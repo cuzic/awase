@@ -515,7 +515,6 @@ impl Runtime {
                 log::info!(
                     "Blacklist force-ON: input_mode スキップ (belief=ObservedEisu, eisu guard)"
                 );
-                return;
             }
         }
     }

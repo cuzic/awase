@@ -106,7 +106,7 @@ impl HeldModifiers {
     }
 
     /// 押下中の修飾キーを解放する `INPUT` イベントを追加する。
-    fn push_release(&self, inputs: &mut Vec<INPUT>) {
+    fn push_release(self, inputs: &mut Vec<INPUT>) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_CONTROL, VK_MENU, VK_SHIFT};
         if self.ctrl {
@@ -124,7 +124,7 @@ impl HeldModifiers {
     ///
     /// # Safety
     /// Win32 API を呼び出す。
-    unsafe fn push_restore(&self, inputs: &mut Vec<INPUT>) -> Self {
+    unsafe fn push_restore(self, inputs: &mut Vec<INPUT>) -> Self {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{
             VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RMENU, VK_RSHIFT, VK_SHIFT,
@@ -695,7 +695,6 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 }
 
 /// `read_ime_state_full` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn read_ime_state_full_async() -> ImeSnapshot {
     // SAFETY: read_ime_state_full は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
@@ -703,7 +702,6 @@ pub async fn read_ime_state_full_async() -> ImeSnapshot {
 }
 
 /// `read_ime_state_fast` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
     // SAFETY: read_ime_state_fast は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
@@ -711,7 +709,6 @@ pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
 }
 
 /// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
     // SAFETY: set_ime_open_cross_process は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -719,7 +716,6 @@ pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
 }
 
 /// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn set_ime_romaji_mode_async() -> bool {
     // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -767,7 +763,6 @@ pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool 
 }
 
 /// `set_ime_romaji_mode_with_target` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn set_ime_romaji_mode_with_target_async(target_conv: Option<u32>) -> bool {
     win32_async::offload(move || unsafe { set_ime_romaji_mode_with_target(target_conv) }).await
 }
@@ -821,7 +816,6 @@ pub unsafe fn set_ime_hiragana_mode_cross_process() -> bool {
 }
 
 /// `set_ime_hiragana_mode_cross_process` の async 版（ワーカースレッドで実行）
-#[expect(clippy::future_not_send)]
 pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
     // SAFETY: set_ime_hiragana_mode_cross_process は unsafe fn。
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -832,7 +826,6 @@ pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
 ///
 /// メインスレッドの `with_app` 再入を避けるため、`SendMessageTimeoutW` (×2) を
 /// ワーカースレッドで実行する。メッセージループは await 中も継続する。
-#[expect(clippy::future_not_send)]
 pub async fn send_f2_via_sendmessage_async() -> bool {
     // SAFETY: send_f2_via_sendmessage は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -842,7 +835,6 @@ pub async fn send_f2_via_sendmessage_async() -> bool {
 /// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
 ///
 /// 診断ログ用途で、`with_app` 再入を避けるためにワーカースレッドへオフロードする。
-#[expect(clippy::future_not_send)]
 pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Option<u32> {
     // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
@@ -1283,6 +1275,7 @@ pub unsafe fn toggle_caps_lock() {
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
 pub unsafe fn set_ime_mode(
     ime_on: bool,
     target_conv_mask_to_set: u32,
@@ -1313,6 +1306,7 @@ pub unsafe fn set_ime_mode(
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
 pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
     let Some(hwnd) = GetForegroundWindow().non_null() else {
         return false;

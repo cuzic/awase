@@ -98,6 +98,7 @@ pub struct ConvTransition {
 /// - `conv_mode_changed`: `ConvModeMgr::update_from_conv` が変化を検出したか。
 /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるか。TsfNative の idle 経路では
 ///   常に `false`。
+#[must_use]
 pub fn classify_conv_transition(
     cm: ConvMode,
     current: InputModeState,
@@ -112,30 +113,29 @@ pub fn classify_conv_transition(
     let has_katakana = cm.charset.is_katakana();
     let was_romaji_capable = current.is_romaji_capable();
 
-    let engine = match input_mode_update {
-        None => {
-            // belief 変化なし。
-            // - conv 不変: カタカナ(NATIVE+KATAKANA)+shadow=OFF のみが唯一の回復経路
-            //   (AssumedRomaji は常に classify_idle=None を返すため)。
-            // - conv 変化: NATIVE(ひらがな/カタカナ)切替+shadow=OFF を engine ON 同期。
-            if !conv_mode_changed {
-                if has_katakana && has_native && !effective_open {
-                    EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
-                } else {
-                    EngineSync::None
-                }
-            } else if has_native && !effective_open {
-                EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+    // belief 変化なし (None) の場合:
+    // - conv 不変: カタカナ(NATIVE+KATAKANA)+shadow=OFF のみが唯一の回復経路
+    //   (AssumedRomaji は常に classify_idle=None を返すため)。
+    // - conv 変化: NATIVE(ひらがな/カタカナ)切替+shadow=OFF を engine ON 同期。
+    //
+    // belief を更新する (Some) 場合は、更新後の new_mode を見て engine を同期する。
+    // 従来コードは複数の if を順に評価していたが、発火するアクションは互いに排他
+    // （対象 open が衝突しない）なので単一アクションに集約できる。ObservedEisu
+    // (NATIVE=0) は NativeToggle 系と、`!effective_open` を要求する分岐は
+    // `effective_open` を要求する romaji 回復分岐と排他になる。
+    let engine = input_mode_update.map_or(
+        if !conv_mode_changed {
+            if has_katakana && has_native && !effective_open {
+                EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
             } else {
                 EngineSync::None
             }
-        }
-        Some(new_mode) => {
-            // belief を更新した上で engine を同期する。従来コードは複数の if を順に
-            // 評価していたが、発火するアクションは互いに排他（対象 open が衝突しない）
-            // なので単一アクションに集約できる。ObservedEisu (NATIVE=0) は NativeToggle
-            // 系と、`!effective_open` を要求する分岐は `effective_open` を要求する
-            // romaji 回復分岐と排他になる。
+        } else if has_native && !effective_open {
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+        } else {
+            EngineSync::None
+        },
+        |new_mode| {
             if matches!(new_mode, InputModeState::ObservedEisu) {
                 EngineSync::DirectInput
             } else if matches!(new_mode, InputModeState::ObservedRomaji)
@@ -150,8 +150,8 @@ pub fn classify_conv_transition(
             } else {
                 EngineSync::None
             }
-        }
-    };
+        },
+    );
 
     // JISかな化検出: ひらがな（NATIVE、非カタカナ）conv で ROMAN ビットが無い状態を
     // engine open 中に観測したらローマ字入力の復元を要求する。

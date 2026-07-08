@@ -241,7 +241,7 @@ impl ObservationStore {
     /// GJI / ObserverPoll / TSF はイベント駆動または周期同期のため epoch フィルタ対象外。
     #[must_use]
     pub fn derive_open(&self, now: Instant) -> Option<bool> {
-        const FRESH: Duration = Duration::from_millis(3000);
+        const FRESH: Duration = Duration::from_secs(3);
         let current_epoch = self.current_focus_epoch;
 
         let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;

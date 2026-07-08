@@ -608,21 +608,19 @@ impl LayoutEntry {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "yab") {
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        match YabLayout::parse(&content, model) {
-                            Ok(yab) => {
-                                let yab = yab.resolve_kana();
-                                log::info!("Discovered layout: {} ({})", yab.name, path.display());
-                                layouts.push(Self {
-                                    name: yab.name.clone(),
-                                    layout: yab,
-                                });
-                            }
-                            Err(e) => {
-                                diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
-                            }
+                    Ok(content) => match YabLayout::parse(&content, model) {
+                        Ok(yab) => {
+                            let yab = yab.resolve_kana();
+                            log::info!("Discovered layout: {} ({})", yab.name, path.display());
+                            layouts.push(Self {
+                                name: yab.name.clone(),
+                                layout: yab,
+                            });
                         }
-                    }
+                        Err(e) => {
+                            diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
+                        }
+                    },
                     Err(e) => {
                         diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                     }
@@ -639,8 +637,11 @@ impl LayoutEntry {
 /// アプリケーション全体の起動シーケンスを実行する。
 ///
 /// `app::run()` から呼ばれる唯一のエントリポイント。
+// 起動シーケンスは初期化ステップの直線的な積み上げで分岐が本質的に多い。
+// 分割は挙動変更リスクが高いため複雑度警告のみ抑制する。
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::items_after_statements)]
+#[expect(clippy::cognitive_complexity)]
 pub(super) fn run_all() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_console = args.iter().any(|a| a == "--debug");

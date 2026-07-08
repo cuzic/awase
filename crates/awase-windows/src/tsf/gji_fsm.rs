@@ -385,8 +385,8 @@ impl GjiFsm {
             GjiState::OnCold {
                 probe: ProbeStatus::Authorized { probe_id, .. },
                 ..
-            } => Some(*probe_id),
-            GjiState::OnComposing {
+            }
+            | GjiState::OnComposing {
                 warmup: ComposingWarmup::AwaitingProbe { probe_id, .. },
                 ..
             } => Some(*probe_id),
@@ -579,7 +579,10 @@ impl TimedStateMachine for GjiFsm {
     type Action = GjiAction;
     type TimerId = GjiTimer;
 
+    // GjiFsm のイベントディスパッチは状態遷移表そのものであり分岐が本質的に多い。
+    // 分割は挙動変更リスクが高いため複雑度警告のみ抑制する。
     #[expect(clippy::too_many_lines)]
+    #[expect(clippy::cognitive_complexity)]
     fn on_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         match event {
             // ── ImeOn ──────────────────────────────────────────────────────
@@ -588,21 +591,18 @@ impl TimedStateMachine for GjiFsm {
                 gji_idle_ms,
             } => {
                 self.injection_mode = injection_mode;
-                match &self.state {
-                    GjiState::OffCold => {
-                        let kind = ColdKind::classify(gji_idle_ms);
-                        log::debug!("[gji-fsm] ImeOn gji_idle={gji_idle_ms}ms → {kind:?}");
-                        // ImeOn（ユーザーが F2 を押した）は FocusChange と異なり
-                        // 即入力する意図があるため、Long/Medium でも proactive に probe を開始する。
-                        self.transition_to_cold_proactive(kind, vec![], None)
-                    }
-                    _ => {
-                        log::debug!(
-                            "[gji-fsm] ImeOn: already on ({}), ignored",
-                            state_label(&self.state)
-                        );
-                        Response::consume()
-                    }
+                if matches!(&self.state, GjiState::OffCold) {
+                    let kind = ColdKind::classify(gji_idle_ms);
+                    log::debug!("[gji-fsm] ImeOn gji_idle={gji_idle_ms}ms → {kind:?}");
+                    // ImeOn（ユーザーが F2 を押した）は FocusChange と異なり
+                    // 即入力する意図があるため、Long/Medium でも proactive に probe を開始する。
+                    self.transition_to_cold_proactive(kind, vec![], None)
+                } else {
+                    log::debug!(
+                        "[gji-fsm] ImeOn: already on ({}), ignored",
+                        state_label(&self.state)
+                    );
+                    Response::consume()
                 }
             }
 
@@ -613,9 +613,8 @@ impl TimedStateMachine for GjiFsm {
                     GjiState::OnCold { pending, .. } => pending.len(),
                     _ => 0,
                 };
-                match &self.state {
-                    GjiState::OffCold => return Response::consume(),
-                    _ => {}
+                if matches!(&self.state, GjiState::OffCold) {
+                    return Response::consume();
                 }
                 if pending_count > 0 {
                     log::warn!(
@@ -812,11 +811,12 @@ impl TimedStateMachine for GjiFsm {
             },
 
             // ── EndComposition ─────────────────────────────────────────────
-            GjiEvent::EndComposition { epoch } => match &mut self.state {
-                GjiState::OnComposing {
+            GjiEvent::EndComposition { epoch } => {
+                if let GjiState::OnComposing {
                     epoch: current_epoch,
                     warmup,
-                } => {
+                } = &mut self.state
+                {
                     if epoch != *current_epoch {
                         log::debug!(
                             "[gji-fsm] EndComposition: stale epoch {epoch:?} ≠ {current_epoch:?}, ignored"
@@ -846,15 +846,14 @@ impl TimedStateMachine for GjiFsm {
                             Response::consume()
                         }
                     }
-                }
-                _ => {
+                } else {
                     log::debug!(
                         "[gji-fsm] EndComposition: not composing ({}), ignored",
                         state_label(&self.state)
                     );
                     Response::consume()
                 }
-            },
+            }
 
             // ── NativeF2Consumed ───────────────────────────────────────────
             GjiEvent::NativeF2Consumed => {
@@ -885,24 +884,22 @@ impl TimedStateMachine for GjiFsm {
 
     fn on_timeout(&mut self, timer_id: GjiTimer) -> Response<GjiAction, GjiTimer> {
         match timer_id {
-            GjiTimer::LongIdle => match &self.state {
-                GjiState::OnWarm { .. } => {
+            GjiTimer::LongIdle => {
+                if let GjiState::OnWarm { .. } = &self.state {
                     log::debug!("[gji-fsm] LongIdle timeout → OnCold(Long, NotStarted)");
                     self.state = GjiState::OnCold {
                         kind: ColdKind::Long,
                         probe: ProbeStatus::NotStarted,
                         pending: vec![],
                     };
-                    Response::consume()
-                }
-                _ => {
+                } else {
                     log::warn!(
                         "[gji-fsm] LongIdle timeout in unexpected state ({})",
                         state_label(&self.state)
                     );
-                    Response::consume()
                 }
-            },
+                Response::consume()
+            }
         }
     }
 }
@@ -914,6 +911,10 @@ impl TimedStateMachine for GjiFsm {
 /// - `Tsf`（WezTerm 等）: `LONG_IDLE_MS`（10 s）
 /// - `Vk`（Chrome/Edge 等）: `CHROME_LONG_IDLE_MS`（5 s）
 /// - `Unicode`（Win32 等）: `LONG_IDLE_MS`（保守的に長めに設定）
+// Tsf と Unicode がたまたま同じ値 (tuning::LONG_IDLE_MS) を使っているが、これは
+// injection mode ごとに個別チューニングされるテーブルであり、将来一方だけ値が
+// 変わる可能性があるため意図的に統合しない。
+#[allow(clippy::match_same_arms)]
 pub(crate) fn long_idle_ms_for(mode: InjectionMode) -> u64 {
     match mode {
         InjectionMode::Tsf => tuning::LONG_IDLE_MS,

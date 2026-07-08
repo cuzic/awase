@@ -47,23 +47,20 @@ pub(crate) fn send_vk_dbe_alpha_warmup(charset: awase::engine::Charset) -> u64 {
         return crate::hook::current_tick_ms();
     }
 
-    match charset {
-        awase::engine::Charset::ZenkakuAlpha => {
-            let inputs = [
-                make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
-                make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
-                make_tsf_key_input(VK_DBE_DBCSCHAR, false),
-                make_tsf_key_input(VK_DBE_DBCSCHAR, true),
-            ];
-            let _ = crate::win32::send_input_safe(&inputs);
-        }
-        _ => {
-            let inputs = [
-                make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
-                make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
-            ];
-            let _ = crate::win32::send_input_safe(&inputs);
-        }
+    if charset == awase::engine::Charset::ZenkakuAlpha {
+        let inputs = [
+            make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
+            make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
+            make_tsf_key_input(VK_DBE_DBCSCHAR, false),
+            make_tsf_key_input(VK_DBE_DBCSCHAR, true),
+        ];
+        let _ = crate::win32::send_input_safe(&inputs);
+    } else {
+        let inputs = [
+            make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
+            make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
+        ];
+        let _ = crate::win32::send_input_safe(&inputs);
     }
     crate::hook::current_tick_ms()
 }
@@ -85,25 +82,22 @@ pub(crate) fn send_vk_dbe_katakana_warmup(charset: awase::engine::Charset) -> u6
         return crate::hook::current_tick_ms();
     }
 
-    match charset {
-        awase::engine::Charset::HankakuKatakana => {
-            // F1↓F1↑ でカタカナ、F3↓F3↑ で半角に切り替え。
-            let inputs = [
-                make_tsf_key_input(VK_DBE_KATAKANA, false),
-                make_tsf_key_input(VK_DBE_KATAKANA, true),
-                make_tsf_key_input(VK_DBE_SBCSCHAR, false),
-                make_tsf_key_input(VK_DBE_SBCSCHAR, true),
-            ];
-            let _ = crate::win32::send_input_safe(&inputs);
-        }
-        _ => {
-            // ZenkakuKatakana その他: F1↓F1↑ のみ
-            let inputs = [
-                make_tsf_key_input(VK_DBE_KATAKANA, false),
-                make_tsf_key_input(VK_DBE_KATAKANA, true),
-            ];
-            let _ = crate::win32::send_input_safe(&inputs);
-        }
+    if charset == awase::engine::Charset::HankakuKatakana {
+        // F1↓F1↑ でカタカナ、F3↓F3↑ で半角に切り替え。
+        let inputs = [
+            make_tsf_key_input(VK_DBE_KATAKANA, false),
+            make_tsf_key_input(VK_DBE_KATAKANA, true),
+            make_tsf_key_input(VK_DBE_SBCSCHAR, false),
+            make_tsf_key_input(VK_DBE_SBCSCHAR, true),
+        ];
+        let _ = crate::win32::send_input_safe(&inputs);
+    } else {
+        // ZenkakuKatakana その他: F1↓F1↑ のみ
+        let inputs = [
+            make_tsf_key_input(VK_DBE_KATAKANA, false),
+            make_tsf_key_input(VK_DBE_KATAKANA, true),
+        ];
+        let _ = crate::win32::send_input_safe(&inputs);
     }
     crate::hook::current_tick_ms()
 }

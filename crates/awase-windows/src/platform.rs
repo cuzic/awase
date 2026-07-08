@@ -119,7 +119,7 @@ impl WindowsPlatform {
     /// conv mutation 可否の唯一の実体は `Output::conv_mutation_allowed`（Cell<bool>）で、
     /// `send_eager_tsf_warmup` / probe warmup がこのフラグを self-gate に使う。
     /// `AwaseOwned` かどうかだけが即時ゲートに効くため、ここでその bool を push する。
-    pub(crate) fn set_conv_mode_authority(&mut self, authority: ConvModeAuthority) {
+    pub(crate) fn set_conv_mode_authority(&self, authority: ConvModeAuthority) {
         self.output
             .set_conv_mutation_allowed(authority.allows_conv_mutation());
     }
@@ -134,6 +134,9 @@ impl WindowsPlatform {
     ///
     /// `GjiFsm` の状態遷移は WM_* 処理を経由するため数百 ms の遅延がある。
     /// ここでは observer が AtomicBool で即時更新する値を直接読む。
+    // Platform の他メソッドと対称な API 配置のため、状態はグローバル observer から
+    // 読むが `&self` を維持する（呼び出し側の `self.method()` 記法との一貫性）。
+    #[allow(clippy::unused_self)]
     pub(crate) fn is_composition_warm_in_tsf(&self) -> bool {
         crate::tsf::observer::gji_candidate_visible_now()
     }
@@ -203,7 +206,6 @@ impl WindowsPlatform {
     }
 
     /// 出力モードを切り替える（設定変更時）。
-    #[expect(clippy::missing_const_for_fn)]
     /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
     pub(crate) fn install_pending_tsf_and_set_timer(
         &mut self,
@@ -231,7 +233,7 @@ impl WindowsPlatform {
         // step_probe 内（SacrificialResend 等）で発生したイベントを追加で drain する。
         self.drain_pending_composition_events();
         if let Some(gji_resp) = result.gji_response {
-            self.dispatch_gji_response(gji_resp);
+            self.dispatch_gji_response(&gji_resp);
         }
         if result.learned_tsf {
             // UnicodeLiteralObserverFsm が GJI write なしと判断 → フォーカス中クラスを Tsf に昇格。
@@ -253,7 +255,7 @@ impl WindowsPlatform {
     /// `GjiFsm::on_event` / `on_timeout` の結果を処理し、タイマー操作とアクションを実行する。
     pub(crate) fn dispatch_gji_response(
         &mut self,
-        response: timed_fsm::Response<
+        response: &timed_fsm::Response<
             crate::tsf::gji_fsm::GjiAction,
             crate::tsf::gji_fsm::GjiTimer,
         >,
@@ -301,6 +303,7 @@ impl WindowsPlatform {
                     //   deferred chars あり → VK_IME_ON poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
                     //   deferred chars なし → 従来通り VK_IME_OFF→VK_IME_ON reinit
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
+                        use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
@@ -312,7 +315,6 @@ impl WindowsPlatform {
                                 self.start_unicode_cold_warmup(probe_id.0, deferred);
                             }
                         }
-                        use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
                             result: WarmupResult {
@@ -322,7 +324,7 @@ impl WindowsPlatform {
                                 gji_resumed: false,
                             },
                         });
-                        self.dispatch_gji_response(warmup_resp);
+                        self.dispatch_gji_response(&warmup_resp);
                     }
                 }
                 GjiAction::CancelProbe { probe_id } => {
@@ -448,7 +450,7 @@ impl WindowsPlatform {
                 injection_mode,
                 gji_idle_ms,
             });
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_response(&resp);
         // ImeModeFsm: フォーカス変更で Unknown に戻す（次の IMC 確認待ち）。
         // on_ime_mode_focus_changed が ime_mode_focus_gen をインクリメントするため、
         // spawn_local の前に gen を取得して closure にキャプチャする。
@@ -481,12 +483,12 @@ impl WindowsPlatform {
                 injection_mode,
                 gji_idle_ms,
             });
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_response(&resp);
     }
 
     fn dispatch_gji_event(&mut self, event: crate::tsf::gji_fsm::GjiEvent) {
         let resp = self.output.gji_on_event(event);
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_response(&resp);
     }
 
     /// IME OFF を GjiFsm に通知する（`on_ime_applied(open=false)` から呼ぶ）。
@@ -497,7 +499,7 @@ impl WindowsPlatform {
     /// TIMER_GJI_LONG_IDLE ハンドラ。LongIdle タイムアウトを GjiFsm に通知する。
     pub(crate) fn gji_on_timer_long_idle(&mut self) {
         let resp = self.output.gji_on_long_idle();
-        self.dispatch_gji_response(resp);
+        self.dispatch_gji_response(&resp);
     }
 
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化されたことを GjiFsm に通知する。
@@ -648,7 +650,7 @@ impl PlatformRuntime for WindowsPlatform {
         // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
         // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
         for resp in self.output.drain_pending_gji_key_responses() {
-            self.dispatch_gji_response(resp);
+            self.dispatch_gji_response(&resp);
         }
         // SymbolVkSent 等の CompositionReset フラグを drain する。
         if self.output.take_composition_reset() {
@@ -938,6 +940,9 @@ impl WindowsPlatform {
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// 戦略選択と実行は [`crate::ime_controller::CONTROLLER`] が唯一の SSOT として担う。
     /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
+    // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
+    // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
+    #[allow(clippy::unused_self)]
     pub(crate) fn apply_ime_open_with_view(
         &self,
         open: bool,
@@ -974,7 +979,7 @@ impl WindowsPlatform {
         open: bool,
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
-        let shadow_on = applied.map_or(false, |(s, _)| s);
+        let shadow_on = applied.is_some_and(|(s, _)| s);
         self.apply_ime_open_with_belief(
             open,
             applied,

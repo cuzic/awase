@@ -14,6 +14,7 @@
 //! ```
 
 #![cfg(windows)]
+#![allow(unsafe_code)]
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
@@ -464,7 +465,7 @@ impl TestEditWindow {
         // Register window class
         let class_name_wide: Vec<u16> = "AwaseTestWindow\0".encode_utf16().collect();
         let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(test_wnd_proc),
             hInstance: HINSTANCE::default(),
             lpszClassName: windows::core::PCWSTR(class_name_wide.as_ptr()),
@@ -676,7 +677,7 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
             },
         },
     ];
-    let size = i32::try_from(std::mem::size_of::<INPUT>()).expect("INPUT size fits i32");
+    let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
     let sent = SendInput(&inputs, size);
     log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
 
@@ -1001,9 +1002,6 @@ fn e2e_ime_status_detection() {
     log::info!("=== E2E Phase 3: IME status detection ===");
 
     unsafe {
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
-        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-
         log_system_info();
 
         let Some(win) = TestEditWindow::create() else {

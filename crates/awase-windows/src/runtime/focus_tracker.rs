@@ -15,6 +15,10 @@ use crate::focus::classifier::ImmCapability;
 ///
 /// - IMM 能力学習の純粋な判断（[`Self::decide_imm_capability`]）
 /// - IME sync キー情報（`sync_toggle/on/off_keys`）による [`Self::enrich_ime_relevance`]
+// `sync_*` プレフィックスは「IME sync キー」という意味的な括りを示すために意図的に
+// 揃えている。3フィールドとも呼び出し元（bootstrap.rs / runtime/mod.rs 含め35箇所）で
+// 現在名で参照されており、改名は影響範囲が広いため見送る。
+#[allow(clippy::struct_field_names)]
 pub(crate) struct FocusTracker {
     /// トグル系 sync キー（KANJI 等）
     pub(crate) sync_toggle_keys: Vec<VkCode>,

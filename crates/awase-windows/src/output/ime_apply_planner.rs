@@ -59,19 +59,22 @@ impl OpenBelief {
 /// SetOpen は常に Engine の意図であり恒真だった。）
 /// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
-    let effective_open = if let Some(conv) = inputs.conv_mode {
-        if desired_open {
-            // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
-            // conv=0 (DirectInput) や conv=0x10 (ROMAN のみ) は半角英数直接入力 = IME OFF 相当扱い。
-            // VK_DBE_HIRAGANA を送ってひらがなモードに復帰させる必要がある。
-            conv & 0x0001 != 0
-        } else {
-            // open=false 要求時: DirectInput(0) でなければ「IME ON」扱い（従来通り）。
-            conv != 0
-        }
-    } else {
-        inputs.shadow_on || inputs.candidate_visible || (!desired_open && inputs.candidate_was_seen)
-    };
+    let effective_open = inputs.conv_mode.map_or(
+        inputs.shadow_on
+            || inputs.candidate_visible
+            || (!desired_open && inputs.candidate_was_seen),
+        |conv| {
+            if desired_open {
+                // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
+                // conv=0 (DirectInput) や conv=0x10 (ROMAN のみ) は半角英数直接入力 = IME OFF 相当扱い。
+                // VK_DBE_HIRAGANA を送ってひらがなモードに復帰させる必要がある。
+                conv & 0x0001 != 0
+            } else {
+                // open=false 要求時: DirectInput(0) でなければ「IME ON」扱い（従来通り）。
+                conv != 0
+            }
+        },
+    );
 
     let confident = if !inputs.can_imm32_cross_process
         && !inputs.gji_monitor_ok

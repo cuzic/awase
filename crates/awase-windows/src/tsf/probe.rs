@@ -577,6 +577,7 @@ impl LiteralDetector {
     /// F2 は WriteTransferCount を増加させない（w_KB=+0.0）ため誤検知しない。
     ///
     /// リテラル時（GJI が VK を受け取らない）は I/O 変化なし → タイムアウトで SuspectedLiteral。
+    #[must_use]
     pub fn new_gji_resumed() -> Self {
         let mut d = Self::new();
         d.use_process_io_confirm = true;
@@ -597,6 +598,7 @@ impl LiteralDetector {
     /// - warm Chrome（コンポジション 'あ'）: VK_A 後 w_KB ≈ +0.4KB（+400 バイト）
     ///
     /// [`COMPOSITION_BYTES_THRESHOLD`] = 350 バイトで cold/warm を分離できる。
+    #[must_use]
     pub fn new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a: u64) -> Self {
         let mut d = Self::new();
         d.use_process_io_confirm = true;
@@ -614,25 +616,31 @@ impl LiteralDetector {
     ///
     /// `Some` = 判定確定、`None` = まだ待機中。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    #[must_use]
     pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
         use std::sync::atomic::Ordering::Relaxed;
         let now = crate::hook::current_tick_ms();
-        let confirmed = if let Some(write_baseline) = self.write_bytes_baseline {
-            // Chrome 用: WriteTransferCount 増加で文字コンポジションを確認する。
-            // gji_last_io_ms は F2（モード切り替え）でも変化するため信頼しない。
-            // VK_A → 'あ' 変換は w_KB=+0.3KB 程度を書き込む。
-            // F2 は w_KB=+0.0（WriteTransferCount 増加なし）なので閾値以上には達しない。
-            crate::tsf::observer::gji_write_bytes()
-                > write_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD)
-        } else if self.was_candidate_visible || self.use_process_io_confirm {
-            // long_idle TSF パス: gji_last_io_ms 変化で早期確認
-            TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
-        } else {
-            // 通常パス: candidate window SHOW イベント待ち
-            TSF_OBS
-                .gji_candidate_show
-                .has_changed(self.gji_show_baseline)
-        };
+        let confirmed = self.write_bytes_baseline.map_or_else(
+            || {
+                if self.was_candidate_visible || self.use_process_io_confirm {
+                    // long_idle TSF パス: gji_last_io_ms 変化で早期確認
+                    TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
+                } else {
+                    // 通常パス: candidate window SHOW イベント待ち
+                    TSF_OBS
+                        .gji_candidate_show
+                        .has_changed(self.gji_show_baseline)
+                }
+            },
+            |write_baseline| {
+                // Chrome 用: WriteTransferCount 増加で文字コンポジションを確認する。
+                // gji_last_io_ms は F2（モード切り替え）でも変化するため信頼しない。
+                // VK_A → 'あ' 変換は w_KB=+0.3KB 程度を書き込む。
+                // F2 は w_KB=+0.0（WriteTransferCount 増加なし）なので閾値以上には達しない。
+                crate::tsf::observer::gji_write_bytes()
+                    > write_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD)
+            },
+        );
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)
         } else if now >= deadline_ms {

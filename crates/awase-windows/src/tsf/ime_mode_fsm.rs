@@ -152,11 +152,7 @@ impl ImeModeFsm {
         let new_state = ImeModeState::from_conversion_mode(mode);
         match (self.state, new_state == self.state) {
             (ImeModeState::Unknown, _) => {
-                log::debug!(
-                    "[ime-mode] initial confirm: {:?} (conv=0x{:08X})",
-                    new_state,
-                    mode
-                );
+                log::debug!("[ime-mode] initial confirm: {new_state:?} (conv=0x{mode:08X})");
             }
             (_, false) => {
                 log::warn!(
@@ -167,11 +163,7 @@ impl ImeModeFsm {
                 );
             }
             (_, true) => {
-                log::debug!(
-                    "[ime-mode] confirmed: {:?} (conv=0x{:08X})",
-                    new_state,
-                    mode
-                );
+                log::debug!("[ime-mode] confirmed: {new_state:?} (conv=0x{mode:08X})");
             }
         }
         self.state = new_state;

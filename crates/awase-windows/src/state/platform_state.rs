@@ -100,10 +100,10 @@ impl ImeStateHub {
                 source,
                 UserIntentSource::SyncKey | UserIntentSource::PhysicalImeKey
             ) {
-                if !target {
-                    self.last_user_explicit_off_ms = tick_ms.0;
-                } else {
+                if *target {
                     self.last_user_explicit_off_ms = 0;
+                } else {
+                    self.last_user_explicit_off_ms = tick_ms.0;
                 }
             }
         }
@@ -244,10 +244,7 @@ impl ImeStateHub {
             .active_chord_kind()
             .unwrap_or(ChordKind::CtrlMuhenkanImeOff);
         self.dispatch_event(ImeEvent::ChordEnded { kind }, tick_ms);
-        log::debug!(
-            "[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{:02X})",
-            vk
-        );
+        log::debug!("[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{vk:02X})");
     }
 
     // ── Input barrier ──
@@ -847,6 +844,8 @@ impl ImeStateHub {
         self.shadow_model.last_intent = None;
     }
 
+    /// 現在呼び出し元がないが診断用アクセサとして残す。
+    #[allow(dead_code)]
     pub(crate) fn last_intent_source(&self) -> Option<UserIntentSource> {
         self.shadow_model.last_intent.as_ref().map(|i| i.source)
     }
@@ -1196,7 +1195,9 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
         let stale_at = std::time::Instant::now()
-            - std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200);
+            - std::time::Duration::from_millis(
+                crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200,
+            );
         ps.ime
             .shadow_model
             .observations

@@ -94,6 +94,12 @@ pub(crate) enum KeyMechanism {
 /// 呼び出し側は `crate::ime::send_ime_mode_key(ime_key_for(..))` で送る。各行の挙動根拠
 /// （コミットハッシュ）は P2-1 ゴールデンに集約済み。キー変更はこの match 1行の diff になる。
 #[must_use]
+// GjiDirect/Close と MsImeDirect/Close は現在同じ VK_IME_OFF を送るが、この表は
+// 「1行 = 1 (機構, 操作) の送信キー根拠（コミットハッシュ付き）」という宣言的テーブル
+// 設計を意図している。IME OFF キー選択は過去に複数回反転しており
+// (.claude/rules/experiment-logging.md 参照)、行を統合すると片方だけキーを変える将来の
+// 変更が 1 行 diff で済まなくなるため、意図的に統合しない。
+#[allow(clippy::match_same_arms)]
 pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> VkCode {
     use ImeOperation::{Close, Open};
     use KeyMechanism::{GjiDirect, MsImeDirect};

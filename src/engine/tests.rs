@@ -417,7 +417,14 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
 
     let mut engine = TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(make_layout(), VK_LSHIFT, VK_CONVERT, 100, ConfirmMode::Wait, 30),
+        engine: NicolaFsm::new(
+            make_layout(),
+            VK_LSHIFT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        ),
     };
 
     let down = RawKeyEvent {

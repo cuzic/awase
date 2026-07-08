@@ -741,7 +741,11 @@ impl SettingsApp {
         if need_reload {
             self.preview_cache = Some((
                 cache_key,
-                load_layout_for_preview(&self.config.general.layouts_dir, &layout_file, keyboard_model),
+                load_layout_for_preview(
+                    &self.config.general.layouts_dir,
+                    &layout_file,
+                    keyboard_model,
+                ),
             ));
         }
 

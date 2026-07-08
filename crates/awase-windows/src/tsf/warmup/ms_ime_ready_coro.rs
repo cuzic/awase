@@ -51,6 +51,9 @@ fn env_native_ready(env: &TsfEnvSnapshot) -> bool {
         )
 }
 
+// `Rc` を使うため生成される future は `!Send`。これはタイマー駆動の単一スレッド設計
+// による意図的な制約（crates/timed-fsm/src/coro.rs::yield_step 参照）。
+#[expect(clippy::future_not_send)]
 async fn ms_ime_ready_coro_body(
     ch: Rc<Channel<TsfEnvSnapshot, Vec<ProbeAction>>>,
     cold_seq: u32,
@@ -126,7 +129,7 @@ impl MsImeReadyCoro {
         let guard = OutputActiveGuard::begin();
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms).await
+            ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms).await;
         });
         let mut this = Self {
             coro,

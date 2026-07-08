@@ -828,7 +828,6 @@ impl DecisionExecutor {
     /// async path は完了時にバッチが既に終わっており、次バッチ開始時に
     /// `applied_snapshot = ime.model().applied` で SSOT から再取得されるため、
     /// 完了時の intra-batch 更新は不要（`on_ime_apply_complete` が SSOT を更新する）。
-    #[expect(clippy::needless_pass_by_ref_mut)]
     fn update_intra_batch_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
         if outcome == ImeOpenOutcome::UnsafeToToggle {

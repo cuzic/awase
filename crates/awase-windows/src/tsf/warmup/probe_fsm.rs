@@ -264,6 +264,9 @@ struct TsfTransmitDonePayload {
 
 // ── コルーチン本体 ────────────────────────────────────────────────────────────
 
+// `Rc` を使うため生成される future は `!Send`。これはタイマー駆動の単一スレッド設計
+// による意図的な制約（crates/timed-fsm/src/coro.rs::yield_step 参照）。
+#[expect(clippy::future_not_send)]
 async fn tsf_probe_coro_body(
     ch: Rc<Channel<TsfProbeTickInput, Vec<ProbeAction>>>,
     romaji: String,
@@ -360,9 +363,7 @@ async fn tsf_probe_coro_body(
         // 部分リテラル判定: SHOW 後に composition 内容が expected_kana と異なるケース。
         // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
         let partial_literal = matches!(detection, DetectionResult::CompositionConfirmed)
-            && expected_kana.map_or(false, |e| {
-                env.foreground_comp_char.map_or(false, |c| c != e)
-            });
+            && expected_kana.is_some_and(|e| env.foreground_comp_char.is_some_and(|c| c != e));
 
         let final_actions = match detection {
             DetectionResult::CompositionConfirmed if partial_literal => {
@@ -391,7 +392,7 @@ async fn tsf_probe_coro_body(
                     ProbeAction::Done,
                 ]
             }
-            _ => {
+            DetectionResult::CompositionConfirmed => {
                 log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
                 vec![ProbeAction::Done]
@@ -428,7 +429,7 @@ impl TsfProbeCoro {
     ) -> Self {
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await
+            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await;
         });
         let mut this = Self {
             coro,

@@ -143,11 +143,7 @@ impl crate::ime::ImeSnapshot {
         );
         if let Some(new_mode) = result {
             log::info!(
-                "IME input method changed: conv=0x{:08X}→0x{:08X}, belief {:?}→{:?}",
-                prev_conv,
-                curr_conv,
-                current_input_mode,
-                new_mode,
+                "IME input method changed: conv=0x{prev_conv:08X}→0x{curr_conv:08X}, belief {current_input_mode:?}→{new_mode:?}"
             );
         }
         result

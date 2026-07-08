@@ -204,7 +204,7 @@ impl<'a> ColdWarmupSequence<'a> {
             .output
             .conv_mode
             .get()
-            .and_then(|m| m.imm_conv_target());
+            .and_then(awase::engine::ConvMode::imm_conv_target);
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
@@ -270,8 +270,7 @@ impl<'a> ColdWarmupSequence<'a> {
             .output
             .conv_mode
             .get()
-            .map(|m| m.charset)
-            .unwrap_or(awase::engine::Charset::Hiragana);
+            .map_or(awase::engine::Charset::Hiragana, |m| m.charset);
 
         WarmupContext {
             cold_seq,

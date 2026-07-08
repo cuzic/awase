@@ -39,6 +39,11 @@ struct TickInput {
 
 // ── コルーチン本体 ─────────────────────────────────────────────────────────────
 
+// `Rc` を使うため生成される future は `!Send`。これはタイマー駆動の単一スレッド設計
+// による意図的な制約（crates/timed-fsm/src/coro.rs::yield_step 参照）。
+// Chrome/TSF・warm/cold の分岐が本質的に多いディスパッチャのため複雑度警告も抑制する。
+#[expect(clippy::future_not_send)]
+#[expect(clippy::cognitive_complexity)]
 async fn sacr_warmup_coro_body(
     ch: Rc<Channel<TickInput, Vec<ProbeAction>>>,
     cold_seq: u32,
@@ -86,8 +91,7 @@ async fn sacr_warmup_coro_body(
     if !confirmed_warm && target == TransmitTarget::Chrome {
         let reinit_deadline_ms = crate::hook::current_tick_ms() + CHROME_GJI_REINIT_CONFIRM_MS;
         log::debug!(
-            "[sacr-warmup] cold={cold_seq} Chrome cold → SendChromeGjiReinit (timeout={}ms)",
-            CHROME_GJI_REINIT_CONFIRM_MS,
+            "[sacr-warmup] cold={cold_seq} Chrome cold → SendChromeGjiReinit (timeout={CHROME_GJI_REINIT_CONFIRM_MS}ms)"
         );
         // VK_IME_OFF→VK_IME_ON 送信 + async IMC ポーリング開始を dispatcher に委譲する。
         yield_step(
@@ -155,8 +159,7 @@ async fn sacr_warmup_coro_body(
                 let settle_deadline =
                     crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
                 log::debug!(
-                    "[sacr-warmup] cold={cold_seq} Chrome HIDE 後 IPC settle 待機 ({}ms)",
-                    SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+                    "[sacr-warmup] cold={cold_seq} Chrome HIDE 後 IPC settle 待機 ({SACR_WARMUP_CHROME_IPC_SETTLE_MS}ms)"
                 );
                 loop {
                     yield_step(ch.clone(), vec![]).await;
@@ -173,8 +176,7 @@ async fn sacr_warmup_coro_body(
             let settle_deadline = crate::hook::current_tick_ms() + SACR_WARMUP_CHROME_IPC_SETTLE_MS;
             log::debug!(
                 "[sacr-warmup] cold={cold_seq} Chrome warm: 早期 HIDE (composition 観測済み) \
-                 IPC settle 待機 ({}ms)",
-                SACR_WARMUP_CHROME_IPC_SETTLE_MS,
+                 IPC settle 待機 ({SACR_WARMUP_CHROME_IPC_SETTLE_MS}ms)"
             );
             loop {
                 yield_step(ch.clone(), vec![]).await;
@@ -229,7 +231,7 @@ impl SacrificialWarmupCoro {
     ) -> Self {
         let guard = OutputActiveGuard::begin();
         let coro = StepCoro::new(async move |ch| {
-            sacr_warmup_coro_body(ch, cold_seq, romaji, detector, deadline_ms, target).await
+            sacr_warmup_coro_body(ch, cold_seq, romaji, detector, deadline_ms, target).await;
         });
         let mut this = Self {
             coro,

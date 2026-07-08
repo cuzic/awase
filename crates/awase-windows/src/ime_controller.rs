@@ -127,8 +127,8 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 ///
 /// - ON  → `VK_DBE_HIRAGANA` (0xF2) — ひらがなモードに設定（カタカナ時はスキップ）
 /// - OFF → `VK_IME_OFF` (0x1A) — DirectInput（直接入力）へ移行。MS-IME がネイティブに処理する冪等キー。
-///         `VK_DBE_ALPHANUMERIC` は半角英数（IME-ON）に留まるため使用しない。
-///         `VK_KANJI` はトグルのため使用しない（shadow desync で逆転する）。
+///   `VK_DBE_ALPHANUMERIC` は半角英数（IME-ON）に留まるため使用しない。
+///   `VK_KANJI` はトグルのため使用しない（shadow desync で逆転する）。
 ///
 /// 適用条件:
 /// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
@@ -350,6 +350,9 @@ impl ImeController {
 ///
 /// 戦略選択は `active_ime_kind` と `profile.can_use_imm32_cross_process()` のみに
 /// 依存するため、`shadow_on` / `belief_input_mode` はここでは選択に影響しない既定値を渡す。
+///
+/// # Panics
+/// `profile` が `"Standard"` / `"Imm32Unavailable"` / `"TsfNative"` のいずれでもない場合。
 #[must_use]
 pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) -> &'static str {
     use crate::focus::class_names::AppImeProfile;

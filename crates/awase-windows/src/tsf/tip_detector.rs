@@ -85,16 +85,18 @@ fn find_gji_clsid(
         loop {
             let mut prof = TF_INPUTPROCESSORPROFILE::default();
             let mut fetched: u32 = 0;
-            let res = enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &raw mut fetched);
             if res.is_err() || fetched == 0 {
                 break;
             }
             if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
                 continue;
             }
-            if let Ok(bstr) =
-                profiles.GetLanguageProfileDescription(&prof.clsid, prof.langid, &prof.guidProfile)
-            {
+            if let Ok(bstr) = profiles.GetLanguageProfileDescription(
+                &raw const prof.clsid,
+                prof.langid,
+                &raw const prof.guidProfile,
+            ) {
                 if bstr.to_string().contains("Google") {
                     return Some(prof.clsid);
                 }
@@ -114,7 +116,7 @@ fn find_gji_clsid(
 pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<ActiveImeKind> {
     unsafe {
         let mut prof = TF_INPUTPROCESSORPROFILE::default();
-        mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &mut prof)
+        mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut prof)
             .map_err(|e| log::debug!("[tip-detect] GetActiveProfile failed: {e}"))
             .ok()?;
 
@@ -151,7 +153,7 @@ pub(super) fn dump_profiles(
         loop {
             let mut prof = TF_INPUTPROCESSORPROFILE::default();
             let mut fetched: u32 = 0;
-            let res = enumerator.Next(std::slice::from_mut(&mut prof), &mut fetched as *mut u32);
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &raw mut fetched);
             if res.is_err() || fetched == 0 {
                 break;
             }
@@ -161,7 +163,11 @@ pub(super) fn dump_profiles(
                 "HKL"
             };
             let desc = profiles
-                .GetLanguageProfileDescription(&prof.clsid, prof.langid, &prof.guidProfile)
+                .GetLanguageProfileDescription(
+                    &raw const prof.clsid,
+                    prof.langid,
+                    &raw const prof.guidProfile,
+                )
                 .ok()
                 .map(|b| b.to_string())
                 .unwrap_or_default();
