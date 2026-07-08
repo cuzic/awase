@@ -111,7 +111,16 @@ footer p{margin:0.3rem 0}
 <h2>[Unreleased]</h2>
 <h3>バグ修正</h3>
 <ul>
-<li><strong>Chrome 入力中、CLSID ベース IME 種別の単発誤検出で <code>GjiFsm</code> が単語ごとに再構築され <code>cold</code> が発火し続ける不具合を修正（BUG-17）</strong><ul>
+<li><p><strong>Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）</strong></p>
+<ul>
+<li><code>GetForegroundWindow()</code> 基準の conv 読み取り（<code>get_ime_conversion_mode_raw_timeout</code>）が、<code>Chrome_WidgetWin_1</code> と GJI 候補ポップアップ（<code>Windows.UI.Input.InputSite.WindowClass</code>）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを <code>ConvModeMgr</code> が無条件に確定していた</li>
+<li>確定した誤読を eager warmup（<code>send_eager_tsf_warmup</code>）が鵜呑みにし、<code>VK_DBE_KATAKANA</code> を実送信 → 一過性の誤読が GJI の本当の状態としてロックインされ、以後の入力が全部カタカナ化し、さらに <code>KatakanaShadowOff</code> 救済ロジックが繰り返し IME OFF/ON を往復させて先頭文字の literal 漏れを誘発していた</li>
+<li><code>ConvModeMgr::update_from_conv</code> に、非カタカナ→カタカナ遷移限定のデバウンス（<code>ImeKindDebounce</code> と同一の「2 tick 連続確認」パターン）を追加</li>
+<li>追補: 上記は warmup 側（<code>ConvModeMgr</code>）しか保護しておらず、<code>classify_conv_transition</code>（belief 更新・<code>KatakanaShadowOff</code> 等の engine 同期）は raw conv を直接再解釈しており同じ誤読に無防備だった。<code>classify_conv_transition</code> の引数を <code>conv: u32</code> から <code>ConvModeMgr::get()</code> 由来の <code>ConvMode</code> に変更し、warmup と belief/engine-sync が同一の確定値を参照するよう統一した。詳細は docs/known-bugs.md BUG-19</li>
+</ul>
+</li>
+<li><p><strong>Chrome 入力中、CLSID ベース IME 種別の単発誤検出で <code>GjiFsm</code> が単語ごとに再構築され <code>cold</code> が発火し続ける不具合を修正（BUG-17）</strong></p>
+<ul>
 <li><code>gji-io-monitor</code> ワーカースレッドが 2 秒ごとにポーリングする <code>ITfInputProcessorProfileMgr::GetActiveProfile</code> の単発フリップを <code>WM_IME_KIND_CHANGED</code> としてそのまま main スレッドへ伝播しており、<code>set_active_ime_kind</code> が種別変化のたびに warmup 戦略（<code>GjiFsm</code>/<code>MsImeStrategy</code>）を無条件で新規生成 → 確立済みの <code>OnWarm</code>/<code>OnComposing</code> を破棄していた</li>
 <li>Chrome cold-start reinit が実 <code>VK_IME_OFF→VK_IME_ON</code> トグルを送信すること自体が誤検出の引き金となり、「reinit → 誤検出 → GjiFsm 再構築 → 次の単語も cold → 再度 reinit → …」という自己増幅ループを形成していた（実機ログで <code>cold_seq</code> が単語ごとに 392→401 と climb、2 回の &quot;StartComposition while engine off&quot; 警告が CLSID ポーリング周期とほぼ一致する 2146ms 間隔で観測）</li>
 <li><code>tsf/gji_monitor.rs</code> に <code>ImeKindDebounce</code> を追加し、同じ新種別が 2 tick 連続で観測されるまで確定させないようにした。詳細は docs/known-bugs.md BUG-17</li>
