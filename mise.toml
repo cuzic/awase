@@ -17,6 +17,18 @@ run = "cargo test --lib"
 description = "Check formatting"
 run = "cargo fmt -- --check"
 
+[tasks.check-macos]
+description = "Compile check (macOS target, no SDK/linker required)"
+run = "cargo check -p awase-macos -p awase-macos-probe --target aarch64-apple-darwin --all-targets"
+
+[tasks.clippy-macos]
+description = "Run clippy lints (macOS target, no SDK/linker required, includes tests)"
+run = "cargo clippy -p awase-macos -p awase-macos-probe --target aarch64-apple-darwin --all-targets -- -A clippy::cargo"
+
+[tasks.test-macos-probe]
+description = "Run awase-macos-probe tests (bins + lib + integration tests, host target)"
+run = "cargo test -p awase-macos-probe"
+
 [tasks.pre-push]
 description = "Run all checks before push"
 depends = ["check", "clippy", "test", "fmt"]

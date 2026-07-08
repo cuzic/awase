@@ -1,0 +1,34 @@
+[package]
+name = "awase-macos-probe"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "awase-macos-probe"
+path = "src/main.rs"
+
+[dependencies]
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-graphics = { version = "0.3", features = ["CGEvent"] }
+objc2-application-services = "0.3"
+
+[lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
