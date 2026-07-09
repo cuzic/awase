@@ -299,4 +299,35 @@ pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
 /// 結果）から炙り出すための一時計測。実測データが取れて narrowing 方針が決まったら、
 /// このフラグと分岐ごと撤去するか恒久的なゲート条件に置き換えること
 /// （cold 突入判定の絞り込み調査の一部、2026-07-09〜）。
-pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = true;
+///
+/// 2026-07-09 追記: 実機7サンプル（目視確認込み）で予防的分岐スキップは無破損だった。
+/// 次の実験（`DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON`）は「予防分岐自体を止める」のではなく
+/// 「予防分岐は残しつつ Chrome の犠牲キーを差し替える」検証のため、本フラグは `false` に戻し
+/// 予防分岐を通常通り発火させる（そうしないと差し替え後のキーを試す機会がない）。
+pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = false;
+
+/// Chrome/Edge の `StartSacrificialWarmup` 犠牲キーを `VkAThenBackspace` から
+/// `ImeOffThenOn`（VK_IME_OFF→VK_IME_ON）に一時的に差し替える診断フラグ。
+///
+/// 適用箇所は `output/probe_io.rs` の `StartSacrificialWarmup` ディスパッチ1点のみ。
+/// `state/key_sequence_policy.rs::sacrificial_warmup_key`（実機確定根拠 `22c3905` の
+/// 宣言的テーブル）自体は変更しない — あちらは「TSF は ImeOffThenOn、Chrome は
+/// VkAThenBackspace」という実機確定済みの事実の記録であり、診断中の仮説で汚さない。
+///
+/// ## 背景
+///
+/// `ImeOffThenOn`（`tsf/warmup/ime_offon_warmup_fsm.rs`）は元々 WezTerm 等 TSF 専用
+/// （vim の VK_A 誤爆対策）。Chrome には ADR-048/`22c3905` の「VK_IME_OFF が Chrome
+/// TSF context を壊す」という知見から使われてこなかった。ただしこの知見の実機再検証は
+/// `6c1732d`→`22c3905`（2026-06-30、6分差）の revert 由来で、今回は改めて実機で
+/// 確認する（ユーザーの記憶では当時も実機検証済みとのことだが、念のため再確認）。
+///
+/// VK_IME_ON 単体（OFF を挟まない）は試さない — `VK_IME_ON`/`VK_IME_OFF` は冪等キー
+/// （ADR-067）であり、engine が既に ON の状態で ON を再送しても状態遷移が起きず
+/// GJI が無反応になると考えられるため。OFF→ON で実際に状態遷移を起こす。
+///
+/// `true` の間は Chrome の犠牲キーが VK_A+BS ではなく VK_IME_OFF→ON になる。
+/// 壊れた場合の症状: Chrome の TSF composition context が破壊され、ADR-048 が記録した
+/// Teams "na" literal 化と同種の症状（部分/全体リテラル化）が予想される。
+/// 実機で目視確認しながら試すこと。
+pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;

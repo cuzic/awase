@@ -692,7 +692,23 @@ where
                 //
                 // TSF（WezTerm 等）: VK_IME_OFF→ON + write_bytes 検出（vim 安全プローブ）。
                 //   vim は VK_IME_OFF/ON を無視するため cold 時にアプリへ届いても誤動作しない。
-                match key_sequence_policy::sacrificial_warmup_key(config.target) {
+                //
+                // DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: Chrome にも ImeOffThenOn を試す診断。
+                // `key_sequence_policy::sacrificial_warmup_key`（実機確定済みテーブル）自体は
+                // 変更せず、ここで戻り値だけ上書きする。tuning.rs 参照。
+                let sacrificial_key = if config.target == TransmitTarget::Chrome
+                    && crate::tuning::DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON
+                {
+                    log::info!(
+                        "[sacr-warmup-diag] cold={} Chrome: VkAThenBackspace → ImeOffThenOn に差し替え \
+                         (DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON=true)",
+                        config.cold_seq
+                    );
+                    SacrificialWarmupKey::ImeOffThenOn
+                } else {
+                    key_sequence_policy::sacrificial_warmup_key(config.target)
+                };
+                match sacrificial_key {
                     SacrificialWarmupKey::VkAThenBackspace => {
                         let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
                         io.send_sacrificial_vk_a_with_bs(config.cold_seq);
