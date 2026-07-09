@@ -528,7 +528,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                         TSF_OBS
                             .gji_last_write_ms
                             .store(m.last_write_change_ms(), Ordering::Relaxed);
-                        log::info!(
+                        log::debug!(
                             "[gji-io] WRITE: w_ops=+{} w_KB=+{:.1} \
                              (r_ops=+{} x_ops=+{})",
                             delta.write_ops,
