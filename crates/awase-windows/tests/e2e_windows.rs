@@ -21,7 +21,7 @@ use awase::engine::input_tracker::InputTracker;
 use awase::engine::{ModifierState, NicolaFsm};
 use awase::types::{
     ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
-    VkCode,
+    SpecialKey, VkCode,
 };
 use awase::yab::YabLayout;
 use awase::KeyboardModel;
@@ -299,7 +299,7 @@ fn e2e_engine_speculative_mode() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
+        .any(|a| matches!(a, KeyAction::SpecialKey(SpecialKey::Backspace)));
     log::info!("Has BS for retraction: {}", has_bs);
     assert!(has_bs, "speculative retraction should include BS");
 }
@@ -353,12 +353,13 @@ fn e2e_engine_flush_pending_all_states() {
     log::debug!("Flush from PendingChar: actions={:?}", r.actions);
     assert!(!r.actions.is_empty());
 
-    // PendingThumb
+    // PendingThumb: 単独の親指キーは何にも確定しないため、flush してもアクションは
+    // 出ない（resolve_pending_thumb_as_single は常に空を返す設計）。
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x1D, 0x7B, 1_000_000));
     let r = engine.flush_pending(ContextChange::EngineDisabled);
     log::debug!("Flush from PendingThumb: actions={:?}", r.actions);
-    assert!(!r.actions.is_empty());
+    assert!(r.actions.is_empty(), "lone thumb key alone has no output");
 
     // SpeculativeChar
     let mut engine = make_test_engine(ConfirmMode::Speculative);
@@ -1372,7 +1373,7 @@ fn e2e_speculative_retraction_then_normal() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
+        .any(|a| matches!(a, KeyAction::SpecialKey(SpecialKey::Backspace)));
     assert!(has_bs, "retraction should have BS");
 
     // Key 2: normal speculative (fresh start)
