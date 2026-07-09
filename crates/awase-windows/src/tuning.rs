@@ -330,4 +330,13 @@ pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = false;
 /// 壊れた場合の症状: Chrome の TSF composition context が破壊され、ADR-048 が記録した
 /// Teams "na" literal 化と同種の症状（部分/全体リテラル化）が予想される。
 /// 実機で目視確認しながら試すこと。
-pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
+///
+/// 2026-07-09 追記: 実験中止・`false` に戻した。VK_IME_OFF→ON 自体は Chrome cold-start で
+/// 2/2 サンプル成功（composition confirmed・目視でも正しい文字）していたが、実機セッション後半で
+/// Shift/Ctrl が stuck するバグが実際に発生した（`mods(s=true)` が KeyUp 後もクリアされず、
+/// `[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true → synthetic Ctrl↑ が
+/// GetAsyncKeyState を汚染した可能性がある` という既存の自己診断WARNまで出た）。Chrome 側の
+/// 予防分岐を再度発火させた（`DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP=false`）ことと合わせて
+/// 合成 IME キー送信の頻度が上がったことが誘因と推定（未確定、WezTerm/TSF 側の既存
+/// `ImeOffThenOn` も無関係ではない可能性）。原因の切り分けができるまで再度 `true` にしない。
+pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = false;
