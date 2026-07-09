@@ -31,6 +31,11 @@ All notable changes to this project will be documented in this file.
   - config.rs / config.toml.sample / awase-settings の推奨から Alt を撤回し、
     F13-F24（プログラマブルキーボードでの物理リマップ前提）/ VK_SPACE を代替として案内
 
+- **無変換ソロ連打による緊急 Engine OFF が誤発動しやすかったのを修正**
+  - スリープ復帰直後の conv mode 誤観測（カタカナ固定）から復旧しようと無変換キーを連打しただけで、Ctrl スタック時の緊急脱出用に用意していた「無変換単独3連打でエンジン OFF」機構（ADR-055）が誤発動し、`user_enabled` が false になる実機事例が発生（2026-07-08）。一度発動すると `Ctrl+変換`（`ime_on`）等の通常のキー操作では `user_enabled` が戻らず、「何を押しても直らない」状態になっていた
+  - 必要連打回数を 3 → 5 に引き上げ（`SOLO_OFF_TRIGGER_COUNT`, `src/engine/nicola_fsm.rs`）、誤発動しにくくした
+  - 発動時にトレイ通知を出すようにし、ユーザーが「engine が緊急停止したこと」と「`Ctrl+Shift+変換` で復帰できること」をその場で把握できるようにした。詳細は `docs/adr/055-engine-off-solo-triple.md` の追補
+
 - **Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）**
   - `GetForegroundWindow()` 基準の conv 読み取り（`get_ime_conversion_mode_raw_timeout`）が、`Chrome_WidgetWin_1` と GJI 候補ポップアップ（`Windows.UI.Input.InputSite.WindowClass`）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを `ConvModeMgr` が無条件に確定していた
   - 確定した誤読を eager warmup（`send_eager_tsf_warmup`）が鵜呑みにし、`VK_DBE_KATAKANA` を実送信 → 一過性の誤読が GJI の本当の状態としてロックインされ、以後の入力が全部カタカナ化し、さらに `KatakanaShadowOff` 救済ロジックが繰り返し IME OFF/ON を往復させて先頭文字の literal 漏れを誘発していた

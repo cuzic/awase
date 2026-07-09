@@ -184,10 +184,11 @@ pub struct KeysConfig {
     pub ime_off: Vec<String>,
     /// IME 検出設定
     pub ime_detect: ImeDetectConfig,
-    /// ソロ3連打でエンジン OFF するキー（None または空文字列で無効）
+    /// ソロ5連打でエンジン OFF するキー（None または空文字列で無効）
     ///
     /// モディファイア不要のキー名を1つ指定する（"VK_NONCONVERT" 等）。
     /// Ctrl スタック等でホットキーが効かなくなった場合の緊急回復用。
+    /// 必要連打回数は `SOLO_OFF_TRIGGER_COUNT`（`src/engine/nicola_fsm.rs`）。
     pub engine_off_solo_triple: Option<String>,
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///

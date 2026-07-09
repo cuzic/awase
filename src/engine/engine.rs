@@ -55,6 +55,9 @@ pub struct Engine {
     /// IME ON/OFF コンボ判定時に除外するために使用。
     /// VkCode(0) = 未設定。
     thumb_vks: (VkCode, VkCode),
+    /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかの 1 ショットフラグ。
+    /// Platform 層がトレイ通知を出すかどうかの判定に使う（`take_solo_off_notification`）。
+    solo_off_notify: bool,
 }
 
 impl Engine {
@@ -66,6 +69,7 @@ impl Engine {
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             thumb_vks: (VkCode(0), VkCode(0)),
+            solo_off_notify: false,
         }
     }
 
@@ -240,10 +244,20 @@ impl Engine {
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {
             log::info!("Engine OFF triggered by consecutive solo key presses");
+            self.solo_off_notify = true;
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
 
         decision
+    }
+
+    /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかを取得する（1 ショット）。
+    ///
+    /// Platform 層がトレイ通知等でユーザーに「engine が緊急停止したこと」と
+    /// 復帰方法を知らせるために使う。通常の `Ctrl+Shift+変換/無変換` による
+    /// 意図的な engine on/off ではこのフラグは立たない。
+    pub fn take_solo_off_notification(&mut self) -> bool {
+        std::mem::take(&mut self.solo_off_notify)
     }
 
     /// 外部コマンドの統合エントリポイント。
@@ -300,6 +314,7 @@ impl Engine {
                 }
             }
             EngineCommand::FocusChanged => self.handle_focus_changed(ctx),
+            EngineCommand::ForceEngineOn => self.force_enable_and_activate(ctx, "force"),
         }
     }
 
@@ -462,22 +477,29 @@ impl Engine {
             .match_event(event, ctx.modifiers, self.adapter.is_enabled())
     }
 
+    /// `user_enabled` を無条件で true にし、IME recovery を伴う activate 処理を行う。
+    ///
+    /// `SpecialKeyMatch::EngineOn`（`Ctrl+Shift+変換` キーコンボ経由）と
+    /// `EngineCommand::ForceEngineOn`（トレイの「状態をリセット」等、外部コマンド経由）の
+    /// 両方から呼ばれる共通ロジック。`trigger` はログ表示用のラベル。
+    fn force_enable_and_activate(&mut self, ctx: &InputContext, trigger: &str) -> Decision {
+        let old_active = self.compute_active(ctx);
+        let (_, mut decision) = self.adapter.set_enabled(true);
+        let new_active = self.compute_active(ctx);
+        log::info!("Engine user_enabled ON ({trigger}, active={new_active})");
+        if !new_active {
+            // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
+            self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
+        } else {
+            self.apply_active_transition(old_active, new_active, &mut decision);
+        }
+        decision
+    }
+
     /// `SpecialKeyMatch` に応じた状態変更と `Decision` 生成を行う副作用適用メソッド。
     fn apply_special_key_match(&mut self, m: &SpecialKeyMatch, ctx: &InputContext) -> Decision {
         match m {
-            SpecialKeyMatch::EngineOn => {
-                let old_active = self.compute_active(ctx);
-                let (_, mut decision) = self.adapter.set_enabled(true);
-                let new_active = self.compute_active(ctx);
-                log::info!("Engine user_enabled ON (key combo, active={new_active})");
-                if new_active {
-                    self.apply_active_transition(old_active, new_active, &mut decision);
-                } else {
-                    // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
-                    self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
-                }
-                decision
-            }
+            SpecialKeyMatch::EngineOn => self.force_enable_and_activate(ctx, "key combo"),
             SpecialKeyMatch::EngineOff => {
                 let old_active = self.compute_active(ctx);
                 let (_, mut decision) = self.adapter.set_enabled(false);

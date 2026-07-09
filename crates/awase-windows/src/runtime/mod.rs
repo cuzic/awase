@@ -316,6 +316,14 @@ impl Runtime {
         self.execute_decision(decision);
     }
 
+    /// エンジンを無条件で ON にする（トグルではなく強制）。
+    /// トレイの「状態をリセット」等、現在の ON/OFF に関わらず必ず有効化したい場合に使う。
+    pub fn force_engine_on(&mut self) {
+        let ctx = self.build_ctx();
+        let decision = self.engine.on_command(EngineCommand::ForceEngineOn, &ctx);
+        self.execute_decision(decision);
+    }
+
     /// 外部コンテキスト喪失時にエンジンの保留状態を安全にフラッシュする。
     pub fn invalidate_engine_context(&mut self, reason: ContextChange) {
         let ctx = self.build_ctx();

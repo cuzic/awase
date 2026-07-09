@@ -25,10 +25,16 @@ use super::timing;
 pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
 
 /// ソロ連打トリガーの連打間隔上限（マイクロ秒）
-const SOLO_TRIPLE_TIMEOUT_US: u64 = 400_000;
+const SOLO_OFF_TIMEOUT_US: u64 = 400_000;
 
 /// ソロ連打でエンジン OFF を発動する必要連打回数
-const SOLO_TRIPLE_COUNT: u32 = 3;
+///
+/// 3 回だと、スリープ復帰直後など IME が混乱した状態で焦って無変換キーを
+/// 連打しただけで誤発火し、「緊急脱出」のつもりが逆に engine を止めてしまう
+/// 事例が実機で発生した（2026-07-08、conv がカタカナへ固定＋shadow OFF から
+/// の復帰を試みて無変換を連打した結果、user_enabled が意図せず false に）。
+/// 5 回に引き上げて誤発火しにくくする。
+const SOLO_OFF_TRIGGER_COUNT: u32 = 5;
 
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
@@ -107,7 +113,7 @@ pub struct NicolaFsm {
     /// ソロ N 連打でエンジン OFF を発動するキー（VkCode(0) = 機能無効）。
     engine_off_triple_vk: VkCode,
 
-    /// triple 連打でのエンジン OFF 要求フラグ（1ショット）。
+    /// ソロ連打でのエンジン OFF 要求フラグ（1ショット）。
     engine_off_requested: bool,
 
     /// Shift 面の出力を半角英数リテラル（`KeyAction::Text`、IME 非経由）に変換する。
@@ -140,7 +146,7 @@ impl NicolaFsm {
             phys: PhysicalKeyState::empty(),
             left_thumb_consumed: None,
             right_thumb_consumed: None,
-            solo_counter: ConsecutiveSoloCounter::new(SOLO_TRIPLE_TIMEOUT_US),
+            solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
             shift_plane_halfwidth: true,
@@ -1193,7 +1199,7 @@ impl NicolaFsm {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_triple_vk.0 != 0 && vk_code == self.engine_off_triple_vk {
             let count = self.solo_counter.record(vk_code, timestamp);
-            if count >= SOLO_TRIPLE_COUNT {
+            if count >= SOLO_OFF_TRIGGER_COUNT {
                 self.solo_counter.reset();
                 self.engine_off_requested = true;
                 // N 回目は suppress（OS への VK 送出を防ぐ）

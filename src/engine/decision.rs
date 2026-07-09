@@ -283,6 +283,9 @@ pub enum EngineCommand {
     RefreshState,
     /// 前面プロセスが変更された（デバウンス後に Platform 層が検出、ADR 028）
     FocusChanged,
+    /// `user_enabled` を無条件で true にする（トグルではなく強制 ON）。
+    /// トレイの「状態をリセット」等、現在の ON/OFF に関わらず必ず有効化したい場合に使う。
+    ForceEngineOn,
 }
 
 #[cfg(test)]

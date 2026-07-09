@@ -140,6 +140,13 @@ Ctrl/Win も同様に不可</li>
 F13-F24（プログラマブルキーボードでの物理リマップ前提）/ VK_SPACE を代替として案内</li>
 </ul>
 </li>
+<li><p><strong>無変換ソロ連打による緊急 Engine OFF が誤発動しやすかったのを修正</strong></p>
+<ul>
+<li>スリープ復帰直後の conv mode 誤観測（カタカナ固定）から復旧しようと無変換キーを連打しただけで、Ctrl スタック時の緊急脱出用に用意していた「無変換単独3連打でエンジン OFF」機構（ADR-055）が誤発動し、<code>user_enabled</code> が false になる実機事例が発生（2026-07-08）。一度発動すると <code>Ctrl+変換</code>（<code>ime_on</code>）等の通常のキー操作では <code>user_enabled</code> が戻らず、「何を押しても直らない」状態になっていた</li>
+<li>必要連打回数を 3 → 5 に引き上げ（<code>SOLO_OFF_TRIGGER_COUNT</code>, <code>src/engine/nicola_fsm.rs</code>）、誤発動しにくくした</li>
+<li>発動時にトレイ通知を出すようにし、ユーザーが「engine が緊急停止したこと」と「<code>Ctrl+Shift+変換</code> で復帰できること」をその場で把握できるようにした。詳細は <code>docs/adr/055-engine-off-solo-triple.md</code> の追補</li>
+</ul>
+</li>
 <li><p><strong>Chrome/Edge で conv mode の一発誤読が GJI を実際にカタカナへ固定する不具合を修正（BUG-19）</strong></p>
 <ul>
 <li><code>GetForegroundWindow()</code> 基準の conv 読み取り（<code>get_ime_conversion_mode_raw_timeout</code>）が、<code>Chrome_WidgetWin_1</code> と GJI 候補ポップアップ（<code>Windows.UI.Input.InputSite.WindowClass</code>）の間でフォーカスが往復する際に一瞬だけ誤ったカタカナ conv を拾うことがあり、これを <code>ConvModeMgr</code> が無条件に確定していた</li>
