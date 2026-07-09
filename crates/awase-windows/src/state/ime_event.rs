@@ -231,6 +231,12 @@ pub enum InputModeApplyStrategy {
     /// IME-ON 経路にはこの専用 strategy で同じ訂正を配線する。
     /// 判定は `state::eisu_recovery::eisu_reset_on_ime_on` に集約。
     UserImeOnEisuReset,
+    /// TurnOn 系キー（ひらがな/かな 等）受信時、IME は既に open で OFF→ON 遷移が
+    /// 起きなかったため `UserImeOnEisuReset` が発火しないケース向けの stale
+    /// `ObservedEisu` 訂正。
+    ///
+    /// 判定は `state::eisu_recovery::eisu_reset_on_turn_on_while_open` に集約。
+    UserTurnOnEisuReset,
 }
 
 /// `InputModeApplied` event における適用結果。

@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-07-07
+> 最終更新: 2026-07-09
 
 ---
 
@@ -1328,6 +1328,67 @@ Medium cold まで `is_long_cold` 相当に含めるかを再検討する。
 `crates/awase-windows/src/tsf/composition_fsm.rs`（`ConfirmKeyDown`）,
 `crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（対称な WezTerm 側実装、参照）,
 `crates/awase-windows/src/tsf/gji_fsm.rs`（`ColdKind::classify`, `transition_to_cold_proactive`）
+
+---
+
+## BUG-22: MS Edge で Uwp⇔TsfNative フォーカス往復後、conv=Eisu(英数) に固着し nicola が入力できなくなる
+
+**症状:** 2026-07-09 実機ログ。MS Edge（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で
+IME・conv モードは MS-IME。無操作でしばらく放置した後、Edge の親ウィンドウ
+（`Chrome_WidgetWin_1`）とその内部 IME 入力ウィンドウ（`Windows.UI.Input.InputSite.WindowClass`、
+`Uwp` 扱い）の間でフォーカスが何度も往復し（ユーザー操作なし）、その後 Edge にひらがなで
+入力しても `Engine deactivated (reason=Inactive(NotRomajiInput))` のまま活性化せず、
+`FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)` が繰り返し出力されて
+入力を受け付けなくなった。
+
+**原因（2つの独立した設計不備の重なり）:**
+
+1. `apply_hwnd_cache_restore`（`state/platform_state.rs`）が `HwndImeCache::restore`
+   （`focus/hwnd_cache.rs`、TTL `HWND_CACHE_MAX_AGE_MS`=1時間）で取得した
+   スナップショットの `input_mode` を、鮮度・confidence チェックなしに
+   `ImeEvent::InputModeApplied { strategy: CacheRestore, .. }` として無条件適用していた。
+   131 秒前に保存された stale `ObservedEisu` がそのまま復元され、`correction_for_imm_broken`
+   （`ObservedEisu` は意図的に対象外 — 受動的経路がユーザーの英数選択を踏み潰さないため）
+   では訂正できず、engine が inactive のまま固着した。
+2. `eisu_reset_on_ime_on`（`state/eisu_recovery.rs`）は OFF→ON 遷移でのみ発火するため、
+   IME が既に open（MS-IME は常時 open のことが多い）な状態でユーザーが TurnOn 系キー
+   （ひらがな/かな 等、`ShadowImeAction::TurnOn`）を押しても遷移が起きず、
+   `kp_stage_shadow_ime_toggle` の no-op 分岐（`effective_open() == current`）で
+   握りつぶされ、手動での復帰手段が構造的に存在しなかった。
+
+**修正:**
+
+1. `state/eisu_recovery::cache_restore_eisu_guard(cached_mode)` を新設。
+   `apply_hwnd_cache_restore` はキャッシュ復元前にこの関数を通し、`ObservedEisu` のみ
+   `AssumedRomaji { AppKindExcluded }` に倒す（他モードはそのままキャッシュ値を信頼）。
+2. `state/eisu_recovery::eisu_reset_on_turn_on_while_open(action_is_turn_on, mode)` を新設し、
+   `InputModeApplyStrategy::UserTurnOnEisuReset` として `kp_stage_shadow_ime_toggle` の
+   no-op 分岐に配線。`ShadowImeAction::TurnOn` 受信時に belief が `ObservedEisu` なら
+   `AssumedRomaji` へ訂正する（OFF→ON 遷移を必要とする `UserImeOnEisuReset` と対になる、
+   「IME が既に open」ケース専用の救済）。
+
+`state/eisu_recovery.rs` の module doc の経路×救済対応表に4行目として追記し、
+`tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset` /
+`input_mode_applied_construction_sites_are_accounted_for` の期待値を更新。
+
+**再発防止テスト:** `state/eisu_recovery.rs` の単体テスト
+（`cache_restore_guard_corrects_stale_eisu` 等 4件）、
+`tests/golden_scenarios.rs::scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu` /
+`scenario_14_turn_on_while_open_recovers_stale_eisu`（いずれも Linux 上で
+`cargo test -p awase-windows` により実行・グリーン確認済み）。
+`tests/architecture_guard.rs` の全 10 テストもグリーン。Windows 実機での再現確認は未実施。
+
+**関連:** BUG-18（無操作中の AppKind Uwp⇔TsfNative 往復、文字欠落）と発生源
+（無操作時のフォーカス往復）は共通だが、下流の壊れ方が異なる別バグとして扱う。
+2026-07-06 の「ObservedEisu 循環デッドロック」修正（`f9f070e`/`1b61efe`、
+`UserImeOnEisuReset` / `GjiIoInference` 救済追加）でカバーしていなかった2経路
+（キャッシュ復元経路、IME open のまま TurnOn キーを受けるケース）の追補。
+
+**関連ファイル:** `crates/awase-windows/src/state/eisu_recovery.rs`,
+`crates/awase-windows/src/state/platform_state.rs`（`apply_hwnd_cache_restore`）,
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`kp_stage_shadow_ime_toggle`）,
+`crates/awase-windows/src/focus/hwnd_cache.rs`,
+`crates/awase-windows/src/state/ime_event.rs`（`InputModeApplyStrategy`）
 
 ---
 

@@ -591,6 +591,32 @@ impl Runtime {
                 kind,
                 current,
             );
+
+            // TurnOn 系キー（ひらがな/かな 等）は IME が既に open でも「英数から
+            // ひらがなへ戻す」ユーザー操作として意味を持つ。OFF→ON 遷移が起きない
+            // ためこの上の eisu_reset_on_ime_on（UserImeOnEisuReset）は発火しないので、
+            // ここで同様の stale ObservedEisu 救済を別途行う（2026-07-09 MS Edge/MS-IME
+            // で実発生: IME open のまま conv だけ Eisu に固着すると、ひらがなキーを
+            // 押しても復帰できなかった）。
+            if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
+                matches!(action, ShadowImeAction::TurnOn),
+                self.platform_state.ime.input_mode(),
+            ) {
+                self.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::InputModeApplied {
+                        mode: new_mode,
+                        strategy:
+                            crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
+                        result: crate::state::ime_event::InputModeApplyResult::Applied,
+                        at: tick_ms,
+                    },
+                    tick_ms,
+                );
+                log::info!(
+                    "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
+                     リセット (UserTurnOnEisuReset)"
+                );
+            }
             return false;
         }
         self.platform_state.ime.on_ime_toggled();

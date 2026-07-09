@@ -642,9 +642,15 @@ impl ImeStateHub {
                 },
                 tick_ms,
             );
+            // キャッシュされた input_mode が ObservedEisu の場合、生の観測と同じ強さで
+            // engine activation を塞がせない（cache_restore_eisu_guard 参照）。
+            // 2026-07-09 MS Edge で実発生: Uwp⇔TsfNative フォーカス往復のたびに
+            // 131 秒前の ObservedEisu キャッシュが復元され、eisu guard に阻まれて
+            // engine が inactive のまま固着し続けた。
+            let mode = crate::state::eisu_recovery::cache_restore_eisu_guard(snap.input_mode);
             self.dispatch_event(
                 ImeEvent::InputModeApplied {
-                    mode: snap.input_mode,
+                    mode,
                     strategy: InputModeApplyStrategy::CacheRestore,
                     result: InputModeApplyResult::Applied,
                     at: tick_ms,

@@ -151,6 +151,7 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 /// - `platform_state.rs::apply_hwnd_cache_restore` → `InputModeApplyStrategy::CacheRestore`
 /// - `key_pipeline.rs` (post-decision)             → `InputModeApplyStrategy::PostSetOpenEisuReset`
 /// - `key_pipeline.rs` (shadow toggle OFF→ON)      → `InputModeApplyStrategy::UserImeOnEisuReset`
+/// - `key_pipeline.rs` (shadow toggle no-op/TurnOn)→ `InputModeApplyStrategy::UserTurnOnEisuReset`
 /// - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
 /// - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
 ///
@@ -160,7 +161,7 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 fn input_mode_applied_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
         ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore
-        ("src/runtime/key_pipeline.rs", 2), // PostSetOpenEisuReset + UserImeOnEisuReset
+        ("src/runtime/key_pipeline.rs", 3), // PostSetOpenEisuReset + UserImeOnEisuReset + UserTurnOnEisuReset
         ("src/runtime/ime_refresh.rs", 1),  // ImmBrokenCorrection (FocusChanged)
         ("src/runtime/mod.rs", 1),          // ImmBrokenCorrection (Blacklist force-ON)
     ];
@@ -238,7 +239,7 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
             "runtime/key_pipeline.rs",
             2,
             "kp_stage_shadow_ime_toggle の SyncKey/PhysicalImeKey (救済: 同関数内の \
-             UserImeOnEisuReset)",
+             UserImeOnEisuReset + no-op 分岐の UserTurnOnEisuReset)",
         ),
     ];
 
@@ -279,6 +280,15 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
         "shadow toggle 経路の救済 (UserImeOnEisuReset) が撤去されています。\
          撤去する場合は ObservedEisu 循環デッドロック (2026-07-06) の再発防止策を\
          代わりに用意してください。"
+    );
+    assert!(
+        kp.contains("eisu_reset_on_turn_on_while_open(")
+            && kp.contains("InputModeApplyStrategy::UserTurnOnEisuReset"),
+        "shadow toggle no-op 分岐の救済 (UserTurnOnEisuReset) が撤去されています。\
+         IME が既に open のまま conv だけ ObservedEisu に固着した場合、TurnOn 系キー \
+         (ひらがな/かな 等) を押しても OFF→ON 遷移が起きないため UserImeOnEisuReset は \
+         発火しません。撤去する場合は ObservedEisu 循環デッドロック (2026-07-09 MS Edge/\
+         MS-IME で実発生) の再発防止策を代わりに用意してください。"
     );
 }
 
