@@ -1247,6 +1247,90 @@ Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.r
 
 ---
 
+## BUG-21: Chrome の cold-start 復帰処理が重症度 (Short/Medium/Long) を無視し、確定キー/IME再有効化のたびに過剰発火する
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で GJI を使い
+日本語を連続入力しているだけなのに、単語の区切り（確定キー相当の操作）や
+Ctrl+無変換 での IME OFF→ON 再有効化のたびに `cold_seq` がインクリメントし、
+`[sacr-warmup] cold=N Chrome reinit: IME Hiragana 確認 → 再送` が数秒に1回のペースで
+発生する。2026-07-09 実機ログ（06:27:42〜06:28:22 の約40秒間）で `cold_seq` が
+349→362 と 13 回発火し、うち大半が `sacr-timeout`（VK_A probe で warm 未確認 →
+`VK_IME_OFF→VK_IME_ON` reinit 実行）だった。cold 1回につき VK_A+BS（probe 用犠牲キー）
++ cleanup BS×1 + （reinit が必要な場合）VK_IME_OFF/ON×2 相当の合成キーが余分に注入され、
+ユーザーからは「cold-start の発火頻度が高すぎる」「BS の回数が多すぎる」と報告された。
+
+BUG-17 と症状が類似するが原因は別。BUG-17 は `WM_IME_KIND_CHANGED` 経由の `GjiFsm`
+丸ごと再構築が引き金だが、本バグは **正規の** IME OFF/ON トグル・確定キー(Space/Enter/Esc)
+操作が引き金であり `[tip-detect]` ログは介在しない。
+
+**原因:** `GjiFsm` は cold を `ColdKind::Short`/`Medium`/`Long`（`gji_idle_ms` から
+`ColdKind::classify` が判定、`tsf/gji_fsm.rs`）に正しく分類している。WezTerm/TSF 側の
+復帰処理 `GjiWarmupCoro`（`tsf/warmup/gji_warmup_coro.rs:273`）はこの重症度を見て
+`ctx.is_long_cold` のときだけ VK_A probe + sacrificial warmup のフルコースに分岐し、
+Short/Medium cold は軽量な inline LiteralDetect のみで済ませていた。
+
+一方 Chrome 側の復帰処理 `TsfProbeCoro::new_chrome`
+（旧: `tsf/warmup/probe_fsm.rs`）は `ColdKind` を一切受け取っておらず、
+`tsf_probe_coro_body` の Phase 2a は `env.gji_active` が true であれば cold の重症度に
+関わらず常に `StartSacrificialWarmup`（VK_A+BS probe → 未確認なら
+`VK_IME_OFF→VK_IME_ON` reinit + IME確認ポーリング → cleanup BS → 再送）を実行して
+いた。さらに、確定キー(Space/Enter/Esc) は `composition_fsm.rs::ConfirmKeyDown` が
+warm/cold を問わず常に `GjiCompositionReset`（`handle_composition_reset()` →
+強制的に `OnCold(Short)`）を emit しており、`ImeOn`（`OffCold` から）も
+「即入力する意図があるため」常に `transition_to_cold_proactive` で cold へ遷移する
+（これ自体は `8715731a2` で修正した実バグの再発防止であり妥当）。つまり **cold の
+判定自体は正しい** — 確定キーや短い IME OFF/ON のたびに Short/Medium cold へ入るのは
+意図通り。バグは **Chrome の復帰処理がこの重症度情報を捨てて毎回 Long cold 相当の
+最重量パスを踏んでいた**こと。
+
+**修正:** `send_romaji_batched`（`output/vk_send.rs`）が既に計算していた
+`long_idle`（`idle_ms_at_last_cold() > CHROME_LONG_IDLE_MS`）/ `f2_gji_long_idle`
+を `is_long_cold` として `ChromeProbe::new` / `TsfProbeCoro::new_chrome`
+（`tsf/warmup/chrome_probe.rs`, `tsf/warmup/probe_fsm.rs`）に渡すよう変更。
+`tsf_probe_coro_body` の Phase 2a を `env.gji_active && is_long_cold` のときのみ
+`StartSacrificialWarmup` に分岐するよう変更し、それ以外（`!gji_active` または
+Short/Medium cold）は `Transmit(needs_literal: env.gji_active)` で直接送信しつつ、
+`gji_active` なら inline LiteralDetect（Phase 3）を安全網として残す。WezTerm 側
+`GjiWarmupCoro` の `is_long_cold` 分岐と対称にした。
+
+合わせて `composition_fsm.rs::ConfirmKeyDown` の `if warm && tsf_mode` を `if warm` に
+変更（Chrome にも TSF と同じ「warm なら warmup を KeyUp まで遅延」を適用）。これは
+`a3425bf`（2026-05-13、フラグ統合コミット）で WezTerm 専用ルール（`f58b47c`
+導入の F2/Enter 競合対策）が `is_tsf_mode()` ガードなしで Chrome に引き継がれた
+副作用で、Chrome 固有の根拠は見つからなかった。ただし `GjiCompositionReset` 自体は
+両分岐で変わらず emit されるため、この副修正は warmup 送信タイミングの改善に留まり、
+今回の主因（Chrome 復帰処理の重症度無視）の修正ではない。
+
+**再発防止テスト:**
+`tsf/warmup/probe_fsm.rs::tests::chrome_short_cold_skips_sacrificial_warmup` /
+`chrome_long_cold_still_uses_sacrificial_warmup` /
+`chrome_short_cold_without_gji_active_skips_literal_detect`（`TsfProbeCoro::new_chrome`
+を `is_long_cold` 別に直接 tick して emit される `ProbeAction` を検証）、
+`tsf/composition_fsm.rs::tests::warm_chrome_confirm_keydown_defers_warmup_to_keyup`。
+いずれも Windows ターゲットでのみコンパイル対象のため
+`cargo test -p awase-windows --target x86_64-pc-windows-gnu` が必要。本セッションでは
+Linux 上でのクロスコンパイル成功（`cargo test`/`cargo clippy -- -D warnings` とも
+変更ファイルにエラーなし）とロジックの手動トレースで検証済み。wine 等の実行環境が
+無いためテスト実行そのものは未実施（実機/CI 待ち）。
+
+**残存リスク:** `is_long_cold` の閾値は `CHROME_LONG_IDLE_MS`（既存の 5000ms、
+Chrome 固有の実測に基づく）をそのまま流用しており新規のタイミング定数追加はない。
+Short/Medium cold で `StartSacrificialWarmup` を省略した結果、まれに Chrome の
+composition context が実際に未初期化のまま送信され `RawTsfLiteralRecovery`
+（BS 再送によるリカバリ）の発火頻度が増える可能性がある — その場合は
+`[raw-tsf-literal] cold=N raw TSF literal suspected` の頻度を実機ログで確認し、
+Medium cold まで `is_long_cold` 相当に含めるかを再検討する。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`tsf_probe_coro_body`, `TsfProbeCoro::new_chrome`）,
+`crates/awase-windows/src/tsf/warmup/chrome_probe.rs`（`ChromeProbe::new`）,
+`crates/awase-windows/src/output/vk_send.rs`（`send_romaji_batched`, `is_long_cold` 算出）,
+`crates/awase-windows/src/tsf/composition_fsm.rs`（`ConfirmKeyDown`）,
+`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（対称な WezTerm 側実装、参照）,
+`crates/awase-windows/src/tsf/gji_fsm.rs`（`ColdKind::classify`, `transition_to_cold_proactive`）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

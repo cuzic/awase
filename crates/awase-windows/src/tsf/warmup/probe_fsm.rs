@@ -7,10 +7,19 @@
 //! ## フェーズ遷移
 //!
 //! ```text
-//! ChromeProbe ──► [gji_active]──► StartSacrificialWarmup（SacrificialWarmupCoro に委譲）
-//!              └─[!gji_active]──► Transmit(Chrome) ─[needs_literal=false]─► Done
-//!                                                   └─[needs_literal=true]──► LiteralDetect ─► Done
+//! ChromeProbe ──► [gji_active && is_long_cold]──► StartSacrificialWarmup（SacrificialWarmupCoro に委譲）
+//!              └─[!gji_active || !is_long_cold]──► Transmit(Chrome) ─[needs_literal=false]─► Done
+//!                                                                    └─[needs_literal=true]──► LiteralDetect ─► Done
 //! ```
+//!
+//! `is_long_cold` は呼び出し元（`send_romaji_batched`）が `idle_ms_at_last_cold()` /
+//! `gji_last_io_ms()` から計算した `CHROME_LONG_IDLE_MS` 超過フラグ。GjiFsm の
+//! `ColdKind`（Short/Medium/Long）と同じ「本当に GJI が寝ていたか」を表す重症度で、
+//! WezTerm 側の `GjiWarmupCoro`（`ctx.is_long_cold` でのみ sacrificial warmup に
+//! 分岐する）と対称にするために追加した。確定キー(Space/Enter/Esc) や IME OFF→ON
+//! の再有効化のような「一瞬だけ cold 扱いになった」ケースまで一律で
+//! VK_A probe + Chrome reinit のフルコースを踏むと、Chrome では cold-start が
+//! 過剰発火する（実測: 通常の日本語連続入力で数秒に1回、BS を含む再送が発生）。
 //!
 //! ## 設計ポリシー
 //!
@@ -273,6 +282,7 @@ async fn tsf_probe_coro_body(
     probe: TsfReadinessProbe,
     total_max_ms: u64,
     cold_seq: u32,
+    is_long_cold: bool,
 ) {
     // ── Phase 1: ChromeProbe ポーリング ──────────────────────────────────────
     let env = loop {
@@ -290,9 +300,13 @@ async fn tsf_probe_coro_body(
         break input.env;
     };
 
-    // ── Phase 2a: gji_active → SacrificialWarmupCoro に委譲 ──────────────────
-    if env.gji_active {
-        // GJI active: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
+    // ── Phase 2a: gji_active && is_long_cold → SacrificialWarmupCoro に委譲 ──
+    // is_long_cold=false（確定キー・IME OFF→ON 再有効化直後等の Short/Medium cold）は
+    // GJI が実際に寝ていた可能性が低いため、Phase 2b の軽量パス（inline LiteralDetect の
+    // みを安全網として残す）に流す。WezTerm 側 GjiWarmupCoro の `ctx.is_long_cold` 分岐
+    // （gji_warmup_coro.rs）と対称。
+    if env.gji_active && is_long_cold {
+        // GJI active + 本当に long cold: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
         // ChromeProbe 完了直後に TSF context がまだ初期化中で先頭 VK がリテラル化する race を防ぐ。
         yield_step(
             ch,
@@ -318,7 +332,10 @@ async fn tsf_probe_coro_body(
         return; // SacrificialWarmupCoro が引き継ぐ → このコルーチンは破棄
     }
 
-    // ── Phase 2b: !gji_active → GJI モニター不健全のため直接 Chrome 送信 ─────
+    // ── Phase 2b: !gji_active もしくは Short/Medium cold → 直接 Chrome 送信 ──
+    // gji_active なら inline LiteralDetect（Phase 3）を安全網として有効化するが、
+    // VK_A probe + Chrome reinit のフルコースは踏まない。
+    let needs_literal = env.gji_active;
     let transmit_input = yield_step(
         ch.clone(),
         vec![ProbeAction::Transmit {
@@ -326,7 +343,7 @@ async fn tsf_probe_coro_body(
             plan: TransmitPlan {
                 should_prepend_f2: false,
                 used_eager_path: false,
-                needs_literal: false,
+                needs_literal,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
             observations: ProbeObservations {
@@ -420,16 +437,22 @@ pub(crate) struct TsfProbeCoro {
 
 impl TsfProbeCoro {
     /// Chrome F2 cold warmup (`send_romaji_batched` の cold パス) 用コンストラクタ。
+    ///
+    /// `is_long_cold` = 呼び出し元が `idle_ms_at_last_cold()` / `gji_last_io_ms()` から
+    /// 判定した「本当に `CHROME_LONG_IDLE_MS` を超えて GJI が寝ていたか」。false のときは
+    /// VK_A probe + Chrome reinit のフルコース（`StartSacrificialWarmup`）を踏まず、
+    /// 軽量な inline LiteralDetect のみを安全網として使う。
     pub(crate) fn new_chrome(
         romaji: &str,
         cold_seq: u32,
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         guard: OutputActiveGuard,
+        is_long_cold: bool,
     ) -> Self {
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await;
+            tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq, is_long_cold).await;
         });
         let mut this = Self {
             coro,
@@ -656,5 +679,87 @@ mod tests {
             "Medium cold + GJI 無応答: F2 をバッチに含めないと先頭 VK がリテラル化する"
         );
         assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
+    }
+
+    // ── TsfProbeCoro (Chrome) — is_long_cold 重症度分岐 回帰テスト ────────────
+    //
+    // docs/known-bugs.md BUG-21: 確定キー(Space/Enter/Esc) や IME OFF→ON 再有効化直後の
+    // 一瞬だけの cold (Short/Medium) まで、Long cold と同じ VK_A probe + Chrome reinit の
+    // フルコース (StartSacrificialWarmup) を踏むと、Chrome では cold-start が過剰発火する。
+
+    fn ready_chrome_probe(is_long_cold: bool) -> TsfProbeCoro {
+        // total_max_ms=0 → check_now が最初の tick で即 ready になる。
+        crate::tsf::observer::TSF_OBS
+            .gji_monitor_ok
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let guard = OutputActiveGuard::noop_for_test();
+        let probe = TsfReadinessProbe::new(0, 0, 0);
+        TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard, is_long_cold)
+    }
+
+    #[test]
+    fn chrome_short_cold_skips_sacrificial_warmup() {
+        let mut machine = ready_chrome_probe(false);
+        let actions = machine.tick(&TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::StartSacrificialWarmup(_))),
+            "is_long_cold=false: VK_A probe + Chrome reinit のフルコースを踏まない: {actions:?}"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                ProbeAction::Transmit {
+                    plan,
+                    target: TransmitTarget::Chrome,
+                    ..
+                } if plan.needs_literal
+            )),
+            "gji_active な Short/Medium cold は inline LiteralDetect を安全網として残す: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_long_cold_still_uses_sacrificial_warmup() {
+        let mut machine = ready_chrome_probe(true);
+        let actions = machine.tick(&TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::StartSacrificialWarmup(_))),
+            "is_long_cold=true: 従来通り StartSacrificialWarmup を踏む: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn chrome_short_cold_without_gji_active_skips_literal_detect() {
+        // !gji_active（GJI モニター不健全）は is_long_cold に関わらず従来どおり
+        // needs_literal=false（安全網なしの直接送信）。
+        let mut machine = ready_chrome_probe(false);
+        let actions = machine.tick(&TsfEnvSnapshot {
+            gji_active: false,
+            ..Default::default()
+        });
+
+        assert!(
+            actions.iter().any(|a| matches!(
+                a,
+                ProbeAction::Transmit {
+                    plan,
+                    target: TransmitTarget::Chrome,
+                    ..
+                } if !plan.needs_literal
+            )),
+            "!gji_active: LiteralDetect 不要のまま直接送信する: {actions:?}"
+        );
     }
 }

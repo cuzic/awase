@@ -190,8 +190,14 @@ impl TimedStateMachine for CompositionFsm {
 
             // ── ConfirmKeyDown ─────────────────────────────────────────────
             CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm } => {
-                if warm && tsf_mode {
-                    // warm+TSF: KeyUp まで warmup を遅延する（F2 と Enter の競合回避）。
+                if warm {
+                    // warm（TSF/Chrome 共通）: KeyUp まで warmup を遅延する（F2 と Enter の競合回避）。
+                    // 2026-07 まで Chrome (tsf_mode=false) はこの分岐を通らず、warm でも
+                    // 即 cold mark + reset していた（a3425bf でフラグ統合した際に
+                    // WezTerm 専用ルールを is_tsf_mode() ガードなしで引き継いだ副作用。
+                    // Chrome 固有の根拠は無く、cold-start warmup が確定キーのたびに
+                    // 過剰発火していた）。warm な GJI/TSF を確定キーだけで cold 化する理由は
+                    // tsf_mode に関係なく無いため、判定を warm 単独に統一した。
                     self.state = CompositionState::PendingWarmupOnKeyUp {
                         confirm_vk: vk,
                         tsf_mode,
@@ -204,7 +210,7 @@ impl TimedStateMachine for CompositionFsm {
                         CompositionAction::GjiCompositionReset,
                     ])
                 } else {
-                    // cold または非 TSF: 即 cold mark + warmup。
+                    // cold: 即 cold mark + warmup。
                     self.state = CompositionState::Cold {
                         reason: ColdReason::PassthroughConfirmKey,
                     };
@@ -316,6 +322,37 @@ mod tests {
                 .iter()
                 .any(|a| matches!(a, CompositionAction::EmitWarmup { .. })),
             "warm+TSF の KeyDown では warmup を遅延する"
+        );
+        assert_eq!(fsm.pending_warmup_vk(), Some(ENTER));
+
+        let r = fsm.on_event(CompositionEvent::ConfirmKeyUp { vk: ENTER });
+        assert_eq!(
+            r.actions,
+            vec![CompositionAction::EmitWarmup {
+                reason: WarmupReason::ConfirmKeyUp
+            }],
+            "KeyUp で保留 warmup を送信する"
+        );
+        assert!(fsm.state_label().starts_with("Warm"));
+    }
+
+    #[test]
+    fn warm_chrome_confirm_keydown_defers_warmup_to_keyup() {
+        // 2026-07: 以前は tsf_mode=false (Chrome) だと warm でも即 cold mark + warmup
+        // していた（a3425bf でフラグ統合した際に WezTerm 専用ルールを is_tsf_mode()
+        // ガードなしで引き継いだ副作用）。warm な GJI/TSF を確定キーだけで即時再送する
+        // 理由は tsf_mode に関係なく無いため、TSF と同じ KeyUp 遅延に統一した。
+        let mut fsm = CompositionFsm::new();
+        let r = fsm.on_event(CompositionEvent::ConfirmKeyDown {
+            vk: ENTER,
+            tsf_mode: false,
+            warm: true,
+        });
+        assert!(
+            !r.actions
+                .iter()
+                .any(|a| matches!(a, CompositionAction::EmitWarmup { .. })),
+            "warm+Chrome の KeyDown でも warmup を遅延する"
         );
         assert_eq!(fsm.pending_warmup_vk(), Some(ENTER));
 

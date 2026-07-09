@@ -242,6 +242,12 @@ impl Output {
             let guard = OutputActiveGuard::begin();
             let probe =
                 crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
+            // is_long_cold: GJI が本当に CHROME_LONG_IDLE_MS を超えて寝ていたか。
+            // 確定キーや IME OFF→ON 再有効化直後の一瞬だけの cold (Short/Medium) では
+            // false になり、ChromeProbe は VK_A probe + Chrome reinit のフルコースを
+            // 省略して軽量パス（inline LiteralDetect のみ）を使う（過剰な cold-start
+            // 発火の抑制、docs/known-bugs.md BUG-21）。
+            let is_long_cold = long_idle || f2_gji_long_idle;
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                     romaji,
@@ -249,6 +255,7 @@ impl Output {
                     probe,
                     probe_max_ms,
                     guard,
+                    is_long_cold,
                 ),
             ));
             self.runtime_outbox
