@@ -270,6 +270,10 @@ async fn gji_coro_body(
     );
 
     // ── Phase 5a: long cold + TSF → StartSacrificialWarmup（SwitchMachine） ────
+    // `ctx.is_long_cold` は `ColdKind::is_long()` 由来（cold 突入時点の gji_idle_ms() 実IO
+    // 観測から分類済み）で、Chrome 側の自己参照タイマーとは異なり既に実IOに基づいている。
+    // そのため `tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`（Chrome 専用の診断フラグ、
+    // `output/vk_send.rs` 参照）はここには適用しない。
     if plan.needs_literal && ctx.is_long_cold && env.is_tsf_mode {
         log::debug!(
             "[gji-coro] cold={} long_cold + TSF → StartSacrificialWarmup",

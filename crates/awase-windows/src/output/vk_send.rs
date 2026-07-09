@@ -247,7 +247,24 @@ impl Output {
             // false になり、ChromeProbe は VK_A probe + Chrome reinit のフルコースを
             // 省略して軽量パス（inline LiteralDetect のみ）を使う（過剰な cold-start
             // 発火の抑制、docs/known-bugs.md BUG-21）。
-            let is_long_cold = long_idle || f2_gji_long_idle;
+            //
+            // 注: この判定は「awase 自身が最後に送信してからの経過時間」
+            // （`idle_ms_at_last_cold` = `ms_since_last_send()`）という自己参照タイマーに
+            // 基づく。実際に GJI プロセスが動いているかどうかの直接観測
+            // （`gji_last_io_ms` / `gji_idle_ms()`, `tsf/gji_monitor.rs` の
+            // `GetProcessIoCounters` 実IO監視）とは独立している。
+            let self_timer_is_long_cold = long_idle || f2_gji_long_idle;
+            let real_gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+            let is_long_cold =
+                self_timer_is_long_cold && !crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP;
+            if self_timer_is_long_cold {
+                log::info!(
+                    "[h1-probe-diag] cold={cold_seq} self_timer_is_long_cold=true \
+                     real_gji_idle_ms={real_gji_idle_ms} \
+                     DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP={} → is_long_cold={is_long_cold}",
+                    crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP,
+                );
+            }
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                     romaji,

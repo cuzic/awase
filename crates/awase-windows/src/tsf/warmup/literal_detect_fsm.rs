@@ -172,29 +172,32 @@ impl LiteralDetectCore {
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しく
                     //     ze_bs_count=3 を使うと挿入点前の無関係な文字まで消える。
                     log::debug!(
-                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={} consecutive={})",
+                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq,
                         self.romaji,
                         PARTIAL_LITERAL_BS,
                         self.consecutive,
+                        crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
                     return Some(self.recovery(env, PARTIAL_LITERAL_BS));
                 }
 
                 log::debug!(
-                    "[literal-detect] cold={} composition confirmed",
-                    self.cold_seq
+                    "[literal-detect] cold={} composition confirmed real_gji_idle_ms={}",
+                    self.cold_seq,
+                    crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
                 Some(vec![ProbeAction::Done])
             }
             DetectionResult::SuspectedLiteral => {
                 log::debug!(
-                    "[literal-detect] cold={} suspected literal (backs={} consecutive={})",
+                    "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
                     self.cold_seq,
                     self.ze_bs_count,
                     self.consecutive,
+                    crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
                 Some(self.recovery(env, self.ze_bs_count))

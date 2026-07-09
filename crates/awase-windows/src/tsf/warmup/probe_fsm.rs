@@ -305,6 +305,11 @@ async fn tsf_probe_coro_body(
     // GJI が実際に寝ていた可能性が低いため、Phase 2b の軽量パス（inline LiteralDetect の
     // みを安全網として残す）に流す。WezTerm 側 GjiWarmupCoro の `ctx.is_long_cold` 分岐
     // （gji_warmup_coro.rs）と対称。
+    //
+    // DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP の適用は呼び出し元
+    // （`output/vk_send.rs` が `is_long_cold` を計算する箇所）で行う。
+    // この関数自体・`is_long_cold` パラメータの意味は変えない
+    // （`tests` が `is_long_cold` を直接指定して分岐を検証しているため）。
     if env.gji_active && is_long_cold {
         // GJI active + 本当に long cold: SacrificialWarmup で TSF warm 確認後に実ローマ字を送信する。
         // ChromeProbe 完了直後に TSF context がまだ初期化中で先頭 VK がリテラル化する race を防ぐ。

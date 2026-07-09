@@ -270,3 +270,33 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
+
+// === 診断用（一時的） ===
+
+/// Chrome/Edge 経路の `is_long_cold` 事前予防を一時的に無効化する診断フラグ。
+///
+/// 対象は `StartSacrificialWarmup` を送信前に先制発行する分岐
+/// （`tsf/warmup/probe_fsm.rs` Phase 2a、BUG-21）。適用箇所は `output/vk_send.rs`
+/// （`send_romaji_batched` が Chrome 用 `is_long_cold` を計算する箇所）の1点のみ。
+/// `probe_fsm.rs`/`gji_warmup_coro.rs` 自体の分岐ロジックは変更しない（`is_long_cold` を
+/// 直接パラメータで受け取るため、既存の BUG-21 回帰テストは本フラグの影響を受けずそのまま
+/// 有効）。
+///
+/// TSF/WezTerm 側（`gji_warmup_coro.rs` Phase 5a）は対象外。あちらの `ctx.is_long_cold`
+/// は `ColdKind::is_long()`（cold 突入時点の `gji_idle_ms()` 実IO観測から分類済み）に
+/// 由来し、Chrome 側の自己参照タイマー（`idle_ms_at_last_cold()` = 「awase 自身が最後に
+/// 送信してからの経過時間」）と異なり既に実IOに基づいている。既に信頼できる信号を
+/// 診断目的で止める理由がなく、WezTerm cold-start literal 化の実害リスクの方が大きい。
+///
+/// `true` の間は Chrome/Edge の予防的 `StartSacrificialWarmup` をスキップし、常に直接送信 +
+/// inline `LiteralDetect` の事後検出に委ねる。partial literal 検出後の捨て駒リトライ
+/// （`literal_detect_fsm.rs::emit_recovery_actions` の `is_tsf_mode && consecutive==0` 分岐）
+/// は対象外で今まで通り動作する。
+///
+/// 目的: 「本当は long cold ではなかったのに誤って先制で捨て駒を送っていたケース」を
+/// 実機ログ（`[h1-probe-diag]` の自己タイマー vs `real_gji_idle_ms`、および
+/// `[literal-detect]` の `CompositionConfirmed`/`SuspectedLiteral`/`partial-literal` 実際の
+/// 結果）から炙り出すための一時計測。実測データが取れて narrowing 方針が決まったら、
+/// このフラグと分岐ごと撤去するか恒久的なゲート条件に置き換えること
+/// （cold 突入判定の絞り込み調査の一部、2026-07-09〜）。
+pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = true;
