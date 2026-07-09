@@ -337,11 +337,16 @@ pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = false;
 /// `[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true → synthetic Ctrl↑ が
 /// GetAsyncKeyState を汚染した可能性がある` という既存の自己診断WARNまで出た）。
 ///
-/// **本フラグとの因果関係は未確認**（当初「合成IMEキー送信頻度の増加が誘因」と推定したが、
-/// 症状が実際に出ていたのは Windows Terminal（TSF/`CASCADIA_HOSTING_WINDOW_CLASS`）で、
-/// このフラグは `TransmitTarget::Chrome` 専用のためそちらのコードパスには一切触れない。
-/// WezTerm 側の `ImeOffThenOn` は本フラグと無関係に元から存在する機能。単に同一セッション中に
-/// 起きたというタイミングの一致だけで疑った可能性が高い）。予防的に `false` に戻したがコストは
-/// ゼロ（Chrome は実績のある VK_A+BS に戻るだけ）のためそのままにしておく。stuck modifier
-/// バグ自体の真因切り分けは別途行うこと。
-pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = false;
+/// **本フラグとの因果関係は否定された**（当初「合成IMEキー送信頻度の増加が誘因」と
+/// 推定したが、症状が実際に出ていたのは Windows Terminal（TSF/
+/// `CASCADIA_HOSTING_WINDOW_CLASS`）で、このフラグは `TransmitTarget::Chrome` 専用の
+/// ためそちらのコードパスには一切触れない）。
+///
+/// 2026-07-09 追記2: stuck modifier バグの真因を確定した（BUG-23,
+/// `docs/known-bugs.md`）。Windows ロック画面（Secure Desktop）遷移中は
+/// `WH_KEYBOARD_LL` フックがイベントを一切観測できず、ロックの瞬間に押されていた
+/// 修飾キーの KeyUp が失われて `hook::PHYSICAL_KEY_STATE` が stuck していた
+/// （`hook::reset_physical_key_state()` を新設し `WTS_SESSION_UNLOCK`/`panic_reset()`
+/// から呼ぶ修正 済み、コミット `77536d6`）。本フラグとは完全に無関係と確定したため
+/// 実験を再開する。
+pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
