@@ -487,11 +487,11 @@ impl Engine {
         let (_, mut decision) = self.adapter.set_enabled(true);
         let new_active = self.compute_active(ctx);
         log::info!("Engine user_enabled ON ({trigger}, active={new_active})");
-        if !new_active {
+        if new_active {
+            self.apply_active_transition(old_active, new_active, &mut decision);
+        } else {
             // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
             self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
-        } else {
-            self.apply_active_transition(old_active, new_active, &mut decision);
         }
         decision
     }
