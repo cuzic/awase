@@ -111,10 +111,13 @@ fn code_lines(content: &str) -> Vec<(usize, String)> {
 }
 
 fn rel(path: &Path) -> String {
+    // ALLOW リストはフォワードスラッシュ固定で書かれているため、Windows の
+    // `\` 区切り表示に引きずられないよう常に `/` へ正規化する。
     path.strip_prefix(manifest())
         .unwrap_or(path)
         .display()
         .to_string()
+        .replace('\\', "/")
 }
 
 /// `dirs` 以下の本番コードから `pred` に該当する行を「path:line: code」形式で集める。

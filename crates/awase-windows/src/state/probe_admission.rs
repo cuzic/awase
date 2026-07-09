@@ -91,6 +91,11 @@ pub struct ImmLikeTicket {
 ///
 /// - 非同期 probe: `ImmLikeTicket::admit()` → `Admission::Accept(AcceptedObservation)`
 /// - 同期 probe: `AcceptedObservation::for_sync(epoch)` で直接構築（シングルスレッドのため常に有効）
+// `#[non_exhaustive]` は他クレートからの構造体リテラル構築のみを禁止するが、この
+// `_private` フィールドは同一クレート内の他モジュールからの構築も禁止する意図的な
+// カプセル化（admission を通らない write をコンパイラで防ぐ）。#[non_exhaustive] に
+// 置き換えると同クレート内の抜け道を許してしまうため見送る。
+#[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy)]
 pub struct AcceptedObservation {
     /// 受理時のフォーカスエポック（診断・derive_open フィルタ用）

@@ -251,7 +251,6 @@ pub struct InputContext {
     pub right_thumb_down: Option<Timestamp>,
 }
 
-
 /// エンジン切替・IME 制御の特殊キーコンボを集約する構造体。
 #[derive(Debug)]
 pub struct SpecialKeyCombos {
@@ -296,7 +295,10 @@ mod tests {
     use super::*;
 
     fn test_effect() -> Effect {
-        Effect::Ui(UiEffect::EngineStateChanged { enabled: true, send_ime_key: true })
+        Effect::Ui(UiEffect::EngineStateChanged {
+            enabled: true,
+            send_ime_key: true,
+        })
     }
 
     // ── Decision factory methods ──

@@ -293,6 +293,8 @@ impl Runtime {
     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
+        // JISかな化復元（Apply(3)）のレート制限。関数末尾の restore_roman 分岐でのみ使う。
+        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
         // Shift 押下中の IME-ON 半角英数 hold（kp_stage_shift_eisu_hold）中は凍結する。
         // conv=0x00000000 は awase 自身が意図的に設定した状態であり、ObservedEisu →
         // DirectInput（IME OFF 落ち）に反応させてはならない。Shift 解放時の復元が
@@ -406,10 +408,7 @@ impl Runtime {
             }
             Some(new_mode) => {
                 log::info!(
-                    "[idle-conv-check] TsfNative: conv=0x{:08X} → belief {:?}→{:?}",
-                    conv,
-                    current,
-                    new_mode,
+                    "[idle-conv-check] TsfNative: conv=0x{conv:08X} → belief {current:?}→{new_mode:?}"
                 );
                 // source=ConvBitsInference: 実態は conv ビット（ImmGetConversionStatus 由来）
                 // からの input_mode 推定であり、ImmGetOpenStatus API 観測ではない。conv の
@@ -440,7 +439,6 @@ impl Runtime {
         // （変化検出は別経路が先に消費するため頼れない）ので、送信間隔をここで抑える。
         // 復元が成功すれば次回 conv=ROMAN 付きになり要求自体が止まる。復元が効かない
         // 環境でも最悪この間隔で IMC_SETCONVERSIONMODE を打つだけ（冪等・非同期）。
-        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
         if transition.restore_roman
             && self.platform.output.conv_mutation_allowed.get()
             && now_tick.saturating_sub(self.platform.output.last_roman_restore_ms.get())
@@ -523,6 +521,9 @@ impl Runtime {
     ///
     /// IME ON/OFF が変化したら `true` を返す。`kp_stage_execute` がこの値を見て
     /// Imm32Unavailable アプリで物理 IME キーを抑止すべきか判定する。
+    // shadow IME belief トグルは分岐が本質的に多い。分割は挙動変更リスクが高いため
+    // 複雑度警告のみ抑制する。
+    #[expect(clippy::cognitive_complexity)]
     fn kp_stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
@@ -1091,7 +1092,11 @@ fn sanitize_focus_probe_open_status(
 impl Runtime {
     /// read_ime_state_fast_async の結果を self に適用する（with_app 内で呼ぶ）。
     /// kp_stage_focus_probe の旧同期ロジックを async 完了後に実行する版。
-    #[expect(clippy::needless_pass_by_value, clippy::option_if_let_else)]
+    // FocusProbe 完了後の belief 適用は分岐が本質的に多い。分割・引数構造体化は
+    // 挙動変更リスクが高いため複雑度・引数数の警告のみ抑制する。
+    #[expect(clippy::needless_pass_by_value)]
+    #[expect(clippy::cognitive_complexity)]
+    #[allow(clippy::too_many_arguments)]
     fn apply_focus_probe(
         &mut self,
         probe: crate::ime::FastImeProbeResult,
@@ -1180,9 +1185,8 @@ impl Runtime {
                         .update_from_conv(conv, now_tick_ms);
                     self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                     log::debug!(
-                        "[focus-conv-check] TsfNative: conv=0x{:08X} 読み取り（belief 更新なし、\
-                         フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）",
-                        conv,
+                        "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
+                         フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）"
                     );
                 }
             }
@@ -1319,9 +1323,8 @@ impl Runtime {
                 "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
             ),
             None if used_shadow_fallback => log::debug!(
-                "FocusProbe: TsfNative/Imm32Unavailable — shadow 値 {} を代替観測として記録 \
-                 [probe_age={probe_age_ms}ms]",
-                shadow_on,
+                "FocusProbe: TsfNative/Imm32Unavailable — shadow 値 {shadow_on} を代替観測として記録 \
+                 [probe_age={probe_age_ms}ms]"
             ),
             None if probe.ime_on.is_none() => log::warn!(
                 "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} \

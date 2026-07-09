@@ -174,7 +174,14 @@ pub(crate) struct WarmupOutcome {
 /// - 状態アクセサ（warmth、composition、injection_mode、TsfGate）
 /// - キー送信（`send_keys`、`send_romaji_*`、`send_char_*`、`send_unicode_char`）
 /// - ノンブロッキング TSF/Chrome プローブ FSM（`advance_tsf_probe` とその内部メソッド群）
+impl Default for Output {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Output {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             injector: KeyInjector::new(),
@@ -597,8 +604,7 @@ impl Output {
         let charset = self
             .conv_mode
             .get()
-            .map(|m| m.charset)
-            .unwrap_or(crate::state::Charset::Hiragana);
+            .map_or(crate::state::Charset::Hiragana, |m| m.charset);
         let ms = match charset {
             crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
                 let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
@@ -654,6 +660,9 @@ impl Output {
     /// - Unicode: Win32/UWP デフォルト。Unicode 直接注入で IME をバイパス。
     /// - Vk: Chrome/Edge/Electron。Batched VK で IME composition。
     /// - Tsf: WezTerm 等。Sequential VK で TSF/IME に composition させる。
+    // 注入モード(Unicode/Vk/Tsf)ごとの分岐が本質的に多いディスパッチャ。分割は挙動変更
+    // リスクが高いため、複雑度警告のみ抑制する。
+    #[expect(clippy::cognitive_complexity)]
     pub fn send_keys(&self, actions: &[KeyAction]) {
         // モード解決 + OutputActiveGuard 取得をセッションオブジェクトに委譲
         let session = OutputSession::begin(self);

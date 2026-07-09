@@ -310,8 +310,7 @@ mod tests {
 
     #[test]
     fn hold_then_drop_via_clear() {
-        let mut gate: HoldingGate<AlwaysHoldMachine, u32> =
-            HoldingGate::new(AlwaysHoldMachine, 8);
+        let mut gate: HoldingGate<AlwaysHoldMachine, u32> = HoldingGate::new(AlwaysHoldMachine, 8);
         gate.on_event(());
         gate.try_hold(1);
         gate.try_hold(2);
@@ -325,8 +324,7 @@ mod tests {
 
     #[test]
     fn capacity_overflow_false_and_caller_decides() {
-        let mut gate: HoldingGate<AlwaysHoldMachine, u32> =
-            HoldingGate::new(AlwaysHoldMachine, 2);
+        let mut gate: HoldingGate<AlwaysHoldMachine, u32> = HoldingGate::new(AlwaysHoldMachine, 2);
         gate.on_event(());
         assert!(gate.try_hold(1));
         assert!(gate.try_hold(2));
@@ -336,8 +334,7 @@ mod tests {
 
     #[test]
     fn reactivate_clears_buffer() {
-        let mut gate: HoldingGate<AlwaysHoldMachine, u32> =
-            HoldingGate::new(AlwaysHoldMachine, 8);
+        let mut gate: HoldingGate<AlwaysHoldMachine, u32> = HoldingGate::new(AlwaysHoldMachine, 8);
         gate.on_event(()); // InitiateHold
         gate.try_hold(1);
         gate.try_hold(2);
@@ -350,8 +347,7 @@ mod tests {
 
     #[test]
     fn drain_via_timeout() {
-        let mut gate: HoldingGate<TimedDrainMachine, u32> =
-            HoldingGate::new(TimedDrainMachine, 8);
+        let mut gate: HoldingGate<TimedDrainMachine, u32> = HoldingGate::new(TimedDrainMachine, 8);
         gate.on_event(()); // InitiateHold
         gate.try_hold(7);
         gate.try_hold(8);
@@ -363,8 +359,7 @@ mod tests {
 
     #[test]
     fn on_event_returns_empty_vec_when_no_drain() {
-        let mut gate: HoldingGate<AlwaysHoldMachine, u32> =
-            HoldingGate::new(AlwaysHoldMachine, 8);
+        let mut gate: HoldingGate<AlwaysHoldMachine, u32> = HoldingGate::new(AlwaysHoldMachine, 8);
         let (_, drained) = gate.on_event(());
         assert!(drained.is_empty());
     }

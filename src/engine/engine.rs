@@ -15,8 +15,8 @@ use crate::config::ParsedKeyCombo;
 use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
 use super::decision::{
-    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect,
-    InactiveReason, InputContext, InputEffect, SpecialKeyCombos, UiEffect,
+    ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
+    InputContext, InputEffect, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::ModifierState;
@@ -173,9 +173,7 @@ impl Engine {
                 ActivationState::Inactive(InactiveReason::NotRomajiInput)
             );
             if !suppress_set_open {
-                effects.push(Effect::Ime(ImeEffect::SetOpen {
-                    open: now_active,
-                }));
+                effects.push(Effect::Ime(ImeEffect::SetOpen { open: now_active }));
             }
             // NotRomajiInput の場合は SetOpen も engine-state キーも不要。
             // ユーザーが選択した kana/katakana モードをそのまま維持する。
@@ -420,9 +418,7 @@ impl Engine {
         let target_state = self.compute_state(&pseudo_ctx);
         let effects = self.transition_activation(target_state);
         if effects.is_empty() {
-            decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
-                open: true,
-            }));
+            decision.push_effect(Effect::Ime(ImeEffect::SetOpen { open: true }));
         } else {
             for e in effects {
                 decision.push_effect(e);
@@ -454,9 +450,7 @@ impl Engine {
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
-            effects.push(Effect::Ime(ImeEffect::SetOpen {
-                open,
-            }));
+            effects.push(Effect::Ime(ImeEffect::SetOpen { open }));
         }
         Decision::consumed_with(effects)
     }
@@ -493,11 +487,11 @@ impl Engine {
         let (_, mut decision) = self.adapter.set_enabled(true);
         let new_active = self.compute_active(ctx);
         log::info!("Engine user_enabled ON ({trigger}, active={new_active})");
-        if !new_active {
+        if new_active {
+            self.apply_active_transition(old_active, new_active, &mut decision);
+        } else {
             // ime_on=false 等で active になれない → pseudo_ctx で IME 強制 ON
             self.apply_engine_on_with_ime_recovery(ctx, &mut decision);
-        } else {
-            self.apply_active_transition(old_active, new_active, &mut decision);
         }
         decision
     }

@@ -14,13 +14,14 @@
 //! ```
 
 #![cfg(windows)]
+#![allow(unsafe_code)]
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
 use awase::engine::{ModifierState, NicolaFsm};
 use awase::types::{
     ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
-    VkCode,
+    SpecialKey, VkCode,
 };
 use awase::yab::YabLayout;
 use awase::KeyboardModel;
@@ -45,8 +46,12 @@ fn init_test_logging() {
 
 /// Load the test NICOLA layout
 fn load_test_layout() -> YabLayout {
+    // cargo はテストバイナリの CWD をこのパッケージのルート（crates/awase-windows/）に
+    // 設定するため、相対パスではなくワークスペースルートの layout/ を CARGO_MANIFEST_DIR
+    // 起点で解決する（他のテストファイルの env!("CARGO_MANIFEST_DIR") パターンに倣う）。
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../layout/nicola.yab");
     let yab_content =
-        std::fs::read_to_string("layout/nicola.yab").expect("layout/nicola.yab should exist");
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     YabLayout::parse(&yab_content, KeyboardModel::Jis).expect("layout should parse")
 }
 
@@ -132,7 +137,9 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         extra_info: 0,
         timestamp: ts,
         key_classification: classify_vk(vk),
-        physical_pos: None,
+        // 実運用（hook.rs）と同様、scan code から物理位置を解決する。
+        // None のままだと .yab の面参照がすべて失敗し PassThrough になってしまう。
+        physical_pos: awase_windows::scanmap::scan_to_pos(KeyboardModel::Jis, ScanCode(scan)),
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
@@ -148,7 +155,7 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         extra_info: 0,
         timestamp: ts,
         key_classification: classify_vk(vk),
-        physical_pos: None,
+        physical_pos: awase_windows::scanmap::scan_to_pos(KeyboardModel::Jis, ScanCode(scan)),
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
@@ -292,7 +299,7 @@ fn e2e_engine_speculative_mode() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
+        .any(|a| matches!(a, KeyAction::SpecialKey(SpecialKey::Backspace)));
     log::info!("Has BS for retraction: {}", has_bs);
     assert!(has_bs, "speculative retraction should include BS");
 }
@@ -346,12 +353,13 @@ fn e2e_engine_flush_pending_all_states() {
     log::debug!("Flush from PendingChar: actions={:?}", r.actions);
     assert!(!r.actions.is_empty());
 
-    // PendingThumb
+    // PendingThumb: 単独の親指キーは何にも確定しないため、flush してもアクションは
+    // 出ない（resolve_pending_thumb_as_single は常に空を返す設計）。
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x1D, 0x7B, 1_000_000));
     let r = engine.flush_pending(ContextChange::EngineDisabled);
     log::debug!("Flush from PendingThumb: actions={:?}", r.actions);
-    assert!(!r.actions.is_empty());
+    assert!(r.actions.is_empty(), "lone thumb key alone has no output");
 
     // SpeculativeChar
     let mut engine = make_test_engine(ConfirmMode::Speculative);
@@ -464,7 +472,7 @@ impl TestEditWindow {
         // Register window class
         let class_name_wide: Vec<u16> = "AwaseTestWindow\0".encode_utf16().collect();
         let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(test_wnd_proc),
             hInstance: HINSTANCE::default(),
             lpszClassName: windows::core::PCWSTR(class_name_wide.as_ptr()),
@@ -676,7 +684,7 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
             },
         },
     ];
-    let size = i32::try_from(std::mem::size_of::<INPUT>()).expect("INPUT size fits i32");
+    let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
     let sent = SendInput(&inputs, size);
     log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
 
@@ -1001,9 +1009,6 @@ fn e2e_ime_status_detection() {
     log::info!("=== E2E Phase 3: IME status detection ===");
 
     unsafe {
-        use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
-        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-
         log_system_info();
 
         let Some(win) = TestEditWindow::create() else {
@@ -1368,7 +1373,7 @@ fn e2e_speculative_retraction_then_normal() {
     let has_bs = r
         .actions
         .iter()
-        .any(|a| matches!(a, KeyAction::Key(vk) if vk.0 == 0x08));
+        .any(|a| matches!(a, KeyAction::SpecialKey(SpecialKey::Backspace)));
     assert!(has_bs, "retraction should have BS");
 
     // Key 2: normal speculative (fresh start)

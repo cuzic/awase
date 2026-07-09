@@ -192,10 +192,10 @@ impl SystemTray {
             // トレイアイコンを追加
             // シェル未起動時（ログオン直後等）は失敗しても OK。
             // TaskbarCreated がブロードキャストされた時点で recreate() が呼ばれる。
-            if !Shell_NotifyIconW(NIM_ADD, &raw const nid).as_bool() {
-                log::warn!("Shell_NotifyIcon NIM_ADD failed — shell not ready, will retry on TaskbarCreated");
-            } else {
+            if Shell_NotifyIconW(NIM_ADD, &raw const nid).as_bool() {
                 log::info!("System tray icon created (elevated={elevated})");
+            } else {
+                log::warn!("Shell_NotifyIcon NIM_ADD failed — shell not ready, will retry on TaskbarCreated");
             }
 
             Ok(Self {

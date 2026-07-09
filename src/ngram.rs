@@ -61,9 +61,19 @@ impl NgramModel {
         };
 
         if content.trim_start().starts_with('[') {
-            Self::from_toml(&content, adjustment_range_us, min_threshold_us, max_threshold_us)
+            Self::from_toml(
+                &content,
+                adjustment_range_us,
+                min_threshold_us,
+                max_threshold_us,
+            )
         } else {
-            Self::from_csv(&content, adjustment_range_us, min_threshold_us, max_threshold_us)
+            Self::from_csv(
+                &content,
+                adjustment_range_us,
+                min_threshold_us,
+                max_threshold_us,
+            )
         }
     }
 
@@ -119,7 +129,13 @@ impl NgramModel {
             }
         }
 
-        Ok(Self { bigram, trigram, adjustment_range_us, min_threshold_us, max_threshold_us })
+        Ok(Self {
+            bigram,
+            trigram,
+            adjustment_range_us,
+            min_threshold_us,
+            max_threshold_us,
+        })
     }
 
     /// Load from a TOML string.
@@ -158,7 +174,13 @@ impl NgramModel {
             trigram.insert((chars[0], chars[1], chars[2]), score);
         }
 
-        Ok(Self { bigram, trigram, adjustment_range_us, min_threshold_us, max_threshold_us })
+        Ok(Self {
+            bigram,
+            trigram,
+            adjustment_range_us,
+            min_threshold_us,
+            max_threshold_us,
+        })
     }
 
     fn parse_toml_section(
@@ -182,8 +204,9 @@ impl NgramModel {
             let score = value
                 .as_float()
                 .or_else(|| value.as_integer().map(|i| i as f64))
-                .ok_or_else(|| anyhow::anyhow!("{section_name} value for {key:?} is not a number"))?
-                as f32;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("{section_name} value for {key:?} is not a number")
+                })? as f32;
             result.push((chars, score));
         }
         Ok(result)

@@ -290,7 +290,7 @@ impl KeyInjector {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                Self::format_vk_run(&run),
+                Self::format_vk_run(run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
@@ -307,7 +307,7 @@ impl KeyInjector {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
-                Self::format_vk_run(&run),
+                Self::format_vk_run(run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }
@@ -340,7 +340,7 @@ impl KeyInjector {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] ({leading_label})",
-                Self::format_vk_run(&run),
+                Self::format_vk_run(run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }

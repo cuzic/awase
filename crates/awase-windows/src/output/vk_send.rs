@@ -104,6 +104,9 @@ impl Output {
     ///
     /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
     /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
+    // cold/warm・GJI probe 有無で分岐が本質的に多い送信パス。分割は挙動変更リスクが
+    // 高いため、複雑度警告のみ抑制する。
+    #[expect(clippy::cognitive_complexity)]
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {

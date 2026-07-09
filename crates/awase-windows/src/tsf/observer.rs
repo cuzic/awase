@@ -269,8 +269,8 @@ impl TsfObservations {
     pub(crate) fn active_ime_kind(&self) -> ActiveImeKind {
         match self.tsf_active_kind.load(Ordering::Acquire) {
             1 => ActiveImeKind::GoogleJapaneseInput,
-            2 => ActiveImeKind::MicrosoftIme,
-            _ => ActiveImeKind::MicrosoftIme, // 未検出時は安全なデフォルト
+            // 2 (MicrosoftIme 明示検出) と 0 (未検出) はどちらも安全デフォルト MicrosoftIme。
+            _ => ActiveImeKind::MicrosoftIme,
         }
     }
 

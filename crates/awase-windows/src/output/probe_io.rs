@@ -206,7 +206,11 @@ impl ProbeIo for Output {
         // GJI は cross-process で VK_IME_ON を非同期処理するため、spawn_local が完了する
         // ~10ms 以内に ImmSetConversionStatus が確定し、GJI が conv を読む前に間に合う。
         if self.conv_mutation_allowed.get() {
-            if let Some(conv_target) = self.conv_mode.get().and_then(|m| m.imm_conv_target()) {
+            if let Some(conv_target) = self
+                .conv_mode
+                .get()
+                .and_then(awase::engine::ConvMode::imm_conv_target)
+            {
                 win32_async::spawn_local(async move {
                     let _ =
                         crate::ime::set_ime_romaji_mode_with_target_async(Some(conv_target)).await;
@@ -437,7 +441,7 @@ impl Output {
 /// 同一の10行ブロックが繰り返されるため、共通関数として抽出する。
 fn store_gji_warmup_if_probing(
     io: &impl ProbeIo,
-    obs: &crate::tsf::warmup::probe_fsm::ProbeObservations,
+    obs: crate::tsf::warmup::probe_fsm::ProbeObservations,
     plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
 ) {
     if io.current_gji_probe_id().is_some() {
@@ -455,7 +459,7 @@ fn store_gji_warmup_if_probing(
 /// `ProbeObservations` と `TransmitPlan` から `WarmupPath` を分類する純粋関数。
 /// Tsf/Chrome の両 Transmit アームで共用する。
 fn classify_warmup_path(
-    obs: &crate::tsf::warmup::probe_fsm::ProbeObservations,
+    obs: crate::tsf::warmup::probe_fsm::ProbeObservations,
     plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
 ) -> crate::tsf::gji_fsm::WarmupPath {
     use crate::tsf::gji_fsm::WarmupPath;
@@ -594,7 +598,7 @@ where
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
-                        store_gji_warmup_if_probing(io, &observations, &plan);
+                        store_gji_warmup_if_probing(io, observations, &plan);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -620,7 +624,7 @@ where
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
-                        store_gji_warmup_if_probing(io, &observations, &plan);
+                        store_gji_warmup_if_probing(io, observations, &plan);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -649,11 +653,6 @@ where
                 // VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信する（vim 安全プローブ）。
                 // Off→On 状態遷移が GJI WriteTransferCount を増加させ（実測 +46B / ~30ms）、
                 // ImeOffOnWarmupFsm が write_bytes 上昇を検出してから実ローマ字を再送する。
-                let real_chars: VkSequence = config
-                    .romaji
-                    .chars()
-                    .filter_map(crate::output::resolve_ascii_to_vk)
-                    .collect();
                 // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
                 // TSF/WezTerm の場合のみ bypass 状態でスキップする。
                 if key_sequence_policy::warmup_respects_bypass_gate(config.target)
@@ -665,7 +664,12 @@ where
                     );
                     return DispatchResult::Done;
                 }
-                if real_chars.is_empty() {
+                if config
+                    .romaji
+                    .chars()
+                    .find_map(crate::output::resolve_ascii_to_vk)
+                    .is_none()
+                {
                     return DispatchResult::Done;
                 }
                 // literal recovery パスでは consecutive をインクリメントしてループを防ぐ。
@@ -673,7 +677,7 @@ where
                     io.increment_consecutive_count();
                 }
                 // GjiFsm bridge: 送信時点で warmup 結果を記録する。
-                store_gji_warmup_if_probing(io, &config.observations, &config.plan);
+                store_gji_warmup_if_probing(io, config.observations, &config.plan);
                 // target に応じて戦略を切り替える。
                 //
                 // Chrome: VK_A+BS（元の方式）。
@@ -839,7 +843,6 @@ where
                         + mark cold"
                     );
                     io.set_raw_literal(backs, romaji);
-                    io.mark_cold_raw_tsf();
                 } else {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
@@ -850,8 +853,8 @@ where
                     // terminal に残ると "kおの" 等の文字化けになる。
                     // romaji 再送はせず BS のみ送って terminal をクリーンにする。
                     io.set_raw_literal(backs, String::new());
-                    io.mark_cold_raw_tsf();
                 }
+                io.mark_cold_raw_tsf();
             }
         }
     }

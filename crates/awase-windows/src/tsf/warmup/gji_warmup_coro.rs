@@ -84,6 +84,12 @@ struct GjiProbeCtx {
 
 // ── コルーチン本体 ────────────────────────────────────────────────────────────
 
+// `Rc` を使うため生成される future は `!Send`。これはタイマー駆動の単一スレッド設計
+// による意図的な制約（crates/timed-fsm/src/coro.rs::yield_step 参照）。
+// probe 分岐（Phase 1/2/3・eager/cold・consecutive 判定）が本質的に多いディスパッチャの
+// ため複雑度警告も抑制する。
+#[expect(clippy::future_not_send)]
+#[expect(clippy::cognitive_complexity)]
 async fn gji_coro_body(
     ch: Rc<Channel<TickInput, Vec<ProbeAction>>>,
     romaji: String,
@@ -340,7 +346,7 @@ async fn gji_coro_body(
 /// ## OutputActiveGuard の管理
 ///
 /// `gji_probe_guard`（`Output` が保持）は probe 開始時から Done まで active を維持する。
-/// inline LiteralDetect に入ったとき `_literal_detect_guard` を追加で活性化する。
+/// inline LiteralDetect に入ったとき `literal_detect_guard` を追加で活性化する。
 /// `OutputActiveGuard` は参照カウント (`depth`) 方式なので 2 つのガードが重複しても安全。
 pub(crate) struct GjiWarmupCoro {
     coro: StepCoro<TickInput, Vec<ProbeAction>>,
@@ -349,7 +355,7 @@ pub(crate) struct GjiWarmupCoro {
     cold_seq: u32,
     forces_prepend_f2: bool,
     /// inline LiteralDetect フェーズ中に OUTPUT_GATE を active に保つ追加ガード。
-    _literal_detect_guard: Option<OutputActiveGuard>,
+    literal_detect_guard: Option<OutputActiveGuard>,
 }
 
 impl GjiWarmupCoro {
@@ -391,7 +397,7 @@ impl GjiWarmupCoro {
                 cold_reason,
                 ctx,
             )
-            .await
+            .await;
         });
         let mut this = Self {
             coro,
@@ -399,7 +405,7 @@ impl GjiWarmupCoro {
             pending_transmit_done: None,
             cold_seq,
             forces_prepend_f2,
-            _literal_detect_guard: None,
+            literal_detect_guard: None,
         };
         // Self-priming: StepCoro の最初の step() は input を消費しない
         // （timed_fsm::coro のドキュメント参照）。construction 直後・pending_tsf に
@@ -462,7 +468,7 @@ impl TickableFsm for GjiWarmupCoro {
         match detector {
             Some(det) => {
                 let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
-                self._literal_detect_guard = Some(OutputActiveGuard::begin());
+                self.literal_detect_guard = Some(OutputActiveGuard::begin());
                 self.pending_transmit_done = Some(TransmitDonePayload {
                     romaji,
                     ze_bs_count,

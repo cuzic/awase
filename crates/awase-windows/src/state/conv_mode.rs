@@ -159,7 +159,7 @@ impl ConvModeMgr {
         }
 
         #[cfg(windows)]
-        if old.map_or(false, |m| m.charset == Charset::HankakuKatakana)
+        if old.is_some_and(|m| m.charset == Charset::HankakuKatakana)
             && new.charset == Charset::ZenkakuKatakana
         {
             let now = now_ms.0;

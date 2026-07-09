@@ -50,12 +50,15 @@ impl AppImePolicy {
     #[must_use]
     pub const fn from_profile(profile: ImePolicyProfile) -> Self {
         match profile {
-            ImePolicyProfile::ImmCross => Self {
-                // 通常 Win32: IMM32 クロスプロセスが使えるため awase が所有
-                owns_physical_kanji: true,
-                actuator_kind: ImeActuatorKind::ImmCross,
-                focus_settle_ms: 100,
-            },
+            // ImmCross: 通常 Win32、IMM32 クロスプロセスが使えるため awase が所有。
+            // Plain / Unknown は安全デフォルト (ImmCross 同等) を使う。
+            ImePolicyProfile::ImmCross | ImePolicyProfile::Plain | ImePolicyProfile::Unknown => {
+                Self {
+                    owns_physical_kanji: true,
+                    actuator_kind: ImeActuatorKind::ImmCross,
+                    focus_settle_ms: 100,
+                }
+            }
             ImePolicyProfile::Imm32Unavailable => Self {
                 owns_physical_kanji: true,
                 actuator_kind: ImeActuatorKind::Imm32Unavailable,
@@ -67,12 +70,6 @@ impl AppImePolicy {
                 owns_physical_kanji: false,
                 actuator_kind: ImeActuatorKind::TsfNative,
                 focus_settle_ms: 200,
-            },
-            // Plain / Unknown は安全デフォルト (ImmCross 同等) を使う
-            ImePolicyProfile::Plain | ImePolicyProfile::Unknown => Self {
-                owns_physical_kanji: true,
-                actuator_kind: ImeActuatorKind::ImmCross,
-                focus_settle_ms: 100,
             },
         }
     }

@@ -155,7 +155,9 @@ impl<'a> TimingJudge<'a> {
     /// n-gram で閾値を動的調整する内部ヘルパー
     fn adjusted_threshold(&self, candidate_kana: Option<char>) -> u64 {
         match (self.ngram_model, candidate_kana) {
-            (Some(model), Some(ch)) => model.adjusted_threshold(self.threshold_us, &self.recent_kana, ch),
+            (Some(model), Some(ch)) => {
+                model.adjusted_threshold(self.threshold_us, &self.recent_kana, ch)
+            }
             _ => self.threshold_us,
         }
     }

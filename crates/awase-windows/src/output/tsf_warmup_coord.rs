@@ -229,8 +229,7 @@ impl TsfWarmupCoordinator {
         self.pending_tsf
             .borrow_mut()
             .as_mut()
-            .map(|m| m.push_deferred_unicode_chars(chars))
-            .unwrap_or(false)
+            .is_some_and(|m| m.push_deferred_unicode_chars(chars))
     }
 
     /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。

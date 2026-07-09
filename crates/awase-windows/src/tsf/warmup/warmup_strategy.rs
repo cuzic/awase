@@ -77,29 +77,29 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
     }
 
     fn current_probe_params(&self) -> Option<ProbeParams> {
-        crate::tsf::gji_fsm::GjiFsm::current_probe_params(self)
+        Self::current_probe_params(self)
     }
 
     fn on_gji_event(&mut self, event: GjiEvent) -> Response<GjiAction, GjiTimer> {
         use timed_fsm::TimedStateMachine as _;
-        crate::tsf::gji_fsm::GjiFsm::on_event(self, event)
+        Self::on_event(self, event)
     }
 
     fn on_gji_long_idle(&mut self) -> Response<GjiAction, GjiTimer> {
         use timed_fsm::TimedStateMachine as _;
-        crate::tsf::gji_fsm::GjiFsm::on_timeout(self, GjiTimer::LongIdle)
+        Self::on_timeout(self, GjiTimer::LongIdle)
     }
 
     fn gji_current_composition_epoch(&self) -> Option<FocusEpoch> {
         use crate::tsf::gji_fsm::GjiState;
-        match crate::tsf::gji_fsm::GjiFsm::state(self) {
+        match Self::state(self) {
             GjiState::OnComposing { epoch, .. } => Some(*epoch),
             _ => None,
         }
     }
 
     fn is_next_key_long_cold(&self) -> bool {
-        crate::tsf::gji_fsm::GjiFsm::is_next_key_long_cold(self)
+        Self::is_next_key_long_cold(self)
     }
 }
 
