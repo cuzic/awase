@@ -405,6 +405,12 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
         }
         WTS_SESSION_UNLOCK => {
             log::info!("Session unlocked, scheduling deferred recovery");
+            // ロック中 (Secure Desktop) は WH_KEYBOARD_LL にイベントが届かないため、
+            // ロック直前に押されていた物理キーの KeyUp が失われうる。PHYSICAL_KEY_STATE は
+            // OR で左右を合成するため、片側が stuck するだけで mods.shift/ctrl が恒久的に
+            // true になる（2026-07-09 実機で確認）。アンロック時点では物理キーはどれも
+            // 離されていると仮定してよいため、無条件でリセットする。
+            hook::reset_physical_key_state();
             app.platform.timer.kill(TIMER_IME_REFRESH);
             app.platform
                 .timer

@@ -1436,6 +1436,72 @@ IME・conv モードは MS-IME。無操作でしばらく放置した後、Edge 
 
 ---
 
+## BUG-23: 画面ロック中に離された修飾キーの KeyUp が失われ、Shift/Ctrl が恒久的に stuck する（修正済み・実機再現確認待ち）
+
+**症状:** 2026-07-09 実機ログ。何もしていない（あるいは離席してロック画面になっていた）
+状態から復帰後、Shift/Ctrl を単体で押して離しても `[engine-input]` の
+`mods(c=... s=...)` が `true` のまま戻らなくなる。ユーザー体感は「Caps Lock が
+ON になったような状態」（打鍵が意図しない大文字/記号として出力される）。
+既存の自己診断ログも発火する:
+
+```
+[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true (vk=0xA0 KeyDown)
+→ synthetic Ctrl↑ が GetAsyncKeyState を汚染した可能性がある
+```
+
+**原因（確定）:** `hook.rs` の `PHYSICAL_KEY_STATE`（VK ごとの物理押下状態、
+non-injected な KeyDown/KeyUp でのみ更新）は、`observer::focus_observer::read_os_modifiers()`
+で左右のキーを OR 演算して合成される（`shift = is_physical_key_down(VK_LSHIFT) ||
+is_physical_key_down(VK_RSHIFT)`）。実機ログで `19:53:07` に `vk=0xA1`（右Shift）の
+KeyDown だけが記録され、以降一度も対応する KeyUp が現れないことを確認した。
+
+Windows がロック画面（Secure Desktop）に遷移している間、通常デスクトップに
+インストールされた `WH_KEYBOARD_LL` フックはその間のキーイベントを一切観測できない。
+ロックの瞬間に修飾キーが押されていた（あるいは離席中の誤タッチ等）場合、KeyDown は
+ロック前に捕捉されても対応する KeyUp がロック中に発生し、フックに届かないまま
+`PHYSICAL_KEY_STATE` がその VK だけ `true` に stuck する。OR 合成のため、以後
+反対側のキーを正しく押して離しても複合された `mods.shift`/`mods.ctrl` は
+恒久的に `true` のまま戻らない。
+
+**副次的に発覚した既存の隙間:** ADR-052 の `panic_reset()` は stuck modifier からの
+回復を想定して `send_all_modifier_key_ups()`（`SendInput` で全修飾キーの KeyUp を送信）
+を実行するが、これは自己注入（`dwExtraInfo=INJECTED_MARKER`）のため `hook_callback` の
+`is_self_injected` フィルタ（ADR-054、VcXsrv 由来の stuck Ctrl 対策として後から追加）に
+弾かれ、`PHYSICAL_KEY_STATE` の更新まで到達しない。OS 側の modifier は解放されるが
+awase 内部の物理キー shadow は解放されないままだった（panic_reset が本来意図していた
+動作を ADR-054 が意図せず壊していた regression）。
+
+**修正:** `hook::reset_physical_key_state()`（`PHYSICAL_KEY_STATE` /
+`PHYSICAL_KEY_DOWN_AT_MS` の全 256 VK スロットを無条件でクリア）を新設し、以下 2 箇所
+から呼ぶ:
+
+1. `runtime/message_handlers.rs::handle_wts_session_change` の `WTS_SESSION_UNLOCK`
+   分岐（根本原因への対処。アンロック時点では物理キーはどれも離されていると
+   仮定してよい）
+2. `runtime/mod.rs::panic_reset()`（`send_all_modifier_key_ups()` の直後。ADR-052 が
+   意図していた stuck modifier 回復を実際に機能させる）
+
+トレイメニューの「内部状態をリセット」は既に `WM_PANIC_RESET` → `panic_reset()` と
+同一経路（ADR-052）のため、追加の配線なしで同じ修正が適用される。
+
+**テスト:** `hook.rs` は Windows 専用 API に依存しクロスコンパイルのみ
+（`cargo build -p awase-windows --target x86_64-pc-windows-gnu` で確認済み、
+wine 環境が無いため実行は未実施）。`reset_physical_key_state()` 自体は単純な
+atomic 全クリアのため単体テストの価値は低いと判断し、known-bugs.md への本追記で
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md) の記録要件を満たす。
+Windows 実機でのロック→アンロック再現待ち。
+
+**関連ファイル:** `crates/awase-windows/src/hook.rs`（`PHYSICAL_KEY_STATE`,
+`reset_physical_key_state`）, `crates/awase-windows/src/runtime/message_handlers.rs`
+（`handle_wts_session_change`）, `crates/awase-windows/src/runtime/mod.rs`
+（`panic_reset`, `send_all_modifier_key_ups`）,
+`crates/awase-windows/src/observer/focus_observer.rs`（`read_os_modifiers`）
+
+**関連 ADR:** ADR-052（トレイパニックリセット）, ADR-054（PHYSICAL_KEY_STATE
+injected フィルタ、VcXsrv 由来 stuck Ctrl 対策 — 今回発覚した regression の導入元）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

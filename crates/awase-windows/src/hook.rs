@@ -138,6 +138,30 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
     (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
 }
 
+/// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
+///
+/// セッションロック中（Secure Desktop 遷移中）は `WH_KEYBOARD_LL` フックにイベントが
+/// 一切届かないため、ロックの瞬間に押されていた物理キーの KeyUp が失われ得る。
+/// `PHYSICAL_KEY_STATE` は OR 演算で左右を合成する（`observer::focus_observer::read_os_modifiers`）
+/// ため、片側が stuck するだけで `mods.shift`/`mods.ctrl` が恒久的に `true` になる
+/// （2026-07-09 実機で確認、右 Shift の KeyUp 消失が原因）。
+///
+/// アンロック時点では OS 側の実際の物理キーはどれも「離されている」と仮定してよい
+/// （ロック中ずっと押しっぱなしということはまず無い）ため、全スロットを無条件でクリアする。
+///
+/// `panic_reset()`（`send_all_modifier_key_ups()` は自己注入 SendInput のため
+/// `is_self_injected` フィルタで弾かれ `PHYSICAL_KEY_STATE` を更新できない、ADR-054 由来の
+/// 隙間）と `WM_WTSSESSION_CHANGE` の `WTS_SESSION_UNLOCK` から呼ぶ。
+pub fn reset_physical_key_state() {
+    for slot in &PHYSICAL_KEY_STATE {
+        slot.store(false, Ordering::Relaxed);
+    }
+    for slot in &PHYSICAL_KEY_DOWN_AT_MS {
+        slot.store(0, Ordering::Relaxed);
+    }
+    log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
+}
+
 /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
 ///
 /// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume された」

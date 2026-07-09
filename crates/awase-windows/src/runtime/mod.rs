@@ -942,7 +942,12 @@ impl Runtime {
         }
 
         // 3. 全修飾キーの KeyUp を送信（スタック解消）
+        // send_all_modifier_key_ups() は自己注入 SendInput (INJECTED_MARKER) のため
+        // is_self_injected フィルタでフックの PHYSICAL_KEY_STATE 更新まで届かない
+        // (ADR-054 由来の隙間、2026-07-09 発見)。OS 側の modifier は解放されるが
+        // awase 内部の物理キー shadow は解放されないままだったため、明示的にリセットする。
         send_all_modifier_key_ups();
+        crate::hook::reset_physical_key_state();
 
         // 4. PlatformState を全面リセット
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
