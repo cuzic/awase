@@ -116,6 +116,8 @@ async fn gji_coro_body(
             continue;
         };
 
+        // probe 完了時の実測値（elapsed/gji_idle/settled）は「予算に対して実際どれだけ
+        // かかったか」を事後ログから直接確認するために必要（切り分けログ強化、2026-07-09）。
         log::debug!(
             "[gji-coro] cold={} GjiProbe 完了 ({}ms gji_idle={}ms settled={})",
             ctx.cold_seq,
@@ -134,6 +136,11 @@ async fn gji_coro_body(
                         .elapsed_ms
                         .saturating_add(crate::tuning::GJI_IDLE_MS);
                 if !outcome.settled && pre_idle && ctx.forces_prepend_f2 {
+                    // このヒューリスティックは「F2 を送っても GJI は応答しない」と判断して
+                    // 即 transmit（nc_fired=false, gji_resumed=false）に倒すため、GJI が
+                    // 実際には数百ms後に応答するケースでは partial literal の疑い経路
+                    // （is_partial_literal）を直接誘発しうる。発火有無を事後ログから
+                    // 確認できるようにする（切り分けログ強化、2026-07-09）。
                     log::debug!(
                         "[gji-coro] cold={} GJI pre-idle (idle={}ms elapsed={}ms) → skip FreshF2",
                         ctx.cold_seq,
@@ -246,6 +253,20 @@ async fn gji_coro_body(
         !env.deferred_pending,
         ctx.forces_prepend_f2,
         ctx.is_long_cold,
+    );
+
+    // transmit plan の判定結果（needs_literal になるかどうか、その入力になった
+    // nc_fired/gji_resumed/suppress_f2）は従来ログに一切出ておらず、部分リテラル発生時に
+    // 「なぜ LiteralDetect に入った/入らなかったか」を事後診断できなかった
+    // （切り分けログ強化、2026-07-09 の "kお" 系調査で判明）。
+    log::debug!(
+        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} gji_resumed={} \
+         suppress_f2={suppress_f2} effective_prepend_f2={effective_prepend_f2} is_tsf_mode={}",
+        ctx.cold_seq,
+        plan.needs_literal,
+        observations.nc_fired,
+        observations.gji_resumed,
+        env.is_tsf_mode,
     );
 
     // ── Phase 5a: long cold + TSF → StartSacrificialWarmup（SwitchMachine） ────
