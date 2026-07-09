@@ -1195,6 +1195,50 @@ gate）, `crates/awase-windows/src/runtime/key_pipeline.rs`
 前提条件になった）, `.claude/rules/ime-belief-architecture.md`（Observer が
 `desired_open` を偽装して書き換える禁止パターンの実例として追記候補）
 
+**追補3（2026-07-09、増幅ループの実体を特定・部分対策、実機検証待ち）:**
+上記の対策（デバウンス + 確定値の一本化）は「一発誤読を belief に確定させない」
+ことは達成したが、**一度確定してしまった belief（誤りであれ正しいものであれ）を
+cold warmup のたびに real IME へ再書き込みし続ける**という、別レイヤーの自己参照
+ループが残っていた。`tsf/warmup/cold_warmup.rs::preamble()`（cold warmup のたびに
+実行、＝`GjiFsm::FocusChange` の再突入のたびに実行され得る）と
+`output/probe_io.rs::send_sacrificial_ime_off_on`（Chrome cold-start
+sacrificial warmup 経由）が、`conv_mode.get()` を無条件に real IME へ
+`set_ime_romaji_mode_with_target_async` で書き戻していた。フォーカスが
+スプリアスに往復するたび（BUG-18 参照）にこの書き戻しが繰り返されるため、
+一度誤って確定した belief が「本当の GJI 状態」としてロックインされ続ける
+経路になっていた。
+
+`state/conv_mode.rs::ConvModeMgr` に `needs_conv_restore_write` /
+`mark_conv_restore_written` を追加し、**同じ `mode` に対する復元書き込みを
+1回だけに制限**した（`mode` が本当に変化した場合は改めて書き込み可能）。
+`ImC_CMODE` の ROMAN ビット確保のみ（`imm_conv_target` が `None` を返す
+ケース）は対象外（誤った charset ビットを注入するリスクがなく、
+`conv | ROMAN` は冪等なため）。`docs/adr/078-ime-mode-belief-desired-effective-constraint.md`
+Phase 1a に相当する、スコープを絞った部分対策。
+
+**テスト:** `state/conv_mode.rs` にユニットテスト4件追加
+（`restore_write_not_needed_before_any_mode_is_confirmed`,
+`restore_write_needed_once_then_suppressed_for_same_mode`,
+`restore_write_needed_again_after_mode_genuinely_changes`,
+`restore_write_unaffected_by_pending_katakana_candidate`）。Linux 上で
+`cargo test -p awase-windows`（lib 138件・golden_scenarios 19件・
+architecture_guard 10件・journal_replay 1件・layer_boundary_guard 8件、
+全件 pass）と `cargo build/clippy -p awase-windows --target
+x86_64-pc-windows-gnu`（warning ゼロ）を確認済み。**Windows 実機
+（Chrome/Edge + GJI、フォーカス往復での再発有無）での検証は未実施。**
+
+**関連ファイル（追補3）:** `crates/awase-windows/src/state/conv_mode.rs`
+（`needs_conv_restore_write`, `mark_conv_restore_written`）,
+`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`（`preamble()`）,
+`crates/awase-windows/src/output/probe_io.rs`
+（`send_sacrificial_ime_off_on`）
+
+**未対応（follow-up）:** `runtime/key_pipeline.rs` の Shift 解放復元経路
+（BUG-15 関連）は、物理 Shift キー解放という genuine なユーザー操作起点
+のため今回は対象外とした。`DesiredMode`/`EffectiveMode`/`ModeConstraint`
+への型分割・トレイの明示的 intent 化・config1.db 対応は ADR-078 の
+Phase 1b/2 として未着手。
+
 ---
 
 ## BUG-20: ドリフト補正の再送が non-ImmCross アプリで no-op のため IME ON / Engine OFF が固定化する（修正済み・実機検証待ち）

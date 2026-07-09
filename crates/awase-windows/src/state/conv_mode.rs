@@ -70,6 +70,10 @@ pub(crate) struct ConvModeMgr {
     /// 非カタカナ → カタカナ (Zenkaku/Hankaku) への遷移候補。2 回連続で同じ値を観測する
     /// まで `mode` を確定させない（BUG-19 の一発誤読ロック対策、下記 `update_from_conv` 参照）。
     katakana_candidate: std::cell::Cell<Option<ConvMode>>,
+    /// 直近に real IME への復元書き込み（`set_ime_romaji_mode_with_target_async` 等）を
+    /// 行った時点の `mode`。`needs_conv_restore_write` / `mark_conv_restore_written` 参照
+    /// （ADR-078 Phase 1a: cold warmup 増幅ループ対策）。
+    restore_written_for: std::cell::Cell<Option<ConvMode>>,
 }
 
 impl Default for ConvModeMgr {
@@ -79,6 +83,7 @@ impl Default for ConvModeMgr {
             #[cfg(windows)]
             suppress_zenkata_until_ms: std::cell::Cell::new(0),
             katakana_candidate: std::cell::Cell::new(None),
+            restore_written_for: std::cell::Cell::new(None),
         }
     }
 }
@@ -187,6 +192,32 @@ impl ConvModeMgr {
     pub(crate) fn get(&self) -> Option<ConvMode> {
         self.mode.get()
     }
+
+    /// 現在の `mode` に対する real IME への復元書き込みがまだ済んでいなければ `true`。
+    ///
+    /// `mode` が変わらない限り、同じ belief 値に対する復元書き込みは 1 回だけに制限する
+    /// （ADR-078 Phase 1a）。`cold_warmup.rs::preamble()` は cold warmup（＝
+    /// `GjiFsm::FocusChange` のたびに再突入し得る）ごとに `conv_mode.get()` を real IME へ
+    /// 書き戻していたため、一度誤って確定した belief がフォーカス往復のたびに
+    /// 再アサートされ続けて自己増幅する経路になっていた（詳細は
+    /// `docs/known-bugs.md` BUG-19、`docs/adr/078-*.md` 参照）。`mode` が本当に
+    /// 変化した場合（新しい `update_from_conv` が新値を確定した場合）は、その新しい
+    /// `mode` に対しては改めて `true` を返す — 復元自体を止めるのではなく、
+    /// 「同じ belief への書き込みの反復」だけを止める。
+    ///
+    /// `mode` が `None`（まだ何も確定していない）のときは書き込む対象がないため `false`。
+    pub(crate) fn needs_conv_restore_write(&self) -> bool {
+        self.mode
+            .get()
+            .is_some_and(|current| self.restore_written_for.get() != Some(current))
+    }
+
+    /// 現在の `mode` に対する復元書き込みを実行したことを記録する。
+    ///
+    /// 呼び出し元が実際に `set_ime_romaji_mode_with_target_async` 等を発行した直後に呼ぶこと。
+    pub(crate) fn mark_conv_restore_written(&self) {
+        self.restore_written_for.set(self.mode.get());
+    }
 }
 
 #[cfg(test)]
@@ -276,5 +307,74 @@ mod tests {
         // 半角英数 (conv=0)
         assert!(mgr.update_from_conv(0x0000, t(10)));
         assert_eq!(mgr.get().unwrap().charset.to_string(), "HanAlpha");
+    }
+
+    // ── needs_conv_restore_write / mark_conv_restore_written (ADR-078 Phase 1a) ──
+
+    /// mode が未確定（`None`）のうちは復元書き込みの対象がない。
+    #[test]
+    fn restore_write_not_needed_before_any_mode_is_confirmed() {
+        let mgr = ConvModeMgr::default();
+        assert!(!mgr.needs_conv_restore_write());
+    }
+
+    /// mode が確定した直後は復元書き込みが必要。書き込み後は同じ mode に対しては
+    /// 不要になる（cold warmup のたびに同じ belief を書き戻す増幅ループの対策）。
+    #[test]
+    fn restore_write_needed_once_then_suppressed_for_same_mode() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_ZENKATA, t(0)));
+        assert!(
+            mgr.needs_conv_restore_write(),
+            "確定直後は復元書き込みが必要"
+        );
+
+        mgr.mark_conv_restore_written();
+        assert!(
+            !mgr.needs_conv_restore_write(),
+            "書き込み済みマーク後は同じ mode に対して不要"
+        );
+
+        // 同じ mode を再観測（変化なし）しても、書き込み済みのままなので不要。
+        assert!(!mgr.update_from_conv(CONV_ZENKATA, t(10)));
+        assert!(!mgr.needs_conv_restore_write());
+    }
+
+    /// mode が本当に別の値へ変化したら、その新しい mode に対しては改めて必要になる
+    /// （復元自体を止めるのではなく、同じ belief への反復書き込みだけを止める）。
+    #[test]
+    fn restore_write_needed_again_after_mode_genuinely_changes() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        mgr.mark_conv_restore_written();
+        assert!(!mgr.needs_conv_restore_write());
+
+        // 半角英数へ変化（カタカナ以外へのデバウンスなし遷移）
+        assert!(mgr.update_from_conv(0x0000, t(10)));
+        assert!(
+            mgr.needs_conv_restore_write(),
+            "mode が変わったら新しい mode に対して改めて必要"
+        );
+    }
+
+    /// カタカナ debounce の 1 回目（未確定）の間は、まだ古い mode のままなので
+    /// 復元書き込みの要否はその古い mode の記録状態に従う（新しい候補値では判断しない）。
+    #[test]
+    fn restore_write_unaffected_by_pending_katakana_candidate() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0)));
+        mgr.mark_conv_restore_written();
+        assert!(!mgr.needs_conv_restore_write());
+
+        // 1回目のカタカナ観測（確定保留、mode はまだ Hiragana のまま）
+        assert!(!mgr.update_from_conv(CONV_ZENKATA, t(10)));
+        assert!(
+            !mgr.needs_conv_restore_write(),
+            "mode 自体はまだ Hiragana のまま書き込み済みなので不要"
+        );
+
+        // 2回目で確定 → 新しい mode (ZenKata) に対して改めて必要
+        assert!(mgr.update_from_conv(CONV_ZENKATA, t(20)));
+        assert!(mgr.needs_conv_restore_write());
     }
 }

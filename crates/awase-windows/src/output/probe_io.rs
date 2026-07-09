@@ -205,12 +205,18 @@ impl ProbeIo for Output {
         // いた場合（例: cold=3 で ZenKata が誤設定された状態）の補正として機能する。
         // GJI は cross-process で VK_IME_ON を非同期処理するため、spawn_local が完了する
         // ~10ms 以内に ImmSetConversionStatus が確定し、GJI が conv を読む前に間に合う。
-        if self.conv_mutation_allowed.get() {
+        //
+        // `cold_warmup.rs::preamble()` と同じ理由で、同じ belief (mode) に対する復元書き込みは
+        // 1回だけに制限する — サクリファイシャル warmup がフォーカス往復のたびに繰り返し
+        // 発生すると、誤った belief を毎回 real IME へ再アサートする自己増幅経路になる
+        // (BUG-19, ADR-078 Phase 1a、実機検証待ち)。
+        if self.conv_mutation_allowed.get() && self.conv_mode.needs_conv_restore_write() {
             if let Some(conv_target) = self
                 .conv_mode
                 .get()
                 .and_then(awase::engine::ConvMode::imm_conv_target)
             {
+                self.conv_mode.mark_conv_restore_written();
                 win32_async::spawn_local(async move {
                     let _ =
                         crate::ime::set_ime_romaji_mode_with_target_async(Some(conv_target)).await;

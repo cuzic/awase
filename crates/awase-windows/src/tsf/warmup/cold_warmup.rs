@@ -208,17 +208,29 @@ impl<'a> ColdWarmupSequence<'a> {
             .get()
             .and_then(awase::engine::ConvMode::imm_conv_target);
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
+        // カタカナ等の明示的復元 (conv_target = Some) は、同じ belief に対して cold
+        // warmup のたびに繰り返し書き戻すと、一度誤って確定した belief がフォーカス
+        // 往復のたびに real IME へ再アサートされ続けて自己増幅する経路になっていた
+        // (BUG-19)。`ConvModeMgr::needs_conv_restore_write` で「同じ mode に対する
+        // 復元書き込みは1回だけ」に制限する（ADR-078 Phase 1a、実機検証待ち）。
+        // ROMAN ビット確保のみ (target=None) は対象外 — 誤った charset ビットを
+        // 注入するリスクがなく、`conv | ROMAN` は冪等なため繰り返しても無害。
+        let should_write_conv_target = conv_mutation_allowed
+            && (conv_target.is_none() || self.output.conv_mode.needs_conv_restore_write());
+        if should_write_conv_target && conv_target.is_some() {
+            self.output.conv_mode.mark_conv_restore_written();
+        }
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
-                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} target={:?}",
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} target={:?} write={should_write_conv_target}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 conv_target.map(|v| format!("0x{v:08X}")),
             );
-            if conv_mutation_allowed {
+            if should_write_conv_target {
                 let _ = crate::ime::set_ime_romaji_mode_with_target_async(conv_target).await;
             }
         });
