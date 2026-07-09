@@ -137,7 +137,9 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         extra_info: 0,
         timestamp: ts,
         key_classification: classify_vk(vk),
-        physical_pos: None,
+        // 実運用（hook.rs）と同様、scan code から物理位置を解決する。
+        // None のままだと .yab の面参照がすべて失敗し PassThrough になってしまう。
+        physical_pos: awase_windows::scanmap::scan_to_pos(KeyboardModel::Jis, ScanCode(scan)),
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
@@ -153,7 +155,7 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         extra_info: 0,
         timestamp: ts,
         key_classification: classify_vk(vk),
-        physical_pos: None,
+        physical_pos: awase_windows::scanmap::scan_to_pos(KeyboardModel::Jis, ScanCode(scan)),
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
