@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-07-07
+> 最終更新: 2026-07-09
 
 ---
 
@@ -1244,6 +1244,151 @@ ON 方向には対称の実装（`apply_force_on_for_imm_broken`、`runtime/mod.
 `SendInput`/`ImmSetOpenStatus` 系の `unsafe` Win32 API に直結し注入用シームがないため、
 Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.rs` と同じ制約）。
 実機（Windows Terminal/Chrome + GJI）での動作確認は未実施。
+
+---
+
+## BUG-21: Chrome の cold-start 復帰処理が重症度 (Short/Medium/Long) を無視し、確定キー/IME再有効化のたびに過剰発火する
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で GJI を使い
+日本語を連続入力しているだけなのに、単語の区切り（確定キー相当の操作）や
+Ctrl+無変換 での IME OFF→ON 再有効化のたびに `cold_seq` がインクリメントし、
+`[sacr-warmup] cold=N Chrome reinit: IME Hiragana 確認 → 再送` が数秒に1回のペースで
+発生する。2026-07-09 実機ログ（06:27:42〜06:28:22 の約40秒間）で `cold_seq` が
+349→362 と 13 回発火し、うち大半が `sacr-timeout`（VK_A probe で warm 未確認 →
+`VK_IME_OFF→VK_IME_ON` reinit 実行）だった。cold 1回につき VK_A+BS（probe 用犠牲キー）
++ cleanup BS×1 + （reinit が必要な場合）VK_IME_OFF/ON×2 相当の合成キーが余分に注入され、
+ユーザーからは「cold-start の発火頻度が高すぎる」「BS の回数が多すぎる」と報告された。
+
+BUG-17 と症状が類似するが原因は別。BUG-17 は `WM_IME_KIND_CHANGED` 経由の `GjiFsm`
+丸ごと再構築が引き金だが、本バグは **正規の** IME OFF/ON トグル・確定キー(Space/Enter/Esc)
+操作が引き金であり `[tip-detect]` ログは介在しない。
+
+**原因:** `GjiFsm` は cold を `ColdKind::Short`/`Medium`/`Long`（`gji_idle_ms` から
+`ColdKind::classify` が判定、`tsf/gji_fsm.rs`）に正しく分類している。WezTerm/TSF 側の
+復帰処理 `GjiWarmupCoro`（`tsf/warmup/gji_warmup_coro.rs:273`）はこの重症度を見て
+`ctx.is_long_cold` のときだけ VK_A probe + sacrificial warmup のフルコースに分岐し、
+Short/Medium cold は軽量な inline LiteralDetect のみで済ませていた。
+
+一方 Chrome 側の復帰処理 `TsfProbeCoro::new_chrome`
+（旧: `tsf/warmup/probe_fsm.rs`）は `ColdKind` を一切受け取っておらず、
+`tsf_probe_coro_body` の Phase 2a は `env.gji_active` が true であれば cold の重症度に
+関わらず常に `StartSacrificialWarmup`（VK_A+BS probe → 未確認なら
+`VK_IME_OFF→VK_IME_ON` reinit + IME確認ポーリング → cleanup BS → 再送）を実行して
+いた。さらに、確定キー(Space/Enter/Esc) は `composition_fsm.rs::ConfirmKeyDown` が
+warm/cold を問わず常に `GjiCompositionReset`（`handle_composition_reset()` →
+強制的に `OnCold(Short)`）を emit しており、`ImeOn`（`OffCold` から）も
+「即入力する意図があるため」常に `transition_to_cold_proactive` で cold へ遷移する
+（これ自体は `8715731a2` で修正した実バグの再発防止であり妥当）。つまり **cold の
+判定自体は正しい** — 確定キーや短い IME OFF/ON のたびに Short/Medium cold へ入るのは
+意図通り。バグは **Chrome の復帰処理がこの重症度情報を捨てて毎回 Long cold 相当の
+最重量パスを踏んでいた**こと。
+
+**修正:** `send_romaji_batched`（`output/vk_send.rs`）が既に計算していた
+`long_idle`（`idle_ms_at_last_cold() > CHROME_LONG_IDLE_MS`）/ `f2_gji_long_idle`
+を `is_long_cold` として `ChromeProbe::new` / `TsfProbeCoro::new_chrome`
+（`tsf/warmup/chrome_probe.rs`, `tsf/warmup/probe_fsm.rs`）に渡すよう変更。
+`tsf_probe_coro_body` の Phase 2a を `env.gji_active && is_long_cold` のときのみ
+`StartSacrificialWarmup` に分岐するよう変更し、それ以外（`!gji_active` または
+Short/Medium cold）は `Transmit(needs_literal: env.gji_active)` で直接送信しつつ、
+`gji_active` なら inline LiteralDetect（Phase 3）を安全網として残す。WezTerm 側
+`GjiWarmupCoro` の `is_long_cold` 分岐と対称にした。
+
+合わせて `composition_fsm.rs::ConfirmKeyDown` の `if warm && tsf_mode` を `if warm` に
+変更（Chrome にも TSF と同じ「warm なら warmup を KeyUp まで遅延」を適用）。これは
+`a3425bf`（2026-05-13、フラグ統合コミット）で WezTerm 専用ルール（`f58b47c`
+導入の F2/Enter 競合対策）が `is_tsf_mode()` ガードなしで Chrome に引き継がれた
+副作用で、Chrome 固有の根拠は見つからなかった。ただし `GjiCompositionReset` 自体は
+両分岐で変わらず emit されるため、この副修正は warmup 送信タイミングの改善に留まり、
+今回の主因（Chrome 復帰処理の重症度無視）の修正ではない。
+
+**再発防止テスト:**
+`tsf/warmup/probe_fsm.rs::tests::chrome_short_cold_skips_sacrificial_warmup` /
+`chrome_long_cold_still_uses_sacrificial_warmup` /
+`chrome_short_cold_without_gji_active_skips_literal_detect`（`TsfProbeCoro::new_chrome`
+を `is_long_cold` 別に直接 tick して emit される `ProbeAction` を検証）、
+`tsf/composition_fsm.rs::tests::warm_chrome_confirm_keydown_defers_warmup_to_keyup`。
+いずれも Windows ターゲットでのみコンパイル対象のため
+`cargo test -p awase-windows --target x86_64-pc-windows-gnu` が必要。本セッションでは
+Linux 上でのクロスコンパイル成功（`cargo test`/`cargo clippy -- -D warnings` とも
+変更ファイルにエラーなし）とロジックの手動トレースで検証済み。wine 等の実行環境が
+無いためテスト実行そのものは未実施（実機/CI 待ち）。
+
+**残存リスク:** `is_long_cold` の閾値は `CHROME_LONG_IDLE_MS`（既存の 5000ms、
+Chrome 固有の実測に基づく）をそのまま流用しており新規のタイミング定数追加はない。
+Short/Medium cold で `StartSacrificialWarmup` を省略した結果、まれに Chrome の
+composition context が実際に未初期化のまま送信され `RawTsfLiteralRecovery`
+（BS 再送によるリカバリ）の発火頻度が増える可能性がある — その場合は
+`[raw-tsf-literal] cold=N raw TSF literal suspected` の頻度を実機ログで確認し、
+Medium cold まで `is_long_cold` 相当に含めるかを再検討する。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`tsf_probe_coro_body`, `TsfProbeCoro::new_chrome`）,
+`crates/awase-windows/src/tsf/warmup/chrome_probe.rs`（`ChromeProbe::new`）,
+`crates/awase-windows/src/output/vk_send.rs`（`send_romaji_batched`, `is_long_cold` 算出）,
+`crates/awase-windows/src/tsf/composition_fsm.rs`（`ConfirmKeyDown`）,
+`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（対称な WezTerm 側実装、参照）,
+`crates/awase-windows/src/tsf/gji_fsm.rs`（`ColdKind::classify`, `transition_to_cold_proactive`）
+
+---
+
+## BUG-22: MS Edge で Uwp⇔TsfNative フォーカス往復後、conv=Eisu(英数) に固着し nicola が入力できなくなる
+
+**症状:** 2026-07-09 実機ログ。MS Edge（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で
+IME・conv モードは MS-IME。無操作でしばらく放置した後、Edge の親ウィンドウ
+（`Chrome_WidgetWin_1`）とその内部 IME 入力ウィンドウ（`Windows.UI.Input.InputSite.WindowClass`、
+`Uwp` 扱い）の間でフォーカスが何度も往復し（ユーザー操作なし）、その後 Edge にひらがなで
+入力しても `Engine deactivated (reason=Inactive(NotRomajiInput))` のまま活性化せず、
+`FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)` が繰り返し出力されて
+入力を受け付けなくなった。
+
+**原因（2つの独立した設計不備の重なり）:**
+
+1. `apply_hwnd_cache_restore`（`state/platform_state.rs`）が `HwndImeCache::restore`
+   （`focus/hwnd_cache.rs`、TTL `HWND_CACHE_MAX_AGE_MS`=1時間）で取得した
+   スナップショットの `input_mode` を、鮮度・confidence チェックなしに
+   `ImeEvent::InputModeApplied { strategy: CacheRestore, .. }` として無条件適用していた。
+   131 秒前に保存された stale `ObservedEisu` がそのまま復元され、`correction_for_imm_broken`
+   （`ObservedEisu` は意図的に対象外 — 受動的経路がユーザーの英数選択を踏み潰さないため）
+   では訂正できず、engine が inactive のまま固着した。
+2. `eisu_reset_on_ime_on`（`state/eisu_recovery.rs`）は OFF→ON 遷移でのみ発火するため、
+   IME が既に open（MS-IME は常時 open のことが多い）な状態でユーザーが TurnOn 系キー
+   （ひらがな/かな 等、`ShadowImeAction::TurnOn`）を押しても遷移が起きず、
+   `kp_stage_shadow_ime_toggle` の no-op 分岐（`effective_open() == current`）で
+   握りつぶされ、手動での復帰手段が構造的に存在しなかった。
+
+**修正:**
+
+1. `state/eisu_recovery::cache_restore_eisu_guard(cached_mode)` を新設。
+   `apply_hwnd_cache_restore` はキャッシュ復元前にこの関数を通し、`ObservedEisu` のみ
+   `AssumedRomaji { AppKindExcluded }` に倒す（他モードはそのままキャッシュ値を信頼）。
+2. `state/eisu_recovery::eisu_reset_on_turn_on_while_open(action_is_turn_on, mode)` を新設し、
+   `InputModeApplyStrategy::UserTurnOnEisuReset` として `kp_stage_shadow_ime_toggle` の
+   no-op 分岐に配線。`ShadowImeAction::TurnOn` 受信時に belief が `ObservedEisu` なら
+   `AssumedRomaji` へ訂正する（OFF→ON 遷移を必要とする `UserImeOnEisuReset` と対になる、
+   「IME が既に open」ケース専用の救済）。
+
+`state/eisu_recovery.rs` の module doc の経路×救済対応表に4行目として追記し、
+`tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset` /
+`input_mode_applied_construction_sites_are_accounted_for` の期待値を更新。
+
+**再発防止テスト:** `state/eisu_recovery.rs` の単体テスト
+（`cache_restore_guard_corrects_stale_eisu` 等 4件）、
+`tests/golden_scenarios.rs::scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu` /
+`scenario_14_turn_on_while_open_recovers_stale_eisu`（いずれも Linux 上で
+`cargo test -p awase-windows` により実行・グリーン確認済み）。
+`tests/architecture_guard.rs` の全 10 テストもグリーン。Windows 実機での再現確認は未実施。
+
+**関連:** BUG-18（無操作中の AppKind Uwp⇔TsfNative 往復、文字欠落）と発生源
+（無操作時のフォーカス往復）は共通だが、下流の壊れ方が異なる別バグとして扱う。
+2026-07-06 の「ObservedEisu 循環デッドロック」修正（`f9f070e`/`1b61efe`、
+`UserImeOnEisuReset` / `GjiIoInference` 救済追加）でカバーしていなかった2経路
+（キャッシュ復元経路、IME open のまま TurnOn キーを受けるケース）の追補。
+
+**関連ファイル:** `crates/awase-windows/src/state/eisu_recovery.rs`,
+`crates/awase-windows/src/state/platform_state.rs`（`apply_hwnd_cache_restore`）,
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`kp_stage_shadow_ime_toggle`）,
+`crates/awase-windows/src/focus/hwnd_cache.rs`,
+`crates/awase-windows/src/state/ime_event.rs`（`InputModeApplyStrategy`）
 
 ---
 

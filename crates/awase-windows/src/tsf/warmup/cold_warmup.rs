@@ -151,6 +151,8 @@ impl<'a> ColdWarmupSequence<'a> {
         };
         let use_eager = eager_ms != 0;
 
+        // eager/non-eager のパス分岐は WarmupKind（FreshF2/ReWarmup/ProbeWithSettle）の
+        // 予算選択に直結する（切り分けログ強化、2026-07-09）。RUST_LOG=debug で確認する運用。
         log::debug!(
             "[h1-warmup] cold={} path={} eager_ms={eager_ms} now_ms={now_ms} elapsed={}ms",
             ctx.cold_seq,
@@ -225,6 +227,8 @@ impl<'a> ColdWarmupSequence<'a> {
 
         // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
         let win_class = unsafe { crate::ime::get_foreground_window_class() };
+        // 実フォアグラウンドクラスと focus トラッカーの認識（AppKind changed ログ）の
+        // 食い違いを事後診断するために必要（切り分けログ強化、2026-07-09）。
         log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
         let long_idle = self.output.composition.idle_ms_at_last_cold() > LONG_IDLE_MS;
@@ -259,6 +263,8 @@ impl<'a> ColdWarmupSequence<'a> {
         //   VK_DBE_HIRAGANA がキューに入ってから GJI が最初の I/O を開始するまでの
         //   実測下限。この時間内は GJI I/O 監視結果を信頼しない。
         let probe_min_ms: u64 = cold_reason.probe_min_ms(long_idle);
+        // 実際に選ばれた予算（eager_settle_ms/probe_min_ms）と long_idle 判定を
+        // 事後ログから直接確認できるようにする（切り分けログ強化、2026-07-09）。
         log::debug!(
             "[h1-warmup] cold={cold_seq} eager_settle_ms={eager_settle_ms}ms probe_min_ms={probe_min_ms}ms \
              reason={:?} long_idle={long_idle} idle_at_cold={}ms",

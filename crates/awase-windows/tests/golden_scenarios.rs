@@ -17,6 +17,8 @@
 //! 10. HwndCacheRestored と UserImeSetIntent の動作の違い
 //! 11. Edge stale-ObservedEisu からの物理かなキー回復 (UserImeOnEisuReset)
 //! 12. GJI I/O 観測 (GjiIoInference) が ObservedEisu を自己回復する
+//! 13. hwnd キャッシュ復元は stale ObservedEisu をそのまま再注入しない (cache_restore_eisu_guard)
+//! 14. IME が既に open のまま TurnOn キーを受けても ObservedEisu から回復する (UserTurnOnEisuReset)
 //!
 //! ## 実装状況
 //!
@@ -511,5 +513,116 @@ fn scenario_12_gji_io_inference_corrects_stale_eisu() {
     assert!(
         model.input_mode().is_romaji_capable(),
         "Medium confidence の GjiIoInference が ObservedEisu を訂正する"
+    );
+}
+
+// ── シナリオ 13: hwnd キャッシュ復元は stale ObservedEisu をそのまま再注入しない ──
+
+// 2026-07-09 MS Edge で実発生: Uwp⇔TsfNative フォーカス往復のたびに、最大 1 時間前の
+// ObservedEisu キャッシュスナップショットが apply_hwnd_cache_restore で無条件に
+// 再注入され、eisu guard (correction_for_imm_broken は ObservedEisu を意図的に対象外)
+// に阻まれて engine が inactive のまま固着し続けた。cache_restore_eisu_guard が
+// キャッシュ経路専用にこの ObservedEisu を AssumedRomaji へ倒すことを固定する。
+#[test]
+fn scenario_13_hwnd_cache_restore_does_not_reinject_stale_eisu() {
+    use awase::engine::InputModeState;
+    use awase_windows::state::eisu_recovery::cache_restore_eisu_guard;
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+    use awase_windows::state::TickMs;
+
+    // 修正前の生キャッシュ値をそのまま適用した場合の再現（バグの固定）
+    let unguarded = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+    ]);
+    assert!(
+        !unguarded.input_mode().is_romaji_capable(),
+        "無条件のキャッシュ復元は ObservedEisu を再注入し engine を詰ませる (バグの再現)"
+    );
+
+    // apply_hwnd_cache_restore が実際に使う cache_restore_eisu_guard を経由した場合
+    let guarded_mode = cache_restore_eisu_guard(InputModeState::ObservedEisu);
+    let guarded = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        ImeEvent::InputModeApplied {
+            mode: guarded_mode,
+            strategy: InputModeApplyStrategy::CacheRestore,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+    ]);
+    assert!(
+        guarded.input_mode().is_romaji_capable(),
+        "cache_restore_eisu_guard が stale ObservedEisu を AssumedRomaji に倒し、\
+         engine が activation 可能な状態を維持する"
+    );
+}
+
+// ── シナリオ 14: IME が既に open のまま TurnOn キーを受けても ObservedEisu から回復する ──
+
+// eisu_reset_on_ime_on は OFF→ON 遷移でのみ発火するため、IME が既に open な状態で
+// ユーザーが TurnOn 系キー（ひらがな/かな 等）を押しても遷移が起きず救済されない
+// （2026-07-09 MS-IME/Edge で実発生）。UserTurnOnEisuReset がこのケースを別途救済する。
+#[test]
+fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::eisu_recovery::eisu_reset_on_turn_on_while_open;
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+    use awase_windows::state::TickMs;
+
+    // IME は open のまま (物理キーで既に ON 済み)、conv だけが Eisu に固着
+    let deadlocked = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeObserved {
+            mode: InputModeState::ObservedEisu,
+            source: ObservationSource::ObserverPoll,
+            confidence: ObservationConfidence::Medium,
+            at: TickMs(0),
+        },
+    ]);
+    assert!(deadlocked.effective_open(), "IME は open のまま");
+    assert!(
+        !deadlocked.input_mode().is_romaji_capable(),
+        "OFF→ON 遷移を伴わないため UserImeOnEisuReset は発火せず ObservedEisu が残る \
+         (バグの再現)"
+    );
+
+    // TurnOn キー (ひらがな等) 受信 → eisu_reset_on_turn_on_while_open が発火
+    let new_mode = eisu_reset_on_turn_on_while_open(true, deadlocked.input_mode())
+        .expect("ObservedEisu かつ TurnOn action なら救済値が返る");
+    assert_eq!(
+        new_mode,
+        InputModeState::AssumedRomaji {
+            reason: AssumedReason::AppKindExcluded
+        }
+    );
+
+    let mut events = vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeObserved {
+            mode: InputModeState::ObservedEisu,
+            source: ObservationSource::ObserverPoll,
+            confidence: ObservationConfidence::Medium,
+            at: TickMs(0),
+        },
+    ];
+    events.push(ImeEvent::InputModeApplied {
+        mode: new_mode,
+        strategy: InputModeApplyStrategy::UserTurnOnEisuReset,
+        result: InputModeApplyResult::Applied,
+        at: TickMs(0),
+    });
+    let recovered = run_reducer(events);
+    assert!(recovered.effective_open(), "IME ON が維持される");
+    assert!(
+        recovered.input_mode().is_romaji_capable(),
+        "UserTurnOnEisuReset で romaji-capable に回復し engine が活性化できる"
     );
 }

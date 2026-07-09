@@ -16,6 +16,7 @@ impl ChromeProbe {
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         guard: OutputActiveGuard,
+        is_long_cold: bool,
     ) -> Self {
         Self(TsfProbeCoro::new_chrome(
             romaji,
@@ -23,6 +24,7 @@ impl ChromeProbe {
             probe,
             total_max_ms,
             guard,
+            is_long_cold,
         ))
     }
 }
