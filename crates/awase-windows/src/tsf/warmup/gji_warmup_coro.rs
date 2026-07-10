@@ -150,6 +150,25 @@ async fn gji_coro_body(
                     break 'initial (false, false);
                 }
 
+                // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: 早期 F2 warmup 自体を
+                // 送らずreactiveなLiteralDetectのみに委ねる。cold_reason/実測idleを
+                // ここで確定しておき、後続の[literal-detect]/[raw-tsf-literal]ログと
+                // cold_seq で突き合わせれば「この cold_reason + このidle時間で
+                // F2 warmupが本当に必要だったか」を事後に narrowing できる。
+                if crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP {
+                    log::debug!(
+                        "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
+                         skip FreshF2 (reason={cold_reason:?} gji_idle_ms={} \
+                         real_gji_idle_ms={} probe_elapsed={}ms settled={})",
+                        ctx.cold_seq,
+                        outcome.gji_idle_ms,
+                        crate::tsf::observer::gji_idle_ms(),
+                        outcome.elapsed_ms,
+                        outcome.settled,
+                    );
+                    break 'initial (false, false);
+                }
+
                 // ── Phase 2: SendFreshF2 ─────────────────────────────────────
                 let f2_input = yield_step(
                     ch.clone(),
@@ -274,7 +293,16 @@ async fn gji_coro_body(
     // 観測から分類済み）で、Chrome 側の自己参照タイマーとは異なり既に実IOに基づいている。
     // そのため `tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`（Chrome 専用の診断フラグ、
     // `output/vk_send.rs` 参照）はここには適用しない。
-    if plan.needs_literal && ctx.is_long_cold && env.is_tsf_mode {
+    //
+    // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: 犠牲キー(VK_A+BS/VK_IME_OFF→ON)
+    // escalationを止め、Phase 5b（直接Transmit + inline LiteralDetect）にフォールスルー
+    // させる。cold_reason/実測idleをログに残し、後続の[literal-detect]ログと cold_seq で
+    // 突き合わせれば「このidle時間で本当に犠牲キーが必要だったか」を事後に narrowing できる。
+    if plan.needs_literal
+        && ctx.is_long_cold
+        && env.is_tsf_mode
+        && !crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP
+    {
         log::debug!(
             "[gji-coro] cold={} long_cold + TSF → StartSacrificialWarmup",
             ctx.cold_seq
@@ -293,6 +321,19 @@ async fn gji_coro_body(
         )
         .await;
         return; // SacrificialWarmupFsm が SwitchMachine で引き継ぐ → このコルーチンは破棄
+    }
+    if plan.needs_literal
+        && ctx.is_long_cold
+        && env.is_tsf_mode
+        && crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP
+    {
+        log::debug!(
+            "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
+             skip StartSacrificialWarmup (long_cold本来必要) → 直接Transmit \
+             (reason={cold_reason:?} real_gji_idle_ms={})",
+            ctx.cold_seq,
+            crate::tsf::observer::gji_idle_ms(),
+        );
     }
 
     // ── Phase 5b: Transmit ───────────────────────────────────────────────────

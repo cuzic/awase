@@ -350,3 +350,54 @@ pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = false;
 /// から呼ぶ修正 済み、コミット `77536d6`）。本フラグとは完全に無関係と確定したため
 /// 実験を再開する。
 pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
+
+/// WezTerm/TSF 側の予防的 warmup を丸ごと止め、reactive な検出のみに委ねる診断フラグ。
+///
+/// 対象は `gji_warmup_coro.rs` の早期 SendFreshF2 + long-cold 時の
+/// StartSacrificialWarmup escalation。これらを止め、`LiteralDetect`
+/// （事後の compose 確認 + partial/suspected literal 回収）のみに委ねる。
+///
+/// `DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`（Chrome 専用）の対称版。あちらのコメントに
+/// 明記の通り「TSF/WezTerm 側は対象外」だったため、BUG-24（`docs/known-bugs.md`）の
+/// 偽陰性疑いを実機で検証するために新設した。
+///
+/// ## 目的（BUG-24 検証）
+///
+/// BUG-24 は「`is_partial_literal()` が romaji 自体の compose 結果ではなく、別の
+/// warmup F2 キーへの応答（`nc_fired`/`gji_resumed`）を代理指標にしている」ことに
+/// 起因する偽陽性・偽陰性リスクを記録したもの。ユーザー仮説: 現状は予防的 warmup が
+/// 広く・保守的にかかっているため `needs_literal=false`（LiteralDetect 自体を
+/// スキップする分岐）に実際には滅多に入らず、偽陰性（部分リテラルの検知漏れ）が
+/// 実害として顕在化していないだけではないか。予防を絞れば顕在化するはず、というもの。
+///
+/// `true` の間は以下 2 箇所を無効化する:
+///
+/// 1. **Phase 2 (`SendFreshF2`) をスキップ**: `gji_coro_body` の pre-idle スキップ判定の
+///    直後に、フラグが立っていれば無条件で `break 'initial (false, false)` する
+///    （F2 warmup キー自体を送らない → `nc_fired`/`gji_resumed` は常に false のまま）。
+/// 2. **Phase 5a (`StartSacrificialWarmup`) をスキップ**: `long_cold && is_tsf_mode` の
+///    条件を満たしても発火させず、Phase 5b（直接 Transmit）にフォールスルーさせる。
+///
+/// いずれも `plan.needs_literal` 自体の計算式（`decide_transmit_plan`）は変更しない。
+/// 早期 F2 を送らないことで `nc_fired` が常に false になり、
+/// `needs_literal` の第2項（`!nc_fired && is_tsf_mode && gji_active && !gji_resumed`）が
+/// 真になりやすくなるため、実際には LiteralDetect 自体は有効なままのケースが多いと
+/// 予想される。**もし本当に「予防を絞ると偽陰性が顕在化する」なら、それでも
+/// `needs_literal=false` になってしまうケース、あるいは LiteralDetect が有効でも
+/// 検知漏れするケースが実機ログに現れるはず**——このフラグはあくまで「予防を薄くして
+/// reactive パスの露出を増やす」ための道具であり、偽陰性の直接証明ではない。
+///
+/// ## 観測すべきログ
+///
+/// - `[gji-coro] cold=N DIAG_DISABLE_PROACTIVE_TSF_WARMUP → skip FreshF2 (BUG-24 検証)`:
+///   フラグが実際に発火した回数・頻度。
+/// - `[literal-detect] cold=N partial literal ...` / `suspected literal ...`:
+///   reactive 検出が実際に発火したか（発火すれば偽陰性ではない、正常に機能）。
+/// - 画面上で実際に文字化け（ローマ字がそのまま残る等）が見えるのに、上記
+///   `[literal-detect]` ログが一切出ていない場合 → **偽陰性が実際に起きている証拠**。
+/// - `[gji-coro-diag] ... skip-verify`（`needs_literal=false` だった場合の事後診断）が
+///   出た場合、その後実際に問題があったかどうか（画面の目視確認と突き合わせる）。
+///
+/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に実測を
+/// 追記した上で撤去すること（`tuning-constants.md` の実測義務）。
+pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = false;
