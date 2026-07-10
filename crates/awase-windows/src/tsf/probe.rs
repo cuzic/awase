@@ -398,6 +398,16 @@ impl CompositionState {
         }
         self.warm_epoch.mark_cold();
         self.cold_ctx.record_cold(reason, idle_ms);
+        // PassthroughConfirmKey/ReinjectConfirmKey は物理 Space/Enter/Escape が
+        // 実際に OS の TSF composition context へ届くタイミングであり、それ自体が
+        // 「活動」である。send_keys() を経由しないローマ字非出力の確定キー連打では
+        // last_send_ms が更新されず、idle_ms が壁時計時間で単調増加し続けて通常の
+        // タイピングを long_idle と誤判定してしまう（2026-07-10 診断）。確定キー系
+        // の reason に限り last_send_ms をここで touch し、次回の idle_ms 計算を
+        // このイベント基準にリセットする。
+        if reason.is_confirm_key() {
+            self.warm_epoch.update_last_send_ms();
+        }
     }
 
     /// フォーカスウィンドウが変わったことを通知する。
@@ -749,5 +759,40 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
         assert!(elapsed < 100, "should release immediately, got {elapsed}ms");
+    }
+
+    /// 確定キー(Space/Enter/Escape)連打時、ローマ字出力(send_keys)を伴わなくても
+    /// `mark_composition_cold(PassthroughConfirmKey/ReinjectConfirmKey)` のたびに
+    /// last_send_ms がリセットされ、idle_ms が壁時計時間で累積し続けないことを確認する。
+    ///
+    /// 2026-07-10 診断: この reset が無いと、通常タイピング中の確定キー連打
+    /// （Tab移動やフォーム入力等、ローマ字出力を伴わない Space/Enter）で idle_ms が
+    /// 単調増加し続け、`cold_warmup.rs` の long_idle 判定が誤って true になり
+    /// 不要に settle 予算(1500/2000ms)を拡張してしまう（回帰防止）。
+    #[test]
+    fn confirm_key_cold_mark_resets_idle_instead_of_accumulating() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let state = CompositionState::new();
+
+        // 実際のローマ字送信 (send_keys 相当) を模擬した baseline。
+        state.update_last_send_ms();
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        state.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+        let first_idle = state.cold_ctx.idle_ms_at_last_cold();
+        assert!(
+            (40..150).contains(&first_idle),
+            "1回目の idle は直前 sleep の ~60ms を反映するはず: {first_idle}ms"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        state.mark_composition_cold(crate::output::ColdReason::PassthroughConfirmKey);
+        let second_idle = state.cold_ctx.idle_ms_at_last_cold();
+        assert!(
+            (40..150).contains(&second_idle),
+            "確定キー連打のたびに last_send_ms がリセットされ idle は ~60ms のはず\
+             （リセットされないと累積して ~120ms になり long_idle 誤判定を招く）: {second_idle}ms"
+        );
     }
 }
