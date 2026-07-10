@@ -1292,30 +1292,16 @@ mod tests {
         assert!(io.mark_cold_raw_tsf_called.get());
     }
 
-    #[test]
-    fn raw_tsf_literal_recovery_skips_set_literal_when_consecutive() {
-        let io = FakeProbeIo {
-            consecutive: 1,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
-        let actions = vec![
-            ProbeAction::RawTsfLiteralRecovery {
-                cold_seq: 0,
-                backs: 2,
-                romaji: "ka".to_string(),
-                escape_composition: false,
-            },
-            ProbeAction::Done,
-        ];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(result.is_done());
-        assert!(
-            !io.set_raw_literal_called.get(),
-            "should skip set when consecutive > 0"
-        );
-        assert!(io.mark_cold_raw_tsf_called.get(), "should always mark cold");
-    }
+    // NOTE: `raw_tsf_literal_recovery_skips_set_literal_when_consecutive`（consecutive>0 で
+    // set_raw_literal を呼ばない、という旧設計を検証していたテスト）は 2026-07-10 に削除した。
+    // 2026-05-25 (9aa7e29) 時点の「諦めたら set_raw_literal を呼ばずスキップする」設計を
+    // テストしていたが、2026-06-18 (84e6942, BUG-13 修正) で「諦めても set_raw_literal は
+    // 呼び、romaji を空にして BS のみ送る（terminal に 'k'(literal)+composition が残ると
+    // 文字化けするため）」という設計に意図的に変更された。この変更時に古いテストが
+    // 削除されず、単一の生産コード経路に対して直下の
+    // `raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`（set_raw_literal を
+    // 呼ぶことを期待）と正反対の期待値を持つ矛盾したテストペアが残っていた。
+    // 現在の意図（84e6942）と一致する後者のみを残す。
 
     #[test]
     fn send_fresh_f2_action_calls_send_fresh_f2() {
