@@ -1502,6 +1502,98 @@ injected フィルタ、VcXsrv 由来 stuck Ctrl 対策 — 今回発覚した r
 
 ---
 
+## BUG-24: `is_partial_literal()` が romaji 自体の compose 結果ではなく warmup F2 への
+応答を代理指標にしており、偽陽性（正しい文字の誤削除）・偽陰性（部分リテラルの
+検知漏れ）の両方を構造的に許容している（未修正）
+
+**症状（偽陽性、実例あり）:** `gji_warmup_coro.rs:232-237` のコメントに記録済み。
+Enter/Space 等の確定キー操作後、WezTerm では正しく `composited 'な'` として
+compose されているのに、`nc_fired=false`（fresh F2 warmup キー自体への
+NAMECHANGE 応答が確認できなかった）が真になり `is_partial_literal()` が
+誤って true と判定、正しく確定した 'な' が backspace で消される事故が
+実際に発生した。対策として `is_confirm_key && is_tsf_mode` の場合のみ
+`nc_fired` を強制的に true へ昇格し、この特定条件下での誤検知を抑制する
+ピンポイント修正が入っている（`gji_warmup_coro.rs:237`）。
+
+**症状（偽陰性、疑いのみ・未確認）:** `needs_literal=false` と判定されて
+`LiteralDetect` フェーズ自体がスキップされた場合、実際には部分リテラルが
+発生していても検知されず放置される可能性が疑われている。開発者自身が
+この疑いを認識し、`gji_warmup_coro.rs:313-333` に fire-and-forget の
+非同期診断ログ（`[gji-coro-diag] ... skip-verify`）を仕込んで事後確認を
+試みているが、**この診断ログの出力を実際に分析した記録は一切なく、
+偽陰性が本当に起きているかどうかは未確認のまま**である。
+
+**原因:** `is_partial_literal()`（`tsf/warmup/literal_detect_fsm.rs:53-62`）は
+`nc_fired`（fresh F2 warmup キー自体への NAMECHANGE 応答があったか）と
+`gji_resumed`（F2×2 後に GJI の I/O が応答したか）を代理指標に使っているが、
+これらは **送信した romaji 自体が実際に compose されたかどうかとは別の、
+warmup 用の F2 キーへの応答の有無**でしかない。「warmup 確認信号が
+期限内に届かなかった」ことと「実際に IME が未初期化だった」ことは
+論理的に別の主張であり、確認信号が単に遅かっただけ（TSF-native アプリの
+HIMC=NULL 制約により、実際の compose 結果を直接読む代替手段が存在しない
+ことは ADR-078 前後の調査で確認済み）のケースを「部分リテラル」と
+誤診断してしまう構造になっている。
+
+`is_confirm_key && is_tsf_mode` の昇格修正でカバーされているのは確定キー
+経由の cold のみで、少なくとも以下 2 経路は同種の偽陽性リスクを未パッチ
+のまま残している（2026-07-10 調査）:
+
+1. **`gji_candidate_visible` 早期脱出**（`gji_warmup_coro.rs:176-182`）:
+   NameChangeWait 中に候補ウィンドウが既に見えていれば
+   `break 'ncwait (false, false)` で即 transmit へ抜けるが、候補が
+   見えている状況はむしろ compose が正常進行中である可能性が高い。
+   確定キー経由でなければ昇格修正の対象外。
+2. **NameChangeWait タイムアウト**（`gji_warmup_coro.rs:184-188, 222`）:
+   `nc_fired_now=false && timed_out=true` でも `break 'ncwait
+   (nc_fired_now, gji_wrote_after_f2)` に落ちる。WezTerm の UIA
+   NAMECHANGE イベントが単に遅延・座標イベントと合流しただけで、
+   実際の compose 自体は成功しているケースを排除できていない。
+
+さらに **pre-idle スキップ**（`gji_warmup_coro.rs:134-151`）には、コード
+自身のコメントに「GJI が実際には数百 ms 後に応答するケースでは partial
+literal の疑い経路を直接誘発しうる」と、既知のリスクとして明記された
+まま放置されている箇所もある。
+
+**なぜ偽陰性が実害として顕在化していないと考えられるか（2026-07-10、
+ユーザー仮説）:** 現状は cold-start 予防（warmup）が広く・保守的に
+かかっているため `needs_literal` がほぼ常に true になり、`LiteralDetect`
+自体がスキップされるケースが実運用でほとんど発生していない可能性が高い。
+予防のタイミング・適用範囲を絞り込んだ場合に、この偽陰性が顕在化する
+可能性がある。**実機での検証でしか確認できない**（Linux 環境では
+wine 不在のため実行不可）。
+
+**改善オプション（実現性順、2026-07-10 調査、いずれも未実施）:**
+
+1. **昇格条件の横展開（低コスト・対症療法）:** `is_confirm_key` 限定の
+   昇格ロジックを、`gji_candidate_visible` 早期脱出パスと NameChangeWait
+   タイムアウトパスにも同様に適用する。実装は容易だが本質解決ではない。
+2. **経過時間ベースの補助指標追加（中コスト）:** `LiteralDetector`
+   （`tsf/probe.rs`）の `check_now`/`DetectionResult` は現状、確認までの
+   経過時間を一切保持・返却していない（`Option<DetectionResult>` の
+   2値 enum のみ）。`start_ms` を保持させ「確認が極端に速ければ元々
+   compose 進行中だった証拠」として偽陽性抑制に使える可能性があるが、
+   `COMPOSITION_BYTES_THRESHOLD` 導入時と同様、実機サンプルからの
+   閾値較正が必要。
+3. **IMM32 文字列突合せの適用範囲拡大（高コスト・効果限定）:**
+   `probe_fsm.rs:397-398` の `expected_kana` との実文字列突合せが最も
+   直接的だが、WezTerm/Windows Terminal は HIMC=NULL のため適用不可
+   ——これが `is_partial_literal` ヒューリスティック導入の前提そのもの
+   なので、根本解決にはならない。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`
+（`is_partial_literal`）, `crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`
+（`nc_for_plan` 昇格・`skip-verify` 診断ログ・pre-idle スキップ）,
+`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`decide_transmit_plan`,
+`ProbeObservations`）, `crates/awase-windows/src/tsf/probe.rs`
+（`LiteralDetector`, `check_now`, `DetectionResult`）
+
+**関連コミット:** `3ffbe66`（"な" バグ、`nc_fired` 昇格によるピンポイント
+修正）, `1f35029`（`skip-verify` 診断ログ導入）, `4e31b64`（partial literal
+検出後の回収を VK_ESCAPE ベースに変更——本バグとは独立に、検出後の
+「何文字消すか」の精度は改善したが、検出自体の信頼性（本バグ）は未着手）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
