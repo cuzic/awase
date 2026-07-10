@@ -32,13 +32,22 @@ use crate::tsf::warmup::probe_fsm::{
     LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
 };
 
-/// 部分リテラル検出時に送るバックスペース数。
+/// 部分リテラル検出時に、composition 破棄（ESC）の後に送るバックスペース数。
 ///
-/// 部分リテラルの構造は「先頭 1 文字リテラル + 残りが 1 composition ユニット」であり、
-/// BS×1 で composition をクリアし BS×1 でリテラル文字を削除する計 2 回が正しい。
+/// 部分リテラルの構造は「先頭 1 文字リテラル + 残りが 1 composition ユニット」。
+/// 2026-07-10 以前は composition 側も「BS×1 で消せるはず」という推測に頼っていたが、
+/// composition が実際に何文字分だったかは（candidate SHOW/HIDE や GJI I/O からは）
+/// 分からないため、compose ユニットが 2 文字以上になるケースで消し過ぎ/消し残しが
+/// 起きうる不安定さがあった。`VK_ESCAPE` は candidate 表示中の composition を
+/// 文字数に関係なく 1 打鍵で確実に破棄できるため（`docs/windows-api-constraints.md`
+/// 1-2 節で実機確認済み: 「VK_ESCAPE は composition をキャンセルして入力テキストが消える」）、
+/// composition 側の推測を ESC に置き換え、BS はここに残る「先頭 literal プレフィックス」
+/// の削除のみを担う。プレフィックスは経験的に 1 文字（cold→warm 遷移は通常 1 文字目の
+/// 処理中に完了する）と仮定する。
 /// `ze_bs_count`（= chars.len()）はローマ字文字数に等しいが、3 文字ローマ字（"ltu" など）
-/// では ze_bs_count=3 となり 1 回多くなるため、部分リテラルパスでは使わない。
-pub(crate) const PARTIAL_LITERAL_BS: usize = 2;
+/// では ze_bs_count=3 となり literal プレフィックスの実数と食い違うため、部分リテラル
+/// パスでは使わない。
+pub(crate) const PARTIAL_LITERAL_BS: usize = 1;
 
 /// `CompositionConfirmed` 時に「先頭文字がリテラル化した partial literal」かどうかを判定する純関数。
 ///
@@ -65,6 +74,9 @@ pub(crate) fn is_partial_literal(
 ///
 /// TSF mode かつ consecutive==0 → sacr warmup パス（`SendRecoveryBs + StartSacrificialWarmup + Done`）。
 /// それ以外 → 従来の `RawTsfLiteralRecovery + Done`。
+///
+/// `escape_composition`: `true` の場合、dispatcher はバックスペースの前に `VK_ESCAPE` を送って
+/// composition を確実に破棄する（partial literal 専用、[`PARTIAL_LITERAL_BS`] のドキュメント参照）。
 pub(crate) fn emit_recovery_actions(
     cold_seq: u32,
     romaji: String,
@@ -72,10 +84,15 @@ pub(crate) fn emit_recovery_actions(
     observations: ProbeObservations,
     consecutive: u32,
     env: &TsfEnvSnapshot,
+    escape_composition: bool,
 ) -> Vec<ProbeAction> {
     if env.is_tsf_mode && consecutive == 0 {
         vec![
-            ProbeAction::SendRecoveryBs { cold_seq, backs },
+            ProbeAction::SendRecoveryBs {
+                cold_seq,
+                backs,
+                escape_composition,
+            },
             ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
                 cold_seq,
                 romaji,
@@ -98,6 +115,7 @@ pub(crate) fn emit_recovery_actions(
                 cold_seq,
                 backs,
                 romaji,
+                escape_composition,
             },
             ProbeAction::Done,
         ]
@@ -166,13 +184,13 @@ impl LiteralDetectCore {
             DetectionResult::CompositionConfirmed => {
                 if is_partial_literal(self.observations, &self.romaji, env) {
                     // ze_bs_count (= chars.len()) は「全部リテラル」向けの値であり、
-                    // 部分リテラルには使えない。部分リテラルの構造は常に:
-                    //   先頭 1 文字リテラル + 残りが 1 composition ユニット
-                    // 削除 = BS×1 (composition クリア) + BS×1 (リテラル削除) = 2 固定。
-                    // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しく
-                    //     ze_bs_count=3 を使うと挿入点前の無関係な文字まで消える。
+                    // 部分リテラルには使えない。composition 側は VK_ESCAPE で文字数に
+                    // 関係なく確実に破棄し（dispatcher 側で実行）、BS は先頭 literal
+                    // プレフィックス分（PARTIAL_LITERAL_BS）のみを担う。
+                    // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition
+                    //     → ESC (composition 破棄) + BS×1 ('l' 削除) が正しい。
                     log::debug!(
-                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} backs={} consecutive={} real_gji_idle_ms={})",
+                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq,
                         self.romaji,
                         PARTIAL_LITERAL_BS,
@@ -180,7 +198,7 @@ impl LiteralDetectCore {
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
-                    return Some(self.recovery(env, PARTIAL_LITERAL_BS));
+                    return Some(self.recovery(env, PARTIAL_LITERAL_BS, true));
                 }
 
                 log::debug!(
@@ -200,12 +218,17 @@ impl LiteralDetectCore {
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                Some(self.recovery(env, self.ze_bs_count))
+                Some(self.recovery(env, self.ze_bs_count, false))
             }
         }
     }
 
-    fn recovery(&mut self, env: &TsfEnvSnapshot, backs: usize) -> Vec<ProbeAction> {
+    fn recovery(
+        &mut self,
+        env: &TsfEnvSnapshot,
+        backs: usize,
+        escape_composition: bool,
+    ) -> Vec<ProbeAction> {
         emit_recovery_actions(
             self.cold_seq,
             std::mem::take(&mut self.romaji),
@@ -213,6 +236,7 @@ impl LiteralDetectCore {
             self.observations,
             self.consecutive,
             env,
+            escape_composition,
         )
     }
 }
@@ -342,18 +366,90 @@ mod tests {
         );
     }
 
-    // 3 文字ローマ字 (っ = "ltu") でも BS は 2 固定
+    // 3 文字ローマ字 (っ = "ltu") でも BS は 1 固定（composition 側は ESC が担当）
     #[test]
-    fn partial_literal_bs_count_is_always_2_regardless_of_romaji_length() {
-        // "ltu" → 'l' リテラル + 'tu'→'と' composition → BS×2 が正しい。
+    fn partial_literal_bs_count_is_always_1_regardless_of_romaji_length() {
+        // "ltu" → 'l' リテラル + 'tu'→'と' composition
+        // → ESC (composition 破棄、文字数不問) + BS×1 ('l' 削除) が正しい。
         // BS×3 (= chars.len()) を送ると挿入点前の無関係な文字を消してしまう。
         assert!(
             is_partial_literal(obs(false, false), "ltu", &tsf_env()),
             "ltu: 部分リテラル条件が揃っているべき"
         );
         assert_eq!(
-            PARTIAL_LITERAL_BS, 2,
-            "PARTIAL_LITERAL_BS は常に 2 (1 リテラル + 1 composition クリア)"
+            PARTIAL_LITERAL_BS, 1,
+            "PARTIAL_LITERAL_BS は常に 1 (先頭 literal プレフィックスのみ、composition は ESC で破棄)"
         );
+    }
+
+    // partial literal 検出時、emit される recovery アクションが escape_composition=true を
+    // 持つことを確認する（2026-07-10 追加: ESC-based composition 回収）。
+    #[test]
+    fn emit_recovery_actions_partial_literal_sets_escape_composition_true() {
+        let actions = emit_recovery_actions(
+            0,
+            "ltu".to_string(),
+            PARTIAL_LITERAL_BS,
+            obs(false, false),
+            0,
+            &tsf_env(),
+            true,
+        );
+        match &actions[0] {
+            ProbeAction::SendRecoveryBs {
+                escape_composition, ..
+            } => assert!(
+                *escape_composition,
+                "partial literal 回収は escape_composition=true であるべき"
+            ),
+            other => panic!("expected SendRecoveryBs, got {other:?}"),
+        }
+    }
+
+    // SuspectedLiteral（全部 literal 化）は escape_composition=false のままであるべき
+    // （composition が存在しないため ESC は不要、既存の chars.len() ベース BS のみ）。
+    #[test]
+    fn emit_recovery_actions_suspected_literal_keeps_escape_composition_false() {
+        let actions = emit_recovery_actions(
+            0,
+            "ko".to_string(),
+            2,
+            obs(false, false),
+            0,
+            &tsf_env(),
+            false,
+        );
+        match &actions[0] {
+            ProbeAction::SendRecoveryBs {
+                escape_composition, ..
+            } => assert!(
+                !*escape_composition,
+                "SuspectedLiteral 回収は escape_composition=false であるべき"
+            ),
+            other => panic!("expected SendRecoveryBs, got {other:?}"),
+        }
+    }
+
+    // consecutive > 0 (give-up パス) でも escape_composition がそのまま引き継がれることを確認する。
+    #[test]
+    fn emit_recovery_actions_give_up_path_still_carries_escape_composition() {
+        let actions = emit_recovery_actions(
+            0,
+            "ltu".to_string(),
+            PARTIAL_LITERAL_BS,
+            obs(false, false),
+            1, // consecutive > 0 → give-up (RawTsfLiteralRecovery) パス
+            &tsf_env(),
+            true,
+        );
+        match &actions[0] {
+            ProbeAction::RawTsfLiteralRecovery {
+                escape_composition, ..
+            } => assert!(
+                *escape_composition,
+                "give-up パスでも escape_composition を引き継ぐべき"
+            ),
+            other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
+        }
     }
 }

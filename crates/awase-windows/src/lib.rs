@@ -145,6 +145,10 @@ pub struct RawTsfLiteralPending {
     pub(crate) backs: std::sync::atomic::AtomicUsize,
     /// 再送すべきローマ字文字列（空文字列 = 再送なし）
     pub(crate) romaji: std::sync::Mutex<String>,
+    /// `true` の場合、backspace 送信前に `VK_ESCAPE` を送って現在の composition を
+    /// （何文字分かに関わらず）確実に破棄してからバックスペースする。
+    /// partial literal（candidate 表示中に一部だけ literal 化）の回収専用。
+    pub(crate) escape_composition: AtomicBool,
 }
 
 #[cfg(windows)]
@@ -153,6 +157,7 @@ impl RawTsfLiteralPending {
         Self {
             backs: std::sync::atomic::AtomicUsize::new(0),
             romaji: std::sync::Mutex::new(String::new()),
+            escape_composition: AtomicBool::new(false),
         }
     }
 

@@ -214,6 +214,9 @@ pub(crate) enum ProbeAction {
         cold_seq: u32,
         backs: usize,
         romaji: String,
+        /// `true` = partial literal（candidate 表示中に一部だけ literal 化）回収。
+        /// バックスペース前に `VK_ESCAPE` を送って composition を確実に破棄する。
+        escape_composition: bool,
     },
     /// GJI warmup 完了後に犠牲キー（VK_A）暖機フェーズを開始する。
     ///
@@ -236,8 +239,15 @@ pub(crate) enum ProbeAction {
     /// partial literal / SuspectedLiteral 回収前の terminal cleanup 用 BS 送信。
     ///
     /// [`LiteralDetectFsm`] が TSF mode + consecutive==0 のときに `StartSacrificialWarmup` の直前に
-    /// emit する。dispatcher は `ProbeIo::send_literal_recovery_bs` を呼び出す。
-    SendRecoveryBs { cold_seq: u32, backs: usize },
+    /// emit する。dispatcher は `escape_composition` に応じて `ProbeIo::send_literal_recovery_bs`
+    /// または `ProbeIo::send_literal_recovery_esc_bs` を呼び出す。
+    SendRecoveryBs {
+        cold_seq: u32,
+        backs: usize,
+        /// `true` = partial literal 回収。ESC で composition を確実に破棄してから
+        /// 残る literal プレフィックス分のみ BS する。
+        escape_composition: bool,
+    },
     /// Unicode モードで GJI write が観測されなかった。
     ///
     /// [`crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
@@ -394,11 +404,17 @@ async fn tsf_probe_coro_body(
                     env.foreground_comp_char, expected_kana
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "partial-literal");
+                // この経路は TSF→IMM32 bridge による実文字列突合せ (expected_kana との比較)
+                // に基づく別系統の partial-literal 検出であり、is_partial_literal() の
+                // ヒューリスティック（nc_fired/gji_resumed/is_tsf_mode）とは異なる。
+                // ESC-based 回収は candidate 表示中の partial literal 専用に限定するため、
+                // ここでは既存どおり backs=ze_bs_count のみで対応する（escape_composition=false）。
                 vec![
                     ProbeAction::RawTsfLiteralRecovery {
                         cold_seq,
                         backs: ze_bs_count,
                         romaji: recovery_romaji,
+                        escape_composition: false,
                     },
                     ProbeAction::Done,
                 ]
@@ -410,6 +426,7 @@ async fn tsf_probe_coro_body(
                         cold_seq,
                         backs: ze_bs_count,
                         romaji: recovery_romaji,
+                        escape_composition: false,
                     },
                     ProbeAction::Done,
                 ]

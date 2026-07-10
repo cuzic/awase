@@ -184,25 +184,32 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。
 ///
 /// `RAW_TSF_LITERAL.backs` に退避されたバックスペース数を読み取り、SendInput で送信する。
+/// `RAW_TSF_LITERAL.escape_composition` が立っていれば、バックスペースの前に
+/// `VK_ESCAPE` を送って現在の composition を（何文字分かに関わらず）確実に破棄する
+/// （partial literal 回収: candidate 表示中に一部だけ literal 化したケース）。
 /// drain キーの SendInput より先に呼ぶことで WezTerm への到着順を保証する。
 ///
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 pub fn flush_raw_tsf_literal_backspaces() {
-    use crate::vk::VK_BACK;
+    use crate::vk::{VK_BACK, VK_ESCAPE};
     use std::sync::atomic::Ordering::Relaxed;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
-    if n == 0 {
+    let escape_composition = crate::RAW_TSF_LITERAL.escape_composition.swap(false, Relaxed);
+    if n == 0 && !escape_composition {
         return;
     }
-    let backs: Vec<_> = (0..n)
-        .flat_map(|_| {
-            [
-                make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-                make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-            ]
-        })
-        .collect();
-    log::debug!("[raw-tsf-literal] flush backspace ×{n}");
-    let _ = crate::win32::send_input_safe(&backs);
+    let mut inputs = Vec::with_capacity(2 * (n + usize::from(escape_composition)));
+    if escape_composition {
+        inputs.push(make_key_input_ex(VK_ESCAPE, false, INJECTED_MARKER));
+        inputs.push(make_key_input_ex(VK_ESCAPE, true, INJECTED_MARKER));
+    }
+    inputs.extend((0..n).flat_map(|_| {
+        [
+            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+        ]
+    }));
+    log::debug!("[raw-tsf-literal] flush escape={escape_composition} backspace ×{n}");
+    let _ = crate::win32::send_input_safe(&inputs);
 }

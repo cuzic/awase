@@ -49,7 +49,10 @@ pub(crate) trait ProbeIo {
     /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
     fn increment_consecutive_count(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
-    fn set_raw_literal(&self, backs: usize, romaji: String);
+    ///
+    /// `escape_composition`: partial literal（candidate 表示中に一部だけ literal 化）回収時に
+    /// `true`。`flush_raw_tsf_literal_backspaces` がバックスペース前に `VK_ESCAPE` を送る。
+    fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
     /// `ProbeAction::Transmit` 完了時に `WarmupResult` を一時バッファに保存する。
@@ -79,6 +82,13 @@ pub(crate) trait ProbeIo {
     ///
     /// `RawTsfLiteralRecovery` → sacr warmup 切り替え時に VK_A 送信前に呼ぶ。
     fn send_literal_recovery_bs(&self, backs: usize, cold_seq: u32);
+    /// `VK_ESCAPE` で現在の composition を破棄してから BS×n を送信する。
+    ///
+    /// partial literal（candidate 表示中に一部だけ literal 化）の回収専用。ESC は
+    /// composition の文字数に関わらず 1 打鍵で確実に全消去できるため、
+    /// 「composition が何文字だったか」を推測する必要がなくなる（backs は残る
+    /// literal プレフィックス分のみでよい）。
+    fn send_literal_recovery_esc_bs(&self, backs: usize, cold_seq: u32);
     /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットし、IMC ポーリングを開始する。
     ///
     /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
@@ -180,8 +190,8 @@ impl ProbeIo for Output {
         self.composition.increment_consecutive_count();
     }
 
-    fn set_raw_literal(&self, backs: usize, romaji: String) {
-        self.record_raw_tsf_literal(backs, romaji);
+    fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool) {
+        self.record_raw_tsf_literal(backs, romaji, escape_composition);
     }
 
     fn mark_cold_raw_tsf(&self) {
@@ -287,6 +297,27 @@ impl ProbeIo for Output {
             })
             .collect();
         log::debug!("[raw-tsf-literal] cold={cold_seq} partial literal cleanup BS×{backs}");
+        let _ = crate::win32::send_input_safe(&inputs);
+    }
+
+    fn send_literal_recovery_esc_bs(&self, backs: usize, cold_seq: u32) {
+        use crate::tsf::output::make_key_input_ex;
+        use crate::tsf::output::INJECTED_MARKER;
+        use crate::vk::{VK_BACK, VK_ESCAPE};
+        use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+        let mut inputs: Vec<INPUT> = vec![
+            make_key_input_ex(VK_ESCAPE, false, INJECTED_MARKER),
+            make_key_input_ex(VK_ESCAPE, true, INJECTED_MARKER),
+        ];
+        inputs.extend((0..backs).flat_map(|_| {
+            [
+                make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
+                make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
+            ]
+        }));
+        log::debug!(
+            "[raw-tsf-literal] cold={cold_seq} partial literal cleanup: VK_ESCAPE (composition破棄) + BS×{backs}"
+        );
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
@@ -644,11 +675,21 @@ where
                 }
             }
 
-            ProbeAction::SendRecoveryBs { cold_seq, backs } => {
+            ProbeAction::SendRecoveryBs {
+                cold_seq,
+                backs,
+                escape_composition,
+            } => {
                 // GjiWarmupCoro（inline LiteralDetect）が TSF mode + consecutive==0 で
                 // partial literal / SuspectedLiteral を検出したときに emit する。
                 // StartSacrificialWarmup の直前に backs 個の BS で terminal cleanup を行う。
-                io.send_literal_recovery_bs(backs, cold_seq);
+                // escape_composition=true（partial literal）: ESC で composition を確実に
+                // 破棄してから残る literal プレフィックスのみ BS する。
+                if escape_composition {
+                    io.send_literal_recovery_esc_bs(backs, cold_seq);
+                } else {
+                    io.send_literal_recovery_bs(backs, cold_seq);
+                }
             }
 
             ProbeAction::StartSacrificialWarmup(config) => {
@@ -853,6 +894,7 @@ where
                 cold_seq,
                 backs,
                 romaji,
+                escape_composition,
             } => {
                 // TSF mode + consecutive==0 の場合は GjiWarmupCoro が SendRecoveryBs +
                 // StartSacrificialWarmup を直接 emit するため、このハンドラには到達しない。
@@ -864,7 +906,7 @@ where
                         → backspace ×{backs} + re-send {romaji:?} scheduled \
                         + mark cold"
                     );
-                    io.set_raw_literal(backs, romaji);
+                    io.set_raw_literal(backs, romaji, escape_composition);
                 } else {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
@@ -874,7 +916,9 @@ where
                     // 諦めても partial literal 由来の 'k'(literal) + composition が
                     // terminal に残ると "kおの" 等の文字化けになる。
                     // romaji 再送はせず BS のみ送って terminal をクリーンにする。
-                    io.set_raw_literal(backs, String::new());
+                    // escape_composition はそのまま引き継ぎ、composition が残っていれば
+                    // ESC で確実に破棄する。
+                    io.set_raw_literal(backs, String::new(), escape_composition);
                 }
                 io.mark_cold_raw_tsf();
             }
@@ -906,6 +950,7 @@ mod tests {
         mark_cold_raw_tsf_called: Cell<bool>,
         increment_consecutive_called: Cell<bool>,
         send_literal_recovery_bs_called: Cell<bool>,
+        send_literal_recovery_esc_bs_called: Cell<bool>,
         send_sacrificial_ime_off_on_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
@@ -928,6 +973,7 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
                 send_literal_recovery_bs_called: Cell::new(false),
+                send_literal_recovery_esc_bs_called: Cell::new(false),
                 send_sacrificial_ime_off_on_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 last_used_prepend_f2: Cell::new(false),
@@ -972,7 +1018,7 @@ mod tests {
         fn increment_consecutive_count(&self) {
             self.increment_consecutive_called.set(true);
         }
-        fn set_raw_literal(&self, _backs: usize, _romaji: String) {
+        fn set_raw_literal(&self, _backs: usize, _romaji: String, _escape_composition: bool) {
             self.set_raw_literal_called.set(true);
         }
         fn mark_cold_raw_tsf(&self) {
@@ -995,6 +1041,10 @@ mod tests {
 
         fn send_literal_recovery_bs(&self, _backs: usize, _cold_seq: u32) {
             self.send_literal_recovery_bs_called.set(true);
+        }
+
+        fn send_literal_recovery_esc_bs(&self, _backs: usize, _cold_seq: u32) {
+            self.send_literal_recovery_esc_bs_called.set(true);
         }
 
         fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
@@ -1232,6 +1282,7 @@ mod tests {
                 cold_seq: 0,
                 backs: 2,
                 romaji: "ka".to_string(),
+                escape_composition: false,
             },
             ProbeAction::Done,
         ];
@@ -1253,6 +1304,7 @@ mod tests {
                 cold_seq: 0,
                 backs: 2,
                 romaji: "ka".to_string(),
+                escape_composition: false,
             },
             ProbeAction::Done,
         ];
@@ -1590,6 +1642,7 @@ mod tests {
             ProbeAction::SendRecoveryBs {
                 cold_seq: 0,
                 backs: 2,
+                escape_composition: false,
             },
             ProbeAction::StartSacrificialWarmup(
                 crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
@@ -1636,6 +1689,53 @@ mod tests {
         assert!(
             !io.mark_cold_raw_tsf_called.get(),
             "sacr warmup パス: mark_cold_raw_tsf は呼ばない"
+        );
+    }
+
+    // SendRecoveryBs{escape_composition: true}（partial literal 回収）は
+    // send_literal_recovery_esc_bs を呼び、無印の send_literal_recovery_bs は呼ばない。
+    #[test]
+    fn send_recovery_bs_with_escape_composition_calls_esc_bs_variant() {
+        let io = FakeProbeIo {
+            consecutive: 0,
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![
+            ProbeAction::SendRecoveryBs {
+                cold_seq: 0,
+                backs: 1,
+                escape_composition: true,
+            },
+            ProbeAction::StartSacrificialWarmup(
+                crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
+                    cold_seq: 0,
+                    romaji: "ko".to_string(),
+                    plan: TransmitPlan {
+                        should_prepend_f2: false,
+                        used_eager_path: false,
+                        needs_literal: true,
+                        literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    },
+                    observations: ProbeObservations {
+                        nc_fired: false,
+                        gji_resumed: false,
+                    },
+                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+                    target: TransmitTarget::Tsf,
+                    from_literal_recovery: true,
+                },
+            ),
+            ProbeAction::Done,
+        ];
+        dispatch_probe_actions(&mut machine, actions, &io);
+        assert!(
+            io.send_literal_recovery_esc_bs_called.get(),
+            "escape_composition=true: send_literal_recovery_esc_bs を呼ぶべき"
+        );
+        assert!(
+            !io.send_literal_recovery_bs_called.get(),
+            "escape_composition=true: 無印の send_literal_recovery_bs は呼ばないべき"
         );
     }
 
@@ -1688,6 +1788,7 @@ mod tests {
                 cold_seq: 0,
                 backs: 2,
                 romaji: "ko".to_string(),
+                escape_composition: false,
             },
             ProbeAction::Done,
         ];

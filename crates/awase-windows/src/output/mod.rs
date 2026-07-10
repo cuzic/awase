@@ -1008,15 +1008,26 @@ impl awase::platform::CompositionOutput for Output {
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼び出す。
 /// backspace 送信 → romaji 再送の順序を保証するため、drain keys より前に実行すること。
 impl Output {
-    /// `RAW_TSF_LITERAL` グローバルに backs と romaji を書き込む。
+    /// `RAW_TSF_LITERAL` グローバルに backs / romaji / escape_composition を書き込む。
     ///
     /// `RawTsfLiteralRecovery` 処理で `consecutive == 0` のときのみ呼ぶ。
     /// `flush_raw_tsf_literal_backspaces` と `flush_raw_tsf_literal_romaji` の read 側と
     /// ここの write 側を `Output` に集約し、dispatcher が直接グローバルを触らないようにする。
+    ///
+    /// `escape_composition`: partial literal（candidate 表示中に一部だけ literal 化）回収時に
+    /// `true`。バックスペース前に `VK_ESCAPE` を送って composition を確実に破棄する。
     #[expect(clippy::unused_self)]
-    pub(crate) fn record_raw_tsf_literal(&self, backs: usize, romaji: String) {
+    pub(crate) fn record_raw_tsf_literal(
+        &self,
+        backs: usize,
+        romaji: String,
+        escape_composition: bool,
+    ) {
         use std::sync::atomic::Ordering::Relaxed;
         crate::RAW_TSF_LITERAL.backs.store(backs, Relaxed);
+        crate::RAW_TSF_LITERAL
+            .escape_composition
+            .store(escape_composition, Relaxed);
         *crate::RAW_TSF_LITERAL
             .romaji
             .lock()
