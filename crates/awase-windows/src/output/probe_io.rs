@@ -120,25 +120,11 @@ impl ProbeIo for Output {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        // TSF-native (WezTerm 等) では ImmSetConversionStatus が TSF モードに反映されない。
-        // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナモードの場合、
-        // 先頭 VK_DBE_HIRAGANA の代わりに VK_DBE_KATAKANA (+ 半角なら VK_DBE_SBCSCHAR) を送り
-        // TSF 入力モードをカタカナに切り替える。
-        // `effective_charset()` は DIAG_FORCE_HIRAGANA_CHARSET が有効な間は常に Hiragana を
-        // 返すため、その間このカタカナ追従パス自体に一切入らない（BUG-19 検証）。
-        let charset = self.conv_mode.effective_charset();
-        let result = if outcome.prepend_f2_warmup && !outcome.used_eager_path && charset.is_katakana()
-        {
-            Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
-            // HanKata (F1+F3) leading warmup 後は IMM が ZenKata を返すため conv_mode 汚染を抑制する。
-            if charset == crate::state::Charset::HankakuKatakana {
-                self.conv_mode
-                    .on_hankata_warmup_sent(crate::state::TickMs(crate::hook::current_tick_ms()));
-            }
-            chars.len()
-        } else {
-            crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
-        };
+        // カタカナ/英数 charset への追従送信（VK_DBE_KATAKANA 等の leading warmup）は
+        // BUG-19 のロックイン事故を受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` により
+        // `ConvModeMgr::effective_charset()` は既に常に Hiragana を返しており、この
+        // 追従パスは実質的に到達不能だった（`docs/known-bugs.md` BUG-19 参照）。
+        let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
         // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
         // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
         if outcome.used_eager_path && crate::tsf::output::kana_for_romaji_static(romaji).is_some() {
