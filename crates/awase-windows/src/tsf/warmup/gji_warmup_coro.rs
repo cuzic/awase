@@ -8,10 +8,7 @@
 //!
 //! ```text
 //! probe ループ
-//!   ├─[settle 不要 / 完了]─► transmit へ
-//!   └─[settle 必要]──────► [SendFreshF2] → NameChangeWait
-//!                               └─[nc + !settled]─► SecondaryProbe ──┐
-//!                               └─[その他]──────────────────────────► transmit へ
+//!   └─[settle 不要 / 完了]─► transmit へ
 //!
 //! transmit
 //!   ├─[needs_literal=false]──────────────────────────────► Done（single yield）
@@ -30,7 +27,6 @@ use std::rc::Rc;
 
 use awase::types::VkCode;
 
-use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
@@ -40,15 +36,6 @@ use crate::tsf::warmup::probe_fsm::{
 };
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
-
-// ── FreshF2Callback ──────────────────────────────────────────────────────────
-
-struct FreshF2Callback {
-    nc_baseline: NamechangeBaseline,
-    fresh_f2_ms: u64,
-    /// FreshF2 送信直前の `gji_last_write_ms()` スナップショット（NameChangeWait 判定用）。
-    gji_write_baseline: u64,
-}
 
 // ── TransmitDonePayload ──────────────────────────────────────────────────────
 
@@ -73,7 +60,6 @@ struct VkSentPayload {
 
 struct TickInput {
     env: TsfEnvSnapshot,
-    fresh_f2_callback: Option<FreshF2Callback>,
     transmit_done: Option<TransmitDonePayload>,
     vk_sent: Option<VkSentPayload>,
 }
@@ -85,7 +71,6 @@ struct GjiProbeCtx {
     cold_seq: u32,
     prepend_f2_warmup: bool,
     used_eager_path: bool,
-    ncwait_budget_ms: u64,
     forces_prepend_f2: bool,
     is_long_cold: bool,
     fresh_f2_at_probe_start: bool,
@@ -111,9 +96,8 @@ async fn gji_coro_body(
 ) {
     // env は 'initial ループの最初の yield で必ず設定される（loop は常に 1 回以上実行）。
     let mut env: TsfEnvSnapshot;
-    let mut fresh_f2_sent = false;
 
-    // ── Phase 1 / 2 / 3: GJI probe ──────────────────────────────────────────
+    // ── Phase 1: GJI probe ───────────────────────────────────────────────────
     let (nc_fired, gji_resumed) = 'initial: loop {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
         // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
@@ -139,118 +123,20 @@ async fn gji_coro_body(
         if needs_settle_check {
             let is_ime_init_cold = cold_reason.requires_settle();
             if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
-                // pre-idle: F2 送信前から GJI が長期静止 + forces_prepend_f2
-                // → F2 を送っても GJI は応答しないので FreshF2 をスキップして transmit へ
-                let pre_idle = outcome.gji_idle_ms
-                    >= outcome
-                        .elapsed_ms
-                        .saturating_add(crate::tuning::GJI_IDLE_MS);
-                if !outcome.settled && pre_idle && ctx.forces_prepend_f2 {
-                    // このヒューリスティックは「F2 を送っても GJI は応答しない」と判断して
-                    // 即 transmit（nc_fired=false, gji_resumed=false）に倒すため、GJI が
-                    // 実際には数百ms後に応答するケースでは partial literal の疑い経路
-                    // （is_partial_literal）を直接誘発しうる。発火有無を事後ログから
-                    // 確認できるようにする（切り分けログ強化、2026-07-09）。
-                    log::debug!(
-                        "[gji-coro] cold={} GJI pre-idle (idle={}ms elapsed={}ms) → skip FreshF2",
-                        ctx.cold_seq,
-                        outcome.gji_idle_ms,
-                        outcome.elapsed_ms,
-                    );
-                    break 'initial (false, false);
-                }
-
-                // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: 早期 F2 warmup 自体を
-                // 送らずreactiveなLiteralDetectのみに委ねる。cold_reason/実測idleを
-                // ここで確定しておき、後続の[literal-detect]/[raw-tsf-literal]ログと
-                // cold_seq で突き合わせれば「この cold_reason + このidle時間で
-                // F2 warmupが本当に必要だったか」を事後に narrowing できる。
-                if crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP {
-                    log::debug!(
-                        "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
-                         skip FreshF2 (reason={cold_reason:?} gji_idle_ms={} \
-                         real_gji_idle_ms={} probe_elapsed={}ms settled={})",
-                        ctx.cold_seq,
-                        outcome.gji_idle_ms,
-                        crate::tsf::observer::gji_idle_ms(),
-                        outcome.elapsed_ms,
-                        outcome.settled,
-                    );
-                    break 'initial (false, false);
-                }
-
-                // ── Phase 2: SendFreshF2 ─────────────────────────────────────
-                let f2_input = yield_step(
-                    ch.clone(),
-                    vec![ProbeAction::SendFreshF2 {
-                        cold_seq: ctx.cold_seq,
-                        probe_settled: outcome.settled,
-                    }],
-                )
-                .await;
-                fresh_f2_sent = true;
-
-                let cb = f2_input
-                    .fresh_f2_callback
-                    .expect("[gji-coro] FreshF2 tick に fresh_f2_callback が設定されていません");
-
-                let deadline_ms = cb.fresh_f2_ms + ctx.ncwait_budget_ms;
-                let probe_settled = outcome.settled;
-
-                // ── Phase 3: NameChangeWait ──────────────────────────────────
-                let result = 'ncwait: loop {
-                    let nc_input = yield_step(ch.clone(), vec![]).await;
-                    env = nc_input.env;
-
-                    if env.gji_candidate_visible {
-                        log::debug!(
-                            "[gji-coro] cold={} NameChangeWait: candidate visible → 即 transmit",
-                            ctx.cold_seq
-                        );
-                        break 'ncwait (false, false);
-                    }
-
-                    let nc_fired_now = cb.nc_baseline.fired();
-                    let timed_out = crate::hook::current_tick_ms() >= deadline_ms;
-                    if !nc_fired_now && !timed_out {
-                        continue;
-                    }
-
-                    let gji_wrote_after_f2 =
-                        crate::tsf::observer::gji_last_write_ms() > cb.gji_write_baseline;
-                    log::debug!(
-                        "[gji-coro] cold={} NameChangeWait 完了: nc={nc_fired_now} timeout={timed_out} gji_after_f2={gji_wrote_after_f2}",
-                        ctx.cold_seq
-                    );
-
-                    // OBJ_NAMECHANGE 後 + unsettled → 二次 GJI probe
-                    if nc_fired_now && !probe_settled {
-                        log::debug!(
-                            "[gji-coro] cold={} OBJ_NAMECHANGE 後 二次 GJI probe (max {}ms)",
-                            ctx.cold_seq,
-                            crate::tuning::GJI_POST_NAMECHANGE_MS,
-                        );
-                        let secondary = TsfReadinessProbe::new(cb.fresh_f2_ms, ctx.cold_seq, 0);
-                        loop {
-                            let sp_input = yield_step(ch.clone(), vec![]).await;
-                            env = sp_input.env;
-                            if secondary
-                                .check_outcome(crate::tuning::GJI_POST_NAMECHANGE_MS)
-                                .is_some()
-                            {
-                                log::debug!(
-                                    "[gji-coro] cold={} SecondaryGjiProbe 完了",
-                                    ctx.cold_seq
-                                );
-                                break;
-                            }
-                        }
-                        break 'ncwait (true, false);
-                    }
-
-                    break 'ncwait (nc_fired_now, gji_wrote_after_f2);
-                };
-                break 'initial result;
+                // Phase 2 (SendFreshF2) + Phase 3 (NameChangeWait/SecondaryProbe) は
+                // DIAG_DISABLE_PROACTIVE_TSF_WARMUP（常時 true）下で無条件に到達不能
+                // だったため撤去した。reactive な LiteralDetect のみに委ねる
+                // （`docs/known-bugs.md` BUG-24 参照。再度有効化する場合はこのコミット
+                // の revert が必要）。
+                log::debug!(
+                    "[gji-coro] cold={} settle 必要 (reason={cold_reason:?} gji_idle_ms={} \
+                     probe_elapsed={}ms settled={}) → skip FreshF2, reactive LiteralDetect のみ",
+                    ctx.cold_seq,
+                    outcome.gji_idle_ms,
+                    outcome.elapsed_ms,
+                    outcome.settled,
+                );
+                break 'initial (false, false);
             }
         }
 
@@ -270,8 +156,7 @@ async fn gji_coro_body(
     };
 
     // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
-    let already_sent_f2 = ctx.fresh_f2_at_probe_start || fresh_f2_sent;
-    let suppress_f2 = already_sent_f2 && env.is_tsf_mode;
+    let suppress_f2 = ctx.fresh_f2_at_probe_start && env.is_tsf_mode;
     let mut effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2;
 
     // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: Phase 2/5a を止めても、この
@@ -549,11 +434,9 @@ async fn gji_coro_body(
 /// `OutputActiveGuard` は参照カウント (`depth`) 方式なので 2 つのガードが重複しても安全。
 pub(crate) struct GjiWarmupCoro {
     coro: StepCoro<TickInput, Vec<ProbeAction>>,
-    pending_fresh_f2: Option<FreshF2Callback>,
     pending_transmit_done: Option<TransmitDonePayload>,
     pending_vk_sent: Option<VkSentPayload>,
     cold_seq: u32,
-    forces_prepend_f2: bool,
     /// inline LiteralDetect フェーズ中に OUTPUT_GATE を active に保つ追加ガード。
     literal_detect_guard: Option<OutputActiveGuard>,
 }
@@ -570,7 +453,6 @@ impl GjiWarmupCoro {
         cold_reason: ColdReason,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
-        ncwait_budget_ms: u64,
         forces_prepend_f2: bool,
         is_long_cold: bool,
         fresh_f2_at_probe_start: bool,
@@ -580,7 +462,6 @@ impl GjiWarmupCoro {
             cold_seq,
             prepend_f2_warmup,
             used_eager_path,
-            ncwait_budget_ms,
             forces_prepend_f2,
             is_long_cold,
             fresh_f2_at_probe_start,
@@ -601,11 +482,9 @@ impl GjiWarmupCoro {
         });
         let mut this = Self {
             coro,
-            pending_fresh_f2: None,
             pending_transmit_done: None,
             pending_vk_sent: None,
             cold_seq,
-            forces_prepend_f2,
             literal_detect_guard: None,
         };
         // Self-priming: StepCoro の最初の step() は input を消費しない
@@ -628,7 +507,6 @@ impl TickableFsm for GjiWarmupCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
         let input = TickInput {
             env: *env,
-            fresh_f2_callback: self.pending_fresh_f2.take(),
             transmit_done: self.pending_transmit_done.take(),
             vk_sent: self.pending_vk_sent.take(),
         };
@@ -640,19 +518,6 @@ impl TickableFsm for GjiWarmupCoro {
 
     fn cold_seq_hint(&self) -> u32 {
         self.cold_seq
-    }
-
-    fn forces_prepend_f2_for_extra_f2(&self) -> bool {
-        self.forces_prepend_f2
-    }
-
-    fn apply_fresh_f2_sent(&mut self, nc_baseline: NamechangeBaseline, fresh_f2_ms: u64) {
-        let gji_write_baseline = crate::tsf::observer::gji_last_write_ms();
-        self.pending_fresh_f2 = Some(FreshF2Callback {
-            nc_baseline,
-            fresh_f2_ms,
-            gji_write_baseline,
-        });
     }
 
     /// `needs_literal=true` のとき `false`（Continue）を返してコルーチンに LiteralDetect を委譲する。

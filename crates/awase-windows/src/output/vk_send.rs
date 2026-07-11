@@ -424,7 +424,6 @@ impl Output {
                 started.cold_reason,
                 prepend_f2_warmup,
                 used_eager_path,
-                probe_params.ncwait_budget_ms,
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,
