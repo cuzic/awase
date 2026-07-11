@@ -729,10 +729,11 @@ impl SettingsApp {
                 self.preview_cache = None;
             }
             if ui.button("編集...").clicked() {
-                let path =
-                    resolve_layouts_dir(&self.config.general.layouts_dir).join(&layout_file);
+                let path = resolve_layouts_dir(&self.config.general.layouts_dir).join(&layout_file);
                 match launch_yab_editor(&path) {
-                    Ok(()) => self.status = format!("配列エディタを起動しました: {}", path.display()),
+                    Ok(()) => {
+                        self.status = format!("配列エディタを起動しました: {}", path.display())
+                    }
                     Err(e) => self.status = format!("配列エディタの起動に失敗: {e}"),
                 }
             }
@@ -1645,8 +1646,8 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod preview_tab_repro {
     use super::{
-        draw_face_grid, find_config_path, load_layout_for_preview, resolve_layouts_dir,
-        SettingsApp, Tab,
+        SettingsApp, Tab, draw_face_grid, find_config_path, load_layout_for_preview,
+        resolve_layouts_dir,
     };
 
     /// `draw_face_grid` 単体を、実ファイル読み込み → egui 描画で GPU/ウィンドウ
@@ -1660,8 +1661,9 @@ mod preview_tab_repro {
             dir.display()
         );
 
-        let layout = load_layout_for_preview("layout", "nicola.yab", awase::scanmap::KeyboardModel::Jis)
-            .expect("実際の layout/nicola.yab のロードに失敗した");
+        let layout =
+            load_layout_for_preview("layout", "nicola.yab", awase::scanmap::KeyboardModel::Jis)
+                .expect("実際の layout/nicola.yab のロードに失敗した");
 
         let row_sizes = awase::scanmap::KeyboardModel::Jis.row_sizes();
         let ctx = eframe::egui::Context::default();
