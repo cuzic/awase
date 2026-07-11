@@ -2154,6 +2154,86 @@ read-back だけで成功と判断しない。
 
 ---
 
+**追補3（実機確認・撤回、2026-07-11）: scan=0 の `VK_DBE_ALPHANUMERIC` 注入も
+awase 自身のフックにすら届かず失敗。GJI entry を全面停止（保留）に変更。**
+
+**症状:** 追補2の scan=0 注入を実機投入。ユーザーが「こんにちはあいうえお」を
+入力し「ダメでしたね」と報告。ログ全文を確認したところ:
+
+- `[shift-conv-guard] GJI VK_DBE_ALPHANUMERIC(scan=0) SendInput sent=2/2 events`
+  — `SendInput` 自体は OS 的に成功。
+- **`[hook] IME-mode vk=0xF0 ...` のログがログ全文を通じて一度も出現しない**
+  （追補1の scan=0x3A 注入と同じ症状。同一セッション内で `VK_DBE_HIRAGANA`
+  0xF2 は `scan=0x70` で毎回確実に `[hook]` ログに出現しており、フック自体は
+  正常に動作している）。
+- `[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON` の直後に
+  `Engine deactivated (... reason=Inactive(NotRomajiInput))` が発火し、以降の
+  ローマ字キー（`vk=0x41`='A', `0x49`='I', `0x45`='E', `0x55`='U`, `0x4F`='O'
+  等）はすべて `[relay-passthrough] PassThrough idle: direct OS pass-through`
+  として**生のまま GJI へ素通し**されている。しかし GJI 自身の conv は
+  scan=0 注入でも一切変化していないため（entry verify を今回は行っていないが、
+  前提となる `[hook] vk=0xF0` 到達自体が無いので当然変化していない）、素通しされた
+  生ローマ字キーが GJI 自身の**未切替のひらがな変換エンジン**にそのまま入り、
+  結果的に「こんにちは」のようなひらがな文字列がそのまま出力された。
+
+**原因（推定）:** `[hook]` ログは自己注入フィルタより前で無条件に出るため、
+`VK_DBE_ALPHANUMERIC` の `SendInput` イベントは scan 値（0x3A/0x3A衝突 or
+scan=0/非衝突）に関わらず、**awase 自身の `WH_KEYBOARD_LL` フックにすら
+到達していない**ことが2回連続で確認された。これは「scan コードが CapsLock と
+衝突するから横取りされる」という追補1の仮説（scan 依存の問題）では説明が
+つかない——scan=0 は物理キーに対応しないため衝突しないはずだが、それでも
+届かない。より根本的な原因として、`KEYEVENTF_SCANCODE` を付けずに
+`SendInput` した場合、OS（win32k）が `wScan` の値を無視し、`wVk` から
+`MapVirtualKeyW` 相当の内部変換で scan を独自に再計算して
+`KBDLLHOOKSTRUCT.scanCode` を構築している可能性がある——だとすれば、我々が
+`wScan=0` を指定しても実際にフックへ渡る scan は結局 OS が再計算した値
+（0x3A 等）になり、`wScan` フィールドを変えたところで到達性は変わらない。
+真因の完全な特定には至っていないが、**「scan を変えれば届く」という仮説は
+2回の実機失敗で反証された**。
+
+**対応:** GJI 向けの entry 機構（scan 付き注入・scan=0 注入・IMC write の
+いずれも）を全て撤回し、**GJI では entry を一切試みない**方針に変更した
+（`kp_shift_conv_guard_key_down`: `active_ime_kind != MicrosoftIme` の場合は
+ログのみで `SendInput`/IMC write を送らない）。加えて、**左Shift単独タップの
+検出自体は行うが、GJI では持続トグルへ絶対に移行しない**よう
+`kp_shift_conv_guard_key_up` にガードを追加した（`toggle_entry_supported =
+active_ime_kind == MicrosoftIme` を tap 判定に AND する）。理由: entry が
+機能しないまま `half_width_alnum_toggle_active` を立てて engine を
+pass-through にすると、生ローマ字キーが GJI 自身の未切替のひらがな変換
+エンジンにそのまま入り「かな入力が壊れる」という**新たな実害**が生まれる
+（今回まさにこれが発生した）。entry 機構が無い IME 種別では、機能を丸ごと
+無効化する方が安全側と判断した。MS-IME 側（IMC write, 既存経路）は変更なし。
+
+**未解決（今後の課題）:** GJI に対して実際に半角英数へ切り替える手段は
+まだ見つかっていない。次の候補として、mozc の `TipTextService` が実装する
+`ITfLangBarItemButton`（言語バーのモード切替アイコン）を `ITfLangBarItemMgr`
+経由で列挙し `OnClick` を呼ぶ案がある——これは本物の UI クリックと同じ
+`SwitchInputModeAsync` 経路を通るはずで、`SendInput` によるキーイベント
+注入という失敗し続けている手段そのものを迂回できる。COM インターフェースの
+呼び出しであり `SendInput`/フックの介在が無いため、今回までの2つの失敗
+（scan 依存問題）とは独立した経路になる。未着手・未検証。Windows crate の
+`Win32_UI_TextServices` feature は既に有効化済み（`Cargo.toml`）。
+
+**教訓:** 「scan を変えれば届く」という一見もっともらしい仮説も、実機で
+2回連続反証されている以上、3回目に同種の「scan の値を変える」バリエーションを
+試すべきではない。`SendInput` による `VK_DBE_ALPHANUMERIC` 注入という**手段
+そのもの**（scan の値によらず）が機能しないと考えるべきであり、次に検討すべきは
+異なる制御チャネル（COM/UI Automation 等）である。また、entry が機能しない
+状態のまま持続トグルの belief だけを進めると、「何も起きない」より悪い
+「かな入力が壊れる」という新規リグレッションを生む——**機構が実証されるまでは
+機能自体を無効化する**方が安全側の設計判断になる。
+
+**テスト:** 自動テスト不可（実機の GJI TIP・OS 入力パイプライン挙動に依存）。
+この追補が再発防止の記録。次回 GJI entry を検討する際は、必ず
+`ITfLangBarItemButton` のような非 `SendInput` 経路から着手し、`SendInput`
+ベースの `VK_DBE_ALPHANUMERIC` 注入（scan の値を問わず）を再試行しないこと。
+
+**関連ファイル（追補3）:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_shift_conv_guard_key_down`: GJI entry を全撤去、`kp_shift_conv_guard_key_up`:
+`toggle_entry_supported` ガード追加）
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
