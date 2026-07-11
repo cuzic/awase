@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.8.9] - 2026-07-11
+
 ### 追加
 
 - **US (ANSI 104) キーボード対応**
@@ -47,6 +49,16 @@ All notable changes to this project will be documented in this file.
   - `gji-io-monitor` ワーカースレッドが 2 秒ごとにポーリングする `ITfInputProcessorProfileMgr::GetActiveProfile` の単発フリップを `WM_IME_KIND_CHANGED` としてそのまま main スレッドへ伝播しており、`set_active_ime_kind` が種別変化のたびに warmup 戦略（`GjiFsm`/`MsImeStrategy`）を無条件で新規生成 → 確立済みの `OnWarm`/`OnComposing` を破棄していた
   - Chrome cold-start reinit が実 `VK_IME_OFF→VK_IME_ON` トグルを送信すること自体が誤検出の引き金となり、「reinit → 誤検出 → GjiFsm 再構築 → 次の単語も cold → 再度 reinit → …」という自己増幅ループを形成していた（実機ログで `cold_seq` が単語ごとに 392→401 と climb、2 回の "StartComposition while engine off" 警告が CLSID ポーリング周期とほぼ一致する 2146ms 間隔で観測）
   - `tsf/gji_monitor.rs` に `ImeKindDebounce` を追加し、同じ新種別が 2 tick 連続で観測されるまで確定させないようにした。詳細は docs/known-bugs.md BUG-17
+  - 追補3: デバウンス済みでも、`cold_warmup.rs::preamble()`（cold warmup のたびに実行）が `conv_mode.get()` を無条件に real IME へ書き戻していたため、一度誤って確定した belief がフォーカス往復のたびに再アサートされ続けて自己増幅する経路が残っていた。`ConvModeMgr::needs_conv_restore_write`/`mark_conv_restore_written` を追加し、同じ確定 mode への復元書き込みを1回だけに制限した
+  - 追補4: 上記スロットルは `cold_warmup.rs`/`probe_io.rs` の IMM32 書き戻し経路にしか配線されておらず、根本原因分析自体が名指ししていた `output/mod.rs::send_eager_tsf_warmup`（確定キーのたびに高頻度で発火する eager warmup の charset 選択）だけが無防備なまま残っていた。ここにも同じスロットルを適用し、確定済み mode への charset-changing warmup キー（F1/F0 系）送信を1回に制限した
+  - 追補5: ユーザーは IME トレイからカタカナ/半角英数を手動選択したことが一度もなく今後もその予定がないと確認したため、`DIAG_FORCE_HIRAGANA_CHARSET` 診断フラグを新設し、charset 追従ロジック（F1/F0 warmup・IMM32 conv_target 書き戻し・F1 leading warmup 前置）を丸ごと無効化して常に Hiragana 扱いにする実験を開始した（観測・ログ自体は継続、行動への反映だけを止める）
+
+- **IME を ON にした直後の最初の1文字で、正しく変換されているのに不要な BS 訂正が発生する不具合を修正（BUG-24）**
+  - `is_partial_literal()`（`tsf/warmup/literal_detect_fsm.rs`）は、今回送った romaji 自身の確認信号（候補ウィンドウ SHOW / GJI I/O 変化）ではなく、送信前に確定していた無関係な代理指標 `nc_fired`/`gji_resumed`（別の F2 warmup キーへの応答有無）で部分リテラルを判定していた。`ColdReason::requires_settle()`（`FocusChange`/`NativeF2Consumed`/`SetOpenTrue` — IME が既に ON の状態でも発生しうる）直後は、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`（cold-start の予防的 warmup を丸ごと無効化し reactive 検出のみに委ねる診断フラグ）下でこの代理指標の元になる確認送信自体が無条件でスキップされるため、`nc_fired` が構造的に常に `false` になり、実機で確実に再現していた
+  - `composition_fsm.rs::ConfirmKeyDown` と `platform.rs::on_reinject_key` が、warm な確定キー（Enter/Space/Escape）でも無条件に `MarkCold`/`GjiCompositionReset` を発行していた副作用も特定・修正（連続 typing 中の余分な cold 化が literal-detect の露出機会を増やしていた）
+  - IME セッション（打鍵開始〜候補ウィンドウ HIDE）内で literal-detect を1回確認できたら、以降はセッション終了まで検出処理自体をスキップする仕組み（`tsf/observer.rs` の `literal_session_confirmed` 系、`DIAG_LITERAL_SESSION_SKIP`）を追加し、反応速度を落とさないようにした
+  - 上記だけではセッション最初の1文字自体（`is_partial_literal()` を初めて通る文字）は直っていなかったため、最終的にセッション最初の1文字に限り romaji の VK を1つずつ送信し、送信した VK 自身への `CompositionConfirmed`/`SuspectedLiteral` を確認してから次の VK を送る設計（`ProbeAction::TransmitSingleVk`、`gji_warmup_coro.rs`）に変更した。2つの VK をまとめて送るために生じていた「どちらの VK の効果か区別できない」問題は、VK 送信の間に意図的な確認ポイントを挟むことで構造的に解消した。実機で症状の解消を確認済み
+  - 詳細は docs/known-bugs.md BUG-24
 
 ## [1.8.6] - 2026-07-07
 
