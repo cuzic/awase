@@ -1019,6 +1019,37 @@ impl Runtime {
                 log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
             });
         }
+
+        // 診断用（2026-07-11）: 送信方式によらず、実 conv が本当に英数
+        // （NATIVE ビット OFF）へ変化したかを送信直後に読み取って確認する。
+        // GJI 経路（scan 付き VK 注入）・MS-IME 経路（IMC write）どちらでも
+        // 実効性を直接検証できるようにするための一時的な verify ログ。
+        win32_async::spawn_local(async {
+            win32_async::sleep_ms(150).await;
+            let conv = win32_async::offload(|| unsafe {
+                crate::ime::get_ime_conversion_mode_raw_timeout(50)
+            })
+            .await;
+            match conv {
+                Some(c) => {
+                    let native = c & crate::imm::IME_CMODE_NATIVE != 0;
+                    log::info!(
+                        "[shift-conv-guard] entry verify (150ms後): conv=0x{c:08X} NATIVE={native} \
+                         ({})",
+                        if native {
+                            "未だひらがな側 → 半角英数化は未反映"
+                        } else {
+                            "英数モードに変化した"
+                        }
+                    );
+                }
+                None => {
+                    log::info!(
+                        "[shift-conv-guard] entry verify (150ms後): conv 読み取り失敗 (None)"
+                    );
+                }
+            }
+        });
     }
 
     fn kp_shift_conv_guard_key_up(&mut self, event: &RawKeyEvent) {

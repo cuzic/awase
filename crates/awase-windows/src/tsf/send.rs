@@ -54,13 +54,26 @@ pub(crate) fn send_vk_dbe_alpha_warmup(charset: awase::engine::Charset) -> u64 {
             make_tsf_key_input(VK_DBE_DBCSCHAR, false),
             make_tsf_key_input(VK_DBE_DBCSCHAR, true),
         ];
-        let _ = crate::win32::send_input_safe(&inputs);
+        let sent = crate::win32::send_input_safe(&inputs);
+        log::info!(
+            "[tsf-warmup] alpha warmup (Zenkaku) SendInput sent={sent}/{} events",
+            inputs.len()
+        );
     } else {
         let inputs = [
             make_tsf_key_input(VK_DBE_ALPHANUMERIC, false),
             make_tsf_key_input(VK_DBE_ALPHANUMERIC, true),
         ];
-        let _ = crate::win32::send_input_safe(&inputs);
+        // 診断用 (2026-07-11 実機報告): GJI + TSF-native (Windows Terminal) で
+        // このF0注入が [hook] IME-mode ログに一度も現れず、実convも変化しない
+        // 現象が確認された。SendInput の戻り値（実際に送信できたイベント数）を
+        // 明示的にログし、OS レベルで拒否されているのか、届いてはいるが GJI が
+        // 無視しているのかを切り分ける。
+        let sent = crate::win32::send_input_safe(&inputs);
+        log::info!(
+            "[tsf-warmup] alpha warmup (Hankaku) SendInput sent={sent}/{} events",
+            inputs.len()
+        );
     }
     crate::hook::current_tick_ms()
 }
