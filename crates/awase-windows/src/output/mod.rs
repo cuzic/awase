@@ -601,10 +601,7 @@ impl Output {
                 crate::state::TickMs(crate::hook::current_tick_ms()),
             );
         }
-        let charset = self
-            .conv_mode
-            .get()
-            .map_or(crate::state::Charset::Hiragana, |m| m.charset);
+        let charset = self.conv_mode.effective_charset();
         // カタカナ/英数系 warmup キー (F1/F0 系) は実際に GJI の charset を書き換える
         // 副作用を持つ。この関数は EmitWarmup (ConfirmKeyDown/Up・CtrlUp・SetOpenTrue 等)
         // のたびに呼ばれるため、同じ確定 mode に対して無条件に送り続けると、一発の

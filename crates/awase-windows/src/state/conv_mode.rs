@@ -193,6 +193,21 @@ impl ConvModeMgr {
         self.mode.get()
     }
 
+    /// warmup/送信ロジックが実際に追従すべき charset を返す。
+    ///
+    /// `tuning::DIAG_FORCE_HIRAGANA_CHARSET` が有効な間は、観測値に関わらず常に
+    /// `Charset::Hiragana` を返す（カタカナ/英数への charset-aware warmup・VK
+    /// 前置ロジックを実験的に無効化する診断フラグ）。`get()`/`update_from_conv()`
+    /// 自体は影響を受けない — 観測・ログは通常通り継続され、この関数を経由する
+    /// 「実際に charset に追従して動くかどうか」の消費側だけが無効化される。
+    #[cfg(windows)]
+    pub(crate) fn effective_charset(&self) -> Charset {
+        if crate::tuning::DIAG_FORCE_HIRAGANA_CHARSET {
+            return Charset::Hiragana;
+        }
+        self.get().map_or(Charset::Hiragana, |m| m.charset)
+    }
+
     /// 現在の `mode` に対する real IME への復元書き込みがまだ済んでいなければ `true`。
     ///
     /// `mode` が変わらない限り、同じ belief 値に対する復元書き込みは 1 回だけに制限する

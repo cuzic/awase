@@ -120,12 +120,11 @@ impl ProbeIo for Output {
         // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナモードの場合、
         // 先頭 VK_DBE_HIRAGANA の代わりに VK_DBE_KATAKANA (+ 半角なら VK_DBE_SBCSCHAR) を送り
         // TSF 入力モードをカタカナに切り替える。
-        let conv_mode = self.conv_mode.get();
-        let result = if outcome.prepend_f2_warmup
-            && !outcome.used_eager_path
-            && conv_mode.is_some_and(|m| m.charset.is_katakana())
+        // `effective_charset()` は DIAG_FORCE_HIRAGANA_CHARSET が有効な間は常に Hiragana を
+        // 返すため、その間このカタカナ追従パス自体に一切入らない（BUG-19 検証）。
+        let charset = self.conv_mode.effective_charset();
+        let result = if outcome.prepend_f2_warmup && !outcome.used_eager_path && charset.is_katakana()
         {
-            let charset = conv_mode.unwrap().charset;
             Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
             // HanKata (F1+F3) leading warmup 後は IMM が ZenKata を返すため conv_mode 汚染を抑制する。
             if charset == crate::state::Charset::HankakuKatakana {

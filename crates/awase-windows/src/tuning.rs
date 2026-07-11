@@ -416,3 +416,50 @@ pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
 /// データのみのため、ユーザー判断で `true` のまま実運用を継続し、より広い条件
 /// （長い idle・他の cold_reason・他アプリ・複数セッション）で追加検証中。
 pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
+
+/// カタカナ/英数 charset への「追従」warmup・VK 前置ロジックを丸ごと無効化し、
+/// 常に Hiragana(F2) として振る舞わせる診断フラグ（BUG-19 検証）。
+///
+/// ## 背景
+///
+/// BUG-19（`docs/known-bugs.md`）は「GJI の conv mode が謎にカタカナへ変化し、
+/// awase がそれに"追従"して実キー VK_DBE_KATAKANA を送ることで、一過性かも
+/// しれない状態を real IME の恒久的な状態としてロックインしてしまう」問題。
+/// 追補4までにデバウンス・復元書き込みの重複排除などを重ねてきたが、いずれも
+/// 「観測されたカタカナに追従して warmup キーを送る」という設計自体は残していた。
+///
+/// ユーザー（本プロジェクトの唯一の実利用者）は IME トレイからカタカナ/半角
+/// 英数を手動選択したことが一度もなく、今後もその予定がないと明言している。
+/// つまりこのユーザーの実運用においては、conv mode がカタカナ/英数へ変化する
+/// ことがあるとすれば、それは常に GJI 側の何らかの内部ドリフト（本物のユーザー
+/// 意図ではない）であり、awase 側がそれに追従する必要（927f2a2/109b4c9 が
+/// 保護していた「トレイでカタカナ選択したユーザー」のケース）が実質存在しない。
+///
+/// `true` の間は以下 3 箇所で charset を常に `Charset::Hiragana` 扱いにする
+/// （`ConvModeMgr::effective_charset()` 経由）:
+///
+/// 1. `output/mod.rs::send_eager_tsf_warmup` — 投機的な eager warmup の
+///    charset 選択（F1/F0 系を送らず常に F2）。
+/// 2. `tsf/warmup/cold_warmup.rs::preamble()` — cold-start warmup の
+///    charset 選択（`WarmupContext::charset`）。
+/// 3. `output/probe_io.rs::transmit_tsf` — 実際の romaji バッチ送信時に
+///    F1 leading warmup を前置するかどうかの判断。
+///
+/// `ConvModeMgr::get()`/`update_from_conv()` 自体は無変更 — 観測・ログ
+/// （`[conv-mode]` 等）は通常通り継続する。この関数を経由する「実際に
+/// charset に追従して動く」消費側だけを止める。
+///
+/// ## 観測すべきログ
+///
+/// - `[conv-mode] ... → ZenKata/roma` 等の観測ログ自体は出続けるはず
+///   （観測は止めていないため）。
+/// - `[tsf-eager-warmup] ZenKata warmup 送信` / `[h1-warmup] ... {ZenKata,
+///   HankakuKatakana, ...} warmup+probe 送信` / `f1-leading` ログが
+///   **一切出なくなる**はず（出た場合はこのフラグの配線漏れ）。
+/// - 画面上で実際にカタカナが打鍵結果として現れる／GJI が持続的にカタカナへ
+///   固定される場合 → 927f2a2/109b4c9 相当の退行が実際に起きている証拠
+///   （ただしトレイでカタカナを手動選択しない限り想定していない）。
+///
+/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-19 に
+/// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
+pub const DIAG_FORCE_HIRAGANA_CHARSET: bool = true;

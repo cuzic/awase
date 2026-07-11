@@ -1290,6 +1290,39 @@ architecture_guard 10件が全件 pass することを確認済み）。**Window
 （`needs_conv_restore_write`/`mark_conv_restore_written`、変更なし・既存
 プリミティブを再利用）
 
+**追補5（2026-07-11、ユーザー判断でカタカナ/英数追従そのものを実験的に無効化）:**
+追補1〜4はいずれも「観測されたカタカナへ awase が追従して warmup キーを送る」
+という設計自体は維持したまま、その追従の頻度・タイミングを調整する対症療法
+だった。ユーザーは IME トレイからカタカナ/半角英数を手動選択したことが一度も
+なく今後もその予定がないと明言（`927f2a2`/`109b4c9` が保護していたケースに
+該当しない）。これを踏まえ、DIAG_DISABLE_PROACTIVE_TSF_WARMUP と同じ「実験用
+診断フラグで丸ごと無効化し、実機で何が起きるか観察する」手法を適用した。
+
+新設フラグ `tuning::DIAG_FORCE_HIRAGANA_CHARSET`（`true`）は、
+`ConvModeMgr::effective_charset()` を新設し、これが有効な間は常に
+`Charset::Hiragana` を返すようにした。以下 3 箇所を `effective_charset()`
+経由に置き換え、charset 追従ロジックを丸ごと無効化する:
+
+1. `output/mod.rs::send_eager_tsf_warmup`（eager warmup の charset 選択）
+2. `tsf/warmup/cold_warmup.rs::preamble()`（`WarmupContext::charset` と
+   `conv_target`、ImmSetConversionStatus 書き戻し先の両方）
+3. `output/probe_io.rs::transmit_tsf`（F1 leading warmup 前置判断）
+
+`ConvModeMgr::get()`/`update_from_conv()` 自体は無変更 — 観測・`[conv-mode]`
+ログは通常通り継続する。「観測はするが行動には反映しない」形。
+
+**テスト:** 既存 lib(138)/golden_scenarios(19)/architecture_guard(10)/
+layer_boundary_guard(8)/journal_replay(1) 全件 pass、clippy(lib) warning
+ゼロを確認済み。Windows実機での動作確認（カタカナ観測ログは出るが warmup
+キー送信ログが一切出ないこと、実際にカタカナ入力が必要になった場合の
+挙動）は未実施。
+
+**関連ファイル（追補5）:** `crates/awase-windows/src/tuning.rs`
+（`DIAG_FORCE_HIRAGANA_CHARSET`）, `crates/awase-windows/src/state/conv_mode.rs`
+（`ConvModeMgr::effective_charset`）, `crates/awase-windows/src/output/mod.rs`,
+`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`,
+`crates/awase-windows/src/output/probe_io.rs`
+
 ---
 
 ## BUG-20: ドリフト補正の再送が non-ImmCross アプリで no-op のため IME ON / Engine OFF が固定化する（修正済み・実機検証待ち）

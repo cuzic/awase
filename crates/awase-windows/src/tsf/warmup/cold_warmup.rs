@@ -202,11 +202,16 @@ impl<'a> ColdWarmupSequence<'a> {
         // ROMAN ビット設定は実 romaji 送信より先に完了する。
         // conv_mode から ImmSetConversionStatus の目標値を取得する。
         // カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため Some を返す。
-        let conv_target = self
-            .output
-            .conv_mode
-            .get()
-            .and_then(awase::engine::ConvMode::imm_conv_target);
+        // DIAG_FORCE_HIRAGANA_CHARSET が有効な間は常に None（ROMAN ビット確保のみ）にする
+        // — 観測されたカタカナ/英数 conv へ IMM32 レベルで追従することも止める（BUG-19 検証）。
+        let conv_target = if crate::tuning::DIAG_FORCE_HIRAGANA_CHARSET {
+            None
+        } else {
+            self.output
+                .conv_mode
+                .get()
+                .and_then(awase::engine::ConvMode::imm_conv_target)
+        };
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
         // カタカナ等の明示的復元 (conv_target = Some) は、同じ belief に対して cold
         // warmup のたびに繰り返し書き戻すと、一度誤って確定した belief がフォーカス
@@ -284,11 +289,7 @@ impl<'a> ColdWarmupSequence<'a> {
             self.output.composition.idle_ms_at_last_cold()
         );
 
-        let charset = self
-            .output
-            .conv_mode
-            .get()
-            .map_or(awase::engine::Charset::Hiragana, |m| m.charset);
+        let charset = self.output.conv_mode.effective_charset();
 
         WarmupContext {
             cold_seq,
