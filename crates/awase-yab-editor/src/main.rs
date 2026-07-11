@@ -24,11 +24,20 @@ const FACES: [(Face, &str); 4] = [
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ValueKind {
-    Romaji,
+    /// ローマ字（複数文字、かな変換される）または記号・数字の打鍵（単発、
+    /// IME がキーストロークとして処理する）。入力に応じて `apply_edit` が
+    /// `YabValue::Romaji` / `YabValue::KeySequence` のどちらを作るか自動判定する。
+    /// JIS キーボード上に存在する文字（`char::is_ascii_graphic`）のみ許可する。
+    Keystroke,
     Literal,
-    KeySequence,
     Special,
     None,
+}
+
+/// 打鍵欄の入力を検証する。JIS キーボード上のキーとして表現できない文字が
+/// あれば、その文字を返す。
+fn find_invalid_keystroke_char(input: &str) -> Option<char> {
+    input.chars().find(|c| !c.is_ascii_graphic())
 }
 
 const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
@@ -133,7 +142,7 @@ impl YabEditor {
         let value = self.face(self.current_face).get(&pos).cloned();
         match value {
             Some(YabValue::Romaji { romaji, .. }) => {
-                self.edit_kind = ValueKind::Romaji;
+                self.edit_kind = ValueKind::Keystroke;
                 self.edit_value = romaji;
             }
             Some(YabValue::Literal(s)) => {
@@ -141,7 +150,7 @@ impl YabEditor {
                 self.edit_value = s;
             }
             Some(YabValue::KeySequence(s)) => {
-                self.edit_kind = ValueKind::KeySequence;
+                self.edit_kind = ValueKind::Keystroke;
                 self.edit_value = s;
             }
             Some(YabValue::Special(sk)) => {
@@ -160,13 +169,21 @@ impl YabEditor {
     fn apply_edit(&mut self) {
         let Some(pos) = self.selected_pos else { return };
         let value = match self.edit_kind {
-            ValueKind::Romaji => {
-                let romaji = self.edit_value.trim().to_string();
-                if romaji.is_empty() {
+            ValueKind::Keystroke => {
+                let input = self.edit_value.trim().to_string();
+                if input.is_empty() {
                     YabValue::None
+                } else if let Some(bad) = find_invalid_keystroke_char(&input) {
+                    self.status = format!("「{bad}」は JIS キーボード上のキーとして入力できません");
+                    return;
+                } else if input.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let kana = self.kana_table.kana_for_romaji(&input);
+                    YabValue::Romaji {
+                        romaji: input,
+                        kana,
+                    }
                 } else {
-                    let kana = self.kana_table.kana_for_romaji(&romaji);
-                    YabValue::Romaji { romaji, kana }
+                    YabValue::KeySequence(input)
                 }
             }
             ValueKind::Literal => {
@@ -175,14 +192,6 @@ impl YabEditor {
                     YabValue::None
                 } else {
                     YabValue::Literal(s)
-                }
-            }
-            ValueKind::KeySequence => {
-                let s = self.edit_value.clone();
-                if s.is_empty() {
-                    YabValue::None
-                } else {
-                    YabValue::KeySequence(s)
                 }
             }
             ValueKind::Special => YabValue::Special(SPECIAL_KEYS[self.edit_special_idx].0),
@@ -508,46 +517,74 @@ impl YabEditor {
         // Type selector (radio buttons)
         ui.horizontal(|ui| {
             ui.label("種別:");
-            ui.radio_value(&mut self.edit_kind, ValueKind::Romaji, "ローマ字");
-            ui.radio_value(&mut self.edit_kind, ValueKind::Literal, "リテラル");
-            ui.radio_value(
-                &mut self.edit_kind,
-                ValueKind::KeySequence,
-                "キーシーケンス",
-            );
-            ui.radio_value(&mut self.edit_kind, ValueKind::Special, "特殊キー");
-            ui.radio_value(&mut self.edit_kind, ValueKind::None, "なし");
+            ui.radio_value(&mut self.edit_kind, ValueKind::Keystroke, "打鍵")
+                .on_hover_text(
+                    "ローマ字（複数文字、例: 「si」「tsu」）またはキーボード上の\n\
+                     記号・数字（例: 「!」「1」）を、実際のキー押下として送信し、\n\
+                     IME に処理させます。\n\
+                     \n\
+                     アルファベットのみならローマ字入力として（かな変換テーブルを\n\
+                     引いてかな文字を出力）、それ以外（記号・数字）はキーシーケンス\n\
+                     として扱われ、結果は今の IME の変換モードに依存します。\n\
+                     \n\
+                     JIS キーボード上に存在する文字（半角の英数字・記号）のみ\n\
+                     入力できます。",
+                );
+            ui.radio_value(&mut self.edit_kind, ValueKind::Literal, "リテラル")
+                .on_hover_text(
+                    "指定した文字列を Unicode 文字としてそのまま直接送信します\n\
+                     （IME を一切経由しません）。IME や変換モードに関係なく必ず\n\
+                     その文字が出ます。「ー」「…」のような固定記号に向いています。",
+                );
+            ui.radio_value(&mut self.edit_kind, ValueKind::Special, "特殊キー")
+                .on_hover_text("Backspace / Escape / Enter / Space / Delete を送信します。");
+            ui.radio_value(&mut self.edit_kind, ValueKind::None, "なし")
+                .on_hover_text("このキーへの割り当てを解除します（パススルー）。");
         });
         ui.add_space(4.0);
 
         // Value input
         match self.edit_kind {
-            ValueKind::Romaji => {
+            ValueKind::Keystroke => {
                 ui.horizontal(|ui| {
-                    ui.label("ローマ字:");
+                    ui.label("打鍵:");
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.edit_value)
                             .desired_width(120.0)
-                            .hint_text("例: ka, si, tsu"),
+                            .hint_text("例: ka, si, tsu, !, 1"),
                     );
                     if resp.changed() {
                         // Normalize: strip spaces, lowercase
                         self.edit_value = self.edit_value.trim().to_lowercase();
                     }
                 });
-                let preview: String = self
-                    .kana_table
-                    .kana_for_romaji(self.edit_value.trim())
-                    .map_or_else(|| "（未対応）".to_string(), |c| c.to_string());
-                ui.horizontal(|ui| {
-                    ui.label("かな変換:");
-                    ui.label(
-                        egui::RichText::new(&preview)
-                            .size(22.0)
-                            .strong()
-                            .color(egui::Color32::from_rgb(0, 80, 160)),
+                let trimmed = self.edit_value.trim();
+                if let Some(bad) = find_invalid_keystroke_char(trimmed) {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        format!("「{bad}」は JIS キーボード上のキーとして入力できません"),
                     );
-                });
+                } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let preview: String = self
+                        .kana_table
+                        .kana_for_romaji(trimmed)
+                        .map_or_else(|| "（未対応）".to_string(), |c| c.to_string());
+                    ui.horizontal(|ui| {
+                        ui.label("かな変換:");
+                        ui.label(
+                            egui::RichText::new(&preview)
+                                .size(22.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0, 80, 160)),
+                        );
+                    });
+                } else if !trimmed.is_empty() {
+                    ui.label(
+                        egui::RichText::new("※ 記号/数字のキーシーケンスとして IME に処理させます")
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
             ValueKind::Literal => {
                 ui.horizontal(|ui| {
@@ -560,21 +597,6 @@ impl YabEditor {
                 });
                 ui.label(
                     egui::RichText::new("※ Unicode 文字をそのまま送信します")
-                        .small()
-                        .color(egui::Color32::GRAY),
-                );
-            }
-            ValueKind::KeySequence => {
-                ui.horizontal(|ui| {
-                    ui.label("シーケンス:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.edit_value)
-                            .desired_width(120.0)
-                            .hint_text("例: ．"),
-                    );
-                });
-                ui.label(
-                    egui::RichText::new("※ IME がキーストロークとして処理します")
                         .small()
                         .color(egui::Color32::GRAY),
                 );
@@ -599,9 +621,15 @@ impl YabEditor {
             }
         }
 
+        let can_apply = self.edit_kind != ValueKind::Keystroke
+            || find_invalid_keystroke_char(self.edit_value.trim()).is_none();
+
         ui.add_space(6.0);
         if ui
-            .add(egui::Button::new(egui::RichText::new("適用").strong()))
+            .add_enabled(
+                can_apply,
+                egui::Button::new(egui::RichText::new("適用").strong()),
+            )
             .clicked()
         {
             self.apply_edit();
@@ -622,8 +650,10 @@ fn cell_display(value: Option<&YabValue>) -> String {
         Some(YabValue::Literal(s) | YabValue::KeySequence(s)) => {
             s.chars().take(2).collect::<String>() + "."
         }
-        Some(YabValue::Special(SpecialKey::Backspace)) => "\u{232b}".to_string(), // ⌫
-        Some(YabValue::Special(SpecialKey::Enter)) => "\u{23ce}".to_string(),     // ⏎
+        // ⌫ (U+232B) 単体はフォントによっては潰れて視認しづらいため、
+        // 左矢印 + "BS" で「後ろを消す」方向を明示する（ESC/DEL とテキスト量を揃えた）。
+        Some(YabValue::Special(SpecialKey::Backspace)) => "\u{2190}BS".to_string(), // ←BS
+        Some(YabValue::Special(SpecialKey::Enter)) => "\u{23ce}".to_string(),       // ⏎
         Some(YabValue::Special(SpecialKey::Escape)) => "ESC".to_string(),
         Some(YabValue::Special(SpecialKey::Space)) => "\u{2423}".to_string(), // ␣
         Some(YabValue::Special(SpecialKey::Delete)) => "DEL".to_string(),
