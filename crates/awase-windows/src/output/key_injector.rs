@@ -117,45 +117,6 @@ impl KeyInjector {
         let _ = crate::win32::send_input_safe(&inputs);
     }
 
-    /// リテラル文字列を `KEYEVENTF_UNICODE` で直接送信する（`KeyAction::Text` 用）。
-    ///
-    /// 物理 Shift 押下中は「Shift 解放 → VK_PACKET 列 → Shift 復元」を **1 回の
-    /// SendInput** にまとめて bare で届ける。修飾キー押下中の ASCII VK_PACKET は
-    /// Windows Terminal 等の受信側で Shift+キーとして再解釈され破棄される
-    /// （2026-07-07 実機: `Text("K")` の送信ログはあるのに画面に出ない。全角 Ｋ は
-    /// 同じ Shift 押下 + VK_PACKET で届いていた = ASCII のみ死ぬ）ための対策。
-    /// IME モードキー送信の `HeldModifiers` release/restore（`ime.rs`）と同じ手法。
-    ///
-    /// Shift のみ扱う: エンジンは Ctrl/Alt 押下中の文字キーを Shift 面に到達させない
-    /// （`OsModifierHeld` bypass）ため、Text 送信時に押下されうる修飾キーは Shift だけ。
-    pub(crate) fn send_text_direct(&self, s: &str) {
-        use crate::tsf::output::make_key_input_ex;
-        use crate::vk::{VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
-        if self
-            .unicode_cold_defer
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.unicode_cold_deferred.borrow_mut().extend(s.chars());
-            return;
-        }
-        // GetAsyncKeyState は synthetic KeyUp で汚染されるため物理キー状態で判定する
-        // （ime.rs::HeldModifiers::read と同じ理由）。
-        let shift_held = crate::hook::is_physical_key_down(VK_LSHIFT)
-            || crate::hook::is_physical_key_down(VK_RSHIFT);
-        let mut inputs = Vec::with_capacity(s.chars().count() * 4 + 2);
-        if shift_held {
-            inputs.push(make_key_input_ex(VK_SHIFT, true, INJECTED_MARKER));
-        }
-        for ch in s.chars() {
-            Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
-        }
-        if shift_held {
-            inputs.push(make_key_input_ex(VK_SHIFT, false, INJECTED_MARKER));
-            log::debug!("[text-direct] shift held → release/restore 付き bare 送信 (\"{s}\")");
-        }
-        let _ = crate::win32::send_input_safe(&inputs);
-    }
-
     /// PerKey モード: 1文字ずつ個別の SendInput 呼び出し
     #[expect(clippy::unused_self)]
     pub(super) fn send_romaji_per_key(&self, romaji: &str) {

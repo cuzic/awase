@@ -220,6 +220,16 @@ impl Runtime {
     // ── フォーカス変更通知 ──
 
     fn ir_notify_focus_changed(&mut self, skip_imm_query: bool) {
+        // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが
+        // 変わった場合、半角英数状態を他アプリへ持ち越さないよう即座にかな入力へ
+        // 復元する（呼び出し自体を遅延させないという意味で「即座」。復元処理自体は
+        // 既存同様 spawn_local 経由の非同期 retry ループを含むため、この呼び出しが
+        // フォーカス変更処理をブロックすることはない）。物理 Shift が押されている
+        // とは限らないため synthetic Shift up の前置は不要（false）。
+        if self.platform_state.gate.half_width_alnum_toggle_active {
+            log::info!("[shift-conv-guard] FocusChanged 中 → 半角英数トグルを強制解除");
+            self.kp_restore_kana_from_half_width(false);
+        }
         // IMM broken アプリ（Chrome 等）に切り替わった際に input_mode が
         // 前ウィンドウの stale な ObservedKana を引き継いでいると、FocusChanged の ctx で
         // engine が inactive になる。broken アプリでは入力モードを検出できないため、
@@ -286,12 +296,15 @@ impl Runtime {
             );
         }
 
-        // Shift 押下中の IME-ON 半角英数 hold（kp_stage_shift_eisu_hold）中は
-        // OS poll を凍結する。conv=0x00000000 は awase 自身が意図的に設定した
-        // 一時状態であり、観測して belief（input_mode=ObservedEisu 等）に
-        // 反映してはならない。解放時の復元 + 既存の観測経路が事後に整合させる。
-        if self.platform_state.gate.shift_eisu_hold {
-            log::debug!("Skipping observer/SSOT write: shift-eisu hold 中");
+        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
+        // 持続トグル中（`kp_stage_shift_conv_guard`）は OS poll を凍結する。
+        // conv=0x00000000 は awase 自身が意図的に設定した状態であり、観測して
+        // belief（input_mode=ObservedEisu 等）に反映してはならない。解放時の復元 +
+        // 既存の観測経路が事後に整合させる。
+        if self.platform_state.gate.shift_conv_guard_pending
+            || self.platform_state.gate.half_width_alnum_toggle_active
+        {
+            log::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
             return ImeReadStrategy::SkipTyping;
         }
 

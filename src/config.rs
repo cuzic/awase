@@ -73,18 +73,6 @@ pub struct GeneralConfig {
     pub linux_input_backend: String,
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
     pub linux_evdev_device: Option<String>,
-    /// Shift 押下中を「半角英数入力モード」として扱う（IME-ON 半角英数 hold）。
-    ///
-    /// true（デフォルト）: Shift 押下中はプラットフォーム層が IME を IME-ON 半角英数
-    /// （conv=0x0000）へ切り替え、.yab の Shift 面の書き方に従って処遇する:
-    /// - 英数字（`Ｋ` / `'Ｋ'`）→ 素通し = 半角 `K`
-    /// - クォートなし全角記号（`！`）→ 素通し = 半角 `!`
-    /// - クォート付き全角記号・かな（`'！'` / `'ウ'`）→ 書かれたまま確定出力 = 全角 `！` / `ウ`
-    ///
-    /// Shift 解放でかな入力へ自動復帰する。
-    ///
-    /// false: 従来どおり .yab の Shift 面の値を IME 経由で出力する。
-    pub shift_plane_halfwidth: bool,
     /// キーボードの物理レイアウトモデル（"jis" または "us"）。
     ///
     /// .yab のパース時の列数上限チェックと、プラットフォーム層の
@@ -107,9 +95,10 @@ pub struct GeneralConfig {
     ///   で確認済み）。特定の物理キーだけを Alt から切り離して親指シフト専用にする
     ///   運用は、`ModifierState` の左右別トラッキングという設計変更が要る未実装機能。
     /// - `VK_LSHIFT`/`VK_RSHIFT` は `is_os_modifier_held()` の対象外のため
-    ///   `PendingThumb` には到達できるが、Shift を押しっぱなしのまま複数文字を
-    ///   連続入力した場合に既存の「Shift 面」機能（`shift_plane_halfwidth`）と
-    ///   衝突しないかは未検証。
+    ///   `PendingThumb` には到達できるが、左Shift単独タップによる「IME-ON 半角英数」
+    ///   持続トグル（`kp_stage_shift_conv_guard`、Windows platform 層）は
+    ///   `VK_LSHIFT`/`VK_RSHIFT` を直接見て判定するため、これらを親指キーへ
+    ///   割り当てる運用と衝突しないかは未検証。
     /// - 親指キーは「同時打鍵が不成立の単独タップ」時に生の VK を `SendInput` で
     ///   そのまま OS に送る設計（`nicola_fsm.rs` の `timeout_pending_thumb`）。
     ///   無変換/変換は JIS キーボードでは OS 的に無害だからこそ安全に機能している。
@@ -142,7 +131,6 @@ impl Default for GeneralConfig {
             auto_start: "ask".to_string(),
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
-            shift_plane_halfwidth: true,
             keyboard_model: KeyboardModel::Jis,
         }
     }

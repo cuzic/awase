@@ -295,11 +295,14 @@ impl Runtime {
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
         // JISかな化復元（Apply(3)）のレート制限。関数末尾の restore_roman 分岐でのみ使う。
         const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
-        // Shift 押下中の IME-ON 半角英数 hold（kp_stage_shift_eisu_hold）中は凍結する。
-        // conv=0x00000000 は awase 自身が意図的に設定した状態であり、ObservedEisu →
-        // DirectInput（IME OFF 落ち）に反応させてはならない。Shift 解放時の復元が
+        // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
+        // 持続トグル中（`kp_stage_shift_conv_guard`）は凍結する。conv=0x00000000 は
+        // awase 自身が意図的に設定した状態であり、ObservedEisu → DirectInput
+        // （IME OFF 落ち）に反応させてはならない。Shift 解放時の復元が
         // explicit IME action として抑止を引き継ぐ。
-        if self.platform_state.gate.shift_eisu_hold {
+        if self.platform_state.gate.shift_conv_guard_pending
+            || self.platform_state.gate.half_width_alnum_toggle_active
+        {
             return;
         }
         let in_flight = self.platform.output_in_flight_ms();
@@ -602,20 +605,29 @@ impl Runtime {
                 matches!(action, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
             ) {
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
-                    tick_ms,
-                );
-                log::info!(
-                    "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
-                     リセット (UserTurnOnEisuReset)"
-                );
+                // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
+                // スキップしてトグルOFF処理そのものを呼ぶ。実convとbeliefの整合を保つ
+                // ため（2026-07-11 codexレビュー: 単に書き戻すとbeliefだけromaji-capable
+                // に戻り実convは半角英数のままの壊れた中間状態になる）。
+                if self.platform_state.gate.half_width_alnum_toggle_active {
+                    log::info!("[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                    self.kp_restore_kana_from_half_width(false);
+                } else {
+                    self.platform_state.ime.dispatch_event(
+                        crate::state::ime_event::ImeEvent::InputModeApplied {
+                            mode: new_mode,
+                            strategy:
+                                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
+                            result: crate::state::ime_event::InputModeApplyResult::Applied,
+                            at: tick_ms,
+                        },
+                        tick_ms,
+                    );
+                    log::info!(
+                        "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
+                         リセット (UserTurnOnEisuReset)"
+                    );
+                }
             }
             return false;
         }
@@ -632,19 +644,27 @@ impl Runtime {
             !current && self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
         ) {
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::InputModeApplied {
-                    mode: new_mode,
-                    strategy: crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
-                    result: crate::state::ime_event::InputModeApplyResult::Applied,
-                    at: tick_ms,
-                },
-                tick_ms,
-            );
-            log::info!(
-                "[shadow-toggle] IME ON + ObservedEisu → AssumedRomaji にリセット \
-                 (UserImeOnEisuReset, engine 即活性化)"
-            );
+            // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
+            // スキップしてトグルOFF処理そのものを呼ぶ（E節の理由は上の分岐と同じ）。
+            if self.platform_state.gate.half_width_alnum_toggle_active {
+                log::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                self.kp_restore_kana_from_half_width(false);
+            } else {
+                self.platform_state.ime.dispatch_event(
+                    crate::state::ime_event::ImeEvent::InputModeApplied {
+                        mode: new_mode,
+                        strategy:
+                            crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
+                        result: crate::state::ime_event::InputModeApplyResult::Applied,
+                        at: tick_ms,
+                    },
+                    tick_ms,
+                );
+                log::info!(
+                    "[shadow-toggle] IME ON + ObservedEisu → AssumedRomaji にリセット \
+                     (UserImeOnEisuReset, engine 即活性化)"
+                );
+            }
         }
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
@@ -753,24 +773,34 @@ impl Runtime {
                 applied && new_ime_on,
                 self.platform_state.ime.input_mode(),
             ) {
-                // これは外部観測ではなく、awase 自身が直前に発行した SetOpen(true) の
-                // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
-                // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
-                // 存在しない API 呼び出しを偽装することになる)。
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
-                    tick_ms,
-                );
-                log::info!(
-                    "[post-decision] SetOpen(true) + ObservedEisu → AssumedRomaji にリセット \
-                     (engine 即活性化)"
-                );
+                // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
+                // スキップしてトグルOFF処理そのものを呼ぶ（E節、shadow_ime_toggle側の
+                // 2箇所と同じ理由）。
+                if self.platform_state.gate.half_width_alnum_toggle_active {
+                    log::info!(
+                        "[post-decision] SetOpen(true)（半角英数トグルON中）→ トグルOFF処理へ委譲"
+                    );
+                    self.kp_restore_kana_from_half_width(false);
+                } else {
+                    // これは外部観測ではなく、awase 自身が直前に発行した SetOpen(true) の
+                    // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
+                    // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
+                    // 存在しない API 呼び出しを偽装することになる)。
+                    self.platform_state.ime.dispatch_event(
+                        crate::state::ime_event::ImeEvent::InputModeApplied {
+                            mode: new_mode,
+                            strategy:
+                                crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
+                            result: crate::state::ime_event::InputModeApplyResult::Applied,
+                            at: tick_ms,
+                        },
+                        tick_ms,
+                    );
+                    log::info!(
+                        "[post-decision] SetOpen(true) + ObservedEisu → AssumedRomaji にリセット \
+                         (engine 即活性化)"
+                    );
+                }
             }
         }
 
@@ -782,54 +812,109 @@ impl Runtime {
             log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
-        self.kp_stage_shift_eisu_hold(event);
+        self.kp_stage_shift_conv_guard(event);
     }
 
-    /// Shift 押下中の IME-ON 半角英数切替（shift_plane_halfwidth の platform 側実装）。
+    /// Shift 押下→解放間の IME conv 安全網、および左Shift単独タップによる
+    /// 「IME-ON 半角英数」持続トグル判定（BUG-15 撤去 + 新機能、2026-07-11）。
     ///
-    /// ユーザー要望 (2026-07-07): 「SHIFT DOWN 中は半角英数入力（IME-ON のまま、
-    /// IME-OFF 直接入力ではない）、SHIFT UP したあとは親指シフトのかな入力」。
+    /// # 安全網（両Shift・チョード問わず無条件）
     ///
-    /// 方式: Shift KeyDown で MS-IME の変換モードを半角英数（conv=0x00000000、
-    /// IME は ON のまま）へ切り替え、Shift 面の ASCII キーはエンジンが素通しする
-    /// （`shift_face_reduce`）。出力は IME 自身が行うため、KEYEVENTF_UNICODE 注入が
-    /// Windows Terminal で不達になる問題（BUG-15 追補2: ASCII の VK_PACKET は
-    /// Shift 解放/復元付き bare 送信でも落とされる）を構造的に回避する。
-    /// Shift KeyUp で conv をかな入力へ復元する（verify-retry、実機動作確認済み）。
+    /// MS-IME は（設定で無効化不可能な）「Shift 単独タップで英数モードに切替える」
+    /// 誤検知を持つ。awase が Shift+文字キーのチョード（`.yab` Shift 面）を engine で
+    /// consume すると、OS からは「Shift down→（何も見えない）→Shift up」に見え、
+    /// この誤検知が発火する。これを打ち消すため、物理 Shift（L/R 問わず）の
+    /// 押下→解放のたびに無条件で conv を英数へ→かなへ書き戻す（BUG-15 旧
+    /// `kp_stage_shift_eisu_hold` の無条件挙動を維持）。engine の `input_mode`
+    /// belief には触れないため、engine は常時アクティブなまま Shift+文字のチョード
+    /// （`should_use_shift_plane`/`shift_face_reduce`）を通常通り処理し続ける。
     ///
-    /// これにより MS-IME の「Shift 単独タップで英数切替」の誤発動問題（BUG-15 本体:
-    /// awase がキーを consume して単独タップに見える）も吸収される — hold 中は
-    /// awase 自身が英数へ切り替えており、解放時に必ずかなへ復元するため。
-    fn kp_stage_shift_eisu_hold(&mut self, event: &RawKeyEvent) {
+    /// # 左Shift単独タップの持続トグル
+    ///
+    /// 左Shift の押下→解放の間に他の非注入物理キーが一切来なかった場合のみ
+    /// 「単独タップ」と判定し、上記の復元を**キャンセル**して代わりに
+    /// `half_width_alnum_toggle_active` を立てる（IME-ON 半角英数の持続トグルへ
+    /// 移行）。もう一度単独タップしたら通常の復元を実行してトグルを解除する。
+    /// 右Shift単独タップ・チョードの場合は常に安全網通り即座に復元する（右Shift
+    /// タップはトグルの「緊急解除」としても働く）。
+    fn kp_stage_shift_conv_guard(&mut self, event: &RawKeyEvent) {
         use awase::types::ModifierKey;
+
+        // Shift 以外の物理キー（VK_LSHIFT 自身を除く）の KeyDown で単独タップ候補を
+        // 折る。VK_RSHIFT も対象（LShift down → RShift down → LShift up を誤って
+        // 単独タップ扱いしないため、2026-07-11 codex レビュー指摘）。自己注入は対象外
+        // （BUG-14 と同じ理由: 他プロセスの SendInput をユーザーの物理操作として
+        // 扱わない）。
+        if matches!(event.event_type, KeyEventType::KeyDown)
+            && !event.injected
+            && event.vk_code != crate::vk::VK_LSHIFT
+        {
+            self.platform_state.gate.left_shift_tap_candidate = false;
+        }
+
         if event.modifier_key != Some(ModifierKey::Shift) || event.injected {
             return;
         }
         if matches!(event.event_type, KeyEventType::KeyDown) {
-            if self.platform_state.gate.shift_eisu_hold {
-                return; // Shift 長押しの auto-repeat KeyDown
-            }
-            // Ctrl/Alt/Win チョード（ショートカット）では発動しない。
-            if event.modifier_snapshot.ctrl
-                || event.modifier_snapshot.alt
-                || event.modifier_snapshot.win
-            {
-                return;
-            }
-            // かな入力コンテキストのみ: MS-IME × IME ON × エンジン有効 × conv 書込権限。
-            if crate::tsf::observer::gji_is_active_ime()
-                || !self.platform_state.ime.effective_open()
-                || !self.platform_state.ime.belief.is_japanese_ime()
-                || !self.engine.is_user_enabled()
-                || !self.platform.output.conv_mutation_allowed.get()
-            {
-                return;
-            }
-            self.platform_state.gate.shift_eisu_hold = true;
-            let now_tick = crate::state::TickMs(hook::current_tick_ms());
-            self.platform_state.ime.note_explicit_ime_action(now_tick);
-            log::info!("[shift-eisu] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
-            // 入口は IMC write のみで行う。
+            self.kp_shift_conv_guard_key_down(event);
+            return;
+        }
+        self.kp_shift_conv_guard_key_up(event);
+    }
+
+    fn kp_shift_conv_guard_key_down(&mut self, event: &RawKeyEvent) {
+        // 左Shift・他modifier無し → タップ候補開始。
+        if event.vk_code == crate::vk::VK_LSHIFT
+            && !event.modifier_snapshot.ctrl
+            && !event.modifier_snapshot.alt
+            && !event.modifier_snapshot.win
+        {
+            self.platform_state.gate.left_shift_tap_candidate = true;
+        }
+
+        // Ctrl/Alt/Win チョード（ショートカット）では安全網自体を発動しない。
+        if event.modifier_snapshot.ctrl
+            || event.modifier_snapshot.alt
+            || event.modifier_snapshot.win
+        {
+            return;
+        }
+
+        // 常に pending を立てる: `half_width_alnum_toggle_active` 中でも、この
+        // Shift down に対応する KeyUp でトグルOFF/右Shift緊急解除の判定を走らせる
+        // 必要がある。立て忘れると KeyUp 側の `take()` が false になり、2回目の
+        // 左Shiftタップも右Shift緊急解除も一切発火しなくなる
+        // （2026-07-11 codex レビューで発覚）。
+        self.platform_state.gate.shift_conv_guard_pending = true;
+
+        if self.platform_state.gate.half_width_alnum_toggle_active {
+            // 既に conv=0x0000 のはず。再送はしない（冪等化、無駄な書き込み回避）。
+            return;
+        }
+
+        // かな入力コンテキストのみ: IME ON・engine 有効・conv 書込権限。
+        if !self.platform_state.ime.effective_open()
+            || !self.platform_state.ime.belief.is_japanese_ime()
+            || !self.engine.is_user_enabled()
+            || !self.platform.output.conv_mutation_allowed.get()
+        {
+            self.platform_state.gate.shift_conv_guard_pending = false;
+            return;
+        }
+
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        self.platform_state.ime.note_explicit_ime_action(now_tick);
+        log::info!("[shift-conv-guard] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
+
+        if crate::tsf::observer::gji_is_active_ime() {
+            // GJI: 既存 TSF warmup 経路と同じ scan 付き VK_DBE_ALPHANUMERIC 注入を
+            // 流用する。実 IME が確実に ON であることは直前の effective_open() ガード
+            // で確認済み（BUG-15 追補7の教訓: 実 IME が OFF の文脈での scan 付き
+            // DBE キー注入は CapsLock 汚染を招くため厳禁）。この経路は実機未検証。
+            let _ =
+                crate::tsf::send::send_vk_dbe_alpha_warmup(awase::engine::Charset::HankakuAlpha);
+        } else {
+            // MS-IME: 入口は IMC write のみで行う。
             //
             // 撤回済みの試行（2026-07-07）: VK_DBE_ALPHANUMERIC + VK_DBE_SBCSCHAR の
             // scan 付き注入（順序保証目的、追補6）は、**実 IME が OFF の文脈に着弾
@@ -845,15 +930,59 @@ impl Runtime {
             win32_async::spawn_local(async {
                 let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
                 if !ok {
-                    log::warn!("[shift-eisu] conv→0x0000 切替に失敗 (IMC_SETCONVERSIONMODE)");
+                    log::warn!("[shift-conv-guard] conv→0x0000 切替に失敗 (IMC_SETCONVERSIONMODE)");
                 }
             });
+        }
+    }
+
+    fn kp_shift_conv_guard_key_up(&mut self, event: &RawKeyEvent) {
+        if !std::mem::take(&mut self.platform_state.gate.shift_conv_guard_pending) {
             return;
         }
-        // Shift KeyUp: hold 中だった場合のみ、かな入力へ復元する。
-        if !std::mem::take(&mut self.platform_state.gate.shift_eisu_hold) {
+        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
+            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        self.platform_state.gate.left_shift_tap_candidate = false;
+
+        if is_left_shift_tap && !self.platform_state.gate.half_width_alnum_toggle_active {
+            // 本物の単独タップ、1回目 → 復元をスキップして持続トグルへ移行する。
+            self.platform_state.gate.half_width_alnum_toggle_active = true;
+            log::info!(
+                "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 維持)"
+            );
+            let now_tick = crate::state::TickMs(hook::current_tick_ms());
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::InputModeApplied {
+                    mode: InputModeState::ObservedEisu,
+                    strategy:
+                        crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                    result: crate::state::ime_event::InputModeApplyResult::Applied,
+                    at: now_tick,
+                },
+                now_tick,
+            );
             return;
         }
+
+        // 2回目の左Shiftタップ（トグルOFF）・チョード・右Shift（トグルの緊急解除も
+        // 兼ねる）: 常に安全網の復元を実行する。
+        self.kp_restore_kana_from_half_width(true);
+    }
+
+    /// 「IME-ON 半角英数」からかな入力への復元（トグルOFF・安全網の復元の共通処理）。
+    ///
+    /// 責務は belief 更新 + 復元注入 + `half_width_alnum_toggle_active=false` に
+    /// 限定する（2026-07-11 codex レビュー: `kp_stage_shadow_ime_toggle` /
+    /// `kp_stage_post_decision` 側の既存の物理キー disposition 処理と二重に
+    /// 物理キーを扱わないようにするため）。
+    ///
+    /// `prepend_synthetic_shift_up`: 呼び出し元がまだ物理 Shift up の reinject を
+    /// 行っていない（＝ OS 視点でまだ Shift 押下中）場合は true にする。
+    /// `kp_shift_conv_guard_key_up` から呼ぶ場合は常に true、フォーカス変更や他の
+    /// IME-ON キー起点（E/F 節）から呼ぶ場合は物理 Shift が押されているとは
+    /// 限らないため false。
+    pub(crate) fn kp_restore_kana_from_half_width(&mut self, prepend_synthetic_shift_up: bool) {
+        self.platform_state.gate.half_width_alnum_toggle_active = false;
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
         // idle-conv-check が復元途中の conv=0x0000 を読んで ObservedEisu →
         // DirectInput に落とさないよう、明示的 IME 操作として抑止する。
@@ -864,7 +993,7 @@ impl Runtime {
             .output
             .ime_mode_fsm
             .borrow_mut()
-            .unconfirm("shift-eisu release");
+            .unconfirm("shift-conv-guard release");
         // IMC の conv write だけでは新 MS-IME (TSF-native) の実モードが英数から戻らない
         // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
         // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
@@ -876,23 +1005,48 @@ impl Runtime {
         // 処理しない（2026-07-07 実機: [ime-mode] SendInput vk=0xF2 scan=0x0 発火後も
         // 半角英数のまま。物理かなキーの reinject (scan=0x70) と TSF warmup の F2
         // (make_tsf_key_input) は効く — 差分は scan の有無のみ）。
-        // 下の IMC write/verify は保険として残す。
-        let f2_inputs = [
-            // この時点では物理 Shift up の reinject が未実行（kp_stage_execute は後）で、
-            // OS 視点ではまだ Shift 押下中。Shift+ひらがなキー = カタカナ切替に
-            // 化けないよう、synthetic Shift up を同一バッチの先頭に入れる
-            // （物理は解放済みなので restore 不要。後続の本物の Shift up reinject と
-            // 二重になるが KeyUp の重複は無害）。
-            crate::tsf::output::make_tsf_key_input(crate::vk::VK_SHIFT, true),
-            crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_HIRAGANA, false),
-            crate::tsf::output::make_tsf_key_input(crate::vk::VK_DBE_HIRAGANA, true),
-        ];
-        let _ = crate::win32::send_input_safe(&f2_inputs);
-        log::debug!("[shift-release] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元");
+        // 下の IMC write/verify は保険として残す（GJI では未検証、無効でも実害は
+        // ログ警告のみ）。
+        //
+        // ただし scan 付き VK_DBE_HIRAGANA 注入自体にもハザードがある
+        // （known-bugs.md BUG-15 追補7: 「解放側 F2=scan 0x70 も実 OFF でかなロック
+        // トグルの同族ハザード」）。実 IME が確実に ON でない限り注入してはならない
+        // という追補7の教訓を、hold 中より窓が長い持続トグルにも徹底するため、
+        // `effective_open()==false` の場合は注入をスキップし IMC write のみに
+        // 留める（フォーカス変更で他アプリに切り替わった直後等を想定）。
+        if self.platform_state.ime.effective_open() {
+            let mut f2_inputs = Vec::with_capacity(3);
+            if prepend_synthetic_shift_up {
+                // 呼び出し元が物理 Shift up の reinject をまだ行っていない場合、OS
+                // 視点ではまだ Shift 押下中。Shift+ひらがなキー = カタカナ切替に
+                // 化けないよう、synthetic Shift up を同一バッチの先頭に入れる
+                // （物理は解放済みなので restore 不要。後続の本物の Shift up
+                // reinject と二重になるが KeyUp の重複は無害）。
+                f2_inputs.push(crate::tsf::output::make_tsf_key_input(
+                    crate::vk::VK_SHIFT,
+                    true,
+                ));
+            }
+            f2_inputs.push(crate::tsf::output::make_tsf_key_input(
+                crate::vk::VK_DBE_HIRAGANA,
+                false,
+            ));
+            f2_inputs.push(crate::tsf::output::make_tsf_key_input(
+                crate::vk::VK_DBE_HIRAGANA,
+                true,
+            ));
+            let _ = crate::win32::send_input_safe(&f2_inputs);
+            log::debug!("[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元");
+        } else {
+            log::debug!(
+                "[shift-conv-guard] effective_open()=false のため VK_DBE_HIRAGANA 注入をスキップ \
+                 (IMC write のみ、BUG-15 追補7の教訓)"
+            );
+        }
         // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
-        // 注意: hold 中の conv 読み取りで conv_mode が HanAlpha に更新されている場合、
-        // imm_conv_target は None → ひらがな target になる（hold 前がカタカナだった
-        // 記憶は失われる。エッジケースとして許容）。
+        // 注意: 半角英数中の conv 読み取りで conv_mode が HanAlpha に更新されている
+        // 場合、imm_conv_target は None → ひらがな target になる（切替前がカタカナ
+        // だった記憶は失われる。エッジケースとして許容）。
         let target = self
             .platform
             .output
@@ -904,7 +1058,20 @@ impl Runtime {
                     | crate::imm::IME_CMODE_FULLSHAPE
                     | crate::imm::IME_CMODE_ROMAN,
             );
-        log::info!("[shift-release] Shift 解放 → かな入力へ復元 (target=0x{target:08X})");
+        log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
+
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InputModeApplied {
+                mode: InputModeState::AssumedRomaji {
+                    reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
+                },
+                strategy: crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                result: crate::state::ime_event::InputModeApplyResult::Applied,
+                at: now_tick,
+            },
+            now_tick,
+        );
+
         win32_async::spawn_local(async move {
             // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
             // idle-conv-check で観測 = 上限 478ms）。冪等な IMC write を
@@ -915,7 +1082,7 @@ impl Runtime {
             for attempt in 0..MAX_TRIES {
                 let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
                 if !ok {
-                    log::warn!("[shift-release] conv 復元 write #{attempt} 失敗");
+                    log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
                 }
                 win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
                 let conv = win32_async::offload(|| unsafe {
@@ -925,13 +1092,13 @@ impl Runtime {
                 if let Some(c) = conv {
                     if c & crate::imm::IME_CMODE_NATIVE != 0 {
                         log::debug!(
-                            "[shift-release] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
+                            "[shift-conv-guard] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
                         );
                         return;
                     }
                 }
             }
-            log::warn!("[shift-release] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+            log::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
         });
     }
 

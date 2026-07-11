@@ -237,6 +237,16 @@ pub enum InputModeApplyStrategy {
     ///
     /// 判定は `state::eisu_recovery::eisu_reset_on_turn_on_while_open` に集約。
     UserTurnOnEisuReset,
+    /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの ON/OFF。
+    ///
+    /// トグルONで `ObservedEisu`（Engineを`Inactive(NotRomajiInput)`へ誘導し、
+    /// `SetOpen`を発行させずに素通りさせる）、トグルOFFで `AssumedRomaji` 系へ
+    /// 遷移させる。IME の open/close を一切変更しないため、
+    /// `state::eisu_recovery` の「IME を ON にする経路」対応表・
+    /// `tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset`
+    /// の対象外（SetOpenを経由しないため、対になる eisu 救済の配線は不要）。
+    /// 判定・発火箇所は `runtime/key_pipeline.rs::kp_stage_shift_conv_guard`。
+    UserHalfWidthAlnumToggle,
 }
 
 /// `InputModeApplied` event における適用結果。

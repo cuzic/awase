@@ -19,6 +19,9 @@
 //! 12. GJI I/O 観測 (GjiIoInference) が ObservedEisu を自己回復する
 //! 13. hwnd キャッシュ復元は stale ObservedEisu をそのまま再注入しない (cache_restore_eisu_guard)
 //! 14. IME が既に open のまま TurnOn キーを受けても ObservedEisu から回復する (UserTurnOnEisuReset)
+//! 15. 左Shift単独タップによる「IME-ON 半角英数」持続トグル: ObservedEisu へ切替えても
+//!     IME は open のまま維持され (SetOpen を経由しない)、トグルOFF で romaji-capable に
+//!     復帰する (UserHalfWidthAlnumToggle)
 //!
 //! ## 実装状況
 //!
@@ -624,5 +627,68 @@ fn scenario_14_turn_on_while_open_recovers_stale_eisu() {
     assert!(
         recovered.input_mode().is_romaji_capable(),
         "UserTurnOnEisuReset で romaji-capable に回復し engine が活性化できる"
+    );
+}
+
+/// シナリオ15: 左Shift単独タップによる「IME-ON 半角英数」持続トグル
+/// (`kp_stage_shift_conv_guard` の belief 側の核心部分)。
+///
+/// `kp_shift_conv_guard_key_up` が単独タップを検知すると `InputModeApplied
+/// { mode: ObservedEisu, strategy: UserHalfWidthAlnumToggle }` を dispatch する。
+/// この belief 変更は `SetOpen` effect を一切経由しないため、`Engine::compute_state`
+/// は `Inactive(NotRomajiInput)` で engine を素通りモードにしつつ、`effective_open()`
+/// は true のまま維持される（`transition_activation` の `suppress_set_open` 分岐、
+/// `src/engine/engine.rs:98-112,165-188`）。もう一度タップすると
+/// `kp_restore_kana_from_half_width` が `AssumedRomaji { UserHalfWidthAlnumToggleOff }`
+/// へ戻し、romaji-capable に復帰する。
+#[test]
+fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+    use awase_windows::state::TickMs;
+
+    // 前提: IME は既に ON でローマ字入力可能（通常のかな入力中）。
+    let toggled_on = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+    ]);
+    assert!(
+        toggled_on.effective_open(),
+        "半角英数トグルON は SetOpen を経由しないため IME は open のまま維持される"
+    );
+    assert!(
+        !toggled_on.input_mode().is_romaji_capable(),
+        "ObservedEisu へ切り替わり engine は NotRomajiInput で inactive になる"
+    );
+
+    // もう一度タップ（トグルOFF）。
+    let toggled_off = run_reducer(vec![
+        focus_changed(ImePolicyProfile::Imm32Unavailable),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(10),
+        },
+    ]);
+    assert!(toggled_off.effective_open(), "IME ON は一貫して維持される");
+    assert!(
+        toggled_off.input_mode().is_romaji_capable(),
+        "トグルOFF で romaji-capable に復帰し engine が再度活性化できる"
     );
 }
