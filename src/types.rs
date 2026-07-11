@@ -218,12 +218,6 @@ pub enum KeyAction {
     Romaji(String),
     /// キーシーケンスとして出力（IME がキーストロークを変換する）
     KeySequence(String),
-    /// リテラル文字列を IME を経由せず直接出力する（Windows: `KEYEVENTF_UNICODE`）。
-    ///
-    /// `Char` と違い、かな→ローマ字変換も記号→VK 変換もせず、IME の変換モードに
-    /// かかわらず確定文字として届ける。Shift 面の半角英数出力
-    /// （`shift_plane_halfwidth`）が主な用途: IME ON 中でも composition に入らない。
-    Text(String),
 }
 
 impl KeyAction {

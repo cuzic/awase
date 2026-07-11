@@ -1236,6 +1236,15 @@ pub struct CompositionSnapshot {
     pub sentence_mode: Option<u32>,
 }
 
+/// Caps Lock のロック状態（トグル表示灯）を読む。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn is_caps_lock_on() -> bool {
+    windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0
+}
+
 /// Caps Lock の状態をトグルする。
 ///
 /// # Safety

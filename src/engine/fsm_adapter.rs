@@ -93,11 +93,6 @@ impl FsmAdapter {
         self.fsm.set_engine_off_triple_vk(vk);
     }
 
-    /// Shift 面の出力を半角英数リテラル（`Text`）に変換するかを設定する。
-    pub(super) const fn set_shift_plane_halfwidth(&mut self, enable: bool) {
-        self.fsm.set_shift_plane_halfwidth(enable);
-    }
-
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         self.fsm.take_engine_off_requested()

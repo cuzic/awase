@@ -694,19 +694,20 @@ fn test_shift_held_uses_shift_face() {
     // Shift を押下
     engine.on_event(Ev::down(VK_SHIFT).build());
 
-    // Shift 面に定義がある文字キー → Shift 面の文字が出力される
-    // （shift_plane_halfwidth デフォルト有効: かな literal は Text で確定出力）
+    // Shift 面に定義がある文字キー → Shift 面の文字が IME 経由でそのまま出力される
+    // （BUG-15 の「hold 中は IME-ON 半角英数」撤去後、shift_face_reduce 本来の
+    // 挙動＝.yab の値をそのまま Reduce する、2026-07-11）。
     let result = engine.on_event(Ev::down(VK_A).build());
     result.assert_consumed();
     assert_eq!(result.actions.len(), 1);
-    assert!(matches!(&result.actions[0], KeyAction::Text(s) if s == "ウ"));
+    assert!(matches!(result.actions[0], KeyAction::Char('ウ')));
 }
 
 #[test]
-fn test_shift_face_fullwidth_ascii_passes_through() {
-    // Shift 押下中は半角英数入力（shift_plane_halfwidth=true デフォルト）:
-    // ASCII 相当の Shift 面キーはエンジン非介入で素通しし、プラットフォーム層が
-    // IME を半角英数モード（IME-ON conv=0x0000）に切り替えて IME 自身に打たせる。
+fn test_shift_face_returns_literal_via_ime() {
+    // Shift 面の literal は .yab に書かれたまま Char で IME 経由に確定出力する
+    // （BUG-15 撤去により、これが Shift 面の唯一の挙動になった。旧
+    // `test_shift_face_halfwidth_disabled_keeps_literal` を改称・簡略化）。
     let mut layout = make_layout();
     layout.shift.insert(POS_A, lit('Ｋ'));
     let mut engine = TestHarness {
@@ -719,105 +720,12 @@ fn test_shift_face_fullwidth_ascii_passes_through() {
             ConfirmMode::Wait,
             30,
         ),
-    };
-
-    engine.on_event(Ev::down(VK_SHIFT).build());
-    engine
-        .on_event(Ev::down(VK_A).build())
-        .assert_pass_through();
-}
-
-#[test]
-fn test_shift_face_halfwidth_disabled_keeps_literal() {
-    // shift_plane_halfwidth=false なら従来どおり .yab の値をそのまま出力する。
-    let mut layout = make_layout();
-    layout.shift.insert(POS_A, lit('Ｋ'));
-    let mut fsm = NicolaFsm::new(
-        layout,
-        VK_NONCONVERT,
-        VK_CONVERT,
-        100,
-        ConfirmMode::Wait,
-        30,
-    );
-    fsm.set_shift_plane_halfwidth(false);
-    let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(),
-        engine: fsm,
     };
 
     engine.on_event(Ev::down(VK_SHIFT).build());
     let result = engine.on_event(Ev::down(VK_A).build());
     result.assert_consumed();
     assert!(matches!(result.actions[0], KeyAction::Char('Ｋ')));
-}
-
-#[test]
-fn test_shift_face_kana_literal_emits_text() {
-    // Shift 面のかな literal は .yab に書かれたまま Text で確定出力する
-    // （shift-eisu hold 中は IME が半角英数のため IME 経由の compose は成立しない。
-    // 非 ASCII の Text は VK_PACKET で届く）。
-    let mut engine = make_engine_with_shift();
-    engine.on_event(Ev::down(VK_SHIFT).build());
-    let result = engine.on_event(Ev::down(VK_A).build());
-    result.assert_consumed();
-    assert!(
-        matches!(&result.actions[0], KeyAction::Text(s) if s == "ウ"),
-        "expected Text(\"ウ\"), got {:?}",
-        result.actions[0]
-    );
-}
-
-#[test]
-fn test_shift_face_fullwidth_symbol_literal_emits_fullwidth_text() {
-    // クォート付き全角記号 '！' は .yab に書かれたまま全角で確定出力する
-    // （ユーザー要望 2026-07-07: Shift+1 で 全角！）。
-    let mut layout = make_layout();
-    layout.shift.insert(POS_A, lit('！'));
-    let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(
-            layout,
-            VK_NONCONVERT,
-            VK_CONVERT,
-            100,
-            ConfirmMode::Wait,
-            30,
-        ),
-    };
-    engine.on_event(Ev::down(VK_SHIFT).build());
-    let result = engine.on_event(Ev::down(VK_A).build());
-    result.assert_consumed();
-    assert!(
-        matches!(&result.actions[0], KeyAction::Text(s) if s == "！"),
-        "expected Text(\"！\"), got {:?}",
-        result.actions[0]
-    );
-}
-
-#[test]
-fn test_shift_face_halfwidth_symbol_passes_through() {
-    // クォートなし全角記号（パース時に半角化され KeySequence("!") になる）は
-    // 素通し → IME-ON 半角英数の素のキー入力として半角 ! が出る。
-    let mut layout = make_layout();
-    layout
-        .shift
-        .insert(POS_A, crate::yab::YabValue::KeySequence("!".to_string()));
-    let mut engine = TestHarness {
-        tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(
-            layout,
-            VK_NONCONVERT,
-            VK_CONVERT,
-            100,
-            ConfirmMode::Wait,
-            30,
-        ),
-    };
-    engine.on_event(Ev::down(VK_SHIFT).build());
-    engine
-        .on_event(Ev::down(VK_A).build())
-        .assert_pass_through();
 }
 
 #[test]

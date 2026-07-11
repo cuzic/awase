@@ -29,6 +29,10 @@ pub enum AssumedReason {
     AppKindExcluded,
     /// 強制 ON ガード中（連続検出失敗による）
     ForceOnGuardActive,
+    /// 左Shift単独タップによる「IME-ON 半角英数」トグルOFF直後。
+    /// awase 自身が VK_DBE_HIRAGANA 注入 + conv 復元 write でかな入力へ戻した
+    /// 直後の仮定値（後続の観測が再確認・再訂正する）。
+    UserHalfWidthAlnumToggleOff,
 }
 
 impl InputModeState {

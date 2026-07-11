@@ -48,6 +48,17 @@
 //! ための保護。ここの救済は「ユーザーが**たった今**明示的に IME を ON にした」瞬間のみ
 //! 発火するため、保護対象と衝突しない（IME-ON 直後の GJI/MS-IME はひらがなモードで
 //! 再開するため、過去の英数観測は必ず stale）。
+//!
+//! ## `InputModeApplyStrategy::UserHalfWidthAlnumToggle` は対応表の対象外
+//!
+//! 左Shift単独タップによる「IME-ON 半角英数」持続トグル（`kp_stage_shift_conv_guard`）は
+//! `ObservedEisu` へ意図的に belief を誘導する経路だが、`SetOpen` を一切発行しない
+//! （IME の open/close 状態を変えない、Engine を `NotRomajiInput` で素通りさせるだけ）。
+//! 上記の対応表は「IME を OFF→ON にする経路」に対する stale `ObservedEisu` 救済の
+//! 対称性を扱うものであり、本トグルは open/close 遷移を伴わないため対象外。
+//! トグルOFF自体（`ObservedEisu → AssumedRomaji`）は救済ではなく awase 自身の
+//! 能動的な意図的遷移であり、`tests/architecture_guard.rs` の
+//! `user_ime_on_paths_are_paired_with_eisu_reset` の監視対象にも含めない。
 
 use awase::engine::{AssumedReason, InputModeState};
 

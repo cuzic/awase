@@ -111,9 +111,6 @@ impl Output {
                 KeyAction::KeySequence(s) => {
                     log::trace!("macOS output: KeySequence(\"{s}\")");
                 }
-                KeyAction::Text(s) => {
-                    log::trace!("macOS output: Text(\"{s}\") via CGEvent::set_string (literal)");
-                }
             }
         }
     }

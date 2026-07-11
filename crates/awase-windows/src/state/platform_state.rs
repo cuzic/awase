@@ -919,13 +919,29 @@ pub(crate) struct GateStore {
     pub post_bypass_passthrough: bool,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
-    /// Shift 押下中の IME-ON 半角英数 hold が有効か（`kp_stage_shift_eisu_hold`）。
+    /// 今回の左Shift downが単独タップ候補か（`kp_stage_shift_conv_guard`）。
     ///
-    /// Shift KeyDown で awase が conv=0x00000000（IME-ON 半角英数）へ切り替えたとき
-    /// true。Shift KeyUp で take してかな入力（conv=0x19 等）へ復元する。
-    /// hold 中は idle-conv-check の ObservedEisu 反応（DirectInput 落ち）を凍結する
-    /// — conv=0x0000 は awase 自身の意図的な状態のため。
-    pub shift_eisu_hold: bool,
+    /// 左Shift KeyDownでtrueにセットし、Shift保持中に`VK_LSHIFT`/`VK_RSHIFT`以外の
+    /// 非注入物理KeyDownが来たらfalseに倒す（チョード判定）。左Shift KeyUp時に
+    /// これがtrueのままなら「本物の単独タップ」として半角英数トグルの対象にする。
+    pub left_shift_tap_candidate: bool,
+    /// 今回のShift downに対応する復元処理が必要か（`kp_stage_shift_conv_guard`）。
+    ///
+    /// Shift KeyDownで awase が conv=0x00000000（IME-ON 半角英数）へ切り替えたとき
+    /// true。Shift KeyUpで`std::mem::take`し、trueならKeyUp側の復元/トグル判定を
+    /// 走らせる。**`half_width_alnum_toggle_active`とは独立**（トグルON中の
+    /// Shift downでも必ずtrueにする——立てないとKeyUp側でトグルOFF/右Shift緊急解除が
+    /// 発火しなくなる、2026-07-11 codexレビューで発覚）。
+    pub shift_conv_guard_pending: bool,
+    /// 左Shift単独タップによる「IME-ON半角英数」持続トグルが有効か。
+    ///
+    /// `shift_conv_guard_pending`と違い、Shift keyup後も左Shiftの次の単独タップ
+    /// （または右Shiftタップ/フォーカス変更による緊急解除）まで true であり続ける。
+    /// true の間、`platform_state.ime.input_mode()`はObservedEisuへ誘導され
+    /// Engineが`Inactive(NotRomajiInput)`で素通りになる（IMEはbelief上ONのまま）。
+    /// idle-conv-check / ime_refresh の OS poll を凍結する（`shift_conv_guard_pending`
+    /// と同じ理由: conv=0x0000は awase自身の意図的な状態のため）。
+    pub half_width_alnum_toggle_active: bool,
 }
 
 impl GateStore {
@@ -934,7 +950,9 @@ impl GateStore {
             last_hook_activity_ms: 0,
             post_bypass_passthrough: false,
             sync_key_gate: SyncKeyGate::new(),
-            shift_eisu_hold: false,
+            left_shift_tap_candidate: false,
+            shift_conv_guard_pending: false,
+            half_width_alnum_toggle_active: false,
         }
     }
 }

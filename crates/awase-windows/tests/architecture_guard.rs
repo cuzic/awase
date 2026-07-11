@@ -152,6 +152,11 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 /// - `key_pipeline.rs` (post-decision)             → `InputModeApplyStrategy::PostSetOpenEisuReset`
 /// - `key_pipeline.rs` (shadow toggle OFF→ON)      → `InputModeApplyStrategy::UserImeOnEisuReset`
 /// - `key_pipeline.rs` (shadow toggle no-op/TurnOn)→ `InputModeApplyStrategy::UserTurnOnEisuReset`
+/// - `key_pipeline.rs` (左Shift単独タップ、トグルON)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///   (`ObservedEisu` へ、`kp_shift_conv_guard_key_up`)
+/// - `key_pipeline.rs` (半角英数トグルOFF共通ヘルパー)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///   (`AssumedRomaji` へ、`kp_restore_kana_from_half_width`。B節のトグルOFF・E節の3競合
+///   経路・F節のフォーカス変更安全策から共通で呼ばれる、2026-07-11)
 /// - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
 /// - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
 ///
@@ -161,9 +166,10 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 fn input_mode_applied_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
         ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore
-        ("src/runtime/key_pipeline.rs", 3), // PostSetOpenEisuReset + UserImeOnEisuReset + UserTurnOnEisuReset
-        ("src/runtime/ime_refresh.rs", 1),  // ImmBrokenCorrection (FocusChanged)
-        ("src/runtime/mod.rs", 1),          // ImmBrokenCorrection (Blacklist force-ON)
+        ("src/runtime/key_pipeline.rs", 5), // PostSetOpenEisuReset + UserImeOnEisuReset
+        // + UserTurnOnEisuReset + UserHalfWidthAlnumToggle(ON) + UserHalfWidthAlnumToggle(OFF共通ヘルパー)
+        ("src/runtime/ime_refresh.rs", 1), // ImmBrokenCorrection (FocusChanged)
+        ("src/runtime/mod.rs", 1),         // ImmBrokenCorrection (Blacklist force-ON)
     ];
     for (path, expected) in known_sites {
         let content = read_crate_file(path);

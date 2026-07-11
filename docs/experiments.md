@@ -149,3 +149,123 @@ IME モードキー全般に一般化した。詳細は [docs/known-bugs.md](kno
 「実 IME が確実に ON」でない限り注入してはならない。IME が処理しない文脈では
 kbd106 の素のキー（CapsLock / かなロック / 半角全角）として作用し、
 グローバルなキーボード状態を汚染する。belief は実状態の保証にならない。
+
+---
+
+## エントリ 06: BUG-15 hold 方式（Shift 押しっぱなし半角英数）の撤去 — 安全網とASCIIパススルーの分離が必要だった
+
+**背景**: ユーザー要望（2026-07-11）で BUG-15 の「Shift 押しっぱなし中は半角英数」
+（hold 方式）を「左Shift単独タップで持続トグル」方式へ置き換えることになった。
+一見単純な UX 変更だが、設計検証で「hold 機構は安全網とASCIIパススルーの
+2役を兼ねていた」ことが発覚し、片方だけ撤去する必要があった。
+
+| 日付 | 仮説 | 環境（アプリ × IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | hold 機構全体（`kp_stage_shift_eisu_hold` 全体）を撤去し、左Shift単独タップ判定だけの新実装に置き換えれば良いはず | Windows Terminal × MS-IME（設計時点、実機未検証） | （設計レビュー段階で発覚、実装はしなかった） | 別エージェントによる設計レビューで「hold 機構は Shift+文字チョード時に MS-IME の単独タップ誤検知を無条件で打ち消す安全網でもある。全体を撤去すると `.yab` Shift 面のチョード（`'！'` 等）で BUG-15 の症状（数秒〜十数秒のかな入力破壊）がそのまま再発する」と指摘された | 撤回（設計段階、実装前に修正） | （設計変更、コミットなし） |
+| 2026-07-11 | 安全網（Shift 押下→解放ごとの無条件 conv 書き戻し）は維持し、`shift_plane_halfwidth`（hold 中の ASCII パススルー）だけを撤去。左Shift単独タップ判定はこの安全網の上に「復元をキャンセルして持続トグルへ」という形で重ねる | 同上 | `kp_stage_shift_eisu_hold` → `kp_stage_shift_conv_guard` に改名・再構成。`shift_plane_halfwidth`/`ShiftEisuDisposition`/`KeyAction::Text` を削除 | 全 lib/golden/architecture_guard テスト green、clippy warning ゼロを確認（実機検証は未実施） | 採用（実機検証待ち） | （本セッションの一連のコミット） |
+
+**学び**:
+
+- 複数の目的を一つの機構（今回は「Shift 押下→解放ごとの conv 書き戻し」）が
+  兼ねている場合、片方の目的（ASCII パススルー）を撤去する要望が来ても、
+  もう片方の目的（MS-IME 単独タップ誤検知の安全網）まで一緒に消してはならない。
+  「この機構は何のためにあるか」を実装コードだけでなく、関連する
+  known-bugs.md のバグ本体の症状（今回は BUG-15 本体の「Shift単独タップ誤検知」）
+  まで遡って確認する必要がある。
+- 今回はコミット前の設計レビュー段階（Codex + Plan agent の2段階レビュー）で
+  発覚したため、実機で症状を再現する前に設計を修正できた。パターンとしては
+  「機能追加・削除の要望」が来たとき、対象コードの隣接する既存コメント
+  （`kp_stage_shift_eisu_hold` の doc comment に「BUG-15 本体の誤発動問題も
+  吸収される」と明記されていた）を読み飛ばさないことが重要。
+
+---
+
+## エントリ 07: BUG-25 GJI entry の scan 付き VK_DBE_ALPHANUMERIC 注入 — CapsLock 汚染で即日撤回
+
+**背景**: BUG-25（左Shift単独タップ持続トグル）の GJI 向け entry 実装で、
+既存の TSF warmup ヘルパー `send_vk_dbe_alpha_warmup` を standalone トグルへ
+転用した。BUG-15 追補7（scan 付き `VK_DBE_ALPHANUMERIC` の CapsLock 汚染）を
+知っていたため `effective_open()==true`（実 IME ON 確認済み）のガードを
+入れていたが、それでも実機で再発した。
+
+| 日付 | 仮説 | 環境（アプリ × IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | GJI 検出時は既存 TSF warmup 経路（scan 付き `VK_DBE_ALPHANUMERIC` 注入）を使えば、MS-IME 同様に半角英数へ切り替えられるはず。`effective_open()` ガードがあるので BUG-15 追補7の CapsLock 汚染は再発しないはず | Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、TSF-native）× GJI（Google 日本語入力） | `kp_shift_conv_guard_key_down` の entry に GJI 分岐を追加、`send_vk_dbe_alpha_warmup(HankakuAlpha)` を呼ぶ | ユーザー報告: 「IME ON / **CAPS LOCK ON** / awase engine OFF / ローマ字入力 / ひらがな」。診断ログ追加で確認: `gji_is_active_ime=true` で分岐は正しいが `SendInput sent=2/2`（OS的には成功）にもかかわらず `[hook] IME-mode vk=0xF0` のログが一切出ず、150ms後の conv も `0x00000019`（ひらがなローマ字）のまま無変化。scan=0x3A（物理CapsLock位置）がドライバレベルでCapsLockとして横取りされ、awase自身のフックにすら届いていないと判明 | 撤回（GJI分岐を削除、entry を GJI・MS-IME 共通の IMC write に一本化） | （本エントリ対応コミット） |
+
+**学び**:
+
+- `effective_open()`（belief 上の IME ON 確認）は、BUG-15 追補7が想定していた
+  「実 IME が OFF の文脈」由来の CapsLock 汚染は防ぐが、**「対象 IME がこの
+  単発注入をそもそも処理しない」由来の同一症状は防げない**。IME 種別（GJI vs
+  MS-IME）ごとに実際に確認しないまま「実 IME が ON なら安全」と一般化しては
+  ならない。
+- `send_vk_dbe_alpha_warmup` は元々「直後に文字 VK を続けて送る」前提の
+  NICOLA 内部 warmup ヒント（`send_vk_runs_with_leading_warmup` から呼ばれる
+  charset 指定）であり、standalone の「IME モードを切り替えて維持する」用途
+  では設計上の保証が無い。既存ヘルパーを別目的に転用する際は、その関数が
+  「なぜ動いているか」（前提条件・呼び出しパターン）を確認してから流用する。
+- `SendInput` の戻り値が成功（`sent=N/N`）でも、実際にターゲットアプリ/IME
+  まで意図通り届いたとは限らない。`[hook] IME-mode ...` ログ（自己注入
+  フィルタより前で無条件に出る）の有無を確認して初めて「フックまで到達したか」
+  が分かる——ここが欠落すると OS レベルの scan コード横取りを見逃す。
+
+## エントリ 08: BUG-25 GJI entry の IMC write 一本化 — 読み返し成功は偽陽性、mozc 本家調査で scan=0 注入へ
+
+**背景**: エントリ07の撤回を受け、entry を GJI・MS-IME 共通の IMC write
+（`set_ime_romaji_mode_with_target_async(Some(0))`）に一本化した。CapsLock
+汚染は解消したが、GJI で実際に半角英数化されるかは「反映されない場合は機能
+不全として残る」と留保していた。
+
+| 日付 | 仮説 | 環境（アプリ × IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | IMC write は CapsLock を汚染しないので安全側。GJI で `success=true`・verify-read で `conv=0x00000000 NATIVE=false` が確認できれば半角英数化が反映されたと言える | Windows Terminal（TSF-native）× GJI（Google 日本語入力） | entry を GJI・MS-IME 共通で IMC write のみに一本化（`d39f56d`） | `success=true`、150ms後 verify-read で `conv=0x00000000 NATIVE=false` を確認。**しかし実際に「あいうえお」を打鍵するとひらがなが出力され、GJI の実コンポーザは切り替わっていなかった**（ユーザー報告「え？全然デキてないよ」）。mozc 本家ソース（`google/mozc`）調査により、conversion-mode compartment への書き込みは `win32/tip/tip_edit_session.cc` の `OnModeChangedAsync`（UI 表示同期のみ）を発火させるだけで、実コンバータへの `SendCommand(SWITCH_COMPOSITION_MODE)` は言語バークリックか本物のキー入力経路からしか呼ばれないことが判明——**GJI にとって IMC write は構造的に一方向の UI ミラーであり、read-back の成功は無意味**だと確定した | 撤回（GJI 分岐を復活させ、`make_key_input_ex` で scan=0 の `VK_DBE_ALPHANUMERIC` DOWN+UP を直接送る方式へ変更。MS-IME は IMC write のまま維持。実機未検証） | （本エントリ対応コミット） |
+
+**学び**:
+
+- **IMC read-back（`success=true` や verify ログ）を GJI の成否判定に使っては
+  ならない。** 書き込みが UI ミラーに過ぎない以上、読み取りも「awase 自身が
+  直前に書いた値をそのまま読み返しているだけ」になりうる。BUG-15 追補3
+  （IMC read は実モードを保証しない）と同じ形の罠を、今回は write 側でも
+  踏んだ——過去に文書化済みの教訓であっても、方向（read/write）が違うだけで
+  同じ罠を再発見してしまう。**内部状態の読み取りだけで「直った」と判断せず、
+  必ず実際の打鍵結果で確認する。**
+- サードパーティ IME の外部制御を設計する際、公開 API（IMM/TSF compartment）
+  が「効いているように見える」ことと「実際に効く」ことは別物であり、対象
+  ソフトウェアのソースが公開されている場合はそちらで実装を確認するのが
+  最も確実——mozc は OSS のため、今回 `win32/tip/` の実装を直接読むことで
+  「compartment write は UI ミラー、実際の切り替えは本物のキー入力のみ」と
+  いう構造を確定できた。同様の状況（サードパーティ IME/IMEの外部制御）では
+  推測より先にソース調査を優先する。
+
+## エントリ 09: BUG-25 GJI entry の scan=0 `VK_DBE_ALPHANUMERIC` 注入 — フックにすら届かず反証、entry 機構を全撤去
+
+**背景**: エントリ08で IMC write が GJI に効かないと判明したため、mozc の
+`keyevent_handler.cc` が scan を見ず VK 値のみで判定することを根拠に、
+scan=0（CapsLock と衝突しない値）で `VK_DBE_ALPHANUMERIC` を再注入する方式
+（`make_key_input_ex`）に切り替えた。
+
+| 日付 | 仮説 | 環境（アプリ × IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-11 | scan=0x3A（CapsLock位置）との衝突さえ避ければ、mozc は VK 値のみで判定するため scan=0 の VK_DBE_ALPHANUMERIC 注入は awase のフック・GJI の TSF キーイベントシンク双方に届くはず | Windows Terminal（TSF-native）× GJI | entry を `make_key_input_ex(VK_DBE_ALPHANUMERIC, .., scan=0)` の DOWN+UP 注入に変更（`6f0964b`） | `SendInput sent=2/2`（OS的には成功）。**しかし `[hook] IME-mode vk=0xF0` のログが今回も一度も出現せず**（同一セッション内で `VK_DBE_HIRAGANA` 0xF2/scan=0x70 は毎回確実に出現）、entry verify 前に engine が `Inactive(NotRomajiInput)` へ遷移し生ローマ字キーを GJI へ素通しした結果、GJI 自身の未切替のひらがな変換エンジンがそれを処理し「こんにちはあいうえお」がそのままひらがなで出力された。ユーザー報告「ダメでしたね」 | 撤回（GJI 向け entry を scan 値によらず全撤去。IMC write・scan付き注入・scan=0注入のいずれも試行済みで尽きたため、entry 機構自体を「未対応」として無効化し、`half_width_alnum_toggle_active` への遷移も GJI では起きないようガードを追加） | （本エントリ対応コミット） |
+
+**学び**:
+
+- **「scan の値を変えれば届く」という仮説は、scan=0x3A（衝突）→scan=0（非衝突）
+  の2パターンで連続反証された。** `[hook] IME-mode vk=0xF0` ログが2回とも
+  一度も出現しなかったことから、`SendInput` による `VK_DBE_ALPHANUMERIC`
+  注入は scan の値によらず awase 自身の `WH_KEYBOARD_LL` フックにすら
+  到達しないと判断するのが妥当。同じ変数（scan値）を変えた再試行を3回目も
+  行うのではなく、**手段そのもの（`SendInput` によるキーイベント注入）を
+  疑い、別の制御チャネル（COM の `ITfLangBarItemButton` 経由の言語バー
+  ボタン起動等）へ切り替える**べき、という判断に至った。
+- **entry が機能しない状態のまま belief だけを「トグルON」に進めると、
+  「何も起きない」より悪い実害が生まれる。** engine が `Inactive` になり
+  生キーを pass-through するが、GJI の実 conv は変化していないため、素通しした
+  ローマ字キーが GJI 自身のひらがな変換エンジンにそのまま入り、意図しない
+  ひらがな出力という**新しい種類の破壊**になった。機構が実証されるまでは、
+  「何もしない」（機能を無効化する）方が「believe だけ進めて実害を出す」より
+  安全側の設計判断である。
+- 3回連続で同一の失敗ログシグネチャ（`[hook] IME-mode vk=0xF0` 皆無）が
+  出た場合、それは「まだ運が悪い」ではなく「この経路は原理的に機能しない」
+  という強いシグナルとして扱うべき——同種の変更をもう一段階小さくして
+  再試行する前に、アーキテクチャレベルで別の経路を検討する。
