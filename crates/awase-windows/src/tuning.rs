@@ -400,4 +400,4 @@ pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
 ///
 /// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に実測を
 /// 追記した上で撤去すること（`tuning-constants.md` の実測義務）。
-pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = false;
+pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
