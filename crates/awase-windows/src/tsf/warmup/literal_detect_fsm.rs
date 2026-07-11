@@ -49,6 +49,25 @@ use crate::tsf::warmup::probe_fsm::{
 /// パスでは使わない。
 pub(crate) const PARTIAL_LITERAL_BS: usize = 1;
 
+/// IME セッション最初の1文字専用の per-VK confirm ループ（BUG-24 追補）が、
+/// ある VK で `SuspectedLiteral`（確認信号タイムアウト）になったときの回収パラメータを返す純関数。
+///
+/// `failed_idx`: 何番目 (0-based) の VK が `SuspectedLiteral` になったか。
+/// 戻り値: `(backs, escape_composition)`。
+///
+/// - `backs` は常に `1`: VK を1つずつ送って確認しているため、リテラル化しうるのは
+///   「いま送った VK 自身」だけだと確定している（`is_partial_literal` のような
+///   「全部リテラル化した前提」の推測が不要）。
+/// - `escape_composition` は `failed_idx > 0` のときのみ `true`: それより前の VK は
+///   個別に `CompositionConfirmed` 済み（＝composition が実在する）ため、
+///   `VK_ESCAPE` で文字数に関係なく確実に破棄してから BS する。`failed_idx == 0`
+///   は composition が一切存在しないため ESC を送らない（既存の
+///   `is_partial_literal`/`PARTIAL_LITERAL_BS` と同じ「composition が無い状態で
+///   ESC を送らない」防御方針を踏襲）。
+pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
+    (1, failed_idx > 0)
+}
+
 /// `CompositionConfirmed` 時に「先頭文字がリテラル化した partial literal」かどうかを判定する純関数。
 ///
 /// WezTerm (TSF mode) では HIMC=NULL のため foreground_comp_char による文字照合が
@@ -318,6 +337,25 @@ impl crate::tsf::warmup::tickable_fsm::TickableFsm for LiteralDetectFsm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn per_vk_recovery_params_first_vk_no_escape() {
+        assert_eq!(
+            per_vk_recovery_params(0),
+            (1, false),
+            "先頭 VK の SuspectedLiteral は composition が存在しないため ESC 不要"
+        );
+    }
+
+    #[test]
+    fn per_vk_recovery_params_later_vk_escapes() {
+        assert_eq!(
+            per_vk_recovery_params(1),
+            (1, true),
+            "2番目以降の VK の SuspectedLiteral は先行 VK による composition を ESC で破棄"
+        );
+        assert_eq!(per_vk_recovery_params(2), (1, true));
+    }
 
     fn obs(nc_fired: bool, gji_resumed: bool) -> ProbeObservations {
         ProbeObservations {

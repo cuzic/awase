@@ -6,7 +6,7 @@
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
-//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done` |
+//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done`, `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome probe + LiteralDetect（StepCoro） | `apply_transmit_done` |
 //! | `SacrificialWarmupCoro` | `sacr_warmup_coro.rs` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化（StepCoro） | `notify_start_composition` |
@@ -63,6 +63,14 @@ pub(crate) trait TickableFsm {
     ) -> bool {
         true
     }
+
+    // ── SetOpenTrue/IMEセッション最初の1文字 per-VK confirm ケイパビリティ
+    // （GjiWarmupCoro のみ、BUG-24 追補）───────────────────────────────────
+    //
+    // romaji を VK 単位に分割送信する際、各 VK 送信直後に生成した detector を
+    // コルーチンへ渡す。複数 VK にわたって呼ばれる。
+
+    fn apply_vk_sent(&mut self, _detector: LiteralDetector, _deadline_ms: u64) {}
 
     // ── StartComposition 通知（SacrificialWarmupFsm のみ）────────────────
     //

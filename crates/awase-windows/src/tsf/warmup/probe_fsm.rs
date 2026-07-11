@@ -209,6 +209,24 @@ pub(crate) enum ProbeAction {
         romaji: String,
         target: TransmitTarget,
     },
+    /// IME セッション最初の1文字専用（BUG-24 追補）: romaji の VK を1つだけ送信する。
+    ///
+    /// `is_partial_literal()` が送信前の無関係な代理指標（`nc_fired`/`gji_resumed`）に
+    /// 頼っているため、cold 直後の最初の1文字は VK を1個ずつ送って「送ったVK自身」への
+    /// `CompositionConfirmed`/`SuspectedLiteral` を確認してから次の VK を送る。
+    /// dispatcher は送信直前に `LiteralDetector::new()` でベースラインを取り、1 VK だけ
+    /// `KeyInjector::send_vk_pair` で送信する。`is_last=true` のときのみ、通常の
+    /// `Transmit` と同じ deferred VK フラッシュ・GjiFsm warmup 結果保存を行う。
+    TransmitSingleVk {
+        cold_seq: u32,
+        vk: VkCode,
+        needs_shift: bool,
+        /// この VK の confirm 待ちタイムアウト（ms）。`plan.literal_detect_ms` を渡す。
+        timeout_ms: u64,
+        is_last: bool,
+        observations: ProbeObservations,
+        plan: TransmitPlan,
+    },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
     RawTsfLiteralRecovery {
         cold_seq: u32,

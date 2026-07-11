@@ -3,7 +3,7 @@
 //! `Output` が本番実装。`#[cfg(test)]` ブロック内の `FakeProbeIo` がテスト実装。
 //! `dispatch_probe_actions` は `ProbeIo` を受け取り、Win32 呼び出しを直接行わない。
 
-use crate::output::{Output, VkMarker, VkSequence, WarmupOutcome};
+use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
 use crate::state::key_sequence_policy::{self, SacrificialWarmupKey};
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
@@ -28,6 +28,10 @@ pub(crate) trait ProbeIo {
     ) -> usize;
     /// Chrome バッチ送信を実行する。
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]);
+    /// IME セッション最初の1文字の per-VK confirm ループ専用（BUG-24 追補）: 1 VK の
+    /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend /
+    /// unicode kana 分岐を一切行わない。
+    fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
     /// `TsfWarmupCoordinator` の deferred キューを取り出してクリアする。
@@ -149,6 +153,10 @@ impl ProbeIo for Output {
 
     fn transmit_chrome(&self, romaji: &str, chars: &[(VkCode, bool)]) {
         Self::send_romaji_batch_immediate(romaji, chars);
+    }
+
+    fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool) {
+        KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
     }
 
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker) {
@@ -674,6 +682,33 @@ where
                 }
             }
 
+            ProbeAction::TransmitSingleVk {
+                cold_seq,
+                vk,
+                needs_shift,
+                timeout_ms,
+                is_last,
+                observations,
+                plan,
+            } => {
+                if io.gate_is_bypass() {
+                    log::debug!(
+                        "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection"
+                    );
+                    return DispatchResult::Done;
+                }
+                // ベースラインは SendInput **前**に取得する（送信中の SHOW/I-O 変化を見逃さないため）。
+                let detector = crate::tsf::probe::LiteralDetector::new();
+                io.send_single_tsf_vk(vk, needs_shift);
+                let deadline_ms = crate::hook::current_tick_ms() + timeout_ms;
+                if is_last {
+                    io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
+                    // GjiFsm bridge: romaji 全体の送信完了に相当するタイミングで warmup 結果を保存する。
+                    store_gji_warmup_if_probing(io, observations, &plan);
+                }
+                machine.apply_vk_sent(detector, deadline_ms);
+            }
+
             ProbeAction::SendRecoveryBs {
                 cold_seq,
                 backs,
@@ -942,6 +977,7 @@ mod tests {
         consecutive: u32,
         transmit_tsf_called: Cell<bool>,
         transmit_chrome_called: Cell<bool>,
+        send_single_tsf_vk_call_count: Cell<u32>,
         deferred_vks_called: Cell<bool>,
         send_fresh_f2_called: Cell<bool>,
         send_extra_f2_called: Cell<bool>,
@@ -965,6 +1001,7 @@ mod tests {
                 consecutive: 0,
                 transmit_tsf_called: Cell::new(false),
                 transmit_chrome_called: Cell::new(false),
+                send_single_tsf_vk_call_count: Cell::new(0),
                 deferred_vks_called: Cell::new(false),
                 send_fresh_f2_called: Cell::new(false),
                 send_extra_f2_called: Cell::new(false),
@@ -997,6 +1034,10 @@ mod tests {
         }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
             self.transmit_chrome_called.set(true);
+        }
+        fn send_single_tsf_vk(&self, _vk: VkCode, _needs_shift: bool) {
+            self.send_single_tsf_vk_call_count
+                .set(self.send_single_tsf_vk_call_count.get() + 1);
         }
         fn send_deferred_vks(&self, _vks: &[DeferredVk], _marker: VkMarker) {
             self.deferred_vks_called.set(true);

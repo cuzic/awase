@@ -28,6 +28,8 @@
 
 use std::rc::Rc;
 
+use awase::types::VkCode;
+
 use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
@@ -60,12 +62,20 @@ struct TransmitDonePayload {
     deadline_ms: u64,
 }
 
+/// `apply_vk_sent` のペイロード（BUG-24 追補: IME セッション最初の1文字の per-VK confirm ループ）。
+/// 次 tick の TickInput に載り、コルーチン本体がそのVK専用の detector をポーリングする。
+struct VkSentPayload {
+    detector: LiteralDetector,
+    deadline_ms: u64,
+}
+
 // ── TickInput ────────────────────────────────────────────────────────────────
 
 struct TickInput {
     env: TsfEnvSnapshot,
     fresh_f2_callback: Option<FreshF2Callback>,
     transmit_done: Option<TransmitDonePayload>,
+    vk_sent: Option<VkSentPayload>,
 }
 
 // ── GjiProbeCtx ──────────────────────────────────────────────────────────────
@@ -353,6 +363,112 @@ async fn gji_coro_body(
         );
     }
 
+    // ── Phase 5b (IME セッション最初の1文字専用, BUG-24 追補): per-VK send+confirm ──
+    // is_partial_literal() は「今回送った romaji 自身の確認信号」ではなく、送信前に
+    // 確定していた無関係な代理指標 nc_fired/gji_resumed（別の F2 warmup キーへの応答
+    // 有無）で判定しており、cold 直後の最初の1文字はほぼ確実に誤検知する（BUG-24）。
+    // このセッションでまだ literal-detect を確認済みでない場合に限り、romaji の VK を
+    // 1つずつ送信し、「送信した VK 自身」への CompositionConfirmed/SuspectedLiteral を
+    // 都度確認してから次の VK を送る。F2 prepend・unicode eager path は対象外とし
+    // （それ以外の経路は下の通常 Transmit にフォールスルーする）、全 VK 確認できたら
+    // このセッションの残りは literal-detect 自体をスキップする
+    // （`tsf::observer::mark_literal_session_confirmed`、`literal_detect_fsm.rs` 参照）。
+    if crate::tuning::DIAG_LITERAL_SESSION_SKIP
+        && plan.needs_literal
+        && !crate::tsf::observer::literal_session_confirmed()
+        && !plan.should_prepend_f2
+        && !plan.used_eager_path
+        && env.is_tsf_mode
+    {
+        use crate::tsf::probe::DetectionResult;
+
+        let vk_chars: Vec<(VkCode, bool)> = romaji
+            .chars()
+            .filter_map(crate::output::resolve_ascii_to_vk)
+            .collect();
+        if vk_chars.is_empty() {
+            yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+            return;
+        }
+        let last_idx = vk_chars.len() - 1;
+        for (idx, &(vk, needs_shift)) in vk_chars.iter().enumerate() {
+            let is_last = idx == last_idx;
+            let vk_input = yield_step(
+                ch.clone(),
+                vec![ProbeAction::TransmitSingleVk {
+                    cold_seq: ctx.cold_seq,
+                    vk,
+                    needs_shift,
+                    timeout_ms: plan.literal_detect_ms,
+                    is_last,
+                    observations,
+                    plan,
+                }],
+            )
+            .await;
+            let Some(sent) = vk_input.vk_sent else {
+                log::warn!(
+                    "[gji-coro] cold={} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断",
+                    ctx.cold_seq
+                );
+                return;
+            };
+
+            let detection = loop {
+                let poll_input = yield_step(ch.clone(), vec![]).await;
+                env = poll_input.env;
+                if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
+                    break d;
+                }
+            };
+
+            match detection {
+                DetectionResult::CompositionConfirmed => {
+                    log::debug!(
+                        "[gji-coro] cold={} per-VK[{idx}/{last_idx}] confirmed (vk=0x{:02X})",
+                        ctx.cold_seq,
+                        vk.0,
+                    );
+                }
+                DetectionResult::SuspectedLiteral => {
+                    let (backs, escape_composition) =
+                        crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                    log::debug!(
+                        "[gji-coro] cold={} per-VK[{idx}/{last_idx}] suspected literal \
+                         (vk=0x{:02X} escape={escape_composition})",
+                        ctx.cold_seq,
+                        vk.0,
+                    );
+                    crate::ime_diagnostic::log_composition_probe(
+                        ctx.cold_seq,
+                        "setopen-per-vk-literal",
+                    );
+                    let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                        ctx.cold_seq,
+                        romaji.clone(),
+                        backs,
+                        observations,
+                        ctx.consecutive,
+                        &env,
+                        escape_composition,
+                    );
+                    yield_step(ch.clone(), actions).await;
+                    return;
+                }
+            }
+        }
+
+        log::debug!(
+            "[gji-coro] cold={} per-VK: 全 {} VK 確認済み → セッション確認 (is_partial_literal bypass)",
+            ctx.cold_seq,
+            vk_chars.len(),
+        );
+        crate::tsf::observer::mark_literal_session_confirmed();
+        crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, "setopen-per-vk-confirmed");
+        yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+        return;
+    }
+
     // ── Phase 5b: Transmit ───────────────────────────────────────────────────
     // needs_literal=false: dispatcher が apply_transmit_done(None) → true → Done
     // needs_literal=true:  dispatcher が apply_transmit_done(Some(det)) → false → Continue
@@ -435,6 +551,7 @@ pub(crate) struct GjiWarmupCoro {
     coro: StepCoro<TickInput, Vec<ProbeAction>>,
     pending_fresh_f2: Option<FreshF2Callback>,
     pending_transmit_done: Option<TransmitDonePayload>,
+    pending_vk_sent: Option<VkSentPayload>,
     cold_seq: u32,
     forces_prepend_f2: bool,
     /// inline LiteralDetect フェーズ中に OUTPUT_GATE を active に保つ追加ガード。
@@ -486,6 +603,7 @@ impl GjiWarmupCoro {
             coro,
             pending_fresh_f2: None,
             pending_transmit_done: None,
+            pending_vk_sent: None,
             cold_seq,
             forces_prepend_f2,
             literal_detect_guard: None,
@@ -512,6 +630,7 @@ impl TickableFsm for GjiWarmupCoro {
             env: *env,
             fresh_f2_callback: self.pending_fresh_f2.take(),
             transmit_done: self.pending_transmit_done.take(),
+            vk_sent: self.pending_vk_sent.take(),
         };
         match self.coro.step(input) {
             CoroStep::Yielded(actions) => actions,
@@ -562,5 +681,18 @@ impl TickableFsm for GjiWarmupCoro {
             }
             None => true,
         }
+    }
+
+    /// BUG-24 追補: IME セッション最初の1文字の per-VK confirm ループが1 VK 送信するたびに呼ぶ。
+    /// 次 tick の TickInput に `vk_sent` として載せ、コルーチン本体がそのVK専用の
+    /// detector をポーリングする。
+    fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
+        if self.literal_detect_guard.is_none() {
+            self.literal_detect_guard = Some(OutputActiveGuard::begin());
+        }
+        self.pending_vk_sent = Some(VkSentPayload {
+            detector,
+            deadline_ms,
+        });
     }
 }
