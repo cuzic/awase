@@ -109,6 +109,15 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>修正</h3>
+<ul>
+<li><strong>設定画面「プレビュー」タブを再表示</strong><ul>
+<li><code>layouts_dir</code>/<code>config.toml</code> のパス解決を <code>awase::paths::resolve_relative_to_exe</code> に一本化し、<code>cargo run</code>/<code>cargo build</code> で <code>target/debug/</code> 配下から起動した場合にワークスペースルート直下の <code>layout/nicola.yab</code> を見つけられなかったバグを修正</li>
+<li>プレビュータブに「編集...」ボタンを追加し、表示中の配列ファイルを <code>awase-yab-editor</code> で直接開けるように</li>
+<li>2026-07-06（<code>c3fa08e</code>）に「配列プレビューの実装が固まっていない」として非表示にしていたが、上記修正により再表示した</li>
+</ul>
+</li>
+</ul>
 <h2>[1.9.0] - 2026-07-11</h2>
 <h3>追加</h3>
 <ul>
