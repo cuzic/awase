@@ -31,8 +31,7 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{
-    decide_transmit_plan, LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitTarget,
-    TsfEnvSnapshot,
+    decide_transmit_plan, ProbeAction, ProbeObservations, TransmitTarget, TsfEnvSnapshot,
 };
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
@@ -200,49 +199,21 @@ async fn gji_coro_body(
         env.is_tsf_mode,
     );
 
-    // ── Phase 5a: long cold + TSF → StartSacrificialWarmup（SwitchMachine） ────
-    // `ctx.is_long_cold` は `ColdKind::is_long()` 由来（cold 突入時点の gji_idle_ms() 実IO
-    // 観測から分類済み）で、Chrome 側の自己参照タイマーとは異なり既に実IOに基づいている。
-    // そのため `tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`（Chrome 専用の診断フラグ、
-    // `output/vk_send.rs` 参照）はここには適用しない。
+    // ── Phase 5a: long cold + TSF の proactive StartSacrificialWarmup は撤去 ────
+    // `DIAG_DISABLE_PROACTIVE_TSF_WARMUP`（常時 true）下で、以前ここにあった
+    // 「long_cold && is_tsf_mode → 犠牲キー(VK_A+BS/VK_IME_OFF→ON) escalation を
+    // 即発行」という分岐は無条件に到達不能だった。Phase 5b（直接Transmit + inline
+    // LiteralDetect）に完全にフォールスルーする（`docs/known-bugs.md` BUG-24 参照。
+    // 再度有効化する場合はこのコミットの revert が必要）。
     //
-    // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: 犠牲キー(VK_A+BS/VK_IME_OFF→ON)
-    // escalationを止め、Phase 5b（直接Transmit + inline LiteralDetect）にフォールスルー
-    // させる。cold_reason/実測idleをログに残し、後続の[literal-detect]ログと cold_seq で
-    // 突き合わせれば「このidle時間で本当に犠牲キーが必要だったか」を事後に narrowing できる。
-    if plan.needs_literal
-        && ctx.is_long_cold
-        && env.is_tsf_mode
-        && !crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP
-    {
+    // なお `ProbeAction::StartSacrificialWarmup` 自体は Chrome 側の cold-start
+    // パス（`probe_fsm.rs` の `TsfProbeCoro`）と、TSF mode consecutive==0 の
+    // partial-literal 回収パス（`literal_detect_fsm.rs`）から今も発行されており、
+    // 両者は撤去していない。
+    if plan.needs_literal && ctx.is_long_cold && env.is_tsf_mode {
         log::debug!(
-            "[gji-coro] cold={} long_cold + TSF → StartSacrificialWarmup",
-            ctx.cold_seq
-        );
-        yield_step(
-            ch.clone(),
-            vec![ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
-                cold_seq: ctx.cold_seq,
-                romaji,
-                plan,
-                observations,
-                literal_detect_ms: plan.literal_detect_ms,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: false,
-            })],
-        )
-        .await;
-        return; // SacrificialWarmupFsm が SwitchMachine で引き継ぐ → このコルーチンは破棄
-    }
-    if plan.needs_literal
-        && ctx.is_long_cold
-        && env.is_tsf_mode
-        && crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP
-    {
-        log::debug!(
-            "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
-             skip StartSacrificialWarmup (long_cold本来必要) → 直接Transmit \
-             (reason={cold_reason:?} real_gji_idle_ms={})",
+            "[gji-coro-diag] cold={} long_cold + TSF: proactive StartSacrificialWarmup は \
+             撤去済み → 直接Transmit (reason={cold_reason:?} real_gji_idle_ms={})",
             ctx.cold_seq,
             crate::tsf::observer::gji_idle_ms(),
         );
