@@ -32,7 +32,91 @@ enum CaptureTarget {
     NewTo,
 }
 
+/// ログ初期化。
+///
+/// `#![windows_subsystem = "windows"]` によりコンソールが無いため、awase.exe
+/// （`crates/awase-windows/src/app/bootstrap.rs::init_logging`）と同じ方式で
+/// ログを初期化する: 通常起動は実行ファイル隣の `awase-settings.log` に出力し、
+/// `--debug` フラグ指定時のみ親プロセスのコンソールへ stderr 出力する。
+///
+/// これが無いと GUI サブシステムでは panic してもコンソールに何も残らず
+/// 「無言のまま強制終了」になる（2026-07-11 プレビュータブ egui::Grid panic の
+/// 調査で発覚。当時 env_logger 自体が初期化されておらず log::warn! も no-op
+/// だった）。
+fn init_logging(debug_console: bool) {
+    let log_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awase-settings.log")))
+        .unwrap_or_else(|| std::path::PathBuf::from("awase-settings.log"));
+
+    if debug_console {
+        attach_parent_console();
+        let mut builder =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
+        builder.format_timestamp_millis();
+        builder.target(env_logger::Target::Stderr);
+        builder.init();
+        log::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
+        return;
+    }
+
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    builder.format_timestamp_millis();
+    if let Ok(file) = log_file {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    // ファイルが開けない場合は stderr フォールバック
+    builder.init();
+    log::info!("awase-settings starting... (log → {})", log_path.display());
+}
+
+#[cfg(target_os = "windows")]
+fn attach_parent_console() {
+    use windows::Win32::System::Console::AttachConsole;
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    // SAFETY: AttachConsole is a standard Win32 API; ATTACH_PARENT_PROCESS is the documented sentinel value.
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn attach_parent_console() {}
+
+/// panic 時にファイル:行番号とメッセージをログに記録する。
+///
+/// デフォルトの panic handler は stderr に書くだけなので、コンソールが無い
+/// GUI サブシステムでは `awase-settings.log` に残らない。
+fn install_panic_logging_hook() {
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info.location().map_or_else(
+            || "unknown location".to_owned(),
+            |l| format!("{}:{}:{}", l.file(), l.line(), l.column()),
+        );
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("(non-string payload)");
+        log::error!("[PANIC] {msg} @ {location}");
+        prev_hook(info);
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let debug_console = args.iter().any(|a| a == "--debug");
+    init_logging(debug_console);
+    install_panic_logging_hook();
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
