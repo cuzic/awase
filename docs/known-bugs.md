@@ -1672,6 +1672,47 @@ WezTerm/TSF 側の3防御層すべて（Phase 2 `SendFreshF2`、Phase 5a
 検出後の回収を VK_ESCAPE ベースに変更——本バグとは独立に、検出後の
 「何文字消すか」の精度は改善したが、検出自体の信頼性（本バグ）は未着手）
 
+**追補（2026-07-11、実機ログでユーザー報告「VK_BACK が１回余分」を解析・
+偽陽性の真因の一つを特定・部分修正）:** ユーザーから Windows Terminal +
+GJI で「余分な BS が非常に多い」との報告。`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
+（実運用中）下のログを解析した結果、以下 2 点が判明した。
+
+1. **`nc_fired`/`gji_resumed` の測定窓が短すぎる:** 該当ケースでは romaji
+   "mo" 送信からわずか `real_gji_idle_ms=16`（16ms）で `nc_fired=false`
+   と判定されていた。この codebase の他の実測値（GJI round-trip 47〜250ms、
+   BUG-08 の ~180ms 等）と比べて明らかに短く、確認信号が「まだ届く時間が
+   なかっただけ」を「届かなかった＝失敗」と誤認する構造的リスクがある
+   （`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` が有効な間は本質的に避けられない
+   トレードオフ——プロアクティブ warmup が提供していた「猶予時間」を
+   意図的に無くす実験のため）。
+2. **より広範な根本原因（今回修正）:** `composition_fsm.rs::ConfirmKeyDown`
+   のコード自身のコメントが「warm な GJI/TSF を確定キーだけで cold 化
+   する理由はない」と明記していたにもかかわらず、実装は warm/cold 両分岐で
+   `MarkCold`/`GjiCompositionReset` を無条件に発行していた（`on_reinject_key`
+   （`platform.rs`）の `ReinjectConfirmKey` 経路も同様、warm チェックなし）。
+   結果、連続 typing 中に Enter/Space/Escape を押すたびに実際には何も
+   冷えていないのに cold 化され、次の1文字が cold-start 経路
+   （warmup+probe+literal-detect）を通ってしまい、上記(1)の false
+   positive リスクに繰り返し晒されていた。
+
+**修正:** `composition_fsm.rs::ConfirmKeyDown`（warm=true 分岐）と
+`platform.rs::on_reinject_key`（confirm キー・`is_composition_warm()`
+ガード追加）の両方で、warm なら `MarkCold`/`GjiCompositionReset` を
+一切発行しないよう変更。KeyUp までの warmup 遅延タイミング制御自体は
+維持。(1)の測定窓自体は未対応（真に新しい確認信号か、
+`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` 実験自体の終了が必要——別記事参照）。
+
+**テスト:** `composition_fsm.rs` に `warm_confirm_keydown_does_not_mark_cold_or_reset_gji`
+を追加（warm な ConfirmKeyDown が actions を一切発行しないことを固定）。
+Windows-only モジュールのため Linux では `cargo test -p awase-windows --lib
+--target x86_64-pc-windows-gnu --no-run` でコンパイル確認のみ（wine 不在で
+実行不可、この codebase の既存パターンと同じ）。既存の golden_scenarios(19)・
+architecture_guard(10)・layer_boundary_guard(8)・journal_replay(1)・lib(138)
+は全件 pass。**Windows 実機での再発有無・BS 頻度の改善確認は未実施。**
+
+**関連ファイル（追補）:** `crates/awase-windows/src/tsf/composition_fsm.rs`
+（`ConfirmKeyDown`）, `crates/awase-windows/src/platform.rs`（`on_reinject_key`）
+
 ---
 
 ## デバッグ方法

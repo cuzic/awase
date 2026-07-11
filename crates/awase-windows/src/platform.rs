@@ -897,6 +897,17 @@ impl TsfComposition for WindowsPlatform {
         }
 
         if is_keydown && vk.is_composition_confirm_key() {
+            // 2026-07-11: この confirm キーは on_passthrough_key で既に一度処理済みの
+            // 同じ物理キーイベントが reinject/defer キューを経由して再度届いたもの。
+            // warm であれば（composition_fsm.rs の ConfirmKeyDown と同じ理由で）
+            // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
+            // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
+            if self.output.is_composition_warm() {
+                log::trace!(
+                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",
+                );
+                return;
+            }
             log::debug!(
                 "[composition] reinject KeyDown vk={vk:#04x} → marking cold + eager warmup",
             );

@@ -198,17 +198,21 @@ impl TimedStateMachine for CompositionFsm {
                     // Chrome 固有の根拠は無く、cold-start warmup が確定キーのたびに
                     // 過剰発火していた）。warm な GJI/TSF を確定キーだけで cold 化する理由は
                     // tsf_mode に関係なく無いため、判定を warm 単独に統一した。
+                    //
+                    // 2026-07-11: 上記の理由（warm を確定キーだけで cold 化する理由はない）
+                    // にもかかわらず、この分岐は従来 MarkCold/GjiCompositionReset を無条件に
+                    // 発行し続けていた。連続 typing 中は Enter/Space/Escape のたびに実際には
+                    // 何も冷えていないのに cold 化され、次の1文字が cold-start 経路（warmup+
+                    // probe+literal-detect）を通ってしまい、BUG-24 系の false positive
+                    // （不要な BS）の温床になっていた（実機ログで確認、docs/known-bugs.md
+                    // BUG-24 参照）。warm なら cold 化・GJI reset とも不要なため、ここでは
+                    // 何もしない（KeyUp までの遅延タイミング制御のみ行う）。
                     self.state = CompositionState::PendingWarmupOnKeyUp {
                         confirm_vk: vk,
                         tsf_mode,
                         epoch: self.epoch,
                     };
-                    Response::emit(vec![
-                        CompositionAction::MarkCold {
-                            reason: ColdReason::PassthroughConfirmKey,
-                        },
-                        CompositionAction::GjiCompositionReset,
-                    ])
+                    Response::consume()
                 } else {
                     // cold: 即 cold mark + warmup。
                     self.state = CompositionState::Cold {
@@ -334,6 +338,22 @@ mod tests {
             "KeyUp で保留 warmup を送信する"
         );
         assert!(fsm.state_label().starts_with("Warm"));
+    }
+
+    // 2026-07-11: 連続 typing 中は確定キーを押しても実際には何も冷えていないはず。
+    // ConfirmKeyDown(warm=true) は MarkCold/GjiCompositionReset を一切発行しない
+    // べきである（BUG-24 の false positive 温床対策。docs/known-bugs.md 参照）。
+    #[test]
+    fn warm_confirm_keydown_does_not_mark_cold_or_reset_gji() {
+        let mut fsm = CompositionFsm::new();
+        let r = fsm.on_event(warm_tsf_confirm_down(ENTER));
+        assert!(
+            r.actions.is_empty(),
+            "warm な確定キー KeyDown は cold 化・GJI reset とも不要 (actions={:?})",
+            r.actions
+        );
+        // KeyUp までの遅延タイミング制御自体は維持されていること。
+        assert_eq!(fsm.pending_warmup_vk(), Some(ENTER));
     }
 
     #[test]
