@@ -1644,11 +1644,13 @@ fn send_reload_config_message() {
 
 #[cfg(test)]
 mod preview_tab_repro {
-    use super::{draw_face_grid, load_layout_for_preview, resolve_layouts_dir};
+    use super::{
+        draw_face_grid, find_config_path, load_layout_for_preview, resolve_layouts_dir,
+        SettingsApp, Tab,
+    };
 
-    /// プレビュータブを開いたときに実行される経路（実ファイル読み込み →
-    /// egui 描画）を GPU/ウィンドウ無しで再現する。実機で「プレビュー押したら
-    /// 強制終了」が起きた原因を切り分けるための再現テスト。
+    /// `draw_face_grid` 単体を、実ファイル読み込み → egui 描画で GPU/ウィンドウ
+    /// 無しに再現する。
     #[test]
     fn loading_and_drawing_real_nicola_yab_does_not_panic() {
         let dir = resolve_layouts_dir("layout");
@@ -1670,5 +1672,72 @@ mod preview_tab_repro {
                 draw_face_grid(ui, &layout.right_thumb, "right", row_sizes);
             });
         });
+    }
+
+    fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
+        SettingsApp {
+            config,
+            config_path: std::path::PathBuf::from("config.toml"),
+            status: String::new(),
+            active_tab: Tab::Preview,
+            available_layouts: Vec::new(),
+            new_engine_on_key: String::new(),
+            new_engine_off_key: String::new(),
+            new_ime_on_key: String::new(),
+            new_ime_off_key: String::new(),
+            new_ime_toggle_key: String::new(),
+            new_ime_detect_on_key: String::new(),
+            new_ime_detect_off_key: String::new(),
+            new_keymap_app: String::new(),
+            new_keymap_from_ctrl: false,
+            new_keymap_from_shift: false,
+            new_keymap_from_alt: false,
+            new_keymap_from_main: String::new(),
+            new_keymap_to_main: String::new(),
+            capturing: None,
+            new_override_bufs: <[(String, String); 4]>::default(),
+            new_pb_key: String::new(),
+            new_pb_process: String::new(),
+            new_pb_class: String::new(),
+            preview_cache: None,
+        }
+    }
+
+    /// `SettingsApp::tab_preview` を丸ごと（ツールバー行のボタン・凡例込みで）
+    /// GPU/ウィンドウ無しで実行し、実機で「プレビュー押したら無言のまま
+    /// 強制終了」した現象と同じコードパスを再現する。`draw_face_grid` の
+    /// panic 修正だけでは不十分な別の panic がまだ残っていないかを確認する。
+    #[test]
+    fn full_tab_preview_render_with_real_config_does_not_panic() {
+        let config_path = find_config_path();
+        let config = awase::config::AppConfig::load(&config_path).unwrap_or_else(|e| {
+            panic!(
+                "テスト前提: {} の読み込みに失敗した: {e}",
+                config_path.display()
+            )
+        });
+        assert_eq!(
+            config.general.layouts_dir, "layout",
+            "テストがリポジトリ実物の config.toml を読めていない可能性"
+        );
+
+        let mut app = test_settings_app(config);
+        let ctx = eframe::egui::Context::default();
+        // Preview タブは egui の 1 フレーム目で読み込みキャッシュを埋め、
+        // 2 フレーム目でそのキャッシュを描画する（need_reload 判定のため）。
+        // 実機と同じく最低 2 フレーム流して両方の経路を通す。
+        for _ in 0..2 {
+            let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                    app.tab_preview(ui);
+                });
+            });
+        }
+
+        match app.preview_cache.as_ref().map(|(_, r)| r) {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => panic!("プレビューがエラーで終わった（読み込み失敗）: {e}"),
+            None => panic!("プレビューキャッシュが埋まらなかった"),
+        }
     }
 }
