@@ -109,6 +109,22 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.9.0] - 2026-07-11</h2>
+<h3>追加</h3>
+<ul>
+<li><strong>左Shift単独タップによる「IME-ON 半角英数」持続トグル（BUG-25、MS-IME対応）</strong><ul>
+<li>左Shiftキーの単独タップ（他キーを介さない押下→解放）で、IME を開いたまま半角英数入力へ切り替える持続トグルを追加。もう一度単独タップすると通常のかな入力へ復帰する</li>
+<li>BUG-15 の「Shift 押しっぱなし中は半角英数」（hold 方式）を置き換えた。Shift+文字キーのチョード（<code>.yab</code> Shift 面）で MS-IME の Shift 単独タップ誤検知が発火する問題を打ち消す既存の安全網は維持しつつ、hold 方式固有の ASCII パススルー層（<code>shift_plane_halfwidth</code>）のみを撤去した</li>
+<li>右Shift単独タップは常に安全網の復元のみを実行し、持続トグル中に押すと「緊急解除」としても働く</li>
+<li>GJI（Google 日本語入力）向けの entry 機構は scan 付き VK 注入・IMC write・scan=0 VK 注入の3通りを実機検証したがいずれも機能せず（CapsLock 汚染、または <code>SendInput</code> がフックにすら到達しない）、GJI では機能を無効化した（MS-IME のみ対応）。詳細は docs/known-bugs.md BUG-25、docs/experiments.md エントリ06〜09</li>
+</ul>
+</li>
+<li><strong>Ctrl+変換を IME ON 中に押すと、ひらがな＋ローマ字＋CapsLock OFF へリセットするように変更</strong><ul>
+<li>従来は IME OFF→ON にのみ反応していたが、IME が既に ON の状態で Ctrl+変換を押した場合も、入力モードをひらがな・ローマ字・CapsLock OFF へ揃えて再確定させるようにした</li>
+<li>Ctrl+Shift+変換（EngineOn combo）等、無関係な IME-ON 経路を誤検出しないよう、Ctrl 単独修飾かつ VK_CONVERT 単押しの場合のみ対象とするガードを追加</li>
+</ul>
+</li>
+</ul>
 <h2>[1.8.9] - 2026-07-11</h2>
 <h3>追加</h3>
 <ul>
