@@ -15,7 +15,6 @@ enum Tab {
     #[allow(dead_code)]
     AppRules,
     ImeDetect,
-    #[allow(dead_code)]
     Preview,
     Advanced,
 }
@@ -890,16 +889,20 @@ impl eframe::App for SettingsApp {
             .default_width(100.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                // 「アプリ別」(AppRules) と「プレビュー」(Preview) は非表示。
-                // 前者は高度な機能のため GUI 化を見送り、後者は実装がまだ固まって
-                // いないため一旦非表示にしている（今後の課題）。config.toml 側の
-                // app_overrides / post_bypass / レイアウトは従来どおり有効で、
-                // tab_app_rules / tab_preview の実装自体は残してある。
+                // 「アプリ別」(AppRules) は高度な機能のため GUI 化を見送り、
+                // config.toml の直接編集（app_overrides / post_bypass）に委ねている。
+                // tab_app_rules の実装自体は残してある。
+                //
+                // 「プレビュー」(Preview) は 2026-07-06 に「配列プレビューの実装が
+                // まだ固まっていない」として一旦非表示にしていたが、layouts_dir の
+                // パス解決バグ修正 + 「編集...」ボタン（awase-yab-editor 起動）の
+                // 追加により再表示した。
                 for (tab, label) in [
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Keymap, "ショートカット"),
                     (Tab::ImeDetect, "IME 検出"),
+                    (Tab::Preview, "プレビュー"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {

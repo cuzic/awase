@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 修正
+
+- **設定画面「プレビュー」タブを再表示**
+  - `layouts_dir`/`config.toml` のパス解決を `awase::paths::resolve_relative_to_exe` に一本化し、`cargo run`/`cargo build` で `target/debug/` 配下から起動した場合にワークスペースルート直下の `layout/nicola.yab` を見つけられなかったバグを修正
+  - プレビュータブに「編集...」ボタンを追加し、表示中の配列ファイルを `awase-yab-editor` で直接開けるように
+  - 2026-07-06（`c3fa08e`）に「配列プレビューの実装が固まっていない」として非表示にしていたが、上記修正により再表示した
+
 ## [1.9.0] - 2026-07-11
 
 ### 追加
