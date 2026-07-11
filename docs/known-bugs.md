@@ -1746,6 +1746,66 @@ architecture_guard(10)・layer_boundary_guard(8)・journal_replay(1)・lib(138)
 **関連ファイル（追補）:** `crates/awase-windows/src/tsf/composition_fsm.rs`
 （`ConfirmKeyDown`）, `crates/awase-windows/src/platform.rs`（`on_reinject_key`）
 
+**追補（2026-07-11、IMEセッション単位の literal-detect スキップで(1)の測定窓問題を根治）:**
+上記追補が「未対応」と記した(1)（`nc_fired`/`gji_resumed` の測定窓が
+`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` 下では構造的に短すぎる問題）に対応した。
+
+**根本原因の再整理:** `is_partial_literal()` は「今回送った romaji 自身の確認信号」
+（`DetectionResult::CompositionConfirmed` = 候補ウィンドウ SHOW / GJI I/O 変化）では
+なく、送信前に確定していた無関係な代理指標 `nc_fired`/`gji_resumed`（別の F2 warmup
+キーへの応答有無）で判定している。`ColdReason::requires_settle()`
+（`FocusChange`/`NativeF2Consumed`/`SetOpenTrue` の3つ、IME が既に ON の状態でも
+発生しうる）直後は、この代理指標の元になる確認送信が `DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
+により無条件でスキップされるため、`nc_fired` は構造的に常に `false` になる。
+
+**修正方針（ユーザー提案）:** 「IME セッション（打鍵開始〜候補ウィンドウ HIDE）の
+最初の1文字だけ実際に `CompositionConfirmed` を確認し、確認できたらそのセッションの
+残りは literal-detect 自体をスキップして即送信する」という設計に変更した。
+`cold_reason` の種類には一切依存せず、「今回のセッションで実際に compose が機能した」
+という直接の事実だけを判断材料にする。これにより cold-start の第一文字だけがコストを
+払い、以降は反応速度を落とさない。
+
+cold パス（`GjiWarmupCoro` の inline LiteralDetect）と warm パス（`LiteralDetectFsm`）は
+既に同一の `LiteralDetectCore::poll` を共有しているため、そこ1箇所にゲートを追加する
+だけで両方に適用される — 新しい `ProbeAction` やコルーチンの分岐は不要だった
+（当初検討した「VKを1個ずつ送って毎回確認するループ」案は過剰と判断し撤回、
+本方式に一本化）。
+
+**実装:**
+1. `tsf/observer.rs` に `literal_session_confirmed: AtomicBool` を追加し、
+   `literal_session_confirmed()`/`mark_literal_session_confirmed()`/
+   `reset_literal_session_confirmed()` の3関数を新設（既存の `candidate_was_seen`
+   と同じ命名・実装パターン）。
+2. `tsf/warmup/literal_detect_fsm.rs::LiteralDetectCore::poll` の先頭で
+   `DIAG_LITERAL_SESSION_SKIP && literal_session_confirmed()` を確認し、`true` なら
+   検出処理自体をスキップして即 `[Done]` を返す。`CompositionConfirmed`（かつ
+   非 partial-literal）を確認できたときに `mark_literal_session_confirmed()` を呼ぶ。
+3. `platform.rs::gji_on_end_composition`（候補ウィンドウ HIDE の dispatch 箇所）で
+   `reset_literal_session_confirmed()` を呼び、次のセッションの最初の1文字は
+   改めて確認を受けるようにする。
+4. `tuning::DIAG_LITERAL_SESSION_SKIP: bool = true` を新設（`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`/
+   `DIAG_FORCE_HIRAGANA_CHARSET` と同じ「実験用診断フラグで丸ごと切替可能にし、
+   実機で観察する」流儀）。
+
+**テスト:** `cargo build/test -p awase-windows --target x86_64-pc-windows-gnu`
+（コンパイル確認、`literal_detect_fsm.rs`/`platform.rs`/`observer.rs` は
+Windows専用モジュールのため Linux では実行不可・wine不在）。既存の
+golden_scenarios(19)・architecture_guard(10)・layer_boundary_guard(8)・
+journal_replay(1)・lib(138) 全件 pass、clippy(lib) warning ゼロを確認済み。
+
+**Windows実機での検証は未実施。** 特に以下2点は実機でしか確認できない:
+- セッション内2文字目以降で本当に `[literal-detect] ... partial literal` /
+  `suspected literal` が発生しなくなるか（症状の改善確認）。
+- セッション判定の起点・終点（HIDE のタイミング）がずれて、本来チェックすべき
+  文字をスキップしてしまう偽陰性が起きていないか（`tuning.rs` の
+  `DIAG_LITERAL_SESSION_SKIP` のドキュメント参照）。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/observer.rs`
+（`literal_session_confirmed` 系3関数）,
+`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`LiteralDetectCore::poll`）,
+`crates/awase-windows/src/platform.rs`（`gji_on_end_composition`）,
+`crates/awase-windows/src/tuning.rs`（`DIAG_LITERAL_SESSION_SKIP`）
+
 ---
 
 ## デバッグ方法

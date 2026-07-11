@@ -178,6 +178,21 @@ impl LiteralDetectCore {
     pub(crate) fn poll(&mut self, env: &TsfEnvSnapshot) -> Option<Vec<ProbeAction>> {
         use crate::tsf::probe::DetectionResult;
 
+        // BUG-24 追補: このIMEセッション（打鍵開始〜候補ウィンドウHIDE）で既に
+        // CompositionConfirmedを確認済みなら、literal-detect自体をスキップして
+        // 即送信する。is_partial_literalが送信前の無関係な代理指標(nc_fired/gji_resumed)
+        // に頼っているため、cold直後は毎回誤検知しうる — セッション内2文字目以降は
+        // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
+        // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
+        if crate::tuning::DIAG_LITERAL_SESSION_SKIP && crate::tsf::observer::literal_session_confirmed()
+        {
+            log::debug!(
+                "[literal-detect] cold={} セッション確認済み → スキップ",
+                self.cold_seq
+            );
+            return Some(vec![ProbeAction::Done]);
+        }
+
         let detection = self.detector.check_now(self.deadline_ms)?;
 
         match detection {
@@ -207,6 +222,9 @@ impl LiteralDetectCore {
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
+                if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
+                    crate::tsf::observer::mark_literal_session_confirmed();
+                }
                 Some(vec![ProbeAction::Done])
             }
             DetectionResult::SuspectedLiteral => {

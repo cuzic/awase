@@ -463,3 +463,48 @@ pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
 /// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-19 に
 /// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
 pub const DIAG_FORCE_HIRAGANA_CHARSET: bool = true;
+
+/// IME セッション内で literal-detect を初回のみ実行し、以降は候補ウィンドウ HIDE まで
+/// スキップする診断フラグ（BUG-24 追補）。
+///
+/// ## 背景
+///
+/// `is_partial_literal()`（`tsf/warmup/literal_detect_fsm.rs`）は、今回送った romaji
+/// 自身の確認信号（`DetectionResult::CompositionConfirmed` = 候補ウィンドウ SHOW /
+/// GJI I/O 変化）ではなく、送信前に確定していた無関係な代理指標 `nc_fired`/`gji_resumed`
+/// （別の F2 warmup キーへの応答有無）で判定している。`ColdReason::requires_settle()`
+/// （`FocusChange`/`NativeF2Consumed`/`SetOpenTrue`）の直後は、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
+/// 下でこの代理指標の元になる確認送信自体が無条件でスキップされるため、`nc_fired` は
+/// 構造的に常に `false` になり、cold 直後の最初の1文字がほぼ確実に「正しく変換されて
+/// いるのに不要な ESC+BS 訂正」を受ける（実機ログで確認、`docs/known-bugs.md` BUG-24）。
+///
+/// ## 方針（ユーザー提案）
+///
+/// 「IME セッション（打鍵開始から候補ウィンドウ HIDE まで）の最初の1文字だけ実際に
+/// `CompositionConfirmed` を確認し、確認できたらそのセッションの残りは literal-detect
+/// 自体をスキップして即送信する」という設計に変更する。反応速度を落とさず、かつ
+/// 無関係な代理指標ではなく「今回のセッションで実際に compose が機能した」という
+/// 直接の事実だけを判断材料にする。
+///
+/// `true` の間、`LiteralDetectCore::poll`（`tsf/warmup/literal_detect_fsm.rs`）は
+/// `tsf::observer::literal_session_confirmed()` が `true` ならチェック自体を行わず
+/// 即 `Done` を返す。`CompositionConfirmed`（かつ非 partial-literal）を確認できたら
+/// `mark_literal_session_confirmed()` を呼ぶ。候補ウィンドウ HIDE
+/// （`platform.rs::gji_on_end_composition`）で `reset_literal_session_confirmed()` を
+/// 呼び、次のセッションの最初の1文字は改めて確認を受ける。
+///
+/// `cold_reason` の種類には依存しない — cold/warm 問わず、セッション内で一度
+/// 確認済みかどうかだけで判定する。
+///
+/// ## 観測すべきログ
+///
+/// - `[literal-detect] cold=N partial literal ...`/`suspected literal ...` が、
+///   同一セッション内の2文字目以降で発生しなくなるはず（1文字目のみ発生しうる）。
+/// - 実機でカタカナ化やGJI応答遅延など、実際には literal 化しているのに検出漏れ
+///   （偽陰性）が起きていないか目視確認が必要 — セッション判定の起点・終点
+///   （HIDE のタイミング）がずれると、本来チェックすべき文字をスキップしてしまう
+///   リスクがある。
+///
+/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に
+/// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
+pub const DIAG_LITERAL_SESSION_SKIP: bool = true;

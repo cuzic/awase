@@ -143,6 +143,18 @@ pub struct TsfObservations {
     /// `KanjiToggleStrategy` が shadow=false でも desync を検出して VK_KANJI を送れるようにする。
     pub(super) candidate_was_seen: AtomicBool,
 
+    /// 現在の IME セッション（打鍵開始〜候補ウィンドウ HIDE）内で、`LiteralDetectCore`
+    /// が一度でも `CompositionConfirmed`（かつ非 partial-literal）を確認できたかどうか。
+    ///
+    /// `true` になった後は、同一セッション内の以降の文字は literal-detect 自体をスキップし
+    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired`/`gji_resumed` が
+    /// `SetOpenTrue`/`FocusChange`/`NativeF2Consumed` 等の cold 直後は構造的に信頼できず、
+    /// 正しく変換されているのに不要な ESC+BS 訂正が発生していた）。
+    ///
+    /// `mark_literal_session_confirmed()` で `true` に、`reset_literal_session_confirmed()`
+    /// （`gji_on_end_composition` = 候補ウィンドウ HIDE 時）で `false` にリセットする。
+    pub(super) literal_session_confirmed: AtomicBool,
+
     /// `EVENT_OBJECT_SHOW` で GJI candidate が表示されたことを `GjiFsm::StartComposition` に橋渡しする pending フラグ。
     ///
     /// `observation_event_proc` が set → `take_pending_start_composition()` で drain → platform が `StartComposition` を dispatch。
@@ -206,6 +218,7 @@ impl TsfObservations {
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
+            literal_session_confirmed: AtomicBool::new(false),
             pending_start_composition: AtomicBool::new(false),
             pending_end_composition: AtomicBool::new(false),
             ime_composition_active: AtomicBool::new(false),
@@ -406,6 +419,30 @@ pub(crate) fn ime_composition_active_now() -> bool {
 /// `apply_ime_open` 後に `candidate_was_seen` フラグをリセットする。
 pub(crate) fn reset_candidate_was_seen() {
     TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);
+}
+
+/// 現在の IME セッション内で literal-detect が一度でも確認済みかどうか（BUG-24 追補）。
+///
+/// `true` の間、`LiteralDetectCore::poll` は検出処理自体をスキップして即 `Done` を返す。
+pub(crate) fn literal_session_confirmed() -> bool {
+    TSF_OBS.literal_session_confirmed.load(Ordering::Relaxed)
+}
+
+/// literal-detect がこのセッションで初めて `CompositionConfirmed`（非 partial-literal）を
+/// 確認したときに呼ぶ。次の `reset_literal_session_confirmed()`（候補ウィンドウ HIDE）まで
+/// 以降の文字の literal-detect をスキップさせる。
+pub(crate) fn mark_literal_session_confirmed() {
+    TSF_OBS
+        .literal_session_confirmed
+        .store(true, Ordering::Relaxed);
+}
+
+/// 候補ウィンドウ HIDE（`gji_on_end_composition`）で呼ぶ。IME セッションの終了に相当し、
+/// 次のセッションの最初の1文字は改めて literal-detect の確認を受ける。
+pub(crate) fn reset_literal_session_confirmed() {
+    TSF_OBS
+        .literal_session_confirmed
+        .store(false, Ordering::Relaxed);
 }
 
 /// `pending_start_composition` フラグを取り出す（set→false swap）。

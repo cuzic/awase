@@ -536,6 +536,11 @@ impl WindowsPlatform {
         if let Some(epoch) = self.output.gji_current_composition_epoch() {
             log::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
             self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
+            // BUG-24 追補: 候補ウィンドウ HIDE = IME セッションの終了。次のセッションの
+            // 最初の1文字は改めて literal-detect の確認を受けるようリセットする。
+            if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
+                crate::tsf::observer::reset_literal_session_confirmed();
+            }
         }
     }
 
