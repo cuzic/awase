@@ -3,6 +3,7 @@ pub mod engine;
 pub mod gate;
 pub mod kana_table;
 pub mod ngram;
+pub mod paths;
 pub mod platform;
 pub mod scanmap;
 pub mod types;

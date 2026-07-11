@@ -1,6 +1,6 @@
 mod bootstrap;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use windows::Win32::Foundation::HWND;
@@ -149,18 +149,7 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
 
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
 fn resolve_relative(path: &str) -> PathBuf {
-    if Path::new(path).is_absolute() {
-        return PathBuf::from(path);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let resolved = dir.join(path);
-            if resolved.exists() {
-                return resolved;
-            }
-        }
-    }
-    PathBuf::from(path)
+    awase::paths::resolve_relative_to_exe(path)
 }
 
 /// キーコンボ文字列のリストをパースし、失敗時は診断に警告を出す

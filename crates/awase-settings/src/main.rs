@@ -729,6 +729,14 @@ impl SettingsApp {
             if ui.button("再読み込み").clicked() {
                 self.preview_cache = None;
             }
+            if ui.button("編集...").clicked() {
+                let path =
+                    resolve_layouts_dir(&self.config.general.layouts_dir).join(&layout_file);
+                match launch_yab_editor(&path) {
+                    Ok(()) => self.status = format!("配列エディタを起動しました: {}", path.display()),
+                    Err(e) => self.status = format!("配列エディタの起動に失敗: {e}"),
+                }
+            }
         });
         ui.add_space(8.0);
 
@@ -1449,17 +1457,7 @@ fn load_layout_for_preview(
     layout_file: &str,
     model: awase::scanmap::KeyboardModel,
 ) -> Result<awase::yab::YabLayout, String> {
-    // layouts_dir が相対パスなら current_exe の隣を探す
-    let dir = if std::path::Path::new(layouts_dir).is_absolute() {
-        std::path::PathBuf::from(layouts_dir)
-    } else if let Ok(exe) = std::env::current_exe() {
-        exe.parent().map_or_else(
-            || std::path::PathBuf::from(layouts_dir),
-            |d| d.join(layouts_dir),
-        )
-    } else {
-        std::path::PathBuf::from(layouts_dir)
-    };
+    let dir = resolve_layouts_dir(layouts_dir);
     let path = dir.join(layout_file);
     let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     awase::yab::YabLayout::parse(&content, model).map_err(|e| format!("{e}"))
@@ -1533,28 +1531,42 @@ fn yab_value_display(v: &awase::yab::YabValue) -> String {
 // ── Utility functions ──
 
 fn find_config_path() -> std::path::PathBuf {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let p = dir.join("config.toml");
-        if p.exists() {
-            return p;
-        }
-    }
-    std::path::PathBuf::from("config.toml")
+    awase::paths::resolve_relative_to_exe("config.toml")
+}
+
+/// `layouts_dir` を解決する。実行ファイル隣・`cargo run` 時のワークスペース
+/// ルートのどちらでも動くよう、`awase::paths` の共通ロジックに委ねる（かつては
+/// ここに exe 隣のみを見る独自ロジックがあり、`target` 配下から起動した際に
+/// ワークスペースルート直下の `layout/` を見つけられなかった）。
+fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
+    awase::paths::resolve_relative_to_exe(layouts_dir)
+}
+
+/// プレビュー中の .yab ファイルを `awase-yab-editor` で開く。
+///
+/// 配列編集用の別 UI を settings 内に作り直さず、既存の awase-yab-editor
+/// クレートを子プロセスとして起動して再利用する。ビルド成果物のバイナリは
+/// cargo ワークスペース・インストーラのどちらでも常に同じディレクトリに
+/// 並ぶため、実行ファイルの隣を見るだけでよい（`layouts_dir` のような
+/// リソース探索とは異なり `target` フォールバックは不要）。
+fn launch_yab_editor(layout_path: &std::path::Path) -> std::io::Result<()> {
+    let exe_name = if cfg!(windows) {
+        "awase-yab-editor.exe"
+    } else {
+        "awase-yab-editor"
+    };
+    let editor_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(exe_name)))
+        .unwrap_or_else(|| std::path::PathBuf::from(exe_name));
+    std::process::Command::new(editor_path)
+        .arg(layout_path)
+        .spawn()
+        .map(|_| ())
 }
 
 fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
-    let dir = if std::path::Path::new(layouts_dir).is_absolute() {
-        std::path::PathBuf::from(layouts_dir)
-    } else if let Ok(exe) = std::env::current_exe() {
-        exe.parent().map_or_else(
-            || std::path::PathBuf::from(layouts_dir),
-            |d| d.join(layouts_dir),
-        )
-    } else {
-        std::path::PathBuf::from(layouts_dir)
-    };
+    let dir = resolve_layouts_dir(layouts_dir);
     let mut names = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
