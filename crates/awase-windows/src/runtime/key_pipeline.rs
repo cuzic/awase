@@ -976,49 +976,87 @@ impl Runtime {
         self.platform_state.ime.note_explicit_ime_action(now_tick);
         log::info!("[shift-conv-guard] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
 
-        // 診断ログ（現在使っていないが、実機切り分け時の可視性のため残す）。
-        log::debug!(
-            "[shift-conv-guard] entry: active_ime_kind={:?}",
-            crate::tsf::observer::tsf_obs().active_ime_kind()
-        );
+        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+        log::debug!("[shift-conv-guard] entry: active_ime_kind={active_ime_kind:?}");
 
-        // 入口は IME 種別によらず IMC write のみで行う（GJI・MS-IME 共通）。
+        // 入口機構は IME 種別で分岐する。
         //
-        // **撤回（2026-07-11 実機確認、BUG-15 追補7 の再発）**: 当初 GJI 向けに
+        // MS-IME: IMC write（`set_ime_romaji_mode_with_target_async`）。この経路は
+        // 元々の（BUG-15由来の）実装で実績があり、変更しない。
+        //
+        // GJI: **IMC write は使わない（2026-07-11、mozc 本家ソース調査で判明した
+        // 構造的欠陥）**。GJI の TIP（`win32/tip/tip_text_service.cc`）は
+        // `ITfCompartmentEventSink::OnChange` で conversion-mode compartment の
+        // 変化を受け取っても `TipEditSession::OnModeChangedAsync`
+        // （`tip_edit_session.cc`）止まりで、これは UI 表示の同期のみを行い
+        // 実コンポーザ（`SessionCommand::SWITCH_COMPOSITION_MODE` 経由）へは
+        // 一切伝播しない。つまり IMC write は GJI にとって「読み返すと成功して
+        // 見える一方通行の UI ミラー」に過ぎず、`success=true` かつ verify-read
+        // で `conv=0x0` を確認しても、実際のタイプ入力はひらがなのまま変化しない
+        // （実機確認: `success=true`/`NATIVE=false` を得た直後に「あいうえお」を
+        // 打鍵してもひらがなが出力された。ユーザー報告「え？全然デキてないよ」）。
+        //
+        // GJI で実際にモードを切り替える唯一の経路は、mozc 側が
+        // `win32/base/keyevent_handler.cc` で VK 値だけを見て
+        // `VK_DBE_ALPHANUMERIC` → `KeyEvent::EISU` に変換する、本物の TSF
+        // キーイベント配送（`ITfKeyEventSink::OnKeyDown`）である。
+        //
+        // **撤回済みの試行1（2026-07-11 実機確認、BUG-15 追補7 の再発）**:
         // 既存 TSF warmup 経路の scan 付き VK_DBE_ALPHANUMERIC 注入
-        // （`send_vk_dbe_alpha_warmup`）を流用していたが、Windows Terminal
-        // （TSF-native、GJI）で実際に CapsLock が点灯する事故が発生した。
-        // `SendInput` 自体は sent=2/2 で成功するが `[hook] IME-mode vk=0xF0` の
-        // ログが一度も現れず、実 conv も変化しない——scan=0x3A（物理 CapsLock
-        // 位置）が kbd106 の素のキー処理で CapsLock として横取りされ、GJI の
-        // TSF キーイベントシンクにすら届いていないと判断した。この warmup 経路は
-        // 元々「直後に文字 VK を続けて送る」前提の一時的な charset ヒントであり、
-        // 単発の standalone トグルとして安全に使える保証がない。
+        // （`send_vk_dbe_alpha_warmup`、`MapVirtualKeyW` が返す scan=0x3A）を
+        // 流用したところ、Windows Terminal（TSF-native、GJI）で実際に CapsLock
+        // が点灯する事故が発生した。`SendInput` 自体は sent=2/2 で成功するが
+        // `[hook] IME-mode vk=0xF0` のログが一度も現れず、実 conv も変化しない
+        // ——scan=0x3A（物理 CapsLock 位置）が kbd106 の素のキー処理で CapsLock
+        // として横取りされ、mozc の TSF キーイベントシンクにすら届いていないと
+        // 判断した（`keyevent_handler.cc` は VK 値のみで判定し scan は見ないが、
+        // それ以前に OS ドライバ層で握り潰されている）。
         //
-        // 撤回済みの試行（2026-07-07、MS-IME 側）: VK_DBE_ALPHANUMERIC +
-        // VK_DBE_SBCSCHAR の scan 付き注入（順序保証目的、追補6）も同じ scan=0x3A
-        // 経由で CapsLock をトグルした（実機: belief ON × 実 OFF の窓で Shift を
-        // 押すたびに CapsLock 点灯）。IME モードキーは「実 IME が確実に ON」でも
-        // 安全とは限らない — VK_DBE_ALPHANUMERIC の scan 付き注入は GJI・MS-IME
-        // 問わず避けること。
-        //
-        // IMC write は入力ストリームとの順序保証がないため、着地が遅れた場合
-        // （実測最大 250ms）は最初の Shift+英字が MS-IME の「Shift+英字 → 全角英数」
-        // で全角化する既知の限界がある（BUG-15 追補6 参照）。CapsLock 汚染より
-        // 軽微なため許容する。GJI では IMC write 自体が himc_null な TSF-native
-        // ウィンドウで効かない可能性が残るが、少なくとも CapsLock は汚染しない
-        // ため安全側に倒す（実機で無反応になる場合は既知の限界として許容し、
-        // 別の安全な経路を今後検討する）。
-        log::info!("[shift-conv-guard] IMC write (conv=0x0000) 送信");
-        win32_async::spawn_local(async {
-            let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
-            log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
-        });
+        // **今回の試行（未検証）**: `make_key_input_ex` で scan=0（衝突しない値）
+        // の VK_DBE_ALPHANUMERIC を送る。mozc 側の判定は VK 値のみ（scan 非依存）
+        // なので、scan=0x3A の CapsLock 衝突さえ避ければ TSF ルーティングには
+        // 届くはずという仮説に基づく。VK_DBE_HIRAGANA は非衝突 scan=0x70 で
+        // 確実に動作している実績があり、DBE 系 VK 自体が TSF 経由で機能すること
+        // は既に確認済み。
+        match active_ime_kind {
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput => {
+                log::info!(
+                    "[shift-conv-guard] GJI経路: VK_DBE_ALPHANUMERIC (scan=0) 注入 (IMC write は使わない)"
+                );
+                let inputs = [
+                    crate::tsf::output::make_key_input_ex(
+                        crate::vk::VK_DBE_ALPHANUMERIC,
+                        false,
+                        crate::tsf::output::TSF_MARKER,
+                    ),
+                    crate::tsf::output::make_key_input_ex(
+                        crate::vk::VK_DBE_ALPHANUMERIC,
+                        true,
+                        crate::tsf::output::TSF_MARKER,
+                    ),
+                ];
+                let sent = crate::win32::send_input_safe(&inputs);
+                log::info!(
+                    "[shift-conv-guard] GJI VK_DBE_ALPHANUMERIC(scan=0) SendInput sent={sent}/{} events",
+                    inputs.len()
+                );
+            }
+            crate::tsf::observer::ActiveImeKind::MicrosoftIme => {
+                log::info!("[shift-conv-guard] MS-IME経路: IMC write (conv=0x0000) 送信");
+                win32_async::spawn_local(async {
+                    let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
+                    log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
+                });
+            }
+        }
 
-        // 診断用（2026-07-11）: 送信方式によらず、実 conv が本当に英数
-        // （NATIVE ビット OFF）へ変化したかを送信直後に読み取って確認する。
-        // GJI 経路（scan 付き VK 注入）・MS-IME 経路（IMC write）どちらでも
-        // 実効性を直接検証できるようにするための一時的な verify ログ。
+        // 診断用（2026-07-11）: 送信直後に conv を読み取ってログに残す。
+        // **注意（GJI では確定的な成否の証明にはならない）**: GJI は上記の通り
+        // conversion-mode compartment が UI ミラーに過ぎないため、この読み取りが
+        // 英数側を示しても実コンポーザが追従した証拠にはならない（過去に一度、
+        // この verify ログだけで成功と誤判断し、ユーザーに指摘された）。GJI 側の
+        // 成否は実際の打鍵結果でのみ確認できる。MS-IME 側は元々このIMC write
+        // 自体が実効的な経路なので、この読み取りは引き続き有効な確認になる。
         win32_async::spawn_local(async {
             win32_async::sleep_ms(150).await;
             let conv = win32_async::offload(|| unsafe {
@@ -1034,7 +1072,7 @@ impl Runtime {
                         if native {
                             "未だひらがな側 → 半角英数化は未反映"
                         } else {
-                            "英数モードに変化した"
+                            "conversion-mode compartment は英数側 (GJIでは実効性の証明にはならない)"
                         }
                     );
                 }
