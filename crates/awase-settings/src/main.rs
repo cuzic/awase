@@ -1486,10 +1486,14 @@ fn draw_face_grid(
         / (max_cols + indent_ratio * max_indent_units))
         .clamp(18.0, 32.0);
     let key_size = egui::vec2(cell, cell);
-    egui::Grid::new(format!("face_grid_{id_suffix}"))
-        .spacing(egui::vec2(spacing, spacing))
-        .show(ui, |ui| {
-            for (row_idx, &col_count) in row_sizes.iter().enumerate() {
+    // egui::Grid は行内で ui.add_space() によるカーソル移動を許可しない
+    // （"You cannot advance the cursor when in a grid layout" で panic する）ため、
+    // 段差インデント表現には使えない。awase-yab-editor の draw_keyboard_grid と
+    // 同様に ui.horizontal + add_space で1行ずつ手動配置する。
+    ui.push_id(id_suffix, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
+        for (row_idx, &col_count) in row_sizes.iter().enumerate() {
+            ui.horizontal(|ui| {
                 // 行インデントで段差を表現（セルサイズに比例）
                 let indent = (row_idx as f32) * cell * indent_ratio;
                 if indent > 0.0 {
@@ -1513,9 +1517,9 @@ fn draw_face_grid(
                         ui.visuals().text_color(),
                     );
                 }
-                ui.end_row();
-            }
-        });
+            });
+        }
+    });
 }
 
 /// `YabValue` を1〜2文字の表示文字列に変換する。
@@ -1635,5 +1639,36 @@ fn send_reload_config_message() {
                 let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod preview_tab_repro {
+    use super::{draw_face_grid, load_layout_for_preview, resolve_layouts_dir};
+
+    /// プレビュータブを開いたときに実行される経路（実ファイル読み込み →
+    /// egui 描画）を GPU/ウィンドウ無しで再現する。実機で「プレビュー押したら
+    /// 強制終了」が起きた原因を切り分けるための再現テスト。
+    #[test]
+    fn loading_and_drawing_real_nicola_yab_does_not_panic() {
+        let dir = resolve_layouts_dir("layout");
+        assert!(
+            dir.join("nicola.yab").exists(),
+            "テスト前提: {} に layout/nicola.yab が見つからない",
+            dir.display()
+        );
+
+        let layout = load_layout_for_preview("layout", "nicola.yab", awase::scanmap::KeyboardModel::Jis)
+            .expect("実際の layout/nicola.yab のロードに失敗した");
+
+        let row_sizes = awase::scanmap::KeyboardModel::Jis.row_sizes();
+        let ctx = eframe::egui::Context::default();
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                draw_face_grid(ui, &layout.normal, "normal", row_sizes);
+                draw_face_grid(ui, &layout.left_thumb, "left", row_sizes);
+                draw_face_grid(ui, &layout.right_thumb, "right", row_sizes);
+            });
+        });
     }
 }
