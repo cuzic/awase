@@ -71,8 +71,9 @@ data/
 |------|------|
 | エンジン ON | **Ctrl+Shift+変換** |
 | エンジン OFF | **Ctrl+Shift+無変換** |
-| IME ON | **Ctrl+変換** |
+| IME ON | **Ctrl+変換**（IME が既に ON の場合はひらがな・ローマ字・CapsLock OFF へリセット） |
 | IME OFF | **Ctrl+無変換** |
+| IME-ON 半角英数トグル（MS-IME のみ） | **左Shift 単独タップ**（他キーを介さず押して離す。もう一度タップで解除） |
 | アプリ別動作を手動切替 | **Ctrl+Shift+F11** |
 
 > トレイアイコンを右クリック → 「設定」から GUI で変更できます。

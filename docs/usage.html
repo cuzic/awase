@@ -334,12 +334,17 @@ footer p{margin-bottom:0.3rem}
         <tr>
           <td><span class="cat cat-ime">IME</span></td>
           <td><kbd>Ctrl</kbd> + <kbd>変換</kbd></td>
-          <td>IME を ON にする（冪等 — 既に ON なら何も起きない）</td>
+          <td>IME を ON にする。既に ON の場合はひらがな・ローマ字・CapsLock OFF へリセットする</td>
         </tr>
         <tr>
           <td><span class="cat cat-ime">IME</span></td>
           <td><kbd>Ctrl</kbd> + <kbd>無変換</kbd></td>
           <td>IME を OFF にする（冪等 — 既に OFF なら何も起きない）</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td>左 <kbd>Shift</kbd> 単独タップ</td>
+          <td>「IME-ON 半角英数」持続トグル。他のキーを介さず押して離すと切替、もう一度タップで解除（現状 MS-IME のみ対応。GJI は今後対応予定）</td>
         </tr>
         <tr>
           <td><span class="cat cat-engine">エンジン</span></td>
@@ -392,7 +397,11 @@ footer p{margin-bottom:0.3rem}
     <p class="note" style="margin-top:1.2rem">
       <strong>冪等な IME 制御について：</strong>
       <kbd>Ctrl</kbd>+<kbd>変換</kbd> は「IME を ON にする」という操作です。従来のトグル方式と異なり、現在の状態がずれていても必ず意図した結果になります。
-      エンジン ON/OFF とは独立して動作します。
+      エンジン ON/OFF とは独立して動作します。IME が既に ON の場合は、入力途中の状態（カタカナ・半角英数など）をひらがな・ローマ字・CapsLock OFF へ揃えて再確定させます。
+    </p>
+    <p class="note" style="margin-top:0.6rem">
+      <strong>「IME-ON 半角英数」トグルについて：</strong>
+      左 <kbd>Shift</kbd> 単独タップは、IME を開いたまま NICOLA エンジンだけを一時的に停止し、英数字を直接入力できるようにします（IME 自体は閉じないため、パスワード欄などとは異なる仕組みです）。もう一度左 <kbd>Shift</kbd> を単独タップすると通常のかな入力へ戻ります。右 <kbd>Shift</kbd> の単独タップやフォーカス変更でも自動的に解除されます。
     </p>
   </div>
 </section>
