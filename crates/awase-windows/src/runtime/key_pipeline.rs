@@ -976,11 +976,23 @@ impl Runtime {
         self.platform_state.ime.note_explicit_ime_action(now_tick);
         log::info!("[shift-conv-guard] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
 
-        if crate::tsf::observer::gji_is_active_ime() {
+        // 診断用（2026-07-11 実機報告: belief は ObservedEisu/engine 非活性化まで
+        // 正しく遷移するのに実 conv がローマ字ひらがなのまま変化しない現象の切り分け）。
+        // `gji_is_active_ime()` が実際に GJI を検出しているか、どちらの分岐が
+        // 選ばれたかを明示的にログする。
+        let gji_active = crate::tsf::observer::gji_is_active_ime();
+        log::info!(
+            "[shift-conv-guard] entry branch 判定: gji_is_active_ime={gji_active} \
+             active_ime_kind={:?}",
+            crate::tsf::observer::tsf_obs().active_ime_kind()
+        );
+
+        if gji_active {
             // GJI: 既存 TSF warmup 経路と同じ scan 付き VK_DBE_ALPHANUMERIC 注入を
             // 流用する。実 IME が確実に ON であることは直前の effective_open() ガード
             // で確認済み（BUG-15 追補7の教訓: 実 IME が OFF の文脈での scan 付き
             // DBE キー注入は CapsLock 汚染を招くため厳禁）。この経路は実機未検証。
+            log::info!("[shift-conv-guard] GJI経路: send_vk_dbe_alpha_warmup(HankakuAlpha) 送信");
             let _ =
                 crate::tsf::send::send_vk_dbe_alpha_warmup(awase::engine::Charset::HankakuAlpha);
         } else {
@@ -997,11 +1009,14 @@ impl Runtime {
             // （実測最大 250ms）は最初の Shift+英字が MS-IME の「Shift+英字 → 全角英数」
             // で全角化する既知の限界がある（BUG-15 追補6 参照）。CapsLock 汚染より
             // 軽微なため許容し、defer ゲートでの根治は将来課題とする。
+            log::info!("[shift-conv-guard] MS-IME経路: IMC write (conv=0x0000) 送信");
             win32_async::spawn_local(async {
                 let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
-                if !ok {
-                    log::warn!("[shift-conv-guard] conv→0x0000 切替に失敗 (IMC_SETCONVERSIONMODE)");
-                }
+                // 診断用: 成功/失敗どちらも明示的にログする（従来は失敗時のみ）。
+                // himc_null な TSF-native ウィンドウでは get_ime_wnd/GETCONVERSIONMODE
+                // が早期 None を返して黙って false になるケースがあるため、
+                // 実際にどちらだったかを可視化する（2026-07-11 実機診断）。
+                log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
             });
         }
     }
