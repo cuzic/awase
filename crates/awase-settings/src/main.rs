@@ -44,7 +44,6 @@ enum CaptureTarget {
 /// 調査で発覚。当時 env_logger 自体が初期化されておらず log::warn! も no-op
 /// だった）。
 fn init_logging(debug_console: bool) {
-    write_raw_startup_marker();
     let log_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awase-settings.log")))
@@ -94,12 +93,6 @@ fn attach_parent_console() {}
 ///
 /// デフォルトの panic handler は stderr に書くだけなので、コンソールが無い
 /// GUI サブシステムでは `awase-settings.log` に残らない。
-///
-/// `log::error!` 経由の記録に加えて、`%TEMP%\awase-settings-panic.log` へ
-/// `log`/`env_logger` を一切経由しない生の同期書き込みも行う。exe 隣の
-/// ディレクトリが書き込み不能（権限・パス由来など init_logging 側のファイル
-/// オープンが失敗する未知の要因）だった場合でも、`%TEMP%` は原則いつでも
-/// 書き込み可能なため、こちらだけは確実に残る想定。
 fn install_panic_logging_hook() {
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -114,41 +107,8 @@ fn install_panic_logging_hook() {
             .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("(non-string payload)");
         log::error!("[PANIC] {msg} @ {location}");
-        write_raw_panic_marker(msg, &location);
         prev_hook(info);
     }));
-}
-
-/// `log`/`env_logger` を経由せず、`%TEMP%\awase-settings-panic.log` に直接
-/// 追記する。書き込みに失敗しても（panic ハンドラ内なので）何もできることは
-/// 無いため黙って諦める。
-fn write_raw_panic_marker(msg: &str, location: &str) {
-    write_raw_marker(&format!("[PANIC] {msg} @ {location}"));
-}
-
-/// `init_logging` の一番最初に呼ぶ。「そもそもプロセスが `main()` の先頭まで
-/// 到達したか」を、`env_logger` の初期化成否とは無関係に確認するための
-/// 起動マーカー。これと `write_raw_panic_marker` を同じファイルに書くことで:
-/// - ファイル自体が無い → main() 到達前にプロセスが落ちている
-/// - START はあるが PANIC が無い → Rust の panic ではなく、panic hook を
-///   経由しないネイティブクラッシュ（例: OpenGL ドライバ側の例外）を疑う
-/// - START と PANIC の両方がある → 通常の Rust panic
-fn write_raw_startup_marker() {
-    write_raw_marker("[START] awase-settings launched");
-}
-
-fn write_raw_marker(line: &str) {
-    use std::io::Write as _;
-    let path = std::env::temp_dir().join("awase-settings-panic.log");
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-    else {
-        return;
-    };
-    let _ = writeln!(file, "{line}");
-    let _ = file.flush();
 }
 
 fn main() -> eframe::Result<()> {
