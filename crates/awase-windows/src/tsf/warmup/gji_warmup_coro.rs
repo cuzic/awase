@@ -262,7 +262,24 @@ async fn gji_coro_body(
     // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
     let already_sent_f2 = ctx.fresh_f2_at_probe_start || fresh_f2_sent;
     let suppress_f2 = already_sent_f2 && env.is_tsf_mode;
-    let effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2;
+    let mut effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2;
+
+    // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: Phase 2/5a を止めても、この
+    // 「romajiバッチにF2を直接同梱する」第3の防御層が生きていると、実質的に予防が
+    // 効いたままになり実験にならない（2026-07-11 実機ログで確認済み: idle=1188ms の
+    // "ko" 送信でも vks=[F2,4B,4F] のようにF2先頭同梱が発生し、無防備な状態を
+    // 検証できていなかった）。ここも強制的に無効化し、reactiveなLiteralDetectのみに
+    // 完全に委ねる。
+    if crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP && effective_prepend_f2 {
+        log::debug!(
+            "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
+             force effective_prepend_f2=false (reason={cold_reason:?} \
+             real_gji_idle_ms={})",
+            ctx.cold_seq,
+            crate::tsf::observer::gji_idle_ms(),
+        );
+        effective_prepend_f2 = false;
+    }
 
     let plan = decide_transmit_plan(
         effective_prepend_f2,

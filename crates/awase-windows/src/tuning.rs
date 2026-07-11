@@ -370,13 +370,19 @@ pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
 /// スキップする分岐）に実際には滅多に入らず、偽陰性（部分リテラルの検知漏れ）が
 /// 実害として顕在化していないだけではないか。予防を絞れば顕在化するはず、というもの。
 ///
-/// `true` の間は以下 2 箇所を無効化する:
+/// `true` の間は以下 3 箇所を無効化する:
 ///
 /// 1. **Phase 2 (`SendFreshF2`) をスキップ**: `gji_coro_body` の pre-idle スキップ判定の
 ///    直後に、フラグが立っていれば無条件で `break 'initial (false, false)` する
 ///    （F2 warmup キー自体を送らない → `nc_fired`/`gji_resumed` は常に false のまま）。
 /// 2. **Phase 5a (`StartSacrificialWarmup`) をスキップ**: `long_cold && is_tsf_mode` の
 ///    条件を満たしても発火させず、Phase 5b（直接 Transmit）にフォールスルーさせる。
+/// 3. **`effective_prepend_f2` を強制 false**: 上記 1・2 を無効化しても、実際の
+///    romaji バッチに F2 を直接同梱する第3の防御層（`effective_prepend_f2`、
+///    `should_prepend_f2` の入力）が生きていると予防が実質効いたままになる。
+///    2026-07-11 の実機ログで、1・2 だけ無効化した状態でも idle=1188ms の "ko" 送信が
+///    `vks=[F2,4B,4F]`（F2 先頭同梱）でカバーされ、無防備な状態を検証できていなかった
+///    ことが判明したため追加した。
 ///
 /// いずれも `plan.needs_literal` 自体の計算式（`decide_transmit_plan`）は変更しない。
 /// 早期 F2 を送らないことで `nc_fired` が常に false になり、
