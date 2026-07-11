@@ -99,6 +99,13 @@ jobs:
       - name: Build awase-settings.exe
         run: cargo build --release -p awase-settings
 
+      # awase-settings は今まで実 Windows でテストが一度も走っていなかった
+      # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
+      # 不具合（プレビュータブを開くと無言のまま強制終了）が Linux 上の headless
+      # 再現テストでは検出できても実 Windows で再現するかは未検証だったため追加。
+      - name: Run awase-settings tests (Windows)
+        run: cargo test -p awase-settings
+
       - name: Install Japanese IME
         shell: pwsh
         run: |
