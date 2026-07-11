@@ -517,7 +517,7 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
         }
 
         // Caps Lock / IME 状態 / JISかな・ローマ字
-        let caps_lock_on = windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+        let caps_lock_on = crate::ime::is_caps_lock_on();
         let snap = crate::ime::read_ime_state_full();
 
         let ime_on = snap.ime_on.unwrap_or(false);
@@ -907,8 +907,7 @@ unsafe extern "system" fn tray_wnd_proc(
                     let _ = crate::ime::set_ime_romaji_mode_state(false);
                 },
                 Some(TrayCommand::ResetState) => unsafe {
-                    let caps_lock_on =
-                        windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+                    let caps_lock_on = crate::ime::is_caps_lock_on();
                     if caps_lock_on {
                         crate::ime::toggle_caps_lock();
                     }

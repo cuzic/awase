@@ -748,6 +748,14 @@ impl Runtime {
         focus_transition_was_pending: bool,
     ) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
+            // IME-ON コンボ（既定: Ctrl+変換）は現在の IME 状態によらず SetOpen(true) を
+            // 無条件で再発行する（`build_ime_set_open_decision` の「二重 enqueue 防止」
+            // コメント参照）。このため handle_engine_set_open で belief を更新する前に
+            // 「このイベント処理前は既に IME ON だったか」を控えておく必要がある
+            // （2026-07-11 ユーザー要望: IME-ON コンボを IME ON 中に押したら、ひらがな +
+            // ローマ字入力 + CapsLock OFF へリセットする。既に OFF→ON の場合は従来通り
+            // 単純に ON にするだけで良い）。
+            let was_open_before = self.platform_state.ime.effective_open();
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
@@ -762,6 +770,23 @@ impl Runtime {
                 "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
                 if applied { "" } else { " [chord barrier active → skipped]" }
             );
+
+            // `decision.find_ime_set_open()==Some(true)` は IME-ON コンボ以外からも
+            // 発火しうる（例: `Ctrl+Shift+変換` = EngineOn コンボで engine が
+            // Inactive→Active に遷移する際も `transition_activation` が同じ
+            // `SetOpen{open:true}` を無条件で出す、`engine.rs` L171）。「IME が既に
+            // ONだった」だけでなく、実際に押されたキーが IME-ON コンボの既定値
+            // `Ctrl+変換`（Shift/Alt/Win 無し）と一致することも確認し、無関係な
+            // コンボでリセットが誤発火しないようにする。`keys.ime_on` をカスタマイズ
+            // した場合はこの判定も合わせて更新すること。
+            let is_default_ime_on_combo = event.vk_code == crate::vk::VK_CONVERT
+                && event.modifier_snapshot.ctrl
+                && !event.modifier_snapshot.shift
+                && !event.modifier_snapshot.alt
+                && !event.modifier_snapshot.win;
+            if applied && new_ime_on && was_open_before && is_default_ime_on_combo {
+                Self::kp_reset_to_hiragana_romaji_capsoff();
+            }
 
             // SetOpen(true) 後 input_mode=ObservedEisu が残ると engine が NotRomajiInput で
             // inactive になり、VK_KANJI 送信後も 1500ms 間 NICOLA が処理されない。
@@ -813,6 +838,51 @@ impl Runtime {
         }
 
         self.kp_stage_shift_conv_guard(event);
+    }
+
+    /// IME-ON コンボ（既定: Ctrl+変換）を IME 既に ON の状態で押した場合のリセット動作。
+    ///
+    /// ユーザー要望 (2026-07-11):「Ctrl+変換 で IME-OFF のときは IME-ON だけど、
+    /// IME-ON のときは ひらがな・ローマ字・Caps OFF にしてほしい」。IME-OFF→ON は
+    /// 既存の `SetOpen(true)` のみで達成されるため変更不要。ここでは「既に ON だった」
+    /// 場合にだけ追加で: ひらがな＋ローマ字入力へ conv を寄せ（全角/半角・記号入力等の
+    /// 無関係なビットは保持しつつ NATIVE|FULLSHAPE|ROMAN を立てて KATAKANA を落とす）、
+    /// 実 OS の Caps Lock を OFF にする。トレイメニューの「状態をリセット」
+    /// (`TrayCommand::ResetState`、`tray.rs`) と同じ変換モードのマスクを使う。
+    fn kp_reset_to_hiragana_romaji_capsoff() {
+        // Caps Lock はトグル表示灯の読み取り (GetKeyState) + 条件付き SendInput のみで、
+        // クロスプロセス IMM 呼び出しを含まないためフックスレッドから直接呼んで安全
+        // （`is_physical_key_down`/`GetAsyncKeyState` 等、他の同期呼び出しと同水準）。
+        // SAFETY: is_caps_lock_on / toggle_caps_lock は Win32 API を呼ぶのみ。
+        // メインスレッド（フックスレッド）から呼んでいる。
+        if unsafe { crate::ime::is_caps_lock_on() } {
+            unsafe { crate::ime::toggle_caps_lock() };
+            log::info!("[ime-on-combo] IME 既に ON → Caps Lock を OFF に");
+        }
+        log::info!(
+            "[ime-on-combo] IME 既に ON → ひらがな＋ローマ字入力へリセット \
+             (NATIVE|FULLSHAPE|ROMAN を立て KATAKANA を落とす)"
+        );
+        // IMC read/write はクロスプロセスメッセージを含むため、フックスレッドから直接
+        // 呼ばず shift-conv-guard と同じパターンで spawn_local する。現在の conv を
+        // 読んでから mask するのは、記号入力等の無関係なビットを保持するため
+        // （`set_ime_romaji_mode_with_target_async` は target を丸ごと置換するので、
+        // 事前に現在値を読んでマスク計算してから渡す）。
+        win32_async::spawn_local(async {
+            let current = win32_async::offload(|| unsafe {
+                crate::ime::get_ime_conversion_mode_raw_timeout(50)
+            })
+            .await;
+            let set_mask = crate::imm::IME_CMODE_NATIVE
+                | crate::imm::IME_CMODE_FULLSHAPE
+                | crate::imm::IME_CMODE_ROMAN;
+            let clear_mask = crate::imm::IME_CMODE_KATAKANA;
+            let target = current.map_or(set_mask, |c| (c | set_mask) & !clear_mask);
+            let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
+            if !ok {
+                log::warn!("[ime-on-combo] ひらがな＋ローマ字リセットの conv write に失敗");
+            }
+        });
     }
 
     /// Shift 押下→解放間の IME conv 安全網、および左Shift単独タップによる
