@@ -605,8 +605,29 @@ impl Output {
             .conv_mode
             .get()
             .map_or(crate::state::Charset::Hiragana, |m| m.charset);
+        // カタカナ/英数系 warmup キー (F1/F0 系) は実際に GJI の charset を書き換える
+        // 副作用を持つ。この関数は EmitWarmup (ConfirmKeyDown/Up・CtrlUp・SetOpenTrue 等)
+        // のたびに呼ばれるため、同じ確定 mode に対して無条件に送り続けると、一発の
+        // 誤読が belief に確定しただけでも real IME へ warmup のたびに再アサートされ
+        // 続けて自己増幅するループになる (BUG-19)。`cold_warmup.rs::preamble` /
+        // `probe_io.rs::send_sacrificial_ime_off_on` と同じ `needs_conv_restore_write()`
+        // で「同じ mode への warmup 送信は1回だけ」に制限する。BUG-19 の根本原因分析
+        // 自体がこの関数を名指ししていたが、従来の対策(ADR-078 Phase 1a)は上記2箇所
+        // にしか配線されておらず、本関数は無防備なまま残っていた（実機ログで
+        // 2026-07-11 に確認、`docs/known-bugs.md` BUG-19 追補4）。
+        // Hiragana (F2) は ROMAN ビット確保のみで冪等なため対象外（既存の
+        // `conv_target.is_none()` 除外と同じ理由）。
+        if !matches!(charset, crate::state::Charset::Hiragana)
+            && !self.conv_mode.needs_conv_restore_write()
+        {
+            log::trace!(
+                "[tsf-eager-warmup] {charset} は確定済み → 反復 warmup 送信をスキップ (BUG-19 追補4)"
+            );
+            return;
+        }
         let ms = match charset {
             crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
+                self.conv_mode.mark_conv_restore_written();
                 let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
                 log::debug!(
                     "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"
@@ -621,6 +642,7 @@ impl Output {
                 ms
             }
             crate::state::Charset::ZenkakuAlpha | crate::state::Charset::HankakuAlpha => {
+                self.conv_mode.mark_conv_restore_written();
                 let ms = crate::tsf::send::send_vk_dbe_alpha_warmup(charset);
                 log::debug!(
                     "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"

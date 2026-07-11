@@ -1239,6 +1239,57 @@ x86_64-pc-windows-gnu`（warning ゼロ）を確認済み。**Windows 実機
 への型分割・トレイの明示的 intent 化・config1.db 対応は ADR-078 の
 Phase 1b/2 として未着手。
 
+**追補4（2026-07-11、実機ログで再発を確認・真の根本原因を特定・修正）:**
+上記3件の対策を適用済みのビルド（`e7cc6d7` HEAD 相当）でも、Windows Terminal
+（`CASCADIA_HOSTING_WINDOW_CLASS` + `Windows.UI.Input.InputSite.WindowClass`、
+GJI、`TsfNative`）で通常の日本語入力中に再発した（ユーザー報告「半角空白が
+消える」「awase も gji もカタカナになる」）。実機ログ（本セッションで共有、
+2026-07-11T00:36〜00:49 に約10回発生）を解析した結果、**今回は一発誤読では
+なく、`ConvModeMgr` の 2 回連続観測デバウンスを正規に通過して `mode` が
+`ZenKata` へ確定していた**（`[conv-mode] カタカナ遷移候補観測 (1回目、
+確定保留)` → 数百ms後に `[conv-mode] Hiragana/roma → ZenKata/roma` で確定、
+というログが全 10 件で一致）。
+
+**根本原因（確定）:** 確定後、`output/mod.rs::send_eager_tsf_warmup`
+（composition-fsm の `EmitWarmup`、すなわち Enter/Space/Ctrl chord 等の
+confirm-key・cold-mark のたびに呼ばれる、非常に高頻度な speculative
+warmup 経路）が `conv_mode.get()` の charset を見て毎回無条件に実 VK
+（`VK_DBE_KATAKANA` 系）を GJI へ送信していた。ログでは同一エピソード内で
+`[tsf-eager-warmup] ZenKata warmup 送信` が 10〜20 秒間に十数〜20回超
+連続で発生していた。この関数は BUG-19 の**原本の根本原因分析自体**が
+名指ししていた箇所（"次の eager warmup（`output/mod.rs:590-620`
+`send_eager_tsf_warmup`）が実際に GJI へ送信してしまう"）だが、追補1〜3
+で導入された `ConvModeMgr::needs_conv_restore_write`/`mark_conv_restore_written`
+（「同じ確定 mode への復元書き込みは1回だけ」のスロットル）は
+`cold_warmup.rs::preamble()` と `probe_io.rs::send_sacrificial_ime_off_on`
+の2箇所にしか配線されておらず、**この本命の関数だけが無防備なまま
+残っていた**。一度きりの誤読（または本物のカタカナ入力）がデバウンスを
+通過して確定した後、EmitWarmup が発火するたびに実 F1 キーが GJI へ
+再送され続け、真にロックインされる自己増幅ループになっていた。
+
+**修正:** `send_eager_tsf_warmup` の ZenkakuKatakana/HankakuKatakana/
+ZenkakuAlpha/HankakuAlpha 分岐に `needs_conv_restore_write()` ガードを追加し、
+実送信時に `mark_conv_restore_written()` を呼ぶよう変更（`crates/awase-windows/src/output/mod.rs`）。
+既存の `cold_warmup.rs`/`probe_io.rs` と全く同じスロットル方式であり、
+新しい仕組みは導入していない。Hiragana (F2) 分岐は既存の
+`conv_target.is_none()` 除外と同じ理由（ROMAN ビット確保のみで冪等）で
+対象外のまま。
+
+**テスト:** スロットル本体（`ConvModeMgr::needs_conv_restore_write`/
+`mark_conv_restore_written`）は既に `state/conv_mode.rs` の5件のユニット
+テストでカバー済み（追補3で追加、Linux で `cargo test -p awase-windows --lib conv_mode`
+実行可能）。今回の変更は既存プリミティブを新しい呼び出し箇所に配線した
+のみで、`send_eager_tsf_warmup` 自体は実 `SendInput` を伴うため Windows
+実機以外でのユニットテストは困難（`cargo build/test -p awase-windows
+--target x86_64-pc-windows-gnu` でコンパイル確認・既存 lib 138件/
+architecture_guard 10件が全件 pass することを確認済み）。**Windows 実機
+での再発有無の検証は未実施（次回セッションでの確認事項）。**
+
+**関連ファイル（追補4）:** `crates/awase-windows/src/output/mod.rs`
+（`send_eager_tsf_warmup`）, `crates/awase-windows/src/state/conv_mode.rs`
+（`needs_conv_restore_write`/`mark_conv_restore_written`、変更なし・既存
+プリミティブを再利用）
+
 ---
 
 ## BUG-20: ドリフト補正の再送が non-ImmCross アプリで no-op のため IME ON / Engine OFF が固定化する（修正済み・実機検証待ち）
