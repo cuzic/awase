@@ -1562,6 +1562,35 @@ literal の疑い経路を直接誘発しうる」と、既知のリスクとし
 可能性がある。**実機での検証でしか確認できない**（Linux 環境では
 wine 不在のため実行不可）。
 
+**実機検証（2026-07-11、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`）:**
+
+WezTerm/TSF 側の3防御層すべて（Phase 2 `SendFreshF2`、Phase 5a
+`StartSacrificialWarmup`、`effective_prepend_f2` のバッチ同梱）を診断フラグ
+`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`（`tuning.rs`）で無効化し、Windows Terminal
+（`CASCADIA_HOSTING_WINDOW_CLASS`）で実機タイピングして予防をなくした状態での
+挙動を観測した。
+
+- **`reason=SetOpenTrue`（エンジン再有効化直後、`real_gji_idle_ms` 282〜1188ms）**:
+  観測した全件（`cold=1,10,11,12,14`）で、`romaji="ko"`（歴史的な"kお"バグの
+  典型パターン）送信後に `is_partial_literal()` が正しく `partial literal` を
+  検知し、ESC-based 回収（`4e31b64`、`VK_ESCAPE` + `BS×1` + 再送）が正しく機能
+  して文字化けを免れた。予防ゼロでも reactive 検知だけで実害を防げることを
+  実機で確認できた。
+- **`reason=ReinjectConfirmKey`/`CtrlKeyBypass`（`nc_fired=true`、
+  `cold=5,6,9,13`）**: `effective_prepend_f2` を強制 false にした結果
+  `needs_literal=false` となり、`LiteralDetect` 自体が一切起動しなかった。
+  目視確認の結果、この瞬間の出力（"さ"/"に"）はローマ字のまま残っておらず
+  正しく変換されていた——`nc_fired=true` という判定自体がこのケースでは実態と
+  一致していたことを示唆する。これは「`nc_fired=false` なのに実際は暖まって
+  いた」（"な" バグ）とは逆方向であり、偽陰性の証拠にはならない。
+
+**現時点の結論:** 今回の実機検証（1セッション、上記件数）の範囲では偽陰性の
+実害は観測されなかった。ただし条件（より長い idle、他の cold_reason、他アプリ、
+複数セッション）を広げていない段階のため、BUG-24 の理論的懸念自体が否定された
+わけではない。ユーザーの判断で `DIAG_DISABLE_PROACTIVE_TSF_WARMUP=true` の
+まま実運用を継続し、より広い条件下で問題が顕在化するか追加検証中
+（2026-07-11〜、進行中）。
+
 **改善オプション（実現性順、2026-07-10 調査、いずれも未実施）:**
 
 1. **昇格条件の横展開（低コスト・対症療法）:** `is_confirm_key` 限定の

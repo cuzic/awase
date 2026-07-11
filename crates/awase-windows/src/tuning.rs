@@ -406,4 +406,13 @@ pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
 ///
 /// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に実測を
 /// 追記した上で撤去すること（`tuning-constants.md` の実測義務）。
+///
+/// 2026-07-11 追記: 実機1セッションで `SetOpenTrue`（cold=1,10,11,12,14、
+/// real_gji_idle_ms 282〜1188ms）の"ko"送信は全件 ESC-based 回収（`4e31b64`）が
+/// 正しく機能し文字化けなし。`nc_fired=true`（cold=5,6,9,13）で `needs_literal=false`
+/// となり LiteralDetect 自体が起動しなかったケースも目視で文字化けなしを確認
+/// （`nc_fired=true` の判定がこのケースでは実態と一致していたと解釈、偽陰性の
+/// 証拠にはならない）。詳細は `docs/known-bugs.md` BUG-24 参照。1セッション分の
+/// データのみのため、ユーザー判断で `true` のまま実運用を継続し、より広い条件
+/// （長い idle・他の cold_reason・他アプリ・複数セッション）で追加検証中。
 pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
