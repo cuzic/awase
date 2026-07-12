@@ -49,8 +49,9 @@ awase（ワークスペースルート）
 ├── crates/timed-fsm/         ← タイムアウト付き FSM ライブラリ（crates.io 公開予定）
 ├── crates/win32-async/       ← シングルスレッド spawn_local
 ├── crates/win32-worker/      ← バックグラウンドスレッド
-├── crates/awase-settings/    ← 設定 GUI（iced）
-└── crates/awase-yab-editor/  ← .yab 配列エディタ（独立 GUI）
+└── crates/awase-settings/    ← 設定 GUI（.yab 配列編集タブ込み。旧 awase-yab-editor
+                                  バイナリはここに統合済み — バイナリを分ける価値が
+                                  無い割に CI/配布物の同期コストが大きかったため）
 ```
 
 **lib クレート（`src/`）は Windows API を一切参照しない。** macOS / Linux 対応のための設計上の制約です（ADR-019）。

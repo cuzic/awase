@@ -1,6 +1,13 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+use std::path::{Path, PathBuf};
+
 use eframe::egui;
+
+use awase::kana_table::KanaTable;
+use awase::scanmap::PhysicalPos;
+use awase::types::SpecialKey;
+use awase::yab::{YabFace, YabLayout, YabValue};
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
 #[cfg(target_os = "windows")]
@@ -15,9 +22,56 @@ enum Tab {
     #[allow(dead_code)]
     AppRules,
     ImeDetect,
-    Preview,
+    Layout,
     Advanced,
 }
+
+/// 配列編集タブの4面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Face {
+    Normal,
+    LeftThumb,
+    RightThumb,
+    Shift,
+}
+
+const FACES: [(Face, &str); 4] = [
+    (Face::Normal, "通常面"),
+    (Face::LeftThumb, "左親指シフト"),
+    (Face::RightThumb, "右親指シフト"),
+    (Face::Shift, "小指シフト"),
+];
+
+/// 配列編集タブのセル編集時の種別。
+///
+/// かつて awase-yab-editor という独立バイナリだったものを awase-settings に
+/// 統合した（コードの再利用に価値はあるが、別バイナリに分ける価値は無いという
+/// 判断。CI/配布物/インストーラで2バイナリを同期し続けるコストの方が大きかった）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    /// ローマ字（複数文字、かな変換される）または記号・数字の打鍵（単発、
+    /// IME がキーストロークとして処理する）。入力に応じて `apply_layout_edit` が
+    /// `YabValue::Romaji` / `YabValue::KeySequence` のどちらを作るか自動判定する。
+    /// JIS キーボード上に存在する文字（`char::is_ascii_graphic`）のみ許可する。
+    Keystroke,
+    Literal,
+    Special,
+    None,
+}
+
+/// 打鍵欄の入力を検証する。JIS キーボード上のキーとして表現できない文字が
+/// あれば、その文字を返す。
+fn find_invalid_keystroke_char(input: &str) -> Option<char> {
+    input.chars().find(|c| !c.is_ascii_graphic())
+}
+
+const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
+    (SpecialKey::Backspace, "Backspace"),
+    (SpecialKey::Escape, "Escape"),
+    (SpecialKey::Enter, "Enter"),
+    (SpecialKey::Space, "Space"),
+    (SpecialKey::Delete, "Delete"),
+];
 
 /// キー入力キャプチャの対象。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,6 +190,10 @@ fn main() -> eframe::Result<()> {
     )
 }
 
+/// 各 bool は無関係な由来（keymap キャプチャの修飾キー3つ、配列編集タブの
+/// dirty フラグ1つ）を持つ独立したフラグであり、bitflags 化や enum への統合は
+/// 可読性を下げるだけなので許容する。
+#[expect(clippy::struct_excessive_bools)]
 struct SettingsApp {
     config: awase::config::AppConfig,
     config_path: std::path::PathBuf,
@@ -165,11 +223,22 @@ struct SettingsApp {
     new_pb_key: String,
     new_pb_process: String,
     new_pb_class: String,
-    // Preview cache: (layout filename, parsed result)
-    preview_cache: Option<(
-        (String, awase::scanmap::KeyboardModel),
-        Result<awase::yab::YabLayout, String>,
-    )>,
+    // ── 配列編集タブの状態（旧 awase-yab-editor バイナリを統合） ──
+    layout: YabLayout,
+    layout_file_path: Option<PathBuf>,
+    layout_file_path_buf: String,
+    layout_current_face: Face,
+    layout_selected_pos: Option<PhysicalPos>,
+    layout_edit_kind: ValueKind,
+    layout_edit_value: String,
+    layout_edit_special_idx: usize,
+    kana_table: KanaTable,
+    layout_modified: bool,
+    layout_status: String,
+    /// rfd の非同期ファイルダイアログから戻ってきたパス（開く）
+    layout_pending_open: Option<PathBuf>,
+    /// rfd の非同期ファイルダイアログから戻ってきたパス（名前を付けて保存）
+    layout_pending_save_as: Option<PathBuf>,
 }
 
 impl SettingsApp {
@@ -184,6 +253,23 @@ impl SettingsApp {
             }
         };
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
+
+        let layout_path =
+            resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
+        let (layout, layout_status, layout_file_path) =
+            match load_yab_layout(&layout_path, config.general.keyboard_model) {
+                Ok(ly) => (
+                    ly,
+                    format!("{} を読み込みました", layout_path.display()),
+                    Some(layout_path.clone()),
+                ),
+                Err(e) => (empty_yab_layout(), format!("読み込み失敗: {e}"), None),
+            };
+        let layout_file_path_buf = layout_file_path.as_ref().map_or_else(
+            || layout_path.display().to_string(),
+            |p| p.display().to_string(),
+        );
+
         Self {
             config,
             config_path,
@@ -208,7 +294,19 @@ impl SettingsApp {
             new_pb_key: String::new(),
             new_pb_process: String::new(),
             new_pb_class: String::new(),
-            preview_cache: None,
+            layout,
+            layout_file_path,
+            layout_file_path_buf,
+            layout_current_face: Face::Normal,
+            layout_selected_pos: None,
+            layout_edit_kind: ValueKind::None,
+            layout_edit_value: String::new(),
+            layout_edit_special_idx: 0,
+            kana_table: KanaTable::build(),
+            layout_modified: false,
+            layout_status,
+            layout_pending_open: None,
+            layout_pending_save_as: None,
         }
     }
 
@@ -237,6 +335,213 @@ impl SettingsApp {
                 self.status = "変更を破棄しました".to_string();
             }
             Err(e) => self.status = format!("読み込み失敗: {e}"),
+        }
+    }
+
+    // ── 配列編集タブ（旧 awase-yab-editor）──
+
+    const fn layout_face_mut(&mut self, face: Face) -> &mut YabFace {
+        match face {
+            Face::Normal => &mut self.layout.normal,
+            Face::LeftThumb => &mut self.layout.left_thumb,
+            Face::RightThumb => &mut self.layout.right_thumb,
+            Face::Shift => &mut self.layout.shift,
+        }
+    }
+
+    const fn layout_face(&self, face: Face) -> &YabFace {
+        match face {
+            Face::Normal => &self.layout.normal,
+            Face::LeftThumb => &self.layout.left_thumb,
+            Face::RightThumb => &self.layout.right_thumb,
+            Face::Shift => &self.layout.shift,
+        }
+    }
+
+    fn select_layout_cell(&mut self, pos: PhysicalPos) {
+        self.layout_selected_pos = Some(pos);
+        let value = self
+            .layout_face(self.layout_current_face)
+            .get(&pos)
+            .cloned();
+        match value {
+            Some(YabValue::Romaji { romaji, .. }) => {
+                self.layout_edit_kind = ValueKind::Keystroke;
+                self.layout_edit_value = romaji;
+            }
+            Some(YabValue::Literal(s)) => {
+                self.layout_edit_kind = ValueKind::Literal;
+                self.layout_edit_value = s;
+            }
+            Some(YabValue::KeySequence(s)) => {
+                self.layout_edit_kind = ValueKind::Keystroke;
+                self.layout_edit_value = s;
+            }
+            Some(YabValue::Special(sk)) => {
+                self.layout_edit_kind = ValueKind::Special;
+                self.layout_edit_special_idx =
+                    SPECIAL_KEYS.iter().position(|(k, _)| *k == sk).unwrap_or(0);
+                self.layout_edit_value.clear();
+            }
+            Some(YabValue::None) | None => {
+                self.layout_edit_kind = ValueKind::None;
+                self.layout_edit_value.clear();
+            }
+        }
+    }
+
+    fn apply_layout_edit(&mut self) {
+        let Some(pos) = self.layout_selected_pos else {
+            return;
+        };
+        let value = match self.layout_edit_kind {
+            ValueKind::Keystroke => {
+                let input = self.layout_edit_value.trim().to_string();
+                if input.is_empty() {
+                    YabValue::None
+                } else if let Some(bad) = find_invalid_keystroke_char(&input) {
+                    self.layout_status =
+                        format!("「{bad}」は JIS キーボード上のキーとして入力できません");
+                    return;
+                } else if input.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let kana = self.kana_table.kana_for_romaji(&input);
+                    YabValue::Romaji {
+                        romaji: input,
+                        kana,
+                    }
+                } else {
+                    YabValue::KeySequence(input)
+                }
+            }
+            ValueKind::Literal => {
+                let s = self.layout_edit_value.clone();
+                if s.is_empty() {
+                    YabValue::None
+                } else {
+                    YabValue::Literal(s)
+                }
+            }
+            ValueKind::Special => YabValue::Special(SPECIAL_KEYS[self.layout_edit_special_idx].0),
+            ValueKind::None => YabValue::None,
+        };
+        self.layout_face_mut(self.layout_current_face)
+            .insert(pos, value);
+        self.layout_modified = true;
+        self.layout_status = "変更あり".to_string();
+    }
+
+    fn layout_do_save(&mut self) {
+        let path = self.layout_file_path.clone();
+        match path {
+            Some(p) => self.layout_write_to_path(&p),
+            None => self.layout_do_save_as_dialog(),
+        }
+    }
+
+    fn layout_write_to_path(&mut self, path: &Path) {
+        let text = self.layout.serialize(self.config.general.keyboard_model);
+        match std::fs::write(path, &text) {
+            Ok(()) => {
+                self.layout_file_path = Some(path.to_path_buf());
+                self.layout_file_path_buf = path.display().to_string();
+                self.layout_modified = false;
+                self.layout_status = format!("{} に保存しました", path.display());
+            }
+            Err(e) => self.layout_status = format!("保存失敗: {e}"),
+        }
+    }
+
+    fn layout_do_open_dialog(&mut self) {
+        let task = rfd::AsyncFileDialog::new()
+            .set_title("配列ファイルを開く")
+            .add_filter("YAB 配列ファイル", &["yab"])
+            .add_filter("すべてのファイル", &["*"])
+            .pick_file();
+        let result = std::thread::spawn(move || {
+            let handle = pollster::block_on(task);
+            handle.map(|h| PathBuf::from(h.path()))
+        });
+        if let Ok(maybe_path) = result.join() {
+            self.layout_pending_open = maybe_path;
+        }
+    }
+
+    fn layout_do_save_as_dialog(&mut self) {
+        let task = rfd::AsyncFileDialog::new()
+            .set_title("名前を付けて保存")
+            .add_filter("YAB 配列ファイル", &["yab"])
+            .add_filter("すべてのファイル", &["*"])
+            .save_file();
+        let result = std::thread::spawn(move || {
+            let handle = pollster::block_on(task);
+            handle.map(|h| PathBuf::from(h.path()))
+        });
+        if let Ok(Some(path)) = result.join() {
+            self.layout_pending_save_as = Some(path);
+        }
+    }
+
+    fn layout_load_from_path(&mut self, path: &Path) {
+        match load_yab_layout(path, self.config.general.keyboard_model) {
+            Ok(ly) => {
+                self.layout = ly;
+                self.layout_file_path_buf = path.display().to_string();
+                self.layout_file_path = Some(path.to_path_buf());
+                self.layout_modified = false;
+                self.layout_selected_pos = None;
+                self.layout_status = format!("{} を読み込みました", path.display());
+            }
+            Err(e) => self.layout_status = format!("読み込み失敗: {e}"),
+        }
+    }
+
+    fn layout_do_open_from_text_box(&mut self) {
+        let path = PathBuf::from(&self.layout_file_path_buf);
+        self.layout_load_from_path(&path);
+    }
+
+    fn layout_do_reload(&mut self) {
+        let Some(path) = self.layout_file_path.clone() else {
+            self.layout_status = "ファイルパスが未設定です".to_string();
+            return;
+        };
+        match load_yab_layout(&path, self.config.general.keyboard_model) {
+            Ok(ly) => {
+                self.layout = ly;
+                self.layout_modified = false;
+                self.layout_selected_pos = None;
+                self.layout_status = format!("{} を再読み込みしました", path.display());
+            }
+            Err(e) => self.layout_status = format!("再読み込み失敗: {e}"),
+        }
+    }
+
+    fn drain_layout_pending_async(&mut self) {
+        if let Some(path) = self.layout_pending_open.take() {
+            self.layout_load_from_path(&path);
+        }
+        if let Some(path) = self.layout_pending_save_as.take() {
+            self.layout_write_to_path(&path);
+        }
+    }
+
+    /// 配列編集タブ表示中のみキーボードショートカットを解釈する
+    /// （他タブでの入力中に Ctrl+S 等を奪わないため）。
+    fn handle_layout_shortcuts(&mut self, ctx: &egui::Context) {
+        if self.active_tab != Tab::Layout {
+            return;
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
+            self.layout_do_save();
+        }
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::O)) {
+            self.layout_do_open_dialog();
+        }
+        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::S)) {
+            self.layout_do_save_as_dialog();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+            self.layout_do_reload();
         }
     }
 
@@ -800,67 +1105,286 @@ impl SettingsApp {
         }
     }
 
-    fn tab_preview(&mut self, ui: &mut egui::Ui) {
-        ui.heading("配列プレビュー");
-        ui.label("選択中のレイアウトをキーボード風に表示します。\n通常面・左親指シフト面・右親指シフト面を確認できます。");
-        ui.add_space(8.0);
+    fn tab_layout(&mut self, ui: &mut egui::Ui) {
+        self.drain_layout_pending_async();
 
-        let layout_file = self.config.general.default_layout.clone();
-        let keyboard_model = self.config.general.keyboard_model;
+        ui.heading("配列編集");
+        ui.add_space(4.0);
+
+        // ツールバー
         ui.horizontal(|ui| {
-            ui.label(format!("レイアウト: {layout_file}"));
-            if ui.button("再読み込み").clicked() {
-                self.preview_cache = None;
+            if ui.button("開く").clicked() {
+                self.layout_do_open_dialog();
             }
-            if ui.button("編集...").clicked() {
-                let path = resolve_layouts_dir(&self.config.general.layouts_dir).join(&layout_file);
-                match launch_yab_editor(&path) {
-                    Ok(()) => {
-                        self.status = format!("配列エディタを起動しました: {}", path.display())
-                    }
-                    Err(e) => self.status = format!("配列エディタの起動に失敗: {e}"),
-                }
+            if ui.button("保存").clicked() {
+                self.layout_do_save();
+            }
+            if ui.button("名前を付けて保存").clicked() {
+                self.layout_do_save_as_dialog();
+            }
+            if ui.button("再読み込み").clicked() {
+                self.layout_do_reload();
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("パス:");
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut self.layout_file_path_buf).desired_width(300.0),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.layout_do_open_from_text_box();
+            }
+        });
+        ui.horizontal(|ui| {
+            let fname = self
+                .layout_file_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map_or("-", |n| n.to_str().unwrap_or("-"));
+            ui.label(fname);
+            ui.separator();
+            ui.label(if self.layout_modified {
+                egui::RichText::new("変更あり").color(egui::Color32::from_rgb(200, 80, 0))
+            } else {
+                egui::RichText::new("保存済み").color(egui::Color32::from_rgb(0, 140, 0))
+            });
+            ui.separator();
+            ui.label(keyboard_model_label(self.config.general.keyboard_model))
+                .on_hover_text(
+                    "配列のキーボード配列（JIS/US）は「基本設定」タブの設定に従います。",
+                );
+            if !self.layout_status.is_empty() {
+                ui.separator();
+                ui.label(&self.layout_status);
             }
         });
         ui.add_space(8.0);
 
-        // キャッシュをチェック、無ければロード（レイアウト名とキーボード配列の両方をキーにする）
-        let cache_key = (layout_file.clone(), keyboard_model);
-        let need_reload = self
-            .preview_cache
-            .as_ref()
-            .map_or(true, |(cached_key, _)| cached_key != &cache_key);
-        if need_reload {
-            self.preview_cache = Some((
-                cache_key,
-                load_layout_for_preview(
-                    &self.config.general.layouts_dir,
-                    &layout_file,
-                    keyboard_model,
-                ),
-            ));
+        // 面タブ
+        ui.horizontal(|ui| {
+            for (face, label) in &FACES {
+                let is_active = self.layout_current_face == *face;
+                let btn_text = if is_active {
+                    egui::RichText::new(*label).strong()
+                } else {
+                    egui::RichText::new(*label)
+                };
+                if ui.selectable_label(is_active, btn_text).clicked() {
+                    self.layout_current_face = *face;
+                    self.layout_selected_pos = None;
+                }
+            }
+        });
+        ui.separator();
+
+        // 凡例
+        ui.horizontal(|ui| {
+            ui.label("凡例:");
+            color_legend(ui, egui::Color32::from_rgb(255, 255, 255), "打鍵(ローマ字)");
+            color_legend(ui, egui::Color32::from_rgb(210, 230, 255), "リテラル");
+            color_legend(ui, egui::Color32::from_rgb(210, 255, 220), "特殊キー");
+            color_legend(
+                ui,
+                egui::Color32::from_rgb(200, 235, 255),
+                "打鍵(記号/数字)",
+            );
+            color_legend(ui, egui::Color32::from_rgb(220, 220, 220), "なし");
+        });
+        ui.add_space(8.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.draw_layout_keyboard_grid(ui);
+            ui.add_space(8.0);
+            ui.separator();
+            self.draw_layout_edit_panel(ui);
+        });
+    }
+
+    fn draw_layout_keyboard_grid(&mut self, ui: &mut egui::Ui) {
+        let row_sizes = self.config.general.keyboard_model.row_sizes();
+        let mut clicked_pos = None;
+
+        // Row indents to simulate staggered keyboard layout
+        let indents: [f32; 4] = [0.0, 14.0, 28.0, 42.0];
+
+        for (row, &cols) in row_sizes.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.add_space(indents[row]);
+                for col in 0..cols {
+                    #[expect(clippy::cast_possible_truncation)]
+                    let pos = PhysicalPos::new(row as u8, col as u8);
+                    let value = self.layout_face(self.layout_current_face).get(&pos);
+                    let is_selected = self.layout_selected_pos == Some(pos);
+
+                    let display = cell_display(value);
+                    let bg_color = cell_color(value);
+                    let stroke = if is_selected {
+                        egui::Stroke::new(2.5, egui::Color32::from_rgb(30, 100, 220))
+                    } else {
+                        egui::Stroke::new(1.0, egui::Color32::from_rgb(160, 160, 160))
+                    };
+
+                    let tip = cell_tooltip(value, pos);
+                    let btn =
+                        egui::Button::new(egui::RichText::new(display).monospace().size(14.0))
+                            .fill(bg_color)
+                            .stroke(stroke)
+                            .min_size(egui::vec2(40.0, 34.0));
+
+                    if ui.add(btn).on_hover_text(tip).clicked() {
+                        clicked_pos = Some(pos);
+                    }
+                }
+            });
         }
 
-        match self.preview_cache.as_ref().map(|(_, r)| r) {
-            Some(Ok(layout)) => {
-                let row_sizes = keyboard_model.row_sizes();
-                ui.label(format!("名前: {}", layout.name));
-                ui.add_space(12.0);
-                ui.label("通常面");
-                draw_face_grid(ui, &layout.normal, "normal", row_sizes);
-                ui.add_space(12.0);
-                ui.label("左親指シフト面");
-                draw_face_grid(ui, &layout.left_thumb, "left", row_sizes);
-                ui.add_space(12.0);
-                ui.label("右親指シフト面");
-                draw_face_grid(ui, &layout.right_thumb, "right", row_sizes);
+        if let Some(pos) = clicked_pos {
+            self.select_layout_cell(pos);
+        }
+    }
+
+    #[expect(clippy::too_many_lines)]
+    fn draw_layout_edit_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("編集パネル");
+        let Some(pos) = self.layout_selected_pos else {
+            ui.label(
+                egui::RichText::new("キーボードグリッドのセルをクリックして選択してください")
+                    .italics()
+                    .color(egui::Color32::GRAY),
+            );
+            return;
+        };
+
+        // Position display
+        let pos_label = format!(
+            "位置: 行 {} 列 {}  (row={}, col={})",
+            pos.row + 1,
+            pos.col + 1,
+            pos.row,
+            pos.col
+        );
+        ui.label(egui::RichText::new(pos_label).strong());
+        ui.add_space(4.0);
+
+        // Type selector (radio buttons)
+        ui.horizontal(|ui| {
+            ui.label("種別:");
+            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Keystroke, "打鍵")
+                .on_hover_text(
+                    "ローマ字（複数文字、例: 「si」「tsu」）またはキーボード上の\n\
+                     記号・数字（例: 「!」「1」）を、実際のキー押下として送信し、\n\
+                     IME に処理させます。\n\
+                     \n\
+                     アルファベットのみならローマ字入力として（かな変換テーブルを\n\
+                     引いてかな文字を出力）、それ以外（記号・数字）はキーシーケンス\n\
+                     として扱われ、結果は今の IME の変換モードに依存します。\n\
+                     \n\
+                     JIS キーボード上に存在する文字（半角の英数字・記号）のみ\n\
+                     入力できます。",
+                );
+            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Literal, "リテラル")
+                .on_hover_text(
+                    "指定した文字列を Unicode 文字としてそのまま直接送信します\n\
+                     （IME を一切経由しません）。IME や変換モードに関係なく必ず\n\
+                     その文字が出ます。「ー」「…」のような固定記号に向いています。",
+                );
+            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Special, "特殊キー")
+                .on_hover_text("Backspace / Escape / Enter / Space / Delete を送信します。");
+            ui.radio_value(&mut self.layout_edit_kind, ValueKind::None, "なし")
+                .on_hover_text("このキーへの割り当てを解除します（パススルー）。");
+        });
+        ui.add_space(4.0);
+
+        // Value input
+        match self.layout_edit_kind {
+            ValueKind::Keystroke => {
+                ui.horizontal(|ui| {
+                    ui.label("打鍵:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.layout_edit_value)
+                            .desired_width(120.0)
+                            .hint_text("例: ka, si, tsu, !, 1"),
+                    );
+                    if resp.changed() {
+                        // Normalize: strip spaces, lowercase
+                        self.layout_edit_value = self.layout_edit_value.trim().to_lowercase();
+                    }
+                });
+                let trimmed = self.layout_edit_value.trim();
+                if let Some(bad) = find_invalid_keystroke_char(trimmed) {
+                    ui.colored_label(
+                        egui::Color32::RED,
+                        format!("「{bad}」は JIS キーボード上のキーとして入力できません"),
+                    );
+                } else if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let preview: String = self
+                        .kana_table
+                        .kana_for_romaji(trimmed)
+                        .map_or_else(|| "（未対応）".to_string(), |c| c.to_string());
+                    ui.horizontal(|ui| {
+                        ui.label("かな変換:");
+                        ui.label(
+                            egui::RichText::new(&preview)
+                                .size(22.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(0, 80, 160)),
+                        );
+                    });
+                } else if !trimmed.is_empty() {
+                    ui.label(
+                        egui::RichText::new("※ 記号/数字のキーシーケンスとして IME に処理させます")
+                            .small()
+                            .color(egui::Color32::GRAY),
+                    );
+                }
             }
-            Some(Err(e)) => {
-                ui.colored_label(egui::Color32::RED, format!("読み込みエラー: {e}"));
+            ValueKind::Literal => {
+                ui.horizontal(|ui| {
+                    ui.label("文字:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.layout_edit_value)
+                            .desired_width(120.0)
+                            .hint_text("例: ー、…"),
+                    );
+                });
+                ui.label(
+                    egui::RichText::new("※ Unicode 文字をそのまま送信します")
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
             }
-            None => {
-                ui.label("読み込み中...");
+            ValueKind::Special => {
+                ui.horizontal(|ui| {
+                    ui.label("特殊キー:");
+                    egui::ComboBox::from_id_salt("special_key")
+                        .selected_text(SPECIAL_KEYS[self.layout_edit_special_idx].1)
+                        .show_ui(ui, |ui| {
+                            for (i, (_, name)) in SPECIAL_KEYS.iter().enumerate() {
+                                ui.selectable_value(&mut self.layout_edit_special_idx, i, *name);
+                            }
+                        });
+                });
             }
+            ValueKind::None => {
+                ui.label(
+                    egui::RichText::new("このキーへの割り当てを解除します")
+                        .color(egui::Color32::GRAY),
+                );
+            }
+        }
+
+        let can_apply = self.layout_edit_kind != ValueKind::Keystroke
+            || find_invalid_keystroke_char(self.layout_edit_value.trim()).is_none();
+
+        ui.add_space(6.0);
+        if ui
+            .add_enabled(
+                can_apply,
+                egui::Button::new(egui::RichText::new("適用").strong()),
+            )
+            .clicked()
+        {
+            self.apply_layout_edit();
         }
     }
 
@@ -943,6 +1467,8 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_layout_shortcuts(ctx);
+
         // 複数ディスプレイ対応: DPI スケールの異なるモニタへ移動すると、
         // WM_DPICHANGED 後のウィンドウサイズが移動先モニタに収まらず
         // 下部が画面外に出て操作不能になることがある。現在のモニタサイズを
@@ -978,16 +1504,17 @@ impl eframe::App for SettingsApp {
                 // config.toml の直接編集（app_overrides / post_bypass）に委ねている。
                 // tab_app_rules の実装自体は残してある。
                 //
-                // 「プレビュー」(Preview) は 2026-07-06 に「配列プレビューの実装が
+                // 「配列編集」(Layout) は 2026-07-06 に「配列プレビューの実装が
                 // まだ固まっていない」として一旦非表示にしていたが、layouts_dir の
-                // パス解決バグ修正 + 「編集...」ボタン（awase-yab-editor 起動）の
-                // 追加により再表示した。
+                // パス解決バグ修正を経て再表示した。その後、独立バイナリだった
+                // awase-yab-editor を統合し、プレビューではなく実際に編集できる
+                // タブにした（バイナリを分ける価値は無いという判断）。
                 for (tab, label) in [
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Keymap, "ショートカット"),
                     (Tab::ImeDetect, "IME 検出"),
-                    (Tab::Preview, "プレビュー"),
+                    (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
@@ -1028,7 +1555,7 @@ impl eframe::App for SettingsApp {
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::AppRules => self.tab_app_rules(ui),
                     Tab::ImeDetect => self.tab_ime_detect(ui),
-                    Tab::Preview => self.tab_preview(ui),
+                    Tab::Layout => self.tab_layout(ui),
                     Tab::Advanced => self.tab_advanced(ui),
                 });
         });
@@ -1535,88 +2062,87 @@ fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) ->
     changed
 }
 
-// ── Preview helpers ──
+// ── 配列編集タブ ヘルパー（旧 awase-yab-editor）──
 
-/// 指定されたレイアウトファイルをパースしてプレビュー用に読み込む。
-///
-/// `model` は .yab の列数上限チェックに使う（`general.keyboard_model` 設定）。
-fn load_layout_for_preview(
-    layouts_dir: &str,
-    layout_file: &str,
-    model: awase::scanmap::KeyboardModel,
-) -> Result<awase::yab::YabLayout, String> {
-    let dir = resolve_layouts_dir(layouts_dir);
-    let path = dir.join(layout_file);
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    awase::yab::YabLayout::parse(&content, model).map_err(|e| format!("{e}"))
+fn color_legend(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, color);
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, egui::Color32::GRAY),
+        egui::StrokeKind::Middle,
+    );
+    ui.label(label);
 }
 
-/// YabFace をキーボード風のグリッドで描画する。
-///
-/// キーサイズは利用可能幅から算出する（リフロー）: 最上段 13 キー + 行段差
-/// インデント + spacing が収まるよう 18〜32px の範囲で縮小し、狭いウィンドウでも
-/// 図全体が横スクロールなしで見えるようにする。フォント・インデントも比例縮小。
-fn draw_face_grid(
-    ui: &mut egui::Ui,
-    face: &awase::yab::YabFace,
-    id_suffix: &str,
-    row_sizes: [usize; 4],
-) {
-    let spacing = 2.0;
-    let max_cols = row_sizes[0] as f32;
-    // 最下段のインデント（フルサイズ時 8px/段 × 3 段）を含めて収まるセルサイズ。
-    let indent_ratio = 0.25; // インデント = セルサイズ × 0.25（32px 時に従来の 8px）
-    let max_indent_units = (row_sizes.len() - 1) as f32;
-    let cell = ((ui.available_width() - spacing * max_cols)
-        / (max_cols + indent_ratio * max_indent_units))
-        .clamp(18.0, 32.0);
-    let key_size = egui::vec2(cell, cell);
-    // egui::Grid は行内で ui.add_space() によるカーソル移動を許可しない
-    // （"You cannot advance the cursor when in a grid layout" で panic する）ため、
-    // 段差インデント表現には使えない。awase-yab-editor の draw_keyboard_grid と
-    // 同様に ui.horizontal + add_space で1行ずつ手動配置する。
-    ui.push_id(id_suffix, |ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(spacing, spacing);
-        for (row_idx, &col_count) in row_sizes.iter().enumerate() {
-            ui.horizontal(|ui| {
-                // 行インデントで段差を表現（セルサイズに比例）
-                let indent = (row_idx as f32) * cell * indent_ratio;
-                if indent > 0.0 {
-                    ui.add_space(indent);
-                }
-                for col_idx in 0..col_count {
-                    let pos = awase::scanmap::PhysicalPos::new(row_idx as u8, col_idx as u8);
-                    let label = face.get(&pos).map(yab_value_display).unwrap_or_default();
-                    let (rect, _response) = ui.allocate_exact_size(key_size, egui::Sense::hover());
-                    ui.painter().rect_stroke(
-                        rect,
-                        4.0,
-                        egui::Stroke::new(1.0, egui::Color32::GRAY),
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.painter().text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        &label,
-                        egui::FontId::proportional(cell * 0.5),
-                        ui.visuals().text_color(),
-                    );
-                }
-            });
+fn cell_display(value: Option<&YabValue>) -> String {
+    match value {
+        Some(YabValue::Romaji { kana: Some(ch), .. }) => ch.to_string(),
+        Some(YabValue::Romaji { romaji, .. }) if romaji.len() <= 3 => romaji.clone(),
+        Some(YabValue::Romaji { romaji, .. }) => format!("{}.", &romaji[..2]),
+        Some(YabValue::Literal(s) | YabValue::KeySequence(s)) if s.chars().count() <= 2 => {
+            s.clone()
         }
-    });
+        Some(YabValue::Literal(s) | YabValue::KeySequence(s)) => {
+            s.chars().take(2).collect::<String>() + "."
+        }
+        // ⌫ (U+232B) 単体はフォントによっては潰れて視認しづらいため、
+        // 左矢印 + "BS" で「後ろを消す」方向を明示する（ESC/DEL とテキスト量を揃えた）。
+        Some(YabValue::Special(SpecialKey::Backspace)) => "\u{2190}BS".to_string(), // ←BS
+        Some(YabValue::Special(SpecialKey::Enter)) => "\u{23ce}".to_string(),       // ⏎
+        Some(YabValue::Special(SpecialKey::Escape)) => "ESC".to_string(),
+        Some(YabValue::Special(SpecialKey::Space)) => "\u{2423}".to_string(), // ␣
+        Some(YabValue::Special(SpecialKey::Delete)) => "DEL".to_string(),
+        Some(YabValue::None) | None => "\u{2014}".to_string(), // —
+    }
 }
 
-/// `YabValue` を1〜2文字の表示文字列に変換する。
-fn yab_value_display(v: &awase::yab::YabValue) -> String {
-    use awase::yab::YabValue;
-    match v {
-        YabValue::Romaji { kana: Some(k), .. } => k.to_string(),
-        YabValue::Romaji { romaji, kana: None } => romaji.clone(),
-        YabValue::Literal(s) => s.clone(),
-        YabValue::KeySequence(s) => s.clone(),
-        YabValue::Special(_) => "◆".to_string(),
-        YabValue::None => String::new(),
+const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
+    match value {
+        Some(YabValue::Romaji { .. }) => egui::Color32::from_rgb(255, 255, 255),
+        Some(YabValue::Literal(_)) => egui::Color32::from_rgb(210, 230, 255),
+        Some(YabValue::Special(_)) => egui::Color32::from_rgb(210, 255, 220),
+        Some(YabValue::KeySequence(_)) => egui::Color32::from_rgb(200, 235, 255),
+        Some(YabValue::None) | None => egui::Color32::from_rgb(220, 220, 220),
+    }
+}
+
+fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
+    let kind_str = match value {
+        Some(YabValue::Romaji { romaji, kana }) => {
+            let kana_str = kana.map_or_else(
+                || "なし".to_string(),
+                |c| {
+                    let mut s = String::new();
+                    s.push(c);
+                    s
+                },
+            );
+            format!("ローマ字: {romaji}  かな: {kana_str}")
+        }
+        Some(YabValue::Literal(s)) => format!("リテラル: {s}"),
+        Some(YabValue::KeySequence(s)) => format!("キーシーケンス: {s}"),
+        Some(YabValue::Special(sk)) => format!("特殊キー: {sk:?}"),
+        Some(YabValue::None) | None => "割り当てなし".to_string(),
+    };
+    format!("({}, {})  {}", pos.row, pos.col, kind_str)
+}
+
+fn load_yab_layout(path: &Path, model: awase::scanmap::KeyboardModel) -> Result<YabLayout, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    YabLayout::parse(&content, model)
+        .map(YabLayout::resolve_kana)
+        .map_err(|e| format!("パース失敗: {e}"))
+}
+
+fn empty_yab_layout() -> YabLayout {
+    YabLayout {
+        name: "untitled".to_string(),
+        normal: YabFace::new(),
+        left_thumb: YabFace::new(),
+        right_thumb: YabFace::new(),
+        shift: YabFace::new(),
     }
 }
 
@@ -1632,29 +2158,6 @@ fn find_config_path() -> std::path::PathBuf {
 /// ワークスペースルート直下の `layout/` を見つけられなかった）。
 fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
-}
-
-/// プレビュー中の .yab ファイルを `awase-yab-editor` で開く。
-///
-/// 配列編集用の別 UI を settings 内に作り直さず、既存の awase-yab-editor
-/// クレートを子プロセスとして起動して再利用する。ビルド成果物のバイナリは
-/// cargo ワークスペース・インストーラのどちらでも常に同じディレクトリに
-/// 並ぶため、実行ファイルの隣を見るだけでよい（`layouts_dir` のような
-/// リソース探索とは異なり `target` フォールバックは不要）。
-fn launch_yab_editor(layout_path: &std::path::Path) -> std::io::Result<()> {
-    let exe_name = if cfg!(windows) {
-        "awase-yab-editor.exe"
-    } else {
-        "awase-yab-editor"
-    };
-    let editor_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(exe_name)))
-        .unwrap_or_else(|| std::path::PathBuf::from(exe_name));
-    std::process::Command::new(editor_path)
-        .arg(layout_path)
-        .spawn()
-        .map(|_| ())
 }
 
 fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
@@ -1728,44 +2231,22 @@ fn send_reload_config_message() {
 }
 
 #[cfg(test)]
-mod preview_tab_repro {
+mod layout_tab_repro {
     use super::{
-        SettingsApp, Tab, draw_face_grid, find_config_path, load_layout_for_preview,
-        resolve_layouts_dir,
+        Face, KanaTable, PhysicalPos, SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout,
+        find_config_path, load_yab_layout, resolve_layouts_dir,
     };
 
-    /// `draw_face_grid` 単体を、実ファイル読み込み → egui 描画で GPU/ウィンドウ
-    /// 無しに再現する。
-    #[test]
-    fn loading_and_drawing_real_nicola_yab_does_not_panic() {
-        let dir = resolve_layouts_dir("layout");
-        assert!(
-            dir.join("nicola.yab").exists(),
-            "テスト前提: {} に layout/nicola.yab が見つからない",
-            dir.display()
-        );
-
-        let layout =
-            load_layout_for_preview("layout", "nicola.yab", awase::scanmap::KeyboardModel::Jis)
-                .expect("実際の layout/nicola.yab のロードに失敗した");
-
-        let row_sizes = awase::scanmap::KeyboardModel::Jis.row_sizes();
-        let ctx = eframe::egui::Context::default();
-        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-            eframe::egui::CentralPanel::default().show(ctx, |ui| {
-                draw_face_grid(ui, &layout.normal, "normal", row_sizes);
-                draw_face_grid(ui, &layout.left_thumb, "left", row_sizes);
-                draw_face_grid(ui, &layout.right_thumb, "right", row_sizes);
-            });
-        });
-    }
-
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
+        let layout_path =
+            resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
+        let layout = load_yab_layout(&layout_path, config.general.keyboard_model)
+            .unwrap_or_else(|_| empty_yab_layout());
         SettingsApp {
             config,
             config_path: std::path::PathBuf::from("config.toml"),
             status: String::new(),
-            active_tab: Tab::Preview,
+            active_tab: Tab::Layout,
             available_layouts: Vec::new(),
             new_engine_on_key: String::new(),
             new_engine_off_key: String::new(),
@@ -1785,16 +2266,28 @@ mod preview_tab_repro {
             new_pb_key: String::new(),
             new_pb_process: String::new(),
             new_pb_class: String::new(),
-            preview_cache: None,
+            layout_file_path_buf: layout_path.display().to_string(),
+            layout_file_path: Some(layout_path),
+            layout,
+            layout_current_face: Face::Normal,
+            layout_selected_pos: None,
+            layout_edit_kind: ValueKind::None,
+            layout_edit_value: String::new(),
+            layout_edit_special_idx: 0,
+            kana_table: KanaTable::build(),
+            layout_modified: false,
+            layout_status: String::new(),
+            layout_pending_open: None,
+            layout_pending_save_as: None,
         }
     }
 
-    /// `SettingsApp::tab_preview` を丸ごと（ツールバー行のボタン・凡例込みで）
-    /// GPU/ウィンドウ無しで実行し、実機で「プレビュー押したら無言のまま
-    /// 強制終了」した現象と同じコードパスを再現する。`draw_face_grid` の
-    /// panic 修正だけでは不十分な別の panic がまだ残っていないかを確認する。
+    /// `SettingsApp::tab_layout` を丸ごと（ツールバー行のボタン・凡例・グリッド・
+    /// セル選択後の編集パネル込みで）GPU/ウィンドウ無しで実行し、実機で
+    /// 「プレビュー押したら無言のまま強制終了」した現象と同じコードパスを再現
+    /// する（egui::Grid の panic 修正が有効であることの回帰テスト）。
     #[test]
-    fn full_tab_preview_render_with_real_config_does_not_panic() {
+    fn full_tab_layout_render_with_real_config_does_not_panic() {
         let config_path = find_config_path();
         let config = awase::config::AppConfig::load(&config_path).unwrap_or_else(|e| {
             panic!(
@@ -1808,22 +2301,62 @@ mod preview_tab_repro {
         );
 
         let mut app = test_settings_app(config);
-        let ctx = eframe::egui::Context::default();
-        // Preview タブは egui の 1 フレーム目で読み込みキャッシュを埋め、
-        // 2 フレーム目でそのキャッシュを描画する（need_reload 判定のため）。
-        // 実機と同じく最低 2 フレーム流して両方の経路を通す。
-        for _ in 0..2 {
-            let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
-                eframe::egui::CentralPanel::default().show(ctx, |ui| {
-                    app.tab_preview(ui);
-                });
-            });
-        }
+        assert!(
+            app.layout_file_path.is_some(),
+            "実際の layout/nicola.yab のロードに失敗した"
+        );
 
-        match app.preview_cache.as_ref().map(|(_, r)| r) {
-            Some(Ok(_)) => {}
-            Some(Err(e)) => panic!("プレビューがエラーで終わった（読み込み失敗）: {e}"),
-            None => panic!("プレビューキャッシュが埋まらなかった"),
-        }
+        let ctx = eframe::egui::Context::default();
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_layout(ui);
+            });
+        });
+
+        // セルを選択した状態（編集パネル描画）も再現する。
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_layout(ui);
+            });
+        });
+    }
+
+    #[test]
+    fn apply_layout_edit_rejects_non_jis_keystroke() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "あ".to_string();
+        app.apply_layout_edit();
+        assert!(
+            !app.layout_modified,
+            "JIS キーボードに存在しない文字が適用されてしまった"
+        );
+    }
+
+    #[test]
+    fn apply_layout_edit_classifies_alphabetic_as_romaji_and_symbol_as_key_sequence() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "ka".to_string();
+        app.apply_layout_edit();
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 0)),
+            Some(YabValue::Romaji { .. })
+        ));
+
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 1));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "!".to_string();
+        app.apply_layout_edit();
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 1)),
+            Some(YabValue::KeySequence(_))
+        ));
     }
 }

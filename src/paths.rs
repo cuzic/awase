@@ -1,10 +1,10 @@
 //! 実行ファイルからの相対パスでリソース（`config.toml`, `layout/*.yab` 等）を
 //! 解決する共通ロジック。
 //!
-//! 各バイナリクレート（awase-windows / awase-linux / awase-macos / awase-settings /
-//! awase-yab-editor）が同じ問題を別々に解決しようとして、`current_exe().parent()`
-//! だけを見る／`.exists()` チェックを忘れる、といった非対称なロジックが個別実装
-//! に紛れ込んでいた。ここに一本化する。
+//! 各バイナリクレート（awase-windows / awase-linux / awase-macos / awase-settings）
+//! が同じ問題を別々に解決しようとして、`current_exe().parent()` だけを見る／
+//! `.exists()` チェックを忘れる、といった非対称なロジックが個別実装に紛れ込んで
+//! いた。ここに一本化する。
 //!
 //! 2つの実行形態をサポートする:
 //! - インストール後の配置: `layout/` や `config.toml` が exe と同じディレクトリにある

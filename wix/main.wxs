@@ -42,13 +42,6 @@
         <RegistryValue Root="HKCU" Key="Software\awase" Name="SettingsExe"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
-      <!-- awase-settings の「プレビュー」タブ「編集...」ボタンが同じディレクトリの
-           隣を探して子プロセスとして起動するため、同梱が必須。 -->
-      <Component Id="YabEditorExe" Guid="6AE7F5D1-DCC0-4091-ABE8-CE7FD8E693B2">
-        <File Source="dist\awase-yab-editor.exe" />
-        <RegistryValue Root="HKCU" Key="Software\awase" Name="YabEditorExe"
-                       Type="string" Value="" KeyPath="yes" />
-      </Component>
       <Component Id="ConfigFile" Guid="57E95F1F-4785-40B7-A4E7-16613080C938" NeverOverwrite="yes">
         <File Source="dist\config.toml" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="ConfigFile"

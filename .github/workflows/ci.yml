@@ -99,13 +99,6 @@ jobs:
       - name: Build awase-settings.exe
         run: cargo build --release -p awase-settings
 
-      # awase-settings の「プレビュー」タブの「編集...」ボタンが子プロセスとして
-      # 起動する（settings.exe と同じディレクトリの隣を探す）。今まで CI で
-      # ビルド・配布のどちらの対象にもなっておらず、実機で「配列エディタの起動に
-      # 失敗: 指定されたファイルが見つかりません」が発生していた。
-      - name: Build awase-yab-editor.exe
-        run: cargo build --release -p awase-yab-editor
-
       # awase-settings は今まで実 Windows でテストが一度も走っていなかった
       # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
       # 不具合（プレビュータブを開くと無言のまま強制終了）が Linux 上の headless
@@ -157,7 +150,6 @@ jobs:
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
           cp target/release/awase-settings.exe dist/
-          cp target/release/awase-yab-editor.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
           cp data/*.csv.gz dist/data/ 2>/dev/null || true
