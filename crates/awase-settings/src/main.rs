@@ -80,8 +80,8 @@ const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
     (SpecialKey::Delete, "Delete"),
 ];
 
-/// 配列編集タブのコピー/貼り付け作業用クリップボードの枠数。
-const CLIPBOARD_SLOTS: usize = 4;
+/// 配列編集タブのコピー履歴に保持する最大件数。
+const CLIPBOARD_HISTORY_LEN: usize = 4;
 
 /// キー入力キャプチャの対象。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,13 +249,11 @@ struct SettingsApp {
     layout_file_path_buf: String,
     layout_current_face: Face,
     layout_selected_pos: Option<PhysicalPos>,
-    /// 「コピー」で選択中セルの生の値を保持し、「貼り付け」で別のセルへ
-    /// そのまま書き込む（面をまたいでも保持する）。テキスト欄を経由しない
+    /// 「コピー」で選択中セルの生の値を先頭に積む履歴（最大
+    /// `CLIPBOARD_HISTORY_LEN` 件、面をまたいでも保持する）。履歴の項目を
+    /// クリックすると選択中セルへそのまま貼り付ける。テキスト欄を経由しない
     /// ため、ローマ字の かな 解決結果なども含めて正確に複製できる。
-    /// `CLIPBOARD_SLOTS` 枠分あり、`layout_clipboard_active_slot` が現在の
-    /// コピー/貼り付け対象の枠を指す。
-    layout_clipboard: [Option<YabValue>; CLIPBOARD_SLOTS],
-    layout_clipboard_active_slot: usize,
+    layout_clipboard_history: Vec<YabValue>,
     layout_edit_kind: ValueKind,
     layout_edit_value: String,
     layout_edit_special_idx: usize,
@@ -317,8 +315,7 @@ impl SettingsApp {
             layout_file_path_buf: String::new(),
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
-            layout_clipboard: [const { None }; CLIPBOARD_SLOTS],
-            layout_clipboard_active_slot: 0,
+            layout_clipboard_history: Vec::new(),
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -411,8 +408,9 @@ impl SettingsApp {
         }
     }
 
-    /// 選択中セルの生の値を、選択中の枠（`layout_clipboard_active_slot`）へ
-    /// コピーする。
+    /// 選択中セルの生の値を履歴の先頭に積む。同じ値が履歴に既にあれば
+    /// 重複させず先頭へ移動する。`CLIPBOARD_HISTORY_LEN` 件を超えた古い
+    /// 項目は捨てる。
     fn copy_layout_cell(&mut self) {
         let Some(pos) = self.layout_selected_pos else {
             return;
@@ -422,32 +420,24 @@ impl SettingsApp {
             .get(&pos)
             .cloned()
             .unwrap_or(YabValue::None);
-        self.layout_status = format!(
-            "枠{}にコピーしました: {}",
-            self.layout_clipboard_active_slot + 1,
-            cell_tooltip(Some(&value), pos)
-        );
-        self.layout_clipboard[self.layout_clipboard_active_slot] = Some(value);
+        self.layout_status = format!("履歴にコピーしました: {}", cell_tooltip(Some(&value), pos));
+        self.layout_clipboard_history.retain(|v| v != &value);
+        self.layout_clipboard_history.insert(0, value);
+        self.layout_clipboard_history
+            .truncate(CLIPBOARD_HISTORY_LEN);
     }
 
-    /// 選択中の枠（`layout_clipboard_active_slot`）の値を選択中セルへ
-    /// そのまま書き込む（面をまたいでも可）。テキスト欄（打鍵/リテラル入力）
-    /// を経由しないため、ローマ字の かな 解決結果を含めて元セルと完全に
-    /// 同じ値になる。
-    fn paste_layout_cell(&mut self) {
+    /// 履歴の項目を選択中セルへそのまま書き込む（面をまたいでも可）。
+    /// テキスト欄（打鍵/リテラル入力）を経由しないため、ローマ字の かな
+    /// 解決結果を含めてコピー元と完全に同じ値になる。
+    fn paste_layout_cell(&mut self, value: YabValue) {
         let Some(pos) = self.layout_selected_pos else {
             return;
         };
-        let Some(value) = self.layout_clipboard[self.layout_clipboard_active_slot].clone() else {
-            return;
-        };
+        self.layout_status = format!("貼り付けました: {}", cell_tooltip(Some(&value), pos));
         self.layout_face_mut(self.layout_current_face)
             .insert(pos, value);
         self.layout_modified = true;
-        self.layout_status = format!(
-            "枠{}から貼り付けました",
-            self.layout_clipboard_active_slot + 1
-        );
         // 編集パネルの表示も貼り付け後の値に合わせて更新する。
         self.select_layout_cell(pos);
     }
@@ -1380,43 +1370,38 @@ impl SettingsApp {
         ui.label(egui::RichText::new(pos_label).strong());
         ui.add_space(4.0);
 
-        // 作業用クリップボード: 選択中セルの生の値をそのまま別のセルへ複製する。
-        // CLIPBOARD_SLOTS 枠あり、枠を選んでからコピー/貼り付けする。
-        ui.horizontal(|ui| {
-            ui.label("枠:");
-            for slot in 0..CLIPBOARD_SLOTS {
-                let label = self.layout_clipboard[slot].as_ref().map_or_else(
-                    || format!("{}: (空)", slot + 1),
-                    |v| format!("{}: {}", slot + 1, cell_display(Some(v))),
-                );
-                if ui
-                    .selectable_label(self.layout_clipboard_active_slot == slot, label)
-                    .clicked()
-                {
-                    self.layout_clipboard_active_slot = slot;
-                }
-            }
-        });
+        // コピー履歴: 「コピー」を押すたびに選択中セルの値が履歴の先頭に
+        // 積まれる。履歴の項目をクリックすると選択中セルへ直接貼り付ける。
         ui.horizontal(|ui| {
             if ui
                 .button("コピー")
-                .on_hover_text("選択中のセルの値を、選択中の枠へコピーします。")
+                .on_hover_text("選択中のセルの値を履歴に追加します。")
                 .clicked()
             {
                 self.copy_layout_cell();
             }
-            let paste_enabled = self.layout_clipboard[self.layout_clipboard_active_slot].is_some();
-            if ui
-                .add_enabled(paste_enabled, egui::Button::new("貼り付け"))
-                .on_hover_text(
-                    "選択中の枠にコピーした値を、選択中のセルへ貼り付けます。\n\
-                     面をまたいでも貼り付けられます。",
-                )
-                .clicked()
-            {
-                self.paste_layout_cell();
+            ui.label("履歴（クリックで貼り付け）:");
+            if self.layout_clipboard_history.is_empty() {
+                ui.label(
+                    egui::RichText::new("(空)")
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
             }
         });
+        if !self.layout_clipboard_history.is_empty() {
+            // 狭いウィンドウ幅でもボタン列が画面外に切れないよう折り返す
+            // （他タブと同様のリフロー対応）。
+            ui.horizontal_wrapped(|ui| {
+                for value in self.layout_clipboard_history.clone() {
+                    let label = cell_display(Some(&value));
+                    let tip = value_description(Some(&value));
+                    if ui.button(label).on_hover_text(tip).clicked() {
+                        self.paste_layout_cell(value);
+                    }
+                }
+            });
+        }
         ui.add_space(4.0);
 
         // Type selector (radio buttons)
@@ -2261,8 +2246,9 @@ const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
     }
 }
 
-fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
-    let kind_str = match value {
+/// セルの位置に依存しない、値そのものの説明文字列。
+fn value_description(value: Option<&YabValue>) -> String {
+    match value {
         Some(YabValue::Romaji { romaji, kana }) => {
             let kana_str = kana.map_or_else(
                 || "なし".to_string(),
@@ -2278,8 +2264,11 @@ fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
         Some(YabValue::KeySequence(s)) => format!("キーシーケンス: {s}"),
         Some(YabValue::Special(sk)) => format!("特殊キー: {sk:?}"),
         Some(YabValue::None) | None => "割り当てなし".to_string(),
-    };
-    format!("({}, {})  {}", pos.row, pos.col, kind_str)
+    }
+}
+
+fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
+    format!("({}, {})  {}", pos.row, pos.col, value_description(value))
 }
 
 fn load_yab_layout(path: &Path, model: awase::scanmap::KeyboardModel) -> Result<YabLayout, String> {
@@ -2386,8 +2375,9 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_SLOTS, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind,
-        YabValue, empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir,
+        CLIPBOARD_HISTORY_LEN, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab,
+        ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
+        resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -2424,8 +2414,7 @@ mod layout_tab_repro {
             layout,
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
-            layout_clipboard: [const { None }; CLIPBOARD_SLOTS],
-            layout_clipboard_active_slot: 0,
+            layout_clipboard_history: Vec::new(),
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -2637,12 +2626,13 @@ mod layout_tab_repro {
 
         app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
         app.copy_layout_cell();
-        assert!(app.layout_clipboard[app.layout_clipboard_active_slot].is_some());
+        assert_eq!(app.layout_clipboard_history.first().cloned(), original);
 
         // 貼り付けは面をまたいでも動く。
         app.layout_current_face = Face::LeftThumb;
         app.layout_selected_pos = Some(PhysicalPos::new(1, 2));
-        app.paste_layout_cell();
+        let clipped = app.layout_clipboard_history[0].clone();
+        app.paste_layout_cell(clipped);
 
         let pasted = app
             .layout_face(Face::LeftThumb)
@@ -2660,47 +2650,141 @@ mod layout_tab_repro {
     }
 
     #[test]
-    fn clipboard_slots_hold_independent_values() {
+    fn copy_history_holds_multiple_independent_entries_most_recent_first() {
         let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
         let mut app = test_settings_app(config);
 
-        // CLIPBOARD_SLOTS 枠すべてに別々の値をコピーする。
-        for slot in 0..CLIPBOARD_SLOTS {
+        // CLIPBOARD_HISTORY_LEN 件、別々の値をコピーする。
+        for i in 0..CLIPBOARD_HISTORY_LEN {
             #[expect(clippy::cast_possible_truncation)]
-            let pos = PhysicalPos::new(0, slot as u8);
+            let pos = PhysicalPos::new(0, i as u8);
             app.layout_selected_pos = Some(pos);
             app.layout_edit_kind = ValueKind::Special;
-            // Special キーの種類を枠ごとに変えて区別できるようにする。
-            app.layout_edit_special_idx = slot % SPECIAL_KEYS.len();
+            // Special キーの種類を毎回変えて区別できるようにする。
+            app.layout_edit_special_idx = i % SPECIAL_KEYS.len();
             app.apply_layout_edit();
-
-            app.layout_clipboard_active_slot = slot;
-            app.layout_selected_pos = Some(pos);
             app.copy_layout_cell();
         }
 
-        // 各枠の中身が上書きされずに独立して保持されている。
-        for slot in 0..CLIPBOARD_SLOTS {
-            let expected = SPECIAL_KEYS[slot % SPECIAL_KEYS.len()].0;
+        // 履歴は最大件数ぶん、最後にコピーしたものが先頭に来る（全件の並びを検証）。
+        assert_eq!(app.layout_clipboard_history.len(), CLIPBOARD_HISTORY_LEN);
+        for (history_idx, entry) in app.layout_clipboard_history.iter().enumerate() {
+            // i=CLIPBOARD_HISTORY_LEN-1 が最後にコピーされたので history[0] に来る
+            // → history_idx と i は逆順で対応する。
+            let expected_i = CLIPBOARD_HISTORY_LEN - 1 - history_idx;
+            let expected = SPECIAL_KEYS[expected_i % SPECIAL_KEYS.len()].0;
             assert!(
-                matches!(
-                    &app.layout_clipboard[slot],
-                    Some(YabValue::Special(sk)) if *sk == expected
-                ),
-                "枠{}の中身が想定と異なる: {:?}",
-                slot + 1,
-                app.layout_clipboard[slot]
+                matches!(entry, YabValue::Special(sk) if *sk == expected),
+                "history[{history_idx}] が想定と異なる: {entry:?}"
             );
         }
 
-        // 枠2を選んで貼り付けると、枠2の値だけが使われる。
-        app.layout_clipboard_active_slot = 1;
+        // 履歴の2番目の項目を貼り付けると、その値だけが使われる。
+        let second = app.layout_clipboard_history[1].clone();
         app.layout_selected_pos = Some(PhysicalPos::new(3, 0));
-        app.paste_layout_cell();
-        let expected = SPECIAL_KEYS[1 % SPECIAL_KEYS.len()].0;
+        app.paste_layout_cell(second.clone());
+        assert_eq!(
+            app.layout_face(Face::Normal)
+                .get(&PhysicalPos::new(3, 0))
+                .cloned(),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn copying_same_value_again_moves_it_to_front_without_duplicating() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Special;
+        app.layout_edit_special_idx = 0; // Backspace
+        app.apply_layout_edit();
+        app.copy_layout_cell();
+
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 1));
+        app.layout_edit_kind = ValueKind::Special;
+        app.layout_edit_special_idx = 1; // Escape
+        app.apply_layout_edit();
+        app.copy_layout_cell();
+
+        // Backspace を再度コピーすると、重複せず先頭に移動するだけ。
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.copy_layout_cell();
+
+        assert_eq!(app.layout_clipboard_history.len(), 2);
         assert!(matches!(
-            app.layout_face(Face::Normal).get(&PhysicalPos::new(3, 0)),
-            Some(YabValue::Special(sk)) if *sk == expected
+            &app.layout_clipboard_history[0],
+            YabValue::Special(awase::types::SpecialKey::Backspace)
         ));
+        // Escape は追い出されず2番目に残っている。
+        assert!(matches!(
+            &app.layout_clipboard_history[1],
+            YabValue::Special(awase::types::SpecialKey::Escape)
+        ));
+    }
+
+    #[test]
+    fn copying_beyond_history_capacity_drops_the_oldest_entry() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        // CLIPBOARD_HISTORY_LEN を超える数、別々の値をコピーする
+        // （SPECIAL_KEYS は5種類あり CLIPBOARD_HISTORY_LEN(4) より多いので
+        // すべて別の値になる）。
+        let extra = 2;
+        for i in 0..(CLIPBOARD_HISTORY_LEN + extra) {
+            #[expect(clippy::cast_possible_truncation)]
+            let pos = PhysicalPos::new(0, i as u8);
+            app.layout_selected_pos = Some(pos);
+            app.layout_edit_kind = ValueKind::Special;
+            app.layout_edit_special_idx = i % SPECIAL_KEYS.len();
+            app.apply_layout_edit();
+            app.copy_layout_cell();
+        }
+
+        assert_eq!(app.layout_clipboard_history.len(), CLIPBOARD_HISTORY_LEN);
+        // 最古（i=0, i=1）は追い出され、最新 CLIPBOARD_HISTORY_LEN 件だけが残る。
+        let oldest_surviving_i = extra; // i=0..extra は捨てられた
+        for (history_idx, entry) in app.layout_clipboard_history.iter().enumerate() {
+            let expected_i = CLIPBOARD_HISTORY_LEN + extra - 1 - history_idx;
+            assert!(
+                expected_i >= oldest_surviving_i,
+                "捨てられたはずの古い項目が残っている: history[{history_idx}]"
+            );
+            let expected = SPECIAL_KEYS[expected_i % SPECIAL_KEYS.len()].0;
+            assert!(
+                matches!(entry, YabValue::Special(sk) if *sk == expected),
+                "history[{history_idx}] が想定と異なる: {entry:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_and_paste_are_noop_without_a_selected_cell() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+        // YabLayout は PartialEq を実装していないため、シリアライズした
+        // テキストの一致で「変更されていない」ことを確認する。
+        let model = app.config.general.keyboard_model;
+        let serialized_before = app.layout.serialize(model);
+
+        app.layout_selected_pos = None;
+        app.copy_layout_cell();
+        assert!(
+            app.layout_clipboard_history.is_empty(),
+            "選択セルが無いのに履歴へコピーされてしまった"
+        );
+
+        app.paste_layout_cell(YabValue::Literal("x".to_string()));
+        assert_eq!(
+            app.layout.serialize(model),
+            serialized_before,
+            "選択セルが無いのにレイアウトが変更されてしまった"
+        );
+        assert!(
+            !app.layout_modified,
+            "選択セルが無いのに modified フラグが立ってしまった"
+        );
     }
 }
