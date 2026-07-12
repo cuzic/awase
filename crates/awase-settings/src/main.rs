@@ -516,9 +516,16 @@ impl SettingsApp {
             return;
         }
         self.layout_loaded = true;
+        let start = std::time::Instant::now();
         let path = resolve_layouts_dir(&self.config.general.layouts_dir)
             .join(&self.config.general.default_layout);
+        let resolve_ms = start.elapsed().as_millis();
         self.layout_load_from_path(&path);
+        log::info!(
+            "[layout-tab] resolve_layouts_dir: {resolve_ms}ms, load_from_path 込み合計: {}ms (path={})",
+            start.elapsed().as_millis(),
+            path.display()
+        );
     }
 
     fn drain_layout_pending_async(&mut self) {
@@ -1111,6 +1118,12 @@ impl SettingsApp {
     }
 
     fn tab_layout(&mut self, ui: &mut egui::Ui) {
+        // 実機で「編集タブを開くと黒い画面になる」と報告されたため、原因切り分け
+        // 用に初回描画（読み込み + 全ウィジェット描画）の所要時間を計測してログに
+        // 残す。実行ファイル隣の awase-settings.log を見れば実測値が分かる。
+        let first_open = !self.layout_loaded;
+        let frame_start = std::time::Instant::now();
+
         self.ensure_layout_loaded();
         self.drain_layout_pending_async();
 
@@ -1204,6 +1217,13 @@ impl SettingsApp {
             ui.separator();
             self.draw_layout_edit_panel(ui);
         });
+
+        if first_open {
+            log::info!(
+                "[layout-tab] 初回描画（読み込み+全ウィジェット構築）: {}ms",
+                frame_start.elapsed().as_millis()
+            );
+        }
     }
 
     fn draw_layout_keyboard_grid(&mut self, ui: &mut egui::Ui) {
