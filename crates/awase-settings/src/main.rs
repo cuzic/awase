@@ -80,6 +80,9 @@ const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
     (SpecialKey::Delete, "Delete"),
 ];
 
+/// 配列編集タブのコピー/貼り付け作業用クリップボードの枠数。
+const CLIPBOARD_SLOTS: usize = 4;
+
 /// キー入力キャプチャの対象。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CaptureTarget {
@@ -249,7 +252,10 @@ struct SettingsApp {
     /// 「コピー」で選択中セルの生の値を保持し、「貼り付け」で別のセルへ
     /// そのまま書き込む（面をまたいでも保持する）。テキスト欄を経由しない
     /// ため、ローマ字の かな 解決結果なども含めて正確に複製できる。
-    layout_clipboard: Option<YabValue>,
+    /// `CLIPBOARD_SLOTS` 枠分あり、`layout_clipboard_active_slot` が現在の
+    /// コピー/貼り付け対象の枠を指す。
+    layout_clipboard: [Option<YabValue>; CLIPBOARD_SLOTS],
+    layout_clipboard_active_slot: usize,
     layout_edit_kind: ValueKind,
     layout_edit_value: String,
     layout_edit_special_idx: usize,
@@ -311,7 +317,8 @@ impl SettingsApp {
             layout_file_path_buf: String::new(),
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
-            layout_clipboard: None,
+            layout_clipboard: [const { None }; CLIPBOARD_SLOTS],
+            layout_clipboard_active_slot: 0,
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -404,7 +411,8 @@ impl SettingsApp {
         }
     }
 
-    /// 選択中セルの生の値をクリップボードへコピーする。
+    /// 選択中セルの生の値を、選択中の枠（`layout_clipboard_active_slot`）へ
+    /// コピーする。
     fn copy_layout_cell(&mut self) {
         let Some(pos) = self.layout_selected_pos else {
             return;
@@ -414,22 +422,32 @@ impl SettingsApp {
             .get(&pos)
             .cloned()
             .unwrap_or(YabValue::None);
-        self.layout_status = format!("コピーしました: {}", cell_tooltip(Some(&value), pos));
-        self.layout_clipboard = Some(value);
+        self.layout_status = format!(
+            "枠{}にコピーしました: {}",
+            self.layout_clipboard_active_slot + 1,
+            cell_tooltip(Some(&value), pos)
+        );
+        self.layout_clipboard[self.layout_clipboard_active_slot] = Some(value);
     }
 
-    /// クリップボードの値を選択中セルへそのまま書き込む（面をまたいでも可）。
-    /// テキスト欄（打鍵/リテラル入力）を経由しないため、ローマ字の かな
-    /// 解決結果を含めて元セルと完全に同じ値になる。
+    /// 選択中の枠（`layout_clipboard_active_slot`）の値を選択中セルへ
+    /// そのまま書き込む（面をまたいでも可）。テキスト欄（打鍵/リテラル入力）
+    /// を経由しないため、ローマ字の かな 解決結果を含めて元セルと完全に
+    /// 同じ値になる。
     fn paste_layout_cell(&mut self) {
-        let (Some(pos), Some(value)) = (self.layout_selected_pos, self.layout_clipboard.clone())
-        else {
+        let Some(pos) = self.layout_selected_pos else {
+            return;
+        };
+        let Some(value) = self.layout_clipboard[self.layout_clipboard_active_slot].clone() else {
             return;
         };
         self.layout_face_mut(self.layout_current_face)
             .insert(pos, value);
         self.layout_modified = true;
-        self.layout_status = "貼り付けました".to_string();
+        self.layout_status = format!(
+            "枠{}から貼り付けました",
+            self.layout_clipboard_active_slot + 1
+        );
         // 編集パネルの表示も貼り付け後の値に合わせて更新する。
         self.select_layout_cell(pos);
     }
@@ -1362,32 +1380,41 @@ impl SettingsApp {
         ui.label(egui::RichText::new(pos_label).strong());
         ui.add_space(4.0);
 
-        // コピー/貼り付け: 選択中セルの生の値をそのまま別のセルへ複製する。
+        // 作業用クリップボード: 選択中セルの生の値をそのまま別のセルへ複製する。
+        // CLIPBOARD_SLOTS 枠あり、枠を選んでからコピー/貼り付けする。
+        ui.horizontal(|ui| {
+            ui.label("枠:");
+            for slot in 0..CLIPBOARD_SLOTS {
+                let label = self.layout_clipboard[slot].as_ref().map_or_else(
+                    || format!("{}: (空)", slot + 1),
+                    |v| format!("{}: {}", slot + 1, cell_display(Some(v))),
+                );
+                if ui
+                    .selectable_label(self.layout_clipboard_active_slot == slot, label)
+                    .clicked()
+                {
+                    self.layout_clipboard_active_slot = slot;
+                }
+            }
+        });
         ui.horizontal(|ui| {
             if ui
                 .button("コピー")
-                .on_hover_text("選択中のセルの値をコピーします。")
+                .on_hover_text("選択中のセルの値を、選択中の枠へコピーします。")
                 .clicked()
             {
                 self.copy_layout_cell();
             }
-            let paste_enabled = self.layout_clipboard.is_some();
+            let paste_enabled = self.layout_clipboard[self.layout_clipboard_active_slot].is_some();
             if ui
                 .add_enabled(paste_enabled, egui::Button::new("貼り付け"))
                 .on_hover_text(
-                    "コピーした値を選択中のセルへ貼り付けます。\n\
+                    "選択中の枠にコピーした値を、選択中のセルへ貼り付けます。\n\
                      面をまたいでも貼り付けられます。",
                 )
                 .clicked()
             {
                 self.paste_layout_cell();
-            }
-            if let Some(clip) = &self.layout_clipboard {
-                ui.label(
-                    egui::RichText::new(format!("コピー中: {}", cell_display(Some(clip))))
-                        .small()
-                        .color(egui::Color32::GRAY),
-                );
             }
         });
         ui.add_space(4.0);
@@ -2359,8 +2386,8 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        Face, KanaTable, PhysicalPos, SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout,
-        find_config_path, load_yab_layout, resolve_layouts_dir,
+        CLIPBOARD_SLOTS, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab, ValueKind,
+        YabValue, empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -2397,7 +2424,8 @@ mod layout_tab_repro {
             layout,
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
-            layout_clipboard: None,
+            layout_clipboard: [const { None }; CLIPBOARD_SLOTS],
+            layout_clipboard_active_slot: 0,
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -2609,7 +2637,7 @@ mod layout_tab_repro {
 
         app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
         app.copy_layout_cell();
-        assert!(app.layout_clipboard.is_some());
+        assert!(app.layout_clipboard[app.layout_clipboard_active_slot].is_some());
 
         // 貼り付けは面をまたいでも動く。
         app.layout_current_face = Face::LeftThumb;
@@ -2629,5 +2657,50 @@ mod layout_tab_repro {
         // 編集パネルの表示も貼り付け後の値に更新されている。
         assert_eq!(app.layout_edit_kind, ValueKind::Keystroke);
         assert_eq!(app.layout_edit_value, "ka");
+    }
+
+    #[test]
+    fn clipboard_slots_hold_independent_values() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        // CLIPBOARD_SLOTS 枠すべてに別々の値をコピーする。
+        for slot in 0..CLIPBOARD_SLOTS {
+            #[expect(clippy::cast_possible_truncation)]
+            let pos = PhysicalPos::new(0, slot as u8);
+            app.layout_selected_pos = Some(pos);
+            app.layout_edit_kind = ValueKind::Special;
+            // Special キーの種類を枠ごとに変えて区別できるようにする。
+            app.layout_edit_special_idx = slot % SPECIAL_KEYS.len();
+            app.apply_layout_edit();
+
+            app.layout_clipboard_active_slot = slot;
+            app.layout_selected_pos = Some(pos);
+            app.copy_layout_cell();
+        }
+
+        // 各枠の中身が上書きされずに独立して保持されている。
+        for slot in 0..CLIPBOARD_SLOTS {
+            let expected = SPECIAL_KEYS[slot % SPECIAL_KEYS.len()].0;
+            assert!(
+                matches!(
+                    &app.layout_clipboard[slot],
+                    Some(YabValue::Special(sk)) if *sk == expected
+                ),
+                "枠{}の中身が想定と異なる: {:?}",
+                slot + 1,
+                app.layout_clipboard[slot]
+            );
+        }
+
+        // 枠2を選んで貼り付けると、枠2の値だけが使われる。
+        app.layout_clipboard_active_slot = 1;
+        app.layout_selected_pos = Some(PhysicalPos::new(3, 0));
+        app.paste_layout_cell();
+        let expected = SPECIAL_KEYS[1 % SPECIAL_KEYS.len()].0;
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(3, 0)),
+            Some(YabValue::Special(sk)) if *sk == expected
+        ));
     }
 }
