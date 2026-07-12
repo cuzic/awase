@@ -246,6 +246,10 @@ struct SettingsApp {
     layout_file_path_buf: String,
     layout_current_face: Face,
     layout_selected_pos: Option<PhysicalPos>,
+    /// 「コピー」で選択中セルの生の値を保持し、「貼り付け」で別のセルへ
+    /// そのまま書き込む（面をまたいでも保持する）。テキスト欄を経由しない
+    /// ため、ローマ字の かな 解決結果なども含めて正確に複製できる。
+    layout_clipboard: Option<YabValue>,
     layout_edit_kind: ValueKind,
     layout_edit_value: String,
     layout_edit_special_idx: usize,
@@ -307,6 +311,7 @@ impl SettingsApp {
             layout_file_path_buf: String::new(),
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
+            layout_clipboard: None,
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -397,6 +402,36 @@ impl SettingsApp {
                 self.layout_edit_value.clear();
             }
         }
+    }
+
+    /// 選択中セルの生の値をクリップボードへコピーする。
+    fn copy_layout_cell(&mut self) {
+        let Some(pos) = self.layout_selected_pos else {
+            return;
+        };
+        let value = self
+            .layout_face(self.layout_current_face)
+            .get(&pos)
+            .cloned()
+            .unwrap_or(YabValue::None);
+        self.layout_status = format!("コピーしました: {}", cell_tooltip(Some(&value), pos));
+        self.layout_clipboard = Some(value);
+    }
+
+    /// クリップボードの値を選択中セルへそのまま書き込む（面をまたいでも可）。
+    /// テキスト欄（打鍵/リテラル入力）を経由しないため、ローマ字の かな
+    /// 解決結果を含めて元セルと完全に同じ値になる。
+    fn paste_layout_cell(&mut self) {
+        let (Some(pos), Some(value)) = (self.layout_selected_pos, self.layout_clipboard.clone())
+        else {
+            return;
+        };
+        self.layout_face_mut(self.layout_current_face)
+            .insert(pos, value);
+        self.layout_modified = true;
+        self.layout_status = "貼り付けました".to_string();
+        // 編集パネルの表示も貼り付け後の値に合わせて更新する。
+        self.select_layout_cell(pos);
     }
 
     fn apply_layout_edit(&mut self) {
@@ -1325,6 +1360,36 @@ impl SettingsApp {
             pos.col
         );
         ui.label(egui::RichText::new(pos_label).strong());
+        ui.add_space(4.0);
+
+        // コピー/貼り付け: 選択中セルの生の値をそのまま別のセルへ複製する。
+        ui.horizontal(|ui| {
+            if ui
+                .button("コピー")
+                .on_hover_text("選択中のセルの値をコピーします。")
+                .clicked()
+            {
+                self.copy_layout_cell();
+            }
+            let paste_enabled = self.layout_clipboard.is_some();
+            if ui
+                .add_enabled(paste_enabled, egui::Button::new("貼り付け"))
+                .on_hover_text(
+                    "コピーした値を選択中のセルへ貼り付けます。\n\
+                     面をまたいでも貼り付けられます。",
+                )
+                .clicked()
+            {
+                self.paste_layout_cell();
+            }
+            if let Some(clip) = &self.layout_clipboard {
+                ui.label(
+                    egui::RichText::new(format!("コピー中: {}", cell_display(Some(clip))))
+                        .small()
+                        .color(egui::Color32::GRAY),
+                );
+            }
+        });
         ui.add_space(4.0);
 
         // Type selector (radio buttons)
@@ -2332,6 +2397,7 @@ mod layout_tab_repro {
             layout,
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
+            layout_clipboard: None,
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
@@ -2524,5 +2590,44 @@ mod layout_tab_repro {
             "特殊キーが正しく往復しなかった: {:?}",
             reparsed.normal.get(&PhysicalPos::new(0, 3))
         );
+    }
+
+    #[test]
+    fn copy_then_paste_duplicates_cell_exactly_including_kana() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        // コピー元セルにローマ字を設定する（かな解決も含めて複製できるかを見る）。
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "ka".to_string();
+        app.apply_layout_edit();
+        let original = app
+            .layout_face(Face::Normal)
+            .get(&PhysicalPos::new(0, 0))
+            .cloned();
+
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.copy_layout_cell();
+        assert!(app.layout_clipboard.is_some());
+
+        // 貼り付けは面をまたいでも動く。
+        app.layout_current_face = Face::LeftThumb;
+        app.layout_selected_pos = Some(PhysicalPos::new(1, 2));
+        app.paste_layout_cell();
+
+        let pasted = app
+            .layout_face(Face::LeftThumb)
+            .get(&PhysicalPos::new(1, 2))
+            .cloned();
+        assert_eq!(
+            original, pasted,
+            "貼り付け後の値がコピー元と完全に一致しない（かな解決結果含む）"
+        );
+        assert!(app.layout_modified);
+
+        // 編集パネルの表示も貼り付け後の値に更新されている。
+        assert_eq!(app.layout_edit_kind, ValueKind::Keystroke);
+        assert_eq!(app.layout_edit_value, "ka");
     }
 }
