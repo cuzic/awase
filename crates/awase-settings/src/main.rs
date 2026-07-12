@@ -235,6 +235,9 @@ struct SettingsApp {
     kana_table: KanaTable,
     layout_modified: bool,
     layout_status: String,
+    /// 「配列編集」タブを一度でも開いたか（開いたときに一度だけ .yab を
+    /// 読み込む。起動時の同期読み込みを避けるため）。
+    layout_loaded: bool,
     /// rfd の非同期ファイルダイアログから戻ってきたパス（開く）
     layout_pending_open: Option<PathBuf>,
     /// rfd の非同期ファイルダイアログから戻ってきたパス（名前を付けて保存）
@@ -253,22 +256,6 @@ impl SettingsApp {
             }
         };
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
-
-        let layout_path =
-            resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
-        let (layout, layout_status, layout_file_path) =
-            match load_yab_layout(&layout_path, config.general.keyboard_model) {
-                Ok(ly) => (
-                    ly,
-                    format!("{} を読み込みました", layout_path.display()),
-                    Some(layout_path.clone()),
-                ),
-                Err(e) => (empty_yab_layout(), format!("読み込み失敗: {e}"), None),
-            };
-        let layout_file_path_buf = layout_file_path.as_ref().map_or_else(
-            || layout_path.display().to_string(),
-            |p| p.display().to_string(),
-        );
 
         Self {
             config,
@@ -294,9 +281,13 @@ impl SettingsApp {
             new_pb_key: String::new(),
             new_pb_process: String::new(),
             new_pb_class: String::new(),
-            layout,
-            layout_file_path,
-            layout_file_path_buf,
+            // 配列編集タブの状態は「配列編集」タブを開くまで読み込まない
+            // （ensure_layout_loaded 参照）。起動時に毎回 .yab を同期的に
+            // 読み込むと、ウィンドウ生成〜最初の描画までの間が延び、実機で
+            // 「黒い画面が出てから編集画面が出る」形で体感された。
+            layout: empty_yab_layout(),
+            layout_file_path: None,
+            layout_file_path_buf: String::new(),
             layout_current_face: Face::Normal,
             layout_selected_pos: None,
             layout_edit_kind: ValueKind::None,
@@ -304,7 +295,8 @@ impl SettingsApp {
             layout_edit_special_idx: 0,
             kana_table: KanaTable::build(),
             layout_modified: false,
-            layout_status,
+            layout_status: String::new(),
+            layout_loaded: false,
             layout_pending_open: None,
             layout_pending_save_as: None,
         }
@@ -514,6 +506,19 @@ impl SettingsApp {
             }
             Err(e) => self.layout_status = format!("再読み込み失敗: {e}"),
         }
+    }
+
+    /// 「配列編集」タブを開いたときに一度だけ設定中のレイアウトファイルを
+    /// 読み込む。`SettingsApp::new` で毎回同期読み込みすると、アプリ起動〜
+    /// 最初の描画までの間が延びるため遅延させている。
+    fn ensure_layout_loaded(&mut self) {
+        if self.layout_loaded {
+            return;
+        }
+        self.layout_loaded = true;
+        let path = resolve_layouts_dir(&self.config.general.layouts_dir)
+            .join(&self.config.general.default_layout);
+        self.layout_load_from_path(&path);
     }
 
     fn drain_layout_pending_async(&mut self) {
@@ -1106,6 +1111,7 @@ impl SettingsApp {
     }
 
     fn tab_layout(&mut self, ui: &mut egui::Ui) {
+        self.ensure_layout_loaded();
         self.drain_layout_pending_async();
 
         ui.heading("配列編集");
@@ -2277,6 +2283,7 @@ mod layout_tab_repro {
             kana_table: KanaTable::build(),
             layout_modified: false,
             layout_status: String::new(),
+            layout_loaded: true,
             layout_pending_open: None,
             layout_pending_save_as: None,
         }
