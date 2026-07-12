@@ -7,7 +7,7 @@ use eframe::egui;
 use awase::kana_table::KanaTable;
 use awase::scanmap::PhysicalPos;
 use awase::types::SpecialKey;
-use awase::yab::{YabFace, YabLayout, YabValue};
+use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
 #[cfg(target_os = "windows")]
@@ -63,6 +63,13 @@ enum ValueKind {
 /// あれば、その文字を返す。
 fn find_invalid_keystroke_char(input: &str) -> Option<char> {
     input.chars().find(|c| !c.is_ascii_graphic())
+}
+
+/// 打鍵欄の入力を正規化する。前後の空白を取り除き、全角英数記号
+/// （IME 入力の癖で全角のまま打たれがち）を半角へ自動変換してから
+/// 小文字化する。入力側が半角/全角を意識しなくて済むようにするため。
+fn normalize_keystroke_input(input: &str) -> String {
+    input.trim().to_halfwidth_str().to_lowercase()
 }
 
 const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
@@ -398,7 +405,7 @@ impl SettingsApp {
         };
         let value = match self.layout_edit_kind {
             ValueKind::Keystroke => {
-                let input = self.layout_edit_value.trim().to_string();
+                let input = normalize_keystroke_input(&self.layout_edit_value);
                 if input.is_empty() {
                     YabValue::None
                 } else if let Some(bad) = find_invalid_keystroke_char(&input) {
@@ -1334,7 +1341,8 @@ impl SettingsApp {
                      として扱われ、結果は今の IME の変換モードに依存します。\n\
                      \n\
                      JIS キーボード上に存在する文字（半角の英数字・記号）のみ\n\
-                     入力できます。",
+                     入力できます。全角で入力しても自動で半角に変換されるので、\n\
+                     半角/全角を意識する必要はありません。",
                 );
             ui.radio_value(&mut self.layout_edit_kind, ValueKind::Literal, "リテラル")
                 .on_hover_text(
@@ -1360,8 +1368,7 @@ impl SettingsApp {
                             .hint_text("例: ka, si, tsu, !, 1"),
                     );
                     if resp.changed() {
-                        // Normalize: strip spaces, lowercase
-                        self.layout_edit_value = self.layout_edit_value.trim().to_lowercase();
+                        self.layout_edit_value = normalize_keystroke_input(&self.layout_edit_value);
                     }
                 });
                 let trimmed = self.layout_edit_value.trim();
@@ -2412,6 +2419,35 @@ mod layout_tab_repro {
         assert!(matches!(
             app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 1)),
             Some(YabValue::KeySequence(_))
+        ));
+    }
+
+    #[test]
+    fn apply_layout_edit_normalizes_fullwidth_keystroke_input() {
+        // IME で入力すると全角のまま打ちがちなので、入力側が半角/全角を
+        // 意識しなくていいように自動変換されることを確認する。
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        // 全角ローマ字 "ｋａ" → 半角化されて "ka" → Romaji として分類される。
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "\u{FF4B}\u{FF41}".to_string();
+        app.apply_layout_edit();
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 0)),
+            Some(YabValue::Romaji { romaji, .. }) if romaji == "ka"
+        ));
+
+        // 全角記号 "！" → 半角化されて "!" → KeySequence として分類され、
+        // JIS キーボード外の文字として拒否されない。
+        app.layout_selected_pos = Some(PhysicalPos::new(0, 1));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "\u{FF01}".to_string();
+        app.apply_layout_edit();
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 1)),
+            Some(YabValue::KeySequence(s)) if s == "!"
         ));
     }
 }
