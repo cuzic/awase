@@ -130,6 +130,16 @@ fn init_logging(debug_console: bool) {
     log::info!("awase-settings starting... (log → {})", log_path.display());
 }
 
+/// ログを記録した直後に即 `flush` するチェックポイント。
+///
+/// 通常の `log::info!` はバッファされる場合があり、直後にハング/クラッシュ
+/// すると出力が失われることがある（実機で「配列編集タブ関連のログが一切
+/// 出ない」と報告された際、原因切り分けのために導入）。
+fn log_checkpoint(msg: &str) {
+    log::info!("[layout-tab] checkpoint: {msg}");
+    log::logger().flush();
+}
+
 #[cfg(target_os = "windows")]
 fn attach_parent_console() {
     use windows::Win32::System::Console::AttachConsole;
@@ -516,16 +526,20 @@ impl SettingsApp {
             return;
         }
         self.layout_loaded = true;
+        log_checkpoint("ensure_layout_loaded 開始");
         let start = std::time::Instant::now();
         let path = resolve_layouts_dir(&self.config.general.layouts_dir)
             .join(&self.config.general.default_layout);
-        let resolve_ms = start.elapsed().as_millis();
-        self.layout_load_from_path(&path);
-        log::info!(
-            "[layout-tab] resolve_layouts_dir: {resolve_ms}ms, load_from_path 込み合計: {}ms (path={})",
+        log_checkpoint(&format!(
+            "resolve_layouts_dir 完了: {}ms (path={})",
             start.elapsed().as_millis(),
             path.display()
-        );
+        ));
+        self.layout_load_from_path(&path);
+        log_checkpoint(&format!(
+            "layout_load_from_path 完了: 合計 {}ms",
+            start.elapsed().as_millis()
+        ));
     }
 
     fn drain_layout_pending_async(&mut self) {
@@ -1117,15 +1131,23 @@ impl SettingsApp {
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_layout(&mut self, ui: &mut egui::Ui) {
-        // 実機で「編集タブを開くと黒い画面になる」と報告されたため、原因切り分け
-        // 用に初回描画（読み込み + 全ウィジェット描画）の所要時間を計測してログに
-        // 残す。実行ファイル隣の awase-settings.log を見れば実測値が分かる。
+        // 実機で「編集タブを開くと黒い画面になり、[layout-tab] ログが一切
+        // 出ない」と報告された。ログが出ないのは、途中でハング/クラッシュして
+        // バッファが flush される前に消えている可能性があるため、各チェック
+        // ポイントで即 flush するログに切り替える（log_checkpoint 参照）。
         let first_open = !self.layout_loaded;
         let frame_start = std::time::Instant::now();
 
+        if first_open {
+            log_checkpoint("tab_layout 開始（ensure_layout_loaded 呼び出し前）");
+        }
         self.ensure_layout_loaded();
         self.drain_layout_pending_async();
+        if first_open {
+            log_checkpoint("ensure_layout_loaded 完了、ウィジェット構築開始");
+        }
 
         ui.heading("配列編集");
         ui.add_space(4.0);
@@ -1211,18 +1233,24 @@ impl SettingsApp {
         });
         ui.add_space(8.0);
 
+        if first_open {
+            log_checkpoint("ツールバー/タブ/凡例 描画完了、グリッド描画開始");
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             self.draw_layout_keyboard_grid(ui);
+            if first_open {
+                log_checkpoint("グリッド描画完了、編集パネル描画開始");
+            }
             ui.add_space(8.0);
             ui.separator();
             self.draw_layout_edit_panel(ui);
         });
 
         if first_open {
-            log::info!(
-                "[layout-tab] 初回描画（読み込み+全ウィジェット構築）: {}ms",
+            log_checkpoint(&format!(
+                "初回描画完了（読み込み+全ウィジェット構築）: 合計 {}ms",
                 frame_start.elapsed().as_millis()
-            );
+            ));
         }
     }
 
