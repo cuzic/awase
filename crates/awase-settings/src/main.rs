@@ -2450,4 +2450,79 @@ mod layout_tab_repro {
             Some(YabValue::KeySequence(s)) if s == "!"
         ));
     }
+
+    /// セルを編集 → 実際に `layout_write_to_path` で .yab ファイルへ保存 →
+    /// 別途パースし直して値が正しく往復することを確認する。`apply_layout_edit`
+    /// が正しく分類していても、`YabLayout::serialize` / `YabValue::parse` 側の
+    /// 実装と噛み合っていなければファイルには正しく書き出せないため、
+    /// メモリ上の分類テストとは別に実ファイル I/O を通す。
+    #[test]
+    fn edited_cells_round_trip_through_actual_yab_file() {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+
+        let edits = [
+            (PhysicalPos::new(0, 0), ValueKind::Keystroke, "ka"),
+            // 全角のまま入力しても正規化されて保存されることも兼ねて確認する。
+            (PhysicalPos::new(0, 1), ValueKind::Keystroke, "\u{FF01}"), // ！→ !
+            (PhysicalPos::new(0, 2), ValueKind::Literal, "\u{30fc}"),   // ー
+            (PhysicalPos::new(0, 3), ValueKind::Special, ""),
+        ];
+        for (pos, kind, value) in edits {
+            app.layout_selected_pos = Some(pos);
+            app.layout_edit_kind = kind;
+            app.layout_edit_value = value.to_string();
+            if kind == ValueKind::Special {
+                app.layout_edit_special_idx = 0; // Backspace
+            }
+            app.apply_layout_edit();
+        }
+
+        let tmp_dir = std::env::temp_dir();
+        let path = tmp_dir.join(format!(
+            "awase_settings_roundtrip_test_{}.yab",
+            std::process::id()
+        ));
+        app.layout_write_to_path(&path);
+        assert!(!app.layout_modified, "保存後も変更ありのままになっている");
+
+        let content = std::fs::read_to_string(&path).expect("保存したファイルを読み戻せない");
+        let _ = std::fs::remove_file(&path);
+        let reparsed = awase::yab::YabLayout::parse(&content, app.config.general.keyboard_model)
+            .expect("保存した .yab の再パースに失敗した")
+            .resolve_kana();
+
+        assert!(
+            matches!(
+                reparsed.normal.get(&PhysicalPos::new(0, 0)),
+                Some(YabValue::Romaji { romaji, .. }) if romaji == "ka"
+            ),
+            "ローマ字が正しく往復しなかった: {:?}",
+            reparsed.normal.get(&PhysicalPos::new(0, 0))
+        );
+        assert!(
+            matches!(
+                reparsed.normal.get(&PhysicalPos::new(0, 1)),
+                Some(YabValue::KeySequence(s)) if s == "!"
+            ),
+            "全角記号が正規化された上でキーシーケンスとして往復しなかった: {:?}",
+            reparsed.normal.get(&PhysicalPos::new(0, 1))
+        );
+        assert!(
+            matches!(
+                reparsed.normal.get(&PhysicalPos::new(0, 2)),
+                Some(YabValue::Literal(s)) if s == "\u{30fc}"
+            ),
+            "リテラルが正しく往復しなかった: {:?}",
+            reparsed.normal.get(&PhysicalPos::new(0, 2))
+        );
+        assert!(
+            matches!(
+                reparsed.normal.get(&PhysicalPos::new(0, 3)),
+                Some(YabValue::Special(awase::types::SpecialKey::Backspace))
+            ),
+            "特殊キーが正しく往復しなかった: {:?}",
+            reparsed.normal.get(&PhysicalPos::new(0, 3))
+        );
+    }
 }
