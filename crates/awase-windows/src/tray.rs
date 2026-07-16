@@ -45,6 +45,10 @@ const IDM_INPUT_ROMAJI: u16 = 207;
 const IDM_INPUT_KANA: u16 = 208;
 const IDM_RESET_STATE: u16 = 209;
 
+/// 実験: cold warmup トグル メニュー項目 ID（BUG-24 追補、2026-07-16）
+const IDM_DIAG_COLD_SKIP_F2: u16 = 210;
+const IDM_DIAG_COLD_SKIP_PROBE_WAIT: u16 = 211;
+
 /// トレイメニューから選択されたコマンド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -67,6 +71,10 @@ pub enum TrayCommand {
     InputRomaji,
     InputKana,
     ResetState,
+    /// `DIAG_COLD_SKIP_F2` をトグルする（BUG-24 追補 cold warmup 実験）
+    ToggleDiagColdSkipF2,
+    /// `DIAG_COLD_SKIP_PROBE_WAIT` をトグルする（BUG-24 追補 cold warmup 実験）
+    ToggleDiagColdSkipProbeWait,
 }
 
 /// 文字列メニュー項目を追加するヘルパー。
@@ -98,6 +106,14 @@ unsafe fn append_menu_item_checked(hmenu: HMENU, id: u16, label: &str, checked: 
         MF_STRING
     };
     let _ = unsafe { AppendMenuW(hmenu, flags, usize::from(id), PCWSTR(text.as_ptr())) };
+}
+
+/// トレイメニューの `DIAG_*` `AtomicBool` トグル項目を反転させ、結果をログに出す。
+pub(crate) fn toggle_diag_flag(flag: &std::sync::atomic::AtomicBool, name: &str) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let new_value = !flag.load(Relaxed);
+    flag.store(new_value, Relaxed);
+    log::info!("[tray-diag] {name} = {new_value}");
 }
 
 /// トレイアイコン ID
@@ -595,6 +611,34 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             "状態をリセット (Engine ON/Caps OFF/ひらがな/ローマ字)",
         );
 
+        // 実験: cold warmup の F2 送信・probe 待機を個別に on/off する
+        // （BUG-24 追補、`tuning.rs` の DIAG_COLD_SKIP_F2/DIAG_COLD_SKIP_PROBE_WAIT）。
+        let skip_f2 = crate::tuning::DIAG_COLD_SKIP_F2.load(std::sync::atomic::Ordering::Relaxed);
+        let skip_wait =
+            crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT.load(std::sync::atomic::Ordering::Relaxed);
+        let h_diag_menu = CreatePopupMenu().unwrap_or_default();
+        if !h_diag_menu.is_invalid() {
+            append_menu_item_checked(
+                h_diag_menu,
+                IDM_DIAG_COLD_SKIP_F2,
+                "F2 warmup をスキップ",
+                skip_f2,
+            );
+            append_menu_item_checked(
+                h_diag_menu,
+                IDM_DIAG_COLD_SKIP_PROBE_WAIT,
+                "probe 待機をスキップ",
+                skip_wait,
+            );
+            let diag_title_wide = crate::win32::to_wide("実験: cold warmup");
+            let _ = AppendMenuW(
+                hmenu,
+                MF_POPUP,
+                h_diag_menu.0 as usize,
+                PCWSTR(diag_title_wide.as_ptr()),
+            );
+        }
+
         append_menu_sep(hmenu);
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
@@ -654,6 +698,8 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_INPUT_ROMAJI => Some(TrayCommand::InputRomaji),
         IDM_INPUT_KANA => Some(TrayCommand::InputKana),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
+        IDM_DIAG_COLD_SKIP_F2 => Some(TrayCommand::ToggleDiagColdSkipF2),
+        IDM_DIAG_COLD_SKIP_PROBE_WAIT => Some(TrayCommand::ToggleDiagColdSkipProbeWait),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -919,6 +965,15 @@ unsafe extern "system" fn tray_wnd_proc(
                         crate::imm::IME_CMODE_KATAKANA,
                     );
                 },
+                Some(TrayCommand::ToggleDiagColdSkipF2) => {
+                    toggle_diag_flag(&crate::tuning::DIAG_COLD_SKIP_F2, "DIAG_COLD_SKIP_F2");
+                }
+                Some(TrayCommand::ToggleDiagColdSkipProbeWait) => {
+                    toggle_diag_flag(
+                        &crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT,
+                        "DIAG_COLD_SKIP_PROBE_WAIT",
+                    );
+                }
                 None => {}
             }
             LRESULT(0)

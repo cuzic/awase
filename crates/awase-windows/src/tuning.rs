@@ -493,3 +493,70 @@ pub const DIAG_FORCE_HIRAGANA_CHARSET: bool = true;
 /// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に
 /// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
 pub const DIAG_LITERAL_SESSION_SKIP: bool = true;
+
+/// GJI cold-start warmup の予防的な F2 送信・`TsfReadinessProbe` 待機
+/// （`ColdReason`×`long_idle` で決まる `eager_settle_ms`/`probe_min_ms` の行列、
+/// `WarmupKind::FreshF2/ReWarmup/ProbeWithSettle` の分岐）を、それぞれ独立に
+/// 実行中トグルできる実験用フラグ（BUG-24 追補、設計思想の転換に伴う簡素化実験）。
+///
+/// ## 背景
+///
+/// `cold_warmup.rs::run_start` は本来「GJI が composition を受け付け可能になる
+/// まで待ってから送る」という設計（温めてから打鍵）のために、cold になった理由
+/// （`ColdReason`）と直近の idle 時間に応じて待機時間を細かく作り分け、さらに
+/// 送信前に予防的な F2 warmup を送っていた。しかし BUG-24 で「1文字ずつ送って
+/// confirm し、ダメなら backspace で訂正する」per-VK confirm ループ
+/// （`DIAG_LITERAL_SESSION_SKIP`）が入ったことで、送信が早すぎた/GJI がまだ
+/// 温まっていなかった場合の保険は既にそちらが reactive に持っている。つまり
+/// 予防的 F2 送信も `TsfReadinessProbe` の事前待機も、per-VK confirm と同じ
+/// 保険を二重にかけているだけの可能性がある（ユーザー仮説、2026-07-16）。
+///
+/// ## 方針
+///
+/// 「温めてから打鍵」をやめ、「打鍵してダメなら都度直す」に一本化できるかを
+/// 実機で試す実験。他の `DIAG_*` 定数と違いコンパイル時定数ではなく
+/// `AtomicBool` にしてあり、トレイメニュー（`tray.rs` の「実験: cold warmup」
+/// サブメニュー）から実行中に個別 on/off できる。「何をスキップして何を
+/// スキップしないか」を実機で試行錯誤しながら選び、問題が出た方だけを
+/// オフに戻せるようにするための構成（ユーザー方針、2026-07-16）。
+///
+/// - [`DIAG_COLD_SKIP_F2`]: `true` の間、`ColdWarmupSequence::run_start` は
+///   F2 warmup を送らない。
+/// - [`DIAG_COLD_SKIP_PROBE_WAIT`]: `true` の間、`TsfReadinessProbe` を
+///   `min_ms=0`/`total_max_ms=0`（実質即座に release）で構築する。
+///
+/// 両方 `true` のとき、`preamble()` 完了後間を置かず romaji の per-VK confirm
+/// （`DIAG_LITERAL_SESSION_SKIP` の `TransmitSingleVk` ループ）に進む。GJI が
+/// hiragana composition を受け付けない場合、1文字目が `SuspectedLiteral` に
+/// なり `emit_recovery_actions` の `StartSacrificialWarmup` 経路（TSF mode +
+/// consecutive==0）が再確立を担う。`WarmupKind` 分岐・`eager_settle_ms`/
+/// `probe_min_ms`/`RE_WARMUP_MS` は両方 `true` のとき未使用になるが、比較・
+/// 切り戻し用にコードは残してある。
+///
+/// ## 既知の懸念（実験前から分かっている、実機で検証する）
+///
+/// - **チラつき**: F2 も待機もなしで即送信すると、GJI 側の準備が本当に整うまでの
+///   間に一瞬 unconverted な表示が見える、あるいは1文字目が literal 化して
+///   backspace 訂正が入るなど視覚的なチラつきが増える可能性がある。
+/// - **速度の逆転**: 状況によっては「F2 を送ってある程度待ってから一括送信」の
+///   方が「1文字ずつ confirm を待ちながら送る」per-VK ループより体感が速い
+///   ケースがあるかもしれない（未検証）。
+///
+/// ## 観測すべきログ
+///
+/// - `[h1-warmup] cold=N DIAG_COLD_SKIP: skip_f2=.. skip_wait=.. ...`: この
+///   トグルの組み合わせが実際に何回・どの組み合わせで通ったか。
+/// - `[gji-coro] cold=N per-VK[...] suspected literal`: per-VK confirm の
+///   backspace 訂正がどれくらいの頻度で発生するか（F2・待機を削った分、
+///   増えるはず。増加が体感できるチラつき・タイプ遅延に繋がっていないか）。
+/// - 画面上のチラつき・変換ミスの目視確認、および typing の体感速度。
+///
+/// 実験終了後はデフォルトを `false` に戻すか、結果に応じて `docs/known-bugs.md`
+/// に実測を追記した上で `ColdReason` の待機行列を撤去すること
+/// （`tuning-constants.md` の実測義務）。
+pub static DIAG_COLD_SKIP_F2: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// [`DIAG_COLD_SKIP_F2`] を参照。`TsfReadinessProbe` の待機のみを独立にスキップする。
+pub static DIAG_COLD_SKIP_PROBE_WAIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);

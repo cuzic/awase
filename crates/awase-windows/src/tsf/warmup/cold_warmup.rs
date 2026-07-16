@@ -7,13 +7,20 @@
 //!
 //! ```text
 //! run_start()
-//!   └─ preamble()           : 診断ログ・IMM32 ローマ字モード設定・cold_seq インクリメント
+//!   └─ preamble()             : 診断ログ・IMM32 ローマ字モード設定・cold_seq インクリメント
+//!      ├─[DIAG_COLD_SKIP_F2 || DIAG_COLD_SKIP_PROBE_WAIT]
+//!      │    └─ run_experimental_start(): トグルに応じて F2 送信・probe 待機を個別にスキップ
 //!      ├─ run_eager_start()  : eager warmup パス (eager_warmup_sent_ms != 0)
 //!      │    ├─ FreshF2        (remaining == 0 && !requires_settle) → F2 送信 + probe
 //!      │    ├─ ReWarmup       (remaining == 0 &&  requires_settle) → F2 再送 + RE_WARMUP_MS 待機
 //!      │    └─ ProbeWithSettle(remaining > 0)                      → probe (NAMECHANGE 確認付き)
 //!      └─ run_non_eager_start(): F2×2 送信 + WarmupStarted (GjiProbe)
 //! ```
+//!
+//! `DIAG_COLD_SKIP_F2`/`DIAG_COLD_SKIP_PROBE_WAIT`（`tuning.rs`、`AtomicBool`、
+//! トレイメニューの「実験: cold warmup」から実行中に on/off できる）のどちらかが
+//! `true` の間は `run_eager_start`/`run_non_eager_start` に到達しない
+//! （比較・切り戻し用に残してある、実験中）。
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -151,10 +158,60 @@ impl<'a> ColdWarmupSequence<'a> {
             crate::output::fmt_ms(eager_elapsed),
         );
 
+        let skip_f2 = crate::tuning::DIAG_COLD_SKIP_F2.load(Relaxed);
+        let skip_wait = crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT.load(Relaxed);
+        if skip_f2 || skip_wait {
+            return Self::run_experimental_start(&ctx, skip_f2, skip_wait);
+        }
+
         if use_eager {
             Self::run_eager_start(&ctx, eager_ms, eager_elapsed)
         } else {
             Self::run_non_eager_start(&ctx)
+        }
+    }
+
+    /// `DIAG_COLD_SKIP_F2`/`DIAG_COLD_SKIP_PROBE_WAIT` 用: トレイメニューで選んだ
+    /// 組み合わせに応じて、予防的な F2 warmup 送信・`TsfReadinessProbe` の待機を
+    /// 独立にスキップする。
+    ///
+    /// `skip_f2=true` の間、F2 は送らない（romaji の VK だけを per-VK confirm
+    /// ループへ渡す）。`skip_wait=true` の間、`WarmupKind`（FreshF2/ReWarmup/
+    /// ProbeWithSettle）による `eager_settle_ms`/`probe_min_ms` の使い分けを
+    /// 行わず、`min_ms=0`/`total_max_ms=0` の probe を返す（`gji_coro_body` の
+    /// Phase 1 は次 tick で即座に解放される）。両方 `true` のとき、cold で GJI が
+    /// hiragana composition を受け付けなければ1文字目が `SuspectedLiteral` に
+    /// なり、`emit_recovery_actions` の `StartSacrificialWarmup` 経路（TSF mode +
+    /// consecutive==0）が再確立を担う。
+    fn run_experimental_start(
+        ctx: &WarmupContext,
+        skip_f2: bool,
+        skip_wait: bool,
+    ) -> WarmupStarted {
+        log::debug!(
+            "[h1-warmup] cold={} DIAG_COLD_SKIP: skip_f2={skip_f2} skip_wait={skip_wait} \
+             (charset={} conv_mutation={})",
+            ctx.cold_seq,
+            ctx.charset,
+            ctx.conv_mutation_allowed,
+        );
+        let sent_f2 = !skip_f2 && ctx.conv_mutation_allowed;
+        let warmup_sent_ms = if sent_f2 {
+            send_charset_warmup_pair(ctx.charset)
+        } else {
+            crate::hook::current_tick_ms()
+        };
+        let (min_ms, total_max_ms) = if skip_wait {
+            (0, 0)
+        } else {
+            (ctx.probe_min_ms, ctx.eager_settle_ms)
+        };
+        WarmupStarted {
+            probe: crate::tsf::probe::TsfReadinessProbe::new(warmup_sent_ms, ctx.cold_seq, min_ms),
+            total_max_ms,
+            needs_settle_check: false,
+            cold_reason: ctx.cold_reason,
+            fresh_f2_at_probe_start: sent_f2,
         }
     }
 
