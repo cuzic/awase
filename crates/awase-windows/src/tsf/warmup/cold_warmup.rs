@@ -209,7 +209,15 @@ impl<'a> ColdWarmupSequence<'a> {
         WarmupStarted {
             probe: crate::tsf::probe::TsfReadinessProbe::new(warmup_sent_ms, ctx.cold_seq, min_ms),
             total_max_ms,
-            needs_settle_check: false,
+            // `needs_settle_check: true` にする。`false` にすると gji_coro_body の
+            // Phase 1 が何も確認せず nc_fired=true を返してしまい（既存の
+            // FreshF2/non-eager パスと同じ挙動）、decide_transmit_plan が
+            // needs_literal=false と判定して per-VK confirm がまるごと素通りに
+            // なる（2026-07-16 実機ログで発覚: [gji-coro] transmit-plan
+            // needs_literal=false が並び、per-VK[...] ログが一切出ていなかった）。
+            // 待機を削った分の保険を per-VK confirm に持たせるには、Phase 1 に
+            // 実際に outcome.settled を見させて「未確認」を正直に報告させる必要がある。
+            needs_settle_check: true,
             cold_reason: ctx.cold_reason,
             fresh_f2_at_probe_start: sent_f2,
         }
