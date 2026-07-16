@@ -354,16 +354,6 @@ impl Output {
         KeyInjector::send_vk_runs_with_leading_f2(chars, cold_seq);
     }
 
-    /// VK run 分割送信（カタカナ warmup 選択）: hint に応じた先頭ウォームアップ VK を使う。
-    /// `KeyInjector::send_vk_runs_with_leading_warmup` に委譲する。
-    pub(super) fn send_vk_runs_with_leading_warmup(
-        chars: &[(VkCode, bool)],
-        cold_seq: u32,
-        charset: crate::state::Charset,
-    ) {
-        KeyInjector::send_vk_runs_with_leading_warmup(chars, cold_seq, charset);
-    }
-
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -434,7 +424,6 @@ impl Output {
                 started.cold_reason,
                 prepend_f2_warmup,
                 used_eager_path,
-                probe_params.ncwait_budget_ms,
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
                 started.fresh_f2_at_probe_start,

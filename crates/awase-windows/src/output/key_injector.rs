@@ -4,7 +4,7 @@
 
 use super::resolve::CharResolution;
 use crate::tsf::output::{make_key_input_ex, INJECTED_MARKER};
-use crate::vk::{VK_DBE_HIRAGANA, VK_DBE_KATAKANA, VK_DBE_SBCSCHAR, VK_LSHIFT};
+use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT};
 use awase::kana_table::KanaTable;
 use awase::types::VkCode;
 use itertools::Itertools as _;
@@ -268,39 +268,6 @@ impl KeyInjector {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
-                Self::format_vk_run(run),
-            );
-            Self::send_vk_run_batch(run, VkMarker::Tsf);
-        }
-    }
-
-    /// VK run 分割送信（カタカナ warmup 選択）: hint に応じた先頭ウォームアップ VK を使う。
-    pub(crate) fn send_vk_runs_with_leading_warmup(
-        chars: &[(VkCode, bool)],
-        cold_seq: u32,
-        charset: crate::state::Charset,
-    ) {
-        use crate::state::Charset;
-
-        let (leading_label, leading_vks): (&str, Vec<(VkCode, bool)>) = match charset {
-            Charset::ZenkakuKatakana => ("f1-leading", vec![(VK_DBE_KATAKANA, false)]),
-            Charset::HankakuKatakana => (
-                "f1+f3-leading",
-                vec![(VK_DBE_KATAKANA, false), (VK_DBE_SBCSCHAR, false)],
-            ),
-            _ => ("f2-leading", vec![(VK_DBE_HIRAGANA, false)]),
-        };
-
-        let mut warmup_plus_chars = Vec::with_capacity(chars.len() + leading_vks.len());
-        warmup_plus_chars.extend_from_slice(&leading_vks);
-        warmup_plus_chars.extend_from_slice(chars);
-        let runs = Self::split_vk_runs(&warmup_plus_chars);
-        let total_runs = runs.len();
-
-        for (run_idx, run) in runs.into_iter().enumerate() {
-            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
-            log::debug!(
-                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] ({leading_label})",
                 Self::format_vk_run(run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);

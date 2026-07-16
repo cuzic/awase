@@ -20,24 +20,15 @@ use std::sync::atomic::Ordering::Relaxed;
 use crate::output::Output;
 use crate::tuning::LONG_IDLE_MS;
 
-use crate::tsf::send::{
-    send_vk_dbe_alpha_warmup, send_vk_dbe_hiragana_pair, send_vk_dbe_katakana_warmup,
-};
+use crate::tsf::send::send_vk_dbe_hiragana_pair;
 
-/// charset に応じた warmup VK ペアを 1 回送信し、送信後の時刻を返す。
+/// warmup VK ペア（F2↓F2↑, ひらがな）を1回送信し、送信後の時刻を返す。
 ///
-/// - `HankakuKatakana` → F1↓F1↑F3↓F3↑ (半角カタカナ)
-/// - `ZenkakuKatakana` → F1↓F1↑ (全角カタカナ)
-/// - `Hiragana` → F2↓F2↑ (ひらがな)
-/// - `ZenkakuAlpha` → F0↓F0↑F4↓F4↑ (全角英数)
-/// - `HankakuAlpha` → F0↓F0↑ (半角英数)
-fn send_charset_warmup_pair(charset: awase::engine::Charset) -> u64 {
-    use awase::engine::Charset;
-    match charset {
-        Charset::ZenkakuKatakana | Charset::HankakuKatakana => send_vk_dbe_katakana_warmup(charset),
-        Charset::ZenkakuAlpha | Charset::HankakuAlpha => send_vk_dbe_alpha_warmup(charset),
-        Charset::Hiragana => send_vk_dbe_hiragana_pair(),
-    }
+/// カタカナ/英数 charset への追従（F1/F0 系キー選択）は BUG-19 のロックイン事故を
+/// 受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` 下では `charset` 引数は常に
+/// Hiragana のため、常に F2 のみを送る（`docs/known-bugs.md` BUG-19 参照）。
+fn send_charset_warmup_pair(_charset: awase::engine::Charset) -> u64 {
+    send_vk_dbe_hiragana_pair()
 }
 
 /// eager パスの 3 分岐を表す enum。
@@ -160,25 +151,11 @@ impl<'a> ColdWarmupSequence<'a> {
             crate::output::fmt_ms(eager_elapsed),
         );
 
-        let started = if use_eager {
+        if use_eager {
             Self::run_eager_start(&ctx, eager_ms, eager_elapsed)
         } else {
             Self::run_non_eager_start(&ctx)
-        };
-
-        // FreshF2 / ReWarmup / non-eager パスで HanKata warmup (F1+F3) を送信した場合、
-        // IMM が ZenKata (0x0B) を返すことがあるため conv_mode 汚染を抑制する。
-        // fresh_f2_at_probe_start=true かつ HanKata かつ conv_mutation_allowed のとき実際に送信済み。
-        if started.fresh_f2_at_probe_start
-            && ctx.conv_mutation_allowed
-            && ctx.charset == awase::engine::Charset::HankakuKatakana
-        {
-            self.output
-                .conv_mode
-                .on_hankata_warmup_sent(crate::state::TickMs(crate::hook::current_tick_ms()));
         }
-
-        started
     }
 
     /// 準備フェーズ: 診断ログ出力・IMM32 設定・`cold_seq` インクリメントを行い
@@ -200,31 +177,13 @@ impl<'a> ColdWarmupSequence<'a> {
         // ハンドリング経由で行われる (probe_min_ms ≥ 50ms 待機)。
         // worker-thread SendMessageTimeoutW は通常 10ms 以内に完了するため、
         // ROMAN ビット設定は実 romaji 送信より先に完了する。
-        // conv_mode から ImmSetConversionStatus の目標値を取得する。
-        // カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため Some を返す。
-        // DIAG_FORCE_HIRAGANA_CHARSET が有効な間は常に None（ROMAN ビット確保のみ）にする
-        // — 観測されたカタカナ/英数 conv へ IMM32 レベルで追従することも止める（BUG-19 検証）。
-        let conv_target = if crate::tuning::DIAG_FORCE_HIRAGANA_CHARSET {
-            None
-        } else {
-            self.output
-                .conv_mode
-                .get()
-                .and_then(awase::engine::ConvMode::imm_conv_target)
-        };
+        // conv_mode から ImmSetConversionStatus の目標値を取得する。カタカナ/英数への
+        // 明示的復元（KATAKANA/FULLSHAPE ビット等）は BUG-19 のロックイン事故を受けて
+        // 撤去した。常に None（ROMAN ビット確保のみ）を書き戻す（`docs/known-bugs.md`
+        // BUG-19 参照）。
+        let conv_target: Option<u32> = None;
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
-        // カタカナ等の明示的復元 (conv_target = Some) は、同じ belief に対して cold
-        // warmup のたびに繰り返し書き戻すと、一度誤って確定した belief がフォーカス
-        // 往復のたびに real IME へ再アサートされ続けて自己増幅する経路になっていた
-        // (BUG-19)。`ConvModeMgr::needs_conv_restore_write` で「同じ mode に対する
-        // 復元書き込みは1回だけ」に制限する（ADR-078 Phase 1a、実機検証待ち）。
-        // ROMAN ビット確保のみ (target=None) は対象外 — 誤った charset ビットを
-        // 注入するリスクがなく、`conv | ROMAN` は冪等なため繰り返しても無害。
-        let should_write_conv_target = conv_mutation_allowed
-            && (conv_target.is_none() || self.output.conv_mode.needs_conv_restore_write());
-        if should_write_conv_target && conv_target.is_some() {
-            self.output.conv_mode.mark_conv_restore_written();
-        }
+        let should_write_conv_target = conv_mutation_allowed;
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(

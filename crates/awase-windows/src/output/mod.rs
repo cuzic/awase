@@ -363,7 +363,7 @@ impl Output {
         self.warmup_coord.store_probe_id(id);
     }
 
-    /// `GjiAction::StartProbe` の ncwait_budget_ms / forces_prepend_f2 / is_long_cold を記録する。
+    /// `GjiAction::StartProbe` の forces_prepend_f2 / is_long_cold を記録する。
     ///
     /// `send_romaji_as_tsf` が `GjiWarmupCoro::new` を生成する際に参照する。
     /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
@@ -583,75 +583,15 @@ impl Output {
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::tsf::observer::reset_namechange_seq();
-        // charset に応じた warmup VK を選択する（送るとモードが変わってしまうため charset-aware が必須）:
-        //   Hiragana  → F2 (VK_DBE_HIRAGANA)
-        //   ZenKata   → F1 (VK_DBE_KATAKANA)
-        //   HanKata   → F1+F3 (VK_DBE_KATAKANA + VK_DBE_SBCSCHAR)
-        //   ZenAlpha  → F0+F4 (VK_DBE_ALPHANUMERIC + VK_DBE_DBCSCHAR)
-        //   HanAlpha  → F0 (VK_DBE_ALPHANUMERIC)
-        //
-        // conv_mode は idle-check / focus-probe でしか更新されないため、ユーザーが直前に
-        // モードを切替えた直後にキーを押すと stale な Hiragana で F2 を送ってしまう。
-        // apply_focus_probe と同様に直前の IMM 読み取りで conv_mode を最新化する。
-        // SAFETY: get_ime_conversion_mode_raw_timeout は apply_focus_probe (with_app 内) でも
-        //         安全に呼ばれており、ここも同じ with_app コンテキストで安全。
-        if let Some(fresh_conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) } {
-            self.conv_mode.update_from_conv(
-                fresh_conv,
-                crate::state::TickMs(crate::hook::current_tick_ms()),
-            );
-        }
-        let charset = self.conv_mode.effective_charset();
-        // カタカナ/英数系 warmup キー (F1/F0 系) は実際に GJI の charset を書き換える
-        // 副作用を持つ。この関数は EmitWarmup (ConfirmKeyDown/Up・CtrlUp・SetOpenTrue 等)
-        // のたびに呼ばれるため、同じ確定 mode に対して無条件に送り続けると、一発の
-        // 誤読が belief に確定しただけでも real IME へ warmup のたびに再アサートされ
-        // 続けて自己増幅するループになる (BUG-19)。`cold_warmup.rs::preamble` /
-        // `probe_io.rs::send_sacrificial_ime_off_on` と同じ `needs_conv_restore_write()`
-        // で「同じ mode への warmup 送信は1回だけ」に制限する。BUG-19 の根本原因分析
-        // 自体がこの関数を名指ししていたが、従来の対策(ADR-078 Phase 1a)は上記2箇所
-        // にしか配線されておらず、本関数は無防備なまま残っていた（実機ログで
-        // 2026-07-11 に確認、`docs/known-bugs.md` BUG-19 追補4）。
-        // Hiragana (F2) は ROMAN ビット確保のみで冪等なため対象外（既存の
-        // `conv_target.is_none()` 除外と同じ理由）。
-        if !matches!(charset, crate::state::Charset::Hiragana)
-            && !self.conv_mode.needs_conv_restore_write()
-        {
-            log::trace!(
-                "[tsf-eager-warmup] {charset} は確定済み → 反復 warmup 送信をスキップ (BUG-19 追補4)"
-            );
-            return;
-        }
-        let ms = match charset {
-            crate::state::Charset::ZenkakuKatakana | crate::state::Charset::HankakuKatakana => {
-                self.conv_mode.mark_conv_restore_written();
-                let ms = crate::tsf::send::send_vk_dbe_katakana_warmup(charset);
-                log::debug!(
-                    "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"
-                );
-                // HanKata warmup (F1+F3) 後は IMM conv が ZenKata (0x0B) を返すことがある。
-                // TsfNative では F3 が IMM FULLSHAPE ビットを変更しないため。conv_mode 汚染を抑制する。
-                if charset == crate::state::Charset::HankakuKatakana {
-                    self.conv_mode.on_hankata_warmup_sent(crate::state::TickMs(
-                        crate::hook::current_tick_ms(),
-                    ));
-                }
-                ms
-            }
-            crate::state::Charset::ZenkakuAlpha | crate::state::Charset::HankakuAlpha => {
-                self.conv_mode.mark_conv_restore_written();
-                let ms = crate::tsf::send::send_vk_dbe_alpha_warmup(charset);
-                log::debug!(
-                    "[tsf-eager-warmup] {charset} warmup 送信, eager_warmup_sent_ms={ms}ms"
-                );
-                ms
-            }
-            crate::state::Charset::Hiragana => {
-                let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
-                log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
-                ms
-            }
-        };
+        // カタカナ/英数系 charset への追従 warmup（F1/F0 系）は BUG-19 のロックイン
+        // 事故を受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` により
+        // `ConvModeMgr::effective_charset()` は既に常に Hiragana を返しており、
+        // charset 分岐・`needs_conv_restore_write` スロットル・直前の conv 再取得
+        // （いずれも非 Hiragana 分岐のためだけに存在していた）は実質的に到達不能
+        // だった（`docs/known-bugs.md` BUG-19 参照）。常に F2 (VK_DBE_HIRAGANA) の
+        // みを送る（ROMAN ビット確保のみで冪等なため反復送信も無害）。
+        let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
+        log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
         self.composition.set_eager_warmup_sent_ms(ms);
     }
 

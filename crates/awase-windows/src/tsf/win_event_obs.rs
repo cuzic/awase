@@ -51,7 +51,7 @@ impl Drop for WinEventHookGuard {
 ///
 /// | フック | イベント範囲 | 目的 |
 /// |---|---|---|
-/// | NAMECHANGE | 0x800C | WezTerm title 変更 → `wait_for_tsf_cold_settle` early-exit |
+/// | NAMECHANGE | 0x800C | WezTerm title 変更カウンタ（`focus_namechange`、現在 write-only。BUG-24 参照） |
 /// | OBJECT_SHOW/HIDE | 0x8002-0x8003 | GJI candidate window 表示状態追跡 → raw TSF literal 検出用 |
 pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
     let mut hooks = Vec::new();
