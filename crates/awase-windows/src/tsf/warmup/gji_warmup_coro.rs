@@ -259,6 +259,7 @@ async fn gji_coro_body(
                     is_last,
                     observations,
                     plan,
+                    target: TransmitTarget::Tsf,
                 }],
             )
             .await;

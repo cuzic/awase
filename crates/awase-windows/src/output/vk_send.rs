@@ -8,6 +8,7 @@ use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::vk::{VK_DBE_HIRAGANA, VK_OEM_MINUS};
 use awase::types::VkCode;
+use std::sync::atomic::Ordering::Relaxed;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
@@ -199,22 +200,34 @@ impl Output {
                     > crate::tuning::CHROME_LONG_IDLE_MS
             };
             let skip_f2_send = skip_f2_send && !f2_gji_long_idle;
+            // DIAG_CHROME_SKIP_F2（実験、2026-07-16）: 予防的な programmatic F2 送信を
+            // 丸ごとスキップする。物理 F2 検出由来の skip_f2_send とは理由が異なるが、
+            // 実際に「programmatic F2 を送らない」という結果は同じなので同じ変数に折り込む
+            // （ログの skip_f2 フィールドで判別は付かなくなるが、F2 自体を送らない
+            // という当面の実験目的には影響しない）。
+            let skip_f2_send = skip_f2_send || crate::tuning::DIAG_CHROME_SKIP_F2.load(Relaxed);
             let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
                 cold_marked_ms
             } else {
                 crate::hook::current_tick_ms()
             };
-            let (probe_min_ms, probe_max_ms) = if long_idle || f2_gji_long_idle {
-                (
-                    crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
-                    crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
-                )
-            } else {
-                (
-                    crate::tuning::CHROME_PROBE_MIN_MS,
-                    crate::tuning::CHROME_PROBE_MAX_MS,
-                )
-            };
+            // DIAG_CHROME_SKIP_PROBE_WAIT（実験、2026-07-16）: TsfReadinessProbe の
+            // min/max 待機を丸ごとスキップする（WezTerm 側 DIAG_COLD_SKIP_PROBE_WAIT の
+            // Chrome 版）。
+            let (probe_min_ms, probe_max_ms) =
+                if crate::tuning::DIAG_CHROME_SKIP_PROBE_WAIT.load(Relaxed) {
+                    (0, 0)
+                } else if long_idle || f2_gji_long_idle {
+                    (
+                        crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
+                        crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
+                    )
+                } else {
+                    (
+                        crate::tuning::CHROME_PROBE_MIN_MS,
+                        crate::tuning::CHROME_PROBE_MAX_MS,
+                    )
+                };
             if f2_stale {
                 let elapsed = crate::hook::current_tick_ms().saturating_sub(cold_marked_ms);
                 log::debug!(
@@ -255,8 +268,13 @@ impl Output {
             // `GetProcessIoCounters` 実IO監視）とは独立している。
             let self_timer_is_long_cold = long_idle || f2_gji_long_idle;
             let real_gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-            let is_long_cold =
-                self_timer_is_long_cold && !crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP;
+            // DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP（実験、2026-07-16）: long-cold 時の
+            // 予防的犠牲キー（StartSacrificialWarmup）を完全にスキップする。既存の
+            // DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP（2026-07-09 の別実験、const のまま）
+            // と OR で合成する。
+            let is_long_cold = self_timer_is_long_cold
+                && !crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP
+                && !crate::tuning::DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP.load(Relaxed);
             if self_timer_is_long_cold {
                 log::info!(
                     "[h1-probe-diag] cold={cold_seq} self_timer_is_long_cold=true \

@@ -29,6 +29,7 @@
 //! - フェーズ遷移は `StepCoro` async 本体に直線記述し、`ProbePhase` enum は不要。
 
 use std::rc::Rc;
+use std::sync::atomic::Ordering::Relaxed;
 
 use awase::types::VkCode;
 
@@ -223,6 +224,10 @@ pub(crate) enum ProbeAction {
         is_last: bool,
         observations: ProbeObservations,
         plan: TransmitPlan,
+        /// 送信先（`Tsf`: WezTerm 等 TSF-native、`Chrome`: Chrome/Edge）。
+        /// dispatcher が VK 送信関数（`send_single_tsf_vk`/`send_single_chrome_vk`）と
+        /// detector 構築方式（SHOW ベース/write-bytes ベース）を切り替えるために使う。
+        target: TransmitTarget,
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
     RawTsfLiteralRecovery {
@@ -284,6 +289,7 @@ pub(crate) enum ProbeAction {
 struct TsfProbeTickInput {
     env: TsfEnvSnapshot,
     transmit_done: Option<TsfTransmitDonePayload>,
+    vk_sent: Option<VkSentPayload>,
 }
 
 /// `apply_transmit_done(Some(detector))` のペイロード。次 tick で inline LiteralDetect に入る。
@@ -294,6 +300,14 @@ struct TsfTransmitDonePayload {
     /// `apply_transmit_done` 呼び出し時点の `current_tick_ms() + literal_detect_ms`。
     deadline_ms: u64,
     expected_kana: Option<char>,
+}
+
+/// `apply_vk_sent` のペイロード（Chrome per-VK confirm 実験、`DIAG_CHROME_USE_PER_VK_CONFIRM`）。
+/// 次 tick の `TsfProbeTickInput` に載り、コルーチン本体がそのVK専用の detector をポーリングする。
+/// `gji_warmup_coro.rs::VkSentPayload` と同型（TSF/Chrome で別々に持つ、共有はしない）。
+struct VkSentPayload {
+    detector: LiteralDetector,
+    deadline_ms: u64,
 }
 
 // ── コルーチン本体 ────────────────────────────────────────────────────────────
@@ -366,6 +380,115 @@ async fn tsf_probe_coro_body(
     // gji_active なら inline LiteralDetect（Phase 3）を安全網として有効化するが、
     // VK_A probe + Chrome reinit のフルコースは踏まない。
     let needs_literal = env.gji_active;
+
+    // ── Phase 2c（Chrome per-VK confirm 実験, DIAG_CHROME_USE_PER_VK_CONFIRM）──
+    // WezTerm 側 gji_coro_body の Phase 5b と同じ発想: romaji をまとめて送るのではなく
+    // 1文字ずつ送って「送った VK 自身」への CompositionConfirmed/SuspectedLiteral を
+    // 都度確認してから次の VK を送る。バッチ送信特有の「どの文字が化けたか区別できない」
+    // 曖昧さ（BUG-03 が Chrome で解決できなかった原因）を、そもそもバッチにしないことで
+    // 回避する。detector 自体は HIMC を使わない（候補ウィンドウ SHOW / GJI I/O / Chrome
+    // 用 WriteTransferCount 閾値のみ）ため、TSF/Chrome 間で使い分ける必要はない。
+    if crate::tuning::DIAG_CHROME_USE_PER_VK_CONFIRM.load(Relaxed)
+        && needs_literal
+        && !crate::tsf::observer::literal_session_confirmed()
+    {
+        use crate::tsf::probe::DetectionResult;
+
+        let vk_chars: Vec<(VkCode, bool)> = romaji
+            .chars()
+            .filter_map(crate::output::resolve_ascii_to_vk)
+            .collect();
+        if vk_chars.is_empty() {
+            yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+            return;
+        }
+        let observations = ProbeObservations {
+            nc_fired: true,
+            gji_resumed: false,
+        };
+        let plan = TransmitPlan {
+            should_prepend_f2: false,
+            used_eager_path: false,
+            needs_literal: true,
+            literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
+        };
+        let last_idx = vk_chars.len() - 1;
+        for (idx, &(vk, needs_shift)) in vk_chars.iter().enumerate() {
+            let is_last = idx == last_idx;
+            let vk_input = yield_step(
+                ch.clone(),
+                vec![ProbeAction::TransmitSingleVk {
+                    cold_seq,
+                    vk,
+                    needs_shift,
+                    timeout_ms: plan.literal_detect_ms,
+                    is_last,
+                    observations,
+                    plan,
+                    target: TransmitTarget::Chrome,
+                }],
+            )
+            .await;
+            let Some(sent) = vk_input.vk_sent else {
+                log::warn!(
+                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断"
+                );
+                return;
+            };
+
+            let detection = loop {
+                let poll_input = yield_step(ch.clone(), vec![]).await;
+                if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
+                    break d;
+                }
+                let _ = poll_input;
+            };
+
+            match detection {
+                DetectionResult::CompositionConfirmed => {
+                    log::debug!(
+                        "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] confirmed (vk=0x{:02X})",
+                        vk.0,
+                    );
+                }
+                DetectionResult::SuspectedLiteral => {
+                    let (backs, escape_composition) =
+                        crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                    log::debug!(
+                        "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] suspected literal \
+                         (vk=0x{:02X} escape={escape_composition})",
+                        vk.0,
+                    );
+                    crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-literal");
+                    // env.is_tsf_mode=false（Chrome）なので emit_recovery_actions は常に
+                    // RawTsfLiteralRecovery（backspace のみ）に倒れる。consecutive は
+                    // 分岐に使われないため 0 で問題ない
+                    // （`literal_detect_fsm::emit_recovery_actions` 参照）。
+                    let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                        cold_seq,
+                        romaji.clone(),
+                        backs,
+                        observations,
+                        0,
+                        &env,
+                        escape_composition,
+                    );
+                    yield_step(ch.clone(), actions).await;
+                    return;
+                }
+            }
+        }
+
+        log::debug!(
+            "[tsf-probe] cold={cold_seq} Chrome per-VK: 全 {} VK 確認済み → セッション確認",
+            vk_chars.len(),
+        );
+        crate::tsf::observer::mark_literal_session_confirmed();
+        crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-confirmed");
+        yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+        return;
+    }
+
     let transmit_input = yield_step(
         ch.clone(),
         vec![ProbeAction::Transmit {
@@ -467,6 +590,7 @@ async fn tsf_probe_coro_body(
 pub(crate) struct TsfProbeCoro {
     coro: StepCoro<TsfProbeTickInput, Vec<ProbeAction>>,
     pending_transmit_done: Option<TsfTransmitDonePayload>,
+    pending_vk_sent: Option<VkSentPayload>,
     cold_seq: u32,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。
     _guard: OutputActiveGuard,
@@ -494,6 +618,7 @@ impl TsfProbeCoro {
         let mut this = Self {
             coro,
             pending_transmit_done: None,
+            pending_vk_sent: None,
             cold_seq,
             _guard: guard,
         };
@@ -514,6 +639,7 @@ impl TickableFsm for TsfProbeCoro {
         let input = TsfProbeTickInput {
             env: *env,
             transmit_done: self.pending_transmit_done.take(),
+            vk_sent: self.pending_vk_sent.take(),
         };
         match self.coro.step(input) {
             CoroStep::Yielded(actions) => actions,
@@ -551,6 +677,16 @@ impl TickableFsm for TsfProbeCoro {
             }
             None => true,
         }
+    }
+
+    /// Chrome per-VK confirm 実験（`DIAG_CHROME_USE_PER_VK_CONFIRM`）が1 VK 送信するたびに呼ぶ。
+    /// `GjiWarmupCoro::apply_vk_sent` の Chrome 版。`_guard` がコルーチン生存中ずっと
+    /// active を保持しているため、追加のガード確保は不要。
+    fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
+        self.pending_vk_sent = Some(VkSentPayload {
+            detector,
+            deadline_ms,
+        });
     }
 }
 

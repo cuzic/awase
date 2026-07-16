@@ -31,6 +31,9 @@ pub(crate) trait ProbeIo {
     /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend /
     /// unicode kana 分岐を一切行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
+    /// Chrome per-VK confirm 実験（`DIAG_CHROME_USE_PER_VK_CONFIRM`）専用: 1 VK の
+    /// DOWN+UP を `VkMarker::Injected` で単独送信する。`send_single_tsf_vk` の Chrome版。
+    fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
     /// `TsfWarmupCoordinator` の deferred キューを取り出してクリアする。
@@ -133,6 +136,10 @@ impl ProbeIo for Output {
 
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool) {
         KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
+    }
+
+    fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool) {
+        KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::Injected);
     }
 
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker) {
@@ -622,19 +629,41 @@ where
                 is_last,
                 observations,
                 plan,
+                target,
             } => {
-                if io.gate_is_bypass() {
+                // `gate_is_bypass()` は TSF composition context の readiness ゲートで
+                // Chrome には適用されない（Chrome は常に gate=Bypass 運用、
+                // `StartSacrificialWarmup` の既存コメント参照）。Tsf 向けのときだけ確認する。
+                if target == TransmitTarget::Tsf && io.gate_is_bypass() {
                     log::debug!(
                         "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection"
                     );
                     return DispatchResult::Done;
                 }
                 // ベースラインは SendInput **前**に取得する（送信中の SHOW/I-O 変化を見逃さないため）。
-                let detector = crate::tsf::probe::LiteralDetector::new();
-                io.send_single_tsf_vk(vk, needs_shift);
+                // Chrome は write-bytes 閾値ベース（HIMC 不使用、`new_gji_resumed_with_pre_send_baseline`）、
+                // TSF は候補ウィンドウ SHOW ベース（`new()`）を使う。
+                let detector = match target {
+                    TransmitTarget::Tsf => crate::tsf::probe::LiteralDetector::new(),
+                    TransmitTarget::Chrome => {
+                        crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(
+                            crate::tsf::observer::gji_write_bytes(),
+                        )
+                    }
+                };
+                let marker = match target {
+                    TransmitTarget::Tsf => {
+                        io.send_single_tsf_vk(vk, needs_shift);
+                        VkMarker::Tsf
+                    }
+                    TransmitTarget::Chrome => {
+                        io.send_single_chrome_vk(vk, needs_shift);
+                        VkMarker::Injected
+                    }
+                };
                 let deadline_ms = crate::hook::current_tick_ms() + timeout_ms;
                 if is_last {
-                    io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
+                    io.send_deferred_vks(&io.take_pending_deferred_vks(), marker);
                     // GjiFsm bridge: romaji 全体の送信完了に相当するタイミングで warmup 結果を保存する。
                     store_gji_warmup_if_probing(io, observations, &plan);
                 }
@@ -910,6 +939,7 @@ mod tests {
         transmit_tsf_called: Cell<bool>,
         transmit_chrome_called: Cell<bool>,
         send_single_tsf_vk_call_count: Cell<u32>,
+        send_single_chrome_vk_call_count: Cell<u32>,
         deferred_vks_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
@@ -932,6 +962,7 @@ mod tests {
                 transmit_tsf_called: Cell::new(false),
                 transmit_chrome_called: Cell::new(false),
                 send_single_tsf_vk_call_count: Cell::new(0),
+                send_single_chrome_vk_call_count: Cell::new(0),
                 deferred_vks_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
@@ -966,6 +997,10 @@ mod tests {
         fn send_single_tsf_vk(&self, _vk: VkCode, _needs_shift: bool) {
             self.send_single_tsf_vk_call_count
                 .set(self.send_single_tsf_vk_call_count.get() + 1);
+        }
+        fn send_single_chrome_vk(&self, _vk: VkCode, _needs_shift: bool) {
+            self.send_single_chrome_vk_call_count
+                .set(self.send_single_chrome_vk_call_count.get() + 1);
         }
         fn send_deferred_vks(&self, _vks: &[DeferredVk], _marker: VkMarker) {
             self.deferred_vks_called.set(true);

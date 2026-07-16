@@ -560,3 +560,75 @@ pub static DIAG_COLD_SKIP_F2: std::sync::atomic::AtomicBool =
 /// [`DIAG_COLD_SKIP_F2`] を参照。`TsfReadinessProbe` の待機のみを独立にスキップする。
 pub static DIAG_COLD_SKIP_PROBE_WAIT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
+
+// === Chrome cold-start 簡素化実験（DIAG_COLD_SKIP_* の Chrome 版、2026-07-16）===
+//
+// WezTerm/TSF 側の実験（`DIAG_COLD_SKIP_F2`/`DIAG_COLD_SKIP_PROBE_WAIT`）が実機で
+// 好感触だったことを受け、Chrome の cold-start（`output/vk_send.rs::send_romaji_batched`、
+// `tsf/warmup/probe_fsm.rs::tsf_probe_coro_body`）にも同じ発想を適用する。
+//
+// Chrome は WezTerm と異なりバッチ送信（romaji 全体を一括送信）かつ HIMC が常に NULL
+// （`docs/known-bugs.md` BUG-03: 実際の変換内容を検証する手段が構造的に無い）という
+// 制約があったが、`DIAG_CHROME_USE_PER_VK_CONFIRM` で導入した per-VK confirm
+// （`LiteralDetector::check_now` — 候補ウィンドウ SHOW / GJI I/O / WriteTransferCount
+// 閾値のみで判定、HIMC 不使用）を使えば、そもそもバッチにしないことで BUG-03 の
+// 「どの文字が化けたか区別できない」曖昧さを回避できる（ユーザー指摘、2026-07-16）。
+
+/// Chrome cold-start の予防的 F2 送信（SendMessageTimeout + SendInput の二重送信）を
+/// スキップする診断フラグ。[`DIAG_COLD_SKIP_F2`] の Chrome 版。
+///
+/// `true` の間、`send_romaji_batched` の Chrome cold パスは F2 を一切送らない。
+pub static DIAG_CHROME_SKIP_F2: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Chrome cold-start の `TsfReadinessProbe` 待機（`CHROME_PROBE_MIN_MS`/`MAX_MS` と
+/// long_idle 版）をスキップする診断フラグ。[`DIAG_COLD_SKIP_PROBE_WAIT`] の Chrome 版。
+///
+/// `true` の間、probe の `min_ms`/`total_max_ms` を 0 にし実質即座に release する。
+pub static DIAG_CHROME_SKIP_PROBE_WAIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Chrome cold-start の long-cold 時の予防的犠牲キー（`StartSacrificialWarmup`、
+/// VK_A+BS または `DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON` 次第で VK_IME_OFF→ON）を
+/// 完全にスキップする診断フラグ。
+///
+/// 既存の [`DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`] とは別に新設した
+/// （あちらは 2026-07-09 の別実験の履歴が付いた既存の compile-time const で、
+/// 意味を変えずに残す）。`true` の間、`send_romaji_batched` は Chrome 用
+/// `is_long_cold` を常に `false` として扱い、`tsf_probe_coro_body` の Phase 2a
+/// （SacrificialWarmup 分岐）に到達しない。per-VK confirm（下記）による reactive
+/// 検出のみに委ねる。
+pub static DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+/// Chrome cold-start でも WezTerm と同じ per-VK confirm（1文字ずつ送信→確認、ダメなら
+/// backspace 訂正）を使う診断フラグ。
+///
+/// ## 背景
+///
+/// 当初「Chrome は HIMC が常に NULL だから per-VK confirm は使えないのでは」と
+/// 懸念したが、`LiteralDetector::check_now` は HIMC を一切使わない（候補ウィンドウ
+/// SHOW / GJI I/O タイムスタンプ / Chrome 用 WriteTransferCount 閾値のみ）ため、
+/// この懸念は誤りだった（ユーザー指摘、2026-07-16）。BUG-03（`docs/known-bugs.md`）が
+/// Chrome で解決できなかったのは「バッチ送信中のどの文字が化けたか区別できない」
+/// という曖昧さが原因であり、1文字ずつ送って確認する per-VK 方式はバッチにしない
+/// ことでこの曖昧さ自体を回避する。
+///
+/// `true` の間、`tsf_probe_coro_body` の Phase 2c が `needs_literal=true` かつ
+/// このセッションでまだ literal-detect を確認済みでない場合に限り、romaji の VK を
+/// 1つずつ送信して確認する（`DIAG_LITERAL_SESSION_SKIP` の `literal_session_confirmed()`
+/// を TSF/Chrome で共有する）。SuspectedLiteral のときは
+/// `literal_detect_fsm::emit_recovery_actions` に倒れる（`env.is_tsf_mode=false` のため
+/// 常に `RawTsfLiteralRecovery`、[`DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP`] と合わせて
+/// 犠牲キーには頼らない）。
+///
+/// ## 観測すべきログ
+///
+/// - `[tsf-probe] cold=N Chrome per-VK[idx/last] confirmed/suspected literal`
+/// - `[comp-probe] chrome-per-vk-confirmed`/`chrome-per-vk-literal`
+///
+/// 実験終了後はデフォルトを `false` に戻すか、結果に応じて `docs/known-bugs.md` に
+/// 実測を追記した上で Chrome 側のバッチ送信・`CHROME_PROBE_*`/sacrificial warmup を
+/// 撤去すること（`tuning-constants.md` の実測義務）。
+pub static DIAG_CHROME_USE_PER_VK_CONFIRM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
