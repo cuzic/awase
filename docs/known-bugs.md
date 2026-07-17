@@ -2676,6 +2676,71 @@ check_now_confirms_via_candidate_show_when_write_bytes_below_threshold`
 
 ---
 
+## BUG-28: `flush_raw_tsf_literal_recovery` が `pending_gji_key_responses` を drain せず、`StartProbe` が数秒〜数十件分まとめて burst 発火する
+
+**症状:** WindowsTerminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TSF mode）で最初の1文字
+「な」を送信した直後、実機ログで `[gji-fsm] StartProbe probe_id=ProbeId(N)` が
+`N=14`〜`42`（29件）まで**同一ミリ秒内に他のログを一切挟まず連続発火**した。
+ユーザー報告は「なぞのバックスペースの無限ループが発生しました」。この burst
+自体は backspace ではなく `GjiFsm` の `StartProbe` action だが、直前の約8秒間は
+TeamsWebView/Chrome での Chrome per-VK confirm による raw-tsf-literal 回収
+（`[raw-tsf-literal] re-sending raw TSF literal romaji="ni"`）と
+`VirtualDesktopHotkeySwitcher` 経由の激しいフォーカス切替が続いていた。
+
+**IME:** GJI（Google 日本語入力）。TSF mode（`mode=Tsf`、WindowsTerminal 等）と
+Vk mode（`mode=Vk`、Chrome/TeamsWebView 等）の両方に影響する。
+
+**再現手順:** raw-tsf-literal リカバリ（`WM_DRAIN_OUTPUT_QUEUE` ハンドラ経由）が
+複数回発生した直後に、通常の `send_keys()`（実際のキー入力）が呼ばれると、
+undrained のまま溜まっていた `GjiResponse`（`StartProbe` を含む）が一括で
+dispatch・ログ出力される。
+
+**原因:** `GjiEvent::KeyInput` の `Response`（`GjiAction::StartProbe` を含みうる）は
+即座に dispatch されず、`Output::push_key_response`（`tsf_warmup_coord.rs`
+`pending_gji_key_responses: RefCell<Vec<GjiResponse>>`）に一旦バッファされる。
+これを実際に drain・dispatch（`"[gji-fsm] StartProbe probe_id=..."` のログ出力
+はここで発生する）するのは `WindowsPlatform::send_keys`
+（`platform.rs` 旧656-658行）の中だけだった。
+
+一方、`WindowsPlatform::flush_raw_tsf_literal_recovery`（`platform.rs` 569-574行、
+`WM_DRAIN_OUTPUT_QUEUE` ハンドラから呼ばれる）は内部で
+`Output::flush_raw_tsf_literal_recovery` → `flush_raw_tsf_literal_romaji` →
+`send_romaji_as_tsf`/`send_romaji_batched` を呼び、これが同じく
+`push_key_response` で `pending_gji_key_responses` に積む。しかしこの関数は
+`send_keys` を経由しないため、`pending_tsf_timer()` の補完だけを行い
+（コメントで「`platform.send_keys` を経由しないため、ここでタイマー設定を
+補完する」と明記されていたが、これは4つの後処理のうち1つだけだった）、
+`drain_pending_gji_key_responses`／`take_composition_reset`／
+`drain_pending_composition_events` は**行っていなかった**。
+
+結果として、raw-tsf-literal リカバリが発生するたびに `pending_gji_key_responses`
+にエントリが積まれるが、次に本物の `send_keys()`（実際のキー入力）が呼ばれる
+まで一切 drain されない。各エントリの `GjiFsm::on_event(KeyInput)` 自体は
+push 時点（＝実際に古い時刻）に同期的に評価・状態遷移済みだが、ログ出力と
+一部の副作用（`gji_store_probe_id` 等）だけが後から一括で発生するため、
+数秒〜数十秒越しの stale な `StartProbe` が同一ミリ秒内に burst するように見える。
+
+**修正 (2026-07-17):** `send_keys` が `output.send_keys(actions)` の直後に行っていた
+4つの後処理（`drain_pending_gji_key_responses`+dispatch、
+`take_composition_reset`+`gji_on_composition_reset`、
+`drain_pending_composition_events`、`pending_tsf_timer`+`apply_timer_command`）を
+`WindowsPlatform::drain_output_post_send_effects` として抽出し、
+`send_keys` と `flush_raw_tsf_literal_recovery` の両方から呼ぶようにした。
+
+**テスト:** `WindowsPlatform` は実 Win32 タイマー/フック等に依存するため
+Linux 上でのユニットテストは非現実的（`golden_scenarios.rs` 等の既存テストは
+`Output`/reducer レベルを直接駆動しており `WindowsPlatform::send_keys` 自体は
+経由しない）。本記録で代替する。lib 139・architecture_guard 10・
+golden_scenarios 20・journal_replay 1・layer_boundary_guard 8 全通過、
+Windows cross-compile（build + test --no-run）警告ゼロ確認済み。実機再検証は
+未実施。
+
+**関連ファイル:** `crates/awase-windows/src/platform.rs`
+（`WindowsPlatform::send_keys`、`flush_raw_tsf_literal_recovery`、新設
+`drain_output_post_send_effects`）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

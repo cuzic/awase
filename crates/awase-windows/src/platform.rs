@@ -563,11 +563,40 @@ impl WindowsPlatform {
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
     ///
-    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` を呼ぶため
-    /// cold/warm どちらのパスでも `pending_tsf` に probe が積まれることがある。
-    /// `platform.send_keys` を経由しないため、ここでタイマー設定を補完する。
+    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` /
+    /// `send_romaji_batched` を呼ぶため、`send_keys()` と同様に `GjiFsm::KeyInput` の
+    /// `Response`（`pending_gji_key_responses`）や `composition_reset` フラグが
+    /// 発生しうる。`platform.send_keys` を経由しないため、`drain_output_post_send_effects`
+    /// で同じ後処理を補完する（BUG-28: これを怠ると `pending_gji_key_responses` が
+    /// 次の実 `send_keys()` 呼び出しまで滞留し、溜まった分がまとめて stale な
+    /// `StartProbe` として burst 発火する。docs/known-bugs.md 参照）。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         self.output.flush_raw_tsf_literal_recovery();
+        self.drain_output_post_send_effects();
+    }
+
+    /// `output.send_keys()` / `output.flush_raw_tsf_literal_recovery()` の直後に共通で
+    /// 必要な後処理をまとめる（BUG-28）。
+    ///
+    /// `GjiFsm::KeyInput` の `Response` は `push_key_response` で
+    /// `pending_gji_key_responses` に一旦バッファされ、ここで初めて dispatch・ログ出力
+    /// （`"[gji-fsm] StartProbe probe_id=..."` 等）される。この関数を呼ばずに
+    /// `output.send_keys()`/`output.flush_raw_tsf_literal_recovery()` だけ呼ぶと、
+    /// バッファされた `Response` が次にこの関数が呼ばれるまで滞留し続ける。
+    fn drain_output_post_send_effects(&mut self) {
+        // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
+        // Vec で取り出すのは、1回の送信で複数文字を送る際に全 Response（StartProbe 含む）を
+        // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
+        for resp in self.output.drain_pending_gji_key_responses() {
+            self.dispatch_gji_response(&resp);
+        }
+        // SymbolVkSent 等の CompositionReset フラグを drain する。
+        if self.output.take_composition_reset() {
+            self.gji_on_composition_reset();
+        }
+        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
+        self.drain_pending_composition_events();
+        // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
         if let Some(cmd) = self.output.pending_tsf_timer() {
             self.apply_timer_command(cmd);
         }
@@ -650,22 +679,7 @@ impl PlatformRuntime for WindowsPlatform {
             self.output.set_unicode_cold_defer(false);
             self.flush_unicode_cold_deferred_chars();
         }
-        // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
-        // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
-        // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
-        for resp in self.output.drain_pending_gji_key_responses() {
-            self.dispatch_gji_response(&resp);
-        }
-        // SymbolVkSent 等の CompositionReset フラグを drain する。
-        if self.output.take_composition_reset() {
-            self.gji_on_composition_reset();
-        }
-        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
-        self.drain_pending_composition_events();
-        // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
-        if let Some(cmd) = self.output.pending_tsf_timer() {
-            self.apply_timer_command(cmd);
-        }
+        self.drain_output_post_send_effects();
     }
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {
