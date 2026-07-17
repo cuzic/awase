@@ -86,6 +86,18 @@ pub(crate) struct TransmitPlan {
     pub literal_detect_ms: u64,
 }
 
+/// BUG-29: 候補ウィンドウが既に表示中なら、Chrome per-VK confirm の
+/// literal-detect polling をスキップしてよいかを判定する（純粋関数、テスト用に分離）。
+///
+/// 候補ウィンドウが表示中であること自体が「warm な composition が継続している」
+/// 直接証拠であるため、SHOW イベント（エッジトリガで VK1 以降は再発火しない）や
+/// WriteTransferCount 閾値（子音単体 VK では原理的に越えない）に頼らず即
+/// confirmed とみなせる。`crates/awase-windows/src/tsf/probe.rs:676-680` に
+/// 記載された既知の限界を構造的に解消する。
+pub(crate) const fn should_skip_literal_wait(candidate_visible: bool) -> bool {
+    candidate_visible
+}
+
 /// probe 観測値・環境スナップショット・コンテキストから送信方針を決定する純粋計算関数。
 ///
 /// `GjiWarmupCoro` 内から呼ばれるが、単独でテストも可能。副作用なし。
@@ -457,12 +469,29 @@ async fn tsf_probe_coro_body(
                 return;
             };
 
-            let detection = loop {
-                let poll_input = yield_step(ch.clone(), vec![]).await;
-                if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
-                    break d;
+            let detection = if should_skip_literal_wait(
+                crate::tsf::observer::gji_candidate_visible_now(),
+            ) {
+                // BUG-29: 候補ウィンドウが既に表示中 = warm な composition が
+                // 継続している直接証拠。SHOW はエッジトリガ（hidden→visible
+                // 遷移でのみ増分）のため VK1 以降では再発火せず、子音単体 VK は
+                // WriteTransferCount 閾値も原理的に越えない（probe.rs:676-680,
+                // 658-667 に既知の限界として記載済み）。polling を待たず
+                // 即 confirmed とすることでこの検出漏れを構造的に解消する。
+                log::debug!(
+                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] \
+                     candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+                    vk.0,
+                );
+                DetectionResult::CompositionConfirmed
+            } else {
+                loop {
+                    let poll_input = yield_step(ch.clone(), vec![]).await;
+                    if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
+                        break d;
+                    }
+                    let _ = poll_input;
                 }
-                let _ = poll_input;
             };
 
             match detection {
@@ -749,6 +778,24 @@ impl TickableFsm for TsfProbeCoro {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── should_skip_literal_wait 回帰テスト（BUG-29）────────────────────────
+
+    #[test]
+    fn should_skip_literal_wait_when_candidate_already_visible() {
+        assert!(
+            should_skip_literal_wait(true),
+            "候補ウィンドウ表示中は literal-detect の polling をスキップする"
+        );
+    }
+
+    #[test]
+    fn should_skip_literal_wait_false_when_candidate_hidden() {
+        assert!(
+            !should_skip_literal_wait(false),
+            "非表示中は従来通り literal-detect の polling を行う"
+        );
+    }
 
     // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
 
