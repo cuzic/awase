@@ -192,9 +192,17 @@ impl TsfWarmupCoordinator {
     /// probe を `pending_tsf` にセットする。既存 probe があれば上書きして warn を出す。
     pub(crate) fn install_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
         let mut slot = self.pending_tsf.borrow_mut();
-        if slot.is_some() {
+        // BUG-27 調査用: 上書きされる旧 machine の cold_seq も出す
+        // （新 cold_seq だけでは「誰が誰を上書きしたか」が分からなかった）。
+        if let Some(old) = slot.as_ref() {
             log::warn!(
-                "[tsf-probe] overwriting in-flight probe with new probe cold={}",
+                "[tsf-probe] overwriting in-flight probe cold={} with new probe cold={}",
+                old.cold_seq_hint(),
+                machine.cold_seq_hint()
+            );
+        } else {
+            log::trace!(
+                "[tsf-probe-coord] install_pending_tsf cold={} (fresh)",
                 machine.cold_seq_hint()
             );
         }
@@ -203,17 +211,40 @@ impl TsfWarmupCoordinator {
 
     /// `pending_tsf` を取り出す（`step_probe` の1ステップ処理用）。
     pub(crate) fn take_pending_tsf(&self) -> Option<Box<dyn TickableFsm>> {
-        self.pending_tsf.borrow_mut().take()
+        let m = self.pending_tsf.borrow_mut().take();
+        // BUG-27 調査用ログ: take→(dispatch)→restore の1サイクルを追跡する。
+        // None が返るのは「probe 完了済み・timer は生きているが drain 待ち」等の
+        // 正常系でも起き得るため warn ではなく trace（既存の [tsf-probe-tick] 側
+        // ログと組み合わせて、machine の有無を tick ごとに突き合わせる想定）。
+        match &m {
+            Some(machine) => log::trace!(
+                "[tsf-probe-coord] take_pending_tsf → Some(cold={})",
+                machine.cold_seq_hint()
+            ),
+            None => log::trace!("[tsf-probe-coord] take_pending_tsf → None"),
+        }
+        m
     }
 
     /// `pending_tsf` に machine を戻す（`step_probe` の Continue 用）。
     pub(crate) fn restore_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
+        log::trace!(
+            "[tsf-probe-coord] restore_pending_tsf cold={}",
+            machine.cold_seq_hint()
+        );
         *self.pending_tsf.borrow_mut() = Some(machine);
     }
 
     /// `pending_tsf` をクリアする（`CancelProbe` 用）。
     pub(crate) fn clear_pending_tsf(&self) {
-        *self.pending_tsf.borrow_mut() = None;
+        // BUG-27 調査用ログ: CancelProbe 経路で pending_tsf が本当に破棄された
+        // 場合にのみログを出す（すでに None なら何も起きていない）。
+        if let Some(machine) = self.pending_tsf.borrow_mut().take() {
+            log::debug!(
+                "[tsf-probe-coord] clear_pending_tsf: discarding cold={}",
+                machine.cold_seq_hint()
+            );
+        }
     }
 
     /// probe が実行中かどうかを返す。

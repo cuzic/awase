@@ -277,10 +277,25 @@ async fn gji_coro_body(
             )
             .await;
             let Some(sent) = vk_input.vk_sent else {
+                // BUG-27 (probe_fsm.rs::tsf_probe_coro_body と同型の防御分岐、Chrome 側は
+                // 2026-07-17 実機で初観測): 従来は無リカバリの `return` で、この VK に
+                // 対応する romaji とキュー中の後続文字を丸ごと失っていた。`SuspectedLiteral`
+                // と同じ backspace+romaji 再送リカバリに倒す。
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
                 log::warn!(
-                    "[gji-coro] cold={} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断",
+                    "[gji-coro] cold={} per-VK[{idx}/{last_idx}] vk_sent 未設定 \
+                     → suspected literal 相当としてリカバリ (backs={backs} escape={escape_composition})",
                     ctx.cold_seq
                 );
+                crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, "setopen-per-vk-unset");
+                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                    ctx.cold_seq,
+                    romaji.clone(),
+                    backs,
+                    escape_composition,
+                );
+                yield_step(ch.clone(), actions).await;
                 return;
             };
 
@@ -490,6 +505,18 @@ impl GjiWarmupCoro {
 
 impl TickableFsm for GjiWarmupCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        // BUG-27 調査用ログ: probe_fsm.rs::TsfProbeCoro::tick と同じ意図。
+        // 通常 tick は毎回 None のため、どちらかが Some の場合のみ出す。
+        if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
+            log::debug!(
+                "[gji-coro-vk-sent-trace] cold={} tick consuming pending_vk_sent={} \
+                 pending_transmit_done={} t={}ms",
+                self.cold_seq,
+                self.pending_vk_sent.is_some(),
+                self.pending_transmit_done.is_some(),
+                crate::hook::current_tick_ms(),
+            );
+        }
         let input = TickInput {
             env: *env,
             transmit_done: self.pending_transmit_done.take(),
@@ -537,6 +564,14 @@ impl TickableFsm for GjiWarmupCoro {
     /// 次 tick の TickInput に `vk_sent` として載せ、コルーチン本体がそのVK専用の
     /// detector をポーリングする。
     fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
+        // BUG-27 調査用ログ: probe_fsm.rs::TsfProbeCoro::apply_vk_sent と同じ意図。
+        let overwritten = self.pending_vk_sent.is_some();
+        log::debug!(
+            "[gji-coro-vk-sent-trace] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
+             overwritten_unconsumed={overwritten} t={}ms",
+            self.cold_seq,
+            crate::hook::current_tick_ms(),
+        );
         if self.literal_detect_guard.is_none() {
             self.literal_detect_guard = Some(OutputActiveGuard::begin());
         }

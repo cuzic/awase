@@ -418,9 +418,29 @@ async fn tsf_probe_coro_body(
             )
             .await;
             let Some(sent) = vk_input.vk_sent else {
+                // BUG-27: dispatcher が `apply_vk_sent` を呼ぶ前提が崩れた場合の防御分岐
+                // （2026-07-16 まで到達例なし、2026-07-17 実機で "はだいじょうぶ"→"いじょうぶ"
+                // として初観測）。従来はここで無リカバリの `return` をしており、この VK に
+                // 対応する romaji が丸ごと消え、かつ probe 中に別文字が来ていれば
+                // coordinator の deferred VK キューの flush ポイント（`is_last`）にも
+                // 二度と到達できず、後続文字も道連れで失われていた。`SuspectedLiteral` と
+                // 同じ backspace+romaji 再送リカバリに倒すことで、この VK 自身は
+                // literal 扱いとして回収し、次の cold パス（per-VK confirm）で
+                // 改めて送り直す機会を与える。
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
                 log::warn!(
-                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断"
+                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] vk_sent 未設定 \
+                     → suspected literal 相当としてリカバリ (backs={backs} escape={escape_composition})"
                 );
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-unset");
+                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                    cold_seq,
+                    romaji.clone(),
+                    backs,
+                    escape_composition,
+                );
+                yield_step(ch.clone(), actions).await;
                 return;
             };
 
@@ -620,6 +640,19 @@ impl TsfProbeCoro {
 
 impl TickableFsm for TsfProbeCoro {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+        // BUG-27 調査用ログ: 通常 tick（Phase 1 の 10ms ポーリング等）は毎回
+        // vk_sent/transmit_done とも None のため、どちらかが Some の場合のみ出す
+        // （毎 tick 出すと Phase 1 のポーリングだけでログが埋まる）。
+        if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
+            log::debug!(
+                "[tsf-probe-vk-sent-trace] cold={} tick consuming pending_vk_sent={} \
+                 pending_transmit_done={} t={}ms",
+                self.cold_seq,
+                self.pending_vk_sent.is_some(),
+                self.pending_transmit_done.is_some(),
+                crate::hook::current_tick_ms(),
+            );
+        }
         let input = TsfProbeTickInput {
             env: *env,
             transmit_done: self.pending_transmit_done.take(),
@@ -667,6 +700,16 @@ impl TickableFsm for TsfProbeCoro {
     /// `GjiWarmupCoro::apply_vk_sent` の Chrome 版。`_guard` がコルーチン生存中ずっと
     /// active を保持しているため、追加のガード確保は不要。
     fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
+        // BUG-27 調査用ログ: overwritten=true なら、前回の apply_vk_sent が
+        // まだ tick() に消費されないまま次の apply_vk_sent が来ている
+        // （＝1 tick 内で TransmitSingleVk が2回ディスパッチされた等の異常）。
+        let overwritten = self.pending_vk_sent.is_some();
+        log::debug!(
+            "[tsf-probe-vk-sent-trace] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
+             overwritten_unconsumed={overwritten} t={}ms",
+            self.cold_seq,
+            crate::hook::current_tick_ms(),
+        );
         self.pending_vk_sent = Some(VkSentPayload {
             detector,
             deadline_ms,
@@ -917,6 +960,52 @@ mod tests {
                 } if !plan.needs_literal
             )),
             "!gji_active: LiteralDetect 不要のまま直接送信する: {actions:?}"
+        );
+    }
+
+    // ── BUG-27: per-VK confirm の vk_sent 未設定 → 無リカバリ return の回帰テスト ──
+
+    /// `vk_sent 未設定`（dispatcher が `apply_vk_sent` を呼ばなかった状態）を、あえて
+    /// `apply_vk_sent` を呼ばずに次の `tick()` を実行することで再現する。本番の
+    /// `dispatch_probe_actions` は `TransmitSingleVk` 処理時に必ず `apply_vk_sent` を
+    /// 呼ぶが、2026-07-17 実機でこの前提が崩れ、"はだいじょうぶ"→"いじょうぶ" のように
+    /// 最初の1〜2文字が無リカバリで消えるのを観測した（docs/known-bugs.md BUG-27）。
+    #[test]
+    fn chrome_per_vk_vk_sent_unset_recovers_instead_of_silently_dropping() {
+        crate::tsf::observer::reset_literal_session_confirmed();
+        let mut machine = ready_chrome_probe(false);
+        let first_actions = machine.tick(&TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                first_actions.as_slice(),
+                [ProbeAction::TransmitSingleVk { .. }]
+            ),
+            "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
+        );
+
+        // apply_vk_sent を呼ばずに次の tick を実行 → pending_vk_sent が None のまま渡る。
+        let recovery_actions = machine.tick(&TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            matches!(
+                recovery_actions.as_slice(),
+                [
+                    ProbeAction::RawTsfLiteralRecovery {
+                        backs: 1,
+                        escape_composition: false,
+                        ..
+                    },
+                    ProbeAction::Done,
+                ]
+            ),
+            "vk_sent 未設定でも無言で消えず、SuspectedLiteral と同じ backspace+再送 \
+             リカバリを emit するはず: {recovery_actions:?}"
         );
     }
 }
