@@ -480,6 +480,15 @@ impl CompositionState {
         self.cold_ctx.consecutive_count()
     }
 
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
+    ///
+    /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した dispatcher が
+    /// 呼ぶ（BUG-27 追補4）。フォーカス変更・`SetOpenTrue` 以外に、本物の confirm
+    /// でも「連続失敗」の連続性が切れるため、ここでもリセットが必要。
+    pub fn reset_consecutive_count(&self) {
+        self.cold_ctx.reset_consecutive_count();
+    }
+
     /// unicode 送信時刻を返す。0 = 未送信。
     #[must_use]
     pub const fn last_unicode_transmit_ms(&self) -> u64 {

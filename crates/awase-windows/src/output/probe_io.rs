@@ -45,6 +45,8 @@ pub(crate) trait ProbeIo {
     fn consecutive_count(&self) -> u32;
     /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
     fn increment_consecutive_count(&self);
+    /// 連続カウントをリセットする（`DetectionResult::CompositionConfirmed` 確認時、BUG-27 追補4）。
+    fn reset_consecutive_count(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
     ///
     /// `escape_composition`: partial literal（candidate 表示中に一部だけ literal 化）回収時に
@@ -146,6 +148,10 @@ impl ProbeIo for Output {
 
     fn increment_consecutive_count(&self) {
         self.composition.increment_consecutive_count();
+    }
+
+    fn reset_consecutive_count(&self) {
+        self.composition.reset_consecutive_count();
     }
 
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool) {
@@ -848,6 +854,18 @@ where
                 }
                 io.mark_cold_raw_tsf();
             }
+
+            ProbeAction::CompositionConfirmed { mark_literal_session } => {
+                // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
+                // 本物の CompositionConfirmed が挟まれば連続ではなくなるため、
+                // 必ずリセットする（従来は FocusChange/SetOpenTrue でしかリセット
+                // されず、セッション中に一度でも literal 化すると以後ずっと
+                // give-up=backspace-onlyに固定される regression があった）。
+                io.reset_consecutive_count();
+                if mark_literal_session {
+                    crate::tsf::observer::mark_literal_session_confirmed();
+                }
+            }
         }
     }
     DispatchResult::Continue
@@ -875,6 +893,7 @@ mod tests {
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         increment_consecutive_called: Cell<bool>,
+        reset_consecutive_called: Cell<bool>,
         send_sacrificial_ime_off_on_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
@@ -896,6 +915,7 @@ mod tests {
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
+                reset_consecutive_called: Cell::new(false),
                 send_sacrificial_ime_off_on_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 last_used_prepend_f2: Cell::new(false),
@@ -940,6 +960,9 @@ mod tests {
         }
         fn increment_consecutive_count(&self) {
             self.increment_consecutive_called.set(true);
+        }
+        fn reset_consecutive_count(&self) {
+            self.reset_consecutive_called.set(true);
         }
         fn set_raw_literal(&self, _backs: usize, _romaji: String, _escape_composition: bool) {
             self.set_raw_literal_called.set(true);

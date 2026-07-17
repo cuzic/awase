@@ -268,6 +268,20 @@ pub(crate) enum ProbeAction {
     /// またはタイムアウト後に emit する。
     /// dispatcher が各 `char` を `send_unicode_char_direct()` で送信する。
     FlushDeferredUnicodeChars(Vec<char>),
+    /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した。
+    ///
+    /// dispatcher は必ず `consecutive_count`（`RawTsfLiteralRecovery` 連続発火数）を
+    /// リセットする。`consecutive_count` は「連続失敗」の抑止用カウンタであり、
+    /// 途中で本物の confirm が挟まれば連続ではなくなる（BUG-27 追補4:
+    /// 従来は `CompositionConfirmed` では一度もリセットされず、セッション中に
+    /// 一度でも literal 化すると以後ずっと give-up＝backspace のみに固定される
+    /// regression があった）。
+    ///
+    /// `mark_literal_session=true` の場合、このセッションの literal-detect 自体を
+    /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`）。
+    /// per-VK confirm では各 VK の confirm で `mark_literal_session=false`、
+    /// 全 VK 確認済みの最終確認でのみ `true` を使う。
+    CompositionConfirmed { mark_literal_session: bool },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -401,22 +415,28 @@ async fn tsf_probe_coro_body(
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
         };
         let last_idx = vk_chars.len() - 1;
+        // BUG-27 追補4: 前の VK の CompositionConfirmed で emit する
+        // consecutive_count リセット action を、次の TransmitSingleVk の yield に
+        // 相乗りさせる（コルーチンの構造上、confirm 直後に単独で yield する
+        // ポイントが無いため）。
+        let mut pending_confirm: Option<ProbeAction> = None;
         for (idx, &(vk, needs_shift)) in vk_chars.iter().enumerate() {
             let is_last = idx == last_idx;
-            let vk_input = yield_step(
-                ch.clone(),
-                vec![ProbeAction::TransmitSingleVk {
-                    cold_seq,
-                    vk,
-                    needs_shift,
-                    timeout_ms: plan.literal_detect_ms,
-                    is_last,
-                    observations,
-                    plan,
-                    target: TransmitTarget::Chrome,
-                }],
-            )
-            .await;
+            let mut actions = Vec::with_capacity(2);
+            if let Some(confirm) = pending_confirm.take() {
+                actions.push(confirm);
+            }
+            actions.push(ProbeAction::TransmitSingleVk {
+                cold_seq,
+                vk,
+                needs_shift,
+                timeout_ms: plan.literal_detect_ms,
+                is_last,
+                observations,
+                plan,
+                target: TransmitTarget::Chrome,
+            });
+            let vk_input = yield_step(ch.clone(), actions).await;
             let Some(sent) = vk_input.vk_sent else {
                 // BUG-27 追補（2026-07-17、revert）: 一度は SuspectedLiteral と同じ
                 // backspace+romaji 再送リカバリに倒したが、実機で msedge の
@@ -451,6 +471,11 @@ async fn tsf_probe_coro_body(
                         "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] confirmed (vk=0x{:02X})",
                         vk.0,
                     );
+                    // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
+                    // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
+                    pending_confirm = Some(ProbeAction::CompositionConfirmed {
+                        mark_literal_session: false,
+                    });
                 }
                 DetectionResult::SuspectedLiteral => {
                     let (backs, escape_composition) =
@@ -480,9 +505,20 @@ async fn tsf_probe_coro_body(
             "[tsf-probe] cold={cold_seq} Chrome per-VK: 全 {} VK 確認済み → セッション確認",
             vk_chars.len(),
         );
-        crate::tsf::observer::mark_literal_session_confirmed();
         crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-confirmed");
-        yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+        // BUG-27 追補4: 最後の VK の pending_confirm は不要（mark_literal_session=true
+        // 版のリセットで包含されるため）、破棄してよい。
+        let _ = pending_confirm.take();
+        yield_step(
+            ch.clone(),
+            vec![
+                ProbeAction::CompositionConfirmed {
+                    mark_literal_session: true,
+                },
+                ProbeAction::Done,
+            ],
+        )
+        .await;
         return;
     }
 

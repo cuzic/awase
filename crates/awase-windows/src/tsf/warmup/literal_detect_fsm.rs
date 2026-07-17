@@ -220,10 +220,15 @@ impl LiteralDetectCore {
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
-                if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
-                    crate::tsf::observer::mark_literal_session_confirmed();
-                }
-                Some(vec![ProbeAction::Done])
+                // BUG-27 追補4: consecutive_count リセットを dispatcher の
+                // CompositionConfirmed ハンドラに一元化する（mark_literal_session_confirmed
+                // の直接呼び出しをやめ、ProbeAction 経由にする）。
+                Some(vec![
+                    ProbeAction::CompositionConfirmed {
+                        mark_literal_session: crate::tuning::DIAG_LITERAL_SESSION_SKIP,
+                    },
+                    ProbeAction::Done,
+                ])
             }
             DetectionResult::SuspectedLiteral => {
                 log::debug!(

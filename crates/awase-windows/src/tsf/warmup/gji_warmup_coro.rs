@@ -260,22 +260,27 @@ async fn gji_coro_body(
             return;
         }
         let last_idx = vk_chars.len() - 1;
+        // BUG-27 追補4: probe_fsm.rs::tsf_probe_coro_body と同じく、前の VK の
+        // CompositionConfirmed で emit する consecutive_count リセット action を
+        // 次の TransmitSingleVk の yield に相乗りさせる。
+        let mut pending_confirm: Option<ProbeAction> = None;
         for (idx, &(vk, needs_shift)) in vk_chars.iter().enumerate() {
             let is_last = idx == last_idx;
-            let vk_input = yield_step(
-                ch.clone(),
-                vec![ProbeAction::TransmitSingleVk {
-                    cold_seq: ctx.cold_seq,
-                    vk,
-                    needs_shift,
-                    timeout_ms: plan.literal_detect_ms,
-                    is_last,
-                    observations,
-                    plan,
-                    target: TransmitTarget::Tsf,
-                }],
-            )
-            .await;
+            let mut actions = Vec::with_capacity(2);
+            if let Some(confirm) = pending_confirm.take() {
+                actions.push(confirm);
+            }
+            actions.push(ProbeAction::TransmitSingleVk {
+                cold_seq: ctx.cold_seq,
+                vk,
+                needs_shift,
+                timeout_ms: plan.literal_detect_ms,
+                is_last,
+                observations,
+                plan,
+                target: TransmitTarget::Tsf,
+            });
+            let vk_input = yield_step(ch.clone(), actions).await;
             let Some(sent) = vk_input.vk_sent else {
                 // BUG-27 追補（2026-07-17、revert）: probe_fsm.rs::tsf_probe_coro_body と
                 // 同型の防御分岐。Chrome 側で SuspectedLiteral 相当のリカバリに倒したところ、
@@ -307,6 +312,11 @@ async fn gji_coro_body(
                         ctx.cold_seq,
                         vk.0,
                     );
+                    // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
+                    // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
+                    pending_confirm = Some(ProbeAction::CompositionConfirmed {
+                        mark_literal_session: false,
+                    });
                 }
                 DetectionResult::SuspectedLiteral => {
                     let (backs, escape_composition) =
@@ -338,9 +348,20 @@ async fn gji_coro_body(
             ctx.cold_seq,
             vk_chars.len(),
         );
-        crate::tsf::observer::mark_literal_session_confirmed();
         crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, "setopen-per-vk-confirmed");
-        yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+        // BUG-27 追補4: 最後の VK の pending_confirm は不要（mark_literal_session=true
+        // 版のリセットで包含されるため）、破棄してよい。
+        let _ = pending_confirm.take();
+        yield_step(
+            ch.clone(),
+            vec![
+                ProbeAction::CompositionConfirmed {
+                    mark_literal_session: true,
+                },
+                ProbeAction::Done,
+            ],
+        )
+        .await;
         return;
     }
 

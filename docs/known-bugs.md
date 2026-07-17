@@ -2560,6 +2560,62 @@ target ビルド・テストコンパイルは警告ゼロで確認済み（cros
 （`ChromeProbe::apply_vk_sent` 追加）、
 `crates/awase-windows/src/tsf/warmup/tickable_fsm.rs`（実装一覧コメント更新）。
 
+**追補4（修正、2026-07-17）: `consecutive_count`（連続 literal 失敗カウンタ）が
+`CompositionConfirmed` では一度もリセットされず、セッション中に一度でも
+literal 化すると以後ずっと give-up＝backspace のみに固定される regression。**
+
+追補3の修正後、実機で再テストしたところ `vk_sent 未設定` は解消されたが、
+今度は正当な `DetectionResult::SuspectedLiteral`（本物の検出）が
+Microsoft Teams (TeamsWebView) で頻発し、`[raw-tsf-literal] consecutive
+raw-tsf-literal (count=N)` が cold=12→13→14 と N=4→5→6 と単調増加し、
+一度も0に戻らないことが分かった（ユーザー報告: 「した という風に何度か
+入力していますが、バックスペースで消されているかんじがします」）。
+
+`crates/awase-windows/src/tsf/probe.rs` の `ColdContext::reset_consecutive_count()`
+の呼び出し元を調べたところ、リセットされるのは `CompositionState::
+on_focus_changed()`（フォーカス変更時）と `mark_composition_cold(SetOpenTrue)`
+（engine が新たに ON になった時）の2箇所のみで、**「文字が正しく確認できた
+（`DetectionResult::CompositionConfirmed`、非 partial）」では一度もリセットされて
+いなかった**。`consecutive_count` は「連続 RawTsfLiteralRecovery」抑止用の
+カウンタであり、間に本物の confirm が挟まれば連続ではなくなるはずだが、その
+リセット経路が存在しなかった。
+
+Codex CLI（`codex exec -s read-only`）に相談し、`ProbeAction` に
+`CompositionConfirmed { mark_literal_session: bool }` を追加して dispatcher
+（`probe_io.rs::dispatch_probe_actions`）に一元化する方針を確認した。
+
+**修正:** `CompositionState::reset_consecutive_count()`（`ColdContext` への
+public wrapper）、`ProbeIo::reset_consecutive_count()` を追加し、
+`ProbeAction::CompositionConfirmed { mark_literal_session }` を dispatcher で
+処理して `io.reset_consecutive_count()` を必ず呼ぶ（`mark_literal_session=true`
+なら `tsf::observer::mark_literal_session_confirmed()` も呼ぶ）ようにした。
+呼び出し箇所:
+
+- `literal_detect_fsm.rs::LiteralDetectCore::poll` の非 partial
+  `CompositionConfirmed` 分岐（warm パス、Chrome/TSF 共有）。
+- `probe_fsm.rs::tsf_probe_coro_body`（Chrome per-VK confirm）: 各 VK の
+  confirm で `mark_literal_session=false` のリセットを次の `TransmitSingleVk`
+  yield に相乗りさせ、全 VK 確認後にのみ `mark_literal_session=true` を送る
+  （1 VK 目は成功したが2 VK 目で `SuspectedLiteral` になったケースでも
+  `consecutive` が正しくリセットされている状態から再送判定できるようにするため）。
+- `gji_warmup_coro.rs::gji_coro_body`（TSF/WezTerm per-VK confirm）: 同様。
+
+**テスト:** `chrome_per_vk_vk_sent_unset_does_not_backspace` は影響を受けない
+（`apply_vk_sent` を呼ばないテストのため per-VK ループの confirm 分岐に
+到達しない）ことを確認。個別の `ProbeAction::CompositionConfirmed` dispatch の
+単体テストは今回は追加していない（`FakeProbeIo` に `reset_consecutive_called`
+フラグは追加済み、今後の回帰テスト追加の土台とする）。lib 139・
+architecture_guard 10・golden_scenarios 20・journal_replay 1・
+layer_boundary_guard 8 全通過、Windows cross-compile 警告ゼロ確認済み
+（実機再検証は未実施）。
+
+**関連ファイル（追補4）:** `crates/awase-windows/src/tsf/probe.rs`
+（`CompositionState::reset_consecutive_count`）、
+`crates/awase-windows/src/output/probe_io.rs`（`ProbeIo::reset_consecutive_count`、
+dispatcher）、`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`、
+`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`、
+`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`。
+
 ---
 
 ## デバッグ方法
