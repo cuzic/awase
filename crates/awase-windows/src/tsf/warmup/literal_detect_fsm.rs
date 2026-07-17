@@ -22,15 +22,14 @@
 //! - 10ms 間隔の TIMER_TSF_PROBE ハンドラから駆動する。
 //! - composition 確認 → `[ProbeAction::Done]`
 //! - raw literal 疑い → `[ProbeAction::RawTsfLiteralRecovery { .. }, ProbeAction::Done]`
-//!   （TSF mode + consecutive==0 では `SendRecoveryBs + StartSacrificialWarmup + Done`）
+//!   （捨て駒キーには倒れない、2026-07-16 撤去。dispatcher が `consecutive_count()==0`
+//!   のときだけ romaji 再送をスケジュールする）
 //! - 判定待ち → `None`（`LiteralDetectFsm::tick` では `vec![]`、タイマー継続）
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
-use crate::tsf::warmup::probe_fsm::{
-    LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
-};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeObservations};
 
 /// 部分リテラル検出時に、composition 破棄（ESC）の後に送るバックスペース数。
 ///
@@ -91,8 +90,16 @@ pub(crate) fn is_partial_literal(
 
 /// literal 回収用アクション列を生成する（cold/warm 共通）。
 ///
-/// TSF mode かつ consecutive==0 → sacr warmup パス（`SendRecoveryBs + StartSacrificialWarmup + Done`）。
-/// それ以外 → 従来の `RawTsfLiteralRecovery + Done`。
+/// 常に `RawTsfLiteralRecovery + Done`（backspace のみ、捨て駒キーには頼らない）。
+/// `RawTsfLiteralRecovery` の dispatcher が `consecutive_count()==0` のときだけ
+/// romaji の再送を `RAW_TSF_LITERAL` 経由でスケジュールする（`output/mod.rs::
+/// record_raw_tsf_literal` → 次イベントで `send_romaji_as_tsf` を通常の cold パス
+/// として再実行）。cold パスは per-VK confirm がデフォルトのため、この再送は
+/// 自然に per-VK として実行される — 1文字失敗した後の再送も per-VK のままにする、
+/// という設計（ユーザー方針、2026-07-16。以前あった「TSF mode かつ consecutive==0
+/// → SendRecoveryBs + StartSacrificialWarmup」分岐は撤去した。捨て駒キー
+/// （VK_A+BS/VK_IME_OFF→ON）は cold-start の予防用途としても失敗リカバリ用途
+/// としても、もう本経路からは発行されない）。
 ///
 /// `escape_composition`: `true` の場合、dispatcher はバックスペースの前に `VK_ESCAPE` を送って
 /// composition を確実に破棄する（partial literal 専用、[`PARTIAL_LITERAL_BS`] のドキュメント参照）。
@@ -100,45 +107,17 @@ pub(crate) fn emit_recovery_actions(
     cold_seq: u32,
     romaji: String,
     backs: usize,
-    observations: ProbeObservations,
-    consecutive: u32,
-    env: &TsfEnvSnapshot,
     escape_composition: bool,
 ) -> Vec<ProbeAction> {
-    if env.is_tsf_mode && consecutive == 0 {
-        vec![
-            ProbeAction::SendRecoveryBs {
-                cold_seq,
-                backs,
-                escape_composition,
-            },
-            ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
-                cold_seq,
-                romaji,
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: true,
-                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: true,
-            }),
-            ProbeAction::Done,
-        ]
-    } else {
-        vec![
-            ProbeAction::RawTsfLiteralRecovery {
-                cold_seq,
-                backs,
-                romaji,
-                escape_composition,
-            },
-            ProbeAction::Done,
-        ]
-    }
+    vec![
+        ProbeAction::RawTsfLiteralRecovery {
+            cold_seq,
+            backs,
+            romaji,
+            escape_composition,
+        },
+        ProbeAction::Done,
+    ]
 }
 
 /// warm パス（`LiteralDetectFsm`）と cold パス（`GjiWarmupCoro` Phase 6）が共有する
@@ -151,7 +130,7 @@ pub(crate) struct LiteralDetectCore {
     cold_seq: u32,
     /// 送信したローマ字（回収アクションのペイロード用）
     romaji: String,
-    /// probe 中に観測した事実。部分リテラル判定・sacr warmup config に使用する。
+    /// probe 中に観測した事実。部分リテラル判定に使用する。
     observations: ProbeObservations,
     /// composition 確認 / raw literal 検出器
     detector: LiteralDetector,
@@ -159,10 +138,10 @@ pub(crate) struct LiteralDetectCore {
     deadline_ms: u64,
     /// raw literal 検出時に送るバックスペース数
     ze_bs_count: usize,
-    /// 構築時点の連続 raw-tsf-literal 回数。
+    /// 構築時点の連続 raw-tsf-literal 回数（ログ用）。
     ///
-    /// 0 かつ TSF mode の場合は `StartSacrificialWarmup` 経由で sacr warmup を起動する。
-    /// 1 以上の場合は give-up（cleanup のみ）。
+    /// dispatcher（`probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ）が
+    /// `consecutive_count()==0` かどうかで再送 vs give-up を判定する。
     consecutive: u32,
 }
 
@@ -232,7 +211,7 @@ impl LiteralDetectCore {
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
-                    return Some(self.recovery(env, PARTIAL_LITERAL_BS, true));
+                    return Some(self.recovery(PARTIAL_LITERAL_BS, true));
                 }
 
                 log::debug!(
@@ -255,24 +234,16 @@ impl LiteralDetectCore {
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                Some(self.recovery(env, self.ze_bs_count, false))
+                Some(self.recovery(self.ze_bs_count, false))
             }
         }
     }
 
-    fn recovery(
-        &mut self,
-        env: &TsfEnvSnapshot,
-        backs: usize,
-        escape_composition: bool,
-    ) -> Vec<ProbeAction> {
+    fn recovery(&mut self, backs: usize, escape_composition: bool) -> Vec<ProbeAction> {
         emit_recovery_actions(
             self.cold_seq,
             std::mem::take(&mut self.romaji),
             backs,
-            self.observations,
-            self.consecutive,
-            env,
             escape_composition,
         )
     }
@@ -440,25 +411,19 @@ mod tests {
 
     // partial literal 検出時、emit される recovery アクションが escape_composition=true を
     // 持つことを確認する（2026-07-10 追加: ESC-based composition 回収）。
+    // 2026-07-16: 捨て駒キー撤去に伴い emit_recovery_actions は常に RawTsfLiteralRecovery を
+    // 返すようになった（consecutive による分岐は dispatcher 側 `probe_io.rs` に一本化）。
     #[test]
     fn emit_recovery_actions_partial_literal_sets_escape_composition_true() {
-        let actions = emit_recovery_actions(
-            0,
-            "ltu".to_string(),
-            PARTIAL_LITERAL_BS,
-            obs(false, false),
-            0,
-            &tsf_env(),
-            true,
-        );
+        let actions = emit_recovery_actions(0, "ltu".to_string(), PARTIAL_LITERAL_BS, true);
         match &actions[0] {
-            ProbeAction::SendRecoveryBs {
+            ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
             } => assert!(
                 *escape_composition,
                 "partial literal 回収は escape_composition=true であるべき"
             ),
-            other => panic!("expected SendRecoveryBs, got {other:?}"),
+            other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
         }
     }
 
@@ -466,44 +431,13 @@ mod tests {
     // （composition が存在しないため ESC は不要、既存の chars.len() ベース BS のみ）。
     #[test]
     fn emit_recovery_actions_suspected_literal_keeps_escape_composition_false() {
-        let actions = emit_recovery_actions(
-            0,
-            "ko".to_string(),
-            2,
-            obs(false, false),
-            0,
-            &tsf_env(),
-            false,
-        );
-        match &actions[0] {
-            ProbeAction::SendRecoveryBs {
-                escape_composition, ..
-            } => assert!(
-                !*escape_composition,
-                "SuspectedLiteral 回収は escape_composition=false であるべき"
-            ),
-            other => panic!("expected SendRecoveryBs, got {other:?}"),
-        }
-    }
-
-    // consecutive > 0 (give-up パス) でも escape_composition がそのまま引き継がれることを確認する。
-    #[test]
-    fn emit_recovery_actions_give_up_path_still_carries_escape_composition() {
-        let actions = emit_recovery_actions(
-            0,
-            "ltu".to_string(),
-            PARTIAL_LITERAL_BS,
-            obs(false, false),
-            1, // consecutive > 0 → give-up (RawTsfLiteralRecovery) パス
-            &tsf_env(),
-            true,
-        );
+        let actions = emit_recovery_actions(0, "ko".to_string(), 2, false);
         match &actions[0] {
             ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
             } => assert!(
-                *escape_composition,
-                "give-up パスでも escape_composition を引き継ぐべき"
+                !*escape_composition,
+                "SuspectedLiteral 回収は escape_composition=false であるべき"
             ),
             other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
         }

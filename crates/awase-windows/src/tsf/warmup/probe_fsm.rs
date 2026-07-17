@@ -256,18 +256,6 @@ pub(crate) enum ProbeAction {
     ///
     /// [`crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro`] が emit する。
     SendChromeGjiReinit { cold_seq: u32 },
-    /// partial literal / SuspectedLiteral 回収前の terminal cleanup 用 BS 送信。
-    ///
-    /// [`LiteralDetectFsm`] が TSF mode + consecutive==0 のときに `StartSacrificialWarmup` の直前に
-    /// emit する。dispatcher は `escape_composition` に応じて `ProbeIo::send_literal_recovery_bs`
-    /// または `ProbeIo::send_literal_recovery_esc_bs` を呼び出す。
-    SendRecoveryBs {
-        cold_seq: u32,
-        backs: usize,
-        /// `true` = partial literal 回収。ESC で composition を確実に破棄してから
-        /// 残る literal プレフィックス分のみ BS する。
-        escape_composition: bool,
-    },
     /// Unicode モードで GJI write が観測されなかった。
     ///
     /// [`crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm`] が emit する。
@@ -460,17 +448,13 @@ async fn tsf_probe_coro_body(
                         vk.0,
                     );
                     crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-literal");
-                    // env.is_tsf_mode=false（Chrome）なので emit_recovery_actions は常に
-                    // RawTsfLiteralRecovery（backspace のみ）に倒れる。consecutive は
-                    // 分岐に使われないため 0 で問題ない
-                    // （`literal_detect_fsm::emit_recovery_actions` 参照）。
+                    // emit_recovery_actions は常に RawTsfLiteralRecovery（backspace のみ、
+                    // 捨て駒キーには倒れない）を返す。consecutive==0 なら dispatcher が
+                    // romaji の再送を自然に次の cold パス（per-VK confirm）へ委ねる。
                     let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                         cold_seq,
                         romaji.clone(),
                         backs,
-                        observations,
-                        0,
-                        &env,
                         escape_composition,
                     );
                     yield_step(ch.clone(), actions).await;

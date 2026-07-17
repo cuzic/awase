@@ -12,13 +12,23 @@
 //!
 //! transmit
 //!   ├─[needs_literal=false]──────────────────────────────► Done（single yield）
-//!   ├─[long_cold + is_tsf_mode]──► [StartSacrificialWarmup] → SacrificialWarmupFsm
+//!   ├─[needs_literal かつセッション未確認]──► per-VK confirm ループ（Phase 5b、BUG-24 追補）
+//!   │     romaji の VK を1つずつ送信し CompositionConfirmed/SuspectedLiteral を都度確認
+//!   │       ├─[全 VK 確認]─────────────► セッション確認 (literal_session_confirmed) → Done
+//!   │       └─[いずれか SuspectedLiteral]─► [RawTsfLiteralRecovery + Done]
 //!   └─[その他 needs_literal]──► [Transmit { needs_literal }] → inline LiteralDetect
 //!         LiteralDetect ループ（warm パスと共有の `LiteralDetectCore` に委譲）
 //!           ├─[composition 確認]─► Done
-//!           ├─[partial literal]───► [SendRecoveryBs + StartSacrificialWarmup + Done]
-//!           └─[suspected literal]─► [RawTsfLiteralRecovery + Done]
+//!           └─[partial/suspected literal]─► [RawTsfLiteralRecovery + Done]
 //! ```
+//!
+//! 捨て駒キー（`StartSacrificialWarmup`、VK_A+BS/VK_IME_OFF→ON）は 2026-07-16 に
+//! この2経路（per-VK・inline LiteralDetect）双方から撤去した。`RawTsfLiteralRecovery`
+//! の dispatcher が `consecutive_count()==0` のときだけ romaji 再送を自然に次の
+//! cold パス（per-VK confirm）へ委ねる（`literal_detect_fsm::emit_recovery_actions`
+//! 参照）。Chrome 側の long-cold 予防的 `StartSacrificialWarmup`（`probe_fsm.rs`）
+//! はまだ `DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP` で flag-gate されているのみで、
+//! コード自体は残っている。
 //!
 //! Phase 6 の LiteralDetect 判定は `literal_detect_fsm::LiteralDetectCore` に集約されており、
 //! warm パスの `LiteralDetectFsm` と同一ロジックを共有する（重複排除）。
@@ -206,10 +216,13 @@ async fn gji_coro_body(
     // LiteralDetect）に完全にフォールスルーする（`docs/known-bugs.md` BUG-24 参照。
     // 再度有効化する場合はこのコミットの revert が必要）。
     //
-    // なお `ProbeAction::StartSacrificialWarmup` 自体は Chrome 側の cold-start
-    // パス（`probe_fsm.rs` の `TsfProbeCoro`）と、TSF mode consecutive==0 の
-    // partial-literal 回収パス（`literal_detect_fsm.rs`）から今も発行されており、
-    // 両者は撤去していない。
+    // なお `ProbeAction::StartSacrificialWarmup` 自体は撤去していないが、2026-07-16
+    // 時点で本番コードから到達する経路は Chrome 側の cold-start パス
+    // （`probe_fsm.rs` の `TsfProbeCoro`、`DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP` で
+    // flag-gate 済み・デフォルト到達不能）のみ。TSF mode の partial/suspected-literal
+    // 回収パス（`literal_detect_fsm.rs::emit_recovery_actions`、per-VK confirm 双方）は
+    // 常に `RawTsfLiteralRecovery`（backspace のみ）に一本化し、捨て駒キーには
+    // 一切倒れないようにした（ユーザー方針、2026-07-16）。
     if plan.needs_literal && ctx.is_long_cold && env.is_tsf_mode {
         log::debug!(
             "[gji-coro-diag] cold={} long_cold + TSF: proactive StartSacrificialWarmup は \
@@ -273,7 +286,10 @@ async fn gji_coro_body(
 
             let detection = loop {
                 let poll_input = yield_step(ch.clone(), vec![]).await;
-                env = poll_input.env;
+                // per-VK 分岐は常にこの for ループ内で return するため（全確認 or
+                // SuspectedLiteral 回収のいずれか）、以降の Phase で使う外側の `env` を
+                // 更新する必要はない。
+                let _ = poll_input;
                 if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
                     break d;
                 }
@@ -304,9 +320,6 @@ async fn gji_coro_body(
                         ctx.cold_seq,
                         romaji.clone(),
                         backs,
-                        observations,
-                        ctx.consecutive,
-                        &env,
                         escape_composition,
                     );
                     yield_step(ch.clone(), actions).await;
