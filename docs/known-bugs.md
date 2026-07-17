@@ -2616,6 +2616,64 @@ dispatcher）、`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`、
 `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`、
 `crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`。
 
+**追補5（根本原因の疑いを再検証・修正、2026-07-17）: Chrome per-VK confirm の
+検出方式が候補ウィンドウ SHOW を一切見ておらず、子音単体 VK を誤って
+`SuspectedLiteral` と判定していた。**
+
+追補4の修正後もなお、ユーザーから「表層的すぎないか」という指摘があり
+再調査した。実機ログで `apply_vk_sent SET` → `tick consuming
+pending_vk_sent=true` が正しく出ている（＝追補3の修正は効いている）のに、
+約300ms（`RAW_TSF_LITERAL_DETECT_MS`）待った末に `Chrome per-VK[0/1]
+suspected literal` と判定されるケースが "し"（romaji "si" の "s"）・
+"た"（romaji "ta" の "t"）等、**romaji 2文字の1文字目（子音）で一貫して**
+発生していた。ユーザーからは「候補ウィンドウは目で見えているのに検知できて
+いないのでは」という指摘があった。
+
+`crates/awase-windows/src/tsf/probe.rs::LiteralDetector::check_now` を確認した
+ところ、Chrome ターゲットの per-VK confirm は毎回
+`new_gji_resumed_with_pre_send_baseline(gji_write_bytes())` で detector を
+生成しており、これは常に `write_bytes_baseline = Some(...)` になる。
+`check_now` はこの場合 **`gji_candidate_show`（候補ウィンドウ SHOW イベント）を
+一切見ず**、GJIプロセスの WriteTransferCount が
+`COMPOSITION_BYTES_THRESHOLD`（350バイト）を超えて増加したかだけで判定していた。
+この350バイトという閾値は「VK_A→'あ' のように1VKで完結する1文字」の実測
+（5サンプル）に基づく値で、per-VK confirm が子音単体（まだ romaji バッファが
+未確定の状態）を送った直後に問い合わせるケースは実測対象外だった。実機ログでは
+候補ウィンドウの SHOW イベント自体は正常に観測できていた
+（`[gji-obs] candidate SHOW #19` 等）ため、**合成は実際に起きているのに検出方式が
+それを拾えていなかった**と判断した。
+
+Codex CLI に2回目の相談（読み取り専用でコードを再調査させ、上記の分析と
+一致することを確認）し、推奨された最小修正（write-bytes 閾値と SHOW
+イベントの OR 判定）を採用した。
+
+**修正:** `LiteralDetector::check_now` の `write_bytes_baseline: Some(_)` 分岐に
+`gji_candidate_show.has_changed(self.gji_show_baseline)` を OR 条件として追加した。
+`gji_show_baseline`/`was_candidate_visible` は `new_gji_resumed_with_pre_send_
+baseline` が内部で呼ぶ `Self::new()` で既に取得済みのため、追加のフィールドや
+コンストラクタ分岐は不要。この変更は Chrome per-VK confirm だけでなく
+`new_gji_resumed`/`new_gji_resumed_with_pre_send_baseline` を使う全経路
+（`StartSacrificialWarmup` の Chrome パス含む）に適用される（OR 条件のため
+既存の write-bytes 検出を弱めることはなく、より早く／確実に確認できるように
+なるだけ）。
+
+**既知の限界:** 直前の VK 送信で候補ウィンドウが既に表示中だった場合、
+`gji_candidate_show` は「新規表示」でのみ増分するため、続く VK では SHOW が
+増えないケースがあり得る。その場合は従来通り write-bytes 閾値に委ねる
+（OR 条件のため、どちらか一方が拾えれば確認できる）。今回の実機症状
+（子音単体の1VK目、SHOW が新規に発火するケース）はこれでカバーされる。
+
+**テスト:** `tsf/probe.rs::tests::
+check_now_confirms_via_candidate_show_when_write_bytes_below_threshold`
+（write-bytes 閾値未達でも SHOW があれば confirmed になることを確認）、
+`check_now_still_detects_suspected_literal_when_neither_signal_fires`
+（両シグナルとも無ければ従来通り SuspectedLiteral になることを確認、
+本物の literal 化検出の回帰防止）を追加。Windows cross-compile 警告ゼロ
+確認済み（cross-compile のため実行はできず、実機再検証は未実施）。
+
+**関連ファイル（追補5）:** `crates/awase-windows/src/tsf/probe.rs`
+（`LiteralDetector::check_now`）。
+
 ---
 
 ## デバッグ方法

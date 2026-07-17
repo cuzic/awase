@@ -652,12 +652,38 @@ impl LiteralDetector {
                 }
             },
             |write_baseline| {
-                // Chrome 用: WriteTransferCount 増加で文字コンポジションを確認する。
-                // gji_last_io_ms は F2（モード切り替え）でも変化するため信頼しない。
-                // VK_A → 'あ' 変換は w_KB=+0.3KB 程度を書き込む。
-                // F2 は w_KB=+0.0（WriteTransferCount 増加なし）なので閾値以上には達しない。
-                crate::tsf::observer::gji_write_bytes()
-                    > write_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD)
+                // Chrome 用: WriteTransferCount 増加 **または** 候補ウィンドウ SHOW を
+                // composition 確認シグナルとする（BUG-27 追補5）。
+                //
+                // COMPOSITION_BYTES_THRESHOLD (350B) は「VK_A→'あ' のように1VKで
+                // 完結する1文字」の実測（5サンプル）に基づく値であり、Chrome
+                // per-VK confirm（`TransmitSingleVk`、romaji を1VKずつ送る）が
+                // 子音単体（例: "si"の"s"、"ta"の"t"）を送った直後に問い合わせる
+                // ケースは検証対象外だった。子音単体は romaji バッファがまだ未確定の
+                // ため、完結した1文字と同じ量の WriteTransferCount 増加が起きるとは
+                // 限らない。実機（Microsoft Teams/TeamsWebView）で「候補ウィンドウは
+                // 正しく表示されている（[gji-obs] candidate SHOW ログで確認済み）のに
+                // 350B閾値に届かず SuspectedLiteral と誤判定され、正しく入力できて
+                // いた文字が backspace で消える」regression を確認した
+                // （docs/known-bugs.md BUG-27 追補5）。
+                //
+                // gji_show_baseline/was_candidate_visible は Self::new() で既に
+                // 取得済み（`new_gji_resumed_with_pre_send_baseline` は内部で
+                // Self::new() を呼ぶ）ため、追加のフィールドやコンストラクタ分岐は
+                // 不要。SHOW イベントが増えていれば、WriteTransferCount 閾値に
+                // 未達でも confirmed とする。
+                //
+                // 既知の限界: 直前の VK 送信で候補ウィンドウが既に表示中だった場合
+                // （2VK目以降で was_candidate_visible=true）、SHOW カウンタは
+                // 「新規表示」でのみ増分するため、続く VK では SHOW が増えない
+                // ケースがあり得る。その場合は従来通り write-bytes 閾値に委ねる
+                // （OR 条件なので write-bytes 側が拾えば確認できる）。
+                let write_confirmed = crate::tsf::observer::gji_write_bytes()
+                    > write_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD);
+                let show_confirmed = TSF_OBS
+                    .gji_candidate_show
+                    .has_changed(self.gji_show_baseline);
+                write_confirmed || show_confirmed
             },
         );
         if confirmed {
@@ -802,6 +828,63 @@ mod tests {
             (40..150).contains(&second_idle),
             "確定キー連打のたびに last_send_ms がリセットされ idle は ~60ms のはず\
              （リセットされないと累積して ~120ms になり long_idle 誤判定を招く）: {second_idle}ms"
+        );
+    }
+
+    // ── BUG-27 追補5: Chrome per-VK confirm の write-bytes 閾値が候補ウィンドウ
+    // SHOW を見ていなかった問題の回帰テスト ────────────────────────────────
+
+    /// write-bytes が閾値未満でも、候補ウィンドウ SHOW が観測されていれば
+    /// `CompositionConfirmed` を返すことを確認する。
+    ///
+    /// `COMPOSITION_BYTES_THRESHOLD`（350B）は「VK_A→'あ' のように1VKで完結する
+    /// 1文字」の実測に基づく値で、Chrome per-VK confirm が子音単体
+    /// （例: "si"の"s"）を送った直後に問い合わせるケースは対象外だった。
+    /// 実機（Microsoft Teams/TeamsWebView）で「候補ウィンドウは正しく表示されて
+    /// いるのに350B閾値に届かず SuspectedLiteral と誤判定される」regression を
+    /// 確認した（docs/known-bugs.md BUG-27 追補5）。
+    #[test]
+    fn check_now_confirms_via_candidate_show_when_write_bytes_below_threshold() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(1_000, SeqCst);
+
+        let detector = LiteralDetector::new_gji_resumed_with_pre_send_baseline(1_000);
+
+        // write_bytes は閾値未満のまま（子音単体で完結した1文字分の書き込みが
+        // 起きないケースを模擬）。
+        TSF_OBS.gji_write_bytes.store(1_100, SeqCst); // +100B < 350B 閾値
+
+        // しかし候補ウィンドウの SHOW イベントは観測されている。
+        TSF_OBS.gji_candidate_show.notify();
+
+        let now_ms = crate::hook::current_tick_ms();
+        let result = detector.check_now(now_ms + 10_000); // まだ deadline 未到達
+        assert!(
+            matches!(result, Some(DetectionResult::CompositionConfirmed)),
+            "write-bytes 閾値未達でも candidate SHOW があれば CompositionConfirmed の \
+             はず: {result:?}"
+        );
+    }
+
+    /// write-bytes 閾値超過・SHOW どちらも観測されなければ、従来通り deadline 経過で
+    /// `SuspectedLiteral` を返すことを確認する（本物の literal 化検出は壊さない）。
+    #[test]
+    fn check_now_still_detects_suspected_literal_when_neither_signal_fires() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(2_000, SeqCst);
+        let baseline_show = TSF_OBS.gji_candidate_show.baseline();
+
+        let detector = LiteralDetector::new_gji_resumed_with_pre_send_baseline(2_000);
+
+        // write_bytes・candidate_show とも変化なし（本物の literal 化を模擬）。
+        assert!(!TSF_OBS.gji_candidate_show.has_changed(baseline_show));
+
+        let now_ms = crate::hook::current_tick_ms();
+        let result = detector.check_now(now_ms); // deadline は既に到達済み
+        assert!(
+            matches!(result, Some(DetectionResult::SuspectedLiteral)),
+            "write-bytes・SHOW とも変化なしで deadline 到達なら SuspectedLiteral の \
+             はず: {result:?}"
         );
     }
 }
