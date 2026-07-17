@@ -418,29 +418,22 @@ async fn tsf_probe_coro_body(
             )
             .await;
             let Some(sent) = vk_input.vk_sent else {
-                // BUG-27: dispatcher が `apply_vk_sent` を呼ぶ前提が崩れた場合の防御分岐
-                // （2026-07-16 まで到達例なし、2026-07-17 実機で "はだいじょうぶ"→"いじょうぶ"
-                // として初観測）。従来はここで無リカバリの `return` をしており、この VK に
-                // 対応する romaji が丸ごと消え、かつ probe 中に別文字が来ていれば
-                // coordinator の deferred VK キューの flush ポイント（`is_last`）にも
-                // 二度と到達できず、後続文字も道連れで失われていた。`SuspectedLiteral` と
-                // 同じ backspace+romaji 再送リカバリに倒すことで、この VK 自身は
-                // literal 扱いとして回収し、次の cold パス（per-VK confirm）で
-                // 改めて送り直す機会を与える。
-                let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                // BUG-27 追補（2026-07-17、revert）: 一度は SuspectedLiteral と同じ
+                // backspace+romaji 再送リカバリに倒したが、実機で msedge の
+                // Chrome_WidgetWin_1 において `vk_sent 未設定` が**打鍵のたびに毎回**
+                // 発火することが判明した（candidate SHOW/HIDE は正常に回っており VK 自体は
+                // 正しく打てている形跡がある）。consecutive raw-tsf-literal count が
+                // 6→7→8→9→10→11→12 と単調増加して二度と 0 に戻らず、常に
+                // 「give up, backspace ×1 のみ（再送なし）」分岐に落ちるため、
+                // 正しく入力できていた文字まで毎回 backspace で消え、実質何も入力できなく
+                // なった（"書いたそばから Backspace されて、まったく何も入力できません"）。
+                // つまりこの防御分岐は SuspectedLiteral ほど信頼できるシグナルではなく、
+                // 積極的なリカバリ（backspace）はむしろ有害。無リカバリの `return` に戻す。
+                // トリガー自体（なぜ pending_vk_sent が次 tick で空になるか）は
+                // docs/known-bugs.md BUG-27 参照、診断ログは残している。
                 log::warn!(
-                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] vk_sent 未設定 \
-                     → suspected literal 相当としてリカバリ (backs={backs} escape={escape_composition})"
+                    "[tsf-probe] cold={cold_seq} Chrome per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断"
                 );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "chrome-per-vk-unset");
-                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
-                    cold_seq,
-                    romaji.clone(),
-                    backs,
-                    escape_composition,
-                );
-                yield_step(ch.clone(), actions).await;
                 return;
             };
 
@@ -963,15 +956,20 @@ mod tests {
         );
     }
 
-    // ── BUG-27: per-VK confirm の vk_sent 未設定 → 無リカバリ return の回帰テスト ──
+    // ── BUG-27 追補2: per-VK confirm の vk_sent 未設定は無リカバリ return に戻す ──
 
     /// `vk_sent 未設定`（dispatcher が `apply_vk_sent` を呼ばなかった状態）を、あえて
-    /// `apply_vk_sent` を呼ばずに次の `tick()` を実行することで再現する。本番の
-    /// `dispatch_probe_actions` は `TransmitSingleVk` 処理時に必ず `apply_vk_sent` を
-    /// 呼ぶが、2026-07-17 実機でこの前提が崩れ、"はだいじょうぶ"→"いじょうぶ" のように
-    /// 最初の1〜2文字が無リカバリで消えるのを観測した（docs/known-bugs.md BUG-27）。
+    /// `apply_vk_sent` を呼ばずに次の `tick()` を実行することで再現する。
+    ///
+    /// 一度は `SuspectedLiteral` と同じ backspace+romaji 再送リカバリに倒したが
+    /// （BUG-27 初版）、msedge 実機で `vk_sent 未設定` が毎打鍵で発火し、
+    /// `consecutive` が単調増加して二度と 0 に戻らないため常に「give up,
+    /// backspace ×1 のみ（再送なし）」に落ち、正しく入力できていた文字まで
+    /// 毎回消える regression になった（docs/known-bugs.md BUG-27 追補2）。
+    /// 無リカバリの `return`（`ProbeAction::Done` のみを返す）に戻したことを
+    /// 固定する回帰テスト。
     #[test]
-    fn chrome_per_vk_vk_sent_unset_recovers_instead_of_silently_dropping() {
+    fn chrome_per_vk_vk_sent_unset_does_not_backspace() {
         crate::tsf::observer::reset_literal_session_confirmed();
         let mut machine = ready_chrome_probe(false);
         let first_actions = machine.tick(&TsfEnvSnapshot {
@@ -987,25 +985,21 @@ mod tests {
         );
 
         // apply_vk_sent を呼ばずに次の tick を実行 → pending_vk_sent が None のまま渡る。
-        let recovery_actions = machine.tick(&TsfEnvSnapshot {
+        let actions_after_unset = machine.tick(&TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });
 
         assert!(
-            matches!(
-                recovery_actions.as_slice(),
-                [
-                    ProbeAction::RawTsfLiteralRecovery {
-                        backs: 1,
-                        escape_composition: false,
-                        ..
-                    },
-                    ProbeAction::Done,
-                ]
-            ),
-            "vk_sent 未設定でも無言で消えず、SuspectedLiteral と同じ backspace+再送 \
-             リカバリを emit するはず: {recovery_actions:?}"
+            !actions_after_unset
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "vk_sent 未設定で backspace を発行してはいけない（msedge で正しく入力できていた \
+             文字まで消える regression になった）: {actions_after_unset:?}"
+        );
+        assert!(
+            matches!(actions_after_unset.as_slice(), [ProbeAction::Done]),
+            "無リカバリで Done のみを返すはず: {actions_after_unset:?}"
         );
     }
 }

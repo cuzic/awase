@@ -277,25 +277,15 @@ async fn gji_coro_body(
             )
             .await;
             let Some(sent) = vk_input.vk_sent else {
-                // BUG-27 (probe_fsm.rs::tsf_probe_coro_body と同型の防御分岐、Chrome 側は
-                // 2026-07-17 実機で初観測): 従来は無リカバリの `return` で、この VK に
-                // 対応する romaji とキュー中の後続文字を丸ごと失っていた。`SuspectedLiteral`
-                // と同じ backspace+romaji 再送リカバリに倒す。
-                let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                // BUG-27 追補（2026-07-17、revert）: probe_fsm.rs::tsf_probe_coro_body と
+                // 同型の防御分岐。Chrome 側で SuspectedLiteral 相当のリカバリに倒したところ、
+                // msedge で `vk_sent 未設定` が毎打鍵で発火し、backspace のみ（再送なし）で
+                // 正しく入力できていた文字まで消える regression になった
+                // （docs/known-bugs.md BUG-27 追補2参照）。無リカバリの `return` に戻す。
                 log::warn!(
-                    "[gji-coro] cold={} per-VK[{idx}/{last_idx}] vk_sent 未設定 \
-                     → suspected literal 相当としてリカバリ (backs={backs} escape={escape_composition})",
+                    "[gji-coro] cold={} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断",
                     ctx.cold_seq
                 );
-                crate::ime_diagnostic::log_composition_probe(ctx.cold_seq, "setopen-per-vk-unset");
-                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
-                    ctx.cold_seq,
-                    romaji.clone(),
-                    backs,
-                    escape_composition,
-                );
-                yield_step(ch.clone(), actions).await;
                 return;
             };
 

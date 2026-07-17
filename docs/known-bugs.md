@@ -2441,6 +2441,55 @@ emit されることを確認）。Windows target ビルド・テストコンパ
 `output/tsf_warmup_coord.rs::{take_pending_tsf,restore_pending_tsf,install_pending_tsf,
 clear_pending_tsf}` が対象。挙動は変えていない（ログ追加のみ、テスト全通過）。
 
+**追補2（実機確認・撤回、2026-07-17）: backspace+再送リカバリが msedge で入力を
+全面破壊した。**
+
+**アプリ:** msedge（`Chrome_WidgetWin_1`、hwnd=0x25097a、`profile=Imm32Unavailable`）。
+
+**IME:** GJI（Google 日本語入力）。`DIAG_CHROME_USE_PER_VK_CONFIRM` 動作中。conv 等は
+不明（`himc_null=true` のため `[comp-probe]` の open/conv 系フィールドは全て `-`）。
+
+**再現手順 / 症状:** 「書いたそばから Backspace されて、まったく何も入力できません」。
+実機ログで `vk_sent 未設定` が **打鍵のたびに毎回**（cold=99,100,101,102,103,104,105...
+と1文字ごとに新しい cold_seq で）発火し、`[raw-tsf-literal] consecutive
+raw-tsf-literal (count=N)` が 6→7→8→9→10→11→12 と単調増加して一度も 0 に戻らな
+かった。`count>0` は「give up, backspace ×1 のみ（再送なし）」分岐（`probe_io.rs`
+の `RawTsfLiteralRecovery` ハンドラ）に固定で落ちるため、実質「打鍵→即
+backspace ×1→次の打鍵も同様」の繰り返しになり、何も入力できなくなった。
+candidate SHOW/HIDE の WinEvent 自体は正常に回っており（`で`→`き`→`て`→`い`→
+`る`→`か` の各文字で `StartComposition`/`EndComposition` が観測されている）、
+VK 自体は正しく GJI に届いて composition が処理されていた可能性が高い。
+
+**なぜ元に戻すと直るのか:** BUG-27 本編の修正（`vk_sent 未設定` を
+`SuspectedLiteral` と同じ backspace+romaji 再送リカバリとして扱う）は、
+「はだいじょうぶ」→「いじょうぶ」の1回の実機観測（`consecutive=0` で resend
+された）を根拠にしていたが、この追補2の実機では `vk_sent 未設定` が
+**信頼できない・むしろ頻発するシグナル**であることが分かった。頻発すると
+`consecutive` が 0 に戻る間もなく積み上がり、常に「resend なしの backspace
+のみ」に落ちるため、正しく打てていた文字まで機械的に削除し続ける。
+`SuspectedLiteral`（実際に literal 化を検出した場合）とは異なり、この防御
+分岐は「本当に literal 化したかどうか」を何も確認していないため、
+積極的なリカバリ（backspace）はむしろ有害と判断し、無リカバリの `return`
+に戻した。
+
+**根治の方針（未着手）:** `vk_sent` が `None` になるトリガー自体（追補1参照）を
+特定しない限り、この防御分岐に対する「正しい」リカバリは設計できない。今回
+「毎打鍵で発火する」という頻度の情報が新たに得られたことで、まれなレース
+ではなく **システマティックな要因**（例: idle-conv-check の
+`get_ime_conversion_mode_raw_timeout(10)` が `SendMessageTimeoutW` を同期的に
+呼んでおり、そのメッセージポンプ中に `TIMER_TSF_PROBE` が再入し、
+`pending_vk_sent` の set/consume 順序を乱している可能性）を疑う次の調査の
+足がかりになる。次に着手する場合は `RUST_LOG=trace` で追補1の診断ログ
+（`apply_vk_sent SET overwritten_unconsumed=...`／`tick consuming
+pending_vk_sent=...`）と `idle-conv-check` のタイミングを突き合わせること。
+
+**テスト:** `probe_fsm.rs::tests::chrome_per_vk_vk_sent_unset_does_not_backspace`
+（旧 `chrome_per_vk_vk_sent_unset_recovers_instead_of_silently_dropping` を置換）。
+`vk_sent` 未設定時に `RawTsfLiteralRecovery` を一切発行せず `ProbeAction::Done`
+のみを返すことを固定する。Windows target ビルド・テストコンパイルは警告ゼロ
+で確認済み（cross-compile のため実行はできず、この revert 自体の実機再検証は
+未実施）。
+
 ---
 
 ## デバッグ方法
