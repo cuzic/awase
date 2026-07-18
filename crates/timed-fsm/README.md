@@ -6,7 +6,8 @@
 
 A timed finite state machine framework where **timer commands are declarative transition outputs**.
 
-Zero dependencies. No async runtime. No platform coupling.
+Zero dependencies by default. No platform coupling. Async `tokio` integration is opt-in
+(see the `tokio` feature below), never on by default.
 
 ## The problem
 
@@ -112,6 +113,83 @@ let response = Response::<bool, ()>::emit_one(true);
 let consumed = response.dispatch(&mut MyPlatform, &mut MyPlatform);
 // If consumed is false, pass the event to the next handler in the chain.
 ```
+
+## Async actions, and stopping the driver on a dead resource
+
+`ActionExecutor::execute` is synchronous and gets the whole action batch at once — fine
+for actions that never need to `.await` (`SendInput()`, `uinput` writes, …), but not for
+actions that acquire a socket, probe a peer, or otherwise need to await something.
+`Response::dispatch_async` + `AsyncActionExecutor` cover that: actions run one at a time,
+each `.await`ed in turn. No dependency on any particular async runtime — just
+`core::future::Future`.
+
+Running an action can also surface something the state machine has no way to know: that
+the resource it depends on is already gone (a closed socket, a dropped connection, …).
+That's not a state transition — the FSM never touched the resource — but the driver loop
+still needs to react, usually by shutting down instead of waiting on events that can never
+arrive again. Report `ActionOutcome::Stop` from `execute_one` for exactly this:
+`dispatch_async` skips whatever actions are left in the current response and returns a
+`DispatchOutcome { consumed, stop: true }` for the driver's own loop to check.
+
+```rust
+use std::time::Duration;
+use timed_fsm::{ActionOutcome, AsyncActionExecutor, Response, TimerRuntime};
+
+struct MyPlatform;
+
+impl TimerRuntime for MyPlatform {
+    type TimerId = ();
+    fn set_timer(&mut self, _id: (), _duration: Duration) {}
+    fn kill_timer(&mut self, _id: ()) {}
+}
+
+impl AsyncActionExecutor for MyPlatform {
+    type Action = &'static str;
+    async fn execute_one(&mut self, action: &&'static str) -> ActionOutcome {
+        if *action == "socket-closed" {
+            return ActionOutcome::Stop;
+        }
+        // ... await the real I/O here ...
+        ActionOutcome::Continue
+    }
+}
+
+// In your event loop:
+let response = Response::emit_one("socket-closed");
+let outcome = response.dispatch_async(&mut MyPlatform, &mut MyPlatform).await;
+if outcome.stop {
+    // break out of the driver loop — no more events/timeouts will come.
+}
+```
+
+## `tokio` feature
+
+`TimerRuntime::set_timer` is synchronous — it says nothing about how the caller finds
+out a timer fired. On `tokio`, that's always the same shape: spawn a sleep task, keep the
+handle so a `Kill` can abort it, and report back over a channel the event loop can
+`select!` on. Enable the `tokio` feature (off by default) to get that written once, as
+`TokioTimerRuntime<T>`:
+
+```toml
+[dependencies]
+timed-fsm = { version = "0.4", features = ["tokio"] }
+```
+
+```rust,ignore
+use timed_fsm::tokio_support::TokioTimerRuntime;
+
+let mut timers = TokioTimerRuntime::new();
+loop {
+    let response = tokio::select! {
+        Some(event) = input_rx.recv() => machine.on_event(event),
+        Some(timer_id) = timers.recv() => machine.on_timeout(timer_id),
+    };
+    // apply response.timers via timers.set_timer/kill_timer, run response.actions, ...
+}
+```
+
+This is additive: the crate's core (`TimedStateMachine`, `Response`, `TimerRuntime`, ...)
+stays dependency-free either way.
 
 ## Multiple timers
 
@@ -236,11 +314,15 @@ gate.try_hold(42);
 | `Response::dispatch` | Execute a `Response` against a runtime |
 | `TimerRuntime` | Trait for platform timer operations |
 | `ActionExecutor` | Trait for platform action execution |
+| `Response::dispatch_async` | Async counterpart to `dispatch`, for actions that must `.await` |
+| `AsyncActionExecutor` | Trait for async, one-action-at-a-time execution |
+| `ActionOutcome` / `DispatchOutcome` | Lets an action signal "stop the driver loop" (resource gone) |
 | `ShiftReduceParser` | Extension: shift-reduce grammar with timer support |
 | `ShiftReduceParser::parse` | Main loop for a `ShiftReduceParser` |
 | `StepCoro<I, Y>` | Coroutine for sequential multi-phase workflows |
 | `Clock` / `MonotonicClock` / `ManualClock` | Clock abstraction for deadline-based FSMs |
 | `HoldingGate<M, T>` / `GateAction` | Item-buffering gate controlled by an FSM |
+| `tokio_support::TokioTimerRuntime<T>` | Async `TimerRuntime` for `tokio` (`tokio` feature, off by default) |
 
 ### Response builder
 
@@ -288,7 +370,8 @@ within a time window**:
 
 ## Design principles
 
-- **Zero dependencies** — only `std::time::Duration` from the standard library
+- **Zero dependencies by default** — only `std::time::Duration` from the standard library,
+  unless the opt-in `tokio` feature is enabled
 - **No side effects** — the state machine never calls platform APIs
 - **`consumed` flag** — supports event interception (keyboard hooks, MIDI filters, etc.)
 - **Multiple timer IDs** — use `()` for one timer, an enum for many

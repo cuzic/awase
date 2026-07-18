@@ -32,6 +32,9 @@
 //! | [`Response::dispatch`] | Connects a pure `Response` to runtime side effects |
 //! | [`TimerRuntime`] | Trait for platform timer integration (Windows/Linux/macOS/test) |
 //! | [`ActionExecutor`] | Trait for executing output actions in order |
+//! | [`Response::dispatch_async`] | Async counterpart to `dispatch`, for actions that must `.await` |
+//! | [`AsyncActionExecutor`] | Trait for executing one action at a time, asynchronously |
+//! | [`ActionOutcome`] / [`DispatchOutcome`] | Lets an action signal "the resource I depend on is gone — stop the driver loop" |
 //! | [`ShiftReduceParser`] | Extension for token-buffering grammars with timer support |
 //! | [`ShiftReduceParser::parse`] | Main loop for a [`ShiftReduceParser`] |
 //!
@@ -154,6 +157,67 @@
 //! assert!(consumed);
 //! ```
 //!
+//! ## Async actions, and stopping the driver on a dead resource
+//!
+//! [`ActionExecutor::execute`] is synchronous and receives the whole action
+//! batch at once — fine for actions that never `.await` (`SendInput()`,
+//! `uinput` writes, …), but not for actions that acquire a socket, probe a
+//! peer, or otherwise need to await something. [`Response::dispatch_async`]
+//! and [`AsyncActionExecutor`] cover that case: actions run one at a time,
+//! each `.await`ed in turn. This crate places no requirement on *which*
+//! async runtime drives them — only `core::future::Future` is used.
+//!
+//! Executing an action can also reveal something the state machine has no
+//! way to know: that the resource it depends on is already gone (a closed
+//! socket, a dropped connection, …). That's not a state transition — the
+//! FSM never touched the resource — but the driver loop still needs to
+//! react to it, typically by shutting down instead of waiting on events and
+//! timeouts that can never arrive again. [`AsyncActionExecutor::execute_one`]
+//! reports [`ActionOutcome::Stop`] for exactly this: `dispatch_async` skips
+//! any actions remaining in the current response and returns a
+//! [`DispatchOutcome`] with `stop: true` for the driver's own loop to check.
+//!
+//! ```
+//! use std::time::Duration;
+//! use timed_fsm::{ActionOutcome, AsyncActionExecutor, Response, TimerRuntime};
+//! # struct MyTimers;
+//! # impl TimerRuntime for MyTimers {
+//! #     type TimerId = ();
+//! #     fn set_timer(&mut self, _id: (), _dur: Duration) {}
+//! #     fn kill_timer(&mut self, _id: ()) {}
+//! # }
+//!
+//! struct MyExecutor;
+//! impl AsyncActionExecutor for MyExecutor {
+//!     type Action = &'static str;
+//!     async fn execute_one(&mut self, action: &&'static str) -> ActionOutcome {
+//!         if *action == "socket-closed" {
+//!             return ActionOutcome::Stop;
+//!         }
+//!         // ... await the real I/O here ...
+//!         ActionOutcome::Continue
+//!     }
+//! }
+//!
+//! # #[tokio::main(flavor = "current_thread")]
+//! # async fn main() {
+//! let response = Response::emit_one("socket-closed");
+//! let outcome = response.dispatch_async(&mut MyTimers, &mut MyExecutor).await;
+//! assert!(outcome.stop); // the driver loop should end, not wait for more events
+//! # }
+//! ```
+//!
+//! ## `tokio`
+//!
+//! On an async `tokio` event loop, [`TimerRuntime::set_timer`] can't block
+//! waiting for its own deadline — it has to spawn a task and report back
+//! later, which needs somewhere to report back *to*. The `tokio` feature
+//! (off by default) adds `tokio_support::TokioTimerRuntime`, a ready-made
+//! [`TimerRuntime`] with a `recv().await` you can put directly in a
+//! `tokio::select!` next to your event source, instead of hand-rolling the
+//! `HashMap<TimerId, JoinHandle>` + `mpsc` channel plumbing yourself. See
+//! that module's docs for a full driver-loop example.
+//!
 //! # Multiple timers
 //!
 //! When a state machine needs more than one concurrent timer, use an
@@ -221,9 +285,11 @@
 //! | Protocol framing | Byte received | Inter-frame gap detection |
 //! | IME / input method | Composition key | Commit-after-idle timeout |
 //!
-//! # No dependencies
+//! # No dependencies by default
 //!
-//! `timed-fsm` has no runtime dependencies beyond `std`.
+//! `timed-fsm` has no runtime dependencies beyond `std`, unless the opt-in
+//! `tokio` feature is enabled (see the `tokio_support` module and the
+//! "`tokio`" section above).
 
 pub mod clock;
 pub mod coro;
@@ -232,10 +298,12 @@ pub mod gate;
 mod machine;
 pub mod parser;
 mod response;
+#[cfg(feature = "tokio")]
+pub mod tokio_support;
 
 pub use clock::{Clock, ManualClock, MonotonicClock};
 pub use coro::{yield_step, Channel, CoroStep, StepCoro};
-pub use dispatch::{ActionExecutor, TimerRuntime};
+pub use dispatch::{ActionExecutor, ActionOutcome, AsyncActionExecutor, DispatchOutcome, TimerRuntime};
 pub use gate::{GateAction, HoldingGate};
 pub use machine::TimedStateMachine;
 pub use parser::{ParseAction, ShiftReduceParser};

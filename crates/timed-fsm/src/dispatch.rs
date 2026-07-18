@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::time::Duration;
 
 use crate::response::{Response, TimerCommand};
@@ -63,6 +64,18 @@ pub trait ActionExecutor {
     fn execute(&mut self, actions: &[Self::Action]);
 }
 
+/// Shared by [`Response::dispatch`] and [`Response::dispatch_async`]: apply
+/// every timer command in order via [`TimerRuntime::set_timer`] /
+/// [`TimerRuntime::kill_timer`].
+fn apply_timers<T: Copy>(commands: &[TimerCommand<T>], timers: &mut impl TimerRuntime<TimerId = T>) {
+    for cmd in commands {
+        match *cmd {
+            TimerCommand::Set { id, duration } => timers.set_timer(id, duration),
+            TimerCommand::Kill { id } => timers.kill_timer(id),
+        }
+    }
+}
+
 impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
     /// Dispatch this response to a runtime.
     ///
@@ -126,16 +139,136 @@ impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
         timers: &mut impl TimerRuntime<TimerId = T>,
         executor: &mut impl ActionExecutor<Action = A>,
     ) -> bool {
-        for cmd in &self.timers {
-            match *cmd {
-                TimerCommand::Set { id, duration } => timers.set_timer(id, duration),
-                TimerCommand::Kill { id } => timers.kill_timer(id),
-            }
-        }
+        apply_timers(&self.timers, timers);
         if !self.actions.is_empty() {
             executor.execute(&self.actions);
         }
         self.consumed
+    }
+}
+
+/// What executing one action tells the caller about continuing.
+///
+/// This exists for drivers whose actions can discover that the resource
+/// they depend on is already gone (a closed socket, a dropped connection, …)
+/// — a fact the state machine itself has no way to express, since it never
+/// touches that resource. [`Response::dispatch_async`] stops processing
+/// further actions in the current response as soon as one reports
+/// [`Stop`](Self::Stop), and reports that upward so the driver's own event
+/// loop can end instead of waiting on events/timeouts that will never come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionOutcome {
+    /// Keep going: process any remaining actions in this response, and keep
+    /// the driver loop running afterward.
+    Continue,
+    /// The resource this action touched is gone. Any actions remaining in
+    /// the current response are skipped, and [`DispatchOutcome::stop`] is
+    /// set so the driver loop can shut down.
+    Stop,
+}
+
+/// The result of [`Response::dispatch_async`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchOutcome {
+    /// Same meaning as the `bool` returned by [`Response::dispatch`]: `true`
+    /// unless the response was [`pass_through`](Response::pass_through).
+    pub consumed: bool,
+    /// `true` if any action reported [`ActionOutcome::Stop`]. The driver
+    /// should stop waiting for further events/timeouts once this is set.
+    pub stop: bool,
+}
+
+/// An async counterpart to [`ActionExecutor`], for runtimes where executing
+/// an action needs to `.await` (acquiring a socket, probing a peer, …)
+/// rather than complete synchronously.
+///
+/// Unlike [`ActionExecutor::execute`] (which receives the whole action
+/// batch at once), actions are executed **one at a time** via
+/// [`execute_one`](Self::execute_one) so that an action reporting
+/// [`ActionOutcome::Stop`] can prevent the remaining actions in the same
+/// response from running at all — see [`Response::dispatch_async`].
+///
+/// This trait has no dependency on any particular async runtime; it only
+/// requires `core::future::Future`, so it works with `tokio`,
+/// `async-std`, `smol`, or any other executor the driver chooses to poll
+/// the returned future on.
+pub trait AsyncActionExecutor {
+    /// The action type (must match the state machine's `Action`).
+    type Action;
+
+    /// Execute a single action and report whether the driver should keep
+    /// going.
+    ///
+    /// Implementations that need to hold data across the `.await` point
+    /// should clone what they need out of `&mut self` before constructing
+    /// the returned future, so the future itself doesn't borrow `self` any
+    /// longer than the lifetime `'a` of this call already requires.
+    fn execute_one<'a>(&'a mut self, action: &'a Self::Action) -> impl Future<Output = ActionOutcome> + Send + 'a;
+}
+
+impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
+    /// Async counterpart to [`dispatch`](Self::dispatch).
+    ///
+    /// Processing order is the same — timer commands first, then actions —
+    /// but actions are awaited one at a time via
+    /// [`AsyncActionExecutor::execute_one`], stopping early (and setting
+    /// [`DispatchOutcome::stop`]) as soon as one reports
+    /// [`ActionOutcome::Stop`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use timed_fsm::{ActionOutcome, AsyncActionExecutor, Response, TimerRuntime};
+    ///
+    /// struct MockTimers(Vec<String>);
+    /// impl TimerRuntime for MockTimers {
+    ///     type TimerId = u8;
+    ///     fn set_timer(&mut self, id: u8, dur: Duration) {
+    ///         self.0.push(format!("set({id}, {dur:?})"));
+    ///     }
+    ///     fn kill_timer(&mut self, _id: u8) {}
+    /// }
+    ///
+    /// struct MockExecutor(Vec<i32>);
+    /// impl AsyncActionExecutor for MockExecutor {
+    ///     type Action = i32;
+    ///     async fn execute_one(&mut self, action: &i32) -> ActionOutcome {
+    ///         self.0.push(*action);
+    ///         ActionOutcome::Continue
+    ///     }
+    /// }
+    ///
+    /// # #[tokio::main(flavor = "current_thread")]
+    /// # async fn main() {
+    /// let response = Response::emit(vec![1, 2])
+    ///     .with_timer(1u8, Duration::from_millis(100));
+    ///
+    /// let mut timers = MockTimers(vec![]);
+    /// let mut executor = MockExecutor(vec![]);
+    /// let outcome = response.dispatch_async(&mut timers, &mut executor).await;
+    ///
+    /// assert!(outcome.consumed);
+    /// assert!(!outcome.stop);
+    /// assert_eq!(executor.0, vec![1, 2]);
+    /// # }
+    /// ```
+    pub async fn dispatch_async(
+        &self,
+        timers: &mut (impl TimerRuntime<TimerId = T> + Send),
+        executor: &mut (impl AsyncActionExecutor<Action = A> + Send),
+    ) -> DispatchOutcome
+    where
+        A: Sync,
+        T: Sync,
+    {
+        apply_timers(&self.timers, timers);
+        for action in &self.actions {
+            if executor.execute_one(action).await == ActionOutcome::Stop {
+                return DispatchOutcome { consumed: self.consumed, stop: true };
+            }
+        }
+        DispatchOutcome { consumed: self.consumed, stop: false }
     }
 }
 
@@ -200,5 +333,79 @@ mod tests {
         assert!(consumed);
         assert_eq!(timers.0.len(), 1);
         assert!(executor.0.is_empty());
+    }
+
+    /// Executes every action, but reports [`ActionOutcome::Stop`] the first
+    /// time it sees an action equal to `stop_on` (if set).
+    struct RecordAsyncActions {
+        seen: Vec<&'static str>,
+        stop_on: Option<&'static str>,
+    }
+
+    impl AsyncActionExecutor for RecordAsyncActions {
+        type Action = &'static str;
+        async fn execute_one(&mut self, action: &&'static str) -> ActionOutcome {
+            self.seen.push(*action);
+            if self.stop_on == Some(*action) {
+                ActionOutcome::Stop
+            } else {
+                ActionOutcome::Continue
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_async_processes_timers_then_actions() {
+        let response = Response::emit(vec!["a", "b"])
+            .with_timer(1, Duration::from_millis(100))
+            .with_kill_timer(2);
+
+        let mut timers = RecordTimers(vec![]);
+        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let outcome = response.dispatch_async(&mut timers, &mut executor).await;
+
+        assert!(outcome.consumed);
+        assert!(!outcome.stop);
+        assert_eq!(timers.0.len(), 2);
+        assert_eq!(executor.seen, vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn dispatch_async_pass_through_returns_unconsumed_and_does_not_stop() {
+        let response: Response<&str, u8> = Response::pass_through();
+        let mut timers = RecordTimers(vec![]);
+        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let outcome = response.dispatch_async(&mut timers, &mut executor).await;
+
+        assert!(!outcome.consumed);
+        assert!(!outcome.stop);
+        assert!(executor.seen.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dispatch_async_stop_skips_remaining_actions_but_keeps_timers_applied() {
+        // Timers are applied up front regardless of what actions do —
+        // mirrors `dispatch`'s "timers before actions" ordering guarantee.
+        let response = Response::emit(vec!["a", "b", "c"]).with_timer(9, Duration::from_millis(1));
+
+        let mut timers = RecordTimers(vec![]);
+        let mut executor = RecordAsyncActions { seen: vec![], stop_on: Some("b") };
+        let outcome = response.dispatch_async(&mut timers, &mut executor).await;
+
+        assert!(outcome.consumed);
+        assert!(outcome.stop, "an action reporting Stop must be reflected in the outcome");
+        assert_eq!(executor.seen, vec!["a", "b"], "action after the Stop-reporting one must not run");
+        assert_eq!(timers.0.len(), 1, "timers still apply even though an action later stops the driver");
+    }
+
+    #[tokio::test]
+    async fn dispatch_async_all_continue_never_sets_stop() {
+        let response = Response::emit(vec!["a", "b", "c"]);
+        let mut timers = RecordTimers(vec![]);
+        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let outcome = response.dispatch_async(&mut timers, &mut executor).await;
+
+        assert!(!outcome.stop);
+        assert_eq!(executor.seen, vec!["a", "b", "c"]);
     }
 }

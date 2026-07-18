@@ -1,6 +1,6 @@
 [package]
 name = "timed-fsm"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "A timed finite state machine framework where timer commands are declarative transition outputs"
 license = "MIT OR Apache-2.0"
@@ -11,10 +11,22 @@ readme = "README.md"
 rust-version = "1.85"
 
 [dependencies]
-# 依存ゼロ
+# 既定では依存ゼロ。`tokio` feature を有効にした場合のみ、非同期tokioランタイム
+# 向けの`TimerRuntime`実装(`tokio_support`モジュール)がこの依存を引き込む。
+tokio = { version = "1", features = ["rt", "sync", "time"], optional = true }
+
+[features]
+tokio = ["dep:tokio"]
+
+# docs.rs builds with default features only unless told otherwise; without this,
+# the opt-in `tokio_support` module (and its intra-doc links) would never appear
+# on the published docs page.
+[package.metadata.docs.rs]
+all-features = true
 
 [dev-dependencies]
 proptest = "1"
+tokio = { version = "1", features = ["full"] }
 
 [lints.rust]
 unsafe_code = "deny"
