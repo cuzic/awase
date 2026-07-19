@@ -780,15 +780,22 @@ impl SettingsApp {
                         "US (ANSI 104キー)",
                     );
                 });
-            // US → JIS への切替時、Space/Left Alt/Right Alt 等 US 向けに変更していた
-            // 親指キーが JIS では使えない（Space は単独タップの意味が変わり、Alt は
-            // なりすまし設定自体が無意味になる）まま残ってしまうのを防ぐため、
-            // 既定値（無変換/変換）へ強制的に戻す。ユーザーが手動で戻す手間を省く。
+            // US → JIS への切替時、Space/Left Alt/Right Alt・独自ホットキー等
+            // US 向けに変更していた設定が JIS では意味が変わる/使えないまま残る
+            // （Space は単独タップの意味が変わり、Alt はなりすまし設定自体が
+            // 無意味になる）のを防ぐため、親指キーとホットキー一式を
+            // KeysConfig::default()/GeneralConfig::default() と同じ JIS 既定値へ
+            // 強制的に戻す。ユーザーが手動で戻す手間を省く。
             if prev_keyboard_model != awase::scanmap::KeyboardModel::Jis
                 && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Jis
             {
                 self.config.general.left_thumb_key = "無変換".to_string();
                 self.config.general.right_thumb_key = "変換".to_string();
+                self.config.keys.engine_on = vec!["Ctrl+Shift+変換".to_string()];
+                self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
+                self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
+                self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
+                self.config.keys.engine_off_solo_triple = Some("VK_NONCONVERT".to_string());
             }
             // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
             // （Ctrl+Shift+変換 等）は US に無変換/変換キーが物理的に存在しないため
