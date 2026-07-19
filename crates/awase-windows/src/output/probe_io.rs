@@ -31,7 +31,7 @@ pub(crate) trait ProbeIo {
     /// unicode kana 分岐を一切行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
     /// Chrome per-VK confirm 専用: 1 VK の
-    /// DOWN+UP を `VkMarker::InjectedWithScan`（実験: scan code 付き）で単独送信する。
+    /// DOWN+UP を `VkMarker::InjectedWithScan`（scan code 付き）で単独送信する。
     /// `send_single_tsf_vk` の Chrome版。
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
@@ -109,8 +109,8 @@ impl ProbeIo for Output {
     }
 
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool) {
-        // 実験: scan code 付き（VkMarker::InjectedWithScan）。key_injector.rs の
-        // send_romaji_batch_immediate と同じ実験。
+        // scan code 付き（VkMarker::InjectedWithScan）、key_injector.rs の
+        // send_romaji_batch_immediate と同じ恒久仕様。
         KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
     }
 
