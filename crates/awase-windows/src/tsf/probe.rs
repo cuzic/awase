@@ -102,6 +102,19 @@ impl TsfReadinessProbe {
     ///
     /// `true` = 送信可能（GJI 静止 or タイムアウト）、`false` = まだ待機中。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    ///
+    /// 2026-07-19 時点、本番の producer（`cold_warmup.rs::run_start`・
+    /// `vk_send.rs` の Chrome cold パス）はいずれも `min_ms=0`・`total_max_ms=0`
+    /// を渡すため、`min_deadline`/`max_deadline` は共に `warmup_sent_ms` と等しくなり、
+    /// このメソッドは実質「常に最初の呼び出しで `true` を返す」（`GJI_IDLE_MS`/
+    /// `settled_at_ms`/`POST_IDLE_MARGIN_MS` の待機ロジックは通らない）。
+    /// これは値が静的に固定されている（`ProbeObservations.gji_resumed` や
+    /// `DIAG_DISABLE_PROACTIVE_TSF_WARMUP` のような）到達不能ではなく、両呼び出し元が
+    /// たまたま実行時に 0 を渡しているだけの状態（コンパイラは保証しない）。
+    /// 本メソッド自体は任意の `min_ms`/`total_max_ms` に対して汎用的に正しく動作する
+    /// タイミング primitive であり、cold-start 待機時間の調整は本リポジトリで
+    /// 何度も出し入れされてきた領域（`tuning-constants.md` の釣り上げ履歴参照）。
+    /// 「今 0 が渡っているから」という理由だけでこの分岐自体を削除しないこと。
     pub fn check_now(&self, total_max_ms: u64) -> bool {
         let now = crate::hook::current_tick_ms();
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
