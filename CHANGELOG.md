@@ -4,12 +4,50 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-19
+
 ### 追加
 
 - **「配列編集」タブにセルのコピー/貼り付け（履歴方式）を追加**
   - セルを選択して「コピー」を押すと、その値が履歴の先頭に自動的に積まれる（最大4件、面をまたいでも保持）
   - 履歴はボタン列として表示され、クリックするだけで選択中のセルへ直接貼り付けられる（テキスト欄を経由しないため、ローマ字のかな変換結果を含めて元セルと完全に同じ値になる）
   - 同じ値を続けてコピーしても重複せず、履歴の先頭に移動するだけ
+- **US配列: 左右 Alt キーを親指キーへなりすませる機能を追加**
+  - US配列にはスペース両隣に無変換/変換キーが無いため、左右 Alt キーを `left_thumb_key`/`right_thumb_key` としてなりすまさせる設定（`left_alt_impersonates_thumb_key`/`right_alt_impersonates_thumb_key`、既定 false）を追加。PowerToys 等の外部リマップと同等のことを awase 単体で完結できる
+  - エンジン ON 時のみ発動し、OFF 時は通常の Alt として Alt+Tab 等を損なわない。左右は独立に設定可能で、押しっぱなし中はキー押下時点の状態を保持しstuck modifier化を防ぐ
+  - US配列選択時のみ設定画面（awase-settings）に表示
+- **US配列: Space親指キーのcomposing中フォールバックと Shift+Space 即時送出を追加**
+  - Space を親指キーに割り当てた場合、変換候補ウィンドウ表示中でも単独タップで `VK_SPACE`（変換候補送り）を送出できるようにした（無変換/変換と異なり、composing 中の raw VK_SPACE 送出は IME の正規機能のため）
+  - Shift+Space は同時打鍵判定を待たずリテラルなスペースとして即時送出する
+  - 設定は `space_thumb_ignore_composing_guard`/`space_thumb_shift_literal`（既定 true）。Space が親指キーの時のみ設定画面に表示
+- **設定画面: US⇔JIS配列切替時にホットキー既定値を自動リセット/復元**
+  - US配列へ切り替えるとJIS前提のホットキー既定値（無変換/変換キー等）を空にリセットし、JISへ戻すとJIS既定値へ復元するようにした
+
+### 修正
+
+- **BUG-31: Microsoft Teams で連続タイピング中に文字が無音で消失する不具合を修正**
+  - アプリ: Microsoft Teams（`TeamsWebView`、Chrome系、Vk mode）。IME: Google 日本語入力（GJI）
+  - 再現: Enter確定直後、warm状態(`GjiFsm::OnWarm`)であるにも関わらず物理 `NativeF2Down`（非TSF）イベントが無条件に `MarkCold`+`GjiCompositionReset` を発行して warm 維持用タイマーを kill しており、以降の romaji が per-VK confirm レースに巻き込まれて一部消失していた（実機報告: 「５せっしょん」の一部が無音で消失）
+  - `NativeF2Down` を warm 中は無視するようガードを追加
+- **BUG-30: GJI候補ウィンドウ可視時に正しく入力できた文字を誤って backspace する不具合を修正**
+  - 候補ウィンドウの SHOW イベント（edge-triggered）とライブ可視状態（level-triggered）が別センサーで、`SuspectedLiteral` 判定時に可視でも保護がなかった。可視中は backspace を保留する veto を追加し、TSF/Chrome の literal-detect ロジックも統一した
+- **Alt親指キーなりすまし: `OsModifierHeld` bypass により NICOLA 同時打鍵判定が一切効かなくなる不具合を修正**
+  - vk 書き換え自体は正しく行われていたが、`GetAsyncKeyState` 由来の別経路（`modifiers.alt`）が物理 Alt 押下をそのまま返しており、3箇所で `BypassReason::OsModifierHeld` が誤発動していた。なりすまし中は `modifiers.alt` を補正するよう修正
+- **Alt親指キーなりすまし: 環境によって vk が汎用 `VK_MENU` で届き、なりすましが一切発動しない不具合を修正**
+  - `WH_KEYBOARD_LL` の vkCode が左右区別済み `VK_LMENU`/`VK_RMENU` ではなく汎用 `VK_MENU` で届く環境があり、直接比較のみの判定が常に false になっていた。`LLKHF_EXTENDED` フラグで左右を判別するよう修正
+- **設定画面: 「適用」ボタンが常に無効だったバグを修正**
+  - `awase-settings.exe` の設定リロード通知が `FindWindowW` で存在しないウィンドウクラス名（`awase_msg_window`）を探しており、`awase.exe`（`awase_tray_window`）に一度も通知が届いていなかった。正しいクラス名に修正し、失敗時は `log::warn!` で明示的にログを残すようにした
+- **設定画面: `config.toml` パス解決が `awase.exe` と非対称だったバグを修正**
+  - `awase.exe` はコマンドライン引数で明示パスを指定できるが `awase-settings.exe` はこれを無視しており、異なる `config.toml` を編集してしまう恐れがあった。優先順位を揃え、編集中のパスを画面上部に常時表示する機能も追加した
+- **設定画面: 長い検証警告文がボタン行に切られて表示されない問題を修正**
+
+### 変更
+
+- **GJI/Chrome の cold-start warmup アーキテクチャを大幅に簡素化**
+  - 数日間の実機ソーク（cold=60件超、suspected literal ゼロ件）で無破損を確認できたため、待機行列（`WarmupKind::FreshF2`/`ReWarmup`/`ProbeWithSettle` 等の `ColdReason`×`long_idle` 行列）と捨て駒キー機構（`SacrificialWarmupCoro`/`ImeOffOnWarmupFsm`）を物理削除し、romaji を1文字ずつ送って確認する per-VK confirm 方式に一本化した
+  - Chrome（`probe_fsm.rs`）と TSF（`gji_warmup_coro.rs`）で重複していた per-VK confirm ループを共通実装に統合（正味 -82行）
+  - Chrome の VK 送信への scan code 付与を実験仕様から恒久仕様へ確定
+  - 上記を支える基盤として、内部依存クレート `timed-fsm` に `StepCoro::prime()`（ダミー入力なしの self-priming）を追加
 
 ## [1.9.1] - 2026-07-12
 
