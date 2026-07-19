@@ -836,6 +836,19 @@ pub(super) fn run_all() -> Result<()> {
     );
     engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
+    // left/right のいずれかが Space (VK_SPACE) に割り当てられている場合、
+    // その VK を Engine/NicolaFsm に伝える。core 側は VK 番号の意味を知らず、
+    // ここで渡した値との等値比較のみで「Space かどうか」を判定する
+    // （config.rs の space_thumb_ignore_composing_guard/space_thumb_shift_literal doc 参照）。
+    let space_thumb_vk = [left_thumb_vk, right_thumb_vk]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_SPACE);
+    engine.set_space_thumb_config(
+        space_thumb_vk,
+        config.general.space_thumb_ignore_composing_guard,
+        config.general.space_thumb_shift_literal,
+    );
+
     if let Some(vk) = config
         .keys
         .engine_off_solo_triple

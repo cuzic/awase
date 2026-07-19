@@ -15,9 +15,9 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, OutputUpdate,
-    ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent, TIMER_PENDING,
-    TIMER_SPECULATIVE,
+    BypassReason, ClassifiedEvent, ComposingHint, EngineState, Face, IdleIntent, KeyClass,
+    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
+    TIMER_PENDING, TIMER_SPECULATIVE,
 };
 use super::timing;
 
@@ -64,6 +64,7 @@ pub(crate) fn yab_value_to_action(value: &YabValue) -> KeyAction {
 
 /// 配列変換エンジン（状態機械 + 同時打鍵判定）
 #[allow(missing_debug_implementations)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct NicolaFsm {
     /// 配列定義（.yab ベース）
     pub(crate) layout: YabLayout,
@@ -115,6 +116,22 @@ pub struct NicolaFsm {
 
     /// ソロ連打でのエンジン OFF 要求フラグ（1ショット）。
     engine_off_requested: bool,
+
+    /// `left_thumb_key`/`right_thumb_key` のいずれかが Space (`VK_SPACE`) に
+    /// 割り当てられている場合、その VK コード。どちらも Space でなければ `None`。
+    ///
+    /// 実際の VK 番号（Windows の magic hex）は Platform 層（各 `vk.rs`）の
+    /// 責務であり、core はここで渡された値と等値比較するだけで「Space かどうか」
+    /// を判定する（`GeneralConfig::space_thumb_ignore_composing_guard` 等参照）。
+    space_thumb_vk: Option<VkCode>,
+
+    /// Space 親指キー単独タップ確定時、IME 変換候補ウィンドウ表示中
+    /// （`composing`）でも生 VK を送出するか。`space_thumb_vk` が `None` なら無効。
+    space_thumb_ignore_composing_guard: bool,
+
+    /// Shift を押しながら Space 親指キーを押した場合、同時打鍵判定を試みず
+    /// 即座にリテラルなスペースとして送出するか。`space_thumb_vk` が `None` なら無効。
+    space_thumb_shift_literal: bool,
 }
 
 // ── 公開 API ──
@@ -145,6 +162,12 @@ impl NicolaFsm {
             solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
+            // 既定値は GeneralConfig::default() と揃える（Space 未割当 / ガード類は
+            // 有効）。実際の Space VK は Platform 層が set_space_thumb_config() で
+            // 明示的に配線する（config.rs の doc 参照）。
+            space_thumb_vk: None,
+            space_thumb_ignore_composing_guard: true,
+            space_thumb_shift_literal: true,
         }
     }
 
@@ -171,11 +194,26 @@ impl NicolaFsm {
     ///
     /// 呼び出し側は戻り値の `Response` を `dispatch()` で処理すること。
     ///
+    /// `composing` は `PendingThumb` の Space フォールバック判定（composing 中でも
+    /// 生 VK_SPACE を送出する例外）に使う。**`Trusted(bool)` を渡してよいのは、
+    /// 呼び出し元がこの `composing` 値を「保留キーが入力された時点と同一のウィンドウ/
+    /// コンテキスト」のものだと保証できる場合のみ**（同一イベント処理内の割り込み、
+    /// 直近の `self.phys.composing` 等）。
+    ///
+    /// `FocusChanged`（フォーカス変更）や `InvalidateContext`（IME OFF・言語切替等の
+    /// 外部コンテキスト喪失）経由のフラッシュは、`InputContext::composing` を
+    /// 呼び出し時点で読み直す設計上、**既に切り替わった後の新しいウィンドウ**の状態を
+    /// 指している（`Runtime::ir_notify_focus_changed` は `detect_and_update_focus()` で
+    /// フォーカスを切り替えた後に `build_ctx()` を呼ぶ）。この場合は `Unknown` を渡す。
+    /// `Unknown` では Space 例外も含め無条件 suppress する（フォーカス切替後に別ウィンドウへ
+    /// 生 VK_SPACE 等が誤注入されるのを防ぐ安全側の選択。過去に類似の focus 遷移バグを
+    /// 繰り返してきたため — `docs/known-bugs.md` 参照）。
+    ///
     /// # Panics
     ///
     /// Panics if internal state is inconsistent (e.g. `PendingChar` phase
     /// without a stored `pending_char`). This indicates a logic error.
-    pub fn flush_pending(&mut self, reason: ContextChange) -> Resp {
+    pub fn flush_pending(&mut self, reason: ContextChange, composing: ComposingHint) -> Resp {
         let old_state = std::mem::replace(&mut self.state, EngineState::Idle);
         let was_idle = matches!(old_state, EngineState::Idle);
 
@@ -191,8 +229,20 @@ impl NicolaFsm {
                 Response::emit(resolved.actions.into_vec())
             }
             EngineState::PendingThumb(thumb) => {
-                // 保留中の親指キーを単独確定
-                let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
+                // 保留中の親指キーを単独確定。composing を信頼できない場合は
+                // Space 例外も含め無条件 suppress する（上記 doc 参照）。
+                let resolved = match composing {
+                    ComposingHint::Trusted(c) => self.resolve_pending_thumb_as_single(
+                        thumb.scan_code,
+                        thumb.vk_code,
+                        thumb.modifier_key,
+                        c,
+                    ),
+                    ComposingHint::Unknown => ResolvedAction {
+                        actions: SmallVec::new(),
+                        output: OutputUpdate::None,
+                    },
+                };
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions.into_vec())
             }
@@ -241,7 +291,7 @@ impl NicolaFsm {
     /// 無効化時は保留キーをフラッシュする。
     /// 戻り値の `Resp` を `dispatch()` で処理すること（タイマー停止 + 保留キー確定）。
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
-        let flush_resp = self.flush_pending(ContextChange::EngineDisabled);
+        let flush_resp = self.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(self.phys.composing));
         self.enabled = !self.enabled;
         self.output_history.clear();
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
@@ -283,6 +333,25 @@ impl NicolaFsm {
         self.engine_off_triple_vk = vk;
     }
 
+    /// Space 親指キーのフォールバック挙動を設定する。
+    ///
+    /// `space_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
+    /// Space (`VK_SPACE`) に解決された場合の VK コード（Platform 層が
+    /// `crate::vk::VK_SPACE` との等値比較で判定し渡す）。どちらも Space でなければ
+    /// `None` を渡すこと。`ignore_composing_guard`/`shift_literal` は
+    /// `GeneralConfig::space_thumb_ignore_composing_guard`/
+    /// `space_thumb_shift_literal` にそのまま対応する。
+    pub const fn set_space_thumb_config(
+        &mut self,
+        space_thumb_vk: Option<VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.space_thumb_vk = space_thumb_vk;
+        self.space_thumb_ignore_composing_guard = ignore_composing_guard;
+        self.space_thumb_shift_literal = shift_literal;
+    }
+
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         std::mem::take(&mut self.engine_off_requested)
@@ -316,7 +385,7 @@ impl NicolaFsm {
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
-        let flush_resp = self.flush_pending(ContextChange::LayoutSwapped);
+        let flush_resp = self.flush_pending(ContextChange::LayoutSwapped, ComposingHint::Trusted(self.phys.composing));
         self.layout = layout;
         self.output_history.clear();
         flush_resp
@@ -557,8 +626,25 @@ impl NicolaFsm {
         }
     }
 
+    /// Space 親指キーを Shift と同時に押した場合、同時打鍵判定を一切試みず
+    /// 即座にリテラルなスペースとして送出すべきかを判定する。
+    ///
+    /// NICOLA の小指シフト面（Shift 単独系）と親指シフト（同時打鍵系）はそもそも
+    /// 組み合わせない設計のため、Shift 押下中の Space 親指キーを `PendingThumb` に
+    /// 入れず即座に素通しにしても、通常の同時打鍵判定と衝突しない。
+    const fn is_space_thumb_shift_literal(&self, ev: &ClassifiedEvent) -> bool {
+        self.space_thumb_shift_literal
+            && self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && matches!(self.space_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
+        // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
+        if self.is_space_thumb_shift_literal(ev) {
+            return IdleIntent::PassThrough;
+        }
         // Shift plane
         if self.should_use_shift_plane(ev) {
             return IdleIntent::ShiftPlane;
@@ -647,7 +733,12 @@ impl NicolaFsm {
                     ev.timestamp,
                 );
                 self.go_idle();
-                let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
+                let resolved = self.resolve_pending_thumb_as_single(
+                    thumb.scan_code,
+                    thumb.vk_code,
+                    thumb.modifier_key,
+                    self.phys.composing,
+                );
                 resolved.into_reduce_and_continue(*ev)
             }
         }
@@ -807,7 +898,12 @@ impl NicolaFsm {
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
-        let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
+        let resolved = self.resolve_pending_thumb_as_single(
+            thumb.scan_code,
+            thumb.vk_code,
+            thumb.modifier_key,
+            self.phys.composing,
+        );
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -815,7 +911,12 @@ impl NicolaFsm {
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
         self.go_idle();
-        let resolved = Self::resolve_pending_thumb_as_single(thumb.vk_code);
+        let resolved = self.resolve_pending_thumb_as_single(
+            thumb.scan_code,
+            thumb.vk_code,
+            thumb.modifier_key,
+            self.phys.composing,
+        );
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -862,13 +963,53 @@ impl NicolaFsm {
     /// IME 側で カタカナトグル等の副作用（Microsoft IME のデフォルト挙動）が起こり、
     /// 入力モードが意図せず切り替わる。
     ///
-    /// したがって何も送出しない（suppress）。これにより親指の単独打鍵は完全に無視され、
-    /// IME に対して透明になる。Engine が無効な場合は hook 層で bypass されてここには
-    /// 来ないので、Windows 全般での 無変換 / 変換 キー機能は引き続き使える。
-    fn resolve_pending_thumb_as_single(_vk_code: VkCode) -> ResolvedAction {
+    /// したがって composing 中は何も送出しない（suppress）。これにより親指の単独打鍵は
+    /// composing 中は完全に無視され、IME に対して透明になる。Engine が無効な場合は
+    /// hook 層で bypass されてここには来ないので、Windows 全般での 無変換 / 変換 キー
+    /// 機能は composing していない場面では引き続き使える。
+    ///
+    /// **Space の例外**: `space_thumb_vk` に一致し `space_thumb_ignore_composing_guard`
+    /// が true の場合、composing 中でも常に生 VK_SPACE を送出する。MS-IME/Google 日本語
+    /// 入力とも Space による「変換候補送り」は正規機能であり、無変換/変換と同じ理由
+    /// （かな/カタカナ切替・再変換の誤発火防止）で composing 中に抑制すると、通常の
+    /// 変換操作そのものが壊れるため。
+    ///
+    /// タイムアウト経路（`timeout_pending_thumb`）とフラッシュ経路（`flush_pending`、
+    /// `decide_pending_thumb` の Passthrough 割り込み、`step_pending_thumb_char`/
+    /// `step_pending_thumb_thumb`）の双方から共通で呼ぶ。以前はフラッシュ経路が
+    /// `composing`/VK 種別を一切見ずに常時 suppress していたため、フォーカス変更や
+    /// 別キー割り込みで Space が消えることがあった（この不整合を解消するために
+    /// `composing`/`modifier_key` を明示的に受け取る形にした）。
+    fn resolve_pending_thumb_as_single(
+        &self,
+        scan_code: ScanCode,
+        vk_code: VkCode,
+        modifier_key: Option<crate::types::ModifierKey>,
+        composing: bool,
+    ) -> ResolvedAction {
+        // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
+        // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
+        if modifier_key.is_some() {
+            return ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            };
+        }
+
+        let is_space_with_fallback =
+            self.space_thumb_vk == Some(vk_code) && self.space_thumb_ignore_composing_guard;
+        if composing && !is_space_with_fallback {
+            return ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            };
+        }
+
+        let action = KeyAction::Key(vk_code);
+        let output = OutputUpdate::record(scan_code, &action, None);
         ResolvedAction {
-            actions: SmallVec::new(),
-            output: OutputUpdate::None,
+            actions: smallvec![action],
+            output,
         }
     }
 
@@ -1051,9 +1192,12 @@ impl NicolaFsm {
 
         let resolved = match old_state {
             EngineState::PendingChar(pending) => self.resolve_pending_char_as_single(&pending),
-            EngineState::PendingThumb(thumb) => {
-                Self::resolve_pending_thumb_as_single(thumb.vk_code)
-            }
+            EngineState::PendingThumb(thumb) => self.resolve_pending_thumb_as_single(
+                thumb.scan_code,
+                thumb.vk_code,
+                thumb.modifier_key,
+                self.phys.composing,
+            ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
             | EngineState::SpeculativeChar(_) => {
@@ -1127,31 +1271,17 @@ impl NicolaFsm {
             self.solo_counter.reset();
         }
 
-        if composing {
-            // resolve_pending_thumb_as_single と同じ理由（IME 側のかな/カタカナ切替・
-            // 再変換の誤発火防止）。ただしこちらは「文字キーが一切来ないまま本物の
-            // 単独タップとして確定した」経路であり、composition していないときは
-            // 従来通り素通しする（Windows 全般での無変換/変換キー機能を維持するため）。
-            return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
-        }
-
-        if modifier_key.is_some() {
-            // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta、例: 無変換/変換の代わりに
-            // 左右 Alt を親指キーに割り当てる場合）に分類される場合は、composing に
-            // 関わらず常に suppress する。無変換/変換と違い、Alt 単独の KeyDown/KeyUp を
-            // 生のまま OS に送ると Windows のメニューフォーカス等の副作用があり、
-            // 「親指キーとして使う以上、その物理キーはもう Alt としては機能しない」という
-            // 前提に反する。素通しが必要な Alt 操作は他の物理キーに割り当てること。
-            return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
-        }
-
-        let action = KeyAction::Key(vk_code);
         // scan_code には物理キーの実スキャンコードを使う。
         // 以前は ScanCode(u32::from(vk_code.0)) という合成値を使っていたが、
         // VK_CONVERT (VK=0x1C) の合成スキャンコードが Enter の物理スキャンコード (0x1C) と
         // 衝突し、後から Enter KeyUp が来たときに誤って KeyUp(VK_CONVERT) が送出されていた。
-        self.update_history(OutputUpdate::record(scan_code, &action, None));
-        self.build_response(smallvec![action], true, TimerIntent::CancelAll)
+        //
+        // suppress/送出の判定（composing ガード・Space 例外・OS 修飾キーガード）は
+        // resolve_pending_thumb_as_single に委譲し、flush 経路と挙動を統一する。
+        let resolved =
+            self.resolve_pending_thumb_as_single(scan_code, vk_code, modifier_key, composing);
+        self.update_history(resolved.output);
+        self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
     /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
@@ -1290,7 +1420,7 @@ impl NicolaFsm {
             reason,
             self.state.debug_label(),
         );
-        let flush = self.flush_pending(ContextChange::BypassKey);
+        let flush = self.flush_pending(ContextChange::BypassKey, ComposingHint::Trusted(self.phys.composing));
         let mut resp = Response::pass_through();
         resp.actions = flush.actions;
         resp.timers = flush.timers;

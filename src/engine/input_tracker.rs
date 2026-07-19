@@ -23,6 +23,9 @@ pub struct PhysicalKeyState {
     pub left_thumb_down: Option<Timestamp>,
     /// 右親指キー押下時刻（None = 非押下）
     pub right_thumb_down: Option<Timestamp>,
+    /// IME の変換候補ウィンドウが現在表示中か（`InputContext::composing` 由来）。
+    /// `ctx` を持たない構築経路（`empty()`/`InputTracker::snapshot()`）では `false`。
+    pub composing: bool,
 }
 
 impl PhysicalKeyState {
@@ -41,6 +44,7 @@ impl PhysicalKeyState {
             },
             left_thumb_down: None,
             right_thumb_down: None,
+            composing: false,
         }
     }
 
@@ -55,6 +59,7 @@ impl PhysicalKeyState {
             modifiers: ctx.modifiers,
             left_thumb_down: ctx.left_thumb_down,
             right_thumb_down: ctx.right_thumb_down,
+            composing: ctx.composing,
         }
     }
 
@@ -66,6 +71,7 @@ impl PhysicalKeyState {
             modifiers: ctx.modifiers,
             left_thumb_down: ctx.left_thumb_down,
             right_thumb_down: ctx.right_thumb_down,
+            composing: ctx.composing,
         }
     }
 }
@@ -127,6 +133,7 @@ impl InputTracker {
             modifiers: self.modifiers,
             left_thumb_down: self.left_thumb_down,
             right_thumb_down: self.right_thumb_down,
+            composing: false,
         }
     }
 
@@ -143,6 +150,10 @@ impl InputTracker {
             modifiers: self.modifiers,
             left_thumb_down: self.left_thumb_down,
             right_thumb_down: self.right_thumb_down,
+            // composing は ctx 経由でしか分からない。この経路（Platform 層の素の
+            // InputTracker::process）は composing を持たないため false 固定。
+            // 実際に Engine へ渡るスナップショットは PhysicalKeyState::from_ctx 側。
+            composing: false,
         }
     }
 

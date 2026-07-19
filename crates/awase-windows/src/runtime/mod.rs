@@ -873,6 +873,14 @@ impl Runtime {
                 left_alt_impersonates,
                 right_alt_impersonates,
             );
+            let space_thumb_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_SPACE);
+            self.engine.set_space_thumb_config(
+                space_thumb_vk,
+                config.general.space_thumb_ignore_composing_guard,
+                config.general.space_thumb_shift_literal,
+            );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,

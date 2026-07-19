@@ -138,6 +138,31 @@ pub struct GeneralConfig {
     /// - 任意のキーを任意の VK に対応させる汎用リマップ機能ではない。Left/Right Alt
     ///   専用。それ以上の自由なリマップをしたい場合は PowerToys 等の外部ツールを使うこと。
     pub keyboard_model: KeyboardModel,
+    /// `left_thumb_key`/`right_thumb_key` に `VK_SPACE`（Space）を割り当てている
+    /// 場合に限り効く設定。無変換/変換など他の VK には一切影響しない。
+    ///
+    /// 単独タップ（同時打鍵が不成立）確定時、IME の変換候補ウィンドウ表示中
+    /// （`composing`）でも構わず生 VK_SPACE を送出するか。
+    ///
+    /// `composing` ガードはもともと無変換/変換の誤爆（かな/カタカナ切替・
+    /// 再変換）防止用に入れたものだが、Space の場合は composing 中に
+    /// 生 VK_SPACE を送ることは MS-IME/Google 日本語入力とも「変換候補送り」
+    /// という正規機能であり、無変換/変換と同じガードを適用すると通常の
+    /// 変換操作そのものが壊れる。そのため既定値は `true`（常時送出）。
+    ///
+    /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
+    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    /// 別ウィンドウへの生 VK_SPACE 誤注入を防ぐための安全策で、ユーザーが設定できる
+    /// 範囲ではない。
+    pub space_thumb_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に `VK_SPACE`（Space）を割り当てている
+    /// 場合に限り効く設定。無変換/変換など他の VK には一切影響しない。
+    ///
+    /// Shift を同時に押しながら Space 親指キーを押した場合、同時打鍵判定を
+    /// 一切試みず、`PendingThumb` にも入らず即座にリテラルなスペースとして
+    /// 送出するか（NICOLA の小指シフト面は Shift 単独系で thumb-shift とは
+    /// 組み合わせない設計のため、Shift 押下中は安全に即時パススルーできる）。
+    pub space_thumb_shift_literal: bool,
 }
 
 impl Default for GeneralConfig {
@@ -161,6 +186,8 @@ impl Default for GeneralConfig {
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
+            space_thumb_ignore_composing_guard: true,
+            space_thumb_shift_literal: true,
         }
     }
 }
