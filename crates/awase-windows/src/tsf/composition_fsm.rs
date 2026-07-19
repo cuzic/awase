@@ -87,8 +87,8 @@ pub(crate) enum CompositionEvent {
     ConfirmKeyUp { vk: VkCode },
     /// Ctrl KeyUp（cold 状態で eager warmup リセット）
     CtrlUp { warm: bool },
-    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown
-    NativeF2Down { tsf_mode: bool },
+    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown。`warm` は現況（`tsf_mode=false` 側でのみ参照）。
+    NativeF2Down { tsf_mode: bool, warm: bool },
 }
 
 /// composition FSM が出力するアクション（dispatcher が副作用を実行する）。
@@ -261,7 +261,7 @@ impl TimedStateMachine for CompositionFsm {
             }
 
             // ── NativeF2Down ───────────────────────────────────────────────
-            CompositionEvent::NativeF2Down { tsf_mode } => {
+            CompositionEvent::NativeF2Down { tsf_mode, warm } => {
                 if tsf_mode {
                     // 物理 F2 を consume し、代替の warmup F2 で一本化する（double-F2 防止）。
                     // GjiNativeF2Consumed を使うことで GjiFsm が Medium/Long cold 状態を維持できる。
@@ -280,8 +280,24 @@ impl TimedStateMachine for CompositionFsm {
                             reason: WarmupReason::NativeF2,
                         },
                     ])
+                } else if warm {
+                    // 2026-07-19 (BUG-31): warm な状態で「TSF を経由しない F2 系キー」が
+                    // 届いても、実際には何も冷えていない。ConfirmKeyDown(warm=true) と同じ
+                    // 理由（2026-07-11 修正、上記コメント参照）で、warm を確定キー以外の
+                    // イベントで cold 化する根拠も無い。連続 typing 中に無関係な物理 IME
+                    // キー（VK_DBE_HIRAGANA、自己注入ではない = 外部/OS 由来）が届くと、
+                    // それだけで直後 1.8 秒後の全く無関係なタイピングまで cold-start
+                    // 経路（F2/probe 待機省略 → per-VK confirm）に落とされ、GJI 候補
+                    // ウィンドウ可視性のレース（BUG-29/BUG-30）に巻き込まれて文字が
+                    // 消失する実機不具合を確認した（docs/known-bugs.md BUG-31）。
+                    // 過去の F2NonTsf cold-mark が実際に有効だった事例
+                    // （`3c275a7`/`79134f5`/`b5946bb`）はいずれも GJI long-idle
+                    // （既に GjiFsm が OnCold(Long/Medium)）由来であり、warm 中に F2 系
+                    // イベントが来て何かを温め直す必要があった実測事例は無い。よって
+                    // warm 中は何もしない。
+                    Response::consume()
                 } else {
-                    // 非 TSF: cold mark のみ（Chrome/Win32 向け）。
+                    // 非 TSF・非 warm: cold mark のみ（Chrome/Win32 向け）。
                     self.state = CompositionState::Cold {
                         reason: ColdReason::F2NonTsf,
                     };
@@ -431,7 +447,10 @@ mod tests {
     #[test]
     fn native_f2_in_tsf_consumes_and_warms() {
         let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::NativeF2Down { tsf_mode: true });
+        let r = fsm.on_event(CompositionEvent::NativeF2Down {
+            tsf_mode: true,
+            warm: false,
+        });
         assert!(r.actions.contains(&CompositionAction::ConsumeF2));
         assert!(r.actions.iter().any(|a| matches!(
             a,
@@ -444,7 +463,10 @@ mod tests {
     #[test]
     fn native_f2_non_tsf_marks_cold_without_consume() {
         let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::NativeF2Down { tsf_mode: false });
+        let r = fsm.on_event(CompositionEvent::NativeF2Down {
+            tsf_mode: false,
+            warm: false,
+        });
         assert!(!r.actions.contains(&CompositionAction::ConsumeF2));
         assert!(r.actions.iter().any(|a| matches!(
             a,
@@ -452,6 +474,26 @@ mod tests {
                 reason: ColdReason::F2NonTsf
             }
         )));
+    }
+
+    // 2026-07-19 (BUG-31): warm 中に「TSF を経由しない F2 系キー」が届いても、
+    // 実際には何も冷えていない（連続 typing 中の無関係な物理 IME キーの副作用で
+    // GJI 候補ウィンドウ可視性レースに巻き込まれ文字が消失する不具合の根治）。
+    // warm_confirm_keydown_does_not_mark_cold_or_reset_gji と同じ理由で、
+    // NativeF2Down(tsf_mode=false, warm=true) も MarkCold/GjiCompositionReset を
+    // 一切発行しないべきである。
+    #[test]
+    fn native_f2_non_tsf_while_warm_is_noop() {
+        let mut fsm = CompositionFsm::new();
+        let r = fsm.on_event(CompositionEvent::NativeF2Down {
+            tsf_mode: false,
+            warm: true,
+        });
+        assert!(
+            r.actions.is_empty(),
+            "warm 中の非 TSF F2 は cold 化・GJI reset とも不要 (actions={:?})",
+            r.actions
+        );
     }
 
     #[test]

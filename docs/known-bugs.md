@@ -3290,6 +3290,86 @@ probe_io.rs`（`Transmit`/`TransmitSingleVk` ハンドラ）、
 
 ---
 
+## BUG-31: `NativeF2Down`（非 TSF）が warm 中でも無条件に cold-mark し、連続 typing の1文字を無用な per-VK confirm レースに晒す
+
+**症状:** Microsoft Teams（`TeamsWebView`、Chrome 系、Vk mode）で、Google 日本語入力
+（GJI）を使って通常の連続タイピング中（メッセージ送信直後、1.8秒の自然な間を挟んで
+「５せっしょん」と入力）に、`せ` とそれに続く `っし`/`ょ` の一部が無音で消失した
+（backspace のみ発生し romaji 再送が起きなかった）。ユーザー実機報告（2026-07-19）:
+「Teams で、入力が一部おかしくなりました」「５セッション のような数字が入っている
+ところが期待と違う入力になりました」。
+
+**再現手順（実機ログで確認、`experiment/skip-cold-probe-wait` ブランチ）:**
+Enter で確定した直後、`self_injected=false, injected=false` の**物理** VK 0xF0↑/0xF2↓
+（`IME-mode` タグ、`source=PhysicalImeKey`）イベントが届き、`composition_native_f2_down`
+経由で `CompositionFsm::NativeF2Down { tsf_mode: false }` に渡る。この時点で GjiFsm
+は `OnWarm`（直前に `LongIdle timer set duration=5000ms` で 5 秒間 warm 維持のはず
+だった）にもかかわらず、`NativeF2Down` は無条件に `MarkCold(F2NonTsf)` +
+`GjiCompositionReset` を発行し、warm 維持用の LongIdle タイマーを kill する
+（`Timer killed: logical=108`）。
+
+その約1.8秒後（何のフォーカス変更も long-idle もない、ごく普通の継続タイピング）に
+`せ` を送信する段になっても、composition は上記の stale な cold mark を引きずった
+まま `warm=false` と判定され、`idle_at_cold=235ms`（1.8秒前のスナップショット値が
+そのまま）で per-VK confirm のcold-startパス（`experiment/skip-cold-probe-wait` で
+事前 F2/probe 待機を撤去した後の唯一の安全網）に送り込まれる。ここで無関係な過去の
+composition が残していた候補ウィンドウの HIDE が数ms差でこのper-VK confirmチェック
+と衝突し（BUG-29/BUG-30 の「残存リスク」節が予告していた再発パターン）、
+`suspected literal` の誤検知 → `probe_io.rs` の
+「`consecutive raw-tsf-literal (count>=2)` は再送せず backspace のみで諦める」分岐
+（BUG-27 参照）に落ちて、`せ` と後続文字の一部が実際に失われた。
+
+**原因（本質）:** `NativeF2Down(tsf_mode=false)` には
+`ConfirmKeyDown`（`.claude/rules` 準拠、2026-07-11 修正済み: warm な確定キーは
+cold 化しない）と同種の「warm を無条件に cold 化してはいけない」ガードが欠けていた
+まま、`a3425bf` 以来放置されていた（`ConfirmKeyDown` 修正時のコメントにある
+「warm な GJI/TSF を確定キーだけで cold 化する理由は tsf_mode に関係なく無い」が、
+`NativeF2Down` には未適用だった）。過去に `F2NonTsf` cold-mark が実際に必要だった
+事例（`3c275a7`/`79134f5`/`b5946bb`）はいずれも GJI long-idle（GjiFsm が既に
+`OnCold(Long/Medium)`）由来であり、warm 中に F2 系イベントが来て何かを温め直す
+必要があった実測事例は無い。
+
+物理 VK 0xF0↑/0xF2↓ 自体の発火元（`self_injected=false` だが `injected=false` ＝
+awase 自身の注入マーカーも LLKHF_INJECTED も無い）は未特定。BUG-14 で記録済みの
+外部注入 VK_DBE_HIRAGANA down+up シグネチャに似るが、そちらは `injected=true`
+であり一致しない。win32k の JIS NLS キー変換などカーネル/ドライバ側由来の可能性が
+高い（同環境で 2026-07-06 にも類似の単独 0xF0 KeyUp を記録済み、`hook.rs:436-439`
+参照）。次回発生時は `[hook] IME-mode vk=0xXX dir ... scan=0xXX extra=0xXX` の
+`scan`/`extra` 値で切り分けること。
+
+**修正 (2026-07-19):** `CompositionEvent::NativeF2Down` に `warm: bool` を追加し
+（`composition_native_f2_down` から `self.output.is_composition_warm()` を渡す）、
+`tsf_mode=false` 分岐で `warm` なら `Response::consume()`（no-op、LongIdle タイマー
+はそのまま生存）に変更した。`tsf_mode=true`（`NativeF2Consumed`）分岐は変更なし
+（Medium/Long cold 維持のための別の設計意図があり、本件のトリガーではない）。
+
+**要実機確認（未実施）:** warm 中に物理 F2 キーを意図的に押下してすぐ打鍵した場合、
+literal 化しないか（本修正が唯一楽観的になる範囲。過去の F2NonTsf 実測事例は
+すべて long-idle 由来で、この状況専用の実測は無い）。
+
+**検討したが今回は見送った案:** `probe_io.rs` の give-up 分岐（consecutive失敗で
+romaji 再送せず backspace のみ）自体の緩和。BUG-27 追補2で「常に再送」は msedge で
+無限 backspace ループを起こし撤回済みのため、今回のトリガー（stale cold mark）を
+塞ぐ本修正を優先し、give-up 分岐自体は次回同種再発時に改めて検討する
+（BUG-29「残存リスク」節を参照）。同様に、外部注入（`injected=true`）F2 の
+ユーザー意図昇格を抑制する BUG-14 型ガードを `composition_native_f2_down` 呼び出し
+前に追加する案も検討したが、本件の実機ログでは `injected=false` であり本件の
+直接原因ではないため、今回のスコープからは除外した。
+
+**テスト:** `crates/awase-windows/src/tsf/composition_fsm.rs` に
+`native_f2_non_tsf_while_warm_is_noop` を追加（warm 中の `NativeF2Down` が
+`MarkCold`/`GjiCompositionReset` を一切発行しないことを検証）。既存の
+`native_f2_in_tsf_consumes_and_warms` / `native_f2_non_tsf_marks_cold_without_consume`
+は `warm` フィールド追加に伴い更新（挙動は不変）。`cargo check -p awase-windows
+--target x86_64-pc-windows-gnu` 通過確認済み。wine 未導入のためこのサンドボックス
+では `.exe` 実行はできず、実機再検証は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/composition_fsm.rs`
+（`NativeF2Down` 主修正・テスト）、`crates/awase-windows/src/platform.rs`
+（`composition_native_f2_down` で `warm` を渡す）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

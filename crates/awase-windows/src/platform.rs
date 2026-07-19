@@ -412,8 +412,9 @@ impl WindowsPlatform {
     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
     pub(crate) fn composition_native_f2_down(&mut self, applied_ime_on: Option<bool>) -> bool {
         let tsf_mode = self.output.is_tsf_mode();
+        let warm = self.output.is_composition_warm();
         self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode },
+            crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
             applied_ime_on,
         )
     }
