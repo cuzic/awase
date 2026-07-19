@@ -33,9 +33,7 @@ use std::rc::Rc;
 
 use crate::tsf::ime_mode_fsm::ImeModeState;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::{
-    ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget, TsfEnvSnapshot,
-};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan, TransmitTarget, TsfEnvSnapshot};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 
@@ -99,10 +97,6 @@ async fn ms_ime_ready_coro_body(
                     used_eager_path: false,
                     needs_literal: false,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations: ProbeObservations {
-                    nc_fired: false,
-                    gji_resumed: false,
                 },
                 romaji,
                 target: TransmitTarget::Tsf,

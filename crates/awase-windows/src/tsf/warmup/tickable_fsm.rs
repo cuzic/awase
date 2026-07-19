@@ -2,18 +2,16 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧（本番実装 9 種 + テスト用 StubMachine）
+//! ## 実装一覧（本番実装 7 種 + テスト用 StubMachine）
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
 //! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_transmit_done`, `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome probe + LiteralDetect（StepCoro） | `apply_transmit_done` |
-//! | `SacrificialWarmupCoro` | `sacr_warmup_coro.rs` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化（StepCoro） | `notify_start_composition` |
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
-//! | `ImeOffOnWarmupFsm` | `ime_offon_warmup_fsm.rs` | VK_IME_OFF→ON 暖機（手書きカウンタ FSM） | なし |
 //! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
-//! | `ChromeProbe` | `chrome_probe.rs` | Chrome cold-start GJI readiness probe（手書き FSM） | なし |
+//! | `ChromeProbe` | `chrome_probe.rs` | Chrome cold-start GJI readiness probe（内部 `TsfProbeCoro` ラッパー） | `apply_transmit_done`, `apply_vk_sent`（いずれも内部 `TsfProbeCoro` へ委譲） |
 //! | `UnicodeLiteralObserverFsm` | `unicode_literal_observer.rs` | Unicode 送信後の GJI write 観測（事後 Tsf 昇格） | なし |
 //!
 //! `Core`（`tick` / `cold_seq_hint`）は全実装型が実装する。上表は core 以外に
@@ -54,21 +52,18 @@ pub(crate) trait TickableFsm {
     }
 
     // ── SetOpenTrue/IMEセッション最初の1文字 per-VK confirm ケイパビリティ
-    // （GjiWarmupCoro のみ、BUG-24 追補）───────────────────────────────────
+    // （GjiWarmupCoro、TsfProbeCoro/ChromeProbe、BUG-24 追補・BUG-27）───────
     //
     // romaji を VK 単位に分割送信する際、各 VK 送信直後に生成した detector を
     // コルーチンへ渡す。複数 VK にわたって呼ばれる。
+    //
+    // BUG-27（2026-07-17）: `ChromeProbe`（`TsfProbeCoro` のラッパー）がこの
+    // メソッドの委譲を欠いていたため、Chrome 側の呼び出しがここのデフォルト
+    // no-op に落ち、内側の `TsfProbeCoro::apply_vk_sent` が一度も呼ばれずに
+    // `pending_vk_sent` が常に空のままだった。ラッパー型を追加するときは
+    // 実装対象メソッドの委譲漏れが無いか、この表と実装を必ず突き合わせること。
 
     fn apply_vk_sent(&mut self, _detector: LiteralDetector, _deadline_ms: u64) {}
-
-    // ── StartComposition 通知（SacrificialWarmupFsm のみ）────────────────
-    //
-    // drain_pending_composition_events が StartComposition を取り出したとき、
-    // 現在の sacr-warmup probe に対して composition が観測されたことを通知する。
-    // VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了する場合の
-    // IPC race 検出（Phase 3 IPC settle 待機）に使う。
-
-    fn notify_start_composition(&mut self) {}
 
     // ── Unicode deferred chars 追記（UnicodeColdWarmupFsm のみ）──────────
     //

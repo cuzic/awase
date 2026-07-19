@@ -102,6 +102,19 @@ impl TsfReadinessProbe {
     ///
     /// `true` = 送信可能（GJI 静止 or タイムアウト）、`false` = まだ待機中。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    ///
+    /// 2026-07-19 時点、本番の producer（`cold_warmup.rs::run_start`・
+    /// `vk_send.rs` の Chrome cold パス）はいずれも `min_ms=0`・`total_max_ms=0`
+    /// を渡すため、`min_deadline`/`max_deadline` は共に `warmup_sent_ms` と等しくなり、
+    /// このメソッドは実質「常に最初の呼び出しで `true` を返す」（`GJI_IDLE_MS`/
+    /// `settled_at_ms`/`POST_IDLE_MARGIN_MS` の待機ロジックは通らない）。
+    /// これは値が静的に固定されている（`ProbeObservations.gji_resumed` や
+    /// `DIAG_DISABLE_PROACTIVE_TSF_WARMUP` のような）到達不能ではなく、両呼び出し元が
+    /// たまたま実行時に 0 を渡しているだけの状態（コンパイラは保証しない）。
+    /// 本メソッド自体は任意の `min_ms`/`total_max_ms` に対して汎用的に正しく動作する
+    /// タイミング primitive であり、cold-start 待機時間の調整は本リポジトリで
+    /// 何度も出し入れされてきた領域（`tuning-constants.md` の釣り上げ履歴参照）。
+    /// 「今 0 が渡っているから」という理由だけでこの分岐自体を削除しないこと。
     pub fn check_now(&self, total_max_ms: u64) -> bool {
         let now = crate::hook::current_tick_ms();
         let max_deadline = self.warmup_sent_ms.saturating_add(total_max_ms);
@@ -133,27 +146,6 @@ impl TsfReadinessProbe {
         }
         // warmup 後に GJI I/O が来ていない = GJI は既に正常状態 → min_ms 経過済みで即解放
         true
-    }
-
-    /// GJI が settled になるまでポーリング待機する。
-    ///
-    /// `block_on` ではなく `std::thread::sleep` を使うため、ネストされたメッセージループを
-    /// 起動しない。`with_app` 内からの呼び出しでも WinEvent 再入が発生しない。
-    ///
-    /// 主にテストコードおよびフォールバックパスで使用する。
-    /// 本番の TSF プローブは TIMER_TSF_PROBE + `check_now` を使うこと。
-    pub fn wait_until_ready(&self, total_max_ms: u64) {
-        const POLL_MS: u64 = 10;
-        let cold_seq = self.cold_seq;
-        let call_ms = crate::hook::current_tick_ms();
-        loop {
-            if self.check_now(total_max_ms) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        }
-        let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
-        log::debug!("[tsf-probe] cold={cold_seq} wait_until_ready done, waited {total}ms");
     }
 }
 
@@ -271,8 +263,6 @@ pub struct ColdContext {
     last_cold_reason: std::cell::Cell<crate::output::ColdReason>,
     /// 最後に cold になった時点での idle 時間（ms）
     idle_ms_at_last_cold: std::cell::Cell<u64>,
-    /// 最後に cold にマークされた時刻（GetTickCount64 ms）。0 = 未設定。
-    cold_marked_ms: std::cell::Cell<u64>,
     /// `RawTsfLiteralRecovery` が連続で発火した回数
     raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
 }
@@ -283,7 +273,6 @@ impl ColdContext {
         Self {
             last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
-            cold_marked_ms: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
         }
     }
@@ -292,7 +281,6 @@ impl ColdContext {
     pub fn record_cold(&self, reason: crate::output::ColdReason, idle_ms: u64) {
         self.last_cold_reason.set(reason);
         self.idle_ms_at_last_cold.set(idle_ms);
-        self.cold_marked_ms.set(crate::hook::current_tick_ms());
     }
 
     /// `RawTsfLiteralRecovery` 連続カウントをインクリメントして新値を返す。
@@ -311,17 +299,6 @@ impl ColdContext {
     #[must_use]
     pub const fn idle_ms_at_last_cold(&self) -> u64 {
         self.idle_ms_at_last_cold.get()
-    }
-
-    /// `idle_ms_at_last_cold` を更新する。
-    pub fn set_idle_ms_at_last_cold(&self, ms: u64) {
-        self.idle_ms_at_last_cold.set(ms);
-    }
-
-    /// 最後に cold にマークされた時刻（ms）を返す。0 = 未設定。
-    #[must_use]
-    pub const fn cold_marked_ms(&self) -> u64 {
-        self.cold_marked_ms.get()
     }
 
     /// 最後に cold にマークされた理由を返す。
@@ -468,16 +445,19 @@ impl CompositionState {
         self.cold_ctx.last_cold_reason()
     }
 
-    /// 最後に cold にマークされた時刻（ms）を返す。0 = 未設定。
-    #[must_use]
-    pub const fn cold_marked_ms(&self) -> u64 {
-        self.cold_ctx.cold_marked_ms()
-    }
-
     /// `RawTsfLiteralRecovery` が連続で発火した回数を返す。
     #[must_use]
     pub const fn consecutive_count(&self) -> u32 {
         self.cold_ctx.consecutive_count()
+    }
+
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
+    ///
+    /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した dispatcher が
+    /// 呼ぶ（BUG-27 追補4）。フォーカス変更・`SetOpenTrue` 以外に、本物の confirm
+    /// でも「連続失敗」の連続性が切れるため、ここでもリセットが必要。
+    pub fn reset_consecutive_count(&self) {
+        self.cold_ctx.reset_consecutive_count();
     }
 
     /// unicode 送信時刻を返す。0 = 未送信。
@@ -490,17 +470,6 @@ impl CompositionState {
     pub fn set_last_unicode_transmit_ms(&self, ms: u64) {
         self.warm_epoch.set_last_unicode_transmit_ms(ms);
     }
-
-    /// warm 状態を維持したまま連続カウントをインクリメントする。
-    ///
-    /// TSF mode の回収パスで呼ぶ。`mark_composition_cold` は呼ばないため
-    /// `flush_raw_tsf_literal_romaji` の再送が warm 経路（F2 なし）を通る。
-    pub fn increment_consecutive_count(&self) {
-        let n = self.cold_ctx.increment_consecutive_count();
-        log::debug!(
-            "[composition] increment_consecutive_count → {n} (warm state preserved for TSF mode re-send)"
-        );
-    }
 }
 
 // ── LiteralDetector ──
@@ -508,39 +477,37 @@ impl CompositionState {
 /// `send_romaji_as_tsf` が文字を送信した直後に生成し、
 /// GJI 候補ウィンドウの変化を監視して composition が成功したか判定する検出器。
 ///
-/// ## 確認シグナル
+/// ## 確認シグナル（TSF/Chrome 共通、BUG-30 で統一）
 ///
-/// - 通常（`was_candidate_visible=false` かつ `use_process_io_confirm=false`）:
-///   `gji_candidate_show` の SHOW イベント変化を待つ。
+/// `gji_write_bytes()` が [`COMPOSITION_BYTES_THRESHOLD`] バイト以上増加した、
+/// **または** `gji_candidate_show`（候補ウィンドウ SHOW イベント）が発火した、
+/// のいずれかで `CompositionConfirmed` とする（OR 条件、BUG-27 追補5）。
 ///
-/// - 候補ウィンドウ表示中（`was_candidate_visible=true`）または
-///   プロセス I/O 早期確認モード（`use_process_io_confirm=true`）:
-///   `gji_last_io_ms` の変化（GJI プロセス I/O カウンタ）を待つ。
+/// 以前は target（Chrome/TSF）ごとに別ロジックだった（Chrome は write-bytes 閾値、
+/// TSF は `gji_last_io_ms` の「変化の有無」を閾値なしで判定）。閾値なし判定は
+/// 「F2 等のモード切り替えキーでも `gji_last_io_ms` が変化する」誤検知の懸念が
+/// あり、かつ Chrome 側は cold literal（未 compose）でも WriteTransferCount が
+/// 実測 +300B ほど動くことが分かっている（[`COMPOSITION_BYTES_THRESHOLD`] の
+/// 根拠参照）ため、TSF-native composition でも同様の非ゼロ I/O が literal 時に
+/// 出ないという保証はなかった。閾値なし判定より閾値ありの方が安全側（confirm が
+/// 遅れる方向にしか倒れない）と判断し、target 分岐を撤去して統一した
+/// （`docs/known-bugs.md` BUG-30 追補1）。
 ///
-/// `use_process_io_confirm=true` の使いどころ: `gji_resumed=true`（F2×2 warmup 後に
-/// GJI が I/O 応答済み）の long_idle パス。この場合 SHOW が >500ms 遅れることがあるが、
-/// GJI が VK を受け取ると辞書参照等の I/O を SHOW より先に行うため、
-/// `gji_last_io_ms` 変化（〜数十ms）で早期確認できる。
-/// リテラル時は GJI が VK を受け取らないため I/O 変化なし → 通常タイムアウトで検出。
+/// **実測未了**: [`COMPOSITION_BYTES_THRESHOLD`]（350B）は Chrome の SendInput
+/// 経路で実測された値であり、TSF-native composition（WezTerm 等）で同じ桁の
+/// I/O が出るかは未検証。実機で乖離が確認された場合は target 別の定数に
+/// 分離すること。
 #[derive(Debug)]
 pub struct LiteralDetector {
     /// 送信前の GJI 候補ウィンドウ SHOW ベースライン
     gji_show_baseline: Baseline,
-    /// 送信前の GJI I/O タイムスタンプ
-    io_baseline: u64,
-    /// 送信前に候補ウィンドウが表示中だったか
-    was_candidate_visible: bool,
-    /// SHOW イベントの代わりに GJI プロセス I/O 変化で早期確認するか
+    /// 送信前の WriteTransferCount 累積値
+    write_bytes_baseline: u64,
+    /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいか。
     ///
-    /// `gji_resumed=true` の long_idle パスで使用。SHOW が遅い（>500ms）ケースでも
-    /// I/O 変化（VK 処理による辞書 I/O）で数十ms 以内に CompositionConfirmed を返す。
-    use_process_io_confirm: bool,
-    /// Chrome 用 composition 確認ベースライン（`new_gji_resumed` 時のみ `Some`）。
-    ///
-    /// `gji_last_io_ms` はモード切り替えキー（F2 等）でも変化するため、
-    /// WriteTransferCount のベースラインを記録して文字コンポジションのみを検出する。
-    /// `None` の場合は従来の `gji_last_io_ms` 変化チェックを使用する。
-    write_bytes_baseline: Option<u64>,
+    /// per-VK 単体確認（`TransmitSingleVk`）では前モーラ由来の誤 veto の恐れが
+    /// あるため `false` を渡すこと。単語単位のバッチ確認では `true`。
+    veto_eligible: bool,
 }
 
 /// raw-TSF-literal 検出結果。
@@ -552,56 +519,28 @@ pub enum DetectionResult {
     SuspectedLiteral,
 }
 
-impl Default for LiteralDetector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl LiteralDetector {
     /// 現在の観測値からベースラインを取得して `LiteralDetector` を生成する。
     ///
-    /// ローマ字送信直前に呼ぶこと。
-    pub fn new() -> Self {
-        use std::sync::atomic::Ordering::Relaxed;
+    /// ローマ字送信直前に呼ぶこと。`veto_eligible` は
+    /// [`veto_eligible`](Self::veto_eligible) を参照。
+    #[must_use]
+    pub fn new(veto_eligible: bool) -> Self {
         Self {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
-            io_baseline: TSF_OBS.gji_last_io_ms.load(Relaxed),
-            was_candidate_visible: TSF_OBS.gji_candidate_visible.load(Relaxed),
-            use_process_io_confirm: false,
-            write_bytes_baseline: None,
+            write_bytes_baseline: crate::tsf::observer::gji_write_bytes(),
+            veto_eligible,
         }
     }
 
-    /// GJI プロセス I/O 変化を早期確認シグナルとして使う `LiteralDetector` を生成する。
+    /// VK 送信前に取得済みの WriteTransferCount ベースラインを使う `LiteralDetector` を生成する。
     ///
-    /// `gji_resumed=true`（F2×2 warmup 後に GJI I/O 応答確認済み）の long_idle TSF パスで使用。
-    /// GJI が VK を処理すると辞書 I/O が発生し `gji_last_io_ms` が SHOW より先に更新される
-    /// ため、数十ms で CompositionConfirmed を返せる。
+    /// `SacrificialWarmup` の Chrome パス・per-VK confirm で使用する。VK 送信後に
+    /// [`Self::new`] を呼ぶと、タイミングによっては当該 VK の write がベースラインに
+    /// 吸収されて検出できない。VK 送信直前に取得したベースラインを引数で渡すことで
+    /// この race を解消する。
     ///
-    /// ## Chrome 用 WriteTransferCount 確認
-    ///
-    /// `gji_last_io_ms` は F2（モード切り替え）でも変化するため誤検知の恐れがある。
-    /// `write_bytes_baseline` に現在の WriteTransferCount 累積値を記録し、
-    /// [`COMPOSITION_BYTES_THRESHOLD`] バイト以上の増加を composition 確認シグナルとする。
-    /// F2 は WriteTransferCount を増加させない（w_KB=+0.0）ため誤検知しない。
-    ///
-    /// リテラル時（GJI が VK を受け取らない）は I/O 変化なし → タイムアウトで SuspectedLiteral。
-    #[must_use]
-    pub fn new_gji_resumed() -> Self {
-        let mut d = Self::new();
-        d.use_process_io_confirm = true;
-        d.write_bytes_baseline = Some(crate::tsf::observer::gji_write_bytes());
-        d
-    }
-
-    /// VK_A 送信前に取得済みの WriteTransferCount ベースラインを使う `LiteralDetector` を生成する。
-    ///
-    /// `SacrificialWarmup` の Chrome パスで使用する。VK_A 送信後に `new_gji_resumed()` を
-    /// 呼ぶと、タイミングによっては VK_A の write がベースラインに吸収されて検出できない。
-    /// VK_A 送信直前に取得したベースラインを引数で渡すことでこの race を解消する。
-    ///
-    /// ## 閾値の根拠
+    /// ## 閾値の根拠（Chrome 実測、TSF は未検証。型ドキュメント参照）
     ///
     /// 実機ログ（5サンプル）より:
     /// - cold Chrome（リテラル 'a'）: VK_A 後 w_KB ≈ +0.3KB（+300 バイト）
@@ -609,17 +548,18 @@ impl LiteralDetector {
     ///
     /// [`COMPOSITION_BYTES_THRESHOLD`] = 350 バイトで cold/warm を分離できる。
     #[must_use]
-    pub fn new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a: u64) -> Self {
-        let mut d = Self::new();
-        d.use_process_io_confirm = true;
-        d.write_bytes_baseline = Some(write_bytes_before_vk_a);
-        d
+    pub fn new_with_pre_send_baseline(write_bytes_before_vk: u64, veto_eligible: bool) -> Self {
+        Self {
+            gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
+            write_bytes_baseline: write_bytes_before_vk,
+            veto_eligible,
+        }
     }
 
-    /// cold Chrome（リテラル 'a': +300B）と warm Chrome（コンポジション 'あ': +400B）を
+    /// cold（リテラル 'a': +300B）と warm（コンポジション 'あ': +400B）を
     /// 区別するための WriteTransferCount 増加閾値。
     ///
-    /// 実機ログ 5 サンプルに基づく。cold/warm の中間値 350 バイトを閾値とする。
+    /// 実機ログ 5 サンプル（Chrome）に基づく。cold/warm の中間値 350 バイトを閾値とする。
     const COMPOSITION_BYTES_THRESHOLD: u64 = 350;
 
     /// タイマーポーリング用ノンブロッキング判定。
@@ -628,29 +568,34 @@ impl LiteralDetector {
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
     #[must_use]
     pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
-        use std::sync::atomic::Ordering::Relaxed;
         let now = crate::hook::current_tick_ms();
-        let confirmed = self.write_bytes_baseline.map_or_else(
-            || {
-                if self.was_candidate_visible || self.use_process_io_confirm {
-                    // long_idle TSF パス: gji_last_io_ms 変化で早期確認
-                    TSF_OBS.gji_last_io_ms.load(Relaxed) != self.io_baseline
-                } else {
-                    // 通常パス: candidate window SHOW イベント待ち
-                    TSF_OBS
-                        .gji_candidate_show
-                        .has_changed(self.gji_show_baseline)
-                }
-            },
-            |write_baseline| {
-                // Chrome 用: WriteTransferCount 増加で文字コンポジションを確認する。
-                // gji_last_io_ms は F2（モード切り替え）でも変化するため信頼しない。
-                // VK_A → 'あ' 変換は w_KB=+0.3KB 程度を書き込む。
-                // F2 は w_KB=+0.0（WriteTransferCount 増加なし）なので閾値以上には達しない。
-                crate::tsf::observer::gji_write_bytes()
-                    > write_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD)
-            },
-        );
+
+        // COMPOSITION_BYTES_THRESHOLD (350B) は「VK_A→'あ' のように1VKで
+        // 完結する1文字」の実測（5サンプル）に基づく値であり、per-VK confirm
+        // （`TransmitSingleVk`、romaji を1VKずつ送る）が子音単体（例: "si"の"s"、
+        // "ta"の"t"）を送った直後に問い合わせるケースは検証対象外だった。子音単体は
+        // romaji バッファがまだ未確定のため、完結した1文字と同じ量の
+        // WriteTransferCount 増加が起きるとは限らない。実機（Microsoft
+        // Teams/TeamsWebView）で「候補ウィンドウは正しく表示されている
+        // （[gji-obs] candidate SHOW ログで確認済み）のに 350B閾値に届かず
+        // SuspectedLiteral と誤判定され、正しく入力できていた文字が backspace で
+        // 消える」regression を確認した（docs/known-bugs.md BUG-27 追補5）。
+        // SHOW イベントが増えていれば、WriteTransferCount 閾値に未達でも
+        // confirmed とする（OR 条件）。
+        //
+        // 既知の限界: 直前の VK 送信で候補ウィンドウが既に表示中だった場合、
+        // SHOW カウンタは「新規表示」でのみ増分するため、続く VK では SHOW が
+        // 増えないケースがあり得る。その場合は write-bytes 閾値に委ねる
+        // （OR 条件なので write-bytes 側が拾えば確認できる）。両方とも拾えない
+        // 残存ケースは `LiteralDetectCore::veto_decision`（BUG-30）が
+        // 候補ウィンドウ可視性ベースの veto で補う。
+        let write_confirmed = crate::tsf::observer::gji_write_bytes()
+            > self.write_bytes_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD);
+        let show_confirmed = TSF_OBS
+            .gji_candidate_show
+            .has_changed(self.gji_show_baseline);
+        let confirmed = write_confirmed || show_confirmed;
+
         if confirmed {
             Some(DetectionResult::CompositionConfirmed)
         } else if now >= deadline_ms {
@@ -658,6 +603,15 @@ impl LiteralDetector {
         } else {
             None
         }
+    }
+
+    /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいかどうか。
+    ///
+    /// 構築時に渡された `veto_eligible` をそのまま返す。per-VK 単体確認では
+    /// 前モーラ由来の誤 veto の恐れがあるため `false` で構築すること。
+    #[must_use]
+    pub(crate) fn veto_eligible(&self) -> bool {
+        self.veto_eligible
     }
 }
 
@@ -671,6 +625,19 @@ mod tests {
     /// テスト間でグローバルな観測 atomic が競合しないようにシリアライズするロック
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
+    /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
+    /// 検証するテスト専用の待機ヘルパーとしてここに残す）。
+    fn poll_until_ready(probe: &TsfReadinessProbe, total_max_ms: u64) {
+        const POLL_MS: u64 = 10;
+        loop {
+            if probe.check_now(total_max_ms) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+        }
+    }
+
     /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
     #[test]
     fn probe_fallback_waits_total_max_ms() {
@@ -680,7 +647,7 @@ mod tests {
         let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0);
-        probe.wait_until_ready(100);
+        poll_until_ready(&probe, 100);
 
         let elapsed = start.elapsed().as_millis();
         // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
@@ -704,7 +671,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(warmup_ms, 0, 0); // min_ms=0
-        probe.wait_until_ready(1_000);
+        poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();
         // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
@@ -728,7 +695,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
-        probe.wait_until_ready(300);
+        poll_until_ready(&probe, 300);
 
         let elapsed = start.elapsed().as_millis();
         // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
@@ -754,7 +721,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0
-        probe.wait_until_ready(1_000);
+        poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();
         // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
@@ -793,6 +760,63 @@ mod tests {
             (40..150).contains(&second_idle),
             "確定キー連打のたびに last_send_ms がリセットされ idle は ~60ms のはず\
              （リセットされないと累積して ~120ms になり long_idle 誤判定を招く）: {second_idle}ms"
+        );
+    }
+
+    // ── BUG-27 追補5: Chrome per-VK confirm の write-bytes 閾値が候補ウィンドウ
+    // SHOW を見ていなかった問題の回帰テスト ────────────────────────────────
+
+    /// write-bytes が閾値未満でも、候補ウィンドウ SHOW が観測されていれば
+    /// `CompositionConfirmed` を返すことを確認する。
+    ///
+    /// `COMPOSITION_BYTES_THRESHOLD`（350B）は「VK_A→'あ' のように1VKで完結する
+    /// 1文字」の実測に基づく値で、Chrome per-VK confirm が子音単体
+    /// （例: "si"の"s"）を送った直後に問い合わせるケースは対象外だった。
+    /// 実機（Microsoft Teams/TeamsWebView）で「候補ウィンドウは正しく表示されて
+    /// いるのに350B閾値に届かず SuspectedLiteral と誤判定される」regression を
+    /// 確認した（docs/known-bugs.md BUG-27 追補5）。
+    #[test]
+    fn check_now_confirms_via_candidate_show_when_write_bytes_below_threshold() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(1_000, SeqCst);
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(1_000, true);
+
+        // write_bytes は閾値未満のまま（子音単体で完結した1文字分の書き込みが
+        // 起きないケースを模擬）。
+        TSF_OBS.gji_write_bytes.store(1_100, SeqCst); // +100B < 350B 閾値
+
+        // しかし候補ウィンドウの SHOW イベントは観測されている。
+        TSF_OBS.gji_candidate_show.notify();
+
+        let now_ms = crate::hook::current_tick_ms();
+        let result = detector.check_now(now_ms + 10_000); // まだ deadline 未到達
+        assert!(
+            matches!(result, Some(DetectionResult::CompositionConfirmed)),
+            "write-bytes 閾値未達でも candidate SHOW があれば CompositionConfirmed の \
+             はず: {result:?}"
+        );
+    }
+
+    /// write-bytes 閾値超過・SHOW どちらも観測されなければ、従来通り deadline 経過で
+    /// `SuspectedLiteral` を返すことを確認する（本物の literal 化検出は壊さない）。
+    #[test]
+    fn check_now_still_detects_suspected_literal_when_neither_signal_fires() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(2_000, SeqCst);
+        let baseline_show = TSF_OBS.gji_candidate_show.baseline();
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(2_000, true);
+
+        // write_bytes・candidate_show とも変化なし（本物の literal 化を模擬）。
+        assert!(!TSF_OBS.gji_candidate_show.has_changed(baseline_show));
+
+        let now_ms = crate::hook::current_tick_ms();
+        let result = detector.check_now(now_ms); // deadline は既に到達済み
+        assert!(
+            matches!(result, Some(DetectionResult::SuspectedLiteral)),
+            "write-bytes・SHOW とも変化なしで deadline 到達なら SuspectedLiteral の \
+             はず: {result:?}"
         );
     }
 }

@@ -114,9 +114,18 @@ pub fn classify_conv_transition(
     let was_romaji_capable = current.is_romaji_capable();
 
     // belief 変化なし (None) の場合:
-    // - conv 不変: カタカナ(NATIVE+KATAKANA)+shadow=OFF のみが唯一の回復経路
-    //   (AssumedRomaji は常に classify_idle=None を返すため)。
-    // - conv 変化: NATIVE(ひらがな/カタカナ)切替+shadow=OFF を engine ON 同期。
+    // - NATIVE(ひらがな/カタカナ)+shadow=OFF なら conv 不変・変化を問わず engine ON
+    //   同期を試みる（BUG-26: かつて conv 不変の場合はカタカナのみを回復対象とし、
+    //   非カタカナ NATIVE を無条件で無視していた。FocusChanged 直後の最初の
+    //   idle-conv-check が「既に NATIVE」を steady-state として読む場合
+    //   （ConvModeMgr が focus 変更前から同じ値を保持しており conv_mode_changed が
+    //   一度も true にならない）、この経路だけが唯一の回復手段なのに永久に
+    //   EngineSync::None を返し続け、shadow=OFF が実際の Hiragana conv と乖離した
+    //   まま engine が romaji パススルーに固定される（2026-07-17, Windows Terminal /
+    //   Windows.UI.Input.InputSite.WindowClass で実機再現、docs/known-bugs.md
+    //   BUG-26 参照）。
+    // - AssumedRomaji は常に classify_idle=None を返すため、この分岐が None
+    //   ケースでの唯一の回復経路になる。
     //
     // belief を更新する (Some) 場合は、更新後の new_mode を見て engine を同期する。
     // 従来コードは複数の if を順に評価していたが、発火するアクションは互いに排他
@@ -124,14 +133,13 @@ pub fn classify_conv_transition(
     // (NATIVE=0) は NativeToggle 系と、`!effective_open` を要求する分岐は
     // `effective_open` を要求する romaji 回復分岐と排他になる。
     let engine = input_mode_update.map_or(
-        if !conv_mode_changed {
-            if has_katakana && has_native && !effective_open {
-                EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
+        if has_native && !effective_open {
+            let reason = if has_katakana {
+                ConvSyncReason::KatakanaShadowOff
             } else {
-                EngineSync::None
-            }
-        } else if has_native && !effective_open {
-            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+                ConvSyncReason::NativeToggleShadowOff
+            };
+            EngineSync::ReportOpenInference(reason)
         } else {
             EngineSync::None
         },
@@ -398,6 +406,25 @@ mod tests {
     fn hiragana_belief_romaji_capable_shadow_off_syncs_engine() {
         // input_mode 変化なし (None) だが conv 変化 + NATIVE + shadow=OFF → engine ON。
         let t = classify(CONV_HIRAGANA, assumed(), false, true);
+        assert_eq!(t.input_mode_update, None);
+        assert_eq!(
+            t.engine,
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+        );
+    }
+
+    /// BUG-26 回帰: 上と同じ conv=0x19 (ひらがなローマ字, 非カタカナ) だが
+    /// conv_mode_changed=false（steady-state — FocusChanged 直後の最初の
+    /// idle-conv-check で ConvModeMgr が既にこの値を保持しており「変化」を
+    /// 検出しない場合に相当）。かつては非カタカナ NATIVE は conv_mode_changed=true
+    /// の場合のみ回復対象とされ、この steady-state ケースは無条件で
+    /// EngineSync::None を返し続けていた。shadow=OFF が実際の Hiragana conv と
+    /// 乖離したまま、engine が romaji パススルーに永久に固定される
+    /// （Windows Terminal / InputSite.WindowClass で実機再現、docs/known-bugs.md
+    /// BUG-26）。conv_mode_changed の有無に関わらず回復するのが正しい。
+    #[test]
+    fn hiragana_belief_romaji_capable_shadow_off_steady_state_still_syncs_engine() {
+        let t = classify(CONV_HIRAGANA, InputModeState::ObservedRomaji, false, false);
         assert_eq!(t.input_mode_update, None);
         assert_eq!(
             t.engine,

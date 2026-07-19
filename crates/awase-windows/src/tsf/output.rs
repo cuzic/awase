@@ -55,57 +55,6 @@ pub enum ColdReason {
 }
 
 impl ColdReason {
-    /// warmup 後の eager settle 待機時間 (ms)。long_idle=true のとき延長。
-    #[must_use]
-    pub const fn eager_settle_ms(self, long_idle: bool) -> u64 {
-        match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
-                if long_idle {
-                    2000
-                } else {
-                    1500
-                }
-            }
-            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle {
-                    1500
-                } else {
-                    500
-                }
-            }
-            Self::SymbolVkSent
-            | Self::F2NonTsf
-            | Self::RawTsfLiteralRecovery
-            | Self::CtrlKeyBypass
-            | Self::SetOpenFalse => 500,
-        }
-    }
-
-    /// VK_DBE_HIRAGANA 送信後の最小待機時間 (ms)（GJI I/O 観測開始前の固定待機）
-    #[must_use]
-    pub const fn probe_min_ms(self, long_idle: bool) -> u64 {
-        match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
-                if long_idle {
-                    300
-                } else {
-                    // short_idle: LiteralDetect が安全網になるため短縮可
-                    100
-                }
-            }
-            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle {
-                    300
-                } else {
-                    50
-                }
-            }
-            Self::SymbolVkSent => 30,
-            Self::F2NonTsf | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 100,
-            Self::CtrlKeyBypass => 50,
-        }
-    }
-
     /// confirmation キー（composition 確定/キャンセル）かどうか
     #[must_use]
     pub const fn is_confirm_key(self) -> bool {
@@ -122,12 +71,17 @@ impl ColdReason {
     }
 }
 
-/// TSF モード用 INPUT 構造体を作成するヘルパー（TSF_MARKER 付き）
+/// scan code 付き INPUT 構造体を作成する共通ヘルパー。
 ///
 /// `wVk` を保持したまま `MapVirtualKeyW` で算出した `wScan` も設定する。
 /// `KEYEVENTF_SCANCODE` は付加しない（付加すると WezTerm が LLKHF_SCANCODE フラグ付き
-/// キーとして検出し IME をバイパスしてしまうため）。
-pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
+/// キーとして検出し IME をバイパスしてしまうため、`99f56a2`→`2d4d85c` の2段階の実機
+/// トライで判明した組み合わせ）。`extra_info` は呼び出し元のマーカーをそのまま使う。
+pub(crate) fn make_scan_key_input(
+    vk: awase::types::VkCode,
+    is_keyup: bool,
+    extra_info: usize,
+) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC) as u16 };
     let flags = if is_keyup {
         KEYEVENTF_KEYUP
@@ -142,10 +96,17 @@ pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> IN
                 wScan: scan,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: TSF_MARKER,
+                dwExtraInfo: extra_info,
             },
         },
     }
+}
+
+/// TSF モード用 INPUT 構造体を作成するヘルパー（TSF_MARKER 付き）。
+///
+/// [`make_scan_key_input`] を参照。
+pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
+    make_scan_key_input(vk, is_keyup, TSF_MARKER)
 }
 
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
@@ -195,7 +156,9 @@ pub fn flush_raw_tsf_literal_backspaces() {
     use crate::vk::{VK_BACK, VK_ESCAPE};
     use std::sync::atomic::Ordering::Relaxed;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
-    let escape_composition = crate::RAW_TSF_LITERAL.escape_composition.swap(false, Relaxed);
+    let escape_composition = crate::RAW_TSF_LITERAL
+        .escape_composition
+        .swap(false, Relaxed);
     if n == 0 && !escape_composition {
         return;
     }

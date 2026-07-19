@@ -48,10 +48,14 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 
 /// Chrome VK パスでの「長期 idle」判定閾値 (ms)。
 ///
-/// この閾値を超えると Chrome プローブ最小待機時間が 20ms → 200ms に延長される。
-/// 実測で idle=6312ms 後に Chrome TSF の composition context 再初期化に ~145ms かかる
-/// 事例があり (cold=1040)、20ms probe では "ko" が raw text として出力された。
-/// 5000ms に設定することで 5s 以上の idle 後の cold start に 200ms 余裕を確保する。
+/// `GjiFsm::long_idle_ms_for(InjectionMode::Vk)` が参照し、`ColdKind::classify` の
+/// Short/Medium/Long 重症度分岐（cold-start warmup の経路選択に使う）の cutoff になる。
+///
+/// 予防的な Chrome プローブ最小待機の延長（20ms→200ms）機構自体は 2026-07-18 に
+/// 撤去した（`docs/known-bugs.md` BUG-24 参照、per-VK confirm に一本化）。この定数の
+/// 元々の実測根拠（idle=6312ms 後に Chrome TSF の composition context 再初期化に
+/// ~145ms かかった事例, cold=1040）は撤去された機構向けだったが、値自体は
+/// `ColdKind` 分岐の cutoff として引き続き使われている。
 ///
 /// TSF/GJI パス（WezTerm 等）は GJI セッション生存期間に依存するため `LONG_IDLE_MS` を使用する。
 pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
@@ -75,21 +79,21 @@ pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
 /// LiteralDetect のタイムアウトで補う必要がある。500ms = 実測最大 ~370ms + 130ms マージン。
 pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
 
-/// ProbeWithSettle フェーズでの再 warmup 最大待機時間 (ms)。
+/// 候補ウィンドウ可視 veto の上限保留時間 (ms)。
 ///
-/// eager_re_warmup で F2 を送信してから GJI settled を待つ最大時間。
-pub const RE_WARMUP_MS: u64 = 500;
-
-/// GJI long idle 後の F2×2 に対する GJI I/O 応答確認 NameChangeWait の最大タイムアウト (ms)。
+/// `LiteralDetectCore::poll` が `SuspectedLiteral`（`RAW_TSF_LITERAL_DETECT_MS` 系の
+/// deadline 到達）を検出した時点で GJI 候補ウィンドウがまだ可視の場合、backspace を
+/// 出さず hold する（可視である以上ほぼ確実に compose 成功しているため、消すと
+/// BUG-27 追補5 と同型の regression になる）。この定数はその hold の上限であり、
+/// 超過しても backspace はせず無回収の `Done` で打ち切る（候補ウィンドウが固着した
+/// 異常系でタイマーが永久に止まらないための安全弁）。
 ///
-/// GJI I/O 早期終了（gji_long_idle_probe）が機能するケースでは GJI_IDLE_MS (80ms) 静止後に
-/// 即送信できる。機能しない（WezTerm + keybinds_ok=false 等）場合のフォールバックタイムアウト。
-///
-/// 実測（28s アイドル後 cold=16）: F2×2 送信から 181ms 後に GJI が初めて VK を受け入れた。
-/// 150ms ではタイムアウトが早すぎ「bあ」のような部分リテラル化が発生したため 350ms に延長。
-/// 350ms = 実測最大 ~180ms + 170ms マージン。
-/// タイムアウト時は VK_IME_OFF→VK_IME_ON セカンドステージへ。
-pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
+/// **実測未了 — 暫定値**: 「候補ウィンドウ可視 → I/O/SHOW 確定」までの実測遅延データが
+/// まだ無い。300ms は `CHROME_GJI_REINIT_CONFIRM_MS`（IME ON→NATIVE確認 300ms）等、
+/// 同程度の「確認待ち」定数から類推した仮値であり、`tuning-constants.md` が要求する
+/// 実測根拠を満たしていない。実機（Windows, Chrome/Teams/WezTerm 等）で計測してから
+/// 本番投入すること。
+pub const GJI_CANDIDATE_VETO_CAP_MS: u64 = 300;
 
 /// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
 ///
@@ -99,37 +103,16 @@ pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 /// をこの閾値以上でも有効にする。
 pub const MEDIUM_IDLE_PROBE_MS: u64 = 7_000;
 
-/// Chrome プローブ最小待機時間 (ms)。
+/// Chrome/Unicode-mode GJI 再初期化（VK_IME_OFF→VK_IME_ON）後、`IMC_GETCONVERSIONMODE`
+/// で Hiragana を確認するまでの最大待機時間 (ms)。
 ///
-/// F2 を SendMessageTimeout で送信後、TSF 応答を待つ最低時間。
-pub const CHROME_PROBE_MIN_MS: u64 = 20;
-
-/// Chrome プローブ最大待機時間 (ms)。
-pub const CHROME_PROBE_MAX_MS: u64 = 120;
-
-/// 長期 idle (`idle_ms_at_last_cold > LONG_IDLE_MS`) cold start 時の Chrome プローブ
-/// 最小待機時間 (ms)。GJI が長期 idle 後に reinit に要する時間を見越して延長する。
-///
-/// Chrome TSF は GJI I/O を出さないため probe は min_ms 経過後に即発火する。
-/// 実測で Chrome が F2 受信後 composition context を再初期化するのに ~114ms 必要なケースを
-/// 確認（probe は f2_sent_ms 起点なので async overhead ~7ms を差し引くと実効 ~107ms）。
-/// 200ms に設定することで十分な余裕を確保する。
-pub const CHROME_PROBE_LONG_IDLE_MIN_MS: u64 = 200;
-
-/// 長期 idle 時の Chrome プローブ最大待機時間 (ms)。
-///
-/// 120ms の上限では GJI が再活性化する前に timeout して literal "ra" が出力される
-/// 症状を抑えるため、500ms まで延長する（GJI が settle すれば短く済む）。
-pub const CHROME_PROBE_LONG_IDLE_MAX_MS: u64 = 500;
-
-/// Chrome GJI 再初期化（VK_IME_OFF→VK_IME_ON）後、`IMC_GETCONVERSIONMODE` で Hiragana を確認するまでの
-/// 最大待機時間 (ms)。
-///
-/// GJI は VK_IME_ON 受信後 ~50-100ms 以内に IME ON 状態に移行する実測値が多い。
-/// 300ms あれば十分な余裕を確保できる。タイムアウト時は強制再送する。
+/// `Output::send_f22_f21_reinit`（Unicode injection mode の long-cold GJI 再起動）が
+/// `send_chrome_gji_reinit_and_poll` 経由で使う。GJI は VK_IME_ON 受信後 ~50-100ms 以内に
+/// IME ON 状態に移行する実測値が多い。300ms あれば十分な余裕を確保できる。タイムアウト時は
+/// 強制再送する。
 pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
 
-/// Chrome GJI 再初期化確認ポーリング間隔 (ms)。
+/// [`CHROME_GJI_REINIT_CONFIRM_MS`] のポーリング間隔 (ms)。
 ///
 /// `IMC_GETCONVERSIONMODE` を async でこの間隔ごとに発行する。
 /// 10ms 間隔で最大 30 回 = 300ms（`CHROME_GJI_REINIT_CONFIRM_MS` に対応）。
@@ -150,48 +133,7 @@ pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
 pub const MS_IME_READY_CONFIRM_MS: u64 = 400;
 
 /// MS-IME confirm-then-transmit ゲートの IMC ポーリング間隔 (ms)。
-///
-/// `CHROME_GJI_REINIT_POLL_INTERVAL_MS` と同じ 10ms（同じシグナル・同じ発行機構）。
 pub const MS_IME_READY_POLL_INTERVAL_MS: u64 = 10;
-
-/// SacrificialWarmup（VK_A+BS）で composition-confirmed 後、GJI candidate window が
-/// 非表示になるのを待つ最大時間 (ms)。
-///
-/// ## 背景（Chrome IPC race condition）
-///
-/// Chrome/GJI の IME 処理はクロスプロセス IPC（レンダラー↔ブラウザー）を経由するため、
-/// VK_A+BS の EndComposition が TSF スタックを伝播するまでに ~200ms 程度かかる。
-///
-/// GJI write (+400B) による composition-confirmed は VK_A+BS 送信から ~26ms で検出できるが、
-/// そこで即座に実ローマ字を送ると、delayed EndComposition IPC が後続の composition を
-/// キャンセルする競合が発生する（例：「korede」が composition 後 225ms で消える）。
-///
-/// candidate window が非表示になった（HIDE 観測）= EndComposition IPC が Chrome に到達した
-/// ことの代理指標として使い、その後に実ローマ字を送ることで race を回避する。
-///
-/// 実測: VK_A+BS → HIDE まで ~225ms（long-idle cold Chrome）。300ms で十分な余裕を確保。
-/// タイムアウト時（window が最初から非表示だった場合等）は即時再送する。
-pub const SACR_WARMUP_CHROME_HIDE_WAIT_MS: u64 = 300;
-
-/// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したときの IPC settle 待機時間（ms）。
-///
-/// VK_A+BS は1回の SendInput で送るため Chrome は同一メッセージポンプ反復内で処理し、
-/// SHOW と HIDE が ~5ms 以内に連続して発火する。この場合 sacr-warmup の最初の tick では
-/// `gji_candidate_visible=false` だが EndComposition IPC はまだ Chrome に伝播中（~200ms）。
-/// HIDE wait（Phase 2）が機能しないため、固定時間の IPC settle 待機（Phase 3）を使う。
-/// ~200ms の IPC 伝播より長い 250ms を設定する。
-pub const SACR_WARMUP_CHROME_IPC_SETTLE_MS: u64 = 250;
-
-/// F2NonTsf cold start で物理 F2 送信からこの時間以上経過した場合、
-/// Chrome の TSF composition context が失効した可能性があるため
-/// programmatic F2 を再送する（ms）。
-///
-/// 背景: Chrome は F2 受信後 ~326ms で composition context を初期化するが、
-/// 一定時間キー入力がないと context が失効する（実測: 1688ms で失効確認）。
-/// 失効後のバッチ送信では最初のキーが literal になるバグが発生する
-/// （例: まぁ → mあぁ）。1200ms 超過時に programmatic F2 を再送することで
-/// context を確実に再初期化する。
-pub const F2_STALE_MS: u64 = 1200;
 
 // === キャッシュ有効期限 ===
 
@@ -255,241 +197,3 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
-
-// === 診断用（一時的） ===
-
-/// Chrome/Edge 経路の `is_long_cold` 事前予防を一時的に無効化する診断フラグ。
-///
-/// 対象は `StartSacrificialWarmup` を送信前に先制発行する分岐
-/// （`tsf/warmup/probe_fsm.rs` Phase 2a、BUG-21）。適用箇所は `output/vk_send.rs`
-/// （`send_romaji_batched` が Chrome 用 `is_long_cold` を計算する箇所）の1点のみ。
-/// `probe_fsm.rs`/`gji_warmup_coro.rs` 自体の分岐ロジックは変更しない（`is_long_cold` を
-/// 直接パラメータで受け取るため、既存の BUG-21 回帰テストは本フラグの影響を受けずそのまま
-/// 有効）。
-///
-/// TSF/WezTerm 側（`gji_warmup_coro.rs` Phase 5a）は対象外。あちらの `ctx.is_long_cold`
-/// は `ColdKind::is_long()`（cold 突入時点の `gji_idle_ms()` 実IO観測から分類済み）に
-/// 由来し、Chrome 側の自己参照タイマー（`idle_ms_at_last_cold()` = 「awase 自身が最後に
-/// 送信してからの経過時間」）と異なり既に実IOに基づいている。既に信頼できる信号を
-/// 診断目的で止める理由がなく、WezTerm cold-start literal 化の実害リスクの方が大きい。
-///
-/// `true` の間は Chrome/Edge の予防的 `StartSacrificialWarmup` をスキップし、常に直接送信 +
-/// inline `LiteralDetect` の事後検出に委ねる。partial literal 検出後の捨て駒リトライ
-/// （`literal_detect_fsm.rs::emit_recovery_actions` の `is_tsf_mode && consecutive==0` 分岐）
-/// は対象外で今まで通り動作する。
-///
-/// 目的: 「本当は long cold ではなかったのに誤って先制で捨て駒を送っていたケース」を
-/// 実機ログ（`[h1-probe-diag]` の自己タイマー vs `real_gji_idle_ms`、および
-/// `[literal-detect]` の `CompositionConfirmed`/`SuspectedLiteral`/`partial-literal` 実際の
-/// 結果）から炙り出すための一時計測。実測データが取れて narrowing 方針が決まったら、
-/// このフラグと分岐ごと撤去するか恒久的なゲート条件に置き換えること
-/// （cold 突入判定の絞り込み調査の一部、2026-07-09〜）。
-///
-/// 2026-07-09 追記: 実機7サンプル（目視確認込み）で予防的分岐スキップは無破損だった。
-/// 次の実験（`DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON`）は「予防分岐自体を止める」のではなく
-/// 「予防分岐は残しつつ Chrome の犠牲キーを差し替える」検証のため、本フラグは `false` に戻し
-/// 予防分岐を通常通り発火させる（そうしないと差し替え後のキーを試す機会がない）。
-pub const DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP: bool = false;
-
-/// Chrome/Edge の `StartSacrificialWarmup` 犠牲キーを `VkAThenBackspace` から
-/// `ImeOffThenOn`（VK_IME_OFF→VK_IME_ON）に一時的に差し替える診断フラグ。
-///
-/// 適用箇所は `output/probe_io.rs` の `StartSacrificialWarmup` ディスパッチ1点のみ。
-/// `state/key_sequence_policy.rs::sacrificial_warmup_key`（実機確定根拠 `22c3905` の
-/// 宣言的テーブル）自体は変更しない — あちらは「TSF は ImeOffThenOn、Chrome は
-/// VkAThenBackspace」という実機確定済みの事実の記録であり、診断中の仮説で汚さない。
-///
-/// ## 背景
-///
-/// `ImeOffThenOn`（`tsf/warmup/ime_offon_warmup_fsm.rs`）は元々 WezTerm 等 TSF 専用
-/// （vim の VK_A 誤爆対策）。Chrome には ADR-048/`22c3905` の「VK_IME_OFF が Chrome
-/// TSF context を壊す」という知見から使われてこなかった。ただしこの知見の実機再検証は
-/// `6c1732d`→`22c3905`（2026-06-30、6分差）の revert 由来で、今回は改めて実機で
-/// 確認する（ユーザーの記憶では当時も実機検証済みとのことだが、念のため再確認）。
-///
-/// VK_IME_ON 単体（OFF を挟まない）は試さない — `VK_IME_ON`/`VK_IME_OFF` は冪等キー
-/// （ADR-067）であり、engine が既に ON の状態で ON を再送しても状態遷移が起きず
-/// GJI が無反応になると考えられるため。OFF→ON で実際に状態遷移を起こす。
-///
-/// `true` の間は Chrome の犠牲キーが VK_A+BS ではなく VK_IME_OFF→ON になる。
-/// 壊れた場合の症状: Chrome の TSF composition context が破壊され、ADR-048 が記録した
-/// Teams "na" literal 化と同種の症状（部分/全体リテラル化）が予想される。
-/// 実機で目視確認しながら試すこと。
-///
-/// 2026-07-09 追記: 実験中止・`false` に戻した。VK_IME_OFF→ON 自体は Chrome cold-start で
-/// 2/2 サンプル成功（composition confirmed・目視でも正しい文字）していたが、同じ実機セッション
-/// 後半で Shift/Ctrl が stuck するバグが発生した（`mods(s=true)` が KeyUp 後もクリアされず、
-/// `[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true → synthetic Ctrl↑ が
-/// GetAsyncKeyState を汚染した可能性がある` という既存の自己診断WARNまで出た）。
-///
-/// **本フラグとの因果関係は否定された**（当初「合成IMEキー送信頻度の増加が誘因」と
-/// 推定したが、症状が実際に出ていたのは Windows Terminal（TSF/
-/// `CASCADIA_HOSTING_WINDOW_CLASS`）で、このフラグは `TransmitTarget::Chrome` 専用の
-/// ためそちらのコードパスには一切触れない）。
-///
-/// 2026-07-09 追記2: stuck modifier バグの真因を確定した（BUG-23,
-/// `docs/known-bugs.md`）。Windows ロック画面（Secure Desktop）遷移中は
-/// `WH_KEYBOARD_LL` フックがイベントを一切観測できず、ロックの瞬間に押されていた
-/// 修飾キーの KeyUp が失われて `hook::PHYSICAL_KEY_STATE` が stuck していた
-/// （`hook::reset_physical_key_state()` を新設し `WTS_SESSION_UNLOCK`/`panic_reset()`
-/// から呼ぶ修正 済み、コミット `77536d6`）。本フラグとは完全に無関係と確定したため
-/// 実験を再開する。
-pub const DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: bool = true;
-
-/// WezTerm/TSF 側の予防的 warmup を丸ごと止め、reactive な検出のみに委ねる診断フラグ。
-///
-/// 対象は `gji_warmup_coro.rs` の早期 SendFreshF2 + long-cold 時の
-/// StartSacrificialWarmup escalation。これらを止め、`LiteralDetect`
-/// （事後の compose 確認 + partial/suspected literal 回収）のみに委ねる。
-///
-/// `DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP`（Chrome 専用）の対称版。あちらのコメントに
-/// 明記の通り「TSF/WezTerm 側は対象外」だったため、BUG-24（`docs/known-bugs.md`）の
-/// 偽陰性疑いを実機で検証するために新設した。
-///
-/// ## 目的（BUG-24 検証）
-///
-/// BUG-24 は「`is_partial_literal()` が romaji 自体の compose 結果ではなく、別の
-/// warmup F2 キーへの応答（`nc_fired`/`gji_resumed`）を代理指標にしている」ことに
-/// 起因する偽陽性・偽陰性リスクを記録したもの。ユーザー仮説: 現状は予防的 warmup が
-/// 広く・保守的にかかっているため `needs_literal=false`（LiteralDetect 自体を
-/// スキップする分岐）に実際には滅多に入らず、偽陰性（部分リテラルの検知漏れ）が
-/// 実害として顕在化していないだけではないか。予防を絞れば顕在化するはず、というもの。
-///
-/// `true` の間は以下 3 箇所を無効化する:
-///
-/// 1. **Phase 2 (`SendFreshF2`) をスキップ**: `gji_coro_body` の pre-idle スキップ判定の
-///    直後に、フラグが立っていれば無条件で `break 'initial (false, false)` する
-///    （F2 warmup キー自体を送らない → `nc_fired`/`gji_resumed` は常に false のまま）。
-/// 2. **Phase 5a (`StartSacrificialWarmup`) をスキップ**: `long_cold && is_tsf_mode` の
-///    条件を満たしても発火させず、Phase 5b（直接 Transmit）にフォールスルーさせる。
-/// 3. **`effective_prepend_f2` を強制 false**: 上記 1・2 を無効化しても、実際の
-///    romaji バッチに F2 を直接同梱する第3の防御層（`effective_prepend_f2`、
-///    `should_prepend_f2` の入力）が生きていると予防が実質効いたままになる。
-///    2026-07-11 の実機ログで、1・2 だけ無効化した状態でも idle=1188ms の "ko" 送信が
-///    `vks=[F2,4B,4F]`（F2 先頭同梱）でカバーされ、無防備な状態を検証できていなかった
-///    ことが判明したため追加した。
-///
-/// いずれも `plan.needs_literal` 自体の計算式（`decide_transmit_plan`）は変更しない。
-/// 早期 F2 を送らないことで `nc_fired` が常に false になり、
-/// `needs_literal` の第2項（`!nc_fired && is_tsf_mode && gji_active && !gji_resumed`）が
-/// 真になりやすくなるため、実際には LiteralDetect 自体は有効なままのケースが多いと
-/// 予想される。**もし本当に「予防を絞ると偽陰性が顕在化する」なら、それでも
-/// `needs_literal=false` になってしまうケース、あるいは LiteralDetect が有効でも
-/// 検知漏れするケースが実機ログに現れるはず**——このフラグはあくまで「予防を薄くして
-/// reactive パスの露出を増やす」ための道具であり、偽陰性の直接証明ではない。
-///
-/// ## 観測すべきログ
-///
-/// - `[gji-coro] cold=N DIAG_DISABLE_PROACTIVE_TSF_WARMUP → skip FreshF2 (BUG-24 検証)`:
-///   フラグが実際に発火した回数・頻度。
-/// - `[literal-detect] cold=N partial literal ...` / `suspected literal ...`:
-///   reactive 検出が実際に発火したか（発火すれば偽陰性ではない、正常に機能）。
-/// - 画面上で実際に文字化け（ローマ字がそのまま残る等）が見えるのに、上記
-///   `[literal-detect]` ログが一切出ていない場合 → **偽陰性が実際に起きている証拠**。
-/// - `[gji-coro-diag] ... skip-verify`（`needs_literal=false` だった場合の事後診断）が
-///   出た場合、その後実際に問題があったかどうか（画面の目視確認と突き合わせる）。
-///
-/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に実測を
-/// 追記した上で撤去すること（`tuning-constants.md` の実測義務）。
-///
-/// 2026-07-11 追記: 実機1セッションで `SetOpenTrue`（cold=1,10,11,12,14、
-/// real_gji_idle_ms 282〜1188ms）の"ko"送信は全件 ESC-based 回収（`4e31b64`）が
-/// 正しく機能し文字化けなし。`nc_fired=true`（cold=5,6,9,13）で `needs_literal=false`
-/// となり LiteralDetect 自体が起動しなかったケースも目視で文字化けなしを確認
-/// （`nc_fired=true` の判定がこのケースでは実態と一致していたと解釈、偽陰性の
-/// 証拠にはならない）。詳細は `docs/known-bugs.md` BUG-24 参照。1セッション分の
-/// データのみのため、ユーザー判断で `true` のまま実運用を継続し、より広い条件
-/// （長い idle・他の cold_reason・他アプリ・複数セッション）で追加検証中。
-pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
-
-/// カタカナ/英数 charset への「追従」warmup・VK 前置ロジックを丸ごと無効化し、
-/// 常に Hiragana(F2) として振る舞わせる診断フラグ（BUG-19 検証）。
-///
-/// ## 背景
-///
-/// BUG-19（`docs/known-bugs.md`）は「GJI の conv mode が謎にカタカナへ変化し、
-/// awase がそれに"追従"して実キー VK_DBE_KATAKANA を送ることで、一過性かも
-/// しれない状態を real IME の恒久的な状態としてロックインしてしまう」問題。
-/// 追補4までにデバウンス・復元書き込みの重複排除などを重ねてきたが、いずれも
-/// 「観測されたカタカナに追従して warmup キーを送る」という設計自体は残していた。
-///
-/// ユーザー（本プロジェクトの唯一の実利用者）は IME トレイからカタカナ/半角
-/// 英数を手動選択したことが一度もなく、今後もその予定がないと明言している。
-/// つまりこのユーザーの実運用においては、conv mode がカタカナ/英数へ変化する
-/// ことがあるとすれば、それは常に GJI 側の何らかの内部ドリフト（本物のユーザー
-/// 意図ではない）であり、awase 側がそれに追従する必要（927f2a2/109b4c9 が
-/// 保護していた「トレイでカタカナ選択したユーザー」のケース）が実質存在しない。
-///
-/// `true` の間は以下 3 箇所で charset を常に `Charset::Hiragana` 扱いにする
-/// （`ConvModeMgr::effective_charset()` 経由）:
-///
-/// 1. `output/mod.rs::send_eager_tsf_warmup` — 投機的な eager warmup の
-///    charset 選択（F1/F0 系を送らず常に F2）。
-/// 2. `tsf/warmup/cold_warmup.rs::preamble()` — cold-start warmup の
-///    charset 選択（`WarmupContext::charset`）。
-/// 3. `output/probe_io.rs::transmit_tsf` — 実際の romaji バッチ送信時に
-///    F1 leading warmup を前置するかどうかの判断。
-///
-/// `ConvModeMgr::get()`/`update_from_conv()` 自体は無変更 — 観測・ログ
-/// （`[conv-mode]` 等）は通常通り継続する。この関数を経由する「実際に
-/// charset に追従して動く」消費側だけを止める。
-///
-/// ## 観測すべきログ
-///
-/// - `[conv-mode] ... → ZenKata/roma` 等の観測ログ自体は出続けるはず
-///   （観測は止めていないため）。
-/// - `[tsf-eager-warmup] ZenKata warmup 送信` / `[h1-warmup] ... {ZenKata,
-///   HankakuKatakana, ...} warmup+probe 送信` / `f1-leading` ログが
-///   **一切出なくなる**はず（出た場合はこのフラグの配線漏れ）。
-/// - 画面上で実際にカタカナが打鍵結果として現れる／GJI が持続的にカタカナへ
-///   固定される場合 → 927f2a2/109b4c9 相当の退行が実際に起きている証拠
-///   （ただしトレイでカタカナを手動選択しない限り想定していない）。
-///
-/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-19 に
-/// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
-pub const DIAG_FORCE_HIRAGANA_CHARSET: bool = true;
-
-/// IME セッション内で literal-detect を初回のみ実行し、以降は候補ウィンドウ HIDE まで
-/// スキップする診断フラグ（BUG-24 追補）。
-///
-/// ## 背景
-///
-/// `is_partial_literal()`（`tsf/warmup/literal_detect_fsm.rs`）は、今回送った romaji
-/// 自身の確認信号（`DetectionResult::CompositionConfirmed` = 候補ウィンドウ SHOW /
-/// GJI I/O 変化）ではなく、送信前に確定していた無関係な代理指標 `nc_fired`/`gji_resumed`
-/// （別の F2 warmup キーへの応答有無）で判定している。`ColdReason::requires_settle()`
-/// （`FocusChange`/`NativeF2Consumed`/`SetOpenTrue`）の直後は、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
-/// 下でこの代理指標の元になる確認送信自体が無条件でスキップされるため、`nc_fired` は
-/// 構造的に常に `false` になり、cold 直後の最初の1文字がほぼ確実に「正しく変換されて
-/// いるのに不要な ESC+BS 訂正」を受ける（実機ログで確認、`docs/known-bugs.md` BUG-24）。
-///
-/// ## 方針（ユーザー提案）
-///
-/// 「IME セッション（打鍵開始から候補ウィンドウ HIDE まで）の最初の1文字だけ実際に
-/// `CompositionConfirmed` を確認し、確認できたらそのセッションの残りは literal-detect
-/// 自体をスキップして即送信する」という設計に変更する。反応速度を落とさず、かつ
-/// 無関係な代理指標ではなく「今回のセッションで実際に compose が機能した」という
-/// 直接の事実だけを判断材料にする。
-///
-/// `true` の間、`LiteralDetectCore::poll`（`tsf/warmup/literal_detect_fsm.rs`）は
-/// `tsf::observer::literal_session_confirmed()` が `true` ならチェック自体を行わず
-/// 即 `Done` を返す。`CompositionConfirmed`（かつ非 partial-literal）を確認できたら
-/// `mark_literal_session_confirmed()` を呼ぶ。候補ウィンドウ HIDE
-/// （`platform.rs::gji_on_end_composition`）で `reset_literal_session_confirmed()` を
-/// 呼び、次のセッションの最初の1文字は改めて確認を受ける。
-///
-/// `cold_reason` の種類には依存しない — cold/warm 問わず、セッション内で一度
-/// 確認済みかどうかだけで判定する。
-///
-/// ## 観測すべきログ
-///
-/// - `[literal-detect] cold=N partial literal ...`/`suspected literal ...` が、
-///   同一セッション内の2文字目以降で発生しなくなるはず（1文字目のみ発生しうる）。
-/// - 実機でカタカナ化やGJI応答遅延など、実際には literal 化しているのに検出漏れ
-///   （偽陰性）が起きていないか目視確認が必要 — セッション判定の起点・終点
-///   （HIDE のタイミング）がずれると、本来チェックすべき文字をスキップしてしまう
-///   リスクがある。
-///
-/// 実験終了後は `false` に戻すか、結果に応じて `docs/known-bugs.md` BUG-24 に
-/// 実測を追記した上で撤去すること（`tuning-constants.md` の実測義務）。
-pub const DIAG_LITERAL_SESSION_SKIP: bool = true;

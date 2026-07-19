@@ -161,8 +161,6 @@ pub(crate) struct StepProbeResult {
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
 pub(crate) struct WarmupOutcome {
-    /// F2 ウォームアップバッチが前置きされたか
-    pub prepend_f2_warmup: bool,
     /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
     pub used_eager_path: bool,
     /// cold start シーケンス番号（ログ相関用）
@@ -332,7 +330,7 @@ impl Output {
 
     /// VK_IME_OFF → VK_IME_ON の連続送信を ImeModeFsm に通知する。
     ///
-    /// `send_sacrificial_ime_off_on` / `send_chrome_gji_reinit_and_poll` で使う。
+    /// `send_chrome_gji_reinit_and_poll` で使う。
     pub(crate) fn on_f22_f21_sent(&self) {
         let mut fsm = self.ime_mode_fsm.borrow_mut();
         fsm.on_f22_sent();
@@ -404,8 +402,8 @@ impl Output {
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn gji_take_warmup_result(&self) -> Option<crate::tsf::gji_fsm::WarmupResult> {
-        self.warmup_coord.take_warmup_result()
+    pub(crate) fn gji_take_warmup_pending(&self) -> bool {
+        self.warmup_coord.take_warmup_pending()
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -584,12 +582,8 @@ impl Output {
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::tsf::observer::reset_namechange_seq();
         // カタカナ/英数系 charset への追従 warmup（F1/F0 系）は BUG-19 のロックイン
-        // 事故を受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` により
-        // `ConvModeMgr::effective_charset()` は既に常に Hiragana を返しており、
-        // charset 分岐・`needs_conv_restore_write` スロットル・直前の conv 再取得
-        // （いずれも非 Hiragana 分岐のためだけに存在していた）は実質的に到達不能
-        // だった（`docs/known-bugs.md` BUG-19 参照）。常に F2 (VK_DBE_HIRAGANA) の
-        // みを送る（ROMAN ビット確保のみで冪等なため反復送信も無害）。
+        // 事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。常に F2
+        // (VK_DBE_HIRAGANA) のみを送る（ROMAN ビット確保のみで冪等なため反復送信も無害）。
         let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
         log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
         self.composition.set_eager_warmup_sent_ms(ms);
@@ -774,7 +768,6 @@ impl Output {
                 // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
                 //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
                 foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
-                gji_candidate_visible: crate::tsf::observer::gji_candidate_visible_now(),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 deferred_pending: self.warmup_coord.has_pending_deferred(),
@@ -804,15 +797,15 @@ impl Output {
             probe_io::DispatchResult::Done => {
                 self.on_tsf_probe_ready();
                 self.gji_end_probe_guard();
-                let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                    let probe_id = self.warmup_coord.take_probe_id()?;
-                    Some(
+                let gji_response = self
+                    .gji_take_warmup_pending()
+                    .then(|| self.warmup_coord.take_probe_id())
+                    .flatten()
+                    .map(|probe_id| {
                         self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
                             probe_id,
-                            result,
-                        }),
-                    )
-                });
+                        })
+                    });
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
                     timer_cmd: TimerCommand::Kill {
@@ -826,22 +819,6 @@ impl Output {
             probe_io::DispatchResult::Continue => {
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 self.warmup_coord.restore_pending_tsf(machine);
-                StepProbeResult {
-                    timer_cmd: TimerCommand::Continue {
-                        id: crate::TIMER_TSF_PROBE,
-                        delay: Duration::from_millis(10),
-                    },
-                    gji_response: None,
-                    needs_gji_composition_reset,
-                    learned_tsf: false,
-                }
-            }
-            probe_io::DispatchResult::SwitchMachine(new_machine) => {
-                // SacrificialWarmupFsm への切り替え（GjiWarmupCoro long_cold パス / Chrome）。
-                // 新 machine が内部ガードを保持するため gji_probe_guard を解放する。
-                self.gji_end_probe_guard();
-                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
-                self.warmup_coord.restore_pending_tsf(new_machine);
                 StepProbeResult {
                     timer_cmd: TimerCommand::Continue {
                         id: crate::TIMER_TSF_PROBE,
@@ -889,15 +866,6 @@ impl Output {
     /// `send_keys()` が開始した TSF/GJI probe がまだ完了していないか。
     pub(crate) fn has_pending_tsf_work(&self) -> bool {
         self.warmup_coord.has_pending_tsf()
-    }
-
-    /// sacr-warmup probe に StartComposition が観測されたことを通知する。
-    ///
-    /// `platform.rs::drain_pending_composition_events` が StartComposition を処理した際に呼ぶ。
-    /// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したケースを検出するため、
-    /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
-    pub(crate) fn notify_probe_start_composition(&self) {
-        self.warmup_coord.notify_probe_start_composition();
     }
 
     /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
@@ -1029,59 +997,6 @@ mod tests {
     use super::*;
 
     // ── ColdReason impl メソッドテスト ────────────────────────────────────────
-
-    #[test]
-    fn cold_reason_eager_settle_ms_short_idle() {
-        assert_eq!(ColdReason::FocusChange.eager_settle_ms(false), 1500);
-        assert_eq!(ColdReason::NativeF2Consumed.eager_settle_ms(false), 1500);
-        assert_eq!(ColdReason::SetOpenTrue.eager_settle_ms(false), 1500);
-        assert_eq!(
-            ColdReason::PassthroughConfirmKey.eager_settle_ms(false),
-            500
-        );
-        assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(false), 500);
-        assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(false), 500);
-        assert_eq!(ColdReason::F2NonTsf.eager_settle_ms(false), 500);
-        assert_eq!(
-            ColdReason::RawTsfLiteralRecovery.eager_settle_ms(false),
-            500
-        );
-        assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(false), 500);
-    }
-
-    #[test]
-    fn cold_reason_eager_settle_ms_long_idle() {
-        // FocusChange 系: long_idle で 1500→2000ms
-        assert_eq!(ColdReason::FocusChange.eager_settle_ms(true), 2000);
-        assert_eq!(ColdReason::NativeF2Consumed.eager_settle_ms(true), 2000);
-        assert_eq!(ColdReason::SetOpenTrue.eager_settle_ms(true), 2000);
-        // ConfirmKey 系: long_idle で 500→1500ms
-        assert_eq!(
-            ColdReason::PassthroughConfirmKey.eager_settle_ms(true),
-            1500
-        );
-        assert_eq!(ColdReason::ReinjectConfirmKey.eager_settle_ms(true), 1500);
-        // 他は不変
-        assert_eq!(ColdReason::SymbolVkSent.eager_settle_ms(true), 500);
-        assert_eq!(ColdReason::SetOpenFalse.eager_settle_ms(true), 500);
-    }
-
-    #[test]
-    fn cold_reason_probe_min_ms() {
-        assert_eq!(ColdReason::FocusChange.probe_min_ms(false), 100);
-        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(false), 100);
-        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(false), 100);
-        assert_eq!(ColdReason::FocusChange.probe_min_ms(true), 300);
-        assert_eq!(ColdReason::NativeF2Consumed.probe_min_ms(true), 300);
-        assert_eq!(ColdReason::SetOpenTrue.probe_min_ms(true), 300);
-        assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(false), 50);
-        assert_eq!(ColdReason::ReinjectConfirmKey.probe_min_ms(false), 50);
-        assert_eq!(ColdReason::PassthroughConfirmKey.probe_min_ms(true), 300);
-        assert_eq!(ColdReason::SymbolVkSent.probe_min_ms(false), 30);
-        assert_eq!(ColdReason::F2NonTsf.probe_min_ms(false), 100);
-        assert_eq!(ColdReason::RawTsfLiteralRecovery.probe_min_ms(false), 100);
-        assert_eq!(ColdReason::SetOpenFalse.probe_min_ms(false), 100);
-    }
 
     #[test]
     fn cold_reason_is_confirm_key() {

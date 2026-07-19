@@ -269,3 +269,39 @@ scan=0（CapsLock と衝突しない値）で `VK_DBE_ALPHANUMERIC` を再注入
   出た場合、それは「まだ運が悪い」ではなく「この経路は原理的に機能しない」
   という強いシグナルとして扱うべき——同種の変更をもう一段階小さくして
   再試行する前に、アーキテクチャレベルで別の経路を検討する。
+
+---
+
+## エントリ 10: GJI cold-start warmup の「待機行列」「捨て駒キー」撤去 — per-VK confirm 一本化
+
+**背景**: BUG-24（`is_partial_literal()` が romaji 自体の compose 結果ではなく、
+別の warmup F2 キーへの応答 `nc_fired`/`gji_resumed` を代理指標にしている）の
+根治として per-VK confirm（1文字ずつ送信→confirm、失敗時は backspace のみで
+回収）を導入した後、旧来の「待機行列」（`WarmupKind::FreshF2`/`ReWarmup`/
+`ProbeWithSettle`、`ColdReason`×`long_idle` の `eager_settle_ms`/`probe_min_ms`
+行列）と「捨て駒キー」（`StartSacrificialWarmup`/`SacrificialResend`、
+`SacrificialWarmupCoro`/`ImeOffOnWarmupFsm`）が per-VK confirm と二重の保険に
+なっているのではないか、という仮説を `experiment/skip-cold-probe-wait`
+ブランチで検証した。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-16〜17 | per-VK confirm が送信後の confirm/recovery を担うなら、送信前の予防的待機（F2 事前送信・probe 事前待機）は不要なはず | WezTerm（TSF-native）× GJI、Chrome × GJI | `DIAG_COLD_SKIP_F2`/`DIAG_COLD_SKIP_PROBE_WAIT`（WezTerm 側）・`DIAG_CHROME_SKIP_F2`/`DIAG_CHROME_SKIP_PROBE_WAIT`/`DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP`（Chrome 側）を新設しデフォルト全 `true` で実機投入 | 24時間弱のソークで BUG-26〜29（本リポジトリ known-bugs.md）を発見・修正しつつ、無破損を確認 | 保留（さらに広い条件で継続ソーク） | `d495649` 直前の一連のコミット群 |
+| 2026-07-18 | 上記フラグを恒久化し、待機行列・捨て駒キー機構を物理削除しても安全なはず | WezTerm/Chrome 双方 × GJI | 上記実験フラグをすべて恒久化。`WarmupKind::*`・`SacrificialWarmupCoro`・`ImeOffOnWarmupFsm` を物理削除し、`GjiWarmupCoro::run_start` を「IMM32 ローマ字モード復元 + 即座に per-VK confirm へ」の単一経路に単純化 | 数日間の実機ソーク（cold=61〜74 超、WezTerm/Chrome 双方）で `suspected literal` genuine ゼロ件を `per-VK[...] confirmed` の3点セットログで確認。cargo check/test/clippy（`--target x86_64-pc-windows-gnu`、警告ゼロ）、Linux 上の `cargo test -p awase-windows`（174 passed）も通過 | 採用（物理削除） | `d495649`（詳細は `docs/known-bugs.md` BUG-24 追補8） |
+| 2026-07-19 | 上記の物理削除の副産物として、observation/decision/belief 側にも本番到達不能なコードが残っているはず | （コード調査のみ、実機検証なし） | codex CLI 2プロセス（read-only、候補検証+独立発見）による調査 + Claude 自身の裏取りで `ProbeObservations.gji_resumed`（常に false）・`DIAG_FORCE_HIRAGANA_CHARSET`（無配線）・`TsfReadinessProbe::wait_until_ready`（本番呼び出しゼロ）・`GjiWarmupCoro` の `needs_settle_check`（常に true）を確認、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` はユーザー判断で恒久化 | cargo check/clippy（`--target x86_64-pc-windows-gnu`、警告ゼロ）で確認。wine 未導入のためこのサンドボックスでは `cargo test --target x86_64-pc-windows-gnu` 実行不可（実機/CI 確認が最終）。`TsfReadinessProbe::check_now` の min_ms/total_max_ms 分岐は「本番が現状 0 を渡しているだけ」で静的には unreachable でないため削除せず据え置き | 採用（削除分）／保留（check_now） | 本エントリ対応の一連のコミット（BUG-24 追補9） |
+| 2026-07-19 | 追補9が残した「未調査」項目（`WarmupOutcome.prepend_f2_warmup` 等）を含め、GJI probe/warmup 関連変数を網羅的に洗い出せば追加の dead code が見つかるはず | （コード調査のみ、実機検証なし） | 5並列エージェントで GJI probe/warmup 関連変数を全域洗い出し（一次調査）→ 9並列 opus エージェントで各候補を反証前提に個別再検証（二次調査）。`WarmupOutcome.prepend_f2_warmup`・`PendingInput.deferred_vks`・`WarmupResult`/`GjiAction::SendInput.result`・`gji_read_op_count`/`gji_read_bytes`・`ColdContext::set_idle_ms_at_last_cold`・`ColdContext::cold_marked_ms`・`TickableFsm::notify_start_composition` の7件を DEAD 確定・物理削除。`TsfReadinessProbe::check_now` の min_ms/total_max_ms 分岐は独立 opus エージェントでも再度反証できず、追補9の据え置き判断を維持 | 削除7件それぞれで `cargo check`/`cargo test --no-run`（`--target x86_64-pc-windows-gnu`、警告ゼロ）を実行、最終確認は `cargo cc`（プロジェクト規定 clippy エイリアス）で warning ゼロ。wine 未導入のためこのサンドボックスでは実行不可（実機/CI 確認が最終） | 採用（削除7件）／据え置き再確認（check_now） | 本エントリ対応の一連のコミット（BUG-24 追補10） |
+| 2026-07-19 | 追補10でもかなり枯れたはずだが、GJI cold/warm 周りにまだ撤去可能な変数が残っていないか（ユーザー確認） | （コード調査のみ、実機検証なし） | 単一 opus エージェントで同じ一次洗い出し→二次反証の手法をもう一段実施。孤児アクセサ `gji_last_write_ms()`/`gji_write_bytes()`（レシーバ形、呼び出しゼロ）と、log-only 化していた `GJI_LONG_IDLE_PROBE_TOTAL_MS`→`ColdKind::budget_ms()`→`StartProbe.budget_ms` チェーン一式（NameChangeWait 撤去+skip-cold-probe-wait 恒久化の結果どのタイマーも支配しなくなり debug ログにしか使われていなかった）の2件を DEAD 確定・削除。`should_prepend_f2`/`used_eager_path`/`ime_show_seq`/`SendInput` mirror 等4件は意図的残置として再確認・据え置き | `cargo check`/`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -D warnings`/`cargo test --no-run`（警告ゼロ）、Linux で `cargo test -p awase-windows --lib`（135 passed）+ architecture_guard/golden_scenarios/ime_key_sequence_golden/layer_boundary_guard 全 green | 採用（削除2件）／据え置き再確認（4件） | 本エントリ対応の一連のコミット（BUG-24 追補11） |
+
+**学び**:
+
+- 予防的待機・捨て駒キーのような「二重の保険」は、reactive な回収機構
+  （per-VK confirm）が実証された後も惰性で残りがち。恒久化の判断は
+  数日単位の実機ソーク（cold=60件超）を経てから行い、`docs/known-bugs.md`
+  に実測件数を残すことで次の担当者が根拠を追える。
+- 削除は必ず段階を踏む: (1) 実験フラグで無効化 → 実機ソーク → (2) 恒久化 →
+  物理削除 → (3) 恒久化の副産物として残った到達不能コードを別途調査。
+  一足飛びに (1)→(3) をやると「何が本当に安全に消せるか」の根拠が薄くなる。
+- 「静的に到達不能」（コンパイラ/型で保証される dead code）と「今たまたま
+  実行時値が 0/false」は別物として扱う。前者は安全に削除できるが、後者
+  （`TsfReadinessProbe::check_now` の待機ロジック等）は将来また非ゼロの
+  値が必要になり得るため、同じ調査パスに乗せて安易に削除しない。

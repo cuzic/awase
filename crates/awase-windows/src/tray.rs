@@ -602,6 +602,10 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             "状態をリセット (Engine ON/Caps OFF/ひらがな/ローマ字)",
         );
 
+        // 実験: cold warmup（F2送信/probe待機/捨て駒スキップ、per-VK confirm）は
+        // 2026-07-18 に実機ソークを経て恒久化・撤去した。トレイの on/off トグルは
+        // 不要になったため削除した（docs/known-bugs.md 参照）。
+
         append_menu_sep(hmenu);
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");

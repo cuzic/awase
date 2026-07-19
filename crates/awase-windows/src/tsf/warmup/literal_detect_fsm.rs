@@ -22,15 +22,14 @@
 //! - 10ms 間隔の TIMER_TSF_PROBE ハンドラから駆動する。
 //! - composition 確認 → `[ProbeAction::Done]`
 //! - raw literal 疑い → `[ProbeAction::RawTsfLiteralRecovery { .. }, ProbeAction::Done]`
-//!   （TSF mode + consecutive==0 では `SendRecoveryBs + StartSacrificialWarmup + Done`）
+//!   （捨て駒キーには倒れない、2026-07-16 撤去。dispatcher が `consecutive_count()==0`
+//!   のときだけ romaji 再送をスケジュールする）
 //! - 判定待ち → `None`（`LiteralDetectFsm::tick` では `vec![]`、タイマー継続）
 
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
-use crate::tsf::warmup::probe_fsm::{
-    LiteralDetectConfig, ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
-};
+use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeObservations};
 
 /// 部分リテラル検出時に、composition 破棄（ESC）の後に送るバックスペース数。
 ///
@@ -74,8 +73,6 @@ pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
 /// 不可能。代わりに以下の条件がすべて揃った場合を partial literal と判断する:
 ///   - `nc_fired=false` : fresh F2 に WezTerm が NAMECHANGE で応答しなかった
 ///     → TSF context が cold のまま送信した可能性が高い
-///   - `gji_resumed=false` : GJI も F2 後に I/O 応答しなかった
-///     → composition が全く始まっていない状態で先頭 VK が届いた疑い
 ///   - `is_tsf_mode` : WezTerm 等の TSF 専用アプリ（HIMC 照合不可）
 ///   - romaji 2 文字以上 : 1 文字なら partial にならない
 pub(crate) fn is_partial_literal(
@@ -83,16 +80,21 @@ pub(crate) fn is_partial_literal(
     romaji: &str,
     env: &TsfEnvSnapshot,
 ) -> bool {
-    !observations.nc_fired
-        && !observations.gji_resumed
-        && env.is_tsf_mode
-        && romaji.chars().count() >= 2
+    !observations.nc_fired && env.is_tsf_mode && romaji.chars().count() >= 2
 }
 
 /// literal 回収用アクション列を生成する（cold/warm 共通）。
 ///
-/// TSF mode かつ consecutive==0 → sacr warmup パス（`SendRecoveryBs + StartSacrificialWarmup + Done`）。
-/// それ以外 → 従来の `RawTsfLiteralRecovery + Done`。
+/// 常に `RawTsfLiteralRecovery + Done`（backspace のみ、捨て駒キーには頼らない）。
+/// `RawTsfLiteralRecovery` の dispatcher が `consecutive_count()==0` のときだけ
+/// romaji の再送を `RAW_TSF_LITERAL` 経由でスケジュールする（`output/mod.rs::
+/// record_raw_tsf_literal` → 次イベントで `send_romaji_as_tsf` を通常の cold パス
+/// として再実行）。cold パスは per-VK confirm がデフォルトのため、この再送は
+/// 自然に per-VK として実行される — 1文字失敗した後の再送も per-VK のままにする、
+/// という設計（ユーザー方針、2026-07-16。以前あった「TSF mode かつ consecutive==0
+/// → SendRecoveryBs + StartSacrificialWarmup」分岐は撤去した。捨て駒キー
+/// （VK_A+BS/VK_IME_OFF→ON）は cold-start の予防用途としても失敗リカバリ用途
+/// としても、もう本経路からは発行されない）。
 ///
 /// `escape_composition`: `true` の場合、dispatcher はバックスペースの前に `VK_ESCAPE` を送って
 /// composition を確実に破棄する（partial literal 専用、[`PARTIAL_LITERAL_BS`] のドキュメント参照）。
@@ -100,45 +102,17 @@ pub(crate) fn emit_recovery_actions(
     cold_seq: u32,
     romaji: String,
     backs: usize,
-    observations: ProbeObservations,
-    consecutive: u32,
-    env: &TsfEnvSnapshot,
     escape_composition: bool,
 ) -> Vec<ProbeAction> {
-    if env.is_tsf_mode && consecutive == 0 {
-        vec![
-            ProbeAction::SendRecoveryBs {
-                cold_seq,
-                backs,
-                escape_composition,
-            },
-            ProbeAction::StartSacrificialWarmup(LiteralDetectConfig {
-                cold_seq,
-                romaji,
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: true,
-                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations,
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: true,
-            }),
-            ProbeAction::Done,
-        ]
-    } else {
-        vec![
-            ProbeAction::RawTsfLiteralRecovery {
-                cold_seq,
-                backs,
-                romaji,
-                escape_composition,
-            },
-            ProbeAction::Done,
-        ]
-    }
+    vec![
+        ProbeAction::RawTsfLiteralRecovery {
+            cold_seq,
+            backs,
+            romaji,
+            escape_composition,
+        },
+        ProbeAction::Done,
+    ]
 }
 
 /// warm パス（`LiteralDetectFsm`）と cold パス（`GjiWarmupCoro` Phase 6）が共有する
@@ -151,7 +125,7 @@ pub(crate) struct LiteralDetectCore {
     cold_seq: u32,
     /// 送信したローマ字（回収アクションのペイロード用）
     romaji: String,
-    /// probe 中に観測した事実。部分リテラル判定・sacr warmup config に使用する。
+    /// probe 中に観測した事実。部分リテラル判定に使用する。
     observations: ProbeObservations,
     /// composition 確認 / raw literal 検出器
     detector: LiteralDetector,
@@ -159,11 +133,19 @@ pub(crate) struct LiteralDetectCore {
     deadline_ms: u64,
     /// raw literal 検出時に送るバックスペース数
     ze_bs_count: usize,
-    /// 構築時点の連続 raw-tsf-literal 回数。
+    /// 構築時点の連続 raw-tsf-literal 回数（ログ用）。
     ///
-    /// 0 かつ TSF mode の場合は `StartSacrificialWarmup` 経由で sacr warmup を起動する。
-    /// 1 以上の場合は give-up（cleanup のみ）。
+    /// dispatcher（`probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ）が
+    /// `consecutive_count()==0` かどうかで再送 vs give-up を判定する。
     consecutive: u32,
+    /// 候補ウィンドウ可視 veto の開始時刻（ms）。`None` は veto 未発動。
+    ///
+    /// `deadline_ms` 到達時点（`SuspectedLiteral`）で候補ウィンドウがまだ可視の場合、
+    /// backspace を出さず hold する。可視である以上ほぼ確実に compose 成功しているため
+    /// （BUG-27 追補5 と同型の regression を避ける）。[`GJI_CANDIDATE_VETO_CAP_MS`] を
+    /// 超えても可視のまま確定しない異常系（候補ウィンドウの固着）に備え、hold には
+    /// 上限を設ける。上限超過時も backspace はせず、無回収の `Done` で打ち切る。
+    veto_started_at_ms: Option<u64>,
 }
 
 impl LiteralDetectCore {
@@ -186,6 +168,7 @@ impl LiteralDetectCore {
             deadline_ms,
             ze_bs_count,
             consecutive,
+            veto_started_at_ms: None,
         }
     }
 
@@ -199,12 +182,11 @@ impl LiteralDetectCore {
 
         // BUG-24 追補: このIMEセッション（打鍵開始〜候補ウィンドウHIDE）で既に
         // CompositionConfirmedを確認済みなら、literal-detect自体をスキップして
-        // 即送信する。is_partial_literalが送信前の無関係な代理指標(nc_fired/gji_resumed)
+        // 即送信する。is_partial_literalが送信前の無関係な代理指標(nc_fired)
         // に頼っているため、cold直後は毎回誤検知しうる — セッション内2文字目以降は
         // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
         // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
-        if crate::tuning::DIAG_LITERAL_SESSION_SKIP && crate::tsf::observer::literal_session_confirmed()
-        {
+        if crate::tsf::observer::literal_session_confirmed() {
             log::debug!(
                 "[literal-detect] cold={} セッション確認済み → スキップ",
                 self.cold_seq
@@ -224,7 +206,7 @@ impl LiteralDetectCore {
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition
                     //     → ESC (composition 破棄) + BS×1 ('l' 削除) が正しい。
                     log::debug!(
-                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
+                        "[literal-detect] cold={} partial literal (nc=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq,
                         self.romaji,
                         PARTIAL_LITERAL_BS,
@@ -232,7 +214,7 @@ impl LiteralDetectCore {
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
-                    return Some(self.recovery(env, PARTIAL_LITERAL_BS, true));
+                    return Some(self.recovery(PARTIAL_LITERAL_BS, true));
                 }
 
                 log::debug!(
@@ -241,41 +223,87 @@ impl LiteralDetectCore {
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
-                if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
-                    crate::tsf::observer::mark_literal_session_confirmed();
+                // BUG-27 追補4: consecutive_count リセットを dispatcher の
+                // CompositionConfirmed ハンドラに一元化する（mark_literal_session_confirmed
+                // の直接呼び出しをやめ、ProbeAction 経由にする）。
+                Some(vec![
+                    ProbeAction::CompositionConfirmed {
+                        mark_literal_session: true,
+                    },
+                    ProbeAction::Done,
+                ])
+            }
+            DetectionResult::SuspectedLiteral => match self.veto_decision() {
+                VetoDecision::Hold => {
+                    log::debug!(
+                        "[literal-detect] cold={} candidate window可視のため回収を保留 (real_gji_idle_ms={})",
+                        self.cold_seq,
+                        crate::tsf::observer::gji_idle_ms(),
+                    );
+                    None
                 }
-                Some(vec![ProbeAction::Done])
-            }
-            DetectionResult::SuspectedLiteral => {
-                log::debug!(
-                    "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
-                    self.cold_seq,
-                    self.ze_bs_count,
-                    self.consecutive,
-                    crate::tsf::observer::gji_idle_ms(),
-                );
-                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                Some(self.recovery(env, self.ze_bs_count, false))
-            }
+                VetoDecision::Expired => {
+                    log::warn!(
+                        "[literal-detect] cold={} candidate window可視のまま veto 上限 {}ms 超過 → 無回収で打ち切り",
+                        self.cold_seq,
+                        crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
+                    );
+                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "veto-expired");
+                    Some(vec![ProbeAction::Done])
+                }
+                VetoDecision::NotApplicable => {
+                    log::debug!(
+                        "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
+                        self.cold_seq,
+                        self.ze_bs_count,
+                        self.consecutive,
+                        crate::tsf::observer::gji_idle_ms(),
+                    );
+                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
+                    Some(self.recovery(self.ze_bs_count, false))
+                }
+            },
         }
     }
 
-    fn recovery(
-        &mut self,
-        env: &TsfEnvSnapshot,
-        backs: usize,
-        escape_composition: bool,
-    ) -> Vec<ProbeAction> {
+    fn recovery(&mut self, backs: usize, escape_composition: bool) -> Vec<ProbeAction> {
         emit_recovery_actions(
             self.cold_seq,
             std::mem::take(&mut self.romaji),
             backs,
-            self.observations,
-            self.consecutive,
-            env,
             escape_composition,
         )
     }
+
+    /// `SuspectedLiteral`（deadline 到達）時点で、候補ウィンドウ可視性による
+    /// backspace veto を適用すべきか判定する。
+    ///
+    /// veto 対象外（per-VK Chrome パス、または候補ウィンドウが可視でない）なら
+    /// [`VetoDecision::NotApplicable`] を返し、呼び出し側は従来通り回収する。
+    fn veto_decision(&mut self) -> VetoDecision {
+        if !self.detector.veto_eligible() || !crate::tsf::observer::gji_candidate_visible_now() {
+            self.veto_started_at_ms = None;
+            return VetoDecision::NotApplicable;
+        }
+        let now = crate::hook::current_tick_ms();
+        let started_at = *self.veto_started_at_ms.get_or_insert(now);
+        if now < started_at.saturating_add(crate::tuning::GJI_CANDIDATE_VETO_CAP_MS) {
+            VetoDecision::Hold
+        } else {
+            VetoDecision::Expired
+        }
+    }
+}
+
+/// [`LiteralDetectCore::veto_decision`] の判定結果。
+#[derive(Debug, PartialEq, Eq)]
+enum VetoDecision {
+    /// veto 対象外（per-VK パス、または候補ウィンドウが可視でない）→ 通常の回収に進む。
+    NotApplicable,
+    /// 候補ウィンドウ可視 かつ 上限未到達 → backspace を出さず hold（ポーリング継続）。
+    Hold,
+    /// 候補ウィンドウ可視のまま上限到達 → backspace はせず無回収で打ち切る。
+    Expired,
 }
 
 /// warm パスの post-transmit composition 確認 FSM。[`LiteralDetectCore`] の薄いラッパー。
@@ -292,8 +320,9 @@ impl LiteralDetectFsm {
     /// `LiteralDetectFsm` を生成する。
     ///
     /// `literal_detect_ms` はタイムアウト期間（ms）。`OutputActiveGuard::begin()` を内部で
-    /// 呼び出し、`LiteralDetector::new()` と deadline（`current_tick_ms() + literal_detect_ms`）を
-    /// 確定して `LiteralDetectCore` を組み立てる。
+    /// 呼び出し、`LiteralDetector::new(true)`（単語単位のバッチ確認のため veto 有効）と
+    /// deadline（`current_tick_ms() + literal_detect_ms`）を確定して `LiteralDetectCore` を
+    /// 組み立てる。
     ///
     /// `consecutive` は現在の連続 raw-tsf-literal 回数。0 かつ TSF mode のとき sacr warmup を起動する。
     pub(crate) fn new(
@@ -305,7 +334,7 @@ impl LiteralDetectFsm {
         consecutive: u32,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        let detector = LiteralDetector::new();
+        let detector = LiteralDetector::new(true);
         let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
         Self {
             core: LiteralDetectCore::new(
@@ -357,11 +386,8 @@ mod tests {
         assert_eq!(per_vk_recovery_params(2), (1, true));
     }
 
-    fn obs(nc_fired: bool, gji_resumed: bool) -> ProbeObservations {
-        ProbeObservations {
-            nc_fired,
-            gji_resumed,
-        }
+    fn obs(nc_fired: bool) -> ProbeObservations {
+        ProbeObservations { nc_fired }
     }
 
     fn tsf_env() -> TsfEnvSnapshot {
@@ -374,10 +400,10 @@ mod tests {
 
     // CompositionConfirmed が partial literal 条件を満たす場合 → RawTsfLiteralRecovery
     #[test]
-    fn composition_confirmed_tsf_nc_false_gji_not_resumed_multi_char_forces_recovery() {
-        // 条件充足: nc=false, gji_resumed=false, is_tsf_mode=true, romaji.chars()=2
+    fn composition_confirmed_tsf_nc_false_multi_char_forces_recovery() {
+        // 条件充足: nc=false, is_tsf_mode=true, romaji.chars()=2
         assert!(
-            is_partial_literal(obs(false, false), "ni", &tsf_env()),
+            is_partial_literal(obs(false), "ni", &tsf_env()),
             "部分リテラル条件がすべて揃っているべき"
         );
     }
@@ -386,17 +412,8 @@ mod tests {
     #[test]
     fn composition_confirmed_nc_fired_does_not_force_recovery() {
         assert!(
-            !is_partial_literal(obs(true, false), "ni", &tsf_env()),
+            !is_partial_literal(obs(true), "ni", &tsf_env()),
             "nc_fired=true → 強制 recovery 不要"
-        );
-    }
-
-    // gji_resumed=true の場合は強制 recovery しない
-    #[test]
-    fn composition_confirmed_gji_resumed_does_not_force_recovery() {
-        assert!(
-            !is_partial_literal(obs(false, true), "ni", &tsf_env()),
-            "gji_resumed=true → 強制 recovery 不要"
         );
     }
 
@@ -404,7 +421,7 @@ mod tests {
     #[test]
     fn composition_confirmed_single_char_romaji_no_recovery() {
         assert!(
-            !is_partial_literal(obs(false, false), "n", &tsf_env()),
+            !is_partial_literal(obs(false), "n", &tsf_env()),
             "1 文字ローマ字 → 部分リテラルにならない"
         );
     }
@@ -417,7 +434,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !is_partial_literal(obs(false, false), "ni", &env),
+            !is_partial_literal(obs(false), "ni", &env),
             "non-TSF mode → 強制 recovery 不要"
         );
     }
@@ -429,7 +446,7 @@ mod tests {
         // → ESC (composition 破棄、文字数不問) + BS×1 ('l' 削除) が正しい。
         // BS×3 (= chars.len()) を送ると挿入点前の無関係な文字を消してしまう。
         assert!(
-            is_partial_literal(obs(false, false), "ltu", &tsf_env()),
+            is_partial_literal(obs(false), "ltu", &tsf_env()),
             "ltu: 部分リテラル条件が揃っているべき"
         );
         assert_eq!(
@@ -440,25 +457,19 @@ mod tests {
 
     // partial literal 検出時、emit される recovery アクションが escape_composition=true を
     // 持つことを確認する（2026-07-10 追加: ESC-based composition 回収）。
+    // 2026-07-16: 捨て駒キー撤去に伴い emit_recovery_actions は常に RawTsfLiteralRecovery を
+    // 返すようになった（consecutive による分岐は dispatcher 側 `probe_io.rs` に一本化）。
     #[test]
     fn emit_recovery_actions_partial_literal_sets_escape_composition_true() {
-        let actions = emit_recovery_actions(
-            0,
-            "ltu".to_string(),
-            PARTIAL_LITERAL_BS,
-            obs(false, false),
-            0,
-            &tsf_env(),
-            true,
-        );
+        let actions = emit_recovery_actions(0, "ltu".to_string(), PARTIAL_LITERAL_BS, true);
         match &actions[0] {
-            ProbeAction::SendRecoveryBs {
+            ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
             } => assert!(
                 *escape_composition,
                 "partial literal 回収は escape_composition=true であるべき"
             ),
-            other => panic!("expected SendRecoveryBs, got {other:?}"),
+            other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
         }
     }
 
@@ -466,46 +477,116 @@ mod tests {
     // （composition が存在しないため ESC は不要、既存の chars.len() ベース BS のみ）。
     #[test]
     fn emit_recovery_actions_suspected_literal_keeps_escape_composition_false() {
-        let actions = emit_recovery_actions(
-            0,
-            "ko".to_string(),
-            2,
-            obs(false, false),
-            0,
-            &tsf_env(),
-            false,
-        );
+        let actions = emit_recovery_actions(0, "ko".to_string(), 2, false);
         match &actions[0] {
-            ProbeAction::SendRecoveryBs {
+            ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
             } => assert!(
                 !*escape_composition,
                 "SuspectedLiteral 回収は escape_composition=false であるべき"
             ),
-            other => panic!("expected SendRecoveryBs, got {other:?}"),
+            other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
         }
     }
 
-    // consecutive > 0 (give-up パス) でも escape_composition がそのまま引き継がれることを確認する。
+    // ── veto: 候補ウィンドウ可視時の backspace 抑制 ─────────────────────────────
+    //
+    // 候補ウィンドウの SHOW/HIDE と GJI I/O は別々のセンサーであり、SuspectedLiteral
+    // （deadline 到達）の瞬間に候補ウィンドウが可視なら、ほぼ確実に compose は成功して
+    // いる（BUG-27 追補5 と同型の regression を避ける）。この veto の poll() 内での
+    // 実装を検証する。
+
+    use crate::tsf::observer::TSF_OBS;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック。
+    static VETO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_tsf_obs_for_veto_test() {
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        crate::tsf::observer::reset_literal_session_confirmed();
+    }
+
+    // SuspectedLiteral 到達時点で候補ウィンドウが可視なら、backspace を出さず
+    // hold（None を返してポーリング継続）すべき。
     #[test]
-    fn emit_recovery_actions_give_up_path_still_carries_escape_composition() {
-        let actions = emit_recovery_actions(
-            0,
-            "ltu".to_string(),
-            PARTIAL_LITERAL_BS,
-            obs(false, false),
-            1, // consecutive > 0 → give-up (RawTsfLiteralRecovery) パス
-            &tsf_env(),
-            true,
+    fn poll_vetoes_backspace_while_candidate_visible() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        // 送信直前（可視になる前）に detector のベースラインを取る。veto_eligible=true
+        // （単語単位のバッチ確認を模擬）。
+        let detector = LiteralDetector::new(true);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        let result = core.poll(&tsf_env());
+        assert!(
+            result.is_none(),
+            "候補ウィンドウ可視時は backspace を出さず hold すべき: {result:?}"
         );
-        match &actions[0] {
-            ProbeAction::RawTsfLiteralRecovery {
-                escape_composition, ..
-            } => assert!(
-                *escape_composition,
-                "give-up パスでも escape_composition を引き継ぐべき"
-            ),
-            other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
-        }
+    }
+
+    // hold が GJI_CANDIDATE_VETO_CAP_MS を超えても候補ウィンドウが可視のままなら、
+    // backspace はせず無回収の Done で打ち切るべき（固着ウィンドウに対する安全弁）。
+    #[test]
+    fn poll_gives_up_without_backspace_after_veto_cap_expires() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        let detector = LiteralDetector::new(true);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        // 1 回目: hold に入る（veto_started_at_ms が確定する）。
+        assert!(core.poll(&tsf_env()).is_none());
+
+        // 上限を超えるまで実時間で待機する（候補ウィンドウ固着を模擬）。
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::tuning::GJI_CANDIDATE_VETO_CAP_MS + 50,
+        ));
+
+        let actions = core
+            .poll(&tsf_env())
+            .expect("上限超過後は Some(..) で確定するべき");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "上限超過時も backspace（RawTsfLiteralRecovery）は出さないべき: {actions:?}"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, ProbeAction::Done)),
+            "無回収で Done を返すべき: {actions:?}"
+        );
+    }
+
+    // per-VK 単体確認（veto_eligible=false）では前モーラ由来の誤 veto を避けるため、
+    // 候補ウィンドウが可視でも veto を適用せず従来通り backspace 回収するべき。
+    #[test]
+    fn poll_does_not_veto_on_per_vk_confirm_path() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(5_000, false);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
+
+        let actions = core
+            .poll(&tsf_env())
+            .expect("per-VK パスは veto を無効化し即座に回収するべき");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "per-VK パスでは候補ウィンドウ可視でも backspace 回収すべき: {actions:?}"
+        );
     }
 }

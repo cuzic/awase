@@ -34,7 +34,6 @@ use std::time::Duration;
 use timed_fsm::{Response, TimedStateMachine};
 
 use crate::output::InjectionMode;
-use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tuning;
 
 // ── プリミティブ型 ────────────────────────────────────────────────────────────
@@ -53,7 +52,7 @@ impl FocusEpoch {
     }
 }
 
-/// probe ID。stale な `WarmupComplete` を弾くための識別子。タイムアウトによる保守的フォールバックも同イベント経由（`WarmupResult::conservative_fallback()`）。
+/// probe ID。stale な `WarmupComplete` を弾くための識別子。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProbeId(pub(crate) u32);
 
@@ -67,45 +66,6 @@ pub(crate) struct ProbeParams {
     pub is_long_cold: bool,
 }
 
-// ── WarmupResult ─────────────────────────────────────────────────────────────
-
-/// warmup probe の完了経路（4-bool の旧 WarmupResult を enum に昇格）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WarmupPath {
-    /// OBJ_NAMECHANGE 発火を確認した通常経路
-    NameChangeConfirmed,
-    /// eager LiteralDetect 経由で composition を確認した経路
-    EagerLiteralDetected,
-    /// GJI long-idle 後に I/O 応答を確認した経路
-    GjiResumed,
-    /// budget 枯渇による保守的フォールバック
-    TimedOutFallback,
-}
-
-/// warmup probe の結果。`GjiAction::SendInput` に格納されるが、実際の送信は
-/// `vk_send.rs` の既存ロジックが担うため dispatcher (`platform.rs`) はこの値を読まない
-/// (shadow tracking 専用、フィールドはテストでのみ検証される)。
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub(crate) struct WarmupResult {
-    pub path: WarmupPath,
-    pub prepend_f2_warmup: bool,
-    pub nc_fired: bool,
-    pub gji_resumed: bool,
-}
-
-impl WarmupResult {
-    #[allow(dead_code)]
-    pub(crate) const fn conservative_fallback() -> Self {
-        Self {
-            path: WarmupPath::TimedOutFallback,
-            prepend_f2_warmup: true,
-            nc_fired: false,
-            gji_resumed: false,
-        }
-    }
-}
-
 // ── PendingInput ─────────────────────────────────────────────────────────────
 
 /// `OnCold` 中に蓄積する入力バッファ（warmup 前の入力キャッシュ）。
@@ -116,40 +76,30 @@ impl WarmupResult {
 #[allow(dead_code)]
 pub(crate) struct PendingInput {
     pub romaji: String,
-    pub deferred_vks: Vec<DeferredVk>,
 }
 
 impl PendingInput {
     pub(crate) fn new(romaji: impl Into<String>) -> Self {
         Self {
             romaji: romaji.into(),
-            deferred_vks: Vec::new(),
         }
     }
 }
 
 // ── 状態型 ───────────────────────────────────────────────────────────────────
 
-/// `OnCold` の種別と warmup budget。
+/// `OnCold` の種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColdKind {
-    /// フォーカス変更・IME-ON 直後、GJI 確実に生存（即 Running、budget=100ms）
+    /// フォーカス変更・IME-ON 直後、GJI 確実に生存（即 Running）
     Short,
-    /// medium idle (7000–9999ms)、GJI 生存不明（NotStarted、ncwait_budget=550ms）
+    /// medium idle (7000–9999ms)、GJI 生存不明（NotStarted、最初の KeyInput まで待機）
     Medium,
-    /// LongIdle タイムアウト後（NotStarted、ncwait_budget=GJI_LONG_IDLE_PROBE_TOTAL_MS=350ms）
+    /// LongIdle タイムアウト後（NotStarted、最初の KeyInput まで待機）
     Long,
 }
 
 impl ColdKind {
-    /// GjiProbe フェーズの probe_budget_ms（Short のみ即プローブ開始で使用）
-    pub(crate) const fn budget_ms(self) -> u64 {
-        match self {
-            Self::Short => 100,
-            Self::Medium | Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
-        }
-    }
-
     /// F2 をバッチに強制同梱するか（GJI が寝ている可能性がある Medium/Long で true）。
     pub(crate) const fn forces_prepend_f2(self) -> bool {
         matches!(self, Self::Medium | Self::Long)
@@ -258,10 +208,7 @@ pub(crate) enum GjiEvent {
     /// キー入力（ローマ字 + deferred VK）
     KeyInput(PendingInput),
     /// warmup probe 完了
-    WarmupComplete {
-        probe_id: ProbeId,
-        result: WarmupResult,
-    },
+    WarmupComplete { probe_id: ProbeId },
     /// `WM_IME_STARTCOMPOSITION`
     StartComposition,
     /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
@@ -283,8 +230,6 @@ pub(crate) enum GjiAction {
     /// 新しい warmup probe を開始する
     StartProbe {
         probe_id: ProbeId,
-        /// GjiProbe フェーズの最大待機時間 (ms)
-        budget_ms: u64,
         /// `GjiWarmupCoro::new` に渡す probe パラメータ
         params: ProbeParams,
     },
@@ -293,10 +238,7 @@ pub(crate) enum GjiAction {
     /// warmup 完了・入力バッファの shadow tracking 用（実際の送信は既存ロジックが担うため
     /// dispatcher はペイロードを読まない。テストが `pending` の件数検証に使う）。
     #[allow(dead_code)]
-    SendInput {
-        result: WarmupResult,
-        pending: Vec<PendingInput>,
-    },
+    SendInput { pending: Vec<PendingInput> },
     #[allow(dead_code)]
     SendInputDirect(PendingInput),
 }
@@ -425,11 +367,7 @@ impl GjiFsm {
         if let Some(id) = old_probe {
             actions.push(GjiAction::CancelProbe { probe_id: id });
         }
-        actions.push(GjiAction::StartProbe {
-            probe_id,
-            budget_ms: kind.budget_ms(),
-            params,
-        });
+        actions.push(GjiAction::StartProbe { probe_id, params });
         Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
     }
 
@@ -450,11 +388,7 @@ impl GjiFsm {
             };
             (
                 ProbeStatus::Authorized { probe_id, params },
-                Some(GjiAction::StartProbe {
-                    probe_id,
-                    budget_ms: kind.budget_ms(),
-                    params,
-                }),
+                Some(GjiAction::StartProbe { probe_id, params }),
             )
         } else {
             (ProbeStatus::NotStarted, None)
@@ -676,11 +610,7 @@ impl TimedStateMachine for GjiFsm {
                                 };
                                 *probe = ProbeStatus::Authorized { probe_id, params };
                                 pending.push(input);
-                                Response::emit(vec![GjiAction::StartProbe {
-                                    probe_id,
-                                    budget_ms: kind.budget_ms(),
-                                    params,
-                                }])
+                                Response::emit(vec![GjiAction::StartProbe { probe_id, params }])
                             }
                             ProbeStatus::Authorized { .. } => {
                                 pending.push(input);
@@ -702,7 +632,7 @@ impl TimedStateMachine for GjiFsm {
             }
 
             // ── WarmupComplete ─────────────────────────────────────────────
-            GjiEvent::WarmupComplete { probe_id, result } => {
+            GjiEvent::WarmupComplete { probe_id } => {
                 // 現在 Authorized/Executing の probe_id と照合（stale 判定）
                 let current_id = self.running_probe_id();
                 if current_id != Some(probe_id) {
@@ -716,7 +646,7 @@ impl TimedStateMachine for GjiFsm {
                         let pending = std::mem::take(pending);
                         let mut extra_actions = Vec::new();
                         if !pending.is_empty() {
-                            extra_actions.push(GjiAction::SendInput { result, pending });
+                            extra_actions.push(GjiAction::SendInput { pending });
                         }
                         self.transition_to_warm(extra_actions)
                     }
@@ -728,7 +658,7 @@ impl TimedStateMachine for GjiFsm {
                         let pending = std::mem::take(pending);
                         let mut extra_actions = Vec::new();
                         if !pending.is_empty() {
-                            extra_actions.push(GjiAction::SendInput { result, pending });
+                            extra_actions.push(GjiAction::SendInput { pending });
                         }
                         // warmup を AlreadyWarm に更新
                         if let GjiState::OnComposing { warmup, .. } = &mut self.state {
@@ -965,15 +895,7 @@ mod tests {
             } => *probe_id,
             s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
         };
-        GjiEvent::WarmupComplete {
-            probe_id,
-            result: WarmupResult {
-                path: WarmupPath::NameChangeConfirmed,
-                prepend_f2_warmup: false,
-                nc_fired: true,
-                gji_resumed: false,
-            },
-        }
+        GjiEvent::WarmupComplete { probe_id }
     }
 
     // ── ImeOn → OnCold(Short) ────────────────────────────────────────────
@@ -1070,7 +992,6 @@ mod tests {
         // 古い probe_id の Complete → 無視されるはず
         let r = fsm.on_event(GjiEvent::WarmupComplete {
             probe_id: stale_probe_id,
-            result: WarmupResult::conservative_fallback(),
         });
         r.assert_consumed();
         r.assert_action_count(0);
@@ -1629,13 +1550,7 @@ mod tests {
         );
 
         // WarmupComplete → pending flush、warmup → AlreadyWarm
-        let result = WarmupResult {
-            path: WarmupPath::NameChangeConfirmed,
-            prepend_f2_warmup: false,
-            nc_fired: true,
-            gji_resumed: false,
-        };
-        let r = fsm.on_event(GjiEvent::WarmupComplete { probe_id, result });
+        let r = fsm.on_event(GjiEvent::WarmupComplete { probe_id });
 
         // SendInput が emit される
         assert!(
@@ -1716,13 +1631,7 @@ mod tests {
         }
 
         // WarmupComplete → OnWarm に遷移し pending が flush される
-        let result = WarmupResult {
-            path: WarmupPath::GjiResumed,
-            prepend_f2_warmup: false,
-            nc_fired: false,
-            gji_resumed: true,
-        };
-        let r2 = fsm.on_event(GjiEvent::WarmupComplete { probe_id, result });
+        let r2 = fsm.on_event(GjiEvent::WarmupComplete { probe_id });
         assert!(
             r2.actions
                 .iter()
@@ -1763,10 +1672,7 @@ mod tests {
         ));
 
         // TimedOutFallback → pending が flush され warmup が AlreadyWarm になる
-        let r = fsm.on_event(GjiEvent::WarmupComplete {
-            probe_id,
-            result: WarmupResult::conservative_fallback(),
-        });
+        let r = fsm.on_event(GjiEvent::WarmupComplete { probe_id });
 
         // SendInput（保守的フォールバック）が emit される
         assert!(

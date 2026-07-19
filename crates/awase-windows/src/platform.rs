@@ -283,14 +283,9 @@ impl WindowsPlatform {
         }
         for action in &response.actions {
             match action {
-                GjiAction::StartProbe {
-                    probe_id,
-                    budget_ms,
-                    params,
-                } => {
+                GjiAction::StartProbe { probe_id, params } => {
                     log::debug!(
-                        "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
-                         forces_f2={} long={}",
+                        "[gji-fsm] StartProbe probe_id={probe_id:?} forces_f2={} long={}",
                         params.forces_prepend_f2,
                         params.is_long_cold
                     );
@@ -302,7 +297,7 @@ impl WindowsPlatform {
                     //   deferred chars あり → VK_IME_ON poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
                     //   deferred chars なし → 従来通り VK_IME_OFF→VK_IME_ON reinit
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
-                        use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
+                        use crate::tsf::gji_fsm::GjiEvent;
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
@@ -316,12 +311,6 @@ impl WindowsPlatform {
                         }
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
-                            result: WarmupResult {
-                                path: WarmupPath::GjiResumed,
-                                prepend_f2_warmup: false,
-                                nc_fired: false,
-                                gji_resumed: false,
-                            },
                         });
                         self.dispatch_gji_response(&warmup_resp);
                     }
@@ -423,8 +412,9 @@ impl WindowsPlatform {
     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
     pub(crate) fn composition_native_f2_down(&mut self, applied_ime_on: Option<bool>) -> bool {
         let tsf_mode = self.output.is_tsf_mode();
+        let warm = self.output.is_composition_warm();
         self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode },
+            crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
             applied_ime_on,
         )
     }
@@ -537,9 +527,7 @@ impl WindowsPlatform {
             self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
             // BUG-24 追補: 候補ウィンドウ HIDE = IME セッションの終了。次のセッションの
             // 最初の1文字は改めて literal-detect の確認を受けるようリセットする。
-            if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
-                crate::tsf::observer::reset_literal_session_confirmed();
-            }
+            crate::tsf::observer::reset_literal_session_confirmed();
         }
     }
 
@@ -549,11 +537,6 @@ impl WindowsPlatform {
     /// StartComposition を先に dispatch してから EndComposition を dispatch する順序を保つ。
     fn drain_pending_composition_events(&mut self) {
         if crate::tsf::observer::take_pending_start_composition() {
-            // sacr-warmup probe に StartComposition を通知する（Phase 3 IPC race 検出用）。
-            // VK_A+BS atomic batch で SHOW+HIDE が最初の tick 前に完了した場合、
-            // 次の tick では gji_candidate_visible=false だが IPC はまだ伝播中のため、
-            // composition_was_seen フラグで検出して Phase 3 IPC settle 待機に移行する。
-            self.output.notify_probe_start_composition();
             self.gji_on_start_composition();
         }
         if crate::tsf::observer::take_pending_end_composition() {
@@ -563,11 +546,40 @@ impl WindowsPlatform {
 
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラ用: raw TSF literal 回収 + probe タイマーをセット。
     ///
-    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` を呼ぶため
-    /// cold/warm どちらのパスでも `pending_tsf` に probe が積まれることがある。
-    /// `platform.send_keys` を経由しないため、ここでタイマー設定を補完する。
+    /// `output.flush_raw_tsf_literal_recovery()` は内部で `send_romaji_as_tsf` /
+    /// `send_romaji_batched` を呼ぶため、`send_keys()` と同様に `GjiFsm::KeyInput` の
+    /// `Response`（`pending_gji_key_responses`）や `composition_reset` フラグが
+    /// 発生しうる。`platform.send_keys` を経由しないため、`drain_output_post_send_effects`
+    /// で同じ後処理を補完する（BUG-28: これを怠ると `pending_gji_key_responses` が
+    /// 次の実 `send_keys()` 呼び出しまで滞留し、溜まった分がまとめて stale な
+    /// `StartProbe` として burst 発火する。docs/known-bugs.md 参照）。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         self.output.flush_raw_tsf_literal_recovery();
+        self.drain_output_post_send_effects();
+    }
+
+    /// `output.send_keys()` / `output.flush_raw_tsf_literal_recovery()` の直後に共通で
+    /// 必要な後処理をまとめる（BUG-28）。
+    ///
+    /// `GjiFsm::KeyInput` の `Response` は `push_key_response` で
+    /// `pending_gji_key_responses` に一旦バッファされ、ここで初めて dispatch・ログ出力
+    /// （`"[gji-fsm] StartProbe probe_id=..."` 等）される。この関数を呼ばずに
+    /// `output.send_keys()`/`output.flush_raw_tsf_literal_recovery()` だけ呼ぶと、
+    /// バッファされた `Response` が次にこの関数が呼ばれるまで滞留し続ける。
+    fn drain_output_post_send_effects(&mut self) {
+        // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
+        // Vec で取り出すのは、1回の送信で複数文字を送る際に全 Response（StartProbe 含む）を
+        // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
+        for resp in self.output.drain_pending_gji_key_responses() {
+            self.dispatch_gji_response(&resp);
+        }
+        // SymbolVkSent 等の CompositionReset フラグを drain する。
+        if self.output.take_composition_reset() {
+            self.gji_on_composition_reset();
+        }
+        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
+        self.drain_pending_composition_events();
+        // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
         if let Some(cmd) = self.output.pending_tsf_timer() {
             self.apply_timer_command(cmd);
         }
@@ -650,22 +662,7 @@ impl PlatformRuntime for WindowsPlatform {
             self.output.set_unicode_cold_defer(false);
             self.flush_unicode_cold_deferred_chars();
         }
-        // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
-        // Vec で取り出すのは、1回の send_keys で複数文字を送る際に全 Response（StartProbe 含む）を
-        // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。
-        for resp in self.output.drain_pending_gji_key_responses() {
-            self.dispatch_gji_response(&resp);
-        }
-        // SymbolVkSent 等の CompositionReset フラグを drain する。
-        if self.output.take_composition_reset() {
-            self.gji_on_composition_reset();
-        }
-        // candidate SHOW/HIDE (observation_event_proc) → StartComposition/EndComposition
-        self.drain_pending_composition_events();
-        // cold-start 時に pending_tsf が設定された場合は 10ms タイマーを起動してプローブを進める。
-        if let Some(cmd) = self.output.pending_tsf_timer() {
-            self.apply_timer_command(cmd);
-        }
+        self.drain_output_post_send_effects();
     }
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {
@@ -907,9 +904,7 @@ impl TsfComposition for WindowsPlatform {
             // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
             // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
             if self.output.is_composition_warm() {
-                log::trace!(
-                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",
-                );
+                log::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",);
                 return;
             }
             log::debug!(

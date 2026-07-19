@@ -13,9 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use crate::tsf::gji_fsm::GjiTimer;
-use crate::tsf::gji_fsm::{
-    FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams, WarmupResult,
-};
+use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
@@ -36,8 +34,8 @@ pub(crate) struct TsfWarmupCoordinator {
     pub(super) current_gji_probe_id: Cell<Option<ProbeId>>,
     /// GJI probe 中に OUTPUT_GATE を活性化するガード。
     gji_probe_guard: RefCell<Option<OutputActiveGuard>>,
-    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
-    pending_gji_warmup: Cell<Option<WarmupResult>>,
+    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しフラグ。
+    pending_gji_warmup: Cell<bool>,
     /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
     pub(super) pending_gji_composition_reset: Cell<bool>,
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
@@ -57,7 +55,7 @@ impl TsfWarmupCoordinator {
             pending_tsf: RefCell::new(None),
             current_gji_probe_id: Cell::new(None),
             gji_probe_guard: RefCell::new(None),
-            pending_gji_warmup: Cell::new(None),
+            pending_gji_warmup: Cell::new(false),
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
             pending_deferred: RefCell::new(Vec::new()),
@@ -154,12 +152,12 @@ impl TsfWarmupCoordinator {
     // ── warmup result 橋渡し ───────────────────────────────────────────────
 
     /// `pending_gji_warmup` をセットする（`ProbeIo::store_gji_warmup_result` 用）。
-    pub(crate) fn store_warmup_result(&self, result: WarmupResult) {
-        self.pending_gji_warmup.set(Some(result));
+    pub(crate) fn mark_warmup_pending(&self) {
+        self.pending_gji_warmup.set(true);
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn take_warmup_result(&self) -> Option<WarmupResult> {
+    pub(crate) fn take_warmup_pending(&self) -> bool {
         self.pending_gji_warmup.take()
     }
 
@@ -192,9 +190,17 @@ impl TsfWarmupCoordinator {
     /// probe を `pending_tsf` にセットする。既存 probe があれば上書きして warn を出す。
     pub(crate) fn install_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
         let mut slot = self.pending_tsf.borrow_mut();
-        if slot.is_some() {
+        // BUG-27 調査用: 上書きされる旧 machine の cold_seq も出す
+        // （新 cold_seq だけでは「誰が誰を上書きしたか」が分からなかった）。
+        if let Some(old) = slot.as_ref() {
             log::warn!(
-                "[tsf-probe] overwriting in-flight probe with new probe cold={}",
+                "[tsf-probe] overwriting in-flight probe cold={} with new probe cold={}",
+                old.cold_seq_hint(),
+                machine.cold_seq_hint()
+            );
+        } else {
+            log::trace!(
+                "[tsf-probe-coord] install_pending_tsf cold={} (fresh)",
                 machine.cold_seq_hint()
             );
         }
@@ -203,17 +209,40 @@ impl TsfWarmupCoordinator {
 
     /// `pending_tsf` を取り出す（`step_probe` の1ステップ処理用）。
     pub(crate) fn take_pending_tsf(&self) -> Option<Box<dyn TickableFsm>> {
-        self.pending_tsf.borrow_mut().take()
+        let m = self.pending_tsf.borrow_mut().take();
+        // BUG-27 調査用ログ: take→(dispatch)→restore の1サイクルを追跡する。
+        // None が返るのは「probe 完了済み・timer は生きているが drain 待ち」等の
+        // 正常系でも起き得るため warn ではなく trace（既存の [tsf-probe-tick] 側
+        // ログと組み合わせて、machine の有無を tick ごとに突き合わせる想定）。
+        match &m {
+            Some(machine) => log::trace!(
+                "[tsf-probe-coord] take_pending_tsf → Some(cold={})",
+                machine.cold_seq_hint()
+            ),
+            None => log::trace!("[tsf-probe-coord] take_pending_tsf → None"),
+        }
+        m
     }
 
     /// `pending_tsf` に machine を戻す（`step_probe` の Continue 用）。
     pub(crate) fn restore_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
+        log::trace!(
+            "[tsf-probe-coord] restore_pending_tsf cold={}",
+            machine.cold_seq_hint()
+        );
         *self.pending_tsf.borrow_mut() = Some(machine);
     }
 
     /// `pending_tsf` をクリアする（`CancelProbe` 用）。
     pub(crate) fn clear_pending_tsf(&self) {
-        *self.pending_tsf.borrow_mut() = None;
+        // BUG-27 調査用ログ: CancelProbe 経路で pending_tsf が本当に破棄された
+        // 場合にのみログを出す（すでに None なら何も起きていない）。
+        if let Some(machine) = self.pending_tsf.borrow_mut().take() {
+            log::debug!(
+                "[tsf-probe-coord] clear_pending_tsf: discarding cold={}",
+                machine.cold_seq_hint()
+            );
+        }
     }
 
     /// probe が実行中かどうかを返す。
@@ -238,13 +267,6 @@ impl TsfWarmupCoordinator {
             id: crate::TIMER_TSF_PROBE,
             delay: Duration::from_millis(10),
         })
-    }
-
-    /// sacr-warmup probe に StartComposition が観測されたことを通知する。
-    pub(crate) fn notify_probe_start_composition(&self) {
-        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            machine.notify_start_composition();
-        }
     }
 
     /// probe 進行中なら渡された VK 列を coordinator の deferred キューに追記し true を返す。

@@ -1,4 +1,4 @@
-use super::key_injector::{make_key_input, KeyInjector, VkMarker};
+use super::key_injector::{KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
@@ -6,7 +6,7 @@ use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::vk::{VK_DBE_HIRAGANA, VK_OEM_MINUS};
+use crate::vk::VK_OEM_MINUS;
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
@@ -25,20 +25,12 @@ impl TsfSendPipeline {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        // cold パスかつ eager warmup あり → unicode TSF（既存）
-        // cold パスかつ eager なし → VK のまま（F2 ウォームアップ未完のため）
-        // warm パス（prepend_f2_warmup=false）:
+        // warm パス:
         //   used_eager_path=true → unicode TSF（B↓A↓B↑A↑ VK の「b」チラつき回避）
         //   used_eager_path=false → VK run
         //   TSF-native (WezTerm): send_romaji_as_tsf_warm が false を設定するため常に VK run →
         //     GJI コンポジション経由で候補ウィンドウが表示される。
-        let unicode_kana: Option<char> = if outcome.prepend_f2_warmup {
-            if outcome.used_eager_path {
-                kana_for_romaji_static(romaji)
-            } else {
-                None
-            }
-        } else if outcome.used_eager_path {
+        let unicode_kana: Option<char> = if outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
             None
@@ -46,33 +38,21 @@ impl TsfSendPipeline {
 
         let t_send = crate::hook::current_tick_ms();
         log::debug!(
-            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (prepend_f2={} eager={})",
+            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (eager={})",
             outcome.cold_seq,
             romaji,
             if unicode_kana.is_some() {
                 "unicode"
-            } else if outcome.prepend_f2_warmup {
-                "vk-run+f2"
             } else {
                 "vk-run"
             },
             t_send,
-            outcome.prepend_f2_warmup,
             outcome.used_eager_path,
         );
 
         unicode_kana.map_or_else(
             || {
-                if outcome.prepend_f2_warmup {
-                    // VK run cold path: F2 を K+O と同一 SendInput バッチに含める。
-                    // F2↓ が K↓ の直前に WezTerm へ届くため、GJI の composition context が
-                    // K を受け取る前に確実に初期化される（partial literal 防止）。
-                    // 例: NameChangeWait nc_fired=false 後に ko を送る際、
-                    //   F2+K+O バッチ → F2↓ で GJI 初期化 → K↓ でコンポジション開始 → こ
-                    Output::send_vk_runs_with_leading_f2(chars, outcome.cold_seq);
-                } else {
-                    Output::send_vk_runs(chars, outcome.cold_seq);
-                }
+                Output::send_vk_runs(chars, outcome.cold_seq);
                 chars.len()
             },
             |kana| {
@@ -102,11 +82,8 @@ impl Output {
 
     /// Batched モード: 全文字を1回の SendInput にまとめて送信（重畳押し順）
     ///
-    /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
-    /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
-    // cold/warm・GJI probe 有無で分岐が本質的に多い送信パス。分割は挙動変更リスクが
-    // 高いため、複雑度警告のみ抑制する。
-    #[expect(clippy::cognitive_complexity)]
+    /// cold 時は GJI プローブを開始し（ノンブロッキング）、TIMER_TSF_PROBE が
+    /// `ChromeProbe` フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -163,68 +140,14 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
-            // F2NonTsf: 物理 F2 がすでに Chrome の composition context を初期化済み。
-            // プログラム的な F2 送信（SendMessageTimeout + SendInput）をスキップし、
-            // 物理 F2 の時刻を probe 基準点として使うことで Chrome が 3 回 F2 を受け取る
-            // バグ（「かんりのつごう → kaんりのつごう」）を防ぐ。
-            // ただし以下の場合は F2NonTsf を無効化して programmatic F2 を再送する:
-            // - F2 から F2_STALE_MS 以上経過した場合: context が失効している可能性
-            // - long_idle=true の場合: 物理 F2 単体では Chrome の composition context
-            //   を再初期化できない（実測: ~518ms 必要なのに probe が 499ms で発火して
-            //   最初のキーが literal になる）。programmatic F2 (SendMessageTimeout +
-            //   SendInput) を必ず送って確実に初期化する。
-            // - f2_gji_long_idle=true の場合: GJI が長期 idle のとき物理 F2 だけでは
-            //   TSF context が起動せず GJI I/O が来ない。probe の "GJI I/O なし →
-            //   min_ms 後に即解放" パスが早期発火して最初のキーがリテラルになる
-            //   （例: たんなる → tあんなる）。long_idle 同様 programmatic F2 を送る。
-            let cold_reason = self.composition.last_cold_reason();
-            let cold_marked_ms = self.composition.cold_marked_ms();
-            let f2_stale = cold_reason == ColdReason::F2NonTsf
-                && cold_marked_ms != 0
-                && crate::hook::current_tick_ms().saturating_sub(cold_marked_ms)
-                    > crate::tuning::F2_STALE_MS;
-            // ノンブロッキング Chrome プローブを開始。
-            // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
-            // min/max を延長する（120ms では GJI が settle する前に timeout して literal
-            // 出力される回帰を抑制）。
-            let long_idle =
-                self.composition.idle_ms_at_last_cold() > crate::tuning::CHROME_LONG_IDLE_MS;
-            let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale && !long_idle;
-            // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合:
-            // GJI I/O が来ないのは正常状態だからではなく Chrome TSF context が未起動のため。
-            // skip_f2_send を false に上書きして programmatic F2 を強制送信する。
-            let f2_gji_long_idle = skip_f2_send && {
-                let gji_last_io = crate::tsf::observer::gji_last_io_ms();
-                crate::hook::current_tick_ms().saturating_sub(gji_last_io)
-                    > crate::tuning::CHROME_LONG_IDLE_MS
-            };
-            let skip_f2_send = skip_f2_send && !f2_gji_long_idle;
-            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
-                cold_marked_ms
-            } else {
-                crate::hook::current_tick_ms()
-            };
-            let (probe_min_ms, probe_max_ms) = if long_idle || f2_gji_long_idle {
-                (
-                    crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
-                    crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
-                )
-            } else {
-                (
-                    crate::tuning::CHROME_PROBE_MIN_MS,
-                    crate::tuning::CHROME_PROBE_MAX_MS,
-                )
-            };
-            if f2_stale {
-                let elapsed = crate::hook::current_tick_ms().saturating_sub(cold_marked_ms);
-                log::debug!(
-                    "[h1-probe] cold={cold_seq} F2NonTsf stale ({elapsed}ms > F2_STALE_MS={}) \
-                     → programmatic F2 を再送",
-                    crate::tuning::F2_STALE_MS
-                );
-            }
+            // 予防的な programmatic F2 送信・TsfReadinessProbe の事前待機は 2026-07-18 に
+            // 撤去した（実機ソーク数日で無破損確認、docs/known-bugs.md 参照）。per-VK
+            // confirm（tsf_probe_coro_body の Phase 2c）が送信後の confirm/recovery を
+            // 担うため、送信前に GJI の準備を待つ予防は二重の保険だった。
+            let f2_sent_ms = crate::hook::current_tick_ms();
+            let (probe_min_ms, probe_max_ms) = (0, 0);
             log::debug!(
-                "[h1-probe] cold={cold_seq} long_idle={long_idle} f2_gji_long_idle={f2_gji_long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send} f2_stale={f2_stale}",
+                "[h1-probe] cold={cold_seq} idle_at_cold={}ms F2/probe待機省略 → per-VK confirm へ",
                 self.composition.idle_ms_at_last_cold(),
             );
 
@@ -242,29 +165,6 @@ impl Output {
             let guard = OutputActiveGuard::begin();
             let probe =
                 crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
-            // is_long_cold: GJI が本当に CHROME_LONG_IDLE_MS を超えて寝ていたか。
-            // 確定キーや IME OFF→ON 再有効化直後の一瞬だけの cold (Short/Medium) では
-            // false になり、ChromeProbe は VK_A probe + Chrome reinit のフルコースを
-            // 省略して軽量パス（inline LiteralDetect のみ）を使う（過剰な cold-start
-            // 発火の抑制、docs/known-bugs.md BUG-21）。
-            //
-            // 注: この判定は「awase 自身が最後に送信してからの経過時間」
-            // （`idle_ms_at_last_cold` = `ms_since_last_send()`）という自己参照タイマーに
-            // 基づく。実際に GJI プロセスが動いているかどうかの直接観測
-            // （`gji_last_io_ms` / `gji_idle_ms()`, `tsf/gji_monitor.rs` の
-            // `GetProcessIoCounters` 実IO監視）とは独立している。
-            let self_timer_is_long_cold = long_idle || f2_gji_long_idle;
-            let real_gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-            let is_long_cold =
-                self_timer_is_long_cold && !crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP;
-            if self_timer_is_long_cold {
-                log::info!(
-                    "[h1-probe-diag] cold={cold_seq} self_timer_is_long_cold=true \
-                     real_gji_idle_ms={real_gji_idle_ms} \
-                     DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP={} → is_long_cold={is_long_cold}",
-                    crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP,
-                );
-            }
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                     romaji,
@@ -272,7 +172,6 @@ impl Output {
                     probe,
                     probe_max_ms,
                     guard,
-                    is_long_cold,
                 ),
             ));
             self.runtime_outbox
@@ -291,33 +190,8 @@ impl Output {
                     conv_pre
                         .is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 );
-
-                if skip_f2_send {
-                    // 物理 F2 が Chrome の composition context を既に初期化済みのため
-                    // プログラム的な F2 送信をスキップする。probe は cold_marked_ms 基準で待機。
-                    log::debug!("[h1-run] cold={cold_seq} F2NonTsf: skip programmatic F2 (physical F2 at f2_sent_ms={f2_sent_ms})");
-                } else {
-                    // IMC_SETCONVERSIONMODE を ROMAN に揃えてから SendInput でローマ字を送ることで
-                    // カナ出力化けを防ぐ。await でワーカースレッドに完全委譲しているので順序は保たれる。
-                    let _ = crate::ime::set_ime_romaji_mode_async().await;
-
-                    log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
-                    let f2_ok = crate::ime::send_f2_via_sendmessage_async().await;
-                    log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
-
-                    // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
-                    // マネージャーを経由しないため、Chrome の composition context が初期化されない。
-                    // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
-                    // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
-                    let f2_via_sendinput = [
-                        make_key_input(VK_DBE_HIRAGANA, false),
-                        make_key_input(VK_DBE_HIRAGANA, true),
-                    ];
-                    let _ = crate::win32::send_input_safe(&f2_via_sendinput);
-                    log::debug!(
-                        "[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)"
-                    );
-                }
+                // 予防的な programmatic F2 送信は 2026-07-18 に撤去した（上記コメント参照）。
+                // romaji は per-VK confirm（ChromeProbe/tsf_probe_coro_body）がそのまま送る。
             });
 
             return;
@@ -346,12 +220,6 @@ impl Output {
     /// `KeyInjector::send_vk_runs` に委譲する。
     pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: u32) {
         KeyInjector::send_vk_runs(chars, cold_seq);
-    }
-
-    /// VK run 分割送信（F2 leading）: F2 を先頭に付加して送信する。
-    /// `KeyInjector::send_vk_runs_with_leading_f2` に委譲する。
-    pub(super) fn send_vk_runs_with_leading_f2(chars: &[(VkCode, bool)], cold_seq: u32) {
-        KeyInjector::send_vk_runs_with_leading_f2(chars, cold_seq);
     }
 
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
@@ -420,13 +288,10 @@ impl Output {
                 cold_seq,
                 started.probe,
                 started.total_max_ms,
-                started.needs_settle_check,
                 started.cold_reason,
-                prepend_f2_warmup,
                 used_eager_path,
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
-                started.fresh_f2_at_probe_start,
                 self.composition.consecutive_count(),
             ));
             self.install_pending_tsf(coro);
@@ -516,7 +381,6 @@ impl Output {
 
         log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms");
         let outcome = WarmupOutcome {
-            prepend_f2_warmup: false,
             used_eager_path,
             cold_seq,
         };
@@ -541,7 +405,6 @@ impl Output {
             });
         }
 
-        let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
 
         // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
@@ -557,24 +420,20 @@ impl Output {
         {
             // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
             // ze_bs_count は実際の値を渡す。
-            let _ = (detector,);
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
                     romaji.to_owned(),
-                    crate::tsf::warmup::probe_fsm::ProbeObservations {
-                        nc_fired: false,
-                        gji_resumed: false,
-                    },
+                    crate::tsf::warmup::probe_fsm::ProbeObservations { nc_fired: false },
                     ze_bs_count,
                     crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                     self.composition.consecutive_count(),
                 ),
             ));
         } else {
-            // detector と ze_bs_count は Probing+GJI 健全パスでのみ使う。
+            // ze_bs_count は Probing+GJI 健全パスでのみ使う。
             // 他パスでは warm マーク済みで LiteralDetect 不要。
-            let _ = (detector, ze_bs_count);
+            let _ = ze_bs_count;
         }
     }
 
@@ -649,7 +508,9 @@ impl Output {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                Self::send_vk_pair(vk, needs_shift, VkMarker::Injected);
+                // 実験: scan code 付き（VkMarker::InjectedWithScan）。send_romaji_batch_immediate
+                // と同じ実験、詳細はそちらのコメント参照。
+                Self::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!(

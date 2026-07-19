@@ -103,28 +103,14 @@ pub struct TsfObservations {
     /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
-    /// GJI プロセスの累積 ReadOperationCount。
-    ///
-    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
-    /// ベースラインとの差分で「GJI が VK を受け取って辞書 lookup したか」を確認できる
-    /// （composition 確認シグナルとして `gji_last_io_ms` より限定的）。
-    /// 観測・状態推定用。0 = 未取得。
-    pub(super) gji_read_op_count: AtomicU64,
-
-    /// GJI プロセスの累積 ReadTransferCount（バイト数）。
-    ///
-    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
-    /// スパイク（数 MB）= 辞書ファイル再ロード（コールドスタート）の可能性がある。
-    /// 観測・状態推定用。0 = 未取得。
-    pub(super) gji_read_bytes: AtomicU64,
-
     /// GJI プロセスの累積 WriteTransferCount（バイト数）。
     ///
     /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
     /// F2（モード切り替え）は WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
     /// 文字変換は +0.2KB 以上増加する。ベースラインとの差分で
     /// 「モード切り替えのみか文字コンポジションが発生したか」を区別できる。
-    /// [`LiteralDetector::new_gji_resumed`] の Chrome 用確認シグナルとして使用する。
+    /// [`LiteralDetector::new`]/[`LiteralDetector::new_with_pre_send_baseline`]
+    /// の composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
     /// 観測・状態推定用。0 = 未取得。
     pub(super) gji_write_bytes: AtomicU64,
 
@@ -148,7 +134,7 @@ pub struct TsfObservations {
     /// が一度でも `CompositionConfirmed`（かつ非 partial-literal）を確認できたかどうか。
     ///
     /// `true` になった後は、同一セッション内の以降の文字は literal-detect 自体をスキップし
-    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired`/`gji_resumed` が
+    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired` が
     /// `SetOpenTrue`/`FocusChange`/`NativeF2Consumed` 等の cold 直後は構造的に信頼できず、
     /// 正しく変換されているのに不要な ESC+BS 訂正が発生していた）。
     ///
@@ -213,8 +199,6 @@ impl TsfObservations {
             gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
             gji_last_io_ms: AtomicU64::new(0),
-            gji_read_op_count: AtomicU64::new(0),
-            gji_read_bytes: AtomicU64::new(0),
             gji_write_bytes: AtomicU64::new(0),
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
@@ -233,33 +217,6 @@ impl TsfObservations {
     #[must_use]
     pub fn gji_last_io_ms(&self) -> u64 {
         self.gji_last_io_ms.load(Ordering::Relaxed)
-    }
-
-    /// GJI 最終 Write 変化時刻 (ms) を読み取る（Relaxed）。0 = 未観測。
-    ///
-    /// `gji_last_io_ms` とは異なり、WriteTransferCount 増加時のみ更新される。
-    /// GJI がアクティブ IME かどうかの判定（`GjiDirectStrategy.is_applicable()`）に使用する。
-    #[must_use]
-    pub fn gji_last_write_ms(&self) -> u64 {
-        self.gji_last_write_ms.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 ReadOperationCount を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_read_op_count(&self) -> u64 {
-        self.gji_read_op_count.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 ReadTransferCount（バイト数）を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_read_bytes(&self) -> u64 {
-        self.gji_read_bytes.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 WriteTransferCount（バイト数）を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_write_bytes(&self) -> u64 {
-        self.gji_write_bytes.load(Ordering::Relaxed)
     }
 
     /// GJI モニターが利用可能かを読み取る（Acquire）。
@@ -368,8 +325,8 @@ pub(crate) fn gji_last_write_ms() -> u64 {
 /// GJI プロセスの累積 WriteTransferCount（バイト数）を返す。0 = 未観測。live 読み取り。
 ///
 /// F2 などのモード切り替えキーは WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
-/// 文字変換は +0.2KB 以上増加する。`LiteralDetector::new_gji_resumed` の
-/// Chrome 用 composition 確認シグナルとして使用する。
+/// 文字変換は +0.2KB 以上増加する。`LiteralDetector`（`new`/`new_with_pre_send_baseline`）の
+/// composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
 pub(crate) fn gji_write_bytes() -> u64 {
     TSF_OBS.gji_write_bytes.load(Ordering::Relaxed)
 }
