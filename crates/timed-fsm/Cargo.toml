@@ -1,10 +1,10 @@
 [package]
 name = "timed-fsm"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "A timed finite state machine framework where timer commands are declarative transition outputs"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/cuzic/timed-fsm"
+repository = "https://github.com/cuzic/awase/tree/main/crates/timed-fsm"
 keywords = ["state-machine", "fsm", "timer", "event-driven"]
 categories = ["data-structures"]
 readme = "README.md"
