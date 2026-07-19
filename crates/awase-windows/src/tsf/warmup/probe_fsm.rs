@@ -45,10 +45,6 @@ use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 pub(crate) struct TsfEnvSnapshot {
     pub is_tsf_mode: bool,
     pub gji_active: bool,
-    /// `LiteralDetect` の部分リテラル検出で参照する現在 composition 先頭文字。
-    /// `crate::ime::get_foreground_comp_str_char()` のスナップショット。
-    /// `None` = HIMC 未取得（テスト・LiteralDetect 非活性時）→ 部分リテラル検出をスキップ。
-    pub foreground_comp_char: Option<char>,
     /// 現在の IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
     pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
     /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。
@@ -67,28 +63,12 @@ pub(crate) struct ProbeObservations {
 /// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TransmitPlan {
-    /// バッチ送信に F2 (VK_DBE_HIRAGANA) を先行させるか。
-    pub should_prepend_f2: bool,
     /// VK ローマ字パス（true）か Unicode TSF パス（false）か。
     pub used_eager_path: bool,
     /// raw TSF literal の LiteralDetect フェーズを有効にするか。
     pub needs_literal: bool,
     /// LiteralDetect のタイムアウト期間（ms）。
     pub literal_detect_ms: u64,
-}
-
-/// BUG-29: 候補ウィンドウが既に表示中なら、per-VK confirm の
-/// literal-detect polling をスキップしてよいかを判定する（純粋関数、テスト用に分離）。
-///
-/// 候補ウィンドウが表示中であること自体が「warm な composition が継続している」
-/// 直接証拠であるため、SHOW イベント（エッジトリガで VK1 以降は再発火しない）や
-/// WriteTransferCount 閾値（子音単体 VK では原理的に越えない）に頼らず即
-/// confirmed とみなせる。`crates/awase-windows/src/tsf/probe.rs`
-/// （`LiteralDetector::check_now`）に記載された既知の限界を構造的に解消する。
-/// BUG-30 で `LiteralDetector` の検出ロジックが TSF/Chrome 共通化されたため、
-/// この早期脱出も両ターゲットに適用する（`docs/known-bugs.md` BUG-30 追補1）。
-pub(crate) const fn should_skip_literal_wait(candidate_visible: bool) -> bool {
-    candidate_visible
 }
 
 /// probe 観測値・環境スナップショット・コンテキストから送信方針を決定する純粋計算関数。
@@ -103,10 +83,8 @@ pub(crate) fn decide_transmit_plan(
     is_long_cold: bool,
 ) -> TransmitPlan {
     // romaji バッチへの F2 直接同梱（第3の防御層）は DIAG_DISABLE_PROACTIVE_TSF_WARMUP を
-    // 2026-07-19 に恒久化したことで撤去し、常に false になった。reactive な LiteralDetect
-    // のみに委ねる（`docs/known-bugs.md` BUG-24 参照。再度有効化する場合はこのコミットの
-    // revert が必要）。
-    let should_prepend_f2 = false;
+    // 2026-07-19 に恒久化したことで撤去した。reactive な LiteralDetect のみに委ねる
+    // （`docs/known-bugs.md` BUG-24 参照）。
 
     // nc_fired=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
     // nc_fired=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
@@ -130,7 +108,6 @@ pub(crate) fn decide_transmit_plan(
     };
 
     TransmitPlan {
-        should_prepend_f2,
         used_eager_path,
         needs_literal,
         literal_detect_ms,
@@ -231,16 +208,13 @@ pub(crate) struct ProbeTickInput {
 }
 
 /// `apply_transmit_done(Some(detector))` のペイロード。次 tick で inline LiteralDetect に入る。
-/// Chrome (`TsfProbeCoro`) / TSF (`GjiWarmupCoro`) で共有。`expected_kana` は Chrome の
-/// inline LiteralDetect（Phase 3、partial literal 判定）のみが使用し、TSF 側
-/// （`LiteralDetectCore` に委譲）は常に `None` を渡す。
+/// Chrome (`TsfProbeCoro`) / TSF (`GjiWarmupCoro`) で共有。
 pub(crate) struct TransmitDonePayload {
     pub(crate) romaji: String,
     pub(crate) ze_bs_count: usize,
     pub(crate) detector: LiteralDetector,
     /// `apply_transmit_done` 呼び出し時点の `current_tick_ms() + literal_detect_ms`。
     pub(crate) deadline_ms: u64,
-    pub(crate) expected_kana: Option<char>,
 }
 
 /// `apply_vk_sent` のペイロード。次 tick の [`ProbeTickInput`] に載り、コルーチン本体が
@@ -344,8 +318,7 @@ pub(crate) async fn run_per_vk_confirm(
         // （probe.rs の `LiteralDetector::check_now` に既知の限界として記載済み）。
         // 検出ロジック自体が TSF/Chrome で統一された（BUG-30、`docs/known-bugs.md`
         // BUG-30 追補1）ため、この早期脱出も両ターゲットに適用する（旧: Chrome 限定）。
-        let detection = if should_skip_literal_wait(crate::tsf::observer::gji_candidate_visible_now())
-        {
+        let detection = if crate::tsf::observer::gji_candidate_visible_now() {
             log::debug!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
                  candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
@@ -456,7 +429,6 @@ async fn tsf_probe_coro_body(
     // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
     if needs_literal && !crate::tsf::observer::literal_session_confirmed() {
         let plan = TransmitPlan {
-            should_prepend_f2: false,
             used_eager_path: false,
             needs_literal: true,
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -470,7 +442,6 @@ async fn tsf_probe_coro_body(
         vec![ProbeAction::Transmit {
             cold_seq,
             plan: TransmitPlan {
-                should_prepend_f2: false,
                 used_eager_path: false,
                 needs_literal,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -487,7 +458,6 @@ async fn tsf_probe_coro_body(
         ze_bs_count,
         detector,
         deadline_ms,
-        expected_kana,
     }) = transmit_input.transmit_done
     else {
         return;
@@ -495,40 +465,13 @@ async fn tsf_probe_coro_body(
 
     loop {
         use crate::tsf::probe::DetectionResult;
-        let detect_input = yield_step(ch.clone(), vec![]).await;
-        let env = detect_input.env;
+        yield_step(ch.clone(), vec![]).await;
 
         let Some(detection) = detector.check_now(deadline_ms) else {
             continue;
         };
 
-        // 部分リテラル判定: SHOW 後に composition 内容が expected_kana と異なるケース。
-        // TSF→IMM32 bridge が composition 中に HIMC を更新する環境でのみ有効。
-        let partial_literal = matches!(detection, DetectionResult::CompositionConfirmed)
-            && expected_kana.is_some_and(|e| env.foreground_comp_char.is_some_and(|c| c != e));
-
         let final_actions = match detection {
-            DetectionResult::CompositionConfirmed if partial_literal => {
-                log::warn!(
-                    "[raw-tsf-literal] cold={cold_seq} partial literal: comp={:?} ≠ expected='{:?}' → SuspectedLiteral",
-                    env.foreground_comp_char, expected_kana
-                );
-                crate::ime_diagnostic::log_composition_probe(cold_seq, "partial-literal");
-                // この経路は TSF→IMM32 bridge による実文字列突合せ (expected_kana との比較)
-                // に基づく別系統の partial-literal 検出であり、is_partial_literal() の
-                // ヒューリスティック（nc_fired/is_tsf_mode）とは異なる。
-                // ESC-based 回収は candidate 表示中の partial literal 専用に限定するため、
-                // ここでは既存どおり backs=ze_bs_count のみで対応する（escape_composition=false）。
-                vec![
-                    ProbeAction::RawTsfLiteralRecovery {
-                        cold_seq,
-                        backs: ze_bs_count,
-                        romaji: recovery_romaji,
-                        escape_composition: false,
-                    },
-                    ProbeAction::Done,
-                ]
-            }
             DetectionResult::SuspectedLiteral => {
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "suspected");
                 vec![
@@ -640,7 +583,6 @@ impl TickableFsm for TsfProbeCoro {
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
-        expected_kana: Option<char>,
     ) -> bool {
         match detector {
             Some(det) => {
@@ -650,7 +592,6 @@ impl TickableFsm for TsfProbeCoro {
                     ze_bs_count,
                     detector: det,
                     deadline_ms,
-                    expected_kana,
                 });
                 false
             }
@@ -683,41 +624,7 @@ impl TickableFsm for TsfProbeCoro {
 mod tests {
     use super::*;
 
-    // ── should_skip_literal_wait 回帰テスト（BUG-29）────────────────────────
-
-    #[test]
-    fn should_skip_literal_wait_when_candidate_already_visible() {
-        assert!(
-            should_skip_literal_wait(true),
-            "候補ウィンドウ表示中は literal-detect の polling をスキップする"
-        );
-    }
-
-    #[test]
-    fn should_skip_literal_wait_false_when_candidate_hidden() {
-        assert!(
-            !should_skip_literal_wait(false),
-            "非表示中は従来通り literal-detect の polling を行う"
-        );
-    }
-
     // ── decide_transmit_plan 回帰テスト ──────────────────────────────────────
-
-    #[test]
-    fn decide_plan_should_prepend_f2_is_always_false() {
-        // DIAG_DISABLE_PROACTIVE_TSF_WARMUP を 2026-07-19 に恒久化したことで、romaji
-        // バッチへの F2 直接同梱（第3の防御層）は撤去され、should_prepend_f2 は
-        // 入力に関わらず常に false になった。この不変条件が将来壊れないことを
-        // 固定する回帰テスト（再度有効化する場合はこのコミットの revert が必要）。
-        let obs = ProbeObservations { nc_fired: true };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-        let plan = decide_transmit_plan(false, obs, &env, true, true, true); // Long cold, nc_fired
-        assert!(!plan.should_prepend_f2);
-    }
 
     #[test]
     fn decide_plan_nc_not_fired_tsf_not_long_idle_keeps_literal() {

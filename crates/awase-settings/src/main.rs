@@ -884,6 +884,29 @@ impl SettingsApp {
                 &mut self.config.general.right_thumb_key,
             );
         });
+        if self.config.general.left_thumb_key == "VK_SPACE"
+            || self.config.general.right_thumb_key == "VK_SPACE"
+        {
+            ui.indent("space_thumb_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.space_thumb_ignore_composing_guard,
+                    "変換候補ウィンドウ表示中でも Space を送出する",
+                )
+                .on_hover_text(
+                    "OFF にすると、無変換/変換キーと同様に変換候補ウィンドウ表示中は\n\
+                     Space 単独タップを抑制します（IME の変換候補送り機能が使えなくなります）。\n\
+                     通常は ON のままにしてください。",
+                );
+                ui.checkbox(
+                    &mut self.config.general.space_thumb_shift_literal,
+                    "Shift+Space は常に半角スペースとして送出する",
+                )
+                .on_hover_text(
+                    "ON の場合、Shift を押しながら Space 親指キーを押すと、\n\
+                     同時打鍵判定を待たず即座に半角スペースを入力します。",
+                );
+            });
+        }
         ui.add_space(8.0);
 
         // Engine on/off
@@ -2478,8 +2501,8 @@ fn setup_fonts(ctx: &egui::Context) {
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
         use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
         unsafe {
             // クラス名は crates/awase-windows/src/tray.rs の
             // `WINDOW_CLASS_NAME` = "awase_tray_window" と必ず一致させること。
@@ -2506,9 +2529,8 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab,
-        ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
-        resolve_layouts_dir,
+        empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir, Face, KanaTable,
+        PhysicalPos, SettingsApp, Tab, ValueKind, YabValue, CLIPBOARD_HISTORY_LEN, SPECIAL_KEYS,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {

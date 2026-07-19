@@ -765,9 +765,6 @@ impl Output {
             crate::tsf::warmup::probe_fsm::TsfEnvSnapshot {
                 is_tsf_mode: self.is_tsf_mode(),
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
-                // SAFETY: GetForegroundWindow + ImmGetContext + ImmGetCompositionStringW。
-                //         step_probe は TIMER_TSF_PROBE ハンドラ（メインスレッド）から呼ばれる。
-                foreground_comp_char: unsafe { crate::ime::get_foreground_comp_str_char() },
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 deferred_pending: self.warmup_coord.has_pending_deferred(),

@@ -9,6 +9,7 @@ use crate::types::{ContextChange, KeyAction, RawKeyEvent};
 use crate::yab::YabLayout;
 
 use super::decision::{Decision, Effect, EffectVec, InputEffect, TimerEffect};
+use super::fsm_types::ComposingHint;
 use super::input_tracker::PhysicalKeyState;
 use super::nicola_fsm::NicolaFsm;
 
@@ -44,14 +45,18 @@ impl FsmAdapter {
     }
 
     /// 保留中のキーをフラッシュし、Decision を返す。
-    pub(super) fn flush(&mut self, reason: ContextChange) -> Decision {
-        let resp = self.fsm.flush_pending(reason);
+    pub(super) fn flush(&mut self, reason: ContextChange, composing: ComposingHint) -> Decision {
+        let resp = self.fsm.flush_pending(reason, composing);
         Self::response_to_decision(resp)
     }
 
     /// フラッシュして Effect リストのみを返す（他の Effect と結合する用途）。
-    pub(super) fn flush_to_effects(&mut self, reason: ContextChange) -> EffectVec {
-        let resp = self.fsm.flush_pending(reason);
+    pub(super) fn flush_to_effects(
+        &mut self,
+        reason: ContextChange,
+        composing: ComposingHint,
+    ) -> EffectVec {
+        let resp = self.fsm.flush_pending(reason, composing);
         Self::response_to_effects(resp)
     }
 
@@ -91,6 +96,17 @@ impl FsmAdapter {
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     pub(super) const fn set_engine_off_triple_vk(&mut self, vk: crate::types::VkCode) {
         self.fsm.set_engine_off_triple_vk(vk);
+    }
+
+    /// Space 親指キーのフォールバック挙動を設定する。
+    pub(super) const fn set_space_thumb_config(
+        &mut self,
+        space_thumb_vk: Option<crate::types::VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.fsm
+            .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
@@ -155,6 +171,7 @@ mod tests {
 
     use crate::config::ConfirmMode;
     use crate::engine::decision::{Decision, Effect, InputEffect, TimerEffect};
+    use crate::engine::fsm_types::ComposingHint;
     use crate::engine::input_tracker::{InputTracker, PhysicalKeyState};
     use crate::engine::nicola_fsm::NicolaFsm;
     use crate::ngram::NgramModel;
@@ -530,7 +547,7 @@ mod tests {
     #[test]
     fn flush_when_idle_returns_consumed() {
         let mut adapter = make_adapter();
-        let decision = adapter.flush(ContextChange::ImeOff);
+        let decision = adapter.flush(ContextChange::ImeOff, ComposingHint::Trusted(false));
         // Idle からのフラッシュは consume() が返る（タイマー Kill 2つ付き）
         assert!(decision.is_consumed());
     }
@@ -544,7 +561,7 @@ mod tests {
         let phys = tracker.process(&event);
         adapter.on_event(event, &phys);
 
-        let decision = adapter.flush(ContextChange::FocusChanged);
+        let decision = adapter.flush(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         assert!(decision.is_consumed());
         match decision {
             Decision::Consume { effects } => {
@@ -567,8 +584,8 @@ mod tests {
         let phys = tracker.process(&event);
         adapter.on_event(event, &phys);
 
-        let d1 = adapter.flush(ContextChange::ImeOff);
-        let d2 = adapter.flush(ContextChange::ImeOff);
+        let d1 = adapter.flush(ContextChange::ImeOff, ComposingHint::Trusted(false));
+        let d2 = adapter.flush(ContextChange::ImeOff, ComposingHint::Trusted(false));
 
         // 1回目は actions を含む
         let has_keys_1 = match &d1 {
@@ -594,7 +611,8 @@ mod tests {
     #[test]
     fn flush_to_effects_when_idle_returns_timer_kills() {
         let mut adapter = make_adapter();
-        let effects = adapter.flush_to_effects(ContextChange::ImeOff);
+        let effects =
+            adapter.flush_to_effects(ContextChange::ImeOff, ComposingHint::Trusted(false));
         // Idle → タイマー Kill x2 が必ず含まれる
         let kill_count = effects
             .iter()
@@ -614,7 +632,8 @@ mod tests {
         let phys = tracker.process(&event);
         adapter.on_event(event, &phys);
 
-        let effects = adapter.flush_to_effects(ContextChange::FocusChanged);
+        let effects =
+            adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         let has_send_keys = effects.iter().any(|e| matches!(e, Effect::Input(_)));
         assert!(has_send_keys);
     }
@@ -757,7 +776,7 @@ mod tests {
         for variant in variants {
             let mut adapter = make_adapter();
             // panic しないこと
-            let _decision = adapter.flush(variant);
+            let _decision = adapter.flush(variant, ComposingHint::Trusted(false));
         }
     }
 

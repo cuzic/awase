@@ -31,7 +31,7 @@ pub(crate) trait ProbeIo {
     /// unicode kana 分岐を一切行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
     /// Chrome per-VK confirm 専用: 1 VK の
-    /// DOWN+UP を `VkMarker::InjectedWithScan`（実験: scan code 付き）で単独送信する。
+    /// DOWN+UP を `VkMarker::InjectedWithScan`（scan code 付き）で単独送信する。
     /// `send_single_tsf_vk` の Chrome版。
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
@@ -109,8 +109,8 @@ impl ProbeIo for Output {
     }
 
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool) {
-        // 実験: scan code 付き（VkMarker::InjectedWithScan）。key_injector.rs の
-        // send_romaji_batch_immediate と同じ実験。
+        // scan code 付き（VkMarker::InjectedWithScan）、key_injector.rs の
+        // send_romaji_batch_immediate と同じ恒久仕様。
         KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
     }
 
@@ -400,10 +400,6 @@ where
                         let detector = plan
                             .needs_literal
                             .then(|| crate::tsf::probe::LiteralDetector::new(true));
-                        // TSF cold path の部分リテラル検出: SHOW 発火時に IMM32 composition と突き合わせる。
-                        // K がリテラル化して O だけが compose された場合（"ko"→'k'+'お'）を
-                        // expected_kana='こ' vs actual='お' の不一致で検出する。
-                        let expected_kana = crate::tsf::output::kana_for_romaji_static(&romaji);
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
@@ -414,7 +410,6 @@ where
                             ze_bs_count,
                             detector,
                             plan.literal_detect_ms,
-                            expected_kana,
                         ) {
                             return DispatchResult::Done;
                         }
@@ -440,7 +435,6 @@ where
                             ze_bs_count,
                             detector,
                             plan.literal_detect_ms,
-                            None,
                         ) {
                             return DispatchResult::Done;
                         }
@@ -698,7 +692,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: false,
                 used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -721,7 +714,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: false,
                 used_eager_path: false,
                 needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -747,7 +739,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: false,
                 used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -769,7 +760,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: true,
                 used_eager_path: true, // nc_fired=true + gji_long_idle=true
                 needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -792,7 +782,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: false,
                 used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -815,7 +804,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: true,
                 used_eager_path: true, // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -871,7 +859,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: true,
                 // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle = false || true = true
                 used_eager_path: true,
                 needs_literal: false,
@@ -893,14 +880,11 @@ mod tests {
     fn tsf_mode_nc_not_fired_gji_active_uses_vk_path() {
         // decide_transmit_plan: nc_fired=false + is_tsf_mode=true → used_eager_path=false (VK path)。
         // KEYEVENTF_UNICODE は GJI コンポジションをバイパスして候補ウィンドウが出ないため TSF mode では使わない。
-        // prepend_f2_warmup + nc_fired=false + !is_tsf_mode → should_prepend_f2=false。
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                // nc_fired=false + is_tsf_mode=true + !gji_long_idle → should_prepend_f2=false
-                should_prepend_f2: false,
                 used_eager_path: false, // is_tsf_mode=true → VK path
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -927,8 +911,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                // nc_fired=false + is_tsf_mode=true + gji_long_idle=true → should_prepend_f2=true
-                should_prepend_f2: true,
                 used_eager_path: false, // is_tsf_mode=true → VK path
                 needs_literal: false,   // gji_active=false → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
@@ -948,16 +930,15 @@ mod tests {
     #[test]
     fn tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect() {
         // decide_transmit_plan: nc_fired=false + is_tsf_mode=true + gji_active=true + gji_long_idle=true
-        // → should_prepend_f2=true, used_eager_path=false (VK), needs_literal=true (TSF mode override)。
+        // → used_eager_path=false (VK), needs_literal=true (TSF mode override)。
         // VK path でリテラル化した場合に BS 再送で回収できるよう LiteralDetect を有効化する。
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: true,
                 used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true, // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode)
+                needs_literal: true, // gji_active && (!gji_long_idle || is_tsf_mode)
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
             romaji: "ko".to_string(),
@@ -976,18 +957,14 @@ mod tests {
     }
 
     #[test]
-    fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_f2_and_literal_detect() {
-        // nc_fired=false + is_tsf_mode=true + !gji_long_idle:
-        // decide_transmit_plan: should_prepend_f2 = prepend_f2_warmup && (nc_fired || !is_tsf_mode || gji_long_idle)
-        //   = true && (false || false || false) = false → F2 をバッチに含めない。
-        // SendFreshF2 が ~300ms 前に fresh F2 を送信済み → 再び含めると TSF reinit race (Bug 1)。
-        // should_prepend_f2=false → needs_literal=false → done=true。
+    fn tsf_mode_cold_start_nc_not_fired_not_long_idle_skips_literal_detect() {
+        // nc_fired=false + is_tsf_mode=true + !gji_long_idle かつ needs_literal=false のとき、
+        // LiteralDetect フェーズへ入らず Done を即返す。
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: false, // nc_fired=false + is_tsf_mode + !gji_long_idle → false
                 used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -998,7 +975,7 @@ mod tests {
         let result = dispatch_probe_actions(&mut machine, actions, &io);
         assert!(
             result.is_done(),
-            "plan.should_prepend_f2=false + plan.needs_literal=false → Done を即返す"
+            "plan.needs_literal=false → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
     }
@@ -1020,7 +997,6 @@ mod tests {
         let actions = vec![ProbeAction::Transmit {
             cold_seq: 0,
             plan: TransmitPlan {
-                should_prepend_f2: true,
                 used_eager_path: false, // is_tsf_mode → VK path
                 needs_literal: true,    // LiteralDetect 有効
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,

@@ -19,7 +19,7 @@ use super::decision::{
     InputContext, InputEffect, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
-use super::fsm_types::ModifierState;
+use super::fsm_types::{ComposingHint, ModifierState};
 use super::input_tracker::PhysicalKeyState;
 use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
@@ -85,6 +85,22 @@ impl Engine {
         self.adapter.set_engine_off_triple_vk(vk);
     }
 
+    /// Space 親指キーのフォールバック挙動を設定する。
+    ///
+    /// `space_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
+    /// Space (`VK_SPACE`) に解決された場合の VK コード（Platform 層が判定して渡す。
+    /// どちらも Space でなければ `None`）。`ignore_composing_guard`/`shift_literal`
+    /// は `GeneralConfig` の同名フィールドにそのまま対応する。
+    pub const fn set_space_thumb_config(
+        &mut self,
+        space_thumb_vk: Option<VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.adapter
+            .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
@@ -121,9 +137,15 @@ impl Engine {
 
         if was_active != now_active {
             if !now_active {
-                // active → inactive: 保留キーをフラッシュ
+                // active → inactive: 保留キーをフラッシュ。
+                // ctx.composing はこの呼び出し時点の最新値であり、保留キーが入力された
+                // 時点と同一ウィンドウ/コンテキストである保証がない（フォーカス変更に
+                // 伴う non-active 化等）ため Unknown を渡し、Space フォールバック例外も
+                // 含め無条件 suppress する（ComposingHint の doc 参照）。
                 let reason = new_state.to_context_change();
-                let flush = self.adapter.flush_to_effects(reason);
+                let flush = self
+                    .adapter
+                    .flush_to_effects(reason, ComposingHint::Unknown);
                 effects.extend(flush);
                 // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
                 // Engine inactive 時に到着しても consumed されないようにする。
@@ -229,9 +251,13 @@ impl Engine {
     pub fn on_timeout(&mut self, timer_id: usize, ctx: &InputContext) -> Decision {
         let phys = PhysicalKeyState::from_ctx_snapshot(ctx);
 
-        // Engine が非活性なら on_timeout せず flush（コンテキスト喪失）
+        // Engine が非活性なら on_timeout せず flush（コンテキスト喪失）。
+        // 非活性化の理由（IME OFF・フォーカス変更等）を問わず、保留キーが入力された
+        // 時点と同一コンテキストである保証がないため Unknown を渡す。
         if !self.compute_active(ctx) {
-            return self.adapter.flush(ContextChange::ImeOff);
+            return self
+                .adapter
+                .flush(ContextChange::ImeOff, ComposingHint::Unknown);
         }
 
         let decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
@@ -279,7 +305,11 @@ impl Engine {
                 }
                 decision
             }
-            EngineCommand::InvalidateContext(reason) => self.adapter.flush(reason),
+            // InvalidateContext は外部コンテキスト喪失（IME OFF・言語切替等）の汎用通知
+            // であり、composing が保留キーと同一コンテキストか保証できないため Unknown。
+            EngineCommand::InvalidateContext(reason) => {
+                self.adapter.flush(reason, ComposingHint::Unknown)
+            }
             EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
             EngineCommand::ReloadKeys { special } => {
                 self.special_keys = special;
@@ -323,7 +353,13 @@ impl Engine {
         let mut effects = EffectVec::new();
 
         // アプリ切替: 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
-        let flush_effects = self.adapter.flush_to_effects(ContextChange::FocusChanged);
+        // ctx.composing はこの時点で既に新ウィンドウの状態を指しうる
+        // （フォーカス切替が先に完了してから build_ctx() が呼ばれるため）ので、
+        // Unknown を渡して Space フォールバック例外も含め無条件 suppress する。
+        // 生 VK_SPACE 等が別ウィンドウへ誤注入されるのを防ぐ安全側の選択。
+        let flush_effects = self
+            .adapter
+            .flush_to_effects(ContextChange::FocusChanged, ComposingHint::Unknown);
         effects.extend(flush_effects);
 
         // Consume 済みで KeyUp が来ていないキーの KeyUp を再注入して

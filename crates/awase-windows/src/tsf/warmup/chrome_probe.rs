@@ -42,15 +42,9 @@ impl TickableFsm for ChromeProbe {
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
-        expected_kana: Option<char>,
     ) -> bool {
-        self.0.apply_transmit_done(
-            romaji,
-            ze_bs_count,
-            detector,
-            literal_detect_ms,
-            expected_kana,
-        )
+        self.0
+            .apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms)
     }
 
     // BUG-27 根本原因（2026-07-17）: この委譲が抜けていたため、Chrome per-VK confirm

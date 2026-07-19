@@ -20,6 +20,7 @@ type Resp = Response<KeyAction, usize>;
 
 // VK code constants specific to this test file
 const VK_RETURN: VkCode = VkCode(0x0D);
+const VK_SPACE: VkCode = VkCode(0x20);
 const VK_SHIFT: VkCode = VkCode(0x10);
 const VK_LSHIFT: VkCode = VkCode(0xA0);
 const VK_RSHIFT: VkCode = VkCode(0xA1);
@@ -38,6 +39,7 @@ const SCAN_F: ScanCode = ScanCode(0x21);
 const SCAN_C: ScanCode = ScanCode(0x2E);
 const SCAN_V: ScanCode = ScanCode(0x2F);
 const SCAN_RETURN: ScanCode = ScanCode(0x1C);
+const SCAN_SPACE: ScanCode = ScanCode(0x39);
 const SCAN_SHIFT: ScanCode = ScanCode(0x2A);
 const SCAN_LSHIFT: ScanCode = ScanCode(0x2A);
 const SCAN_RSHIFT: ScanCode = ScanCode(0x36);
@@ -179,7 +181,7 @@ fn classify_test_key(
 ) -> (crate::types::KeyClassification, Option<PhysicalPos>) {
     use crate::types::KeyClassification;
 
-    if vk == VK_NONCONVERT {
+    if vk == VK_NONCONVERT || vk == VK_SPACE {
         (KeyClassification::LeftThumb, None)
     } else if vk == VK_CONVERT {
         (KeyClassification::RightThumb, None)
@@ -225,6 +227,7 @@ fn vk_to_scan(vk: VkCode) -> ScanCode {
         VK_NONCONVERT => SCAN_NONCONVERT,
         VK_CONVERT => SCAN_CONVERT,
         VK_RETURN => SCAN_RETURN,
+        VK_SPACE => SCAN_SPACE,
         VK_SHIFT => SCAN_SHIFT,
         VK_LSHIFT => SCAN_LSHIFT,
         VK_RSHIFT => SCAN_RSHIFT,
@@ -454,6 +457,145 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
     );
 }
 
+// ── Space 親指キーのフォールバック（left_thumb_key/right_thumb_key = VK_SPACE） ──
+
+/// 左親指キーに Space を割り当て、`space_thumb_vk`/フラグを明示設定したエンジンを返す。
+fn make_engine_with_space_thumb(ignore_composing_guard: bool, shift_literal: bool) -> TestHarness {
+    let mut engine = NicolaFsm::new(
+        make_layout(),
+        VK_SPACE,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
+    engine.set_space_thumb_config(Some(VK_SPACE), ignore_composing_guard, shift_literal);
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine,
+    }
+}
+
+/// Space 親指キーは、composing 中（変換候補ウィンドウ表示中）でも
+/// `space_thumb_ignore_composing_guard=true`（既定値）なら単独タップで送出される。
+/// 無変換/変換と違い、Space の raw VK_SPACE は IME の「変換候補送り」正規機能であり、
+/// composing 中に抑制すると通常の変換操作が壊れるための例外（resolve_pending_thumb_as_single 参照）。
+#[test]
+fn test_space_thumb_emits_while_composing_when_guard_ignored() {
+    let mut engine = make_engine_with_space_thumb(true, true);
+
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_SPACE)),
+        "space_thumb_ignore_composing_guard=true なら composing 中でも VK_SPACE を送出すべき"
+    );
+}
+
+/// `space_thumb_ignore_composing_guard=false` なら、Space も無変換/変換と同じく
+/// composing 中は suppress される（設定でオプトアウトできることの確認）。
+#[test]
+fn test_space_thumb_suppressed_while_composing_when_guard_disabled() {
+    let mut engine = make_engine_with_space_thumb(false, true);
+
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "space_thumb_ignore_composing_guard=false なら composing 中は他の親指キーと同様 suppress される"
+    );
+}
+
+/// flush 経路でも、composing 値を「保留キーと同一コンテキスト」だと呼び出し元が
+/// `ComposingHint::Trusted` で明示保証した場合は、composing 中の Space フォールバックが
+/// タイムアウト経路と一貫している（従来 flush は無条件 suppress だった不整合の回帰防止）。
+/// `EngineDisabled`/`LayoutSwapped`/`BypassKey` 等、同一イベント処理内で完結する
+/// flush がこれに当たる（`NicolaFsm::toggle_enabled`/`swap_layout`/`handle_bypass` 参照）。
+#[test]
+fn test_space_thumb_flush_consistent_with_timeout_when_composing_trusted() {
+    let mut engine = make_engine_with_space_thumb(true, true);
+
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert_pending(&result);
+
+    let result = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(true));
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_SPACE)),
+        "Trusted(true) なら flush 経路も composing 中の Space ガード無視を timeout 経路と同様に適用すべき"
+    );
+}
+
+/// `ComposingHint::Unknown`（フォーカス変更等、コンテキスト境界を跨ぐフラッシュ）では、
+/// `space_thumb_ignore_composing_guard=true` であっても Space フォールバック例外を
+/// 一切適用せず、無条件 suppress する。
+///
+/// 背景: `Runtime::ir_notify_focus_changed`（Windows platform 層）は
+/// `detect_and_update_focus()` でフォーカスを新ウィンドウへ切り替えた**後**に
+/// `build_ctx()` を呼んで `InputContext::composing` を読み直すため、この値は
+/// 「保留中の親指キーが入力された元のウィンドウ」ではなく「切替後の新ウィンドウ」の
+/// composing 状態を指しうる。ここで Space 例外を適用すると、Alt-Tab 等で無関係な
+/// 新ウィンドウへ生 VK_SPACE が誤注入されるリスクがある（ボタン押下・チェックボックス
+/// トグル等の副作用）。`Unknown` はこの安全側フォールバックを保証する。
+#[test]
+fn test_space_thumb_flush_suppressed_when_composing_hint_unknown() {
+    let mut engine = make_engine_with_space_thumb(true, true);
+
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert_pending(&result);
+
+    let result = engine.flush_pending(ContextChange::FocusChanged, ComposingHint::Unknown);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "ComposingHint::Unknown では Space 例外を含め無条件 suppress すべき\
+         （コンテキスト境界を跨ぐため composing の新鮮さを保証できない）"
+    );
+}
+
+/// Shift+Space は `space_thumb_shift_literal=true` の場合、同時打鍵判定を待たず
+/// 即座に PassThrough（consumed=false）として処理される（PendingThumb に入らない）。
+#[test]
+fn test_shift_space_literal_passthrough_when_enabled() {
+    let mut engine = make_engine_with_space_thumb(true, true);
+
+    // Shift を先に押下
+    let shift_result = engine.on_event(Ev::down(VK_LSHIFT).build());
+    assert!(!shift_result.consumed, "Shift 単体は素通しされる");
+
+    // Shift 押下中に Space（親指キー）が来ても PendingThumb に入らず即座に素通し
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert!(
+        !result.consumed,
+        "Shift+Space は同時打鍵判定を待たず即座に PassThrough になるべき"
+    );
+    assert!(
+        result.timers.is_empty(),
+        "PendingThumb に入らないので TIMER_PENDING は張られないはず"
+    );
+}
+
+/// `space_thumb_shift_literal=false` なら、Shift+Space も通常の親指キー同様
+/// `PendingThumb` に入る（同時打鍵判定が有効なままであることの確認）。
+#[test]
+fn test_shift_space_enters_pending_when_literal_disabled() {
+    let mut engine = make_engine_with_space_thumb(true, false);
+
+    let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert_pending(&result);
+}
+
 #[test]
 fn test_char_then_thumb_after_threshold() {
     let mut engine = make_engine();
@@ -541,11 +683,14 @@ fn test_swap_layout_flushes_pending_thumb() {
     let new_layout = make_layout();
     let result = engine.swap_layout(new_layout);
     result.assert_consumed();
-    // 単独親指打鍵は IME 副作用 (カタカナトグル等) を防ぐため suppress される。
-    // よって VK_NONCONVERT は emit されず、actions は空。
+    // composing=false（テストのデフォルト状態）なので生 VK_NONCONVERT が emit される
+    // （composing 中の suppress は resolve_pending_thumb_as_single 参照）。
     assert!(
-        result.actions.is_empty(),
-        "thumb single should be suppressed, not emitted"
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "thumb single should be emitted when not composing"
     );
 }
 
@@ -1265,12 +1410,12 @@ fn test_toggle_enabled_returns_state() {
 #[test]
 fn test_flush_pending_from_idle_is_noop() {
     let mut engine = make_engine();
-    let r = engine.flush_pending(ContextChange::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     // Idle → no-op, consume with no actions
     assert!(r.actions.is_empty());
     assert!(r.consumed);
     // 再入しても no-op
-    let r2 = engine.flush_pending(ContextChange::ImeOff);
+    let r2 = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     assert!(r2.actions.is_empty());
 }
 
@@ -1281,10 +1426,10 @@ fn test_flush_pending_from_pending_char() {
     // PendingChar 状態にする
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     // flush → 通常面で単独確定
-    let r = engine.flush_pending(ContextChange::EngineDisabled);
+    let r = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(false));
     assert!(!r.actions.is_empty(), "should emit the pending char");
     // Idle に戻っている
-    let r2 = engine.flush_pending(ContextChange::ImeOff);
+    let r2 = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     assert!(r2.actions.is_empty(), "should be idle after flush");
 }
 
@@ -1294,9 +1439,14 @@ fn test_flush_pending_from_pending_thumb() {
     let t0 = 1_000_000;
     // PendingThumb 状態にする
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
-    // flush → 親指キーを単独確定 (= suppress = action 無し)
-    let r = engine.flush_pending(ContextChange::InputLanguageChanged);
-    // 単独親指打鍵は IME 副作用を防ぐため suppress される
+    // flush（composing=true）→ 親指キーを単独確定 (= suppress = action 無し)。
+    // Space 未割当なので composing=false でも本来は生 VK 送出だが、ここでは
+    // composing 中の抑制（無変換/変換のかな/カタカナ切替誤爆防止）を確認する。
+    let r = engine.flush_pending(
+        ContextChange::InputLanguageChanged,
+        ComposingHint::Trusted(true),
+    );
+    // 単独親指打鍵は composing 中は IME 副作用を防ぐため suppress される
     assert!(
         r.actions.is_empty(),
         "thumb single should be suppressed on flush, not emitted"
@@ -1311,7 +1461,7 @@ fn test_flush_pending_from_pending_char_thumb() {
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0 + 30_000).build());
     // flush → 同時打鍵として確定
-    let r = engine.flush_pending(ContextChange::LayoutSwapped);
+    let r = engine.flush_pending(ContextChange::LayoutSwapped, ComposingHint::Trusted(false));
     assert!(!r.actions.is_empty(), "should emit simultaneous result");
 }
 
@@ -1323,7 +1473,7 @@ fn test_flush_pending_from_speculative_char() {
     let r1 = engine.on_event(Ev::down(VK_A).at(t0).build());
     assert!(!r1.actions.is_empty(), "speculative output");
     // flush → 既に出力済みなので追加出力なし
-    let r = engine.flush_pending(ContextChange::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     assert!(
         r.actions.is_empty(),
         "speculative was already output, no additional actions"
@@ -1335,7 +1485,7 @@ fn test_flush_pending_cancels_timers() {
     let mut engine = make_engine();
     let t0 = 1_000_000;
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    let r = engine.flush_pending(ContextChange::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     // タイマー停止命令が含まれる（assert_timer_kill ヘルパーを使用）
     r.assert_timer_kill(TIMER_PENDING);
     r.assert_timer_kill(TIMER_SPECULATIVE);
@@ -1421,42 +1571,43 @@ fn test_set_ngram_model_and_timing_judge() {
 
 #[test]
 fn test_pending_thumb_then_char_after_threshold() {
-    // PendingThumb + char after threshold -> thumb single (suppressed), char new pending
+    // PendingThumb + char after threshold -> thumb single (composing=false なので emit), char new pending
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
     assert_pending(&r);
 
-    // Char arrives after threshold
+    // Char arrives after threshold。composing=false（テストのデフォルト状態）なので、
+    // 無変換/変換は「Windows 全般での無変換/変換キー機能」として生 VK が emit される
+    // （timeout_pending_thumb と同じ判定を flush 経路にも統一した挙動、composing 中の
+    // suppress は resolve_pending_thumb_as_single 参照）。
     let r = engine.on_event(Ev::down(VK_A).at(200_000).build());
     r.assert_consumed();
-    // 単独親指打鍵は suppress されるので VK_NONCONVERT は emit されない。
-    // char は新規 pending で取り込まれるので、ここでも emit はない（消費されたまま pending）。
     assert!(
-        !r.actions
+        r.actions
             .iter()
             .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
-        "thumb single should be suppressed, not emitted"
+        "thumb single should be emitted when not composing"
     );
 }
 
 #[test]
 fn test_pending_thumb_then_another_thumb() {
-    // PendingThumb + another thumb -> first thumb suppressed, second thumb pending
+    // PendingThumb + another thumb -> first thumb single (composing=false なので emit), second thumb pending
     let mut engine = make_engine();
 
     let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
     assert_pending(&r);
 
-    // Another thumb arrives within threshold (still same kind = thumb)
+    // Another thumb arrives within threshold (still same kind = thumb)。
+    // composing=false なので最初の親指キーは生 VK で emit される（上のテスト参照）。
     let r = engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
     r.assert_consumed();
-    // First thumb is resolved as suppressed (no VK_NONCONVERT emit)
     assert!(
-        !r.actions
+        r.actions
             .iter()
             .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
-        "first thumb single should be suppressed, not emitted"
+        "first thumb single should be emitted when not composing"
     );
 }
 
@@ -1523,15 +1674,16 @@ fn test_key_up_while_pending_thumb() {
     let r = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&r);
 
-    // KeyUp of the pending thumb key -> resolves as single (suppressed = no action)
+    // KeyUp of the pending thumb key -> resolves as single。composing=false
+    // （テストのデフォルト状態）なので生 VK が emit される
+    // （composing 中の suppress は resolve_pending_thumb_as_single 参照）。
     let r = engine.on_event(Ev::up(VK_NONCONVERT).build());
     r.assert_consumed();
-    // 単独親指打鍵は IME 副作用 (カタカナトグル等) を防ぐため suppress される。
     assert!(
-        !r.actions
+        r.actions
             .iter()
             .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
-        "thumb single on KeyUp should be suppressed, not emitted"
+        "thumb single on KeyUp should be emitted when not composing"
     );
 }
 
@@ -3553,7 +3705,7 @@ mod fsm_adapter_tests {
     #[test]
     fn flush_returns_decision() {
         let mut adapter = make_adapter();
-        let decision = adapter.flush(ContextChange::FocusChanged);
+        let decision = adapter.flush(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         // Flush on idle should return a Decision without panicking
         let _ = decision.is_consumed();
     }
@@ -3561,7 +3713,8 @@ mod fsm_adapter_tests {
     #[test]
     fn flush_to_effects_returns_vec() {
         let mut adapter = make_adapter();
-        let effects = adapter.flush_to_effects(ContextChange::FocusChanged);
+        let effects =
+            adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         // Verify it returns a Vec (may or may not be empty depending on FSM internals)
         let _ = effects.len();
     }
@@ -3703,7 +3856,7 @@ mod fsm_adapter_tests {
         let _ = adapter.on_event(event, &phys);
 
         // Flush should resolve the pending key
-        let decision = adapter.flush(ContextChange::FocusChanged);
+        let decision = adapter.flush(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         // The flush should produce some output (consumed with effects)
         let _ = decision;
     }

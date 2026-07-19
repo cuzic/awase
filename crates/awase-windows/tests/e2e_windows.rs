@@ -18,7 +18,7 @@
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
-use awase::engine::{ModifierState, NicolaFsm};
+use awase::engine::{ComposingHint, ModifierState, NicolaFsm};
 use awase::types::{
     ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
     SpecialKey, VkCode,
@@ -342,29 +342,36 @@ fn e2e_engine_flush_pending_all_states() {
 
     // Idle
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    let r = engine.flush_pending(ContextChange::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     log::debug!("Flush from Idle: actions={:?}", r.actions);
     assert!(r.actions.is_empty());
 
     // PendingChar
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
-    let r = engine.flush_pending(ContextChange::ImeOff);
+    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
     log::debug!("Flush from PendingChar: actions={:?}", r.actions);
     assert!(!r.actions.is_empty());
 
-    // PendingThumb: 単独の親指キーは何にも確定しないため、flush してもアクションは
-    // 出ない（resolve_pending_thumb_as_single は常に空を返す設計）。
+    // PendingThumb: composing=false（IME 変換候補ウィンドウ非表示）なら、
+    // 「Windows 全般での無変換/変換キー機能」として生 VK が emit される
+    // （timeout 経路と統一済み、composing=true 時のみ suppress される）。
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x1D, 0x7B, 1_000_000));
-    let r = engine.flush_pending(ContextChange::EngineDisabled);
+    let r = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(false));
     log::debug!("Flush from PendingThumb: actions={:?}", r.actions);
-    assert!(r.actions.is_empty(), "lone thumb key alone has no output");
+    assert!(
+        !r.actions.is_empty(),
+        "lone thumb key should emit raw VK when not composing"
+    );
 
     // SpeculativeChar
     let mut engine = make_test_engine(ConfirmMode::Speculative);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
-    let r = engine.flush_pending(ContextChange::InputLanguageChanged);
+    let r = engine.flush_pending(
+        ContextChange::InputLanguageChanged,
+        ComposingHint::Trusted(false),
+    );
     log::debug!("Flush from SpeculativeChar: actions={:?}", r.actions);
     // SpeculativeChar already output, flush should be empty
     assert!(r.actions.is_empty());
@@ -1113,7 +1120,7 @@ fn e2e_engine_with_ime_context() {
     assert!(r.consumed, "re-enabled engine should consume");
 
     // Flush to release pending state
-    let _ = engine.flush_pending(ContextChange::ImeOff);
+    let _ = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
 
     log::info!("=== Phase 3 engine+IME tests completed ===");
 }

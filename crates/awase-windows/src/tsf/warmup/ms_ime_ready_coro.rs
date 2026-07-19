@@ -93,7 +93,6 @@ async fn ms_ime_ready_coro_body(
             ProbeAction::Transmit {
                 cold_seq,
                 plan: TransmitPlan {
-                    should_prepend_f2: false,
                     used_eager_path: false,
                     needs_literal: false,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
@@ -207,7 +206,7 @@ mod tests {
         assert!(matches!(
             &actions[0],
             ProbeAction::Transmit { romaji, target: TransmitTarget::Tsf, plan, .. }
-                if romaji == "wo" && !plan.should_prepend_f2 && !plan.needs_literal
+                if romaji == "wo" && !plan.needs_literal
         ));
         assert!(matches!(actions[1], ProbeAction::Done));
     }

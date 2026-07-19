@@ -15,10 +15,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// VK INPUT に使うマーカー種別。
 ///
-/// - `Injected`: Chrome/VK モード、scan code なし（INJECTED_MARKER、`wScan=0`）
-/// - `InjectedWithScan`: Chrome/VK モード、scan code 付き（INJECTED_MARKER、実験用。
-///   TSF 側の `make_tsf_key_input` と同じ construction を使うが marker は
-///   `INJECTED_MARKER` のまま = 既存の自己注入識別を変えない）
+/// - `Injected`: Chrome/VK モードの単発キー送信（Unicode フォールバック経路の
+///   `send_romaji_per_key`、LSHIFT・VK_ESCAPE・VK_BACK 等）、scan code なし
+///   （INJECTED_MARKER、`wScan=0`）
+/// - `InjectedWithScan`: Chrome composition 送信本体（scan code 付き、
+///   INJECTED_MARKER。TSF 側の `make_tsf_key_input` と同じ construction を
+///   使うが marker は `INJECTED_MARKER` のまま = 既存の自己注入識別を変えない）。
+///   2026-07-19 に scan code 付与を実機ソークで確認済み（`f3a39a0`）、恒久仕様。
 /// - `Tsf`:      WezTerm TSF モード、scan code 付き（TSF_MARKER）
 ///
 /// LSHIFT は常に INJECTED_MARKER（scan なし）のため、このマーカーは VK 本体にのみ適用する。
@@ -231,10 +234,9 @@ impl KeyInjector {
 
     /// ローマ字を即座にバッチ送信する（重畳順・VK ラン分割）。
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
-        // 実験: Chrome 側にも scan code を付与する（VkMarker::InjectedWithScan）。
-        // TSF 側で WezTerm の初回 composition 失敗を修正した経緯（`docs/known-bugs.md`
-        // BUG-30 追補1 の会話、`99f56a2`/`2d4d85c`）を踏まえ、Chrome でも同様に
-        // 効果があるか実機で確認する。
+        // Chrome composition 送信は scan code 付き（VkMarker::InjectedWithScan）で
+        // 恒久化済み（`f3a39a0`、2026-07-19 実機ソーク確認）。TSF 側で WezTerm の
+        // 初回 composition 失敗を修正した経緯（`99f56a2`/`2d4d85c`）と同じ理屈。
         for run in Self::split_vk_runs(chars) {
             let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan);
             log::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");

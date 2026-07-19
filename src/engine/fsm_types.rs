@@ -232,6 +232,20 @@ pub enum IdleIntent {
     ConfirmMode,
 }
 
+/// `flush_pending` に渡す composing 値の信頼性。
+///
+/// `NicolaFsm::flush_pending` の doc 参照。呼び出し元が `composing` を「保留キーが
+/// 入力された時点と同一のコンテキスト」のものだと保証できる場合のみ `Trusted` を渡す。
+/// フォーカス変更等でコンテキスト境界を跨ぐ場合は `Unknown` を渡し、
+/// Space フォールバック例外も含め無条件 suppress する（安全側）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposingHint {
+    /// `composing` は保留キーと同一コンテキストのものと信頼できる。
+    Trusted(bool),
+    /// コンテキスト境界を跨ぐため `composing` を信頼できない。無条件 suppress する。
+    Unknown,
+}
+
 /// 出力履歴の更新指示。
 #[derive(Debug, Clone)]
 pub enum OutputUpdate {

@@ -69,7 +69,7 @@ pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
 
 /// `CompositionConfirmed` 時に「先頭文字がリテラル化した partial literal」かどうかを判定する純関数。
 ///
-/// WezTerm (TSF mode) では HIMC=NULL のため foreground_comp_char による文字照合が
+/// WezTerm (TSF mode) では HIMC=NULL のため IMM32 composition 文字列との文字照合が
 /// 不可能。代わりに以下の条件がすべて揃った場合を partial literal と判断する:
 ///   - `nc_fired=false` : fresh F2 に WezTerm が NAMECHANGE で応答しなかった
 ///     → TSF context が cold のまま送信した可能性が高い
