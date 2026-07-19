@@ -48,10 +48,14 @@ pub const LONG_IDLE_MS: u64 = 10_000;
 
 /// Chrome VK パスでの「長期 idle」判定閾値 (ms)。
 ///
-/// この閾値を超えると Chrome プローブ最小待機時間が 20ms → 200ms に延長される。
-/// 実測で idle=6312ms 後に Chrome TSF の composition context 再初期化に ~145ms かかる
-/// 事例があり (cold=1040)、20ms probe では "ko" が raw text として出力された。
-/// 5000ms に設定することで 5s 以上の idle 後の cold start に 200ms 余裕を確保する。
+/// `GjiFsm::long_idle_ms_for(InjectionMode::Vk)` が参照し、`ColdKind::classify` の
+/// Short/Medium/Long 重症度分岐（cold-start warmup の経路選択に使う）の cutoff になる。
+///
+/// 予防的な Chrome プローブ最小待機の延長（20ms→200ms）機構自体は 2026-07-18 に
+/// 撤去した（`docs/known-bugs.md` BUG-24 参照、per-VK confirm に一本化）。この定数の
+/// 元々の実測根拠（idle=6312ms 後に Chrome TSF の composition context 再初期化に
+/// ~145ms かかった事例, cold=1040）は撤去された機構向けだったが、値自体は
+/// `ColdKind` 分岐の cutoff として引き続き使われている。
 ///
 /// TSF/GJI パス（WezTerm 等）は GJI セッション生存期間に依存するため `LONG_IDLE_MS` を使用する。
 pub const CHROME_LONG_IDLE_MS: u64 = 5_000;
