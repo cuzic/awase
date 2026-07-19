@@ -109,12 +109,69 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.10.0] - 2026-07-19</h2>
 <h3>追加</h3>
 <ul>
 <li><strong>「配列編集」タブにセルのコピー/貼り付け（履歴方式）を追加</strong><ul>
 <li>セルを選択して「コピー」を押すと、その値が履歴の先頭に自動的に積まれる（最大4件、面をまたいでも保持）</li>
 <li>履歴はボタン列として表示され、クリックするだけで選択中のセルへ直接貼り付けられる（テキスト欄を経由しないため、ローマ字のかな変換結果を含めて元セルと完全に同じ値になる）</li>
 <li>同じ値を続けてコピーしても重複せず、履歴の先頭に移動するだけ</li>
+</ul>
+</li>
+<li><strong>US配列: 左右 Alt キーを親指キーへなりすませる機能を追加</strong><ul>
+<li>US配列にはスペース両隣に無変換/変換キーが無いため、左右 Alt キーを <code>left_thumb_key</code>/<code>right_thumb_key</code> としてなりすまさせる設定（<code>left_alt_impersonates_thumb_key</code>/<code>right_alt_impersonates_thumb_key</code>、既定 false）を追加。PowerToys 等の外部リマップと同等のことを awase 単体で完結できる</li>
+<li>エンジン ON 時のみ発動し、OFF 時は通常の Alt として Alt+Tab 等を損なわない。左右は独立に設定可能で、押しっぱなし中はキー押下時点の状態を保持しstuck modifier化を防ぐ</li>
+<li>US配列選択時のみ設定画面（awase-settings）に表示</li>
+</ul>
+</li>
+<li><strong>US配列: Space親指キーのcomposing中フォールバックと Shift+Space 即時送出を追加</strong><ul>
+<li>Space を親指キーに割り当てた場合、変換候補ウィンドウ表示中でも単独タップで <code>VK_SPACE</code>（変換候補送り）を送出できるようにした（無変換/変換と異なり、composing 中の raw VK_SPACE 送出は IME の正規機能のため）</li>
+<li>Shift+Space は同時打鍵判定を待たずリテラルなスペースとして即時送出する</li>
+<li>設定は <code>space_thumb_ignore_composing_guard</code>/<code>space_thumb_shift_literal</code>（既定 true）。Space が親指キーの時のみ設定画面に表示</li>
+</ul>
+</li>
+<li><strong>設定画面: US⇔JIS配列切替時にホットキー既定値を自動リセット/復元</strong><ul>
+<li>US配列へ切り替えるとJIS前提のホットキー既定値（無変換/変換キー等）を空にリセットし、JISへ戻すとJIS既定値へ復元するようにした</li>
+</ul>
+</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>BUG-31: Microsoft Teams で連続タイピング中に文字が無音で消失する不具合を修正</strong><ul>
+<li>アプリ: Microsoft Teams（<code>TeamsWebView</code>、Chrome系、Vk mode）。IME: Google 日本語入力（GJI）</li>
+<li>再現: Enter確定直後、warm状態(<code>GjiFsm::OnWarm</code>)であるにも関わらず物理 <code>NativeF2Down</code>（非TSF）イベントが無条件に <code>MarkCold</code>+<code>GjiCompositionReset</code> を発行して warm 維持用タイマーを kill しており、以降の romaji が per-VK confirm レースに巻き込まれて一部消失していた（実機報告: 「５せっしょん」の一部が無音で消失）</li>
+<li><code>NativeF2Down</code> を warm 中は無視するようガードを追加</li>
+</ul>
+</li>
+<li><strong>BUG-30: GJI候補ウィンドウ可視時に正しく入力できた文字を誤って backspace する不具合を修正</strong><ul>
+<li>候補ウィンドウの SHOW イベント（edge-triggered）とライブ可視状態（level-triggered）が別センサーで、<code>SuspectedLiteral</code> 判定時に可視でも保護がなかった。可視中は backspace を保留する veto を追加し、TSF/Chrome の literal-detect ロジックも統一した</li>
+</ul>
+</li>
+<li><strong>Alt親指キーなりすまし: <code>OsModifierHeld</code> bypass により NICOLA 同時打鍵判定が一切効かなくなる不具合を修正</strong><ul>
+<li>vk 書き換え自体は正しく行われていたが、<code>GetAsyncKeyState</code> 由来の別経路（<code>modifiers.alt</code>）が物理 Alt 押下をそのまま返しており、3箇所で <code>BypassReason::OsModifierHeld</code> が誤発動していた。なりすまし中は <code>modifiers.alt</code> を補正するよう修正</li>
+</ul>
+</li>
+<li><strong>Alt親指キーなりすまし: 環境によって vk が汎用 <code>VK_MENU</code> で届き、なりすましが一切発動しない不具合を修正</strong><ul>
+<li><code>WH_KEYBOARD_LL</code> の vkCode が左右区別済み <code>VK_LMENU</code>/<code>VK_RMENU</code> ではなく汎用 <code>VK_MENU</code> で届く環境があり、直接比較のみの判定が常に false になっていた。<code>LLKHF_EXTENDED</code> フラグで左右を判別するよう修正</li>
+</ul>
+</li>
+<li><strong>設定画面: 「適用」ボタンが常に無効だったバグを修正</strong><ul>
+<li><code>awase-settings.exe</code> の設定リロード通知が <code>FindWindowW</code> で存在しないウィンドウクラス名（<code>awase_msg_window</code>）を探しており、<code>awase.exe</code>（<code>awase_tray_window</code>）に一度も通知が届いていなかった。正しいクラス名に修正し、失敗時は <code>log::warn!</code> で明示的にログを残すようにした</li>
+</ul>
+</li>
+<li><strong>設定画面: <code>config.toml</code> パス解決が <code>awase.exe</code> と非対称だったバグを修正</strong><ul>
+<li><code>awase.exe</code> はコマンドライン引数で明示パスを指定できるが <code>awase-settings.exe</code> はこれを無視しており、異なる <code>config.toml</code> を編集してしまう恐れがあった。優先順位を揃え、編集中のパスを画面上部に常時表示する機能も追加した</li>
+</ul>
+</li>
+<li><strong>設定画面: 長い検証警告文がボタン行に切られて表示されない問題を修正</strong></li>
+</ul>
+<h3>変更</h3>
+<ul>
+<li><strong>GJI/Chrome の cold-start warmup アーキテクチャを大幅に簡素化</strong><ul>
+<li>数日間の実機ソーク（cold=60件超、suspected literal ゼロ件）で無破損を確認できたため、待機行列（<code>WarmupKind::FreshF2</code>/<code>ReWarmup</code>/<code>ProbeWithSettle</code> 等の <code>ColdReason</code>×<code>long_idle</code> 行列）と捨て駒キー機構（<code>SacrificialWarmupCoro</code>/<code>ImeOffOnWarmupFsm</code>）を物理削除し、romaji を1文字ずつ送って確認する per-VK confirm 方式に一本化した</li>
+<li>Chrome（<code>probe_fsm.rs</code>）と TSF（<code>gji_warmup_coro.rs</code>）で重複していた per-VK confirm ループを共通実装に統合（正味 -82行）</li>
+<li>Chrome の VK 送信への scan code 付与を実験仕様から恒久仕様へ確定</li>
+<li>上記を支える基盤として、内部依存クレート <code>timed-fsm</code> に <code>StepCoro::prime()</code>（ダミー入力なしの self-priming）を追加</li>
 </ul>
 </li>
 </ul>
