@@ -65,15 +65,6 @@ pub(crate) trait TickableFsm {
 
     fn apply_vk_sent(&mut self, _detector: LiteralDetector, _deadline_ms: u64) {}
 
-    // ── StartComposition 通知（SacrificialWarmupFsm のみ）────────────────
-    //
-    // drain_pending_composition_events が StartComposition を取り出したとき、
-    // 現在の sacr-warmup probe に対して composition が観測されたことを通知する。
-    // VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了する場合の
-    // IPC race 検出（Phase 3 IPC settle 待機）に使う。
-
-    fn notify_start_composition(&mut self) {}
-
     // ── Unicode deferred chars 追記（UnicodeColdWarmupFsm のみ）──────────
     //
     // drain 処理中に2文字目以降の long-cold Unicode char が届いたとき、

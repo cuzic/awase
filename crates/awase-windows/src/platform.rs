@@ -546,11 +546,6 @@ impl WindowsPlatform {
     /// StartComposition を先に dispatch してから EndComposition を dispatch する順序を保つ。
     fn drain_pending_composition_events(&mut self) {
         if crate::tsf::observer::take_pending_start_composition() {
-            // sacr-warmup probe に StartComposition を通知する（Phase 3 IPC race 検出用）。
-            // VK_A+BS atomic batch で SHOW+HIDE が最初の tick 前に完了した場合、
-            // 次の tick では gji_candidate_visible=false だが IPC はまだ伝播中のため、
-            // composition_was_seen フラグで検出して Phase 3 IPC settle 待機に移行する。
-            self.output.notify_probe_start_composition();
             self.gji_on_start_composition();
         }
         if crate::tsf::observer::take_pending_end_composition() {

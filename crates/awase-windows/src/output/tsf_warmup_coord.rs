@@ -271,13 +271,6 @@ impl TsfWarmupCoordinator {
         })
     }
 
-    /// sacr-warmup probe に StartComposition が観測されたことを通知する。
-    pub(crate) fn notify_probe_start_composition(&self) {
-        if let Some(machine) = self.pending_tsf.borrow_mut().as_mut() {
-            machine.notify_start_composition();
-        }
-    }
-
     /// probe 進行中なら渡された VK 列を coordinator の deferred キューに追記し true を返す。
     ///
     /// キューは probe machine ではなく coordinator が所有するため、どの machine が

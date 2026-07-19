@@ -870,15 +870,6 @@ impl Output {
         self.warmup_coord.has_pending_tsf()
     }
 
-    /// sacr-warmup probe に StartComposition が観測されたことを通知する。
-    ///
-    /// `platform.rs::drain_pending_composition_events` が StartComposition を処理した際に呼ぶ。
-    /// VK_A+BS atomic batch で SHOW+HIDE が最初の tick より前に完了したケースを検出するため、
-    /// `SacrificialWarmupFsm::composition_was_seen` フラグをセットする。
-    pub(crate) fn notify_probe_start_composition(&self) {
-        self.warmup_coord.notify_probe_start_composition();
-    }
-
     /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
     ///
     /// `GjiAction::CancelProbe` ハンドラが呼ぶ。内部で以下を一括実行する:
