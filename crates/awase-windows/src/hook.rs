@@ -14,6 +14,14 @@ use crate::output::INJECTED_MARKER;
 const LLKHF_ALTDOWN: u32 = 0x20;
 /// SendInput / keybd_event 等で注入されたイベントを示すフラグ
 const LLKHF_INJECTED: u32 = 0x10;
+/// 拡張キー（Right Ctrl/Right Alt・矢印キー等）を示すフラグ。
+///
+/// `KBDLLHOOKSTRUCT.vkCode` は環境によって Ctrl/Alt を左右区別済みの
+/// VK_LMENU/VK_RMENU (0xA4/0xA5) ではなく汎用の VK_MENU (0x12) で届けることがある
+/// （`vk.rs` の `classify_modifier`/`is_ctrl_variant` が汎用形・左右specific形の
+/// 両方を防御的にマッチしているのはこのため）。汎用形で届いた場合、この拡張キー
+/// フラグで Left/Right を判別する（Right Alt/Right Ctrl は拡張キー、Left 側は非拡張）。
+const LLKHF_EXTENDED: u32 = 0x01;
 use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
@@ -96,14 +104,27 @@ pub fn resolve_thumb_key(name: &str) -> Option<(VkCode, bool)> {
     }
 }
 
+/// `vk`/`extended` から、この物理キーが Left Alt か Right Alt かを判定する。
+///
+/// `vk` が既に区別済みの VK_LMENU/VK_RMENU ならそのまま使う。汎用の VK_MENU
+/// (0x12) で届いた場合は `extended`（`KBDLLHOOKSTRUCT.flags` の
+/// `LLKHF_EXTENDED`）で判別する（Right Alt は拡張キー）。
+#[must_use]
+const fn classify_alt_side(vk: VkCode, extended: bool) -> (bool, bool) {
+    let is_left = vk.0 == crate::vk::VK_LMENU.0 || (vk.0 == crate::vk::VK_MENU.0 && !extended);
+    let is_right = vk.0 == crate::vk::VK_RMENU.0 || (vk.0 == crate::vk::VK_MENU.0 && extended);
+    (is_left, is_right)
+}
+
 /// Left/Right Alt キーのなりすまし処理（グローバル状態の読み書きを伴う副作用あり）。
 /// 判定ロジック本体は `decide_alt_impersonation`（純粋関数）に委譲する。
 ///
 /// `vk` が Left/Right Alt でない場合、または対応する設定が OFF の場合は
-/// `vk` をそのまま返す。
+/// `vk` をそのまま返す。`extended` は `classify_alt_side` 参照。
 #[must_use]
-fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, config: &HookConfig) -> VkCode {
-    if config.left_alt_impersonates_thumb_key && vk == crate::vk::VK_LMENU {
+fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, extended: bool, config: &HookConfig) -> VkCode {
+    let (is_left_alt, is_right_alt) = classify_alt_side(vk, extended);
+    if config.left_alt_impersonates_thumb_key && is_left_alt {
         let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
         let was_down = ALT_L_WAS_DOWN.load(Ordering::Relaxed);
         let was_impersonating = ALT_L_IMPERSONATING.load(Ordering::Relaxed);
@@ -118,7 +139,7 @@ fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, config: &HookConfig) ->
         ALT_L_IMPERSONATING.store(impersonating, Ordering::Relaxed);
         ALT_L_WAS_DOWN.store(is_keydown, Ordering::Relaxed);
         new_vk
-    } else if config.right_alt_impersonates_thumb_key && vk == crate::vk::VK_RMENU {
+    } else if config.right_alt_impersonates_thumb_key && is_right_alt {
         let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
         let was_down = ALT_R_WAS_DOWN.load(Ordering::Relaxed);
         let was_impersonating = ALT_R_IMPERSONATING.load(Ordering::Relaxed);
@@ -653,7 +674,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // これにより後続の全パイプライン（is_os_modifier_held の bypass 判定含む）が
     // 無変換/変換相当のキーとして扱う。PowerToys 等の OS レベルリマップと同じ効果。
     // vk が Left/Right Alt でない、または両設定とも OFF なら vk はそのまま返る。
-    vk = apply_alt_impersonation(vk, is_keydown, &config);
+    // LLKHF_EXTENDED は vk が汎用 VK_MENU (0x12) で届いた場合の Left/Right 判別に使う
+    // （classify_alt_side 参照）。
+    let alt_extended = (kb.flags.0 & LLKHF_EXTENDED) != 0;
+    vk = apply_alt_impersonation(vk, is_keydown, alt_extended, &config);
 
     // Ctrl consumption tracking
     if crate::vk::is_ctrl_variant(vk) {
@@ -725,10 +749,41 @@ fn now_timestamp() -> Timestamp {
 
 #[cfg(test)]
 mod alt_impersonation_tests {
-    use super::{decide_alt_impersonation, resolve_thumb_key};
-    use crate::vk::{VK_CONVERT, VK_LMENU, VK_NONCONVERT, VK_SPACE};
+    use super::{classify_alt_side, decide_alt_impersonation, resolve_thumb_key};
+    use crate::vk::{VK_CONVERT, VK_LMENU, VK_MENU, VK_NONCONVERT, VK_RMENU, VK_SPACE};
 
     const LEFT_THUMB: awase::types::VkCode = VK_NONCONVERT;
+
+    /// vk が既に区別済みの VK_LMENU/VK_RMENU で届く環境では、extended フラグに
+    /// 関わらずそのまま Left/Right と判定する。
+    #[test]
+    fn classify_alt_side_specific_vk() {
+        assert_eq!(classify_alt_side(VK_LMENU, false), (true, false));
+        assert_eq!(classify_alt_side(VK_LMENU, true), (true, false));
+        assert_eq!(classify_alt_side(VK_RMENU, false), (false, true));
+        assert_eq!(classify_alt_side(VK_RMENU, true), (false, true));
+    }
+
+    /// vk が汎用の VK_MENU (0x12) で届く環境（実機で確認された挙動。
+    /// `vk.rs` の `classify_modifier`/`is_ctrl_variant` が汎用形も含めて
+    /// 防御的にマッチしているのと同じ理由）では、LLKHF_EXTENDED で
+    /// Left/Right を判別する（Right Alt が拡張キー）。
+    ///
+    /// このテストは実機で「Left Alt がなりすまし機能として全く発動しない」
+    /// という回帰の再発防止用（vk == VK_LMENU 直接比較のみだと、この
+    /// ケースを取りこぼして常に false になっていた）。
+    #[test]
+    fn classify_alt_side_generic_vk_menu() {
+        assert_eq!(classify_alt_side(VK_MENU, false), (true, false));
+        assert_eq!(classify_alt_side(VK_MENU, true), (false, true));
+    }
+
+    /// Alt 以外の VK はどちらにも該当しない。
+    #[test]
+    fn classify_alt_side_unrelated_vk_is_neither() {
+        assert_eq!(classify_alt_side(VK_SPACE, false), (false, false));
+        assert_eq!(classify_alt_side(VK_SPACE, true), (false, false));
+    }
 
     /// "Left Alt"/"Right Alt" は無変換/変換相当の VK に解決され、
     /// なりすましフラグが立つ。
