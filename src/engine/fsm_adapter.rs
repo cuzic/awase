@@ -611,7 +611,8 @@ mod tests {
     #[test]
     fn flush_to_effects_when_idle_returns_timer_kills() {
         let mut adapter = make_adapter();
-        let effects = adapter.flush_to_effects(ContextChange::ImeOff, ComposingHint::Trusted(false));
+        let effects =
+            adapter.flush_to_effects(ContextChange::ImeOff, ComposingHint::Trusted(false));
         // Idle → タイマー Kill x2 が必ず含まれる
         let kill_count = effects
             .iter()
@@ -631,7 +632,8 @@ mod tests {
         let phys = tracker.process(&event);
         adapter.on_event(event, &phys);
 
-        let effects = adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
+        let effects =
+            adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         let has_send_keys = effects.iter().any(|e| matches!(e, Effect::Input(_)));
         assert!(has_send_keys);
     }

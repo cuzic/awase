@@ -1442,7 +1442,10 @@ fn test_flush_pending_from_pending_thumb() {
     // flush（composing=true）→ 親指キーを単独確定 (= suppress = action 無し)。
     // Space 未割当なので composing=false でも本来は生 VK 送出だが、ここでは
     // composing 中の抑制（無変換/変換のかな/カタカナ切替誤爆防止）を確認する。
-    let r = engine.flush_pending(ContextChange::InputLanguageChanged, ComposingHint::Trusted(true));
+    let r = engine.flush_pending(
+        ContextChange::InputLanguageChanged,
+        ComposingHint::Trusted(true),
+    );
     // 単独親指打鍵は composing 中は IME 副作用を防ぐため suppress される
     assert!(
         r.actions.is_empty(),
@@ -3710,7 +3713,8 @@ mod fsm_adapter_tests {
     #[test]
     fn flush_to_effects_returns_vec() {
         let mut adapter = make_adapter();
-        let effects = adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
+        let effects =
+            adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
         // Verify it returns a Vec (may or may not be empty depending on FSM internals)
         let _ = effects.len();
     }

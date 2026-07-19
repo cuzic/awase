@@ -368,7 +368,10 @@ fn e2e_engine_flush_pending_all_states() {
     // SpeculativeChar
     let mut engine = make_test_engine(ConfirmMode::Speculative);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
-    let r = engine.flush_pending(ContextChange::InputLanguageChanged, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(
+        ContextChange::InputLanguageChanged,
+        ComposingHint::Trusted(false),
+    );
     log::debug!("Flush from SpeculativeChar: actions={:?}", r.actions);
     // SpeculativeChar already output, flush should be empty
     assert!(r.actions.is_empty());

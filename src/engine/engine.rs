@@ -143,7 +143,9 @@ impl Engine {
                 // 伴う non-active 化等）ため Unknown を渡し、Space フォールバック例外も
                 // 含め無条件 suppress する（ComposingHint の doc 参照）。
                 let reason = new_state.to_context_change();
-                let flush = self.adapter.flush_to_effects(reason, ComposingHint::Unknown);
+                let flush = self
+                    .adapter
+                    .flush_to_effects(reason, ComposingHint::Unknown);
                 effects.extend(flush);
                 // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
                 // Engine inactive 時に到着しても consumed されないようにする。
@@ -253,7 +255,9 @@ impl Engine {
         // 非活性化の理由（IME OFF・フォーカス変更等）を問わず、保留キーが入力された
         // 時点と同一コンテキストである保証がないため Unknown を渡す。
         if !self.compute_active(ctx) {
-            return self.adapter.flush(ContextChange::ImeOff, ComposingHint::Unknown);
+            return self
+                .adapter
+                .flush(ContextChange::ImeOff, ComposingHint::Unknown);
         }
 
         let decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);

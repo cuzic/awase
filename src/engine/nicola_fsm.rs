@@ -291,7 +291,10 @@ impl NicolaFsm {
     /// 無効化時は保留キーをフラッシュする。
     /// 戻り値の `Resp` を `dispatch()` で処理すること（タイマー停止 + 保留キー確定）。
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
-        let flush_resp = self.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(self.phys.composing));
+        let flush_resp = self.flush_pending(
+            ContextChange::EngineDisabled,
+            ComposingHint::Trusted(self.phys.composing),
+        );
         self.enabled = !self.enabled;
         self.output_history.clear();
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
@@ -385,7 +388,10 @@ impl NicolaFsm {
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
-        let flush_resp = self.flush_pending(ContextChange::LayoutSwapped, ComposingHint::Trusted(self.phys.composing));
+        let flush_resp = self.flush_pending(
+            ContextChange::LayoutSwapped,
+            ComposingHint::Trusted(self.phys.composing),
+        );
         self.layout = layout;
         self.output_history.clear();
         flush_resp
@@ -1420,7 +1426,10 @@ impl NicolaFsm {
             reason,
             self.state.debug_label(),
         );
-        let flush = self.flush_pending(ContextChange::BypassKey, ComposingHint::Trusted(self.phys.composing));
+        let flush = self.flush_pending(
+            ContextChange::BypassKey,
+            ComposingHint::Trusted(self.phys.composing),
+        );
         let mut resp = Response::pass_through();
         resp.actions = flush.actions;
         resp.timers = flush.timers;
