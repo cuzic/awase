@@ -1693,10 +1693,16 @@ impl eframe::App for SettingsApp {
                 if ui.button("キャンセル").clicked() {
                     self.cancel();
                 }
-                if !self.status.is_empty() {
-                    ui.label(&self.status);
-                }
             });
+            // ステータス（バリデーション警告等）はボタン行とは別の行に出す。
+            // ボタンと同じ ui.horizontal() 内に置くと、長い警告文が折り返さず
+            // 右側に切れて見えなくなるため（複数警告を "; " 連結すると
+            // 数百文字になり得る）。折り返しを明示指定し、ウィンドウ幅いっぱいまで
+            // 使って複数行に自然に折り返させる。
+            if !self.status.is_empty() {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(&self.status).wrap());
+            }
             ui.add_space(6.0);
         });
 
