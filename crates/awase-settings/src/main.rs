@@ -790,6 +790,20 @@ impl SettingsApp {
                 self.config.general.left_thumb_key = "無変換".to_string();
                 self.config.general.right_thumb_key = "変換".to_string();
             }
+            // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
+            // （Ctrl+Shift+変換 等）は US に無変換/変換キーが物理的に存在しないため
+            // 動作しない。動かない既定値を黙って残すより、未設定にして
+            // 「キー設定」タブで明示的に選んでもらう方が誠実（他アプリのショートカット
+            // と衝突しない US 向け「正解」の組み合わせを勝手に決め打ちできないため）。
+            if prev_keyboard_model != awase::scanmap::KeyboardModel::Us
+                && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us
+            {
+                self.config.keys.engine_on.clear();
+                self.config.keys.engine_off.clear();
+                self.config.keys.ime_on.clear();
+                self.config.keys.ime_off.clear();
+                self.config.keys.engine_off_solo_triple = None;
+            }
         });
         if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
             ui.label(
@@ -799,7 +813,13 @@ impl SettingsApp {
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
                  F13-F24 等へ物理リマップするか、Space を検討してください。\n\
                  キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
-                 エンジン ON 時のみ Alt キーを親指キーとして使えます）。",
+                 エンジン ON 時のみ Alt キーを親指キーとして使えます）。\n\
+                 \n\
+                 エンジン ON/OFF・IME ON/OFF・単独5連打OFF のホットキーも未設定に\n\
+                 なっています（無変換/変換前提の既定値は US では動かないため）。\n\
+                 「キー設定」タブで、動作する物理キーの組み合わせを設定してください。\n\
+                 単独5連打OFF は、親指キーとして設定した物理キー自体を指定してください\n\
+                 （それ以外のキーを指定しても発火しません）。",
             );
         }
         ui.horizontal(|ui| {
