@@ -121,23 +121,21 @@ impl MsImeReadyCoro {
     pub(crate) fn new(romaji: &str, cold_seq: u32, deadline_ms: u64) -> Self {
         let guard = OutputActiveGuard::begin();
         let romaji = romaji.to_string();
-        let coro = StepCoro::new(async move |ch| {
+        let mut coro = StepCoro::new(async move |ch| {
             ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms).await;
         });
-        let mut this = Self {
+        // pending_tsf に格納して外部から本物の tick を受け取り始める前に prime() で
+        // 消費しておく（詳細は `GjiWarmupCoro::new` のコメント参照）。
+        let primed = coro.prime();
+        debug_assert!(
+            matches!(&primed, CoroStep::Yielded(actions) if actions.is_empty()),
+            "MsImeReadyCoro prime() は空の ProbeAction を yield するはず: {primed:?}"
+        );
+        Self {
             coro,
             cold_seq,
             _guard: guard,
-        };
-        // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
-        // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
-        // （詳細は `GjiWarmupCoro::new` のコメント参照）。
-        let primed = this.tick(TsfEnvSnapshot::default());
-        debug_assert!(
-            primed.is_empty(),
-            "MsImeReadyCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
-        );
-        this
+        }
     }
 }
 

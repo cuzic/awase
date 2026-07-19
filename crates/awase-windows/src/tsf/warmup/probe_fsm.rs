@@ -541,25 +541,23 @@ impl TsfProbeCoro {
         guard: OutputActiveGuard,
     ) -> Self {
         let romaji = romaji.to_string();
-        let coro = StepCoro::new(async move |ch| {
+        let mut coro = StepCoro::new(async move |ch| {
             tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await;
         });
-        let mut this = Self {
+        // pending_tsf に格納して外部から本物の tick を受け取り始める前に prime() で
+        // 消費しておく（詳細は `GjiWarmupCoro::new` のコメント参照）。
+        let primed = coro.prime();
+        debug_assert!(
+            matches!(&primed, CoroStep::Yielded(actions) if actions.is_empty()),
+            "TsfProbeCoro prime() は空の ProbeAction を yield するはず: {primed:?}"
+        );
+        Self {
             coro,
             pending_transmit_done: None,
             pending_vk_sent: None,
             cold_seq,
             _guard: guard,
-        };
-        // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
-        // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
-        // （詳細は `GjiWarmupCoro::new` のコメント参照）。
-        let primed = this.tick(TsfEnvSnapshot::default());
-        debug_assert!(
-            primed.is_empty(),
-            "TsfProbeCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
-        );
-        this
+        }
     }
 }
 

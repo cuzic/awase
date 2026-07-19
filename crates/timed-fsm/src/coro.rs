@@ -25,6 +25,13 @@
 //! `input_1` 自体は消費されない（次の `step(input_2)` で最初の yield 点が `input_2` を読む）。
 //! タイマー駆動では 1 ティック分のロスは動作に影響しない。
 //!
+//! `new` 直後・外部から本物の `step()` を受け取り始める前にこの「捨てられる1回」を
+//! 明示的に消費しておきたい場合（例: コルーチンを `Box<dyn TickableFsm>` 等に格納する前に、
+//! 格納後の最初の本物の tick が握り潰されないようにしたい）は、ダミーの `input` 値を
+//! 用意して `step(dummy)` する代わりに [`StepCoro::prime`] を使う。コルーチン本体が
+//! 最初の yield 点より前で `input` を読むことは構造上あり得ないため、どんな本体に対しても
+//! 安全に呼べる。
+//!
 //! ## 使用例
 //!
 //! ```rust
@@ -122,6 +129,7 @@ pub async fn yield_step<I, Y>(channel: Rc<Channel<I, Y>>, output: Y) -> I {
 
 /// [`StepCoro::step`] の返り値。
 #[must_use]
+#[derive(Debug)]
 pub enum CoroStep<Y> {
     /// コルーチンが yield した。`Y` は今ステップの出力。
     Yielded(Y),
@@ -182,5 +190,98 @@ impl<I: 'static, Y: 'static> StepCoro<I, Y> {
             }
             Poll::Ready(()) => CoroStep::Complete,
         }
+    }
+
+    /// コルーチン本体を最初の [`yield_step`] まで進める（`input` を消費しない）。
+    ///
+    /// [`step`](Self::step) の最初の呼び出しは、future を最初の yield 点まで進めは
+    /// するが、そこに渡した `input` 自体は読まれない（次の `step()` 呼び出しの
+    /// `input` が最初の yield 点に届く。詳しくはモジュールドキュメントの
+    /// 「最初の step について」を参照）。この「捨てられる1回」を、ダミーの
+    /// `input` 値なしで明示的に消費するのが `prime`。
+    ///
+    /// 外部から本物の `step()` 呼び出しを受け取り始める前（＝ `new` の直後、
+    /// 呼び出し元がまだ `self` を保持していて、まだ誰にも `step()` を呼ばれて
+    /// いない段階）に一度だけ呼ぶことを想定している。コルーチン本体が最初の
+    /// yield 点より前で `input` を読むことは構造上あり得ない
+    /// （[`yield_step`] は必ず output を書いてから初めて input を待つため）ので、
+    /// どんなコルーチン本体に対しても安全に呼べる。
+    ///
+    /// ```
+    /// use std::rc::Rc;
+    /// use timed_fsm::coro::{Channel, CoroStep, StepCoro, yield_step};
+    ///
+    /// async fn phases(ch: Rc<Channel<u32, String>>) {
+    ///     let n = yield_step(ch.clone(), "phase1".to_owned()).await;
+    ///     let _ = yield_step(ch, format!("phase2: got {n}")).await;
+    /// }
+    ///
+    /// let mut coro: StepCoro<u32, String> = StepCoro::new(phases);
+    /// // ダミーの input を用意せず、最初の yield まで進める。
+    /// let CoroStep::Yielded(out) = coro.prime() else { panic!() };
+    /// assert_eq!(out, "phase1");
+    ///
+    /// // 以降は通常どおり、本物の input で step する。
+    /// let CoroStep::Yielded(out) = coro.step(42) else { panic!() };
+    /// assert_eq!(out, "phase2: got 42");
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// コルーチン本体が [`yield_step`] を呼ばずに `Poll::Pending` を返した場合（内部実装エラー）。
+    pub fn prime(&mut self) -> CoroStep<Y> {
+        let mut cx = Context::from_waker(Waker::noop());
+        match self.future.as_mut().poll(&mut cx) {
+            Poll::Pending => {
+                let output = self
+                    .channel
+                    .output
+                    .take()
+                    .expect("StepCoro: コルーチンが output を設定せずに Pending を返しました");
+                CoroStep::Yielded(output)
+            }
+            Poll::Ready(()) => CoroStep::Complete,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prime_reaches_first_yield_without_input() {
+        let mut coro: StepCoro<u32, &'static str> = StepCoro::new(|ch| async move {
+            let n = yield_step(ch.clone(), "phase1").await;
+            let _ = yield_step(ch, "unused").await;
+            let _ = n;
+        });
+
+        let CoroStep::Yielded(out) = coro.prime() else {
+            panic!("expected Yielded");
+        };
+        assert_eq!(out, "phase1");
+    }
+
+    #[test]
+    fn prime_then_step_matches_step_with_dummy_input() {
+        // prime() の後の real step(42) が、旧来の
+        // step(dummy) → 捨てる → step(42) と同じ2番目の yield 点に届くことを確認する。
+        let mut coro: StepCoro<u32, String> = StepCoro::new(|ch| async move {
+            let n = yield_step(ch.clone(), "phase1".to_owned()).await;
+            let _ = yield_step(ch, format!("phase2: got {n}")).await;
+        });
+
+        let _ = coro.prime();
+        let CoroStep::Yielded(out) = coro.step(42) else {
+            panic!("expected Yielded");
+        };
+        assert_eq!(out, "phase2: got 42");
+    }
+
+    #[test]
+    fn prime_on_immediately_complete_coroutine_returns_complete() {
+        let mut coro: StepCoro<u32, &'static str> = StepCoro::new(|_ch| async move {});
+        assert!(matches!(coro.prime(), CoroStep::Complete));
     }
 }

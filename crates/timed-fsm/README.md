@@ -266,6 +266,25 @@ let CoroStep::Yielded(out) = coro.step(42) else { panic!() };
 assert_eq!(out, "phase2: got 42");
 ```
 
+`step(0)`'s `0` above is discarded (see the module docs' "最初の step について" /
+"About the first step") — the first yield point is only ever fed by the *second*
+`step()` call. If you need to consume that discarded first step before storing the
+coroutine somewhere it will start receiving real ticks (so a real tick right after
+install can't be silently swallowed), use `StepCoro::prime()` instead of inventing a
+dummy input value:
+
+```rust
+# use std::rc::Rc;
+# use timed_fsm::coro::{Channel, CoroStep, StepCoro, yield_step};
+# async fn phases(ch: Rc<Channel<u32, String>>) {
+#     let n = yield_step(ch.clone(), "phase1".to_owned()).await;
+#     let _ = yield_step(ch, format!("phase2: got {n}")).await;
+# }
+let mut coro: StepCoro<u32, String> = StepCoro::new(phases);
+let CoroStep::Yielded(out) = coro.prime() else { panic!() }; // no dummy input needed
+assert_eq!(out, "phase1");
+```
+
 ## Clock abstraction
 
 The `clock` module provides a `Clock` trait for injecting time into deadline-based FSMs.
@@ -320,6 +339,7 @@ gate.try_hold(42);
 | `ShiftReduceParser` | Extension: shift-reduce grammar with timer support |
 | `ShiftReduceParser::parse` | Main loop for a `ShiftReduceParser` |
 | `StepCoro<I, Y>` | Coroutine for sequential multi-phase workflows |
+| `StepCoro::prime` | Consume the discarded first `step()` without a dummy input value |
 | `Clock` / `MonotonicClock` / `ManualClock` | Clock abstraction for deadline-based FSMs |
 | `HoldingGate<M, T>` / `GateAction` | Item-buffering gate controlled by an FSM |
 | `tokio_support::TokioTimerRuntime<T>` | Async `TimerRuntime` for `tokio` (`tokio` feature, off by default) |

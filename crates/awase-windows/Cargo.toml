@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 awase = { path = "../.." }
-timed-fsm = { path = "../timed-fsm", version = "0.4.0" }
+timed-fsm = { path = "../timed-fsm", version = "0.5.0" }
 log = "0.4"
 env_logger = "0.11"
 anyhow = "1"
