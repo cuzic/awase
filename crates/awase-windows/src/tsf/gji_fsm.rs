@@ -34,7 +34,6 @@ use std::time::Duration;
 use timed_fsm::{Response, TimedStateMachine};
 
 use crate::output::InjectionMode;
-use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tuning;
 
 // ── プリミティブ型 ────────────────────────────────────────────────────────────
@@ -114,14 +113,12 @@ impl WarmupResult {
 #[allow(dead_code)]
 pub(crate) struct PendingInput {
     pub romaji: String,
-    pub deferred_vks: Vec<DeferredVk>,
 }
 
 impl PendingInput {
     pub(crate) fn new(romaji: impl Into<String>) -> Self {
         Self {
             romaji: romaji.into(),
-            deferred_vks: Vec::new(),
         }
     }
 }
