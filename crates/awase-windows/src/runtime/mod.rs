@@ -139,7 +139,16 @@ impl Runtime {
     pub(crate) fn build_ctx(&self) -> InputContext {
         // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
-        let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+        let mut modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+        // Alt なりすまし中は本物の Alt 押下を無視する（hook.rs の
+        // `is_alt_impersonation_active` doc 参照。ここを直さないと、hook.rs 側の
+        // RawKeyEvent.modifier_snapshot は正しく補正されていても、
+        // bypass_reason() が実際に見る PhysicalKeyState.modifiers はこの
+        // build_ctx() の戻り値から来る（別経路）ため、なりすましたキーが
+        // 常に OsModifierHeld でバイパスされてしまう）。
+        if crate::hook::is_alt_impersonation_active() {
+            modifiers.alt = false;
+        }
         build_input_context(
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),

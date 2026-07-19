@@ -367,6 +367,27 @@ pub fn set_engine_enabled(enabled: bool) {
     CACHED_ENGINE_ENABLED.store(enabled, Ordering::Release);
 }
 
+/// Alt なりすましが現在発動中か（Left/Right いずれか）。
+///
+/// `InputContext::modifiers`/`RawKeyEvent::modifier_snapshot` を構築する全ての
+/// 箇所（`hook.rs` 自身・`runtime/mod.rs::build_ctx`・
+/// `runtime/message_handlers.rs` のタイマーハンドラ）で、この値が `true` の間は
+/// `modifiers.alt` を強制的に `false` にすること。
+///
+/// 背景（2026-07-19 実機で発覚）: `apply_alt_impersonation` で vk を書き換えても、
+/// `crate::observer::focus_observer::read_os_modifiers()` は `GetAsyncKeyState` で
+/// 「本物の Alt が物理的に押されているか」を vk と無関係に直接読むため、
+/// なりすまし中も `modifiers.alt` は true のままになる。core engine の
+/// `bypass_reason()` は `ev.key_class`（vk 由来、なりすまし後は正しく LeftThumb 等に
+/// 分類される）とは**別に** `self.phys.modifiers.is_os_modifier_held()`
+/// （ctrl||alt||win）を見て無条件に bypass するため、vk の書き換えだけでは
+/// 常に `BypassReason::OsModifierHeld` でチョード判定に一切入らず素通しされ、
+/// 「ローマ字入力のような挙動になる」不具合の直接原因になっていた。
+#[must_use]
+pub fn is_alt_impersonation_active() -> bool {
+    ALT_L_IMPERSONATING.load(Ordering::Relaxed) || ALT_R_IMPERSONATING.load(Ordering::Relaxed)
+}
+
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
 #[must_use]
 pub fn current_tick_ms() -> u64 {
@@ -725,6 +746,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // Alt 物理押下中またはメニューモード（WM_SYSKEYDOWN コンテキスト）のキーは変換しない
     if kb.flags.0 & LLKHF_ALTDOWN != 0 {
         modifier_snapshot.alt = true;
+    }
+    // Alt なりすまし中は modifier_snapshot.alt を強制的に false にする
+    // （is_alt_impersonation_active の doc 参照。vk 書き換えだけでは不十分だった
+    // 実機バグの修正、2026-07-19）。
+    if is_alt_impersonation_active() {
+        modifier_snapshot.alt = false;
     }
     let event = build_raw_key_event(
         vk,
