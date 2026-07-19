@@ -2481,11 +2481,23 @@ fn send_reload_config_message() {
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
         use windows::core::w;
         unsafe {
-            let hwnd = FindWindowW(w!("awase_msg_window"), None);
+            // クラス名は crates/awase-windows/src/tray.rs の
+            // `WINDOW_CLASS_NAME` = "awase_tray_window" と必ず一致させること。
+            // 以前ここは "awase_msg_window" という存在しないクラス名を探しており、
+            // FindWindowW が常に失敗 → 適用ボタンを押しても awase.exe に一切
+            // 通知が届かない（無言で失敗する）というバグがあった
+            // （2026-07-19 実機で確認・修正）。awase-settings は awase-windows を
+            // 依存に持たないため定数を共有できず、文字列直書きで揃えている。
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
             if let Ok(hwnd) = hwnd {
                 let msg = windows::Win32::Foundation::WPARAM(0);
                 let lparam = windows::Win32::Foundation::LPARAM(0);
                 let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
+            } else {
+                log::warn!(
+                    "設定リロード通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
+                     awase.exe が起動していないか、権限レベルが異なる可能性があります。"
+                );
             }
         }
     }

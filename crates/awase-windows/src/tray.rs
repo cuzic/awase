@@ -106,7 +106,14 @@ const TRAY_ICON_ID: u32 = 1;
 /// トレイアイコン用カスタムメッセージ
 const WM_TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
-/// ウィンドウクラス名（設定 GUI や多重起動検出時の `FindWindowW` 検索用に一定の名前を使う）
+/// ウィンドウクラス名（設定 GUI や多重起動検出時の `FindWindowW` 検索用に一定の名前を使う）。
+///
+/// `crates/awase-settings/src/main.rs::send_reload_config_message()` がこの文字列を
+/// **直書きで**参照している（awase-settings は awase-windows に依存しないため定数を
+/// 共有できない）。ここを変更したら必ず向こうも合わせて変更すること。過去に
+/// この2箇所の文字列が食い違い（"awase_tray_window" vs "awase_msg_window"）、
+/// 設定 GUI の「適用」が awase.exe に一切通知されない（無言で失敗する）バグが
+/// 長期間気づかれずに残っていた（2026-07-19 実機で発覚・修正）。
 pub const WINDOW_CLASS_NAME: &str = "awase_tray_window";
 
 /// システムトレイアイコン管理
