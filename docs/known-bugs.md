@@ -2021,6 +2021,74 @@ awase-windows`（174 passed, 0 failed）で確認済み。ゴールデン
 実機/CI での `cargo test --target x86_64-pc-windows-gnu` 実行が最終確認となる）。
 MS-IME 経路（`MsImeReadyCoro` 等）は今回一切変更していない。
 
+**追補9（2026-07-19）: 追補8の副産物として残っていた observation/decision/belief
+側の到達不能コードを codex CLI 協力の調査で特定・撤去。** ユーザーの見立て
+「cold warmup 整理整頓の副産物として一部の observation/decision/belief が
+不要になったはず」を受け、Codex CLI（`codex exec -s read-only`）を2プロセス
+並列実行（候補検証パス + 独立発見パス）し、Claude 自身が全 file:line を
+再検証（grep 再実行・producer まで遡って追跡）した上で以下を撤去した:
+
+- `ProbeObservations.gji_resumed`（`tsf/warmup/probe_fsm.rs`）撤去。唯一の
+  producer（`gji_warmup_coro.rs` の `'initial` ループ）が2分岐とも `false` を
+  返しており本番では常に false だった（true になるのは単体テストのみ）。
+  `decide_transmit_plan` の `used_eager_path`/`needs_literal` の死んだ分岐、
+  `is_partial_literal()` の no-op 節、`WarmupResult.gji_resumed` フィールド、
+  `classify_warmup_path` の `GjiResumed` 分岐、死んだ単体テスト3件を連鎖的に
+  撤去（`WarmupPath::GjiResumed` 自体は Unicode injection mode 側で別途
+  構築されるため enum variant は残置）。名前が似ている
+  `LiteralDetector::new_gji_resumed()`（Chrome の Transmit 分岐で現役使用、
+  GJI I/O write-bytes 差分ベースの別概念）とは無関係、削除対象ではない。
+- `DIAG_FORCE_HIRAGANA_CHARSET`（`tuning.rs`）撤去。追補8時点で既にコメントが
+  「配線先を持たず、値を変えても挙動に一切影響しない」と自認していたものを
+  物理削除。
+- `TsfReadinessProbe::wait_until_ready`（`tsf/probe.rs`）撤去。本番呼び出し
+  ゼロ（全4呼び出し元が `probe.rs` 自身の `#[cfg(test)] mod tests` 内）を
+  確認。`check_now` 自体のタイミング挙動を検証する4回帰テストは、ループ本体を
+  テスト専用ヘルパー `poll_until_ready` として維持し継続。
+- `GjiWarmupCoro` の `needs_settle_check` パラメータ撤去。唯一の producer
+  （`WarmupStarted`、構築箇所は `cold_warmup.rs::run_start` の1箇所のみ）が
+  常に `true` を渡していたため、Phase 1 の settle-check 本体を無条件実行に
+  インライン化。
+- `DIAG_DISABLE_PROACTIVE_TSF_WARMUP`（`tuning.rs`）を**ユーザー判断で**恒久化。
+  このフラグは元々 const true で、本番では既に「romaji バッチへの F2 直接
+  同梱（第3の防御層）を無効化」という挙動が確定していたため恒久化自体は現状の
+  挙動を変えない。`decide_transmit_plan` から `initial_prepend_f2` パラメータを
+  削除し `should_prepend_f2` を恒久的に false 化、`needs_literal` の死んだ
+  第1節を削除。`gji_warmup_coro.rs` の `effective_prepend_f2`/`suppress_f2`
+  計算・DIAG 分岐、`GjiProbeCtx`/`GjiWarmupCoro::new` の
+  `prepend_f2_warmup`/`fresh_f2_at_probe_start`（前者の唯一の入力元）、
+  `WarmupStarted.fresh_f2_at_probe_start`（唯一の読み手が消えたため到達不能に）
+  も連鎖的に撤去。**既知のフォローアップ（未実装）**: `WarmupOutcome.
+  prepend_f2_warmup`（`output/mod.rs`）は `plan.should_prepend_f2` からのみ
+  供給されるため恒久的に false になったはずで、`TsfSendPipeline::transmit`
+  （`vk_send.rs`）の `outcome.prepend_f2_warmup` 分岐・
+  `Output::send_vk_runs_with_leading_f2` が TSF/GJI 経路では到達不能になった
+  可能性が高いが、本セッションでは未調査・未削除（次の codex 調査候補）。
+
+**据え置き（削除しなかったもの）**: `TsfReadinessProbe::check_now`
+（`tsf/probe.rs`）の `min_ms`/`total_max_ms` 分岐。本番の producer
+（`cold_warmup.rs::run_start`・`vk_send.rs` の Chrome cold パス）が現状
+両方とも 0 を渡しているため実質常に最初の呼び出しで true を返すが、これは
+上記項目のような**静的な到達不能**（コンパイラ/型で保証される dead code）
+ではなく、両呼び出し元が**たまたま実行時に 0 を渡しているだけ**の状態。
+`check_now` 自体は任意の値に対して汎用的に正しく動作するタイミング
+primitive であり、cold-start 待機時間の調整は本リポジトリで過去に何度も
+出し入れされてきた領域（[tuning-constants](../.claude/rules/tuning-constants.md)
+の釣り上げ履歴: `CHROME_PROBE_MIN_MS` 20→100→200ms 等）。ユーザー確認の上、
+削除せずコメントで現状を記録するに留めた（`tsf/probe.rs::check_now` の
+doc comment参照）。
+
+調査は Codex 2プロセス完了後、Claude が `verdict: confirmed` の各項目を
+file:line 再読み込み・独立 grep 再実行で裏取りしてから実施（セッション中に
+codex 側の誤り2件を Claude 自身の直接ソース確認で発見・訂正済み:
+`LiteralDetector::new_gji_resumed()` は生きている、`send_romaji_as_tsf` は
+`gji_current_probe_params()` を呼ぶ）。各コミットごとに `cargo check`/
+`cargo clippy`（`--target x86_64-pc-windows-gnu`、警告ゼロ）、
+`cargo test --target x86_64-pc-windows-gnu --no-run` でテストバイナリの
+コンパイル（リンク含む）を確認。wine 未導入のためこのサンドボックスでは
+実行不可（実機/CI での実行確認が最終）。`docs/experiments.md` エントリ10に
+本ソーク全体の経緯を記録。
+
 ---
 
 ## BUG-25: 左Shift単独タップによる「IME-ON 半角英数」持続トグル（BUG-15 hold方式の置換）
