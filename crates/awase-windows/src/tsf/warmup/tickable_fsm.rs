@@ -31,7 +31,7 @@ pub(crate) trait TickableFsm {
     // ── Core（全実装型）────────────────────────────────────────────────────
 
     /// 1 ステップ進める。[`ProbeAction::Done`] が含まれたら完了。
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction>;
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction>;
     /// ログ相関用の cold_seq を返す。
     fn cold_seq_hint(&self) -> u32;
 

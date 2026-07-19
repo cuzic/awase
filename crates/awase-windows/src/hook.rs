@@ -122,7 +122,7 @@ const fn classify_alt_side(vk: VkCode, extended: bool) -> (bool, bool) {
 /// `vk` が Left/Right Alt でない場合、または対応する設定が OFF の場合は
 /// `vk` をそのまま返す。`extended` は `classify_alt_side` 参照。
 #[must_use]
-fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, extended: bool, config: &HookConfig) -> VkCode {
+fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, extended: bool, config: HookConfig) -> VkCode {
     let (is_left_alt, is_right_alt) = classify_alt_side(vk, extended);
     if config.left_alt_impersonates_thumb_key && is_left_alt {
         let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
@@ -711,7 +711,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             CACHED_ENGINE_ENABLED.load(Ordering::Relaxed),
         );
     }
-    let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, &config);
+    let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, config);
     if rewritten_vk != vk {
         log::debug!(
             "[alt-impersonation] impersonating: vk 0x{:02X} -> 0x{:02X}",

@@ -28,7 +28,7 @@ impl ChromeProbe {
 }
 
 impl TickableFsm for ChromeProbe {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.0.tick(env)
     }
 
@@ -89,7 +89,7 @@ mod tests {
         let probe = TsfReadinessProbe::new(0, 0, 0);
         let mut chrome_probe = ChromeProbe::new("ka", 0, probe, 0, guard);
 
-        let first_actions = chrome_probe.tick(&TsfEnvSnapshot {
+        let first_actions = chrome_probe.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });
@@ -106,7 +106,7 @@ mod tests {
         let deadline_ms = crate::hook::current_tick_ms() + 1000;
         chrome_probe.apply_vk_sent(LiteralDetector::new(false), deadline_ms);
 
-        let actions_after_apply = chrome_probe.tick(&TsfEnvSnapshot {
+        let actions_after_apply = chrome_probe.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });

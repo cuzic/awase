@@ -41,7 +41,7 @@ use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 ///
 /// Hiragana / Katakana はどちらも NATIVE ビット確認済みで romaji VK が compose される。
 /// 純粋関数（`ImeModeFsm::is_native_ready` の env 版）。
-fn env_native_ready(env: &TsfEnvSnapshot) -> bool {
+fn env_native_ready(env: TsfEnvSnapshot) -> bool {
     env.ime_mode_confirmed
         && matches!(
             env.ime_mode,
@@ -64,7 +64,7 @@ async fn ms_ime_ready_coro_body(
     let start_ms = crate::hook::current_tick_ms();
     loop {
         let env = yield_step(ch.clone(), vec![]).await;
-        if env_native_ready(&env) {
+        if env_native_ready(env) {
             log::info!(
                 "[msime-ready] cold={cold_seq} IME mode NATIVE 確認 (+{}ms) → 送信 {romaji:?}",
                 crate::hook::current_tick_ms().saturating_sub(start_ms),
@@ -132,7 +132,7 @@ impl MsImeReadyCoro {
         // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
         // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
         // （詳細は `GjiWarmupCoro::new` のコメント参照）。
-        let primed = this.tick(&TsfEnvSnapshot::default());
+        let primed = this.tick(TsfEnvSnapshot::default());
         debug_assert!(
             primed.is_empty(),
             "MsImeReadyCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
@@ -142,8 +142,8 @@ impl MsImeReadyCoro {
 }
 
 impl TickableFsm for MsImeReadyCoro {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
-        match self.coro.step(*env) {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
+        match self.coro.step(env) {
             CoroStep::Yielded(actions) => actions,
             CoroStep::Complete => vec![ProbeAction::Done],
         }
@@ -171,22 +171,22 @@ mod tests {
     fn native_ready_requires_confirmation() {
         // belief だけ（unconfirmed）では準備完了と見なさない — BUG-13 はまさに
         // belief=ON のまま OS 未準備の窓で送信したことが原因。
-        assert!(!env_native_ready(&env(ImeModeState::Hiragana, false)));
-        assert!(env_native_ready(&env(ImeModeState::Hiragana, true)));
+        assert!(!env_native_ready(env(ImeModeState::Hiragana, false)));
+        assert!(env_native_ready(env(ImeModeState::Hiragana, true)));
     }
 
     #[test]
     fn katakana_counts_as_ready() {
         // ユーザーが意図的にカタカナモードの場合も NATIVE 確認済みなら送信してよい
         // （MsImeDirectStrategy の KATAKANA スキップと同じ扱い）。
-        assert!(env_native_ready(&env(ImeModeState::Katakana, true)));
+        assert!(env_native_ready(env(ImeModeState::Katakana, true)));
     }
 
     #[test]
     fn off_and_unknown_are_not_ready() {
-        assert!(!env_native_ready(&env(ImeModeState::Off, true)));
-        assert!(!env_native_ready(&env(ImeModeState::Unknown, true)));
-        assert!(!env_native_ready(&env(ImeModeState::Unknown, false)));
+        assert!(!env_native_ready(env(ImeModeState::Off, true)));
+        assert!(!env_native_ready(env(ImeModeState::Unknown, true)));
+        assert!(!env_native_ready(env(ImeModeState::Unknown, false)));
     }
 
     #[test]
@@ -196,12 +196,12 @@ mod tests {
 
         // 未確認の間は待機（アクションなし）
         for _ in 0..3 {
-            let actions = coro.tick(&env(ImeModeState::Hiragana, false));
+            let actions = coro.tick(env(ImeModeState::Hiragana, false));
             assert!(actions.is_empty(), "未確認中は待機するはず: {actions:?}");
         }
 
         // NATIVE 確認 → Transmit + Done
-        let actions = coro.tick(&env(ImeModeState::Hiragana, true));
+        let actions = coro.tick(env(ImeModeState::Hiragana, true));
         assert_eq!(actions.len(), 2);
         assert!(matches!(
             &actions[0],
@@ -217,7 +217,7 @@ mod tests {
         let deadline = crate::hook::current_tick_ms(); // 即座に期限切れ
         let mut coro = MsImeReadyCoro::new("ka", 8, deadline);
 
-        let actions = coro.tick(&env(ImeModeState::Unknown, false));
+        let actions = coro.tick(env(ImeModeState::Unknown, false));
         assert_eq!(actions.len(), 2);
         assert!(matches!(
             &actions[0],

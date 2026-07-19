@@ -39,7 +39,7 @@ impl UnicodeLiteralObserverFsm {
 }
 
 impl TickableFsm for UnicodeLiteralObserverFsm {
-    fn tick(&mut self, _env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, _env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.elapsed_ms += 10;
         if self.elapsed_ms < OBSERVATION_WINDOW_MS {
             return vec![];
