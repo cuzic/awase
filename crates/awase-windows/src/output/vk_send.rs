@@ -25,20 +25,12 @@ impl TsfSendPipeline {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        // cold パスかつ eager warmup あり → unicode TSF（既存）
-        // cold パスかつ eager なし → VK のまま（F2 ウォームアップ未完のため）
-        // warm パス（prepend_f2_warmup=false）:
+        // warm パス:
         //   used_eager_path=true → unicode TSF（B↓A↓B↑A↑ VK の「b」チラつき回避）
         //   used_eager_path=false → VK run
         //   TSF-native (WezTerm): send_romaji_as_tsf_warm が false を設定するため常に VK run →
         //     GJI コンポジション経由で候補ウィンドウが表示される。
-        let unicode_kana: Option<char> = if outcome.prepend_f2_warmup {
-            if outcome.used_eager_path {
-                kana_for_romaji_static(romaji)
-            } else {
-                None
-            }
-        } else if outcome.used_eager_path {
+        let unicode_kana: Option<char> = if outcome.used_eager_path {
             kana_for_romaji_static(romaji)
         } else {
             None
@@ -46,33 +38,21 @@ impl TsfSendPipeline {
 
         let t_send = crate::hook::current_tick_ms();
         log::debug!(
-            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (prepend_f2={} eager={})",
+            "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (eager={})",
             outcome.cold_seq,
             romaji,
             if unicode_kana.is_some() {
                 "unicode"
-            } else if outcome.prepend_f2_warmup {
-                "vk-run+f2"
             } else {
                 "vk-run"
             },
             t_send,
-            outcome.prepend_f2_warmup,
             outcome.used_eager_path,
         );
 
         unicode_kana.map_or_else(
             || {
-                if outcome.prepend_f2_warmup {
-                    // VK run cold path: F2 を K+O と同一 SendInput バッチに含める。
-                    // F2↓ が K↓ の直前に WezTerm へ届くため、GJI の composition context が
-                    // K を受け取る前に確実に初期化される（partial literal 防止）。
-                    // 例: NameChangeWait nc_fired=false 後に ko を送る際、
-                    //   F2+K+O バッチ → F2↓ で GJI 初期化 → K↓ でコンポジション開始 → こ
-                    Output::send_vk_runs_with_leading_f2(chars, outcome.cold_seq);
-                } else {
-                    Output::send_vk_runs(chars, outcome.cold_seq);
-                }
+                Output::send_vk_runs(chars, outcome.cold_seq);
                 chars.len()
             },
             |kana| {
@@ -242,12 +222,6 @@ impl Output {
         KeyInjector::send_vk_runs(chars, cold_seq);
     }
 
-    /// VK run 分割送信（F2 leading）: F2 を先頭に付加して送信する。
-    /// `KeyInjector::send_vk_runs_with_leading_f2` に委譲する。
-    pub(super) fn send_vk_runs_with_leading_f2(chars: &[(VkCode, bool)], cold_seq: u32) {
-        KeyInjector::send_vk_runs_with_leading_f2(chars, cold_seq);
-    }
-
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -407,7 +381,6 @@ impl Output {
 
         log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms");
         let outcome = WarmupOutcome {
-            prepend_f2_warmup: false,
             used_eager_path,
             cold_seq,
         };

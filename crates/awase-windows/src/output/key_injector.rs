@@ -4,7 +4,7 @@
 
 use super::resolve::CharResolution;
 use crate::tsf::output::{make_key_input_ex, INJECTED_MARKER};
-use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT};
+use crate::vk::VK_LSHIFT;
 use awase::kana_table::KanaTable;
 use awase::types::VkCode;
 use itertools::Itertools as _;
@@ -251,23 +251,6 @@ impl KeyInjector {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
-                Self::format_vk_run(run),
-            );
-            Self::send_vk_run_batch(run, VkMarker::Tsf);
-        }
-    }
-
-    /// VK run 分割送信（F2 leading）: F2 を先頭に付加して `send_vk_runs` と同様に送信する。
-    pub(crate) fn send_vk_runs_with_leading_f2(chars: &[(VkCode, bool)], cold_seq: u32) {
-        let mut f2_plus_chars = Vec::with_capacity(chars.len() + 1);
-        f2_plus_chars.push((VK_DBE_HIRAGANA, false));
-        f2_plus_chars.extend_from_slice(chars);
-        let runs = Self::split_vk_runs(&f2_plus_chars);
-        let total_runs = runs.len();
-        for (run_idx, run) in runs.into_iter().enumerate() {
-            let run_gji_idle = crate::tsf::observer::gji_idle_ms();
-            log::debug!(
-                "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}] (f2-leading)",
                 Self::format_vk_run(run),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);

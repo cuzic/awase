@@ -396,7 +396,6 @@ where
                         // plan は FSM の enter_transmit_tsf が confirm 時点の env で確定済み。
                         // dispatcher は再導出せずそのまま使う。
                         let outcome = WarmupOutcome {
-                            prepend_f2_warmup: plan.should_prepend_f2,
                             used_eager_path: plan.used_eager_path,
                             cold_seq,
                         };
@@ -612,8 +611,6 @@ mod tests {
         reset_consecutive_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
-        /// transmit_tsf に渡された WarmupOutcome.prepend_f2_warmup を記録する。
-        last_used_prepend_f2: Cell<bool>,
     }
 
     impl Default for FakeProbeIo {
@@ -631,7 +628,6 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
-                last_used_prepend_f2: Cell::new(false),
             }
         }
     }
@@ -648,7 +644,6 @@ mod tests {
         ) -> usize {
             self.transmit_tsf_called.set(true);
             self.last_used_eager_path.set(outcome.used_eager_path);
-            self.last_used_prepend_f2.set(outcome.prepend_f2_warmup);
             self.tsf_transmit_result
         }
         fn transmit_chrome(&self, _romaji: &str, _chars: &[(VkCode, bool)]) {
@@ -1066,10 +1061,6 @@ mod tests {
             "plan.should_prepend_f2=false + plan.needs_literal=false → Done を即返す"
         );
         assert!(io.transmit_tsf_called.get());
-        assert!(
-            !io.last_used_prepend_f2.get(),
-            "plan.should_prepend_f2=false は WarmupOutcome.prepend_f2_warmup に反映されるべき"
-        );
     }
 
     // 旧 gji_resumed_skips_literal_detect_to_prevent_false_positive テストは

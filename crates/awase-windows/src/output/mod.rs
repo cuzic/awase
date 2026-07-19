@@ -161,8 +161,6 @@ pub(crate) struct StepProbeResult {
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
 pub(crate) struct WarmupOutcome {
-    /// F2 ウォームアップバッチが前置きされたか
-    pub prepend_f2_warmup: bool,
     /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
     pub used_eager_path: bool,
     /// cold start シーケンス番号（ログ相関用）
