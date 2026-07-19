@@ -134,27 +134,6 @@ impl TsfReadinessProbe {
         // warmup 後に GJI I/O が来ていない = GJI は既に正常状態 → min_ms 経過済みで即解放
         true
     }
-
-    /// GJI が settled になるまでポーリング待機する。
-    ///
-    /// `block_on` ではなく `std::thread::sleep` を使うため、ネストされたメッセージループを
-    /// 起動しない。`with_app` 内からの呼び出しでも WinEvent 再入が発生しない。
-    ///
-    /// 主にテストコードおよびフォールバックパスで使用する。
-    /// 本番の TSF プローブは TIMER_TSF_PROBE + `check_now` を使うこと。
-    pub fn wait_until_ready(&self, total_max_ms: u64) {
-        const POLL_MS: u64 = 10;
-        let cold_seq = self.cold_seq;
-        let call_ms = crate::hook::current_tick_ms();
-        loop {
-            if self.check_now(total_max_ms) {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
-        }
-        let total = crate::hook::current_tick_ms().saturating_sub(call_ms);
-        log::debug!("[tsf-probe] cold={cold_seq} wait_until_ready done, waited {total}ms");
-    }
 }
 
 // ── WarmEpoch ──
@@ -695,6 +674,19 @@ mod tests {
     /// テスト間でグローバルな観測 atomic が競合しないようにシリアライズするロック
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
+    /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
+    /// 検証するテスト専用の待機ヘルパーとしてここに残す）。
+    fn poll_until_ready(probe: &TsfReadinessProbe, total_max_ms: u64) {
+        const POLL_MS: u64 = 10;
+        loop {
+            if probe.check_now(total_max_ms) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+        }
+    }
+
     /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
     #[test]
     fn probe_fallback_waits_total_max_ms() {
@@ -704,7 +696,7 @@ mod tests {
         let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0);
-        probe.wait_until_ready(100);
+        poll_until_ready(&probe, 100);
 
         let elapsed = start.elapsed().as_millis();
         // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
@@ -728,7 +720,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(warmup_ms, 0, 0); // min_ms=0
-        probe.wait_until_ready(1_000);
+        poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();
         // 即 settled（margin = POST_IDLE_MARGIN_MS = 30ms 以内）
@@ -752,7 +744,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
-        probe.wait_until_ready(300);
+        poll_until_ready(&probe, 300);
 
         let elapsed = start.elapsed().as_millis();
         // min_ms=80 の phase1 wait 後に即解放（I/O なし → 正常状態）
@@ -778,7 +770,7 @@ mod tests {
 
         let start = Instant::now();
         let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0
-        probe.wait_until_ready(1_000);
+        poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();
         // min_ms=0 なので即解放（1000ms タイムアウトを待たない）
