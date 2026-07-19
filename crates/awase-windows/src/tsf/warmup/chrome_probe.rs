@@ -110,7 +110,7 @@ mod tests {
         // 本番の dispatch_probe_actions と同じく、TickableFsm トレイト経由で
         // apply_vk_sent を呼ぶ（ここが ChromeProbe の委譲を経由する）。
         let deadline_ms = crate::hook::current_tick_ms() + 1000;
-        chrome_probe.apply_vk_sent(LiteralDetector::new(), deadline_ms);
+        chrome_probe.apply_vk_sent(LiteralDetector::new(false), deadline_ms);
 
         let actions_after_apply = chrome_probe.tick(&TsfEnvSnapshot {
             gji_active: true,

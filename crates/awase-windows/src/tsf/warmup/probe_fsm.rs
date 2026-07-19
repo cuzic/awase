@@ -77,14 +77,16 @@ pub(crate) struct TransmitPlan {
     pub literal_detect_ms: u64,
 }
 
-/// BUG-29: 候補ウィンドウが既に表示中なら、Chrome per-VK confirm の
+/// BUG-29: 候補ウィンドウが既に表示中なら、per-VK confirm の
 /// literal-detect polling をスキップしてよいかを判定する（純粋関数、テスト用に分離）。
 ///
 /// 候補ウィンドウが表示中であること自体が「warm な composition が継続している」
 /// 直接証拠であるため、SHOW イベント（エッジトリガで VK1 以降は再発火しない）や
 /// WriteTransferCount 閾値（子音単体 VK では原理的に越えない）に頼らず即
-/// confirmed とみなせる。`crates/awase-windows/src/tsf/probe.rs:676-680` に
-/// 記載された既知の限界を構造的に解消する。
+/// confirmed とみなせる。`crates/awase-windows/src/tsf/probe.rs`
+/// （`LiteralDetector::check_now`）に記載された既知の限界を構造的に解消する。
+/// BUG-30 で `LiteralDetector` の検出ロジックが TSF/Chrome 共通化されたため、
+/// この早期脱出も両ターゲットに適用する（`docs/known-bugs.md` BUG-30 追補1）。
 pub(crate) const fn should_skip_literal_wait(candidate_visible: bool) -> bool {
     candidate_visible
 }
@@ -162,7 +164,7 @@ pub(crate) enum ProbeAction {
     /// `is_partial_literal()` が送信前の無関係な代理指標（`nc_fired`）に
     /// 頼っているため、cold 直後の最初の1文字は VK を1個ずつ送って「送ったVK自身」への
     /// `CompositionConfirmed`/`SuspectedLiteral` を確認してから次の VK を送る。
-    /// dispatcher は送信直前に `LiteralDetector::new()` でベースラインを取り、1 VK だけ
+    /// dispatcher は送信直前に `LiteralDetector::new_with_pre_send_baseline()` でベースラインを取り、1 VK だけ
     /// `KeyInjector::send_vk_pair` で送信する。`is_last=true` のときのみ、通常の
     /// `Transmit` と同じ deferred VK フラッシュ・GjiFsm warmup 結果保存を行う。
     TransmitSingleVk {
@@ -258,8 +260,9 @@ pub(crate) struct VkSentPayload {
 ///
 /// 統合前は `probe_fsm.rs::tsf_probe_coro_body`（Chrome Phase 2c）と
 /// `gji_warmup_coro.rs::gji_coro_body`（TSF Phase 5b）にほぼ同一のループが重複していた。
-/// 差分は BUG-29（候補ウィンドウ可視時の polling スキップ、Chrome のみ）とログ/診断タグの
-/// 接頭辞のみで、いずれも `target` から導出できるためここに統合できた。
+/// 差分はログ/診断タグの接頭辞のみで、`target` から導出できるためここに統合できた
+/// （BUG-29 の候補ウィンドウ可視時 polling スキップは元々 Chrome 限定だったが、
+/// BUG-30 で検出ロジック自体が統一されたため両ターゲット共通になった）。
 ///
 /// 全 VK 確認できたらセッション確認 (`mark_literal_session=true`) + `Done` を、
 /// `SuspectedLiteral` を検出したら `RawTsfLiteralRecovery` を、dispatcher が
@@ -335,14 +338,13 @@ pub(crate) async fn run_per_vk_confirm(
             return;
         };
 
-        // BUG-29: Chrome のみ、候補ウィンドウが既に表示中なら literal-detect の
-        // polling をスキップする。SHOW はエッジトリガ（hidden→visible 遷移でのみ増分）
-        // のため VK1 以降では再発火せず、子音単体 VK は WriteTransferCount 閾値も
-        // 原理的に越えない（probe.rs:676-680, 658-667 に既知の限界として記載済み）。
-        // TSF 側はこの早期脱出を経験的に必要としていない（従来から常時 polling）ため
-        // 据え置く。
-        let detection = if target == TransmitTarget::Chrome
-            && should_skip_literal_wait(crate::tsf::observer::gji_candidate_visible_now())
+        // BUG-29/BUG-30: 候補ウィンドウが既に表示中なら literal-detect の polling を
+        // スキップする。SHOW はエッジトリガ（hidden→visible 遷移でのみ増分）のため VK1
+        // 以降では再発火せず、子音単体 VK は WriteTransferCount 閾値も原理的に越えない
+        // （probe.rs の `LiteralDetector::check_now` に既知の限界として記載済み）。
+        // 検出ロジック自体が TSF/Chrome で統一された（BUG-30、`docs/known-bugs.md`
+        // BUG-30 追補1）ため、この早期脱出も両ターゲットに適用する（旧: Chrome 限定）。
+        let detection = if should_skip_literal_wait(crate::tsf::observer::gji_candidate_visible_now())
         {
             log::debug!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \

@@ -79,6 +79,22 @@ pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
 /// LiteralDetect のタイムアウトで補う必要がある。500ms = 実測最大 ~370ms + 130ms マージン。
 pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
 
+/// 候補ウィンドウ可視 veto の上限保留時間 (ms)。
+///
+/// `LiteralDetectCore::poll` が `SuspectedLiteral`（`RAW_TSF_LITERAL_DETECT_MS` 系の
+/// deadline 到達）を検出した時点で GJI 候補ウィンドウがまだ可視の場合、backspace を
+/// 出さず hold する（可視である以上ほぼ確実に compose 成功しているため、消すと
+/// BUG-27 追補5 と同型の regression になる）。この定数はその hold の上限であり、
+/// 超過しても backspace はせず無回収の `Done` で打ち切る（候補ウィンドウが固着した
+/// 異常系でタイマーが永久に止まらないための安全弁）。
+///
+/// **実測未了 — 暫定値**: 「候補ウィンドウ可視 → I/O/SHOW 確定」までの実測遅延データが
+/// まだ無い。300ms は `CHROME_GJI_REINIT_CONFIRM_MS`（IME ON→NATIVE確認 300ms）等、
+/// 同程度の「確認待ち」定数から類推した仮値であり、`tuning-constants.md` が要求する
+/// 実測根拠を満たしていない。実機（Windows, Chrome/Teams/WezTerm 等）で計測してから
+/// 本番投入すること。
+pub const GJI_CANDIDATE_VETO_CAP_MS: u64 = 300;
+
 /// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
 ///
 /// LONG_IDLE_MS (10s) 未満でも ~7s 以上の idle 後は WezTerm TSF が応答するまでに

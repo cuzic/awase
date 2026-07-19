@@ -405,7 +405,6 @@ impl Output {
             });
         }
 
-        let detector = crate::tsf::probe::LiteralDetector::new();
         let ze_bs_count = TsfSendPipeline::transmit(romaji, chars, &outcome);
 
         // cold-start probe 機構を持つ IME（GJI 等）が LONG_IDLE_MS 以上静止している場合は
@@ -421,7 +420,6 @@ impl Output {
         {
             // detector と guard は LiteralDetectFsm::new が内部生成するため渡さない。
             // ze_bs_count は実際の値を渡す。
-            let _ = (detector,);
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
@@ -433,9 +431,9 @@ impl Output {
                 ),
             ));
         } else {
-            // detector と ze_bs_count は Probing+GJI 健全パスでのみ使う。
+            // ze_bs_count は Probing+GJI 健全パスでのみ使う。
             // 他パスでは warm マーク済みで LiteralDetect 不要。
-            let _ = (detector, ze_bs_count);
+            let _ = ze_bs_count;
         }
     }
 

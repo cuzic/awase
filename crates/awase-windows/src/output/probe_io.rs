@@ -391,9 +391,12 @@ where
                                 );
                             });
                         }
+                        // veto_eligible=true: 単語単位のバッチ送信のため、候補ウィンドウ可視性
+                        // veto（BUG-30）を適用してよい（前モーラ由来の誤 veto の懸念は per-VK
+                        // 単体確認のみ、下記 TransmitSingleVk ハンドラ参照）。
                         let detector = plan
                             .needs_literal
-                            .then(crate::tsf::probe::LiteralDetector::new);
+                            .then(|| crate::tsf::probe::LiteralDetector::new(true));
                         // TSF cold path の部分リテラル検出: SHOW 発火時に IMM32 composition と突き合わせる。
                         // K がリテラル化して O だけが compose された場合（"ko"→'k'+'お'）を
                         // expected_kana='こ' vs actual='お' の不一致で検出する。
@@ -416,14 +419,11 @@ where
                     TransmitTarget::Chrome => {
                         // plan.needs_literal は enter_transmit_chrome が env.gji_active で確定済み。
                         // 検出ベースラインは送信前に確定させること。
-                        // Chrome 経由では GJI が VK を処理すると辞書 I/O が発生し gji_last_io_ms が
-                        // 更新される。gji_candidate_show はシンプルなかな（「や」など）では発火しないため
-                        // new_gji_resumed() を使って I/O 変化を確認シグナルとする。
-                        // これにより「ya→や」等で false SuspectedLiteral が発生し BS×2 + 再送が
-                        // ループするバグを防ぐ。
+                        // veto_eligible=true: 単語単位のバッチ送信のため veto を適用してよい
+                        // （TSF 分岐と同じ理由、上記コメント参照）。
                         let detector = plan
                             .needs_literal
-                            .then(crate::tsf::probe::LiteralDetector::new_gji_resumed);
+                            .then(|| crate::tsf::probe::LiteralDetector::new(true));
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
@@ -460,16 +460,14 @@ where
                     return DispatchResult::Done;
                 }
                 // ベースラインは SendInput **前**に取得する（送信中の SHOW/I-O 変化を見逃さないため）。
-                // Chrome は write-bytes 閾値ベース（HIMC 不使用、`new_gji_resumed_with_pre_send_baseline`）、
-                // TSF は候補ウィンドウ SHOW ベース（`new()`）を使う。
-                let detector = match target {
-                    TransmitTarget::Tsf => crate::tsf::probe::LiteralDetector::new(),
-                    TransmitTarget::Chrome => {
-                        crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(
-                            crate::tsf::observer::gji_write_bytes(),
-                        )
-                    }
-                };
+                // TSF/Chrome 共通で write-bytes 閾値 + 候補ウィンドウ SHOW の OR 判定を使う
+                // （BUG-30 で target 分岐を撤去して統一）。veto_eligible=false: per-VK 単体確認
+                // では前の VK が開いた候補ウィンドウが可視のまま残っている状態で今回の VK が
+                // 真にリテラル化するケース（前モーラ由来の誤 veto）を避けるため。
+                let detector = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(
+                    crate::tsf::observer::gji_write_bytes(),
+                    false,
+                );
                 let marker = match target {
                     TransmitTarget::Tsf => {
                         io.send_single_tsf_vk(vk, needs_shift);

@@ -109,7 +109,8 @@ pub struct TsfObservations {
     /// F2（モード切り替え）は WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
     /// 文字変換は +0.2KB 以上増加する。ベースラインとの差分で
     /// 「モード切り替えのみか文字コンポジションが発生したか」を区別できる。
-    /// [`LiteralDetector::new_gji_resumed`] の Chrome 用確認シグナルとして使用する。
+    /// [`LiteralDetector::new`]/[`LiteralDetector::new_with_pre_send_baseline`]
+    /// の composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
     /// 観測・状態推定用。0 = 未取得。
     pub(super) gji_write_bytes: AtomicU64,
 
@@ -324,8 +325,8 @@ pub(crate) fn gji_last_write_ms() -> u64 {
 /// GJI プロセスの累積 WriteTransferCount（バイト数）を返す。0 = 未観測。live 読み取り。
 ///
 /// F2 などのモード切り替えキーは WriteTransferCount が増加しない（w_KB=+0.0）のに対し、
-/// 文字変換は +0.2KB 以上増加する。`LiteralDetector::new_gji_resumed` の
-/// Chrome 用 composition 確認シグナルとして使用する。
+/// 文字変換は +0.2KB 以上増加する。`LiteralDetector`（`new`/`new_with_pre_send_baseline`）の
+/// composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
 pub(crate) fn gji_write_bytes() -> u64 {
     TSF_OBS.gji_write_bytes.load(Ordering::Relaxed)
 }

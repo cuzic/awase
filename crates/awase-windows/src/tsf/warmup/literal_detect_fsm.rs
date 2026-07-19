@@ -138,6 +138,14 @@ pub(crate) struct LiteralDetectCore {
     /// dispatcher（`probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ）が
     /// `consecutive_count()==0` かどうかで再送 vs give-up を判定する。
     consecutive: u32,
+    /// 候補ウィンドウ可視 veto の開始時刻（ms）。`None` は veto 未発動。
+    ///
+    /// `deadline_ms` 到達時点（`SuspectedLiteral`）で候補ウィンドウがまだ可視の場合、
+    /// backspace を出さず hold する。可視である以上ほぼ確実に compose 成功しているため
+    /// （BUG-27 追補5 と同型の regression を避ける）。[`GJI_CANDIDATE_VETO_CAP_MS`] を
+    /// 超えても可視のまま確定しない異常系（候補ウィンドウの固着）に備え、hold には
+    /// 上限を設ける。上限超過時も backspace はせず、無回収の `Done` で打ち切る。
+    veto_started_at_ms: Option<u64>,
 }
 
 impl LiteralDetectCore {
@@ -160,6 +168,7 @@ impl LiteralDetectCore {
             deadline_ms,
             ze_bs_count,
             consecutive,
+            veto_started_at_ms: None,
         }
     }
 
@@ -224,17 +233,36 @@ impl LiteralDetectCore {
                     ProbeAction::Done,
                 ])
             }
-            DetectionResult::SuspectedLiteral => {
-                log::debug!(
-                    "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
-                    self.cold_seq,
-                    self.ze_bs_count,
-                    self.consecutive,
-                    crate::tsf::observer::gji_idle_ms(),
-                );
-                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                Some(self.recovery(self.ze_bs_count, false))
-            }
+            DetectionResult::SuspectedLiteral => match self.veto_decision() {
+                VetoDecision::Hold => {
+                    log::debug!(
+                        "[literal-detect] cold={} candidate window可視のため回収を保留 (real_gji_idle_ms={})",
+                        self.cold_seq,
+                        crate::tsf::observer::gji_idle_ms(),
+                    );
+                    None
+                }
+                VetoDecision::Expired => {
+                    log::warn!(
+                        "[literal-detect] cold={} candidate window可視のまま veto 上限 {}ms 超過 → 無回収で打ち切り",
+                        self.cold_seq,
+                        crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
+                    );
+                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "veto-expired");
+                    Some(vec![ProbeAction::Done])
+                }
+                VetoDecision::NotApplicable => {
+                    log::debug!(
+                        "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
+                        self.cold_seq,
+                        self.ze_bs_count,
+                        self.consecutive,
+                        crate::tsf::observer::gji_idle_ms(),
+                    );
+                    crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
+                    Some(self.recovery(self.ze_bs_count, false))
+                }
+            },
         }
     }
 
@@ -246,6 +274,36 @@ impl LiteralDetectCore {
             escape_composition,
         )
     }
+
+    /// `SuspectedLiteral`（deadline 到達）時点で、候補ウィンドウ可視性による
+    /// backspace veto を適用すべきか判定する。
+    ///
+    /// veto 対象外（per-VK Chrome パス、または候補ウィンドウが可視でない）なら
+    /// [`VetoDecision::NotApplicable`] を返し、呼び出し側は従来通り回収する。
+    fn veto_decision(&mut self) -> VetoDecision {
+        if !self.detector.veto_eligible() || !crate::tsf::observer::gji_candidate_visible_now() {
+            self.veto_started_at_ms = None;
+            return VetoDecision::NotApplicable;
+        }
+        let now = crate::hook::current_tick_ms();
+        let started_at = *self.veto_started_at_ms.get_or_insert(now);
+        if now < started_at.saturating_add(crate::tuning::GJI_CANDIDATE_VETO_CAP_MS) {
+            VetoDecision::Hold
+        } else {
+            VetoDecision::Expired
+        }
+    }
+}
+
+/// [`LiteralDetectCore::veto_decision`] の判定結果。
+#[derive(Debug, PartialEq, Eq)]
+enum VetoDecision {
+    /// veto 対象外（per-VK パス、または候補ウィンドウが可視でない）→ 通常の回収に進む。
+    NotApplicable,
+    /// 候補ウィンドウ可視 かつ 上限未到達 → backspace を出さず hold（ポーリング継続）。
+    Hold,
+    /// 候補ウィンドウ可視のまま上限到達 → backspace はせず無回収で打ち切る。
+    Expired,
 }
 
 /// warm パスの post-transmit composition 確認 FSM。[`LiteralDetectCore`] の薄いラッパー。
@@ -262,8 +320,9 @@ impl LiteralDetectFsm {
     /// `LiteralDetectFsm` を生成する。
     ///
     /// `literal_detect_ms` はタイムアウト期間（ms）。`OutputActiveGuard::begin()` を内部で
-    /// 呼び出し、`LiteralDetector::new()` と deadline（`current_tick_ms() + literal_detect_ms`）を
-    /// 確定して `LiteralDetectCore` を組み立てる。
+    /// 呼び出し、`LiteralDetector::new(true)`（単語単位のバッチ確認のため veto 有効）と
+    /// deadline（`current_tick_ms() + literal_detect_ms`）を確定して `LiteralDetectCore` を
+    /// 組み立てる。
     ///
     /// `consecutive` は現在の連続 raw-tsf-literal 回数。0 かつ TSF mode のとき sacr warmup を起動する。
     pub(crate) fn new(
@@ -275,7 +334,7 @@ impl LiteralDetectFsm {
         consecutive: u32,
     ) -> Self {
         let guard = OutputActiveGuard::begin();
-        let detector = LiteralDetector::new();
+        let detector = LiteralDetector::new(true);
         let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
         Self {
             core: LiteralDetectCore::new(
@@ -428,5 +487,106 @@ mod tests {
             ),
             other => panic!("expected RawTsfLiteralRecovery, got {other:?}"),
         }
+    }
+
+    // ── veto: 候補ウィンドウ可視時の backspace 抑制 ─────────────────────────────
+    //
+    // 候補ウィンドウの SHOW/HIDE と GJI I/O は別々のセンサーであり、SuspectedLiteral
+    // （deadline 到達）の瞬間に候補ウィンドウが可視なら、ほぼ確実に compose は成功して
+    // いる（BUG-27 追補5 と同型の regression を避ける）。この veto の poll() 内での
+    // 実装を検証する。
+
+    use crate::tsf::observer::TSF_OBS;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック。
+    static VETO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn reset_tsf_obs_for_veto_test() {
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        crate::tsf::observer::reset_literal_session_confirmed();
+    }
+
+    // SuspectedLiteral 到達時点で候補ウィンドウが可視なら、backspace を出さず
+    // hold（None を返してポーリング継続）すべき。
+    #[test]
+    fn poll_vetoes_backspace_while_candidate_visible() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        // 送信直前（可視になる前）に detector のベースラインを取る。veto_eligible=true
+        // （単語単位のバッチ確認を模擬）。
+        let detector = LiteralDetector::new(true);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        let result = core.poll(&tsf_env());
+        assert!(
+            result.is_none(),
+            "候補ウィンドウ可視時は backspace を出さず hold すべき: {result:?}"
+        );
+    }
+
+    // hold が GJI_CANDIDATE_VETO_CAP_MS を超えても候補ウィンドウが可視のままなら、
+    // backspace はせず無回収の Done で打ち切るべき（固着ウィンドウに対する安全弁）。
+    #[test]
+    fn poll_gives_up_without_backspace_after_veto_cap_expires() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        let detector = LiteralDetector::new(true);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        // 1 回目: hold に入る（veto_started_at_ms が確定する）。
+        assert!(core.poll(&tsf_env()).is_none());
+
+        // 上限を超えるまで実時間で待機する（候補ウィンドウ固着を模擬）。
+        std::thread::sleep(std::time::Duration::from_millis(
+            crate::tuning::GJI_CANDIDATE_VETO_CAP_MS + 50,
+        ));
+
+        let actions = core
+            .poll(&tsf_env())
+            .expect("上限超過後は Some(..) で確定するべき");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "上限超過時も backspace（RawTsfLiteralRecovery）は出さないべき: {actions:?}"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, ProbeAction::Done)),
+            "無回収で Done を返すべき: {actions:?}"
+        );
+    }
+
+    // per-VK 単体確認（veto_eligible=false）では前モーラ由来の誤 veto を避けるため、
+    // 候補ウィンドウが可視でも veto を適用せず従来通り backspace 回収するべき。
+    #[test]
+    fn poll_does_not_veto_on_per_vk_confirm_path() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(5_000, false);
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core = LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
+
+        let actions = core
+            .poll(&tsf_env())
+            .expect("per-VK パスは veto を無効化し即座に回収するべき");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "per-VK パスでは候補ウィンドウ可視でも backspace 回収すべき: {actions:?}"
+        );
     }
 }
