@@ -109,6 +109,30 @@ pub struct GeneralConfig {
     /// `default_layout` も、既定の `layout/nicola.yab`（JIS 版）ではなく
     /// `layout/nicola_us.yab`（US 版、列数が少ない）を指すよう変更が必要。
     pub keyboard_model: KeyboardModel,
+    /// Left Alt キーを、エンジン ON 時に限り `left_thumb_key` になりすまさせるか
+    /// （既定 `false`）。Right Alt 用の `right_alt_impersonates_thumb_key` とは
+    /// 独立に ON/OFF できる（左だけ・右だけ・両方、いずれの構成もあり得るため）。
+    ///
+    /// US 配列にはスペースキーの両隣に無変換/変換キーが無いため、コミュニティでは
+    /// PowerToys 等の OS レベルのキーリマップツールで左右の Alt キーを無変換/変換相当に
+    /// 置き換える運用が一般的（スペースの両隣という物理位置が JIS の無変換/スペース/変換
+    /// と一致するため）。この設定は同等のことを awase 単体で完結させる。
+    ///
+    /// - **エンジン ON 時のみ発動する**: Alt キーの KeyDown/KeyUp が Platform 層の
+    ///   フック（`hook.rs` の `hook_callback`、`classify_key`/Ctrl 消費追跡等より前）で
+    ///   `left_thumb_key` の VK に書き換えられてから以降の全パイプラインに流れる。
+    ///   これにより `ModifierState::is_os_modifier_held()` の OS 予約修飾キー bypass
+    ///   にも一切引っかからず、PowerToys 等の外部リマップと本質的に同じ効果を得る。
+    /// - **エンジン OFF 時は通常の Left Alt として機能する**（Alt+Tab 等の OS
+    ///   ショートカットを損なわない）。押下中に ON/OFF が切り替わっても、
+    ///   新規押下時点の判定を離すまで保持するため、なりすまし状態が押下中に
+    ///   ズレて Alt が stuck modifier になる事故は起きない（`hook.rs` 参照）。
+    /// - 任意のキーを任意の VK に対応させる汎用リマップ機能ではない。Left/Right Alt
+    ///   専用。それ以上の自由なリマップをしたい場合は PowerToys 等の外部ツールを使うこと。
+    pub left_alt_impersonates_thumb_key: bool,
+    /// Right Alt キーを、エンジン ON 時に限り `right_thumb_key` になりすまさせるか
+    /// （既定 `false`）。詳細は `left_alt_impersonates_thumb_key` を参照。
+    pub right_alt_impersonates_thumb_key: bool,
 }
 
 impl Default for GeneralConfig {
@@ -132,6 +156,8 @@ impl Default for GeneralConfig {
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
+            left_alt_impersonates_thumb_key: false,
+            right_alt_impersonates_thumb_key: false,
         }
     }
 }

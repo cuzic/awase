@@ -9,6 +9,12 @@ pub struct HookConfig {
     pub right_thumb_vk: VkCode,
     /// 物理キーボードモデル。`scan_to_pos` のテーブル選択に使う。
     pub keyboard_model: KeyboardModel,
+    /// `GeneralConfig::left_alt_impersonates_thumb_key`。true かつエンジン ON 中は
+    /// Left Alt を `left_thumb_vk` になりすまさせる。
+    pub left_alt_impersonates_thumb_key: bool,
+    /// `GeneralConfig::right_alt_impersonates_thumb_key`。true かつエンジン ON 中は
+    /// Right Alt を `right_thumb_vk` になりすまさせる。
+    pub right_alt_impersonates_thumb_key: bool,
 }
 
 /// IME 同期キー（変換/無変換/漢字 等）押下後のキー保留バッファ。

@@ -861,6 +861,10 @@ impl Runtime {
         ) {
             crate::hook::set_thumb_vk_codes(left, right);
             self.engine.set_thumb_vks(left, right);
+            crate::hook::set_alt_impersonation_enabled(
+                config.general.left_alt_impersonates_thumb_key,
+                config.general.right_alt_impersonates_thumb_key,
+            );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,

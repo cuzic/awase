@@ -784,9 +784,11 @@ impl SettingsApp {
             ui.label(
                 "  US 配列では既定の親指キー(無変換/変換)とホットキーが使えません。\n\
                  下の「レイアウト」で nicola_us.yab を選び、キー設定タブで\n\
-                 親指キーを変更してください（Alt/Ctrl/Win は OS 予約修飾キーのため\n\
+                 親指キーを変更してください（Ctrl/Win は OS 予約修飾キーのため\n\
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
-                 F13-F24 等へ物理リマップするか、Space を検討してください）。",
+                 F13-F24 等へ物理リマップするか、Space を検討してください。\n\
+                 Alt はキー設定タブの「Alt なりすまし」でエンジン ON 時のみ\n\
+                 親指キーとして使えます）。",
             );
         }
         ui.horizontal(|ui| {
@@ -838,6 +840,30 @@ impl SettingsApp {
                 &mut self.config.general.right_thumb_key,
             );
         });
+        if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
+            ui.indent("alt_impersonation_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.left_alt_impersonates_thumb_key,
+                    "Left Alt を左親指キーとして使う（エンジン ON 時のみ）",
+                )
+                .on_hover_text(
+                    "エンジンが ON の間だけ、物理 Left Alt キーの押下を左親指キー\n\
+                     （上の「左親指」欄の値）として扱います。エンジン OFF 中は\n\
+                     通常の Alt として機能するため、Alt+Tab 等は失われません。\n\
+                     PowerToys 等の OS レベルキーリマップと同様の効果を awase 単体で\n\
+                     実現します（Left/Right は独立に ON/OFF できます）。",
+                );
+                ui.checkbox(
+                    &mut self.config.general.right_alt_impersonates_thumb_key,
+                    "Right Alt を右親指キーとして使う（エンジン ON 時のみ）",
+                )
+                .on_hover_text(
+                    "エンジンが ON の間だけ、物理 Right Alt キーの押下を右親指キー\n\
+                     （上の「右親指」欄の値）として扱います。エンジン OFF 中は\n\
+                     通常の Alt として機能します。",
+                );
+            });
+        }
         ui.add_space(8.0);
 
         // Engine on/off

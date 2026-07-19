@@ -395,6 +395,10 @@ pub(super) fn initialize_app(
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     hook::set_keyboard_model(config.general.keyboard_model);
+    hook::set_alt_impersonation_enabled(
+        config.general.left_alt_impersonates_thumb_key,
+        config.general.right_alt_impersonates_thumb_key,
+    );
 
     let engine_on_ime_vk = config
         .keys
