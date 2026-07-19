@@ -709,8 +709,6 @@ mod tests {
             false,
             false,
             false,
-            false,
-            false,
             0,
         )
     }

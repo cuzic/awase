@@ -315,11 +315,9 @@ impl Output {
                 started.probe,
                 started.total_max_ms,
                 started.cold_reason,
-                prepend_f2_warmup,
                 used_eager_path,
                 probe_params.forces_prepend_f2,
                 probe_params.is_long_cold,
-                started.fresh_f2_at_probe_start,
                 self.composition.consecutive_count(),
             ));
             self.install_pending_tsf(coro);

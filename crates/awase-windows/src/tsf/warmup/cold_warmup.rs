@@ -22,12 +22,6 @@ pub(crate) struct WarmupStarted {
     pub total_max_ms: u64,
     /// cold になった理由（NAMECHANGE フェーズの判断に使用）
     pub cold_reason: crate::output::ColdReason,
-    /// プローブ開始前に VK_DBE_HIRAGANA pair が送信済みかどうか。
-    ///
-    /// 予防的 F2 送信を撤去したため常に `false`（per-VK confirm が romaji の VK を
-    /// 直接送る。バッチに F2 を含めると WezTerm が TSF reinit を起こし先頭 VK が
-    /// リテラル化するため、`TransmitTsf` 側でも F2 の重複送信は行わない）。
-    pub fresh_f2_at_probe_start: bool,
 }
 
 /// TSF cold-start ウォームアップシーケンスを管理する構造体。
@@ -87,7 +81,6 @@ impl<'a> ColdWarmupSequence<'a> {
             ),
             total_max_ms: 0,
             cold_reason,
-            fresh_f2_at_probe_start: false,
         }
     }
 }

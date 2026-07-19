@@ -50,11 +50,9 @@ use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 #[derive(Clone, Copy)]
 struct GjiProbeCtx {
     cold_seq: u32,
-    prepend_f2_warmup: bool,
     used_eager_path: bool,
     forces_prepend_f2: bool,
     is_long_cold: bool,
-    fresh_f2_at_probe_start: bool,
     consecutive: u32,
 }
 
@@ -129,29 +127,7 @@ async fn gji_coro_body(
         nc_fired: nc_for_plan,
     };
 
-    // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
-    let suppress_f2 = ctx.fresh_f2_at_probe_start && env.is_tsf_mode;
-    let mut effective_prepend_f2 = ctx.prepend_f2_warmup && !suppress_f2;
-
-    // BUG-24 検証（DIAG_DISABLE_PROACTIVE_TSF_WARMUP）: Phase 2/5a を止めても、この
-    // 「romajiバッチにF2を直接同梱する」第3の防御層が生きていると、実質的に予防が
-    // 効いたままになり実験にならない（2026-07-11 実機ログで確認済み: idle=1188ms の
-    // "ko" 送信でも vks=[F2,4B,4F] のようにF2先頭同梱が発生し、無防備な状態を
-    // 検証できていなかった）。ここも強制的に無効化し、reactiveなLiteralDetectのみに
-    // 完全に委ねる。
-    if crate::tuning::DIAG_DISABLE_PROACTIVE_TSF_WARMUP && effective_prepend_f2 {
-        log::debug!(
-            "[gji-coro-diag] cold={} DIAG_DISABLE_PROACTIVE_TSF_WARMUP: \
-             force effective_prepend_f2=false (reason={cold_reason:?} \
-             real_gji_idle_ms={})",
-            ctx.cold_seq,
-            crate::tsf::observer::gji_idle_ms(),
-        );
-        effective_prepend_f2 = false;
-    }
-
     let plan = decide_transmit_plan(
-        effective_prepend_f2,
         ctx.used_eager_path,
         observations,
         &env,
@@ -161,12 +137,11 @@ async fn gji_coro_body(
     );
 
     // transmit plan の判定結果（needs_literal になるかどうか、その入力になった
-    // nc_fired/suppress_f2）は従来ログに一切出ておらず、部分リテラル発生時に
+    // nc_fired）は従来ログに一切出ておらず、部分リテラル発生時に
     // 「なぜ LiteralDetect に入った/入らなかったか」を事後診断できなかった
     // （切り分けログ強化、2026-07-09 の "kお" 系調査で判明）。
     log::debug!(
-        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} \
-         suppress_f2={suppress_f2} effective_prepend_f2={effective_prepend_f2} is_tsf_mode={}",
+        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} is_tsf_mode={}",
         ctx.cold_seq,
         plan.needs_literal,
         observations.nc_fired,
@@ -296,20 +271,16 @@ impl GjiWarmupCoro {
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         cold_reason: ColdReason,
-        prepend_f2_warmup: bool,
         used_eager_path: bool,
         forces_prepend_f2: bool,
         is_long_cold: bool,
-        fresh_f2_at_probe_start: bool,
         consecutive: u32,
     ) -> Self {
         let ctx = GjiProbeCtx {
             cold_seq,
-            prepend_f2_warmup,
             used_eager_path,
             forces_prepend_f2,
             is_long_cold,
-            fresh_f2_at_probe_start,
             consecutive,
         };
         let romaji = romaji.to_string();
