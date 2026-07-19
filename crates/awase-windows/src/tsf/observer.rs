@@ -218,21 +218,6 @@ impl TsfObservations {
         self.gji_last_io_ms.load(Ordering::Relaxed)
     }
 
-    /// GJI 最終 Write 変化時刻 (ms) を読み取る（Relaxed）。0 = 未観測。
-    ///
-    /// `gji_last_io_ms` とは異なり、WriteTransferCount 増加時のみ更新される。
-    /// GJI がアクティブ IME かどうかの判定（`GjiDirectStrategy.is_applicable()`）に使用する。
-    #[must_use]
-    pub fn gji_last_write_ms(&self) -> u64 {
-        self.gji_last_write_ms.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 WriteTransferCount（バイト数）を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_write_bytes(&self) -> u64 {
-        self.gji_write_bytes.load(Ordering::Relaxed)
-    }
-
     /// GJI モニターが利用可能かを読み取る（Acquire）。
     #[must_use]
     pub fn gji_monitor_ok(&self) -> bool {
