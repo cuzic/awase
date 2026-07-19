@@ -68,7 +68,6 @@ async fn gji_coro_body(
     romaji: String,
     probe: TsfReadinessProbe,
     total_max_ms: u64,
-    needs_settle_check: bool,
     cold_reason: ColdReason,
     ctx: GjiProbeCtx,
 ) {
@@ -98,24 +97,22 @@ async fn gji_coro_body(
             outcome.settled,
         );
 
-        if needs_settle_check {
-            let is_ime_init_cold = cold_reason.requires_settle();
-            if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
-                // Phase 2 (SendFreshF2) + Phase 3 (NameChangeWait/SecondaryProbe) は
-                // DIAG_DISABLE_PROACTIVE_TSF_WARMUP（常時 true）下で無条件に到達不能
-                // だったため撤去した。reactive な LiteralDetect のみに委ねる
-                // （`docs/known-bugs.md` BUG-24 参照。再度有効化する場合はこのコミット
-                // の revert が必要）。
-                log::debug!(
-                    "[gji-coro] cold={} settle 必要 (reason={cold_reason:?} gji_idle_ms={} \
-                     probe_elapsed={}ms settled={}) → skip FreshF2, reactive LiteralDetect のみ",
-                    ctx.cold_seq,
-                    outcome.gji_idle_ms,
-                    outcome.elapsed_ms,
-                    outcome.settled,
-                );
-                break 'initial false;
-            }
+        let is_ime_init_cold = cold_reason.requires_settle();
+        if (!outcome.settled || is_ime_init_cold) && outcome.monitor_healthy {
+            // Phase 2 (SendFreshF2) + Phase 3 (NameChangeWait/SecondaryProbe) は
+            // DIAG_DISABLE_PROACTIVE_TSF_WARMUP（常時 true）下で無条件に到達不能
+            // だったため撤去した。reactive な LiteralDetect のみに委ねる
+            // （`docs/known-bugs.md` BUG-24 参照。再度有効化する場合はこのコミット
+            // の revert が必要）。
+            log::debug!(
+                "[gji-coro] cold={} settle 必要 (reason={cold_reason:?} gji_idle_ms={} \
+                 probe_elapsed={}ms settled={}) → skip FreshF2, reactive LiteralDetect のみ",
+                ctx.cold_seq,
+                outcome.gji_idle_ms,
+                outcome.elapsed_ms,
+                outcome.settled,
+            );
+            break 'initial false;
         }
 
         break 'initial true;
@@ -298,7 +295,6 @@ impl GjiWarmupCoro {
         cold_seq: u32,
         probe: TsfReadinessProbe,
         total_max_ms: u64,
-        needs_settle_check: bool,
         cold_reason: ColdReason,
         prepend_f2_warmup: bool,
         used_eager_path: bool,
@@ -318,16 +314,7 @@ impl GjiWarmupCoro {
         };
         let romaji = romaji.to_string();
         let coro = StepCoro::new(async move |ch| {
-            gji_coro_body(
-                ch,
-                romaji,
-                probe,
-                total_max_ms,
-                needs_settle_check,
-                cold_reason,
-                ctx,
-            )
-            .await;
+            gji_coro_body(ch, romaji, probe, total_max_ms, cold_reason, ctx).await;
         });
         let mut this = Self {
             coro,

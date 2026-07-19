@@ -705,7 +705,6 @@ mod tests {
             0,
             probe,
             0,
-            false,
             ColdReason::FocusChange,
             false,
             false,

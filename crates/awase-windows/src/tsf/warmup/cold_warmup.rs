@@ -20,16 +20,6 @@ pub(crate) struct WarmupStarted {
     pub probe: crate::tsf::probe::TsfReadinessProbe,
     /// probe の最大待機時間 (ms, warmup_sent_ms 起点)。予防的待機を撤去したため常に 0。
     pub total_max_ms: u64,
-    /// プローブ完了後に NAMECHANGE 確認フェーズが必要かどうか。
-    ///
-    /// 常に `true`。`false` にすると `gji_coro_body` の Phase 1 が何も確認せず
-    /// `nc_fired=true` を返してしまい、`decide_transmit_plan` が
-    /// `needs_literal=false` と誤判定して per-VK confirm がまるごと素通りになる
-    /// （2026-07-16 実機ログで発覚した regression、詳細は
-    /// `docs/known-bugs.md` 参照）。予防的待機を削った分の安全網を per-VK confirm に
-    /// 持たせるには、Phase 1 に実際に `outcome.settled` を見させ「未確認」を
-    /// 正直に報告させる必要がある。
-    pub needs_settle_check: bool,
     /// cold になった理由（NAMECHANGE フェーズの判断に使用）
     pub cold_reason: crate::output::ColdReason,
     /// プローブ開始前に VK_DBE_HIRAGANA pair が送信済みかどうか。
@@ -96,7 +86,6 @@ impl<'a> ColdWarmupSequence<'a> {
                 0,
             ),
             total_max_ms: 0,
-            needs_settle_check: true,
             cold_reason,
             fresh_f2_at_probe_start: false,
         }

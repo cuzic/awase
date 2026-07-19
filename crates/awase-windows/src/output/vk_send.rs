@@ -314,7 +314,6 @@ impl Output {
                 cold_seq,
                 started.probe,
                 started.total_max_ms,
-                started.needs_settle_check,
                 started.cold_reason,
                 prepend_f2_warmup,
                 used_eager_path,
