@@ -45,14 +45,6 @@ const IDM_INPUT_ROMAJI: u16 = 207;
 const IDM_INPUT_KANA: u16 = 208;
 const IDM_RESET_STATE: u16 = 209;
 
-/// 実験: cold warmup トグル メニュー項目 ID（BUG-24 追補、2026-07-16）
-const IDM_DIAG_COLD_SKIP_F2: u16 = 210;
-const IDM_DIAG_COLD_SKIP_PROBE_WAIT: u16 = 211;
-const IDM_DIAG_CHROME_SKIP_F2: u16 = 212;
-const IDM_DIAG_CHROME_SKIP_PROBE_WAIT: u16 = 213;
-const IDM_DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP: u16 = 214;
-const IDM_DIAG_CHROME_USE_PER_VK_CONFIRM: u16 = 215;
-
 /// トレイメニューから選択されたコマンド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -75,18 +67,6 @@ pub enum TrayCommand {
     InputRomaji,
     InputKana,
     ResetState,
-    /// `DIAG_COLD_SKIP_F2` をトグルする（BUG-24 追補 cold warmup 実験）
-    ToggleDiagColdSkipF2,
-    /// `DIAG_COLD_SKIP_PROBE_WAIT` をトグルする（BUG-24 追補 cold warmup 実験）
-    ToggleDiagColdSkipProbeWait,
-    /// `DIAG_CHROME_SKIP_F2` をトグルする（Chrome cold warmup 実験）
-    ToggleDiagChromeSkipF2,
-    /// `DIAG_CHROME_SKIP_PROBE_WAIT` をトグルする（Chrome cold warmup 実験）
-    ToggleDiagChromeSkipProbeWait,
-    /// `DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP` をトグルする（Chrome cold warmup 実験）
-    ToggleDiagChromeSkipSacrificialWarmup,
-    /// `DIAG_CHROME_USE_PER_VK_CONFIRM` をトグルする（Chrome cold warmup 実験）
-    ToggleDiagChromeUsePerVkConfirm,
 }
 
 /// 文字列メニュー項目を追加するヘルパー。
@@ -118,14 +98,6 @@ unsafe fn append_menu_item_checked(hmenu: HMENU, id: u16, label: &str, checked: 
         MF_STRING
     };
     let _ = unsafe { AppendMenuW(hmenu, flags, usize::from(id), PCWSTR(text.as_ptr())) };
-}
-
-/// トレイメニューの `DIAG_*` `AtomicBool` トグル項目を反転させ、結果をログに出す。
-pub(crate) fn toggle_diag_flag(flag: &std::sync::atomic::AtomicBool, name: &str) {
-    use std::sync::atomic::Ordering::Relaxed;
-    let new_value = !flag.load(Relaxed);
-    flag.store(new_value, Relaxed);
-    log::info!("[tray-diag] {name} = {new_value}");
 }
 
 /// トレイアイコン ID
@@ -623,78 +595,9 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             "状態をリセット (Engine ON/Caps OFF/ひらがな/ローマ字)",
         );
 
-        // 実験: cold warmup の F2 送信・probe 待機を個別に on/off する
-        // （BUG-24 追補、`tuning.rs` の DIAG_COLD_SKIP_F2/DIAG_COLD_SKIP_PROBE_WAIT）。
-        let skip_f2 = crate::tuning::DIAG_COLD_SKIP_F2.load(std::sync::atomic::Ordering::Relaxed);
-        let skip_wait =
-            crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT.load(std::sync::atomic::Ordering::Relaxed);
-        let h_diag_menu = CreatePopupMenu().unwrap_or_default();
-        if !h_diag_menu.is_invalid() {
-            append_menu_item_checked(
-                h_diag_menu,
-                IDM_DIAG_COLD_SKIP_F2,
-                "F2 warmup をスキップ",
-                skip_f2,
-            );
-            append_menu_item_checked(
-                h_diag_menu,
-                IDM_DIAG_COLD_SKIP_PROBE_WAIT,
-                "probe 待機をスキップ",
-                skip_wait,
-            );
-            let diag_title_wide = crate::win32::to_wide("実験: cold warmup (WezTerm)");
-            let _ = AppendMenuW(
-                hmenu,
-                MF_POPUP,
-                h_diag_menu.0 as usize,
-                PCWSTR(diag_title_wide.as_ptr()),
-            );
-        }
-
-        // 実験: Chrome cold warmup（F2 送信・probe 待機・犠牲キー・per-VK confirm を
-        // 個別に on/off する、2026-07-16）。
-        let chrome_skip_f2 =
-            crate::tuning::DIAG_CHROME_SKIP_F2.load(std::sync::atomic::Ordering::Relaxed);
-        let chrome_skip_wait =
-            crate::tuning::DIAG_CHROME_SKIP_PROBE_WAIT.load(std::sync::atomic::Ordering::Relaxed);
-        let chrome_skip_sacrificial = crate::tuning::DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let chrome_per_vk = crate::tuning::DIAG_CHROME_USE_PER_VK_CONFIRM
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let h_chrome_diag_menu = CreatePopupMenu().unwrap_or_default();
-        if !h_chrome_diag_menu.is_invalid() {
-            append_menu_item_checked(
-                h_chrome_diag_menu,
-                IDM_DIAG_CHROME_SKIP_F2,
-                "F2 warmup をスキップ",
-                chrome_skip_f2,
-            );
-            append_menu_item_checked(
-                h_chrome_diag_menu,
-                IDM_DIAG_CHROME_SKIP_PROBE_WAIT,
-                "probe 待機をスキップ",
-                chrome_skip_wait,
-            );
-            append_menu_item_checked(
-                h_chrome_diag_menu,
-                IDM_DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP,
-                "long cold の捨て駒をスキップ",
-                chrome_skip_sacrificial,
-            );
-            append_menu_item_checked(
-                h_chrome_diag_menu,
-                IDM_DIAG_CHROME_USE_PER_VK_CONFIRM,
-                "per-VK confirm を使う",
-                chrome_per_vk,
-            );
-            let chrome_diag_title_wide = crate::win32::to_wide("実験: cold warmup (Chrome)");
-            let _ = AppendMenuW(
-                hmenu,
-                MF_POPUP,
-                h_chrome_diag_menu.0 as usize,
-                PCWSTR(chrome_diag_title_wide.as_ptr()),
-            );
-        }
+        // 実験: cold warmup（F2送信/probe待機/捨て駒スキップ、per-VK confirm）は
+        // 2026-07-18 に実機ソークを経て恒久化・撤去した。トレイの on/off トグルは
+        // 不要になったため削除した（docs/known-bugs.md 参照）。
 
         append_menu_sep(hmenu);
 
@@ -755,14 +658,6 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_INPUT_ROMAJI => Some(TrayCommand::InputRomaji),
         IDM_INPUT_KANA => Some(TrayCommand::InputKana),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
-        IDM_DIAG_COLD_SKIP_F2 => Some(TrayCommand::ToggleDiagColdSkipF2),
-        IDM_DIAG_COLD_SKIP_PROBE_WAIT => Some(TrayCommand::ToggleDiagColdSkipProbeWait),
-        IDM_DIAG_CHROME_SKIP_F2 => Some(TrayCommand::ToggleDiagChromeSkipF2),
-        IDM_DIAG_CHROME_SKIP_PROBE_WAIT => Some(TrayCommand::ToggleDiagChromeSkipProbeWait),
-        IDM_DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP => {
-            Some(TrayCommand::ToggleDiagChromeSkipSacrificialWarmup)
-        }
-        IDM_DIAG_CHROME_USE_PER_VK_CONFIRM => Some(TrayCommand::ToggleDiagChromeUsePerVkConfirm),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
@@ -1028,36 +923,6 @@ unsafe extern "system" fn tray_wnd_proc(
                         crate::imm::IME_CMODE_KATAKANA,
                     );
                 },
-                Some(TrayCommand::ToggleDiagColdSkipF2) => {
-                    toggle_diag_flag(&crate::tuning::DIAG_COLD_SKIP_F2, "DIAG_COLD_SKIP_F2");
-                }
-                Some(TrayCommand::ToggleDiagColdSkipProbeWait) => {
-                    toggle_diag_flag(
-                        &crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT,
-                        "DIAG_COLD_SKIP_PROBE_WAIT",
-                    );
-                }
-                Some(TrayCommand::ToggleDiagChromeSkipF2) => {
-                    toggle_diag_flag(&crate::tuning::DIAG_CHROME_SKIP_F2, "DIAG_CHROME_SKIP_F2");
-                }
-                Some(TrayCommand::ToggleDiagChromeSkipProbeWait) => {
-                    toggle_diag_flag(
-                        &crate::tuning::DIAG_CHROME_SKIP_PROBE_WAIT,
-                        "DIAG_CHROME_SKIP_PROBE_WAIT",
-                    );
-                }
-                Some(TrayCommand::ToggleDiagChromeSkipSacrificialWarmup) => {
-                    toggle_diag_flag(
-                        &crate::tuning::DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP,
-                        "DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP",
-                    );
-                }
-                Some(TrayCommand::ToggleDiagChromeUsePerVkConfirm) => {
-                    toggle_diag_flag(
-                        &crate::tuning::DIAG_CHROME_USE_PER_VK_CONFIRM,
-                        "DIAG_CHROME_USE_PER_VK_CONFIRM",
-                    );
-                }
                 None => {}
             }
             LRESULT(0)

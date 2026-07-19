@@ -368,13 +368,12 @@ fn c6_single_reduce_call_site() {
 /// する粗いものだが、その禁則の具体形は「vk.rs 外での VkCode(0x..) リテラル」。よって
 /// `VkCode(0x..)` の本番コード出現を検査する (construction / 無名比較の両方を捕捉)。
 ///
-/// 既知の例外 2 件: cold-start warmup の犠牲キー 'A' (`VkCode(0x41)`)。vk.rs に named 定数が
+/// 既知の例外 1 件: cold-start warmup の犠牲キー 'A' (`VkCode(0x41)`)。vk.rs に named 定数が
 /// ない letter key のため暫定的に許容 (本来は vk.rs へ移すのが望ましい既存の借り)。
 #[test]
 fn d1_no_vk_magic_hex_outside_vk_rs() {
     const ALLOW: &[(&str, &str)] = &[
         ("output/mod.rs", "const VK_A: VkCode = VkCode(0x41);"), // send_unicode_cold_warmup_keys
-        ("output/probe_io.rs", "const VK_A: VkCode = VkCode(0x41);"), // send_sacrificial_vk_a_with_bs
     ];
     let mut files = Vec::new();
     collect_rs(&manifest().join("src"), &mut files);

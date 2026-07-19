@@ -537,9 +537,7 @@ impl WindowsPlatform {
             self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
             // BUG-24 追補: 候補ウィンドウ HIDE = IME セッションの終了。次のセッションの
             // 最初の1文字は改めて literal-detect の確認を受けるようリセットする。
-            if crate::tuning::DIAG_LITERAL_SESSION_SKIP {
-                crate::tsf::observer::reset_literal_session_confirmed();
-            }
+            crate::tsf::observer::reset_literal_session_confirmed();
         }
     }
 
@@ -921,9 +919,7 @@ impl TsfComposition for WindowsPlatform {
             // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
             // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
             if self.output.is_composition_warm() {
-                log::trace!(
-                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",
-                );
+                log::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",);
                 return;
             }
             log::debug!(

@@ -26,7 +26,6 @@
 
 use crate::focus::class_names::AppImeProfile;
 use crate::tsf::observer::ActiveImeKind;
-use crate::tsf::warmup::probe_fsm::TransmitTarget;
 use crate::vk::{VK_DBE_HIRAGANA, VK_IME_OFF, VK_IME_ON};
 use awase::types::VkCode;
 
@@ -113,50 +112,6 @@ pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> Vk
     }
 }
 
-// ── warmup 犠牲キー・gate ポリシー（output/probe_io.rs の dispatch_probe_actions が引く）──
-//
-// cold-start warmup で「Chrome か TSF/WezTerm か」で分岐していたキー選択・gate 判定を集約する。
-// 実行（SendInput・FSM 構築）は probe_io 側に残し、ここは「どのキー種別か / gate を尊重するか」
-// の判断だけを担う。各行の実機確定根拠は 22c3905（Chrome=VK_A+BS / TSF=VK_IME_OFF→ON 分岐確定）。
-
-/// StartSacrificialWarmup が送る犠牲キーの種別。target ごとに実機で確定している（22c3905）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SacrificialWarmupKey {
-    /// Chrome: VK_A + BS を同一 SendInput バッチ（文字フラッシュ防止）。
-    /// VK_IME_OFF は Chrome TSF context を壊すため使用不可。
-    VkAThenBackspace,
-    /// TSF/WezTerm: VK_IME_OFF→VK_IME_ON（vim 安全プローブ、Off→On が GJI write を増やす）。
-    ImeOffThenOn,
-}
-
-/// warmup 犠牲キーの種別を target から決める。
-#[must_use]
-pub(crate) const fn sacrificial_warmup_key(target: TransmitTarget) -> SacrificialWarmupKey {
-    match target {
-        TransmitTarget::Chrome => SacrificialWarmupKey::VkAThenBackspace,
-        TransmitTarget::Tsf => SacrificialWarmupKey::ImeOffThenOn,
-    }
-}
-
-/// warmup 送信で TSF gate=Bypass を尊重すべき target か。
-///
-/// Chrome は常に gate=Bypass 運用（IME を直接制御せずバッチ送信）のため、gate による送信スキップを
-/// してはならない（スキップすると Chrome では一切送信されない）。TSF/WezTerm は Bypass 時に見送る。
-/// probe_io の複数箇所で重複していた `target != Chrome` 判定をここへ集約する。
-#[must_use]
-pub(crate) const fn warmup_respects_bypass_gate(target: TransmitTarget) -> bool {
-    !matches!(target, TransmitTarget::Chrome)
-}
-
-/// SacrificialResend で犠牲 VK_A を消す cleanup BS を要する target か。
-///
-/// Chrome は VK_A+BS を atomic batch で送信済みのため cleanup BS 不要。
-/// 呼び出し側で `skip_cleanup_bs`（VK_A を送らない ImeOffOnWarmupFsm）と AND すること。
-#[must_use]
-pub(crate) const fn target_needs_sacrificial_cleanup_bs(target: TransmitTarget) -> bool {
-    !matches!(target, TransmitTarget::Chrome)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,31 +180,5 @@ mod tests {
             ActiveImeKind::GoogleJapaneseInput,
             AppImeProfile::TsfNative
         ));
-    }
-
-    // ── warmup ポリシー ──
-
-    #[test]
-    fn sacrificial_key_per_target() {
-        assert_eq!(
-            sacrificial_warmup_key(TransmitTarget::Chrome),
-            SacrificialWarmupKey::VkAThenBackspace
-        );
-        assert_eq!(
-            sacrificial_warmup_key(TransmitTarget::Tsf),
-            SacrificialWarmupKey::ImeOffThenOn
-        );
-    }
-
-    #[test]
-    fn only_non_chrome_respects_bypass_gate() {
-        assert!(!warmup_respects_bypass_gate(TransmitTarget::Chrome));
-        assert!(warmup_respects_bypass_gate(TransmitTarget::Tsf));
-    }
-
-    #[test]
-    fn only_non_chrome_needs_cleanup_bs() {
-        assert!(!target_needs_sacrificial_cleanup_bs(TransmitTarget::Chrome));
-        assert!(target_needs_sacrificial_cleanup_bs(TransmitTarget::Tsf));
     }
 }

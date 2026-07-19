@@ -1,4 +1,4 @@
-use super::key_injector::{make_key_input, KeyInjector, VkMarker};
+use super::key_injector::{KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
@@ -6,9 +6,8 @@ use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::vk::{VK_DBE_HIRAGANA, VK_OEM_MINUS};
+use crate::vk::VK_OEM_MINUS;
 use awase::types::VkCode;
-use std::sync::atomic::Ordering::Relaxed;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
@@ -103,11 +102,8 @@ impl Output {
 
     /// Batched モード: 全文字を1回の SendInput にまとめて送信（重畳押し順）
     ///
-    /// cold 時は F2 を先行送信してから GJI プローブを開始し（ノンブロッキング）、
-    /// TIMER_TSF_PROBE が `ChromeProbe` フェーズを進めてローマ字を送信する。
-    // cold/warm・GJI probe 有無で分岐が本質的に多い送信パス。分割は挙動変更リスクが
-    // 高いため、複雑度警告のみ抑制する。
-    #[expect(clippy::cognitive_complexity)]
+    /// cold 時は GJI プローブを開始し（ノンブロッキング）、TIMER_TSF_PROBE が
+    /// `ChromeProbe` フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
@@ -164,80 +160,14 @@ impl Output {
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
             log::debug!("[h1-window] cold={cold_seq} class={win_class}");
 
-            // F2NonTsf: 物理 F2 がすでに Chrome の composition context を初期化済み。
-            // プログラム的な F2 送信（SendMessageTimeout + SendInput）をスキップし、
-            // 物理 F2 の時刻を probe 基準点として使うことで Chrome が 3 回 F2 を受け取る
-            // バグ（「かんりのつごう → kaんりのつごう」）を防ぐ。
-            // ただし以下の場合は F2NonTsf を無効化して programmatic F2 を再送する:
-            // - F2 から F2_STALE_MS 以上経過した場合: context が失効している可能性
-            // - long_idle=true の場合: 物理 F2 単体では Chrome の composition context
-            //   を再初期化できない（実測: ~518ms 必要なのに probe が 499ms で発火して
-            //   最初のキーが literal になる）。programmatic F2 (SendMessageTimeout +
-            //   SendInput) を必ず送って確実に初期化する。
-            // - f2_gji_long_idle=true の場合: GJI が長期 idle のとき物理 F2 だけでは
-            //   TSF context が起動せず GJI I/O が来ない。probe の "GJI I/O なし →
-            //   min_ms 後に即解放" パスが早期発火して最初のキーがリテラルになる
-            //   （例: たんなる → tあんなる）。long_idle 同様 programmatic F2 を送る。
-            let cold_reason = self.composition.last_cold_reason();
-            let cold_marked_ms = self.composition.cold_marked_ms();
-            let f2_stale = cold_reason == ColdReason::F2NonTsf
-                && cold_marked_ms != 0
-                && crate::hook::current_tick_ms().saturating_sub(cold_marked_ms)
-                    > crate::tuning::F2_STALE_MS;
-            // ノンブロッキング Chrome プローブを開始。
-            // 長期 idle 後の cold start では GJI が reinit に要する時間が長いため
-            // min/max を延長する（120ms では GJI が settle する前に timeout して literal
-            // 出力される回帰を抑制）。
-            let long_idle =
-                self.composition.idle_ms_at_last_cold() > crate::tuning::CHROME_LONG_IDLE_MS;
-            let skip_f2_send = cold_reason == ColdReason::F2NonTsf && !f2_stale && !long_idle;
-            // 物理 F2 (skip_f2_send=true) かつ GJI が長期 idle の場合:
-            // GJI I/O が来ないのは正常状態だからではなく Chrome TSF context が未起動のため。
-            // skip_f2_send を false に上書きして programmatic F2 を強制送信する。
-            let f2_gji_long_idle = skip_f2_send && {
-                let gji_last_io = crate::tsf::observer::gji_last_io_ms();
-                crate::hook::current_tick_ms().saturating_sub(gji_last_io)
-                    > crate::tuning::CHROME_LONG_IDLE_MS
-            };
-            let skip_f2_send = skip_f2_send && !f2_gji_long_idle;
-            // DIAG_CHROME_SKIP_F2（実験、2026-07-16）: 予防的な programmatic F2 送信を
-            // 丸ごとスキップする。物理 F2 検出由来の skip_f2_send とは理由が異なるが、
-            // 実際に「programmatic F2 を送らない」という結果は同じなので同じ変数に折り込む
-            // （ログの skip_f2 フィールドで判別は付かなくなるが、F2 自体を送らない
-            // という当面の実験目的には影響しない）。
-            let skip_f2_send = skip_f2_send || crate::tuning::DIAG_CHROME_SKIP_F2.load(Relaxed);
-            let f2_sent_ms = if skip_f2_send && cold_marked_ms != 0 {
-                cold_marked_ms
-            } else {
-                crate::hook::current_tick_ms()
-            };
-            // DIAG_CHROME_SKIP_PROBE_WAIT（実験、2026-07-16）: TsfReadinessProbe の
-            // min/max 待機を丸ごとスキップする（WezTerm 側 DIAG_COLD_SKIP_PROBE_WAIT の
-            // Chrome 版）。
-            let (probe_min_ms, probe_max_ms) =
-                if crate::tuning::DIAG_CHROME_SKIP_PROBE_WAIT.load(Relaxed) {
-                    (0, 0)
-                } else if long_idle || f2_gji_long_idle {
-                    (
-                        crate::tuning::CHROME_PROBE_LONG_IDLE_MIN_MS,
-                        crate::tuning::CHROME_PROBE_LONG_IDLE_MAX_MS,
-                    )
-                } else {
-                    (
-                        crate::tuning::CHROME_PROBE_MIN_MS,
-                        crate::tuning::CHROME_PROBE_MAX_MS,
-                    )
-                };
-            if f2_stale {
-                let elapsed = crate::hook::current_tick_ms().saturating_sub(cold_marked_ms);
-                log::debug!(
-                    "[h1-probe] cold={cold_seq} F2NonTsf stale ({elapsed}ms > F2_STALE_MS={}) \
-                     → programmatic F2 を再送",
-                    crate::tuning::F2_STALE_MS
-                );
-            }
+            // 予防的な programmatic F2 送信・TsfReadinessProbe の事前待機は 2026-07-18 に
+            // 撤去した（実機ソーク数日で無破損確認、docs/known-bugs.md 参照）。per-VK
+            // confirm（tsf_probe_coro_body の Phase 2c）が送信後の confirm/recovery を
+            // 担うため、送信前に GJI の準備を待つ予防は二重の保険だった。
+            let f2_sent_ms = crate::hook::current_tick_ms();
+            let (probe_min_ms, probe_max_ms) = (0, 0);
             log::debug!(
-                "[h1-probe] cold={cold_seq} long_idle={long_idle} f2_gji_long_idle={f2_gji_long_idle} idle_at_cold={}ms min={probe_min_ms}ms max={probe_max_ms}ms skip_f2={skip_f2_send} f2_stale={f2_stale}",
+                "[h1-probe] cold={cold_seq} idle_at_cold={}ms F2/probe待機省略 → per-VK confirm へ",
                 self.composition.idle_ms_at_last_cold(),
             );
 
@@ -255,34 +185,6 @@ impl Output {
             let guard = OutputActiveGuard::begin();
             let probe =
                 crate::tsf::probe::TsfReadinessProbe::new(f2_sent_ms, cold_seq, probe_min_ms);
-            // is_long_cold: GJI が本当に CHROME_LONG_IDLE_MS を超えて寝ていたか。
-            // 確定キーや IME OFF→ON 再有効化直後の一瞬だけの cold (Short/Medium) では
-            // false になり、ChromeProbe は VK_A probe + Chrome reinit のフルコースを
-            // 省略して軽量パス（inline LiteralDetect のみ）を使う（過剰な cold-start
-            // 発火の抑制、docs/known-bugs.md BUG-21）。
-            //
-            // 注: この判定は「awase 自身が最後に送信してからの経過時間」
-            // （`idle_ms_at_last_cold` = `ms_since_last_send()`）という自己参照タイマーに
-            // 基づく。実際に GJI プロセスが動いているかどうかの直接観測
-            // （`gji_last_io_ms` / `gji_idle_ms()`, `tsf/gji_monitor.rs` の
-            // `GetProcessIoCounters` 実IO監視）とは独立している。
-            let self_timer_is_long_cold = long_idle || f2_gji_long_idle;
-            let real_gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-            // DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP（実験、2026-07-16）: long-cold 時の
-            // 予防的犠牲キー（StartSacrificialWarmup）を完全にスキップする。既存の
-            // DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP（2026-07-09 の別実験、const のまま）
-            // と OR で合成する。
-            let is_long_cold = self_timer_is_long_cold
-                && !crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP
-                && !crate::tuning::DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP.load(Relaxed);
-            if self_timer_is_long_cold {
-                log::info!(
-                    "[h1-probe-diag] cold={cold_seq} self_timer_is_long_cold=true \
-                     real_gji_idle_ms={real_gji_idle_ms} \
-                     DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP={} → is_long_cold={is_long_cold}",
-                    crate::tuning::DIAG_SKIP_PROACTIVE_SACRIFICIAL_WARMUP,
-                );
-            }
             self.install_pending_tsf(Box::new(
                 crate::tsf::warmup::chrome_probe::ChromeProbe::new(
                     romaji,
@@ -290,7 +192,6 @@ impl Output {
                     probe,
                     probe_max_ms,
                     guard,
-                    is_long_cold,
                 ),
             ));
             self.runtime_outbox
@@ -309,33 +210,8 @@ impl Output {
                     conv_pre
                         .is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
                 );
-
-                if skip_f2_send {
-                    // 物理 F2 が Chrome の composition context を既に初期化済みのため
-                    // プログラム的な F2 送信をスキップする。probe は cold_marked_ms 基準で待機。
-                    log::debug!("[h1-run] cold={cold_seq} F2NonTsf: skip programmatic F2 (physical F2 at f2_sent_ms={f2_sent_ms})");
-                } else {
-                    // IMC_SETCONVERSIONMODE を ROMAN に揃えてから SendInput でローマ字を送ることで
-                    // カナ出力化けを防ぐ。await でワーカースレッドに完全委譲しているので順序は保たれる。
-                    let _ = crate::ime::set_ime_romaji_mode_async().await;
-
-                    log::debug!("[h1-run] cold={cold_seq} F2 via SendMessageTimeout");
-                    let f2_ok = crate::ime::send_f2_via_sendmessage_async().await;
-                    log::debug!("[h1-run] cold={cold_seq} F2 SendMessageTimeout delivered={f2_ok}");
-
-                    // SendMessageTimeout はウィンドウの wndproc に直接届くが TSF のキーストローク
-                    // マネージャーを経由しないため、Chrome の composition context が初期化されない。
-                    // SendInput 経由でも F2 を送り TSF に composition context を初期化させる。
-                    // INJECTED_MARKER 付きなので awase 自身のフックは即座に素通しする（mark_cold 不要）。
-                    let f2_via_sendinput = [
-                        make_key_input(VK_DBE_HIRAGANA, false),
-                        make_key_input(VK_DBE_HIRAGANA, true),
-                    ];
-                    let _ = crate::win32::send_input_safe(&f2_via_sendinput);
-                    log::debug!(
-                        "[h1-run] cold={cold_seq} F2 via SendInput (TSF composition context init)"
-                    );
-                }
+                // 予防的な programmatic F2 送信は 2026-07-18 に撤去した（上記コメント参照）。
+                // romaji は per-VK confirm（ChromeProbe/tsf_probe_coro_body）がそのまま送る。
             });
 
             return;

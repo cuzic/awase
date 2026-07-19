@@ -16,7 +16,6 @@ impl ChromeProbe {
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         guard: OutputActiveGuard,
-        is_long_cold: bool,
     ) -> Self {
         Self(TsfProbeCoro::new_chrome(
             romaji,
@@ -24,7 +23,6 @@ impl ChromeProbe {
             probe,
             total_max_ms,
             guard,
-            is_long_cold,
         ))
     }
 }
@@ -56,7 +54,7 @@ impl TickableFsm for ChromeProbe {
     }
 
     // BUG-27 根本原因（2026-07-17）: この委譲が抜けていたため、Chrome per-VK confirm
-    // （DIAG_CHROME_USE_PER_VK_CONFIRM）の `TransmitSingleVk` 処理で
+    // の `TransmitSingleVk` 処理で
     // `dispatch_probe_actions` が呼ぶ `machine.apply_vk_sent(...)` が
     // `TickableFsm` のデフォルト no-op（`tickable_fsm.rs`）に落ちていた。内側の
     // `TsfProbeCoro::apply_vk_sent` が一度も呼ばれないため `pending_vk_sent` が
@@ -95,7 +93,7 @@ mod tests {
         let guard = OutputActiveGuard::noop_for_test();
         // total_max_ms=0 → 最初の tick で probe.check_outcome が即 ready になる。
         let probe = TsfReadinessProbe::new(0, 0, 0);
-        let mut chrome_probe = ChromeProbe::new("ka", 0, probe, 0, guard, false);
+        let mut chrome_probe = ChromeProbe::new("ka", 0, probe, 0, guard);
 
         let first_actions = chrome_probe.tick(&TsfEnvSnapshot {
             gji_active: true,

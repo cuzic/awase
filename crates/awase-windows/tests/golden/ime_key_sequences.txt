@@ -59,15 +59,12 @@ MS-IME	TsfNative	apply_skipping_imm	MsImeDirect
 #
 # SendFreshF2         → send_fresh_f2(): VK_DBE_HIRAGANA (0xF2) down/up。
 #                       Medium/Long cold（forces_prepend_f2）では send_extra_f2() で F2×2 連続。
-# StartSacrificialWarmup:
-#   TransmitTarget::Chrome → send_sacrificial_vk_a_with_bs(): VK_A(0x41)+VK_BACK を同一バッチ送信
-#                            （文字フラッシュ防止）。根拠: 22c3905（Chrome は VK_A+BS 維持）,
-#                            af906b1（同一バッチ化）。VK_IME_OFF は Chrome TSF context を壊すため不可。
-#   TransmitTarget::Tsf    → send_sacrificial_ime_off_on(): VK_IME_OFF→VK_IME_ON（IME_KANJI_MARKER 付き、
-#                            vim 安全プローブ）。根拠: 22c3905（TSF のみ VK_IME_OFF→ON へ分岐）,
-#                            6c1732d（write_bytes 検出方式）。
-# SendChromeGjiReinit → send_chrome_gji_reinit_and_poll(): VK_IME_OFF→VK_IME_ON + async IMC ポーリング
-#                       （Chrome 超長時間 idle の再初期化）。
-# SacrificialResend   → BS×1（VK_A 削除、Chrome/skip_cleanup_bs 時は省略）後に実ローマ字を再送。
 # RawTsfLiteralRecovery → set_raw_literal(backs, romaji) で BS×backs + 再送を予約し mark_cold。
 #                         consecutive>0 のときは再送せず BS のみ（give-up）。
+#
+# 捨て駒キー機構（StartSacrificialWarmup/SacrificialResend、VK_A+BS・VK_IME_OFF→ON、
+# SacrificialWarmupCoro/ImeOffOnWarmupFsm）は 2026-07-18 に物理削除した。実機ソークで
+# per-VK confirm（TransmitSingleVk、上記とは別の cold-start パス）のみで安全網として
+# 十分と確認済み（docs/known-bugs.md 参照）。send_chrome_gji_reinit_and_poll() は
+# Unicode injection mode の long-cold GJI 再初期化として probe_io.rs に残っているが、
+# ProbeAction 経由ではなく Output::send_f22_f21_reinit() から直接呼ばれる。

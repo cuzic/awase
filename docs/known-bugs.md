@@ -1478,6 +1478,27 @@ Medium cold まで `is_long_cold` 相当に含めるかを再検討する。
 `crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（対称な WezTerm 側実装、参照）,
 `crates/awase-windows/src/tsf/gji_fsm.rs`（`ColdKind::classify`, `transition_to_cold_proactive`）
 
+**追記（2026-07-18）: `is_long_cold` 分岐・`StartSacrificialWarmup` フルコース自体を
+物理削除。** BUG-24 の per-VK confirm（1文字ずつ送信→confirm、失敗時は backspace の
+み、捨て駒キーには頼らない）が実機で安定稼働することを確認した後、「送信前に GJI
+準備を待つ」予防機構（本 BUG が扱っていた `is_long_cold` 重症度分岐を含む）自体が
+per-VK confirm と二重の保険になっているという仮説を `experiment/skip-cold-probe-wait`
+ブランチで検証した。実機ソーク数日（cold=61〜74 超、WezTerm/Chrome 双方）で
+`suspected literal` が genuine にゼロ件（チェック自体は毎回走って毎回パスしている
+ことをログで確認済み、素通りではない）となり、無破損を確認できたため、
+`TsfProbeCoro::new_chrome` の `is_long_cold` パラメータ・Phase 2a
+（`StartSacrificialWarmup` 分岐）・`SacrificialWarmupCoro`/`ImeOffOnWarmupFsm`
+自体を撤去した。本 BUG エントリの「原因」節が説明する重症度分類の**判断**
+（`ColdKind::Short`/`Medium`/`Long`）自体は TSF/WezTerm 側 `decide_transmit_plan`
+の `is_long_cold` 引数として現役だが、Chrome 側のこのバグが扱っていた分岐先
+（フルコース vs 軽量パス）という区別自体が意味を失った（フルコースが無くなった
+ため）。上記「再発防止テスト」に列挙した3つの `is_long_cold` 別テストは
+`chrome_gji_active_enters_per_vk_confirm_as_safety_net`
+（`literal_session_confirmed` のグローバル状態リークを避けるため
+`reset_literal_session_confirmed()` を追加）と
+`chrome_without_gji_active_skips_literal_detect` に整理統合した。詳細は
+BUG-24 の追補7以降を参照。
+
 ---
 
 ## BUG-22: MS Edge で Uwp⇔TsfNative フォーカス往復後、conv=Eisu(英数) に固着し nicola が入力できなくなる
@@ -1939,6 +1960,66 @@ architecture_guard(10)・layer_boundary_guard(8)・journal_replay(1)・lib(138)
 `--test golden_scenarios`（19 passed）・`--test architecture_guard`
 （10 passed）・`--test layer_boundary_guard`（8 passed）・
 `--test journal_replay`（1 passed）・clippy（`-D warnings`）で確認済み。
+
+**追補7（2026-07-16〜17）: Chrome にも per-VK confirm を拡張し、Chrome/TSF 両実装を
+`run_per_vk_confirm` に統合。** `experiment/skip-cold-probe-wait` ブランチで
+Chrome の cold-start（`probe_fsm.rs::tsf_probe_coro_body` Phase 2c）にも
+WezTerm と同型の per-VK confirm を追加（`DIAG_CHROME_USE_PER_VK_CONFIRM` 実験、
+デフォルト有効）。並行して `DIAG_COLD_SKIP_F2`/`DIAG_COLD_SKIP_PROBE_WAIT`
+（WezTerm 側の予防的 F2 送信・probe 事前待機を個別スキップする `AtomicBool` 実験、
+トレイの「実験: cold warmup」から on/off）・Chrome 版の
+`DIAG_CHROME_SKIP_F2`/`DIAG_CHROME_SKIP_PROBE_WAIT`/`DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP`
+を新設し、デフォルト全 `true`（F2 送信なし・probe 待機なしで即座に per-VK confirm
+へ進む、最も大胆な状態）で実機投入した。24時間弱のソークで BUG-26〜29（本ファイル
+別項）を発見・修正しつつ、無破損を確認した。
+
+**追補8（2026-07-18）: 上記実験フラグをすべて恒久化し、待機行列・捨て駒キー
+機構を物理削除。** 数日間の実機ソーク（cold=61〜74 超、WezTerm/Chrome 双方、
+`suspected literal` genuine ゼロ件を `per-VK[...] confirmed` の3点セットログで
+確認済み、追補6参照）で問題が起きなかったことを受け、以下を撤去した:
+
+- `tsf/warmup/cold_warmup.rs`: `WarmupKind::FreshF2/ReWarmup/ProbeWithSettle`・
+  `run_eager_start`/`run_non_eager_start`・`ColdReason`×`long_idle` の
+  `eager_settle_ms`/`probe_min_ms` 行列（`tsf/output.rs::ColdReason::eager_settle_ms`/
+  `probe_min_ms` メソッドごと）を削除し、`run_start` を「IMM32 ローマ字モード復元 +
+  即座に per-VK confirm へ」の単一経路に単純化。`session_expired` 時のみ
+  `DIAG_COLD_SKIP_F2` の値に関係なく無条件で F2 を送っていた抜け穴も閉じた
+  （ユーザー確認の上、恒久的に F2 を送らない方針に統一）。
+- `output/vk_send.rs::send_romaji_batched`（Chrome）: F2 事前送信（`SendMessageTimeout`
+  + `SendInput` の二重送信）・probe 事前待機（`CHROME_PROBE_MIN_MS`/`MAX_MS`/
+  `LONG_IDLE_MIN_MS`/`MAX_MS`）の計算・送信コードを削除。
+- 捨て駒キー機構一式を物理削除: `ProbeAction::StartSacrificialWarmup`/
+  `SacrificialResend`/`SendChromeGjiReinit`（`SendChromeGjiReinit` の実装関数
+  `send_chrome_gji_reinit_and_poll` 自体は Unicode injection mode の long-cold
+  再初期化 `Output::send_f22_f21_reinit` が直接呼ぶ別経路のため残置）、
+  `tsf/warmup/sacr_warmup_coro.rs`（`SacrificialWarmupCoro`）・
+  `tsf/warmup/ime_offon_warmup_fsm.rs`（`ImeOffOnWarmupFsm`）ファイルごと、
+  `state/key_sequence_policy.rs::SacrificialWarmupKey`/`sacrificial_warmup_key`/
+  `warmup_respects_bypass_gate`/`target_needs_sacrificial_cleanup_bs`、
+  `probe_fsm.rs::TsfProbeCoro::new_chrome` の `is_long_cold` パラメータと
+  Phase 2a 分岐自体（BUG-21 が扱っていた重症度分岐、詳細は BUG-21 追記参照）。
+- `DIAG_LITERAL_SESSION_SKIP`（per-VK confirm 自体のゲート）を恒久 `true` 化
+  （`gji_warmup_coro.rs`/`literal_detect_fsm.rs`/`platform.rs` のフラグ分岐を削除）。
+- 上記に伴い連鎖的に不要となった dead code も削除: `ConvModeMgr::effective_charset`/
+  `needs_conv_restore_write`/`mark_conv_restore_written`（+ `restore_written_for`
+  フィールド、ADR-078 Phase 1a）、`ProbeIo::increment_consecutive_count`
+  （+ `Composition::increment_consecutive_count` ラッパー）、
+  `DispatchResult::SwitchMachine`、`TsfEnvSnapshot::gji_candidate_visible`
+  フィールド。トレイの「実験: cold warmup (WezTerm/Chrome)」サブメニュー・
+  `tray::toggle_diag_flag`・対応する `TrayCommand` バリアントも削除。
+- `DIAG_DISABLE_PROACTIVE_TSF_WARMUP`/`DIAG_FORCE_HIRAGANA_CHARSET` は今回の
+  スコープ外（別実験）として温存したが、`DIAG_FORCE_HIRAGANA_CHARSET` は
+  唯一の実消費者だった `cold_warmup.rs` 側ロジックの削除に伴い**配線先を失い、
+  現状値を変えても挙動に一切影響しない**（`tuning.rs` のコメントに記録）。
+
+`cargo check`/`cargo test`/`cargo clippy --lib`（いずれも
+`--target x86_64-pc-windows-gnu`、警告ゼロ）、Linux 上の `cargo test -p
+awase-windows`（174 passed, 0 failed）で確認済み。ゴールデン
+（`tests/golden/ime_key_sequences.txt`）の warmup ドキュメント section も
+実装に追従して更新し、`WARMUP_DOC` 定数とバイト単位で diff 一致することを
+手動確認した（wine 未導入のためこのサンドボックスでは `.exe` 実行不可、
+実機/CI での `cargo test --target x86_64-pc-windows-gnu` 実行が最終確認となる）。
+MS-IME 経路（`MsImeReadyCoro` 等）は今回一切変更していない。
 
 ---
 

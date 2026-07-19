@@ -580,36 +580,6 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             // なっていても、この操作で必ず Engine ON まで復帰させる。
             let _ = with_app(Runtime::force_engine_on);
         }
-        Some(tray::TrayCommand::ToggleDiagColdSkipF2) => {
-            tray::toggle_diag_flag(&crate::tuning::DIAG_COLD_SKIP_F2, "DIAG_COLD_SKIP_F2");
-        }
-        Some(tray::TrayCommand::ToggleDiagColdSkipProbeWait) => {
-            tray::toggle_diag_flag(
-                &crate::tuning::DIAG_COLD_SKIP_PROBE_WAIT,
-                "DIAG_COLD_SKIP_PROBE_WAIT",
-            );
-        }
-        Some(tray::TrayCommand::ToggleDiagChromeSkipF2) => {
-            tray::toggle_diag_flag(&crate::tuning::DIAG_CHROME_SKIP_F2, "DIAG_CHROME_SKIP_F2");
-        }
-        Some(tray::TrayCommand::ToggleDiagChromeSkipProbeWait) => {
-            tray::toggle_diag_flag(
-                &crate::tuning::DIAG_CHROME_SKIP_PROBE_WAIT,
-                "DIAG_CHROME_SKIP_PROBE_WAIT",
-            );
-        }
-        Some(tray::TrayCommand::ToggleDiagChromeSkipSacrificialWarmup) => {
-            tray::toggle_diag_flag(
-                &crate::tuning::DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP,
-                "DIAG_CHROME_SKIP_SACRIFICIAL_WARMUP",
-            );
-        }
-        Some(tray::TrayCommand::ToggleDiagChromeUsePerVkConfirm) => {
-            tray::toggle_diag_flag(
-                &crate::tuning::DIAG_CHROME_USE_PER_VK_CONFIRM,
-                "DIAG_CHROME_USE_PER_VK_CONFIRM",
-            );
-        }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }

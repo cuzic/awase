@@ -4,7 +4,6 @@
 //! `dispatch_probe_actions` は `ProbeIo` を受け取り、Win32 呼び出しを直接行わない。
 
 use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
-use crate::state::key_sequence_policy::{self, SacrificialWarmupKey};
 use crate::tsf::output::ColdReason;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
@@ -31,7 +30,7 @@ pub(crate) trait ProbeIo {
     /// DOWN+UP を単独の SendInput で送信する。`transmit_tsf` と異なり F2 prepend /
     /// unicode kana 分岐を一切行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
-    /// Chrome per-VK confirm 実験（`DIAG_CHROME_USE_PER_VK_CONFIRM`）専用: 1 VK の
+    /// Chrome per-VK confirm 専用: 1 VK の
     /// DOWN+UP を `VkMarker::Injected` で単独送信する。`send_single_tsf_vk` の Chrome版。
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
@@ -43,8 +42,6 @@ pub(crate) trait ProbeIo {
     fn take_pending_deferred_vks(&self) -> Vec<DeferredVk>;
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
-    /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
-    fn increment_consecutive_count(&self);
     /// 連続カウントをリセットする（`DetectionResult::CompositionConfirmed` 確認時、BUG-27 追補4）。
     fn reset_consecutive_count(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
@@ -62,29 +59,12 @@ pub(crate) trait ProbeIo {
     ///
     /// `None` の場合は GjiFsm 未接続なので `store_gji_warmup_result` 呼び出しをスキップできる。
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId>;
-    /// VK_IME_OFF→VK_IME_ON を IME_KANJI_MARKER 付きで送信する（vim 安全な一次プローブ）。
+    /// Unicode injection mode の long-cold GJI 再初期化: VK_IME_OFF→VK_IME_ON を
+    /// SendInput でキューイングし、`ImeModeFsm` の belief 更新 + async
+    /// `IMC_GETCONVERSIONMODE` ポーリングを開始する。
     ///
-    /// `StartSacrificialWarmup` ハンドラが呼ぶ。Off→On 遷移が GJI WriteTransferCount を増加させ、
-    /// `ImeOffOnWarmupFsm` が write_bytes 上昇を検出してから実ローマ字を再送する。
-    fn send_sacrificial_ime_off_on(&self, cold_seq: u32);
-    /// 犠牲キー（VK_A + BS）を同一 SendInput バッチで送信する（Chrome 用）。
-    ///
-    /// VK_A と BS を一括送信することで Chrome が次フレームを描画する前に
-    /// 'あ'/'a' が形成→即消去される。ユーザーには文字が表示されない。
-    /// `SacrificialResend` Chrome 側では追加の BS 送信を行わない。
-    fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32);
-    /// BS×1 を送信する（犠牲キーの削除用）。
-    ///
-    /// `SacrificialResend` ハンドラが呼ぶ（TSF/WezTerm target のみ）。
-    fn send_sacrificial_bs_one(&self, cold_seq: u32);
-    /// Chrome sacr-warmup cold タイムアウト後に GJI を強制リセットし、IMC ポーリングを開始する。
-    ///
-    /// VK_A+BS でも Chrome の GJI が初期化されなかった場合（80s 以上の超長時間 idle 等）に、
-    /// VK_IME_OFF→VK_IME_ON を SendInput でキューイングして再初期化を試みる。
-    ///
-    /// さらに `ImeModeFsm` の belief を Off → Hiragana に更新し、
-    /// async `IMC_GETCONVERSIONMODE` ポーリングを `spawn_local` で開始する。
-    /// ポーリング結果は `with_app(|runtime| runtime.platform.output.update_ime_mode_from_imc(conv))` で反映される。
+    /// `Output::send_f22_f21_reinit`（`gji_fsm::GjiAction::StartProbe` の
+    /// Unicode-mode long-cold ハンドリング）が直接呼ぶ。
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32);
     /// Unicode char を直接送信する（defer モードを無視して即送信）。
     ///
@@ -105,9 +85,7 @@ impl ProbeIo for Output {
         outcome: &WarmupOutcome,
     ) -> usize {
         // カタカナ/英数 charset への追従送信（VK_DBE_KATAKANA 等の leading warmup）は
-        // BUG-19 のロックイン事故を受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` により
-        // `ConvModeMgr::effective_charset()` は既に常に Hiragana を返しており、この
-        // 追従パスは実質的に到達不能だった（`docs/known-bugs.md` BUG-19 参照）。
+        // BUG-19 のロックイン事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。
         let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
         // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
         // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
@@ -146,10 +124,6 @@ impl ProbeIo for Output {
         self.composition.consecutive_count()
     }
 
-    fn increment_consecutive_count(&self) {
-        self.composition.increment_consecutive_count();
-    }
-
     fn reset_consecutive_count(&self) {
         self.composition.reset_consecutive_count();
     }
@@ -169,79 +143,6 @@ impl ProbeIo for Output {
 
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
         self.warmup_coord.current_probe_id()
-    }
-
-    fn send_sacrificial_ime_off_on(&self, cold_seq: u32) {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::{VK_IME_OFF, VK_IME_ON};
-        // VK_IME_ON 後に GJI が正しい conv を復元できるよう、直前に ImmSetConversionStatus を
-        // 再スケジュールする。cold warmup 開始時の imm-romaji が stale な conv_mode を参照して
-        // いた場合（例: cold=3 で ZenKata が誤設定された状態）の補正として機能する。
-        // GJI は cross-process で VK_IME_ON を非同期処理するため、spawn_local が完了する
-        // ~10ms 以内に ImmSetConversionStatus が確定し、GJI が conv を読む前に間に合う。
-        //
-        // `cold_warmup.rs::preamble()` と同じ理由で、同じ belief (mode) に対する復元書き込みは
-        // 1回だけに制限する — サクリファイシャル warmup がフォーカス往復のたびに繰り返し
-        // 発生すると、誤った belief を毎回 real IME へ再アサートする自己増幅経路になる
-        // (BUG-19, ADR-078 Phase 1a、実機検証待ち)。
-        if self.conv_mutation_allowed.get() && self.conv_mode.needs_conv_restore_write() {
-            if let Some(conv_target) = self
-                .conv_mode
-                .get()
-                .and_then(awase::engine::ConvMode::imm_conv_target)
-            {
-                self.conv_mode.mark_conv_restore_written();
-                win32_async::spawn_local(async move {
-                    let _ =
-                        crate::ime::set_ime_romaji_mode_with_target_async(Some(conv_target)).await;
-                    log::debug!(
-                        "[sacr-warmup] cold={cold_seq} imm-romaji 直前補正: \
-                         target=0x{conv_target:08X}"
-                    );
-                });
-            }
-        }
-        let inputs = [
-            make_key_input_ex(VK_IME_OFF, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_IME_OFF, true, IME_KANJI_MARKER),
-            make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
-        ];
-        log::debug!("[sacr-warmup] cold={cold_seq} VK_IME_OFF→ON 送信（vim 安全プローブ）");
-        self.on_f22_f21_sent();
-        let _ = crate::win32::send_input_safe(&inputs);
-    }
-
-    fn send_sacrificial_vk_a_with_bs(&self, cold_seq: u32) {
-        use crate::tsf::output::make_key_input_ex;
-        use crate::tsf::output::INJECTED_MARKER;
-        use crate::vk::VK_BACK;
-        use awase::types::VkCode;
-        const VK_A: VkCode = VkCode(0x41);
-        // VK_A + BS を一括 SendInput することで Chrome が次フレームを描画する前に
-        // 'あ'/'a' → BS と処理され、ユーザーには文字フラッシュが見えない。
-        let inputs = [
-            make_key_input_ex(VK_A, false, INJECTED_MARKER),
-            make_key_input_ex(VK_A, true, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-        ];
-        log::debug!(
-            "[sacr-warmup] cold={cold_seq} VK_A+BS 同時送信（Chrome 用：文字フラッシュ防止）"
-        );
-        let _ = crate::win32::send_input_safe(&inputs);
-    }
-
-    fn send_sacrificial_bs_one(&self, cold_seq: u32) {
-        use crate::tsf::output::make_key_input_ex;
-        use crate::tsf::output::INJECTED_MARKER;
-        use crate::vk::VK_BACK;
-        let inputs = [
-            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-        ];
-        log::debug!("[sacr-warmup] cold={cold_seq} BS×1 送信（犠牲キー削除）");
-        let _ = crate::win32::send_input_safe(&inputs);
     }
 
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {
@@ -345,7 +246,6 @@ impl Output {
     /// `ime_mode_focus_gen` の世代照合により、ポーリング中にフォーカスが変わった場合は
     /// stale 結果で `ImeModeFsm` / latch を汚染せず黙って終了する。
     /// 待機側は `MsImeReadyCoro`（`pending_tsf`）が env 経由で確認を観測する。
-    /// 発行機構は `send_chrome_gji_reinit_and_poll` の IMC ポーリングと同型（VK 送信なし）。
     pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: u32, deadline_ms: u64) {
         let gen = self.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
@@ -397,8 +297,8 @@ impl Output {
 
 /// GJI probe が飛行中なら `WarmupResult` を記録する。
 ///
-/// `ProbeAction::Transmit` の TSF/Chrome 両アームと `StartSacrificialWarmup` で
-/// 同一の10行ブロックが繰り返されるため、共通関数として抽出する。
+/// `ProbeAction::Transmit`/`TransmitSingleVk` の TSF/Chrome 両アームで同一の
+/// 10行ブロックが繰り返されるため、共通関数として抽出する。
 fn store_gji_warmup_if_probing(
     io: &impl ProbeIo,
     obs: crate::tsf::warmup::probe_fsm::ProbeObservations,
@@ -440,8 +340,6 @@ pub(crate) enum DispatchResult {
     Done,
     /// probe 継続（次回 tick を待つ）。
     Continue,
-    /// 別の FSM に切り替える（`LiteralDetectFsm` 等）。
-    SwitchMachine(Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>),
     /// Unicode 送信後に GJI write が観測されなかった → フォーカス中クラスを Tsf に昇格する。
     ///
     /// `advance_tsf_probe` が `focus.learn_injection_mode_tsf()` を呼ぶ。
@@ -586,8 +484,8 @@ where
                 target,
             } => {
                 // `gate_is_bypass()` は TSF composition context の readiness ゲートで
-                // Chrome には適用されない（Chrome は常に gate=Bypass 運用、
-                // `StartSacrificialWarmup` の既存コメント参照）。Tsf 向けのときだけ確認する。
+                // Chrome には適用されない（Chrome は常に gate=Bypass 運用）。
+                // Tsf 向けのときだけ確認する。
                 if target == TransmitTarget::Tsf && io.gate_is_bypass() {
                     log::debug!(
                         "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection"
@@ -622,186 +520,6 @@ where
                     store_gji_warmup_if_probing(io, observations, &plan);
                 }
                 machine.apply_vk_sent(detector, deadline_ms);
-            }
-
-            ProbeAction::StartSacrificialWarmup(config) => {
-                // GjiWarmupCoro が long_cold + TSF mode のときに emit する（直接）か、
-                // inline LiteralDetect が partial literal / SuspectedLiteral を検出して
-                // sacr warmup 経由で回収する場合（from_literal_recovery=true）に emit される。
-                //
-                // VK_A+BS の代わりに VK_IME_OFF→VK_IME_ON を送信する（vim 安全プローブ）。
-                // Off→On 状態遷移が GJI WriteTransferCount を増加させ（実測 +46B / ~30ms）、
-                // ImeOffOnWarmupFsm が write_bytes 上昇を検出してから実ローマ字を再送する。
-                // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
-                // TSF/WezTerm の場合のみ bypass 状態でスキップする。
-                if key_sequence_policy::warmup_respects_bypass_gate(config.target)
-                    && io.gate_is_bypass()
-                {
-                    log::debug!(
-                        "[sacr-warmup] cold={} StartSacrificialWarmup: gate=Bypass, skipping",
-                        config.cold_seq
-                    );
-                    return DispatchResult::Done;
-                }
-                if config
-                    .romaji
-                    .chars()
-                    .find_map(crate::output::resolve_ascii_to_vk)
-                    .is_none()
-                {
-                    return DispatchResult::Done;
-                }
-                // literal recovery パスでは consecutive をインクリメントしてループを防ぐ。
-                if config.from_literal_recovery {
-                    io.increment_consecutive_count();
-                }
-                // GjiFsm bridge: 送信時点で warmup 結果を記録する。
-                store_gji_warmup_if_probing(io, config.observations, &config.plan);
-                // target に応じて戦略を切り替える。
-                //
-                // Chrome: VK_A+BS（元の方式）。
-                //   VK_IME_OFF が Chrome TSF context を壊すため使用不可（過去検証済み）。
-                //   Chrome 内で vim が動くケースは稀であり VK_A の vim 問題は許容。
-                //
-                // TSF（WezTerm 等）: VK_IME_OFF→ON + write_bytes 検出（vim 安全プローブ）。
-                //   vim は VK_IME_OFF/ON を無視するため cold 時にアプリへ届いても誤動作しない。
-                //
-                // DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON: Chrome にも ImeOffThenOn を試す診断。
-                // `key_sequence_policy::sacrificial_warmup_key`（実機確定済みテーブル）自体は
-                // 変更せず、ここで戻り値だけ上書きする。tuning.rs 参照。
-                let sacrificial_key = if config.target == TransmitTarget::Chrome
-                    && crate::tuning::DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON
-                {
-                    log::info!(
-                        "[sacr-warmup-diag] cold={} Chrome: VkAThenBackspace → ImeOffThenOn に差し替え \
-                         (DIAG_CHROME_SACRIFICIAL_KEY_IME_OFFON=true)",
-                        config.cold_seq
-                    );
-                    SacrificialWarmupKey::ImeOffThenOn
-                } else {
-                    key_sequence_policy::sacrificial_warmup_key(config.target)
-                };
-                match sacrificial_key {
-                    SacrificialWarmupKey::VkAThenBackspace => {
-                        let write_bytes_before_vk_a = crate::tsf::observer::gji_write_bytes();
-                        io.send_sacrificial_vk_a_with_bs(config.cold_seq);
-                        let detector = crate::tsf::probe::LiteralDetector::new_gji_resumed_with_pre_send_baseline(write_bytes_before_vk_a);
-                        let deadline_ms = crate::hook::current_tick_ms() + config.literal_detect_ms;
-                        log::debug!(
-                            "[sacr-warmup] cold={} VK_A+BS 送信 → SacrificialWarmupCoro 開始 \
-                            (romaji={:?} write_bytes_baseline={})",
-                            config.cold_seq,
-                            config.romaji,
-                            write_bytes_before_vk_a,
-                        );
-                        let sacr_coro =
-                            crate::tsf::warmup::sacr_warmup_coro::SacrificialWarmupCoro::new(
-                                config.cold_seq,
-                                config.romaji,
-                                detector,
-                                deadline_ms,
-                                config.target,
-                            );
-                        return DispatchResult::SwitchMachine(Box::new(sacr_coro));
-                    }
-                    SacrificialWarmupKey::ImeOffThenOn => {
-                        let write_bytes_baseline = crate::tsf::observer::gji_write_bytes();
-                        io.send_sacrificial_ime_off_on(config.cold_seq);
-                        log::debug!(
-                            "[sacr-warmup] cold={} VK_IME_OFF→ON 送信 → ImeOffOnWarmupFsm 開始 \
-                            (romaji={:?} write_bytes_baseline={})",
-                            config.cold_seq,
-                            config.romaji,
-                            write_bytes_baseline,
-                        );
-                        let fsm = crate::tsf::warmup::ime_offon_warmup_fsm::ImeOffOnWarmupFsm::new(
-                            config.cold_seq,
-                            config.romaji,
-                            config.target,
-                            write_bytes_baseline,
-                        );
-                        return DispatchResult::SwitchMachine(Box::new(fsm));
-                    }
-                }
-            }
-
-            ProbeAction::SendChromeGjiReinit { cold_seq } => {
-                // SacrificialWarmupCoro が Chrome cold タイムアウト後に emit する。
-                // VK_IME_OFF→VK_IME_ON 送信 + ImeModeFsm belief 更新 + async IMC ポーリング開始。
-                // FSM 切り替えは不要（SacrificialWarmupCoro がそのまま IME 確認を待機する）。
-                io.send_chrome_gji_reinit_and_poll(cold_seq);
-            }
-
-            ProbeAction::SacrificialResend(resend) => {
-                // SacrificialWarmupCoro から emit される（composition 確認後）。
-                // BS×1（犠牲 VK_A 削除）→ 実ローマ字送信 → deferred_vks 送信。
-                // target に応じて Chrome/TSF パスを切り替える。
-                let cold_seq = resend.cold_seq;
-                let chars: VkSequence = resend
-                    .romaji
-                    .chars()
-                    .filter_map(crate::output::resolve_ascii_to_vk)
-                    .collect();
-                // Chrome は常に gate=Bypass 運用のため gate チェック対象外（policy に集約）。
-                if chars.is_empty()
-                    || (key_sequence_policy::warmup_respects_bypass_gate(resend.target)
-                        && io.gate_is_bypass())
-                {
-                    // ゲートが閉じている or 実ローマ字なし: BS も送らず即終了
-                    log::debug!(
-                        "[sacr-warmup] cold={cold_seq} SacrificialResend: skip (bypass or empty)"
-                    );
-                } else {
-                    // BS×1: 犠牲 VK_A の結果を削除。
-                    // skip_cleanup_bs=true（ImeOffOnWarmupFsm）は VK_A を送っていないので BS 不要。
-                    // Chrome は VK_A+BS を atomic batch で送信済みのため cleanup BS 不要（policy に集約）。
-                    if !resend.skip_cleanup_bs
-                        && key_sequence_policy::target_needs_sacrificial_cleanup_bs(resend.target)
-                    {
-                        io.send_sacrificial_bs_one(cold_seq);
-                    }
-                    match resend.target {
-                        TransmitTarget::Chrome => {
-                            // Chrome パス: INJECTED_MARKER バッチ送信。
-                            // Chrome cold case は SendChromeGjiReinit 後に SacrificialWarmupCoro が
-                            // IME 確認し SacrificialResend(confirmed_warm=false) を emit する。
-                            // VK_IME_OFF→VK_IME_ON は SendChromeGjiReinit で送信済み。
-                            log::debug!(
-                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を Chrome パスで再送 \
-                                (confirmed_warm={})",
-                                resend.romaji, resend.confirmed_warm,
-                            );
-                            io.transmit_chrome(&resend.romaji, &chars);
-                            io.send_deferred_vks(
-                                &io.take_pending_deferred_vks(),
-                                VkMarker::Injected,
-                            );
-                        }
-                        TransmitTarget::Tsf => {
-                            // confirmed_warm=true: warm 維持のまま VK run 送信（F2 prepend なし）。
-                            //   WezTerm の 344ms composition context タイマーをリセットしない。
-                            // confirmed_warm=false: VK_A timeout → TSF cold 確定 → F2 で warmup。
-                            //   partial literal 回収後の sacr warmup や long-cold timeout で使われる。
-                            //   timeout 期間（≥300ms）中に WezTerm の 344ms timer が既に発火している
-                            //   可能性があるため、F2 を明示的に送って TSF context を再初期化する。
-                            let prepend_f2 = !resend.confirmed_warm;
-                            let outcome = WarmupOutcome {
-                                prepend_f2_warmup: prepend_f2,
-                                used_eager_path: false,
-                                cold_seq,
-                            };
-                            log::debug!(
-                                "[sacr-warmup] cold={cold_seq} 実ローマ字 {:?} を {} パスで再送",
-                                resend.romaji,
-                                if prepend_f2 { "F2+warm" } else { "warm" },
-                            );
-                            io.transmit_tsf(&resend.romaji, &chars, &outcome);
-                            io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
-                        }
-                    }
-                }
-                // SacrificialWarmupCoro は Done を後続 action として emit しているため
-                // ここでは machine 状態を更新せず Continue を返す（queue が Done を処理する）。
             }
 
             ProbeAction::UpgradeToTsf => {
@@ -855,7 +573,9 @@ where
                 io.mark_cold_raw_tsf();
             }
 
-            ProbeAction::CompositionConfirmed { mark_literal_session } => {
+            ProbeAction::CompositionConfirmed {
+                mark_literal_session,
+            } => {
                 // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
                 // 本物の CompositionConfirmed が挟まれば連続ではなくなるため、
                 // 必ずリセットする（従来は FocusChange/SetOpenTrue でしかリセット
@@ -892,9 +612,7 @@ mod tests {
         deferred_vks_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
-        increment_consecutive_called: Cell<bool>,
         reset_consecutive_called: Cell<bool>,
-        send_sacrificial_ime_off_on_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.prepend_f2_warmup を記録する。
@@ -914,9 +632,7 @@ mod tests {
                 deferred_vks_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
-                increment_consecutive_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
-                send_sacrificial_ime_off_on_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 last_used_prepend_f2: Cell::new(false),
             }
@@ -958,9 +674,6 @@ mod tests {
         fn consecutive_count(&self) -> u32 {
             self.consecutive
         }
-        fn increment_consecutive_count(&self) {
-            self.increment_consecutive_called.set(true);
-        }
         fn reset_consecutive_count(&self) {
             self.reset_consecutive_called.set(true);
         }
@@ -977,36 +690,15 @@ mod tests {
             None
         }
 
-        fn send_sacrificial_ime_off_on(&self, _cold_seq: u32) {
-            self.send_sacrificial_ime_off_on_called.set(true);
-        }
-
-        fn send_sacrificial_vk_a_with_bs(&self, _cold_seq: u32) {}
-
-        fn send_sacrificial_bs_one(&self, _cold_seq: u32) {}
-
         fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
 
         fn send_unicode_char_direct(&self, _ch: char) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {
-        make_chrome_machine_with_cold(true)
-    }
-
-    fn make_chrome_machine_with_cold(
-        is_long_cold: bool,
-    ) -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
-            "ka",
-            0,
-            probe,
-            0,
-            guard,
-            is_long_cold,
-        )
+        crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
     }
 
     fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
@@ -1458,41 +1150,6 @@ mod tests {
             "plan.needs_literal=true → LiteralDetect フェーズへ移行"
         );
         assert!(io.transmit_tsf_called.get());
-    }
-
-    #[test]
-    fn start_sacrificial_warmup_without_literal_recovery_does_not_increment_consecutive() {
-        // GjiWarmupCoro の通常 cold-start パス（from_literal_recovery=false）では
-        // increment_consecutive_count を呼ばない。
-        let io = FakeProbeIo {
-            consecutive: 0,
-            ..Default::default()
-        };
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::StartSacrificialWarmup(
-            crate::tsf::warmup::probe_fsm::LiteralDetectConfig {
-                cold_seq: 0,
-                romaji: "ko".to_string(),
-                plan: TransmitPlan {
-                    should_prepend_f2: false,
-                    used_eager_path: false,
-                    needs_literal: true,
-                    literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                },
-                observations: ProbeObservations {
-                    nc_fired: true,
-                    gji_resumed: false,
-                },
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-                target: TransmitTarget::Tsf,
-                from_literal_recovery: false,
-            },
-        )];
-        dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(
-            !io.increment_consecutive_called.get(),
-            "from_literal_recovery=false: increment_consecutive_count を呼ばないべき"
-        );
     }
 
     #[test]

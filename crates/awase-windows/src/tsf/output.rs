@@ -55,57 +55,6 @@ pub enum ColdReason {
 }
 
 impl ColdReason {
-    /// warmup 後の eager settle 待機時間 (ms)。long_idle=true のとき延長。
-    #[must_use]
-    pub const fn eager_settle_ms(self, long_idle: bool) -> u64 {
-        match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
-                if long_idle {
-                    2000
-                } else {
-                    1500
-                }
-            }
-            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle {
-                    1500
-                } else {
-                    500
-                }
-            }
-            Self::SymbolVkSent
-            | Self::F2NonTsf
-            | Self::RawTsfLiteralRecovery
-            | Self::CtrlKeyBypass
-            | Self::SetOpenFalse => 500,
-        }
-    }
-
-    /// VK_DBE_HIRAGANA 送信後の最小待機時間 (ms)（GJI I/O 観測開始前の固定待機）
-    #[must_use]
-    pub const fn probe_min_ms(self, long_idle: bool) -> u64 {
-        match self {
-            Self::FocusChange | Self::SetOpenTrue | Self::NativeF2Consumed => {
-                if long_idle {
-                    300
-                } else {
-                    // short_idle: LiteralDetect が安全網になるため短縮可
-                    100
-                }
-            }
-            Self::PassthroughConfirmKey | Self::ReinjectConfirmKey => {
-                if long_idle {
-                    300
-                } else {
-                    50
-                }
-            }
-            Self::SymbolVkSent => 30,
-            Self::F2NonTsf | Self::RawTsfLiteralRecovery | Self::SetOpenFalse => 100,
-            Self::CtrlKeyBypass => 50,
-        }
-    }
-
     /// confirmation キー（composition 確定/キャンセル）かどうか
     #[must_use]
     pub const fn is_confirm_key(self) -> bool {
@@ -195,7 +144,9 @@ pub fn flush_raw_tsf_literal_backspaces() {
     use crate::vk::{VK_BACK, VK_ESCAPE};
     use std::sync::atomic::Ordering::Relaxed;
     let n = crate::RAW_TSF_LITERAL.backs.swap(0, Relaxed);
-    let escape_composition = crate::RAW_TSF_LITERAL.escape_composition.swap(false, Relaxed);
+    let escape_composition = crate::RAW_TSF_LITERAL
+        .escape_composition
+        .swap(false, Relaxed);
     if n == 0 && !escape_composition {
         return;
     }

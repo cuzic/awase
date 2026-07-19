@@ -2,16 +2,14 @@
 //!
 //! 10ms タイマー (`TIMER_TSF_PROBE`) から `tick()` が呼ばれるパターンを型として表現する。
 //!
-//! ## 実装一覧（本番実装 9 種 + テスト用 StubMachine）
+//! ## 実装一覧（本番実装 7 種 + テスト用 StubMachine）
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
 //! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_transmit_done`, `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome probe + LiteralDetect（StepCoro） | `apply_transmit_done` |
-//! | `SacrificialWarmupCoro` | `sacr_warmup_coro.rs` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化（StepCoro） | `notify_start_composition` |
 //! | `LiteralDetectFsm` | `literal_detect_fsm.rs` | warm パスの post-transmit composition 確認（`LiteralDetectCore` ラッパー） | なし（Core のみ） |
-//! | `ImeOffOnWarmupFsm` | `ime_offon_warmup_fsm.rs` | VK_IME_OFF→ON 暖機（手書きカウンタ FSM） | なし |
 //! | `UnicodeColdWarmupFsm` | `unicode_cold_warmup_fsm.rs` | Unicode long-cold の deferred chars 送信（手書き FSM） | `push_deferred_unicode_chars` |
 //! | `ChromeProbe` | `chrome_probe.rs` | Chrome cold-start GJI readiness probe（内部 `TsfProbeCoro` ラッパー） | `apply_transmit_done`, `apply_vk_sent`（いずれも内部 `TsfProbeCoro` へ委譲） |
 //! | `UnicodeLiteralObserverFsm` | `unicode_literal_observer.rs` | Unicode 送信後の GJI write 観測（事後 Tsf 昇格） | なし |
