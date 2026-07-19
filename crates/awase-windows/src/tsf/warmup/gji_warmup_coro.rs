@@ -164,15 +164,7 @@ async fn gji_coro_body(
         && !plan.used_eager_path
         && env.is_tsf_mode
     {
-        run_per_vk_confirm(
-            ch.clone(),
-            ctx.cold_seq,
-            &romaji,
-            plan,
-            observations,
-            TransmitTarget::Tsf,
-        )
-        .await;
+        run_per_vk_confirm(ch.clone(), ctx.cold_seq, &romaji, plan, TransmitTarget::Tsf).await;
         return;
     }
 
@@ -184,7 +176,6 @@ async fn gji_coro_body(
         vec![ProbeAction::Transmit {
             cold_seq: ctx.cold_seq,
             plan,
-            observations,
             romaji: romaji.clone(),
             target: TransmitTarget::Tsf,
         }],

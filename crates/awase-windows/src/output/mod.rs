@@ -402,8 +402,8 @@ impl Output {
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn gji_take_warmup_result(&self) -> Option<crate::tsf::gji_fsm::WarmupResult> {
-        self.warmup_coord.take_warmup_result()
+    pub(crate) fn gji_take_warmup_pending(&self) -> bool {
+        self.warmup_coord.take_warmup_pending()
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -797,15 +797,15 @@ impl Output {
             probe_io::DispatchResult::Done => {
                 self.on_tsf_probe_ready();
                 self.gji_end_probe_guard();
-                let gji_response = self.gji_take_warmup_result().and_then(|result| {
-                    let probe_id = self.warmup_coord.take_probe_id()?;
-                    Some(
+                let gji_response = self
+                    .gji_take_warmup_pending()
+                    .then(|| self.warmup_coord.take_probe_id())
+                    .flatten()
+                    .map(|probe_id| {
                         self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
                             probe_id,
-                            result,
-                        }),
-                    )
-                });
+                        })
+                    });
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 StepProbeResult {
                     timer_cmd: TimerCommand::Kill {

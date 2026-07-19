@@ -13,9 +13,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use crate::tsf::gji_fsm::GjiTimer;
-use crate::tsf::gji_fsm::{
-    FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams, WarmupResult,
-};
+use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
@@ -36,8 +34,8 @@ pub(crate) struct TsfWarmupCoordinator {
     pub(super) current_gji_probe_id: Cell<Option<ProbeId>>,
     /// GJI probe 中に OUTPUT_GATE を活性化するガード。
     gji_probe_guard: RefCell<Option<OutputActiveGuard>>,
-    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しバッファ。
-    pending_gji_warmup: Cell<Option<WarmupResult>>,
+    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しフラグ。
+    pending_gji_warmup: Cell<bool>,
     /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
     pub(super) pending_gji_composition_reset: Cell<bool>,
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
@@ -57,7 +55,7 @@ impl TsfWarmupCoordinator {
             pending_tsf: RefCell::new(None),
             current_gji_probe_id: Cell::new(None),
             gji_probe_guard: RefCell::new(None),
-            pending_gji_warmup: Cell::new(None),
+            pending_gji_warmup: Cell::new(false),
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
             pending_deferred: RefCell::new(Vec::new()),
@@ -154,12 +152,12 @@ impl TsfWarmupCoordinator {
     // ── warmup result 橋渡し ───────────────────────────────────────────────
 
     /// `pending_gji_warmup` をセットする（`ProbeIo::store_gji_warmup_result` 用）。
-    pub(crate) fn store_warmup_result(&self, result: WarmupResult) {
-        self.pending_gji_warmup.set(Some(result));
+    pub(crate) fn mark_warmup_pending(&self) {
+        self.pending_gji_warmup.set(true);
     }
 
     /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn take_warmup_result(&self) -> Option<WarmupResult> {
+    pub(crate) fn take_warmup_pending(&self) -> bool {
         self.pending_gji_warmup.take()
     }
 

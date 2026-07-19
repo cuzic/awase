@@ -302,7 +302,7 @@ impl WindowsPlatform {
                     //   deferred chars あり → VK_IME_ON poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
                     //   deferred chars なし → 従来通り VK_IME_OFF→VK_IME_ON reinit
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
-                        use crate::tsf::gji_fsm::{GjiEvent, WarmupPath, WarmupResult};
+                        use crate::tsf::gji_fsm::GjiEvent;
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
@@ -316,11 +316,6 @@ impl WindowsPlatform {
                         }
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
-                            result: WarmupResult {
-                                path: WarmupPath::GjiResumed,
-                                prepend_f2_warmup: false,
-                                nc_fired: false,
-                            },
                         });
                         self.dispatch_gji_response(&warmup_resp);
                     }

@@ -51,10 +51,10 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// `ProbeAction::Transmit` 完了時に `WarmupResult` を一時バッファに保存する。
+    /// `ProbeAction::Transmit` 完了を一時フラグに保存する。
     ///
     /// `Output::step_probe` が probe 完了を確認した後に取り出し、`GjiFsm::WarmupComplete` に変換する。
-    fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult);
+    fn store_gji_warmup_result(&self);
     /// 現在実行中の GJI probe_id を返す（GjiFsm へ通知済みの ID）。
     ///
     /// `None` の場合は GjiFsm 未接続なので `store_gji_warmup_result` 呼び出しをスキップできる。
@@ -137,8 +137,8 @@ impl ProbeIo for Output {
         self.warmup_coord.mark_composition_reset();
     }
 
-    fn store_gji_warmup_result(&self, result: crate::tsf::gji_fsm::WarmupResult) {
-        self.warmup_coord.store_warmup_result(result);
+    fn store_gji_warmup_result(&self) {
+        self.warmup_coord.mark_warmup_pending();
     }
 
     fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
@@ -295,39 +295,13 @@ impl Output {
     }
 }
 
-/// GJI probe が飛行中なら `WarmupResult` を記録する。
+/// GJI probe が飛行中なら warmup 完了を記録する。
 ///
 /// `ProbeAction::Transmit`/`TransmitSingleVk` の TSF/Chrome 両アームで同一の
-/// 10行ブロックが繰り返されるため、共通関数として抽出する。
-fn store_gji_warmup_if_probing(
-    io: &impl ProbeIo,
-    obs: crate::tsf::warmup::probe_fsm::ProbeObservations,
-    plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
-) {
+/// 呼び出しが繰り返されるため、共通関数として抽出する。
+fn store_gji_warmup_if_probing(io: &impl ProbeIo) {
     if io.current_gji_probe_id().is_some() {
-        use crate::tsf::gji_fsm::WarmupResult;
-        io.store_gji_warmup_result(WarmupResult {
-            path: classify_warmup_path(obs, plan),
-            prepend_f2_warmup: plan.should_prepend_f2,
-            nc_fired: obs.nc_fired,
-        });
-    }
-}
-
-/// probe dispatcher の汎用実装。
-/// `ProbeObservations` と `TransmitPlan` から `WarmupPath` を分類する純粋関数。
-/// Tsf/Chrome の両 Transmit アームで共用する。
-fn classify_warmup_path(
-    obs: crate::tsf::warmup::probe_fsm::ProbeObservations,
-    plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
-) -> crate::tsf::gji_fsm::WarmupPath {
-    use crate::tsf::gji_fsm::WarmupPath;
-    if obs.nc_fired {
-        WarmupPath::NameChangeConfirmed
-    } else if plan.used_eager_path {
-        WarmupPath::EagerLiteralDetected
-    } else {
-        WarmupPath::TimedOutFallback
+        io.store_gji_warmup_result();
     }
 }
 
@@ -376,7 +350,6 @@ where
             ProbeAction::Transmit {
                 cold_seq,
                 plan,
-                observations,
                 romaji,
                 target,
             } => {
@@ -429,7 +402,7 @@ where
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
-                        store_gji_warmup_if_probing(io, observations, &plan);
+                        store_gji_warmup_if_probing(io);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -455,7 +428,7 @@ where
                         io.transmit_chrome(&romaji, &chars);
                         io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
-                        store_gji_warmup_if_probing(io, observations, &plan);
+                        store_gji_warmup_if_probing(io);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -475,8 +448,6 @@ where
                 needs_shift,
                 timeout_ms,
                 is_last,
-                observations,
-                plan,
                 target,
             } => {
                 // `gate_is_bypass()` は TSF composition context の readiness ゲートで
@@ -513,7 +484,7 @@ where
                 if is_last {
                     io.send_deferred_vks(&io.take_pending_deferred_vks(), marker);
                     // GjiFsm bridge: romaji 全体の送信完了に相当するタイミングで warmup 結果を保存する。
-                    store_gji_warmup_if_probing(io, observations, &plan);
+                    store_gji_warmup_if_probing(io);
                 }
                 machine.apply_vk_sent(detector, deadline_ms);
             }
@@ -591,9 +562,7 @@ where
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
-    use crate::tsf::warmup::probe_fsm::{
-        ProbeAction, ProbeObservations, TransmitPlan, TransmitTarget,
-    };
+    use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan, TransmitTarget};
     use std::cell::Cell;
 
     /// テスト用フェイク ProbeIo。Win32 副作用を no-op にし、呼び出しをフラグで記録する。
@@ -676,7 +645,7 @@ mod tests {
             self.mark_cold_raw_tsf_called.set(true);
         }
 
-        fn store_gji_warmup_result(&self, _result: crate::tsf::gji_fsm::WarmupResult) {}
+        fn store_gji_warmup_result(&self) {}
 
         fn current_gji_probe_id(&self) -> Option<crate::tsf::gji_fsm::ProbeId> {
             None
@@ -730,9 +699,6 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations {
-                nc_fired: true,
-            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
         }];
@@ -755,9 +721,6 @@ mod tests {
                 used_eager_path: false,
                 needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations {
-                nc_fired: true,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
@@ -785,9 +748,6 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations {
-                nc_fired: true,
-            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -809,9 +769,6 @@ mod tests {
                 used_eager_path: true, // nc_fired=true + gji_long_idle=true
                 needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations {
-                nc_fired: true,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
@@ -836,9 +793,6 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations {
-                nc_fired: true,
-            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -861,9 +815,6 @@ mod tests {
                 used_eager_path: true, // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations {
-                nc_fired: false,
             },
             romaji: "ki".to_string(),
             target: TransmitTarget::Tsf,
@@ -922,9 +873,6 @@ mod tests {
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations {
-                nc_fired: false,
-            },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -952,9 +900,6 @@ mod tests {
                 used_eager_path: false, // is_tsf_mode=true → VK path
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations {
-                nc_fired: false,
             },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
@@ -984,9 +929,6 @@ mod tests {
                 needs_literal: false,   // gji_active=false → false
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations {
-                nc_fired: false,
-            },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
         }];
@@ -1013,9 +955,6 @@ mod tests {
                 used_eager_path: false, // is_tsf_mode → VK path
                 needs_literal: true, // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode)
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
-            },
-            observations: ProbeObservations {
-                nc_fired: false,
             },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
@@ -1048,9 +987,6 @@ mod tests {
                 used_eager_path: false,
                 needs_literal: false,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
-            },
-            observations: ProbeObservations {
-                nc_fired: false,
             },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
@@ -1085,7 +1021,6 @@ mod tests {
                 needs_literal: true,    // LiteralDetect 有効
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations { nc_fired: false },
             romaji: "to".to_string(),
             target: TransmitTarget::Tsf,
         }];

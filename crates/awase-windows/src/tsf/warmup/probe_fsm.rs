@@ -58,7 +58,7 @@ pub(crate) struct TsfEnvSnapshot {
     pub deferred_pending: bool,
 }
 
-/// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
+/// probe 中に観測した事実。`decide_transmit_plan` の入力に使う。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProbeObservations {
     pub nc_fired: bool,
@@ -154,8 +154,6 @@ pub(crate) enum ProbeAction {
         cold_seq: u32,
         /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
         plan: TransmitPlan,
-        /// probe 中に観測した事実。GjiFsm bridge・WarmupPath 分類に使う。
-        observations: ProbeObservations,
         romaji: String,
         target: TransmitTarget,
     },
@@ -174,8 +172,6 @@ pub(crate) enum ProbeAction {
         /// この VK の confirm 待ちタイムアウト（ms）。`plan.literal_detect_ms` を渡す。
         timeout_ms: u64,
         is_last: bool,
-        observations: ProbeObservations,
-        plan: TransmitPlan,
         /// 送信先（`Tsf`: WezTerm 等 TSF-native、`Chrome`: Chrome/Edge）。
         /// dispatcher が VK 送信関数（`send_single_tsf_vk`/`send_single_chrome_vk`）と
         /// detector 構築方式（SHOW ベース/write-bytes ベース）を切り替えるために使う。
@@ -276,7 +272,6 @@ pub(crate) async fn run_per_vk_confirm(
     cold_seq: u32,
     romaji: &str,
     plan: TransmitPlan,
-    observations: ProbeObservations,
     target: TransmitTarget,
 ) {
     use crate::tsf::probe::DetectionResult;
@@ -322,8 +317,6 @@ pub(crate) async fn run_per_vk_confirm(
             needs_shift,
             timeout_ms: plan.literal_detect_ms,
             is_last,
-            observations,
-            plan,
             target,
         });
         let vk_input = yield_step(ch.clone(), actions).await;
@@ -466,16 +459,7 @@ async fn tsf_probe_coro_body(
             needs_literal: true,
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
         };
-        let observations = ProbeObservations { nc_fired: true };
-        run_per_vk_confirm(
-            ch.clone(),
-            cold_seq,
-            &romaji,
-            plan,
-            observations,
-            TransmitTarget::Chrome,
-        )
-        .await;
+        run_per_vk_confirm(ch.clone(), cold_seq, &romaji, plan, TransmitTarget::Chrome).await;
         return;
     }
 
@@ -489,7 +473,6 @@ async fn tsf_probe_coro_body(
                 needs_literal,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations { nc_fired: true },
             romaji,
             target: TransmitTarget::Chrome,
         }],
