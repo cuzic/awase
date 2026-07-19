@@ -256,35 +256,3 @@ pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
 /// データのみのため、ユーザー判断で `true` のまま実運用を継続し、より広い条件
 /// （長い idle・他の cold_reason・他アプリ・複数セッション）で追加検証中。
 pub const DIAG_DISABLE_PROACTIVE_TSF_WARMUP: bool = true;
-
-/// カタカナ/英数 charset への「追従」warmup・VK 前置ロジックを丸ごと無効化し、
-/// 常に Hiragana(F2) として振る舞わせる診断フラグ（BUG-19 検証）。
-///
-/// ## 背景
-///
-/// BUG-19（`docs/known-bugs.md`）は「GJI の conv mode が謎にカタカナへ変化し、
-/// awase がそれに"追従"して実キー VK_DBE_KATAKANA を送ることで、一過性かも
-/// しれない状態を real IME の恒久的な状態としてロックインしてしまう」問題。
-/// 追補4までにデバウンス・復元書き込みの重複排除などを重ねてきたが、いずれも
-/// 「観測されたカタカナに追従して warmup キーを送る」という設計自体は残していた。
-///
-/// ユーザー（本プロジェクトの唯一の実利用者）は IME トレイからカタカナ/半角
-/// 英数を手動選択したことが一度もなく、今後もその予定がないと明言している。
-/// つまりこのユーザーの実運用においては、conv mode がカタカナ/英数へ変化する
-/// ことがあるとすれば、それは常に GJI 側の何らかの内部ドリフト（本物のユーザー
-/// 意図ではない）であり、awase 側がそれに追従する必要（927f2a2/109b4c9 が
-/// 保護していた「トレイでカタカナ選択したユーザー」のケース）が実質存在しない。
-///
-/// `true` の間は charset を常に `Charset::Hiragana` 扱いにする想定だった
-/// `ConvModeMgr::effective_charset()` 経由の消費側（`output/mod.rs::send_eager_tsf_warmup`、
-/// `output/probe_io.rs::transmit_tsf`）は、この診断フラグ新設より前の BUG-19 対応で
-/// 既に「常に F2/VK path のみ」に単純化済みで `effective_charset()` を呼んでいなかった。
-/// 唯一の実消費者だった `tsf/warmup/cold_warmup.rs::preamble()` の charset 選択も
-/// 2026-07-18 の cold-start 予防的 F2 送信撤去に伴い削除され、`effective_charset()`
-/// 自体を `state/conv_mode.rs` から削除した。
-///
-/// **現状このフラグは配線先を持たず、値を変えても挙動に一切影響しない**（2026-07-18
-/// 確認）。`ConvModeMgr::get()`/`update_from_conv()`（観測・ログ）自体は無関係のため
-/// 引き続き通常通り動作する。撤去するか、charset-aware warmup を将来的に復活させる際の
-/// 再配線ポイントとして残すかはユーザー判断待ち。
-pub const DIAG_FORCE_HIRAGANA_CHARSET: bool = true;
