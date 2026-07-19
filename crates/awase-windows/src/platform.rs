@@ -290,8 +290,7 @@ impl WindowsPlatform {
                 } => {
                     log::debug!(
                         "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
-                         ncwait={}ms forces_f2={} long={}",
-                        params.ncwait_budget_ms,
+                         forces_f2={} long={}",
                         params.forces_prepend_f2,
                         params.is_long_cold
                     );

@@ -98,7 +98,7 @@ pub(crate) fn decide_transmit_plan(
     is_long_cold: bool,
 ) -> TransmitPlan {
     // nc_fired=false + TSF mode (WezTerm) + !forces_prepend_f2 (Short cold):
-    // SendFreshF2 action が ~300ms 前に fresh F2 を送信済み → WezTerm の TSF context は
+    // 直前に fresh F2 を送信済み（`ctx.fresh_f2_at_probe_start`）→ WezTerm の TSF context は
     // 既に初期化済み。バッチに再び F2 を含めると WezTerm が TSF reinit を再トリガーし、
     // 同一バッチの先頭 VK が reinit 中に届いてリテラル化する race が起きる。
     // Medium/Long cold (forces_prepend_f2=true): GJI が F2×2 で起動中 or 無応答のため F2 同梱が必要。
@@ -192,9 +192,6 @@ pub(crate) struct SacrificialResend {
 /// ステートマシン → dispatcher 方向の宣言的アクション。
 #[derive(Debug)]
 pub(crate) enum ProbeAction {
-    /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、完了したら
-    /// [`TsfProbeCoro::apply_fresh_f2_sent`] を呼ぶ。
-    SendFreshF2 { cold_seq: u32, probe_settled: bool },
     /// TSF または Chrome バッチパイプラインで `romaji` を送信する。
     ///
     /// dispatcher は romaji 送信直後に `TsfWarmupCoordinator` の deferred キューを
@@ -566,7 +563,7 @@ mod tests {
     #[test]
     fn decide_plan_nc_not_fired_tsf_not_long_idle_suppresses_f2_but_keeps_literal() {
         // nc_fired=false + TSF mode + Short cold (forces_prepend_f2=false):
-        // SendFreshF2 が ~300ms 前に送信済み → バッチに F2 を含めると reinit race でリテラル化する。
+        // 直前に fresh F2 送信済み → バッチに F2 を含めると reinit race でリテラル化する。
         // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
         let obs = ProbeObservations {
             nc_fired: false,

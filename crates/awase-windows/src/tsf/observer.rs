@@ -70,13 +70,14 @@ pub(in crate::tsf) struct Baseline(u32);
 /// 読み取りは judgement 層 (`probe.rs`) と action 層 (`output.rs`) から行う。
 #[derive(Debug)]
 pub struct TsfObservations {
-    /// `wait_for_tsf_cold_settle()` が OBJ_NAMECHANGE を early-exit シグナルとして使うカウンタ。
+    /// OBJ_NAMECHANGE 発火のたびに +1 されるカウンタ。現在は write-only。
     ///
-    /// `send_eager_tsf_warmup()` 呼び出し時にリセットされ、
-    /// WezTerm ウィンドウの OBJ_NAMECHANGE が発火するたびに +1 される。
-    ///
-    /// 書き込み: `observation_event_proc`（NAMECHANGE イベント）, `send_eager_tsf_warmup`（リセット）
-    /// 読み取り: `namechange_baseline()` / `NamechangeBaseline::fired()` 経由
+    /// かつて `gji_warmup_coro.rs` の NameChangeWait フェーズ（Phase 3）がこのカウンタの
+    /// 変化を読み取って GJI 応答を判定していたが、`DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
+    /// （常時 true）下で当該フェーズ自体が到達不能だったため撤去した（`docs/known-bugs.md`
+    /// BUG-24 参照）。書き込み側（`observation_event_proc` の NAMECHANGE イベント通知、
+    /// `send_eager_tsf_warmup` によるリセット）は WinEventHook 登録・他フィールドと絡む
+    /// ため本コミットでは触れず残している。
     pub(in crate::tsf) focus_namechange: ChangeCounter,
 
     /// `GoogleJapaneseInputCandidateWindow` が `EVENT_OBJECT_SHOW` で表示されるたびに +1 されるカウンタ。
@@ -384,14 +385,6 @@ pub(crate) fn gji_is_active_ime() -> bool {
         && TSF_OBS.tsf_active_kind.load(Ordering::Acquire) == 1
 }
 
-/// OBJ_NAMECHANGE カウンタのベースラインを取得する。
-///
-/// `SendInput` 等を呼ぶ前に取得し、完了後に `NamechangeBaseline::fired()` で
-/// 変化があったかを確認する。
-pub(crate) fn namechange_baseline() -> NamechangeBaseline {
-    NamechangeBaseline(TSF_OBS.focus_namechange.baseline())
-}
-
 /// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。
 pub(crate) fn reset_namechange_seq() {
     TSF_OBS.focus_namechange.reset();
@@ -465,18 +458,6 @@ pub(crate) fn take_pending_end_composition() -> bool {
     TSF_OBS
         .pending_end_composition
         .swap(false, Ordering::Relaxed)
-}
-
-/// OBJ_NAMECHANGE カウンタのベースライン値。
-///
-/// `namechange_baseline()` で取得し、`fired()` で変化を検出する。
-pub(crate) struct NamechangeBaseline(Baseline);
-
-impl NamechangeBaseline {
-    /// ベースライン取得後にカウンタが変化したかどうかを返す。
-    pub(crate) fn fired(&self) -> bool {
-        TSF_OBS.focus_namechange.has_changed(self.0)
-    }
 }
 
 // ── IME 種別 ──

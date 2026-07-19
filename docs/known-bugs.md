@@ -1906,6 +1906,40 @@ architecture_guard(10)・layer_boundary_guard(8)・journal_replay(1)・lib(138)
 `dispatch_probe_actions` の `TransmitSingleVk` アーム）,
 `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`per_vk_recovery_params`）
 
+**追補（2026-07-11、予防的 warmup レイヤーの撤去。v1.8.9 で per-VK confirm
+方式が実機確認された後の後片付け）:** 上記の per-VK confirm ループが
+`SetOpenTrue` 直後の偽陽性を reactive 側だけで解消できることを実機で
+確認できたため（`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` を有効化した実機検証、
+上記参照）、無条件に到達不能だった予防的コードパスを撤去した
+（`cleanup/remove-proactive-warmup-safeguards` ブランチ）。
+
+- `send_eager_tsf_warmup` のカタカナ/英数 charset 追従（`VK_DBE_KATAKANA`/
+  `VK_DBE_ALPHANUMERIC` 系）— `DIAG_FORCE_HIRAGANA_CHARSET`（BUG-19 追補5）
+  下で到達不能だった。`transmit_tsf` の katakana leading-warmup 分岐、
+  `send_vk_runs_with_leading_warmup`、`cold_warmup.rs` の charset 別
+  `conv_target` 復元ロジック、`ConvModeMgr::on_hankata_warmup_sent`、
+  `tsf/send.rs` の `send_vk_dbe_katakana_warmup`/`send_vk_dbe_alpha_warmup`
+  を撤去。
+- `GjiWarmupCoro` の Phase 2 (`SendFreshF2`) + Phase 3
+  (`NameChangeWait`/`SecondaryProbe`) — `DIAG_DISABLE_PROACTIVE_TSF_WARMUP`
+  下で settle-check 分岐が Phase 2 に到達する前に必ず `break` していた。
+  `ProbeAction::SendFreshF2`、`ProbeIo::send_fresh_f2`/`send_extra_f2`、
+  `NamechangeBaseline`、`ProbeParams.ncwait_budget_ms`（`ColdKind`
+  分類自体は維持）を撤去。
+- `GjiWarmupCoro` Phase 5a の proactive `StartSacrificialWarmup`
+  （long_cold && is_tsf_mode で犠牲キー escalation を即発行する分岐）
+  — 同フラグ下で無条件に到達不能だった。Chrome 側の cold-start パス
+  （`probe_fsm.rs::TsfProbeCoro`）と partial-literal 回収パス
+  （`literal_detect_fsm.rs`）が発行する同アクションは撤去していない
+  （生きた経路）。
+
+いずれも「`DIAG_*` フラグが恒久的に `true` のままである」ことを前提にした
+撤去であり、フラグを再度 `false` に戻す場合はこれらのコミットの revert
+が必要。`cargo test -p awase-windows --lib`（138 passed）・
+`--test golden_scenarios`（19 passed）・`--test architecture_guard`
+（10 passed）・`--test layer_boundary_guard`（8 passed）・
+`--test journal_replay`（1 passed）・clippy（`-D warnings`）で確認済み。
+
 ---
 
 ## BUG-25: 左Shift単独タップによる「IME-ON 半角英数」持続トグル（BUG-15 hold方式の置換）

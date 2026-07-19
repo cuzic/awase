@@ -764,6 +764,7 @@ impl SettingsApp {
                  US: ANSI 104キー配列。無変換/変換キーが無いため、\n\
                  親指キーとホットキーを別途 US 向けに変更する必要があります。",
             );
+            let prev_keyboard_model = self.config.general.keyboard_model;
             egui::ComboBox::from_id_salt("keyboard_model")
                 .selected_text(keyboard_model_label(self.config.general.keyboard_model))
                 .show_ui(ui, |ui| {
@@ -779,14 +780,53 @@ impl SettingsApp {
                         "US (ANSI 104キー)",
                     );
                 });
+            // US → JIS への切替時、Space/Left Alt/Right Alt・独自ホットキー等
+            // US 向けに変更していた設定が JIS では意味が変わる/使えないまま残る
+            // （Space は単独タップの意味が変わり、Alt はなりすまし設定自体が
+            // 無意味になる）のを防ぐため、親指キーとホットキー一式を
+            // KeysConfig::default()/GeneralConfig::default() と同じ JIS 既定値へ
+            // 強制的に戻す。ユーザーが手動で戻す手間を省く。
+            if prev_keyboard_model != awase::scanmap::KeyboardModel::Jis
+                && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Jis
+            {
+                self.config.general.left_thumb_key = "無変換".to_string();
+                self.config.general.right_thumb_key = "変換".to_string();
+                self.config.keys.engine_on = vec!["Ctrl+Shift+変換".to_string()];
+                self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
+                self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
+                self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
+                self.config.keys.engine_off_solo_triple = Some("VK_NONCONVERT".to_string());
+            }
+            // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
+            // （Ctrl+Shift+変換 等）は US に無変換/変換キーが物理的に存在しないため
+            // 動作しない。動かない既定値を黙って残すより、未設定にして
+            // 「キー設定」タブで明示的に選んでもらう方が誠実（他アプリのショートカット
+            // と衝突しない US 向け「正解」の組み合わせを勝手に決め打ちできないため）。
+            if prev_keyboard_model != awase::scanmap::KeyboardModel::Us
+                && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us
+            {
+                self.config.keys.engine_on.clear();
+                self.config.keys.engine_off.clear();
+                self.config.keys.ime_on.clear();
+                self.config.keys.ime_off.clear();
+                self.config.keys.engine_off_solo_triple = None;
+            }
         });
         if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
             ui.label(
                 "  US 配列では既定の親指キー(無変換/変換)とホットキーが使えません。\n\
                  下の「レイアウト」で nicola_us.yab を選び、キー設定タブで\n\
-                 親指キーを変更してください（Alt/Ctrl/Win は OS 予約修飾キーのため\n\
+                 親指キーを変更してください（Ctrl/Win は OS 予約修飾キーのため\n\
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
-                 F13-F24 等へ物理リマップするか、Space を検討してください）。",
+                 F13-F24 等へ物理リマップするか、Space を検討してください。\n\
+                 キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
+                 エンジン ON 時のみ Alt キーを親指キーとして使えます）。\n\
+                 \n\
+                 エンジン ON/OFF・IME ON/OFF・単独5連打OFF のホットキーも未設定に\n\
+                 なっています（無変換/変換前提の既定値は US では動かないため）。\n\
+                 「キー設定」タブで、動作する物理キーの組み合わせを設定してください。\n\
+                 単独5連打OFF は、親指キーとして設定した物理キー自体を指定してください\n\
+                 （それ以外のキーを指定しても発火しません）。",
             );
         }
         ui.horizontal(|ui| {
@@ -820,7 +860,11 @@ impl SettingsApp {
         ui.label("親指キー");
         ui.horizontal(|ui| {
             ui.label("  左親指:").on_hover_text(
-                "左の親指シフトキーに使うキーです。\n通常は「無変換」キーを使います。",
+                "左の親指シフトキーに使うキーです。通常は「無変換」キーを使います。\n\
+                 「Left Alt」を選ぶと、物理 Left Alt キーをエンジン ON 時に限り\n\
+                 左親指キーとして使います（OFF 時は通常の Alt として機能し、\n\
+                 Alt+Tab 等を損ないません。PowerToys 等の OS レベルキーリマップと\n\
+                 同様の効果を awase 単体で実現する機能です）。",
             );
             thumb_key_combo(
                 ui,
@@ -830,7 +874,9 @@ impl SettingsApp {
         });
         ui.horizontal(|ui| {
             ui.label("  右親指:").on_hover_text(
-                "右の親指シフトキーに使うキーです。\n通常は「変換」キーを使います。",
+                "右の親指シフトキーに使うキーです。通常は「変換」キーを使います。\n\
+                 「Right Alt」を選ぶと、物理 Right Alt キーをエンジン ON 時に限り\n\
+                 右親指キーとして使います（詳細は左親指のヒントを参照）。",
             );
             thumb_key_combo(
                 ui,
@@ -1632,6 +1678,42 @@ impl eframe::App for SettingsApp {
             ctx.request_repaint();
         }
 
+        // 現在編集している config.toml の実パスを常時表示する。
+        //
+        // awase.exe と awase-settings.exe はそれぞれ独立に config.toml のパスを
+        // 解決する（find_config_path()、コマンドライン引数 → 実行ファイル隣 →
+        // ワークスペースルート、の優先順位で決まる）ため、起動方法や配置次第では
+        // 2つの実行ファイルが異なる config.toml を読み書きしてしまい得る
+        // （設定画面で保存しても awase.exe に反映されない、という実機バグとして
+        // 2026-07-19 に確認済み）。この表示により、少なくとも「今どのファイルを
+        // 編集しているか」を一目で確認・比較できるようにする。
+        egui::TopBottomPanel::top("config_path_panel").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("設定ファイル:");
+                let display_path = self
+                    .config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.config_path.clone());
+                ui.monospace(display_path.display().to_string())
+                    .on_hover_text(
+                        "awase.exe が実際に読み込む config.toml と同じパスか確認してください。\n\
+                         起動方法（コマンドライン引数の有無・カレントディレクトリ）によっては\n\
+                         別のファイルを指している場合があります。",
+                    );
+                if ui.small_button("フォルダを開く").clicked() {
+                    if let Some(dir) = display_path.parent() {
+                        let _ = std::process::Command::new("explorer")
+                            .arg("/select,")
+                            .arg(&display_path)
+                            .spawn()
+                            .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        });
+
         // Side panel for tab selection
         egui::SidePanel::left("tab_panel")
             .resizable(false)
@@ -1674,10 +1756,16 @@ impl eframe::App for SettingsApp {
                 if ui.button("キャンセル").clicked() {
                     self.cancel();
                 }
-                if !self.status.is_empty() {
-                    ui.label(&self.status);
-                }
             });
+            // ステータス（バリデーション警告等）はボタン行とは別の行に出す。
+            // ボタンと同じ ui.horizontal() 内に置くと、長い警告文が折り返さず
+            // 右側に切れて見えなくなるため（複数警告を "; " 連結すると
+            // 数百文字になり得る）。折り返しを明示指定し、ウィンドウ幅いっぱいまで
+            // 使って複数行に自然に折り返させる。
+            if !self.status.is_empty() {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(&self.status).wrap());
+            }
             ui.add_space(6.0);
         });
 
@@ -1816,14 +1904,19 @@ fn key_list_ui(
 /// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。US 配列で
 /// 無変換/変換キーが無い場合の代替はこちらの範囲を推奨する。
 ///
-/// 意図的に含めていないもの: VK_LMENU/VK_RMENU（Alt）・VK_LCONTROL/VK_RCONTROL
-/// （Ctrl）・VK_LWIN/VK_RWIN（Win）。これらは `ModifierState::is_os_modifier_held`
-/// の対象で、`bypass_reason` がそのキーの KeyDown を即座に `OsModifierHeld` として
-/// 素通しするため、親指キーに割り当てても `PendingThumb` に一切入らず同時打鍵検出
-/// そのものが機能しない（`engine/tests.rs` の
+/// 意図的に含めていないもの: VK_LCONTROL/VK_RCONTROL（Ctrl）・VK_LWIN/VK_RWIN（Win）。
+/// これらは `ModifierState::is_os_modifier_held` の対象で、`bypass_reason` が
+/// そのキーの KeyDown を即座に `OsModifierHeld` として素通しするため、親指キーに
+/// 割り当てても `PendingThumb` に一切入らず同時打鍵検出そのものが機能しない
+/// （`engine/tests.rs` の
 /// `test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass` で
 /// 確認済み。手動 remap の思いつきではなく実測済みの制約）。手動で config.toml に
 /// 書けばパースは通るが動作しないため、GUI の候補としては提示しない。
+/// Alt (VK_LMENU/VK_RMENU) は本来同じ制約を受けるが、`ALT_IMPERSONATION_OPTIONS`
+/// （左親指/右親指の候補にのみ追加で表示、`thumb_key_combo` 参照）経由でなら
+/// エンジン ON 時限定のなりすまし機構（`hook.rs::resolve_thumb_key`）が
+/// この制約を回避するため使用可能。単独5連打エンジンOFF（`solo_triple_combo`）
+/// 等、`THUMB_KEY_OPTIONS` を共有する他の用途には Alt を出さないよう分離してある。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
     ("変換", "VK_CONVERT"),
@@ -1844,6 +1937,15 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("F23", "VK_F23"),
     ("F24", "VK_F24"),
 ];
+
+/// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
+///
+/// 内部表記 `"Left Alt"`/`"Right Alt"` は VK 名ではなく、`hook.rs::resolve_thumb_key`
+/// が特別に解釈する指示文字列。物理 Left/Right Alt キーをエンジン ON 時に限り
+/// 親指キー（無変換/変換相当）として扱う（`config.rs` の `GeneralConfig::keyboard_model`
+/// doc・`THUMB_KEY_OPTIONS` doc 参照）。`solo_triple_combo` 等、`THUMB_KEY_OPTIONS` を
+/// 共有する他の用途には出さないため、意図的に別の定数に分離してある。
+const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] = &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///
@@ -2022,8 +2124,9 @@ fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
 
 /// 親指キー選択ドロップダウン。変更時は true を返す。
 fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
-    let display = THUMB_KEY_OPTIONS
-        .iter()
+    let options = THUMB_KEY_OPTIONS.iter().chain(ALT_IMPERSONATION_OPTIONS);
+    let display = options
+        .clone()
         .find(|(_, v)| *v == current.as_str())
         .map_or(current.as_str(), |(d, _)| *d)
         .to_string();
@@ -2036,7 +2139,7 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in THUMB_KEY_OPTIONS {
+            for (label, internal) in options {
                 if ui
                     .selectable_label(current.as_str() == *internal, *label)
                     .clicked()
@@ -2290,7 +2393,23 @@ fn empty_yab_layout() -> YabLayout {
 
 // ── Utility functions ──
 
+/// config.toml のパスを解決する。
+///
+/// `crates/awase-windows/src/app/mod.rs::find_config_path()` と**同じ優先順位**
+/// （コマンドライン引数 → `resolve_relative_to_exe`）で解決すること。ここが
+/// ズレていると、`awase.exe` を明示パス引数付きショートカット等で起動している
+/// 場合に、awase-settings.exe が別の（自動解決された）config.toml を編集して
+/// しまい、「設定画面で保存しても awase.exe に反映されない」という実機バグの
+/// 原因になる（2026-07-19 に実際に発生し確認済み）。
 fn find_config_path() -> std::path::PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg.starts_with("--") {
+            let _ = args.next(); // value をスキップ
+            continue;
+        }
+        return std::path::PathBuf::from(arg);
+    }
     awase::paths::resolve_relative_to_exe("config.toml")
 }
 
@@ -2362,11 +2481,23 @@ fn send_reload_config_message() {
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
         use windows::core::w;
         unsafe {
-            let hwnd = FindWindowW(w!("awase_msg_window"), None);
+            // クラス名は crates/awase-windows/src/tray.rs の
+            // `WINDOW_CLASS_NAME` = "awase_tray_window" と必ず一致させること。
+            // 以前ここは "awase_msg_window" という存在しないクラス名を探しており、
+            // FindWindowW が常に失敗 → 適用ボタンを押しても awase.exe に一切
+            // 通知が届かない（無言で失敗する）というバグがあった
+            // （2026-07-19 実機で確認・修正）。awase-settings は awase-windows を
+            // 依存に持たないため定数を共有できず、文字列直書きで揃えている。
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
             if let Ok(hwnd) = hwnd {
                 let msg = windows::Win32::Foundation::WPARAM(0);
                 let lparam = windows::Win32::Foundation::LPARAM(0);
                 let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
+            } else {
+                log::warn!(
+                    "設定リロード通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
+                     awase.exe が起動していないか、権限レベルが異なる可能性があります。"
+                );
             }
         }
     }

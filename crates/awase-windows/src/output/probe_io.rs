@@ -5,7 +5,6 @@
 
 use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
 use crate::state::key_sequence_policy::{self, SacrificialWarmupKey};
-use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::output::ColdReason;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
@@ -39,15 +38,6 @@ pub(crate) trait ProbeIo {
     /// probe machine が何回 tick されたか・途中で置き換わったかに関係なく、
     /// 実際に romaji を送信する直前でこれを呼んで得た値を `send_deferred_vks` に渡すこと。
     fn take_pending_deferred_vks(&self) -> Vec<DeferredVk>;
-    /// fresh F2 (`VK_DBE_HIRAGANA`) を送信し、`(namechange_baseline, sent_ms)` を返す。
-    ///
-    /// ベースラインは SendInput **前**に取得すること（送信中の NAMECHANGE を見逃さないため）。
-    fn send_fresh_f2(&self) -> (NamechangeBaseline, u64);
-    /// gji_long_idle 時に追加 F2 を送信して F2×2 連続とする。
-    ///
-    /// F2 単発では GJI I/O が発生しないが、F2×2 連続では GJI が起動して I/O を出す
-    /// （cold=1244 実測: 31ms 以内）。`send_fresh_f2` の直後に呼ぶこと。
-    fn send_extra_f2(&self);
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
     /// warm 状態を維持したまま連続カウントをインクリメントする（TSF mode 回収パス用）。
@@ -120,25 +110,11 @@ impl ProbeIo for Output {
         chars: &[(VkCode, bool)],
         outcome: &WarmupOutcome,
     ) -> usize {
-        // TSF-native (WezTerm 等) では ImmSetConversionStatus が TSF モードに反映されない。
-        // VK cold path (prepend_f2_warmup=true, used_eager_path=false) でカタカナモードの場合、
-        // 先頭 VK_DBE_HIRAGANA の代わりに VK_DBE_KATAKANA (+ 半角なら VK_DBE_SBCSCHAR) を送り
-        // TSF 入力モードをカタカナに切り替える。
-        // `effective_charset()` は DIAG_FORCE_HIRAGANA_CHARSET が有効な間は常に Hiragana を
-        // 返すため、その間このカタカナ追従パス自体に一切入らない（BUG-19 検証）。
-        let charset = self.conv_mode.effective_charset();
-        let result = if outcome.prepend_f2_warmup && !outcome.used_eager_path && charset.is_katakana()
-        {
-            Self::send_vk_runs_with_leading_warmup(chars, outcome.cold_seq, charset);
-            // HanKata (F1+F3) leading warmup 後は IMM が ZenKata を返すため conv_mode 汚染を抑制する。
-            if charset == crate::state::Charset::HankakuKatakana {
-                self.conv_mode
-                    .on_hankata_warmup_sent(crate::state::TickMs(crate::hook::current_tick_ms()));
-            }
-            chars.len()
-        } else {
-            crate::output::TsfSendPipeline::transmit(romaji, chars, outcome)
-        };
+        // カタカナ/英数 charset への追従送信（VK_DBE_KATAKANA 等の leading warmup）は
+        // BUG-19 のロックイン事故を受けて撤去した。`DIAG_FORCE_HIRAGANA_CHARSET` により
+        // `ConvModeMgr::effective_charset()` は既に常に Hiragana を返しており、この
+        // 追従パスは実質的に到達不能だった（`docs/known-bugs.md` BUG-19 参照）。
+        let result = crate::output::TsfSendPipeline::transmit(romaji, chars, outcome);
         // unicode パスを使った場合（used_eager_path=true かつ kana が存在する）は
         // PendingGjiConfirm 状態に入る: GJI が I/O 応答するまで次の warm キーも unicode で送る。
         if outcome.used_eager_path && crate::tsf::output::kana_for_romaji_static(romaji).is_some() {
@@ -166,27 +142,6 @@ impl ProbeIo for Output {
 
     fn take_pending_deferred_vks(&self) -> Vec<DeferredVk> {
         self.warmup_coord.take_pending_deferred()
-    }
-
-    fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
-        use crate::vk::VK_DBE_HIRAGANA;
-        let refresh = [
-            crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, false),
-            crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, true),
-        ];
-        let nc_baseline = crate::tsf::observer::namechange_baseline();
-        let _ = crate::win32::send_input_safe(&refresh);
-        let fresh_f2_ms = crate::hook::current_tick_ms();
-        (nc_baseline, fresh_f2_ms)
-    }
-
-    fn send_extra_f2(&self) {
-        use crate::vk::VK_DBE_HIRAGANA;
-        let extra = [
-            crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, false),
-            crate::tsf::output::make_tsf_key_input(VK_DBE_HIRAGANA, true),
-        ];
-        let _ = crate::win32::send_input_safe(&extra);
     }
 
     fn consecutive_count(&self) -> u32 {
@@ -561,29 +516,6 @@ where
     while let Some(action) = queue.pop_front() {
         match action {
             ProbeAction::Done => return DispatchResult::Done,
-
-            ProbeAction::SendFreshF2 {
-                cold_seq,
-                probe_settled,
-            } => {
-                let settle_reason = if probe_settled {
-                    "NativeF2Consumed/SetOpenTrue"
-                } else {
-                    "probe timeout"
-                };
-                log::debug!(
-                    "[tsf-probe] cold={cold_seq} {settle_reason} → fresh F2 + NameChangeWait"
-                );
-                let (nc_baseline, fresh_f2_ms) = io.send_fresh_f2();
-                if machine.forces_prepend_f2_for_extra_f2() {
-                    // Medium/Long cold: F2 単発では GJI が I/O を出さない。F2×2 連続で GJI を起動させる。
-                    // NameChangeWait 内の gji_long_idle_probe が GJI I/O 応答を監視し、
-                    // GJI_IDLE_MS 静止確認後に VK path へ移行する。
-                    log::debug!("[tsf-probe] cold={cold_seq} forces_prepend_f2: 追加 F2 送信 (F2×2 連続で GJI 起動)");
-                    io.send_extra_f2();
-                }
-                machine.apply_fresh_f2_sent(nc_baseline, fresh_f2_ms);
-            }
 
             ProbeAction::Transmit {
                 cold_seq,
@@ -979,8 +911,6 @@ mod tests {
         transmit_chrome_called: Cell<bool>,
         send_single_tsf_vk_call_count: Cell<u32>,
         deferred_vks_called: Cell<bool>,
-        send_fresh_f2_called: Cell<bool>,
-        send_extra_f2_called: Cell<bool>,
         set_raw_literal_called: Cell<bool>,
         mark_cold_raw_tsf_called: Cell<bool>,
         increment_consecutive_called: Cell<bool>,
@@ -1003,8 +933,6 @@ mod tests {
                 transmit_chrome_called: Cell::new(false),
                 send_single_tsf_vk_call_count: Cell::new(0),
                 deferred_vks_called: Cell::new(false),
-                send_fresh_f2_called: Cell::new(false),
-                send_extra_f2_called: Cell::new(false),
                 set_raw_literal_called: Cell::new(false),
                 mark_cold_raw_tsf_called: Cell::new(false),
                 increment_consecutive_called: Cell::new(false),
@@ -1044,13 +972,6 @@ mod tests {
         }
         fn take_pending_deferred_vks(&self) -> Vec<DeferredVk> {
             vec![]
-        }
-        fn send_fresh_f2(&self) -> (NamechangeBaseline, u64) {
-            self.send_fresh_f2_called.set(true);
-            (crate::tsf::observer::namechange_baseline(), 0)
-        }
-        fn send_extra_f2(&self) {
-            self.send_extra_f2_called.set(true);
         }
         fn consecutive_count(&self) -> u32 {
             self.consecutive
@@ -1112,14 +1033,6 @@ mod tests {
     }
 
     fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
-        make_gji_machine_with_cold(crate::tuning::SETTLE_TIMEOUT_MS, false)
-    }
-
-    fn make_gji_machine_with_cold(
-        ncwait_budget_ms: u64,
-        forces_prepend_f2: bool,
-    ) -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
-        let is_long_cold = ncwait_budget_ms == crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS;
         let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
         crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
             "ka",
@@ -1130,9 +1043,8 @@ mod tests {
             ColdReason::FocusChange,
             false,
             false,
-            ncwait_budget_ms,
-            forces_prepend_f2,
-            is_long_cold,
+            false,
+            false,
             false,
             0,
         )
@@ -1342,85 +1254,6 @@ mod tests {
     // `raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`（set_raw_literal を
     // 呼ぶことを期待）と正反対の期待値を持つ矛盾したテストペアが残っていた。
     // 現在の意図（84e6942）と一致する後者のみを残す。
-
-    #[test]
-    fn send_fresh_f2_action_calls_send_fresh_f2() {
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::SendFreshF2 {
-            cold_seq: 0,
-            probe_settled: false,
-        }];
-        // SendFreshF2 は apply_fresh_f2_sent を呼ぶだけで Done を emit しない。
-        // 返値は false（queue が空になり Done なし）。
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(!result.is_done());
-        assert!(io.send_fresh_f2_called.get());
-    }
-
-    #[test]
-    fn send_fresh_f2_with_gji_long_idle_sends_extra_f2_and_waits_namechange() {
-        // forces_prepend_f2=true (Long cold) 時は SendFreshF2 の直後に追加 F2 を送信して F2×2 連続とする。
-        // NameChangeWait はスキップせず GJI I/O 応答を gji_long_idle_probe モードで監視する。
-        let io = FakeProbeIo::default();
-        let mut machine =
-            make_gji_machine_with_cold(crate::tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS, true);
-        let actions = vec![ProbeAction::SendFreshF2 {
-            cold_seq: 0,
-            probe_settled: false,
-        }];
-        // forces_prepend_f2=true (Long cold) のとき:
-        // - send_fresh_f2 と send_extra_f2 が呼ばれる（F2×2 連続）
-        // - GjiWarmupCoro が GJI I/O 応答を待つため Done を即返さない
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(
-            !result.is_done(),
-            "forces_prepend_f2: GJI I/O 応答を待つため Done を即返さないべき"
-        );
-        assert!(
-            io.send_fresh_f2_called.get(),
-            "send_fresh_f2 が呼ばれるべき"
-        );
-        assert!(
-            io.send_extra_f2_called.get(),
-            "forces_prepend_f2: 追加 F2 で F2×2 連続にするべき"
-        );
-        assert!(
-            !io.transmit_tsf_called.get(),
-            "TransmitTsf は即実行されないべき"
-        );
-    }
-
-    #[test]
-    fn send_fresh_f2_with_medium_cold_sends_extra_f2_and_waits_namechange() {
-        // 再現テスト: ColdKind::Medium（7s〜10s idle）
-        // cold=7 "このろぐ → kおのろぐ" バグ: GJI が fresh F2 から 325ms 後に起動するため
-        // SETTLE_TIMEOUT_MS (300ms) では間に合わず "kお" になっていた。
-        // gji_long_idle_probe=true + MEDIUM_IDLE_PROBE_TOTAL_MS (550ms) で GJI I/O を待てること。
-        // forces_prepend_f2=true だが Long ではないので追加 F2 なし（F2×1 のみ）。
-        // ※ Medium の forces_prepend_f2=true は「F2×2 を強制」ではなく「gji_long_idle_probe=true」の意味。
-        let io = FakeProbeIo::default();
-        // Medium cold: forces_prepend_f2=true (gji_long_idle_probe 有効), budget=MEDIUM_IDLE_PROBE_TOTAL_MS
-        let mut machine =
-            make_gji_machine_with_cold(crate::tuning::MEDIUM_IDLE_PROBE_TOTAL_MS, true);
-        let actions = vec![ProbeAction::SendFreshF2 {
-            cold_seq: 0,
-            probe_settled: false,
-        }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(
-            !result.is_done(),
-            "medium idle: GJI I/O 応答を待つため Done を即返さないべき"
-        );
-        assert!(
-            io.send_fresh_f2_called.get(),
-            "send_fresh_f2 が呼ばれるべき"
-        );
-        assert!(
-            io.send_extra_f2_called.get(),
-            "medium idle (forces_prepend_f2=true): F2×2 を送るべき"
-        );
-    }
 
     #[test]
     fn nc_not_fired_with_gji_long_idle_forces_unicode_tsf() {

@@ -214,7 +214,13 @@ pub(crate) unsafe fn handle_wm_timer(
                     .push((timer_id, wparam));
                 return;
             }
-            let modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+            let mut modifiers = unsafe { crate::observer::focus_observer::read_os_modifiers() };
+            // Alt なりすまし中の補正（`crate::hook::is_alt_impersonation_active` doc・
+            // `Runtime::build_ctx` の同様の補正参照）。タイマー満了経路
+            // （timeout_pending_thumb 等）でもここを直さないとなりすましが機能しない。
+            if hook::is_alt_impersonation_active() {
+                modifiers.alt = false;
+            }
             let ctx = super::build_input_context(
                 app.platform_state.ime.effective_open(),
                 app.platform_state.ime.input_mode(),

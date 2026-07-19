@@ -85,15 +85,19 @@ pub struct GeneralConfig {
     ///
     /// 上書き先の VK 選定には注意が必要:
     ///
-    /// - **`VK_LMENU`/`VK_RMENU`（Alt）・`VK_LCONTROL`/`VK_RCONTROL`（Ctrl）・
-    ///   `VK_LWIN`/`VK_RWIN`（Win）は使用不可。** これらは `ModifierState::
-    ///   is_os_modifier_held()` で「OS 予約修飾キー」とみなされ、`bypass_reason`
-    ///   がそのキーの KeyDown を即座に `OsModifierHeld` として素通しするため、
-    ///   `PendingThumb` に一切入らず同時打鍵検出そのものが機能しない
-    ///   （`engine/tests.rs` の
+    /// - **`VK_LMENU`/`VK_RMENU`（Alt）を `left_thumb_key`/`right_thumb_key` に
+    ///   直接指定することはできない。** `ModifierState::is_os_modifier_held()` で
+    ///   「OS 予約修飾キー」とみなされ、`bypass_reason` がそのキーの KeyDown を
+    ///   即座に `OsModifierHeld` として素通しするため、`PendingThumb` に一切入らず
+    ///   同時打鍵検出そのものが機能しない（`engine/tests.rs` の
     ///   `test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass`
-    ///   で確認済み）。特定の物理キーだけを Alt から切り離して親指シフト専用にする
-    ///   運用は、`ModifierState` の左右別トラッキングという設計変更が要る未実装機能。
+    ///   で確認済み）。**Alt を使いたい場合は下記の `"Left Alt"`/`"Right Alt"`
+    ///   という特殊な値を使うこと**（VK 名を直接指定するのではなく、なりすまし
+    ///   機構経由で同じ問題を回避する）。
+    /// - **`VK_LCONTROL`/`VK_RCONTROL`（Ctrl）・`VK_LWIN`/`VK_RWIN`（Win）は
+    ///   使用不可。** 上記と同じ理由（`is_os_modifier_held()`）で同時打鍵検出が
+    ///   機能しない。Alt と異なり、なりすまし機構は用意していない
+    ///   （`ModifierState` の左右別トラッキングという設計変更が要る未実装機能）。
     /// - `VK_LSHIFT`/`VK_RSHIFT` は `is_os_modifier_held()` の対象外のため
     ///   `PendingThumb` には到達できるが、左Shift単独タップによる「IME-ON 半角英数」
     ///   持続トグル（`kp_stage_shift_conv_guard`、Windows platform 層）は
@@ -108,6 +112,31 @@ pub struct GeneralConfig {
     ///
     /// `default_layout` も、既定の `layout/nicola.yab`（JIS 版）ではなく
     /// `layout/nicola_us.yab`（US 版、列数が少ない）を指すよう変更が必要。
+    ///
+    /// `left_thumb_key`/`right_thumb_key` に特殊な値 `"Left Alt"`/`"Right Alt"` を
+    /// 指定すると、物理 Left/Right Alt キーをエンジン ON 時に限り親指キーとして扱う
+    /// 「なりすまし」機構が有効になる（Platform 層の実装は `hook.rs` の
+    /// `resolve_thumb_key`/`apply_alt_impersonation` 参照）。独立したチェックボックス
+    /// ではなくこの2つの候補として `left_thumb_key`/`right_thumb_key` の選択肢に
+    /// 統合することで、値が一箇所（この2フィールド）だけに存在し、設定 GUI の
+    /// 表示条件と実際の有効状態がズレる余地を無くしている。
+    ///
+    /// - US 配列にはスペースキーの両隣に無変換/変換キーが無いため、コミュニティでは
+    ///   PowerToys 等の OS レベルのキーリマップツールで左右の Alt キーを無変換/変換
+    ///   相当に置き換える運用が一般的（スペースの両隣という物理位置が JIS の
+    ///   無変換/スペース/変換と一致するため）。この機能は同等のことを awase 単体で
+    ///   完結させる。
+    /// - **エンジン ON 時のみ発動する**: Alt キーの KeyDown/KeyUp が Platform 層の
+    ///   フック（`hook.rs` の `hook_callback`、`classify_key`/Ctrl 消費追跡等より前）で
+    ///   無変換/変換相当の VK に書き換えられてから以降の全パイプラインに流れる。
+    ///   これにより `ModifierState::is_os_modifier_held()` の OS 予約修飾キー bypass
+    ///   にも一切引っかからず、PowerToys 等の外部リマップと本質的に同じ効果を得る。
+    /// - **エンジン OFF 時は通常の Alt として機能する**（Alt+Tab 等の OS
+    ///   ショートカットを損なわない）。押下中に ON/OFF が切り替わっても、
+    ///   新規押下時点の判定を離すまで保持するため、なりすまし状態が押下中に
+    ///   ズレて Alt が stuck modifier になる事故は起きない（`hook.rs` 参照）。
+    /// - 任意のキーを任意の VK に対応させる汎用リマップ機能ではない。Left/Right Alt
+    ///   専用。それ以上の自由なリマップをしたい場合は PowerToys 等の外部ツールを使うこと。
     pub keyboard_model: KeyboardModel,
 }
 

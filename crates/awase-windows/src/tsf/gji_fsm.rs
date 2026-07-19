@@ -61,21 +61,10 @@ pub(crate) struct ProbeId(pub(crate) u32);
 ///
 /// `GjiWarmupCoro::new` に渡すパラメータをまとめる。
 /// `ColdKind` から `transition_to_cold` / `on_event(KeyInput NotStarted)` で生成する。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ProbeParams {
-    pub ncwait_budget_ms: u64,
     pub forces_prepend_f2: bool,
     pub is_long_cold: bool,
-}
-
-impl Default for ProbeParams {
-    fn default() -> Self {
-        Self {
-            ncwait_budget_ms: tuning::SETTLE_TIMEOUT_MS,
-            forces_prepend_f2: false,
-            is_long_cold: false,
-        }
-    }
 }
 
 // ── WarmupResult ─────────────────────────────────────────────────────────────
@@ -158,15 +147,6 @@ impl ColdKind {
         match self {
             Self::Short => 100,
             Self::Medium | Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
-        }
-    }
-
-    /// NameChangeWait フェーズの deadline budget。`apply_fresh_f2_sent` に渡す。
-    pub(crate) const fn ncwait_budget_ms(self) -> u64 {
-        match self {
-            Self::Short => tuning::SETTLE_TIMEOUT_MS,
-            Self::Medium => tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
-            Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
         }
     }
 
@@ -433,7 +413,6 @@ impl GjiFsm {
     ) -> Response<GjiAction, GjiTimer> {
         let probe_id = self.alloc_probe_id();
         let params = ProbeParams {
-            ncwait_budget_ms: kind.ncwait_budget_ms(),
             forces_prepend_f2: kind.forces_prepend_f2(),
             is_long_cold: kind.is_long(),
         };
@@ -466,7 +445,6 @@ impl GjiFsm {
         let (probe_status, start_action) = if kind.is_proactive() {
             let probe_id = self.alloc_probe_id();
             let params = ProbeParams {
-                ncwait_budget_ms: kind.ncwait_budget_ms(),
                 forces_prepend_f2: kind.forces_prepend_f2(),
                 is_long_cold: kind.is_long(),
             };
@@ -693,7 +671,6 @@ impl TimedStateMachine for GjiFsm {
                                 // Medium/Long の最初の KeyInput で probe を開始する
                                 let probe_id = maybe_new_probe_id.unwrap();
                                 let params = ProbeParams {
-                                    ncwait_budget_ms: kind.ncwait_budget_ms(),
                                     forces_prepend_f2: kind.forces_prepend_f2(),
                                     is_long_cold: kind.is_long(),
                                 };
@@ -831,7 +808,6 @@ impl TimedStateMachine for GjiFsm {
                             let pending = std::mem::take(pending);
                             let kind = ColdKind::Short; // composition が一旦終わったのでリセット
                             let params = ProbeParams {
-                                ncwait_budget_ms: kind.ncwait_budget_ms(),
                                 forces_prepend_f2: false,
                                 is_long_cold: false,
                             };
@@ -1251,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn medium_cold_key_input_starts_probe_with_ncwait_budget() {
+    fn medium_cold_key_input_starts_probe_with_forces_prepend_f2() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on());
         let ev = complete(&fsm);
@@ -1267,11 +1243,6 @@ mod tests {
             "Medium cold: KeyInput で StartProbe が必要"
         );
         if let Some(GjiAction::StartProbe { params, .. }) = probe_action {
-            assert_eq!(
-                params.ncwait_budget_ms,
-                tuning::MEDIUM_IDLE_PROBE_TOTAL_MS,
-                "Medium cold: ncwait_budget_ms = MEDIUM_IDLE_PROBE_TOTAL_MS"
-            );
             assert!(
                 params.forces_prepend_f2,
                 "Medium cold: forces_prepend_f2=true"
@@ -1280,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn long_cold_key_input_starts_probe_with_long_ncwait_budget() {
+    fn long_cold_key_input_starts_probe_with_forces_prepend_f2() {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on());
         let ev = complete(&fsm);
@@ -1293,11 +1264,6 @@ mod tests {
             .iter()
             .find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
-            assert_eq!(
-                params.ncwait_budget_ms,
-                tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
-                "Long cold: ncwait_budget_ms = GJI_LONG_IDLE_PROBE_TOTAL_MS"
-            );
             assert!(
                 params.forces_prepend_f2,
                 "Long cold: forces_prepend_f2=true"
@@ -1308,7 +1274,7 @@ mod tests {
     }
 
     #[test]
-    fn short_cold_starts_probe_with_short_ncwait_budget() {
+    fn short_cold_starts_probe_without_forces_prepend_f2() {
         let mut fsm = GjiFsm::new();
         // ImeOn → OnCold(Short) で即 StartProbe
         let r = fsm.on_event(ime_on());
@@ -1317,11 +1283,6 @@ mod tests {
             .iter()
             .find(|a| matches!(a, GjiAction::StartProbe { .. }))
         {
-            assert_eq!(
-                params.ncwait_budget_ms,
-                tuning::SETTLE_TIMEOUT_MS,
-                "Short cold: ncwait_budget_ms = SETTLE_TIMEOUT_MS"
-            );
             assert!(
                 !params.forces_prepend_f2,
                 "Short cold: forces_prepend_f2=false"

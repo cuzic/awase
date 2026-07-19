@@ -30,7 +30,7 @@ pub use hook_state::*;
 pub(crate) mod conv_mode;
 pub use conv_mode::ConvModeAuthority;
 #[cfg(windows)]
-pub(crate) use conv_mode::{Charset, ConvModeMgr};
+pub(crate) use conv_mode::ConvModeMgr;
 
 pub mod app_ime_policy;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の

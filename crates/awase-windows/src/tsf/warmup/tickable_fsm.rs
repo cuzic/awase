@@ -6,7 +6,7 @@
 //!
 //! | 実装型 | ファイル | 用途 | 追加でオーバーライドするメソッド |
 //! |--------|---------|------|-----------------|
-//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `forces_prepend_f2_for_extra_f2`, `apply_fresh_f2_sent`, `apply_transmit_done`, `apply_vk_sent` |
+//! | `GjiWarmupCoro` | `gji_warmup_coro.rs` | GJI cold-start warmup probe（StepCoro） | `apply_transmit_done`, `apply_vk_sent` |
 //! | `MsImeReadyCoro` | `ms_ime_ready_coro.rs` | MS-IME IMC 確認待ち confirm-then-transmit（StepCoro, BUG-13） | なし（Core のみ） |
 //! | `TsfProbeCoro` | `probe_fsm.rs` | Chrome probe + LiteralDetect（StepCoro） | `apply_transmit_done` |
 //! | `SacrificialWarmupCoro` | `sacr_warmup_coro.rs` | VK_A 犠牲キー暖機 + Chrome GJI 再初期化（StepCoro） | `notify_start_composition` |
@@ -22,7 +22,6 @@
 //! probe 進行中に届いた後続 VK（deferred VK）は `TsfWarmupCoordinator` が一元管理する
 //! （`push_deferred` は個々の実装が持たない）。
 
-use crate::tsf::observer::NamechangeBaseline;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 
@@ -37,16 +36,6 @@ pub(crate) trait TickableFsm {
     fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction>;
     /// ログ相関用の cold_seq を返す。
     fn cold_seq_hint(&self) -> u32;
-
-    // ── FreshF2 ケイパビリティ（GjiWarmupCoro のみ）───────────────────────
-    //
-    // Medium/Long cold start で F2×2 連続送信が必要かどうか。
-    // GjiWarmupCoro のみが `true` または実装を返す。他は no-op デフォルト。
-
-    fn forces_prepend_f2_for_extra_f2(&self) -> bool {
-        false
-    }
-    fn apply_fresh_f2_sent(&mut self, _nc_baseline: NamechangeBaseline, _fresh_f2_ms: u64) {}
 
     // ── TransmitDone ケイパビリティ（GjiWarmupCoro / TsfProbeCoro）───────────
     //

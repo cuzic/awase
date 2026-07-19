@@ -80,14 +80,6 @@ pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
 /// eager_re_warmup で F2 を送信してから GJI settled を待つ最大時間。
 pub const RE_WARMUP_MS: u64 = 500;
 
-/// GJI settled 判定後の第二プローブ最大待機時間 (ms)。
-///
-/// OBJ_NAMECHANGE 後に GJI が再び発火した場合の二次プローブ上限。
-pub const SETTLE_TIMEOUT_MS: u64 = 300;
-
-/// OBJ_NAMECHANGE 後の GJI 二次プローブ最大待機時間 (ms)。
-pub const GJI_POST_NAMECHANGE_MS: u64 = 300;
-
 /// GJI long idle 後の F2×2 に対する GJI I/O 応答確認 NameChangeWait の最大タイムアウト (ms)。
 ///
 /// GJI I/O 早期終了（gji_long_idle_probe）が機能するケースでは GJI_IDLE_MS (80ms) 静止後に
@@ -103,16 +95,9 @@ pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
 ///
 /// LONG_IDLE_MS (10s) 未満でも ~7s 以上の idle 後は WezTerm TSF が応答するまでに
 /// ~325ms かかる実測がある（cold=7: gji_idle=8719ms 後 GJI が 325ms 後に起動）。
-/// SETTLE_TIMEOUT_MS (300ms) では間に合わないため、gji_long_idle_probe（GJI I/O 応答監視）
-/// をこの閾値以上でも有効にし、MEDIUM_IDLE_PROBE_TOTAL_MS の余裕を確保する。
+/// 300ms 程度の短い待機では間に合わないため、gji_long_idle_probe（GJI I/O 応答監視）
+/// をこの閾値以上でも有効にする。
 pub const MEDIUM_IDLE_PROBE_MS: u64 = 7_000;
-
-/// GJI 中程度 idle 時の NameChangeWait GJI I/O 応答確認タイムアウト (ms)。
-///
-/// 実測（~8.7s idle 後 cold=7）: fresh F2 から 325ms 後に GJI I/O → +80ms 静止 = 405ms。
-/// 550ms = 実測最大 ~405ms + 145ms マージン。
-/// タイムアウトした場合は GJI_LONG_IDLE_PROBE_TOTAL_MS 同様に TransmitTsf へフォールバック。
-pub const MEDIUM_IDLE_PROBE_TOTAL_MS: u64 = 550;
 
 /// Chrome プローブ最小待機時間 (ms)。
 ///

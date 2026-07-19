@@ -104,21 +104,6 @@ impl ConvModeMgr {
         }
     }
 
-    /// HankakuKatakana 用 warmup VK (F1+F3) を送信したことを通知する。
-    ///
-    /// 以後 500ms 以内の HankakuKatakana → ZenkakuKatakana ダウングレードを抑制する。
-    /// TsfNative ウィンドウでは F3 (VK_DBE_SBCSCHAR) が IMM conv の FULLSHAPE ビットを変更しない
-    /// ため、F1+F3 送信後の IMM 読み取りが ZenKata (0x0B) を返す副作用を遮断する。
-    ///
-    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
-    #[cfg(windows)]
-    pub(crate) fn on_hankata_warmup_sent(&self, tick_ms: TickMs) {
-        let until = tick_ms.0 + 500;
-        if until > self.suppress_zenkata_until_ms.get() {
-            self.suppress_zenkata_until_ms.set(until);
-        }
-    }
-
     /// `ImmGetConversionStatus` の raw conv 値からモードを更新する。
     ///
     /// 変化があった場合のみ `info` ログを出力し `true` を返す。

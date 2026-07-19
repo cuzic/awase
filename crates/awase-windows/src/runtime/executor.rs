@@ -649,6 +649,9 @@ impl DecisionExecutor {
                 ConvModeAuthority::UserOwned
             };
             platform.set_conv_mode_authority(authority);
+            // Alt なりすまし（left/right_thumb_key == "Left Alt"/"Right Alt"）の
+            // 発動条件。フックスレッドから同期的に読めるようキャッシュを更新する。
+            crate::hook::set_engine_enabled(*enabled);
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();
