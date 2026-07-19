@@ -3343,9 +3343,22 @@ awase 自身の注入マーカーも LLKHF_INJECTED も無い）は未特定。B
 はそのまま生存）に変更した。`tsf_mode=true`（`NativeF2Consumed`）分岐は変更なし
 （Medium/Long cold 維持のための別の設計意図があり、本件のトリガーではない）。
 
-**要実機確認（未実施）:** warm 中に物理 F2 キーを意図的に押下してすぐ打鍵した場合、
-literal 化しないか（本修正が唯一楽観的になる範囲。過去の F2NonTsf 実測事例は
-すべて long-idle 由来で、この状況専用の実測は無い）。
+**実機ソーク結果 (2026-07-19、修正コミット `810f33d` 反映後):** ユーザーが Teams
+(TeamsWebView) で通常使用を継続し、cold-start 関連の入力不具合は再発していない。
+加えて、意図的に「warm 中に物理 F2 キーを押下してすぐ打鍵」を試行し、実機ログで
+`reason=F2NonTsf` が発火した3件（`idle=2734ms`・`idle=5218ms`・`idle=78ms`）を
+それぞれ直前ログまで遡って検証した結果、**全件とも composition が実際に non-warm
+だった**ことを確認した（前2件は直前の本物のフォーカス変更、`idle=78ms`
+のケースは直前の Ctrl+無変換 IME OFF から F2 キーでの IME 再 ON、いずれも GjiFsm
+が正当に `OnCold` に落ちていた場面）。つまり本修正の `warm` ゲートは、warm を
+不必要に cold 化する経路のみを抑止し、genuinely cold な場面では従来通り
+`F2NonTsf` cold-mark を発行し続けている（over-suppression していない）ことが
+確認できた。3件とも後続の romaji 送信は per-VK confirm を通過して literal
+誤検知なく確定しており、文字消失は発生していない。「warm 中に物理 F2 を押下して
+literal 化するか」という本来のシナリオ自体はこのソークでは一度も再現しなかった
+（＝待避された F2NonTsf cold-mark が発生する場面に遭遇していない）ため、
+その意味での実測はまだ0件。継続してソークし、該当シナリオに遭遇した場合は
+追補として記録すること。
 
 **検討したが今回は見送った案:** `probe_io.rs` の give-up 分岐（consecutive失敗で
 romaji 再送せず backspace のみ）自体の緩和。BUG-27 追補2で「常に再送」は msedge で
