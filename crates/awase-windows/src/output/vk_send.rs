@@ -508,7 +508,9 @@ impl Output {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
-                Self::send_vk_pair(vk, needs_shift, VkMarker::Injected);
+                // 実験: scan code 付き（VkMarker::InjectedWithScan）。send_romaji_batch_immediate
+                // と同じ実験、詳細はそちらのコメント参照。
+                Self::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!(

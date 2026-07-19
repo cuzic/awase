@@ -31,7 +31,8 @@ pub(crate) trait ProbeIo {
     /// unicode kana 分岐を一切行わない。
     fn send_single_tsf_vk(&self, vk: VkCode, needs_shift: bool);
     /// Chrome per-VK confirm 専用: 1 VK の
-    /// DOWN+UP を `VkMarker::Injected` で単独送信する。`send_single_tsf_vk` の Chrome版。
+    /// DOWN+UP を `VkMarker::InjectedWithScan`（実験: scan code 付き）で単独送信する。
+    /// `send_single_tsf_vk` の Chrome版。
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool);
     /// deferred VKs を送信する。
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker);
@@ -108,7 +109,9 @@ impl ProbeIo for Output {
     }
 
     fn send_single_chrome_vk(&self, vk: VkCode, needs_shift: bool) {
-        KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::Injected);
+        // 実験: scan code 付き（VkMarker::InjectedWithScan）。key_injector.rs の
+        // send_romaji_batch_immediate と同じ実験。
+        KeyInjector::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
     }
 
     fn send_deferred_vks(&self, vks: &[DeferredVk], marker: VkMarker) {
@@ -426,7 +429,10 @@ where
                             .then(|| crate::tsf::probe::LiteralDetector::new(true));
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
-                        io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Injected);
+                        io.send_deferred_vks(
+                            &io.take_pending_deferred_vks(),
+                            VkMarker::InjectedWithScan,
+                        );
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         store_gji_warmup_if_probing(io);
                         if machine.apply_transmit_done(
@@ -475,7 +481,7 @@ where
                     }
                     TransmitTarget::Chrome => {
                         io.send_single_chrome_vk(vk, needs_shift);
-                        VkMarker::Injected
+                        VkMarker::InjectedWithScan
                     }
                 };
                 let deadline_ms = crate::hook::current_tick_ms() + timeout_ms;

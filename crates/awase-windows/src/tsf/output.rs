@@ -71,12 +71,17 @@ impl ColdReason {
     }
 }
 
-/// TSF モード用 INPUT 構造体を作成するヘルパー（TSF_MARKER 付き）
+/// scan code 付き INPUT 構造体を作成する共通ヘルパー。
 ///
 /// `wVk` を保持したまま `MapVirtualKeyW` で算出した `wScan` も設定する。
 /// `KEYEVENTF_SCANCODE` は付加しない（付加すると WezTerm が LLKHF_SCANCODE フラグ付き
-/// キーとして検出し IME をバイパスしてしまうため）。
-pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
+/// キーとして検出し IME をバイパスしてしまうため、`99f56a2`→`2d4d85c` の2段階の実機
+/// トライで判明した組み合わせ）。`extra_info` は呼び出し元のマーカーをそのまま使う。
+pub(crate) fn make_scan_key_input(
+    vk: awase::types::VkCode,
+    is_keyup: bool,
+    extra_info: usize,
+) -> INPUT {
     let scan = unsafe { MapVirtualKeyW(u32::from(vk.0), MAPVK_VK_TO_VSC) as u16 };
     let flags = if is_keyup {
         KEYEVENTF_KEYUP
@@ -91,10 +96,17 @@ pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> IN
                 wScan: scan,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: TSF_MARKER,
+                dwExtraInfo: extra_info,
             },
         },
     }
+}
+
+/// TSF モード用 INPUT 構造体を作成するヘルパー（TSF_MARKER 付き）。
+///
+/// [`make_scan_key_input`] を参照。
+pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> INPUT {
+    make_scan_key_input(vk, is_keyup, TSF_MARKER)
 }
 
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）

@@ -15,13 +15,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 
 /// VK INPUT に使うマーカー種別。
 ///
-/// - `Injected`: Chrome/VK モード（INJECTED_MARKER）
-/// - `Tsf`:      WezTerm TSF モード（TSF_MARKER）
+/// - `Injected`: Chrome/VK モード、scan code なし（INJECTED_MARKER、`wScan=0`）
+/// - `InjectedWithScan`: Chrome/VK モード、scan code 付き（INJECTED_MARKER、実験用。
+///   TSF 側の `make_tsf_key_input` と同じ construction を使うが marker は
+///   `INJECTED_MARKER` のまま = 既存の自己注入識別を変えない）
+/// - `Tsf`:      WezTerm TSF モード、scan code 付き（TSF_MARKER）
 ///
-/// LSHIFT は常に INJECTED_MARKER のため、このマーカーは VK 本体にのみ適用する。
+/// LSHIFT は常に INJECTED_MARKER（scan なし）のため、このマーカーは VK 本体にのみ適用する。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum VkMarker {
     Injected,
+    InjectedWithScan,
     Tsf,
 }
 
@@ -29,6 +33,9 @@ impl VkMarker {
     pub(crate) fn make_input(self, vk: VkCode, is_keyup: bool) -> INPUT {
         match self {
             Self::Injected => make_key_input(vk, is_keyup),
+            Self::InjectedWithScan => {
+                crate::tsf::output::make_scan_key_input(vk, is_keyup, INJECTED_MARKER)
+            }
             Self::Tsf => crate::tsf::output::make_tsf_key_input(vk, is_keyup),
         }
     }
@@ -224,8 +231,12 @@ impl KeyInjector {
 
     /// ローマ字を即座にバッチ送信する（重畳順・VK ラン分割）。
     pub(crate) fn send_romaji_batch_immediate(romaji: &str, chars: &[(VkCode, bool)]) {
+        // 実験: Chrome 側にも scan code を付与する（VkMarker::InjectedWithScan）。
+        // TSF 側で WezTerm の初回 composition 失敗を修正した経緯（`docs/known-bugs.md`
+        // BUG-30 追補1 の会話、`99f56a2`/`2d4d85c`）を踏まえ、Chrome でも同様に
+        // 効果があるか実機で確認する。
         for run in Self::split_vk_runs(chars) {
-            let n = Self::send_vk_run_batch(run, VkMarker::Injected);
+            let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan);
             log::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
         }
     }
