@@ -303,7 +303,9 @@ pub mod tokio_support;
 
 pub use clock::{Clock, ManualClock, MonotonicClock};
 pub use coro::{yield_step, Channel, CoroStep, StepCoro};
-pub use dispatch::{ActionExecutor, ActionOutcome, AsyncActionExecutor, DispatchOutcome, TimerRuntime};
+pub use dispatch::{
+    ActionExecutor, ActionOutcome, AsyncActionExecutor, DispatchOutcome, TimerRuntime,
+};
 pub use gate::{GateAction, HoldingGate};
 pub use machine::TimedStateMachine;
 pub use parser::{ParseAction, ShiftReduceParser};

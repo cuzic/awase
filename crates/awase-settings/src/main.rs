@@ -1968,7 +1968,8 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
 /// 親指キー（無変換/変換相当）として扱う（`config.rs` の `GeneralConfig::keyboard_model`
 /// doc・`THUMB_KEY_OPTIONS` doc 参照）。`solo_triple_combo` 等、`THUMB_KEY_OPTIONS` を
 /// 共有する他の用途には出さないため、意図的に別の定数に分離してある。
-const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] = &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
+const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
+    &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///
@@ -2501,8 +2502,8 @@ fn setup_fonts(ctx: &egui::Context) {
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {
-        use windows::core::w;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
         unsafe {
             // クラス名は crates/awase-windows/src/tray.rs の
             // `WINDOW_CLASS_NAME` = "awase_tray_window" と必ず一致させること。
@@ -2529,8 +2530,9 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir, Face, KanaTable,
-        PhysicalPos, SettingsApp, Tab, ValueKind, YabValue, CLIPBOARD_HISTORY_LEN, SPECIAL_KEYS,
+        CLIPBOARD_HISTORY_LEN, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab,
+        ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
+        resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {

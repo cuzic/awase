@@ -67,7 +67,10 @@ pub trait ActionExecutor {
 /// Shared by [`Response::dispatch`] and [`Response::dispatch_async`]: apply
 /// every timer command in order via [`TimerRuntime::set_timer`] /
 /// [`TimerRuntime::kill_timer`].
-fn apply_timers<T: Copy>(commands: &[TimerCommand<T>], timers: &mut impl TimerRuntime<TimerId = T>) {
+fn apply_timers<T: Copy>(
+    commands: &[TimerCommand<T>],
+    timers: &mut impl TimerRuntime<TimerId = T>,
+) {
     for cmd in commands {
         match *cmd {
             TimerCommand::Set { id, duration } => timers.set_timer(id, duration),
@@ -203,7 +206,10 @@ pub trait AsyncActionExecutor {
     /// should clone what they need out of `&mut self` before constructing
     /// the returned future, so the future itself doesn't borrow `self` any
     /// longer than the lifetime `'a` of this call already requires.
-    fn execute_one<'a>(&'a mut self, action: &'a Self::Action) -> impl Future<Output = ActionOutcome> + Send + 'a;
+    fn execute_one<'a>(
+        &'a mut self,
+        action: &'a Self::Action,
+    ) -> impl Future<Output = ActionOutcome> + Send + 'a;
 }
 
 impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
@@ -265,10 +271,16 @@ impl<A, T: Copy + Eq + core::fmt::Debug> Response<A, T> {
         apply_timers(&self.timers, timers);
         for action in &self.actions {
             if executor.execute_one(action).await == ActionOutcome::Stop {
-                return DispatchOutcome { consumed: self.consumed, stop: true };
+                return DispatchOutcome {
+                    consumed: self.consumed,
+                    stop: true,
+                };
             }
         }
-        DispatchOutcome { consumed: self.consumed, stop: false }
+        DispatchOutcome {
+            consumed: self.consumed,
+            stop: false,
+        }
     }
 }
 
@@ -361,7 +373,10 @@ mod tests {
             .with_kill_timer(2);
 
         let mut timers = RecordTimers(vec![]);
-        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let mut executor = RecordAsyncActions {
+            seen: vec![],
+            stop_on: None,
+        };
         let outcome = response.dispatch_async(&mut timers, &mut executor).await;
 
         assert!(outcome.consumed);
@@ -374,7 +389,10 @@ mod tests {
     async fn dispatch_async_pass_through_returns_unconsumed_and_does_not_stop() {
         let response: Response<&str, u8> = Response::pass_through();
         let mut timers = RecordTimers(vec![]);
-        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let mut executor = RecordAsyncActions {
+            seen: vec![],
+            stop_on: None,
+        };
         let outcome = response.dispatch_async(&mut timers, &mut executor).await;
 
         assert!(!outcome.consumed);
@@ -389,20 +407,37 @@ mod tests {
         let response = Response::emit(vec!["a", "b", "c"]).with_timer(9, Duration::from_millis(1));
 
         let mut timers = RecordTimers(vec![]);
-        let mut executor = RecordAsyncActions { seen: vec![], stop_on: Some("b") };
+        let mut executor = RecordAsyncActions {
+            seen: vec![],
+            stop_on: Some("b"),
+        };
         let outcome = response.dispatch_async(&mut timers, &mut executor).await;
 
         assert!(outcome.consumed);
-        assert!(outcome.stop, "an action reporting Stop must be reflected in the outcome");
-        assert_eq!(executor.seen, vec!["a", "b"], "action after the Stop-reporting one must not run");
-        assert_eq!(timers.0.len(), 1, "timers still apply even though an action later stops the driver");
+        assert!(
+            outcome.stop,
+            "an action reporting Stop must be reflected in the outcome"
+        );
+        assert_eq!(
+            executor.seen,
+            vec!["a", "b"],
+            "action after the Stop-reporting one must not run"
+        );
+        assert_eq!(
+            timers.0.len(),
+            1,
+            "timers still apply even though an action later stops the driver"
+        );
     }
 
     #[tokio::test]
     async fn dispatch_async_all_continue_never_sets_stop() {
         let response = Response::emit(vec!["a", "b", "c"]);
         let mut timers = RecordTimers(vec![]);
-        let mut executor = RecordAsyncActions { seen: vec![], stop_on: None };
+        let mut executor = RecordAsyncActions {
+            seen: vec![],
+            stop_on: None,
+        };
         let outcome = response.dispatch_async(&mut timers, &mut executor).await;
 
         assert!(!outcome.stop);

@@ -938,7 +938,7 @@ mod tests {
             cold_seq: 0,
             plan: TransmitPlan {
                 used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true, // gji_active && (!gji_long_idle || is_tsf_mode)
+                needs_literal: true,    // gji_active && (!gji_long_idle || is_tsf_mode)
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
             romaji: "ko".to_string(),
@@ -973,10 +973,7 @@ mod tests {
             target: TransmitTarget::Tsf,
         }];
         let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(
-            result.is_done(),
-            "plan.needs_literal=false → Done を即返す"
-        );
+        assert!(result.is_done(), "plan.needs_literal=false → Done を即返す");
         assert!(io.transmit_tsf_called.get());
     }
 
