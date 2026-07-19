@@ -320,7 +320,6 @@ impl WindowsPlatform {
                                 path: WarmupPath::GjiResumed,
                                 prepend_f2_warmup: false,
                                 nc_fired: false,
-                                gji_resumed: false,
                             },
                         });
                         self.dispatch_gji_response(&warmup_resp);

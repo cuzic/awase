@@ -91,7 +91,6 @@ pub(crate) struct WarmupResult {
     pub path: WarmupPath,
     pub prepend_f2_warmup: bool,
     pub nc_fired: bool,
-    pub gji_resumed: bool,
 }
 
 impl WarmupResult {
@@ -101,7 +100,6 @@ impl WarmupResult {
             path: WarmupPath::TimedOutFallback,
             prepend_f2_warmup: true,
             nc_fired: false,
-            gji_resumed: false,
         }
     }
 }
@@ -971,7 +969,6 @@ mod tests {
                 path: WarmupPath::NameChangeConfirmed,
                 prepend_f2_warmup: false,
                 nc_fired: true,
-                gji_resumed: false,
             },
         }
     }
@@ -1633,7 +1630,6 @@ mod tests {
             path: WarmupPath::NameChangeConfirmed,
             prepend_f2_warmup: false,
             nc_fired: true,
-            gji_resumed: false,
         };
         let r = fsm.on_event(GjiEvent::WarmupComplete { probe_id, result });
 
@@ -1720,7 +1716,6 @@ mod tests {
             path: WarmupPath::GjiResumed,
             prepend_f2_warmup: false,
             nc_fired: false,
-            gji_resumed: true,
         };
         let r2 = fsm.on_event(GjiEvent::WarmupComplete { probe_id, result });
         assert!(

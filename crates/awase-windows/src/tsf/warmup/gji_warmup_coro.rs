@@ -76,7 +76,7 @@ async fn gji_coro_body(
     let mut env: TsfEnvSnapshot;
 
     // ── Phase 1: GJI probe ───────────────────────────────────────────────────
-    let (nc_fired, gji_resumed) = 'initial: loop {
+    let nc_fired = 'initial: loop {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
         // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
         // （`GjiWarmupCoro::new` が construction 時に self-priming tick を行うため、
@@ -114,11 +114,11 @@ async fn gji_coro_body(
                     outcome.elapsed_ms,
                     outcome.settled,
                 );
-                break 'initial (false, false);
+                break 'initial false;
             }
         }
 
-        break 'initial (true, false);
+        break 'initial true;
     };
 
     // ── Phase 4: transmit plan 決定 ───────────────────────────────────────────
@@ -127,10 +127,9 @@ async fn gji_coro_body(
     // nc_fired=false のまま decide_transmit_plan に渡すと needs_literal 第2項が true になり
     // LiteralDetect が誤検出して backspace を送る（composited 'な' が消えるバグ）。
     // → is_confirm_key && TSF mode の場合は nc_fired を true に昇格して第2項を抑制する。
-    let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode && !gji_resumed);
+    let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode);
     let observations = ProbeObservations {
         nc_fired: nc_for_plan,
-        gji_resumed,
     };
 
     // fresh F2 を送信済みかつ TSF mode → バッチへの F2 再同梱を抑制（"kお" バグ防止）
@@ -165,22 +164,21 @@ async fn gji_coro_body(
     );
 
     // transmit plan の判定結果（needs_literal になるかどうか、その入力になった
-    // nc_fired/gji_resumed/suppress_f2）は従来ログに一切出ておらず、部分リテラル発生時に
+    // nc_fired/suppress_f2）は従来ログに一切出ておらず、部分リテラル発生時に
     // 「なぜ LiteralDetect に入った/入らなかったか」を事後診断できなかった
     // （切り分けログ強化、2026-07-09 の "kお" 系調査で判明）。
     log::debug!(
-        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} gji_resumed={} \
+        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} \
          suppress_f2={suppress_f2} effective_prepend_f2={effective_prepend_f2} is_tsf_mode={}",
         ctx.cold_seq,
         plan.needs_literal,
         observations.nc_fired,
-        observations.gji_resumed,
         env.is_tsf_mode,
     );
 
     // ── Phase 5b (IME セッション最初の1文字専用, BUG-24 追補): per-VK send+confirm ──
     // is_partial_literal() は「今回送った romaji 自身の確認信号」ではなく、送信前に
-    // 確定していた無関係な代理指標 nc_fired/gji_resumed（別の F2 warmup キーへの応答
+    // 確定していた無関係な代理指標 nc_fired（別の F2 warmup キーへの応答
     // 有無）で判定しており、cold 直後の最初の1文字はほぼ確実に誤検知する（BUG-24）。
     // このセッションでまだ literal-detect を確認済みでない場合に限り、Chrome 側
     // Phase 2c と共通実装（`run_per_vk_confirm`、2026-07-17 統合）に romaji の VK 単位
@@ -222,13 +220,12 @@ async fn gji_coro_body(
     .await;
 
     if !plan.needs_literal {
-        // 診断用（副作用なし）: gji_resumed/nc_fired ヒューリスティックで LiteralDetect を
+        // 診断用（副作用なし）: nc_fired ヒューリスティックで LiteralDetect を
         // スキップした際、実際に composition が確定したか（部分リテラル false-negative の疑い）を
         // 非同期に事後確認する。gate は保持しない fire-and-forget のため後続入力に影響しない。
         // 参照: 「起動直後、GJIがローマ字をそのまま全角英数として通す」報告の再現条件切り分け。
         let cold_seq = ctx.cold_seq;
         let nc_fired = observations.nc_fired;
-        let gji_resumed = observations.gji_resumed;
         let gji_active = env.gji_active;
         let should_prepend_f2 = plan.should_prepend_f2;
         let used_eager_path = plan.used_eager_path;
@@ -236,7 +233,7 @@ async fn gji_coro_body(
             win32_async::sleep_ms(crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE as u32).await;
             log::debug!(
                 "[gji-coro-diag] cold={cold_seq} skip-verify nc_fired={nc_fired} \
-                 gji_resumed={gji_resumed} gji_active={gji_active} \
+                 gji_active={gji_active} \
                  should_prepend_f2={should_prepend_f2} used_eager_path={used_eager_path}"
             );
             crate::ime_diagnostic::log_composition_probe(cold_seq, "skip-verify");

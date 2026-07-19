@@ -310,7 +310,6 @@ fn store_gji_warmup_if_probing(
             path: classify_warmup_path(obs, plan),
             prepend_f2_warmup: plan.should_prepend_f2,
             nc_fired: obs.nc_fired,
-            gji_resumed: obs.gji_resumed,
         });
     }
 }
@@ -323,9 +322,7 @@ fn classify_warmup_path(
     plan: &crate::tsf::warmup::probe_fsm::TransmitPlan,
 ) -> crate::tsf::gji_fsm::WarmupPath {
     use crate::tsf::gji_fsm::WarmupPath;
-    if obs.gji_resumed {
-        WarmupPath::GjiResumed
-    } else if obs.nc_fired {
+    if obs.nc_fired {
         WarmupPath::NameChangeConfirmed
     } else if plan.used_eager_path {
         WarmupPath::EagerLiteralDetected
@@ -743,7 +740,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: true,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
@@ -770,7 +766,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: true,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
@@ -800,7 +795,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: true,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
@@ -826,7 +820,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: true,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
@@ -853,7 +846,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: true,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
@@ -880,7 +872,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "ki".to_string(),
             target: TransmitTarget::Tsf,
@@ -941,7 +932,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
@@ -973,7 +963,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
@@ -1005,7 +994,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
@@ -1031,12 +1019,11 @@ mod tests {
             plan: TransmitPlan {
                 should_prepend_f2: true,
                 used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true, // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode) && !gji_resumed
+                needs_literal: true, // should_prepend_f2 && gji_active && (!gji_long_idle || is_tsf_mode)
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
@@ -1072,7 +1059,6 @@ mod tests {
             },
             observations: ProbeObservations {
                 nc_fired: false,
-                gji_resumed: false,
             },
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
@@ -1089,43 +1075,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn gji_resumed_skips_literal_detect_to_prevent_false_positive() {
-        // gji_resumed=true: F2×2 送信後に GJI I/O 応答を確認済み → VK composition は成功する。
-        // long_idle 後の候補ウィンドウ表示に 500ms 超かかるため LiteralDetect タイムアウトが
-        // false positive (BS 誤送信) になる。gji_resumed=true では LiteralDetect をスキップする。
-        //
-        // 実機ログ: WezTerm long_idle(120s) + NativeF2Consumed → cold=72 で 'と' が正常 compose されたが
-        // SuspectedLiteral 誤判定 → BS×2 で 'と' 削除 → 後続打鍵 'つ' の composition context 破壊
-        // → IME-OFF Engine-ON 状態になった（2026-06-20 報告）。
-        let io = FakeProbeIo::default();
-        let mut machine = make_gji_machine();
-        let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
-            plan: TransmitPlan {
-                should_prepend_f2: true,
-                used_eager_path: false, // gji_resumed=true → false
-                needs_literal: false,   // !gji_resumed=false → false
-                literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
-            },
-            observations: ProbeObservations {
-                nc_fired: true,
-                gji_resumed: true,
-            },
-            romaji: "to".to_string(),
-            target: TransmitTarget::Tsf,
-        }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
-        assert!(
-            result.is_done(),
-            "plan.needs_literal=false → Done を即返す（false positive BS 防止）"
-        );
-        assert!(io.transmit_tsf_called.get());
-    }
+    // 旧 gji_resumed_skips_literal_detect_to_prevent_false_positive テストは
+    // ProbeObservations.gji_resumed 撤去（BUG-24 追補9）に伴い削除した。この signal は
+    // 本番では常に false だったため（唯一の producer である gji_warmup_coro.rs の
+    // 'initial ループが2分岐とも gji_resumed=false を返していた）、実際には一度も
+    // 発火していなかった。当時の実機報告（WezTerm long_idle(120s) 後の 'と' 部分
+    // リテラル誤判定、2026-06-20）は per-VK confirm（BUG-24 本体）が別の仕組みで
+    // 解決済み。詳細は docs/known-bugs.md BUG-24 追補9参照。
 
     #[test]
-    fn gji_not_resumed_long_idle_tsf_mode_keeps_literal_detect() {
-        // gji_resumed=false + gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
+    fn long_idle_tsf_mode_keeps_literal_detect() {
+        // gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
         // VK がリテラル化した場合の回収パスが必要。
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
@@ -1134,13 +1094,10 @@ mod tests {
             plan: TransmitPlan {
                 should_prepend_f2: true,
                 used_eager_path: false, // is_tsf_mode → VK path
-                needs_literal: true,    // gji_resumed=false → LiteralDetect 有効
+                needs_literal: true,    // LiteralDetect 有効
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE,
             },
-            observations: ProbeObservations {
-                nc_fired: false,
-                gji_resumed: false,
-            },
+            observations: ProbeObservations { nc_fired: false },
             romaji: "to".to_string(),
             target: TransmitTarget::Tsf,
         }];

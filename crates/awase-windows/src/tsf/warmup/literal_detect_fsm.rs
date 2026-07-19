@@ -73,8 +73,6 @@ pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
 /// 不可能。代わりに以下の条件がすべて揃った場合を partial literal と判断する:
 ///   - `nc_fired=false` : fresh F2 に WezTerm が NAMECHANGE で応答しなかった
 ///     → TSF context が cold のまま送信した可能性が高い
-///   - `gji_resumed=false` : GJI も F2 後に I/O 応答しなかった
-///     → composition が全く始まっていない状態で先頭 VK が届いた疑い
 ///   - `is_tsf_mode` : WezTerm 等の TSF 専用アプリ（HIMC 照合不可）
 ///   - romaji 2 文字以上 : 1 文字なら partial にならない
 pub(crate) fn is_partial_literal(
@@ -82,10 +80,7 @@ pub(crate) fn is_partial_literal(
     romaji: &str,
     env: &TsfEnvSnapshot,
 ) -> bool {
-    !observations.nc_fired
-        && !observations.gji_resumed
-        && env.is_tsf_mode
-        && romaji.chars().count() >= 2
+    !observations.nc_fired && env.is_tsf_mode && romaji.chars().count() >= 2
 }
 
 /// literal 回収用アクション列を生成する（cold/warm 共通）。
@@ -178,7 +173,7 @@ impl LiteralDetectCore {
 
         // BUG-24 追補: このIMEセッション（打鍵開始〜候補ウィンドウHIDE）で既に
         // CompositionConfirmedを確認済みなら、literal-detect自体をスキップして
-        // 即送信する。is_partial_literalが送信前の無関係な代理指標(nc_fired/gji_resumed)
+        // 即送信する。is_partial_literalが送信前の無関係な代理指標(nc_fired)
         // に頼っているため、cold直後は毎回誤検知しうる — セッション内2文字目以降は
         // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
         // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
@@ -202,7 +197,7 @@ impl LiteralDetectCore {
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition
                     //     → ESC (composition 破棄) + BS×1 ('l' 削除) が正しい。
                     log::debug!(
-                        "[literal-detect] cold={} partial literal (nc=false gji_resumed=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
+                        "[literal-detect] cold={} partial literal (nc=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq,
                         self.romaji,
                         PARTIAL_LITERAL_BS,
@@ -332,11 +327,8 @@ mod tests {
         assert_eq!(per_vk_recovery_params(2), (1, true));
     }
 
-    fn obs(nc_fired: bool, gji_resumed: bool) -> ProbeObservations {
-        ProbeObservations {
-            nc_fired,
-            gji_resumed,
-        }
+    fn obs(nc_fired: bool) -> ProbeObservations {
+        ProbeObservations { nc_fired }
     }
 
     fn tsf_env() -> TsfEnvSnapshot {
@@ -349,10 +341,10 @@ mod tests {
 
     // CompositionConfirmed が partial literal 条件を満たす場合 → RawTsfLiteralRecovery
     #[test]
-    fn composition_confirmed_tsf_nc_false_gji_not_resumed_multi_char_forces_recovery() {
-        // 条件充足: nc=false, gji_resumed=false, is_tsf_mode=true, romaji.chars()=2
+    fn composition_confirmed_tsf_nc_false_multi_char_forces_recovery() {
+        // 条件充足: nc=false, is_tsf_mode=true, romaji.chars()=2
         assert!(
-            is_partial_literal(obs(false, false), "ni", &tsf_env()),
+            is_partial_literal(obs(false), "ni", &tsf_env()),
             "部分リテラル条件がすべて揃っているべき"
         );
     }
@@ -361,17 +353,8 @@ mod tests {
     #[test]
     fn composition_confirmed_nc_fired_does_not_force_recovery() {
         assert!(
-            !is_partial_literal(obs(true, false), "ni", &tsf_env()),
+            !is_partial_literal(obs(true), "ni", &tsf_env()),
             "nc_fired=true → 強制 recovery 不要"
-        );
-    }
-
-    // gji_resumed=true の場合は強制 recovery しない
-    #[test]
-    fn composition_confirmed_gji_resumed_does_not_force_recovery() {
-        assert!(
-            !is_partial_literal(obs(false, true), "ni", &tsf_env()),
-            "gji_resumed=true → 強制 recovery 不要"
         );
     }
 
@@ -379,7 +362,7 @@ mod tests {
     #[test]
     fn composition_confirmed_single_char_romaji_no_recovery() {
         assert!(
-            !is_partial_literal(obs(false, false), "n", &tsf_env()),
+            !is_partial_literal(obs(false), "n", &tsf_env()),
             "1 文字ローマ字 → 部分リテラルにならない"
         );
     }
@@ -392,7 +375,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !is_partial_literal(obs(false, false), "ni", &env),
+            !is_partial_literal(obs(false), "ni", &env),
             "non-TSF mode → 強制 recovery 不要"
         );
     }
@@ -404,7 +387,7 @@ mod tests {
         // → ESC (composition 破棄、文字数不問) + BS×1 ('l' 削除) が正しい。
         // BS×3 (= chars.len()) を送ると挿入点前の無関係な文字を消してしまう。
         assert!(
-            is_partial_literal(obs(false, false), "ltu", &tsf_env()),
+            is_partial_literal(obs(false), "ltu", &tsf_env()),
             "ltu: 部分リテラル条件が揃っているべき"
         );
         assert_eq!(

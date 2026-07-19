@@ -62,7 +62,6 @@ pub(crate) struct TsfEnvSnapshot {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ProbeObservations {
     pub nc_fired: bool,
-    pub gji_resumed: bool,
 }
 
 /// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
@@ -110,12 +109,9 @@ pub(crate) fn decide_transmit_plan(
     let should_prepend_f2 =
         initial_prepend_f2 && (obs.nc_fired || !env.is_tsf_mode || forces_prepend_f2);
 
-    // gji_resumed=true: GJI が F2×2 に I/O 応答 → VK path 強制。
     // nc_fired=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
     // nc_fired=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
-    let used_eager_path = if obs.gji_resumed {
-        false
-    } else if obs.nc_fired {
+    let used_eager_path = if obs.nc_fired {
         (initial_used_eager || forces_prepend_f2) && deferred_empty
     } else if env.is_tsf_mode {
         false
@@ -123,7 +119,6 @@ pub(crate) fn decide_transmit_plan(
         initial_used_eager || forces_prepend_f2
     };
 
-    // gji_resumed=true: GJI I/O 応答確認済み → composition 成功が確定。
     // Long cold (is_long_cold=true) 後は候補ウィンドウ表示に >500ms かかり false positive になる
     // （BS 誤送信 → context 破壊）。Medium cold は 7-10s で gji_long_idle_probe=true のため対象外。
     //
@@ -131,11 +126,8 @@ pub(crate) fn decide_transmit_plan(
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
     // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
     // （seつぞく バグ: gji_idle ~1.4s で 300ms NameChangeWait が間に合わなかったケース）
-    let needs_literal = (should_prepend_f2
-        && env.gji_active
-        && (!is_long_cold || env.is_tsf_mode)
-        && !obs.gji_resumed)
-        || (!obs.nc_fired && env.is_tsf_mode && env.gji_active && !obs.gji_resumed);
+    let needs_literal = (should_prepend_f2 && env.gji_active && (!is_long_cold || env.is_tsf_mode))
+        || (!obs.nc_fired && env.is_tsf_mode && env.gji_active);
 
     let literal_detect_ms = if is_long_cold && env.is_tsf_mode {
         crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
@@ -177,7 +169,7 @@ pub(crate) enum ProbeAction {
     },
     /// IME セッション最初の1文字専用（BUG-24 追補）: romaji の VK を1つだけ送信する。
     ///
-    /// `is_partial_literal()` が送信前の無関係な代理指標（`nc_fired`/`gji_resumed`）に
+    /// `is_partial_literal()` が送信前の無関係な代理指標（`nc_fired`）に
     /// 頼っているため、cold 直後の最初の1文字は VK を1個ずつ送って「送ったVK自身」への
     /// `CompositionConfirmed`/`SuspectedLiteral` を確認してから次の VK を送る。
     /// dispatcher は送信直前に `LiteralDetector::new()` でベースラインを取り、1 VK だけ
@@ -482,10 +474,7 @@ async fn tsf_probe_coro_body(
             needs_literal: true,
             literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
         };
-        let observations = ProbeObservations {
-            nc_fired: true,
-            gji_resumed: false,
-        };
+        let observations = ProbeObservations { nc_fired: true };
         run_per_vk_confirm(
             ch.clone(),
             cold_seq,
@@ -508,10 +497,7 @@ async fn tsf_probe_coro_body(
                 needs_literal,
                 literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
             },
-            observations: ProbeObservations {
-                nc_fired: true,
-                gji_resumed: false,
-            },
+            observations: ProbeObservations { nc_fired: true },
             romaji,
             target: TransmitTarget::Chrome,
         }],
@@ -553,7 +539,7 @@ async fn tsf_probe_coro_body(
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "partial-literal");
                 // この経路は TSF→IMM32 bridge による実文字列突合せ (expected_kana との比較)
                 // に基づく別系統の partial-literal 検出であり、is_partial_literal() の
-                // ヒューリスティック（nc_fired/gji_resumed/is_tsf_mode）とは異なる。
+                // ヒューリスティック（nc_fired/is_tsf_mode）とは異なる。
                 // ESC-based 回収は candidate 表示中の partial literal 専用に限定するため、
                 // ここでは既存どおり backs=ze_bs_count のみで対応する（escape_composition=false）。
                 vec![
@@ -745,10 +731,7 @@ mod tests {
         // nc_fired=false + TSF mode + Short cold (forces_prepend_f2=false):
         // 直前に fresh F2 送信済み → バッチに F2 を含めると reinit race でリテラル化する。
         // ただし IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: false };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -768,35 +751,10 @@ mod tests {
     }
 
     #[test]
-    fn decide_plan_gji_resumed_disables_literal_detection() {
-        // gji_resumed=true 時の false positive BS 再発防止:
-        // GJI が F2×2 に I/O 応答済み → composition 成功確定 → LiteralDetect は false positive になる。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            gji_resumed: true,
-        };
-        let env = TsfEnvSnapshot {
-            is_tsf_mode: true,
-            gji_active: true,
-            ..Default::default()
-        };
-
-        let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
-
-        assert!(
-            !plan.needs_literal,
-            "gji_resumed=true: LiteralDetect をスキップしないと BS 誤送信になる"
-        );
-    }
-
-    #[test]
     fn decide_plan_nc_not_fired_tsf_long_idle_keeps_f2_and_literal() {
         // Long cold (forces_prepend_f2=true): F2×2 で GJI を起動する必要があるためバッチに F2 が必要。
         // LiteralDetect も有効（GJI 応答未確認）。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: false };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -806,19 +764,13 @@ mod tests {
         let plan = decide_transmit_plan(true, false, obs, &env, true, true, true);
 
         assert!(plan.should_prepend_f2, "Long cold: F2 バッチ同梱が必要");
-        assert!(
-            plan.needs_literal,
-            "gji_resumed=false + tsf: LiteralDetect 有効"
-        );
+        assert!(plan.needs_literal, "tsf mode: LiteralDetect 有効");
     }
 
     #[test]
     fn decide_plan_nc_fired_keeps_f2_and_enables_literal_when_gji_active() {
         // nc_fired=true: NameChange 発火確認済み → F2 はバッチに含める。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: true };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -830,17 +782,14 @@ mod tests {
         assert!(plan.should_prepend_f2, "nc_fired=true: F2 はバッチに含める");
         assert!(
             plan.needs_literal,
-            "gji_active + !is_long_cold + !gji_resumed: LiteralDetect 有効"
+            "gji_active + !is_long_cold: LiteralDetect 有効"
         );
     }
 
     #[test]
     fn decide_plan_non_tsf_mode_keeps_f2() {
         // 非 TSF mode（Chrome 等）: nc_fired=false でも F2 バッチ同梱が必要。
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: false };
         let env = TsfEnvSnapshot {
             is_tsf_mode: false,
             gji_active: true,
@@ -858,10 +807,7 @@ mod tests {
     #[test]
     fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
         // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
-        let obs = ProbeObservations {
-            nc_fired: true,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: true };
         let env = TsfEnvSnapshot {
             is_tsf_mode: false,
             gji_active: false,
@@ -879,10 +825,7 @@ mod tests {
     #[test]
     fn decide_plan_medium_cold_forces_f2_in_batch_on_ncwait_timeout() {
         // Medium cold (forces_prepend_f2=true) + nc_fired=false → should_prepend_f2=true
-        let obs = ProbeObservations {
-            nc_fired: false,
-            gji_resumed: false,
-        };
+        let obs = ProbeObservations { nc_fired: false };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,

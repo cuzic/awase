@@ -148,7 +148,7 @@ pub struct TsfObservations {
     /// が一度でも `CompositionConfirmed`（かつ非 partial-literal）を確認できたかどうか。
     ///
     /// `true` になった後は、同一セッション内の以降の文字は literal-detect 自体をスキップし
-    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired`/`gji_resumed` が
+    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired` が
     /// `SetOpenTrue`/`FocusChange`/`NativeF2Consumed` 等の cold 直後は構造的に信頼できず、
     /// 正しく変換されているのに不要な ESC+BS 訂正が発生していた）。
     ///

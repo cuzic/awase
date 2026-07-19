@@ -100,10 +100,7 @@ async fn ms_ime_ready_coro_body(
                     needs_literal: false,
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 },
-                observations: ProbeObservations {
-                    nc_fired: false,
-                    gji_resumed: false,
-                },
+                observations: ProbeObservations { nc_fired: false },
                 romaji,
                 target: TransmitTarget::Tsf,
             },
