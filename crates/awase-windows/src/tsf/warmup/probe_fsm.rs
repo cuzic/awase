@@ -77,7 +77,7 @@ pub(crate) struct TransmitPlan {
 pub(crate) fn decide_transmit_plan(
     initial_used_eager: bool,
     obs: ProbeObservations,
-    env: &TsfEnvSnapshot,
+    env: TsfEnvSnapshot,
     deferred_empty: bool,
     forces_prepend_f2: bool,
     is_long_cold: bool,
@@ -243,19 +243,10 @@ pub(crate) struct VkSentPayload {
 /// `apply_vk_sent` を呼ばなかった場合（BUG-27）は無リカバリで中断する。いずれの場合も
 /// 必要なアクションは内部で yield 済み（または `CoroStep::Complete` の `Done` フォール
 /// バックに委ねる）で、呼び出し元は `.await` 後にそのまま `return` すればよい。
-#[expect(clippy::future_not_send)]
-pub(crate) async fn run_per_vk_confirm(
-    ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
-    cold_seq: u32,
-    romaji: &str,
-    plan: TransmitPlan,
-    target: TransmitTarget,
-) {
-    use crate::tsf::probe::DetectionResult;
-
-    // ログ・診断タグは Chrome/TSF で従来通り書き分ける（docs/known-bugs.md のデバッグ
-    // キーワード表・実機ログ grep パターンとの互換性を保つため）。
-    let (log_tag, literal_tag, confirmed_tag) = match target {
+/// [`run_per_vk_confirm`] のログ・診断タグ（Chrome/TSF で従来通り書き分ける。
+/// docs/known-bugs.md のデバッグキーワード表・実機ログ grep パターンとの互換性を保つため）。
+fn per_vk_confirm_tags(target: TransmitTarget) -> (&'static str, &'static str, &'static str) {
+    match target {
         TransmitTarget::Chrome => (
             "tsf-probe",
             "chrome-per-vk-literal",
@@ -266,7 +257,57 @@ pub(crate) async fn run_per_vk_confirm(
             "setopen-per-vk-literal",
             "setopen-per-vk-confirmed",
         ),
-    };
+    }
+}
+
+/// 1 VK 分の [`DetectionResult`] を確定させる（[`run_per_vk_confirm`] から抽出）。
+///
+/// BUG-29/BUG-30: 候補ウィンドウが既に表示中なら literal-detect の polling をスキップする。
+/// SHOW はエッジトリガ（hidden→visible 遷移でのみ増分）のため VK1 以降では再発火せず、
+/// 子音単体 VK は WriteTransferCount 閾値も原理的に越えない（probe.rs の
+/// `LiteralDetector::check_now` に既知の限界として記載済み）。検出ロジック自体が
+/// TSF/Chrome で統一された（BUG-30、`docs/known-bugs.md` BUG-30 追補1）ため、
+/// この早期脱出も両ターゲットに適用する（旧: Chrome 限定）。
+#[expect(clippy::future_not_send)]
+async fn await_vk_detection(
+    ch: &Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
+    sent: &VkSentPayload,
+    log_tag: &str,
+    cold_seq: u32,
+    idx: usize,
+    last_idx: usize,
+    vk: VkCode,
+) -> crate::tsf::probe::DetectionResult {
+    use crate::tsf::probe::DetectionResult;
+
+    if crate::tsf::observer::gji_candidate_visible_now() {
+        log::debug!(
+            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
+             candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+            vk.0,
+        );
+        return DetectionResult::CompositionConfirmed;
+    }
+    loop {
+        let poll_input = yield_step(ch.clone(), vec![]).await;
+        if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
+            break d;
+        }
+        let _ = poll_input;
+    }
+}
+
+#[expect(clippy::future_not_send)]
+pub(crate) async fn run_per_vk_confirm(
+    ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
+    cold_seq: u32,
+    romaji: &str,
+    plan: TransmitPlan,
+    target: TransmitTarget,
+) {
+    use crate::tsf::probe::DetectionResult;
+
+    let (log_tag, literal_tag, confirmed_tag) = per_vk_confirm_tags(target);
 
     let vk_chars: Vec<(VkCode, bool)> = romaji
         .chars()
@@ -312,28 +353,7 @@ pub(crate) async fn run_per_vk_confirm(
             return;
         };
 
-        // BUG-29/BUG-30: 候補ウィンドウが既に表示中なら literal-detect の polling を
-        // スキップする。SHOW はエッジトリガ（hidden→visible 遷移でのみ増分）のため VK1
-        // 以降では再発火せず、子音単体 VK は WriteTransferCount 閾値も原理的に越えない
-        // （probe.rs の `LiteralDetector::check_now` に既知の限界として記載済み）。
-        // 検出ロジック自体が TSF/Chrome で統一された（BUG-30、`docs/known-bugs.md`
-        // BUG-30 追補1）ため、この早期脱出も両ターゲットに適用する（旧: Chrome 限定）。
-        let detection = if crate::tsf::observer::gji_candidate_visible_now() {
-            log::debug!(
-                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
-                 candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
-                vk.0,
-            );
-            DetectionResult::CompositionConfirmed
-        } else {
-            loop {
-                let poll_input = yield_step(ch.clone(), vec![]).await;
-                if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
-                    break d;
-                }
-                let _ = poll_input;
-            }
-        };
+        let detection = await_vk_detection(&ch, &sent, log_tag, cold_seq, idx, last_idx, vk).await;
 
         match detection {
             DetectionResult::CompositionConfirmed => {
@@ -534,7 +554,7 @@ impl TsfProbeCoro {
         // Self-priming: StepCoro の最初の step() は input を消費しない。construction 直後・
         // pending_tsf に格納される前にこの「捨てられる1回」を消費しておく
         // （詳細は `GjiWarmupCoro::new` のコメント参照）。
-        let primed = this.tick(&TsfEnvSnapshot::default());
+        let primed = this.tick(TsfEnvSnapshot::default());
         debug_assert!(
             primed.is_empty(),
             "TsfProbeCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
@@ -544,7 +564,7 @@ impl TsfProbeCoro {
 }
 
 impl TickableFsm for TsfProbeCoro {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         // BUG-27 調査用ログ: 通常 tick（Phase 1 の 10ms ポーリング等）は毎回
         // vk_sent/transmit_done とも None のため、どちらかが Some の場合のみ出す
         // （毎 tick 出すと Phase 1 のポーリングだけでログが埋まる）。
@@ -559,7 +579,7 @@ impl TickableFsm for TsfProbeCoro {
             );
         }
         let input = ProbeTickInput {
-            env: *env,
+            env,
             transmit_done: self.pending_transmit_done.take(),
             vk_sent: self.pending_vk_sent.take(),
         };
@@ -637,7 +657,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, &env, true, false, false);
+        let plan = decide_transmit_plan(false, obs, env, true, false, false);
 
         assert!(
             plan.needs_literal,
@@ -655,7 +675,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, &env, true, true, true);
+        let plan = decide_transmit_plan(false, obs, env, true, true, true);
 
         assert!(plan.needs_literal, "tsf mode: LiteralDetect 有効");
     }
@@ -670,7 +690,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, &env, true, false, false);
+        let plan = decide_transmit_plan(false, obs, env, true, false, false);
 
         assert!(
             plan.needs_literal,
@@ -688,7 +708,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(true, obs, &env, false, false, false); // deferred_empty=false
+        let plan = decide_transmit_plan(true, obs, env, false, false, false); // deferred_empty=false
 
         assert!(
             !plan.used_eager_path,
@@ -707,7 +727,7 @@ mod tests {
             ..Default::default()
         };
 
-        let plan = decide_transmit_plan(false, obs, &env, true, true, false); // Medium cold
+        let plan = decide_transmit_plan(false, obs, env, true, true, false); // Medium cold
 
         assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
     }
@@ -734,7 +754,7 @@ mod tests {
         // 依存しないよう明示的にリセットする。
         crate::tsf::observer::reset_literal_session_confirmed();
         let mut machine = ready_chrome_probe();
-        let actions = machine.tick(&TsfEnvSnapshot {
+        let actions = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });
@@ -755,7 +775,7 @@ mod tests {
     fn chrome_without_gji_active_skips_literal_detect() {
         // !gji_active（GJI モニター不健全）: needs_literal=false（安全網なしの直接送信）。
         let mut machine = ready_chrome_probe();
-        let actions = machine.tick(&TsfEnvSnapshot {
+        let actions = machine.tick(TsfEnvSnapshot {
             gji_active: false,
             ..Default::default()
         });
@@ -789,7 +809,7 @@ mod tests {
     fn chrome_per_vk_vk_sent_unset_does_not_backspace() {
         crate::tsf::observer::reset_literal_session_confirmed();
         let mut machine = ready_chrome_probe();
-        let first_actions = machine.tick(&TsfEnvSnapshot {
+        let first_actions = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });
@@ -802,7 +822,7 @@ mod tests {
         );
 
         // apply_vk_sent を呼ばずに次の tick を実行 → pending_vk_sent が None のまま渡る。
-        let actions_after_unset = machine.tick(&TsfEnvSnapshot {
+        let actions_after_unset = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
         });

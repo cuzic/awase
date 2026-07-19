@@ -78,7 +78,7 @@ pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
 pub(crate) fn is_partial_literal(
     observations: ProbeObservations,
     romaji: &str,
-    env: &TsfEnvSnapshot,
+    env: TsfEnvSnapshot,
 ) -> bool {
     !observations.nc_fired && env.is_tsf_mode && romaji.chars().count() >= 2
 }
@@ -177,7 +177,7 @@ impl LiteralDetectCore {
     /// - `None` → まだ待機中（タイマー継続）
     /// - `Some([Done])` → composition 確認（タイマー停止）
     /// - `Some([RawTsfLiteralRecovery { .. }, Done])` → raw literal 検出（タイマー停止）
-    pub(crate) fn poll(&mut self, env: &TsfEnvSnapshot) -> Option<Vec<ProbeAction>> {
+    pub(crate) fn poll(&mut self, env: TsfEnvSnapshot) -> Option<Vec<ProbeAction>> {
         use crate::tsf::probe::DetectionResult;
 
         // BUG-24 追補: このIMEセッション（打鍵開始〜候補ウィンドウHIDE）で既に
@@ -352,7 +352,7 @@ impl LiteralDetectFsm {
 }
 
 impl crate::tsf::warmup::tickable_fsm::TickableFsm for LiteralDetectFsm {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.core.poll(env).unwrap_or_default()
     }
 
@@ -403,7 +403,7 @@ mod tests {
     fn composition_confirmed_tsf_nc_false_multi_char_forces_recovery() {
         // 条件充足: nc=false, is_tsf_mode=true, romaji.chars()=2
         assert!(
-            is_partial_literal(obs(false), "ni", &tsf_env()),
+            is_partial_literal(obs(false), "ni", tsf_env()),
             "部分リテラル条件がすべて揃っているべき"
         );
     }
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn composition_confirmed_nc_fired_does_not_force_recovery() {
         assert!(
-            !is_partial_literal(obs(true), "ni", &tsf_env()),
+            !is_partial_literal(obs(true), "ni", tsf_env()),
             "nc_fired=true → 強制 recovery 不要"
         );
     }
@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn composition_confirmed_single_char_romaji_no_recovery() {
         assert!(
-            !is_partial_literal(obs(false), "n", &tsf_env()),
+            !is_partial_literal(obs(false), "n", tsf_env()),
             "1 文字ローマ字 → 部分リテラルにならない"
         );
     }
@@ -434,7 +434,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !is_partial_literal(obs(false), "ni", &env),
+            !is_partial_literal(obs(false), "ni", env),
             "non-TSF mode → 強制 recovery 不要"
         );
     }
@@ -446,7 +446,7 @@ mod tests {
         // → ESC (composition 破棄、文字数不問) + BS×1 ('l' 削除) が正しい。
         // BS×3 (= chars.len()) を送ると挿入点前の無関係な文字を消してしまう。
         assert!(
-            is_partial_literal(obs(false), "ltu", &tsf_env()),
+            is_partial_literal(obs(false), "ltu", tsf_env()),
             "ltu: 部分リテラル条件が揃っているべき"
         );
         assert_eq!(
@@ -522,7 +522,7 @@ mod tests {
         let now_ms = crate::hook::current_tick_ms();
         let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
 
-        let result = core.poll(&tsf_env());
+        let result = core.poll(tsf_env());
         assert!(
             result.is_none(),
             "候補ウィンドウ可視時は backspace を出さず hold すべき: {result:?}"
@@ -543,7 +543,7 @@ mod tests {
         let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
 
         // 1 回目: hold に入る（veto_started_at_ms が確定する）。
-        assert!(core.poll(&tsf_env()).is_none());
+        assert!(core.poll(tsf_env()).is_none());
 
         // 上限を超えるまで実時間で待機する（候補ウィンドウ固着を模擬）。
         std::thread::sleep(std::time::Duration::from_millis(
@@ -551,7 +551,7 @@ mod tests {
         ));
 
         let actions = core
-            .poll(&tsf_env())
+            .poll(tsf_env())
             .expect("上限超過後は Some(..) で確定するべき");
         assert!(
             !actions
@@ -580,7 +580,7 @@ mod tests {
         let mut core = LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
 
         let actions = core
-            .poll(&tsf_env())
+            .poll(tsf_env())
             .expect("per-VK パスは veto を無効化し即座に回収するべき");
         assert!(
             actions

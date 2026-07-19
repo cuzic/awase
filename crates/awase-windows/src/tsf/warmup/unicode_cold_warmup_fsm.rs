@@ -46,7 +46,7 @@ impl UnicodeColdWarmupFsm {
         }
     }
 
-    fn tick_inner(&mut self, _env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick_inner(&mut self, _env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.elapsed_ms += 10;
         let current = crate::tsf::observer::gji_write_bytes();
         let gji_wrote = current > self.baseline_bytes;
@@ -72,7 +72,7 @@ impl UnicodeColdWarmupFsm {
 }
 
 impl crate::tsf::warmup::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         self.tick_inner(env)
     }
 

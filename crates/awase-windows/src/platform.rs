@@ -904,7 +904,7 @@ impl TsfComposition for WindowsPlatform {
             // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
             // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
             if self.output.is_composition_warm() {
-                log::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ",);
+                log::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ");
                 return;
             }
             log::debug!(

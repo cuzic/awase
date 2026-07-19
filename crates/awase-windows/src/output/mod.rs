@@ -788,7 +788,7 @@ impl Output {
             machine.cold_seq_hint(),
             tick_t
         );
-        let actions = machine.tick(&env);
+        let actions = machine.tick(env);
         let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
         match dispatch {
             probe_io::DispatchResult::Done => {

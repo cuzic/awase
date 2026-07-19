@@ -130,7 +130,7 @@ async fn gji_coro_body(
     let plan = decide_transmit_plan(
         ctx.used_eager_path,
         observations,
-        &env,
+        env,
         !env.deferred_pending,
         ctx.forces_prepend_f2,
         ctx.is_long_cold,
@@ -222,7 +222,7 @@ async fn gji_coro_body(
         let detect_input = yield_step(ch.clone(), vec![]).await;
         env = detect_input.env;
 
-        if let Some(final_actions) = core.poll(&env) {
+        if let Some(final_actions) = core.poll(env) {
             yield_step(ch.clone(), final_actions).await;
             return;
         }
@@ -287,7 +287,7 @@ impl GjiWarmupCoro {
         // 格納される前にこの「捨てられる1回」を消費しておくことで、install 後に
         // 外部から届く最初の tick の入力（deferred VK 等）が握り潰されるのを防ぐ。
         // construction 時点では何も届いていないため、捨てても安全。
-        let primed = this.tick(&TsfEnvSnapshot::default());
+        let primed = this.tick(TsfEnvSnapshot::default());
         debug_assert!(
             primed.is_empty(),
             "GjiWarmupCoro self-priming tick は空の ProbeAction を返すはず: {primed:?}"
@@ -299,7 +299,7 @@ impl GjiWarmupCoro {
 // ── TickableFsm impl ─────────────────────────────────────────────────────────
 
 impl TickableFsm for GjiWarmupCoro {
-    fn tick(&mut self, env: &TsfEnvSnapshot) -> Vec<ProbeAction> {
+    fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
         // BUG-27 調査用ログ: probe_fsm.rs::TsfProbeCoro::tick と同じ意図。
         // 通常 tick は毎回 None のため、どちらかが Some の場合のみ出す。
         if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
@@ -313,7 +313,7 @@ impl TickableFsm for GjiWarmupCoro {
             );
         }
         let input = ProbeTickInput {
-            env: *env,
+            env,
             transmit_done: self.pending_transmit_done.take(),
             vk_sent: self.pending_vk_sent.take(),
         };

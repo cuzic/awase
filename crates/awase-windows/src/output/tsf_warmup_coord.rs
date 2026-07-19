@@ -312,7 +312,7 @@ mod tests {
     impl TickableFsm for StubMachine {
         fn tick(
             &mut self,
-            _env: &TsfEnvSnapshot,
+            _env: TsfEnvSnapshot,
         ) -> Vec<crate::tsf::warmup::probe_fsm::ProbeAction> {
             self.ticks += 1;
             vec![]
