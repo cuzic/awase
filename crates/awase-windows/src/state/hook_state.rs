@@ -9,11 +9,11 @@ pub struct HookConfig {
     pub right_thumb_vk: VkCode,
     /// 物理キーボードモデル。`scan_to_pos` のテーブル選択に使う。
     pub keyboard_model: KeyboardModel,
-    /// `GeneralConfig::left_alt_impersonates_thumb_key`。true かつエンジン ON 中は
-    /// Left Alt を `left_thumb_vk` になりすまさせる。
+    /// `GeneralConfig::left_thumb_key == "Left Alt"` かどうか（`hook::resolve_thumb_key`
+    /// が導出）。true かつエンジン ON 中は Left Alt を `left_thumb_vk` になりすまさせる。
     pub left_alt_impersonates_thumb_key: bool,
-    /// `GeneralConfig::right_alt_impersonates_thumb_key`。true かつエンジン ON 中は
-    /// Right Alt を `right_thumb_vk` になりすまさせる。
+    /// `GeneralConfig::right_thumb_key == "Right Alt"` かどうか（`hook::resolve_thumb_key`
+    /// が導出）。true かつエンジン ON 中は Right Alt を `right_thumb_vk` になりすまさせる。
     pub right_alt_impersonates_thumb_key: bool,
 }
 

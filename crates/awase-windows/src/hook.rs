@@ -75,6 +75,27 @@ fn decide_alt_impersonation(
     (vk, impersonating)
 }
 
+/// `left_thumb_key`/`right_thumb_key` 設定文字列を VkCode に解決し、
+/// Alt なりすましが必要かどうかも同時に判定する。
+///
+/// `"Left Alt"`/`"Right Alt"`（`awase-settings` の `THUMB_KEY_OPTIONS` 参照）は
+/// 物理キー名ではなく「エンジン ON 時のみ Left/Right Alt を親指キーとして扱う」
+/// という特殊な指示であり、通常の VK 名パーサー（`VkCode::from_name`）には
+/// 含めない。なりすまし先の VK は JIS の無変換(左)/変換(右)相当に固定する
+/// （`config.rs` の `GeneralConfig::keyboard_model` doc 参照）。
+///
+/// 戻り値: `(親指キーとして使う VkCode, Alt なりすましを有効にするか)`。
+/// 未知のキー名の場合は `None`。
+#[must_use]
+pub fn resolve_thumb_key(name: &str) -> Option<(VkCode, bool)> {
+    use crate::vk::{VkCodeExt, VK_CONVERT, VK_NONCONVERT};
+    match name {
+        "Left Alt" => Some((VK_NONCONVERT, true)),
+        "Right Alt" => Some((VK_CONVERT, true)),
+        _ => VkCode::from_name(name).map(|vk| (vk, false)),
+    }
+}
+
 /// Left/Right Alt キーのなりすまし処理（グローバル状態の読み書きを伴う副作用あり）。
 /// 判定ロジック本体は `decide_alt_impersonation`（純粋関数）に委譲する。
 ///
@@ -252,8 +273,9 @@ pub fn ctrl_consumed_since_down() -> bool {
 /// false = Jis（既定）、true = Us。
 static CACHED_KEYBOARD_MODEL_IS_US: AtomicBool = AtomicBool::new(false);
 
-/// `GeneralConfig::left_alt_impersonates_thumb_key`/`right_alt_impersonates_thumb_key`
-/// のキャッシュ。左右は独立に ON/OFF できる（片方だけの構成もあり得るため）。
+/// Alt なりすまし ON/OFF のキャッシュ。`resolve_thumb_key` が
+/// `left_thumb_key`/`right_thumb_key` の値（`"Left Alt"`/`"Right Alt"` か否か）
+/// から導出した結果を保持する。左右は独立（片方だけの構成もあり得るため）。
 static CACHED_LEFT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(false);
 static CACHED_RIGHT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(false);
 
@@ -265,8 +287,8 @@ static CACHED_ENGINE_ENABLED: AtomicBool = AtomicBool::new(false);
 ///
 /// 新規押下（離された状態からの KeyDown）時点の判定を、以降の auto-repeat
 /// KeyDown・KeyUp まで保持するために使う。押しっぱなし中に
-/// `left_alt_impersonates_thumb_key`/`right_alt_impersonates_thumb_key` の設定変更や
-/// エンジン ON/OFF 切替が起きても、同一の押下セッション内では KeyDown（repeat 含む）/
+/// `left_thumb_key`/`right_thumb_key` の設定変更やエンジン ON/OFF 切替が
+/// 起きても、同一の押下セッション内では KeyDown（repeat 含む）/
 /// KeyUp が同じ扱い（なりすまし継続 or 通常 Alt 継続）になり、途中で判定がズレて
 /// Alt が stuck modifier になる事故を防ぐ（`PHYSICAL_KEY_DOWN_AT_MS` の
 /// auto-repeat 対策コメント参照、同種の問題）。
@@ -703,10 +725,34 @@ fn now_timestamp() -> Timestamp {
 
 #[cfg(test)]
 mod alt_impersonation_tests {
-    use super::decide_alt_impersonation;
-    use crate::vk::{VK_LMENU, VK_NONCONVERT};
+    use super::{decide_alt_impersonation, resolve_thumb_key};
+    use crate::vk::{VK_CONVERT, VK_LMENU, VK_NONCONVERT, VK_SPACE};
 
     const LEFT_THUMB: awase::types::VkCode = VK_NONCONVERT;
+
+    /// "Left Alt"/"Right Alt" は無変換/変換相当の VK に解決され、
+    /// なりすましフラグが立つ。
+    #[test]
+    fn resolve_thumb_key_alt_sentinels() {
+        assert_eq!(resolve_thumb_key("Left Alt"), Some((VK_NONCONVERT, true)));
+        assert_eq!(resolve_thumb_key("Right Alt"), Some((VK_CONVERT, true)));
+    }
+
+    /// 通常の VK 名は従来通り解決され、なりすましフラグは立たない。
+    #[test]
+    fn resolve_thumb_key_normal_vk_name() {
+        assert_eq!(resolve_thumb_key("VK_SPACE"), Some((VK_SPACE, false)));
+        assert_eq!(
+            resolve_thumb_key("VK_NONCONVERT"),
+            Some((VK_NONCONVERT, false))
+        );
+    }
+
+    /// 未知のキー名は `None`（呼び出し元が `.context(...)` でエラーにする）。
+    #[test]
+    fn resolve_thumb_key_unknown_name_returns_none() {
+        assert_eq!(resolve_thumb_key("Not A Real Key"), None);
+    }
 
     /// エンジン ON・新規押下 → なりすまし発動、vk が親指キーに書き換わる。
     #[test]

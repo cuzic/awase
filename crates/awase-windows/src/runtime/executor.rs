@@ -649,7 +649,7 @@ impl DecisionExecutor {
                 ConvModeAuthority::UserOwned
             };
             platform.set_conv_mode_authority(authority);
-            // Alt なりすまし（config.rs: left/right_alt_impersonates_thumb_key）の
+            // Alt なりすまし（left/right_thumb_key == "Left Alt"/"Right Alt"）の
             // 発動条件。フックスレッドから同期的に読めるようキャッシュを更新する。
             crate::hook::set_engine_enabled(*enabled);
         }

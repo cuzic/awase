@@ -20,7 +20,6 @@ use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
-use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
@@ -855,15 +854,15 @@ impl Runtime {
                 config.app_overrides.clone(),
             ));
         self.platform.focus.cache_reset();
-        if let (Some(left), Some(right)) = (
-            VkCode::from_name(&config.general.left_thumb_key),
-            VkCode::from_name(&config.general.right_thumb_key),
+        if let (Some((left, left_alt_impersonates)), Some((right, right_alt_impersonates))) = (
+            crate::hook::resolve_thumb_key(&config.general.left_thumb_key),
+            crate::hook::resolve_thumb_key(&config.general.right_thumb_key),
         ) {
             crate::hook::set_thumb_vk_codes(left, right);
             self.engine.set_thumb_vks(left, right);
             crate::hook::set_alt_impersonation_enabled(
-                config.general.left_alt_impersonates_thumb_key,
-                config.general.right_alt_impersonates_thumb_key,
+                left_alt_impersonates,
+                right_alt_impersonates,
             );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",

@@ -124,6 +124,10 @@ pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
 }
 
 /// 検証済み設定で配列の読み込みとエンジン初期化を行い、構成要素を返す
+///
+/// 戻り値の bool 2 つは Left/Right Alt なりすましの有効状態
+/// （`left_thumb_key`/`right_thumb_key` が `"Left Alt"`/`"Right Alt"` かどうかから
+/// `hook::resolve_thumb_key` が導出する。`hook::set_alt_impersonation_enabled` 参照）。
 pub(super) fn init_engine_validated(
     config: &ValidatedConfig,
     diag: &mut StartupDiagnostics,
@@ -134,15 +138,19 @@ pub(super) fn init_engine_validated(
     String,
     VkCode,
     VkCode,
+    bool,
+    bool,
 )> {
-    let left_thumb_vk = VkCode::from_name(&config.general.left_thumb_key).context(format!(
-        "Unknown VK name: {}",
-        config.general.left_thumb_key
-    ))?;
-    let right_thumb_vk = VkCode::from_name(&config.general.right_thumb_key).context(format!(
-        "Unknown VK name: {}",
-        config.general.right_thumb_key
-    ))?;
+    let (left_thumb_vk, left_alt_impersonates) =
+        hook::resolve_thumb_key(&config.general.left_thumb_key).context(format!(
+            "Unknown VK name: {}",
+            config.general.left_thumb_key
+        ))?;
+    let (right_thumb_vk, right_alt_impersonates) =
+        hook::resolve_thumb_key(&config.general.right_thumb_key).context(format!(
+            "Unknown VK name: {}",
+            config.general.right_thumb_key
+        ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let layouts = LayoutEntry::scan_all(&layouts_dir, diag, config.general.keyboard_model)?;
@@ -173,6 +181,8 @@ pub(super) fn init_engine_validated(
         initial_layout_name,
         left_thumb_vk,
         right_thumb_vk,
+        left_alt_impersonates,
+        right_alt_impersonates,
     ))
 }
 
@@ -388,6 +398,8 @@ pub(super) fn initialize_app(
     sync_off_keys: Vec<VkCode>,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
+    left_alt_impersonates: bool,
+    right_alt_impersonates: bool,
     all_keymaps: crate::keymap::KeymapTable,
 ) {
     let mut ps = crate::PlatformState::new();
@@ -395,10 +407,7 @@ pub(super) fn initialize_app(
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     hook::set_keyboard_model(config.general.keyboard_model);
-    hook::set_alt_impersonation_enabled(
-        config.general.left_alt_impersonates_thumb_key,
-        config.general.right_alt_impersonates_thumb_key,
-    );
+    hook::set_alt_impersonation_enabled(left_alt_impersonates, right_alt_impersonates);
 
     let engine_on_ime_vk = config
         .keys
@@ -767,8 +776,16 @@ pub(super) fn run_all() -> Result<()> {
     for w in &config_warnings {
         diag.warn(w);
     }
-    let (fsm, layouts, layout_names, initial_layout_name, left_thumb_vk, right_thumb_vk) =
-        init_engine_validated(&config, &mut diag)?;
+    let (
+        fsm,
+        layouts,
+        layout_names,
+        initial_layout_name,
+        left_thumb_vk,
+        right_thumb_vk,
+        left_alt_impersonates,
+        right_alt_impersonates,
+    ) = init_engine_validated(&config, &mut diag)?;
     let engine_on_keys = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
     let engine_off_keys = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
     let ime_control_on_keys =
@@ -845,6 +862,8 @@ pub(super) fn run_all() -> Result<()> {
         sync_off_keys,
         left_thumb_vk,
         right_thumb_vk,
+        left_alt_impersonates,
+        right_alt_impersonates,
         compiled_keymaps,
     );
 

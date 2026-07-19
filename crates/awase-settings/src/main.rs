@@ -764,6 +764,7 @@ impl SettingsApp {
                  US: ANSI 104キー配列。無変換/変換キーが無いため、\n\
                  親指キーとホットキーを別途 US 向けに変更する必要があります。",
             );
+            let prev_keyboard_model = self.config.general.keyboard_model;
             egui::ComboBox::from_id_salt("keyboard_model")
                 .selected_text(keyboard_model_label(self.config.general.keyboard_model))
                 .show_ui(ui, |ui| {
@@ -779,6 +780,16 @@ impl SettingsApp {
                         "US (ANSI 104キー)",
                     );
                 });
+            // US → JIS への切替時、Space/Left Alt/Right Alt 等 US 向けに変更していた
+            // 親指キーが JIS では使えない（Space は単独タップの意味が変わり、Alt は
+            // なりすまし設定自体が無意味になる）まま残ってしまうのを防ぐため、
+            // 既定値（無変換/変換）へ強制的に戻す。ユーザーが手動で戻す手間を省く。
+            if prev_keyboard_model != awase::scanmap::KeyboardModel::Jis
+                && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Jis
+            {
+                self.config.general.left_thumb_key = "無変換".to_string();
+                self.config.general.right_thumb_key = "変換".to_string();
+            }
         });
         if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
             ui.label(
@@ -787,8 +798,8 @@ impl SettingsApp {
                  親指キーを変更してください（Ctrl/Win は OS 予約修飾キーのため\n\
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
                  F13-F24 等へ物理リマップするか、Space を検討してください。\n\
-                 Alt はキー設定タブの「Alt なりすまし」でエンジン ON 時のみ\n\
-                 親指キーとして使えます）。",
+                 キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
+                 エンジン ON 時のみ Alt キーを親指キーとして使えます）。",
             );
         }
         ui.horizontal(|ui| {
@@ -822,7 +833,11 @@ impl SettingsApp {
         ui.label("親指キー");
         ui.horizontal(|ui| {
             ui.label("  左親指:").on_hover_text(
-                "左の親指シフトキーに使うキーです。\n通常は「無変換」キーを使います。",
+                "左の親指シフトキーに使うキーです。通常は「無変換」キーを使います。\n\
+                 「Left Alt」を選ぶと、物理 Left Alt キーをエンジン ON 時に限り\n\
+                 左親指キーとして使います（OFF 時は通常の Alt として機能し、\n\
+                 Alt+Tab 等を損ないません。PowerToys 等の OS レベルキーリマップと\n\
+                 同様の効果を awase 単体で実現する機能です）。",
             );
             thumb_key_combo(
                 ui,
@@ -832,7 +847,9 @@ impl SettingsApp {
         });
         ui.horizontal(|ui| {
             ui.label("  右親指:").on_hover_text(
-                "右の親指シフトキーに使うキーです。\n通常は「変換」キーを使います。",
+                "右の親指シフトキーに使うキーです。通常は「変換」キーを使います。\n\
+                 「Right Alt」を選ぶと、物理 Right Alt キーをエンジン ON 時に限り\n\
+                 右親指キーとして使います（詳細は左親指のヒントを参照）。",
             );
             thumb_key_combo(
                 ui,
@@ -840,30 +857,6 @@ impl SettingsApp {
                 &mut self.config.general.right_thumb_key,
             );
         });
-        if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
-            ui.indent("alt_impersonation_options", |ui| {
-                ui.checkbox(
-                    &mut self.config.general.left_alt_impersonates_thumb_key,
-                    "Left Alt を左親指キーとして使う（エンジン ON 時のみ）",
-                )
-                .on_hover_text(
-                    "エンジンが ON の間だけ、物理 Left Alt キーの押下を左親指キー\n\
-                     （上の「左親指」欄の値）として扱います。エンジン OFF 中は\n\
-                     通常の Alt として機能するため、Alt+Tab 等は失われません。\n\
-                     PowerToys 等の OS レベルキーリマップと同様の効果を awase 単体で\n\
-                     実現します（Left/Right は独立に ON/OFF できます）。",
-                );
-                ui.checkbox(
-                    &mut self.config.general.right_alt_impersonates_thumb_key,
-                    "Right Alt を右親指キーとして使う（エンジン ON 時のみ）",
-                )
-                .on_hover_text(
-                    "エンジンが ON の間だけ、物理 Right Alt キーの押下を右親指キー\n\
-                     （上の「右親指」欄の値）として扱います。エンジン OFF 中は\n\
-                     通常の Alt として機能します。",
-                );
-            });
-        }
         ui.add_space(8.0);
 
         // Engine on/off
@@ -1842,14 +1835,19 @@ fn key_list_ui(
 /// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。US 配列で
 /// 無変換/変換キーが無い場合の代替はこちらの範囲を推奨する。
 ///
-/// 意図的に含めていないもの: VK_LMENU/VK_RMENU（Alt）・VK_LCONTROL/VK_RCONTROL
-/// （Ctrl）・VK_LWIN/VK_RWIN（Win）。これらは `ModifierState::is_os_modifier_held`
-/// の対象で、`bypass_reason` がそのキーの KeyDown を即座に `OsModifierHeld` として
-/// 素通しするため、親指キーに割り当てても `PendingThumb` に一切入らず同時打鍵検出
-/// そのものが機能しない（`engine/tests.rs` の
+/// 意図的に含めていないもの: VK_LCONTROL/VK_RCONTROL（Ctrl）・VK_LWIN/VK_RWIN（Win）。
+/// これらは `ModifierState::is_os_modifier_held` の対象で、`bypass_reason` が
+/// そのキーの KeyDown を即座に `OsModifierHeld` として素通しするため、親指キーに
+/// 割り当てても `PendingThumb` に一切入らず同時打鍵検出そのものが機能しない
+/// （`engine/tests.rs` の
 /// `test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass` で
 /// 確認済み。手動 remap の思いつきではなく実測済みの制約）。手動で config.toml に
 /// 書けばパースは通るが動作しないため、GUI の候補としては提示しない。
+/// Alt (VK_LMENU/VK_RMENU) は本来同じ制約を受けるが、`ALT_IMPERSONATION_OPTIONS`
+/// （左親指/右親指の候補にのみ追加で表示、`thumb_key_combo` 参照）経由でなら
+/// エンジン ON 時限定のなりすまし機構（`hook.rs::resolve_thumb_key`）が
+/// この制約を回避するため使用可能。単独5連打エンジンOFF（`solo_triple_combo`）
+/// 等、`THUMB_KEY_OPTIONS` を共有する他の用途には Alt を出さないよう分離してある。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
     ("変換", "VK_CONVERT"),
@@ -1870,6 +1868,15 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("F23", "VK_F23"),
     ("F24", "VK_F24"),
 ];
+
+/// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
+///
+/// 内部表記 `"Left Alt"`/`"Right Alt"` は VK 名ではなく、`hook.rs::resolve_thumb_key`
+/// が特別に解釈する指示文字列。物理 Left/Right Alt キーをエンジン ON 時に限り
+/// 親指キー（無変換/変換相当）として扱う（`config.rs` の `GeneralConfig::keyboard_model`
+/// doc・`THUMB_KEY_OPTIONS` doc 参照）。`solo_triple_combo` 等、`THUMB_KEY_OPTIONS` を
+/// 共有する他の用途には出さないため、意図的に別の定数に分離してある。
+const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] = &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///
@@ -2048,8 +2055,9 @@ fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
 
 /// 親指キー選択ドロップダウン。変更時は true を返す。
 fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
-    let display = THUMB_KEY_OPTIONS
-        .iter()
+    let options = THUMB_KEY_OPTIONS.iter().chain(ALT_IMPERSONATION_OPTIONS);
+    let display = options
+        .clone()
         .find(|(_, v)| *v == current.as_str())
         .map_or(current.as_str(), |(d, _)| *d)
         .to_string();
@@ -2062,7 +2070,7 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in THUMB_KEY_OPTIONS {
+            for (label, internal) in options {
                 if ui
                     .selectable_label(current.as_str() == *internal, *label)
                     .clicked()
