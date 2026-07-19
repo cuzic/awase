@@ -160,7 +160,6 @@ async fn gji_coro_body(
     // （`tsf::observer::mark_literal_session_confirmed`、`literal_detect_fsm.rs` 参照）。
     if plan.needs_literal
         && !crate::tsf::observer::literal_session_confirmed()
-        && !plan.should_prepend_f2
         && !plan.used_eager_path
         && env.is_tsf_mode
     {
@@ -190,14 +189,12 @@ async fn gji_coro_body(
         let cold_seq = ctx.cold_seq;
         let nc_fired = observations.nc_fired;
         let gji_active = env.gji_active;
-        let should_prepend_f2 = plan.should_prepend_f2;
         let used_eager_path = plan.used_eager_path;
         win32_async::spawn_local(async move {
             win32_async::sleep_ms(crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE as u32).await;
             log::debug!(
                 "[gji-coro-diag] cold={cold_seq} skip-verify nc_fired={nc_fired} \
-                 gji_active={gji_active} \
-                 should_prepend_f2={should_prepend_f2} used_eager_path={used_eager_path}"
+                 gji_active={gji_active} used_eager_path={used_eager_path}"
             );
             crate::ime_diagnostic::log_composition_probe(cold_seq, "skip-verify");
         });
@@ -340,7 +337,6 @@ impl TickableFsm for GjiWarmupCoro {
         ze_bs_count: usize,
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
-        expected_kana: Option<char>,
     ) -> bool {
         match detector {
             Some(det) => {
@@ -351,7 +347,6 @@ impl TickableFsm for GjiWarmupCoro {
                     ze_bs_count,
                     detector: det,
                     deadline_ms,
-                    expected_kana,
                 });
                 false
             }

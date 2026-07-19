@@ -46,7 +46,6 @@ pub(crate) trait TickableFsm {
         _ze_bs_count: usize,
         _detector: Option<LiteralDetector>,
         _literal_detect_ms: u64,
-        _expected_kana: Option<char>,
     ) -> bool {
         true
     }
