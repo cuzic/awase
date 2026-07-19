@@ -216,14 +216,6 @@ impl GjiMonitor {
         self.last_write_change_ms
     }
 
-    const fn last_read_ops(&self) -> u64 {
-        self.last_read_ops
-    }
-
-    const fn last_read_bytes(&self) -> u64 {
-        self.last_read_bytes
-    }
-
     const fn last_write_bytes(&self) -> u64 {
         self.last_write_bytes
     }
@@ -515,12 +507,6 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS
                         .gji_last_io_ms
                         .store(m.last_change_ms(), Ordering::Relaxed);
-                    TSF_OBS
-                        .gji_read_op_count
-                        .store(m.last_read_ops(), Ordering::Relaxed);
-                    TSF_OBS
-                        .gji_read_bytes
-                        .store(m.last_read_bytes(), Ordering::Relaxed);
                     TSF_OBS
                         .gji_write_bytes
                         .store(m.last_write_bytes(), Ordering::Relaxed);

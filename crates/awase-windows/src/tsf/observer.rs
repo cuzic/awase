@@ -103,21 +103,6 @@ pub struct TsfObservations {
     /// `send_romaji_as_tsf` や `TsfReadinessJudge` が参照する。
     pub(super) gji_last_io_ms: AtomicU64,
 
-    /// GJI プロセスの累積 ReadOperationCount。
-    ///
-    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
-    /// ベースラインとの差分で「GJI が VK を受け取って辞書 lookup したか」を確認できる
-    /// （composition 確認シグナルとして `gji_last_io_ms` より限定的）。
-    /// 観測・状態推定用。0 = 未取得。
-    pub(super) gji_read_op_count: AtomicU64,
-
-    /// GJI プロセスの累積 ReadTransferCount（バイト数）。
-    ///
-    /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
-    /// スパイク（数 MB）= 辞書ファイル再ロード（コールドスタート）の可能性がある。
-    /// 観測・状態推定用。0 = 未取得。
-    pub(super) gji_read_bytes: AtomicU64,
-
     /// GJI プロセスの累積 WriteTransferCount（バイト数）。
     ///
     /// バックグラウンドモニタースレッドが 10ms ごとに更新する。
@@ -213,8 +198,6 @@ impl TsfObservations {
             gji_candidate_show: ChangeCounter::new(),
             gji_candidate_visible: AtomicBool::new(false),
             gji_last_io_ms: AtomicU64::new(0),
-            gji_read_op_count: AtomicU64::new(0),
-            gji_read_bytes: AtomicU64::new(0),
             gji_write_bytes: AtomicU64::new(0),
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
@@ -242,18 +225,6 @@ impl TsfObservations {
     #[must_use]
     pub fn gji_last_write_ms(&self) -> u64 {
         self.gji_last_write_ms.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 ReadOperationCount を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_read_op_count(&self) -> u64 {
-        self.gji_read_op_count.load(Ordering::Relaxed)
-    }
-
-    /// GJI プロセスの累積 ReadTransferCount（バイト数）を読み取る（Relaxed）。
-    #[must_use]
-    pub fn gji_read_bytes(&self) -> u64 {
-        self.gji_read_bytes.load(Ordering::Relaxed)
     }
 
     /// GJI プロセスの累積 WriteTransferCount（バイト数）を読み取る（Relaxed）。
