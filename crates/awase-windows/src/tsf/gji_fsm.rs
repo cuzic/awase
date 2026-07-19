@@ -88,26 +88,18 @@ impl PendingInput {
 
 // ── 状態型 ───────────────────────────────────────────────────────────────────
 
-/// `OnCold` の種別と warmup budget。
+/// `OnCold` の種別。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColdKind {
-    /// フォーカス変更・IME-ON 直後、GJI 確実に生存（即 Running、budget=100ms）
+    /// フォーカス変更・IME-ON 直後、GJI 確実に生存（即 Running）
     Short,
-    /// medium idle (7000–9999ms)、GJI 生存不明（NotStarted、ncwait_budget=550ms）
+    /// medium idle (7000–9999ms)、GJI 生存不明（NotStarted、最初の KeyInput まで待機）
     Medium,
-    /// LongIdle タイムアウト後（NotStarted、ncwait_budget=GJI_LONG_IDLE_PROBE_TOTAL_MS=350ms）
+    /// LongIdle タイムアウト後（NotStarted、最初の KeyInput まで待機）
     Long,
 }
 
 impl ColdKind {
-    /// GjiProbe フェーズの probe_budget_ms（Short のみ即プローブ開始で使用）
-    pub(crate) const fn budget_ms(self) -> u64 {
-        match self {
-            Self::Short => 100,
-            Self::Medium | Self::Long => tuning::GJI_LONG_IDLE_PROBE_TOTAL_MS,
-        }
-    }
-
     /// F2 をバッチに強制同梱するか（GJI が寝ている可能性がある Medium/Long で true）。
     pub(crate) const fn forces_prepend_f2(self) -> bool {
         matches!(self, Self::Medium | Self::Long)
@@ -238,8 +230,6 @@ pub(crate) enum GjiAction {
     /// 新しい warmup probe を開始する
     StartProbe {
         probe_id: ProbeId,
-        /// GjiProbe フェーズの最大待機時間 (ms)
-        budget_ms: u64,
         /// `GjiWarmupCoro::new` に渡す probe パラメータ
         params: ProbeParams,
     },
@@ -377,11 +367,7 @@ impl GjiFsm {
         if let Some(id) = old_probe {
             actions.push(GjiAction::CancelProbe { probe_id: id });
         }
-        actions.push(GjiAction::StartProbe {
-            probe_id,
-            budget_ms: kind.budget_ms(),
-            params,
-        });
+        actions.push(GjiAction::StartProbe { probe_id, params });
         Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
     }
 
@@ -402,11 +388,7 @@ impl GjiFsm {
             };
             (
                 ProbeStatus::Authorized { probe_id, params },
-                Some(GjiAction::StartProbe {
-                    probe_id,
-                    budget_ms: kind.budget_ms(),
-                    params,
-                }),
+                Some(GjiAction::StartProbe { probe_id, params }),
             )
         } else {
             (ProbeStatus::NotStarted, None)
@@ -628,11 +610,7 @@ impl TimedStateMachine for GjiFsm {
                                 };
                                 *probe = ProbeStatus::Authorized { probe_id, params };
                                 pending.push(input);
-                                Response::emit(vec![GjiAction::StartProbe {
-                                    probe_id,
-                                    budget_ms: kind.budget_ms(),
-                                    params,
-                                }])
+                                Response::emit(vec![GjiAction::StartProbe { probe_id, params }])
                             }
                             ProbeStatus::Authorized { .. } => {
                                 pending.push(input);

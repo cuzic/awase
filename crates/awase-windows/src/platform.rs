@@ -283,14 +283,9 @@ impl WindowsPlatform {
         }
         for action in &response.actions {
             match action {
-                GjiAction::StartProbe {
-                    probe_id,
-                    budget_ms,
-                    params,
-                } => {
+                GjiAction::StartProbe { probe_id, params } => {
                     log::debug!(
-                        "[gji-fsm] StartProbe probe_id={probe_id:?} budget={budget_ms}ms \
-                         forces_f2={} long={}",
+                        "[gji-fsm] StartProbe probe_id={probe_id:?} forces_f2={} long={}",
                         params.forces_prepend_f2,
                         params.is_long_cold
                     );

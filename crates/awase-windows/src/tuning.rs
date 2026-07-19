@@ -79,17 +79,6 @@ pub const RAW_TSF_LITERAL_DETECT_MS: u64 = 300;
 /// LiteralDetect のタイムアウトで補う必要がある。500ms = 実測最大 ~370ms + 130ms マージン。
 pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
 
-/// GJI long idle 後の F2×2 に対する GJI I/O 応答確認 NameChangeWait の最大タイムアウト (ms)。
-///
-/// GJI I/O 早期終了（gji_long_idle_probe）が機能するケースでは GJI_IDLE_MS (80ms) 静止後に
-/// 即送信できる。機能しない（WezTerm + keybinds_ok=false 等）場合のフォールバックタイムアウト。
-///
-/// 実測（28s アイドル後 cold=16）: F2×2 送信から 181ms 後に GJI が初めて VK を受け入れた。
-/// 150ms ではタイムアウトが早すぎ「bあ」のような部分リテラル化が発生したため 350ms に延長。
-/// 350ms = 実測最大 ~180ms + 170ms マージン。
-/// タイムアウト時は VK_IME_OFF→VK_IME_ON セカンドステージへ。
-pub const GJI_LONG_IDLE_PROBE_TOTAL_MS: u64 = 350;
-
 /// GJI セッションが「中程度の idle」と判断する GJI アイドル閾値 (ms)。
 ///
 /// LONG_IDLE_MS (10s) 未満でも ~7s 以上の idle 後は WezTerm TSF が応答するまでに
