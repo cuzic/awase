@@ -520,7 +520,8 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+        let mut core =
+            LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
 
         let result = core.poll(tsf_env());
         assert!(
@@ -540,7 +541,8 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core = LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+        let mut core =
+            LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
 
         // 1 回目: hold に入る（veto_started_at_ms が確定する）。
         assert!(core.poll(tsf_env()).is_none());
@@ -577,7 +579,8 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core = LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
+        let mut core =
+            LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
 
         let actions = core
             .poll(tsf_env())

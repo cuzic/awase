@@ -590,7 +590,9 @@ impl LiteralDetector {
         // 残存ケースは `LiteralDetectCore::veto_decision`（BUG-30）が
         // 候補ウィンドウ可視性ベースの veto で補う。
         let write_confirmed = crate::tsf::observer::gji_write_bytes()
-            > self.write_bytes_baseline.saturating_add(Self::COMPOSITION_BYTES_THRESHOLD);
+            > self
+                .write_bytes_baseline
+                .saturating_add(Self::COMPOSITION_BYTES_THRESHOLD);
         let show_confirmed = TSF_OBS
             .gji_candidate_show
             .has_changed(self.gji_show_baseline);

@@ -122,7 +122,12 @@ const fn classify_alt_side(vk: VkCode, extended: bool) -> (bool, bool) {
 /// `vk` が Left/Right Alt でない場合、または対応する設定が OFF の場合は
 /// `vk` をそのまま返す。`extended` は `classify_alt_side` 参照。
 #[must_use]
-fn apply_alt_impersonation(vk: VkCode, is_keydown: bool, extended: bool, config: HookConfig) -> VkCode {
+fn apply_alt_impersonation(
+    vk: VkCode,
+    is_keydown: bool,
+    extended: bool,
+    config: HookConfig,
+) -> VkCode {
     let (is_left_alt, is_right_alt) = classify_alt_side(vk, extended);
     if config.left_alt_impersonates_thumb_key && is_left_alt {
         let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
@@ -922,7 +927,10 @@ mod alt_impersonation_tests {
             vk_up, LEFT_THUMB,
             "KeyUp は対応する KeyDown のなりすまし判定と対称であるべき"
         );
-        assert!(!impersonating_after_up, "KeyUp 後は押下状態ではないため false");
+        assert!(
+            !impersonating_after_up,
+            "KeyUp 後は押下状態ではないため false"
+        );
     }
 
     /// 押していない状態から始まる通常の Alt 単体タップは、エンジン OFF なら

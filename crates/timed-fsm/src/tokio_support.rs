@@ -89,7 +89,11 @@ where
     #[must_use]
     pub fn new() -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        Self { handles: HashMap::new(), tx, rx }
+        Self {
+            handles: HashMap::new(),
+            tx,
+            rx,
+        }
     }
 
     /// Wait for the next timer to fire.
@@ -220,6 +224,9 @@ mod tests {
             );
         } // `timers` dropped here — both tasks should be aborted.
         tokio::time::sleep(Duration::from_millis(40)).await;
-        assert!(probe_rx.try_recv().is_err(), "task kept running after the runtime that owned it was dropped");
+        assert!(
+            probe_rx.try_recv().is_err(),
+            "task kept running after the runtime that owned it was dropped"
+        );
     }
 }
