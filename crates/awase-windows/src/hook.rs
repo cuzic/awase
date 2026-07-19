@@ -699,11 +699,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // （classify_alt_side 参照）。
     let alt_extended = (kb.flags.0 & LLKHF_EXTENDED) != 0;
     if matches!(vk.0, 0x12 | 0xA4 | 0xA5) {
-        // 診断用: なりすましが発動しない不具合の切り分けのため、Alt 系 vk が
-        // フックに到達した時点の生の状態を残す。--debug 無しでも awase.log
-        // (既定 info レベル) で確認できるよう info! にしている
-        // （不具合解消後は debug! へ戻すか撤去すること）。
-        log::info!(
+        log::debug!(
             "[alt-impersonation] raw vk=0x{:02X} scan=0x{:X} extended={} is_keydown={} \
              left_cfg={} right_cfg={} engine_enabled={}",
             vk.0,
@@ -717,7 +713,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, &config);
     if rewritten_vk != vk {
-        log::info!(
+        log::debug!(
             "[alt-impersonation] impersonating: vk 0x{:02X} -> 0x{:02X}",
             vk.0,
             rewritten_vk.0
