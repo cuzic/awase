@@ -1678,6 +1678,42 @@ impl eframe::App for SettingsApp {
             ctx.request_repaint();
         }
 
+        // 現在編集している config.toml の実パスを常時表示する。
+        //
+        // awase.exe と awase-settings.exe はそれぞれ独立に config.toml のパスを
+        // 解決する（find_config_path()、コマンドライン引数 → 実行ファイル隣 →
+        // ワークスペースルート、の優先順位で決まる）ため、起動方法や配置次第では
+        // 2つの実行ファイルが異なる config.toml を読み書きしてしまい得る
+        // （設定画面で保存しても awase.exe に反映されない、という実機バグとして
+        // 2026-07-19 に確認済み）。この表示により、少なくとも「今どのファイルを
+        // 編集しているか」を一目で確認・比較できるようにする。
+        egui::TopBottomPanel::top("config_path_panel").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("設定ファイル:");
+                let display_path = self
+                    .config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.config_path.clone());
+                ui.monospace(display_path.display().to_string())
+                    .on_hover_text(
+                        "awase.exe が実際に読み込む config.toml と同じパスか確認してください。\n\
+                         起動方法（コマンドライン引数の有無・カレントディレクトリ）によっては\n\
+                         別のファイルを指している場合があります。",
+                    );
+                if ui.small_button("フォルダを開く").clicked() {
+                    if let Some(dir) = display_path.parent() {
+                        let _ = std::process::Command::new("explorer")
+                            .arg("/select,")
+                            .arg(&display_path)
+                            .spawn()
+                            .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        });
+
         // Side panel for tab selection
         egui::SidePanel::left("tab_panel")
             .resizable(false)
@@ -2357,7 +2393,23 @@ fn empty_yab_layout() -> YabLayout {
 
 // ── Utility functions ──
 
+/// config.toml のパスを解決する。
+///
+/// `crates/awase-windows/src/app/mod.rs::find_config_path()` と**同じ優先順位**
+/// （コマンドライン引数 → `resolve_relative_to_exe`）で解決すること。ここが
+/// ズレていると、`awase.exe` を明示パス引数付きショートカット等で起動している
+/// 場合に、awase-settings.exe が別の（自動解決された）config.toml を編集して
+/// しまい、「設定画面で保存しても awase.exe に反映されない」という実機バグの
+/// 原因になる（2026-07-19 に実際に発生し確認済み）。
 fn find_config_path() -> std::path::PathBuf {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg.starts_with("--") {
+            let _ = args.next(); // value をスキップ
+            continue;
+        }
+        return std::path::PathBuf::from(arg);
+    }
     awase::paths::resolve_relative_to_exe("config.toml")
 }
 
