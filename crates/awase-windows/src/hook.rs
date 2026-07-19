@@ -677,7 +677,32 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // LLKHF_EXTENDED は vk が汎用 VK_MENU (0x12) で届いた場合の Left/Right 判別に使う
     // （classify_alt_side 参照）。
     let alt_extended = (kb.flags.0 & LLKHF_EXTENDED) != 0;
-    vk = apply_alt_impersonation(vk, is_keydown, alt_extended, &config);
+    if matches!(vk.0, 0x12 | 0xA4 | 0xA5) {
+        // 診断用: なりすましが発動しない不具合の切り分けのため、Alt 系 vk が
+        // フックに到達した時点の生の状態を残す。--debug 無しでも awase.log
+        // (既定 info レベル) で確認できるよう info! にしている
+        // （不具合解消後は debug! へ戻すか撤去すること）。
+        log::info!(
+            "[alt-impersonation] raw vk=0x{:02X} scan=0x{:X} extended={} is_keydown={} \
+             left_cfg={} right_cfg={} engine_enabled={}",
+            vk.0,
+            kb.scanCode,
+            alt_extended,
+            is_keydown,
+            config.left_alt_impersonates_thumb_key,
+            config.right_alt_impersonates_thumb_key,
+            CACHED_ENGINE_ENABLED.load(Ordering::Relaxed),
+        );
+    }
+    let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, &config);
+    if rewritten_vk != vk {
+        log::info!(
+            "[alt-impersonation] impersonating: vk 0x{:02X} -> 0x{:02X}",
+            vk.0,
+            rewritten_vk.0
+        );
+    }
+    vk = rewritten_vk;
 
     // Ctrl consumption tracking
     if crate::vk::is_ctrl_variant(vk) {
