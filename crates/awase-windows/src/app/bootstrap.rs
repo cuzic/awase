@@ -143,12 +143,12 @@ pub(super) fn init_engine_validated(
 )> {
     let (left_thumb_vk, left_alt_impersonates) =
         hook::resolve_thumb_key(&config.general.left_thumb_key).context(format!(
-            "Unknown VK name: {}",
+            "Unknown VK name in config.general.left_thumb_key: {}",
             config.general.left_thumb_key
         ))?;
     let (right_thumb_vk, right_alt_impersonates) =
         hook::resolve_thumb_key(&config.general.right_thumb_key).context(format!(
-            "Unknown VK name: {}",
+            "Unknown VK name in config.general.right_thumb_key: {}",
             config.general.right_thumb_key
         ))?;
 
