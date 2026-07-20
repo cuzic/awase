@@ -1,0 +1,1067 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Usage — awase (合わせ)</title>
+<meta name="description" content="Guide to awase's keyboard shortcuts, tray-icon operations, and configuration file.">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:4rem;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+  }
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.7;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:860px;margin:0 auto;padding:0 1.5rem}
+
+/* Site nav */
+.site-nav{
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  padding:0.75rem 1.5rem;
+}
+.site-nav .inner{
+  max-width:860px;
+  margin:0 auto;
+  display:flex;
+  align-items:center;
+  gap:1.5rem;
+}
+.site-nav .brand{
+  font-weight:700;
+  font-size:1rem;
+  color:var(--text);
+}
+.site-nav a{font-size:0.92rem;color:var(--text-secondary)}
+.site-nav a:hover{color:var(--accent);text-decoration:none}
+.site-nav a.active{color:var(--accent);font-weight:600}
+
+/* Page header */
+.page-header{
+  padding:3.5rem 1.5rem 2.5rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  text-align:center;
+}
+.page-header h1{
+  font-size:2rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.page-header p{
+  font-size:1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+.section-title{
+  font-size:1.4rem;
+  font-weight:700;
+  color:var(--text);
+  margin-bottom:0.5rem;
+}
+.section-lead{
+  color:var(--text-secondary);
+  margin-bottom:2rem;
+  font-size:0.95rem;
+}
+
+/* kbd style */
+kbd{
+  display:inline-block;
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.82rem;
+  font-weight:600;
+  padding:0.15rem 0.55rem;
+  border:1.5px solid var(--border);
+  border-bottom-width:3px;
+  border-radius:5px;
+  background:var(--bg);
+  color:var(--text);
+  white-space:nowrap;
+  box-shadow:0 1px 0 var(--border);
+}
+
+/* Shortcut table */
+.sc-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.93rem;
+}
+.sc-table thead th{
+  text-align:left;
+  padding:0.55rem 0.9rem;
+  border-bottom:2px solid var(--border);
+  font-weight:600;
+  color:var(--text);
+  white-space:nowrap;
+}
+.sc-table tbody td{
+  padding:0.7rem 0.9rem;
+  border-bottom:1px solid var(--border);
+  color:var(--text-secondary);
+  vertical-align:top;
+}
+.sc-table tbody td:first-child{
+  white-space:nowrap;
+}
+.sc-table tbody tr:last-child td{border-bottom:none}
+
+/* Mode table */
+.mode-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.93rem;
+  max-width:560px;
+}
+.mode-table th,.mode-table td{
+  padding:0.6rem 0.9rem;
+  border:1px solid var(--border);
+  text-align:center;
+}
+.mode-table th{
+  font-weight:600;
+  color:var(--text);
+  background:var(--bg-alt);
+}
+.mode-table td{color:var(--text-secondary)}
+.mode-on{color:#16a34a;font-weight:600}
+.mode-off{color:#dc2626;font-weight:600}
+.mode-result{
+  color:var(--accent);
+  font-weight:600;
+  font-size:0.9rem;
+}
+
+/* Section card */
+.card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.8rem;
+  box-shadow:var(--card-shadow);
+  margin-bottom:1.2rem;
+}
+.card h3{
+  font-size:1.05rem;
+  font-weight:700;
+  margin-bottom:0.8rem;
+  color:var(--text);
+}
+.card ul{
+  padding-left:1.4em;
+  color:var(--text-secondary);
+}
+.card li{margin-bottom:0.35rem;font-size:0.93rem}
+
+/* code */
+code,.code-block{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.88rem;
+}
+.code-block{
+  display:block;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:0.8rem 1.2rem;
+  margin:0.8rem 0;
+  overflow-x:auto;
+  color:var(--text);
+  white-space:pre;
+}
+.note{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+  padding:0.6rem 0.9rem;
+  border-left:3px solid var(--accent-light);
+  background:var(--bg-alt);
+  border-radius:0 6px 6px 0;
+}
+
+/* Settings tab table */
+.tab-table{width:100%;border-collapse:collapse;font-size:0.91rem;margin:0.8rem 0}
+.tab-table th,.tab-table td{padding:0.55rem 0.85rem;border:1px solid var(--border);vertical-align:top}
+.tab-table th{background:var(--bg-alt);font-weight:600;color:var(--text);white-space:nowrap}
+.tab-table td{color:var(--text-secondary)}
+.tab-table td:first-child{white-space:nowrap;color:var(--text);font-weight:500}
+
+/* category label */
+.cat{
+  display:inline-block;
+  font-size:0.72rem;
+  font-weight:700;
+  padding:0.1rem 0.45rem;
+  border-radius:4px;
+  margin-bottom:0.2rem;
+  letter-spacing:0.02em;
+}
+.cat-ime{background:#dbeafe;color:#1d4ed8}
+.cat-engine{background:#dcfce7;color:#166534}
+.cat-system{background:#f3e8ff;color:#7e22ce}
+.cat-thumb{background:#fff7ed;color:#9a3412}
+@media(prefers-color-scheme:dark){
+  .cat-ime{background:#1e3a5f;color:#93c5fd}
+  .cat-engine{background:#14532d;color:#86efac}
+  .cat-system{background:#3b0764;color:#d8b4fe}
+  .cat-thumb{background:#431407;color:#fdba74}
+}
+
+/* Keyboard layout diagram */
+.kbd-tabs{display:flex;gap:0.4rem;margin-bottom:1rem;flex-wrap:wrap}
+.kbd-tab{
+  font-size:0.88rem;
+  font-weight:600;
+  padding:0.45rem 0.9rem;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:var(--bg);
+  color:var(--text-secondary);
+  cursor:pointer;
+  font-family:inherit;
+}
+.kbd-tab:hover{color:var(--text)}
+.kbd-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+
+.kbd-legend{display:flex;flex-wrap:wrap;gap:1.1rem;margin-bottom:1.3rem;font-size:0.82rem;color:var(--text-secondary)}
+.kbd-legend-item{display:flex;align-items:center;gap:0.4rem}
+.kbd-swatch{width:14px;height:14px;border-radius:3px;display:inline-block;border:1.5px solid var(--border)}
+.kbd-swatch.k{background:#dbeafe;border-color:#bfdbfe}
+.kbd-swatch.l{background:var(--bg)}
+.kbd-swatch.s{background:var(--bg-alt)}
+.kbd-swatch.e{background:transparent;border-style:dashed}
+@media(prefers-color-scheme:dark){
+  .kbd-swatch.k{background:#1e3a5f;border-color:#1e40af}
+}
+
+.kbd-wrap{overflow-x:auto;padding-bottom:0.5rem}
+.kbd-grid{display:flex;flex-direction:column;gap:6px;width:max-content;padding:0.2rem 0.1rem}
+.kbd-row{display:flex;gap:6px}
+.kbd-row.r1{margin-left:23px}
+.kbd-row.r2{margin-left:36px}
+.kbd-row.r3{margin-left:54px}
+.kbd-key{
+  width:46px;
+  height:46px;
+  border-radius:8px;
+  border:1.5px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:1.05rem;
+  font-weight:600;
+  color:var(--text);
+  background:var(--bg);
+  box-shadow:0 1px 0 var(--border);
+  user-select:none;
+  flex:none;
+}
+.kbd-key.k{background:#dbeafe;border-color:#bfdbfe;color:#1d4ed8}
+.kbd-key.s{background:var(--bg-alt);font-size:0.7rem;color:var(--text-secondary)}
+.kbd-key.e{background:transparent;border-style:dashed;box-shadow:none}
+@media(prefers-color-scheme:dark){
+  .kbd-key.k{background:#1e3a5f;border-color:#1e40af;color:#93c5fd}
+  .kbd-key.s{color:var(--text-secondary)}
+}
+@media(max-width:640px){
+  .kbd-key{width:36px;height:36px;font-size:0.85rem}
+  .kbd-key.s{font-size:0.62rem}
+  .kbd-row.r1{margin-left:18px}
+  .kbd-row.r2{margin-left:28px}
+  .kbd-row.r3{margin-left:42px}
+}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .page-header{padding:2.5rem 1.5rem 1.8rem}
+  .page-header h1{font-size:1.5rem}
+  section{padding:2.5rem 0}
+  .sc-table thead th:last-child,.sc-table tbody td:last-child{display:none}
+}
+</style>
+</head>
+<body>
+
+<!-- Site nav -->
+<nav class="site-nav">
+  <div class="inner">
+    <span class="brand">awase (合わせ)</span>
+    <a href="index.en.html">Home</a>
+    <a href="usage.en.html" class="active">Usage</a>
+    <a href="internals.en.html">Internals</a>
+    <a href="changelog.en.html">Changelog</a>
+    <a href="https://github.com/cuzic/awase">GitHub</a>
+    <a href="usage.html">日本語</a>
+  </div>
+</nav>
+
+<!-- Page header -->
+<div class="page-header">
+  <h1>Usage</h1>
+  <p>Reference for keyboard shortcuts, tray operations, layout switching, the configuration file, and logs</p>
+</div>
+
+<!-- How input modes work -->
+<section>
+  <div class="container">
+    <h2 class="section-title">How input modes work</h2>
+    <p class="section-lead">awase switches its behavior based on the combination of the "IME state" and the "engine state."</p>
+
+    <table class="mode-table">
+      <thead>
+        <tr>
+          <th>IME</th>
+          <th>Engine</th>
+          <th>Behavior</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="mode-on">ON</td>
+          <td class="mode-on">ON</td>
+          <td class="mode-result">Thumb-shift (NICOLA) input</td>
+        </tr>
+        <tr>
+          <td class="mode-on">ON</td>
+          <td class="mode-off">OFF</td>
+          <td>Ordinary IME input (romaji conversion)</td>
+        </tr>
+        <tr>
+          <td class="mode-off">OFF</td>
+          <td>Either</td>
+          <td>Direct alphanumeric input (the engine stops automatically)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="note" style="margin-top:1.2rem">
+      When the IME is OFF, the engine stops automatically, so awase will not misbehave in password fields and similar contexts.
+    </p>
+  </div>
+</section>
+
+<!-- Layout diagram -->
+<section>
+  <div class="container">
+    <h2 class="section-title">NICOLA standard layout diagram</h2>
+    <p class="section-lead">This lists which character each key outputs in the bundled default layouts (JIS <code>layout/nicola.yab</code> / US <code>layout/nicola_us.yab</code>). The normal plane is produced by a single keystroke; the other three planes are produced by chording (a simultaneous keystroke) with the Muhenkan/Henkan key (thumb shift) or the pinky-shift key.</p>
+
+    <div class="kbd-tabs" id="kbd-model-tabs" role="tablist"></div>
+    <div class="kbd-tabs" id="kbd-tabs" role="tablist"></div>
+
+    <div class="kbd-legend">
+      <span class="kbd-legend-item"><span class="kbd-swatch k"></span>Roman-kana</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch l"></span>Literal (symbols/digits)</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch s"></span>Special key</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch e"></span>Unassigned</span>
+    </div>
+
+    <div class="kbd-wrap">
+      <div id="kbd-grid" class="kbd-grid"></div>
+    </div>
+
+    <p class="note" style="margin-top:1rem">
+      The layout is fully customizable. You can edit it directly in the "Layout Editor" tab of the Settings window, or create your own <code>.yab</code> file and switch to it (see <a href="#layout-switch">Switching layouts</a>).
+    </p>
+  </div>
+</section>
+
+<!-- Keyboard shortcuts -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Keyboard shortcuts</h2>
+    <p class="section-lead">These are the shortcuts in the default configuration. They can be changed in <code>config.toml</code>.</p>
+
+    <table class="sc-table">
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Keys</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Henkan</kbd></td>
+          <td>Turn the IME ON. If it is already ON, reset it to hiragana / romaji / CapsLock OFF</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Muhenkan</kbd></td>
+          <td>Turn the IME OFF (idempotent — nothing happens if it is already OFF)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td>Left <kbd>Shift</kbd> solo tap</td>
+          <td>Sustained "IME-ON half-width alphanumeric" toggle. Press and release without pressing any other key to switch on; tap again to release (currently supported by MS-IME only; GJI support is planned)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">Engine</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Henkan</kbd></td>
+          <td>Turn the NICOLA engine ON (enable thumb-shift input)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">Engine</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Muhenkan</kbd></td>
+          <td>Turn the NICOLA engine OFF (switch to romaji input)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-engine">Engine</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F12</kbd></td>
+          <td>Toggle the engine ON/OFF (global hotkey, configurable in <code>config.toml</code>)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-system">System</span></td>
+          <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>F11</kbd></td>
+          <td>Force-override the focus classification of the current window (switch between text input ↔ bypass)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-thumb">Thumb shift</span></td>
+          <td><kbd>Henkan</kbd></td>
+          <td>Right thumb-shift key (while the engine is ON, pressed simultaneously with another key for NICOLA detection)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-thumb">Thumb shift</span></td>
+          <td><kbd>Muhenkan</kbd></td>
+          <td>Left thumb-shift key (while the engine is ON, pressed simultaneously with another key for NICOLA detection)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-ime">IME</span></td>
+          <td><kbd>Hankaku/Zenkaku</kbd></td>
+          <td>Toggle the IME ON/OFF (standard Windows behavior)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-system">Emergency</span></td>
+          <td><kbd>Muhenkan</kbd> × 3 (within 400 ms)</td>
+          <td>Force the NICOLA engine OFF (for when a stuck Ctrl or similar keeps the shortcuts from working)</td>
+        </tr>
+        <tr>
+          <td><span class="cat cat-system">Emergency</span></td>
+          <td><kbd>Ctrl</kbd>+<kbd>Muhenkan</kbd> → <kbd>Ctrl</kbd>+<kbd>Henkan</kbd> → <kbd>Ctrl</kbd>+<kbd>Muhenkan</kbd> (within 2 seconds)</td>
+          <td>Panic reset — force a return to the standard state (IME ON, hiragana, engine ON)</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p class="note" style="margin-top:1.2rem">
+      <strong>About idempotent IME control:</strong>
+      <kbd>Ctrl</kbd>+<kbd>Henkan</kbd> is the operation "turn the IME ON." Unlike the traditional toggle approach, it always produces the intended result even if the current state has drifted.
+      It operates independently of the engine ON/OFF state. If the IME is already ON, it aligns any in-progress state (katakana, half-width alphanumeric, etc.) to hiragana / romaji / CapsLock OFF and re-commits it.
+    </p>
+    <p class="note" style="margin-top:0.6rem">
+      <strong>About the "IME-ON half-width alphanumeric" toggle:</strong>
+      A solo tap of left <kbd>Shift</kbd> temporarily stops only the NICOLA engine while keeping the IME open, letting you type alphanumeric characters directly (because the IME itself does not close, this works differently from a password field). Tapping left <kbd>Shift</kbd> alone again returns to normal kana input. It is also released automatically by a solo tap of the right <kbd>Shift</kbd> or by a focus change.
+    </p>
+  </div>
+</section>
+
+<!-- Tray icon -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Tray-icon operations</h2>
+    <p class="section-lead">The awase icon lives in the system tray at the far right of the taskbar.</p>
+
+    <div class="card">
+      <h3>Right-click menu</h3>
+      <ul>
+        <li><strong>Select layout</strong> — Lists the .yab files in <code>layouts_dir</code>. Selecting one switches the layout immediately</li>
+        <li><strong>Settings...</strong> — Opens the Settings window</li>
+        <li><strong>Clear learning cache</strong> — Deletes the IME's learning-data cache</li>
+        <li><strong>Restart process</strong> — Fully restarts the process when input misbehaves (see <a href="#panic-reset">"Emergency operations & reset"</a> for details)</li>
+        <li><strong>Auto-start</strong> — Enables/disables auto-start at logon (checked = enabled)</li>
+        <li><strong>Restart as administrator</strong> — Restarts awase elevated via UAC. This lets it work even with apps that require administrator privileges (some games, for example)</li>
+        <li><strong>Enable/disable toggle</strong> — Toggles the engine ON/OFF (the same operation as <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>)</li>
+        <li><strong>Exit</strong> — Quits awase</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Reading the icon</h3>
+      <ul>
+        <li>When the icon is shown normally — engine ON (thumb-shift input enabled)</li>
+        <li>When the icon is grayed out — engine OFF (ordinary input)</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Settings window -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Settings window (awase-settings)</h2>
+    <p class="section-lead">Open it by right-clicking the tray icon → "Settings...". After making changes, use the "Apply" button to save them and apply them immediately.</p>
+
+    <div class="card">
+      <h3>Basic Settings tab</h3>
+      <table class="tab-table">
+        <tr><th>Item</th><th>Description</th></tr>
+        <tr><td>Keyboard model</td><td>Choose JIS (Japanese layout) or US (English layout)</td></tr>
+        <tr><td>Simultaneous-keystroke threshold</td><td>The time window (ms) within which two keystrokes count as simultaneous. The NICOLA standard default is 100 ms</td></tr>
+        <tr><td>Confirm mode</td><td>The timing at which characters are committed. See the table below</td></tr>
+        <tr><td>Speculative-output wait</td><td>The wait (ms) before speculative output when using two_phase / adaptive_timing</td></tr>
+        <tr><td>Output mode</td><td>Unicode (recommended), PerKey, or Batched. Normally leave it as Unicode</td></tr>
+        <tr><td>Hook mode</td><td>Relay (recommended, stable) or Filter (low latency)</td></tr>
+        <tr><td>Auto-start</td><td>Whether to start automatically at Windows logon</td></tr>
+        <tr><td>Layout</td><td>Selects the .yab layout file to use. "Rescan" refreshes the list</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Confirm-mode options</h3>
+      <table class="tab-table">
+        <tr><th>Mode</th><th>Behavior</th><th>Suited for</th></tr>
+        <tr><td>wait</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
+        <tr><td>speculative</td><td>Outputs immediately and replaces on a simultaneous keystroke. Fastest, but flickers briefly</td><td>People who prioritize speed above all</td></tr>
+        <tr><td>two_phase</td><td>Speculative output after a short wait. Between wait and speculative</td><td>People who want a balance</td></tr>
+        <tr><td>adaptive_timing</td><td>wait during continuous typing, speculative once typing pauses. Adapts to speed automatically</td><td>People whose typing speed varies</td></tr>
+        <tr><td>ngram_predictive</td><td>Dynamically decides speculative vs. wait using n-gram statistics. Uses context to improve accuracy</td><td>People who want the smartest decision (recommended)</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Key Settings tab</h3>
+      <table class="tab-table">
+        <tr><th>Item</th><th>Description</th></tr>
+        <tr><td>Left thumb key</td><td>The key used for the left thumb-shift key (default: VK_NONCONVERT = Muhenkan)</td></tr>
+        <tr><td>Right thumb key</td><td>The key used for the right thumb-shift key (default: VK_CONVERT = Henkan)</td></tr>
+        <tr><td>Engine ON key</td><td>The key that turns the NICOLA engine ON. Multiple entries allowed</td></tr>
+        <tr><td>Engine OFF key</td><td>The key that turns the NICOLA engine OFF. Multiple entries allowed</td></tr>
+        <tr><td>IME ON key</td><td>The key that turns the IME ON (idempotent). Multiple entries allowed</td></tr>
+        <tr><td>IME OFF key</td><td>The key that turns the IME OFF (idempotent). Multiple entries allowed</td></tr>
+        <tr><td>Engine-toggle hotkey</td><td>A global hotkey that toggles the engine ON/OFF</td></tr>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>IME Detection tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">These are the key settings awase uses to track changes in IME state. The defaults are usually fine.</p>
+      <table class="tab-table">
+        <tr><th>Item</th><th>Description</th></tr>
+        <tr><td>Toggle key</td><td>The key the OS uses to toggle the IME ON/OFF (e.g. Hankaku/Zenkaku)</td></tr>
+        <tr><td>ON key</td><td>The key the OS uses to turn the IME ON</td></tr>
+        <tr><td>OFF key</td><td>The key the OS uses to turn the IME OFF</td></tr>
+      </table>
+      <p class="note" style="margin-top:0.7rem">The "Restore defaults" button returns these to the standard settings.</p>
+    </div>
+
+    <div class="card">
+      <h3>Per-App Settings tab</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">Override behavior per app using the combination of process name and window class name.</p>
+      <table class="tab-table">
+        <tr><th>Setting type</th><th>Description</th><th>Example use</th></tr>
+        <tr><td>Force as text input</td><td>Always enable NICOLA input regardless of the automatic classification</td><td>Apps that are mistakenly bypassed</td></tr>
+        <tr><td>Force as bypass</td><td>Always disable the engine</td><td>Start menu, password managers</td></tr>
+        <tr><td>Force as VK output mode</td><td>Send romaji as VK keystrokes</td><td>Chrome, Edge, Electron-based apps</td></tr>
+        <tr><td>Force as TSF output mode</td><td>Send in TSF native mode</td><td>TSF-direct apps such as Windows Terminal</td></tr>
+      </table>
+      <p class="note" style="margin-top:0.7rem">You can find process names and class names in the log when you start with <code>awase.exe --debug</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Advanced Settings tab</h3>
+      <table class="tab-table">
+        <tr><th>Item</th><th>Description</th></tr>
+        <tr><td>n-gram file</td><td>Path to the n-gram statistics data (.csv.gz or .toml). Used in ngram_predictive mode</td></tr>
+        <tr><td>n-gram adjustment range</td><td>The range (ms) by which n-gram prediction adjusts the simultaneous-keystroke threshold</td></tr>
+        <tr><td>n-gram min/max threshold</td><td>The lower and upper bounds (ms) of the threshold adjusted by n-gram prediction</td></tr>
+        <tr><td>Focus debounce</td><td>The wait (ms) that prevents false detection during rapid Alt+Tab switching</td></tr>
+        <tr><td>IME polling interval</td><td>The period (ms) for detecting changes such as when you operate the language bar with the mouse</td></tr>
+        <tr><td>Layout directory</td><td>Path to the folder that holds the .yab files</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- config.toml -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Key config.toml settings</h2>
+    <p class="section-lead">awase's behavior can be tuned in detail in <code>config.toml</code>.</p>
+
+    <div class="card">
+      <h3>Customizing shortcuts</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">The following are the default values. Add a <code>[keys]</code> section to <code>config.toml</code> to override them.</p>
+      <div class="code-block">[keys]
+# NICOLA engine ON (enable thumb-shift input)
+engine_on = ["Ctrl+Shift+変換"]
+
+# NICOLA engine OFF (switch to ordinary input)
+engine_off = ["Ctrl+Shift+無変換"]
+
+# IME ON (switch to hiragana input mode)
+ime_on = ["Ctrl+変換"]
+
+# IME OFF (switch to direct input mode)
+ime_off = ["Ctrl+無変換"]
+
+# Emergency: pressing Muhenkan alone three times within 400 ms turns the engine OFF.
+# A last resort for when Ctrl gets stuck and the shortcuts stop working.
+# Disable it with an empty string "" or by deleting the line.
+engine_off_solo_triple = "VK_NONCONVERT"
+
+# IME mode key sent when the engine turns ON (switch to full-width hiragana mode)
+engine_on_ime_key = "VK_DBE_DBCSCHAR"
+
+# IME mode key sent when the engine turns OFF (switch to half-width alphanumeric mode)
+engine_off_ime_key = "VK_DBE_SBCSCHAR"</div>
+      <p class="note" style="margin-top:0.7rem">To assign multiple keys, add them to the array: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
+      <p class="note">A global hotkey (which works regardless of app focus) is set with <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> under <code>[general]</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Simultaneous-keystroke detection</h3>
+      <div class="code-block">[general]
+# Simultaneous-keystroke detection threshold (milliseconds). The NICOLA standard default is 100 ms.
+simultaneous_threshold_ms = 100
+
+# Confirm-mode selection
+#   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction (recommended)
+#   wait              - hold until the timeout (most accurate)
+#   speculative       - output immediately (fastest)
+#   two_phase         - short wait -> speculative output -> replace
+#   adaptive_timing   - automatically adjust the threshold to typing speed
+confirm_mode = "ngram_predictive"</div>
+    </div>
+
+    <div class="card">
+      <h3>Customizing the thumb keys</h3>
+      <div class="code-block">[general]
+# Left thumb key (VK code name)
+left_thumb_key = "VK_NONCONVERT"    # Muhenkan key
+
+# Right thumb key (VK code name)
+right_thumb_key = "VK_CONVERT"      # Henkan key</div>
+    </div>
+
+    <div class="card">
+      <h3>Keyboard model and output method</h3>
+      <div class="code-block">[general]
+# Keyboard model (the default is fine if you use a JIS keyboard)
+# keyboard_model = "jis"   # JIS keyboard (default)
+# keyboard_model = "us"    # US keyboard
+
+# Send method for romaji output (normally no need to change)
+#   unicode  - send hiragana directly (no IME needed, recommended)
+#   per_key  - SendInput one character at a time (for compatibility with other hooks)
+#   batched  - all characters in a single SendInput
+output_mode = "unicode"</div>
+      <p class="note">For the new Microsoft IME (Windows 10 20H1 or later), <code>unicode</code> mode is recommended. With <code>per_key</code> / <code>batched</code>, input may not be processed correctly.</p>
+    </div>
+
+    <div class="card">
+      <h3>Auto-start settings</h3>
+      <div class="code-block">[general]
+# Start automatically at Windows logon
+#   "enabled"  - enable auto-start
+#   "disabled" - disable auto-start
+#   "ask"      - ask with a dialog on first launch (default)
+auto_start = "enabled"</div>
+      <p class="note">Auto-start is registered in the <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> registry key. The Startup folder is not used.</p>
+    </div>
+
+    <div class="card">
+      <h3>Overriding behavior for specific windows</h3>
+      <div class="code-block">[focus_overrides]
+# Force text input in specific apps
+force_text = [
+    { process = "myapp.exe", class = "MyWindowClass" },
+]
+
+# Skip the engine entirely in specific apps
+force_bypass = [
+    { process = "SearchHost.exe", class = "SearchHost" },
+]</div>
+      <p class="note">If the start menu or search bar misbehaves, add it to <code>force_bypass</code>.</p>
+    </div>
+
+    <div class="card">
+      <h3>Per-app output-mode override</h3>
+      <div class="code-block">[focus_overrides]
+# Send as VK keystrokes (Chrome / Edge / VS Code and other Electron-based apps)
+force_vk = [
+    { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
+    { process = "code.exe",    class = "Chrome_RenderWidgetHostHWND" },
+]
+
+# Send in TSF native mode (Windows Terminal, etc.)
+force_tsf = [
+    { process = "WindowsTerminal.exe", class = "CASCADIA_HOSTING_WINDOW_CLASS" },
+]</div>
+    </div>
+
+    <div class="card">
+      <h3>Manually setting IME-detection keys</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Automatic detection is usually sufficient, but you can set these manually if you use a special keyboard or IME.</p>
+      <div class="code-block">[ime_sync]
+# Key that toggles the IME ON/OFF (e.g. Hankaku/Zenkaku)
+# toggle = ["VK_KANJI"]
+
+# Key that turns the IME directly ON
+# on = ["VK_DBE_HIRAGANA"]
+
+# Key that turns the IME directly OFF
+# off = ["VK_DBE_SBCSCHAR"]</div>
+    </div>
+  </div>
+</section>
+
+<!-- Emergency operations & reset -->
+<section id="panic-reset">
+  <div class="container">
+    <h2 class="section-title">Emergency operations & reset</h2>
+    <p class="section-lead">These are the operations for when input misbehaves or you want to force the engine to stop.</p>
+
+    <div class="card">
+      <h3>Emergency reset (recommended — try this first)</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
+        Use this when input as a whole misbehaves — a modifier key is stuck, the IME is confused, pending characters remain, and so on.
+      </p>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>Method 1 — tray icon (when the mouse is usable; more reliable)</strong></p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
+        Right-click the awase icon in the taskbar → "<strong>Restart process</strong>"<br>
+        <span style="font-size:0.88rem">Fully restarts the awase process. This reliably clears any stuck state.</span>
+      </p>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>Method 2 — keyboard shortcut (panic reset)</strong></p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.3rem">
+        Quickly enter <kbd>Ctrl</kbd>+<kbd>Muhenkan</kbd> → <kbd>Ctrl</kbd>+<kbd>Henkan</kbd> → <kbd>Ctrl</kbd>+<kbd>Muhenkan</kbd>
+        <strong>within 2 seconds</strong>
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.88rem;margin-bottom:0.7rem">
+        (The IME-OFF → IME-ON → IME-OFF sequence. Repeatedly pressing the same key will not trigger it.)
+      </p>
+
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.4rem"><strong>What method 2 does:</strong></p>
+      <ul style="color:var(--text-secondary);padding-left:1.4em;font-size:0.93rem">
+        <li>Forcibly releases any held-down Shift / Ctrl / Alt / Win state</li>
+        <li>Cancels the IME's uncommitted composition string</li>
+        <li>Reinitializes the IME state OFF → ON (hiragana input)</li>
+        <li>Flushes the engine's pending state (discards an uncommitted simultaneous keystroke, restores the engine-ON state)</li>
+        <li>Fully resets awase's internal state</li>
+      </ul>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.6rem">
+        On success, the tray balloon notification "<strong>State has been reset</strong>" is shown.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Force the engine OFF — triple-tap the Muhenkan key</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.8rem">
+        A last resort for forcing the NICOLA engine to stop when even the normal shortcuts do not work — for example, when the Ctrl key is stuck.
+        It is <strong>enabled by default</strong> (already assigned to the Muhenkan key).
+      </p>
+      <div class="code-block">[keys]
+# Key that turns the engine OFF when tapped alone three times within 400 ms (default: Muhenkan)
+engine_off_solo_triple = "VK_NONCONVERT"
+
+# Specify an empty string to disable it
+# engine_off_solo_triple = ""</div>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.8rem;margin-bottom:0.4rem">
+        <strong>Operation:</strong> tap <kbd>Muhenkan</kbd> alone, without pressing it together with another key, <strong>three times within 400 ms</strong>
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.88rem">
+        * During normal thumb-shift input, this is counted as a "thumb-key solo timeout," so the design makes it unlikely to fire accidentally during the flow of typing.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- Switching layouts (.yab) -->
+<section id="layout-switch">
+  <div class="container">
+    <h2 class="section-title">Switching layouts (.yab)</h2>
+    <p class="section-lead">Thumb-shift layouts are defined in .yab files. You can use several layouts and switch between them.</p>
+
+    <div class="card">
+      <h3>How to switch</h3>
+      <ul>
+        <li><strong>Right-click the tray icon → Select layout</strong> — The easiest method. Switches immediately</li>
+        <li><strong>Settings window "Basic Settings" tab</strong> — Choose from the layout dropdown → "Apply"</li>
+        <li><strong>Edit config.toml</strong> — Change the default with <code>default_layout = "nicola.yab"</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Adding a custom layout</h3>
+      <ol style="padding-left:1.4em;color:var(--text-secondary)">
+        <li style="margin-bottom:0.4rem">Place a new <code>.yab</code> file in the folder specified by <code>layouts_dir</code> in <code>config.toml</code> (the default is <code>config/</code>)</li>
+        <li style="margin-bottom:0.4rem">Press the "Rescan" button on the "Basic Settings" tab of the Settings window</li>
+        <li>The new layout appears in the dropdown; select it and press "Apply"</li>
+      </ol>
+      <p class="note" style="margin-top:0.8rem">For details on the .yab format, see the README on <a href="https://github.com/cuzic/awase">GitHub</a>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Logs & debugging -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Logs & debugging</h2>
+    <p class="section-lead">If something misbehaves, check the logs.</p>
+
+    <div class="card">
+      <h3>Log file location</h3>
+      <ul>
+        <li>Normal startup: <strong><code>awase.log</code></strong> in the same folder as <code>awase.exe</code> (appended to on each launch)</li>
+        <li>When installed via Scoop: <code>%USERPROFILE%\scoop\apps\awase\current\awase.log</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>Start in debug mode</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">When you need detailed logs, start in debug mode from a command prompt.</p>
+      <div class="code-block">awase.exe --debug</div>
+      <p class="note">Alternatively, setting the environment variable <code>RUST_LOG=debug</code> before starting has the same effect.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Uninstall -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Uninstalling</h2>
+
+    <div class="card">
+      <h3>MSI installer version</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">Uninstall by selecting <strong>awase</strong> from Windows "Settings → Apps" or "Control Panel → Uninstall a program."</p>
+    </div>
+
+    <div class="card">
+      <h3>Scoop version</h3>
+      <div class="code-block">scoop uninstall awase</div>
+    </div>
+
+    <div class="card">
+      <h3>ZIP version (portable)</h3>
+      <ol style="padding-left:1.4em;color:var(--text-secondary)">
+        <li style="margin-bottom:0.4rem">Right-click the tray icon → "Exit" to quit awase</li>
+        <li style="margin-bottom:0.4rem">If you set up auto-start, delete the "awase" task from Task Scheduler</li>
+        <li>Delete the entire extracted folder</li>
+      </ol>
+    </div>
+
+  </div>
+</section>
+
+<!-- Initial setup steps -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Initial setup steps</h2>
+    <p class="section-lead">Recommended steps for using awase for the first time.</p>
+
+    <div class="card">
+      <h3>1. Confirm it is running</h3>
+      <ul>
+        <li>When you start awase, an icon appears in the system tray</li>
+        <li>Open a text editor and run an input test in Notepad or similar</li>
+        <li>Turn the IME ON with <kbd>Ctrl</kbd>+<kbd>Henkan</kbd> → thumb-shift input begins</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>2. Adjust the confirm mode</h3>
+      <ul>
+        <li>First try <code>confirm_mode = "ngram_predictive"</code> (recommended)</li>
+        <li>If there are many misconversions, change it to <code>"wait"</code> (accurate but somewhat slower)</li>
+        <li>If fast typing feels off, try <code>"adaptive_timing"</code></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>3. If input does not work well in Chrome / Edge</h3>
+      <ul>
+        <li>Confirm you are using Google Japanese Input or Microsoft IME (awase supports both IMEs)</li>
+        <li>Turn the IME ON with <kbd>Ctrl</kbd>+<kbd>Henkan</kbd> before you start typing</li>
+        <li>If only the first character comes out as an alphabetic letter, awase corrects it automatically (TSF cold-start handling)</li>
+      </ul>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-top:0.8rem;margin-bottom:0.2rem">
+        <strong>You may catch a momentary glimpse of "あ" (the throwaway-keystroke feature)</strong>
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.2rem">
+        In Chrome and Windows Terminal, when you type for the first time right after the IME turns ON, "あ" may appear momentarily and immediately disappear.
+        This is a sign that the <strong>throwaway-keystroke feature</strong> is working correctly.
+      </p>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        In TSF apps such as Chrome, there is no official way to confirm from the outside whether the IME is ready to accept input.
+        So awase briefly performs the operation "press the <kbd>A</kbd> key and delete it with <kbd>BS</kbd>" before the screen is drawn,
+        and confirms that input is ready by observing whether the IME was able to convert it to "あ".
+        Based on the information gained from this throwaway keystroke, it sends the character you actually want to type at exactly the right moment.
+        Normally nothing appears on screen, but depending on timing, "あ" may be visible for just an instant.
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>5. Resetting when the engine misbehaves</h3>
+      <ul>
+        <li>Explicitly turn the engine ON with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Henkan</kbd></li>
+        <li>Explicitly turn the IME ON with <kbd>Ctrl</kbd>+<kbd>Henkan</kbd></li>
+        <li>If that still does not resolve it, right-click the tray icon → toggle with "Enable/disable toggle"</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="index.en.html">Home</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+<script>
+// A direct diagram of the contents of layout/nicola.yab (the NICOLA standard layout, JIS).
+// Each cell is [display char, type], where the type is k=Roman-kana / l=literal / s=special key / e=unassigned.
+const KBD_PLANES = [
+  { title: 'Normal', rows: [
+    [['１','l'],['２','l'],['３','l'],['４','l'],['５','l'],['６','l'],['７','l'],['８','l'],['９','l'],['０','l'],['－','l'],['','e'],['','e']],
+    [['。','l'],['か','k'],['た','k'],['こ','k'],['さ','k'],['ら','k'],['ち','k'],['く','k'],['つ','k'],['，','l'],['、','l'],['','e']],
+    [['う','k'],['し','k'],['て','k'],['け','k'],['せ','k'],['は','k'],['と','k'],['き','k'],['い','k'],['ん','k'],['BS','s'],['Esc','s']],
+    [['．','l'],['ひ','k'],['す','k'],['ふ','k'],['へ','k'],['め','k'],['そ','k'],['ね','k'],['ほ','k'],['／','l'],['','e']],
+  ]},
+  { title: 'Left thumb shift', rows: [
+    [['？','l'],['／','l'],['～','l'],['「','l'],['」','l'],['［','l'],['］','l'],['（','l'],['）','l'],['｛','l'],['｝','l'],['','e'],['','e']],
+    [['ぁ','k'],['え','k'],['り','k'],['ゃ','k'],['れ','k'],['ぱ','k'],['ぢ','k'],['ぐ','k'],['づ','k'],['ぴ','k'],['','e'],['','e']],
+    [['を','k'],['あ','k'],['な','k'],['ゅ','k'],['も','k'],['ば','k'],['ど','k'],['ぎ','k'],['ぽ','k'],['よ','k'],['BS','s'],['Esc','s']],
+    [['ぅ','k'],['ー','l'],['ろ','k'],['や','k'],['ぃ','k'],['ぷ','k'],['ぞ','k'],['ぺ','k'],['ぼ','k'],['゛','l'],['','e']],
+  ]},
+  { title: 'Right thumb shift', rows: [
+    [['？','l'],['／','l'],['～','l'],['「','l'],['」','l'],['［','l'],['］','l'],['（','l'],['）','l'],['｛','l'],['｝','l'],['','e'],['','e']],
+    [['゜','l'],['が','k'],['だ','k'],['ご','k'],['ざ','k'],['よ','k'],['に','k'],['る','k'],['ま','k'],['ぇ','k'],['','e'],['','e']],
+    [['ゔ','k'],['じ','k'],['で','k'],['げ','k'],['ぜ','k'],['み','k'],['お','k'],['の','k'],['ょ','k'],['っ','k'],['BS','s'],['Esc','s']],
+    [['','e'],['び','k'],['ず','k'],['ぶ','k'],['べ','k'],['ぬ','k'],['ゆ','k'],['む','k'],['わ','k'],['ぉ','k'],['','e']],
+  ]},
+  { title: 'Pinky shift', rows: [
+    [['！','l'],['＂','l'],['＃','l'],['＄','l'],['％','l'],['＆','l'],['＇','l'],['（','l'],['）','l'],['：','l'],['＝','l'],['～','l'],['｜','l']],
+    [['Ｑ','l'],['Ｗ','l'],['Ｅ','l'],['Ｒ','l'],['Ｔ','l'],['Ｙ','l'],['Ｕ','l'],['Ｉ','l'],['Ｏ','l'],['Ｐ','l'],['＇','l'],['｛','l']],
+    [['Ａ','l'],['Ｓ','l'],['Ｄ','l'],['Ｆ','l'],['Ｇ','l'],['Ｈ','l'],['Ｊ','l'],['Ｋ','l'],['Ｌ','l'],['＋','l'],['＊','l'],['｝','l']],
+    [['Ｚ','l'],['Ｘ','l'],['Ｃ','l'],['Ｖ','l'],['Ｂ','l'],['Ｎ','l'],['Ｍ','l'],['＜','l'],['＞','l'],['？','l'],['＿','l']],
+  ]},
+];
+
+// layout/nicola_us.yab is generated from layout/nicola.yab (JIS) by dropping
+// the physical keys that don't exist on a US keyboard (the last column of
+// row0, and the last column of row2/row3 on each plane — row1 has the same
+// column count on both). So the US plane data isn't duplicated here; it's
+// derived mechanically from the JIS plane data (KBD_PLANES) below.
+function toUsRows(rows) {
+  return rows.map((row, rowIndex) => (rowIndex === 1 ? row : row.slice(0, -1)));
+}
+
+const KBD_MODELS = [
+  { key: 'jis', label: 'JIS layout (nicola.yab)', planes: KBD_PLANES },
+  {
+    key: 'us',
+    label: 'US layout (nicola_us.yab)',
+    planes: KBD_PLANES.map((plane) => ({ title: plane.title, rows: toUsRows(plane.rows) })),
+  },
+];
+
+(() => {
+  const modelTabsEl = document.getElementById('kbd-model-tabs');
+  const tabsEl = document.getElementById('kbd-tabs');
+  const gridEl = document.getElementById('kbd-grid');
+  if (!modelTabsEl || !tabsEl || !gridEl) return;
+
+  let modelIndex = 0;
+  let planeIndex = 0;
+
+  function renderGrid() {
+    gridEl.innerHTML = '';
+    KBD_MODELS[modelIndex].planes[planeIndex].rows.forEach((row, rowIndex) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = `kbd-row r${rowIndex}`;
+      row.forEach(([label, type]) => {
+        const keyEl = document.createElement('div');
+        keyEl.className = `kbd-key ${type}`;
+        keyEl.textContent = label;
+        rowEl.appendChild(keyEl);
+      });
+      gridEl.appendChild(rowEl);
+    });
+  }
+
+  function renderPlaneTabs() {
+    tabsEl.innerHTML = '';
+    KBD_MODELS[modelIndex].planes.forEach((plane, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kbd-tab' + (i === planeIndex ? ' active' : '');
+      btn.textContent = plane.title;
+      btn.addEventListener('click', () => {
+        planeIndex = i;
+        renderPlaneTabs();
+        renderGrid();
+      });
+      tabsEl.appendChild(btn);
+    });
+  }
+
+  function renderModelTabs() {
+    modelTabsEl.innerHTML = '';
+    KBD_MODELS.forEach((model, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kbd-tab' + (i === modelIndex ? ' active' : '');
+      btn.textContent = model.label;
+      btn.addEventListener('click', () => {
+        modelIndex = i;
+        planeIndex = 0;
+        renderModelTabs();
+        renderPlaneTabs();
+        renderGrid();
+      });
+      modelTabsEl.appendChild(btn);
+    });
+  }
+
+  renderModelTabs();
+  renderPlaneTabs();
+  renderGrid();
+})();
+</script>
+
+</body>
+</html>

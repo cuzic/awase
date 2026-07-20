@@ -26,6 +26,7 @@ NAV = """\
     <a href="internals.html">内部動作</a>
     <a href="changelog.html" class="active">更新履歴</a>
     <a href="https://github.com/cuzic/awase">GitHub</a>
+    <a href="changelog.en.html">English</a>
   </div>
 </nav>"""
 

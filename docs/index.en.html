@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>awase — Thumb-Shift (NICOLA) Keyboard Emulator</title>
+<meta name="description" content="A fast, rock-solid thumb-shift (NICOLA) keyboard emulator written in Rust. Full support even for tricky apps like Chrome, Zoom, and LINE. Runs on Windows.">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:5rem;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+  }
+  .book-banner{background:#1E3A5F!important;border-color:#2563EB!important;color:#93C5FD!important}
+  .book-banner a{color:#60A5FA!important}
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.7;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+.container{max-width:960px;margin:0 auto;padding:0 1.5rem}
+
+/* Hero */
+.hero{
+  text-align:center;
+  padding:6rem 1.5rem 4rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+}
+.hero-title{
+  font-size:2.8rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.hero-subtitle{
+  font-size:1.1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+}
+.hero-catchcopy{
+  font-size:1.5rem;
+  font-weight:600;
+  color:var(--accent);
+  margin-top:2rem;
+}
+.hero-desc{
+  max-width:640px;
+  margin:1rem auto 0;
+  color:var(--text-secondary);
+  font-size:1.05rem;
+}
+.hero-badges{
+  display:flex;
+  gap:0.6rem;
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:1.8rem;
+}
+.badge{
+  display:inline-block;
+  padding:0.3rem 0.9rem;
+  border-radius:9999px;
+  font-size:0.85rem;
+  font-weight:600;
+  background:var(--accent);
+  color:#fff;
+}
+.badge.outline{
+  background:transparent;
+  border:1.5px solid var(--accent);
+  color:var(--accent);
+}
+
+/* CTA buttons */
+.cta-group{
+  display:flex;
+  gap:1rem;
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:2.5rem;
+}
+.btn{
+  display:inline-block;
+  padding:0.75rem 2rem;
+  border-radius:8px;
+  font-weight:700;
+  font-size:1rem;
+  transition:opacity .15s;
+}
+.btn:hover{opacity:.85;text-decoration:none}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-secondary{
+  background:transparent;
+  border:2px solid var(--accent);
+  color:var(--accent);
+}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+.section-title{
+  font-size:1.6rem;
+  font-weight:700;
+  text-align:center;
+  margin-bottom:0.6rem;
+  color:var(--text);
+}
+.section-lead{
+  text-align:center;
+  color:var(--text-secondary);
+  margin-bottom:2.5rem;
+  font-size:1rem;
+}
+
+/* Features */
+.features-grid{
+  display:grid;
+  grid-template-columns:repeat(2,1fr);
+  gap:1.5rem;
+}
+.feature-card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:1.8rem;
+  box-shadow:var(--card-shadow);
+}
+.feature-card h3{
+  font-size:1.15rem;
+  font-weight:700;
+  margin-bottom:0.8rem;
+  color:var(--accent);
+}
+.feature-card ul{
+  list-style:none;
+  padding:0;
+}
+.feature-card li{
+  position:relative;
+  padding-left:1.2em;
+  margin-bottom:0.4rem;
+  font-size:0.95rem;
+  color:var(--text-secondary);
+}
+.feature-card li::before{
+  content:"\2013";
+  position:absolute;
+  left:0;
+  color:var(--accent-light);
+}
+
+/* Compatibility */
+.compat-grid{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:1.2rem;
+}
+.compat-card{
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.4rem 1.6rem;
+  box-shadow:var(--card-shadow);
+}
+.compat-card h3{
+  font-size:1rem;
+  font-weight:700;
+  margin-bottom:0.5rem;
+  color:var(--text);
+}
+.compat-card p{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  line-height:1.6;
+}
+.compat-tag{
+  display:inline-block;
+  font-size:0.75rem;
+  font-weight:600;
+  padding:0.15rem 0.55rem;
+  border-radius:4px;
+  margin-bottom:0.5rem;
+  background:var(--accent);
+  color:#fff;
+}
+.compat-tag.hard{background:#dc2626}
+
+/* Install */
+.install-tabs{
+  display:flex;
+  gap:0.5rem;
+  margin-bottom:1.5rem;
+  border-bottom:2px solid var(--border);
+  padding-bottom:0;
+}
+.install-tab{
+  padding:0.5rem 1.2rem;
+  font-weight:600;
+  font-size:0.95rem;
+  border-radius:6px 6px 0 0;
+  cursor:pointer;
+  color:var(--text-secondary);
+  background:transparent;
+  border:none;
+}
+.install-block{max-width:700px;margin:0 auto}
+.install-block h3{
+  font-size:1.1rem;
+  font-weight:600;
+  margin:1.5rem 0 0.8rem;
+  color:var(--text);
+}
+.install-block ol,
+.install-block ul{
+  padding-left:1.5em;
+  color:var(--text-secondary);
+}
+.install-block li{margin-bottom:0.4rem;font-size:0.95rem}
+code,.code-block{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.9rem;
+}
+.code-block{
+  display:block;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:0.8rem 1.2rem;
+  margin:0.8rem 0;
+  overflow-x:auto;
+  color:var(--text);
+}
+.install-note{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  margin-top:0.4rem;
+}
+
+/* Modes */
+.modes-grid{
+  display:grid;
+  grid-template-columns:repeat(1,1fr);
+  gap:0.8rem;
+  max-width:700px;
+  margin:0 auto;
+}
+.mode-row{
+  display:grid;
+  grid-template-columns:180px 1fr;
+  gap:1rem;
+  align-items:start;
+  padding:0.9rem 1.2rem;
+  background:var(--bg);
+  border:1px solid var(--border);
+  border-radius:8px;
+}
+.mode-name{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:0.88rem;
+  font-weight:700;
+  color:var(--accent);
+}
+.mode-desc{
+  font-size:0.92rem;
+  color:var(--text-secondary);
+}
+
+/* Usage */
+.usage-block{max-width:700px;margin:0 auto}
+.usage-block h3{
+  font-size:1.1rem;
+  font-weight:600;
+  margin:1.5rem 0 0.8rem;
+  color:var(--text);
+}
+.usage-block ul{
+  padding-left:1.5em;
+  color:var(--text-secondary);
+}
+.usage-block li{margin-bottom:0.4rem;font-size:0.95rem}
+.config-table{
+  width:100%;
+  border-collapse:collapse;
+  margin:1rem 0;
+  font-size:0.92rem;
+}
+.config-table th,
+.config-table td{
+  text-align:left;
+  padding:0.6rem 0.8rem;
+  border-bottom:1px solid var(--border);
+}
+.config-table th{
+  font-weight:600;
+  color:var(--text);
+  white-space:nowrap;
+}
+.config-table td{color:var(--text-secondary)}
+
+/* FAQ */
+.faq-list{max-width:700px;margin:0 auto}
+.faq-item{
+  border-bottom:1px solid var(--border);
+  padding:1.2rem 0;
+}
+.faq-item:first-child{border-top:1px solid var(--border)}
+.faq-q{
+  font-weight:600;
+  font-size:1rem;
+  color:var(--text);
+  margin-bottom:0.5rem;
+}
+.faq-q::before{content:"Q. ";color:var(--accent)}
+.faq-a{
+  font-size:0.95rem;
+  color:var(--text-secondary);
+  padding-left:0.2rem;
+}
+.faq-a::before{content:"A. ";font-weight:600;color:var(--text)}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .hero{padding:4rem 1.5rem 3rem}
+  .hero-title{font-size:2rem}
+  .hero-catchcopy{font-size:1.2rem}
+  .features-grid{grid-template-columns:1fr}
+  .compat-grid{grid-template-columns:1fr}
+  .mode-row{grid-template-columns:1fr}
+  section{padding:3rem 0}
+  .section-title{font-size:1.3rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Site nav -->
+<nav style="background:var(--bg-alt);border-bottom:1px solid var(--border);padding:0.75rem 1.5rem">
+  <div style="max-width:960px;margin:0 auto;display:flex;align-items:center;gap:1.5rem">
+    <span style="font-weight:700;font-size:1rem;color:var(--text)">awase（合わせ）</span>
+    <a style="font-size:0.92rem;color:var(--accent);font-weight:600" href="index.en.html">Home</a>
+    <a style="font-size:0.92rem;color:var(--text-secondary)" href="usage.en.html">Usage</a>
+    <a style="font-size:0.92rem;color:var(--text-secondary)" href="internals.en.html">Internals</a>
+    <a style="font-size:0.92rem;color:var(--text-secondary)" href="changelog.en.html">Changelog</a>
+    <a style="font-size:0.92rem;color:var(--text-secondary)" href="https://github.com/cuzic/awase">GitHub</a>
+    <a style="font-size:0.92rem;color:var(--text-secondary)" href="index.html">日本語</a>
+  </div>
+</nav>
+
+<!-- Book announcement banner -->
+<div class="book-banner" style="background:#EFF6FF;border-bottom:1px solid #BFDBFE;padding:0.6rem 1.5rem;text-align:center;font-size:0.9rem;color:#1E40AF">
+  📖 A book on the story behind awase's development is now available →
+  <a href="https://cuzic.github.io/awase-book/" style="color:#1D4ED8;font-weight:600;text-decoration:underline" target="_blank" rel="noopener">"Turning Unreliable Windows API Responses into Correct Input: Designing a Thumb-Shift Emulator"</a>
+</div>
+
+<!-- Hero -->
+<header class="hero">
+  <div class="container">
+    <h1 class="hero-title">awase（合わせ）</h1>
+    <p class="hero-subtitle">Thumb-Shift (NICOLA) Keyboard Emulator</p>
+    <p class="hero-catchcopy">Thumb-shift typing, made more comfortable.</p>
+    <p class="hero-desc">A fast, rock-solid thumb-shift emulator written in Rust. It works flawlessly even in apps that traditional tools have struggled with, such as Chrome, Zoom, and LINE.</p>
+    <div class="hero-badges">
+      <span class="badge">Windows support</span>
+      <span class="badge outline">Full Chrome / Edge support</span>
+      <span class="badge outline">Zoom support</span>
+      <span class="badge outline">Optimized for Google Japanese Input</span>
+      <span class="badge outline">MS-IME support</span>
+    </div>
+    <div class="cta-group">
+      <a class="btn btn-primary" href="#install">Download (MSI)</a>
+      <a class="btn btn-secondary" href="#install">Download (ZIP)</a>
+      <a class="btn btn-secondary" href="https://github.com/cuzic/awase">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<!-- Features -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Features</h2>
+    <p class="section-lead">Meticulously built with capabilities that other thumb-shift tools don't offer.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <h3>Rock-Solid Operation</h3>
+        <ul>
+          <li>A unique relay mode designed so the OS is unlikely to forcibly uninstall the keyboard hook</li>
+          <li>If it ever is removed, the auto-recovery feature re-registers it instantly</li>
+          <li>Automatically recovers on wake from sleep and on screen unlock</li>
+          <li>Accurately preserves IME state even when switching windows with ALT+TAB</li>
+          <li>No DLL injection — won't trigger false positives in antivirus software</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>Fast and Accurate</h3>
+        <ul>
+          <li>Written in Rust with 1–5ms processing time, so you never feel input lag</li>
+          <li>An n-gram statistical model predicts "the reading that fits the context," judging chords intelligently</li>
+          <li>Choose from five confirmation modes to match your typing style</li>
+          <li>Coexists with other hook-based software such as AutoHotKey</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>Freely Customizable</h3>
+        <ul>
+          <li>Freely edit layout definitions in the .yab format</li>
+          <li>Supports both JIS and US keyboards</li>
+          <li>Fine-tune thumb-key assignments, chord thresholds, and more</li>
+          <li>Change settings intuitively through the GUI settings screen</li>
+        </ul>
+      </div>
+      <div class="feature-card">
+        <h3>Open Source</h3>
+        <ul>
+          <li>Dual-licensed under MIT / Apache 2.0</li>
+          <li>Source code published on GitHub</li>
+          <li>One-command installation via Scoop</li>
+          <li>Easy setup with the MSI installer</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Compatibility -->
+<section>
+  <div class="container">
+    <h2 class="section-title">App Compatibility</h2>
+    <p class="section-lead">Thoroughly supports the apps that traditional thumb-shift tools have struggled with.</p>
+    <div class="compat-grid">
+      <div class="compat-card">
+        <span class="compat-tag hard">Hard for traditional tools</span>
+        <h3>Chrome / Edge</h3>
+        <p>Solves TSF composition timing problems with a unique approach that monitors Google Japanese Input I/O. It works reliably even while the candidate window is showing.</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag hard">Hard for traditional tools</span>
+        <h3>Zoom</h3>
+        <p>Full support for Zoom, which runs as a TSF application. Chat input during video meetings is comfortable too.</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag hard">Hard for traditional tools</span>
+        <h3>TSF apps in general</h3>
+        <p>Even in TSF-native apps like Windows Terminal, it solves the cold-start problem and works accurately.</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">Full support</span>
+        <h3>Google Japanese Input</h3>
+        <p>Using a dedicated control method tailored to how Google Japanese Input works internally, it toggles the IME ON/OFF reliably and without side effects.</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">Full support</span>
+        <h3>LINE / Qt apps</h3>
+        <p>It infers the IME state transitions that LINE performs internally, achieving IME ON/OFF switching exactly as intended. Misbehavior when switching apps via ALT+TAB is eliminated as well. It supports Qt-based apps in general.</p>
+      </div>
+      <div class="compat-card">
+        <span class="compat-tag" style="background:#16a34a">Full support</span>
+        <h3>Microsoft IME</h3>
+        <p>Supports the Microsoft IME that ships with Windows.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Why awase works -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Why awase Works</h2>
+    <p class="section-lead">The fundamental difference from traditional tools lies in an architecture that "infers internal state from the outside."</p>
+    <div class="install-block">
+
+      <h3>IMM32 applications — no problem (any tool works)</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        Apps that use the IMM32 API, such as Sakura Editor and Hidemaru, integrate with the IME in a simple way, and they work correctly just by sending keys. Most thumb-shift software has worked fine here.
+      </p>
+
+      <h3>TSF apps (Zoom, LINE, etc.) — internal state is invisible</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        TSF (Text Services Framework) apps such as Zoom, LINE, and Windows Terminal communicate with the IME through a sophisticated internal protocol, and an external program has no way to directly ask "is the IME ready to accept characters right now?"<br><br>
+        awase monitors Google Japanese Input's I/O activity in the background and infers, from when that activity goes quiet, whether "the TSF composition context has finished getting ready." It's an approach that estimates internal state purely through external observation, without invasive techniques like DLL injection.
+      </p>
+
+      <h3>Chrome / Microsoft Edge — cross-process control</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-bottom:1.5rem">
+        Chrome and Edge coordinate multiple processes, so the usual IMM32 cross-process APIs cannot be used. This is why traditional thumb-shift tools tend to misbehave when toggling the IME ON/OFF.<br><br>
+        awase has a dedicated control strategy for Chrome/Edge. It tracks the IME's actual state internally as a shadow model, and continuously verifies whether "the IME really did switch" from the difference between the keys it sent to the OS and the observed results.
+      </p>
+
+      <h3>Windows Store apps (UWP) — a different input path</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9">
+        UWP apps handle focus differently from Win32 and use their own input path. Every time focus changes, awase automatically detects the type of app and switches to the input strategy best suited to UWP, TSF, or Win32.
+      </p>
+
+      <p style="margin-top:1.8rem;font-size:0.95rem;color:var(--text-secondary)">
+        The detailed mechanics of the keyboard hook, chord detection, n-gram model, and IME control strategies are explained in the
+        <a href="internals.en.html">Internals guide</a>.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- n-gram -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Smart Chord Detection with n-grams</h2>
+    <p class="section-lead">A statistical model judges not just timing but "whether it's natural Japanese."</p>
+    <div class="install-block">
+      <p style="color:var(--text-secondary);font-size:0.98rem;line-height:1.9">
+        When typing fast, does the <strong>か</strong> in "よかった" combine with the right thumb to become <strong>が</strong>, or does it stay <strong>か</strong>? Judging by timing alone makes misconversions likely.<br><br>
+        awase includes a built-in statistical model learned from a Japanese n-gram corpus, and judges "which is the natural Japanese" from the surrounding context. Even when you type fast there are few misconversions, and long-form input stays comfortable.
+      </p>
+
+      <h3>Five Confirmation Modes</h3>
+      <div class="modes-grid">
+        <div class="mode-row">
+          <span class="mode-name">ngram_predictive</span>
+          <span class="mode-desc">Context prediction with an n-gram statistical model. The best balance of speed and accuracy (recommended)</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">adaptive_timing</span>
+          <span class="mode-desc">Automatically adjusts the threshold based on your recent typing speed</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">two_phase</span>
+          <span class="mode-desc">Uses speculative output to keep speed, then replaces it if a thumb key arrives</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">speculative</span>
+          <span class="mode-desc">Outputs single keystrokes immediately. Fastest, but misconversions may increase during fast typing</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">wait</span>
+          <span class="mode-desc">Waits until the timer fires before committing. Most accurate, and suited to those who type at a relaxed pace</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Install -->
+<section id="install">
+  <div class="container">
+    <h2 class="section-title">Installation</h2>
+    <div class="install-block">
+
+      <h3>MSI installer (recommended)</h3>
+      <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">Double-click to finish setup. It registers itself to start up automatically, too.</p>
+      <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">Download the latest version (MSI)</a>
+      <p style="color:var(--text-secondary);font-size:0.88rem">If the download doesn't work, download it manually from <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a>.</p>
+
+      <!-- Scoop 未対応のため非表示
+      <h3>Scoop（コマンドライン）</h3>
+      <div class="code-block">scoop install awase</div>
+      <p class="install-note">Scoop がインストールされていない場合は <a href="https://scoop.sh">scoop.sh</a> を参照してください。</p>
+      -->
+
+      <h3>ZIP version (portable)</h3>
+      <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">No installation needed. Unzip and use it right away.</p>
+      <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (ZIP)</a>
+      <ol>
+        <li>Download <code id="zip-filename">awase-x.x.x-x64.zip</code> from <a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> and unzip it</li>
+        <li>Run <code>install.ps1</code> from the unzipped folder in PowerShell (registers startup)</li>
+        <li>Run <code>awase.exe</code> (it lives in the tray)</li>
+      </ol>
+
+      <h3>Build from source</h3>
+      <div class="code-block">cargo build -p awase-windows --release</div>
+    </div>
+  </div>
+</section>
+
+<!-- Usage -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Usage</h2>
+    <div class="usage-block">
+      <h3>Basic operations</h3>
+      <ul>
+        <li>Press the Hankaku/Zenkaku key to turn the IME ON → thumb-shift input becomes active</li>
+        <li>The Henkan (変換) and Muhenkan (無変換) keys act as thumb-shift keys</li>
+        <li>Ctrl+Shift+Henkan turns the engine ON, Ctrl+Shift+Muhenkan turns the engine OFF</li>
+        <li>Check the status via the tray icon; right-click for settings and to quit</li>
+      </ul>
+
+      <h3>Key config.toml settings</h3>
+      <table class="config-table">
+        <tr>
+          <th><code>confirm_mode</code></th>
+          <td>Selects the confirmation mode. <code>ngram_predictive</code> (recommended), <code>wait</code> (favors accuracy), <code>speculative</code> (favors speed), and more</td>
+        </tr>
+        <tr>
+          <th><code>output_mode</code></th>
+          <td>The output method. <code>unicode</code> is the default</td>
+        </tr>
+        <tr>
+          <th><code>hook_mode</code></th>
+          <td>How the hook operates. <code>relay</code> is the default, designed to prioritize stability</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Frequently Asked Questions</h2>
+    <div class="faq-list">
+      <div class="faq-item">
+        <p class="faq-q">Does it really work in Chrome and Edge?</p>
+        <p class="faq-a">Yes. Chrome and Edge have tricky TSF composition timing, and traditional tools tended to garble characters or introduce delays. awase solves this with a unique method that monitors Google Japanese Input's I/O to detect when composition is ready.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Can I use it in Zoom chat?</p>
+        <p class="faq-a">Yes. Zoom runs as a TSF application, but awase optimizes input to TSF-native apps, so it works without issues.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Won't antivirus software flag it as a false positive?</p>
+        <p class="faq-a">Because awase never uses DLL injection, it's designed to be unlikely to trigger false positives in security software. It uses only standard Windows APIs — keyboard hooks and SendInput.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Which IMEs are supported?</p>
+        <p class="faq-a">It supports Microsoft IME and Google Japanese Input. Many traditional tools switch the IME with a "toggle key," so unless they know the current state precisely, they can end up in the opposite state from what was intended — a fundamental problem. Google Japanese Input in particular does not let external programs correctly read the current IME state, so it was an IME especially prone to this issue. awase controls the IME with idempotent operations — "turn the IME ON" and "turn the IME OFF" (running them any number of times gives the same result) — so even if the state has drifted, you always get the intended result.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Can I use it alongside other key remappers (AutoHotKey, etc.)?</p>
+        <p class="faq-a">Yes. In relay mode all keys are re-injected, so keys reach other hook-based software as well.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Won't it stop working after waking from sleep?</p>
+        <p class="faq-a">It automatically re-registers the hook on wake from sleep and on screen unlock. It also detects anomalies with periodic health checks and recovers automatically. It's designed to be resilient after Windows Update, using an implementation that doesn't depend on internal changes to the OS's character-output method.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Won't it misbehave on password entry screens?</p>
+        <p class="faq-a">When the IME is OFF, the engine is automatically disabled and you get normal key input.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Can I use layouts other than NICOLA?</p>
+        <p class="faq-a">By creating a layout definition file in the .yab format, you can define any layout you like.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Sometimes when I typed in Chrome, only the first character came out as a Latin letter.</p>
+        <p class="faq-a">This is the TSF cold-start problem. Chrome can take a few hundred milliseconds to initialize the IME's composition context, and if romaji arrives before that finishes, characters get garbled, e.g. "こ → ko" or "か → kあ". awase monitors Google Japanese Input's I/O activity to detect when composition is ready, and automatically times its output to match.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">When I typed fast, the shift would bleed into the neighboring key and add a dakuten.</p>
+        <p class="faq-a">This is a problem widely reported with traditional tools like YamabukiR and Benisara. If the moment you release the thumb-shift key overlaps with the next keystroke, it's judged as an unintended chord and a voiced sound or a different character comes out — creating a situation where "it only works if you type slowly." awase uses an n-gram statistical model to judge "whether it's natural Japanese," so it can decide correctly even if the timing is slightly off. You can also choose from five confirmation modes to tune it to your own typing speed.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">During fast typing, the character order sometimes came out wrong.</p>
+        <p class="faq-a">This is a bug where keys pile up while awaiting completion of TSF output processing, then get output in the wrong order once processing resumes. For example, typing "というのは" was known to sometimes come out as "とはいうの". awase solves this by strictly identifying each timer-event instance, so no matter how fast you type, output stays in the correct order.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">In terminals like Windows Terminal, only the first character sometimes came out as a Latin letter.</p>
+        <p class="faq-a">In TSF-native apps, the composition context is reset right after you press a confirmation key (Enter or Space). awase detects this reset and performs warmup, ensuring TSF is in a ready state before the next character input. Even the first character after a long idle period is entered correctly.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">Sometimes IME ON/OFF switching stopped working from the second time on.</p>
+        <p class="faq-a">This happens when awase's internal "IME state" drifts from the OS's actual state and it wrongly decides "already switched." awase re-observes the IME's real state on every focus change and app switch, and continuously corrects the drift by reconciling against the shadow model.</p>
+      </div>
+      <div class="faq-item">
+        <p class="faq-q">When I switched to another app with ALT+TAB, the engine sometimes turned OFF in LINE.</p>
+        <p class="faq-a">While the ALT+TAB task switcher is displayed, the OS temporarily moves focus to the switcher's window. If the IME state is read at that instant, it can be wrongly judged as "IME OFF" and the engine stops. awase updates an internal counter (an epoch) on every focus change, automatically invalidating stale observations that occurred during the switch animation. This keeps IME state correct even after ALT+TAB.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Naming -->
+<section>
+  <div class="container">
+    <h2 class="section-title">Origin of the Name</h2>
+    <div class="install-block" style="text-align:center">
+      <p style="font-size:3rem;font-weight:800;letter-spacing:0.15em;color:var(--accent);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;margin-bottom:1rem">a&nbsp;w&nbsp;a&nbsp;s&nbsp;e</p>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;max-width:560px;margin:0 auto">
+        Typed on a QWERTY keyboard, "awase" flows <strong>left pinky → left ring → left pinky → left ring → left middle</strong>, gliding from the outside inward using only the left hand.<br><br>
+        The name of a keyboard program makes a beautiful motion on the keyboard itself — we named it that way out of playfulness, along with the meaning of "awase" (合わせ: bringing chords together in a simultaneous keystroke).
+      </p>
+      <div style="margin-top:1.8rem;display:flex;justify-content:center;gap:0.5rem;flex-wrap:wrap">
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">A<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">pinky</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">W<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">ring</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">A<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">pinky</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">S<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">ring</span></span>
+        <span style="padding:0.5rem 0.8rem;background:var(--bg-alt);border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:1.1rem;font-weight:700">E<br><span style="font-size:0.7rem;font-weight:400;color:var(--text-secondary)">middle</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+<script>
+(async () => {
+  try {
+    const r = await fetch('https://api.github.com/repos/cuzic/awase/releases?per_page=10');
+    if (!r.ok) return;
+    const releases = await r.json();
+
+    // アセットが添付されている最新リリースを MSI・ZIP それぞれ独立して探す
+    let msi, msiTag, zip, zipTag;
+    for (const rel of releases) {
+      if (!msi) {
+        const found = rel.assets?.find(a => a.name.endsWith('.msi'));
+        if (found) { msi = found; msiTag = rel.tag_name; }
+      }
+      if (!zip) {
+        const found = rel.assets?.find(a => a.name.endsWith('.zip'));
+        if (found) { zip = found; zipTag = rel.tag_name; }
+      }
+      if (msi && zip) break;
+    }
+
+    const dlMsi = document.getElementById('dl-msi');
+    if (dlMsi && msiTag) {
+      dlMsi.textContent = `Download the latest version (MSI) ${msiTag}`;
+      if (msi) dlMsi.href = msi.browser_download_url;
+    }
+
+    const dlZipBtn = document.getElementById('dl-zip-btn');
+    if (dlZipBtn && zipTag) {
+      dlZipBtn.textContent = `Download the latest version (ZIP) ${zipTag}`;
+      if (zip) dlZipBtn.href = zip.browser_download_url;
+    }
+
+    const dlZip = document.getElementById('dl-zip');
+    if (dlZip && zip) dlZip.href = zip.browser_download_url;
+
+    const zipFn = document.getElementById('zip-filename');
+    if (zipFn && zip) zipFn.textContent = zip.name;
+  } catch (_) {}
+})();
+</script>
+</body>
+</html>

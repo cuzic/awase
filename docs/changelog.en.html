@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Changelog — awase</title>
+<meta name="description" content="Version-by-version changelog for awase. A list of bug fixes, new features, and internal improvements.">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+  }
+}
+html{scroll-behavior:smooth}
+body{font-family:system-ui,-apple-system,sans-serif;line-height:1.7;color:var(--text);background:var(--bg)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:800px;margin:0 auto;padding:0 1.5rem}
+.site-nav{background:var(--bg-alt);border-bottom:1px solid var(--border);padding:0.75rem 1.5rem}
+.site-nav .inner{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:1.5rem}
+.site-nav .brand{font-weight:700;font-size:1rem;color:var(--text)}
+.site-nav a{font-size:0.92rem;color:var(--text-secondary)}
+.site-nav a:hover{color:var(--accent);text-decoration:none}
+.site-nav a.active{color:var(--accent);font-weight:600}
+.page-header{padding:3.5rem 1.5rem 2.5rem;background:var(--bg-alt);border-bottom:1px solid var(--border);text-align:center}
+.page-header h1{font-size:2rem;font-weight:800;letter-spacing:-0.02em;color:var(--text)}
+.page-header p{font-size:1rem;color:var(--text-secondary);margin-top:0.5rem}
+section{padding:4rem 0}
+/* Markdown-rendered changelog */
+.cl-content h2{
+  font-size:1.4rem;font-weight:800;
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  border-bottom:2px solid var(--border);
+  padding-bottom:0.5rem;margin:2.5rem 0 1rem;color:var(--text)
+}
+.cl-content h2:first-child{margin-top:0}
+.cl-content h3{
+  font-size:0.8rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:0.06em;
+  color:var(--text-secondary);margin:1.2rem 0 0.5rem
+}
+.cl-content ul{list-style:none;padding:0}
+.cl-content > ul > li,
+.cl-content ul > li{
+  position:relative;padding:0.35rem 0 0.35rem 1.4em;
+  font-size:0.95rem;border-bottom:1px solid var(--border)
+}
+.cl-content ul > li:last-child{border-bottom:none}
+.cl-content ul > li::before{
+  content:"\25B8";position:absolute;left:0;
+  color:var(--accent-light);font-size:0.75rem;top:0.55rem
+}
+.cl-content ul ul{margin-top:0.3rem}
+.cl-content ul ul > li{
+  border-bottom:none;font-size:0.875rem;
+  color:var(--text-secondary);padding-top:0.15rem;padding-bottom:0.15rem
+}
+.cl-content ul ul > li::before{content:"\2013";top:0.3rem}
+.cl-content hr{border:none;border-top:1px solid var(--border);margin:2.5rem 0}
+.cl-content p{font-size:0.95rem;color:var(--text-secondary);margin:0.5rem 0}
+.cl-content code{
+  font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:0.85em;background:var(--bg-alt);
+  padding:0.1em 0.35em;border-radius:3px;border:1px solid var(--border)
+}
+.cl-content strong{color:var(--text);font-weight:700}
+footer{
+  background:var(--bg-alt);border-top:1px solid var(--border);
+  padding:2rem 1.5rem;text-align:center;
+  font-size:0.875rem;color:var(--text-secondary)
+}
+footer p{margin:0.3rem 0}
+</style>
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="inner">
+    <span class="brand">awase</span>
+    <a href="index.en.html">Home</a>
+    <a href="usage.en.html">Usage</a>
+    <a href="internals.en.html">Internals</a>
+    <a href="changelog.en.html" class="active">Changelog</a>
+    <a href="https://github.com/cuzic/awase">GitHub</a>
+    <a href="changelog.html">日本語</a>
+  </div>
+</nav>
+
+<div class="page-header">
+  <h1>Changelog</h1>
+  <p>What changed in each version of awase. Downloads are available from <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a>.</p>
+</div>
+
+<section>
+<div class="container">
+<div class="cl-content">
+<h2>[Unreleased]</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong><code>layout/nicola.yab</code>/<code>nicola_us.yab</code>: Fixed a bug where the number-row left/right thumb shift produced duplicate "6"/"7" for the keys "4" and "5"</strong><ul>
+<li>Since the very first commit, both the left and right thumb-shift number rows had duplicated bracket symbols as <code>4:［ 5:］ 6:［ 7:］</code>, and the Japanese corner brackets 「」 did not exist anywhere on the number row</li>
+<li>Fixed to <code>4:「 5:」</code> (Muhenkan+4 → 「, Henkan+5 → 」), leaving <code>6:［ 7:］</code> unchanged</li>
+</ul>
+</li>
+</ul>
+<h2>[1.10.0] - 2026-07-19</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added cell copy/paste (history-based) to the "Layout Editor" tab</strong><ul>
+<li>Select a cell and press "Copy" and its value is automatically pushed to the top of the history (up to 4 entries, retained even across shift planes)</li>
+<li>The history is shown as a row of buttons, and a single click pastes directly into the selected cell (because it does not go through the text field, the result is exactly the same value as the source cell, including the kana conversion of romaji)</li>
+<li>Copying the same value again does not create a duplicate; it simply moves it to the top of the history</li>
+</ul>
+</li>
+<li><strong>US layout: Added the ability to impersonate thumb keys with the left/right Alt keys</strong><ul>
+<li>Because the US layout has no Muhenkan/Henkan keys on either side of the space bar, a setting was added to let the left/right Alt keys impersonate <code>left_thumb_key</code>/<code>right_thumb_key</code> (<code>left_alt_impersonates_thumb_key</code>/<code>right_alt_impersonates_thumb_key</code>, default false). This lets awase accomplish, on its own, the same thing as an external remapper like PowerToys</li>
+<li>It only takes effect while the engine is ON; while OFF the keys act as normal Alt so Alt+Tab and the like are not broken. Left and right can be configured independently, and while held down the state is fixed at the moment of the keypress to prevent stuck modifiers</li>
+<li>Shown in the settings screen (awase-settings) only when the US layout is selected</li>
+</ul>
+</li>
+<li><strong>US layout: Added a composing-time fallback for the Space thumb key and immediate emission of Shift+Space</strong><ul>
+<li>When Space is assigned as a thumb key, a solo tap can now emit <code>VK_SPACE</code> (advancing conversion candidates) even while the candidate window is shown (unlike Muhenkan/Henkan, emitting a raw VK_SPACE during composing is a legitimate IME function)</li>
+<li>Shift+Space is emitted immediately as a literal space without waiting for chord detection</li>
+<li>The settings are <code>space_thumb_ignore_composing_guard</code>/<code>space_thumb_shift_literal</code> (default true). Shown in the settings screen only when Space is a thumb key</li>
+</ul>
+</li>
+<li><strong>Settings screen: Automatically reset/restore the default hotkey values when switching between the US and JIS layouts</strong><ul>
+<li>Switching to the US layout now clears the JIS-oriented default hotkey values (Muhenkan/Henkan keys, etc.) to empty, and switching back to JIS restores the JIS defaults</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>BUG-31: Fixed a bug where characters were silently lost during continuous typing in Microsoft Teams</strong><ul>
+<li>App: Microsoft Teams (<code>TeamsWebView</code>, Chromium-based, Vk mode). IME: Google Japanese Input (GJI)</li>
+<li>Reproduction: Immediately after confirming with Enter, even though the state was warm (<code>GjiFsm::OnWarm</code>), a physical <code>NativeF2Down</code> (non-TSF) event unconditionally issued <code>MarkCold</code>+<code>GjiCompositionReset</code>, killing the warm-maintenance timer, so subsequent romaji got caught in a per-VK confirm race and some was lost (field report: part of "５せっしょん" was silently dropped)</li>
+<li>Added a guard to ignore <code>NativeF2Down</code> while warm</li>
+</ul>
+</li>
+<li><strong>BUG-30: Fixed a bug where characters that had been correctly entered were mistakenly backspaced while the GJI candidate window was visible</strong><ul>
+<li>The candidate window's SHOW event (edge-triggered) and its live visible state (level-triggered) were separate sensors, and there was no protection during visibility when <code>SuspectedLiteral</code> was detected. Added a veto that holds off backspacing while visible, and unified the literal-detect logic across TSF/Chrome</li>
+</ul>
+</li>
+<li><strong>Alt thumb-key impersonation: Fixed a bug where the <code>OsModifierHeld</code> bypass disabled NICOLA chord detection entirely</strong><ul>
+<li>The vk rewrite itself was being done correctly, but a separate path derived from <code>GetAsyncKeyState</code> (<code>modifiers.alt</code>) was still returning the physical Alt press as-is, so <code>BypassReason::OsModifierHeld</code> was misfiring in three places. Fixed to correct <code>modifiers.alt</code> during impersonation</li>
+</ul>
+</li>
+<li><strong>Alt thumb-key impersonation: Fixed a bug where in some environments the vk arrived as the generic <code>VK_MENU</code>, so impersonation never triggered</strong><ul>
+<li>In some environments the <code>WH_KEYBOARD_LL</code> vkCode arrives as the generic <code>VK_MENU</code> rather than the left/right-distinguished <code>VK_LMENU</code>/<code>VK_RMENU</code>, so a comparison based only on direct matching was always false. Fixed to distinguish left/right using the <code>LLKHF_EXTENDED</code> flag</li>
+</ul>
+</li>
+<li><strong>Settings screen: Fixed a bug where the "Apply" button was always disabled</strong><ul>
+<li><code>awase-settings.exe</code>'s config-reload notification was using <code>FindWindowW</code> to look for a nonexistent window class name (<code>awase_msg_window</code>), so the notification never reached <code>awase.exe</code> (<code>awase_tray_window</code>). Fixed to the correct class name, and on failure it now explicitly logs via <code>log::warn!</code></li>
+</ul>
+</li>
+<li><strong>Settings screen: Fixed a bug where <code>config.toml</code> path resolution was asymmetric with <code>awase.exe</code></strong><ul>
+<li><code>awase.exe</code> can specify an explicit path via a command-line argument, but <code>awase-settings.exe</code> ignored it, risking editing a different <code>config.toml</code>. Aligned the priority order, and also added a feature that always displays the path being edited at the top of the screen</li>
+</ul>
+</li>
+<li><strong>Settings screen: Fixed an issue where long validation-warning text was cut off by the button row and not shown</strong></li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Greatly simplified the GJI/Chrome cold-start warmup architecture</strong><ul>
+<li>After several days of real-machine soak testing (60+ cold events, zero suspected literals) confirmed no corruption, the wait-queue (the <code>ColdReason</code>×<code>long_idle</code> matrix of <code>WarmupKind::FreshF2</code>/<code>ReWarmup</code>/<code>ProbeWithSettle</code> etc.) and the sacrificial-key mechanism (<code>SacrificialWarmupCoro</code>/<code>ImeOffOnWarmupFsm</code>) were physically removed, consolidating onto the per-VK confirm approach that sends romaji one character at a time and confirms each</li>
+<li>Unified the per-VK confirm loops that were duplicated between Chrome (<code>probe_fsm.rs</code>) and TSF (<code>gji_warmup_coro.rs</code>) into a shared implementation (net -82 lines)</li>
+<li>Finalized the addition of scan codes to Chrome VK sends, promoting it from experimental to permanent behavior</li>
+<li>As the foundation supporting the above, added <code>StepCoro::prime()</code> (self-priming without a dummy input) to the internal dependency crate <code>timed-fsm</code></li>
+</ul>
+</li>
+</ul>
+<h2>[1.9.1] - 2026-07-12</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a "Layout Editor" tab to the settings screen (edit .yab in place)</strong><ul>
+<li>Merged the standalone <code>awase-yab-editor</code> binary into <code>awase-settings</code> and deleted it (the code is worth reusing, but a separate binary was judged not worth it; the cost of keeping two binaries in sync across CI, distribution, and the installer outweighed the practical benefit)</li>
+<li>All four planes (normal / left thumb shift / right thumb shift / little-finger shift) can be edited via the flow: click a cell in a keyboard-style grid to select it → choose the type (keystroke / literal / special key / none) and edit → apply</li>
+<li>The former "Romaji" and "Key sequence" types were consolidated into "keystroke," auto-detected by the input (whether it is alphabetic). If you enter a key that does not exist on a JIS keyboard, an error is shown in real time and the apply button is disabled</li>
+<li>Even if you enter symbols/alphanumerics in full-width, they are automatically converted to half-width, so the input side does not need to be conscious of half/full width</li>
+<li>Supports Open / Save / Save As / Reload, and the Ctrl+S / Ctrl+O / Ctrl+Shift+S / F5 shortcuts</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue where the settings screen's "Layout Editor" tab (formerly the Preview tab) did not display / crashed</strong><ul>
+<li>Unified <code>layouts_dir</code>/<code>config.toml</code> path resolution onto <code>awase::paths::resolve_relative_to_exe</code>, fixing a bug where <code>layout/nicola.yab</code> directly under the workspace root could not be found when launched from under <code>target/debug/</code> via <code>cargo run</code>/<code>cargo build</code></li>
+<li>Re-showed the tab that had been hidden on 2026-07-06 (<code>c3fa08e</code>) on the grounds that "the layout preview implementation was not solid yet"</li>
+<li>Fixed a bug where opening the tab caused a silent forced termination (the cause was that <code>egui::Grid</code> does not allow cursor movement via in-row <code>add_space()</code>. Blocked by the two issues above, it had never once been rendered with real data, so this was a latent bug no one had hit)</li>
+<li>Added log file output (<code>awase-settings.log</code>) + a panic hook to <code>awase-settings</code>. Because the GUI subsystem has no console, panics had previously left nothing in any log</li>
+<li>Fixed an issue where <code>.yab</code> was loaded synchronously every time the tab was opened, lengthening the interval between window creation and the first render; changed to lazy loading</li>
+</ul>
+</li>
+</ul>
+<h2>[1.9.0] - 2026-07-11</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Persistent "IME-ON half-width alphanumeric" toggle via a left Shift solo tap (BUG-25, MS-IME support)</strong><ul>
+<li>Added a persistent toggle where a solo tap of the left Shift key (press → release without any intervening key) switches to half-width alphanumeric input while keeping the IME open. Another solo tap returns to normal kana input</li>
+<li>This replaces BUG-15's "half-width alphanumeric while Shift is held" (hold approach). It keeps the existing safety net that cancels out MS-IME's false detection of a Shift solo tap during a Shift+character chord (the Shift plane of <code>.yab</code>), while removing only the ASCII pass-through layer (<code>shift_plane_halfwidth</code>) that was specific to the hold approach</li>
+<li>A right Shift solo tap always performs only the safety-net restore, and pressing it during the persistent toggle also acts as an "emergency release"</li>
+<li>For GJI (Google Japanese Input), three entry mechanisms were tested on real hardware — scan-code-tagged VK injection, IMC write, and scan=0 VK injection — but none worked (CapsLock contamination, or <code>SendInput</code> not even reaching the hook), so the feature was disabled for GJI (MS-IME only). See docs/known-bugs.md BUG-25 and docs/experiments.md entries 06–09</li>
+</ul>
+</li>
+<li><strong>Changed Ctrl+Henkan pressed while the IME is ON to reset to hiragana + romaji + CapsLock OFF</strong><ul>
+<li>Previously it only responded to an IME OFF→ON transition, but now, even when the IME is already ON, pressing Ctrl+Henkan re-confirms the input mode by aligning it to hiragana, romaji, and CapsLock OFF</li>
+<li>Added a guard that targets only the case of a Ctrl-only modifier plus a single VK_CONVERT press, so that unrelated IME-ON paths such as Ctrl+Shift+Henkan (the EngineOn combo) are not falsely detected</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.9] - 2026-07-11</h2>
+<h3>Added</h3>
+<ul>
+<li><p><strong>US (ANSI 104) keyboard support</strong></p>
+<ul>
+<li>Added US-layout-specific scan-code ⇔ physical-position tables (<code>scan_to_pos_us</code>/<code>pos_to_scan_us</code>) to <code>crates/awase-windows/src/scanmap.rs</code>, and wired them to be selected according to <code>KeyboardModel::{Jis,Us}</code></li>
+<li>Reintroduced the <code>general.keyboard_model</code> (&quot;jis&quot;/&quot;us&quot;) setting. The field of the same name had been removed on 2026-07-06 as "never once wired up"; this time it was revived after actually wiring it all the way through <code>.yab</code> parsing and <code>HookConfig</code> (the hook's scan_to_pos table selection)</li>
+<li>Corrected <code>KeyboardModel::Us.row_sizes()</code>'s row0 from 13 to 12 (the grave key is treated as off-grid since it has no physical key mapping. The old value was an error in never-executed, unverified code)</li>
+<li>Added the US-layout <code>layout/nicola_us.yab</code> (the columns for JIS-only keys removed from <code>layout/nicola.yab</code>. The values of the shared scan codes are reused as-is)</li>
+<li>Extended <code>AppConfig::validate</code> to warn at startup validation when <code>keyboard_model = &quot;us&quot;</code> yet defaults that assume Muhenkan/Henkan keys (<code>left_thumb_key</code>/<code>right_thumb_key</code> and each hotkey under <code>[keys]</code>) remain</li>
+<li>Added JIS/US selection, layout-preview tracking, and thumb-key candidates to the settings screen (awase-settings)</li>
+<li>The Linux/macOS side is not covered this time (remains fixed at <code>KeyboardModel::Jis</code>)</li>
+</ul>
+</li>
+<li><p><strong>Discovered that assigning Ctrl/Alt/Win to a thumb key does not work (<code>engine/tests.rs</code>)</strong></p>
+<ul>
+<li>We once recommended <code>VK_LMENU</code>/<code>VK_RMENU</code> (Alt) as a thumb-key substitute for the US layout, but
+it turned out that the KeyDown of that key itself immediately hits <code>ModifierState::is_os_modifier_held()</code> →
+the <code>OsModifierHeld</code> of <code>bypass_reason</code>, so it never enters <code>PendingThumb</code> at all and is
+passed straight through (chord detection itself does not work). Not just Alt but
+Ctrl/Win are likewise impossible</li>
+<li>This constraint is pinned by <code>test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass</code>.
+Shift is not subject to <code>is_os_modifier_held()</code>, so it can reach <code>PendingThumb</code>
+(<code>test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier</code>
+confirms the suppression of a solo tap), but its interaction with the Shift-plane feature is untested</li>
+<li>Also added a defense to <code>timeout_pending_thumb</code> that, when the thumb key is an OS modifier,
+suppresses raw VK emission of a solo tap regardless of composing (propagating
+<code>modifier_key</code> into <code>ClassifiedEvent</code>/<code>PendingThumbData</code>)</li>
+<li>Withdrew Alt from the recommendations in config.rs / config.toml.sample / awase-settings, and
+now suggest F13-F24 (assuming physical remapping on a programmable keyboard) / VK_SPACE as substitutes</li>
+</ul>
+</li>
+<li><p><strong>Fixed the emergency Engine OFF via solo Muhenkan repeats being too prone to misfiring</strong></p>
+<ul>
+<li>Simply mashing the Muhenkan key to recover from a misread conv mode right after waking from sleep (stuck at katakana) caused the "solo triple-tap of Muhenkan turns the engine OFF" mechanism (ADR-055) — prepared as an emergency escape for a stuck Ctrl — to misfire, setting <code>user_enabled</code> to false in a real-machine case (2026-07-08). Once triggered, <code>user_enabled</code> did not come back with normal key operations like <code>Ctrl+Henkan</code> (<code>ime_on</code>), leaving a "nothing fixes it" state</li>
+<li>Raised the required repeat count from 3 to 5 (<code>SOLO_OFF_TRIGGER_COUNT</code>, <code>src/engine/nicola_fsm.rs</code>) to make misfires less likely</li>
+<li>Now shows a tray notification when triggered, so the user can immediately understand "the engine has emergency-stopped" and "it can be recovered with <code>Ctrl+Shift+Henkan</code>." See the addendum in <code>docs/adr/055-engine-off-solo-triple.md</code></li>
+</ul>
+</li>
+<li><p><strong>Fixed a bug in Chrome/Edge where a single misread of the conv mode actually locked GJI into katakana (BUG-19)</strong></p>
+<ul>
+<li>The <code>GetForegroundWindow()</code>-based conv reading (<code>get_ime_conversion_mode_raw_timeout</code>) could momentarily pick up an incorrect katakana conv while focus bounced between <code>Chrome_WidgetWin_1</code> and the GJI candidate popup (<code>Windows.UI.Input.InputSite.WindowClass</code>), and <code>ConvModeMgr</code> unconditionally committed this</li>
+<li>Eager warmup (<code>send_eager_tsf_warmup</code>) took the committed misread at face value and actually sent <code>VK_DBE_KATAKANA</code> → the transient misread got locked in as GJI's real state, turning all subsequent input into katakana, and furthermore the <code>KatakanaShadowOff</code> rescue logic repeatedly bounced IME OFF/ON, inducing leading-character literal leaks</li>
+<li>Added debouncing limited to a non-katakana→katakana transition (the same "confirm over 2 consecutive ticks" pattern as <code>ImeKindDebounce</code>) to <code>ConvModeMgr::update_from_conv</code></li>
+<li>Addendum: The above only protected the warmup side (<code>ConvModeMgr</code>); <code>classify_conv_transition</code> (belief updates, engine sync such as <code>KatakanaShadowOff</code>) was re-interpreting raw conv directly and was defenseless against the same misread. Changed <code>classify_conv_transition</code>'s argument from <code>conv: u32</code> to a <code>ConvMode</code> derived from <code>ConvModeMgr::get()</code>, so that warmup and belief/engine-sync reference the same committed value. See docs/known-bugs.md BUG-19</li>
+<li>Addendum 2: Even in a debounced state, if a conv misread fired <code>KatakanaShadowOff</code>/<code>NativeToggleShadowOff</code> right after the user explicitly turned the IME OFF, it would spoof <code>UserImeSetIntent{Command}</code> and directly rewrite <code>desired_open</code>, causing a separate-path recurrence where the engine returned to ON on its own. Separated this into <code>EngineSync::ReportOpenInference</code>, which no longer rewrites <code>desired_open</code> but merely records it as an <code>ObserverReported</code> (<code>ObservationSource::ConvOpenInference</code>, Medium confidence). The actual correction decision is delegated to the existing drift correction (BUG-20 already fixed the OFF direction too). Also added a source-aware gate that never fires a correction from this observation alone as long as there has never been any explicit user intent</li>
+</ul>
+</li>
+<li><p><strong>Fixed a bug during Chrome input where a single misdetection of the CLSID-based IME kind caused <code>GjiFsm</code> to be rebuilt per word and <code>cold</code> to keep firing (BUG-17)</strong></p>
+<ul>
+<li>The <code>gji-io-monitor</code> worker thread was propagating single flips of <code>ITfInputProcessorProfileMgr::GetActiveProfile</code> — which it polls every 2 seconds — to the main thread as-is via <code>WM_IME_KIND_CHANGED</code>, and <code>set_active_ime_kind</code> unconditionally created a new warmup strategy (<code>GjiFsm</code>/<code>MsImeStrategy</code>) on every kind change → discarding the established <code>OnWarm</code>/<code>OnComposing</code></li>
+<li>The very fact that Chrome cold-start reinit sends a real <code>VK_IME_OFF→VK_IME_ON</code> toggle became the trigger for the misdetection, forming a self-amplifying loop of "reinit → misdetection → GjiFsm rebuild → next word is cold too → reinit again → …" (in field logs, <code>cold_seq</code> climbed 392→401 per word, and two "StartComposition while engine off" warnings were observed at 2146ms intervals, nearly matching the CLSID polling period)</li>
+<li>Added <code>ImeKindDebounce</code> to <code>tsf/gji_monitor.rs</code> so that a new kind is not committed until it is observed on 2 consecutive ticks. See docs/known-bugs.md BUG-17</li>
+<li>Addendum 3: Even after debouncing, <code>cold_warmup.rs::preamble()</code> (run on every cold warmup) unconditionally wrote <code>conv_mode.get()</code> back to the real IME, so a once-mistakenly-committed belief kept being re-asserted on every focus bounce, leaving a path that self-amplified. Added <code>ConvModeMgr::needs_conv_restore_write</code>/<code>mark_conv_restore_written</code> to limit the restore write to the same committed mode to just once</li>
+<li>Addendum 4: The above throttle was wired only into the IMM32 write-back paths of <code>cold_warmup.rs</code>/<code>probe_io.rs</code>, leaving only <code>output/mod.rs::send_eager_tsf_warmup</code> — the very thing the root-cause analysis had named (the charset selection of eager warmup, which fires at high frequency on every confirm key) — defenseless. Applied the same throttle here too, limiting the sending of charset-changing warmup keys (F1/F0 family) for an already-committed mode to once</li>
+<li>Addendum 5: Since the user confirmed they had never manually selected katakana / half-width alphanumeric from the IME tray and have no plans to do so, a <code>DIAG_FORCE_HIRAGANA_CHARSET</code> diagnostic flag was added, starting an experiment that disables the charset-following logic (F1/F0 warmup, IMM32 conv_target write-back, F1 leading warmup prefix) wholesale and always treats it as Hiragana (observation/logging themselves continue; only acting on it is stopped)</li>
+</ul>
+</li>
+<li><p><strong>Fixed a bug where the first character right after turning the IME ON, though correctly converted, got an unnecessary BS correction (BUG-24)</strong></p>
+<ul>
+<li><code>is_partial_literal()</code> (<code>tsf/warmup/literal_detect_fsm.rs</code>) was judging partial literals not by the confirmation signal of the romaji it just sent (candidate window SHOW / GJI I/O change) but by the unrelated proxy indicators <code>nc_fired</code>/<code>gji_resumed</code> (whether there was a response to a different F2 warmup key) that had been settled before sending. Right after <code>ColdReason::requires_settle()</code> (<code>FocusChange</code>/<code>NativeF2Consumed</code>/<code>SetOpenTrue</code> — which can occur even when the IME is already ON), under <code>DIAG_DISABLE_PROACTIVE_TSF_WARMUP</code> (a diagnostic flag that disables cold-start proactive warmup wholesale and relies only on reactive detection), the confirmation send that is the source of this proxy indicator is itself unconditionally skipped, so <code>nc_fired</code> became structurally always <code>false</code>, and it reproduced reliably on real hardware</li>
+<li>Also identified and fixed a side effect where <code>composition_fsm.rs::ConfirmKeyDown</code> and <code>platform.rs::on_reinject_key</code> unconditionally issued <code>MarkCold</code>/<code>GjiCompositionReset</code> even for warm confirm keys (Enter/Space/Escape) (the extra cold marking during continuous typing was increasing the exposure of literal-detect)</li>
+<li>Added a mechanism (the <code>literal_session_confirmed</code> family in <code>tsf/observer.rs</code>, <code>DIAG_LITERAL_SESSION_SKIP</code>) that, once literal-detect has been confirmed once within an IME session (from the start of typing to the candidate window HIDE), skips the detection process itself until the session ends, so as not to slow down responsiveness</li>
+<li>The above alone did not fix the first character of the session itself (the one that first passes through <code>is_partial_literal()</code>), so ultimately the design was changed to, for the first character of a session only, send the romaji's VKs one at a time and confirm the sent VK's own <code>CompositionConfirmed</code>/<code>SuspectedLiteral</code> before sending the next VK (<code>ProbeAction::TransmitSingleVk</code>, <code>gji_warmup_coro.rs</code>). The "which VK's effect is it" ambiguity that arose from sending two VKs together was structurally resolved by inserting a deliberate confirmation point between VK sends. The symptom's resolution was confirmed on real hardware</li>
+<li>See docs/known-bugs.md BUG-24</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.6] - 2026-07-07</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed Teams (TeamsWebView) being misclassified as still a target of IMM32 cross-process control</strong><ul>
+<li>Microsoft Teams's main window class <code>TeamsWebView</code> was not listed in <code>IMM32_UNAVAILABLE_CLASSES</code> and was handled as the <code>Standard</code> classification, so unreliable IMM32 open-status reads were being attempted despite it being Chromium-based like the Chrome family. Added it to be classified as <code>Imm32Unavailable</code> / <code>TsfNative</code> like <code>Chrome_*</code></li>
+<li>Along with this, added <code>sanitize_focus_probe_open_status()</code> to the completion handling of <code>kp_stage_focus_probe</code>, adding a defense that, if the <code>current_app_profile</code> at apply time does not support IMM32 open status (Imm32Unavailable/TsfNative), forcibly discards <code>probe.ime_on</code>. This stops trusting a stale <code>probe.ime_on</code> even for apps whose classification changes later</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Wired empirically-learned IMM32 capabilities into focus-profile determination</strong> (unreachable-path audit B5)<ul>
+<li><code>ImmCapabilityStore</code> (which learns from <code>ImmGetDefaultIMEWnd</code>=NULL detection and exceeding an IME detection-miss threshold, and persists to cache.toml) had, until now, only learned and saved, with no consumer that changed behavior</li>
+<li>On focus updates, classes whose static classification is <code>Standard</code> but whose learned value is <code>Unavailable</code> are now demoted to <code>Imm32Unavailable</code> (so that IMM-broken apps not listed in the static list no longer incur wasteful <code>SendMessageTimeoutW</code>)</li>
+<li>Promotion is not performed (static Imm32-unavailable / TSF-native knowledge takes priority). Demotion self-releases via <code>Works</code> recovery learning. Demotions are auditable via the <code>[imm-learning] profile demoted</code> INFO log, and mislearning is cleared by hand-editing <code>[imm_capability]</code> in cache.toml</li>
+<li>Note: learned entries already accumulated in an existing cache.toml take effect immediately. If an unexpected demotion occurs, check the logs</li>
+</ul>
+</li>
+<li><strong>Cleanup based on the unreachable-path audit (2026-07-06, 5 parallel perspectives)</strong><ul>
+<li>Removed 2 orphan WM handlers (<code>WM_PROCESS_DEFERRED</code> / <code>WM_IME_KEY_DETECTED</code>) and a group of enum variants with zero construction sites (<code>ImeEffect::RequestRefresh</code>, <code>ActivationState::Pending</code>+<code>PendingReason</code>, <code>InactiveReason::NonTextFocus</code>, <code>DecisionOrigin</code>, <code>DetectionSource::UiaAsync</code>, <code>ConvModeAuthority::TemporarilyUnowned</code>, <code>ColdReason::SessionExpired</code>, <code>ChordKind::CtrlHenkanImeOn</code>+<code>ImeEvent::ChordStarted</code>)</li>
+<li>Removed an event-driven wakeup mechanism that was firing on nothing (<code>win32-async::AtomicWatcher</code> + <code>notify_all</code>, the write-only <code>composition_probe</code> counter) (waiting had already been replaced by polling)</li>
+<li>Simplified an always-false condition (<code>used_eager_path</code>), folded away <code>EffectOrigin</code>/<code>SetOpen.origin</code> that had become always-true, and removed a dead write (<code>GjiState::OnCold.saw_native_f2</code>)</li>
+<li>All of these were confirmed via repository-wide grep and individual verification of the evidence chain as "values that do not exist at runtime / paths that are not taken." No behavior change</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>MS-IME cold start — Fixed leading-character literalization right after IME ON (BUG-13, "を"→"wお")</strong><ul>
+<li><code>MsImeStrategy</code> assumed "MS-IME is always warm" and had no cold-start protection, so sends within ~130-300ms (measured) right after an IME OFF→ON transition literalized the leading VK</li>
+<li>Introduced a confirm-then-transmit of the same type as the GJI probe rather than a fixed wait: when <code>ImeModeFsm</code> has not confirmed NATIVE, romaji is deferred to <code>MsImeReadyCoro</code>, and it is sent the moment the NATIVE bit is confirmed via <code>IMC_GETCONVERSIONMODE</code> polling (10ms interval)</li>
+<li><code>MS_IME_READY_CONFIRM_MS</code> (400ms) is a safety valve only (in environments where IMC cannot be read, it forces the send + a give-up latch to prevent every keypress from becoming a probe)</li>
+<li>See docs/known-bugs.md BUG-13</li>
+</ul>
+</li>
+</ul>
+<h3>Added</h3>
+<ul>
+<li><strong>Detect conflicting MS-IME key assignments and guide the user to disable them</strong><ul>
+<li>When MS-IME's "Muhenkan key = IME-off" / "Henkan key = IME-on" assignments are enabled, a solo tap of Muhenkan/Henkan that awase passes through flips the IME state on the OS side only, diverging from belief (real machine 2026-07-06: a Muhenkan tap 92ms after IME ON produced "IME OFF, Engine ON," turning thumb-shift input into raw romaji)</li>
+<li>On the first <code>WM_IME_KIND_CHANGED</code> where the active IME is confirmed to be MS-IME, it reads <code>IsKeyAssignmentEnabled</code> / <code>KeyAssignmentMuhenkan</code> / <code>KeyAssignmentHenkan</code> under <code>HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME</code>, and on a conflict shows a warning popup. "Yes" directly opens <code>ms-settings:regionlanguage-jpnime</code> (the Microsoft IME settings page)</li>
+<li>The check itself is skipped while GJI is in use. The registry is read-only (no automatic rewriting/disabling is performed)</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Removed settings that had lost their meaning</strong><ul>
+<li><code>keyboard_model</code>: layout parsing was fixed to JIS and it had never once been wired up (the settings screen's jis/us selection had no effect)</li>
+<li><code>output_mode</code>: already replaced by per-app auto-injection method selection (InjectionMode); it was a write-only dead setting</li>
+<li><code>hook_mode</code>: consolidated onto Relay (Filter was a legacy path untested since the arrival of the relay-family features, so it was removed implementation and all)</li>
+<li>Leaving these keys in an old config.toml is harmless (they are ignored). Also deleted the pre-separation old built-in settings GUI (gui/main.rs, an orphan file)</li>
+<li><code>confirm_mode</code> survives as a live setting (still defaults to wait). The n-gram-family detailed settings are wired so the UI enables them only when the "n-gram prediction" mode is selected</li>
+</ul>
+</li>
+<li><strong>Added UI for per-app overrides and the emergency-escape key to the settings screen</strong><ul>
+<li>New "Per-app" tab: <code>app_overrides</code> (force_text / force_bypass / force_vk / force_tsf) and <code>post_bypass</code> (pass-through of tmux prefixes etc.) can now be edited from the GUI</li>
+<li>Key settings tab: added <code>engine_off_solo_triple</code> (solo triple-tap to turn the engine OFF, for emergency escape when Ctrl is stuck)</li>
+</ul>
+</li>
+<li><strong>Temporarily hid the "Per-app" and "Preview" tabs from the side panel</strong><ul>
+<li>"Per-app" is an advanced feature, so its GUI-ification was deferred, leaving it to direct editing of <code>config.toml</code></li>
+<li>"Preview" (layout preview) is temporarily hidden because its implementation is not solid yet (future work)</li>
+<li>Both implementations themselves remain, and <code>config.toml</code>'s <code>app_overrides</code> / <code>post_bypass</code> / layout settings are valid as before</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.5] - 2026-07-06</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue where the settings screen became unusable across DPI transitions on multiple displays</strong> (<a href="https://github.com/cuzic/awase/commit/a7d3e53">a7d3e53</a>, <a href="https://github.com/cuzic/awase/commit/7cb1625">7cb1625</a>, <a href="https://github.com/cuzic/awase/commit/7207413">7207413</a>)<ul>
+<li>Moving to a display with a different DPI scale caused the window not to fit on the destination monitor, pushing the Apply/Cancel buttons off-screen</li>
+<li>Auto-clamp to the monitor size + moved the buttons to an always-visible bottom panel + set a minimum window size</li>
+<li>Narrow widths are handled by reflow (reduced-scale keyboard diagram, wrapping of keymap rows), and a scrollbar is shown only when it still doesn't fit. Increased the default width to 580px (previously the right edge of the preview was cut off)</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.4] - 2026-07-06</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added F13-F24 to the thumb-key choices</strong> (<a href="https://github.com/cuzic/awase/commit/8951418">8951418</a>)<ul>
+<li>For users who assign F13-F24 to thumb positions on a programmable keyboard (QMK/ZMK etc.)</li>
+<li>Also added parsing of VK_F13–VK_F24 to <code>VkCode::from_name</code></li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.3] - 2026-07-06</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue where the Engine always went OFF about 500ms after focusing Edge/Chrome (BUG-07)</strong> (<a href="https://github.com/cuzic/awase/commit/0d67f20">0d67f20</a>)<ul>
+<li>The TsfGate's bypass-commit handling was injecting a false <code>write_focus_probe(false)</code> observation on every refresh without running a probe (the false premise that "non-TSF windows have no Japanese IME," a revert of ce45b82)</li>
+<li>In Imm32Unavailable, which has no real observation path, the false Low false dominated belief and was uncorrectable. The architecture_guard pins the call sites of <code>write_focus_probe</code> to the real probe path</li>
+</ul>
+</li>
+<li><strong>Fixed an issue where messages originating from worker threads did not reach the main thread (BUG-09)</strong> (<a href="https://github.com/cuzic/awase/commit/69f271d">69f271d</a>)<ul>
+<li><code>post_to_main_thread</code>'s <code>PostMessageW(NULL)</code> is "a post to the calling thread itself," so <code>WM_IME_KIND_CHANGED</code> from gji-io-monitor was being lost → even in an MS-IME environment the warmup strategy stayed as the default GjiFsm and wandered (a split-brain where the detection layer is correct but only the output layer is broken)</li>
+<li>Changed to <code>PostThreadMessageW(engine_thread_id())</code> + an IME-kind pull sync at message-loop start. Confirmed on real hardware a switch to MsImeStrategy 3ms after MicrosoftIme detection</li>
+</ul>
+</li>
+<li><strong>Fixed an issue where pressing a physical hiragana key did not turn the IME ON in MS-IME (BUG-10)</strong> (<a href="https://github.com/cuzic/awase/commit/9d5040b">9d5040b</a>)<ul>
+<li>The unconditional Suppress of the physical F2 (VK_DBE_HIRAGANA) in TSF mode was paired with the GJI strategy's "F2 substitute send" contract, but in MsImeStrategy no substitute was sent, making it eat-and-run (Engine ON but real IME OFF divergence)</li>
+<li>Limited the Suppress to the GJI strategy (<code>f2_warmup_owned</code>), passing the physical key through for MS-IME</li>
+</ul>
+</li>
+<li><strong>Defense against JIS-kana input caused by a kana-lock flip from synthetic VK_KANA (BUG-08)</strong> (<a href="https://github.com/cuzic/awase/commit/b38d67f">b38d67f</a>)<ul>
+<li>A synthetic VK_KANA pair at an interval impossible for a physical press (135µs) was passed through, flipping GJI from romaji to JIS-kana input</li>
+<li>Swallow <code>LLKHF_INJECTED</code>-tagged VK_KANA in the hook, and added diagnostic logging on all VK_KANA arrivals to identify the injection source</li>
+</ul>
+</li>
+</ul>
+<h3>Reverted / Disabled</h3>
+<ul>
+<li><strong>Disabled the application of UIA asynchronous focus classification (BUG-11/BUG-12)</strong> (<a href="https://github.com/cuzic/awase/commit/d941721">d941721</a>, <a href="https://github.com/cuzic/awase/commit/f88e89b">f88e89b</a>)<ul>
+<li>The delivery fix for BUG-09 exposed two-stage real harm in a receive handler that ran for the first time ever (cache-key mix-up → Edge permanently NonText; even after fixing, a recurrence from the structural mismatch between (pid,class) cache granularity and the browser's within-window element granularity)</li>
+<li>Changed the handler to log-only, deliberately reverting to the proven behavior from before the delivery fix. Sync classification (known classes, WS_EX_NOIME, MSAA) remains as before</li>
+</ul>
+</li>
+<li><strong>Withdrew the firing of JIS-kana auto-restore (restore_roman) under TsfNative</strong> (<a href="https://github.com/cuzic/awase/commit/92fddc8">92fddc8</a>, <a href="https://github.com/cuzic/awase/commit/f88e89b">f88e89b</a>)<ul>
+<li>Under MS-IME × TsfNative, conv's ROMAN=0 is a false positive, and the restore write bounced conv back and forth between 0x19⇄0x09, inducing spurious Engine/IME ON during direct input</li>
+<li>Changed to a spec that fires only in the <code>is_roman_reliable=true</code> context (effectively disabled on the TsfNative idle path). See docs/experiments.md entry 03 for the background</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.2] - 2026-07-05</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue in LINE etc. where subsequent input characters were lost while the drain queue was being processed</strong> (<a href="https://github.com/cuzic/awase/commit/233b6e3">233b6e3</a>)<ul>
+<li>If a new Unicode character arrived while <code>UnicodeColdWarmupFsm</code> was in flight, the FSM was overwritten and <code>deferred_chars</code> was lost</li>
+<li>Added <code>push_deferred_unicode_chars</code> to <code>TickableFsm</code> so that an in-flight FSM can be appended to, avoiding the overwrite</li>
+</ul>
+</li>
+<li><strong>Fixed an issue where GJI warmup (VK_A+BS) misfired right after startup in an MS-IME environment</strong> (<a href="https://github.com/cuzic/awase/commit/b694ffc">b694ffc</a>)<ul>
+<li>The gji_monitor thread did not send <code>WM_IME_KIND_CHANGED</code> at startup, delaying the switch to <code>MsImeStrategy</code></li>
+<li>After the initial IME-kind detection, it now unconditionally posts <code>WM_IME_KIND_CHANGED</code>, applying the correct warmup strategy from right after startup</li>
+</ul>
+</li>
+</ul>
+<h3>Refactoring</h3>
+<ul>
+<li><strong>Extracted the unicode-cold-warmup logic into helper methods</strong> (<a href="https://github.com/cuzic/awase/commit/60a0b79">60a0b79</a>)<ul>
+<li>Added <code>start_unicode_cold_warmup</code> / <code>flush_unicode_cold_deferred_chars</code> to <code>WindowsPlatform</code>, consolidating duplicate code between <code>send_keys</code> and <code>dispatch_gji_response</code></li>
+</ul>
+</li>
+<li><strong>Reduced deep nesting and duplication via method extraction</strong> (<a href="https://github.com/cuzic/awase/commit/b0cd4e9">b0cd4e9</a>, <a href="https://github.com/cuzic/awase/commit/c4900a3">c4900a3</a>, <a href="https://github.com/cuzic/awase/commit/f5023b4">f5023b4</a>)<ul>
+<li>Consolidated duplicate blocks in <code>probe_io.rs</code> with <code>fmt_conv()</code> / <code>store_gji_warmup_if_probing()</code></li>
+<li>Turned a 2-line idle calculation into a function with <code>observer::gji_idle_ms()</code> (removed 6 sites)</li>
+<li>Turned the 4-line <code>gji_on_event + dispatch_gji_response</code> pattern into 1 line with <code>dispatch_gji_event()</code> (5 methods)</li>
+<li>Turned the 3-line IME OFF→ON notification pattern into 1 line with <code>Output::on_f22_f21_sent()</code> (2 sites)</li>
+<li>Turned VK-run formatting into a function with <code>KeyInjector::format_vk_run()</code> (shared by the 3 <code>send_vk_runs*</code> methods)</li>
+<li>Unified 7 raw <code>SendInput</code> sites onto the existing <code>win32::send_input_safe()</code> and removed the <code>unsafe</code> blocks</li>
+</ul>
+</li>
+</ul>
+<h2>[1.8.1] - 2026-07-05</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue where the IME's internal recognition (belief) and the actual OS-side IME state diverged during fast focus transitions such as Alt+Tab</strong> (<a href="https://github.com/cuzic/awase/commit/dd6f208">dd6f208</a>, <a href="https://github.com/cuzic/awase/commit/08ce474">08ce474</a>, <a href="https://github.com/cuzic/awase/commit/11ee689">11ee689</a>, <a href="https://github.com/cuzic/awase/commit/435e2d3">435e2d3</a>)<ul>
+<li>Fixed the GJI force-IME-ON guard to look at "the actually active IME kind" rather than "the survival of the GJI process," resolving double-sending of VK_DBE_HIRAGANA in an MS-IME environment</li>
+<li>Wired a settle barrier (<code>settle_until</code>) right after a focus transition, guarding all call paths of <code>Engine</code>/<code>ImeEffect::SetOpen</code> (keyboard input, focus-change notifications, IME-refresh polling, hotkeys, etc.) in a single sweep at the two sites <code>execute_from_loop</code>/<code>execute_from_hook</code></li>
+<li>Unified onto <code>is_effectively_tsf_native</code> the 5 sites that had misjudged Windows Terminal (<code>CASCADIA_HOSTING_WINDOW_CLASS</code>) as "non-TSF native," overlooking that the classification priority of <code>AppImeProfile::from_class_name</code> never classifies it as <code>TsfNative</code></li>
+</ul>
+</li>
+<li><strong>Fixed an issue where the BrokenAppBootstrap force guard overrode the user's explicit OFF intent</strong> (<a href="https://github.com/cuzic/awase/commit/a06ad69">a06ad69</a>)</li>
+</ul>
+<h2>[1.8.0] - 2026-07-05</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Established an observation-admission layer (ObservationAdmission) via FocusEpoch + ImmLikeTicket</strong> (<a href="https://github.com/cuzic/awase/commit/604cf99">604cf99</a>, <a href="https://github.com/cuzic/awase/commit/569bf0f">569bf0f</a>, <a href="https://github.com/cuzic/awase/commit/67e63ad">67e63ad</a>, <a href="https://github.com/cuzic/awase/commit/1345d95">1345d95</a>) (ADR-077)<ul>
+<li>Manages focus transitions by epoch, structurally rejecting stale observations to fundamentally prevent the misobservation chains of ImmCross apps</li>
+<li>Added shadow-grace suppression to ImmCrossProbe, enforcing epoch matching on all paths</li>
+<li>Added rejection counters and dump-time logging to make the observation-admission situation visible</li>
+</ul>
+</li>
+<li><strong>Changed the settings screen so thumb keys can be selected via a dropdown</strong> (<a href="https://github.com/cuzic/awase/commit/9e1621a">9e1621a</a>)<ul>
+<li>Left/right thumb-key assignments can now be changed directly from a dropdown UI, applying setting changes immediately</li>
+</ul>
+</li>
+<li><strong>MSI/ZIP can now be downloaded directly from the website</strong> (<a href="https://github.com/cuzic/awase/commit/877b1af">877b1af</a>, <a href="https://github.com/cuzic/awase/commit/15c6ff5">15c6ff5</a>, <a href="https://github.com/cuzic/awase/commit/21eadb1">21eadb1</a>)<ul>
+<li>Added links to download the latest GitHub Releases assets directly from awase.cc</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue in ImmCross apps where the engine stopped while still in kana mode after IME ON</strong> (<a href="https://github.com/cuzic/awase/commit/81f6576">81f6576</a>, <a href="https://github.com/cuzic/awase/commit/e4378c6">e4378c6</a>)<ul>
+<li>Suppressed the ObservedKana observation right after IME ON in ImmCross apps, resolving the case where the engine was mistakenly deactivated</li>
+</ul>
+</li>
+<li><strong>Fixed an issue in MS-IME + ImmCross apps where romaji mode was not maintained at IME ON</strong> (<a href="https://github.com/cuzic/awase/commit/91631a0">91631a0</a>, <a href="https://github.com/cuzic/awase/commit/1969cd3">1969cd3</a>, <a href="https://github.com/cuzic/awase/commit/4c02f2e">4c02f2e</a>)<ul>
+<li>Force ROMAN mode before IME ON in MS-IME, and skip forcing romaji when ObservedKana</li>
+</ul>
+</li>
+<li><strong>Unified IME-kind determination from process existence to the CLSID API, supporting dynamic IME switching</strong> (<a href="https://github.com/cuzic/awase/commit/e6456b2">e6456b2</a>, <a href="https://github.com/cuzic/awase/commit/ce252fe">ce252fe</a>)<ul>
+<li>Abolished the GJI-fixed policy and determine the IME kind via the CLSID API at runtime, supporting dynamic switching of GJI/MS-IME</li>
+</ul>
+</li>
+<li><strong>Fixed an issue where a black console window appeared when launching the settings screen</strong> (<a href="https://github.com/cuzic/awase/commit/49d4f31">49d4f31</a>)</li>
+<li><strong>Fixed thumb-key changes from the settings screen to apply immediately</strong> (<a href="https://github.com/cuzic/awase/commit/6cd1178">6cd1178</a>)</li>
+<li><strong>Fixed to not perform immediate drift correction on HwndCache-derived intents</strong> (<a href="https://github.com/cuzic/awase/commit/d418035">d418035</a>)</li>
+<li><strong>Classified XamlExplorerHostIslandWindow as NonText</strong> (<a href="https://github.com/cuzic/awase/commit/a8d9a00">a8d9a00</a>)</li>
+</ul>
+<h3>Refactoring</h3>
+<ul>
+<li><strong>Migrated all ImmCrossProbe to epoch matching and removed shadow grace</strong> (<a href="https://github.com/cuzic/awase/commit/f478ee7">f478ee7</a>)</li>
+<li><strong>Abolished TipDetector's file cache and unified onto an in-process OnceLock only</strong> (<a href="https://github.com/cuzic/awase/commit/9e0ecf0">9e0ecf0</a>)</li>
+</ul>
+<h2>[1.7.1] - 2026-07-02</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue in ImmCross apps like LINE where the engine stopped after switching from GJI alphanumeric to hiragana</strong> (<a href="https://github.com/cuzic/awase/commit/4bcf8b0">4bcf8b0</a>)<ul>
+<li>Because GJI does not set the ROMAN bit even in alphanumeric mode, <code>classify_transition</code> could not detect the return to hiragana, so <code>ObservedEisu</code> lingered and the engine became <code>Inactive(NotRomajiInput)</code></li>
+<li>Added a stale-recovery branch to <code>classify_ime_snapshot</code> that auto-resets to <code>AssumedRomaji</code> the moment conv_mode changes to non-alphanumeric in an ImmCross app</li>
+</ul>
+</li>
+</ul>
+<h3>Refactoring</h3>
+<ul>
+<li><strong>Unified ImmCrossProbe's input_mode updates to go through <code>classify_fetched_snapshot</code></strong> (<a href="https://github.com/cuzic/awase/commit/c2c8b55">c2c8b55</a>)<ul>
+<li>Applied the three-layer separation of Observe → pure decision → belief to the ImmCrossProbe handler, removing inline determination</li>
+</ul>
+</li>
+</ul>
+<h2>[1.7.0] - 2026-07-02</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Auto-detect a state where alphanumeric direct input is happening with the IME left ON (ObservedEisu) and switch to IME OFF (direct input)</strong> (<a href="https://github.com/cuzic/awase/commit/30e6c5f">30e6c5f</a>, <a href="https://github.com/cuzic/awase/commit/1ef82ca">1ef82ca</a>, <a href="https://github.com/cuzic/awase/commit/754a7a4">754a7a4</a>) (ADR-074)<ul>
+<li>Added <code>InputModeState::ObservedEisu</code> to explicitly distinguish "shadow=ON but actually half-width alphanumeric direct input"</li>
+<li>When <code>idle_conv_check</code> detects <code>ObservedEisu</code>, it automatically issues IME OFF + Engine deactivation</li>
+<li>The case where <code>ObservedEisu</code> lingers right after <code>SetOpen(true)</code> is reset to <code>AssumedRomaji</code>, immediately reactivating the Engine</li>
+</ul>
+</li>
+<li><strong>Replaced the tray menu's "Reset internal state" with a process restart</strong> (<a href="https://github.com/cuzic/awase/commit/a720c7a">a720c7a</a>)<ul>
+<li>When the FSM / IME state is broken, the entire process can now be restarted with mouse operations alone to return to a completely clean state</li>
+<li>Positioned as the only reliable means of resetting runtime-determined state, such as the in-process fixing of the GJI kind determination (<code>active_ime_kind</code>) (ADR-073)</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Extended warmup-send VKs to support Charset (hiragana / katakana / JIS-kana)</strong> (<a href="https://github.com/cuzic/awase/commit/536d93a">536d93a</a>)<ul>
+<li>Consolidated the TSF warmup send when GJI is inactive (e.g. when MS-IME is in use) into a single decision point, eliminating skip omissions</li>
+</ul>
+</li>
+<li><strong>Introduced a single gate for conv_mode changes via <code>ConvModePolicy</code></strong> (<a href="https://github.com/cuzic/awase/commit/2826248">2826248</a>, <a href="https://github.com/cuzic/awase/commit/cc9f745">cc9f745</a>, <a href="https://github.com/cuzic/awase/commit/af3b776">af3b776</a>) (ADR-064)<ul>
+<li>Added a <code>conv_mutation_allowed</code> gate to <code>Output</code>, making writes to conv_mode verifiable in one place</li>
+<li>Replaced <code>is_romaji_mode: bool</code> with the <code>ConvModePolicy</code> type to clarify the meaning</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a group of bugs where Ctrl+Henkan / Ctrl+Muhenkan did not work correctly in MS-IME</strong> (<a href="https://github.com/cuzic/awase/commit/f527a18">f527a18</a>, <a href="https://github.com/cuzic/awase/commit/baff902">baff902</a>, <a href="https://github.com/cuzic/awase/commit/301e911">301e911</a>, <a href="https://github.com/cuzic/awase/commit/48a667a">48a667a</a>)<ul>
+<li>Fixed a bug where Ctrl+Henkan did not make MS-IME hiragana / did not return from half-width alphanumeric</li>
+<li>Unified <code>MsImeDirectStrategy</code>'s DirectInput switch onto the idempotent <code>VK_IME_OFF</code></li>
+<li>Once GJI is confirmed, forbid mistaken demotion to MS-IME (in-process fixing, ADR-073)</li>
+</ul>
+</li>
+<li><strong>Fixed IME misrecognition / keystroke loss on ImmCrossProbe / GJI+TsfNative focus</strong> (<a href="https://github.com/cuzic/awase/commit/496926c">496926c</a>, <a href="https://github.com/cuzic/awase/commit/489cdf1">489cdf1</a>, <a href="https://github.com/cuzic/awase/commit/15ac8d8">15ac8d8</a>, <a href="https://github.com/cuzic/awase/commit/500dab6">500dab6</a>) (ADR-071, ADR-075)<ul>
+<li>Fixed a bug where <code>ImmCrossProbe</code> misrecognized the IME state on Qt / GJI focus</li>
+<li>Changed the GJI+TsfNative IME OFF send from a <code>VK_KANJI</code> toggle to the idempotent <code>VK_IME_OFF</code></li>
+<li>Fixed a bug where a subsequent key was lost while a TSF cold-start probe was running, turning "にゅうりょく" into "にうりょく" (moved ownership of the deferred VK queue from the probe machine to <code>TsfWarmupCoordinator</code>)</li>
+</ul>
+</li>
+<li><strong>Fixed an IME/Engine desync caused by a re-sync omission of <code>conv_mode_authority</code></strong> (<a href="https://github.com/cuzic/awase/commit/e2199e7">e2199e7</a>, <a href="https://github.com/cuzic/awase/commit/c887da8">c887da8</a>, <a href="https://github.com/cuzic/awase/commit/1f96598">1f96598</a>) (ADR-072)<ul>
+<li>Re-sync <code>conv_mode_authority</code> on every IME apply completion, resolving the issue where a stale authority value lingered right after a panic reset or on the second Ctrl+Henkan</li>
+<li>Made the <code>already_matched</code> determination consistent across all IME kinds, and fixed it to not mistakenly mix in <code>candidate_was_seen</code></li>
+</ul>
+</li>
+<li><strong>Fixed a group of IME/NICOLA-engine state-sync bugs in katakana / JIS-kana mode</strong> (<a href="https://github.com/cuzic/awase/commit/66bfc33">66bfc33</a>, <a href="https://github.com/cuzic/awase/commit/58fa2ac">58fa2ac</a>, <a href="https://github.com/cuzic/awase/commit/e8b09de">e8b09de</a>, <a href="https://github.com/cuzic/awase/commit/927f2a2">927f2a2</a>, <a href="https://github.com/cuzic/awase/commit/0f652ae">0f652ae</a>)<ul>
+<li>Fixed a bug where the NICOLA engine stayed OFF after switching to katakana mode / was returned to hiragana after selecting half-width katakana in the tray</li>
+<li>Correctly reflect JIS-kana / katakana mode changes made via the taskbar into belief</li>
+<li>Suppressed the mistaken downgrade of HanKata → ZenKata</li>
+</ul>
+</li>
+<li><strong>Fixed Engine state-sync omissions / misdetection caused by idle-conv-check</strong> (<a href="https://github.com/cuzic/awase/commit/0f75b5b">0f75b5b</a>, <a href="https://github.com/cuzic/awase/commit/ea3da7f">ea3da7f</a>, <a href="https://github.com/cuzic/awase/commit/ed862bb">ed862bb</a>, <a href="https://github.com/cuzic/awase/commit/a325df7">a325df7</a>, <a href="https://github.com/cuzic/awase/commit/29bc9c4">29bc9c4</a>)<ul>
+<li>Fixed a bug where the Engine did not recover on a katakana+shadow=OFF or HanAlpha→Hiragana transition</li>
+<li>Fixed Chrome IME-state misrecognition after ALT+TAB, and a tray desync (<code>user_enabled=true</code> but <code>ime_on=false</code>)</li>
+</ul>
+</li>
+<li><strong>Consolidated GJI cold-start / partial-literal countermeasures into SacrificialWarmup (VK_A+BS)</strong> (<a href="https://github.com/cuzic/awase/commit/6c1732d">6c1732d</a>, <a href="https://github.com/cuzic/awase/commit/22c3905">22c3905</a>)<ul>
+<li>Replaced with a warmup based on <code>VK_IME_OFF→ON</code> + <code>write_bytes</code> detection, ensuring compatibility with vim etc.</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where the engine got stuck on the first keystroke after waking the PC from sleep</strong> (<a href="https://github.com/cuzic/awase/commit/c4df99b">c4df99b</a>) (ADR-076)<ul>
+<li>Fixed a bug where, right after waking from sleep, <code>read_ime_state_fast</code> temporarily returned <code>is_japanese_ime=false</code> and the engine deactivated with <code>NotJapaneseIme</code></li>
+<li>Compute the grace-period determination before <code>set_is_japanese_ime</code> inside <code>apply_focus_probe</code>, suppressing downgrades to <code>false</code> while shadow grace is active (updates to <code>true</code> are always allowed)</li>
+<li>Made the grace protection of <code>imc_open</code> and <code>is_japanese_ime</code> symmetric</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where a named-mutex race caused startup to fail on process restart</strong> (<a href="https://github.com/cuzic/awase/commit/bb84696">bb84696</a>)<ul>
+<li>A bug in the "process restart" tray feature added in this version itself</li>
+</ul>
+</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><strong>Completed all 21 tasks of the cohesion refactor, H-1 through M-5</strong>: resolved circular dependencies among type definitions, removed direct OS-global calls from the state layer, split <code>PlatformState</code> into <code>FocusStore</code>/<code>GateStore</code>/<code>KeymapStore</code> and <code>Runtime</code> into <code>FocusTracker</code>/<code>RefreshScheduler</code>/<code>ImeCoordinator</code> (ADR-069) (<a href="https://github.com/cuzic/awase/commit/a7a1e23">a7a1e23</a>, <a href="https://github.com/cuzic/awase/commit/811036a">811036a</a>, <a href="https://github.com/cuzic/awase/commit/8aad49a">8aad49a</a>)</li>
+<li><strong>Renamed <code>ApplyBelief</code> → <code>OpenBelief</code> and consolidated into the <code>reduce_open_belief</code> pure function</strong> (concentrating the IME-apply decision logic in one place and making it easy to unit-test) (ADR-070) (<a href="https://github.com/cuzic/awase/commit/1e09e90">1e09e90</a>, <a href="https://github.com/cuzic/awase/commit/8c34984">8c34984</a>)</li>
+<li><strong>Introduced a <code>RuntimeOutbox</code>/<code>RuntimeRequest</code> event bus and removed the <code>Output</code> → <code>Runtime</code> reverse dependency (<code>with_app()</code>)</strong> (<a href="https://github.com/cuzic/awase/commit/4782e3e">4782e3e</a>, <a href="https://github.com/cuzic/awase/commit/7568180">7568180</a>)</li>
+<li><strong>Extracted <code>TsfWarmupCoordinator</code> / <code>KeyInjector</code> / <code>ImeApplyPlanner</code> from the bloated <code>Output</code></strong> (<a href="https://github.com/cuzic/awase/commit/03ebfc9">03ebfc9</a>, <a href="https://github.com/cuzic/awase/commit/e1993bf">e1993bf</a>, <a href="https://github.com/cuzic/awase/commit/080e96d">080e96d</a>)</li>
+<li><strong>Moved <code>ConvMode</code>/<code>Charset</code> determination to the <code>nicola</code> crate and made it pure functions, relaxed the <code>#[cfg(windows)]</code> gate to per-module granularity, and added Linux unit tests</strong> (ADR-065) (<a href="https://github.com/cuzic/awase/commit/b1ab86f">b1ab86f</a>, <a href="https://github.com/cuzic/awase/commit/5ee724b">5ee724b</a>, <a href="https://github.com/cuzic/awase/commit/b27a218">b27a218</a>)</li>
+</ul>
+<h2>[1.6.0] - 2026-06-29</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Full Microsoft IME support</strong> (<a href="https://github.com/cuzic/awase/commit/45edf19">45edf19</a>, <a href="https://github.com/cuzic/awase/commit/56cd9a5">56cd9a5</a>)<ul>
+<li>Idempotent ON/OFF control via <code>MsImeDirectStrategy</code> (<code>VK_DBE_HIRAGANA</code> / <code>VK_DBE_ALPHANUMERIC</code>) (ADR-063)</li>
+<li>Switch between GJI / MS-IME at runtime via <code>WM_IME_KIND_CHANGED</code></li>
+</ul>
+</li>
+<li><strong>Dynamic GJI CLSID discovery via TSF EnumProfiles</strong> (<a href="https://github.com/cuzic/awase/commit/55233f0">55233f0</a>, <a href="https://github.com/cuzic/awase/commit/005f0a6">005f0a6</a>)<ul>
+<li>Migrated from process-name dependence to CLSID-based IME-kind determination</li>
+<li>Persist the CLSID to <code>cache.toml</code> to reduce the cold-start cost after a restart</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Migrated GJI IME control to VK_IME_ON/OFF (0x16/0x1A)</strong> — no config1.db patch needed (<a href="https://github.com/cuzic/awase/commit/b271aee">b271aee</a>, <a href="https://github.com/cuzic/awase/commit/8c39b8e">8c39b8e</a>)<ul>
+<li>Completely removed <code>gji.rs</code> (config1.db patching, process management) (-692 lines)</li>
+<li>Removed "GJI Setup / Teardown" from the tray menu; no first-install work required</li>
+<li>Confirmed VK_IME_ON/OFF behavior on real hardware in Chrome / WezTerm / Windows Terminal (2026-06-28)</li>
+<li>Removed the <code>gji_keybinds_ok</code> flag and the Observer's config1.db monitoring loop</li>
+</ul>
+</li>
+<li><strong>Unified IME-kind determination onto a CLSID basis</strong> (<a href="https://github.com/cuzic/awase/commit/2d5cfe9">2d5cfe9</a>)<ul>
+<li>Removed the <code>gji_write_idle_ms</code> heuristic to improve determination accuracy</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a bug in WezTerm where the first character after Enter (e.g. "な") suddenly disappeared</strong> (<a href="https://github.com/cuzic/awase/commit/3ffbe66">3ffbe66</a>)<ul>
+<li>Promote <code>nc_fired</code> in ReinjectConfirmKey + TSF mode to suppress LiteralDetect misdetection</li>
+</ul>
+</li>
+<li><strong>Fixed a BS burst caused by LiteralDetect misfiring while MS-IME is active</strong> (<a href="https://github.com/cuzic/awase/commit/699ab5f">699ab5f</a>)</li>
+<li><strong>Panic reset now returns to romaji-hiragana even from katakana / JIS-kana states</strong> (<a href="https://github.com/cuzic/awase/commit/a88bb36">a88bb36</a>, <a href="https://github.com/cuzic/awase/commit/6ee20bf">6ee20bf</a>)<ul>
+<li>Force <code>NATIVE | FULLSHAPE | ROMAN</code> via <code>IMC_SETCONVERSIONMODE</code> and drop <code>KATAKANA</code></li>
+<li>Return to romaji-hiragana even from half-width katakana (including JIS-kana input mode) / full-width katakana</li>
+</ul>
+</li>
+</ul>
+<h2>[1.5.0] - 2026-06-27</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added "Reset internal state" to the tray menu</strong> (<a href="https://github.com/cuzic/awase/commit/1591593">1591593</a>)<ul>
+<li>When the IME state or FSM is broken, the internal state can be initialized with mouse operations alone</li>
+<li>Can be reliably reset even in situations where the keyboard is not working properly (ADR-052)</li>
+</ul>
+</li>
+<li><strong>Introduced StepCoro — a timer-driven coroutine foundation</strong> (<a href="https://github.com/cuzic/awase/commit/e548e63">e548e63</a>)<ul>
+<li>Replaced <code>GjiWarmupFsm</code> / <code>LiteralDetectFsm</code> / <code>SacrificialWarmupFsm</code> / <code>TsfProbeMachine</code> with StepCoro (ADR-053)</li>
+<li>Intermediate variables of FSM states can be written as local variables of the coroutine, greatly reducing code volume</li>
+<li>Promoted to the <code>timed_fsm::coro</code> module (<a href="https://github.com/cuzic/awase/commit/118b3cf">118b3cf</a>)</li>
+</ul>
+</li>
+<li><strong>Persist InjectionMode in cache.toml</strong> (<a href="https://github.com/cuzic/awase/commit/c6fed60">c6fed60</a>)<ul>
+<li>Added <code>InjectionModeStore</code> to remember the injection mode across sessions</li>
+<li>Reduce the cold-start cost after a restart (ADR-058)</li>
+<li>Merged <code>imm_cache.toml</code> into <code>cache.toml</code> (<a href="https://github.com/cuzic/awase/commit/10918c2">10918c2</a>)</li>
+</ul>
+</li>
+<li><strong>InjectionMode post-hoc promotion: auto-promote on GJI write_bytes observation</strong> (<a href="https://github.com/cuzic/awase/commit/68c24e1">68c24e1</a>)<ul>
+<li>Judge via WriteTransferCount whether the keys sent in Unicode mode right after focus were processed by GJI</li>
+<li>If GJI is working, auto-promote injection_mode to Tsf (ADR-062)</li>
+</ul>
+</li>
+<li><strong>Unicode long-cold support: UnicodeColdWarmupFsm</strong> (<a href="https://github.com/cuzic/awase/commit/70d3fed">70d3fed</a>)<ul>
+<li>After a long idle in Unicode mode, send a VK_IME_ON poke and confirm GJI has started up before sending characters</li>
+<li>Hold off character sending until GJI responds to prevent partial literals</li>
+</ul>
+</li>
+<li><strong>Added a startup check for competing software</strong> (<a href="https://github.com/cuzic/awase/commit/9875c2c">9875c2c</a>)<ul>
+<li>If a NICOLA-capable IME such as Yamabuki is running at the same time, warn via a balloon notification (ADR-060)</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Migrated auto-start from schtasks to the HKCU\Run registry</strong> (<a href="https://github.com/cuzic/awase/commit/0d09d80">0d09d80</a>)<ul>
+<li>Starts immediately at logon (no 30-second delay needed), and can be registered without administrator privileges (ADR-059)</li>
+<li>Old schtasks tasks are automatically deleted at startup (<a href="https://github.com/cuzic/awase/commit/584897a">584897a</a>)</li>
+</ul>
+</li>
+<li><strong>Added Windows Terminal to force_tsf</strong> (<a href="https://github.com/cuzic/awase/commit/4e49ee1">4e49ee1</a>)<ul>
+<li>Reliably enable GJI composition, improving conversion accuracy in Windows Terminal</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Skip IME-key injection while the Win key is held</strong> (<a href="https://github.com/cuzic/awase/commit/6469f51">6469f51</a>)<ul>
+<li>Fixed the malfunction where Win+A opened the Start menu (ADR-061)</li>
+</ul>
+</li>
+<li><strong>Prevent mistaken IME-key sends on virtual-desktop switch</strong> (<a href="https://github.com/cuzic/awase/commit/a97173a">a97173a</a>)<ul>
+<li>Fixed a focus-guard omission where IME keys were mistakenly sent to LINE etc. right after switching virtual desktops</li>
+</ul>
+</li>
+<li><strong>Remove partial-literal remnants with BS</strong> (<a href="https://github.com/cuzic/awase/commit/f3ff84d">f3ff84d</a>)<ul>
+<li>When TSF literal recovery gives up, delete the literal characters left in the terminal with BS</li>
+</ul>
+</li>
+<li><strong>Turned the resend after partial-literal detection into SacrificialWarmup</strong> (<a href="https://github.com/cuzic/awase/commit/62ad28b">62ad28b</a>)<ul>
+<li>Unified the resend after partial-literal detection onto a safe warmup flow</li>
+</ul>
+</li>
+<li><strong>Added IPC settle waiting after an early HIDE in SacrificialWarmup Phase2</strong> (<a href="https://github.com/cuzic/awase/commit/88d562f">88d562f</a>)<ul>
+<li>After the candidate window is HIDEd early, wait until the GJI IPC completes before releasing the next input</li>
+</ul>
+</li>
+<li><strong>Changed Unicode long-cold from a lone VK_IME_ON to a VK_IME_ON+VK_A+BS sacrificial key</strong> (<a href="https://github.com/cuzic/awase/commit/6cb175f">6cb175f</a>)<ul>
+<li>Reliably increase GJI's WriteTransferCount to improve cold-determination accuracy</li>
+</ul>
+</li>
+<li><strong>Record the shadow value as a surrogate observation under TsfNative/Imm32Unavailable</strong> (<a href="https://github.com/cuzic/awase/commit/1e77002">1e77002</a>)<ul>
+<li>Even in windows where IMM32 is unavailable, save shadow_on as an observed value to stabilize state estimation</li>
+</ul>
+</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><strong>Bulk-replaced <code>#[allow]</code> with <code>#[expect]</code></strong> (all crates) (<a href="https://github.com/cuzic/awase/commit/c2b0685">c2b0685</a>)<ul>
+<li>Adapts to the strengthened lints of Rust 2024 edition; the compiler warns once the suppression reason is no longer needed</li>
+</ul>
+</li>
+<li><strong>Made <code>unsafe extern</code> explicit</strong> (Rust 2024 lint compliance) (<a href="https://github.com/cuzic/awase/commit/f645d3c">f645d3c</a>)</li>
+<li><strong>Migrated awase-settings to edition 2024</strong> (<a href="https://github.com/cuzic/awase/commit/ee2487c">ee2487c</a>)</li>
+<li><strong>Removed GjiWarmupFsm / StartLiteralDetect</strong> (dead-code removal after the StepCoro migration) (<a href="https://github.com/cuzic/awase/commit/f01d401">f01d401</a>)</li>
+<li><strong>Raised MSRV to 1.85</strong> (<code>timed_fsm::coro</code> uses <code>async</code>/<code>await</code> syntax)</li>
+</ul>
+<hr />
+<h2>[1.4.0] - 2026-06-25</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added the [[post_bypass]] setting</strong>: a setting to NICOLA-skip the keystroke immediately following a command key, such as tmux (<code>Ctrl+B</code>) or screen (<a href="https://github.com/cuzic/awase/commit/a67ebb5">a67ebb5</a>)<ul>
+<li>The target key and wait time can be specified in the <code>[[post_bypass]]</code> section</li>
+<li>Added tmux-oriented comments and a config example to the TOML sample (<a href="https://github.com/cuzic/awase/commit/49b8343">49b8343</a>)</li>
+</ul>
+</li>
+<li><strong>Introduced SacrificialWarmup</strong>: resolve the partial literalization of Chrome cold-start and WezTerm long-idle with a self-sacrificing VK_A+BS batch (<a href="https://github.com/cuzic/awase/commit/28fc97a">28fc97a</a>, <a href="https://github.com/cuzic/awase/commit/16a288d">16a288d</a>)<ul>
+<li>Pre-correct Chrome's "kおのなかで"-type partial literal in the warmup phase</li>
+<li>Resolve the case where WezTerm enters an Engine-ON/IME-OFF state after a long idle</li>
+<li>Limited to long-cold + TSF mode only to prevent performance degradation in normal times (<a href="https://github.com/cuzic/awase/commit/d02ec44">d02ec44</a>)</li>
+</ul>
+</li>
+<li><strong>Implemented ImeModeFsm + ChromeGjiReinitFsm</strong>: added an FSM that, after sending F22→F21, confirms GJI has settled into Hiragana mode before allowing the next input (<a href="https://github.com/cuzic/awase/commit/2c8d647">2c8d647</a>)</li>
+<li><strong>Improved the Chrome LiteralDetector to a WriteTransferCount basis</strong>: judge composition completion by the number of bytes written to the pipe, suppressing mistaken BS (<a href="https://github.com/cuzic/awase/commit/c7ef500">c7ef500</a>)</li>
+<li><strong>Update belief on all F21/F22 send paths + suppress FocusChange right after a VK</strong>: raise the reliability of the IME-mode state and reduce unnecessary re-probes (<a href="https://github.com/cuzic/awase/commit/1a0e54e">1a0e54e</a>)</li>
+</ul>
+<h3>Fixed</h3>
+<p><strong>Complete fix of the Ctrl+J problem</strong></p>
+<ul>
+<li><strong>Fixed an issue where Ctrl+J did not reach tmux while the IME was ON</strong> (<a href="https://github.com/cuzic/awase/commit/32a037d">32a037d</a>)<ul>
+<li>TsfGate was mistakenly sending Ctrl+J during IME ON to the GJI warmup path</li>
+</ul>
+</li>
+<li><strong>Re-fixed the issue where Ctrl+J was hijacked by GJI</strong> (<a href="https://github.com/cuzic/awase/commit/ee0b1fd">ee0b1fd</a>)</li>
+<li><strong>Fixed an issue where a modifier's early release after a Ctrl bypass mistakenly suppressed J↑</strong> (<a href="https://github.com/cuzic/awase/commit/bd51ea1">bd51ea1</a>)</li>
+<li><strong>Fixed to NICOLA-skip the next key right after a Ctrl+key bypass</strong> (<a href="https://github.com/cuzic/awase/commit/ddb6b58">ddb6b58</a>)<ul>
+<li>Eliminated the case where the key right after a bypass was mistakenly judged as a thumb-shift chord</li>
+</ul>
+</li>
+</ul>
+<p><strong>Stabilization of SacrificialWarmup</strong></p>
+<ul>
+<li><strong>Fixed a bug where it terminated immediately at gate=Bypass</strong> (<a href="https://github.com/cuzic/awase/commit/0426fb6">0426fb6</a>)</li>
+<li><strong>Send VK_A+BS in the same batch to prevent a character flash</strong> (<a href="https://github.com/cuzic/awase/commit/af906b1">af906b1</a>)</li>
+<li><strong>Take the write_bytes baseline before sending VK_A and adjusted the threshold to 350B</strong> (<a href="https://github.com/cuzic/awase/commit/26bc0fe">26bc0fe</a>)</li>
+<li><strong>Force-reset GJI with F22→F21 on a Chrome cold timeout</strong> (<a href="https://github.com/cuzic/awase/commit/9630acb">9630acb</a>)</li>
+<li><strong>After confirming Chrome is warm, wait for HIDE before resending the real romaji</strong> (<a href="https://github.com/cuzic/awase/commit/2355761">2355761</a>)</li>
+<li><strong>Fixed the IPC race where "おお" disappeared on an early HIDE after a VK_A+BS atomic batch</strong> (<a href="https://github.com/cuzic/awase/commit/123efb1">123efb1</a>)</li>
+<li><strong>Fixed a drain-ordering bug where <code>composition_was_seen</code> became false on the first tick</strong> (<a href="https://github.com/cuzic/awase/commit/e40a2eb">e40a2eb</a>)</li>
+</ul>
+<p><strong>WezTerm</strong></p>
+<ul>
+<li><strong>Fixed the second-character literalization after a WezTerm long-idle with the PendingGjiConfirm state</strong> (<a href="https://github.com/cuzic/awase/commit/7041b20">7041b20</a>)</li>
+<li><strong>Sync injection_mode right after focus, and re-initialize with F22→F21 on Unicode long-cold</strong> (<a href="https://github.com/cuzic/awase/commit/6ecb8e9">6ecb8e9</a>)</li>
+<li><strong>Fixed the HWND cast type to <code>*mut c_void</code></strong> (implicit conversion to <code>isize</code> is UB at the Windows API boundary) (<a href="https://github.com/cuzic/awase/commit/ff1f092">ff1f092</a>)</li>
+</ul>
+<p><strong>GJI FSM</strong></p>
+<ul>
+<li><strong>Dispatch <code>WarmupComplete</code> immediately on <code>StartProbe</code> in Unicode mode</strong> (fix for the OnCold stuck bug) (<a href="https://github.com/cuzic/awase/commit/444e9a6">444e9a6</a>)</li>
+<li><strong>Fixed to maintain the proactive probe on a FocusChange right after ImeOn</strong> (<a href="https://github.com/cuzic/awase/commit/782f10d">782f10d</a>)</li>
+<li><strong>Added a generation guard to FocusChange spawn_local polling</strong> (preventing double application) (<a href="https://github.com/cuzic/awase/commit/90c9962">90c9962</a>)</li>
+</ul>
+<p><strong>Other</strong></p>
+<ul>
+<li>Added a <code>post_bypass</code> field to <code>ValidatedConfig</code> (build-error fix) (<a href="https://github.com/cuzic/awase/commit/089858d">089858d</a>)</li>
+<li>Downgraded the Unknown → real-value IME state transition from a drift WARN to an initial-confirm DEBUG (<a href="https://github.com/cuzic/awase/commit/4347928">4347928</a>)</li>
+<li>Fixed a type mismatch where a <code>u64</code> was being passed to <code>sleep_ms</code> (<a href="https://github.com/cuzic/awase/commit/ddc6be3">ddc6be3</a>)</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><strong>Ported HoldingGate / GateAction to the timed-fsm crate</strong>: consolidate the gate logic in the library layer to improve reusability (<a href="https://github.com/cuzic/awase/commit/ebbc9e4">ebbc9e4</a>)</li>
+<li><strong>Added <code>to_hwnd()</code> to HwndId to consolidate raw casts in one place</strong> (<a href="https://github.com/cuzic/awase/commit/1932948">1932948</a>)</li>
+<li><strong>Reference <code>gji_candidate_visible</code> via env</strong> (removed direct polling) (<a href="https://github.com/cuzic/awase/commit/19f4372">19f4372</a>)</li>
+<li><strong>Removed the unnecessary <code>plan</code> / <code>observations</code> fields from SacrificialResend</strong> (<a href="https://github.com/cuzic/awase/commit/61c4c12">61c4c12</a>)</li>
+</ul>
+<hr />
+<h2>[1.3.0] - 2026-06-23</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed an issue where ALT+TAB could not be pressed consecutively</strong> (<a href="https://github.com/cuzic/awase/commit/d6cb1a4">d6cb1a4</a>)<ul>
+<li>When sending F21/F22 (IME ON/OFF keys) on every focus change, ALT was temporarily released, so the ALT+TAB switcher mistook it as "ALT released = confirm"</li>
+<li>F21/F22 are GJI-only virtual VKs, so they work correctly even when sent while holding ALT</li>
+</ul>
+</li>
+<li><strong>Fixed the "kお" cold-start bug after a GJI long-idle</strong> (<a href="https://github.com/cuzic/awase/commit/e4a6248">e4a6248</a>, <a href="https://github.com/cuzic/awase/commit/c571acf">c571acf</a>)<ul>
+<li>Fixed the case where, after GJI is idle for 8–10 seconds or more, the first keystroke partially literalizes ("こ"→"kお")</li>
+<li>Improved to batch F2 together even on a medium idle (7–10 seconds) when GJI times out unresponsive (<a href="https://github.com/cuzic/awase/commit/2159dca">2159dca</a>)</li>
+</ul>
+</li>
+<li><strong>Fixed partial literals ("kお", "seつぞく")</strong> (<a href="https://github.com/cuzic/awase/commit/5562b6a">5562b6a</a>, <a href="https://github.com/cuzic/awase/commit/d54f5b1">d54f5b1</a>, <a href="https://github.com/cuzic/awase/commit/125d2c1">125d2c1</a>)<ul>
+<li>Set <code>gji_resumed</code> after a GJI I/O response to rescue partial literals</li>
+<li>Enable LiteralDetect in TSF mode as well (preventing the recurrence of "seつぞく")</li>
+<li>Fixed the partial-literal BS count from <code>chars.len()</code> to a fixed 2</li>
+</ul>
+</li>
+<li><strong>Improved the Chrome-path LiteralDetector</strong> (<a href="https://github.com/cuzic/awase/commit/c279fc7">c279fc7</a>)<ul>
+<li>Switched to <code>new_gji_resumed</code> to suppress literal misdetection after a GJI resume</li>
+</ul>
+</li>
+<li><strong>probe-fsm: Fixed F2 double-sending / delay</strong> (<a href="https://github.com/cuzic/awase/commit/d195c43">d195c43</a>, <a href="https://github.com/cuzic/awase/commit/4de228b">4de228b</a>)<ul>
+<li>Suppress F2 double-sending into the TSF batch on the ReWarmup/non-eager path</li>
+<li>Skip fresh F2 + NameChangeWait when GJI is pre-idle to reduce delay</li>
+</ul>
+</li>
+<li><strong>composition-fsm: Fixed to correctly maintain the Long cold state</strong> (<a href="https://github.com/cuzic/awase/commit/c96598f">c96598f</a>)</li>
+</ul>
+<h3>Added</h3>
+<ul>
+<li><strong>Created GjiWarmupFsm</strong>: introduced a GJI-cold-start-warmup-dedicated FSM to make the warm-up logic independent (<a href="https://github.com/cuzic/awase/commit/fcd1b82">fcd1b82</a>, <a href="https://github.com/cuzic/awase/commit/f768944">f768944</a>)</li>
+<li><strong>Created LiteralDetectFsm</strong>: a literal-detection FSM shared by the warm path and GJI post-transmit (<a href="https://github.com/cuzic/awase/commit/8608062">8608062</a>, <a href="https://github.com/cuzic/awase/commit/660ee19">660ee19</a>)</li>
+<li><strong>Created ChromeProbe</strong>: swapped <code>pending_tsf</code> to <code>Box&lt;dyn TickableFsm&gt;</code> and added a Chrome-dedicated probe (<a href="https://github.com/cuzic/awase/commit/51901c0">51901c0</a>)</li>
+<li><strong>Added ColdKind::Medium</strong>: classify GJI idle time into Long / Medium / Short to optimize the warmup strategy (<a href="https://github.com/cuzic/awase/commit/bf3eade">bf3eade</a>)</li>
+<li><strong>Transmit immediately when the candidate is visible in NameChangeWait</strong>: shorten the probe wait time in WezTerm by up to 300ms (<a href="https://github.com/cuzic/awase/commit/25182eb">25182eb</a>)</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><strong>Defined the TickableFsm trait</strong>: <code>TsfProbeMachine</code> / <code>GjiWarmupFsm</code> / <code>LiteralDetectFsm</code> / <code>ChromeProbe</code> implement a common interface (<a href="https://github.com/cuzic/awase/commit/d22e987">d22e987</a>)</li>
+<li><strong>Defined the ImeWarmupStrategy trait</strong>: abstracted so that <code>GjiFsm</code> / <code>MsImeStrategy</code> can be handled through a unified interface (<a href="https://github.com/cuzic/awase/commit/eb8b9d4">eb8b9d4</a>)</li>
+<li><strong>Large-scale GjiFsm refactoring</strong>: separated <code>ProbeStatus</code> into <code>Authorized+Executing</code> and removed 3 Cells, moved <code>OutputActiveGuard</code> to Output (<a href="https://github.com/cuzic/awase/commit/0ca92b2">0ca92b2</a>, <a href="https://github.com/cuzic/awase/commit/65e0a1a">65e0a1a</a>)</li>
+<li><strong>transport refactoring</strong>: extracted <code>PassthroughQueue</code> and consolidated the F2 case into <code>PhysicalKeyDisposition::plan()</code> (<a href="https://github.com/cuzic/awase/commit/3cfc57b">3cfc57b</a>, <a href="https://github.com/cuzic/awase/commit/005ed17">005ed17</a>)</li>
+</ul>
+<hr />
+<h2>[1.2.0] - 2026-06-21</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added GjiFsm</strong>: introduced an FSM that infers GJI's (Google Japanese Input's) internal composition state (<a href="https://github.com/cuzic/awase/commit/b152c7e">b152c7e</a>)<ul>
+<li>Phase 2a: connected GjiFsm to Output and wired FocusChange / ImeOn / ImeOff / WarmupComplete (<a href="https://github.com/cuzic/awase/commit/bb228c2">bb228c2</a>)</li>
+<li>Phase 2b: wired CompositionReset / KeyInput and turned <code>is_composition_warm</code> into an FSM (<a href="https://github.com/cuzic/awase/commit/d49c516">d49c516</a>)</li>
+<li>Phase 3: switched <code>is_composition_warm</code> to the GjiFsm SSOT (<a href="https://github.com/cuzic/awase/commit/2b6d25f">2b6d25f</a>)</li>
+<li>Phase 4: removed the legacy epoch warm tracking and consolidated GjiFsm as the SSOT (<a href="https://github.com/cuzic/awase/commit/588ea32">588ea32</a>)</li>
+</ul>
+</li>
+<li><strong>Enhanced panic logging</strong>: added a hook that records the location and message on a panic to <code>awase.log</code> (<a href="https://github.com/cuzic/awase/commit/de0226a">de0226a</a>)</li>
+<li><strong>Auto-generate the changelog page</strong>: added a GitHub Actions workflow to auto-generate <code>changelog.html</code> from <code>CHANGELOG.md</code> (<a href="https://github.com/cuzic/awase/commit/efc4310">efc4310</a>, <a href="https://github.com/cuzic/awase/commit/6fb7a38">6fb7a38</a>)</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the F2+S race of WezTerm TSF cold start</strong> and the false-positive BS after <code>gji_resumed</code> (<a href="https://github.com/cuzic/awase/commit/b754277">b754277</a>)</li>
+<li><strong>Fixed hiragana injection from IME ON carry-over on a CoreWindow cache miss</strong> (<a href="https://github.com/cuzic/awase/commit/1c5cc91">1c5cc91</a>)</li>
+<li><strong>Fixed a <code>debug_assert</code> panic where <code>StartProbe</code> was overwritten during a NICOLA chord</strong> (<a href="https://github.com/cuzic/awase/commit/a5a9412">a5a9412</a>)</li>
+<li><strong>Chrome: Fixed to force-send the programmatic F2 even when the f2_gji_long_idle flag is enabled</strong> (<a href="https://github.com/cuzic/awase/commit/43dca5a">43dca5a</a>)</li>
+<li><strong>probe: Fixed to reset <code>consecutive_count</code> on SetOpenTrue as well</strong> (<a href="https://github.com/cuzic/awase/commit/cbd1946">cbd1946</a>)</li>
+<li><strong>tray: Explicitly handle <code>WM_CLOSE</code> to prevent an unintended shutdown</strong> (<a href="https://github.com/cuzic/awase/commit/c924eed">c924eed</a>)</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><strong>probe-fsm</strong>: organized the FSM layer boundary by introducing <code>TransmitPlan</code> / <code>ProbeObservations</code> (<a href="https://github.com/cuzic/awase/commit/3c36f21">3c36f21</a>)</li>
+<li><strong>chord management</strong>: fully consolidated into ImeStateHub (Phase 2 complete) (<a href="https://github.com/cuzic/awase/commit/fd17da0">fd17da0</a>)<ul>
+<li>Consolidated chord start/end decisions into the reducer (<a href="https://github.com/cuzic/awase/commit/a7218e0">a7218e0</a>)</li>
+<li>Promoted <code>pending_warmup_on_keyup</code> to CompositionFsm (<a href="https://github.com/cuzic/awase/commit/f3b0448">f3b0448</a>)</li>
+</ul>
+</li>
+<li><strong>transport</strong>: separated <code>suppress_physical</code> into <code>PhysicalKeyDisposition</code> (<a href="https://github.com/cuzic/awase/commit/8a045bb">8a045bb</a>)</li>
+<li>Clippy pedantic compliance (CI Rust 1.96) (<a href="https://github.com/cuzic/awase/commit/881f824">881f824</a>)</li>
+</ul>
+<hr />
+<h2>[1.1.1] - 2026-06-20</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the IME-OFF Engine-ON state after a Chrome → WezTerm focus switch</strong> (<a href="https://github.com/cuzic/awase/commit/12dd094">12dd094</a>, <a href="https://github.com/cuzic/awase/commit/56f5e49">56f5e49</a>)<ul>
+<li>Changed to force-send GJI F21 ignoring <code>shadow_on</code> on entry to TsfNative</li>
+<li>Changed the belief on a TsfNative cache miss from carry-over (true) to the safe default OFF</li>
+<li>Extended the focus cache TTL from 5 seconds to 1 hour (resolving the issue where leaving and returning to a window with IME ON was treated as a cache miss)</li>
+<li>Skip cache saving for short focus (&lt; 100ms) (preventing notification popups etc. from overwriting a normal state)</li>
+</ul>
+</li>
+<li><strong>Fixed the LiteralDetect false positive after WezTerm gji_resumed</strong> (the case where "あ" became "a") (<a href="https://github.com/cuzic/awase/commit/da8dad1">da8dad1</a>)</li>
+<li><strong>Implemented early composition confirmation after WezTerm gji_resumed</strong> (detect the GJI I/O change to shorten the wait time) (<a href="https://github.com/cuzic/awase/commit/aa8a79d">aa8a79d</a>)</li>
+<li><strong>Fixed the comp-probe RUNTIME re-entrant borrow bug</strong> (<code>shadow_on</code> / <code>jp</code> were always false) (<a href="https://github.com/cuzic/awase/commit/2225578">2225578</a>)</li>
+<li><strong>nicola-fsm: Fixed a bug where the shift counter lingered on a solo repeat</strong> (<a href="https://github.com/cuzic/awase/commit/a53344b">a53344b</a>)</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li>Added GJI process I/O statistics (ReadOperationCount / ReadTransferCount) to the monitoring log (<a href="https://github.com/cuzic/awase/commit/93236a8">93236a8</a>)</li>
+</ul>
+<hr />
+<h2>[1.1.0] - 2026-06-20</h2>
+<h3>Important Changes</h3>
+<ul>
+<li><strong>Changed the GJI keybindings from F13/F14 to F21/F22</strong> (<a href="https://github.com/cuzic/awase/commit/7f8291f">7f8291f</a>)<ul>
+<li>F21/F22 are virtual keys that do not exist on a real keyboard and do not generate VT escape sequences</li>
+<li>The Nop binding configuration in WezTerm / Windows Terminal is no longer needed</li>
+<li><strong>When upgrading, be sure to re-run "Set up Google Japanese Input" from the tray menu</strong></li>
+</ul>
+</li>
+</ul>
+<h3>Added</h3>
+<ul>
+<li><strong>Automatic GJI keybind monitoring</strong>: if the F21/F22 entries are erased from config1.db, detect it within 30 seconds and auto-re-register (<a href="https://github.com/cuzic/awase/commit/58557e9">58557e9</a>)</li>
+<li><strong>Tray menu expansion</strong>: added GJI teardown and an auto-start toggle (<a href="https://github.com/cuzic/awase/commit/e67cb49">e67cb49</a>)</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed leading-character literalization after a WezTerm long-idle</strong> ("こ"→"ko") (LiteralDetect + BS resend approach) (<a href="https://github.com/cuzic/awase/commit/84e6942">84e6942</a>)</li>
+<li><strong>Fixed the GJI IME-ON failure bug</strong>: F21 was ignored due to a missing <code>DirectInput\tF21\tIMEOn</code> entry (<a href="https://github.com/cuzic/awase/commit/9d11cd7">9d11cd7</a>)</li>
+<li><strong>Fixed a partial literal in Teams / Chrome</strong> (conversion failure of "kおんな"→"こんな") (<a href="https://github.com/cuzic/awase/commit/3744457">3744457</a>, <a href="https://github.com/cuzic/awase/commit/040f8f8">040f8f8</a>)</li>
+<li><strong>Fixed the LiteralDetect false positive after a GJI long-idle</strong> (<a href="https://github.com/cuzic/awase/commit/a6b4c0d">a6b4c0d</a>)</li>
+</ul>
+<h3>Performance</h3>
+<ul>
+<li>Shortened the probe wait time right after a focus change from 300ms to 100ms (improving input responsiveness) (<a href="https://github.com/cuzic/awase/commit/23052fb">23052fb</a>)</li>
+</ul>
+<h3>Documentation</h3>
+<ul>
+<li>Updated F13/F14 → F21/F22 across all awase.cc pages, and removed the WezTerm Nop configuration steps</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li>Removed the KeySeq mechanism of the TSF probe (dead code) (<a href="https://github.com/cuzic/awase/commit/550781f">550781f</a>)</li>
+</ul>
+<h2>[1.0.1] - 2026-06-15</h2>
+<h3>Fixed</h3>
+<ul>
+<li>Fixed the "んい→に" conversion bug in <strong>Chrome VK mode</strong> (<a href="https://github.com/cuzic/awase/commit/71a4d68">71a4d68</a>)</li>
+<li>Fixed a bug where a stale <code>ime_on=false</code> lingered on entry to <strong>Imm32Unavailable</strong> (<a href="https://github.com/cuzic/awase/commit/bfad1a8">bfad1a8</a>)</li>
+<li>Fixed <strong>KeyUp</strong> while Ctrl/Alt/Win is held to be bypassed symmetrically with <code>on_key_down</code> (<a href="https://github.com/cuzic/awase/commit/5904d67">5904d67</a>)</li>
+<li>executor: Fixed the mistaken firing of a deferred timer by running the Timer immediately in <strong>Relay mode</strong> (<a href="https://github.com/cuzic/awase/commit/71ebfb9">71ebfb9</a>)</li>
+<li>executor: Fixed the <code>push</code> of the event queue (<code>VecDeque</code>) to <code>push_back</code> (<a href="https://github.com/cuzic/awase/commit/3823f12">3823f12</a>)</li>
+</ul>
+<h3>Documentation</h3>
+<ul>
+<li><strong>Heavily renewed the landing page</strong> (added technical differentiation and the origin of the name)</li>
+<li><strong>Added a Usage page</strong> (usage.html) (covering the settings screen, all config.toml items, and emergency-operation procedures)</li>
+<li><strong>Added an Internals page</strong> (internals.html)</li>
+<li><strong>Greatly expanded the FAQ</strong><ul>
+<li>Shift misses during fast typing</li>
+<li>Idempotent IME control rather than a toggle in Google IME</li>
+<li>Four symptoms that tend to occur with other tools (Yamabuki R etc.) and their countermeasures</li>
+<li>F21/F22 Nop configuration steps for Windows Terminal / WezTerm</li>
+</ul>
+</li>
+<li>Unified terminology in comments (IMM → IMM32, IME-ON/OFF → IME ON/OFF, Henkan/Muhenkan → Henkan/Muhenkan)</li>
+</ul>
+<h3>Removed</h3>
+<ul>
+<li>Removed <code>awase-gji-setup.exe</code> from the distribution (the feature is already integrated into the awase main body)</li>
+</ul>
+<h3>Internal</h3>
+<ul>
+<li><code>config</code>: promoted to a <code>#[serde(default)]</code> struct and removed the group of 18 <code>default_*</code> functions (-142 lines)</li>
+<li><code>vk</code>: introduced <code>enum VkMarker</code> to type-unify the marker selection by bool/fn_ptr</li>
+<li><code>fsm</code> / <code>nicola_fsm</code> / <code>ngram</code>: cleaned up duplicate code, wrapper functions, and dead code (total -270 lines)</li>
+<li>rustfmt / clippy formatting</li>
+</ul>
+<h2>[1.0.0] - 2026-06-14</h2>
+<p>The first stable release.</p>
+<p><strong>Full Changelog</strong>: https://github.com/cuzic/awase/compare/v0.1.0...v1.0.0</p>
+
+</div>
+</div>
+</section>
+
+<footer>
+  <p><a href="index.en.html">Home</a> | <a href="usage.en.html">Usage</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0 &nbsp;|&nbsp; Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+</body>
+</html>

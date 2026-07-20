@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How It Works — awase</title>
+<meta name="description" content="How awase makes thumb-shift input work even in difficult applications. A technical explanation of its keyboard hook, chord detection, and IME control internals.">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --accent:#2563EB;
+  --accent-light:#3B82F6;
+  --bg:#ffffff;
+  --bg-alt:#F8FAFC;
+  --text:#1E293B;
+  --text-secondary:#475569;
+  --border:#E2E8F0;
+  --card-shadow:0 1px 3px rgba(0,0,0,0.08),0 1px 2px rgba(0,0,0,0.06);
+  --section-gap:4.5rem;
+  --green:#16a34a;
+  --red:#dc2626;
+  --purple:#7c3aed;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    --bg:#0F172A;
+    --bg-alt:#1E293B;
+    --text:#E2E8F0;
+    --text-secondary:#94A3B8;
+    --border:#334155;
+    --card-shadow:0 1px 3px rgba(0,0,0,0.3),0 1px 2px rgba(0,0,0,0.2);
+    --green:#4ade80;
+    --red:#f87171;
+    --purple:#a78bfa;
+  }
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,sans-serif;
+  line-height:1.8;
+  color:var(--text);
+  background:var(--bg);
+}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.container{max-width:780px;margin:0 auto;padding:0 1.5rem}
+
+/* Nav */
+.site-nav{
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  padding:0.75rem 1.5rem;
+}
+.site-nav .inner{
+  max-width:780px;
+  margin:0 auto;
+  display:flex;
+  align-items:center;
+  gap:1.5rem;
+}
+.site-nav .brand{font-weight:700;font-size:1rem;color:var(--text)}
+.site-nav a{font-size:0.92rem;color:var(--text-secondary)}
+.site-nav a:hover{color:var(--accent);text-decoration:none}
+.site-nav a.active{color:var(--accent);font-weight:600}
+
+/* Page header */
+.page-header{
+  padding:3.5rem 1.5rem 2.5rem;
+  background:var(--bg-alt);
+  border-bottom:1px solid var(--border);
+  text-align:center;
+}
+.page-header h1{
+  font-size:2rem;
+  font-weight:800;
+  letter-spacing:-0.02em;
+  color:var(--text);
+}
+.page-header p{
+  font-size:1rem;
+  color:var(--text-secondary);
+  margin-top:0.5rem;
+  max-width:560px;
+  margin-left:auto;
+  margin-right:auto;
+}
+
+/* TOC */
+.toc{
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.4rem 1.8rem;
+  margin-bottom:3rem;
+}
+.toc h2{
+  font-size:0.85rem;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:0.08em;
+  color:var(--text-secondary);
+  margin-bottom:0.8rem;
+}
+.toc ol{
+  padding-left:1.4em;
+  color:var(--text-secondary);
+  font-size:0.93rem;
+}
+.toc li{margin-bottom:0.25rem}
+.toc a{color:var(--accent)}
+
+/* Sections */
+section{padding:var(--section-gap) 0}
+section:nth-child(even){background:var(--bg-alt)}
+
+h2.sec{
+  font-size:1.5rem;
+  font-weight:800;
+  color:var(--text);
+  margin-bottom:0.4rem;
+  line-height:1.3;
+}
+.sec-num{
+  font-size:0.85rem;
+  font-weight:600;
+  color:var(--accent);
+  display:block;
+  margin-bottom:0.3rem;
+  letter-spacing:0.05em;
+}
+.sec-lead{
+  color:var(--text-secondary);
+  font-size:0.98rem;
+  margin-bottom:2rem;
+  border-bottom:1px solid var(--border);
+  padding-bottom:1.2rem;
+}
+
+p.body{
+  color:var(--text-secondary);
+  font-size:0.97rem;
+  margin-bottom:1.2rem;
+  line-height:1.9;
+}
+h3.sub{
+  font-size:1.05rem;
+  font-weight:700;
+  color:var(--text);
+  margin:2rem 0 0.6rem;
+}
+
+/* Diagram boxes */
+.diagram{
+  font-family:ui-monospace,SFMono-Regular,"Cascadia Code",Consolas,monospace;
+  font-size:0.83rem;
+  line-height:1.7;
+  background:var(--bg-alt);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1.2rem 1.5rem;
+  margin:1.4rem 0;
+  overflow-x:auto;
+  white-space:pre;
+  color:var(--text);
+}
+
+/* Callout */
+.callout{
+  border-left:4px solid var(--accent);
+  background:var(--bg-alt);
+  border-radius:0 8px 8px 0;
+  padding:0.9rem 1.2rem;
+  margin:1.4rem 0;
+  font-size:0.93rem;
+  color:var(--text-secondary);
+}
+.callout strong{color:var(--text)}
+.callout.green{border-color:var(--green)}
+.callout.red{border-color:var(--red)}
+.callout.purple{border-color:var(--purple)}
+
+/* Comparison table */
+.cmp-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:0.91rem;
+  margin:1.2rem 0;
+}
+.cmp-table th,.cmp-table td{
+  padding:0.6rem 0.9rem;
+  border:1px solid var(--border);
+  text-align:left;
+}
+.cmp-table th{
+  background:var(--bg-alt);
+  font-weight:600;
+  color:var(--text);
+}
+.cmp-table td{color:var(--text-secondary)}
+
+/* Strategy cards */
+.strategy-stack{display:flex;flex-direction:column;gap:0.6rem;margin:1.2rem 0}
+.strategy-card{
+  display:flex;
+  align-items:flex-start;
+  gap:1rem;
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:1rem 1.2rem;
+  background:var(--bg);
+}
+.strategy-num{
+  flex-shrink:0;
+  width:2rem;
+  height:2rem;
+  border-radius:50%;
+  background:var(--accent);
+  color:#fff;
+  font-weight:800;
+  font-size:0.9rem;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.strategy-body h4{
+  font-size:0.97rem;
+  font-weight:700;
+  color:var(--text);
+  margin-bottom:0.25rem;
+}
+.strategy-body p{
+  font-size:0.88rem;
+  color:var(--text-secondary);
+  line-height:1.6;
+}
+.strategy-body .for{
+  font-size:0.8rem;
+  color:var(--accent);
+  font-weight:600;
+  margin-top:0.3rem;
+}
+
+/* Footer */
+footer{
+  text-align:center;
+  padding:2.5rem 1.5rem;
+  border-top:1px solid var(--border);
+  color:var(--text-secondary);
+  font-size:0.9rem;
+  background:var(--bg-alt);
+}
+footer p{margin-bottom:0.3rem}
+
+/* Responsive */
+@media(max-width:640px){
+  .page-header{padding:2.5rem 1.5rem 1.8rem}
+  .page-header h1{font-size:1.5rem}
+  section{padding:2.5rem 0}
+  h2.sec{font-size:1.25rem}
+  .diagram{font-size:0.75rem}
+}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav class="site-nav">
+  <div class="inner">
+    <span class="brand">awase</span>
+    <a href="index.en.html">Home</a>
+    <a href="usage.en.html">Usage</a>
+    <a href="internals.en.html" class="active">Internals</a>
+    <a href="changelog.en.html">Changelog</a>
+    <a href="https://github.com/cuzic/awase">GitHub</a>
+    <a href="internals.html">日本語</a>
+  </div>
+</nav>
+
+<!-- Page header -->
+<div class="page-header">
+  <h1>How It Works</h1>
+  <p>A code-free, technical explanation of why awase works even in difficult applications.</p>
+</div>
+
+<!-- Main content -->
+<section>
+<div class="container">
+
+  <!-- TOC -->
+  <div class="toc">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#hook">Intercepting keys — the keyboard hook</a></li>
+      <li><a href="#relay">Re-injecting every key — relay mode</a></li>
+      <li><a href="#fsm">How to detect a "simultaneous press" — state machines and timers</a></li>
+      <li><a href="#ngram">Using Japanese statistics to prevent misjudgments — the n-gram model</a></li>
+      <li><a href="#shadow">Tracking the invisible IME state — the shadow model</a></li>
+      <li><a href="#strategy">Why the control method differs per application</a></li>
+      <li><a href="#line">Why LINE / Qt apps are especially tricky</a></li>
+      <li><a href="#msime">Why the control method changes between Google Japanese Input and MS-IME</a></li>
+      <li><a href="#injection">Choosing how to deliver keys automatically — InjectionMode</a></li>
+      <li><a href="#chrome">Why Chrome / Edge are especially difficult</a></li>
+      <li><a href="#coldstart">The first character comes out garbled — the TSF cold-start problem</a></li>
+      <li><a href="#wezterm">Characters vanish after a long idle — the WezTerm long-idle problem</a></li>
+      <li><a href="#kana">Working correctly beyond hiragana — katakana and JIS kana support</a></li>
+      <li><a href="#sleep">Automatic recovery after sleep or unlock</a></li>
+    </ol>
+  </div>
+
+  <!-- Section 1 -->
+  <span class="sec-num" id="hook">01</span>
+  <h2 class="sec">Intercepting keys — the keyboard hook</h2>
+  <p class="sec-lead">awase inserts itself "between" the keyboard driver and the application.</p>
+
+  <p class="body">
+    Windows provides a mechanism to receive keyboard input ahead of every application.
+    It is called the <strong>low-level keyboard hook (WH_KEYBOARD_LL)</strong>, and
+    every time a physical key is pressed, awase is the first to be notified.
+  </p>
+
+  <div class="diagram">
+Physical keyboard
+    │  key press
+    ▼
+【 awase's hook 】  ← every key is received here first
+    │
+    ├─ keys relevant to thumb shift → awase takes over processing
+    │
+    └─ irrelevant keys → passed through unchanged
+    │
+    ▼
+Windows / Application</div>
+
+  <p class="body">
+    However, "interception" has a limitation: if processing takes too long, Windows forcibly
+    unhooks the hook. awase copes with this limitation by finishing every decision as quickly
+    as possible and handing heavy work off to a separate thread. If it is unhooked anyway,
+    it re-registers itself automatically.
+  </p>
+
+  <div class="callout">
+    <strong>Difference from DLL injection:</strong>
+    Some other thumb-shift tools use "DLL injection," embedding code directly into the
+    application's process. This lets them reach deeper, but it is more likely to be
+    flagged as a false positive by antivirus software.
+    awase does not use this approach and operates using only standard Windows APIs.
+  </div>
+
+  <!-- Section 2 -->
+  <span class="sec-num" id="relay" style="margin-top:3rem;display:block">02</span>
+  <h2 class="sec">Re-injecting every key — relay mode</h2>
+  <p class="sec-lead">awase swallows every key first, then re-sends it after processing.</p>
+
+  <p class="body">
+    A normal keyboard hook has two operating modes.
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th></th>
+      <th>Filter mode</th>
+      <th>Relay mode (awase's default)</th>
+    </tr>
+    <tr>
+      <td>Behavior</td>
+      <td>Intercept only the relevant keys, pass the rest through</td>
+      <td>Swallow every key first, then re-send it after processing</td>
+    </tr>
+    <tr>
+      <td>Coexistence with other hooks</td>
+      <td>May conflict depending on ordering</td>
+      <td>Because keys are re-injected, they reach other hooks too</td>
+    </tr>
+    <tr>
+      <td>Stability</td>
+      <td>Prone to timing dependence</td>
+      <td>Ordering is guaranteed by a FIFO queue</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    In relay mode, awase must always re-send any key it receives itself.
+    To avoid an infinite loop in which "the key I sent is received by me again,"
+    re-injected keys are tagged with a marker so the hook passes them through.
+  </p>
+
+  <!-- Section 3 -->
+  <span class="sec-num" id="fsm" style="margin-top:3rem;display:block">03</span>
+  <h2 class="sec">How to detect a "simultaneous press" — state machines and timers</h2>
+  <p class="sec-lead">The heart of thumb shift is the part that decides "two keys were pressed simultaneously."</p>
+
+  <p class="body">
+    In NICOLA thumb shift, a character key and a thumb key that overlap within 100ms are judged
+    a "chord." But a computer has no concept of "simultaneous"—one of them always arrives first.
+    Furthermore, in fast typing the next character key can arrive before the previous thumb key
+    is released.
+  </p>
+
+  <div class="diagram">
+Example: entering "が" (character key: A + right thumb key)
+
+Case 1 (character first):
+  A↓ ─── A↑
+          right thumb↓ ─ right thumb↑
+  ↑ within 100ms here → "が"
+
+Case 2 (thumb first):
+  right thumb↓ ─── right thumb↑
+     A↓ ─── A↑
+     ↑ within 100ms here → "が"
+
+Case 3 (three-key problem):
+  か↓ ─────────── か↑
+      right thumb↓ ──────────── right thumb↑
+              ら↓ ─ ら↑
+  ↑ which one pairs up? → "が＋ら" or "か＋ら"?</div>
+
+  <p class="body">
+    This is solved by combining a <strong>state machine (FSM: Finite State Machine)</strong> with
+    <strong>timers</strong>.
+    Every time a key arrives, awase transitions to the next state based on "the current state"
+    and "the kind of key," and at some point commits to "this is a chord" or "this is a single
+    keystroke."
+  </p>
+
+  <div class="diagram">
+State machine sketch (simplified):
+
+  Idle
+    │ character key↓
+    ▼
+  Character key pending ─── timeout (100ms) → emit as a standalone character
+    │ thumb key↓ (within 100ms)
+    ▼
+  Both pressed ─── thumb key↑ → emit as a shifted character
+    │ character key↑
+    ▼
+  Thumb key only pressed → wait for the next character key</div>
+
+  <p class="body">
+    In the "three-key problem" of Case 3, the state machine compares the time gaps d1 (character 1 → thumb)
+    and d2 (thumb → character 2).
+    If d1 &lt; d2, character 1 is closer to the thumb, so it judges "character 1 + thumb is a chord";
+    if d1 ≥ d2, character 2 is closer to the thumb, so it judges "character 2 + thumb is a chord."
+    But when d1 and d2 are close, timing alone cannot decide.
+  </p>
+
+  <div class="callout">
+    <strong>What confirm mode is:</strong>
+    It is the strategy for "when to commit output." There are five kinds, such as waiting until the
+    timeout (<code>wait</code>) or emitting right away and swapping the output if a shift key follows
+    (<code>speculative</code>), so you can choose one to match your typing style.
+  </div>
+
+  <!-- Section 4 -->
+  <span class="sec-num" id="ngram" style="margin-top:3rem;display:block">04</span>
+  <h2 class="sec">Using Japanese statistics to prevent misjudgments — the n-gram model</h2>
+  <p class="sec-lead">When timing is close in the three-key problem, "is it natural as Japanese?" breaks the tie.</p>
+
+  <p class="body">
+    In fast typing, the "three-key problem" arises when a character key, a thumb key, and the next
+    character key all overlap. d1 and d2 are nearly identical, and timing alone cannot decide
+    whether "the earlier character pairs with the thumb (a shifted character)" or
+    "the later character pairs with the thumb (a shifted character)."
+  </p>
+
+  <p class="body">
+    awase's <code>ngram_predictive</code> mode resolves this ambiguity with Japanese statistics.
+    When the timing is close, it checks the "sequence of hiragana" for each of the two interpretations
+    against an n-gram corpus and <strong>chooses whichever makes more natural Japanese</strong>.
+  </p>
+
+  <div class="callout green">
+    <strong>Example:</strong> when three keys overlap, the n-gram compares the occurrence probability
+    of the bigram "preceding kana → candidate kana" for the two interpretations.<br><br>
+    Interpretation A (か + right thumb = が) score: probability of the preceding character "ら" → "が" = "<strong>らが</strong>"<br>
+    Interpretation B (emit か standalone) score: probability of the preceding character "よ" → "か" = "<strong>よか</strong>"<br><br>
+    In a Japanese corpus, words containing "よか" (like "よかった" or "よかれ") are abundant, whereas
+    a sequence of "らが" as in "らがった" is rare.
+    So "よか" wins the score, and "よかった" is chosen.<br><br>
+    Conversely, if the context changes so that "らが" scores higher, "らがった" is chosen.
+    Rather than judging by timing figures alone, using the preceding character as context improves accuracy.
+  </div>
+
+  <p class="body">
+    This corpus is statistical data learned from a large amount of Japanese text.
+    It quantifies "how frequently a given two-hiragana combination appears" and
+    is bundled with awase.
+  </p>
+
+  <!-- Section 5 -->
+  <span class="sec-num" id="shadow" style="margin-top:3rem;display:block">05</span>
+  <h2 class="sec">Tracking the invisible IME state — the shadow model</h2>
+  <p class="sec-lead">How does awase know "is the IME ON or OFF right now"?</p>
+
+  <p class="body">
+    To enable thumb-shift input, the IME must be in the "ON" state.
+    But the Windows IME state cannot always be reliably obtained from an external program.
+    With Google Japanese Input in particular, there is no public API to read the internal state accurately.
+  </p>
+
+  <h3 class="sub">Managing three distinct "states" separately</h3>
+
+  <p class="body">
+    Rather than a single IME state, awase manages <strong>three distinct "states."</strong>
+  </p>
+
+  <div class="diagram">
+┌─────────────────────────────────────────────────┐
+│ desired (the user's intent)                      │
+│   Ctrl+Henkan → want it ON                       │
+│   Ctrl+Muhenkan → want it OFF                    │
+└─────────────────────────┬───────────────────────┘
+                          │ instruct
+                          ▼
+┌─────────────────────────────────────────────────┐
+│ applied (the last result we applied)             │
+│   "sent the ON command, and got confirmation"    │
+└─────────────────────────┬───────────────────────┘
+                          │ reconcile via observation
+                          ▼
+┌─────────────────────────────────────────────────┐
+│ observed (the state actually observed from OS/IME)│
+│   the reality obtained from polling/observation  │
+└─────────────────────────────────────────────────┘</div>
+
+  <p class="body">
+    The "intent" and the "reality" can diverge. For example, when switching applications the
+    application itself may turn the IME OFF on its own.
+    awase detects this divergence through periodic observation (polling), and
+    if there is a divergence it corrects it automatically.
+  </p>
+
+  <h3 class="sub">What idempotent control means</h3>
+
+  <p class="body">
+    Many traditional thumb-shift tools used a "toggle the IME" approach:
+    "if it's ON now, turn it OFF; if it's OFF, turn it ON."
+    The weakness of this approach is that unless you know the current state accurately, you end up
+    with the opposite of what you intended.
+  </p>
+
+  <p class="body">
+    awase uses <strong>idempotent operations</strong>—"<strong>turn the IME ON</strong>" and
+    "<strong>turn the IME OFF</strong>."
+    These are operations whose result does not change no matter how many times you run them.
+    Even if the state has diverged, running "turn it ON" always results in ON.
+  </p>
+
+  <div class="callout">
+    <strong>What idempotent means:</strong> using a light switch as an analogy, "each press flips
+    between ON and OFF" is a toggle (the traditional approach). "Pressing this button always turns
+    it ON" is idempotent (awase's approach). Because you do not need to know the state, even if a
+    divergence occurs the result always matches your intent.
+  </div>
+
+  <h3 class="sub">Centrally managing whether an observation "can be trusted" — ObservationAdmission</h3>
+
+  <p class="body">
+    awase runs multiple "probes" asynchronously in the background.
+    When a probe returns a result, is that observation really about "the window that is focused right now"?
+  </p>
+
+  <p class="body">
+    For example, when switching apps with ALT+TAB, the OS briefly moves focus to the task
+    switcher's window.
+    If a probe launched during this tiny interval returns "IME OFF," the engine ends up stopped
+    even after returning to the original app.
+  </p>
+
+  <div class="diagram">
+ALT+TAB timeline:
+
+LINE is focused
+  │ press ALT+TAB → task switcher appears
+  │ OS: focus = switcher window
+  │  └─ ImmCrossProbe launches → returns "IME OFF"  ← stale observation
+  │ release ALT+TAB → back to LINE
+  │  └─ probe result arrives → engine stops! (bug)
+  ▼
+awase's countermeasure: focus had changed → reject this observation</div>
+
+  <p class="body">
+    awase solves this with an "epoch."
+    Every time focus changes, it increments an internal counter (FocusEpoch) by 1.
+    A probe records the epoch number at start time, and when its result arrives it reconciles that
+    against the current epoch number.
+    If the numbers differ, it judges "focus changed in the meantime = stale" and discards the result.
+  </p>
+
+  <div class="callout green">
+    <strong>Guaranteed by the type system:</strong>
+    "Only an observation that passed epoch reconciliation can be written into the shadow model"—this
+    is <strong>enforced by the compiler</strong>.
+    When an observation passes epoch reconciliation, a token called <code>AcceptedObservation</code>
+    is issued, and without this token the <code>write_*</code> functions cannot be called.
+    When a probe is added in the future, forgetting the reconciliation results in a
+    <strong>compile error</strong>.
+  </div>
+
+  <!-- Section 6 -->
+  <span class="sec-num" id="strategy" style="margin-top:3rem;display:block">06</span>
+  <h2 class="sec">Why the control method differs per application</h2>
+  <p class="sec-lead">The way the instruction "please turn the IME ON" is delivered differs by application.</p>
+
+  <p class="body">
+    There are broadly two ways Windows applications communicate with the IME:
+    the old <strong>IMM32</strong> mechanism and the newer <strong>TSF (Text Services Framework)</strong>.
+    On top of that, Google Japanese Input has its own internal structure.
+    awase automatically determines the kind of application and tries a three-tier control method.
+  </p>
+
+  <div class="strategy-stack">
+    <div class="strategy-card">
+      <div class="strategy-num">1</div>
+      <div class="strategy-body">
+        <h4>IMM32 cross-process control</h4>
+        <p>Send a "please turn it ON" message directly to the application's IME window.
+        This is the most reliable method, and on success you can immediately confirm that the state changed.</p>
+        <p class="for">Target: common applications such as Notepad and Word</p>
+      </div>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-num">2</div>
+      <div class="strategy-body">
+        <h4>Google Japanese Input direct control (VK_IME_ON / VK_IME_OFF)</h4>
+        <p>Send the Windows virtual keys VK_IME_ON (to hiragana mode) and VK_IME_OFF (to direct input).
+        Because they are idempotent operations, they match your intent no matter how many times they are sent.</p>
+        <p class="for">Target: every application where Google Japanese Input is running</p>
+      </div>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-num">3</div>
+      <div class="strategy-body">
+        <h4>KANJI key toggle (last resort)</h4>
+        <p>Send the hankaku/zenkaku key (VK_KANJI) to switch the IME.
+        Because it is a toggle operation, there is a risk of ending up with the opposite of what you
+        intended unless the current state is known accurately.
+        awase confirms the state via the shadow model before sending it.</p>
+        <p class="for">Target: a fallback for when the above two methods cannot be used</p>
+      </div>
+    </div>
+  </div>
+
+  <p class="body">
+    If strategy 1 succeeds, strategies 2 and 3 are not attempted. If strategy 1 fails, strategy 2 is attempted.
+    In this way, control works reliably regardless of the kind of application.
+  </p>
+
+  <div class="callout purple">
+    <strong>The special case of LINE / Qt apps:</strong>
+    Qt-based apps such as LINE start their own IME state transition when they receive IME-related keys
+    (such as hankaku/zenkaku).
+    For LINE, awase adopts the policy of "never letting any physical IME key through" and operates the
+    IME using only IMM32 cross-process control.
+  </div>
+
+  <!-- Section 7: LINE -->
+  <span class="sec-num" id="line" style="margin-top:3rem;display:block">07</span>
+  <h2 class="sec">Why LINE / Qt apps are especially tricky</h2>
+  <p class="sec-lead">When LINE receives an IME key, it starts its own state transition.</p>
+
+  <p class="body">
+    Apps built with the Qt framework, such as LINE, start
+    <strong>their own IME state transition</strong> when they receive IME-related keys like the
+    hankaku/zenkaku key (VK_KANJI).
+    LINE interprets the key awase sends to "turn the IME ON" with a different meaning, ending up in
+    the opposite state from what was intended.
+  </p>
+
+  <div class="diagram">
+A normal app (such as Notepad):
+  awase → sends VK_KANJI → the OS's IME receives it → IME ON
+
+LINE (a Qt app):
+  awase → sends VK_KANJI → LINE intercepts it
+                           → LINE's own IME state transition begins
+                           → can end up the opposite of what was intended</div>
+
+  <p class="body">
+    To solve this problem, awase adopts the policy of
+    <strong>never letting any physical IME key through</strong> for LINE.
+    It removes the very opportunity for LINE to see an IME key and operates the IME using only
+    IMM32 cross-process control (strategy 1).
+  </p>
+
+  <h3 class="sub">Combined with ALT+TAB</h3>
+
+  <p class="body">
+    For LINE, "not letting IME keys through" alone was not enough.
+    When switching windows with ALT+TAB, the OS briefly moves focus to the task switcher's window.
+    If the IME state is read at this instant, it is mistakenly judged "IME OFF," and the engine
+    stops when returning to LINE.
+  </p>
+
+  <p class="body">
+    awase solves this with the mechanism "increment a counter (epoch) every time focus changes, and
+    reject observations with an old counter"
+    (see ObservationAdmission in Section 5).
+    The ALT+TAB problem in LINE is also resolved structurally by this epoch reconciliation.
+  </p>
+
+  <!-- Section 8: MS-IME -->
+  <span class="sec-num" id="msime" style="margin-top:3rem;display:block">08</span>
+  <h2 class="sec">Why the control method changes between Google Japanese Input and MS-IME</h2>
+  <p class="sec-lead">Even for the same "turn the IME ON," the command differs by IME software.</p>
+
+  <p class="body">
+    Windows lets you freely choose "which IME software to use."
+    The representative ones are the Windows-standard <strong>MS-IME</strong> and the separately
+    installed <strong>Google Japanese Input</strong>.
+    Even for the same operation "please switch to hiragana mode," the command each one accepts differs.
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>Operation</th>
+      <th>Google Japanese Input</th>
+      <th>MS-IME</th>
+    </tr>
+    <tr>
+      <td>To hiragana mode</td>
+      <td><code>VK_IME_ON</code> (0x16)</td>
+      <td><code>VK_DBE_HIRAGANA</code> (0xF2)</td>
+    </tr>
+    <tr>
+      <td>To direct input (alphanumeric)</td>
+      <td><code>VK_IME_OFF</code> (0x1A)</td>
+      <td><code>VK_DBE_ALPHANUMERIC</code> (0xF0)</td>
+    </tr>
+    <tr>
+      <td>Are both idempotent?</td>
+      <td>Yes (the result does not change no matter how many times it is sent)</td>
+      <td>Yes (likewise)</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    awase automatically determines which IME is in use via the
+    <strong>TSF (Text Services Framework) API</strong>.
+    Specifically, it dynamically obtains the unique identifier (CLSID) for each IME and
+    saves the IME kind it identified for the first time after startup to <code>cache.toml</code>.
+    On the next startup it uses this cache, so there is no identification cost.
+  </p>
+
+  <div class="callout">
+    <strong>Why identify by CLSID:</strong>
+    It used to determine the IME by process name—"is the Google Japanese Input process
+    (GoogleIMEJaConverter.exe) running?"
+    But process names can vary by environment.
+    Obtaining the CLSID via TSF's <code>EnumProfiles</code> uses an official OS-level API, so it is
+    reliable and stable.
+  </div>
+
+  <p class="body">
+    When the IME is switched (for example, when you uninstall Google Japanese Input and revert to
+    MS-IME), awase is notified via the <code>WM_IME_KIND_CHANGED</code> message.
+    Upon receiving this message, awase switches its control method in real time.
+    No restart is required.
+  </p>
+
+  <!-- Section 9: InjectionMode -->
+  <span class="sec-num" id="injection" style="margin-top:3rem;display:block">09</span>
+  <h2 class="sec">Choosing how to deliver keys automatically — InjectionMode</h2>
+  <p class="sec-lead">Even for the same key, a different "delivery method" changes how the IME behaves.</p>
+
+  <p class="body">
+    When awase re-sends a key (relay mode), there are actually choices for
+    "in what form to send it."
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>Mode</th>
+      <th>Description</th>
+      <th>Best-suited case</th>
+    </tr>
+    <tr>
+      <td><strong>Unicode mode</strong></td>
+      <td>Send the key as a character code. Simple, but may bypass the IME</td>
+      <td>Apps that do not need to go through the IME</td>
+    </tr>
+    <tr>
+      <td><strong>TSF mode</strong></td>
+      <td>Send in a form equivalent to a physical key. The IME reliably receives it</td>
+      <td>Google Japanese Input / TSF apps</td>
+    </tr>
+  </table>
+
+  <p class="body">
+    In environments where Google Japanese Input is running, TSF mode is required.
+    But rather than checking on every startup whether Google Japanese Input is running, awase uses a
+    mechanism called <strong>automatic promotion</strong>.
+  </p>
+
+  <div class="diagram">
+Flow of InjectionMode automatic promotion:
+
+Right after startup: Unicode mode
+  │
+  │ focus change → send keys in Unicode mode
+  │
+  ├─ observe Google Japanese Input's WriteTransferCount
+  │   ├─ increased (+350B or more)
+  │   │    → judge "Google Japanese Input processed the key"
+  │   │    → automatically promote to TSF mode
+  │   │    → save to cache.toml (persists across restarts)
+  │   │
+  │   └─ no increase → continue in Unicode mode</div>
+
+  <p class="body">
+    <code>WriteTransferCount</code> is the number of I/O write bytes of the Google Japanese Input process.
+    When Google Japanese Input receives a key, writes occur for things like dictionary lookups.
+    By monitoring this figure, you can confirm from the outside "whether Google Japanese Input
+    actually processed the key."
+  </p>
+
+  <div class="callout green">
+    <strong>Why the user needs no configuration:</strong>
+    Thanks to automatic promotion, in environments where Google Japanese Input is installed, it
+    automatically switches to TSF mode at the timing of the first focus change.
+    In MS-IME environments or environments without Google Japanese Input, it keeps operating in
+    Unicode mode.
+    There is no need to choose the IME kind in the settings screen.
+  </div>
+
+  <!-- Section 10: Chrome -->
+  <span class="sec-num" id="chrome" style="margin-top:3rem;display:block">10</span>
+  <h2 class="sec">Why Chrome / Edge are especially difficult</h2>
+  <p class="sec-lead">Chrome uses multiple cooperating processes, so the usual method does not work.</p>
+
+  <p class="body">
+    Chrome and Edge adopt a "multi-process" architecture.
+    The process responsible for display, the process responsible for networking, and the process
+    responsible for input run separately.
+  </p>
+
+  <p class="body">
+    The IMM32 method of "sending a message directly to the application's IME window" assumes that
+    the sender and the receiver are in the same process.
+    In Chrome this does not hold, and method 1 (IMM32 control) cannot be used.
+  </p>
+
+  <div class="diagram">
+Chrome's process layout (simplified):
+
+┌──────────────────────────────────────┐
+│ Browser process (frame / UI)         │
+│   ↕ cannot communicate via IMM32     │
+│ Renderer process (page display)      │← the IME communicates here
+│   ↕ IPC                             │
+│ Network process ...                  │
+└──────────────────────────────────────┘
+  awase cannot deliver directly
+  to the IME window</div>
+
+  <p class="body">
+    So awase sends VK_IME_ON (hiragana mode) / VK_IME_OFF (direct input) to Google Japanese Input.
+    Because they reach Google Japanese Input's internal process directly, they work regardless of
+    Chrome's process layout.
+  </p>
+
+  <h3 class="sub">Aligning timing with Google Japanese Input I/O monitoring</h3>
+
+  <p class="body">
+    Chrome has yet another hard problem.
+    It can take several hundred milliseconds until the IME is in a state where it can receive keys
+    (the TSF composition context). If a character key arrives before this preparation is done,
+    garbling occurs.
+  </p>
+
+  <p class="body">
+    awase monitors Google Japanese Input's disk access (I/O) in the background.
+    It treats the moment Google Japanese Input "goes quiet" as a "ready" sign, and sends characters
+    from there.
+  </p>
+
+  <div class="callout green">
+    <strong>Why I/O monitoring is effective:</strong>
+    Google Japanese Input performs file reads and writes for things like dictionary lookups.
+    Once the IME's composition context is established, internal processing settles down and the I/O
+    goes quiet.
+    This is a way to infer the "internal readiness state" from the outside without using invasive
+    techniques like DLL injection.
+  </div>
+
+  <!-- Section 8 -->
+  <span class="sec-num" id="coldstart" style="margin-top:3rem;display:block">11</span>
+  <h2 class="sec">The first character comes out garbled — the TSF cold-start problem</h2>
+  <p class="sec-lead">In TSF apps, "getting ready to accept input" takes time.</p>
+
+  <p class="body">
+    In TSF-native apps such as Windows Terminal, or in Chrome, a phenomenon can occur where you
+    meant to type "こ" but "ko" comes out.
+    This is called the "TSF cold-start problem."
+  </p>
+
+  <h3 class="sub">Why it happens</h3>
+
+  <p class="body">
+    A TSF app has an input buffer called the "composition context."
+    Right after launching the app, or right after switching the IME ON, initializing this buffer
+    takes several hundred milliseconds.
+    If romaji keys ("k", "o") arrive before initialization is complete, the IME cannot convert them
+    and outputs them as raw letters.
+  </p>
+
+  <div class="diagram">
+Timeline of a cold-start occurrence:
+
+0ms    switch the IME ON
+       start typing "こ": K↓ K↑
+50ms   O↓ O↑
+100ms  (composition context initialization complete) ← keys that arrived before this are not converted
+
+Result: "ko" is output as raw letters</div>
+
+  <h3 class="sub">awase's solution</h3>
+
+  <p class="body">
+    awase performs warmup processing "right after a confirm key (Enter or Space) is pressed" or
+    "after a long period with no input."
+    It is a "pre-warming" that activates the composition context ahead of time.
+    Using the idle time before the next character arrives, it finishes preparation and prevents the
+    cold-start before it happens.
+  </p>
+
+  <p class="body">
+    Even if a cold-start occurs at an unpredictable time, awase detects the "ready" moment via
+    Google Japanese Input I/O monitoring before sending characters, so garbling is unlikely to occur.
+  </p>
+
+  <h3 class="sub">The sacrificial keystroke feature (reliable warmup for Chrome / Windows Terminal)</h3>
+
+  <p class="body">
+    In TSF-native apps such as Chrome and Windows Terminal, there are cases where the pre-warming
+    above cannot determine whether the composition context was reliably activated.
+    To solve this, awase provides a <strong>sacrificial keystroke feature</strong>.
+  </p>
+
+  <p class="body">
+    A sacrificial keystroke is the action of sending the <kbd>A</kbd> key as a "sacrificial pawn"
+    together with a backspace, right before the character you actually want to type.
+    Because <kbd>A</kbd> and <kbd>BS</kbd> are sent in the same batch, Chrome processes both before
+    it draws the screen, so "あ" is never displayed even for an instant.
+  </p>
+
+  <div class="diagram">
+Flow of the sacrificial keystroke feature:
+
+[cold-start detected]
+   │
+   ├─ send VK_A + BS in the same batch (sacrificial keystroke)
+   │     ← nothing is displayed on screen
+   │
+   ├─ observe Google Japanese Input's I/O write bytes (WriteTransferCount)
+   │   ├─ +350B or more → confirm composition established → send the real romaji
+   │   └─ timeout → force-reset Google Japanese Input with VK_IME_OFF→VK_IME_ON → retry
+   │
+   └─ re-send the real romaji (no extra BS needed: the sacrificial keystroke already erased one character)</div>
+
+  <p class="body">
+    The sacrificial keystroke has two roles.
+    First, <strong>forced warmup</strong>: the <kbd>A</kbd> key makes Google Japanese Input start a
+    composition, so the context can be reliably activated.
+    Second, <strong>state observation</strong>: when Google Japanese Input processes <kbd>A</kbd>,
+    the I/O write bytes inside the process increase (to send the conversion-candidate data for "あ").
+    By measuring this increase with <code>WriteTransferCount</code>, you can directly confirm
+    "whether the composition was really established."
+    It is a content-based confirmation method that is not swayed by timing races.
+  </p>
+
+  <div class="callout">
+    <strong>A note about Windows Terminal:</strong>
+    The VK_IME_ON (0x16) / VK_IME_OFF (0x1A) that awase sends to Google Japanese Input are
+    standard Windows virtual key codes, but they do not exist on a physical keyboard.
+    They also do not generate VT escape sequences, so no additional setup is needed in Windows Terminal.
+  </div>
+
+  <!-- Section 12: WezTerm long-idle -->
+  <span class="sec-num" id="wezterm" style="margin-top:3rem;display:block">12</span>
+  <h2 class="sec">Characters vanish after a long idle — the WezTerm long-idle problem</h2>
+  <p class="sec-lead">If WezTerm is left unused for a long time, the TSF context "cools down."</p>
+
+  <p class="body">
+    In WezTerm (a terminal written in Rust), the first character could vanish after a long period
+    without input.
+    For example, if you leave it for 10 minutes and then type "な," the phenomenon is that "な" does
+    not appear and nothing happens.
+  </p>
+
+  <h3 class="sub">Why it happens</h3>
+
+  <p class="body">
+    WezTerm is a TSF-native app.
+    In TSF, the "composition context" that communicates with the IME is
+    <strong>internally reset if it is not used for a long time</strong>.
+    By the time the next key arrives, the context has already been lost, and
+    the first key is not delivered to the IME and vanishes.
+  </p>
+
+  <div class="diagram">
+Timeline of a WezTerm long-idle occurrence:
+
+0 min    typing with the IME ON
+     ↓ left for 10–15 min
+15 min   TSF composition context is reset (internally)
+     ↓ the user presses a key
+15 min   first "な" → not delivered to the IME, vanishes
+       next "に" → the IME initializes the context → delivered normally
+
+Result: you meant to type "なにほ" but it becomes "にほ"</div>
+
+  <h3 class="sub">awase's solution — detect and re-send</h3>
+
+  <p class="body">
+    A fixed-timeout approach of "warm up every N minutes" was also tried, but the timing at which
+    WezTerm resets the context varies by environment, and fixing a threshold only moved the race
+    condition to a different timing.
+  </p>
+
+  <p class="body">
+    Rather than "preventing via a timeout," awase adopts the pattern of
+    <strong>"detecting that it vanished and repairing it."</strong>
+    It observes that the first key was not delivered to the IME and re-sends the same key once more.
+  </p>
+
+  <div class="diagram">
+Flow of LiteralDetect (detect and repair):
+
+a key arrives
+  │
+  ├─ confirm whether the IME received it (observe TSF-mode write bytes)
+  │   │
+  │   ├─ received → process as normal input
+  │   │
+  │   └─ not received (literal-ization detected)
+  │       │
+  │       ├─ erase the "raw character (e.g. k)" that WezTerm displayed, with BS
+  │       └─ re-send the same key → this time the context is initialized, so it is delivered</div>
+
+  <div class="callout green">
+    <strong>"Detect and repair" over "prevent":</strong>
+    If you try to prevent by extending a timeout, a race condition of "OK at this timing but fails at
+    that timing" always remains.
+    In WezTerm's case, because "you can tell that it failed," detecting and repairing eliminates the
+    race condition fundamentally.
+    awase calls this pattern <code>LiteralDetect</code>.
+  </div>
+
+  <!-- Section 13: katakana / JIS kana -->
+  <span class="sec-num" id="kana" style="margin-top:3rem;display:block">13</span>
+  <h2 class="sec">Working correctly beyond hiragana — katakana and JIS kana support</h2>
+  <p class="sec-lead">How to handle thumb shift when the IME is in a mode other than hiragana is complex.</p>
+
+  <p class="body">
+    The IME has multiple input modes beyond "hiragana," such as "katakana," "JIS kana," and
+    "half-width katakana."
+    Because awase's thumb-shift engine is designed on the premise of hiragana, an additional
+    mechanism was needed to handle these modes appropriately.
+  </p>
+
+  <h3 class="sub">The central principle "katakana = ObservedRomaji"</h3>
+
+  <p class="body">
+    In katakana mode, romaji input remains active while the IME converts the output to katakana.
+    awase treats katakana mode as equivalent to "romaji input in progress."
+    This keeps the thumb-shift engine from being mistakenly deactivated.
+  </p>
+
+  <table class="cmp-table">
+    <tr>
+      <th>Input mode</th>
+      <th>awase's handling</th>
+      <th>Engine state</th>
+    </tr>
+    <tr>
+      <td>Hiragana (romaji)</td>
+      <td>Normal thumb-shift input</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>Katakana (full-width)</td>
+      <td>Equivalent to romaji input in progress</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>Half-width katakana</td>
+      <td>Equivalent to romaji input in progress</td>
+      <td>Active</td>
+    </tr>
+    <tr>
+      <td>Alphanumeric (direct input)</td>
+      <td>Thumb shift not needed</td>
+      <td>Inactive</td>
+    </tr>
+    <tr>
+      <td>JIS kana</td>
+      <td>Input that does not use romaji. The engine is kept on</td>
+      <td>Active (passive standby)</td>
+    </tr>
+  </table>
+
+  <h3 class="sub">ObservedEisu — automatic detection of alphanumeric direct input</h3>
+
+  <p class="body">
+    The IME can switch to "alphanumeric input mode" while remaining ON.
+    This state causes a mismatch of "shadow = ON" but "reality = alphanumeric direct input."
+  </p>
+
+  <p class="body">
+    awase manages this as an independent mode called <code>ObservedEisu</code> (observed alphanumeric).
+    When <code>ObservedEisu</code> is detected, it automatically switches to IME OFF (direct input)
+    within 500ms and deactivates the engine as well.
+    The user no longer has to notice and deal with it manually.
+  </p>
+
+  <div class="callout">
+    <strong>Why alphanumeric mode must not be left as is:</strong>
+    If alphanumeric mode continues while the shadow model thinks "IME ON," an inconsistency persists
+    in which awase tries to convert keys expecting hiragana input while letters are actually output.
+    By treating <code>ObservedEisu</code> as an explicit mode, awase can safely auto-recover, treating
+    "this state as anticipated."
+  </div>
+
+  <!-- Section 14: sleep / unlock -->
+  <span class="sec-num" id="sleep" style="margin-top:3rem;display:block">14</span>
+  <h2 class="sec">Automatic recovery after sleep or unlock</h2>
+  <p class="sec-lead">Right after a PC resumes from sleep, the IME state cannot be read correctly.</p>
+
+  <p class="body">
+    When you put a PC to sleep and resume it, the Windows IME subsystem also temporarily enters an
+    "initializing" state.
+    If awase tries to read the IME state at this instant, it can get back the mistaken value
+    <code>is_japanese_ime = false</code> (no Japanese IME).
+  </p>
+
+  <div class="diagram">
+Timeline after resuming from sleep:
+
+Before sleep: Google Japanese Input running, IME ON
+  │
+  └─ sleep
+       │
+  resume ├─ OS: re-initializing the IME subsystem
+       │     ↓ if awase reads during this
+       │     is_japanese_ime = false (wrong)
+       │     → engine stops (judged "no Japanese IME")
+       │
+       └─ initialization complete (several hundred ms later)
+             → the normal value returns, but the engine has already stopped</div>
+
+  <h3 class="sub">Solution via grace protection</h3>
+
+  <p class="body">
+    awase sets a "grace period" right after resuming from sleep.
+    During this period, it <strong>ignores downgrades</strong> to
+    <code>is_japanese_ime = false</code>.
+    On the other hand, it always accepts updates to <code>is_japanese_ime = true</code> (normal).
+  </p>
+
+  <p class="body">
+    This is an asymmetric design of "hold bad news for a fixed period, accept good news immediately."
+    It discards the mistaken <code>false</code> right after resuming from sleep, and the engine
+    recovers the moment the correct <code>true</code> arrives after initialization completes.
+  </p>
+
+  <div class="callout green">
+    <strong>Using shadow grace and epoch for different purposes:</strong>
+    For "stale observations after focus changed," FocusEpoch is used (Section 5).
+    For "temporary wrong values after resuming from sleep," a grace period is used.
+    The former is a problem of "the observation is old"; the latter is a problem of "the observation
+    itself is temporarily untrustworthy."
+    Each is handled with a different approach.
+  </div>
+
+</div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <p><a href="index.en.html">Home</a> | <a href="usage.en.html">Usage</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
+  <p>License: MIT / Apache 2.0</p>
+  <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
+</footer>
+
+</body>
+</html>
