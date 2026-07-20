@@ -13,8 +13,17 @@ fn win_key_held() -> bool {
 
 /// VK_DBE_HIRAGANA (F2) のキーダウン＋キーアップを SendInput で送信する。
 ///
-/// 送信後の時刻（`current_tick_ms` の値）を返す。
-pub(crate) fn send_vk_dbe_hiragana_pair() -> u64 {
+/// 戻り値: 実際に注入した場合 `Some(送信時刻ms)`（`current_tick_ms` の値）。
+/// Win キー押下中でスキップした場合 `None`。
+///
+/// **呼び出し元は `None` を「送信していない」として扱うこと** — スキップを送信成功
+/// 扱いで `eager_warmup_sent_ms` にラッチすると、この F2 が「物理 F2 キーの代替」
+/// （`PhysicalKeyDisposition::plan` が物理キーを Suppress した埋め合わせ）である
+/// ケースで、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定してしまう。
+/// `crate::ime::send_ime_mode_key` の BUG-16 追補（2026-07-07）と同型の欠陥
+/// （`docs/known-bugs.md` BUG-32 参照）。
+#[must_use]
+pub(crate) fn send_vk_dbe_hiragana_pair() -> Option<u64> {
     use crate::vk::VK_DBE_HIRAGANA;
 
     // Win キー押下中は送信をスキップする。
@@ -22,7 +31,7 @@ pub(crate) fn send_vk_dbe_hiragana_pair() -> u64 {
     // Win↑ 時にスタートメニューが開く原因になる。
     if win_key_held() {
         log::debug!("[tsf-warmup] skipped VK_DBE_HIRAGANA (Win key held)");
-        return crate::hook::current_tick_ms();
+        return None;
     }
 
     let inputs = [
@@ -30,5 +39,5 @@ pub(crate) fn send_vk_dbe_hiragana_pair() -> u64 {
         make_tsf_key_input(VK_DBE_HIRAGANA, true),
     ];
     let _ = crate::win32::send_input_safe(&inputs);
-    crate::hook::current_tick_ms()
+    Some(crate::hook::current_tick_ms())
 }

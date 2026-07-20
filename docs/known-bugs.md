@@ -3383,6 +3383,88 @@ romaji 再送せず backspace のみ）自体の緩和。BUG-27 追補2で「常
 
 ---
 
+## BUG-32: `send_vk_dbe_hiragana_pair` が Win キー押下中のスキップを送信成功と
+区別せず返し、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TSF native、GJI）で
+物理 F2（`VK_DBE_HIRAGANA`）キーで IME を OFF→ON にした直後、以降の入力が全て
+`[raw-tsf-literal] cold=N per-VK[0/1] suspected literal` → backspace リカバリを
+繰り返し、2回連続失敗で `giving up`（romaji 再送なし）に落ちて文字が消える。
+ユーザー実機報告（2026-07-20）:「入力しても文字がチラついててちゃんと入力できない」
+「IME ON だと shadow はなっているけど、実際は IME OFF なんだと思う」。ログで
+実際にその通りであることを確認した。
+
+**IME:** GJI（Google 日本語入力）。TsfNative（Windows Terminal・WezTerm 等）。
+
+**再現手順（実機ログで確認）:**
+1. 物理 F2（`VK_DBE_HIRAGANA`）KeyDown で shadow が OFF→ON にトグルする
+   （`Shadow IME toggle: OFF → ON (vk=0xF2, source=PhysicalImeKey)`）。
+2. `f2_warmup_owned=true`（GJI 戦略）のため `PhysicalKeyDisposition::plan` が
+   この物理キーを **Suppress**（OS/GJI に配送しない）と判断する
+   （`[tsf-f2] key suppress vk=0xf2 KeyDown (physical disposition)`）。
+   この設計は「物理キーの代わりに awase 自身が代替の F2 warmup を送る」ことが
+   前提（`key_pipeline.rs` のコメント参照、BUG-10 の教訓）。
+3. `CompositionFsm::NativeF2Down` → `EmitWarmup` → `Output::send_eager_tsf_warmup`
+   → `tsf::send::send_vk_dbe_hiragana_pair` が代替送信を試みるが、この瞬間
+   **Win キー押下中**だったため実際には `SendInput` を呼ばずスキップする
+   （`[tsf-warmup] skipped VK_DBE_HIRAGANA (Win key held)`）。
+4. しかし `send_vk_dbe_hiragana_pair`（旧実装）は送信した場合とスキップした場合の
+   **どちらも同じ `current_tick_ms()` を返す**ため、呼び出し元
+   `send_eager_tsf_warmup` は区別できず「VK_DBE_HIRAGANA 送信」とログを出し、
+   `eager_warmup_sent_ms` を送信済み扱いで更新する
+   （`[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms=...ms`）。
+5. 一方、`ime_controller::GjiDirectStrategy::apply` は `shadow_on == true` を見て
+   「物理キー側で ON 済みのはず」と判断し `VK_IME_ON` の送信自体をスキップする
+   （`[apply-ime] GJI direct: shadow ON, skip VK_IME_ON` →
+   `outcome=AlreadyMatched`）。
+6. 結果: 物理 F2（Suppress）・代替 F2（Win 押下でスキップ）・`VK_IME_ON`
+   （shadow ON によりスキップ）の**3経路すべてが実際には GJI に何も送っておらず**、
+   それにもかかわらず belief は `effective=true confident=true` で確定する。
+7. 2026-07-18 の cold-start 簡素化（BUG-24 追補参照）で「送信前に GJI 準備を待つ」
+   予防的待機は撤去済みで、literal 化の検出・回収は完全に per-VK confirm
+   （送信後のリカバリ）に一本化されている。per-VK confirm は romaji を再送する
+   だけで **IME-ON トグル自体を再試行しない**ため、GJI が実際には OFF のままだと
+   何度再送しても必ず literal 判定になり、2回連続失敗で `probe_io.rs` の
+   give-up 分岐（backspace のみ、再送なし）に落ちて文字が失われる。
+
+**原因（本質）:** `send_vk_dbe_hiragana_pair` の「Win キー押下中スキップ」が
+戻り値レベルで「送信成功」と区別不能だった。これは `crate::ime::send_ime_mode_key`
+が BUG-16 追補（2026-07-07）で修正した欠陥
+（「スキップを `Applied` 扱いにすると `applied_snapshot` がラッチされ再試行が
+全て no-op 化する」）と**全く同型**で、`send_ime_mode_key` 側だけが修正され、
+本関数（composition の eager warmup 専用パス）には同種の修正が入っていなかった。
+
+**修正 (2026-07-20):** `send_vk_dbe_hiragana_pair` の戻り値を `u64` から
+`Option<u64>`（`#[must_use]`）に変更。実際に `SendInput` した場合のみ
+`Some(送信時刻ms)`、Win キー押下中でスキップした場合は `None` を返す。
+呼び出し元 `Output::send_eager_tsf_warmup` は `None` のとき
+`eager_warmup_sent_ms` を更新せず、「送信した」ログも出さないよう変更した。
+
+**未解決の残課題（今回のスコープ外）:** 本修正は「スキップを送信成功と偽らない」
+ことのみを直しており、GJI に実際に IME-ON 信号を届ける再試行機構までは実装して
+いない。2026-07-18 の設計方針（pre-send 待機を撤去し per-VK confirm に一本化）は
+「literal 化した romaji の再送」は回収するが「IME トグル自体の再送」は回収しない
+という非対称性が残っている。次に同種の報告（Win キー押下中に物理 IME キーで
+ON にした直後の入力不能）があれば、per-VK confirm の give-up 分岐から
+`send_eager_tsf_warmup` を再試行する経路の追加を検討すること。
+
+**テスト:** `send_vk_dbe_hiragana_pair` は `crate::hook::is_physical_key_down` /
+`crate::win32::send_input_safe`（実 Win32 API）に依存するため、既存の warmup
+パス同様 Linux 上でのユニットテストは非現実的（`tsf` モジュール全体が
+`#[cfg(windows)]`）。`cargo check`/`cargo clippy -p awase-windows --lib --target
+x86_64-pc-windows-gnu -- -D warnings` 通過、`cargo test -p awase-windows --target
+x86_64-pc-windows-gnu --no-run` で lib・全 `tests/*.rs`（architecture_guard 含む）の
+コンパイル・リンクまで確認済み。wine 未導入のためこのサンドボックスでは `.exe`
+実行はできず、実機再検証は未実施。本記録で代替する。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/send.rs`
+（`send_vk_dbe_hiragana_pair` 主修正）、`crates/awase-windows/src/output/mod.rs`
+（`send_eager_tsf_warmup` 呼び出し元更新）。関連バグ: BUG-16 追補（同型の欠陥、
+`send_ime_mode_key` 側の修正）、BUG-10（f2_warmup_owned=false 側の食い逃げ）、
+BUG-24 追補（per-VK confirm への一本化）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

@@ -565,8 +565,11 @@ impl Output {
     /// `applied_ime_on`: 呼び出し元が知っている IME 開閉状態。`None` で latch にフォールバック。
     /// 値が false（IME OFF）または TSF モード以外では何もしない。
     ///
-    /// `eager_warmup_sent_ms` を現在時刻で更新する。NativeF2Consumed 等の前に
-    /// `mark_composition_cold` が呼ばれて 0 にリセットされるため二重更新は発生しない。
+    /// 実際に送信できた場合のみ `eager_warmup_sent_ms` を現在時刻で更新する。Win キー
+    /// 押下中で送信がスキップされた場合は更新しない（BUG-32: スキップを送信成功扱いに
+    /// すると、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する）。
+    /// 送信できた場合、NativeF2Consumed 等の前に `mark_composition_cold` が呼ばれて
+    /// 0 にリセットされるため二重更新は発生しない。
     pub fn send_eager_tsf_warmup(&self, applied_ime_on: Option<bool>) {
         if !self.conv_mutation_allowed.get() {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
@@ -584,9 +587,18 @@ impl Output {
         // カタカナ/英数系 charset への追従 warmup（F1/F0 系）は BUG-19 のロックイン
         // 事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。常に F2
         // (VK_DBE_HIRAGANA) のみを送る（ROMAN ビット確保のみで冪等なため反復送信も無害）。
-        let ms = crate::tsf::send::send_vk_dbe_hiragana_pair();
-        log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
-        self.composition.set_eager_warmup_sent_ms(ms);
+        match crate::tsf::send::send_vk_dbe_hiragana_pair() {
+            Some(ms) => {
+                log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
+                self.composition.set_eager_warmup_sent_ms(ms);
+            }
+            None => {
+                log::debug!(
+                    "[tsf-eager-warmup] スキップ (Win key held) → eager_warmup_sent_ms は \
+                     更新しない (BUG-32)"
+                );
+            }
+        }
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
