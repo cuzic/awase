@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>awase</id>
+    <version>1.10.0</version>
+    <packageSourceUrl>https://github.com/cuzic/awase/tree/main/packaging/choco</packageSourceUrl>
+    <owners>cuzic</owners>
+    <title>awase (NICOLA thumb-shift keyboard remapper)</title>
+    <authors>cuzic</authors>
+    <projectUrl>https://github.com/cuzic/awase</projectUrl>
+    <projectSourceUrl>https://github.com/cuzic/awase</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/cuzic/awase/issues</bugTrackerUrl>
+    <copyright>Copyright (c) 2026 cuzic</copyright>
+    <licenseUrl>https://github.com/cuzic/awase/blob/main/LICENSE-MIT</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>keyboard ime japanese nicola thumb-shift remapper</tags>
+    <summary>A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond</summary>
+    <description>
+awase is a Windows keyboard remapper that enables NICOLA thumb-shift Japanese input. It intercepts physical key events at a low level, detects simultaneous key presses using NICOLA-compliant timing arbitration (d1/d2 comparison), and sends the resulting romaji to the IME for conversion.
+
+Key features:
+
+- NICOLA-compliant simultaneous keystroke detection with 5 decision modes (wait / speculative / two-phase / adaptive-timing / n-gram predictive)
+- N-gram adaptive thresholding derived from a Wikipedia Japanese corpus for improved accuracy
+- Compatible with Yamabuki-format (.yab) keyboard layout files
+- Broad application compatibility (Win32 / UWP / TSF-native apps such as Chrome, VS Code, WezTerm)
+- Multi-layered fault tolerance: hook health monitoring, sleep/resume recovery, IME detection fallback, and automatic TSF cold-start recovery
+- Automatic focus detection that disables conversion outside text fields
+- System tray integration for layout switching, settings, and enable/disable toggling
+
+Note: the installer performs a per-user install (no admin rights required).
+    </description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
