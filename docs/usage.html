@@ -237,6 +237,70 @@ code,.code-block{
   .cat-thumb{background:#431407;color:#fdba74}
 }
 
+/* Keyboard layout diagram */
+.kbd-tabs{display:flex;gap:0.4rem;margin-bottom:1rem;flex-wrap:wrap}
+.kbd-tab{
+  font-size:0.88rem;
+  font-weight:600;
+  padding:0.45rem 0.9rem;
+  border-radius:8px;
+  border:1px solid var(--border);
+  background:var(--bg);
+  color:var(--text-secondary);
+  cursor:pointer;
+  font-family:inherit;
+}
+.kbd-tab:hover{color:var(--text)}
+.kbd-tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+
+.kbd-legend{display:flex;flex-wrap:wrap;gap:1.1rem;margin-bottom:1.3rem;font-size:0.82rem;color:var(--text-secondary)}
+.kbd-legend-item{display:flex;align-items:center;gap:0.4rem}
+.kbd-swatch{width:14px;height:14px;border-radius:3px;display:inline-block;border:1.5px solid var(--border)}
+.kbd-swatch.k{background:#dbeafe;border-color:#bfdbfe}
+.kbd-swatch.l{background:var(--bg)}
+.kbd-swatch.s{background:var(--bg-alt)}
+.kbd-swatch.e{background:transparent;border-style:dashed}
+@media(prefers-color-scheme:dark){
+  .kbd-swatch.k{background:#1e3a5f;border-color:#1e40af}
+}
+
+.kbd-wrap{overflow-x:auto;padding-bottom:0.5rem}
+.kbd-grid{display:flex;flex-direction:column;gap:6px;width:max-content;padding:0.2rem 0.1rem}
+.kbd-row{display:flex;gap:6px}
+.kbd-row.r1{margin-left:23px}
+.kbd-row.r2{margin-left:36px}
+.kbd-row.r3{margin-left:54px}
+.kbd-key{
+  width:46px;
+  height:46px;
+  border-radius:8px;
+  border:1.5px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:1.05rem;
+  font-weight:600;
+  color:var(--text);
+  background:var(--bg);
+  box-shadow:0 1px 0 var(--border);
+  user-select:none;
+  flex:none;
+}
+.kbd-key.k{background:#dbeafe;border-color:#bfdbfe;color:#1d4ed8}
+.kbd-key.s{background:var(--bg-alt);font-size:0.7rem;color:var(--text-secondary)}
+.kbd-key.e{background:transparent;border-style:dashed;box-shadow:none}
+@media(prefers-color-scheme:dark){
+  .kbd-key.k{background:#1e3a5f;border-color:#1e40af;color:#93c5fd}
+  .kbd-key.s{color:var(--text-secondary)}
+}
+@media(max-width:640px){
+  .kbd-key{width:36px;height:36px;font-size:0.85rem}
+  .kbd-key.s{font-size:0.62rem}
+  .kbd-row.r1{margin-left:18px}
+  .kbd-row.r2{margin-left:28px}
+  .kbd-row.r3{margin-left:42px}
+}
+
 /* Footer */
 footer{
   text-align:center;
@@ -268,6 +332,7 @@ footer p{margin-bottom:0.3rem}
     <a href="internals.html">内部動作</a>
     <a href="changelog.html">更新履歴</a>
     <a href="https://github.com/cuzic/awase">GitHub</a>
+    <a href="usage.en.html">English</a>
   </div>
 </nav>
 
@@ -312,6 +377,32 @@ footer p{margin-bottom:0.3rem}
 
     <p class="note" style="margin-top:1.2rem">
       IME が OFF のときはエンジンが自動的に停止するため、パスワード欄などでも誤動作しません。
+    </p>
+  </div>
+</section>
+
+<!-- 配列図 -->
+<section>
+  <div class="container">
+    <h2 class="section-title">NICOLA 標準配列図</h2>
+    <p class="section-lead">同梱のデフォルト配列（JIS版 <code>layout/nicola.yab</code> / US版 <code>layout/nicola_us.yab</code>）が、どのキーでどの文字を出力するかの一覧です。通常面は単独打鍵、他の3面は無変換・変換キー（親指シフト）または小指シフトキーとの同時打鍵で入力します。</p>
+
+    <div class="kbd-tabs" id="kbd-model-tabs" role="tablist"></div>
+    <div class="kbd-tabs" id="kbd-tabs" role="tablist"></div>
+
+    <div class="kbd-legend">
+      <span class="kbd-legend-item"><span class="kbd-swatch k"></span>ローマ字かな</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch l"></span>リテラル（記号・数字）</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch s"></span>特殊キー</span>
+      <span class="kbd-legend-item"><span class="kbd-swatch e"></span>未割当</span>
+    </div>
+
+    <div class="kbd-wrap">
+      <div id="kbd-grid" class="kbd-grid"></div>
+    </div>
+
+    <p class="note" style="margin-top:1rem">
+      配列は自由にカスタマイズできます。設定画面の「配列編集」タブで直接編集するか、独自の <code>.yab</code> ファイルを作成して切り替えられます（<a href="#layout-switch">レイアウトの切り替え</a>参照）。
     </p>
   </div>
 </section>
@@ -721,7 +812,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
 </section>
 
 <!-- レイアウト (.yab) の切り替え -->
-<section>
+<section id="layout-switch">
   <div class="container">
     <h2 class="section-title">レイアウト（.yab）の切り替え</h2>
     <p class="section-lead">親指シフト配列は .yab ファイルで定義されています。複数の配列を使い分けることができます。</p>
@@ -861,6 +952,117 @@ engine_off_solo_triple = "VK_NONCONVERT"
   <p>License: MIT / Apache 2.0</p>
   <p>Created by <a href="https://github.com/cuzic">cuzic</a></p>
 </footer>
+
+<script>
+// layout/nicola.yab（NICOLA 標準配列）の内容をそのまま図示したもの。
+// 各セルは [表示文字, 種別] で、種別は k=ローマ字かな / l=リテラル / s=特殊キー / e=未割当。
+const KBD_PLANES = [
+  { title: '通常面', rows: [
+    [['１','l'],['２','l'],['３','l'],['４','l'],['５','l'],['６','l'],['７','l'],['８','l'],['９','l'],['０','l'],['－','l'],['','e'],['','e']],
+    [['。','l'],['か','k'],['た','k'],['こ','k'],['さ','k'],['ら','k'],['ち','k'],['く','k'],['つ','k'],['，','l'],['、','l'],['','e']],
+    [['う','k'],['し','k'],['て','k'],['け','k'],['せ','k'],['は','k'],['と','k'],['き','k'],['い','k'],['ん','k'],['BS','s'],['Esc','s']],
+    [['．','l'],['ひ','k'],['す','k'],['ふ','k'],['へ','k'],['め','k'],['そ','k'],['ね','k'],['ほ','k'],['／','l'],['','e']],
+  ]},
+  { title: '左親指シフト', rows: [
+    [['？','l'],['／','l'],['～','l'],['「','l'],['」','l'],['［','l'],['］','l'],['（','l'],['）','l'],['｛','l'],['｝','l'],['','e'],['','e']],
+    [['ぁ','k'],['え','k'],['り','k'],['ゃ','k'],['れ','k'],['ぱ','k'],['ぢ','k'],['ぐ','k'],['づ','k'],['ぴ','k'],['','e'],['','e']],
+    [['を','k'],['あ','k'],['な','k'],['ゅ','k'],['も','k'],['ば','k'],['ど','k'],['ぎ','k'],['ぽ','k'],['よ','k'],['BS','s'],['Esc','s']],
+    [['ぅ','k'],['ー','l'],['ろ','k'],['や','k'],['ぃ','k'],['ぷ','k'],['ぞ','k'],['ぺ','k'],['ぼ','k'],['゛','l'],['','e']],
+  ]},
+  { title: '右親指シフト', rows: [
+    [['？','l'],['／','l'],['～','l'],['「','l'],['」','l'],['［','l'],['］','l'],['（','l'],['）','l'],['｛','l'],['｝','l'],['','e'],['','e']],
+    [['゜','l'],['が','k'],['だ','k'],['ご','k'],['ざ','k'],['よ','k'],['に','k'],['る','k'],['ま','k'],['ぇ','k'],['','e'],['','e']],
+    [['ゔ','k'],['じ','k'],['で','k'],['げ','k'],['ぜ','k'],['み','k'],['お','k'],['の','k'],['ょ','k'],['っ','k'],['BS','s'],['Esc','s']],
+    [['','e'],['び','k'],['ず','k'],['ぶ','k'],['べ','k'],['ぬ','k'],['ゆ','k'],['む','k'],['わ','k'],['ぉ','k'],['','e']],
+  ]},
+  { title: '小指シフト', rows: [
+    [['！','l'],['＂','l'],['＃','l'],['＄','l'],['％','l'],['＆','l'],['＇','l'],['（','l'],['）','l'],['：','l'],['＝','l'],['～','l'],['｜','l']],
+    [['Ｑ','l'],['Ｗ','l'],['Ｅ','l'],['Ｒ','l'],['Ｔ','l'],['Ｙ','l'],['Ｕ','l'],['Ｉ','l'],['Ｏ','l'],['Ｐ','l'],['＇','l'],['｛','l']],
+    [['Ａ','l'],['Ｓ','l'],['Ｄ','l'],['Ｆ','l'],['Ｇ','l'],['Ｈ','l'],['Ｊ','l'],['Ｋ','l'],['Ｌ','l'],['＋','l'],['＊','l'],['｝','l']],
+    [['Ｚ','l'],['Ｘ','l'],['Ｃ','l'],['Ｖ','l'],['Ｂ','l'],['Ｎ','l'],['Ｍ','l'],['＜','l'],['＞','l'],['？','l'],['＿','l']],
+  ]},
+];
+
+// layout/nicola_us.yab は layout/nicola.yab（JIS）から、US配列に存在しない
+// 物理キー（各面 row0 の末尾1列 / row2・row3 の末尾1列）を除いて生成されている
+// （row1 のみ JIS/US で同じ列数）。そのため US 面のデータは複製せず、
+// JIS面（KBD_PLANES）から機械的に導出する。
+function toUsRows(rows) {
+  return rows.map((row, rowIndex) => (rowIndex === 1 ? row : row.slice(0, -1)));
+}
+
+const KBD_MODELS = [
+  { key: 'jis', label: 'JIS配列（nicola.yab）', planes: KBD_PLANES },
+  {
+    key: 'us',
+    label: 'US配列（nicola_us.yab）',
+    planes: KBD_PLANES.map((plane) => ({ title: plane.title, rows: toUsRows(plane.rows) })),
+  },
+];
+
+(() => {
+  const modelTabsEl = document.getElementById('kbd-model-tabs');
+  const tabsEl = document.getElementById('kbd-tabs');
+  const gridEl = document.getElementById('kbd-grid');
+  if (!modelTabsEl || !tabsEl || !gridEl) return;
+
+  let modelIndex = 0;
+  let planeIndex = 0;
+
+  function renderGrid() {
+    gridEl.innerHTML = '';
+    KBD_MODELS[modelIndex].planes[planeIndex].rows.forEach((row, rowIndex) => {
+      const rowEl = document.createElement('div');
+      rowEl.className = `kbd-row r${rowIndex}`;
+      row.forEach(([label, type]) => {
+        const keyEl = document.createElement('div');
+        keyEl.className = `kbd-key ${type}`;
+        keyEl.textContent = label;
+        rowEl.appendChild(keyEl);
+      });
+      gridEl.appendChild(rowEl);
+    });
+  }
+
+  function renderPlaneTabs() {
+    tabsEl.innerHTML = '';
+    KBD_MODELS[modelIndex].planes.forEach((plane, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kbd-tab' + (i === planeIndex ? ' active' : '');
+      btn.textContent = plane.title;
+      btn.addEventListener('click', () => {
+        planeIndex = i;
+        renderPlaneTabs();
+        renderGrid();
+      });
+      tabsEl.appendChild(btn);
+    });
+  }
+
+  function renderModelTabs() {
+    modelTabsEl.innerHTML = '';
+    KBD_MODELS.forEach((model, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'kbd-tab' + (i === modelIndex ? ' active' : '');
+      btn.textContent = model.label;
+      btn.addEventListener('click', () => {
+        modelIndex = i;
+        planeIndex = 0;
+        renderModelTabs();
+        renderPlaneTabs();
+        renderGrid();
+      });
+      modelTabsEl.appendChild(btn);
+    });
+  }
+
+  renderModelTabs();
+  renderPlaneTabs();
+  renderGrid();
+})();
+</script>
 
 </body>
 </html>
