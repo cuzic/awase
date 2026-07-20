@@ -629,6 +629,49 @@ fn test_load_nicola_us_yab_file() {
     assert_eq!(layout.normal.get(&jis_only_pos), None);
 }
 
+#[test]
+fn test_load_nicola_f_yab_file() {
+    let path = std::path::Path::new("layout/nicola_f.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
+
+    // Verify basic structure
+    assert!(!layout.normal.is_empty());
+    assert!(!layout.left_thumb.is_empty());
+    assert!(!layout.right_thumb.is_empty());
+    assert!(!layout.shift.is_empty());
+
+    // NICOLA-F配列（もどき）はローマ字ではなく仮名を直接リテラルで持つ。
+    // 物理位置 (row2, col0) は NICOLA 本家と同じ「う」。
+    let a_pos = PhysicalPos::new(2, 0);
+    assert_eq!(
+        layout.normal.get(&a_pos),
+        Some(&YabValue::Literal("う".to_string()))
+    );
+    assert_eq!(
+        layout.left_thumb.get(&a_pos),
+        Some(&YabValue::Literal("を".to_string()))
+    );
+
+    // 未対応の特殊キーワード「濁」「半」は 無（None）に置き換え済み。
+    let unsupported_special_pos = PhysicalPos::new(1, 11);
+    assert_eq!(
+        layout.normal.get(&unsupported_special_pos),
+        Some(&YabValue::None)
+    );
+    assert_eq!(
+        layout.left_thumb.get(&unsupported_special_pos),
+        Some(&YabValue::None)
+    );
+    assert_eq!(
+        layout.right_thumb.get(&unsupported_special_pos),
+        Some(&YabValue::None)
+    );
+}
+
 // ── to_fullwidth_str テスト ──
 
 #[test]
