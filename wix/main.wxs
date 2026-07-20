@@ -4,11 +4,16 @@
            Name="awase"
            Language="1041"
            Version="$(var.Version)"
-           Manufacturer="awase"
+           Manufacturer="cuzic"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
     <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/cuzic/awase" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/cuzic/awase/issues" />
+    <Property Id="ARPCONTACT" Value="cuzic" />
+    <Property Id="ARPCOMMENTS" Value="A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
