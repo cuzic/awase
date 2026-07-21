@@ -849,6 +849,22 @@ pub(super) fn run_all() -> Result<()> {
         config.general.space_thumb_shift_literal,
     );
 
+    // 同様に、left/right のいずれかが無変換/変換に割り当てられている場合、
+    // その VK を伝える（config.rs の muhenkan/henkan_solo_tap_ignore_composing_guard
+    // doc 参照）。
+    let muhenkan_vk = [left_thumb_vk, right_thumb_vk]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_NONCONVERT);
+    let henkan_vk = [left_thumb_vk, right_thumb_vk]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_CONVERT);
+    engine.set_thumb_key_solo_tap_config(
+        muhenkan_vk,
+        config.general.muhenkan_solo_tap_ignore_composing_guard,
+        henkan_vk,
+        config.general.henkan_solo_tap_ignore_composing_guard,
+    );
+
     if let Some(vk) = config
         .keys
         .engine_off_solo_triple

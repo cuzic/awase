@@ -881,6 +881,18 @@ impl Runtime {
                 config.general.space_thumb_ignore_composing_guard,
                 config.general.space_thumb_shift_literal,
             );
+            let muhenkan_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_NONCONVERT);
+            let henkan_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_CONVERT);
+            self.engine.set_thumb_key_solo_tap_config(
+                muhenkan_vk,
+                config.general.muhenkan_solo_tap_ignore_composing_guard,
+                henkan_vk,
+                config.general.henkan_solo_tap_ignore_composing_guard,
+            );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,
