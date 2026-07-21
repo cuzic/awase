@@ -35,6 +35,7 @@ pub enum ConfirmMode {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // 設定ファイルの各トグル項目を1:1で表現
 pub struct GeneralConfig {
     /// 同時打鍵の判定閾値（ミリ秒）
     pub simultaneous_threshold_ms: u32,
@@ -163,6 +164,29 @@ pub struct GeneralConfig {
     /// 送出するか（NICOLA の小指シフト面は Shift 単独系で thumb-shift とは
     /// 組み合わせない設計のため、Shift 押下中は安全に即時パススルーできる）。
     pub space_thumb_shift_literal: bool,
+    /// `left_thumb_key`/`right_thumb_key` に無変換(`VK_NONCONVERT`)を割り当てている
+    /// 場合に限り効く設定。変換キーや Space 等他の VK には一切影響しない。
+    ///
+    /// 単独タップ（同時打鍵が不成立）確定時、IME の変換候補ウィンドウ表示中
+    /// （`composing`）でも構わず生 VK_NONCONVERT を送出するか。
+    ///
+    /// composing 中のガードはもともと MS-IME のかな/カタカナ切替・再変換の
+    /// 誤爆を防ぐための安全策として入れているため（`docs/known-bugs.md` BUG-25
+    /// 参照）、既定値は `false`（従来通り composing 中は suppress）。単独タップで
+    /// 無変換キー本来の機能（かな変換の取り消し等）を使いたい場合のみ `true` にする。
+    ///
+    /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
+    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    /// 別ウィンドウへの生 VK 誤注入を防ぐための安全策で、ユーザーが設定できる
+    /// 範囲ではない。
+    pub muhenkan_solo_tap_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
+    /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
+    ///
+    /// 単独タップ（同時打鍵が不成立）確定時、IME の変換候補ウィンドウ表示中
+    /// （`composing`）でも構わず生 VK_CONVERT を送出するか。既定値・注意点は
+    /// `muhenkan_solo_tap_ignore_composing_guard` と同様。
+    pub henkan_solo_tap_ignore_composing_guard: bool,
 }
 
 impl Default for GeneralConfig {
@@ -188,6 +212,8 @@ impl Default for GeneralConfig {
             keyboard_model: KeyboardModel::Jis,
             space_thumb_ignore_composing_guard: true,
             space_thumb_shift_literal: true,
+            muhenkan_solo_tap_ignore_composing_guard: false,
+            henkan_solo_tap_ignore_composing_guard: false,
         }
     }
 }

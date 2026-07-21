@@ -132,6 +132,23 @@ pub struct NicolaFsm {
     /// Shift を押しながら Space 親指キーを押した場合、同時打鍵判定を試みず
     /// 即座にリテラルなスペースとして送出するか。`space_thumb_vk` が `None` なら無効。
     space_thumb_shift_literal: bool,
+
+    /// `left_thumb_key`/`right_thumb_key` のいずれかが無変換 (`VK_NONCONVERT`) に
+    /// 割り当てられている場合、その VK コード。`space_thumb_vk` と同様、実際の VK
+    /// 番号は Platform 層の責務で、core は等値比較のみ行う。
+    muhenkan_vk: Option<VkCode>,
+
+    /// 無変換キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
+    /// 生 VK を送出するか。`muhenkan_vk` が `None` なら無効。
+    muhenkan_solo_tap_ignore_composing_guard: bool,
+
+    /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
+    /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
+    henkan_vk: Option<VkCode>,
+
+    /// 変換キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
+    /// 生 VK を送出するか。`henkan_vk` が `None` なら無効。
+    henkan_solo_tap_ignore_composing_guard: bool,
 }
 
 // ── 公開 API ──
@@ -168,6 +185,13 @@ impl NicolaFsm {
             space_thumb_vk: None,
             space_thumb_ignore_composing_guard: true,
             space_thumb_shift_literal: true,
+            // 無変換/変換の VK は Platform 層が set_thumb_key_solo_tap_config() で
+            // 明示的に配線するまで None。ガード既定値は GeneralConfig::default() と
+            // 揃えて false（従来通り composing 中は抑制）。
+            muhenkan_vk: None,
+            muhenkan_solo_tap_ignore_composing_guard: false,
+            henkan_vk: None,
+            henkan_solo_tap_ignore_composing_guard: false,
         }
     }
 
@@ -353,6 +377,26 @@ impl NicolaFsm {
         self.space_thumb_vk = space_thumb_vk;
         self.space_thumb_ignore_composing_guard = ignore_composing_guard;
         self.space_thumb_shift_literal = shift_literal;
+    }
+
+    /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
+    ///
+    /// `muhenkan_vk`/`henkan_vk` は `left_thumb_key`/`right_thumb_key` がそれぞれ
+    /// 無変換/変換に解決された場合の VK コード（Platform 層が判定して渡す）。
+    /// 割り当てられていなければ `None` を渡すこと。各 `ignore_composing_guard` は
+    /// `GeneralConfig::muhenkan_solo_tap_ignore_composing_guard`/
+    /// `henkan_solo_tap_ignore_composing_guard` にそのまま対応する。
+    pub const fn set_thumb_key_solo_tap_config(
+        &mut self,
+        muhenkan_vk: Option<VkCode>,
+        muhenkan_ignore_composing_guard: bool,
+        henkan_vk: Option<VkCode>,
+        henkan_ignore_composing_guard: bool,
+    ) {
+        self.muhenkan_vk = muhenkan_vk;
+        self.muhenkan_solo_tap_ignore_composing_guard = muhenkan_ignore_composing_guard;
+        self.henkan_vk = henkan_vk;
+        self.henkan_solo_tap_ignore_composing_guard = henkan_ignore_composing_guard;
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
@@ -980,6 +1024,12 @@ impl NicolaFsm {
     /// （かな/カタカナ切替・再変換の誤発火防止）で composing 中に抑制すると、通常の
     /// 変換操作そのものが壊れるため。
     ///
+    /// **無変換/変換の明示的なオプトアウト**: `muhenkan_vk`/`henkan_vk` に一致し、
+    /// それぞれ対応する `*_solo_tap_ignore_composing_guard` が true の場合も同様に
+    /// composing 中でも生 VK を送出する。既定値は `false`（従来通り抑制）で、
+    /// ユーザーが明示的に有効化した場合のみ、上記のかな/カタカナ切替等の副作用
+    /// リスクを引き受けて composing 中の単独タップを素通しさせる。
+    ///
     /// タイムアウト経路（`timeout_pending_thumb`）とフラッシュ経路（`flush_pending`、
     /// `decide_pending_thumb` の Passthrough 割り込み、`step_pending_thumb_char`/
     /// `step_pending_thumb_thumb`）の双方から共通で呼ぶ。以前はフラッシュ経路が
@@ -1004,7 +1054,13 @@ impl NicolaFsm {
 
         let is_space_with_fallback =
             self.space_thumb_vk == Some(vk_code) && self.space_thumb_ignore_composing_guard;
-        if composing && !is_space_with_fallback {
+        let is_muhenkan_with_fallback =
+            self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_ignore_composing_guard;
+        let is_henkan_with_fallback =
+            self.henkan_vk == Some(vk_code) && self.henkan_solo_tap_ignore_composing_guard;
+        let ignore_composing_guard =
+            is_space_with_fallback || is_muhenkan_with_fallback || is_henkan_with_fallback;
+        if composing && !ignore_composing_guard {
             return ResolvedAction {
                 actions: SmallVec::new(),
                 output: OutputUpdate::None,

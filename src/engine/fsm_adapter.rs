@@ -109,6 +109,22 @@ impl FsmAdapter {
             .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
     }
 
+    /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
+    pub(super) const fn set_thumb_key_solo_tap_config(
+        &mut self,
+        muhenkan_vk: Option<crate::types::VkCode>,
+        muhenkan_ignore_composing_guard: bool,
+        henkan_vk: Option<crate::types::VkCode>,
+        henkan_ignore_composing_guard: bool,
+    ) {
+        self.fsm.set_thumb_key_solo_tap_config(
+            muhenkan_vk,
+            muhenkan_ignore_composing_guard,
+            henkan_vk,
+            henkan_ignore_composing_guard,
+        );
+    }
+
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         self.fsm.take_engine_off_requested()

@@ -101,6 +101,27 @@ impl Engine {
             .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
     }
 
+    /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
+    ///
+    /// `muhenkan_vk`/`henkan_vk` は `left_thumb_key`/`right_thumb_key` がそれぞれ
+    /// 無変換/変換に解決された場合の VK コード（Platform 層が判定して渡す。
+    /// 割り当てられていなければ `None`）。各 `ignore_composing_guard` は
+    /// `GeneralConfig` の同名フィールドにそのまま対応する。
+    pub const fn set_thumb_key_solo_tap_config(
+        &mut self,
+        muhenkan_vk: Option<VkCode>,
+        muhenkan_ignore_composing_guard: bool,
+        henkan_vk: Option<VkCode>,
+        henkan_ignore_composing_guard: bool,
+    ) {
+        self.adapter.set_thumb_key_solo_tap_config(
+            muhenkan_vk,
+            muhenkan_ignore_composing_guard,
+            henkan_vk,
+            henkan_ignore_composing_guard,
+        );
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
