@@ -407,17 +407,35 @@ pub(crate) async fn run_per_vk_confirm(
                 return;
             }
             DetectionResult::StaleConfirm => {
-                // ADR-079 Stage 1: fencing による検出のみ実装し、recovery
-                // （ESC + retype + replay）は Stage 2 で追加する。ここでは
-                // 実機ログでの観測のためログのみ残し、これ以上の backspace 等の
-                // 破壊的操作は行わず現状維持で終了する。
+                // ADR-079 Stage 1 追補（実機で発見した回帰の修正）: 「候補ウィンドウ
+                // 既に可視」ショートカットは per-VK confirm の**1文字目**でも発火し
+                // うる（前世代の後始末ではなく、フォーカス変更前からの残留 GJI UI
+                // 状態等が原因）。この場合に「検出のみ・recovery なし」で単に Done
+                // にすると、まだ送信していない後続 VK が一切送られないまま処理が
+                // 終了し、既に送信済みの VK（このVKの生文字）だけが取り残されて
+                // 消失・文字化けする実害が生じた（実機報告 2026-07-22:
+                // 「これでできる」→「kれでできる」）。
+                //
+                // fencing が「この confirm 根拠は信用できない」と判定した以上は、
+                // 何もしないより既存の SuspectedLiteral と同じ回収
+                // （backspace + romaji 再送）に倒す方が安全側である。ログタグは
+                // 区別して残し、実地でどの程度発火するかは引き続き観測する。
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
                 log::warn!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
-                     (vk=0x{:02X}) — ADR-079 Stage1: recovery 未実装のため現状維持のみ",
+                     → suspected literal と同じ回収 (backspace+再送) を行う (vk=0x{:02X} \
+                     escape={escape_composition})",
                     vk.0,
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
-                yield_step(ch.clone(), vec![ProbeAction::Done]).await;
+                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                    cold_seq,
+                    romaji.to_string(),
+                    backs,
+                    escape_composition,
+                );
+                yield_step(ch.clone(), actions).await;
                 return;
             }
         }
@@ -542,13 +560,23 @@ async fn tsf_probe_coro_body(
                 vec![ProbeAction::Done]
             }
             DetectionResult::StaleConfirm => {
-                // ADR-079 Stage 1: 検出のみ。ESC/retype/replay は Stage 2 で追加する。
+                // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
+                // 未送信 VK が欠落する回帰を引き起こした（run_per_vk_confirm 側の
+                // 同種修正のコメント参照）。SuspectedLiteral と同じ回収に倒す。
                 log::warn!(
-                    "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 — \
-                     ADR-079 Stage1: recovery 未実装のため現状維持のみ"
+                    "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
+                     suspected literal と同じ回収 (backspace+再送) を行う"
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
-                vec![ProbeAction::Done]
+                vec![
+                    ProbeAction::RawTsfLiteralRecovery {
+                        cold_seq,
+                        backs: ze_bs_count,
+                        romaji: recovery_romaji,
+                        escape_composition: false,
+                    },
+                    ProbeAction::Done,
+                ]
             }
         };
 
@@ -882,12 +910,22 @@ mod tests {
     // ── ADR-079: epoch fencing（「既に可視」ショートカット）の回帰テスト ──────
 
     /// 候補ウィンドウが「既に可視」でも、直近の GJI I/O が今回の VK 送信より前
-    /// （前世代の残存合成）にしか裏付けられていなければ `StaleConfirm` として
-    /// 扱われ、Stage 1（検出のみ）では backspace 等の破壊的操作を一切行わず
-    /// `Done` のみを返すことを確認する（ADR-079 コンテキスト節の実機トレースが
-    /// 示した誤帰属パターンの再発防止）。
+    /// （前世代の残存合成、あるいはフォーカス変更前からの残留 GJI UI 状態）にしか
+    /// 裏付けられていなければ `StaleConfirm` として扱われ、既存の
+    /// `SuspectedLiteral` と同じ回収（backspace + romaji 再送）を行うことを
+    /// 確認する。
+    ///
+    /// 当初は「検出のみ・recovery なし（ただの Done）」だったが、これは per-VK
+    /// confirm の**1文字目**でこの経路が発火した場合（前世代の後始末ではなく、
+    /// フォーカス変更直後の残留 UI 状態等が原因）に、まだ送信していない後続 VK
+    /// が一切送られないまま処理が終了し、既に送信済みの VK の生文字だけが
+    /// 取り残される実害を実機で引き起こした（2026-07-22 実機報告:
+    /// 「これでできる」→「kれでできる」、docs/known-bugs.md BUG-33 追補）。
+    /// fencing が「信用できない」と判定した confirm は、何もしないより
+    /// 既存の安全な回収パスに倒す方が正しい。
     #[test]
-    fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_does_not_backspace() {
+    fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal()
+    {
         use crate::tsf::observer::TSF_OBS;
         use std::sync::atomic::Ordering::SeqCst;
 
@@ -929,15 +967,11 @@ mod tests {
         });
 
         assert!(
-            !actions_after_stale
+            actions_after_stale
                 .iter()
                 .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
-            "stale confirm 検出時に backspace を発行してはいけない（Stage1は検出のみ）: \
-             {actions_after_stale:?}"
-        );
-        assert!(
-            matches!(actions_after_stale.as_slice(), [ProbeAction::Done]),
-            "stale confirm 検出時は Done のみを返すはず（recovery は Stage2）: \
+            "stale confirm 検出時は suspected literal と同じく backspace 回収を \
+             発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
              {actions_after_stale:?}"
         );
 

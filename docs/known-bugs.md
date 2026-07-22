@@ -3568,6 +3568,41 @@ candidate SHOW 由来の fencing は benign なポーリングレースと本物
 suspected-literal 誤判定の既知の限界）、
 [ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
 
+**追補（2026-07-22 実機）: 「検出のみ・recovery なし」が未送信 VK の欠落を招く
+regression を引き起こしたため、SuspectedLiteral と同じ回収に倒した。**
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`）から Chrome/msedge
+（`Chrome_WidgetWin_1`、Imm32Unavailable、GJI）へフォーカス変更した直後、最初の
+1文字「こ」（romaji "ko"）が「k」だけ残って「れ」以降と連結し、「これでできる」が
+「kれでできる」になった。
+
+**原因:** per-VK confirm の VK0（'K'）送信直後、BUG-29 由来の「候補ウィンドウ
+既に可視」ショートカットが発火し、fencing が `gji_last_write_ms`
+（epoch より約1.3秒前）を根拠に正しく `StaleConfirm` と判定した。ここまでは
+意図通り。しかし本 Stage 1 の当初実装は `StaleConfirm` を「検出のみ・recovery
+なし（ただの `Done`）」として扱っており、per-VK confirm ループがこの時点で
+即座に終了してしまっていた。この「既に可視」ショートカットは per-VK confirm
+の**1文字目**でも発火しうる（ADR-079 本体が想定していた「同一タイピング中に
+一度 backspace した後の世代」ではなく、**フォーカス変更直前からの残留 GJI UI
+状態**が原因）ため、まだ VK1（'O'）を一度も送信していない段階で処理が終了し、
+既に送信済みの VK0 の生文字「k」だけが取り残された。
+
+**修正:** `StaleConfirm` を「信用できない confirm」として扱い、既存の
+`SuspectedLiteral` と全く同じ回収アクション（`per_vk_recovery_params`/
+`emit_recovery_actions` によるバックスペース + romaji 再送、あるいは
+`LiteralDetectCore::poll`/Chrome inline LiteralDetect の同型パス）を発行する
+よう変更した。「信用できないから何もしない」ではなく「信用できないから
+今まで通りの安全な回収パスに倒す」方が正しいと判断した。ログタグ
+（`epoch-fence-stale`）は区別して残し、実地で `StaleConfirm` がどの程度
+発火するかの観測（本来の Stage 1 の目的）は引き続き継続する。
+
+**なぜ最初にこれを見落としたか:** 設計レビュー（Opus）は「retype 対象の取り
+違え」「SHOW 由来 fencing のレース」という fencing の**判定ロジック**の欠陥は
+指摘したが、判定結果を受けた**per-VK confirm ループ側のアクション**（1文字目
+で発火した場合に後続 VK が失われる）までは検証しておらず、実装者（本セッション）
+も机上のユニットテストのみで実機投入前の検証を止めていた。実機ログでの
+即時発見・修正に留められた。
+
 ---
 
 ## デバッグ方法

@@ -2,12 +2,15 @@
 
 ## ステータス
 
-Stage 1（epoch fencing の検出のみ、recovery 無し）実装済み（2026-07-22、
-`docs/known-bugs.md` BUG-33）。Stage 2（quarantine → ESC + retype + replay）は
-未実装。詳細は BUG-33 の「未解決の follow-up」を参照。Stage 2 着手前に、
-実機で Stage 1 の `[epoch-fence] stale confirm` ログを観測し信号の質を
-確認することを推奨する（設計レビューで見つかった懸念、後述「未解決事項」
-参照）。
+Stage 1（epoch fencing の検出 + 既存 `SuspectedLiteral` と同型の回収）実装済み
+（2026-07-22、`docs/known-bugs.md` BUG-33）。当初は「検出のみ・recovery 無し」
+だったが、per-VK confirm の1文字目でこの経路が発火すると未送信 VK が欠落する
+regression を実機で引き起こしたため、BUG-33 追補で「stale confirm を検出したら
+既存の backspace + romaji 再送に倒す」方式に修正済み。Stage 2（quarantine →
+ESC + 消えた文字の retype + 後続入力の限定 replay）は未実装。詳細は BUG-33 の
+「未解決の follow-up」を参照。Stage 2 着手前に、実機で Stage 1 の
+`[epoch-fence-stale]` ログを観測し信号の質を確認することを推奨する
+（設計レビューで見つかった懸念、後述「未解決事項」参照）。
 
 ## コンテキスト
 
