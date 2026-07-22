@@ -1394,6 +1394,83 @@ ON 方向には対称の実装（`apply_force_on_for_imm_broken`、`runtime/mod.
 Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.rs` と同じ制約）。
 実機（Windows Terminal/Chrome + GJI）での動作確認は未実施。
 
+**追補（2026-07-21、修正が dead code で一度も実行されていなかったことが判明・再修正済み）:**
+
+**症状:** Windows Terminal（`Windows.UI.Input.InputSite.WindowClass`、`force-tsf` 判定で
+`profile=TsfNative`、GJI）で、症状発生前の直近フォーカスは msedge（`Chrome_WidgetWin_1`,
+`Imm32Unavailable`）だった。Windows Terminal 側で `Ctrl+無変換`（vk=0x1D, ctrl=true）を
+押下し `IME OFF (key combo)` を送信、`[apply-ime] GJI direct: send 0x001A (open=false)` →
+`outcome=Applied` → `SetOpen(false) applied → Off (belief, unconfirmed)` まではログ上
+正常に見えるが、以後37秒間（実機ログ 01:16:34〜01:17:11 確認）にわたって実 conv は
+一度も `0x00000019`（NATIVE|FULLSHAPE|ROMAN = ひらがなローマ字、IME 実体は ON のまま）
+から変化しなかった。この間 `[idle-conv-check]` は
+`conv observation open=true reason=NativeToggleShadowOff → ObserverReported として記録
+(engine は actuate しない)` を継続的に出力するが、それを補正するはずの
+`[drift] correction:` ログは一度も出力されなかった。ユーザーはタイピングを継続していた
+（`idle_ms` が `TYPING_IDLE_MS` を割らない）ため、この間ずっと belief 上は
+IME OFF（`desired_open=false`）、実 IME は ON のまま、という BUG-20 と同一症状
+（IME ON / Engine OFF 系の乖離固着）が再現した。
+
+**原因（確定）:** BUG-20 の修正コミット（`e8ffcd6`）は `ir_apply_drift_correction()`
+に `can_use_imm32_cross_process()` による分岐（ImmCross は `set_ime_open`、
+non-ImmCross は `apply_ime_open_with_belief` 経由の実 VK 送信）を追加したが、
+関数冒頭に **BUG-20 修正前から存在していた** 次のガードを消し忘れていた。
+
+```rust
+fn ir_apply_drift_correction(&mut self) {
+    if self.ir_resolve_skip_imm_query() {   // = !can_use_imm32_cross_process()
+        return;
+    }
+    ...
+```
+
+`ir_resolve_skip_imm_query()` は `!can_use_imm32_cross_process()` そのものであり、
+GJI/TsfNative（Windows Terminal・Chrome 等）や Blacklist アプリでは常に `true` を
+返す。つまり BUG-20 で追加した non-ImmCross 分岐（`else` 節）は、それが実行される
+べき条件のときに **必ずこの早期 `return` で先に抜けてしまい、構造的に到達不能な
+dead code** になっていた。`check_drift_correction`（純粋関数、`platform_state.rs`）
+自体は `explicit_intent=Some(false)`（Ctrl+無変換 由来）と `desired=false` が一致し
+`trusted.open=true` との乖離が 400ms（`DRIFT_CORRECTION_THRESHOLD_MS`）を超えている
+ため即座に `Some((false, true, duration_ms))` を返す状態だったが、呼び出し元の
+`ir_apply_drift_correction` がその手前で毎回無言で return していたため一度も
+`log::warn!("[drift] correction: ...")` すら出力されなかった（早期 return に
+ログが無いため、症状発生中のログを見ても「何も起きていない」ようにしか見えない）。
+
+BUG-20 のコミットメッセージ・`known-bugs.md` 本文どちらにも「実機検証は未実施」と
+明記されていた通り、この dead code は一度も実機で検証されないまま今日まで残っていた。
+
+**なぜ強制再送は安全か（BUG-19 との関係）:** この修正は「conv が desired と食い違って
+いたら強制的に再送する」という、BUG-19 が問題にした挙動（conv の一発誤読だけを根拠に
+`desired_open` を書き換えてユーザーの明示 OFF を踏み潰す）の再燃に見えるかもしれないが、
+別物である。`check_drift_correction` は BUG-19/BUG-20 で追加された次の二重ガードを
+維持したまま呼び出される:
+
+1. `trusted.source == ConvOpenInference && explicit_intent.is_none()` の場合は補正を
+   発火させない（`platform_state.rs:442-444`、`desired_open` そのものへの書き込みは
+   一切発生しない — この修正は `desired_open` を経由せず、既に確定している `desired`
+   を実機に再送するだけ）。
+2. 今回のシナリオは `explicit_intent=Some(false)` が `desired=false` と一致する
+   （ユーザーが実際に Ctrl+無変換 を押した）ため、上記ガードを素通りし、正しく
+   `desired`（ユーザーの意図した値）を再送する設計通りの経路に入る。
+
+**修正:** `ir_apply_drift_correction()` 冒頭の `ir_resolve_skip_imm_query()` 早期
+`return` を削除。呼び出し元 `ir_stage_notify()` のコメント（「ImmCross アプリ向け」）
+も実態に合わせて更新。
+
+**検証状況:** Linux 上で `cargo build -p awase-windows --target x86_64-pc-windows-gnu`
+（クロスコンパイル成功）、`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu
+-- -D warnings`（警告なし）、`cargo test -p awase-windows --lib`（135件全通過）、
+`cargo test -p awase-windows --test golden_scenarios --test architecture_guard
+--test layer_boundary_guard --test journal_replay`（全通過）を確認済み。
+`ir_apply_drift_correction` の先（`unsafe` Win32 API 群）は BUG-20 と同じ制約で
+Linux 上でのユニットテストが書けないため、実機（Windows Terminal + GJI、Ctrl+無変換
+での明示 OFF 後に conv が変化しないケース）での動作確認は引き続き未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_apply_drift_correction`, `ir_stage_notify`）
+
+**関連バグ:** BUG-19（`check_drift_correction` の `explicit_intent` ガードの根拠）
+
 ---
 
 ## BUG-21: Chrome の cold-start 復帰処理が重症度 (Short/Medium/Long) を無視し、確定キー/IME再有効化のたびに過剰発火する
