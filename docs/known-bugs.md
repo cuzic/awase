@@ -3574,7 +3574,20 @@ confirm を一切通らない）にはこの直接呼び出しは効かないた
 x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings`（警告
 ゼロ）、`cargo test -p awase-windows --target x86_64-pc-windows-gnu --no-run`（lib・
 `tests/*.rs` 全ファイルのコンパイル・リンク）確認済み。wine 未導入のためこのサンドボックス
-では `.exe` 実行はできず、実機再検証は未実施。
+では `.exe` 実行はできない（実機確認結果は下記「実機ソーク結果」）。
+
+**実機ソーク結果 (2026-07-22、修正コミット `fabe6d6` 反映後):** ユーザーが Chrome+GJI で
+通常使用を継続。修正前は本バグ記載の症状（`giving up, backs=1 cleanup only (no re-send)`
+ログが連発、体感でも VK_BACK の誤発火が多発）が出ていたが、修正後は `[raw-tsf-literal] ...
+giving up` ログ自体が一度も出ていないことを確認（ユーザー報告: 「giving up のログはない
+ね」「一時はすごくVK_BACKが誤発火していたけど、なくなってる」）。厳密な時間・シナリオを
+区切った多日ソーク（BUG-31/BUG-21 のような）ではなく通常使用中の確認のため、継続して
+様子を見ること。give-up 自体が0件ということは、per-VK confirm の初回疑い
+（`consecutive == 0`、backspace + romaji 再送）の時点で既に回収できている、または
+そもそも suspected literal 自体が発生していない可能性がある。「give-up には至るが
+reinit で後続文字が正常化する」ケースを意図的に踏んだ確認ではまだないため、
+`send_chrome_gji_reinit_and_poll` 呼び出し自体の実効性（VK_IME_OFF→VK_IME_ON 後に
+GJI が実際に ON に戻るか）は次回 give-up が実機で発生した際にログで確認すること。
 
 **関連ファイル:** `crates/awase-windows/src/output/probe_io.rs`
 （`RawTsfLiteralRecovery` ハンドラ、`send_chrome_gji_reinit_and_poll` のレート制限）、
