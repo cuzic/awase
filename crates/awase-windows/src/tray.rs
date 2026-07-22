@@ -935,11 +935,13 @@ unsafe extern "system" fn tray_wnd_proc(
             LRESULT(0)
         }
         WM_CLOSE => {
-            // DefWindowProcW は WM_CLOSE を DestroyWindow → WM_DESTROY → PostQuitMessage に
-            // 変換してしまうため、意図しない Alt+F4 等によるシャットダウンを防ぐ。
-            // トレイウィンドウは常に非表示であり、明示的な終了操作（トレイメニュー "終了"）
-            // 以外では閉じるべきでない。
-            log::warn!("Tray window received unexpected WM_CLOSE — ignoring to prevent accidental shutdown");
+            // トレイウィンドウは常に非表示（WS_VISIBLE なし、ShowWindow も未呼び出し）で
+            // フォーカスを持てないため、Alt+F4 の対象にはなり得ない。実際に WM_CLOSE が
+            // 届くのは taskkill（/f なし）やタスクマネージャーの「タスクの終了」など、
+            // 外部からの明示的な終了要求のみ（2026-07-22 実機ログで確認済み）。
+            // これらを正常終了として受理する。
+            log::info!("Tray window received WM_CLOSE — shutting down");
+            PostQuitMessage(0);
             LRESULT(0)
         }
         WM_DESTROY => {
