@@ -3465,6 +3465,111 @@ BUG-24 追補（per-VK confirm への一本化）。
 
 ---
 
+## BUG-33: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として
+誤って採用し、見捨てた世代の backspace が別スコープの確定済み文字を消す（ADR-079、Stage 1: 検出のみ実装）
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、GJI、TSF-native）で
+高速に連続入力すると、Ctrl+無変換で IME OFF → `4`→`1`（半角数字、直接パススルー）
+→ 物理サムキーで IME 再 ON → 「ふん」と続けて入力したところ、**「41分」と入力
+したはずが「4分」になった**（`1` が消失）。消えたのは疑わしいと判定された文字
+ではなく、直前の別スコープ（IME OFF 中）で既に確定済みの実文字だった。
+ユーザー実機報告・詳細な時系列診断は
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md) のコンテキスト
+節を参照（2026-07-22）。
+
+**IME:** Google 日本語入力（GJI）。Windows Terminal（TSF-native、per-VK confirm
+経路）。
+
+**再現手順（実機ログで確認、ADR-079 参照）:**
+1. romaji "fu" を per-VK confirm で1文字ずつ送信（cold=263）。VK0（F）は
+   candidate SHOW を根拠に confirmed、VK1（U）は 300ms deadline を約41ms
+   超過して `SuspectedLiteral` と誤判定（実際には合成は成功していた、false
+   positive）。
+2. per-VK confirm の recovery（`per_vk_recovery_params(idx=1)`）が
+   `backs=1, escape_composition=true` を返し、`VK_ESCAPE`（本物の pending
+   composition を破棄）+ `VK_BACK`×1 を送信。composition 側に破棄すべき
+   literal は存在しなかったため、`VK_BACK` は代わりに手前の唯一の確定済み
+   文字 `1` を消してしまう。
+3. romaji "fu" が cold=264 として再送される。
+4. 再送後、候補ウィンドウ SHOW イベントが発火し VK0（F）を confirmed 判定するが、
+   `last_gji_write` を逆算すると実際の GJI I/O は cold=263（見捨てた世代）の
+   ものであり、cold=264 自身の送信より前に起きていた。つまり **前世代の残存
+   証拠を現世代の confirm として誤って使い回していた**。
+
+**原因（本質）:** `LiteralDetector::check_now`（`tsf/probe.rs`）および
+`await_vk_detection` の「候補ウィンドウ既に可視」ショートカット
+（`tsf/warmup/probe_fsm.rs`、BUG-29 由来）は、confirm の根拠（candidate SHOW /
+write-bytes 増加）が「どの送信世代に由来するか」を一切区別していなかった。
+候補ウィンドウの SHOW/HIDE や write-bytes 増加は、対応する GJI I/O が現在の
+送信より後に起きたことを保証しない非同期シグナルであり、Chandra-Toueg の
+unreliable failure detector と同型の曖昧さを持つ（詳細は ADR-079「理論的背景」
+節）。
+
+**修正 (2026-07-22, Stage 1 — 検出のみ):** epoch fencing を導入した。
+- `LiteralDetector` に `epoch_send_ms`（構築時 = VK/バッチ送信時刻）を追加し、
+  `DetectionResult` に `StaleConfirm` を新設。`check_now` は confirm 根拠
+  （write-bytes 閾値超過 / candidate SHOW）が実際に `gji_last_write_ms()`
+  （既存の GJI I/O 最終書き込み時刻）で `epoch_send_ms` 以降に裏付けられて
+  いるかを確認する。
+- write-bytes 由来の confirm は `gji_last_write_ms` の更新と同一ポーリング
+  サンプルで自己整合するため即時判定。candidate SHOW 由来の confirm は
+  `EVENT_OBJECT_SHOW` が write-bytes ポーリング（`GJI_SAMPLE_INTERVAL_MS`=10ms）
+  より早く届きうる benign なレースがあるため、即断せず最大2ポーリング分
+  （`LiteralDetector::EPOCH_FENCE_GRACE_MS`=20ms）だけ `gji_last_write_ms` が
+  追いつくのを待ってから再判定する。
+- `gji_last_write_ms() == 0`（GJI I/O monitor 未アタッチ等で一度も観測して
+  いない）の場合は fencing 自体を無効化し従来通りの confirm 判定に
+  フォールバックする（false-negative の温床にしないため）。
+- `await_vk_detection` の「候補ウィンドウ既に可視」ショートカット（BUG-29）
+  にも同じ fencing 条件を適用した。まさにこのショートカットが実機トレースで
+  誤発火した箇所（前世代の合成が残したままの可視状態を、現世代の VK0 送信の
+  confirm として即座に採用していた）。
+
+**本コミットのスコープ（意図的な限定）:** `StaleConfirm` を検出しても
+ESC/retype/replay は一切行わず、warn ログ（`[epoch-fence] ...` /
+`ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale")`）を
+残すのみで現状維持する（**ADR-079 の Stage 1**）。これは実装計画の設計レビュー
+（Opus によるセカンドオピニオン）で、当初想定していた「quarantine → ESC →
+retype → replay」機構に2件の設計欠陥（(1) リングバッファに「送信した順」で
+記録すると pre-edit の未確定合成文字を retype 対象に取り違える、(2)
+candidate SHOW 由来の fencing は benign なポーリングレースと本物の stale を
+瞬間的に区別できず正常な合成を破壊しかねない）が見つかったため、まず
+検出・ログのみを実機にデプロイして `StaleConfirm` の実際の発火頻度・状況を
+観測し、信号の質を検証してから Stage 2（quarantine/ESC/retype/replay の実装）
+に進む方針とした。
+
+**未解決の follow-up（Stage 2、未実装）:**
+- 本修正は「stale confirm を検出してログに残す」までであり、`1` が消える
+  実害自体は直っていない（backspace は fencing が検出するより前に既に
+  実行されているため）。Stage 2 で、backspace 実行時に「直近の確定済み
+  （committed）出力」を quarantine し、`StaleConfirm` 検出時に ESC + retype +
+  （変換トリガー系キーが絡まなければ）後続入力の replay を行う機構を追加する
+  予定。
+- Stage 2 実装には、`Output::send_keys`（決定済み Char/Romaji 出力）と
+  `RawKeyEventExt::reinject`（IME OFF 時の直接パススルー、`lib.rs`）という
+  2つの独立経路を横断する「直近確定出力履歴」のリングバッファが新規に必要
+  （現状はどちらの経路も履歴を残していない）。
+
+**テスト:** `tsf/probe.rs::tests`（`#[cfg(windows)]`）に fencing の5パターン
+（fresh write 即時confirm/ stale write 即時stale/ show 猶予後confirm/ show
+猶予後stale/ last_write_ms 未観測時のフォールバック）を追加。
+`tsf/warmup/probe_fsm.rs::tests`（`#[cfg(windows)]` 無し、Linux でも実行可）に
+`await_vk_detection` の「既に可視」ショートカットの fencing 分岐テストを追加。
+`tsf/warmup/literal_detect_fsm.rs::tests` に `LiteralDetectCore::poll` の
+`StaleConfirm` 分岐テストを追加。`cargo check`/`cargo clippy -p awase-windows
+--target x86_64-pc-windows-gnu` で型チェック済み（このサンドボックスに wine が
+無いため `#[cfg(windows)]` テストの実行そのものは Windows 実機/CI 待ち）。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/probe.rs`（`LiteralDetector`
+主修正）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`await_vk_detection`/`run_per_vk_confirm`）、
+`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`
+（`LiteralDetectCore::poll`）。関連: BUG-29/BUG-30（per-VK confirm の
+suspected-literal 誤判定の既知の限界）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
@@ -3490,3 +3595,4 @@ BUG-24 追補（per-VK confirm への一本化）。
 | `[shift-conv-guard] かな入力へ復元` | BUG-15/BUG-25: conv をかな入力へ verify-retry 復元（安全網ブリップの終了、またはトグルOFF） |
 | `[tip-detect] IME kind candidate X (current=Y), awaiting confirmation next tick` | CLSID 種別フリップの1回目の観測（`ImeKindDebounce`）。次 tick も同じなら確定、元に戻れば破棄 |
 | `[tip-detect] IME kind → X` | CLSID 種別変化が2 tick連続で確定し `WM_IME_KIND_CHANGED` を発行（`GjiFsm`/`MsImeStrategy` が再構築される点に注意、BUG-17） |
+| `stale confirm 検出` / `epoch-fence-stale` | ADR-079/BUG-33: confirm 根拠が前世代由来と判明（Stage 1 は検出ログのみ、backspace は行わない） |

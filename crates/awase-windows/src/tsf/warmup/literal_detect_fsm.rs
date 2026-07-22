@@ -263,6 +263,20 @@ impl LiteralDetectCore {
                     Some(self.recovery(self.ze_bs_count, false))
                 }
             },
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1: fencing による検出のみ実装し、recovery
+                // （ESC + retype + replay）は Stage 2 で追加する。ここでは
+                // 実機ログでの観測のためログのみ残し、これ以上の backspace 等の
+                // 破壊的操作は行わず現状維持で終了する。
+                log::warn!(
+                    "[literal-detect] cold={} stale confirm 検出 (romaji={:?}) \
+                     — ADR-079 Stage1: recovery 未実装のため現状維持のみ",
+                    self.cold_seq,
+                    self.romaji,
+                );
+                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
+                Some(vec![ProbeAction::Done])
+            }
         }
     }
 
@@ -591,5 +605,46 @@ mod tests {
                 .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
             "per-VK パスでは候補ウィンドウ可視でも backspace 回収すべき: {actions:?}"
         );
+    }
+
+    // ── ADR-079: epoch fencing（StaleConfirm）の回帰テスト ────────────────────
+
+    /// confirm 根拠（write-bytes 閾値超過）が今回の送信より前の GJI I/O にしか
+    /// 裏付けられていない場合、`LiteralDetectCore::poll` は `StaleConfirm` を
+    /// 受けて Stage 1（検出のみ）の通り backspace 等を一切発行せず `Done` のみを
+    /// 返すことを確認する。
+    #[test]
+    fn poll_returns_done_only_when_stale_confirm_detected() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        let stale_write_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        TSF_OBS.gji_write_bytes.store(9_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(9_000, true); // epoch > stale_write_ms
+        TSF_OBS.gji_write_bytes.store(9_400, SeqCst); // 閾値超過だが根拠は stale
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core =
+            LiteralDetectCore::new(0, "fu".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        let actions = core
+            .poll(tsf_env())
+            .expect("stale confirm は即座に確定するはず");
+        assert!(
+            !actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "stale confirm 検出時に backspace を発行してはいけない（Stage1は検出のみ）: \
+             {actions:?}"
+        );
+        assert!(
+            matches!(actions.as_slice(), [ProbeAction::Done]),
+            "stale confirm 検出時は Done のみを返すはず（recovery は Stage2）: {actions:?}"
+        );
+
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
     }
 }

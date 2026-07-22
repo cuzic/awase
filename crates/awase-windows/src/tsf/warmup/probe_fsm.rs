@@ -281,12 +281,30 @@ async fn await_vk_detection(
     use crate::tsf::probe::DetectionResult;
 
     if crate::tsf::observer::gji_candidate_visible_now() {
-        log::debug!(
-            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
-             candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+        // ADR-079 epoch fencing: 「既に可視」だけを根拠に無条件で confirmed とすると、
+        // 前の（見捨てた）世代が開いたまま残っている候補ウィンドウを現世代の証拠として
+        // 誤って採用してしまう（実機トレースで確認済み、本 VK1 以降のショートカットが
+        // まさにその発火箇所だった）。直近の GJI I/O が本当にこの VK の送信時刻より
+        // 後かを確認する。GJI I/O monitor 未アタッチ（last_write_ms==0）の場合は
+        // fencing を適用せず従来通り confirmed とする。
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        let epoch_send_ms = sent.detector.epoch_send_ms();
+        let fencing_active = last_write_ms != 0;
+        if !fencing_active || last_write_ms >= epoch_send_ms {
+            log::debug!(
+                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
+                 candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+                vk.0,
+            );
+            return DetectionResult::CompositionConfirmed;
+        }
+        log::warn!(
+            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
+             visible だが直近の GJI I/O (last_write={last_write_ms}ms) が送信時刻 \
+             (epoch={epoch_send_ms}ms) より前 → stale confirm として扱う (vk=0x{:02X})",
             vk.0,
         );
-        return DetectionResult::CompositionConfirmed;
+        return DetectionResult::StaleConfirm;
     }
     loop {
         let poll_input = yield_step(ch.clone(), vec![]).await;
@@ -386,6 +404,20 @@ pub(crate) async fn run_per_vk_confirm(
                     escape_composition,
                 );
                 yield_step(ch.clone(), actions).await;
+                return;
+            }
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1: fencing による検出のみ実装し、recovery
+                // （ESC + retype + replay）は Stage 2 で追加する。ここでは
+                // 実機ログでの観測のためログのみ残し、これ以上の backspace 等の
+                // 破壊的操作は行わず現状維持で終了する。
+                log::warn!(
+                    "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
+                     (vk=0x{:02X}) — ADR-079 Stage1: recovery 未実装のため現状維持のみ",
+                    vk.0,
+                );
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                yield_step(ch.clone(), vec![ProbeAction::Done]).await;
                 return;
             }
         }
@@ -507,6 +539,15 @@ async fn tsf_probe_coro_body(
             DetectionResult::CompositionConfirmed => {
                 log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
+                vec![ProbeAction::Done]
+            }
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1: 検出のみ。ESC/retype/replay は Stage 2 で追加する。
+                log::warn!(
+                    "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 — \
+                     ADR-079 Stage1: recovery 未実装のため現状維持のみ"
+                );
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 vec![ProbeAction::Done]
             }
         };
@@ -836,5 +877,71 @@ mod tests {
             matches!(actions_after_unset.as_slice(), [ProbeAction::Done]),
             "無リカバリで Done のみを返すはず: {actions_after_unset:?}"
         );
+    }
+
+    // ── ADR-079: epoch fencing（「既に可視」ショートカット）の回帰テスト ──────
+
+    /// 候補ウィンドウが「既に可視」でも、直近の GJI I/O が今回の VK 送信より前
+    /// （前世代の残存合成）にしか裏付けられていなければ `StaleConfirm` として
+    /// 扱われ、Stage 1（検出のみ）では backspace 等の破壊的操作を一切行わず
+    /// `Done` のみを返すことを確認する（ADR-079 コンテキスト節の実機トレースが
+    /// 示した誤帰属パターンの再発防止）。
+    #[test]
+    fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_does_not_backspace() {
+        use crate::tsf::observer::TSF_OBS;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        crate::tsf::observer::reset_literal_session_confirmed();
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+
+        let mut machine = ready_chrome_probe();
+        let first_actions = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                first_actions.as_slice(),
+                [ProbeAction::TransmitSingleVk { .. }]
+            ),
+            "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
+        );
+
+        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
+        let stale_write_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(
+            crate::tsf::observer::gji_write_bytes(),
+            false,
+        );
+        let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+
+        // 候補ウィンドウが「既に可視」= 前世代の合成が残っている状態を模擬する。
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        machine.apply_vk_sent(detector, deadline_ms);
+        let actions_after_stale = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            !actions_after_stale
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "stale confirm 検出時に backspace を発行してはいけない（Stage1は検出のみ）: \
+             {actions_after_stale:?}"
+        );
+        assert!(
+            matches!(actions_after_stale.as_slice(), [ProbeAction::Done]),
+            "stale confirm 検出時は Done のみを返すはず（recovery は Stage2）: \
+             {actions_after_stale:?}"
+        );
+
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
     }
 }
