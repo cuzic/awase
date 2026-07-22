@@ -3465,6 +3465,134 @@ BUG-24 追補（per-VK confirm への一本化）。
 
 ---
 
+## BUG-33: `Imm32Unavailable` プロファイルでは drift correction が構造的に一度も発火し得ない（belief 自身を「観測」として書き戻す循環）
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で GJI を使用中、
+物理 F2 押下直後の通常タイピングで `[raw-tsf-literal] cold=N consecutive raw-tsf-literal
+(count=2/3/4) → giving up, backs=1 cleanup only (no re-send)` が4連続で発火し、romaji
+再送なしの単発 backspace だけで後始末される「変な感じのバックスペース」をユーザーが
+実機で観測した（2026-07-22 実機ログ、`せ` を含む複数文字が literal 化 → backspace のみで
+消失・語順崩れ）。全ログを通じて `[drift]` 系のログが一度も出力されていない。
+
+**IME:** GJI（Google 日本語入力）。`Imm32Unavailable`（Chrome/WezTerm/Windows Terminal 等、
+`ImmGetOpenStatus` が使えないプロファイル）。
+
+**原因（確定、コード読解で確認）:** `check_drift_correction`（`state/platform_state.rs:407-450`）
+は `observations.most_recent_trusted()` が返す観測と `desired_open` が一致していれば
+「乖離なし」として即 `None` を返す。ところが `Imm32Unavailable` では以下の経路で
+**belief 自身の値がそのまま「観測」として観測ストアに書き戻される**:
+
+1. `apply_focus_probe`（`runtime/key_pipeline.rs:249`）が `shadow_on =
+   self.platform_state.ime.effective_open()`（＝現在の belief そのもの）を probe 実行前に
+   キャプチャする。
+2. `Imm32Unavailable` では `ImmGetOpenStatus` 相当が使えず `probe_ime_on = None` になるため、
+   フォールバックとして `apply_effective_ime(shadow_on, ...)` →
+   `write_focus_probe(shadow_on, ...)`（`key_pipeline.rs:1462-1480`、コメント曰く
+   「shadow の apply 値を代替観測として記録」）が呼ばれ、`ObservationSource::FocusProbe`
+   （confidence=Low）として観測ストアに `open = shadow_on` を記録する
+   （`platform_state.rs:762-780`）。
+3. `most_recent_trusted()`（`observation_store.rs:214-219`）は confidence の下限を設けて
+   おらず、他に観測が無ければこの Low 観測がそのまま採用される。
+4. この観測は定義上 `open == desired`（同じ値を書き写しただけ）になるため、
+   `check_drift_correction` の `if trusted.open == desired { return None; }`
+   （`platform_state.rs:445-447`）に毎回引っかかり、**「乖離あり」と判定される入力が
+   そもそも生成されない**。
+
+GJI I/O からの実測（`ObservationSource::GjiIoInference`）は input_mode 判定にのみ使われ、
+`observation_store.rs:92,111` で明示的に open 観測ストアには記録されない
+（`ConvBitsInference | GjiIoInference => None` / `=> {}`）。`ConvOpenInference` も
+明示ユーザー意図が無いと gate される（BUG-19 対策、`platform_state.rs:442-444`）ため、
+Chrome+GJI で明示 intent なしに belief が実状態から乖離するケース（今回のログのように、
+物理 F2 押下と自己注入 F2 の交錯などで乖離が生じるケース）は drift correction では
+一切救えない。
+
+**BUG-20 との違い:** BUG-20 は「non-ImmCross アプリでは `set_ime_open` が no-op なのに
+belief だけ適用済み扱いにしていた」という *送信側* の欠陥（`57cab1d` で修正済み）。
+本バグは *検知側* の欠陥で、そもそも `Imm32Unavailable` に belief を裏付ける本物の
+観測ソースが存在しないため、BUG-20 の修正が入っていても drift correction 自体が
+発火しない。両方直って初めて non-ImmCross アプリでの drift correction が機能する。
+
+**修正 (2026-07-22):** belief/drift-correction 経路（observation store に本物の open
+観測を足す案、下記「検討したが見送った案」）ではなく、**per-VK confirm の give-up 分岐
+から実 IME-ON 再送を直接行う**、より小さく効果が即時なパスを採用した。
+
+- `probe_io.rs` の `ProbeAction::RawTsfLiteralRecovery` ハンドラで、`consecutive > 0`
+  （2連続失敗＝give-up）のときだけ `io.send_chrome_gji_reinit_and_poll(cold_seq)` を
+  追加で呼ぶ。1回目の疑い（`consecutive == 0`）では呼ばない — BUG-29/BUG-30 で分かって
+  いる候補ウィンドウ SHOW/HIDE レース由来の偽陽性の可能性がまだ高いため、give-up 自体が
+  課している「2連続失敗」の閾値にそのまま相乗りする。
+- `send_chrome_gji_reinit_and_poll` は 2026-07-18 の「捨て駒キー」撤去（本ファイル追補8、
+  `docs/experiments.md` エントリ10）で削除された `SacrificialWarmupCoro` 等の重量級機構
+  とは別物で、Unicode injection mode の long-cold GJI 再起動（`platform.rs:307`）向けに
+  既に実装・実運用されていた既存メソッドをそのまま再利用しただけ（新規実装は呼び出しの
+  追加のみ）。`VK_IME_OFF→VK_IME_ON` を実際に `SendInput` し、`CHROME_GJI_REINIT_CONFIRM_MS`
+  （300ms、実測較正済み）で IMC を async ポーリングして Hiragana 確認まで見届ける。
+  「捨て駒キー」削除判断（送信**前**の予防的待機は不要）とは矛盾しない — 本修正は
+  give-up **後**の実際の状態修復であり、別の対象を直している。
+- give-up が短時間に連発した場合の多重発火を防ぐため、`Output::last_gji_reinit_ms`
+  （新規フィールド）で `CHROME_GJI_REINIT_CONFIRM_MS` 未満の再発火をレート制限した
+  （`send_chrome_gji_reinit_and_poll` 冒頭に追加）。OFF→ON の最終到達状態は決定論的に
+  ON だが、窓内に重ねて送ると瞬間的な OFF ブリップが積み重なり候補ウィンドウを無用に
+  揺らしかねないため。
+
+**なぜ n-gram/統計判定が不要か:** 検討時、「literal 化した romaji が本当に日本語の
+つもりだったか、それとも英語入力のつもりだったか」を統計的に推測する案も出たが、
+コード上不要と判明した。per-VK confirm の literal-detect（`RawTsfLiteralRecovery`）に
+入るのは `vk_send.rs::send_char_as_vk` の `CharResolution::Romaji` 分岐だけであり、
+これは NICOLA チョード判定（`src/engine/`）が「このかな文字を出力する」と**既に決定した
+後**の値にしか発生しない。ユーザーが明示的に半角英数入力したいときはそもそも別分岐
+（`CharResolution::Vk`/`Unicode`）を通りこのパイプラインに来ない。つまり give-up が
+発火した時点で「日本語のつもりだった」は常に真であり、推測の余地がない。
+
+**なぜ shadow 反転のリスクが無いか:** `GjiDirectStrategy::apply`（`ime_controller.rs`）は
+`VK_KANJI` のようなトグルキーではなく、ON/OFF 専用の冪等キー（`VK_IME_ON`/`VK_IME_OFF`）
+を使う設計（コメント: 「shadow desync の影響を排除する」）。`send_chrome_gji_reinit_and_poll`
+も同じ冪等キーで OFF→ON を送るため、万一 give-up が偽陽性で実際には既に IME ON だった
+場合でも、最終到達状態は変わらず ON のまま（OFF は一瞬の経由点であり、二重反転で OFF に
+固定される心配は無い）。
+
+**検討したが見送った案:** belief/drift-correction を経由する設計（`RawTsfLiteralRecovery`
+give-up と `CompositionConfirmed` から `ObservationSource` 新設 variant で
+`ObserverReported` を dispatch し、`check_drift_correction` に本物の観測を与える）。
+コード調査で実現可能と確認済み（`ir_apply_drift_correction` は `applied: None` を渡す
+ことで `GjiDirectStrategy` の shadow_on skip ガードを迂回し実送信することも確認済み）
+だったが、(a) 400ms の `DRIFT_CORRECTION_THRESHOLD_MS` を待つ分レイテンシが乗る、
+(b) 新規 `ObservationSource` variant・`observation_store.rs` の分岐追加が要る、という
+理由で、per-VK confirm 内で完結する直接呼び出しより変更範囲・待ち時間ともに大きいと
+判断し見送った。GJI が**タイピング中でなく**長時間 OFF のまま乖離するケース（per-VK
+confirm を一切通らない）にはこの直接呼び出しは効かないため、将来そのようなケースが
+実機で確認されたら、この belief 経由の設計を別バグとして再検討すること。
+
+**テスト:** `crates/awase-windows/src/output/probe_io.rs` の
+`raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`（既存、
+`gji_reinit_call_count == 1` の assertion を追加）と
+`raw_tsf_literal_recovery_sets_literal_and_marks_cold_when_first_time`（既存、
+`gji_reinit_call_count == 0` の assertion を追加）で「give-up のときだけ実 IME-ON
+再送が発火する」ことを検証。`send_chrome_gji_reinit_and_poll` 自体は Win32 API
+（`SendInput`）に直結するため Linux 上でのユニットテストは非現実的（既存の `tsf` 系
+テストと同じ制約）。`cargo check`/`cargo clippy -p awase-windows --target
+x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings`（警告
+ゼロ）、`cargo test -p awase-windows --target x86_64-pc-windows-gnu --no-run`（lib・
+`tests/*.rs` 全ファイルのコンパイル・リンク）確認済み。wine 未導入のためこのサンドボックス
+では `.exe` 実行はできず、実機再検証は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/output/probe_io.rs`
+（`RawTsfLiteralRecovery` ハンドラ、`send_chrome_gji_reinit_and_poll` のレート制限）、
+`crates/awase-windows/src/output/mod.rs`（`Output::last_gji_reinit_ms` フィールド追加）、
+`crates/awase-windows/src/tuning.rs`（`CHROME_GJI_REINIT_CONFIRM_MS` のコメント更新）。
+検知側の未解決ギャップ（drift-correction が構造的に発火しない件）自体は本修正後も
+残存する: `crates/awase-windows/src/state/platform_state.rs`
+（`check_drift_correction`, `write_focus_probe`）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`apply_focus_probe`,
+`apply_effective_ime`）、`crates/awase-windows/src/state/observation_store.rs`
+（`most_recent_trusted`, `ObservationSource` ごとの record 分岐）。関連バグ: BUG-20
+（送信側の対称バグ）、BUG-19（`ConvOpenInference` gate の元ネタ）、BUG-21（同じ
+`send_chrome_gji_reinit_and_poll` 系統の別トリガー元）、BUG-27（give-up 分岐で romaji
+を再送しない設計の由来）、BUG-29/BUG-30（literal 誤検知の偽陽性源）、BUG-31/BUG-32
+（同じ literal storm 症状の別原因）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

@@ -121,6 +121,13 @@ pub struct Output {
     /// JISかな化からのローマ字入力復元（BUG-08 Apply(3)）を最後に送った時刻
     /// （`GetTickCount64` 由来）。steady-state 検出のレート制限に使う。
     pub(crate) last_roman_restore_ms: std::cell::Cell<u64>,
+    /// `send_chrome_gji_reinit_and_poll` を最後に送った時刻（`GetTickCount64` 由来）。
+    ///
+    /// BUG-33: per-VK confirm の give-up（`RawTsfLiteralRecovery` 連続失敗）から
+    /// この reinit を呼ぶ経路を追加したため、短時間に連続 give-up した場合に
+    /// `VK_IME_OFF→VK_IME_ON` の SendInput バーストが多重発火しないようレート制限する。
+    /// `CHROME_GJI_REINIT_CONFIRM_MS` のポーリング窓が終わる前の再発火を抑止する。
+    pub(crate) last_gji_reinit_ms: std::cell::Cell<u64>,
     /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
     ///
     /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
@@ -194,6 +201,7 @@ impl Output {
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
             last_roman_restore_ms: std::cell::Cell::new(0),
+            last_gji_reinit_ms: std::cell::Cell::new(0),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
         }
     }

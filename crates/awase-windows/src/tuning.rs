@@ -110,6 +110,11 @@ pub const MEDIUM_IDLE_PROBE_MS: u64 = 7_000;
 /// `send_chrome_gji_reinit_and_poll` 経由で使う。GJI は VK_IME_ON 受信後 ~50-100ms 以内に
 /// IME ON 状態に移行する実測値が多い。300ms あれば十分な余裕を確保できる。タイムアウト時は
 /// 強制再送する。
+///
+/// BUG-33（2026-07-22）: `probe_io.rs` の `RawTsfLiteralRecovery` give-up 分岐
+/// （per-VK confirm が2連続で literal 化を検出した場合）からも `send_chrome_gji_reinit_and_poll`
+/// を呼ぶようになった。この窓は同時に「連続 give-up による reinit 多重発火」のレート制限
+/// （`Output::last_gji_reinit_ms`）にも使われる。
 pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
 
 /// [`CHROME_GJI_REINIT_CONFIRM_MS`] のポーリング間隔 (ms)。
