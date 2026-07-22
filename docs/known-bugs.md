@@ -3465,6 +3465,103 @@ BUG-24 追補（per-VK confirm への一本化）。
 
 ---
 
+## BUG-34: `SendMessageTimeoutW(SMTO_ABORTIFHUNG)` の `timeout_ms` 未保証により、エンジンスレッド上の同期 IME 読み取りが数秒ブロックし打鍵が消える
+
+**症状:** WezTerm（TsfNative、GJI）で連続タイピング中、`[engine-input]` ログの `delay=` が
+突然 5000〜6000ms 台に跳ね上がり、その間の打鍵がまとめてバースト処理される
+（2026-07-22 実機ログ）。ユーザー視点では「文字が消えて、しばらく待ってから
+まとめて出てくる」と観測される。低レベルフックは常に `LRESULT(1)` でキーを消費してから
+`PostThreadMessageW` でエンジンスレッドに転送するため、エンジンスレッドのメッセージ
+ループが詰まっている間、物理キー入力はどこにも表示されない。
+
+**原因（確定、コード読解 + ログ解析で確認）:** `event.timestamp`（フック捕捉時刻）と
+`now_us`（`key_pipeline.rs::kp_run_inner` がエンジン側で処理する時刻）は同一の
+`Instant` ベースクロック（`hook::now_timestamp_us()`、`hook.rs:790-799`）を使っており、
+時計のズレではなく実際のメッセージループ停止であることが確認できる。
+
+止まっていた間のログは一切出力されないため直接の証拠は無いが、`imm.rs::send_ime_control`
+（`SendMessageTimeoutW` のラッパー、`imm.rs:119-141`）のコメントには「`SMTO_ABORTIFHUNG`
+により `timeout_ms` 内に制御が戻ることが保証される」とあり、これは **Win32 のよく知られた
+誤解**である。`SMTO_ABORTIFHUNG` は送信先スレッドが**既に**ハングとマークされている
+場合のみ即座に打ち切る。送信先がその瞬間から重くなり始めた場合、Windows がハングと
+判定するまで（`HungAppTimeout`、既定 ~5000ms）呼び出し元は普通にブロックし続け、
+呼び出し側が指定した小さな `timeout_ms`（大抵 5〜50ms）はこの一次ブロックには効かない。
+観測された `delay=5741ms` 等の値は `HungAppTimeout` の既定値（~5000ms）+αとほぼ一致する。
+
+これらの呼び出しが **エンジンスレッド（メッセージループそのもの）上で同期的に**
+実行されていたため、ブロック中はキー処理が完全に止まっていた。
+
+**修正済み（本コミット）:** `runtime/key_pipeline.rs::kp_stage_idle_conv_check`
+（TsfNative アイドル時の変換モード確認、通常タイピングの合間ごとに走る頻出経路）が
+`crate::ime::get_ime_conversion_mode_raw_timeout`（同期版）を直接呼んでいた箇所を、
+既存の `get_ime_conversion_mode_raw_timeout_async`（`ime.rs`、元々は
+`probe_io.rs`/`vk_send.rs`/`cold_warmup.rs`/`platform.rs` の warmup 計測用に存在）へ
+offload するよう変更。`kp_stage_focus_probe`/`apply_focus_probe`
+（`state/probe_admission.rs` の `ImmLikeTicket`/`AcceptedObservation`、ADR-077）と
+同型の epoch fencing を追加し、read spawn 後にフォーカスが変わっていれば結果を棄却する。
+GJI が実際にハングしている間の断続タイピングで offload 呼び出しが積み上がらないよう、
+`GateStore::idle_conv_check_in_flight` で多重 spawn を防止する。
+
+**追補（セカンドオピニオンレビューで発覚・同コミットで修正）:** 上記の offload 化だけでは、
+旧同期コードが暗黙に持っていた「読み取り開始から belief 適用までの間に awase 自身の状態が
+変化し得ない」というアトミック性が壊れ、新たな race を生んでいた。`kp_stage_idle_conv_check`
+は `kp_run_inner` の早い段階（decision 前）で読み取りを spawn するが、同一キーイベントの
+後続処理（`kp_stage_post_decision` → `kp_stage_shift_conv_guard`、および `kp_stage_execute`
+の warmup 送信）は spawn 後・apply 前に割り込める。旧同期コードでは読み取りが完了してから
+これらが走っていたため、以下は構造的に起こり得なかった:
+
+1. spawn 時点では `shift_conv_guard_pending`/`half_width_alnum_toggle_active` が false でも、
+   同じキーイベントの `kp_stage_shift_conv_guard` が spawn 後に true へ倒して `conv=0x0000`
+   の IMC write を発行し、apply 時にその値を「ユーザーの英数モード」として拾ってしまう
+   （awase 自身が立てた保護対象の conv を awase 自身が誤読して IME を強制 OFF する）。
+2. 同様に、spawn 後に発生した explicit IME 操作（Ctrl+変換/無変換 等）による抑制が
+   apply 時には再評価されず、ユーザーの明示操作を打ち消す方向に belief を書き換えてしまう。
+3. cold-start 等で、spawn 直後に awase 自身が warmup（`ImmSetConversionStatus`/VK_DBE_HIRAGANA
+   等）を送信すると、offload 先のワーカースレッドが conv を**遷移途中**でサンプリングし、
+   汚染された値を belief 適用に使ってしまう。
+
+`ImmLikeTicket`/`FocusEpoch` によるフォーカス変更の棄却だけではこれらを検出できない
+（フォーカスは変わっていないため）。対策として `apply_idle_conv_check` の先頭で、
+spawn 時にキャプチャしたスナップショット（`output_idle_ms_at_spawn` / `now_tick_at_spawn`）
+と apply 時点を突き合わせ、(1)(2) はガード状態・explicit age を再評価して、(3) は
+`output_in_flight_ms()` を絶対時刻（最終送信時刻）に換算して spawn 時と apply 時で
+一致するかを確認し、いずれか変化していれば読み取り結果を丸ごと破棄するようにした。
+
+**未対応（残存、フォローアップ候補）:** 同じ `SMTO_ABORTIFHUNG` 誤解に基づく同期呼び出しが
+他にも残っている。いずれもエンジンスレッド上で同期実行されるため、条件が揃えば同様に
+数秒ブロックしうる:
+
+- `runtime/key_pipeline.rs:740,917,1070,1261` 付近（`get_ime_conversion_mode_raw_timeout`
+  / `read_ime_state_fast` の同期呼び出し）
+- `runtime/key_pipeline.rs::apply_focus_probe` 内（1546 行付近、`get_ime_conversion_mode_raw_timeout(10)`
+  の同期呼び出し — `with_app` コールバック内＝メインスレッド上）
+- `ime_controller.rs::MsImeDirectStrategy::apply`（KATAKANA チェックの
+  `get_ime_conversion_mode_raw_timeout(5)`）
+- `runtime/executor.rs:749,793` 付近（`WM_EXECUTE_EFFECTS` ハンドラの post-apply verification）
+- `runtime/ime_refresh.rs:492` 付近（`TIMER_IME_REFRESH` ハンドラ）
+
+これらを直す際は、いずれも `get_ime_conversion_mode_raw_timeout_async`
+（または `read_ime_state_fast_async`）への置き換え + 呼び出し元の同期前提の再設計
+（結果を今すぐ使う必要があるか、後続処理を async continuation に移せるか）が必要になる。
+`ime_controller.rs::apply()` 自体は `apply_skipping_imm` 経由の呼び出しでは
+`ImmCrossProcessStrategy` を通らないため `SendMessageTimeoutW(IMC_SETOPENSTATUS)` の
+ブロックとは無縁だが、`MsImeDirectStrategy` の KATAKANA チェックは
+`ImmCrossProcessStrategy` の有無に関わらず独立して `SendMessageTimeoutW` を呼ぶため注意。
+
+**検証状況:** 実機で「この特定の呼び出しが5秒ブロックしていた」ことを示す直接ログ
+（呼び出し前後の `Instant` 計測）はまだ取れていない。`fix-requires-evidence.md` 的には
+状況証拠（クロック解析 + Win32 API の既知の挙動 + ログの発生アプリ/タイミングの一致）
+までで、次回実機検証（該当行前後にタイムスタンプログを仕込んで再現待ち）が望ましい。
+
+**関連ファイル:** `crates/awase-windows/src/imm.rs`（`send_ime_control`）、
+`crates/awase-windows/src/ime.rs`（`get_ime_conversion_mode_raw_timeout`,
+`get_ime_conversion_mode_raw_timeout_async`）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`kp_stage_idle_conv_check`,
+`apply_idle_conv_check`）、`crates/awase-windows/src/state/probe_admission.rs`
+（`ImmLikeTicket`, `AcceptedObservation`, ADR-077）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

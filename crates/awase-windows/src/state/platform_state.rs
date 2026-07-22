@@ -942,6 +942,14 @@ pub(crate) struct GateStore {
     /// idle-conv-check / ime_refresh の OS poll を凍結する（`shift_conv_guard_pending`
     /// と同じ理由: conv=0x0000は awase自身の意図的な状態のため）。
     pub half_width_alnum_toggle_active: bool,
+    /// `kp_stage_idle_conv_check` の conv 読み取り（offload 済み、`SendMessageTimeoutW`
+    /// ベース）が in-flight かどうか。
+    ///
+    /// GJI が本当にハングしている間に断続的なタイピングが続くと、idle ゲートを
+    /// 通過するたびに新しい offload 呼び出しが積み上がりワーカースレッドが増え続ける。
+    /// 1 件 in-flight の間は新規 spawn をスキップし、完了時（epoch 棄却時も含む）に
+    /// `with_app` 内で必ず false へ戻す。
+    pub idle_conv_check_in_flight: bool,
 }
 
 impl GateStore {
@@ -953,6 +961,7 @@ impl GateStore {
             left_shift_tap_candidate: false,
             shift_conv_guard_pending: false,
             half_width_alnum_toggle_active: false,
+            idle_conv_check_in_flight: false,
         }
     }
 }

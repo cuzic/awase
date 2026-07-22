@@ -834,7 +834,13 @@ pub async fn send_f2_via_sendmessage_async() -> bool {
 
 /// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
 ///
-/// 診断ログ用途で、`with_app` 再入を避けるためにワーカースレッドへオフロードする。
+/// `with_app` 再入を避けるためにワーカースレッドへオフロードする。加えて、
+/// `SendMessageTimeoutW(SMTO_ABORTIFHUNG)` は送信先スレッドが既にハング判定済みの
+/// 場合のみ `timeout_ms` で打ち切られ、そうでなければ Windows の `HungAppTimeout`
+/// （既定 ~5000ms）までブロックしうる（`timeout_ms` は保証されない、既知の Win32 の
+/// 誤解）。エンジンスレッド（メッセージループ）上で同期呼び出しすると、その間キー入力が
+/// フックに消費されたまま処理されず「文字が消えて数秒後にバーストで出る」症状になる
+/// （`docs/known-bugs.md` 参照）。呼び出し元は必ずこの async 版を使うこと。
 pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Option<u32> {
     // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。

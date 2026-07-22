@@ -21,7 +21,8 @@ dylint_linting::declare_late_lint! {
     /// `InputModeObserved` at all (`ImmGetOpenStatus` — that source means "the
     /// ON/OFF API was called", not "input mode was observed"), or (b) is only
     /// legitimate from its one designated call site (`ConvBitsInference` — the
-    /// idle-conv-check function that actually reads conv bits).
+    /// idle-conv-check completion function that turns the (possibly async-offloaded)
+    /// conv bits read into a belief update).
     ///
     /// ### Why is this bad?
     ///
@@ -78,7 +79,7 @@ dylint_linting::declare_late_lint! {
 /// occurrence is necessarily a disguise.
 const RESTRICTED_SOURCES: &[(&str, &[&str])] = &[
     ("ImmGetOpenStatus", &[]),
-    ("ConvBitsInference", &["kp_stage_idle_conv_check"]),
+    ("ConvBitsInference", &["apply_idle_conv_check"]),
     // GJI I/O 活動からの ObservedEisu 矛盾訂正。GJI I/O タイムスタンプという実観測に
     // 基づく designated 経路は Blacklist observe stage のみ（source を名乗れるのは
     // observe_gji_after_focus の結果を dispatch する箇所に限る）。

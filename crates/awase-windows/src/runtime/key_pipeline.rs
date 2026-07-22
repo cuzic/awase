@@ -293,8 +293,6 @@ impl Runtime {
     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
-        // JISかな化復元（Apply(3)）のレート制限。関数末尾の restore_roman 分岐でのみ使う。
-        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
         // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
         // 持続トグル中（`kp_stage_shift_conv_guard`）は凍結する。conv=0x00000000 は
         // awase 自身が意図的に設定した状態であり、ObservedEisu → DirectInput
@@ -305,9 +303,12 @@ impl Runtime {
         {
             return;
         }
-        let in_flight = self.platform.output_in_flight_ms();
-        let now_tick = crate::state::TickMs(hook::current_tick_ms());
-        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
+        let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
+        let now_tick_at_spawn = crate::state::TickMs(hook::current_tick_ms());
+        let explicit_age = self
+            .platform_state
+            .ime
+            .explicit_ime_action_age_ms(now_tick_at_spawn);
         let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
@@ -315,7 +316,7 @@ impl Runtime {
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,
-            in_flight,
+            output_idle_ms_at_spawn,
             explicit_age,
             crate::tuning::TYPING_IDLE_MS,
             crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
@@ -324,7 +325,7 @@ impl Runtime {
             // （KeyDown・TsfNative・idle の 3 条件を通過した上で explicit_age だけが残っている場合）
             if matches!(event.event_type, KeyEventType::KeyDown)
                 && is_tsf_native
-                && in_flight > crate::tuning::TYPING_IDLE_MS
+                && output_idle_ms_at_spawn > crate::tuning::TYPING_IDLE_MS
                 && explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS
             {
                 log::debug!(
@@ -335,10 +336,104 @@ impl Runtime {
             }
             return;
         }
-        // SAFETY: フォアグラウンドウィンドウの IME 変換モードを 10ms タイムアウトで読む。
-        let Some(conv) = (unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }) else {
+
+        // BUG-34（docs/known-bugs.md）: get_ime_conversion_mode_raw_timeout は
+        // SendMessageTimeoutW(SMTO_ABORTIFHUNG) ベースで、ハング判定が確定するまで
+        // 実質 timeout_ms を無視して ~5s ブロックしうる。エンジンスレッド上で同期に
+        // 呼ぶとメッセージループが詰まり打鍵が消える。offload してワーカースレッドで
+        // 実行する。
+        //
+        // 多重 in-flight 防止: GJI が本当にハングしている間、断続的なタイピングで
+        // offload 呼び出しが積み上がるのを防ぐ（1 件 in-flight の間は新規 spawn しない）。
+        if self.platform_state.gate.idle_conv_check_in_flight {
+            log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
             return;
+        }
+        self.platform_state.gate.idle_conv_check_in_flight = true;
+
+        // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch 照合し
+        // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型）。
+        let ticket = crate::state::probe_admission::ImmLikeTicket {
+            focus_epoch: self.platform_state.focus.focus_epoch,
         };
+        win32_async::spawn_local(async move {
+            let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+            let _ = crate::with_app(|app| {
+                app.platform_state.gate.idle_conv_check_in_flight = false;
+                let Some(conv) = conv else { return };
+                let current_epoch = app.platform_state.focus.focus_epoch;
+                let crate::state::probe_admission::Admission::Accept(_) =
+                    ticket.admit(current_epoch)
+                else {
+                    log::debug!("[idle-conv-check] epoch rejected (focus changed since read spawn)");
+                    return;
+                };
+                app.apply_idle_conv_check(conv, output_idle_ms_at_spawn, now_tick_at_spawn);
+            });
+        });
+    }
+
+    /// `get_ime_conversion_mode_raw_timeout_async` の結果を self に適用する
+    /// （`with_app` 内で呼ぶ）。`kp_stage_idle_conv_check` の旧同期ロジックを
+    /// async 完了後に実行する版。
+    ///
+    /// 読み取りが in-flight の間（旧同期コードでは起こり得なかった隙間）に、
+    /// awase 自身が (a) shift ガードを立てる、(b) explicit IME 操作を記録する、
+    /// (c) warmup 等で実際に出力を送る、のいずれかを行っていたら、読み取った
+    /// `conv` は awase 自身の遷移途中を拾った汚染値の可能性がある。spawn 時の
+    /// スナップショット（`output_idle_ms_at_spawn` / `now_tick_at_spawn`）と
+    /// apply 時点を突き合わせて、これらが起きていないことを再確認してから適用する。
+    fn apply_idle_conv_check(
+        &mut self,
+        conv: u32,
+        output_idle_ms_at_spawn: u64,
+        now_tick_at_spawn: crate::state::TickMs,
+    ) {
+        // JISかな化復元（Apply(3)）のレート制限。この関数末尾の restore_roman 分岐でのみ使う。
+        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
+
+        // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
+        if self.platform_state.gate.shift_conv_guard_pending
+            || self.platform_state.gate.half_width_alnum_toggle_active
+        {
+            log::debug!(
+                "[idle-conv-check] apply 時に shift ガードが有効 → 読み取り結果 conv=0x{conv:08X} を破棄"
+            );
+            return;
+        }
+
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+
+        // (b) explicit IME 操作の再検証: spawn 後に Ctrl+変換/無変換 等が発生した場合。
+        let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
+        if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
+            log::debug!(
+                "[idle-conv-check] apply 時に explicit IME action {explicit_age}ms 前 → \
+                 読み取り結果 conv=0x{conv:08X} を破棄 (suppress={}ms)",
+                crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
+            );
+            return;
+        }
+
+        // (c) 自己出力の再検証: spawn〜apply の間に awase 自身が SendInput/warmup で
+        // 出力していれば、conv は遷移途中を拾った可能性が高い。`output_in_flight_ms()`
+        // （最終送信からの経過 ms）を spawn 時と apply 時で絶対時刻に換算して突き合わせ、
+        // 最終送信時刻そのものが変わっていないかを確認する（経過 ms の単純比較では
+        // 待機時間の分だけ必ず増えるため使えない）。
+        let output_idle_ms_now = self.platform.output_in_flight_ms();
+        let last_send_abs_ms_at_spawn = (output_idle_ms_at_spawn != u64::MAX)
+            .then(|| now_tick_at_spawn.0.saturating_sub(output_idle_ms_at_spawn));
+        let last_send_abs_ms_now =
+            (output_idle_ms_now != u64::MAX).then(|| now_tick.0.saturating_sub(output_idle_ms_now));
+        if last_send_abs_ms_at_spawn != last_send_abs_ms_now {
+            log::debug!(
+                "[idle-conv-check] apply 時に自己出力を検出 (last_send {last_send_abs_ms_at_spawn:?}→{last_send_abs_ms_now:?}) → \
+                 読み取り結果 conv=0x{conv:08X} を破棄 (mid-warmup 汚染の可能性)"
+            );
+            return;
+        }
+        let in_flight = output_idle_ms_now;
+
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
         let conv_mode_changed = self

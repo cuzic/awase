@@ -1,7 +1,7 @@
 // UI test: verify RESTRICTED_INPUT_MODE_OBSERVATION_SOURCE fires on
 // `ImeEvent::InputModeObserved { source: ObservationSource::X, .. }` where X is
 // disguised (ImmGetOpenStatus, never allowed) or out-of-place (ConvBitsInference,
-// only allowed in `kp_stage_idle_conv_check`).
+// only allowed in `apply_idle_conv_check`).
 
 /// Minimal inline mock matching the shape of
 /// `awase_windows::state::ime_event::{ImeEvent, ObservationSource}`.
@@ -35,7 +35,7 @@ mod ime_event {
 
 use ime_event::{ImeEvent, ObservationConfidence, ObservationSource};
 
-fn kp_stage_idle_conv_check() -> ImeEvent {
+fn apply_idle_conv_check() -> ImeEvent {
     // Should NOT trigger: this is the designated function for ConvBitsInference.
     ImeEvent::InputModeObserved {
         source: ObservationSource::ConvBitsInference,
@@ -96,7 +96,7 @@ fn unrelated_source_is_fine() -> ImeEvent {
 }
 
 fn main() {
-    let _ = kp_stage_idle_conv_check();
+    let _ = apply_idle_conv_check();
     let _ = some_other_helper_reusing_conv_bits();
     let _ = reset_stale_input_mode_for_some_new_reason();
     let _ = ir_stage_observe();
