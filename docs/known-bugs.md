@@ -3465,6 +3465,72 @@ BUG-24 追補（per-VK confirm への一本化）。
 
 ---
 
+## BUG-33: `Imm32Unavailable` プロファイルでは drift correction が構造的に一度も発火し得ない（belief 自身を「観測」として書き戻す循環）
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、`Imm32Unavailable` プロファイル）で GJI を使用中、
+物理 F2 押下直後の通常タイピングで `[raw-tsf-literal] cold=N consecutive raw-tsf-literal
+(count=2/3/4) → giving up, backs=1 cleanup only (no re-send)` が4連続で発火し、romaji
+再送なしの単発 backspace だけで後始末される「変な感じのバックスペース」をユーザーが
+実機で観測した（2026-07-22 実機ログ、`せ` を含む複数文字が literal 化 → backspace のみで
+消失・語順崩れ）。全ログを通じて `[drift]` 系のログが一度も出力されていない。
+
+**IME:** GJI（Google 日本語入力）。`Imm32Unavailable`（Chrome/WezTerm/Windows Terminal 等、
+`ImmGetOpenStatus` が使えないプロファイル）。
+
+**原因（確定、コード読解で確認）:** `check_drift_correction`（`state/platform_state.rs:407-450`）
+は `observations.most_recent_trusted()` が返す観測と `desired_open` が一致していれば
+「乖離なし」として即 `None` を返す。ところが `Imm32Unavailable` では以下の経路で
+**belief 自身の値がそのまま「観測」として観測ストアに書き戻される**:
+
+1. `apply_focus_probe`（`runtime/key_pipeline.rs:249`）が `shadow_on =
+   self.platform_state.ime.effective_open()`（＝現在の belief そのもの）を probe 実行前に
+   キャプチャする。
+2. `Imm32Unavailable` では `ImmGetOpenStatus` 相当が使えず `probe_ime_on = None` になるため、
+   フォールバックとして `apply_effective_ime(shadow_on, ...)` →
+   `write_focus_probe(shadow_on, ...)`（`key_pipeline.rs:1462-1480`、コメント曰く
+   「shadow の apply 値を代替観測として記録」）が呼ばれ、`ObservationSource::FocusProbe`
+   （confidence=Low）として観測ストアに `open = shadow_on` を記録する
+   （`platform_state.rs:762-780`）。
+3. `most_recent_trusted()`（`observation_store.rs:214-219`）は confidence の下限を設けて
+   おらず、他に観測が無ければこの Low 観測がそのまま採用される。
+4. この観測は定義上 `open == desired`（同じ値を書き写しただけ）になるため、
+   `check_drift_correction` の `if trusted.open == desired { return None; }`
+   （`platform_state.rs:445-447`）に毎回引っかかり、**「乖離あり」と判定される入力が
+   そもそも生成されない**。
+
+GJI I/O からの実測（`ObservationSource::GjiIoInference`）は input_mode 判定にのみ使われ、
+`observation_store.rs:92,111` で明示的に open 観測ストアには記録されない
+（`ConvBitsInference | GjiIoInference => None` / `=> {}`）。`ConvOpenInference` も
+明示ユーザー意図が無いと gate される（BUG-19 対策、`platform_state.rs:442-444`）ため、
+Chrome+GJI で明示 intent なしに belief が実状態から乖離するケース（今回のログのように、
+物理 F2 押下と自己注入 F2 の交錯などで乖離が生じるケース）は drift correction では
+一切救えない。
+
+**BUG-20 との違い:** BUG-20 は「non-ImmCross アプリでは `set_ime_open` が no-op なのに
+belief だけ適用済み扱いにしていた」という *送信側* の欠陥（`57cab1d` で修正済み）。
+本バグは *検知側* の欠陥で、そもそも `Imm32Unavailable` に belief を裏付ける本物の
+観測ソースが存在しないため、BUG-20 の修正が入っていても drift correction 自体が
+発火しない。両方直って初めて non-ImmCross アプリでの drift correction が機能する。
+
+**修正:** 未着手。今回はログ・原因究明のみを記録する（`fix-requires-evidence` ルール
+に従い、修正は次回着手時に golden/known-bugs 追記とセットで行うこと）。
+
+**検討候補（未検証）:** `GjiIoInference` を input_mode 専用ではなく open 観測にも
+反映する経路の追加（GJI I/O が実際に発生している＝IME が英数直接入力ではなく変換動作を
+している、という信号を open 観測として扱えないか）。ただし `ConvOpenInference` と同様に
+「弱い間接推測」であるため、BUG-19 型の誤爆（明示意図の押し付け）を避ける gate 設計が
+別途必要。
+
+**関連ファイル:** `crates/awase-windows/src/state/platform_state.rs`
+（`check_drift_correction`, `write_focus_probe`）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`apply_focus_probe`,
+`apply_effective_ime`）、`crates/awase-windows/src/state/observation_store.rs`
+（`most_recent_trusted`, `ObservationSource` ごとの record 分岐）。関連バグ: BUG-20
+（送信側の対称バグ）、BUG-19（`ConvOpenInference` gate の元ネタ）、BUG-31/BUG-32
+（同じ literal storm 症状の別原因）。
+
+---
+
 ## BUG-34: `SendMessageTimeoutW(SMTO_ABORTIFHUNG)` の `timeout_ms` 未保証により、エンジンスレッド上の同期 IME 読み取りが数秒ブロックし打鍵が消える
 
 **症状:** WezTerm（TsfNative、GJI）で連続タイピング中、`[engine-input]` ログの `delay=` が
