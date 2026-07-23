@@ -281,12 +281,30 @@ async fn await_vk_detection(
     use crate::tsf::probe::DetectionResult;
 
     if crate::tsf::observer::gji_candidate_visible_now() {
-        log::debug!(
-            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
-             candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+        // ADR-079 epoch fencing: 「既に可視」だけを根拠に無条件で confirmed とすると、
+        // 前の（見捨てた）世代が開いたまま残っている候補ウィンドウを現世代の証拠として
+        // 誤って採用してしまう（実機トレースで確認済み、本 VK1 以降のショートカットが
+        // まさにその発火箇所だった）。直近の GJI I/O が本当にこの VK の送信時刻より
+        // 後かを確認する。GJI I/O monitor 未アタッチ（last_write_ms==0）の場合は
+        // fencing を適用せず従来通り confirmed とする。
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        let epoch_send_ms = sent.detector.epoch_send_ms();
+        let fencing_active = last_write_ms != 0;
+        if !fencing_active || last_write_ms >= epoch_send_ms {
+            log::debug!(
+                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
+                 candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
+                vk.0,
+            );
+            return DetectionResult::CompositionConfirmed;
+        }
+        log::warn!(
+            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
+             visible だが直近の GJI I/O (last_write={last_write_ms}ms) が送信時刻 \
+             (epoch={epoch_send_ms}ms) より前 → stale confirm として扱う (vk=0x{:02X})",
             vk.0,
         );
-        return DetectionResult::CompositionConfirmed;
+        return DetectionResult::StaleConfirm;
     }
     loop {
         let poll_input = yield_step(ch.clone(), vec![]).await;
@@ -379,6 +397,38 @@ pub(crate) async fn run_per_vk_confirm(
                 // emit_recovery_actions は常に RawTsfLiteralRecovery（backspace のみ、
                 // 捨て駒キーには倒れない）を返す。consecutive==0 なら dispatcher が
                 // romaji の再送を自然に次の cold パス（per-VK confirm）へ委ねる。
+                let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
+                    cold_seq,
+                    romaji.to_string(),
+                    backs,
+                    escape_composition,
+                );
+                yield_step(ch.clone(), actions).await;
+                return;
+            }
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1 追補（実機で発見した回帰の修正）: 「候補ウィンドウ
+                // 既に可視」ショートカットは per-VK confirm の**1文字目**でも発火し
+                // うる（前世代の後始末ではなく、フォーカス変更前からの残留 GJI UI
+                // 状態等が原因）。この場合に「検出のみ・recovery なし」で単に Done
+                // にすると、まだ送信していない後続 VK が一切送られないまま処理が
+                // 終了し、既に送信済みの VK（このVKの生文字）だけが取り残されて
+                // 消失・文字化けする実害が生じた（実機報告 2026-07-22:
+                // 「これでできる」→「kれでできる」）。
+                //
+                // fencing が「この confirm 根拠は信用できない」と判定した以上は、
+                // 何もしないより既存の SuspectedLiteral と同じ回収
+                // （backspace + romaji 再送）に倒す方が安全側である。ログタグは
+                // 区別して残し、実地でどの程度発火するかは引き続き観測する。
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                log::warn!(
+                    "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
+                     → suspected literal と同じ回収 (backspace+再送) を行う (vk=0x{:02X} \
+                     escape={escape_composition})",
+                    vk.0,
+                );
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                     cold_seq,
                     romaji.to_string(),
@@ -508,6 +558,25 @@ async fn tsf_probe_coro_body(
                 log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
                 vec![ProbeAction::Done]
+            }
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
+                // 未送信 VK が欠落する回帰を引き起こした（run_per_vk_confirm 側の
+                // 同種修正のコメント参照）。SuspectedLiteral と同じ回収に倒す。
+                log::warn!(
+                    "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
+                     suspected literal と同じ回収 (backspace+再送) を行う"
+                );
+                crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                vec![
+                    ProbeAction::RawTsfLiteralRecovery {
+                        cold_seq,
+                        backs: ze_bs_count,
+                        romaji: recovery_romaji,
+                        escape_composition: false,
+                    },
+                    ProbeAction::Done,
+                ]
             }
         };
 
@@ -836,5 +905,77 @@ mod tests {
             matches!(actions_after_unset.as_slice(), [ProbeAction::Done]),
             "無リカバリで Done のみを返すはず: {actions_after_unset:?}"
         );
+    }
+
+    // ── ADR-079: epoch fencing（「既に可視」ショートカット）の回帰テスト ──────
+
+    /// 候補ウィンドウが「既に可視」でも、直近の GJI I/O が今回の VK 送信より前
+    /// （前世代の残存合成、あるいはフォーカス変更前からの残留 GJI UI 状態）にしか
+    /// 裏付けられていなければ `StaleConfirm` として扱われ、既存の
+    /// `SuspectedLiteral` と同じ回収（backspace + romaji 再送）を行うことを
+    /// 確認する。
+    ///
+    /// 当初は「検出のみ・recovery なし（ただの Done）」だったが、これは per-VK
+    /// confirm の**1文字目**でこの経路が発火した場合（前世代の後始末ではなく、
+    /// フォーカス変更直後の残留 UI 状態等が原因）に、まだ送信していない後続 VK
+    /// が一切送られないまま処理が終了し、既に送信済みの VK の生文字だけが
+    /// 取り残される実害を実機で引き起こした（2026-07-22 実機報告:
+    /// 「これでできる」→「kれでできる」、docs/known-bugs.md BUG-33 追補）。
+    /// fencing が「信用できない」と判定した confirm は、何もしないより
+    /// 既存の安全な回収パスに倒す方が正しい。
+    #[test]
+    fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal()
+    {
+        use crate::tsf::observer::TSF_OBS;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        crate::tsf::observer::reset_literal_session_confirmed();
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+
+        let mut machine = ready_chrome_probe();
+        let first_actions = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                first_actions.as_slice(),
+                [ProbeAction::TransmitSingleVk { .. }]
+            ),
+            "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
+        );
+
+        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
+        let stale_write_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(
+            crate::tsf::observer::gji_write_bytes(),
+            false,
+        );
+        let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+
+        // 候補ウィンドウが「既に可視」= 前世代の合成が残っている状態を模擬する。
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        machine.apply_vk_sent(detector, deadline_ms);
+        let actions_after_stale = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            actions_after_stale
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "stale confirm 検出時は suspected literal と同じく backspace 回収を \
+             発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
+             {actions_after_stale:?}"
+        );
+
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
     }
 }

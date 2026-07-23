@@ -263,6 +263,19 @@ impl LiteralDetectCore {
                     Some(self.recovery(self.ze_bs_count, false))
                 }
             },
+            DetectionResult::StaleConfirm => {
+                // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
+                // 未送信 VK が欠落する回帰を引き起こした（probe_fsm.rs 側の
+                // 同種修正のコメント参照）。SuspectedLiteral と同じ回収に倒す。
+                log::warn!(
+                    "[literal-detect] cold={} stale confirm 検出 (romaji={:?}) → \
+                     suspected literal と同じ回収 (backspace+再送) を行う",
+                    self.cold_seq,
+                    self.romaji,
+                );
+                crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
+                Some(self.recovery(self.ze_bs_count, false))
+            }
         }
     }
 
@@ -591,5 +604,49 @@ mod tests {
                 .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
             "per-VK パスでは候補ウィンドウ可視でも backspace 回収すべき: {actions:?}"
         );
+    }
+
+    // ── ADR-079: epoch fencing（StaleConfirm）の回帰テスト ────────────────────
+
+    /// confirm 根拠（write-bytes 閾値超過）が今回の送信より前の GJI I/O にしか
+    /// 裏付けられていない場合、`LiteralDetectCore::poll` は `StaleConfirm` を
+    /// 受けて `SuspectedLiteral` と同じ回収（backspace + romaji 再送）を行う
+    /// ことを確認する。
+    ///
+    /// 当初は「検出のみ・recovery なし（ただの Done）」だったが、これは
+    /// per-VK confirm の1文字目でこの経路が発火した場合に、まだ送信していない
+    /// 後続 VK が一切送られないまま処理が終了する実害を実機で引き起こした
+    /// （2026-07-22 実機報告: 「これでできる」→「kれでできる」、
+    /// docs/known-bugs.md BUG-33 追補、`probe_fsm.rs` 側の同種修正コメント参照）。
+    #[test]
+    fn poll_recovers_like_suspected_literal_when_stale_confirm_detected() {
+        let _g = VETO_TEST_LOCK.lock().unwrap();
+        reset_tsf_obs_for_veto_test();
+
+        let stale_write_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        TSF_OBS.gji_write_bytes.store(9_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(9_000, true); // epoch > stale_write_ms
+        TSF_OBS.gji_write_bytes.store(9_400, SeqCst); // 閾値超過だが根拠は stale
+
+        let now_ms = crate::hook::current_tick_ms();
+        let mut core =
+            LiteralDetectCore::new(0, "fu".to_string(), obs(true), detector, now_ms, 2, 0);
+
+        let actions = core
+            .poll(tsf_env())
+            .expect("stale confirm は即座に確定するはず");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "stale confirm 検出時は suspected literal と同じく backspace 回収を \
+             発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
+             {actions:?}"
+        );
+
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
     }
 }
