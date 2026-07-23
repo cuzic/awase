@@ -685,9 +685,9 @@ mod tests {
         // BUG-33 追補4: romaji 再送はスケジュールするが、backspace は送らない
         // （StaleConfirm は literal の証拠ではないため）。
         assert!(
-            actions.iter().any(
-                |a| matches!(a, ProbeAction::RawTsfLiteralRecovery { backs: 0, .. })
-            ),
+            actions
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { backs: 0, .. })),
             "stale confirm 検出時は romaji 再送はスケジュールするが backspace は \
              送らないはず（未送信 VK を残したまま無回収で終わると生文字が残存する \
              ため再送自体は必要）: {actions:?}"

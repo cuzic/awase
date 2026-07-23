@@ -744,7 +744,6 @@ impl LiteralDetector {
     pub(crate) fn veto_eligible(&self) -> bool {
         self.veto_eligible
     }
-
 }
 
 #[cfg(test)]

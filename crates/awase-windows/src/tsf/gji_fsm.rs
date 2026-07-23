@@ -815,7 +815,9 @@ impl TimedStateMachine for GjiFsm {
             }
 
             // ── CompositionReset ───────────────────────────────────────────
-            GjiEvent::CompositionReset { gji_idle_ms } => self.handle_composition_reset(gji_idle_ms),
+            GjiEvent::CompositionReset { gji_idle_ms } => {
+                self.handle_composition_reset(gji_idle_ms)
+            }
         }
     }
 
