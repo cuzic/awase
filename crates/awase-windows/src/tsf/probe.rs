@@ -512,7 +512,8 @@ pub struct LiteralDetector {
     ///
     /// 構築時点（VK/バッチ送信の直前）の `current_tick_ms()`。ADR-079 の
     /// epoch fencing で「confirm の根拠になった GJI I/O が本当にこの送信より
-    /// 後に起きたものか」を判定するために使う。`epoch_send_ms()` 参照。
+    /// 後に起きたものか」を判定するために使う。[`Self::check_now`] と
+    /// [`Self::visible_fencing_verdict`] の両方が参照する。
     epoch_send_ms: u64,
     /// SHOW イベントのみで confirmed 判定されたが `gji_last_write_ms()` が
     /// まだ `epoch_send_ms` に追いついていない状態を最初に観測した時刻。
@@ -543,7 +544,11 @@ impl LiteralDetector {
     /// `GJI_SAMPLE_INTERVAL_MS`（構造的に既に確定している値）の2倍という
     /// 数学的なマージンに過ぎないため、`tuning-constants.md` の実測義務の
     /// 対象外とする（ADR-079 実装計画、Opus レビュー欠陥2対処）。
-    const EPOCH_FENCE_GRACE_MS: u64 = crate::tuning::GJI_SAMPLE_INTERVAL_MS as u64 * 2;
+    ///
+    /// `pub(crate)`: `probe_fsm.rs` の「候補ウィンドウ既に可視」ショートカット
+    /// （[`Self::visible_fencing_verdict`]）のテストが猶予切れを模擬するために
+    /// この値を必要とするため。
+    pub(crate) const EPOCH_FENCE_GRACE_MS: u64 = crate::tuning::GJI_SAMPLE_INTERVAL_MS as u64 * 2;
 
     /// 現在の観測値からベースラインを取得して `LiteralDetector` を生成する。
     ///
@@ -659,22 +664,7 @@ impl LiteralDetector {
         }
 
         if show_confirmed {
-            if evidence_is_fresh {
-                self.show_stale_hold_since_ms.set(None);
-                return Some(DetectionResult::CompositionConfirmed);
-            }
-            let hold_since = self.show_stale_hold_since_ms.get().unwrap_or_else(|| {
-                self.show_stale_hold_since_ms.set(Some(now));
-                now
-            });
-            if now.saturating_sub(hold_since) < Self::EPOCH_FENCE_GRACE_MS {
-                // 猶予中: gji_last_write_ms が追いつくかもしれないのでまだ確定しない。
-                // ただし deadline を過ぎているなら stale として確定する
-                // （猶予は「少し待てば追いつくかも」の窓であり、deadline 到達後まで
-                // 引き延ばす理由はない）。
-                return (now >= deadline_ms).then_some(DetectionResult::StaleConfirm);
-            }
-            return Some(DetectionResult::StaleConfirm);
+            return self.grace_hold_verdict(now, deadline_ms, evidence_is_fresh);
         }
 
         if now >= deadline_ms {
@@ -682,6 +672,68 @@ impl LiteralDetector {
         } else {
             None
         }
+    }
+
+    /// SHOW-only な confirm 根拠に対する ADR-079 猶予判定の共通実装。
+    ///
+    /// `evidence_is_fresh` が `true` なら即座に `CompositionConfirmed`。
+    /// `false` なら、`gji_last_write_ms()` が追いつくかもしれない
+    /// [`Self::EPOCH_FENCE_GRACE_MS`] の間だけ即断せず `None`（＝呼び出し側は
+    /// 次 tick で再判定すること）を返し、猶予切れ後に `StaleConfirm` で確定する。
+    /// `deadline_ms` を過ぎている場合は猶予中でも即 `StaleConfirm` にする
+    /// （猶予は「少し待てば追いつくかも」の窓であり、deadline 到達後まで
+    /// 引き延ばす理由はない）。
+    ///
+    /// [`Self::check_now`] の SHOW-only 分岐と
+    /// [`Self::visible_fencing_verdict`]（`probe_fsm.rs` の「候補ウィンドウ
+    /// 既に可視」ショートカット）の両方から使う。両者は 1 detector
+    /// インスタンスにつきどちらか一方の経路しか通らない
+    /// （`await_vk_detection` が `gji_candidate_visible_now()` で分岐する）ため、
+    /// `show_stale_hold_since_ms` の hold 状態が競合することはない。
+    fn grace_hold_verdict(
+        &self,
+        now: u64,
+        deadline_ms: u64,
+        evidence_is_fresh: bool,
+    ) -> Option<DetectionResult> {
+        if evidence_is_fresh {
+            self.show_stale_hold_since_ms.set(None);
+            return Some(DetectionResult::CompositionConfirmed);
+        }
+        let hold_since = self.show_stale_hold_since_ms.get().unwrap_or_else(|| {
+            self.show_stale_hold_since_ms.set(Some(now));
+            now
+        });
+        if now.saturating_sub(hold_since) < Self::EPOCH_FENCE_GRACE_MS {
+            return (now >= deadline_ms).then_some(DetectionResult::StaleConfirm);
+        }
+        Some(DetectionResult::StaleConfirm)
+    }
+
+    /// `probe_fsm.rs::await_vk_detection` の「候補ウィンドウが送信直後から
+    /// 既に可視」ショートカット専用の epoch fencing 判定（ADR-079）。
+    ///
+    /// このケースでは [`Self::check_now`] の確定シグナル（write-bytes 閾値・
+    /// SHOW エッジ）が構造的に機能しない（SHOW は既に可視＝再発火せず、
+    /// per-VK 単体の子音では write-bytes 閾値に届かないことがある。
+    /// `probe_fsm.rs` の `await_vk_detection` 冒頭コメント参照）ため、
+    /// `check_now` に委譲できない。代わりに `gji_last_write_ms()` と
+    /// `epoch_send_ms` の比較だけを根拠にし、[`Self::grace_hold_verdict`] と
+    /// 同じ猶予ロジックを共有する。
+    ///
+    /// 呼び出し側は `Some` が返るまで tick ごとに呼び直すこと（`None` は
+    /// 「まだ猶予中、次 tick で再確認」を意味する）。猶予無しで即断すると、
+    /// 高速タイピングで候補ウィンドウが開きっぱなしの通常ケースでも
+    /// `gji_last_write_ms` のポーリングサンプルが追いつく前に false positive
+    /// の `StaleConfirm` を返してしまい、正しく合成できていた文字が
+    /// backspace で失われる（実機で確認済み）。
+    #[must_use]
+    pub(crate) fn visible_fencing_verdict(&self, deadline_ms: u64) -> Option<DetectionResult> {
+        let now = crate::hook::current_tick_ms();
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        let fencing_active = last_write_ms != 0;
+        let evidence_is_fresh = !fencing_active || last_write_ms >= self.epoch_send_ms;
+        self.grace_hold_verdict(now, deadline_ms, evidence_is_fresh)
     }
 
     /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいかどうか。
@@ -693,15 +745,6 @@ impl LiteralDetector {
         self.veto_eligible
     }
 
-    /// この detector が構築された時刻（epoch fencing の基準点）を返す。
-    ///
-    /// `probe_fsm.rs::await_vk_detection` の「候補ウィンドウ既に可視」
-    /// ショートカットが、`check_now` を経由せず同じ fencing 条件を
-    /// 適用するために使う。
-    #[must_use]
-    pub(crate) const fn epoch_send_ms(&self) -> u64 {
-        self.epoch_send_ms
-    }
 }
 
 #[cfg(test)]
