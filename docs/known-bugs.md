@@ -4005,6 +4005,103 @@ warnings` クリーン、`cargo test -p awase-windows --target x86_64-pc-windows
 
 ---
 
+## BUG-37: Ctrl+T 等の同一プロセス内フォーカス移動で IME belief が実状態と乖離しても、唯一の訂正手段（物理 IME キー）が no-op に握り潰される
+
+**症状:** BUG-36 と同一の実機ログ（2026-07-23、Chrome + GJI、`Imm32Unavailable`）の
+さらに手前で観測。「た」が literal 化するより前に、ユーザーは Ctrl+T で新規タブを
+開いた直後、違和感を覚えて物理サムキーで IME ON を明示的に押していた。しかし:
+
+```
+[engine-input] vk=0x54 KeyDown ... gas_ctrl=true phys_ctrl=true   ← Ctrl+T（新規タブ）
+[focus-sync] hwnd=0xE8D19D0 class="Chrome_WidgetWin_1" ... → mode=Vk
+[tsf-gate] focus change → PendingWarmup (held cleared)
+...
+[hook] IME-mode vk=0xF2 down self_injected=false injected=false ...   ← 物理キー（自己注入ではない）
+[shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey
+  effective_open は既に true → apply-ime 見送り                        ← 何も送信されなかった
+```
+
+ユーザーの明示的な訂正操作が完全に無視され、直後の "た" 入力が literal 化した
+（BUG-36 参照。BUG-36 の修正だけでは症状の一部しか直らず、根本原因はこちら）。
+
+**IME:** Google 日本語入力（GJI）。`Imm32Unavailable`（Chrome/Edge 等）および
+実質 TSF ネイティブ（WezTerm/Windows Terminal 等）。
+
+**原因（確定、コード読解で確認）:**
+
+1. `kp_stage_shadow_ime_toggle`（`runtime/key_pipeline.rs`）の no-op チェックは
+   **無条件**: `effective_open() == 要求値` なら `apply_ime_open` に到達せず、
+   実 OS へは何も送信しない。`Imm32Unavailable` 向けの特別扱いは存在しない。
+   コード自身のコメントが「belief が既に一致しているため実 IME が別経路で
+   乖離していても訂正されない」と既知のギャップとして明記していた。
+2. Ctrl+T（同一プロセス内のタブ切替）は `EVENT_OBJECT_FOCUS`（アクセシビリティ
+   focus イベント、`app/bootstrap.rs::win_event_proc` → `on_window_focus_event`）
+   だけを発火させる。このイベントは `injection_mode`／`TsfGate` のみ更新し、
+   `desired_open`／`effective_open`／`observations` などの belief には一切触れない
+   （`output/mod.rs:508-511` のコメントは Ctrl+T をこの軽量イベントの発生源として
+   既に想定していたが、belief 面の対応はしていなかった）。
+3. belief を実際に再検証する唯一の経路（`ImeEvent::FocusChanged`、
+   `applied` を `Unknown` にリセットし `apply_force_on_for_imm_broken` を
+   解禁する）は `process_changed`（フォーカス元と先で PID が異なる）でしか
+   発火しない（`focus_tracking.rs::advance_focus_tracking`）。Ctrl+T の新規タブは
+   同一 Chrome プロセス内のため、この経路が発火しない。
+4. 仮に発火したとしても、`focus_tracking.rs:341-369`（"Imm32Unavailable hard
+   pre-sync"）が `effective_open()==true` のとき `mirror_applied_open(true, ...)`
+   で `applied` を即座に再ロックしてしまい、`apply_force_on_for_imm_broken` の
+   訂正チャンスを消してしまう。
+
+結果として `Imm32Unavailable`／実質 TSF ネイティブなアプリでは、belief が
+一度でも実状態と乖離すると、(a) 唯一の訂正チャネルである物理 IME キー押下は
+no-op で握り潰され、(b) 唯一のbelief再検証経路は同一プロセス内フォーカス移動
+では発火せず、(c) 発火してもすぐ再ロックされる、という三重に訂正されない状態
+になる。`BUG-33`（drift correction が構造的に発火し得ない）と同根の
+「observe できないプロファイルは自己確認はできても自己訂正できない」問題の
+別の顔。
+
+**修正:** 真のフォーカス変更（`process_changed`）で使われている再プライム機構
+（`Output::mark_composition_cold_focus_change` → 次の VK/TSF 送信で
+`VK_DBE_HIRAGANA` warmup を先行送信）を、軽量な `on_window_focus_event` からも
+条件付きで発火するようにした。`focus::class_names::should_reprime_on_lightweight_focus_sync`
+（新設の純粋関数）が「`Imm32Unavailable` または実質 TSF ネイティブなプロファイル」
+かつ「belief（`effective_open()`）が既に ON」の場合にのみ `true` を返し、
+`on_window_focus_event` はこの条件のときだけ cold mark する。
+
+- 新規コードパスは作らず、既存の cold-mark／eager-warmup 機構をそのまま再利用。
+- cold mark 自体は「次に実際に VK/TSF を送信するまで何も OS に送らない」遅延
+  フラグのため、Chrome が連続発火させる複数の `EVENT_OBJECT_FOCUS`
+  （タブ・アドレスバー・コンテンツ等）で何度呼ばれてもレイテンシ以外の実害はない。
+- belief=OFF のときは何もしない（不要な IME ON 化を起こさない）。
+- 実状態を確実に問い合わせられる `Standard` プロファイルは対象外（この機構が
+  不要な唯一のケース）。
+
+**未解決（Stage 1 の限定的な修正）:** 本修正は「belief=ON のときに実状態を
+belief へ追従させる」再プライムのみ。逆方向（belief=OFF なのに実状態が ON の
+まま乖離）や、Ctrl+T 以外の同一プロセス内フォーカス移動（タブドラッグ、
+複数ウィンドウ間のショートカット等）で同型の問題が起きるかは未検証。
+[ADR-028](adr/028-focus-event-redesign.md)（承認済み・未実装）はより広い
+「同一プロセス内フォーカス移動でも belief-invalidating しない re-fetch を行う」
+設計を提案しており、本修正はその一部を Imm32Unavailable/TSF-native の
+片方向ケースに限定して先行実装したものと位置づけられる。
+
+**テスト:** `focus/class_names.rs::tests` に
+`should_reprime_on_lightweight_focus_sync` の回帰テスト5件を追加
+（Chrome belief=ON/OFF、Windows Terminal、WezTerm、Standard の各ケース）。
+純粋関数のため Linux ネイティブで実行可能（`cargo test -p awase-windows --lib
+class_names` で確認済み、140 passed）。`on_window_focus_event` 側の実際の
+呼び出し配線は `#[cfg(windows)]` のため `cargo test -p awase-windows --target
+x86_64-pc-windows-gnu --no-run` でコンパイルのみ確認。実機での Ctrl+T 再現
+テストは次回ソークで実施すること。
+
+**関連ファイル:** `crates/awase-windows/src/focus/class_names.rs`
+（`cannot_verify_real_ime_state`/`should_reprime_on_lightweight_focus_sync` 新設）、
+`crates/awase-windows/src/runtime/mod.rs`（`on_window_focus_event` に配線）。
+関連: BUG-36（本バグが引き起こした literal 化の直接症状、別コミットで先行修正済み）、
+BUG-33（Imm32Unavailable の drift correction 不発火、同根の問題）、
+[ADR-028](adr/028-focus-event-redesign.md)（未実装、より広い設計）、
+`.claude/rules/ime-belief-architecture.md`。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

@@ -76,6 +76,36 @@ pub fn is_effectively_tsf_native(profile: AppImeProfile, class_name: &str) -> bo
     profile == AppImeProfile::TsfNative || is_tsf_native_window(class_name)
 }
 
+/// このプロファイルで、awase が実 OS IME ON/OFF 状態を確実に問い合わせられないか。
+///
+/// `Imm32Unavailable`（Chrome/Edge 等、VK_KANJI 制御）と実質 TSF ネイティブ
+/// （WezTerm/Windows Terminal 等）はいずれも `ImmGet*` 系 API が使えないか
+/// 不安定なため、belief（shadow state）が実状態と乖離しても自力では気付けない
+/// （BUG-33/BUG-37 参照）。
+#[must_use]
+pub fn cannot_verify_real_ime_state(profile: AppImeProfile, class_name: &str) -> bool {
+    profile == AppImeProfile::Imm32Unavailable || is_effectively_tsf_native(profile, class_name)
+}
+
+/// BUG-37: 同一プロセス内フォーカス移動（Ctrl+T 新規タブ等）のような、belief を
+/// 一切更新しない軽量フォーカスイベントで、次の入力に備えて composition を
+/// 再プライム（cold mark）すべきかどうかを判定する純粋関数。
+///
+/// `cannot_verify_real_ime_state` なプロファイルで belief（`effective_open`）が
+/// 既に ON のときだけ true を返す。この種のプロファイルでは、実状態が belief と
+/// 無断で乖離しても唯一の訂正チャネルである物理 IME キー押下すら shadow-toggle の
+/// no-op（belief==要求値なら何もしない、`kp_stage_shadow_ime_toggle` 参照）に
+/// 握り潰されるため、フォーカス移動のたびに「次の入力で再プライムする」フラグを
+/// 立てておくことで実状態を belief に追従させる。
+#[must_use]
+pub fn should_reprime_on_lightweight_focus_sync(
+    profile: AppImeProfile,
+    class_name: &str,
+    belief_effective_open: bool,
+) -> bool {
+    cannot_verify_real_ime_state(profile, class_name) && belief_effective_open
+}
+
 // ── AppImeProfile ──────────────────────────────────────────────
 
 /// フォーカス中アプリの IME 制御プロファイル。
@@ -265,5 +295,59 @@ mod tests {
         let profile = AppImeProfile::from_class_name("Notepad");
         assert_eq!(profile, AppImeProfile::Standard);
         assert!(!is_effectively_tsf_native(profile, "Notepad"));
+    }
+
+    // BUG-37 回帰テスト: Ctrl+T 新規タブ等の同一プロセス内フォーカス移動で、
+    // belief=ON かつ実状態を問い合わせられないプロファイルのときだけ再プライムする。
+
+    #[test]
+    fn chrome_with_belief_on_should_reprime() {
+        let profile = AppImeProfile::from_class_name("Chrome_WidgetWin_1");
+        assert!(should_reprime_on_lightweight_focus_sync(
+            profile,
+            "Chrome_WidgetWin_1",
+            true,
+        ));
+    }
+
+    #[test]
+    fn chrome_with_belief_off_should_not_reprime() {
+        // belief=OFF なら実状態も OFF のはずで、余計な IME ON 化を起こさない。
+        let profile = AppImeProfile::from_class_name("Chrome_WidgetWin_1");
+        assert!(!should_reprime_on_lightweight_focus_sync(
+            profile,
+            "Chrome_WidgetWin_1",
+            false,
+        ));
+    }
+
+    #[test]
+    fn cascadia_with_belief_on_should_reprime_via_effectively_tsf_native() {
+        // Windows Terminal は profile=Imm32Unavailable だが is_effectively_tsf_native 経由で対象。
+        let profile = AppImeProfile::from_class_name("CASCADIA_HOSTING_WINDOW_CLASS");
+        assert!(should_reprime_on_lightweight_focus_sync(
+            profile,
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            true,
+        ));
+    }
+
+    #[test]
+    fn wezterm_with_belief_on_should_reprime() {
+        let profile = AppImeProfile::from_class_name("org.wezfurlong.wezterm");
+        assert!(should_reprime_on_lightweight_focus_sync(
+            profile,
+            "org.wezfurlong.wezterm",
+            true,
+        ));
+    }
+
+    #[test]
+    fn standard_class_with_belief_on_should_not_reprime() {
+        // 通常の IMM32 アプリは実状態を問い合わせられるので、この機構は不要。
+        let profile = AppImeProfile::from_class_name("Notepad");
+        assert!(!should_reprime_on_lightweight_focus_sync(
+            profile, "Notepad", true,
+        ));
     }
 }

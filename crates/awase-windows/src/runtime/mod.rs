@@ -765,6 +765,27 @@ impl Runtime {
                      app_kind={new_app_kind:?} hint={hint:?} → mode={new_mode:?}",
                     hwnd_id.0
                 );
+
+                // BUG-37: この `EVENT_OBJECT_FOCUS` 経路（Ctrl+T 新規タブ等、同一プロセス内の
+                // フォーカス移動を含む）は belief（desired_open/effective_open）を一切触らない。
+                // 判定ロジックは `should_reprime_on_lightweight_focus_sync` のドキュメント参照
+                // （唯一の訂正チャネルである物理 IME キー押下が shadow-toggle の no-op に
+                // 握り潰される問題を、真のフォーカス変更と同じ再プライム機構で補う）。
+                // cold mark 自体は次に実際に入力するまで何も送信しない遅延フラグなので、
+                // Chrome の連続フォーカスイベントで何度呼ばれても実害はない
+                // （詳細は docs/known-bugs.md BUG-37）。
+                let profile = crate::focus::classify::AppImeProfile::from_class_name(&class_name);
+                if crate::focus::class_names::should_reprime_on_lightweight_focus_sync(
+                    profile,
+                    &class_name,
+                    self.platform_state.ime.effective_open(),
+                ) {
+                    log::debug!(
+                        "[focus-sync] belief=ON かつ実状態を問い合わせられないプロファイル \
+                         (profile={profile:?}) → 次の入力で再プライムするため cold mark"
+                    );
+                    self.platform.mark_composition_cold_focus_change();
+                }
             }
         }
 
