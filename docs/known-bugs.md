@@ -4102,6 +4102,45 @@ BUG-33（Imm32Unavailable の drift correction 不発火、同根の問題）、
 
 ---
 
+## BUG-38: `RawTsfLiteralRecovery` の give-up 分岐が `pending_deferred` を flush しないため、probe 実行中に届いた別の打鍵が消失・出力順逆転する
+
+> 統合ブランチでの注記: 本エントリは `main` 側で「BUG-35」として書かれていたが、
+> 本ブランチには既に別の BUG-35（per-VK confirm の stale confirm 誤帰属、
+> ADR-079 Stage1）が存在していたため、統合時に BUG-38 へ改番した。
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で高速タイピング中、「とうろくする」と入力したところ「と」が消え、続く「う」と「ろ」の出力順が入れ替わった（2026-07-22 実機ログ）。ユーザー報告は「なぞの VK_BACK が再発しています」。
+
+**再現手順（ログで確認済み）:**
+
+```
+と(to) の2文字目 VK が stale confirm 検出 → RawTsfLiteralRecovery(consecutive=0):
+  backspace ×1 + 再送 "to" を予約、mark cold
+  （↑ この間に実キー "う" が到着 → probe in-flight のため pending_deferred=[う] に退避）
+再送した "to"（新 probe, cold+1）の1文字目 VK も stale confirm 検出
+  → RawTsfLiteralRecovery(consecutive=1, give-up): backspace のみ・再送なし
+     + Chrome reinit (VK_IME_OFF→VK_IME_ON) 予約
+flush_raw_tsf_literal_recovery: backspace → (romaji空なので再送なし) → reinit
+  → has_pending_tsf()==false になるが pending_deferred=[う] は誰も flush しない
+実キー "ろ"(ro) が到着 → probe in-flight ではないため deferred されず、
+  通常の新規 probe を経て即座に送信される（TransmitTsf 分岐で自身の
+  送信直後に pending_deferred=[う] を flush）
+→ 出力順が "ろ","う" になり、"と" は2回の backspace で消えたまま戻らない
+```
+
+**IME:** GJI（Google 日本語入力）。TsfNative プロファイル（Windows Terminal 等）。stale confirm 検出自体は本統合ブランチが取り込んだ epoch-fencing 機能（BUG-35、ADR-079 Stage1）によるものだが、本バグの根本原因（`pending_deferred` を flush し忘れる欠落）はその機能とは独立に `main` に既に存在する。stale confirm はこの欠落を踏みやすくする誘因にすぎない。
+
+**原因（確定、コード読解で確認）:** `dispatch_probe_actions`（`output/probe_io.rs`）の `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk`（`is_last`）の3ハンドラは、いずれも自分の送信直後に `io.send_deferred_vks(&io.take_pending_deferred_vks(), marker)` を呼んで `pending_deferred`（`TsfWarmupCoordinator` 所有、probe 実行中に届いた後続キーの退避キュー）を flush する。しかし `ProbeAction::RawTsfLiteralRecovery` のハンドラだけはこれを一切呼ばない。特に `consecutive > 0`（give-up、romaji 再送なし）の場合、この probe の完了後に新しい probe が張られる保証がないため、`pending_deferred` は誰にも flush されないまま取り残される。次に届いた**全く別の**打鍵が（`has_pending_tsf()==false` になっているため）deferred されずに先に通常送信され、後から取り残された分が flush されるため、出力順が入れ替わる。
+
+**修正:** `Output::flush_raw_tsf_literal_recovery`（`output/mod.rs`、backspace → romaji 再送の実送信が起きる同期ポイント）の最後に `flush_stale_deferred_vks_after_recovery` を追加した。`TsfWarmupCoordinator::take_pending_deferred_if_probe_idle()`（新設）が `has_pending_tsf()` を見て、romaji 再送が新しい probe を張っていれば `None`（その新 probe 自身の既存3ハンドラに flush を委ねる）、probe が本当に終わっていれば取り残された VK を返す。`dispatch_probe_actions` の中（`set_raw_literal` が static に退避するだけで実送信はまだ起きていない時点）で flush すると backspace より先に deferred VK が OS に届いてしまうため、意図的に「実際に SendInput される同期ポイント」である `flush_raw_tsf_literal_recovery` の末尾に置いた。
+
+**未対応（残存、フォローアップ候補）:** `escape_composition=true`（ESC で composition を丸ごと破棄する経路、per-VK confirm の2文字目以降で到達しうる、`main` に既存）の場合、ESC 直後の raw な deferred VK 送信は probe を経由しないため、それ自体が literal 化するリスクが理論上残る。probe を経由した re-entry（romaji へ変換して `send_romaji_as_tsf` 相当に載せる）は ADR-079 Stage2（未実装）のスコープであり、本 fix は「取り残されたまま出力順が入れ替わる」実害の解消に限定した。
+
+**テスト:** `output/tsf_warmup_coord.rs` に `take_pending_deferred_if_probe_idle` の回帰テスト3件を追加（probe in-flight 中は drain しないこと／give-up で probe が終わった後は drain すること／キューが空なら `None` を返すこと）。実際の `Output::flush_stale_deferred_vks_after_recovery` は `SendInput` を伴うため（本クレートの既存の慣習どおり、Win32 呼び出しを伴うコードパスは `ProbeIo`/`FakeProbeIo` 経由か、決定ロジックを純粋関数に分離した上でユニットテストする）、コーディネーターレベルのテストで決定ロジックを直接検証する形にした。Windows cross-compile（`cargo xwin clippy --target x86_64-pc-windows-gnu -- -D warnings` 含む）警告ゼロ確認済み。Wine 等の実行環境がないためテストの実実行（`cargo test --target x86_64-pc-windows-gnu`）は未実施、実機再検証も未実施。
+
+**関連ファイル:** `crates/awase-windows/src/output/mod.rs`（`flush_raw_tsf_literal_recovery`、新設 `flush_stale_deferred_vks_after_recovery`）、`crates/awase-windows/src/output/tsf_warmup_coord.rs`（新設 `take_pending_deferred_if_probe_idle`）、`crates/awase-windows/src/output/probe_io.rs`（`ProbeAction::RawTsfLiteralRecovery` ハンドラ）。関連: BUG-28（同じ `flush_raw_tsf_literal_recovery` 経路の別の drain 漏れ）、BUG-35（stale confirm 誤帰属、ADR-079 Stage1、本バグの誘因）、BUG-36（give-up→Chrome reinit の順序修正）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:

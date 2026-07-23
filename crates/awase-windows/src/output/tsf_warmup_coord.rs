@@ -297,6 +297,24 @@ impl TsfWarmupCoordinator {
     pub(crate) fn take_pending_deferred(&self) -> Vec<DeferredVk> {
         std::mem::take(&mut *self.pending_deferred.borrow_mut())
     }
+
+    /// probe が in-flight でなければ deferred キューを取り出してクリアし、
+    /// 空でなければ `Some(vks)` を返す。
+    ///
+    /// `RawTsfLiteralRecovery` の give-up 分岐（romaji 再送なしで probe が終わる経路）専用。
+    /// `dispatch_probe_actions` の `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk` は
+    /// 自身の送信直後に無条件で `take_pending_deferred` を呼ぶが、この経路だけは
+    /// 呼ばないため（docs/known-bugs.md）、`flush_raw_tsf_literal_recovery` の
+    /// 最後から呼ぶ。probe が in-flight のとき（romaji 再送が新しい probe を張った
+    /// 場合）は `None` を返し、キューには触れない — その新しい probe 自身の
+    /// 上記ハンドラが完了後に正しい順序で flush するのに任せる。
+    pub(crate) fn take_pending_deferred_if_probe_idle(&self) -> Option<Vec<DeferredVk>> {
+        if self.has_pending_tsf() {
+            return None;
+        }
+        let vks = self.take_pending_deferred();
+        (!vks.is_empty()).then_some(vks)
+    }
 }
 
 #[cfg(test)]
@@ -366,5 +384,57 @@ mod tests {
             "probe が上書きされても deferred キューは coordinator に残り続ける"
         );
         assert_eq!(coord.take_pending_deferred().len(), 1);
+    }
+
+    // ── take_pending_deferred_if_probe_idle（RawTsfLiteralRecovery give-up 経路）──
+
+    #[test]
+    fn take_pending_deferred_if_probe_idle_returns_none_when_queue_empty() {
+        let coord = TsfWarmupCoordinator::new();
+        assert!(coord.take_pending_deferred_if_probe_idle().is_none());
+    }
+
+    #[test]
+    fn take_pending_deferred_if_probe_idle_does_not_drain_while_probe_in_flight() {
+        // romaji 再送（consecutive==0）が新しい probe を張った直後の状態を模す:
+        // その新しい probe 自身の TransmitTsf 等が完了後に flush するはずなので、
+        // ここで先取りして drain してはいけない。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false)]));
+
+        assert!(coord.take_pending_deferred_if_probe_idle().is_none());
+        assert!(
+            coord.has_pending_deferred(),
+            "probe が in-flight のときはキューを消費してはいけない"
+        );
+    }
+
+    #[test]
+    fn take_pending_deferred_if_probe_idle_drains_after_give_up_clears_probe() {
+        // RawTsfLiteralRecovery の give-up 分岐（romaji 再送なし）が probe を
+        // 完了させた直後の状態を模す: pending_tsf はクリアされるが、
+        // 元バグでは pending_deferred が誰にも flush されず取り残されていた。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false), (VkCode(0x4F), false)]));
+        coord.clear_pending_tsf();
+        assert!(!coord.has_pending_tsf());
+        assert!(
+            coord.has_pending_deferred(),
+            "前提: give-up 直後は取り残された deferred VK が残っている"
+        );
+
+        let drained = coord.take_pending_deferred_if_probe_idle();
+
+        assert_eq!(
+            drained.map(|v| v.len()),
+            Some(2),
+            "give-up で probe が完了したら取り残された deferred VK を返すべき"
+        );
+        assert!(
+            !coord.has_pending_deferred(),
+            "flush 後はキューが空になる（二重送信防止）"
+        );
     }
 }

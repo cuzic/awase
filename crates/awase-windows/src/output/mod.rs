@@ -1009,7 +1009,8 @@ impl Output {
         }
     }
 
-    /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送 → (あれば) GJI reinit。
+    /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送 → (あれば) GJI reinit
+    /// → 取り残された deferred VK flush。
     ///
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。drain keys より前に実行すること。
     ///
@@ -1019,6 +1020,11 @@ impl Output {
     /// commit してしまうため、reinit が先行すると commit 済みの literal 文字を
     /// backspace で確実に消せなくなる（`pending_gji_reinit_cold_seq` のフィールド
     /// doc・`docs/known-bugs.md` BUG-36 参照）。
+    ///
+    /// BUG-38: `flush_stale_deferred_vks_after_recovery` を最後に置くのは、
+    /// backspace/romaji再送/reinit がすべて実際に SendInput された後でなければ
+    /// 取り残された deferred VK を送出してはいけないため（先に送ると backspace が
+    /// deferred 側の文字を巻き込んで消してしまう、`docs/known-bugs.md` BUG-38 参照）。
     pub fn flush_raw_tsf_literal_recovery(&self) {
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
@@ -1026,6 +1032,48 @@ impl Output {
             use probe_io::ProbeIo as _;
             self.send_chrome_gji_reinit_and_poll(cold_seq);
         }
+        self.flush_stale_deferred_vks_after_recovery();
+    }
+
+    /// give-up（romaji 再送なし）で `RawTsfLiteralRecovery` が終わった場合に、
+    /// `pending_deferred` に取り残された VK を送出する。
+    ///
+    /// `dispatch_probe_actions` の `ProbeAction::RawTsfLiteralRecovery` ハンドラは
+    /// `record_raw_tsf_literal` で backspace/romaji を static に退避するだけで、
+    /// `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk` の各ハンドラと違って
+    /// `pending_deferred` を一切 flush しない（docs/known-bugs.md 参照）。
+    /// 何もしないと、probe 実行中に届いた別の打鍵の VK がこのキューに取り残されたまま
+    /// 消費されず、後続の全く別の打鍵が先に probe を通過して出力順が入れ替わる
+    /// （例: "とうろく" と連続入力して "と" が消え "うろ" が "ろう" に逆転する）。
+    ///
+    /// `flush_raw_tsf_literal_romaji` が romaji を再送した場合（consecutive==0 の
+    /// 通常リカバリ）は、その再送自身が新しい probe を張るため
+    /// `warmup_coord.has_pending_tsf()` が true になり、ここでは何もしない。
+    /// その新しい probe の `TransmitTsf` 等のハンドラが、確認完了後に
+    /// 正しい順序（再送した romaji → deferred VK）で自然に flush する。
+    /// give up（romaji 再送なし）の場合のみ、ここで直接 flush する。
+    ///
+    /// 既知の残課題: この flush は cold-mark 直後（GJI がまだ確実に温まっていない
+    /// 状態）に raw VK を probe なしで送るため、deferred 側が literal 化する
+    /// リスクは理論上残る（escape_composition=true の場合は composition が
+    /// ESC で丸ごと破棄された直後でもある）。probe を経由した re-entry は
+    /// ADR-079 Stage2（未実装）のスコープであり、本 fix は「取り残されたまま
+    /// 順序が入れ替わる」実害の解消に限定する。
+    fn flush_stale_deferred_vks_after_recovery(&self) {
+        use probe_io::ProbeIo as _;
+        let Some(vks) = self.warmup_coord.take_pending_deferred_if_probe_idle() else {
+            return;
+        };
+        log::debug!(
+            "[raw-tsf-literal] give-up 後に取り残されていた deferred {} VK(s) を flush",
+            vks.len()
+        );
+        let marker = if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
+            VkMarker::InjectedWithScan
+        } else {
+            VkMarker::Tsf
+        };
+        self.send_deferred_vks(&vks, marker);
     }
 }
 
