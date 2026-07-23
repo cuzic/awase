@@ -151,6 +151,23 @@ impl ProbeIo for Output {
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_IME_OFF, VK_IME_ON};
+        // BUG-33: give-up（RawTsfLiteralRecovery 連続失敗）からもこの reinit を呼ぶため、
+        // CHROME_GJI_REINIT_CONFIRM_MS のポーリング窓が終わる前の再発火をレート制限する。
+        // OFF→ON の最終到達状態は ON で決定論的だが、窓内に連続 give-up が来るたびに
+        // 重ねて送ると「OFF→ON→OFF→ON…」の瞬間的な OFF ブリップが積み重なり、
+        // GJI 側の composition/候補ウィンドウを無用に揺らす（BUG-29/BUG-30 のような
+        // 誤検知の温床になりかねない）。前回の送信からポーリング窓が経過するまで待つ。
+        let now_ms = crate::hook::current_tick_ms();
+        let elapsed = now_ms.saturating_sub(self.last_gji_reinit_ms.get());
+        if elapsed < crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS {
+            log::debug!(
+                "[chrome-reinit] cold={cold_seq} skip: 前回 reinit から {elapsed}ms \
+                 (< {}ms) しか経っていない",
+                crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS
+            );
+            return;
+        }
+        self.last_gji_reinit_ms.set(now_ms);
         // 1. VK_IME_OFF → VK_IME_ON を SendInput でキューイングし GJI を OFF/ON リセット。
         let inputs = [
             make_key_input_ex(VK_IME_OFF, false, IME_KANJI_MARKER),
@@ -534,6 +551,14 @@ where
                     // escape_composition はそのまま引き継ぎ、composition が残っていれば
                     // ESC で確実に破棄する。
                     io.set_raw_literal(backs, String::new(), escape_composition);
+                    // BUG-33: 2連続 literal 化は「GJI が実際に OFF/direct-input のまま
+                    // だった」ことの強い証拠（このパイプラインに来る romaji は常に
+                    // awase 自身が「日本語のかな」と決定した文字なので、英語入力の
+                    // つもりだった可能性は無い）。backspace で見た目を掃除するだけでは
+                    // 次の文字も同じ理由で literal 化し続けるため、実際に
+                    // VK_IME_OFF→VK_IME_ON を送って GJI を ON へ戻す（詳細は
+                    // docs/known-bugs.md BUG-33）。
+                    io.send_chrome_gji_reinit_and_poll(cold_seq);
                 }
                 io.mark_cold_raw_tsf();
             }
@@ -578,6 +603,8 @@ mod tests {
         reset_consecutive_called: Cell<bool>,
         /// transmit_tsf に渡された WarmupOutcome.used_eager_path を記録する。
         last_used_eager_path: Cell<bool>,
+        /// BUG-33: give-up 分岐からの `send_chrome_gji_reinit_and_poll` 呼び出し回数。
+        gji_reinit_call_count: Cell<u32>,
     }
 
     impl Default for FakeProbeIo {
@@ -595,6 +622,7 @@ mod tests {
                 mark_cold_raw_tsf_called: Cell::new(false),
                 reset_consecutive_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
+                gji_reinit_call_count: Cell::new(0),
             }
         }
     }
@@ -649,7 +677,10 @@ mod tests {
             None
         }
 
-        fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {}
+        fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {
+            self.gji_reinit_call_count
+                .set(self.gji_reinit_call_count.get() + 1);
+        }
 
         fn send_unicode_char_direct(&self, _ch: char) {}
     }
@@ -837,6 +868,12 @@ mod tests {
         assert!(result.is_done());
         assert!(io.set_raw_literal_called.get());
         assert!(io.mark_cold_raw_tsf_called.get());
+        assert_eq!(
+            io.gji_reinit_call_count.get(),
+            0,
+            "BUG-33: 初回の suspected literal では実 IME-ON 再送を発火させない \
+             (偽陽性の可能性がまだ高いため give-up まで待つ)"
+        );
     }
 
     // NOTE: `raw_tsf_literal_recovery_skips_set_literal_when_consecutive`（consecutive>0 で
@@ -1036,6 +1073,12 @@ mod tests {
         assert!(
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
+        );
+        assert_eq!(
+            io.gji_reinit_call_count.get(),
+            1,
+            "BUG-33: give-up（consecutive > 0）は実 IME-ON 再送 \
+             (send_chrome_gji_reinit_and_poll) を1回呼ぶべき"
         );
     }
 }
