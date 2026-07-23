@@ -33,10 +33,38 @@ fn read_crate_file(rel_path: &str) -> String {
 /// テストコード内での使用（意図的な stale-intent シミュレーション等）は
 /// このチェックの対象外とする。
 fn production_code_only(content: &str) -> &str {
-    match content.find("#[cfg(test)]\nmod tests") {
-        Some(idx) => &content[..idx],
-        None => content,
+    content
+        .find("#[cfg(test)]\nmod tests")
+        .map_or(content, |idx| &content[..idx])
+}
+
+/// `content` 内で `fn_signature_needle`（例: `"fn some_handler"`）が最初に
+/// マッチした関数の本体（波括弧の対応を数えて閉じ括弧まで）を切り出す。
+///
+/// 特定の関数の中だけで「あるパターンが出現しないこと」を固定したい場合に使う
+/// （ファイル全体には他の正当な用途で同じパターンが出現しうるため）。
+fn extract_fn_body<'a>(content: &'a str, fn_signature_needle: &str) -> &'a str {
+    let start = content
+        .find(fn_signature_needle)
+        .unwrap_or_else(|| panic!("function matching {fn_signature_needle:?} not found"));
+    let open_brace = content[start..].find('{').map_or_else(
+        || panic!("no opening brace found for {fn_signature_needle:?}"),
+        |i| start + i,
+    );
+    let mut depth = 0i32;
+    for (i, ch) in content[open_brace..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &content[open_brace..=open_brace + i];
+                }
+            }
+            _ => {}
+        }
     }
+    panic!("unbalanced braces while extracting body of {fn_signature_needle:?}");
 }
 
 /// `ImeEvent::PanicReset` は `apply_panic_reset` のみが dispatch する。
@@ -441,4 +469,45 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
          `UserImeSetIntent` は typed writer 経由で発行し、直接 dispatch_event() を呼ばないこと。\n\
          新しい UserIntentSource variant を追加する場合は typed writer メソッドを追加してください。"
     );
+}
+
+/// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
+/// belief/state への書き込みを一切行わないことを固定する。
+///
+/// この handler は UIA の非同期分類結果を受け取るが、hwnd 粒度とウィンドウ内
+/// フォーカス要素追跡の設計が未解決のため、結果を意図的に破棄しログのみに
+/// とどめている（`let _ = app;` で書き込み手段自体を放棄、関数内コメント参照）。
+/// この no-op はコンパイラで強制されておらず「コメントのみの防御」であるため、
+/// 将来この handler に belief 書き込みロジックが足された場合、GjiFsm の
+/// `CompositionReset`/`NativeF2Consumed`（BUG-33 追補3・4）と同型の「弱い
+/// 非同期シグナルだけで belief を破壊し確定済み文字が消える」バグが構造的に
+/// 再発しうる。それを検知するため、この関数の本体に belief/state 書き込みと
+/// 思われる呼び出しパターンが一切出現しないことを固定する。
+#[test]
+fn uia_async_focus_kind_handler_does_not_write_belief() {
+    let path = "src/runtime/message_handlers.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn handle_wm_focus_kind_update");
+    for forbidden in [
+        "dispatch_event(",
+        "reduce(",
+        "ImeEvent::",
+        ".shadow_model.",
+        "force_guards",
+        ".belief.",
+        "learn_injection_mode",
+        "update_injection_mode",
+        "gji_on_",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "{path} の handle_wm_focus_kind_update 内に belief/state 書き込みと \
+             思われるパターン `{forbidden}` が見つかりました。UIA 非同期結果は \
+             BUG-12 により意図的に適用しない設計です（hwnd 粒度・ウィンドウ内 \
+             フォーカス要素追跡の設計が未解決のため）。意図的に適用するよう \
+             変更したのであれば、関数内コメントの課題が解決されたことを確認した \
+             上でこのテストの期待値を更新してください。"
+        );
+    }
 }

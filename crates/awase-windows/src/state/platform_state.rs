@@ -512,7 +512,7 @@ impl ImeStateHub {
     /// ユーザー操作（IME トグル・SetOpen 等）で「意図した状態」が確定したときに呼ぶ。
     pub(crate) fn reset_detect_state(&mut self) {
         self.shadow_model.observe_miss_monitor.record_success();
-        self.shadow_model.force_guards.guards.clear();
+        self.shadow_model.force_guards.clear();
     }
 
     /// IME トグルが実際に適用されたことを記録する。
@@ -543,7 +543,7 @@ impl ImeStateHub {
         self.belief.is_japanese_ime = true;
         self.belief.prev_conversion_mode = None;
         self.shadow_model.observe_miss_monitor.record_success();
-        self.shadow_model.force_guards.guards.clear();
+        self.shadow_model.force_guards.clear();
         self.shadow_model.force_guards.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
             expires_at: None,
