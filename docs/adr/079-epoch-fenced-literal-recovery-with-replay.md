@@ -2,7 +2,30 @@
 
 ## ステータス
 
-提案中（2026-07-22）。実装は別セッションで行う。本 ADR は設計のみ。
+Stage 1（epoch fencing の検出 + 既存 `SuspectedLiteral` と同型の回収）実装済み
+（2026-07-22、`docs/known-bugs.md` BUG-35。統合ブランチでの改番注記は同エントリ
+参照 — 実装当時は「BUG-33」として書かれていたが、main 側に既に別の BUG-33 が
+存在したため統合時に BUG-35 へ改番）。当初は「検出のみ・recovery 無し」
+だったが、per-VK confirm の1文字目でこの経路が発火すると未送信 VK が欠落する
+regression を実機で引き起こしたため、BUG-35 追補で「stale confirm を検出したら
+既存の backspace + romaji 再送に倒す」方式に修正済み。
+
+BUG-35 追補3・追補4（2026-07-23、実機で複数件確認）で、この「backspace +
+romaji 再送」方式自体に欠陥があると判明し修正済み: (a) `CompositionReset`/
+`NativeF2Consumed` が実際の GJI 生存証拠（`gji_idle_ms`）を無視して
+genuinely warm なセッションまで cold-start 経路へ送り込んでいた前提条件面
+（追補3）、(b) `VK_BACK` は composition スコープ外の確定済みテキストにも
+届く不可逆操作であるにもかかわらず、`StaleConfirm`（confirm 根拠が古いという
+検出であって literal の証拠ではない）でも無条件に backspace を送っていた
+回収面（追補4、`per_vk_recovery_params` を `(is_stale, failed_idx)` 基準に
+変更し「literal の positive な証拠がない限り backspace を送らない」よう修正）。
+
+Stage 2（quarantine → ESC + 消えた文字の retype + 後続入力の限定 replay）は
+引き続き未実装。追補3・4により Stage 1 起因の実害（無根拠な cold 化・証拠
+なしの backspace）は根治したため、Stage 2 が対象とする「一度 backspace した
+後、再送の confirm が stale だと後から分かるケース」自体の発生頻度が実地で
+どこまで残るか、まず観測することを推奨する（詳細は BUG-35 の
+「未解決の follow-up」を参照）。
 
 ## コンテキスト
 
@@ -77,13 +100,40 @@ Stale confirm を検出したら、以下の順で対処する:
 - **timeout（300ms deadline）を実測値ベースで単純に延長する案**: `tuning-constants.md` が指摘する「同じ定数 family の盲目的エスカレーション」の再演になるため、根治にならないと判断し採用しない。Chandra-Toueg の観点からも、timeout 延長は accuracy/completeness トレードオフ上の移動に過ぎず、別の（より遅い）ケースで同型の false positive が再発しうる。
 - **ring buffer による無条件補償 retype**: 「backspace 実行直後、まだ何もcommitされていなければ retype」という単純ガードだけでは、本トレースのような高速タイピング下（stale 判定までに後続入力が既に進行している）を救えないため、本案（後続入力も含めた限定 replay）に発展させた。
 
-## 未解決事項 / 実装時に詰めるべき点
+## 未解決事項 / 実装時に詰めるべき点（2026-07-22 実装セッションで決定）
 
-- Fencing チェックの実装箇所（`tsf/probe.rs::LiteralDetector` か `tsf/warmup/probe_fsm.rs::run_per_vk_confirm` か）と、既存の `veto_eligible` / `VetoDecision` 機構（BUG-30 追補1）との統合方法。
-- Replay バッファの保持期間・上限（無制限に保持するとメモリ/複雑性の観点で危険。どの時点で「もう stale confirm の心配はない」と判断してバッファを破棄してよいかの境界条件）。
-- 「変換トリガー系」の具体的な列挙（Space/Enter 以外に何を含めるか）。
-- `fix-requires-evidence.md` に基づき、実装時は golden test（`ime_key_sequence_golden.rs` 等）または `docs/known-bugs.md` への記録のいずれかが必須。本件は warmup/cold-start・キー選択領域に該当するため両方が望ましい。
-- `tuning-constants.md` に基づき、fencing 判定に新規の時間定数を導入する場合は実機実測値を伴うこと。
+### 1. Fencing チェックの実装箇所・判定条件（決定）
+
+`tsf/observer.rs` に既存の `gji_last_write_ms()`（GJI プロセスの最終 WriteOperationCount 変化時刻、live 読み取り）を、そのまま fencing の判定基準に使う。新規のタイムスタンプ計装（例: SHOW 専用タイムスタンプ）は追加しない。
+
+判定条件は単一: **`gji_candidate_show` の SHOW / `gji_write_bytes` の閾値超過のどちらが confirm 信号を出したかに関わらず、`gji_last_write_ms() >= epoch_send_ms`（自分の世代が VK を送信した時刻）を満たさない限り、その confirm を「自分の世代の証拠」として採用しない**。理由: 実機トレース（本 ADR コンテキスト節）では、SHOW イベント自体は cold=264 の送信後に本当に発火していたが、対応する `gji_last_write_ms` は cold=263 送信時点の値のまま更新されておらず、「候補ウィンドウが遅れて反応しただけで、実際の GJI I/O は現世代のものではない」ことが分かる。この1条件で SHOW/write-bytes 両シグナルの stale 判定を一元的にカバーできる。
+
+配置は `tsf/probe.rs::LiteralDetector` に決定（`tsf/warmup/probe_fsm.rs::run_per_vk_confirm` 側には置かない）。`LiteralDetector` に `epoch_send_ms: u64` フィールドを追加し（`new_with_pre_send_baseline` 等、VK 送信直前にベースラインを取得する既存の呼び出し箇所で同時に取得可能）、`check_now` の戻り値 `DetectionResult` に第三のバリアント `StaleConfirm` を追加する。
+
+理由: BUG-30 で確立した「`check_now` は信号検出（signal detection）に専念し、veto のような行動判断は `LiteralDetectCore::poll` 側に置く」という分離は維持する。ただし fencing は「この信号にどう反応するか」という policy ではなく「この信号は誰の送信に帰属するか」という検出そのものの精度の問題であり、veto とは性質が異なる（veto は「信号は現世代のものだが、行動を保留すべきか」の判断。fencing は「その信号は現世代のものか、そもそも別世代のものか」の判定）。よって `check_now` の責務を拡張する形が一貫する。
+
+呼び出し側（`run_per_vk_confirm`／`LiteralDetectCore::poll`）は `StaleConfirm` を新たに受け取る分岐を追加するだけで済み、`veto_eligible`/`VetoDecision` 機構（`NotApplicable`/`Hold`/`Expired`）とは独立に共存する（veto は「有効な `SuspectedLiteral` をどう扱うか」、fencing は「そもそも `CompositionConfirmed`/`SuspectedLiteral` の判定材料が正しい世代のものか」であり、判定順序は fencing → veto）。
+
+### 2. Replay バッファの保持期間・上限・所有者（決定）
+
+**新たに判明した欠落:** 既存コードには「backspace で消した文字が何だったか」を記録する仕組みが一切ない（`RawTsfLiteralRecovery` アクションは `backs`＝消す文字数のみを持ち、消した文字の内容は保持しない）。ADR 本文の replay 対象は「backspace 以降の後続入力」のみだが、stale 判明時に retype すべき「誤って消してしまった文字自身」を復元するには、**直近送信済み出力アクションの小さな履歴リング**を新設する必要がある。
+
+- **保持期間:** 新規の時間定数は導入しない。既存の `RAW_TSF_LITERAL_DETECT_MS`(300ms) / `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`(500ms) の confirm/timeout ウィンドウにそのまま乗せる（このウィンドウ内で `StaleConfirm` が確定するか、確定しないまま `Done` になれば用済み）。
+- **上限:** 16 件（`INPUT_DEFER::MAX_CAPACITY`(1024) は無関係に長時間分をカバーするものであり参考にしない。300〜500ms のタイピング速度から見て 16 件で十分）。上限超過時は log と共に「今回の recovery は replay を諦めて従来通り（backspace のみ、後続 UX 不整合は許容）」にフォールバックする（silent には切り捨てない）。
+- **所有者:** `TsfWarmupCoordinator`（probe インスタンスの差し替えを跨いで生存する唯一のコンポーネント。既存の `pending_deferred: RefCell<Vec<DeferredVk>>` と並ぶ新フィールドとして追加する）。
+- **破棄タイミング:** フォーカス変更（`on_focus_changed()`）、非 stale の通常 `Done`、stale-recovery 完了（ESC+retype+replay 実行後）のいずれかで破棄する。
+
+### 3. 「変換トリガー系」キーの列挙（決定）
+
+新規の列挙は作らず、既存の `vk::is_composition_confirm_key`（`crates/awase-windows/src/vk.rs:212-219`、Space/Enter/Escape の3つ）を再利用する。この関数は既に「composition を確定／キャンセルするキー」として定義・テスト済みであり、本 ADR が要求する「pending composition の有無で意味が変わるキー」の概念と完全に一致する。replay バッファの走査は、この関数が `true` を返す VK に到達した時点で打ち切る（そのキー自体は replay せず、以降も replay しない）。
+
+### 4. テスト・記録義務（変更なし）
+
+`fix-requires-evidence.md` に基づき、実装時は golden test（`ime_key_sequence_golden.rs` 等、`DetectionResult::StaleConfirm` を含む純粋関数の回帰テスト）と `docs/known-bugs.md` への記録の両方を行う（本件は warmup/cold-start・キー選択領域に該当するため両方が望ましいケース）。
+
+### 5. タイミング定数（変更なし）
+
+`tuning-constants.md` に基づき、本設計は新規の時間定数を導入しない（決定 2 の通り既存定数を再利用）。fencing 判定自体も新規の待機時間を追加するものではなく、既存の confirm/timeout ウィンドウ内で判定条件を精緻化するのみ。実機実測が必要になるとすれば、リプレイバッファの上限 16 件が実際のタイピング速度で十分かの検証であり、これは Windows 実機ソークテストで確認する（このサンドボックスでは実行不可、フラグを立てて別途実施）。
 
 ## 関連
 

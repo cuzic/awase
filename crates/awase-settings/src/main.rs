@@ -907,6 +907,38 @@ impl SettingsApp {
                 );
             });
         }
+        if self.config.general.left_thumb_key == "無変換"
+            || self.config.general.right_thumb_key == "無変換"
+        {
+            ui.indent("muhenkan_thumb_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
+                )
+                .on_hover_text(
+                    "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
+                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
+                     ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
+                     IME によっては誤って入力モードが切り替わることがあります。",
+                );
+            });
+        }
+        if self.config.general.left_thumb_key == "変換"
+            || self.config.general.right_thumb_key == "変換"
+        {
+            ui.indent("henkan_thumb_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.henkan_solo_tap_ignore_composing_guard,
+                    "変換候補ウィンドウ表示中でも変換キー単独タップを送出する",
+                )
+                .on_hover_text(
+                    "OFF(既定)の場合、変換候補ウィンドウ表示中は変換キーの単独タップを\n\
+                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
+                     ON にすると、変換候補ウィンドウ表示中でも変換キー本来の機能が使えますが、\n\
+                     IME によっては誤って入力モードが切り替わることがあります。",
+                );
+            });
+        }
         ui.add_space(8.0);
 
         // Engine on/off

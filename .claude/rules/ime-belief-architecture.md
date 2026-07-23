@@ -134,3 +134,44 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 3. **CI テスト（軽量な第二の防衛線）**: `crates/awase-windows/tests/architecture_guard.rs` — `PanicReset` / `HwndCacheRestored` / `InputModeObserved` の構築箇所数をテキスト走査で固定し、想定外の増加を検知する。`cargo test -p awase-windows --test architecture_guard`（Linux でも実行可能、CI に組み込み済み）。
 
 新しい「観測が乏しい状況での安全デフォルト」や「awase 自身の能動的訂正」を追加するときは、上記のどの仕組みにも引っかからないからといって「近道が許されている」わけではない。まず本当に `ObserverReported`（confidence 付き）/ `InputModeApplied`（strategy 付き）で表現できないか検討すること。
+
+## `ImeModel` 以外の belief 的状態への適用範囲（2026-07-23 追記）
+
+`GjiFsm`（TSF composition の warm/cold、`tsf/gji_fsm.rs`）にはこの3段防御が
+一切無く、`GjiEvent::CompositionReset`/`NativeF2Consumed` が弱い代理指標
+（`gji_candidate_visible_now()` の素の `AtomicBool` 読み取り）だけで無条件に
+belief を書き換えていたことが、実機バグ2件（確定済み文字が VK_BACK で消える、
+`docs/known-bugs.md` BUG-33 追補3・4）の根本原因だった。修正は dylint 新設や
+private 化ではなく、`gji_idle_ms`（実観測値）をイベントの必須パラメータ化する
+という軽量な手法で行った。
+
+この教訓を受けて `ImeModel` 以外の belief 的トラッカー全体を監査した結果、
+`ImeModeFsm`/conv mode/`TsfGate`/injection_mode/focus 分類は実観測でゲート
+済みだったが、以下2箇所は「規約・コメントのみで守られている」構造的な弱さが
+見つかり是正した:
+
+- **`state/force_guard.rs::ForceGuardSet.guards`**: 全 `pub` フィールドで、
+  正規の `clear_for_focus_change()` を迂回した直接フィールド操作が現存して
+  いた → `guards` を private 化し `clear()` を唯一の公開クリア口にした。
+- **UIA 非同期結果ハンドラ（`runtime/message_handlers.rs::handle_wm_focus_kind_update`、
+  BUG-12 対策）**: 結果を意図的に破棄する no-op が単一のコメントだけで
+  守られており、コンパイラ強制が無かった → `tests/architecture_guard.rs::
+  uia_async_focus_kind_handler_does_not_write_belief` を追加し、この関数の
+  本体に belief 書き込みパターンが一切出現しないことを固定した。
+
+**新しい belief 的状態（FSM の内部状態、キャッシュされた分類結果、force guard
+のような override 機構等）を追加・変更する際の判断基準**: 新規 dylint crate は
+「型シグネチャの変更や private 化では防げない、意味論的な偽装」（例:
+`ObserverReported` の `source` を偽って別の観測に見せかける）にのみ投資する。
+それ以外は次の軽い順に検討する:
+
+1. その値が**蓄積する**（一度書き込まれると以後の判断に効き続ける）か、
+   それとも**毎回純粋関数で再計算される**か。後者なら無条件上書きでも実害
+   なし（`AppKind`/`FocusCache` 等）。
+2. 蓄積する値なら、書き込み経路を**1箇所の関数に集約**し、フィールドを
+   private 化できないか（`ForceGuardSet` の例）。
+3. private 化できない・関数を集約しても「その関数の中身が観測を無視している」
+   ことまでは防げない場合は、`tests/architecture_guard.rs` に出現数固定
+   テストを足す（UIA ハンドラの例、または `GjiEvent` のように必須パラメータ化）。
+4. 「意味論的な偽装」（型は正しいが呼び出し元が嘘をついている）でなければ、
+   dylint の新設は基本的に過剰投資。

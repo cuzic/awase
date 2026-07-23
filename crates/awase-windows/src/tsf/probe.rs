@@ -508,6 +508,17 @@ pub struct LiteralDetector {
     /// per-VK 単体確認（`TransmitSingleVk`）では前モーラ由来の誤 veto の恐れが
     /// あるため `false` を渡すこと。単語単位のバッチ確認では `true`。
     veto_eligible: bool,
+    /// この detector が対応する送信（VK 送信 or romaji バッチ送信）の epoch。
+    ///
+    /// 構築時点（VK/バッチ送信の直前）の `current_tick_ms()`。ADR-079 の
+    /// epoch fencing で「confirm の根拠になった GJI I/O が本当にこの送信より
+    /// 後に起きたものか」を判定するために使う。[`Self::check_now`] と
+    /// [`Self::visible_fencing_verdict`] の両方が参照する。
+    epoch_send_ms: u64,
+    /// SHOW イベントのみで confirmed 判定されたが `gji_last_write_ms()` が
+    /// まだ `epoch_send_ms` に追いついていない状態を最初に観測した時刻。
+    /// `None` = 未観測。ADR-079 fencing の一時的な hold 状態。
+    show_stale_hold_since_ms: std::cell::Cell<Option<u64>>,
 }
 
 /// raw-TSF-literal 検出結果。
@@ -517,9 +528,28 @@ pub enum DetectionResult {
     CompositionConfirmed,
     /// raw TSF literal 疑い（IME をバイパスして ASCII が出力された）
     SuspectedLiteral,
+    /// confirm の根拠（候補 SHOW / write-bytes 増加）が、この送信より前に
+    /// 起きた GJI I/O に由来する（= 別の、既に見捨てた世代の残存証拠を
+    /// 誤って現世代の confirm として使い回そうとしている）と判明した
+    /// （ADR-079 epoch fencing）。
+    StaleConfirm,
 }
 
 impl LiteralDetector {
+    /// SHOW イベントは write-bytes ポーリング（`GJI_SAMPLE_INTERVAL_MS`）より
+    /// 早く届きうるため、fencing 判定前に最大2ポーリング分だけ
+    /// `gji_last_write_ms()` の追いつきを待つ猶予。
+    ///
+    /// UX タイミング調整の定数ではなく、既存のポーリング周期
+    /// `GJI_SAMPLE_INTERVAL_MS`（構造的に既に確定している値）の2倍という
+    /// 数学的なマージンに過ぎないため、`tuning-constants.md` の実測義務の
+    /// 対象外とする（ADR-079 実装計画、Opus レビュー欠陥2対処）。
+    ///
+    /// `pub(crate)`: `probe_fsm.rs` の「候補ウィンドウ既に可視」ショートカット
+    /// （[`Self::visible_fencing_verdict`]）のテストが猶予切れを模擬するために
+    /// この値を必要とするため。
+    pub(crate) const EPOCH_FENCE_GRACE_MS: u64 = crate::tuning::GJI_SAMPLE_INTERVAL_MS as u64 * 2;
+
     /// 現在の観測値からベースラインを取得して `LiteralDetector` を生成する。
     ///
     /// ローマ字送信直前に呼ぶこと。`veto_eligible` は
@@ -530,6 +560,8 @@ impl LiteralDetector {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             write_bytes_baseline: crate::tsf::observer::gji_write_bytes(),
             veto_eligible,
+            epoch_send_ms: crate::hook::current_tick_ms(),
+            show_stale_hold_since_ms: std::cell::Cell::new(None),
         }
     }
 
@@ -553,6 +585,8 @@ impl LiteralDetector {
             gji_show_baseline: TSF_OBS.gji_candidate_show.baseline(),
             write_bytes_baseline: write_bytes_before_vk,
             veto_eligible,
+            epoch_send_ms: crate::hook::current_tick_ms(),
+            show_stale_hold_since_ms: std::cell::Cell::new(None),
         }
     }
 
@@ -566,6 +600,25 @@ impl LiteralDetector {
     ///
     /// `Some` = 判定確定、`None` = まだ待機中。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    ///
+    /// ## ADR-079 epoch fencing
+    ///
+    /// confirm の根拠（write-bytes 閾値超過 / 候補 SHOW）が本当にこの
+    /// detector の送信（`epoch_send_ms`）より後に起きた GJI I/O に由来するかを
+    /// `gji_last_write_ms()` と突き合わせる。前の世代の backspace で見捨てた
+    /// 送信の遅延した副作用を、現世代の confirm として誤って採用してしまう
+    /// （実機トレースで確認済み、ADR-079 コンテキスト節）ことを防ぐ。
+    ///
+    /// - `write_confirmed`: write-bytes の増加は `gji_last_write_ms` の
+    ///   更新と同一ポーリングサンプルで自己整合するため、fencing は即時判定
+    ///   でよい。
+    /// - `show_confirmed`（write 未達）: `EVENT_OBJECT_SHOW` は write-bytes の
+    ///   ポーリング（`GJI_SAMPLE_INTERVAL_MS`）より早く届きうるため、
+    ///   即座に stale と断定せず [`Self::EPOCH_FENCE_GRACE_MS`] の間だけ
+    ///   `gji_last_write_ms()` が追いつくのを待ってから再判定する。
+    /// - `gji_last_write_ms() == 0`（GJI I/O monitor が未アタッチ等で一度も
+    ///   観測していない）場合は fencing を適用せず、常に従来通りの confirm
+    ///   判定にフォールバックする。
     #[must_use]
     pub fn check_now(&self, deadline_ms: u64) -> Option<DetectionResult> {
         let now = crate::hook::current_tick_ms();
@@ -596,15 +649,91 @@ impl LiteralDetector {
         let show_confirmed = TSF_OBS
             .gji_candidate_show
             .has_changed(self.gji_show_baseline);
-        let confirmed = write_confirmed || show_confirmed;
 
-        if confirmed {
-            Some(DetectionResult::CompositionConfirmed)
-        } else if now >= deadline_ms {
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        // monitor 未観測なら fencing 自体を無効化する（Opus レビュー指摘3対処）。
+        let fencing_active = last_write_ms != 0;
+        let evidence_is_fresh = !fencing_active || last_write_ms >= self.epoch_send_ms;
+
+        if write_confirmed {
+            return Some(if evidence_is_fresh {
+                DetectionResult::CompositionConfirmed
+            } else {
+                DetectionResult::StaleConfirm
+            });
+        }
+
+        if show_confirmed {
+            return self.grace_hold_verdict(now, deadline_ms, evidence_is_fresh);
+        }
+
+        if now >= deadline_ms {
             Some(DetectionResult::SuspectedLiteral)
         } else {
             None
         }
+    }
+
+    /// SHOW-only な confirm 根拠に対する ADR-079 猶予判定の共通実装。
+    ///
+    /// `evidence_is_fresh` が `true` なら即座に `CompositionConfirmed`。
+    /// `false` なら、`gji_last_write_ms()` が追いつくかもしれない
+    /// [`Self::EPOCH_FENCE_GRACE_MS`] の間だけ即断せず `None`（＝呼び出し側は
+    /// 次 tick で再判定すること）を返し、猶予切れ後に `StaleConfirm` で確定する。
+    /// `deadline_ms` を過ぎている場合は猶予中でも即 `StaleConfirm` にする
+    /// （猶予は「少し待てば追いつくかも」の窓であり、deadline 到達後まで
+    /// 引き延ばす理由はない）。
+    ///
+    /// [`Self::check_now`] の SHOW-only 分岐と
+    /// [`Self::visible_fencing_verdict`]（`probe_fsm.rs` の「候補ウィンドウ
+    /// 既に可視」ショートカット）の両方から使う。両者は 1 detector
+    /// インスタンスにつきどちらか一方の経路しか通らない
+    /// （`await_vk_detection` が `gji_candidate_visible_now()` で分岐する）ため、
+    /// `show_stale_hold_since_ms` の hold 状態が競合することはない。
+    fn grace_hold_verdict(
+        &self,
+        now: u64,
+        deadline_ms: u64,
+        evidence_is_fresh: bool,
+    ) -> Option<DetectionResult> {
+        if evidence_is_fresh {
+            self.show_stale_hold_since_ms.set(None);
+            return Some(DetectionResult::CompositionConfirmed);
+        }
+        let hold_since = self.show_stale_hold_since_ms.get().unwrap_or_else(|| {
+            self.show_stale_hold_since_ms.set(Some(now));
+            now
+        });
+        if now.saturating_sub(hold_since) < Self::EPOCH_FENCE_GRACE_MS {
+            return (now >= deadline_ms).then_some(DetectionResult::StaleConfirm);
+        }
+        Some(DetectionResult::StaleConfirm)
+    }
+
+    /// `probe_fsm.rs::await_vk_detection` の「候補ウィンドウが送信直後から
+    /// 既に可視」ショートカット専用の epoch fencing 判定（ADR-079）。
+    ///
+    /// このケースでは [`Self::check_now`] の確定シグナル（write-bytes 閾値・
+    /// SHOW エッジ）が構造的に機能しない（SHOW は既に可視＝再発火せず、
+    /// per-VK 単体の子音では write-bytes 閾値に届かないことがある。
+    /// `probe_fsm.rs` の `await_vk_detection` 冒頭コメント参照）ため、
+    /// `check_now` に委譲できない。代わりに `gji_last_write_ms()` と
+    /// `epoch_send_ms` の比較だけを根拠にし、[`Self::grace_hold_verdict`] と
+    /// 同じ猶予ロジックを共有する。
+    ///
+    /// 呼び出し側は `Some` が返るまで tick ごとに呼び直すこと（`None` は
+    /// 「まだ猶予中、次 tick で再確認」を意味する）。猶予無しで即断すると、
+    /// 高速タイピングで候補ウィンドウが開きっぱなしの通常ケースでも
+    /// `gji_last_write_ms` のポーリングサンプルが追いつく前に false positive
+    /// の `StaleConfirm` を返してしまい、正しく合成できていた文字が
+    /// backspace で失われる（実機で確認済み）。
+    #[must_use]
+    pub(crate) fn visible_fencing_verdict(&self, deadline_ms: u64) -> Option<DetectionResult> {
+        let now = crate::hook::current_tick_ms();
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        let fencing_active = last_write_ms != 0;
+        let evidence_is_fresh = !fencing_active || last_write_ms >= self.epoch_send_ms;
+        self.grace_hold_verdict(now, deadline_ms, evidence_is_fresh)
     }
 
     /// 候補ウィンドウ可視性による backspace veto（BUG-30）を適用してよいかどうか。
@@ -807,6 +936,7 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         TSF_OBS.gji_write_bytes.store(2_000, SeqCst);
         let baseline_show = TSF_OBS.gji_candidate_show.baseline();
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
 
         let detector = LiteralDetector::new_with_pre_send_baseline(2_000, true);
 
@@ -819,6 +949,138 @@ mod tests {
             matches!(result, Some(DetectionResult::SuspectedLiteral)),
             "write-bytes・SHOW とも変化なしで deadline 到達なら SuspectedLiteral の \
              はず: {result:?}"
+        );
+    }
+
+    // ── ADR-079: epoch fencing の回帰テスト ─────────────────────────────────
+
+    /// write-bytes 閾値超過の confirm 根拠が epoch 送信時刻より後の GJI I/O に
+    /// 裏付けられていれば、従来通り即座に `CompositionConfirmed` を返す。
+    #[test]
+    fn check_now_confirms_when_write_evidence_is_fresh() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(4_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(4_000, true);
+        let now_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(now_ms, SeqCst); // epoch_send_ms 以降
+        TSF_OBS.gji_write_bytes.store(4_400, SeqCst); // 閾値(350B)超過
+
+        let result = detector.check_now(now_ms + 10_000);
+        assert!(
+            matches!(result, Some(DetectionResult::CompositionConfirmed)),
+            "fresh な write 根拠は即座に CompositionConfirmed のはず: {result:?}"
+        );
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// write-bytes 閾値超過の confirm 根拠が epoch 送信時刻より前の GJI I/O
+    /// （前世代の見捨てた送信の残存効果）にしか裏付けられていなければ、
+    /// deadline を待たず即座に `StaleConfirm` を返す（ADR-079 コンテキスト節の
+    /// 実機トレースが示す誤帰属パターンの再発防止）。
+    #[test]
+    fn check_now_returns_stale_confirm_when_write_evidence_predates_epoch() {
+        let _g = TEST_LOCK.lock().unwrap();
+        let stale_write_ms = crate::hook::current_tick_ms();
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
+        let detector = LiteralDetector::new_with_pre_send_baseline(5_000, true); // epoch > stale_write_ms
+        TSF_OBS.gji_write_bytes.store(5_400, SeqCst); // 閾値超過だが根拠は stale
+
+        let now_ms = crate::hook::current_tick_ms();
+        let result = detector.check_now(now_ms + 10_000); // deadline 未到達
+        assert!(
+            matches!(result, Some(DetectionResult::StaleConfirm)),
+            "epoch より前の write 根拠は StaleConfirm のはず: {result:?}"
+        );
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// SHOW のみによる confirm 根拠が epoch より前の write にしか裏付けられて
+    /// いない場合、即断せず `EPOCH_FENCE_GRACE_MS` の間は保留（`None`）する
+    /// （SHOW が write-bytes ポーリングより早く届く benign なレースを誤って
+    /// stale 扱いしないため、Opus レビュー欠陥2対処）。猶予中に
+    /// `gji_last_write_ms` が追いつけば `CompositionConfirmed` に確定する。
+    #[test]
+    fn check_now_holds_show_only_confirm_then_resolves_fresh_within_grace() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(6_000, SeqCst);
+        let epoch_ms = crate::hook::current_tick_ms();
+        TSF_OBS
+            .gji_last_write_ms
+            .store(epoch_ms.saturating_sub(50), SeqCst); // stale
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(6_000, true);
+        TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
+
+        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let held = detector.check_now(far_deadline);
+        assert!(
+            held.is_none(),
+            "SHOW根拠が stale なら即断せず猶予中は None のはず: {held:?}"
+        );
+
+        // 猶予中に gji_last_write_ms が追いつく。
+        TSF_OBS
+            .gji_last_write_ms
+            .store(crate::hook::current_tick_ms(), SeqCst);
+        let resolved = detector.check_now(far_deadline);
+        assert!(
+            matches!(resolved, Some(DetectionResult::CompositionConfirmed)),
+            "猶予中に write が追いつけば CompositionConfirmed に確定するはず: {resolved:?}"
+        );
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// SHOW のみによる confirm 根拠が猶予期間を過ぎても epoch に追いつかなければ、
+    /// `StaleConfirm` として確定する。
+    #[test]
+    fn check_now_show_only_confirm_becomes_stale_after_grace_expires() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_write_bytes.store(7_000, SeqCst);
+        let epoch_ms = crate::hook::current_tick_ms();
+        TSF_OBS
+            .gji_last_write_ms
+            .store(epoch_ms.saturating_sub(50), SeqCst); // stale のまま追いつかない
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(7_000, true);
+        TSF_OBS.gji_candidate_show.notify();
+
+        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let held = detector.check_now(far_deadline);
+        assert!(held.is_none(), "猶予開始直後はまだ None のはず: {held:?}");
+
+        std::thread::sleep(std::time::Duration::from_millis(
+            LiteralDetector::EPOCH_FENCE_GRACE_MS + 10,
+        ));
+        let result = detector.check_now(far_deadline);
+        assert!(
+            matches!(result, Some(DetectionResult::StaleConfirm)),
+            "猶予切れでも write が追いつかなければ StaleConfirm のはず: {result:?}"
+        );
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// `gji_last_write_ms()` が一度も観測されていない（GJI I/O monitor 未アタッチ、
+    /// MS-IME 使用時等）場合は fencing 自体を無効化し、従来通りの confirm 判定に
+    /// フォールバックする（Opus レビュー指摘3対処: fencing が false-negative の
+    /// 温床にならないようにする）。
+    #[test]
+    fn check_now_fencing_inactive_when_last_write_ms_unobserved() {
+        let _g = TEST_LOCK.lock().unwrap();
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+        TSF_OBS.gji_write_bytes.store(8_000, SeqCst);
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(8_000, true);
+        TSF_OBS.gji_candidate_show.notify(); // write_bytes は閾値未満のまま
+
+        let far_deadline = crate::hook::current_tick_ms() + 10_000;
+        let result = detector.check_now(far_deadline);
+        assert!(
+            matches!(result, Some(DetectionResult::CompositionConfirmed)),
+            "gji_last_write_ms 未観測 (0) なら fencing を適用せず即 CompositionConfirmed \
+             のはず: {result:?}"
         );
     }
 }

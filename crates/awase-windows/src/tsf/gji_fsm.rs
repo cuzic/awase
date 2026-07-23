@@ -217,11 +217,13 @@ pub(crate) enum GjiEvent {
     /// (reinject-tsf の NativeF2Consumed パス)。
     ///
     /// Medium/Long cold の場合は probe を継続する。
-    /// Short cold / OnWarm / OnComposing の場合は `CompositionReset` 相当で処理する。
-    NativeF2Consumed,
+    /// Short cold / OnWarm / OnComposing の場合は `CompositionReset` 相当で処理する
+    /// （`gji_idle_ms` で ColdKind を再分類し、genuinely warm なら cold に倒さない）。
+    NativeF2Consumed { gji_idle_ms: u64 },
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化された
-    /// (PassthroughKey, RawTsfLiteralRecovery 等)
-    CompositionReset,
+    /// (PassthroughKey, RawTsfLiteralRecovery 等)。`gji_idle_ms` で ColdKind を
+    /// 再分類し、genuinely warm（Short）なら cold に倒さず `OnWarm` に留める。
+    CompositionReset { gji_idle_ms: u64 },
 }
 
 /// GJI FSM が出力するアクション（ディスパッチャが副作用を実行する）。
@@ -447,17 +449,29 @@ impl GjiFsm {
 
     /// composition context が無効化されたときの共通処理。
     ///
-    /// 既存 probe をキャンセルして `OnCold(Short, NotStarted)` に戻る。
-    /// `NativeF2Consumed` と `CompositionReset` 双方から呼ばれる。
-    fn handle_composition_reset(&mut self) -> Response<GjiAction, GjiTimer> {
+    /// `NativeF2Consumed` と `CompositionReset` 双方から呼ばれる。`gji_idle_ms`
+    /// （呼び出し元が観測して渡す実測アイドル時間、`FocusChange`/`ImeOn` と同じ
+    /// パターン）を `ColdKind::classify` にかけて再検証する。
+    ///
+    /// 以前は `OnWarm`/`OnComposing` から常に無条件で `OnCold(Short)` へ落として
+    /// いたが、これは「composition キャンセルが起きた」という弱い代理指標のみを
+    /// 根拠にしており、GJI が実際に cold である証拠を一切参照していなかった
+    /// （Ctrl+key bypass 等で誤って genuinely warm なセッションを cold-start の
+    /// per-VK confirm 経路に送り込み、false-positive の backspace を誘発した
+    /// 実機バグ、docs/known-bugs.md BUG-33 追補3参照）。`ColdKind::Short` は
+    /// 定義上「GJI 確実に生存」を意味するため、この範囲では cold へ倒さず
+    /// `OnWarm` に留める。
+    fn handle_composition_reset(&mut self, gji_idle_ms: u64) -> Response<GjiAction, GjiTimer> {
         match &self.state {
             GjiState::OffCold => Response::consume(),
 
             GjiState::OnCold { .. } => {
-                // 既存 probe をキャンセルして Short で再開（pending も破棄）
+                // 既存 probe をキャンセルして NotStarted で再開（pending も破棄）。
+                // kind は固定値ではなく実測 idle から再分類する。
                 let old = self.running_probe_id();
+                let kind = ColdKind::classify(gji_idle_ms);
                 self.state = GjiState::OnCold {
-                    kind: ColdKind::Short,
+                    kind,
                     probe: ProbeStatus::NotStarted,
                     pending: vec![],
                 };
@@ -469,12 +483,29 @@ impl GjiFsm {
             }
 
             GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
-                self.state = GjiState::OnCold {
-                    kind: ColdKind::Short,
-                    probe: ProbeStatus::NotStarted,
-                    pending: vec![],
-                };
-                Response::consume().with_kill_timer(GjiTimer::LongIdle)
+                let kind = ColdKind::classify(gji_idle_ms);
+                if matches!(kind, ColdKind::Short) {
+                    // GJI は実測 idle 上まだ genuinely warm。composition キャンセル
+                    // という事象自体は本当だが、これは GJI エンジンが cold である
+                    // 証拠にはならない。cold-start（per-VK confirm + epoch fencing）
+                    // へ送り込まず OnWarm に留める。
+                    log::debug!(
+                        "[gji-fsm] CompositionReset: gji_idle={gji_idle_ms}ms (Short) → \
+                         genuinely warm のため OnCold に倒さず OnWarm を維持"
+                    );
+                    self.transition_to_warm(vec![])
+                } else {
+                    log::debug!(
+                        "[gji-fsm] CompositionReset: gji_idle={gji_idle_ms}ms → {kind:?}、\
+                         genuinely stale → OnCold"
+                    );
+                    self.state = GjiState::OnCold {
+                        kind,
+                        probe: ProbeStatus::NotStarted,
+                        pending: vec![],
+                    };
+                    Response::consume().with_kill_timer(GjiTimer::LongIdle)
+                }
             }
         }
     }
@@ -762,7 +793,7 @@ impl TimedStateMachine for GjiFsm {
             }
 
             // ── NativeF2Consumed ───────────────────────────────────────────
-            GjiEvent::NativeF2Consumed => {
+            GjiEvent::NativeF2Consumed { gji_idle_ms } => {
                 // Medium/Long cold 中は probe を継続する（WezTerm が FocusChange 直後に
                 // 自分で F2 を送る動作は probe を妨げない）。
                 // Short cold / OnWarm / OnComposing は文脈破壊として CompositionReset 相当で処理する。
@@ -779,12 +810,14 @@ impl TimedStateMachine for GjiFsm {
                     log::debug!(
                         "[gji-fsm] NativeF2Consumed → CompositionReset (short/warm/composing)"
                     );
-                    self.handle_composition_reset()
+                    self.handle_composition_reset(gji_idle_ms)
                 }
             }
 
             // ── CompositionReset ───────────────────────────────────────────
-            GjiEvent::CompositionReset => self.handle_composition_reset(),
+            GjiEvent::CompositionReset { gji_idle_ms } => {
+                self.handle_composition_reset(gji_idle_ms)
+            }
         }
     }
 
@@ -1221,7 +1254,7 @@ mod tests {
         fsm.on_event(ev);
         fsm.on_event(focus_change_with_idle(8_000));
         // NativeF2Consumed → probe 継続
-        let r = fsm.on_event(GjiEvent::NativeF2Consumed);
+        let r = fsm.on_event(GjiEvent::NativeF2Consumed { gji_idle_ms: 8_000 });
         r.assert_consumed();
         r.assert_action_count(0);
         // まだ OnCold(Medium, NotStarted) のまま
@@ -1240,7 +1273,7 @@ mod tests {
         let mut fsm = GjiFsm::new();
         fsm.on_event(ime_on()); // → OnCold(Short, Authorized)
                                 // NativeF2Consumed → CompositionReset 相当（CancelProbe + NotStarted）
-        let r = fsm.on_event(GjiEvent::NativeF2Consumed);
+        let r = fsm.on_event(GjiEvent::NativeF2Consumed { gji_idle_ms: 0 });
         assert!(
             r.actions
                 .iter()
@@ -1255,6 +1288,76 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── BUG-33 追補3: CompositionReset の observation(gji_idle_ms) ゲート ──
+
+    /// 回帰テスト: 実機バグ「リーク」→「リーを」の前提条件。
+    ///
+    /// Ctrl+key bypass 等で composition キャンセルが起きても、実測
+    /// `gji_idle_ms` が小さい（`ColdKind::Short` = GJI 確実に生存）場合は
+    /// `OnCold` へ倒さず `OnWarm` に留まるべき。以前は無条件で `OnCold(Short)`
+    /// に落としており、これが cold-start（per-VK confirm + epoch fencing）を
+    /// 誘発し、genuinely warm なセッションでも false-positive の backspace が
+    /// 発生する温床になっていた。
+    #[test]
+    fn composition_reset_while_genuinely_warm_stays_warm() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+
+        // 実機ログの値（「く」処理からわずか63ms後）と同程度の短い idle。
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 63 });
+        r.assert_consumed();
+        r.assert_timer_set(GjiTimer::LongIdle);
+        assert!(
+            matches!(fsm.state(), GjiState::OnWarm { .. }),
+            "genuinely warm(Short) な CompositionReset は OnCold に落ちてはいけない: {}",
+            state_label(fsm.state())
+        );
+    }
+
+    /// 過剰防御になっていないことの確認: 実際に genuinely stale
+    /// （`gji_idle_ms` が Medium 相当）な場合は従来どおり `OnCold` へ正しく落ちる。
+    #[test]
+    fn composition_reset_while_genuinely_stale_transitions_cold() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 8_000 });
+        r.assert_consumed();
+        r.assert_timer_kill(GjiTimer::LongIdle);
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold {
+                kind: ColdKind::Medium,
+                probe: ProbeStatus::NotStarted,
+                ..
+            }
+        ));
+    }
+
+    /// `NativeF2Consumed` 経由でも同じ observation ゲートが効くことを確認する。
+    #[test]
+    fn native_f2_consumed_while_warm_and_fresh_stays_warm() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+
+        let r = fsm.on_event(GjiEvent::NativeF2Consumed { gji_idle_ms: 50 });
+        r.assert_consumed();
+        assert!(
+            matches!(fsm.state(), GjiState::OnWarm { .. }),
+            "genuinely warm(Short) な NativeF2Consumed は OnCold に落ちてはいけない: {}",
+            state_label(fsm.state())
+        );
     }
 
     // ── StartComposition / EndComposition ────────────────────────────────

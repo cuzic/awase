@@ -362,6 +362,91 @@ fn test_pattern5_thumb_alone_timeout_suppressed_while_composing() {
     assert_eq!(result.actions.len(), 0);
 }
 
+// ── 無変換/変換キー単独タップの composing 中ガード opt-out
+//    (muhenkan/henkan_solo_tap_ignore_composing_guard) ──
+
+/// 無変換を左親指キー・変換を右親指キーとし、`muhenkan_vk`/`henkan_vk` と
+/// 各 `*_solo_tap_ignore_composing_guard` を明示設定したエンジンを返す。
+fn make_engine_with_thumb_key_solo_tap_config(
+    muhenkan_ignore_composing_guard: bool,
+    henkan_ignore_composing_guard: bool,
+) -> TestHarness {
+    let mut engine = NicolaFsm::new(
+        make_layout(),
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
+    engine.set_thumb_key_solo_tap_config(
+        Some(VK_NONCONVERT),
+        muhenkan_ignore_composing_guard,
+        Some(VK_CONVERT),
+        henkan_ignore_composing_guard,
+    );
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine,
+    }
+}
+
+/// `muhenkan_solo_tap_ignore_composing_guard=true`（既定 false からのオプトイン）
+/// なら、composing 中でも無変換キー単独タップで生 VK_NONCONVERT を送出する。
+#[test]
+fn test_muhenkan_thumb_emits_while_composing_when_guard_enabled() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config(true, false);
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "muhenkan_solo_tap_ignore_composing_guard=true なら composing 中でも VK_NONCONVERT を送出すべき"
+    );
+}
+
+/// 変換キー側も同様に `henkan_solo_tap_ignore_composing_guard=true` で
+/// composing 中の単独タップが素通しされる。
+#[test]
+fn test_henkan_thumb_emits_while_composing_when_guard_enabled() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config(false, true);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "henkan_solo_tap_ignore_composing_guard=true なら composing 中でも VK_CONVERT を送出すべき"
+    );
+}
+
+/// 無変換側のフラグが true でも、変換キー自体のフラグが false なら
+/// 変換キーの単独タップは従来通り composing 中は suppress される
+/// （VK ごとに独立してガードが効くことの確認）。
+#[test]
+fn test_muhenkan_guard_does_not_affect_henkan() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config(true, false);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "muhenkan 用フラグが true でも、変換キー自体のフラグが false なら composing 中は suppress されるべき"
+    );
+}
+
 /// 親指キーに Ctrl/Alt（`ModifierState::is_os_modifier_held` が true になる系統）を
 /// 割り当てると、そのキーの KeyDown 自体が `bypass_reason` の `OsModifierHeld` に
 /// 即座に該当し、`PendingThumb` に一切入らず素通しされる（同時打鍵検出が機能しない）。

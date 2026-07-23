@@ -1394,6 +1394,83 @@ ON 方向には対称の実装（`apply_force_on_for_imm_broken`、`runtime/mod.
 Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.rs` と同じ制約）。
 実機（Windows Terminal/Chrome + GJI）での動作確認は未実施。
 
+**追補（2026-07-21、修正が dead code で一度も実行されていなかったことが判明・再修正済み）:**
+
+**症状:** Windows Terminal（`Windows.UI.Input.InputSite.WindowClass`、`force-tsf` 判定で
+`profile=TsfNative`、GJI）で、症状発生前の直近フォーカスは msedge（`Chrome_WidgetWin_1`,
+`Imm32Unavailable`）だった。Windows Terminal 側で `Ctrl+無変換`（vk=0x1D, ctrl=true）を
+押下し `IME OFF (key combo)` を送信、`[apply-ime] GJI direct: send 0x001A (open=false)` →
+`outcome=Applied` → `SetOpen(false) applied → Off (belief, unconfirmed)` まではログ上
+正常に見えるが、以後37秒間（実機ログ 01:16:34〜01:17:11 確認）にわたって実 conv は
+一度も `0x00000019`（NATIVE|FULLSHAPE|ROMAN = ひらがなローマ字、IME 実体は ON のまま）
+から変化しなかった。この間 `[idle-conv-check]` は
+`conv observation open=true reason=NativeToggleShadowOff → ObserverReported として記録
+(engine は actuate しない)` を継続的に出力するが、それを補正するはずの
+`[drift] correction:` ログは一度も出力されなかった。ユーザーはタイピングを継続していた
+（`idle_ms` が `TYPING_IDLE_MS` を割らない）ため、この間ずっと belief 上は
+IME OFF（`desired_open=false`）、実 IME は ON のまま、という BUG-20 と同一症状
+（IME ON / Engine OFF 系の乖離固着）が再現した。
+
+**原因（確定）:** BUG-20 の修正コミット（`e8ffcd6`）は `ir_apply_drift_correction()`
+に `can_use_imm32_cross_process()` による分岐（ImmCross は `set_ime_open`、
+non-ImmCross は `apply_ime_open_with_belief` 経由の実 VK 送信）を追加したが、
+関数冒頭に **BUG-20 修正前から存在していた** 次のガードを消し忘れていた。
+
+```rust
+fn ir_apply_drift_correction(&mut self) {
+    if self.ir_resolve_skip_imm_query() {   // = !can_use_imm32_cross_process()
+        return;
+    }
+    ...
+```
+
+`ir_resolve_skip_imm_query()` は `!can_use_imm32_cross_process()` そのものであり、
+GJI/TsfNative（Windows Terminal・Chrome 等）や Blacklist アプリでは常に `true` を
+返す。つまり BUG-20 で追加した non-ImmCross 分岐（`else` 節）は、それが実行される
+べき条件のときに **必ずこの早期 `return` で先に抜けてしまい、構造的に到達不能な
+dead code** になっていた。`check_drift_correction`（純粋関数、`platform_state.rs`）
+自体は `explicit_intent=Some(false)`（Ctrl+無変換 由来）と `desired=false` が一致し
+`trusted.open=true` との乖離が 400ms（`DRIFT_CORRECTION_THRESHOLD_MS`）を超えている
+ため即座に `Some((false, true, duration_ms))` を返す状態だったが、呼び出し元の
+`ir_apply_drift_correction` がその手前で毎回無言で return していたため一度も
+`log::warn!("[drift] correction: ...")` すら出力されなかった（早期 return に
+ログが無いため、症状発生中のログを見ても「何も起きていない」ようにしか見えない）。
+
+BUG-20 のコミットメッセージ・`known-bugs.md` 本文どちらにも「実機検証は未実施」と
+明記されていた通り、この dead code は一度も実機で検証されないまま今日まで残っていた。
+
+**なぜ強制再送は安全か（BUG-19 との関係）:** この修正は「conv が desired と食い違って
+いたら強制的に再送する」という、BUG-19 が問題にした挙動（conv の一発誤読だけを根拠に
+`desired_open` を書き換えてユーザーの明示 OFF を踏み潰す）の再燃に見えるかもしれないが、
+別物である。`check_drift_correction` は BUG-19/BUG-20 で追加された次の二重ガードを
+維持したまま呼び出される:
+
+1. `trusted.source == ConvOpenInference && explicit_intent.is_none()` の場合は補正を
+   発火させない（`platform_state.rs:442-444`、`desired_open` そのものへの書き込みは
+   一切発生しない — この修正は `desired_open` を経由せず、既に確定している `desired`
+   を実機に再送するだけ）。
+2. 今回のシナリオは `explicit_intent=Some(false)` が `desired=false` と一致する
+   （ユーザーが実際に Ctrl+無変換 を押した）ため、上記ガードを素通りし、正しく
+   `desired`（ユーザーの意図した値）を再送する設計通りの経路に入る。
+
+**修正:** `ir_apply_drift_correction()` 冒頭の `ir_resolve_skip_imm_query()` 早期
+`return` を削除。呼び出し元 `ir_stage_notify()` のコメント（「ImmCross アプリ向け」）
+も実態に合わせて更新。
+
+**検証状況:** Linux 上で `cargo build -p awase-windows --target x86_64-pc-windows-gnu`
+（クロスコンパイル成功）、`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu
+-- -D warnings`（警告なし）、`cargo test -p awase-windows --lib`（135件全通過）、
+`cargo test -p awase-windows --test golden_scenarios --test architecture_guard
+--test layer_boundary_guard --test journal_replay`（全通過）を確認済み。
+`ir_apply_drift_correction` の先（`unsafe` Win32 API 群）は BUG-20 と同じ制約で
+Linux 上でのユニットテストが書けないため、実機（Windows Terminal + GJI、Ctrl+無変換
+での明示 OFF 後に conv が変化しないケース）での動作確認は引き続き未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_apply_drift_correction`, `ir_stage_notify`）
+
+**関連バグ:** BUG-19（`check_drift_correction` の `explicit_intent` ガードの根拠）
+
 ---
 
 ## BUG-21: Chrome の cold-start 復帰処理が重症度 (Short/Medium/Long) を無視し、確定キー/IME再有効化のたびに過剰発火する
@@ -3512,21 +3589,96 @@ belief だけ適用済み扱いにしていた」という *送信側* の欠陥
 観測ソースが存在しないため、BUG-20 の修正が入っていても drift correction 自体が
 発火しない。両方直って初めて non-ImmCross アプリでの drift correction が機能する。
 
-**修正:** 未着手。今回はログ・原因究明のみを記録する（`fix-requires-evidence` ルール
-に従い、修正は次回着手時に golden/known-bugs 追記とセットで行うこと）。
+**修正 (2026-07-22):** belief/drift-correction 経路（observation store に本物の open
+観測を足す案、下記「検討したが見送った案」）ではなく、**per-VK confirm の give-up 分岐
+から実 IME-ON 再送を直接行う**、より小さく効果が即時なパスを採用した。
 
-**検討候補（未検証）:** `GjiIoInference` を input_mode 専用ではなく open 観測にも
-反映する経路の追加（GJI I/O が実際に発生している＝IME が英数直接入力ではなく変換動作を
-している、という信号を open 観測として扱えないか）。ただし `ConvOpenInference` と同様に
-「弱い間接推測」であるため、BUG-19 型の誤爆（明示意図の押し付け）を避ける gate 設計が
-別途必要。
+- `probe_io.rs` の `ProbeAction::RawTsfLiteralRecovery` ハンドラで、`consecutive > 0`
+  （2連続失敗＝give-up）のときだけ `io.send_chrome_gji_reinit_and_poll(cold_seq)` を
+  追加で呼ぶ。1回目の疑い（`consecutive == 0`）では呼ばない — BUG-29/BUG-30 で分かって
+  いる候補ウィンドウ SHOW/HIDE レース由来の偽陽性の可能性がまだ高いため、give-up 自体が
+  課している「2連続失敗」の閾値にそのまま相乗りする。
+- `send_chrome_gji_reinit_and_poll` は 2026-07-18 の「捨て駒キー」撤去（本ファイル追補8、
+  `docs/experiments.md` エントリ10）で削除された `SacrificialWarmupCoro` 等の重量級機構
+  とは別物で、Unicode injection mode の long-cold GJI 再起動（`platform.rs:307`）向けに
+  既に実装・実運用されていた既存メソッドをそのまま再利用しただけ（新規実装は呼び出しの
+  追加のみ）。`VK_IME_OFF→VK_IME_ON` を実際に `SendInput` し、`CHROME_GJI_REINIT_CONFIRM_MS`
+  （300ms、実測較正済み）で IMC を async ポーリングして Hiragana 確認まで見届ける。
+  「捨て駒キー」削除判断（送信**前**の予防的待機は不要）とは矛盾しない — 本修正は
+  give-up **後**の実際の状態修復であり、別の対象を直している。
+- give-up が短時間に連発した場合の多重発火を防ぐため、`Output::last_gji_reinit_ms`
+  （新規フィールド）で `CHROME_GJI_REINIT_CONFIRM_MS` 未満の再発火をレート制限した
+  （`send_chrome_gji_reinit_and_poll` 冒頭に追加）。OFF→ON の最終到達状態は決定論的に
+  ON だが、窓内に重ねて送ると瞬間的な OFF ブリップが積み重なり候補ウィンドウを無用に
+  揺らしかねないため。
 
-**関連ファイル:** `crates/awase-windows/src/state/platform_state.rs`
+**なぜ n-gram/統計判定が不要か:** 検討時、「literal 化した romaji が本当に日本語の
+つもりだったか、それとも英語入力のつもりだったか」を統計的に推測する案も出たが、
+コード上不要と判明した。per-VK confirm の literal-detect（`RawTsfLiteralRecovery`）に
+入るのは `vk_send.rs::send_char_as_vk` の `CharResolution::Romaji` 分岐だけであり、
+これは NICOLA チョード判定（`src/engine/`）が「このかな文字を出力する」と**既に決定した
+後**の値にしか発生しない。ユーザーが明示的に半角英数入力したいときはそもそも別分岐
+（`CharResolution::Vk`/`Unicode`）を通りこのパイプラインに来ない。つまり give-up が
+発火した時点で「日本語のつもりだった」は常に真であり、推測の余地がない。
+
+**なぜ shadow 反転のリスクが無いか:** `GjiDirectStrategy::apply`（`ime_controller.rs`）は
+`VK_KANJI` のようなトグルキーではなく、ON/OFF 専用の冪等キー（`VK_IME_ON`/`VK_IME_OFF`）
+を使う設計（コメント: 「shadow desync の影響を排除する」）。`send_chrome_gji_reinit_and_poll`
+も同じ冪等キーで OFF→ON を送るため、万一 give-up が偽陽性で実際には既に IME ON だった
+場合でも、最終到達状態は変わらず ON のまま（OFF は一瞬の経由点であり、二重反転で OFF に
+固定される心配は無い）。
+
+**検討したが見送った案:** belief/drift-correction を経由する設計（`RawTsfLiteralRecovery`
+give-up と `CompositionConfirmed` から `ObservationSource` 新設 variant で
+`ObserverReported` を dispatch し、`check_drift_correction` に本物の観測を与える）。
+コード調査で実現可能と確認済み（`ir_apply_drift_correction` は `applied: None` を渡す
+ことで `GjiDirectStrategy` の shadow_on skip ガードを迂回し実送信することも確認済み）
+だったが、(a) 400ms の `DRIFT_CORRECTION_THRESHOLD_MS` を待つ分レイテンシが乗る、
+(b) 新規 `ObservationSource` variant・`observation_store.rs` の分岐追加が要る、という
+理由で、per-VK confirm 内で完結する直接呼び出しより変更範囲・待ち時間ともに大きいと
+判断し見送った。GJI が**タイピング中でなく**長時間 OFF のまま乖離するケース（per-VK
+confirm を一切通らない）にはこの直接呼び出しは効かないため、将来そのようなケースが
+実機で確認されたら、この belief 経由の設計を別バグとして再検討すること。
+
+**テスト:** `crates/awase-windows/src/output/probe_io.rs` の
+`raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`（既存、
+`gji_reinit_call_count == 1` の assertion を追加）と
+`raw_tsf_literal_recovery_sets_literal_and_marks_cold_when_first_time`（既存、
+`gji_reinit_call_count == 0` の assertion を追加）で「give-up のときだけ実 IME-ON
+再送が発火する」ことを検証。`send_chrome_gji_reinit_and_poll` 自体は Win32 API
+（`SendInput`）に直結するため Linux 上でのユニットテストは非現実的（既存の `tsf` 系
+テストと同じ制約）。`cargo check`/`cargo clippy -p awase-windows --target
+x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings`（警告
+ゼロ）、`cargo test -p awase-windows --target x86_64-pc-windows-gnu --no-run`（lib・
+`tests/*.rs` 全ファイルのコンパイル・リンク）確認済み。wine 未導入のためこのサンドボックス
+では `.exe` 実行はできない（実機確認結果は下記「実機ソーク結果」）。
+
+**実機ソーク結果 (2026-07-22、修正コミット `fabe6d6` 反映後):** ユーザーが Chrome+GJI で
+通常使用を継続。修正前は本バグ記載の症状（`giving up, backs=1 cleanup only (no re-send)`
+ログが連発、体感でも VK_BACK の誤発火が多発）が出ていたが、修正後は `[raw-tsf-literal] ...
+giving up` ログ自体が一度も出ていないことを確認（ユーザー報告: 「giving up のログはない
+ね」「一時はすごくVK_BACKが誤発火していたけど、なくなってる」）。厳密な時間・シナリオを
+区切った多日ソーク（BUG-31/BUG-21 のような）ではなく通常使用中の確認のため、継続して
+様子を見ること。give-up 自体が0件ということは、per-VK confirm の初回疑い
+（`consecutive == 0`、backspace + romaji 再送）の時点で既に回収できている、または
+そもそも suspected literal 自体が発生していない可能性がある。「give-up には至るが
+reinit で後続文字が正常化する」ケースを意図的に踏んだ確認ではまだないため、
+`send_chrome_gji_reinit_and_poll` 呼び出し自体の実効性（VK_IME_OFF→VK_IME_ON 後に
+GJI が実際に ON に戻るか）は次回 give-up が実機で発生した際にログで確認すること。
+
+**関連ファイル:** `crates/awase-windows/src/output/probe_io.rs`
+（`RawTsfLiteralRecovery` ハンドラ、`send_chrome_gji_reinit_and_poll` のレート制限）、
+`crates/awase-windows/src/output/mod.rs`（`Output::last_gji_reinit_ms` フィールド追加）、
+`crates/awase-windows/src/tuning.rs`（`CHROME_GJI_REINIT_CONFIRM_MS` のコメント更新）。
+検知側の未解決ギャップ（drift-correction が構造的に発火しない件）自体は本修正後も
+残存する: `crates/awase-windows/src/state/platform_state.rs`
 （`check_drift_correction`, `write_focus_probe`）、
 `crates/awase-windows/src/runtime/key_pipeline.rs`（`apply_focus_probe`,
 `apply_effective_ime`）、`crates/awase-windows/src/state/observation_store.rs`
 （`most_recent_trusted`, `ObservationSource` ごとの record 分岐）。関連バグ: BUG-20
-（送信側の対称バグ）、BUG-19（`ConvOpenInference` gate の元ネタ）、BUG-31/BUG-32
+（送信側の対称バグ）、BUG-19（`ConvOpenInference` gate の元ネタ）、BUG-21（同じ
+`send_chrome_gji_reinit_and_poll` 系統の別トリガー元）、BUG-27（give-up 分岐で romaji
+を再送しない設計の由来）、BUG-29/BUG-30（literal 誤検知の偽陽性源）、BUG-31/BUG-32
 （同じ literal storm 症状の別原因）。
 
 ---
@@ -3628,6 +3780,587 @@ spawn 時にキャプチャしたスナップショット（`output_idle_ms_at_s
 
 ---
 
+## BUG-35: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として
+誤って採用し、見捨てた世代の backspace が別スコープの確定済み文字を消す（ADR-079、Stage 1: 検出のみ実装）
+
+> 統合ブランチでの注記: 本エントリは当初 `feat/adr079-epoch-fenced-literal-recovery`
+> ブランチ側で「BUG-33」として書かれていたが、main 側に既に別の BUG-33
+> （`Imm32Unavailable` drift correction 循環）が存在していたため、統合時に
+> BUG-35 へ改番した（本文中の自己参照・`docs/adr/079-epoch-fenced-literal-recovery-with-replay.md`
+> 内の参照も揃えて更新済み）。
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、GJI、TSF-native）で
+高速に連続入力すると、Ctrl+無変換で IME OFF → `4`→`1`（半角数字、直接パススルー）
+→ 物理サムキーで IME 再 ON → 「ふん」と続けて入力したところ、**「41分」と入力
+したはずが「4分」になった**（`1` が消失）。消えたのは疑わしいと判定された文字
+ではなく、直前の別スコープ（IME OFF 中）で既に確定済みの実文字だった。
+ユーザー実機報告・詳細な時系列診断は
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md) のコンテキスト
+節を参照（2026-07-22）。
+
+**IME:** Google 日本語入力（GJI）。Windows Terminal（TSF-native、per-VK confirm
+経路）。
+
+**再現手順（実機ログで確認、ADR-079 参照）:**
+1. romaji "fu" を per-VK confirm で1文字ずつ送信（cold=263）。VK0（F）は
+   candidate SHOW を根拠に confirmed、VK1（U）は 300ms deadline を約41ms
+   超過して `SuspectedLiteral` と誤判定（実際には合成は成功していた、false
+   positive）。
+2. per-VK confirm の recovery（`per_vk_recovery_params(idx=1)`）が
+   `backs=1, escape_composition=true` を返し、`VK_ESCAPE`（本物の pending
+   composition を破棄）+ `VK_BACK`×1 を送信。composition 側に破棄すべき
+   literal は存在しなかったため、`VK_BACK` は代わりに手前の唯一の確定済み
+   文字 `1` を消してしまう。
+3. romaji "fu" が cold=264 として再送される。
+4. 再送後、候補ウィンドウ SHOW イベントが発火し VK0（F）を confirmed 判定するが、
+   `last_gji_write` を逆算すると実際の GJI I/O は cold=263（見捨てた世代）の
+   ものであり、cold=264 自身の送信より前に起きていた。つまり **前世代の残存
+   証拠を現世代の confirm として誤って使い回していた**。
+
+**原因（本質）:** `LiteralDetector::check_now`（`tsf/probe.rs`）および
+`await_vk_detection` の「候補ウィンドウ既に可視」ショートカット
+（`tsf/warmup/probe_fsm.rs`、BUG-29 由来）は、confirm の根拠（candidate SHOW /
+write-bytes 増加）が「どの送信世代に由来するか」を一切区別していなかった。
+候補ウィンドウの SHOW/HIDE や write-bytes 増加は、対応する GJI I/O が現在の
+送信より後に起きたことを保証しない非同期シグナルであり、Chandra-Toueg の
+unreliable failure detector と同型の曖昧さを持つ（詳細は ADR-079「理論的背景」
+節）。
+
+**修正 (2026-07-22, Stage 1 — 検出のみ):** epoch fencing を導入した。
+- `LiteralDetector` に `epoch_send_ms`（構築時 = VK/バッチ送信時刻）を追加し、
+  `DetectionResult` に `StaleConfirm` を新設。`check_now` は confirm 根拠
+  （write-bytes 閾値超過 / candidate SHOW）が実際に `gji_last_write_ms()`
+  （既存の GJI I/O 最終書き込み時刻）で `epoch_send_ms` 以降に裏付けられて
+  いるかを確認する。
+- write-bytes 由来の confirm は `gji_last_write_ms` の更新と同一ポーリング
+  サンプルで自己整合するため即時判定。candidate SHOW 由来の confirm は
+  `EVENT_OBJECT_SHOW` が write-bytes ポーリング（`GJI_SAMPLE_INTERVAL_MS`=10ms）
+  より早く届きうる benign なレースがあるため、即断せず最大2ポーリング分
+  （`LiteralDetector::EPOCH_FENCE_GRACE_MS`=20ms）だけ `gji_last_write_ms` が
+  追いつくのを待ってから再判定する。
+- `gji_last_write_ms() == 0`（GJI I/O monitor 未アタッチ等で一度も観測して
+  いない）の場合は fencing 自体を無効化し従来通りの confirm 判定に
+  フォールバックする（false-negative の温床にしないため）。
+- `await_vk_detection` の「候補ウィンドウ既に可視」ショートカット（BUG-29）
+  にも epoch 比較（`last_write_ms >= epoch_send_ms`）自体は適用した。まさに
+  このショートカットが実機トレースで誤発火した箇所（前世代の合成が残した
+  ままの可視状態を、現世代の VK0 送信の confirm として即座に採用していた）。
+  ただし `check_now` の SHOW-only 分岐が持つ `EPOCH_FENCE_GRACE_MS` の猶予は
+  このショートカットには**移植されておらず**、一発判定のままだった
+  （2026-07-23 実機で発覚した regression。追補2参照）。
+
+**本コミットのスコープ（意図的な限定）:** `StaleConfirm` を検出しても
+ESC/retype/replay は一切行わず、warn ログ（`[epoch-fence] ...` /
+`ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale")`）を
+残すのみで現状維持する（**ADR-079 の Stage 1**）。これは実装計画の設計レビュー
+（Opus によるセカンドオピニオン）で、当初想定していた「quarantine → ESC →
+retype → replay」機構に2件の設計欠陥（(1) リングバッファに「送信した順」で
+記録すると pre-edit の未確定合成文字を retype 対象に取り違える、(2)
+candidate SHOW 由来の fencing は benign なポーリングレースと本物の stale を
+瞬間的に区別できず正常な合成を破壊しかねない）が見つかったため、まず
+検出・ログのみを実機にデプロイして `StaleConfirm` の実際の発火頻度・状況を
+観測し、信号の質を検証してから Stage 2（quarantine/ESC/retype/replay の実装）
+に進む方針とした。
+
+**未解決の follow-up（Stage 2、未実装）:**
+- 本修正は「stale confirm を検出してログに残す」までであり、`1` が消える
+  実害自体は直っていない（backspace は fencing が検出するより前に既に
+  実行されているため）。Stage 2 で、backspace 実行時に「直近の確定済み
+  （committed）出力」を quarantine し、`StaleConfirm` 検出時に ESC + retype +
+  （変換トリガー系キーが絡まなければ）後続入力の replay を行う機構を追加する
+  予定。
+- Stage 2 実装には、`Output::send_keys`（決定済み Char/Romaji 出力）と
+  `RawKeyEventExt::reinject`（IME OFF 時の直接パススルー、`lib.rs`）という
+  2つの独立経路を横断する「直近確定出力履歴」のリングバッファが新規に必要
+  （現状はどちらの経路も履歴を残していない）。
+
+**テスト:** `tsf/probe.rs::tests`（`#[cfg(windows)]`）に fencing の5パターン
+（fresh write 即時confirm/ stale write 即時stale/ show 猶予後confirm/ show
+猶予後stale/ last_write_ms 未観測時のフォールバック）を追加。
+`tsf/warmup/probe_fsm.rs::tests`（`#[cfg(windows)]` 無し、Linux でも実行可）に
+`await_vk_detection` の「既に可視」ショートカットの fencing 分岐テストを追加。
+`tsf/warmup/literal_detect_fsm.rs::tests` に `LiteralDetectCore::poll` の
+`StaleConfirm` 分岐テストを追加。`cargo check`/`cargo clippy -p awase-windows
+--target x86_64-pc-windows-gnu` で型チェック済み（このサンドボックスに wine が
+無いため `#[cfg(windows)]` テストの実行そのものは Windows 実機/CI 待ち）。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/probe.rs`（`LiteralDetector`
+主修正）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`await_vk_detection`/`run_per_vk_confirm`）、
+`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`
+（`LiteralDetectCore::poll`）。関連: BUG-29/BUG-30（per-VK confirm の
+suspected-literal 誤判定の既知の限界）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
+**追補（2026-07-22 実機）: 「検出のみ・recovery なし」が未送信 VK の欠落を招く
+regression を引き起こしたため、SuspectedLiteral と同じ回収に倒した。**
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`）から Chrome/msedge
+（`Chrome_WidgetWin_1`、Imm32Unavailable、GJI）へフォーカス変更した直後、最初の
+1文字「こ」（romaji "ko"）が「k」だけ残って「れ」以降と連結し、「これでできる」が
+「kれでできる」になった。
+
+**原因:** per-VK confirm の VK0（'K'）送信直後、BUG-29 由来の「候補ウィンドウ
+既に可視」ショートカットが発火し、fencing が `gji_last_write_ms`
+（epoch より約1.3秒前）を根拠に正しく `StaleConfirm` と判定した。ここまでは
+意図通り。しかし本 Stage 1 の当初実装は `StaleConfirm` を「検出のみ・recovery
+なし（ただの `Done`）」として扱っており、per-VK confirm ループがこの時点で
+即座に終了してしまっていた。この「既に可視」ショートカットは per-VK confirm
+の**1文字目**でも発火しうる（ADR-079 本体が想定していた「同一タイピング中に
+一度 backspace した後の世代」ではなく、**フォーカス変更直前からの残留 GJI UI
+状態**が原因）ため、まだ VK1（'O'）を一度も送信していない段階で処理が終了し、
+既に送信済みの VK0 の生文字「k」だけが取り残された。
+
+**修正:** `StaleConfirm` を「信用できない confirm」として扱い、既存の
+`SuspectedLiteral` と全く同じ回収アクション（`per_vk_recovery_params`/
+`emit_recovery_actions` によるバックスペース + romaji 再送、あるいは
+`LiteralDetectCore::poll`/Chrome inline LiteralDetect の同型パス）を発行する
+よう変更した。「信用できないから何もしない」ではなく「信用できないから
+今まで通りの安全な回収パスに倒す」方が正しいと判断した。ログタグ
+（`epoch-fence-stale`）は区別して残し、実地で `StaleConfirm` がどの程度
+発火するかの観測（本来の Stage 1 の目的）は引き続き継続する。
+
+**なぜ最初にこれを見落としたか:** 設計レビュー（Opus）は「retype 対象の取り
+違え」「SHOW 由来 fencing のレース」という fencing の**判定ロジック**の欠陥は
+指摘したが、判定結果を受けた**per-VK confirm ループ側のアクション**（1文字目
+で発火した場合に後続 VK が失われる）までは検証しておらず、実装者（本セッション）
+も机上のユニットテストのみで実機投入前の検証を止めていた。実機ログでの
+即時発見・修正に留められた。
+
+**追補2（2026-07-23 実機）: 「既に可視」ショートカットに `EPOCH_FENCE_GRACE_MS`
+の猶予が移植されておらず、高速タイピング中に正しく合成できていた文字が
+false positive の stale confirm で繰り返し失われていた。**
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.
+InputSite.WindowClass`、GJI、TSF-native）で NICOLA 同時打鍵により高速に連続
+入力すると、`[raw-tsf-literal] cold=N raw TSF literal suspected` / `stale
+confirm 検出` による backspace が「なぞに発火する」とユーザーから報告
+（2026-07-23）。実機ログでは romaji "de"（「で」）の送信が `cold=45→46→47` の
+3世代連続で `epoch-fence-stale` と判定され、2世代目までは backspace+再送で
+自己修復したが、3世代目は `consecutive raw-tsf-literal (count=2) → giving up,
+backs=1 cleanup only (no re-send)` に落ち、**再送なしで「で」が完全に消失した**。
+同セッションの別ログでは「かこ１しゅうかん」と入力したかった文字列で、「しゅ」の
+「ゅ」が1つ余分に先行する語順崩れも観測されており、同じ経路が自己修復で
+辛うじて即座には露見しなかったケースと考えられる。
+
+**原因（確定、コード読解で確認）:** `probe.rs::LiteralDetector::check_now`
+（SHOW-only 分岐、661-677行目当時）は、fencing 判定で `evidence_is_fresh ==
+false` でも即座に `StaleConfirm` を返さず、`show_stale_hold_since_ms` +
+`EPOCH_FENCE_GRACE_MS`（= `GJI_SAMPLE_INTERVAL_MS × 2` = 20ms）による猶予を
+挟んでから再判定していた——「`EVENT_OBJECT_SHOW` は write-bytes ポーリング
+（`GJI_SAMPLE_INTERVAL_MS`）より早く届きうる」という benign なレースを
+吸収するための設計（追補1以前からの既存機能）。
+
+ところが `probe_fsm.rs::await_vk_detection` の「候補ウィンドウ既に可視」
+ショートカット（BUG-29 由来、高速タイピングで候補ウィンドウが開きっぱなしの
+場合に毎回通る経路）は、`check_now` を経由せず**独自に同じ epoch 比較を
+inline で再実装**しており（Stage 1 導入時のコメントには「同じ fencing 条件を
+適用した」とあったが実際には猶予ロジックが移植されていなかった）、
+`last_write_ms >= epoch_send_ms` を一発判定するだけで、猶予を一切設けていな
+かった。この経路は VK 送信直後の**最初の tick**（10ms 後）で発火するため、
+GJI I/O monitor のポーリングサンプルが追いつく前——つまり合成が実際には
+成功していても——に構造的に false positive の `StaleConfirm` を返し続ける
+状態になっていた。ADR-079 自身が decision #1 で「fencing は `LiteralDetector`
+に置く」と明記していたにもかかわらず、このショートカットだけが独自実装で
+迂回していた点も設計逸脱だった。
+
+**修正 (2026-07-23):** `LiteralDetector` に、`check_now` の SHOW-only 猶予
+ロジックを共通化した `grace_hold_verdict` を新設し、`check_now` 自身もこれを
+呼ぶようリファクタした。さらに「既に可視」ショートカット専用の
+`visible_fencing_verdict(&self, deadline_ms) -> Option<DetectionResult>` を
+追加し、これも `grace_hold_verdict` を共有する（`check_now` に直接委譲する
+方式は採用しなかった。既に可視の場合、`check_now` の確定シグナル自体
+（write-bytes 閾値・SHOW エッジ）が構造的に発火しないため）。
+`await_vk_detection` はこれを `Some` が返るまで tick ごとに呼び直すループに
+変更した（`None` の間は猶予中として空 action で待機）。1 detector インスタンス
+につき `check_now` 経由か `visible_fencing_verdict` 経由かは
+`gji_candidate_visible_now()` で排他的に決まるため、共有する
+`show_stale_hold_since_ms` の hold 状態が競合することはない。
+
+**テスト:** `tsf/warmup/probe_fsm.rs::tests` の既存回帰テスト
+`chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal`
+を、猶予期間中は action 無し→猶予切れ後に recovery、という2 tick 構成に更新。
+新規に `chrome_per_vk_visible_shortcut_confirms_when_write_catches_up_within_grace`
+を追加し、猶予期間内に `gji_last_write_ms` が追いつけば `CompositionConfirmed`
+となり backspace 回収が一切発行されないことを固定した（今回の regression が
+実際に露呈していたはずのケース）。`cargo check`/`cargo clippy -p awase-windows
+--lib --target x86_64-pc-windows-gnu -- -D warnings`（警告ゼロ）、`cargo test
+-p awase-windows --lib --target x86_64-pc-windows-gnu --no-run`（リンク確認）
+まで実施。wine 未導入のためこのサンドボックスでは `#[cfg(windows)]` テストの
+実行そのものは Windows 実機/CI 待ち。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/probe.rs`
+（`LiteralDetector::grace_hold_verdict`/`visible_fencing_verdict` 新設、
+`check_now` リファクタ）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`await_vk_detection` をループ化）。関連: BUG-29（ショートカット自体の起源）、
+本エントリ追補1（StaleConfirm の recovery 化）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
+**追補3（2026-07-23 実機）: 症状（backspace）ではなく前提条件（無根拠な cold
+化）そのものを根治。`GjiFsm::handle_composition_reset` に `gji_idle_ms`
+observation ゲートを追加。**
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` →
+`Windows.UI.Input.InputSite.WindowClass`、GJI、TSF-native）で「リーク」と
+連続入力した直後に `Ctrl+I` を押して「を」を続けたところ、**「リークを」が
+「リーを」になった（「ク」が消失）**。
+
+**再現手順（実機ログで確認）:**
+1. 「り」「ー」「く」が connected composition として正常に入力される（GJI は
+   継続的に warm、候補ウィンドウの開閉も正常）。
+2. `Ctrl+I` 押下。`message_handlers.rs` の Ctrl+key パススルー処理が
+   `gji_candidate_visible_now()`（＝候補ウィンドウが「今まさに」可視か、
+   という素の代理指標）だけを根拠に、IMM32 の `cancel_ime_composition()` 直後
+   `Platform::on_ctrl_bypass_composition_cancel()` → `gji_on_composition_reset()`
+   → `GjiFsm::handle_composition_reset()` を呼ぶ。ここが実測 `gji_idle_ms()`
+   を一切参照せず、`OnWarm`/`OnComposing` から無条件に `OnCold{Short}` へ
+   強制していた。
+3. 2026-07-18 以降、cold-start は理由（`ColdReason`/`ColdKind`）に関わらず
+   即座に F2/probe 事前待機を省略して per-VK confirm（epoch fencing 付き）へ
+   入る（`tsf/warmup/cold_warmup.rs::run_start`）。本来 cold-start が一切
+   不要な genuinely warm なセッションまでこの経路に送り込まれた。
+4. 続く「を」（romaji "wo"）の1文字目 `w` は正しく confirmed、2文字目 `o` が
+   「候補ウィンドウ既に可視」ショートカット経由で `StaleConfirm` と判定され、
+   `escape_composition=true`（VK_ESCAPE + VK_BACK×1）の回収が発火。ESC が
+   直前の未確定 pending composition を破棄した結果、後続の BS×1 が
+   「消すべき literal」を失い、代わりに直前の唯一の確定済み文字である
+   「ク」を消した。
+
+**原因（本質）:** `GjiEvent::CompositionReset`/`GjiEvent::NativeF2Consumed`
+（Warm/Composing 中のフォールバック）が共通で通る
+`GjiFsm::handle_composition_reset()` が、composition キャンセルという
+弱い代理指標のみを根拠に、実際の GJI 生存証拠（`gji_idle_ms()`）を一切
+参照せず無条件に cold へ強制していた。`FocusChange`/`ImeOn` は既に
+`gji_idle_ms()` を観測して `ColdKind::classify` で判断しており、
+`CompositionReset`/`NativeF2Consumed` だけがこの「observation → decision」
+の原則から外れた例外だった。この経路の呼び出し元は実際には4種類ある
+（Ctrl+key bypass、記号 VK 送信後 `SymbolVkSent`、Space/Enter/Escape
+パススルー `PassthroughConfirmKey`、物理 F2 消費 `NativeF2Consumed` の
+Warm/Composing フォールバック）が、いずれも `platform.rs` の
+`gji_on_composition_reset()`/`gji_on_native_f2_consumed()` という
+たった2つの関数を経由するだけなので、1箇所ずつ個別に直すのではなく
+この共通関門を直すことで4経路すべてを一括是正した。
+
+**修正 (2026-07-23):** `GjiEvent::CompositionReset`/`NativeF2Consumed` に
+`gji_idle_ms: u64` を必須フィールドとして追加し（`FocusChange`/`ImeOn` と
+同じパターン）、呼び出し元（`gji_on_composition_reset`/
+`gji_on_native_f2_consumed`）が `crate::tsf::observer::gji_idle_ms()` を
+取得して渡すようにした。`handle_composition_reset` は
+`ColdKind::classify(gji_idle_ms)` が `Short`（enum 定義上「GJI 確実に生存」）
+を返す場合は cold へ倒さず `OnWarm` に留まり（`transition_to_warm`）、
+`Medium`/`Long`（genuinely stale）の場合のみ従来どおり `OnCold` へ遷移する。
+`OnCold` 状態からの再遷移も、固定値 `ColdKind::Short` ではなく実測
+`gji_idle_ms` で再分類するよう改めた。
+
+`mark_composition_cold(ColdReason)` 系（9箇所）は、GJI warm/cold の機能的
+SSOT（`GjiFsm::is_warm()`）を一切動かさない別の診断専用構造体
+（`tsf/probe.rs::CompositionState`）を更新するだけと判明したため、今回は
+変更していない。
+
+**テスト:** `tsf/gji_fsm.rs::tests`（`#[cfg(windows)]` 無し、型としては
+Windows 非依存だが親モジュール `tsf` が `#[cfg(windows)]` のため実行には
+Windows ターゲットが必要）に3件追加: `composition_reset_while_genuinely_warm_stays_warm`
+（実機再現、`gji_idle_ms=63` で `OnWarm` を維持することを固定）、
+`composition_reset_while_genuinely_stale_transitions_cold`（過剰防御に
+倒れていないことの確認、`gji_idle_ms=8_000` で `OnCold{Medium}` へ正しく
+落ちる）、`native_f2_consumed_while_warm_and_fresh_stays_warm`（同じゲートが
+`NativeF2Consumed` 経由でも効くことの確認）。既存2件
+（`native_f2_consumed_while_medium_cold_continues_probe`/
+`native_f2_consumed_while_short_cold_resets_probe`）も新シグネチャに追従。
+`cargo check`/`cargo clippy -p awase-windows --lib --target
+x86_64-pc-windows-gnu -- -D warnings`（警告ゼロ）、`cargo test -p
+awase-windows --lib --target x86_64-pc-windows-gnu --no-run`（リンク確認）
+まで実施。wine 未導入のためこのサンドボックスでは実行そのものは
+Windows 実機/CI 待ち。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/gji_fsm.rs`
+（`GjiEvent::CompositionReset`/`NativeF2Consumed` フィールド追加、
+`handle_composition_reset` の observation ゲート化）、
+`crates/awase-windows/src/platform.rs`（`gji_on_composition_reset`/
+`gji_on_native_f2_consumed` が `gji_idle_ms()` を取得して渡す）。関連:
+本エントリ追補1・追補2（症状面: per-VK confirm 側の StaleConfirm 処理）、
+本追補3は前提条件面（そもそも genuinely warm なセッションを cold-start
+経路に送り込まない）の根治。[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
+**追補4（2026-07-23 実機、2件確認）: `VK_BACK` に「literal の positive な証拠」
+を要求するよう `per_vk_recovery_params` を変更。`StaleConfirm` および
+「直前の VK が確認済みの `SuspectedLiteral`」では backspace を送らない。**
+
+**症状:**
+1. Windows Terminal で「リーク」に続けて `Ctrl+I` → 「を」を入力したところ
+   「リークを」が「リーを」になった（「ク」が消失、per-VK[1/1] が
+   `StaleConfirm`、`escape=true`）。
+2. 同環境で IME OFF 中に "cold " をパススルー入力→物理 F2 で IME ON→「が」を
+   入力したところ「cold が」が「coldが」になった（末尾スペースが消失、
+   per-VK[1/1] が `StaleConfirm`、`escape=true`）。
+3. 追加で、`StaleConfirm` が連鎖して `consecutive` カウントが 1→2→3→4 と
+   積み上がり、その都度 backspace が発火して複数文字が連続して消える
+   カスケード障害も観測した（per-VK[0/1] で `StaleConfirm` が3世代連続）。
+
+**原因（本質）:** `per_vk_recovery_params(failed_idx)` は `DetectionResult`
+の種別（`SuspectedLiteral` か `StaleConfirm` か）を区別せず、常に
+`backs=1`（`failed_idx==0`）または「ESC + backs=1」（`failed_idx>0`）を
+返していた。しかし `VK_ESCAPE` の破壊スコープは pending composition
+内に閉じているのに対し、`VK_BACK` は「カーソル直前の1文字を無条件に消す」
+命令であり composition スコープ**外**の確定済みテキストにも届く。
+`escape_composition=true` のケースでは ESC が pending composition を
+（それが実在すれば）破棄した後、消すべき literal がもはや存在しない状態で
+backspace が発火し、直前の別スコープの確定済み文字を誤って消していた。
+`StaleConfirm` は「confirm 根拠が古い」ことの検出であって「literal である」
+証拠ではなく、`SuspectedLiteral` であっても `failed_idx>0`（直前の VK が
+fresh に confirmed 済み＝GJI が「いま」この語を処理している直接証拠がある）
+場合は「次の1VKだけが本当に IME をバイパスする」可能性が実質低い。
+
+**修正:** `per_vk_recovery_params(is_stale: bool, failed_idx: usize)` に
+シグネチャ変更し、`backs = if is_stale || failed_idx > 0 { 0 } else { 1 }`
+とした。つまり:
+- `StaleConfirm`（`is_stale=true`）: idx に関わらず backspace を送らない。
+- `SuspectedLiteral` かつ `failed_idx > 0`: backspace を送らず ESC のみ。
+- `SuspectedLiteral` かつ `failed_idx == 0`（この語で一度も confirm 済みの
+  証拠がない唯一のケース）: 従来どおり `backs=1`。
+
+`tsf/warmup/probe_fsm.rs`（`run_per_vk_confirm`・Chrome inline LiteralDetect
+の両方）と `tsf/warmup/literal_detect_fsm.rs`（`LiteralDetectCore::poll` の
+`StaleConfirm` 分岐）双方の `StaleConfirm` ハンドラを `backs=0` に統一した
+（バッチ経路には `failed_idx` の概念が無いため `is_stale` のみで判定）。
+
+**テスト:** `literal_detect_fsm.rs` に `per_vk_recovery_params` の全パターン
+（stale×idx、非stale×idx）を固定するテストを追加・更新。
+`probe_fsm.rs` に `chrome_per_vk_suspected_literal_after_confirmed_prior_vk_escapes_without_backspace`
+（「cold が」バグの直接回帰テスト、本物の deadline 到達による
+`SuspectedLiteral` を `failed_idx=1` で発生させ backspace なしを確認）を
+新規追加。既存の stale confirm 系回帰テスト（`chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal`
+等）は `backs=0` を確認するようアサーションを更新。`cargo check`/`cargo
+clippy -p awase-windows --lib --target x86_64-pc-windows-gnu -- -D
+warnings`（警告ゼロ）、`cargo test -p awase-windows --lib --target
+x86_64-pc-windows-gnu --no-run`（リンク確認）まで実施。wine 未導入のため
+実行そのものと実機再検証は次回。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`
+（`per_vk_recovery_params` シグネチャ変更、`LiteralDetectCore::poll` の
+`StaleConfirm` 分岐）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`run_per_vk_confirm`・`tsf_probe_coro_body` 両方の `StaleConfirm`/
+`SuspectedLiteral` ハンドラ）。関連: 本エントリ追補1・2・3、BUG-29/BUG-30
+（per-VK confirm の suspected-literal 誤判定の既知の限界）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
+---
+
+## BUG-36: `RawTsfLiteralRecovery` give-up が Chrome GJI reinit を backspace flush より先に送り、未確定 preedit が commit されて literal 文字が残る
+
+**症状:** Chrome（`Chrome_WidgetWin_1`、`Imm32Unavailable`、GJI）で「たみや」と
+連続入力したところ、「た」が literal 化して **"t" だけが残り「tみや」になった**
+（2026-07-23 実機ログ、`verify/integrate-unmerged-branches` ブランチでの実機
+ソーク中に発見）。BUG-35（ADR-079 Stage 1 epoch fencing）と BUG-33（give-up 時の
+Chrome GJI reinit）を統合した直後に再現。
+
+**IME:** Google 日本語入力（GJI）。`Imm32Unavailable`（Chrome/WezTerm/Windows
+Terminal 等）。
+
+**再現ログ（要約、`RUST_LOG=debug`）:**
+```
+[h1-probe] cold=3 ... per-VK confirm へ  ("ta" の VK0='T' 送信)
+[tsf-probe] cold=3 per-VK[0/1] candidate window already visible だが
+  直近の GJI I/O が送信時刻より前 → stale confirm として扱う (vk=0x54)
+[raw-tsf-literal] cold=3 raw TSF literal suspected → backspace ×1 + re-送 "ta"
+[raw-tsf-literal] flush escape=false backspace ×1     ← backspace 実送信
+[output] re-sending raw TSF literal romaji="ta"        ← "ta" 再送 (cold=4)
+[tsf-probe] cold=4 per-VK[0/1] candidate window already visible だが
+  直近の GJI I/O が送信時刻より前 → stale confirm として扱う (vk=0x54)  ← 再度同じ VK0 で発火
+[raw-tsf-literal] cold=4 consecutive raw-tsf-literal (count=2) → giving up,
+  backs=1 cleanup only (no re-send)
+[chrome-reinit] cold=4 VK_IME_OFF→VK_IME_ON 強制リセット送信 ...  ← reinit が先に実送信
+[hook] IME-mode vk=0x1A down/up (VK_IME_OFF) ... vk=0x16 down/up (VK_IME_ON)
+[composition] marked cold reason=RawTsfLiteralRecovery consecutive=2
+[raw-tsf-literal] flush escape=false backspace ×1     ← backspace はこの後
+```
+
+**原因（確定、コード読解で確認）:** `probe_io.rs` の `RawTsfLiteralRecovery`
+ハンドラの give-up 分岐（`consecutive > 0`）は、同じ関数内で
+
+1. `io.set_raw_literal(backs, "", escape_composition)` — backspace 数をグローバル
+   （`RAW_TSF_LITERAL`）に**予約するだけ**（実送信は `WM_DRAIN_OUTPUT_QUEUE` →
+   `flush_raw_tsf_literal_recovery` → `flush_raw_tsf_literal_backspaces` まで遅延）。
+2. `io.send_chrome_gji_reinit_and_poll(cold_seq)` — `VK_IME_OFF`→`VK_IME_ON` を
+   **その場で即座に** `SendInput` する（BUG-33 の実装）。
+
+を順に呼んでいた。この2つの間に実行タイミングの前後関係の保証がなく、実際には
+2 が 1 より先に OS へ届く。`VK_IME_OFF` は Windows IME の一般的挙動として
+**未確定の composition（preedit）を commit してから IME を閉じる**ため、
+cold=4 の VK0 送信で開始していた preedit "t" がここで実文字としてドキュメントに
+確定してしまう。その後にようやく届く backspace ×1 は、IME が OFF→ON を経て
+状態が変わった後の非同期タイミングで発火するため、確定済みの "t" を確実に
+消せない（本リポジトリで繰り返し出てくる「reinit 直後の非同期レース」と同型）。
+
+**修正:** give-up 分岐から `send_chrome_gji_reinit_and_poll` の直接呼び出しを
+廃止し、新設の `ProbeIo::schedule_chrome_gji_reinit` で `Output::pending_gji_reinit_cold_seq`
+に予約するだけに変更した。実際の reinit 送信は `Output::flush_raw_tsf_literal_recovery`
+（`flush_raw_tsf_literal_backspaces` の直後、`WM_DRAIN_OUTPUT_QUEUE` ハンドラ内）
+に移動し、**backspace が実際に送信された後で** reinit を送るよう順序を保証した。
+`send_chrome_gji_reinit_and_poll` 自体は変更していない（`Output::send_f22_f21_reinit`
+という別の呼び出し元があり、そちらは backspace flush と無関係な Unicode-mode
+long-cold 経路のため、即時実行のままで問題ない）。
+
+**テスト:** `output/probe_io.rs::tests` の
+`raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark` を、
+give-up 時に `send_chrome_gji_reinit_and_poll`（即時実行）が**呼ばれないこと**、
+代わりに `schedule_chrome_gji_reinit`（予約）が1回呼ばれることを検証するよう
+更新（`FakeProbeIo` に `gji_reinit_scheduled_count` を追加）。
+`raw_tsf_literal_recovery_sets_literal_and_marks_cold_when_first_time` にも
+初回（consecutive==0）では予約すら行わないことのアサーションを追加。
+`cargo check`/`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu -- -D
+warnings` クリーン、`cargo test -p awase-windows --target x86_64-pc-windows-gnu
+--no-run` でテストバイナリのコンパイル確認済み。wine 未導入のためこのサンドボックス
+では実行不可（`#[cfg(windows)]` 系と同じ制約）。実機再検証は次回ソークで実施。
+
+**関連ファイル:** `crates/awase-windows/src/output/probe_io.rs`
+（`ProbeIo::schedule_chrome_gji_reinit` 新設、give-up ハンドラの呼び出し先変更）、
+`crates/awase-windows/src/output/mod.rs`（`Output::pending_gji_reinit_cold_seq`
+フィールド新設、`flush_raw_tsf_literal_recovery` での消化）。関連: BUG-33
+（give-up 時の Chrome GJI reinit 自体の導入）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)/BUG-35
+（stale confirm epoch fencing。本バグの引き金となった1文字目 stale confirm の
+連発自体はここでは未解決 — なぜ VK0 が2回とも stale と判定されたかは別途調査
+の余地がある）。
+
+---
+
+## BUG-37: Ctrl+T 等の同一プロセス内フォーカス移動で IME belief が実状態と乖離しても、唯一の訂正手段（物理 IME キー）が no-op に握り潰される
+
+**症状:** BUG-36 と同一の実機ログ（2026-07-23、Chrome + GJI、`Imm32Unavailable`）の
+さらに手前で観測。「た」が literal 化するより前に、ユーザーは Ctrl+T で新規タブを
+開いた直後、違和感を覚えて物理サムキーで IME ON を明示的に押していた。しかし:
+
+```
+[engine-input] vk=0x54 KeyDown ... gas_ctrl=true phys_ctrl=true   ← Ctrl+T（新規タブ）
+[focus-sync] hwnd=0xE8D19D0 class="Chrome_WidgetWin_1" ... → mode=Vk
+[tsf-gate] focus change → PendingWarmup (held cleared)
+...
+[hook] IME-mode vk=0xF2 down self_injected=false injected=false ...   ← 物理キー（自己注入ではない）
+[shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey
+  effective_open は既に true → apply-ime 見送り                        ← 何も送信されなかった
+```
+
+ユーザーの明示的な訂正操作が完全に無視され、直後の "た" 入力が literal 化した
+（BUG-36 参照。BUG-36 の修正だけでは症状の一部しか直らず、根本原因はこちら）。
+
+**IME:** Google 日本語入力（GJI）。`Imm32Unavailable`（Chrome/Edge 等）および
+実質 TSF ネイティブ（WezTerm/Windows Terminal 等）。
+
+**原因（確定、コード読解で確認）:**
+
+1. `kp_stage_shadow_ime_toggle`（`runtime/key_pipeline.rs`）の no-op チェックは
+   **無条件**: `effective_open() == 要求値` なら `apply_ime_open` に到達せず、
+   実 OS へは何も送信しない。`Imm32Unavailable` 向けの特別扱いは存在しない。
+   コード自身のコメントが「belief が既に一致しているため実 IME が別経路で
+   乖離していても訂正されない」と既知のギャップとして明記していた。
+2. Ctrl+T（同一プロセス内のタブ切替）は `EVENT_OBJECT_FOCUS`（アクセシビリティ
+   focus イベント、`app/bootstrap.rs::win_event_proc` → `on_window_focus_event`）
+   だけを発火させる。このイベントは `injection_mode`／`TsfGate` のみ更新し、
+   `desired_open`／`effective_open`／`observations` などの belief には一切触れない
+   （`output/mod.rs:508-511` のコメントは Ctrl+T をこの軽量イベントの発生源として
+   既に想定していたが、belief 面の対応はしていなかった）。
+3. belief を実際に再検証する唯一の経路（`ImeEvent::FocusChanged`、
+   `applied` を `Unknown` にリセットし `apply_force_on_for_imm_broken` を
+   解禁する）は `process_changed`（フォーカス元と先で PID が異なる）でしか
+   発火しない（`focus_tracking.rs::advance_focus_tracking`）。Ctrl+T の新規タブは
+   同一 Chrome プロセス内のため、この経路が発火しない。
+4. 仮に発火したとしても、`focus_tracking.rs:341-369`（"Imm32Unavailable hard
+   pre-sync"）が `effective_open()==true` のとき `mirror_applied_open(true, ...)`
+   で `applied` を即座に再ロックしてしまい、`apply_force_on_for_imm_broken` の
+   訂正チャンスを消してしまう。
+
+結果として `Imm32Unavailable`／実質 TSF ネイティブなアプリでは、belief が
+一度でも実状態と乖離すると、(a) 唯一の訂正チャネルである物理 IME キー押下は
+no-op で握り潰され、(b) 唯一のbelief再検証経路は同一プロセス内フォーカス移動
+では発火せず、(c) 発火してもすぐ再ロックされる、という三重に訂正されない状態
+になる。`BUG-33`（drift correction が構造的に発火し得ない）と同根の
+「observe できないプロファイルは自己確認はできても自己訂正できない」問題の
+別の顔。
+
+**修正:** 真のフォーカス変更（`process_changed`）で使われている再プライム機構
+（`Output::mark_composition_cold_focus_change` → 次の VK/TSF 送信で
+`VK_DBE_HIRAGANA` warmup を先行送信）を、軽量な `on_window_focus_event` からも
+条件付きで発火するようにした。`focus::class_names::should_reprime_on_lightweight_focus_sync`
+（新設の純粋関数）が「`Imm32Unavailable` または実質 TSF ネイティブなプロファイル」
+かつ「belief（`effective_open()`）が既に ON」の場合にのみ `true` を返し、
+`on_window_focus_event` はこの条件のときだけ cold mark する。
+
+- 新規コードパスは作らず、既存の cold-mark／eager-warmup 機構をそのまま再利用。
+- cold mark 自体は「次に実際に VK/TSF を送信するまで何も OS に送らない」遅延
+  フラグのため、Chrome が連続発火させる複数の `EVENT_OBJECT_FOCUS`
+  （タブ・アドレスバー・コンテンツ等）で何度呼ばれてもレイテンシ以外の実害はない。
+- belief=OFF のときは何もしない（不要な IME ON 化を起こさない）。
+- 実状態を確実に問い合わせられる `Standard` プロファイルは対象外（この機構が
+  不要な唯一のケース）。
+
+**未解決（Stage 1 の限定的な修正）:** 本修正は「belief=ON のときに実状態を
+belief へ追従させる」再プライムのみ。逆方向（belief=OFF なのに実状態が ON の
+まま乖離）や、Ctrl+T 以外の同一プロセス内フォーカス移動（タブドラッグ、
+複数ウィンドウ間のショートカット等）で同型の問題が起きるかは未検証。
+[ADR-028](adr/028-focus-event-redesign.md)（承認済み・未実装）はより広い
+「同一プロセス内フォーカス移動でも belief-invalidating しない re-fetch を行う」
+設計を提案しており、本修正はその一部を Imm32Unavailable/TSF-native の
+片方向ケースに限定して先行実装したものと位置づけられる。
+
+**テスト:** `focus/class_names.rs::tests` に
+`should_reprime_on_lightweight_focus_sync` の回帰テスト5件を追加
+（Chrome belief=ON/OFF、Windows Terminal、WezTerm、Standard の各ケース）。
+純粋関数のため Linux ネイティブで実行可能（`cargo test -p awase-windows --lib
+class_names` で確認済み、140 passed）。`on_window_focus_event` 側の実際の
+呼び出し配線は `#[cfg(windows)]` のため `cargo test -p awase-windows --target
+x86_64-pc-windows-gnu --no-run` でコンパイルのみ確認。実機での Ctrl+T 再現
+テストは次回ソークで実施すること。
+
+**関連ファイル:** `crates/awase-windows/src/focus/class_names.rs`
+（`cannot_verify_real_ime_state`/`should_reprime_on_lightweight_focus_sync` 新設）、
+`crates/awase-windows/src/runtime/mod.rs`（`on_window_focus_event` に配線）。
+関連: BUG-36（本バグが引き起こした literal 化の直接症状、別コミットで先行修正済み）、
+BUG-33（Imm32Unavailable の drift correction 不発火、同根の問題）、
+[ADR-028](adr/028-focus-event-redesign.md)（未実装、より広い設計）、
+`.claude/rules/ime-belief-architecture.md`。
+
+---
+
+## BUG-38: `RawTsfLiteralRecovery` の give-up 分岐が `pending_deferred` を flush しないため、probe 実行中に届いた別の打鍵が消失・出力順逆転する
+
+> 統合ブランチでの注記: 本エントリは `main` 側で「BUG-35」として書かれていたが、
+> 本ブランチには既に別の BUG-35（per-VK confirm の stale confirm 誤帰属、
+> ADR-079 Stage1）が存在していたため、統合時に BUG-38 へ改番した。
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で高速タイピング中、「とうろくする」と入力したところ「と」が消え、続く「う」と「ろ」の出力順が入れ替わった（2026-07-22 実機ログ）。ユーザー報告は「なぞの VK_BACK が再発しています」。
+
+**再現手順（ログで確認済み）:**
+
+```
+と(to) の2文字目 VK が stale confirm 検出 → RawTsfLiteralRecovery(consecutive=0):
+  backspace ×1 + 再送 "to" を予約、mark cold
+  （↑ この間に実キー "う" が到着 → probe in-flight のため pending_deferred=[う] に退避）
+再送した "to"（新 probe, cold+1）の1文字目 VK も stale confirm 検出
+  → RawTsfLiteralRecovery(consecutive=1, give-up): backspace のみ・再送なし
+     + Chrome reinit (VK_IME_OFF→VK_IME_ON) 予約
+flush_raw_tsf_literal_recovery: backspace → (romaji空なので再送なし) → reinit
+  → has_pending_tsf()==false になるが pending_deferred=[う] は誰も flush しない
+実キー "ろ"(ro) が到着 → probe in-flight ではないため deferred されず、
+  通常の新規 probe を経て即座に送信される（TransmitTsf 分岐で自身の
+  送信直後に pending_deferred=[う] を flush）
+→ 出力順が "ろ","う" になり、"と" は2回の backspace で消えたまま戻らない
+```
+
+**IME:** GJI（Google 日本語入力）。TsfNative プロファイル（Windows Terminal 等）。stale confirm 検出自体は本統合ブランチが取り込んだ epoch-fencing 機能（BUG-35、ADR-079 Stage1）によるものだが、本バグの根本原因（`pending_deferred` を flush し忘れる欠落）はその機能とは独立に `main` に既に存在する。stale confirm はこの欠落を踏みやすくする誘因にすぎない。
+
+**原因（確定、コード読解で確認）:** `dispatch_probe_actions`（`output/probe_io.rs`）の `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk`（`is_last`）の3ハンドラは、いずれも自分の送信直後に `io.send_deferred_vks(&io.take_pending_deferred_vks(), marker)` を呼んで `pending_deferred`（`TsfWarmupCoordinator` 所有、probe 実行中に届いた後続キーの退避キュー）を flush する。しかし `ProbeAction::RawTsfLiteralRecovery` のハンドラだけはこれを一切呼ばない。特に `consecutive > 0`（give-up、romaji 再送なし）の場合、この probe の完了後に新しい probe が張られる保証がないため、`pending_deferred` は誰にも flush されないまま取り残される。次に届いた**全く別の**打鍵が（`has_pending_tsf()==false` になっているため）deferred されずに先に通常送信され、後から取り残された分が flush されるため、出力順が入れ替わる。
+
+**修正:** `Output::flush_raw_tsf_literal_recovery`（`output/mod.rs`、backspace → romaji 再送の実送信が起きる同期ポイント）の最後に `flush_stale_deferred_vks_after_recovery` を追加した。`TsfWarmupCoordinator::take_pending_deferred_if_probe_idle()`（新設）が `has_pending_tsf()` を見て、romaji 再送が新しい probe を張っていれば `None`（その新 probe 自身の既存3ハンドラに flush を委ねる）、probe が本当に終わっていれば取り残された VK を返す。`dispatch_probe_actions` の中（`set_raw_literal` が static に退避するだけで実送信はまだ起きていない時点）で flush すると backspace より先に deferred VK が OS に届いてしまうため、意図的に「実際に SendInput される同期ポイント」である `flush_raw_tsf_literal_recovery` の末尾に置いた。
+
+**未対応（残存、フォローアップ候補）:** `escape_composition=true`（ESC で composition を丸ごと破棄する経路、per-VK confirm の2文字目以降で到達しうる、`main` に既存）の場合、ESC 直後の raw な deferred VK 送信は probe を経由しないため、それ自体が literal 化するリスクが理論上残る。probe を経由した re-entry（romaji へ変換して `send_romaji_as_tsf` 相当に載せる）は ADR-079 Stage2（未実装）のスコープであり、本 fix は「取り残されたまま出力順が入れ替わる」実害の解消に限定した。
+
+**テスト:** `output/tsf_warmup_coord.rs` に `take_pending_deferred_if_probe_idle` の回帰テスト3件を追加（probe in-flight 中は drain しないこと／give-up で probe が終わった後は drain すること／キューが空なら `None` を返すこと）。実際の `Output::flush_stale_deferred_vks_after_recovery` は `SendInput` を伴うため（本クレートの既存の慣習どおり、Win32 呼び出しを伴うコードパスは `ProbeIo`/`FakeProbeIo` 経由か、決定ロジックを純粋関数に分離した上でユニットテストする）、コーディネーターレベルのテストで決定ロジックを直接検証する形にした。Windows cross-compile（`cargo xwin clippy --target x86_64-pc-windows-gnu -- -D warnings` 含む）警告ゼロ確認済み。Wine 等の実行環境がないためテストの実実行（`cargo test --target x86_64-pc-windows-gnu`）は未実施、実機再検証も未実施。
+
+**関連ファイル:** `crates/awase-windows/src/output/mod.rs`（`flush_raw_tsf_literal_recovery`、新設 `flush_stale_deferred_vks_after_recovery`）、`crates/awase-windows/src/output/tsf_warmup_coord.rs`（新設 `take_pending_deferred_if_probe_idle`）、`crates/awase-windows/src/output/probe_io.rs`（`ProbeAction::RawTsfLiteralRecovery` ハンドラ）。関連: BUG-28（同じ `flush_raw_tsf_literal_recovery` 経路の別の drain 漏れ）、BUG-35（stale confirm 誤帰属、ADR-079 Stage1、本バグの誘因）、BUG-36（give-up→Chrome reinit の順序修正）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
@@ -3653,3 +4386,4 @@ spawn 時にキャプチャしたスナップショット（`output_idle_ms_at_s
 | `[shift-conv-guard] かな入力へ復元` | BUG-15/BUG-25: conv をかな入力へ verify-retry 復元（安全網ブリップの終了、またはトグルOFF） |
 | `[tip-detect] IME kind candidate X (current=Y), awaiting confirmation next tick` | CLSID 種別フリップの1回目の観測（`ImeKindDebounce`）。次 tick も同じなら確定、元に戻れば破棄 |
 | `[tip-detect] IME kind → X` | CLSID 種別変化が2 tick連続で確定し `WM_IME_KIND_CHANGED` を発行（`GjiFsm`/`MsImeStrategy` が再構築される点に注意、BUG-17） |
+| `stale confirm 検出` / `epoch-fence-stale` | ADR-079/BUG-35: confirm 根拠が前世代由来と判明（追補1で SuspectedLiteral と同じ backspace+再送に変更済み。追補2で「既に可視」ショートカットの猶予漏れによる false positive も修正済み。追補3で `CompositionReset`/`NativeF2Consumed` 自体に `gji_idle_ms` observation ゲートを追加し前提条件面を根治。追補4で backspace 自体を送らない（romaji 再送のみ）方式に変更、literal の positive な証拠がない限り BS を送らない） |

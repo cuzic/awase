@@ -365,7 +365,9 @@ impl Runtime {
                 let crate::state::probe_admission::Admission::Accept(_) =
                     ticket.admit(current_epoch)
                 else {
-                    log::debug!("[idle-conv-check] epoch rejected (focus changed since read spawn)");
+                    log::debug!(
+                        "[idle-conv-check] epoch rejected (focus changed since read spawn)"
+                    );
                     return;
                 };
                 app.apply_idle_conv_check(conv, output_idle_ms_at_spawn, now_tick_at_spawn);
