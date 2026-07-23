@@ -205,7 +205,7 @@ impl Runtime {
         self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.ir_notify_engine_refresh();
-        // Phase 4b: desired ≠ observed ドリフト補正（ImmCross アプリ向け）
+        // Phase 4b: desired ≠ observed ドリフト補正（ImmCross / non-ImmCross 両対応）
         self.ir_apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール
         self.reschedule_ime_refresh();
@@ -539,9 +539,13 @@ impl Runtime {
     }
 
     fn ir_apply_drift_correction(&mut self) {
-        if self.ir_resolve_skip_imm_query() {
-            return;
-        }
+        // BUG-20 で non-ImmCross（GJI/TsfNative/Blacklist）向けの再送分岐を追加した際、
+        // この関数冒頭に残っていた `ir_resolve_skip_imm_query()`（=
+        // `!can_use_imm32_cross_process()`）による早期 return を消し忘れていた。
+        // 追加した non-ImmCross 分岐はまさにこのガードが true になる場合に実行される
+        // はずのコードであり、ガードが残っていたことで一度も到達できない dead code に
+        // なっていた（BUG-20 の「実機検証は未実施」という注記通り、実機で一度も
+        // 検証されないまま今日まで放置されていた）。詳細は known-bugs.md BUG-20 追補参照。
         if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
             return;
         }
