@@ -49,22 +49,42 @@ use crate::tsf::warmup::probe_fsm::{ProbeAction, ProbeObservations};
 pub(crate) const PARTIAL_LITERAL_BS: usize = 1;
 
 /// IME セッション最初の1文字専用の per-VK confirm ループ（BUG-24 追補）が、
-/// ある VK で `SuspectedLiteral`（確認信号タイムアウト）になったときの回収パラメータを返す純関数。
+/// ある VK で `SuspectedLiteral`/`StaleConfirm` になったときの回収パラメータを返す純関数。
 ///
-/// `failed_idx`: 何番目 (0-based) の VK が `SuspectedLiteral` になったか。
+/// `is_stale`: `DetectionResult::StaleConfirm`（epoch fencing 判定）由来なら `true`、
+/// `SuspectedLiteral`（deadline 到達）由来なら `false`。
+/// `failed_idx`: 何番目 (0-based) の VK が失敗判定になったか。
 /// 戻り値: `(backs, escape_composition)`。
 ///
-/// - `backs` は常に `1`: VK を1つずつ送って確認しているため、リテラル化しうるのは
-///   「いま送った VK 自身」だけだと確定している（`is_partial_literal` のような
-///   「全部リテラル化した前提」の推測が不要）。
-/// - `escape_composition` は `failed_idx > 0` のときのみ `true`: それより前の VK は
-///   個別に `CompositionConfirmed` 済み（＝composition が実在する）ため、
-///   `VK_ESCAPE` で文字数に関係なく確実に破棄してから BS する。`failed_idx == 0`
-///   は composition が一切存在しないため ESC を送らない（既存の
-///   `is_partial_literal`/`PARTIAL_LITERAL_BS` と同じ「composition が無い状態で
-///   ESC を送らない」防御方針を踏襲）。
-pub(crate) const fn per_vk_recovery_params(failed_idx: usize) -> (usize, bool) {
-    (1, failed_idx > 0)
+/// ## VK_BACK には「literal の positive な証拠」を要求する（2026-07-23、実機バグ2件で確認）
+///
+/// `VK_ESCAPE` の破壊スコープは pending composition 内に閉じている（実機確認済み、
+/// `docs/windows-api-constraints.md` §1-2）のに対し、`VK_BACK` は「カーソル直前の
+/// 1文字を無条件に消す」命令であり、composition スコープ**外**の既に確定済みの
+/// テキストにも届く唯一の不可逆操作である。したがって BS は「本当に literal が
+/// 出た」という積極的な証拠がある場合にのみ送る:
+///
+/// - `is_stale`（`StaleConfirm`）: 「confirm の根拠が古い」ことの検出であり
+///   「literal である」ことの証拠では**ない**。idx に関わらず BS は送らない
+///   （`backs=0`）。実機で2件確認済み: `escape_composition=true` の場合、ESC が
+///   pending composition を破棄した後の BS が消すべき literal を失い、直前の
+///   別スコープの確定済み文字（「リーク」の「ク」、「cold 」の末尾スペース）を
+///   誤って消していた（`docs/known-bugs.md` BUG-33 追補3・4参照）。
+/// - `!is_stale && failed_idx > 0`（`SuspectedLiteral`、直前の VK は fresh に
+///   confirmed 済み）: GJI が「いま」この語を処理している直接証拠がある以上、
+///   その直後の1VKだけが本当に IME をバイパスすることは実質考えにくい。BS は
+///   送らず ESC のみに倒す（`escape_composition=true`、直前 VK の pending
+///   composition を破棄）。
+/// - `!is_stale && failed_idx == 0`（この語で一度も confirm 済みの証拠がない
+///   唯一のケース）: 従来どおり `backs=1`（composition 自体が存在しないため
+///   `escape_composition=false`）。
+///
+/// `escape_composition` は `failed_idx > 0` のときのみ `true`（BS の有無に関わらず、
+/// それより前の VK が個別に `CompositionConfirmed` 済み＝pending composition が
+/// 実在するため）。
+pub(crate) const fn per_vk_recovery_params(is_stale: bool, failed_idx: usize) -> (usize, bool) {
+    let backs = if is_stale || failed_idx > 0 { 0 } else { 1 };
+    (backs, failed_idx > 0)
 }
 
 /// `CompositionConfirmed` 時に「先頭文字がリテラル化した partial literal」かどうかを判定する純関数。
@@ -264,17 +284,18 @@ impl LiteralDetectCore {
                 }
             },
             DetectionResult::StaleConfirm => {
-                // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
-                // 未送信 VK が欠落する回帰を引き起こした（probe_fsm.rs 側の
-                // 同種修正のコメント参照）。SuspectedLiteral と同じ回収に倒す。
+                // BUG-33 追補4: StaleConfirm は「confirm 根拠が古い」ことの検出で
+                // あって「literal である」証拠ではない。backspace は送らず
+                // （backs=0）、romaji 再送のみスケジュールする
+                // （`per_vk_recovery_params` のドキュメント参照）。
                 log::warn!(
                     "[literal-detect] cold={} stale confirm 検出 (romaji={:?}) → \
-                     suspected literal と同じ回収 (backspace+再送) を行う",
+                     backspace は送らず romaji 再送のみ行う",
                     self.cold_seq,
                     self.romaji,
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
-                Some(self.recovery(self.ze_bs_count, false))
+                Some(self.recovery(0, false))
             }
         }
     }
@@ -381,22 +402,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn per_vk_recovery_params_first_vk_no_escape() {
+    fn per_vk_recovery_params_first_vk_suspected_literal_backs_1_no_escape() {
         assert_eq!(
-            per_vk_recovery_params(0),
+            per_vk_recovery_params(false, 0),
             (1, false),
-            "先頭 VK の SuspectedLiteral は composition が存在しないため ESC 不要"
+            "先頭 VK の SuspectedLiteral（この語で一度も confirm 済みの証拠がない \
+             唯一のケース）は composition が存在しないため ESC 不要、literal の \
+             positive な証拠として backs=1"
         );
     }
 
+    // BUG-33 追補4: 2番目以降の VK の SuspectedLiteral は「直前の VK が fresh に
+    // confirmed 済み」という正の証拠があるため、もはや backspace を送らない
+    // （以前は backs=1 で送っていたが、実機で「cold 」の末尾スペースを誤って
+    // 消す実害が確認された）。ESC のみで pending composition を破棄する。
     #[test]
-    fn per_vk_recovery_params_later_vk_escapes() {
+    fn per_vk_recovery_params_later_vk_suspected_literal_escapes_without_backspace() {
         assert_eq!(
-            per_vk_recovery_params(1),
-            (1, true),
-            "2番目以降の VK の SuspectedLiteral は先行 VK による composition を ESC で破棄"
+            per_vk_recovery_params(false, 1),
+            (0, true),
+            "2番目以降の VK の SuspectedLiteral は先行 VK による composition を \
+             ESC で破棄するが、backspace は送らない"
         );
-        assert_eq!(per_vk_recovery_params(2), (1, true));
+        assert_eq!(per_vk_recovery_params(false, 2), (0, true));
+    }
+
+    // BUG-33 追補4: StaleConfirm は「confirm 根拠が古い」ことの検出であって
+    // 「literal である」証拠ではないため、idx に関わらず backspace を送らない。
+    #[test]
+    fn per_vk_recovery_params_stale_confirm_never_backspaces() {
+        assert_eq!(
+            per_vk_recovery_params(true, 0),
+            (0, false),
+            "先頭 VK の StaleConfirm は composition も存在しないため ESC も不要"
+        );
+        assert_eq!(
+            per_vk_recovery_params(true, 1),
+            (0, true),
+            "2番目以降の VK の StaleConfirm は ESC のみ、backspace は送らない"
+        );
     }
 
     fn obs(nc_fired: bool) -> ProbeObservations {
@@ -638,13 +682,15 @@ mod tests {
         let actions = core
             .poll(tsf_env())
             .expect("stale confirm は即座に確定するはず");
+        // BUG-33 追補4: romaji 再送はスケジュールするが、backspace は送らない
+        // （StaleConfirm は literal の証拠ではないため）。
         assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
-            "stale confirm 検出時は suspected literal と同じく backspace 回収を \
-             発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
-             {actions:?}"
+            actions.iter().any(
+                |a| matches!(a, ProbeAction::RawTsfLiteralRecovery { backs: 0, .. })
+            ),
+            "stale confirm 検出時は romaji 再送はスケジュールするが backspace は \
+             送らないはず（未送信 VK を残したまま無回収で終わると生文字が残存する \
+             ため再送自体は必要）: {actions:?}"
         );
 
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);

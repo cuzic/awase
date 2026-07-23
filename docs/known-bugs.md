@@ -3761,6 +3761,68 @@ Windows 実機/CI 待ち。
 本追補3は前提条件面（そもそも genuinely warm なセッションを cold-start
 経路に送り込まない）の根治。[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
 
+**追補4（2026-07-23 実機、2件確認）: `VK_BACK` に「literal の positive な証拠」
+を要求するよう `per_vk_recovery_params` を変更。`StaleConfirm` および
+「直前の VK が確認済みの `SuspectedLiteral`」では backspace を送らない。**
+
+**症状:**
+1. Windows Terminal で「リーク」に続けて `Ctrl+I` → 「を」を入力したところ
+   「リークを」が「リーを」になった（「ク」が消失、per-VK[1/1] が
+   `StaleConfirm`、`escape=true`）。
+2. 同環境で IME OFF 中に "cold " をパススルー入力→物理 F2 で IME ON→「が」を
+   入力したところ「cold が」が「coldが」になった（末尾スペースが消失、
+   per-VK[1/1] が `StaleConfirm`、`escape=true`）。
+3. 追加で、`StaleConfirm` が連鎖して `consecutive` カウントが 1→2→3→4 と
+   積み上がり、その都度 backspace が発火して複数文字が連続して消える
+   カスケード障害も観測した（per-VK[0/1] で `StaleConfirm` が3世代連続）。
+
+**原因（本質）:** `per_vk_recovery_params(failed_idx)` は `DetectionResult`
+の種別（`SuspectedLiteral` か `StaleConfirm` か）を区別せず、常に
+`backs=1`（`failed_idx==0`）または「ESC + backs=1」（`failed_idx>0`）を
+返していた。しかし `VK_ESCAPE` の破壊スコープは pending composition
+内に閉じているのに対し、`VK_BACK` は「カーソル直前の1文字を無条件に消す」
+命令であり composition スコープ**外**の確定済みテキストにも届く。
+`escape_composition=true` のケースでは ESC が pending composition を
+（それが実在すれば）破棄した後、消すべき literal がもはや存在しない状態で
+backspace が発火し、直前の別スコープの確定済み文字を誤って消していた。
+`StaleConfirm` は「confirm 根拠が古い」ことの検出であって「literal である」
+証拠ではなく、`SuspectedLiteral` であっても `failed_idx>0`（直前の VK が
+fresh に confirmed 済み＝GJI が「いま」この語を処理している直接証拠がある）
+場合は「次の1VKだけが本当に IME をバイパスする」可能性が実質低い。
+
+**修正:** `per_vk_recovery_params(is_stale: bool, failed_idx: usize)` に
+シグネチャ変更し、`backs = if is_stale || failed_idx > 0 { 0 } else { 1 }`
+とした。つまり:
+- `StaleConfirm`（`is_stale=true`）: idx に関わらず backspace を送らない。
+- `SuspectedLiteral` かつ `failed_idx > 0`: backspace を送らず ESC のみ。
+- `SuspectedLiteral` かつ `failed_idx == 0`（この語で一度も confirm 済みの
+  証拠がない唯一のケース）: 従来どおり `backs=1`。
+
+`tsf/warmup/probe_fsm.rs`（`run_per_vk_confirm`・Chrome inline LiteralDetect
+の両方）と `tsf/warmup/literal_detect_fsm.rs`（`LiteralDetectCore::poll` の
+`StaleConfirm` 分岐）双方の `StaleConfirm` ハンドラを `backs=0` に統一した
+（バッチ経路には `failed_idx` の概念が無いため `is_stale` のみで判定）。
+
+**テスト:** `literal_detect_fsm.rs` に `per_vk_recovery_params` の全パターン
+（stale×idx、非stale×idx）を固定するテストを追加・更新。
+`probe_fsm.rs` に `chrome_per_vk_suspected_literal_after_confirmed_prior_vk_escapes_without_backspace`
+（「cold が」バグの直接回帰テスト、本物の deadline 到達による
+`SuspectedLiteral` を `failed_idx=1` で発生させ backspace なしを確認）を
+新規追加。既存の stale confirm 系回帰テスト（`chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal`
+等）は `backs=0` を確認するようアサーションを更新。`cargo check`/`cargo
+clippy -p awase-windows --lib --target x86_64-pc-windows-gnu -- -D
+warnings`（警告ゼロ）、`cargo test -p awase-windows --lib --target
+x86_64-pc-windows-gnu --no-run`（リンク確認）まで実施。wine 未導入のため
+実行そのものと実機再検証は次回。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`
+（`per_vk_recovery_params` シグネチャ変更、`LiteralDetectCore::poll` の
+`StaleConfirm` 分岐）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`
+（`run_per_vk_confirm`・`tsf_probe_coro_body` 両方の `StaleConfirm`/
+`SuspectedLiteral` ハンドラ）。関連: 本エントリ追補1・2・3、BUG-29/BUG-30
+（per-VK confirm の suspected-literal 誤判定の既知の限界）、
+[ADR-079](adr/079-epoch-fenced-literal-recovery-with-replay.md)。
+
 ---
 
 ## デバッグ方法
@@ -3788,4 +3850,4 @@ Windows 実機/CI 待ち。
 | `[shift-conv-guard] かな入力へ復元` | BUG-15/BUG-25: conv をかな入力へ verify-retry 復元（安全網ブリップの終了、またはトグルOFF） |
 | `[tip-detect] IME kind candidate X (current=Y), awaiting confirmation next tick` | CLSID 種別フリップの1回目の観測（`ImeKindDebounce`）。次 tick も同じなら確定、元に戻れば破棄 |
 | `[tip-detect] IME kind → X` | CLSID 種別変化が2 tick連続で確定し `WM_IME_KIND_CHANGED` を発行（`GjiFsm`/`MsImeStrategy` が再構築される点に注意、BUG-17） |
-| `stale confirm 検出` / `epoch-fence-stale` | ADR-079/BUG-33: confirm 根拠が前世代由来と判明（追補1で SuspectedLiteral と同じ backspace+再送に変更済み。追補2で「既に可視」ショートカットの猶予漏れによる false positive も修正済み） |
+| `stale confirm 検出` / `epoch-fence-stale` | ADR-079/BUG-33: confirm 根拠が前世代由来と判明（追補1で SuspectedLiteral と同じ backspace+再送に変更済み。追補2で「既に可視」ショートカットの猶予漏れによる false positive も修正済み。追補3で `CompositionReset`/`NativeF2Consumed` 自体に `gji_idle_ms` observation ゲートを追加し前提条件面を根治。追補4で backspace 自体を送らない（romaji 再送のみ）方式に変更、literal の positive な証拠がない限り BS を送らない） |
