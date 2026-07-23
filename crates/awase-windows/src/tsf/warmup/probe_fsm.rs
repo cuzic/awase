@@ -285,26 +285,41 @@ async fn await_vk_detection(
         // 前の（見捨てた）世代が開いたまま残っている候補ウィンドウを現世代の証拠として
         // 誤って採用してしまう（実機トレースで確認済み、本 VK1 以降のショートカットが
         // まさにその発火箇所だった）。直近の GJI I/O が本当にこの VK の送信時刻より
-        // 後かを確認する。GJI I/O monitor 未アタッチ（last_write_ms==0）の場合は
-        // fencing を適用せず従来通り confirmed とする。
-        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
-        let epoch_send_ms = sent.detector.epoch_send_ms();
-        let fencing_active = last_write_ms != 0;
-        if !fencing_active || last_write_ms >= epoch_send_ms {
-            log::debug!(
+        // 後かを `LiteralDetector::visible_fencing_verdict` で確認する。
+        //
+        // 猶予なしの一発判定は禁止: `gji_last_write_ms` は GJI I/O monitor の
+        // ポーリングサンプル（`GJI_SAMPLE_INTERVAL_MS` 周期）でしか更新されない
+        // ため、この VK 自身の合成が実際には成功していても、直後の tick では
+        // まだ反映されていないことが多い。これを猶予なしで stale と断定すると、
+        // 候補ウィンドウが開きっぱなしになる通常の高速タイピングで毎回のように
+        // false positive の StaleConfirm が発生し、正しく合成できていた文字が
+        // backspace で失われる regression になる（実機で確認済み、2026-07-23）。
+        // `check_now` の SHOW-only 分岐と同じ `EPOCH_FENCE_GRACE_MS` の猶予を
+        // 共有するため、`Some` が返るまで tick ごとに再確認する。
+        let verdict = loop {
+            if let Some(verdict) = sent.detector.visible_fencing_verdict(sent.deadline_ms) {
+                break verdict;
+            }
+            let poll_input = yield_step(ch.clone(), vec![]).await;
+            let _ = poll_input;
+        };
+        match verdict {
+            DetectionResult::CompositionConfirmed => log::debug!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
                  candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
                 vk.0,
-            );
-            return DetectionResult::CompositionConfirmed;
+            ),
+            DetectionResult::StaleConfirm => log::warn!(
+                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
+                 visible だが直近の GJI I/O が猶予期間内に送信時刻へ追いつかず \
+                 → stale confirm として扱う (vk=0x{:02X})",
+                vk.0,
+            ),
+            DetectionResult::SuspectedLiteral => unreachable!(
+                "visible_fencing_verdict は CompositionConfirmed/StaleConfirm のみ返す"
+            ),
         }
-        log::warn!(
-            "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
-             visible だが直近の GJI I/O (last_write={last_write_ms}ms) が送信時刻 \
-             (epoch={epoch_send_ms}ms) より前 → stale confirm として扱う (vk=0x{:02X})",
-            vk.0,
-        );
-        return DetectionResult::StaleConfirm;
+        return verdict;
     }
     loop {
         let poll_input = yield_step(ch.clone(), vec![]).await;
@@ -961,6 +976,22 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         machine.apply_vk_sent(detector, deadline_ms);
+        let actions_immediately_after_send = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            actions_immediately_after_send.is_empty(),
+            "ADR-079 猶予期間中は即断せず、まだ何も action を出さないはず \
+             （猶予なしの即断は false positive の stale confirm を量産する \
+             regression になった）: {actions_immediately_after_send:?}"
+        );
+
+        // 猶予期間（EPOCH_FENCE_GRACE_MS）が過ぎても gji_last_write_ms は追いつかない
+        // （前世代の残存 GJI I/O のまま）ため、次 tick で StaleConfirm に確定する。
+        std::thread::sleep(std::time::Duration::from_millis(
+            LiteralDetector::EPOCH_FENCE_GRACE_MS + 10,
+        ));
         let actions_after_stale = machine.tick(TsfEnvSnapshot {
             gji_active: true,
             ..Default::default()
@@ -973,6 +1004,77 @@ mod tests {
             "stale confirm 検出時は suspected literal と同じく backspace 回収を \
              発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
              {actions_after_stale:?}"
+        );
+
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// ADR-079 の猶予期間（`EPOCH_FENCE_GRACE_MS`）内に `gji_last_write_ms` が
+    /// 追いつけば、「候補ウィンドウ既に可視」ショートカットは stale confirm と
+    /// 誤判定せず `CompositionConfirmed` として確定し、backspace 回収を一切
+    /// 発行しないことを確認する。
+    ///
+    /// これが実機で欠けていた回帰そのもの: 高速タイピング中は候補ウィンドウが
+    /// 開きっぱなしのままこのショートカットに毎回入るため、猶予なしの一発判定だと
+    /// GJI I/O monitor のポーリングサンプルが追いつく前に stale と誤判定され、
+    /// 正しく合成できていた文字まで backspace で失われていた
+    /// （2026-07-23 実機ログ、romaji "de" が3世代連続で stale 誤判定され
+    /// 再送なしで消失）。
+    #[test]
+    fn chrome_per_vk_visible_shortcut_confirms_when_write_catches_up_within_grace() {
+        use crate::tsf::observer::TSF_OBS;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        crate::tsf::observer::reset_literal_session_confirmed();
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+
+        let mut machine = ready_chrome_probe();
+        machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        // 送信直前時点では GJI I/O がまだ観測されていない（同一世代内の
+        // ポーリングラグを模擬）。
+        let epoch_ms = crate::hook::current_tick_ms();
+        TSF_OBS
+            .gji_last_write_ms
+            .store(epoch_ms.saturating_sub(50), SeqCst); // stale（epoch より前）
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(
+            crate::tsf::observer::gji_write_bytes(),
+            false,
+        );
+        let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+        TSF_OBS.gji_candidate_visible.store(true, SeqCst);
+
+        machine.apply_vk_sent(detector, deadline_ms);
+        let actions_immediately_after_send = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            actions_immediately_after_send.is_empty(),
+            "猶予中はまだ確定しないはず: {actions_immediately_after_send:?}"
+        );
+
+        // 猶予期間内に、このVK自身の送信によるGJI I/Oが観測されたことにする。
+        TSF_OBS
+            .gji_last_write_ms
+            .store(crate::hook::current_tick_ms(), SeqCst);
+        let actions_after_catchup = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+
+        assert!(
+            !actions_after_catchup
+                .iter()
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
+            "猶予内に write が追いつけば CompositionConfirmed のはずで、\
+             backspace 回収を発行してはいけない: {actions_after_catchup:?}"
         );
 
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
