@@ -186,11 +186,14 @@ pub(crate) enum ProbeAction {
     /// 一度でも literal 化すると以後ずっと give-up＝backspace のみに固定される
     /// regression があった）。
     ///
-    /// `mark_literal_session=true` の場合、このセッションの literal-detect 自体を
-    /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`）。
-    /// per-VK confirm では各 VK の confirm で `mark_literal_session=false`、
-    /// 全 VK 確認済みの最終確認でのみ `true` を使う。
-    CompositionConfirmed { mark_literal_session: bool },
+    /// `mark_literal_session=true` の場合、`cold_seq` 世代の literal-detect 自体を
+    /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`、
+    /// BUG-39 で世代付きに変更）。per-VK confirm では各 VK の confirm で
+    /// `mark_literal_session=false`、全 VK 確認済みの最終確認でのみ `true` を使う。
+    CompositionConfirmed {
+        cold_seq: u32,
+        mark_literal_session: bool,
+    },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -397,6 +400,7 @@ pub(crate) async fn run_per_vk_confirm(
                 // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
                 // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
                 pending_confirm = Some(ProbeAction::CompositionConfirmed {
+                    cold_seq,
                     mark_literal_session: false,
                 });
             }
@@ -474,6 +478,7 @@ pub(crate) async fn run_per_vk_confirm(
         ch.clone(),
         vec![
             ProbeAction::CompositionConfirmed {
+                cold_seq,
                 mark_literal_session: true,
             },
             ProbeAction::Done,
@@ -518,7 +523,7 @@ async fn tsf_probe_coro_body(
 
     // ── Phase 2c（per-VK confirm）──
     // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
-    if needs_literal && !crate::tsf::observer::literal_session_confirmed() {
+    if needs_literal && !crate::tsf::observer::literal_session_confirmed(cold_seq) {
         let plan = TransmitPlan {
             used_eager_path: false,
             needs_literal: true,

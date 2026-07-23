@@ -159,7 +159,7 @@ async fn gji_coro_body(
     // literal-detect 自体をスキップする
     // （`tsf::observer::mark_literal_session_confirmed`、`literal_detect_fsm.rs` 参照）。
     if plan.needs_literal
-        && !crate::tsf::observer::literal_session_confirmed()
+        && !crate::tsf::observer::literal_session_confirmed(ctx.cold_seq)
         && !plan.used_eager_path
         && env.is_tsf_mode
     {

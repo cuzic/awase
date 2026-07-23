@@ -584,6 +584,7 @@ where
             }
 
             ProbeAction::CompositionConfirmed {
+                cold_seq,
                 mark_literal_session,
             } => {
                 // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
@@ -593,7 +594,7 @@ where
                 // give-up=backspace-onlyに固定される regression があった）。
                 io.reset_consecutive_count();
                 if mark_literal_session {
-                    crate::tsf::observer::mark_literal_session_confirmed();
+                    crate::tsf::observer::mark_literal_session_confirmed(cold_seq);
                 }
             }
         }
