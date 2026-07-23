@@ -496,15 +496,22 @@ impl WindowsPlatform {
     /// `on_passthrough_key` の PassthroughKey / F2NonTsf や
     /// `mark_cold_raw_tsf`（`step_probe` 経由）から呼ぶ。
     pub(crate) fn gji_on_composition_reset(&mut self) {
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset);
+        // `gji_on_focus_change` と同じパターン: 実測 idle を観測して渡す。
+        // GjiFsm 側の `handle_composition_reset` がこれを `ColdKind::classify` に
+        // かけ、genuinely warm（Short）なら cold へ倒さず `OnWarm` を維持する
+        // （BUG-33 追補3: 弱い代理指標のみで無条件に cold 化していた回帰の修正）。
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset { gji_idle_ms });
     }
 
     /// TSF mode で物理 F2 が消費されたことを GjiFsm に通知する（`on_reinject_key` の NativeF2Consumed パス）。
     ///
     /// Medium/Long cold 中は probe が継続（saw_native_f2=true）。Short cold / OnWarm / OnComposing は
-    /// CompositionReset 相当として処理される（GjiFsm 側で分岐）。
+    /// CompositionReset 相当として処理される（GjiFsm 側で分岐、`gji_idle_ms` による
+    /// 再検証込み）。
     pub(crate) fn gji_on_native_f2_consumed(&mut self) {
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed);
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed { gji_idle_ms });
     }
 
     /// GJI candidate SHOW → GjiFsm::StartComposition を dispatch する。
