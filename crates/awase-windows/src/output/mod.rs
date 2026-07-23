@@ -128,6 +128,16 @@ pub struct Output {
     /// `VK_IME_OFF→VK_IME_ON` の SendInput バーストが多重発火しないようレート制限する。
     /// `CHROME_GJI_REINIT_CONFIRM_MS` のポーリング窓が終わる前の再発火を抑止する。
     pub(crate) last_gji_reinit_ms: std::cell::Cell<u64>,
+    /// `RawTsfLiteralRecovery` give-up 分岐から予約された Chrome GJI reinit の cold_seq。
+    ///
+    /// BUG-36: give-up 分岐は `set_raw_literal` で backspace を予約すると同時に
+    /// reinit（`VK_IME_OFF`→`VK_IME_ON`）を要求するが、backspace の実送信は
+    /// `WM_DRAIN_OUTPUT_QUEUE` まで遅延される。reinit を同期的に即送信すると、
+    /// `VK_IME_OFF` が未確定の preedit を commit してしまい、その後に届く backspace が
+    /// commit 済み文字を確実に消せないレース（backspace より reinit が先に外へ出る）
+    /// が起きる。そのため reinit 本体はここに予約だけして、
+    /// `flush_raw_tsf_literal_recovery`（backspace 送信の直後）で実行する。
+    pub(crate) pending_gji_reinit_cold_seq: std::cell::Cell<Option<u32>>,
     /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
     ///
     /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
@@ -202,6 +212,7 @@ impl Output {
             conv_mutation_allowed: std::cell::Cell::new(false),
             last_roman_restore_ms: std::cell::Cell::new(0),
             last_gji_reinit_ms: std::cell::Cell::new(0),
+            pending_gji_reinit_cold_seq: std::cell::Cell::new(None),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
         }
     }
@@ -998,12 +1009,23 @@ impl Output {
         }
     }
 
-    /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送。
+    /// raw TSF literal 回収を一括実行: backspace 送信 → romaji 再送 → (あれば) GJI reinit。
     ///
     /// WM_DRAIN_OUTPUT_QUEUE ハンドラから呼ぶ。drain keys より前に実行すること。
+    ///
+    /// BUG-36: `pending_gji_reinit_cold_seq` の消化をここに置くのは、backspace の
+    /// 実送信（`flush_raw_tsf_literal_backspaces`）より reinit（`VK_IME_OFF`→
+    /// `VK_IME_ON`）が先に外へ出るのを防ぐため。`VK_IME_OFF` は未確定の preedit を
+    /// commit してしまうため、reinit が先行すると commit 済みの literal 文字を
+    /// backspace で確実に消せなくなる（`pending_gji_reinit_cold_seq` のフィールド
+    /// doc・`docs/known-bugs.md` BUG-36 参照）。
     pub fn flush_raw_tsf_literal_recovery(&self) {
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
+        if let Some(cold_seq) = self.pending_gji_reinit_cold_seq.take() {
+            use probe_io::ProbeIo as _;
+            self.send_chrome_gji_reinit_and_poll(cold_seq);
+        }
     }
 }
 

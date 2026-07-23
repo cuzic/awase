@@ -67,6 +67,13 @@ pub(crate) trait ProbeIo {
     /// `Output::send_f22_f21_reinit`（`gji_fsm::GjiAction::StartProbe` の
     /// Unicode-mode long-cold ハンドリング）が直接呼ぶ。
     fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32);
+    /// `RawTsfLiteralRecovery` give-up 分岐専用: `send_chrome_gji_reinit_and_poll` の
+    /// 即時実行ではなく、`flush_raw_tsf_literal_recovery`（backspace 送信直後）まで
+    /// 予約する。BUG-36: reinit の `VK_IME_OFF` は未確定の preedit を commit して
+    /// しまうため、backspace より先に reinit を送ると commit 済みの literal 文字を
+    /// 確実に消せないレースが起きる（`Output::pending_gji_reinit_cold_seq` の
+    /// フィールド doc・`docs/known-bugs.md` BUG-36 参照）。
+    fn schedule_chrome_gji_reinit(&self, cold_seq: u32);
     /// Unicode char を直接送信する（defer モードを無視して即送信）。
     ///
     /// `FlushDeferredUnicodeChars` ハンドラが deferred chars を送信するために使う。
@@ -231,6 +238,10 @@ impl ProbeIo for Output {
                 first_write_tick,
             );
         });
+    }
+
+    fn schedule_chrome_gji_reinit(&self, cold_seq: u32) {
+        self.pending_gji_reinit_cold_seq.set(Some(cold_seq));
     }
 
     fn send_unicode_char_direct(&self, ch: char) {
@@ -558,7 +569,16 @@ where
                     // 次の文字も同じ理由で literal 化し続けるため、実際に
                     // VK_IME_OFF→VK_IME_ON を送って GJI を ON へ戻す（詳細は
                     // docs/known-bugs.md BUG-33）。
-                    io.send_chrome_gji_reinit_and_poll(cold_seq);
+                    //
+                    // BUG-36: ただし即時実行してはいけない。上の set_raw_literal は
+                    // backspace を予約するだけで、実送信は WM_DRAIN_OUTPUT_QUEUE 経由の
+                    // flush_raw_tsf_literal_recovery まで遅延される。ここで
+                    // send_chrome_gji_reinit_and_poll を直接呼ぶと VK_IME_OFF が
+                    // backspace より先に外へ出て、未確定 preedit を commit した後に
+                    // backspace が追いつけないレースになる（docs/known-bugs.md BUG-36）。
+                    // 代わりに schedule_chrome_gji_reinit で予約し、
+                    // flush_raw_tsf_literal_recovery が backspace 送信直後に実行する。
+                    io.schedule_chrome_gji_reinit(cold_seq);
                 }
                 io.mark_cold_raw_tsf();
             }
@@ -605,6 +625,10 @@ mod tests {
         last_used_eager_path: Cell<bool>,
         /// BUG-33: give-up 分岐からの `send_chrome_gji_reinit_and_poll` 呼び出し回数。
         gji_reinit_call_count: Cell<u32>,
+        /// BUG-36: give-up 分岐からの `schedule_chrome_gji_reinit` 呼び出し回数
+        /// （backspace flush 後まで予約されるべきで、即時 `send_chrome_gji_reinit_and_poll`
+        /// は呼ばれないはず）。
+        gji_reinit_scheduled_count: Cell<u32>,
     }
 
     impl Default for FakeProbeIo {
@@ -623,6 +647,7 @@ mod tests {
                 reset_consecutive_called: Cell::new(false),
                 last_used_eager_path: Cell::new(false),
                 gji_reinit_call_count: Cell::new(0),
+                gji_reinit_scheduled_count: Cell::new(0),
             }
         }
     }
@@ -680,6 +705,11 @@ mod tests {
         fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {
             self.gji_reinit_call_count
                 .set(self.gji_reinit_call_count.get() + 1);
+        }
+
+        fn schedule_chrome_gji_reinit(&self, _cold_seq: u32) {
+            self.gji_reinit_scheduled_count
+                .set(self.gji_reinit_scheduled_count.get() + 1);
         }
 
         fn send_unicode_char_direct(&self, _ch: char) {}
@@ -873,6 +903,11 @@ mod tests {
             0,
             "BUG-33: 初回の suspected literal では実 IME-ON 再送を発火させない \
              (偽陽性の可能性がまだ高いため give-up まで待つ)"
+        );
+        assert_eq!(
+            io.gji_reinit_scheduled_count.get(),
+            0,
+            "BUG-33: 初回の suspected literal では reinit の予約すら行わない"
         );
     }
 
@@ -1076,9 +1111,17 @@ mod tests {
         );
         assert_eq!(
             io.gji_reinit_call_count.get(),
+            0,
+            "BUG-36: give-up 分岐は send_chrome_gji_reinit_and_poll を直接呼んではいけない \
+             （backspace flush より先に VK_IME_OFF が外へ出て未確定 preedit を commit \
+             してしまうレースになる。flush_raw_tsf_literal_recovery 側で backspace の \
+             あとに実行する）"
+        );
+        assert_eq!(
+            io.gji_reinit_scheduled_count.get(),
             1,
-            "BUG-33: give-up（consecutive > 0）は実 IME-ON 再送 \
-             (send_chrome_gji_reinit_and_poll) を1回呼ぶべき"
+            "BUG-33/BUG-36: give-up（consecutive > 0）は実 IME-ON 再送を \
+             schedule_chrome_gji_reinit で1回予約すべき（即時実行はしない）"
         );
     }
 }
