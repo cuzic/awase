@@ -8,11 +8,24 @@ Stage 1（epoch fencing の検出 + 既存 `SuspectedLiteral` と同型の回収
 存在したため統合時に BUG-35 へ改番）。当初は「検出のみ・recovery 無し」
 だったが、per-VK confirm の1文字目でこの経路が発火すると未送信 VK が欠落する
 regression を実機で引き起こしたため、BUG-35 追補で「stale confirm を検出したら
-既存の backspace + romaji 再送に倒す」方式に修正済み。Stage 2（quarantine →
-ESC + 消えた文字の retype + 後続入力の限定 replay）は未実装。詳細は BUG-35 の
-「未解決の follow-up」を参照。Stage 2 着手前に、実機で Stage 1 の
-`[epoch-fence-stale]` ログを観測し信号の質を確認することを推奨する
-（設計レビューで見つかった懸念、後述「未解決事項」参照）。
+既存の backspace + romaji 再送に倒す」方式に修正済み。
+
+BUG-35 追補3・追補4（2026-07-23、実機で複数件確認）で、この「backspace +
+romaji 再送」方式自体に欠陥があると判明し修正済み: (a) `CompositionReset`/
+`NativeF2Consumed` が実際の GJI 生存証拠（`gji_idle_ms`）を無視して
+genuinely warm なセッションまで cold-start 経路へ送り込んでいた前提条件面
+（追補3）、(b) `VK_BACK` は composition スコープ外の確定済みテキストにも
+届く不可逆操作であるにもかかわらず、`StaleConfirm`（confirm 根拠が古いという
+検出であって literal の証拠ではない）でも無条件に backspace を送っていた
+回収面（追補4、`per_vk_recovery_params` を `(is_stale, failed_idx)` 基準に
+変更し「literal の positive な証拠がない限り backspace を送らない」よう修正）。
+
+Stage 2（quarantine → ESC + 消えた文字の retype + 後続入力の限定 replay）は
+引き続き未実装。追補3・4により Stage 1 起因の実害（無根拠な cold 化・証拠
+なしの backspace）は根治したため、Stage 2 が対象とする「一度 backspace した
+後、再送の confirm が stale だと後から分かるケース」自体の発生頻度が実地で
+どこまで残るか、まず観測することを推奨する（詳細は BUG-35 の
+「未解決の follow-up」を参照）。
 
 ## コンテキスト
 

@@ -402,10 +402,10 @@ pub(crate) async fn run_per_vk_confirm(
             }
             DetectionResult::SuspectedLiteral => {
                 let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(false, idx);
                 log::debug!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] suspected literal \
-                     (vk=0x{:02X} escape={escape_composition})",
+                     (vk=0x{:02X} backs={backs} escape={escape_composition})",
                     vk.0,
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, literal_tag);
@@ -429,17 +429,23 @@ pub(crate) async fn run_per_vk_confirm(
                 // にすると、まだ送信していない後続 VK が一切送られないまま処理が
                 // 終了し、既に送信済みの VK（このVKの生文字）だけが取り残されて
                 // 消失・文字化けする実害が生じた（実機報告 2026-07-22:
-                // 「これでできる」→「kれでできる」）。
+                // 「これでできる」→「kれでできる」）。romaji の再送自体は必要
+                // なので Done では終わらせない。
                 //
-                // fencing が「この confirm 根拠は信用できない」と判定した以上は、
-                // 何もしないより既存の SuspectedLiteral と同じ回収
-                // （backspace + romaji 再送）に倒す方が安全側である。ログタグは
-                // 区別して残し、実地でどの程度発火するかは引き続き観測する。
+                // BUG-33 追補4（2026-07-23、実機で2件確認）: 一方で `StaleConfirm`
+                // は「confirm 根拠が古い」ことの検出であって「literal である」
+                // 証拠ではないため、backspace は送らない（`per_vk_recovery_params`
+                // のドキュメント参照）。以前は SuspectedLiteral と全く同じ
+                // backspace+再送に倒しており、これが「リーク」の「ク」・
+                // 「cold 」の末尾スペースといった別スコープの確定済み文字を
+                // 誤って消す実害・および stale confirm が連鎖して consecutive
+                // カウントが積み上がり複数文字が連続して消える実害を引き起こして
+                // いた。
                 let (backs, escape_composition) =
-                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(idx);
+                    crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(true, idx);
                 log::warn!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
-                     → suspected literal と同じ回収 (backspace+再送) を行う (vk=0x{:02X} \
+                     → backspace は送らず romaji 再送のみ行う (vk=0x{:02X} backs={backs} \
                      escape={escape_composition})",
                     vk.0,
                 );
@@ -577,16 +583,22 @@ async fn tsf_probe_coro_body(
             DetectionResult::StaleConfirm => {
                 // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
                 // 未送信 VK が欠落する回帰を引き起こした（run_per_vk_confirm 側の
-                // 同種修正のコメント参照）。SuspectedLiteral と同じ回収に倒す。
+                // 同種修正のコメント参照）。romaji 再送自体は必要なので Done では
+                // 終わらせない。
+                //
+                // BUG-33 追補4: 一方 backspace は「literal である」証拠がない
+                // 限り送らない（`per_vk_recovery_params` のドキュメント参照）。
+                // StaleConfirm は confirm 根拠が古いことの検出であって literal の
+                // 証拠ではないため backs=0 とする。
                 log::warn!(
                     "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
-                     suspected literal と同じ回収 (backspace+再送) を行う"
+                     backspace は送らず romaji 再送のみ行う"
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 vec![
                     ProbeAction::RawTsfLiteralRecovery {
                         cold_seq,
-                        backs: ze_bs_count,
+                        backs: 0,
                         romaji: recovery_romaji,
                         escape_composition: false,
                     },
@@ -926,18 +938,22 @@ mod tests {
 
     /// 候補ウィンドウが「既に可視」でも、直近の GJI I/O が今回の VK 送信より前
     /// （前世代の残存合成、あるいはフォーカス変更前からの残留 GJI UI 状態）にしか
-    /// 裏付けられていなければ `StaleConfirm` として扱われ、既存の
-    /// `SuspectedLiteral` と同じ回収（backspace + romaji 再送）を行うことを
-    /// 確認する。
+    /// 裏付けられていなければ `StaleConfirm` として扱われ、romaji 再送は
+    /// スケジュールするが backspace は送らないことを確認する。
     ///
     /// 当初は「検出のみ・recovery なし（ただの Done）」だったが、これは per-VK
     /// confirm の**1文字目**でこの経路が発火した場合（前世代の後始末ではなく、
     /// フォーカス変更直後の残留 UI 状態等が原因）に、まだ送信していない後続 VK
     /// が一切送られないまま処理が終了し、既に送信済みの VK の生文字だけが
     /// 取り残される実害を実機で引き起こした（2026-07-22 実機報告:
-    /// 「これでできる」→「kれでできる」、docs/known-bugs.md BUG-33 追補）。
-    /// fencing が「信用できない」と判定した confirm は、何もしないより
-    /// 既存の安全な回収パスに倒す方が正しい。
+    /// 「これでできる」→「kれでできる」、docs/known-bugs.md BUG-33 参照）。
+    /// そのため romaji 再送自体は必要（Done で終わらせない）。
+    ///
+    /// BUG-33 追補4: 一方 backspace は「literal である」証拠がない限り送らない。
+    /// `StaleConfirm` は confirm 根拠が古いことの検出であって literal の証拠では
+    /// ないため、以前の「SuspectedLiteral と同じ backspace+再送」は誤りだった
+    /// （実機で「リーク」の「ク」・「cold 」の末尾スペースを誤って消す実害を
+    /// 確認済み）。
     #[test]
     fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal()
     {
@@ -1000,10 +1016,10 @@ mod tests {
         assert!(
             actions_after_stale
                 .iter()
-                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
-            "stale confirm 検出時は suspected literal と同じく backspace 回収を \
-             発行するはず（未送信 VK を残したまま無回収で終わると生文字が残存する）: \
-             {actions_after_stale:?}"
+                .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { backs: 0, .. })),
+            "stale confirm 検出時は romaji 再送はスケジュールする（未送信 VK を \
+             残したまま無回収で終わると生文字が残存するため）が、backspace は \
+             送らない（backs=0）はず: {actions_after_stale:?}"
         );
 
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -1075,6 +1091,100 @@ mod tests {
                 .any(|a| matches!(a, ProbeAction::RawTsfLiteralRecovery { .. })),
             "猶予内に write が追いつけば CompositionConfirmed のはずで、\
              backspace 回収を発行してはいけない: {actions_after_catchup:?}"
+        );
+
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+    }
+
+    /// BUG-33 追補4 の直接回帰テスト（実機報告「cold が」→「coldが」、末尾スペース
+    /// 消失）: 2文字目以降の VK が「本物の」`SuspectedLiteral`（deadline 到達、
+    /// 「既に可視」ショートカットではない）になっても、直前の VK が fresh に
+    /// confirmed 済みである以上 backspace は送らず ESC のみで回収する。
+    #[test]
+    fn chrome_per_vk_suspected_literal_after_confirmed_prior_vk_escapes_without_backspace() {
+        use crate::tsf::observer::TSF_OBS;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        crate::tsf::observer::reset_literal_session_confirmed();
+        TSF_OBS.gji_candidate_visible.store(false, SeqCst);
+        TSF_OBS.gji_last_write_ms.store(0, SeqCst);
+
+        let mut machine = ready_chrome_probe(); // romaji "ka" (2 VK)
+        let first_actions = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            matches!(
+                first_actions.as_slice(),
+                [ProbeAction::TransmitSingleVk { .. }]
+            ),
+            "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
+        );
+
+        // VK0 ('k') を write-bytes 閾値超過（genuinely fresh）で confirm する。
+        let baseline = crate::tsf::observer::gji_write_bytes();
+        let detector0 = LiteralDetector::new_with_pre_send_baseline(baseline, false);
+        let deadline0 = crate::hook::current_tick_ms() + 10_000;
+        machine.apply_vk_sent(detector0, deadline0);
+        let after_send0 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            after_send0.is_empty(),
+            "confirm 待ちの1 tick 目は空のはず: {after_send0:?}"
+        );
+
+        TSF_OBS.gji_write_bytes.store(baseline + 400, SeqCst); // 閾値超過、fresh write
+        TSF_OBS
+            .gji_last_write_ms
+            .store(crate::hook::current_tick_ms(), SeqCst);
+        let actions_vk0_confirmed = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            actions_vk0_confirmed
+                .iter()
+                .any(|a| matches!(a, ProbeAction::TransmitSingleVk { .. })),
+            "VK0 confirm 後は VK1 の送信要求が来るはず: {actions_vk0_confirmed:?}"
+        );
+
+        // VK1 ('a') は候補ウィンドウ非可視のまま、deadline を既に過ぎた状態にして
+        // 本物の SuspectedLiteral（「既に可視」ショートカットではない）を起こす。
+        let detector1 = LiteralDetector::new_with_pre_send_baseline(
+            crate::tsf::observer::gji_write_bytes(),
+            false,
+        );
+        let deadline1 = crate::hook::current_tick_ms(); // 既に期限切れ
+        machine.apply_vk_sent(detector1, deadline1);
+        let after_send1 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            after_send1.is_empty(),
+            "confirm 待ちの1 tick 目は空のはず: {after_send1:?}"
+        );
+
+        let actions_vk1 = machine.tick(TsfEnvSnapshot {
+            gji_active: true,
+            ..Default::default()
+        });
+        assert!(
+            actions_vk1.iter().any(|a| matches!(
+                a,
+                ProbeAction::RawTsfLiteralRecovery {
+                    backs: 0,
+                    escape_composition: true,
+                    ..
+                }
+            )),
+            "直前の VK が confirmed 済みの SuspectedLiteral は ESC のみ・backspace \
+             なしのはず（実機で確定済みの直前文字を誤って消す実害が確認された）: \
+             {actions_vk1:?}"
         );
 
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
