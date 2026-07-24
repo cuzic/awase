@@ -261,6 +261,19 @@ mod tests {
     }
 
     #[test]
+    fn kana_to_romaji_equal_length_tie_keeps_first_encountered() {
+        // build_reverse_map の `romaji.len() < existing.len()` の `<` が `<=` に
+        // 壊れると、長さが同じ場合まで常に上書きされてしまう。'ふ' は "hu"/"fu" が
+        // 共に2文字で、コメントにある通り「先勝ち」（FxHashMap の走査順で先に
+        // 挿入された方）が正しい挙動。この結果は走査順（FxHash のバケット順）に
+        // 依存する実装詳細だが、"hu"/"fu" どちらであっても一貫して同じ値になる
+        // べきであり、`<=` に変異すると必ず逆側（後から来た方）に置き換わるため
+        // 区別できる。
+        let t = KanaTable::build();
+        assert_eq!(t.romaji_for_kana('ふ'), Some("fu"));
+    }
+
+    #[test]
     fn kana_to_romaji_dakuon() {
         let t = KanaTable::build();
         assert_eq!(t.romaji_for_kana('が'), Some("ga"));

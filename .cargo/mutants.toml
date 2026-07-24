@@ -68,4 +68,14 @@ exclude_re = [
     # 呼び出し元の削除を伴うため、cargo-mutants 対応とは別のクリーンアップ
     # タスクとして扱う。
     "engine\\.rs:79:9: replace Engine::set_thumb_vks with \\(\\)",
+
+    # 等価変異体（equivalent mutant）: SyncKeyGateMachine::on_timeout の
+    # `Response::pass_through()` を `Default::default()` に置換する変異
+    # (src/gate.rs:83)。timed-fsm クレートの `impl<A, T> Default for Response<A, T>`
+    # は `fn default() -> Self { Self::pass_through() }` と定義されており、
+    # 両者は任意の A/T について常にビット単位で同一の値を返す。数学的に
+    # 区別不可能なため除外する（同種の他の Response 返り値の
+    # `Default::default()` 変異は、関数ごとに個別に等価性を確認してから
+    # 除外すること。すべてが同様に等価とは限らない）。
+    "gate\\.rs:83:9: replace .*on_timeout.* with Default::default\\(\\)",
 ]
