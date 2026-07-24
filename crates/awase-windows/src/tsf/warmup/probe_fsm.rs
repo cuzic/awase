@@ -1085,8 +1085,15 @@ mod tests {
     #[test]
     fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal()
     {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
+
+        // TSF_OBS(プロセス全体のグローバル状態)への並行アクセスをobserver.rs/
+        // probe.rs/literal_detect_fsm.rsと共通のロックで直列化する。このファイルの
+        // テストは元々ロックを一切持たず、他ファイルのテストと無防備にTSF_OBSを
+        // 奪い合っていた(2026-07-25、Windows実機での初回cargo test実行で
+        // クロスファイルの汚染が判明)。
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
 
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -1173,9 +1180,10 @@ mod tests {
     /// 再送なしで消失）。
     #[test]
     fn chrome_per_vk_visible_shortcut_confirms_when_write_catches_up_within_grace() {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
@@ -1237,9 +1245,10 @@ mod tests {
     /// confirmed 済みである以上 backspace は送らず ESC のみで回収する。
     #[test]
     fn chrome_per_vk_suspected_literal_after_confirmed_prior_vk_escapes_without_backspace() {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
