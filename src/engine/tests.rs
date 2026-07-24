@@ -5468,4 +5468,226 @@ mod engine_integration_tests {
             effects_of(&d)
         );
     }
+
+    // ── セッター系: 呼ぶ→実際に効いていることを後続動作で確認する ──
+
+    #[test]
+    fn engine_set_user_enabled_actually_toggles_active_state() {
+        let mut engine = make_test_engine();
+        assert!(engine.is_user_enabled());
+
+        engine.set_user_enabled(false);
+        assert!(
+            !engine.is_user_enabled(),
+            "set_user_enabled(false) must actually disable"
+        );
+
+        engine.set_user_enabled(true);
+        assert!(engine.is_user_enabled());
+    }
+
+    #[test]
+    fn engine_set_space_thumb_config_ignore_composing_guard_actually_takes_effect() {
+        // set_space_thumb_config が no-op に壊れると、space_thumb_vk が None のままになり、
+        // ignore_composing_guard=true を指定しても composing 中は無条件 suppress
+        // されてしまう（生 VK_SPACE が出力されない）。
+        let mut engine = make_test_engine();
+        engine.set_space_thumb_config(Some(VK_SPACE), true, false);
+
+        let composing_ctx = InputContext {
+            composing: true,
+            ..ime_on_ctx()
+        };
+
+        let d1 = engine.on_input(Ev::down(VK_SPACE).at(0).build(), &composing_ctx);
+        assert!(d1.is_consumed());
+
+        let d2 = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_SPACE))
+            )),
+            "space_thumb_vk + ignore_composing_guard=true must emit raw VK_SPACE even while \
+             composing, got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn engine_set_thumb_key_solo_tap_config_ignore_composing_guard_actually_takes_effect() {
+        // set_thumb_key_solo_tap_config が no-op に壊れると、muhenkan_vk が None のままになり、
+        // 同様に composing 中の生 VK 出力が抑制されたままになる。
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(Some(VK_NONCONVERT), true, None, false);
+
+        let composing_ctx = InputContext {
+            composing: true,
+            ..ime_on_ctx()
+        };
+
+        engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &composing_ctx);
+        let d2 = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "muhenkan_vk + ignore_composing_guard=true must emit raw VK even while composing, \
+             got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn update_fsm_params_threshold_ms_actually_changes_timing_window() {
+        // set_threshold_ms の `ms * 1000` (nicola_fsm.rs:408) が `+`/`/` に壊れると、
+        // 実際の threshold_us が大きく変わる（+1000 なら誤差程度、/1000 なら 0 近く）。
+        // ここでは閾値を意図的に 10ms まで縮め、通常なら simultaneous になる 50ms の
+        // ギャップが simultaneous でなくなることで、指定した値が実際に反映されている
+        // ことを確認する。
+        let mut engine = make_test_engine();
+        engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: 10,
+                confirm_mode: ConfirmMode::Wait,
+                speculative_delay_ms: 30,
+            },
+            &ime_on_ctx(),
+        );
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        // 50ms gap: 変更後の 10ms 閾値なら simultaneous ではない → 親指単独確定。
+        let d2 = engine.on_input(Ev::down(VK_A).at(50_000).build(), &ime_on_ctx());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "threshold_ms=10 なら 50ms gap は simultaneous にならないはず, got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn update_fsm_params_confirm_mode_actually_switches_to_speculative() {
+        // set_confirm_mode 本体 (nicola_fsm.rs:413) が no-op に壊れると、confirm_mode が
+        // 既定の Wait のままになり、文字キー押下時に即座出力（投機）されなくなる。
+        let mut engine = make_test_engine();
+        engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: 100,
+                confirm_mode: ConfirmMode::Speculative,
+                speculative_delay_ms: 40,
+            },
+            &ime_on_ctx(),
+        );
+
+        let d = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('う')))
+            )),
+            "Speculative mode must emit immediately on key down, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn update_fsm_params_speculative_delay_ms_actually_sets_phase2_timer_duration() {
+        // set_confirm_mode の `speculative_delay_ms * 1000` (nicola_fsm.rs:414) が
+        // `+`/`/` に壊れると、TwoPhase モードで TIMER_SPECULATIVE 満了後に
+        // Phase2 へ遷移する際の残り時間 (remaining_us = threshold_us -
+        // speculative_delay_us) が大きくずれる。
+        // TwoPhase モードは Phase1 で speculative_delay_us だけ短く待ってから
+        // 投機出力に遷移する（idle_speculative の即時 Reduce とは別経路）ため、
+        // ここで確認する。
+        // threshold_ms=100, speculative_delay_ms=40 →
+        // remaining_us = 100_000 - 40_000 = 60_000 (60ms) を直接検証する。
+        let mut engine = make_test_engine();
+        engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: 100,
+                confirm_mode: ConfirmMode::TwoPhase,
+                speculative_delay_ms: 40,
+            },
+            &ime_on_ctx(),
+        );
+
+        let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+        // Phase 1 の短い待機タイマー自体も speculative_delay_us (40ms) のはず。
+        let phase1_duration = effects_of(&d1).iter().find_map(|e| match e {
+            Effect::Timer(TimerEffect::Set { duration, .. }) => Some(*duration),
+            _ => None,
+        });
+        assert_eq!(
+            phase1_duration,
+            Some(std::time::Duration::from_micros(40_000)),
+            "expected Phase1 (TIMER_SPECULATIVE) duration 40ms, got {:?} (effects: {:?})",
+            phase1_duration,
+            effects_of(&d1)
+        );
+
+        // TIMER_SPECULATIVE 満了 → Phase2 へ遷移し、残り時間 (60ms) で TIMER_PENDING を再設定。
+        let d2 = engine.on_timeout(TIMER_SPECULATIVE, &ime_on_ctx());
+        let phase2_duration = effects_of(&d2).iter().find_map(|e| match e {
+            Effect::Timer(TimerEffect::Set { duration, .. }) => Some(*duration),
+            _ => None,
+        });
+        assert_eq!(
+            phase2_duration,
+            Some(std::time::Duration::from_micros(60_000)),
+            "expected Phase2 timer duration 60ms (100ms - 40ms), got {:?} (effects: {:?})",
+            phase2_duration,
+            effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn set_ngram_model_actually_adjusts_simultaneous_threshold() {
+        // fsm_adapter.rs::set_ngram_model が no-op に壊れると、ngram_model が
+        // None のままになり、adjusted_threshold が常に生の threshold_us を返す。
+        // ここでは「う」の直後に「あ」が来る強い負のバイグラムスコアを与えて
+        // 閾値を意図的に縮め、通常は simultaneous になる 50ms のギャップが
+        // simultaneous でなくなることでモデルが実際に反映されていることを確認する。
+        use crate::ngram::NgramModel;
+
+        let mut engine = make_test_engine();
+
+        // recent_kana に 'う' を積む（A 単独確定）。
+        engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        let toml_str = r#"
+[bigram]
+"うあ" = -10.0
+"#;
+        let model = NgramModel::from_toml(toml_str, 80_000, 10_000, 150_000).unwrap();
+        engine.on_command(EngineCommand::SetNgramModel(model), &ime_on_ctx());
+
+        // 左親指 → S (左親指面で 'あ') を 50ms 差で送る。
+        // 調整後の閾値は 100_000 + tanh(-10)*80_000 ≈ 20_000 (20ms) に縮むはずなので、
+        // 50ms のギャップは simultaneous にならない。
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(200_000).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+        let d2 = engine.on_input(Ev::down(VK_S).at(250_000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('あ')))
+            )),
+            "ngram model が反映されていれば 50ms gap は simultaneous にならず 'あ' は \
+             出ないはず, got {:?}",
+            effects_of(&d2)
+        );
+    }
 }
