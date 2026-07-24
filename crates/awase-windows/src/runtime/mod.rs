@@ -889,7 +889,6 @@ impl Runtime {
             crate::hook::resolve_thumb_key(&config.general.right_thumb_key),
         ) {
             crate::hook::set_thumb_vk_codes(left, right);
-            self.engine.set_thumb_vks(left, right);
             crate::hook::set_alt_impersonation_enabled(
                 left_alt_impersonates,
                 right_alt_impersonates,

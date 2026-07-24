@@ -834,7 +834,6 @@ pub(super) fn run_all() -> Result<()> {
             ime_off: ime_control_off_keys,
         },
     );
-    engine.set_thumb_vks(left_thumb_vk, right_thumb_vk);
 
     // left/right のいずれかが Space (VK_SPACE) に割り当てられている場合、
     // その VK を Engine/NicolaFsm に伝える。core 側は VK 番号の意味を知らず、

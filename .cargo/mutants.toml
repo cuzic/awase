@@ -59,16 +59,6 @@ exclude_re = [
     # 返す Response や self.state には影響しない。
     "nicola_fsm\\.rs:299:12: delete ! in NicolaFsm::flush_pending",
 
-    # 死んだ状態（write-only）: Engine::set_thumb_vks は crates/awase-windows から
-    # 実際に呼ばれているが、書き込む先の self.thumb_vks フィールドを読む箇所が
-    # コード全体に一つも無い（engine.rs:619 のコメント参照。IME 制御キーが
-    # thumb_vks と衝突しないよう除外するガードが、ModifierTiming の grace 猶予
-    # 廃止に伴い撤去された名残）。意味のある動作テストが書けないため除外する。
-    # 本来は set_thumb_vks / thumb_vks ごと削除するのが筋だが、awase-windows 側の
-    # 呼び出し元の削除を伴うため、cargo-mutants 対応とは別のクリーンアップ
-    # タスクとして扱う。
-    "engine\\.rs:79:9: replace Engine::set_thumb_vks with \\(\\)",
-
     # 等価変異体（equivalent mutant）: SyncKeyGateMachine::on_timeout の
     # `Response::pass_through()` を `Default::default()` に置換する変異
     # (src/gate.rs:83)。timed-fsm クレートの `impl<A, T> Default for Response<A, T>`
