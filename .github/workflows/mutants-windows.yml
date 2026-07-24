@@ -1,0 +1,56 @@
+name: Mutants (Windows, self-hosted)
+
+# awase-windowsはWindows専用API(win32-async/win32-worker/windows crate)を使うため
+# mingw-w64クロスコンパイルではなくMSVCネイティブでcargo-mutantsを回す必要があり、
+# GitHub提供のwindows-latestは有料枠消費が大きい長時間ジョブ向けではないため、
+# ephemeral self-hosted runnerで実行する(詳細: ~/cargo-ci-gcp-spot-instance、
+# .claude/skills/cargo-ci-gcp-spot-instance/SKILL.md)。
+#
+# 【重要】このワークフローはself-hosted runnerを使うため、意図的にworkflow_dispatch
+# 専用にしてある(push/pull_requestトリガーを一切持たせない)。以前はci.ymlの
+# push/pull_request/workflow_dispatch混在トリガーの中でjob単位のif条件
+# (`if: github.event_name == 'workflow_dispatch'`)だけに守らせていたが、
+# public repoでself-hosted runnerを使う以上、トリガー面自体からpull_requestを
+# 完全に排除する方が安全(if条件の書き間違い・将来の変更でガードが外れる
+# リスクを構造的に無くすため)。**この安全設計を維持するため、このファイルに
+# push/pull_requestトリガーを追加しないこと。** 通常のpush/PRゲートに含める
+# 重いジョブ(GitHub-hosted runnerで足りるもの)はci.ymlの`mutants`job
+# (ubuntu-latest)を使う。
+#
+# runnerが起動していない(gh-runner-tokenを発行してinstanceを起動していない)間は
+# ジョブがqueuedのまま待たされるだけ。
+#
+# 2026-07-25、windows-runnerを「プロジェクト専用VM」から「全プロジェクト共通の
+# 汎用runner」に設計変更した。rustup/cargo/VS Build Toolsは引き続き起動スクリプト
+# 側(全プロジェクト共通のプラットフォームツール)に残るが、ビルド成果物キャッシュ
+# (target/、Cargo.lockにキーする)はプロジェクト固有のためこのjob側で
+# Swatinem/rust-cacheを使って管理する(汎用runnerが複数repoで使い回される以上、
+# target/を永続ディスクに固定してしまうと他プロジェクトのビルドと衝突しうるため)。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants-windows:
+    runs-on: [self-hosted, Windows, gcp-spot]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Run cargo-mutants (awase-windows)
+        shell: pwsh
+        run: cargo mutants -p awase-windows --jobs 8 --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-windows
+          path: mutants.out/

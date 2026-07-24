@@ -217,13 +217,19 @@ jobs:
           name: mutants-report
           path: mutants.out/
 
+  # mutants-windows(self-hosted runner向け)は2026-07に mutants-windows.yml
+  # へ分離した。public repoでself-hosted runnerを使うjobは、push/pull_request
+  # と同居するファイルのif条件だけに守らせるのではなく、workflow_dispatch専用の
+  # 別ファイルにしてトリガー面自体からpull_requestを排除する方が安全なため
+  # (mutants-windows.yml冒頭のコメント参照)。
+
   # 手動起動専用。対象は awase-windows のうちプラットフォーム非依存な
   # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）。
   # awase-windows の大半を占める #[cfg(windows)] コードは Linux 上では
   # コンパイルされず、無指定で走らせると false MISSED だらけになるため
   # 明示的なファイル許可リストでスコープを絞ってある（詳細は同 toml 内コメント参照）。
-  # Windows 実機依存のロジック自体のミューテーションテストは対象外
-  # （windows-latest ランナーでの実行は将来検討）。
+  # Windows 実機依存のロジック自体のミューテーションテスト(#[cfg(windows)]配下)は
+  # mutants-windows.yml(self-hosted Windows runner)が別途担当する。
   mutants-awase-windows:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

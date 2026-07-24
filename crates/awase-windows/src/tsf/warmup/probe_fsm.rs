@@ -55,9 +55,22 @@ pub(crate) struct TsfEnvSnapshot {
 }
 
 /// probe 中に観測した事実。`decide_transmit_plan` の入力に使う。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ProbeObservations {
+    /// TSF の NameChange イベントが実際に発火したか（生の観測値、呼び出し元での上書き禁止）。
     pub nc_fired: bool,
+    /// GJI probe が実際に新規 I/O を確認できたか（`GjiProbeOutcome.settled`）。
+    /// `confirm_key_tsf_hint` の救済を効かせてよいかどうかの実測ゲートに使う（BUG-40）。
+    pub gji_settled: bool,
+    /// `cold_reason` が confirm-key 系（ReinjectConfirmKey/PassthroughConfirmKey）かつ
+    /// TSF mode か。WezTerm 等で Enter/Space 後に NameChange が発火しないが GJI は
+    /// 正常に合成中というケースの救済ヒント（`3ffbe66` 参照）。`gji_settled` が
+    /// true（GJI が実際に I/O を返している）の場合に限り `nc_fired=false` を
+    /// 救済してよい。`gji_settled=false`（例: 88s idle 後に probe がわずか16msで
+    /// 完了した genuinely cold なセッション）まで無条件に救済すると、reactive
+    /// LiteralDetect が丸ごとスキップされ、漏れた romaji が無補正で出力される
+    /// （BUG-40、`docs/known-bugs.md` 参照）。
+    pub confirm_key_tsf_hint: bool,
 }
 
 /// `decide_transmit_plan` が確定した実行方針。dispatcher がそのまま実行する。
@@ -86,9 +99,17 @@ pub(crate) fn decide_transmit_plan(
     // 2026-07-19 に恒久化したことで撤去した。reactive な LiteralDetect のみに委ねる
     // （`docs/known-bugs.md` BUG-24 参照）。
 
-    // nc_fired=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
-    // nc_fired=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
-    let used_eager_path = if obs.nc_fired {
+    // nc_fired=false でも、confirm_key_tsf_hint（WezTerm 等で NameChange が発火しない
+    // 既知ケース）かつ gji_settled（GJI が実際に I/O を返しており genuinely warm）の
+    // 場合に限り、NameChange 発火とみなして救済する（`3ffbe66`）。gji_settled=false の
+    // ままこの救済を効かせると、genuinely cold なセッションまで誤救済されて reactive
+    // LiteralDetect が丸ごとスキップされる（BUG-40）。nc_fired 自体は書き換えない
+    // （呼び出し元・`is_partial_literal` が生値として参照するため）。
+    let nc_confirmed = obs.nc_fired || (obs.confirm_key_tsf_hint && obs.gji_settled);
+
+    // nc_confirmed=true: IME モード確認済み（Medium/Long cold かつ deferred なし → VK path）。
+    // nc_confirmed=false + TSF mode: VK path 固定（unicode は GJI composition をバイパスし "nお" race が起きる）。
+    let used_eager_path = if nc_confirmed {
         (initial_used_eager || forces_prepend_f2) && deferred_empty
     } else if env.is_tsf_mode {
         false
@@ -99,7 +120,7 @@ pub(crate) fn decide_transmit_plan(
     // NameChangeWait タイムアウトで IME 準備が未確認のまま transmit したケースを
     // LiteralDetect で回収する。F2 をバッチに含めない場合も IME が cold の可能性がある。
     // （既知バグ: gji_idle ~1.4s で 300ms NameChangeWait が間に合わなかったケース）
-    let needs_literal = !obs.nc_fired && env.is_tsf_mode && env.gji_active;
+    let needs_literal = !nc_confirmed && env.is_tsf_mode && env.gji_active;
 
     let literal_detect_ms = if is_long_cold && env.is_tsf_mode {
         crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE
@@ -186,11 +207,14 @@ pub(crate) enum ProbeAction {
     /// 一度でも literal 化すると以後ずっと give-up＝backspace のみに固定される
     /// regression があった）。
     ///
-    /// `mark_literal_session=true` の場合、このセッションの literal-detect 自体を
-    /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`）。
-    /// per-VK confirm では各 VK の confirm で `mark_literal_session=false`、
-    /// 全 VK 確認済みの最終確認でのみ `true` を使う。
-    CompositionConfirmed { mark_literal_session: bool },
+    /// `mark_literal_session=true` の場合、`cold_seq` 世代の literal-detect 自体を
+    /// スキップ対象としてマークする（`tsf::observer::mark_literal_session_confirmed`、
+    /// BUG-39 で世代付きに変更）。per-VK confirm では各 VK の confirm で
+    /// `mark_literal_session=false`、全 VK 確認済みの最終確認でのみ `true` を使う。
+    CompositionConfirmed {
+        cold_seq: u32,
+        mark_literal_session: bool,
+    },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
 }
@@ -397,6 +421,7 @@ pub(crate) async fn run_per_vk_confirm(
                 // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
                 // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
                 pending_confirm = Some(ProbeAction::CompositionConfirmed {
+                    cold_seq,
                     mark_literal_session: false,
                 });
             }
@@ -474,6 +499,7 @@ pub(crate) async fn run_per_vk_confirm(
         ch.clone(),
         vec![
             ProbeAction::CompositionConfirmed {
+                cold_seq,
                 mark_literal_session: true,
             },
             ProbeAction::Done,
@@ -518,7 +544,7 @@ async fn tsf_probe_coro_body(
 
     // ── Phase 2c（per-VK confirm）──
     // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
-    if needs_literal && !crate::tsf::observer::literal_session_confirmed() {
+    if needs_literal && !crate::tsf::observer::literal_session_confirmed(cold_seq) {
         let plan = TransmitPlan {
             used_eager_path: false,
             needs_literal: true,
@@ -744,7 +770,10 @@ mod tests {
     fn decide_plan_nc_not_fired_tsf_not_long_idle_keeps_literal() {
         // nc_fired=false + TSF mode + Short cold (forces_prepend_f2=false):
         // IME 準備完了が未確認のため LiteralDetect は有効にして回収する。
-        let obs = ProbeObservations { nc_fired: false };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            ..Default::default()
+        };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -762,7 +791,10 @@ mod tests {
     #[test]
     fn decide_plan_nc_not_fired_tsf_long_idle_keeps_literal() {
         // Long cold (forces_prepend_f2=true): LiteralDetect が有効（GJI 応答未確認）。
-        let obs = ProbeObservations { nc_fired: false };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            ..Default::default()
+        };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -775,9 +807,21 @@ mod tests {
     }
 
     #[test]
-    fn decide_plan_nc_fired_enables_literal_when_gji_active() {
-        // nc_fired=true でも gji_active + !is_long_cold なら LiteralDetect は有効なまま。
-        let obs = ProbeObservations { nc_fired: true };
+    fn decide_plan_nc_fired_suppresses_literal_even_when_gji_active() {
+        // BUG-40（docs/known-bugs.md）で `nc_confirmed = nc_fired || (confirm_key_tsf_hint
+        // && gji_settled)` に整理されて以降、nc_fired=true（NameChange が実発火 = 合成が
+        // 実際に確認された）は常に needs_literal=false になる。この関数は
+        // `426a7f2`（2026-07-19）で追加された旧テスト（旧実装では
+        // `should_prepend_f2` 由来の第1節があり、nc_fired=true でも
+        // gji_active+!is_long_cold なら literal 有効、という別の分岐が生きていた）の
+        // 期待値が、その後の削除・BUG-40整理で古くなったまま残っていたもの。
+        // BUG-40の副次的発見として記録済み（本テスト自体は未修正のまま放置されて
+        // いた）で、2026-07-25にWindows実機CIで実際にassertion failureとして
+        // 顕在化したのを機に、現在の意図された挙動に合わせて更新した。
+        let obs = ProbeObservations {
+            nc_fired: true,
+            ..Default::default()
+        };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -787,15 +831,18 @@ mod tests {
         let plan = decide_transmit_plan(false, obs, env, true, false, false);
 
         assert!(
-            plan.needs_literal,
-            "gji_active + !is_long_cold: LiteralDetect 有効"
+            !plan.needs_literal,
+            "nc_fired=true(NameChange確認済み)ならgji_active/is_long_cold問わずLiteralDetect不要のはず(BUG-40)"
         );
     }
 
     #[test]
     fn decide_plan_nc_fired_with_deferred_vks_disables_eager_path() {
         // nc_fired=true でも deferred_vks が存在する場合は unicode に戻さない（nお race 防止）。
-        let obs = ProbeObservations { nc_fired: true };
+        let obs = ProbeObservations {
+            nc_fired: true,
+            ..Default::default()
+        };
         let env = TsfEnvSnapshot {
             is_tsf_mode: false,
             gji_active: false,
@@ -814,7 +861,10 @@ mod tests {
     fn decide_plan_medium_cold_keeps_literal_on_ncwait_timeout() {
         // Medium cold (forces_prepend_f2=true) + nc_fired=false → GJI 応答未確認のため
         // LiteralDetect は有効なまま。
-        let obs = ProbeObservations { nc_fired: false };
+        let obs = ProbeObservations {
+            nc_fired: false,
+            ..Default::default()
+        };
         let env = TsfEnvSnapshot {
             is_tsf_mode: true,
             gji_active: true,
@@ -824,6 +874,84 @@ mod tests {
         let plan = decide_transmit_plan(false, obs, env, true, true, false); // Medium cold
 
         assert!(plan.needs_literal, "GJI 応答未確認: LiteralDetect 有効");
+    }
+
+    // ── BUG-40 回帰テスト: confirm_key_tsf_hint は gji_settled 必須 ────────────
+    //
+    // `nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode)`
+    // という旧実装（gji_settled を一切見ない）は、WezTerm の Enter/Space 後に
+    // NameChange が発火しないが GJI は実際に合成中というケース（`3ffbe66`）を
+    // 救済するために書かれた。しかし gji_settled を見ないため、88s idle 後に
+    // probe がわずか16msで完了した genuinely cold なセッション（GJI は未確定、
+    // gji_settled=false）まで同じ条件で誤救済し、reactive LiteralDetect が
+    // 丸ごとスキップされて漏れた romaji ("ke" 等) が無補正で出力された。
+
+    #[test]
+    fn decide_plan_confirm_key_hint_without_settled_keeps_literal() {
+        // confirm_key_tsf_hint=true だが gji_settled=false（genuinely cold, BUG-40
+        // の実トレース相当）: 救済せず LiteralDetect を有効なままにする。
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_settled: false,
+            confirm_key_tsf_hint: true,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
+
+        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+
+        assert!(
+            plan.needs_literal,
+            "BUG-40: gji_settled=false のまま confirm_key_tsf_hint だけで救済してはならない"
+        );
+    }
+
+    #[test]
+    fn decide_plan_confirm_key_hint_with_settled_suppresses_literal() {
+        // confirm_key_tsf_hint=true かつ gji_settled=true（WezTerm が実際に I/O を
+        // 返している、3ffbe66 の対象シナリオ）: NameChange 欠落を救済し、誤検出の
+        // backspace で確定済み文字を消さないよう LiteralDetect を抑制する。
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_settled: true,
+            confirm_key_tsf_hint: true,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: true,
+            gji_active: true,
+            ..Default::default()
+        };
+
+        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+
+        assert!(
+            !plan.needs_literal,
+            "3ffbe66: gji_settled=true なら NameChange 欠落を救済し LiteralDetect を抑制する"
+        );
+    }
+
+    #[test]
+    fn decide_plan_confirm_key_hint_without_tsf_mode_has_no_effect() {
+        // confirm_key_tsf_hint は is_tsf_mode 前提の救済ヒントであり、それ単体
+        // （gji_settled=true でも）non-TSF では needs_literal に影響しない
+        // （non-TSF は元々 needs_literal の第3項 `env.is_tsf_mode` で false 固定）。
+        let obs = ProbeObservations {
+            nc_fired: false,
+            gji_settled: true,
+            confirm_key_tsf_hint: true,
+        };
+        let env = TsfEnvSnapshot {
+            is_tsf_mode: false,
+            gji_active: true,
+            ..Default::default()
+        };
+
+        let plan = decide_transmit_plan(false, obs, env, true, false, false);
+
+        assert!(!plan.needs_literal, "non-TSF: needs_literal は常に false");
     }
 
     // ── TsfProbeCoro (Chrome) — 犠牲キー撤去後の直接送信回帰テスト ────────────
@@ -957,8 +1085,15 @@ mod tests {
     #[test]
     fn chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal()
     {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
+
+        // TSF_OBS(プロセス全体のグローバル状態)への並行アクセスをobserver.rs/
+        // probe.rs/literal_detect_fsm.rsと共通のロックで直列化する。このファイルの
+        // テストは元々ロックを一切持たず、他ファイルのテストと無防備にTSF_OBSを
+        // 奪い合っていた(2026-07-25、Windows実機での初回cargo test実行で
+        // クロスファイルの汚染が判明)。
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
 
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -977,16 +1112,22 @@ mod tests {
             "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
         );
 
-        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
-        let stale_write_ms = crate::hook::current_tick_ms();
-        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-
         let detector = LiteralDetector::new_with_pre_send_baseline(
             crate::tsf::observer::gji_write_bytes(),
             false,
         );
         let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+
+        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
+        // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を作るため、実時間
+        // sleepではなくsaturating_subで明示的な過去時刻を使う。GetTickCount64の
+        // 粗い解像度(既定~15.6ms)下ではsleep(5ms)後にtickが進んでいる保証がなく、
+        // 同一tickに丸まるとevidence_is_freshのtie判定(`>=`、probe.rs:656/735)が
+        // trueになり、猶予に入らず即座にactionが出て「猶予期間中は空のはず」の
+        // アサートがflakyに失敗する(2026-07-25、Windows実機で初めてこのテストを
+        // 実行した際に顕在化)。
+        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
 
         // 候補ウィンドウが「既に可視」= 前世代の合成が残っている状態を模擬する。
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
@@ -1039,9 +1180,10 @@ mod tests {
     /// 再送なしで消失）。
     #[test]
     fn chrome_per_vk_visible_shortcut_confirms_when_write_catches_up_within_grace() {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
@@ -1103,9 +1245,10 @@ mod tests {
     /// confirmed 済みである以上 backspace は送らず ESC のみで回収する。
     #[test]
     fn chrome_per_vk_suspected_literal_after_confirmed_prior_vk_escapes_without_backspace() {
-        use crate::tsf::observer::TSF_OBS;
+        use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
+        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);

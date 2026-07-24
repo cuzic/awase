@@ -3771,12 +3771,56 @@ spawn 時にキャプチャしたスナップショット（`output_idle_ms_at_s
 状況証拠（クロック解析 + Win32 API の既知の挙動 + ログの発生アプリ/タイミングの一致）
 までで、次回実機検証（該当行前後にタイムスタンプログを仕込んで再現待ち）が望ましい。
 
+**追補2（2026-07-24、実機ログ解析で発覚・本コミットで修正）:** 上記追補の (2) 対策
+（`apply_idle_conv_check` で explicit age を再評価する）には、BUG-34 のブロック時間が
+長い場合に無効化される抜け穴が残っていた。
+
+**症状（実機ログ、GJI/TsfNative, hwnd class `Windows.UI.Input.InputSite.WindowClass`,
+himc_null=true）:** ユーザーが shift-conv-guard（Shift 押下による IME-ON 半角英数の
+安全網、GJI では entry 機構が無く実 conv は変化しない）を Shift を長押し（実測 約2.6秒）
+して使った直後、実際の IME は `conv=0x00000019`（NATIVE、ひらがな）のまま変化していない
+にもかかわらず `Engine deactivated (reason=Inactive(ImeOff))` が発火。以後
+`[idle-conv-check] TsfNative: conv observation open=true reason=NativeToggleShadowOff
+... → ObserverReported として記録 (engine は actuate しない)` が繰り返し出力され、
+`[gji-fsm] StartComposition while engine off — ignored` で打鍵が消失し続けた
+（ユーザー通報「なぜか、IME ON Engine OFF になる」、2026-07-24）。
+
+**原因:** `apply_idle_conv_check` の (b) explicit age 再検証は、apply 時点の
+「直近の明示的 IME 操作からの経過時間」を `EXPLICIT_IME_SUPPRESS_MS`（1500ms）と
+比較するだけだった。Shift 押下（shift-conv-guard 突入、`note_explicit_ime_action`）の
+**直前**に spawn された idle-conv-check の読み取りが BUG-34 で長時間（1500ms 超）
+ブロックされた場合、apply 時点では「Shift 押下からの経過時間」が既に閾値を超えて
+しまっており、この読み取りが shift-conv-guard 突入以降に汚染された `conv` 値
+（半角英数扱い＝`ObservedEisu`）を拾っていても素通りしてしまう。`ObservedEisu` は
+`classify_conv_transition`（`state/conv_classify.rs`）経由で `EngineSync::DirectInput`
+となり、`handle_engine_set_open(false)` が `UserImeSetIntent{Command}` として
+`desired_open=false` を確定させる（`state/ime_model.rs`）。この経路は
+「ユーザーが明示的に OFF にした」ことを意味する状態になるため、以後
+`NativeToggleShadowOff`（実 conv が NATIVE を示す観測）を何度観測しても
+BUG-19 再発防止のガード（`state/conv_classify.rs`、`ConvOpenInference` は
+明示意図が無い限り drift correction を発火させない設計）により自動復帰しない
+（次のフォーカス変更で `last_intent` がクリアされるまで固定）。
+
+**修正（本コミット）:** apply 時の explicit 操作再検証を、経過時間の閾値比較から
+spawn 時にキャプチャした `last_explicit_ime_action_ms`（生のタイムスタンプ）と
+apply 時点の値の**一致比較**に変更した（`ImeStateHub::last_explicit_ime_action_ms_raw()`
+を追加、`kp_stage_idle_conv_check`/`apply_idle_conv_check` に
+`explicit_action_ms_at_spawn` を追加）。値が変化していれば「spawn〜apply の間に
+明示操作があった」ことが遅延の長さに関わらず確実に分かるため、ブロック時間が
+`EXPLICIT_IME_SUPPRESS_MS` を超える場合でも読み取り結果を棄却できる。
+
+**検証状況:** コード読解 + ログ解析による確定。実機での再現待ち（`RUST_LOG=debug` で
+`[idle-conv-check] apply 時に spawn 後の explicit IME action を検出 → ... を破棄` が
+出るかを確認する）。
+
 **関連ファイル:** `crates/awase-windows/src/imm.rs`（`send_ime_control`）、
 `crates/awase-windows/src/ime.rs`（`get_ime_conversion_mode_raw_timeout`,
 `get_ime_conversion_mode_raw_timeout_async`）、
 `crates/awase-windows/src/runtime/key_pipeline.rs`（`kp_stage_idle_conv_check`,
 `apply_idle_conv_check`）、`crates/awase-windows/src/state/probe_admission.rs`
-（`ImmLikeTicket`, `AcceptedObservation`, ADR-077）。
+（`ImmLikeTicket`, `AcceptedObservation`, ADR-077）、
+`crates/awase-windows/src/state/platform_state.rs`（`ImeStateHub::note_explicit_ime_action`,
+`last_explicit_ime_action_ms_raw`）。
 
 ---
 
@@ -4361,6 +4405,46 @@ flush_raw_tsf_literal_recovery: backspace → (romaji空なので再送なし) �
 
 ---
 
+## BUG-39: `literal_session_confirmed` が FocusChange・長時間 idle・アプリ切替をまたいで持ち越され、新しい cold セッションの先頭文字が literal で漏れても reactive literal-detect が発動しない
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で、Chrome で約88秒アイドルしたあと Windows Terminal にフォーカスを移し、物理 F2（IME ON）を押してから「こっか」と入力したところ、1文字目だけ literal ローマ字が漏れて **"koっか"** になった（2026-07-23 実機ログ）。
+
+**再現手順（ログで確認済み、`.claude/rules/experiment-logging.md` 準拠の実測）:**
+
+```
+Chrome で ~88s idle（GJI I/O 静止、候補ウィンドウの SHOW/HIDE は一度も観測されない）
+  → Windows Terminal へ FocusChange、TsfNative と判定、cold mark（reason=FocusChange）
+物理 VK_DBE_HIRAGANA(F2) 押下（self_injected=false）
+  → NativeF2Consumed、reason=NativeF2Consumed で追加 cold mark
+「こ」romaji="ko" 送信:
+  cold_warmup: reason=NativeF2Consumed → F2/probe 待機省略、per-VK confirm へ
+  gji-coro: settle 必要（settled=false）→ transmit-plan needs_literal=true
+  literal_detect_fsm: 「セッション確認済み → スキップ」 ← ここで reactive 検出が丸ごと無効化
+  → "ko" が変換されず literal のまま出力、誰も訂正しない
+「っ」「か」以降は正常に「っか」として変換される（新しい cold=301 での probe/warmup 自体は機能していた）
+```
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal 等）。Chrome の `Imm32Unavailable` でも同じ構造的欠陥のため理論上再現しうる（未確認）。
+
+**原因（確定、コード読解で確認）:** `literal_session_confirmed`（`tsf/observer.rs`）は「同一 IME セッション内では以降の文字の literal-detect をスキップする」BUG-24 由来の最適化フラグで、`mark_literal_session_confirmed()` で `true` になり、本番で唯一 `false` に戻すのは `Output::gji_on_end_composition`（`platform.rs`、候補ウィンドウ HIDE 時）だけだった。しかもこの呼び出しは `gji_current_composition_epoch()` が `Some`（= `GjiFsm` が `OnComposing` のまま）の場合にしかガードを通らない。ところが `GjiFsm` は `FocusChange`/`NativeF2Consumed` 等で `OnComposing` から容易に抜ける（`gji_idle_ms` observation ゲート込みで cold へ倒れる、BUG-33 追補3）。候補ウィンドウの HIDE イベント（`observation_event_proc` → `pending_end_composition`）がドレインされる時点で `GjiFsm` が既に `OnComposing` を抜けていれば `gji_current_composition_epoch()` は `None` を返し、**reset がそのまま握り潰される**。結果、`literal_session_confirmed` は「一度確認できたセッション」の生存期間（候補ウィンドウ HIDE まで）ではなく、**次にたまたま epoch 付きで HIDE がドレインされるまで**という、フォーカス変更・アプリ切替・数十秒〜数分の idle をまたいでも解除されない期間だけ true であり続ける。この状態で新しい cold セッション（別アプリ、別 TSF context）の1文字目が literal 化しても、`gji_warmup_coro`/`LiteralDetectCore` は「セッション確認済み」を理由に検出処理自体をスキップし、誰も backspace+再送で訂正しない。
+
+`.claude/rules/ime-belief-architecture.md` の 2026-07-23 追記（`GjiFsm` の `CompositionReset`/`NativeF2Consumed` が弱い代理指標だけで無条件に belief を書き換えていた、という同種の教訓）と同じ形の欠陥: `literal_session_confirmed` は「蓄積する」値なのに、唯一のリセット経路が **単一の呼び出し口の実行成否**（epoch が取れるか）に依存しており、その呼び出しが握り潰された場合の代替経路が無かった。
+
+**修正（初期案から設計変更）:** 当初は `mark_composition_cold` に `reason.requires_settle()` 分岐でリセットを追加する対症的パッチを検討したが、これは「新しい無条件書き込み条件分岐を1つ増やす」だけで、`.claude/rules/ime-belief-architecture.md` が戒める「観測を無視した蓄積状態の場当たり的な保護」の再演になる（レビュー指摘）。代わりに **`literal_session_confirmed` 自体を「確認したかどうかの真偽値」から「どの `cold_seq`（`WarmEpoch::cold_start_count`、実際に新しい warmup/probe が走るたびに増える世代カウンタ）で確認したか」を保持する値に変更**し、判定を「記録した世代 == 現在の世代」という比較に置き換えた（observation → belief の経路を太らせる形）。具体的には:
+
+- `TsfObservations::literal_session_confirmed: AtomicBool` → `literal_session_confirmed_gen: AtomicU32`（`0` = 未確認の番人値）に変更（`tsf/observer.rs`）。
+- `literal_session_confirmed(current_cold_seq: u32) -> bool` / `mark_literal_session_confirmed(cold_seq: u32)` と、確認対象の世代を明示的に引数化した。
+- `mark_literal_session_confirmed` の実際の呼び出し元（`ProbeAction::CompositionConfirmed`、`tsf/warmup/probe_fsm.rs`/`literal_detect_fsm.rs`）は元々 `cold_seq` をローカルスコープに持っていたため、`ProbeAction::CompositionConfirmed` に `cold_seq: u32` フィールドを追加して伝搬させるだけで済んだ（`output/probe_io.rs` のディスパッチャがそのまま `mark_literal_session_confirmed(cold_seq)` を呼ぶ）。
+- `reset_literal_session_confirmed()`（`gji_on_end_composition`、候補ウィンドウ HIDE 時）は残した。世代比較が正しさの唯一の拠り所になったため、この呼び出しが `gji_current_composition_epoch()==None` で握り潰されても実害はない（次の cold-start で `cold_seq` が進めば自動的に stale になる）。この明示リセットは「同一世代内でも次の1語は律儀に再確認させる」という BUG-24 の保守的な最適化オプトアウトとして意味があるため削除しなかった。
+
+この設計により、`mark_composition_cold`/`ColdReason` 側には一切変更が不要になった（当初案の `requires_settle()` 分岐は追加していない）。「FocusChange 等どの reason で cold になったら reset すべきか」を個別に列挙する近道を取らず、`cold_seq` という既存の実観測値（BUG-33 追補3 で `GjiFsm` にも使われている考え方と同型）に判定を委ねることで、新しい cold-start 契機が将来追加されても automatically 正しく扱われる。
+
+**テスト:** `tsf/observer.rs` に `#[cfg(test)]` モジュールを新設し回帰テスト4件を追加: `unconfirmed_state_is_never_confirmed`、`same_generation_query_is_confirmed`、`new_cold_generation_invalidates_prior_confirmation_without_explicit_reset`（本バグの核心 — `reset_literal_session_confirmed()` を挟まずに `cold_seq` が進むだけで前世代の確認が自動的に無効化されることを確認）、`explicit_reset_invalidates_same_generation_confirmation`（HIDE 経由の明示リセットが引き続き機能することを確認）。Windows cross-compile（`cargo check`/`cargo check --tests`/`cargo clippy --lib -- -D warnings`、`x86_64-pc-windows-gnu`）警告ゼロ確認済み。Wine 等の実行環境がないため `cargo test --target x86_64-pc-windows-gnu` の実実行および実機再検証は未実施（BUG-38 と同様の制約）。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/observer.rs`（`literal_session_confirmed_gen`/`literal_session_confirmed`/`mark_literal_session_confirmed`/`reset_literal_session_confirmed`）、`crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`ProbeAction::CompositionConfirmed` に `cold_seq` フィールド追加、`run_per_vk_confirm`／Chrome コルーチンの確認呼び出し）、`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`／`literal_detect_fsm.rs`（`literal_session_confirmed(cold_seq)` 呼び出し）、`crates/awase-windows/src/output/probe_io.rs`（`CompositionConfirmed` ディスパッチャ）、`crates/awase-windows/src/platform.rs`（`gji_on_end_composition`、明示リセット経路）。関連: BUG-24（`literal_session_confirmed` 導入元）、BUG-33 追補3（`GjiFsm` が `gji_idle_ms` 実観測値をイベントの必須パラメータ化した同型の設計判断）、`.claude/rules/ime-belief-architecture.md`（「蓄積する belief 的状態は実観測値との比較で自己検証させる」という判断基準）。
+
+---
+
 ## デバッグ方法
 
 ログ出力（`RUST_LOG=debug`）で以下のキーワードを確認する:
@@ -4387,3 +4471,82 @@ flush_raw_tsf_literal_recovery: backspace → (romaji空なので再送なし) �
 | `[tip-detect] IME kind candidate X (current=Y), awaiting confirmation next tick` | CLSID 種別フリップの1回目の観測（`ImeKindDebounce`）。次 tick も同じなら確定、元に戻れば破棄 |
 | `[tip-detect] IME kind → X` | CLSID 種別変化が2 tick連続で確定し `WM_IME_KIND_CHANGED` を発行（`GjiFsm`/`MsImeStrategy` が再構築される点に注意、BUG-17） |
 | `stale confirm 検出` / `epoch-fence-stale` | ADR-079/BUG-35: confirm 根拠が前世代由来と判明（追補1で SuspectedLiteral と同じ backspace+再送に変更済み。追補2で「既に可視」ショートカットの猶予漏れによる false positive も修正済み。追補3で `CompositionReset`/`NativeF2Consumed` 自体に `gji_idle_ms` observation ゲートを追加し前提条件面を根治。追補4で backspace 自体を送らない（romaji 再送のみ）方式に変更、literal の positive な証拠がない限り BS を送らない） |
+| `[literal-detect] cold=N セッション確認済み → スキップ` | BUG-39: `literal_session_confirmed(N)==true`（確認済み世代が現在の `cold_seq=N` と一致）のため reactive literal-detect 自体をスキップ。修正後は世代不一致で自動的に無効化されるため、このログの `cold=N` は必ず「実際にその N で確認が取れた」世代のはず — もしこの N で一度も `[literal-detect] cold=N composition confirmed` 相当のログが無いのに出ていたら回帰を疑う |
+
+---
+
+## BUG-40: `nc_for_plan` が `gji_settled`（GJI probe の実測結果）を見ずに confirm-key ヒントだけで `nc_fired` を昇格し、genuinely cold なセッションまで reactive literal-detect を丸ごとスキップしていた
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、GJI、TsfNative）で、約88秒 GJI I/O が静止した状態から物理 F キー（単独、修飾キーなし）を押したところ、変換されないローマ字 **"ke"** が literal のまま出力された（本来は「け」に変換されるか、少なくとも変換前提の romaji 送信自体が起きないかのどちらかであるべき。2026-07-23 実機ログ）。BUG-39（`06ad210`）修正を取り込んだビルド（未コミット差分なしを `git status`/`git diff` で確認済み）でも再現した — BUG-39 とは別経路の欠陥。
+
+**再現手順（ログで確認済み）:**
+
+```
+Ctrl 押下中に複数ショートカットキーを連打（Ctrl+B/H/P/Shift+V 等）→ 通常の passthrough
+  Ctrl KeyUp → composition-fsm が EmitWarmup(CtrlUp) → 実 VK_DBE_HIRAGANA(F2) 送信
+物理 F キー押下（修飾キーなし）→ 100ms バッファタイマー
+  送信予定: Char('け')（NICOLA レイアウト上の F キーのマッピング）
+  → send_char_as_tsf: 'け' → romaji "ke"
+  cold_warmup: reason=ReinjectConfirmKey → F2/probe 待機省略、per-VK confirm へ
+  gji-coro: GjiProbe 完了（16ms, gji_idle=88063ms, settled=false）
+    → 「settle 必要 → skip FreshF2, reactive LiteralDetect のみ」とログ（nc_fired=false のはず）
+  transmit-plan: needs_literal=false nc_fired=true ← settled=false のはずが nc_fired が true に化けている
+  → per-VK confirm も inline LiteralDetect も構造的にスキップされ、
+    診断専用の fire-and-forget "skip-verify" タスクだけが実行される（副作用なし）
+  → "ke" が変換されず literal のまま出力、誰も訂正しない
+```
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal 等）。
+
+**原因（確定、コード読解 + 標準入力での純関数再現で確認）:** `gji_warmup_coro.rs`（`gji_coro_body`）は Phase 1 の GJI probe で `outcome.settled=false` を正しく検出し、「reactive LiteralDetect のみに委ねる」と判断して `nc_fired=false` を確定させていた。しかし Phase 4（transmit plan 決定）の直後の行で:
+
+```rust
+let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode);
+```
+
+という上書きが `outcome.settled` を一切参照せずに `nc_fired` を `true` に昇格させていた。この上書きは元々 `3ffbe66`（2026-06-27, `Enter後 TSF mode での LiteralDetect 誤検出を抑制`）で導入されたもので、WezTerm で Enter/Space 後に NameChange イベントが発火しないが GJI 自体は正常に合成中というケースを救済するためのものだった。**導入当初は `is_confirm_key() && is_tsf_mode && !gji_resumed` という3項条件**で、`gji_resumed`（F2×2 待機行列が GJI からの I/O 応答を確認できたか）が実質的なゲートだった。ところが `629db3b`（2026-07-19）で `gji_resumed` の唯一の生成元（F2×2 待機行列）が `d495649` で物理削除され dead code 化したのを受け、`gji_resumed` 項自体が削除された（cleanup としては正しい）。**このとき、上書きの本来の意図だった「GJI が実際に応答/再開しているか」という実測ゲートが失われたまま、`is_confirm_key() && is_tsf_mode` の2項だけが残った。** 結果、88秒 idle 後の genuinely cold なセッション（`outcome.settled=false`）でも confirm-key 系 cold_reason かつ TSF mode でありさえすれば無条件に救済され、`decide_transmit_plan`（`probe_fsm.rs`）の `needs_literal = !obs.nc_fired && env.is_tsf_mode && env.gji_active` が `false` になり、per-VK confirm・inline `LiteralDetectCore`（Phase 6）の両方が構造的にスキップされた。
+
+`.claude/rules/ime-belief-architecture.md` の 2026-07-23 追記（`GjiFsm` が弱い代理指標だけで無条件に belief を書き換えていた、という同種の教訓）と同じ形の欠陥: `gji_resumed` という実観測値が dead code 削除のタイミングで代理指標無しの盲目的な条件に縮退し、それに気づく機構（型・テスト）が無かった。
+
+**修正:** `nc_for_plan` という `nc_fired` を上書きする1変数に集約する設計をやめ、`ProbeObservations` に生の観測値を追加した:
+
+- `ProbeObservations.nc_fired`: 生の NameChange 発火シグナル（呼び出し元での上書きを禁止、`is_partial_literal` 等が生値として参照するため）。
+- `ProbeObservations.gji_settled`: `GjiProbeOutcome.settled`（実測）。
+- `ProbeObservations.confirm_key_tsf_hint`: `cold_reason.is_confirm_key() && env.is_tsf_mode`（`3ffbe66` の救済ヒント、`cold_reason` にアクセスできる `gji_warmup_coro.rs` 側でのみ算出可能なため呼び出し元で計算）。
+
+`decide_transmit_plan`（純関数、単独テスト可能）内で `nc_confirmed = obs.nc_fired || (obs.confirm_key_tsf_hint && obs.gji_settled)` として合成し、`used_eager_path`/`needs_literal` の判定はすべて `nc_confirmed` を使う。`gji_settled=true`（GJI が実際に I/O を返している = `3ffbe66` が想定した WezTerm 合成中シナリオ）の場合のみ救済が効き、`gji_settled=false`（本バグの実トレース相当）では救済されず reactive LiteralDetect が機能する。
+
+**未検証のリスク（実機確認が必要、本コミットのスコープ外）:** `3ffbe66` が対象とした WezTerm の「Enter/Space 後に NameChange が発火しないが GJI は合成中」シナリオで `outcome.settled` が実際に `true` になるかは静的解析だけでは確定できない。もし WezTerm 側でも GJI がこの時点で新規 I/O を出さず quiescent（`settled=false`）であれば、本修正は `3ffbe66` の元バグ（Enter 後の先頭文字「な」消失）を再発させる。実機での WezTerm 再現テスト（`gji_warmup_coro.rs:90-96` の `settled=` ログを確認）が必要（Opus によるセカンドオピニオンレビュー、2026-07-23）。ユーザー判断により実機データ取得前に修正を先行実装した（再現困難な bug のため）。
+
+**テスト:** `probe_fsm.rs` の `decide_transmit_plan` 回帰テストに3件追加: `decide_plan_confirm_key_hint_without_settled_keeps_literal`（BUG-40 の核心 — `confirm_key_tsf_hint=true` でも `gji_settled=false` なら救済せず `needs_literal=true` のままであることを確認）、`decide_plan_confirm_key_hint_with_settled_suppresses_literal`（`3ffbe66` の元シナリオ — `gji_settled=true` なら救済され `needs_literal=false` になることを確認）、`decide_plan_confirm_key_hint_without_tsf_mode_has_no_effect`。純関数のため Linux 上で `rustc` 単体抽出により実行結果を事前検証済み（wine 未導入のため `cargo test --target x86_64-pc-windows-gnu` の実実行は BUG-38/BUG-39 と同様に未実施）。`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity` は警告ゼロ確認済み。
+
+**副次的発見（本コミットでは未修正、別途フォローアップ要）:** 同じ `probe_fsm.rs` の既存テスト `decide_plan_nc_fired_enables_literal_when_gji_active`（`426a7f2`, 2026-07-19 `DIAG_DISABLE_PROACTIVE_TSF_WARMUP` 恒久化リファクタで追加）は、`nc_fired=true` を入力に `plan.needs_literal` が `true` になることを期待しているが、同じ形式で `rustc` 単体抽出して確認した限り現在の `needs_literal` 式では `nc_fired=true` のとき常に `false` になり、このテストはアサーション失敗するはずである。同リファクタで `needs_literal` の第1節（`should_prepend_f2` 由来、削除済み）だけがこのテストの成立根拠だったが、削除時にアサーションが更新されなかった可能性が高い。Windows 実機/CI での実行結果が未確認のため確定はできないが、次にこのファイルに触れるセッションで要確認。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`ProbeObservations`/`decide_transmit_plan`）、`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（`gji_coro_body` Phase 1/4、`nc_for_plan` 撤去）、`crates/awase-windows/src/output/vk_send.rs`／`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`ProbeObservations` 構築箇所の追随）。関連: BUG-39（同じ `gji_warmup_coro.rs` の別経路）、`3ffbe66`（`confirm_key_tsf_hint` 相当ロジックの導入元）、`629db3b`（`gji_resumed` 削除、本バグの直接の引き金）、`.claude/rules/ime-belief-architecture.md`（「蓄積しない・毎回純粋関数で再計算される値は独立した実観測パラメータとして渡す」という判断基準）。
+
+## BUG-41: `decide_alt_impersonation` が KeyUp 時点で「なりすまし発動中」フラグを stuck true のまま持ち越し、後続の無関係な Alt 押下まで modifier 誤補正の対象にしていた
+
+**発覚経緯:** 2026-07-25、`crates/awase-windows` の `cargo test --lib` が GCP Spot self-hosted runner上のWindows実機で初めて実際に実行された（従来はWine未導入によりLinux上での実行・Windows実機での動作確認とも未実施で、`--no-run`のクロスコンパイルチェックのみだった）。この初回実行で`hook::alt_impersonation_tests::keyup_uses_the_decision_recorded_at_keydown`が実機上で初めて失敗し、本バグが発覚した。
+
+**症状（テストで再現）:** Left Alt を親指キーとしてなりすまし設定中、`decide_alt_impersonation`にKeyDown→KeyUpの順で入力すると、KeyUp後も戻り値の`is_impersonating`が`true`のままだった（`assert!(!impersonating_after_up, ...)`が失敗）。この戻り値は`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`（`hook.rs`）に格納され、`is_alt_impersonation_active()`経由で3箇所（`hook.rs`・`runtime/mod.rs`・`runtime/message_handlers.rs`）が`modifiers.alt`を強制falseに補正する判断に使われる。KeyUp後もこのフラグがstuck trueのまま残ると、次に(なりすまし設定の無い)Right Altを押す、あるいはAlt+Tab等を行った際にも`modifiers.alt`が誤ってfalse補正され、`cec4da9`が修正したのと同種のbypass誤爆が再発しうる。
+
+**原因:** `decide_alt_impersonation`が「今回のvk翻訳に使う判定」と「以後保持すべき状態」を同じ1つの値(`impersonating`)で兼用しており、`is_keydown=false`(KeyUp)の場合も無条件に`was_impersonating`をそのまま持ち越していた。KeyUpの瞬間は物理キーが既に離れているため、以後保持する状態は必ずfalseに戻すべきだった。
+
+**修正:** 戻り値の2要素目(以後保持する状態)を`is_keydown`で分岐させ、KeyUpの場合は常に`false`を返すようにした。vk翻訳(1要素目)は従来通り`currently_impersonating`(直前の判定)を使い、KeyDown/KeyUpの対称性は維持している。
+
+**テスト:** 既存の`hook::alt_impersonation_tests::keyup_uses_the_decision_recorded_at_keydown`がそのまま回帰テストになる(新規追加ではなく、既存テストが正しく通るようになった)。`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`は警告ゼロ確認済み。**2026-07-25、GCP Spot self-hosted runner(`rust-nicola-builder`)上での実`cargo test --lib -p awase-windows`実行でパス確認済み**(`cargo mutants`のbaselineフェーズが`ok Unmutated baseline in 44s build + 4s test`で全テストパスと報告、GitHub Actions run 30098397721の`mutants-windows` job)。
+
+**関連ファイル:** `crates/awase-windows/src/hook.rs`（`decide_alt_impersonation`、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`）。関連: `cec4da9`（同種のOsModifierHeldバイパス誤爆の初回修正）。
+
+## 2026-07-25: Windows実機での`cargo test --lib -p awase-windows`初回実行で判明したテスト自体の不具合(実装バグではない)
+
+GCP Spot self-hosted runner導入により、`cargo test --lib -p awase-windows`が実Windows上で初めて実行された（従来はLinux上でのクロスコンパイル`--no-run`チェックのみで、実行そのものは未実施だった）。BUG-41以外に、以下は**実装ではなくテスト自体の不具合**と判明したため、テスト側を修正した:
+
+- `tsf::probe::tests::check_now_returns_stale_confirm_when_write_evidence_predates_epoch`、`tsf::warmup::probe_fsm::tests::chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal`、`tsf::warmup::literal_detect_fsm::tests::poll_recovers_like_suspected_literal_when_stale_confirm_detected`: いずれも`std::thread::sleep(5ms)`+実`GetTickCount64`(既定解像度~15.6ms)で「epochより前」の時刻を作ろうとしていたが、tick解像度に対してマージンが無く、同一tickに丸まると`evidence_is_fresh`のtie判定(`>=`)が意図せずtrueになりflakyに失敗しうる設計だった。同ファイル内の他のテスト（`check_now_show_only_confirm_becomes_stale_after_grace_expires`等）が既に使っている`saturating_sub(50)`方式に統一し、実時間sleepへの依存を排除した。`EPOCH_FENCE_GRACE_MS`等の本番タイミング定数は変更していない。（`literal_detect_fsm.rs`側は最初の修正時に見落としており、下記ロック統一後の再検証で単独の真の失敗として顕在化し追加修正した。）
+- `runtime::executor::tests::confident_when_confirmed_on_desired_on`: `now_ms=100_000`/`at_ms=500`(経過99,500ms)というテスト新設時点(`f7f09bc`, 2026-06-04)から既に300ms窓の外にある入力を使っていた。`chrome_intent_confident`の「Confirmed一致から300ms以内のみconfident」という設計(`7a24442`でOFF方向の永続スキップを廃止した際に確立)自体は正しく、テストの入力値を300ms以内(`at_ms=900`/`now_ms=1000`)に修正した。
+- `tsf::warmup::literal_detect_fsm::tests::poll_recovers_like_suspected_literal_when_stale_confirm_detected`（および`poll_vetoes_backspace_while_candidate_visible`のPoisonErrorカスケード）: `TSF_OBS`（プロセス全体のグローバル状態）を保護するはずの`Mutex`が`observer.rs`/`probe.rs`/`literal_detect_fsm.rs`の3ファイルでそれぞれ**別々**の`static`として定義されており(`TEST_LOCK`×2、`VETO_TEST_LOCK`×1)、名前は同じでも異なる`Mutex`インスタンスのため互いに排他できていなかった。`cargo test`のデフォルト並列実行下で、あるファイルのテストが別ファイルのテストの`TSF_OBS`書き換えに巻き込まれ、`gji_last_write_ms`が意図せず0にリセットされる等で本来`StaleConfirm`になるはずの判定が`CompositionConfirmed`に化けていた。`observer.rs`に`TSF_OBS_TEST_LOCK`を1つだけ定義し、3ファイルとも`use ... as TEST_LOCK`でこれを共有するよう統一した。**この統一作業で`probe_fsm.rs`のテスト3件(`chrome_per_vk_*`)がそもそも一切ロックを持たずTSF_OBSを直接操作していた点を見落としており**、統一後の再検証で「probe.rsの他テストがprobe_fsm.rsの無防備な書き換えに巻き込まれて新たに失敗する」という形で発覚し、この3件にも同じ`TSF_OBS_TEST_LOCK`を追加する追加修正が必要だった。
+- `tsf::warmup::probe_fsm::tests::decide_plan_nc_fired_enables_literal_when_gji_active`: BUG-40で既に「次にこのファイルに触れるセッションで要確認」と記録されていた通り、`nc_fired=true`時に`needs_literal=true`を期待する古い実装(旧`should_prepend_f2`由来、削除済み)の名残だった。BUG-40で確立された新しい意図(`nc_fired=true`＝NameChange確認済みなら常に`needs_literal=false`)に合わせてテスト名・アサーションを更新した(`decide_plan_nc_fired_suppresses_literal_even_when_gji_active`に改名)。
+
+いずれも`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`で警告ゼロ確認済み。**2026-07-25、GCP Spot self-hosted runner(`rust-nicola-builder`)上での実`cargo test --lib -p awase-windows`実行で全パス確認済み**(`cargo mutants`のbaselineフェーズが`ok Unmutated baseline in 44s build + 4s test`で成功、GitHub Actions run 30098397721)。当初1回の修正では`literal_detect_fsm.rs`のsleep依存と`probe_fsm.rs`のロック不備を見落としており、計4コミット・3回の実機再実行を経て全15件の失敗が解消したことを確認した(教訓: クロスファイルでグローバル状態を共有するテスト群は、1箇所直すたびに実機で再実行し、マスクされていた別の失敗が露出しないか確認するまで「直った」と判断しないこと)。
+
+なお`cargo mutants`のフル走査(3296ミュータント)自体はjobのtimeout-minutes(180分)内に完走せず`cancelled`になったが、これはミュータント総数が非常に多いことによるもので、baselineの全パスとは無関係(バグではない)。フル走査を完走させたい場合は`--jobs`を増やすかタイムアウトを延ばすか、`-f`で対象ファイルを絞ること。
