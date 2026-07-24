@@ -5141,4 +5141,331 @@ mod engine_integration_tests {
             Effect::Ui(UiEffect::EngineStateChanged { .. })
         )));
     }
+
+    // ── check_active_transition / transition_activation (line 159, 221) ──
+
+    #[test]
+    fn active_to_inactive_transition_flushes_pending_char_as_send_keys() {
+        // check_active_transition の `was_active != now_active` (line 159) が
+        // `==` に壊れると、実際に状態が変化したときに限ってこの分岐に入らなくなり、
+        // 保留中の文字がフラッシュされなくなる。
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('う')))
+            )),
+            "active→inactive transition must flush the pending char, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn active_to_inactive_transition_emits_set_open_false() {
+        // transition_activation の `if !suppress_set_open` (line 221) の `!` が
+        // 消えると、通常の ImeOff 遷移（NotRomajiInput ではない）で SetOpen が
+        // 発行されなくなる。EngineStateChanged は無条件で push されるため、
+        // それだけを見るテストではこの変異を検出できない。
+        let mut engine = make_test_engine();
+        assert!(engine.compute_active(&ime_on_ctx()));
+
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false })
+            )),
+            "normal ImeOff transition must emit SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    // ── on_input: KeyUp dedup 短絡 (line 238) ──
+
+    #[test]
+    fn key_up_for_consumed_pending_char_short_circuits_without_resolving() {
+        // `if !is_key_down && self.lifecycle.on_key_up(...)` (line 238) の `!` が
+        // 消えると、この短絡がもう機能せず、保留中の文字キーの KeyUp が
+        // （本来は素通しの dedup のはずが）FSM 経由で再度解決され、
+        // 想定外に文字が出力されてしまう。
+        let mut engine = make_test_engine();
+        let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        let d2 = engine.on_input(Ev::up(VK_A).at(50).build(), &ime_on_ctx());
+        assert!(d2.is_consumed());
+        assert!(
+            effects_of(&d2).is_empty(),
+            "KeyUp for an already-consumed pending key must be a bare dedup consume \
+             with no effects, got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    // ── on_input: lifecycle 登録条件 (line 264) ──
+
+    #[test]
+    fn key_down_passthrough_key_is_not_registered_for_lifecycle_dedup() {
+        // `if is_key_down && decision.is_consumed()` (line 264) の `&&` が `||` に
+        // 壊れると、consumed でない（passthrough の）KeyDown も lifecycle に
+        // 登録されてしまい、対応する KeyUp が line 238 の dedup 短絡に
+        // 誤って引っかかって consumed 扱いになってしまう。
+        let mut engine = make_test_engine();
+        let d1 = engine.on_input(Ev::down(VK_RETURN).at(0).build(), &ime_on_ctx());
+        assert!(
+            !d1.is_consumed(),
+            "Enter (non-layout key) should pass through"
+        );
+
+        let d2 = engine.on_input(Ev::up(VK_RETURN).at(50).build(), &ime_on_ctx());
+        assert!(
+            !d2.is_consumed(),
+            "Enter key_up must also pass through, not be dedup-consumed"
+        );
+    }
+
+    // ── on_timeout: active/inactive 分岐 (line 278) ──
+
+    #[test]
+    fn on_timeout_while_active_resolves_normally_not_via_flush() {
+        // `if !self.compute_active(ctx)` (line 278) の `!` が消えると、
+        // active なときに flush(ImeOff, ComposingHint::Unknown) 経由になってしまう。
+        // PendingChar の場合は resolve_pending_char_as_single が hint に依存しないため
+        // 区別できないが、PendingThumb は composing hint で挙動が変わる
+        // （Unknown なら無条件 suppress）ため、こちらで区別する。
+        let mut engine = make_test_engine();
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        // composing=false（非合成中）で active のままタイムアウト。
+        let d2 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(d2.is_consumed());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions)) if !actions.is_empty()
+            )),
+            "active な on_timeout は通常経路で親指キーの生VKを出力するはず（flush 経路だと \
+             ComposingHint::Unknown により無条件 suppress され actions が空になる）, got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    // ── take_solo_off_notification (line 302) ──
+
+    #[test]
+    fn take_solo_off_notification_false_by_default() {
+        let mut engine = make_test_engine();
+        assert!(!engine.take_solo_off_notification());
+    }
+
+    #[test]
+    fn take_solo_off_notification_true_once_after_solo_off_trigger() {
+        let mut engine = make_test_engine();
+        engine.set_engine_off_triple_vk(VK_NONCONVERT);
+        let gap = 150_000u64;
+
+        for i in 0..5u64 {
+            engine.on_input(Ev::down(VK_NONCONVERT).at(i * gap).build(), &ime_on_ctx());
+            engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        }
+
+        assert!(
+            engine.take_solo_off_notification(),
+            "should be true once right after the 5th consecutive solo timeout"
+        );
+        assert!(
+            !engine.take_solo_off_notification(),
+            "one-shot flag must be false on the immediately following call"
+        );
+    }
+
+    // ── apply_engine_on_with_ime_recovery (line 466-467) ──
+
+    #[test]
+    fn toggle_engine_recovery_forces_ime_on_and_reports_state_changed() {
+        // `apply_engine_on_with_ime_recovery` の pseudo_ctx { ime_on: true, ..*ctx } から
+        // `ime_on: true` フィールドが削除されると、実際の ctx.ime_on (=false) がそのまま
+        // 使われてしまい、target_state が Inactive のままになる。prev_activation も
+        // Inactive のままなので transition_activation の was==now が成立してしまい、
+        // 空の effects → SetOpen(true) のフォールバックのみが push され、
+        // EngineStateChanged が発行されなくなる。
+        let mut engine = make_test_engine();
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx()); // まず OFF にする
+        assert!(!engine.is_user_enabled());
+
+        // ime_on=false の ctx で ON に戻す → recovery 経路（pseudo_ctx で ime_on を強制 true）。
+        let d = engine.on_command(EngineCommand::ToggleEngine, &ime_off_ctx());
+        assert!(engine.is_user_enabled());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true })
+        )));
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ui(UiEffect::EngineStateChanged { enabled: true, .. })
+            )),
+            "recovery must compute target state from the ime-forced-on pseudo_ctx, \
+             not the real (ime_on=false) ctx, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    // ── matches_ime_off (line 516) ──
+
+    #[test]
+    fn matches_ime_off_true_for_matching_combo_false_otherwise() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+        };
+        let engine = make_engine_with_special(special);
+
+        assert!(engine.matches_ime_off(&ime_on_ctx(), &Ev::down(VK_CONVERT).at(0).build()));
+        assert!(!engine.matches_ime_off(&ime_on_ctx(), &Ev::down(VK_A).at(0).build()));
+    }
+
+    // ── matches_key_combo (line 583-586): 修飾キーの厳密一致 ──
+
+    #[test]
+    fn key_combo_requires_exact_ctrl_match() {
+        // `event.vk_code == combo.vk && combo.ctrl == modifiers.ctrl && ...` の
+        // 最初の `&&` (line 584) が `||` に壊れると、vk が一致しただけで
+        // ctrl の不一致を無視してマッチしてしまう。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let ctx_with_ctrl = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                win: false,
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(0).build(), &ctx_with_ctrl);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "combo requires ctrl=false; ctrl=true must not match, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn key_combo_requires_exact_shift_match() {
+        // 2番目の `&&` (line 585) が `||` に壊れると、ctrl まで一致すれば
+        // shift の不一致を無視してマッチしてしまう。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let ctx_with_shift = InputContext {
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: false,
+                shift: true,
+                win: false,
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(0).build(), &ctx_with_shift);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "combo requires shift=false; shift=true must not match, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn key_combo_requires_exact_alt_match() {
+        // 3番目の `&&` (line 586) が `||` に壊れると、ctrl/shift まで一致すれば
+        // alt の不一致を無視してマッチしてしまう。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let ctx_with_alt = InputContext {
+            modifiers: ModifierState {
+                ctrl: false,
+                alt: true,
+                shift: false,
+                win: false,
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(0).build(), &ctx_with_alt);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "combo requires alt=false; alt=true must not match, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn key_combo_requires_exact_vk_match() {
+        // matches_key_combo の本体が無条件 `true` に置換されると、vk が
+        // 全く違うキーでもマッチしてしまう。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let d = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "unrelated vk must not match the combo, got {:?}",
+            effects_of(&d)
+        );
+    }
 }
