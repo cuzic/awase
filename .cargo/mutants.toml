@@ -59,13 +59,29 @@ exclude_re = [
     # 返す Response や self.state には影響しない。
     "nicola_fsm\\.rs:299:12: delete ! in NicolaFsm::flush_pending",
 
-    # 死んだ状態（write-only）: Engine::set_thumb_vks は crates/awase-windows から
-    # 実際に呼ばれているが、書き込む先の self.thumb_vks フィールドを読む箇所が
-    # コード全体に一つも無い（engine.rs:619 のコメント参照。IME 制御キーが
-    # thumb_vks と衝突しないよう除外するガードが、ModifierTiming の grace 猶予
-    # 廃止に伴い撤去された名残）。意味のある動作テストが書けないため除外する。
-    # 本来は set_thumb_vks / thumb_vks ごと削除するのが筋だが、awase-windows 側の
-    # 呼び出し元の削除を伴うため、cargo-mutants 対応とは別のクリーンアップ
-    # タスクとして扱う。
-    "engine\\.rs:79:9: replace Engine::set_thumb_vks with \\(\\)",
+    # 等価変異体（equivalent mutant）: SyncKeyGateMachine::on_timeout の
+    # `Response::pass_through()` を `Default::default()` に置換する変異
+    # (src/gate.rs:83)。timed-fsm クレートの `impl<A, T> Default for Response<A, T>`
+    # は `fn default() -> Self { Self::pass_through() }` と定義されており、
+    # 両者は任意の A/T について常にビット単位で同一の値を返す。数学的に
+    # 区別不可能なため除外する（同種の他の Response 返り値の
+    # `Default::default()` 変異は、関数ごとに個別に等価性を確認してから
+    # 除外すること。すべてが同様に等価とは限らない）。
+    "gate\\.rs:83:9: replace .*on_timeout.* with Default::default\\(\\)",
+
+    # トレイトのデフォルト実装がロジックを持たない単なるプレースホルダ定数の
+    # ケース（platform.rs の TsfComposition）。このトレイトのメソッド群は
+    # 「composition 機構が不要なプラットフォームは実装を省略できる」ための
+    # no-op デフォルトとして設計されている（platform.rs:242-248 のドキュメント
+    # コメント参照）。実際の意味のある実装は crates/awase-windows の
+    # WindowsPlatform 側でオーバーライドされており、そちらでテストすべきもの。
+    # ルート awase クレート側にはこれらのデフォルト値自体を検証する以上の
+    # 意味のあるテストが書けないため除外する。
+    # (ImeDetector::is_active はロジックを持つデフォルト実装のため、
+    #  こちらはテストを追加して対応した。トレイトのデフォルト実装が
+    #  すべて除外対象というわけではない。)
+    "platform\\.rs:260:9: replace .*output_in_flight_ms.*",
+    "platform\\.rs:265:9: replace .*is_composition_warm.*",
+    "platform\\.rs:270:9: replace .*is_tsf_mode.*",
+    "platform\\.rs:292:9: replace .*on_passthrough_key.*",
 ]

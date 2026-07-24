@@ -249,6 +249,40 @@ pub trait ShiftReduceParser {
     /// Use `()` if no per-reduce bookkeeping is needed.
     type ReduceRecord;
 
+    /// Cycle-detection cap: the maximum number of `decide` calls [`parse`]
+    /// will make within a **single** `parse()` invocation before it assumes
+    /// the grammar is stuck in a [`ReduceAndContinue`](ParseAction::ReduceAndContinue)
+    /// cycle and stops.
+    ///
+    /// # Why this exists
+    ///
+    /// [`ReduceAndContinue`](ParseAction::ReduceAndContinue) re-feeds a
+    /// `remaining` token back into `decide`. Termination is therefore a
+    /// **grammar obligation**, not a structural guarantee: if a bug makes
+    /// `decide` keep returning `ReduceAndContinue` for the same effective
+    /// state/token, the driver loop would spin forever, hanging the calling
+    /// thread with no panic and no log. In the `awase` thumb-shift keyboard
+    /// engine this exact bug once turned a one-line `go_idle()` regression into
+    /// a total keyboard-input lockup on a low-level Windows hook thread.
+    ///
+    /// This cap converts that silent infinite hang into a bounded, observable
+    /// failure. When it is exceeded, [`parse`] fails a `debug_assert!` (so the
+    /// cycle is caught fast and loudly in tests/CI and under mutation testing),
+    /// and in release builds degrades gracefully — returning the partial actions
+    /// accumulated so far with no timer commands — rather than crashing the host
+    /// process, honoring the crate's *infallible transitions* principle.
+    ///
+    /// # Choosing a value
+    ///
+    /// A legitimate `ReduceAndContinue` chain is short: each step should make
+    /// progress toward a terminal by consuming its `remaining` token. Real usage
+    /// in `awase` never exceeds **2** iterations per `parse()` (measured across
+    /// its full test suite). The default of `1024` leaves several orders of
+    /// magnitude of headroom for unusually deep grammars while still terminating
+    /// in microseconds. Override it only if you have a genuine, measured need for
+    /// a longer chain (or, rarely, a smaller cap to fail faster in tests).
+    const MAX_REDUCE_CONTINUE_STEPS: usize = 1024;
+
     /// The action table: given the current state and input token, decide what to do.
     ///
     /// This method may mutate internal state (e.g., enter a pending state,
@@ -291,15 +325,54 @@ pub trait ShiftReduceParser {
     ///
     /// # Termination
     ///
-    /// The loop always terminates because every path through `decide` either
-    /// returns a terminal variant (`Shift`, `Reduce`, `PassThrough`) — which
-    /// causes an immediate `return` — or returns `ReduceAndContinue` with a
-    /// new token. The grammar must ensure no cycle exists.
+    /// The loop terminates when `decide` returns a terminal variant (`Shift`,
+    /// `Reduce`, `PassThrough`), which causes an immediate `return`. A
+    /// `ReduceAndContinue` result re-feeds a `remaining` token, so a
+    /// **well-formed grammar must guarantee no cycle** — every
+    /// `ReduceAndContinue` must make progress toward a terminal.
+    ///
+    /// As a defensive backstop against a grammar bug that violates this
+    /// obligation (which would otherwise hang the calling thread forever with
+    /// no diagnostic), the loop is capped at
+    /// [`MAX_REDUCE_CONTINUE_STEPS`](Self::MAX_REDUCE_CONTINUE_STEPS) `decide`
+    /// calls. Exceeding the cap fails a `debug_assert!` in debug/test builds and
+    /// degrades gracefully in release builds (returns the partial actions with no
+    /// timers). See that constant's docs for the rationale and the `awase`
+    /// incident that motivated it.
     fn parse(&mut self, initial: Self::Token) -> Response<Self::Action, Self::TimerId> {
         let mut actions: Vec<Self::Action> = Vec::new();
         let mut current = Some(initial);
 
+        // Safety net against a buggy grammar whose `decide` returns
+        // `ReduceAndContinue` without ever reaching a terminal (see the
+        // `MAX_REDUCE_CONTINUE_STEPS` docs). Each loop iteration is one
+        // `decide` call; terminal variants `return`, so `steps` only keeps
+        // growing while `ReduceAndContinue` is chosen.
+        let mut steps: usize = 0;
+
         while let Some(token) = current.take() {
+            steps += 1;
+            if steps > Self::MAX_REDUCE_CONTINUE_STEPS {
+                // A grammar cycle. In a debug/test build fail loudly and fast so
+                // the bug is found at development time (a silent infinite hang is
+                // the worst possible symptom — on `awase` it locks up the whole
+                // keyboard-hook thread). In a release build we must honor the
+                // crate's "infallible transitions" contract and never crash the
+                // host process, so we degrade gracefully: return whatever partial
+                // actions accumulated, with no timers, and let the caller move on.
+                debug_assert!(
+                    false,
+                    "ShiftReduceParser::parse exceeded MAX_REDUCE_CONTINUE_STEPS \
+                     ({}) — decide() is stuck returning ReduceAndContinue for the \
+                     same effective state/token (a grammar cycle). This would have \
+                     hung the calling thread forever. Fix decide()/on_reduce so the \
+                     re-processed `remaining` token makes progress toward a terminal \
+                     (Shift/Reduce/PassThrough); see the go_idle() incident noted on \
+                     ReduceAndContinue.",
+                    Self::MAX_REDUCE_CONTINUE_STEPS
+                );
+                return build_response(actions, false, Vec::new());
+            }
             match self.decide(&token) {
                 ParseAction::Shift { timers } => {
                     return build_response(actions, true, timers);
@@ -526,5 +599,81 @@ mod tests {
         // Has accumulated actions from the ReduceAndContinue, so consumed is true
         assert!(r.consumed);
         assert_eq!(r.actions, vec!["first"]);
+    }
+
+    /// A deliberately broken parser: `decide` returns `ReduceAndContinue`
+    /// forever (the `remaining` token never makes progress). Before the cycle
+    /// cap existed, `parse` would loop on this input until the thread was killed
+    /// — the exact silent-infinite-hang class of bug that a `go_idle()`
+    /// regression triggered in `awase` (a `TIMEOUT`, not a `MISSED`, under
+    /// mutation testing).
+    ///
+    /// The cap is overridden to a tiny value so the test proves the mechanism
+    /// without spinning up to the 1024 default.
+    struct InfiniteParser {
+        reduce_count: usize,
+    }
+
+    impl ShiftReduceParser for InfiniteParser {
+        type Action = i32;
+        type Token = i32;
+        type TimerId = u8;
+        type ReduceRecord = ();
+
+        // Small cap: prove the backstop fires promptly.
+        const MAX_REDUCE_CONTINUE_STEPS: usize = 8;
+
+        fn decide(&mut self, _token: &i32) -> ParseAction<i32, i32, u8, ()> {
+            // Never reaches a terminal — always re-processes the same token.
+            ParseAction::ReduceAndContinue {
+                actions: vec![],
+                record: (),
+                remaining: 0,
+            }
+        }
+
+        fn on_reduce(&mut self, (): ()) {
+            self.reduce_count += 1;
+        }
+    }
+
+    /// The cycle cap must make `parse` terminate instead of hanging forever.
+    ///
+    /// This test itself is the proof of termination: if the backstop were
+    /// removed, this test would hang the whole `timed-fsm` suite (caught in CI
+    /// as a timeout rather than passing). We accept either landing:
+    /// - debug/test builds (`debug_assertions` on): the `debug_assert!` fires
+    ///   and the call panics — fast, loud, debuggable.
+    /// - release builds: graceful degradation returns a bounded `Response`.
+    ///
+    /// Either way, control returns quickly; the point is that it does not hang.
+    #[test]
+    fn reduce_and_continue_cycle_terminates_instead_of_hanging() {
+        // Silence the panic hook so the (expected) debug_assert backtrace does
+        // not spam test output.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut p = InfiniteParser { reduce_count: 0 };
+            p.parse(0)
+        }));
+        std::panic::set_hook(prev_hook);
+
+        match outcome {
+            // debug builds: the debug_assert! fired. Termination proven by the
+            // fact that we got here at all (not a hang).
+            Err(_) => {}
+            // release builds: graceful degradation. Response is bounded and safe.
+            Ok(resp) => {
+                assert!(
+                    resp.actions.is_empty(),
+                    "cycle produced no output actions, so the degraded response carries none"
+                );
+                assert!(
+                    resp.timers.is_empty(),
+                    "degraded response must not emit timer commands"
+                );
+            }
+        }
     }
 }

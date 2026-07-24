@@ -51,10 +51,6 @@ pub struct Engine {
     lifecycle: KeyLifecycle,
     /// 直前の実効状態（遷移検知用）
     prev_activation: ActivationState,
-    /// NICOLA 親指シフトキーの VK コード（左・右）。
-    /// IME ON/OFF コンボ判定時に除外するために使用。
-    /// VkCode(0) = 未設定。
-    thumb_vks: (VkCode, VkCode),
     /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかの 1 ショットフラグ。
     /// Platform 層がトレイ通知を出すかどうかの判定に使う（`take_solo_off_notification`）。
     solo_off_notify: bool,
@@ -68,15 +64,8 @@ impl Engine {
             special_keys,
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
-            thumb_vks: (VkCode(0), VkCode(0)),
             solo_off_notify: false,
         }
-    }
-
-    /// NICOLA 親指シフトキーの VK コードを設定する。
-    /// IME ON/OFF コンボが親指キーと衝突しないように除外するために使用。
-    pub const fn set_thumb_vks(&mut self, left: VkCode, right: VkCode) {
-        self.thumb_vks = (left, right);
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
@@ -616,9 +605,12 @@ impl SpecialKeyCombos {
 
         // IME 制御キー（エンジン状態に関わらずチェック）
         //
-        // 注: 以前は thumb_vks のキーを除外するガードがあったが、
-        // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）により
-        // 誤マッチリスクが解消されたため除去。
+        // 注: 以前は「押されたキーが NICOLA 親指シフトキーなら IME ON/OFF コンボ
+        // 判定から除外する」ガードがあったが（Engine の thumb_vks フィールド経由、
+        // d8727f5 で導入）、VK_NONCONVERT を親指キーに割り当てた設定では Ctrl+無変換
+        // などの特殊コンボが一切効かなくなる回帰を招いたため 9e879cf で除去した。
+        // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）で誤マッチリスクも
+        // 解消済み。thumb_vks フィールド自体もその後 write-only の死んだ状態として撤去。
         if self
             .ime_on
             .iter()

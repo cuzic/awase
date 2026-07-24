@@ -453,6 +453,18 @@ mod tests {
     }
 
     #[test]
+    fn from_csv_rejects_trigram_wrong_char_count() {
+        // n=3 の match guard `chars.len() == 3` (line 122) が `true` に置換されると、
+        // 3文字以外のデータでも通ってしまい、chars[2] へのインデックスアクセスで
+        // パニックする（2文字の場合）か、余分な文字を無言で無視してしまう
+        // （4文字以上の場合）。上の from_csv_rejects_wrong_char_count は bigram
+        // (n=2) 側のガードしか通らないため、trigram (n=3) 側を別途確認する。
+        let csv = "3,ab,1.0\n";
+        let result = NgramModel::from_csv(csv, 20_000, 30_000, 120_000);
+        assert!(result.is_err(), "expected error, got {result:?}");
+    }
+
+    #[test]
     fn from_csv_rejects_invalid_line() {
         let csv = "bad line\n";
         let result = NgramModel::from_csv(csv, 20_000, 30_000, 120_000);

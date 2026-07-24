@@ -922,3 +922,143 @@ fn test_serialize_round_trip_nicola_file() {
         }
     }
 }
+
+// ── strip_paired_quote 境界値テスト ──
+
+#[test]
+fn parse_value_mismatched_single_quote_is_not_stripped() {
+    // starts_with('\'') && ends_with('\'') の `&&` が `||` に壊れると、
+    // 片方だけ一致した文字列も誤って引用符付きリテラルとして剥がされてしまう。
+    assert_eq!(
+        YabValue::parse("'abc"),
+        YabValue::Literal("'abc".to_string())
+    );
+}
+
+#[test]
+fn parse_value_mismatched_double_quote_is_not_stripped() {
+    assert_eq!(
+        YabValue::parse("\"abc"),
+        YabValue::Literal("\"abc".to_string())
+    );
+}
+
+#[test]
+fn parse_value_two_char_quote_pair_is_not_stripped() {
+    // s.len() > 2 の `>` が `>=` に壊れると、中身が空の2文字（クォート2つのみ）も
+    // 剥がされて空文字列になってしまう。中身が最低1文字必要なことを確認する。
+    assert_eq!(YabValue::parse("''"), YabValue::Literal("''".to_string()));
+    assert_eq!(
+        YabValue::parse("\"\""),
+        YabValue::Literal("\"\"".to_string())
+    );
+}
+
+// ── is_all_fullwidth_ascii 境界値テスト ──
+
+#[test]
+fn parse_value_plain_ascii_is_literal_not_romaji() {
+    // is_all_fullwidth_ascii の本体が無条件 true に置換される、または
+    // `!self.is_empty() && ...` の `&&` が `||` に壊れると、非空文字列は
+    // 中身に関わらず「全角のみ」と誤判定され、classify_fullwidth に回されて
+    // Romaji/KeySequence になってしまう。
+    assert_eq!(YabValue::parse("abc"), YabValue::Literal("abc".to_string()));
+}
+
+// ── process_yab_line: セクションヘッダ判定 ──
+
+#[test]
+fn test_process_yab_line_requires_both_bracket_ends_for_section_header() {
+    // `line.starts_with('[') && line.ends_with(']')` の `&&` が `||` に壊れると、
+    // 閉じ括弧の無い行も誤ってセクションヘッダとして扱われ、
+    // `&line[1..line.len()-1]` で末尾の実際の文字を巻き込んで切り捨ててしまう。
+    let input = "\
+[abc
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let layout = YabLayout::parse(input, KeyboardModel::Jis).unwrap();
+    assert_eq!(
+        layout.name, "[abc",
+        "line missing the closing ']' must be treated as a name line, not a section header"
+    );
+    assert!(
+        !layout.normal.is_empty(),
+        "the real section header on the next line must still be recognized"
+    );
+}
+
+// ── YabFace: contains_key / len / values_mut / resolve_kana ──
+
+#[test]
+fn yab_face_contains_key_true_for_defined_false_for_undefined() {
+    let mut face = YabFace::new();
+    let pos = PhysicalPos::new(0, 0);
+    assert!(!face.contains_key(&pos));
+
+    face.insert(pos, YabValue::Literal("x".to_string()));
+    assert!(face.contains_key(&pos));
+    assert!(!face.contains_key(&PhysicalPos::new(1, 1)));
+}
+
+#[test]
+fn yab_face_len_reflects_insert_count() {
+    let mut face = YabFace::new();
+    assert_eq!(face.len(), 0);
+
+    face.insert(PhysicalPos::new(0, 0), YabValue::Literal("x".to_string()));
+    assert_eq!(face.len(), 1);
+
+    face.insert(PhysicalPos::new(0, 1), YabValue::Literal("y".to_string()));
+    assert_eq!(face.len(), 2);
+}
+
+#[test]
+fn yab_face_values_mut_iterates_all_defined_entries() {
+    let mut face = YabFace::new();
+    face.insert(
+        PhysicalPos::new(0, 0),
+        YabValue::Romaji {
+            romaji: "ka".to_string(),
+            kana: None,
+        },
+    );
+    face.insert(
+        PhysicalPos::new(0, 1),
+        YabValue::Romaji {
+            romaji: "si".to_string(),
+            kana: None,
+        },
+    );
+    assert_eq!(face.values_mut().count(), 2);
+}
+
+#[test]
+fn yab_face_resolve_kana_populates_kana_field_for_romaji_values() {
+    let table = KanaTable::build();
+    let mut face = YabFace::new();
+    let pos = PhysicalPos::new(0, 0);
+    face.insert(
+        pos,
+        YabValue::Romaji {
+            romaji: "ka".to_string(),
+            kana: None,
+        },
+    );
+
+    face.resolve_kana(&table);
+
+    match face.get(&pos) {
+        Some(YabValue::Romaji { kana, .. }) => {
+            assert_eq!(
+                *kana,
+                Some('か'),
+                "resolve_kana must fill in the kana field"
+            );
+        }
+        other => panic!("expected Romaji, got {other:?}"),
+    }
+}

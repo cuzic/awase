@@ -1092,4 +1092,112 @@ engine_off = ["Ctrl+VK_NONCONVERT", "VK_NONCONVERT"]
         assert_eq!(config.keys.engine_on.len(), 2);
         assert_eq!(config.keys.engine_off.len(), 2);
     }
+
+    // ── AppConfig::save (395): 実際にシリアライズしてファイルへ書き込むこと ──
+
+    #[test]
+    fn save_writes_full_toml_content_and_round_trips() {
+        // save() 本体が `Ok(()) を返すだけの no-op` に置換されると、ファイルには
+        // 何も書き込まれない（あるいは元の内容が残ったまま）になる。
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 123
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let path =
+            std::env::temp_dir().join(format!("awase_test_save_{}.toml", std::process::id()));
+
+        config.save(&path).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        let reloaded = AppConfig::load(&path);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            content.contains("simultaneous_threshold_ms"),
+            "save() must actually serialize the config to the file, got: {content}"
+        );
+        assert_eq!(reloaded.unwrap().general.simultaneous_threshold_ms, 123);
+    }
+
+    // ── validate_thresholds (426): speculative_delay_ms == threshold は境界内 ──
+
+    #[test]
+    fn test_validate_speculative_delay_equal_to_threshold_is_not_reset() {
+        // `speculative_delay_ms > threshold` の `>` が `>=` に壊れると、ちょうど
+        // 等しい場合まで誤ってリセットされてしまう。
+        let toml_str = r#"
+[general]
+simultaneous_threshold_ms = 50
+speculative_delay_ms = 50
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(
+            validated.general.speculative_delay_ms, 50,
+            "equal to threshold must not be reset"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("speculative_delay_ms")),
+            "unexpected warning: {warnings:?}"
+        );
+    }
+
+    // ── validate_thumb_keys (452-455): 4条件の `||` を個別に検証 ──
+
+    #[test]
+    fn test_validate_thumb_keys_warns_on_left_kana() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "Kana"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("ロック型")));
+    }
+
+    #[test]
+    fn test_validate_thumb_keys_warns_on_left_vk_kana() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "VK_KANA"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("ロック型")));
+    }
+
+    #[test]
+    fn test_validate_thumb_keys_warns_on_right_kana() {
+        let toml_str = r#"
+[general]
+right_thumb_key = "Kana"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("ロック型")));
+    }
+
+    #[test]
+    fn test_validate_thumb_keys_warns_on_right_vk_kana() {
+        let toml_str = r#"
+[general]
+right_thumb_key = "VK_KANA"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("ロック型")));
+    }
+
+    #[test]
+    fn test_validate_thumb_keys_no_warning_for_defaults() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("ロック型")),
+            "default thumb keys must not warn, got: {warnings:?}"
+        );
+    }
 }
