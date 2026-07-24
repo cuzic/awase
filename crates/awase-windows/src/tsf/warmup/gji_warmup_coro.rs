@@ -73,7 +73,7 @@ async fn gji_coro_body(
     let mut env: TsfEnvSnapshot;
 
     // ── Phase 1: GJI probe ───────────────────────────────────────────────────
-    let nc_fired = 'initial: loop {
+    let (nc_fired, gji_settled) = 'initial: loop {
         // 最初の step() で input は消費されないため、env は 2 tick 目から更新される。
         // 10ms タイマー駆動の 1 tick ズレは動作に影響しない
         // （`GjiWarmupCoro::new` が construction 時に self-priming tick を行うため、
@@ -110,21 +110,27 @@ async fn gji_coro_body(
                 outcome.elapsed_ms,
                 outcome.settled,
             );
-            break 'initial false;
+            break 'initial (false, outcome.settled);
         }
 
-        break 'initial true;
+        break 'initial (true, outcome.settled);
     };
 
     // ── Phase 4: transmit plan 決定 ───────────────────────────────────────────
     // ReinjectConfirmKey/PassthroughConfirmKey + TSF mode（WezTerm等）:
     // Enter/Space 後に WezTerm は NameChange を発火しないが GJI は VKs を正常にコンポジション中。
     // nc_fired=false のまま decide_transmit_plan に渡すと needs_literal 第2項が true になり
-    // LiteralDetect が誤検出して backspace を送る（composited 'な' が消えるバグ）。
-    // → is_confirm_key && TSF mode の場合は nc_fired を true に昇格して第2項を抑制する。
-    let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode);
+    // LiteralDetect が誤検出して backspace を送る（composited 'な' が消えるバグ、`3ffbe66`）。
+    // → confirm_key_tsf_hint として decide_transmit_plan に渡し、gji_settled（実測）と
+    // 併せて救済してよいかを判定させる。nc_fired 自体はここで書き換えない
+    // （BUG-40: 以前は is_confirm_key && is_tsf_mode だけで nc_fired を無条件に true へ
+    // 昇格していたため、88s idle 後の genuinely cold なセッション（gji_settled=false）
+    // まで誤救済され、reactive LiteralDetect が丸ごとスキップされて漏れた romaji が
+    // 無補正で出力された。`docs/known-bugs.md` 参照）。
     let observations = ProbeObservations {
-        nc_fired: nc_for_plan,
+        nc_fired,
+        gji_settled,
+        confirm_key_tsf_hint: cold_reason.is_confirm_key() && env.is_tsf_mode,
     };
 
     let plan = decide_transmit_plan(
@@ -137,14 +143,18 @@ async fn gji_coro_body(
     );
 
     // transmit plan の判定結果（needs_literal になるかどうか、その入力になった
-    // nc_fired）は従来ログに一切出ておらず、部分リテラル発生時に
-    // 「なぜ LiteralDetect に入った/入らなかったか」を事後診断できなかった
-    // （切り分けログ強化、2026-07-09 の "kお" 系調査で判明）。
+    // nc_fired/gji_settled/confirm_key_tsf_hint）は従来ログに一切出ておらず、部分
+    // リテラル発生時に「なぜ LiteralDetect に入った/入らなかったか」を事後診断
+    // できなかった（切り分けログ強化、2026-07-09 の "kお" 系調査で判明。
+    // gji_settled/confirm_key_tsf_hint は BUG-40 追加）。
     log::debug!(
-        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} is_tsf_mode={}",
+        "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} gji_settled={} \
+         confirm_key_tsf_hint={} is_tsf_mode={}",
         ctx.cold_seq,
         plan.needs_literal,
         observations.nc_fired,
+        observations.gji_settled,
+        observations.confirm_key_tsf_hint,
         env.is_tsf_mode,
     );
 

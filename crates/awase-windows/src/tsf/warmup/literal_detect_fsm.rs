@@ -445,7 +445,10 @@ mod tests {
     }
 
     fn obs(nc_fired: bool) -> ProbeObservations {
-        ProbeObservations { nc_fired }
+        ProbeObservations {
+            nc_fired,
+            ..Default::default()
+        }
     }
 
     fn tsf_env() -> TsfEnvSnapshot {
