@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # mutants ジョブを手動起動するため。push/pull_request では他ジョブと同様に動くが、
+  # mutants ジョブ自体は if で workflow_dispatch 起動時のみに絞ってある。
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -192,3 +195,24 @@ jobs:
         with:
           name: awase-windows-x64-msi
           path: awase-0.1.0-x64.msi
+
+  # 手動起動専用（push/pull_request では動かない）。設定は .cargo/mutants.toml、
+  # 対象は `awase` パッケージ（プラットフォーム非依存の中核ロジック）のみ。
+  # フル実行は数十分かかるため、通常の push/PR ゲートには含めない。
+  mutants:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Run cargo-mutants (awase core crate)
+        run: cargo mutants --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out/

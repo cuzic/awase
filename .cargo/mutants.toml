@@ -1,0 +1,27 @@
+# cargo-mutants 設定 (https://mutants.rs/)
+#
+# デフォルト対象はワークスペースルートの `awase` パッケージ（プラットフォーム
+# 非依存の中核ロジック: engine/ gate.rs kana_table.rs ngram.rs scanmap.rs yab/ 等）。
+# ルート Cargo.toml は [workspace] と [package] を兼ねているため、リポジトリ
+# ルートで引数なしに `cargo mutants` を実行すると `awase` パッケージだけが対象になる。
+#
+# 他パッケージを対象にする場合は明示的に指定する:
+#   cargo mutants -p awase-windows   # state/ 等の一部はプラットフォーム非依存だが、
+#                                     # 大半は #[cfg(windows)] のため Linux 上では
+#                                     # unviable 判定（ビルド対象外）になる。
+#                                     # 本命は Windows 実機 / windows-latest CI。
+#   cargo mutants --workspace        # 全パッケージ（低速）
+#
+# 変更点だけを見たいときは --in-diff を使う:
+#   git diff main | cargo mutants --in-diff -
+
+exclude_globs = [
+    "target/**",
+    # ゴールデン/ジャーナルの固定データフィクスチャ（ロジックを持たない）
+    "crates/awase-windows/tests/golden/**",
+    "crates/awase-windows/tests/journals/**",
+]
+
+# ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
+# false MISSED（実際はテストが間に合わず打ち切られただけ）になるのを防ぐ下限。
+minimum_test_timeout = 30

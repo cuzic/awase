@@ -20,3 +20,7 @@ run = "cargo fmt -- --check"
 [tasks.pre-push]
 description = "Run all checks before push"
 depends = ["check", "clippy", "test", "fmt"]
+
+[tasks.mutants]
+description = "Run cargo-mutants mutation testing on the awase core crate (slow, run manually)"
+run = "cargo mutants"
