@@ -337,4 +337,36 @@ mod tests {
         assert_eq!(info.process_id, 42);
         assert_eq!(info.class_name, "Notepad");
     }
+
+    // ── ImeDetector::is_active (デフォルト実装) ──
+    //
+    // 具体的な実装（awase-windows 等）を持たないため、最小のテスト用実装で
+    // デフォルトメソッドのロジックそのものを検証する。
+
+    struct FakeImeDetector(ImeMode);
+
+    impl ImeDetector for FakeImeDetector {
+        fn get_mode(&self) -> ImeMode {
+            self.0
+        }
+        fn is_composing(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn is_active_true_for_kana_modes() {
+        assert!(FakeImeDetector(ImeMode::Hiragana).is_active());
+        assert!(FakeImeDetector(ImeMode::Katakana).is_active());
+        assert!(FakeImeDetector(ImeMode::HalfKatakana).is_active());
+    }
+
+    #[test]
+    fn is_active_false_for_off_and_alphanumeric() {
+        // is_active の本体が無条件 true に置換される、または
+        // `!matches!(...)` の `!` が消えると、Off/Alphanumeric でも
+        // true になってしまう。
+        assert!(!FakeImeDetector(ImeMode::Off).is_active());
+        assert!(!FakeImeDetector(ImeMode::Alphanumeric).is_active());
+    }
 }
