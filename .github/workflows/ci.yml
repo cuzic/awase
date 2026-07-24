@@ -216,3 +216,28 @@ jobs:
         with:
           name: mutants-report
           path: mutants.out/
+
+  # 手動起動専用。対象は awase-windows のうちプラットフォーム非依存な
+  # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）。
+  # awase-windows の大半を占める #[cfg(windows)] コードは Linux 上では
+  # コンパイルされず、無指定で走らせると false MISSED だらけになるため
+  # 明示的なファイル許可リストでスコープを絞ってある（詳細は同 toml 内コメント参照）。
+  # Windows 実機依存のロジック自体のミューテーションテストは対象外
+  # （windows-latest ランナーでの実行は将来検討）。
+  mutants-awase-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Run cargo-mutants (awase-windows, platform-independent subset)
+        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-awase-windows
+          path: mutants.out/
