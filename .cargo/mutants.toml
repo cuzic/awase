@@ -52,4 +52,10 @@ exclude_re = [
     # 区別不可能（数学的に等価）。同じ箇所の `==`/`<` への変異は区別可能で
     # 別途テスト済み（この行を除外対象から漏らさないよう line:col まで指定する）。
     "timing\\.rs:120:24: replace > with >=",
+
+    # ログ出力のみに影響し、戻り値・状態に一切影響しない分岐:
+    # NicolaFsm::flush_pending の `if !was_idle { log::info!(...) }` は、
+    # was_idle の真偽が変わってもログを出すかどうかが変わるだけで、
+    # 返す Response や self.state には影響しない。
+    "nicola_fsm\\.rs:299:12: delete ! in NicolaFsm::flush_pending",
 ]
