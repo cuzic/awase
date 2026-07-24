@@ -1,0 +1,69 @@
+# awase-windows 用スコープ限定設定
+#
+# 使い方:
+#   cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml
+#
+# なぜファイルを名指しで許可リスト化しているか:
+#
+# `cargo mutants -p awase-windows` を無指定で実行すると、awase-windows の
+# 大半を占める #[cfg(windows)] 配下のロジック（フック/UIA/TSF 等の実 Win32
+# 呼び出し）まで対象になる。Linux 上ではこれらの関数自体がコンパイルされない
+# ため、変異を仕込んでもビルド後のバイナリに反映されず、テストが素通しして
+# 見かけ上 MISSED になる（実際は「テストできない」だけで「テストが甘い」
+# わけではない = false MISSED、cargo-mutants 導入時の初回フル実行で判明した
+# 既知の落とし穴）。この誤検知を避けるため、実際に Linux 上でコンパイルされる
+# （= プラットフォーム非依存な）ファイルだけを examine_globs で明示的に
+# 許可する。ディレクトリ丸ごとの glob（例 `state/**`）を使わないのは、同じ
+# ディレクトリ内に #[cfg(windows)] ファイルが混在しているため
+# （例: state/platform_state.rs, state/ime_decision_view.rs 等は対象外）。
+#
+# 保守上の注意: このリストはメンテナンスが必要 —— 対象ファイルの
+# プラットフォーム依存性が変わったら（#[cfg(windows)] を追加/削除したら）、
+# このリストと下の exclude_re も合わせて見直すこと。
+examine_globs = [
+    "crates/awase-windows/src/scanmap.rs",
+    "crates/awase-windows/src/msime_key_assignment.rs",
+    "crates/awase-windows/src/single_thread_cell.rs",
+    "crates/awase-windows/src/state/ime_model.rs",
+    "crates/awase-windows/src/state/observation_store.rs",
+    "crates/awase-windows/src/state/conv_classify.rs",
+    "crates/awase-windows/src/state/conv_mode.rs",
+    "crates/awase-windows/src/state/eisu_recovery.rs",
+    "crates/awase-windows/src/state/force_guard.rs",
+    "crates/awase-windows/src/state/belief.rs",
+    "crates/awase-windows/src/state/hook_state.rs",
+    "crates/awase-windows/src/state/app_ime_policy.rs",
+    "crates/awase-windows/src/state/ime_event.rs",
+    "crates/awase-windows/src/state/input_barrier.rs",
+    "crates/awase-windows/src/state/probe_admission.rs",
+    "crates/awase-windows/src/state/transition.rs",
+    "crates/awase-windows/src/focus/class_names.rs",
+    "crates/awase-windows/src/focus/cache.rs",
+    "crates/awase-windows/src/focus/kinds.rs",
+]
+
+# ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
+# false MISSED になるのを防ぐ下限（ルートの .cargo/mutants.toml と同じ理由）。
+minimum_test_timeout = 30
+
+exclude_re = [
+    # msime_key_assignment.rs: `windows_impl` モジュール全体が #[cfg(windows)]。
+    # Linux ではこのモジュール自体が存在しないため、中の関数（レジストリ読み取り・
+    # ポップアップ表示など実 Win32 呼び出し）への変異は常に false MISSED になる。
+    # ロジックの実体は同ファイルの `conflict_warning`（cfg 無し）に集約済みで、
+    # そちらは examine_globs の対象としてテスト済み。
+    "windows_impl::",
+
+    # conv_mode.rs: on_focus_changed は関数全体が #[cfg(windows)]。
+    "ConvModeMgr::on_focus_changed",
+
+    # conv_mode.rs: update_from_conv 内の HanKata→ZenKata ダウングレード抑制判定
+    # （147/148/152 行）だけが #[cfg(windows)] のインラインブロック。同じ関数の
+    # 他の分岐（142 行目の old == Some(new) 等）は cfg 無しで実際にテスト対象。
+    "conv_mode\\.rs:(147|148|152):",
+
+    # ime_event.rs: HwndId::to_hwnd と `From<HWND> for HwndId` は windows クレートの
+    # 型を直接扱う #[cfg(windows)] 専用の変換関数。
+    "HwndId::to_hwnd",
+    "for HwndId>::from",
+]
