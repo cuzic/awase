@@ -672,12 +672,18 @@ mod tests {
         let _g = VETO_TEST_LOCK.lock().unwrap();
         reset_tsf_obs_for_veto_test();
 
-        let stale_write_ms = crate::hook::current_tick_ms();
-        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-
         TSF_OBS.gji_write_bytes.store(9_000, SeqCst);
         let detector = LiteralDetector::new_with_pre_send_baseline(9_000, true); // epoch > stale_write_ms
+        // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を模擬する。
+        // GetTickCount64は解像度が粗い(既定~15.6ms)ため、実時間sleep(5ms)で
+        // 「epochより後」を作ろうとすると同一tickに丸められることがあり、
+        // evidence_is_fresh(tieをfresh扱いする`>=`比較)が意図せずtrueになって
+        // flakyに失敗する(2026-07-25、probe.rs/probe_fsm.rsの同種修正時に
+        // このテストへの適用を見落としていたが、Windows実機の再実行で
+        // 単独の真の失敗として顕在化し発見)。saturating_subで明示的に確実な
+        // 過去時刻を作ることで解像度に依存しないようにする。
+        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
         TSF_OBS.gji_write_bytes.store(9_400, SeqCst); // 閾値超過だが根拠は stale
 
         let now_ms = crate::hook::current_tick_ms();
