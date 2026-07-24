@@ -25,3 +25,22 @@ exclude_globs = [
 # ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
 # false MISSED（実際はテストが間に合わず打ち切られただけ）になるのを防ぐ下限。
 minimum_test_timeout = 30
+
+# 初回フル実行（2026-07-24、GitHub Actions run 30070606789、661 mutants）で
+# 見つかった MISSED 127件のうち、以下19件はログ/デバッグ出力にのみ影響し、
+# 製品ロジックとしての価値がない（テストで潰すコストに見合わない）ため除外する:
+#
+# - debug_label / debug_state_label 系（EngineState/Engine/FsmAdapter/NicolaFsm）:
+#   デバッグ用の状態ラベル文字列生成。ログにしか出ず、動作に影響しない。
+# - UpperHex/LowerHex (VkCode/ScanCode) の fmt 実装: ログ表示専用。
+# - Debug for YabFace / Display for Charset / Display for ConvMode の fmt 実装:
+#   同上、表示専用でロジックに影響しない。
+#
+# これにより以後の実行結果は実ロジックの検証に集中できる。
+exclude_re = [
+    "debug_label|debug_state_label",
+    "UpperHex|LowerHex",
+    "impl std::fmt::Debug for YabFace",
+    "impl fmt::Display for Charset",
+    "impl fmt::Display for ConvMode",
+]
