@@ -993,17 +993,23 @@ mod tests {
     // （旧ケース 8「EngineIntent でない → confident」は 2026-07-06 到達不能パス監査
     // B6 で撤去 — SetOpen は常に Engine の意図であり is_engine_intent 区別ごと畳んだ。）
 
-    // ケース 9: Confirmed ON + 目標 ON → confident（永続スキップ）
+    // ケース 9: Confirmed ON + 目標 ON + 300ms 以内 → confident。
+    // 300ms超過後は他ケース同様not confidentになる(7a24442でOFF方向の「永続
+    // スキップ」を廃止した設計と一貫させるため、confidentは時間無制限の
+    // 「永続」ではなく300msの再検証ウィンドウという設計)。旧now_ms=100_000/
+    // at_ms=500(elapsed=99,500ms)はテスト新設(f7f09bc, 2026-06-04)時点で
+    // 既に300ms窓の外にあり、Windows実機で初めてこのテストを実行するまで
+    // (2026-07-25)発見されなかった。
     #[test]
     fn confident_when_confirmed_on_desired_on() {
         assert!(chrome_intent_confident(
             true,
             AppliedImeState::Confirmed {
                 open: true,
-                at_ms: 500
+                at_ms: 900
             },
             true,
-            100_000
+            1000
         ));
     }
 

@@ -807,8 +807,17 @@ mod tests {
     }
 
     #[test]
-    fn decide_plan_nc_fired_enables_literal_when_gji_active() {
-        // nc_fired=true でも gji_active + !is_long_cold なら LiteralDetect は有効なまま。
+    fn decide_plan_nc_fired_suppresses_literal_even_when_gji_active() {
+        // BUG-40（docs/known-bugs.md）で `nc_confirmed = nc_fired || (confirm_key_tsf_hint
+        // && gji_settled)` に整理されて以降、nc_fired=true（NameChange が実発火 = 合成が
+        // 実際に確認された）は常に needs_literal=false になる。この関数は
+        // `426a7f2`（2026-07-19）で追加された旧テスト（旧実装では
+        // `should_prepend_f2` 由来の第1節があり、nc_fired=true でも
+        // gji_active+!is_long_cold なら literal 有効、という別の分岐が生きていた）の
+        // 期待値が、その後の削除・BUG-40整理で古くなったまま残っていたもの。
+        // BUG-40の副次的発見として記録済み（本テスト自体は未修正のまま放置されて
+        // いた）で、2026-07-25にWindows実機CIで実際にassertion failureとして
+        // 顕在化したのを機に、現在の意図された挙動に合わせて更新した。
         let obs = ProbeObservations {
             nc_fired: true,
             ..Default::default()
@@ -822,8 +831,8 @@ mod tests {
         let plan = decide_transmit_plan(false, obs, env, true, false, false);
 
         assert!(
-            plan.needs_literal,
-            "gji_active + !is_long_cold: LiteralDetect 有効"
+            !plan.needs_literal,
+            "nc_fired=true(NameChange確認済み)ならgji_active/is_long_cold問わずLiteralDetect不要のはず(BUG-40)"
         );
     }
 
@@ -1096,16 +1105,22 @@ mod tests {
             "per-VK confirm ループの最初の VK 送信要求のはず: {first_actions:?}"
         );
 
-        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
-        let stale_write_ms = crate::hook::current_tick_ms();
-        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-
         let detector = LiteralDetector::new_with_pre_send_baseline(
             crate::tsf::observer::gji_write_bytes(),
             false,
         );
         let deadline_ms = crate::hook::current_tick_ms() + 10_000;
+
+        // 前世代の残存 GJI I/O（今回の VK 送信より前）だけがある状態を模擬する。
+        // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を作るため、実時間
+        // sleepではなくsaturating_subで明示的な過去時刻を使う。GetTickCount64の
+        // 粗い解像度(既定~15.6ms)下ではsleep(5ms)後にtickが進んでいる保証がなく、
+        // 同一tickに丸まるとevidence_is_freshのtie判定(`>=`、probe.rs:656/735)が
+        // trueになり、猶予に入らず即座にactionが出て「猶予期間中は空のはず」の
+        // アサートがflakyに失敗する(2026-07-25、Windows実機で初めてこのテストを
+        // 実行した際に顕在化)。
+        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
 
         // 候補ウィンドウが「既に可視」= 前世代の合成が残っている状態を模擬する。
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);

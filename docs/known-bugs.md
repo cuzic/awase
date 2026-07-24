@@ -4523,3 +4523,28 @@ let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode);
 **副次的発見（本コミットでは未修正、別途フォローアップ要）:** 同じ `probe_fsm.rs` の既存テスト `decide_plan_nc_fired_enables_literal_when_gji_active`（`426a7f2`, 2026-07-19 `DIAG_DISABLE_PROACTIVE_TSF_WARMUP` 恒久化リファクタで追加）は、`nc_fired=true` を入力に `plan.needs_literal` が `true` になることを期待しているが、同じ形式で `rustc` 単体抽出して確認した限り現在の `needs_literal` 式では `nc_fired=true` のとき常に `false` になり、このテストはアサーション失敗するはずである。同リファクタで `needs_literal` の第1節（`should_prepend_f2` 由来、削除済み）だけがこのテストの成立根拠だったが、削除時にアサーションが更新されなかった可能性が高い。Windows 実機/CI での実行結果が未確認のため確定はできないが、次にこのファイルに触れるセッションで要確認。
 
 **関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`ProbeObservations`/`decide_transmit_plan`）、`crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs`（`gji_coro_body` Phase 1/4、`nc_for_plan` 撤去）、`crates/awase-windows/src/output/vk_send.rs`／`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`ProbeObservations` 構築箇所の追随）。関連: BUG-39（同じ `gji_warmup_coro.rs` の別経路）、`3ffbe66`（`confirm_key_tsf_hint` 相当ロジックの導入元）、`629db3b`（`gji_resumed` 削除、本バグの直接の引き金）、`.claude/rules/ime-belief-architecture.md`（「蓄積しない・毎回純粋関数で再計算される値は独立した実観測パラメータとして渡す」という判断基準）。
+
+## BUG-41: `decide_alt_impersonation` が KeyUp 時点で「なりすまし発動中」フラグを stuck true のまま持ち越し、後続の無関係な Alt 押下まで modifier 誤補正の対象にしていた
+
+**発覚経緯:** 2026-07-25、`crates/awase-windows` の `cargo test --lib` が GCP Spot self-hosted runner上のWindows実機で初めて実際に実行された（従来はWine未導入によりLinux上での実行・Windows実機での動作確認とも未実施で、`--no-run`のクロスコンパイルチェックのみだった）。この初回実行で`hook::alt_impersonation_tests::keyup_uses_the_decision_recorded_at_keydown`が実機上で初めて失敗し、本バグが発覚した。
+
+**症状（テストで再現）:** Left Alt を親指キーとしてなりすまし設定中、`decide_alt_impersonation`にKeyDown→KeyUpの順で入力すると、KeyUp後も戻り値の`is_impersonating`が`true`のままだった（`assert!(!impersonating_after_up, ...)`が失敗）。この戻り値は`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`（`hook.rs`）に格納され、`is_alt_impersonation_active()`経由で3箇所（`hook.rs`・`runtime/mod.rs`・`runtime/message_handlers.rs`）が`modifiers.alt`を強制falseに補正する判断に使われる。KeyUp後もこのフラグがstuck trueのまま残ると、次に(なりすまし設定の無い)Right Altを押す、あるいはAlt+Tab等を行った際にも`modifiers.alt`が誤ってfalse補正され、`cec4da9`が修正したのと同種のbypass誤爆が再発しうる。
+
+**原因:** `decide_alt_impersonation`が「今回のvk翻訳に使う判定」と「以後保持すべき状態」を同じ1つの値(`impersonating`)で兼用しており、`is_keydown=false`(KeyUp)の場合も無条件に`was_impersonating`をそのまま持ち越していた。KeyUpの瞬間は物理キーが既に離れているため、以後保持する状態は必ずfalseに戻すべきだった。
+
+**修正:** 戻り値の2要素目(以後保持する状態)を`is_keydown`で分岐させ、KeyUpの場合は常に`false`を返すようにした。vk翻訳(1要素目)は従来通り`currently_impersonating`(直前の判定)を使い、KeyDown/KeyUpの対称性は維持している。
+
+**テスト:** 既存の`hook::alt_impersonation_tests::keyup_uses_the_decision_recorded_at_keydown`がそのまま回帰テストになる(新規追加ではなく、既存テストが正しく通るようになった)。`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`は警告ゼロ確認済み。GCP Spot self-hosted runner上での実`cargo test --lib -p awase-windows`実行によるパス確認は次回のCI実行待ち。
+
+**関連ファイル:** `crates/awase-windows/src/hook.rs`（`decide_alt_impersonation`、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`）。関連: `cec4da9`（同種のOsModifierHeldバイパス誤爆の初回修正）。
+
+## 2026-07-25: Windows実機での`cargo test --lib -p awase-windows`初回実行で判明したテスト自体の不具合(実装バグではない)
+
+GCP Spot self-hosted runner導入により、`cargo test --lib -p awase-windows`が実Windows上で初めて実行された（従来はLinux上でのクロスコンパイル`--no-run`チェックのみで、実行そのものは未実施だった）。BUG-41以外に、以下は**実装ではなくテスト自体の不具合**と判明したため、テスト側を修正した:
+
+- `tsf::probe::tests::check_now_returns_stale_confirm_when_write_evidence_predates_epoch`、`tsf::warmup::probe_fsm::tests::chrome_per_vk_stale_confirm_from_leftover_candidate_window_recovers_like_suspected_literal`: どちらも`std::thread::sleep(5ms)`+実`GetTickCount64`(既定解像度~15.6ms)で「epochより前」の時刻を作ろうとしていたが、tick解像度に対してマージンが無く、同一tickに丸まると`evidence_is_fresh`のtie判定(`>=`)が意図せずtrueになりflakyに失敗しうる設計だった。同ファイル内の他のテスト（`check_now_show_only_confirm_becomes_stale_after_grace_expires`等）が既に使っている`saturating_sub(50)`方式に統一し、実時間sleepへの依存を排除した。`EPOCH_FENCE_GRACE_MS`等の本番タイミング定数は変更していない。
+- `runtime::executor::tests::confident_when_confirmed_on_desired_on`: `now_ms=100_000`/`at_ms=500`(経過99,500ms)というテスト新設時点(`f7f09bc`, 2026-06-04)から既に300ms窓の外にある入力を使っていた。`chrome_intent_confident`の「Confirmed一致から300ms以内のみconfident」という設計(`7a24442`でOFF方向の永続スキップを廃止した際に確立)自体は正しく、テストの入力値を300ms以内(`at_ms=900`/`now_ms=1000`)に修正した。
+- `tsf::warmup::literal_detect_fsm::tests::poll_recovers_like_suspected_literal_when_stale_confirm_detected`（および`poll_vetoes_backspace_while_candidate_visible`のPoisonErrorカスケード）: `TSF_OBS`（プロセス全体のグローバル状態）を保護するはずの`Mutex`が`observer.rs`/`probe.rs`/`literal_detect_fsm.rs`の3ファイルでそれぞれ**別々**の`static`として定義されており(`TEST_LOCK`×2、`VETO_TEST_LOCK`×1)、名前は同じでも異なる`Mutex`インスタンスのため互いに排他できていなかった。`cargo test`のデフォルト並列実行下で、あるファイルのテストが別ファイルのテストの`TSF_OBS`書き換えに巻き込まれ、`gji_last_write_ms`が意図せず0にリセットされる等で本来`StaleConfirm`になるはずの判定が`CompositionConfirmed`に化けていた。`observer.rs`に`TSF_OBS_TEST_LOCK`を1つだけ定義し、3ファイルとも`use ... as TEST_LOCK`でこれを共有するよう統一した。
+- `tsf::warmup::probe_fsm::tests::decide_plan_nc_fired_enables_literal_when_gji_active`: BUG-40で既に「次にこのファイルに触れるセッションで要確認」と記録されていた通り、`nc_fired=true`时に`needs_literal=true`を期待する古い実装(旧`should_prepend_f2`由来、削除済み)の名残だった。BUG-40で確立された新しい意図(`nc_fired=true`＝NameChange確認済みなら常に`needs_literal=false`)に合わせてテスト名・アサーションを更新した(`decide_plan_nc_fired_suppresses_literal_even_when_gji_active`に改名)。
+
+いずれも`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`で警告ゼロ確認済み。GCP Spot self-hosted runner上での実`cargo test --lib -p awase-windows`によるパス確認は次回CI実行で行う。

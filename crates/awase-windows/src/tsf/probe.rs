@@ -753,8 +753,9 @@ mod tests {
     use std::sync::atomic::Ordering::SeqCst;
     use std::time::Instant;
 
-    /// テスト間でグローバルな観測 atomic が競合しないようにシリアライズするロック
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// テスト間でグローバルな観測atomicが競合しないようにシリアライズするロック
+    /// (`observer.rs`/`literal_detect_fsm.rs`と共有、`TSF_OBS_TEST_LOCK`参照)。
+    use crate::tsf::observer::TSF_OBS_TEST_LOCK as TEST_LOCK;
 
     /// `check_now` が `true` を返すまでポーリングする（旧 `wait_until_ready`、
     /// 本番未使用のため 2026-07-19 に撤去。`check_now` 自体のタイミング挙動を
@@ -980,12 +981,18 @@ mod tests {
     #[test]
     fn check_now_returns_stale_confirm_when_write_evidence_predates_epoch() {
         let _g = TEST_LOCK.lock().unwrap();
-        let stale_write_ms = crate::hook::current_tick_ms();
-        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
-        std::thread::sleep(std::time::Duration::from_millis(5));
-
         TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
         let detector = LiteralDetector::new_with_pre_send_baseline(5_000, true); // epoch > stale_write_ms
+        // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を模擬する。
+        // GetTickCount64は解像度が粗い(既定~15.6ms)ため、実時間sleep(5ms)で
+        // 「epochより後」を作ろうとすると同一tickに丸められることがあり、
+        // evidence_is_fresh(tieをfresh扱いする`>=`比較)が意図せずtrueになって
+        // flakyに失敗する(2026-07-25実CI実行で初めてWindows実機上でこのテストが
+        // 実行され、この非決定性が顕在化した)。saturating_subで明示的に確実な
+        // 過去時刻を作ることで解像度に依存しないようにする(下のcheck_now_show_only_confirm_*
+        // テストと同じ手法)。
+        let stale_write_ms = crate::hook::current_tick_ms().saturating_sub(50);
+        TSF_OBS.gji_last_write_ms.store(stale_write_ms, SeqCst);
         TSF_OBS.gji_write_bytes.store(5_400, SeqCst); // 閾値超過だが根拠は stale
 
         let now_ms = crate::hook::current_tick_ms();

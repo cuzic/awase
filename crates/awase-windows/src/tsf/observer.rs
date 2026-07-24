@@ -290,6 +290,21 @@ impl TsfObservations {
 ///   `focus_namechange`, `composition_probe`
 pub(in crate::tsf) static TSF_OBS: TsfObservations = TsfObservations::new();
 
+/// `TSF_OBS` への並行テストアクセスを直列化する唯一のロック。
+///
+/// `TSF_OBS` はプロセス全体で共有される単一の`static`であり、`cargo test`は
+/// デフォルトで複数スレッド並行実行する。過去は`observer.rs`/`probe.rs`/
+/// `warmup/literal_detect_fsm.rs`の各テストモジュールがそれぞれ**別々**の
+/// `Mutex`(`TEST_LOCK`/`TEST_LOCK`/`VETO_TEST_LOCK`)でこのstaticを
+/// 「保護しているつもり」だったが、異なる`Mutex`インスタンスは互いに排他
+/// しないため実質ノーガードだった。2026-07-25、Windows実機での初回
+/// `cargo test --lib -p awase-windows`実行でこのレースが顕在化し、
+/// `literal_detect_fsm::poll_recovers_like_suspected_literal_when_stale_confirm_detected`
+/// が`gji_last_write_ms`を他モジュールのテストに書き換えられて
+/// `StaleConfirm`の代わりに`CompositionConfirmed`を観測し失敗した。
+#[cfg(test)]
+pub(in crate::tsf) static TSF_OBS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// `TsfObservations` グローバルへの参照を返す。
 ///
 /// `tsf/` 外から TSF/GJI 観測値を読む唯一の正規ルート。
@@ -473,8 +488,9 @@ pub use super::win_event_obs::{install_observation_hooks, WinEventHookGuard};
 mod tests {
     use super::*;
 
-    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック。
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック
+    /// (`probe.rs`/`literal_detect_fsm.rs`と共有、詳細は`TSF_OBS_TEST_LOCK`のdoc参照)。
+    use super::TSF_OBS_TEST_LOCK as TEST_LOCK;
 
     // ── BUG-39: literal_session_confirmed の世代付け回帰テスト ─────────────
 

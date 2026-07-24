@@ -560,8 +560,9 @@ mod tests {
     use crate::tsf::observer::TSF_OBS;
     use std::sync::atomic::Ordering::SeqCst;
 
-    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック。
-    static VETO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック
+    /// (`observer.rs`/`probe.rs`と共有、`TSF_OBS_TEST_LOCK`参照)。
+    use crate::tsf::observer::TSF_OBS_TEST_LOCK as VETO_TEST_LOCK;
 
     fn reset_tsf_obs_for_veto_test() {
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
