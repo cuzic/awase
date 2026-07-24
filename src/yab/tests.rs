@@ -1038,7 +1038,7 @@ fn yab_face_values_mut_iterates_all_defined_entries() {
 
 #[test]
 fn yab_face_resolve_kana_populates_kana_field_for_romaji_values() {
-    let table = crate::kana_table::KanaTable::build();
+    let table = KanaTable::build();
     let mut face = YabFace::new();
     let pos = PhysicalPos::new(0, 0);
     face.insert(
