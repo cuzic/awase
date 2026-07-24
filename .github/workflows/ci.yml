@@ -216,3 +216,28 @@ jobs:
         with:
           name: mutants-report
           path: mutants.out/
+
+  # 全プロジェクト統一のGCP Spot self-hosted runner(rust-nicola-builder)向け。
+  # awase-windowsはWindows専用API(win32-async/win32-worker/windows crate)を使うため
+  # mingw-w64クロスコンパイルではなくMSVCネイティブでcargo-mutantsを回す必要があり、
+  # GitHub提供のwindows-latestは有料枠消費が大きい長時間ジョブ向けではないため、
+  # ephemeral self-hosted runnerで実行する(詳細: ~/cargo-ci-gcp-spot-instance、
+  # rust-nicolaリポジトリの.claude/skills/cargo-ci-gcp-spot-instance/SKILL.md)。
+  # runnerが起動していない(gh-runner-tokenを発行してinstanceを起動していない)間は
+  # ジョブがqueuedのまま待たされるだけなので、push/pull_requestのゲートには含めず
+  # workflow_dispatch専用にしてある。
+  mutants-windows:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, Windows, gcp-spot]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run cargo-mutants (awase-windows)
+        shell: pwsh
+        run: cargo mutants -p awase-windows --jobs 8 --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-windows
+          path: mutants.out/
