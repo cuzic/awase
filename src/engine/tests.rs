@@ -1212,6 +1212,117 @@ fn test_continuous_shift_left_thumb() {
     );
 }
 
+/// 親指を単独タイムアウトで確定した後（=消費されていない）も物理的に押されたままの場合、
+/// 次に来た文字キーは `active_thumb_face()` 経由でシフトされるべき
+/// （`classify_idle_intent` の「Active thumb combo」分岐、`is_thumb_consumed`、
+/// `active_thumb_face` の3つを同時に検証する）。
+///
+/// - `classify_idle_intent` の `!ev.key_class.is_thumb()` の `!` が消えると、
+///   文字キー到着時にこの分岐そのものに入らなくなり、char は PendingChar
+///   （通常面）に落ちる。
+/// - `is_thumb_consumed` の本体が `true` に置換される、または
+///   `phys_down.is_some() && consumed == phys_down` が `||` に壊れると、
+///   一度もこの物理押下で consume されていないのに「消費済み」と誤判定され、
+///   `active_thumb_face()` が None を返し、同じく char が PendingChar に落ちる。
+/// - `active_thumb_face` 自体が無条件 None に置換されても同様。
+///
+/// いずれの変異でも、正しい実装なら即座に得られる 'を'（左親指シフト面）の代わりに
+/// PendingChar（保留、まだ確定していない）になるため区別できる。
+#[test]
+fn test_char_after_thumb_solo_timeout_still_held_uses_active_thumb_face() {
+    let mut engine = make_engine();
+
+    // 左親指のみ押下 → PendingThumb
+    let r = engine.on_event(Ev::down(VK_NONCONVERT).at(0).build());
+    assert_pending(&r);
+
+    // 文字キーが来ないままタイムアウト → 単独確定（生 VK_NONCONVERT 送出）。
+    // consume_thumb は呼ばれないので left_thumb_consumed は None のまま。
+    // KeyUp を送っていないので phys.left_thumb_down は Some のまま。
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1);
+    assert!(matches!(r.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
+
+    // 親指を離さずに文字キー 'A' を押す → active_thumb_face() = Some(LeftThumb) の
+    // はずなので、即座に左親指面 'を' で確定する（PendingChar には入らない）。
+    let r = engine.on_event(Ev::down(VK_A).at(200_000).build());
+    r.assert_consumed();
+    assert_eq!(r.actions.len(), 1, "actions: {:?}", r.actions);
+    assert!(
+        matches!(r.actions[0], KeyAction::Char('を')),
+        "held-but-unconsumed thumb should shift the next char, got {:?}",
+        r.actions[0]
+    );
+}
+
+// ── SpeculativeChar 状態での KeyUp (line 1180) ──
+
+#[test]
+fn test_speculative_char_key_up_matching_vk_confirms_and_goes_idle() {
+    let mut engine = make_engine();
+    engine.state = EngineState::SpeculativeChar(PendingKey {
+        scan_code: SCAN_A,
+        vk_code: VK_A,
+        pos: Some(POS_A),
+        timestamp: 1_000_000,
+    });
+
+    // 投機出力されたのと同じキー(VK_A)の KeyUp → 確定して Idle へ
+    let _r = engine.on_event(Ev::up(VK_A).at(1_050_000).build());
+    assert!(
+        engine.state.is_idle(),
+        "matching key_up should confirm and return to Idle, got {:?}",
+        engine.state
+    );
+}
+
+#[test]
+fn test_speculative_char_key_up_different_vk_does_not_confirm() {
+    // event.vk_code == pending.vk_code の `==` が `!=` に壊れると、無関係なキーの
+    // KeyUp で投機出力が確定してしまう（逆に、本来のキーの KeyUp では確定しなくなる）。
+    // ここでは無関係な VK_S の KeyUp を送り、SpeculativeChar のままであることを確認する。
+    let mut engine = make_engine();
+    engine.state = EngineState::SpeculativeChar(PendingKey {
+        scan_code: SCAN_A,
+        vk_code: VK_A,
+        pos: Some(POS_A),
+        timestamp: 1_000_000,
+    });
+
+    let _r = engine.on_event(Ev::up(VK_S).at(1_050_000).build());
+    assert!(
+        matches!(engine.state, EngineState::SpeculativeChar(_)),
+        "unrelated key_up must not confirm the speculative char, got {:?}",
+        engine.state
+    );
+}
+
+// ── engine_off_triple_vk: 対象外の親指キーはカウントしない (line 1324) ──
+
+#[test]
+fn test_engine_off_triple_vk_ignores_mismatched_thumb_solo_timeouts() {
+    // engine_off_triple_vk.0 != 0 && vk_code == engine_off_triple_vk の `&&` が
+    // `||` に壊れると、設定さえされていれば「無関係な親指キー」の単独タイムアウトでも
+    // カウントされてしまい、5回連続で誤って engine off が要求される。
+    let mut engine = make_engine();
+    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+
+    let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
+
+    // VK_CONVERT（対象外の親指キー）を5回連続で単独タイムアウトさせる
+    for i in 0..5u64 {
+        let t = i * gap;
+        engine.on_event(Ev::down(VK_CONVERT).at(t).build());
+        engine.on_timeout(TIMER_PENDING);
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} consecutive solo presses of an unrelated thumb key must never trigger engine off",
+            i + 1
+        );
+    }
+}
+
 // ── 連続シフト（右親指）テスト ──
 
 #[test]

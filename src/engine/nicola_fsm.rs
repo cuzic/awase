@@ -1557,3 +1557,90 @@ impl NicolaFsm {
         }
     }
 }
+
+// ── lookup_face / lookup_kana_at: private ヘルパーの直接テスト ──
+//
+// lookup_kana_at は module-private (pub(crate) ではない) なので、他モジュールの
+// engine::tests からは呼べない。ここに同一モジュール内のテストとして置く。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_fsm() -> NicolaFsm {
+        NicolaFsm::new(
+            YabLayout {
+                name: "test".to_string(),
+                normal: YabFace::new(),
+                left_thumb: YabFace::new(),
+                right_thumb: YabFace::new(),
+                shift: YabFace::new(),
+            },
+            VkCode(0x1D),
+            VkCode(0x1C),
+            100,
+            ConfirmMode::Wait,
+            30,
+        )
+    }
+
+    #[test]
+    fn lookup_face_extracts_kana_from_romaji_value() {
+        // YabValue::Romaji { kana: Some(ch), .. } のアームが削除されて `_ => None` に
+        // フォールすると、kana が None になってしまう（KeyAction 自体は
+        // From<&YabValue> 側で独立に 'か' になるため、kana だけが壊れる）。
+        let fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        let mut face = YabFace::new();
+        face.insert(
+            pos,
+            YabValue::Romaji {
+                romaji: "ka".to_string(),
+                kana: Some('か'),
+            },
+        );
+        let (action, kana) = fsm.lookup_face(Some(pos), &face).unwrap();
+        assert!(matches!(action, KeyAction::Char('か')));
+        assert_eq!(kana, Some('か'), "Romaji value の kana がそのまま返るべき");
+    }
+
+    #[test]
+    fn lookup_face_romaji_without_resolved_kana_returns_none() {
+        // kana: None の Romaji（拗音等）では、アームが削除されても偶然 None になり
+        // 区別できないため、kana: Some の場合と対で確認しておく。
+        let fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        let mut face = YabFace::new();
+        face.insert(
+            pos,
+            YabValue::Romaji {
+                romaji: "kya".to_string(),
+                kana: None,
+            },
+        );
+        let (_, kana) = fsm.lookup_face(Some(pos), &face).unwrap();
+        assert_eq!(kana, None);
+    }
+
+    #[test]
+    fn lookup_kana_at_returns_kana_for_romaji_value_on_normal_face() {
+        // lookup_kana_at -> None に置換されても、Some(Default::default())
+        // (= Some('\0')) に置換されても、この具体的な非ヌル文字と食い違うため検出できる。
+        let mut fsm = make_test_fsm();
+        let pos = PhysicalPos::new(1, 1);
+        fsm.layout.normal.insert(
+            pos,
+            YabValue::Romaji {
+                romaji: "ka".to_string(),
+                kana: Some('か'),
+            },
+        );
+        assert_eq!(fsm.lookup_kana_at(Some(pos), Face::Normal), Some('か'));
+    }
+
+    #[test]
+    fn lookup_kana_at_returns_none_for_undefined_position() {
+        let fsm = make_test_fsm();
+        let pos = PhysicalPos::new(3, 3);
+        assert_eq!(fsm.lookup_kana_at(Some(pos), Face::Normal), None);
+    }
+}
