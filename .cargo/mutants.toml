@@ -78,4 +78,20 @@ exclude_re = [
     # `Default::default()` 変異は、関数ごとに個別に等価性を確認してから
     # 除外すること。すべてが同様に等価とは限らない）。
     "gate\\.rs:83:9: replace .*on_timeout.* with Default::default\\(\\)",
+
+    # トレイトのデフォルト実装がロジックを持たない単なるプレースホルダ定数の
+    # ケース（platform.rs の TsfComposition）。このトレイトのメソッド群は
+    # 「composition 機構が不要なプラットフォームは実装を省略できる」ための
+    # no-op デフォルトとして設計されている（platform.rs:242-248 のドキュメント
+    # コメント参照）。実際の意味のある実装は crates/awase-windows の
+    # WindowsPlatform 側でオーバーライドされており、そちらでテストすべきもの。
+    # ルート awase クレート側にはこれらのデフォルト値自体を検証する以上の
+    # 意味のあるテストが書けないため除外する。
+    # (ImeDetector::is_active はロジックを持つデフォルト実装のため、
+    #  こちらはテストを追加して対応した。トレイトのデフォルト実装が
+    #  すべて除外対象というわけではない。)
+    "platform\\.rs:260:9: replace .*output_in_flight_ms.*",
+    "platform\\.rs:265:9: replace .*is_composition_warm.*",
+    "platform\\.rs:270:9: replace .*is_tsf_mode.*",
+    "platform\\.rs:292:9: replace .*on_passthrough_key.*",
 ]
