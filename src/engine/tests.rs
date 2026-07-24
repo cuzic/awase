@@ -362,6 +362,56 @@ fn test_pattern5_thumb_alone_timeout_suppressed_while_composing() {
     assert_eq!(result.actions.len(), 0);
 }
 
+/// `PendingThumb` 中に、その親指面に候補が無い文字キーが来た場合、待たずに
+/// 即座に「親指単独確定 + 新規キー再処理」される（`step_pending_thumb_char` の
+/// 「候補なし」分岐）。
+///
+/// これは `NicolaFsm::go_idle()` が実際に `state` を `Idle` に戻すことに依存する
+/// 挙動である。`go_idle()` が state を変更しない no-op に壊れると、
+/// `ShiftReduceParser::parse`（crates/timed-fsm/src/parser.rs）の
+/// `ReduceAndContinue` ループが同じ `PendingThumb` に対して同じ文字キーを
+/// 何度も再判定し続け、**実際にプロセスがハングする**（cargo-mutants がこの
+/// 変異を `MISSED` ではなく `TIMEOUT` として検出したのはこのため）。
+///
+/// ループが規定回数内に終わらなければハングする代わりに明示的に panic させる
+/// ウォッチドッグで囲み、将来同じ回帰が起きても CI がタイムアウトで無言のまま
+/// 詰まるのではなく、すぐ分かる形で落ちるようにしている。
+#[test]
+fn test_pattern6_thumb_then_noncandidate_char_resolves_without_hanging() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut engine = make_engine();
+        let t0 = 0;
+
+        let result = engine.on_event(Ev::down(VK_NONCONVERT).at(t0).build());
+        assert_pending(&result);
+        assert!(matches!(engine.state, EngineState::PendingThumb(_)));
+
+        // VK_D は make_layout() のどの面（Normal/LeftThumb/RightThumb/Shift）にも
+        // 定義が無いキー（test_support::make_layout 参照）。
+        let t1 = t0 + 30_000;
+        let result = engine.on_event(Ev::down(VK_D).at(t1).build());
+        let _ = tx.send((result, engine.state.is_idle()));
+    });
+
+    let (result, is_idle) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("PendingThumb + no-candidate char must resolve promptly, not hang (go_idle() must actually transition state to Idle)");
+
+    // 親指単独確定 (生 VK_NONCONVERT) が Reduce され、その後 D キーは
+    // レイアウト未定義キーとして PassThrough される → 蓄積アクションは1件のみ。
+    result.assert_consumed();
+    assert_eq!(result.actions.len(), 1);
+    assert!(matches!(result.actions[0], KeyAction::Key(x) if x == VK_NONCONVERT));
+    assert!(
+        is_idle,
+        "state must be Idle after resolving the stale PendingThumb, got non-idle"
+    );
+}
+
 // ── 無変換/変換キー単独タップの composing 中ガード opt-out
 //    (muhenkan/henkan_solo_tap_ignore_composing_guard) ──
 
