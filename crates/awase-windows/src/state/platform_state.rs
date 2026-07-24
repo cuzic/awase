@@ -304,6 +304,20 @@ impl ImeStateHub {
         now_ms.saturating_sub(self.last_explicit_ime_action_ms)
     }
 
+    /// `last_explicit_ime_action_ms` の生値（0 = 未操作）。
+    ///
+    /// idle-conv-check の spawn 時スナップショットと apply 時の値を突き合わせ、
+    /// 「spawn〜apply の間に新しい明示的 IME 操作が起きたか」を経過時間ではなく
+    /// 値の一致で判定するために使う。`explicit_ime_action_age_ms` の閾値判定
+    /// （`EXPLICIT_IME_SUPPRESS_MS`）は、`get_ime_conversion_mode_raw_timeout_async`
+    /// が BUG-34（`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` が指定タイムアウトを無視して
+    /// 数秒ブロックしうる）で長時間ブロックした場合、spawn 直後に明示操作が起きても
+    /// apply 時点では age が閾値を超えてしまい素通りする穴がある。値の一致比較なら
+    /// 遅延の長さに関わらず「spawn 後に何か明示操作があった」事実だけで棄却できる。
+    pub(crate) fn last_explicit_ime_action_ms_raw(&self) -> u64 {
+        self.last_explicit_ime_action_ms
+    }
+
     /// フォーカス変化をまたいで持続するユーザー明示 IME OFF タイムスタンプ。
     ///
     /// `last_explicit_off_ms()` は `FocusChanged` で `last_intent` がクリアされると 0 に

@@ -3771,12 +3771,56 @@ spawn 時にキャプチャしたスナップショット（`output_idle_ms_at_s
 状況証拠（クロック解析 + Win32 API の既知の挙動 + ログの発生アプリ/タイミングの一致）
 までで、次回実機検証（該当行前後にタイムスタンプログを仕込んで再現待ち）が望ましい。
 
+**追補2（2026-07-24、実機ログ解析で発覚・本コミットで修正）:** 上記追補の (2) 対策
+（`apply_idle_conv_check` で explicit age を再評価する）には、BUG-34 のブロック時間が
+長い場合に無効化される抜け穴が残っていた。
+
+**症状（実機ログ、GJI/TsfNative, hwnd class `Windows.UI.Input.InputSite.WindowClass`,
+himc_null=true）:** ユーザーが shift-conv-guard（Shift 押下による IME-ON 半角英数の
+安全網、GJI では entry 機構が無く実 conv は変化しない）を Shift を長押し（実測 約2.6秒）
+して使った直後、実際の IME は `conv=0x00000019`（NATIVE、ひらがな）のまま変化していない
+にもかかわらず `Engine deactivated (reason=Inactive(ImeOff))` が発火。以後
+`[idle-conv-check] TsfNative: conv observation open=true reason=NativeToggleShadowOff
+... → ObserverReported として記録 (engine は actuate しない)` が繰り返し出力され、
+`[gji-fsm] StartComposition while engine off — ignored` で打鍵が消失し続けた
+（ユーザー通報「なぜか、IME ON Engine OFF になる」、2026-07-24）。
+
+**原因:** `apply_idle_conv_check` の (b) explicit age 再検証は、apply 時点の
+「直近の明示的 IME 操作からの経過時間」を `EXPLICIT_IME_SUPPRESS_MS`（1500ms）と
+比較するだけだった。Shift 押下（shift-conv-guard 突入、`note_explicit_ime_action`）の
+**直前**に spawn された idle-conv-check の読み取りが BUG-34 で長時間（1500ms 超）
+ブロックされた場合、apply 時点では「Shift 押下からの経過時間」が既に閾値を超えて
+しまっており、この読み取りが shift-conv-guard 突入以降に汚染された `conv` 値
+（半角英数扱い＝`ObservedEisu`）を拾っていても素通りしてしまう。`ObservedEisu` は
+`classify_conv_transition`（`state/conv_classify.rs`）経由で `EngineSync::DirectInput`
+となり、`handle_engine_set_open(false)` が `UserImeSetIntent{Command}` として
+`desired_open=false` を確定させる（`state/ime_model.rs`）。この経路は
+「ユーザーが明示的に OFF にした」ことを意味する状態になるため、以後
+`NativeToggleShadowOff`（実 conv が NATIVE を示す観測）を何度観測しても
+BUG-19 再発防止のガード（`state/conv_classify.rs`、`ConvOpenInference` は
+明示意図が無い限り drift correction を発火させない設計）により自動復帰しない
+（次のフォーカス変更で `last_intent` がクリアされるまで固定）。
+
+**修正（本コミット）:** apply 時の explicit 操作再検証を、経過時間の閾値比較から
+spawn 時にキャプチャした `last_explicit_ime_action_ms`（生のタイムスタンプ）と
+apply 時点の値の**一致比較**に変更した（`ImeStateHub::last_explicit_ime_action_ms_raw()`
+を追加、`kp_stage_idle_conv_check`/`apply_idle_conv_check` に
+`explicit_action_ms_at_spawn` を追加）。値が変化していれば「spawn〜apply の間に
+明示操作があった」ことが遅延の長さに関わらず確実に分かるため、ブロック時間が
+`EXPLICIT_IME_SUPPRESS_MS` を超える場合でも読み取り結果を棄却できる。
+
+**検証状況:** コード読解 + ログ解析による確定。実機での再現待ち（`RUST_LOG=debug` で
+`[idle-conv-check] apply 時に spawn 後の explicit IME action を検出 → ... を破棄` が
+出るかを確認する）。
+
 **関連ファイル:** `crates/awase-windows/src/imm.rs`（`send_ime_control`）、
 `crates/awase-windows/src/ime.rs`（`get_ime_conversion_mode_raw_timeout`,
 `get_ime_conversion_mode_raw_timeout_async`）、
 `crates/awase-windows/src/runtime/key_pipeline.rs`（`kp_stage_idle_conv_check`,
 `apply_idle_conv_check`）、`crates/awase-windows/src/state/probe_admission.rs`
-（`ImmLikeTicket`, `AcceptedObservation`, ADR-077）。
+（`ImmLikeTicket`, `AcceptedObservation`, ADR-077）、
+`crates/awase-windows/src/state/platform_state.rs`（`ImeStateHub::note_explicit_ime_action`,
+`last_explicit_ime_action_ms_raw`）。
 
 ---
 

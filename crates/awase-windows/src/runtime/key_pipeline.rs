@@ -305,6 +305,7 @@ impl Runtime {
         }
         let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
         let now_tick_at_spawn = crate::state::TickMs(hook::current_tick_ms());
+        let explicit_action_ms_at_spawn = self.platform_state.ime.last_explicit_ime_action_ms_raw();
         let explicit_age = self
             .platform_state
             .ime
@@ -370,7 +371,12 @@ impl Runtime {
                     );
                     return;
                 };
-                app.apply_idle_conv_check(conv, output_idle_ms_at_spawn, now_tick_at_spawn);
+                app.apply_idle_conv_check(
+                    conv,
+                    output_idle_ms_at_spawn,
+                    now_tick_at_spawn,
+                    explicit_action_ms_at_spawn,
+                );
             });
         });
     }
@@ -383,13 +389,15 @@ impl Runtime {
     /// awase 自身が (a) shift ガードを立てる、(b) explicit IME 操作を記録する、
     /// (c) warmup 等で実際に出力を送る、のいずれかを行っていたら、読み取った
     /// `conv` は awase 自身の遷移途中を拾った汚染値の可能性がある。spawn 時の
-    /// スナップショット（`output_idle_ms_at_spawn` / `now_tick_at_spawn`）と
-    /// apply 時点を突き合わせて、これらが起きていないことを再確認してから適用する。
+    /// スナップショット（`output_idle_ms_at_spawn` / `now_tick_at_spawn` /
+    /// `explicit_action_ms_at_spawn`）と apply 時点を突き合わせて、これらが
+    /// 起きていないことを再確認してから適用する。
     fn apply_idle_conv_check(
         &mut self,
         conv: u32,
         output_idle_ms_at_spawn: u64,
         now_tick_at_spawn: crate::state::TickMs,
+        explicit_action_ms_at_spawn: u64,
     ) {
         // JISかな化復元（Apply(3)）のレート制限。この関数末尾の restore_roman 分岐でのみ使う。
         const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
@@ -406,7 +414,25 @@ impl Runtime {
 
         let now_tick = crate::state::TickMs(hook::current_tick_ms());
 
-        // (b) explicit IME 操作の再検証: spawn 後に Ctrl+変換/無変換 等が発生した場合。
+        // (b) explicit IME 操作の再検証（値の一致比較）: spawn 後に Ctrl+変換/無変換 や
+        // shift-conv-guard の note_explicit_ime_action が発生していないかを、経過時間
+        // ではなく `last_explicit_ime_action_ms` の値そのものの一致で判定する。
+        //
+        // 旧実装は apply 時点の経過時間 (`explicit_ime_action_age_ms`) を
+        // `EXPLICIT_IME_SUPPRESS_MS` と比較していたが、`get_ime_conversion_mode_raw_timeout_async`
+        // が BUG-34（`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` が指定タイムアウトを無視して
+        // 数秒ブロックしうる、docs/known-bugs.md）で長時間ブロックすると、spawn 直後に
+        // 明示操作（Shift 押下による shift-conv-guard 突入等）が起きても、apply 時点では
+        // 経過時間が閾値を超えてしまい素通りしていた。値の一致比較なら、遅延の長さに
+        // 関わらず「spawn〜apply の間に明示操作があった」事実だけで確実に棄却できる。
+        if self.platform_state.ime.last_explicit_ime_action_ms_raw() != explicit_action_ms_at_spawn
+        {
+            log::debug!(
+                "[idle-conv-check] apply 時に spawn 後の explicit IME action を検出 → \
+                 読み取り結果 conv=0x{conv:08X} を破棄 (spawn={explicit_action_ms_at_spawn}ms)"
+            );
+            return;
+        }
         let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
         if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
             log::debug!(
