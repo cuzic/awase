@@ -5317,6 +5317,52 @@ mod engine_integration_tests {
         );
     }
 
+    #[test]
+    fn toggle_engine_off_when_already_inactive_emits_no_transition() {
+        // engine.rs:320 の `if user_enabled && !new_active` の `&&` が `||` に壊れると
+        // 検出される変異体キラー。
+        //
+        // 状況: engine は user_enabled=true・prev_activation=Active（make_test_engine の
+        // 既定）だが、ctx は ime_on=false なので実効状態は既に inactive。ここで
+        // ToggleEngine を撃つと user_enabled が false に落ちるだけで、実効状態は
+        // inactive → inactive のまま変化しない。したがって
+        //   old_active=false, new_active=false, user_enabled=false
+        // となり、正しい `&&` では条件 `false && !false = false` → else 分岐
+        // (`apply_active_transition(false, false)` は old==new で no-op) となって
+        // 遷移エフェクトは一切出ない。
+        //
+        // `&&`→`||` に壊れると条件は `false || !false = true` となり recovery 分岐へ。
+        // recovery は is_enabled=false（トグル後）で target=Inactive を計算するが、
+        // prev_activation はまだ stale な Active のままなので transition_activation の
+        // was(true)!=now(false) が成立し、spurious な SetOpen{false} +
+        // EngineStateChanged{enabled:false} を発行してしまう。
+        let mut engine = make_test_engine();
+        assert!(engine.is_user_enabled());
+        assert!(
+            !engine.compute_active(&ime_off_ctx()),
+            "precondition: effective state is already inactive under ime_off ctx"
+        );
+
+        let d = engine.on_command(EngineCommand::ToggleEngine, &ime_off_ctx());
+        assert!(
+            !engine.is_user_enabled(),
+            "toggle must flip user_enabled to false"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Ui(UiEffect::EngineStateChanged { .. })
+            )),
+            "inactive→inactive toggle must not emit EngineStateChanged, got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "inactive→inactive toggle must not emit SetOpen, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     // ── matches_ime_off (line 516) ──
 
     #[test]
