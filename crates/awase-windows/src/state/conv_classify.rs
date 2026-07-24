@@ -475,6 +475,64 @@ mod tests {
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
     }
 
+    // ── NativeToggleShadowOff の3条件 (`conv_mode_changed && has_native &&
+    //    !effective_open`) を個別に検証する ──────────────────────────────────────
+    //
+    // `roman_reliable_downgrades_to_kana` と同じ belief 更新経路
+    // (CONV_JISKANA + assumed() + is_roman_reliable=true → Some(ObservedKana)) を
+    // 使うと、has_native は常に true（ObservedEisu 以外の Some を返す時点で
+    // classify_idle の構造上 !cm.is_eisu() が保証される）、かつこの新 belief は
+    // is_romaji_capable()=false なので、直前の RomajiRecovered 分岐
+    // (line154, `!was_romaji_capable && new_mode.is_romaji_capable() && effective_open`)
+    // には一切干渉されない。conv_mode_changed / effective_open だけを動かして
+    // NativeToggleShadowOff の2つの `&&` をそれぞれ独立に検出できる。
+
+    /// conv_mode_changed=false なら（他の条件が揃っていても）NativeToggleShadowOff は
+    /// 発火しないはず。1つ目の `&&`（conv_mode_changed と has_native の間）が `||` に
+    /// 壊れると、has_native=true が常に真であるせいで conv_mode_changed の値に関わらず
+    /// 発火してしまう。
+    #[test]
+    fn native_toggle_requires_conv_mode_changed() {
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_JISKANA),
+            assumed(),
+            false,
+            false, // effective_open=false (NativeToggleShadowOff の条件は満たす)
+            false, // conv_mode_changed=false ← ここが false なら発火しないはず
+            true,
+        );
+        assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
+        assert_eq!(
+            t.engine,
+            EngineSync::None,
+            "conv_mode_changed=false so NativeToggleShadowOff must not fire, got {:?}",
+            t.engine
+        );
+    }
+
+    /// effective_open=true なら（他の条件が揃っていても）NativeToggleShadowOff は
+    /// 発火しないはず（既に engine ON なので shadow=OFF 前提の同期は不要）。2つ目の
+    /// `&&`（has_native と `!effective_open` の間）が `||` に壊れると、has_native=true が
+    /// 常に真であるせいで effective_open の値に関わらず発火してしまう。
+    #[test]
+    fn native_toggle_requires_shadow_off() {
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_JISKANA),
+            assumed(),
+            false,
+            true, // effective_open=true ← ここが true なら発火しないはず
+            true, // conv_mode_changed=true (NativeToggleShadowOff の条件は満たす)
+            true,
+        );
+        assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
+        assert_eq!(
+            t.engine,
+            EngineSync::None,
+            "effective_open=true so NativeToggleShadowOff must not fire, got {:?}",
+            t.engine
+        );
+    }
+
     // ── cold start ─────────────────────────────────────────────────────────────
 
     /// cold start 中 (is_cold=true) は ROMAN ビットが信頼できないため、ひらがなローマ字
