@@ -424,7 +424,10 @@ impl Output {
                 crate::tsf::warmup::literal_detect_fsm::LiteralDetectFsm::new(
                     cold_seq,
                     romaji.to_owned(),
-                    crate::tsf::warmup::probe_fsm::ProbeObservations { nc_fired: false },
+                    crate::tsf::warmup::probe_fsm::ProbeObservations {
+                        nc_fired: false,
+                        ..Default::default()
+                    },
                     ze_bs_count,
                     crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                     self.composition.consecutive_count(),

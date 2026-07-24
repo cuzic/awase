@@ -206,7 +206,7 @@ impl LiteralDetectCore {
         // に頼っているため、cold直後は毎回誤検知しうる — セッション内2文字目以降は
         // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
         // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
-        if crate::tsf::observer::literal_session_confirmed() {
+        if crate::tsf::observer::literal_session_confirmed(self.cold_seq) {
             log::debug!(
                 "[literal-detect] cold={} セッション確認済み → スキップ",
                 self.cold_seq
@@ -248,6 +248,7 @@ impl LiteralDetectCore {
                 // の直接呼び出しをやめ、ProbeAction 経由にする）。
                 Some(vec![
                     ProbeAction::CompositionConfirmed {
+                        cold_seq: self.cold_seq,
                         mark_literal_session: true,
                     },
                     ProbeAction::Done,
@@ -444,7 +445,10 @@ mod tests {
     }
 
     fn obs(nc_fired: bool) -> ProbeObservations {
-        ProbeObservations { nc_fired }
+        ProbeObservations {
+            nc_fired,
+            ..Default::default()
+        }
     }
 
     fn tsf_env() -> TsfEnvSnapshot {

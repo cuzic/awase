@@ -130,17 +130,27 @@ pub struct TsfObservations {
     /// `KanjiToggleStrategy` が shadow=false でも desync を検出して VK_KANJI を送れるようにする。
     pub(super) candidate_was_seen: AtomicBool,
 
-    /// 現在の IME セッション（打鍵開始〜候補ウィンドウ HIDE）内で、`LiteralDetectCore`
-    /// が一度でも `CompositionConfirmed`（かつ非 partial-literal）を確認できたかどうか。
+    /// `LiteralDetectCore` が最後に `CompositionConfirmed`（かつ非 partial-literal）を
+    /// 確認できた **`cold_seq`（`WarmEpoch::cold_start_count`）世代**。未確認なら `0`
+    /// （`cold_start_count` は 0 始まりで、確認は必ず何らかの cold-start 後にしか
+    /// 起こらないため `0` を「未確認」の番人値として使える）。
     ///
-    /// `true` になった後は、同一セッション内の以降の文字は literal-detect 自体をスキップし
-    /// 即送信する（BUG-24: `is_partial_literal()` の判定材料である `nc_fired` が
-    /// `SetOpenTrue`/`FocusChange`/`NativeF2Consumed` 等の cold 直後は構造的に信頼できず、
-    /// 正しく変換されているのに不要な ESC+BS 訂正が発生していた）。
+    /// 「確認済みかどうか」は真偽値ではなく **この値が現在の `cold_seq` と一致するか**
+    /// で判定する（[`literal_session_confirmed()`] 参照）。一致する間は、同一 cold
+    /// 世代内の以降の文字は literal-detect 自体をスキップし即送信する（BUG-24:
+    /// `is_partial_literal()` の判定材料である `nc_fired` が `SetOpenTrue`/`FocusChange`/
+    /// `NativeF2Consumed` 等の cold 直後は構造的に信頼できず、正しく変換されているのに
+    /// 不要な ESC+BS 訂正が発生していた）。
     ///
-    /// `mark_literal_session_confirmed()` で `true` に、`reset_literal_session_confirmed()`
-    /// （`gji_on_end_composition` = 候補ウィンドウ HIDE 時）で `false` にリセットする。
-    pub(super) literal_session_confirmed: AtomicBool,
+    /// 世代比較そのものが「新しい cold-start が始まれば自動的に stale になる」ことを
+    /// 保証するため、`reset_literal_session_confirmed()`（`gji_on_end_composition` =
+    /// 候補ウィンドウ HIDE 時）による明示リセットは「次の1語も律儀に再確認させる」
+    /// 保守的な最適化オプトアウトに過ぎず、正しさの唯一の拠り所ではない（BUG-39:
+    /// 以前は真偽値のみで管理しており、その唯一のリセット経路が `GjiFsm` が
+    /// `OnComposing` を抜けた後の HIDE では発火せず、フォーカス変更・長時間 idle・
+    /// アプリ切替をまたいで「確認済み」が持ち越され、新しい cold セッションの literal
+    /// 漏れが検出されなくなっていた）。
+    pub(super) literal_session_confirmed_gen: AtomicU32,
 
     /// `EVENT_OBJECT_SHOW` で GJI candidate が表示されたことを `GjiFsm::StartComposition` に橋渡しする pending フラグ。
     ///
@@ -203,7 +213,7 @@ impl TsfObservations {
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
-            literal_session_confirmed: AtomicBool::new(false),
+            literal_session_confirmed_gen: AtomicU32::new(0),
             pending_start_composition: AtomicBool::new(false),
             pending_end_composition: AtomicBool::new(false),
             ime_composition_active: AtomicBool::new(false),
@@ -371,28 +381,47 @@ pub(crate) fn reset_candidate_was_seen() {
     TSF_OBS.candidate_was_seen.store(false, Ordering::Relaxed);
 }
 
-/// 現在の IME セッション内で literal-detect が一度でも確認済みかどうか（BUG-24 追補）。
+/// `current_cold_seq` 世代において literal-detect が一度でも確認済みかどうか
+/// （BUG-24 追補、BUG-39 で真偽値から世代比較に変更）。
 ///
-/// `true` の間、`LiteralDetectCore::poll` は検出処理自体をスキップして即 `Done` を返す。
-pub(crate) fn literal_session_confirmed() -> bool {
-    TSF_OBS.literal_session_confirmed.load(Ordering::Relaxed)
+/// 記録されている確認済み世代が `0`（未確認）だったり `current_cold_seq` と異なる
+/// （＝その後 `FocusChange`/`NativeF2Consumed` 等で新しい cold-start が実際に走り、
+/// `cold_seq` が進んでいた）場合は `false` を返す。これにより、フォーカス変更や
+/// 長時間 idle をまたいで「前の cold 世代で確認済み」がそのまま信頼され続けることは
+/// 構造的に起こらない。`true` の間、`LiteralDetectCore::poll` は検出処理自体を
+/// スキップして即 `Done` を返す。
+pub(crate) fn literal_session_confirmed(current_cold_seq: u32) -> bool {
+    let confirmed_gen = TSF_OBS
+        .literal_session_confirmed_gen
+        .load(Ordering::Relaxed);
+    confirmed_gen != 0 && confirmed_gen == current_cold_seq
 }
 
-/// literal-detect がこのセッションで初めて `CompositionConfirmed`（非 partial-literal）を
-/// 確認したときに呼ぶ。次の `reset_literal_session_confirmed()`（候補ウィンドウ HIDE）まで
-/// 以降の文字の literal-detect をスキップさせる。
-pub(crate) fn mark_literal_session_confirmed() {
+/// literal-detect が `cold_seq` 世代で初めて `CompositionConfirmed`（非 partial-literal）を
+/// 確認したときに呼ぶ。`cold_seq` が進む（＝新しい cold-start が走る）まで、または
+/// `reset_literal_session_confirmed()`（候補ウィンドウ HIDE）が呼ばれるまで、以降の
+/// 同世代内の文字の literal-detect をスキップさせる。
+///
+/// `cold_seq` は呼び出し元（`run_per_vk_confirm`/`LiteralDetectCore`）が確認した VK を
+/// 送信した時点の `WarmEpoch::cold_start_count()` であること（`0` は「未確認」の番人値
+/// のため渡さない）。
+pub(crate) fn mark_literal_session_confirmed(cold_seq: u32) {
+    debug_assert_ne!(
+        cold_seq, 0,
+        "cold_seq=0 は「未確認」の番人値のため mark に使ってはならない"
+    );
     TSF_OBS
-        .literal_session_confirmed
-        .store(true, Ordering::Relaxed);
+        .literal_session_confirmed_gen
+        .store(cold_seq, Ordering::Relaxed);
 }
 
-/// 候補ウィンドウ HIDE（`gji_on_end_composition`）で呼ぶ。IME セッションの終了に相当し、
-/// 次のセッションの最初の1文字は改めて literal-detect の確認を受ける。
+/// 候補ウィンドウ HIDE（`gji_on_end_composition`）で呼ぶ。保守的な最適化オプトアウト
+/// （次の1語も律儀に再確認させる）であり、正しさはこれに依存しない — `cold_seq` が
+/// 進めば `literal_session_confirmed()` は自動的に `false` を返すため（BUG-39）。
 pub(crate) fn reset_literal_session_confirmed() {
     TSF_OBS
-        .literal_session_confirmed
-        .store(false, Ordering::Relaxed);
+        .literal_session_confirmed_gen
+        .store(0, Ordering::Relaxed);
 }
 
 /// `pending_start_composition` フラグを取り出す（set→false swap）。
@@ -438,3 +467,77 @@ pub(crate) enum ActiveImeKind {
 
 pub use super::gji_monitor::start_monitor_thread;
 pub use super::win_event_obs::{install_observation_hooks, WinEventHookGuard};
+
+#[cfg(test)]
+#[cfg(windows)]
+mod tests {
+    use super::*;
+
+    /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック。
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // ── BUG-39: literal_session_confirmed の世代付け回帰テスト ─────────────
+
+    /// 確認していない状態（`cold_seq=0` 番人値）では、どの世代を問い合わせても
+    /// 確認済みにならない。
+    #[test]
+    fn unconfirmed_state_is_never_confirmed() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_literal_session_confirmed();
+
+        assert!(!literal_session_confirmed(1));
+        assert!(!literal_session_confirmed(301));
+    }
+
+    /// `mark_literal_session_confirmed(cold_seq)` で記録した世代と同じ `cold_seq` を
+    /// 問い合わせれば確認済みになる。
+    #[test]
+    fn same_generation_query_is_confirmed() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_literal_session_confirmed();
+
+        mark_literal_session_confirmed(301);
+
+        assert!(literal_session_confirmed(301));
+    }
+
+    /// BUG-39 の核心: `mark_literal_session_confirmed(301)` 後、
+    /// `reset_literal_session_confirmed()`（候補ウィンドウ HIDE、`GjiFsm` の epoch 欠如で
+    /// 握り潰されうる）が一切呼ばれなくても、新しい cold-start で `cold_seq` が進めば
+    /// （FocusChange・NativeF2Consumed 等を経て実際に新しい probe/warmup が走った結果）
+    /// 古い世代の確認は自動的に無効になる。フォーカス変更・長時間 idle・アプリ切替を
+    /// またいで「前セッションで確認済み」が持ち越され、新しい cold セッションの literal
+    /// 漏れが reactive literal-detect に検出されなくなる実機バグ（Windows Terminal で
+    /// "こっか"→"koっか"）の回帰防止。
+    #[test]
+    fn new_cold_generation_invalidates_prior_confirmation_without_explicit_reset() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_literal_session_confirmed();
+
+        mark_literal_session_confirmed(301);
+        assert!(literal_session_confirmed(301));
+
+        // reset_literal_session_confirmed() を挟まずに次の cold-start が
+        // cold_seq=302 として走った場合を模擬する。
+        assert!(
+            !literal_session_confirmed(302),
+            "古い世代(301)の確認は新しい世代(302)の問い合わせには適用されないべき"
+        );
+    }
+
+    /// `reset_literal_session_confirmed()`（候補ウィンドウ HIDE）は同一世代内でも
+    /// 明示的に「未確認」へ戻す（BUG-24 の「次の1語は再確認」という保守的な挙動を
+    /// 引き続き提供する、世代比較はこれを代替するのではなく補完する）。
+    #[test]
+    fn explicit_reset_invalidates_same_generation_confirmation() {
+        let _g = TEST_LOCK.lock().unwrap();
+        reset_literal_session_confirmed();
+
+        mark_literal_session_confirmed(301);
+        assert!(literal_session_confirmed(301));
+
+        reset_literal_session_confirmed();
+
+        assert!(!literal_session_confirmed(301));
+    }
+}
