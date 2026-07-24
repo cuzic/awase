@@ -56,7 +56,7 @@ fn resolve_relative_to(exe: &Path, path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_relative_to, Path, PathBuf};
+    use super::{resolve_relative_to, resolve_relative_to_exe, Path, PathBuf};
     use std::fs;
 
     fn unique_temp_dir(name: &str) -> PathBuf {
@@ -65,6 +65,20 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn resolve_relative_to_exe_actually_delegates_to_resolve_relative_to() {
+        // resolve_relative_to_exe の本体が Default::default()（空の PathBuf）に
+        // 置換されると、std::env::current_exe() の結果を一切使わずに常に空パスを
+        // 返してしまう。絶対パスなら resolve_relative_to 側で exe を使わず即座に
+        // そのまま返す分岐に入るため、current_exe() の成否に関わらず検証できる。
+        let abs = if cfg!(windows) {
+            r"C:\foo\bar"
+        } else {
+            "/foo/bar"
+        };
+        assert_eq!(resolve_relative_to_exe(abs), PathBuf::from(abs));
     }
 
     #[test]
