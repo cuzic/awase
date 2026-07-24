@@ -43,4 +43,13 @@ exclude_re = [
     "impl std::fmt::Debug for YabFace",
     "impl fmt::Display for Charset",
     "impl fmt::Display for ConvMode",
+
+    # 等価変異体（equivalent mutant）: TimingJudge::three_key_pairing の
+    # `if score_a > score_b` (src/engine/timing.rs:120) は、直前の
+    # `if (score_a - score_b).abs() > f32::EPSILON` ガードを通過した時点で
+    # score_a != score_b が保証されている。score_a != score_b の前提下では
+    # `>` と `>=` は常に同じ真偽値を返すため、`>=` へのこの変異はどんな入力でも
+    # 区別不可能（数学的に等価）。同じ箇所の `==`/`<` への変異は区別可能で
+    # 別途テスト済み（この行を除外対象から漏らさないよう line:col まで指定する）。
+    "timing\\.rs:120:24: replace > with >=",
 ]

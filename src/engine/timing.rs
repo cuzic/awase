@@ -422,4 +422,219 @@ mod tests {
             ThreeKeyResult::PairWithChar2
         );
     }
+
+    // ── margin 計算 (line 91: threshold_us * TIMING_MARGIN_PERCENT / 100) ──
+    //
+    // 以下のテストは、margin が正しく計算されている（= threshold の 30%）ことを
+    // 「d1<d2 の生タイミング比較」と「n-gram スコア比較」の結果が食い違う場面を
+    // 選んで確認する。margin の掛け算/割り算を壊す変異（*→+, *→/, /→%, /→*）は、
+    // margin の実際の値を大きく変えてしまい、Phase1（タイミングのみで即決）が
+    // 発火するかどうかが変わる。Phase1 と Phase2（n-gram スコア）で意図的に
+    // 逆の結論になるよう仕込むことで、margin の値そのものを間接的に検証する。
+
+    #[test]
+    fn three_key_pairing_char1_branch_fires_with_correct_margin_inflated_margin_would_not() {
+        let model = sample_model();
+        // recent=['し'], char1_single='し', char2_thumb='た' → score_b = bigram(し,た) = 1.8
+        // char1_thumb='x' (未知の組み合わせ) → score_a = 0.0
+        // score_b > score_a なので、Phase2 に落ちると PairWithChar2 になる。
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // d1 = thumb_ts - char1_ts = 10_000, d2 = char2_ts - thumb_ts = 50_000
+        // 正しい margin = 100_000*30/100 = 30_000 → d1+margin=40_000 < d2=50_000 → Phase1 発火
+        // → タイミングのみで PairWithChar1（スコアは見ない）
+        // margin が肥大化する変異（*→+ で 100_000、/→* で 300_000_000）だと
+        // d1+margin が d2 を超え Phase1 が発火せず Phase2（スコア）に落ちて PairWithChar2 になる
+        // → 期待値と食い違い、変異を検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 10_000, 60_000, Some('x'), Some('し'), Some('た')),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_char1_branch_does_not_fire_with_correct_margin_shrunk_margin_would_fire() {
+        let model = sample_model();
+        // 同じスコア構成（score_b=1.8 > score_a=0.0）で Phase2 に落ちれば PairWithChar2。
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // thumb_ts=10_000, char2_ts=20_500 → d1=10_000, d2=char2_ts-thumb_ts=10_500。
+        // 正しい margin=30_000 では d1+margin=40_000 < d2=10_500 は false
+        // → Phase1 は発火せず Phase2 に落ちる → PairWithChar2。
+        // margin が縮小する変異（*→/ で 33、/→% で 0）だと d1+margin ≈ 10_033/10_000 が
+        // d2=10_500 未満になり Phase1 が誤って発火して PairWithChar1 になる → 検出できる
+        // （d2 をわざと d1 のすぐ近くに置くことで、逆方向の branch2 (d2+margin<d1) が
+        // 縮小後の margin でも発火しないようにしている）。
+        assert_eq!(
+            judge.three_key_pairing(0, 10_000, 20_500, Some('x'), Some('し'), Some('た')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_char1_branch_exact_margin_boundary_does_not_fire() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // thumb_ts=10_000, char2_ts=50_000 → d1=10_000, d2=char2_ts-thumb_ts=40_000。
+        // margin=30_000 ちょうどで d2=d1+margin。
+        // `<` は非包含なので d1+margin < d2 は false（40_000 < 40_000）→ Phase2 に落ちて PairWithChar2。
+        // `<=` や `==` に変異すると true になり Phase1 が発火して PairWithChar1 になる → 検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 10_000, 50_000, Some('x'), Some('し'), Some('た')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_char2_branch_fires_with_correct_margin_inflated_margin_would_not() {
+        let model = sample_model();
+        // recent=['し'], char1_thumb='た' → score_a = bigram(し,た) = 1.8
+        // char1_single=None, char2_thumb='x'(未知) → score_b = 0.0 → score_a > score_b → Phase2 なら PairWithChar1
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // d1 = 50_000, d2 = 10_000 → 正しい margin=30_000: d2+margin=40_000 < d1=50_000 → Phase1 発火 → PairWithChar2
+        // margin が肥大化すると d2+margin > d1 になり Phase1 が発火せず Phase2 で PairWithChar1 になる → 検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 50_000, 60_000, Some('た'), None, Some('x')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_char2_branch_does_not_fire_with_correct_margin_shrunk_margin_would_fire() {
+        let model = sample_model();
+        // 同じスコア構成（score_a=1.8 > score_b=0.0）で Phase2 に落ちれば PairWithChar1。
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // d1=11_000, d2=10_000 (gap=1_000)。正しい margin=30_000 では
+        // d2+margin=40_000 < d1=11_000 は false → Phase1 は発火せず Phase2 に落ちて PairWithChar1。
+        // margin が縮小すると d2+margin ≈ 10_033/10_000 が d1=11_000 未満になり
+        // Phase1 が誤って発火して PairWithChar2 になる → 検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 11_000, 21_000, Some('た'), None, Some('x')),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_char2_branch_exact_margin_boundary_does_not_fire() {
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['し']);
+        // d2=10_000, margin=30_000 ちょうどで d1=d2+margin=40_000。
+        // `<` は非包含なので d2+margin < d1 は false（40_000 < 40_000）→ Phase2 に落ちて PairWithChar1。
+        // `<=` や `==` に変異すると true になり Phase1 が発火して PairWithChar2 になる → 検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 40_000, 50_000, Some('た'), None, Some('x')),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    // ── score_b の match アーム (line 104-111) ──
+
+    #[test]
+    fn three_key_pairing_char2_thumb_only_score_overrides_raw_timing() {
+        let model = sample_model();
+        // char1_single=None, char2_thumb='り' → (None, Some(c2)) アーム経由で
+        // score_b = frequency_score(recent, 'り') = bigram(あ,り) = 1.5 を使う。
+        // このアームが削除されると `_` にフォールして score_b = NEG_INFINITY になり、
+        // score_a も NEG_INFINITY（char1_thumb=None）なので diff が NaN になり
+        // タイブレーク（生の d1<d2 比較）に落ちる。
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // d1=40_000 < d2=50_000（生タイミングなら char1 を選ぶ）が、gap=10_000 は
+        // margin=30_000 以内なので Phase2 に入り、score_b=1.5 > score_a=-inf で PairWithChar2。
+        // アームが削除されると score_b も -inf になりタイブレークが d1<d2=true→PairWithChar1 になる
+        // → 生タイミングと逆の結果になるため検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 40_000, 90_000, None, None, Some('り')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    // ── スコア差の比較 (line 118-129) ──
+
+    #[test]
+    fn three_key_pairing_score_diff_uses_subtraction_not_addition() {
+        // score_a=1.5 (bigram あり), score_b=-1.5 (bigram をぱ, extended=['あ','を']) →
+        // diff = 1.5 - (-1.5) = 3.0 > EPSILON → score_a > score_b → PairWithChar1。
+        // `-`→`+` に変異すると diff = 1.5 + (-1.5) = 0.0 になり EPSILON 判定を通らず
+        // タイブレーク(d1<d2)に落ちる。d1=60_000 > d2=50_000 なので d1<d2=false → PairWithChar2
+        // となり、正しい結果 PairWithChar1 と食い違うため検出できる。
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // gap = |d1-d2| = 10_000 <= margin(30_000) なので Phase2 に入る。
+        assert_eq!(
+            judge.three_key_pairing(0, 60_000, 110_000, Some('り'), Some('を'), Some('ぱ')),
+            ThreeKeyResult::PairWithChar1
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_score_diff_exact_epsilon_boundary_excludes_equal() {
+        // diff.abs() が f32::EPSILON にちょうど一致する場合、`>` は false（除外）で
+        // タイブレークに落ちるべき。`>=` に変異すると true になりスコア分岐に入ってしまう。
+        //
+        // f32::EPSILON (= 2^-23 = 1.1920929e-7) を bigram スコアとして直接埋め込み、
+        // もう片方を 0.0 (未知の組み合わせ) にすることで diff をちょうど EPSILON にする。
+        let toml_str = r#"
+[bigram]
+"あり" = 1.1920929e-7
+"#;
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
+        // 前提確認: score_a が本当に f32::EPSILON と bit-exact であること
+        assert_eq!(model.frequency_score(&['あ'], 'り'), f32::EPSILON);
+
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // char1_thumb='り' → score_a=f32::EPSILON。char2_thumb='x'(未知)→score_b=0.0。
+        // diff.abs()=EPSILON。正しい `>` では EPSILON>EPSILON=false → タイブレークへ。
+        // d1=60_000 > d2=50_000 なので d1<d2=false → PairWithChar2（タイブレークの結果）。
+        // `>=` に変異すると true になりスコア分岐へ入り、score_a(EPSILON)>score_b(0.0) なので
+        // PairWithChar1 になる → 正しい結果 PairWithChar2 と食い違うため検出できる。
+        assert_eq!(
+            judge.three_key_pairing(0, 60_000, 110_000, Some('り'), None, Some('x')),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    #[test]
+    fn three_key_pairing_tie_break_exact_equal_timing_excludes_equal() {
+        // score_a=score_b=NEG_INFINITY（両方とも kana 未指定）で diff は NaN になり
+        // `.abs() > EPSILON` は false（NaN との比較は常に false）→ タイブレーク `d1 < d2` に落ちる。
+        // d1=d2=50_000 ちょうど。`<` は非包含なので false → PairWithChar2。
+        // `==`/`<=` に変異すると true になり PairWithChar1 になってしまう → 検出できる。
+        let model = sample_model();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        // char1_ts=0, thumb_ts=50_000, char2_ts=100_000 → d1=50_000, d2=char2_ts-thumb_ts=50_000。
+        // gap=0 は margin の値に関わらず Phase1 のどちらの分岐も発火しないため、
+        // margin の変異とは独立に line 125 だけを狙い撃ちできる。
+        assert_eq!(
+            judge.three_key_pairing(0, 50_000, 100_000, None, None, None),
+            ThreeKeyResult::PairWithChar2
+        );
+    }
+
+    // ── should_speculate: normal_score - thumb_score > SPECULATIVE_SCORE_THRESHOLD (line 152) ──
+
+    #[test]
+    fn should_speculate_uses_subtraction_not_division() {
+        // normal_score=0.6, thumb_score=0.5 → diff=0.1、閾値0.5を超えないので speculate しない。
+        // `-`→`/` に変異すると 0.6/0.5=1.2 になり閾値を超えて speculate してしまう → 検出できる。
+        let toml_str = r#"
+[bigram]
+"あX" = 0.6
+"あY" = 0.5
+"#;
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(!judge.should_speculate(Some('X'), Some('Y'), None));
+    }
+
+    #[test]
+    fn should_speculate_exact_threshold_boundary_excludes_equal() {
+        // normal_score=1.0, thumb_score=0.5 → diff=0.5 ちょうど。`>` は非包含なので speculate しない。
+        // `>`→`>=` に変異すると 0.5>=0.5=true になり speculate してしまう → 検出できる。
+        let toml_str = r#"
+[bigram]
+"あX" = 1.0
+"あY" = 0.5
+"#;
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(!judge.should_speculate(Some('X'), Some('Y'), None));
+    }
 }
