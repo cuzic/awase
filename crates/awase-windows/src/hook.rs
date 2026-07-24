@@ -55,13 +55,23 @@ pub fn classify_key(
     }
 }
 
-/// Alt キー1個ぶんの「なりすまし」判定（純粋関数、テスト対象）。
+/// Alt キー1個ぶんの「なりすまし」判定(純粋関数、テスト対象)。
 ///
-/// 新規押下（`was_down=false` の `KeyDown`）時点でのみ `engine_enabled` を見て
-/// 判定し直す。auto-repeat の `KeyDown`（`was_down=true`）や `KeyUp` は、直前の
-/// 新規押下時点の判定（`was_impersonating`）をそのまま使う。これにより、同一の
+/// 新規押下(`was_down=false` の `KeyDown`)時点でのみ `engine_enabled` を見て
+/// 判定し直す。auto-repeat の `KeyDown`(`was_down=true`)は、直前の新規押下
+/// 時点の判定(`was_impersonating`)をそのまま使う。これにより、同一の
 /// 押しっぱなしセッション中に設定変更やエンジン ON/OFF 切替が起きても、途中で
 /// 判定がズレて Alt が stuck modifier になることを防ぐ。
+///
+/// `KeyUp` は vk 翻訳(戻り値1要素目)だけは直前の判定と対称にする(押下時に
+/// thumb_vk を送っていれば、離す側も同じ thumb_vk を送る)。一方、以後保持
+/// すべき状態(戻り値2要素目、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING` に
+/// 格納され `is_alt_impersonation_active()` が参照する)は、物理キーが離れた
+/// 時点で必ず false に戻す。ここを `was_impersonating` のまま持ち越すと、
+/// キーを離した後も「なりすまし発動中」のフラグが stuck true になり、後続の
+/// 無関係な(なりすましでない)Alt 押下まで `modifiers.alt` を誤って false
+/// 補正してしまう(`cec4da9` が修正した bypass 誤爆と同種の再発。2026-07-25、
+/// Windows実機で初めてこのテストを実行して発見)。
 ///
 /// 戻り値: `(書き換え後の vk, 次に保持すべき is_impersonating 状態)`
 #[must_use]
@@ -74,13 +84,24 @@ fn decide_alt_impersonation(
     engine_enabled: bool,
 ) -> (VkCode, bool) {
     let is_fresh_press = is_keydown && !was_down;
-    let impersonating = if is_fresh_press {
+    let currently_impersonating = if is_fresh_press {
         engine_enabled
     } else {
         was_impersonating
     };
-    let vk = if impersonating { thumb_vk } else { original_vk };
-    (vk, impersonating)
+    let vk = if currently_impersonating {
+        thumb_vk
+    } else {
+        original_vk
+    };
+    // KeyUpの瞬間、物理キーはもう押下中ではないため、以後保持する状態は
+    // 必ずfalseにする(vk翻訳自体はcurrently_impersonatingを使い、対称性を保つ)。
+    let next_impersonating = if is_keydown {
+        currently_impersonating
+    } else {
+        false
+    };
+    (vk, next_impersonating)
 }
 
 /// `left_thumb_key`/`right_thumb_key` 設定文字列を VkCode に解決し、
