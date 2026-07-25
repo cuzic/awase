@@ -486,3 +486,78 @@ Phase 1d・1e は Windows 実機での複数アプリ×複数 IME のソーク�
 `crates/awase-windows/src/state/` 配下の platform-independent パターン
 （ADR-065）に従って実装すれば Linux 上で `cargo test -p awase-windows --lib`
 から検証可能。
+
+---
+
+## Phase 1a/1b/1c 実施記録（2026-07-25、未配線・Linux 検証済み）
+
+上記「Phase 1 計画（確定）」の 1a/1b/1c を実装した。1d（実機ソーク必須のランタイム
+配線）・1e（旧経路撤去）は未着手（このサンドボックスでは実行不可のため）。既存内容は
+変更せず本節を追記した。
+
+### 実装した内容
+
+- **Phase 1a — `Imm32UnavailableDriver`**（`crates/awase-windows/src/state/ime_profile_driver.rs`）:
+  Chrome/Edge/UWP 向け。`owns_physical_kanji=true` / `focus_settle_ms=500` /
+  `default_feedback=Blind{max_attempts:5, backoff:DRIFT_CORRECTION_THRESHOLD_MS}` を
+  `AppImePolicy::from_profile(Imm32Unavailable)` と parity。`ime_open_mechanism` は
+  `SharedImeKeyDispatch`（具体 VK 選択はランタイム合成に委譲）。
+- **Phase 1b — `TsfNativeDriver`**（同ファイル）: WezTerm/Windows Terminal 向け。
+  `owns_physical_kanji=false`（TSF が KANJI を処理するため通す）/ `focus_settle_ms=200` /
+  `default_feedback=Blind`。`probe_budget_ms` は既存 tuning SSOT
+  （`MEDIUM_IDLE_PROBE_MS` / `WARMUP_GRACE_MS`、`Imm32Unavailable` は
+  `CHROME_GJI_REINIT_CONFIRM_MS`）を参照し**新規タイミング定数を導入しない**
+  （`.claude/rules/tuning-constants.md` の「実測なしのエスカレーション禁止」を尊重。
+  `ColdReason` 解像度別のエスカレーションは windows-gated メソッドとして Phase 1d へ）。
+- **Phase 1c — レジストリ**: `driver_for(ImePolicyProfile) -> &'static dyn ImeProfileDriver`
+  と `ALL_DRIVERS`。`ImmCross`/`Plain`/`Unknown` は `ImmCrossDriver` へ集約
+  （分類 enum `ImePolicyProfile` 自体は統合せず、driver へのマッピングのみ collapse）。
+- **Phase 1c — contract test スイート（不変条件5件）**: `ime_profile_driver.rs` の
+  `tests` に実装。1=IME-ON 経路ドライバの stale `ObservedEisu` 救済ペア宣言、
+  2=`owns_physical_kanji` ドライバの非 KANJI 機構宣言、3=`Blind` give-up の有界終端
+  （`decide_actuation_action` SSOT を各ドライバの `default_feedback` で駆動）、
+  4=GJI IME-ON の `GjiFsmSync` 分離不能性、5=`uses_gji_direct` によるアクセスゲート。
+
+### GJI 横断性設計（design B）をどう反映したか
+
+「GJI 横断性の設計」節で確定した (B)（GJI 直接制御を全プロファイル横断の共有機構として
+1箇所に集約し、ドライバは `uses_gji_direct()` を静的宣言するだけ）を型で表現した:
+
+- 新設 `crates/awase-windows/src/state/gji_direct_mechanism.rs` に共有機構
+  `GjiDirectMechanism` を1箇所だけ実装。各ドライバは GJI/MS-IME の**動的分岐を持たない**
+  （`ImeOpenMechanism` は cross-process API か「共有キー委譲」かの2択のみを宣言）。
+- **アクセスの排他性（適用条件2・不変条件5）**: 共有機構を呼ぶ capability token
+  `GjiDirectAccess` はフィールド非公開で、唯一の公開コンストラクタ
+  `GjiDirectMechanism::access_for` が `uses_gji_direct()==true` のドライバにのみ `Some` を
+  返す。宣言しないドライバ（`ImmCrossDriver`）からは構造的に到達不可能。
+- **同期義務の分離不能性（適用条件3・不変条件4）**: 作動要求の帰結 `GjiActuation` が
+  `GjiFsmSync`（`OnImeOn`/`OnImeOff`）を内包し、同期義務を伴わずに GJI で IME を ON にする
+  経路を型として提供しない（BUG-18/22 型の「actuate 抜き belief-ON 高速パス」を防ぐ）。
+- **狭いインタフェース（適用条件1）**: 共有機構は状態を持たず、公開 API は
+  `access_for` / `actuate` の2つのみ。送信 VK は既存 SSOT `ime_key_for`
+  （windows-gated）が握り、機構側で複製しない（SSOT 二重化を回避）。
+
+### テスト結果（Linux / cross-compile）
+
+- `cargo test -p awase-windows --lib`: **172 passed / 0 failed**（Phase 0 の 158 から
+  contract/parity/機構テスト計 14 件増、退行なし）。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib`: green。
+- `cargo clippy -p awase-windows --lib --target x86_64-pc-windows-gnu -- -D warnings`: green。
+- `cargo fmt --check`: green。
+
+### Phase 1d（実機配線）への申し送り
+
+- **VK 解決の合流点**: `GjiActuation.open` を `ime_key_for(KeyMechanism::GjiDirect, ..)`
+  へ渡して具体 VK を解決し、`GjiActuation.fsm_sync` を実 `GjiFsm`（`gji_on_ime_on` /
+  `gji_on_ime_off`）へ写像するのが 1d の中心作業。MS-IME 経路（`MsImeDirectStrategy`
+  相当）は GJI 機構とは別に、`ime_open_mechanism==SharedImeKeyDispatch` かつ
+  `active_ime_kind==MicrosoftIme` の合成としてランタイムが選ぶ。
+- **並走方式**: 「Phase 1d」節の read-only shadow 方式（actuate は常に片方のみ、もう片方は
+  parity 比較のみ）を厳守すること。`assert_policy_parity` 相当の実行時 parity ガードを
+  ソーク中の shadow 比較に流用できる。
+- **probe_budget_ms の精緻化**: 現状は `is_confirm_key` 軸を未使用（`TsfNative` は
+  `long_idle` のみ、`Imm32Unavailable` は両軸未使用で単一定数）。`ColdReason` を
+  windows-gated メソッドとして追加し、BUG-01/BUG-21 の重症度別予算を復元するのが 1d の残作業。
+- **不変条件の実行時化**: contract test 5 件は Phase 1 では「型/静的宣言レベル」の検証に
+  留まる。1d で実際に belief/`GjiFsm` を書く経路が入ったら、不変条件1・3・4 を journal
+  リプレイ（ADR-082 の `EventOrigin`）で実行時にも固定すること。
