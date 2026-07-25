@@ -300,7 +300,7 @@ pub trait ImeProfileDriver: Sync {
 | 要素 | 1ドライバあたり行数（概算） | 3ドライバ合計 |
 |---|---|---|
 | struct 定義 + module doc（現状 `from_profile` の match アーム内コメントを移設） | ~12行 | 36行 |
-| `impl ImeProfileDriver for XxxDriver` ヘッダ + 7メソッドのシグネチャ+ワンライナー本体 | ~7メソッド×3行=21行 | 63行 |
+| `impl ImeProfileDriver for XxxDriver` ヘッダ + 全面移行時 7メソッド（Phase 0 の上記4メソッド + Phase 1 で追加する `is_applicable`/`apply` + `AppImePolicy::default_feedback` 相当の feedback 方針メソッド）のシグネチャ+ワンライナー本体 | ~7メソッド×3行=21行 | 63行 |
 | `probe_budget_ms` の中身（現状 BUG-01 の表: ColdReason×long_idle → ms、4行程度のmatch） | ~4行 | 12行（実質は表の値そのものなので新規重複ではなく移設） |
 | `#[cfg(test)]` ユニットテスト（各ドライバ最低2〜3件、struct 構築+ assert） | ~15行 | 45行 |
 | **小計（3ドライバ分の「型の骨組み」）** | | **約156行** |
