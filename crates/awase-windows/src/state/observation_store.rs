@@ -220,8 +220,8 @@ impl ObservationStore {
 
     /// `most_recent_trusted(now)` と同じロジックに、`since` 以降に record された観測のみを
     /// 対象にする条件を追加したもの。actuation を送信した時刻以降の観測だけを見て収束判定
-    /// したい場合に使う（BUG-42対策、ADR-080参照）。全ソース対象（`ConvOpenInference`を
-    /// 除外しない — BUG-42の直接トリガーだったソースを含めないと意味がないため）。
+    /// したい場合に使う（BUG-43対策、ADR-080参照）。全ソース対象（`ConvOpenInference`を
+    /// 除外しない — BUG-43の直接トリガーだったソースを含めないと意味がないため）。
     #[must_use]
     pub fn most_recent_trusted_after(
         &self,

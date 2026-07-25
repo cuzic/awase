@@ -2,10 +2,10 @@
 
 ## ステータス
 
-Phase 1 実装済み（2026-07-25、実機ソーク未実施）。当初 BUG-42 に対して先行適用した
+Phase 1 実装済み（2026-07-25、実機ソーク未実施）。当初 BUG-43 に対して先行適用した
 暫定パッチ（`Runtime::last_drift_correction_send` による手作りクールダウン）は、
 本 Phase 1 で `Actuation`/`FeedbackPolicy` 機構に置き換え、当該フィールドは撤去済み
-（`docs/known-bugs.md` BUG-42 の「追記（恒久対応）」参照）。本 ADR は当初、その暫定
+（`docs/known-bugs.md` BUG-43 の「追記（恒久対応）」参照）。本 ADR は当初、その暫定
 パッチが4件目の独立した手作りレート制限であるという事実を出発点に、同じ欠陥を持つ
 経路が今後も追加され続けないようにするための構造的な後継案として提案されたもの。
 
@@ -57,7 +57,7 @@ actuation 試行状態の永続化先の欠落、epoch fencing の対象 API 不
   できないことを補うために「actuate した belief をそのまま低信頼度の観測として
   ストアに書き戻す」処理があった。これは定義上 `observed == desired` を作り出すため、
   `check_drift_correction` は**乖離を一度も検知できず、補正が一度も発火しない**。
-- **BUG-42**（本会話で発見・暫定修正済み）: TsfNative/Blacklist アプリで、
+- **BUG-43**（本会話で発見・暫定修正済み）: TsfNative/Blacklist アプリで、
   actuation（`apply_ime_open_with_belief` 経由の VK_IME_OFF 送信）の結果が
   `observations` ストアへ一切フィードバックされない（completion イベントが
   `generation: None` のため dispatch されない設計になっていた）。加えてこの
@@ -65,7 +65,7 @@ actuation 試行状態の永続化先の欠落、epoch fencing の対象 API 不
   正しく検知され続けるが**一度も収束せず、observe tick（~20ms）ごとに同じ VK を
   無限に再送**した（実機ログで 675ms 間に 16 回連続送信を確認）。
 
-BUG-33 は「収束を偽装した」、BUG-42 は「収束を一度も記録できなかった」という、
+BUG-33 は「収束を偽装した」、BUG-43 は「収束を一度も記録できなかった」という、
 同じ欠落を反対側から踏んだものである。
 
 **本 ADR のスコープに関する注記（Codex レビュー指摘・反映、重要度: 中）**:
@@ -73,7 +73,7 @@ BUG-33 の実際の修正（`docs/known-bugs.md` BUG-33、2026-07-22 実装済�
 drift correction 側ではなく、per-VK confirm の give-up 分岐から
 `send_chrome_gji_reinit_and_poll` を直接呼ぶという、本 ADR とは別系統の
 小さな修復パスだった。本 ADR が導入する `Actuation`/`FeedbackPolicy` は
-BUG-42 のクラス（actuation の feedback 欠如によるタイトループ）は構造的に
+BUG-43 のクラス（actuation の feedback 欠如によるタイトループ）は構造的に
 再発不能にするが、BUG-33 のクラス（belief を自己参照的に低信頼度観測として
 書き戻すことで乖離そのものが生成されなくなる問題）は**観測の書き込み側**の
 欠陥であり、actuation 側の型変更だけでは塞がれない。BUG-33 型の再発を
@@ -93,7 +93,7 @@ BUG-42 のクラス（actuation の feedback 欠如によるタイトループ�
 | 箇所 | 対象 |
 |---|---|
 | `Output::last_gji_reinit_ms`（BUG-33 の別経路の修正、`output/probe_io.rs`） | Chrome GJI reinit の give-up 連続発火防止 |
-| `Runtime::last_drift_correction_send`（本会話で追加、BUG-42 暫定修正） | drift correction の再送抑制 |
+| `Runtime::last_drift_correction_send`（本会話で追加、BUG-43 暫定修正） | drift correction の再送抑制 |
 
 **観測側のちらつき・過敏反応を抑える目的の guard（本 ADR の対象外、別カテゴリ）:**
 
@@ -122,7 +122,7 @@ edge case のたびに増える"* と *"scattered boolean フラグは FSM に�
 持たない一級市民になっていない**、というもの。`.claude/rules/ime-belief-architecture.md`
 が強制しているのは「状態が嘘をつかない」という*安全性*（safety）であり、
 「補正は必ず有限回で収束する」という*活性*（liveness）は一切強制されていない。
-BUG-33/BUG-42 は同一の欠落を安全性/活性それぞれの側から踏んだ、というのが
+BUG-33/BUG-43 は同一の欠落を安全性/活性それぞれの側から踏んだ、というのが
 fable の指摘であり、私の見立てと矛盾せず補完し合う。
 
 ### 先例: conv-mode 軸では既に同種の対策が提案・一部実装済み（ADR-078）
@@ -210,7 +210,7 @@ open/close の実観測経路は現状存在しない。`AssumeAfter` を独立�
 
 `FeedbackPolicy::Blind` は `max_attempts` に達したら `Resolution::GaveUp` を返して
 終了し、`desired` が変化するまで（＝新しい `Actuation` が構築されるまで）
-二度と actuate しない。これが BUG-42 が起こしたタイトループを**型レベルで
+二度と actuate しない。これが BUG-43 が起こしたタイトループを**型レベルで
 不可能にする**（`last_drift_correction_send` のような手作りタイムスタンプに
 頼らない）。
 
@@ -222,7 +222,7 @@ open/close の実観測経路は現状存在しない。`AssumeAfter` を独立�
 `Some`/`None` を計算する**純粋関数**で、過去に `GaveUp` した試行の記憶を一切
 持たない。この構造をそのまま流用すると、observe tick（~20ms）ごとに
 `ir_apply_drift_correction` が**新しい** `Actuation` を毎回構築してしまい、
-`max_attempts` が実質的に tick のたびにリセットされる — BUG-42 とまったく同じ
+`max_attempts` が実質的に tick のたびにリセットされる — BUG-43 とまったく同じ
 タイトループが `Actuation` という型を被っただけで再発する。
 
 したがって明示的に定める: `Actuation` の所有者は `Runtime`
@@ -270,7 +270,7 @@ drift correction は `observed != desired`（乖離）が続く間しか走ら�
 フィルタは `ImmCrossProbe`/`FocusProbe` の2ソースにしか適用されておらず、
 `check_drift_correction` が実際に呼ぶ `most_recent_trusted()`
 （`observation_store.rs:214-219`）は confidence と `is_expired` しか見ない
-**epoch もタイムスタンプ下限も一切考慮しない**関数である。BUG-42 の直接トリガーは
+**epoch もタイムスタンプ下限も一切考慮しない**関数である。BUG-43 の直接トリガーは
 `ConvOpenInference`（epoch フィルタ対象外のソース）が stale なまま居座ることだった
 ため、「既存の epoch admission を再利用する」という記述では実際には何も塞げない。
 
@@ -278,7 +278,7 @@ drift correction は `observed != desired`（乖離）が続く間しか走ら�
 `most_recent_trusted_after(&self, now: Instant, since: Instant) -> Option<&ImeObservation>`
 を新設し、`o.at >= since` も追加条件に含める（全ソース対象、`ConvOpenInference`
 を除外しない）。`ir_apply_drift_correction` は `Actuation.sent_at` を `since` として
-渡す。これにより BUG-42 の直接トリガーだった「補正前の stale な
+渡す。これにより BUG-43 の直接トリガーだった「補正前の stale な
 `ConvOpenInference` 観測が居座り続ける」問題を、既存 API の意味を変えずに
 （`derive_open()`/`most_recent_trusted()` はそのまま残し、新関数を追加する形で）塞ぐ。
 
@@ -408,7 +408,7 @@ broken-app-bootstrap force-on（`apply_force_on_for_imm_broken`/
 
 ## 関連
 
-- `docs/known-bugs.md` BUG-42（本 ADR の直接の動機、暫定パッチの詳細）、
+- `docs/known-bugs.md` BUG-43（本 ADR の直接の動機、暫定パッチの詳細）、
   BUG-33（逆方向の症状）、BUG-20（actuation 送信側の対称バグ）。
 - `docs/adr/077-observation-admission-epoch.md`（`FocusEpoch` による admission
   パターン。本 ADR のタイムスタンプ・フェンシングは `FocusEpoch` 型そのものは

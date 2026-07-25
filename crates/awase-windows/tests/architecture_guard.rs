@@ -475,7 +475,7 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// （関数定義 `fn apply_ime_open_with_belief(` は数えない）。
 ///
 /// これは「唯一の窓口」への統合テストではなく、**新しい未レビューの呼び出し元が
-/// 増えたら気づく**ための count guard である。ADR-080 / `docs/known-bugs.md` BUG-42
+/// 増えたら気づく**ための count guard である。ADR-080 / `docs/known-bugs.md` BUG-43
 /// の根本原因は、raw actuation（IME open の実 actuate）を drift correction ループが
 /// observe tick ごとに無限再送していたことだった。修正（タスク #14）は
 /// `ir_apply_drift_correction` の actuation を `Actuation`/`FeedbackPolicy`
@@ -486,7 +486,7 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 ///
 /// したがってこのテストは「`ir_apply_drift_correction` が raw actuation を直接
 /// 呼ばないこと」は**検証しない**（それは現状の正しいコードに対して偽であり、
-/// 即座に fail する）。代わりに、BUG-42 の設計欠陥（同じ actuate 呼び出しが
+/// 即座に fail する）。代わりに、BUG-43 の設計欠陥（同じ actuate 呼び出しが
 /// 無自覚に増殖した）と同型の増殖を検知するため、呼び出し元の総数を凍結する。
 ///
 /// 現在の既知の呼び出し元（file : function、行番号はドリフトするため記載しない）:
@@ -496,7 +496,7 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// - `runtime/ime_refresh.rs` : `ir_apply_drift_correction`（Blacklist/TsfNative の drift 訂正、ADR-080 の直接対象）
 ///
 /// 新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ
-/// `Actuation` ベースのゲーティングが必要かどうか（ADR-080 / BUG-42 参照）を
+/// `Actuation` ベースのゲーティングが必要かどうか（ADR-080 / BUG-43 参照）を
 /// 検討した上で、このカウントと上記一覧を更新すること。呼び出し元を削除した
 /// 場合は単にカウントを更新すること。
 #[test]
@@ -543,7 +543,7 @@ fn apply_ime_open_with_belief_call_sites_are_accounted_for() {
          異なります(実際: {total})。内訳: {breakdown:?}\n\
          新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ \
          Actuation ベースのゲーティングが必要かどうか（ADR-080 / \
-         docs/known-bugs.md BUG-42 参照 — raw actuation が observe tick ごとに\
+         docs/known-bugs.md BUG-43 参照 — raw actuation が observe tick ごとに\
          無限再送された設計欠陥）を検討した上で、このカウントを更新してください。\n\
          呼び出し元を削除した場合は単にこのカウントを更新してください。"
     );

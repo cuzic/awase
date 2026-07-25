@@ -4551,7 +4551,7 @@ GCP Spot self-hosted runner導入により、`cargo test --lib -p awase-windows`
 
 なお`cargo mutants`のフル走査(3296ミュータント)自体はjobのtimeout-minutes(180分)内に完走せず`cancelled`になったが、これはミュータント総数が非常に多いことによるもので、baselineの全パスとは無関係(バグではない)。フル走査を完走させたい場合は`--jobs`を増やすかタイムアウトを延ばすか、`-f`で対象ファイルを絞ること。
 
-## BUG-42: `ir_apply_drift_correction`（Blacklist/TsfNative パス）が observation store を更新しないため、同じ IME-OFF 訂正キーを observe tick ごとに無限再送する
+## BUG-43: `ir_apply_drift_correction`（Blacklist/TsfNative パス）が observation store を更新しないため、同じ IME-OFF 訂正キーを observe tick ごとに無限再送する
 
 **症状:** Windows Terminal（`process=WindowsTerminal.exe`、`fg_class=CASCADIA_HOSTING_WINDOW_CLASS`、`focused_hwnd` class は `Windows.UI.Input.InputSite.WindowClass`、`app_kind=Uwp`、force-tsf 判定で TsfNative 扱い）で GJI（Google 日本語入力）使用中、`[drift] correction: observed=true ≠ desired=false for ...ms → set_ime_open(false)` → `Blacklist drift correction: apply_ime_open(false) → Applied` のログが 2026-07-25T01:28:31.022〜31.697 の約675msの間に **16回連続**（平均間隔 ~45ms、observe tick の 20ms タイマーとほぼ同期）で発火し、そのたびに `GJI direct: send 0x001A (open=false)`（`VK_IME_OFF`）を `SendInput` し、`composition] marked cold reason=SetOpenFalse` で毎回 warm 状態を破棄していた（次の実出力で `VK_DBE_HIRAGANA` warmup が強制される）。ユーザーはこの間、画面上で「キーが連打されたかのような」挙動を観測した。ログの `duration_ms` は補正のたびにリセットされず単調増加していた（84502ms → 85176ms）ことから、乖離が一度も解消されないまま補正だけが空振りし続けていたと確認できる。
 

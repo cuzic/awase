@@ -572,7 +572,7 @@ impl Runtime {
 
         // ADR-080: actuation を型付きトランザクション（`Actuation`）として扱い、
         // feedback（収束確認）方針を `AppImePolicy::default_feedback` からデータとして
-        // 受け取る。これにより BUG-42 の「実送信の結果が observation store に
+        // 受け取る。これにより BUG-43 の「実送信の結果が observation store に
         // フィードバックされず、observe tick ごとに同じ VK を無限再送するタイトループ」を
         // 手作りクールダウン（旧 `last_drift_correction_send`）に頼らず型レベルで防ぐ。
         //

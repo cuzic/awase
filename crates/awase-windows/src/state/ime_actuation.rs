@@ -43,7 +43,7 @@ pub enum ActuationAction {
 }
 
 /// `Blind` の有界終端を判定する純粋関数（`runtime`層がLinuxでテストできないため、
-/// この核心ロジックだけ`state`層に切り出してある。ADR-080 / BUG-42 参照）。
+/// この核心ロジックだけ`state`層に切り出してある。ADR-080 / BUG-43 参照）。
 ///
 /// `Blind` は `attempts >= max_attempts` で厳密に打ち切る（それ未満では決して諦めず、
 /// それ以上でも決して `Send` に戻らない）。`Read` は試行回数だけでは打ち切らず常に
