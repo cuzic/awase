@@ -149,6 +149,26 @@ pub struct NicolaFsm {
     /// 変換キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
     /// 生 VK を送出するか。`henkan_vk` が `None` なら無効。
     henkan_solo_tap_ignore_composing_guard: bool,
+
+    /// `left_thumb_key`/`right_thumb_key` のいずれかが Enter (`VK_RETURN`) に
+    /// 割り当てられている場合、その VK コード。`space_thumb_vk` と同様、実際の VK
+    /// 番号は Platform 層の責務で、core は等値比較のみ行う。
+    enter_thumb_vk: Option<VkCode>,
+
+    /// Enter 親指キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
+    /// 生 VK_RETURN を送出するか。`enter_thumb_vk` が `None` なら無効。
+    ///
+    /// Enter は IME 変換候補の確定という正規機能を持つため、既定値は Space と同じ
+    /// `true`（常時送出）。無変換/変換と異なり `false` を既定にすると、変換候補
+    /// ウィンドウ表示中に Enter 単独タップが丸ごと抑制され、変換確定そのものが
+    /// できなくなってしまう。
+    enter_thumb_ignore_composing_guard: bool,
+
+    /// Shift を押しながら Enter 親指キーを押した場合、同時打鍵判定を一切試みず
+    /// 即座にリテラルな Enter として送出するか。`enter_thumb_vk` が `None` なら無効。
+    /// Shift+Enter（ソフト改行）は NICOLA の小指シフト面と組み合わせない設計のため、
+    /// `space_thumb_shift_literal` と同じ理由で既定値は `true`。
+    enter_thumb_shift_literal: bool,
 }
 
 // ── 公開 API ──
@@ -192,6 +212,12 @@ impl NicolaFsm {
             muhenkan_solo_tap_ignore_composing_guard: false,
             henkan_vk: None,
             henkan_solo_tap_ignore_composing_guard: false,
+            // Enter の VK は Platform 層が set_enter_thumb_config() で明示的に配線する
+            // まで None。ガード既定値は GeneralConfig::default() と揃えて Space と
+            // 同じ true（composing 中も変換確定/改行として素通し）。
+            enter_thumb_vk: None,
+            enter_thumb_ignore_composing_guard: true,
+            enter_thumb_shift_literal: true,
         }
     }
 
@@ -397,6 +423,25 @@ impl NicolaFsm {
         self.muhenkan_solo_tap_ignore_composing_guard = muhenkan_ignore_composing_guard;
         self.henkan_vk = henkan_vk;
         self.henkan_solo_tap_ignore_composing_guard = henkan_ignore_composing_guard;
+    }
+
+    /// Enter 親指キーのフォールバック挙動を設定する。
+    ///
+    /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
+    /// Enter (`VK_RETURN`) に解決された場合の VK コード（Platform 層が
+    /// `crate::vk::VK_RETURN` との等値比較で判定し渡す）。どちらも Enter でなければ
+    /// `None` を渡すこと。`ignore_composing_guard`/`shift_literal` は
+    /// `GeneralConfig::enter_thumb_ignore_composing_guard`/
+    /// `enter_thumb_shift_literal` にそのまま対応する。
+    pub const fn set_enter_thumb_config(
+        &mut self,
+        enter_thumb_vk: Option<VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.enter_thumb_vk = enter_thumb_vk;
+        self.enter_thumb_ignore_composing_guard = ignore_composing_guard;
+        self.enter_thumb_shift_literal = shift_literal;
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
@@ -689,10 +734,25 @@ impl NicolaFsm {
             && matches!(self.space_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
+    /// Enter 親指キーを Shift と同時に押した場合、同時打鍵判定を一切試みず
+    /// 即座にリテラルな Enter（Shift+Enter のソフト改行）として送出すべきかを判定する。
+    /// `is_space_thumb_shift_literal` と同じ理由付け（NICOLA の小指シフト面とは
+    /// 組み合わせない設計）。
+    const fn is_enter_thumb_shift_literal(&self, ev: &ClassifiedEvent) -> bool {
+        self.enter_thumb_shift_literal
+            && self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
         // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
         if self.is_space_thumb_shift_literal(ev) {
+            return IdleIntent::PassThrough;
+        }
+        // Shift+Enter literal: 明示的なソフト改行のエスケープハッチ（同上）。
+        if self.is_enter_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;
         }
         // Shift plane
@@ -1030,6 +1090,11 @@ impl NicolaFsm {
     /// ユーザーが明示的に有効化した場合のみ、上記のかな/カタカナ切替等の副作用
     /// リスクを引き受けて composing 中の単独タップを素通しさせる。
     ///
+    /// **Enter の例外**: `enter_thumb_vk` に一致し `enter_thumb_ignore_composing_guard`
+    /// が true の場合も、Space と同じ理由（IME 変換候補確定は正規機能であり、
+    /// 無変換/変換と同じガードを適用すると通常の変換確定操作が丸ごと壊れる）で
+    /// composing 中でも常に生 VK_RETURN を送出する。既定値は `true`。
+    ///
     /// タイムアウト経路（`timeout_pending_thumb`）とフラッシュ経路（`flush_pending`、
     /// `decide_pending_thumb` の Passthrough 割り込み、`step_pending_thumb_char`/
     /// `step_pending_thumb_thumb`）の双方から共通で呼ぶ。以前はフラッシュ経路が
@@ -1058,8 +1123,12 @@ impl NicolaFsm {
             self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_ignore_composing_guard;
         let is_henkan_with_fallback =
             self.henkan_vk == Some(vk_code) && self.henkan_solo_tap_ignore_composing_guard;
-        let ignore_composing_guard =
-            is_space_with_fallback || is_muhenkan_with_fallback || is_henkan_with_fallback;
+        let is_enter_with_fallback =
+            self.enter_thumb_vk == Some(vk_code) && self.enter_thumb_ignore_composing_guard;
+        let ignore_composing_guard = is_space_with_fallback
+            || is_muhenkan_with_fallback
+            || is_henkan_with_fallback
+            || is_enter_with_fallback;
         if composing && !ignore_composing_guard {
             return ResolvedAction {
                 actions: SmallVec::new(),

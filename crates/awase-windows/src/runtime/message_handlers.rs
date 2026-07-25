@@ -506,6 +506,16 @@ pub(crate) fn handle_wm_reload_config() {
 
 /// WM_COMMAND ハンドラ
 pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
+    // トレイメニューの IME コマンドは、メニュー表示前に捕捉したウィンドウ
+    // （`tray::menu_target_hwnd()`）を対象にする。捕捉できていなければ
+    // `GetForegroundWindow()` にフォールバックする（メニュー選択後の呼び出し時点の
+    // フォアグラウンドはトレイ自身の可能性が高いため、あくまで最終手段）。
+    // 理由は `ime::set_ime_open_for_target` の doc を参照。
+    let ime_target = tray::menu_target_hwnd().or_else(|| {
+        use crate::win32::HwndExt as _;
+        windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().non_null()
+    });
+
     match tray::handle_tray_command(wparam) {
         Some(tray::TrayCommand::Settings) => launch_settings(),
         Some(tray::TrayCommand::RestartAdmin) => tray::restart_as_admin(),
@@ -522,52 +532,73 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             crate::ime::toggle_caps_lock();
         }
         Some(tray::TrayCommand::ImeHiragana) => {
-            let _ = crate::ime::set_ime_mode(
-                true,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
-                crate::imm::IME_CMODE_KATAKANA,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
+                    crate::imm::IME_CMODE_KATAKANA,
+                );
+            }
         }
         Some(tray::TrayCommand::ImeFullKatakana) => {
-            let _ = crate::ime::set_ime_mode(
-                true,
-                crate::imm::IME_CMODE_NATIVE
-                    | crate::imm::IME_CMODE_KATAKANA
-                    | crate::imm::IME_CMODE_FULLSHAPE,
-                0,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_KATAKANA
+                        | crate::imm::IME_CMODE_FULLSHAPE,
+                    0,
+                );
+            }
         }
         Some(tray::TrayCommand::ImeFullAlpha) => {
-            let _ = crate::ime::set_ime_mode(
-                true,
-                crate::imm::IME_CMODE_FULLSHAPE,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    crate::imm::IME_CMODE_FULLSHAPE,
+                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                );
+            }
         }
         Some(tray::TrayCommand::ImeHalfAlpha) => {
-            let _ = crate::ime::set_ime_mode(
-                true,
-                0,
-                crate::imm::IME_CMODE_NATIVE
-                    | crate::imm::IME_CMODE_KATAKANA
-                    | crate::imm::IME_CMODE_FULLSHAPE,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    0,
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_KATAKANA
+                        | crate::imm::IME_CMODE_FULLSHAPE,
+                );
+            }
         }
         Some(tray::TrayCommand::ImeHalfKatakana) => {
-            let _ = crate::ime::set_ime_mode(
-                true,
-                crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                crate::imm::IME_CMODE_FULLSHAPE,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                    crate::imm::IME_CMODE_FULLSHAPE,
+                );
+            }
         }
         Some(tray::TrayCommand::ImeDirect) => {
-            let _ = crate::ime::set_ime_mode(false, 0, 0);
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(hwnd, false, 0, 0);
+            }
         }
         Some(tray::TrayCommand::InputRomaji) => {
-            let _ = crate::ime::set_ime_romaji_mode_state(true);
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, true);
+            }
         }
         Some(tray::TrayCommand::InputKana) => {
-            let _ = crate::ime::set_ime_romaji_mode_state(false);
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, false);
+            }
         }
         Some(tray::TrayCommand::ResetState) => {
             let caps_lock_on =
@@ -575,13 +606,16 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             if caps_lock_on {
                 crate::ime::toggle_caps_lock();
             }
-            let _ = crate::ime::set_ime_mode(
-                true,
-                crate::imm::IME_CMODE_NATIVE
-                    | crate::imm::IME_CMODE_FULLSHAPE
-                    | crate::imm::IME_CMODE_ROMAN,
-                crate::imm::IME_CMODE_KATAKANA,
-            );
+            if let Some(hwnd) = ime_target {
+                let _ = crate::ime::set_ime_mode_for_target(
+                    hwnd,
+                    true,
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_FULLSHAPE
+                        | crate::imm::IME_CMODE_ROMAN,
+                    crate::imm::IME_CMODE_KATAKANA,
+                );
+            }
             // 無変換ソロ連打の緊急停止（ADR-055 追補）等で user_enabled が false に
             // なっていても、この操作で必ず Engine ON まで復帰させる。
             let _ = with_app(Runtime::force_engine_on);

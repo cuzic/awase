@@ -731,6 +731,119 @@ fn test_shift_space_enters_pending_when_literal_disabled() {
     assert_pending(&result);
 }
 
+// ── Enter 親指キーのフォールバック（left_thumb_key/right_thumb_key = VK_RETURN） ──
+
+/// 左親指キーに Enter を割り当て、`enter_thumb_vk`/フラグを明示設定したエンジンを返す。
+fn make_engine_with_enter_thumb(ignore_composing_guard: bool, shift_literal: bool) -> TestHarness {
+    let mut engine = NicolaFsm::new(
+        make_layout(),
+        VK_RETURN,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
+    engine.set_enter_thumb_config(Some(VK_RETURN), ignore_composing_guard, shift_literal);
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine,
+    }
+}
+
+/// Enter を左親指キーとした KeyDown イベントを構築する。
+///
+/// `classify_test_key`（`Ev::down` が使う共通の VK→分類マッピング）は VK_RETURN を
+/// 汎用の non-layout キーとして `Passthrough` に分類する（`test_pending_char_then_non_layout_key_passes_through_new`
+/// 等、他の多数のテストがこの前提に依存しているため変更できない）。Enter を親指キーとして
+/// 扱うこのブロックのテストだけは、`test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass`
+/// と同じ手法（`RawKeyEvent` を手組みして `key_classification` を明示指定）で対処する。
+fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
+    use crate::types::{ImeRelevance, KeyClassification, KeyEventType, ModifierState};
+    RawKeyEvent {
+        vk_code: VK_RETURN,
+        scan_code: vk_to_scan(VK_RETURN),
+        event_type: KeyEventType::KeyDown,
+        extra_info: 0,
+        timestamp: ts,
+        key_classification: KeyClassification::LeftThumb,
+        physical_pos: None,
+        ime_relevance: ImeRelevance::default(),
+        modifier_key: None,
+        modifier_snapshot: ModifierState::default(),
+        injected: false,
+    }
+}
+
+/// Enter 親指キーは、composing 中（変換候補ウィンドウ表示中）でも
+/// `enter_thumb_ignore_composing_guard=true`（既定値）なら単独タップで送出される。
+/// 無変換/変換と違い、Enter の raw VK_RETURN は IME の「変換確定」正規機能であり、
+/// composing 中に抑制すると通常の変換確定操作が壊れるための例外
+/// （resolve_pending_thumb_as_single 参照、Space と同じ理由付け）。
+#[test]
+fn test_enter_thumb_emits_while_composing_when_guard_ignored() {
+    let mut engine = make_engine_with_enter_thumb(true, true);
+
+    let result = engine.on_event(enter_thumb_down_event(0));
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_RETURN)),
+        "enter_thumb_ignore_composing_guard=true なら composing 中でも VK_RETURN を送出すべき"
+    );
+}
+
+/// `enter_thumb_ignore_composing_guard=false` なら、Enter も無変換/変換と同じく
+/// composing 中は suppress される（設定でオプトアウトできることの確認）。
+#[test]
+fn test_enter_thumb_suppressed_while_composing_when_guard_disabled() {
+    let mut engine = make_engine_with_enter_thumb(false, true);
+
+    let result = engine.on_event(enter_thumb_down_event(0));
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "enter_thumb_ignore_composing_guard=false なら composing 中は他の親指キーと同様 suppress される"
+    );
+}
+
+/// Shift+Enter は `enter_thumb_shift_literal=true` の場合、同時打鍵判定を待たず
+/// 即座に PassThrough（consumed=false）として処理される（PendingThumb に入らない）。
+#[test]
+fn test_shift_enter_literal_passthrough_when_enabled() {
+    let mut engine = make_engine_with_enter_thumb(true, true);
+
+    let shift_result = engine.on_event(Ev::down(VK_LSHIFT).build());
+    assert!(!shift_result.consumed, "Shift 単体は素通しされる");
+
+    let result = engine.on_event(enter_thumb_down_event(0));
+    assert!(
+        !result.consumed,
+        "Shift+Enter は同時打鍵判定を待たず即座に PassThrough になるべき"
+    );
+    assert!(
+        result.timers.is_empty(),
+        "PendingThumb に入らないので TIMER_PENDING は張られないはず"
+    );
+}
+
+/// `enter_thumb_shift_literal=false` なら、Shift+Enter も通常の親指キー同様
+/// `PendingThumb` に入る（同時打鍵判定が有効なままであることの確認）。
+#[test]
+fn test_shift_enter_enters_pending_when_literal_disabled() {
+    let mut engine = make_engine_with_enter_thumb(true, false);
+
+    let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
+    let result = engine.on_event(enter_thumb_down_event(0));
+    assert_pending(&result);
+}
+
 #[test]
 fn test_char_then_thumb_after_threshold() {
     let mut engine = make_engine();
@@ -4507,6 +4620,44 @@ mod engine_integration_tests {
     }
 
     #[test]
+    fn special_key_engine_on_combo_recovers_when_context_inactive_but_user_enabled() {
+        // 実機バグ: user_enabled=true のまま ime_on=false 等の *文脈* で Engine が
+        // inactive に陥っているとき、以前は `!engine_enabled` ガードにより
+        // Ctrl+Shift+変換（engine_on コンボ）が完全に無視され PassThrough
+        // されるだけだった（force_enable_and_activate の recovery ロジックへ
+        // 到達不能）。この回帰を防ぐ。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        assert!(engine.is_user_enabled(), "user_enabled は最初から true");
+        assert!(
+            !engine.compute_active(&ime_off_ctx()),
+            "ime_off_ctx では文脈により inactive のはず"
+        );
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: true })
+            )),
+            "user_enabled=true でも context-inactive なら engine_on コンボで IME を \
+             強制的に開く SetOpen(true) が発行されるべき（修正前は match_event が \
+             None を返し、この effect が一切発行されず PassThrough のみだった）"
+        );
+    }
+
+    #[test]
     fn special_key_engine_off_combo() {
         let combo = ParsedKeyCombo {
             ctrl: false,
@@ -5583,6 +5734,35 @@ mod engine_integration_tests {
             )),
             "muhenkan_vk + ignore_composing_guard=true must emit raw VK even while composing, \
              got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn engine_set_enter_thumb_config_ignore_composing_guard_actually_takes_effect() {
+        // set_enter_thumb_config が no-op に壊れると、enter_thumb_vk が None のままになり、
+        // ignore_composing_guard=true を指定しても composing 中は無条件 suppress
+        // されてしまう（生 VK_RETURN が出力されない）。
+        let mut engine = make_test_engine();
+        engine.set_enter_thumb_config(Some(VK_RETURN), true, false);
+
+        let composing_ctx = InputContext {
+            composing: true,
+            ..ime_on_ctx()
+        };
+
+        let d1 = engine.on_input(enter_thumb_down_event(0), &composing_ctx);
+        assert!(d1.is_consumed());
+
+        let d2 = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_RETURN))
+            )),
+            "enter_thumb_vk + ignore_composing_guard=true must emit raw VK_RETURN even while \
+             composing, got {:?}",
             effects_of(&d2)
         );
     }

@@ -21,6 +21,28 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use anyhow::{Context, Result};
 
+use std::sync::atomic::{AtomicIsize, Ordering};
+
+/// コンテキストメニューを表示する直前（`SetForegroundWindow` でトレイ自身に
+/// フォーカスを奪う直前）に捕捉した、実際にフォーカスされていたウィンドウ。
+///
+/// `handle_tray_message` が右クリックのたびに更新し、`handle_wm_command`（メニュー
+/// 選択後の `WM_COMMAND`）がこれを読んで IME コマンドの対象ウィンドウとして使う。
+/// メニュー選択の時点で `GetGUIThreadInfo` / `GetForegroundWindow` を素朴に問い合わせると
+/// トレイ自身やメニューの一時ウィンドウを掴んでしまい、ユーザーが実際に入力していた
+/// アプリには何も効かない（2026-07-24 実機: 「IME ON・Engine OFF から何をしても
+/// 復旧できない」として観測。トレイの「状態をリセット」がこの経路だった）。
+static MENU_TARGET_HWND: AtomicIsize = AtomicIsize::new(0);
+
+/// 直近の `handle_tray_message` 呼び出し時に捕捉したフォーカスウィンドウを返す。
+/// 捕捉できていなければ `None`（呼び出し元は生の `GetForegroundWindow()` 等に
+/// フォールバックすること）。
+#[must_use]
+pub(crate) fn menu_target_hwnd() -> Option<HWND> {
+    let raw = MENU_TARGET_HWND.load(Ordering::Relaxed);
+    (raw != 0).then_some(HWND(raw as *mut core::ffi::c_void))
+}
+
 /// トレイメニュー項目 ID
 const IDM_SETTINGS: u16 = 50;
 const IDM_RESTART_ADMIN: u16 = 51;
@@ -500,6 +522,17 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
     if event != WM_RBUTTONUP {
         return;
     }
+
+    // メニュー表示のための `SetForegroundWindow(hwnd)`（下記）でトレイ自身に
+    // フォーカスを奪う前に、実際にフォーカスされているウィンドウを捕捉しておく。
+    // ここで捕捉し損ねると、メニュー選択後の IME コマンドがトレイ自身（または
+    // メニューの一時ウィンドウ）を対象にしてしまう（`MENU_TARGET_HWND` の doc 参照）。
+    // SAFETY: メッセージループスレッドから呼ばれるため Win32 スレッド要件を満たす。
+    let captured = unsafe {
+        crate::win32::get_gui_thread_info_with_timeout(std::time::Duration::from_millis(150))
+    }
+    .focused_hwnd;
+    MENU_TARGET_HWND.store(captured.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
 
     // SAFETY: `hwnd` はシステムトレイ作成時に `CreateWindowExW` で得た有効なウィンドウハンドル。
     //         `GetCursorPos`・`CreatePopupMenu`・`AppendMenuW`・`TrackPopupMenu`・`DestroyMenu` は

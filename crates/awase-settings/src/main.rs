@@ -907,6 +907,29 @@ impl SettingsApp {
                 );
             });
         }
+        if self.config.general.left_thumb_key == "VK_RETURN"
+            || self.config.general.right_thumb_key == "VK_RETURN"
+        {
+            ui.indent("enter_thumb_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.enter_thumb_ignore_composing_guard,
+                    "変換候補ウィンドウ表示中でも Enter を送出する",
+                )
+                .on_hover_text(
+                    "OFF にすると、無変換/変換キーと同様に変換候補ウィンドウ表示中は\n\
+                     Enter 単独タップを抑制します（IME の変換確定機能が使えなくなります）。\n\
+                     通常は ON のままにしてください。",
+                );
+                ui.checkbox(
+                    &mut self.config.general.enter_thumb_shift_literal,
+                    "Shift+Enter は常にソフト改行として送出する",
+                )
+                .on_hover_text(
+                    "ON の場合、Shift を押しながら Enter 親指キーを押すと、\n\
+                     同時打鍵判定を待たず即座に Shift+Enter を入力します。",
+                );
+            });
+        }
         if self.config.general.left_thumb_key == "無変換"
             || self.config.general.right_thumb_key == "無変換"
         {
@@ -1974,6 +1997,7 @@ fn key_list_ui(
 /// 等、`THUMB_KEY_OPTIONS` を共有する他の用途には Alt を出さないよう分離してある。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
+    ("Enter", "VK_RETURN"),
     ("変換", "VK_CONVERT"),
     ("無変換", "VK_NONCONVERT"),
     ("かな", "VK_KANA"),
