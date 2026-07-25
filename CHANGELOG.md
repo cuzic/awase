@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 追加
+
+- **親指キーとして Enter を選択できるようにした**
+  - `left_thumb_key`/`right_thumb_key` に Enter（`VK_RETURN`）を割り当てられるようにした（設定画面の親指キー選択肢に「Enter」を追加）
+  - Space と同様、Enter を親指キーに割り当てた場合は変換候補ウィンドウ表示中でも単独タップで生 `VK_RETURN`（変換確定）を送出する（無変換/変換と異なり、composing 中の raw VK_RETURN 送出は IME の正規機能のため）
+  - Shift+Enter は同時打鍵判定を待たずリテラルな Enter（ソフト改行）として即時送出する
+  - 設定は `enter_thumb_ignore_composing_guard`/`enter_thumb_shift_literal`（既定 true）。Enter が親指キーの時のみ設定画面に表示
+
 ## [1.10.1] - 2026-07-20
 
 ### 修正

@@ -864,6 +864,18 @@ pub(super) fn run_all() -> Result<()> {
         config.general.henkan_solo_tap_ignore_composing_guard,
     );
 
+    // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
+    // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal
+    // doc 参照）。
+    let enter_thumb_vk = [left_thumb_vk, right_thumb_vk]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_RETURN);
+    engine.set_enter_thumb_config(
+        enter_thumb_vk,
+        config.general.enter_thumb_ignore_composing_guard,
+        config.general.enter_thumb_shift_literal,
+    );
+
     if let Some(vk) = config
         .keys
         .engine_off_solo_triple

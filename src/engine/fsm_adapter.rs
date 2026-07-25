@@ -125,6 +125,17 @@ impl FsmAdapter {
         );
     }
 
+    /// Enter 親指キーのフォールバック挙動を設定する。
+    pub(super) const fn set_enter_thumb_config(
+        &mut self,
+        enter_thumb_vk: Option<crate::types::VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.fsm
+            .set_enter_thumb_config(enter_thumb_vk, ignore_composing_guard, shift_literal);
+    }
+
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         self.fsm.take_engine_off_requested()
