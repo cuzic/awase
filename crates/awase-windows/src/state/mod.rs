@@ -40,6 +40,10 @@ pub mod ime_actuation;
 // （配線は Phase 1 のスコープ）ため、両ターゲットで dead_code を許可する。
 #[allow(dead_code)]
 pub mod ime_profile_driver;
+// ADR-081 Phase 1c: 共有 GJI 直接制御機構（design B）。ドライバ同様まだ未配線
+// （配線は Phase 1d のスコープ）のため両ターゲットで dead_code を許可する。
+#[allow(dead_code)]
+pub mod gji_direct_mechanism;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
 // 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
 // なる（ADR-065 と同じ局所抑制パターン）。
