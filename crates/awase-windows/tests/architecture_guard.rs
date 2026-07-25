@@ -678,3 +678,104 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
         );
     }
 }
+
+/// GJI/MS-IME の IME ON/OFF/フォールバックが送信する VK コードを、実装ソースの
+/// テキスト走査で固定する。
+///
+/// `docs/experiments.md` エントリ01: 「IME OFF に何のキーを送るか」で5日間に6回、
+/// 採用と撤回が反転した（`534051a` → `098c663` → `adb856c` → `b271aee` → … →
+/// `489cdf1`）。最終結論は「GJI/MS-IME いずれも IME OFF は冪等 VK_IME_OFF (0x1A) を
+/// 送る `post_ime_off_direct()` 経由（VK_KANJI トグルには戻さない）」（根拠:
+/// `489cdf1`, `48a667a`）。MS-IME 専用 OFF (`post_ms_ime_off`) は `VK_DBE_ALPHANUMERIC`
+/// で、これも同エントリで複数回採用/撤回された当事者。
+///
+/// `tests/ime_key_sequence_golden.rs` の `KEY_DOC` はこの結論をコメントとして固定して
+/// いるが、その本文はハードコードされた定数文字列同士の突き合わせ（自己参照）であり、
+/// 各 `post_*` 関数の実装が別の VK コードに戻ってもゴールデンは通ってしまう。この
+/// テストは `src/ime.rs` の実関数本体を直接検査し、送信 VK コードの回帰を検知する。
+/// Win32 呼び出しを伴わないテキスト走査のみのため Linux 上でもそのまま実行できる。
+#[test]
+fn ime_open_close_functions_send_expected_vk_codes() {
+    let path = "src/ime.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+
+    // 冪等 IME ON: VK_IME_ON。VK_KANJI（非冪等トグル）・VK_DBE_HIRAGANA（MS-IME専用）が
+    // 混入すると shadow desync や環境依存の不具合を再導入する。
+    let on_direct = extract_fn_body(production, "pub unsafe fn post_ime_on_direct(");
+    assert!(
+        on_direct.contains("VK_IME_ON"),
+        "{path} の post_ime_on_direct が VK_IME_ON を送っていません。"
+    );
+    for forbidden in ["VK_KANJI", "VK_DBE_HIRAGANA", "VK_DBE_ALPHANUMERIC"] {
+        assert!(
+            !on_direct.contains(forbidden),
+            "{path} の post_ime_on_direct に {forbidden} が混入しています。冪等 IME ON は \
+             VK_IME_ON 単独であるべきです。"
+        );
+    }
+
+    // 冪等 IME OFF: VK_IME_OFF。docs/experiments.md エントリ01「IME OFF に何のキーを
+    // 送るか」で5日間に6回反転した最終結論（534051a→098c663→adb856c→b271aee→…→
+    // 489cdf1、根拠48a667a）。
+    let off_direct = extract_fn_body(production, "pub unsafe fn post_ime_off_direct(");
+    assert!(
+        off_direct.contains("VK_IME_OFF"),
+        "{path} の post_ime_off_direct が VK_IME_OFF を送っていません。docs/experiments.md \
+         エントリ01 の6回反転（534051a→098c663→adb856c→b271aee→…→489cdf1）の最終結論から \
+         の回帰です。"
+    );
+    for forbidden in ["VK_KANJI", "VK_DBE_ALPHANUMERIC", "VK_DBE_HIRAGANA"] {
+        assert!(
+            !off_direct.contains(forbidden),
+            "{path} の post_ime_off_direct に {forbidden} が混入しています。docs/experiments.md \
+             エントリ01 で撤回済みの選択肢への回帰の可能性があります。"
+        );
+    }
+
+    // GJI 専用エイリアスは post_ime_on_direct/post_ime_off_direct への委譲のみである
+    // こと。独自の VK 送信を再実装すると、6回反転の教訓を踏まえない別経路が生まれる。
+    let gji_on = extract_fn_body(production, "pub unsafe fn post_gji_ime_on(");
+    assert!(
+        gji_on.contains("post_ime_on_direct()"),
+        "{path} の post_gji_ime_on が post_ime_on_direct() に委譲していません。"
+    );
+    let gji_off = extract_fn_body(production, "pub unsafe fn post_gji_ime_off(");
+    assert!(
+        gji_off.contains("post_ime_off_direct()"),
+        "{path} の post_gji_ime_off が post_ime_off_direct() に委譲していません。"
+    );
+
+    // MS-IME 専用 ON: VK_DBE_HIRAGANA。VK_KANJI 混入は conv 破壊のリスクを再導入する。
+    let ms_on = extract_fn_body(production, "pub unsafe fn post_ms_ime_on(");
+    assert!(
+        ms_on.contains("VK_DBE_HIRAGANA") && !ms_on.contains("VK_KANJI"),
+        "{path} の post_ms_ime_on が VK_DBE_HIRAGANA 単独を送っていません。"
+    );
+
+    // MS-IME 専用 OFF: VK_DBE_ALPHANUMERIC。docs/experiments.md エントリ01で複数回
+    // 採用/撤回された当事者（「半角英数(IME ON)であって直接入力ではない」という事実が
+    // 繰り返し再発見されてきた）。VK_KANJI（トグル）・VK_IME_OFF（Chrome/Edge等の
+    // Imm32Unavailable アプリでは無視される）への回帰を防ぐ。
+    let ms_off = extract_fn_body(production, "pub unsafe fn post_ms_ime_off(");
+    assert!(
+        ms_off.contains("VK_DBE_ALPHANUMERIC")
+            && !ms_off.contains("VK_KANJI")
+            && !ms_off.contains("VK_IME_OFF"),
+        "{path} の post_ms_ime_off が VK_DBE_ALPHANUMERIC 単独を送っていません。"
+    );
+
+    // 最終フォールバック: VK_KANJI トグルを down/up ちょうど1回ずつ送る。
+    // （関数本体には import 文・診断ログ・コメントにも `VK_KANJI` という部分文字列が
+    // 複数回出現するため、実際に SendInput へ push する `make_key_input_ex(VK_KANJI, ..)`
+    // の down/up 引数だけを数える。ヘルパー名のリネームにも意味論的に頑健。）
+    let kanji_toggle = extract_fn_body(production, "pub unsafe fn post_kanji_toggle_to_focused(");
+    let down_count = kanji_toggle.matches("VK_KANJI, false").count();
+    let up_count = kanji_toggle.matches("VK_KANJI, true").count();
+    assert_eq!(
+        (down_count, up_count),
+        (1, 1),
+        "{path} の post_kanji_toggle_to_focused 内 VK_KANJI down/up 送信回数が想定(1, 1)と \
+         異なります(実際: ({down_count}, {up_count}))。"
+    );
+}

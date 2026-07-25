@@ -144,6 +144,25 @@ jobs:
           Set-WinUserLanguageList $langList -Force
           Write-Host "Language list set: ja-JP, en-US"
 
+      # src/ 内の #[cfg(windows)] ユニットテスト（composition_fsm/probe_fsm/
+      # literal_detect_fsm/gji_fsm/observer/probe_io/hook 等）は、Linux 側 test job の
+      # `cargo test --lib -p awase-windows` では #[cfg(windows)] ゆえ 0 tests になり、
+      # この windows-build job もこれまで `--lib` を一度も実行していなかったため、
+      # push/PR 毎の通常 CI では事実上どこでも実行されていなかった。
+      # 2026-07-25、workflow_dispatch 専用（push/PR では起動しない）の
+      # mutants-windows.yml（GCP Spot self-hosted Windows runner）で cargo mutants の
+      # baseline フェーズとして初めて実 Windows 実行され、15件のテスト不具合
+      # （実装バグ1件 = BUG-41、テスト自体の不具合14件）が発覚・同日中に修正され
+      # 全パス確認済み（docs/known-bugs.md BUG-41 および直後のセクション参照、
+      # GitHub Actions run 30098397721）。その検証は push/PR 毎には走らない
+      # self-hosted 専用ワークフローに限られていたため、以後の regression を
+      # push/PR ゲートで検知できるよう通常の windows-build job にも組み込む。
+      # TSF_OBS 等のグローバル状態を触るテストは observer.rs/probe.rs/
+      # literal_detect_fsm.rs/probe_fsm.rs の4ファイルが単一の TSF_OBS_TEST_LOCK で
+      # 直列化済み（上記修正で統一）のため、デフォルトの並列実行のままでブロック化する。
+      - name: Run lib unit tests (Windows)
+        run: cargo test --lib -p awase-windows
+
       # ime_key_sequence_golden は #![cfg(windows)] のため Linux の test ジョブでは
       # 0 tests になり、実質どこでも走っていなかった。ここ（実 Windows）で初めて
       # 戦略選択のゴールデンを assert する。architecture_guard/golden_scenarios/
