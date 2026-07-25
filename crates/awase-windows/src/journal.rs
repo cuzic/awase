@@ -125,6 +125,25 @@ pub enum JournalEntry {
         is_roman_reliable: bool,
         result: crate::state::conv_classify::ConvTransition,
     },
+    /// IME actuation 試行（awase 自身の能動的訂正、drift correction 等）1回分の
+    /// 構造化記録（ADR-082 Phase 0.5）。
+    ///
+    /// `ImeEvent { description: String }` の自由文字列と違い、出所（`origin.source`、
+    /// actuation は常に `EventSource::SelfActuated`）・世代（`origin.epoch`）・目標値
+    /// （`target`）・feedback 方針（`policy`）・累積試行回数（`attempts`）・判定
+    /// （`action`）を型として保持する。これにより「誰が・どの世代の要求として・何回目に
+    /// 送ったか」を後から型で取り出せる（BUG-43 の無限再送が試行回数で有界化されている
+    /// ことの検証など）。
+    ///
+    /// ペイロード `ActuationRecord`（`state/ime_actuation.rs`）は `state` 層に定義があり、
+    /// `#[cfg(windows)]` な本モジュールに依存せず Linux のリプレイテストからも同じ型で
+    /// 構築・検証できる。リプレイは `tests/drift_correction_replay.rs` が
+    /// `DriftCorrectionFixture` 経由で行う。`ActuationRecord` は書き出し用に `Serialize`
+    /// のみ（`origin` が `&'static str` を含み `Deserialize` 不可のため、fixture 側は
+    /// `epoch` のみ保存し `strategy` を `policy` から再構築する）。
+    ImeActuation {
+        record: crate::state::ime_actuation::ActuationRecord,
+    },
     /// ダンプトリガー発動
     DumpTriggered,
 }
@@ -444,5 +463,32 @@ mod tests {
         assert!(json.starts_with('['));
         assert!(json.contains("ImeEvent"));
         assert!(json.contains("elapsed_ms"));
+    }
+
+    #[test]
+    fn ime_actuation_entry_serializes_structured_origin() {
+        use crate::state::event_origin::Generation;
+        use crate::state::ime_actuation::{actuation_origin, ActuationRecord, FeedbackPolicy};
+
+        let policy = FeedbackPolicy::Blind {
+            max_attempts: 5,
+            backoff: Duration::from_millis(400),
+        };
+        let (mut j, _mock) = mock_journal();
+        // attempts=2 < max_attempts=5 なので action は Send に導出される。
+        j.record(JournalEntry::ImeActuation {
+            record: ActuationRecord::new(
+                actuation_origin(policy, Generation::new(2)),
+                false,
+                policy,
+                2,
+            ),
+        });
+        let json = j.to_json().unwrap();
+        // 自由文字列ではなく構造化された出所・世代・判定が型として書き出される。
+        assert!(json.contains("ImeActuation"));
+        assert!(json.contains("SelfActuated"));
+        assert!(json.contains("drift_correction_blind"));
+        assert!(json.contains("\"action\": \"Send\""));
     }
 }
