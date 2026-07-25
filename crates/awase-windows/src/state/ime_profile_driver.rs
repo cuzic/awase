@@ -48,6 +48,13 @@ pub enum ImeOpenMechanism {
     /// `ImmSetOpenStatus` 相当のクロスプロセス API 呼び出し（VK 送信なし）。
     CrossProcessApi,
     /// 指定した VK を `SendInput` で送る（冪等キー、GJI/MS-IME 等）。
+    ///
+    /// Phase 1 で `GjiDirect`/`MsImeDirect` 相当のドライバがこの variant を
+    /// 返す際は、VK を直書きせず既存 SSOT の
+    /// `state/key_sequence_policy.rs::ime_key_for(KeyMechanism, ImeOperation)`
+    /// から取得すること（`ime_controller.rs` の各 Strategy が使っているのと
+    /// 同じ経路）。IME OFF キー反転のような実験で `ime_key_for` だけを更新して
+    /// ドライバ配線側が旧 VK を送り続ける drift を防ぐ。
     Vk(VkCode),
 }
 
@@ -93,6 +100,12 @@ pub trait ImeProfileDriver {
     fn probe_budget_ms(&self, is_confirm_key: bool, long_idle: bool) -> u64;
 
     /// IME を開く/閉じる実際の機構と送信内容。
+    ///
+    /// 返すのは開閉機構そのものだけで、`ImmCross` 経路が IME ON 時に行う
+    /// conv ビット依存の ROMAN 補完（`set_ime_romaji_mode`。MS-IME + ImmCross の
+    /// かなモード残留でエンジンが停止する既知バグの対策）は含まない。これは
+    /// 現在の conv mode という観測値に依存する動的判断であり、trait doc に記した
+    /// 通り Phase 1（`ImeControlView` を受け取るメソッド）のスコープ。
     fn ime_open_mechanism(&self, open: bool) -> ImeOpenMechanism;
 }
 
