@@ -20,8 +20,9 @@
 //! [`ImeProfileDriver`] のメソッドは windows 限定型を一切取らない・返さない形に
 //! 分解している:
 //!
-//! - `ColdReason`（`FocusChange`/`ReinjectConfirmKey`/`SessionExpired` 等 8 種）
-//!   ではなく `is_confirm_key: bool` + `long_idle: bool` の 2 引数に分解する
+//! - `ColdReason`（`tsf/output.rs` の 10 variant。`FocusChange`/
+//!   `ReinjectConfirmKey`/`CtrlKeyBypass` 等）ではなく `is_confirm_key: bool`
+//!   + `long_idle: bool` の 2 引数に分解する
 //!   （`docs/known-bugs.md` BUG-01/BUG-21/BUG-40 が実際に参照する軸はこの 2 つ）。
 //! - 送信 VK は `awase::types::VkCode`（windows 非依存のニュータイプ）で返す。
 //!   `ImmCross` プロファイルは VK ではなく `ImmSetOpenStatus`（cross-process API）
@@ -58,6 +59,14 @@ pub enum ImeOpenMechanism {
 /// conv ビットに応じた ROMAN 事前設定等）は含まない —
 /// それらは Phase 1（ランタイム配線）で `ImeControlView` を受け取る別メソッド
 /// として追加する想定であり、本 Phase 0 実装のスコープ外。
+///
+/// なお `state/app_ime_policy.rs::AppImePolicy` が持つ静的な per-profile 値の
+/// うち `default_feedback`（`FeedbackPolicy::Read`/`Blind` の選択）は、本
+/// Phase 0 trait には **意図的に含めていない**。drift correction feedback は
+/// ADR-080 の `Actuation`/`FeedbackPolicy` 経路が SSOT であり、ここで再宣言
+/// すると二重定義になるため。ドライバへ移設するかどうかは全面移行を判断する
+/// Phase 1 以降で扱う（[ADR-081](../../../../docs/adr/081-per-profile-capability-driver-decomposition.md)
+/// 2 節の見積り表もこの feedback メソッドを全面移行時のコストに含めている）。
 pub trait ImeProfileDriver {
     /// 物理 KANJI / VK_F3 / VK_F4 を awase が完全所有するか。
     ///
@@ -74,11 +83,13 @@ pub trait ImeProfileDriver {
     ///
     /// `docs/known-bugs.md` BUG-01（WezTerm/TsfNative の `eager_settle_ms`）・
     /// BUG-21（Chrome/Imm32Unavailable の重症度別予算）が実際に依存していた
-    /// 2 軸（確定キー起因か・long idle か）だけを引数に取る。`ColdReason` の
-    /// 全 8 種類（`FocusChange`/`SetOpenTrue`/`NativeF2Consumed`/
-    /// `PassthroughConfirmKey`/`ReinjectConfirmKey`/`SessionExpired`/
-    /// `SymbolVkSent` 等）を再現する解像度は Phase 1 で `ColdReason` 自体を
-    /// windows-gated メソッドとして追加する際に扱う。
+    /// 2 軸（確定キー起因か・long idle か）だけを引数に取る。`ColdReason`
+    /// （`tsf/output.rs`、2026-07-25 時点で `FocusChange`/`SetOpenTrue`/
+    /// `SetOpenFalse`/`NativeF2Consumed`/`PassthroughConfirmKey`/
+    /// `ReinjectConfirmKey`/`SymbolVkSent`/`F2NonTsf`/`RawTsfLiteralRecovery`/
+    /// `CtrlKeyBypass` の 10 種。旧 `SessionExpired` は 2026-07-06 の到達不能
+    /// パス監査で撤去済み）を完全に再現する解像度は Phase 1 で `ColdReason`
+    /// 自体を windows-gated メソッドとして追加する際に扱う。
     fn probe_budget_ms(&self, is_confirm_key: bool, long_idle: bool) -> u64;
 
     /// IME を開く/閉じる実際の機構と送信内容。
