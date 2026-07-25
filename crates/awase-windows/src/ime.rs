@@ -26,6 +26,10 @@ use crate::win32::HwndExt as _;
 /// detect 側と同じ hwndFocus を使うことで、Zoom 等のマルチウィンドウアプリで
 /// トップレベルウィンドウと入力ウィンドウの IME context が異なる場合も正しく動作する。
 ///
+/// 物理 IME キー（Ctrl+無変換 等）のように「今まさにフォーカスされているウィンドウ」を
+/// 対象にしたい呼び出し元向け。トレイメニュー等、対象ウィンドウを別途確定済みの
+/// 呼び出し元は [`set_ime_open_for_target`] を使うこと。
+///
 /// Returns `true` if the operation succeeded.
 ///
 /// # Safety
@@ -43,14 +47,32 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
         );
         return false;
     };
-    // SAFETY: hwnd は get_gui_thread_info_with_timeout が返した有効なフォーカスウィンドウハンドル。
+    unsafe { set_ime_open_for_target(hwnd, open) }
+}
+
+/// [`set_ime_open_cross_process`] のターゲット指定版。
+///
+/// 呼び出し時点の `GetGUIThreadInfo` を問い合わせず、`hwnd` に対して直接
+/// `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL / IMC_SETOPENSTATUS` を発行する。
+///
+/// トレイメニューのコマンドは、メニューを表示するために awase 自身のトレイ
+/// ウィンドウへ `SetForegroundWindow` している（`tray::handle_tray_message`）ため、
+/// コマンド実行時点で `set_ime_open_cross_process` の live query を使うと
+/// トレイ自身（またはメニューの一時ウィンドウ）を対象にしてしまい、ユーザーが
+/// 実際に入力していたアプリには何も効かない（2026-07-24 実機で「IME ON・Engine
+/// OFF から何をしても復旧できない」として観測）。メニュー表示前に捕捉した
+/// フォーカスウィンドウ（`tray::menu_target_hwnd()`）をここに渡すことで、
+/// 正しい対象に対して操作できる。
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread.
+#[must_use]
+pub unsafe fn set_ime_open_for_target(hwnd: HWND, open: bool) -> bool {
+    // SAFETY: hwnd は呼び出し元が特定した有効なウィンドウハンドル。
     //         get_ime_wnd は内部で ImmGetDefaultIMEWnd を呼ぶ安全なラッパーであり、NULL を返す場合は
     //         直後の `?` でショートサーキットするため問題ない。
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        log::debug!(
-            "set_ime_open_cross_process: hwnd={hwnd:?} open={open} gui_elapsed={}ms → no IME wnd, abort",
-            gui_elapsed.as_millis()
-        );
+        log::debug!("set_ime_open_for_target: hwnd={hwnd:?} open={open} → no IME wnd, abort");
         return false;
     };
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
@@ -65,13 +87,12 @@ pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
             .is_some();
     let send_elapsed = t_send.elapsed();
     // 診断: Ctrl+無変換 で前文字消失調査用。タイムアウトに近いケースと partial commit の
-    // 関係を切り分けるため、GetGUIThreadInfo / send_ime_control の所要時間と現時点で
-    // observer 側が把握している candidate (composition 可視) を一緒に出す。
+    // 関係を切り分けるため、send_ime_control の所要時間と現時点で observer 側が把握している
+    // candidate (composition 可視) を一緒に出す。
     let candidate_visible = crate::tsf::observer::gji_candidate_visible_now();
     log::debug!(
-        "set_ime_open_cross_process: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success} \
-         gui_elapsed={}ms send_elapsed={}ms candidate_visible={candidate_visible}",
-        gui_elapsed.as_millis(),
+        "set_ime_open_for_target: hwnd={hwnd:?} ime_wnd={ime_wnd:?} open={open} success={success} \
+         send_elapsed={}ms candidate_visible={candidate_visible}",
         send_elapsed.as_millis()
     );
     success
@@ -1266,6 +1287,10 @@ pub unsafe fn toggle_caps_lock() {
 
 /// クロスプロセスで IME の ON/OFF を切り替え、変換モードのマスクを適用する。
 ///
+/// 呼び出し時点の `GetForegroundWindow()` を対象にする。トレイメニュー等、対象
+/// ウィンドウを別途確定済みの呼び出し元は [`set_ime_mode_for_target`] を使うこと
+/// （理由は [`set_ime_open_for_target`] の doc を参照）。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
@@ -1274,17 +1299,41 @@ pub unsafe fn set_ime_mode(
     target_conv_mask_to_set: u32,
     target_conv_mask_to_clear: u32,
 ) -> bool {
-    let open_ok = set_ime_open_cross_process(ime_on);
-    if !ime_on {
-        return open_ok;
-    }
     let Some(hwnd) = GetForegroundWindow().non_null() else {
         return false;
     };
-    let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
+    unsafe {
+        set_ime_mode_for_target(
+            hwnd,
+            ime_on,
+            target_conv_mask_to_set,
+            target_conv_mask_to_clear,
+        )
+    }
+}
+
+/// [`set_ime_mode`] のターゲット指定版。IME open/close と conv mode の両方を `hwnd`
+/// に対して発行する（[`set_ime_open_for_target`] を参照）。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn set_ime_mode_for_target(
+    hwnd: HWND,
+    ime_on: bool,
+    target_conv_mask_to_set: u32,
+    target_conv_mask_to_clear: u32,
+) -> bool {
+    let open_ok = unsafe { set_ime_open_for_target(hwnd, ime_on) };
+    if !ime_on {
+        return open_ok;
+    }
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
-    let Some(current) = crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) else {
+    let Some(current) =
+        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
+    else {
         return false;
     };
     let conv = current as u32;
@@ -1292,10 +1341,15 @@ pub unsafe fn set_ime_mode(
     if new_conv == conv {
         return true;
     }
-    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50).is_some()
+    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
+        .is_some()
 }
 
 /// クロスプロセスで IME のローマ字/かな入力を切り替える。
+///
+/// 呼び出し時点の `GetForegroundWindow()` を対象にする。トレイメニュー等、対象
+/// ウィンドウを別途確定済みの呼び出し元は [`set_ime_romaji_mode_state_for_target`]
+/// を使うこと（理由は [`set_ime_open_for_target`] の doc を参照）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
@@ -1304,10 +1358,21 @@ pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
     let Some(hwnd) = GetForegroundWindow().non_null() else {
         return false;
     };
-    let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
+    unsafe { set_ime_romaji_mode_state_for_target(hwnd, romaji) }
+}
+
+/// [`set_ime_romaji_mode_state`] のターゲット指定版。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn set_ime_romaji_mode_state_for_target(hwnd: HWND, romaji: bool) -> bool {
+    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
-    let Some(current) = crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) else {
+    let Some(current) =
+        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
+    else {
         return false;
     };
     let conv = current as u32;
@@ -1319,5 +1384,6 @@ pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
     if new_conv == conv {
         return true;
     }
-    crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50).is_some()
+    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
+        .is_some()
 }
