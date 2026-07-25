@@ -156,3 +156,213 @@ IME 制御を、**プロファイルごとに独立した「capability を宣言
   本 ADR はこれをドライバ全体に拡張する方向）
 - `.claude/rules/experiment-logging.md`（IME OFF キー6反転の記録規約）
 - `.claude/rules/tuning-constants.md`（タイミング定数エスカレーション規約）
+
+---
+
+## Phase 0 実施記録（2026-07-25、検証専用・コード変更なしの調査 + 限定的な Go 判断後の試験実装）
+
+本節は上記「決定」「第一歩」で定義された Phase 0 の実施結果を追記するものであり、
+上記の提案本文（「ステータス」〜「不変条件」まで）は一切変更していない。
+
+### 1. 定量調査: `docs/known-bugs.md` 43件の分類
+
+対象は本ブランチ（`worktree-agent-a39c002e32c77fc87`、`main` の祖先コミット
+`317d8cf` から分岐）に存在する BUG-01〜BUG-41（41件）に加え、`main`/
+`integration/unmerged-branches-verify` 側にのみ存在する BUG-42・BUG-43
+（`git show 18b8bc7:docs/known-bugs.md` で読み取り専用に参照、本ブランチへは
+未マージ）を合わせた43件全件。分類基準は本 ADR 冒頭の3分類:
+
+- **(a) cross-profile spillover**: ある profile/app 向けの修正・最適化が、
+  別の profile/app に副作用を与えた（または与えうる構造を持っていた）事例。
+- **(b) single-profile**: 単一の profile/app に症状・原因・修正がすべて閉じていた事例。
+- **(c) cross-cutting infra**: `AppImeProfile`/`ImePolicyProfile` の分岐そのものとは
+  無関係な、汎用インフラ（スレッド配送・タイマー・hook 状態・検出ヒューリスティック等）の欠陥。
+
+| BUG | 分類 | 根拠（本文からの一文引用） |
+|---|---|---|
+| 01 | b | 「WezTerm は TSF native app。F2 (VK_DBE_HIRAGANA) 受信後、TSF composition context の初期化に実測 ~300–936ms かかることがある。」 |
+| 02 | b | 「Chrome は F2 受信後に composition context を非同期初期化する。」 |
+| 03 | c | 「Chrome 以外のアプリでも同様の GJI SHOW タイミング問題が起きる可能性がある。」（`LiteralDetector` は全 profile 共有） |
+| 04 | c | 「GJI モニタースレッドが切断（gji_monitor_ok=false）している場合、probe は GJI 観測を行わず…フォールバックに移行する。」（profile 非依存の GJI 監視インフラ） |
+| 05 | c | 「composition context が時間経過でいつ無効化されるか Windows API から通知されないため、保守的な固定値 2000ms を閾値として設定している。」 |
+| 06 | c | u32 オーバーフローという型設計上の一般論。ADR-069 リファクタで解消済み。 |
+| 07 | **a** | 「実観測経路を持たない Imm32Unavailable でのみ Low が belief を支配する」— Win+X 対策（`ce45b82`、非TSF全般向けの一般修正）が Imm32Unavailable だけに実害を出した。 |
+| 08 | **a** | 「復元書き込みが conv を 0x19⇄0x09 で往復させ…直接入力中の spurious Engine ON + IME ON を実機で引き起こした」— GJI×TsfNative 向けの復元ロジックが steady-state まで広がり MS-IME×TsfNative を壊した（撤回）。 |
+| 09 | c | 「hwnd=NULL の `PostMessageW` は…呼び出しスレッド自身への `PostThreadMessage` と等価」— profile 非依存のスレッド配送バグ。 |
+| 10 | **a** | 「MsImeStrategy は `needs_f2_probe()=false` で F2 warmup を送らない…『消すが代わりを送らない』食い逃げになり」— GJI 戦略専用の Suppress 契約が MS-IME 戦略の入力を食い潰した。 |
+| 11 | c | 「(pid, class) 粒度でキャッシュした瞬間にウィンドウ全体へ固着する」— UIA focus 分類インフラの構造的欠陥（profile 分岐と無関係）。 |
+| 12 | c | 「配送修正の副作用として発症」— BUG-09（インフラ）修正が露出させた別のインフラ潜在バグ。 |
+| 13 | b | MS-IME/TSF 戦略専用の cold-start 保護追加、他戦略へは波及しない設計。 |
+| 14 | **a** | 「導入直後から Windows Terminal × MS-IME で一切入力できなくなり撤回…hook 層で遮断すると IME の状態機械が壊れる」— BUG-08 の VK_KANA 限定 swallow を IME モードキー全般へ一般化した結果 MS-IME が機能停止。 |
+| 15 | b | MS-IME/TSF・Shift/Eisu 専用。9回の追補すべて MS-IME 側に閉じる（GJI 対応は BUG-25 側で別展開）。 |
+| 16 | c | 「Win キー押下中の IME キー注入スキップが Applied 扱いになり」— `send_ime_mode_key` という GjiDirect/MsImeDirect 共有関数のバグ、profile 分岐ロジック自体には起因しない。 |
+| 17 | c | GJI CLSID ポーリングデバウンス。GJI を使う任意の profile に共通のインフラ欠陥。 |
+| 18 | **a** | 「hard pre-sync はまさに『実 apply をスキップして belief だけ ON にする』ための経路なので、`gji_on_ime_on` が一度も呼ばれず…`GjiFsm` は `OffCold` のまま残留する」— Imm32Unavailable 専用の高速パスが全 profile 共有の `GjiFsm` を同期し忘れた。 |
+| 19 | c | `ConvModeMgr`/`classify_conv_transition` という profile 非依存の共有 conv 分類ロジックの欠陥（トリガーは Chrome 特有のポップアップ flicker）。 |
+| 20 | **a** | 「GJI/TsfNative（Windows Terminal・Chrome 等）では常に no-op になる…ON 方向には対称の実装が…あり…OFF 方向の対称実装が存在しなかった」— `can_use_imm32_cross_process()` で分岐する共有関数の片側だけ実装漏れ。 |
+| 21 | c* | 「Chrome 側の復帰処理…が重症度情報を捨てて毎回 Long cold 相当の最重量パスを踏んでいた」— WezTerm 側は既に独立実装で対応済みだった＝**per-target に分離済みの実装が同期されず drift した**事例（*重複コスト側の証拠として2節で再言及）。 |
+| 22 | **a** | 「`apply_hwnd_cache_restore`…が…鮮度・confidence チェックなしに…無条件適用していた」— profile 非依存の汎用キャッシュ復元が Imm32Unavailable 固有の `ObservedEisu` の脆さを踏み抜いた。 |
+| 23 | c | ロック画面中の modifier KeyUp 消失。`hook.rs`/`PHYSICAL_KEY_STATE` は profile と無関係な低レベルキー状態管理。 |
+| 24 | c | `is_partial_literal()` は全 TSF-native cold-start 経路が共有する検出ヒューリスティックの構造的欠陥。 |
+| 25 | **a** | 「GJI という IME 種別そのものが、この単発 F0 注入を認識しない…無関係な standalone トグル用途へ転用しない」— MS-IME 向け warmup ヘルパーを GJI へ転用する試み（追補1〜3）が3回連続で実機失敗。 |
+| 26 | c | `classify_conv_transition` の steady-state 分岐の非対称漏れ（profile 分岐ではなく conv mode 判定ロジック自体の欠落）。 |
+| 27 | **a** | 「追補2…msedge で入力を全面破壊した」— Chrome 実機観測1件から作った backspace リカバリが msedge（同じ Imm32Unavailable、別アプリインスタンス）で無限バックスペースを誘発し撤回。 |
+| 28 | c | `pending_gji_key_responses` の drain 漏れ。TSF probe インフラのバースト処理欠陥。 |
+| 29 | c* | Chrome の per-VK confirm 検出漏れ。「TSF/WezTerm 側（`gji_coro_body` Phase 5b）に同型の検出漏れがあるか未確認」— Chrome/TSF が別実装のため**片方だけ**修正された（*重複コスト証拠）。 |
+| 30 | c* | 「TSF の gji io 閾値無しがおかしいと思います。Chrome のバイト量の閾値にする、方向で統一してください」— **TSF 用と Chrome 用に分岐していた検出ロジックを1本化したことが直接の修正**（*重複が生んだドリフトを統一で解消した実例）。 |
+| 31 | c* | 「`ConfirmKeyDown`…と同種の『warm を無条件に cold 化してはいけない』ガードが欠けていたまま」— 同じ原則が別のイベントハンドラ（`NativeF2Down`）に伝播しておらず再発（*同一原則の複数箇所実装漏れ）。 |
+| 32 | c* | 「これは…`send_ime_mode_key` が BUG-16 追補で修正した欠陥と全く同型で…本関数には同種の修正が入っていなかった」— 同じ「スキップ≠Applied」原則が別関数に伝播していなかった（*BUG-16/31 と同型の反復）。 |
+| 33 | c | Imm32Unavailable の drift correction 構造的不発火。共有 `check_drift_correction`/観測ストアの設計欠陥。 |
+| 34 | c | `SendMessageTimeoutW(SMTO_ABORTIFHUNG)` の誤解。呼び出し箇所5箇所以上に及ぶ汎用同期呼び出しパターンの欠陥。 |
+| 35 | c* | 「`await_vk_detection`…は `check_now` を経由せず独自に同じ epoch 比較を inline で再実装しており…猶予ロジックが移植されていなかった」— 同じ fencing ロジックが2箇所に分裂し片方だけ更新漏れ（*重複コスト証拠）。 |
+| 36 | c | Chrome GJI reinit と backspace flush の実行順序未保証。インフラのタイミング欠陥。 |
+| 37 | **a** | 「`Imm32Unavailable` hard pre-sync…が…`applied` を即座に再ロックしてしまい」— BUG-18 と同根、Imm32Unavailable 専用ショートカットが共有の訂正経路を握り潰す。 |
+| 38 | c | `pending_deferred` flush 漏れ。TSF probe コーディネーターのインフラ欠陥。 |
+| 39 | c | `literal_session_confirmed` のリセット漏れ。observer インフラの蓄積状態管理欠陥。 |
+| 40 | c | `nc_for_plan` の dead-code 削除に伴うリグレッション。純関数のクリーンアップミス。 |
+| 41 | c | Alt なりすましの KeyUp 状態持ち越し。IME profile と無関係な hook/modifier 状態バグ。 |
+| 42 | c | EngineOn コンボの context-inactive 未対応、トレイの `SetForegroundWindow` 誤対象化。いずれも IME profile 分岐と無関係な engine/tray インフラ。 |
+| 43 | **a** | 「同じ `ir_apply_drift_correction`（Blacklist/TsfNative パス）が observation store を更新しないため…無限再送する」— BUG-20/33 と同型、共有 drift-correction 関数の non-ImmCross 分岐の欠陥が3回目の再発。ADR-080 の `Actuation`/`FeedbackPolicy`（プロファイルごとに `Blind`/`Read` を型で強制）で根治され、本 ADR が拡張しようとしている方向性の直近の実例。 |
+
+**集計:** (a) cross-profile spillover = **11件**（07, 08, 10, 14, 18, 20, 22, 25, 27, 37, 43）
+／ (b) single-profile = **4件**（01, 02, 13, 15）／ (c) cross-cutting infra = **28件**
+（残り。うち `*` を付した **6件**（21, 29, 30, 31, 32, 35）は、既に per-target/
+per-strategy に分離されている実装同士が同期されず drift した「重複コストが実際に
+バグを生んだ」事例）。
+
+**解釈:** 「共有ループ＋プロファイル分岐」が実際に他プロファイルへ副作用を
+波及させた事例は 43件中 11件（26%）で、本 ADR コンテキスト節が提示した4件
+（07/10/... 相当）の存在は裏付けられた。一方で、43件中 65%（28件）は
+プロファイル分岐そのものとは無関係な汎用インフラ欠陥であり、これらは
+ドライバへ分離しても解決しない（trait 分離後もスレッド配送・タイマー・
+検出ヒューリスティックのバグは同じ形で残る）。さらに重要な点として、
+**既に部分的に分離されている実装（Chrome 用 vs TSF 用の probe コルーチン、
+literal 検出の per-target 分岐等）が「重複コストの現実」として既に6件の
+バグを生んでいる** — これは本 ADR が提案する「プロファイルごとに独立した
+ドライバ」を進める際に、同種の drift が `ImeProfileDriver` 実装間でも
+起こりうることを示す実証的な警告である。
+
+### 2. 重複コストの見積り（型シグネチャレベル、実装は書かない）
+
+#### 現状（共有）
+
+`ImeOpenStrategy`（`ime_controller.rs`）は既に4戦略が個別 struct + `impl` に
+分離されている（`ImmCrossProcessStrategy`/`GjiDirectStrategy`/
+`MsImeDirectStrategy`/`KanjiToggleStrategy`、各30〜80行）。共有なのは
+trait 定義（12行）と `ImeController::apply_iter`（優先順位ループ、約25行）
+のみ。つまり ADR コンテキストが問題視する「フォールバックチェーンの
+暗黙の優先順位」は主に `apply_iter` の走査順（配列の並び）に宿っており、
+各戦略の実装自体は既に分離済みで重複コストは小さい。
+
+`AppImePolicy`（`state/app_ime_policy.rs`）は対照的に、3プロファイル
+（実質 `ImmCross`/`Imm32Unavailable`/`TsfNative`、`Plain`/`Unknown` は
+`ImmCross` にフォールバック）を **1つの struct + `from_profile` の match 式**
+（本体35行）で表現しており、こちらが ADR の主眼（「データだけ分岐、
+ロジックは共有」）に一致する。
+
+#### 仮に `ImeProfileDriver` trait + 3構造体（`ImmCrossDriver`/
+`Imm32UnavailableDriver`/`TsfNativeDriver`）へ完全分離した場合の見積り
+
+ADR 本文が各ドライバに持たせたいとする責務（cold-start probe 予算、
+drift correction feedback 方針、IME OFF キー選択、focus settle 時間）を
+trait メソッドとして書き出す。**注記:** `ColdReason`（`tsf/output.rs`）・
+`ImeControlView`（`state/ime_decision_view.rs`）は本ブランチでは
+`#[cfg(windows)]` 限定型であり、`FeedbackPolicy`/`Actuation`（ADR-080）は
+本ブランチに未マージのため存在しない。`state/app_ime_policy.rs` が Linux で
+テスト可能なのは、まさにこれら windows 限定型に依存せず `ImePolicyProfile`
+（`state/ime_event.rs`、ungated）のような純粋な値だけを扱っているためである。
+本タスクの制約（新規コードは `state/` に置き Linux でテスト可能にする）を
+満たすには、trait のシグネチャも同様に windows 限定型を避ける必要がある:
+
+```rust
+pub trait ImeProfileDriver: Sync {
+    /// 物理 KANJI を awase が所有するか（旧 AppImePolicy::owns_physical_kanji）
+    fn owns_physical_kanji(&self) -> bool;
+    /// フォーカス変更後の settle 待ち時間 (ms)
+    fn focus_settle_ms(&self) -> u64;
+    /// cold-start probe の探索予算 (ms)。ColdReason 実体の代わりに
+    /// 「確定キー起因か」「long idle か」という2つの bool パラメータへ
+    /// 分解することで windows 限定型への依存を避ける。
+    fn probe_budget_ms(&self, is_confirm_key: bool, long_idle: bool) -> u64;
+    /// IME を開く/閉じるときに送る VK（`awase::types::VkCode` は windows 非依存）
+    fn ime_open_key(&self, open: bool) -> awase::types::VkCode;
+}
+```
+
+`is_applicable`/`apply`（実際の Win32 API 呼び出しを伴う）は
+`ImeControlView`/`ImeOpenOutcome` 経由の実行時配線が要るため Phase 1
+（ランタイム配線）のスコープとし、Phase 0 の trait には含めない
+（後述4節の試験実装もこの4メソッドのみ）。
+
+上記 trait 定義自体は約20行（1箇所のみ、重複しない）。3構造体それぞれに
+必要な「型としての枠」を見積もる:
+
+| 要素 | 1ドライバあたり行数（概算） | 3ドライバ合計 |
+|---|---|---|
+| struct 定義 + module doc（現状 `from_profile` の match アーム内コメントを移設） | ~12行 | 36行 |
+| `impl ImeProfileDriver for XxxDriver` ヘッダ + 7メソッドのシグネチャ+ワンライナー本体 | ~7メソッド×3行=21行 | 63行 |
+| `probe_budget_ms` の中身（現状 BUG-01 の表: ColdReason×long_idle → ms、4行程度のmatch） | ~4行 | 12行（実質は表の値そのものなので新規重複ではなく移設） |
+| `#[cfg(test)]` ユニットテスト（各ドライバ最低2〜3件、struct 構築+ assert） | ~15行 | 45行 |
+| **小計（3ドライバ分の「型の骨組み」）** | | **約156行** |
+
+対して現状の `AppImePolicy`（struct 17行 + `from_profile` 35行 +
+テスト6件・約40行 = 約92行）を置き換えることになるため、**純増分は
+約60〜100行**（3ドライバ化した場合の骨組みのみ。ADR が明言する通り
+`ImeOpenStrategy` の4戦略は既に分離済みのため実質的な追加重複はほぼ
+発生しない）。
+
+**この見積りの前提と限界:** 上記は「判断ロジックの型」のみで、cold-start
+probe・warmup コルーチン本体（`tsf/warmup/*.rs`、数百〜千行規模）を
+ドライバごとに複製することは意図していない（ADR 本文が明示するスコープ外）。
+仮にそこまで複製すると、1節の `*` 印6件が示す通り、**per-target 実装が
+静かに drift する具体的リスクが既に実証されている**ため、Phase 1 で
+probe/warmup 本体まで複製する場合は本 ADR の「不変条件」に加えて
+「ドライバ間の contract テスト（各ドライバが同じ入力パターンに対し
+一貫した契約を満たすことを検証する共有テストスイート）」を必須にすべきである。
+
+### 3. Go/No-Go 判断
+
+**判断: 限定的 Go（ADR 本文が提案する「最小プロファイル1本の試験実装」の
+範囲に限定）。**
+
+**Go の理由:**
+- cross-profile spillover は43件中11件（26%）と無視できない比率で実在し、
+  うち BUG-20→BUG-43 の系譜（`ir_apply_drift_correction` の non-ImmCross
+  分岐）は同一の共有関数が3世代にわたって再発しており、ADR-080 が
+  Actuation/FeedbackPolicy という「型でプロファイルごとの方針を強制する」
+  設計に踏み切って初めて根治した。これは本 ADR の狙い（capability を
+  型で宣言し、共有ループの if/match を無くす）が実際に効いた直近の実例。
+- `ImeOpenStrategy` の4戦略は既にほぼ分離済み（2節）であり、
+  `AppImePolicy` → `ImeProfileDriver` への移行コストは見積り上60〜100行と
+  小さい。低コストで検証できる。
+- ADR 本文の第一歩（3節）自体が「Go なら ImmCross 1本を試験実装」と
+  スコープを限定しており、全面移行を決め打ちしていない。
+
+**No-Go 側に倒すべきでない理由（＝全面 Go でもない理由）:**
+- 43件中28件（65%）はプロファイル分岐と無関係な汎用インフラ欠陥であり、
+  ドライバ分離では解決しない。「IME 制御の不具合の主因はプロファイル
+  分岐である」という前提そのものが、悉皆調査では過半数を占めない。
+- `*` を付した6件（21, 29, 30, 31, 32, 35）は、**既に部分分離されている
+  実装が同期を怠ってバグを生んだ**実例であり、「間違った抽象より重複の
+  方が安い」という ADR 本文の仮説（適用しない範囲節）に対する直接の
+  反証データでもある。BUG-30 の追補1は逆に「重複していた検出ロジックを
+  統一したことで直った」実例であり、Phase 1 で probe/warmup 本体まで
+  ドライバごとに複製する場合は、この drift リスクを契約テストで
+  相殺する設計が伴わない限り、新しい類の regression を生産しかねない。
+
+**結論として:** `AppImePolicy` → `ImeProfileDriver` という「判断ロジックの
+型」レベルの分離は妥当性の見積りがついた（Go）。Phase 1 で cold-start
+probe・warmup 本体・`ImeOpenStrategy` の呼び出し順序まで踏み込む場合は、
+上記6件の drift 事例を踏まえ、ドライバ間の contract テストを不変条件に
+追加することを Phase 1 提案時の必須検討事項とする。
+
+### 4. 試験実装（Go 判定に基づく最小実装）
+
+`ImeProfileDriver` trait と、`ImmCross` プロファイル向けの `ImmCrossDriver`
+実装を `crates/awase-windows/src/state/ime_profile_driver.rs` に新規追加した
+（既存ランタイムへの配線はしていない。ADR-080 Phase 1 の `state/ime_actuation.rs`
+と同じ位置づけ）。scope は 2節の見積りに沿い、`focus_settle_ms`/
+`owns_physical_kanji`/cold-start probe 予算（`ColdReason`/idle 種別からの
+ms 決定）/IME OFF キー選択の4点に限定し、cold-start probe・warmup
+コルーチン本体は複製していない。ユニットテストを Linux 上の
+`cargo test -p awase-windows --lib` で実行可能な形で追加した。
