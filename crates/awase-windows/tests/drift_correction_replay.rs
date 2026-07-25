@@ -17,9 +17,11 @@
 //! `state::ime_actuation` は `#[cfg(windows)]` でゲートされていないため、
 //! `conv_classify` と同様このテストは Linux ホストでもそのまま実行できる。
 
+use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::ime_actuation::{
     decide_actuation_action, ActuationAction, DriftCorrectionFixture, FeedbackPolicy,
 };
+use awase_windows::state::ime_event::ImePolicyProfile;
 
 fn load_fixtures(path: &std::path::Path) -> Vec<DriftCorrectionFixture> {
     let content = std::fs::read_to_string(path)
@@ -97,6 +99,17 @@ fn bug43_tight_loop_is_bounded_not_infinite() {
     let FeedbackPolicy::Blind { max_attempts, .. } = fixture.policy else {
         panic!("BUG-43 フィクスチャの policy は Blind のはず（TsfNative/Blacklist パス）");
     };
+
+    // フィクスチャの policy を本番設定（AppImePolicy::from_profile）にアンカーする。
+    // これが無いと、ADR-080 の有界化が将来本番側で緩められて（例: max_attempts 引き上げ、
+    // FeedbackPolicy::Read への変更）も、フィクスチャに書かれた固定値のおかげでこの
+    // 「BUG-43 回帰テスト」は無関係に green のまま通り続け、退行を検知できなくなる。
+    assert_eq!(
+        fixture.policy,
+        AppImePolicy::from_profile(ImePolicyProfile::TsfNative).default_feedback,
+        "BUG-43 フィクスチャの policy が本番の AppImePolicy::from_profile(TsfNative) と \
+         乖離している（本番の有界化設定が変わったのにフィクスチャが追従していない）"
+    );
 
     // BUG-43 実機ログの回数(16)が max_attempts(5) を上回っていることが前提条件。
     // これが崩れると「有界にした」ことの検証にならない（max_attempts 未到達のまま
