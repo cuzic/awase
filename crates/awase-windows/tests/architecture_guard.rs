@@ -649,10 +649,16 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     let content = read_crate_file(path);
     let production = production_code_only(&content);
     let match_block = extract_drift_correction_match_block(production);
+    // 注意: `observations.record(` に限定する（`.record(` だけだと `UnifiedJournal::record`
+    // ‐ ADR-082 Phase 0.5 で追加された `self.platform_state.ime.journal.record(..)`（監査用
+    // ジャーナルへの書き込み、`observations` とは無関係）にも誤って一致してしまう。
+    // `journal` は書き込み専用の監査ログで、drift 検知の収束判定（`check_drift_correction`/
+    // `most_recent_trusted`）が読み取ることは一切無い（`grep -rn '\.journal\b'` で確認済み、
+    // 全呼び出しが `.record(..)` か `.dump_to_file()` のみ）ため、不変条件6のスコープ外。
     for forbidden in [
         "dispatch_event(",
         "ObserverReported",
-        ".record(",
+        "observations.record(",
         "write_focus_probe",
         "write_observer_poll",
         "write_imm_cross_probe",
