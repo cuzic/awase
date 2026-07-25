@@ -176,3 +176,76 @@ BUG-43（drift correction 無限再送、`Runtime.active_actuation` /
 - `.claude/rules/ime-belief-architecture.md`（2026-07-23 追記節が
   同型の問題を先行して文書化している）
 - `.claude/rules/fix-requires-evidence.md`
+
+## 第一歩 実施記録（2026-07-25）
+
+「第一歩」節の 1.〜3. を実施した。以下は実施内容と結果。**上の「提案中」本文
+（ステータス含む）は変更していない** — この節は追記のみ。
+
+### 1. `EventOrigin` 最小実装
+
+`crates/awase-windows/src/state/event_origin.rs` を新設し、`Generation`
+（`u64` newtype、`Copy`、`next()`/`is_newer_than()`）と `EventSource`
+（`Physical` / `Injected { reason }` / `SelfActuated { strategy }`）、両者を
+束ねる `EventOrigin { source, epoch }` を実装した。指示通り**既存コードへの
+配線は一切行っていない**（`RawKeyEvent::injected`・`InputModeApplyStrategy`・
+`WarmEpoch`・`cold_seq`・`Actuation.attempts` はいずれも無変更）。12件の
+ユニットテストを添えた（`cargo test -p awase-windows --lib`、Linux で実行可能）。
+
+### 2./3. BUG-43 の journal リプレイ実証
+
+`decide_actuation_action`（`state/ime_actuation.rs`、既存の純粋関数、ADR-080）
+の実引数 `(FeedbackPolicy, attempts: u32)` に合わせて `DriftCorrectionFixture`
+（`policy` + `ticks: Vec<{attempts, observed_at_ms, expected}>`）を設計し、
+`docs/known-bugs.md` BUG-43 の実機ログ（675ms の間に `apply_ime_open(false)` を
+16 回連続送信、observe tick 20ms とほぼ同期、`duration_ms` 84502ms→85176ms）を
+`tests/journals/drift_correction/bug-43-drift-correction-tight-loop.json` として
+固定化した。`tests/drift_correction_replay.rs` が 16 tick 分 `decide_actuation_action`
+をリプレイし、以下を assert する:
+
+- 16 回の連続 drift 検知のうち実際に `Send` になるのは `max_attempts`（5）回だけ
+  （残り 11 回は `GiveUp`）。
+- 一度 `GiveUp` に達したら、tick 列の最後まで `Send` に戻らない。
+
+**結果: 通った**（`cargo test -p awase-windows --test drift_correction_replay`
+2 tests ok）。ADR-080 Phase1 の `Blind` ポリシーが BUG-43 と同じ入力パターン
+（16 回の高頻度連続検知）に対して型レベルで有界終端することを、実機ログ由来の
+固定フィクスチャで確認できた。
+
+**実証できたこと**: 「実機で観測済みの入力パターンをフィクスチャとして固定化し、
+純粋関数のリプレイで回帰を防ぐ」という `ConvClassifyFixture` と同じ枠組みが、
+`classify_conv_transition` 以外の純粋関数（`decide_actuation_action`）にも
+そのまま展開できた。既存の `tests/journal_replay.rs` を変更せず、新規
+`tests/drift_correction_replay.rs` + `tests/journals/drift_correction/`
+サブディレクトリ（`journal_replay.rs` の非再帰 `read_dir` と衝突しない）を
+追加するだけで済み、作業量は「第一歩」2. が想定した「1本書く」の範囲に収まった。
+
+**限界（重要）**: このフィクスチャは実機 journal ダンプからの機械的な転記では
+**ない**。BUG-43 発生当時（ADR-080 Phase1 実装前）は actuation 呼び出しを
+journal に記録する仕組みが存在しなかったため、`docs/known-bugs.md` の集計的な
+記述（675ms/16回・平均間隔・`duration_ms` の始点終点）から `observed_at_ms` を
+手で近似復元した。`ConvClassifyFixture` が実現している「実機ダンプの
+`JournalEntry::ConvClassifyCall` をそのまま転記する」フローは、`Actuation`
+呼び出しについてはまだ再現できていない（`journal.rs::JournalEntry` に
+actuation 用の専用 variant が無いため）。
+
+### 採用範囲を広げる推奨
+
+**推奨: 進める。** ただし次の一歩は「別の純粋関数にもリプレイを広げる」前に、
+**`journal.rs::JournalEntry` に actuation 呼び出しを記録する専用 variant を
+追加する**ことを優先すべきと判断する。理由: 今回のフィクスチャが「known-bugs.md
+の散文からの手作業復元」に留まったのは、まさに ADR 本文が課題として挙げている
+「`ImeEvent { description: String }` が自由文字列で構造化されていない」ことの
+別側面（actuation はそもそも journal に記録すらされていない）である。この専用
+variant を追加すれば、次回同種のバグを実機で踏んだ際に `ConvClassifyFixture` と
+同じ「ダンプ→転記→リプレイ」フローがそのまま使え、近似復元という弱点が解消される。
+
+その上で、ADR 本文が示す優先順位（`decide_actuation_action` → 
+`decide_alt_impersonation`（BUG-41） → `GjiFsm` 状態遷移関数（BUG-33 追補3・4））
+通り、次に `decide_alt_impersonation` へのリプレイ基盤拡張に進むことを推奨する。
+
+`EventOrigin`（1.）自体を既存コードへ配線するかどうかは、今回の検証範囲外
+（意図的にスコープ外とした）であり、判断を保留する。`journal.rs` に actuation
+の専用 variant を追加する際に、その variant が `EventOrigin` を必須フィールドと
+して持つ設計にできるかを最初の配線候補として検討するのが自然な次点になる
+（ADR 本文「決定 2.」が想定する経路そのもの）。
