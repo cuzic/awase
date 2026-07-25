@@ -34,6 +34,12 @@ pub(crate) use conv_mode::ConvModeMgr;
 
 pub mod app_ime_policy;
 pub mod ime_actuation;
+// ADR-081 Phase 0 試験実装（未配線）。app_ime_policy と同じ ungated パターンで
+// Linux 上の `cargo test -p awase-windows --lib` から実行できるようにする。
+// 呼び出し元は Windows/非 Windows どちらにも現時点で存在しない
+// （配線は Phase 1 のスコープ）ため、両ターゲットで dead_code を許可する。
+#[allow(dead_code)]
+pub mod ime_profile_driver;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
 // 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
 // なる（ADR-065 と同じ局所抑制パターン）。
