@@ -176,3 +176,187 @@ BUG-43（drift correction 無限再送、`Runtime.active_actuation` /
 - `.claude/rules/ime-belief-architecture.md`（2026-07-23 追記節が
   同型の問題を先行して文書化している）
 - `.claude/rules/fix-requires-evidence.md`
+
+## 第一歩 実施記録（2026-07-25）
+
+「第一歩」節の 1.〜3. を実施した。以下は実施内容と結果。**上の「提案中」本文
+（ステータス含む）は変更していない** — この節は追記のみ。
+
+### 1. `EventOrigin` 最小実装
+
+`crates/awase-windows/src/state/event_origin.rs` を新設し、`Generation`
+（`u64` newtype、`Copy`、`next()`/`is_newer_than()`）と `EventSource`
+（`Physical` / `Injected { reason }` / `SelfActuated { strategy }`）、両者を
+束ねる `EventOrigin { source, epoch }` を実装した。指示通り**既存コードへの
+配線は一切行っていない**（`RawKeyEvent::injected`・`InputModeApplyStrategy`・
+`WarmEpoch`・`cold_seq`・`Actuation.attempts` はいずれも無変更）。12件の
+ユニットテストを添えた（`cargo test -p awase-windows --lib`、Linux で実行可能）。
+
+### 2./3. BUG-43 の journal リプレイ実証
+
+`decide_actuation_action`（`state/ime_actuation.rs`、既存の純粋関数、ADR-080）
+の実引数 `(FeedbackPolicy, attempts: u32)` に合わせて `DriftCorrectionFixture`
+（`policy` + `ticks: Vec<{attempts, observed_at_ms, expected}>`）を設計し、
+`docs/known-bugs.md` BUG-43 の実機ログ（675ms の間に `apply_ime_open(false)` を
+16 回連続送信、observe tick 20ms とほぼ同期、`duration_ms` 84502ms→85176ms）を
+`tests/journals/drift_correction/bug-43-drift-correction-tight-loop.json` として
+固定化した。`tests/drift_correction_replay.rs` が 16 tick 分 `decide_actuation_action`
+をリプレイし、以下を assert する:
+
+- 16 回の連続 drift 検知のうち実際に `Send` になるのは `max_attempts`（5）回だけ
+  （残り 11 回は `GiveUp`）。
+- 一度 `GiveUp` に達したら、tick 列の最後まで `Send` に戻らない。
+
+**結果: 通った**（`cargo test -p awase-windows --test drift_correction_replay`
+2 tests ok）。ADR-080 Phase1 の `Blind` ポリシーが BUG-43 と同じ入力パターン
+（16 回の高頻度連続検知）に対して型レベルで有界終端することを、実機ログ由来の
+固定フィクスチャで確認できた。
+
+**実証できたこと**: 「実機で観測済みの入力パターンをフィクスチャとして固定化し、
+純粋関数のリプレイで回帰を防ぐ」という `ConvClassifyFixture` と同じ枠組みが、
+`classify_conv_transition` 以外の純粋関数（`decide_actuation_action`）にも
+そのまま展開できた。既存の `tests/journal_replay.rs` を変更せず、新規
+`tests/drift_correction_replay.rs` + `tests/journals/drift_correction/`
+サブディレクトリ（`journal_replay.rs` の非再帰 `read_dir` と衝突しない）を
+追加するだけで済み、作業量は「第一歩」2. が想定した「1本書く」の範囲に収まった。
+
+**限界（重要）**: このフィクスチャは実機 journal ダンプからの機械的な転記では
+**ない**。BUG-43 発生当時（ADR-080 Phase1 実装前）は actuation 呼び出しを
+journal に記録する仕組みが存在しなかったため、`docs/known-bugs.md` の集計的な
+記述（675ms/16回・平均間隔・`duration_ms` の始点終点）から `observed_at_ms` を
+手で近似復元した。`ConvClassifyFixture` が実現している「実機ダンプの
+`JournalEntry::ConvClassifyCall` をそのまま転記する」フローは、`Actuation`
+呼び出しについてはまだ再現できていない（`journal.rs::JournalEntry` に
+actuation 用の専用 variant が無いため）。
+
+### 採用範囲を広げる推奨
+
+**推奨: 進める。** ただし次の一歩は「別の純粋関数にもリプレイを広げる」前に、
+**`journal.rs::JournalEntry` に actuation 呼び出しを記録する専用 variant を
+追加する**ことを優先すべきと判断する。理由: 今回のフィクスチャが「known-bugs.md
+の散文からの手作業復元」に留まったのは、まさに ADR 本文が課題として挙げている
+「`ImeEvent { description: String }` が自由文字列で構造化されていない」ことの
+別側面（actuation はそもそも journal に記録すらされていない）である。この専用
+variant を追加すれば、次回同種のバグを実機で踏んだ際に `ConvClassifyFixture` と
+同じ「ダンプ→転記→リプレイ」フローがそのまま使え、近似復元という弱点が解消される。
+
+その上で、ADR 本文が示す優先順位（`decide_actuation_action` → 
+`decide_alt_impersonation`（BUG-41） → `GjiFsm` 状態遷移関数（BUG-33 追補3・4））
+通り、次に `decide_alt_impersonation` へのリプレイ基盤拡張に進むことを推奨する。
+
+`EventOrigin`（1.）自体を既存コードへ配線するかどうかは、今回の検証範囲外
+（意図的にスコープ外とした）であり、判断を保留する。`journal.rs` に actuation
+の専用 variant を追加する際に、その variant が `EventOrigin` を必須フィールドと
+して持つ設計にできるかを最初の配線候補として検討するのが自然な次点になる
+（ADR 本文「決定 2.」が想定する経路そのもの）。
+
+## Phase 0.5 実施記録（2026-07-25）
+
+「第一歩 実施記録」の「採用範囲を広げる推奨」節が最優先とした
+**「`journal.rs::JournalEntry` に actuation 呼び出しを記録する専用 variant を
+追加する」** を実施した。**上の「提案中」本文および「第一歩 実施記録」節は変更して
+いない** — この節は追記のみ。ADR-081 Phase 1（`ir_apply_drift_correction` の
+ドライバ分離）が着手する前に、actuation 呼び出しの journal リプレイ回帰網を張る
+ことが目的。
+
+### 1. `JournalEntry::ImeActuation` 構造化 variant の追加
+
+`journal.rs` に `ImeActuation { record: ActuationRecord }` を追加した。ペイロード
+`ActuationRecord`（`state/ime_actuation.rs`）は出所・世代・目標値・方針・試行回数・
+判定を型として持つ:
+
+```rust
+pub struct ActuationRecord {
+    pub origin: EventOrigin,   // source は常に SelfActuated、epoch = 何回目の試行か
+    pub target: bool,          // この試行が目指す IME open 状態
+    pub policy: FeedbackPolicy,
+    pub attempts: u32,
+    pub action: ActuationAction, // decide_actuation_action で new() 内一意導出
+}
+```
+
+`ImeEvent { description: String }`（ADR 本文が「決定 1.」で問題視した自由文字列）と
+違い、`format!("{event:?}")` ではなく `source`/`epoch`/`action` を型として取り出せる。
+
+**型定義を `state` 層に置いた**理由: `journal` モジュールは `#[cfg(windows)]` で
+ゲートされているため、Linux のリプレイテストからは `JournalEntry` を直接参照できない。
+ペイロード型を `state`（プラットフォーム非依存、ADR-065）に置くことで、Windows の
+journal 記録と Linux のリプレイが**単一の型定義・単一の構築経路（`ActuationRecord::new`）
+を共有**する。
+
+### 2. `EventOrigin` を `Actuation` に配線
+
+`runtime::ime_actuation::Actuation`（ADR-080 の実行時状態）に `origin: EventOrigin`
+フィールドを追加。`actuation_for()` の新規構築時に
+`actuation_origin(policy, Generation::INITIAL)` で初期化し（`target` 変化のたびに
+`0` から振り直す）、実送信ごとに `attempts` と `origin.epoch` を同時に進める
+`advance_epoch()` に集約した（別々に更新して片方を忘れる事故を構造的に防ぐ）。
+`ir_apply_drift_correction` の **Send 側と Blind GiveUp 側の両方**で試行1回分を
+`JournalEntry::ImeActuation` として記録する。これで BUG-43 の「16 回中 5 回だけ
+`Send`・残り 11 回は `GiveUp`」が journal から型で追える。`GiveUp` 時に observations へ
+書き込まない規約（ADR-080、BUG-33 型の収束偽装防止）は不変。
+
+配線の核心（`strategy` 導出・`EventOrigin` 構築・`action` 導出）は `state` 層の純粋
+関数（`actuation_strategy` / `actuation_origin` / `ActuationRecord::new`）に切り出し、
+Linux でユニットテスト済み（`cargo test -p awase-windows --lib`）。`runtime/` 部分は
+`#[cfg(windows)]` のため `cargo check --target x86_64-pc-windows-gnu --lib` の
+コンパイル確認に留めた。
+
+### 3. BUG-43 リプレイを新 variant 経由に更新
+
+`tests/drift_correction_replay.rs` を `ActuationRecord`（= journal に積まれるのと
+同一の構造化レコード）経由に更新した。fixture の各 tick に `epoch` フィールドを追加
+（健全な系列では `epoch == attempts`）。従来の `action` 照合に加え、**(2) 出所が
+常に `SelfActuated` であること・(3) `epoch` が `attempts` と歩調を合わせて積まれて
+いること**（`EventOrigin` 配線の退行検知）を照合する。既存の 2 テスト構成と fixture を
+最大限再利用した拡張であり、全面書き直しはしていない。
+
+### 型の serde 方針（設計判断）
+
+`EventSource` の `Injected { reason }` / `SelfActuated { strategy }` は `&'static str`
+のため、`EventSource`・`EventOrigin`・`ActuationRecord` は **`Serialize` のみ**導出した
+（任意入力から `&'static str` の借用を復元する `Deserialize` は型として表現できない）。
+journal は書き出し専用なのでこれで足りる。リプレイ側（`DriftCorrectionFixture`）は
+`Generation`（`u64` newtype、Ser/De 両対応）だけを保存し、`strategy` は
+`actuation_strategy(policy)` で `policy` から一意に再構築するため、`EventSource` 自体の
+`Deserialize` は不要。`event_origin.rs` の既存 12 テストと Copy・`&'static str` の
+API は無変更のまま（ADR-081 が想定する `EventSource::SelfActuated` の Copy 前提を
+壊さないため）。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **169 件 green**（第一歩の 165 + Phase 0.5 で
+  追加した 4 件: `actuation_strategy`/`actuation_origin` 系）。退行なし。
+- `cargo test -p awase-windows --test drift_correction_replay --test journal_replay`:
+  **3 件 green**（新 variant `ActuationRecord` 経由でも BUG-43 の有界終端が維持）。退行なし。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib`: green
+  （runtime 配線のコンパイル確認）。
+- `cargo clippy -p awase-windows --lib --target x86_64-pc-windows-gnu -- -D warnings`
+  / `cargo fmt --check`: clean。
+
+### ADR-081 Phase 1d への申し送り
+
+ADR-081 のドライバ `actuate()` から本 variant を積むには:
+
+1. ドライバ内で actuation 試行を行う箇所で、`ActuationRecord::new(origin, target,
+   policy, attempts)` を組み立て `JournalEntry::ImeActuation { record }` として
+   journal に `record()` する。`origin` は `Actuation.origin`（本 Phase で配線済み）を
+   そのまま渡せばよい。ドライバが独自に `EventOrigin` を作る場合も
+   `actuation_origin(policy, epoch)` を通すこと（`strategy` 文字列の唯一の定義点。
+   直書きしない）。
+2. `ir_apply_drift_correction` を書き換える際、本 Phase で入れた 2 箇所の
+   `record()`（Send 側・GiveUp 側）を**ドライバ側に移設**する形にすれば、リプレイ
+   テストは `ActuationRecord` 経由のままなので**変更不要で回帰網として機能する**
+   （テストは journal モジュールに依存せず `state::ActuationRecord` を見ているため、
+   ドライバ移設で壊れない）。
+3. `advance_epoch()` は `attempts` と `epoch` を必ず一対で進める。ドライバが試行回数を
+   独自管理する場合も、この不変条件（`epoch == その actuation 系列の試行回数`）を
+   保つこと。リプレイテスト (3) がこの一致を検証しているため、崩すと落ちる。
+
+### 次の一歩（推奨）
+
+ADR 本文の優先順位通り、次は `decide_alt_impersonation`（BUG-41）へリプレイ基盤を
+広げる。ただし BUG-41 は「非同期確認の世代誤帰属」ではなく「KeyUp でのローカル状態
+クリア漏れ」という別形状（ADR 本文コンテキスト参照）なので、`ActuationRecord` を
+そのまま流用するのではなく、`decide_alt_impersonation` 専用の fixture 型を新設する
+（`DriftCorrectionFixture` と同じ「実機観測を固定化する」枠組みは共有）。

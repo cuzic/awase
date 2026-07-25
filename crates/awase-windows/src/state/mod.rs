@@ -33,6 +33,9 @@ pub use conv_mode::ConvModeAuthority;
 pub(crate) use conv_mode::ConvModeMgr;
 
 pub mod app_ime_policy;
+// ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
+// 配線はまだ無い（モジュール冒頭のスコープ節参照）。
+pub mod event_origin;
 pub mod ime_actuation;
 // ADR-081 Phase 0 試験実装（未配線）。app_ime_policy と同じ ungated パターンで
 // Linux 上の `cargo test -p awase-windows --lib` から実行できるようにする。

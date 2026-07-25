@@ -586,19 +586,34 @@ impl Runtime {
         // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは下の
         // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
         let policy = self.platform_state.ime.default_feedback();
-        let (act_policy, act_attempts, act_sent_at, act_gave_up_at) = {
+        let (act_policy, act_attempts, act_sent_at, act_gave_up_at, act_origin) = {
             let actuation = self.actuation_for(desired, policy);
             (
                 actuation.policy,
                 actuation.attempts,
                 actuation.sent_at,
                 actuation.gave_up_at,
+                actuation.origin,
             )
         };
 
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
-                if decide_actuation_action(act_policy, act_attempts) == ActuationAction::GiveUp {
+                let action = decide_actuation_action(act_policy, act_attempts);
+                if action == ActuationAction::GiveUp {
+                    // ADR-082 Phase 0.5: 打ち切り判定も出所・世代付きで構造化記録する
+                    // （BUG-43 の「16 回中 5 回だけ送り、残りは GiveUp」を journal から
+                    // 型で追えるようにする）。observations には書き込まない規約は不変。
+                    self.platform_state.ime.journal.record(
+                        crate::journal::JournalEntry::ImeActuation {
+                            record: crate::state::ime_actuation::ActuationRecord::new(
+                                act_origin,
+                                desired,
+                                act_policy,
+                                act_attempts,
+                            ),
+                        },
+                    );
                     // max_attempts 到達。observations には一切書き込まない（BUG-33 型の
                     // 収束偽装を避ける）。ただし「一度諦めたら desired が変わるまで永久に
                     // 補正しない」硬直（ADR-080「有限 Blind からの復旧条件」）を避けるため、
@@ -672,6 +687,21 @@ impl Runtime {
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
         );
+        // ADR-082 Phase 0.5: 実送信する試行を出所・世代付きで構造化記録する。
+        // `Blind` はここに到達する時点で必ず `Send`（`GiveUp` は上で return 済み）、
+        // `Read` は常に `Send`。`action` は `ActuationRecord::new` が
+        // `decide_actuation_action` で導出する。
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ImeActuation {
+                record: crate::state::ime_actuation::ActuationRecord::new(
+                    act_origin,
+                    desired,
+                    act_policy,
+                    act_attempts,
+                ),
+            });
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::DriftDetected {
@@ -700,12 +730,13 @@ impl Runtime {
             self.on_ime_apply_complete(desired, outcome, None);
         }
 
-        // 実送信したので試行回数を進める。`Blind` はこれが `max_attempts` に達すると
-        // 次回 `GiveUp` する。`Read` は attempts では打ち切らないが、一貫性のため
-        // 同じ送信経路で加算する。`Confirmed`/`GiveUp` で return したパスはここに
-        // 到達しないため加算されない。
+        // 実送信したので試行回数と世代を1つ進める（`advance_epoch`）。`Blind` はこれが
+        // `max_attempts` に達すると次回 `GiveUp` する。`Read` は attempts では打ち切らないが、
+        // 一貫性のため同じ送信経路で加算する。`Confirmed`/`GiveUp` で return したパスは
+        // ここに到達しないため加算されない。`attempts` と `origin.epoch` を別々に動かして
+        // 片方を忘れないよう、両者を同時に進めるメソッドに集約している（ADR-082 Phase 0.5）。
         if let Some(actuation) = self.active_actuation.as_mut() {
-            actuation.attempts += 1;
+            actuation.advance_epoch();
         }
     }
 

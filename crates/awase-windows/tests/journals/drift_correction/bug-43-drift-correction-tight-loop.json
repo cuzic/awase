@@ -1,0 +1,30 @@
+[
+  {
+    "name": "bug43_windows_terminal_gji_tsfnative_tight_loop_bounded_by_blind_max_attempts",
+    "note": "docs/known-bugs.md BUG-43: Windows Terminal（process=WindowsTerminal.exe, focused_hwnd class=Windows.UI.Input.InputSite.WindowClass, app_kind=Uwp, force-tsf判定でTsfNative/Blacklist扱い）でGJI（Google日本語入力）使用中、2026-07-25T01:28:31.022〜31.697の約675msの間に『[drift] correction: observed=true ≠ desired=false for ...ms → set_ime_open(false)』→『Blacklist drift correction: apply_ime_open(false) → Applied』が16回連続（平均間隔~45ms、observe tickの20msタイマーとほぼ同期）で発火し、そのたびにVK_IME_OFFをSendInputしてcomposition warm状態を破棄していた。duration_msは補正のたびにリセットされず単調増加（84502ms→85176ms）しており、乖離が一度も解消されないまま補正だけが空振りし続けていたことを示す。ADR-080 Phase1でActuation/FeedbackPolicyの型強制を実装済み（IME_ACTUATION_BLIND_MAX_ATTEMPTS=5, backoff=DRIFT_CORRECTION_THRESHOLD_MS=400ms）。このフィクスチャはADR-082『第一歩』2.: decide_actuation_actionが16回の連続drift検知に対して試行5回目でGiveUpし、以後Sendに戻らないこと（=BUG-43の無限再送が型レベルで再発不可能なこと）をリプレイで固定化する。observed_at_msはBUG-43節の集計記述（675ms/16回・平均間隔~45ms・duration_ms 84502→85176）からの近似復元であり、実機journalダンプの生ログ行そのものではない（ADR-080実装前はActuation呼び出しをjournalに記録する仕組みが無かったため、conv_classify.rsのConvClassifyFixtureのように実機ダンプを直接転記することはできなかった）。attemptsは『ADR-080 Phase1のActuationがあったなら何回目の試行だったか』を0-originで振り直した値。",
+    "policy": {
+      "Blind": {
+        "max_attempts": 5,
+        "backoff": { "secs": 0, "nanos": 400000000 }
+      }
+    },
+    "ticks": [
+      { "attempts": 0, "epoch": 0, "observed_at_ms": 84502, "expected": "Send" },
+      { "attempts": 1, "epoch": 1, "observed_at_ms": 84547, "expected": "Send" },
+      { "attempts": 2, "epoch": 2, "observed_at_ms": 84592, "expected": "Send" },
+      { "attempts": 3, "epoch": 3, "observed_at_ms": 84637, "expected": "Send" },
+      { "attempts": 4, "epoch": 4, "observed_at_ms": 84682, "expected": "Send" },
+      { "attempts": 5, "epoch": 5, "observed_at_ms": 84727, "expected": "GiveUp" },
+      { "attempts": 6, "epoch": 6, "observed_at_ms": 84772, "expected": "GiveUp" },
+      { "attempts": 7, "epoch": 7, "observed_at_ms": 84817, "expected": "GiveUp" },
+      { "attempts": 8, "epoch": 8, "observed_at_ms": 84862, "expected": "GiveUp" },
+      { "attempts": 9, "epoch": 9, "observed_at_ms": 84907, "expected": "GiveUp" },
+      { "attempts": 10, "epoch": 10, "observed_at_ms": 84952, "expected": "GiveUp" },
+      { "attempts": 11, "epoch": 11, "observed_at_ms": 84997, "expected": "GiveUp" },
+      { "attempts": 12, "epoch": 12, "observed_at_ms": 85042, "expected": "GiveUp" },
+      { "attempts": 13, "epoch": 13, "observed_at_ms": 85087, "expected": "GiveUp" },
+      { "attempts": 14, "epoch": 14, "observed_at_ms": 85132, "expected": "GiveUp" },
+      { "attempts": 15, "epoch": 15, "observed_at_ms": 85176, "expected": "GiveUp" }
+    ]
+  }
+]
