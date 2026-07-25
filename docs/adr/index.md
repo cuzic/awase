@@ -61,6 +61,8 @@
 | [078](078-ime-mode-belief-desired-effective-constraint.md) | IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）— Imm32Unavailable/TsfNative 限定、Standard は観測駆動を維持 | 提案中 |
 | [079](079-epoch-fenced-literal-recovery-with-replay.md) | per-VK confirm の stale confirm 誤帰属 — epoch fencing + ESC ベース recovery + 変換トリガー除外 replay | 提案中 |
 | [080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | IME actuation の型付きトランザクション化 — Feedback（Read/Blind）で closed-loop/open-loop を表現し drift correction の無限/皆無ループを根治 | Phase 1 実装済み（実機ソーク未実施） |
+| [081](081-per-profile-capability-driver-decomposition.md) | IME 制御をプロファイル別 capability 駆動ドライバへ分離 — 共有ループの分岐面をやめ「アプリA向け修正がアプリBを壊す」波及を構造的に止める | 提案中 |
+| [082](082-journal-structured-replay-and-event-origin.md) | `journal.rs` を事後ログから構造化リプレイ基盤へ格上げ — 出所(source)・世代(epoch)の規律を横断型 `EventOrigin` 1箇所に統合 | 提案中 |
 
 既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
 Windows IME 制御に特化した日本語 ADR を補完するものである。
