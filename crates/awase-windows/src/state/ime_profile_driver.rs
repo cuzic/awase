@@ -74,7 +74,11 @@ pub enum ImeOpenMechanism {
 /// すると二重定義になるため。ドライバへ移設するかどうかは全面移行を判断する
 /// Phase 1 以降で扱う（[ADR-081](../../../../docs/adr/081-per-profile-capability-driver-decomposition.md)
 /// 2 節の見積り表もこの feedback メソッドを全面移行時のコストに含めている）。
-pub trait ImeProfileDriver {
+///
+/// `Sync` を要求するのは、Phase 1 で `ime_controller.rs::ImeController::strategies`
+/// （`[&'static dyn ImeOpenStrategy; N]`、`ImeOpenStrategy: Sync`）と同型に
+/// `[&'static dyn ImeProfileDriver; N]` として保持する想定のため。
+pub trait ImeProfileDriver: Sync {
     /// 物理 KANJI / VK_F3 / VK_F4 を awase が完全所有するか。
     ///
     /// `true` のとき、物理 KANJI イベントはアプリに渡さない
@@ -205,7 +209,12 @@ mod tests {
     /// 保持する設計、`ime_controller.rs::ImeController::strategies` と同型）。
     #[test]
     fn driver_is_usable_as_trait_object() {
-        let driver: &dyn ImeProfileDriver = &ImmCrossDriver;
-        assert!(driver.owns_physical_kanji());
+        // strategies (`[&'static dyn ImeOpenStrategy; N]`, `ImeOpenStrategy: Sync`)
+        // と同型に保てること = `dyn ImeProfileDriver` が Sync であることを固定する
+        // （trait の Sync 境界が外れたらこのテストが壊れて気付ける）。
+        fn assert_sync<T: Sync + ?Sized>() {}
+        assert_sync::<dyn ImeProfileDriver>();
+        let drivers: [&dyn ImeProfileDriver; 1] = [&ImmCrossDriver];
+        assert!(drivers[0].owns_physical_kanji());
     }
 }
