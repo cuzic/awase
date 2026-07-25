@@ -187,6 +187,29 @@ pub struct GeneralConfig {
     /// （`composing`）でも構わず生 VK_CONVERT を送出するか。既定値・注意点は
     /// `muhenkan_solo_tap_ignore_composing_guard` と同様。
     pub henkan_solo_tap_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に Enter (`VK_RETURN`) を割り当てている
+    /// 場合に限り効く設定。無変換/変換や Space 等他の VK には一切影響しない。
+    ///
+    /// 単独タップ（同時打鍵が不成立）確定時、IME の変換候補ウィンドウ表示中
+    /// （`composing`）でも構わず生 VK_RETURN を送出するか。
+    ///
+    /// Enter は IME 変換候補の確定という正規機能を持つため、`space_thumb_ignore_composing_guard`
+    /// と同じ理由で既定値は `true`（常時送出）。無変換/変換と同じ既定 `false` にすると、
+    /// 変換候補ウィンドウ表示中の Enter 単独タップが丸ごと抑制され、通常の変換確定
+    /// 操作そのものができなくなってしまう。
+    ///
+    /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
+    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    pub enter_thumb_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に Enter (`VK_RETURN`) を割り当てている
+    /// 場合に限り効く設定。無変換/変換や Space 等他の VK には一切影響しない。
+    ///
+    /// Shift を同時に押しながら Enter 親指キーを押した場合、同時打鍵判定を
+    /// 一切試みず、`PendingThumb` にも入らず即座にリテラルな Enter（Shift+Enter の
+    /// ソフト改行）として送出するか。既定値・注意点は `space_thumb_shift_literal`
+    /// と同様（NICOLA の小指シフト面は Shift 単独系で thumb-shift とは組み合わせない
+    /// 設計のため、Shift 押下中は安全に即時パススルーできる）。
+    pub enter_thumb_shift_literal: bool,
 }
 
 impl Default for GeneralConfig {
@@ -214,6 +237,8 @@ impl Default for GeneralConfig {
             space_thumb_shift_literal: true,
             muhenkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_ignore_composing_guard: false,
+            enter_thumb_ignore_composing_guard: true,
+            enter_thumb_shift_literal: true,
         }
     }
 }

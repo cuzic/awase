@@ -913,6 +913,14 @@ impl Runtime {
                 henkan_vk,
                 config.general.henkan_solo_tap_ignore_composing_guard,
             );
+            let enter_thumb_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_RETURN);
+            self.engine.set_enter_thumb_config(
+                enter_thumb_vk,
+                config.general.enter_thumb_ignore_composing_guard,
+                config.general.enter_thumb_shift_literal,
+            );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,

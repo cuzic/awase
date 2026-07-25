@@ -111,6 +111,22 @@ impl Engine {
         );
     }
 
+    /// Enter 親指キーのフォールバック挙動を設定する。
+    ///
+    /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
+    /// Enter (`VK_RETURN`) に解決された場合の VK コード（Platform 層が判定して渡す。
+    /// どちらも Enter でなければ `None`）。`ignore_composing_guard`/`shift_literal`
+    /// は `GeneralConfig` の同名フィールドにそのまま対応する。
+    pub const fn set_enter_thumb_config(
+        &mut self,
+        enter_thumb_vk: Option<VkCode>,
+        ignore_composing_guard: bool,
+        shift_literal: bool,
+    ) {
+        self.adapter
+            .set_enter_thumb_config(enter_thumb_vk, ignore_composing_guard, shift_literal);
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
