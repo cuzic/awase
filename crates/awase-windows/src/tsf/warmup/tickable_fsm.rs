@@ -19,6 +19,24 @@
 //!
 //! probe 進行中に届いた後続 VK（deferred VK）は `TsfWarmupCoordinator` が一元管理する
 //! （`push_deferred` は個々の実装が持たない）。
+//!
+//! ## ラップ型を追加するときの規約（BUG-27 の教訓）
+//!
+//! `pending_tsf: RefCell<Option<Box<dyn TickableFsm>>>`（`tsf_warmup_coord.rs`）は
+//! capability メソッドを `dyn TickableFsm` 経由で一律に呼ぶ。デフォルト実装が
+//! no-op であるため、別の `TickableFsm` 実装をラップする型（例: `ChromeProbe` が
+//! 内部で `TsfProbeCoro` をラップする）が委譲を1つでも書き忘れても**コンパイルは
+//! 通る**（BUG-27: `ChromeProbe` が `apply_vk_sent` の委譲を欠いていたため、実機で
+//! romaji 2文字目以降が毎回失われる不具合が実際に発生した）。
+//!
+//! この種の委譲漏れは型では防げないため（capability を別 trait に分離すると
+//! `dyn TickableFsm` のオブジェクト安全性・一律呼び出しが崩れるため不採用）、
+//! **ラップ型を追加する場合は、オーバーライドする各メソッドについて「委譲が
+//! 効いているか」を確認する回帰テストを対で追加すること**。`chrome_probe.rs` の
+//! `chrome_probe_apply_vk_sent_reaches_inner_coro` /
+//! `chrome_probe_apply_transmit_done_reaches_inner_coro` がその実例
+//! （デフォルト no-op の戻り値・後続 tick の挙動と、委譲が効いた場合の戻り値・
+//! 挙動が異なることを利用して判別する）。
 
 use crate::state::event_origin::Generation;
 use crate::tsf::probe::LiteralDetector;

@@ -124,4 +124,38 @@ mod tests {
         );
     }
 
+    // ── apply_transmit_done 委譲の回帰テスト ────────────────────────────────
+    //
+    // `apply_vk_sent` と対称の委譲漏れリスクが `apply_transmit_done` にもある
+    // （どちらも `ChromeProbe` が `TsfProbeCoro` へ委譲するオーバーライドで、
+    // BUG-27 は前者でのみ実際に発生したが、後者の委譲が抜けても症状は同種になる:
+    // `TickableFsm` のデフォルト no-op は常に `true`（＝この machine は Done 扱い）
+    // を返すため、委譲が欠けると inline LiteralDetect フェーズへ絶対に継続しない）。
+    // `TickableFsm::tickable_fsm.rs` のモジュール doc が要求する「ラップ型の
+    // オーバーライドは対で回帰テストを持つ」規約に従い追加する。
+    #[test]
+    fn chrome_probe_apply_transmit_done_reaches_inner_coro() {
+        let guard = OutputActiveGuard::noop_for_test();
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, 0, guard);
+
+        // `detector: Some(..)` を渡した場合、内側の `TsfProbeCoro::apply_transmit_done`
+        // は `pending_transmit_done` に積んで `false`（＝まだ Done ではない、次 tick で
+        // inline LiteralDetect に続く）を返す。`TickableFsm` のデフォルト no-op は
+        // 引数に関わらず常に `true` を返すため、委譲が効いているかどうかは戻り値だけで
+        // 判別できる。
+        let is_done = chrome_probe.apply_transmit_done(
+            "ka".to_string(),
+            2,
+            Some(LiteralDetector::new(false)),
+            1000,
+        );
+
+        assert!(
+            !is_done,
+            "apply_transmit_done(detector=Some(..)) が内側の TsfProbeCoro に届いて \
+             いれば pending_transmit_done に積んで false を返すはず。デフォルト \
+             no-op（常に true）に落ちていないか確認: is_done={is_done}"
+        );
+    }
 }
