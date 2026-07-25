@@ -14,7 +14,8 @@
 //!    tick で新しい観測が来るのを待つ（ADR-080「有限 `Blind` からの復旧条件」）。
 
 use super::Runtime;
-use crate::state::ime_actuation::FeedbackPolicy;
+use crate::state::event_origin::{EventOrigin, Generation};
+use crate::state::ime_actuation::{actuation_origin, FeedbackPolicy};
 
 /// 進行中の actuation 試行そのもの（`Copy` ではない、生存期間を持つ状態）。
 ///
@@ -34,6 +35,22 @@ pub(super) struct Actuation {
     /// 破棄してやり直す（ADR-080「有限 `Blind` からの復旧条件」／task #15）。
     /// 破棄・再構築のたびに `None` に戻る。
     pub(super) gave_up_at: Option<std::time::Instant>,
+    /// この actuation 試行の出所・世代（ADR-082 Phase 0.5）。
+    /// `source` は常に `SelfActuated{strategy}`（`policy` から導出）。`epoch` は
+    /// `attempts` と歩調を合わせて単調増加し（`advance_epoch`）、journal の
+    /// `JournalEntry::ImeActuation` に「何回目・どの世代の訂正か」として記録される。
+    /// 新規構築（target 変化）のたびに `Generation::INITIAL` から振り直す。
+    pub(super) origin: EventOrigin,
+}
+
+impl Actuation {
+    /// 実送信して `attempts` を1つ進めるのに合わせ、`origin.epoch` も次の世代へ
+    /// 進める。両者を1メソッドで動かし、`attempts` と `epoch` の歩調がずれない
+    /// ことを構造的に保証する（呼び出し元が別々に更新して片方を忘れる事故を防ぐ）。
+    pub(super) fn advance_epoch(&mut self) {
+        self.attempts += 1;
+        self.origin.epoch = self.origin.epoch.next();
+    }
 }
 
 impl Runtime {
@@ -59,6 +76,7 @@ impl Runtime {
                 attempts: 0,
                 sent_at: std::time::Instant::now(),
                 gave_up_at: None,
+                origin: actuation_origin(policy, Generation::INITIAL),
             });
         }
         self.active_actuation
