@@ -149,7 +149,15 @@ mod tests {
 
     #[test]
     fn imm_cross_driver_owns_physical_kanji() {
+        // focus_settle と同様、直値ではなく SSOT（AppImePolicy）と照合して
+        // owns_physical_kanji の drift も検出できるようにする。
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::ime_event::ImePolicyProfile;
         assert!(ImmCrossDriver.owns_physical_kanji());
+        assert_eq!(
+            ImmCrossDriver.owns_physical_kanji(),
+            AppImePolicy::from_profile(ImePolicyProfile::ImmCross).owns_physical_kanji
+        );
     }
 
     #[test]
