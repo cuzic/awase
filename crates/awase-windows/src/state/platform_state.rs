@@ -382,6 +382,13 @@ impl ImeStateHub {
         self.shadow_model.app_policy.focus_settle_ms
     }
 
+    /// 現在のアプリの feedback（収束確認）方針（`AppImePolicy` 由来、ADR-080）。
+    ///
+    /// `ir_apply_drift_correction` が `Actuation` を構築する際に使う。
+    pub(crate) fn default_feedback(&self) -> super::ime_actuation::FeedbackPolicy {
+        self.shadow_model.app_policy.default_feedback
+    }
+
     /// 次のイベント generation 番号を払い出す。
     ///
     /// 呼び出し元で `self.platform_state.ime.event_log.next_seq()` を直接書かずに

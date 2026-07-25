@@ -33,6 +33,7 @@ pub use conv_mode::ConvModeAuthority;
 pub(crate) use conv_mode::ConvModeMgr;
 
 pub mod app_ime_policy;
+pub mod ime_actuation;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
 // 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
 // なる（ADR-065 と同じ局所抑制パターン）。

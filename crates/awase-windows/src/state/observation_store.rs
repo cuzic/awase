@@ -218,6 +218,22 @@ impl ObservationStore {
             .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
     }
 
+    /// `most_recent_trusted(now)` と同じロジックに、`since` 以降に record された観測のみを
+    /// 対象にする条件を追加したもの。actuation を送信した時刻以降の観測だけを見て収束判定
+    /// したい場合に使う（BUG-42対策、ADR-080参照）。全ソース対象（`ConvOpenInference`を
+    /// 除外しない — BUG-42の直接トリガーだったソースを含めないと意味がないため）。
+    #[must_use]
+    pub fn most_recent_trusted_after(
+        &self,
+        now: Instant,
+        since: Instant,
+    ) -> Option<&ImeObservation> {
+        self.per_source
+            .iter()
+            .filter(|o| !o.is_expired(now) && o.at >= since)
+            .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
+    }
+
     /// 観測プールから IME 開閉の best-effort belief を導出する純粋決定関数。
     ///
     /// ## 判定順序
@@ -435,6 +451,59 @@ mod tests {
             s.most_recent_trusted(now).map(|o| o.open),
             Some(false),
             "High confidence が勝つ"
+        );
+    }
+
+    #[test]
+    fn most_recent_trusted_after_excludes_before_since() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        let since = t0 + Duration::from_millis(100);
+        // since より前に record された High confidence の観測は、本来なら勝つはずだが除外される。
+        let mut high = obs(true, ObservationSource::ImmGetOpenStatus, t0);
+        high.confidence = ObservationConfidence::High;
+        s.record(high);
+        assert_eq!(
+            s.most_recent_trusted_after(since, since),
+            None,
+            "since より前の観測は最高 confidence でも除外される"
+        );
+        // 対照: 通常の most_recent_trusted なら拾える。
+        assert_eq!(
+            s.most_recent_trusted(since).map(|o| o.open),
+            Some(true),
+            "since 条件のない most_recent_trusted なら拾える"
+        );
+    }
+
+    #[test]
+    fn most_recent_trusted_after_includes_at_or_after_since() {
+        let mut s = ObservationStore::default();
+        let since = Instant::now();
+        // since 以降の観測は confidence 優先で通常どおり選ばれる。
+        let mut low = obs(true, ObservationSource::FocusProbe, since);
+        low.confidence = ObservationConfidence::Low;
+        let mut high = obs(false, ObservationSource::ImmGetOpenStatus, since);
+        high.confidence = ObservationConfidence::High;
+        s.record(low);
+        s.record(high);
+        assert_eq!(
+            s.most_recent_trusted_after(since, since).map(|o| o.open),
+            Some(false),
+            "since ちょうどの観測は含まれ、High confidence が勝つ (most_recent_trusted と同じ tie-break)"
+        );
+    }
+
+    #[test]
+    fn most_recent_trusted_after_does_not_exclude_by_source() {
+        let mut s = ObservationStore::default();
+        let since = Instant::now();
+        // ConvOpenInference (間接推論ソース) も since 条件だけで判定され、ソース種別では除外されない。
+        s.record(obs(true, ObservationSource::ConvOpenInference, since));
+        assert_eq!(
+            s.most_recent_trusted_after(since, since).map(|o| o.open),
+            Some(true),
+            "ConvOpenInference もソース種別では除外されず全ソース対象"
         );
     }
 

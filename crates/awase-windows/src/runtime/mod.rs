@@ -1,6 +1,7 @@
 pub(crate) mod executor;
 mod focus_tracker;
 mod focus_tracking;
+mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
@@ -114,6 +115,9 @@ pub struct Runtime {
     pub(crate) post_bypass_rules: Vec<PostBypassEntry>,
     /// IME apply・パニック回復の調停
     ime_coordinator: ime_coordinator::ImeCoordinator,
+    /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
+    /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
+    active_actuation: Option<ime_actuation::Actuation>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -725,6 +729,7 @@ impl Runtime {
             all_keymaps,
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
+            active_actuation: None,
         }
     }
 

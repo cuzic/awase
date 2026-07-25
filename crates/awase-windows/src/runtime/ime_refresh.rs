@@ -2,6 +2,7 @@ use awase::engine::{ConvMode, EngineCommand, InputModeState};
 use awase::platform::PlatformRuntime;
 
 use super::Runtime;
+use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
 use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
@@ -220,6 +221,10 @@ impl Runtime {
     // ── フォーカス変更通知 ──
 
     fn ir_notify_focus_changed(&mut self, skip_imm_query: bool) {
+        // 別アプリ/ウィンドウへ遷移したら進行中の actuation 試行を破棄する
+        // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
+        // ため、attempts を持ち越さず次の tick で作り直す。
+        self.discard_actuation();
         // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが
         // 変わった場合、半角英数状態を他アプリへ持ち越さないよう即座にかな入力へ
         // 復元する（呼び出し自体を遅延させないという意味で「即座」。復元処理自体は
@@ -565,6 +570,104 @@ impl Runtime {
             return;
         }
 
+        // ADR-080: actuation を型付きトランザクション（`Actuation`）として扱い、
+        // feedback（収束確認）方針を `AppImePolicy::default_feedback` からデータとして
+        // 受け取る。これにより BUG-42 の「実送信の結果が observation store に
+        // フィードバックされず、observe tick ごとに同じ VK を無限再送するタイトループ」を
+        // 手作りクールダウン（旧 `last_drift_correction_send`）に頼らず型レベルで防ぐ。
+        //
+        // - `Blind`（Imm32Unavailable / TsfNative、実読み戻し不能）: `max_attempts` 到達で
+        //   `GiveUp` し、`desired` が変わる（＝新しい `Actuation`）まで再送しない。
+        // - `Read`（ImmCross 等、実読み戻し可能）: `sent_at` 以降の trusted 観測が desired と
+        //   一致すれば `Confirmed` として破棄、そうでなければ従来同様に再送する。
+        //
+        // なお `ir_check_drift_correction`（=`check_drift_correction`）の乖離「検知」側は
+        // ADR-080 Phase 1 では従来どおり `most_recent_trusted`（since フェンシングなし）を
+        // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは下の
+        // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
+        let policy = self.platform_state.ime.default_feedback();
+        let (act_policy, act_attempts, act_sent_at, act_gave_up_at) = {
+            let actuation = self.actuation_for(desired, policy);
+            (
+                actuation.policy,
+                actuation.attempts,
+                actuation.sent_at,
+                actuation.gave_up_at,
+            )
+        };
+
+        match act_policy {
+            FeedbackPolicy::Blind { .. } => {
+                if decide_actuation_action(act_policy, act_attempts) == ActuationAction::GiveUp {
+                    // max_attempts 到達。observations には一切書き込まない（BUG-33 型の
+                    // 収束偽装を避ける）。ただし「一度諦めたら desired が変わるまで永久に
+                    // 補正しない」硬直（ADR-080「有限 Blind からの復旧条件」）を避けるため、
+                    // 外部で状況が動いた証拠が来たら試行をやり直す（task #15）。
+                    //
+                    // 復旧判定は観測の「値」ではなく「鮮度」で行う。drift 補正は
+                    // observed != desired（乖離）が続く間しか走らず、open/close は bool の
+                    // ため「間違った値」は !desired の1通りしか存在しない。よって ADR 当初の
+                    // 文言「target と異なる値の観測が来たら復旧」はほぼ毎 tick 真になり
+                    // GiveUp を即座に無効化してしまう（乖離の定義そのものだから）。意味の
+                    // ある信号は「諦めた時刻以降に新しい観測が record されたか」＝世界で
+                    // 何かが動いたか（値は問わない）であり、`most_recent_trusted_after` が
+                    // まさにそれを判定する。
+                    match act_gave_up_at {
+                        None => {
+                            // この tick で初めて GiveUp に到達。境界時刻を刻んで parked に
+                            // する。この tick では再送も復旧判定もしない（次 tick 以降で
+                            // `now` より後の観測だけを「新しい」とみなせるようにするため）。
+                            if let Some(actuation) = self.active_actuation.as_mut() {
+                                actuation.gave_up_at = Some(now);
+                            }
+                            log::debug!(
+                                "[drift] actuation gave up (Blind): desired={desired} \
+                                 observed={observed} attempts={act_attempts}"
+                            );
+                        }
+                        Some(gave_up_at) => {
+                            // 既に parked。gave_up_at 以降に新しい trusted 観測が record
+                            // されていれば（値は不問＝外部で状況が動いた証拠）、試行を破棄
+                            // して次 tick の `actuation_for` に attempts=0・新しい sent_at・
+                            // gave_up_at=None で作り直させる。実際の再送は次 tick に任せ、
+                            // discard した同じ tick では送らない（ロジックを単純に保つ）。
+                            let fresh = self
+                                .platform_state
+                                .ime
+                                .model()
+                                .observations
+                                .most_recent_trusted_after(now, gave_up_at)
+                                .is_some();
+                            if fresh {
+                                log::debug!(
+                                    "[drift] fresh observation after give-up → 試行を破棄して\
+                                     再試行: desired={desired} observed={observed}"
+                                );
+                                self.discard_actuation();
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+            FeedbackPolicy::Read { .. } => {
+                // `sent_at` 以降の trusted 観測が desired と一致していれば収束済み
+                // （`Resolution::Confirmed`）。再送不要なので試行を破棄する。
+                let confirmed = self
+                    .platform_state
+                    .ime
+                    .model()
+                    .observations
+                    .most_recent_trusted_after(now, act_sent_at)
+                    .is_some_and(|o| o.open == desired);
+                if confirmed {
+                    log::debug!("[drift] actuation confirmed (Read): desired={desired} → 破棄");
+                    self.discard_actuation();
+                    return;
+                }
+            }
+        }
+
         log::warn!(
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
@@ -595,6 +698,14 @@ impl Runtime {
                 .apply_ime_open_with_belief(desired, None, belief);
             log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(desired, outcome, None);
+        }
+
+        // 実送信したので試行回数を進める。`Blind` はこれが `max_attempts` に達すると
+        // 次回 `GiveUp` する。`Read` は attempts では打ち切らないが、一貫性のため
+        // 同じ送信経路で加算する。`Confirmed`/`GiveUp` で return したパスはここに
+        // 到達しないため加算されない。
+        if let Some(actuation) = self.active_actuation.as_mut() {
+            actuation.attempts += 1;
         }
     }
 

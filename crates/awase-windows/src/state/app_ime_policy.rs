@@ -8,7 +8,20 @@
 //! - **アプリ差分は AppImePolicy に閉じ込める** — reducer 本体に if-else を増やさない
 //! - reducer は policy の "what to do" を参照するだけ、policy 自体に分岐ロジックを持たない
 
-use super::ime_event::ImePolicyProfile;
+use super::ime_actuation::FeedbackPolicy;
+use super::ime_event::{ImePolicyProfile, ObservationSource};
+use std::time::Duration;
+
+/// Blind feedback（読み戻し不能プロファイル）で actuation を打ち切るまでの試行回数。
+///
+/// **未検証の初期値**: 実 Windows 実機での soak テストによる裏付けはまだ無い
+/// （このサンドボックスでは実測できない）。`5 × backoff`（`backoff` は現状
+/// `DRIFT_CORRECTION_THRESHOLD_MS` を再利用、2026-07-25 時点で 400ms なので
+/// 最悪 ~2s）を「遅いが最終的に成功する訂正を早すぎる段階で諦めない程度に長く、
+/// かつ本当に stuck な状態を延々叩き続けない程度に短い」妥当な出発点として
+/// 置いているだけ。この値を変更する場合は `.claude/rules/tuning-constants.md`
+/// に従い実機実測の根拠を本文に添えること。
+const IME_ACTUATION_BLIND_MAX_ATTEMPTS: u32 = 5;
 
 /// アプリ別の IME 制御ポリシー。
 ///
@@ -27,6 +40,12 @@ pub struct AppImePolicy {
 
     /// フォーカス変更後、observer を信頼できるようになるまでの待ち時間 (ms)。
     pub focus_settle_ms: u64,
+
+    /// このプロファイルの actuation デフォルト feedback（収束確認）方針。
+    ///
+    /// 読み戻し可能なプロファイル（ImmCross 系）は `Read`、読み戻し手段が
+    /// 構造的に無いプロファイル（Imm32Unavailable / TsfNative）は `Blind`。
+    pub default_feedback: FeedbackPolicy,
 }
 
 /// IME 制御 actuator の種別。
@@ -57,6 +76,12 @@ impl AppImePolicy {
                     owns_physical_kanji: true,
                     actuator_kind: ImeActuatorKind::ImmCross,
                     focus_settle_ms: 100,
+                    default_feedback: FeedbackPolicy::Read {
+                        source: ObservationSource::ImmGetOpenStatus,
+                        deadline: Duration::from_millis(
+                            crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS,
+                        ),
+                    },
                 }
             }
             ImePolicyProfile::Imm32Unavailable => Self {
@@ -64,12 +89,20 @@ impl AppImePolicy {
                 actuator_kind: ImeActuatorKind::Imm32Unavailable,
                 // Chrome/Edge は GJI/IMM が信頼できないので settle 長め
                 focus_settle_ms: 500,
+                default_feedback: FeedbackPolicy::Blind {
+                    max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
+                    backoff: Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS),
+                },
             },
             ImePolicyProfile::TsfNative => Self {
                 // WezTerm 等は TSF が KANJI を正しく処理するため通す
                 owns_physical_kanji: false,
                 actuator_kind: ImeActuatorKind::TsfNative,
                 focus_settle_ms: 200,
+                default_feedback: FeedbackPolicy::Blind {
+                    max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
+                    backoff: Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS),
+                },
             },
         }
     }
@@ -129,6 +162,57 @@ mod tests {
     #[test]
     fn default_is_standard() {
         assert_eq!(AppImePolicy::default(), AppImePolicy::standard());
+    }
+
+    #[test]
+    fn imm_cross_default_feedback_is_read_via_imm_get_open_status() {
+        let p = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
+        assert!(matches!(
+            p.default_feedback,
+            FeedbackPolicy::Read {
+                source: ObservationSource::ImmGetOpenStatus,
+                deadline,
+            } if deadline
+                == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+        ));
+    }
+
+    #[test]
+    fn plain_and_unknown_share_imm_cross_read_feedback() {
+        for profile in [ImePolicyProfile::Plain, ImePolicyProfile::Unknown] {
+            let p = AppImePolicy::from_profile(profile);
+            assert!(matches!(
+                p.default_feedback,
+                FeedbackPolicy::Read {
+                    source: ObservationSource::ImmGetOpenStatus,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn imm32_unavailable_default_feedback_is_blind() {
+        let p = AppImePolicy::from_profile(ImePolicyProfile::Imm32Unavailable);
+        assert!(matches!(
+            p.default_feedback,
+            FeedbackPolicy::Blind {
+                max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
+                backoff,
+            } if backoff == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+        ));
+    }
+
+    #[test]
+    fn tsf_native_default_feedback_is_blind() {
+        let p = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
+        assert!(matches!(
+            p.default_feedback,
+            FeedbackPolicy::Blind {
+                max_attempts: IME_ACTUATION_BLIND_MAX_ATTEMPTS,
+                backoff,
+            } if backoff == Duration::from_millis(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
+        ));
     }
 
     #[test]

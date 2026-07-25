@@ -471,6 +471,84 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
     );
 }
 
+/// `apply_ime_open_with_belief(` の**呼び出し箇所数**を crate 全域で固定する
+/// （関数定義 `fn apply_ime_open_with_belief(` は数えない）。
+///
+/// これは「唯一の窓口」への統合テストではなく、**新しい未レビューの呼び出し元が
+/// 増えたら気づく**ための count guard である。ADR-080 / `docs/known-bugs.md` BUG-42
+/// の根本原因は、raw actuation（IME open の実 actuate）を drift correction ループが
+/// observe tick ごとに無限再送していたことだった。修正（タスク #14）は
+/// `ir_apply_drift_correction` の actuation を `Actuation`/`FeedbackPolicy`
+/// ステートマシンでゲートしたが、**raw send 呼び出し自体は同関数内にインラインで
+/// 意図的に残した**（Phase 1 のスコープは「送るか否か・頻度」の制御であって、
+/// raw send を別モジュールの「単一窓口」に物理的に集約することではない。全呼び出し元の
+/// 棚卸しと統合は Phase 2）。
+///
+/// したがってこのテストは「`ir_apply_drift_correction` が raw actuation を直接
+/// 呼ばないこと」は**検証しない**（それは現状の正しいコードに対して偽であり、
+/// 即座に fail する）。代わりに、BUG-42 の設計欠陥（同じ actuate 呼び出しが
+/// 無自覚に増殖した）と同型の増殖を検知するため、呼び出し元の総数を凍結する。
+///
+/// 現在の既知の呼び出し元（file : function、行番号はドリフトするため記載しない）:
+/// - `platform.rs` : `apply_ime_open_with_applied`（shadow のみから belief を作る後方互換ラッパー）
+/// - `runtime/mod.rs` : `apply_force_on_for_imm_broken` / `try_force_on_bootstrap`（Blacklist force-ON、2箇所）
+/// - `runtime/key_pipeline.rs` : ObservedEisu 検出時の DirectInput 補正（false 送信）
+/// - `runtime/ime_refresh.rs` : `ir_apply_drift_correction`（Blacklist/TsfNative の drift 訂正、ADR-080 の直接対象）
+///
+/// 新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ
+/// `Actuation` ベースのゲーティングが必要かどうか（ADR-080 / BUG-42 参照）を
+/// 検討した上で、このカウントと上記一覧を更新すること。呼び出し元を削除した
+/// 場合は単にカウントを更新すること。
+#[test]
+fn apply_ime_open_with_belief_call_sites_are_accounted_for() {
+    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk_rs_files(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    const EXPECTED_TOTAL: usize = 5;
+    let mut total = 0usize;
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = production_code_only(&content);
+        // 呼び出し箇所のみ数える（定義 `fn apply_ime_open_with_belief(` は除外）。
+        let calls = production.matches("apply_ime_open_with_belief(").count()
+            - production.matches("fn apply_ime_open_with_belief(").count();
+        if calls > 0 {
+            total += calls;
+            breakdown.push((rel, calls));
+        }
+    }
+
+    assert_eq!(
+        total, EXPECTED_TOTAL,
+        "`apply_ime_open_with_belief(` の呼び出し箇所数が想定({EXPECTED_TOTAL})と\
+         異なります(実際: {total})。内訳: {breakdown:?}\n\
+         新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ \
+         Actuation ベースのゲーティングが必要かどうか（ADR-080 / \
+         docs/known-bugs.md BUG-42 参照 — raw actuation が observe tick ごとに\
+         無限再送された設計欠陥）を検討した上で、このカウントを更新してください。\n\
+         呼び出し元を削除した場合は単にこのカウントを更新してください。"
+    );
+}
+
 /// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
 /// belief/state への書き込みを一切行わないことを固定する。
 ///
@@ -508,6 +586,89 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
              フォーカス要素追跡の設計が未解決のため）。意図的に適用するよう \
              変更したのであれば、関数内コメントの課題が解決されたことを確認した \
              上でこのテストの期待値を更新してください。"
+        );
+    }
+}
+
+/// `match act_signature` 部分の開始マーカー。`ir_apply_drift_correction` の中で
+/// `FeedbackPolicy` を分岐する `match act_policy { ... }` ブロックの先頭。
+const DRIFT_MATCH_MARKER: &str = "match act_policy {";
+/// 実送信ブロックの先頭にある `log::warn!` のメッセージ接頭辞。この直前で
+/// `match act_policy { ... }`（早期 return 分岐）が終わる。
+const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
+
+/// `ir_apply_drift_correction` の `match act_policy { ... }` ブロック（＝ `Blind`/`GaveUp`
+/// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
+///
+/// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
+/// `log::warn!("[drift] correction: observed=...")` の直前。この `log::warn!` より後は
+/// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
+/// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
+/// **関数全体ではなく match ブロックだけ**を検査対象にする。行番号ではなくマーカー文字列で
+/// 境界を求めるため、周辺のコードが動いても壊れにくい。
+fn extract_drift_correction_match_block(content: &str) -> &str {
+    let start = content
+        .find(DRIFT_MATCH_MARKER)
+        .unwrap_or_else(|| panic!("marker {DRIFT_MATCH_MARKER:?} not found in ime_refresh.rs"));
+    let send_marker = content.find(DRIFT_SEND_LOG_MARKER).unwrap_or_else(|| {
+        panic!("send-path marker {DRIFT_SEND_LOG_MARKER:?} not found in ime_refresh.rs")
+    });
+    // match ブロック内は `log::debug!` のみ。実送信は `log::warn!` で始まる唯一の箇所。
+    let send_log = content[start..send_marker]
+        .rfind("log::warn!(")
+        .map_or_else(
+            || panic!("no `log::warn!(` found between match block and send-path marker"),
+            |i| start + i,
+        );
+    assert!(
+        send_log > start,
+        "抽出範囲が不正: match ブロック開始 ({start}) より前に送信 log ({send_log}) がある"
+    );
+    &content[start..send_log]
+}
+
+/// ADR-080 不変条件6 の回帰ガード: `Resolution::GaveUp`（Blind の max_attempts 到達）
+/// および `Read` の未収束・deadline 超過による早期 return は、いかなる場合も
+/// `observations` ストアへの書き込み（`ObserverReported` 等の dispatch）を発生させない。
+///
+/// これに違反すると BUG-33 と同型の「収束偽装」が再発する。BUG-33 では、ある機構が
+/// **自分の belief をそのまま観測ストアに「観測」として書き戻していた**ため、書き戻した
+/// 値が構造上つねに一致してしまい、drift 検知が二度と発火しなくなっていた。ここで
+/// もし GaveUp/Confirmed の早期 return が `desired` を観測として書き込めば、次 tick 以降の
+/// `check_drift_correction` が「観測 == desired」で乖離なしと誤認し、本来まだ実現できて
+/// いない目標を「達成済み」と勘違いする（＝同じ失敗モード）。
+///
+/// 注意: `match act_policy { ... }` ブロックの**後**にある正規の実送信経路は
+/// `dispatch_event(ImeEvent::DriftDetected {..})` を正当に呼ぶ。それは不変条件6の
+/// スコープ外なので、関数全体ではなく match ブロックのテキストだけを検査する
+/// (`extract_drift_correction_match_block` 参照)。仮にその `dispatch_event` を match
+/// ブロック内（早期 return より前）へ移動させれば、このテストは fail する。
+#[test]
+fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
+    let path = "src/runtime/ime_refresh.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let match_block = extract_drift_correction_match_block(production);
+    for forbidden in [
+        "dispatch_event(",
+        "ObserverReported",
+        ".record(",
+        "write_focus_probe",
+        "write_observer_poll",
+        "write_imm_cross_probe",
+    ] {
+        assert!(
+            !match_block.contains(forbidden),
+            "{path} の ir_apply_drift_correction 内 `match act_policy {{ ... }}` \
+             （Blind/GaveUp・Read/Confirmed の早期 return 分岐）に、観測ストアへの \
+             書き込みと思われるパターン `{forbidden}` が見つかりました。\n\
+             ADR-080 不変条件6 により、GaveUp（および Read の deadline 超過/未収束）は \
+             `observations` への書き込み（`ObserverReported` 等の dispatch）を \
+             一切発生させてはなりません。違反すると docs/known-bugs.md BUG-33 と同型の \
+             収束偽装（自分の belief を観測として書き戻し、drift 検知が二度と発火しない）\
+             が再発します。実送信は match ブロックの後（`log::warn!(\"[drift] correction: \
+             observed=...\")` 以降）でのみ行い、そこでの `DriftDetected` dispatch は \
+             不変条件6 のスコープ外です。"
         );
     }
 }
