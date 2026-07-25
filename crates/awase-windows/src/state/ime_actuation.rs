@@ -5,6 +5,7 @@
 //! 保持できるよう、実行中の試行状態（attempts 等）は一切持たない。実行時状態を
 //! 伴う `Actuation` は runtime 層（`runtime/ime_actuation.rs`）が別途持つ。
 
+use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_event::ObservationSource;
 
 /// Feedback（収束確認）方針。プロファイルごとに `AppImePolicy::default_feedback` として持つ。
@@ -40,8 +41,6 @@ pub enum Resolution {
 ///
 /// `serde` 導出は `DriftCorrectionFixture`（下記）の `expected` フィールド用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-// wired up in a follow-up task（runtime 層への配線）。それまでは tests のみが参照する。
-#[allow(dead_code)]
 pub enum ActuationAction {
     /// まだ試行回数に余裕がある、実際に actuate してよい。
     Send,
@@ -56,8 +55,6 @@ pub enum ActuationAction {
 /// それ以上でも決して `Send` に戻らない）。`Read` は試行回数だけでは打ち切らず常に
 /// `Send` を返す（収束は観測確認で成立し、その終端は別処理が担う）。
 #[must_use]
-// wired up in a follow-up task（runtime 層への配線）。それまでは tests のみが参照する。
-#[allow(dead_code)]
 pub fn decide_actuation_action(policy: FeedbackPolicy, attempts: u32) -> ActuationAction {
     match policy {
         FeedbackPolicy::Blind { max_attempts, .. } => {
@@ -68,6 +65,86 @@ pub fn decide_actuation_action(policy: FeedbackPolicy, attempts: u32) -> Actuati
             }
         }
         FeedbackPolicy::Read { .. } => ActuationAction::Send,
+    }
+}
+
+// ── EventOrigin 配線（ADR-082 Phase 0.5）──────────────────────────────────────
+//
+// drift correction の actuation 試行に「出所（誰が起こしたか）」と「世代（何回目か）」を
+// 型として持たせるための構築経路。runtime 層（`ir_apply_drift_correction`）と journal
+// リプレイテストの両方がこの純粋関数を通って `EventOrigin` を組み立てる（構築経路の
+// 集約、`.claude/rules/ime-belief-architecture.md`）。`runtime/` は Linux で実行検証
+// できないため、`EventOrigin` の中身を決めるロジックはここ（`state`）に置き、Linux で
+// ユニットテストする。
+
+/// actuation 試行の出所を表す `EventSource::SelfActuated` の `strategy` 識別子。
+///
+/// `FeedbackPolicy` から一意に導出する。`DriftCorrectionFixture` は `EventSource` 自体を
+/// deserialize せず（`&'static str` のため不可、`state/event_origin.rs` 参照）、`policy`
+/// からこの関数で `strategy` を再構築するため、ここが `strategy` 文字列の唯一の定義点。
+#[must_use]
+pub const fn actuation_strategy(policy: FeedbackPolicy) -> &'static str {
+    match policy {
+        // Imm32Unavailable / TsfNative（実読み戻し不能）。BUG-43 はこちら。
+        FeedbackPolicy::Blind { .. } => "drift_correction_blind",
+        // ImmCross 等（実読み戻し可能）。
+        FeedbackPolicy::Read { .. } => "drift_correction_read",
+    }
+}
+
+/// actuation 試行1回分の `EventOrigin` を組み立てる。
+///
+/// `source` は常に `SelfActuated`（awase 自身の能動的訂正）で、`strategy` は
+/// `actuation_strategy(policy)`。`epoch` は「この actuation 系列の何回目の試行か」を
+/// `Generation` で表す（`Actuation.attempts` と歩調を合わせて単調増加。target が変わって
+/// 新しい `Actuation` になると 0 から振り直す）。
+#[must_use]
+pub fn actuation_origin(policy: FeedbackPolicy, epoch: Generation) -> EventOrigin {
+    EventOrigin::new(
+        EventSource::SelfActuated {
+            strategy: actuation_strategy(policy),
+        },
+        epoch,
+    )
+}
+
+/// actuation 試行1回分の構造化レコード（ADR-082 Phase 0.5）。
+///
+/// `journal.rs::JournalEntry::ImeActuation` が運ぶペイロード本体。型定義を `state` 層に
+/// 置くことで、`#[cfg(windows)]` な `journal` モジュールに依存せず Linux のリプレイテスト
+/// （`tests/drift_correction_replay.rs`）からも同じ型で構築・検証できる。Windows の
+/// journal 記録と Linux のリプレイが単一の型定義・単一の構築経路（`new`）を共有する
+/// （`.claude/rules/ime-belief-architecture.md`「構築経路を集約する」）。
+///
+/// `Serialize` のみ（journal 書き出し用）。`origin` が `&'static str` を含み `Deserialize`
+/// できないため、リプレイ側は生の `ActuationRecord` を deserialize せず、fixture の
+/// `(policy, epoch, attempts)` から `new` で再構築して照合する。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ActuationRecord {
+    /// 出所（常に `SelfActuated`）と世代。
+    pub origin: EventOrigin,
+    /// この試行が目指す IME open 状態。
+    pub target: bool,
+    /// この試行の feedback 方針。
+    pub policy: FeedbackPolicy,
+    /// tick 開始前の累積試行回数（0-origin）。
+    pub attempts: u32,
+    /// `decide_actuation_action(policy, attempts)` の判定（`Send`/`GiveUp`）。
+    pub action: ActuationAction,
+}
+
+impl ActuationRecord {
+    /// 唯一の構築経路。`action` は `decide_actuation_action` で一意に決まるため引数に
+    /// 取らず内部で導出する（呼び出し元が origin と食い違う action を渡す事故を防ぐ）。
+    #[must_use]
+    pub fn new(origin: EventOrigin, target: bool, policy: FeedbackPolicy, attempts: u32) -> Self {
+        Self {
+            origin,
+            target,
+            policy,
+            attempts,
+            action: decide_actuation_action(policy, attempts),
+        }
     }
 }
 
@@ -125,6 +202,11 @@ pub struct DriftCorrectionFixture {
 pub struct DriftCorrectionTick {
     /// この tick の時点での累積試行回数（0-origin、tick 開始前の値）。
     pub attempts: u32,
+    /// この tick の `EventOrigin.epoch`（ADR-082 Phase 0.5）。runtime 側で `attempts` と
+    /// 歩調を合わせて単調増加する（`Actuation::advance_epoch`）ため、健全なフィクスチャ
+    /// では `epoch == attempts`。リプレイはこの一致を検証し、`JournalEntry::ImeActuation`
+    /// に積まれる世代の配線が壊れていないことを固定する。
+    pub epoch: Generation,
     /// 実機ログの経過時間（ms）。ドキュメント用途のみ（BUG-43 記述からの近似復元、
     /// 上記モジュールコメント参照）、`decide_actuation_action` の判定には使わない。
     #[serde(default)]
@@ -188,6 +270,54 @@ mod tests {
                 ActuationAction::Send,
                 "Read は試行回数で打ち切らない (attempts={attempts})"
             );
+        }
+    }
+
+    // ── EventOrigin 配線（ADR-082 Phase 0.5）─────────────────────────────────
+
+    #[test]
+    fn actuation_strategy_distinguishes_policy() {
+        assert_eq!(actuation_strategy(blind(5)), "drift_correction_blind");
+        assert_eq!(actuation_strategy(read()), "drift_correction_read");
+    }
+
+    #[test]
+    fn actuation_origin_is_self_actuated_with_policy_strategy() {
+        let origin = actuation_origin(blind(5), Generation::new(3));
+        assert_eq!(
+            origin.source,
+            EventSource::SelfActuated {
+                strategy: "drift_correction_blind",
+            },
+            "actuation は常に SelfActuated（物理でも外部注入でもない）"
+        );
+        assert!(!origin.source.is_physical());
+        assert!(!origin.source.is_injected());
+        assert_eq!(origin.epoch, Generation::new(3));
+    }
+
+    #[test]
+    fn actuation_origin_epoch_tracks_attempt_generation() {
+        // 同じ actuation 系列の連続試行では epoch が単調増加する。
+        let prev = actuation_origin(blind(5), Generation::new(0));
+        let next = actuation_origin(blind(5), Generation::new(1));
+        assert!(next.epoch.is_newer_than(prev.epoch));
+    }
+
+    #[test]
+    fn actuation_origin_round_trips_strategy_from_policy() {
+        // fixture は EventSource を deserialize せず policy から strategy を再構築する。
+        // その再構築が生の actuation_origin と一致することを固定する。
+        for policy in [blind(5), read()] {
+            let epoch = Generation::new(7);
+            let rebuilt = actuation_origin(policy, epoch);
+            assert_eq!(
+                rebuilt.source,
+                EventSource::SelfActuated {
+                    strategy: actuation_strategy(policy),
+                }
+            );
+            assert_eq!(rebuilt.epoch, epoch);
         }
     }
 }

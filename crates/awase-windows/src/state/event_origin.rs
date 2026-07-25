@@ -15,12 +15,20 @@
 //!
 //! # スコープ（重要）
 //!
-//! ADR-082「第一歩」1. の指示通り、この実装は型を定義するのみで **既存コードへの
-//! 配線は一切行わない**。`RawKeyEvent::injected` / `InputModeApplyStrategy` /
-//! `WarmEpoch` / `cold_seq` / `Actuation.attempts` はこのモジュールの追加によって
-//! 変更されない。`EventOrigin` を実際にどこかの belief 的状態へ採用するかどうかは、
-//! ADR-082「第一歩」2./3.（BUG-43 journal リプレイの実証）の結果を見てから判断する
-//! （ADR 本文「意図的に『していない』こと」節も参照）。
+//! ADR-082「第一歩」1. の時点では、この実装は型を定義するのみで既存コードへの
+//! 配線を一切行わなかった（`RawKeyEvent::injected` / `InputModeApplyStrategy` /
+//! `WarmEpoch` / `cold_seq` はいずれも今も無変更）。
+//!
+//! # Phase 0.5 での配線（2026-07-25）
+//!
+//! ADR-082 Phase 0.5 で `EventOrigin` を最初の1経路に配線した:
+//! `runtime::ime_actuation::Actuation` が `origin: EventOrigin` を持ち、drift
+//! correction の actuation 試行ごとに `source = SelfActuated{strategy}`・`epoch`
+//! を積む（`runtime/ime_refresh.rs::ir_apply_drift_correction`）。試行1回分は
+//! `journal.rs::JournalEntry::ImeActuation` として構造化記録される。`strategy` の
+//! 導出と `EventOrigin` の構築は `state::ime_actuation::actuation_origin()`（純粋
+//! 関数、Linux でユニットテスト可能）に集約している。`WarmEpoch` / `cold_seq` /
+//! `RawKeyEvent::injected` を `EventOrigin` へ寄せるのは引き続き将来スコープ。
 
 // ── Generation ───────────────────────────────────────────────────────────────
 
@@ -32,7 +40,23 @@
 ///
 /// `0` から開始し、`next()` で単調増加のみを許可する（巻き戻し不可）。
 /// `u64` を包むだけの newtype であり、蓄積・比較以外のロジックは持たない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+///
+/// `serde` 導出は ADR-082 Phase 0.5: `journal.rs::JournalEntry::ImeActuation` の
+/// `origin.epoch` を journal に記録し（`Serialize`）、`DriftCorrectionFixture` の
+/// tick が世代を保持してリプレイで往復できる（`Deserialize`）ようにするため。
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Generation(u64);
 
 impl Generation {
@@ -84,7 +108,14 @@ impl Generation {
 /// 将来的に既存コードへ配線する際は、`InputModeApplyStrategy` のような専用 enum
 /// への置き換えを検討すること（この最小実装では、まだどの呼び出し元にも配線
 /// しないため、既存の専用 enum を re-export するのではなく汎用の文字列に留める）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `serde::Serialize` のみ導出する（`Deserialize` はしない）。`reason`/`strategy` が
+/// `&'static str` のため、任意入力から借用を復元する `Deserialize` は型として表現
+/// できない。journal は書き出し専用（`Serialize`）でありこれで足りる。リプレイ側
+/// （`DriftCorrectionFixture`）は世代（`Generation`、Ser/De 両対応）だけを保存し、
+/// `SelfActuated` の `strategy` は `actuation_strategy()`（`state::ime_actuation`）で
+/// `policy` から一意に再構築するため、`EventSource` 自体の `Deserialize` は不要。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum EventSource {
     /// 実機ユーザーの物理キー操作（`LLKHF_INJECTED` が立っていない）。
     Physical,
@@ -118,9 +149,11 @@ impl EventSource {
 /// 観測・完了通知』系エントリは `EventOrigin` を必須フィールドとして持つ」と
 /// 決定した、その必須フィールドの型そのもの。
 ///
-/// この最小実装では単純な集約のみで、`journal.rs::JournalEntry` への配線は
-/// まだ行わない（モジュール冒頭のスコープ節参照）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// ADR-082 Phase 0.5 で `journal.rs::JournalEntry::ImeActuation` の `origin`
+/// フィールドとして配線された（journal への書き出し用に `Serialize` を導出）。
+/// `EventSource` が `&'static str` を持つため `Deserialize` は導出しない
+/// （`EventSource` のコメント参照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct EventOrigin {
     pub source: EventSource,
     pub epoch: Generation,
