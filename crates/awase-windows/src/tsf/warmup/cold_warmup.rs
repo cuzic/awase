@@ -71,6 +71,7 @@ impl<'a> ColdWarmupSequence<'a> {
         log::debug!(
             "[h1-warmup] cold={cold_seq} class={win_class} session_expired={session_expired} \
              elapsed={elapsed_ms}ms reason={cold_reason:?} → F2/probe待機省略、per-VK confirm へ",
+            cold_seq = cold_seq.value(),
         );
 
         WarmupStarted {

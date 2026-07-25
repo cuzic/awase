@@ -35,6 +35,7 @@
 
 use std::rc::Rc;
 
+use crate::state::event_origin::Generation;
 use crate::tsf::output::ColdReason;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
@@ -49,7 +50,7 @@ use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
 
 #[derive(Clone, Copy)]
 struct GjiProbeCtx {
-    cold_seq: u32,
+    cold_seq: Generation,
     used_eager_path: bool,
     forces_prepend_f2: bool,
     is_long_cold: bool,
@@ -89,7 +90,7 @@ async fn gji_coro_body(
         // かかったか」を事後ログから直接確認するために必要（切り分けログ強化、2026-07-09）。
         log::debug!(
             "[gji-coro] cold={} GjiProbe 完了 ({}ms gji_idle={}ms settled={})",
-            ctx.cold_seq,
+            ctx.cold_seq.value(),
             outcome.elapsed_ms,
             outcome.gji_idle_ms,
             outcome.settled,
@@ -105,7 +106,7 @@ async fn gji_coro_body(
             log::debug!(
                 "[gji-coro] cold={} settle 必要 (reason={cold_reason:?} gji_idle_ms={} \
                  probe_elapsed={}ms settled={}) → skip FreshF2, reactive LiteralDetect のみ",
-                ctx.cold_seq,
+                ctx.cold_seq.value(),
                 outcome.gji_idle_ms,
                 outcome.elapsed_ms,
                 outcome.settled,
@@ -150,7 +151,7 @@ async fn gji_coro_body(
     log::debug!(
         "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} gji_settled={} \
          confirm_key_tsf_hint={} is_tsf_mode={}",
-        ctx.cold_seq,
+        ctx.cold_seq.value(),
         plan.needs_literal,
         observations.nc_fired,
         observations.gji_settled,
@@ -204,7 +205,8 @@ async fn gji_coro_body(
             win32_async::sleep_ms(crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE as u32).await;
             log::debug!(
                 "[gji-coro-diag] cold={cold_seq} skip-verify nc_fired={nc_fired} \
-                 gji_active={gji_active} used_eager_path={used_eager_path}"
+                 gji_active={gji_active} used_eager_path={used_eager_path}",
+                cold_seq = cold_seq.value(),
             );
             crate::ime_diagnostic::log_composition_probe(cold_seq, "skip-verify");
         });
@@ -255,7 +257,7 @@ pub(crate) struct GjiWarmupCoro {
     coro: StepCoro<ProbeTickInput, Vec<ProbeAction>>,
     pending_transmit_done: Option<TransmitDonePayload>,
     pending_vk_sent: Option<VkSentPayload>,
-    cold_seq: u32,
+    cold_seq: Generation,
     /// inline LiteralDetect フェーズ中に OUTPUT_GATE を active に保つ追加ガード。
     literal_detect_guard: Option<OutputActiveGuard>,
 }
@@ -265,7 +267,7 @@ impl GjiWarmupCoro {
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn new(
         romaji: &str,
-        cold_seq: u32,
+        cold_seq: Generation,
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         cold_reason: ColdReason,
@@ -314,7 +316,7 @@ impl TickableFsm for GjiWarmupCoro {
             log::debug!(
                 "[gji-coro-vk-sent-trace] cold={} tick consuming pending_vk_sent={} \
                  pending_transmit_done={} t={}ms",
-                self.cold_seq,
+                self.cold_seq.value(),
                 self.pending_vk_sent.is_some(),
                 self.pending_transmit_done.is_some(),
                 crate::hook::current_tick_ms(),
@@ -331,7 +333,7 @@ impl TickableFsm for GjiWarmupCoro {
         }
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.cold_seq
     }
 
@@ -371,7 +373,7 @@ impl TickableFsm for GjiWarmupCoro {
         log::debug!(
             "[gji-coro-vk-sent-trace] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
              overwritten_unconsumed={overwritten} t={}ms",
-            self.cold_seq,
+            self.cold_seq.value(),
             crate::hook::current_tick_ms(),
         );
         if self.literal_detect_guard.is_none() {

@@ -15,6 +15,7 @@ use crate::output::Output;
 use crate::timer::Win32Timer;
 use crate::tray::SystemTray;
 
+use crate::state::event_origin::Generation;
 use crate::state::ConvModeAuthority;
 
 /// Windows 固有のプラットフォーム実装
@@ -306,7 +307,13 @@ impl WindowsPlatform {
                                 );
                                 self.output.send_f22_f21_reinit();
                             } else {
-                                self.start_unicode_cold_warmup(probe_id.0, deferred);
+                                // probe_id (GjiFsm 側の probe 相関 ID) をそのまま cold_seq の
+                                // ログ相関値として転用する既存の挙動を維持する（値そのものは
+                                // 変えず、型だけ Generation に揃える）。
+                                self.start_unicode_cold_warmup(
+                                    Generation::new(u64::from(probe_id.0)),
+                                    deferred,
+                                );
                             }
                         }
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
@@ -606,7 +613,7 @@ impl WindowsPlatform {
     ///
     /// `send_keys()` と `dispatch_gji_response()` の両方から呼ぶ共通起点。
     /// 飛行中 FSM への追記に成功した場合は VK_IME_ON / VK_A+BS を再送しない。
-    fn start_unicode_cold_warmup(&mut self, cold_seq: u32, deferred: Vec<char>) {
+    fn start_unicode_cold_warmup(&mut self, cold_seq: Generation, deferred: Vec<char>) {
         if self.output.try_push_unicode_chars_to_pending(&deferred) {
             log::debug!(
                 "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
@@ -619,7 +626,8 @@ impl WindowsPlatform {
         log::info!(
             "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
              VK_IME_ON+VK_A+BS → {} chars defer",
-            deferred.len()
+            deferred.len(),
+            cold_seq = cold_seq.value(),
         );
         let fsm = crate::tsf::warmup::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
             cold_seq, deferred, baseline,

@@ -20,6 +20,7 @@
 //! probe 進行中に届いた後続 VK（deferred VK）は `TsfWarmupCoordinator` が一元管理する
 //! （`push_deferred` は個々の実装が持たない）。
 
+use crate::state::event_origin::Generation;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 
@@ -33,7 +34,7 @@ pub(crate) trait TickableFsm {
     /// 1 ステップ進める。[`ProbeAction::Done`] が含まれたら完了。
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction>;
     /// ログ相関用の cold_seq を返す。
-    fn cold_seq_hint(&self) -> u32;
+    fn cold_seq_hint(&self) -> Generation;
 
     // ── TransmitDone ケイパビリティ（GjiWarmupCoro / TsfProbeCoro）───────────
     //

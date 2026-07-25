@@ -26,6 +26,7 @@
 //!   のときだけ romaji 再送をスケジュールする）
 //! - 判定待ち → `None`（`LiteralDetectFsm::tick` では `vec![]`、タイマー継続）
 
+use crate::state::event_origin::Generation;
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
@@ -119,7 +120,7 @@ pub(crate) fn is_partial_literal(
 /// `escape_composition`: `true` の場合、dispatcher はバックスペースの前に `VK_ESCAPE` を送って
 /// composition を確実に破棄する（partial literal 専用、[`PARTIAL_LITERAL_BS`] のドキュメント参照）。
 pub(crate) fn emit_recovery_actions(
-    cold_seq: u32,
+    cold_seq: Generation,
     romaji: String,
     backs: usize,
     escape_composition: bool,
@@ -142,7 +143,7 @@ pub(crate) fn emit_recovery_actions(
 /// ここ 1 箇所に集約する。両パスは `poll` を 10ms ごとに呼ぶだけで、判定ロジックを重複させない。
 pub(crate) struct LiteralDetectCore {
     /// ログ相関番号
-    cold_seq: u32,
+    cold_seq: Generation,
     /// 送信したローマ字（回収アクションのペイロード用）
     romaji: String,
     /// probe 中に観測した事実。部分リテラル判定に使用する。
@@ -172,7 +173,7 @@ impl LiteralDetectCore {
     /// `LiteralDetectCore` を生成する。`detector` と `deadline_ms` は呼び出し側が用意する
     /// （cold パスは transmit 完了時、warm パスは送信直後に確定させる）。
     pub(crate) const fn new(
-        cold_seq: u32,
+        cold_seq: Generation,
         romaji: String,
         observations: ProbeObservations,
         detector: LiteralDetector,
@@ -209,7 +210,7 @@ impl LiteralDetectCore {
         if crate::tsf::observer::literal_session_confirmed(self.cold_seq) {
             log::debug!(
                 "[literal-detect] cold={} セッション確認済み → スキップ",
-                self.cold_seq
+                self.cold_seq.value()
             );
             return Some(vec![ProbeAction::Done]);
         }
@@ -227,7 +228,7 @@ impl LiteralDetectCore {
                     //     → ESC (composition 破棄) + BS×1 ('l' 削除) が正しい。
                     log::debug!(
                         "[literal-detect] cold={} partial literal (nc=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
-                        self.cold_seq,
+                        self.cold_seq.value(),
                         self.romaji,
                         PARTIAL_LITERAL_BS,
                         self.consecutive,
@@ -239,7 +240,7 @@ impl LiteralDetectCore {
 
                 log::debug!(
                     "[literal-detect] cold={} composition confirmed real_gji_idle_ms={}",
-                    self.cold_seq,
+                    self.cold_seq.value(),
                     crate::tsf::observer::gji_idle_ms(),
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "confirmed");
@@ -258,7 +259,7 @@ impl LiteralDetectCore {
                 VetoDecision::Hold => {
                     log::debug!(
                         "[literal-detect] cold={} candidate window可視のため回収を保留 (real_gji_idle_ms={})",
-                        self.cold_seq,
+                        self.cold_seq.value(),
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     None
@@ -266,7 +267,7 @@ impl LiteralDetectCore {
                 VetoDecision::Expired => {
                     log::warn!(
                         "[literal-detect] cold={} candidate window可視のまま veto 上限 {}ms 超過 → 無回収で打ち切り",
-                        self.cold_seq,
+                        self.cold_seq.value(),
                         crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "veto-expired");
@@ -275,7 +276,7 @@ impl LiteralDetectCore {
                 VetoDecision::NotApplicable => {
                     log::debug!(
                         "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
-                        self.cold_seq,
+                        self.cold_seq.value(),
                         self.ze_bs_count,
                         self.consecutive,
                         crate::tsf::observer::gji_idle_ms(),
@@ -292,7 +293,7 @@ impl LiteralDetectCore {
                 log::warn!(
                     "[literal-detect] cold={} stale confirm 検出 (romaji={:?}) → \
                      backspace は送らず romaji 再送のみ行う",
-                    self.cold_seq,
+                    self.cold_seq.value(),
                     self.romaji,
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
@@ -361,7 +362,7 @@ impl LiteralDetectFsm {
     ///
     /// `consecutive` は現在の連続 raw-tsf-literal 回数。0 かつ TSF mode のとき sacr warmup を起動する。
     pub(crate) fn new(
-        cold_seq: u32,
+        cold_seq: Generation,
         romaji: String,
         observations: ProbeObservations,
         ze_bs_count: usize,
@@ -391,7 +392,7 @@ impl crate::tsf::warmup::tickable_fsm::TickableFsm for LiteralDetectFsm {
         self.core.poll(env).unwrap_or_default()
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.core.cold_seq
     }
 }
@@ -522,7 +523,12 @@ mod tests {
     // 返すようになった（consecutive による分岐は dispatcher 側 `probe_io.rs` に一本化）。
     #[test]
     fn emit_recovery_actions_partial_literal_sets_escape_composition_true() {
-        let actions = emit_recovery_actions(0, "ltu".to_string(), PARTIAL_LITERAL_BS, true);
+        let actions = emit_recovery_actions(
+            Generation::INITIAL,
+            "ltu".to_string(),
+            PARTIAL_LITERAL_BS,
+            true,
+        );
         match &actions[0] {
             ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
@@ -538,7 +544,7 @@ mod tests {
     // （composition が存在しないため ESC は不要、既存の chars.len() ベース BS のみ）。
     #[test]
     fn emit_recovery_actions_suspected_literal_keeps_escape_composition_false() {
-        let actions = emit_recovery_actions(0, "ko".to_string(), 2, false);
+        let actions = emit_recovery_actions(Generation::INITIAL, "ko".to_string(), 2, false);
         match &actions[0] {
             ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
@@ -582,8 +588,15 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core =
-            LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+        let mut core = LiteralDetectCore::new(
+            Generation::INITIAL,
+            "ko".to_string(),
+            obs(true),
+            detector,
+            now_ms,
+            2,
+            0,
+        );
 
         let result = core.poll(tsf_env());
         assert!(
@@ -603,8 +616,15 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core =
-            LiteralDetectCore::new(0, "ko".to_string(), obs(true), detector, now_ms, 2, 0);
+        let mut core = LiteralDetectCore::new(
+            Generation::INITIAL,
+            "ko".to_string(),
+            obs(true),
+            detector,
+            now_ms,
+            2,
+            0,
+        );
 
         // 1 回目: hold に入る（veto_started_at_ms が確定する）。
         assert!(core.poll(tsf_env()).is_none());
@@ -641,8 +661,15 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core =
-            LiteralDetectCore::new(0, "s".to_string(), obs(true), detector, now_ms, 1, 0);
+        let mut core = LiteralDetectCore::new(
+            Generation::INITIAL,
+            "s".to_string(),
+            obs(true),
+            detector,
+            now_ms,
+            1,
+            0,
+        );
 
         let actions = core
             .poll(tsf_env())
@@ -687,8 +714,15 @@ mod tests {
         TSF_OBS.gji_write_bytes.store(9_400, SeqCst); // 閾値超過だが根拠は stale
 
         let now_ms = crate::hook::current_tick_ms();
-        let mut core =
-            LiteralDetectCore::new(0, "fu".to_string(), obs(true), detector, now_ms, 2, 0);
+        let mut core = LiteralDetectCore::new(
+            Generation::INITIAL,
+            "fu".to_string(),
+            obs(true),
+            detector,
+            now_ms,
+            2,
+            0,
+        );
 
         let actions = core
             .poll(tsf_env())

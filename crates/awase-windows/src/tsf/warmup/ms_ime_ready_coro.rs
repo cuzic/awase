@@ -31,6 +31,7 @@
 
 use std::rc::Rc;
 
+use crate::state::event_origin::Generation;
 use crate::tsf::ime_mode_fsm::ImeModeState;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan, TransmitTarget, TsfEnvSnapshot};
@@ -54,7 +55,7 @@ fn env_native_ready(env: TsfEnvSnapshot) -> bool {
 #[expect(clippy::future_not_send)]
 async fn ms_ime_ready_coro_body(
     ch: Rc<Channel<TsfEnvSnapshot, Vec<ProbeAction>>>,
-    cold_seq: u32,
+    cold_seq: Generation,
     romaji: String,
     deadline_ms: u64,
 ) {
@@ -68,6 +69,7 @@ async fn ms_ime_ready_coro_body(
             log::info!(
                 "[msime-ready] cold={cold_seq} IME mode NATIVE 確認 (+{}ms) → 送信 {romaji:?}",
                 crate::hook::current_tick_ms().saturating_sub(start_ms),
+                cold_seq = cold_seq.value(),
             );
             break;
         }
@@ -78,6 +80,7 @@ async fn ms_ime_ready_coro_body(
                 "[msime-ready] cold={cold_seq} 期限切れ (mode={:?} confirmed={}) → 強制送信 {romaji:?}",
                 env.ime_mode,
                 env.ime_mode_confirmed,
+                cold_seq = cold_seq.value(),
             );
             break;
         }
@@ -112,13 +115,13 @@ async fn ms_ime_ready_coro_body(
 /// 設置は `Output::ms_ime_gate_defer`（`send_romaji_as_tsf` のゲート）。
 pub(crate) struct MsImeReadyCoro {
     coro: StepCoro<TsfEnvSnapshot, Vec<ProbeAction>>,
-    cold_seq: u32,
+    cold_seq: Generation,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。
     _guard: OutputActiveGuard,
 }
 
 impl MsImeReadyCoro {
-    pub(crate) fn new(romaji: &str, cold_seq: u32, deadline_ms: u64) -> Self {
+    pub(crate) fn new(romaji: &str, cold_seq: Generation, deadline_ms: u64) -> Self {
         let guard = OutputActiveGuard::begin();
         let romaji = romaji.to_string();
         let mut coro = StepCoro::new(async move |ch| {
@@ -147,7 +150,7 @@ impl TickableFsm for MsImeReadyCoro {
         }
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.cold_seq
     }
 }
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn coro_waits_until_confirmed_then_transmits() {
         let deadline = crate::hook::current_tick_ms() + 60_000;
-        let mut coro = MsImeReadyCoro::new("wo", 7, deadline);
+        let mut coro = MsImeReadyCoro::new("wo", Generation::new(7), deadline);
 
         // 未確認の間は待機（アクションなし）
         for _ in 0..3 {
@@ -213,7 +216,7 @@ mod tests {
     fn coro_transmits_on_deadline_even_without_confirmation() {
         // 安全弁: IMC が読めない環境でも期限でタイピングを止めない。
         let deadline = crate::hook::current_tick_ms(); // 即座に期限切れ
-        let mut coro = MsImeReadyCoro::new("ka", 8, deadline);
+        let mut coro = MsImeReadyCoro::new("ka", Generation::new(8), deadline);
 
         let actions = coro.tick(env(ImeModeState::Unknown, false));
         assert_eq!(actions.len(), 2);

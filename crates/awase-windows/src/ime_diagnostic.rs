@@ -18,6 +18,7 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
+use crate::state::event_origin::Generation;
 use crate::win32::HwndExt as _;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
@@ -269,7 +270,7 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
 /// 取得した composition 文字列・result 文字列・cursor pos に加えて、現在のフォアグラウンド
 /// プロファイル（TsfNative / Imm32Unavailable / Standard）と shadow 状態を 1 行にまとめる。
 /// 各プロファイルでの IMM API 反応をログから比較するための観測点。
-pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
+pub fn log_composition_probe(cold_seq: Generation, label: &'static str) {
     use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     // SAFETY: GetForegroundWindow は安全な読み取り API。capture_composition_snapshot は
@@ -342,6 +343,7 @@ pub fn log_composition_probe(cold_seq: u32, label: &'static str) {
          himc_null={himc_null} open={open} conv={conv} sent={sent} \
          comp={comp} comp_read={comp_read} result={result} result_read={result_read} \
          cursor={cursor} attr={attr} shadow_on={shadow_on} jp={jp}",
+        cold_seq = cold_seq.value(),
         profile = view.1,
         class = view.0,
         himc_null = snap.himc_null,

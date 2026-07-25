@@ -28,6 +28,8 @@ use std::rc::Rc;
 
 use awase::types::VkCode;
 
+use crate::state::event_origin::Generation;
+
 /// probe 進行中に蓄積する後続 VK。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeferredVk {
@@ -151,7 +153,7 @@ pub(crate) enum ProbeAction {
     /// フラッシュしてから warm マークし、`target == Tsf` なら
     /// [`TsfProbeCoro::apply_transmit_done`] を呼ぶ。
     Transmit {
-        cold_seq: u32,
+        cold_seq: Generation,
         /// FSM が確定した実行方針。dispatcher はそのまま実行する（再導出不要）。
         plan: TransmitPlan,
         romaji: String,
@@ -166,7 +168,7 @@ pub(crate) enum ProbeAction {
     /// `KeyInjector::send_vk_pair` で送信する。`is_last=true` のときのみ、通常の
     /// `Transmit` と同じ deferred VK フラッシュ・GjiFsm warmup 結果保存を行う。
     TransmitSingleVk {
-        cold_seq: u32,
+        cold_seq: Generation,
         vk: VkCode,
         needs_shift: bool,
         /// この VK の confirm 待ちタイムアウト（ms）。`plan.literal_detect_ms` を渡す。
@@ -179,7 +181,7 @@ pub(crate) enum ProbeAction {
     },
     /// `RAW_TSF_LITERAL` を設定し、composition を `RawTsfLiteralRecovery` で cold マークする。
     RawTsfLiteralRecovery {
-        cold_seq: u32,
+        cold_seq: Generation,
         backs: usize,
         romaji: String,
         /// `true` = partial literal（candidate 表示中に一部だけ literal 化）回収。
@@ -212,7 +214,7 @@ pub(crate) enum ProbeAction {
     /// BUG-39 で世代付きに変更）。per-VK confirm では各 VK の confirm で
     /// `mark_literal_session=false`、全 VK 確認済みの最終確認でのみ `true` を使う。
     CompositionConfirmed {
-        cold_seq: u32,
+        cold_seq: Generation,
         mark_literal_session: bool,
     },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
@@ -297,7 +299,7 @@ async fn await_vk_detection(
     ch: &Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
     sent: &VkSentPayload,
     log_tag: &str,
-    cold_seq: u32,
+    cold_seq: Generation,
     idx: usize,
     last_idx: usize,
     vk: VkCode,
@@ -332,12 +334,14 @@ async fn await_vk_detection(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
                  candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
                 vk.0,
+                cold_seq = cold_seq.value(),
             ),
             DetectionResult::StaleConfirm => log::warn!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
                  visible だが直近の GJI I/O が猶予期間内に送信時刻へ追いつかず \
                  → stale confirm として扱う (vk=0x{:02X})",
                 vk.0,
+                cold_seq = cold_seq.value(),
             ),
             DetectionResult::SuspectedLiteral => unreachable!(
                 "visible_fencing_verdict は CompositionConfirmed/StaleConfirm のみ返す"
@@ -357,7 +361,7 @@ async fn await_vk_detection(
 #[expect(clippy::future_not_send)]
 pub(crate) async fn run_per_vk_confirm(
     ch: Rc<Channel<ProbeTickInput, Vec<ProbeAction>>>,
-    cold_seq: u32,
+    cold_seq: Generation,
     romaji: &str,
     plan: TransmitPlan,
     target: TransmitTarget,
@@ -405,7 +409,8 @@ pub(crate) async fn run_per_vk_confirm(
             // 入力できなくなった。無リカバリの `return` に戻す
             // （docs/known-bugs.md BUG-27 参照）。
             log::warn!(
-                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断"
+                "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断",
+                cold_seq = cold_seq.value(),
             );
             return;
         };
@@ -417,6 +422,7 @@ pub(crate) async fn run_per_vk_confirm(
                 log::debug!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] confirmed (vk=0x{:02X})",
                     vk.0,
+                    cold_seq = cold_seq.value(),
                 );
                 // BUG-27 追補4: この VK 自身の confirm で consecutive_count を
                 // リセットする（セッション確認はまだ、全 VK 確認後にまとめて行う）。
@@ -432,6 +438,7 @@ pub(crate) async fn run_per_vk_confirm(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] suspected literal \
                      (vk=0x{:02X} backs={backs} escape={escape_composition})",
                     vk.0,
+                    cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, literal_tag);
                 // emit_recovery_actions は常に RawTsfLiteralRecovery（backspace のみ、
@@ -473,6 +480,7 @@ pub(crate) async fn run_per_vk_confirm(
                      → backspace は送らず romaji 再送のみ行う (vk=0x{:02X} backs={backs} \
                      escape={escape_composition})",
                     vk.0,
+                    cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
@@ -490,6 +498,7 @@ pub(crate) async fn run_per_vk_confirm(
     log::debug!(
         "[{log_tag}] cold={cold_seq} per-VK: 全 {} VK 確認済み → セッション確認",
         vk_chars.len(),
+        cold_seq = cold_seq.value(),
     );
     crate::ime_diagnostic::log_composition_probe(cold_seq, confirmed_tag);
     // BUG-27 追補4: 最後の VK の pending_confirm は不要（mark_literal_session=true
@@ -518,7 +527,7 @@ async fn tsf_probe_coro_body(
     romaji: String,
     probe: TsfReadinessProbe,
     total_max_ms: u64,
-    cold_seq: u32,
+    cold_seq: Generation,
 ) {
     // ── Phase 1: ChromeProbe ポーリング ──────────────────────────────────────
     let env = loop {
@@ -528,7 +537,8 @@ async fn tsf_probe_coro_body(
         };
         log::debug!(
             "[tsf-probe] cold={cold_seq} ChromeProbe 完了 ({}ms)",
-            outcome.elapsed_ms
+            outcome.elapsed_ms,
+            cold_seq = cold_seq.value(),
         );
         // VK_IME_OFF→VK_IME_ON を Chrome path で使わない（タイムアウト後のリセット専用）。
         // VK_IME_OFF が Chrome TSF context を壊し、VK_IME_ON が間に合わず na がリテラル化する。
@@ -602,7 +612,10 @@ async fn tsf_probe_coro_body(
                 ]
             }
             DetectionResult::CompositionConfirmed => {
-                log::debug!("[raw-tsf-literal] cold={cold_seq} composition confirmed");
+                log::debug!(
+                    "[raw-tsf-literal] cold={cold_seq} composition confirmed",
+                    cold_seq = cold_seq.value(),
+                );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
                 vec![ProbeAction::Done]
             }
@@ -618,7 +631,8 @@ async fn tsf_probe_coro_body(
                 // 証拠ではないため backs=0 とする。
                 log::warn!(
                     "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
-                     backspace は送らず romaji 再送のみ行う"
+                     backspace は送らず romaji 再送のみ行う",
+                    cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 vec![
@@ -648,7 +662,7 @@ pub(crate) struct TsfProbeCoro {
     coro: StepCoro<ProbeTickInput, Vec<ProbeAction>>,
     pending_transmit_done: Option<TransmitDonePayload>,
     pending_vk_sent: Option<VkSentPayload>,
-    cold_seq: u32,
+    cold_seq: Generation,
     /// RAII guard。drop で `OUTPUT_GATE.active=false`。
     _guard: OutputActiveGuard,
 }
@@ -657,7 +671,7 @@ impl TsfProbeCoro {
     /// Chrome F2 cold warmup (`send_romaji_batched` の cold パス) 用コンストラクタ。
     pub(crate) fn new_chrome(
         romaji: &str,
-        cold_seq: u32,
+        cold_seq: Generation,
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         guard: OutputActiveGuard,
@@ -692,7 +706,7 @@ impl TickableFsm for TsfProbeCoro {
             log::debug!(
                 "[tsf-probe-vk-sent-trace] cold={} tick consuming pending_vk_sent={} \
                  pending_transmit_done={} t={}ms",
-                self.cold_seq,
+                self.cold_seq.value(),
                 self.pending_vk_sent.is_some(),
                 self.pending_transmit_done.is_some(),
                 crate::hook::current_tick_ms(),
@@ -709,7 +723,7 @@ impl TickableFsm for TsfProbeCoro {
         }
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.cold_seq
     }
 
@@ -750,7 +764,7 @@ impl TickableFsm for TsfProbeCoro {
         log::debug!(
             "[tsf-probe-vk-sent-trace] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
              overwritten_unconsumed={overwritten} t={}ms",
-            self.cold_seq,
+            self.cold_seq.value(),
             crate::hook::current_tick_ms(),
         );
         self.pending_vk_sent = Some(VkSentPayload {
@@ -966,8 +980,8 @@ mod tests {
             .gji_monitor_ok
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let guard = OutputActiveGuard::noop_for_test();
-        let probe = TsfReadinessProbe::new(0, 0, 0);
-        TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        TsfProbeCoro::new_chrome("ka", Generation::INITIAL, probe, 0, guard)
     }
 
     #[test]

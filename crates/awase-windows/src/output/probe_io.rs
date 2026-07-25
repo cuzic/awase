@@ -4,6 +4,7 @@
 //! `dispatch_probe_actions` は `ProbeIo` を受け取り、Win32 呼び出しを直接行わない。
 
 use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
+use crate::state::event_origin::Generation;
 use crate::tsf::output::ColdReason;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
@@ -66,14 +67,14 @@ pub(crate) trait ProbeIo {
     ///
     /// `Output::send_f22_f21_reinit`（`gji_fsm::GjiAction::StartProbe` の
     /// Unicode-mode long-cold ハンドリング）が直接呼ぶ。
-    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32);
+    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: Generation);
     /// `RawTsfLiteralRecovery` give-up 分岐専用: `send_chrome_gji_reinit_and_poll` の
     /// 即時実行ではなく、`flush_raw_tsf_literal_recovery`（backspace 送信直後）まで
     /// 予約する。BUG-36: reinit の `VK_IME_OFF` は未確定の preedit を commit して
     /// しまうため、backspace より先に reinit を送ると commit 済みの literal 文字を
     /// 確実に消せないレースが起きる（`Output::pending_gji_reinit_cold_seq` の
     /// フィールド doc・`docs/known-bugs.md` BUG-36 参照）。
-    fn schedule_chrome_gji_reinit(&self, cold_seq: u32);
+    fn schedule_chrome_gji_reinit(&self, cold_seq: Generation);
     /// Unicode char を直接送信する（defer モードを無視して即送信）。
     ///
     /// `FlushDeferredUnicodeChars` ハンドラが deferred chars を送信するために使う。
@@ -155,7 +156,7 @@ impl ProbeIo for Output {
         self.warmup_coord.current_probe_id()
     }
 
-    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: u32) {
+    fn send_chrome_gji_reinit_and_poll(&self, cold_seq: Generation) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_IME_OFF, VK_IME_ON};
         // BUG-33: give-up（RawTsfLiteralRecovery 連続失敗）からもこの reinit を呼ぶため、
@@ -170,7 +171,8 @@ impl ProbeIo for Output {
             log::debug!(
                 "[chrome-reinit] cold={cold_seq} skip: 前回 reinit から {elapsed}ms \
                  (< {}ms) しか経っていない",
-                crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS
+                crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS,
+                cold_seq = cold_seq.value(),
             );
             return;
         }
@@ -187,7 +189,8 @@ impl ProbeIo for Output {
         let write_bytes_before = crate::tsf::observer::gji_write_bytes();
         log::debug!(
             "[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始 \
-             (write_bytes_baseline={write_bytes_before})"
+             (write_bytes_baseline={write_bytes_before})",
+            cold_seq = cold_seq.value(),
         );
         let _ = crate::win32::send_input_safe(&inputs);
 
@@ -211,6 +214,7 @@ impl ProbeIo for Output {
                         "[chrome-reinit] cold={cold_seq} GJI write_bytes 上昇検出: \
                          tick=#{i} delta=+{write_delta}B (+{:.1}KB)",
                         write_delta as f64 / 1024.0,
+                        cold_seq = cold_seq.value(),
                     );
                 }
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
@@ -219,6 +223,7 @@ impl ProbeIo for Output {
                      write_delta=+{write_delta}B",
                     fmt_conv(conv),
                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                    cold_seq = cold_seq.value(),
                 );
                 let confirmed = crate::with_app(|runtime| {
                     runtime.platform.output.update_ime_mode_from_imc(conv);
@@ -227,7 +232,10 @@ impl ProbeIo for Output {
                     fsm.state().is_hiragana() && fsm.is_confirmed()
                 });
                 if confirmed.unwrap_or(false) {
-                    log::debug!("[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了");
+                    log::debug!(
+                        "[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了",
+                        cold_seq = cold_seq.value(),
+                    );
                     break;
                 }
             }
@@ -236,11 +244,12 @@ impl ProbeIo for Output {
                  total_write_delta=+{}B first_write_tick={:?}",
                 crate::tsf::observer::gji_write_bytes().saturating_sub(write_bytes_before),
                 first_write_tick,
+                cold_seq = cold_seq.value(),
             );
         });
     }
 
-    fn schedule_chrome_gji_reinit(&self, cold_seq: u32) {
+    fn schedule_chrome_gji_reinit(&self, cold_seq: Generation) {
         self.pending_gji_reinit_cold_seq.set(Some(cold_seq));
     }
 
@@ -277,7 +286,7 @@ impl Output {
     /// `ime_mode_focus_gen` の世代照合により、ポーリング中にフォーカスが変わった場合は
     /// stale 結果で `ImeModeFsm` / latch を汚染せず黙って終了する。
     /// 待機側は `MsImeReadyCoro`（`pending_tsf`）が env 経由で確認を観測する。
-    pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: u32, deadline_ms: u64) {
+    pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: Generation, deadline_ms: u64) {
         let gen = self.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
             loop {
@@ -299,7 +308,8 @@ impl Output {
                 match status {
                     MsImePollStatus::Ready => {
                         log::debug!(
-                            "[msime-ready] cold={cold_seq} IMC ポーリング: NATIVE 確認 → 終了"
+                            "[msime-ready] cold={cold_seq} IMC ポーリング: NATIVE 確認 → 終了",
+                            cold_seq = cold_seq.value(),
                         );
                         return;
                     }
@@ -314,7 +324,8 @@ impl Output {
                             out.ms_ime_gate_give_up.set(true);
                             log::warn!(
                                 "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ → \
-                                 give-up latch 設定（フォーカス変更 / 次の IME ON まで gate 停止）"
+                                 give-up latch 設定（フォーカス変更 / 次の IME ON まで gate 停止）",
+                                cold_seq = cold_seq.value(),
                             );
                         }
                     });
@@ -419,6 +430,7 @@ where
                                     fmt_conv(conv),
                                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                                    cold_seq = cold_seq.value(),
                                 );
                             });
                         }
@@ -483,7 +495,8 @@ where
                 // Tsf 向けのときだけ確認する。
                 if target == TransmitTarget::Tsf && io.gate_is_bypass() {
                     log::debug!(
-                        "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection"
+                        "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection",
+                        cold_seq = cold_seq.value(),
                     );
                     return DispatchResult::Done;
                 }
@@ -547,7 +560,8 @@ where
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
                         → backspace ×{backs} + re-send {romaji:?} scheduled \
-                        + mark cold"
+                        + mark cold",
+                        cold_seq = cold_seq.value(),
                     );
                     io.set_raw_literal(backs, romaji, escape_composition);
                 } else {
@@ -555,6 +569,7 @@ where
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
                         (count={}) → giving up, backs={backs} cleanup only (no re-send)",
                         consecutive + 1,
+                        cold_seq = cold_seq.value(),
                     );
                     // 諦めても partial literal 由来の 'k'(literal) + composition が
                     // terminal に残ると "kおの" 等の文字化けになる。
@@ -703,12 +718,12 @@ mod tests {
             None
         }
 
-        fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: u32) {
+        fn send_chrome_gji_reinit_and_poll(&self, _cold_seq: Generation) {
             self.gji_reinit_call_count
                 .set(self.gji_reinit_call_count.get() + 1);
         }
 
-        fn schedule_chrome_gji_reinit(&self, _cold_seq: u32) {
+        fn schedule_chrome_gji_reinit(&self, _cold_seq: Generation) {
             self.gji_reinit_scheduled_count
                 .set(self.gji_reinit_scheduled_count.get() + 1);
         }
@@ -718,15 +733,21 @@ mod tests {
 
     fn make_chrome_machine() -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {
         let guard = OutputActiveGuard::noop_for_test();
-        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
-        crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome("ka", 0, probe, 0, guard)
+        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        crate::tsf::warmup::probe_fsm::TsfProbeCoro::new_chrome(
+            "ka",
+            Generation::INITIAL,
+            probe,
+            0,
+            guard,
+        )
     }
 
     fn make_gji_machine() -> crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro {
-        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, 0, 0);
+        let probe = crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0);
         crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
             "ka",
-            0,
+            Generation::INITIAL,
             probe,
             0,
             ColdReason::FocusChange,
@@ -752,7 +773,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false,
                 needs_literal: false,
@@ -774,7 +795,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false,
                 needs_literal: true, // enter_transmit_chrome が gji_active=true のとき設定
@@ -799,7 +820,7 @@ mod tests {
         };
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false,
                 needs_literal: false,
@@ -820,7 +841,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: true, // nc_fired=true + gji_long_idle=true
                 needs_literal: false,  // gji_long_idle + !is_tsf_mode → false
@@ -842,7 +863,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false,
                 needs_literal: false,
@@ -864,7 +885,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: true, // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle
                 needs_literal: false,
@@ -888,7 +909,7 @@ mod tests {
         let mut machine = make_gji_machine();
         let actions = vec![
             ProbeAction::RawTsfLiteralRecovery {
-                cold_seq: 0,
+                cold_seq: Generation::INITIAL,
                 backs: 2,
                 romaji: "ka".to_string(),
                 escape_composition: false,
@@ -930,7 +951,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 // nc_fired=false + non-tsf → initial_used_eager || gji_long_idle = false || true = true
                 used_eager_path: true,
@@ -956,7 +977,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false, // is_tsf_mode=true → VK path
                 needs_literal: false,
@@ -982,7 +1003,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false, // is_tsf_mode=true → VK path
                 needs_literal: false,   // gji_active=false → false
@@ -1008,7 +1029,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false, // is_tsf_mode → VK path
                 needs_literal: true,    // gji_active && (!gji_long_idle || is_tsf_mode)
@@ -1036,7 +1057,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false,
                 needs_literal: false,
@@ -1065,7 +1086,7 @@ mod tests {
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
-            cold_seq: 0,
+            cold_seq: Generation::INITIAL,
             plan: TransmitPlan {
                 used_eager_path: false, // is_tsf_mode → VK path
                 needs_literal: true,    // LiteralDetect 有効
@@ -1093,7 +1114,7 @@ mod tests {
         let mut machine = make_gji_machine();
         let actions = vec![
             ProbeAction::RawTsfLiteralRecovery {
-                cold_seq: 0,
+                cold_seq: Generation::INITIAL,
                 backs: 2,
                 romaji: "ko".to_string(),
                 escape_composition: false,

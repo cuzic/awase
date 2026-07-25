@@ -3,6 +3,7 @@
 //! `Output` は Facade として本構造体を保持し、低レベルのキー注入操作を委譲する。
 
 use super::resolve::CharResolution;
+use crate::state::event_origin::Generation;
 use crate::tsf::output::{make_key_input_ex, INJECTED_MARKER};
 use crate::vk::VK_LSHIFT;
 use awase::kana_table::KanaTable;
@@ -256,7 +257,7 @@ impl KeyInjector {
     }
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
-    pub(crate) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: u32) {
+    pub(crate) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: Generation) {
         let runs = Self::split_vk_runs(chars);
         let total_runs = runs.len();
 
@@ -265,6 +266,7 @@ impl KeyInjector {
             log::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
                 Self::format_vk_run(run),
+                cold_seq = cold_seq.value(),
             );
             Self::send_vk_run_batch(run, VkMarker::Tsf);
         }

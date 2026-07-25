@@ -7,6 +7,7 @@
 
 use std::sync::atomic::Ordering;
 
+use crate::state::event_origin::Generation;
 use crate::tsf::observer::{Baseline, TSF_OBS};
 use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
@@ -47,7 +48,7 @@ pub struct TsfReadinessProbe {
     /// VK_IME_ON を送信した時刻 (GetTickCount64 ms)。
     pub warmup_sent_ms: u64,
     /// ログ相関用 cold-start シーケンス番号。
-    pub cold_seq: u32,
+    pub cold_seq: Generation,
     /// VK_IME_ON 送信から最低この ms が経過するまで I/O 観測を信頼しない。
     pub min_ms: u64,
     /// GJI 静止を最初に検出した時刻（POST_IDLE_MARGIN 用）。0 = 未検出。
@@ -69,7 +70,7 @@ pub struct GjiProbeOutcome {
 
 impl TsfReadinessProbe {
     #[must_use]
-    pub const fn new(warmup_sent_ms: u64, cold_seq: u32, min_ms: u64) -> Self {
+    pub const fn new(warmup_sent_ms: u64, cold_seq: Generation, min_ms: u64) -> Self {
         Self {
             warmup_sent_ms,
             cold_seq,
@@ -160,7 +161,7 @@ pub struct WarmEpoch {
     /// 最後の `send_keys` 完了時刻（ms）
     last_send_ms: std::cell::Cell<u64>,
     /// Cold-start 発生回数カウンタ
-    cold_start_count: std::cell::Cell<u32>,
+    cold_start_count: std::cell::Cell<Generation>,
     /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。0 = 未送信
     eager_warmup_sent_ms: std::cell::Cell<u64>,
     /// KEYEVENTF_UNICODE で文字を送信した時刻（ms）。0 = 未送信 / リセット済み。
@@ -176,7 +177,7 @@ impl WarmEpoch {
     pub const fn new() -> Self {
         Self {
             last_send_ms: std::cell::Cell::new(0),
-            cold_start_count: std::cell::Cell::new(0),
+            cold_start_count: std::cell::Cell::new(Generation::INITIAL),
             eager_warmup_sent_ms: std::cell::Cell::new(0),
             last_unicode_transmit_ms: std::cell::Cell::new(0),
         }
@@ -236,13 +237,13 @@ impl WarmEpoch {
 
     /// cold-start 発生回数を返す。
     #[must_use]
-    pub const fn cold_start_count(&self) -> u32 {
+    pub const fn cold_start_count(&self) -> Generation {
         self.cold_start_count.get()
     }
 
     /// cold-start 発生回数をインクリメントして新値を返す。
-    pub fn increment_cold_start_count(&self) -> u32 {
-        let n = self.cold_start_count.get() + 1;
+    pub fn increment_cold_start_count(&self) -> Generation {
+        let n = self.cold_start_count.get().next();
         self.cold_start_count.set(n);
         n
     }
@@ -430,12 +431,12 @@ impl CompositionState {
 
     /// cold-start 発生回数を返す。
     #[must_use]
-    pub const fn cold_start_count(&self) -> u32 {
+    pub const fn cold_start_count(&self) -> Generation {
         self.warm_epoch.cold_start_count()
     }
 
     /// cold-start 発生回数をインクリメントして新値を返す。
-    pub fn increment_cold_start_count(&self) -> u32 {
+    pub fn increment_cold_start_count(&self) -> Generation {
         self.warm_epoch.increment_cold_start_count()
     }
 
@@ -778,7 +779,7 @@ mod tests {
 
         let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 0);
+        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0);
         poll_until_ready(&probe, 100);
 
         let elapsed = start.elapsed().as_millis();
@@ -802,7 +803,7 @@ mod tests {
         TSF_OBS.gji_last_io_ms.store(io_ms, SeqCst);
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(warmup_ms, 0, 0); // min_ms=0
+        let probe = TsfReadinessProbe::new(warmup_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();
@@ -826,7 +827,7 @@ mod tests {
             .store(now_ms.saturating_sub(200), SeqCst); // 200ms 前に I/O（warmup 前）
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 80); // min_ms=80
+        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 80); // min_ms=80
         poll_until_ready(&probe, 300);
 
         let elapsed = start.elapsed().as_millis();
@@ -852,7 +853,7 @@ mod tests {
             .store(now_ms.saturating_sub(5_000), SeqCst);
 
         let start = Instant::now();
-        let probe = TsfReadinessProbe::new(now_ms, 0, 0); // min_ms=0
+        let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0); // min_ms=0
         poll_until_ready(&probe, 1_000);
 
         let elapsed = start.elapsed().as_millis();

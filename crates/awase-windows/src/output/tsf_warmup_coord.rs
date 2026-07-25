@@ -195,13 +195,13 @@ impl TsfWarmupCoordinator {
         if let Some(old) = slot.as_ref() {
             log::warn!(
                 "[tsf-probe] overwriting in-flight probe cold={} with new probe cold={}",
-                old.cold_seq_hint(),
-                machine.cold_seq_hint()
+                old.cold_seq_hint().value(),
+                machine.cold_seq_hint().value()
             );
         } else {
             log::trace!(
                 "[tsf-probe-coord] install_pending_tsf cold={} (fresh)",
-                machine.cold_seq_hint()
+                machine.cold_seq_hint().value()
             );
         }
         *slot = Some(machine);
@@ -217,7 +217,7 @@ impl TsfWarmupCoordinator {
         match &m {
             Some(machine) => log::trace!(
                 "[tsf-probe-coord] take_pending_tsf → Some(cold={})",
-                machine.cold_seq_hint()
+                machine.cold_seq_hint().value()
             ),
             None => log::trace!("[tsf-probe-coord] take_pending_tsf → None"),
         }
@@ -228,7 +228,7 @@ impl TsfWarmupCoordinator {
     pub(crate) fn restore_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
         log::trace!(
             "[tsf-probe-coord] restore_pending_tsf cold={}",
-            machine.cold_seq_hint()
+            machine.cold_seq_hint().value()
         );
         *self.pending_tsf.borrow_mut() = Some(machine);
     }
@@ -240,7 +240,7 @@ impl TsfWarmupCoordinator {
         if let Some(machine) = self.pending_tsf.borrow_mut().take() {
             log::debug!(
                 "[tsf-probe-coord] clear_pending_tsf: discarding cold={}",
-                machine.cold_seq_hint()
+                machine.cold_seq_hint().value()
             );
         }
     }
@@ -335,8 +335,8 @@ mod tests {
             self.ticks += 1;
             vec![]
         }
-        fn cold_seq_hint(&self) -> u32 {
-            0
+        fn cold_seq_hint(&self) -> crate::state::event_origin::Generation {
+            crate::state::event_origin::Generation::INITIAL
         }
     }
 

@@ -2,6 +2,7 @@ use super::key_injector::{KeyInjector, VkMarker};
 use super::resolve::{ascii_to_vk, CharResolution};
 use super::{fmt_ms, WarmthContext, WarmupOutcome};
 use super::{Output, VkSequence};
+use crate::state::event_origin::Generation;
 use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
@@ -39,7 +40,7 @@ impl TsfSendPipeline {
         let t_send = crate::hook::current_tick_ms();
         log::debug!(
             "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (eager={})",
-            outcome.cold_seq,
+            outcome.cold_seq.value(),
             romaji,
             if unicode_kana.is_some() {
                 "unicode"
@@ -58,7 +59,7 @@ impl TsfSendPipeline {
             |kana| {
                 log::debug!(
                     "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
-                    outcome.cold_seq,
+                    outcome.cold_seq.value(),
                     kana,
                     kana as u32,
                 );
@@ -138,7 +139,10 @@ impl Output {
 
             let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
-            log::debug!("[h1-window] cold={cold_seq} class={win_class}");
+            log::debug!(
+                "[h1-window] cold={cold_seq} class={win_class}",
+                cold_seq = cold_seq.value(),
+            );
 
             // 予防的な programmatic F2 送信・TsfReadinessProbe の事前待機は 2026-07-18 に
             // 撤去した（実機ソーク数日で無破損確認、docs/known-bugs.md 参照）。per-VK
@@ -149,6 +153,7 @@ impl Output {
             log::debug!(
                 "[h1-probe] cold={cold_seq} idle_at_cold={}ms F2/probe待機省略 → per-VK confirm へ",
                 self.composition.idle_ms_at_last_cold(),
+                cold_seq = cold_seq.value(),
             );
 
             // SendMessageTimeoutW 系の同期呼び出し (set_ime_romaji_mode + send_f2_via_sendmessage)
@@ -218,7 +223,7 @@ impl Output {
 
     /// VK run 分割送信: 同一 VK 連続境界でバッチを分割して IME のオートリピート誤検出を回避する。
     /// `KeyInjector::send_vk_runs` に委譲する。
-    pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: u32) {
+    pub(super) fn send_vk_runs(chars: &[(VkCode, bool)], cold_seq: Generation) {
         KeyInjector::send_vk_runs(chars, cold_seq);
     }
 
@@ -343,6 +348,7 @@ impl Output {
                  {romaji:?} を defer して IMC 確認待ち",
                 fsm.state(),
                 fsm.is_confirmed(),
+                cold_seq = cold_seq.value(),
             );
         }
         let cold_seq = self.composition.cold_start_count();
@@ -372,14 +378,18 @@ impl Output {
         };
         let used_eager_path = if in_post_unicode_pending {
             log::debug!(
-                "[tsf-warm-start] cold={cold_seq} PendingGjiConfirm: GJI 未応答 → romaji={romaji:?} を unicode で強制送信"
+                "[tsf-warm-start] cold={cold_seq} PendingGjiConfirm: GJI 未応答 → romaji={romaji:?} を unicode で強制送信",
+                cold_seq = cold_seq.value(),
             );
             true
         } else {
             used_eager_path
         };
 
-        log::debug!("[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms");
+        log::debug!(
+            "[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms",
+            cold_seq = cold_seq.value(),
+        );
         let outcome = WarmupOutcome {
             used_eager_path,
             cold_seq,
@@ -401,6 +411,7 @@ impl Output {
                     conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                     conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
+                    cold_seq = cold_seq.value(),
                 );
             });
         }

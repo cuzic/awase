@@ -10,6 +10,7 @@
 //!    [`ProbeAction::FlushDeferredUnicodeChars`] を emit して完了する。
 //! 5. dispatcher が各文字を `send_unicode_char_direct()` で送信する。
 
+use crate::state::event_origin::Generation;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 
@@ -20,7 +21,7 @@ const WARMUP_TIMEOUT_MS: u64 = 200;
 ///
 /// VK_IME_ON 送信後に GJI の起動を確認（`gji_write_bytes` 増加）してから deferred chars を送る。
 pub(crate) struct UnicodeColdWarmupFsm {
-    cold_seq: u32,
+    cold_seq: Generation,
     /// RAII guard — Drop で `OUTPUT_GATE.active=false`（後続キーを INPUT_DEFER に退避）
     _guard: OutputActiveGuard,
     /// VK_IME_ON 送信前に取得した `gji_write_bytes()` ベースライン
@@ -32,10 +33,15 @@ pub(crate) struct UnicodeColdWarmupFsm {
 }
 
 impl UnicodeColdWarmupFsm {
-    pub(crate) fn new(cold_seq: u32, deferred_chars: Vec<char>, baseline_bytes: u64) -> Self {
+    pub(crate) fn new(
+        cold_seq: Generation,
+        deferred_chars: Vec<char>,
+        baseline_bytes: u64,
+    ) -> Self {
         log::debug!(
             "[unicode-cold-warmup] cold={cold_seq} FSM 開始: {} chars deferred, baseline_bytes={baseline_bytes}",
-            deferred_chars.len()
+            deferred_chars.len(),
+            cold_seq = cold_seq.value(),
         );
         Self {
             cold_seq,
@@ -60,7 +66,7 @@ impl UnicodeColdWarmupFsm {
         log::debug!(
             "[unicode-cold-warmup] cold={} gji_wrote={gji_wrote} timed_out={timed_out} \
              elapsed={}ms → {} chars 送信",
-            self.cold_seq,
+            self.cold_seq.value(),
             self.elapsed_ms,
             chars.len()
         );
@@ -76,14 +82,14 @@ impl crate::tsf::warmup::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
         self.tick_inner(env)
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.cold_seq
     }
 
     fn push_deferred_unicode_chars(&mut self, chars: &[char]) -> bool {
         log::debug!(
             "[unicode-cold-warmup] cold={} in-flight FSM に {} chars 追記 (合計 {} chars)",
-            self.cold_seq,
+            self.cold_seq.value(),
             chars.len(),
             self.deferred_chars.len() + chars.len(),
         );

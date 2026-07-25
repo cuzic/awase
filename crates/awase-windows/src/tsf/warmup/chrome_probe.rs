@@ -2,6 +2,7 @@
 //!
 //! [`TsfProbeCoro::new_chrome`] を [`TickableFsm`] トレイト経由で使えるようにラップする。
 
+use crate::state::event_origin::Generation;
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot, TsfProbeCoro};
@@ -12,7 +13,7 @@ pub(crate) struct ChromeProbe(TsfProbeCoro);
 impl ChromeProbe {
     pub(crate) fn new(
         romaji: &str,
-        cold_seq: u32,
+        cold_seq: Generation,
         probe: TsfReadinessProbe,
         total_max_ms: u64,
         guard: OutputActiveGuard,
@@ -32,7 +33,7 @@ impl TickableFsm for ChromeProbe {
         self.0.tick(env)
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.0.cold_seq_hint()
     }
 
@@ -86,8 +87,8 @@ mod tests {
         crate::tsf::observer::reset_literal_session_confirmed();
         let guard = OutputActiveGuard::noop_for_test();
         // total_max_ms=0 → 最初の tick で probe.check_outcome が即 ready になる。
-        let probe = TsfReadinessProbe::new(0, 0, 0);
-        let mut chrome_probe = ChromeProbe::new("ka", 0, probe, 0, guard);
+        let probe = TsfReadinessProbe::new(0, Generation::INITIAL, 0);
+        let mut chrome_probe = ChromeProbe::new("ka", Generation::INITIAL, probe, 0, guard);
 
         let first_actions = chrome_probe.tick(TsfEnvSnapshot {
             gji_active: true,
@@ -122,4 +123,5 @@ mod tests {
              なっていないか確認: {actions_after_apply:?}"
         );
     }
+
 }

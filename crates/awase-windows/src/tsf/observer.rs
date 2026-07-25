@@ -20,6 +20,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
+use crate::state::event_origin::Generation;
+
 // ── ChangeCounter ──────────────────────────────────────────────────────────
 
 /// 単調増加シーケンスカウンタ。変化検出パターンをカプセル化する。
@@ -150,7 +152,11 @@ pub struct TsfObservations {
     /// `OnComposing` を抜けた後の HIDE では発火せず、フォーカス変更・長時間 idle・
     /// アプリ切替をまたいで「確認済み」が持ち越され、新しい cold セッションの literal
     /// 漏れが検出されなくなっていた）。
-    pub(super) literal_session_confirmed_gen: AtomicU32,
+    /// 生の `u64` 世代値として保持する（`Generation` 自体は atomic 型を持たないため、
+    /// 公開 API 境界（`literal_session_confirmed`/`mark_literal_session_confirmed`/
+    /// `reset_literal_session_confirmed`）で `Generation::value()`/`Generation::new()`
+    /// を介して変換する）。
+    pub(super) literal_session_confirmed_gen: AtomicU64,
 
     /// `EVENT_OBJECT_SHOW` で GJI candidate が表示されたことを `GjiFsm::StartComposition` に橋渡しする pending フラグ。
     ///
@@ -213,7 +219,7 @@ impl TsfObservations {
             gji_last_write_ms: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
-            literal_session_confirmed_gen: AtomicU32::new(0),
+            literal_session_confirmed_gen: AtomicU64::new(0),
             pending_start_composition: AtomicBool::new(false),
             pending_end_composition: AtomicBool::new(false),
             ime_composition_active: AtomicBool::new(false),
@@ -405,12 +411,13 @@ pub(crate) fn reset_candidate_was_seen() {
 /// 長時間 idle をまたいで「前の cold 世代で確認済み」がそのまま信頼され続けることは
 /// 構造的に起こらない。`true` の間、`LiteralDetectCore::poll` は検出処理自体を
 /// スキップして即 `Done` を返す。
-pub(crate) fn literal_session_confirmed(current_cold_seq: u32) -> bool {
+pub(crate) fn literal_session_confirmed(current_cold_seq: Generation) -> bool {
     let confirmed_gen = TSF_OBS
         .literal_session_confirmed_gen
         .load(Ordering::Relaxed);
-    confirmed_gen != 0 && confirmed_gen == current_cold_seq
+    confirmed_gen != 0 && confirmed_gen == current_cold_seq.value()
 }
+
 
 /// literal-detect が `cold_seq` 世代で初めて `CompositionConfirmed`（非 partial-literal）を
 /// 確認したときに呼ぶ。`cold_seq` が進む（＝新しい cold-start が走る）まで、または
@@ -420,14 +427,15 @@ pub(crate) fn literal_session_confirmed(current_cold_seq: u32) -> bool {
 /// `cold_seq` は呼び出し元（`run_per_vk_confirm`/`LiteralDetectCore`）が確認した VK を
 /// 送信した時点の `WarmEpoch::cold_start_count()` であること（`0` は「未確認」の番人値
 /// のため渡さない）。
-pub(crate) fn mark_literal_session_confirmed(cold_seq: u32) {
+pub(crate) fn mark_literal_session_confirmed(cold_seq: Generation) {
     debug_assert_ne!(
-        cold_seq, 0,
+        cold_seq,
+        Generation::INITIAL,
         "cold_seq=0 は「未確認」の番人値のため mark に使ってはならない"
     );
     TSF_OBS
         .literal_session_confirmed_gen
-        .store(cold_seq, Ordering::Relaxed);
+        .store(cold_seq.value(), Ordering::Relaxed);
 }
 
 /// 候補ウィンドウ HIDE（`gji_on_end_composition`）で呼ぶ。保守的な最適化オプトアウト
@@ -501,8 +509,8 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         reset_literal_session_confirmed();
 
-        assert!(!literal_session_confirmed(1));
-        assert!(!literal_session_confirmed(301));
+        assert!(!literal_session_confirmed(Generation::new(1)));
+        assert!(!literal_session_confirmed(Generation::new(301)));
     }
 
     /// `mark_literal_session_confirmed(cold_seq)` で記録した世代と同じ `cold_seq` を
@@ -512,12 +520,12 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         reset_literal_session_confirmed();
 
-        mark_literal_session_confirmed(301);
+        mark_literal_session_confirmed(Generation::new(301));
 
-        assert!(literal_session_confirmed(301));
+        assert!(literal_session_confirmed(Generation::new(301)));
     }
 
-    /// BUG-39 の核心: `mark_literal_session_confirmed(301)` 後、
+    /// BUG-39 の核心: `mark_literal_session_confirmed(Generation::new(301))` 後、
     /// `reset_literal_session_confirmed()`（候補ウィンドウ HIDE、`GjiFsm` の epoch 欠如で
     /// 握り潰されうる）が一切呼ばれなくても、新しい cold-start で `cold_seq` が進めば
     /// （FocusChange・NativeF2Consumed 等を経て実際に新しい probe/warmup が走った結果）
@@ -530,13 +538,13 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         reset_literal_session_confirmed();
 
-        mark_literal_session_confirmed(301);
-        assert!(literal_session_confirmed(301));
+        mark_literal_session_confirmed(Generation::new(301));
+        assert!(literal_session_confirmed(Generation::new(301)));
 
         // reset_literal_session_confirmed() を挟まずに次の cold-start が
         // cold_seq=302 として走った場合を模擬する。
         assert!(
-            !literal_session_confirmed(302),
+            !literal_session_confirmed(Generation::new(302)),
             "古い世代(301)の確認は新しい世代(302)の問い合わせには適用されないべき"
         );
     }
@@ -549,11 +557,11 @@ mod tests {
         let _g = TEST_LOCK.lock().unwrap();
         reset_literal_session_confirmed();
 
-        mark_literal_session_confirmed(301);
-        assert!(literal_session_confirmed(301));
+        mark_literal_session_confirmed(Generation::new(301));
+        assert!(literal_session_confirmed(Generation::new(301)));
 
         reset_literal_session_confirmed();
 
-        assert!(!literal_session_confirmed(301));
+        assert!(!literal_session_confirmed(Generation::new(301)));
     }
 }

@@ -1,3 +1,4 @@
+use crate::state::event_origin::Generation;
 use crate::vk::ascii_to_vk;
 use awase::types::{KeyAction, VkCode};
 use std::time::Duration;
@@ -137,7 +138,7 @@ pub struct Output {
     /// commit 済み文字を確実に消せないレース（backspace より reinit が先に外へ出る）
     /// が起きる。そのため reinit 本体はここに予約だけして、
     /// `flush_raw_tsf_literal_recovery`（backspace 送信の直後）で実行する。
-    pub(crate) pending_gji_reinit_cold_seq: std::cell::Cell<Option<u32>>,
+    pub(crate) pending_gji_reinit_cold_seq: std::cell::Cell<Option<Generation>>,
     /// Output → Runtime の遅延リクエストを蓄積するアウトボックス。
     ///
     /// キー注入中に `with_app` 経由で Runtime を直接呼ぶと再入するため、
@@ -181,7 +182,7 @@ pub(crate) struct WarmupOutcome {
     /// eager warmup パス（既存の F2 経由）を通ったか（Unicode 送信判定に使用）
     pub used_eager_path: bool,
     /// cold start シーケンス番号（ログ相関用）
-    pub cold_seq: u32,
+    pub cold_seq: Generation,
 }
 
 /// 状態管理・キー送信・TSF プローブ FSM を含む主実装ブロック。
@@ -275,7 +276,7 @@ impl Output {
     /// 2. VK_A + BS を `INJECTED_MARKER` 付きで同一バッチ送信（犠牲キー）。
     ///    VK_A が GJI の hiragana composition を起動して `gji_write_bytes` を増やし、
     ///    BS が即キャンセルするため文字フラッシュは発生しない。
-    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: u32) {
+    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: Generation) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
         use crate::vk::{VK_BACK, VK_IME_ON};
         use awase::types::VkCode;
@@ -285,7 +286,10 @@ impl Output {
             make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
         ];
-        log::debug!("[unicode-cold-warmup] cold={cold_seq} VK_IME_ON 送信 (ひらがなモード切替)");
+        log::debug!(
+            "[unicode-cold-warmup] cold={cold_seq} VK_IME_ON 送信 (ひらがなモード切替)",
+            cold_seq = cold_seq.value(),
+        );
         let _ = crate::win32::send_input_safe(&ime_on_inputs);
         self.ime_mode_fsm.borrow_mut().on_f21_sent();
 
@@ -296,7 +300,8 @@ impl Output {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ];
         log::debug!(
-            "[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)"
+            "[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)",
+            cold_seq = cold_seq.value(),
         );
         let _ = crate::win32::send_input_safe(&sacr_inputs);
     }
@@ -710,7 +715,8 @@ impl Output {
                             let cold_seq = self.composition.cold_start_count();
                             log::debug!(
                                 "[unicode-obs] cold={cold_seq} Unicode Romaji 送信後に GJI write 観測開始 \
-                                (baseline={baseline})"
+                                (baseline={baseline})",
+                                cold_seq = cold_seq.value(),
                             );
                             self.install_pending_tsf(Box::new(
                                 crate::tsf::warmup::unicode_literal_observer::UnicodeLiteralObserverFsm::new(
@@ -781,7 +787,7 @@ impl Output {
     /// WT（Unicode mode）向けに async IMC ポーリングは行わない。
     pub(crate) fn send_f22_f21_reinit(&self) {
         use probe_io::ProbeIo as _;
-        self.send_chrome_gji_reinit_and_poll(0);
+        self.send_chrome_gji_reinit_and_poll(Generation::INITIAL);
     }
 
     /// TIMER_TSF_PROBE ハンドラから呼ぶ。probe を 1 ステップ進め、結果を返す。
@@ -816,7 +822,7 @@ impl Output {
         };
         log::debug!(
             "[tsf-probe-tick] cold={} t={}ms",
-            machine.cold_seq_hint(),
+            machine.cold_seq_hint().value(),
             tick_t
         );
         let actions = machine.tick(env);

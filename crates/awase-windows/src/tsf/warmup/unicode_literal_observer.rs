@@ -14,6 +14,7 @@
 //!    - GJI write あり → `ProbeAction::Done`（Unicode 維持）
 //!    - GJI write なし → `ProbeAction::UpgradeToTsf` + `ProbeAction::Done`
 
+use crate::state::event_origin::Generation;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 
@@ -22,14 +23,14 @@ const OBSERVATION_WINDOW_MS: u64 = 100;
 
 /// Unicode モード文字送信後に GJI write を観測するプローブ FSM。
 pub(crate) struct UnicodeLiteralObserverFsm {
-    cold_seq: u32,
+    cold_seq: Generation,
     baseline_bytes: u64,
     elapsed_ms: u64,
 }
 
 impl UnicodeLiteralObserverFsm {
     /// `baseline_bytes` = 送信直前の `gji_write_bytes()` スナップショット。
-    pub(crate) fn new(baseline_bytes: u64, cold_seq: u32) -> Self {
+    pub(crate) fn new(baseline_bytes: u64, cold_seq: Generation) -> Self {
         Self {
             cold_seq,
             baseline_bytes,
@@ -48,21 +49,21 @@ impl TickableFsm for UnicodeLiteralObserverFsm {
         if current == self.baseline_bytes {
             log::info!(
                 "[unicode-obs] cold={} {}ms GJI write なし → injection_mode Tsf 昇格",
-                self.cold_seq,
+                self.cold_seq.value(),
                 self.elapsed_ms
             );
             vec![ProbeAction::UpgradeToTsf, ProbeAction::Done]
         } else {
             log::debug!(
                 "[unicode-obs] cold={} GJI write 確認 (Δ={}) → Unicode 維持",
-                self.cold_seq,
+                self.cold_seq.value(),
                 current.wrapping_sub(self.baseline_bytes)
             );
             vec![ProbeAction::Done]
         }
     }
 
-    fn cold_seq_hint(&self) -> u32 {
+    fn cold_seq_hint(&self) -> Generation {
         self.cold_seq
     }
 }
