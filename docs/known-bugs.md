@@ -4550,3 +4550,115 @@ GCP Spot self-hosted runner導入により、`cargo test --lib -p awase-windows`
 いずれも`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`で警告ゼロ確認済み。**2026-07-25、GCP Spot self-hosted runner(`rust-nicola-builder`)上での実`cargo test --lib -p awase-windows`実行で全パス確認済み**(`cargo mutants`のbaselineフェーズが`ok Unmutated baseline in 44s build + 4s test`で成功、GitHub Actions run 30098397721)。当初1回の修正では`literal_detect_fsm.rs`のsleep依存と`probe_fsm.rs`のロック不備を見落としており、計4コミット・3回の実機再実行を経て全15件の失敗が解消したことを確認した(教訓: クロスファイルでグローバル状態を共有するテスト群は、1箇所直すたびに実機で再実行し、マスクされていた別の失敗が露出しないか確認するまで「直った」と判断しないこと)。
 
 なお`cargo mutants`のフル走査(3296ミュータント)自体はjobのtimeout-minutes(180分)内に完走せず`cancelled`になったが、これはミュータント総数が非常に多いことによるもので、baselineの全パスとは無関係(バグではない)。フル走査を完走させたい場合は`--jobs`を増やすかタイムアウトを延ばすか、`-f`で対象ファイルを絞ること。
+
+---
+
+## BUG-42: IME ON・Engine OFF から一切復旧できない（Ctrl+Shift+変換 が no-op、トレイ「状態をリセット」が誤ったウィンドウを対象にする）
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` →
+`Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で、IME アイコンは
+ON のまま awase の NICOLA 変換だけが効かなくなり、Ctrl+Shift+変換（Engine ON
+コンボ）を押しても・トレイメニューの「状態をリセット」を選んでも復旧しなかった
+（2026-07-24 実機ログ）。ログ上は `Engine user_enabled ON (force, active=true)`
+というトレイ経由の成功ログが出ているにもかかわらず、直後に Windows Terminal で
+K/A を打っても `belief ObservedRomaji 変更なし` のまま変換されなかった。
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal）。
+ただし原因1・2はいずれも IME/プロファイルに依存しない汎用的な構造欠陥。
+
+**原因1（確定、コード読解で確認）: `Ctrl+Shift+変換` コンボが `user_enabled=true`
+のときは文脈起因の inactive を一切救済できない。**
+
+`SpecialKeyCombos::match_event`（`src/engine/engine.rs`）の EngineOn コンボ判定は
+`if !engine_enabled && …` という条件でガードされていた。`engine_enabled` は
+`adapter.is_enabled()`（＝`user_enabled`）であり、`compute_active(ctx)` が
+false になる理由（`ImeOff` / `NotJapaneseIme` / `NotRomajiInput`）は一切見ない。
+つまり `user_enabled=true` のまま**文脈**で `Inactive` に陥っているケース
+（ユーザーが明示的に無効化したわけではない、最も典型的な「効かなくなった」
+状態）では、`match_event` が `None` を返して `check_special_keys` がヒットせず、
+`process_key_event` は `PassThrough` を返す。実機ログでは、この PassThrough に
+落ちた `Ctrl+Shift+変換`（vk=0x1C, mods c=true s=true）が、IME 候補ウィンドウが
+可視だったために無関係な `[ctrl-bypass]`（Ctrl+key 用の composition キャンセル
+ロジック、`runtime/message_handlers.rs::handle_wm_key_from_hook`）に飲み込まれ、
+`marked cold reason=CtrlKeyBypass` を出しただけで終わっていた。
+`force_enable_and_activate`（`ime_on=false` からの `apply_engine_on_with_ime_recovery`
+復旧込み）自体は既に存在し `EngineCommand::ForceEngineOn` からは呼べていたが、
+キーコンボ経由では到達不能だった。
+
+**原因2（確定、コード読解で確認）: トレイ「状態をリセット」は、メニュー選択
+時点の `GetGUIThreadInfo`/`GetForegroundWindow` を対象にするため、実際には
+awase 自身のトレイウィンドウ（またはメニューの一時ウィンドウ）に対して IME ON
+を発行してしまう。**
+
+`tray::handle_tray_message`（`crates/awase-windows/src/tray.rs`）は、
+`TrackPopupMenu` でコンテキストメニューを出すために
+`SetForegroundWindow(hwnd)`（`hwnd` は awase 自身のトレイウィンドウ）を呼ぶ。
+この時点でユーザーが実際に入力していたアプリ（Windows Terminal 等）から
+フォーカスが奪われる。メニュー選択後の `WM_COMMAND`
+（`runtime/message_handlers.rs::handle_wm_command`）で
+`ime::set_ime_mode`/`set_ime_open_cross_process` を呼ぶと、その内部の
+`GetGUIThreadInfo().hwndFocus` はこの時点でトレイ自身（実機ログでは
+`class="awase_tray_window"`、直後に `class="#32768"` のコンテキストメニュー）
+を指しており、ユーザーが実際に使っていたアプリには一切作用しない。この経路は
+「状態をリセット」だけでなく、トレイの「IME 状態」「JISかな / ローマ字」
+サブメニュー全項目（ひらがな/カタカナ/英数/直接入力/ローマ字入力/かな入力）に
+共通する構造欠陥だった。
+
+**修正:**
+
+1. `src/engine/engine.rs`: `SpecialKeyCombos::match_event` に `engine_active`
+   引数を追加し、EngineOn コンボの判定を `!engine_enabled || !engine_active` に
+   拡張した。`engine_active` は呼び出し元の `Engine::match_special_keys` が
+   `compute_active(ctx)` から渡す。物理キー経由なので `ctx` は常に「今まさに
+   フォーカスされている実アプリ」を指しており、原因2のような対象ウィンドウの
+   問題は生じない。
+2. `crates/awase-windows/src/tray.rs`: `handle_tray_message` の冒頭
+   （`SetForegroundWindow` より前）で `GetGUIThreadInfo` を一度だけ問い合わせ、
+   `MENU_TARGET_HWND`（新設 static）に保存する。`tray::menu_target_hwnd()` で
+   読み出せる。
+3. `crates/awase-windows/src/ime.rs`: `set_ime_open_for_target` /
+   `set_ime_mode_for_target` / `set_ime_romaji_mode_state_for_target`
+   （いずれも新設）を追加し、ライブクエリではなく明示的な `HWND` を対象にできる
+   ようにした。既存の `set_ime_open_cross_process` / `set_ime_mode` /
+   `set_ime_romaji_mode_state`（ライブクエリ版）はそのまま残し、
+   `ime_controller.rs`（物理キー経由の IME ON/OFF）は変更なし。
+4. `crates/awase-windows/src/runtime/message_handlers.rs::handle_wm_command`:
+   トレイメニュー由来の IME コマンド全項目（Hiragana/FullKatakana/FullAlpha/
+   HalfAlpha/HalfKatakana/Direct/InputRomaji/InputKana/ResetState）を
+   `tray::menu_target_hwnd()`（無ければ `GetForegroundWindow()` に最終
+   フォールバック）を対象にするよう変更した。
+
+**未解決（残存、フォローアップ候補）:** 原因2の修正は「メニュー表示直前の
+フォーカスウィンドウ」を対象にするが、ユーザーがトレイアイコンを右クリックする
+**前**に既に Start メニュー等 awase 以外の UI を経由していた場合（今回の実機
+ログはこのケースだった: トレイクリック前に `explorer.exe` の `InputSite` へ
+フォーカスが移っていた）、捕捉されるのは「直前に経由したウィンドウ」であり
+「本来入力したかったアプリ」ではない可能性が残る。これは Windows の
+フォーカス管理の限界であり、トレイメニュー自体の設計を変えない限り解消しない。
+また `force_engine_on`／`EngineCommand::ForceEngineOn`（トレイ「状態をリセット」
+の Engine 部分）は `Runtime::build_ctx()` の現在の belief をそのまま使うため、
+原因2と同型の「文脈がずれている」問題が理論上残る。原因1の修正により
+Ctrl+Shift+変換 が実アプリ上の物理キーとして機能するようになったため、
+実運用上の主要な回復手段はこちらに移った。
+
+**テスト:** `src/engine/tests.rs::engine_integration_tests::
+special_key_engine_on_combo_recovers_when_context_inactive_but_user_enabled`
+を追加（`user_enabled=true` のまま `ime_off_ctx()` で `Ctrl+Shift+変換` 相当の
+コンボを押すと `SetOpen(true)` が発行されることを検証。修正前のコードに対して
+実際に FAIL することを確認済み）。`cargo test -p awase --lib engine::` で
+Linux ネイティブ実行可能。原因2（`tray.rs`/`ime.rs`/`message_handlers.rs`）は
+Win32 メッセージループ・フォーカス遷移に依存するため自動テスト困難。
+Windows cross-compile（`cargo check --target x86_64-pc-windows-gnu` /
+`cargo clippy --target x86_64-pc-windows-gnu --lib`）警告ゼロ確認済み、
+`cargo test -p awase-windows --lib` / `--test architecture_guard` /
+`--test layer_boundary_guard` / `--test golden_scenarios` は Linux ネイティブで
+全 pass（`user_ime_on_paths_are_paired_with_eisu_reset` を含む）。Wine 等の
+実行環境がないため Windows 実機での動作確認は未実施。
+
+**関連ファイル:** `src/engine/engine.rs`（`SpecialKeyCombos::match_event`）、
+`crates/awase-windows/src/tray.rs`（`MENU_TARGET_HWND`/`menu_target_hwnd`）、
+`crates/awase-windows/src/ime.rs`（`set_ime_open_for_target` 等）、
+`crates/awase-windows/src/runtime/message_handlers.rs`（`handle_wm_command`）。
+関連: BUG-33/BUG-37（同じ「observe できないプロファイルは自己訂正できない」系統の
+別の顔）、[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)。
