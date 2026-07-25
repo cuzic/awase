@@ -141,10 +141,16 @@ mod tests {
 
     #[test]
     fn imm_cross_driver_focus_settle_matches_app_ime_policy() {
-        // state/app_ime_policy.rs::AppImePolicy::from_profile(ImmCross).focus_settle_ms
-        // と同値であることを固定する（ドライバ分離がデータ面で既存ポリシーと
-        // 食い違わないことの回帰テスト）。
-        assert_eq!(ImmCrossDriver.focus_settle_ms(), 100);
+        // ドライバ分離がデータ面で既存ポリシーと食い違わないことの回帰テスト。
+        // 直値ではなく SSOT（AppImePolicy）を直接参照することで、AppImePolicy 側の
+        // focus_settle_ms が実測に基づき変更されたらこのテストが失敗して drift を
+        // 検出できるようにする（直値固定だと SSOT が動いても気付けない）。
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::ime_event::ImePolicyProfile;
+        assert_eq!(
+            ImmCrossDriver.focus_settle_ms(),
+            AppImePolicy::from_profile(ImePolicyProfile::ImmCross).focus_settle_ms
+        );
     }
 
     #[test]
