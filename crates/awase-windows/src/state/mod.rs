@@ -33,6 +33,9 @@ pub use conv_mode::ConvModeAuthority;
 pub(crate) use conv_mode::ConvModeMgr;
 
 pub mod app_ime_policy;
+// ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
+// 配線はまだ無い（モジュール冒頭のスコープ節参照）。
+pub mod event_origin;
 pub mod ime_actuation;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
 // 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
