@@ -35,13 +35,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get install -y gcc-mingw-w64-x86-64
-      # Windows GNU ターゲット向けにテストバイナリをビルド（実行はしない）。
-      # Linux では検出できない Windows 固有の型エラー・API 不一致をローカル CI で早期発見する。
-      # -D warnings で warning も CI エラーとして扱い、混入を防ぐ。
-      - run: RUSTFLAGS="-D warnings" cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows
+      - uses: taiki-e/install-action@cargo-xwin
+      # 実際に配布している awase.exe/awase-settings.exe は MSVC ABI（windows-build
+      # ジョブの windows-latest ランナーが使う既定ツールチェイン）。以前はここで
+      # x86_64-pc-windows-gnu (mingw) にクロスコンパイルしていたが、それは一度も
+      # 出荷しない ABI を検証していただけだった。cargo-xwin（Windows SDK/CRT を
+      # 取得して MSVC ABI へクロスリンクする）に切り替え、実際に出荷する ABI と
+      # 同じものを Linux 上で早期検証する。
+      # Windows テストバイナリをビルドするのみ（実行はしない、Linux 上では
+      # Windows バイナリを実行できないため）。Linux では検出できない Windows
+      # 固有の型エラー・API 不一致をローカル CI で早期発見する。
+      # 素の RUSTFLAGS 環境変数は使わない: cargo-xwin はターゲット別 rustflags
+      # （リンカ・ライブラリパス指定）を設定するが、RUSTFLAGS 環境変数は
+      # Cargo の優先順位で最上位のため、これを設定するとターゲット別 rustflags を
+      # 丸ごと上書きしてクロスリンクが壊れる。warning-as-error 化は実 Windows で
+      # 走る windows-build ジョブの clippy ステップ（-D warnings）に任せる。
+      - run: cargo xwin build --tests -p awase-windows
 
   clippy:
     runs-on: ubuntu-latest
@@ -65,17 +76,33 @@ jobs:
         with:
           toolchain: nightly-2026-05-22
           components: rustc-dev, llvm-tools-preview
-          targets: x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-xwin
       - name: Install cargo-dylint
         run: cargo install cargo-dylint dylint-link --version 6.0.0 --locked
+      # dylint には windows-cross-check ジョブの `cargo xwin build/clippy` のような
+      # 専用サブコマンドが無いため、`cargo xwin env` が出力するクロスリンク用の
+      # 環境変数（リンカ・Windows SDK/CRT のパス指定）を同じステップ内で `eval` して
+      # から素の `cargo dylint --target x86_64-pc-windows-msvc` を叩く。
+      # `cargo xwin env` の出力は `export NAME="value";` という bash 構文であり
+      # （値に `;` 区切りの Windows パスを含むものもある: LIB 変数等）、$GITHUB_ENV
+      # が期待する `NAME=value` 形式とは異なるため、$GITHUB_ENV 経由でステップを
+      # またいで引き継ぐには自前でパースし直す必要がある。それよりも同一シェル内で
+      # `eval` する方が、bash 構文をそのまま正しく解釈できて確実（実際に
+      # `cargo xwin env --target x86_64-pc-windows-msvc >> "$GITHUB_ENV"` は
+      # クォート・セミコロンが値としてそのまま書き込まれて壊れることをローカルで確認済み）。
       # awase-windows を Windows ターゲットで check し、journal.rs 等の #[cfg(windows)]
       # コードも含めて lint する（windows-cross-check ジョブと同じ cross-compile 方針）。
-      # 両 lint は Warn レベルなので DYLINT_RUSTFLAGS=-D warnings で CI エラーへ昇格させる。
+      # 両 lint は Warn レベルなので DYLINT_RUSTFLAGS=-D warnings で CI エラーへ昇格させる
+      # (これは cargo-xwin のターゲット別 rustflags とは別の、dylint 専用の環境変数
+      # なので windows-cross-check ジョブで避けた素の RUSTFLAGS 上書き問題は起きない)。
       - name: Run dylint (custom layer-boundary lints)
         env:
           DYLINT_RUSTFLAGS: "-D warnings"
-        run: cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-gnu
+        run: |
+          eval "$(cargo xwin env --target x86_64-pc-windows-msvc)"
+          cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc
 
   fmt:
     runs-on: ubuntu-latest
