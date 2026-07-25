@@ -4507,6 +4507,44 @@ mod engine_integration_tests {
     }
 
     #[test]
+    fn special_key_engine_on_combo_recovers_when_context_inactive_but_user_enabled() {
+        // 実機バグ: user_enabled=true のまま ime_on=false 等の *文脈* で Engine が
+        // inactive に陥っているとき、以前は `!engine_enabled` ガードにより
+        // Ctrl+Shift+変換（engine_on コンボ）が完全に無視され PassThrough
+        // されるだけだった（force_enable_and_activate の recovery ロジックへ
+        // 到達不能）。この回帰を防ぐ。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        assert!(engine.is_user_enabled(), "user_enabled は最初から true");
+        assert!(
+            !engine.compute_active(&ime_off_ctx()),
+            "ime_off_ctx では文脈により inactive のはず"
+        );
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: true })
+            )),
+            "user_enabled=true でも context-inactive なら engine_on コンボで IME を \
+             強制的に開く SetOpen(true) が発行されるべき（修正前は match_event が \
+             None を返し、この effect が一切発行されず PassThrough のみだった）"
+        );
+    }
+
+    #[test]
     fn special_key_engine_off_combo() {
         let combo = ParsedKeyCombo {
             ctrl: false,

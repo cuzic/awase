@@ -514,8 +514,12 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        self.special_keys
-            .match_event(event, ctx.modifiers, self.adapter.is_enabled())
+        self.special_keys.match_event(
+            event,
+            ctx.modifiers,
+            self.adapter.is_enabled(),
+            self.compute_active(ctx),
+        )
     }
 
     /// `user_enabled` を無条件で true にし、IME recovery を伴う activate 処理を行う。
@@ -578,15 +582,26 @@ fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: Modi
 impl SpecialKeyCombos {
     /// エンジン有効状態を考慮したうえでコンボマッチを行い、最初に一致した種別を返す。
     ///
-    /// 副作用なし。`engine_enabled` は `adapter.is_enabled()` の値を渡すこと。
+    /// 副作用なし。`engine_enabled` は `adapter.is_enabled()` の値を、`engine_active` は
+    /// `compute_active(ctx)` の値を渡すこと。
     fn match_event(
         &self,
         event: &RawKeyEvent,
         modifiers: ModifierState,
         engine_enabled: bool,
+        engine_active: bool,
     ) -> Option<SpecialKeyMatch> {
-        // エンジン ON/OFF コンボキー — user_enabled のみ変更
-        if !engine_enabled
+        // エンジン ON コンボキー。
+        //
+        // `!engine_enabled`（ユーザーが明示的に無効化した）だけでなく
+        // `!engine_active`（`user_enabled=true` のまま ime_on=false 等の
+        // *文脈*で inactive に陥っているケース）でもマッチさせる。後者を
+        // 見逃すと、Engine が context 起因で inactive のとき Ctrl+Shift+変換 が
+        // 完全に無反応になり（`match_event` が None を返し PassThrough
+        // されるだけ）、実測ログで「IME ON だが Engine Off から何をしても
+        // 復旧できない」事象の一因になっていた（`force_enable_and_activate` の
+        // recovery ロジック自体は存在するのに、この経路からは到達不能だった）。
+        if (!engine_enabled || !engine_active)
             && self
                 .engine_on
                 .iter()
