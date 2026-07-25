@@ -80,7 +80,12 @@ pub enum UserIntentSource {
 }
 
 /// Observation のソース (外部観測の種類)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `serde::Serialize`/`Deserialize` は ADR-082「第一歩」2. の
+/// `state::ime_actuation::DriftCorrectionFixture`（`FeedbackPolicy::Read.source`
+/// を JSON フィクスチャとして保存・復元するため）が必要とする。全 variant が
+/// データを持たないため機械的に導出可能で、既存の意味論には影響しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ObservationSource {
     /// フォーカス変更直後の同期プローブ
     FocusProbe,
