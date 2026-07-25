@@ -16,12 +16,37 @@
 //!
 //! `state::ime_actuation` は `#[cfg(windows)]` でゲートされていないため、
 //! `conv_classify` と同様このテストは Linux ホストでもそのまま実行できる。
+//!
+//! # ADR-082 Phase 0.5: 「新 variant 経由」の意味
+//!
+//! `journal.rs::JournalEntry::ImeActuation` 自体は `journal` モジュールが
+//! `#[cfg(windows)]` のため Linux からは参照できない。そこで variant のペイロード型
+//! `ActuationRecord`（`state/ime_actuation.rs`、プラットフォーム非依存）を Linux でも
+//! 共有し、リプレイはこの `ActuationRecord`（= journal に積まれるのと同一の構造化
+//! レコード）を `ActuationRecord::new` で構築して照合する。これにより「出所（常に
+//! `SelfActuated`）・世代（`epoch`）・判定（`action`）が型として正しく積まれるか」まで
+//! 含めて回帰させる（従来は `decide_actuation_action` の `action` だけを見ていた）。
 
 use awase_windows::state::app_ime_policy::AppImePolicy;
+use awase_windows::state::event_origin::EventSource;
 use awase_windows::state::ime_actuation::{
-    decide_actuation_action, ActuationAction, DriftCorrectionFixture, FeedbackPolicy,
+    actuation_origin, ActuationAction, ActuationRecord, DriftCorrectionFixture, FeedbackPolicy,
 };
 use awase_windows::state::ime_event::ImePolicyProfile;
+
+/// BUG-43 の drift correction は `apply_ime_open(false)`（IME を OFF に落とす）だった。
+/// fixture は試行回数の有界化検証が主眼で target を保持しないため、ここで固定する。
+const BUG43_TARGET: bool = false;
+
+/// 1 tick 分を journal の `JournalEntry::ImeActuation` に積まれるのと同一の
+/// `ActuationRecord`（新 variant のペイロード）として組み立てる単一経路。
+fn record_for_tick(
+    fixture: &DriftCorrectionFixture,
+    tick: &awase_windows::state::ime_actuation::DriftCorrectionTick,
+) -> ActuationRecord {
+    let origin = actuation_origin(fixture.policy, tick.epoch);
+    ActuationRecord::new(origin, BUG43_TARGET, fixture.policy, tick.attempts)
+}
 
 fn load_fixtures(path: &std::path::Path) -> Vec<DriftCorrectionFixture> {
     let content = std::fs::read_to_string(path)
@@ -54,16 +79,50 @@ fn replay_all_drift_correction_fixtures() {
         for fixture in load_fixtures(path) {
             for tick in &fixture.ticks {
                 total += 1;
-                let actual = decide_actuation_action(fixture.policy, tick.attempts);
-                if actual != tick.expected {
+                let record = record_for_tick(&fixture, tick);
+
+                // (1) 判定（action）の照合。
+                if record.action != tick.expected {
                     failures.push(format!(
-                        "[{}] {} attempts={} observed_at_ms={:?}:\n  expected: {:?}\n  actual:   {:?}",
+                        "[{}] {} attempts={} observed_at_ms={:?}:\n  expected action: {:?}\n  actual action:   {:?}",
                         path.file_name().unwrap_or_default().to_string_lossy(),
                         fixture.name,
                         tick.attempts,
                         tick.observed_at_ms,
                         tick.expected,
-                        actual,
+                        record.action,
+                    ));
+                }
+
+                // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
+                let expected_source = EventSource::SelfActuated {
+                    strategy: awase_windows::state::ime_actuation::actuation_strategy(
+                        fixture.policy,
+                    ),
+                };
+                if record.origin.source != expected_source {
+                    failures.push(format!(
+                        "[{}] {} attempts={}: origin.source が SelfActuated でない: {:?}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        fixture.name,
+                        tick.attempts,
+                        record.origin.source,
+                    ));
+                }
+
+                // (3) 世代の配線: epoch は attempts と歩調を合わせて積まれる
+                //     （Actuation::advance_epoch）。fixture の epoch と record の epoch、
+                //     さらに attempts との一致を固定し、EventOrigin 配線の退行を検知する。
+                if record.origin.epoch != tick.epoch
+                    || record.origin.epoch.value() != u64::from(tick.attempts)
+                {
+                    failures.push(format!(
+                        "[{}] {} attempts={}: epoch 配線が壊れている: tick.epoch={:?} record.epoch={:?}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        fixture.name,
+                        tick.attempts,
+                        tick.epoch,
+                        record.origin.epoch,
                     ));
                 }
             }
@@ -121,10 +180,12 @@ fn bug43_tight_loop_is_bounded_not_infinite() {
         "BUG-43 の観測回数({tick_count})が max_attempts({max_attempts}) を上回っていないと有界終端の証明にならない"
     );
 
+    // 新 variant のペイロード `ActuationRecord` 経由で action 列を得る（journal に
+    // 積まれるのと同一経路）。
     let actions: Vec<ActuationAction> = fixture
         .ticks
         .iter()
-        .map(|tick| decide_actuation_action(fixture.policy, tick.attempts))
+        .map(|tick| record_for_tick(fixture, tick).action)
         .collect();
 
     let send_count = actions
