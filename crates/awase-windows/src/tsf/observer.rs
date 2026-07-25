@@ -411,6 +411,12 @@ pub(crate) fn reset_candidate_was_seen() {
 /// 長時間 idle をまたいで「前の cold 世代で確認済み」がそのまま信頼され続けることは
 /// 構造的に起こらない。`true` の間、`LiteralDetectCore::poll` は検出処理自体を
 /// スキップして即 `Done` を返す。
+///
+/// 決定分岐の呼び出し元（`probe_fsm.rs`/`literal_detect_fsm.rs`/`gji_warmup_coro.rs`）は
+/// `TsfEnvSnapshot::literal_session_confirmed_gen` 経由の比較へ移行済み（belief 監査、
+/// `.claude/rules/ime-belief-architecture.md` 参照）。本関数自体は削除せず残すが、
+/// 現状クレート内に非テストの呼び出し元がないため `#[allow(dead_code)]` を付与する。
+#[allow(dead_code)]
 pub(crate) fn literal_session_confirmed(current_cold_seq: Generation) -> bool {
     let confirmed_gen = TSF_OBS
         .literal_session_confirmed_gen
@@ -418,6 +424,19 @@ pub(crate) fn literal_session_confirmed(current_cold_seq: Generation) -> bool {
     confirmed_gen != 0 && confirmed_gen == current_cold_seq.value()
 }
 
+/// `literal_session_confirmed_gen` の生の値を `Option<Generation>` として取り出す。
+///
+/// [`TsfEnvSnapshot`](crate::tsf::warmup::probe_fsm::TsfEnvSnapshot) へ埋め込むための
+/// スナップショット用アクセサ。`0`（未確認の番人値）は `None` として返す。
+/// [`literal_session_confirmed()`] のように呼び出し元の `cold_seq` と比較して bool 化
+/// する判断はここでは行わない — 呼び出し元ごとに比較対象の `cold_seq` が異なるため、
+/// 比較そのものは snapshot を受け取った FSM 側の純粋なコードに委ねる。
+pub(crate) fn literal_session_confirmed_gen_snapshot() -> Option<Generation> {
+    let confirmed_gen = TSF_OBS
+        .literal_session_confirmed_gen
+        .load(Ordering::Relaxed);
+    (confirmed_gen != 0).then(|| Generation::new(confirmed_gen))
+}
 
 /// literal-detect が `cold_seq` 世代で初めて `CompositionConfirmed`（非 partial-literal）を
 /// 確認したときに呼ぶ。`cold_seq` が進む（＝新しい cold-start が走る）まで、または

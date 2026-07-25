@@ -54,6 +54,16 @@ pub(crate) struct TsfEnvSnapshot {
     /// `TsfWarmupCoordinator` の deferred キューに現在何か積まれているか（覗き見、消費しない）。
     /// `GjiWarmupCoro` の `decide_transmit_plan` eager path 判定に使う。
     pub deferred_pending: bool,
+    /// `crate::tsf::observer::gji_candidate_visible_now()` の生値。GJI candidate window が
+    /// 現時点で可視かどうか（決定分岐から素の `AtomicBool` 読み取りを排除するため、
+    /// `env` 経由の明示パラメータとして持つ。`.claude/rules/ime-belief-architecture.md`
+    /// 「`ImeModel` 以外の belief 的状態への適用範囲」節参照）。
+    pub gji_candidate_visible_now: bool,
+    /// `TSF_OBS.literal_session_confirmed_gen` の生値（0 なら `None`）。
+    /// `literal_session_confirmed(cold_seq)` は「保存されている世代」と「呼び出し元の
+    /// cold_seq」を比較する関数であり、呼び出し元ごとに cold_seq が異なるため、
+    /// snapshot にはこの生の世代値だけを埋め込み、比較は FSM 側の純粋なコードで行う。
+    pub literal_session_confirmed_gen: Option<Generation>,
 }
 
 /// probe 中に観測した事実。`decide_transmit_plan` の入力に使う。
@@ -303,10 +313,11 @@ async fn await_vk_detection(
     idx: usize,
     last_idx: usize,
     vk: VkCode,
+    env: TsfEnvSnapshot,
 ) -> crate::tsf::probe::DetectionResult {
     use crate::tsf::probe::DetectionResult;
 
-    if crate::tsf::observer::gji_candidate_visible_now() {
+    if env.gji_candidate_visible_now {
         // ADR-079 epoch fencing: 「既に可視」だけを根拠に無条件で confirmed とすると、
         // 前の（見捨てた）世代が開いたまま残っている候補ウィンドウを現世代の証拠として
         // 誤って採用してしまう（実機トレースで確認済み、本 VK1 以降のショートカットが
@@ -415,7 +426,24 @@ pub(crate) async fn run_per_vk_confirm(
             return;
         };
 
-        let detection = await_vk_detection(&ch, &sent, log_tag, cold_seq, idx, last_idx, vk).await;
+        // `vk_input.env`（このVKの送信が確定した、まさにこの tick のスナップショット）を
+        // 渡す。旧実装は `gji_candidate_visible_now()` を `await_vk_detection` 実行時点で
+        // 都度ライブ読みしており、VK ごとに変化しうる候補ウィンドウ可視性を反映していた。
+        // ループ開始時に一度だけ取った `env`（このコルーチンの呼び出し元から渡された
+        // スナップショット）を全 VK で使い回すと、後続 VK の可視性変化を無視してしまい
+        // 挙動が変わる。`ProbeTickInput.env` は tick ごとに更新されるため、これが
+        // 旧実装のライブ読みに最も近い等価物。
+        let detection = await_vk_detection(
+            &ch,
+            &sent,
+            log_tag,
+            cold_seq,
+            idx,
+            last_idx,
+            vk,
+            vk_input.env,
+        )
+        .await;
 
         match detection {
             DetectionResult::CompositionConfirmed => {
@@ -554,7 +582,7 @@ async fn tsf_probe_coro_body(
 
     // ── Phase 2c（per-VK confirm）──
     // TSF 側 gji_coro_body の Phase 5b と共通実装（`run_per_vk_confirm`、2026-07-17 統合）。
-    if needs_literal && !crate::tsf::observer::literal_session_confirmed(cold_seq) {
+    if needs_literal && env.literal_session_confirmed_gen != Some(cold_seq) {
         let plan = TransmitPlan {
             used_eager_path: false,
             needs_literal: true,
@@ -1147,8 +1175,12 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         machine.apply_vk_sent(detector, deadline_ms);
+        // `gji_candidate_visible_now` は `await_vk_detection` が `env` 経由で読む
+        // ようになった（グローバル直読み廃止）ため、上で `TSF_OBS.gji_candidate_visible`
+        // に立てた「既に可視」を、この tick に渡す `env` にも明示的に反映する。
         let actions_immediately_after_send = machine.tick(TsfEnvSnapshot {
             gji_active: true,
+            gji_candidate_visible_now: true,
             ..Default::default()
         });
         assert!(
@@ -1165,6 +1197,7 @@ mod tests {
         ));
         let actions_after_stale = machine.tick(TsfEnvSnapshot {
             gji_active: true,
+            gji_candidate_visible_now: true,
             ..Default::default()
         });
 
@@ -1223,8 +1256,12 @@ mod tests {
         TSF_OBS.gji_candidate_visible.store(true, SeqCst);
 
         machine.apply_vk_sent(detector, deadline_ms);
+        // `gji_candidate_visible_now` は `await_vk_detection` が `env` 経由で読む
+        // ようになった（グローバル直読み廃止）ため、上で `TSF_OBS.gji_candidate_visible`
+        // に立てた「既に可視」を、この tick に渡す `env` にも明示的に反映する。
         let actions_immediately_after_send = machine.tick(TsfEnvSnapshot {
             gji_active: true,
+            gji_candidate_visible_now: true,
             ..Default::default()
         });
         assert!(
@@ -1238,6 +1275,7 @@ mod tests {
             .store(crate::hook::current_tick_ms(), SeqCst);
         let actions_after_catchup = machine.tick(TsfEnvSnapshot {
             gji_active: true,
+            gji_candidate_visible_now: true,
             ..Default::default()
         });
 

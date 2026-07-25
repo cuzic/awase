@@ -207,7 +207,7 @@ impl LiteralDetectCore {
         // に頼っているため、cold直後は毎回誤検知しうる — セッション内2文字目以降は
         // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
         // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
-        if crate::tsf::observer::literal_session_confirmed(self.cold_seq) {
+        if env.literal_session_confirmed_gen == Some(self.cold_seq) {
             log::debug!(
                 "[literal-detect] cold={} セッション確認済み → スキップ",
                 self.cold_seq.value()
@@ -255,7 +255,7 @@ impl LiteralDetectCore {
                     ProbeAction::Done,
                 ])
             }
-            DetectionResult::SuspectedLiteral => match self.veto_decision() {
+            DetectionResult::SuspectedLiteral => match self.veto_decision(env) {
                 VetoDecision::Hold => {
                     log::debug!(
                         "[literal-detect] cold={} candidate window可視のため回収を保留 (real_gji_idle_ms={})",
@@ -316,8 +316,8 @@ impl LiteralDetectCore {
     ///
     /// veto 対象外（per-VK Chrome パス、または候補ウィンドウが可視でない）なら
     /// [`VetoDecision::NotApplicable`] を返し、呼び出し側は従来通り回収する。
-    fn veto_decision(&mut self) -> VetoDecision {
-        if !self.detector.veto_eligible() || !crate::tsf::observer::gji_candidate_visible_now() {
+    fn veto_decision(&mut self, env: TsfEnvSnapshot) -> VetoDecision {
+        if !self.detector.veto_eligible() || !env.gji_candidate_visible_now {
             self.veto_started_at_ms = None;
             return VetoDecision::NotApplicable;
         }
@@ -598,7 +598,13 @@ mod tests {
             0,
         );
 
-        let result = core.poll(tsf_env());
+        // `veto_decision` はグローバル直読みをやめ `env.gji_candidate_visible_now` を
+        // 見るようになったため、上で `TSF_OBS.gji_candidate_visible` に立てた「可視」を
+        // ここでも明示的に反映する。
+        let result = core.poll(TsfEnvSnapshot {
+            gji_candidate_visible_now: true,
+            ..tsf_env()
+        });
         assert!(
             result.is_none(),
             "候補ウィンドウ可視時は backspace を出さず hold すべき: {result:?}"
@@ -626,8 +632,16 @@ mod tests {
             0,
         );
 
+        // `veto_decision` はグローバル直読みをやめ `env.gji_candidate_visible_now` を
+        // 見るようになったため、上で `TSF_OBS.gji_candidate_visible` に立てた「可視」を
+        // ここでも明示的に反映する。
+        let visible_env = TsfEnvSnapshot {
+            gji_candidate_visible_now: true,
+            ..tsf_env()
+        };
+
         // 1 回目: hold に入る（veto_started_at_ms が確定する）。
-        assert!(core.poll(tsf_env()).is_none());
+        assert!(core.poll(visible_env).is_none());
 
         // 上限を超えるまで実時間で待機する（候補ウィンドウ固着を模擬）。
         std::thread::sleep(std::time::Duration::from_millis(
@@ -635,7 +649,7 @@ mod tests {
         ));
 
         let actions = core
-            .poll(tsf_env())
+            .poll(visible_env)
             .expect("上限超過後は Some(..) で確定するべき");
         assert!(
             !actions
@@ -671,8 +685,14 @@ mod tests {
             0,
         );
 
+        // veto_eligible=false（per-VK パス）のため `gji_candidate_visible_now` の値に
+        // 関わらず veto は無効化されるはずだが、テストの意図（「可視でも」）に合わせて
+        // 明示的に true を渡す。
         let actions = core
-            .poll(tsf_env())
+            .poll(TsfEnvSnapshot {
+                gji_candidate_visible_now: true,
+                ..tsf_env()
+            })
             .expect("per-VK パスは veto を無効化し即座に回収するべき");
         assert!(
             actions

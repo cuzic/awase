@@ -805,6 +805,9 @@ impl Output {
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
                 deferred_pending: self.warmup_coord.has_pending_deferred(),
+                gji_candidate_visible_now: crate::tsf::observer::gji_candidate_visible_now(),
+                literal_session_confirmed_gen:
+                    crate::tsf::observer::literal_session_confirmed_gen_snapshot(),
             }
         };
 
