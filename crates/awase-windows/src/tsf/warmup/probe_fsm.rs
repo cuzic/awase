@@ -629,12 +629,17 @@ async fn tsf_probe_coro_body(
         let final_actions = match detection {
             DetectionResult::SuspectedLiteral => {
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "suspected");
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
+                        false,
+                        ze_bs_count,
+                    );
                 vec![
                     ProbeAction::RawTsfLiteralRecovery {
                         cold_seq,
-                        backs: ze_bs_count,
+                        backs,
                         romaji: recovery_romaji,
-                        escape_composition: false,
+                        escape_composition,
                     },
                     ProbeAction::Done,
                 ]
@@ -663,12 +668,17 @@ async fn tsf_probe_coro_body(
                     cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                let (backs, escape_composition) =
+                    crate::tsf::warmup::literal_detect_fsm::word_level_recovery_params(
+                        true,
+                        ze_bs_count,
+                    );
                 vec![
                     ProbeAction::RawTsfLiteralRecovery {
                         cold_seq,
-                        backs: 0,
+                        backs,
                         romaji: recovery_romaji,
-                        escape_composition: false,
+                        escape_composition,
                     },
                     ProbeAction::Done,
                 ]

@@ -88,6 +88,43 @@ pub(crate) const fn per_vk_recovery_params(is_stale: bool, failed_idx: usize) ->
     (backs, failed_idx > 0)
 }
 
+/// 単語全体をまとめて回収する非 per-VK 経路が、ある語で `SuspectedLiteral`/
+/// `StaleConfirm` になったときの回収パラメータを返す純関数。
+///
+/// 対象は「1 VK ずつ確認する per-VK confirm」ではなく、語全体を送信してから
+/// composition confirm/literal を判定する経路: `LiteralDetectCore::poll` の
+/// `VetoDecision::NotApplicable`（`SuspectedLiteral`）/ `StaleConfirm` 枝
+/// （warm パス、および cold パスの `GjiWarmupCoro` 経由）と、`probe_fsm.rs`
+/// の raw-tsf-literal 最終確認ループ（`tsf_probe_coro_body`）の同名 2 枝。
+///
+/// [`per_vk_recovery_params`] とは**別概念**であり混同しないこと。あちらは
+/// per-VK confirm（`run_per_vk_confirm`）専用で `failed_idx`（何番目の VK か）
+/// に依存する分岐を持つが、こちらは語全体の `ze_bs_count`（送信ローマ字の
+/// 文字数）のみに依存し、per-VK 特有の「直前 VK が confirmed 済みか」という
+/// 区別は存在しない。
+///
+/// `is_stale`: `DetectionResult::StaleConfirm`（epoch fencing 判定）由来なら
+/// `true`、`SuspectedLiteral`（deadline 到達）由来なら `false`。
+/// `ze_bs_count`: raw literal 検出時に送るバックスペース数（`is_stale=false`
+/// のときのみ使用）。
+/// 戻り値: `(backs, escape_composition)`。`escape_composition` はこの経路では
+/// 常に `false`（語全体の送信では composition が単一で、ESC ではなく BS で
+/// 素直に回収できるため）。
+///
+/// `is_stale` の場合に `backs=0` を返す理由は [`per_vk_recovery_params`] の
+/// ドキュメント（BUG-33 追補4）と同じ: `StaleConfirm` は「confirm の根拠が
+/// 古い」ことの検出であって「literal である」証拠ではないため。
+pub(crate) const fn word_level_recovery_params(
+    is_stale: bool,
+    ze_bs_count: usize,
+) -> (usize, bool) {
+    if is_stale {
+        (0, false)
+    } else {
+        (ze_bs_count, false)
+    }
+}
+
 /// `CompositionConfirmed` 時に「先頭文字がリテラル化した partial literal」かどうかを判定する純関数。
 ///
 /// WezTerm (TSF mode) では HIMC=NULL のため IMM32 composition 文字列との文字照合が
@@ -282,7 +319,9 @@ impl LiteralDetectCore {
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
-                    Some(self.recovery(self.ze_bs_count, false))
+                    let (backs, escape_composition) =
+                        word_level_recovery_params(false, self.ze_bs_count);
+                    Some(self.recovery(backs, escape_composition))
                 }
             },
             DetectionResult::StaleConfirm => {
@@ -297,7 +336,9 @@ impl LiteralDetectCore {
                     self.romaji,
                 );
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
-                Some(self.recovery(0, false))
+                let (backs, escape_composition) =
+                    word_level_recovery_params(true, self.ze_bs_count);
+                Some(self.recovery(backs, escape_composition))
             }
         }
     }
