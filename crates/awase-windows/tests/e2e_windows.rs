@@ -1085,6 +1085,139 @@ fn e2e_ime_status_detection() {
     }
 }
 
+/// Read the current IME composition string (GCS_COMPSTR) for a window's
+/// active IME context. Returns `None` when there is no composition in
+/// progress or the IME context is unavailable.
+unsafe fn get_composition_string(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::Win32::UI::Input::Ime::{
+        GCS_COMPSTR, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    };
+
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return None;
+    }
+
+    // First call with no buffer to get the required byte length.
+    let len_bytes = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+    if len_bytes <= 0 {
+        let _ = ImmReleaseContext(hwnd, himc);
+        return None;
+    }
+    let len_bytes = len_bytes.cast_unsigned();
+
+    // Use a u16 buffer directly (GCS_COMPSTR data is UTF-16) so no
+    // alignment-changing pointer cast is needed when reading it back.
+    let mut buf = vec![0u16; len_bytes as usize / 2];
+    let written = ImmGetCompositionStringW(
+        himc,
+        GCS_COMPSTR,
+        Some(buf.as_mut_ptr().cast()),
+        len_bytes,
+    );
+    let _ = ImmReleaseContext(hwnd, himc);
+
+    if written <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buf))
+}
+
+/// Poll `get_composition_string` until it returns a non-empty string or the
+/// deadline passes. IME composition updates asynchronously with respect to
+/// SendInput, so a single immediate read can race the TSF/IMM update.
+unsafe fn wait_for_composition_string(
+    hwnd: windows::Win32::Foundation::HWND,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        if let Some(s) = get_composition_string(hwnd) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn e2e_msime_romaji_to_kana_conversion_interactive() {
+    init_test_logging();
+    if !is_interactive_session() {
+        log::info!(
+            "Skipping MS-IME romaji conversion test (set AWASE_E2E_INTERACTIVE=1)"
+        );
+        return;
+    }
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME romaji->kana conversion (SendInput) ===");
+
+    unsafe {
+        log_system_info();
+
+        if !is_japanese_ime_available() {
+            log::warn!("Japanese IME not installed, skipping MS-IME conversion test");
+            return;
+        }
+
+        let Some(win) = TestEditWindow::create() else {
+            log::error!("Could not create test window, skipping");
+            return;
+        };
+        win.clear();
+        win.focus();
+
+        // Turn the IME on so SendInput keystrokes go through romaji->kana
+        // conversion instead of being typed literally.
+        set_ime_open(win.edit_hwnd, true);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !get_ime_open(win.edit_hwnd) {
+            log::warn!("Could not enable IME, skipping MS-IME conversion test");
+            return;
+        }
+
+        // Type "ka" via SendInput (VK_K, VK_A). MS-IME's default romaji
+        // table composes this to the hiragana "か" without needing an
+        // explicit henkan (space) conversion step.
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{304B}"), // か
+            "composing string should be 'か' after typing 'ka', got: {compstr:?}"
+        );
+
+        // Confirm the composition (Enter commits the current compstr as-is,
+        // without opening a kanji conversion candidate list).
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{304B}",
+            "confirmed text should be 'か', got: '{text}'"
+        );
+
+        // Cleanup
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME romaji->kana conversion test completed ===");
+    }
+}
+
 #[test]
 fn e2e_engine_with_ime_context() {
     init_test_logging();
