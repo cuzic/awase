@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! フォーカス検出・注入モード決定に関する型定義モジュール。
 //!
 //! 以前は `runtime::mod` に置かれていたが、focus 層に移動した（逆依存解消）。

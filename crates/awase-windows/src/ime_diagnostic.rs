@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! IME 状態の診断スナップショット（Phase 1: 観測強化）。
 //!
 //! フォーカス変更直後・出力直前など重要タイミングで IME 周辺の各種状態を

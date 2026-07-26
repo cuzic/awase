@@ -140,6 +140,7 @@ pub(crate) struct RuntimeDiagnosticSnapshot {
 }
 
 impl Runtime {
+    #[allow(unsafe_code)] // read_os_modifiers() が Win32 GetKeyState を呼ぶ
     pub(crate) fn build_ctx(&self) -> InputContext {
         // SAFETY: `read_os_modifiers` は Win32 `GetKeyState` を呼ぶのみで副作用はない。
         //         メインスレッドから呼ばれるため、スレッド要件を満たしている。
@@ -640,6 +641,7 @@ impl Runtime {
     /// sync key で guard が起動された後、KeyUp で OS が IME を切り替えてから呼ばれる。
     /// guard 解除 → IME 状態 refresh → Engine 通知 → バッファキー再処理。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
+    #[allow(unsafe_code)] // poll_and_classify_ime() が Win32 IMM API を呼ぶ
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除し、保留キーを回収
         let keys = self.platform_state.gate.sync_key_gate.deactivate();
@@ -983,6 +985,7 @@ impl Runtime {
     ///
     /// エンジン状態・IME・修飾キー・フック・キャッシュをすべて初期状態に戻す。
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
+    #[allow(unsafe_code)] // cancel_ime_composition() が Win32 IMM API を呼ぶ
     pub fn panic_reset(&mut self) {
         log::warn!("Panic reset triggered!");
 
@@ -1095,6 +1098,7 @@ fn send_all_modifier_key_ups() {
 /// # Safety
 /// Win32 IMM API (`ImmGetContext`, `ImmNotifyIME`, `ImmReleaseContext`) を呼び出す。
 /// メインスレッドから呼ぶこと。
+#[allow(unsafe_code)]
 unsafe fn cancel_ime_composition() {
     use std::mem::size_of;
     use windows::Win32::UI::Input::Ime::{ImmNotifyIME, NOTIFY_IME_ACTION, NOTIFY_IME_INDEX};

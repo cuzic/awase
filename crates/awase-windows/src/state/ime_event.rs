@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! IME 状態モデルの event 型定義 (Step 0)
 //!
 //! Reducer リファクタリングの足場として、IME 状態変更に関する全 event を表現する。
