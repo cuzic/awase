@@ -21,6 +21,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
+      # 注意: nextestは対象0件だとexit code 4で失敗する(cargo testは0件でも
+      # exit 0)。今のステップは全て実行時に1件以上ヒットするコマンドのみだが、
+      # 将来 #[cfg(windows)] 専用テストだけを対象にするステップをLinux側に
+      # うっかり追加すると突然赤くなる。追加時は事前に実行件数を確認すること。
       - run: cargo nextest run --lib
       # awase-windows は Windows 専用コードだが、state/ 層のユニットテストと
       # architecture_guard / golden_scenarios / layer_boundary_guard は
@@ -118,6 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-machete
       - run: cargo machete
 
@@ -130,6 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
 
@@ -144,11 +150,13 @@ jobs:
       - name: Clippy (awase-windows)
         run: cargo clippy -p awase-windows -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity
 
+      # --locked: コミット済みCargo.lock(audit/machete jobが検査した実体)からの
+      # 意図しないドリフトをpush/PR毎に検知する(release.ymlと同じ理由)。
       - name: Build awase.exe
-        run: cargo build --release -p awase-windows
+        run: cargo build --release --locked -p awase-windows
 
       - name: Build awase-settings.exe
-        run: cargo build --release -p awase-settings
+        run: cargo build --release --locked -p awase-settings
 
       # awase-settings は今まで実 Windows でテストが一度も走っていなかった
       # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
@@ -181,11 +189,16 @@ jobs:
       # push/PR ゲートで検知できるよう通常の windows-build job にも組み込む。
       # TSF_OBS 等のグローバル状態を触るテストは observer.rs/probe.rs/
       # literal_detect_fsm.rs/probe_fsm.rs の4ファイルが単一の TSF_OBS_TEST_LOCK で
-      # 直列化済み（上記修正で統一）だった。2026-07-26、cargo test から cargo nextest
-      # へ移行（プロセス単位でテストを分離するランナー）したことで、各テストが別
-      # プロセスで実行され TSF_OBS static もプロセスごとに独立するため、この種の
-      # クロステスト汚染は構造的に発生しなくなった（TSF_OBS_TEST_LOCKは無害だが
-      # 冗長化）。ブロック化（continue-on-errorなし）は維持する。
+      # 直列化済み（上記修正で統一）。2026-07-26、この windows-build job の
+      # cargo test を cargo nextest（プロセス単位でテストを分離するランナー）に
+      # 移行したことで、この経路では各テストが別プロセスで実行され TSF_OBS static も
+      # プロセスごとに独立するためクロステスト汚染は構造的に発生しなくなった。
+      # ただし TSF_OBS_TEST_LOCK 自体は削除しないこと: (a) 開発者がローカルで
+      # 素の `cargo test` を実行する経路は今も同一プロセス内スレッド並列のまま、
+      # (b) .cargo/mutants.toml・.cargo/mutants-awase-windows.toml・
+      # mutants-windows.yml のいずれも test_tool = "nextest" を指定しておらず、
+      # cargo-mutants は既定の `cargo test` を使うため、この2経路では引き続き
+      # 本ロックが唯一の防御。ブロック化（continue-on-errorなし）は維持する。
       - name: Run lib unit tests (Windows)
         run: cargo nextest run --lib -p awase-windows
 
