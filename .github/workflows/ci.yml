@@ -25,13 +25,25 @@ jobs:
       # exit 0)。今のステップは全て実行時に1件以上ヒットするコマンドのみだが、
       # 将来 #[cfg(windows)] 専用テストだけを対象にするステップをLinux側に
       # うっかり追加すると突然赤くなる。追加時は事前に実行件数を確認すること。
-      - run: cargo nextest run --lib
-      # awase-windows は Windows 専用コードだが、state/ 層のユニットテストと
-      # architecture_guard / golden_scenarios / layer_boundary_guard は
-      # ソースをテキスト走査する第二防衛線でプラットフォーム非依存なため Linux でも走る。
+      #
+      # 旧: 素の `cargo nextest run --lib` はルートの`awase`パッケージのみが
+      # 対象で、timed-fsm(38件)とawase-linux(9件)がCIで一度も実行されて
+      # いなかった。2026-07-26、実測で `--workspace --lib` が
+      # Linux上で937件(awase 702 + awase-windows 188 + timed-fsm 38 +
+      # awase-linux 9)全PASSすることを確認して統合した。awase-windows は
+      # Windows 専用コードだが、state/ 層のユニットテストと architecture_guard
+      # / golden_scenarios / layer_boundary_guard はソースをテキスト走査する
+      # 第二防衛線でプラットフォーム非依存なため Linux でも走る。
       # ime_key_sequence_golden は #![cfg(windows)] なので Linux では 0 tests。
-      # 実際の assert は windows-build ジョブで実行する。
-      - run: cargo nextest run --lib -p awase-windows
+      # 実際の assert は windows-build ジョブで実行する。awase-settings は
+      # lib target を持たないため `--lib` 指定で自動的に対象外になる
+      # (`-p awase-settings --lib` を明示すると "no library targets found"
+      # でexit 101になるため、`-p`列挙ではなく`--workspace`を使うこと)。
+      # doctest(timed-fsmに18件)はnextestが実行しないため対象外のまま
+      # (`cargo test --doc --workspace` はLinux上でwin32-workerのdoctestが
+      # `#![cfg(windows)]`で消えたクレートを参照してFAILするため、追加するなら
+      # `cargo test --doc -p timed-fsm` に限定すること)。
+      - run: cargo nextest run --workspace --lib
       - run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard
 
   windows-cross-check:
