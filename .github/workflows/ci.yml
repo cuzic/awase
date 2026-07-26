@@ -121,6 +121,18 @@ jobs:
       - uses: taiki-e/install-action@cargo-machete
       - run: cargo machete
 
+  # push/pull_request 毎にブロッキングで実行する。cargo-audit はコード変更が
+  # 無くても新しい advisory の公開だけで赤くなり得るが、他ジョブ(clippy pedantic+
+  # nursery deny 等)と同様にこのリポジトリは検知したら都度 .cargo/audit.toml で
+  # トリアージする方針を採る(2026-07-26、Task #2でquick-xml等を実際にこの方式で
+  # 処理済み)。無関係なPRが赤くなるコストより、脆弱性の見逃しを防ぐ利益を優先する。
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cargo-audit
+      - run: cargo audit
+
   windows-build:
     runs-on: windows-latest
     steps:
