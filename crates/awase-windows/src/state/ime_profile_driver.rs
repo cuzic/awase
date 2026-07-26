@@ -84,6 +84,10 @@ pub enum ImeOpenMechanism {
 /// `state/app_ime_policy.rs::AppImePolicy::default_feedback` を SSOT とし、drift 回帰
 /// テスト（`tests` の `assert_policy_parity`）で両者の一致を固定する。全面移行
 /// （Phase 1e）で `AppImePolicy` を撤去した時点でドライバ側が SSOT になる。
+///
+/// `Sync` を要求するのは、Phase 1 で `ime_controller.rs::ImeController::strategies`
+/// （`[&'static dyn ImeOpenStrategy; N]`、`ImeOpenStrategy: Sync`）と同型に
+/// `[&'static dyn ImeProfileDriver; N]` として保持する想定のため。
 pub trait ImeProfileDriver: Sync {
     /// 物理 KANJI / VK_F3 / VK_F4 を awase が完全所有するか。
     ///
@@ -436,8 +440,13 @@ mod tests {
     /// 保持する設計、`ime_controller.rs::ImeController::strategies` と同型）。
     #[test]
     fn driver_is_usable_as_trait_object() {
-        let driver: &dyn ImeProfileDriver = &ImmCrossDriver;
-        assert!(driver.owns_physical_kanji());
+        // strategies (`[&'static dyn ImeOpenStrategy; N]`, `ImeOpenStrategy: Sync`)
+        // と同型に保てること = `dyn ImeProfileDriver` が Sync であることを固定する
+        // （trait の Sync 境界が外れたらこのテストが壊れて気付ける）。
+        fn assert_sync<T: Sync + ?Sized>() {}
+        assert_sync::<dyn ImeProfileDriver>();
+        let drivers: [&dyn ImeProfileDriver; 1] = [&ImmCrossDriver];
+        assert!(drivers[0].owns_physical_kanji());
     }
 
     // ── Phase 1a/1b: 新ドライバ × AppImePolicy SSOT の parity 回帰 ──
