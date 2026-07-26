@@ -468,6 +468,23 @@ BUG-09 修正の本来の成果（`WM_IME_KIND_CHANGED` → warmup 戦略切替�
 オーナー問題（`msime_key_assignment.rs`、コミット a0a4f68 の検出ポップアップ）。
 本修正は乖離が起きた後でも先頭文字リテラル化を防ぐ第二の防衛線。
 
+**追補1（2026-07-25）: `InjectionMode::Vk` への拡張** 当初の修正は
+`InjectionMode::Tsf`（WezTerm 等、`force_tsf` 設定アプリ）にしか `ms_ime_gate_defer`
+を配線していなかった。`InjectionMode::Vk`（Chrome/Edge/Electron、および `force_tsf`
+未設定の既定 TsfNative アプリ = Windows Terminal 等）は `needs_f2_probe()` が
+MS-IME 戦略で常に false のため GJI probe 分岐にも入らず、cold-start 保護が構造的に
+存在しなかった。`IMC_GETCONVERSIONMODE` の観測自体は injection mode に依存しない
+（`send_chrome_gji_reinit_and_poll` が Vk/Chrome 経路で同一 API を既に本番運用している
+実績あり）ため、`ms_ime_gate_defer` を `target: TransmitTarget` でパラメータ化し
+`send_romaji_batched`（Vk モード）からも呼ぶよう拡張した。`MsImeReadyCoro` の
+Phase 2 Transmit も `TransmitTarget::Tsf` 固定から `target` 経由に変更。
+**実機検証は未実施**（Vk 対象アプリで実際に本バグと同型のリテラル化が起きるかの
+確認、および IMC がその環境で読めるかの確認が必要）。give-up（期限切れ）時は
+未確認のまま強制送信するため、IMC が読めない Vk アプリでは引き続き無保護になる
+残留リスクがある。新規ファイルの追加は不要（既存の `ms_ime_gate_defer`/
+`MsImeReadyCoro` を共用）。回帰テストは
+`ms_ime_ready_coro.rs::tests::coro_transmits_via_chrome_target_when_installed_for_vk_mode`。
+
 ---
 
 ## BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読し、ユーザーの IME OFF を Engine ON で上書きし続ける
