@@ -15,14 +15,21 @@
 //! （フォーカス先の conversion mode。準備完了で NATIVE ビットが立つ）を使う。
 //! Chrome 経路の `send_chrome_gji_reinit_and_poll` で運用実績のあるシグナル。
 //!
+//! この観測シグナル自体は injection mode に依存しないため、`InjectionMode::Vk`
+//! （Chrome/Edge/Electron、既定設定の TsfNative アプリ）にも同じゲートを展開している
+//! （`Output::ms_ime_gate_defer` 参照）。`target: TransmitTarget` で Phase 2 の送信先を
+//! Tsf/Chrome のどちらにするか切り替える。
+//!
 //! ```text
-//! send_romaji_as_tsf（MS-IME + TSF mode + ImeModeFsm 未確認）
+//! send_romaji_as_tsf / send_romaji_batched（MS-IME + ImeModeFsm 未確認）
 //!   ├─ romaji を保持して MsImeReadyCoro を pending_tsf に設置
 //!   ├─ Output::start_ms_ime_ready_poll が IMC ポーリング開始（10ms 間隔、async）
 //!   │    └─ ImeModeFsm を on_conversion_mode_read で確定させる
 //!   └─ コルーチン: env.ime_mode が NATIVE 確認されるまで tick 待機
-//!        ├─[確認]────────► Transmit(Tsf) → deferred VK flush → Done
-//!        └─[期限切れ]────► 強制 Transmit（安全弁。give-up latch はポーリング側が設定）
+//!        ├─[確認]────────► Transmit(target) → deferred VK flush → Done
+//!        └─[期限切れ]────► 強制 Transmit（安全弁。give-up latch はポーリング側が設定。
+//!                          未確認のまま送るため IMC が読めない環境では先頭文字が
+//!                          リテラル化する可能性が残る）
 //! ```
 //!
 //! probe 中に届いた後続キーは既存の deferred VK 機構
@@ -58,6 +65,7 @@ async fn ms_ime_ready_coro_body(
     cold_seq: Generation,
     romaji: String,
     deadline_ms: u64,
+    target: TransmitTarget,
 ) {
     // ── Phase 1: ImeModeFsm の NATIVE 確認待ち ─────────────────────────────
     // 確認の実体は Output::start_ms_ime_ready_poll の async IMC ポーリング。
@@ -101,7 +109,7 @@ async fn ms_ime_ready_coro_body(
                     literal_detect_ms: crate::tuning::RAW_TSF_LITERAL_DETECT_MS,
                 },
                 romaji,
-                target: TransmitTarget::Tsf,
+                target,
             },
             ProbeAction::Done,
         ],
@@ -112,7 +120,8 @@ async fn ms_ime_ready_coro_body(
 /// MS-IME confirm-then-transmit コルーチン。
 ///
 /// [`TickableFsm`] を実装し `pending_tsf` に格納される。
-/// 設置は `Output::ms_ime_gate_defer`（`send_romaji_as_tsf` のゲート）。
+/// 設置は `Output::ms_ime_gate_defer`（`send_romaji_as_tsf` / `send_romaji_batched`
+/// のゲート）。
 pub(crate) struct MsImeReadyCoro {
     coro: StepCoro<TsfEnvSnapshot, Vec<ProbeAction>>,
     cold_seq: Generation,
@@ -121,11 +130,16 @@ pub(crate) struct MsImeReadyCoro {
 }
 
 impl MsImeReadyCoro {
-    pub(crate) fn new(romaji: &str, cold_seq: Generation, deadline_ms: u64) -> Self {
+    pub(crate) fn new(
+        romaji: &str,
+        cold_seq: Generation,
+        deadline_ms: u64,
+        target: TransmitTarget,
+    ) -> Self {
         let guard = OutputActiveGuard::begin();
         let romaji = romaji.to_string();
         let mut coro = StepCoro::new(async move |ch| {
-            ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms).await;
+            ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms, target).await;
         });
         // pending_tsf に格納して外部から本物の tick を受け取り始める前に prime() で
         // 消費しておく（詳細は `GjiWarmupCoro::new` のコメント参照）。
@@ -193,7 +207,7 @@ mod tests {
     #[test]
     fn coro_waits_until_confirmed_then_transmits() {
         let deadline = crate::hook::current_tick_ms() + 60_000;
-        let mut coro = MsImeReadyCoro::new("wo", Generation::new(7), deadline);
+        let mut coro = MsImeReadyCoro::new("wo", Generation::new(7), deadline, TransmitTarget::Tsf);
 
         // 未確認の間は待機（アクションなし）
         for _ in 0..3 {
@@ -216,7 +230,7 @@ mod tests {
     fn coro_transmits_on_deadline_even_without_confirmation() {
         // 安全弁: IMC が読めない環境でも期限でタイピングを止めない。
         let deadline = crate::hook::current_tick_ms(); // 即座に期限切れ
-        let mut coro = MsImeReadyCoro::new("ka", Generation::new(8), deadline);
+        let mut coro = MsImeReadyCoro::new("ka", Generation::new(8), deadline, TransmitTarget::Tsf);
 
         let actions = coro.tick(env(ImeModeState::Unknown, false));
         assert_eq!(actions.len(), 2);
