@@ -226,6 +226,28 @@ mod tests {
         assert!(matches!(actions[1], ProbeAction::Done));
     }
 
+    /// Vk 注入モード（Chrome/Edge/Electron 等）向け: ゲートが `TransmitTarget::Chrome` で
+    /// 設置された場合、Phase 2 の Transmit も Chrome ターゲットで発行されること。
+    /// `TransmitTarget::Tsf` へのハードコードが復活する退行を防ぐための固定テスト。
+    #[test]
+    fn coro_transmits_via_chrome_target_when_installed_for_vk_mode() {
+        let deadline = crate::hook::current_tick_ms() + 60_000;
+        let mut coro =
+            MsImeReadyCoro::new("ka", Generation::new(9), deadline, TransmitTarget::Chrome);
+
+        let actions = coro.tick(env(ImeModeState::Hiragana, false));
+        assert!(actions.is_empty(), "未確認中は待機するはず: {actions:?}");
+
+        let actions = coro.tick(env(ImeModeState::Hiragana, true));
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(
+            &actions[0],
+            ProbeAction::Transmit { romaji, target: TransmitTarget::Chrome, plan, .. }
+                if romaji == "ka" && !plan.needs_literal
+        ));
+        assert!(matches!(actions[1], ProbeAction::Done));
+    }
+
     #[test]
     fn coro_transmits_on_deadline_even_without_confirmation() {
         // 安全弁: IMC が読めない環境でも期限でタイピングを止めない。
