@@ -187,7 +187,7 @@ jobs:
 
       # src/ 内の #[cfg(windows)] ユニットテスト（composition_fsm/probe_fsm/
       # literal_detect_fsm/gji_fsm/observer/probe_io/hook 等）は、Linux 側 test job の
-      # `cargo nextest run --lib -p awase-windows`(旧 `cargo test --lib -p awase-windows`)
+      # `cargo nextest run --workspace --lib`(旧 `cargo test --lib -p awase-windows`)
       # では #[cfg(windows)] ゆえ 0 tests になり、この windows-build job もこれまで
       # `--lib` を一度も実行していなかったため、push/PR 毎の通常 CI では事実上どこでも
       # 実行されていなかった。
