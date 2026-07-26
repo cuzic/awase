@@ -7,6 +7,7 @@ use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::warmup::probe_fsm::TransmitTarget;
 use crate::vk::VK_OEM_MINUS;
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
@@ -202,6 +203,18 @@ impl Output {
             return;
         }
 
+        // MS-IME confirm-then-transmit ゲート（BUG-13 の Vk 注入モードへの拡張）:
+        // warm GJI もここに到達しうるが、ゲート冒頭の needs_f2_probe() ガードで即
+        // false になり no-op（GJI 戦略は上の prepend_f2_warmup 分岐が cold-start を
+        // 担う）。実際にゲートが発動するのは MsImeStrategy（needs_f2_probe()=false）
+        // のときのみ。IME ON 遷移直後（OS 準備に実測 ~130-300ms、WT×Tsf モードでの
+        // 計測値）でも即送信すると先頭 VK がリテラル化する（「を」→「wお」、BUG-13）。
+        // 従来 Tsf モードにしか配線していなかったが、IMC_GETCONVERSIONMODE の観測
+        // 自体は injection mode に依存しないため Vk モードにも展開する。
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome) {
+            return;
+        }
+
         // warm パス: 即座にバッチ送信
         Self::send_romaji_batch_immediate(romaji, &chars);
     }
@@ -308,7 +321,7 @@ impl Output {
         // MsImeStrategy は needs_f2_probe()=false のため上の GJI probe 分岐に入らず、
         // IME ON 遷移直後（OS 準備に実測 ~130-300ms）でも即送信して先頭 VK がリテラル化
         // していた（「を」→「wお」）。ImeModeFsm の NATIVE 確認が取れるまで defer する。
-        if self.ms_ime_gate_defer(romaji) {
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf) {
             return;
         }
 
@@ -318,16 +331,31 @@ impl Output {
 
     /// MS-IME confirm-then-transmit ゲート（BUG-13）。defer した場合 `true` を返す。
     ///
-    /// 発動条件: MS-IME 戦略（GJI probe 非対象）+ TSF mode + `ImeModeFsm` が
-    /// NATIVE 未確認 + give-up latch なし。発動時は romaji を `MsImeReadyCoro` に
-    /// 預けて IMC 確認ポーリングを開始する。probe 進行中の後続キーは順序維持のため
-    /// 無条件で deferred キューに積む。
-    fn ms_ime_gate_defer(&self, romaji: &str) -> bool {
+    /// 発動条件: MS-IME 戦略（GJI probe 非対象）+ `ImeModeFsm` が NATIVE 未確認 +
+    /// give-up latch なし。発動時は romaji を `MsImeReadyCoro` に預けて IMC 確認
+    /// ポーリングを開始する。probe 進行中の後続キーは順序維持のため無条件で
+    /// deferred キューに積む。
+    ///
+    /// `target` は呼び出し元の injection mode に対応する送信先
+    /// （`send_romaji_as_tsf` → `Tsf`、`send_romaji_batched` → `Chrome`）。
+    /// `IMC_GETCONVERSIONMODE` の観測自体は injection mode に依存しないため、
+    /// 呼び出し元を切り替えるだけで両モードに同じゲートを展開できる
+    /// （`InjectionMode::Unicode` は IME composition を経由しないため元々このゲートを
+    /// 呼ばず、対象外のままでよい）。
+    ///
+    /// GJI の raw TSF literal 再送経路（`Output::flush_raw_tsf_literal_romaji` から
+    /// `send_romaji_batched` 経由で呼ばれる）もこの関数を通るが、GJI 由来のため
+    /// 冒頭の `needs_f2_probe()` ガードで即 false になり no-op（GJI には別途 F2 probe /
+    /// LiteralDetect の保護がある）。この no-op は偶然ではなく、raw literal の記録自体が
+    /// 常に `gji_active`（`gji_is_active_ime()` / `env.gji_active`）でゲートされている
+    /// ため（`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
+    /// `enter_transmit_chrome`）に成り立つ。記録から `WM_DRAIN_OUTPUT_QUEUE` 経由の
+    /// flush までの間に `active_ime_kind` が GJI→MS-IME に切り替わるレースは、TIP 検出が
+    /// 2 秒間隔ポーリング + 2 tick 連続一致デバウンス（`gji_monitor.rs`）であるのに対し
+    /// flush は同一メッセージループ内で完結するため、実質的に起こり得ない。
+    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget) -> bool {
         // GJI 戦略時は F2 probe 機構（prepend_f2_warmup 分岐）が cold-start を担う。
         if self.warmup_coord.needs_f2_probe() {
-            return false;
-        }
-        if !self.is_tsf_mode() {
             return false;
         }
         // 既に probe/coro 進行中 → 確認状態に関わらず defer（送信順序の維持）。
@@ -344,8 +372,8 @@ impl Output {
             }
             let cold_seq = self.composition.cold_start_count();
             log::info!(
-                "[msime-ready] cold={cold_seq} IME mode 未確認 (state={:?} confirmed={}) → \
-                 {romaji:?} を defer して IMC 確認待ち",
+                "[msime-ready] cold={cold_seq} target={target:?} IME mode 未確認 \
+                 (state={:?} confirmed={}) → {romaji:?} を defer して IMC 確認待ち",
                 fsm.state(),
                 fsm.is_confirmed(),
                 cold_seq = cold_seq.value(),
@@ -358,6 +386,7 @@ impl Output {
             romaji,
             cold_seq,
             deadline_ms,
+            target,
         ));
         self.install_pending_tsf(coro);
         // WindowsPlatform::send_keys が pending_tsf_timer() で TIMER_TSF_PROBE を起動する
