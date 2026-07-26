@@ -1,5 +1,3 @@
-#![allow(unsafe_code)]
-// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! 起動シーケンス（Bootstrap）
 //!
 //! `run()` から呼ばれる起動専用の初期化ヘルパー群。
