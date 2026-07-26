@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! Phase 2: MSAA (IAccessible) によるロールベース判定
 
 use crate::focus::FocusKind;

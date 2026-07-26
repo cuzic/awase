@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! IME 状態の観測 — `read_ime_state_full()` を呼び出して観測スナップショットを返す。
 //!
 //! ## 設計方針

@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! Windows 自動起動管理（HKCU Run レジストリキー経由）
 //!
 //! `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run` に

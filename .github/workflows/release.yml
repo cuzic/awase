@@ -27,11 +27,14 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      # --locked: Cargo.lock(コミット済み、audit/machete CIが検査した実体)と
+      # 異なる依存解決でビルドしてしまうと、CI での監査結果が実際の配布物の
+      # 依存を保証しなくなる。ズレがあれば失敗させて気づけるようにする。
       - name: Build awase.exe
-        run: cargo build --release -p awase-windows
+        run: cargo build --release --locked -p awase-windows
 
       - name: Build awase-settings.exe
-        run: cargo build --release -p awase-settings
+        run: cargo build --release --locked -p awase-settings
 
       - name: Prepare distribution
         shell: bash

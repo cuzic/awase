@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! TSF cold-start ウォームアップシーケンス。
 //!
 //! [`ColdWarmupSequence::run_start`] は IMM32 ローマ字モード復元・診断ログ・

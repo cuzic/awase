@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! IME ON/OFF 制御の Strategy パターン実装。
 //!
 //! `WindowsPlatform::apply_ime_open` の内部メカニズム選択ロジックを

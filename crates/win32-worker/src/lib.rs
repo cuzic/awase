@@ -37,7 +37,6 @@
 //! wakes within the OS timer resolution (typically ≤ 15 ms).
 
 #![cfg(windows)]
-#![allow(unsafe_code)]
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -51,10 +50,13 @@ use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingl
 struct EventHandle(HANDLE);
 
 // HANDLE is a process-global resource and safe to send across threads.
+#[allow(unsafe_code)]
 unsafe impl Send for EventHandle {}
+#[allow(unsafe_code)]
 unsafe impl Sync for EventHandle {}
 
 impl Drop for EventHandle {
+    #[allow(unsafe_code)]
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
     }
@@ -89,6 +91,7 @@ impl ShutdownToken {
     ///     }
     /// });
     /// ```
+    #[allow(unsafe_code)]
     pub fn sleep_ms(&self, ms: u32) -> ControlFlow<()> {
         let result = unsafe { WaitForSingleObject((self.0).0, ms) };
         if result == WAIT_OBJECT_0 {
@@ -111,6 +114,7 @@ impl ShutdownToken {
     /// });
     /// ```
     #[must_use]
+    #[allow(unsafe_code)]
     pub fn is_shutdown(&self) -> bool {
         unsafe { WaitForSingleObject((self.0).0, 0) == WAIT_OBJECT_0 }
     }
@@ -155,6 +159,7 @@ impl WorkerThread {
     /// # Panics
     ///
     /// Panics if `CreateEventW` or `thread::Builder::spawn` fails.
+    #[allow(unsafe_code)]
     pub fn spawn(name: &str, f: impl FnOnce(ShutdownToken) + Send + 'static) -> Self {
         // Manual-reset event, initially non-signalled.
         let raw = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
@@ -181,6 +186,7 @@ impl WorkerThread {
         self.do_shutdown();
     }
 
+    #[allow(unsafe_code)]
     fn do_shutdown(&mut self) {
         unsafe { SetEvent((self.event).0) };
         if let Some(h) = self.handle.take() {
