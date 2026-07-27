@@ -550,9 +550,12 @@ impl TestEditWindow {
         log::info!("Window created: hwnd={:?} class=AwaseTestWindow", hwnd);
         log::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
 
-        // Show window and set focus
+        // Show window and set focus. Plain SetForegroundWindow can lose to
+        // another window that already holds the foreground (observed on
+        // real hardware to cause intermittent failures across otherwise
+        // unrelated tests), so use the AttachThreadInput-based helper.
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
+        force_foreground(hwnd);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit_hwnd));
 
         // Process messages to complete rendering
@@ -609,8 +612,8 @@ impl TestEditWindow {
     /// Set focus to the Edit control
     unsafe fn focus(&self) {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
-        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
-        let _ = SetForegroundWindow(self.hwnd);
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        force_foreground(self.hwnd);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.edit_hwnd));
         pump_messages();
 
@@ -636,11 +639,17 @@ impl Drop for TestEditWindow {
     }
 }
 
-/// Process pending window messages
+/// Process pending window messages.
+///
+/// `TranslateMessage` is required here, not just `DispatchMessageW`: it is
+/// what turns a WM_KEYDOWN into WM_CHAR (and, when an IME is active, drives
+/// the VK_PROCESSKEY / composition pipeline). Without it, SendInput
+/// keystrokes reach the window but never produce IME composition at all.
 unsafe fn pump_messages() {
     use windows::Win32::UI::WindowsAndMessaging::*;
     let mut msg = MSG::default();
     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+        let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 }
@@ -970,6 +979,23 @@ unsafe fn is_japanese_ime_available() -> bool {
     is_japanese
 }
 
+/// Best-effort description of the current thread's active legacy IME
+/// (diagnostic only). Modern TSF-based IMEs (both MS-IME and GJI on recent
+/// Windows) don't always populate this, so `None`/empty isn't meaningful on
+/// its own — it's logged for visibility, not asserted on.
+unsafe fn get_ime_description() -> Option<String> {
+    use windows::Win32::UI::Input::Ime::ImmGetDescriptionW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+
+    let hkl = GetKeyboardLayout(0);
+    let mut buf = [0u16; 128];
+    let len = ImmGetDescriptionW(hkl, Some(&mut buf));
+    if len == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
 /// Set the IME open status
 unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bool {
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
@@ -1082,6 +1108,871 @@ fn e2e_ime_status_detection() {
         // Restore IME OFF (cleanup)
         set_ime_open(win.edit_hwnd, false);
         log::info!("=== Phase 3 IME status tests completed ===");
+    }
+}
+
+/// Read the current IME composition string (GCS_COMPSTR) for a window's
+/// active IME context. Returns `None` when there is no composition in
+/// progress or the IME context is unavailable.
+unsafe fn get_composition_string(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
+    use windows::Win32::UI::Input::Ime::{
+        GCS_COMPSTR, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+    };
+
+    let himc = ImmGetContext(hwnd);
+    if himc.is_invalid() {
+        return None;
+    }
+
+    // First call with no buffer to get the required byte length.
+    let len_bytes = ImmGetCompositionStringW(himc, GCS_COMPSTR, None, 0);
+    if len_bytes <= 0 {
+        let _ = ImmReleaseContext(hwnd, himc);
+        return None;
+    }
+    let len_bytes = len_bytes.cast_unsigned();
+
+    // Use a u16 buffer directly (GCS_COMPSTR data is UTF-16) so no
+    // alignment-changing pointer cast is needed when reading it back.
+    let mut buf = vec![0u16; len_bytes as usize / 2];
+    let written = ImmGetCompositionStringW(
+        himc,
+        GCS_COMPSTR,
+        Some(buf.as_mut_ptr().cast()),
+        len_bytes,
+    );
+    let _ = ImmReleaseContext(hwnd, himc);
+
+    if written <= 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buf))
+}
+
+/// Poll `get_composition_string` until it returns a non-empty string or the
+/// deadline passes. IME composition updates asynchronously with respect to
+/// SendInput, so a single immediate read can race the TSF/IMM update.
+unsafe fn wait_for_composition_string(
+    hwnd: windows::Win32::Foundation::HWND,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        if let Some(s) = get_composition_string(hwnd) {
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Poll until the composition string differs from `previous` (e.g. after a
+/// henkan/katakana conversion key replaces the pre-conversion reading with a
+/// converted candidate).
+unsafe fn wait_for_composition_change(
+    hwnd: windows::Win32::Foundation::HWND,
+    previous: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        if let Some(s) = get_composition_string(hwnd) {
+            if !s.is_empty() && s != previous {
+                return Some(s);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Poll until the composition is empty/gone (e.g. after Escape cancels it).
+unsafe fn wait_for_composition_cleared(
+    hwnd: windows::Win32::Foundation::HWND,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        let cleared = get_composition_string(hwnd).map_or(true, |s| s.is_empty());
+        if cleared {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Shared setup for interactive MS-IME composition tests: skip (with a log
+/// message) when the session isn't interactive or Japanese IME isn't
+/// available, otherwise create a focused Edit window with the IME turned on.
+unsafe fn setup_ime_composition_test() -> Option<TestEditWindow> {
+    if !is_interactive_session() {
+        log::info!("Skipping MS-IME composition test (set AWASE_E2E_INTERACTIVE=1)");
+        return None;
+    }
+    log_system_info();
+
+    if !is_japanese_ime_available() {
+        log::warn!("Japanese IME not installed, skipping MS-IME composition test");
+        return None;
+    }
+
+    let Some(win) = TestEditWindow::create() else {
+        log::error!("Could not create test window, skipping");
+        return None;
+    };
+    win.clear();
+    win.focus();
+
+    // Turn the IME on so SendInput keystrokes go through romaji->kana
+    // conversion instead of being typed literally.
+    set_ime_open(win.edit_hwnd, true);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if !get_ime_open(win.edit_hwnd) {
+        log::warn!("Could not enable IME, skipping MS-IME composition test");
+        return None;
+    }
+
+    Some(win)
+}
+
+#[test]
+fn e2e_msime_romaji_to_kana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME romaji->kana conversion (SendInput) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        // Type "ka" via SendInput (VK_K, VK_A). MS-IME's default romaji
+        // table composes this to the hiragana "か" without needing an
+        // explicit henkan (space) conversion step.
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{304B}"), // か
+            "composing string should be 'か' after typing 'ka', got: {compstr:?}"
+        );
+
+        // Confirm the composition (Enter commits the current compstr as-is,
+        // without opening a kanji conversion candidate list).
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{304B}",
+            "confirmed text should be 'か', got: '{text}'"
+        );
+
+        // Cleanup
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME romaji->kana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_kanji_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME kanji conversion (henkan via Space) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        // Type "namae" -> composing "なまえ" ("name"). A single mora like
+        // "me"->"目" was tried first but MS-IME's first Space candidate for
+        // very short readings can be a bare katakana transliteration rather
+        // than a kanji (observed: "め" -> "メ", not "目") — readings need to
+        // be long/common enough that the kanji candidate is unambiguously
+        // ranked first, which holds for this everyday word.
+        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        send_key_to_edit(0x4E, 0x31); // VK_N
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x4D, 0x32); // VK_M
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x45, 0x12); // VK_E
+
+        let reading =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'namae': {reading:?}");
+        assert_eq!(
+            reading.as_deref(),
+            Some("\u{306A}\u{307E}\u{3048}"), // なまえ
+            "composing string should be 'なまえ' after typing 'namae', got: {reading:?}"
+        );
+
+        // Space triggers henkan (kanji conversion).
+        log::info!("--- Sending Space to trigger henkan ---");
+        send_key_to_edit(0x20, 0x39); // VK_SPACE
+
+        let converted = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{306A}\u{307E}\u{3048}",
+            std::time::Duration::from_secs(1),
+        );
+        log::info!("Composition string after henkan: {converted:?}");
+        assert_eq!(
+            converted.as_deref(),
+            Some("\u{540D}\u{524D}"), // 名前
+            "composing string should convert to '名前' after Space, got: {converted:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{540D}\u{524D}",
+            "confirmed text should be '名前', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME kanji conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_katakana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME katakana conversion (F7) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let hiragana =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {hiragana:?}");
+        assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
+
+        // F7 is the cross-IME (MS-IME/ATOK/etc.) convention for "convert the
+        // current composition to full-width katakana", independent of any
+        // conversion dictionary/candidate ranking.
+        log::info!("--- Sending F7 to force katakana conversion ---");
+        send_key_to_edit(0x76, 0x41); // VK_F7
+
+        let katakana =
+            wait_for_composition_change(win.edit_hwnd, "\u{304B}", std::time::Duration::from_secs(1));
+        log::info!("Composition string after F7: {katakana:?}");
+        assert_eq!(
+            katakana.as_deref(),
+            Some("\u{30AB}"), // カ
+            "composing string should be 'カ' after F7, got: {katakana:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{30AB}",
+            "confirmed text should be 'カ', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME katakana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_long_phrase_composition_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME long phrase composition (no henkan) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        // "arigatou" -> "ありがとう" (thank you), a longer multi-mora
+        // composition confirmed directly without a conversion step.
+        log::info!("--- Sending 'arigatou' via SendInput ---");
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x52, 0x13); // VK_R
+        send_key_to_edit(0x49, 0x17); // VK_I
+        send_key_to_edit(0x47, 0x22); // VK_G
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x54, 0x14); // VK_T
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        send_key_to_edit(0x55, 0x16); // VK_U
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'arigatou': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
+            "composing string should be 'ありがとう', got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
+            "confirmed text should be 'ありがとう', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME long phrase composition test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_composition_cancel_escape_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME composition cancel (Escape) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending Escape to cancel composition ---");
+        send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
+
+        let cleared =
+            wait_for_composition_cleared(win.edit_hwnd, std::time::Duration::from_secs(1));
+        assert!(cleared, "composition should be cancelled after Escape");
+
+        let text = win.get_text();
+        log::info!("Edit content after Escape cancel: '{text}'");
+        assert_eq!(
+            text, "",
+            "Escape should cancel the composition without committing text, got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME composition cancel test completed ===");
+    }
+}
+
+// ─────────────────────────────────────────────
+// GJI (Google Japanese Input) — same scenario as the MS-IME baseline test,
+// run against whichever IME is currently the system default. GJI must be
+// switched to be the active default TIP for ja-JP before running this test
+// (e.g. via `Set-WinDefaultInputMethodOverride`) — this file has no
+// in-process IME-switching logic, since a fresh TestEditWindow just
+// inherits whatever the current system default is.
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_gji_romaji_to_kana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI romaji->kana conversion (SendInput) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!(
+            "Active IME description (diagnostic only): {:?}",
+            get_ime_description()
+        );
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{304B}"), // か
+            "composing string should be 'か' after typing 'ka' via GJI, got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{304B}",
+            "confirmed text should be 'か', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI romaji->kana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_kanji_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI kanji conversion (henkan via Space) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        send_key_to_edit(0x4E, 0x31); // VK_N
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x4D, 0x32); // VK_M
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x45, 0x12); // VK_E
+
+        let reading =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'namae': {reading:?}");
+        assert_eq!(
+            reading.as_deref(),
+            Some("\u{306A}\u{307E}\u{3048}"), // なまえ
+            "composing string should be 'なまえ' after typing 'namae' via GJI, got: {reading:?}"
+        );
+
+        log::info!("--- Sending Space to trigger henkan ---");
+        send_key_to_edit(0x20, 0x39); // VK_SPACE
+
+        let converted = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{306A}\u{307E}\u{3048}",
+            std::time::Duration::from_secs(1),
+        );
+        log::info!("Composition string after henkan: {converted:?}");
+        assert_eq!(
+            converted.as_deref(),
+            Some("\u{540D}\u{524D}"), // 名前
+            "composing string should convert to '名前' after Space via GJI, got: {converted:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{540D}\u{524D}",
+            "confirmed text should be '名前', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI kanji conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_katakana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI katakana conversion (F7) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let hiragana =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {hiragana:?}");
+        assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending F7 to force katakana conversion ---");
+        send_key_to_edit(0x76, 0x41); // VK_F7
+
+        let katakana = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{304B}",
+            std::time::Duration::from_secs(1),
+        );
+        log::info!("Composition string after F7: {katakana:?}");
+        assert_eq!(
+            katakana.as_deref(),
+            Some("\u{30AB}"), // カ
+            "composing string should be 'カ' after F7 via GJI, got: {katakana:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{30AB}",
+            "confirmed text should be 'カ', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI katakana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_long_phrase_composition_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI long phrase composition (no henkan) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'arigatou' via SendInput ---");
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x52, 0x13); // VK_R
+        send_key_to_edit(0x49, 0x17); // VK_I
+        send_key_to_edit(0x47, 0x22); // VK_G
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x54, 0x14); // VK_T
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        send_key_to_edit(0x55, 0x16); // VK_U
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'arigatou': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
+            "composing string should be 'ありがとう' via GJI, got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
+            "confirmed text should be 'ありがとう', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI long phrase composition test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_composition_cancel_escape_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI composition cancel (Escape) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending Escape to cancel composition ---");
+        send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
+
+        let cleared =
+            wait_for_composition_cleared(win.edit_hwnd, std::time::Duration::from_secs(1));
+        assert!(cleared, "composition should be cancelled after Escape via GJI");
+
+        let text = win.get_text();
+        log::info!("Edit content after Escape cancel: '{text}'");
+        assert_eq!(
+            text, "",
+            "Escape should cancel the composition without committing text, got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI composition cancel test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent via GJI (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF should turn the IME off via GJI"
+        );
+
+        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF again
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF must be idempotent via GJI too: sending it while \
+             already off must not toggle back on"
+        );
+
+        log::info!("=== GJI VK_IME_OFF idempotency test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_kanji_toggle_hazard_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_KANJI toggles via GJI, not idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_KANJI (1st) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_KANJI should toggle the IME off on first press via GJI"
+        );
+
+        log::info!("--- Sending VK_KANJI (2nd) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI again
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_KANJI toggles under GJI too: a second press flips back ON"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI VK_KANJI toggle hazard test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_dbe_alphanumeric_stays_open_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' via GJI (IME-off key selection regression) ==="
+    );
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_DBE_ALPHANUMERIC must NOT turn the IME 'off' under GJI either \
+             (ImmGetOpenStatus should stay true) — it only changes conversion mode"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI VK_DBE_ALPHANUMERIC stays-open test completed ===");
+    }
+}
+
+// ─────────────────────────────────────────────
+// IME-off key selection regressions
+//
+// docs/experiments.md エントリ01・.claude/rules/experiment-logging.md が
+// 記録する通り、「IME OFF に何のキーを送るか」は5日間で6回、採用と撤回が
+// 反転した(534051a → 098c663 → adb856c → b271aee → ... → 489cdf1)。
+// 最終的に MsImeDirectStrategy は VK_IME_OFF(0x1A, 冪等) を採用したが、
+// その決定打となった「なぜ他の候補が却下されたか」を実機で再現し続けることで、
+// 同じ理由をまた発見するコストを防ぐ。
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // MsImeDirectStrategy settled on VK_IME_OFF specifically because,
+        // unlike VK_KANJI, sending it while already off must NOT toggle
+        // back on (48a667a).
+        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF should turn the IME off"
+        );
+
+        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF again
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF must be idempotent: sending it while already off \
+             must not toggle back on"
+        );
+
+        log::info!("=== VK_IME_OFF idempotency test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_KANJI toggles, not idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // This documents exactly why VK_KANJI was rejected as the IME-off
+        // key across several reversals (098c663, adb856c): it is a toggle,
+        // so a second press while "off" flips it back "on" — unlike
+        // VK_IME_OFF. If this test ever starts failing because VK_KANJI
+        // became idempotent on some future Windows/MS-IME version, that's
+        // useful signal, not just noise.
+        log::info!("--- Sending VK_KANJI (1st) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_KANJI should toggle the IME off on first press"
+        );
+
+        log::info!("--- Sending VK_KANJI (2nd) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI again
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_KANJI toggles: a second press flips back ON. This hazard \
+             (not idempotent) is why awase uses VK_IME_OFF instead."
+        );
+
+        // Leave the IME in a known state for subsequent tests.
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== VK_KANJI toggle hazard test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_vk_dbe_alphanumeric_stays_open_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' (IME-off key selection regression) ==="
+    );
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // VK_DBE_ALPHANUMERIC (半角英数) switches to half-width-alphanumeric
+        // *input mode* while the IME stays "open" — it is not a true
+        // IME-off key. Treating it as one was an earlier, rejected
+        // assumption (docs/experiments.md エントリ01); VK_IME_OFF is the
+        // key that actually clears ImmGetOpenStatus().
+        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_DBE_ALPHANUMERIC must NOT turn the IME 'off' (ImmGetOpenStatus \
+             should stay true) — it only changes the conversion mode. \
+             Using it as an IME-off key was a rejected assumption; see \
+             docs/experiments.md エントリ01."
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== VK_DBE_ALPHANUMERIC stays-open test completed ===");
     }
 }
 
@@ -1635,5 +2526,363 @@ fn e2e_message_long_text() {
         assert_eq!(text, input);
 
         log::info!("Long text test passed");
+    }
+}
+
+// ─────────────────────────────────────────────
+// BUG-13 (Vk-mode gap) evidence: MS-IME cold-start against a real
+// TsfNative app (Windows Terminal), not just our own IMM32 Edit control.
+//
+// project memory msime-coldstart-vk-mode-gap: BUG-13's fix
+// (`ms_ime_gate_defer`) only guards the Tsf injection path
+// (`send_romaji_as_tsf`). The Vk injection path (`send_romaji_batched`,
+// used for `AppKind::TsfNative` apps like Windows Terminal in the default,
+// non-`force_tsf` config) has no such gate. This section drives Windows
+// Terminal directly via SendInput with NO gate/delay after turning the IME
+// on, to check whether the literal-leak race described in BUG-13
+// ("を" -> "wお") is reproducible for real against a TSF-native target.
+// ─────────────────────────────────────────────
+
+/// Force a window belonging to another process into the foreground.
+///
+/// Plain `SetForegroundWindow` is silently ignored by Windows when the
+/// calling process isn't already part of the current foreground input
+/// chain — confirmed on real hardware: calling it directly against a
+/// freshly-launched Windows Terminal window left an unrelated window (the
+/// one that already had focus) in the foreground, so SendInput went to the
+/// wrong window entirely. Temporarily attaching this thread's input queue
+/// to the current foreground thread's is the standard, reliable fix.
+unsafe fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SW_SHOW,
+        SetForegroundWindow, ShowWindow,
+    };
+
+    let fg = GetForegroundWindow();
+    let fg_thread = GetWindowThreadProcessId(fg, None);
+    let current_thread = GetCurrentThreadId();
+    let attached = fg_thread != current_thread
+        && AttachThreadInput(current_thread, fg_thread, true).as_bool();
+
+    let _ = ShowWindow(hwnd, SW_SHOW);
+    let _ = SetForegroundWindow(hwnd);
+    let _ = BringWindowToTop(hwnd);
+
+    if attached {
+        let _ = AttachThreadInput(current_thread, fg_thread, false);
+    }
+}
+
+/// Enumerate all top-level windows whose window class name matches exactly.
+unsafe fn enum_windows_by_class(class_name: &str) -> Vec<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW};
+    use windows::core::BOOL;
+
+    struct EnumCtx<'a> {
+        class_name: &'a str,
+        found: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam.0 as *mut EnumCtx<'_>);
+            let mut buf = [0u16; 256];
+            let len = GetClassNameW(hwnd, &mut buf);
+            if len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == ctx.class_name {
+                ctx.found.push(hwnd);
+            }
+            BOOL(1)
+        }
+    }
+
+    let mut ctx = EnumCtx {
+        class_name,
+        found: Vec::new(),
+    };
+    let lparam = LPARAM(std::ptr::addr_of_mut!(ctx) as isize);
+    let _ = EnumWindows(Some(callback), lparam);
+    ctx.found
+}
+
+/// Type a plain ASCII/Unicode string via `KEYEVENTF_UNICODE` SendInput
+/// (bypasses IME entirely, like `WM_CHAR`). Used only for our own scripted
+/// setup command (the `Read-Host` capture line), never for the romaji
+/// under test — that part must go through the real VK+IME path.
+unsafe fn send_unicode_string(s: &str) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    let mut inputs = Vec::with_capacity(s.len() * 2);
+    for unit in s.encode_utf16() {
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0),
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        });
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(0),
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        });
+    }
+    let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
+    let sent = SendInput(&inputs, size);
+    log::debug!("SendInput unicode string: len={} sent={sent}", s.len());
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    pump_messages();
+}
+
+#[test]
+#[allow(clippy::cognitive_complexity)] // real-hardware E2E orchestration: launch, focus, type, poll, verify
+fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
+    init_test_logging();
+    if !is_interactive_session() {
+        log::info!(
+            "Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)"
+        );
+        return;
+    }
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: Windows Terminal (TsfNative) MS-IME cold-start (BUG-13 Vk-mode gap) ==="
+    );
+
+    unsafe {
+        log_system_info();
+        if !is_japanese_ime_available() {
+            log::warn!("Japanese IME not installed, skipping");
+            return;
+        }
+
+        let before = enum_windows_by_class("CASCADIA_HOSTING_WINDOW_CLASS");
+
+        // `wt.exe` is an MSIX "app execution alias" (a reparse-point stub
+        // under %LOCALAPPDATA%\Microsoft\WindowsApps\). Plain CreateProcess
+        // (std::process::Command::new("wt")) does not resolve that alias —
+        // confirmed on real hardware to fail even though the alias works
+        // fine from anything that goes through ShellExecute, e.g.
+        // PowerShell's Start-Process. So launch it that way instead. The
+        // shell is pinned explicitly (powershell -NoProfile -NoLogo) so the
+        // setup command below doesn't depend on whatever the default
+        // profile happens to be.
+        log::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
+        let Ok(mut child) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process wt -ArgumentList '-w -1 powershell -NoProfile -NoLogo'",
+            ])
+            .spawn()
+        else {
+            log::warn!("Could not launch 'wt' (Windows Terminal not available?), skipping");
+            return;
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut new_hwnd = None;
+        while std::time::Instant::now() < deadline {
+            let current = enum_windows_by_class("CASCADIA_HOSTING_WINDOW_CLASS");
+            if let Some(&h) = current.iter().find(|h| !before.contains(h)) {
+                new_hwnd = Some(h);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let Some(hwnd) = new_hwnd else {
+            log::warn!("Windows Terminal window did not appear in time, skipping");
+            let _ = child.kill();
+            return;
+        };
+        log::info!("Found new Windows Terminal window: {hwnd:?}");
+
+        force_foreground(hwnd);
+        // Give the shell inside the new pane time to start and show its
+        // prompt before we start typing into it. A brand-new `powershell
+        // -NoProfile` process plus Windows Terminal's own PTY/render setup
+        // can take a while; a too-short wait here was observed on real
+        // hardware to silently drop the setup command (the Read-Host
+        // capture file never got created even though SendInput reported
+        // success), so this is deliberately generous.
+        std::thread::sleep(std::time::Duration::from_millis(3500));
+        pump_messages();
+
+        let actual_fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if actual_fg != hwnd {
+            log::warn!(
+                "Windows Terminal window ({hwnd:?}) did not actually become the \
+                 foreground window (foreground is {actual_fg:?} instead) — \
+                 SendInput would go to the wrong window, skipping to avoid a \
+                 false result."
+            );
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+            let _ = child.kill();
+            return;
+        }
+
+        // Read the typed line back via a `Read-Host` capture instead of
+        // clipboard select-all/copy: Windows Terminal's default keybindings
+        // for "select all" turned out not to be Ctrl+Shift+A on this
+        // install (confirmed on real hardware — the clipboard never
+        // changed, so we were reading stale content from an unrelated
+        // earlier copy). `Read-Host` sidesteps that entirely: it just
+        // captures whatever line is typed as a plain string and never
+        // executes it, so it's safe to press Enter on the IME-composed
+        // text without worrying about which app-level keybindings are
+        // configured or about accidentally running an arbitrary command.
+        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Public".into());
+        let capture_path = format!("{home}\\msime_e2e_terminal_capture.txt");
+        let _ = std::fs::remove_file(&capture_path);
+
+        // Loop over two Read-Host prompts (each appended to the capture
+        // file as soon as it's submitted): the first is a plain ASCII
+        // canary line ("probe123") we check BEFORE touching the IME at
+        // all, so a failure here isolates "typing into this window
+        // doesn't work" from "the IME-specific part doesn't work".
+        log::info!("--- Ensuring IME is off, then typing the Read-Host setup command ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF — our own ASCII setup line, not part of the test
+        send_unicode_string(&format!(
+            "for ($i=0; $i -lt 2; $i++) {{ Read-Host | Add-Content -Path '{capture_path}' -Encoding utf8 }}"
+        ));
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: safe, Read-Host only captures a string
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        pump_messages();
+
+        log::info!("--- Sending ASCII canary line 'probe123' ---");
+        send_unicode_string("probe123");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let canary_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut canary_seen = false;
+        while std::time::Instant::now() < canary_deadline {
+            if std::fs::read_to_string(&capture_path).is_ok_and(|s| s.contains("probe123")) {
+                canary_seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        log::info!("ASCII canary line observed in capture file: {canary_seen}");
+        if !canary_seen {
+            log::warn!(
+                "Plain ASCII typed via SendInput never reached the new Windows Terminal \
+                 window's Read-Host prompt at all — this is a setup/typing problem, not \
+                 something specific to the IME race. Skipping the rest of this test as \
+                 inconclusive rather than reporting a false result."
+            );
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+            let _ = child.kill();
+            let _ = std::fs::remove_file(&capture_path);
+            return;
+        }
+
+        // Turn the IME on with the SAME physical key awase itself sends
+        // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
+        // IMMEDIATELY (no gate/settle delay) type "wo" via SendInput —
+        // this is the actual BUG-13 race under test.
+        log::info!("--- Sending VK_DBE_HIRAGANA (F2) then immediately 'w' 'o', no gate ---");
+        send_key_to_edit(0xF2, 0x3C); // VK_DBE_HIRAGANA / F2
+        send_key_to_edit(0x57, 0x11); // VK_W
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        pump_messages();
+
+        // Submit the captured line to Read-Host (still just data capture,
+        // not command execution). Poll for the file rather than a single
+        // flat wait — how long Set-Content takes to appear varies. Two
+        // Enters are sent deliberately: with an active IME composition,
+        // the first Enter just confirms/commits the composed text (normal
+        // IME behavior in any text field); only a second Enter actually
+        // submits the now-plain line to the shell's Read-Host.
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: confirm IME composition
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: submit the line
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut captured = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(s) = std::fs::read_to_string(&capture_path) {
+                if s.lines().count() >= 2 {
+                    captured = Some(s);
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        log::info!("Read-Host capture file contents: {captured:?}");
+        // Only the second captured line (the actual romaji test) matters
+        // from here on; drop the canary line.
+        let captured = captured.map(|s| {
+            s.lines()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        });
+
+        // Best-effort cleanup: close the throwaway terminal window. `child`
+        // is the `wt.exe` launcher process, which typically hands off to
+        // the real (already-running or newly spawned) Windows Terminal
+        // process and exits almost immediately, so `child.kill()` below is
+        // usually a no-op — closing the window itself is what matters.
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(hwnd),
+            windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+        let _ = child.kill();
+        let _ = std::fs::remove_file(&capture_path);
+
+        let Some(captured) = captured else {
+            log::warn!(
+                "Could not read the Read-Host capture file ({capture_path}) — treating as \
+                 inconclusive, not a failure."
+            );
+            return;
+        };
+
+        // Success looks like the captured line containing "を" (properly
+        // composed/committed). A literal-leak reproduction looks like a
+        // bare 'w' immediately followed by "お" (the romaji leaked before
+        // MS-IME was ready), per BUG-13 / docs/known-bugs.md.
+        let has_wo_kana = captured.contains('\u{3092}'); // を
+        let has_literal_leak = captured.contains("w\u{304A}"); // "wお"
+        log::info!(
+            "Windows Terminal capture check: has_wo_kana={has_wo_kana} \
+             has_literal_leak={has_literal_leak} raw={captured:?}"
+        );
+
+        assert!(
+            !has_literal_leak,
+            "BUG-13-equivalent literal leak reproduced in Vk mode against Windows \
+             Terminal: got 'w' + 'お' instead of composed 'を'. This confirms the \
+             Vk injection path needs the same ms_ime_gate_defer treatment as the Tsf \
+             path — see project memory msime-coldstart-vk-mode-gap. Captured: {captured:?}"
+        );
     }
 }
