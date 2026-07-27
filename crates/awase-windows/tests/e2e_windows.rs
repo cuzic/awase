@@ -979,6 +979,23 @@ unsafe fn is_japanese_ime_available() -> bool {
     is_japanese
 }
 
+/// Best-effort description of the current thread's active legacy IME
+/// (diagnostic only). Modern TSF-based IMEs (both MS-IME and GJI on recent
+/// Windows) don't always populate this, so `None`/empty isn't meaningful on
+/// its own — it's logged for visibility, not asserted on.
+unsafe fn get_ime_description() -> Option<String> {
+    use windows::Win32::UI::Input::Ime::ImmGetDescriptionW;
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+
+    let hkl = GetKeyboardLayout(0);
+    let mut buf = [0u16; 128];
+    let len = ImmGetDescriptionW(hkl, Some(&mut buf));
+    if len == 0 {
+        return None;
+    }
+    Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
 /// Set the IME open status
 unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bool {
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext, ImmSetOpenStatus};
@@ -1483,6 +1500,61 @@ fn e2e_msime_composition_cancel_escape_interactive() {
 
         set_ime_open(win.edit_hwnd, false);
         log::info!("=== MS-IME composition cancel test completed ===");
+    }
+}
+
+// ─────────────────────────────────────────────
+// GJI (Google Japanese Input) — same scenario as the MS-IME baseline test,
+// run against whichever IME is currently the system default. GJI must be
+// switched to be the active default TIP for ja-JP before running this test
+// (e.g. via `Set-WinDefaultInputMethodOverride`) — this file has no
+// in-process IME-switching logic, since a fresh TestEditWindow just
+// inherits whatever the current system default is.
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_gji_romaji_to_kana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI romaji->kana conversion (SendInput) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!(
+            "Active IME description (diagnostic only): {:?}",
+            get_ime_description()
+        );
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{304B}"), // か
+            "composing string should be 'か' after typing 'ka' via GJI, got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{304B}",
+            "confirmed text should be 'か', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI romaji->kana conversion test completed ===");
     }
 }
 
