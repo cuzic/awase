@@ -195,3 +195,31 @@ pub(crate) fn admit_epoch_in_app<R>(
     };
     Some(f(app, accepted))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `admit()` は `current_epoch != self.focus_epoch` で棄却する。この比較演算子
+    /// (`!=`→`==`) が反転すると、epoch が一致するときに棄却・不一致のときに受理という
+    /// 完全に逆の判定になり、`current_epoch != self.focus_epoch` の目的（フォーカス変更後
+    /// の stale な probe を弾いて Engine OFF カスケードを防ぐ）が壊れる。この関数には
+    /// これまでテストが1件も無かった。
+    #[test]
+    fn admit_accepts_when_epoch_matches() {
+        let ticket = ImmLikeTicket { focus_epoch: 5 };
+        assert!(matches!(ticket.admit(5), Admission::Accept(_)));
+    }
+
+    #[test]
+    fn admit_rejects_when_epoch_differs() {
+        let ticket = ImmLikeTicket { focus_epoch: 5 };
+        match ticket.admit(6) {
+            Admission::Reject(RejectReason::FocusEpochChanged { at_spawn, current }) => {
+                assert_eq!(at_spawn, 5);
+                assert_eq!(current, 6);
+            }
+            other => panic!("expected Reject(FocusEpochChanged), got {other:?}"),
+        }
+    }
+}

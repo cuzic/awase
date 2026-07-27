@@ -640,6 +640,41 @@ mod tests {
         );
     }
 
+    /// `&&`→`||` の反転を殺すテスト。`tr_no_roman_change_yields_none` は
+    /// `roman_changed=false, curr_has_native=true` を使うが、`current` に
+    /// `ObservedKana`（`self.romaji=false` と一致）を渡していたため、
+    /// mutants で `||` に反転しても後続の第2ガード（belief 一致判定）が
+    /// 偶然 `None` を返し、結果が変わらず検知できなかった。ここでは
+    /// `self.romaji=false` と *不一致* な `ObservedRomaji` を渡すことで、
+    /// 第2ガードでは None にならないケースを作り、第1ガード
+    /// (`roman_changed && curr_has_native`) 自体の反転を露出させる。
+    #[test]
+    fn tr_no_roman_change_yields_none_even_with_mismatched_belief() {
+        // ZENKATA(romaji=false) ← JISAKANA(romaji=false): roman_changed=false,
+        // curr_has_native=true(ZenkakuKatakana は Alpha 系ではない)。
+        assert_eq!(
+            cm(CONV_ZENKATA).classify_transition(cm(CONV_JISAKANA), ObservedRomaji),
+            None
+        );
+    }
+
+    /// 上記の対称ケース: `roman_changed=true, curr_has_native=false`。
+    /// `curr_has_native=false` にするには self が eisu(Alpha系) である必要があるが、
+    /// 単純に eisu へ遷移すると最初の分岐（`self.is_eisu() && !prev.is_eisu()`）が
+    /// 先に発火してしまうため、`prev` も eisu にして最初の分岐を回避する
+    /// （HankakuAlpha は romaji ビットの有無を問わず eisu = true。
+    /// `from_u32_hanalpha_roma` 参照）。
+    #[test]
+    fn tr_roman_change_without_native_yields_none() {
+        // HankakuAlpha+romaji(0x0010) ← HankakuAlpha(CONV_EISUU, romaji なし):
+        // どちらも eisu なので最初の分岐は通らない。roman_changed=true,
+        // curr_has_native=false。
+        assert_eq!(
+            cm(0x0010).classify_transition(cm(CONV_EISUU), ObservedKana),
+            None
+        );
+    }
+
     #[test]
     fn tr_hiragana_to_zenkata_yields_kana() {
         // 0x19 → 0x0B: ROMAN 1→0, NATIVE=1 → Kana

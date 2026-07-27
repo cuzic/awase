@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! フォーカス追跡ロジック（`Runtime` の `impl` 分割）。
 //!
 //! ウィンドウフォーカス変化の検出・分類・後処理を担う。

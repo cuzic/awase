@@ -274,6 +274,21 @@ mod tests {
         }
     }
 
+    // ── KeyAction::romaji ──
+
+    /// `Romaji` からは中身を、それ以外は空文字列を返す。mutants: 固定値
+    /// (`""`/`"xyzzy"`) への置換が既存テストでは検知できなかった。
+    #[test]
+    fn key_action_romaji_extracts_string_from_romaji_variant() {
+        assert_eq!(KeyAction::Romaji("ka".to_string()).romaji(), "ka");
+    }
+
+    #[test]
+    fn key_action_romaji_is_empty_for_non_romaji_variants() {
+        assert_eq!(KeyAction::Suppress.romaji(), "");
+        assert_eq!(KeyAction::KeySequence("x".to_string()).romaji(), "");
+    }
+
     // ── ImeRelevance ──
 
     #[test]

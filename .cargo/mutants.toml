@@ -57,7 +57,11 @@ exclude_re = [
     # NicolaFsm::flush_pending の `if !was_idle { log::info!(...) }` は、
     # was_idle の真偽が変わってもログを出すかどうかが変わるだけで、
     # 返す Response や self.state には影響しない。
-    "nicola_fsm\\.rs:299:12: delete ! in NicolaFsm::flush_pending",
+    # 2026-07-27: 行番号ズレ(299→325)で除外が効かなくなっていたのを修正。
+    # `nicola_fsm.rs` の行番号ドリフトは今後も起こりうるため、除外規則の
+    # 変更時は `grep -n "if !was_idle" src/engine/nicola_fsm.rs` 等で
+    # 現在行を都度確認すること。
+    "nicola_fsm\\.rs:325:12: delete ! in NicolaFsm::flush_pending",
 
     # 等価変異体（equivalent mutant）: SyncKeyGateMachine::on_timeout の
     # `Response::pass_through()` を `Default::default()` に置換する変異
@@ -84,4 +88,12 @@ exclude_re = [
     "platform\\.rs:265:9: replace .*is_composition_warm.*",
     "platform\\.rs:270:9: replace .*is_tsf_mode.*",
     "platform\\.rs:292:9: replace .*on_passthrough_key.*",
+
+    # 等価変異体（equivalent mutant）: ConvMode::imm_conv_target (src/engine/conv.rs:122,125)
+    # の `IME_CMODE_NATIVE | IME_CMODE_KATAKANA | IME_CMODE_FULLSHAPE | IME_CMODE_ROMAN` は
+    # 0x0001/0x0002/0x0008/0x0010 という互いに排他的なビットの OR 結合。排他ビット同士では
+    # `|` と `^` は常に同じ値を返すため、`^` へのこの変異はどんな入力でも区別不可能
+    # （数学的に等価）。定数値が変わって重複ビットを持つようになった場合はこの前提が
+    # 崩れるため、その際は本除外を見直すこと。
+    "conv\\.rs:(122:82|122:60|122:39|125:60|125:39): replace \\| with \\^",
 ]

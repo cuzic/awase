@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! MS-IME「キーとタッチのカスタマイズ」割当ての起動時検出と解除案内
 //!
 //! # 背景（防ぐバグクラス: IME 状態の二重オーナー）

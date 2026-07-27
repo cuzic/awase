@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! IMM32 クロスプロセス制御能力の学習（ImmGetDefaultIMEWnd による初回判定）
 
 use crate::focus::classifier::ImmCapability;

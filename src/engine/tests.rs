@@ -4658,6 +4658,42 @@ mod engine_integration_tests {
     }
 
     #[test]
+    fn special_key_engine_on_combo_does_not_match_when_already_active() {
+        // `match_event` のガードは `(!engine_enabled || !engine_active)`。上の
+        // `_recovers_when_context_inactive_but_user_enabled` は engine_active=false の
+        // ケースのみを固定しており、`!engine_enabled` 項が削除されても
+        // （`engine_enabled || !engine_active` に壊れても）engine_active=false では
+        // 依然 true のままなので検知できない。engine が既に enabled かつ active
+        // （通常運用中）のときに限って両者は分岐する: 元のコードは EngineOn に
+        // マッチしてはならない（force_enable_and_activate の不要な再実行を防ぐ）。
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+        };
+        let engine = make_engine_with_special(special);
+        assert!(engine.is_user_enabled());
+        assert!(
+            engine.compute_active(&ime_on_ctx()),
+            "ime_on_ctx では active のはず"
+        );
+
+        let matched = engine
+            .match_special_keys_for_test(&ime_on_ctx(), &Ev::down(VK_NONCONVERT).at(100).build());
+        assert_eq!(
+            matched, None,
+            "engine が既に enabled かつ active なら engine_on コンボはマッチしてはならない"
+        );
+    }
+
+    #[test]
     fn special_key_engine_off_combo() {
         let combo = ParsedKeyCombo {
             ctrl: false,
@@ -5332,6 +5368,65 @@ mod engine_integration_tests {
                 Effect::Ime(ImeEffect::SetOpen { open: false })
             )),
             "normal ImeOff transition must emit SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// `transition_activation` の `EngineStateChanged.send_ime_key: !suppress_ime_key`
+    /// 自体は上の `active_to_inactive_transition_emits_set_open_false`（`suppress_set_open`
+    /// の `!` を検証）とは別の変異体で、これまで `send_ime_key` フィールドを直接見る
+    /// テストが無かった。通常の ImeOff 遷移（NotRomajiInput ではない）では
+    /// `send_ime_key=true` のはず。
+    #[test]
+    fn active_to_inactive_transition_normal_send_ime_key_true() {
+        let mut engine = make_test_engine();
+        assert!(engine.compute_active(&ime_on_ctx()));
+
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ui(UiEffect::EngineStateChanged {
+                    send_ime_key: true,
+                    ..
+                })
+            )),
+            "normal ImeOff transition must set send_ime_key=true, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// `NotRomajiInput`（tray での英数モード選択等）への遷移では `suppress_set_open`
+    /// (=`suppress_ime_key`) が true になり、`SetOpen` を出さず `send_ime_key=false`
+    /// のはず（ユーザーが選択した kana/katakana モードを維持するため）。
+    #[test]
+    fn active_to_inactive_transition_not_romaji_input_suppresses_send_ime_key() {
+        let mut engine = make_test_engine();
+        assert!(engine.compute_active(&ime_on_ctx()));
+
+        let not_romaji_ctx = InputContext {
+            input_mode: InputModeState::ObservedKana,
+            ..ime_on_ctx()
+        };
+        let d = engine.on_command(EngineCommand::RefreshState, &not_romaji_ctx);
+        assert!(
+            !engine.compute_active(&not_romaji_ctx),
+            "NotRomajiInput への遷移のはず"
+        );
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ui(UiEffect::EngineStateChanged {
+                    send_ime_key: false,
+                    ..
+                })
+            )),
+            "NotRomajiInput transition must set send_ime_key=false, got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "NotRomajiInput transition must not emit SetOpen, got {:?}",
             effects_of(&d)
         );
     }
