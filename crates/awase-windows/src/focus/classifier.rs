@@ -9,8 +9,6 @@ use awase::config::{AppOverrideEntry, AppOverrides};
 
 /// 学習済みキャッシュファイル名（exe と同じディレクトリ）
 const CACHE_FILENAME: &str = "cache.toml";
-/// 旧バージョンのキャッシュファイル名（移行時に削除対象）
-const LEGACY_CACHE_FILENAME: &str = "imm_cache.toml";
 
 /// IMM32 クロスプロセス制御能力の検出結果（class_name ごとにキャッシュ）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,22 +214,6 @@ impl ImmCapabilityStore {
         }
         save_section(&self.base_dir, "imm_capability", section);
         log::debug!("Saved IMM capability cache: {} entries", self.cache.len());
-    }
-
-    /// キャッシュをメモリとファイルの両方からクリアする。
-    /// `cache.toml` 全体を削除するため `InjectionModeStore` のデータも失われる。
-    pub(crate) fn clear(&mut self) -> usize {
-        let count = self.cache.len();
-        self.cache.clear();
-        for filename in [CACHE_FILENAME, LEGACY_CACHE_FILENAME] {
-            let path = self.base_dir.join(filename);
-            if let Err(e) = std::fs::remove_file(&path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    log::warn!("Failed to remove cache file {}: {e}", path.display());
-                }
-            }
-        }
-        count
     }
 }
 

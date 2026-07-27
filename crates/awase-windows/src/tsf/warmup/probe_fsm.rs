@@ -38,8 +38,9 @@ pub(crate) struct DeferredVk {
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::warmup::probe_coro_state::ProbeCoroState;
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
-use timed_fsm::coro::{yield_step, Channel, CoroStep, StepCoro};
+use timed_fsm::coro::{yield_step, Channel, StepCoro};
 
 /// `tick()` 呼び出し時に注入する環境観測値のスナップショット。
 /// テストでは任意値を注入できる。
@@ -697,11 +698,12 @@ async fn tsf_probe_coro_body(
 /// `pending_tsf` (`RefCell<Option<Box<dyn TickableFsm>>>`) に格納し、
 /// `TIMER_TSF_PROBE` ハンドラが `tick()` で 1 ステップ進める。
 pub(crate) struct TsfProbeCoro {
-    coro: StepCoro<ProbeTickInput, Vec<ProbeAction>>,
-    pending_transmit_done: Option<TransmitDonePayload>,
-    pending_vk_sent: Option<VkSentPayload>,
-    cold_seq: Generation,
-    /// RAII guard。drop で `OUTPUT_GATE.active=false`。
+    /// `tick`/`apply_transmit_done`/`apply_vk_sent`/prime のラッパー配線
+    /// （`GjiWarmupCoro` と共有、`probe_coro_state.rs` 参照）。
+    state: ProbeCoroState,
+    /// RAII guard。drop で `OUTPUT_GATE.active=false`。コルーチン生存中ずっと
+    /// active を保持する（`GjiWarmupCoro::literal_detect_guard` と異なり、
+    /// LiteralDetect フェーズ突入を待たず construction 時点から確保する）。
     _guard: OutputActiveGuard,
 }
 
@@ -715,21 +717,11 @@ impl TsfProbeCoro {
         guard: OutputActiveGuard,
     ) -> Self {
         let romaji = romaji.to_string();
-        let mut coro = StepCoro::new(async move |ch| {
+        let coro = StepCoro::new(async move |ch| {
             tsf_probe_coro_body(ch, romaji, probe, total_max_ms, cold_seq).await;
         });
-        // pending_tsf に格納して外部から本物の tick を受け取り始める前に prime() で
-        // 消費しておく（詳細は `GjiWarmupCoro::new` のコメント参照）。
-        let primed = coro.prime();
-        debug_assert!(
-            matches!(&primed, CoroStep::Yielded(actions) if actions.is_empty()),
-            "TsfProbeCoro prime() は空の ProbeAction を yield するはず: {primed:?}"
-        );
         Self {
-            coro,
-            pending_transmit_done: None,
-            pending_vk_sent: None,
-            cold_seq,
+            state: ProbeCoroState::new(coro, cold_seq, "TsfProbeCoro"),
             _guard: guard,
         }
     }
@@ -737,32 +729,11 @@ impl TsfProbeCoro {
 
 impl TickableFsm for TsfProbeCoro {
     fn tick(&mut self, env: TsfEnvSnapshot) -> Vec<ProbeAction> {
-        // BUG-27 調査用ログ: 通常 tick（Phase 1 の 10ms ポーリング等）は毎回
-        // vk_sent/transmit_done とも None のため、どちらかが Some の場合のみ出す
-        // （毎 tick 出すと Phase 1 のポーリングだけでログが埋まる）。
-        if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
-            log::debug!(
-                "[tsf-probe-vk-sent-trace] cold={} tick consuming pending_vk_sent={} \
-                 pending_transmit_done={} t={}ms",
-                self.cold_seq.value(),
-                self.pending_vk_sent.is_some(),
-                self.pending_transmit_done.is_some(),
-                crate::hook::current_tick_ms(),
-            );
-        }
-        let input = ProbeTickInput {
-            env,
-            transmit_done: self.pending_transmit_done.take(),
-            vk_sent: self.pending_vk_sent.take(),
-        };
-        match self.coro.step(input) {
-            CoroStep::Yielded(actions) => actions,
-            CoroStep::Complete => vec![ProbeAction::Done],
-        }
+        self.state.tick(env, "tsf-probe-vk-sent-trace")
     }
 
     fn cold_seq_hint(&self) -> Generation {
-        self.cold_seq
+        self.state.cold_seq()
     }
 
     /// dispatcher が `Transmit(Chrome)` を実行した後に呼ぶ。
@@ -776,39 +747,16 @@ impl TickableFsm for TsfProbeCoro {
         detector: Option<LiteralDetector>,
         literal_detect_ms: u64,
     ) -> bool {
-        match detector {
-            Some(det) => {
-                let deadline_ms = crate::hook::current_tick_ms() + literal_detect_ms;
-                self.pending_transmit_done = Some(TransmitDonePayload {
-                    romaji,
-                    ze_bs_count,
-                    detector: det,
-                    deadline_ms,
-                });
-                false
-            }
-            None => true,
-        }
+        self.state
+            .apply_transmit_done(romaji, ze_bs_count, detector, literal_detect_ms)
     }
 
     /// Chrome per-VK confirm が1 VK 送信するたびに呼ぶ。
     /// `GjiWarmupCoro::apply_vk_sent` の Chrome 版。`_guard` がコルーチン生存中ずっと
     /// active を保持しているため、追加のガード確保は不要。
     fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
-        // BUG-27 調査用ログ: overwritten=true なら、前回の apply_vk_sent が
-        // まだ tick() に消費されないまま次の apply_vk_sent が来ている
-        // （＝1 tick 内で TransmitSingleVk が2回ディスパッチされた等の異常）。
-        let overwritten = self.pending_vk_sent.is_some();
-        log::debug!(
-            "[tsf-probe-vk-sent-trace] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
-             overwritten_unconsumed={overwritten} t={}ms",
-            self.cold_seq.value(),
-            crate::hook::current_tick_ms(),
-        );
-        self.pending_vk_sent = Some(VkSentPayload {
-            detector,
-            deadline_ms,
-        });
+        self.state
+            .apply_vk_sent(detector, deadline_ms, "tsf-probe-vk-sent-trace");
     }
 }
 

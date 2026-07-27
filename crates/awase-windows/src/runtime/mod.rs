@@ -175,6 +175,12 @@ impl Runtime {
         )
     }
 
+    /// 現在のフォーカスエポック（`probe_admission::ImmLikeTicket::admit` の照合用）。
+    #[must_use]
+    pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
+        self.platform_state.focus.focus_epoch
+    }
+
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
     #[expect(clippy::missing_const_for_fn)]
     #[must_use]
@@ -258,12 +264,7 @@ impl Runtime {
             // （Engine::prev_activation は遷移確定済みのため）。既存の
             // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
             // パターンで確実に一度だけ再同期する。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] SetOpen stripped from execute_from_loop decision → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("SetOpen stripped from execute_from_loop decision");
         }
         callback
     }
@@ -395,6 +396,42 @@ impl Runtime {
         );
     }
 
+    /// settle 期間中に IME apply/decision をスキップしたとき、settle 明けに refresh で
+    /// 一度だけ再試行する「確立済みパターン」（`executor::strip_ime_set_open_if_settling`
+    /// doc 参照）を一元化する。
+    ///
+    /// 遅延は settle 残余の上限（= `focus_settle_ms()`）+ タイマー粒度マージン 50ms。
+    /// `reason` はログの `[focus-settle] {reason} → ...` に埋め込まれる、呼び出し元ごとの
+    /// 説明文（例: `"apply_force_on_for_imm_broken skipped (settling)"`）。
+    pub fn schedule_settle_retry(&mut self, reason: &str) {
+        let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+        log::debug!("[focus-settle] {reason} → {retry_ms}ms 後に refresh で再試行");
+        self.schedule_ime_refresh(retry_ms);
+    }
+
+    /// `ImeEvent::InputModeApplied`（`result` は常に `Applied`）の dispatch を一元化する。
+    ///
+    /// awase 自身の能動的な input_mode 訂正（`InputModeApplyStrategy` 参照）は、常に
+    /// `result: Applied` 固定・5 フィールドの構築が `mode`/`strategy`/`tick_ms` だけ
+    /// 違う形で複数箇所に複製されていた。`Skipped` を構築する経路は `state/ime_model.rs`
+    /// 内の別経路専用でありここでは扱わない。
+    pub fn apply_input_mode_correction(
+        &mut self,
+        mode: InputModeState,
+        strategy: crate::state::ime_event::InputModeApplyStrategy,
+        tick_ms: crate::state::TickMs,
+    ) {
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InputModeApplied {
+                mode,
+                strategy,
+                result: crate::state::ime_event::InputModeApplyResult::Applied,
+                at: tick_ms,
+            },
+            tick_ms,
+        );
+    }
+
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
@@ -477,12 +514,7 @@ impl Runtime {
             // 「これで」が「korede」化。TsfNative は open 状態を読めないため
             // 観測での自己修復も効かない）。遅延は settle 残余の上限
             // （= focus_settle_ms）+ タイマー粒度マージン 50ms。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] apply_force_on_for_imm_broken skipped (settling) → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("apply_force_on_for_imm_broken skipped (settling)");
             return;
         }
         if !(self.engine.is_user_enabled()
@@ -520,14 +552,9 @@ impl Runtime {
                     "Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                     tick_ms,
                 );
             } else {
@@ -548,12 +575,7 @@ impl Runtime {
         {
             if self.ime_apply_should_defer() {
                 // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
-                let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-                log::debug!(
-                    "[focus-settle] try_force_on_bootstrap skipped (settling) → \
-                     {retry_ms}ms 後に refresh で再試行"
-                );
-                self.schedule_ime_refresh(retry_ms);
+                self.schedule_settle_retry("try_force_on_bootstrap skipped (settling)");
                 return;
             }
             log::warn!(
@@ -733,11 +755,6 @@ impl Runtime {
         }
     }
 
-    /// 利用可能なレイアウト名の一覧を返す（トレイメニュー表示用）。
-    pub(crate) fn layout_names(&self) -> Vec<String> {
-        self.layouts.iter().map(|e| e.name.clone()).collect()
-    }
-
     /// トレイアイコンの HWND を返す。
     pub(crate) const fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
         self.platform.tray.hwnd()
@@ -822,11 +839,6 @@ impl Runtime {
     /// システムトレイのバルーン通知を表示する。
     pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
         self.platform.tray.show_balloon(title, text);
-    }
-
-    /// IMM 能力学習キャッシュをクリアして削除件数を返す。
-    pub(crate) fn clear_imm_learning(&mut self) -> usize {
-        self.platform.focus.clear_imm_learning()
     }
 
     /// 診断画面が必要とする状態を一括スナップショットとして返す。
