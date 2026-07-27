@@ -175,6 +175,12 @@ impl Runtime {
         )
     }
 
+    /// 現在のフォーカスエポック（`probe_admission::ImmLikeTicket::admit` の照合用）。
+    #[must_use]
+    pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
+        self.platform_state.focus.focus_epoch
+    }
+
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
     #[expect(clippy::missing_const_for_fn)]
     #[must_use]
