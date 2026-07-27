@@ -191,12 +191,7 @@ impl Runtime {
             // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
             // パターンで確実に一度だけ再同期する
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] SetOpen stripped from kp_run_inner decision → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
         let state_after = self.engine.debug_state_label();
         self.platform_state
@@ -255,22 +250,22 @@ impl Runtime {
         win32_async::spawn_local(async move {
             let probe = crate::ime::read_ime_state_fast_async().await;
             let _ = crate::with_app(|app| {
-                let current_epoch = app.platform_state.focus.focus_epoch;
-                let crate::state::probe_admission::Admission::Accept(accepted) =
-                    ticket.admit(current_epoch)
-                else {
-                    log::debug!("[FocusProbe] epoch rejected (focus changed since probe spawn)");
-                    return;
-                };
-                app.apply_focus_probe(
-                    probe,
-                    probe_started_ms,
-                    warmup_ms,
-                    gji_last_io_ms,
-                    last_focus_change_ms,
-                    shadow_on,
-                    active_ime_kind,
-                    accepted,
+                crate::state::probe_admission::admit_epoch_in_app(
+                    app,
+                    ticket,
+                    "[FocusProbe] epoch rejected (focus changed since probe spawn)",
+                    |app, accepted| {
+                        app.apply_focus_probe(
+                            probe,
+                            probe_started_ms,
+                            warmup_ms,
+                            gji_last_io_ms,
+                            last_focus_change_ms,
+                            shadow_on,
+                            active_ime_kind,
+                            accepted,
+                        );
+                    },
                 );
             });
         });
@@ -362,20 +357,18 @@ impl Runtime {
             let _ = crate::with_app(|app| {
                 app.platform_state.gate.idle_conv_check_in_flight = false;
                 let Some(conv) = conv else { return };
-                let current_epoch = app.platform_state.focus.focus_epoch;
-                let crate::state::probe_admission::Admission::Accept(_) =
-                    ticket.admit(current_epoch)
-                else {
-                    log::debug!(
-                        "[idle-conv-check] epoch rejected (focus changed since read spawn)"
-                    );
-                    return;
-                };
-                app.apply_idle_conv_check(
-                    conv,
-                    output_idle_ms_at_spawn,
-                    now_tick_at_spawn,
-                    explicit_action_ms_at_spawn,
+                crate::state::probe_admission::admit_epoch_in_app(
+                    app,
+                    ticket,
+                    "[idle-conv-check] epoch rejected (focus changed since read spawn)",
+                    |app, _accepted| {
+                        app.apply_idle_conv_check(
+                            conv,
+                            output_idle_ms_at_spawn,
+                            now_tick_at_spawn,
+                            explicit_action_ms_at_spawn,
+                        );
+                    },
                 );
             });
         });
@@ -736,14 +729,9 @@ impl Runtime {
                     log::info!("[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲");
                     self.kp_restore_kana_from_half_width(false);
                 } else {
-                    self.platform_state.ime.dispatch_event(
-                        crate::state::ime_event::ImeEvent::InputModeApplied {
-                            mode: new_mode,
-                            strategy:
-                                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
-                            result: crate::state::ime_event::InputModeApplyResult::Applied,
-                            at: tick_ms,
-                        },
+                    self.apply_input_mode_correction(
+                        new_mode,
+                        crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
                         tick_ms,
                     );
                     log::info!(
@@ -773,14 +761,9 @@ impl Runtime {
                 log::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
                 self.kp_restore_kana_from_half_width(false);
             } else {
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
                     tick_ms,
                 );
                 log::info!(
@@ -934,14 +917,9 @@ impl Runtime {
                     // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
                     // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
                     // 存在しない API 呼び出しを偽装することになる)。
-                    self.platform_state.ime.dispatch_event(
-                        crate::state::ime_event::ImeEvent::InputModeApplied {
-                            mode: new_mode,
-                            strategy:
-                                crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
-                            result: crate::state::ime_event::InputModeApplyResult::Applied,
-                            at: tick_ms,
-                        },
+                    self.apply_input_mode_correction(
+                        new_mode,
+                        crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
                         tick_ms,
                     );
                     log::info!(
@@ -1202,14 +1180,9 @@ impl Runtime {
                 "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 維持)"
             );
             let now_tick = crate::state::TickMs(hook::current_tick_ms());
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::InputModeApplied {
-                    mode: InputModeState::ObservedEisu,
-                    strategy:
-                        crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                    result: crate::state::ime_event::InputModeApplyResult::Applied,
-                    at: now_tick,
-                },
+            self.apply_input_mode_correction(
+                InputModeState::ObservedEisu,
+                crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
                 now_tick,
             );
             return;
@@ -1311,15 +1284,11 @@ impl Runtime {
             );
         log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
 
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::InputModeApplied {
-                mode: InputModeState::AssumedRomaji {
-                    reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
-                },
-                strategy: crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                result: crate::state::ime_event::InputModeApplyResult::Applied,
-                at: now_tick,
+        self.apply_input_mode_correction(
+            InputModeState::AssumedRomaji {
+                reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
             },
+            crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             now_tick,
         );
 
@@ -1657,47 +1626,46 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let current_epoch = app.platform_state.focus.focus_epoch;
-                        let crate::state::probe_admission::Admission::Accept(inner_accepted) =
-                            ticket.admit(current_epoch)
-                        else {
-                            log::debug!(
-                                "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)"
-                            );
-                            return;
-                        };
-                        let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-                        let ime = &mut app.platform_state.ime;
-                        // ON/OFF: High confidence (ImmCrossProbe source)
-                        ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
-                        log::debug!(
-                            "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
+                        crate::state::probe_admission::admit_epoch_in_app(
+                            app,
+                            ticket,
+                            "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)",
+                            |app, inner_accepted| {
+                                let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                                let ime = &mut app.platform_state.ime;
+                                // ON/OFF: High confidence (ImmCrossProbe source)
+                                ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
+                                log::debug!(
+                                    "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
+                                );
+                                // input_mode: Observe → pure decision → belief
+                                // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
+                                // ObservedEisu stale 回復を含む全 input_mode 判定をここに集約する。
+                                let update =
+                                    crate::observer::ime_observer::classify_fetched_snapshot(
+                                        &snap,
+                                        tick_ms.0,
+                                        ime.effective_open(),
+                                        ime.is_force_on_guard_active(),
+                                        ime.input_mode(),
+                                        ime.belief.prev_conversion_mode(),
+                                    );
+                                if let Some(mode) = update.new_input_mode {
+                                    use crate::state::ime_event::{
+                                        ImeEvent, ObservationConfidence, ObservationSource,
+                                    };
+                                    ime.dispatch_event(
+                                        ImeEvent::InputModeObserved {
+                                            mode,
+                                            source: ObservationSource::ImmCrossProbe,
+                                            confidence: ObservationConfidence::High,
+                                            at: tick_ms,
+                                        },
+                                        tick_ms,
+                                    );
+                                }
+                            },
                         );
-                        // input_mode: Observe → pure decision → belief
-                        // classify_fetched_snapshot = classify_ime_snapshot の同期 wrapper。
-                        // ObservedEisu stale 回復を含む全 input_mode 判定をここに集約する。
-                        let update = crate::observer::ime_observer::classify_fetched_snapshot(
-                            &snap,
-                            tick_ms.0,
-                            ime.effective_open(),
-                            ime.is_force_on_guard_active(),
-                            ime.input_mode(),
-                            ime.belief.prev_conversion_mode(),
-                        );
-                        if let Some(mode) = update.new_input_mode {
-                            use crate::state::ime_event::{
-                                ImeEvent, ObservationConfidence, ObservationSource,
-                            };
-                            ime.dispatch_event(
-                                ImeEvent::InputModeObserved {
-                                    mode,
-                                    source: ObservationSource::ImmCrossProbe,
-                                    confidence: ObservationConfidence::High,
-                                    at: tick_ms,
-                                },
-                                tick_ms,
-                            );
-                        }
                     });
                 }
 

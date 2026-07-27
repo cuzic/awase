@@ -249,14 +249,9 @@ impl Runtime {
                     "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                     tick_ms,
                 );
             } else {
@@ -561,12 +556,9 @@ impl Runtime {
         };
         if self.ime_apply_should_defer() {
             // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] drift correction skipped (settling): desired={desired} \
-                 observed={observed} → {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry(&format!(
+                "drift correction skipped (settling): desired={desired} observed={observed}"
+            ));
             return;
         }
 

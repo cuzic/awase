@@ -166,3 +166,32 @@ impl ImmLikeTicket {
         })
     }
 }
+
+/// `with_app` クロージャの中で呼ぶための、`admit()` → 早期 return + ログの定型処理を一元化する。
+///
+/// 以前は「spawn 時にチケットをキャプチャ → await → `with_app` → `ticket.admit(current_epoch)` で
+/// 再照合 → 不一致ならログを出して早期 return」という形が `ImmCrossProbe` / `FocusProbe` 系の
+/// 複数の非同期完了ハンドラにほぼ同じ形で複製されていた（この struct 冒頭 doc の使用例が、まさに
+/// その複製されていたグルーコード）。受理されれば `f(app, accepted)` を呼び、棄却時は `reject_log`
+/// をそのまま `log::debug!` に渡して `None` を返す。
+///
+/// `reject_log` は呼び出し元ごとに異なる（タグ名・文言）ログ本文をそのまま渡す
+/// （ログ文言自体は既存の観測結果であり、このリファクタで変更しない）。
+///
+/// `crate::runtime::Runtime` は `#[cfg(windows)]`（`state/` は全プラットフォーム共通）
+/// のため、この関数自体も Windows 専用にする（`conv_classify`/`eisu_recovery` と同じ
+/// 「呼び出し元が `#[cfg(windows)]` の runtime/ のみ」パターン、`state/mod.rs` 参照）。
+#[cfg(windows)]
+pub(crate) fn admit_epoch_in_app<R>(
+    app: &mut crate::runtime::Runtime,
+    ticket: ImmLikeTicket,
+    reject_log: &str,
+    f: impl FnOnce(&mut crate::runtime::Runtime, AcceptedObservation) -> R,
+) -> Option<R> {
+    let current_epoch = app.focus_epoch();
+    let Admission::Accept(accepted) = ticket.admit(current_epoch) else {
+        log::debug!("{reject_log}");
+        return None;
+    };
+    Some(f(app, accepted))
+}

@@ -388,22 +388,21 @@ impl Runtime {
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
-                        let current_epoch = app.platform_state.focus.focus_epoch;
-                        let crate::state::probe_admission::Admission::Accept(accepted) =
-                            ticket.admit(current_epoch)
-                        else {
-                            log::debug!(
-                                "[ImmCrossProbe/focus] epoch rejected \
-                                 (transient window — focus changed since probe spawn)"
-                            );
-                            return;
-                        };
-                        let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                        app.platform_state
-                            .ime
-                            .write_imm_cross_probe(open, now_tick, accepted);
-                        log::debug!(
-                            "[ImmCrossProbe/focus] child-hwnd IME={open} → High confidence 観測記録"
+                        crate::state::probe_admission::admit_epoch_in_app(
+                            app,
+                            ticket,
+                            "[ImmCrossProbe/focus] epoch rejected \
+                             (transient window — focus changed since probe spawn)",
+                            |app, accepted| {
+                                let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
+                                app.platform_state
+                                    .ime
+                                    .write_imm_cross_probe(open, now_tick, accepted);
+                                log::debug!(
+                                    "[ImmCrossProbe/focus] child-hwnd IME={open} → \
+                                     High confidence 観測記録"
+                                );
+                            },
                         );
                     });
                 }
