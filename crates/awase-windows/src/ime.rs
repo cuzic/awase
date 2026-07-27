@@ -471,6 +471,40 @@ pub unsafe fn get_foreground_window_class() -> String {
     }
 }
 
+/// conv mode の「取得 → 変換 → （差分があれば）反映」という手続きを共通化するヘルパー。
+///
+/// `ime_wnd` に対して `IMC_GETCONVERSIONMODE`（タイムアウト 50ms）で現在の変換モードを
+/// 取得し、`f` に渡して新しい値を計算する。取得に失敗した場合（タイムアウト等）は `None`。
+///
+/// 新しい値が現在値と同じ場合は `IMC_SETCONVERSIONMODE` を呼ばずに
+/// `Some((conv, conv, false, true))` を返す（`changed=false` で「既に目的の状態だった」ことを
+/// 呼び出し元に伝える。ログを出すかどうかは呼び出し元ごとに異なるため、ここでは出さない）。
+/// 新しい値が異なる場合のみ `IMC_SETCONVERSIONMODE`（タイムアウト 50ms）を発行し、
+/// `Some((変更前conv, 変更後conv, true, 送信成功))` を返す。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+unsafe fn modify_conv_mode(
+    ime_wnd: HWND,
+    f: impl FnOnce(u32) -> u32,
+) -> Option<(u32, u32, bool, bool)> {
+    // SAFETY: ime_wnd は呼び出し元が get_ime_wnd から取得した有効な IME ウィンドウハンドル。
+    //         タイムアウト 50ms 内に制御が戻ることが保証される。
+    let current = unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }?;
+    let conv = current as u32;
+    let new_conv = f(conv);
+    if new_conv == conv {
+        return Some((conv, new_conv, false, true));
+    }
+    // SAFETY: ime_wnd は呼び出し元が get_ime_wnd から取得した有効な IME ウィンドウハンドル。
+    //         new_conv は取得した conv を f で変換した値であり有効な変換モード値。
+    let success = unsafe {
+        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+    }
+    .is_some();
+    Some((conv, new_conv, true, success))
+}
+
 /// クロスプロセスで IME をローマ字モードに設定する。
 ///
 /// VK_DBE_HIRAGANA (0xF2) による warmup は非同期のため、同一 SendInput バッチ内の
@@ -493,26 +527,14 @@ pub unsafe fn set_ime_romaji_mode() -> bool {
         return false;
     };
 
-    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
-    //         タイムアウト 50ms 内に制御が戻ることが保証される。
-    let Some(current) =
-        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
+    let Some((conv, new_conv, changed, success)) =
+        (unsafe { modify_conv_mode(ime_wnd, |conv| conv | IME_CMODE_ROMAN) })
     else {
         return false;
     };
-    let conv = current as u32;
-    let new_conv = conv | IME_CMODE_ROMAN;
-    if new_conv == conv {
-        return true; // already romaji
+    if changed {
+        log::debug!("[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success}");
     }
-
-    // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
-    //         new_conv は取得した conv に IME_CMODE_ROMAN を OR したものであり有効な変換モード値。
-    let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
-    }
-    .is_some();
-    log::debug!("[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success}");
     success
 }
 
@@ -762,24 +784,19 @@ pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool 
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
-    let Some(current) =
-        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
-    else {
+    let Some((conv, new_conv, changed, success)) = (unsafe {
+        modify_conv_mode(ime_wnd, |conv| {
+            target_conv.unwrap_or(conv | IME_CMODE_ROMAN)
+        })
+    }) else {
         return false;
     };
-    let conv = current as u32;
-    let new_conv = target_conv.unwrap_or(conv | IME_CMODE_ROMAN);
-    if new_conv == conv {
-        return true;
+    if changed {
+        log::debug!(
+            "[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success} target={:?}",
+            target_conv.map(|v| format!("0x{v:08X}")),
+        );
     }
-    let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
-    }
-    .is_some();
-    log::debug!(
-        "[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success} target={:?}",
-        target_conv.map(|v| format!("0x{v:08X}")),
-    );
     success
 }
 
@@ -810,29 +827,23 @@ pub unsafe fn set_ime_hiragana_mode_cross_process() -> bool {
         log::debug!("set_ime_hiragana_mode_cross_process: hwnd={hwnd:?} no IME wnd, abort");
         return false;
     };
-    let Some(current) =
-        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
-    else {
-        log::debug!("set_ime_hiragana_mode_cross_process: IMC_GETCONVERSIONMODE timeout");
-        return false;
-    };
-    let conv = current as u32;
     // ローマ字ひらがなモード = NATIVE + FULLSHAPE + ROMAN、KATAKANA ビットなし。
     // かな入力の半角カタカナ (NATIVE|KATAKANA、ROMAN/FULLSHAPEなし) でリセットした場合も
     // ROMAN を補完してローマ字ひらがなに戻す。awase はローマ字 VK を送るため ROMAN が必要。
-    let new_conv =
-        (conv | IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE | IME_CMODE_ROMAN) & !IME_CMODE_KATAKANA;
-    if new_conv == conv {
-        return true; // already hiragana
+    let Some((conv, new_conv, changed, success)) = (unsafe {
+        modify_conv_mode(ime_wnd, |conv| {
+            (conv | IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE | IME_CMODE_ROMAN) & !IME_CMODE_KATAKANA
+        })
+    }) else {
+        log::debug!("set_ime_hiragana_mode_cross_process: IMC_GETCONVERSIONMODE timeout");
+        return false;
+    };
+    if changed {
+        log::debug!(
+            "set_ime_hiragana_mode_cross_process: hwnd={hwnd:?} \
+             conv 0x{conv:08X} → 0x{new_conv:08X} success={success}"
+        );
     }
-    let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
-    }
-    .is_some();
-    log::debug!(
-        "set_ime_hiragana_mode_cross_process: hwnd={hwnd:?} \
-         conv 0x{conv:08X} → 0x{new_conv:08X} success={success}"
-    );
     success
 }
 
@@ -1331,18 +1342,14 @@ pub unsafe fn set_ime_mode_for_target(
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
-    let Some(current) =
-        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
-    else {
+    let Some((_, _, _, success)) = (unsafe {
+        modify_conv_mode(ime_wnd, |conv| {
+            (conv | target_conv_mask_to_set) & !target_conv_mask_to_clear
+        })
+    }) else {
         return false;
     };
-    let conv = current as u32;
-    let new_conv = (conv | target_conv_mask_to_set) & !target_conv_mask_to_clear;
-    if new_conv == conv {
-        return true;
-    }
-    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
-        .is_some()
+    success
 }
 
 /// クロスプロセスで IME のローマ字/かな入力を切り替える。
@@ -1370,20 +1377,16 @@ pub unsafe fn set_ime_romaji_mode_state_for_target(hwnd: HWND, romaji: bool) -> 
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
-    let Some(current) =
-        (unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) })
-    else {
+    let Some((_, _, _, success)) = (unsafe {
+        modify_conv_mode(ime_wnd, |conv| {
+            if romaji {
+                conv | IME_CMODE_ROMAN
+            } else {
+                conv & !IME_CMODE_ROMAN
+            }
+        })
+    }) else {
         return false;
     };
-    let conv = current as u32;
-    let new_conv = if romaji {
-        conv | IME_CMODE_ROMAN
-    } else {
-        conv & !IME_CMODE_ROMAN
-    };
-    if new_conv == conv {
-        return true;
-    }
-    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50) }
-        .is_some()
+    success
 }
