@@ -16,6 +16,8 @@
 //! - [`probe_fsm`]              — ProbeAction 定義 + TsfProbeCoro + decide_transmit_plan +
 //!   run_per_vk_confirm（Chrome/TSF 共通 per-VK confirm ループ）
 //! - [`gji_warmup_coro`]        — GjiWarmupCoro（GJI cold-start probe, StepCoro）
+//! - [`probe_coro_state`]       — ProbeCoroState（TsfProbeCoro/GjiWarmupCoro 共有の
+//!   TickableFsm ラッパー状態: tick/apply_transmit_done/apply_vk_sent/prime）
 //! - [`ms_ime_ready_coro`]      — MsImeReadyCoro（MS-IME IMC 確認待ち, StepCoro, BUG-13）
 //! - [`literal_detect_fsm`]     — LiteralDetectCore/Fsm（literal 検出 単一所在地）
 //! - [`unicode_cold_warmup_fsm`]— UnicodeColdWarmupFsm（Unicode long-cold deferred）
@@ -32,6 +34,7 @@ pub(crate) mod cold_warmup;
 pub(crate) mod gji_warmup_coro;
 pub(crate) mod literal_detect_fsm;
 pub(crate) mod ms_ime_ready_coro;
+pub(crate) mod probe_coro_state;
 pub(crate) mod probe_fsm;
 pub(crate) mod tickable_fsm;
 pub(crate) mod unicode_cold_warmup_fsm;
