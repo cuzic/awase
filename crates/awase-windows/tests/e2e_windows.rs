@@ -2449,8 +2449,14 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
 
         // Submit the captured line to Read-Host (still just data capture,
         // not command execution). Poll for the file rather than a single
-        // flat wait — how long Set-Content takes to appear varies.
-        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+        // flat wait — how long Set-Content takes to appear varies. Two
+        // Enters are sent deliberately: with an active IME composition,
+        // the first Enter just confirms/commits the composed text (normal
+        // IME behavior in any text field); only a second Enter actually
+        // submits the now-plain line to the shell's Read-Host.
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: confirm IME composition
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: submit the line
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut captured = None;
         while std::time::Instant::now() < deadline {
