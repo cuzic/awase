@@ -15,8 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_COMMAND,
-    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_DESTROY,
+    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -779,39 +779,6 @@ pub fn restart_self() {
     }
 }
 
-/// 設定画面 (awase-settings) を起動する。
-/// 実行ファイルと同じディレクトリにある awase-settings.exe を探す。
-/// 失敗時はバルーン通知でユーザーに知らせる。
-fn launch_settings_gui() {
-    let Ok(exe) = std::env::current_exe() else {
-        show_settings_error("実行ファイルのパスを取得できません");
-        return;
-    };
-    let Some(dir) = exe.parent() else {
-        show_settings_error("実行ファイルのディレクトリを取得できません");
-        return;
-    };
-    let path = dir.join("awase-settings.exe");
-    if !path.exists() {
-        let msg = format!("設定画面が見つかりません:\n{}", path.display());
-        show_settings_error(&msg);
-        return;
-    }
-    match std::process::Command::new(&path).spawn() {
-        Ok(_) => log::info!("awase-settings launched: {}", path.display()),
-        Err(e) => {
-            let msg = format!("設定画面の起動に失敗しました:\n{e}");
-            show_settings_error(&msg);
-        }
-    }
-}
-
-/// 設定画面起動エラーをログとバルーン通知で表示する。
-fn show_settings_error(msg: &str) {
-    log::error!("Settings launch: {msg}");
-    let _ = crate::with_app(|app| app.show_tray_balloon("awase", msg));
-}
-
 /// 自動起動のトグル処理。
 ///
 /// 現在の登録状態を確認し、登録 → 解除、解除 → 登録 を切り替える。
@@ -857,9 +824,11 @@ fn save_auto_start_config(value: &str) {
 
 /// トレイウィンドウプロシージャ
 ///
-/// Shell はトレイコールバックメッセージ（WM_TRAY_CALLBACK）をこのウィンドウに
-/// 直接送信する。メッセージループの `match msg.message` には到達しないため、
-/// ここで処理してメインスレッドの WM_APP / WM_COMMAND に転送する。
+/// `WM_TRAY_CALLBACK`（`WM_APP`）と `WM_COMMAND` はメインスレッドのメッセージ
+/// ループ（`app::run_message_loop`）が `match msg.message` で先取りして
+/// `message_handlers::handle_wm_app_tray` / `handle_wm_command` に振っており、
+/// `DispatchMessageW` に到達しない（呼ばれるのは catch-all の `_` 分岐のみ）。
+/// そのため、ここではそれ以外の到達可能なメッセージだけを処理する。
 unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -867,106 +836,6 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
-        WM_TRAY_CALLBACK => {
-            // Shell からのトレイコールバック → メインのメッセージループに転送
-            // PostMessage ではなく直接処理する（同じスレッドなので安全）
-            let layout_names: Vec<String> =
-                crate::with_app_ref(crate::Runtime::layout_names).unwrap_or_default();
-            let elevated = crate::is_elevated();
-            handle_tray_message(hwnd, lparam, &layout_names, elevated);
-            LRESULT(0)
-        }
-        WM_COMMAND => {
-            match handle_tray_command(wparam) {
-                Some(TrayCommand::Exit) => PostQuitMessage(0),
-                Some(TrayCommand::Toggle) => {
-                    let _ = crate::with_app(super::runtime::Runtime::toggle_engine);
-                }
-                Some(TrayCommand::Settings) => launch_settings_gui(),
-                Some(TrayCommand::ClearImmCache) => {
-                    let _ = crate::with_app(|app| {
-                        let count = app.clear_imm_learning();
-                        log::info!("IMM capability cache cleared ({count} entries)");
-                        app.show_tray_balloon(
-                            "awase",
-                            &format!("学習キャッシュをクリアしました（{count}件）"),
-                        );
-                    });
-                }
-                Some(TrayCommand::RestartAdmin) => restart_as_admin(),
-                Some(TrayCommand::ToggleAutoStart) => handle_autostart_toggle(),
-                Some(TrayCommand::Restart) => restart_self(),
-                Some(TrayCommand::SelectLayout(index)) => {
-                    let _ = crate::with_app(|app| app.switch_layout(index));
-                }
-                Some(TrayCommand::CapsLock) => unsafe {
-                    crate::ime::toggle_caps_lock();
-                },
-                Some(TrayCommand::ImeHiragana) => unsafe {
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
-                        crate::imm::IME_CMODE_KATAKANA,
-                    );
-                },
-                Some(TrayCommand::ImeFullKatakana) => unsafe {
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        crate::imm::IME_CMODE_NATIVE
-                            | crate::imm::IME_CMODE_KATAKANA
-                            | crate::imm::IME_CMODE_FULLSHAPE,
-                        0,
-                    );
-                },
-                Some(TrayCommand::ImeFullAlpha) => unsafe {
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        crate::imm::IME_CMODE_FULLSHAPE,
-                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                    );
-                },
-                Some(TrayCommand::ImeHalfAlpha) => unsafe {
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        0,
-                        crate::imm::IME_CMODE_NATIVE
-                            | crate::imm::IME_CMODE_KATAKANA
-                            | crate::imm::IME_CMODE_FULLSHAPE,
-                    );
-                },
-                Some(TrayCommand::ImeHalfKatakana) => unsafe {
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                        crate::imm::IME_CMODE_FULLSHAPE,
-                    );
-                },
-                Some(TrayCommand::ImeDirect) => unsafe {
-                    let _ = crate::ime::set_ime_mode(false, 0, 0);
-                },
-                Some(TrayCommand::InputRomaji) => unsafe {
-                    let _ = crate::ime::set_ime_romaji_mode_state(true);
-                },
-                Some(TrayCommand::InputKana) => unsafe {
-                    let _ = crate::ime::set_ime_romaji_mode_state(false);
-                },
-                Some(TrayCommand::ResetState) => unsafe {
-                    let caps_lock_on = crate::ime::is_caps_lock_on();
-                    if caps_lock_on {
-                        crate::ime::toggle_caps_lock();
-                    }
-                    let _ = crate::ime::set_ime_mode(
-                        true,
-                        crate::imm::IME_CMODE_NATIVE
-                            | crate::imm::IME_CMODE_FULLSHAPE
-                            | crate::imm::IME_CMODE_ROMAN,
-                        crate::imm::IME_CMODE_KATAKANA,
-                    );
-                },
-                None => {}
-            }
-            LRESULT(0)
-        }
         WM_CLOSE => {
             // トレイウィンドウは常に非表示（WS_VISIBLE なし、ShowWindow も未呼び出し）で
             // フォーカスを持てないため、Alt+F4 の対象にはなり得ない。実際に WM_CLOSE が
