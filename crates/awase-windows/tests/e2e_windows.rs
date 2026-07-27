@@ -2159,3 +2159,228 @@ fn e2e_message_long_text() {
         log::info!("Long text test passed");
     }
 }
+
+// ─────────────────────────────────────────────
+// BUG-13 (Vk-mode gap) evidence: MS-IME cold-start against a real
+// TsfNative app (Windows Terminal), not just our own IMM32 Edit control.
+//
+// project memory msime-coldstart-vk-mode-gap: BUG-13's fix
+// (`ms_ime_gate_defer`) only guards the Tsf injection path
+// (`send_romaji_as_tsf`). The Vk injection path (`send_romaji_batched`,
+// used for `AppKind::TsfNative` apps like Windows Terminal in the default,
+// non-`force_tsf` config) has no such gate. This section drives Windows
+// Terminal directly via SendInput with NO gate/delay after turning the IME
+// on, to check whether the literal-leak race described in BUG-13
+// ("を" -> "wお") is reproducible for real against a TSF-native target.
+// ─────────────────────────────────────────────
+
+/// Enumerate all top-level windows whose window class name matches exactly.
+unsafe fn enum_windows_by_class(class_name: &str) -> Vec<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW};
+    use windows::core::BOOL;
+
+    struct EnumCtx<'a> {
+        class_name: &'a str,
+        found: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        unsafe {
+            let ctx = &mut *(lparam.0 as *mut EnumCtx<'_>);
+            let mut buf = [0u16; 256];
+            let len = GetClassNameW(hwnd, &mut buf);
+            if len > 0 && String::from_utf16_lossy(&buf[..len as usize]) == ctx.class_name {
+                ctx.found.push(hwnd);
+            }
+            BOOL(1)
+        }
+    }
+
+    let mut ctx = EnumCtx {
+        class_name,
+        found: Vec::new(),
+    };
+    let lparam = LPARAM(std::ptr::addr_of_mut!(ctx) as isize);
+    let _ = EnumWindows(Some(callback), lparam);
+    ctx.found
+}
+
+/// Send a modifier chord (e.g. Ctrl+Shift+A): all keys down in order, then
+/// all keys up in reverse order.
+unsafe fn send_chord(vks: &[u16]) {
+    use windows::Win32::UI::Input::KeyboardAndMouse::*;
+
+    let mut inputs = Vec::with_capacity(vks.len() * 2);
+    for &vk in vks {
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: KEYBD_EVENT_FLAGS::default(),
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        });
+    }
+    for &vk in vks.iter().rev() {
+        inputs.push(INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: KEYEVENTF_KEYUP,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        });
+    }
+    let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
+    let sent = SendInput(&inputs, size);
+    log::debug!("SendInput chord: vks={vks:02X?} sent={sent}");
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    pump_messages();
+}
+
+/// Read the current clipboard contents as UTF-16 text (CF_UNICODETEXT).
+unsafe fn read_clipboard_text() -> Option<String> {
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::GlobalLock;
+    use windows::Win32::System::Ole::CF_UNICODETEXT;
+
+    if OpenClipboard(None).is_err() {
+        return None;
+    }
+    let text = (|| {
+        let handle = GetClipboardData(u32::from(CF_UNICODETEXT.0)).ok()?;
+        let ptr = GlobalLock(HGLOBAL(handle.0));
+        if ptr.is_null() {
+            return None;
+        }
+        let text = windows::core::PCWSTR(ptr.cast()).to_string().ok();
+        text
+    })();
+    let _ = CloseClipboard();
+    text
+}
+
+#[test]
+fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
+    init_test_logging();
+    if !is_interactive_session() {
+        log::info!(
+            "Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)"
+        );
+        return;
+    }
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: Windows Terminal (TsfNative) MS-IME cold-start (BUG-13 Vk-mode gap) ==="
+    );
+
+    unsafe {
+        log_system_info();
+        if !is_japanese_ime_available() {
+            log::warn!("Japanese IME not installed, skipping");
+            return;
+        }
+
+        let before = enum_windows_by_class("CASCADIA_HOSTING_WINDOW_CLASS");
+
+        log::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
+        let Ok(mut child) = std::process::Command::new("wt").args(["-w", "-1"]).spawn() else {
+            log::warn!("Could not launch 'wt' (Windows Terminal not available?), skipping");
+            return;
+        };
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut new_hwnd = None;
+        while std::time::Instant::now() < deadline {
+            let current = enum_windows_by_class("CASCADIA_HOSTING_WINDOW_CLASS");
+            if let Some(&h) = current.iter().find(|h| !before.contains(h)) {
+                new_hwnd = Some(h);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let Some(hwnd) = new_hwnd else {
+            log::warn!("Windows Terminal window did not appear in time, skipping");
+            let _ = child.kill();
+            return;
+        };
+        log::info!("Found new Windows Terminal window: {hwnd:?}");
+
+        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+        // Give the shell inside the new pane time to start and show its
+        // prompt before we start typing into it.
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        pump_messages();
+
+        // Turn the IME on with the SAME physical key awase itself sends
+        // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
+        // IMMEDIATELY (no gate/settle delay) type "wo" via SendInput.
+        log::info!("--- Sending VK_DBE_HIRAGANA (F2) then immediately 'w' 'o', no gate ---");
+        send_key_to_edit(0xF2, 0x3C); // VK_DBE_HIRAGANA / F2
+        send_key_to_edit(0x57, 0x11); // VK_W
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        pump_messages();
+
+        // Read back the typed line via clipboard. Windows Terminal's
+        // default bindings are Ctrl+Shift+A (select all) and Ctrl+Shift+C
+        // (copy) — plain Ctrl+C would send SIGINT to the shell instead.
+        send_chord(&[0x11, 0x10, 0x41]); // Ctrl+Shift+A
+        send_chord(&[0x11, 0x10, 0x43]); // Ctrl+Shift+C
+        let copied = read_clipboard_text();
+        log::info!("Clipboard after select-all+copy: {copied:?}");
+
+        // Best-effort cleanup: close the throwaway terminal window. `child`
+        // is the `wt.exe` launcher process, which typically hands off to
+        // the real (already-running or newly spawned) Windows Terminal
+        // process and exits almost immediately, so `child.kill()` below is
+        // usually a no-op — closing the window itself is what matters.
+        let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            Some(hwnd),
+            windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+            windows::Win32::Foundation::WPARAM(0),
+            windows::Win32::Foundation::LPARAM(0),
+        );
+        let _ = child.kill();
+
+        let Some(copied) = copied else {
+            log::warn!(
+                "Could not read clipboard contents (select-all/copy may not be bound to \
+                 Ctrl+Shift+A/C on this Windows Terminal install) — treating as inconclusive, \
+                 not a failure."
+            );
+            return;
+        };
+
+        // Success looks like the buffer containing "を" (properly
+        // composed/committed). A literal-leak reproduction looks like a
+        // bare 'w' immediately followed by "お" (the romaji leaked before
+        // MS-IME was ready), per BUG-13 / docs/known-bugs.md.
+        let has_wo_kana = copied.contains('\u{3092}'); // を
+        let has_literal_leak = copied.contains("w\u{304A}"); // "wお"
+        log::info!(
+            "Windows Terminal buffer check: has_wo_kana={has_wo_kana} \
+             has_literal_leak={has_literal_leak} raw={copied:?}"
+        );
+
+        assert!(
+            !has_literal_leak,
+            "BUG-13-equivalent literal leak reproduced in Vk mode against Windows \
+             Terminal: got 'w' + 'お' instead of composed 'を'. This confirms the \
+             Vk injection path needs the same ms_ime_gate_defer treatment as the Tsf \
+             path — see project memory msime-coldstart-vk-mode-gap. Buffer: {copied:?}"
+        );
+    }
+}
