@@ -2345,8 +2345,13 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
 
         force_foreground(hwnd);
         // Give the shell inside the new pane time to start and show its
-        // prompt before we start typing into it.
-        std::thread::sleep(std::time::Duration::from_millis(2000));
+        // prompt before we start typing into it. A brand-new `powershell
+        // -NoProfile` process plus Windows Terminal's own PTY/render setup
+        // can take a while; a too-short wait here was observed on real
+        // hardware to silently drop the setup command (the Read-Host
+        // capture file never got created even though SendInput reported
+        // success), so this is deliberately generous.
+        std::thread::sleep(std::time::Duration::from_millis(3500));
         pump_messages();
 
         let actual_fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
@@ -2387,7 +2392,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             "$l = Read-Host; Set-Content -Path '{capture_path}' -Value $l -Encoding utf8"
         ));
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN: safe, Read-Host only captures a string
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(1000));
         pump_messages();
 
         // Turn the IME on with the SAME physical key awase itself sends
@@ -2402,11 +2407,18 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         pump_messages();
 
         // Submit the captured line to Read-Host (still just data capture,
-        // not command execution) and give it a moment to write the file.
+        // not command execution). Poll for the file rather than a single
+        // flat wait — how long Set-Content takes to appear varies.
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
-        let captured = std::fs::read_to_string(&capture_path).ok();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut captured = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(s) = std::fs::read_to_string(&capture_path) {
+                captured = Some(s);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
         log::info!("Read-Host capture file contents: {captured:?}");
 
         // Best-effort cleanup: close the throwaway terminal window. `child`
