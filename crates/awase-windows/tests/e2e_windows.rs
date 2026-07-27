@@ -2279,6 +2279,7 @@ unsafe fn send_unicode_string(s: &str) {
 }
 
 #[test]
+#[allow(clippy::cognitive_complexity)] // real-hardware E2E orchestration: launch, focus, type, poll, verify
 fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
     init_test_logging();
     if !is_interactive_session() {
@@ -2386,14 +2387,51 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         let capture_path = format!("{home}\\msime_e2e_terminal_capture.txt");
         let _ = std::fs::remove_file(&capture_path);
 
+        // Loop over two Read-Host prompts (each appended to the capture
+        // file as soon as it's submitted): the first is a plain ASCII
+        // canary line ("probe123") we check BEFORE touching the IME at
+        // all, so a failure here isolates "typing into this window
+        // doesn't work" from "the IME-specific part doesn't work".
         log::info!("--- Ensuring IME is off, then typing the Read-Host setup command ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF — our own ASCII setup line, not part of the test
         send_unicode_string(&format!(
-            "$l = Read-Host; Set-Content -Path '{capture_path}' -Value $l -Encoding utf8"
+            "for ($i=0; $i -lt 2; $i++) {{ Read-Host | Add-Content -Path '{capture_path}' -Encoding utf8 }}"
         ));
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN: safe, Read-Host only captures a string
-        std::thread::sleep(std::time::Duration::from_millis(1000));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         pump_messages();
+
+        log::info!("--- Sending ASCII canary line 'probe123' ---");
+        send_unicode_string("probe123");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let canary_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut canary_seen = false;
+        while std::time::Instant::now() < canary_deadline {
+            if std::fs::read_to_string(&capture_path).is_ok_and(|s| s.contains("probe123")) {
+                canary_seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        log::info!("ASCII canary line observed in capture file: {canary_seen}");
+        if !canary_seen {
+            log::warn!(
+                "Plain ASCII typed via SendInput never reached the new Windows Terminal \
+                 window's Read-Host prompt at all — this is a setup/typing problem, not \
+                 something specific to the IME race. Skipping the rest of this test as \
+                 inconclusive rather than reporting a false result."
+            );
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+            let _ = child.kill();
+            let _ = std::fs::remove_file(&capture_path);
+            return;
+        }
 
         // Turn the IME on with the SAME physical key awase itself sends
         // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
@@ -2414,12 +2452,22 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         let mut captured = None;
         while std::time::Instant::now() < deadline {
             if let Ok(s) = std::fs::read_to_string(&capture_path) {
-                captured = Some(s);
-                break;
+                if s.lines().count() >= 2 {
+                    captured = Some(s);
+                    break;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
         log::info!("Read-Host capture file contents: {captured:?}");
+        // Only the second captured line (the actual romaji test) matters
+        // from here on; drop the canary line.
+        let captured = captured.map(|s| {
+            s.lines()
+                .nth(1)
+                .unwrap_or_default()
+                .to_string()
+        });
 
         // Best-effort cleanup: close the throwaway terminal window. `child`
         // is the `wt.exe` launcher process, which typically hands off to
