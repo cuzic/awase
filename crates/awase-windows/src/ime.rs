@@ -737,32 +737,43 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
     }
 }
 
+/// `win32_async::offload` にクロージャを渡し `.await` する、という 8 箇所の
+/// `xxx_async` ラッパーで共通の定型文を集約するヘルパー。
+///
+/// `f` 自体の呼び出しは安全だが、各呼び出し元は `f` の中身を
+/// `|| unsafe { xxx(..) }` の形にして Win32 API 呼び出しを包む
+/// (`unsafe` は呼び出し対象の unsafe fn ごとに必要なため、ここでは
+/// 二重に `unsafe` で包まない — 包むと `unused_unsafe` 警告になる)。
+async fn offload_unsafe<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    win32_async::offload(f).await
+}
+
 /// `read_ime_state_full` の async 版（ワーカースレッドで実行）
 pub async fn read_ime_state_full_async() -> ImeSnapshot {
     // SAFETY: read_ime_state_full は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
-    win32_async::offload(|| unsafe { read_ime_state_full() }).await
+    offload_unsafe(|| unsafe { read_ime_state_full() }).await
 }
 
 /// `read_ime_state_fast` の async 版（ワーカースレッドで実行）
 pub async fn read_ime_state_fast_async() -> FastImeProbeResult {
     // SAFETY: read_ime_state_fast は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         IMM32 API はワーカースレッドからも呼び出し可能。
-    win32_async::offload(|| unsafe { read_ime_state_fast() }).await
+    offload_unsafe(|| unsafe { read_ime_state_fast() }).await
 }
 
 /// `set_ime_open_cross_process` の async 版（ワーカースレッドで実行）
 pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
     // SAFETY: set_ime_open_cross_process は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    win32_async::offload(move || unsafe { set_ime_open_cross_process(open) }).await
+    offload_unsafe(move || unsafe { set_ime_open_cross_process(open) }).await
 }
 
 /// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
 pub async fn set_ime_romaji_mode_async() -> bool {
     // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    win32_async::offload(|| unsafe { set_ime_romaji_mode() }).await
+    offload_unsafe(|| unsafe { set_ime_romaji_mode() }).await
 }
 
 /// 目標 conv 指定付き `set_ime_romaji_mode`。
@@ -802,7 +813,7 @@ pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool 
 
 /// `set_ime_romaji_mode_with_target` の async 版（ワーカースレッドで実行）
 pub async fn set_ime_romaji_mode_with_target_async(target_conv: Option<u32>) -> bool {
-    win32_async::offload(move || unsafe { set_ime_romaji_mode_with_target(target_conv) }).await
+    offload_unsafe(move || unsafe { set_ime_romaji_mode_with_target(target_conv) }).await
 }
 
 /// クロスプロセスで IME の変換モードをひらがなに強制する。
@@ -851,7 +862,7 @@ pub unsafe fn set_ime_hiragana_mode_cross_process() -> bool {
 pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
     // SAFETY: set_ime_hiragana_mode_cross_process は unsafe fn。
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    win32_async::offload(|| unsafe { set_ime_hiragana_mode_cross_process() }).await
+    offload_unsafe(|| unsafe { set_ime_hiragana_mode_cross_process() }).await
 }
 
 /// `send_f2_via_sendmessage` の async 版（ワーカースレッドで実行）
@@ -861,7 +872,7 @@ pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
 pub async fn send_f2_via_sendmessage_async() -> bool {
     // SAFETY: send_f2_via_sendmessage は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    win32_async::offload(|| unsafe { send_f2_via_sendmessage() }).await
+    offload_unsafe(|| unsafe { send_f2_via_sendmessage() }).await
 }
 
 /// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
@@ -876,7 +887,7 @@ pub async fn send_f2_via_sendmessage_async() -> bool {
 pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Option<u32> {
     // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。win32_async::offload はワーカースレッドで実行するが
     //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    win32_async::offload(move || unsafe { get_ime_conversion_mode_raw_timeout(timeout_ms) }).await
+    offload_unsafe(move || unsafe { get_ime_conversion_mode_raw_timeout(timeout_ms) }).await
 }
 
 /// 現在のキーボードレイアウトの言語情報を返す。
