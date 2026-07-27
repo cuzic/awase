@@ -350,4 +350,83 @@ mod tests {
             profile, "Notepad", true,
         ));
     }
+
+    /// `AppImeProfile` の4つの bool getter（戦略選択の入口）を真理値表として固定する。
+    /// これまで戻り値を直接 assert するテストが無く、反転（`matches!`/`!matches!` の
+    /// 取り違え）が mutants で検知されなかった。
+    #[test]
+    fn app_ime_profile_getters_truth_table() {
+        // (profile, can_use_imm32_cross_process, uses_kanji_toggle,
+        //  should_pass_physical_key, can_read_imm32_open_status)
+        let table = [
+            (AppImeProfile::Standard, true, false, true, true),
+            (AppImeProfile::Imm32Unavailable, false, true, false, false),
+            (AppImeProfile::TsfNative, false, false, true, false),
+        ];
+        for (profile, cross_process, kanji_toggle, pass_physical, read_open_status) in table {
+            assert_eq!(
+                profile.can_use_imm32_cross_process(),
+                cross_process,
+                "{profile:?}.can_use_imm32_cross_process()"
+            );
+            assert_eq!(
+                profile.uses_kanji_toggle(),
+                kanji_toggle,
+                "{profile:?}.uses_kanji_toggle()"
+            );
+            assert_eq!(
+                profile.should_pass_physical_key(),
+                pass_physical,
+                "{profile:?}.should_pass_physical_key()"
+            );
+            assert_eq!(
+                profile.can_read_imm32_open_status(),
+                read_open_status,
+                "{profile:?}.can_read_imm32_open_status()"
+            );
+        }
+    }
+
+    /// `From<AppImeProfile> for ImePolicyProfile` の3分岐変換を固定する。
+    #[test]
+    fn app_ime_profile_converts_to_expected_policy_profile() {
+        use crate::state::ime_event::ImePolicyProfile;
+        assert_eq!(
+            ImePolicyProfile::from(AppImeProfile::Standard),
+            ImePolicyProfile::ImmCross
+        );
+        assert_eq!(
+            ImePolicyProfile::from(AppImeProfile::Imm32Unavailable),
+            ImePolicyProfile::Imm32Unavailable
+        );
+        assert_eq!(
+            ImePolicyProfile::from(AppImeProfile::TsfNative),
+            ImePolicyProfile::TsfNative
+        );
+    }
+
+    #[test]
+    fn is_chromium_widget_table() {
+        assert!(is_chromium_widget("Chrome_WidgetWin_1"));
+        assert!(is_chromium_widget("MozillaWindowClass"));
+        assert!(!is_chromium_widget("Notepad"));
+    }
+
+    /// `detect_app_kind` の3分岐を固定する。`teamswebview_is_chromium_like_imm32_unavailable`
+    /// が TsfNative 側は部分的にカバーしているが、Uwp 分岐（CoreWindow/ApplicationFrameWindow/
+    /// InputSite）と Win32 フォールバックには直接のテストが無かった。
+    #[test]
+    fn detect_app_kind_table() {
+        let table = [
+            ("Chrome_WidgetWin_1", AppKind::TsfNative),
+            ("MozillaWindowClass", AppKind::TsfNative),
+            ("Windows.UI.Core.CoreWindow", AppKind::Uwp),
+            ("ApplicationFrameWindow", AppKind::Uwp),
+            ("Windows.UI.Input.InputSite.WindowClass", AppKind::Uwp),
+            ("Notepad", AppKind::Win32),
+        ];
+        for (class_name, expected) in table {
+            assert_eq!(detect_app_kind(class_name), expected, "{class_name}");
+        }
+    }
 }

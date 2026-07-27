@@ -25,7 +25,8 @@ use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
 
 /// 特殊キーコンボのマッチ結果
-enum SpecialKeyMatch {
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
+pub(super) enum SpecialKeyMatch {
     EngineOn,
     EngineOff,
     ImeOn,
@@ -536,6 +537,23 @@ impl Engine {
             self.adapter.is_enabled(),
             self.compute_active(ctx),
         )
+    }
+
+    /// テスト専用: `match_special_keys` を公開する。
+    ///
+    /// `SpecialKeyCombos::match_event` の `(!engine_enabled || !engine_active)` ガードは、
+    /// engine が既に enabled かつ active（通常運用中）のときは `!engine_enabled` 項が
+    /// 効いて EngineOn コンボにマッチしないことが不変条件。`Decision`/`Effect` 経由の
+    /// 観測では enabled かつ active な状態での再マッチはほぼ無効果（`force_enable_and_activate`
+    /// が実質 no-op を返す）で区別できないため、この不変条件を直接検証する脱出口を設ける。
+    /// 本番コードから呼んではならない。
+    #[cfg(test)]
+    pub(super) fn match_special_keys_for_test(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
+        self.match_special_keys(ctx, event)
     }
 
     /// `user_enabled` を無条件で true にし、IME recovery を伴う activate 処理を行う。

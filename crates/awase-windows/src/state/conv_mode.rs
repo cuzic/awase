@@ -187,6 +187,16 @@ mod tests {
         TickMs(ms)
     }
 
+    /// `allows_conv_mutation` は `AwaseOwned` のときのみ true。反転すると
+    /// `UserOwned`（エンジン OFF 中）でも awase が conv mode を書き換えてしまい、
+    /// ユーザーが選択した IME 設定を破壊する（conv mode は再発ファミリーの一つ）。
+    #[test]
+    fn allows_conv_mutation_only_when_awase_owned() {
+        assert!(ConvModeAuthority::AwaseOwned.allows_conv_mutation());
+        assert!(!ConvModeAuthority::UserOwned.allows_conv_mutation());
+        assert!(!ConvModeAuthority::Unknown.allows_conv_mutation());
+    }
+
     /// BUG-19: 一発だけのカタカナ観測は確定させない（`GetForegroundWindow` 基準の
     /// conv 読み取りが候補ウィンドウ等から誤ってカタカナ conv を拾うケースの再現）。
     #[test]

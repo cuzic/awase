@@ -463,7 +463,7 @@ impl ImeModel {
 #[cfg(test)]
 mod tests {
     use super::super::ime_event::{
-        EventTime, HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource,
+        ApplyError, EventTime, HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource,
     };
     use super::*;
     use crate::state::force_guard::{ForceGuard, ForceOnReason};
@@ -916,6 +916,65 @@ mod tests {
         assert!(
             model.applied.applied_open() == Some(false),
             "一致する generation の完了で applied state を更新する"
+        );
+    }
+
+    /// `stale_ime_apply_success_does_not_consume_pending` の `ImeApplyFailed` 版。
+    /// `reduce()` の `ImeApplyFailed` ハンドラは generation 照合 (`==`) で stale な
+    /// 失敗完了を無視するはずだが、`ImeApplySucceeded` 側と異なりこの経路には
+    /// 対称なテストが無く、`==`→`!=` の反転が mutants で検知されなかった。
+    #[test]
+    fn stale_ime_apply_failure_does_not_consume_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: 9,
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(10),
+            "古い generation の失敗完了で current pending を消費しない"
+        );
+    }
+
+    #[test]
+    fn matching_ime_apply_failure_consumes_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: 10,
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert!(
+            model.pending_generation().is_none(),
+            "一致する generation の失敗完了で pending を消費する"
         );
     }
 

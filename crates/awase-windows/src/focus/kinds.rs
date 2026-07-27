@@ -110,6 +110,15 @@ mod tests {
         assert_eq!(FocusKind::from_u8(255), FocusKind::Undetermined);
     }
 
+    /// `AppKind::store` には roundtrip テストがあるが `FocusKind::store` には無く、
+    /// `store` が no-op に壊れても検知できなかった（mutants MISSED）。
+    #[test]
+    fn focus_kind_load_store_roundtrip() {
+        let atomic = std::sync::atomic::AtomicU8::new(0);
+        FocusKind::NonText.store(&atomic);
+        assert_eq!(FocusKind::load(&atomic), FocusKind::NonText);
+    }
+
     #[test]
     fn test_bypass_state_repr_values() {
         // repr(u8) の値が AtomicU8 との変換で正しいことを確認

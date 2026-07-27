@@ -175,6 +175,51 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// `expires_at: None`（無期限ガード）は期限切れ扱いにしてはならない。
+    /// `is_expired -> true` に壊れると PanicReset/BrokenAppBootstrap 等の
+    /// 無期限ガードが即座に無効化され、安全弁として機能しなくなる。
+    #[test]
+    fn is_expired_false_when_no_expiry_set() {
+        let guard = ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        };
+        assert!(!guard.is_expired(Instant::now()));
+    }
+
+    #[test]
+    fn is_expired_true_after_expiry_time() {
+        let now = Instant::now();
+        let guard = ForceGuard {
+            reason: ForceOnReason::BrokenAppBootstrap,
+            expires_at: Some(now),
+            generation: 1,
+        };
+        assert!(guard.is_expired(now + Duration::from_millis(1)));
+        assert!(!guard.is_expired(now - Duration::from_millis(1)));
+    }
+
+    /// `record_miss` の `consecutive_miss_count == 0` ガードが反転すると、
+    /// 初回 miss で `first_miss_at` が記録されず、drift 窓の起点がずれる。
+    #[test]
+    fn record_miss_sets_first_miss_at_only_on_first_call() {
+        let mut m = ObserveMissMonitor::default();
+        let t0 = Instant::now();
+        m.record_miss(t0);
+        assert_eq!(m.first_miss_at, Some(t0));
+
+        let t1 = t0 + Duration::from_millis(100);
+        m.record_miss(t1);
+        assert_eq!(
+            m.first_miss_at,
+            Some(t0),
+            "2回目以降は first_miss_at を更新しない"
+        );
+        assert_eq!(m.last_miss_at, Some(t1));
+        assert_eq!(m.consecutive_miss_count, 2);
+    }
+
     #[test]
     fn guard_set_add_and_remove() {
         let mut set = ForceGuardSet::default();
