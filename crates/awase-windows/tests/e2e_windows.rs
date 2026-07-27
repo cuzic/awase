@@ -2174,6 +2174,37 @@ fn e2e_message_long_text() {
 // ("を" -> "wお") is reproducible for real against a TSF-native target.
 // ─────────────────────────────────────────────
 
+/// Force a window belonging to another process into the foreground.
+///
+/// Plain `SetForegroundWindow` is silently ignored by Windows when the
+/// calling process isn't already part of the current foreground input
+/// chain — confirmed on real hardware: calling it directly against a
+/// freshly-launched Windows Terminal window left an unrelated window (the
+/// one that already had focus) in the foreground, so SendInput went to the
+/// wrong window entirely. Temporarily attaching this thread's input queue
+/// to the current foreground thread's is the standard, reliable fix.
+unsafe fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SW_SHOW,
+        SetForegroundWindow, ShowWindow,
+    };
+
+    let fg = GetForegroundWindow();
+    let fg_thread = GetWindowThreadProcessId(fg, None);
+    let current_thread = GetCurrentThreadId();
+    let attached = fg_thread != current_thread
+        && AttachThreadInput(current_thread, fg_thread, true).as_bool();
+
+    let _ = ShowWindow(hwnd, SW_SHOW);
+    let _ = SetForegroundWindow(hwnd);
+    let _ = BringWindowToTop(hwnd);
+
+    if attached {
+        let _ = AttachThreadInput(current_thread, fg_thread, false);
+    }
+}
+
 /// Enumerate all top-level windows whose window class name matches exactly.
 unsafe fn enum_windows_by_class(class_name: &str) -> Vec<windows::Win32::Foundation::HWND> {
     use windows::Win32::Foundation::{HWND, LPARAM};
@@ -2332,11 +2363,29 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         };
         log::info!("Found new Windows Terminal window: {hwnd:?}");
 
-        let _ = windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(hwnd);
+        force_foreground(hwnd);
         // Give the shell inside the new pane time to start and show its
         // prompt before we start typing into it.
         std::thread::sleep(std::time::Duration::from_millis(2000));
         pump_messages();
+
+        let actual_fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
+        if actual_fg != hwnd {
+            log::warn!(
+                "Windows Terminal window ({hwnd:?}) did not actually become the \
+                 foreground window (foreground is {actual_fg:?} instead) — \
+                 SendInput would go to the wrong window, skipping to avoid a \
+                 false result."
+            );
+            let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                Some(hwnd),
+                windows::Win32::UI::WindowsAndMessaging::WM_CLOSE,
+                windows::Win32::Foundation::WPARAM(0),
+                windows::Win32::Foundation::LPARAM(0),
+            );
+            let _ = child.kill();
+            return;
+        }
 
         // Turn the IME on with the SAME physical key awase itself sends
         // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
