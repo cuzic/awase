@@ -561,12 +561,9 @@ impl Runtime {
         };
         if self.ime_apply_should_defer() {
             // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] drift correction skipped (settling): desired={desired} \
-                 observed={observed} → {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry(&format!(
+                "drift correction skipped (settling): desired={desired} observed={observed}"
+            ));
             return;
         }
 

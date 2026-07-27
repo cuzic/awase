@@ -258,12 +258,7 @@ impl Runtime {
             // （Engine::prev_activation は遷移確定済みのため）。既存の
             // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
             // パターンで確実に一度だけ再同期する。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] SetOpen stripped from execute_from_loop decision → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("SetOpen stripped from execute_from_loop decision");
         }
         callback
     }
@@ -395,6 +390,19 @@ impl Runtime {
         );
     }
 
+    /// settle 期間中に IME apply/decision をスキップしたとき、settle 明けに refresh で
+    /// 一度だけ再試行する「確立済みパターン」（`executor::strip_ime_set_open_if_settling`
+    /// doc 参照）を一元化する。
+    ///
+    /// 遅延は settle 残余の上限（= `focus_settle_ms()`）+ タイマー粒度マージン 50ms。
+    /// `reason` はログの `[focus-settle] {reason} → ...` に埋め込まれる、呼び出し元ごとの
+    /// 説明文（例: `"apply_force_on_for_imm_broken skipped (settling)"`）。
+    pub fn schedule_settle_retry(&mut self, reason: &str) {
+        let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
+        log::debug!("[focus-settle] {reason} → {retry_ms}ms 後に refresh で再試行");
+        self.schedule_ime_refresh(retry_ms);
+    }
+
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
@@ -477,12 +485,7 @@ impl Runtime {
             // 「これで」が「korede」化。TsfNative は open 状態を読めないため
             // 観測での自己修復も効かない）。遅延は settle 残余の上限
             // （= focus_settle_ms）+ タイマー粒度マージン 50ms。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] apply_force_on_for_imm_broken skipped (settling) → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("apply_force_on_for_imm_broken skipped (settling)");
             return;
         }
         if !(self.engine.is_user_enabled()
@@ -548,12 +551,7 @@ impl Runtime {
         {
             if self.ime_apply_should_defer() {
                 // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
-                let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-                log::debug!(
-                    "[focus-settle] try_force_on_bootstrap skipped (settling) → \
-                     {retry_ms}ms 後に refresh で再試行"
-                );
-                self.schedule_ime_refresh(retry_ms);
+                self.schedule_settle_retry("try_force_on_bootstrap skipped (settling)");
                 return;
             }
             log::warn!(

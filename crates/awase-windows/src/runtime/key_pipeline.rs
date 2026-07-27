@@ -191,12 +191,7 @@ impl Runtime {
             // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
             // パターンで確実に一度だけ再同期する
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
-            let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-            log::debug!(
-                "[focus-settle] SetOpen stripped from kp_run_inner decision → \
-                 {retry_ms}ms 後に refresh で再試行"
-            );
-            self.schedule_ime_refresh(retry_ms);
+            self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
         let state_after = self.engine.debug_state_label();
         self.platform_state
