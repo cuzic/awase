@@ -334,6 +334,6 @@ impl TickableFsm for GjiWarmupCoro {
             self.literal_detect_guard = Some(OutputActiveGuard::begin());
         }
         self.state
-            .apply_vk_sent(detector, deadline_ms, "gji-coro-vk-sent-trace")
+            .apply_vk_sent(detector, deadline_ms, "gji-coro-vk-sent-trace");
     }
 }

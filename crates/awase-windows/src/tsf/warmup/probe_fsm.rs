@@ -756,7 +756,7 @@ impl TickableFsm for TsfProbeCoro {
     /// active を保持しているため、追加のガード確保は不要。
     fn apply_vk_sent(&mut self, detector: LiteralDetector, deadline_ms: u64) {
         self.state
-            .apply_vk_sent(detector, deadline_ms, "tsf-probe-vk-sent-trace")
+            .apply_vk_sent(detector, deadline_ms, "tsf-probe-vk-sent-trace");
     }
 }
 
