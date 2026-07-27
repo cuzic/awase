@@ -2237,34 +2237,34 @@ unsafe fn enum_windows_by_class(class_name: &str) -> Vec<windows::Win32::Foundat
     ctx.found
 }
 
-/// Send a modifier chord (e.g. Ctrl+Shift+A): all keys down in order, then
-/// all keys up in reverse order.
-unsafe fn send_chord(vks: &[u16]) {
+/// Type a plain ASCII/Unicode string via `KEYEVENTF_UNICODE` SendInput
+/// (bypasses IME entirely, like `WM_CHAR`). Used only for our own scripted
+/// setup command (the `Read-Host` capture line), never for the romaji
+/// under test — that part must go through the real VK+IME path.
+unsafe fn send_unicode_string(s: &str) {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-    let mut inputs = Vec::with_capacity(vks.len() * 2);
-    for &vk in vks {
+    let mut inputs = Vec::with_capacity(s.len() * 2);
+    for unit in s.encode_utf16() {
         inputs.push(INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
-                    dwFlags: KEYBD_EVENT_FLAGS::default(),
+                    wVk: VIRTUAL_KEY(0),
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE,
                     time: 0,
                     dwExtraInfo: 0,
                 },
             },
         });
-    }
-    for &vk in vks.iter().rev() {
         inputs.push(INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk),
-                    wScan: 0,
-                    dwFlags: KEYEVENTF_KEYUP,
+                    wVk: VIRTUAL_KEY(0),
+                    wScan: unit,
+                    dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -2273,32 +2273,9 @@ unsafe fn send_chord(vks: &[u16]) {
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
     let sent = SendInput(&inputs, size);
-    log::debug!("SendInput chord: vks={vks:02X?} sent={sent}");
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    log::debug!("SendInput unicode string: len={} sent={sent}", s.len());
+    std::thread::sleep(std::time::Duration::from_millis(150));
     pump_messages();
-}
-
-/// Read the current clipboard contents as UTF-16 text (CF_UNICODETEXT).
-unsafe fn read_clipboard_text() -> Option<String> {
-    use windows::Win32::Foundation::HGLOBAL;
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-    use windows::Win32::System::Memory::GlobalLock;
-    use windows::Win32::System::Ole::CF_UNICODETEXT;
-
-    if OpenClipboard(None).is_err() {
-        return None;
-    }
-    let text = (|| {
-        let handle = GetClipboardData(u32::from(CF_UNICODETEXT.0)).ok()?;
-        let ptr = GlobalLock(HGLOBAL(handle.0));
-        if ptr.is_null() {
-            return None;
-        }
-        let text = windows::core::PCWSTR(ptr.cast()).to_string().ok();
-        text
-    })();
-    let _ = CloseClipboard();
-    text
 }
 
 #[test]
@@ -2331,14 +2308,17 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         // (std::process::Command::new("wt")) does not resolve that alias —
         // confirmed on real hardware to fail even though the alias works
         // fine from anything that goes through ShellExecute, e.g.
-        // PowerShell's Start-Process. So launch it that way instead.
+        // PowerShell's Start-Process. So launch it that way instead. The
+        // shell is pinned explicitly (powershell -NoProfile -NoLogo) so the
+        // setup command below doesn't depend on whatever the default
+        // profile happens to be.
         log::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
         let Ok(mut child) = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "Start-Process wt -ArgumentList '-w -1'",
+                "Start-Process wt -ArgumentList '-w -1 powershell -NoProfile -NoLogo'",
             ])
             .spawn()
         else {
@@ -2387,9 +2367,33 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             return;
         }
 
+        // Read the typed line back via a `Read-Host` capture instead of
+        // clipboard select-all/copy: Windows Terminal's default keybindings
+        // for "select all" turned out not to be Ctrl+Shift+A on this
+        // install (confirmed on real hardware — the clipboard never
+        // changed, so we were reading stale content from an unrelated
+        // earlier copy). `Read-Host` sidesteps that entirely: it just
+        // captures whatever line is typed as a plain string and never
+        // executes it, so it's safe to press Enter on the IME-composed
+        // text without worrying about which app-level keybindings are
+        // configured or about accidentally running an arbitrary command.
+        let home = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Public".into());
+        let capture_path = format!("{home}\\msime_e2e_terminal_capture.txt");
+        let _ = std::fs::remove_file(&capture_path);
+
+        log::info!("--- Ensuring IME is off, then typing the Read-Host setup command ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF — our own ASCII setup line, not part of the test
+        send_unicode_string(&format!(
+            "$l = Read-Host; Set-Content -Path '{capture_path}' -Value $l -Encoding utf8"
+        ));
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN: safe, Read-Host only captures a string
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        pump_messages();
+
         // Turn the IME on with the SAME physical key awase itself sends
         // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
-        // IMMEDIATELY (no gate/settle delay) type "wo" via SendInput.
+        // IMMEDIATELY (no gate/settle delay) type "wo" via SendInput —
+        // this is the actual BUG-13 race under test.
         log::info!("--- Sending VK_DBE_HIRAGANA (F2) then immediately 'w' 'o', no gate ---");
         send_key_to_edit(0xF2, 0x3C); // VK_DBE_HIRAGANA / F2
         send_key_to_edit(0x57, 0x11); // VK_W
@@ -2397,13 +2401,13 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         pump_messages();
 
-        // Read back the typed line via clipboard. Windows Terminal's
-        // default bindings are Ctrl+Shift+A (select all) and Ctrl+Shift+C
-        // (copy) — plain Ctrl+C would send SIGINT to the shell instead.
-        send_chord(&[0x11, 0x10, 0x41]); // Ctrl+Shift+A
-        send_chord(&[0x11, 0x10, 0x43]); // Ctrl+Shift+C
-        let copied = read_clipboard_text();
-        log::info!("Clipboard after select-all+copy: {copied:?}");
+        // Submit the captured line to Read-Host (still just data capture,
+        // not command execution) and give it a moment to write the file.
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let captured = std::fs::read_to_string(&capture_path).ok();
+        log::info!("Read-Host capture file contents: {captured:?}");
 
         // Best-effort cleanup: close the throwaway terminal window. `child`
         // is the `wt.exe` launcher process, which typically hands off to
@@ -2417,25 +2421,25 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             windows::Win32::Foundation::LPARAM(0),
         );
         let _ = child.kill();
+        let _ = std::fs::remove_file(&capture_path);
 
-        let Some(copied) = copied else {
+        let Some(captured) = captured else {
             log::warn!(
-                "Could not read clipboard contents (select-all/copy may not be bound to \
-                 Ctrl+Shift+A/C on this Windows Terminal install) — treating as inconclusive, \
-                 not a failure."
+                "Could not read the Read-Host capture file ({capture_path}) — treating as \
+                 inconclusive, not a failure."
             );
             return;
         };
 
-        // Success looks like the buffer containing "を" (properly
+        // Success looks like the captured line containing "を" (properly
         // composed/committed). A literal-leak reproduction looks like a
         // bare 'w' immediately followed by "お" (the romaji leaked before
         // MS-IME was ready), per BUG-13 / docs/known-bugs.md.
-        let has_wo_kana = copied.contains('\u{3092}'); // を
-        let has_literal_leak = copied.contains("w\u{304A}"); // "wお"
+        let has_wo_kana = captured.contains('\u{3092}'); // を
+        let has_literal_leak = captured.contains("w\u{304A}"); // "wお"
         log::info!(
-            "Windows Terminal buffer check: has_wo_kana={has_wo_kana} \
-             has_literal_leak={has_literal_leak} raw={copied:?}"
+            "Windows Terminal capture check: has_wo_kana={has_wo_kana} \
+             has_literal_leak={has_literal_leak} raw={captured:?}"
         );
 
         assert!(
@@ -2443,7 +2447,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             "BUG-13-equivalent literal leak reproduced in Vk mode against Windows \
              Terminal: got 'w' + 'お' instead of composed 'を'. This confirms the \
              Vk injection path needs the same ms_ime_gate_defer treatment as the Tsf \
-             path — see project memory msime-coldstart-vk-mode-gap. Buffer: {copied:?}"
+             path — see project memory msime-coldstart-vk-mode-gap. Captured: {captured:?}"
         );
     }
 }
