@@ -1669,6 +1669,189 @@ fn e2e_gji_katakana_conversion_interactive() {
     }
 }
 
+#[test]
+fn e2e_gji_long_phrase_composition_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI long phrase composition (no henkan) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'arigatou' via SendInput ---");
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x52, 0x13); // VK_R
+        send_key_to_edit(0x49, 0x17); // VK_I
+        send_key_to_edit(0x47, 0x22); // VK_G
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x54, 0x14); // VK_T
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        send_key_to_edit(0x55, 0x16); // VK_U
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'arigatou': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
+            "composing string should be 'ありがとう' via GJI, got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
+            "confirmed text should be 'ありがとう', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI long phrase composition test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_composition_cancel_escape_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI composition cancel (Escape) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending Escape to cancel composition ---");
+        send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
+
+        let cleared =
+            wait_for_composition_cleared(win.edit_hwnd, std::time::Duration::from_secs(1));
+        assert!(cleared, "composition should be cancelled after Escape via GJI");
+
+        let text = win.get_text();
+        log::info!("Edit content after Escape cancel: '{text}'");
+        assert_eq!(
+            text, "",
+            "Escape should cancel the composition without committing text, got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI composition cancel test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent via GJI (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF should turn the IME off via GJI"
+        );
+
+        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF again
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF must be idempotent via GJI too: sending it while \
+             already off must not toggle back on"
+        );
+
+        log::info!("=== GJI VK_IME_OFF idempotency test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_kanji_toggle_hazard_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_KANJI toggles via GJI, not idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_KANJI (1st) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_KANJI should toggle the IME off on first press via GJI"
+        );
+
+        log::info!("--- Sending VK_KANJI (2nd) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI again
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_KANJI toggles under GJI too: a second press flips back ON"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI VK_KANJI toggle hazard test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_vk_dbe_alphanumeric_stays_open_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' via GJI (IME-off key selection regression) ==="
+    );
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_DBE_ALPHANUMERIC must NOT turn the IME 'off' under GJI either \
+             (ImmGetOpenStatus should stay true) — it only changes conversion mode"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI VK_DBE_ALPHANUMERIC stays-open test completed ===");
+    }
+}
+
 // ─────────────────────────────────────────────
 // IME-off key selection regressions
 //
