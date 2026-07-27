@@ -1483,6 +1483,130 @@ fn e2e_msime_composition_cancel_escape_interactive() {
     }
 }
 
+// ─────────────────────────────────────────────
+// IME-off key selection regressions
+//
+// docs/experiments.md エントリ01・.claude/rules/experiment-logging.md が
+// 記録する通り、「IME OFF に何のキーを送るか」は5日間で6回、採用と撤回が
+// 反転した(534051a → 098c663 → adb856c → b271aee → ... → 489cdf1)。
+// 最終的に MsImeDirectStrategy は VK_IME_OFF(0x1A, 冪等) を採用したが、
+// その決定打となった「なぜ他の候補が却下されたか」を実機で再現し続けることで、
+// 同じ理由をまた発見するコストを防ぐ。
+// ─────────────────────────────────────────────
+
+#[test]
+fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // MsImeDirectStrategy settled on VK_IME_OFF specifically because,
+        // unlike VK_KANJI, sending it while already off must NOT toggle
+        // back on (48a667a).
+        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF should turn the IME off"
+        );
+
+        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        send_key_to_edit(0x1A, 0); // VK_IME_OFF again
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_IME_OFF must be idempotent: sending it while already off \
+             must not toggle back on"
+        );
+
+        log::info!("=== VK_IME_OFF idempotency test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: VK_KANJI toggles, not idempotent (IME-off key selection regression) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // This documents exactly why VK_KANJI was rejected as the IME-off
+        // key across several reversals (098c663, adb856c): it is a toggle,
+        // so a second press while "off" flips it back "on" — unlike
+        // VK_IME_OFF. If this test ever starts failing because VK_KANJI
+        // became idempotent on some future Windows/MS-IME version, that's
+        // useful signal, not just noise.
+        log::info!("--- Sending VK_KANJI (1st) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI
+        assert!(
+            !get_ime_open(win.edit_hwnd),
+            "VK_KANJI should toggle the IME off on first press"
+        );
+
+        log::info!("--- Sending VK_KANJI (2nd) ---");
+        send_key_to_edit(0x19, 0); // VK_KANJI again
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_KANJI toggles: a second press flips back ON. This hazard \
+             (not idempotent) is why awase uses VK_IME_OFF instead."
+        );
+
+        // Leave the IME in a known state for subsequent tests.
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== VK_KANJI toggle hazard test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_vk_dbe_alphanumeric_stays_open_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!(
+        "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' (IME-off key selection regression) ==="
+    );
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+        assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
+
+        // VK_DBE_ALPHANUMERIC (半角英数) switches to half-width-alphanumeric
+        // *input mode* while the IME stays "open" — it is not a true
+        // IME-off key. Treating it as one was an earlier, rejected
+        // assumption (docs/experiments.md エントリ01); VK_IME_OFF is the
+        // key that actually clears ImmGetOpenStatus().
+        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
+        assert!(
+            get_ime_open(win.edit_hwnd),
+            "VK_DBE_ALPHANUMERIC must NOT turn the IME 'off' (ImmGetOpenStatus \
+             should stay true) — it only changes the conversion mode. \
+             Using it as an IME-off key was a rejected assumption; see \
+             docs/experiments.md エントリ01."
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== VK_DBE_ALPHANUMERIC stays-open test completed ===");
+    }
+}
+
 #[test]
 fn e2e_engine_with_ime_context() {
     init_test_logging();
