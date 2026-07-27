@@ -347,6 +347,18 @@ fn store_gji_warmup_if_probing(io: &impl ProbeIo) {
     }
 }
 
+/// deferred VK を flush してから GJI warmup 完了を記録する。
+///
+/// `send_deferred_vks(take_pending_deferred_vks(), marker)` →
+/// `store_gji_warmup_if_probing` の2行セットが TSF/Chrome/single-vk の3箇所で
+/// 複製されていたため共通化する。BUG-27/BUG-38 はこのペアの片方（特に
+/// `store_gji_warmup_if_probing` 側）が抜けたことによる deferred VK 順序バグ
+/// だったため、新しい呼び出し箇所で片方だけ呼び忘れることを構造的に防ぐ。
+fn flush_deferred_and_mark_warmup(io: &impl ProbeIo, marker: VkMarker) {
+    io.send_deferred_vks(&io.take_pending_deferred_vks(), marker);
+    store_gji_warmup_if_probing(io);
+}
+
 /// `dispatch_probe_actions` の結果。
 pub(crate) enum DispatchResult {
     /// probe 完了（タイマー停止）。
@@ -441,10 +453,9 @@ where
                             .needs_literal
                             .then(|| crate::tsf::probe::LiteralDetector::new(true));
                         let ze_bs_count = io.transmit_tsf(&romaji, &chars, &outcome);
-                        io.send_deferred_vks(&io.take_pending_deferred_vks(), VkMarker::Tsf);
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
-                        store_gji_warmup_if_probing(io);
+                        flush_deferred_and_mark_warmup(io, VkMarker::Tsf);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -464,12 +475,8 @@ where
                             .then(|| crate::tsf::probe::LiteralDetector::new(true));
                         let ze_bs_count = chars.len();
                         io.transmit_chrome(&romaji, &chars);
-                        io.send_deferred_vks(
-                            &io.take_pending_deferred_vks(),
-                            VkMarker::InjectedWithScan,
-                        );
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
-                        store_gji_warmup_if_probing(io);
+                        flush_deferred_and_mark_warmup(io, VkMarker::InjectedWithScan);
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -521,9 +528,8 @@ where
                 };
                 let deadline_ms = crate::hook::current_tick_ms() + timeout_ms;
                 if is_last {
-                    io.send_deferred_vks(&io.take_pending_deferred_vks(), marker);
                     // GjiFsm bridge: romaji 全体の送信完了に相当するタイミングで warmup 結果を保存する。
-                    store_gji_warmup_if_probing(io);
+                    flush_deferred_and_mark_warmup(io, marker);
                 }
                 machine.apply_vk_sent(detector, deadline_ms);
             }
