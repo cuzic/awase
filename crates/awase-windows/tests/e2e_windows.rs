@@ -550,9 +550,12 @@ impl TestEditWindow {
         log::info!("Window created: hwnd={:?} class=AwaseTestWindow", hwnd);
         log::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
 
-        // Show window and set focus
+        // Show window and set focus. Plain SetForegroundWindow can lose to
+        // another window that already holds the foreground (observed on
+        // real hardware to cause intermittent failures across otherwise
+        // unrelated tests), so use the AttachThreadInput-based helper.
         let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
+        force_foreground(hwnd);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(edit_hwnd));
 
         // Process messages to complete rendering
@@ -609,8 +612,8 @@ impl TestEditWindow {
     /// Set focus to the Edit control
     unsafe fn focus(&self) {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
-        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow};
-        let _ = SetForegroundWindow(self.hwnd);
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        force_foreground(self.hwnd);
         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(self.edit_hwnd));
         pump_messages();
 
