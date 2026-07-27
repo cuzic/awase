@@ -89,6 +89,32 @@ mod tests {
         assert_eq!(b.chord_kind(), Some(ChordKind::CtrlMuhenkanImeOff));
     }
 
+    /// `is_ctrl_ime_chord`/`is_focus_transition` は既存テストで「正しいバリアントに対して
+    /// true を返す」ケースのみ検証しており、`replace with true` への変異(常に true を
+    /// 返しても既存テストは通る)が検知できなかった。別バリアントに対する false を固定する。
+    #[test]
+    fn ctrl_ime_chord_is_not_focus_transition() {
+        let b = InputBarrier::CtrlImeChord {
+            target: false,
+            kind: ChordKind::CtrlMuhenkanImeOff,
+            started_seq: 100,
+            started_at: Instant::now(),
+        };
+        assert!(!b.is_focus_transition());
+    }
+
+    #[test]
+    fn focus_transition_is_not_ctrl_ime_chord() {
+        let now = Instant::now();
+        let b = InputBarrier::FocusTransition {
+            to_hwnd: HwndId(1),
+            started_seq: 1,
+            started_at: now,
+            settle_until: now + std::time::Duration::from_millis(100),
+        };
+        assert!(!b.is_ctrl_ime_chord());
+    }
+
     #[test]
     fn focus_transition_active_before_settle_until() {
         let now = Instant::now();
