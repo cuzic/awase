@@ -1152,43 +1152,94 @@ unsafe fn wait_for_composition_string(
     }
 }
 
+/// Poll until the composition string differs from `previous` (e.g. after a
+/// henkan/katakana conversion key replaces the pre-conversion reading with a
+/// converted candidate).
+unsafe fn wait_for_composition_change(
+    hwnd: windows::Win32::Foundation::HWND,
+    previous: &str,
+    timeout: std::time::Duration,
+) -> Option<String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        if let Some(s) = get_composition_string(hwnd) {
+            if !s.is_empty() && s != previous {
+                return Some(s);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Poll until the composition is empty/gone (e.g. after Escape cancels it).
+unsafe fn wait_for_composition_cleared(
+    hwnd: windows::Win32::Foundation::HWND,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        pump_messages();
+        let cleared = get_composition_string(hwnd).map_or(true, |s| s.is_empty());
+        if cleared {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Shared setup for interactive MS-IME composition tests: skip (with a log
+/// message) when the session isn't interactive or Japanese IME isn't
+/// available, otherwise create a focused Edit window with the IME turned on.
+unsafe fn setup_ime_composition_test() -> Option<TestEditWindow> {
+    if !is_interactive_session() {
+        log::info!("Skipping MS-IME composition test (set AWASE_E2E_INTERACTIVE=1)");
+        return None;
+    }
+    log_system_info();
+
+    if !is_japanese_ime_available() {
+        log::warn!("Japanese IME not installed, skipping MS-IME composition test");
+        return None;
+    }
+
+    let Some(win) = TestEditWindow::create() else {
+        log::error!("Could not create test window, skipping");
+        return None;
+    };
+    win.clear();
+    win.focus();
+
+    // Turn the IME on so SendInput keystrokes go through romaji->kana
+    // conversion instead of being typed literally.
+    set_ime_open(win.edit_hwnd, true);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if !get_ime_open(win.edit_hwnd) {
+        log::warn!("Could not enable IME, skipping MS-IME composition test");
+        return None;
+    }
+
+    Some(win)
+}
+
 #[test]
 fn e2e_msime_romaji_to_kana_conversion_interactive() {
     init_test_logging();
-    if !is_interactive_session() {
-        log::info!(
-            "Skipping MS-IME romaji conversion test (set AWASE_E2E_INTERACTIVE=1)"
-        );
-        return;
-    }
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     log::info!("=== E2E Phase 3: MS-IME romaji->kana conversion (SendInput) ===");
 
     unsafe {
-        log_system_info();
-
-        if !is_japanese_ime_available() {
-            log::warn!("Japanese IME not installed, skipping MS-IME conversion test");
-            return;
-        }
-
-        let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+        let Some(win) = setup_ime_composition_test() else {
             return;
         };
-        win.clear();
-        win.focus();
-
-        // Turn the IME on so SendInput keystrokes go through romaji->kana
-        // conversion instead of being typed literally.
-        set_ime_open(win.edit_hwnd, true);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if !get_ime_open(win.edit_hwnd) {
-            log::warn!("Could not enable IME, skipping MS-IME conversion test");
-            return;
-        }
 
         // Type "ka" via SendInput (VK_K, VK_A). MS-IME's default romaji
         // table composes this to the hiragana "か" without needing an
@@ -1221,6 +1272,205 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
         // Cleanup
         set_ime_open(win.edit_hwnd, false);
         log::info!("=== MS-IME romaji->kana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_kanji_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME kanji conversion (henkan via Space) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        // Type "me" -> composing "め" (single mora, no ambiguity yet).
+        log::info!("--- Sending 'm' 'e' via SendInput ---");
+        send_key_to_edit(0x4D, 0x32); // VK_M
+        send_key_to_edit(0x45, 0x12); // VK_E
+
+        let reading =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'me': {reading:?}");
+        assert_eq!(
+            reading.as_deref(),
+            Some("\u{3081}"), // め
+            "composing string should be 'め' after typing 'me', got: {reading:?}"
+        );
+
+        // Space triggers henkan (kanji conversion). "め" ("eye") is common
+        // enough that MS-IME's default dictionary ranks 目 as the first
+        // candidate with no prior user history required.
+        log::info!("--- Sending Space to trigger henkan ---");
+        send_key_to_edit(0x20, 0x39); // VK_SPACE
+
+        let converted =
+            wait_for_composition_change(win.edit_hwnd, "\u{3081}", std::time::Duration::from_secs(1));
+        log::info!("Composition string after henkan: {converted:?}");
+        assert_eq!(
+            converted.as_deref(),
+            Some("\u{76EE}"), // 目
+            "composing string should convert to '目' after Space, got: {converted:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{76EE}",
+            "confirmed text should be '目', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME kanji conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_katakana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME katakana conversion (F7) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let hiragana =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {hiragana:?}");
+        assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
+
+        // F7 is the cross-IME (MS-IME/ATOK/etc.) convention for "convert the
+        // current composition to full-width katakana", independent of any
+        // conversion dictionary/candidate ranking.
+        log::info!("--- Sending F7 to force katakana conversion ---");
+        send_key_to_edit(0x76, 0x41); // VK_F7
+
+        let katakana =
+            wait_for_composition_change(win.edit_hwnd, "\u{304B}", std::time::Duration::from_secs(1));
+        log::info!("Composition string after F7: {katakana:?}");
+        assert_eq!(
+            katakana.as_deref(),
+            Some("\u{30AB}"), // カ
+            "composing string should be 'カ' after F7, got: {katakana:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{30AB}",
+            "confirmed text should be 'カ', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME katakana conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_long_phrase_composition_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME long phrase composition (no henkan) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        // "arigatou" -> "ありがとう" (thank you), a longer multi-mora
+        // composition confirmed directly without a conversion step.
+        log::info!("--- Sending 'arigatou' via SendInput ---");
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x52, 0x13); // VK_R
+        send_key_to_edit(0x49, 0x17); // VK_I
+        send_key_to_edit(0x47, 0x22); // VK_G
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x54, 0x14); // VK_T
+        send_key_to_edit(0x4F, 0x18); // VK_O
+        send_key_to_edit(0x55, 0x16); // VK_U
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'arigatou': {compstr:?}");
+        assert_eq!(
+            compstr.as_deref(),
+            Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
+            "composing string should be 'ありがとう', got: {compstr:?}"
+        );
+
+        log::info!("--- Confirming composition with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
+            "confirmed text should be 'ありがとう', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME long phrase composition test completed ===");
+    }
+}
+
+#[test]
+fn e2e_msime_composition_cancel_escape_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: MS-IME composition cancel (Escape) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let compstr =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {compstr:?}");
+        assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending Escape to cancel composition ---");
+        send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
+
+        let cleared =
+            wait_for_composition_cleared(win.edit_hwnd, std::time::Duration::from_secs(1));
+        assert!(cleared, "composition should be cancelled after Escape");
+
+        let text = win.get_text();
+        log::info!("Edit content after Escape cancel: '{text}'");
+        assert_eq!(
+            text, "",
+            "Escape should cancel the composition without committing text, got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== MS-IME composition cancel test completed ===");
     }
 }
 
