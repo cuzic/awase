@@ -2295,8 +2295,22 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
 
         let before = enum_windows_by_class("CASCADIA_HOSTING_WINDOW_CLASS");
 
+        // `wt.exe` is an MSIX "app execution alias" (a reparse-point stub
+        // under %LOCALAPPDATA%\Microsoft\WindowsApps\). Plain CreateProcess
+        // (std::process::Command::new("wt")) does not resolve that alias —
+        // confirmed on real hardware to fail even though the alias works
+        // fine from anything that goes through ShellExecute, e.g.
+        // PowerShell's Start-Process. So launch it that way instead.
         log::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
-        let Ok(mut child) = std::process::Command::new("wt").args(["-w", "-1"]).spawn() else {
+        let Ok(mut child) = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Process wt -ArgumentList '-w -1'",
+            ])
+            .spawn()
+        else {
             log::warn!("Could not launch 'wt' (Windows Terminal not available?), skipping");
             return;
         };
