@@ -1288,33 +1288,42 @@ fn e2e_msime_kanji_conversion_interactive() {
             return;
         };
 
-        // Type "me" -> composing "め" (single mora, no ambiguity yet).
-        log::info!("--- Sending 'm' 'e' via SendInput ---");
+        // Type "namae" -> composing "なまえ" ("name"). A single mora like
+        // "me"->"目" was tried first but MS-IME's first Space candidate for
+        // very short readings can be a bare katakana transliteration rather
+        // than a kanji (observed: "め" -> "メ", not "目") — readings need to
+        // be long/common enough that the kanji candidate is unambiguously
+        // ranked first, which holds for this everyday word.
+        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        send_key_to_edit(0x4E, 0x31); // VK_N
+        send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x4D, 0x32); // VK_M
+        send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x45, 0x12); // VK_E
 
         let reading =
             wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'me': {reading:?}");
+        log::info!("Composition string after 'namae': {reading:?}");
         assert_eq!(
             reading.as_deref(),
-            Some("\u{3081}"), // め
-            "composing string should be 'め' after typing 'me', got: {reading:?}"
+            Some("\u{306A}\u{307E}\u{3048}"), // なまえ
+            "composing string should be 'なまえ' after typing 'namae', got: {reading:?}"
         );
 
-        // Space triggers henkan (kanji conversion). "め" ("eye") is common
-        // enough that MS-IME's default dictionary ranks 目 as the first
-        // candidate with no prior user history required.
+        // Space triggers henkan (kanji conversion).
         log::info!("--- Sending Space to trigger henkan ---");
         send_key_to_edit(0x20, 0x39); // VK_SPACE
 
-        let converted =
-            wait_for_composition_change(win.edit_hwnd, "\u{3081}", std::time::Duration::from_secs(1));
+        let converted = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{306A}\u{307E}\u{3048}",
+            std::time::Duration::from_secs(1),
+        );
         log::info!("Composition string after henkan: {converted:?}");
         assert_eq!(
             converted.as_deref(),
-            Some("\u{76EE}"), // 目
-            "composing string should convert to '目' after Space, got: {converted:?}"
+            Some("\u{540D}\u{524D}"), // 名前
+            "composing string should convert to '名前' after Space, got: {converted:?}"
         );
 
         log::info!("--- Confirming conversion with Enter ---");
@@ -1323,8 +1332,8 @@ fn e2e_msime_kanji_conversion_interactive() {
         let text = win.get_text();
         log::info!("Edit content after confirm: '{text}'");
         assert_eq!(
-            text, "\u{76EE}",
-            "confirmed text should be '目', got: '{text}'"
+            text, "\u{540D}\u{524D}",
+            "confirmed text should be '名前', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
