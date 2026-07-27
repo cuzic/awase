@@ -278,9 +278,7 @@ impl Output {
     ///    BS が即キャンセルするため文字フラッシュは発生しない。
     pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: Generation) {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
-        use crate::vk::{VK_BACK, VK_IME_ON};
-        use awase::types::VkCode;
-        const VK_A: VkCode = VkCode(0x41);
+        use crate::vk::{VK_A, VK_BACK, VK_IME_ON};
 
         let ime_on_inputs = [
             make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
