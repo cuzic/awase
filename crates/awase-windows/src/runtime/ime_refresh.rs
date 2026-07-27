@@ -249,14 +249,9 @@ impl Runtime {
                     "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                     tick_ms,
                 );
             } else {

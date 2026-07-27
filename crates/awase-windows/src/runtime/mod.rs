@@ -409,6 +409,29 @@ impl Runtime {
         self.schedule_ime_refresh(retry_ms);
     }
 
+    /// `ImeEvent::InputModeApplied`（`result` は常に `Applied`）の dispatch を一元化する。
+    ///
+    /// awase 自身の能動的な input_mode 訂正（`InputModeApplyStrategy` 参照）は、常に
+    /// `result: Applied` 固定・5 フィールドの構築が `mode`/`strategy`/`tick_ms` だけ
+    /// 違う形で複数箇所に複製されていた。`Skipped` を構築する経路は `state/ime_model.rs`
+    /// 内の別経路専用でありここでは扱わない。
+    pub fn apply_input_mode_correction(
+        &mut self,
+        mode: InputModeState,
+        strategy: crate::state::ime_event::InputModeApplyStrategy,
+        tick_ms: crate::state::TickMs,
+    ) {
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InputModeApplied {
+                mode,
+                strategy,
+                result: crate::state::ime_event::InputModeApplyResult::Applied,
+                at: tick_ms,
+            },
+            tick_ms,
+        );
+    }
+
     /// ポーリング間隔設定に従って次回 IME リフレッシュをスケジュールする。
     pub fn reschedule_ime_refresh(&mut self) {
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
@@ -529,14 +552,9 @@ impl Runtime {
                     "Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::ImmBrokenCorrection,
                     tick_ms,
                 );
             } else {

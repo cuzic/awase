@@ -174,30 +174,39 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
 /// `ImeEvent::InputModeApplied` は awase 自身の能動的な input_mode 更新に限定される。
 ///
 /// 外部 API を呼んでいないのに `InputModeObserved` で「観測した体」を偽装するのを防ぐ。
+/// `result: Applied` 固定のケース（7箇所、strategy/mode/tick_ms のみ違う）は
+/// `runtime/mod.rs::Runtime::apply_input_mode_correction` に集約済み
+/// （2026-07-27、下記 designated 呼び出し元は同ヘルパー経由）。`result: Skipped` を
+/// 構築する経路は `state/ime_model.rs` 内の別経路専用でここには含まれない。
 /// 現在の designated 使用箇所（各 strategy と対応）:
 /// - `platform_state.rs::apply_panic_reset`        → `InputModeApplyStrategy::PanicReset`
+///   （直接構築、`apply_input_mode_correction` 未経由）
 /// - `platform_state.rs::apply_hwnd_cache_restore` → `InputModeApplyStrategy::CacheRestore`
-/// - `key_pipeline.rs` (post-decision)             → `InputModeApplyStrategy::PostSetOpenEisuReset`
-/// - `key_pipeline.rs` (shadow toggle OFF→ON)      → `InputModeApplyStrategy::UserImeOnEisuReset`
-/// - `key_pipeline.rs` (shadow toggle no-op/TurnOn)→ `InputModeApplyStrategy::UserTurnOnEisuReset`
-/// - `key_pipeline.rs` (左Shift単独タップ、トグルON)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
-///   (`ObservedEisu` へ、`kp_shift_conv_guard_key_up`)
-/// - `key_pipeline.rs` (半角英数トグルOFF共通ヘルパー)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
-///   (`AssumedRomaji` へ、`kp_restore_kana_from_half_width`。B節のトグルOFF・E節の3競合
-///   経路・F節のフォーカス変更安全策から共通で呼ばれる、2026-07-11)
-/// - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
-/// - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
+///   （直接構築、`apply_input_mode_correction` 未経由）
+/// - `runtime/mod.rs::apply_input_mode_correction` （唯一の構築箇所） 経由の呼び出し元:
+///   - `key_pipeline.rs` (post-decision)             → `InputModeApplyStrategy::PostSetOpenEisuReset`
+///   - `key_pipeline.rs` (shadow toggle OFF→ON)      → `InputModeApplyStrategy::UserImeOnEisuReset`
+///   - `key_pipeline.rs` (shadow toggle no-op/TurnOn)→ `InputModeApplyStrategy::UserTurnOnEisuReset`
+///   - `key_pipeline.rs` (左Shift単独タップ、トグルON)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///     (`ObservedEisu` へ、`kp_shift_conv_guard_key_up`)
+///   - `key_pipeline.rs` (半角英数トグルOFF共通ヘルパー)→ `InputModeApplyStrategy::UserHalfWidthAlnumToggle`
+///     (`AssumedRomaji` へ、`kp_restore_kana_from_half_width`。B節のトグルOFF・E節の3競合
+///     経路・F節のフォーカス変更安全策から共通で呼ばれる、2026-07-11)
+///   - `ime_refresh.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (FocusChanged)
+///   - `runtime/mod.rs`                              → `InputModeApplyStrategy::ImmBrokenCorrection` (Blacklist force-ON)
 ///
-/// 新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し
-/// このカウントを更新すること。外部観測には必ず `InputModeObserved` を使うこと。
+/// 新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し、
+/// `apply_input_mode_correction` 経由で dispatch した上でこのカウントを更新すること。
+/// 外部観測には必ず `InputModeObserved` を使うこと。
 #[test]
 fn input_mode_applied_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
-        ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore
-        ("src/runtime/key_pipeline.rs", 5), // PostSetOpenEisuReset + UserImeOnEisuReset
-        // + UserTurnOnEisuReset + UserHalfWidthAlnumToggle(ON) + UserHalfWidthAlnumToggle(OFF共通ヘルパー)
-        ("src/runtime/ime_refresh.rs", 1), // ImmBrokenCorrection (FocusChanged)
-        ("src/runtime/mod.rs", 1),         // ImmBrokenCorrection (Blacklist force-ON)
+        ("src/state/platform_state.rs", 2), // PanicReset + CacheRestore（直接構築、対象外）
+        // 7箇所すべて apply_input_mode_correction 経由になったため key_pipeline.rs / ime_refresh.rs はゼロ。
+        ("src/runtime/key_pipeline.rs", 0),
+        ("src/runtime/ime_refresh.rs", 0),
+        // apply_input_mode_correction 自体の唯一の構築箇所（7箇所すべての共通呼び出し先）。
+        ("src/runtime/mod.rs", 1),
     ];
     for (path, expected) in known_sites {
         let content = read_crate_file(path);
@@ -207,6 +216,7 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
             "{path} 内の `ImeEvent::InputModeApplied` 構築箇所数が想定({expected})と \
              異なります(実際: {count})。\n\
              新しい能動的訂正を追加する場合は `InputModeApplyStrategy` に専用 variant を追加し、\n\
+             `runtime/mod.rs::Runtime::apply_input_mode_correction` 経由で dispatch した上で\n\
              このテストの期待値を更新してください。\n\
              外部 API 観測には `InputModeObserved` を使ってください（偽装厳禁）。"
         );

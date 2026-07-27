@@ -729,14 +729,9 @@ impl Runtime {
                     log::info!("[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲");
                     self.kp_restore_kana_from_half_width(false);
                 } else {
-                    self.platform_state.ime.dispatch_event(
-                        crate::state::ime_event::ImeEvent::InputModeApplied {
-                            mode: new_mode,
-                            strategy:
-                                crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
-                            result: crate::state::ime_event::InputModeApplyResult::Applied,
-                            at: tick_ms,
-                        },
+                    self.apply_input_mode_correction(
+                        new_mode,
+                        crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
                         tick_ms,
                     );
                     log::info!(
@@ -766,14 +761,9 @@ impl Runtime {
                 log::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
                 self.kp_restore_kana_from_half_width(false);
             } else {
-                self.platform_state.ime.dispatch_event(
-                    crate::state::ime_event::ImeEvent::InputModeApplied {
-                        mode: new_mode,
-                        strategy:
-                            crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
-                        result: crate::state::ime_event::InputModeApplyResult::Applied,
-                        at: tick_ms,
-                    },
+                self.apply_input_mode_correction(
+                    new_mode,
+                    crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
                     tick_ms,
                 );
                 log::info!(
@@ -927,14 +917,9 @@ impl Runtime {
                     // 帰結を先読みする能動的な訂正のため InputModeApplied で表現する
                     // (InputModeObserved を使うと「ImmGetOpenStatus で観測した」という
                     // 存在しない API 呼び出しを偽装することになる)。
-                    self.platform_state.ime.dispatch_event(
-                        crate::state::ime_event::ImeEvent::InputModeApplied {
-                            mode: new_mode,
-                            strategy:
-                                crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
-                            result: crate::state::ime_event::InputModeApplyResult::Applied,
-                            at: tick_ms,
-                        },
+                    self.apply_input_mode_correction(
+                        new_mode,
+                        crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
                         tick_ms,
                     );
                     log::info!(
@@ -1195,14 +1180,9 @@ impl Runtime {
                 "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 維持)"
             );
             let now_tick = crate::state::TickMs(hook::current_tick_ms());
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::InputModeApplied {
-                    mode: InputModeState::ObservedEisu,
-                    strategy:
-                        crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                    result: crate::state::ime_event::InputModeApplyResult::Applied,
-                    at: now_tick,
-                },
+            self.apply_input_mode_correction(
+                InputModeState::ObservedEisu,
+                crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
                 now_tick,
             );
             return;
@@ -1304,15 +1284,11 @@ impl Runtime {
             );
         log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
 
-        self.platform_state.ime.dispatch_event(
-            crate::state::ime_event::ImeEvent::InputModeApplied {
-                mode: InputModeState::AssumedRomaji {
-                    reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
-                },
-                strategy: crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                result: crate::state::ime_event::InputModeApplyResult::Applied,
-                at: now_tick,
+        self.apply_input_mode_correction(
+            InputModeState::AssumedRomaji {
+                reason: awase::engine::AssumedReason::UserHalfWidthAlnumToggleOff,
             },
+            crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             now_tick,
         );
 
