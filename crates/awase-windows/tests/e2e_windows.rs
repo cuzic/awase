@@ -636,11 +636,17 @@ impl Drop for TestEditWindow {
     }
 }
 
-/// Process pending window messages
+/// Process pending window messages.
+///
+/// `TranslateMessage` is required here, not just `DispatchMessageW`: it is
+/// what turns a WM_KEYDOWN into WM_CHAR (and, when an IME is active, drives
+/// the VK_PROCESSKEY / composition pipeline). Without it, SendInput
+/// keystrokes reach the window but never produce IME composition at all.
 unsafe fn pump_messages() {
     use windows::Win32::UI::WindowsAndMessaging::*;
     let mut msg = MSG::default();
     while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+        let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 }
