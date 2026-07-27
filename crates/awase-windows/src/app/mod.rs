@@ -200,6 +200,34 @@ fn init_ime_sync_keys(
     (toggle, on, off)
 }
 
+/// IME control ON/OFF キーから panic トリガー用の `PanicTriggerCombo` 一覧を構築する
+fn build_panic_trigger_combos(
+    ime_on: &[ParsedKeyCombo],
+    ime_off: &[ParsedKeyCombo],
+) -> Vec<crate::panic_detect::PanicTriggerCombo> {
+    ime_on
+        .iter()
+        .map(|k| crate::panic_detect::PanicTriggerCombo {
+            vk: k.vk,
+            ctrl: k.ctrl,
+            shift: k.shift,
+            alt: k.alt,
+            is_on: true,
+        })
+        .chain(
+            ime_off
+                .iter()
+                .map(|k| crate::panic_detect::PanicTriggerCombo {
+                    vk: k.vk,
+                    ctrl: k.ctrl,
+                    shift: k.shift,
+                    alt: k.alt,
+                    is_on: false,
+                }),
+        )
+        .collect()
+}
+
 /// 検証済み設定で n-gram モデルのロード（オプション）
 fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics) {
     let Some(ref ngram_path) = config.general.ngram_file else {
@@ -483,27 +511,7 @@ pub(crate) fn reload_config() {
     let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
     let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
     let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
-    let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_on
-        .iter()
-        .map(|k| crate::panic_detect::PanicTriggerCombo {
-            vk: k.vk,
-            ctrl: k.ctrl,
-            shift: k.shift,
-            alt: k.alt,
-            is_on: true,
-        })
-        .chain(
-            ime_off
-                .iter()
-                .map(|k| crate::panic_detect::PanicTriggerCombo {
-                    vk: k.vk,
-                    ctrl: k.ctrl,
-                    shift: k.shift,
-                    alt: k.alt,
-                    is_on: false,
-                }),
-        )
-        .collect();
+    let panic_trigger_combos = build_panic_trigger_combos(&ime_on, &ime_off);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
     key_diag.report();
 

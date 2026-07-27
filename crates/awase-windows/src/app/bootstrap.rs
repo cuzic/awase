@@ -27,10 +27,10 @@ use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
 use super::{
-    find_config_path, init_ime_sync_keys, init_ngram_validated, load_config, parse_key_combos,
-    resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker, StartupDiagnostics,
-    DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS,
-    WM_DUPLICATE_INSTANCE,
+    build_panic_trigger_combos, find_config_path, init_ime_sync_keys, init_ngram_validated,
+    load_config, parse_key_combos, resolve_relative, run_message_loop, HotKeyGuard,
+    RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
+    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 /// ログ初期化
@@ -802,27 +802,8 @@ pub(super) fn run_all() -> Result<()> {
     let sync_on_keys = ime_sync_on;
     let sync_off_keys = ime_sync_off;
 
-    let panic_trigger_combos: Vec<crate::panic_detect::PanicTriggerCombo> = ime_control_on_keys
-        .iter()
-        .map(|k| crate::panic_detect::PanicTriggerCombo {
-            vk: k.vk,
-            ctrl: k.ctrl,
-            shift: k.shift,
-            alt: k.alt,
-            is_on: true,
-        })
-        .chain(
-            ime_control_off_keys
-                .iter()
-                .map(|k| crate::panic_detect::PanicTriggerCombo {
-                    vk: k.vk,
-                    ctrl: k.ctrl,
-                    shift: k.shift,
-                    alt: k.alt,
-                    is_on: false,
-                }),
-        )
-        .collect();
+    let panic_trigger_combos =
+        build_panic_trigger_combos(&ime_control_on_keys, &ime_control_off_keys);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 
     let mut engine = Engine::new(
