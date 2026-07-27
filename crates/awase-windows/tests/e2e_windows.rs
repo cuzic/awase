@@ -1558,6 +1558,117 @@ fn e2e_gji_romaji_to_kana_conversion_interactive() {
     }
 }
 
+#[test]
+fn e2e_gji_kanji_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI kanji conversion (henkan via Space) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        send_key_to_edit(0x4E, 0x31); // VK_N
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x4D, 0x32); // VK_M
+        send_key_to_edit(0x41, 0x1E); // VK_A
+        send_key_to_edit(0x45, 0x12); // VK_E
+
+        let reading =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'namae': {reading:?}");
+        assert_eq!(
+            reading.as_deref(),
+            Some("\u{306A}\u{307E}\u{3048}"), // なまえ
+            "composing string should be 'なまえ' after typing 'namae' via GJI, got: {reading:?}"
+        );
+
+        log::info!("--- Sending Space to trigger henkan ---");
+        send_key_to_edit(0x20, 0x39); // VK_SPACE
+
+        let converted = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{306A}\u{307E}\u{3048}",
+            std::time::Duration::from_secs(1),
+        );
+        log::info!("Composition string after henkan: {converted:?}");
+        assert_eq!(
+            converted.as_deref(),
+            Some("\u{540D}\u{524D}"), // 名前
+            "composing string should convert to '名前' after Space via GJI, got: {converted:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{540D}\u{524D}",
+            "confirmed text should be '名前', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI kanji conversion test completed ===");
+    }
+}
+
+#[test]
+fn e2e_gji_katakana_conversion_interactive() {
+    init_test_logging();
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    log::info!("=== E2E Phase 3: GJI katakana conversion (F7) ===");
+
+    unsafe {
+        let Some(win) = setup_ime_composition_test() else {
+            return;
+        };
+
+        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        send_key_to_edit(0x4B, 0x25); // VK_K
+        send_key_to_edit(0x41, 0x1E); // VK_A
+
+        let hiragana =
+            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        log::info!("Composition string after 'ka': {hiragana:?}");
+        assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
+
+        log::info!("--- Sending F7 to force katakana conversion ---");
+        send_key_to_edit(0x76, 0x41); // VK_F7
+
+        let katakana = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{304B}",
+            std::time::Duration::from_secs(1),
+        );
+        log::info!("Composition string after F7: {katakana:?}");
+        assert_eq!(
+            katakana.as_deref(),
+            Some("\u{30AB}"), // カ
+            "composing string should be 'カ' after F7 via GJI, got: {katakana:?}"
+        );
+
+        log::info!("--- Confirming conversion with Enter ---");
+        send_key_to_edit(0x0D, 0x1C); // VK_RETURN
+
+        let text = win.get_text();
+        log::info!("Edit content after confirm: '{text}'");
+        assert_eq!(
+            text, "\u{30AB}",
+            "confirmed text should be 'カ', got: '{text}'"
+        );
+
+        set_ime_open(win.edit_hwnd, false);
+        log::info!("=== GJI katakana conversion test completed ===");
+    }
+}
+
 // ─────────────────────────────────────────────
 // IME-off key selection regressions
 //
