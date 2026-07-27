@@ -1,0 +1,31 @@
+# cargo-audit 設定 (https://github.com/rustsec/rustsec/tree/main/cargo-audit)
+#
+# 以下は調査済みの advisory のみを対象に ignore している。実行時に配布バイナリ
+# (awase.exe / awase-settings.exe)へ露出する脆弱性を無条件に隠すためのファイル
+# ではない。新規advisoryが増えたらまず `cargo audit` の素の出力と
+# `cargo tree -i <crate>` で経路を確認し、Windows配布物への実害を再評価する
+# ことなくここに追加しないこと。
+
+[advisories]
+ignore = [
+    # quick-xml 0.30.0: awase-settings(GUI) -> eframe -> egui-winit ->
+    # accesskit_winit -> accesskit_unix(cfg(any(target_os = "linux", ...))
+    # 限定、Windows配布物には含まれない) -> atspi-common(通常依存、Linux
+    # ビルドには実際にリンクされる) -> zbus-lockstep -> zbus_xml が依存。
+    # 「ビルド時のみ」ではなく、Linux版awase-settingsの実行時バイナリにも
+    # 含まれる。ただしzbus_xml内でのAT-SPI(D-Bus introspection XML)パース
+    # 用途に限られ、awase自体のキー入力/IME制御ロジックからはこの経路を一切
+    # 呼ばない。release.ymlが配布するWindows版(awase.exe/awase-settings.exe)
+    # にはaccesskit_unixのcfg gateによりそもそもリンクされない。
+    # 2026-07-26 調査、2026-10 頃に eframe/egui/accesskit系の更新で
+    # quick-xml >=0.41.0 に収束していないか再確認すること。
+    "RUSTSEC-2026-0194", # quick-xml: 属性重複チェックの二次時間
+    "RUSTSEC-2026-0195", # quick-xml: NsReaderの無制限確保によるDoS
+
+    # paste 1.0.15 / ttf-parser 0.25.1: unmaintained警告。どちらも推移的依存
+    # (paste は複数のproc-macro経由、ttf-parser は egui/eframe のフォント
+    # 処理系経由)で、直接依存の更新では解消できない。脆弱性ではなく
+    # メンテナンス状況の警告のため許容する。
+    "RUSTSEC-2024-0436", # paste: 開発終了
+    "RUSTSEC-2026-0192",  # ttf-parser: 開発終了
+]

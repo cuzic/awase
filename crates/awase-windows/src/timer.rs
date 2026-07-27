@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! Win32 タイマー管理
 //!
 //! `SetTimer(HWND NULL, ...)` は OS が独自の ID を割り当てるため、

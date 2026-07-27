@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! GJI プロセス I/O モニター。
 //!
 //! バックグラウンドスレッドが Google 日本語入力 Converter プロセスの

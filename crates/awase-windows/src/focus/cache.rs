@@ -108,3 +108,109 @@ impl FocusCache {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_returns_none_for_unregistered_key() {
+        let cache = FocusCache::new();
+        assert_eq!(cache.get(1, "SomeClass"), None);
+    }
+
+    #[test]
+    fn insert_then_get_returns_the_cached_kind() {
+        let mut cache = FocusCache::new();
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::TextInput,
+            DetectionSource::Automatic,
+        );
+        assert_eq!(cache.get(1, "SomeClass"), Some(FocusKind::TextInput));
+    }
+
+    /// `insert` は `Undetermined` を格納しない不変条件。`==`→`!=` の反転でこの
+    /// ガードが壊れても検知できなかった。
+    #[test]
+    fn insert_does_not_store_undetermined() {
+        let mut cache = FocusCache::new();
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::Undetermined,
+            DetectionSource::Automatic,
+        );
+        assert_eq!(cache.get(1, "SomeClass"), None);
+    }
+
+    /// BUG-11（UIA cache 毒で Edge 永久 NonText 化）の再発防止に直結する不変条件:
+    /// 高優先度（`UserOverride`）で有効期限内のエントリは、低優先度（`Automatic`）
+    /// では上書きされない。
+    #[test]
+    fn high_priority_entry_is_not_overwritten_by_low_priority_while_valid() {
+        let mut cache = FocusCache::new();
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::TextInput,
+            DetectionSource::UserOverride,
+        );
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::NonText,
+            DetectionSource::Automatic,
+        );
+        assert_eq!(
+            cache.get(1, "SomeClass"),
+            Some(FocusKind::TextInput),
+            "UserOverride で格納した値が Automatic の上書きから保護されるべき"
+        );
+    }
+
+    /// 同一優先度（`source` が既存と等しい、`>` を満たさない）は上書きされる
+    /// （通常の再判定リフレッシュ）。優先度ガードが `>=` 等に壊れて過剰に
+    /// 保護してしまう回帰の逆側を固定する。
+    #[test]
+    fn same_priority_entry_is_refreshed() {
+        let mut cache = FocusCache::new();
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::TextInput,
+            DetectionSource::Automatic,
+        );
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::NonText,
+            DetectionSource::Automatic,
+        );
+        assert_eq!(
+            cache.get(1, "SomeClass"),
+            Some(FocusKind::NonText),
+            "同一優先度なら新しい判定で上書きされるべき"
+        );
+    }
+
+    /// 低優先度で登録した後、より高優先度な判定が来れば上書きされる。
+    #[test]
+    fn low_priority_entry_is_overwritten_by_high_priority() {
+        let mut cache = FocusCache::new();
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::NonText,
+            DetectionSource::Automatic,
+        );
+        cache.insert(
+            1,
+            "SomeClass".to_string(),
+            FocusKind::TextInput,
+            DetectionSource::UserOverride,
+        );
+        assert_eq!(cache.get(1, "SomeClass"), Some(FocusKind::TextInput));
+    }
+}

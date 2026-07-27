@@ -463,7 +463,8 @@ impl ImeModel {
 #[cfg(test)]
 mod tests {
     use super::super::ime_event::{
-        EventTime, HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource,
+        ApplyError, ChordKind, EventTime, HwndId, ImePolicyProfile, ObservationConfidence,
+        ObservationSource,
     };
     use super::*;
     use crate::state::force_guard::{ForceGuard, ForceOnReason};
@@ -478,6 +479,76 @@ mod tests {
             },
             event,
         }
+    }
+
+    // ── AppliedImeState / ImeModel::applied_pair 系 getter ──────────────────
+    //
+    // これらは `runtime/executor.rs` で間接的に使われテストもあるが、そちらは
+    // crate 全体が `#![cfg(windows)]` のため Linux 上の `cargo mutants -p
+    // awase-windows` では一切ビルドされず、mutants の実行対象にならない。
+    // ここ(`state/ime_model.rs` 自身の `#[cfg(test)]`)はプラットフォーム非依存で
+    // Linux でも実行されるため、バリアント別の直接テストをここに置く。
+
+    #[test]
+    fn applied_ime_state_to_pair_and_related_getters() {
+        assert_eq!(AppliedImeState::Unknown.to_pair(), None);
+        assert!(!AppliedImeState::Unknown.is_confirmed());
+        assert_eq!(AppliedImeState::Unknown.confirmed_at_ms(), 0);
+
+        assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
+        assert!(!AppliedImeState::Optimistic(true).is_confirmed());
+        assert_eq!(AppliedImeState::Optimistic(true).confirmed_at_ms(), 0);
+
+        let confirmed = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 42,
+        };
+        assert_eq!(confirmed.to_pair(), Some((false, 42)));
+        assert!(confirmed.is_confirmed());
+        assert_eq!(confirmed.confirmed_at_ms(), 42);
+    }
+
+    #[test]
+    fn applied_pair_reflects_applied_state() {
+        let mut model = ImeModel::new();
+        assert_eq!(model.applied_pair(), None, "初期状態は Unknown");
+
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 7,
+        };
+        assert_eq!(model.applied_pair(), Some((true, 7)));
+    }
+
+    #[test]
+    fn is_focus_transition_pending_reflects_input_barrier() {
+        let mut model = ImeModel::new();
+        assert!(
+            !model.is_focus_transition_pending(),
+            "barrier なしなら false"
+        );
+
+        model.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: HwndId::NULL,
+            started_seq: 1,
+            started_at: Instant::now(),
+            settle_until: Instant::now() + std::time::Duration::from_millis(100),
+        });
+        assert!(
+            model.is_focus_transition_pending(),
+            "FocusTransition barrier があれば true"
+        );
+
+        model.input_barrier = Some(InputBarrier::CtrlImeChord {
+            target: false,
+            kind: ChordKind::CtrlMuhenkanImeOff,
+            started_seq: 1,
+            started_at: Instant::now(),
+        });
+        assert!(
+            !model.is_focus_transition_pending(),
+            "CtrlImeChord は FocusTransition ではない"
+        );
     }
 
     #[test]
@@ -916,6 +987,65 @@ mod tests {
         assert!(
             model.applied.applied_open() == Some(false),
             "一致する generation の完了で applied state を更新する"
+        );
+    }
+
+    /// `stale_ime_apply_success_does_not_consume_pending` の `ImeApplyFailed` 版。
+    /// `reduce()` の `ImeApplyFailed` ハンドラは generation 照合 (`==`) で stale な
+    /// 失敗完了を無視するはずだが、`ImeApplySucceeded` 側と異なりこの経路には
+    /// 対称なテストが無く、`==`→`!=` の反転が mutants で検知されなかった。
+    #[test]
+    fn stale_ime_apply_failure_does_not_consume_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: 9,
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(10),
+            "古い generation の失敗完了で current pending を消費しない"
+        );
+    }
+
+    #[test]
+    fn matching_ime_apply_failure_consumes_pending() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyFailed {
+                target: false,
+                generation: 10,
+                error: ApplyError::Timeout,
+            },
+        ));
+
+        assert!(
+            model.pending_generation().is_none(),
+            "一致する generation の失敗完了で pending を消費する"
         );
     }
 

@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! WM_* メッセージハンドラ
 //!
 //! `run_message_loop` の `match msg.message` 各 arm を関数として切り出したもの。

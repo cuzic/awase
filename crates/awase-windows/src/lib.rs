@@ -1,6 +1,7 @@
 // Windows 専用クレート — 非 Windows では純粋モジュールのみコンパイルされる
-// Win32 API (フック, SendInput, SetTimer 等) の使用に unsafe が必須
-#![allow(unsafe_code)]
+// unsafe_code の allow はクレート全体ではなく、Win32 FFI を実際に呼ぶ各モジュール
+// ファイル側に個別移管した(Task #9)。state/ や tsf/ の FSM 等の純粋ロジック層は
+// 引き続き `unsafe_code = "warn"`(ルートCargo.toml)の対象のまま。
 #![warn(unused_qualifications)]
 // Win32 API の型キャスト (usize → i32 等) は OS の ABI 制約により不可避
 #![allow(
@@ -305,11 +306,13 @@ pub trait RawKeyEventExt {
     ///
     /// # Safety
     /// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
+    #[allow(unsafe_code)]
     unsafe fn reinject(&self);
 }
 
 #[cfg(windows)]
 impl RawKeyEventExt for RawKeyEvent {
+    #[allow(unsafe_code)]
     unsafe fn reinject(&self) {
         use crate::output::INJECTED_MARKER;
         use awase::types::KeyEventType;

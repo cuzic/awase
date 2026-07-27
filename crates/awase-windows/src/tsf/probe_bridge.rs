@@ -1,3 +1,5 @@
+#![allow(unsafe_code)]
+// Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! 出力セッション統合 — OUTPUT_GATE と Win32 メッセージループを橋渡し。
 //!
 //! `send_keys()` の全期間を一つの出力セッションとして管理し、

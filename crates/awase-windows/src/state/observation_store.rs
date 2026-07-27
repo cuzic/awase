@@ -622,4 +622,101 @@ mod tests {
             "古い観測（FRESH 超過）は無視"
         );
     }
+
+    /// `derive_open_medium_single_source`（true 側）の対称テスト。mutants で
+    /// `match (true_count, false_count) { (0, f) if f >= 1 => Some(false), .. }` の
+    /// ガード `f >= 1` が `false` に壊れても既存テストは検知できなかった
+    /// （true 側しか検証していなかったため）。
+    #[test]
+    fn derive_open_medium_single_source_false() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(false, ObservationSource::ObserverPoll, now));
+        assert_eq!(
+            s.derive_open(now),
+            Some(false),
+            "Medium 単独 false → Some(false)"
+        );
+    }
+
+    /// epoch フィルタ（`ImmCrossProbe`/`FocusProbe` のみ）が実際に効いていることを固定する。
+    /// `derive_open()` の `is_epoch_ok` match アームが削除されても、このテストが無ければ
+    /// 検知できなかった（stale な High 観測がフォーカス変更後も採用され続ける再発）。
+    #[test]
+    fn derive_open_high_confidence_stale_epoch_excluded() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let mut stale_high = obs(true, ObservationSource::ImmCrossProbe, now);
+        stale_high.confidence = ObservationConfidence::High;
+        stale_high.focus_epoch = 0;
+        s.record(stale_high);
+        s.current_focus_epoch = 1; // フォーカスが変わって epoch が進んだ
+        assert_eq!(
+            s.derive_open(now),
+            None,
+            "旧 epoch の ImmCrossProbe(High) は現在の epoch と一致しないため除外される"
+        );
+    }
+
+    #[test]
+    fn consensus_two_sources_agree_false() {
+        // `consensus_requires_two_sources` の true 側と対称。false 側の合意判定
+        // (`votes_false >= 2 && votes_true == 0`) が未検証だったため、`&&`↔`||`・
+        // `>=`↔`<`・`==`↔`!=` の反転が mutants で MISSED になっていた。
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let window = Duration::from_millis(500);
+
+        s.record(obs(false, ObservationSource::ObserverPoll, now));
+        assert_eq!(s.consensus(window, now), None, "1 ソースでは合意なし");
+
+        s.record(obs(false, ObservationSource::Gji, now));
+        assert_eq!(s.consensus(window, now), Some(false), "2 ソース false 合意");
+    }
+
+    #[test]
+    fn consensus_ignores_observation_older_than_window() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let window = Duration::from_millis(500);
+        let old = obs(
+            true,
+            ObservationSource::ObserverPoll,
+            now - Duration::from_secs(1),
+        );
+        s.record(old);
+        s.record(obs(true, ObservationSource::Gji, now));
+        assert_eq!(
+            s.consensus(window, now),
+            None,
+            "window 外の観測は合意にカウントしない（1 票のみ有効）"
+        );
+    }
+
+    #[test]
+    fn consensus_ignores_expired_observation_within_window() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let window = Duration::from_millis(500);
+        let mut expired = obs(true, ObservationSource::ObserverPoll, now);
+        expired.expires_at = Some(now);
+        s.record(expired);
+        s.record(obs(true, ObservationSource::Gji, now));
+        assert_eq!(
+            s.consensus(window, now),
+            None,
+            "window 内でも expired 観測は合意にカウントしない（1 票のみ有効）"
+        );
+    }
+
+    #[test]
+    fn drift_duration_after_update_drift_returns_elapsed() {
+        let mut s = ObservationStore::default();
+        let t0 = Instant::now();
+        s.update_drift(true, false, t0);
+        let t1 = t0 + Duration::from_millis(50);
+        assert_eq!(s.drift_duration(t1), Some(Duration::from_millis(50)));
+        s.update_drift(true, true, t1); // 収束 → drift clear
+        assert_eq!(s.drift_duration(t1), None);
+    }
 }

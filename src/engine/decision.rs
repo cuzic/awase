@@ -402,6 +402,55 @@ mod tests {
         }
     }
 
+    // ── prepend_effects ──
+
+    /// `prepend_effects` は `prefix` を既存 effects の先頭に挿入する。`prefix.is_empty()`
+    /// の早期 return が壊れて no-op 化すると、activation 遷移の effect（SetOpen 等）が
+    /// 決定から静かに脱落する。
+    #[test]
+    fn prepend_effects_orders_prefix_before_existing() {
+        let mut d = Decision::consumed_with(smallvec![test_effect()]);
+        d.prepend_effects(smallvec![Effect::Ime(ImeEffect::SetOpen { open: true })]);
+        match d {
+            Decision::Consume { effects } => {
+                assert_eq!(effects.len(), 2);
+                assert!(matches!(
+                    effects[0],
+                    Effect::Ime(ImeEffect::SetOpen { open: true })
+                ));
+                assert!(matches!(
+                    effects[1],
+                    Effect::Ui(UiEffect::EngineStateChanged { .. })
+                ));
+            }
+            other => panic!("expected Consume, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn prepend_effects_is_noop_for_empty_prefix() {
+        let mut d = Decision::consumed_with(smallvec![test_effect()]);
+        d.prepend_effects(smallvec![]);
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected Consume, got {other:?}"),
+        }
+    }
+
+    /// `PassThrough` への `prepend_effects` は `effects_mut()` 経由で `PassThroughWith`
+    /// に昇格するはず（`effects_mut_on_pass_through_promotes_to_pass_through_with` の
+    /// `prepend_effects` 版）。
+    #[test]
+    fn prepend_effects_on_pass_through_promotes_to_pass_through_with() {
+        let mut d = Decision::pass_through();
+        d.prepend_effects(smallvec![test_effect()]);
+        assert!(!d.is_consumed());
+        match d {
+            Decision::PassThroughWith { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected PassThroughWith, got {other:?}"),
+        }
+    }
+
     // ── find_ime_set_open ──
 
     #[test]
