@@ -226,11 +226,6 @@ impl FocusTracker {
         self.imm_learning.learn(class_name, cap);
     }
 
-    /// IMM 能力キャッシュを全クリアし、削除件数を返す（診断コマンド用）。
-    pub(crate) fn clear_imm_learning(&mut self) -> usize {
-        self.imm_learning.clear()
-    }
-
     // ── Injection モード学習 ────────────────────────────────────────────────
 
     /// class_name が Tsf モード必要と学習済みかどうか。

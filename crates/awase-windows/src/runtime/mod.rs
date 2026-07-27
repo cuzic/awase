@@ -755,11 +755,6 @@ impl Runtime {
         }
     }
 
-    /// 利用可能なレイアウト名の一覧を返す（トレイメニュー表示用）。
-    pub(crate) fn layout_names(&self) -> Vec<String> {
-        self.layouts.iter().map(|e| e.name.clone()).collect()
-    }
-
     /// トレイアイコンの HWND を返す。
     pub(crate) const fn tray_hwnd(&self) -> windows::Win32::Foundation::HWND {
         self.platform.tray.hwnd()
@@ -844,11 +839,6 @@ impl Runtime {
     /// システムトレイのバルーン通知を表示する。
     pub(crate) fn show_tray_balloon(&mut self, title: &str, text: &str) {
         self.platform.tray.show_balloon(title, text);
-    }
-
-    /// IMM 能力学習キャッシュをクリアして削除件数を返す。
-    pub(crate) fn clear_imm_learning(&mut self) -> usize {
-        self.platform.focus.clear_imm_learning()
     }
 
     /// 診断画面が必要とする状態を一括スナップショットとして返す。
