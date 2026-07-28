@@ -15,8 +15,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
     TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED, MF_POPUP,
-    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_DESTROY,
-    WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+    MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_COMMAND,
+    WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
 
 use anyhow::{Context, Result};
@@ -824,11 +824,26 @@ fn save_auto_start_config(value: &str) {
 
 /// トレイウィンドウプロシージャ
 ///
-/// `WM_TRAY_CALLBACK`（`WM_APP`）と `WM_COMMAND` はメインスレッドのメッセージ
-/// ループ（`app::run_message_loop`）が `match msg.message` で先取りして
-/// `message_handlers::handle_wm_app_tray` / `handle_wm_command` に振っており、
-/// `DispatchMessageW` に到達しない（呼ばれるのは catch-all の `_` 分岐のみ）。
-/// そのため、ここではそれ以外の到達可能なメッセージだけを処理する。
+/// `WM_COMMAND`（`TrackPopupMenu` のメニュー選択確定）は、`TrackPopupMenu`
+/// 自身が持つ内部モーダルループが、選択確定時に呼び出し元スレッドの
+/// `WndProc` へ同期的に配送する（`GetMessageW` の戻り値としては一切
+/// 観測されない）。`WM_TRAY_CALLBACK`（`WM_APP`、Shell からのトレイ通知）
+/// も実機では同様に `tray_wnd_proc` にしか届かないことが確認できている
+/// （下記 2026-07-27 実機ログ参照。正確な配送機構が sent message なのか
+/// 別の経路なのかは未確定だが、少なくとも `GetMessageW` の戻り値経由では
+/// 届いていない）。そのため `app::run_message_loop` 側の
+/// `match msg.message { WM_APP => ..., WM_COMMAND => ... }` はどちらの
+/// メッセージに対しても実際には到達しないコードであり、ここが実際の
+/// 到達点になる。
+///
+/// （2026-07-27 実機: `4508231` で「メインループが先取りするので tray_wnd_proc
+/// 側は到達不能」との判断のもとこの2ハンドラを削除したところ、右クリックで
+/// コンテキストメニューが一度も表示されなくなった。上記の通り判断が逆で、
+/// 実際にはこちらが唯一の到達点だった。ロジックの重複・陳腐化を避けるため
+/// `message_handlers::handle_wm_app_tray` / `handle_wm_command` へ委譲する
+/// 形で復元し、実機で右クリック→メニュー表示→各項目選択の動作を再確認した。
+/// メインループ側の分岐は、配送機構の理解が今後の Windows バージョン等で
+/// 崩れた場合のフェイルセーフとして削除せず残す。）
 unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -836,6 +851,21 @@ unsafe extern "system" fn tray_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_TRAY_CALLBACK => {
+            // SAFETY: メニュー表示のための Win32 UI API 呼び出しは同一スレッド
+            //         （トレイウィンドウの所有スレッド）から行われる。
+            unsafe {
+                crate::runtime::message_handlers::handle_wm_app_tray(hwnd, lparam);
+            }
+            LRESULT(0)
+        }
+        WM_COMMAND => {
+            // SAFETY: 同上。wparam はメニュー選択時に Win32 が設定した項目 ID。
+            unsafe {
+                crate::runtime::message_handlers::handle_wm_command(wparam);
+            }
+            LRESULT(0)
+        }
         WM_CLOSE => {
             // トレイウィンドウは常に非表示（WS_VISIBLE なし、ShowWindow も未呼び出し）で
             // フォーカスを持てないため、Alt+F4 の対象にはなり得ない。実際に WM_CLOSE が
