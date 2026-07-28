@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-28
+
 ### 追加
 
 - **親指キーとして Enter を選択できるようにした**
@@ -11,6 +13,31 @@ All notable changes to this project will be documented in this file.
   - Space と同様、Enter を親指キーに割り当てた場合は変換候補ウィンドウ表示中でも単独タップで生 `VK_RETURN`（変換確定）を送出する（無変換/変換と異なり、composing 中の raw VK_RETURN 送出は IME の正規機能のため）
   - Shift+Enter は同時打鍵判定を待たずリテラルな Enter（ソフト改行）として即時送出する
   - 設定は `enter_thumb_ignore_composing_guard`/`enter_thumb_shift_literal`（既定 true）。Enter が親指キーの時のみ設定画面に表示
+
+### 修正
+
+- **トレイアイコンを右クリックしてもコンテキストメニューが一切表示されなくなっていた不具合を修正**
+  - 直前のリファクタで「該当ハンドラは到達不能」と誤って判断し削除してしまったことが原因。実際にはトレイ右クリック通知とメニュー選択確定はこの削除したハンドラ側にしか配送されておらず、右クリックメニュー本体と、メニュー内の全項目（IME状態切替・状態をリセット等）が選択不能になっていた
+  - ハンドラを復元し、Windows実機で右クリック→メニュー表示を確認済み
+- **IME アイコンは ON のまま NICOLA 変換だけが効かなくなり、Ctrl+Shift+変換 やトレイの「状態をリセット」を使っても復旧できない不具合を修正**
+  - アプリ: Windows Terminal。IME: Google 日本語入力（GJI）
+  - `user_enabled=true` のまま文脈的に Inactive に陥ったケースを `Ctrl+Shift+変換` が救済できていなかったこと、およびトレイメニューの各コマンド（状態をリセット/IME状態切替等）がメニュー表示時点で awase 自身のトレイウィンドウにフォーカスが奪われた後の誤ったウィンドウを対象にしていたことが原因
+  - `Ctrl+Shift+変換` を文脈起因の Inactive でも発火するよう修正し、トレイメニュー系コマンドはメニュー表示直前のフォーカスウィンドウを明示的に対象にするよう修正
+- **GJI 使用中、IME-OFF への訂正キーが観測間隔(約20〜45ms)ごとに無限に再送され、キーを連打されたかのような挙動になる不具合を修正**
+  - アプリ: Windows Terminal（`Imm32Unavailable`/TsfNative 系、force-tsf 判定の Blacklist アプリ）。IME: GJI
+  - drift correction（desired/observed 乖離の自動補正）が補正結果を観測側にフィードバックできず、乖離が解消されないまま observe tick のたびに同じ `VK_IME_OFF` を送り続け、そのたびに warm 状態を破棄していた
+  - 直前の補正から一定時間（400ms）内は再送をスキップするクールダウンを追加
+- **左右 Alt キーの親指キーなりすまし: キーを離した後も「なりすまし発動中」フラグが残り、後続の無関係な Alt 押下まで modifier 誤補正の対象になっていた不具合を修正**
+  - GCP Spot self-hosted runner 導入で初めて実機実行されたテストで発覚。KeyUp 時点で以後保持する状態を必ず false に戻すよう修正
+- **GJI（Windows Terminal 等の TsfNative アプリ）: 長時間アイドル後の cold セッションで、確認済みヒントだけを見て reactive literal-detect が丸ごとスキップされ、先頭ローマ字が変換されず literal のまま出力される不具合を修正**
+  - GJI probe の実測結果（settled かどうか）を見ずに確認済み扱いへ昇格させていたことが原因。実測値を確認したうえで救済するかどうか判定するよう修正
+- **GJI（Windows Terminal 等の TsfNative アプリ）: フォーカス変更や長時間アイドルをまたいで「セッション確認済み」状態が持ち越され、新しい cold セッションの先頭文字が literal のまま漏れても検出されない不具合を修正**
+  - 確認済みフラグを真偽値ではなく確認した世代（cold-start のたびに進む世代カウンタ）で持つよう変更し、世代が進むと自動的に無効化されるようにした
+- **MS-IME: cold-start 保護（IME ON 直後の先頭文字リテラル化を防ぐゲート）が TSF mode のアプリにしか効いておらず、Vk 注入モード（Chrome/Edge/Electron 等、既定設定の TsfNative アプリ）では対象外だった不具合を修正**
+  - ゲートを Vk 注入モードにも展開
+- **NICOLA配列（JIS/US共通）: 左親指シフト+；キーに規格外の「よ」が独自に割り当てられていた不具合を修正**
+  - NICOLA公式規格を全44キー位置にわたって監査した結果、左親指シフト+；は規格上未定義であり、「よ」の割り当ては本リポジトリ独自の追加と判明したため未定義（無）に戻した
+  - 右親指シフト+う段の「ゔ」は規格上未定義だが、やまぶき系実装（benizara）とも共有する意図的な拡張のため維持
 
 ## [1.10.1] - 2026-07-20
 
