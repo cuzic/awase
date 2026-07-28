@@ -4695,3 +4695,19 @@ Windows cross-compile（`cargo check --target x86_64-pc-windows-gnu` /
 **テスト:** `runtime` モジュールは `#[cfg(windows)]` のため Linux 上の `cargo test -p awase-windows`（native target）には含まれず、`check_drift_correction` 自体（純関数、`state/platform_state.rs`）も本修正では変更していないため既存テストに追加すべき単体テストが無い。`cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib`・`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings`（警告ゼロ）で確認済み。wine 未導入のためこのサンドボックスでは実行検証不可（他バグと同様の制約）。実機ソークは未実施のため、次回この症状（連続する `Blacklist drift correction` ログ、または似た体感の「キー連打」）が出ないか確認すること。
 
 **関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`（`ir_apply_drift_correction`）、`crates/awase-windows/src/runtime/mod.rs`（`Runtime::last_drift_correction_send` フィールド追加）、`crates/awase-windows/src/state/platform_state.rs`（`check_drift_correction`、変更なし）。関連: BUG-20（drift correction 送信側の対称バグ）、BUG-33（drift correction 検知側の逆方向バグ）。
+
+## BUG-44: `tray_wnd_proc` の「到達不能」判断が逆で、トレイ右クリックのコンテキストメニューが一切表示されなくなった
+
+**症状:** `develop` ブランチで、システムトレイのアイコンを右クリックしてもコンテキストメニューが一瞬も表示されない（フラッシュすらしない）。ユーザー報告（2026-07-27）。実機ログは未取得。
+
+**IME:** 本バグは IME 制御そのものとは無関係（Win32 メッセージディスパッチのバグ）。ただし波及範囲としてトレイメニュー経由の IME 系コマンド（ひらがな/カタカナ/英数/直接入力/ローマ字入力/かな入力/状態をリセット）もすべて選択不能になる。
+
+**原因（コード読解で確認、`crates/awase-windows/src/tray.rs`）:** `4508231`（2026-07-27、「`tray_wnd_proc` の到達不能な `WM_TRAY_CALLBACK`/`WM_COMMAND` を削除」）が、`tray_wnd_proc` から `WM_TRAY_CALLBACK`（`WM_APP`、Shell からのトレイ通知）と `WM_COMMAND`（`TrackPopupMenu` のメニュー選択確定）のハンドラを削除した。削除の根拠は「`app::run_message_loop` の `match msg.message` が `DispatchMessageW` より先にこれらを横取りするので `tray_wnd_proc` 側は実行されない」という判断だったが、これは Win32 のメッセージ配送機構の理解が逆だった。`WM_TRAY_CALLBACK`（Shell からの cross-process 通知）と `WM_COMMAND`（`TrackPopupMenu` が同一スレッドの `WndProc` に対して発行するメニュー選択確定）はいずれも **sent message**（`SendMessage`/`SendNotifyMessage` 系）として配送される。sent message は `GetMessageW`/`PeekMessage` が「次の posted message を返す前に、待機中に届いた sent message を内部で `WndProc` へ直接ディスパッチしてから戻る」という機構で処理されるため、**`GetMessageW` の戻り値としての `msg.message` に現れることがない**。つまり `run_message_loop` 側の `WM_APP =>` / `WM_COMMAND =>` 分岐は元々 tray 由来のイベントに対しては到達しない死んだコードで、実際に唯一到達していたのは `tray_wnd_proc` 側のハンドラだった。`4508231` はこの「実際に生きている方」を削除してしまったため、右クリックイベントが `tray::handle_tray_message`（`TrackPopupMenu` を呼ぶ関数）まで一度も届かなくなり、メニューが完全に表示されなくなった。
+
+**`4508231` のコミット文面にあった「挙動変更なし」という判断が誤っていた理由:** 同コミットは「`message_handlers::handle_wm_command` 側だけ 2026-07-24 の `c9d69ad` で修正され、`tray_wnd_proc` 側は旧ロジックのまま乖離していた」ことを削除の傍証にしていたが、`c9d69ad` 自体も「Windows 実機での動作確認は未実施」と明記されており、当時から一度もこの経路が実機で通しで検証されていなかった。`4508231` も同様に実機未検証のまま "clippy/cargo check がゼロ警告だから安全" という基準でマージされていた。**Win32 メッセージ配送の到達可否は静的解析（cargo check/clippy/cross-compile）では検出できず、実機での右クリック動作確認が必須**という教訓。
+
+**修正:** `tray_wnd_proc` に `WM_TRAY_CALLBACK`/`WM_COMMAND` のハンドラを復元した。ロジックの重複・再陳腐化を避けるため、`message_handlers::handle_wm_app_tray`/`handle_wm_command`（現行の正しい実装、`menu_target_hwnd()` によるフォーカスウィンドウ捕捉を含む）へ委譲する形にし、`run_message_loop` 側の `WM_APP`/`WM_COMMAND` 分岐は保険としてそのまま残した（sent message 前提の理解が今回も誤っていた場合に備えたフェイルセーフ、削除しない）。
+
+**テスト:** Win32 メッセージループの実際の配送経路（sent か posted か）は Windows 実機でしか検証できず、Linux 上の `cargo test`/`cargo nextest` では再現不可能（`architecture_guard`/`golden_scenarios`/`layer_boundary_guard` 全 42 件・lib 218 件は pass 済みだが、これらはメッセージディスパッチ機構自体を対象にしていない）。`cargo check`/`cargo xwin clippy --target x86_64-pc-windows-msvc -- -D warnings` は警告ゼロ。**Windows 実機での右クリック→メニュー表示→各項目選択の一連の動作確認は未実施**（clipd 経由のリモートビルド環境が本セッション中に接続不能だったため）。次回 Windows 実機でこの症状（右クリックしてもメニューが出ない）が再発しないか、また各メニュー項目（設定/学習キャッシュクリア/再起動/自動起動/IME状態切替/状態をリセット/終了）が正しく動作するか確認すること。
+
+**関連ファイル:** `crates/awase-windows/src/tray.rs`（`tray_wnd_proc`）、`crates/awase-windows/src/runtime/message_handlers.rs`（`handle_wm_app_tray`/`handle_wm_command`、変更なし）。関連: BUG-39（`c9d69ad` が修正した menu_target_hwnd 導入の経緯）。

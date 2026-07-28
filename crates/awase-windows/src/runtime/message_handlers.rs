@@ -3,7 +3,10 @@
 //! WM_* メッセージハンドラ
 //!
 //! `run_message_loop` の `match msg.message` 各 arm を関数として切り出したもの。
-//! すべて `pub(crate)` で `app/mod.rs` からのみ呼ばれる。
+//! すべて `pub(crate)` で主に `app/mod.rs` から呼ばれる。ただし
+//! `handle_wm_app_tray` / `handle_wm_command` は `WndProc` に同期配送される
+//! sent message（`GetMessageW` の戻り値に現れない）に対応するため、
+//! `tray::tray_wnd_proc` からも呼ばれる（詳細は `tray_wnd_proc` の doc 参照）。
 
 use std::mem::size_of;
 
