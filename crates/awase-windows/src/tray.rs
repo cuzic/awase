@@ -824,12 +824,14 @@ fn save_auto_start_config(value: &str) {
 
 /// トレイウィンドウプロシージャ
 ///
-/// `WM_TRAY_CALLBACK`（`WM_APP`、Shell からのトレイ通知）と `WM_COMMAND`
-/// （`TrackPopupMenu` のメニュー選択確定）は、いずれも同一スレッドの
-/// `WndProc` に対して Win32 の内部機構が同期的に配送するメッセージであり、
-/// `GetMessageW` の戻り値としては観測されない（`GetMessageW`/`PeekMessage`
-/// は待機中に届いた sent message を内部で `WndProc` へ直接ディスパッチして
-/// から次の posted message を返す）。そのため `app::run_message_loop` 側の
+/// `WM_COMMAND`（`TrackPopupMenu` のメニュー選択確定）は、`TrackPopupMenu`
+/// 自身が持つ内部モーダルループが、選択確定時に呼び出し元スレッドの
+/// `WndProc` へ同期的に配送する（`GetMessageW` の戻り値としては一切
+/// 観測されない）。`WM_TRAY_CALLBACK`（`WM_APP`、Shell からのトレイ通知）
+/// も実機では同様に `tray_wnd_proc` にしか届かないことが確認できている
+/// （下記 2026-07-27 実機ログ参照。正確な配送機構が sent message なのか
+/// 別の経路なのかは未確定だが、少なくとも `GetMessageW` の戻り値経由では
+/// 届いていない）。そのため `app::run_message_loop` 側の
 /// `match msg.message { WM_APP => ..., WM_COMMAND => ... }` はどちらの
 /// メッセージに対しても実際には到達しないコードであり、ここが実際の
 /// 到達点になる。
@@ -839,7 +841,9 @@ fn save_auto_start_config(value: &str) {
 /// コンテキストメニューが一度も表示されなくなった。上記の通り判断が逆で、
 /// 実際にはこちらが唯一の到達点だった。ロジックの重複・陳腐化を避けるため
 /// `message_handlers::handle_wm_app_tray` / `handle_wm_command` へ委譲する
-/// 形で復元する。）
+/// 形で復元し、実機で右クリック→メニュー表示→各項目選択の動作を再確認した。
+/// メインループ側の分岐は、配送機構の理解が今後の Windows バージョン等で
+/// 崩れた場合のフェイルセーフとして削除せず残す。）
 unsafe extern "system" fn tray_wnd_proc(
     hwnd: HWND,
     msg: u32,
