@@ -2,7 +2,17 @@
 
 ## ステータス
 
-提案中（2026-07-25、Claude Fable 5 との壁打ちから起票、未実装）。
+「第一歩」・Phase 0.5 実装済み（2026-07-25、Linux 検証済み、詳細は「第一歩
+実施記録」「Phase 0.5 実施記録」節）。当初は Claude Fable 5 との壁打ちから
+起票した提案（未実装）だったが、`EventOrigin`/`Generation`/`EventSource` の
+最小実装（第一歩）と、`JournalEntry::ImeActuation` 構造化 variant +
+`Actuation` への `EventOrigin` 配線（Phase 0.5、ADR-081 Phase 1 着手前の
+先行実施）まで完了している。`tests/drift_correction_replay.rs`（BUG-43）が
+新 variant 経由で green であることを確認済み。
+
+本 ADR が最終的に狙う「journal 構造化リプレイの全面適用」（`decide_alt_impersonation`
+= BUG-41 系への拡張など、「Phase 0.5 実施記録」節の「次の一歩（推奨）」参照）は
+未着手。
 
 fable の評価: 「どの案を選んでも検証コストを下げ、選ばなくても現行
 アーキテクチャの延命に効く。唯一の後悔しない手」。本 ADR は
