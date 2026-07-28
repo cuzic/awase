@@ -110,11 +110,69 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.11.0] - 2026-07-28</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added the ability to select Enter as a thumb key</strong><ul>
+<li>Enter (<code>VK_RETURN</code>) can now be assigned to <code>left_thumb_key</code>/<code>right_thumb_key</code> (added "Enter" to the thumb-key choices in the settings screen)</li>
+<li>As with Space, when Enter is assigned as a thumb key, a solo tap emits a raw <code>VK_RETURN</code> (confirming conversion) even while the candidate window is shown (unlike Muhenkan/Henkan, emitting a raw VK_RETURN during composing is a legitimate IME function)</li>
+<li>Shift+Enter is emitted immediately as a literal Enter (soft line break) without waiting for chord detection</li>
+<li>The settings are <code>enter_thumb_ignore_composing_guard</code>/<code>enter_thumb_shift_literal</code> (default true). Shown in the settings screen only when Enter is a thumb key</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a bug where right-clicking the tray icon showed no context menu at all</strong><ul>
+<li>Caused by an earlier refactor that mistakenly judged the handler unreachable and removed it. In fact, both the tray right-click notification and the menu-selection confirmation were only ever delivered to that removed handler, so neither the context menu itself nor any of its items (IME mode switching, "reset state", etc.) could be triggered anymore</li>
+<li>Restored the handler and confirmed right-click → menu display on real Windows hardware</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, with the IME icon still showing ON, NICOLA conversion stopped working and could not be recovered via Ctrl+Shift+Henkan or the tray's "Reset state"</strong><ul>
+<li>App: Windows Terminal. IME: Google Japanese Input (GJI)</li>
+<li>Caused by <code>Ctrl+Shift+Henkan</code> being unable to recover from a context-driven Inactive state while <code>user_enabled=true</code>, and by the tray menu commands (Reset state, IME mode switching, etc.) targeting the wrong window because opening the menu itself steals focus to awase's own tray window</li>
+<li>Fixed <code>Ctrl+Shift+Henkan</code> to also fire on a context-driven Inactive state, and fixed the tray menu commands to explicitly target the window that had focus immediately before the menu was shown</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, while using GJI, the IME-OFF correction key was resent in an unbounded loop at the observation interval (roughly every 20-45ms), producing behavior that looked like a key being mashed</strong><ul>
+<li>App: Windows Terminal (<code>Imm32Unavailable</code>/TsfNative family, classified as a Blacklist app by the force-tsf judgment). IME: GJI</li>
+<li>Drift correction (the automatic fixup for a desired/observed mismatch) could not feed its result back into the observation side, so the same <code>VK_IME_OFF</code> kept being sent on every observe tick without the mismatch ever clearing, discarding the warm state each time</li>
+<li>Added a cooldown that skips resending within a fixed window (400ms) of the previous correction</li>
+</ul>
+</li>
+<li><strong>Fixed a bug in Alt-key thumb-key impersonation where the "impersonation active" flag stayed set after key-up, causing subsequent unrelated Alt presses to be miscorrected as well</strong><ul>
+<li>Discovered by a test that ran on real Windows hardware for the first time after the GCP Spot self-hosted runner was introduced. Fixed so the retained state is always reset to false at key-up</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, on a cold session after a long idle in GJI (TsfNative apps such as Windows Terminal), reactive literal-detect was skipped entirely based only on a confirm-key hint, leaving the leading romaji unconverted and output as a literal</strong><ul>
+<li>Caused by promoting the confirmed flag without checking the GJI probe's actual measurement (whether it had settled). Fixed to only grant the exemption after checking the actual measurement</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, in GJI (TsfNative apps such as Windows Terminal), a "session already confirmed" state carried across focus changes and long idle periods, so a leading character that leaked out as a literal in a brand-new cold session was never detected</strong><ul>
+<li>Changed the confirmed flag from a boolean to the generation (a counter that advances on every cold start) at which it was confirmed, so it is automatically invalidated once the generation advances</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where the MS-IME cold-start protection (the gate that prevents the leading character from becoming a literal right after IME turns ON) only applied to TSF-mode apps, leaving Vk-injection-mode apps (Chrome/Edge/Electron and other apps that default to TsfNative) unprotected</strong><ul>
+<li>Extended the gate to Vk injection mode as well</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where the NICOLA layout (both JIS and US) had a non-standard "yo" assigned to left-thumb-shift + ;</strong><ul>
+<li>An audit of the official NICOLA spec across all 44 key positions found that left-thumb-shift + ; is undefined in the spec, and the "yo" assignment was a repository-specific addition; reverted it to undefined (none)</li>
+<li>The right-thumb-shift + u-row "vu" is likewise undefined in the spec but kept, since it's an intentional extension shared with the Yamabuki-family implementation (benizara)</li>
+</ul>
+</li>
+</ul>
+<h2>[1.10.1] - 2026-07-20</h2>
 <h3>Fixed</h3>
 <ul>
 <li><strong><code>layout/nicola.yab</code>/<code>nicola_us.yab</code>: Fixed a bug where the number-row left/right thumb shift produced duplicate "6"/"7" for the keys "4" and "5"</strong><ul>
 <li>Since the very first commit, both the left and right thumb-shift number rows had duplicated bracket symbols as <code>4:［ 5:］ 6:［ 7:］</code>, and the Japanese corner brackets 「」 did not exist anywhere on the number row</li>
 <li>Fixed to <code>4:「 5:」</code> (Muhenkan+4 → 「, Henkan+5 → 」), leaving <code>6:［ 7:］</code> unchanged</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where startup failures exited silently with no indication to the user</strong><ul>
+<li><code>awase.exe</code> is built with <code>windows_subsystem = "windows"</code> and has no console, so if startup failed for any reason — a missing <code>config.toml</code>, a TOML syntax error, an unknown key name for <code>left_thumb_key</code>/<code>right_thumb_key</code>, keyboard-hook registration failure (e.g. blocked by security software), or tray-icon creation failure — double-clicking it would just vanish in an instant with no way to tell what went wrong</li>
+<li>On startup failure, a <code>MessageBoxW</code> now shows the error and a cause-specific remedy. TOML syntax errors include the line number, column number, and the offending line, so it's clear exactly what to fix</li>
 </ul>
 </li>
 </ul>
