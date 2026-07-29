@@ -7,6 +7,10 @@
 #   VERSION省略時は cuzic/awase の最新リリースタグを使う。
 set -euo pipefail
 
+# WSL/MSYS2 経由の非対話実行では choco.exe の場所が PATH に入っていないことがあるため、
+# 両方のマウント表記で保険をかけて追加しておく（既に PATH にあれば単純に重複するだけ）。
+export PATH="$PATH:/mnt/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/bin"
+
 REPO="cuzic/awase"
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
