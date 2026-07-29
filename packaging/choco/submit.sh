@@ -7,9 +7,18 @@
 #   VERSION省略時は cuzic/awase の最新リリースタグを使う。
 set -euo pipefail
 
-# WSL/MSYS2 経由の非対話実行では choco.exe の場所が PATH に入っていないことがあるため、
-# 両方のマウント表記で保険をかけて追加しておく（既に PATH にあれば単純に重複するだけ）。
+# WSL 上の bash は拡張子なし完全一致でしか PATH 探索しないため "choco" では
+# choco.exe を見つけられないことがある（MSYS2 は拡張子省略の解決をしてくれる）。
+# 両方の環境で動くよう、実体を確認してから使うコマンド名を決める。
 export PATH="$PATH:/mnt/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/bin"
+if command -v choco >/dev/null 2>&1; then
+    CHOCO=choco
+elif command -v choco.exe >/dev/null 2>&1; then
+    CHOCO=choco.exe
+else
+    echo "choco(.exe) が見つかりませんでした（PATH: $PATH）" >&2
+    exit 1
+fi
 
 REPO="cuzic/awase"
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,7 +60,7 @@ cp "${PKG_DIR}/tools/chocolateyuninstall.ps1" "${WORKDIR}/tools/"
 cp -r "${PKG_DIR}/icons" "${WORKDIR}/icons"
 
 echo "==> choco pack を実行します"
-(cd "$WORKDIR" && choco pack)
+(cd "$WORKDIR" && "$CHOCO" pack)
 
 NUPKG="${WORKDIR}/awase.${VERSION}.nupkg"
 [ -f "$NUPKG" ] || { echo "nupkg が生成されませんでした: $NUPKG" >&2; exit 1; }
@@ -64,7 +73,7 @@ else
     echo "非対話実行のためローカルインストールテストはスキップします"
 fi
 if [ "$TESTANS" = "y" ] || [ "$TESTANS" = "Y" ]; then
-    choco install awase -s "$WORKDIR" -y
+    "$CHOCO" install awase -s "$WORKDIR" -y
     echo "動作確認後、'choco uninstall awase -y' で片付けてから続行してください"
 fi
 
@@ -85,6 +94,6 @@ fi
 : "${CHOCO_API_KEY:?CHOCO_API_KEY 環境変数に community.chocolatey.org のAPIキーを設定してください}"
 
 echo "==> choco push を実行します"
-choco push "$NUPKG" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY"
+"$CHOCO" push "$NUPKG" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY"
 
 echo "==> 完了しました。packaging/choco/ 配下のテンプレート（バージョン以外の記述内容）に変更があれば、別途 git commit してください"
