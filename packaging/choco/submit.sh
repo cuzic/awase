@@ -80,6 +80,9 @@ fi
 echo
 if [ -t 0 ]; then
     read -r -p "community.chocolatey.org に push しますか？ [y/N] " ANSWER
+elif [ -n "${CHOCO_API_KEY:-}" ]; then
+    ANSWER="Y"
+    echo "非対話実行かつ CHOCO_API_KEY が設定されているため push を実行します"
 else
     ANSWER="N"
     echo "非対話実行のため push はスキップします（CHOCO_API_KEY を渡していないため安全側の既定動作）"
