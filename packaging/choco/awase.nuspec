@@ -14,7 +14,7 @@
     <licenseUrl>https://github.com/cuzic/awase/blob/main/LICENSE-MIT</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
     <releaseNotes>https://github.com/cuzic/awase/blob/main/CHANGELOG.md</releaseNotes>
-    <icon>icons\awase.png</icon>
+    <iconUrl>https://raw.githubusercontent.com/cuzic/awase/main/packaging/choco/icons/awase.png</iconUrl>
     <tags>keyboard ime japanese nicola thumb-shift remapper</tags>
     <summary>A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond</summary>
     <description>
@@ -35,6 +35,5 @@ Note: the installer performs a per-user install (no admin rights required).
   </metadata>
   <files>
     <file src="tools\**" target="tools" />
-    <file src="icons\awase.png" target="icons" />
   </files>
 </package>
