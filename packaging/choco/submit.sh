@@ -97,6 +97,8 @@ fi
 : "${CHOCO_API_KEY:?CHOCO_API_KEY 環境変数に community.chocolatey.org のAPIキーを設定してください}"
 
 echo "==> choco push を実行します"
-"$CHOCO" push "$NUPKG" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY"
+# choco.exe (Windows バイナリ) は WSL 側の絶対パス文字列(/tmp/...)をそのままでは
+# 解決できない。cd してから相対ファイル名で渡す(choco pack と同じ回避策)。
+(cd "$WORKDIR" && "$CHOCO" push "$(basename "$NUPKG")" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY")
 
 echo "==> 完了しました。packaging/choco/ 配下のテンプレート（バージョン以外の記述内容）に変更があれば、別途 git commit してください"
