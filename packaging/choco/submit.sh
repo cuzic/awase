@@ -44,6 +44,7 @@ sed -e "s/^\$version = .*/\$version = '${VERSION}'/" \
     > "${WORKDIR}/tools/chocolateyinstall.ps1"
 
 cp "${PKG_DIR}/tools/chocolateyuninstall.ps1" "${WORKDIR}/tools/"
+cp -r "${PKG_DIR}/icons" "${WORKDIR}/icons"
 
 echo "==> choco pack を実行します"
 (cd "$WORKDIR" && choco pack)
@@ -52,14 +53,24 @@ NUPKG="${WORKDIR}/awase.${VERSION}.nupkg"
 [ -f "$NUPKG" ] || { echo "nupkg が生成されませんでした: $NUPKG" >&2; exit 1; }
 
 echo
-read -r -p "ローカルインストールテストをしますか？（管理者権限のシェル推奨） [y/N] " TESTANS
+if [ -t 0 ]; then
+    read -r -p "ローカルインストールテストをしますか？（管理者権限のシェル推奨） [y/N] " TESTANS
+else
+    TESTANS="N"
+    echo "非対話実行のためローカルインストールテストはスキップします"
+fi
 if [ "$TESTANS" = "y" ] || [ "$TESTANS" = "Y" ]; then
     choco install awase -s "$WORKDIR" -y
     echo "動作確認後、'choco uninstall awase -y' で片付けてから続行してください"
 fi
 
 echo
-read -r -p "community.chocolatey.org に push しますか？ [y/N] " ANSWER
+if [ -t 0 ]; then
+    read -r -p "community.chocolatey.org に push しますか？ [y/N] " ANSWER
+else
+    ANSWER="N"
+    echo "非対話実行のため push はスキップします（CHOCO_API_KEY を渡していないため安全側の既定動作）"
+fi
 if [ "$ANSWER" != "y" ] && [ "$ANSWER" != "Y" ]; then
     NOTRAP_DIR="${WORKDIR}"
     trap - EXIT

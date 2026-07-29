@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="keycap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5B6EF5"/>
+      <stop offset="100%" stop-color="#3730A3"/>
+    </linearGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.04"/>
+    </linearGradient>
+  </defs>
+
+  <!-- outer keycap body -->
+  <rect x="10" y="10" width="236" height="236" rx="52" fill="url(#keycap)"/>
+
+  <!-- inner bezel to read as a physical keycap -->
+  <rect x="26" y="24" width="204" height="196" rx="40" fill="url(#bezel)"/>
+  <rect x="26" y="24" width="204" height="196" rx="40" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="2"/>
+
+  <!-- glyph -->
+  <text x="128" y="196" text-anchor="middle"
+        font-family="Noto Sans JP, IPAGothic, sans-serif" font-weight="900"
+        font-size="168" fill="#ffffff">あ</text>
+</svg>
