@@ -543,6 +543,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         }
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::Restart) => tray::restart_self(),
+        Some(tray::TrayCommand::About) => tray::show_about_dialog(),
         Some(tray::TrayCommand::CapsLock) => {
             crate::ime::toggle_caps_lock();
         }

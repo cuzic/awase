@@ -49,6 +49,7 @@ const IDM_RESTART_ADMIN: u16 = 51;
 const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_AUTOSTART: u16 = 54;
 const IDM_RESTART: u16 = 56;
+const IDM_ABOUT: u16 = 57;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -77,6 +78,7 @@ pub enum TrayCommand {
     ClearImmCache,
     ToggleAutoStart,
     Restart,
+    About,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
     CapsLock,
@@ -673,6 +675,7 @@ pub fn handle_tray_message(
         }
 
         append_menu_sep(hmenu);
+        append_menu_item(hmenu, IDM_ABOUT, "awase について");
         append_menu_item(hmenu, IDM_TOGGLE, "有効/無効切替");
         append_menu_item(hmenu, IDM_EXIT, "終了");
 
@@ -705,6 +708,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_CLEAR_IMM_CACHE => Some(TrayCommand::ClearImmCache),
         IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
         IDM_RESTART => Some(TrayCommand::Restart),
+        IDM_ABOUT => Some(TrayCommand::About),
         IDM_CAPSLOCK => Some(TrayCommand::CapsLock),
         IDM_IME_HIRAGANA => Some(TrayCommand::ImeHiragana),
         IDM_IME_FULL_KATAKANA => Some(TrayCommand::ImeFullKatakana),
@@ -793,6 +797,67 @@ pub fn restart_self() {
         Err(e) => {
             log::error!("Failed to restart self: {e}");
         }
+    }
+}
+
+/// awase のホームページ URL。
+const HOMEPAGE_URL: &str = "https://awase.cc";
+
+/// バージョン情報ダイアログを表示する。
+///
+/// 「はい」を選ぶとホームページ（`HOMEPAGE_URL`）を既定のブラウザで開く。
+/// ユーザー要望（2026-07-29: 「about awase」の追加とホームページへのリンク）に
+/// 対応するもので、インストール済みファイル名からしかバージョンを確認できな
+/// かった状態を解消する。
+pub fn show_about_dialog() {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    };
+
+    let text = format!(
+        "awase バージョン {}\n\n{HOMEPAGE_URL}\n\n\
+         ホームページをブラウザで開きますか？",
+        env!("CARGO_PKG_VERSION"),
+    );
+    let text_wide = crate::win32::to_wide(&text);
+
+    // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
+    let result = unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text_wide.as_ptr()),
+            w!("awase について"),
+            MB_YESNO | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    if result == IDYES {
+        open_homepage();
+    }
+}
+
+/// `HOMEPAGE_URL` を既定のブラウザで開く。
+fn open_homepage() {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let url_wide = crate::win32::to_wide(HOMEPAGE_URL);
+    // SAFETY: url_wide は NUL 終端済み UTF-16 で呼び出し中有効。他はすべて静的リテラル。
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            PCWSTR(url_wide.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns HINSTANCE > 32 on success
+    if result.0 as isize > 32 {
+        log::info!("Opened homepage: {HOMEPAGE_URL}");
+    } else {
+        log::warn!("Failed to open homepage (result={result:?})");
     }
 }
 
