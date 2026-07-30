@@ -617,6 +617,38 @@ impl Runtime {
         }
     }
 
+    /// 設定リロード時にレイアウト一覧を再スキャンし、`default_layout` に追従させる。
+    ///
+    /// 設定画面の「適用」（再起動なしの即時反映）でレイアウト切り替えが効かない、
+    /// という報告（2026-07-29）に対応するもの。それまで `reload_config` は
+    /// スレッショルド・キー設定等は再読込していたが、レイアウトだけは対象外で、
+    /// 再起動しない限り反映されなかった。
+    ///
+    /// レイアウトが実質変わっていない場合は `switch_layout` を呼ばない。
+    /// `EngineCommand::SwapLayout` は保留中のキーを flush する副作用があるため、
+    /// 内容が変わっていないのに設定リロードのたびにタイピング中のキーを
+    /// 確定させてしまうことを避ける。
+    pub(crate) fn reload_layouts(&mut self, layouts: Vec<LayoutEntry>, default_layout: &str) {
+        if layouts.is_empty() {
+            log::warn!("reload_layouts: no layouts found, keeping current layout");
+            return;
+        }
+
+        let names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
+        let index = LayoutEntry::resolve_index(&layouts, default_layout);
+        let target_name = layouts[index].name.clone();
+        let unchanged = self.platform.tray.current_layout_name() == target_name;
+
+        self.layouts = layouts;
+        self.platform.tray.set_layout_names(names);
+
+        if unchanged {
+            return;
+        }
+
+        self.switch_layout(index);
+    }
+
     /// 配列を動的に切り替える
     pub fn switch_layout(&mut self, index: usize) {
         let Some(entry) = self.layouts.get(index) else {
