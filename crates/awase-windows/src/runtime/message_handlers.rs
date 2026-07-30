@@ -497,10 +497,20 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         lparam.0
     );
-    let layout_names: Vec<String> =
-        with_app_ref(|app| app.layouts.iter().map(|e| e.name.clone()).collect())
-            .unwrap_or_default();
-    tray::handle_tray_message(hwnd, lparam, &layout_names, crate::is_elevated());
+    let (layout_names, current_layout_name): (Vec<String>, String) = with_app_ref(|app| {
+        (
+            app.layouts.iter().map(|e| e.name.clone()).collect(),
+            app.platform.tray.current_layout_name().to_string(),
+        )
+    })
+    .unwrap_or_default();
+    tray::handle_tray_message(
+        hwnd,
+        lparam,
+        &layout_names,
+        &current_layout_name,
+        crate::is_elevated(),
+    );
 }
 
 /// WM_RELOAD_CONFIG ハンドラ

@@ -268,6 +268,12 @@ impl SystemTray {
         self.layout_names = names;
     }
 
+    /// 現在アクティブな配列名を返す（トレイメニューでのチェックマーク表示用）
+    #[must_use]
+    pub fn current_layout_name(&self) -> &str {
+        &self.current_layout_name
+    }
+
     /// 現在の配列名を設定し、ツールチップを更新する
     pub fn set_layout_name(&mut self, name: &str) {
         self.current_layout_name = name.to_string();
@@ -510,7 +516,13 @@ fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elev
 ///
 /// `WM_APP` メッセージを受け取った時にメッセージループから呼ばれる。
 /// 右クリックでコンテキストメニューを表示する。
-pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], elevated: bool) {
+pub fn handle_tray_message(
+    hwnd: HWND,
+    lparam: LPARAM,
+    layout_names: &[String],
+    current_layout_name: &str,
+    elevated: bool,
+) {
     #[expect(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
@@ -546,11 +558,16 @@ pub fn handle_tray_message(hwnd: HWND, lparam: LPARAM, layout_names: &[String], 
             return;
         }
 
-        // 配列選択
+        // 配列選択（現在アクティブなレイアウトにチェックマークを付ける）
         for (i, name) in layout_names.iter().enumerate() {
             let text = crate::win32::to_wide(name);
             let id = usize::from(IDM_LAYOUT_BASE) + i;
-            let _ = AppendMenuW(hmenu, MF_STRING, id, PCWSTR(text.as_ptr()));
+            let flags = if name == current_layout_name {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            let _ = AppendMenuW(hmenu, flags, id, PCWSTR(text.as_ptr()));
         }
         if !layout_names.is_empty() {
             append_menu_sep(hmenu);
