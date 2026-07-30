@@ -8,11 +8,13 @@
     <title>awase (NICOLA thumb-shift keyboard remapper)</title>
     <authors>cuzic</authors>
     <projectUrl>https://github.com/cuzic/awase</projectUrl>
-    <projectSourceUrl>https://github.com/cuzic/awase</projectSourceUrl>
+    <projectSourceUrl>https://github.com/cuzic/awase/tree/main/crates</projectSourceUrl>
     <bugTrackerUrl>https://github.com/cuzic/awase/issues</bugTrackerUrl>
     <copyright>Copyright (c) 2026 cuzic</copyright>
     <licenseUrl>https://github.com/cuzic/awase/blob/main/LICENSE-MIT</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <releaseNotes>https://github.com/cuzic/awase/blob/main/CHANGELOG.md</releaseNotes>
+    <iconUrl>https://raw.githubusercontent.com/cuzic/awase/main/packaging/choco/icons/awase.png</iconUrl>
     <tags>keyboard ime japanese nicola thumb-shift remapper</tags>
     <summary>A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond</summary>
     <description>

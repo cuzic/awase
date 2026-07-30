@@ -188,11 +188,7 @@ pub(super) fn init_engine_validated(
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
 fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (YabLayout, String) {
-    let default_name = config.general.default_layout.trim_end_matches(".yab");
-    let index = layouts
-        .iter()
-        .position(|e| e.name == default_name)
-        .unwrap_or(0);
+    let index = LayoutEntry::resolve_index(layouts, &config.general.default_layout);
     let entry = &layouts[index];
     (entry.layout.clone(), entry.name.clone())
 }
@@ -620,15 +616,25 @@ impl LayoutEntry {
             let entry = entry?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "yab") {
+                // レイアウトの識別名はファイル名（拡張子抜き）を使う。`.yab` 内部の
+                // 名前行（`YabLayout::name`、コメントのみのヘッダでは空になる自由記述）
+                // ではなく、これが `config.general.default_layout`（awase-settings の
+                // レイアウト選択 UI も同じくファイル名で識別する、
+                // `scan_layout_names` in awase-settings/src/main.rs 参照）と対応する
+                // 唯一の安定した識別子であるため。かつて内部名前行で照合しており、
+                // `default_layout` が一致する内部名を持つファイルが存在しない場合
+                // `.unwrap_or(0)` で無言に先頭要素へフォールバックしていた
+                // （設定画面でレイアウトを切り替えても再起動後に反映されない実機バグ、
+                // 2026-07-29 ユーザー報告で発覚）。
+                let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                    continue;
+                };
                 match std::fs::read_to_string(&path) {
                     Ok(content) => match YabLayout::parse(&content, model) {
                         Ok(yab) => {
                             let yab = yab.resolve_kana();
-                            log::info!("Discovered layout: {} ({})", yab.name, path.display());
-                            layouts.push(Self {
-                                name: yab.name.clone(),
-                                layout: yab,
-                            });
+                            log::info!("Discovered layout: {stem} ({})", path.display());
+                            layouts.push(Self { name: stem, layout: yab });
                         }
                         Err(e) => {
                             diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
@@ -930,4 +936,79 @@ pub(super) fn run_all() -> Result<()> {
     drop(hook_guard);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{select_default_layout, LayoutEntry, StartupDiagnostics};
+    use awase::scanmap::KeyboardModel;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("awase_bootstrap_test_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // 実運用の .yab は先頭がコメントのみ（`;NICOLA配列`）で、内部の名前行を
+    // 持たないことが多い。config.general.default_layout（awase-settings の
+    // レイアウト選択 UI も含め、常にファイル名で識別する）と照合する際に、
+    // ファイル名ではなく内部の名前行を使っていたため、複製・リネームした
+    // ファイル（例: my_nicola.yab）を選んでも一致せず `.unwrap_or(0)` で
+    // 無言に別のレイアウトへフォールバックしていた
+    // （設定画面でレイアウトを切り替えても反映されない実機バグ、
+    // 2026-07-29 ユーザー報告で発覚）。
+    const COMMENT_ONLY_HEADER_YAB: &str = "\
+;NICOLA配列
+;http://nicola.sunicom.co.jp/spec/kikaku.htm
+
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    #[test]
+    fn select_default_layout_matches_by_file_name_not_internal_name_line() {
+        let dir = unique_temp_dir("select_by_filename");
+        fs::write(dir.join("nicola.yab"), COMMENT_ONLY_HEADER_YAB).unwrap();
+        fs::write(dir.join("my_nicola.yab"), COMMENT_ONLY_HEADER_YAB).unwrap();
+
+        let mut diag = StartupDiagnostics::new();
+        let layouts = LayoutEntry::scan_all(&dir, &mut diag, KeyboardModel::Jis).unwrap();
+        assert_eq!(layouts.len(), 2);
+
+        let config: awase::config::AppConfig = toml::from_str(
+            "[general]\ndefault_layout = \"my_nicola.yab\"\nlayouts_dir = \"unused\"\n",
+        )
+        .unwrap();
+        let (validated, _warnings) = config.validate();
+
+        let (_layout, selected_name) = select_default_layout(&layouts, &validated);
+        assert_eq!(
+            selected_name, "my_nicola",
+            "default_layout must select the file the user actually chose, \
+             not silently fall back to another layout"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

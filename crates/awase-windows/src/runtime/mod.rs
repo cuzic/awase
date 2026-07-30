@@ -64,6 +64,27 @@ pub struct LayoutEntry {
     pub layout: YabLayout,
 }
 
+impl LayoutEntry {
+    /// `default_layout`（`config.general.default_layout`、`.yab` 拡張子付き）に
+    /// 一致するレイアウトのインデックスを返す。一致するものが無ければ `0` に
+    /// フォールバックする（`layouts` が空の場合は呼び出し元の責任で扱うこと）。
+    ///
+    /// 識別は `name`（ファイル名、拡張子抜き）で行う。`.yab` 内部の名前行は
+    /// 自由記述でありファイル名と一致する保証が無いため比較に使わないこと
+    /// （2026-07-29 実機バグ: かつて内部名前行で比較しており、default_layout が
+    /// 一致する内部名を持つファイルが存在しない場合、常に先頭レイアウトへ
+    /// 無言でフォールバックしていた）。起動時（`bootstrap::select_default_layout`）・
+    /// 設定リロード時（`Runtime::reload_layouts`）の両方から同じロジックを使う。
+    #[must_use]
+    pub fn resolve_index(layouts: &[Self], default_layout: &str) -> usize {
+        let default_name = default_layout.trim_end_matches(".yab");
+        layouts
+            .iter()
+            .position(|e| e.name == default_name)
+            .unwrap_or(0)
+    }
+}
+
 /// `[[post_bypass]]` 設定のコンパイル済みエントリ。
 ///
 /// Ctrl+`vk` が PassThrough になった直後、`process`/`class` が一致していれば
@@ -594,6 +615,38 @@ impl Runtime {
             self.on_ime_apply_complete(true, outcome, None);
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
         }
+    }
+
+    /// 設定リロード時にレイアウト一覧を再スキャンし、`default_layout` に追従させる。
+    ///
+    /// 設定画面の「適用」（再起動なしの即時反映）でレイアウト切り替えが効かない、
+    /// という報告（2026-07-29）に対応するもの。それまで `reload_config` は
+    /// スレッショルド・キー設定等は再読込していたが、レイアウトだけは対象外で、
+    /// 再起動しない限り反映されなかった。
+    ///
+    /// レイアウトが実質変わっていない場合は `switch_layout` を呼ばない。
+    /// `EngineCommand::SwapLayout` は保留中のキーを flush する副作用があるため、
+    /// 内容が変わっていないのに設定リロードのたびにタイピング中のキーを
+    /// 確定させてしまうことを避ける。
+    pub(crate) fn reload_layouts(&mut self, layouts: Vec<LayoutEntry>, default_layout: &str) {
+        if layouts.is_empty() {
+            log::warn!("reload_layouts: no layouts found, keeping current layout");
+            return;
+        }
+
+        let names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
+        let index = LayoutEntry::resolve_index(&layouts, default_layout);
+        let target_name = layouts[index].name.clone();
+        let unchanged = self.platform.tray.current_layout_name() == target_name;
+
+        self.layouts = layouts;
+        self.platform.tray.set_layout_names(names);
+
+        if unchanged {
+            return;
+        }
+
+        self.switch_layout(index);
     }
 
     /// 配列を動的に切り替える
@@ -1156,4 +1209,32 @@ unsafe fn cancel_ime_composition() {
         "[ctrl-bypass] ImmNotifyIME(CPS_CANCEL) hwnd={hwnd:?} → {}",
         ok.as_bool()
     );
+}
+
+#[cfg(test)]
+mod layout_entry_tests {
+    use super::LayoutEntry;
+    use awase::scanmap::KeyboardModel;
+    use awase::yab::YabLayout;
+
+    fn entry(name: &str) -> LayoutEntry {
+        LayoutEntry {
+            name: name.to_string(),
+            layout: YabLayout::parse("", KeyboardModel::Jis).unwrap(),
+        }
+    }
+
+    #[test]
+    fn resolve_index_matches_by_file_name_with_or_without_yab_suffix() {
+        let layouts = [entry("nicola"), entry("my_nicola")];
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "my_nicola.yab"), 1);
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "my_nicola"), 1);
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "nicola.yab"), 0);
+    }
+
+    #[test]
+    fn resolve_index_falls_back_to_first_entry_when_no_name_matches() {
+        let layouts = [entry("nicola"), entry("my_nicola")];
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"), 0);
+    }
 }

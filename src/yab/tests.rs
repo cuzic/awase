@@ -923,6 +923,56 @@ fn test_serialize_round_trip_nicola_file() {
     }
 }
 
+#[test]
+fn test_serialize_comment_only_header_has_no_stray_name_line() {
+    // 実運用の nicola.yab は先頭が `;` コメントのみで、明示的な名前行を持たない。
+    // かつて process_yab_line がこのケースで最初のセクション名
+    // （例: "ローマ字シフト無し"）を誤って `name` に採用していたため、
+    // 設定 GUI の「名前をつけて保存」で書き出すと `[ローマ字シフト無し]` の
+    // 直前に同名の余分な行が出力される不具合があった。
+    let input = "\
+;NICOLA配列
+;http://nicola.sunicom.co.jp/spec/kikaku.htm
+
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let model = KeyboardModel::Jis;
+    let layout = YabLayout::parse(input, model).unwrap();
+    assert_eq!(layout.name, "", "comment-only header must not leak into name");
+
+    let serialized = layout.serialize(model);
+    assert!(
+        serialized.starts_with("[ローマ字シフト無し]"),
+        "serialized output must not have a stray name line before the first section, got: {serialized:?}"
+    );
+
+    // グループ間に空行を入れて読みやすくする。
+    let expected_separator = "無\n\n[ローマ字左親指シフト]";
+    assert!(
+        serialized.contains(expected_separator),
+        "expected a blank line between groups, got: {serialized:?}"
+    );
+}
+
 // ── strip_paired_quote 境界値テスト ──
 
 #[test]

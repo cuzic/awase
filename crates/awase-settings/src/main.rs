@@ -13,6 +13,10 @@ use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 #[cfg(target_os = "windows")]
 const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
 
+/// awase のホームページ URL（`crates/awase-windows/src/tray.rs` の
+/// `HOMEPAGE_URL` と同じ値。crate を跨ぐため定数を共有できず文字列直書き）。
+const HOMEPAGE_URL: &str = "https://awase.cc";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Basic,
@@ -1788,6 +1792,12 @@ impl eframe::App for SettingsApp {
                             .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
                     }
                 }
+                // バージョン表示要望（2026-07-29）: これまでインストール済みファイル名
+                // でしかバージョンを確認できなかったため、常時見える位置に出す。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to("ホームページ", HOMEPAGE_URL);
+                    ui.label(format!("awase v{}", env!("CARGO_PKG_VERSION")));
+                });
             });
             ui.add_space(4.0);
         });

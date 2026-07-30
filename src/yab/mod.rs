@@ -404,11 +404,6 @@ fn process_yab_line(
 
         let section_name = &line[1..line.len() - 1];
 
-        // 最初のセクションの前に名前が未設定なら、セクション名を名前として使う
-        if name.is_empty() {
-            *name = section_name.to_string();
-        }
-
         *current_section = classify_section(section_name);
         current_lines.clear();
         return Ok(());
@@ -513,10 +508,15 @@ impl YabLayout {
             ("ローマ字小指シフト", &self.shift),
         ];
 
-        let mut out = self.name.clone();
-        out.push('\n');
+        let mut out = String::new();
+        if !self.name.is_empty() {
+            let _ = writeln!(out, "{}", self.name);
+        }
 
-        for (name, face) in &sections {
+        for (i, (name, face)) in sections.iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
             let _ = writeln!(out, "[{name}]");
             out.push_str(&face.serialize(&row_sizes));
             out.push('\n');

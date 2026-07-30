@@ -7,6 +7,19 @@
 #   VERSION省略時は cuzic/awase の最新リリースタグを使う。
 set -euo pipefail
 
+# WSL 上の bash は拡張子なし完全一致でしか PATH 探索しないため "choco" では
+# choco.exe を見つけられないことがある（MSYS2 は拡張子省略の解決をしてくれる）。
+# 両方の環境で動くよう、実体を確認してから使うコマンド名を決める。
+export PATH="$PATH:/mnt/c/ProgramData/chocolatey/bin:/c/ProgramData/chocolatey/bin"
+if command -v choco >/dev/null 2>&1; then
+    CHOCO=choco
+elif command -v choco.exe >/dev/null 2>&1; then
+    CHOCO=choco.exe
+else
+    echo "choco(.exe) が見つかりませんでした（PATH: $PATH）" >&2
+    exit 1
+fi
+
 REPO="cuzic/awase"
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,22 +57,36 @@ sed -e "s/^\$version = .*/\$version = '${VERSION}'/" \
     > "${WORKDIR}/tools/chocolateyinstall.ps1"
 
 cp "${PKG_DIR}/tools/chocolateyuninstall.ps1" "${WORKDIR}/tools/"
+cp -r "${PKG_DIR}/icons" "${WORKDIR}/icons"
 
 echo "==> choco pack を実行します"
-(cd "$WORKDIR" && choco pack)
+(cd "$WORKDIR" && "$CHOCO" pack)
 
 NUPKG="${WORKDIR}/awase.${VERSION}.nupkg"
 [ -f "$NUPKG" ] || { echo "nupkg が生成されませんでした: $NUPKG" >&2; exit 1; }
 
 echo
-read -r -p "ローカルインストールテストをしますか？（管理者権限のシェル推奨） [y/N] " TESTANS
+if [ -t 0 ]; then
+    read -r -p "ローカルインストールテストをしますか？（管理者権限のシェル推奨） [y/N] " TESTANS
+else
+    TESTANS="N"
+    echo "非対話実行のためローカルインストールテストはスキップします"
+fi
 if [ "$TESTANS" = "y" ] || [ "$TESTANS" = "Y" ]; then
-    choco install awase -s "$WORKDIR" -y
+    "$CHOCO" install awase -s "$WORKDIR" -y
     echo "動作確認後、'choco uninstall awase -y' で片付けてから続行してください"
 fi
 
 echo
-read -r -p "community.chocolatey.org に push しますか？ [y/N] " ANSWER
+if [ -t 0 ]; then
+    read -r -p "community.chocolatey.org に push しますか？ [y/N] " ANSWER
+elif [ -n "${CHOCO_API_KEY:-}" ]; then
+    ANSWER="Y"
+    echo "非対話実行かつ CHOCO_API_KEY が設定されているため push を実行します"
+else
+    ANSWER="N"
+    echo "非対話実行のため push はスキップします（CHOCO_API_KEY を渡していないため安全側の既定動作）"
+fi
 if [ "$ANSWER" != "y" ] && [ "$ANSWER" != "Y" ]; then
     NOTRAP_DIR="${WORKDIR}"
     trap - EXIT
@@ -70,6 +97,8 @@ fi
 : "${CHOCO_API_KEY:?CHOCO_API_KEY 環境変数に community.chocolatey.org のAPIキーを設定してください}"
 
 echo "==> choco push を実行します"
-choco push "$NUPKG" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY"
+# choco.exe (Windows バイナリ) は WSL 側の絶対パス文字列(/tmp/...)をそのままでは
+# 解決できない。cd してから相対ファイル名で渡す(choco pack と同じ回避策)。
+(cd "$WORKDIR" && "$CHOCO" push "$(basename "$NUPKG")" --source https://push.chocolatey.org/ --api-key "$CHOCO_API_KEY")
 
 echo "==> 完了しました。packaging/choco/ 配下のテンプレート（バージョン以外の記述内容）に変更があれば、別途 git commit してください"
