@@ -1020,12 +1020,11 @@ impl SettingsApp {
             ui.label("  エンジン切替:").on_hover_text(
                 "エンジンの ON/OFF をトグルするホットキーです。\nシステム全体で有効です。",
             );
-            let hotkey = self
-                .config
-                .general
-                .engine_toggle_hotkey
-                .get_or_insert_with(String::new);
-            ui.text_edit_singleline(hotkey);
+            hotkey_combo_ui(
+                ui,
+                "engine_toggle_hotkey",
+                &mut self.config.general.engine_toggle_hotkey,
+            );
         });
     }
 
@@ -1278,7 +1277,7 @@ impl SettingsApp {
         ui.label("IME の ON/OFF 切り替えを検出するためのキー設定です。\n通常はデフォルトのままで問題ありません。\n半角/全角キーなど、IME を切り替えるキーを登録します。");
         ui.add_space(8.0);
 
-        key_list_ui(
+        bare_key_list_ui(
             ui,
             "トグルキー（ON/OFF 切替）",
             "ime_det_toggle",
@@ -1286,7 +1285,7 @@ impl SettingsApp {
             &mut self.new_ime_toggle_key,
             "IME の ON/OFF をトグルするキーです。\n押すたびに ON/OFF が切り替わります。\n例: 半角/全角キー",
         );
-        key_list_ui(
+        bare_key_list_ui(
             ui,
             "ON キー（IME を ON にする）",
             "ime_det_on",
@@ -1294,7 +1293,7 @@ impl SettingsApp {
             &mut self.new_ime_detect_on_key,
             "IME を ON にするキーです。\n押すと必ず ON になります。",
         );
-        key_list_ui(
+        bare_key_list_ui(
             ui,
             "OFF キー（IME を OFF にする）",
             "ime_det_off",
@@ -1952,40 +1951,6 @@ fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>) {
         });
 }
 
-fn key_list_ui(
-    ui: &mut egui::Ui,
-    label: &str,
-    id: &str,
-    keys: &mut Vec<String>,
-    buf: &mut String,
-    tooltip: &str,
-) {
-    ui.label(format!("  {label}:")).on_hover_text(tooltip);
-    let mut rm = None;
-    for (i, key) in keys.iter().enumerate() {
-        ui.horizontal(|ui| {
-            ui.label(format!("    {key}"));
-            if ui.small_button("x").clicked() {
-                rm = Some(i);
-            }
-        });
-    }
-    if let Some(i) = rm {
-        keys.remove(i);
-    }
-    ui.horizontal(|ui| {
-        ui.add(
-            egui::TextEdit::singleline(buf)
-                .desired_width(180.0)
-                .id(egui::Id::new(id)),
-        );
-        if ui.button("+追加").clicked() && !buf.is_empty() {
-            keys.push(buf.clone());
-            buf.clear();
-        }
-    });
-}
-
 /// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。
 #[derive(Default)]
 struct NewComboBuf {
@@ -2077,6 +2042,69 @@ fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
     changed
 }
 
+/// 修飾キー無しのキーリスト UI（「IME 検出」タブ専用）。
+///
+/// `ime_detect.toggle/on/off` は `VkCode::from_name` 直読みで修飾キーを
+/// 一切使わないため、`combo_key_list_ui` と違いチェックボックスは出さず、
+/// メインキーのドロップダウン（`THUMB_KEY_OPTIONS` + `IME_DETECT_EXTRA_OPTIONS`）
+/// だけで構成する。
+fn bare_key_list_ui(
+    ui: &mut egui::Ui,
+    label: &str,
+    id: &str,
+    keys: &mut Vec<String>,
+    new_buf: &mut String,
+    tooltip: &str,
+) {
+    ui.label(format!("  {label}:")).on_hover_text(tooltip);
+    let mut rm = None;
+    for (i, key) in keys.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ime_detect_key_combo(ui, &format!("{id}_{i}"), key);
+            if ui.small_button("x").clicked() {
+                rm = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm {
+        keys.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ime_detect_key_combo(ui, &format!("{id}_new"), new_buf);
+        if ui.button("+追加").clicked() && !new_buf.is_empty() {
+            keys.push(std::mem::take(new_buf));
+        }
+    });
+}
+
+/// 「IME 検出」タブ用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
+/// `IME_DETECT_EXTRA_OPTIONS`）。修飾キー欄は無い。変更時は true を返す。
+fn ime_detect_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+    let options = THUMB_KEY_OPTIONS.iter().chain(IME_DETECT_EXTRA_OPTIONS);
+    let display = options
+        .clone()
+        .find(|(_, internal)| *internal == current.as_str())
+        .map_or(current.as_str(), |(d, _)| *d)
+        .to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in options {
+                if ui.selectable_label(current == internal, *label).clicked() {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
 /// 親指キー選択用候補一覧（表示名, config 内部表記）。
 ///
 /// F13-F24: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
@@ -2127,6 +2155,18 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
 /// 共有する他の用途には出さないため、意図的に別の定数に分離してある。
 const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
     &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
+
+/// 「IME 検出」タブ（`ime_detect.toggle/on/off`）の候補にのみ追加するエントリ。
+///
+/// これらは `VkCode::from_name` 直読み（`app/mod.rs::parse_vk_list`、
+/// `vk::parse_key_combo` 経由ではない）で解決される単発 VK で、修飾キーは
+/// 使われない。デフォルト値（`ImeDetectConfig::default`）が 漢字/IMEオン/IMEオフ
+/// のため、`THUMB_KEY_OPTIONS` に無いこの3つをここで補う。
+const IME_DETECT_EXTRA_OPTIONS: &[(&str, &str)] = &[
+    ("漢字", "VK_KANJI"),
+    ("IMEオン", "VK_IME_ON"),
+    ("IMEオフ", "VK_IME_OFF"),
+];
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///
@@ -2353,6 +2393,41 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
             }
         });
     changed
+}
+
+/// グローバルトグルホットキー（`GeneralConfig::engine_toggle_hotkey`、単一値）用の
+/// Ctrl/Shift/Alt チェックボックス + メインキードロップダウン。
+///
+/// `vk::parse_hotkey` は `vk::parse_key_combo` と同じ修飾キー解析を使うため、
+/// `parse_combo_str`/`format_combo`（keymap タブと共通）でそのまま組み立てられる。
+/// メインキー候補は IME 系ではなく英数字/F1-F12/OEM記号中心の `KEYMAP_MAIN_KEYS`
+/// （デフォルト値 `"Ctrl+Shift+F12"` と同系統）を使う。メインキー未選択の状態は
+/// ホットキー無効（`None`）として扱う。
+fn hotkey_combo_ui(ui: &mut egui::Ui, id: &str, current: &mut Option<String>) {
+    let (mut ctrl, mut shift, mut alt, mut main) =
+        parse_combo_str(current.as_deref().unwrap_or(""));
+    let mut changed = false;
+    changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+    changed |= ui.checkbox(&mut shift, "Shift").changed();
+    changed |= ui.checkbox(&mut alt, "Alt").changed();
+    if main_key_combo(ui, id, &mut main) {
+        changed = true;
+    }
+    if ui
+        .small_button("解除")
+        .on_hover_text("ホットキーを無効にします")
+        .clicked()
+    {
+        *current = None;
+        return;
+    }
+    if changed {
+        *current = if main.is_empty() {
+            None
+        } else {
+            Some(format_combo(ctrl, shift, alt, &main))
+        };
+    }
 }
 
 /// キー入力キャプチャボタン。クリックでこの target をキャプチャ対象に設定し、
