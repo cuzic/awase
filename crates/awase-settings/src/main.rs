@@ -224,11 +224,11 @@ struct SettingsApp {
     status: String,
     active_tab: Tab,
     available_layouts: Vec<String>,
-    // Key list add-buffers
-    new_engine_on_key: String,
-    new_engine_off_key: String,
-    new_ime_on_key: String,
-    new_ime_off_key: String,
+    // Key list add-buffers (engine/IME control: modifiers + main key)
+    new_engine_on: NewComboBuf,
+    new_engine_off: NewComboBuf,
+    new_ime_on: NewComboBuf,
+    new_ime_off: NewComboBuf,
     new_ime_toggle_key: String,
     new_ime_detect_on_key: String,
     new_ime_detect_off_key: String,
@@ -292,10 +292,10 @@ impl SettingsApp {
             status: String::new(),
             active_tab: Tab::Basic,
             available_layouts,
-            new_engine_on_key: String::new(),
-            new_engine_off_key: String::new(),
-            new_ime_on_key: String::new(),
-            new_ime_off_key: String::new(),
+            new_engine_on: NewComboBuf::default(),
+            new_engine_off: NewComboBuf::default(),
+            new_ime_on: NewComboBuf::default(),
+            new_ime_off: NewComboBuf::default(),
             new_ime_toggle_key: String::new(),
             new_ime_detect_on_key: String::new(),
             new_ime_detect_off_key: String::new(),
@@ -970,20 +970,20 @@ impl SettingsApp {
 
         // Engine on/off
         ui.label("エンジン制御");
-        key_list_ui(
+        combo_key_list_ui(
             ui,
             "エンジン ON",
             "eng_on",
             &mut self.config.keys.engine_on,
-            &mut self.new_engine_on_key,
+            &mut self.new_engine_on,
             "エンジンを ON にするキーの組み合わせです。\n複数登録できます。",
         );
-        key_list_ui(
+        combo_key_list_ui(
             ui,
             "エンジン OFF",
             "eng_off",
             &mut self.config.keys.engine_off,
-            &mut self.new_engine_off_key,
+            &mut self.new_engine_off,
             "エンジンを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
         ui.horizontal(|ui| {
@@ -996,20 +996,20 @@ impl SettingsApp {
 
         // IME on/off
         ui.label("IME 制御");
-        key_list_ui(
+        combo_key_list_ui(
             ui,
             "IME ON",
             "ime_on",
             &mut self.config.keys.ime_on,
-            &mut self.new_ime_on_key,
+            &mut self.new_ime_on,
             "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
         );
-        key_list_ui(
+        combo_key_list_ui(
             ui,
             "IME OFF",
             "ime_off",
             &mut self.config.keys.ime_off,
-            &mut self.new_ime_off_key,
+            &mut self.new_ime_off,
             "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
         );
         ui.add_space(8.0);
@@ -1986,6 +1986,97 @@ fn key_list_ui(
     });
 }
 
+/// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。
+#[derive(Default)]
+struct NewComboBuf {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    main: String,
+}
+
+/// エンジン制御・IME制御キー用のキーリスト UI。
+///
+/// 自由記述テキストの代わりに、Ctrl/Shift/Alt の修飾チェックボックスと
+/// `THUMB_KEY_OPTIONS`（変換/無変換/かな/F13-F24 等の安全な候補のみ）から選ぶ
+/// メインキーのドロップダウンで組み立てる。既存エントリもその場で編集できる。
+/// `parse_combo_str`/`format_combo`（keymap タブと共通）で文字列化するため、
+/// バックエンドのパース（`vk::parse_key_combo`）・config 形式は変更不要。
+fn combo_key_list_ui(
+    ui: &mut egui::Ui,
+    label: &str,
+    id: &str,
+    keys: &mut Vec<String>,
+    new_entry: &mut NewComboBuf,
+    tooltip: &str,
+) {
+    ui.label(format!("  {label}:")).on_hover_text(tooltip);
+    let mut rm = None;
+    for (i, key) in keys.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            let (mut ctrl, mut shift, mut alt, mut main) = parse_combo_str(key);
+            let mut changed = false;
+            changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
+            changed |= ui.checkbox(&mut shift, "Shift").changed();
+            changed |= ui.checkbox(&mut alt, "Alt").changed();
+            if engine_key_combo(ui, &format!("{id}_{i}"), &mut main) {
+                changed = true;
+            }
+            if changed {
+                *key = format_combo(ctrl, shift, alt, &main);
+            }
+            if ui.small_button("x").clicked() {
+                rm = Some(i);
+            }
+        });
+    }
+    if let Some(i) = rm {
+        keys.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut new_entry.ctrl, "Ctrl");
+        ui.checkbox(&mut new_entry.shift, "Shift");
+        ui.checkbox(&mut new_entry.alt, "Alt");
+        engine_key_combo(ui, &format!("{id}_new"), &mut new_entry.main);
+        if ui.button("+追加").clicked() && !new_entry.main.is_empty() {
+            keys.push(format_combo(
+                new_entry.ctrl,
+                new_entry.shift,
+                new_entry.alt,
+                &new_entry.main,
+            ));
+            *new_entry = NewComboBuf::default();
+        }
+    });
+}
+
+/// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` のみ、
+/// Alt impersonation 候補は含めない。必須選択・空欄なし）。変更時は true を返す。
+fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+    let display = THUMB_KEY_OPTIONS
+        .iter()
+        .find(|(_, internal)| *internal == current.as_str())
+        .map_or(current.as_str(), |(d, _)| *d)
+        .to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in THUMB_KEY_OPTIONS {
+                if ui.selectable_label(current == internal, *label).clicked() {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        });
+    changed
+}
+
 /// 親指キー選択用候補一覧（表示名, config 内部表記）。
 ///
 /// F13-F24: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
@@ -2596,9 +2687,9 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, PhysicalPos, SPECIAL_KEYS, SettingsApp, Tab,
-        ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
-        resolve_layouts_dir,
+        CLIPBOARD_HISTORY_LEN, Face, KanaTable, NewComboBuf, PhysicalPos, SPECIAL_KEYS,
+        SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path,
+        load_yab_layout, resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -2612,10 +2703,10 @@ mod layout_tab_repro {
             status: String::new(),
             active_tab: Tab::Layout,
             available_layouts: Vec::new(),
-            new_engine_on_key: String::new(),
-            new_engine_off_key: String::new(),
-            new_ime_on_key: String::new(),
-            new_ime_off_key: String::new(),
+            new_engine_on: NewComboBuf::default(),
+            new_engine_off: NewComboBuf::default(),
+            new_ime_on: NewComboBuf::default(),
+            new_ime_off: NewComboBuf::default(),
             new_ime_toggle_key: String::new(),
             new_ime_detect_on_key: String::new(),
             new_ime_detect_off_key: String::new(),
