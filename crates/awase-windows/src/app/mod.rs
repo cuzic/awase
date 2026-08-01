@@ -528,8 +528,11 @@ pub(crate) fn reload_config() {
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let mut layout_diag = StartupDiagnostics::new();
-    match crate::LayoutEntry::scan_all(&layouts_dir, &mut layout_diag, config.general.keyboard_model)
-    {
+    match crate::LayoutEntry::scan_all(
+        &layouts_dir,
+        &mut layout_diag,
+        config.general.keyboard_model,
+    ) {
         Ok(layouts) => {
             layout_diag.report();
             let _ = with_app(|app| app.reload_layouts(layouts, &config.general.default_layout));

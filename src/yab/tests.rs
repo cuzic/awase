@@ -957,7 +957,10 @@ fn test_serialize_comment_only_header_has_no_stray_name_line() {
 
     let model = KeyboardModel::Jis;
     let layout = YabLayout::parse(input, model).unwrap();
-    assert_eq!(layout.name, "", "comment-only header must not leak into name");
+    assert_eq!(
+        layout.name, "",
+        "comment-only header must not leak into name"
+    );
 
     let serialized = layout.serialize(model);
     assert!(
