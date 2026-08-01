@@ -162,6 +162,25 @@ impl Engine {
         let now_active = new_state.is_active();
         let mut effects = EffectVec::new();
 
+        // [diag-engine-active] BUG-42系（belief と engine active state の乖離、
+        // 「IME ON なのに Engine OFF のまま」）の切り分け用の一時的な診断ログ。
+        // 既存の `Engine {activated,deactivated}` ログは active/inactive が
+        // "遷移した" 場合にしか出ないため、ime_on=true のまま何らかの理由で
+        // 非活性が継続している（＝遷移が起きない）ケースを毎キー入力ごとに
+        // 可視化する。遷移の有無を問わず出すため log::debug! で十分な頻度に留める。
+        if ctx.ime_on && !now_active {
+            log::debug!(
+                "[diag-engine-active] ime_on=true なのに非活性: reason={:?} \
+                 romaji_capable={} japanese={} user_enabled={} was_active={} input_mode={:?}",
+                new_state,
+                ctx.input_mode.is_romaji_capable(),
+                ctx.is_japanese_ime,
+                self.adapter.is_enabled(),
+                was_active,
+                ctx.input_mode,
+            );
+        }
+
         if was_active != now_active {
             if !now_active {
                 // active → inactive: 保留キーをフラッシュ。
