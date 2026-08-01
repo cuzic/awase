@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::tsv::{KeymapRow, parse_custom_keymap_table};
+use crate::tsv::{parse_custom_keymap_table, KeymapRow};
 
 /// GJI の `IMEOn`/`IMEOff` コマンドが割り当てられている、GJI 内部の入力状態が
 /// 「IME は実質 OFF（未起動）」を表すもの。この状態群でのみ `IMEOn` が割り当て
@@ -51,7 +51,10 @@ const MOZC_KEY_ALIASES: &[(&str, &str)] = &[
 /// （安全側に倒し、未知の VK を検出キーに使わない）。
 #[must_use]
 pub fn mozc_key_to_vk_name(key: &str) -> Option<String> {
-    if let Some((_, vk_name)) = MOZC_KEY_ALIASES.iter().find(|(mozc_key, _)| *mozc_key == key) {
+    if let Some((_, vk_name)) = MOZC_KEY_ALIASES
+        .iter()
+        .find(|(mozc_key, _)| *mozc_key == key)
+    {
         return Some((*vk_name).to_string());
     }
     let digits = key.strip_prefix('F')?;
@@ -152,10 +155,14 @@ fn classify_and_push(
     off_statuses: &BTreeSet<String>,
     result: &mut GjiImeKeys,
 ) {
-    let on_only_in_off_states =
-        !on_statuses.is_empty() && on_statuses.iter().all(|s| STATUSES_WHEN_IME_OFF.contains(&s.as_str()));
-    let off_only_in_on_states =
-        !off_statuses.is_empty() && off_statuses.iter().all(|s| STATUSES_WHEN_IME_ON.contains(&s.as_str()));
+    let on_only_in_off_states = !on_statuses.is_empty()
+        && on_statuses
+            .iter()
+            .all(|s| STATUSES_WHEN_IME_OFF.contains(&s.as_str()));
+    let off_only_in_on_states = !off_statuses.is_empty()
+        && off_statuses
+            .iter()
+            .all(|s| STATUSES_WHEN_IME_ON.contains(&s.as_str()));
 
     if on_only_in_off_states && off_only_in_on_states {
         result.toggle.push(vk_name.to_string());
@@ -172,7 +179,7 @@ fn classify_and_push(
 
 #[cfg(test)]
 mod tests {
-    use super::{GjiImeKeys, extract_ime_keys, mozc_key_to_vk_name};
+    use super::{extract_ime_keys, mozc_key_to_vk_name, GjiImeKeys};
 
     #[test]
     fn f_key_tokens_map_to_vk_names() {

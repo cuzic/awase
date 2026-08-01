@@ -51,7 +51,7 @@ pub fn read_gji_ime_keys(bytes: &[u8]) -> GjiImeKeys {
 
 #[cfg(test)]
 mod tests {
-    use super::{GjiImeKeys, read_gji_ime_keys};
+    use super::{read_gji_ime_keys, GjiImeKeys};
 
     #[test]
     fn empty_bytes_yields_empty_keys() {

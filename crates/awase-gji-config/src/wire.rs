@@ -150,7 +150,7 @@ fn skip_field(bytes: &[u8], pos: &mut usize, wire_type: u64) -> Option<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GjiRawConfig, parse_top_level};
+    use super::{parse_top_level, GjiRawConfig};
 
     /// field 22 (varint=1) + field 42 (string "hello") をエンコードした
     /// テストベクタ。Python で手計算・検算済み。

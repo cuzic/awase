@@ -41,11 +41,12 @@ pub fn parse_custom_keymap_table(text: &str) -> Vec<KeymapRow> {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeymapRow, parse_custom_keymap_table};
+    use super::{parse_custom_keymap_table, KeymapRow};
 
     #[test]
     fn parses_header_and_rows() {
-        let text = "status\tkey\tcommand\nComposition\tHankaku/Zenkaku\tIMEOff\nDirectInput\tF21\tIMEOn\n";
+        let text =
+            "status\tkey\tcommand\nComposition\tHankaku/Zenkaku\tIMEOff\nDirectInput\tF21\tIMEOn\n";
         let rows = parse_custom_keymap_table(text);
         assert_eq!(
             rows,
