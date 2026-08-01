@@ -36,6 +36,11 @@ pub struct GjiRawConfig {
 /// 空バイト列のみ `None` を返す。それ以外は、たとえ途中で未知の構造
 /// （group 型フィールド等、対応していないもの）や壊れたバイト列に遭遇しても、
 /// そこまでに読めたフィールドを保持したまま `Some` を返す（パニックしない）。
+///
+/// 注意: フィールドは番号昇順で直列化される（protobuf の一般的な実装の挙動）
+/// 前提なので、field 42 より前の位置に未対応/破損フィールドがあると、そこで
+/// 走査を打ち切り `custom_keymap_table` 自体を読み損ねる。Mozc の `Config`
+/// に group 型フィールドは存在しないため実害リスクは低いが、限界として記す。
 #[must_use]
 pub fn parse_top_level(bytes: &[u8]) -> Option<GjiRawConfig> {
     if bytes.is_empty() {
@@ -91,18 +96,27 @@ fn read_varint(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     }
 }
 
-/// length-delimited (wire type 2) フィールドを UTF-8 文字列として読む。
-/// 不正な UTF-8 はロス付きで置換する（GJI 由来データは通常 UTF-8 のはず）。
-fn read_length_delimited_string(bytes: &[u8], pos: &mut usize) -> Option<String> {
+/// length-delimited (wire type 2) フィールドの長さ prefix を読み、ペイロードの
+/// `[start, end)` 範囲を返す。`pos` はこの範囲の直後（`end`）まで読み進める。
+/// [`read_length_delimited_string`] と `skip_field` の wire type 2 分岐の
+/// 両方から使う共通ロジック。
+fn read_len_delimited_range(bytes: &[u8], pos: &mut usize) -> Option<(usize, usize)> {
     let len = read_varint(bytes, pos)?;
     let len = usize::try_from(len).ok()?;
-    let end = pos.checked_add(len)?;
+    let start = *pos;
+    let end = start.checked_add(len)?;
     if end > bytes.len() {
         return None;
     }
-    let slice = &bytes[*pos..end];
     *pos = end;
-    Some(String::from_utf8_lossy(slice).into_owned())
+    Some((start, end))
+}
+
+/// length-delimited (wire type 2) フィールドを UTF-8 文字列として読む。
+/// 不正な UTF-8 はロス付きで置換する（GJI 由来データは通常 UTF-8 のはず）。
+fn read_length_delimited_string(bytes: &[u8], pos: &mut usize) -> Option<String> {
+    let (start, end) = read_len_delimited_range(bytes, pos)?;
+    Some(String::from_utf8_lossy(&bytes[start..end]).into_owned())
 }
 
 /// 関心の無いフィールドを、ワイヤ型に応じて読み飛ばす。
@@ -120,13 +134,7 @@ fn skip_field(bytes: &[u8], pos: &mut usize, wire_type: u64) -> Option<()> {
             *pos = end;
         }
         2 => {
-            let len = read_varint(bytes, pos)?;
-            let len = usize::try_from(len).ok()?;
-            let end = pos.checked_add(len)?;
-            if end > bytes.len() {
-                return None;
-            }
-            *pos = end;
+            read_len_delimited_range(bytes, pos)?;
         }
         5 => {
             let end = pos.checked_add(4)?;

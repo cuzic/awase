@@ -117,6 +117,14 @@ pub fn extract_ime_keys(custom_keymap_table: &str) -> GjiImeKeys {
 fn group_ime_rows_by_key(rows: &[KeymapRow]) -> StatusSetsByKey {
     let mut grouped: StatusSetsByKey = BTreeMap::new();
     for row in rows {
+        // command でまず絞る: IMEOn/IMEOff 以外の行（Backspace 等)は空白キー
+        // 判定より先に捨てる。修飾キー付き行のログを IME 無関係コマンドで
+        // 発火させないため。
+        let is_ime_on = row.command == "IMEOn";
+        let is_ime_off = row.command == "IMEOff";
+        if !is_ime_on && !is_ime_off {
+            continue;
+        }
         if row.key.contains(char::is_whitespace) {
             log::debug!(
                 "gji-config: 修飾キー付き行は stage 1 のスコープ外のため無視: key={}",
@@ -124,10 +132,10 @@ fn group_ime_rows_by_key(rows: &[KeymapRow]) -> StatusSetsByKey {
             );
             continue;
         }
-        let entry = match row.command.as_str() {
-            "IMEOn" => &mut grouped.entry(row.key.clone()).or_default().0,
-            "IMEOff" => &mut grouped.entry(row.key.clone()).or_default().1,
-            _ => continue,
+        let entry = if is_ime_on {
+            &mut grouped.entry(row.key.clone()).or_default().0
+        } else {
+            &mut grouped.entry(row.key.clone()).or_default().1
         };
         entry.insert(row.status.clone());
     }
@@ -263,5 +271,27 @@ Composition\tSpace\tConvert
         let text = "status\tkey\tcommand\nComposition\tF15\tIMEOn\nComposition\tF15\tIMEOff\n";
         let keys = extract_ime_keys(text);
         assert_eq!(keys, GjiImeKeys::default());
+    }
+
+    #[test]
+    fn prediction_and_suggestion_are_recognized_as_ime_on_states() {
+        // STATUSES_WHEN_IME_ON の5状態のうちメインfixtureがカバーしないのは
+        // Prediction/Suggestion。この2つが正しく toggle 判定に効くことを
+        // 個別に固定する（この定数を削っても検知できるように）。
+        let text = "status\tkey\tcommand
+DirectInput\tF20\tIMEOn
+Prediction\tF20\tIMEOff
+DirectInput\tF19\tIMEOn
+Suggestion\tF19\tIMEOff
+";
+        let keys = extract_ime_keys(text);
+        assert_eq!(
+            keys,
+            GjiImeKeys {
+                on: vec![],
+                off: vec![],
+                toggle: vec!["VK_F19".to_string(), "VK_F20".to_string()],
+            }
+        );
     }
 }
