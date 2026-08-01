@@ -5,4 +5,5 @@
 //! Win32 API・ファイル I/O・GJI がアクティブかどうかの判定は一切行わない
 //! （呼び出し側の責務）。
 
+pub mod tsv;
 pub mod wire;
