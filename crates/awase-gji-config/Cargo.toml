@@ -1,0 +1,22 @@
+[package]
+name = "awase-gji-config"
+version = "0.1.0"
+edition = "2021"
+description = "Google 日本語入力 (GJI) の config1.db から IME ON/OFF キー割当を読み取る、プラットフォーム非依存の純粋ロジック"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cuzic/awase"
+publish = false
+
+[dependencies]
+log = "0.4"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo_common_metadata = "allow"
+multiple_crate_versions = "allow"
+doc_markdown = "allow"
