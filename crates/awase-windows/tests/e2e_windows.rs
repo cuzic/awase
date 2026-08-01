@@ -1116,7 +1116,7 @@ fn e2e_ime_status_detection() {
 /// progress or the IME context is unavailable.
 unsafe fn get_composition_string(hwnd: windows::Win32::Foundation::HWND) -> Option<String> {
     use windows::Win32::UI::Input::Ime::{
-        GCS_COMPSTR, ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext,
+        ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPSTR,
     };
 
     let himc = ImmGetContext(hwnd);
@@ -1135,12 +1135,8 @@ unsafe fn get_composition_string(hwnd: windows::Win32::Foundation::HWND) -> Opti
     // Use a u16 buffer directly (GCS_COMPSTR data is UTF-16) so no
     // alignment-changing pointer cast is needed when reading it back.
     let mut buf = vec![0u16; len_bytes as usize / 2];
-    let written = ImmGetCompositionStringW(
-        himc,
-        GCS_COMPSTR,
-        Some(buf.as_mut_ptr().cast()),
-        len_bytes,
-    );
+    let written =
+        ImmGetCompositionStringW(himc, GCS_COMPSTR, Some(buf.as_mut_ptr().cast()), len_bytes);
     let _ = ImmReleaseContext(hwnd, himc);
 
     if written <= 0 {
@@ -1268,8 +1264,7 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
@@ -1321,8 +1316,7 @@ fn e2e_msime_kanji_conversion_interactive() {
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x45, 0x12); // VK_E
 
-        let reading =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let reading = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'namae': {reading:?}");
         assert_eq!(
             reading.as_deref(),
@@ -1389,8 +1383,11 @@ fn e2e_msime_katakana_conversion_interactive() {
         log::info!("--- Sending F7 to force katakana conversion ---");
         send_key_to_edit(0x76, 0x41); // VK_F7
 
-        let katakana =
-            wait_for_composition_change(win.edit_hwnd, "\u{304B}", std::time::Duration::from_secs(1));
+        let katakana = wait_for_composition_change(
+            win.edit_hwnd,
+            "\u{304B}",
+            std::time::Duration::from_secs(1),
+        );
         log::info!("Composition string after F7: {katakana:?}");
         assert_eq!(
             katakana.as_deref(),
@@ -1438,8 +1435,7 @@ fn e2e_msime_long_phrase_composition_interactive() {
         send_key_to_edit(0x4F, 0x18); // VK_O
         send_key_to_edit(0x55, 0x16); // VK_U
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'arigatou': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
@@ -1479,8 +1475,7 @@ fn e2e_msime_composition_cancel_escape_interactive() {
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
 
@@ -1534,8 +1529,7 @@ fn e2e_gji_romaji_to_kana_conversion_interactive() {
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
@@ -1578,8 +1572,7 @@ fn e2e_gji_kanji_conversion_interactive() {
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x45, 0x12); // VK_E
 
-        let reading =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let reading = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'namae': {reading:?}");
         assert_eq!(
             reading.as_deref(),
@@ -1692,8 +1685,7 @@ fn e2e_gji_long_phrase_composition_interactive() {
         send_key_to_edit(0x4F, 0x18); // VK_O
         send_key_to_edit(0x55, 0x16); // VK_U
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'arigatou': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
@@ -1733,8 +1725,7 @@ fn e2e_gji_composition_cancel_escape_interactive() {
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
-        let compstr =
-            wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
+        let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
         log::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
 
@@ -1743,7 +1734,10 @@ fn e2e_gji_composition_cancel_escape_interactive() {
 
         let cleared =
             wait_for_composition_cleared(win.edit_hwnd, std::time::Duration::from_secs(1));
-        assert!(cleared, "composition should be cancelled after Escape via GJI");
+        assert!(
+            cleared,
+            "composition should be cancelled after Escape via GJI"
+        );
 
         let text = win.get_text();
         log::info!("Edit content after Escape cancel: '{text}'");
@@ -1763,7 +1757,9 @@ fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent via GJI (IME-off key selection regression) ===");
+    log::info!(
+        "=== E2E Phase 3: VK_IME_OFF is idempotent via GJI (IME-off key selection regression) ==="
+    );
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1905,7 +1901,9 @@ fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: VK_KANJI toggles, not idempotent (IME-off key selection regression) ===");
+    log::info!(
+        "=== E2E Phase 3: VK_KANJI toggles, not idempotent (IME-off key selection regression) ==="
+    );
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -2555,15 +2553,15 @@ fn e2e_message_long_text() {
 unsafe fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SW_SHOW,
-        SetForegroundWindow, ShowWindow,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+        ShowWindow, SW_SHOW,
     };
 
     let fg = GetForegroundWindow();
     let fg_thread = GetWindowThreadProcessId(fg, None);
     let current_thread = GetCurrentThreadId();
-    let attached = fg_thread != current_thread
-        && AttachThreadInput(current_thread, fg_thread, true).as_bool();
+    let attached =
+        fg_thread != current_thread && AttachThreadInput(current_thread, fg_thread, true).as_bool();
 
     let _ = ShowWindow(hwnd, SW_SHOW);
     let _ = SetForegroundWindow(hwnd);
@@ -2576,9 +2574,9 @@ unsafe fn force_foreground(hwnd: windows::Win32::Foundation::HWND) {
 
 /// Enumerate all top-level windows whose window class name matches exactly.
 unsafe fn enum_windows_by_class(class_name: &str) -> Vec<windows::Win32::Foundation::HWND> {
+    use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW};
-    use windows::core::BOOL;
 
     struct EnumCtx<'a> {
         class_name: &'a str,
@@ -2652,9 +2650,7 @@ unsafe fn send_unicode_string(s: &str) {
 fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::info!(
-            "Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)"
-        );
+        log::info!("Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK
@@ -2837,12 +2833,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         log::info!("Read-Host capture file contents: {captured:?}");
         // Only the second captured line (the actual romaji test) matters
         // from here on; drop the canary line.
-        let captured = captured.map(|s| {
-            s.lines()
-                .nth(1)
-                .unwrap_or_default()
-                .to_string()
-        });
+        let captured = captured.map(|s| s.lines().nth(1).unwrap_or_default().to_string());
 
         // Best-effort cleanup: close the throwaway terminal window. `child`
         // is the `wt.exe` launcher process, which typically hands off to

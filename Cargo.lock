@@ -497,6 +497,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-gji-config"
+version = "0.1.0"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "awase-linux"
 version = "0.1.0"
 dependencies = [

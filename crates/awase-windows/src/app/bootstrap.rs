@@ -634,7 +634,10 @@ impl LayoutEntry {
                         Ok(yab) => {
                             let yab = yab.resolve_kana();
                             log::info!("Discovered layout: {stem} ({})", path.display());
-                            layouts.push(Self { name: stem, layout: yab });
+                            layouts.push(Self {
+                                name: stem,
+                                layout: yab,
+                            });
                         }
                         Err(e) => {
                             diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
@@ -947,7 +950,10 @@ mod tests {
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("awase_bootstrap_test_{name}_{}", std::process::id()));
+        dir.push(format!(
+            "awase_bootstrap_test_{name}_{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

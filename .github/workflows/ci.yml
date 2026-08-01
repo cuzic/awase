@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
   # mutants ジョブを手動起動するため。push/pull_request では他ジョブと同様に動くが、
   # mutants ジョブ自体は if で workflow_dispatch 起動時のみに絞ってある。
   workflow_dispatch:
