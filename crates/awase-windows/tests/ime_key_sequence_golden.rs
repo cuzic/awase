@@ -210,11 +210,18 @@ fn strategy_selection_invariants() {
 // 副作用を一切伴わない read-only 比較であり、Linux（cross-compile での --no-run）でも
 // 固定できる。実 apply には触れない。
 //
-// スコープ外（意図的）: `skip_imm=true`（ImmCross 失敗後の GJI/MsImeDirect/KanjiToggle
-// フォールバック合成）は Phase 1d のランタイム配線が担う領域であり、`ImeProfileDriver`
-// はまだそれを表現するメソッドを持たない（ADR-081 本文の「GJI フォールバックの合成は
-// ランタイム（Phase 1d）の責務」を参照）。よってこの比較は `skip_imm=false` の一次経路
-// のみを対象とする。
+// 未解決（スコープ外ではなく、Phase 1d の残タスク）: `skip_imm=true`（ImmCross 失敗後の
+// GJI/MsImeDirect/KanjiToggle フォールバック合成）は `ImeProfileDriver` にまだそれを表現
+// するメソッドが無い。ADR-081 は「GJI フォールバックの合成はランタイム（Phase 1d）の責務」
+// と述べるのみで、具体的にどう表現するかは未確定。2026-08-02 の Phase 1d 検討（Opus 2周
+// レビュー）で、当初計画していたランタイム shadow 配線（旧経路 vs ドライバ経路の parity を
+// 実行時ログで比較する）は安全性の根拠が本リポジトリでは成立しないと判明し（`&self` も
+// `forbid(unsafe_code)` も実 actuate 経路の write を止めない、詳細は
+// `docs/adr/081-per-profile-capability-driver-decomposition.md` の Phase 1d 実施記録節）
+// 見送った。したがって `skip_imm=true` の driver 側表現は依然として未着手であり、Phase 1e
+// 着手前に解決すべき残作業として残っている（`state/gji_direct_mechanism.rs` の
+// `legacy_gji_sync_obligation` が発見した GjiFsm 同期義務の非対称と合わせて、
+// Phase 1e の2大ブロッカー）。よってこの比較は `skip_imm=false` の一次経路のみを対象とする。
 
 /// `characterize_strategy` の `profile: &str` 引数と `ImePolicyProfile` の対応。
 ///
