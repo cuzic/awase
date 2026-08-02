@@ -110,7 +110,44 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h2>[1.11.0] - 2026-07-28</h2>
+<h2>[1.12.0] - 2026-08-01</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added an "About awase" dialog to the tray</strong><ul>
+<li>Addresses a user request: previously the version could only be checked from the installed file name</li>
+<li>Both the tray menu and the settings screen (awase-settings) now show the current version (<code>CARGO_PKG_VERSION</code>) and let you open the homepage (https://awase.cc)</li>
+</ul>
+</li>
+<li><strong>The tray's layout-selection menu now shows a checkmark next to the currently active layout</strong><ul>
+<li>As with the Caps Lock and IME-state menu items, it's now clear at a glance which layout is active when you open the right-click menu</li>
+</ul>
+</li>
+<li><strong>Changed layout changes made via "Apply" in the settings screen to take effect without a restart</strong><ul>
+<li>Previously, thresholds and key settings reloaded immediately on "Apply", but the layout was excluded and only took effect after a restart</li>
+</ul>
+</li>
+<li><strong>Changed the engine-control/IME-control key pickers, IME-detection tab, and toggle hotkey to combo-box selection</strong><ul>
+<li>Key assignment is now selection-based rather than free-text entry, reducing the chance of typos</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a bug where selecting a layout and clicking "Apply" in the settings screen -- or even restarting the PC -- did not actually switch to the selected layout</strong><ul>
+<li>Real-world <code>.yab</code> files (such as <code>nicola.yab</code>) often have a comment-only header with no internal name line. Selecting a copied/renamed file (e.g. <code>my_nicola.yab</code>) then failed to match <code>default_layout</code> (which is specified by file name), silently falling back to a different layout</li>
+<li>Consolidated layout identification into a single matching routine keyed on file name (without extension)</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where "Save As" on a <code>.yab</code> file produced a corrupted line, with a section name leaking into the internal name line</strong><ul>
+<li>Caused by the fallback for an unset name incorrectly adopting the first section name when loading a <code>.yab</code> whose header consisted only of <code>;</code> comments</li>
+</ul>
+</li>
+<li><strong>Fixed a bug on Windows Terminal (Google Japanese Input) where pressing the Hankaku/Zenkaku key left the IME showing ON while NICOLA conversion stopped working</strong><ul>
+<li>Caused by a single physical key press triggering two separate signals to GJI: awase's own <code>SendInput(VK_IME_ON)</code>, and a delayed resend of the original physical key that had been passed through -- with the later-arriving physical key overwriting the conversion mode</li>
+<li>Unified the physical-key delivery decision to depend on whether a direct GJI/MS-IME control mechanism actually actuates, rather than on the app's profile (details: <code>docs/known-bugs.md</code> BUG-46)</li>
+</ul>
+</li>
+</ul>
 <h3>Added</h3>
 <ul>
 <li><strong>Added the ability to select Enter as a thumb key</strong><ul>
