@@ -107,8 +107,15 @@ pub enum JournalEntry {
         state_before: String,
         state_after: String,
     },
-    /// IME 状態変更イベント（dispatch_event 経由の全 ImeEvent）
-    ImeEvent { description: String },
+    /// IME 状態変更イベント（dispatch_event 経由の全 ImeEvent）。
+    ///
+    /// ADR-082「決定 1」: 旧 `ImeEvent { description: String }`（`format!("{event:?}")`
+    /// の自由文字列）を廃止し、実 `state::ime_event::ImeEvent` をそのまま記録する。
+    /// これにより journal が「読める」だけでなく「型として取り出せる」形式になる
+    /// （`source`/`target`/`confidence` 等を文字列パースなしで参照できる）。
+    ImeEvent {
+        event: crate::state::ime_event::ImeEvent,
+    },
     /// `classify_conv_transition` への呼び出し（引数+戻り値を構造化して記録）。
     ///
     /// リプレイ回帰テスト（`tests/journal_replay.rs`）の主要な入力源。実機で
@@ -419,7 +426,7 @@ mod tests {
 
     fn make_entry() -> JournalEntry {
         JournalEntry::ImeEvent {
-            description: "test".to_owned(),
+            event: crate::state::ime_event::ImeEvent::PanicReset { target: true },
         }
     }
 

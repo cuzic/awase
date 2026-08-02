@@ -17,8 +17,8 @@
 //!
 //! キーボードフック、出力、IME 制御、システムトレイ、フォーカス判定など
 //! すべての Win32 API 依存コードを集約する。
-//! 非 Windows では `focus/{cache,class_names}`, `scanmap`, `single_thread_cell`, `tuning`
-//! などの純粋モジュールのみコンパイルされる。
+//! 非 Windows では `focus/{cache,class_names}`, `scanmap`, `single_thread_cell`, `tuning`,
+//! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
@@ -27,6 +27,7 @@ pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
 pub mod tuning;
+pub mod vk;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
 #[cfg(windows)]
@@ -61,10 +62,11 @@ pub mod runtime;
 pub mod timer;
 #[cfg(windows)]
 pub mod tray;
-#[cfg(windows)]
+// tsf 自体は ungated（内部の gji_fsm サブモジュールのみ Linux でテスト可能にする
+// ため）。gji_fsm 以外の全サブモジュールは tsf/mod.rs 側で個別に #[cfg(windows)]
+// している（focus/mod.rs と同じ「ungated な親 mod + サブモジュール個別 gate」
+// パターン、ADR-082 決定1実施記録の次の一歩・BUG-33）。
 pub mod tsf;
-#[cfg(windows)]
-pub mod vk;
 #[cfg(windows)]
 pub mod win32;
 

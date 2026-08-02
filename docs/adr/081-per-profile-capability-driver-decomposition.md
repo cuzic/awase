@@ -570,3 +570,55 @@ Phase 1d・1e は Windows 実機での複数アプリ×複数 IME のソーク�
 - **不変条件の実行時化**: contract test 5 件は Phase 1 では「型/静的宣言レベル」の検証に
   留まる。1d で実際に belief/`GjiFsm` を書く経路が入ったら、不変条件1・3・4 を journal
   リプレイ（ADR-082 の `EventOrigin`）で実行時にも固定すること。
+
+## Phase 1d 準備状況・ソークチェックリスト（2026-08-01 追記）
+
+Linux サンドボックス（wine 未導入、Windows 実機アクセスなし）で ADR-082 の残作業
+（BUG-41/BUG-33 拡張）と並行して Phase 1d への着手可否を検討した結果を記録する。
+
+### 「実機なし準備コード」を書かなかった判断
+
+Phase 1d の本体は「`GjiActuation.open` を具体 VK へ解決し `GjiActuation.fsm_sync` を
+実 `GjiFsm` へ写像する」ランタイム配線と、「並走中に actuate するのは常に片方だけ、
+もう片方は read-only shadow として parity 比較のみ」という方式の実装である
+（上記「申し送り」節）。この parity 検証が実際に意味を持つのは、Chrome×GJI /
+LINE×MS-IME / Edge×GJI / WezTerm(TsfNative) / Teams という組み合わせで実機ソークを
+回し、新旧経路の判断が実際に一致し続けることを確認して初めてであり、Linux で書ける
+「型としての配線」自体は Phase 1c（`state/ime_profile_driver.rs`・
+`state/gji_direct_mechanism.rs`）で既に完成している。この状態でさらに実行されない
+グルーコードを積み増すことは、ADR-081 Phase 0 が定量化した失敗モード
+（「既に部分分離されている実装が同期を怠ってバグを生んだ」6件、コンテキスト節参照）を
+未配線コードの形で再生産するリスクの方が、準備コードの価値より大きいと判断した。
+`is_confirm_key`/`ColdReason` 軸の精緻化（`probe_budget_ms`）も、`.claude/rules/
+tuning-constants.md` の「実測なしのエスカレーション禁止」に照らし実機計測なしには
+着手できない。**結論: 型は書けるものが既に書かれている。1d は実機ソークからしか
+着手できない。**
+
+### ソーク行列チェックリスト
+
+次に Windows 実機セッションが取れたとき、このチェックリストをそのまま上から
+実行すればよい状態を目指して整理した。各セルの「不合格」は即座に
+`docs/known-bugs.md` へ症状を記録し、`.claude/rules/experiment-logging.md` の
+記録規約（アプリ・IME・再現手順の3点）に従うこと。
+
+| 組み合わせ | cold-start | focus 往復 | drift correction |
+|---|---|---|---|
+| Chrome × GJI（Imm32Unavailable） | 長 idle 後の1文字目がリテラル化しない（BUG-02/BUG-21 系） | Alt+Tab 復帰直後に spurious `apply_ime_open` が発火しない | `Blind` give-up 後、乖離が続いても再送が暴走しない（BUG-43 型の再発なし） |
+| LINE/Qt × MS-IME（ImmCross） | 物理 KANJI 押下直後の初回入力が化けない | ウィンドウ切替後、IME ON/OFF 表示と実状態が一致 | 意図しない IME トグルが繰り返し発火しない |
+| Edge × GJI（Imm32Unavailable） | Chrome と同様（別プロセスでの再現性確認） | フォーカス往復で `ObservedEisu` が stale なまま残らない（BUG-07/22/37 系） | 同上 |
+| WezTerm（TsfNative） | F2 送信後、TSF composition context 初期化待ちで最初の文字が欠落・部分リテラル化しない（BUG-01/BUG-18 系） | フォーカス変更直後の `GjiFsm` cold 判定が過剰でない（BUG-33 追補3・4、本セッションで境界値テスト済み） | drift 補正が確定済み文字を誤って backspace しない |
+| Windows Terminal（TsfNative） | 同上 | 同上 | 同上 |
+| Teams | 長時間タイピング中に文字消失しない（BUG-31 系） | Ctrl+Shift+変換 等の Engine ON コンボが no-op にならない（BUG-42 系） | 同上 |
+
+**運用条件（ADR 本文「Phase 1d」節から転記）**:
+- 並走中に実状態へ actuate するのは常に片方のみ。もう片方は計算と parity 比較のみの
+  read-only shadow とする。
+- 1プロファイルのソーク合格 → 即座に旧経路を撤去 → 次のプロファイルへ（一括撤去を
+  最後にまとめない）。
+- 並走期間の上限: 上記ソーク行列合格 + 実使用3〜5日のハード基準。
+
+**不合格時にやること**: 直す前に `%TEMP%/awase_journal_<tick_ms>.json` をダンプする
+（ホットキー: Alt+変換→Alt+無変換 を2回連続、`docs/journal-replay-guide.md` 手順1）。
+ADR-082 の `JournalEntry::ImeActuation`（Phase 0.5 実施済み）・`ImeEvent`（決定1、
+本セッションで実施済み）が構造化されているため、ダンプから直接 `tests/journals/`
+フィクスチャへ転記できる。

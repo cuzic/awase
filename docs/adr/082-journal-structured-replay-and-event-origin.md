@@ -370,3 +370,126 @@ ADR 本文の優先順位通り、次は `decide_alt_impersonation`（BUG-41）�
 クリア漏れ」という別形状（ADR 本文コンテキスト参照）なので、`ActuationRecord` を
 そのまま流用するのではなく、`decide_alt_impersonation` 専用の fixture 型を新設する
 （`DriftCorrectionFixture` と同じ「実機観測を固定化する」枠組みは共有）。
+
+## 決定1 実施記録（2026-08-01）
+
+「決定 1.」（`journal.rs::JournalEntry::ImeEvent { description: String }` の廃止、
+実 `ImeEvent` をそのまま記録する）を実施した。**上の「提案中」本文・既存の実施記録
+節は変更していない** — この節は追記のみ。ADR-082 Phase 0.5 の「採用範囲を広げる
+推奨」節が次点として挙げていた項目であり、BUG-41/BUG-33 へのリプレイ拡張に着手する
+前段として先行実施した（Linux サンドボックスでの Opus 2周レビューにより、当初の
+優先順位案から繰り上げと判断された）。
+
+### 実施内容
+
+- `state/ime_event.rs::ImeEvent` および全サブ型（`HwndId`/`UserIntentSource`/
+  `ObservationConfidence`/`ImePolicyProfile`/`ChordKind`/`ApplyError`/
+  `InputModeApplyStrategy`/`InputModeApplyResult`）に `serde::Serialize` を derive。
+  `ObservationSource`/`InputModeState` は既存で対応済み。`state/mod.rs::TickMs` にも
+  同様に追加。書き出し専用のため `Deserialize` は導出しない（`ActuationRecord` と
+  同じ方針。全フィールドがプレーンな値のみで構成されるため機械的に導出可能）。
+- `journal.rs::JournalEntry::ImeEvent` を `{ description: String }` から
+  `{ event: crate::state::ime_event::ImeEvent }` に置換。
+- `state/platform_state.rs::dispatch_event()` の `format!("{event:?}")` 呼び出しを削除し、
+  `event.clone()` をそのまま journal へ渡すよう変更。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **218 passed / 0 failed**（Phase 0.5 の 169 から、
+  本 ADR とは無関係な他タスクの追加分を含め増加、退行なし）。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib` / `cargo clippy`
+  （Linux・windows-gnu 両方 `-D warnings`）/ `cargo fmt --check`: いずれも green。
+
+### 次の一歩
+
+`decide_alt_impersonation`（BUG-41）・`GjiFsm` 状態遷移関数（BUG-33 追補3・4）への
+拡張は、本 ADR 本文の優先順位通り次点。ただし Opus レビューにより、BUG-41/BUG-33 の
+両方とも「実機でしか観測できない事象の journal 固定化」に該当しないと判定された
+（BUG-41 は既存の決定論的ユニットテストの回帰であり、BUG-33 追補3・4 も同様に既存
+テストで固定化済み）ため、journal リプレイ fixture ではなく「Linux で実行可能にする
+（cfg(windows) ゲートの外に出す）+ 網羅的な不変条件テストを追加する」方針に変更して
+実施した。詳細は `.claude/rules/` 配下ではなく、当該コミットの本文および
+`docs/known-bugs.md` の該当 BUG 節を参照。
+
+## BUG-41（`decide_alt_impersonation`）実施記録（2026-08-01）
+
+上記「次の一歩」の判断に基づき、`decide_alt_impersonation`/`resolve_thumb_key`/
+`classify_alt_side` を `hook.rs`（`#[cfg(windows)]`）から
+`state/alt_impersonation.rs`（ungated）へ移設した。既存11件のテスト
+（`classify_alt_side`×3・`resolve_thumb_key`×3・`decide_alt_impersonation`×5）を
+そのまま Linux で実行可能にし、加えて `decide_alt_impersonation` が
+`(is_keydown, was_down, was_impersonating, engine_enabled)` の bool 4個のみに
+依存する純粋関数（入力空間 2^4=16通り、有限）であることを利用し、網羅テーブル
+テスト1件 + 不変条件テスト2件（`!is_keydown ⇒ next_impersonating==false` が
+BUG-41 の直接の不変条件）を追加した。詳細は `docs/known-bugs.md` BUG-41 節の
+2026-08-01 追記を参照。
+
+**`EventOrigin` を `ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING` へ配線しない判断**:
+本 ADR「不変条件」節は `AltImpersonation` フラグを `EventOrigin` を持つべき型として
+名指ししているが、今回は見送った。理由は2点:
+
+1. `.claude/rules/ime-belief-architecture.md`「`ImeModel` 以外の belief 的状態への
+   適用範囲」節の判断基準ステップ2（書き込み経路を1関数に集約し private 化できるか）
+   を、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING` は既に満たしている
+   （書き込みは `apply_alt_impersonation` 内の2箇所のみ、`static` はモジュール
+   private、読み出しは `is_alt_impersonation_active()` 単一口）。同ルールは
+   「それ以外は dylint / 型強制の新設は基本的に過剰投資」と明言している。
+2. BUG-41 は ADR 本文コンテキスト節が明記する通り「非同期確認の世代誤帰属」
+   ではなく「KeyDown 時に記録したローカル状態を KeyUp でクリアし損ねた」という
+   別形状の欠陥。`Generation`/`EventOrigin` は非同期に届く確認情報の世代照合を
+   目的とした道具であり、この欠陥形状には適合しない。
+
+再提案を防ぐため、判断根拠をここに明示的に残す。
+
+## BUG-33（`GjiFsm` 状態遷移）実施記録（2026-08-01）
+
+ADR 本文の優先順位の最後（`decide_actuation_action` → `decide_alt_impersonation` →
+`GjiFsm` 状態遷移関数）に基づき着手した。BUG-41 と同様、journal リプレイ fixture
+ではなく「Linux で実行可能にする」方針を採った。
+
+`tsf/gji_fsm.rs`（1807行）は `windows::` を1箇所も使わないことを確認した
+（唯一 windows-gated だった依存は `crate::output::InjectionMode`）。よって
+`gji_fsm.rs` 自体は `git mv` せず、`tsf/mod.rs` 側で `gji_fsm` サブモジュールだけ
+`#[cfg(windows)]` を外す方式（`focus/mod.rs` が既に採用している「ungated な親 mod +
+サブモジュール個別 `#[cfg(windows)]`」パターンの踏襲）を取った。ファイル移動を
+伴わないため `git blame`/`git log --follow` の追跡性を損なわず、`composition_fsm.rs`/
+`warmup/warmup_strategy.rs`（gji_fsm を参照する windows-gated 側）の import 修正も
+不要だった。
+
+`InjectionMode` は定義（`Unicode`/`Vk`/`Tsf` の3値、依存ゼロ）のみ
+`state/injection_mode.rs`（ungated）へ移設し、`InjectionHint`（`focus::classifier`、
+windows-gated）に依存する `From<(InjectionHint, AppKind)>` 実装は
+`output/types.rs` に残した。`InjectionMode` の定義箇所は1つのまま
+（SSOT を二重化しない、ADR-081 Phase 0 が実証した「部分分離実装の drift」失敗
+モードを再生産しないため）。
+
+既存33件のテスト（`gji_fsm.rs::tests`、BUG-33 追補3・4 の回帰テスト3件を含む）が
+そのまま `cargo test -p awase-windows --lib` から Linux で実行されるようになった。
+加えて、`composition_reset_while_genuinely_warm_stays_warm`/
+`composition_reset_while_genuinely_stale_transitions_cold`/
+`native_f2_consumed_while_warm_and_fresh_stays_warm`（追補3の回帰テスト）が
+`gji_idle_ms=63/8_000/50` という特定値のみを点で押さえていたのに対し、
+`composition_reset_and_native_f2_consumed_match_cold_kind_classify_across_boundary`
+を新設し、`ColdKind::classify` の閾値（`MEDIUM_IDLE_PROBE_MS`=7000ms・
+`LONG_IDLE_MS`=10000ms）をまたぐ境界値（off-by-one を含む9点）で
+`CompositionReset`/`NativeF2Consumed` の遷移先が常に `ColdKind::classify(gji_idle_ms)`
+と一致することをプロパティとして固定化した。詳細は `docs/known-bugs.md` BUG-33
+追補3節の 2026-08-01 追記を参照。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **266 passed / 0 failed**（タスクA完了時点の
+  232 + gji_fsm 既存33件 + 新規1件、退行なし）。
+- `cargo test -p awase-windows --test architecture_guard --test layer_boundary_guard
+  --test golden_scenarios --test journal_replay`: 全 green（`d1_no_vk_magic_hex_
+  outside_vk_rs` 含む）。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib` / `cargo clippy`
+  （Linux・windows-gnu 両方 `-D warnings`）/ `cargo fmt --check`: いずれも green。
+
+### 次の一歩
+
+ADR 本文「決定 3.」が示す優先順位（`decide_actuation_action` → `decide_alt_
+impersonation` → `GjiFsm` 状態遷移関数）を全て消化した。次の展開候補は
+ADR-081 Phase 1d（実機ソーク必須、現状のサンドボックスでは着手不可）、または
+`GjiFsm` 以外の belief 的状態（`literal_session_confirmed` 等、BUG-39 系統）への
+同種の Linux 実行可能化。

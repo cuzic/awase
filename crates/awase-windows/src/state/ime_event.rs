@@ -21,7 +21,7 @@ use super::TickMs;
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
 /// event log でクロススレッド伝搬される可能性があるため、ここでは値だけ保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct HwndId(pub usize);
 
 impl HwndId {
@@ -69,7 +69,7 @@ pub struct EventTime {
 /// 専用イベントを持つため、このリストには含まない。
 /// `Recovery` や `HwndCache` をここに追加すると `desired_open` を
 /// "ユーザー意図として" 書き換えられてしまうため、列挙値として存在してはならない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UserIntentSource {
     /// 設定された同期キー (Shift+Space 等)
     SyncKey,
@@ -149,7 +149,7 @@ pub enum ObservationSource {
 }
 
 /// 観測の信頼度。reducer が profile 別に judge する際に使う。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum ObservationConfidence {
     /// 推測ベース (FocusProbe で blacklist 回避等)
     Low,
@@ -167,7 +167,7 @@ pub enum ObservationConfidence {
 ///
 /// `From<AppImeProfile> for ImePolicyProfile` は focus 層（`focus::class_names`）に実装し、
 /// runtime 境界でフォーカス変更時に変換する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub enum ImePolicyProfile {
     /// 通常の Win32 アプリ。IMM32 クロスプロセス制御（ImmCross）が使用可能。
     ImmCross,
@@ -189,14 +189,14 @@ pub enum ImePolicyProfile {
 /// 「chord 中の IME ON 要求で barrier を即時解除する」のが設計
 /// （`ImeModel::reduce` の `ImeApplyRequested` arm 参照）。ON の apply は冪等のため
 /// 連打フィルタも不要。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ChordKind {
     /// Ctrl + 無変換 → IME OFF
     CtrlMuhenkanImeOff,
 }
 
 /// Apply 失敗の種別 (Step 7 で使う、Step 0 では定義のみ)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum ApplyError {
     /// タイムアウト
     Timeout,
@@ -212,7 +212,7 @@ pub enum ApplyError {
 ///
 /// awase が能動的に入力モードを変更するとき、どの経路で行ったかを記録する。
 /// reducer が適用後の belief 更新や競合解決に使う。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum InputModeApplyStrategy {
     /// IMM-broken アプリ（Chrome/Edge 等）向けの強制補正 (AssumedRomaji)。
     /// IMM クロスプロセス呼び出しが不可のため、観測値を捨てて仮定に切り替える。
@@ -255,7 +255,7 @@ pub enum InputModeApplyStrategy {
 }
 
 /// `InputModeApplied` event における適用結果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum InputModeApplyResult {
     /// 入力モードを変更した。
     Applied,
@@ -266,7 +266,12 @@ pub enum InputModeApplyResult {
 /// IME 状態モデルへの全 event。
 ///
 /// 時刻情報は `ImeEventEnvelope::time` に集約する (event 内に重複させない)。
-#[derive(Debug, Clone)]
+///
+/// `serde::Serialize` は ADR-082「決定 1」（`journal.rs::JournalEntry::ImeEvent` の
+/// 構造化）が必要とする。全フィールドが `Serialize` 対応のプレーンな値のみで
+/// 構成されるため機械的に導出可能。書き出し専用のため `Deserialize` は導出しない
+/// （`state::ime_actuation::ActuationRecord` と同じ方針）。
+#[derive(Debug, Clone, serde::Serialize)]
 pub enum ImeEvent {
     /// ユーザー/awase が IME を toggle したい意図
     UserImeToggleIntent { source: UserIntentSource },

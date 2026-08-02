@@ -108,7 +108,7 @@ impl ImeStateHub {
             }
         }
 
-        let description = format!("{event:?}");
+        let event_for_journal = event.clone();
         let event_for_reduce = event.clone();
         let time = self.event_log.record(event, tick_ms);
         let envelope = ImeEventEnvelope {
@@ -116,7 +116,9 @@ impl ImeStateHub {
             event: event_for_reduce,
         };
         self.shadow_model.reduce(&envelope);
-        self.journal.record(JournalEntry::ImeEvent { description });
+        self.journal.record(JournalEntry::ImeEvent {
+            event: event_for_journal,
+        });
     }
 
     /// shadow_model から派生した最新の explicit intent。

@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
 
-use crate::output::InjectionMode;
+use crate::state::injection_mode::InjectionMode;
 use crate::tuning;
 
 // ── プリミティブ型 ────────────────────────────────────────────────────────────
@@ -1358,6 +1358,69 @@ mod tests {
             "genuinely warm(Short) な NativeF2Consumed は OnCold に落ちてはいけない: {}",
             state_label(fsm.state())
         );
+    }
+
+    /// 境界値プロパティテスト（ADR-082 決定1実施記録の次の一歩・BUG-33、Linux 実行化に
+    /// 伴い追加）: 上記3件は 63ms/8_000ms/50ms という特定の値のみを点で押さえていた。
+    /// `CompositionReset`/`NativeF2Consumed` が `OnWarm` から倒す先は、常に
+    /// `ColdKind::classify(gji_idle_ms)` の結果と一致すべき（`handle_composition_reset`
+    /// が `ColdKind::Short` のときだけ `OnWarm` を維持し、それ以外は分類結果通りの
+    /// `OnCold { kind, .. }` に倒す、という契約そのもの）。`MEDIUM_IDLE_PROBE_MS`
+    /// (7000ms)・`LONG_IDLE_MS` (10000ms) の閾値をまたぐ代表値で連続的に検証し、
+    /// 閾値の境界1msずれ（off-by-one）が紛れ込んでいないことを固定化する。
+    #[test]
+    fn composition_reset_and_native_f2_consumed_match_cold_kind_classify_across_boundary() {
+        let boundary_values = [
+            0,
+            1,
+            tuning::MEDIUM_IDLE_PROBE_MS - 1,
+            tuning::MEDIUM_IDLE_PROBE_MS,
+            tuning::MEDIUM_IDLE_PROBE_MS + 1,
+            tuning::LONG_IDLE_MS - 1,
+            tuning::LONG_IDLE_MS,
+            tuning::LONG_IDLE_MS + 1,
+            tuning::LONG_IDLE_MS + 5_000,
+        ];
+
+        fn warm_fsm() -> GjiFsm {
+            let mut fsm = GjiFsm::new();
+            fsm.on_event(ime_on());
+            let ev = complete(&fsm);
+            fsm.on_event(ev);
+            assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+            fsm
+        }
+
+        fn assert_matches_classification(gji_idle_ms: u64, fsm: &GjiFsm, via: &str) {
+            let expected_kind = ColdKind::classify(gji_idle_ms);
+            match expected_kind {
+                ColdKind::Short => assert!(
+                    matches!(fsm.state(), GjiState::OnWarm { .. }),
+                    "{via}: gji_idle_ms={gji_idle_ms} (Short) は OnWarm を維持すべき: {}",
+                    state_label(fsm.state())
+                ),
+                _ => assert!(
+                    matches!(
+                        fsm.state(),
+                        GjiState::OnCold { kind, probe: ProbeStatus::NotStarted, .. }
+                            if *kind == expected_kind
+                    ),
+                    "{via}: gji_idle_ms={gji_idle_ms} は OnCold{{kind: {expected_kind:?}}} に \
+                     倒すべき: {}",
+                    state_label(fsm.state())
+                ),
+            }
+        }
+
+        for &gji_idle_ms in &boundary_values {
+            let mut fsm = warm_fsm();
+            fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms });
+            assert_matches_classification(gji_idle_ms, &fsm, "CompositionReset");
+
+            let mut fsm = warm_fsm();
+            fsm.on_event(GjiEvent::NativeF2Consumed { gji_idle_ms });
+            assert_matches_classification(gji_idle_ms, &fsm, "NativeF2Consumed");
+        }
     }
 
     // ── StartComposition / EndComposition ────────────────────────────────

@@ -9,7 +9,7 @@
 /// state/ 層が `hook::current_tick_ms()` を直接呼び出す代わりに、
 /// 呼び出し元（runtime 層）からタイムスタンプを注入するために使う。
 /// これにより state/ が hook 実装に依存しない純粋な型になる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, serde::Serialize)]
 pub struct TickMs(pub u64);
 
 impl TickMs {
@@ -32,6 +32,12 @@ pub use conv_mode::ConvModeAuthority;
 #[cfg(windows)]
 pub(crate) use conv_mode::ConvModeMgr;
 
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
+// hook.rs は #[cfg(windows)] のため非 Windows では未使用になる。BUG-41
+// （decide_alt_impersonation の KeyUp 状態クリア漏れ）が Windows 実機で初めて
+// テストが実行されるまで発見されなかったことの再発防止として、hook.rs から移設。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod alt_impersonation;
 pub mod app_ime_policy;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
@@ -62,6 +68,10 @@ pub mod ime_model;
 #[cfg(windows)]
 pub(crate) use ime_model::AppliedImeState;
 pub mod input_barrier;
+// output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
+// 唯一の ungated 呼び出し元は tsf::gji_fsm。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod injection_mode;
 pub mod observation_store;
 pub mod probe_admission;
 pub mod transition;
