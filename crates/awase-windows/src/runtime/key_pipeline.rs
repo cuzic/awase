@@ -1334,13 +1334,14 @@ impl Runtime {
         // 物理 IME キー（VK_KANJI / VK_F3 / VK_F4 等）を OS に届けるかは Decision（意味論）
         // とは独立した「配送機構」の判断であり、Decision を書き換えずに
         // PhysicalKeyDisposition で表現する。
-        // - Imm32Unavailable (Chrome/Edge): KeyDown は shadow_toggle 発火時のみ、KeyUp は常に
-        //   Suppress。VK_KANJI を SendInput 済みなので物理キーを届けると二重制御になり、
-        //   0xF3 KeyUp は OS が 0xF4 KeyDown を生成して shadow_toggle が反転する。
+        // - Imm32Unavailable (Chrome/Edge) / TsfNative (WezTerm/Windows Terminal) で GJI/MS-IME
+        //   が actuate する場合: KeyDown は shadow_toggle 発火時のみ、KeyUp は常に Suppress。
+        //   awase 自身が apply-ime で VK_IME_ON/OFF 等を SendInput 済みなので物理キーを
+        //   届けると二重制御になる（TsfNative + GJI の実例: BUG-46。awase の SendInput 後に
+        //   遅延 reinject された物理 0xF4 が最後に GJI へ着弾し、ひらがな変換を上書きしていた）。
         // - ImmCross (LINE/Qt): Down/Up 共に Suppress。set_ime_open_cross_process で IME 制御済み。
         //   物理キー / IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが spurious VK_F3/F4 を
         //   生成し shadow_toggle が反転する（IME ON Engine-OFF バグの根本原因）。
-        // - TsfNative (WezTerm): TSF が KANJI を正しく処理するため物理キーを通す（従来通り）。
         let profile = self.platform.current_app_profile();
         let is_tsf_mode = self.platform.is_tsf_mode();
         // F2 (VK_DBE_HIRAGANA) を Suppress してよいのは、warmup 戦略が F2 を自前送信
@@ -1348,12 +1349,14 @@ impl Runtime {
         // F2 warmup を送らないため、Suppress すると物理ひらがなキーが食い逃げされて
         // IME ON にならない（BUG-10）。
         let f2_warmup_owned = self.platform.output.f2_warmup_owned();
+        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         let physical = crate::runtime::PhysicalKeyDisposition::plan(
             event,
             profile,
             shadow_toggled,
             is_tsf_mode,
             f2_warmup_owned,
+            active_ime_kind,
         );
         if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
             let reason = if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
