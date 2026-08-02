@@ -2,12 +2,21 @@
 
 ## ステータス
 
-提案中 → Phase 1 計画確定（2026-07-25、Claude Fable 5 との壁打ちから起票。
-Phase 0 は PR [#31](https://github.com/cuzic/awase/pull/31) で Limited Go、
-Phase 1 計画は Opus による立案 + Fable との壁打ちで未確定点を解消し確定。
-Phase 0.5〜1c 実装は未着手）。
+Phase 1a/1b/1c 試験実装済み（2026-07-25、未配線・Linux 検証済み、詳細は
+「Phase 1a/1b/1c 実施記録」節）。Phase 1 計画自体は Claude Fable 5 との壁打ちから
+起票・確定（2026-07-25、Phase 0 は PR [#31](https://github.com/cuzic/awase/pull/31)
+で Limited Go、Phase 1 計画は Opus による立案 + Fable との壁打ちで未確定点を解消
+し確定）。
 
-Phase 0（第一歩）は実施済み（PR #31）。以降は「Phase 1 計画（確定）」節を参照。
+Phase 0（第一歩）は実施済み（PR #31）。Phase 0.5 は ADR-082 側で先行実施済み
+（`JournalEntry::ImeActuation` + `EventOrigin` 配線、ADR-082「Phase 0.5 実施記録」
+節参照）。Phase 1a（`Imm32UnavailableDriver`）/1b（`TsfNativeDriver`）/1c
+（ドライバレジストリ + contract test 5件）は試験実装済みだが**ランタイムには
+未配線**（`AppImePolicy`/`ime_controller.rs` の既存経路が引き続き使われている）。
+Phase 1d（実機ソーク必須の strangler-fig 配線）・1e（旧経路撤去）は未着手 ——
+このサンドボックスには Windows 実機（wine）が無く実行できないため、次に Windows
+実機セッションが取れたタイミングで着手すること。詳細は「Phase 1a/1b/1c 実施記録」
+節の「Phase 1d への申し送り」を参照。
 
 ## コンテキスト
 

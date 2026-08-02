@@ -9,6 +9,26 @@
 | [0003](0003-chrome-vk-injection.md) | Chrome VK injection と F2 warmup | 実験中 |
 | [0004](0004-injection-mode-design.md) | InjectionMode 三分岐設計 | 安定 |
 | [0005](0005-focus-classification.md) | フォーカス判定と AppKind 設計 | 安定 |
+| [001](001-ime-reliability-detection.md) | UIA FrameworkId ベースの IME 信頼度判定 | 採用済み |
+| [002](002-input-processing-output-layers.md) | 入力・処理・出力の3層分離 | 採用済み |
+| [003](003-nonblocking-ime-cache.md) | フックからブロッキング IME 検出を追い出し、キャッシュ化 | 採用済み |
+| [004](004-appstate-orchestrator.md) | AppState をオーケストレータとして集約、依存方向の逆転 | 採用済み |
+| [005](005-shadow-ime-tracking.md) | Shadow IME 状態追跡と IME トグルキー検出 | 採用済み |
+| [006](006-output-mode.md) | 出力モード選択 (per_key / batched / unicode) | 採用済み |
+| [007](007-focus-debounce.md) | フォーカス変更時の IME キャッシュ更新デバウンス | 採用済み |
+| [008](008-physical-thumb-state-separation.md) | 物理親指キー状態と FSM 解決ロジックの分離 | 採用済み |
+| [009](009-data-carrying-engine-state.md) | データ付き enum による FSM 状態表現 | 採用済み |
+| [010](010-thumb-consumption-timestamp.md) | Option\<Timestamp\> による親指キー消費追跡 | 採用済み |
+| [011](011-raii-win32-resources.md) | RAII ガードによる Win32 リソース管理 | 採用済み |
+| [012](012-newtype-vkcode-scancode.md) | VkCode / ScanCode newtype の全面適用 | 採用済み |
+| [013](013-unified-effect-model.md) | 統一 Effect モデル（Decision / Effect パターン） | 採用済み |
+| [014](014-observer-executor-runtime.md) | Observer / Executor / Runtime の3層分離 | 採用済み |
+| [015](015-shift-reduce-parser.md) | NicolaFsm のシフト-リデュースパーサーモデル | 採用済み |
+| [016](016-engine-responsibility-separation.md) | Engine 内部の責務分離（5層構造） | 採用済み |
+| [017](017-timing-judge.md) | TimingJudge によるタイミング判定の集中化 | 採用済み |
+| [018](018-lessons-from-other-emulators.md) | 他の親指シフトエミュレータからの教訓と対策 | 採用済み |
+| [019](019-platform-independence.md) | lib クレートのプラットフォーム非依存化 | 採用済み |
+| [020](020-key-lifecycle.md) | KeyLifecycle による Down/Up ペア追跡 | 採用済み |
 | [021](021-deferred-effect-execution.md) | Effect 遅延実行（bounded ring + guard slot 含む） | 採用済み |
 | [030](030-tsf-three-layer-architecture.md) | TSF 状態管理の3層分離アーキテクチャ | 採用済み |
 | [031](031-win32-async-crate.md) | win32-async クレートの設計 | 採用済み |
@@ -61,11 +81,50 @@
 | [078](078-ime-mode-belief-desired-effective-constraint.md) | IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）— Imm32Unavailable/TsfNative 限定、Standard は観測駆動を維持 | 提案中 |
 | [079](079-epoch-fenced-literal-recovery-with-replay.md) | per-VK confirm の stale confirm 誤帰属 — epoch fencing + ESC ベース recovery + 変換トリガー除外 replay | 提案中 |
 | [080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | IME actuation の型付きトランザクション化 — Feedback（Read/Blind）で closed-loop/open-loop を表現し drift correction の無限/皆無ループを根治 | Phase 1 実装済み（実機ソーク未実施） |
-| [081](081-per-profile-capability-driver-decomposition.md) | IME 制御をプロファイル別 capability 駆動ドライバへ分離 — 共有ループの分岐面をやめ「アプリA向け修正がアプリBを壊す」波及を構造的に止める | 提案中 |
-| [082](082-journal-structured-replay-and-event-origin.md) | `journal.rs` を事後ログから構造化リプレイ基盤へ格上げ — 出所(source)・世代(epoch)の規律を横断型 `EventOrigin` 1箇所に統合 | 提案中 |
+| [081](081-per-profile-capability-driver-decomposition.md) | IME 制御をプロファイル別 capability 駆動ドライバへ分離 — 共有ループの分岐面をやめ「アプリA向け修正がアプリBを壊す」波及を構造的に止める | Phase 1a/1b/1c 試験実装済み（未配線・Linux検証済み、実機ソーク未着手） |
+| [082](082-journal-structured-replay-and-event-origin.md) | `journal.rs` を事後ログから構造化リプレイ基盤へ格上げ — 出所(source)・世代(epoch)の規律を横断型 `EventOrigin` 1箇所に統合 | 第一歩・Phase 0.5 実装済み（全面適用は未着手） |
 
-既存の英語 ADR（ADR-009〜029）は `docs/` 直下に別途存在する。本ディレクトリは
-Windows IME 制御に特化した日本語 ADR を補完するものである。
+上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
+は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
+ファイルは存在しないため削除した。`0001`〜`0005`（4桁採番）と `001`〜`082`（3桁採番）は
+由来の異なる2つの採番系列が同じディレクトリに共存しているだけで、`0001`と`001`は
+無関係の別 ADR である）。
+
+このほか `docs/adr/ADR-001-architecture-history.md` というファイルが存在するが、これは
+番号付き ADR 系列の一部ではなく、2026-03-28〜05-23 の約8週間・751コミットの
+アーキテクチャ変遷を振り返る独立した記録文書である。ファイル名・見出しがともに
+「ADR-001」を名乗っているため上表の `001`（UIA FrameworkId ベースの IME 信頼度判定）
+と紛らわしいが別物なので注意すること。
+
+### 2026-07-25〜28: ADR-081/082 の試験実装（Phase 1a/1b/1c・Phase 0.5・第一歩）
+
+ADR-080（Phase 1、BUG-43 の drift correction 無限再送を型付きトランザクションで
+終端化）に続き、Claude Fable 5 との壁打ちから起票した ADR-081/082 の実装が進んだ。
+いずれも**ランタイムには未配線**（既存の `AppImePolicy`/`ime_controller.rs`/
+`journal.rs` の経路がそのまま動いている）ため挙動への影響はまだ無いが、この
+index.md のステータス欄が長期間「提案中」のまま更新されておらず、ADR本体の
+「## ステータス」節と実際の実装状況（各ファイルの「実施記録」節）が乖離していた
+ため、本追記で同期した。
+
+- **ADR-082 第一歩** — `EventOrigin`/`Generation`/`EventSource` の最小実装。
+  「誰が(source)・何回目の試行か(epoch)」を型で表現する土台。
+- **ADR-082 Phase 0.5** — `JournalEntry::ImeActuation` 構造化 variant を追加し、
+  `runtime::ime_actuation::Actuation`（ADR-080）に `EventOrigin` を配線。
+  `tests/drift_correction_replay.rs`（BUG-43）が新 variant 経由で green。
+  ADR-081 が `ir_apply_drift_correction` を書き換える前に journal リプレイ
+  回帰網を張ることが目的で、ADR-081 より先行実施した。
+- **ADR-081 Phase 0** — `known-bugs.md` 43件の分類 + `ImmCrossDriver` 試験実装
+  （PR #31、Limited Go 判断）。
+- **ADR-081 Phase 1a/1b/1c** — `Imm32UnavailableDriver`/`TsfNativeDriver` +
+  ドライバレジストリ + contract test 5件を試験実装（Linux検証済み、
+  `cargo test -p awase-windows --lib` 172件 green）。GJI 直接制御は
+  「共有機構1箇所（design B）」として `gji_direct_mechanism.rs` に集約し、
+  各ドライバは `uses_gji_direct()` の静的宣言のみを持つ設計で確定。
+
+**残作業:** ADR-081 Phase 1d（実機ソーク必須の strangler-fig 配線、1プロファイル
+ずつ read-only shadow 並走 → ソーク合格ごとに旧経路撤去）・1e（旧経路撤去の完了
+確認）はこのサンドボックス（wine 未導入）では実行できず未着手。次に Windows
+実機での複数アプリ×複数IMEソークが取れるセッションで着手すること。
 
 ### 2026-07-03: ObservationAdmission Layer による probe 受理ポリシー集約（ADR-077）
 

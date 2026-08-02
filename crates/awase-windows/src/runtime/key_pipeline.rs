@@ -131,7 +131,8 @@ impl Runtime {
         log::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
-             pending_drain={} gate_active={}",
+             pending_drain={} gate_active={} \
+             [diag-ctx] ime_on={} japanese={} input_mode={:?} composing={}",
             event.vk_code,
             event.event_type,
             event.timestamp,
@@ -146,6 +147,10 @@ impl Runtime {
             event.extra_info,
             pending_drain.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             gate_active,
+            ctx.ime_on,
+            ctx.is_japanese_ime,
+            ctx.input_mode,
+            ctx.composing,
         );
         if !mods.ctrl && phys_ctrl {
             log::warn!(

@@ -1235,6 +1235,9 @@ mod layout_entry_tests {
     #[test]
     fn resolve_index_falls_back_to_first_entry_when_no_name_matches() {
         let layouts = [entry("nicola"), entry("my_nicola")];
-        assert_eq!(LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"), 0);
+        assert_eq!(
+            LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"),
+            0
+        );
     }
 }

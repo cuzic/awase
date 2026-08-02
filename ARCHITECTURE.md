@@ -150,6 +150,12 @@ cargo test -p timed-fsm           # timed-fsm フレームワークテスト
 | [030](docs/adr/030-tsf-three-layer-architecture.md) | TSF 状態管理の層分離アーキテクチャ（3 層 + warmup 第4層） |
 | [031](docs/adr/031-win32-async-crate.md) | win32-async クレートの設計 |
 | [032](docs/adr/032-ime-state-reducer-4-layer-model.md) | IME 状態モデルの 4 階層 reducer アーキテクチャ |
+| [069](docs/adr/069-cohesion-refactor-h1-m5.md) | 凝集性リファクタ H-1〜M-5（循環依存・God Object・Reducer 不変条件） |
+| [077](docs/adr/077-observation-admission-epoch.md) | ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー |
+| [080](docs/adr/080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | IME actuation の型付きトランザクション化（Feedback: Read/Blind） |
+
+上表は主要な決定の抜粋。全 ADR（現在 87 件）の一覧・現在のステータスは
+[docs/adr/index.md](docs/adr/index.md) を参照。
 
 開発者ガイド: [docs/layer-boundaries.md](docs/layer-boundaries.md) に
 レイヤー境界ルール集（A〜E カテゴリ、計 13 項目）を集約している。
