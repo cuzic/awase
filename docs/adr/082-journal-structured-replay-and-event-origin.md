@@ -440,3 +440,56 @@ BUG-41 の直接の不変条件）を追加した。詳細は `docs/known-bugs.m
    目的とした道具であり、この欠陥形状には適合しない。
 
 再提案を防ぐため、判断根拠をここに明示的に残す。
+
+## BUG-33（`GjiFsm` 状態遷移）実施記録（2026-08-01）
+
+ADR 本文の優先順位の最後（`decide_actuation_action` → `decide_alt_impersonation` →
+`GjiFsm` 状態遷移関数）に基づき着手した。BUG-41 と同様、journal リプレイ fixture
+ではなく「Linux で実行可能にする」方針を採った。
+
+`tsf/gji_fsm.rs`（1807行）は `windows::` を1箇所も使わないことを確認した
+（唯一 windows-gated だった依存は `crate::output::InjectionMode`）。よって
+`gji_fsm.rs` 自体は `git mv` せず、`tsf/mod.rs` 側で `gji_fsm` サブモジュールだけ
+`#[cfg(windows)]` を外す方式（`focus/mod.rs` が既に採用している「ungated な親 mod +
+サブモジュール個別 `#[cfg(windows)]`」パターンの踏襲）を取った。ファイル移動を
+伴わないため `git blame`/`git log --follow` の追跡性を損なわず、`composition_fsm.rs`/
+`warmup/warmup_strategy.rs`（gji_fsm を参照する windows-gated 側）の import 修正も
+不要だった。
+
+`InjectionMode` は定義（`Unicode`/`Vk`/`Tsf` の3値、依存ゼロ）のみ
+`state/injection_mode.rs`（ungated）へ移設し、`InjectionHint`（`focus::classifier`、
+windows-gated）に依存する `From<(InjectionHint, AppKind)>` 実装は
+`output/types.rs` に残した。`InjectionMode` の定義箇所は1つのまま
+（SSOT を二重化しない、ADR-081 Phase 0 が実証した「部分分離実装の drift」失敗
+モードを再生産しないため）。
+
+既存33件のテスト（`gji_fsm.rs::tests`、BUG-33 追補3・4 の回帰テスト3件を含む）が
+そのまま `cargo test -p awase-windows --lib` から Linux で実行されるようになった。
+加えて、`composition_reset_while_genuinely_warm_stays_warm`/
+`composition_reset_while_genuinely_stale_transitions_cold`/
+`native_f2_consumed_while_warm_and_fresh_stays_warm`（追補3の回帰テスト）が
+`gji_idle_ms=63/8_000/50` という特定値のみを点で押さえていたのに対し、
+`composition_reset_and_native_f2_consumed_match_cold_kind_classify_across_boundary`
+を新設し、`ColdKind::classify` の閾値（`MEDIUM_IDLE_PROBE_MS`=7000ms・
+`LONG_IDLE_MS`=10000ms）をまたぐ境界値（off-by-one を含む9点）で
+`CompositionReset`/`NativeF2Consumed` の遷移先が常に `ColdKind::classify(gji_idle_ms)`
+と一致することをプロパティとして固定化した。詳細は `docs/known-bugs.md` BUG-33
+追補3節の 2026-08-01 追記を参照。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **266 passed / 0 failed**（タスクA完了時点の
+  232 + gji_fsm 既存33件 + 新規1件、退行なし）。
+- `cargo test -p awase-windows --test architecture_guard --test layer_boundary_guard
+  --test golden_scenarios --test journal_replay`: 全 green（`d1_no_vk_magic_hex_
+  outside_vk_rs` 含む）。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib` / `cargo clippy`
+  （Linux・windows-gnu 両方 `-D warnings`）/ `cargo fmt --check`: いずれも green。
+
+### 次の一歩
+
+ADR 本文「決定 3.」が示す優先順位（`decide_actuation_action` → `decide_alt_
+impersonation` → `GjiFsm` 状態遷移関数）を全て消化した。次の展開候補は
+ADR-081 Phase 1d（実機ソーク必須、現状のサンドボックスでは着手不可）、または
+`GjiFsm` 以外の belief 的状態（`literal_session_confirmed` 等、BUG-39 系統）への
+同種の Linux 実行可能化。

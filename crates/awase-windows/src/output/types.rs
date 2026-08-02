@@ -1,16 +1,10 @@
 use crate::focus::classifier::InjectionHint;
 use crate::focus::AppKind;
 
-/// 出力注入モード
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InjectionMode {
-    /// Unicode 直接注入（Win32/UWP デフォルト）
-    Unicode,
-    /// VK Batched 注入（Chrome/Edge/Electron — IME composition 経由）
-    Vk,
-    /// VK Sequential 注入（WezTerm — TSF 直結アプリ向け）
-    Tsf,
-}
+/// 出力注入モードの型定義は `state::injection_mode`（ungated）へ移設した。
+/// `InjectionHint` が windows-gated のため、この `From` 実装だけはここに残す
+/// （SSOT 二重化を避けるため、`InjectionMode` の定義自体はミラーしない）。
+pub(crate) use crate::state::injection_mode::InjectionMode;
 
 /// `InjectionHint` と `AppKind` から `InjectionMode` を決定する。
 ///

@@ -62,7 +62,10 @@ pub mod runtime;
 pub mod timer;
 #[cfg(windows)]
 pub mod tray;
-#[cfg(windows)]
+// tsf 自体は ungated（内部の gji_fsm サブモジュールのみ Linux でテスト可能にする
+// ため）。gji_fsm 以外の全サブモジュールは tsf/mod.rs 側で個別に #[cfg(windows)]
+// している（focus/mod.rs と同じ「ungated な親 mod + サブモジュール個別 gate」
+// パターン、ADR-082 決定1実施記録の次の一歩・BUG-33）。
 pub mod tsf;
 #[cfg(windows)]
 pub mod win32;

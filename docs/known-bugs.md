@@ -4134,6 +4134,21 @@ awase-windows --lib --target x86_64-pc-windows-gnu --no-run`（リンク確認�
 まで実施。wine 未導入のためこのサンドボックスでは実行そのものは
 Windows 実機/CI 待ち。
 
+**2026-08-01追記（ADR-082決定1実施記録の次の一歩、Linux実行可能化）:**
+`tsf/gji_fsm.rs` は windows crate 依存がゼロと判明したため、`tsf/mod.rs`
+側で `gji_fsm` サブモジュールだけ `#[cfg(windows)]` を外し（他の10
+サブモジュールは個別に `#[cfg(windows)]` を付与、`focus/mod.rs` と同じ
+「ungated な親 mod + サブモジュール個別 gate」パターン）、上記3件を含む
+既存33件のテストを `cargo test -p awase-windows --lib` からLinuxで常時
+実行できるようにした（`InjectionMode` の定義は `state/injection_mode.rs`
+へ移設、`InjectionHint` 依存の `From` 実装のみ `output/types.rs` に残置）。
+加えて `composition_reset_and_native_f2_consumed_match_cold_kind_classify_across_boundary`
+を追加し、上記3件が `gji_idle_ms=63/8_000/50` という特定値のみを点で
+押さえていたのに対し、`MEDIUM_IDLE_PROBE_MS`(7000ms)/`LONG_IDLE_MS`(10000ms)
+の閾値をまたぐ境界値（off-by-one含む）で `CompositionReset`/
+`NativeF2Consumed` の遷移先が常に `ColdKind::classify(gji_idle_ms)` と
+一致することをプロパティテストとして固定化した。
+
 **関連ファイル:** `crates/awase-windows/src/tsf/gji_fsm.rs`
 （`GjiEvent::CompositionReset`/`NativeF2Consumed` フィールド追加、
 `handle_composition_reset` の observation ゲート化）、
