@@ -622,3 +622,90 @@ tuning-constants.md` の「実測なしのエスカレーション禁止」に�
 ADR-082 の `JournalEntry::ImeActuation`（Phase 0.5 実施済み）・`ImeEvent`（決定1、
 本セッションで実施済み）が構造化されているため、ダンプから直接 `tests/journals/`
 フィクスチャへ転記できる。
+
+## Phase 1d 検討・実施記録（2026-08-02、ランタイム配線は見送り・設計欠陥1件を発見）
+
+ユーザーから「配線コード自体は実機なしで書ける、実機ソークが要るのは検証だけ」との
+指摘を受け、read-only shadow 方式のランタイム配線（新ドライバ経路は計算のみで実状態に
+書き込まず、旧経路との判断の一致をログ比較する）に着手する検討を行った。Opus 2周
+（立案→批判的レビュー）を経て、**ランタイム配線は実施せず**、代わりに検討過程で
+発見した実際の設計欠陥をテストで固定した。**上の「Phase 1d 準備状況・ソークチェック
+リスト」節を含む既存本文は変更していない** — 本節は追記のみ。
+
+### ランタイム配線を見送った理由
+
+当初計画は「shadow は `&self`（`Runtime`/`WindowsPlatform` の可変借用を取らない）+
+`#![forbid(unsafe_code)]` により、実 IME 制御へ actuate できないことを構造的に保証する」
+というものだった。しかしレビューでこの保証が**このリポジトリでは成立しない**ことが
+判明した:
+
+- 実 actuate 経路そのものが `&self` で宣言されている（`platform.rs::
+  apply_ime_open_with_view`/`apply_ime_open_with_belief` はいずれも `&self`）。
+  `&mut` を取らないことは何の保証にもならない。
+- `WindowsPlatform.output` は `pub` フィールドで、内部に `RefCell`/`Cell`/`AtomicBool`
+  を多数抱える（`output/tsf_warmup_coord.rs`・`output/key_injector.rs`・
+  `state/conv_mode.rs` 等）。これらを書き換える `&self` メソッド（`Output::send_keys`
+  等）が実在し、`&self` 経由でも実際の IME 送信ができてしまう。
+- `#![forbid(unsafe_code)]` が塞ぐのは「Win32 を直接叩くこと」のみで、
+  `ImeController::apply` のような safe ラッパー経由の actuate は素通しする。
+
+**このリポジトリで IME OFF キー選択が5日間に6回反転した経緯
+（`.claude/rules/experiment-logging.md`）を踏まえ、「規律で守る」設計のまま実機なしで
+本番経路に近いコードを書き足すことは避けるべき**と判断した。ゼロにする方法（`state/`
+の ungated モジュールに置き、import をスカラー値のみに絞って actuate 手段を構文的に
+到達不能にする）はあるが、次の理由によりそのコストにも見合わないと判断した:
+
+**ランタイム配線が検証しようとしていた内容は、既に本番コード0行で証明済みだった。**
+`tests/ime_key_sequence_golden.rs::driver_shadow_parity_matches_characterize_strategy_primary_path`
+（Phase 0/1c で実装済み）が `ImeProfileDriver` ベースの戦略選択と現行
+`characterize_strategy` の一致を全 `(active_ime_kind, profile)` 組み合わせで
+コンパイル時に固定しており、`state/ime_profile_driver.rs` の
+`imm32_unavailable_driver_matches_app_ime_policy`/`tsf_native_driver_matches_app_ime_policy`
+が feedback policy の一致を同様に固定している。ランタイムでこれを再検証しても
+検出力は増えない。
+
+### 発見した設計欠陥: GjiFsm 同期義務の非対称（Phase 1e ブロッカー）
+
+検討の過程で、`legacy`（`platform.rs::on_ime_applied`）と `GjiDirectMechanism`
+（Phase 1c 実装）の間に実際の非対称があることが判明した。
+
+- legacy は **profile を問わず** `open` の値だけで無条件に `GjiFsm` を同期する
+  （`gji_on_ime_on`/`gji_on_ime_off` を `outcome != UnsafeToToggle` なら常に呼ぶ）。
+- `GjiDirectMechanism::access_for` は `uses_gji_direct() == true` のドライバ
+  （`Imm32UnavailableDriver`/`TsfNativeDriver`）にしか token を発行しない。
+  `ImmCrossDriver`（LINE/Qt 等）は `false` を宣言するため到達不能。
+
+LINE × Google 日本語入力（ImmCross プロファイル × GJI 有効）は実在する組み合わせであり、
+Phase 1e で legacy（`on_ime_applied` の直接呼び出し）を撤去すると、この組み合わせで
+だけ `GjiFsm` 同期が失われる。これは「belief を actuate 抜きで ON にする高速パスが
+`GjiFsm` 同期を踏み抜く」BUG-18/22 型の再発条件そのものであり、Phase 1c 不変条件4が
+まさに防ごうとしていた失敗モードである。**`KnownGap` として流してよい差分ではない。**
+
+`state/gji_direct_mechanism.rs` に `legacy_gji_sync_obligation(open, outcome) ->
+Option<GjiFsmSync>` という純粋関数と、この非対称を直接示すテスト
+`imm_cross_driver_cannot_obtain_sync_that_legacy_still_requires` を追加して固定した。
+
+**Phase 1e 着手前の必須対応**: 同期義務の宣言軸を `uses_gji_direct()`（静的・profile 軸）
+から `active_ime_kind == GJI`（動的軸、ADR 本文「GJI 横断性の設計」節が既に
+「profile 軸と直交する」と明記している軸）へ改める設計変更が必要。`ImmCrossDriver` に
+`uses_gji_direct` を条件付きで true にする、または `GjiDirectMechanism::access_for` の
+ゲート条件自体を profile ではなく実行時観測に委ねる、のいずれかの方向で Phase 1e 起票時に
+確定させること。
+
+### Phase 1d の残スコープ（未着手のまま持ち越し）
+
+- 上記 GjiFsm 同期義務の非対称の解消（Phase 1e ブロッカーとして最優先）。
+- `skip_imm=true`（ImmCross 失敗後の GJI/MsImeDirect/KanjiToggle フォールバック合成）を
+  `ImeProfileDriver` でどう表現するか（`tests/ime_key_sequence_golden.rs` の該当コメント
+  参照、未解決）。
+- `probe_budget_ms` の `ColdReason` 軸精緻化（実機計測が必要、引き続き着手不可）。
+- 実機ソーク自体（「Phase 1d ソークチェックリスト」節、変更なし）。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **268 passed / 0 failed**（既存268件から
+  `gji_direct_mechanism` に5件追加、退行なし）。
+- `cargo test --test architecture_guard --test layer_boundary_guard --test
+  golden_scenarios --test ime_key_sequence_golden`: 全 green。
+- `cargo check`/`cargo clippy`（Linux・windows-gnu 両方、`--lib`/`--tests`、
+  `-D warnings`）/ `cargo fmt --check`: いずれも green。
