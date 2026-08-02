@@ -410,3 +410,33 @@ ADR 本文の優先順位通り、次は `decide_alt_impersonation`（BUG-41）�
 （cfg(windows) ゲートの外に出す）+ 網羅的な不変条件テストを追加する」方針に変更して
 実施した。詳細は `.claude/rules/` 配下ではなく、当該コミットの本文および
 `docs/known-bugs.md` の該当 BUG 節を参照。
+
+## BUG-41（`decide_alt_impersonation`）実施記録（2026-08-01）
+
+上記「次の一歩」の判断に基づき、`decide_alt_impersonation`/`resolve_thumb_key`/
+`classify_alt_side` を `hook.rs`（`#[cfg(windows)]`）から
+`state/alt_impersonation.rs`（ungated）へ移設した。既存11件のテスト
+（`classify_alt_side`×3・`resolve_thumb_key`×3・`decide_alt_impersonation`×5）を
+そのまま Linux で実行可能にし、加えて `decide_alt_impersonation` が
+`(is_keydown, was_down, was_impersonating, engine_enabled)` の bool 4個のみに
+依存する純粋関数（入力空間 2^4=16通り、有限）であることを利用し、網羅テーブル
+テスト1件 + 不変条件テスト2件（`!is_keydown ⇒ next_impersonating==false` が
+BUG-41 の直接の不変条件）を追加した。詳細は `docs/known-bugs.md` BUG-41 節の
+2026-08-01 追記を参照。
+
+**`EventOrigin` を `ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING` へ配線しない判断**:
+本 ADR「不変条件」節は `AltImpersonation` フラグを `EventOrigin` を持つべき型として
+名指ししているが、今回は見送った。理由は2点:
+
+1. `.claude/rules/ime-belief-architecture.md`「`ImeModel` 以外の belief 的状態への
+   適用範囲」節の判断基準ステップ2（書き込み経路を1関数に集約し private 化できるか）
+   を、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING` は既に満たしている
+   （書き込みは `apply_alt_impersonation` 内の2箇所のみ、`static` はモジュール
+   private、読み出しは `is_alt_impersonation_active()` 単一口）。同ルールは
+   「それ以外は dylint / 型強制の新設は基本的に過剰投資」と明言している。
+2. BUG-41 は ADR 本文コンテキスト節が明記する通り「非同期確認の世代誤帰属」
+   ではなく「KeyDown 時に記録したローカル状態を KeyUp でクリアし損ねた」という
+   別形状の欠陥。`Generation`/`EventOrigin` は非同期に届く確認情報の世代照合を
+   目的とした道具であり、この欠陥形状には適合しない。
+
+再提案を防ぐため、判断根拠をここに明示的に残す。

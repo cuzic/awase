@@ -32,6 +32,12 @@ pub use conv_mode::ConvModeAuthority;
 #[cfg(windows)]
 pub(crate) use conv_mode::ConvModeMgr;
 
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
+// hook.rs は #[cfg(windows)] のため非 Windows では未使用になる。BUG-41
+// （decide_alt_impersonation の KeyUp 状態クリア漏れ）が Windows 実機で初めて
+// テストが実行されるまで発見されなかったことの再発防止として、hook.rs から移設。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod alt_impersonation;
 pub mod app_ime_policy;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。

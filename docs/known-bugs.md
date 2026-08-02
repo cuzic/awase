@@ -4553,7 +4553,9 @@ let nc_for_plan = nc_fired || (cold_reason.is_confirm_key() && env.is_tsf_mode);
 
 **テスト:** 既存の`hook::alt_impersonation_tests::keyup_uses_the_decision_recorded_at_keydown`がそのまま回帰テストになる(新規追加ではなく、既存テストが正しく通るようになった)。`cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`（`-D warnings`）・`cargo clippy --target x86_64-pc-windows-gnu -p awase-windows`は警告ゼロ確認済み。**2026-07-25、GCP Spot self-hosted runner(`rust-nicola-builder`)上での実`cargo test --lib -p awase-windows`実行でパス確認済み**(`cargo mutants`のbaselineフェーズが`ok Unmutated baseline in 44s build + 4s test`で全テストパスと報告、GitHub Actions run 30098397721の`mutants-windows` job)。
 
-**関連ファイル:** `crates/awase-windows/src/hook.rs`（`decide_alt_impersonation`、`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`）。関連: `cec4da9`（同種のOsModifierHeldバイパス誤爆の初回修正）。
+**2026-08-01追記（ADR-082決定1実施記録の次の一歩、Linux実行可能化）:** 本バグが `#[cfg(windows)]` な `hook.rs` に埋もれたテストを Windows実機CI初回実行まで検出できなかったこと自体が再発の温床だったため、`decide_alt_impersonation`/`resolve_thumb_key`/`classify_alt_side` を `crates/awase-windows/src/state/alt_impersonation.rs`（ungated）へ移設し、既存11件のテストをそのまま Linux で実行可能にした（`cargo test -p awase-windows --lib` で常時実行）。加えて `decide_alt_impersonation` は `(is_keydown, was_down, was_impersonating, engine_enabled)` の bool 4個のみに依存する純粋関数で入力空間が2^4=16通りと有限なため、`decide_alt_impersonation_exhaustive_16_combinations`（網羅テーブル）・`keyup_always_clears_next_impersonating_regardless_of_prior_state`（BUG-41の不変条件そのもの）・`fresh_press_always_matches_engine_enabled` の3件を追加し、本バグの症状（KeyUp後のフラグstuck）が起き得ないことを全入力空間で固定化した。`hook::resolve_thumb_key` は既存呼び出し元（`app/bootstrap.rs`等）を変更せずに済むよう再エクスポートで維持。
+
+**関連ファイル:** `crates/awase-windows/src/state/alt_impersonation.rs`（`decide_alt_impersonation`、旧`hook.rs`から移設）、`crates/awase-windows/src/hook.rs`（`ALT_L_IMPERSONATING`/`ALT_R_IMPERSONATING`、`apply_alt_impersonation`）。関連: `cec4da9`（同種のOsModifierHeldバイパス誤爆の初回修正）。
 
 ## 2026-07-25: Windows実機での`cargo test --lib -p awase-windows`初回実行で判明したテスト自体の不具合(実装バグではない)
 
