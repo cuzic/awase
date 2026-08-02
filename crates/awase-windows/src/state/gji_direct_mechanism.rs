@@ -40,6 +40,8 @@
 //! `ime_key_for` SSOT が二重化し、IME OFF キー反転実験
 //! （`.claude/rules/experiment-logging.md`）の drift 源になるため、あえて持たない。
 
+use awase::platform::ImeOpenOutcome;
+
 use super::ime_profile_driver::ImeProfileDriver;
 
 /// GJI 機構経由の IME 状態遷移が課す `GjiFsm` 同期義務のマーカー。
@@ -121,6 +123,45 @@ impl GjiDirectMechanism {
     }
 }
 
+/// 現行（legacy）経路が実際に課す `GjiFsm` 同期義務を、本機構の型（[`GjiFsmSync`]）へ
+/// 写像した純粋関数。
+///
+/// `WindowsPlatform::on_ime_applied`（`platform.rs`）の実装をそのまま反映する:
+/// `outcome == UnsafeToToggle` の場合のみ同期しない（送信していないため）。**それ以外は
+/// `open` の値だけを見て無条件に同期する** — どの戦略（ImmCross / GjiDirect /
+/// MsImeDirect / KanjiToggle）で actuate したか、ひいてはどの `ImeProfileDriver` を
+/// 経由したかは一切問わない。
+///
+/// # Phase 1d で判明した非対称（ADR-081 Phase 1e ブロッカー）
+///
+/// legacy は上記の通り**profile を問わず**この義務を課すが、本機構の
+/// [`GjiDirectMechanism::access_for`] は `uses_gji_direct() == true` のドライバ
+/// （`Imm32UnavailableDriver`/`TsfNativeDriver`）にしか token を発行しない。
+/// `ImmCrossDriver`（LINE/Qt 等）は `uses_gji_direct() == false` を宣言するため、
+/// この機構経由では `GjiFsmSync` を得られない。
+///
+/// しかし LINE × Google 日本語入力（ImmCross プロファイル × GJI 有効）は実在する
+/// 組み合わせであり、legacy は今もこの同期を行っている。Phase 1e で legacy
+/// （`on_ime_applied` の `gji_on_ime_on`/`gji_on_ime_off` 直接呼び出し）を撤去すると、
+/// この組み合わせでだけ `GjiFsm` 同期が失われる — belief を actuate 抜きで ON にする
+/// 高速パスが `GjiFsm` 同期を踏み抜く BUG-18/22 型の再発条件そのものである
+/// （`.claude/rules/ime-belief-architecture.md` 2026-07-23 追記節が同型の教訓を記録済み）。
+///
+/// **これは `KnownGap` として流してよい差分ではない。** 不変条件4・5
+/// （`GjiDirectMechanism` module doc）が「同期義務は profile 軸で宣言する」前提を
+/// 置いているのに対し、実際に同期が必要な条件は `active_ime_kind == GJI`
+/// （実行時観測、profile とは直交する動的軸）である。Phase 1e 着手前に、
+/// 同期義務の宣言軸を `uses_gji_direct()`（静的・profile 軸）から
+/// `active_ime_kind`（動的軸）へ改める設計変更が必要。下記テストが非対称を
+/// 実行可能な形で固定している。
+#[must_use]
+pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option<GjiFsmSync> {
+    if outcome == ImeOpenOutcome::UnsafeToToggle {
+        return None;
+    }
+    Some(GjiFsmSync::for_open(open))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +204,57 @@ mod tests {
                 GjiDirectMechanism::actuate(&b, open),
             );
         }
+    }
+
+    // ── legacy_gji_sync_obligation（Phase 1d で判明した非対称、Phase 1e ブロッカー） ──
+
+    #[test]
+    fn legacy_obligation_is_none_only_for_unsafe_to_toggle() {
+        assert_eq!(
+            legacy_gji_sync_obligation(true, ImeOpenOutcome::UnsafeToToggle),
+            None
+        );
+        assert_eq!(
+            legacy_gji_sync_obligation(false, ImeOpenOutcome::UnsafeToToggle),
+            None
+        );
+        for outcome in [
+            ImeOpenOutcome::Applied,
+            ImeOpenOutcome::FallbackSent,
+            ImeOpenOutcome::AlreadyMatched,
+            ImeOpenOutcome::Failed,
+        ] {
+            assert_eq!(
+                legacy_gji_sync_obligation(true, outcome),
+                Some(GjiFsmSync::OnImeOn)
+            );
+            assert_eq!(
+                legacy_gji_sync_obligation(false, outcome),
+                Some(GjiFsmSync::OnImeOff)
+            );
+        }
+    }
+
+    /// **非対称の直接証拠**: legacy は `ImmCrossDriver`（LINE/Qt 等）でも
+    /// `GjiFsmSync` を要求するが、本機構は `ImmCrossDriver` に token を発行しない
+    /// （`uses_gji_direct() == false` のため）。LINE × Google 日本語入力という
+    /// 実在する組み合わせで、Phase 1e が legacy を撤去すると同期が失われる。
+    #[test]
+    fn imm_cross_driver_cannot_obtain_sync_that_legacy_still_requires() {
+        // legacy は ImmCross 経由の actuate でも同期を要求する。
+        let legacy_obligation = legacy_gji_sync_obligation(true, ImeOpenOutcome::Applied);
+        assert_eq!(legacy_obligation, Some(GjiFsmSync::OnImeOn));
+
+        // しかし ImmCrossDriver は共有機構への token を得られない
+        // （uses_gji_direct()==false の宣言通り）。
+        assert!(
+            GjiDirectMechanism::access_for(&ImmCrossDriver).is_none(),
+            "ImmCrossDriver が GjiDirectAccess を得られてしまうと、この非対称は解消され \
+             本テストは前提から見直しになる"
+        );
+        // つまり「legacy が要求する同期」を「ドライバ経由で満たす手段」が
+        // ImmCross では構造的に存在しない。Phase 1e で legacy を撤去する前に、
+        // GjiFsmSync の発行条件を profile 軸(uses_gji_direct)から
+        // active_ime_kind 軸（動的）へ改める設計変更が必要（module doc参照）。
     }
 }
