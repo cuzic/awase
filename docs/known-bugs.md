@@ -4711,3 +4711,149 @@ Windows cross-compile（`cargo check --target x86_64-pc-windows-gnu` /
 **テスト:** Win32 メッセージループの実際の配送経路（sent か posted か）は Windows 実機でしか検証できず、Linux 上の `cargo test`/`cargo nextest` では再現不可能（`architecture_guard`/`golden_scenarios`/`layer_boundary_guard` 全 42 件・lib 218 件は pass 済みだが、これらはメッセージディスパッチ機構自体を対象にしていない）。`cargo check`/`cargo xwin clippy --target x86_64-pc-windows-msvc -- -D warnings` は警告ゼロ。**Windows 実機で右クリック→メニュー表示を確認済み（2026-07-27、修正後に動作確認）**。各メニュー項目（設定/学習キャッシュクリア/再起動/自動起動/IME状態切替/状態をリセット/終了）個別の網羅的な動作確認までは実施していないため、いずれかが選択不能な場合は本バグの経路の別の側面を疑うこと。
 
 **関連ファイル:** `crates/awase-windows/src/tray.rs`（`tray_wnd_proc`）、`crates/awase-windows/src/runtime/message_handlers.rs`（関数本体は変更なし、モジュール doc コメントのみ更新）。関連: BUG-39（`c9d69ad` が修正した menu_target_hwnd 導入の経緯）。
+
+---
+
+## BUG-45: per-VK confirm の literal 判定が「代理指標のタイムアウト」に基づく belief であり、actual な TSF composition 状態と乖離しても検出も訂正もできない
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で、物理 F0→F2（IME OFF→ON トグル）直後に「かきの」と入力したところ、「か」だけ literal ローマ字が残り **"kaきの"** になった（2026-07-29 実機ログ）。
+
+**再現手順（ログで確認済み）:**
+
+```
+物理 F0 up / F2 down → Shadow IME toggle OFF→ON、reason=SetOpenTrue で composition を cold mark
+  [h1-warmup] reason=SetOpenTrue → F2/probe待機省略、per-VK confirm へ
+  [gji-coro] settle 必要 (reason=SetOpenTrue, settled=false) → skip FreshF2, reactive LiteralDetect のみ
+romaji "ka" 送信、per-VK confirm 開始（cold=585）:
+  vk=0x4B('K') 送信 → confirm 締め切りまでに「合成できた」代理証拠
+    （候補ウィンドウ SHOW / GJI I/O 増加）が届かず suspected literal(idx=0) 判定
+    → RawTsfLiteralRecovery{backs:1} backspace×1 + "ka" 再送 scheduled、mark cold
+再送 "ka" も同じ経路（reason=RawTsfLiteralRecovery → per-VK confirm、cold=586）に入り
+  vk=0x4B('K') が再び suspected literal(idx=0、consecutive=1)
+  → 2連続 literal → give-up: backspace×1のみ（再送なし）+ VK_IME_OFF→VK_IME_ON reinit 予約
+flush 時に backspace×1 → reinit(VK_IME_OFF→VK_IME_ON) 実行、IMC poll で Hiragana 確認
+  → 以降 "ki" は gji_settled=true で unicode transmit 経由、正常に「き」として出力
+最終出力: "ka" が literal のまま残存 + "きの" は正常 = "kaきの"
+```
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal 等）。
+
+**原因（ログ・コード読解で確認、確定的な裏付けは一部未取得）:** これは単体では「backspace 数が足りない」局所バグではなく、`.claude/rules/ime-belief-architecture.md` が `GjiFsm` について既に指摘している構造と同型の **actual と belief の乖離** が真因と考えられる。
+
+- `is_partial_literal`（`tsf/warmup/literal_detect_fsm.rs:130`）が明記する通り、TSF native アプリ（Windows Terminal 含む）は `HIMC=NULL` のため **IMM32 composition 文字列と実際の画面出力を直接照合する手段が存在しない**。per-VK confirm の「suspected literal」判定は、実際に文字が literal として出力されたかどうかの直接観測ではなく、「confirm 締め切り（`literal_detect_ms`）までに合成成功の代理証拠（候補ウィンドウ SHOW / GJI I/O バイト増加）が届いたか」という**間接プロキシのタイムアウト**でしかない。`SetOpenTrue` cold path はこの代理証拠が届く前提の `FreshF2` warmup 自体を意図的にスキップしている（`skip FreshF2, reactive LiteralDetect のみ`）ため、GJI 側がまだ本当に composition を開始できていないだけ（literal ではなく単に遅い）なのか、本当に literal 化したのかを confirm 時点で区別する情報が構造的に存在しない。
+- `RawTsfLiteralRecovery` の `backs`（バックスペース数）は `per_vk_recovery_params(is_stale, failed_idx)`（`tsf/warmup/literal_detect_fsm.rs`）という**純関数の固定値**（`failed_idx==0` なら常に `backs=1`）であり、実際に画面に何文字残っているかを一切観測していない。recovery アクション自体も「1文字だけ literal になったはず」という belief に基づく固定処理であり、actual な出力とすり合わせるフィードバックループがない。
+- 2連続 give-up 後に発行される `VK_IME_OFF→VK_IME_ON` reinit（`send_chrome_gji_reinit_and_poll`、`output/probe_io.rs`）は、同ファイルの BUG-36 コメントが自ら明記する通り「未確定の preedit を commit してしまう」。もし1回目・2回目に suspected literal と判定された vk=0x4B の送信が実際には（遅延していただけで）GJI 側の pending composition として溜まっていたのだとすれば、それぞれの backspace(1) はこの未確定状態を正しく除去できず、最終的に reinit の `VK_IME_OFF` がその溜まった preedit を "ka" として commit してしまった、という筋が計算上（2回とも backs=1 ずつなのに実際には2文字とも消えずに残った）最も辻褄が合う。
+
+要するに、この経路には「actual にどう出力されたか」を確認してから次の一手を決める箇所が一つもない: suspected literal 判定も、backspace 数も、give-up 後の reinit も、すべて過去の代理指標から推測した belief の上に belief を積み重ねているだけで、どこかで一度でも belief が実態とズレると訂正する手段がない。
+
+**未対応（残存）:**
+
+- 「actual と belief のズレ」を実機で機械的に切り分ける追加ログ（SendInput 送出タイムスタンプ vs 実際に画面に literal 文字が現れたかの UIA/クリップボード等での確認）は未取得。上記「原因」は状況証拠からの推論であり、SendInput の正確なタイムスタンプと実際の画面バッファ内容の突合せまでは未実施。
+- 恒久対策の方向性は要検討・未実装: (a) TSF native アプリでも composition 文字列を照合できる代替手段の探索（`HIMC=NULL` の制約を回避できるか）。(b) 「合成成功の証拠切れ」を即 literal 確定にせず、実際に画面へ literal 文字が出たことを確認してから backspace する設計への変更。(c) `SetOpenTrue` cold path で `FreshF2` skip をやめ、常に一定の settle 待ちを入れる（レイテンシとのトレードオフ、`.claude/rules/tuning-constants.md` の実測義務が伴う）。
+
+**追補1（2026-07-29、3方向の独立解析で「原因」3点目の具体的筋を反証）:** 上記「原因」の3点目（2回とも suspected literal になった vk=0x4B の送信が実は pending composition として溜まっており、give-up 後の reinit の `VK_IME_OFF` がそれを "ka" として commit した、という筋）を、Claude 本体・Fable（Claude 5 系列モデル）・Codex CLI の3系統で独立に検証した。
+
+- **`run_per_vk_confirm`（`tsf/warmup/probe_fsm.rs:399-483`）はコード上、`idx=0`（vk=0x4B='K'）で `SuspectedLiteral` を検出すると `emit_recovery_actions` の後すぐ `return` する**ため、`idx=1`（vk=0x41='A'）には cold=585・cold=586 のどちらの試行でも到達しない。ログ全文を `vk=0x41` で検索しても、バグ発生時間帯（23:35:32〜33.6）には一件も出現しない（出現するのは冒頭 23:35:26 の無関係な Ctrl+A パススルーのみ）。**つまり "ka" の 'A' は awase から一度も SendInput されていない**ことが3系統とも一致して確認できた。
+- 一方、この事実は「原因」3点目の "pending composition が 'ka' として commit された" という筋の**具体的な裏付けにはならない**（'A' を送っていないなら、pending composition に 'a' が含まれる余地もそもそも無いはず）。3点目は状況証拠からの推論であり反証はできていないが、支持する具体的証拠も無いことが判明したため、**確度は「推測」に格下げする**。
+- 検証の過程で1つ誤仮説が出た: 「cold=586 は実は "ka" の再送ではなく次の文字 "き" の probe であり、"ka" の再送こそが `pending_deferred` に退避されて確認なしで raw 送出された」という仮説（Fable 起源）。**これはログと矛盾し誤り**: `re-sending raw TSF literal romaji="ka"` の直後の行が `[h1-warmup] cold=586 ... reason=RawTsfLiteralRecovery` であり、"き" は逆にその後に `[tsf] probe in flight → deferred 2 VK(s) for "ki"` として（"ka" ではなく "ki" と明示されたログで）退避されている。cold=585/586 とも "ka" の probe である。今後この筋を再検討する場合はこの反証を踏まえること。
+- backspace(×1 を2回)が実際に画面上・composition 内で何を消費/削除したかは、`himc_null=true` により composition 文字列を直接読めないため本ログからは断定不能（未観測のまま）。"a" の literal 出力メカニズムは依然として未確定。
+- 次に取るべき具体策（実施すればログ範囲を広げるより有効）: (1) backspace flush 直後・reinit 直後のタイミングで実際の画面/バッファ内容を読み取る一時的な診断ログを追加してから再現を取る、(2) "き" 等の後続文字入力との干渉を排除するため、IME トグル直後に「か」だけ入力して数秒待ち、単独でも同じ literal 化が起きるか確認する最小再現を取る。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`run_per_vk_confirm`）、`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`per_vk_recovery_params`、`is_partial_literal`）、`crates/awase-windows/src/output/probe_io.rs`（`ProbeAction::RawTsfLiteralRecovery` ディスパッチャ、BUG-36 コメント）、`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`（`h1-warmup`）。関連: BUG-24（per-VK confirm 導入元）、BUG-33 追補3・4（`GjiFsm` の belief/actual 乖離の同型事例）、BUG-36（reinit が preedit を commit するレース）、BUG-38/BUG-39/BUG-40（cold-start × literal-detect の他の失敗モード）、`.claude/rules/ime-belief-architecture.md`（`GjiFsm` 2026-07-23 追記）。
+
+---
+
+## BUG-46: `PhysicalKeyDisposition::plan` が TsfNative の物理 KANJI 系キーを無条件 Allow するため、GJI/MS-IME 環境で awase 自身の apply-ime actuation と二重に actuate する
+
+**症状:** Windows Terminal（GJI、hwnd class `CASCADIA_HOSTING_WINDOW_CLASS` →
+`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::TsfNative`）で、物理の
+半角/全角キー（hook 上は `VK_DBE_SBCSCHAR (0xF3)` up → `VK_DBE_DBCSCHAR (0xF4)` down
+のペアとして届く）を押すと、awase 内部の belief では IME ON になったことになって
+いるのに、実際には GJI 側の変換が効かない状態になる（ユーザー通報「なぜか、VK_KANJI
+打鍵時に IME ON / Engine OFF になる」、2026-08-01）。
+
+**再現手順（実機ログで確認済み、時系列順）:**
+
+```
+[hook] vk=0xF3 up / vk=0xF4 down (物理、self_injected=false, scan=0x29)
+Shadow IME toggle: OFF → ON (vk=0xF4, source=PhysicalImeKey)
+Engine activated (ime=true, ...)
+[dispatch-ime] belief: effective=false confident=true (profile=TsfNative)
+[apply-ime] GJI direct: send 0x0016 (open=true)   ← awase 自身の SendInput(VK_IME_ON)
+[hook] vk=0x16 down/up self_injected=true          ← 上記の実際の送信
+[apply-ime] outcome=Applied
+[engine-state-key] skipped (apply_ime_open aligned ime=true, profile=TsfNative)
+[reinject] vk=0xf4 down (queued passthrough now firing)  ← 遅延していた「元の」物理キーが
+                                                             awase の actuation の後に着弾
+[ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+```
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal 等）。
+
+**原因（確定、コード読解 + Claude 本体・Opus（Claude 5 系列）・Codex CLI の3系統
+独立検証で一致）:**
+
+- `AppImeProfile::should_pass_physical_key()`（`focus/class_names.rs:177-179`）は
+  `TsfNative` で常に `true` を返す。`PhysicalKeyDisposition::plan`
+  （`runtime/transport.rs`、旧実装）は KANJI 系イベントの suppress 判定にこの値のみを
+  使っており、TsfNative では物理キーを無条件 `Allow`（素通し）していた。
+- 一方 `GjiDirectStrategy`（`ime_controller.rs:10,17`）は「GJI 検出済みなら全プロファイル
+  で適用される」設計であり、TsfNative でも `SendInput(VK_IME_ON/OFF)` を独自に送る。
+  同じく `MsImeDirectStrategy` も `!profile.can_use_imm32_cross_process()`（TsfNative は
+  常に該当）であれば適用される。
+- つまり同一の1回の物理キー押下に対し、(a) awase 自身の apply-ime SendInput と
+  (b) 元の物理キーイベントの reinject という**二重の actuation** が GJI/MS-IME に届く。
+  `ImmCross`/`Imm32Unavailable` プロファイルには既にこの種の二重制御を防ぐ suppress
+  ロジック（`transport.rs` コメント「二重制御による OS 側 spurious VK_F3/F4 の生成を
+  防ぐ」）があったが、TsfNative にはこの保護が欠落していた。
+- **順序も確定**（`runtime/executor.rs` の `ReinjectKey` push 位置 + `drain_deferred` の
+  FIFO）: 送出順は「awase の apply-ime SendInput → 物理キーの reinject」であり、
+  物理キーが最後に着弾する。`VK_DBE_DBCSCHAR (0xF4)` はひらがな変換指定ではなく
+  全角プレーン指定（`vk.rs:111,125`、`ShadowImeAction::TurnOn` であり toggle ではない）
+  のため、awase がひらがなへ合わせた直後にこれが上書きし、belief は ON のまま実際の
+  変換が効かない状態になる、というのが確度「推測」の具体的機構。二重 actuation
+  経路そのものの存在は確度「確定」。
+- **なぜ TsfNative だけ保護が漏れていたか**: `key_pipeline.rs` の「TSF が KANJI を
+  正しく処理するため物理キーを通す」というコメント・実装は、`GjiDirectStrategy` が
+  全プロファイル適用に拡張される前の前提のまま残っていた。前提が破綻した後も
+  コメントが古い状態を正当化し続けたことが、この種のバグが再発する典型パターン。
+
+**修正（本コミット）:** `PhysicalKeyDisposition::plan` の suppress 判定を
+`profile.should_pass_physical_key()` から、`ActiveImeKind` ベースの
+`gji_direct_applicable`/`ms_ime_direct_applicable`（`state/key_sequence_policy.rs`、
+既存の戦略選択と同じ SSOT）で導出する `ime_actuation_owned` に置き換えた。これにより
+TsfNative も Imm32Unavailable と同じ suppress ロジック（shadow_toggle 発火時 KeyDown
++ 全 KeyUp を Suppress）に統一される。`ImmCross` プロファイルの既存の「常に Suppress」
+分岐は変更していない。
+
+**未対応（残存、フォローアップ候補）:**
+
+- `state/app_ime_policy.rs::AppImePolicy::owns_physical_kanji` は本バグの suppress
+  判定には使われていない別系統の（focus_settle_ms/feedback 方針向けの）静的な
+  profile 単位フラグで、TsfNative は `false` のまま（`ActiveImeKind` を見ない）。
+  今回の修正で実際の suppress 判定とこのフラグの意味が乖離した可能性があるため、
+  `state/ime_profile_driver.rs`（ADR-081/082 の per-profile ドライバ分離、Phase 1a/1b
+  時点）側で `owns_physical_kanji` を将来 `ActiveImeKind` 込みで再定義するかどうかは
+  未検討。今回はスコープ外として変更していない。
+- `transport.rs::PassthroughQueue.deferred_vks` は、0xF4 のような「ペア表現」の
+  KANJI 系キーで対応する up が原理的に来ない場合エントリが残留し得る（Opus 指摘の
+  副次的所見）。本バグの主因ではないため未対応。
+- 実機での再現待ち（`RUST_LOG=debug` で TsfNative+GJI 環境において、物理半角/全角
+  キー押下時に KANJI 系イベントが Suppress されるようになったことをログで確認する）。
+
+**検証状況:** コード読解による確定 + Claude 本体・Opus（Claude 5 系列モデル）・
+Codex CLI の3系統独立解析で二重 actuation 経路の存在と原因を一致確認（2026-08-01）。
+`transport.rs::plan_tests` に回帰テストを追加（TsfNative+GJI/MsIme で
+Imm32Unavailable と同じ suppress 挙動になることを固定）。`runtime` モジュールは
+`#[cfg(windows)]` のため Linux 上では `cargo check --target x86_64-pc-windows-gnu`
+での型検査のみ実施、実機/Windows 環境でのテスト実行は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/transport.rs`
+（`PhysicalKeyDisposition::plan`）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_execute`）、`crates/awase-windows/src/focus/class_names.rs`
+（`AppImeProfile::should_pass_physical_key`）、`crates/awase-windows/src/ime_controller.rs`
+（`GjiDirectStrategy`/`MsImeDirectStrategy`）、`crates/awase-windows/src/state/key_sequence_policy.rs`
+（`gji_direct_applicable`/`ms_ime_direct_applicable`）、`crates/awase-windows/src/runtime/executor.rs`
+（`ReinjectKey` 順序）、`crates/awase-windows/src/vk.rs`（`VK_DBE_SBCSCHAR`/`DBCSCHAR`）。
+関連: BUG-07/BUG-09/BUG-11/BUG-20/BUG-34（いずれも「IME ON / Engine OFF」という
+ユーザー通報文言が既出だが原因系統は異なる）。

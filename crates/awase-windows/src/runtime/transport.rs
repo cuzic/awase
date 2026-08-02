@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 
 use crate::focus::class_names::AppImeProfile;
+use crate::state::key_sequence_policy;
+use crate::tsf::observer::ActiveImeKind;
 use crate::vk::VkCodeExt as _;
 
 /// 元の物理キーイベントを OS に届けるかどうかの配送判断。
@@ -21,6 +23,13 @@ pub(crate) enum PhysicalKeyDisposition {
 /// 対応する KeyUp も reinject に揃えて INJECTED_MARKER 対称性を保つ（WezTerm 対策）。
 /// 各メソッドが `Some(event)` を返したとき、呼び出し元が `ReinjectKey(event)` をキューに
 /// 積んで `Consumed` を返す責務を持つ。
+///
+/// `deferred_vks` は `VkCode`（u16）の `HashSet` なので有界（メモリリークではない）。
+/// 0xF3/0xF4 のような「ペア表現」の KANJI 系キー（対応する KeyUp が原理的に来ない
+/// 場合がある）ではエントリが残留し得るが、BUG-46 の修正で KANJI 系 KeyUp は常に
+/// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert。
+/// 「leak しているように見える」からと TTL/クリア機構を追加する前に、まずこの残留が
+/// 実際に `check_keyup_symmetry` の誤発火につながる経路があるか確認すること。
 pub(crate) struct PassthroughQueue {
     deferred_vks: HashSet<VkCode>,
 }
@@ -101,14 +110,24 @@ impl PhysicalKeyDisposition {
     ///
     /// **KANJI 関連キー**:
     /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
-    /// - Imm32Unavailable: shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress
-    /// - TsfNative: Allow（物理キーを通す）
+    /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
+    ///   `MsImeDirectStrategy` で実際に actuate する場合（`ime_actuation_owned`）のみ、
+    ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
+    ///
+    /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
+    /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
+    /// `SendInput(VK_IME_ON/OFF)`（`GjiDirectStrategy`）と、素通しされた元の物理 KANJI 系
+    /// キーの reinject が **二重に actuate** してしまうため（BUG-46）。旧実装は
+    /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
+    /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
+    /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
     pub(crate) fn plan(
         event: &RawKeyEvent,
         profile: AppImeProfile,
         shadow_toggled: bool,
         is_tsf_mode: bool,
         f2_warmup_owned: bool,
+        active_ime_kind: ActiveImeKind,
     ) -> Self {
         // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
@@ -127,8 +146,11 @@ impl PhysicalKeyDisposition {
             // ImmCross: KANJI 関連 VK は Down/Up 共に Suppress
             true
         } else {
-            // Imm32Unavailable: shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress
-            !profile.should_pass_physical_key()
+            // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
+            // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
+            let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(active_ime_kind)
+                || key_sequence_policy::ms_ime_direct_applicable(active_ime_kind, profile);
+            ime_actuation_owned
                 && (shadow_toggled || matches!(event.event_type, KeyEventType::KeyUp))
         };
         if suppress {
@@ -177,18 +199,22 @@ mod plan_tests {
         }
     }
 
+    // F2/非KANJI テストでは ime_actuation_owned 判定に到達しないため、
+    // active_ime_kind はどちらでもよい filler として GoogleJapaneseInput を使う。
+    const ANY_IME_KIND: ActiveImeKind = ActiveImeKind::GoogleJapaneseInput;
+
     // ── F2 (VK_DBE_HIRAGANA): TSF mode 判定は KANJI/shadow_toggle と独立 ──
 
     #[test]
     fn f2_tsf_mode_suppresses_down_and_up() {
         let ev = f2_event(KeyEventType::KeyDown);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true),
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true, ANY_IME_KIND),
             PhysicalKeyDisposition::Suppress
         );
         let ev = f2_event(KeyEventType::KeyUp);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true),
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true, ANY_IME_KIND),
             PhysicalKeyDisposition::Suppress,
             "TSF mode では F2 Up も double-F2 防止のため Suppress"
         );
@@ -202,7 +228,7 @@ mod plan_tests {
         for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
             let ev = f2_event(event_type);
             assert_eq!(
-                PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, false),
+                PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, false, ANY_IME_KIND),
                 PhysicalKeyDisposition::Allow,
                 "MsImeStrategy は F2 warmup を送らないため物理 F2 ({event_type:?}) を素通しする"
             );
@@ -213,7 +239,7 @@ mod plan_tests {
     fn f2_non_tsf_mode_allows() {
         let ev = f2_event(KeyEventType::KeyDown);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::Standard, false, false, false),
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::Standard, false, false, false, ANY_IME_KIND),
             PhysicalKeyDisposition::Allow
         );
     }
@@ -229,13 +255,24 @@ mod plan_tests {
         ] {
             for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
                 for shadow_toggled in [false, true] {
-                    let ev = non_kanji_event(event_type);
-                    assert_eq!(
-                        PhysicalKeyDisposition::plan(&ev, profile, shadow_toggled, false, false),
-                        PhysicalKeyDisposition::Allow,
-                        "非KANJIイベントは profile={profile:?} shadow_toggled={shadow_toggled} \
-                         event_type={event_type:?} でも常に Allow"
-                    );
+                    for active_ime_kind in
+                        [ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::MicrosoftIme]
+                    {
+                        let ev = non_kanji_event(event_type);
+                        assert_eq!(
+                            PhysicalKeyDisposition::plan(
+                                &ev,
+                                profile,
+                                shadow_toggled,
+                                false,
+                                false,
+                                active_ime_kind
+                            ),
+                            PhysicalKeyDisposition::Allow,
+                            "非KANJIイベントは profile={profile:?} shadow_toggled={shadow_toggled} \
+                             event_type={event_type:?} active_ime_kind={active_ime_kind:?} でも常に Allow"
+                        );
+                    }
                 }
             }
         }
@@ -249,7 +286,14 @@ mod plan_tests {
             for shadow_toggled in [false, true] {
                 let ev = kanji_event(event_type, Some(ShadowImeAction::TurnOn));
                 assert_eq!(
-                    PhysicalKeyDisposition::plan(&ev, AppImeProfile::Standard, shadow_toggled, false, false),
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        AppImeProfile::Standard,
+                        shadow_toggled,
+                        false,
+                        false,
+                        ActiveImeKind::MicrosoftIme
+                    ),
                     PhysicalKeyDisposition::Suppress,
                     "ImmCross (Standard) は shadow_toggled={shadow_toggled} event_type={event_type:?} \
                      でも常に Suppress (spurious VK_F3/F4 連鎖の根本修正、08b8661)"
@@ -258,59 +302,84 @@ mod plan_tests {
         }
     }
 
-    // ── Imm32Unavailable: shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress ──
+    // ── Imm32Unavailable / TsfNative 共通: apply-ime が GjiDirect/MsImeDirect で
+    //    actuate する場合、shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress ──
+    //
+    // BUG-46: 旧実装は profile.should_pass_physical_key()（TsfNative で常に true）のみで
+    // 判定しており、TsfNative + GJI/MsIme（Windows Terminal 等）では awase 自身の
+    // apply-ime SendInput と、素通しされた物理 KANJI 系キーの reinject が二重に actuate
+    // していた。ImeActuationOwned（gji_direct_applicable / ms_ime_direct_applicable）を
+    // profile ではなく ActiveImeKind から導出することで、Imm32Unavailable と TsfNative を
+    // 同じ suppress ロジックに統一する。
 
-    #[test]
-    fn imm32_unavailable_keydown_allowed_when_not_shadow_toggled() {
-        let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::Imm32Unavailable, false, false, false),
-            PhysicalKeyDisposition::Allow,
-            "shadow_toggle が発火していない KeyDown は物理キーを通す"
-        );
+    /// `plan()` の `(profile, active_ime_kind)` の全組み合わせで suppress 挙動が
+    /// Imm32Unavailable と TsfNative で一致することを固定する。
+    fn owned_actuation_cases() -> Vec<(AppImeProfile, ActiveImeKind, &'static str)> {
+        vec![
+            (
+                AppImeProfile::Imm32Unavailable,
+                ActiveImeKind::MicrosoftIme,
+                "Imm32Unavailable+MsIme (Chrome/Edge, 従来通り)",
+            ),
+            (
+                AppImeProfile::Imm32Unavailable,
+                ActiveImeKind::GoogleJapaneseInput,
+                "Imm32Unavailable+GJI",
+            ),
+            (
+                AppImeProfile::TsfNative,
+                ActiveImeKind::GoogleJapaneseInput,
+                "TsfNative+GJI (Windows Terminal, BUG-46 再現条件)",
+            ),
+            (
+                AppImeProfile::TsfNative,
+                ActiveImeKind::MicrosoftIme,
+                "TsfNative+MsIme (WezTerm)",
+            ),
+        ]
     }
 
     #[test]
-    fn imm32_unavailable_keydown_suppressed_when_shadow_toggled() {
-        let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::Imm32Unavailable, true, false, false),
-            PhysicalKeyDisposition::Suppress,
-            "shadow_toggle 発火時の KeyDown は awase が既に VK_KANJI を SendInput 済みのため Suppress"
-        );
-    }
-
-    #[test]
-    fn imm32_unavailable_keyup_always_suppressed() {
-        for shadow_toggled in [false, true] {
-            let ev = kanji_event(KeyEventType::KeyUp, Some(ShadowImeAction::TurnOn));
+    fn owned_actuation_keydown_allowed_when_not_shadow_toggled() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
             assert_eq!(
-                PhysicalKeyDisposition::plan(&ev, AppImeProfile::Imm32Unavailable, shadow_toggled, false, false),
-                PhysicalKeyDisposition::Suppress,
-                "Imm32Unavailable の KANJI KeyUp は shadow_toggled={shadow_toggled} でも常に Suppress \
-                 (二重制御による OS 側 spurious VK_F3/F4 の生成を防ぐ)"
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::Allow,
+                "{label}: shadow_toggle が発火していない KeyDown は物理キーを通す"
             );
         }
     }
 
-    // ── TsfNative: KANJI 関連キーは常に Allow (TSF が物理キーを処理する) ──
+    #[test]
+    fn owned_actuation_keydown_suppressed_when_shadow_toggled() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(&ev, profile, true, false, false, active_ime_kind),
+                PhysicalKeyDisposition::Suppress,
+                "{label}: shadow_toggle 発火時の KeyDown は awase が既に apply-ime 済みのため Suppress"
+            );
+        }
+    }
 
     #[test]
-    fn tsf_native_always_allows_kanji_event() {
-        for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+    fn owned_actuation_keyup_always_suppressed() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
             for shadow_toggled in [false, true] {
-                let ev = kanji_event(event_type, Some(ShadowImeAction::TurnOn));
+                let ev = kanji_event(KeyEventType::KeyUp, Some(ShadowImeAction::TurnOn));
                 assert_eq!(
                     PhysicalKeyDisposition::plan(
                         &ev,
-                        AppImeProfile::TsfNative,
+                        profile,
                         shadow_toggled,
                         false,
-                        false
+                        false,
+                        active_ime_kind
                     ),
-                    PhysicalKeyDisposition::Allow,
-                    "TsfNative は shadow_toggled={shadow_toggled} event_type={event_type:?} でも \
-                     常に Allow (TSF が物理キーを処理するため awase は介入しない)"
+                    PhysicalKeyDisposition::Suppress,
+                    "{label}: KANJI KeyUp は shadow_toggled={shadow_toggled} でも常に Suppress \
+                     (二重制御による物理キー再送を防ぐ、BUG-46)"
                 );
             }
         }

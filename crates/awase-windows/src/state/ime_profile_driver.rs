@@ -93,6 +93,16 @@ pub trait ImeProfileDriver: Sync {
     ///
     /// `true` のとき、物理 KANJI イベントはアプリに渡さない
     /// （`state/app_ime_policy.rs::AppImePolicy::owns_physical_kanji` 相当）。
+    ///
+    /// **注意（BUG-46）**: これは profile 軸（静的）のみの宣言であり、実効的な
+    /// disposition の SSOT ではない。`false` を宣言していても [`uses_gji_direct`]
+    /// が `true`（GJI/MS-IME actuate 時）なら、実際には
+    /// `runtime/transport.rs::PhysicalKeyDisposition::plan` が物理キーを Suppress
+    /// する（TsfNative + GJI の実例）。本 trait を Phase 1d で suppress 判定の SSOT
+    /// にする場合は、この2軸（`owns_physical_kanji` と `uses_gji_direct`）を
+    /// `plan()` と同じ形で合成すること。
+    ///
+    /// [`uses_gji_direct`]: Self::uses_gji_direct
     fn owns_physical_kanji(&self) -> bool;
 
     /// GJI が active IME のとき、共有 GJI 直接制御機構
@@ -296,15 +306,18 @@ impl ImeProfileDriver for Imm32UnavailableDriver {
 ///
 /// TSF ネイティブアプリ。`VK_DBE_HIRAGANA` + TSF probe が必要で、cold-start に
 /// composition context の非同期初期化待ちがある（BUG-01）。TSF が KANJI を正しく
-/// 処理するため物理 KANJI は**通す**（`owns_physical_kanji=false`）。読み戻し不能の
+/// 処理するため物理 KANJI は**通す**（`owns_physical_kanji=false`、profile 軸のみ）。
+/// ただし GJI/MS-IME が actuate する場合（`uses_gji_direct=true`）は実効的には
+/// Suppress される（BUG-46、`owns_physical_kanji` の doc 参照）。読み戻し不能の
 /// ため feedback は `Blind`。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TsfNativeDriver;
 
 impl ImeProfileDriver for TsfNativeDriver {
     fn owns_physical_kanji(&self) -> bool {
-        // WezTerm 等は TSF が KANJI を正しく処理するため通す
-        // （`AppImePolicy::from_profile(TsfNative)` と同値）。
+        // WezTerm 等は TSF が KANJI を正しく処理するため通す（profile 軸のみ）。
+        // （`AppImePolicy::from_profile(TsfNative)` と同値）。GJI/MS-IME actuate 時の
+        // 実効 disposition は `uses_gji_direct` doc と BUG-46 を参照。
         false
     }
 
