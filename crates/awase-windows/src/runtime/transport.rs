@@ -209,12 +209,26 @@ mod plan_tests {
     fn f2_tsf_mode_suppresses_down_and_up() {
         let ev = f2_event(KeyEventType::KeyDown);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true, ANY_IME_KIND),
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                true,
+                true,
+                ANY_IME_KIND
+            ),
             PhysicalKeyDisposition::Suppress
         );
         let ev = f2_event(KeyEventType::KeyUp);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, true, ANY_IME_KIND),
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                true,
+                true,
+                ANY_IME_KIND
+            ),
             PhysicalKeyDisposition::Suppress,
             "TSF mode では F2 Up も double-F2 防止のため Suppress"
         );
@@ -228,7 +242,14 @@ mod plan_tests {
         for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
             let ev = f2_event(event_type);
             assert_eq!(
-                PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, true, false, ANY_IME_KIND),
+                PhysicalKeyDisposition::plan(
+                    &ev,
+                    AppImeProfile::TsfNative,
+                    false,
+                    true,
+                    false,
+                    ANY_IME_KIND
+                ),
                 PhysicalKeyDisposition::Allow,
                 "MsImeStrategy は F2 warmup を送らないため物理 F2 ({event_type:?}) を素通しする"
             );
@@ -239,7 +260,14 @@ mod plan_tests {
     fn f2_non_tsf_mode_allows() {
         let ev = f2_event(KeyEventType::KeyDown);
         assert_eq!(
-            PhysicalKeyDisposition::plan(&ev, AppImeProfile::Standard, false, false, false, ANY_IME_KIND),
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::Standard,
+                false,
+                false,
+                false,
+                ANY_IME_KIND
+            ),
             PhysicalKeyDisposition::Allow
         );
     }
@@ -255,9 +283,10 @@ mod plan_tests {
         ] {
             for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
                 for shadow_toggled in [false, true] {
-                    for active_ime_kind in
-                        [ActiveImeKind::GoogleJapaneseInput, ActiveImeKind::MicrosoftIme]
-                    {
+                    for active_ime_kind in [
+                        ActiveImeKind::GoogleJapaneseInput,
+                        ActiveImeKind::MicrosoftIme,
+                    ] {
                         let ev = non_kanji_event(event_type);
                         assert_eq!(
                             PhysicalKeyDisposition::plan(

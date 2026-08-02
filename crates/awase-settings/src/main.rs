@@ -2763,8 +2763,8 @@ fn send_reload_config_message() {
 mod layout_tab_repro {
     use super::{
         CLIPBOARD_HISTORY_LEN, Face, KanaTable, NewComboBuf, PhysicalPos, SPECIAL_KEYS,
-        SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path,
-        load_yab_layout, resolve_layouts_dir,
+        SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
+        resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
