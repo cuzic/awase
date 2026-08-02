@@ -399,6 +399,12 @@ impl VkCodeExt for VkCode {
 // ── キー名解決（config パース用）──
 
 /// ホットキー文字列をパースして修飾キーフラグと仮想キーコードに変換する。
+///
+/// `windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT}` に
+/// 依存する唯一の関数のため `#[cfg(windows)]`。`vk` モジュール自体は
+/// この関数以外 windows crate に依存しないため ungated（ADR-082「決定1実施記録」の
+/// 次の一歩、`decide_alt_impersonation` の Linux 化のための下準備）。
+#[cfg(windows)]
 #[must_use]
 pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT};
@@ -526,6 +532,9 @@ pub const fn vk_to_pos(vk: VkCode) -> Option<awase::scanmap::PhysicalPos> {
 // ── 文字→VK 変換テーブル（output/resolve.rs から移動）───────────────────────
 
 /// ASCII 文字を対応する VK コードに変換する。
+///
+/// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
 #[must_use]
 pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
     match ch {
@@ -545,6 +554,9 @@ pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
 /// JIS キーボード + IME ひらがなモード前提。
 /// IME が有効な状態でこれらのキーストロークを送ると、
 /// 対応する全角記号が入力される。
+///
+/// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
     let entries: &[(char, u16, bool)] = &[
         // 句読点・括弧

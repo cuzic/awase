@@ -17,8 +17,8 @@
 //!
 //! キーボードフック、出力、IME 制御、システムトレイ、フォーカス判定など
 //! すべての Win32 API 依存コードを集約する。
-//! 非 Windows では `focus/{cache,class_names}`, `scanmap`, `single_thread_cell`, `tuning`
-//! などの純粋モジュールのみコンパイルされる。
+//! 非 Windows では `focus/{cache,class_names}`, `scanmap`, `single_thread_cell`, `tuning`,
+//! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
@@ -27,6 +27,7 @@ pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
 pub mod tuning;
+pub mod vk;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
 #[cfg(windows)]
@@ -63,8 +64,6 @@ pub mod timer;
 pub mod tray;
 #[cfg(windows)]
 pub mod tsf;
-#[cfg(windows)]
-pub mod vk;
 #[cfg(windows)]
 pub mod win32;
 
