@@ -9,7 +9,7 @@
 /// state/ 層が `hook::current_tick_ms()` を直接呼び出す代わりに、
 /// 呼び出し元（runtime 層）からタイムスタンプを注入するために使う。
 /// これにより state/ が hook 実装に依存しない純粋な型になる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, serde::Serialize)]
 pub struct TickMs(pub u64);
 
 impl TickMs {

@@ -370,3 +370,43 @@ ADR 本文の優先順位通り、次は `decide_alt_impersonation`（BUG-41）�
 クリア漏れ」という別形状（ADR 本文コンテキスト参照）なので、`ActuationRecord` を
 そのまま流用するのではなく、`decide_alt_impersonation` 専用の fixture 型を新設する
 （`DriftCorrectionFixture` と同じ「実機観測を固定化する」枠組みは共有）。
+
+## 決定1 実施記録（2026-08-01）
+
+「決定 1.」（`journal.rs::JournalEntry::ImeEvent { description: String }` の廃止、
+実 `ImeEvent` をそのまま記録する）を実施した。**上の「提案中」本文・既存の実施記録
+節は変更していない** — この節は追記のみ。ADR-082 Phase 0.5 の「採用範囲を広げる
+推奨」節が次点として挙げていた項目であり、BUG-41/BUG-33 へのリプレイ拡張に着手する
+前段として先行実施した（Linux サンドボックスでの Opus 2周レビューにより、当初の
+優先順位案から繰り上げと判断された）。
+
+### 実施内容
+
+- `state/ime_event.rs::ImeEvent` および全サブ型（`HwndId`/`UserIntentSource`/
+  `ObservationConfidence`/`ImePolicyProfile`/`ChordKind`/`ApplyError`/
+  `InputModeApplyStrategy`/`InputModeApplyResult`）に `serde::Serialize` を derive。
+  `ObservationSource`/`InputModeState` は既存で対応済み。`state/mod.rs::TickMs` にも
+  同様に追加。書き出し専用のため `Deserialize` は導出しない（`ActuationRecord` と
+  同じ方針。全フィールドがプレーンな値のみで構成されるため機械的に導出可能）。
+- `journal.rs::JournalEntry::ImeEvent` を `{ description: String }` から
+  `{ event: crate::state::ime_event::ImeEvent }` に置換。
+- `state/platform_state.rs::dispatch_event()` の `format!("{event:?}")` 呼び出しを削除し、
+  `event.clone()` をそのまま journal へ渡すよう変更。
+
+### テスト結果
+
+- `cargo test -p awase-windows --lib`: **218 passed / 0 failed**（Phase 0.5 の 169 から、
+  本 ADR とは無関係な他タスクの追加分を含め増加、退行なし）。
+- `cargo check -p awase-windows --target x86_64-pc-windows-gnu --lib` / `cargo clippy`
+  （Linux・windows-gnu 両方 `-D warnings`）/ `cargo fmt --check`: いずれも green。
+
+### 次の一歩
+
+`decide_alt_impersonation`（BUG-41）・`GjiFsm` 状態遷移関数（BUG-33 追補3・4）への
+拡張は、本 ADR 本文の優先順位通り次点。ただし Opus レビューにより、BUG-41/BUG-33 の
+両方とも「実機でしか観測できない事象の journal 固定化」に該当しないと判定された
+（BUG-41 は既存の決定論的ユニットテストの回帰であり、BUG-33 追補3・4 も同様に既存
+テストで固定化済み）ため、journal リプレイ fixture ではなく「Linux で実行可能にする
+（cfg(windows) ゲートの外に出す）+ 網羅的な不変条件テストを追加する」方針に変更して
+実施した。詳細は `.claude/rules/` 配下ではなく、当該コミットの本文および
+`docs/known-bugs.md` の該当 BUG 節を参照。
