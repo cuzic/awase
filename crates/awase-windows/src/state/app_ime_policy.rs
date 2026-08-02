@@ -33,6 +33,14 @@ pub struct AppImePolicy {
     ///
     /// `true` のとき、物理 KANJI イベントはアプリに渡さない (Step 1/1b 実装済の概念)。
     /// LINE/Qt / Chrome/Edge ともに `true`。WezTerm は `false`。
+    ///
+    /// **注意（BUG-46）**: これは `AppImeProfile`（静的）軸のみの値であり、実際に
+    /// 物理キーを配送するかどうかの SSOT ではない。実効的な disposition は
+    /// `runtime/transport.rs::PhysicalKeyDisposition::plan`（`transport.rs:144` 付近）
+    /// が `ActiveImeKind`（動的、GJI/MS-IME 検出）も加味して決める。TsfNative でも
+    /// GJI/MS-IME が actuate する場合は物理キーを Suppress する（`owns_physical_kanji=false`
+    /// のまま実際には所有している）。本フィールドを直接参照して suppress 判定を書かない
+    /// こと（`ime_profile_driver.rs` の Phase 1d SSOT 化時も同様）。
     pub owns_physical_kanji: bool,
 
     /// IME 制御の actuator 種別 (ImmCross / VK_KANJI / TSF / Standard)。
@@ -95,7 +103,9 @@ impl AppImePolicy {
                 },
             },
             ImePolicyProfile::TsfNative => Self {
-                // WezTerm 等は TSF が KANJI を正しく処理するため通す
+                // WezTerm 等は TSF が KANJI を正しく処理するため通す（静的 profile 軸のみ）。
+                // 実効的な disposition は ActiveImeKind も見る PhysicalKeyDisposition::plan
+                // が決める（BUG-46、GJI/MS-IME actuate 時は物理キーを Suppress する）。
                 owns_physical_kanji: false,
                 actuator_kind: ImeActuatorKind::TsfNative,
                 focus_settle_ms: 200,

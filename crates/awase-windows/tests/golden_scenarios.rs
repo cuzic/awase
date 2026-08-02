@@ -185,7 +185,9 @@ fn scenario_5_wezterm_tsf_profile_policy() {
     let model = run_reducer(vec![focus_changed(ImePolicyProfile::TsfNative)]);
     assert!(
         !model.app_policy.owns_physical_kanji,
-        "WezTerm では物理 KANJI を awase 所有しない (TSF が処理)"
+        "WezTerm では物理 KANJI を awase 所有しない (TSF が処理) — これは profile 軸 \
+         (AppImePolicy) 単独の静的値。GJI/MS-IME actuate 時の実効 disposition は \
+         PhysicalKeyDisposition::plan が別途決める (BUG-46, docs/known-bugs.md)"
     );
 }
 
@@ -333,7 +335,8 @@ fn focus_change_updates_app_policy() {
     ]);
     assert!(
         !model.app_policy.owns_physical_kanji,
-        "TsfNative では owns_kanji=false"
+        "TsfNative では owns_kanji=false — profile 軸単独の静的値であり、実効 \
+         disposition の SSOT ではない (BUG-46, docs/known-bugs.md)"
     );
 }
 
