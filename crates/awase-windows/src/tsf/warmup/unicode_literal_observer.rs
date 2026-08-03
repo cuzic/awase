@@ -13,6 +13,29 @@
 //! 3. `OBSERVATION_WINDOW_MS` に達したとき:
 //!    - GJI write あり → `ProbeAction::Done`（Unicode 維持）
 //!    - GJI write なし → `ProbeAction::UpgradeToTsf` + `ProbeAction::Done`
+//!
+//! ## 観測専用の HIMC 照合ログ（2026-08-03 追加、判定には使わない）
+//!
+//! `Standard`/`ImmCross` プロファイル（LINE 等）のような IMM32 互換アプリでは、
+//! `capture_composition_snapshot`（`ime.rs`）による HIMC 直接照合が、GJI write bytes より
+//! 確実な確認手段になりうるという仮説がある。ただし本アプリ種別でこの照合を実機で試した
+//! 記録は無く（既存の `log_composition_probe` 呼び出しはすべて `Vk`/`Tsf` モードの
+//! per-VK confirm 経路 = `tsf/warmup/probe_fsm.rs` 等に限られ、`Unicode` モードの経路からは
+//! 一度も呼ばれていなかった）、`comp_str`/`himc_null` が実際に何を返すか未知数だった。
+//!
+//! 過去に類似の HIMC ベース composition 検出（`check_tsf_composition_active`,
+//! `ime.rs:1088`）を TSF ネイティブアプリ（WezTerm）に試みた実績があるが、
+//! `ImmGetCompositionStringW` が常に 0 を返し失敗・撤回された
+//! （`558c39f` → `b643bac`、2026-05-15、`git log -S check_tsf_composition_active`
+//! で確認可能）。この失敗は HIMC を持たない TSF ネイティブアプリ限定であり、
+//! LINE のような有効な HIMC を持つはずの IMM32 互換アプリでは未検証のまま。
+//!
+//! そこで `tick()` の判定確定点（GJI write の有無を確認した直後）で
+//! `log_composition_probe` を1回だけ追加で呼び、`comp_str`/`himc_null` 等を
+//! ログに残す。**`ProbeAction` の判定ロジック（GJI write baseline 比較）は一切変更しない**
+//! ——この呼び出しは既存の判定結果に影響を与えない、純粋な観測のみ。
+//! 実機ログが集まったら、`docs/experiments.md` の事前登録した合格基準と照合し、
+//! HIMC 照合を実際の判定ロジックに採用するかを別途検討する。
 
 use crate::state::event_origin::Generation;
 use crate::tsf::warmup::probe_fsm::{ProbeAction, TsfEnvSnapshot};
@@ -46,6 +69,9 @@ impl TickableFsm for UnicodeLiteralObserverFsm {
             return vec![];
         }
         let current = crate::tsf::observer::gji_write_bytes();
+        // 観測専用: 判定（下記 if/else）には一切使わない。HIMC 照合が Standard/ImmCross
+        // プロファイルで何を返すかを実機ログで確認するためだけの呼び出し（module doc参照）。
+        crate::ime_diagnostic::log_composition_probe(self.cold_seq, "unicode-obs-himc-check");
         if current == self.baseline_bytes {
             log::info!(
                 "[unicode-obs] cold={} {}ms GJI write なし → injection_mode Tsf 昇格",
