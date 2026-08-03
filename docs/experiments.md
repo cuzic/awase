@@ -305,3 +305,38 @@ scan=0（CapsLock と衝突しない値）で `VK_DBE_ALPHANUMERIC` を再注入
   実行時値が 0/false」は別物として扱う。前者は安全に削除できるが、後者
   （`TsfReadinessProbe::check_now` の待機ロジック等）は将来また非ゼロの
   値が必要になり得るため、同じ調査パスに乗せて安易に削除しない。
+
+---
+
+## エントリ 11: `InjectionMode` per-VK 統一構想 — HIMC 照合の観測フェーズ（事前登録）
+
+**背景**: ADR-081 Phase 1d 検討から派生し、「GJI がアクティブなときは profile を
+問わず per-VK（1キーずつ確認しながら送る）方式に文字送信を統一したい」という構想が
+浮上した（詳細は [ADR-083](adr/083-injection-mode-per-vk-unification-investigation.md)）。
+Opus・Fable・Codex の3系統独立レビューの結果、統一自体は BUG-45（per-VK confirm の
+構造的欠陥）が未解決のため NO-GO と判定されたが、統一の鍵となる HIMC 直接照合
+（`capture_composition_snapshot`、`ime.rs:1124`）は実装済みで判定点に配線済みながら
+判断には未使用と判明した。これを Standard/ImmCross プロファイル（LINE 等）で実機
+検証する前段階として、**判定ロジックを一切変更しない観測専用ログ**を追加した。
+
+**このエントリは事前登録**（測定前に合格基準を書く、`.claude/rules/tuning-constants.md`
+の実測義務の精神を診断フェーズにも適用）。以下の基準を実機ログ収集後に照合する。
+
+| 項目 | 合格基準（案） | 意味 |
+| --- | --- | --- |
+| `comp_str` 非空率 | Unicode 注入直後 100ms 以内に ≥ 95% で非空 | HIMC 照合が LINE で「読める」証拠になるか |
+| `himc_null` 発生率 | ほぼ 0%（LINE 等 IMM32 互換アプリの場合） | HIMC 自体が取得できない＝TSF ネイティブと同型の失敗（2026-05-15 撤回, `558c39f`→`b643bac`）の再演でないか |
+| `capture_composition_snapshot` 所要時間 | p99 < 5ms | `ImmGetContext` 系のブロッキングリスクが顕在化しないか |
+| `comp_read_str`（読み）と送信ローマ字の一致率 | 定量化できれば記録（合格基準は測定後に精緻化） | HIMC 照合を将来の判定ロジックに使う場合の信頼性の目安 |
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-03 | HIMC 照合（`capture_composition_snapshot`）は Standard/ImmCross プロファイル（LINE 等）でも意味のある値を返すはず（TSF ネイティブアプリ限定で過去に失敗した `558c39f`→`b643bac` とは異なる組み合わせ） | LINE 等 ImmCross × GJI（実機未実施） | `UnicodeLiteralObserverFsm::tick` の判定確定点に `log_composition_probe` を1行追加（判定ロジックは無変更） | 実機ログ収集待ち | 保留（観測専用パッチのみ投入、判定はソーク後） | （本ブランチのコミット、後日追記） |
+
+**学び（暫定）**:
+
+- HIMC ベースの composition 検出は、過去に TSF ネイティブアプリ（WezTerm）で
+  一度失敗しているが、これは HIMC が取得できない（またはゼロを返す）アプリ種別
+  固有の失敗であり、IMM32 互換アプリでの妥当性を否定するものではない。
+  「過去に似た名前の実験が失敗した」という理由だけで再挑戦を諦めないよう、
+  失敗条件（アプリ種別）を正確に切り分けて記録することが重要。
