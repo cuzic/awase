@@ -695,3 +695,60 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
         "トグルOFF で romaji-capable に復帰し engine が再度活性化できる"
     );
 }
+
+// ── シナリオ 16: EngineActivationSync がユーザーの明示 OFF 意図を汚染しない ──
+
+// 2026-08-04 実発生: 「IME OFF のはずが数百ms〜数秒後に Engine が勝手に ON へ戻る」。
+//
+// 根本原因: `Engine::check_active_transition`（毎キー入力・`RefreshState` の両方から
+// 呼ばれる通常経路）は active/inactive 遷移のたびに対称性のため `ImeEffect::SetOpen`
+// を自動発行する。この SetOpen を awase-windows 側が `UserImeSetIntent` 相当として
+// 扱ってしまうと、観測駆動（Medium confidence の conv 推論等）で一瞬 `ctx.ime_on=true`
+// に振れただけの echo が「ユーザーの本物の意図」として `last_intent` に確定し、
+// ユーザーが明示的に IME を OFF にした直後でも Engine が勝手に ON へ戻る。
+//
+// 修正: `SetOpenOrigin::ActivationSync` 由来の SetOpen は `ImeEvent::EngineActivationSync`
+// で表現し、`desired_open` は更新するが `last_intent` は設定しない
+// （`HwndCacheRestored`/`PanicReset` と同じ「専用イベント」パターン）。
+#[test]
+fn scenario_16_engine_activation_sync_does_not_corrupt_explicit_off_intent() {
+    // ユーザーが明示的に IME OFF にした。
+    let model = run_reducer(vec![
+        user_intent(false, UserIntentSource::PhysicalImeKey),
+        // 直後、観測駆動で Engine が一瞬 Active に遷移し、`check_active_transition` が
+        // 対称性のため SetOpen(true) の echo を自動発行した（`SetOpenOrigin::ActivationSync`）。
+        // awase-windows の `kp_stage_post_decision` はこれを `handle_engine_activation_sync`
+        // 経由で処理し、`EngineActivationSync` を dispatch する。
+        ImeEvent::EngineActivationSync { target: true },
+    ]);
+
+    assert_eq!(
+        model.last_intent.as_ref().map(|i| i.target),
+        Some(false),
+        "EngineActivationSync はユーザーの明示的な OFF 意図 (last_intent) を上書きしてはならない"
+    );
+    assert!(
+        !model.effective_open(),
+        "explicit intent が残っているため、ActivationSync の echo があっても \
+         effective_open() は false のまま（Engine が勝手に ON へ戻ってはならない）"
+    );
+}
+
+// 対照シナリオ: 本物のユーザー操作 (`UserImeSetIntent`) はそのまま `last_intent` を書き換える。
+// EngineActivationSync との違いを明示する。
+#[test]
+fn scenario_16b_explicit_user_action_after_engine_activation_sync_still_wins() {
+    let model = run_reducer(vec![
+        // 観測駆動の ActivationSync echo が先に IME を ON にする。
+        ImeEvent::EngineActivationSync { target: true },
+        // その後ユーザーが本物の IME OFF コンボを押した。
+        user_intent(false, UserIntentSource::Command),
+    ]);
+
+    assert_eq!(
+        model.last_intent.as_ref().map(|i| i.target),
+        Some(false),
+        "本物のユーザー操作は通常どおり last_intent を確定させる"
+    );
+    assert!(!model.effective_open());
+}

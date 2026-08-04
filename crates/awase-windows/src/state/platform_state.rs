@@ -231,6 +231,52 @@ impl ImeStateHub {
         true
     }
 
+    /// `awase::engine::decision::SetOpenOrigin::ActivationSync` 由来の `SetOpen` を処理する。
+    ///
+    /// `handle_engine_set_open` との違いは唯一つ: `ImeEvent::UserImeSetIntent`（`last_intent`
+    /// を設定する）の代わりに `ImeEvent::EngineActivationSync`（`last_intent` を設定しない）を
+    /// dispatch する点。この SetOpen は Engine の active/inactive 遷移が対称性のために
+    /// 自動発行した echo であり、ユーザーが今このキーで ON/OFF を明示的に選んだわけではない
+    /// （`ctx.ime_on` が観測駆動で変化しただけでも Active/Inactive は遷移しうる）。
+    /// `last_intent` を設定すると、以後の drift correction がこの echo を「ユーザーの本物の
+    /// 意図」として扱ってしまい、ユーザーが明示的に IME を OFF にした直後でも Engine が
+    /// 勝手に ON へ戻る再発を引き起こす（2026-08-04、`docs/known-bugs.md` 参照）。
+    ///
+    /// chord/focus-transition-settling のフィルタ条件は `handle_engine_set_open` と同一
+    /// （どちらも「これから OS へ実 apply する SetOpen 要求」という点は変わらないため）。
+    /// `last_explicit_ime_action_ms` は更新しない（これは「明示的 IME 操作」からの
+    /// 経過時間であり、echo はそれに該当しないため idle-conv-check の抑制窓を汚染しない）。
+    pub(crate) fn handle_engine_activation_sync(
+        &mut self,
+        target: bool,
+        ctrl_held: bool,
+        focus_transition_was_pending: bool,
+        generation: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        if self.is_ctrl_ime_chord_active() && !target {
+            return false;
+        }
+        if focus_transition_was_pending {
+            log::debug!(
+                "[focus-settle] ActivationSync SetOpen({target}) request filtered at belief \
+                 last line of defense (focus transition barrier still settling at event start)"
+            );
+            return false;
+        }
+        self.dispatch_event(ImeEvent::EngineActivationSync { target }, tick_ms);
+        self.on_set_open_requested();
+        self.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target,
+                generation,
+                ctrl_held,
+            },
+            tick_ms,
+        );
+        true
+    }
+
     /// Ctrl 系 KeyUp で chord barrier を解除する。
     ///
     /// パイプラインが chord 状態を直接参照しなくて済むよう、

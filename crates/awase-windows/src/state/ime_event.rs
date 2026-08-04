@@ -297,6 +297,17 @@ pub enum ImeEvent {
     /// を true にしてはならない。HwndCache 復元コードはこれを使うこと。
     HwndCacheRestored { target: bool },
 
+    /// Engine の active/inactive 遷移が対称性のために自動発行した `SetOpen` の echo
+    /// （`awase::engine::decision::SetOpenOrigin::ActivationSync`）を反映する。
+    ///
+    /// `UserImeSetIntent` と違い `last_intent` を設定しない。この SetOpen は
+    /// `ctx.ime_on`（観測駆動で変化しうる）を Engine がそのまま追認しただけで、
+    /// ユーザーが今このキーで ON/OFF を選んだわけではない。`last_intent` を
+    /// 設定すると、以後の drift correction がこの echo を「ユーザーの本物の意図」
+    /// として扱ってしまい、ユーザーが明示的に IME を OFF にした直後でも Engine が
+    /// 勝手に ON へ戻る再発を引き起こす（2026-08-04、`docs/known-bugs.md` 参照）。
+    EngineActivationSync { target: bool },
+
     /// OS への適用を開始した。
     ///
     /// `ctrl_held` は dispatch 時点で Ctrl が押下されていたか。reducer が

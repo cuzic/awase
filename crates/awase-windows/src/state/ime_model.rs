@@ -322,6 +322,23 @@ impl ImeModel {
                 // 後続の実観測が effective_open() を上書きできる。
                 self.desired_open = target;
             }
+            ImeEvent::EngineActivationSync { target } => {
+                // Engine の active/inactive 遷移が対称性のために自動発行した echo。
+                // ユーザーの能動的操作ではないため last_intent を設定しない
+                // (`ImeEvent::EngineActivationSync` の doc 参照)。
+                //
+                // `has_user_explicit_intent()==true` の間は `desired_open` も触らない。
+                // `effective_open()` は explicit intent がある間 `desired_open` を
+                // そのまま「現在の明示的な値」として使うため、ここで無条件に上書きすると
+                // last_intent 自体は変えていなくても実質的にユーザーの明示意図を
+                // 上書きしたのと同じ結果になる（HwndCacheRestored は常に直前の
+                // FocusChanged で last_intent が clear された後に届くため、この防御が
+                // 不要だが、EngineActivationSync は届く順序を強く仮定できないため
+                // 明示的にガードする）。
+                if !self.has_user_explicit_intent() {
+                    self.desired_open = target;
+                }
+            }
             ImeEvent::ObserverReported {
                 open,
                 source,
