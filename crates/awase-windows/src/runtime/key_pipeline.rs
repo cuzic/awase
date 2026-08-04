@@ -860,7 +860,7 @@ impl Runtime {
         event: &RawKeyEvent,
         focus_transition_was_pending: bool,
     ) {
-        if let Some(new_ime_on) = decision.find_ime_set_open() {
+        if let Some((new_ime_on, origin)) = decision.find_ime_set_open_with_origin() {
             // IME-ON コンボ（既定: Ctrl+変換）は現在の IME 状態によらず SetOpen(true) を
             // 無条件で再発行する（`build_ime_set_open_decision` の「二重 enqueue 防止」
             // コメント参照）。このため handle_engine_set_open で belief を更新する前に
@@ -872,32 +872,64 @@ impl Runtime {
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-            let applied = self.platform_state.ime.handle_engine_set_open(
-                new_ime_on,
-                event.modifier_snapshot.ctrl,
-                focus_transition_was_pending,
-                generation,
-                tick_ms,
-            );
+            // `origin` で belief 更新の経路を分ける（`SetOpenOrigin` の doc / 2026-08-04
+            // 「IME OFF・Engine ON」再発対策参照）。
+            // - ExplicitUserAction: IME/エンジン ON/OFF コンボ等、本物のユーザー操作。
+            //   `last_intent` を設定してよい（`handle_engine_set_open`）。
+            // - ActivationSync: `check_active_transition` が対称性のために自動発行した
+            //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
+            //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
+            //   以後の drift correction が効かなくなる（IME OFF 直後に Engine が勝手に
+            //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
+            //   `desired_open` のみ更新する。
+            let applied = match origin {
+                awase::engine::SetOpenOrigin::ExplicitUserAction => {
+                    self.platform_state.ime.handle_engine_set_open(
+                        new_ime_on,
+                        event.modifier_snapshot.ctrl,
+                        focus_transition_was_pending,
+                        generation,
+                        tick_ms,
+                    )
+                }
+                awase::engine::SetOpenOrigin::ActivationSync => {
+                    self.platform_state.ime.handle_engine_activation_sync(
+                        new_ime_on,
+                        event.modifier_snapshot.ctrl,
+                        focus_transition_was_pending,
+                        generation,
+                        tick_ms,
+                    )
+                }
+            };
             log::debug!(
-                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
+                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest, origin={origin:?}), \
+                 poll suspended{}",
                 if applied { "" } else { " [chord barrier active → skipped]" }
             );
 
-            // `decision.find_ime_set_open()==Some(true)` は IME-ON コンボ以外からも
-            // 発火しうる（例: `Ctrl+Shift+変換` = EngineOn コンボで engine が
-            // Inactive→Active に遷移する際も `transition_activation` が同じ
-            // `SetOpen{open:true}` を無条件で出す、`engine.rs` L171）。「IME が既に
-            // ONだった」だけでなく、実際に押されたキーが IME-ON コンボの既定値
-            // `Ctrl+変換`（Shift/Alt/Win 無し）と一致することも確認し、無関係な
-            // コンボでリセットが誤発火しないようにする。`keys.ime_on` をカスタマイズ
-            // した場合はこの判定も合わせて更新すること。
+            // IME-ON コンボの既定値 `Ctrl+変換`（Shift/Alt/Win 無し）と一致する場合のみ
+            // ひらがな＋ローマ字＋CapsLock OFF へのリセットを行う。
+            //
+            // 注意: `origin==ExplicitUserAction` は IME-ON コンボだけでなく
+            // `Ctrl+Shift+変換`（EngineOn コンボ、`apply_active_transition` 経由）等の
+            // 他の明示操作も含む（`SetOpenOrigin` の doc 参照）。ActivationSync の echo
+            // を弾くのは `origin` チェックの役目だが、EngineOn コンボ等の
+            // "ExplicitUserAction だが IME-ON コンボそのものではない" ケースを弾いて
+            // いるのは `is_default_ime_on_combo` の VK/modifier 判定（特に `!shift`）
+            // のほうであり、こちらは削除できない。`keys.ime_on` をカスタマイズした
+            // 場合はこの判定も合わせて更新すること。
             let is_default_ime_on_combo = event.vk_code == crate::vk::VK_CONVERT
                 && event.modifier_snapshot.ctrl
                 && !event.modifier_snapshot.shift
                 && !event.modifier_snapshot.alt
                 && !event.modifier_snapshot.win;
-            if applied && new_ime_on && was_open_before && is_default_ime_on_combo {
+            if applied
+                && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
+                && new_ime_on
+                && was_open_before
+                && is_default_ime_on_combo
+            {
                 Self::kp_reset_to_hiragana_romaji_capsoff();
             }
 

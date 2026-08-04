@@ -4925,3 +4925,190 @@ LiteralDetectFsm による事後訂正をすべて共有させた。warm パス�
 **関連ファイル:** `crates/awase-windows/src/vk.rs`（`vk_pair_to_ascii`）、
 `crates/awase-windows/src/output/vk_send.rs`（`send_char_as_tsf`/`send_char_as_vk`）。
 関連: BUG-01/BUG-02/BUG-03（同クラスの cold-start リテラル化）。
+
+## BUG-48: `Engine::check_active_transition` の対称 `SetOpen` echo がユーザーの明示的な IME OFF 意図（`last_intent`）を上書きし、数百ms〜数秒後に Engine が勝手に ON へ戻る
+
+**症状（2026-08-04 ユーザー報告、v1.12.0、MS-IME/TSF native 環境）:** ユーザーが
+無変換キー等で明示的に IME を OFF にした直後（数百ms〜数秒後）、何も操作していないのに
+ログに `Engine activated (ime=true, ...)` が出て NICOLA エンジンが勝手に再度アクティブに
+なる。実機ログでは `[idle-conv-check] TsfNative: conv observation open=true
+reason=NativeToggleShadowOff → ObserverReported として記録 (engine は actuate しない)`
+のバーストの直後にこの再活性化が繰り返し発生していた。
+
+**原因（仮説と確定部分が混在。2026-08-04 の Opus セカンドオピニオンレビューで
+一部誤りが判明し、このセクションは訂正済み。実機再現ログでの追跡は未実施）:**
+
+`ime-belief-architecture.md` の設計では `effective_open()`
+（`state/ime_model.rs`）は「ユーザーの明示的意図（`last_intent`）がある間は観測より
+必ず優先する」ため、`report_conv_open_inference` が記録する `ObserverReported`
+（Medium confidence）だけでは `desired_open`/`last_intent` は書き換わらない
+（BUG-19 再発対策で確認済み）はずだった。
+
+**確定している構造的な欠陥（コード読解で確認済み）:** `src/engine/engine.rs::
+transition_activation()` は、Engine が Inactive→Active（またはその逆）に遷移する
+**たびに**、理由を問わず `Effect::Ime(ImeEffect::SetOpen{open: now_active})` を
+"対称性のため"自動発行する（`// inactive → active: OS IME を強制的に開く`）。
+この effect が **キーボード経路**（`kp_run_inner` → `kp_stage_post_decision`、
+毎キー入力で `check_active_transition` が呼ばれる）を通る場合、修正前は
+それがユーザーの本物のキー操作（IME ON/OFF コンボ）由来なのか、Engine 内部の
+遷移が"つじつま合わせ"で出した echo なのかを区別せず、どちらも同じ
+`handle_engine_set_open()` → `write_set_open_request()` →
+`ImeEvent::UserImeSetIntent{source: Command}` を dispatch していた。これは
+`last_intent` を「本物のユーザー意図」として上書きし、以後の drift correction も
+この echo を正当な意図として扱ってしまう欠陥であり、実際に存在した
+（`ime-belief-architecture.md` が禁止する「観測を偽装した内部補正」と同型）。
+
+**⚠️ 訂正: `EngineCommand::RefreshState`（IME ポーリング/idle-conv-check 由来、
+キー入力を経由しない `ctx.ime_on` 変化）経路については、当初「これも
+`kp_stage_post_decision` に到達し `last_intent` を汚染する」と書いたが、これは
+**誤り**。`ir_notify_engine_refresh`（`runtime/ime_refresh.rs`）が発行する
+`RefreshState` の Decision は `Runtime::execute_decision` →
+`DecisionExecutor::execute_from_loop`（`runtime/executor.rs`）を通り、この経路は
+`ime: &ImeStateHub`（**不変参照**）しか持たないため `handle_engine_set_open`/
+`handle_engine_activation_sync` のどちらも呼べない。つまり修正前でも
+`RefreshState` 由来の `SetOpen` echo は `last_intent` を汚染していなかった。
+それでも `SetOpen` effect 自体は `execute_from_loop` → `execute_one` →
+`dispatch_ime_set_open` 経由で **OS へは無条件に適用される**
+（`executor.rs::dispatch_effect` が `origin` を捨てて `open` だけ見ている、
+`SetOpen { open, .. }` のパターンで確認できる）。つまりこの経路では
+「observed=true という怪しい観測 1 発だけで実際に OS の IME が開いてしまう」
+という、`last_intent` 汚染とは**別種**の問題が残っている（このコミットでは
+未対処。次のセクション「未対処の指摘」参照）。
+
+ユーザー報告ログの「キー入力が無い間に `Engine activated` が出る」バーストが
+実際にどちらの経路（キーボード経由の echo による `last_intent` 汚染、または
+`RefreshState` 経由の OS-level 無条件適用 + drift correction のせめぎ合い）で
+起きていたかは、INFO レベルのログだけでは特定できていない。前者はこのコミットで
+修正済み、後者は未修正のまま残っている。
+
+旧 `DecisionOrigin`/`EffectOrigin`（`SetOpen` の発行元を区別する仕組み）は
+2026-07-06 の到達不能パス監査で「消費者が存在しない」として撤去されていた
+（`src/engine/decision.rs` 冒頭コメント参照）。今回、その消費者の一つ
+（`kp_stage_post_decision` が origin で belief 更新経路を分岐する必要）が
+実在することが判明したが、`execute_from_loop`（非キーボード経路）側には
+まだ消費者を配線していない。
+
+**修正（キーボード経路のみ。`RefreshState`/非キーボード経路は未修正、下記参照）:**
+`ImeEffect::SetOpen` に `origin: SetOpenOrigin`（`ExplicitUserAction` /
+`ActivationSync`）を追加。`transition_activation()` を呼ぶ4箇所のうち、
+`check_active_transition`（毎キー入力・`RefreshState` の両方から呼ばれる汎用経路）
+だけを `ActivationSync` とし、明示的なユーザー操作（IME ON/OFF コンボ・
+エンジン ON/OFF コンボ・`ToggleEngine`/`ForceEngineOn` コマンド）を起点とする
+残り3箇所は `ExplicitUserAction` のままにした。`awase-windows` 側
+（`kp_stage_post_decision`、キーボード経路 `kp_run_inner` からのみ呼ばれる）は
+origin に応じて分岐する:
+- `ExplicitUserAction` → 既存の `handle_engine_set_open()`（`last_intent` を設定）
+- `ActivationSync` → 新設の `handle_engine_activation_sync()`
+  （`ImeEvent::EngineActivationSync` を dispatch。`PanicReset`/`HwndCacheRestored`
+  と同じ「専用イベントで `last_intent` を設定しない」パターン。`desired_open` も
+  一切書き換えない — 当初は `has_user_explicit_intent()==false` の間だけ書いて
+  いたが、それでも `desired_open := effective_open()` という循環 echo になり、
+  元の観測が期限切れで消えた後もこの値が恒久化してしまう問題が Opus レビューで
+  指摘され、完全に書かないよう修正した。`last_explicit_ime_action_ms` は
+  `handle_engine_set_open` と同様に更新する — 「明示的操作」ではなく「awase 自身が
+  能動的に IME へ書き込んだか」を表すフィールドであり、この関数も実際に OS へ
+  SetOpen を適用するため）。`lints/ime_event_guard` にも `EngineActivationSync` /
+  `handle_engine_activation_sync` を登録し、`PanicReset`/`HwndCacheRestored` と
+  同じ dylint 保護下に置いた（当初は登録漏れだった）。
+
+**未対処の指摘（2026-08-04、Opus セカンドオピニオンレビューで判明、このコミットでは
+未修正）:**
+1. **`execute_from_loop`（`RefreshState`/非キーボード経路）は `origin` を見ない
+   まま `SetOpen` effect を無条件に OS へ適用する**（`executor.rs::dispatch_effect`
+   が `SetOpen { open, .. }` で `origin` を捨てている）。`ActivationSync` origin
+   の SetOpen であっても、`last_intent` こそ汚染されなくなったが、**実際に OS の
+   IME を開閉する副作用は防げていない**。単発の Medium confidence 観測だけで
+   Engine が Active に遷移すると、その瞬間だけ物理的に IME が ON になり、
+   `check_drift_correction`（次の ~500ms ポーリング tick）が気づくまでの間
+   belief（`desired_open=false`）と実際の OS 状態（open）が食い違う spurious な
+   ブリップが残る。ユーザーから見える症状（NICOLA がキーを一瞬取る等）を完全には
+   防げていない可能性がある。対処するなら「`ActivationSync` origin の SetOpen は
+   そもそも OS へ適用しない（`transition_activation` 自体が `ctx.ime_on` の
+   confidence を見て抑制すべきか）」という設計判断が必要で、次セッションで検討する。
+2. **`RefreshState` 経由の SetOpen が `execute_from_loop` へ流れ、
+   `handle_engine_set_open`/`handle_engine_activation_sync` のどちらにも
+   到達しない**（`ime: &ImeStateHub` が不変参照のため）ことが判明したため、
+   本バグの当初の説明（下記「原因」セクション参照）にあった「`RefreshState` も
+   `kp_stage_post_decision` を経由して `last_intent` を汚染する」は誤りだった。
+   ユーザー報告ログの実際のバーストがキーボード経路（このコミットで修正済み）と
+   `RefreshState` 経路（上記1、未修正）のどちらで起きていたかは特定できていない。
+
+**未解明（実機ログのみでは特定できなかった点）:** 最初に `ctx.ime_on` が観測駆動で
+true に振れる具体的トリガー（`last_intent` がその時点でなぜ空になっているか）は
+INFO レベルのログだけでは確定できていない。`FocusChanged` が `last_intent` を
+clear する既知経路はあるが、実機ログの再活性化バーストの直前に `FocusChange` ログは
+出ていなかった。次回実機検証時に debug ログ（`[explicit-intent]`/
+`[diag-engine-active]`/`[conv-open-inference]`）を有効化し、トリガーを特定すること。
+あわせて上記「未対処の指摘」1・2 への対応も次セッションの課題とする。
+
+**⚠️ テスト実行範囲に関する重要な注意（2026-08-04、2巡目の Opus レビュー中に判明）:**
+`crates/awase-windows/src/state/mod.rs:80` の `#[cfg(windows)]` により
+`state::platform_state`（`handle_engine_set_open`/`handle_engine_activation_sync`
+を含む）モジュールまるごとが Windows 以外のターゲットではコンパイル対象から
+除外される（`runtime::executor`/`runtime::key_pipeline` も同様に `cfg(windows)`
+配下）。このためサンドボックス（Linux、wine 未導入）で `cargo test -p
+awase-windows --lib`（target 指定なし = ネイティブ Linux ビルド）を実行しても、
+**これらのファイルの `#[test]` は 1 件もコンパイルされず実行もされない**
+（クリーンビルド後にカナリアテストで実証確認済み）。「271 passed」はいずれも
+`state::ime_model`/`state::force_guard`/`state::observation_store`/`tsf::gji_fsm`
+等の Windows 非依存な純粋ロジック部分のみを指しており、`platform_state.rs`/
+`key_pipeline.rs`/`executor.rs` に追加した回帰テストの**実行による検証は
+できていない**。`cargo check -p awase-windows --target x86_64-pc-windows-gnu
+--tests` によるコンパイル確認（型検査・パターンマッチ網羅性等）のみが実施できる
+検証であり、アサーションの実行結果までは保証しない。次の Windows 実機/wine
+セッションで `cargo test -p awase-windows --target x86_64-pc-windows-gnu --lib`
+相当を実際に実行して確認すること（wine 導入を試すか、実機で確認する）。
+
+**テスト:** `src/engine/tests.rs`（Windows 非依存、実行確認済み）に
+`refresh_state_transition_emits_activation_sync_origin_not_explicit_user_action`
+（`RefreshState` 由来の遷移が `ActivationSync` を使うことを固定 — ただし上記の
+とおりこの経路は `execute_from_loop` を通るため、このテストは「Decision の
+effect が正しく tag されること」を固定するのみで、「`last_intent` が汚染
+されないこと」自体は元々この経路では起きなかった）・
+`ime_on_combo_emits_explicit_user_action_origin`（対照: IME-ON コンボは
+`ExplicitUserAction`）を追加。`crates/awase-windows/tests/golden_scenarios.rs`
+（Windows 非依存、実行確認済み）にシナリオ16・16b（`EngineActivationSync` が
+ユーザーの明示 OFF 意図を汚染しないこと、本物のユーザー操作はそのまま
+`last_intent` を確定させること）を追加 — ただしこれは `ImeModel::reduce()` に
+直接イベントを流すレベルのテストで、`kp_stage_post_decision` の `match origin`
+分岐自体（キーボード経路が正しいハンドラを呼ぶこと）を固定するテストは未整備。
+`crates/awase-windows/src/state/platform_state.rs`（**上記の注意のとおり
+`cfg(windows)` によりこのサンドボックスでは実行不可、コンパイル確認のみ**）に
+`handle_engine_activation_sync_filters_when_focus_transition_was_pending`・
+`handle_engine_activation_sync_applies_when_focus_transition_not_pending`・
+`handle_engine_activation_sync_ctrl_chord_filter_still_works`（`handle_engine_
+set_open` の同名テスト3本をコピペ実装した filter が乖離しても検知できるよう鏡写しで
+追加）・`handle_engine_activation_sync_never_sets_last_intent_or_desired_open`
+を追加。
+
+**確認コマンドと実行可否:**
+`cargo test -p awase --lib`（715 passed、Windows 非依存）・
+`architecture_guard`/`golden_scenarios`（22 passed、シナリオ16含む。テキスト
+走査/`ImeModel` 直接操作のみで Windows 非依存）・`cargo cc`（`-D
+clippy::pedantic` 相当の厳格設定、`awase` クレートのみ）は実際に実行し green を
+確認。`cargo test -p awase-windows --lib`（271 passed）も実行したが、上記の
+注意のとおり本コミットの変更箇所は含まれていない。`cargo check -p awase-windows
+--target x86_64-pc-windows-gnu --tests`・`cargo clippy --target
+x86_64-pc-windows-gnu --lib -- -D warnings`・`cargo dylint --all -p
+awase-windows -- --target x86_64-pc-windows-gnu`（`ime_event_guard`/
+`observation_source_guard` 含め warning ゼロ、`EngineActivationSync` の
+dylint 登録も確認）はコンパイル/静的解析レベルで green。wine 未導入のため
+このサンドボックスでは `platform_state.rs`/`key_pipeline.rs`/`executor.rs`
+のテスト実行・実機での再現・修正確認そのものは未実施（次の Windows 実機
+セッションで、MS-IME/TSF native アプリで IME OFF 直後に Engine が勝手に ON へ
+戻らないことを確認すること）。
+
+**関連ファイル:** `src/engine/decision.rs`（`SetOpenOrigin`）、
+`src/engine/engine.rs`（`transition_activation`/`check_active_transition`/
+`apply_active_transition`/`apply_engine_on_with_ime_recovery`/
+`build_ime_set_open_decision`）、`crates/awase-windows/src/state/ime_event.rs`
+（`ImeEvent::EngineActivationSync`）、`crates/awase-windows/src/state/ime_model.rs`
+（`reduce()`）、`crates/awase-windows/src/state/platform_state.rs`
+（`handle_engine_activation_sync`）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_post_decision`）、`crates/awase-windows/src/runtime/executor.rs`
+（`dispatch_effect` — `origin` を見ずに OS 適用する未対処箇所）、
+`crates/awase-windows/src/runtime/ime_refresh.rs`（`ir_notify_engine_refresh`、
+`RefreshState` の発火元）、`lints/ime_event_guard/src/lib.rs`。
+関連: BUG-19（同型の「観測が意図を偽装する」バグ、`ime-belief-architecture.md` の
+起点）、[[project_msime_dual_owner_bugs]]（2026-07-06 に同じ「IME OFF・Engine ON」
+症状で調査したが未解決のまま残っていた不具合2）。

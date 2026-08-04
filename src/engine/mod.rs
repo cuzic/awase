@@ -24,7 +24,7 @@ pub mod timing;
 pub use conv::{Charset, ConvMode};
 pub use decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,
-    InputEffect, SpecialKeyCombos, TimerEffect, UiEffect,
+    InputEffect, SetOpenOrigin, SpecialKeyCombos, TimerEffect, UiEffect,
 };
 pub use engine::Engine;
 pub use fsm_types::{

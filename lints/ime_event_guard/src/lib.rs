@@ -16,9 +16,10 @@ use rustc_span::Span;
 dylint_linting::declare_late_lint! {
     /// ### What it does
     ///
-    /// Flags construction of `ImeEvent::PanicReset` or `ImeEvent::HwndCacheRestored`
-    /// outside their single designated call site (`apply_panic_reset` /
-    /// `apply_hwnd_cache_restore`).
+    /// Flags construction of `ImeEvent::PanicReset`, `ImeEvent::HwndCacheRestored`,
+    /// or `ImeEvent::EngineActivationSync` outside their single designated call site
+    /// (`apply_panic_reset` / `apply_hwnd_cache_restore` /
+    /// `handle_engine_activation_sync`).
     ///
     /// ### Why is this bad?
     ///
@@ -61,11 +62,15 @@ dylint_linting::declare_late_lint! {
     /// ```
     pub RESTRICTED_IME_EVENT_CONSTRUCTION,
     Warn,
-    "ImeEvent::PanicReset/HwndCacheRestored constructed outside its designated function"
+    "ImeEvent::PanicReset/HwndCacheRestored/EngineActivationSync constructed outside its designated function"
 }
 
-const ALLOWED_FNS: &[&str] = &["apply_panic_reset", "apply_hwnd_cache_restore"];
-const RESTRICTED_VARIANTS: &[&str] = &["PanicReset", "HwndCacheRestored"];
+const ALLOWED_FNS: &[&str] = &[
+    "apply_panic_reset",
+    "apply_hwnd_cache_restore",
+    "handle_engine_activation_sync",
+];
+const RESTRICTED_VARIANTS: &[&str] = &["PanicReset", "HwndCacheRestored", "EngineActivationSync"];
 
 impl<'tcx> rustc_lint::LateLintPass<'tcx> for RestrictedImeEventConstruction {
     fn check_fn(

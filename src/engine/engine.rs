@@ -16,7 +16,7 @@ use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
 
 use super::decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
-    InputContext, InputEffect, SpecialKeyCombos, UiEffect,
+    InputContext, InputEffect, SetOpenOrigin, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::{ComposingHint, ModifierState};
@@ -212,7 +212,14 @@ impl Engine {
             );
         }
 
-        let transition_effects = self.transition_activation(new_state);
+        // ここで発行される SetOpen は `check_active_transition`（Phase 2、通常の毎キー
+        // 入力経路）由来であり、ユーザーが今このキーで IME ON/OFF を明示的に選んだ
+        // わけではない（`ctx.ime_on` が観測駆動で変化しただけでも Active/Inactive は
+        // 遷移しうる）。`SetOpenOrigin::ActivationSync` を渡し、Platform 層が
+        // `last_intent`（ユーザー明示意図）を汚染しないようにする（`SetOpenOrigin` の
+        // doc 参照）。
+        let transition_effects =
+            self.transition_activation(new_state, SetOpenOrigin::ActivationSync);
         effects.extend(transition_effects);
         effects
     }
@@ -225,7 +232,15 @@ impl Engine {
     ///   ユーザーが既に望むモード（全角英数等）を選択済みなので、VK_DBE_ALPHANUMERIC を
     ///   追加送信すると全角英数→半角英数のような意図しない conv 変化が起きる。
     /// 同じ状態: 空の EffectVec
-    fn transition_activation(&mut self, new_state: ActivationState) -> EffectVec {
+    ///
+    /// `origin`: 発行する `ImeEffect::SetOpen` に付与する `SetOpenOrigin`。呼び出し元が
+    /// 「これは本物のユーザー操作（IME/エンジン ON/OFF コンボ、トレイ操作等）が引き金か、
+    /// それとも通常のキー入力経路での自動遷移か」を判断して渡すこと。
+    fn transition_activation(
+        &mut self,
+        new_state: ActivationState,
+        origin: SetOpenOrigin,
+    ) -> EffectVec {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
         let mut effects = EffectVec::new();
@@ -236,7 +251,10 @@ impl Engine {
                 ActivationState::Inactive(InactiveReason::NotRomajiInput)
             );
             if !suppress_set_open {
-                effects.push(Effect::Ime(ImeEffect::SetOpen { open: now_active }));
+                effects.push(Effect::Ime(ImeEffect::SetOpen {
+                    open: now_active,
+                    origin,
+                }));
             }
             // NotRomajiInput の場合は SetOpen も engine-state キーも不要。
             // ユーザーが選択した kana/katakana モードをそのまま維持する。
@@ -452,6 +470,10 @@ impl Engine {
     // ── 内部メソッド ──
 
     /// user_enabled 変更後の active 遷移を Decision に反映する。
+    ///
+    /// 呼び出し元（`EngineCommand::ToggleEngine` / `EngineOn`・`EngineOff` コンボ）は
+    /// いずれもユーザーの明示操作が引き金のため、`SetOpenOrigin::ExplicitUserAction` を
+    /// 使う（`check_active_transition` 由来の `ActivationSync` とは区別する）。
     fn apply_active_transition(
         &mut self,
         old_active: bool,
@@ -471,7 +493,7 @@ impl Engine {
             } else {
                 ActivationState::Inactive(InactiveReason::UserDisabled)
             };
-            let effects = self.transition_activation(new_state);
+            let effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
             for e in effects {
                 decision.push_effect(e);
             }
@@ -487,15 +509,21 @@ impl Engine {
     ///
     /// `is_japanese_ime=false` 等で IME を ON にしても active になれない場合は
     /// `SetOpen{true}` のみ追加する（意図を Platform 層に伝えるため）。
+    ///
+    /// EngineOn コンボ・`ForceEngineOn` コマンドいずれもユーザーの明示操作が引き金のため
+    /// `SetOpenOrigin::ExplicitUserAction` を使う。
     fn apply_engine_on_with_ime_recovery(&mut self, ctx: &InputContext, decision: &mut Decision) {
         let pseudo_ctx = InputContext {
             ime_on: true,
             ..*ctx
         };
         let target_state = self.compute_state(&pseudo_ctx);
-        let effects = self.transition_activation(target_state);
+        let effects = self.transition_activation(target_state, SetOpenOrigin::ExplicitUserAction);
         if effects.is_empty() {
-            decision.push_effect(Effect::Ime(ImeEffect::SetOpen { open: true }));
+            decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
+                open: true,
+                origin: SetOpenOrigin::ExplicitUserAction,
+            }));
         } else {
             for e in effects {
                 decision.push_effect(e);
@@ -523,11 +551,15 @@ impl Engine {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        let mut effects = self.transition_activation(new_state);
+        // IME ON/OFF コンボキーそのものがユーザーの明示操作。
+        let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
-            effects.push(Effect::Ime(ImeEffect::SetOpen { open }));
+            effects.push(Effect::Ime(ImeEffect::SetOpen {
+                open,
+                origin: SetOpenOrigin::ExplicitUserAction,
+            }));
         }
         Decision::consumed_with(effects)
     }
