@@ -2015,11 +2015,13 @@ fn combo_key_list_ui(
     });
 }
 
-/// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` のみ、
-/// Alt impersonation 候補は含めない。必須選択・空欄なし）。変更時は true を返す。
+/// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
+/// `IME_MODE_KEY_OPTIONS`。Alt impersonation 候補は含めない。必須選択・空欄なし）。
+/// 変更時は true を返す。
 fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
-    let display = THUMB_KEY_OPTIONS
-        .iter()
+    let options = THUMB_KEY_OPTIONS.iter().chain(IME_MODE_KEY_OPTIONS);
+    let display = options
+        .clone()
         .find(|(_, internal)| *internal == current.as_str())
         .map_or(current.as_str(), |(d, _)| *d)
         .to_string();
@@ -2032,7 +2034,7 @@ fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in THUMB_KEY_OPTIONS {
+            for (label, internal) in options {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -2078,9 +2080,13 @@ fn bare_key_list_ui(
 }
 
 /// 「IME 検出」タブ用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
-/// `IME_DETECT_EXTRA_OPTIONS`）。修飾キー欄は無い。変更時は true を返す。
+/// `IME_DETECT_EXTRA_OPTIONS` + `IME_MODE_KEY_OPTIONS`）。修飾キー欄は無い。
+/// 変更時は true を返す。
 fn ime_detect_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
-    let options = THUMB_KEY_OPTIONS.iter().chain(IME_DETECT_EXTRA_OPTIONS);
+    let options = THUMB_KEY_OPTIONS
+        .iter()
+        .chain(IME_DETECT_EXTRA_OPTIONS)
+        .chain(IME_MODE_KEY_OPTIONS);
     let display = options
         .clone()
         .find(|(_, internal)| *internal == current.as_str())
@@ -2156,6 +2162,19 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
 const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
     &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
 
+/// エンジン制御・IME制御・IME検出用のドロップダウンにのみ追加する、IME モード
+/// 切替キー。`VK_DBE_ALPHANUMERIC`（英数）は `VkCode::from_name`（vk.rs）で
+/// 解決可能で `config.toml` に手書きすれば従来から機能していたが、
+/// `THUMB_KEY_OPTIONS` に候補が無く GUI 上選べなかった
+/// （2026-08-03 ユーザー報告「エンジンOFFの条件で英数キーが選択出来ない」）。
+///
+/// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_triple_combo`
+/// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
+/// IME モード専用キーをそこに混入させると意図しない組み合わせが選択可能に
+/// なってしまう。`ALT_IMPERSONATION_OPTIONS`/`IME_DETECT_EXTRA_OPTIONS` と同じ
+/// 「用途ごとに候補リストを分離する」既存パターンに倣う。
+const IME_MODE_KEY_OPTIONS: &[(&str, &str)] = &[("英数", "VK_DBE_ALPHANUMERIC")];
+
 /// 「IME 検出」タブ（`ime_detect.toggle/on/off`）の候補にのみ追加するエントリ。
 ///
 /// これらは `VkCode::from_name` 直読み（`app/mod.rs::parse_vk_list`、
@@ -2167,6 +2186,34 @@ const IME_DETECT_EXTRA_OPTIONS: &[(&str, &str)] = &[
     ("IMEオン", "VK_IME_ON"),
     ("IMEオフ", "VK_IME_OFF"),
 ];
+
+#[cfg(test)]
+mod ime_mode_key_options_tests {
+    use super::{IME_MODE_KEY_OPTIONS, THUMB_KEY_OPTIONS};
+
+    /// 「英数」がエンジン制御/IME検出のドロップダウン候補に出るようにする
+    /// （2026-08-03 ユーザー報告の回帰防止）。
+    #[test]
+    fn ime_mode_key_options_contains_eisu() {
+        assert!(
+            IME_MODE_KEY_OPTIONS
+                .iter()
+                .any(|(label, internal)| *label == "英数" && *internal == "VK_DBE_ALPHANUMERIC")
+        );
+    }
+
+    /// IME モード専用キーは親指キー候補（`THUMB_KEY_OPTIONS`）には混ぜない
+    /// （`IME_MODE_KEY_OPTIONS` の doc コメント参照）。
+    #[test]
+    fn ime_mode_key_options_do_not_leak_into_thumb_key_options() {
+        for (_, internal) in IME_MODE_KEY_OPTIONS {
+            assert!(
+                !THUMB_KEY_OPTIONS.iter().any(|(_, t)| t == internal),
+                "{internal} が THUMB_KEY_OPTIONS に漏れている"
+            );
+        }
+    }
+}
 
 /// keymap タブで使用する主キー一覧（表示名, parse_key_combo に渡す内部表記）。
 ///

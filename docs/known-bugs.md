@@ -4874,3 +4874,54 @@ Imm32Unavailable と同じ suppress 挙動になることを固定）。`runtime
 （`ReinjectKey` 順序）、`crates/awase-windows/src/vk.rs`（`VK_DBE_SBCSCHAR`/`DBCSCHAR`）。
 関連: BUG-07/BUG-09/BUG-11/BUG-20/BUG-34（いずれも「IME ON / Engine OFF」という
 ユーザー通報文言が既出だが原因系統は異なる）。
+
+## BUG-47: `Vk`/`Tsf` 注入モードで記号（句読点「。」「、」・長音「ー」等）を送ると、cold-start ウォームアップ保護が無いため半角のまま出力される
+
+**症状（2026-08-03 ユーザー報告、v1.12.0）:** キーボード FKB7628-801(Thumb Touch)、
+IME Google 日本語入力。`.yab` レイアウトで句読点リテラル「。」「、」を配置しても
+半角の「.」「,」が出力される。長音記号「ー」も半角のハイフンマイナス「-」になり、
+IME が正しく変換できない（例:「き-」となり「きー」にならない）。
+
+**原因（確定、コード読解で確認）:** `.yab` パース（`src/yab/mod.rs`）・
+`KeyAction::Char` への変換（`src/engine/nicola_fsm.rs`）はいずれも正しい。原因は
+出力層（`crates/awase-windows/src/output/vk_send.rs`）。`send_char_as_tsf`/
+`send_char_as_vk` の `CharResolution::Vk` アーム（記号を `symbol_to_vk` テーブル
+経由で生 VK として送る経路）は、通常のローマ字送信（`send_romaji_as_tsf`/
+`send_romaji_batched`）が必ず呼ぶ `assess_warmth()` によるcold-startウォームアップ
+判定（F2 事前送信・probe設置・MS-IME confirmゲート・LiteralDetect）を一切呼ばず、
+IME/TSF が cold（未ウォームアップ）な状態でも記号 VK を無条件送信していた。GJI/TSF
+が変換エンジンとして受理する準備ができていないため、送信された VK が変換されず
+半角ASCIIのまま素通しされる。`docs/known-bugs.md` の BUG-01/02/03（ローマ字の
+最初の1文字がリテラル化する）と同じクラスのバグだが、記号送信経路には最初から
+この対策が配線されていなかった。
+
+**修正:** `vk.rs` に `ascii_to_vk` の厳密な逆写像 `vk_pair_to_ascii(vk, needs_shift)
+-> Option<char>` を追加し、ASCII 1 文字で表現できる記号（`-`/`.`/`,`/`/` および
+英数字。今回報告の3文字はすべて該当）は `send_char_as_tsf`/`send_char_as_vk` の
+`CharResolution::Vk` アームから通常のローマ字送信経路（`send_romaji_as_tsf`/
+`send_romaji_batched`）へ合流させ、cold-startウォームアップ・probe設置・
+LiteralDetectFsm による事後訂正をすべて共有させた。warm パスの送信バイト列は
+従来の `send_vk_pair(vk, needs_shift, marker)` と同一になるよう設計してある
+（`vk_pair_to_ascii_roundtrips_with_ascii_to_vk` テストで固定）。新規タイミング
+定数は追加していない（既存の `assess_warmth()` と判断基準をそのまま再利用）。
+
+**未対応（次段の課題）:** Shift 付きの記号（`？`/`！`/`～`/`＋` 等）は
+`ascii_to_vk` に逆像が無いため今回の修正の対象外。恒久対応には probe のペイロード
+型を `romaji: String` から `Vec<(VkCode, bool)>` へ一般化する必要があり
+（`ChromeProbe`/`GjiWarmupCoro`/`run_per_vk_confirm` のシグネチャ変更が伴う）、
+スコープ外として次段に持ち越す。
+
+**テスト:** `crates/awase-windows/src/vk.rs` に
+`vk_pair_to_ascii_roundtrips_with_ascii_to_vk`（VK 0x00-0xFF × shift 2値の
+全網羅ラウンドトリップ）・`vk_pair_to_ascii_rejects_shift`・
+`vk_pair_to_ascii_covers_reported_symbols`（今回の3文字を明示的に固定）を追加。
+`cargo test -p awase-windows --lib`（271 passed）・`cargo check`/`cargo clippy
+--target x86_64-pc-windows-gnu --lib -- -D warnings`・`architecture_guard`/
+`layer_boundary_guard`/`golden_scenarios` 全 green を確認。wine 未導入のため
+このサンドボックスでは実機での再現・修正確認そのものは未実施（次の Windows
+実機セッションで Chrome/Edge + GJI にて「。」「、」「ー」の cold-start 直後の
+出力を確認すること）。
+
+**関連ファイル:** `crates/awase-windows/src/vk.rs`（`vk_pair_to_ascii`）、
+`crates/awase-windows/src/output/vk_send.rs`（`send_char_as_tsf`/`send_char_as_vk`）。
+関連: BUG-01/BUG-02/BUG-03（同クラスの cold-start リテラル化）。
