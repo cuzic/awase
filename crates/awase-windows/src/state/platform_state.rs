@@ -44,9 +44,16 @@ pub(crate) struct ImeStateHub {
     /// 場合（仮想デスクトップ切替等）でも、最初のフォーカス変化後に `last_intent` が
     /// クリアされても guard が機能し続けるようにする。
     ///
-    /// - SyncKey / PhysicalImeKey による `target=false` で更新。
-    /// - SyncKey / PhysicalImeKey による `target=true` でリセット。
+    /// - SyncKey / PhysicalImeKey / Command による `target=false` で更新。
+    /// - SyncKey / PhysicalImeKey / Command による `target=true` でリセット。
     /// - FocusChanged / Recovery / HwndCache ではリセットしない。
+    ///
+    /// BUG-48 修正（PR #44）により `Command` ソースは `handle_engine_set_open`
+    /// （`SetOpenOrigin::ExplicitUserAction`）経由でのみ発行されるようになり、
+    /// エンジン内部の対称 echo（`ActivationSync` → `handle_engine_activation_sync`、
+    /// こちらは `write_set_open_request` を呼ばない）とは完全に分離された。
+    /// つまり `Command` は「Ctrl+無変換 等デフォルトキーバインドでの明示 IME OFF/ON」を
+    /// 表す実ユーザー操作専用ソースであり、SyncKey/PhysicalImeKey と同じ扱いにできる。
     last_user_explicit_off_ms: u64,
 
     /// エンジンが明示的 IME ON/OFF を適用した最終時刻 (tick_ms)。0 = 未操作。
@@ -98,7 +105,9 @@ impl ImeStateHub {
         if let ImeEvent::UserImeSetIntent { target, source } = &event {
             if matches!(
                 source,
-                UserIntentSource::SyncKey | UserIntentSource::PhysicalImeKey
+                UserIntentSource::SyncKey
+                    | UserIntentSource::PhysicalImeKey
+                    | UserIntentSource::Command
             ) {
                 if *target {
                     self.last_user_explicit_off_ms = 0;
@@ -379,8 +388,8 @@ impl ImeStateHub {
     ///
     /// `last_explicit_off_ms()` は `FocusChanged` で `last_intent` がクリアされると 0 に
     /// 戻るため、複数の rapid focus 変化（仮想デスクトップ切替等）では 2 回目以降の
-    /// guard が機能しない。このメソッドは SyncKey / PhysicalImeKey による明示 OFF のみを
-    /// 追跡し、FocusChanged でリセットしない。
+    /// guard が機能しない。このメソッドは SyncKey / PhysicalImeKey / Command による明示 OFF
+    /// のみを追跡し、FocusChanged でリセットしない。
     pub(crate) fn persistent_explicit_off_ms(&self) -> u64 {
         self.last_user_explicit_off_ms
     }
@@ -1203,6 +1212,72 @@ mod tests {
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // ── persistent_explicit_off_ms: Command ソースも SyncKey/PhysicalImeKey と
+    //    同じく永続タイムスタンプを更新すること（2026-08-04 実機ログ調査）。
+    //
+    // Ctrl+無変換（デフォルトキーバインド）による明示 IME OFF は
+    // `SpecialKeyMatch::ImeOff` → `handle_engine_set_open` → `write_set_open_request`
+    // → `UserIntentSource::Command` を経由するが、`dispatch_event` の永続タイムスタンプ
+    // 更新が SyncKey/PhysicalImeKey のみを対象にしていたため Command が漏れていた。
+    // その結果、明示 OFF の数秒後に UWP 系中間ウィンドウ（Imm32Unavailable、
+    // 例: ForegroundStaging）へフォーカスが渡ると `focus_tracking.rs` の
+    // `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（10秒）抑制ガードが効かず（`persistent_explicit_off_ms()`
+    // が常に 0 のため `last_off_ms > 0` が false）、`reset_stale_ime_on_for_imm_broken`
+    // が「明示的意図なし」と誤判定して belief を Low confidence で ON に戻し、
+    // Engine が「IME OFF のはずなのに勝手に ON へ戻る」症状を起こしていた
+    // （BUG-48 の「未解明: 最初に ctx.ime_on が観測駆動で true に振れる具体的トリガー」
+    // に対応する原因の一つ）。BUG-48 修正（PR #44）により Command ソースは
+    // `handle_engine_set_open`（`SetOpenOrigin::ExplicitUserAction`）経由でのみ
+    // 発行されるようになり、エンジン内部の対称 echo と分離済みなので、
+    // SyncKey/PhysicalImeKey と同列に永続タイムスタンプへ含めてよい。
+    #[test]
+    fn command_source_updates_persistent_explicit_off_ms() {
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::Command,
+            },
+            TickMs(12_345),
+        );
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            12_345,
+            "Command ソースの明示 OFF も永続タイムスタンプを更新すること"
+        );
+
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::Command,
+            },
+            TickMs(20_000),
+        );
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            0,
+            "Command ソースの明示 ON はタイムスタンプをリセットすること"
+        );
+    }
+
+    // Ctrl+無変換 のデフォルトキーバインドが実際にたどる呼び出し経路
+    // （`handle_engine_set_open` → `write_set_open_request` → `Command`）を
+    // 直接エンドツーエンドで確認する回帰テスト。
+    #[test]
+    fn handle_engine_set_open_updates_persistent_explicit_off_ms() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_set_open(false, false, false, 1, TickMs(9_999));
+        assert!(applied);
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            9_999,
+            "デフォルトキーバインド経由の明示 IME OFF が \
+             Imm32Unavailable cache-miss ガードから漏れないこと"
         );
     }
 

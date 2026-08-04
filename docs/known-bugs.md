@@ -5112,3 +5112,64 @@ dylint 登録も確認）はコンパイル/静的解析レベルで green。win
 関連: BUG-19（同型の「観測が意図を偽装する」バグ、`ime-belief-architecture.md` の
 起点）、[[project_msime_dual_owner_bugs]]（2026-07-06 に同じ「IME OFF・Engine ON」
 症状で調査したが未解決のまま残っていた不具合2）。
+
+**追補（2026-08-04、同日別セッション）: 「未解明」トリガーの1つを特定・修正**
+
+上記「未解明」節にあった「最初に `ctx.ime_on` が観測駆動で true に振れる具体的
+トリガー」を、ユーザー提供の実機ログ（本バグの起票根拠と同一ログ）を
+`crates/awase-windows/src/runtime/focus_tracking.rs`／`state/platform_state.rs`
+のコードと突き合わせて特定した。
+
+**原因:** `Ctrl+無変換`（デフォルトキーバインドの明示 IME OFF）は
+`SpecialKeyMatch::ImeOff`（`src/engine/engine.rs:613-616`）→
+`handle_engine_set_open` → `write_set_open_request` →
+`ImeEvent::UserImeSetIntent{source: UserIntentSource::Command}` を発行する。
+一方 `ImeStateHub::dispatch_event`（`platform_state.rs`）は、フォーカス変更を
+またいで生存する永続タイムスタンプ `last_user_explicit_off_ms` を
+`SyncKey`/`PhysicalImeKey` ソースのときしか更新しておらず、`Command` が対象から
+漏れていた。`FocusChanged` は `ime_model.rs` で `last_intent` を無条件クリアする
+ため、明示 OFF の数秒後にフォーカスが UWP 系中間ウィンドウ（`ForegroundStaging`・
+`Windows.UI.Input.InputSite.WindowClass` 等、`Imm32Unavailable`）を経由すると、
+`focus_tracking.rs` の cache-miss 分岐が `persistent_explicit_off_ms()`（常に 0）
+を見て `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（10秒）抑制ガードを発動できず、
+`reset_stale_ime_on_for_imm_broken` が「明示的意図の証拠なし」と誤判定して
+belief を Low confidence の `ObserverReported{open:true}` で ON に戻していた。
+ユーザー報告ログの `06:23:19.814 IME OFF (key combo)` → 約11秒後
+`06:23:30.845 AppKind changed: Uwp → Win32 (class=ForegroundStaging)` →
+同時刻 `Imm32Unavailable entry without trusted cache: 安全デフォルト ON` →
+`Engine activated` という並びと完全に一致する。
+
+上記「原因」節が指摘した `transition_activation()` の対称 echo とは別経路
+（キーボードから明示 OFF を押した後の *フォーカス遷移* が引き金）であり、
+BUG-48 の主修正（`SetOpenOrigin` 分離）はこちらには影響していなかった
+（`Command` ソースは修正後も `handle_engine_set_open` からのみ発行されるが、
+それが「本物の明示操作」であることが確定した点はむしろこの修正の前提を
+補強する）。
+
+**修正:** `platform_state.rs` の `dispatch_event` にある永続タイムスタンプ更新の
+`matches!(source, SyncKey | PhysicalImeKey)` に `Command` を追加。BUG-48 修正
+（PR #44）により `Command` ソースは `handle_engine_set_open`
+（`SetOpenOrigin::ExplicitUserAction`）経由でのみ発行される、つまり
+「デフォルトキーバインドでの本物のユーザー操作」専用ソースになったため、
+SyncKey/PhysicalImeKey と同列に扱ってよい。
+
+**テスト:** `crates/awase-windows/src/state/platform_state.rs`
+（BUG-48 と同じ理由でこのサンドボックスでは `cfg(windows)` によりコンパイル
+確認のみ、実行不可）に `command_source_updates_persistent_explicit_off_ms`
+（`Command` ソースの `dispatch_event` が永続タイムスタンプを更新/リセットする
+ことを直接確認）・`handle_engine_set_open_updates_persistent_explicit_off_ms`
+（Ctrl+無変換 が実際にたどる呼び出し経路をエンドツーエンドで確認）を追加。
+
+**確認コマンドと実行可否:** `cargo test -p awase --lib`（715 passed）・
+`cargo test -p awase-windows --lib`（271 passed、上記の理由でこのコミットの
+変更箇所は含まれない）・`cargo test -p awase-windows --test golden_scenarios
+--test architecture_guard`（22 passed）は実行し green を確認。
+`cargo check -p awase-windows --target x86_64-pc-windows-gnu --tests`・
+`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -D
+warnings` も green（`--tests` 付きの clippy pedantic warning は本修正と無関係な
+既存debt、`platform_state.rs` を含まない）。実機/wine での動作確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/state/platform_state.rs`
+（`ImeStateHub::dispatch_event`/`persistent_explicit_off_ms`）、
+`crates/awase-windows/src/runtime/focus_tracking.rs`
+（`EXPLICIT_OFF_CACHE_SUPPRESS_MS` 抑制ガード）。
