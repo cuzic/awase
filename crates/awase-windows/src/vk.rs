@@ -549,6 +549,35 @@ pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
     }
 }
 
+/// `ascii_to_vk` の逆写像。`(vk, needs_shift)` が単一 ASCII キーストロークで
+/// 表現できる場合のみ `Some` を返す。
+///
+/// 不変条件: `vk_pair_to_ascii(v, s) == Some(c)` ⇒ `ascii_to_vk(c) == Some((v, s))`
+/// （`vk_pair_to_ascii_roundtrips_with_ascii_to_vk` テストで固定）。
+///
+/// `symbol_to_vk`（`build_symbol_to_vk`）が生成する記号 VK のうち、この関数が
+/// カバーするのは `ascii_to_vk` が扱う4記号（`-`/`.`/`,`/`/`）と英数字のみ。
+/// Shift 付きの記号（`？`/`！`/`～` 等）は対象外（未対応、`docs/known-bugs.md`
+/// BUG-47 参照）。
+///
+/// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
+#[must_use]
+pub(crate) const fn vk_pair_to_ascii(vk: VkCode, needs_shift: bool) -> Option<char> {
+    if needs_shift {
+        return None;
+    }
+    match vk.0 {
+        0x41..=0x5A => Some((b'a' + (vk.0 - 0x41) as u8) as char),
+        0x30..=0x39 => Some((b'0' + (vk.0 - 0x30) as u8) as char),
+        0xBD => Some('-'),
+        0xBE => Some('.'),
+        0xBC => Some(','),
+        0xBF => Some('/'),
+        _ => None,
+    }
+}
+
 /// 記号の VK マッピング（文字 → (VK コード, Shift 必要)）
 ///
 /// JIS キーボード + IME ひらがなモード前提。
@@ -657,4 +686,45 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         .iter()
         .map(|&(ch, vk, shift)| (ch, (VkCode(vk), shift)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ascii_to_vk, vk_pair_to_ascii, VkCode};
+
+    /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
+    /// （2026-08-03 ユーザー報告 BUG-47: 句読点「。」「、」・長音「ー」が
+    /// 半角化する修正の前提となる不変条件。VK 0x00-0xFF × shift 2値を全網羅）。
+    #[test]
+    fn vk_pair_to_ascii_roundtrips_with_ascii_to_vk() {
+        for raw in 0x00u16..=0xFF {
+            for needs_shift in [false, true] {
+                let vk = VkCode(raw);
+                if let Some(ch) = vk_pair_to_ascii(vk, needs_shift) {
+                    assert_eq!(
+                        ascii_to_vk(ch),
+                        Some((vk, needs_shift)),
+                        "vk_pair_to_ascii(0x{raw:02X}, {needs_shift}) = Some({ch:?}) だが \
+                         ascii_to_vk({ch:?}) が往復しない"
+                    );
+                }
+            }
+        }
+    }
+
+    /// shift 付きは常に None（`ascii_to_vk` が shift 付き ASCII を生成しないため）。
+    #[test]
+    fn vk_pair_to_ascii_rejects_shift() {
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBD), true), None);
+        assert_eq!(vk_pair_to_ascii(VkCode(0x41), true), None);
+    }
+
+    /// 今回のユーザー報告3文字（。→VK_OEM_PERIOD、、→VK_OEM_COMMA、ー→VK_OEM_MINUS）
+    /// が正しく ASCII へ解決できることを明示的に固定する。
+    #[test]
+    fn vk_pair_to_ascii_covers_reported_symbols() {
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBE), false), Some('.')); // 。
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBC), false), Some(',')); // 、
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBD), false), Some('-')); // ー
+    }
 }
