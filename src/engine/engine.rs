@@ -493,8 +493,7 @@ impl Engine {
             } else {
                 ActivationState::Inactive(InactiveReason::UserDisabled)
             };
-            let effects =
-                self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
+            let effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
             for e in effects {
                 decision.push_effect(e);
             }
@@ -519,8 +518,7 @@ impl Engine {
             ..*ctx
         };
         let target_state = self.compute_state(&pseudo_ctx);
-        let effects =
-            self.transition_activation(target_state, SetOpenOrigin::ExplicitUserAction);
+        let effects = self.transition_activation(target_state, SetOpenOrigin::ExplicitUserAction);
         if effects.is_empty() {
             decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
                 open: true,
@@ -554,8 +552,7 @@ impl Engine {
         let now_active = new_state.is_active();
 
         // IME ON/OFF コンボキーそのものがユーザーの明示操作。
-        let mut effects =
-            self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
+        let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
