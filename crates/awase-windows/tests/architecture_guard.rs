@@ -25,8 +25,17 @@ use std::path::Path;
 
 fn read_crate_file(rel_path: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    fs::read_to_string(Path::new(manifest_dir).join(rel_path))
-        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"))
+    let raw = fs::read_to_string(Path::new(manifest_dir).join(rel_path))
+        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    // Windows ランナーは git 既定の core.autocrlf=true でチェックアウト時に .rs
+    // ファイルを CRLF 化する（`.gitattributes` の eol=lf 指定は `tests/golden/**`
+    // のみが対象で、通常のソースファイルには効かない）。このファイル内の各種
+    // ガードは `\n` を埋め込んだリテラル（例: `production_code_only` の
+    // `"#[cfg(test)]\nmod tests"`）で境界検出しているため、CRLF のままだと
+    // マッチに失敗し「本番コード」と「テストコード」の切り分けが機能しなくなる
+    // （2026-08-04 実機CI: `user_intent_source_construction_is_limited_to_typed_writers`
+    // が Windows ランナーでのみ count=5 相当で fail した）。読み込み時点で正規化する。
+    raw.replace("\r\n", "\n")
 }
 
 /// `#[cfg(test)]\nmod tests {` より前の「本番コード」部分だけを取り出す。
