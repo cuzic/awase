@@ -22,6 +22,9 @@
 //! 15. 左Shift単独タップによる「IME-ON 半角英数」持続トグル: ObservedEisu へ切替えても
 //!     IME は open のまま維持され (SetOpen を経由しない)、トグルOFF で romaji-capable に
 //!     復帰する (UserHalfWidthAlnumToggle)
+//! 16. `EngineActivationSync`（BUG-48: check_active_transition の対称 SetOpen echo）が
+//!     ユーザーの明示 OFF 意図 (last_intent) を汚染しない。16b はその後の本物の
+//!     ユーザー操作が通常どおり last_intent を確定させることの対照テスト
 //!
 //! ## 実装状況
 //!

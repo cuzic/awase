@@ -909,10 +909,16 @@ impl Runtime {
             );
 
             // IME-ON コンボの既定値 `Ctrl+変換`（Shift/Alt/Win 無し）と一致する場合のみ
-            // ひらがな＋ローマ字＋CapsLock OFF へのリセットを行う。`origin` で
-            // ExplicitUserAction に絞られたため、ActivationSync の echo（`Ctrl+Shift+変換`
-            // = EngineOn コンボでの遷移等）でこのリセットが誤発火することはない。
-            // `keys.ime_on` をカスタマイズした場合はこの判定も合わせて更新すること。
+            // ひらがな＋ローマ字＋CapsLock OFF へのリセットを行う。
+            //
+            // 注意: `origin==ExplicitUserAction` は IME-ON コンボだけでなく
+            // `Ctrl+Shift+変換`（EngineOn コンボ、`apply_active_transition` 経由）等の
+            // 他の明示操作も含む（`SetOpenOrigin` の doc 参照）。ActivationSync の echo
+            // を弾くのは `origin` チェックの役目だが、EngineOn コンボ等の
+            // "ExplicitUserAction だが IME-ON コンボそのものではない" ケースを弾いて
+            // いるのは `is_default_ime_on_combo` の VK/modifier 判定（特に `!shift`）
+            // のほうであり、こちらは削除できない。`keys.ime_on` をカスタマイズした
+            // 場合はこの判定も合わせて更新すること。
             let is_default_ime_on_combo = event.vk_code == crate::vk::VK_CONVERT
                 && event.modifier_snapshot.ctrl
                 && !event.modifier_snapshot.shift

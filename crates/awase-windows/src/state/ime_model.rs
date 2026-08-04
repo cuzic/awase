@@ -322,22 +322,24 @@ impl ImeModel {
                 // 後続の実観測が effective_open() を上書きできる。
                 self.desired_open = target;
             }
-            ImeEvent::EngineActivationSync { target } => {
+            ImeEvent::EngineActivationSync { target: _target } => {
                 // Engine の active/inactive 遷移が対称性のために自動発行した echo。
-                // ユーザーの能動的操作ではないため last_intent を設定しない
-                // (`ImeEvent::EngineActivationSync` の doc 参照)。
+                // `last_intent` はもちろん `desired_open` も一切書き換えない
+                // （`event_log`/`journal` への記録は `dispatch_event` が無条件に行うため、
+                // 「何が起きたか」の記録自体は失われない）。
                 //
-                // `has_user_explicit_intent()==true` の間は `desired_open` も触らない。
-                // `effective_open()` は explicit intent がある間 `desired_open` を
-                // そのまま「現在の明示的な値」として使うため、ここで無条件に上書きすると
-                // last_intent 自体は変えていなくても実質的にユーザーの明示意図を
-                // 上書きしたのと同じ結果になる（HwndCacheRestored は常に直前の
-                // FocusChanged で last_intent が clear された後に届くため、この防御が
-                // 不要だが、EngineActivationSync は届く順序を強く仮定できないため
-                // 明示的にガードする）。
-                if !self.has_user_explicit_intent() {
-                    self.desired_open = target;
-                }
+                // `desired_open` を書かない理由（Opus レビュー 2026-08-04 で指摘、
+                // 当初は `has_user_explicit_intent()==false` の間だけ書いていた）:
+                // `target` は `ctx.ime_on`（≒その時点の `effective_open()`）由来であり、
+                // explicit intent が無い状況では `effective_open()` 自体が観測プール
+                // (`derive_open()`) から計算されている。そこへ `desired_open := target`
+                // を書くと `desired_open := effective_open()` という循環 echo になり、
+                // 元になった観測が期限切れで消えた後も `effective_open()` の
+                // フォールバック (`unwrap_or(self.desired_open)`) がこの値を恒久化して
+                // しまう（一度もユーザー操作が無いのに、ノイズ観測 1 発が焼き付く）。
+                // `desired_open` は `UserImeSetIntent`/`PanicReset`/`HwndCacheRestored`
+                // という「値を確定させる」ための専用イベントにのみ任せ、この echo
+                // イベントは純粋に「Engine 側で何が起きたか」の記録に徹する。
             }
             ImeEvent::ObserverReported {
                 open,

@@ -244,8 +244,16 @@ impl ImeStateHub {
     ///
     /// chord/focus-transition-settling のフィルタ条件は `handle_engine_set_open` と同一
     /// （どちらも「これから OS へ実 apply する SetOpen 要求」という点は変わらないため）。
-    /// `last_explicit_ime_action_ms` は更新しない（これは「明示的 IME 操作」からの
-    /// 経過時間であり、echo はそれに該当しないため idle-conv-check の抑制窓を汚染しない）。
+    ///
+    /// `last_explicit_ime_action_ms` は `handle_engine_set_open` と同様に更新する。この
+    /// フィールドの実際の役割は「ユーザーが明示操作したか」ではなく「awase 自身が
+    /// 能動的に IME へ書き込んだか」（`note_explicit_ime_action` の doc 参照）であり、
+    /// この関数も実際に OS へ SetOpen を適用する以上、idle-conv-check が遷移途中の
+    /// conv 値を汚染された観測として拾わないよう抑制窓を効かせる必要がある
+    /// （Opus レビュー 2026-08-04 で指摘: 更新しないと `get_ime_conversion_mode_raw_timeout_async`
+    /// が BUG-34 級にブロックしている間に本関数の SetOpen 適用が挟まった場合、
+    /// idle-conv-check のガード (b)（値一致比較）が素通りし、遷移途中の conv が
+    /// そのまま belief に入りうる）。
     pub(crate) fn handle_engine_activation_sync(
         &mut self,
         target: bool,
@@ -274,6 +282,7 @@ impl ImeStateHub {
             },
             tick_ms,
         );
+        self.last_explicit_ime_action_ms = tick_ms.0;
         true
     }
 
@@ -1194,6 +1203,81 @@ mod tests {
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // ── handle_engine_activation_sync（BUG-48）: handle_engine_set_open と同じ
+    //    filter を独立に実装しているため、乖離を検知できるよう同型のテストを鏡写しで
+    //    用意する（Opus レビュー 2026-08-04 で「コピペされた filter に対応テストが
+    //    無く、2つの実装が乖離しても気づけない」と指摘された）。
+
+    #[test]
+    fn handle_engine_activation_sync_filters_when_focus_transition_was_pending() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, true, 1, TickMs(0));
+        assert!(!applied, "focus transition pending 中は適用されない");
+        assert!(
+            !ps.ime.model().desired_open(),
+            "フィルタされた ActivationSync は desired_open を書き換えない \
+             (そもそも desired_open は書き換えない設計だが、フィルタされた場合も \
+             念のため確認する)"
+        );
+    }
+
+    #[test]
+    fn handle_engine_activation_sync_applies_when_focus_transition_not_pending() {
+        let mut ps = ps_with_shadow(false, None, true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        assert!(
+            applied,
+            "focus transition が pending でなければ通常通り適用される"
+        );
+    }
+
+    #[test]
+    fn handle_engine_activation_sync_ctrl_chord_filter_still_works() {
+        let mut ps = ps_with_shadow(false, None, true);
+        // 1 回目: ActivationSync による IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
+        let first = ps
+            .ime
+            .handle_engine_activation_sync(false, true, false, 1, TickMs(0));
+        assert!(first, "chord を開始する最初の要求は適用される");
+        assert!(ps.ime.is_ctrl_ime_chord_active());
+        // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
+        let second = ps
+            .ime
+            .handle_engine_activation_sync(false, true, false, 2, TickMs(0));
+        assert!(
+            !second,
+            "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // handle_engine_set_open との核心的な違い: last_intent が既にある間は
+    // desired_open を一切書き換えない（BUG-48 修正の中心的な不変条件）。
+    #[test]
+    fn handle_engine_activation_sync_never_sets_last_intent_or_desired_open() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        assert!(applied);
+        assert_eq!(
+            ps.ime.model().last_intent.as_ref().map(|i| i.target),
+            Some(false),
+            "ActivationSync はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
+        );
+        assert!(
+            !ps.ime.model().desired_open(),
+            "ActivationSync は desired_open も一切書き換えない"
+        );
+        assert!(
+            !ps.ime.effective_open(),
+            "explicit intent が残っているため effective_open() は false のまま"
         );
     }
 
