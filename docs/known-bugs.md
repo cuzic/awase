@@ -5209,7 +5209,7 @@ warnings` も green（`--tests` 付きの clippy pedantic warning は本修正�
 `crates/awase-windows/src/runtime/focus_tracking.rs`
 （`EXPLICIT_OFF_CACHE_SUPPRESS_MS` 抑制ガード）。
 
-## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、Phase 1 対応済み・実機未検証）
+## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、Phase 1・Phase 2 対応済み・実機未検証）
 
 **症状（2026-08-05 ユーザー報告、MS-IME）:** `.yab` の `[ローマ字小指シフト]`
 （物理 `VK_LSHIFT`/`VK_RSHIFT` を押しながら文字キーを打つ面）で「！」を入力すると、
@@ -5363,3 +5363,71 @@ BUG-25（左Shift単独タップ持続トグル、GJI entry 撤回）、BUG-47�
 半角化、本件と症状は類似だが原因は別）、ADR-064（`ConvModePolicy`）、
 ADR-072（conv authority 再同期）、ADR-078（belief 3分割）、ADR-083
 （`InjectionMode` per-VK 統一investigation、NO-GO）。
+
+**追補2（Phase 2 実装、2026-08-05）:** Phase 1 で撤回した INV-9（confirm-gate の
+期限を固定値でなく都度動的に再評価する）の正しい実装。Phase 1 が残した実害
+（「Shift を 400ms 超保持しただけで defer 分岐入り自体が決定論的に
+`ms_ime_gate_give_up` をラッチする」点、上記「今回のフィックスで直っていない/
+確認できていない点」参照）を解消する。
+
+- **`Output::confirm_gate_deadline_override_ms`（`Cell<u64>`）**: confirm-gate
+  の実効期限を `deadline_ms.max(override)` として消費側（`MsImeReadyCoro`/
+  `start_ms_ime_ready_poll`）で評価する。`0` = 上書きなし（従来どおり）。
+  entry（`kp_shift_conv_guard_key_down` の MS-IME 分岐）が hold 開始時に
+  `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms、有限キャップ）へ延長し、
+  release（`kp_shift_conv_guard_key_up`）が hold 終了時点起点の
+  `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`（800ms）へ差し替え、続く
+  `kp_restore_kana_from_half_width` の冪等リトライループ（0/160/320/480ms）が
+  進行中は毎試行この猶予を押し出し続ける。`u64::MAX` の真の無期限にしなかった
+  理由: Shift の KeyUp が何らかの理由でフックに届かない場合（ロック画面・
+  セキュアデスクトップ遷移等）でも、有限キャップを過ぎれば自動的に通常の
+  安全弁（IMC 未確認なら give-up latch）へ復帰させるため。
+- **`Output::shift_conv_guard_gen`（`Cell<u32>`）と所有権チェック付きヘルパー
+  `extend_confirm_gate_override`/`clear_confirm_gate_override`/
+  `bump_shift_conv_guard_gen`**: Opus レビュー（round 5、"pass-5"）で発見した
+  blocking な競合の修正。hold #1 の解放直後に hold #2 が始まった場合
+  （連続 Shift タップの通常の間隔で起こりうる）、hold #1 の detached
+  `spawn_local` リトライタスクが自分の起動時点の世代を `owner_gen` として
+  捕獲し、以後の全 override 書き込み（延長・クリア双方）の前提条件にする。
+  世代不一致になった時点でそのタスクは即座に自分がもう override の所有者
+  でないと分かり、hold #2 の override を誤ってクリア・上書きしない。世代は
+  新しい hold の開始・フォーカス変更（`on_ime_mode_focus_changed`）・
+  `SetOpen(true)` 適用（`platform.rs`、IME が OFF→ON へサイクルし conv=0
+  前提が崩れる）・かな入力コンテキスト前提が崩れた早期 return（entry の
+  ガード節）の 4 箇所で進める。
+- Opus によるレビュー（初回 GO-WITH-CHANGES、実装後の pass-5 で上記 blocking
+  な競合を発見、修正後の round 6 で GO-WITH-CHANGES・非 blocking な
+  should-fix 2件（GJI 経路で対応する entry も retry ループも無いまま
+  override だけ書き込まれる非対称、コメントの数値不整合）を指摘、反映済み）
+  を経て確定。
+
+**定数の実測根拠（`.claude/rules/tuning-constants.md`）:**
+- `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS = 800`: 実測値ではなく、`kp_restore_
+  kana_from_half_width` のリトライ 1 試行分の最大所要時間からの導出。
+  `set_ime_romaji_mode_with_target_async`（`ime.rs` の `modify_conv_mode`）は
+  `IMC_GETCONVERSIONMODE`/`IMC_SETCONVERSIONMODE` を各 50ms タイムアウトで
+  最大2回呼ぶ（最大 ~100ms）+ `RETRY_INTERVAL_MS`（160ms）の sleep +
+  conv 読み取り（10ms タイムアウト）= 1 試行最大 ≈ 270ms。800ms はこれに
+  対する ~2.8 倍のマージン（round 6 レビューで確認済み）。Phase 1 時点の
+  MS-IME Shift 単独タップ誤切替の実測（shift up 後 ~478ms）は `MAX_TRIES`
+  （4 回）× `RETRY_INTERVAL_MS` を決める根拠であり、この定数自体の根拠では
+  ない点に注意（旧版のコメントはこの2つを混同していた）。
+- `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS = 5_000`: 実測値ではなく安全側
+  マージン。通常の hold（Shift 押下から解放まで）は実機ログで ~620ms 程度
+  （上記「今回のフィックスで直っていない/確認できていない点」の
+  `MS_IME_READY_CONFIRM_MS` 実測未達の記述と同様、Windows 実機無しのため
+  この 620ms 自体も過去セッションのログからの参照値であり、本セッションで
+  再測定はしていない）。
+
+**テスト（Phase 2）:** `output/mod.rs` に `extend_confirm_gate_override`/
+`clear_confirm_gate_override`/`bump_shift_conv_guard_gen` の純粋ロジック
+テスト5件（同一世代での書き込み成功・stale 世代での no-op を extend/clear
+双方で固定 — pass-5 が発見した blocking バグそのものの再発防止）、
+`tsf/warmup/ms_ime_ready_coro.rs` に `MsImeReadyCoro` が override 延長中は
+`deadline_ms` が過ぎていても待機し続けることを固定するテスト2件を追加。
+いずれも `output`/`tsf` モジュールが `#[cfg(windows)]` ゲート下にあるため
+Windows target でのみコンパイル対象（`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査・`cargo clippy` で lint 済み、wine
+未導入のためこのサンドボックスでは実行不可）。`cargo test -p awase-windows`
+（Linux 実行分、golden_scenarios/architecture_guard 含む 273 件）は無影響で
+全 green。

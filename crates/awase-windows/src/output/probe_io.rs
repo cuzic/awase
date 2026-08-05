@@ -269,8 +269,10 @@ fn fmt_conv(conv: Option<u32>) -> String {
 enum MsImePollStatus {
     /// NATIVE 確認済み → ポーリング終了。
     Ready,
-    /// 未確認 → 継続。
+    /// 未確認だが期限内 → 継続。
     Pending,
+    /// 未確認のまま期限切れ → give-up latch を立ててポーリング終了。
+    Expired,
     /// フォーカス世代不一致 / with_app 失敗 → 黙って終了。
     Stale,
 }
@@ -298,7 +300,23 @@ impl Output {
                     }
                     out.update_ime_mode_from_imc(conv);
                     if out.ime_mode_fsm.borrow().is_native_ready() {
-                        MsImePollStatus::Ready
+                        return MsImePollStatus::Ready;
+                    }
+                    // ADR-084（BUG-49 追補2）: `shift-conv-guard` の hold 中は
+                    // `confirm_gate_deadline_override_ms` が元の `deadline_ms`
+                    // （送信試行時点起点）を押し出す。詳細は `MsImeReadyCoro` の
+                    // 同型コメント参照。
+                    let effective_deadline_ms =
+                        deadline_ms.max(out.confirm_gate_deadline_override_ms.get());
+                    if crate::hook::current_tick_ms() >= effective_deadline_ms {
+                        out.ms_ime_gate_give_up.set(true);
+                        log::warn!(
+                            "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
+                             (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
+                             （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
+                            cold_seq = cold_seq.value(),
+                        );
+                        MsImePollStatus::Expired
                     } else {
                         MsImePollStatus::Pending
                     }
@@ -313,23 +331,8 @@ impl Output {
                         );
                         return;
                     }
-                    MsImePollStatus::Stale => return,
+                    MsImePollStatus::Stale | MsImePollStatus::Expired => return,
                     MsImePollStatus::Pending => {}
-                }
-
-                if crate::hook::current_tick_ms() >= deadline_ms {
-                    let _ = crate::with_app(|runtime| {
-                        let out = &runtime.platform.output;
-                        if out.ime_mode_focus_gen.get() == gen {
-                            out.ms_ime_gate_give_up.set(true);
-                            log::warn!(
-                                "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ → \
-                                 give-up latch 設定（フォーカス変更 / 次の IME ON まで gate 停止）",
-                                cold_seq = cold_seq.value(),
-                            );
-                        }
-                    });
-                    return;
                 }
                 win32_async::sleep_ms(crate::tuning::MS_IME_READY_POLL_INTERVAL_MS as u32).await;
             }

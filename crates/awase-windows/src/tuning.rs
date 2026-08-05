@@ -140,6 +140,50 @@ pub const MS_IME_READY_CONFIRM_MS: u64 = 400;
 /// MS-IME confirm-then-transmit ゲートの IMC ポーリング間隔 (ms)。
 pub const MS_IME_READY_POLL_INTERVAL_MS: u64 = 10;
 
+/// `shift-conv-guard`（BUG-15）の hold 終了（復元開始）ごとに confirm-then-transmit
+/// ゲート（BUG-13、`Output::confirm_gate_deadline_override_ms`）へ与える猶予 (ms)。
+///
+/// `MS_IME_READY_CONFIRM_MS`（400ms）を流用しないこと — あれは IME OFF→ON 遷移の
+/// 実測値であり、この復元リトライループとは別の現象を測ったものである
+/// （`.claude/rules/tuning-constants.md`「同じ定数ファミリーの盲目的エスカレーション」
+/// 参照）。
+///
+/// この値は「復元リトライが続いている限り `kp_restore_kana_from_half_width` の
+/// 各試行の冒頭で毎回押し出される」設計（同関数参照）の **一区間ぶんの猶予**
+/// であり、リトライ全体の合計所要時間（0/160/320/480ms、最大 ~960ms）をカバー
+/// する単発の待ち時間ではない。したがって導出根拠は「復元が始まってから完了
+/// するまでの合計時間」ではなく「1 回の試行が最大でどれだけかかりうるか」:
+///
+/// - `set_ime_romaji_mode_with_target_async` は IMC write が最大2回
+///   （`ime.rs` の `send_ime_control` 呼び出し、各 50ms タイムアウト）
+///   = 最大 ~100ms。
+/// - 続く `RETRY_INTERVAL_MS`（160ms）の sleep。
+/// - 続く conv 読み取り（`get_ime_conversion_mode_raw_timeout`、10ms タイムアウト）。
+///
+/// 1 試行の最大所要 ≈ 100+160+10 = 270ms（実務上の見積り上限 ~280ms）に対し、
+/// 800ms は次の試行が確実に override を再度押し出す前に期限切れしないための
+/// マージン（約 2.8 倍）である。MS-IME の Shift 単独タップ誤切替そのものの
+/// 実測タイミング（shift up 後 ~478ms 後の idle-conv-check で観測、
+/// `docs/known-bugs.md` BUG-15 参照）は `MAX_TRIES`（4 回）× `RETRY_INTERVAL_MS`
+/// を決める根拠であり、この定数の根拠ではない（Opus pass-5 レビュー指摘: 旧版の
+/// コメントは 478ms/960ms を根拠として引用していたが、ループが自己延長する
+/// 設計に変わった後はそれらは無関係な数値になっていた）。
+pub const SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS: u64 = 800;
+
+/// `shift-conv-guard` の entry（Shift 押下、`kp_shift_conv_guard_key_down`）で
+/// confirm-then-transmit ゲートを実質的に無期限へ延長する代わりに使う、有限の
+/// 安全キャップ (ms)。
+///
+/// 実測値ではなく安全側マージン: 通常の hold（チョード確定・単独タップ確定を
+/// 問わず Shift 押下から解放まで）は実機ログで ~620ms 程度（BUG-49 known-bugs.md
+/// 参照）。Shift の KeyUp が何らかの理由でフックに届かない場合（ロック画面・
+/// セキュアデスクトップ遷移等、`project_ctrl_mismatch_stuck_modifier` に記録の
+/// ある stuck modifier の既知シナリオ）でも、`u64::MAX` のような真の無期限
+/// ではなくこの上限を過ぎれば通常の安全弁（IMC 未確認なら give-up latch）へ
+/// 自動的に復帰する。通常の hold 所要時間（~620ms）に対して十分大きく、かつ
+/// 「固着したまま気づかれない」時間を有限に抑えることを優先した。
+pub const SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS: u64 = 5_000;
+
 // === キャッシュ有効期限 ===
 
 /// フォーカス切り替え時の per-HWND IME 状態スナップショットの最大有効期間 (ms)。

@@ -108,6 +108,44 @@ pub struct Output {
     /// 遅延）するのを防ぐ。フォーカス変更と `SetOpen(true)` 適用でクリアされ、
     /// 再確認の機会が与えられる。
     pub(crate) ms_ime_gate_give_up: std::cell::Cell<bool>,
+    /// MS-IME confirm-then-transmit ゲート（BUG-13）の期限を、`shift-conv-guard`
+    /// の hold 中だけ上書きするための値。`0` = 上書きなし（通常どおり defer 時点で
+    /// 計算した固定 `deadline_ms` を使う）。
+    ///
+    /// `runtime/key_pipeline.rs` の `kp_shift_conv_guard_key_down` が
+    /// `platform_state.gate.shift_conv_guard_pending` を立てるのと同時に
+    /// `current_tick_ms() + SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（有限キャップ、
+    /// 真の無期限ではない）をセットして期限を延長する（awase 自身が
+    /// conv=0x0000 を書いた直後だと分かっている間、IMC 未確認を理由に
+    /// 強制送信・give-up latch してはならない — BUG-49 追補2）。
+    /// `kp_shift_conv_guard_key_up`（`pending` 消費時点、チョード確定でも
+    /// 単独タップ確定でも共通）が `current_tick_ms() + SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`
+    /// （hold 終了時点を起点とするフレッシュな猶予）へ差し替え、続く
+    /// `kp_restore_kana_from_half_width` のリトライループが `shift_conv_guard_gen`
+    /// が自分の起動時点と一致する限り毎試行ごとに同じ幅で押し出し続ける。
+    ///
+    /// 消費側（`MsImeReadyCoro`/`start_ms_ime_ready_poll`）は
+    /// `deadline_ms.max(この値)` を実効期限として使う。`0` のときは
+    /// `deadline_ms`（送信試行時点起点、BUG-13 の元々の cold-start 保護）が
+    /// そのまま効く。`shift-conv-guard` と無関係な確認待ちには一切影響しない。
+    pub(crate) confirm_gate_deadline_override_ms: std::cell::Cell<u64>,
+    /// `confirm_gate_deadline_override_ms` の所有権世代（ADR-084 BUG-49 追補2、
+    /// Opus pass-5 レビュー指摘）。
+    ///
+    /// `kp_shift_conv_guard_key_down` の MS-IME entry 分岐が新しい hold を
+    /// 開始するたびインクリメントする。`kp_restore_kana_from_half_width` は
+    /// 起動時点でこの値を `owner_gen` として捕獲し、`spawn_local` リトライ
+    /// ループの各試行で現在値と一致するかを確認してから
+    /// `confirm_gate_deadline_override_ms` を書く。
+    ///
+    /// これが無いと、hold #1 の解放直後に hold #2 が始まった場合（実測: 通常の
+    /// 連続 Shift タップ間隔で発生しうる）、hold #1 の detached restore task が
+    /// NATIVE 確認後に override を `0` へクリアする書き込みが hold #2 の
+    /// 有効な override を消してしまい、hold #2 で BUG-49 が release 側として
+    /// 再発する（pass-5 レビューで発見）。世代不一致のときはループを即座に
+    /// 中断し、IMC write すら行わない（フォーカスが既に別の対象へ移っている
+    /// 可能性があるため、無関係な書き込みもしない）。
+    pub(crate) shift_conv_guard_gen: std::cell::Cell<u32>,
     /// Unicode 送信後に GJI write 観測を行うフラグ。
     ///
     /// Platform::send_keys が Unicode モード + 未学習クラスのときにセットし、
@@ -209,6 +247,8 @@ impl Output {
             ime_mode_fsm: std::cell::RefCell::new(crate::tsf::ime_mode_fsm::ImeModeFsm::new()),
             ime_mode_focus_gen: std::cell::Cell::new(0),
             ms_ime_gate_give_up: std::cell::Cell::new(false),
+            confirm_gate_deadline_override_ms: std::cell::Cell::new(0),
+            shift_conv_guard_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
             last_roman_restore_ms: std::cell::Cell::new(0),
@@ -345,6 +385,59 @@ impl Output {
             .set(self.ime_mode_focus_gen.get().wrapping_add(1));
         // 新しいフォーカス先では IMC が読める可能性があるため give-up latch を解除する。
         self.ms_ime_gate_give_up.set(false);
+        // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は
+        // shift-conv-guard の hold が想定する「同一ウィンドウ内で完結する」
+        // 前提が崩れたことを意味する。Shift の KeyUp がフックに届かないまま
+        // 別ウィンドウ/ロック画面等へ遷移した場合の取りこぼしに備え、
+        // confirm-gate の override も併せて解除する。
+        self.confirm_gate_deadline_override_ms.set(0);
+        // pass-5 レビュー指摘: このクリアだけでは、まだ走行中の
+        // `kp_restore_kana_from_half_width` リトライループが次の試行で
+        // override を再設定してしまい実効性が無い。`shift_conv_guard_gen` も
+        // 併せてインクリメントし、そのループの `owner_gen` を無効化することで
+        // クリアを恒久化する（旧フォーカス向けの conv write 自体も止まる）。
+        self.bump_shift_conv_guard_gen();
+    }
+
+    // ── shift-conv-guard confirm-gate override（ADR-084 BUG-49 追補2）───────────
+
+    /// `shift_conv_guard_gen` を新しい値に進め、直前までの世代を「所有権を
+    /// 失った」ものとする。以下の 4 箇所で呼ぶ:
+    /// 1. 新しい hold の開始（`kp_shift_conv_guard_key_down` の MS-IME entry 分岐）。
+    /// 2. 同関数の早期 return 分岐（かな入力コンテキスト前提が崩れた場合）。
+    /// 3. フォーカス変更（`on_ime_mode_focus_changed`）。
+    /// 4. `SetOpen(true)` 適用（`platform.rs`）。
+    pub(crate) fn bump_shift_conv_guard_gen(&self) -> u32 {
+        let next = self.shift_conv_guard_gen.get().wrapping_add(1);
+        self.shift_conv_guard_gen.set(next);
+        next
+    }
+
+    /// `owner_gen` が現在の `shift_conv_guard_gen` と一致する場合のみ
+    /// `confirm_gate_deadline_override_ms` を `until_ms` に書き込む。
+    ///
+    /// 一致しない（`owner_gen` を捕獲した後に別の hold が始まった／フォーカスが
+    /// 変わった）場合は何もせず `false` を返す。`kp_restore_kana_from_half_width`
+    /// の detached retry task が、自分より新しい hold の override を誤って
+    /// 延長・上書きしないためのガード（pass-5 レビュー指摘、blocking）。
+    pub(crate) fn extend_confirm_gate_override(&self, owner_gen: u32, until_ms: u64) -> bool {
+        if self.shift_conv_guard_gen.get() != owner_gen {
+            return false;
+        }
+        self.confirm_gate_deadline_override_ms.set(until_ms);
+        true
+    }
+
+    /// `owner_gen` が現在の `shift_conv_guard_gen` と一致する場合のみ
+    /// `confirm_gate_deadline_override_ms` を `0`（上書きなし）に戻す。
+    ///
+    /// 一致しない場合は何もしない — 既に次の hold が override を所有して
+    /// いる可能性があり、それを誤ってクリアしてはならない（pass-5 レビュー
+    /// 指摘、blocking。この不一致無視こそが本ガードの主目的）。
+    pub(crate) fn clear_confirm_gate_override(&self, owner_gen: u32) {
+        if self.shift_conv_guard_gen.get() == owner_gen {
+            self.confirm_gate_deadline_override_ms.set(0);
+        }
     }
 
     // `start_ms_ime_ready_poll`（BUG-13 の IMC 確認ポーリング）は spawn_local 内で
@@ -808,6 +901,7 @@ impl Output {
                 gji_active: crate::tsf::observer::gji_is_active_ime(),
                 ime_mode: ime_fsm.state(),
                 ime_mode_confirmed: ime_fsm.is_confirmed(),
+                confirm_gate_deadline_override_ms: self.confirm_gate_deadline_override_ms.get(),
                 deferred_pending: self.warmup_coord.has_pending_deferred(),
                 gji_candidate_visible_now: crate::tsf::observer::gji_candidate_visible_now(),
                 literal_session_confirmed_gen:
@@ -1238,6 +1332,70 @@ mod tests {
         assert_eq!(taken, "konnichiwa");
         let now_empty = crate::RAW_TSF_LITERAL.romaji.lock().unwrap().clone();
         assert!(now_empty.is_empty());
+    }
+
+    // ── shift-conv-guard confirm-gate override 所有権テスト（ADR-084 BUG-49 追補2、pass-5）──
+
+    #[test]
+    fn extend_confirm_gate_override_writes_when_gen_matches() {
+        let o = make_output();
+        let owner_gen = o.bump_shift_conv_guard_gen();
+        assert!(o.extend_confirm_gate_override(owner_gen, 12345));
+        assert_eq!(o.confirm_gate_deadline_override_ms.get(), 12345);
+    }
+
+    #[test]
+    fn extend_confirm_gate_override_is_a_noop_when_gen_is_stale() {
+        let o = make_output();
+        let owner_gen = o.bump_shift_conv_guard_gen();
+        o.confirm_gate_deadline_override_ms.set(999);
+        // 別の hold が始まった（gen が進んだ）ことをシミュレートする。
+        o.bump_shift_conv_guard_gen();
+        assert!(!o.extend_confirm_gate_override(owner_gen, 12345));
+        assert_eq!(
+            o.confirm_gate_deadline_override_ms.get(),
+            999,
+            "stale な owner_gen からの延長は新しい hold の override を \
+             上書きしてはならない"
+        );
+    }
+
+    #[test]
+    fn clear_confirm_gate_override_resets_when_gen_matches() {
+        let o = make_output();
+        let owner_gen = o.bump_shift_conv_guard_gen();
+        o.confirm_gate_deadline_override_ms.set(12345);
+        o.clear_confirm_gate_override(owner_gen);
+        assert_eq!(o.confirm_gate_deadline_override_ms.get(), 0);
+    }
+
+    #[test]
+    fn clear_confirm_gate_override_is_a_noop_when_gen_is_stale() {
+        let o = make_output();
+        let owner_gen = o.bump_shift_conv_guard_gen();
+        // owner_gen 捕獲後に新しい hold が始まり、その override を書き込む
+        // （実際のシーケンス: 旧タスクが gen を捕獲 → 新 hold が bump + 延長）。
+        let new_owner_gen = o.bump_shift_conv_guard_gen();
+        assert!(o.extend_confirm_gate_override(new_owner_gen, 67890));
+        // 旧タスク（stale な owner_gen）がクリアしようとしても、新 hold の
+        // override を壊してはならない — pass-5 レビューが検出した blocking
+        // 欠陥そのものの再発防止テスト。
+        o.clear_confirm_gate_override(owner_gen);
+        assert_eq!(
+            o.confirm_gate_deadline_override_ms.get(),
+            67890,
+            "stale な owner_gen からのクリアが新しい hold の override を \
+             消してしまうと、その hold は BUG-49 の release 側で無防備になる"
+        );
+    }
+
+    #[test]
+    fn bump_shift_conv_guard_gen_returns_the_new_value() {
+        let o = make_output();
+        let g1 = o.bump_shift_conv_guard_gen();
+        let g2 = o.bump_shift_conv_guard_gen();
+        assert_ne!(g1, g2);
+        assert_eq!(o.shift_conv_guard_gen.get(), g2);
     }
 
     // ── 既存テスト ─────────────────────────────────────────────────────────────
