@@ -4905,11 +4905,11 @@ LiteralDetectFsm による事後訂正をすべて共有させた。warm パス�
 （`vk_pair_to_ascii_roundtrips_with_ascii_to_vk` テストで固定）。新規タイミング
 定数は追加していない（既存の `assess_warmth()` と判断基準をそのまま再利用）。
 
-**未対応（次段の課題）:** Shift 付きの記号（`？`/`！`/`～`/`＋` 等）は
-`ascii_to_vk` に逆像が無いため今回の修正の対象外。恒久対応には probe のペイロード
-型を `romaji: String` から `Vec<(VkCode, bool)>` へ一般化する必要があり
-（`ChromeProbe`/`GjiWarmupCoro`/`run_per_vk_confirm` のシグネチャ変更が伴う）、
-スコープ外として次段に持ち越す。
+**未対応だった点（2026-08-05 追補で解消。下記参照）:** 初回修正時点では Shift
+付きの記号（`？`/`！`/`～`/`＋` 等）が `ascii_to_vk` に逆像が無いため対象外だった。
+当時は恒久対応に probe のペイロード型を `romaji: String` から
+`Vec<(VkCode, bool)>` へ一般化する必要があると見積もっていたが、これは誤りだった
+（詳細は下記追補）。
 
 **テスト:** `crates/awase-windows/src/vk.rs` に
 `vk_pair_to_ascii_roundtrips_with_ascii_to_vk`（VK 0x00-0xFF × shift 2値の
@@ -4921,6 +4921,41 @@ LiteralDetectFsm による事後訂正をすべて共有させた。warm パス�
 このサンドボックスでは実機での再現・修正確認そのものは未実施（次の Windows
 実機セッションで Chrome/Edge + GJI にて「。」「、」「ー」の cold-start 直後の
 出力を確認すること）。
+
+**追補（2026-08-05 ユーザー報告: `！`（びっくりマーク）が半角化）:** 上記
+「未対応」だった Shift 付き記号も同一機構で解決した。**当初の見積もり
+（probe ペイロード型の `Vec<(VkCode, bool)>` 化が必要）は誤りだった** —
+`vk_send.rs` の `CharResolution::Vk` アームは既に `vk_pair_to_ascii` の
+戻り値だけでルーティングを決めており、`send_vk_run_batch`（`key_injector.rs`）
+は要素ごとに `needs_shift` を見て `VK_LSHIFT` down/up を挟む汎用実装だった
+（`ascii_to_vk('A') == Some((VkCode(0x41), true))` の大文字対応がこの汎用性の
+証拠として既に存在していた）。cold パスの `ProbeAction::TransmitSingleVk` /
+`send_single_tsf_vk`/`send_single_chrome_vk` も `needs_shift` を保持したまま
+同じ `send_vk_pair` を呼ぶ。つまり `ascii_to_vk`/`vk_pair_to_ascii` の
+Shift ガード（`if needs_shift { return None }`）を外して対応表を
+`build_symbol_to_vk` の「半角 ASCII 記号」節（21種）まで拡張するだけで、
+probe/FSM 側は無改修のまま Shift 付き記号も cold-start 保護に合流した。
+
+修正: `vk.rs` の `ascii_to_vk` に `[` `]` `;` `:` `@` `^` `\` (shift不要) と
+`!` `"` `#` `$` `%` `&` `'` `(` `)` `?` `=` `+` `*` `<` `>` `_` `{` `}` `|` `~`
+`` ` `` (shift付き、21種) の match arm を追加。`vk_pair_to_ascii` は
+`match (vk.0, needs_shift)` のタプルマッチに書き換えて対称に拡張した（`vk.0`
+だけで分岐する range match だと、意図せず既存の英大文字/数字アームが
+shift 有無を無視して先に一致してしまう実装ミスを避けるため）。
+
+テスト: `vk_pair_to_ascii_covers_shift_symbols`（`！`/`？`/`～` を明示固定）、
+`vk_pair_to_ascii_covers_every_build_symbol_to_vk_pair`（`build_symbol_to_vk`
+の全 `(VkCode, needs_shift)` ペアが `vk_pair_to_ascii` で `Some` になることを
+走査で固定 — 記号が cold-start 保護から漏れたら即座に落ちるドリフト防止）。
+`vk_pair_to_ascii_rejects_shift` は前提（「shift は常に None」）が成り立たなく
+なったため `vk_pair_to_ascii_rejects_unmapped_vks`（英大文字 Shift・F1・
+Backspace が引き続き None）に置き換えた。`cargo test -p awase-windows --lib`
+（273 passed）で確認。実機（Chrome/Edge + GJI、`！`/`？`/`～`/`＋` の cold-start
+直後出力）での再確認は次の Windows 実機セッションで行うこと。
+
+Opus によるレビュー（2026-08-05）: GO-WITH-CHANGES。指摘事項（タプルマッチ化・
+`vk_send.rs` の「Shift付きは未対応」コメント修正・`values()` ベースのドリフト
+防止テスト・本追補によるドキュメント訂正）はすべて本追補で反映済み。
 
 **関連ファイル:** `crates/awase-windows/src/vk.rs`（`vk_pair_to_ascii`）、
 `crates/awase-windows/src/output/vk_send.rs`（`send_char_as_tsf`/`send_char_as_vk`）。
