@@ -924,10 +924,26 @@ impl Runtime {
                 && !event.modifier_snapshot.shift
                 && !event.modifier_snapshot.alt
                 && !event.modifier_snapshot.win;
+            // BUG-50 (2026-08-05): `was_open_before` は belief（`effective_open()`）で
+            // あり、drift（例: KatakanaShadowOff 由来の誤確定で belief=Off のまま実
+            // conv がカタカナ）が起きていると常に false になる。この場合、上のリセ
+            // ットが発火せず「カタカナから誰も戻さない」デッドロックになる（実機ログ
+            // で確認、docs/known-bugs.md BUG-50）。判定は
+            // `should_reset_katakana_on_ime_on_combo`（Linux でテスト可能な純粋関数、
+            // `state/conv_mode.rs`）に集約する。
+            let observed_katakana = self
+                .platform
+                .output
+                .conv_mode
+                .get()
+                .is_some_and(|m| m.charset.is_katakana());
             if applied
                 && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
                 && new_ime_on
-                && was_open_before
+                && crate::state::conv_mode::should_reset_katakana_on_ime_on_combo(
+                    was_open_before,
+                    observed_katakana,
+                )
                 && is_default_ime_on_combo
             {
                 Self::kp_reset_to_hiragana_romaji_capsoff();

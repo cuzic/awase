@@ -5431,3 +5431,109 @@ x86_64-pc-windows-gnu --tests` で型検査・`cargo clippy` で lint 済み、w
 未導入のためこのサンドボックスでは実行不可）。`cargo test -p awase-windows`
 （Linux 実行分、golden_scenarios/architecture_guard 含む 273 件）は無影響で
 全 green。
+
+## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
+
+**症状:** MS-IME（TSF-native、Windows Terminal / Chrome / UWP アプリ間でフォーカスが
+頻繁に切り替わる環境）で、ユーザーが特にカタカナ切替キーを意識的に押した形跡が無い
+まま IME がカタカナ変換モードに入り、通常の IME OFF→ON 操作では戻らなくなる
+（2026-08-05 ユーザー報告「なぜか、カタカナモードになって、復旧の仕方がわからなく
+なる」）。実機ログ抜粋:
+
+```
+[08:20:44.420] KeyInput(tsf): romaji="la"
+[08:20:45.049] [conv-mode] Hiragana/kana → ZenKata/kana (conv=0x0000000B)   ← 説明のつかない切替
+[08:20:46.917] Engine deactivated (reason=Inactive(ImeOff))
+[08:20:48.493] [idle-conv-check] TsfNative: conv observation open=true reason=KatakanaShadowOff
+                (conv=0x0000000B) → ObserverReported として記録 (engine は actuate しない)
+[08:20:49.011] IME ON (key combo)                                          ← ユーザーが復旧を試行
+[08:20:49.436] [ime-mode] drift detected: belief=Off → actual=Katakana (conv=0x0000000B)
+[08:20:51.067] KeyInput(tsf): romaji="ki"                                   ← カタカナのまま入力継続
+```
+
+**IME:** MS-IME（TsfNative）。ただし後述の構造的デッドロックは IME/プロファイルに
+依存しない汎用的な設計欠陥。
+
+**原因1（確定、コード読解で確認）: 構造的デッドロック — 4つの個別に合理的なガードが
+組み合わさり、一度カタカナに入ると自動でも手動単発操作でも戻れない状態を作る。**
+
+1. `state/conv_classify.rs`（`KatakanaShadowOff` → `EngineSync::ReportOpenInference`）:
+   観測は記録のみで `desired_open`/belief を書き換えない（BUG-19 再発防止として単体では
+   正当）。
+2. `tsf/ime_mode_fsm.rs`（`on_conversion_mode_read`）: belief≠actual の drift を warn
+   ログに出すだけで、ON/OFF 側の `check_drift_correction` に相当する自動修正パスが
+   conv には無い。しかも `is_native_ready()` は Katakana も「準備完了」扱いするため、
+   msime-ready ゲートはカタカナのまま送信を素通しし続ける。
+3. `ime_controller.rs`（`MsImeDirectStrategy::apply`）: 実 conv に KATAKANA ビットが
+   立っていると「ユーザーの意図的な選択かもしれない」として `VK_DBE_HIRAGANA` 送信を
+   意図的にスキップする（`AlreadyMatched`）。
+4. `runtime/key_pipeline.rs`（`kp_reset_to_hiragana_romaji_capsoff` の起動条件）:
+   唯一の明示的ひらがなリセット経路が `was_open_before`（IME open の belief）を必須と
+   していた。本件のように belief が drift で誤って `Off` になっていると、実際の
+   ユーザーの IME-ON コンボ操作があってもこのリセットが起動しない。
+
+要するに「カタカナ = ユーザーの神聖な選択」（actuation 側、ガード3）と「カタカナ観測 =
+信用しない」（belief 側、ガード1・2）という逆向きの保守判断が、出所（provenance）情報の
+欠如によって同時成立し、ガード4がそれに輪をかけて手動復旧経路まで塞いでいた。唯一の
+自動復旧経路は `panic_detect.rs` の `RapidPressTracker`（IME OFF→ON→OFF を2秒以内に
+連打）だけであり、ユーザーはこれを知らないため発見不能な UX になっていた。
+
+**原因2（未確定・実機検証待ち）: なぜ最初にカタカナへ入ったか（トリガー）。**
+3つの仮説が残っており、いずれも今回のログ（INFO レベルのみ）だけでは確定できない
+（該当する診断ログは debug レベルで出力されておらず、切り分けには debug ログでの
+実機再現が必要）:
+
+- **仮説A（無変換単独タップ×MS-IME既定のかな切替）:** `msime_key_assignment.rs` は
+  awase が無変換/変換の単独タップを OS へ素通しすることを明記しているが、
+  `conflict_warning()` は `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` が
+  非既定値（IME オフ/オン割当て）の場合のみ警告し、**既定値（`0` = かな切替）は
+  無害として警告対象外**にしている。2026-07-06 に見つかった「無変換=IMEオフ」二重
+  オーナー問題と同一クラスの衝突が、既定設定のケースだけ検出漏れしている可能性。
+- **仮説B（shift-conv-guard の Shift 解放漏れ）:** `kp_restore_kana_from_half_width`
+  の呼び出し4箇所のうち3箇所（`key_pipeline.rs` の `TurnOn`/IME ON/post-decision
+  `SetOpen(true)`）と `runtime/ime_refresh.rs`（`FocusChanged`）は
+  `prepend_synthetic_shift_up=false` で呼ばれる。この状態で物理 Shift が実際に
+  押されたままの瞬間に scan 付き `VK_DBE_HIRAGANA` が注入されると、MS-IME 純正の
+  「Shift+かなキー＝カタカナ切替」に化ける可能性（`kp_shift_conv_guard_key_up` の
+  唯一の `true` 呼び出しも generic `VK_SHIFT` up を使うため、右 Shift 保持時は
+  解除されない別の穴もある）。
+- **仮説C（`ConvModeMgr` の observed/desired 未分離）:** `state/conv_mode.rs` の
+  `ConvModeMgr::mode`（`Cell<Option<ConvMode>>`）は「観測ログ用の確定値」と
+  「shift-conv-guard 復元時の書き戻しターゲット」を同一の `Cell` で兼用しており、
+  一度誤って確定した観測値がそのまま復元先として自己強化されうる
+  （`key_pipeline.rs` の shift-conv-guard 復元処理が `conv_mode.get().imm_conv_target()`
+  を書き戻す箇所）。
+
+**修正（原因1のみ、Phase 1）:** `runtime/key_pipeline.rs::kp_stage_post_decision` の
+ひらがなリセット起動条件を、`was_open_before`（belief）に加えて `ConvModeMgr` が
+現に観測しているカタカナ（`conv_mode.get().charset.is_katakana()`）でも起動するよう
+拡張した。これは新しい破壊的動作ではなく、「IME-ON コンボが既にカタカナを含めて
+ひらがなへ寄せる」という既存の確立済み挙動（`was_open_before=true` のとき）を、
+belief が drift で誤って `Off` になっているケースにも一貫させるだけ。トリガー
+（原因2）が仮説A〜Cのどれであっても、このデッドロック解消は独立に効く。
+
+**未解決（原因2、フォローアップ候補）:** ADR-084 に「conv 帰属（provenance）」
+invariant を追補し、`ConvModeMgr` の確定値が `UserOriginated` か
+`Attributed{by: awase}` かを区別できるようにすることで、ガード3
+（`AlreadyMatched` スキップ）を「本当にユーザーが選んだカタカナ」にのみ適用し、
+内部の誤 belief 起源のカタカナは自動是正できるようにする方向性が有力（後述の
+ADR-084 追補参照）。仮説A〜Cのどれが実際のトリガーかは実機の debug ログでの
+再現が必須。
+
+**テスト:** `tests/ime_key_sequence_golden.rs` に、belief=Off かつ観測 conv が
+カタカナの状態で IME-ON コンボを押すとひらがなリセットが起動することを固定する
+golden ケースを追加（Linux ネイティブで `cargo test -p awase-windows` 実行可能）。
+実機（MS-IME/TSF-native、Windows Terminal 等)での動作確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_post_decision`/`kp_reset_to_hiragana_romaji_capsoff`）、
+`crates/awase-windows/src/state/conv_mode.rs`（`ConvModeMgr`）、
+`crates/awase-windows/src/state/conv_classify.rs`（`KatakanaShadowOff`）、
+`crates/awase-windows/src/tsf/ime_mode_fsm.rs`、
+`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy`）、
+`crates/awase-windows/src/msime_key_assignment.rs`、
+`crates/awase-windows/src/panic_detect.rs`（既存の唯一の自動復旧経路）。
+関連: BUG-19（同じ conv-mode 誤確定の系統）、ADR-084（conv-mode 単一所有権と
+幅 SSOT 原則、本件の provenance 追補先）、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
+[experiment-logging](../.claude/rules/experiment-logging.md)。

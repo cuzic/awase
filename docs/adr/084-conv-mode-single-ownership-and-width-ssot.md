@@ -322,6 +322,9 @@ pub(crate) struct EmitRequest {
 
 - **INV-10（診断と判定の分離）**: 診断目的の読み戻し（現行の entry 150ms verify のようにログのみ出す読み取り）を、後から判定ロジックに流用してはならない。流用する場合は epoch/世代照合を必ず伴わせる（ADR-077/083 の観測フェーズと同じ規律）。
 
+- **INV-11（conv 帰属 / provenance、2026-08-05 BUG-50 追補）**: `ConvModeMgr` が保持する確定値は「観測された値」であって「awase が選んだ値」ではない。この2つを区別する情報（=帰属・provenance）を持たない限り、カタカナ等の非既定 charset を検出したときに「ユーザーの意図的な選択だから壊さない」（`ime_controller.rs::MsImeDirectStrategy::apply` の `AlreadyMatched` スキップ）と「内部の誤確定だから是正すべき」を両立できない。`actuate_conv_mode`（INV-1）による書き込みから一定時間内に観測された変化は `Attributed{by: awase}`、それ以外は `UserOriginated`、起動直後や tray 操作等の起点不明なものは `Unknown` として区別すること。`ConvModeMgr::update_from_conv` は現在 `(conv, now_ms)` のみを受け取るが、直近の `actuate_conv_mode` 呼び出しの epoch も受け取れるようにする必要がある（INV-10 の epoch 規律と同型）。
+  *この invariant が無いことの実害*: BUG-50（一度カタカナに confirm されると `AlreadyMatched` スキップ・`ObserverReported` 限定・drift 検知のログのみ化・`kp_reset_to_hiragana_romaji_capsoff` の `was_open_before` 依存という4つの個別に正当なガードが組み合わさり、trigger が false-positive であっても、また真にユーザー操作起因であっても、区別できないまま復旧不能になる）。ガード自体（BUG-19 再発防止としての「観測だけでは actuate しない」）は本 ADR の方針と矛盾しないが、**帰属が `Attributed{by: awase}` のときに限ってガードを解除できる**構造が欠けている点が本質的な欠落。
+
 ---
 
 ## 5. 移行計画
@@ -424,6 +427,8 @@ Phase 3 が実機で否定されても Phase 1+2 で本件は解決済みのた�
 
 8. **`build_symbol_to_vk` の多対一崩壊。** `＂` と `"`、`＇` と `'`、`～` と `~` が同一の `(vk, shift)` に落ちるため、`vk_pair_to_ascii` は多対一の逆写像である。全角/半角の区別は意図的に破棄され IME の変換モードに委譲されている。P3 はこの崩壊を `Literal` 宣言の保持によって回避するが、**移行期間中は同じ VK に 2 つの意図が乗る**ことを実装者は意識する必要がある。
 
+9. **INV-11（conv 帰属）の実装方式は3トリガー仮説の切り分け結果に左右されない一方、判定の入力になりうる。** BUG-50 で残った3つのトリガー仮説（無変換単独タップ×MS-IME既定のかな切替／`kp_restore_kana_from_half_width` の `prepend_synthetic_shift_up=false` 経由の Shift 解放漏れ／`ConvModeMgr` 自体の observed-desired 未分離）はどれも「LL フックが観測した直近の物理キーイベント」を突き合わせれば `UserOriginated` か `Attributed` かを判定できる可能性がある（awase は全物理キーをフックで見ている）。ただし各仮説がどの程度の頻度で発生するか、また `actuate_conv_mode` 側のタイミングウィンドウ（何 ms 以内を「直近」とみなすか）は実機の debug ログでの再現が無いと定められない。**INV-11 の実装（P1 拡張）は、BUG-50 のトリガー切り分けの実機検証を待たずに着手できる**（帰属の判定ロジックはトリガーの種類に依存しない汎用機構であるため）が、判定ウィンドウの ms 値だけは `.claude/rules/tuning-constants.md` に従い実測を要する。
+
 ---
 
 ## 8. 関連
@@ -436,6 +441,6 @@ Phase 3 が実機で否定されても Phase 1+2 で本件は解決済みのた�
 - ADR-048: アトミックバッチ送信（P2 の `VK_SHIFT` 合成手法）
 - ADR-071: deferred VK queue の所有権（P2 の barrier 実装資産）
 - ADR-033: `AppImeProfile`（`Standard`/`Imm32Unavailable`/`TsfNative`）
-- `docs/known-bugs.md`: BUG-13（MS-IME cold-start リテラル化・confirm-then-transmit）、BUG-15（Shift 解放で英数落ち、二重オーナー構造）、BUG-25（持続トグル、安全網撤去不可の設計判断、GJI entry 撤回）、BUG-47（記号の cold-start 半角化、`vk_pair_to_ascii` 追補）、BUG-01/02/03（cold-start リテラル化ファミリ）
+- `docs/known-bugs.md`: BUG-13（MS-IME cold-start リテラル化・confirm-then-transmit）、BUG-15（Shift 解放で英数落ち、二重オーナー構造）、BUG-19（一発誤読ロック、conv 確定の debounce）、BUG-25（持続トグル、安全網撤去不可の設計判断、GJI entry 撤回）、BUG-47（記号の cold-start 半角化、`vk_pair_to_ascii` 追補）、BUG-50（カタカナドリフトからの復旧不能、INV-11 の発端。デッドロック解消のみ対応済み・トリガー未確定）、BUG-01/02/03（cold-start リテラル化ファミリ）
 - `.claude/rules/ime-belief-architecture.md` / `experiment-logging.md` / `tuning-constants.md` / `fix-requires-evidence.md`
 - `lints/no_vk_as_scan`（VK と scan の取り違え検出。P2 の Shift 合成で関連）
