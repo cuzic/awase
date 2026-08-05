@@ -707,6 +707,21 @@ impl Runtime {
             ShadowImeAction::TurnOff => false,
         };
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+        // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
+        // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
+        // 経路の一つでありながら、従来ここには INFO ログが一切無く、実機ログだけでは
+        // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
+        log::info!(
+            "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
+             kind={:?} injected={} {}→{}",
+            event.vk_code,
+            event.scan_code,
+            action,
+            kind,
+            event.injected,
+            current,
+            new_val,
+        );
         match kind {
             IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val, tick_ms),
             IntentKind::PhysicalImeKey => {
@@ -879,6 +894,11 @@ impl Runtime {
             // ローマ字入力 + CapsLock OFF へリセットする。既に OFF→ON の場合は従来通り
             // 単純に ON にするだけで良い）。
             let was_open_before = self.platform_state.ime.effective_open();
+            // 診断ログ用スナップショット (2026-08-05): handle_engine_set_open/
+            // handle_engine_activation_sync 呼び出し前の last_intent を控えておく。
+            // これらの呼び出しが last_intent を書き換えるため、後で「遷移直前は
+            // 本当に明示意図があったか」を確認するには呼び出し前に読む必要がある。
+            let last_intent_before = self.platform_state.ime.explicit_intent();
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
@@ -912,8 +932,13 @@ impl Runtime {
                     )
                 }
             };
-            log::debug!(
+            // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
+            // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
+            // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に
+            // 遷移した時だけ通るため、毎 tick 出るログではない（低頻度）。
+            log::info!(
                 "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest, origin={origin:?}), \
+                 was_open_before={was_open_before} last_intent_before={last_intent_before:?} \
                  poll suspended{}",
                 if applied { "" } else { " [chord barrier active → skipped]" }
             );
