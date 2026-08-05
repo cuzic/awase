@@ -459,7 +459,8 @@ impl Runtime {
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
         // explicit_intent の有無に関わらずポーリングで得られる情報がないため常に停止する。
         // explicit_intent が確定している他プロファイルも同様に停止。
-        // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）
+        // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）/
+        // `kp_apply_conv_engine_sync` の ReportOpenInference（BUG-51、20ms）。
         let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
