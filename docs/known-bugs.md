@@ -4874,3 +4874,86 @@ Imm32Unavailable と同じ suppress 挙動になることを固定）。`runtime
 （`ReinjectKey` 順序）、`crates/awase-windows/src/vk.rs`（`VK_DBE_SBCSCHAR`/`DBCSCHAR`）。
 関連: BUG-07/BUG-09/BUG-11/BUG-20/BUG-34（いずれも「IME ON / Engine OFF」という
 ユーザー通報文言が既出だが原因系統は異なる）。
+
+## BUG-47: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
+
+**症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で
+NICOLA の物理「IME ON」キー（scan 0x70）を連打しているうちに、何もしていないのに
+入力中の文章が突然カタカナへ変わる（ユーザー通報「また謎にカタカナになる事象が
+再発しました」、2026-08-05）。当初「MS-IME 側の自然発生ドリフト」と誤診したが、
+`RUST_LOG=debug` の実機ログで物理キーイベントを直接確認した結果、awase 自身の
+suppress 漏れであることが判明した。
+
+**再現手順（実機 debug ログで確認済み）:**
+
+```
+[hook] IME-mode vk=0xF1 up  self_injected=false injected=false scan=0x70   ← 物理、KeyUp のみ可視
+[hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70  ← 同じ物理キーの次打鍵
+[imm32-off] key suppress vk=0xf1 KeyUp (physical disposition)
+[shadow-toggle] intent 昇格: vk=0xF2 ... action=TurnOn
+...（この直前、可視範囲外で 0xF1 の KeyDown が Allow され実IMEに届いていたはず）
+[conv-mode] カタカナ遷移候補観測 (1回目、確定保留): Hiragana/kana → ZenKata/kana (conv=0x0000000B)
+...
+[conv-mode] Hiragana/kana → ZenKata/kana (conv=0x0000000B)   ← 2回連続一致で確定（BUG-19対策は正常動作）
+```
+
+`[h1-send]`（GJI/MS-IME プロセス直接 I/O 監視、`ConvModeMgr` とは独立経路）も同時刻に
+既に `conv=0x0000000B` を報告しており、2系統の独立観測が一致 — つまり「awase の
+ポーリングが誤読した」のではなく、**実IMEの内部状態が本当にカタカナになっていた**。
+
+**IME:** Microsoft IME（MS-IME）。TsfNative プロファイル（Windows Terminal/Cascadia）。
+
+**原因（確定）:** NICOLA の物理「IME ON」キーは scan 0x70（JIS配列の
+「カタカナ・ひらがな・ローマ字」キー位置）に割り当てられている。IME が既に ON の
+状態でこのキーを押すと、Windows のキーボードレイアウト変換層が `VK_DBE_HIRAGANA`
+(0xF2) ではなく **`VK_DBE_KATAKANA` (0xF1)** を生成することがある（同一物理キーに
+対する OS 側の状態依存トグル変換、awase の関与しない層）。
+
+`PhysicalKeyDisposition::plan`（`runtime/transport.rs`、BUG-46 修正後の実装）の
+「KANJI 関連キー」汎用分岐は、KeyDown の suppress 条件を `shadow_toggled`
+（＝そのキーで実際に `effective_open()` が false→true に反転したか）に限定していた。
+IME が既に ON の状態で 0xF1 の KeyDown が届くと何もトグルしないため
+`shadow_toggled=false` となり、**Suppress されず素通し**していた。`VK_DBE_KATAKANA`
+は Windows 標準仕様で「カタカナへ切り替えろ」という能動的な意味を持つ仮想キーの
+ため、`VK_KANJI` 等の「素通ししても実害の薄いキー」とは性質が異なり、
+「toggle が不発だったから安全」という BUG-46 の前提がここでは成り立たなかった。
+
+この漏れのある汎用分岐は 4 日前の `076b8709`（BUG-46 修正、2026-08-01）で
+TsfNative プロファイルにも新規適用されており、ユーザーの「最近のバージョンで
+起きるようになった」という証言と時期が一致する。BUG-46 のコードレビュー
+（Claude 本体・Opus・Codex CLI の3系統独立検証）は `VK_DBE_SBCSCHAR`/`DBCSCHAR`
+(0xF3/0xF4) のみを検証対象としており、`VK_DBE_KATAKANA` (0xF1) 固有の危険性
+（素通しが即座に実IMEの能動的なモード変更を引き起こす）は監査対象外だった。
+
+**修正:** `PhysicalKeyDisposition::plan` の KANJI 関連キー分岐に、
+`event.vk_code == VK_DBE_KATAKANA && event_type == KeyDown` の場合は
+`shadow_toggled` の値に関わらず常に Suppress する例外を追加（`ime_actuation_owned`
+の場合のみ、既存のスコープは変更していない）。`VK_KANJI` 等、他の KANJI 系キーの
+挙動（shadow_toggled 不発時は Allow）は変更していない。
+
+**未対応（残存）:**
+
+- 実機での再発有無の検証は未実施（次回セッションでの確認事項）。
+- 「なぜこの物理キーで 0xF1/0xF2 が交互に生成されるか」という Windows 側の変換
+  ロジックの正確な条件（IME の内部状態のどの部分に依存するか）は未解明。今回の
+  修正は「0xF1 が来たら常に Suppress」という結果ベースの対処であり、根本的な
+  発生条件の理解には至っていない。
+
+**検証状況:** コード読解による確定（`hook.rs`/`transport.rs`/`vk.rs` を Explore
+エージェントで独立監査、`vk.rs:48` で `VK_DBE_KATAKANA = 0xF1` の定義を確認）。
+`transport.rs::plan_tests` に回帰テストを追加
+（`dbe_katakana_keydown_suppressed_even_when_not_shadow_toggled`:
+shadow_toggled=false でも Suppress されることを固定、
+`owned_actuation_keydown_allowed_when_not_shadow_toggled_is_unaffected_by_dbe_katakana_fix`:
+`VK_KANJI` の既存挙動が変わっていないことを固定）。`runtime` モジュールは
+`#[cfg(windows)]` のため Linux 上では `cargo build --tests --target
+x86_64-pc-windows-gnu -p awase-windows`（warning ゼロ）および `cargo clippy --lib
+--target x86_64-pc-windows-gnu -p awase-windows -- -D warnings`（warning ゼロ）
+での型検査のみ実施。実機/Windows 環境でのテスト実行・再発確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/transport.rs`
+（`PhysicalKeyDisposition::plan`、`plan_tests`）、`crates/awase-windows/src/vk.rs`
+（`VK_DBE_KATAKANA`/`VK_DBE_HIRAGANA`）、`crates/awase-windows/src/state/conv_mode.rs`
+（`ConvModeMgr::update_from_conv`、今回のバグの「発見経路」となった BUG-19 対策
+デバウンス）。関連: BUG-19（カタカナ conv デバウンスの元ネタ、本バグとは別原因）、
+BUG-46（本バグの直接の混入元コミット）。

@@ -113,6 +113,14 @@ impl PhysicalKeyDisposition {
     /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
     ///   `MsImeDirectStrategy` で実際に actuate する場合（`ime_actuation_owned`）のみ、
     ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
+    ///   **例外: `VK_DBE_KATAKANA` (0xF1) の KeyDown は `shadow_toggled` に関わらず
+    ///   常に Suppress**（`ime_actuation_owned` の場合）。NICOLA の物理「IME ON」キー
+    ///   （scan 0x70）は、IME が既に ON の状態で押されると Windows のキーボード変換層が
+    ///   `VK_DBE_HIRAGANA` (0xF2) ではなく `VK_DBE_KATAKANA` (0xF1) を生成することがある。
+    ///   `VK_KANJI` 等と違い `VK_DBE_KATAKANA` は素通しすると実 IME（MS-IME）が
+    ///   Windows 標準仕様どおり「カタカナへ切替」を能動的に実行してしまうため、
+    ///   toggle が発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
+    ///   `docs/known-bugs.md` 参照）。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -150,8 +158,16 @@ impl PhysicalKeyDisposition {
             // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
             let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(active_ime_kind)
                 || key_sequence_policy::ms_ime_direct_applicable(active_ime_kind, profile);
+            // VK_DBE_KATAKANA の KeyDown は shadow_toggled に関わらず常に Suppress。
+            // 素通しすると実IME（MS-IME）がWindows標準仕様どおり能動的にカタカナへ
+            // 切り替えてしまうため、他のKANJI系キーと違い「toggleが不発だったから
+            // 安全に通してよい」という前提が成り立たない（2026-08-05実機、known-bugs.md）。
+            let is_dbe_katakana_down = event.vk_code == crate::vk::VK_DBE_KATAKANA
+                && event.event_type == KeyEventType::KeyDown;
             ime_actuation_owned
-                && (shadow_toggled || matches!(event.event_type, KeyEventType::KeyUp))
+                && (shadow_toggled
+                    || is_dbe_katakana_down
+                    || matches!(event.event_type, KeyEventType::KeyUp))
         };
         if suppress {
             Self::Suppress
@@ -190,6 +206,13 @@ mod plan_tests {
 
     fn non_kanji_event(event_type: KeyEventType) -> RawKeyEvent {
         kanji_event(event_type, None)
+    }
+
+    fn dbe_katakana_event(event_type: KeyEventType) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code: crate::vk::VK_DBE_KATAKANA,
+            ..kanji_event(event_type, Some(ShadowImeAction::TurnOn))
+        }
     }
 
     fn f2_event(event_type: KeyEventType) -> RawKeyEvent {
@@ -388,6 +411,39 @@ mod plan_tests {
                 PhysicalKeyDisposition::plan(&ev, profile, true, false, false, active_ime_kind),
                 PhysicalKeyDisposition::Suppress,
                 "{label}: shadow_toggle 発火時の KeyDown は awase が既に apply-ime 済みのため Suppress"
+            );
+        }
+    }
+
+    /// 2026-08-05 実機: NICOLA の物理「IME ON」キー（scan 0x70）は IME が既に ON の
+    /// 状態で押されると `VK_DBE_HIRAGANA` (0xF2) ではなく `VK_DBE_KATAKANA` (0xF1) が
+    /// 生成されることがある。この場合 shadow_toggle は不発（既に ON→ON）となるが、
+    /// `VK_DBE_KATAKANA` を素通しすると実 IME が能動的にカタカナへ切り替わってしまう
+    /// ため、`VK_KANJI` 等と異なり shadow_toggled=false でも Suppress する必要がある。
+    #[test]
+    fn dbe_katakana_keydown_suppressed_even_when_not_shadow_toggled() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = dbe_katakana_event(KeyEventType::KeyDown);
+            assert_eq!(
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::Suppress,
+                "{label}: VK_DBE_KATAKANA の KeyDown は shadow_toggle 不発でも \
+                 実IMEへの意図しないカタカナ切替を防ぐため Suppress"
+            );
+        }
+    }
+
+    /// 対照実験: 同じ「shadow_toggle 不発」条件でも `VK_KANJI` 等の一般 KANJI キーは
+    /// 引き続き Allow のまま（`VK_DBE_KATAKANA` 専用の例外であり、KANJI 系キー全体の
+    /// 挙動を変えていないことを固定する）。
+    #[test]
+    fn owned_actuation_keydown_allowed_when_not_shadow_toggled_is_unaffected_by_dbe_katakana_fix() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::Allow,
+                "{label}: VK_KANJI は VK_DBE_KATAKANA 向け修正の影響を受けない"
             );
         }
     }
