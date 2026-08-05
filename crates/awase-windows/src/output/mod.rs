@@ -774,6 +774,12 @@ impl Output {
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
+    ///
+    /// 呼び出し元 (`vk_send.rs` の `send_char_as_tsf`/`send_char_as_vk`) は
+    /// `CharResolution::Vk` の生 VK フォールバック経路にあり、2026-08-05 の
+    /// BUG-47 追補修正で `vk_pair_to_ascii` が `build_symbol_to_vk` の全記号を
+    /// カバーするようになったため、現状この2箇所は理論上到達しない
+    /// （`docs/known-bugs.md` BUG-47 参照）。
     pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
         self.warmup_coord
             .defer_vks_if_in_flight(&[(vk, needs_shift)])
