@@ -174,6 +174,33 @@ impl ConvModeMgr {
     }
 }
 
+/// IME-ON コンボ（既定: Ctrl+変換）押下時に、ひらがな＋ローマ字＋CapsLock OFF への
+/// リセット（`kp_reset_to_hiragana_romaji_capsoff`）を起動すべきかどうかの判定。
+///
+/// `was_open_before`（IME open の belief、`effective_open()`）に加えて
+/// `observed_katakana`（`ConvModeMgr` が現に観測しているカタカナかどうか）の
+/// いずれかが真ならリセット対象にする。
+///
+/// # 背景（BUG-50、2026-08-05）
+///
+/// 従来は `was_open_before` 単独で判定していたが、belief が drift で誤って
+/// `false` になっている（IME は既にカタカナへ入っているのに belief は「まだ
+/// 閉じている」と誤認している）ケースでは、ユーザーが IME-ON コンボを押しても
+/// このリセットが起動せず、カタカナから永久に復旧できないデッドロックになって
+/// いた（`docs/known-bugs.md` BUG-50 参照）。`observed_katakana` を追加条件に
+/// することで、belief が誤っていても実際に観測されたカタカナを起点にリセット
+/// できるようにする。`was_open_before=true` のときの既存の破壊的リセット挙動
+/// （カタカナであっても問答無用でひらがなへ寄せる）はそのまま維持されるため、
+/// 新しい破壊的動作のクラスは増えない。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const fn should_reset_katakana_on_ime_on_combo(
+    was_open_before: bool,
+    observed_katakana: bool,
+) -> bool {
+    was_open_before || observed_katakana
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,5 +298,29 @@ mod tests {
         // 半角英数 (conv=0)
         assert!(mgr.update_from_conv(0x0000, t(10)));
         assert_eq!(mgr.get().unwrap().charset.to_string(), "HanAlpha");
+    }
+
+    // ── should_reset_katakana_on_ime_on_combo (BUG-50) ─────────────────────
+
+    /// 既存挙動: belief が「既に ON」なら、観測に関わらずリセットする
+    /// （カタカナであっても問答無用でひらがなへ寄せる従来の破壊的挙動を維持）。
+    #[test]
+    fn resets_when_belief_says_already_open() {
+        assert!(should_reset_katakana_on_ime_on_combo(true, false));
+        assert!(should_reset_katakana_on_ime_on_combo(true, true));
+    }
+
+    /// BUG-50 の核心: belief が誤って Off でも、実際に観測された conv が
+    /// カタカナならリセットする（belief 単独判定だと発火せず永久に戻れなかった）。
+    #[test]
+    fn resets_when_belief_is_off_but_katakana_is_observed() {
+        assert!(should_reset_katakana_on_ime_on_combo(false, true));
+    }
+
+    /// 通常の OFF→ON（カタカナ観測なし）ではリセットしない
+    /// （素の IME-ON として振る舞う従来挙動を変えない）。
+    #[test]
+    fn no_reset_for_plain_off_to_on_without_katakana_observation() {
+        assert!(!should_reset_katakana_on_ime_on_combo(false, false));
     }
 }
