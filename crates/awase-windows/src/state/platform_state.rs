@@ -205,6 +205,14 @@ impl ImeStateHub {
         if self.is_ctrl_ime_chord_active() && !target {
             // chord transaction 中の二次 IME OFF 要求: フィルタ。
             // ChordEnded（Ctrl KeyUp）が barrier を解除するため、ここでは何もしない。
+            //
+            // 診断ログ (2026-08-05): 従来ここは完全無音だったため、実機ログだけでは
+            // 「明示 OFF がこのフィルタでサイレント無効化された」ケースを他の原因と
+            // 区別できなかった。挙動は変更しない。
+            log::info!(
+                "[chord-filter] SetOpen(false) request filtered: ctrl_ime_chord が既に active \
+                 (last_intent/desired_open は更新されない)"
+            );
             return false;
         }
         if focus_transition_was_pending {
@@ -220,7 +228,9 @@ impl ImeStateHub {
             // 中間ウィンドウ（Alt+Tab スイッチャー等）の未確定 belief に基づき Engine が SetOpen を
             // 発行し得る（2026-07-05 実機ログで確認）。barrier consume 時に kick される非同期
             // focus probe が観測を更新すれば、次の入力イベントで正しい SetOpen が再発行され自己修復する。
-            log::debug!(
+            //
+            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ（頻度は低い）。
+            log::info!(
                 "[focus-settle] SetOpen({target}) request filtered at belief last line of defense \
                  (focus transition barrier still settling at event start)"
             );
@@ -272,10 +282,16 @@ impl ImeStateHub {
         tick_ms: TickMs,
     ) -> bool {
         if self.is_ctrl_ime_chord_active() && !target {
+            // 診断ログ: handle_engine_set_open 側と同じ理由で info に格上げ。
+            log::info!(
+                "[chord-filter] ActivationSync SetOpen(false) request filtered: \
+                 ctrl_ime_chord が既に active"
+            );
             return false;
         }
         if focus_transition_was_pending {
-            log::debug!(
+            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ。
+            log::info!(
                 "[focus-settle] ActivationSync SetOpen({target}) request filtered at belief \
                  last line of defense (focus transition barrier still settling at event start)"
             );
