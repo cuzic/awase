@@ -611,6 +611,16 @@ impl Runtime {
                 self.platform_state
                     .ime
                     .report_conv_open_inference(true, reason, now_tick);
+                // このブランチは desired ≠ observed の乖離を記録するだけで自らは
+                // actuate しない（上記コメント通り BUG-19 対策）。実際の補正判断は
+                // `ir_apply_drift_correction`（`TIMER_IME_REFRESH` 発火時のみ実行）に
+                // 委ねられるが、TsfNative では `explicit_intent` 確定後にこのタイマーが
+                // 恒久停止する設計のため、ここで明示的に蹴らないと乖離が無期限に
+                // 検出されないまま残る（2026-08-04, BUG-51: 実機で最大8分放置された
+                // 不具合）。ここで記録した観測は今まさに取得したばかりで新鮮なため
+                // （`DRIFT_CORRECTION_OBS_MAX_AGE_MS` に対して十分に新しい）、
+                // `may_change_ime` パススルーと同じ 20ms 遅延で安全に確認できる。
+                self.schedule_ime_refresh(20);
                 return;
             }
             EngineSync::SetOpen(reason) => {

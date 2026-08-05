@@ -5537,3 +5537,170 @@ golden ケースを追加（Linux ネイティブで `cargo test -p awase-window
 幅 SSOT 原則、本件の provenance 追補先）、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
 [experiment-logging](../.claude/rules/experiment-logging.md)。
+
+## BUG-51: TsfNative の drift correction が `TIMER_IME_REFRESH` の恒久停止で再起動されず、IME OFF で Engine ON のまま最大8分ドリフトする
+
+**症状:** MS-IME（TsfNative）環境で、実機ログに `[ime-off-rescue] 50ms timer expired →
+保留 vk=0x1D を IME OFF として発火`（vk=0x1D は `VK_NONCONVERT`＝既定の左親指シフト
+キー）が2回記録された（2026-08-04T01:54:37.280 / 01:54:47.730）。その直後から
+`[idle-conv-check] TsfNative: conv observation open=true reason=KatakanaShadowOff
+(conv=0x00000003) → ObserverReported として記録 (engine は actuate しない)` が
+継続的に記録され続け、desired_open=false（IME OFF 済みという engine 内部の認識）と
+実際の TSF conv mode（open=true、HanKata）が乖離したまま推移した。最終的に
+01:55:06.154 の `Engine activated` 直後、`[ime-mode] drift detected: belief=Off →
+actual=Katakana (conv=0x00000003)` というログで乖離が可視化された。この間に記録
+された `[drift] correction: observed=true ≠ desired=false for 478988ms → \
+set_ime_open(false)`（01:54:58.067）は、乖離が **478988ms（約8分）** 続いていた
+ことを示す。ユーザー報告は「IME OFF で Engine ON」（実際は逆方向、desired=OFF・
+実 IME=ON のまま Engine だけが再度 ON になった状態）で、Shift キーの関与をユーザー
+自身が疑っていた。同種の長時間ドリフト（`for 122751ms`）は BUG-50（カタカナ
+ドリフトからの復旧不能）の実機ログでも観測されており、無関係な症状に見えても
+根はこの再起動漏れに繋がっている可能性がある。
+
+**IME:** MS-IME（TsfNative、`ime=MsIme`）。config 既定値: `left_thumb_key="無変換"`
+（vk=0x1D）、`keys.ime_off=["Ctrl+無変換"]`。
+
+**当初の誤診断（Fix A、撤回済み）と訂正の経緯:** 最初は「`hook.rs` の
+`CTRL_CONSUMED_SINCE_DOWN`（`Ctrl↓ → 他キー↓ → 親指キー↓` を検知して
+ime-off-rescue の 50ms 救済窓に入れる仕組み）が Shift 単独押下を「Ctrl チョード消費」
+に誤カウントしている」ことが根本原因であり、修飾キー単独押下を消費対象から除外すれば
+直ると判断し実装・テストまで行った（`vk.rs::counts_as_ctrl_consumption` 新設）。
+しかし Opus・Fable による独立レビューで「`ctrl_consumed_since_down()` は
+`key_pipeline.rs::kp_run_inner` Phase B で **即時発火するか 50ms 猶予後に発火するかを
+分けるだけのゲート** であり、`engine.on_input`（Phase 1、`check_special_keys` が
+NicolaFsm 処理より先に無条件実行される、`engine.rs:267-275`）は
+`event.modifier_snapshot.ctrl=true` かつ vk が ime_off コンボの vk と一致すれば
+`ctrl_consumed_since_down()` の値に関係なく IME OFF を即座に発火する」と指摘された。
+`key_pipeline.rs:164-165` の既存コメント（「Ctrl↓ → 直後に 無変換↓ の意図的チョードでは
+ctrl_consumed_since_down=false なのでここを通過せず engine が即 IME OFF を発火する」）
+と `engine.rs:260-294` の `on_input` 本体を自分でも読み直し、この指摘が正しいことを
+確認した。つまり Fix A は「50ms 救済窓に入るかどうか」を変えるだけで、**その先で
+IME OFF が発火すること自体は防げない**。むしろ「Ctrl↓ → Shift↓/↑ → 無変換↓ →
+50ms 以内に Ctrl↑」という、修正前なら 50ms 猶予中の Ctrl↑ で破棄されていた
+（IME OFF もならず thumb shift 化もしない）パターンが、修正後は猶予なしの即時発火に
+変わる退行があるとも指摘された。この経緯から Fix A は撤回し、`hook.rs`/`vk.rs` の
+変更は本コミットに含めていない。**同種の「修飾キー単独押下の除外」案を再提案する前に
+この経緯を必ず確認すること** — `ctrl_consumed_since_down` を弄る修正は、IME OFF の
+発火有無ではなく発火タイミングにしか効かない。
+
+**真因（コード読解で確認、Opus/Fable 双方が同じ箇所を有望と評価）:** IME OFF コンボ
+自体の発火（Ctrl が真に見えている限り止められない）は今回は不問とし、発火後に
+**乖離が検出・補正されるまでの時間が無期限になりうる** 構造的欠陥を直した。
+`VK_NONCONVERT`（0x1D）は `vk::may_change_ime` が `false` を返すため、
+SetOpen 発行の後処理（`kp_stage_post_decision`）の `may_change_ime` パススルー分岐
+（`schedule_ime_refresh(20)`）はそもそも `!decision.is_consumed()` が
+前提であり IME OFF の `Decision::consumed_with(..)` には到達しない。かつ同分岐より
+前で `TIMER_IME_REFRESH` は明示的に kill される。TsfNative アプリでは
+`Runtime::reschedule_ime_refresh` が `is_tsf_native` を理由に周期ポーリングの
+再スケジュールを恒久的に停止する設計（「フォーカス変更 / may_change_ime キー」が
+再開トリガーという前提）のため、この経路にはどちらのトリガーも来ない。結果、
+`ir_apply_drift_correction`（`ime_refresh.rs`、`TIMER_IME_REFRESH` 発火時のみ実行
+される）が長時間呼ばれず、`desired_open=false` と実 TSF conv（open=true）の乖離が
+検出も補正もされないまま蓄積する。乖離自体は `kp_stage_idle_conv_check`（KeyDown 毎に
+独立実行、`EngineSync::ReportOpenInference` 経由で observation store には記録される
+が `desired_open` は書き換えない、BUG-19 対策）により observation としては記録され
+続けるため、`[drift] correction:` ログの `duration_ms` が単調増加し続ける（BUG-43 と
+対称に「検知タイマー自体が止まる」パターン）。この early-return は
+`is_tsf_native` だけでなく `explicit_intent().is_some()` 全般に効くため、対象は
+TsfNative に限らず explicit_intent が確定する全プロファイルに及ぶ。
+
+**検討したが撤回した修正案（第1版・第2版）:** 本節は同じ近道を将来再提案しないための
+記録（[experiment-logging](../.claude/rules/experiment-logging.md) の精神に準拠）。
+
+- **第1版（撤回）:** `hook.rs` の `CTRL_CONSUMED_SINCE_DOWN`（`Ctrl↓ → 他キー↓ →
+  親指キー↓` を検知して ime-off-rescue の 50ms 救済窓に入れる仕組み）が Shift 単独
+  押下を「Ctrl チョード消費」に誤カウントしていることが根本原因と判断し、修飾キー
+  単独押下を消費対象から除外する純粋関数 `vk.rs::counts_as_ctrl_consumption` を
+  実装・テストまで行った。しかし Opus・Fable 双方の独立レビューで
+  「`ctrl_consumed_since_down()` は `key_pipeline.rs::kp_run_inner` Phase B で
+  即時発火するか 50ms 猶予後に発火するかを分けるだけのゲートであり、
+  `engine.on_input`（Phase 1、`check_special_keys` が NicolaFsm 処理より先に
+  `engine.rs:267-275` で無条件実行される）は `event.modifier_snapshot.ctrl=true`
+  かつ vk が ime_off コンボの vk と一致すれば `ctrl_consumed_since_down()` の値に
+  関係なく IME OFF を即座に発火するため症状を直さない」と指摘され、`engine.rs` を
+  自分でも読み直してこの指摘が正しいことを確認した。さらに「Ctrl↓ → Shift↓/↑ →
+  無変換↓ → 50ms 以内に Ctrl↑」という、修正前なら救済されていたパターンが修正後は
+  猶予なしの即時発火に変わる退行があるとも指摘された。撤回し、`hook.rs`/`vk.rs` の
+  変更は最終的に含めていない。
+- **第2版（撤回）:** IME OFF コンボの発火自体は止めず、`state/platform_state.rs`
+  に `has_pending_drift(now)` という純粋メソッドを新設し、`runtime/mod.rs::
+  reschedule_ime_refresh` がドリフト進行中は TsfNative 等の早期 return より先に
+  ポーリングを継続するよう変更し、さらに `kp_stage_post_decision` の SetOpen 処理で
+  `TIMER_IME_REFRESH` kill 直後に `EXPLICIT_IME_SUPPRESS_MS`（1500ms）後の確認
+  refresh を追加した。第2ラウンドの Codex・Opus・Fable 独立レビューで複数の欠陥が
+  指摘された: (a) `EXPLICIT_IME_SUPPRESS_MS` と `DRIFT_CORRECTION_OBS_MAX_AGE_MS`
+  が共に 1500ms のため、確認 refresh が発火する頃には唯一存在する trusted 観測が
+  ちょうど max_age を超えて stale 判定され、補正が発火しない確率が高い（Opus 指摘）。
+  (b) `has_pending_drift` が `check_drift_correction` の持つ閾値・鮮度・
+  `is_user_enabled` 等のガードを一切持たないため、TsfNative + MS-IME のように
+  drift を「収束」させる観測ソースが無いプロファイルでは drift が clear されず、
+  一度ドリフトが立つとフォーカス変更まで `ime_poll_interval_ms` 間隔のポーリングが
+  恒久的に回り続ける（Codex・Opus・Fable 全員が同じ懸念に到達）。(c) この 1.5 秒
+  one-shot は `may_change_ime` の `schedule_ime_refresh(20)` や focus debounce 等、
+  同じ `TIMER_IME_REFRESH` を使う既存の呼び出しに無条件上書きされて消えることがある
+  （Codex・Fable 指摘）。Opus・Fable 双方が共通して「`kp_apply_conv_engine_sync` の
+  `ReportOpenInference` 記録直後に `schedule_ime_refresh` を呼ぶ event-driven 方式」
+  を代替案として推奨しており、これが最終版（下記）の設計になった。
+
+**修正（本コミット、最終版）:** `runtime/key_pipeline.rs::kp_apply_conv_engine_sync`
+の `EngineSync::ReportOpenInference` 分岐（`kp_stage_idle_conv_check` から KeyDown
+毎に呼ばれる）で、`report_conv_open_inference(true, reason, now_tick)` を呼んで
+新しい観測を記録した直後に `self.schedule_ime_refresh(20)` を追加した
+（`may_change_ime` パススルーと同じ既存の 20ms 遅延を再利用、新規タイミング定数は
+導入していない）。この分岐は「shadow=OFF なのに conv が native/open を示す」という
+まさにドリフトそのものを検出した瞬間にのみ実行されるため、これまでのように
+`desired_open` を直接書き換えることなく（BUG-19 対策の設計はそのまま維持）、
+既存の `ir_apply_drift_correction`／`check_drift_correction`（閾値・鮮度・
+`FeedbackPolicy::Blind` の再送上限等、既存のガードをすべてそのまま活用）に
+「たった今できたばかりの新鮮な観測」を渡して判断させることができる。第2版の
+問題点はすべてこの設計で構造的に解消される: 観測が新鮮なので stale 判定されない
+（問題a）、ドリフトが実際に検出されたときだけ 20ms 後に1回チェックが走るだけで
+継続的なポーリングにはならない（問題b、`reschedule_ime_refresh` 自体は完全に
+未変更のまま）、次に同じ矛盾した観測が来るたびに再度 20ms 後のチェックが自然に
+かかる（ユーザーが入力を続けている限り再発しても数十〜数百ms 単位で捕捉される）。
+`runtime/mod.rs::reschedule_ime_refresh` はコメントを更新しただけで、判定ロジックは
+変更していない（発火する分岐は元のまま）。
+
+**未解明（Fable 指摘、未検証）:** そもそも最初の IME OFF 送信（VK 送信）が、なぜ
+実 IME（TSF conv mode）に反映されなかったのか自体は今回のコード読解だけでは
+分からない。`desired_open=false` は正しく確定しているのに実 conv が open のまま
+だった理由（TSF composition による無視、chord barrier での skip、他の何か）が
+未解明であり、本修正は「乖離を早く検知・再送する」対症であって、初回送信が反映され
+ない根本原因には踏み込んでいない。また、`EXPLICIT_IME_SUPPRESS_MS`（1500ms）の間は
+`kp_stage_idle_conv_check` 自体が抑止されるため、SetOpen 直後〜1500ms の間に
+ユーザーが入力を止めた場合、次の KeyDown（＝次の idle-conv-check 実行）まで本修正の
+トリガーは発火しない。ただしこれは既存の抑止設計そのものであり、タイピングが
+再開されればすぐに捕捉される。次回同症状が再発した場合、初回 SetOpen 送信が実際に
+何を送り、なぜ効かなかったかを VK レベルで実機ログ確認すること。また 8 分の乖離の
+起点（ログの `duration_ms=478988ms` から逆算すると 01:46:49 付近）に対応する最初の
+トリガーのログが今回の抜粋には無く、同じ経路だったかは未検証。
+
+**未修正の残課題:** IME OFF コンボそのものの誤発火（Ctrl が真に見えている間は
+`engine.on_input` Phase 1 が無条件でマッチする）は今回触れていない。Ctrl 状態の
+信頼性問題（stuck Ctrl 等、`project_ctrl_mismatch_stuck_modifier` 参照）が真因の
+可能性があるが、`modifier_snapshot.ctrl`（GetAsyncKeyState 由来）と物理キー状態
+（`is_physical_key_down`）の一致を要求する等の対策は未検討・未実装。
+
+**検証状況:** `runtime/key_pipeline.rs`・`runtime/mod.rs` は `#[cfg(windows)]` の
+ため Linux 上の `cargo test -p awase-windows`（native target）には含まれず、
+`cargo xwin check --tests -p awase-windows --target x86_64-pc-windows-msvc` で
+型検査のみ確認済み（警告ゼロ）。`cargo xwin clippy -p awase-windows --target
+x86_64-pc-windows-msvc`（`--tests` を除く、警告ゼロ）でも確認済み。wine 未導入の
+ためこのサンドボックスでは実機相当のテスト実行は未実施。Codex CLI・Opus・Fable に
+よる2ラウンドの独立レビュー（第1版・第2版それぞれで correctness を検証、指摘の
+突合せ・自分でのコード再確認済み）を経て最終版に到達している。この修正自体は
+2026-08-04 に別ブランチ（`fix/ime-off-rescue-modifier-consumed`）で完成していたが、
+develop への統合が漏れたまま同ブランチが ADR-084/BUG-49 等の後続開発に取り残され、
+2026-08-05 に BUG-50 の調査中に発覚して本エントリとして develop 最新へ移植した
+（ブランチ全体をマージすると 2900 行超の後続修正を巻き戻すため、この1点修正のみを
+再適用）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_apply_conv_engine_sync`）、`crates/awase-windows/src/runtime/mod.rs`
+（`reschedule_ime_refresh`）、`crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_apply_drift_correction`/`check_drift_correction`）。
+関連: BUG-19（`desired_open` を書き換えない設計の由来）、BUG-20（OFF方向drift
+correctionの修正）、BUG-43（対称に「検知タイマー自体が止まる」パターン）、BUG-50
+（同種の長時間ドリフトが観測されたカタカナ復旧不能バグ）、
+[experiment-logging](../.claude/rules/experiment-logging.md)、
+[tuning-constants](../.claude/rules/tuning-constants.md)。
