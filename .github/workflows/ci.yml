@@ -95,6 +95,14 @@ jobs:
           components: rustc-dev, llvm-tools-preview
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-xwin が `cargo xwin env` 時にダウンロードする Windows SDK/MSVC CRT
+          # (~/.cache/cargo-xwin) はデフォルトの rust-cache 対象外で、キャッシュしないと
+          # 毎回 15 分前後かけて再ダウンロードしていた（実測: dylint ジョブ全体 ~17分中
+          # ~15分がこのダウンロード、GitHub Actions run 30987463824 で確認）。
+          # dylint 本体の型チェックは残り ~1.5分。windows-cross-check ジョブと違い
+          # env サブコマンドを直接叩くためこのジョブだけダウンロードが顕在化していた。
+          cache-directories: /home/runner/.cache/cargo-xwin
       - uses: taiki-e/install-action@cargo-xwin
       - name: Install cargo-dylint
         run: cargo install cargo-dylint dylint-link --version 6.0.0 --locked
