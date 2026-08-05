@@ -3,9 +3,8 @@
 //! `Charset` と `ConvMode` の定義は platform 非依存の `nicola` クレートに移動済み。
 //! このファイルは `ConvModeMgr`（状態管理ラッパー）と `ConvModeAuthority`（所有権管理）を定義する。
 
-#[cfg(windows)]
-pub(crate) use awase::engine::Charset;
-pub(crate) use awase::engine::ConvMode;
+pub(crate) use awase::config::ConvModePolicy;
+pub(crate) use awase::engine::{Charset, ConvMode};
 
 use super::TickMs;
 
@@ -70,6 +69,19 @@ pub(crate) struct ConvModeMgr {
     /// 非カタカナ → カタカナ (Zenkaku/Hankaku) への遷移候補。2 回連続で同じ値を観測する
     /// まで `mode` を確定させない（BUG-19 の一発誤読ロック対策、下記 `update_from_conv` 参照）。
     katakana_candidate: std::cell::Cell<Option<ConvMode>>,
+    /// `conv_mode_policy = force`（`config.toml` の `GeneralConfig::conv_mode_policy`）
+    /// のときに cold 転換のたびに強制する目標モード。`IME ON/OFF`
+    /// （`ImeModel::desired_open`）とは独立した別軸。
+    ///
+    /// awase 自身のトレイ（`ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana`/
+    /// `ImeFullAlpha`/`ImeHalfAlpha`）からのみ更新される。GJI/MS-IME 側の
+    /// トレイやその他の経路で実 conv が変わっても、この値自体は変わらない
+    /// （＝それらの変更は次の cold 転換で上書きされる、が設計意図）。
+    desired_mode: std::cell::Cell<ConvMode>,
+    /// `config.toml` の `GeneralConfig::conv_mode_policy` から反映されるポリシー。
+    /// `bootstrap.rs`（起動時）と `apply_config_update`（reload 時）の両方から
+    /// `set_policy` で更新される。デフォルトは `Observe`（従来動作）。
+    policy: std::cell::Cell<ConvModePolicy>,
 }
 
 impl Default for ConvModeMgr {
@@ -79,6 +91,11 @@ impl Default for ConvModeMgr {
             #[cfg(windows)]
             suppress_zenkata_until_ms: std::cell::Cell::new(0),
             katakana_candidate: std::cell::Cell::new(None),
+            desired_mode: std::cell::Cell::new(ConvMode {
+                charset: Charset::Hiragana,
+                romaji: true,
+            }),
+            policy: std::cell::Cell::new(ConvModePolicy::Observe),
         }
     }
 }
@@ -172,6 +189,31 @@ impl ConvModeMgr {
     pub(crate) fn get(&self) -> Option<ConvMode> {
         self.mode.get()
     }
+
+    /// `conv_mode_policy = force` のときに cold 転換のたびに強制する目標モードを返す。
+    /// デフォルトは全角ひらがな（`Default::default()` 参照）。
+    pub(crate) fn desired_mode(&self) -> ConvMode {
+        self.desired_mode.get()
+    }
+
+    /// 目標モードを更新する。awase 自身のトレイ（`ImeHiragana` 等）からのみ
+    /// 呼ぶこと。GJI/MS-IME 側の観測（`update_from_conv`）からは呼ばない —
+    /// 「awase のトレイから変更したときだけ目標が変わる」という設計上の
+    /// 唯一の書き込み点。
+    pub(crate) fn set_desired_mode(&self, mode: ConvMode) {
+        self.desired_mode.set(mode);
+    }
+
+    /// 現在の conv モードポリシーを返す。
+    pub(crate) fn policy(&self) -> ConvModePolicy {
+        self.policy.get()
+    }
+
+    /// ポリシーを更新する。`bootstrap.rs`（起動時）と `apply_config_update`
+    /// （config reload 時）から呼ぶ。
+    pub(crate) fn set_policy(&self, policy: ConvModePolicy) {
+        self.policy.set(policy);
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +227,41 @@ mod tests {
 
     fn t(ms: u64) -> TickMs {
         TickMs(ms)
+    }
+
+    // ── desired_mode ────────────────────────────────────────────────────────
+
+    #[test]
+    fn desired_mode_defaults_to_zenkaku_hiragana() {
+        let mgr = ConvModeMgr::default();
+        let d = mgr.desired_mode();
+        assert_eq!(d.charset, Charset::Hiragana);
+        assert!(d.romaji);
+    }
+
+    #[test]
+    fn desired_mode_only_changes_via_set_desired_mode() {
+        let mgr = ConvModeMgr::default();
+        let zenkata = ConvMode::from_u32(CONV_ZENKATA);
+        // update_from_conv（GJI/MS-IME 側の観測）を流しても、desired_mode は
+        // 一切変化しない（awase トレイ経由の set_desired_mode だけが唯一の
+        // 書き込み点、という設計の回帰テスト）。
+        assert!(mgr.update_from_conv(CONV_HIRAGANA, t(0))); // 初回観測（非カタカナ）で確定
+        assert!(!mgr.update_from_conv(CONV_ZENKATA, t(10))); // 1回目のカタカナ観測は保留
+        assert!(mgr.update_from_conv(CONV_ZENKATA, t(20))); // 2回連続一致で確定
+        assert_eq!(mgr.get(), Some(zenkata));
+        assert_eq!(mgr.desired_mode().charset, Charset::Hiragana);
+
+        mgr.set_desired_mode(zenkata);
+        assert_eq!(mgr.desired_mode(), zenkata);
+    }
+
+    #[test]
+    fn policy_defaults_to_observe_and_updates_via_set_policy() {
+        let mgr = ConvModeMgr::default();
+        assert_eq!(mgr.policy(), ConvModePolicy::Observe);
+        mgr.set_policy(ConvModePolicy::Force);
+        assert_eq!(mgr.policy(), ConvModePolicy::Force);
     }
 
     /// `allows_conv_mutation` は `AwaseOwned` のときのみ true。反転すると
