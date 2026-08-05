@@ -190,3 +190,63 @@ impl ImeModeFsm {
         self.confirmed = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ImeModeFsm, ImeModeState};
+
+    /// ADR-084 P1（BUG-49）: `unconfirm()` は `state` を変えないまま
+    /// `is_native_ready()` を false に落とす。`kp_shift_conv_guard_key_down`
+    /// （`runtime/key_pipeline.rs`）が MS-IME 経路で conv=0x0000 を先回り書き込む
+    /// 直前に同期的に `unconfirm("shift-conv-guard entry")` を呼ぶことで、
+    /// `Output::ms_ime_gate_defer` が stale な `is_native_ready()==true` を
+    /// 信じて素通しするのを防ぐ（BUG-49 の直接の原因）。この不変条件が壊れたら
+    /// key_pipeline.rs 側の修正は無意味になるため、ここで直接固定する。
+    #[test]
+    fn unconfirm_makes_native_ready_false_without_changing_state() {
+        let mut fsm = ImeModeFsm::new();
+        fsm.on_conversion_mode_read(Some(
+            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+        ));
+        assert_eq!(fsm.state(), ImeModeState::Hiragana);
+        assert!(fsm.is_native_ready(), "confirmed かつ Hiragana なら ready");
+
+        fsm.unconfirm("shift-conv-guard entry");
+        assert_eq!(
+            fsm.state(),
+            ImeModeState::Hiragana,
+            "unconfirm は state を変えない（conv が実際に半角英数へ変わったことを \
+             belief に先読みで反映するわけではなく、あくまで「確認が必要」を示すだけ）"
+        );
+        assert!(
+            !fsm.is_native_ready(),
+            "unconfirm 後は state が Hiragana のままでも ready ではない"
+        );
+    }
+
+    /// `unconfirm()` は複数回呼んでも安全（冪等）。エントリ時とその後の
+    /// 再確認失敗時に重ねて呼ばれても panic せず、常に unconfirmed のままになる。
+    #[test]
+    fn unconfirm_is_idempotent() {
+        let mut fsm = ImeModeFsm::new();
+        fsm.unconfirm("first");
+        fsm.unconfirm("second");
+        assert!(!fsm.is_confirmed());
+    }
+
+    #[test]
+    fn on_conversion_mode_read_confirms_native_ready_again() {
+        let mut fsm = ImeModeFsm::new();
+        fsm.on_conversion_mode_read(Some(
+            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+        ));
+        fsm.unconfirm("test");
+        assert!(!fsm.is_native_ready());
+
+        // IMC ポーリングが実際に NATIVE を確認し直すと ready に戻る。
+        fsm.on_conversion_mode_read(Some(
+            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+        ));
+        assert!(fsm.is_native_ready());
+    }
+}

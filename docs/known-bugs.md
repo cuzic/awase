@@ -5209,7 +5209,7 @@ warnings` も green（`--tests` 付きの clippy pedantic warning は本修正�
 `crates/awase-windows/src/runtime/focus_tracking.rs`
 （`EXPLICIT_OFF_CACHE_SUPPRESS_MS` 抑制ガード）。
 
-## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、未修正）
+## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、Phase 1 対応済み・実機未検証）
 
 **症状（2026-08-05 ユーザー報告、MS-IME）:** `.yab` の `[ローマ字小指シフト]`
 （物理 `VK_LSHIFT`/`VK_RSHIFT` を押しながら文字キーを打つ面）で「！」を入力すると、
@@ -5253,8 +5253,104 @@ release")` は Shift **解放**時にしか呼ばれない）。この間にチ�
 Opus・Fable・Codex の3系統に独立で北極星仕様の草案を依頼し統合した
 [ADR-084](adr/084-conv-mode-single-ownership-and-width-ssot.md) を起票した。
 今後この領域に触れる変更は ADR-084 の原則（P1〜P5・INV-1〜INV-10）と
-整合させること。実装は ADR-084 §5 の Phase 1（`actuate_conv_mode` chokepoint 化）
-から着手する想定で、未着手。
+整合させること。
+
+**追補（Phase 1 実装、2026-08-05）:** ADR-084 §5 Phase 1 のうち、以下を実装した
+（`kp_shift_conv_guard_key_down`/`kp_restore_kana_from_half_width`、
+`crates/awase-windows/src/runtime/key_pipeline.rs`）。
+
+- **同期的 belief 無効化（P1/INV-2 の部分適用）**: entry（MS-IME 経路で
+  conv=0x0000 を IMC write する直前）で `ImeModeFsm::unconfirm("shift-conv-guard
+  entry")` を **同期的に**（`spawn_local` の外、フックスレッド上で）呼ぶように
+  した。これにより、entry write 後・restore 前にチョードが解決して記号が
+  送られる場合、`ms_ime_gate_defer` は stale な `is_native_ready()==true` を
+  信じず正しく defer するようになる（本バグの直接の修正）。
+- **give-up latch の解除**: 同じ箇所で `ms_ime_gate_give_up` も解除する。新たな
+  conv actuation が起きた以上、過去の期限切れ判定を持ち越す理由がないため。
+- **INV-7（entry/restore の IME 種別対称化）**: `kp_restore_kana_from_half_width`
+  の実際の OS 書き込み（`VK_DBE_HIRAGANA` 注入・IMC write リトライループ）を
+  entry と対称に MS-IME 限定にした。従来は GJI でも無条件に実行しており
+  （GJI は entry 機構が無いため常に「書いていないものを復元する」無意味な
+  副作用だった）、Opus レビューで独立に「純粋な改善」と確認済み。
+
+**⚠️ 実装したが撤回した部分（INV-9、再度試みる前に必ず読むこと）:** 当初
+`MS_IME_READY_CONFIRM_MS` の期限を「打鍵時点」ではなく「`unconfirm` された
+時点」起点に変更する案（`ms_ime_gate_defer` の `deadline_ms` 計算を
+`unconfirmed_since() + 400ms` に変更）も実装したが、Opus レビューで
+**この実装は却下済みの案A と同じ失敗をする**ことが判明し撤回した（コード上は
+現在も元の「送信試行時点起点」のまま）。
+
+理由: `unconfirmed_since()` は常に「送信試行時点」以前（entry write の瞬間）
+であり、`unconfirm_time ≤ send_time` が常に成り立つため、
+`unconfirmed_since() + 400ms` は `send_time + 400ms` より**早いか同じ**にしか
+ならない。つまり期限を「早める」変更であり、Shift を長く保持するケースで
+新たに失敗を生む（期限切れ → 強制送信で結局半角化 → `ms_ime_gate_give_up`
+ラッチで BUG-13 保護まで無効化）。さらに、実装中に `unconfirmed_since_ms` の
+リセットタイミングにもバグがあった（`on_conversion_mode_read` が NATIVE 以外の
+状態を確認しても無条件に `0` へリセットしてしまい、Shift 保持中に conv=0x0000
+を読み返すたびに「記録なし」に戻って defer の起点が振り出しに戻る）。
+
+正しく実装するには、`unconfirmed_since` を**都度動的に再評価**する必要がある
+（restore の `unconfirm("shift-conv-guard release")` が起点を後ろへ押し出す
+効果を、`MsImeReadyCoro`/`start_ms_ime_ready_poll` の**両方**が固定値
+（現状は defer 時点で一度だけ計算してコルーチンに埋め込む `deadline_ms: u64`）
+ではなくポーリングの都度ライブに参照する形に変更する必要がある。`
+TsfEnvSnapshot`（`tsf/warmup/probe_fsm.rs`）にタイムスタンプを乗せて
+`ms_ime_ready_coro_body` 側からも見えるようにする案が有力だが、未実装）。
+INV-9 のこの正しい実装は Phase 1 のスコープ外として次段に持ち越す。
+
+**今回のフィックスで直っていない/確認できていない点:**
+- 上記 INV-9 未実装のため、Shift を極端に長く（目安 400ms 超）保持したまま
+  記号チョードを確定するケースでは、entry unconfirm による defer は効くが
+  期限切れ→強制送信で結局半角化しうる。**期限の計算式自体（送信試行時点起点）は
+  develop から変更していないが、「defer 分岐に入ること自体」が新規の副作用を
+  持つ点には注意**: develop では entry unconfirm が無いためこの長押しケースは
+  そもそも defer 分岐に入らず `MsImeReadyCoro`/`start_ms_ime_ready_poll` も
+  起動しなかった（＝ `ms_ime_gate_give_up` が立つこともなかった）。今回の変更で
+  defer 分岐に入るようになった結果、Shift 保持中は `on_conversion_mode_read` が
+  常に conv=0x0000（`state=Off`）を確認し続けるため `is_native_ready()` が
+  原理的に真になり得ず、400ms 超の保持は**決定論的に** `ms_ime_gate_give_up` を
+  ラッチするようになった（Opus レビューで指摘）。実害は限定的で、このラッチは
+  IME ON 遷移完了（`platform.rs`）・フォーカス変更（`output/mod.rs`）・次回の
+  shift-conv-guard entry のいずれでも解除されるため BUG-13 本来の窓
+  （IME OFF→ON 直後）は塞がず、Shift 解放直後の1文字目について restore 側の
+  `unconfirm("shift-conv-guard release")` が本来担う再確認保護が一時的に
+  効かなくなる程度に留まる。とはいえ「defer 分岐は無害な delay に過ぎない」と
+  誤解しないこと。
+- `MS_IME_READY_CONFIRM_MS`（400ms）は元々 IME OFF→ON 遷移の実測値
+  （2026-07-06計測）であり、conv-mode 書き換え後の再確認に必要な時間の実測では
+  ない。ADR-084 §5 Phase 1 の実測義務（`.claude/rules/tuning-constants.md`）は
+  **未達**（このサンドボックスに Windows 実機が無いため測定不能。次の実機
+  セッションで「entry の IMC write 完了 → IMC read で conv=0x0000 が確認できる
+  までの実測 ms」と「restore の VK_DBE_HIRAGANA 注入/IMC write から NATIVE 再確認
+  までの実測 ms」の双方を計測すること）。
+- Shift の auto-repeat（`kp_shift_conv_guard_key_down` は新規押下と repeat を
+  区別していない）が entry を再度発火させ、`unconfirm`/`give_up` 解除を
+  typematic レートで繰り返す可能性を Opus レビューで指摘された。実害は
+  「IMC 不可読環境で give-up latch が本来の目的（連続 probe 抑止）を果たせない」
+  程度と評価しているが、実機で Shift の auto-repeat がこの関数に到達するか
+  自体が未確認。
+- 本修正（症状「！」→「!」の直接原因の解消）自体、wine 未導入のためこの
+  サンドボックスでは実機再現・修正確認ができていない。次の Windows 実機
+  セッションで MS-IME + 小指シフト面「！」の cold-start/hold 時間を変えた
+  再現テストを行うこと。
+- 上記に挙げていない conv 書き込み経路（`key_pipeline.rs` の idle-conv-check・
+  ime-on-combo リセット、`executor.rs`、`tsf/warmup/cold_warmup.rs`、
+  `ime_controller.rs` 等）は今回同期的 unconfirm 化していない（INV-2 は
+  `shift-conv-guard` entry のみの部分適用）。ADR-084 の `actuate_conv_mode`
+  chokepoint への統合は次段。
+
+**テスト:** `crates/awase-windows/src/tsf/ime_mode_fsm.rs` に
+`unconfirm_makes_native_ready_false_without_changing_state`（本バグが依存する
+不変条件「unconfirm 後は state が Hiragana のままでも is_native_ready()==false」
+を直接固定）・`unconfirm_is_idempotent`・
+`on_conversion_mode_read_confirms_native_ready_again` を追加（Windows target
+のみでコンパイル・実行可、`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査済み、wine 未導入のためこのサンドボックス
+では実行不可）。`cargo test -p awase-windows`（Linux、golden_scenarios/
+architecture_guard 含む）は無影響で全 green（本修正は `ImeModel`/reducer 層では
+なく `ImeModeFsm`/`Output` 層のみに触れるため、既存の golden シナリオは
+カバー範囲外）。
 
 **関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
 （`kp_stage_shift_conv_guard`/`kp_shift_conv_guard_key_down`/
