@@ -49,20 +49,34 @@ impl<'a> ColdWarmupSequence<'a> {
         // async ラッパーを spawn_local で起動して退避する。
         //
         // カタカナ/英数への明示的復元（KATAKANA/FULLSHAPE ビット等）は BUG-19 の
-        // ロックイン事故を受けて撤去した。常に None（ROMAN ビット確保のみ）を
-        // 書き戻す（`docs/known-bugs.md` BUG-19 参照）。
+        // ロックイン事故を受けて撤去した。`conv_mode_policy = observe`（デフォルト）
+        // では常に None（ROMAN ビット確保のみ）を書き戻す（`docs/known-bugs.md`
+        // BUG-19 参照）。
+        //
+        // `conv_mode_policy = force`（オプトイン設定）のときのみ、awase トレイで
+        // 選択した `desired_mode` を毎回 cold 転換時に冪等に強制する。BUG-19 と
+        // 異なり「観測したカタカナに追従する」のではなく「observation に関係なく
+        // 常に同じ目標へ引き戻す」一方向の書き込みのため、自己増幅ループにはならない。
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
+        let forced_target = match self.output.conv_mode.policy() {
+            crate::state::ConvModePolicy::Observe => None,
+            crate::state::ConvModePolicy::Force => {
+                Some(self.output.conv_mode.desired_mode().to_conv_bits())
+            }
+        };
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
-                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} write={conv_mutation_allowed}",
+                "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} write={conv_mutation_allowed} \
+                 forced_target={}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
+                forced_target.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
             );
             if conv_mutation_allowed {
-                let _ = crate::ime::set_ime_romaji_mode_with_target_async(None).await;
+                let _ = crate::ime::set_ime_romaji_mode_with_target_async(forced_target).await;
             }
         });
 

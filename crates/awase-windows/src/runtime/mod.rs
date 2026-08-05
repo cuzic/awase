@@ -941,6 +941,10 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        self.platform
+            .output
+            .conv_mode
+            .set_policy(config.general.conv_mode_policy);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;

@@ -473,6 +473,12 @@ pub(super) fn initialize_app(
         all_keymaps,
         post_bypass_rules,
     ));
+    let _ = with_app(|app| {
+        app.platform
+            .output
+            .conv_mode
+            .set_policy(config.general.conv_mode_policy);
+    });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
 }
