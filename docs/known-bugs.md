@@ -4996,3 +4996,23 @@ shadow_toggled=false の状態で漏洩した」ことを示す実機ログは�
 パラメータ化して固定（`dbe_mode_keydown_suppressed_even_when_not_shadow_toggled`）。
 Linux 上のビルド/clippy 確認のみで、実機/Windows 環境でのテスト実行・再発確認は
 引き続き未実施。
+
+**追補2（2026-08-05、ユーザー指摘による因果関係の整理）: 「トグルキー問題」ではなく
+「冪等性の前提が送信側にしか成立していなかった」問題として再定義。**
+本ファイル 3642 行目付近で既に確立している設計原則「`VK_KANJI` のようなトグル
+キーではなく、ON/OFF 専用の冪等キー（`VK_IME_ON`/`VK_IME_OFF`）を使う」は
+`VK_DBE_HIRAGANA` (0xF2) にも適用されており（803行目付近「MsImeDirect の冪等
+VK_DBE_HIRAGANA」）、この設計判断自体は正しい。
+
+本バグの実際の欠陥は、この冪等性の前提が **awase 自身が能動的に送信する側**
+（`SendInput`/`IMC_SETCONVERSIONMODE` で常に同じ VK/値を送る）では正しく
+成立していたのに、**物理キーをそのまま素通しする側**（`PhysicalKeyDisposition::
+plan` が `shadow_toggled=false` を理由に Allow する側）では、同じ冪等性が
+暗黙に成り立つものとして扱われていたこと。実際には素通しされる生の物理
+イベントの VK は 0xF2 とは限らず、`ImeKeyKind::from_vk` が同じ「shadow IME
+TurnOn/TurnOff」グループへ分類する 0xF0/0xF1/0xF3/0xF4 でもあり得て、これらは
+それぞれ「ひらがなにする」とは全く別の（非冪等な）副作用を実IMEに与える。
+「トグルキーを避けて冪等キーを選ぶ」という設計判断は、awase が能動的に選んで
+送信する VK にしか適用できない保証であり、**同じ意味クラスに分類された物理
+キーの生イベントを無検査で通すこと**にまで拡張できる保証ではなかった、という
+のが正確な因果関係。
