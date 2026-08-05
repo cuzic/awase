@@ -519,6 +519,23 @@ pub(crate) fn handle_wm_reload_config() {
     reload_config();
 }
 
+/// トレイの Ime系コマンドから `ConvModeMgr::desired_mode` を更新する。
+///
+/// `conv_mode_policy = force`（`config.toml`）のときに cold 転換のたびに
+/// 強制される目標モードを、awase 自身のトレイ選択でのみ更新する唯一の書き込み点。
+/// romaji は常に `true` を渡す（英数系 charset では `to_conv_bits` が ROMAN
+/// ビットを無害に付与するだけで意味を持たない）。
+fn set_desired_conv_mode(charset: awase::engine::Charset) {
+    let _ = with_app(|app| {
+        app.platform.output.conv_mode.set_desired_mode(
+            awase::engine::ConvMode {
+                charset,
+                romaji: true,
+            },
+        );
+    });
+}
+
 /// WM_COMMAND ハンドラ
 pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
     // トレイメニューの IME コマンドは、メニュー表示前に捕捉したウィンドウ
@@ -556,6 +573,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     crate::imm::IME_CMODE_KATAKANA,
                 );
             }
+            set_desired_conv_mode(awase::engine::Charset::Hiragana);
         }
         Some(tray::TrayCommand::ImeFullKatakana) => {
             if let Some(hwnd) = ime_target {
@@ -568,6 +586,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     0,
                 );
             }
+            set_desired_conv_mode(awase::engine::Charset::ZenkakuKatakana);
         }
         Some(tray::TrayCommand::ImeFullAlpha) => {
             if let Some(hwnd) = ime_target {
@@ -578,6 +597,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
                 );
             }
+            set_desired_conv_mode(awase::engine::Charset::ZenkakuAlpha);
         }
         Some(tray::TrayCommand::ImeHalfAlpha) => {
             if let Some(hwnd) = ime_target {
@@ -590,6 +610,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                         | crate::imm::IME_CMODE_FULLSHAPE,
                 );
             }
+            set_desired_conv_mode(awase::engine::Charset::HankakuAlpha);
         }
         Some(tray::TrayCommand::ImeHalfKatakana) => {
             if let Some(hwnd) = ime_target {
@@ -600,6 +621,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     crate::imm::IME_CMODE_FULLSHAPE,
                 );
             }
+            set_desired_conv_mode(awase::engine::Charset::HankakuKatakana);
         }
         Some(tray::TrayCommand::ImeDirect) => {
             if let Some(hwnd) = ime_target {
