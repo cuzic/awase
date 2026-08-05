@@ -1109,6 +1109,21 @@ impl Runtime {
             || !self.platform.output.conv_mutation_allowed.get()
         {
             self.platform_state.gate.shift_conv_guard_pending = false;
+            // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: このガードで早期
+            // return する経路は conv を一切書かないため、override が残って
+            // いてはならない。以前の Shift サイクルで立てた override が
+            // まだ生きている（例: 前回 pending=false のまま key_up の
+            // take() に到達しなかった等）場合の取りこぼしを防ぐ。
+            self.platform
+                .output
+                .confirm_gate_deadline_override_ms
+                .set(0);
+            // pass-5 レビュー指摘と同型の懸念: 単純な `.set(0)` だけでは、
+            // まだ走行中の前回 hold の `kp_restore_kana_from_half_width`
+            // リトライループが次の試行でこの override を再設定してしまい
+            // クリアが無効化される。世代も併せて進め、そのループの
+            // `owner_gen` を無効化してクリアを恒久化する。
+            self.platform.output.bump_shift_conv_guard_gen();
             return;
         }
 
@@ -1166,6 +1181,32 @@ impl Runtime {
                 .borrow_mut()
                 .unconfirm("shift-conv-guard entry");
             self.platform.output.ms_ime_gate_give_up.set(false);
+            // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
+            // `Output::ms_ime_gate_defer`）の期限を、hold 中は
+            // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ実質的に延長する
+            // （`u64::MAX` の真の無期限ではなく有限キャップ — Shift の KeyUp が
+            // 何らかの理由でフックに届かない場合でも、このキャップを過ぎれば
+            // 自動的に通常の安全弁へ復帰する。Opus レビュー指摘）。
+            // これから conv=0x0000 を書くと分かっている以上、その直後に
+            // チョードが解決して romaji/記号が defer された場合、IMC が
+            // 「読めない」のではなく「awase 自身が書いた値をまだ回復して
+            // いない」だけであり、BUG-13 の安全弁（IMC 不可読環境への
+            // フォールバック）の対象ではない。固定 400ms 窓のまま素通しすると
+            // Shift を長く保持しただけで強制送信（半角化）+ give-up latch
+            // （BUG-13 保護の消失）を招く（実機ログで確認済み）。
+            // `kp_shift_conv_guard_key_up`／`kp_restore_kana_from_half_width`
+            // の復元リトライが Shift 解放後により正確な猶予へ差し替える。
+            self.platform.output.confirm_gate_deadline_override_ms.set(
+                hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS,
+            );
+            // pass-5 レビュー指摘（blocking）: 新しい hold の開始を世代として
+            // 記録する。`kp_restore_kana_from_half_width` の detached retry
+            // task はこの値を起動時に `owner_gen` として捕獲し、以後の各試行で
+            // 現在値と一致するかを確認してから override を書く。これにより、
+            // hold #1 の解放直後に hold #2 が始まった場合（連続 Shift タップの
+            // 通常の間隔で起こりうる）、hold #1 の古い retry task が hold #2 の
+            // override を誤ってクリアする事故を防ぐ。
+            self.platform.output.bump_shift_conv_guard_gen();
             win32_async::spawn_local(async {
                 let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
                 log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
@@ -1212,16 +1253,40 @@ impl Runtime {
         if !std::mem::take(&mut self.platform_state.gate.shift_conv_guard_pending) {
             return;
         }
-        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
-            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
-        self.platform_state.gate.left_shift_tap_candidate = false;
-
         // GJI には entry 機構が無い（BUG-25 追補3）ため、左Shift単独タップでも
         // 持続トグルへは絶対に移行しない（移行すると engine が pass-through に
         // なり、生ローマ字キーが GJI 自身の未切替のひらがな変換エンジンへ
         // そのまま入ってかな入力が壊れる）。GJI では常に安全網の復元のみ実行する。
         let toggle_entry_supported = crate::tsf::observer::tsf_obs().active_ime_kind()
             == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
+
+        // ADR-084（BUG-49 追補2、round-6 レビュー指摘）: entry でキャップ付きに
+        // 延長した confirm-then-transmit ゲートの期限を、ここ（hold 終了）を
+        // 起点とするフレッシュな猶予に差し替える。放置したままだと、以後の
+        // どんな romaji 送信も `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` まで
+        // defer し続けてしまう。値の導出根拠は `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`
+        // の doc コメント（tuning.rs）参照 — 復元リトライ 1 試行分の最大所要時間に
+        // マージンを載せたものであり、リトライ全体の合計時間ではない。復元は
+        // `kp_restore_kana_from_half_width` の冪等リトライ（0/160/320/480ms）が
+        // 担い、そのループ自身が進行中は毎回この猶予を押し出す（詳細はそちら参照）。
+        // ここでの設定は、`spawn_local` されたリトライループの最初の tick が
+        // 走るまでの橋渡し。
+        //
+        // entry（`kp_shift_conv_guard_key_down`）が override を書くのは MS-IME
+        // 限定（GJI には entry 機構が無い）なので、ここも対称に MS-IME 限定に
+        // する。GJI で無条件に書くと、対応する entry も retry ループも無い
+        // まま override だけが残り、`clear_confirm_gate_override` を呼ぶ者が
+        // 誰もいない「宙に浮いた」延長になる（自然に期限切れはするが、他の
+        // 経路と非対称で紛らわしい — round-6 レビュー指摘）。
+        if toggle_entry_supported {
+            self.platform
+                .output
+                .confirm_gate_deadline_override_ms
+                .set(hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS);
+        }
+        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
+            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        self.platform_state.gate.left_shift_tap_candidate = false;
 
         if is_left_shift_tap
             && toggle_entry_supported
@@ -1349,6 +1414,15 @@ impl Runtime {
                 );
             log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
 
+            // pass-5 レビュー指摘（blocking）: このリトライタスクは detached
+            // (`spawn_local`) で、完了は Shift タップ間隔より遅れうる。起動時点の
+            // 世代を捕獲し、以後の全 override 書き込み（延長・クリア双方）の
+            // 前提条件にする。捕獲後に新しい hold が始まる（=
+            // `shift_conv_guard_gen` が進む）と、このタスクは即座に
+            // 自分がもう override の所有者でないと分かり、上書きも
+            // 無関係な conv write も一切行わずに終了する。
+            let owner_gen = self.platform.output.shift_conv_guard_gen.get();
+
             win32_async::spawn_local(async move {
                 // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
                 // idle-conv-check で観測 = 上限 478ms）。冪等な IMC write を
@@ -1357,6 +1431,42 @@ impl Runtime {
                 const RETRY_INTERVAL_MS: u32 = 160;
                 const MAX_TRIES: u32 = 4;
                 for attempt in 0..MAX_TRIES {
+                    // ADR-084（BUG-49 追補2、Opus レビュー指摘1・pass-5 指摘）:
+                    // リトライが続いている限り confirm-gate の猶予を「今から
+                    // SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS」へ押し出し続ける。
+                    // key_up 冒頭の一度きりの設定だけでは、このループ自体が
+                    // 実測 ~478ms・設計上最大 ~640ms かかりうることに追従できず、
+                    // 復元完了前に confirm-gate の期限が切れて BUG-49 が
+                    // release 側で再発しうる（実際に一度この形で再発を確認済み）。
+                    // 世代が捕獲時点と一致する場合のみ書く。不一致なら別の hold
+                    // が既に開始しているということであり、このループは即座に
+                    // 打ち切る（override 書き込みはおろか、以後の IMC write も
+                    // 行わない — 対象ウィンドウ/hold が既に自分のものではない）。
+                    let extend_result = crate::with_app(|runtime| {
+                        runtime.platform.output.extend_confirm_gate_override(
+                            owner_gen,
+                            hook::current_tick_ms()
+                                + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS,
+                        )
+                    });
+                    let still_owner = extend_result.unwrap_or_else(|| {
+                        // `with_app` の再入は起きないはずだが（この呼び出しは
+                        // await 前・他の with_app のネスト無し）、万一 None が
+                        // 返った場合に沈黙で猶予が更新されないと BUG-49 が
+                        // 無警告で再発するため、痕跡を残す。
+                        log::warn!(
+                            "[shift-conv-guard] 復元リトライ #{attempt}: with_app 再入 \
+                             (None) により override 更新をスキップ"
+                        );
+                        false
+                    });
+                    if !still_owner {
+                        log::debug!(
+                            "[shift-conv-guard] 復元リトライ #{attempt}: 新しい hold が \
+                             開始された (gen 不一致) ため中断"
+                        );
+                        return;
+                    }
                     let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
                     if !ok {
                         log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
@@ -1371,11 +1481,32 @@ impl Runtime {
                             log::debug!(
                                 "[shift-conv-guard] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
                             );
+                            // 復元完了。confirm-gate は通常どおり
+                            // `is_native_ready()` で即座に解決するため override は
+                            // もう不要 — 次回無関係な hold まで残らないよう戻す
+                            // （ただし自分がまだ所有者の場合のみ。既に次の hold が
+                            // 始まっていればそちらの override を壊してはならない）。
+                            let _ = crate::with_app(|runtime| {
+                                runtime
+                                    .platform
+                                    .output
+                                    .clear_confirm_gate_override(owner_gen);
+                            });
                             return;
                         }
                     }
                 }
                 log::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+                // 復元が最終的に失敗した場合は override を解除し、通常の安全弁
+                // （IMC 未確認なら give-up latch）へ戻す。延長したまま放置すると
+                // 本当に IMC が読めない環境でも give-up が永久に立たなくなる。
+                // 世代が一致する場合のみ（次の hold の override を壊さない）。
+                let _ = crate::with_app(|runtime| {
+                    runtime
+                        .platform
+                        .output
+                        .clear_confirm_gate_override(owner_gen);
+                });
             });
         } else {
             log::debug!(

@@ -81,11 +81,24 @@ async fn ms_ime_ready_coro_body(
             );
             break;
         }
-        if crate::hook::current_tick_ms() >= deadline_ms {
+        // ADR-084（BUG-49 追補2、pass-5 レビュー反映）: `shift-conv-guard` の
+        // hold 中は `Output::confirm_gate_deadline_override_ms` が非 0 になり、
+        // 元の `deadline_ms`（送信試行時点起点、BUG-13 の cold-start 保護）を
+        // 実効的に押し出す。`0`（shift-conv-guard と無関係、または hold 外）
+        // のときは `.max(0)` で無変化 = 従来どおり `deadline_ms` のみが効く。
+        // hold 中は override が `current_tick_ms() + SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`
+        // （有限キャップ、真の無期限ではない）になる。hold 終了（Shift 解放/復元）
+        // で override は「復元時点 + SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS」という
+        // フレッシュな猶予に差し替わり（`kp_shift_conv_guard_key_up` 参照）、
+        // 続く `kp_restore_kana_from_half_width` のリトライループが
+        // `shift_conv_guard_gen` が一致する限り毎試行ごとに同じ幅で押し出し続ける。
+        let effective_deadline_ms = deadline_ms.max(env.confirm_gate_deadline_override_ms);
+        if crate::hook::current_tick_ms() >= effective_deadline_ms {
             // 安全弁: IMC が読めない環境でタイピングを止めない。
             // give-up latch（連続発動の抑止）は start_ms_ime_ready_poll 側が設定する。
             log::warn!(
-                "[msime-ready] cold={cold_seq} 期限切れ (mode={:?} confirmed={}) → 強制送信 {romaji:?}",
+                "[msime-ready] cold={cold_seq} 期限切れ (mode={:?} confirmed={} \
+                 deadline=0x{effective_deadline_ms:X}) → 強制送信 {romaji:?}",
                 env.ime_mode,
                 env.ime_mode_confirmed,
                 cold_seq = cold_seq.value(),
@@ -182,6 +195,13 @@ mod tests {
         }
     }
 
+    fn env_with_override(mode: ImeModeState, confirmed: bool, override_ms: u64) -> TsfEnvSnapshot {
+        TsfEnvSnapshot {
+            confirm_gate_deadline_override_ms: override_ms,
+            ..env(mode, confirmed)
+        }
+    }
+
     #[test]
     fn native_ready_requires_confirmation() {
         // belief だけ（unconfirmed）では準備完了と見なさない — BUG-13 はまさに
@@ -261,5 +281,66 @@ mod tests {
             ProbeAction::Transmit { romaji, .. } if romaji == "ka"
         ));
         assert!(matches!(actions[1], ProbeAction::Done));
+    }
+
+    /// ADR-084（BUG-49 追補2）の核心: `confirm_gate_deadline_override_ms` が
+    /// 大きい（十分未来の）値のとき、元の `deadline_ms` がとっくに過ぎていても
+    /// 強制送信しない。ここでは `.max()` のふるまいを極端値で固定するために
+    /// `u64::MAX` を使うが、これはテスト専用の値であり、本番コードが実際に
+    /// セットする値ではない（本番は `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`
+    /// による有限キャップ、`kp_shift_conv_guard_key_down` 参照 — pass-5
+    /// レビューで `u64::MAX` の真の無期限は「Shift KeyUp がフックに届かない
+    /// 場合に安全弁が永久disableされる」懸念により撤回された）。この test が
+    /// 第一・第二の実装（deadline の起点を `unconfirmed_since` から素朴に
+    /// 計算する版）では存在せず、実機で「期限切れ→半角化」の回帰を後から
+    /// 発見する結果になった — 今後同じ回帰を作らないための直接固定。
+    #[test]
+    fn coro_does_not_expire_while_confirm_gate_is_overridden_to_max() {
+        let deadline = crate::hook::current_tick_ms(); // 元の期限は即座に切れる
+        let mut coro = MsImeReadyCoro::new("!", Generation::new(10), deadline, TransmitTarget::Tsf);
+
+        for _ in 0..5 {
+            let actions = coro.tick(env_with_override(ImeModeState::Off, true, u64::MAX));
+            assert!(
+                actions.is_empty(),
+                "override=MAX の間は元の deadline_ms が過ぎていても待機し続けるはず: {actions:?}"
+            );
+        }
+
+        // override が外れて（0 = 上書きなし）元の（とっくに過ぎた）期限が復活すると、
+        // 次の tick で強制送信する。
+        let actions = coro.tick(env(ImeModeState::Off, true));
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(
+            &actions[0],
+            ProbeAction::Transmit { romaji, .. } if romaji == "!"
+        ));
+    }
+
+    /// `kp_shift_conv_guard_key_up`／`kp_restore_kana_from_half_width` が
+    /// hold 終了時点・各リトライ試行の冒頭で書き込む有限の override
+    /// （「今から `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS` 後」を模した未来の値）は、
+    /// たとえ元の `deadline_ms`（defer/送信試行時点起点、ここでは既に過ぎている）より
+    /// 大きくても、それが優先されて期限切れにならない。`.max()` の実装が
+    /// 「大きい方 = より遅い方 = より長く待つ方」を正しく選んでいることを
+    /// 固定する（逆にしてしまうと却下済みの実装と同じ「期限が早まる」
+    /// バグになる）。
+    #[test]
+    fn coro_prefers_the_later_of_deadline_ms_and_finite_override() {
+        let already_passed_deadline = crate::hook::current_tick_ms(); // 即座に期限切れのはずの値
+        let mut coro = MsImeReadyCoro::new(
+            "de",
+            Generation::new(11),
+            already_passed_deadline,
+            TransmitTarget::Tsf,
+        );
+
+        let future_override = crate::hook::current_tick_ms() + 10_000;
+        let actions = coro.tick(env_with_override(ImeModeState::Off, true, future_override));
+        assert!(
+            actions.is_empty(),
+            "deadline_ms は既に過ぎているが、より遅い override が優先されて \
+             待機し続けるはず: {actions:?}"
+        );
     }
 }
