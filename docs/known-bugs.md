@@ -5208,3 +5208,62 @@ warnings` も green（`--tests` 付きの clippy pedantic warning は本修正�
 （`ImeStateHub::dispatch_event`/`persistent_explicit_off_ms`）、
 `crates/awase-windows/src/runtime/focus_tracking.rs`
 （`EXPLICIT_OFF_CACHE_SUPPRESS_MS` 抑制ガード）。
+
+## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、未修正）
+
+**症状（2026-08-05 ユーザー報告、MS-IME）:** `.yab` の `[ローマ字小指シフト]`
+（物理 `VK_LSHIFT`/`VK_RSHIFT` を押しながら文字キーを打つ面）で「！」を入力すると、
+全角「！」ではなく半角「!」が出力される。BUG-47 追補（`e99f20df`）適用後の
+リビルドで再現することを実機ログで確認済み（`vk_pair_to_ascii` 経由で
+`send_romaji_batched("!")` が正しく呼ばれていることをログで確認したため、
+BUG-47 のcold-start保護漏れとは**別原因**と判明）。
+
+**原因（確定、実機ログ + コード読解で確認）:** 物理 Shift 押下時、
+`kp_shift_conv_guard_key_down`（`runtime/key_pipeline.rs`）が MS-IME の
+「Shift単独タップで半角英数へ誤切替する」クセを打ち消すため、判別未確定
+（チョードか単独タップか分からない）の時点で先回りして conv=0x0000
+（半角英数）を IMC write する。この書き込みは実際に反映される
+（150ms後の verify-read で確認済み）が、`ImeModeFsm`（`tsf/ime_mode_fsm.rs`）の
+`confirmed` belief はこの時点で無効化されない（`unconfirm("shift-conv-guard
+release")` は Shift **解放**時にしか呼ばれない）。この間にチョードが解決して
+「！」が出力されると、`ms_ime_gate_defer` は stale な `is_native_ready()==true`
+を信じて即時送信し、実際には半角英数モードのままの IME に Shift+1 の VK が
+着弾して全角変換されず半角 `!` が出る。非同期 IMC write の着地（実測 ~250ms）と
+チョード解決の競合であるため、**再現は確率的**。
+
+**検討して却下した2案（再提案しないこと）:**
+- **`ImeModeFsm::unconfirm()` を Shift 押下時にも呼ぶ案**: `ms_ime_gate_defer` は
+  defer されるが、確認対象の conv は awase 自身が 0x0000 に保持しているため
+  Shift を離すまで NATIVE 確認は原理的に成立しない。`MS_IME_READY_CONFIRM_MS`
+  （400ms、打鍵時点起点）を超えて Shift を保持すると期限切れで結局半角化する上、
+  `ms_ime_gate_give_up` がラッチされフォーカス変更まで MS-IME cold-start 保護
+  （BUG-13）全体が無効化される。
+- **全角記号21種を `build_symbol_to_vk`（`vk.rs`）から削除し Unicode 直接注入へ
+  切り替える案**: `e99f20df` で全記号は既に `vk_pair_to_ascii` 経由で
+  cold-start 保護・順序保証（`defer_vk_if_probe_in_flight`）・composition warmth
+  追跡（`mark_composition_cold`）に合流済みであり、削除はこれらを丸ごと失う
+  （「ば！」が「！ば」に順序逆転する等）。スコープも誤りで、対象記号の一部
+  （？～（）｛｝）は親指シフト面（shift-conv-guard の対象外、現状正常動作）でも
+  使われており、そちらまで巻き込んで壊す。
+
+**恒久対応方針:** 個別パッチでは同種の反転を繰り返す構造的な問題（conv-mode
+という共有状態への書き込みと belief キャッシュの無効化が不可分になっていない、
+物理 Shift の意味づけが未確定なまま外部状態へ投機的に書き込んでいる、記号の
+全角/半角が `.yab` の宣言ではなく IME の conv-mode に委譲されている）と判断し、
+Opus・Fable・Codex の3系統に独立で北極星仕様の草案を依頼し統合した
+[ADR-084](adr/084-conv-mode-single-ownership-and-width-ssot.md) を起票した。
+今後この領域に触れる変更は ADR-084 の原則（P1〜P5・INV-1〜INV-10）と
+整合させること。実装は ADR-084 §5 の Phase 1（`actuate_conv_mode` chokepoint 化）
+から着手する想定で、未着手。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shift_conv_guard`/`kp_shift_conv_guard_key_down`/
+`kp_restore_kana_from_half_width`）、`crates/awase-windows/src/tsf/ime_mode_fsm.rs`、
+`crates/awase-windows/src/output/vk_send.rs`（`ms_ime_gate_defer`）、
+`crates/awase-windows/src/output/probe_io.rs`（`start_ms_ime_ready_poll`）、
+`layout/nicola.yab`（`[ローマ字小指シフト]`）。
+関連: BUG-13（MS-IME cold-start 保護）、BUG-15（shift-conv-guard 導入経緯）、
+BUG-25（左Shift単独タップ持続トグル、GJI entry 撤回）、BUG-47（記号 cold-start
+半角化、本件と症状は類似だが原因は別）、ADR-064（`ConvModePolicy`）、
+ADR-072（conv authority 再同期）、ADR-078（belief 3分割）、ADR-083
+（`InjectionMode` per-VK 統一investigation、NO-GO）。
