@@ -513,7 +513,8 @@ impl Output {
                 }
                 log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
-                // （このフォールバック自体が現状理論上到達しない。上記コメント参照）。
+                // （このフォールバック自体が現状理論上到達しない。理由は下の
+                // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
@@ -573,7 +574,8 @@ impl Output {
                 }
                 log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
-                // （このフォールバック自体が現状理論上到達しない。上記コメント参照）。
+                // （このフォールバック自体が現状理論上到達しない。理由は下の
+                // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
