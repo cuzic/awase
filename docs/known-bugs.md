@@ -4957,3 +4957,42 @@ x86_64-pc-windows-gnu -p awase-windows`（warning ゼロ）および `cargo clip
 （`ConvModeMgr::update_from_conv`、今回のバグの「発見経路」となった BUG-19 対策
 デバウンス）。関連: BUG-19（カタカナ conv デバウンスの元ネタ、本バグとは別原因）、
 BUG-46（本バグの直接の混入元コミット）。
+
+**追補1（2026-08-05、対象を `VK_DBE_KATAKANA` 単独から `VK_DBE_*` 全体へ拡大）:**
+ユーザーから「同じ debug ログに `VK_DBE_ALPHANUMERIC` (0xF0) も同じパターンで
+出ている」との指摘を受け見直した結果、当初の修正が 0xF1 だけを special-case
+していたのは不十分だったと判明した。実機ログには次の並びもあり、0xF0 が
+0xF1 と全く同じ「KeyUp だけが可視、対応する KeyDown は範囲外」パターンで
+出現していた:
+
+```
+[hook] IME-mode vk=0xF0 up   self_injected=false injected=false scan=0x70
+[hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70
+[imm32-off] key suppress vk=0xf0 KeyUp (physical disposition)
+```
+
+`vk.rs::ImeKeyKind::from_vk` を確認すると、`PhysicalKeyDisposition::plan` の
+「KANJI 関連キー」汎用分岐（`shadow_toggled` 依存の同じ穴）を通る `VK_DBE_*` は
+0xF0 (`Alphanumeric`, `ShadowImeEffect::TurnOff`)・0xF1 (`Katakana`, `TurnOn`)・
+0xF3 (`Deactivate`, `TurnOff`)・0xF4 (`ActivatePair`, `TurnOn`) の4種類（0xF2
+`Activate`/`VK_DBE_HIRAGANA` のみ専用分岐で別処理済み）。IME が既に目的の状態に
+ある時にこれらのいずれかが物理キーから届くと `shadow_toggled=false` となり、
+0xF1 と全く同じ理由で素通しされ、実 IME が該当するネイティブ効果（英数/半角/
+全角への切替）を能動的に適用してしまう。0xF3/0xF4 は BUG-46 の再現ケースそのもの
+（`up 0xF3 → down 0xF4` ペア）だったにもかかわらず、BUG-46 の修正は「二重
+actuation の防止」のみを目的としており、この「素通し自体がネイティブ効果を
+持つ」というハザードは見落とされていた。
+
+**修正（本追補）:** `is_dbe_katakana_down`（0xF1 単独判定）を
+`is_dbe_mode_key_down`（`VK_DBE_ALPHANUMERIC`/`VK_DBE_KATAKANA`/
+`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR` の4種類、KeyDown）に拡張。挙動は
+0xF1 のときと同一（`shadow_toggled` に関わらず常に Suppress）。`VK_KANJI` 等
+DBE 範囲外のキーの挙動は変更していない。
+
+**検証状況（追補）:** 実機ログで直接確認できているのは 0xF0/0xF1 のみ。0xF3/0xF4
+は BUG-46 の再現ケースで同じコードパスを通ることは確認済みだが、「実際に
+shadow_toggled=false の状態で漏洩した」ことを示す実機ログはまだ無い（コード
+監査による論理的な一般化）。回帰テストは `dbe_mode_vks()` で4種類とも
+パラメータ化して固定（`dbe_mode_keydown_suppressed_even_when_not_shadow_toggled`）。
+Linux 上のビルド/clippy 確認のみで、実機/Windows 環境でのテスト実行・再発確認は
+引き続き未実施。
