@@ -128,6 +128,29 @@ impl ConvMode {
         }
     }
 
+    /// この `ConvMode` が表す状態そのものを表す完全な conv ビット列を返す。
+    ///
+    /// `imm_conv_target` と異なり `current` 値に依存せず、`self` の
+    /// `charset`/`romaji` だけから常に完全なビット列を計算する純粋関数。
+    /// 「観測された現在値をどう直すか」ではなく「この目標モードを強制したい」
+    /// という用途（`conv_mode_policy = force`、cold 転換時の強制書き込み等）
+    /// 向け。
+    #[must_use]
+    pub const fn to_conv_bits(self) -> u32 {
+        let charset_bits = match self.charset {
+            Charset::Hiragana => IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE,
+            Charset::ZenkakuKatakana => IME_CMODE_NATIVE | IME_CMODE_KATAKANA | IME_CMODE_FULLSHAPE,
+            Charset::HankakuKatakana => IME_CMODE_NATIVE | IME_CMODE_KATAKANA,
+            Charset::ZenkakuAlpha => IME_CMODE_FULLSHAPE,
+            Charset::HankakuAlpha => 0,
+        };
+        if self.romaji {
+            charset_bits | IME_CMODE_ROMAN
+        } else {
+            charset_bits
+        }
+    }
+
     /// idle 中の conv ポーリング値から belief の `InputModeState` を分類する。
     ///
     /// `classify_idle_conv(u32, ...)` の `ConvMode` 版。Win32 API を呼ばない純粋関数。
@@ -326,6 +349,31 @@ mod tests {
     #[test]
     fn imm_conv_target_hiragana_none() {
         assert_eq!(cm(CONV_HIRAGANA).imm_conv_target(), None);
+    }
+
+    // ── to_conv_bits ─────────────────────────────────────────────────────────
+    #[test]
+    fn to_conv_bits_round_trips_all_charsets_with_roman() {
+        for &conv in &[
+            CONV_HIRAGANA,
+            CONV_ZENKATA,
+            CONV_HANKATA,
+            CONV_EISUU,
+            CONV_ZENALPHA,
+        ] {
+            let mode = cm(conv | 0x0010); // ROMAN 付きで正規化
+            assert_eq!(
+                mode.to_conv_bits(),
+                conv | 0x0010,
+                "conv=0x{conv:04X} は to_conv_bits() で往復する必要がある"
+            );
+        }
+    }
+
+    #[test]
+    fn to_conv_bits_without_roman() {
+        assert_eq!(cm(CONV_ZENKATA).to_conv_bits(), CONV_ZENKATA);
+        assert_eq!(ConvMode::from_u32(0).to_conv_bits(), 0); // 半角英数・ROMANなし
     }
 
     // ── classify_idle (is_roman_reliable=true: 通常 IMM32) ────────────────────
