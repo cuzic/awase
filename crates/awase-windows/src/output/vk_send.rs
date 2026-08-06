@@ -9,7 +9,6 @@ use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::TransmitTarget;
-use crate::vk::VK_OEM_MINUS;
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
@@ -493,27 +492,42 @@ impl Output {
                 self.send_romaji_as_tsf(romaji);
             }
             CharResolution::Vk(vk, needs_shift) => {
+                // ASCII 1 文字で表現できる記号（。→'.'、、→','、ー→'-'、Shift 付きの
+                // ！→'!'/？→'?'/～→'~' 等も含め build_symbol_to_vk の全記号）は
+                // romaji 送信経路（send_romaji_as_tsf）へ合流させる。これにより
+                // assess_warmth() によるcold-startウォームアップ判定・probe設置・
+                // MS-IME confirmゲートを記号送信でも通す（2026-08-03/2026-08-05
+                // ユーザー報告 BUG-47: cold な TSF へ記号 VK を無条件送信すると
+                // 変換されず半角のまま出力される。docs/known-bugs.md BUG-47 参照）。
+                // warm パスは既存の send_vk_pair(vk, needs_shift, VkMarker::Tsf) と
+                // バイト列が同一になるよう vk_pair_to_ascii を ascii_to_vk の厳密な
+                // 逆写像として設計してある（vk.rs のラウンドトリップテスト参照）。
+                if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
+                    log::debug!(
+                        "    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift} \
+                         → romaji \"{ascii}\" 経由 (cold-start保護あり)"
+                    );
+                    let mut buf = [0u8; 4];
+                    self.send_romaji_as_tsf(ascii.encode_utf8(&mut buf));
+                    return;
+                }
                 log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
-                // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
-                // 例: ば(probe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
-                // probe なしで直接送ると「F2 → ー → ba」→「ーば」の順序逆転が起きる。
+                // probe 進行中は VK を後回しにして romaji との送信順序を保証する
+                // （このフォールバック自体が現状理論上到達しない。理由は下の
+                // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
                 Self::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
-                // VK_OEM_MINUS (0xBD, no-shift) = '-' は GJI ローマ字モードで「ー」として
-                // composition に取り込まれる（composition context はリセットされない）。
-                // これらは warm 状態を維持し、次の romaji を warmup sleep なしで即送信する。
-                // その他の記号（句読点など）は composition を commit する可能性があるため cold にマーク。
-                let keeps_composition = vk == VK_OEM_MINUS && !needs_shift;
-                if keeps_composition {
-                    log::debug!("    send_char_as_tsf: VK 0x{vk:02X} は composition 継続 (ー系) → warm 維持");
-                } else {
-                    self.mark_composition_cold(ColdReason::SymbolVkSent);
-                    self.warmup_coord.mark_composition_reset();
-                    self.send_eager_tsf_warmup(None);
-                }
+                // 2026-08-05 修正で vk_pair_to_ascii が build_symbol_to_vk の全記号
+                // （Shift 付きを含む）をカバーしたため、このフォールバックは
+                // resolve_char が build_symbol_to_vk 以外から VK を返すようになった
+                // 場合の保険としてのみ残る（現状は理論上到達しない）。到達した場合の
+                // 安全側の挙動として常に cold マークする。
+                self.mark_composition_cold(ColdReason::SymbolVkSent);
+                self.warmup_coord.mark_composition_reset();
+                self.send_eager_tsf_warmup(None);
             }
             CharResolution::Unicode(ch) => {
                 log::debug!(
@@ -545,15 +559,32 @@ impl Output {
                 self.send_romaji_batched(romaji);
             }
             CharResolution::Vk(vk, needs_shift) => {
+                // ASCII 1 文字で表現できる記号（Shift 付きを含む build_symbol_to_vk
+                // の全記号）は romaji 送信経路（send_romaji_batched）へ合流させる。
+                // send_char_as_tsf 側の同種修正と対称（コメント参照）。
+                // 2026-08-03/2026-08-05 ユーザー報告 BUG-47。
+                if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
+                    log::debug!(
+                        "    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift} \
+                         → romaji \"{ascii}\" 経由 (cold-start保護あり)"
+                    );
+                    let mut buf = [0u8; 4];
+                    self.send_romaji_batched(ascii.encode_utf8(&mut buf));
+                    return;
+                }
                 log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
-                // probe 進行中は VK を後回しにして romaji との送信順序を保証する。
-                // 例: ば(ChromeProbe中) + ー(VK0xBD) の場合、先に ba VKs を送ってから ー を送る。
+                // probe 進行中は VK を後回しにして romaji との送信順序を保証する
+                // （このフォールバック自体が現状理論上到達しない。理由は下の
+                // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
                 // scan code 付き（VkMarker::InjectedWithScan）、send_romaji_batch_immediate
-                // と同じ恒久仕様。詳細はそちらのコメント参照。
+                // と同じ恒久仕様。詳細はそちらのコメント参照。2026-08-05 修正で
+                // vk_pair_to_ascii が build_symbol_to_vk の全記号をカバーしたため、
+                // このフォールバックは resolve_char が build_symbol_to_vk 以外から
+                // VK を返すようになった場合の保険としてのみ残る（現状は理論上到達しない）。
                 Self::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
             }
             CharResolution::Unicode(ch) => {

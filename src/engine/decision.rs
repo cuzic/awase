@@ -43,8 +43,33 @@ pub enum TimerEffect {
 #[derive(Debug, Clone)]
 pub enum ImeEffect {
     /// IME の ON/OFF を設定する（常に Engine の意図。観測同期は別経路）。
-    SetOpen { open: bool },
+    SetOpen { open: bool, origin: SetOpenOrigin },
     // 旧 RequestRefresh は 2026-07-06 の到達不能パス監査で撤去（構築サイトゼロ）。
+}
+
+/// `ImeEffect::SetOpen` がどこから発行されたかを表す。
+///
+/// Platform 層（awase-windows）が `last_intent`（ユーザーの明示的意図）を書き換えて
+/// よいのは `ExplicitUserAction` のときだけ。`ActivationSync` は
+/// `Engine::check_active_transition` が active/inactive 遷移のたびに対称性のため
+/// 自動発行する「echo」であり、ユーザーが今まさに ON/OFF を選んだわけではない
+/// （`ctx.ime_on` が観測駆動で変化しただけの場合も含む）。
+///
+/// 2026-08-04: `ActivationSync` を区別せず `ExplicitUserAction` と同列に扱っていたため、
+/// 観測由来で一時的に `ctx.ime_on=true` になっただけで Engine が Active に遷移すると、
+/// その echo の SetOpen(true) が `last_intent=Some(true)` として確定してしまい、
+/// ユーザーが明示的に IME OFF にした直後でも Engine が勝手に ON へ戻る再発が発生した
+/// （`docs/known-bugs.md` 参照）。旧 `DecisionOrigin`/`EffectOrigin`
+/// （2026-07-06 の到達不能パス監査で「消費者が存在しない」として撤去）が担っていた区別を、
+/// 今回はじめて実際の消費者（`awase-windows::key_pipeline::kp_stage_post_decision`）
+/// 付きで再導入した。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOpenOrigin {
+    /// ユーザーが IME ON/OFF コンボ・エンジン ON/OFF コンボ・トレイ操作等で明示的に要求した。
+    ExplicitUserAction,
+    /// Engine 内部の active/inactive 遷移（`check_active_transition` 経由）が
+    /// 対称性のために自動発行した。ユーザーの明示的意図ではない。
+    ActivationSync,
 }
 
 /// UI に関する副作用
@@ -172,15 +197,25 @@ impl Decision {
 
     /// Effects 内に `ImeEffect::SetOpen` があればその値を返す。
     /// フックコールバックで IME 制御キー検出後に即座に preconditions を更新するために使う。
+    /// `origin` を問わない（OS への実 apply は origin に関わらず必要なため）。
     #[must_use]
     pub fn find_ime_set_open(&self) -> Option<bool> {
+        self.find_ime_set_open_with_origin().map(|(open, _)| open)
+    }
+
+    /// `find_ime_set_open` に加え、その `SetOpenOrigin` も返す。
+    ///
+    /// belief（`desired_open`/`last_intent`）を更新してよいかどうかは呼び出し元が
+    /// `origin` を見て判断すること（`SetOpenOrigin` のドキュメント参照）。
+    #[must_use]
+    pub fn find_ime_set_open_with_origin(&self) -> Option<(bool, SetOpenOrigin)> {
         let effects = match self {
             Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
             Self::PassThrough => return None,
         };
         for effect in effects {
-            if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
-                return Some(*open);
+            if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
+                return Some((*open, *origin));
             }
         }
         None
@@ -410,13 +445,16 @@ mod tests {
     #[test]
     fn prepend_effects_orders_prefix_before_existing() {
         let mut d = Decision::consumed_with(smallvec![test_effect()]);
-        d.prepend_effects(smallvec![Effect::Ime(ImeEffect::SetOpen { open: true })]);
+        d.prepend_effects(smallvec![Effect::Ime(ImeEffect::SetOpen {
+            open: true,
+            origin: SetOpenOrigin::ExplicitUserAction
+        })]);
         match d {
             Decision::Consume { effects } => {
                 assert_eq!(effects.len(), 2);
                 assert!(matches!(
                     effects[0],
-                    Effect::Ime(ImeEffect::SetOpen { open: true })
+                    Effect::Ime(ImeEffect::SetOpen { open: true, .. })
                 ));
                 assert!(matches!(
                     effects[1],
@@ -462,7 +500,10 @@ mod tests {
     fn find_ime_set_open_finds_set_open_among_other_effects() {
         let d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false }),
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                origin: SetOpenOrigin::ExplicitUserAction
+            }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
     }
@@ -477,7 +518,10 @@ mod tests {
     fn retaining_non_set_open_effects_removes_set_open_but_keeps_others() {
         let mut d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false }),
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                origin: SetOpenOrigin::ExplicitUserAction
+            }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
 

@@ -47,6 +47,73 @@ impl ConvModeAuthority {
     }
 }
 
+// ─── conv-mode actuator（ADR-084 P1/INV-1）─────────────────────────────────────
+
+/// `Runtime::actuate_conv_mode`（`runtime/conv_actuation.rs`）が受け取る書き込み目標。
+///
+/// [ADR-084](../../../../docs/adr/084-conv-mode-single-ownership-and-width-ssot.md) の
+/// 提案する完全版（`Kana{katakana}`/`HalfWidthAlnum`/`Restore`）のうち、実際に
+/// 移行済みの呼び出し元（`kp_shift_conv_guard_key_down` の MS-IME entry のみ）が
+/// 必要とする variant のみを定義する。他の呼び出し元（`kp_restore_kana_from_half_width`
+/// の復元リトライ、`cold_warmup.rs`/`executor.rs`/idle-conv-check 側の romaji 復元）は
+/// 未移行（`docs/known-bugs.md` ADR-084 追補参照）。それらを移行する際に variant を
+/// 追加すること — 使われない variant を先回りで用意しない（憶測での API 拡張を避ける）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvModeTarget {
+    /// IME-ON 半角英数（`conv=0x0000`）。MS-IME が Shift 単独タップを英数切替と
+    /// 誤認する前に、awase 側から先回りで同じ状態を書き込む安全網。
+    HalfWidthAlnum,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl ConvModeTarget {
+    /// `ImmSetConversionStatus`/IMC write に渡す raw conv 値。
+    #[must_use]
+    pub(crate) const fn imm_conv_value(self) -> u32 {
+        match self {
+            Self::HalfWidthAlnum => 0,
+        }
+    }
+}
+
+/// `actuate_conv_mode` の呼び出し元が「なぜ conv-mode を変えるのか」を申告する理由。
+///
+/// [ADR-084](../../../../docs/adr/084-conv-mode-single-ownership-and-width-ssot.md) §2 の
+/// 提案する完全版（`ShiftSoloTapCounter`/`HalfWidthAlnumToggle`/`WarmupRestore`/
+/// `DriftCorrection`）のうち、移行済みの呼び出し元が使う variant のみを定義する
+/// （`ConvModeTarget` と同じ理由）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvMutationReason {
+    /// MS-IME が物理 Shift 単独タップを半角英数切替と誤認するのを打ち消す安全網
+    /// （`kp_shift_conv_guard_key_down`、BUG-15/BUG-49）。
+    ShiftSoloTapCounter,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl ConvMutationReason {
+    /// `ImeModeFsm::unconfirm` に渡すログ用ラベル。
+    #[must_use]
+    pub(crate) const fn as_unconfirm_label(self) -> &'static str {
+        match self {
+            Self::ShiftSoloTapCounter => "shift-conv-guard entry",
+        }
+    }
+}
+
+/// `actuate_conv_mode` の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvActuationOutcome {
+    /// ADR-064 の `conv_mutation_allowed`（`UserManaged` 中等）により却下され、
+    /// 何も書き込まなかった。
+    Rejected,
+    /// gate を通過し、belief 無効化（INV-2）を同期的に行った上で、実際の
+    /// Win32 書き込みを非同期 (`spawn_local`) に投げた。
+    Actuated,
+}
+
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
 /// IME 変換モードを一元管理するコンポーネント。
@@ -216,6 +283,33 @@ impl ConvModeMgr {
     }
 }
 
+/// IME-ON コンボ（既定: Ctrl+変換）押下時に、ひらがな＋ローマ字＋CapsLock OFF への
+/// リセット（`kp_reset_to_hiragana_romaji_capsoff`）を起動すべきかどうかの判定。
+///
+/// `was_open_before`（IME open の belief、`effective_open()`）に加えて
+/// `observed_katakana`（`ConvModeMgr` が現に観測しているカタカナかどうか）の
+/// いずれかが真ならリセット対象にする。
+///
+/// # 背景（BUG-50、2026-08-05）
+///
+/// 従来は `was_open_before` 単独で判定していたが、belief が drift で誤って
+/// `false` になっている（IME は既にカタカナへ入っているのに belief は「まだ
+/// 閉じている」と誤認している）ケースでは、ユーザーが IME-ON コンボを押しても
+/// このリセットが起動せず、カタカナから永久に復旧できないデッドロックになって
+/// いた（`docs/known-bugs.md` BUG-50 参照）。`observed_katakana` を追加条件に
+/// することで、belief が誤っていても実際に観測されたカタカナを起点にリセット
+/// できるようにする。`was_open_before=true` のときの既存の破壊的リセット挙動
+/// （カタカナであっても問答無用でひらがなへ寄せる）はそのまま維持されるため、
+/// 新しい破壊的動作のクラスは増えない。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const fn should_reset_katakana_on_ime_on_combo(
+    was_open_before: bool,
+    observed_katakana: bool,
+) -> bool {
+    was_open_before || observed_katakana
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +356,26 @@ mod tests {
         assert_eq!(mgr.policy(), ConvModePolicy::Observe);
         mgr.set_policy(ConvModePolicy::Force);
         assert_eq!(mgr.policy(), ConvModePolicy::Force);
+    }
+
+    // ── ADR-084 P1 conv-mode actuator ─────────────────────────────────────────
+
+    /// ADR-084 P1: `ConvModeTarget::HalfWidthAlnum` は `conv=0x0000`（IME-ON 半角英数）
+    /// に対応する。値を変えると `actuate_conv_mode` が誤った conv を書き込む。
+    #[test]
+    fn half_width_alnum_target_maps_to_zero() {
+        assert_eq!(ConvModeTarget::HalfWidthAlnum.imm_conv_value(), 0);
+    }
+
+    /// `ConvMutationReason` のログラベルは `ImeModeFsm::unconfirm` の既存ログ文言
+    /// （`"shift-conv-guard entry"`）と一致させる。移行前のインライン呼び出しと
+    /// ログの見た目を変えないための固定。
+    #[test]
+    fn shift_solo_tap_counter_uses_existing_unconfirm_label() {
+        assert_eq!(
+            ConvMutationReason::ShiftSoloTapCounter.as_unconfirm_label(),
+            "shift-conv-guard entry"
+        );
     }
 
     /// `allows_conv_mutation` は `AwaseOwned` のときのみ true。反転すると
@@ -348,5 +462,29 @@ mod tests {
         // 半角英数 (conv=0)
         assert!(mgr.update_from_conv(0x0000, t(10)));
         assert_eq!(mgr.get().unwrap().charset.to_string(), "HanAlpha");
+    }
+
+    // ── should_reset_katakana_on_ime_on_combo (BUG-50) ─────────────────────
+
+    /// 既存挙動: belief が「既に ON」なら、観測に関わらずリセットする
+    /// （カタカナであっても問答無用でひらがなへ寄せる従来の破壊的挙動を維持）。
+    #[test]
+    fn resets_when_belief_says_already_open() {
+        assert!(should_reset_katakana_on_ime_on_combo(true, false));
+        assert!(should_reset_katakana_on_ime_on_combo(true, true));
+    }
+
+    /// BUG-50 の核心: belief が誤って Off でも、実際に観測された conv が
+    /// カタカナならリセットする（belief 単独判定だと発火せず永久に戻れなかった）。
+    #[test]
+    fn resets_when_belief_is_off_but_katakana_is_observed() {
+        assert!(should_reset_katakana_on_ime_on_combo(false, true));
+    }
+
+    /// 通常の OFF→ON（カタカナ観測なし）ではリセットしない
+    /// （素の IME-ON として振る舞う従来挙動を変えない）。
+    #[test]
+    fn no_reset_for_plain_off_to_on_without_katakana_observation() {
+        assert!(!should_reset_katakana_on_ime_on_combo(false, false));
     }
 }

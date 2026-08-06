@@ -44,9 +44,16 @@ pub(crate) struct ImeStateHub {
     /// 場合（仮想デスクトップ切替等）でも、最初のフォーカス変化後に `last_intent` が
     /// クリアされても guard が機能し続けるようにする。
     ///
-    /// - SyncKey / PhysicalImeKey による `target=false` で更新。
-    /// - SyncKey / PhysicalImeKey による `target=true` でリセット。
+    /// - SyncKey / PhysicalImeKey / Command による `target=false` で更新。
+    /// - SyncKey / PhysicalImeKey / Command による `target=true` でリセット。
     /// - FocusChanged / Recovery / HwndCache ではリセットしない。
+    ///
+    /// BUG-48 修正（PR #44）により `Command` ソースは `handle_engine_set_open`
+    /// （`SetOpenOrigin::ExplicitUserAction`）経由でのみ発行されるようになり、
+    /// エンジン内部の対称 echo（`ActivationSync` → `handle_engine_activation_sync`、
+    /// こちらは `write_set_open_request` を呼ばない）とは完全に分離された。
+    /// つまり `Command` は「Ctrl+無変換 等デフォルトキーバインドでの明示 IME OFF/ON」を
+    /// 表す実ユーザー操作専用ソースであり、SyncKey/PhysicalImeKey と同じ扱いにできる。
     last_user_explicit_off_ms: u64,
 
     /// エンジンが明示的 IME ON/OFF を適用した最終時刻 (tick_ms)。0 = 未操作。
@@ -98,7 +105,9 @@ impl ImeStateHub {
         if let ImeEvent::UserImeSetIntent { target, source } = &event {
             if matches!(
                 source,
-                UserIntentSource::SyncKey | UserIntentSource::PhysicalImeKey
+                UserIntentSource::SyncKey
+                    | UserIntentSource::PhysicalImeKey
+                    | UserIntentSource::Command
             ) {
                 if *target {
                     self.last_user_explicit_off_ms = 0;
@@ -196,6 +205,14 @@ impl ImeStateHub {
         if self.is_ctrl_ime_chord_active() && !target {
             // chord transaction 中の二次 IME OFF 要求: フィルタ。
             // ChordEnded（Ctrl KeyUp）が barrier を解除するため、ここでは何もしない。
+            //
+            // 診断ログ (2026-08-05): 従来ここは完全無音だったため、実機ログだけでは
+            // 「明示 OFF がこのフィルタでサイレント無効化された」ケースを他の原因と
+            // 区別できなかった。挙動は変更しない。
+            log::info!(
+                "[chord-filter] SetOpen(false) request filtered: ctrl_ime_chord が既に active \
+                 (last_intent/desired_open は更新されない)"
+            );
             return false;
         }
         if focus_transition_was_pending {
@@ -211,13 +228,76 @@ impl ImeStateHub {
             // 中間ウィンドウ（Alt+Tab スイッチャー等）の未確定 belief に基づき Engine が SetOpen を
             // 発行し得る（2026-07-05 実機ログで確認）。barrier consume 時に kick される非同期
             // focus probe が観測を更新すれば、次の入力イベントで正しい SetOpen が再発行され自己修復する。
-            log::debug!(
+            //
+            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ（頻度は低い）。
+            log::info!(
                 "[focus-settle] SetOpen({target}) request filtered at belief last line of defense \
                  (focus transition barrier still settling at event start)"
             );
             return false;
         }
         self.write_set_open_request(target, tick_ms);
+        self.on_set_open_requested();
+        self.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target,
+                generation,
+                ctrl_held,
+            },
+            tick_ms,
+        );
+        self.last_explicit_ime_action_ms = tick_ms.0;
+        true
+    }
+
+    /// `awase::engine::decision::SetOpenOrigin::ActivationSync` 由来の `SetOpen` を処理する。
+    ///
+    /// `handle_engine_set_open` との違いは唯一つ: `ImeEvent::UserImeSetIntent`（`last_intent`
+    /// を設定する）の代わりに `ImeEvent::EngineActivationSync`（`last_intent` を設定しない）を
+    /// dispatch する点。この SetOpen は Engine の active/inactive 遷移が対称性のために
+    /// 自動発行した echo であり、ユーザーが今このキーで ON/OFF を明示的に選んだわけではない
+    /// （`ctx.ime_on` が観測駆動で変化しただけでも Active/Inactive は遷移しうる）。
+    /// `last_intent` を設定すると、以後の drift correction がこの echo を「ユーザーの本物の
+    /// 意図」として扱ってしまい、ユーザーが明示的に IME を OFF にした直後でも Engine が
+    /// 勝手に ON へ戻る再発を引き起こす（2026-08-04、`docs/known-bugs.md` 参照）。
+    ///
+    /// chord/focus-transition-settling のフィルタ条件は `handle_engine_set_open` と同一
+    /// （どちらも「これから OS へ実 apply する SetOpen 要求」という点は変わらないため）。
+    ///
+    /// `last_explicit_ime_action_ms` は `handle_engine_set_open` と同様に更新する。この
+    /// フィールドの実際の役割は「ユーザーが明示操作したか」ではなく「awase 自身が
+    /// 能動的に IME へ書き込んだか」（`note_explicit_ime_action` の doc 参照）であり、
+    /// この関数も実際に OS へ SetOpen を適用する以上、idle-conv-check が遷移途中の
+    /// conv 値を汚染された観測として拾わないよう抑制窓を効かせる必要がある
+    /// （Opus レビュー 2026-08-04 で指摘: 更新しないと `get_ime_conversion_mode_raw_timeout_async`
+    /// が BUG-34 級にブロックしている間に本関数の SetOpen 適用が挟まった場合、
+    /// idle-conv-check のガード (b)（値一致比較）が素通りし、遷移途中の conv が
+    /// そのまま belief に入りうる）。
+    pub(crate) fn handle_engine_activation_sync(
+        &mut self,
+        target: bool,
+        ctrl_held: bool,
+        focus_transition_was_pending: bool,
+        generation: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        if self.is_ctrl_ime_chord_active() && !target {
+            // 診断ログ: handle_engine_set_open 側と同じ理由で info に格上げ。
+            log::info!(
+                "[chord-filter] ActivationSync SetOpen(false) request filtered: \
+                 ctrl_ime_chord が既に active"
+            );
+            return false;
+        }
+        if focus_transition_was_pending {
+            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ。
+            log::info!(
+                "[focus-settle] ActivationSync SetOpen({target}) request filtered at belief \
+                 last line of defense (focus transition barrier still settling at event start)"
+            );
+            return false;
+        }
+        self.dispatch_event(ImeEvent::EngineActivationSync { target }, tick_ms);
         self.on_set_open_requested();
         self.dispatch_event(
             ImeEvent::ImeApplyRequested {
@@ -324,8 +404,8 @@ impl ImeStateHub {
     ///
     /// `last_explicit_off_ms()` は `FocusChanged` で `last_intent` がクリアされると 0 に
     /// 戻るため、複数の rapid focus 変化（仮想デスクトップ切替等）では 2 回目以降の
-    /// guard が機能しない。このメソッドは SyncKey / PhysicalImeKey による明示 OFF のみを
-    /// 追跡し、FocusChanged でリセットしない。
+    /// guard が機能しない。このメソッドは SyncKey / PhysicalImeKey / Command による明示 OFF
+    /// のみを追跡し、FocusChanged でリセットしない。
     pub(crate) fn persistent_explicit_off_ms(&self) -> u64 {
         self.last_user_explicit_off_ms
     }
@@ -1148,6 +1228,147 @@ mod tests {
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // ── persistent_explicit_off_ms: Command ソースも SyncKey/PhysicalImeKey と
+    //    同じく永続タイムスタンプを更新すること（2026-08-04 実機ログ調査）。
+    //
+    // Ctrl+無変換（デフォルトキーバインド）による明示 IME OFF は
+    // `SpecialKeyMatch::ImeOff` → `handle_engine_set_open` → `write_set_open_request`
+    // → `UserIntentSource::Command` を経由するが、`dispatch_event` の永続タイムスタンプ
+    // 更新が SyncKey/PhysicalImeKey のみを対象にしていたため Command が漏れていた。
+    // その結果、明示 OFF の数秒後に UWP 系中間ウィンドウ（Imm32Unavailable、
+    // 例: ForegroundStaging）へフォーカスが渡ると `focus_tracking.rs` の
+    // `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（10秒）抑制ガードが効かず（`persistent_explicit_off_ms()`
+    // が常に 0 のため `last_off_ms > 0` が false）、`reset_stale_ime_on_for_imm_broken`
+    // が「明示的意図なし」と誤判定して belief を Low confidence で ON に戻し、
+    // Engine が「IME OFF のはずなのに勝手に ON へ戻る」症状を起こしていた
+    // （BUG-48 の「未解明: 最初に ctx.ime_on が観測駆動で true に振れる具体的トリガー」
+    // に対応する原因の一つ）。BUG-48 修正（PR #44）により Command ソースは
+    // `handle_engine_set_open`（`SetOpenOrigin::ExplicitUserAction`）経由でのみ
+    // 発行されるようになり、エンジン内部の対称 echo と分離済みなので、
+    // SyncKey/PhysicalImeKey と同列に永続タイムスタンプへ含めてよい。
+    #[test]
+    fn command_source_updates_persistent_explicit_off_ms() {
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::Command,
+            },
+            TickMs(12_345),
+        );
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            12_345,
+            "Command ソースの明示 OFF も永続タイムスタンプを更新すること"
+        );
+
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::Command,
+            },
+            TickMs(20_000),
+        );
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            0,
+            "Command ソースの明示 ON はタイムスタンプをリセットすること"
+        );
+    }
+
+    // Ctrl+無変換 のデフォルトキーバインドが実際にたどる呼び出し経路
+    // （`handle_engine_set_open` → `write_set_open_request` → `Command`）を
+    // 直接エンドツーエンドで確認する回帰テスト。
+    #[test]
+    fn handle_engine_set_open_updates_persistent_explicit_off_ms() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_set_open(false, false, false, 1, TickMs(9_999));
+        assert!(applied);
+        assert_eq!(
+            ps.ime.persistent_explicit_off_ms(),
+            9_999,
+            "デフォルトキーバインド経由の明示 IME OFF が \
+             Imm32Unavailable cache-miss ガードから漏れないこと"
+        );
+    }
+
+    // ── handle_engine_activation_sync（BUG-48）: handle_engine_set_open と同じ
+    //    filter を独立に実装しているため、乖離を検知できるよう同型のテストを鏡写しで
+    //    用意する（Opus レビュー 2026-08-04 で「コピペされた filter に対応テストが
+    //    無く、2つの実装が乖離しても気づけない」と指摘された）。
+
+    #[test]
+    fn handle_engine_activation_sync_filters_when_focus_transition_was_pending() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, true, 1, TickMs(0));
+        assert!(!applied, "focus transition pending 中は適用されない");
+        assert!(
+            !ps.ime.model().desired_open(),
+            "フィルタされた ActivationSync は desired_open を書き換えない \
+             (そもそも desired_open は書き換えない設計だが、フィルタされた場合も \
+             念のため確認する)"
+        );
+    }
+
+    #[test]
+    fn handle_engine_activation_sync_applies_when_focus_transition_not_pending() {
+        let mut ps = ps_with_shadow(false, None, true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        assert!(
+            applied,
+            "focus transition が pending でなければ通常通り適用される"
+        );
+    }
+
+    #[test]
+    fn handle_engine_activation_sync_ctrl_chord_filter_still_works() {
+        let mut ps = ps_with_shadow(false, None, true);
+        // 1 回目: ActivationSync による IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
+        let first = ps
+            .ime
+            .handle_engine_activation_sync(false, true, false, 1, TickMs(0));
+        assert!(first, "chord を開始する最初の要求は適用される");
+        assert!(ps.ime.is_ctrl_ime_chord_active());
+        // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
+        let second = ps
+            .ime
+            .handle_engine_activation_sync(false, true, false, 2, TickMs(0));
+        assert!(
+            !second,
+            "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+        );
+    }
+
+    // handle_engine_set_open との核心的な違い: last_intent が既にある間は
+    // desired_open を一切書き換えない（BUG-48 修正の中心的な不変条件）。
+    #[test]
+    fn handle_engine_activation_sync_never_sets_last_intent_or_desired_open() {
+        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        assert!(applied);
+        assert_eq!(
+            ps.ime.model().last_intent.as_ref().map(|i| i.target),
+            Some(false),
+            "ActivationSync はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
+        );
+        assert!(
+            !ps.ime.model().desired_open(),
+            "ActivationSync は desired_open も一切書き換えない"
+        );
+        assert!(
+            !ps.ime.effective_open(),
+            "explicit intent が残っているため effective_open() は false のまま"
         );
     }
 

@@ -8,7 +8,8 @@
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
 //! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（VK_IME_ON/OFF）。全プロファイルで適用
-//! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_DBE_HIRAGANA/ALPHANUMERIC 冪等制御）
+//! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_IME_ON/OFF 冪等制御。
+//!    2026-08-06 まで ON は `VK_DBE_HIRAGANA` だった、BUG-50 参照）
 //! 4. `KanjiToggleStrategy`     — 最終フォールバック。実到達は「Standard プロファイル ×
 //!    MS-IME × ImmCross 非同期失敗後（apply_skipping_imm）」の 1 組み合わせのみ
 //!
@@ -127,10 +128,21 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 /// CLSID ベースで MS-IME（または互換 IME）がアクティブと判定された場合に、
 /// IMM32 クロスプロセス制御が使えない TSF アプリ（Windows Terminal 等）への制御を担う。
 ///
-/// - ON  → `VK_DBE_HIRAGANA` (0xF2) — ひらがなモードに設定（カタカナ時はスキップ）
+/// - ON  → `VK_IME_ON` (0x16) — DirectInput → IME ON（conv-mode には一切触れない）。
 /// - OFF → `VK_IME_OFF` (0x1A) — DirectInput（直接入力）へ移行。MS-IME がネイティブに処理する冪等キー。
 ///   `VK_DBE_ALPHANUMERIC` は半角英数（IME-ON）に留まるため使用しない。
 ///   `VK_KANJI` はトグルのため使用しない（shadow desync で逆転する）。
+///
+/// 2026-08-06 まで ON は `VK_DBE_HIRAGANA`（モード選択キー）を使っていた。OFF は
+/// `48a667a`（2026-06-27頃）で同種のモードキー `VK_DBE_ALPHANUMERIC` から `VK_IME_OFF`
+/// （真の開閉キー）へ既に移行済みだったが、ON 側だけがモードキーのまま取り残されて
+/// いた。`VK_DBE_HIRAGANA` は「開く」と「ひらがなに強制する」を1つの副作用に束ねて
+/// おり、これが BUG-50（一度カタカナに入ると復旧不能になるデッドロック）の直接の
+/// 前提だった: 現在の conv がカタカナのときこのキーを送るとカタカナが壊れるため、
+/// 送信をスキップするガード（旧 `AlreadyMatched` 分岐）が必要になり、そのガードが
+/// 「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できずデッドロックを
+/// 生んでいた。`VK_IME_ON` は GJI で既に実績のある「開くだけ」の冪等キーであり
+/// conv-mode を一切変更しないため、このガード自体が不要になる（下記 `apply` 参照）。
 ///
 /// 適用条件:
 /// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
@@ -147,20 +159,11 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if open {
-            // カタカナモード（KATAKANA bit 立ち）のとき VK_DBE_HIRAGANA を送ると
-            // ひらがなに切り替わる（IME 的には「ON→ON」だが conv mode が破壊される）。
-            // 現在の conv を読んで KATAKANA bit が立っている場合は送信をスキップする。
-            // Safety: get_ime_conversion_mode_raw_timeout は Win32 API。メインスレッドから呼ぶこと。
-            if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) } {
-                if crate::imm::cmode_has(conv, crate::imm::IME_CMODE_KATAKANA) {
-                    log::debug!(
-                        "[apply-ime] MS-IME direct: conv=0x{conv:08X} カタカナモード \
-                         → VK_DBE_HIRAGANA スキップ (AlreadyMatched)"
-                    );
-                    return ImeOpenOutcome::AlreadyMatched;
-                }
-            }
-            // VK_DBE_HIRAGANA は ROMAN ビット (IME_CMODE_ROMAN=0x10) を変更しない。
+            // VK_IME_ON は conv-mode（ひらがな/カタカナ、全角/半角）に一切触れない
+            // 真の開閉キーのため、旧 VK_DBE_HIRAGANA 版にあった「現在カタカナなら
+            // 送信をスキップする」ガード（BUG-50 デッドロックの直接の前提）は不要。
+            //
+            // VK_IME_ON は ROMAN ビット (IME_CMODE_ROMAN=0x10) を変更しない。
             // かな入力の conv=0x09 のまま IME ON すると JIS かな入力になる（例: LINE, Edge）。
             // 先に ROMAN ビットを立てておくことでフォーカス直後のかな入力化けを防ぐ。
             // ただし ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
@@ -171,7 +174,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             ) {
                 let _ = unsafe { crate::ime::set_ime_romaji_mode() };
             }
-            // 送信キーは KeySequencePolicy が SSOT（VK_DBE_HIRAGANA、MS-IME 冪等 ON キー）。
+            // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON、MS-IME 冪等 ON キー）。
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
             log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (IME ON)");
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。

@@ -4649,7 +4649,7 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ime(ImeEffect::SetOpen { open: true })
+                Effect::Ime(ImeEffect::SetOpen { open: true, .. })
             )),
             "user_enabled=true でも context-inactive なら engine_on コンボで IME を \
              強制的に開く SetOpen(true) が発行されるべき（修正前は match_event が \
@@ -5365,9 +5365,85 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ime(ImeEffect::SetOpen { open: false })
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
             )),
             "normal ImeOff transition must emit SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    // 2026-08-04: 「IME OFF・Engine ON」再発対策（`SetOpenOrigin` 導入）の回帰テスト。
+    //
+    // `EngineCommand::RefreshState`（Platform 層が `ctx.ime_on` を再評価するたびに叩く
+    // 経路。IME ポーリング/idle-conv-check 由来で毎キー入力とは無関係に発火しうる）が
+    // 引き起こす active/inactive 遷移は `check_active_transition` を経由するため、
+    // 発行される `SetOpen` は必ず `SetOpenOrigin::ActivationSync` でなければならない。
+    // ここが誤って `ExplicitUserAction` になると、awase-windows 側の
+    // `kp_stage_post_decision` がユーザーの明示的な IME OFF 意図（`last_intent`）を
+    // 「観測駆動の echo」で上書きしてしまい、ユーザーが IME を OFF にした直後でも
+    // Engine が勝手に ON へ戻る（`docs/known-bugs.md` 参照）。
+    #[test]
+    fn refresh_state_transition_emits_activation_sync_origin_not_explicit_user_action() {
+        let mut engine = make_test_engine();
+        // make_test_engine() は prev_active=true から始まるため、まず ime_off_ctx() で
+        // Inactive に落としてから、本題の Inactive→Active 遷移を起こす。
+        engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(!engine.compute_active(&ime_off_ctx()));
+
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen {
+                    open: true,
+                    origin: SetOpenOrigin::ActivationSync
+                })
+            )),
+            "RefreshState 由来の SetOpen は ActivationSync でなければならない \
+             (ExplicitUserAction だと belief の last_intent が観測駆動の echo で \
+             汚染される), got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen {
+                    origin: SetOpenOrigin::ExplicitUserAction,
+                    ..
+                })
+            )),
+            "RefreshState 由来の SetOpen に ExplicitUserAction が混ざってはならない, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    // 対照テスト: IME-ON コンボ（本物のユーザー操作）は ExplicitUserAction を使う。
+    #[test]
+    fn ime_on_combo_emits_explicit_user_action_origin() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen {
+                    open: true,
+                    origin: SetOpenOrigin::ExplicitUserAction
+                })
+            )),
+            "IME-ON コンボは ExplicitUserAction を使わなければならない, got {:?}",
             effects_of(&d)
         );
     }
@@ -5550,7 +5626,7 @@ mod engine_integration_tests {
         assert!(engine.is_user_enabled());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen { open: true })
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
         )));
         assert!(
             has_effect(&d, |e| matches!(

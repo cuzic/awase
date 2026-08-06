@@ -52,6 +52,9 @@ pub(crate) struct TsfEnvSnapshot {
     pub ime_mode: crate::tsf::ime_mode_fsm::ImeModeState,
     /// `ime_mode` が `IMC_GETCONVERSIONMODE` で OS から確認済みなら true。
     pub ime_mode_confirmed: bool,
+    /// `Output::confirm_gate_deadline_override_ms` の生値。`0` = 上書きなし。
+    /// `MsImeReadyCoro` の期限判定に使う（ADR-084、BUG-49 追補2）。
+    pub confirm_gate_deadline_override_ms: u64,
     /// `TsfWarmupCoordinator` の deferred キューに現在何か積まれているか（覗き見、消費しない）。
     /// `GjiWarmupCoro` の `decide_transmit_plan` eager path 判定に使う。
     pub deferred_pending: bool,

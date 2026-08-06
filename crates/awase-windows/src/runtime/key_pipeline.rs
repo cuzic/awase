@@ -611,6 +611,16 @@ impl Runtime {
                 self.platform_state
                     .ime
                     .report_conv_open_inference(true, reason, now_tick);
+                // このブランチは desired ≠ observed の乖離を記録するだけで自らは
+                // actuate しない（上記コメント通り BUG-19 対策）。実際の補正判断は
+                // `ir_apply_drift_correction`（`TIMER_IME_REFRESH` 発火時のみ実行）に
+                // 委ねられるが、TsfNative では `explicit_intent` 確定後にこのタイマーが
+                // 恒久停止する設計のため、ここで明示的に蹴らないと乖離が無期限に
+                // 検出されないまま残る（2026-08-04, BUG-51: 実機で最大8分放置された
+                // 不具合）。ここで記録した観測は今まさに取得したばかりで新鮮なため
+                // （`DRIFT_CORRECTION_OBS_MAX_AGE_MS` に対して十分に新しい）、
+                // `may_change_ime` パススルーと同じ 20ms 遅延で安全に確認できる。
+                self.schedule_ime_refresh(20);
                 return;
             }
             EngineSync::SetOpen(reason) => {
@@ -697,6 +707,21 @@ impl Runtime {
             ShadowImeAction::TurnOff => false,
         };
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+        // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
+        // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
+        // 経路の一つでありながら、従来ここには INFO ログが一切無く、実機ログだけでは
+        // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
+        log::info!(
+            "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
+             kind={:?} injected={} {}→{}",
+            event.vk_code,
+            event.scan_code,
+            action,
+            kind,
+            event.injected,
+            current,
+            new_val,
+        );
         match kind {
             IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val, tick_ms),
             IntentKind::PhysicalImeKey => {
@@ -860,7 +885,7 @@ impl Runtime {
         event: &RawKeyEvent,
         focus_transition_was_pending: bool,
     ) {
-        if let Some(new_ime_on) = decision.find_ime_set_open() {
+        if let Some((new_ime_on, origin)) = decision.find_ime_set_open_with_origin() {
             // IME-ON コンボ（既定: Ctrl+変換）は現在の IME 状態によらず SetOpen(true) を
             // 無条件で再発行する（`build_ime_set_open_decision` の「二重 enqueue 防止」
             // コメント参照）。このため handle_engine_set_open で belief を更新する前に
@@ -869,35 +894,93 @@ impl Runtime {
             // ローマ字入力 + CapsLock OFF へリセットする。既に OFF→ON の場合は従来通り
             // 単純に ON にするだけで良い）。
             let was_open_before = self.platform_state.ime.effective_open();
+            // 診断ログ用スナップショット (2026-08-05): handle_engine_set_open/
+            // handle_engine_activation_sync 呼び出し前の last_intent を控えておく。
+            // これらの呼び出しが last_intent を書き換えるため、後で「遷移直前は
+            // 本当に明示意図があったか」を確認するには呼び出し前に読む必要がある。
+            let last_intent_before = self.platform_state.ime.explicit_intent();
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-            let applied = self.platform_state.ime.handle_engine_set_open(
-                new_ime_on,
-                event.modifier_snapshot.ctrl,
-                focus_transition_was_pending,
-                generation,
-                tick_ms,
-            );
-            log::debug!(
-                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), poll suspended{}",
+            // `origin` で belief 更新の経路を分ける（`SetOpenOrigin` の doc / 2026-08-04
+            // 「IME OFF・Engine ON」再発対策参照）。
+            // - ExplicitUserAction: IME/エンジン ON/OFF コンボ等、本物のユーザー操作。
+            //   `last_intent` を設定してよい（`handle_engine_set_open`）。
+            // - ActivationSync: `check_active_transition` が対称性のために自動発行した
+            //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
+            //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
+            //   以後の drift correction が効かなくなる（IME OFF 直後に Engine が勝手に
+            //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
+            //   `desired_open` のみ更新する。
+            let applied = match origin {
+                awase::engine::SetOpenOrigin::ExplicitUserAction => {
+                    self.platform_state.ime.handle_engine_set_open(
+                        new_ime_on,
+                        event.modifier_snapshot.ctrl,
+                        focus_transition_was_pending,
+                        generation,
+                        tick_ms,
+                    )
+                }
+                awase::engine::SetOpenOrigin::ActivationSync => {
+                    self.platform_state.ime.handle_engine_activation_sync(
+                        new_ime_on,
+                        event.modifier_snapshot.ctrl,
+                        focus_transition_was_pending,
+                        generation,
+                        tick_ms,
+                    )
+                }
+            };
+            // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
+            // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
+            // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に
+            // 遷移した時だけ通るため、毎 tick 出るログではない（低頻度）。
+            log::info!(
+                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest, origin={origin:?}), \
+                 was_open_before={was_open_before} last_intent_before={last_intent_before:?} \
+                 poll suspended{}",
                 if applied { "" } else { " [chord barrier active → skipped]" }
             );
 
-            // `decision.find_ime_set_open()==Some(true)` は IME-ON コンボ以外からも
-            // 発火しうる（例: `Ctrl+Shift+変換` = EngineOn コンボで engine が
-            // Inactive→Active に遷移する際も `transition_activation` が同じ
-            // `SetOpen{open:true}` を無条件で出す、`engine.rs` L171）。「IME が既に
-            // ONだった」だけでなく、実際に押されたキーが IME-ON コンボの既定値
-            // `Ctrl+変換`（Shift/Alt/Win 無し）と一致することも確認し、無関係な
-            // コンボでリセットが誤発火しないようにする。`keys.ime_on` をカスタマイズ
-            // した場合はこの判定も合わせて更新すること。
+            // IME-ON コンボの既定値 `Ctrl+変換`（Shift/Alt/Win 無し）と一致する場合のみ
+            // ひらがな＋ローマ字＋CapsLock OFF へのリセットを行う。
+            //
+            // 注意: `origin==ExplicitUserAction` は IME-ON コンボだけでなく
+            // `Ctrl+Shift+変換`（EngineOn コンボ、`apply_active_transition` 経由）等の
+            // 他の明示操作も含む（`SetOpenOrigin` の doc 参照）。ActivationSync の echo
+            // を弾くのは `origin` チェックの役目だが、EngineOn コンボ等の
+            // "ExplicitUserAction だが IME-ON コンボそのものではない" ケースを弾いて
+            // いるのは `is_default_ime_on_combo` の VK/modifier 判定（特に `!shift`）
+            // のほうであり、こちらは削除できない。`keys.ime_on` をカスタマイズした
+            // 場合はこの判定も合わせて更新すること。
             let is_default_ime_on_combo = event.vk_code == crate::vk::VK_CONVERT
                 && event.modifier_snapshot.ctrl
                 && !event.modifier_snapshot.shift
                 && !event.modifier_snapshot.alt
                 && !event.modifier_snapshot.win;
-            if applied && new_ime_on && was_open_before && is_default_ime_on_combo {
+            // BUG-50 (2026-08-05): `was_open_before` は belief（`effective_open()`）で
+            // あり、drift（例: KatakanaShadowOff 由来の誤確定で belief=Off のまま実
+            // conv がカタカナ）が起きていると常に false になる。この場合、上のリセ
+            // ットが発火せず「カタカナから誰も戻さない」デッドロックになる（実機ログ
+            // で確認、docs/known-bugs.md BUG-50）。判定は
+            // `should_reset_katakana_on_ime_on_combo`（Linux でテスト可能な純粋関数、
+            // `state/conv_mode.rs`）に集約する。
+            let observed_katakana = self
+                .platform
+                .output
+                .conv_mode
+                .get()
+                .is_some_and(|m| m.charset.is_katakana());
+            if applied
+                && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
+                && new_ime_on
+                && crate::state::conv_mode::should_reset_katakana_on_ime_on_combo(
+                    was_open_before,
+                    observed_katakana,
+                )
+                && is_default_ime_on_combo
+            {
                 Self::kp_reset_to_hiragana_romaji_capsoff();
             }
 
@@ -1077,6 +1160,21 @@ impl Runtime {
             || !self.platform.output.conv_mutation_allowed.get()
         {
             self.platform_state.gate.shift_conv_guard_pending = false;
+            // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: このガードで早期
+            // return する経路は conv を一切書かないため、override が残って
+            // いてはならない。以前の Shift サイクルで立てた override が
+            // まだ生きている（例: 前回 pending=false のまま key_up の
+            // take() に到達しなかった等）場合の取りこぼしを防ぐ。
+            self.platform
+                .output
+                .confirm_gate_deadline_override_ms
+                .set(0);
+            // pass-5 レビュー指摘と同型の懸念: 単純な `.set(0)` だけでは、
+            // まだ走行中の前回 hold の `kp_restore_kana_from_half_width`
+            // リトライループが次の試行でこの override を再設定してしまい
+            // クリアが無効化される。世代も併せて進め、そのループの
+            // `owner_gen` を無効化してクリアを恒久化する。
+            self.platform.output.bump_shift_conv_guard_gen();
             return;
         }
 
@@ -1120,10 +1218,44 @@ impl Runtime {
         // 未着手・未検証。
         if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
             log::info!("[shift-conv-guard] MS-IME経路: IMC write (conv=0x0000) 送信");
-            win32_async::spawn_local(async {
-                let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
-                log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
-            });
+            // ADR-084 P1/INV-1/INV-2（第一弾）: 書き込みと belief 無効化を
+            // `Runtime::actuate_conv_mode` に集約した（`runtime/conv_actuation.rs`）。
+            // 実際の書き込みは非同期（spawn_local）だが、belief 無効化（unconfirm）と
+            // give-up latch 解除はこの呼び出しの中で同期的に行われる。async タスク内で
+            // unconfirm すると、その完了前にチョードが解決して送信ゲート
+            // （`Output::ms_ime_gate_defer`）が呼ばれた場合、stale な
+            // `is_native_ready()==true` を素通ししてしまう（本バグの根本原因）。
+            let _ = self.actuate_conv_mode(
+                crate::state::ConvModeTarget::HalfWidthAlnum,
+                crate::state::ConvMutationReason::ShiftSoloTapCounter,
+                now_tick,
+            );
+            // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
+            // `Output::ms_ime_gate_defer`）の期限を、hold 中は
+            // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ実質的に延長する
+            // （`u64::MAX` の真の無期限ではなく有限キャップ — Shift の KeyUp が
+            // 何らかの理由でフックに届かない場合でも、このキャップを過ぎれば
+            // 自動的に通常の安全弁へ復帰する。Opus レビュー指摘）。
+            // これから conv=0x0000 を書くと分かっている以上、その直後に
+            // チョードが解決して romaji/記号が defer された場合、IMC が
+            // 「読めない」のではなく「awase 自身が書いた値をまだ回復して
+            // いない」だけであり、BUG-13 の安全弁（IMC 不可読環境への
+            // フォールバック）の対象ではない。固定 400ms 窓のまま素通しすると
+            // Shift を長く保持しただけで強制送信（半角化）+ give-up latch
+            // （BUG-13 保護の消失）を招く（実機ログで確認済み）。
+            // `kp_shift_conv_guard_key_up`／`kp_restore_kana_from_half_width`
+            // の復元リトライが Shift 解放後により正確な猶予へ差し替える。
+            self.platform.output.confirm_gate_deadline_override_ms.set(
+                hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS,
+            );
+            // pass-5 レビュー指摘（blocking）: 新しい hold の開始を世代として
+            // 記録する。`kp_restore_kana_from_half_width` の detached retry
+            // task はこの値を起動時に `owner_gen` として捕獲し、以後の各試行で
+            // 現在値と一致するかを確認してから override を書く。これにより、
+            // hold #1 の解放直後に hold #2 が始まった場合（連続 Shift タップの
+            // 通常の間隔で起こりうる）、hold #1 の古い retry task が hold #2 の
+            // override を誤ってクリアする事故を防ぐ。
+            self.platform.output.bump_shift_conv_guard_gen();
 
             // 診断用（2026-07-11）: 送信直後に conv を読み取ってログに残す。
             // MS-IME はこの IMC write 自体が実効的な経路なので、この読み取りは
@@ -1166,16 +1298,40 @@ impl Runtime {
         if !std::mem::take(&mut self.platform_state.gate.shift_conv_guard_pending) {
             return;
         }
-        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
-            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
-        self.platform_state.gate.left_shift_tap_candidate = false;
-
         // GJI には entry 機構が無い（BUG-25 追補3）ため、左Shift単独タップでも
         // 持続トグルへは絶対に移行しない（移行すると engine が pass-through に
         // なり、生ローマ字キーが GJI 自身の未切替のひらがな変換エンジンへ
         // そのまま入ってかな入力が壊れる）。GJI では常に安全網の復元のみ実行する。
         let toggle_entry_supported = crate::tsf::observer::tsf_obs().active_ime_kind()
             == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
+
+        // ADR-084（BUG-49 追補2、round-6 レビュー指摘）: entry でキャップ付きに
+        // 延長した confirm-then-transmit ゲートの期限を、ここ（hold 終了）を
+        // 起点とするフレッシュな猶予に差し替える。放置したままだと、以後の
+        // どんな romaji 送信も `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` まで
+        // defer し続けてしまう。値の導出根拠は `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`
+        // の doc コメント（tuning.rs）参照 — 復元リトライ 1 試行分の最大所要時間に
+        // マージンを載せたものであり、リトライ全体の合計時間ではない。復元は
+        // `kp_restore_kana_from_half_width` の冪等リトライ（0/160/320/480ms）が
+        // 担い、そのループ自身が進行中は毎回この猶予を押し出す（詳細はそちら参照）。
+        // ここでの設定は、`spawn_local` されたリトライループの最初の tick が
+        // 走るまでの橋渡し。
+        //
+        // entry（`kp_shift_conv_guard_key_down`）が override を書くのは MS-IME
+        // 限定（GJI には entry 機構が無い）なので、ここも対称に MS-IME 限定に
+        // する。GJI で無条件に書くと、対応する entry も retry ループも無い
+        // まま override だけが残り、`clear_confirm_gate_override` を呼ぶ者が
+        // 誰もいない「宙に浮いた」延長になる（自然に期限切れはするが、他の
+        // 経路と非対称で紛らわしい — round-6 レビュー指摘）。
+        if toggle_entry_supported {
+            self.platform
+                .output
+                .confirm_gate_deadline_override_ms
+                .set(hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS);
+        }
+        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
+            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        self.platform_state.gate.left_shift_tap_candidate = false;
 
         if is_left_shift_tap
             && toggle_entry_supported
@@ -1225,71 +1381,184 @@ impl Runtime {
             .ime_mode_fsm
             .borrow_mut()
             .unconfirm("shift-conv-guard release");
-        // IMC の conv write だけでは新 MS-IME (TSF-native) の実モードが英数から戻らない
-        // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
-        // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
-        // 英数→かな方向の IMM→TSF 反映だけが壊れている。かな→英数方向の hold 側は
-        // IMC write で実際に効く）。ユーザーの手動回復と同じ VK_DBE_HIRAGANA を注入する。
-        //
-        // 注入は scan code 付き（make_tsf_key_input, MapVirtualKeyW → JIS で 0x70）で
-        // 送ること。scan=0x0 の send_ime_mode_key では MS-IME (TSF) がモードキーとして
-        // 処理しない（2026-07-07 実機: [ime-mode] SendInput vk=0xF2 scan=0x0 発火後も
-        // 半角英数のまま。物理かなキーの reinject (scan=0x70) と TSF warmup の F2
-        // (make_tsf_key_input) は効く — 差分は scan の有無のみ）。
-        // 下の IMC write/verify は保険として残す（GJI では未検証、無効でも実害は
-        // ログ警告のみ）。
-        //
-        // ただし scan 付き VK_DBE_HIRAGANA 注入自体にもハザードがある
-        // （known-bugs.md BUG-15 追補7: 「解放側 F2=scan 0x70 も実 OFF でかなロック
-        // トグルの同族ハザード」）。実 IME が確実に ON でない限り注入してはならない
-        // という追補7の教訓を、hold 中より窓が長い持続トグルにも徹底するため、
-        // `effective_open()==false` の場合は注入をスキップし IMC write のみに
-        // 留める（フォーカス変更で他アプリに切り替わった直後等を想定）。
-        if self.platform_state.ime.effective_open() {
-            let mut f2_inputs = Vec::with_capacity(3);
-            if prepend_synthetic_shift_up {
-                // 呼び出し元が物理 Shift up の reinject をまだ行っていない場合、OS
-                // 視点ではまだ Shift 押下中。Shift+ひらがなキー = カタカナ切替に
-                // 化けないよう、synthetic Shift up を同一バッチの先頭に入れる
-                // （物理は解放済みなので restore 不要。後続の本物の Shift up
-                // reinject と二重になるが KeyUp の重複は無害）。
+        // ADR-084 INV-7（BUG-49 追補）: entry（kp_shift_conv_guard_key_down）は
+        // MS-IME 限定でしか conv を書き込まない（GJI には entry 機構が無い、
+        // BUG-25 追補2/3）。復元側だけ IME 種別を問わず無条件に実行するのは
+        // 非対称であり、GJI に対しては「そもそも書いていないものを復元する」
+        // 無意味な副作用（VK_DBE_HIRAGANA 注入・IMC write リトライ）でしかない。
+        // 以下の実際の OS 書き込みは entry と対称に MS-IME 限定にする
+        // （belief 更新の `apply_input_mode_correction` は IME 種別を問わず
+        // 必要なため、この分岐の外で無条件に行う）。
+        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+        if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
+            // IMC の conv write だけでは新 MS-IME (TSF-native) の実モードが英数から戻らない
+            // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
+            // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
+            // 英数→かな方向の IMM→TSF 反映だけが壊れている。かな→英数方向の hold 側は
+            // IMC write で実際に効く）。ユーザーの手動回復と同じ VK_DBE_HIRAGANA を注入する。
+            //
+            // 注入は scan code 付き（make_tsf_key_input, MapVirtualKeyW → JIS で 0x70）で
+            // 送ること。scan=0x0 の send_ime_mode_key では MS-IME (TSF) がモードキーとして
+            // 処理しない（2026-07-07 実機: [ime-mode] SendInput vk=0xF2 scan=0x0 発火後も
+            // 半角英数のまま。物理かなキーの reinject (scan=0x70) と TSF warmup の F2
+            // (make_tsf_key_input) は効く — 差分は scan の有無のみ）。
+            // 下の IMC write/verify は保険として残す（GJI では未検証、無効でも実害は
+            // ログ警告のみ）。
+            //
+            // ただし scan 付き VK_DBE_HIRAGANA 注入自体にもハザードがある
+            // （known-bugs.md BUG-15 追補7: 「解放側 F2=scan 0x70 も実 OFF でかなロック
+            // トグルの同族ハザード」）。実 IME が確実に ON でない限り注入してはならない
+            // という追補7の教訓を、hold 中より窓が長い持続トグルにも徹底するため、
+            // `effective_open()==false` の場合は注入をスキップし IMC write のみに
+            // 留める（フォーカス変更で他アプリに切り替わった直後等を想定）。
+            if self.platform_state.ime.effective_open() {
+                let mut f2_inputs = Vec::with_capacity(3);
+                if prepend_synthetic_shift_up {
+                    // 呼び出し元が物理 Shift up の reinject をまだ行っていない場合、OS
+                    // 視点ではまだ Shift 押下中。Shift+ひらがなキー = カタカナ切替に
+                    // 化けないよう、synthetic Shift up を同一バッチの先頭に入れる
+                    // （物理は解放済みなので restore 不要。後続の本物の Shift up
+                    // reinject と二重になるが KeyUp の重複は無害）。
+                    f2_inputs.push(crate::tsf::output::make_tsf_key_input(
+                        crate::vk::VK_SHIFT,
+                        true,
+                    ));
+                }
                 f2_inputs.push(crate::tsf::output::make_tsf_key_input(
-                    crate::vk::VK_SHIFT,
+                    crate::vk::VK_DBE_HIRAGANA,
+                    false,
+                ));
+                f2_inputs.push(crate::tsf::output::make_tsf_key_input(
+                    crate::vk::VK_DBE_HIRAGANA,
                     true,
                 ));
+                let _ = crate::win32::send_input_safe(&f2_inputs);
+                log::debug!(
+                    "[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元"
+                );
+            } else {
+                log::debug!(
+                    "[shift-conv-guard] effective_open()=false のため VK_DBE_HIRAGANA 注入をスキップ \
+                     (IMC write のみ、BUG-15 追補7の教訓)"
+                );
             }
-            f2_inputs.push(crate::tsf::output::make_tsf_key_input(
-                crate::vk::VK_DBE_HIRAGANA,
-                false,
-            ));
-            f2_inputs.push(crate::tsf::output::make_tsf_key_input(
-                crate::vk::VK_DBE_HIRAGANA,
-                true,
-            ));
-            let _ = crate::win32::send_input_safe(&f2_inputs);
-            log::debug!("[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元");
+            // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
+            // 注意: 半角英数中の conv 読み取りで conv_mode が HanAlpha に更新されている
+            // 場合、imm_conv_target は None → ひらがな target になる（切替前がカタカナ
+            // だった記憶は失われる。エッジケースとして許容）。
+            let target = self
+                .platform
+                .output
+                .conv_mode
+                .get()
+                .and_then(awase::engine::ConvMode::imm_conv_target)
+                .unwrap_or(
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_FULLSHAPE
+                        | crate::imm::IME_CMODE_ROMAN,
+                );
+            log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
+
+            // pass-5 レビュー指摘（blocking）: このリトライタスクは detached
+            // (`spawn_local`) で、完了は Shift タップ間隔より遅れうる。起動時点の
+            // 世代を捕獲し、以後の全 override 書き込み（延長・クリア双方）の
+            // 前提条件にする。捕獲後に新しい hold が始まる（=
+            // `shift_conv_guard_gen` が進む）と、このタスクは即座に
+            // 自分がもう override の所有者でないと分かり、上書きも
+            // 無関係な conv write も一切行わずに終了する。
+            let owner_gen = self.platform.output.shift_conv_guard_gen.get();
+
+            win32_async::spawn_local(async move {
+                // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
+                // idle-conv-check で観測 = 上限 478ms）。冪等な IMC write を
+                // 160ms 間隔で最大 4 回（0/160/320/480ms、実測上限をカバー）打ち、
+                // NATIVE が確認できた時点で打ち切る。
+                const RETRY_INTERVAL_MS: u32 = 160;
+                const MAX_TRIES: u32 = 4;
+                for attempt in 0..MAX_TRIES {
+                    // ADR-084（BUG-49 追補2、Opus レビュー指摘1・pass-5 指摘）:
+                    // リトライが続いている限り confirm-gate の猶予を「今から
+                    // SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS」へ押し出し続ける。
+                    // key_up 冒頭の一度きりの設定だけでは、このループ自体が
+                    // 実測 ~478ms・設計上最大 ~640ms かかりうることに追従できず、
+                    // 復元完了前に confirm-gate の期限が切れて BUG-49 が
+                    // release 側で再発しうる（実際に一度この形で再発を確認済み）。
+                    // 世代が捕獲時点と一致する場合のみ書く。不一致なら別の hold
+                    // が既に開始しているということであり、このループは即座に
+                    // 打ち切る（override 書き込みはおろか、以後の IMC write も
+                    // 行わない — 対象ウィンドウ/hold が既に自分のものではない）。
+                    let extend_result = crate::with_app(|runtime| {
+                        runtime.platform.output.extend_confirm_gate_override(
+                            owner_gen,
+                            hook::current_tick_ms()
+                                + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS,
+                        )
+                    });
+                    let still_owner = extend_result.unwrap_or_else(|| {
+                        // `with_app` の再入は起きないはずだが（この呼び出しは
+                        // await 前・他の with_app のネスト無し）、万一 None が
+                        // 返った場合に沈黙で猶予が更新されないと BUG-49 が
+                        // 無警告で再発するため、痕跡を残す。
+                        log::warn!(
+                            "[shift-conv-guard] 復元リトライ #{attempt}: with_app 再入 \
+                             (None) により override 更新をスキップ"
+                        );
+                        false
+                    });
+                    if !still_owner {
+                        log::debug!(
+                            "[shift-conv-guard] 復元リトライ #{attempt}: 新しい hold が \
+                             開始された (gen 不一致) ため中断"
+                        );
+                        return;
+                    }
+                    let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
+                    if !ok {
+                        log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
+                    }
+                    win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
+                    let conv = win32_async::offload(|| unsafe {
+                        crate::ime::get_ime_conversion_mode_raw_timeout(10)
+                    })
+                    .await;
+                    if let Some(c) = conv {
+                        if c & crate::imm::IME_CMODE_NATIVE != 0 {
+                            log::debug!(
+                                "[shift-conv-guard] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
+                            );
+                            // 復元完了。confirm-gate は通常どおり
+                            // `is_native_ready()` で即座に解決するため override は
+                            // もう不要 — 次回無関係な hold まで残らないよう戻す
+                            // （ただし自分がまだ所有者の場合のみ。既に次の hold が
+                            // 始まっていればそちらの override を壊してはならない）。
+                            let _ = crate::with_app(|runtime| {
+                                runtime
+                                    .platform
+                                    .output
+                                    .clear_confirm_gate_override(owner_gen);
+                            });
+                            return;
+                        }
+                    }
+                }
+                log::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+                // 復元が最終的に失敗した場合は override を解除し、通常の安全弁
+                // （IMC 未確認なら give-up latch）へ戻す。延長したまま放置すると
+                // 本当に IMC が読めない環境でも give-up が永久に立たなくなる。
+                // 世代が一致する場合のみ（次の hold の override を壊さない）。
+                let _ = crate::with_app(|runtime| {
+                    runtime
+                        .platform
+                        .output
+                        .clear_confirm_gate_override(owner_gen);
+                });
+            });
         } else {
             log::debug!(
-                "[shift-conv-guard] effective_open()=false のため VK_DBE_HIRAGANA 注入をスキップ \
-                 (IMC write のみ、BUG-15 追補7の教訓)"
+                "[shift-conv-guard] GJI経路: entry 機構が無いため復元 write もスキップ \
+                 (ADR-084 INV-7、entry/restore の IME 種別ゲートを対称化)"
             );
         }
-        // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
-        // 注意: 半角英数中の conv 読み取りで conv_mode が HanAlpha に更新されている
-        // 場合、imm_conv_target は None → ひらがな target になる（切替前がカタカナ
-        // だった記憶は失われる。エッジケースとして許容）。
-        let target = self
-            .platform
-            .output
-            .conv_mode
-            .get()
-            .and_then(awase::engine::ConvMode::imm_conv_target)
-            .unwrap_or(
-                crate::imm::IME_CMODE_NATIVE
-                    | crate::imm::IME_CMODE_FULLSHAPE
-                    | crate::imm::IME_CMODE_ROMAN,
-            );
-        log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
 
         self.apply_input_mode_correction(
             InputModeState::AssumedRomaji {
@@ -1298,35 +1567,6 @@ impl Runtime {
             crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
             now_tick,
         );
-
-        win32_async::spawn_local(async move {
-            // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
-            // idle-conv-check で観測 = 上限 478ms）。冪等な IMC write を
-            // 160ms 間隔で最大 4 回（0/160/320/480ms、実測上限をカバー）打ち、
-            // NATIVE が確認できた時点で打ち切る。
-            const RETRY_INTERVAL_MS: u32 = 160;
-            const MAX_TRIES: u32 = 4;
-            for attempt in 0..MAX_TRIES {
-                let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
-                if !ok {
-                    log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
-                }
-                win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
-                let conv = win32_async::offload(|| unsafe {
-                    crate::ime::get_ime_conversion_mode_raw_timeout(10)
-                })
-                .await;
-                if let Some(c) = conv {
-                    if c & crate::imm::IME_CMODE_NATIVE != 0 {
-                        log::debug!(
-                            "[shift-conv-guard] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
-                        );
-                        return;
-                    }
-                }
-            }
-            log::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
-        });
     }
 
     /// Effects の実行（フックからキューに委譲）

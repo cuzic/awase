@@ -25,11 +25,13 @@
 //! フォールバックし、呼び出し側の設定を壊さない設計にしてある
 //! （[`crate::wire::parse_top_level`] のドキュメント参照）。
 
+pub mod command;
 pub mod keymap;
 pub mod tsv;
 pub mod wire;
 
-pub use keymap::GjiImeKeys;
+pub use command::{GjiCompositionMode, GjiModeCommand};
+pub use keymap::{GjiImeKeys, GjiModeKeys};
 
 /// `config1.db` の生バイト列から、IME ON/OFF 検出用の VK 名集合を抽出する。
 ///
@@ -47,6 +49,21 @@ pub fn read_gji_ime_keys(bytes: &[u8]) -> GjiImeKeys {
         return GjiImeKeys::default();
     };
     keymap::extract_ime_keys(&table)
+}
+
+/// `config1.db` の生バイト列から、入力モード変更（かな/カタカナ/半角全角など）
+/// に使われている VK 名の分類を抽出する。[`read_gji_ime_keys`] の IME ON/OFF
+/// 版に対応するモード版で、失敗条件・空の意味も同様（[`GjiModeKeys::default`]
+/// が返る）。
+#[must_use]
+pub fn read_gji_mode_keys(bytes: &[u8]) -> GjiModeKeys {
+    let Some(raw) = wire::parse_top_level(bytes) else {
+        return GjiModeKeys::default();
+    };
+    let Some(table) = raw.custom_keymap_table else {
+        return GjiModeKeys::default();
+    };
+    keymap::extract_mode_keys(&table)
 }
 
 #[cfg(test)]

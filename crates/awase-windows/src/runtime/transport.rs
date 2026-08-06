@@ -122,7 +122,7 @@ impl PhysicalKeyDisposition {
     ///   素通しすると実 IME（MS-IME）が Windows 標準仕様どおりネイティブ効果
     ///   （英数/カタカナ/半角/全角への切替）を能動的に実行してしまうため、toggle が
     ///   発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
-    ///   `docs/known-bugs.md` BUG-47 参照）。
+    ///   `docs/known-bugs.md` BUG-52 参照）。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -229,7 +229,7 @@ mod plan_tests {
         }
     }
 
-    /// BUG-47 の対象 VK_DBE_* 一覧（0xF2 HIRAGANA は専用分岐で別処理のため対象外）。
+    /// BUG-52 の対象 VK_DBE_* 一覧（0xF2 HIRAGANA は専用分岐で別処理のため対象外）。
     fn dbe_mode_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
         vec![
             (

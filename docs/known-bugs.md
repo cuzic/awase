@@ -4875,7 +4875,981 @@ Imm32Unavailable と同じ suppress 挙動になることを固定）。`runtime
 関連: BUG-07/BUG-09/BUG-11/BUG-20/BUG-34（いずれも「IME ON / Engine OFF」という
 ユーザー通報文言が既出だが原因系統は異なる）。
 
-## BUG-47: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
+## BUG-47: `Vk`/`Tsf` 注入モードで記号（句読点「。」「、」・長音「ー」等）を送ると、cold-start ウォームアップ保護が無いため半角のまま出力される
+
+**症状（2026-08-03 ユーザー報告、v1.12.0）:** キーボード FKB7628-801(Thumb Touch)、
+IME Google 日本語入力。`.yab` レイアウトで句読点リテラル「。」「、」を配置しても
+半角の「.」「,」が出力される。長音記号「ー」も半角のハイフンマイナス「-」になり、
+IME が正しく変換できない（例:「き-」となり「きー」にならない）。
+
+**原因（確定、コード読解で確認）:** `.yab` パース（`src/yab/mod.rs`）・
+`KeyAction::Char` への変換（`src/engine/nicola_fsm.rs`）はいずれも正しい。原因は
+出力層（`crates/awase-windows/src/output/vk_send.rs`）。`send_char_as_tsf`/
+`send_char_as_vk` の `CharResolution::Vk` アーム（記号を `symbol_to_vk` テーブル
+経由で生 VK として送る経路）は、通常のローマ字送信（`send_romaji_as_tsf`/
+`send_romaji_batched`）が必ず呼ぶ `assess_warmth()` によるcold-startウォームアップ
+判定（F2 事前送信・probe設置・MS-IME confirmゲート・LiteralDetect）を一切呼ばず、
+IME/TSF が cold（未ウォームアップ）な状態でも記号 VK を無条件送信していた。GJI/TSF
+が変換エンジンとして受理する準備ができていないため、送信された VK が変換されず
+半角ASCIIのまま素通しされる。`docs/known-bugs.md` の BUG-01/02/03（ローマ字の
+最初の1文字がリテラル化する）と同じクラスのバグだが、記号送信経路には最初から
+この対策が配線されていなかった。
+
+**修正:** `vk.rs` に `ascii_to_vk` の厳密な逆写像 `vk_pair_to_ascii(vk, needs_shift)
+-> Option<char>` を追加し、ASCII 1 文字で表現できる記号（`-`/`.`/`,`/`/` および
+英数字。今回報告の3文字はすべて該当）は `send_char_as_tsf`/`send_char_as_vk` の
+`CharResolution::Vk` アームから通常のローマ字送信経路（`send_romaji_as_tsf`/
+`send_romaji_batched`）へ合流させ、cold-startウォームアップ・probe設置・
+LiteralDetectFsm による事後訂正をすべて共有させた。warm パスの送信バイト列は
+従来の `send_vk_pair(vk, needs_shift, marker)` と同一になるよう設計してある
+（`vk_pair_to_ascii_roundtrips_with_ascii_to_vk` テストで固定）。新規タイミング
+定数は追加していない（既存の `assess_warmth()` と判断基準をそのまま再利用）。
+
+**未対応だった点（2026-08-05 追補で解消。下記参照）:** 初回修正時点では Shift
+付きの記号（`？`/`！`/`～`/`＋` 等）が `ascii_to_vk` に逆像が無いため対象外だった。
+当時は恒久対応に probe のペイロード型を `romaji: String` から
+`Vec<(VkCode, bool)>` へ一般化する必要があると見積もっていたが、これは誤りだった
+（詳細は下記追補）。
+
+**テスト:** `crates/awase-windows/src/vk.rs` に
+`vk_pair_to_ascii_roundtrips_with_ascii_to_vk`（VK 0x00-0xFF × shift 2値の
+全網羅ラウンドトリップ）・`vk_pair_to_ascii_rejects_shift`・
+`vk_pair_to_ascii_covers_reported_symbols`（今回の3文字を明示的に固定）を追加。
+`cargo test -p awase-windows --lib`（271 passed）・`cargo check`/`cargo clippy
+--target x86_64-pc-windows-gnu --lib -- -D warnings`・`architecture_guard`/
+`layer_boundary_guard`/`golden_scenarios` 全 green を確認。wine 未導入のため
+このサンドボックスでは実機での再現・修正確認そのものは未実施（次の Windows
+実機セッションで Chrome/Edge + GJI にて「。」「、」「ー」の cold-start 直後の
+出力を確認すること）。
+
+**追補（2026-08-05 ユーザー報告: `！`（びっくりマーク）が半角化）:** 上記
+「未対応」だった Shift 付き記号も同一機構で解決した。**当初の見積もり
+（probe ペイロード型の `Vec<(VkCode, bool)>` 化が必要）は誤りだった** —
+`vk_send.rs` の `CharResolution::Vk` アームは既に `vk_pair_to_ascii` の
+戻り値だけでルーティングを決めており、`send_vk_run_batch`（`key_injector.rs`）
+は要素ごとに `needs_shift` を見て `VK_LSHIFT` down/up を挟む汎用実装だった
+（`ascii_to_vk('A') == Some((VkCode(0x41), true))` の大文字対応がこの汎用性の
+証拠として既に存在していた）。cold パスの `ProbeAction::TransmitSingleVk` /
+`send_single_tsf_vk`/`send_single_chrome_vk` も `needs_shift` を保持したまま
+同じ `send_vk_pair` を呼ぶ。つまり `ascii_to_vk`/`vk_pair_to_ascii` の
+Shift ガード（`if needs_shift { return None }`）を外して対応表を
+`build_symbol_to_vk` の「半角 ASCII 記号」節（21種）まで拡張するだけで、
+probe/FSM 側は無改修のまま Shift 付き記号も cold-start 保護に合流した。
+
+修正: `vk.rs` の `ascii_to_vk` に `[` `]` `;` `:` `@` `^` `\` (shift不要) と
+`!` `"` `#` `$` `%` `&` `'` `(` `)` `?` `=` `+` `*` `<` `>` `_` `{` `}` `|` `~`
+`` ` `` (shift付き、21種) の match arm を追加。`vk_pair_to_ascii` は
+`match (vk.0, needs_shift)` のタプルマッチに書き換えて対称に拡張した（`vk.0`
+だけで分岐する range match だと、意図せず既存の英大文字/数字アームが
+shift 有無を無視して先に一致してしまう実装ミスを避けるため）。
+
+テスト: `vk_pair_to_ascii_covers_shift_symbols`（`！`/`？`/`～` を明示固定）、
+`vk_pair_to_ascii_covers_every_build_symbol_to_vk_pair`（`build_symbol_to_vk`
+の全 `(VkCode, needs_shift)` ペアが `vk_pair_to_ascii` で `Some` になることを
+走査で固定 — 記号が cold-start 保護から漏れたら即座に落ちるドリフト防止）。
+`vk_pair_to_ascii_rejects_shift` は前提（「shift は常に None」）が成り立たなく
+なったため `vk_pair_to_ascii_rejects_unmapped_vks`（英大文字 Shift・F1・
+Backspace が引き続き None）に置き換えた。`cargo test -p awase-windows --lib`
+（273 passed）で確認。実機（Chrome/Edge + GJI、`！`/`？`/`～`/`＋` の cold-start
+直後出力）での再確認は次の Windows 実機セッションで行うこと。
+
+Opus によるレビュー（2026-08-05）: GO-WITH-CHANGES。指摘事項（タプルマッチ化・
+`vk_send.rs` の「Shift付きは未対応」コメント修正・`values()` ベースのドリフト
+防止テスト・本追補によるドキュメント訂正）はすべて本追補で反映済み。
+
+**関連ファイル:** `crates/awase-windows/src/vk.rs`（`vk_pair_to_ascii`）、
+`crates/awase-windows/src/output/vk_send.rs`（`send_char_as_tsf`/`send_char_as_vk`）。
+関連: BUG-01/BUG-02/BUG-03（同クラスの cold-start リテラル化）。
+
+## BUG-48: `Engine::check_active_transition` の対称 `SetOpen` echo がユーザーの明示的な IME OFF 意図（`last_intent`）を上書きし、数百ms〜数秒後に Engine が勝手に ON へ戻る
+
+**症状（2026-08-04 ユーザー報告、v1.12.0、MS-IME/TSF native 環境）:** ユーザーが
+無変換キー等で明示的に IME を OFF にした直後（数百ms〜数秒後）、何も操作していないのに
+ログに `Engine activated (ime=true, ...)` が出て NICOLA エンジンが勝手に再度アクティブに
+なる。実機ログでは `[idle-conv-check] TsfNative: conv observation open=true
+reason=NativeToggleShadowOff → ObserverReported として記録 (engine は actuate しない)`
+のバーストの直後にこの再活性化が繰り返し発生していた。
+
+**原因（仮説と確定部分が混在。2026-08-04 の Opus セカンドオピニオンレビューで
+一部誤りが判明し、このセクションは訂正済み。実機再現ログでの追跡は未実施）:**
+
+`ime-belief-architecture.md` の設計では `effective_open()`
+（`state/ime_model.rs`）は「ユーザーの明示的意図（`last_intent`）がある間は観測より
+必ず優先する」ため、`report_conv_open_inference` が記録する `ObserverReported`
+（Medium confidence）だけでは `desired_open`/`last_intent` は書き換わらない
+（BUG-19 再発対策で確認済み）はずだった。
+
+**確定している構造的な欠陥（コード読解で確認済み）:** `src/engine/engine.rs::
+transition_activation()` は、Engine が Inactive→Active（またはその逆）に遷移する
+**たびに**、理由を問わず `Effect::Ime(ImeEffect::SetOpen{open: now_active})` を
+"対称性のため"自動発行する（`// inactive → active: OS IME を強制的に開く`）。
+この effect が **キーボード経路**（`kp_run_inner` → `kp_stage_post_decision`、
+毎キー入力で `check_active_transition` が呼ばれる）を通る場合、修正前は
+それがユーザーの本物のキー操作（IME ON/OFF コンボ）由来なのか、Engine 内部の
+遷移が"つじつま合わせ"で出した echo なのかを区別せず、どちらも同じ
+`handle_engine_set_open()` → `write_set_open_request()` →
+`ImeEvent::UserImeSetIntent{source: Command}` を dispatch していた。これは
+`last_intent` を「本物のユーザー意図」として上書きし、以後の drift correction も
+この echo を正当な意図として扱ってしまう欠陥であり、実際に存在した
+（`ime-belief-architecture.md` が禁止する「観測を偽装した内部補正」と同型）。
+
+**⚠️ 訂正: `EngineCommand::RefreshState`（IME ポーリング/idle-conv-check 由来、
+キー入力を経由しない `ctx.ime_on` 変化）経路については、当初「これも
+`kp_stage_post_decision` に到達し `last_intent` を汚染する」と書いたが、これは
+**誤り**。`ir_notify_engine_refresh`（`runtime/ime_refresh.rs`）が発行する
+`RefreshState` の Decision は `Runtime::execute_decision` →
+`DecisionExecutor::execute_from_loop`（`runtime/executor.rs`）を通り、この経路は
+`ime: &ImeStateHub`（**不変参照**）しか持たないため `handle_engine_set_open`/
+`handle_engine_activation_sync` のどちらも呼べない。つまり修正前でも
+`RefreshState` 由来の `SetOpen` echo は `last_intent` を汚染していなかった。
+それでも `SetOpen` effect 自体は `execute_from_loop` → `execute_one` →
+`dispatch_ime_set_open` 経由で **OS へは無条件に適用される**
+（`executor.rs::dispatch_effect` が `origin` を捨てて `open` だけ見ている、
+`SetOpen { open, .. }` のパターンで確認できる）。つまりこの経路では
+「observed=true という怪しい観測 1 発だけで実際に OS の IME が開いてしまう」
+という、`last_intent` 汚染とは**別種**の問題が残っている（このコミットでは
+未対処。次のセクション「未対処の指摘」参照）。
+
+ユーザー報告ログの「キー入力が無い間に `Engine activated` が出る」バーストが
+実際にどちらの経路（キーボード経由の echo による `last_intent` 汚染、または
+`RefreshState` 経由の OS-level 無条件適用 + drift correction のせめぎ合い）で
+起きていたかは、INFO レベルのログだけでは特定できていない。前者はこのコミットで
+修正済み、後者は未修正のまま残っている。
+
+旧 `DecisionOrigin`/`EffectOrigin`（`SetOpen` の発行元を区別する仕組み）は
+2026-07-06 の到達不能パス監査で「消費者が存在しない」として撤去されていた
+（`src/engine/decision.rs` 冒頭コメント参照）。今回、その消費者の一つ
+（`kp_stage_post_decision` が origin で belief 更新経路を分岐する必要）が
+実在することが判明したが、`execute_from_loop`（非キーボード経路）側には
+まだ消費者を配線していない。
+
+**修正（キーボード経路のみ。`RefreshState`/非キーボード経路は未修正、下記参照）:**
+`ImeEffect::SetOpen` に `origin: SetOpenOrigin`（`ExplicitUserAction` /
+`ActivationSync`）を追加。`transition_activation()` を呼ぶ4箇所のうち、
+`check_active_transition`（毎キー入力・`RefreshState` の両方から呼ばれる汎用経路）
+だけを `ActivationSync` とし、明示的なユーザー操作（IME ON/OFF コンボ・
+エンジン ON/OFF コンボ・`ToggleEngine`/`ForceEngineOn` コマンド）を起点とする
+残り3箇所は `ExplicitUserAction` のままにした。`awase-windows` 側
+（`kp_stage_post_decision`、キーボード経路 `kp_run_inner` からのみ呼ばれる）は
+origin に応じて分岐する:
+- `ExplicitUserAction` → 既存の `handle_engine_set_open()`（`last_intent` を設定）
+- `ActivationSync` → 新設の `handle_engine_activation_sync()`
+  （`ImeEvent::EngineActivationSync` を dispatch。`PanicReset`/`HwndCacheRestored`
+  と同じ「専用イベントで `last_intent` を設定しない」パターン。`desired_open` も
+  一切書き換えない — 当初は `has_user_explicit_intent()==false` の間だけ書いて
+  いたが、それでも `desired_open := effective_open()` という循環 echo になり、
+  元の観測が期限切れで消えた後もこの値が恒久化してしまう問題が Opus レビューで
+  指摘され、完全に書かないよう修正した。`last_explicit_ime_action_ms` は
+  `handle_engine_set_open` と同様に更新する — 「明示的操作」ではなく「awase 自身が
+  能動的に IME へ書き込んだか」を表すフィールドであり、この関数も実際に OS へ
+  SetOpen を適用するため）。`lints/ime_event_guard` にも `EngineActivationSync` /
+  `handle_engine_activation_sync` を登録し、`PanicReset`/`HwndCacheRestored` と
+  同じ dylint 保護下に置いた（当初は登録漏れだった）。
+
+**未対処の指摘（2026-08-04、Opus セカンドオピニオンレビューで判明、このコミットでは
+未修正）:**
+1. **`execute_from_loop`（`RefreshState`/非キーボード経路）は `origin` を見ない
+   まま `SetOpen` effect を無条件に OS へ適用する**（`executor.rs::dispatch_effect`
+   が `SetOpen { open, .. }` で `origin` を捨てている）。`ActivationSync` origin
+   の SetOpen であっても、`last_intent` こそ汚染されなくなったが、**実際に OS の
+   IME を開閉する副作用は防げていない**。単発の Medium confidence 観測だけで
+   Engine が Active に遷移すると、その瞬間だけ物理的に IME が ON になり、
+   `check_drift_correction`（次の ~500ms ポーリング tick）が気づくまでの間
+   belief（`desired_open=false`）と実際の OS 状態（open）が食い違う spurious な
+   ブリップが残る。ユーザーから見える症状（NICOLA がキーを一瞬取る等）を完全には
+   防げていない可能性がある。対処するなら「`ActivationSync` origin の SetOpen は
+   そもそも OS へ適用しない（`transition_activation` 自体が `ctx.ime_on` の
+   confidence を見て抑制すべきか）」という設計判断が必要で、次セッションで検討する。
+2. **`RefreshState` 経由の SetOpen が `execute_from_loop` へ流れ、
+   `handle_engine_set_open`/`handle_engine_activation_sync` のどちらにも
+   到達しない**（`ime: &ImeStateHub` が不変参照のため）ことが判明したため、
+   本バグの当初の説明（下記「原因」セクション参照）にあった「`RefreshState` も
+   `kp_stage_post_decision` を経由して `last_intent` を汚染する」は誤りだった。
+   ユーザー報告ログの実際のバーストがキーボード経路（このコミットで修正済み）と
+   `RefreshState` 経路（上記1、未修正）のどちらで起きていたかは特定できていない。
+
+**未解明（実機ログのみでは特定できなかった点）:** 最初に `ctx.ime_on` が観測駆動で
+true に振れる具体的トリガー（`last_intent` がその時点でなぜ空になっているか）は
+INFO レベルのログだけでは確定できていない。`FocusChanged` が `last_intent` を
+clear する既知経路はあるが、実機ログの再活性化バーストの直前に `FocusChange` ログは
+出ていなかった。次回実機検証時に debug ログ（`[explicit-intent]`/
+`[diag-engine-active]`/`[conv-open-inference]`）を有効化し、トリガーを特定すること。
+あわせて上記「未対処の指摘」1・2 への対応も次セッションの課題とする。
+
+**⚠️ テスト実行範囲に関する重要な注意（2026-08-04、2巡目の Opus レビュー中に判明）:**
+`crates/awase-windows/src/state/mod.rs:80` の `#[cfg(windows)]` により
+`state::platform_state`（`handle_engine_set_open`/`handle_engine_activation_sync`
+を含む）モジュールまるごとが Windows 以外のターゲットではコンパイル対象から
+除外される（`runtime::executor`/`runtime::key_pipeline` も同様に `cfg(windows)`
+配下）。このためサンドボックス（Linux、wine 未導入）で `cargo test -p
+awase-windows --lib`（target 指定なし = ネイティブ Linux ビルド）を実行しても、
+**これらのファイルの `#[test]` は 1 件もコンパイルされず実行もされない**
+（クリーンビルド後にカナリアテストで実証確認済み）。「271 passed」はいずれも
+`state::ime_model`/`state::force_guard`/`state::observation_store`/`tsf::gji_fsm`
+等の Windows 非依存な純粋ロジック部分のみを指しており、`platform_state.rs`/
+`key_pipeline.rs`/`executor.rs` に追加した回帰テストの**実行による検証は
+できていない**。`cargo check -p awase-windows --target x86_64-pc-windows-gnu
+--tests` によるコンパイル確認（型検査・パターンマッチ網羅性等）のみが実施できる
+検証であり、アサーションの実行結果までは保証しない。次の Windows 実機/wine
+セッションで `cargo test -p awase-windows --target x86_64-pc-windows-gnu --lib`
+相当を実際に実行して確認すること（wine 導入を試すか、実機で確認する）。
+
+**テスト:** `src/engine/tests.rs`（Windows 非依存、実行確認済み）に
+`refresh_state_transition_emits_activation_sync_origin_not_explicit_user_action`
+（`RefreshState` 由来の遷移が `ActivationSync` を使うことを固定 — ただし上記の
+とおりこの経路は `execute_from_loop` を通るため、このテストは「Decision の
+effect が正しく tag されること」を固定するのみで、「`last_intent` が汚染
+されないこと」自体は元々この経路では起きなかった）・
+`ime_on_combo_emits_explicit_user_action_origin`（対照: IME-ON コンボは
+`ExplicitUserAction`）を追加。`crates/awase-windows/tests/golden_scenarios.rs`
+（Windows 非依存、実行確認済み）にシナリオ16・16b（`EngineActivationSync` が
+ユーザーの明示 OFF 意図を汚染しないこと、本物のユーザー操作はそのまま
+`last_intent` を確定させること）を追加 — ただしこれは `ImeModel::reduce()` に
+直接イベントを流すレベルのテストで、`kp_stage_post_decision` の `match origin`
+分岐自体（キーボード経路が正しいハンドラを呼ぶこと）を固定するテストは未整備。
+`crates/awase-windows/src/state/platform_state.rs`（**上記の注意のとおり
+`cfg(windows)` によりこのサンドボックスでは実行不可、コンパイル確認のみ**）に
+`handle_engine_activation_sync_filters_when_focus_transition_was_pending`・
+`handle_engine_activation_sync_applies_when_focus_transition_not_pending`・
+`handle_engine_activation_sync_ctrl_chord_filter_still_works`（`handle_engine_
+set_open` の同名テスト3本をコピペ実装した filter が乖離しても検知できるよう鏡写しで
+追加）・`handle_engine_activation_sync_never_sets_last_intent_or_desired_open`
+を追加。
+
+**確認コマンドと実行可否:**
+`cargo test -p awase --lib`（715 passed、Windows 非依存）・
+`architecture_guard`/`golden_scenarios`（22 passed、シナリオ16含む。テキスト
+走査/`ImeModel` 直接操作のみで Windows 非依存）・`cargo cc`（`-D
+clippy::pedantic` 相当の厳格設定、`awase` クレートのみ）は実際に実行し green を
+確認。`cargo test -p awase-windows --lib`（271 passed）も実行したが、上記の
+注意のとおり本コミットの変更箇所は含まれていない。`cargo check -p awase-windows
+--target x86_64-pc-windows-gnu --tests`・`cargo clippy --target
+x86_64-pc-windows-gnu --lib -- -D warnings`・`cargo dylint --all -p
+awase-windows -- --target x86_64-pc-windows-gnu`（`ime_event_guard`/
+`observation_source_guard` 含め warning ゼロ、`EngineActivationSync` の
+dylint 登録も確認）はコンパイル/静的解析レベルで green。wine 未導入のため
+このサンドボックスでは `platform_state.rs`/`key_pipeline.rs`/`executor.rs`
+のテスト実行・実機での再現・修正確認そのものは未実施（次の Windows 実機
+セッションで、MS-IME/TSF native アプリで IME OFF 直後に Engine が勝手に ON へ
+戻らないことを確認すること）。
+
+**関連ファイル:** `src/engine/decision.rs`（`SetOpenOrigin`）、
+`src/engine/engine.rs`（`transition_activation`/`check_active_transition`/
+`apply_active_transition`/`apply_engine_on_with_ime_recovery`/
+`build_ime_set_open_decision`）、`crates/awase-windows/src/state/ime_event.rs`
+（`ImeEvent::EngineActivationSync`）、`crates/awase-windows/src/state/ime_model.rs`
+（`reduce()`）、`crates/awase-windows/src/state/platform_state.rs`
+（`handle_engine_activation_sync`）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_post_decision`）、`crates/awase-windows/src/runtime/executor.rs`
+（`dispatch_effect` — `origin` を見ずに OS 適用する未対処箇所）、
+`crates/awase-windows/src/runtime/ime_refresh.rs`（`ir_notify_engine_refresh`、
+`RefreshState` の発火元）、`lints/ime_event_guard/src/lib.rs`。
+関連: BUG-19（同型の「観測が意図を偽装する」バグ、`ime-belief-architecture.md` の
+起点）、[[project_msime_dual_owner_bugs]]（2026-07-06 に同じ「IME OFF・Engine ON」
+症状で調査したが未解決のまま残っていた不具合2）。
+
+**追補（2026-08-04、同日別セッション）: 「未解明」トリガーの1つを特定・修正**
+
+上記「未解明」節にあった「最初に `ctx.ime_on` が観測駆動で true に振れる具体的
+トリガー」を、ユーザー提供の実機ログ（本バグの起票根拠と同一ログ）を
+`crates/awase-windows/src/runtime/focus_tracking.rs`／`state/platform_state.rs`
+のコードと突き合わせて特定した。
+
+**原因:** `Ctrl+無変換`（デフォルトキーバインドの明示 IME OFF）は
+`SpecialKeyMatch::ImeOff`（`src/engine/engine.rs:613-616`）→
+`handle_engine_set_open` → `write_set_open_request` →
+`ImeEvent::UserImeSetIntent{source: UserIntentSource::Command}` を発行する。
+一方 `ImeStateHub::dispatch_event`（`platform_state.rs`）は、フォーカス変更を
+またいで生存する永続タイムスタンプ `last_user_explicit_off_ms` を
+`SyncKey`/`PhysicalImeKey` ソースのときしか更新しておらず、`Command` が対象から
+漏れていた。`FocusChanged` は `ime_model.rs` で `last_intent` を無条件クリアする
+ため、明示 OFF の数秒後にフォーカスが UWP 系中間ウィンドウ（`ForegroundStaging`・
+`Windows.UI.Input.InputSite.WindowClass` 等、`Imm32Unavailable`）を経由すると、
+`focus_tracking.rs` の cache-miss 分岐が `persistent_explicit_off_ms()`（常に 0）
+を見て `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（10秒）抑制ガードを発動できず、
+`reset_stale_ime_on_for_imm_broken` が「明示的意図の証拠なし」と誤判定して
+belief を Low confidence の `ObserverReported{open:true}` で ON に戻していた。
+ユーザー報告ログの `06:23:19.814 IME OFF (key combo)` → 約11秒後
+`06:23:30.845 AppKind changed: Uwp → Win32 (class=ForegroundStaging)` →
+同時刻 `Imm32Unavailable entry without trusted cache: 安全デフォルト ON` →
+`Engine activated` という並びと完全に一致する。
+
+上記「原因」節が指摘した `transition_activation()` の対称 echo とは別経路
+（キーボードから明示 OFF を押した後の *フォーカス遷移* が引き金）であり、
+BUG-48 の主修正（`SetOpenOrigin` 分離）はこちらには影響していなかった
+（`Command` ソースは修正後も `handle_engine_set_open` からのみ発行されるが、
+それが「本物の明示操作」であることが確定した点はむしろこの修正の前提を
+補強する）。
+
+**修正:** `platform_state.rs` の `dispatch_event` にある永続タイムスタンプ更新の
+`matches!(source, SyncKey | PhysicalImeKey)` に `Command` を追加。BUG-48 修正
+（PR #44）により `Command` ソースは `handle_engine_set_open`
+（`SetOpenOrigin::ExplicitUserAction`）経由でのみ発行される、つまり
+「デフォルトキーバインドでの本物のユーザー操作」専用ソースになったため、
+SyncKey/PhysicalImeKey と同列に扱ってよい。
+
+**テスト:** `crates/awase-windows/src/state/platform_state.rs`
+（BUG-48 と同じ理由でこのサンドボックスでは `cfg(windows)` によりコンパイル
+確認のみ、実行不可）に `command_source_updates_persistent_explicit_off_ms`
+（`Command` ソースの `dispatch_event` が永続タイムスタンプを更新/リセットする
+ことを直接確認）・`handle_engine_set_open_updates_persistent_explicit_off_ms`
+（Ctrl+無変換 が実際にたどる呼び出し経路をエンドツーエンドで確認）を追加。
+
+**確認コマンドと実行可否:** `cargo test -p awase --lib`（715 passed）・
+`cargo test -p awase-windows --lib`（271 passed、上記の理由でこのコミットの
+変更箇所は含まれない）・`cargo test -p awase-windows --test golden_scenarios
+--test architecture_guard`（22 passed）は実行し green を確認。
+`cargo check -p awase-windows --target x86_64-pc-windows-gnu --tests`・
+`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -D
+warnings` も green（`--tests` 付きの clippy pedantic warning は本修正と無関係な
+既存debt、`platform_state.rs` を含まない）。実機/wine での動作確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/state/platform_state.rs`
+（`ImeStateHub::dispatch_event`/`persistent_explicit_off_ms`）、
+`crates/awase-windows/src/runtime/focus_tracking.rs`
+（`EXPLICIT_OFF_CACHE_SUPPRESS_MS` 抑制ガード）。
+
+## BUG-49: 小指シフト面（物理 Shift）の全角記号が `shift-conv-guard` の conv 書き込みと競合し半角化する（BUG-47 とは別原因、Phase 1・Phase 2 対応済み・実機未検証）
+
+**症状（2026-08-05 ユーザー報告、MS-IME）:** `.yab` の `[ローマ字小指シフト]`
+（物理 `VK_LSHIFT`/`VK_RSHIFT` を押しながら文字キーを打つ面）で「！」を入力すると、
+全角「！」ではなく半角「!」が出力される。BUG-47 追補（`e99f20df`）適用後の
+リビルドで再現することを実機ログで確認済み（`vk_pair_to_ascii` 経由で
+`send_romaji_batched("!")` が正しく呼ばれていることをログで確認したため、
+BUG-47 のcold-start保護漏れとは**別原因**と判明）。
+
+**原因（確定、実機ログ + コード読解で確認）:** 物理 Shift 押下時、
+`kp_shift_conv_guard_key_down`（`runtime/key_pipeline.rs`）が MS-IME の
+「Shift単独タップで半角英数へ誤切替する」クセを打ち消すため、判別未確定
+（チョードか単独タップか分からない）の時点で先回りして conv=0x0000
+（半角英数）を IMC write する。この書き込みは実際に反映される
+（150ms後の verify-read で確認済み）が、`ImeModeFsm`（`tsf/ime_mode_fsm.rs`）の
+`confirmed` belief はこの時点で無効化されない（`unconfirm("shift-conv-guard
+release")` は Shift **解放**時にしか呼ばれない）。この間にチョードが解決して
+「！」が出力されると、`ms_ime_gate_defer` は stale な `is_native_ready()==true`
+を信じて即時送信し、実際には半角英数モードのままの IME に Shift+1 の VK が
+着弾して全角変換されず半角 `!` が出る。非同期 IMC write の着地（実測 ~250ms）と
+チョード解決の競合であるため、**再現は確率的**。
+
+**検討して却下した2案（再提案しないこと）:**
+- **`ImeModeFsm::unconfirm()` を Shift 押下時にも呼ぶ案**: `ms_ime_gate_defer` は
+  defer されるが、確認対象の conv は awase 自身が 0x0000 に保持しているため
+  Shift を離すまで NATIVE 確認は原理的に成立しない。`MS_IME_READY_CONFIRM_MS`
+  （400ms、打鍵時点起点）を超えて Shift を保持すると期限切れで結局半角化する上、
+  `ms_ime_gate_give_up` がラッチされフォーカス変更まで MS-IME cold-start 保護
+  （BUG-13）全体が無効化される。
+- **全角記号21種を `build_symbol_to_vk`（`vk.rs`）から削除し Unicode 直接注入へ
+  切り替える案**: `e99f20df` で全記号は既に `vk_pair_to_ascii` 経由で
+  cold-start 保護・順序保証（`defer_vk_if_probe_in_flight`）・composition warmth
+  追跡（`mark_composition_cold`）に合流済みであり、削除はこれらを丸ごと失う
+  （「ば！」が「！ば」に順序逆転する等）。スコープも誤りで、対象記号の一部
+  （？～（）｛｝）は親指シフト面（shift-conv-guard の対象外、現状正常動作）でも
+  使われており、そちらまで巻き込んで壊す。
+
+**恒久対応方針:** 個別パッチでは同種の反転を繰り返す構造的な問題（conv-mode
+という共有状態への書き込みと belief キャッシュの無効化が不可分になっていない、
+物理 Shift の意味づけが未確定なまま外部状態へ投機的に書き込んでいる、記号の
+全角/半角が `.yab` の宣言ではなく IME の conv-mode に委譲されている）と判断し、
+Opus・Fable・Codex の3系統に独立で北極星仕様の草案を依頼し統合した
+[ADR-084](adr/084-conv-mode-single-ownership-and-width-ssot.md) を起票した。
+今後この領域に触れる変更は ADR-084 の原則（P1〜P5・INV-1〜INV-10）と
+整合させること。
+
+**追補（Phase 1 実装、2026-08-05）:** ADR-084 §5 Phase 1 のうち、以下を実装した
+（`kp_shift_conv_guard_key_down`/`kp_restore_kana_from_half_width`、
+`crates/awase-windows/src/runtime/key_pipeline.rs`）。
+
+- **同期的 belief 無効化（P1/INV-2 の部分適用）**: entry（MS-IME 経路で
+  conv=0x0000 を IMC write する直前）で `ImeModeFsm::unconfirm("shift-conv-guard
+  entry")` を **同期的に**（`spawn_local` の外、フックスレッド上で）呼ぶように
+  した。これにより、entry write 後・restore 前にチョードが解決して記号が
+  送られる場合、`ms_ime_gate_defer` は stale な `is_native_ready()==true` を
+  信じず正しく defer するようになる（本バグの直接の修正）。
+- **give-up latch の解除**: 同じ箇所で `ms_ime_gate_give_up` も解除する。新たな
+  conv actuation が起きた以上、過去の期限切れ判定を持ち越す理由がないため。
+- **INV-7（entry/restore の IME 種別対称化）**: `kp_restore_kana_from_half_width`
+  の実際の OS 書き込み（`VK_DBE_HIRAGANA` 注入・IMC write リトライループ）を
+  entry と対称に MS-IME 限定にした。従来は GJI でも無条件に実行しており
+  （GJI は entry 機構が無いため常に「書いていないものを復元する」無意味な
+  副作用だった）、Opus レビューで独立に「純粋な改善」と確認済み。
+
+**⚠️ 実装したが撤回した部分（INV-9、再度試みる前に必ず読むこと）:** 当初
+`MS_IME_READY_CONFIRM_MS` の期限を「打鍵時点」ではなく「`unconfirm` された
+時点」起点に変更する案（`ms_ime_gate_defer` の `deadline_ms` 計算を
+`unconfirmed_since() + 400ms` に変更）も実装したが、Opus レビューで
+**この実装は却下済みの案A と同じ失敗をする**ことが判明し撤回した（コード上は
+現在も元の「送信試行時点起点」のまま）。
+
+理由: `unconfirmed_since()` は常に「送信試行時点」以前（entry write の瞬間）
+であり、`unconfirm_time ≤ send_time` が常に成り立つため、
+`unconfirmed_since() + 400ms` は `send_time + 400ms` より**早いか同じ**にしか
+ならない。つまり期限を「早める」変更であり、Shift を長く保持するケースで
+新たに失敗を生む（期限切れ → 強制送信で結局半角化 → `ms_ime_gate_give_up`
+ラッチで BUG-13 保護まで無効化）。さらに、実装中に `unconfirmed_since_ms` の
+リセットタイミングにもバグがあった（`on_conversion_mode_read` が NATIVE 以外の
+状態を確認しても無条件に `0` へリセットしてしまい、Shift 保持中に conv=0x0000
+を読み返すたびに「記録なし」に戻って defer の起点が振り出しに戻る）。
+
+正しく実装するには、`unconfirmed_since` を**都度動的に再評価**する必要がある
+（restore の `unconfirm("shift-conv-guard release")` が起点を後ろへ押し出す
+効果を、`MsImeReadyCoro`/`start_ms_ime_ready_poll` の**両方**が固定値
+（現状は defer 時点で一度だけ計算してコルーチンに埋め込む `deadline_ms: u64`）
+ではなくポーリングの都度ライブに参照する形に変更する必要がある。`
+TsfEnvSnapshot`（`tsf/warmup/probe_fsm.rs`）にタイムスタンプを乗せて
+`ms_ime_ready_coro_body` 側からも見えるようにする案が有力だが、未実装）。
+INV-9 のこの正しい実装は Phase 1 のスコープ外として次段に持ち越す。
+
+**今回のフィックスで直っていない/確認できていない点:**
+- 上記 INV-9 未実装のため、Shift を極端に長く（目安 400ms 超）保持したまま
+  記号チョードを確定するケースでは、entry unconfirm による defer は効くが
+  期限切れ→強制送信で結局半角化しうる。**期限の計算式自体（送信試行時点起点）は
+  develop から変更していないが、「defer 分岐に入ること自体」が新規の副作用を
+  持つ点には注意**: develop では entry unconfirm が無いためこの長押しケースは
+  そもそも defer 分岐に入らず `MsImeReadyCoro`/`start_ms_ime_ready_poll` も
+  起動しなかった（＝ `ms_ime_gate_give_up` が立つこともなかった）。今回の変更で
+  defer 分岐に入るようになった結果、Shift 保持中は `on_conversion_mode_read` が
+  常に conv=0x0000（`state=Off`）を確認し続けるため `is_native_ready()` が
+  原理的に真になり得ず、400ms 超の保持は**決定論的に** `ms_ime_gate_give_up` を
+  ラッチするようになった（Opus レビューで指摘）。実害は限定的で、このラッチは
+  IME ON 遷移完了（`platform.rs`）・フォーカス変更（`output/mod.rs`）・次回の
+  shift-conv-guard entry のいずれでも解除されるため BUG-13 本来の窓
+  （IME OFF→ON 直後）は塞がず、Shift 解放直後の1文字目について restore 側の
+  `unconfirm("shift-conv-guard release")` が本来担う再確認保護が一時的に
+  効かなくなる程度に留まる。とはいえ「defer 分岐は無害な delay に過ぎない」と
+  誤解しないこと。
+- `MS_IME_READY_CONFIRM_MS`（400ms）は元々 IME OFF→ON 遷移の実測値
+  （2026-07-06計測）であり、conv-mode 書き換え後の再確認に必要な時間の実測では
+  ない。ADR-084 §5 Phase 1 の実測義務（`.claude/rules/tuning-constants.md`）は
+  **未達**（このサンドボックスに Windows 実機が無いため測定不能。次の実機
+  セッションで「entry の IMC write 完了 → IMC read で conv=0x0000 が確認できる
+  までの実測 ms」と「restore の VK_DBE_HIRAGANA 注入/IMC write から NATIVE 再確認
+  までの実測 ms」の双方を計測すること）。
+- Shift の auto-repeat（`kp_shift_conv_guard_key_down` は新規押下と repeat を
+  区別していない）が entry を再度発火させ、`unconfirm`/`give_up` 解除を
+  typematic レートで繰り返す可能性を Opus レビューで指摘された。実害は
+  「IMC 不可読環境で give-up latch が本来の目的（連続 probe 抑止）を果たせない」
+  程度と評価しているが、実機で Shift の auto-repeat がこの関数に到達するか
+  自体が未確認。
+- 本修正（症状「！」→「!」の直接原因の解消）自体、wine 未導入のためこの
+  サンドボックスでは実機再現・修正確認ができていない。次の Windows 実機
+  セッションで MS-IME + 小指シフト面「！」の cold-start/hold 時間を変えた
+  再現テストを行うこと。
+- 上記に挙げていない conv 書き込み経路（`key_pipeline.rs` の idle-conv-check・
+  ime-on-combo リセット、`executor.rs`、`tsf/warmup/cold_warmup.rs`、
+  `ime_controller.rs` 等）は今回同期的 unconfirm 化していない（INV-2 は
+  `shift-conv-guard` entry のみの部分適用）。ADR-084 の `actuate_conv_mode`
+  chokepoint への統合は次段。
+
+**テスト:** `crates/awase-windows/src/tsf/ime_mode_fsm.rs` に
+`unconfirm_makes_native_ready_false_without_changing_state`（本バグが依存する
+不変条件「unconfirm 後は state が Hiragana のままでも is_native_ready()==false」
+を直接固定）・`unconfirm_is_idempotent`・
+`on_conversion_mode_read_confirms_native_ready_again` を追加（Windows target
+のみでコンパイル・実行可、`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査済み、wine 未導入のためこのサンドボックス
+では実行不可）。`cargo test -p awase-windows`（Linux、golden_scenarios/
+architecture_guard 含む）は無影響で全 green（本修正は `ImeModel`/reducer 層では
+なく `ImeModeFsm`/`Output` 層のみに触れるため、既存の golden シナリオは
+カバー範囲外）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shift_conv_guard`/`kp_shift_conv_guard_key_down`/
+`kp_restore_kana_from_half_width`）、`crates/awase-windows/src/tsf/ime_mode_fsm.rs`、
+`crates/awase-windows/src/output/vk_send.rs`（`ms_ime_gate_defer`）、
+`crates/awase-windows/src/output/probe_io.rs`（`start_ms_ime_ready_poll`）、
+`layout/nicola.yab`（`[ローマ字小指シフト]`）。
+関連: BUG-13（MS-IME cold-start 保護）、BUG-15（shift-conv-guard 導入経緯）、
+BUG-25（左Shift単独タップ持続トグル、GJI entry 撤回）、BUG-47（記号 cold-start
+半角化、本件と症状は類似だが原因は別）、ADR-064（`ConvModePolicy`）、
+ADR-072（conv authority 再同期）、ADR-078（belief 3分割）、ADR-083
+（`InjectionMode` per-VK 統一investigation、NO-GO）。
+
+**追補2（Phase 2 実装、2026-08-05）:** Phase 1 で撤回した INV-9（confirm-gate の
+期限を固定値でなく都度動的に再評価する）の正しい実装。Phase 1 が残した実害
+（「Shift を 400ms 超保持しただけで defer 分岐入り自体が決定論的に
+`ms_ime_gate_give_up` をラッチする」点、上記「今回のフィックスで直っていない/
+確認できていない点」参照）を解消する。
+
+- **`Output::confirm_gate_deadline_override_ms`（`Cell<u64>`）**: confirm-gate
+  の実効期限を `deadline_ms.max(override)` として消費側（`MsImeReadyCoro`/
+  `start_ms_ime_ready_poll`）で評価する。`0` = 上書きなし（従来どおり）。
+  entry（`kp_shift_conv_guard_key_down` の MS-IME 分岐）が hold 開始時に
+  `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms、有限キャップ）へ延長し、
+  release（`kp_shift_conv_guard_key_up`）が hold 終了時点起点の
+  `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`（800ms）へ差し替え、続く
+  `kp_restore_kana_from_half_width` の冪等リトライループ（0/160/320/480ms）が
+  進行中は毎試行この猶予を押し出し続ける。`u64::MAX` の真の無期限にしなかった
+  理由: Shift の KeyUp が何らかの理由でフックに届かない場合（ロック画面・
+  セキュアデスクトップ遷移等）でも、有限キャップを過ぎれば自動的に通常の
+  安全弁（IMC 未確認なら give-up latch）へ復帰させるため。
+- **`Output::shift_conv_guard_gen`（`Cell<u32>`）と所有権チェック付きヘルパー
+  `extend_confirm_gate_override`/`clear_confirm_gate_override`/
+  `bump_shift_conv_guard_gen`**: Opus レビュー（round 5、"pass-5"）で発見した
+  blocking な競合の修正。hold #1 の解放直後に hold #2 が始まった場合
+  （連続 Shift タップの通常の間隔で起こりうる）、hold #1 の detached
+  `spawn_local` リトライタスクが自分の起動時点の世代を `owner_gen` として
+  捕獲し、以後の全 override 書き込み（延長・クリア双方）の前提条件にする。
+  世代不一致になった時点でそのタスクは即座に自分がもう override の所有者
+  でないと分かり、hold #2 の override を誤ってクリア・上書きしない。世代は
+  新しい hold の開始・フォーカス変更（`on_ime_mode_focus_changed`）・
+  `SetOpen(true)` 適用（`platform.rs`、IME が OFF→ON へサイクルし conv=0
+  前提が崩れる）・かな入力コンテキスト前提が崩れた早期 return（entry の
+  ガード節）の 4 箇所で進める。
+- Opus によるレビュー（初回 GO-WITH-CHANGES、実装後の pass-5 で上記 blocking
+  な競合を発見、修正後の round 6 で GO-WITH-CHANGES・非 blocking な
+  should-fix 2件（GJI 経路で対応する entry も retry ループも無いまま
+  override だけ書き込まれる非対称、コメントの数値不整合）を指摘、反映済み）
+  を経て確定。
+
+**定数の実測根拠（`.claude/rules/tuning-constants.md`）:**
+- `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS = 800`: 実測値ではなく、`kp_restore_
+  kana_from_half_width` のリトライ 1 試行分の最大所要時間からの導出。
+  `set_ime_romaji_mode_with_target_async`（`ime.rs` の `modify_conv_mode`）は
+  `IMC_GETCONVERSIONMODE`/`IMC_SETCONVERSIONMODE` を各 50ms タイムアウトで
+  最大2回呼ぶ（最大 ~100ms）+ `RETRY_INTERVAL_MS`（160ms）の sleep +
+  conv 読み取り（10ms タイムアウト）= 1 試行最大 ≈ 270ms。800ms はこれに
+  対する ~2.8 倍のマージン（round 6 レビューで確認済み）。Phase 1 時点の
+  MS-IME Shift 単独タップ誤切替の実測（shift up 後 ~478ms）は `MAX_TRIES`
+  （4 回）× `RETRY_INTERVAL_MS` を決める根拠であり、この定数自体の根拠では
+  ない点に注意（旧版のコメントはこの2つを混同していた）。
+- `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS = 5_000`: 実測値ではなく安全側
+  マージン。通常の hold（Shift 押下から解放まで）は実機ログで ~620ms 程度
+  （上記「今回のフィックスで直っていない/確認できていない点」の
+  `MS_IME_READY_CONFIRM_MS` 実測未達の記述と同様、Windows 実機無しのため
+  この 620ms 自体も過去セッションのログからの参照値であり、本セッションで
+  再測定はしていない）。
+
+**テスト（Phase 2）:** `output/mod.rs` に `extend_confirm_gate_override`/
+`clear_confirm_gate_override`/`bump_shift_conv_guard_gen` の純粋ロジック
+テスト5件（同一世代での書き込み成功・stale 世代での no-op を extend/clear
+双方で固定 — pass-5 が発見した blocking バグそのものの再発防止）、
+`tsf/warmup/ms_ime_ready_coro.rs` に `MsImeReadyCoro` が override 延長中は
+`deadline_ms` が過ぎていても待機し続けることを固定するテスト2件を追加。
+いずれも `output`/`tsf` モジュールが `#[cfg(windows)]` ゲート下にあるため
+Windows target でのみコンパイル対象（`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査・`cargo clippy` で lint 済み、wine
+未導入のためこのサンドボックスでは実行不可）。`cargo test -p awase-windows`
+（Linux 実行分、golden_scenarios/architecture_guard 含む 273 件）は無影響で
+全 green。
+
+**追補3（2026-08-06、ADR-084 P1/INV-1 `actuate_conv_mode` chokepoint 導入・第一弾）:**
+Phase 1 追補が「次段」として残した「ADR-084 の `actuate_conv_mode` chokepoint への
+統合」に着手した。conv-mode を書き込む経路は本ファイルの洗い出しで最低6箇所
+（`key_pipeline.rs` 4箇所・`cold_warmup.rs`・`executor.rs`）+ `VK_DBE_HIRAGANA`/
+`ALPHANUMERIC` 直接送信（`ime.rs`・`ime_controller.rs`・`tsf/send.rs`）に散在して
+いることを確認したが、本コミットは意図的に**最小スコープ**（`kp_shift_conv_guard_
+key_down` の MS-IME entry 書き込み1箇所のみ）に絞った。
+
+**理由:** `kp_restore_kana_from_half_width` の復元リトライループは
+`shift_conv_guard_gen`/`owner_gen`/`confirm_gate_deadline_override_ms` と密結合
+しており、Phase 2 追補にあるとおり Opus レビュー round 5〜6（"pass-5"）で発見・
+修正された blocking な世代競合を含む、複数回のレビューを経てようやく確立した
+挙動である。この領域は「IME OFF キー選択が5日間で6回反転した」
+（`docs/experiments.md` エントリ01）のと同じ再発ファミリーであり、chokepoint への
+機械的な一括移行は、その過程で世代管理の呼び出し順序を崩し新たな回帰を生む
+リスクが高いと判断した。entry 側（比較的自己完結: ガード判定・unconfirm・
+give-up 解除・spawn write のみで、世代管理を伴わない）から着手し、1箇所の移行で
+`actuate_conv_mode` の実際の型・呼び出し規約を確定させることを優先した。
+
+**実装:**
+- `state/conv_mode.rs` に `ConvModeTarget`（`HalfWidthAlnum` のみ、他 variant は
+  未移行呼び出し元の移行時に追加）・`ConvMutationReason`（`ShiftSoloTapCounter`
+  のみ）・`ConvActuationOutcome`（`Rejected`/`Actuated`）を新設。ADR-084 §2 が
+  提案する完全版のうち、実際に使う variant のみを定義し、憶測での API 先行拡張は
+  避けた。
+- `runtime/conv_actuation.rs`（新設）に `Runtime::actuate_conv_mode` を実装。
+  ADR-064 の `conv_mutation_allowed` ゲート確認 → `ImeModeFsm::unconfirm`（INV-2、
+  同期）→ `ms_ime_gate_give_up` 解除（同期）→ 実際の IMC write は非同期
+  `spawn_local`、の順で行う。既存の `kp_shift_conv_guard_key_down` 内のインライン
+  実装と**完全に同じ順序・同じログラベル**（`"shift-conv-guard entry"`）を保つ
+  ことで、挙動変化ゼロの純粋なリファクタとして扱えるようにした。
+- `kp_shift_conv_guard_key_down` の該当箇所（unconfirm 呼び出し + give-up 解除 +
+  `spawn_local` での IMC write）を `self.actuate_conv_mode(ConvModeTarget::
+  HalfWidthAlnum, ConvMutationReason::ShiftSoloTapCounter, now_tick)` 1行に置換。
+  `confirm_gate_deadline_override_ms` の延長・`bump_shift_conv_guard_gen`・150ms
+  診断用 verify-read は元の場所に残置（chokepoint の責務外、Phase 2 の世代管理
+  ロジックに属する）。
+
+**未移行（次段のスコープ、変更なし）:** `kp_restore_kana_from_half_width` の復元
+リトライループ、`tsf/warmup/cold_warmup.rs::preamble`、`runtime/executor.rs`、
+`kp_stage_idle_conv_check` のローマ字復元経路（`key_pipeline.rs` 内3箇所）は
+`set_ime_romaji_mode_with_target_async` を直接呼び続けている。したがって
+ADR-084 INV-1 が求める「低レベル API を private にしてこの関数だけが呼べるように
+する」というコンパイラ強制は、これら全ての移行が完了するまで導入できない
+（本コミット時点では `set_ime_romaji_mode_with_target_async` は従来どおり
+`pub(crate)` のまま）。INV-11（conv 帰属/provenance、BUG-50 追補参照）も未着手。
+
+**テスト:** `state/conv_mode.rs` に `half_width_alnum_target_maps_to_zero`
+（`ConvModeTarget::HalfWidthAlnum` → `conv=0`）・`shift_solo_tap_counter_uses_
+existing_unconfirm_label`（ログラベルが移行前と同一であることを固定）を追加
+（Linux ネイティブで `cargo test -p awase-windows --lib conv_mode` 実行・確認済み、
+12 passed）。`cargo test -p awase-windows --lib`（278 passed）・`--test
+golden_scenarios --test architecture_guard`（22 passed）は無影響で全 green。
+
+**検証状況:** `cargo check -p awase-windows --target x86_64-pc-windows-gnu`・
+`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -A
+clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity`
+（CI の `clippy` ジョブと同じ引数、warning ゼロ）・`cargo xwin build --tests -p
+awase-windows --target x86_64-pc-windows-msvc`（`windows-cross-check` ジョブ相当）
+はいずれも green。`cargo dylint` はサンドボックスのディスク逼迫（作業中に
+一時的に空き容量が数MBまで低下し `error: No space left on device` でリンクが
+落ちる事態が発生、自worktreeのビルドキャッシュ削除で復旧）を踏まえてリスクを
+避けるため見送った — 本コミットは `ImeEvent::PanicReset`/`HwndCacheRestored`/
+`InputModeObserved`/`ConvBitsInference` のいずれも構築しておらず、既存の
+`ime_event_guard`/`observation_source_guard` の検出対象パターンには触れていない。
+wine 未導入のためこのサンドボックスでは実機相当の実行・確認は未実施
+（entry 書き込みのログ順序・タイミングが変わっていないことのみコード読解で確認）。
+
+**関連ファイル:** `crates/awase-windows/src/state/conv_mode.rs`
+（`ConvModeTarget`/`ConvMutationReason`/`ConvActuationOutcome`）、
+`crates/awase-windows/src/runtime/conv_actuation.rs`（新設、
+`Runtime::actuate_conv_mode`）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_shift_conv_guard_key_down`）。関連: ADR-084（P1/INV-1/INV-2）、
+BUG-49 追補1・2（本追補の前提となった entry/restore の既存挙動）。
+
+## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
+
+**症状:** MS-IME（TSF-native、Windows Terminal / Chrome / UWP アプリ間でフォーカスが
+頻繁に切り替わる環境）で、ユーザーが特にカタカナ切替キーを意識的に押した形跡が無い
+まま IME がカタカナ変換モードに入り、通常の IME OFF→ON 操作では戻らなくなる
+（2026-08-05 ユーザー報告「なぜか、カタカナモードになって、復旧の仕方がわからなく
+なる」）。実機ログ抜粋:
+
+```
+[08:20:44.420] KeyInput(tsf): romaji="la"
+[08:20:45.049] [conv-mode] Hiragana/kana → ZenKata/kana (conv=0x0000000B)   ← 説明のつかない切替
+[08:20:46.917] Engine deactivated (reason=Inactive(ImeOff))
+[08:20:48.493] [idle-conv-check] TsfNative: conv observation open=true reason=KatakanaShadowOff
+                (conv=0x0000000B) → ObserverReported として記録 (engine は actuate しない)
+[08:20:49.011] IME ON (key combo)                                          ← ユーザーが復旧を試行
+[08:20:49.436] [ime-mode] drift detected: belief=Off → actual=Katakana (conv=0x0000000B)
+[08:20:51.067] KeyInput(tsf): romaji="ki"                                   ← カタカナのまま入力継続
+```
+
+**IME:** MS-IME（TsfNative）。ただし後述の構造的デッドロックは IME/プロファイルに
+依存しない汎用的な設計欠陥。
+
+**原因1（確定、コード読解で確認）: 構造的デッドロック — 4つの個別に合理的なガードが
+組み合わさり、一度カタカナに入ると自動でも手動単発操作でも戻れない状態を作る。**
+
+1. `state/conv_classify.rs`（`KatakanaShadowOff` → `EngineSync::ReportOpenInference`）:
+   観測は記録のみで `desired_open`/belief を書き換えない（BUG-19 再発防止として単体では
+   正当）。
+2. `tsf/ime_mode_fsm.rs`（`on_conversion_mode_read`）: belief≠actual の drift を warn
+   ログに出すだけで、ON/OFF 側の `check_drift_correction` に相当する自動修正パスが
+   conv には無い。しかも `is_native_ready()` は Katakana も「準備完了」扱いするため、
+   msime-ready ゲートはカタカナのまま送信を素通しし続ける。
+3. `ime_controller.rs`（`MsImeDirectStrategy::apply`）: 実 conv に KATAKANA ビットが
+   立っていると「ユーザーの意図的な選択かもしれない」として `VK_DBE_HIRAGANA` 送信を
+   意図的にスキップする（`AlreadyMatched`）。
+4. `runtime/key_pipeline.rs`（`kp_reset_to_hiragana_romaji_capsoff` の起動条件）:
+   唯一の明示的ひらがなリセット経路が `was_open_before`（IME open の belief）を必須と
+   していた。本件のように belief が drift で誤って `Off` になっていると、実際の
+   ユーザーの IME-ON コンボ操作があってもこのリセットが起動しない。
+
+要するに「カタカナ = ユーザーの神聖な選択」（actuation 側、ガード3）と「カタカナ観測 =
+信用しない」（belief 側、ガード1・2）という逆向きの保守判断が、出所（provenance）情報の
+欠如によって同時成立し、ガード4がそれに輪をかけて手動復旧経路まで塞いでいた。唯一の
+自動復旧経路は `panic_detect.rs` の `RapidPressTracker`（IME OFF→ON→OFF を2秒以内に
+連打）だけであり、ユーザーはこれを知らないため発見不能な UX になっていた。
+
+**原因2（未確定・実機検証待ち）: なぜ最初にカタカナへ入ったか（トリガー）。**
+3つの仮説が残っており、いずれも今回のログ（INFO レベルのみ）だけでは確定できない
+（該当する診断ログは debug レベルで出力されておらず、切り分けには debug ログでの
+実機再現が必要）:
+
+- **仮説A（無変換単独タップ×MS-IME既定のかな切替）:** `msime_key_assignment.rs` は
+  awase が無変換/変換の単独タップを OS へ素通しすることを明記しているが、
+  `conflict_warning()` は `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` が
+  非既定値（IME オフ/オン割当て）の場合のみ警告し、**既定値（`0` = かな切替）は
+  無害として警告対象外**にしている。2026-07-06 に見つかった「無変換=IMEオフ」二重
+  オーナー問題と同一クラスの衝突が、既定設定のケースだけ検出漏れしている可能性。
+- **仮説B（shift-conv-guard の Shift 解放漏れ）:** `kp_restore_kana_from_half_width`
+  の呼び出し4箇所のうち3箇所（`key_pipeline.rs` の `TurnOn`/IME ON/post-decision
+  `SetOpen(true)`）と `runtime/ime_refresh.rs`（`FocusChanged`）は
+  `prepend_synthetic_shift_up=false` で呼ばれる。この状態で物理 Shift が実際に
+  押されたままの瞬間に scan 付き `VK_DBE_HIRAGANA` が注入されると、MS-IME 純正の
+  「Shift+かなキー＝カタカナ切替」に化ける可能性（`kp_shift_conv_guard_key_up` の
+  唯一の `true` 呼び出しも generic `VK_SHIFT` up を使うため、右 Shift 保持時は
+  解除されない別の穴もある）。
+- **仮説C（`ConvModeMgr` の observed/desired 未分離）:** `state/conv_mode.rs` の
+  `ConvModeMgr::mode`（`Cell<Option<ConvMode>>`）は「観測ログ用の確定値」と
+  「shift-conv-guard 復元時の書き戻しターゲット」を同一の `Cell` で兼用しており、
+  一度誤って確定した観測値がそのまま復元先として自己強化されうる
+  （`key_pipeline.rs` の shift-conv-guard 復元処理が `conv_mode.get().imm_conv_target()`
+  を書き戻す箇所）。
+
+**修正（原因1のみ、Phase 1）:** `runtime/key_pipeline.rs::kp_stage_post_decision` の
+ひらがなリセット起動条件を、`was_open_before`（belief）に加えて `ConvModeMgr` が
+現に観測しているカタカナ（`conv_mode.get().charset.is_katakana()`）でも起動するよう
+拡張した。これは新しい破壊的動作ではなく、「IME-ON コンボが既にカタカナを含めて
+ひらがなへ寄せる」という既存の確立済み挙動（`was_open_before=true` のとき）を、
+belief が drift で誤って `Off` になっているケースにも一貫させるだけ。トリガー
+（原因2）が仮説A〜Cのどれであっても、このデッドロック解消は独立に効く。
+
+**未解決（原因2、フォローアップ候補）:** ADR-084 に「conv 帰属（provenance）」
+invariant を追補し、`ConvModeMgr` の確定値が `UserOriginated` か
+`Attributed{by: awase}` かを区別できるようにすることで、ガード3
+（`AlreadyMatched` スキップ）を「本当にユーザーが選んだカタカナ」にのみ適用し、
+内部の誤 belief 起源のカタカナは自動是正できるようにする方向性が有力（後述の
+ADR-084 追補参照）。仮説A〜Cのどれが実際のトリガーかは実機の debug ログでの
+再現が必須。
+
+**テスト:** `tests/ime_key_sequence_golden.rs` に、belief=Off かつ観測 conv が
+カタカナの状態で IME-ON コンボを押すとひらがなリセットが起動することを固定する
+golden ケースを追加（Linux ネイティブで `cargo test -p awase-windows` 実行可能）。
+実機（MS-IME/TSF-native、Windows Terminal 等)での動作確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_post_decision`/`kp_reset_to_hiragana_romaji_capsoff`）、
+`crates/awase-windows/src/state/conv_mode.rs`（`ConvModeMgr`）、
+`crates/awase-windows/src/state/conv_classify.rs`（`KatakanaShadowOff`）、
+`crates/awase-windows/src/tsf/ime_mode_fsm.rs`、
+`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy`）、
+`crates/awase-windows/src/msime_key_assignment.rs`、
+`crates/awase-windows/src/panic_detect.rs`（既存の唯一の自動復旧経路）。
+関連: BUG-19（同じ conv-mode 誤確定の系統）、ADR-084（conv-mode 単一所有権と
+幅 SSOT 原則、本件の provenance 追補先）、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
+[experiment-logging](../.claude/rules/experiment-logging.md)。
+
+**追補（2026-08-06、原因1のガード3を根治・ユーザー指摘）:** 原因1で列挙した4つの
+ガードのうち「ガード3」（`ime_controller.rs::MsImeDirectStrategy::apply` の
+`AlreadyMatched` スキップ）を、provenance 追跡（未解決節で提案していた方向）ではなく
+**そもそもの前提を取り除く形**で解消した。
+
+ユーザーから「なぜひらがな/カタカナのキーを送る必要があるのか、代わりに IME OFF/ON
+（開閉）を使えないのか」という指摘を受けて調査した結果、これは実は以前一度
+「半分だけ」直されていた問題だと判明した: `MsImeDirectStrategy` の OFF は
+`48a667a`（2026-06-27頃）で `VK_DBE_ALPHANUMERIC`（モード選択キー、「半角英数
+＝IME ON のまま」という誤った意味論で確定 Enter 回数がズレる不具合があった）から
+`VK_IME_OFF`（真の開閉キー、DirectInput へ）へ既に移行済みだった。ところが ON 側は
+`VK_DBE_HIRAGANA`（モード選択キー）のまま取り残されていた。GJI 向けの
+`GjiDirectStrategy` は元から ON/OFF とも `VK_IME_ON`/`VK_IME_OFF` を使っており、
+これが TSF-native アプリで問題なく動作することは実証済み（Windows Terminal・Chrome
+含む）。
+
+**なぜガード3が消えるか:** `VK_DBE_HIRAGANA` は「IME を開く」と「ひらがなへ強制する」
+という2つの副作用を1つのキーに束ねていた。この束ねが、現在カタカナのときに送ると
+カタカナを壊す → 壊さないために送信をスキップするガードが要る → そのガードが
+「ユーザーの意図的なカタカナ」と「内部の誤った/一時的なカタカナ」を区別できない、
+という原因1の連鎖そのものを生んでいた。`VK_IME_ON` は conv-mode（ひらがな/カタカナ・
+全角/半角のいずれのビットも）に一切触れない「開くだけ」のキーのため、この束ねが
+存在せず、ガード自体が構造的に不要になる。
+
+**修正:** `state/key_sequence_policy.rs::ime_key_for(MsImeDirect, Open)` を
+`VK_DBE_HIRAGANA` → `VK_IME_ON` に変更（宣言的テーブルの1行 diff）。
+`ime_controller.rs::MsImeDirectStrategy::apply` からガード3（conv 読み取り + KATAKANA
+ビットチェック + `AlreadyMatched` return）を削除。ROMAN ビット pre-mode
+（`set_ime_romaji_mode`、かな入力の JIS かな化け防止、ガード3とは無関係の既存ロジック）
+は維持。
+
+**残る影響（原因2は本追補の対象外）:** 「なぜ最初にカタカナへ入ったか」（原因2、
+仮説A〜C）は未解決のまま。ただしガード3が消えたことで、原因2のどの仮説が真であっても
+—— 一度カタカナに（誤って、あるいは正当に）入った後、次に IME-ON 経路を通れば
+`VK_IME_ON` が送られ、conv-mode は変更されないまま IME が開く。これは「カタカナを
+強制的にひらがなへ戻す」わけではないが、「デッドロックする」こともない。むしろ
+原因1節にあった「ガード4」（`kp_reset_to_hiragana_romaji_capsoff` の `was_open_before`
+依存）が引き続き機能する経路では、IME-ON コンボ押下で明示的にひらがなへリセットされる
+（BUG-50 Phase 1 で `observed_katakana` 条件を追加済み）。
+
+**未対応:** ADR-084 の `actuate_conv_mode` chokepoint（INV-11 provenance 含む）は
+本追補の対象外。ガード3自体が消えたため provenance によるガード3の高度化はもはや
+不要になったが、conv-mode を書き込む他の経路（`kp_restore_kana_from_half_width` 等、
+BUG-49 追補3参照）の集約は引き続き有効な将来課題として残る。
+
+**テスト:** `state/key_sequence_policy.rs::tests::ms_ime_direct_keys` を
+`VK_DBE_HIRAGANA` → `VK_IME_ON` の期待値に更新。`tests/ime_key_sequence_golden.rs`
+の `KEY_DOC`／`tests/golden/ime_key_sequences.txt` を同じ内容に同期
+（Windows target でのみコンパイル・実行対象、`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査済み、wine 未導入のためこのサンドボックスでは
+実行不可）。`cargo test -p awase-windows --lib`（278 passed）・`--test golden_scenarios
+--test architecture_guard`（22 passed）は無影響で全 green（`key_sequence_policy`
+モジュール自体が `#[cfg(windows)]` ゲート下にあり Linux ネイティブでは 0 件しか
+コンパイル対象にならないため、その回帰確認はコンパイル検査止まり）。
+
+**検証状況:** `cargo check`/`cargo clippy -p awase-windows --target
+x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings -W
+clippy::cognitive_complexity`（CI `clippy` ジョブと同じ引数、warning ゼロ）、
+`cargo xwin build --tests -p awase-windows --target x86_64-pc-windows-msvc`
+（`windows-cross-check` ジョブ相当）いずれも green。wine 未導入のためこのサンドボックス
+では実機相当の実行・再現確認は未実施。次の Windows 実機セッションで、MS-IME/TSF-native
+（Windows Terminal 等）で IME OFF→ON が引き続き正しく機能すること、カタカナ入力中に
+IME を OFF→ON しても（意図的か否かを問わず）conv-mode が変化しないことを確認すること。
+
+**関連ファイル（追補）:** `crates/awase-windows/src/state/key_sequence_policy.rs`
+（`ime_key_for`）、`crates/awase-windows/src/ime_controller.rs`
+（`MsImeDirectStrategy::apply`）、`crates/awase-windows/tests/ime_key_sequence_golden.rs`、
+`crates/awase-windows/tests/golden/ime_key_sequences.txt`。関連: `48a667a`
+（OFF 側の同種修正、本追補はこれと ON 側を対称化した）。
+
+## BUG-51: TsfNative の drift correction が `TIMER_IME_REFRESH` の恒久停止で再起動されず、IME OFF で Engine ON のまま最大8分ドリフトする
+
+**症状:** MS-IME（TsfNative）環境で、実機ログに `[ime-off-rescue] 50ms timer expired →
+保留 vk=0x1D を IME OFF として発火`（vk=0x1D は `VK_NONCONVERT`＝既定の左親指シフト
+キー）が2回記録された（2026-08-04T01:54:37.280 / 01:54:47.730）。その直後から
+`[idle-conv-check] TsfNative: conv observation open=true reason=KatakanaShadowOff
+(conv=0x00000003) → ObserverReported として記録 (engine は actuate しない)` が
+継続的に記録され続け、desired_open=false（IME OFF 済みという engine 内部の認識）と
+実際の TSF conv mode（open=true、HanKata）が乖離したまま推移した。最終的に
+01:55:06.154 の `Engine activated` 直後、`[ime-mode] drift detected: belief=Off →
+actual=Katakana (conv=0x00000003)` というログで乖離が可視化された。この間に記録
+された `[drift] correction: observed=true ≠ desired=false for 478988ms → \
+set_ime_open(false)`（01:54:58.067）は、乖離が **478988ms（約8分）** 続いていた
+ことを示す。ユーザー報告は「IME OFF で Engine ON」（実際は逆方向、desired=OFF・
+実 IME=ON のまま Engine だけが再度 ON になった状態）で、Shift キーの関与をユーザー
+自身が疑っていた。同種の長時間ドリフト（`for 122751ms`）は BUG-50（カタカナ
+ドリフトからの復旧不能）の実機ログでも観測されており、無関係な症状に見えても
+根はこの再起動漏れに繋がっている可能性がある。
+
+**IME:** MS-IME（TsfNative、`ime=MsIme`）。config 既定値: `left_thumb_key="無変換"`
+（vk=0x1D）、`keys.ime_off=["Ctrl+無変換"]`。
+
+**当初の誤診断（Fix A、撤回済み）と訂正の経緯:** 最初は「`hook.rs` の
+`CTRL_CONSUMED_SINCE_DOWN`（`Ctrl↓ → 他キー↓ → 親指キー↓` を検知して
+ime-off-rescue の 50ms 救済窓に入れる仕組み）が Shift 単独押下を「Ctrl チョード消費」
+に誤カウントしている」ことが根本原因であり、修飾キー単独押下を消費対象から除外すれば
+直ると判断し実装・テストまで行った（`vk.rs::counts_as_ctrl_consumption` 新設）。
+しかし Opus・Fable による独立レビューで「`ctrl_consumed_since_down()` は
+`key_pipeline.rs::kp_run_inner` Phase B で **即時発火するか 50ms 猶予後に発火するかを
+分けるだけのゲート** であり、`engine.on_input`（Phase 1、`check_special_keys` が
+NicolaFsm 処理より先に無条件実行される、`engine.rs:267-275`）は
+`event.modifier_snapshot.ctrl=true` かつ vk が ime_off コンボの vk と一致すれば
+`ctrl_consumed_since_down()` の値に関係なく IME OFF を即座に発火する」と指摘された。
+`key_pipeline.rs:164-165` の既存コメント（「Ctrl↓ → 直後に 無変換↓ の意図的チョードでは
+ctrl_consumed_since_down=false なのでここを通過せず engine が即 IME OFF を発火する」）
+と `engine.rs:260-294` の `on_input` 本体を自分でも読み直し、この指摘が正しいことを
+確認した。つまり Fix A は「50ms 救済窓に入るかどうか」を変えるだけで、**その先で
+IME OFF が発火すること自体は防げない**。むしろ「Ctrl↓ → Shift↓/↑ → 無変換↓ →
+50ms 以内に Ctrl↑」という、修正前なら 50ms 猶予中の Ctrl↑ で破棄されていた
+（IME OFF もならず thumb shift 化もしない）パターンが、修正後は猶予なしの即時発火に
+変わる退行があるとも指摘された。この経緯から Fix A は撤回し、`hook.rs`/`vk.rs` の
+変更は本コミットに含めていない。**同種の「修飾キー単独押下の除外」案を再提案する前に
+この経緯を必ず確認すること** — `ctrl_consumed_since_down` を弄る修正は、IME OFF の
+発火有無ではなく発火タイミングにしか効かない。
+
+**真因（コード読解で確認、Opus/Fable 双方が同じ箇所を有望と評価）:** IME OFF コンボ
+自体の発火（Ctrl が真に見えている限り止められない）は今回は不問とし、発火後に
+**乖離が検出・補正されるまでの時間が無期限になりうる** 構造的欠陥を直した。
+`VK_NONCONVERT`（0x1D）は `vk::may_change_ime` が `false` を返すため、
+SetOpen 発行の後処理（`kp_stage_post_decision`）の `may_change_ime` パススルー分岐
+（`schedule_ime_refresh(20)`）はそもそも `!decision.is_consumed()` が
+前提であり IME OFF の `Decision::consumed_with(..)` には到達しない。かつ同分岐より
+前で `TIMER_IME_REFRESH` は明示的に kill される。TsfNative アプリでは
+`Runtime::reschedule_ime_refresh` が `is_tsf_native` を理由に周期ポーリングの
+再スケジュールを恒久的に停止する設計（「フォーカス変更 / may_change_ime キー」が
+再開トリガーという前提）のため、この経路にはどちらのトリガーも来ない。結果、
+`ir_apply_drift_correction`（`ime_refresh.rs`、`TIMER_IME_REFRESH` 発火時のみ実行
+される）が長時間呼ばれず、`desired_open=false` と実 TSF conv（open=true）の乖離が
+検出も補正もされないまま蓄積する。乖離自体は `kp_stage_idle_conv_check`（KeyDown 毎に
+独立実行、`EngineSync::ReportOpenInference` 経由で observation store には記録される
+が `desired_open` は書き換えない、BUG-19 対策）により observation としては記録され
+続けるため、`[drift] correction:` ログの `duration_ms` が単調増加し続ける（BUG-43 と
+対称に「検知タイマー自体が止まる」パターン）。この early-return は
+`is_tsf_native` だけでなく `explicit_intent().is_some()` 全般に効くため、対象は
+TsfNative に限らず explicit_intent が確定する全プロファイルに及ぶ。
+
+**検討したが撤回した修正案（第1版・第2版）:** 本節は同じ近道を将来再提案しないための
+記録（[experiment-logging](../.claude/rules/experiment-logging.md) の精神に準拠）。
+
+- **第1版（撤回）:** `hook.rs` の `CTRL_CONSUMED_SINCE_DOWN`（`Ctrl↓ → 他キー↓ →
+  親指キー↓` を検知して ime-off-rescue の 50ms 救済窓に入れる仕組み）が Shift 単独
+  押下を「Ctrl チョード消費」に誤カウントしていることが根本原因と判断し、修飾キー
+  単独押下を消費対象から除外する純粋関数 `vk.rs::counts_as_ctrl_consumption` を
+  実装・テストまで行った。しかし Opus・Fable 双方の独立レビューで
+  「`ctrl_consumed_since_down()` は `key_pipeline.rs::kp_run_inner` Phase B で
+  即時発火するか 50ms 猶予後に発火するかを分けるだけのゲートであり、
+  `engine.on_input`（Phase 1、`check_special_keys` が NicolaFsm 処理より先に
+  `engine.rs:267-275` で無条件実行される）は `event.modifier_snapshot.ctrl=true`
+  かつ vk が ime_off コンボの vk と一致すれば `ctrl_consumed_since_down()` の値に
+  関係なく IME OFF を即座に発火するため症状を直さない」と指摘され、`engine.rs` を
+  自分でも読み直してこの指摘が正しいことを確認した。さらに「Ctrl↓ → Shift↓/↑ →
+  無変換↓ → 50ms 以内に Ctrl↑」という、修正前なら救済されていたパターンが修正後は
+  猶予なしの即時発火に変わる退行があるとも指摘された。撤回し、`hook.rs`/`vk.rs` の
+  変更は最終的に含めていない。
+- **第2版（撤回）:** IME OFF コンボの発火自体は止めず、`state/platform_state.rs`
+  に `has_pending_drift(now)` という純粋メソッドを新設し、`runtime/mod.rs::
+  reschedule_ime_refresh` がドリフト進行中は TsfNative 等の早期 return より先に
+  ポーリングを継続するよう変更し、さらに `kp_stage_post_decision` の SetOpen 処理で
+  `TIMER_IME_REFRESH` kill 直後に `EXPLICIT_IME_SUPPRESS_MS`（1500ms）後の確認
+  refresh を追加した。第2ラウンドの Codex・Opus・Fable 独立レビューで複数の欠陥が
+  指摘された: (a) `EXPLICIT_IME_SUPPRESS_MS` と `DRIFT_CORRECTION_OBS_MAX_AGE_MS`
+  が共に 1500ms のため、確認 refresh が発火する頃には唯一存在する trusted 観測が
+  ちょうど max_age を超えて stale 判定され、補正が発火しない確率が高い（Opus 指摘）。
+  (b) `has_pending_drift` が `check_drift_correction` の持つ閾値・鮮度・
+  `is_user_enabled` 等のガードを一切持たないため、TsfNative + MS-IME のように
+  drift を「収束」させる観測ソースが無いプロファイルでは drift が clear されず、
+  一度ドリフトが立つとフォーカス変更まで `ime_poll_interval_ms` 間隔のポーリングが
+  恒久的に回り続ける（Codex・Opus・Fable 全員が同じ懸念に到達）。(c) この 1.5 秒
+  one-shot は `may_change_ime` の `schedule_ime_refresh(20)` や focus debounce 等、
+  同じ `TIMER_IME_REFRESH` を使う既存の呼び出しに無条件上書きされて消えることがある
+  （Codex・Fable 指摘）。Opus・Fable 双方が共通して「`kp_apply_conv_engine_sync` の
+  `ReportOpenInference` 記録直後に `schedule_ime_refresh` を呼ぶ event-driven 方式」
+  を代替案として推奨しており、これが最終版（下記）の設計になった。
+
+**修正（本コミット、最終版）:** `runtime/key_pipeline.rs::kp_apply_conv_engine_sync`
+の `EngineSync::ReportOpenInference` 分岐（`kp_stage_idle_conv_check` から KeyDown
+毎に呼ばれる）で、`report_conv_open_inference(true, reason, now_tick)` を呼んで
+新しい観測を記録した直後に `self.schedule_ime_refresh(20)` を追加した
+（`may_change_ime` パススルーと同じ既存の 20ms 遅延を再利用、新規タイミング定数は
+導入していない）。この分岐は「shadow=OFF なのに conv が native/open を示す」という
+まさにドリフトそのものを検出した瞬間にのみ実行されるため、これまでのように
+`desired_open` を直接書き換えることなく（BUG-19 対策の設計はそのまま維持）、
+既存の `ir_apply_drift_correction`／`check_drift_correction`（閾値・鮮度・
+`FeedbackPolicy::Blind` の再送上限等、既存のガードをすべてそのまま活用）に
+「たった今できたばかりの新鮮な観測」を渡して判断させることができる。第2版の
+問題点はすべてこの設計で構造的に解消される: 観測が新鮮なので stale 判定されない
+（問題a）、ドリフトが実際に検出されたときだけ 20ms 後に1回チェックが走るだけで
+継続的なポーリングにはならない（問題b、`reschedule_ime_refresh` 自体は完全に
+未変更のまま）、次に同じ矛盾した観測が来るたびに再度 20ms 後のチェックが自然に
+かかる（ユーザーが入力を続けている限り再発しても数十〜数百ms 単位で捕捉される）。
+`runtime/mod.rs::reschedule_ime_refresh` はコメントを更新しただけで、判定ロジックは
+変更していない（発火する分岐は元のまま）。
+
+**未解明（Fable 指摘、未検証）:** そもそも最初の IME OFF 送信（VK 送信）が、なぜ
+実 IME（TSF conv mode）に反映されなかったのか自体は今回のコード読解だけでは
+分からない。`desired_open=false` は正しく確定しているのに実 conv が open のまま
+だった理由（TSF composition による無視、chord barrier での skip、他の何か）が
+未解明であり、本修正は「乖離を早く検知・再送する」対症であって、初回送信が反映され
+ない根本原因には踏み込んでいない。また、`EXPLICIT_IME_SUPPRESS_MS`（1500ms）の間は
+`kp_stage_idle_conv_check` 自体が抑止されるため、SetOpen 直後〜1500ms の間に
+ユーザーが入力を止めた場合、次の KeyDown（＝次の idle-conv-check 実行）まで本修正の
+トリガーは発火しない。ただしこれは既存の抑止設計そのものであり、タイピングが
+再開されればすぐに捕捉される。次回同症状が再発した場合、初回 SetOpen 送信が実際に
+何を送り、なぜ効かなかったかを VK レベルで実機ログ確認すること。また 8 分の乖離の
+起点（ログの `duration_ms=478988ms` から逆算すると 01:46:49 付近）に対応する最初の
+トリガーのログが今回の抜粋には無く、同じ経路だったかは未検証。
+
+**未修正の残課題:** IME OFF コンボそのものの誤発火（Ctrl が真に見えている間は
+`engine.on_input` Phase 1 が無条件でマッチする）は今回触れていない。Ctrl 状態の
+信頼性問題（stuck Ctrl 等、`project_ctrl_mismatch_stuck_modifier` 参照）が真因の
+可能性があるが、`modifier_snapshot.ctrl`（GetAsyncKeyState 由来）と物理キー状態
+（`is_physical_key_down`）の一致を要求する等の対策は未検討・未実装。
+
+**検証状況:** `runtime/key_pipeline.rs`・`runtime/mod.rs` は `#[cfg(windows)]` の
+ため Linux 上の `cargo test -p awase-windows`（native target）には含まれず、
+`cargo xwin check --tests -p awase-windows --target x86_64-pc-windows-msvc` で
+型検査のみ確認済み（警告ゼロ）。`cargo xwin clippy -p awase-windows --target
+x86_64-pc-windows-msvc`（`--tests` を除く、警告ゼロ）でも確認済み。wine 未導入の
+ためこのサンドボックスでは実機相当のテスト実行は未実施。Codex CLI・Opus・Fable に
+よる2ラウンドの独立レビュー（第1版・第2版それぞれで correctness を検証、指摘の
+突合せ・自分でのコード再確認済み）を経て最終版に到達している。この修正自体は
+2026-08-04 に別ブランチ（`fix/ime-off-rescue-modifier-consumed`）で完成していたが、
+develop への統合が漏れたまま同ブランチが ADR-084/BUG-49 等の後続開発に取り残され、
+2026-08-05 に BUG-50 の調査中に発覚して本エントリとして develop 最新へ移植した
+（ブランチ全体をマージすると 2900 行超の後続修正を巻き戻すため、この1点修正のみを
+再適用）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_apply_conv_engine_sync`）、`crates/awase-windows/src/runtime/mod.rs`
+（`reschedule_ime_refresh`）、`crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_apply_drift_correction`/`check_drift_correction`）。
+関連: BUG-19（`desired_open` を書き換えない設計の由来）、BUG-20（OFF方向drift
+correctionの修正）、BUG-43（対称に「検知タイマー自体が止まる」パターン）、BUG-50
+（同種の長時間ドリフトが観測されたカタカナ復旧不能バグ）、
+[experiment-logging](../.claude/rules/experiment-logging.md)、
+[tuning-constants](../.claude/rules/tuning-constants.md)。
+## BUG-52: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
 
 **症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で
 NICOLA の物理「IME ON」キー（scan 0x70）を連打しているうちに、何もしていないのに
@@ -5016,7 +5990,7 @@ TurnOn/TurnOff」グループへ分類する 0xF0/0xF1/0xF3/0xF4 でもあり得
 送信する VK にしか適用できない保証であり、**同じ意味クラスに分類された物理
 キーの生イベントを無検査で通すこと**にまで拡張できる保証ではなかった、という
 のが正確な因果関係。
-## BUG-48: Win キー押下時に検索UIが開くと KeyUp が失われ `PHYSICAL_KEY_STATE[VK_LWIN]` が恒久的にスタックし、以後 IME ON/OFF の実送信が無期限にスキップされる
+## BUG-53: Win キー押下時に検索UIが開くと KeyUp が失われ `PHYSICAL_KEY_STATE[VK_LWIN]` が恒久的にスタックし、以後 IME ON/OFF の実送信が無期限にスキップされる
 
 **症状:** WindowsTerminal（MS-IME、TsfNative プロファイル）で、Windows キーを
 押した際に検索UI（`searchhost.exe`）が開くと、以後 `Ctrl+変換`/`Ctrl+無変換`

@@ -842,6 +842,16 @@ impl TsfComposition for WindowsPlatform {
             if open {
                 // 新しい IME ON 試行 → give-up latch を解除して再確認の機会を与える。
                 self.output.ms_ime_gate_give_up.set(false);
+                // pass-5 レビュー指摘（should-fix）: SetOpen(true) が適用された
+                // ということは IME が OFF→ON へサイクルしたということであり、
+                // `shift-conv-guard` の hold が前提としていた「conv=0x0000 を
+                // 書いた直後」という状態はもはや成立しない（IME が一度 OFF に
+                // なった時点で conv の意味が失われている）。`on_ime_mode_focus_changed`
+                // と対称に、confirm-gate の override と所有権世代を併せて
+                // クリア・無効化し、最大 `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`
+                // 分の猶予が無関係な後続の送信に残留しないようにする。
+                self.output.confirm_gate_deadline_override_ms.set(0);
+                self.output.bump_shift_conv_guard_gen();
             }
         }
         // CompositionFsm の状態を IME ON/OFF に追従させる（保留 warmup の epoch 整合用）。

@@ -1,4 +1,4 @@
-# ADR-083: `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定
+# ADR-085: `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定
 
 ## ステータス
 
@@ -7,11 +7,11 @@
 
 ## コンテキスト
 
-BUG-47（`docs/known-bugs.md`）の調査を通じて、`VK_DBE_KATAKANA`/`VK_DBE_ALPHANUMERIC`
+BUG-52（`docs/known-bugs.md`）の調査を通じて、`VK_DBE_KATAKANA`/`VK_DBE_ALPHANUMERIC`
 等の物理キー漏洩により、awase が一切書き込みをしていないのに実 IME の conv モード
 （英数/ひらがな/カタカナ × 半角/全角）が意図せず変化しうることが実機で確認された。
-BUG-47 自体はこの漏洩経路を塞いだが、根本的に「実 IME の conv モードが何らかの経路で
-awase の意図と乖離しうる」という前提そのものは消えない（BUG-47 の穴が塞がれても、
+BUG-52 自体はこの漏洩経路を塞いだが、根本的に「実 IME の conv モードが何らかの経路で
+awase の意図と乖離しうる」という前提そのものは消えない（BUG-52 の穴が塞がれても、
 将来別の経路で同様の乖離が起きる可能性は残る）。
 
 ADR-078（IME conv-mode belief の三分割）は、この種の乖離への根本的な解決として
@@ -88,7 +88,7 @@ BUG-19 の破綻は「**観測した**カタカナに**追従**して同じ方�
 ## 未対応・今後の課題
 
 - Windows 実機での動作確認（`force` ポリシー有効時の cold 転換頻度・レイテンシ
-  への影響、実際に BUG-47 的な乖離を正せるか）は未実施。
+  への影響、実際に BUG-52 的な乖離を正せるか）は未実施。
 - `desired_mode` はプロセス再起動でデフォルト（全角ひらがな）にリセットされる
   （config.toml への永続化はスコープ外、トレイでの都度選択を想定）。
 - ADR-078 の全面実装（観測モデル自体の再設計）は本 ADR の対象外。本 ADR は
@@ -111,4 +111,4 @@ BUG-19 の破綻は「**観測した**カタカナに**追従**して同じ方�
   提供する軽量な opt-in 緩和策という位置づけ。
 - `docs/known-bugs.md` BUG-19: 観測追従型の自己増幅ループ（本 ADR の設計が
   再現を避ける対象）。
-- `docs/known-bugs.md` BUG-47: 本 ADR のきっかけとなった物理キー漏洩バグ。
+- `docs/known-bugs.md` BUG-52: 本 ADR のきっかけとなった物理キー漏洩バグ。

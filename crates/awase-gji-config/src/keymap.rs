@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::command::{classify_command, GjiCompositionMode, GjiModeCommand};
 use crate::tsv::{parse_custom_keymap_table, KeymapRow};
 
 /// GJI の `IMEOn`/`IMEOff` コマンドが割り当てられている、GJI 内部の入力状態が
@@ -79,6 +80,21 @@ pub struct GjiImeKeys {
     pub toggle: Vec<String>,
 }
 
+/// GJI の custom keymap から抽出した、入力モード変更に使われている VK 名の分類
+/// （[`crate::command::classify_command`] 参照）。`GjiImeKeys` と異なり、
+/// awase 側の belief 追随に使う想定のためモードの種類ごとに分けてある。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GjiModeKeys {
+    /// このキーで特定の [`GjiCompositionMode`] へ絶対設定される
+    /// （現在のモードに依らず遷移先が一意）。
+    pub set_mode: Vec<(String, GjiCompositionMode)>,
+    /// このキーでかな⇔英数がトグルする（遷移先は現在モード依存）。
+    pub toggle_alphanumeric: Vec<String>,
+    /// このキーでカナ種別（ひらがな/全角カナ/半角カナ）が順送りされる
+    /// （遷移先は現在モード依存）。
+    pub toggle_kana_type: Vec<String>,
+}
+
 /// キーごとに集計した「IMEOn が割り当てられている状態の集合」と
 /// 「IMEOff が割り当てられている状態の集合」。
 type StatusSetsByKey = BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>;
@@ -111,6 +127,78 @@ pub fn extract_ime_keys(custom_keymap_table: &str) -> GjiImeKeys {
     result.off.dedup();
     result.toggle.sort_unstable();
     result.toggle.dedup();
+    result
+}
+
+/// `custom_keymap_table` の TSV 文字列から [`GjiModeKeys`] を構築する。
+///
+/// 手順:
+/// 1. 各行の `command` を [`classify_command`] で分類し、`SetMode`/
+///    `ToggleAlphanumericMode`/`ToggleKanaType` のいずれかの行だけを残す
+///    （`IMEOn`/`IMEOff`/`Other` は無視。前者2つは [`extract_ime_keys`] の
+///    担当）。
+/// 2. `key` に空白を含む行（修飾キー付き）は stage 1 と同様スコープ外
+///    として除外する。
+/// 3. 同じキーに複数の異なる分類（例: 状態によって `SetMode(Hiragana)` と
+///    `ToggleAlphanumericMode` の両方）が付いている場合は、遷移先が
+///    一意に定まらないため警告ログのみで取り込まない。
+#[must_use]
+pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
+    let rows = parse_custom_keymap_table(custom_keymap_table);
+    let mut by_key: BTreeMap<String, BTreeSet<GjiModeCommand>> = BTreeMap::new();
+    for row in &rows {
+        let classified = classify_command(&row.command);
+        if matches!(
+            classified,
+            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other
+        ) {
+            continue;
+        }
+        if row.key.contains(char::is_whitespace) {
+            log::debug!(
+                "gji-config: 修飾キー付き行は stage 1 のスコープ外のため無視: key={}",
+                row.key
+            );
+            continue;
+        }
+        by_key
+            .entry(row.key.clone())
+            .or_default()
+            .insert(classified);
+    }
+
+    let mut result = GjiModeKeys::default();
+    for (key, commands) in by_key {
+        let Some(vk_name) = mozc_key_to_vk_name(&key) else {
+            log::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
+            continue;
+        };
+        let mut distinct = commands.into_iter();
+        let Some(only) = distinct.next() else {
+            continue;
+        };
+        if distinct.next().is_some() {
+            log::warn!(
+                "gji-config: 状態間で遷移先が一意に定まらないためスキップしました: key={key}"
+            );
+            continue;
+        }
+        match only {
+            GjiModeCommand::SetMode(mode) => result.set_mode.push((vk_name, mode)),
+            GjiModeCommand::ToggleAlphanumericMode => result.toggle_alphanumeric.push(vk_name),
+            GjiModeCommand::ToggleKanaType => result.toggle_kana_type.push(vk_name),
+            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other => {
+                unreachable!("filtered out above")
+            }
+        }
+    }
+
+    result.set_mode.sort_unstable();
+    result.set_mode.dedup();
+    result.toggle_alphanumeric.sort_unstable();
+    result.toggle_alphanumeric.dedup();
+    result.toggle_kana_type.sort_unstable();
+    result.toggle_kana_type.dedup();
     result
 }
 
@@ -179,7 +267,10 @@ fn classify_and_push(
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_ime_keys, mozc_key_to_vk_name, GjiImeKeys};
+    use super::{
+        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name, GjiImeKeys, GjiModeKeys,
+    };
+    use crate::command::GjiCompositionMode;
 
     #[test]
     fn f_key_tokens_map_to_vk_names() {
@@ -300,5 +391,59 @@ Suggestion\tF19\tIMEOff
                 toggle: vec!["VK_F19".to_string(), "VK_F20".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn extracts_absolute_and_toggle_mode_keys_from_fixture() {
+        // Mozc の data/keymap/*.tsv 実データではこれらのコマンドは通常 Ctrl 付き
+        // キーに割り当てられているが（stage 1 のスコープ外）、分類ロジック自体は
+        // どのキーに割り当てられても同じなので、単発キーで代表させて検証する。
+        let text = "status\tkey\tcommand
+DirectInput\tF7\tCompositionModeFullKatakana
+Precomposition\tF7\tCompositionModeFullKatakana
+Composition\tF7\tCompositionModeFullKatakana
+Conversion\tF7\tCompositionModeFullKatakana
+DirectInput\tF6\tCompositionModeHiragana
+Precomposition\tF6\tCompositionModeHiragana
+DirectInput\tF10\tCompositionModeHalfAlphanumeric
+DirectInput\tEisu\tIMEOn
+Precomposition\tEisu\tToggleAlphanumericMode
+Composition\tEisu\tToggleAlphanumericMode
+Conversion\tEisu\tToggleAlphanumericMode
+Precomposition\tF8\tSwitchKanaType
+Composition\tBackspace\tBackspace
+";
+        let keys = extract_mode_keys(text);
+        assert_eq!(
+            keys,
+            GjiModeKeys {
+                set_mode: vec![
+                    ("VK_F10".to_string(), GjiCompositionMode::HalfAlphanumeric),
+                    ("VK_F6".to_string(), GjiCompositionMode::Hiragana),
+                    ("VK_F7".to_string(), GjiCompositionMode::FullKatakana),
+                ],
+                // Eisu の IMEOn(DirectInput) は classify_command で ImeOn に
+                // 分類され extract_mode_keys では無視されるため、残る
+                // ToggleAlphanumericMode だけが一意に定まり採用される。
+                toggle_alphanumeric: vec!["VK_DBE_ALPHANUMERIC".to_string()],
+                toggle_kana_type: vec!["VK_F8".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn empty_table_yields_empty_mode_keys() {
+        assert_eq!(extract_mode_keys(""), GjiModeKeys::default());
+    }
+
+    #[test]
+    fn conflicting_mode_key_is_dropped_not_panicking() {
+        // 同じキーが状態によって異なる絶対モードへ設定される、解釈不能な矛盾行。
+        let text = "status\tkey\tcommand
+DirectInput\tF9\tCompositionModeHiragana
+Precomposition\tF9\tCompositionModeFullKatakana
+";
+        let keys = extract_mode_keys(text);
+        assert_eq!(keys, GjiModeKeys::default());
     }
 }

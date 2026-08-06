@@ -637,7 +637,7 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open }) = effect {
+        if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
             return self.dispatch_ime_set_open(platform, open, generation);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
@@ -1056,10 +1056,13 @@ mod tests {
 
     // ── strip_ime_set_open_if_settling (P3-1: focus-settle SetOpen 一次フィルタ) ──
 
-    use awase::engine::{Decision, Effect, ImeEffect, TimerEffect};
+    use awase::engine::{Decision, Effect, ImeEffect, SetOpenOrigin, TimerEffect};
 
     fn set_open_effect(open: bool) -> Effect {
-        Effect::Ime(ImeEffect::SetOpen { open })
+        Effect::Ime(ImeEffect::SetOpen {
+            open,
+            origin: SetOpenOrigin::ExplicitUserAction,
+        })
     }
 
     // settling=true: SetOpen effect は decision から除去され、除去された目標値が返る。

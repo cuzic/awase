@@ -22,7 +22,7 @@ use crate::types::VkCode;
 ///
 /// `IME ON/OFF`（`ImeModel::desired_open`）とは独立した別軸の設定。conv
 /// モードは 2026-08 時点で物理キーの意図しない漏洩（`docs/known-bugs.md`
-/// BUG-47）等により実 IME 側と乖離することがあるため、`Force` はこの乖離を
+/// BUG-52）等により実 IME 側と乖離することがあるため、`Force` はこの乖離を
 /// cold 転換のたびに強制的に正すためのオプトイン機能。
 ///
 /// `Observe`（デフォルト）は従来通り、awase は conv モードを観測するのみで

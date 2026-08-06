@@ -533,6 +533,10 @@ pub const fn vk_to_pos(vk: VkCode) -> Option<awase::scanmap::PhysicalPos> {
 
 /// ASCII 文字を対応する VK コードに変換する。
 ///
+/// 英数字に加え、`build_symbol_to_vk` の「半角 ASCII 記号」節にある記号を
+/// すべて含む（2026-08-05 ユーザー報告: Shift 付き記号 `！` の cold-start
+/// 半角化修正で拡張。`docs/known-bugs.md` BUG-47 参照）。
+///
 /// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
 #[cfg_attr(not(windows), allow(dead_code))]
 #[must_use]
@@ -545,6 +549,91 @@ pub(crate) const fn ascii_to_vk(ch: char) -> Option<(VkCode, bool)> {
         '.' => Some((VkCode(0xBE), false)),
         ',' => Some((VkCode(0xBC), false)),
         '/' => Some((VkCode(0xBF), false)),
+        '[' => Some((VkCode(0xDB), false)),
+        ']' => Some((VkCode(0xDD), false)),
+        ';' => Some((VkCode(0xBB), false)),
+        ':' => Some((VkCode(0xBA), false)),
+        '@' => Some((VkCode(0xC0), false)),
+        '^' => Some((VkCode(0xDE), false)),
+        '\\' => Some((VkCode(0xE2), false)),
+        '!' => Some((VkCode(0x31), true)),
+        '"' => Some((VkCode(0x32), true)),
+        '#' => Some((VkCode(0x33), true)),
+        '$' => Some((VkCode(0x34), true)),
+        '%' => Some((VkCode(0x35), true)),
+        '&' => Some((VkCode(0x36), true)),
+        '\'' => Some((VkCode(0x37), true)),
+        '(' => Some((VkCode(0x38), true)),
+        ')' => Some((VkCode(0x39), true)),
+        '?' => Some((VkCode(0xBF), true)),
+        '=' => Some((VkCode(0xBD), true)),
+        '+' => Some((VkCode(0xBB), true)),
+        '*' => Some((VkCode(0xBA), true)),
+        '<' => Some((VkCode(0xBC), true)),
+        '>' => Some((VkCode(0xBE), true)),
+        '_' => Some((VkCode(0xE2), true)),
+        '{' => Some((VkCode(0xDB), true)),
+        '}' => Some((VkCode(0xDD), true)),
+        '|' => Some((VkCode(0xDC), true)),
+        '~' => Some((VkCode(0xDE), true)),
+        '`' => Some((VkCode(0xC0), true)),
+        _ => None,
+    }
+}
+
+/// `ascii_to_vk` の逆写像。`(vk, needs_shift)` が単一 ASCII キーストロークで
+/// 表現できる場合のみ `Some` を返す。
+///
+/// 不変条件: `vk_pair_to_ascii(v, s) == Some(c)` ⇒ `ascii_to_vk(c) == Some((v, s))`
+/// （`vk_pair_to_ascii_roundtrips_with_ascii_to_vk` テストで固定）。
+///
+/// `symbol_to_vk`（`build_symbol_to_vk`）が生成する記号 VK は、Shift 付き記号
+/// （`？`/`！`/`～` 等）も含めすべてこの関数でカバーする（2026-08-05 修正、
+/// `docs/known-bugs.md` BUG-47 参照。修正前は Shift 付きが `needs_shift` の
+/// 一律ガードで弾かれ、対応する半角 ASCII 記号が無い扱いになっていた）。
+/// 英大文字（`A`..`Z`, Shift 付き）は `ascii_to_vk` 側には存在するが、
+/// `build_symbol_to_vk` に該当エントリが無く本バグの対象外のためこの関数では
+/// 未対応のまま（`vk` は `(0x41..=0x5A, false)` の非 Shift 判定のみ持つ）。
+///
+/// 呼び出し元は `output/`（windows-gated）のみのため、非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
+#[must_use]
+pub(crate) const fn vk_pair_to_ascii(vk: VkCode, needs_shift: bool) -> Option<char> {
+    match (vk.0, needs_shift) {
+        (0x41..=0x5A, false) => Some((b'a' + (vk.0 - 0x41) as u8) as char),
+        (0x30..=0x39, false) => Some((b'0' + (vk.0 - 0x30) as u8) as char),
+        (0xBD, false) => Some('-'),
+        (0xBE, false) => Some('.'),
+        (0xBC, false) => Some(','),
+        (0xBF, false) => Some('/'),
+        (0xDB, false) => Some('['),
+        (0xDD, false) => Some(']'),
+        (0xBB, false) => Some(';'),
+        (0xBA, false) => Some(':'),
+        (0xC0, false) => Some('@'),
+        (0xDE, false) => Some('^'),
+        (0xE2, false) => Some('\\'),
+        (0x31, true) => Some('!'),
+        (0x32, true) => Some('"'),
+        (0x33, true) => Some('#'),
+        (0x34, true) => Some('$'),
+        (0x35, true) => Some('%'),
+        (0x36, true) => Some('&'),
+        (0x37, true) => Some('\''),
+        (0x38, true) => Some('('),
+        (0x39, true) => Some(')'),
+        (0xBF, true) => Some('?'),
+        (0xBD, true) => Some('='),
+        (0xBB, true) => Some('+'),
+        (0xBA, true) => Some('*'),
+        (0xBC, true) => Some('<'),
+        (0xBE, true) => Some('>'),
+        (0xE2, true) => Some('_'),
+        (0xDB, true) => Some('{'),
+        (0xDD, true) => Some('}'),
+        (0xDC, true) => Some('|'),
+        (0xDE, true) => Some('~'),
+        (0xC0, true) => Some('`'),
         _ => None,
     }
 }
@@ -657,4 +746,77 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         .iter()
         .map(|&(ch, vk, shift)| (ch, (VkCode(vk), shift)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ascii_to_vk, build_symbol_to_vk, vk_pair_to_ascii, VkCode};
+
+    /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
+    /// （2026-08-03 ユーザー報告 BUG-47: 句読点「。」「、」・長音「ー」が
+    /// 半角化する修正の前提となる不変条件。VK 0x00-0xFF × shift 2値を全網羅）。
+    #[test]
+    fn vk_pair_to_ascii_roundtrips_with_ascii_to_vk() {
+        for raw in 0x00u16..=0xFF {
+            for needs_shift in [false, true] {
+                let vk = VkCode(raw);
+                if let Some(ch) = vk_pair_to_ascii(vk, needs_shift) {
+                    assert_eq!(
+                        ascii_to_vk(ch),
+                        Some((vk, needs_shift)),
+                        "vk_pair_to_ascii(0x{raw:02X}, {needs_shift}) = Some({ch:?}) だが \
+                         ascii_to_vk({ch:?}) が往復しない"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 本当に未対応な VK（英大文字の Shift 付き、F1、Backspace）は引き続き None。
+    /// 2026-08-05 修正前は shift 付きを一律 None にしていたが、その前提は
+    /// もう成り立たない（下記 `vk_pair_to_ascii_covers_shift_symbols` 参照）ため、
+    /// 「shift は常に None」ではなく「未対応 VK は None」の形に修正した。
+    #[test]
+    fn vk_pair_to_ascii_rejects_unmapped_vks() {
+        assert_eq!(vk_pair_to_ascii(VkCode(0x41), true), None); // 'A' (Shift+A、対象外)
+        assert_eq!(vk_pair_to_ascii(VkCode(0x70), false), None); // VK_F1
+        assert_eq!(vk_pair_to_ascii(VkCode(0x70), true), None); // VK_F1 + Shift
+        assert_eq!(vk_pair_to_ascii(VkCode(0x08), false), None); // VK_BACK
+    }
+
+    /// 今回のユーザー報告3文字（。→VK_OEM_PERIOD、、→VK_OEM_COMMA、ー→VK_OEM_MINUS）
+    /// が正しく ASCII へ解決できることを明示的に固定する。
+    #[test]
+    fn vk_pair_to_ascii_covers_reported_symbols() {
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBE), false), Some('.')); // 。
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBC), false), Some(',')); // 、
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBD), false), Some('-')); // ー
+    }
+
+    /// 2026-08-05 ユーザー報告（「！」が半角化する）で追加した Shift 付き記号の
+    /// 代表例。`docs/known-bugs.md` BUG-47 の「未対応」節で名指しされていた
+    /// `？`/`！`/`～` を明示的に固定する。
+    #[test]
+    fn vk_pair_to_ascii_covers_shift_symbols() {
+        assert_eq!(vk_pair_to_ascii(VkCode(0x31), true), Some('!')); // ！
+        assert_eq!(vk_pair_to_ascii(VkCode(0xBF), true), Some('?')); // ？
+        assert_eq!(vk_pair_to_ascii(VkCode(0xDE), true), Some('~')); // ～
+    }
+
+    /// ドリフト防止: `build_symbol_to_vk` に載っている `(VkCode, needs_shift)` は
+    /// すべて `vk_pair_to_ascii` が `Some` を返す（＝cold-start保護つきの romaji
+    /// 経路に合流できる）ことを固定する。「記号が cold-start 保護の外に取り残され
+    /// ていないか」を直接検証する（値の重複は許容: `！`/`!` 等は同じペアを共有する
+    /// ため、キーの文字ではなく値のペアを走査する）。
+    #[test]
+    fn vk_pair_to_ascii_covers_every_build_symbol_to_vk_pair() {
+        for (vk, needs_shift) in build_symbol_to_vk().into_values() {
+            assert!(
+                vk_pair_to_ascii(vk, needs_shift).is_some(),
+                "build_symbol_to_vk に (VK 0x{:02X}, shift={needs_shift}) があるのに \
+                 vk_pair_to_ascii が None を返す → cold-start 保護経路に合流できない",
+                vk.0
+            );
+        }
+    }
 }

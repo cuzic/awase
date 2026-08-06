@@ -16,9 +16,12 @@
 //!   - `ImmCrossProcessStrategy` の `ImmSetOpenStatus` クロスプロセス API（VK を送らない）。
 //!   - `KanjiToggleStrategy` の `post_kanji_toggle_to_focused`（VK_KANJI をフォーカス窓へ送る
 //!     専用経路。`send_ime_mode_key` とは送信機構が異なるためこの表には載せない）。
-//!   - `shadow_on` スキップ（GjiDirect ON）・KATAKANA conv スキップ（MsImeDirect ON）・
-//!     ROMAN pre-mode（`set_ime_romaji_mode`）・フォールバック前の実状態確認（`3510a08`,
-//!     [[feedback_immcross_fallback_state_check]]）。いずれも observation / conv 依存の動的判断。
+//!   - `shadow_on` スキップ（GjiDirect ON）・ROMAN pre-mode（`set_ime_romaji_mode`）・
+//!     フォールバック前の実状態確認（`3510a08`, [[feedback_immcross_fallback_state_check]]）。
+//!     いずれも observation 依存の動的判断。MsImeDirect ON はかつて `VK_DBE_HIRAGANA`
+//!     （モード選択キー）を使っており、そのため「現在カタカナなら送信をスキップする」
+//!     という conv 依存の動的判断（BUG-50 デッドロックの前提）が必要だったが、2026-08-06
+//!     に conv-mode に触れない `VK_IME_ON` へ移行しこの判断自体を撤去した。
 //!
 //! # アプリ分岐を持ち込まない（C-4）
 //! 述語は `AppImeProfile` / `ActiveImeKind` までの抽象で判断する。アプリ名文字列や class_name
@@ -26,7 +29,7 @@
 
 use crate::focus::class_names::AppImeProfile;
 use crate::tsf::observer::ActiveImeKind;
-use crate::vk::{VK_DBE_HIRAGANA, VK_IME_OFF, VK_IME_ON};
+use crate::vk::{VK_IME_OFF, VK_IME_ON};
 use awase::types::VkCode;
 
 // ── 戦略選択の適用条件（ime_controller の is_applicable が引く述語）─────────────────
@@ -84,7 +87,8 @@ impl ImeOperation {
 pub(crate) enum KeyMechanism {
     /// `GjiDirectStrategy`: VK_IME_ON / VK_IME_OFF（GJI が TSF 層で処理する冪等キー）。
     GjiDirect,
-    /// `MsImeDirectStrategy`: VK_DBE_HIRAGANA / VK_IME_OFF（MS-IME 冪等キー）。
+    /// `MsImeDirectStrategy`: VK_IME_ON / VK_IME_OFF（MS-IME が TSF 層で処理する冪等キー、
+    /// 2026-08-06 まで ON は `VK_DBE_HIRAGANA` だった）。
     MsImeDirect,
 }
 
@@ -106,8 +110,9 @@ pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> Vk
         // GjiDirect: post_gji_ime_on/off 相当（GJI+TsfNative の OFF も VK_IME_OFF, 489cdf1）。
         (GjiDirect, Open) => VK_IME_ON,
         (GjiDirect, Close) => VK_IME_OFF,
-        // MsImeDirect: ON=post_ms_ime_on(VK_DBE_HIRAGANA), OFF=post_ime_off_direct(VK_IME_OFF, 48a667a)。
-        (MsImeDirect, Open) => VK_DBE_HIRAGANA,
+        // MsImeDirect: ON=post_ime_on_direct(VK_IME_ON, 2026-08-06 BUG-50根治)、
+        // OFF=post_ime_off_direct(VK_IME_OFF, 48a667a)。
+        (MsImeDirect, Open) => VK_IME_ON,
         (MsImeDirect, Close) => VK_IME_OFF,
     }
 }
@@ -138,7 +143,7 @@ mod tests {
     fn ms_ime_direct_keys() {
         assert_eq!(
             ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open),
-            VK_DBE_HIRAGANA
+            VK_IME_ON
         );
         assert_eq!(
             ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close),

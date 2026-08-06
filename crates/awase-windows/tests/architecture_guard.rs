@@ -25,8 +25,17 @@ use std::path::Path;
 
 fn read_crate_file(rel_path: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    fs::read_to_string(Path::new(manifest_dir).join(rel_path))
-        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"))
+    let raw = fs::read_to_string(Path::new(manifest_dir).join(rel_path))
+        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    // Windows ランナーは git 既定の core.autocrlf=true でチェックアウト時に .rs
+    // ファイルを CRLF 化する（`.gitattributes` の eol=lf 指定は `tests/golden/**`
+    // のみが対象で、通常のソースファイルには効かない）。このファイル内の各種
+    // ガードは `\n` を埋め込んだリテラル（例: `production_code_only` の
+    // `"#[cfg(test)]\nmod tests"`）で境界検出しているため、CRLF のままだと
+    // マッチに失敗し「本番コード」と「テストコード」の切り分けが機能しなくなる
+    // （2026-08-04 実機CI: `user_intent_source_construction_is_limited_to_typed_writers`
+    // が Windows ランナーでのみ count=5 相当で fail した）。読み込み時点で正規化する。
+    raw.replace("\r\n", "\n")
 }
 
 /// `#[cfg(test)]\nmod tests {` より前の「本番コード」部分だけを取り出す。
@@ -694,10 +703,10 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
 ///
 /// `docs/experiments.md` エントリ01: 「IME OFF に何のキーを送るか」で5日間に6回、
 /// 採用と撤回が反転した（`534051a` → `098c663` → `adb856c` → `b271aee` → … →
-/// `489cdf1`）。最終結論は「GJI/MS-IME いずれも IME OFF は冪等 VK_IME_OFF (0x1A) を
-/// 送る `post_ime_off_direct()` 経由（VK_KANJI トグルには戻さない）」（根拠:
-/// `489cdf1`, `48a667a`）。MS-IME 専用 OFF (`post_ms_ime_off`) は `VK_DBE_ALPHANUMERIC`
-/// で、これも同エントリで複数回採用/撤回された当事者。
+/// `489cdf1`）。最終結論は「GJI/MS-IME いずれも IME ON/OFF は冪等 VK_IME_ON (0x16) /
+/// VK_IME_OFF (0x1A) を送る `post_ime_on_direct()`/`post_ime_off_direct()` 経由
+/// （VK_KANJI トグルには戻さない）」（根拠: `489cdf1`, `48a667a`、ON 側は
+/// `2026-08-06` に BUG-50 根治として同じキーへ統一）。
 ///
 /// `tests/ime_key_sequence_golden.rs` の `KEY_DOC` はこの結論をコメントとして固定して
 /// いるが、その本文はハードコードされた定数文字列同士の突き合わせ（自己参照）であり、
@@ -743,8 +752,11 @@ fn ime_open_close_functions_send_expected_vk_codes() {
         );
     }
 
-    // GJI 専用エイリアスは post_ime_on_direct/post_ime_off_direct への委譲のみである
+    // GJI/MS-IME 共用エイリアスは post_ime_on_direct/post_ime_off_direct への委譲のみである
     // こと。独自の VK 送信を再実装すると、6回反転の教訓を踏まえない別経路が生まれる。
+    // （2026-08-06: MsImeDirectStrategy の ON も VK_DBE_HIRAGANA → VK_IME_ON へ移行し
+    // GjiDirectStrategy と同じキーになったため、MS-IME 専用の post_ms_ime_on/off は
+    // 呼び出し元を失い削除した。BUG-50 参照）
     let gji_on = extract_fn_body(production, "pub unsafe fn post_gji_ime_on(");
     assert!(
         gji_on.contains("post_ime_on_direct()"),
@@ -754,25 +766,6 @@ fn ime_open_close_functions_send_expected_vk_codes() {
     assert!(
         gji_off.contains("post_ime_off_direct()"),
         "{path} の post_gji_ime_off が post_ime_off_direct() に委譲していません。"
-    );
-
-    // MS-IME 専用 ON: VK_DBE_HIRAGANA。VK_KANJI 混入は conv 破壊のリスクを再導入する。
-    let ms_on = extract_fn_body(production, "pub unsafe fn post_ms_ime_on(");
-    assert!(
-        ms_on.contains("VK_DBE_HIRAGANA") && !ms_on.contains("VK_KANJI"),
-        "{path} の post_ms_ime_on が VK_DBE_HIRAGANA 単独を送っていません。"
-    );
-
-    // MS-IME 専用 OFF: VK_DBE_ALPHANUMERIC。docs/experiments.md エントリ01で複数回
-    // 採用/撤回された当事者（「半角英数(IME ON)であって直接入力ではない」という事実が
-    // 繰り返し再発見されてきた）。VK_KANJI（トグル）・VK_IME_OFF（Chrome/Edge等の
-    // Imm32Unavailable アプリでは無視される）への回帰を防ぐ。
-    let ms_off = extract_fn_body(production, "pub unsafe fn post_ms_ime_off(");
-    assert!(
-        ms_off.contains("VK_DBE_ALPHANUMERIC")
-            && !ms_off.contains("VK_KANJI")
-            && !ms_off.contains("VK_IME_OFF"),
-        "{path} の post_ms_ime_off が VK_DBE_ALPHANUMERIC 単独を送っていません。"
     );
 
     // 最終フォールバック: VK_KANJI トグルを down/up ちょうど1回ずつ送る。
