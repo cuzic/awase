@@ -79,13 +79,17 @@ const KEY_DOC: &str = "\
 #   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）
 #
 # MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme && !can_use_imm32_cross_process()):
-#   ON  → 現 conv が KATAKANA ビット立ちなら送信せず AlreadyMatched（conv 破壊防止）、
-#         さもなくば（belief!=ObservedKana のとき set_ime_romaji_mode() 後）
-#         VK_DBE_HIRAGANA (0xF2) = ime::post_ms_ime_on() → Applied。
+#   ON  → （belief!=ObservedKana のとき set_ime_romaji_mode() 後）
+#         VK_IME_ON (0x16) = ime::post_ime_on_direct() → Applied。conv-mode に触れないため
+#         AlreadyMatched スキップは不要（2026-08-06 まで VK_DBE_HIRAGANA を使っており、現 conv が
+#         KATAKANA ビット立ちなら送信をスキップするガードが必要だった。このガードが
+#         「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できず、一度
+#         カタカナに入ると永久に復旧できないデッドロックの直接の前提だった。BUG-50 参照）。
 #   OFF → VK_IME_OFF (0x1A) = ime::post_ime_off_direct()（DirectInput へ、冪等）→ Applied。
 #   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
 #   留まるため不可、VK_KANJI はトグルのため不可。
-#   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定）
+#   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定、
+#   2026-08-06 に ON も VK_DBE_HIRAGANA → VK_IME_ON へ移行し OFF と対称化・BUG-50 根治）
 #
 # KanjiToggle (is_applicable: 常に true / 最終フォールバック):
 #   ON/OFF ともに VK_KANJI トグル = ime::post_kanji_toggle_to_focused() → FallbackSent。

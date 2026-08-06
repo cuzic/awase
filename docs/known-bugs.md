@@ -5613,6 +5613,76 @@ golden ケースを追加（Linux ネイティブで `cargo test -p awase-window
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
 [experiment-logging](../.claude/rules/experiment-logging.md)。
 
+**追補（2026-08-06、原因1のガード3を根治・ユーザー指摘）:** 原因1で列挙した4つの
+ガードのうち「ガード3」（`ime_controller.rs::MsImeDirectStrategy::apply` の
+`AlreadyMatched` スキップ）を、provenance 追跡（未解決節で提案していた方向）ではなく
+**そもそもの前提を取り除く形**で解消した。
+
+ユーザーから「なぜひらがな/カタカナのキーを送る必要があるのか、代わりに IME OFF/ON
+（開閉）を使えないのか」という指摘を受けて調査した結果、これは実は以前一度
+「半分だけ」直されていた問題だと判明した: `MsImeDirectStrategy` の OFF は
+`48a667a`（2026-06-27頃）で `VK_DBE_ALPHANUMERIC`（モード選択キー、「半角英数
+＝IME ON のまま」という誤った意味論で確定 Enter 回数がズレる不具合があった）から
+`VK_IME_OFF`（真の開閉キー、DirectInput へ）へ既に移行済みだった。ところが ON 側は
+`VK_DBE_HIRAGANA`（モード選択キー）のまま取り残されていた。GJI 向けの
+`GjiDirectStrategy` は元から ON/OFF とも `VK_IME_ON`/`VK_IME_OFF` を使っており、
+これが TSF-native アプリで問題なく動作することは実証済み（Windows Terminal・Chrome
+含む）。
+
+**なぜガード3が消えるか:** `VK_DBE_HIRAGANA` は「IME を開く」と「ひらがなへ強制する」
+という2つの副作用を1つのキーに束ねていた。この束ねが、現在カタカナのときに送ると
+カタカナを壊す → 壊さないために送信をスキップするガードが要る → そのガードが
+「ユーザーの意図的なカタカナ」と「内部の誤った/一時的なカタカナ」を区別できない、
+という原因1の連鎖そのものを生んでいた。`VK_IME_ON` は conv-mode（ひらがな/カタカナ・
+全角/半角のいずれのビットも）に一切触れない「開くだけ」のキーのため、この束ねが
+存在せず、ガード自体が構造的に不要になる。
+
+**修正:** `state/key_sequence_policy.rs::ime_key_for(MsImeDirect, Open)` を
+`VK_DBE_HIRAGANA` → `VK_IME_ON` に変更（宣言的テーブルの1行 diff）。
+`ime_controller.rs::MsImeDirectStrategy::apply` からガード3（conv 読み取り + KATAKANA
+ビットチェック + `AlreadyMatched` return）を削除。ROMAN ビット pre-mode
+（`set_ime_romaji_mode`、かな入力の JIS かな化け防止、ガード3とは無関係の既存ロジック）
+は維持。
+
+**残る影響（原因2は本追補の対象外）:** 「なぜ最初にカタカナへ入ったか」（原因2、
+仮説A〜C）は未解決のまま。ただしガード3が消えたことで、原因2のどの仮説が真であっても
+—— 一度カタカナに（誤って、あるいは正当に）入った後、次に IME-ON 経路を通れば
+`VK_IME_ON` が送られ、conv-mode は変更されないまま IME が開く。これは「カタカナを
+強制的にひらがなへ戻す」わけではないが、「デッドロックする」こともない。むしろ
+原因1節にあった「ガード4」（`kp_reset_to_hiragana_romaji_capsoff` の `was_open_before`
+依存）が引き続き機能する経路では、IME-ON コンボ押下で明示的にひらがなへリセットされる
+（BUG-50 Phase 1 で `observed_katakana` 条件を追加済み）。
+
+**未対応:** ADR-084 の `actuate_conv_mode` chokepoint（INV-11 provenance 含む）は
+本追補の対象外。ガード3自体が消えたため provenance によるガード3の高度化はもはや
+不要になったが、conv-mode を書き込む他の経路（`kp_restore_kana_from_half_width` 等、
+BUG-49 追補3参照）の集約は引き続き有効な将来課題として残る。
+
+**テスト:** `state/key_sequence_policy.rs::tests::ms_ime_direct_keys` を
+`VK_DBE_HIRAGANA` → `VK_IME_ON` の期待値に更新。`tests/ime_key_sequence_golden.rs`
+の `KEY_DOC`／`tests/golden/ime_key_sequences.txt` を同じ内容に同期
+（Windows target でのみコンパイル・実行対象、`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査済み、wine 未導入のためこのサンドボックスでは
+実行不可）。`cargo test -p awase-windows --lib`（278 passed）・`--test golden_scenarios
+--test architecture_guard`（22 passed）は無影響で全 green（`key_sequence_policy`
+モジュール自体が `#[cfg(windows)]` ゲート下にあり Linux ネイティブでは 0 件しか
+コンパイル対象にならないため、その回帰確認はコンパイル検査止まり）。
+
+**検証状況:** `cargo check`/`cargo clippy -p awase-windows --target
+x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D warnings -W
+clippy::cognitive_complexity`（CI `clippy` ジョブと同じ引数、warning ゼロ）、
+`cargo xwin build --tests -p awase-windows --target x86_64-pc-windows-msvc`
+（`windows-cross-check` ジョブ相当）いずれも green。wine 未導入のためこのサンドボックス
+では実機相当の実行・再現確認は未実施。次の Windows 実機セッションで、MS-IME/TSF-native
+（Windows Terminal 等）で IME OFF→ON が引き続き正しく機能すること、カタカナ入力中に
+IME を OFF→ON しても（意図的か否かを問わず）conv-mode が変化しないことを確認すること。
+
+**関連ファイル（追補）:** `crates/awase-windows/src/state/key_sequence_policy.rs`
+（`ime_key_for`）、`crates/awase-windows/src/ime_controller.rs`
+（`MsImeDirectStrategy::apply`）、`crates/awase-windows/tests/ime_key_sequence_golden.rs`、
+`crates/awase-windows/tests/golden/ime_key_sequences.txt`。関連: `48a667a`
+（OFF 側の同種修正、本追補はこれと ON 側を対称化した）。
+
 ## BUG-51: TsfNative の drift correction が `TIMER_IME_REFRESH` の恒久停止で再起動されず、IME OFF で Engine ON のまま最大8分ドリフトする
 
 **症状:** MS-IME（TsfNative）環境で、実機ログに `[ime-off-rescue] 50ms timer expired →
