@@ -113,6 +113,16 @@ impl PhysicalKeyDisposition {
     /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
     ///   `MsImeDirectStrategy` で実際に actuate する場合（`ime_actuation_owned`）のみ、
     ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
+    ///   **例外: `VK_DBE_*`（0xF0 ALPHANUMERIC / 0xF1 KATAKANA / 0xF3 SBCSCHAR /
+    ///   0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で別処理）の KeyDown は
+    ///   `shadow_toggled` に関わらず常に Suppress**（`ime_actuation_owned` の場合）。
+    ///   NICOLA の物理「IME ON」キー（scan 0x70）は、IME が既に目的の状態にある時に
+    ///   押されると `VK_DBE_HIRAGANA` (0xF2) の代わりにこれらの `VK_DBE_*` を生成する
+    ///   ことがある（実機で 0xF0/0xF1 を確認）。`VK_KANJI` 等と違い `VK_DBE_*` は
+    ///   素通しすると実 IME（MS-IME）が Windows 標準仕様どおりネイティブ効果
+    ///   （英数/カタカナ/半角/全角への切替）を能動的に実行してしまうため、toggle が
+    ///   発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
+    ///   `docs/known-bugs.md` BUG-47 参照）。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -150,8 +160,24 @@ impl PhysicalKeyDisposition {
             // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
             let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(active_ime_kind)
                 || key_sequence_policy::ms_ime_direct_applicable(active_ime_kind, profile);
+            // VK_DBE_* (0xF0 ALPHANUMERIC / 0xF1 KATAKANA / 0xF3 SBCSCHAR / 0xF4
+            // DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で既に処理済みのためここには
+            // 来ない) の KeyDown は shadow_toggled に関わらず常に Suppress。
+            // 素通しすると実IME（MS-IME）がWindows標準仕様どおり能動的にネイティブ
+            // 効果（英数/カタカナ/半角/全角への切替）を適用してしまうため、
+            // VK_KANJI 等と違い「toggleが不発だったから安全に通してよい」という
+            // 前提が成り立たない（2026-08-05実機、0xF0/0xF1 で確認、known-bugs.md）。
+            let is_dbe_mode_key_down = matches!(
+                event.vk_code,
+                crate::vk::VK_DBE_ALPHANUMERIC
+                    | crate::vk::VK_DBE_KATAKANA
+                    | crate::vk::VK_DBE_SBCSCHAR
+                    | crate::vk::VK_DBE_DBCSCHAR
+            ) && event.event_type == KeyEventType::KeyDown;
             ime_actuation_owned
-                && (shadow_toggled || matches!(event.event_type, KeyEventType::KeyUp))
+                && (shadow_toggled
+                    || is_dbe_mode_key_down
+                    || matches!(event.event_type, KeyEventType::KeyUp))
         };
         if suppress {
             Self::Suppress
@@ -190,6 +216,43 @@ mod plan_tests {
 
     fn non_kanji_event(event_type: KeyEventType) -> RawKeyEvent {
         kanji_event(event_type, None)
+    }
+
+    fn dbe_mode_event(
+        vk_code: VkCode,
+        action: ShadowImeAction,
+        event_type: KeyEventType,
+    ) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code,
+            ..kanji_event(event_type, Some(action))
+        }
+    }
+
+    /// BUG-47 の対象 VK_DBE_* 一覧（0xF2 HIRAGANA は専用分岐で別処理のため対象外）。
+    fn dbe_mode_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
+        vec![
+            (
+                crate::vk::VK_DBE_ALPHANUMERIC,
+                ShadowImeAction::TurnOff,
+                "VK_DBE_ALPHANUMERIC (0xF0)",
+            ),
+            (
+                crate::vk::VK_DBE_KATAKANA,
+                ShadowImeAction::TurnOn,
+                "VK_DBE_KATAKANA (0xF1)",
+            ),
+            (
+                crate::vk::VK_DBE_SBCSCHAR,
+                ShadowImeAction::TurnOff,
+                "VK_DBE_SBCSCHAR (0xF3)",
+            ),
+            (
+                crate::vk::VK_DBE_DBCSCHAR,
+                ShadowImeAction::TurnOn,
+                "VK_DBE_DBCSCHAR (0xF4)",
+            ),
+        ]
     }
 
     fn f2_event(event_type: KeyEventType) -> RawKeyEvent {
@@ -388,6 +451,44 @@ mod plan_tests {
                 PhysicalKeyDisposition::plan(&ev, profile, true, false, false, active_ime_kind),
                 PhysicalKeyDisposition::Suppress,
                 "{label}: shadow_toggle 発火時の KeyDown は awase が既に apply-ime 済みのため Suppress"
+            );
+        }
+    }
+
+    /// 2026-08-05 実機: NICOLA の物理「IME ON」キー（scan 0x70）は IME が既に
+    /// 目的の状態にある時に押されると、`VK_DBE_HIRAGANA` (0xF2) ではなく
+    /// `VK_DBE_ALPHANUMERIC` (0xF0) や `VK_DBE_KATAKANA` (0xF1) が生成されることが
+    /// ある（実機ログで両方確認）。この場合 shadow_toggle は不発（既に目的の状態）
+    /// となるが、これら `VK_DBE_*` を素通しすると実 IME が能動的にネイティブ効果
+    /// （英数/カタカナ/半角/全角への切替）を適用してしまうため、`VK_KANJI` 等と
+    /// 異なり shadow_toggled=false でも Suppress する必要がある（0xF3/0xF4 は
+    /// 実機での漏洩は未確認だが、同じコードパスを通るため同様に対象とする）。
+    #[test]
+    fn dbe_mode_keydown_suppressed_even_when_not_shadow_toggled() {
+        for (vk, action, vk_label) in dbe_mode_vks() {
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                    PhysicalKeyDisposition::Suppress,
+                    "{vk_label} / {label}: shadow_toggle 不発でも実IMEへの意図しない \
+                     モード切替を防ぐため Suppress"
+                );
+            }
+        }
+    }
+
+    /// 対照実験: 同じ「shadow_toggle 不発」条件でも `VK_KANJI` 等の DBE 範囲外の
+    /// 一般 KANJI キーは引き続き Allow のまま（`VK_DBE_*` 専用の例外であり、KANJI
+    /// 系キー全体の挙動を変えていないことを固定する）。
+    #[test]
+    fn owned_actuation_keydown_allowed_when_not_shadow_toggled_is_unaffected_by_dbe_mode_fix() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::Allow,
+                "{label}: VK_KANJI は VK_DBE_* 向け修正の影響を受けない"
             );
         }
     }
