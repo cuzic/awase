@@ -375,14 +375,13 @@ pub unsafe fn post_gji_ime_off() {
 #[must_use]
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::{VK_LWIN, VK_RWIN};
 
     // Win キー押下中は注入をスキップする。
     // Win+VK_IME_ON/OFF は OS に未認識ショートカットとして届き、Win↑ のタイミングで
     // スタートメニューを誤起動させる原因になる。
     // Win を SendInput で解放すると Win 自体がスタートメニューを開くため、
     // Alt と同様にスキップ（解放しない）が正しい対処。
-    if crate::hook::is_physical_key_down(VK_LWIN) || crate::hook::is_physical_key_down(VK_RWIN) {
+    if crate::hook::win_key_held() {
         log::debug!(
             "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+VK_IME triggers Start Menu on Win↑)"
         );

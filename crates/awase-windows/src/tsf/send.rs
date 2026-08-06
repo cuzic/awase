@@ -5,12 +5,6 @@
 
 use super::output::make_tsf_key_input;
 
-/// Win キー押下中かどうかを確認するローカルヘルパー。
-fn win_key_held() -> bool {
-    use crate::vk::{VK_LWIN, VK_RWIN};
-    crate::hook::is_physical_key_down(VK_LWIN) || crate::hook::is_physical_key_down(VK_RWIN)
-}
-
 /// VK_DBE_HIRAGANA (F2) のキーダウン＋キーアップを SendInput で送信する。
 ///
 /// 戻り値: 実際に注入した場合 `Some(送信時刻ms)`（`current_tick_ms` の値）。
@@ -29,7 +23,7 @@ pub(crate) fn send_vk_dbe_hiragana_pair() -> Option<u64> {
     // Win キー押下中は送信をスキップする。
     // Win を押したまま VK_DBE_HIRAGANA を注入すると Win+F2 として届き、
     // Win↑ 時にスタートメニューが開く原因になる。
-    if win_key_held() {
+    if crate::hook::win_key_held() {
         log::debug!("[tsf-warmup] skipped VK_DBE_HIRAGANA (Win key held)");
         return None;
     }
