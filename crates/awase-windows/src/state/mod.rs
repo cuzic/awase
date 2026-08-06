@@ -31,6 +31,8 @@ pub(crate) mod conv_mode;
 pub use conv_mode::ConvModeAuthority;
 #[cfg(windows)]
 pub(crate) use conv_mode::ConvModeMgr;
+#[cfg(windows)]
+pub(crate) use conv_mode::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason};
 
 // 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
 // hook.rs は #[cfg(windows)] のため非 Windows では未使用になる。BUG-41

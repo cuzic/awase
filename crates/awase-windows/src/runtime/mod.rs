@@ -1,3 +1,4 @@
+mod conv_actuation;
 pub(crate) mod executor;
 mod focus_tracker;
 mod focus_tracking;

@@ -5432,6 +5432,81 @@ x86_64-pc-windows-gnu --tests` で型検査・`cargo clippy` で lint 済み、w
 （Linux 実行分、golden_scenarios/architecture_guard 含む 273 件）は無影響で
 全 green。
 
+**追補3（2026-08-06、ADR-084 P1/INV-1 `actuate_conv_mode` chokepoint 導入・第一弾）:**
+Phase 1 追補が「次段」として残した「ADR-084 の `actuate_conv_mode` chokepoint への
+統合」に着手した。conv-mode を書き込む経路は本ファイルの洗い出しで最低6箇所
+（`key_pipeline.rs` 4箇所・`cold_warmup.rs`・`executor.rs`）+ `VK_DBE_HIRAGANA`/
+`ALPHANUMERIC` 直接送信（`ime.rs`・`ime_controller.rs`・`tsf/send.rs`）に散在して
+いることを確認したが、本コミットは意図的に**最小スコープ**（`kp_shift_conv_guard_
+key_down` の MS-IME entry 書き込み1箇所のみ）に絞った。
+
+**理由:** `kp_restore_kana_from_half_width` の復元リトライループは
+`shift_conv_guard_gen`/`owner_gen`/`confirm_gate_deadline_override_ms` と密結合
+しており、Phase 2 追補にあるとおり Opus レビュー round 5〜6（"pass-5"）で発見・
+修正された blocking な世代競合を含む、複数回のレビューを経てようやく確立した
+挙動である。この領域は「IME OFF キー選択が5日間で6回反転した」
+（`docs/experiments.md` エントリ01）のと同じ再発ファミリーであり、chokepoint への
+機械的な一括移行は、その過程で世代管理の呼び出し順序を崩し新たな回帰を生む
+リスクが高いと判断した。entry 側（比較的自己完結: ガード判定・unconfirm・
+give-up 解除・spawn write のみで、世代管理を伴わない）から着手し、1箇所の移行で
+`actuate_conv_mode` の実際の型・呼び出し規約を確定させることを優先した。
+
+**実装:**
+- `state/conv_mode.rs` に `ConvModeTarget`（`HalfWidthAlnum` のみ、他 variant は
+  未移行呼び出し元の移行時に追加）・`ConvMutationReason`（`ShiftSoloTapCounter`
+  のみ）・`ConvActuationOutcome`（`Rejected`/`Actuated`）を新設。ADR-084 §2 が
+  提案する完全版のうち、実際に使う variant のみを定義し、憶測での API 先行拡張は
+  避けた。
+- `runtime/conv_actuation.rs`（新設）に `Runtime::actuate_conv_mode` を実装。
+  ADR-064 の `conv_mutation_allowed` ゲート確認 → `ImeModeFsm::unconfirm`（INV-2、
+  同期）→ `ms_ime_gate_give_up` 解除（同期）→ 実際の IMC write は非同期
+  `spawn_local`、の順で行う。既存の `kp_shift_conv_guard_key_down` 内のインライン
+  実装と**完全に同じ順序・同じログラベル**（`"shift-conv-guard entry"`）を保つ
+  ことで、挙動変化ゼロの純粋なリファクタとして扱えるようにした。
+- `kp_shift_conv_guard_key_down` の該当箇所（unconfirm 呼び出し + give-up 解除 +
+  `spawn_local` での IMC write）を `self.actuate_conv_mode(ConvModeTarget::
+  HalfWidthAlnum, ConvMutationReason::ShiftSoloTapCounter, now_tick)` 1行に置換。
+  `confirm_gate_deadline_override_ms` の延長・`bump_shift_conv_guard_gen`・150ms
+  診断用 verify-read は元の場所に残置（chokepoint の責務外、Phase 2 の世代管理
+  ロジックに属する）。
+
+**未移行（次段のスコープ、変更なし）:** `kp_restore_kana_from_half_width` の復元
+リトライループ、`tsf/warmup/cold_warmup.rs::preamble`、`runtime/executor.rs`、
+`kp_stage_idle_conv_check` のローマ字復元経路（`key_pipeline.rs` 内3箇所）は
+`set_ime_romaji_mode_with_target_async` を直接呼び続けている。したがって
+ADR-084 INV-1 が求める「低レベル API を private にしてこの関数だけが呼べるように
+する」というコンパイラ強制は、これら全ての移行が完了するまで導入できない
+（本コミット時点では `set_ime_romaji_mode_with_target_async` は従来どおり
+`pub(crate)` のまま）。INV-11（conv 帰属/provenance、BUG-50 追補参照）も未着手。
+
+**テスト:** `state/conv_mode.rs` に `half_width_alnum_target_maps_to_zero`
+（`ConvModeTarget::HalfWidthAlnum` → `conv=0`）・`shift_solo_tap_counter_uses_
+existing_unconfirm_label`（ログラベルが移行前と同一であることを固定）を追加
+（Linux ネイティブで `cargo test -p awase-windows --lib conv_mode` 実行・確認済み、
+12 passed）。`cargo test -p awase-windows --lib`（278 passed）・`--test
+golden_scenarios --test architecture_guard`（22 passed）は無影響で全 green。
+
+**検証状況:** `cargo check -p awase-windows --target x86_64-pc-windows-gnu`・
+`cargo clippy -p awase-windows --target x86_64-pc-windows-gnu --lib -- -A
+clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity`
+（CI の `clippy` ジョブと同じ引数、warning ゼロ）・`cargo xwin build --tests -p
+awase-windows --target x86_64-pc-windows-msvc`（`windows-cross-check` ジョブ相当）
+はいずれも green。`cargo dylint` はサンドボックスのディスク逼迫（作業中に
+一時的に空き容量が数MBまで低下し `error: No space left on device` でリンクが
+落ちる事態が発生、自worktreeのビルドキャッシュ削除で復旧）を踏まえてリスクを
+避けるため見送った — 本コミットは `ImeEvent::PanicReset`/`HwndCacheRestored`/
+`InputModeObserved`/`ConvBitsInference` のいずれも構築しておらず、既存の
+`ime_event_guard`/`observation_source_guard` の検出対象パターンには触れていない。
+wine 未導入のためこのサンドボックスでは実機相当の実行・確認は未実施
+（entry 書き込みのログ順序・タイミングが変わっていないことのみコード読解で確認）。
+
+**関連ファイル:** `crates/awase-windows/src/state/conv_mode.rs`
+（`ConvModeTarget`/`ConvMutationReason`/`ConvActuationOutcome`）、
+`crates/awase-windows/src/runtime/conv_actuation.rs`（新設、
+`Runtime::actuate_conv_mode`）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_shift_conv_guard_key_down`）。関連: ADR-084（P1/INV-1/INV-2）、
+BUG-49 追補1・2（本追補の前提となった entry/restore の既存挙動）。
+
 ## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
 
 **症状:** MS-IME（TSF-native、Windows Terminal / Chrome / UWP アプリ間でフォーカスが

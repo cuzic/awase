@@ -48,6 +48,73 @@ impl ConvModeAuthority {
     }
 }
 
+// ─── conv-mode actuator（ADR-084 P1/INV-1）─────────────────────────────────────
+
+/// `Runtime::actuate_conv_mode`（`runtime/conv_actuation.rs`）が受け取る書き込み目標。
+///
+/// [ADR-084](../../../../docs/adr/084-conv-mode-single-ownership-and-width-ssot.md) の
+/// 提案する完全版（`Kana{katakana}`/`HalfWidthAlnum`/`Restore`）のうち、実際に
+/// 移行済みの呼び出し元（`kp_shift_conv_guard_key_down` の MS-IME entry のみ）が
+/// 必要とする variant のみを定義する。他の呼び出し元（`kp_restore_kana_from_half_width`
+/// の復元リトライ、`cold_warmup.rs`/`executor.rs`/idle-conv-check 側の romaji 復元）は
+/// 未移行（`docs/known-bugs.md` ADR-084 追補参照）。それらを移行する際に variant を
+/// 追加すること — 使われない variant を先回りで用意しない（憶測での API 拡張を避ける）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvModeTarget {
+    /// IME-ON 半角英数（`conv=0x0000`）。MS-IME が Shift 単独タップを英数切替と
+    /// 誤認する前に、awase 側から先回りで同じ状態を書き込む安全網。
+    HalfWidthAlnum,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl ConvModeTarget {
+    /// `ImmSetConversionStatus`/IMC write に渡す raw conv 値。
+    #[must_use]
+    pub(crate) const fn imm_conv_value(self) -> u32 {
+        match self {
+            Self::HalfWidthAlnum => 0,
+        }
+    }
+}
+
+/// `actuate_conv_mode` の呼び出し元が「なぜ conv-mode を変えるのか」を申告する理由。
+///
+/// [ADR-084](../../../../docs/adr/084-conv-mode-single-ownership-and-width-ssot.md) §2 の
+/// 提案する完全版（`ShiftSoloTapCounter`/`HalfWidthAlnumToggle`/`WarmupRestore`/
+/// `DriftCorrection`）のうち、移行済みの呼び出し元が使う variant のみを定義する
+/// （`ConvModeTarget` と同じ理由）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvMutationReason {
+    /// MS-IME が物理 Shift 単独タップを半角英数切替と誤認するのを打ち消す安全網
+    /// （`kp_shift_conv_guard_key_down`、BUG-15/BUG-49）。
+    ShiftSoloTapCounter,
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+impl ConvMutationReason {
+    /// `ImeModeFsm::unconfirm` に渡すログ用ラベル。
+    #[must_use]
+    pub(crate) const fn as_unconfirm_label(self) -> &'static str {
+        match self {
+            Self::ShiftSoloTapCounter => "shift-conv-guard entry",
+        }
+    }
+}
+
+/// `actuate_conv_mode` の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvActuationOutcome {
+    /// ADR-064 の `conv_mutation_allowed`（`UserManaged` 中等）により却下され、
+    /// 何も書き込まなかった。
+    Rejected,
+    /// gate を通過し、belief 無効化（INV-2）を同期的に行った上で、実際の
+    /// Win32 書き込みを非同期 (`spawn_local`) に投げた。
+    Actuated,
+}
+
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
 /// IME 変換モードを一元管理するコンポーネント。
@@ -212,6 +279,24 @@ mod tests {
 
     fn t(ms: u64) -> TickMs {
         TickMs(ms)
+    }
+
+    /// ADR-084 P1: `ConvModeTarget::HalfWidthAlnum` は `conv=0x0000`（IME-ON 半角英数）
+    /// に対応する。値を変えると `actuate_conv_mode` が誤った conv を書き込む。
+    #[test]
+    fn half_width_alnum_target_maps_to_zero() {
+        assert_eq!(ConvModeTarget::HalfWidthAlnum.imm_conv_value(), 0);
+    }
+
+    /// `ConvMutationReason` のログラベルは `ImeModeFsm::unconfirm` の既存ログ文言
+    /// （`"shift-conv-guard entry"`）と一致させる。移行前のインライン呼び出しと
+    /// ログの見た目を変えないための固定。
+    #[test]
+    fn shift_solo_tap_counter_uses_existing_unconfirm_label() {
+        assert_eq!(
+            ConvMutationReason::ShiftSoloTapCounter.as_unconfirm_label(),
+            "shift-conv-guard entry"
+        );
     }
 
     /// `allows_conv_mutation` は `AwaseOwned` のときのみ true。反転すると

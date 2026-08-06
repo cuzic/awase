@@ -1218,20 +1218,18 @@ impl Runtime {
         // 未着手・未検証。
         if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
             log::info!("[shift-conv-guard] MS-IME経路: IMC write (conv=0x0000) 送信");
-            // ADR-084 P1/INV-2/INV-9（BUG-49）: 実際の書き込みは非同期（spawn_local）
-            // だが、belief 無効化はここで同期的に行う。async タスク内で unconfirm
-            // すると、その完了前にチョードが解決して送信ゲート
+            // ADR-084 P1/INV-1/INV-2（第一弾）: 書き込みと belief 無効化を
+            // `Runtime::actuate_conv_mode` に集約した（`runtime/conv_actuation.rs`）。
+            // 実際の書き込みは非同期（spawn_local）だが、belief 無効化（unconfirm）と
+            // give-up latch 解除はこの呼び出しの中で同期的に行われる。async タスク内で
+            // unconfirm すると、その完了前にチョードが解決して送信ゲート
             // （`Output::ms_ime_gate_defer`）が呼ばれた場合、stale な
             // `is_native_ready()==true` を素通ししてしまう（本バグの根本原因）。
-            // give-up latch も同時に解除する: 新たに conv actuation を行った以上、
-            // 過去の期限切れ（IMC 不可読環境の判定）は無効化前提が変わっており、
-            // 再度試す価値がある。
-            self.platform
-                .output
-                .ime_mode_fsm
-                .borrow_mut()
-                .unconfirm("shift-conv-guard entry");
-            self.platform.output.ms_ime_gate_give_up.set(false);
+            let _ = self.actuate_conv_mode(
+                crate::state::ConvModeTarget::HalfWidthAlnum,
+                crate::state::ConvMutationReason::ShiftSoloTapCounter,
+                now_tick,
+            );
             // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
             // `Output::ms_ime_gate_defer`）の期限を、hold 中は
             // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ実質的に延長する
@@ -1258,10 +1256,6 @@ impl Runtime {
             // 通常の間隔で起こりうる）、hold #1 の古い retry task が hold #2 の
             // override を誤ってクリアする事故を防ぐ。
             self.platform.output.bump_shift_conv_guard_gen();
-            win32_async::spawn_local(async {
-                let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(0)).await;
-                log::info!("[shift-conv-guard] IMC write 結果: ok={ok}");
-            });
 
             // 診断用（2026-07-11）: 送信直後に conv を読み取ってログに残す。
             // MS-IME はこの IMC write 自体が実効的な経路なので、この読み取りは
