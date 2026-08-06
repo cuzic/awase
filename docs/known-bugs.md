@@ -5016,3 +5016,92 @@ TurnOn/TurnOff」グループへ分類する 0xF0/0xF1/0xF3/0xF4 でもあり得
 送信する VK にしか適用できない保証であり、**同じ意味クラスに分類された物理
 キーの生イベントを無検査で通すこと**にまで拡張できる保証ではなかった、という
 のが正確な因果関係。
+## BUG-48: Win キー押下時に検索UIが開くと KeyUp が失われ `PHYSICAL_KEY_STATE[VK_LWIN]` が恒久的にスタックし、以後 IME ON/OFF の実送信が無期限にスキップされる
+
+**症状:** WindowsTerminal（MS-IME、TsfNative プロファイル）で、Windows キーを
+押した際に検索UI（`searchhost.exe`）が開くと、以後 `Ctrl+変換`/`Ctrl+無変換`
+（IME control ON/OFF ホットキー）を押しても Engine の belief だけが ON/OFF
+切り替わり、**実 IME には一切反映されなくなる**（ユーザー通報「なぜかCtrl＋変換で
+IME OFFにならなくなっちゃった」、2026-08-06）。
+
+**再現手順（実機 debug ログで確認済み）:**
+
+```
+[apply-ime] MS-IME direct: send 0x001A (DirectInput, 冪等)
+[ime-mode] skipped vk=0x1A (Win key held — Win+VK_IME triggers Start Menu on Win↑)
+[apply-ime] open=false eff=true conf=true → outcome=UnsafeToToggle
+```
+上記が `Ctrl+変換`/`Ctrl+無変換` を押すたびに繰り返され、実送信が永久にスキップ
+される。ログを遡ると、この直前にユーザーが物理 Windows キーを押下しており、
+以後ずっと `vk=0x5B`（VK_LWIN）の KeyUp が一度も観測されていない。その後
+ユーザーが**もう一度** Windows キーを押して離す（この直後 `searchhost.exe` への
+フォーカス変更ログが確認された）と、直後から `Ctrl+変換` が `outcome=Applied`
+で正常に実送信されるようになった。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal 等）。
+
+**原因（確度: 中〜低、状況証拠からの推測。確定ではない）:** `hook.rs` の
+`PHYSICAL_KEY_STATE`（`is_physical_key_down` が参照する、非注入・非自己注入の
+物理 KeyDown/KeyUp のみで更新される全 VK 用のフラグ配列）は、VK_LWIN/VK_RWIN
+専用の特別分岐を持たず、他の全 VK と同じ経路で無条件更新される。実機ログでは
+他キー（Ctrl・無変換等）の KeyDown/KeyUp は正常に処理され続けていたため、
+`WH_KEYBOARD_LL` フック自体が全面停止したわけではない。Windows キー押下で
+検索UIが実際に開くフローに入ったことは確実であり、この経路上で **シェル/検索UI
+側が保持する別の低レベルフックが `CallNextHookEx` を呼ばずに Win キーの KeyUp
+を消費し、awase 側のフックにイベントが渡らなかった**、という Win32 API の一般的
+な仕様（フックチェーンの前段が `CallNextHookEx` を呼ばないと後段に届かない）に
+基づく推測が最も有力。ただしこれを直接裏付ける実測ログ・コメントはリポジトリ内
+に存在しない。
+
+`crate::hook::win_key_held()`（旧: `tsf/send.rs::win_key_held()` と
+`ime.rs::send_ime_mode_key` 内に重複記述されていた `is_physical_key_down(VK_LWIN)
+|| is_physical_key_down(VK_RWIN)` の単純 OR）が Win+VK_IME によるスタートメニュー
+誤起動を防ぐため（BUG-16 追補、ADR-061）に既存していたが、KeyUp 消失で
+`PHYSICAL_KEY_STATE` がスタックすると、このガード自体が「安全策」から「恒久的な
+機能停止」に反転してしまう。
+
+**修正:** `PHYSICAL_KEY_STATE` 単純参照ではなく、`PHYSICAL_KEY_DOWN_AT_MS`
+（既存の押下開始時刻トラッキング）から算出した保持時間が
+`tuning::WIN_KEY_HELD_STALE_MS`（2,000ms、未実測の暫定値）以上続いている場合は
+stale とみなし「押されていない」扱いにする。判定の中核ロジック
+（`state/win_key_guard.rs::is_held_fresh`）は Win32 API を呼ばない純粋関数として
+分離し、`alt_impersonation.rs`（BUG-41 の教訓）と同じ理由で Linux の
+`cargo test -p awase-windows --lib` から常時実行できるようにした。
+`crate::hook::win_key_held()` を唯一の判定点として新設し、`tsf/send.rs`/`ime.rs`
+の重複していた個別チェックをこれに一本化した。
+
+**未対応（残存）:**
+
+- KeyUp 消失の正確なメカニズムは推測のまま（上記「原因」参照）。実機での再現・
+  検証は未実施。
+- `WIN_KEY_HELD_STALE_MS=2000ms` は実測に基づかない暫定値。実機ソークでの
+  調整余地がある（`tuning-constants.md` の実測義務を満たせていない、次回
+  実機確認時に要実測）。
+- stale 判定は「2秒間 KeyUp が来ない」という間接的なシグナルに依存しており、
+  フォーカス変更をトリガーにした即時リセット（`on_window_focus_event` 経由）
+  という代替案も検討したが、Alt+Tab 中等に Win キーを本当に長押ししている
+  最中の誤リセットを避けるため見送った（両方式ともトレードオフがあり、
+  こちらがより保守的と判断）。
+
+**検証状況:** コード読解による確定（`hook.rs`/`ime.rs`/`tsf/send.rs`を Explore
+エージェントで独立監査）+ 実機ログでの発生・回復シーケンスの確認。
+`state/win_key_guard.rs` に純粋ロジックの単体テスト3件を追加し Linux で
+`cargo test -p awase-windows --lib` から実行・pass 確認済み
+（`none_is_not_held`/`fresh_hold_is_held`/`stale_hold_is_not_held`）。
+`runtime` モジュールは `#[cfg(windows)]` のため Linux 上では `cargo build --tests
+--target x86_64-pc-windows-gnu -p awase-windows`（warning ゼロ）および
+`cargo clippy --lib --target x86_64-pc-windows-gnu -p awase-windows -- -D
+warnings`（warning ゼロ）での型検査のみ実施。実機/Windows 環境での再発確認は
+未実施。
+
+**関連ファイル:** `crates/awase-windows/src/hook.rs`（`win_key_held`、
+`PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS`）、
+`crates/awase-windows/src/state/win_key_guard.rs`（`is_held_fresh`、新設）、
+`crates/awase-windows/src/tuning.rs`（`WIN_KEY_HELD_STALE_MS`、新設）、
+`crates/awase-windows/src/tsf/send.rs`（`send_vk_dbe_hiragana_pair`）、
+`crates/awase-windows/src/ime.rs`（`send_ime_mode_key`）。関連: BUG-16
+（`send_ime_mode_key` スキップ時の `UnsafeToToggle` 伝播、この設計自体は正しく
+機能していた）、ADR-061（Win キー押下中の IME キー注入スキップ機能の導入元）、
+BUG-41（`alt_impersonation.rs` 移設と同じ「純粋判定を Linux でテスト可能にする」
+再発防止パターンの前例）、BUG-23（`reset_physical_key_state` によるセッション
+ロック解除時の全 VK リセット、同種の stuck-modifier 対策の前例）。
