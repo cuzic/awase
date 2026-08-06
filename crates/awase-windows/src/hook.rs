@@ -203,6 +203,29 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
     (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
 }
 
+/// Win キー（左右どちらか）が「新鮮に」押下中かを返す。
+///
+/// `is_physical_key_down(VK_LWIN/VK_RWIN)` の単純な OR ではなく、
+/// `tuning::WIN_KEY_HELD_STALE_MS` 以上「押されたまま」の値は stale として
+/// 無視する（2026-08-06 実機: Win キー押下で検索UIが開いた際に KeyUp が
+/// `WH_KEYBOARD_LL` フックチェーンの前段で消費され awase に届かず、
+/// `PHYSICAL_KEY_STATE` が恒久的に「押されたまま」スタックし、以後
+/// `VK_IME_ON`/`VK_IME_OFF` の実送信が `win_key_held()` により無期限に
+/// スキップされ続けた不具合の対策。原因の確度は「推測」— `WH_KEYBOARD_LL`
+/// 自体は他キーには正常に応答していたため全面停止ではなく、Win キー固有の
+/// 経路でのみ KeyUp が失われたと考えられる）。
+///
+/// `tsf/send.rs::send_vk_dbe_hiragana_pair` と `ime.rs::send_ime_mode_key`
+/// の両方が使う唯一の判定点（旧実装は各所で `is_physical_key_down` の OR を
+/// 個別に重複記述していた）。
+#[must_use]
+pub fn win_key_held() -> bool {
+    use crate::state::win_key_guard::is_held_fresh;
+    use crate::vk::{VK_LWIN, VK_RWIN};
+    is_held_fresh(physical_key_held_ms(VK_LWIN), crate::tuning::WIN_KEY_HELD_STALE_MS)
+        || is_held_fresh(physical_key_held_ms(VK_RWIN), crate::tuning::WIN_KEY_HELD_STALE_MS)
+}
+
 /// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
 ///
 /// セッションロック中（Secure Desktop 遷移中）は `WH_KEYBOARD_LL` フックにイベントが
