@@ -175,6 +175,20 @@ pub const DRIFT_CORRECTION_THRESHOLD_MS: u64 = 400;
 /// この時間より古い観測値は stale とみなしてドリフト補正の根拠として使わない。
 pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 
+/// `PHYSICAL_KEY_STATE[VK_LWIN/VK_RWIN]` が「押されたまま」と信頼できる最大保持時間 (ms)。
+///
+/// これより長く「押されたまま」の値が続いている場合は、KeyUp が
+/// `WH_KEYBOARD_LL` フックチェーンの前段（シェル/検索UI側の低レベルフック等、
+/// 推測）で消費され awase に届かなかった stale な状態とみなし、
+/// `win_key_held()` は「押されていない」として扱う（2026-08-06 実機、
+/// Win キー押下で検索UIが開いた際に KeyUp が失われ `VK_IME_ON/OFF` の実送信が
+/// 恒久的にスキップされ続けた不具合の対策）。
+///
+/// **未実測**: 実機での Win キー保持時間の分布は未計測。人間が Win+何かの
+/// チョードを行う際の保持時間は通常数百ms 以内で完了するという定性的な
+/// 推論に基づく暫定値。実機ソークでの調整余地がある。
+pub const WIN_KEY_HELD_STALE_MS: u64 = 2_000;
+
 // === グレース・マージン ===
 
 /// TSF warmup 完了直後のグレース期間 (ms)。
