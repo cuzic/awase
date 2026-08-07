@@ -140,6 +140,13 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
+    /// `apply_force_on_for_imm_broken` の `conv_mode_policy = force` 経路が最後に
+    /// 実送信した tick（ms）。TsfNative では `reschedule_ime_refresh` の周期ポーリング
+    /// 自体が止まっているため、この経路の再送を `ime_poll_interval_ms` 相当の間隔に
+    /// 抑える自前のレート制限が必要（2026-08-07 実機:「ガタつき・遅延がひどい」、
+    /// `apply_force_on_for_imm_broken` の doc コメント参照）。`discard_actuation` と
+    /// 同じタイミング（FocusChanged 等）で `None` に戻す。
+    last_force_on_resend_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -564,13 +571,33 @@ impl Runtime {
             self.platform.output.conv_mode.policy(),
             crate::state::ConvModePolicy::Force
         );
-        if !force_policy
-            && matches!(
-                self.platform_state.ime.model().applied,
-                crate::state::ime_model::AppliedImeState::Optimistic(true)
-                    | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
-            )
-        {
+        if force_policy {
+            // TsfNative では `reschedule_ime_refresh` の周期ポーリング自体が
+            // is_tsf_native 早期 return で止まっているため、この関数を再度呼ぶ
+            // 唯一の経路は `on_ime_apply_complete` → `post_ime_refresh()` が
+            // 無条件に仕込む 20ms 後の確認 refresh だけになる。上のスロットルを
+            // 単純に外すと、この 20ms 確認チェーンが「再送 → 20ms 後 refresh →
+            // 再送 → …」と自己駆動の無限ループに縮退する（2026-08-07 実機:
+            // 「ガタつき・遅延がひどい」、20〜50ms 間隔で VK_IME_ON 連打を確認）。
+            // `ime_poll_interval_ms` 相当の間隔を自前で空け、意図どおり「poll
+            // 間隔ごとに1回だけ再送」に戻す。間隔未経過なら実送信はせず、
+            // 残り時間だけ次の refresh を予約して抜ける（force-policy の周期
+            // 監視自体は止めない）。
+            let now = crate::hook::current_tick_ms();
+            let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
+            if let Some(last) = self.last_force_on_resend_ms {
+                let elapsed = now.saturating_sub(last);
+                if elapsed < interval_ms {
+                    self.schedule_ime_refresh(interval_ms - elapsed);
+                    return;
+                }
+            }
+            self.last_force_on_resend_ms = Some(now);
+        } else if matches!(
+            self.platform_state.ime.model().applied,
+            crate::state::ime_model::AppliedImeState::Optimistic(true)
+                | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
+        ) {
             return;
         }
         // `platform.set_ime_open` は IMM 専用実装で、Imm32Unavailable / TSF-native
@@ -825,6 +852,7 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
+            last_force_on_resend_ms: None,
         }
     }
 

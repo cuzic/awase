@@ -6079,3 +6079,86 @@ warnings`（warning ゼロ）での型検査のみ実施。実機/Windows 環境
 BUG-41（`alt_impersonation.rs` 移設と同じ「純粋判定を Linux でテスト可能にする」
 再発防止パターンの前例）、BUG-23（`reset_physical_key_state` によるセッション
 ロック解除時の全 VK リセット、同種の stuck-modifier 対策の前例）。
+
+## BUG-54: `apply_force_on_for_imm_broken` の `conv_mode_policy=force` 経路が20msごとのVK_IME_ON無限再送ループに縮退し、体感遅延・ガタつきを引き起こす
+
+**症状:** Windows Terminal（MS-IME、TsfNative/InputSite プロファイル）で
+`conv_mode_policy=force` 運用中、ユーザーから「動きが少しがたついているというか、
+遅延がとてもあり、ギリギリ使えなくてもないがかなりストレスフル」という報告
+（2026-08-07）。実機 debug ログでは以下のブロックが **~35〜50ms 間隔で無限に
+繰り返され**、900ms の抜粋だけで20回以上観測された:
+
+```
+[stage-observe] strategy=SkipTyping/Blacklist belief_on=true explicit_intent=Some(true)
+[apply-ime] MS-IME direct: send 0x0016 (IME ON)
+[ime-mode] SendInput vk=0x16 ...
+[apply-ime] open=true eff=true conf=true → outcome=Applied
+Blacklist force-ON: apply_ime_open(true) → Applied
+[ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+[composition] ImeEffect::SetOpen(true) → marking cold
+[composition] marked cold reason=SetOpenTrue ... → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+Timer set: logical=101, ms=20, os_id=...
+...(UIA async 問い合わせ等)...
+Timer killed: logical=101, os_id=...
+read_ime_state_full: ... ime_on=None (preserving state)
+```
+打鍵の有無に関係なく常時回り続けており、実際にユーザーが打鍵した Enter
+（この抜粋の末尾）が挟まってもループ自体は継続していた。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+
+**原因（確定、コード読解 + ログでの因果確認済み）:** `runtime/mod.rs::
+apply_force_on_for_imm_broken` は「`applied` が既に ON 記録済みなら送らない」
+という自己スロットルを持っていたが、`893254c9`（本ブランチに先立って別セッション
+がマージ、`feat(awase-windows): conv_mode_policy=forceをIME ON/OFF軸にも適用`）
+が `conv_mode_policy=force` のときこのスロットルを完全にバイパスするよう変更
+していた。ところが呼び出し連鎖は次の通りで、このスロットルが同時に
+「`on_ime_apply_complete` → `platform.post_ime_refresh()` が無条件に仕込む
+20ms 後の確認 refresh チェーン」を1回で自己終了させる安全弁も兼ねていた:
+
+```
+TIMER_IME_REFRESH(20ms) 発火
+  → run_ime_refresh_with_prefetched()
+    → apply_force_on_for_imm_broken()   // force policy でスロットル無効化
+      → VK_IME_ON 送信、on_ime_apply_complete()
+        → platform.post_ime_refresh()   // 無条件で 20ms 後に TIMER_IME_REFRESH 再セット
+          → (最初に戻る、無限)
+```
+
+TsfNative ウィンドウでは `reschedule_ime_refresh()` 自体が
+`is_tsf_native || explicit_intent().is_some()` で常に早期 return するため、
+`post_ime_refresh()` の 20ms 確認チェーンが `apply_force_on_for_imm_broken` を
+再度呼ぶ**唯一の経路**になっている。`893254c9` のコミットメッセージが想定していた
+「500ms poll ごとに無条件で再送する」という設計意図は TsfNative では成立せず、
+実際には 20ms 周期の自己駆動ループに縮退していた。
+
+**修正:** `force_policy` 分岐に、`Runtime` の新規フィールド
+`last_force_on_resend_ms: Option<u64>` を使った自前のレート制限を追加した。
+`ime_poll_interval_ms`（既定 500ms）未経過なら実送信をスキップし、残り時間
+だけ次の refresh を予約して抜ける（force-policy の周期監視自体は止めない）。
+`discard_actuation()`（FocusChanged 等で `active_actuation` を破棄する既存の
+唯一の口）に併せてこのフィールドもリセットし、新しいフォーカス先で前の待機を
+持ち越さないようにした。ADR-080 の `Actuation`（`ir_apply_drift_correction`
+専用、`desired`/`FocusChanged`/`Resolution` 確定で破棄・再構築）への統合も
+検討したが、`apply_force_on_for_imm_broken` は `check_drift_correction` を
+経由しない別経路のため、大きな設計変更なしに転用できず、今回は見送った
+（将来の統合候補として残す）。
+
+**検証:** `cargo xwin check`/`cargo xwin clippy -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ）、`cargo test -p
+awase-windows --lib --test golden_scenarios --test architecture_guard`
+（320 件 pass）。wine 未導入のためこのサンドボックスでは実機相当のテスト
+実行は未実施。次回実機確認で、当該ログブロックの再送間隔が
+`ime_poll_interval_ms` 相当（既定500ms）に戻っていることを確認すること。
+
+**未対応（残存）:** BUG-51 で修正した OFF 方向（`ir_apply_drift_correction`
+経由の `KatakanaShadowOff` 誤検知の可能性、実機再現待ち）とは別軸の問題。
+`apply_force_on_for_imm_broken` と ADR-080 `Actuation` の設計統合は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/mod.rs`
+（`apply_force_on_for_imm_broken`、`Runtime::last_force_on_resend_ms`）、
+`crates/awase-windows/src/runtime/ime_actuation.rs`（`discard_actuation`）、
+`crates/awase-windows/src/platform.rs`（`post_ime_refresh`）。関連: BUG-51
+（TsfNative drift correction の再起動漏れ、同じ `TIMER_IME_REFRESH`/20ms 系統）、
+ADR-083（`conv_mode_policy=force` の設計記録）、ADR-080（`Actuation` 型付き
+トランザクション、統合の将来候補）。

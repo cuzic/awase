@@ -87,7 +87,12 @@ impl Runtime {
     /// 進行中の actuation を破棄する。破棄条件2（FocusChanged）・3
     /// （`Resolution` 確定）で使う。次の observe tick で必要なら
     /// `actuation_for` が新規構築する。
+    ///
+    /// `apply_force_on_for_imm_broken` の force-policy レート制限
+    /// （`last_force_on_resend_ms`）も同じ破棄条件（新しいフォーカス先では
+    /// 前の待機を持ち越さない）が成り立つため、ここで併せてリセットする。
     pub(super) fn discard_actuation(&mut self) {
         self.active_actuation = None;
+        self.last_force_on_resend_ms = None;
     }
 }
