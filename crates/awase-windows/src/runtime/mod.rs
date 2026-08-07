@@ -459,13 +459,28 @@ impl Runtime {
         // TsfNative は read_ime_state_full が常に None、GJI も predates-focus-change でスキップ。
         // explicit_intent の有無に関わらずポーリングで得られる情報がないため常に停止する。
         // explicit_intent が確定している他プロファイルも同様に停止。
-        // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
+        // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）。
+        //
+        // `conv_mode_policy = force` のときはこの早期 return をしない。この停止は
+        // 「観測しても何も読めないから無駄」という observe 専用の最適化だが、
+        // `ir_stage_notify` の Phase 4a（`apply_force_on_for_imm_broken`）は同じ
+        // リフレッシュ連鎖に相乗りする能動的な actuation であり、observe が無駄でも
+        // actuation は無駄ではない。この早期 return によって連鎖が停止すると、
+        // フォーカスが TsfNative（Windows Terminal 等）に落ち着いた後の無操作期間は
+        // 一切の force 再送が起きなくなる（2026-08-06 実機: ロック解除後の長い静寂期間で
+        // `belief=ON` × `実IME=OFF` の乖離が force policy でも訂正されなかった不具合）。
+        let force_policy = matches!(
+            self.platform.output.conv_mode.policy(),
+            crate::state::ConvModePolicy::Force
         );
-        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
-            return;
+        if !force_policy {
+            let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
+                self.platform.current_app_profile(),
+                self.platform.focus.class_name(),
+            );
+            if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+                return;
+            }
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
