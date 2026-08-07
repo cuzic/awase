@@ -6162,3 +6162,70 @@ awase-windows --lib --test golden_scenarios --test architecture_guard`
 （TsfNative drift correction の再起動漏れ、同じ `TIMER_IME_REFRESH`/20ms 系統）、
 ADR-083（`conv_mode_policy=force` の設計記録）、ADR-080（`Actuation` 型付き
 トランザクション、統合の将来候補）。
+
+## BUG-55: `get_ime_wnd`/`set_ime_romaji_mode` が `GetForegroundWindow()`（トップレベル）基準の `ImmGetDefaultIMEWnd` を使うため、InputSite 子ウィンドウの実際の変換モードとは無関係な標的に書き込み、JISかな入力ロックから復旧できなくなる
+
+**症状:** Windows Terminal（MS-IME、TsfNative/InputSite プロファイル）で
+`conv_mode_policy=force` 運用中（BUG-54 の 20ms 無限ループ修正を適用した
+ビルドで検証）、「なぜか、JISかなが有効になって、入力不能になった」という
+実機報告（2026-08-07）。ログでは awase 側は一貫して「ローマ字モードへの
+訂正に成功した」と記録し続けていた:
+
+```
+[conv-mode] Hiragana/roma → Hiragana/kana (conv=0x00000009)   // FocusChange 直後、実IMEがかな入力で復元
+[imm-romaji] conv 0x00000009 → 0x00000019 success=true         // set_ime_romaji_mode が「成功」
+[idle-conv-check] TsfNative: conv=0x00000019 → belief AssumedRomaji 変更なし  // 以後もローマ字のまま、と観測し続ける
+```
+しかし実際に画面上で見えていた IME は JIS かな入力のままで、awase 経由の
+物理キー入力が正しいローマ字として解釈されず入力不能になった。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+
+**原因（コード確認済み、実機での完全な因果特定は未確定）:** BUG-54 の調査で
+追加した診断ログ（`[idle-conv-check-diag] foreground_hwnd=... ime_wnd=...`）
+により、`get_ime_wnd`（`ImmGetDefaultIMEWnd(GetForegroundWindow())`）が返す
+`ime_wnd` が、フォーカスの実体（`Windows.UI.Input.InputSite.WindowClass`,
+`HWND(0x20954)`）とは異なる `HWND(0x70a8a)` で、かつセッションを通して
+一貫して同じ値のまま変化しないことを確認した。`GetForegroundWindow()` 自体も
+常にトップレベルウィンドウ（`HWND(0x20942)`, `CASCADIA_HOSTING_WINDOW_CLASS`）
+を返し、実際にテキスト入力を受けている InputSite 子ウィンドウ
+（`HWND(0x20954)`）を指していない。
+
+`ime.rs::set_ime_romaji_mode()`（`MsImeDirectStrategy::apply(open=true, ..)`
+内で「ROMAN ビットを先に立てる」ために呼ばれる）と `get_ime_conversion_mode_
+raw_timeout()`（`idle-conv-check`/`focus-conv-check` が使う conv 読み取り）は
+**どちらも同じ `get_ime_wnd(GetForegroundWindow())` 経路**を使っている。
+`IMC_SETCONVERSIONMODE`/`IMC_GETCONVERSIONMODE` はレガシー IMM32 互換の
+「デフォルト IME ウィンドウ」に送られる `WM_IME_CONTROL` であり、TSF3
+ネイティブな InputSite 子ウィンドウの実際の composition/conversion 状態とは
+別物の可能性が高い。読み取り・書き込みの双方が一貫して同じ的外れな標的を
+指しているため、awase の belief（`AssumedRomaji`、`conv=0x00000019`）と
+実際に画面へ反映される IME 状態が食い違ったまま自己整合してしまい、
+`success=true` ログが実害の発見を遅らせる。
+
+**未確定な点:** 上記は診断ログから読み取れる構造的な疑わしさであり、
+「`ime_wnd`/`foreground_hwnd` が InputSite と無関係な標的である」ことが
+JISかなロックそのものの直接の原因と実機で1対1に確認できたわけではない
+（`set_ime_romaji_mode` 呼び出し直後に実際の画面表示を確認する追加ログは
+まだ入れていない）。
+
+**未修正（本エントリは記録のみ、fix は次回以降）:** `get_ime_wnd`/
+`set_ime_romaji_mode`/`get_ime_conversion_mode_raw_timeout` を
+`GetForegroundWindow()` ではなく実際にフォーカスされている InputSite 子
+hwnd 基準にする案が有力だが、影響範囲が read/write 双方・複数関数に及ぶため
+未着手。当面の回避策として `conv_mode_policy` を `force` 以外に戻すことを
+ユーザーに依頼した。
+
+**検証状況:** コード読解（`ime.rs::set_ime_romaji_mode`/
+`get_ime_conversion_mode_raw_timeout`/`imm::get_ime_wnd` の呼び出し関係確認）
++ 実機診断ログでの `ime_wnd`/`foreground_hwnd` の恒常性確認。追加の実機検証
+（`set_ime_romaji_mode` 呼び出し直後の実画面確認、InputSite 子 hwnd 基準への
+書き換え後の再検証）が必要。
+
+**関連ファイル:** `crates/awase-windows/src/ime.rs`（`set_ime_romaji_mode`、
+`get_ime_conversion_mode_raw_timeout`、`get_ime_wnd` 呼び出し箇所全般）、
+`crates/awase-windows/src/imm.rs`（`get_ime_wnd`）、
+`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy::apply`）。
+関連: BUG-54（同じ実機セッションで先に発見された `apply_force_on_for_imm_
+broken` の無限ループ、本バグの発見はその修正ビルドの実機検証中に判明）、
+ADR-083（`conv_mode_policy=force` の設計記録）。
