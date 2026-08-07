@@ -171,9 +171,8 @@ pub fn classify_ime_snapshot(
 
     let new_input_mode = if guard_active && snap.is_romaji.is_none() {
         None
-    } else if snap
-        .conversion_mode
-        .is_some_and(|conv| awase::engine::ConvMode::from_u32(conv).is_eisu())
+    } else if awase::engine::ConvMode::is_eisu_evidence(snap.ime_on, snap.conversion_mode)
+        == Some(true)
     {
         // 英数モードは romaji フラグより優先して ObservedEisu を返す。
         // input_mode_from_romaji_flag は romaji=false を ObservedKana と判定するため

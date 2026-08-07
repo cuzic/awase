@@ -111,6 +111,25 @@ impl ConvMode {
         matches!(self.charset, Charset::HankakuAlpha | Charset::ZenkakuAlpha)
     }
 
+    /// `conv` が「ユーザーが英数モードを選んだ」証拠として使えるかどうかを判定する。
+    ///
+    /// IME が閉じている(`ime_on == Some(false)`)窓では conv=0（= NATIVE ビット無し
+    /// = `is_eisu()` 真）が自明に成立し、これはユーザーの選択を反映したものではない
+    /// （フォーカスが一瞬通り過ぎただけの無関係な窓でも同じ値になる）。したがって
+    /// `ime_on` が明確に false のときは判定不能として `None` を返し、呼び出し元に
+    /// `input_mode` を書き換えさせない。`ime_on` が `Some(true)` または `None`
+    /// （TsfNative 等、open 状態不明）のときは従来どおり `conv` から判定する
+    /// （2026-08-07 実機: Pushbullet 通知ポップアップが一瞬フォーカスを奪った際、
+    /// その窓の conv=0 が `ObservedEisu` として belief に書き込まれ、フォーカスが
+    /// 元のウィンドウへ戻った後も残留し、最初のキー入力がリテラル化した）。
+    #[must_use]
+    pub fn is_eisu_evidence(ime_on: Option<bool>, conv: Option<u32>) -> Option<bool> {
+        if ime_on == Some(false) {
+            return None;
+        }
+        conv.map(|c| Self::from_u32(c).is_eisu())
+    }
+
     /// `ImmSetConversionStatus` の目標 conv 値を返す。
     ///
     /// カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため `Some(conv)` を返す。
@@ -333,6 +352,44 @@ mod tests {
         assert_eq!(m.charset, Charset::ZenkakuAlpha);
         assert!(m.romaji);
         assert!(m.is_eisu());
+    }
+
+    // ── is_eisu_evidence ─────────────────────────────────────────────────────
+    #[test]
+    fn is_eisu_evidence_ignores_conv_zero_when_ime_off() {
+        // IME が閉じている窓の conv=0 は「英数選択」の証拠にならない(BUG-57)。
+        assert_eq!(ConvMode::is_eisu_evidence(Some(false), Some(CONV_EISUU)), None);
+    }
+
+    #[test]
+    fn is_eisu_evidence_true_when_ime_on() {
+        // トレイの半角英数コマンド等、IME が開いた状態での英数選択は従来どおり有効。
+        assert_eq!(
+            ConvMode::is_eisu_evidence(Some(true), Some(CONV_EISUU)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn is_eisu_evidence_false_when_ime_on_and_not_eisu() {
+        assert_eq!(
+            ConvMode::is_eisu_evidence(Some(true), Some(CONV_HIRAGANA)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn is_eisu_evidence_uses_conv_when_ime_on_unknown() {
+        // TsfNative 等、open 状態不明時は従来どおり conv から判定する。
+        assert_eq!(
+            ConvMode::is_eisu_evidence(None, Some(CONV_EISUU)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn is_eisu_evidence_none_when_conv_unknown() {
+        assert_eq!(ConvMode::is_eisu_evidence(Some(true), None), None);
     }
 
     // ── imm_conv_target ──────────────────────────────────────────────────────

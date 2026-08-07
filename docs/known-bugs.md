@@ -6329,3 +6329,74 @@ Qt はウィンドウクラス名をアプリ内の複数の異なるウィジ�
 関連: BUG-54・BUG-55（同じ実機検証セッションで連鎖的に発見）、
 [[feedback_immcross_owns_kanji]]、`project_kanji_imecross_spurious_vk3.md`
 （LINE に物理 IME キーを見せてはいけない設計原則の由来）。
+
+## BUG-57: `classify_ime_snapshot` の `OsPoll` 観測が `ime_on` を見ずに `conv` だけで英数(`ObservedEisu`)判定するため、一瞬フォーカスを奪った無関係な窓の観測が次のウィンドウまで残留し1文字目がリテラル化する
+
+**症状:** Windows Terminal（TsfNative、MS-IME）で59秒ほど無操作の後、最初の
+一文字だけ意図した文字（「と」）ではなく生のリテラル（全角「ｊ」）が出力された。
+2文字目以降は正常。
+
+**再現手順:** ①どこかのウィンドウで日本語入力中に59秒以上操作しない → ②その間に
+`pushbullet_client.exe`（Windows通知アプリ）の通知ポップアップが一瞬フォーカスを
+奪い、直後に元のウィンドウ（Windows Terminal）へフォーカスが戻る → ③25秒以上
+さらに無操作 → ④最初の1文字を入力すると、意図した文字ではなく生の物理キーが
+そのまま出力される（IME はネイティブ日本語モードのままなので全角文字として
+確定してしまう）。
+
+**原因:** `crates/awase-windows/src/observer/ime_observer.rs::classify_ime_snapshot`
+の英数判定分岐（旧: `snap.conversion_mode.is_some_and(|conv|
+ConvMode::from_u32(conv).is_eisu())`）が `snap.ime_on` を一切参照していなかった。
+`pushbullet_client.exe` へフォーカスが移った瞬間、`ir_stage_observe` の `OsPoll`
+戦略がそのウィンドウの実 IME 状態を読み取り、`ime_on=Some(false)` かつ
+`conv=Some(0x0)` という観測を得た。IME が閉じている窓の `conv=0`（NATIVE ビット
+無し）は `is_eisu()` が真になるが、これは「ユーザーが英数を選んだ」ことの証拠
+ではなく IME が閉じているという自明な事実の副産物に過ぎない。この誤読が
+`InputModeObserved { mode: ObservedEisu, confidence: Medium }` として dispatch され
+belief を書き換えた。
+
+`InputModeObserved` は `focus_epoch` を持たず、`input_mode` はフォーカス変更時に
+無条件でクリアされるスカラ値のため（ON/OFF 側の `ObserverReported` が
+`observation_store.rs::clear_on_focus_change` で窓ごとに破棄されるのとは非対称）、
+直後にフォーカスが Windows Terminal（TsfNative）へ戻った際も汚染された
+`ObservedEisu` がそのまま残留した。`focus_tracking.rs` の TsfNative/SSOT
+「cache restore スキップ」（`HwndCache` からの復元を意図的にスキップする設計、
+仮想デスクトップ切替時の Engine OFF desync 対策として `37883d09` で導入）は
+この汚染を訂正する経路ではなく、素通しするだけだったため訂正されなかった。
+25秒後の最初のキー入力時、`awase::engine::engine` が `ime_on=true なのに非活性:
+reason=Inactive(NotRomajiInput)`（`input_mode=ObservedEisu` のため romaji 非対応と
+誤判定）と判定し、そのキーを生の物理キーとして OS へ素通しした。実際の OS 側 IME
+はネイティブ日本語モードのままだったため、素通しされた生キーがそのまま全角文字
+として確定した。同じキーの KeyUp 時に `idle-conv-check` が実際の conv 値を
+読み直して belief を訂正・Engine を再 activate したが、1文字目の後だった。
+
+**修正:** `src/engine/conv.rs` に `ConvMode::is_eisu_evidence(ime_on: Option<bool>,
+conv: Option<u32>) -> Option<bool>` を新設。`ime_on == Some(false)` のときは
+`None`（判定不能）を返し、`conv` だけでの英数判定を行わないようにした。
+`ime_on` が `Some(true)` または `None`（TsfNative 等 open 状態不明）のときは
+従来どおり `conv` から判定する（トレイの半角英数コマンド等、既存の正当な
+`ObservedEisu` 遷移は変更なし）。`classify_ime_snapshot` の英数判定分岐をこの
+関数の呼び出しに置き換えた。`HwndCache` のスキップ設計自体は触っていない
+（`37883d09` が塞いだ Engine OFF desync が再燃するリスクを避けるため）。
+
+**検証:** `src/engine/conv.rs` に5件のユニットテスト
+（`is_eisu_evidence_ignores_conv_zero_when_ime_off` 等）を追加、
+`cargo test -p awase --lib conv::` で Linux 上で実行・全件green（クロスプラット
+フォームの純粋関数のため実機不要）。`cargo build/clippy --target
+x86_64-pc-windows-gnu -p awase-windows`・`cargo test -p awase-windows --lib`
+（284件）・`architecture_guard`/`golden_scenarios`/`layer_boundary_guard`
+（全件green）で既存挙動への回帰が無いことを確認。Windows 実機での再現確認
+（Pushbullet 通知ポップアップを実際に発生させての検証）は未実施。
+
+**未対応:** ON/OFF 側の `ObserverReported` と `InputModeObserved` の非対称
+（前者は `focus_epoch` を持ちフォーカス変更で自動的に無効化されるが、後者は
+持たない）自体は解消していない。同種の「一瞬だけ通り過ぎた無関係な窓の観測が
+belief に残留する」問題が、英数判定以外の経路で再発する可能性は残る
+（follow-up 案として `InputModeObserved` への `focus_epoch` 導入が検討されたが、
+`ime_event.rs` の variant 変更と `architecture_guard.rs` の期待値更新を伴う
+中リスクの変更のため、本 fix ではスコープ外とした）。
+
+**関連ファイル:** `src/engine/conv.rs`（`ConvMode::is_eisu_evidence`）、
+`crates/awase-windows/src/observer/ime_observer.rs`（`classify_ime_snapshot`）。
+関連: BUG-11（UIA キャッシュ汚染）、BUG-18（AppKind Uwp 往復での文字欠落） —
+いずれも「無関係なフォーカス遷移が belief/キャッシュを汚す」という同じテーマの
+別発生箇所。
