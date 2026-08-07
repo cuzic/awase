@@ -170,6 +170,37 @@ impl ImeModeFsm {
         self.confirmed = true;
     }
 
+    /// `IMC_GETCONVERSIONMODE` の結果を「参考値」として反映する（BUG-59）。
+    ///
+    /// `on_conversion_mode_read` との違い: `state` は更新するが `confirmed` は
+    /// 変更しない。呼び出し元は「これは実際に compose 可能かの確認ではなく、
+    /// cold 判定を早めるためのヒント」という前提で呼ぶこと。
+    ///
+    /// 用途: `platform.rs::gji_on_focus_change` が FocusChange 直後に投げる
+    /// 1回限りの参考ポーリング。この結果で `confirmed=true` を立てると、
+    /// `is_native_ready()` を見る `Output::ms_ime_gate_defer`（BUG-13 の
+    /// confirm-then-transmit ゲート）が「安全に送信してよい」と誤認し、
+    /// フォーカス変更直後の TSF compose sink 未準備な状態へ romaji を
+    /// 即送信してしまい先頭文字がリテラル化した（BUG-59）。`state` だけ
+    /// 更新すれば、他の消費者（`mod.rs` の Unicode cold-start 観測ゲート等）
+    /// にはヒントとして反映されつつ、`is_native_ready()` は
+    /// `start_ms_ime_ready_poll`（`on_conversion_mode_read` を呼ぶ真の
+    /// confirm-then-transmit ポーリング）が実際に確認するまで `false` のまま
+    /// になる。
+    pub(crate) fn on_conversion_mode_hint(&mut self, mode: Option<u32>) {
+        let Some(mode) = mode else {
+            return;
+        };
+        let new_state = ImeModeState::from_conversion_mode(mode);
+        if new_state != self.state {
+            log::debug!(
+                "[ime-mode] cold hint: {:?} → {new_state:?} (conv=0x{mode:08X}, unconfirmed)",
+                self.state
+            );
+            self.state = new_state;
+        }
+    }
+
     /// フォーカス変更時に呼ぶ。
     ///
     /// VK_IME_ON/OFF 送信から 100ms 以内の場合は Chrome の副作用 FocusChange と判断し
@@ -248,5 +279,48 @@ mod tests {
             crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
         ));
         assert!(fsm.is_native_ready());
+    }
+
+    /// BUG-59: FocusChange 直後の cold 判定用ポーリング（`on_conversion_mode_hint`）は
+    /// `state` を更新しても `confirmed` を立てない。これが崩れると
+    /// `Output::ms_ime_gate_defer`（BUG-13 の confirm-then-transmit ゲート）が
+    /// 「安全に送信してよい」と誤認し、フォーカス変更直後の未準備な TSF
+    /// compose sink へ romaji を即送信して先頭文字がリテラル化する
+    /// （実機ログで2件確認: フォーカス変更 69 秒後 / 975ms 後の双方で再現）。
+    #[test]
+    fn conversion_mode_hint_updates_state_without_confirming() {
+        let mut fsm = ImeModeFsm::new();
+        assert_eq!(fsm.state(), ImeModeState::Unknown);
+        assert!(!fsm.is_native_ready());
+
+        fsm.on_conversion_mode_hint(Some(
+            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+        ));
+        assert_eq!(
+            fsm.state(),
+            ImeModeState::Hiragana,
+            "ヒントでも state は更新される（Unicode cold-start 観測ゲート等の消費者向け）"
+        );
+        assert!(
+            !fsm.is_native_ready(),
+            "ヒントだけでは is_native_ready() が true になってはいけない — \
+             ms_ime_gate_defer が誤って即送信を許可してしまう（BUG-59）"
+        );
+
+        // 真の confirm-then-transmit ポーリング（on_conversion_mode_read）が
+        // 実際に確認して初めて ready になる。
+        fsm.on_conversion_mode_read(Some(
+            crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_ROMAN,
+        ));
+        assert!(fsm.is_native_ready());
+    }
+
+    /// ヒントは `None`（IMC 読み取り失敗）でも panic せず、state を変えない。
+    #[test]
+    fn conversion_mode_hint_ignores_none() {
+        let mut fsm = ImeModeFsm::new();
+        fsm.on_conversion_mode_hint(None);
+        assert_eq!(fsm.state(), ImeModeState::Unknown);
+        assert!(!fsm.is_native_ready());
     }
 }

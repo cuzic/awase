@@ -374,6 +374,16 @@ impl Output {
         self.ime_mode_fsm.borrow_mut().on_conversion_mode_read(mode);
     }
 
+    /// `IMC_GETCONVERSIONMODE` の結果を `ImeModeFsm` へ「参考値」として反映する（BUG-59）。
+    ///
+    /// `update_ime_mode_from_imc` と異なり `confirmed` を立てない
+    /// （`ImeModeFsm::on_conversion_mode_hint` 参照）。FocusChange 直後の
+    /// cold 判定用ポーリングなど、「安全に送信してよい」という確認ではない
+    /// 呼び出し元から使うこと。
+    pub(crate) fn update_ime_mode_hint_from_imc(&self, mode: Option<u32>) {
+        self.ime_mode_fsm.borrow_mut().on_conversion_mode_hint(mode);
+    }
+
     /// フォーカス変更時に呼ぶ。VK_IME_ON/OFF 直後の副作用 FocusChange かを判定して適切にリセット。
     ///
     /// 世代カウンタ `ime_mode_focus_gen` をインクリメントすることで、

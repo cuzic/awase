@@ -457,12 +457,20 @@ impl WindowsPlatform {
         // FocusChange 直後に IMC を 1 回ポーリングして初期状態を Unknown → 実値に更新する。
         // sacr-warmup 開始前から Off/Hiragana が判明するため cold 判定の精度が上がる。
         // with_app 再入を避けるため spawn_local でメインループに戻してから実行する。
+        //
+        // BUG-59: この読み取りは「TSF compose sink が実際に準備完了しているか」を
+        // 確認したものではなく、単なる参考値（cold 判定を早めるためのヒント）。
+        // `update_ime_mode_from_imc`（`confirmed=true` を立てる）を使うと、
+        // `Output::ms_ime_gate_defer`（BUG-13 の confirm-then-transmit ゲート）が
+        // 「安全に送信してよい」と誤認し、フォーカス変更直後の未準備な状態へ
+        // romaji を即送信して先頭文字がリテラル化した。`confirmed` を立てない
+        // `update_ime_mode_hint_from_imc` を使うこと。
         win32_async::spawn_local(async move {
             let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             let _ = crate::with_app(|runtime| {
                 let current_gen = runtime.platform.output.ime_mode_focus_gen.get();
                 if current_gen == ime_mode_gen {
-                    runtime.platform.output.update_ime_mode_from_imc(conv);
+                    runtime.platform.output.update_ime_mode_hint_from_imc(conv);
                 } else {
                     log::debug!(
                         "[ime-mode] FocusProbe: stale gen={ime_mode_gen} current={current_gen} → skip"

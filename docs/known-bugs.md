@@ -6562,3 +6562,123 @@ GO-WITH-CHANGES→上記の順序コメント追加・executor.rs コメント�
 （`ms_ime_gate_defer`）。関連: BUG-13（MS-IME cold-start 保護）、
 BUG-49（本バグの直接の前提となった Phase 1・Phase 2、特に追補2の5000ms安全弁）、
 ADR-084。
+## BUG-59: `ImeModeFsm::on_conversion_mode_read` が FocusChange 直後の cold 判定用ポーリング（1回読み）だけで `confirmed=true` を確定させ、BUG-13 の confirm-then-transmit ゲートを無効化して先頭文字がリテラル化する（対応済み・実機未検証）
+
+**症状（2026-08-07 実機、いずれも Windows Terminal / MS-IME / TsfNative・InputSite）:**
+
+- **1件目（05:36〜05:38）:** Chrome から Windows Terminal へフォーカス移動後、
+  69 秒間無操作（`Hook watchdog: no activity` が継続）ののち最初の文字を入力 →
+  「英数字がそのまま出た」（ユーザー確認済み）。
+- **2件目（20:45、同日）:** Chrome から Windows Terminal へフォーカス移動後
+  **わずか 975ms** で最初の文字を入力 → `し`・`ち`・`て`・`つ` の4文字が英数字
+  のまま出力され、ユーザーが `vk=0x08`（Backspace）を7回連続で送って手動で
+  削除した（`20:45:06.579`〜`07.961` の一連の `[relay-passthrough] PassThrough
+  idle: direct OS pass-through (vk=0x08 ...)` として実機ログに記録、ユーザー
+  確認済み: 「英数字(ローマ字)がそのまま出たのを消した」）。
+
+2件はフォーカス変更から最初の文字入力までの間隔が 69000ms 対 975ms と大きく
+異なるにもかかわらず同じ症状を起こしており、**「長時間 idle で劣化する」という
+仮説（当初の調査方向）ではこの2件を一貫して説明できない**。両者に共通するのは
+「フォーカス変更後、最初の文字送信より前に一度だけ `conv` を読んでいる」という
+点であり、これが真因であることをコード読解で確認した。
+
+**IME:** Microsoft IME（TsfNative、Windows Terminal / `Windows.UI.Input.
+InputSite.WindowClass`）。
+
+**原因（コード確認済み）:** `ImeModeFsm::on_conversion_mode_read`
+（`tsf/ime_mode_fsm.rs:147-171`）は、`state == Unknown`（フォーカス変更直後の
+初期値）のときに `IMC_GETCONVERSIONMODE` の読み取りが1回でも成功すると、
+分岐に関係なく無条件で `self.confirmed = true` をセットする（170行目、
+`(ImeModeState::Unknown, _) => { ログのみ }` という枝分かれの後、共通コードで
+即確定）。grace period も複数回一致の要求も無い。
+
+`is_native_ready()`（同90-92行）は `confirmed && (Hiragana|Katakana)` を返し、
+`ms_ime_gate_defer`（`output/vk_send.rs:356-394`）が「MS-IME への romaji 送信を
+安全に行ってよいか」を判断する**唯一のゲート**としてこれを使う（370-372行:
+`if fsm.is_native_ready() { return false; }` = defer せず即送信）。この設計
+自体は BUG-13（OFF→ON 遷移直後の cold-start リテラル化）を塞ぐために導入された
+正しい仕組みである。
+
+問題は `confirmed` フラグの**書き込み元が1系統ではない**こと。BUG-13 が意図した
+「安全に送信してよいと確認された」という意味とは別に、`platform.rs::
+gji_on_focus_change`（433-473行）が **FocusChange のたびに無条件で** 1回だけ
+`IMC_GETCONVERSIONMODE`（タイムアウト50ms）を投げ、結果を
+`update_ime_mode_from_imc` 経由で同じ `on_conversion_mode_read` に渡している
+（458行のコメント: 「FocusChange 直後に IMC を1回ポーリングして初期状態を
+Unknown → 実値に更新する。sacr-warmup 開始前から Off/Hiragana が判明するため
+**cold 判定の精度が上がる**」）。この呼び出しの本来の目的は cold-start
+warmup戦略の初期値を決めるための**参考情報収集**であり、「TSF composition が
+実際に compose 可能な状態まで初期化済み」を保証するものではない。しかし
+`on_conversion_mode_read` はこの呼び出しと `MsImeReadyCoro`（BUG-13 の
+confirm-then-transmit ゲート本体）からの呼び出しを区別せず、どちらも同じ
+`confirmed` フラグに書き込む。
+
+FocusChange 直後の conv 読み取り（`ImmGetDefaultIMEWnd` 経由、BUG-55 参照）は
+IMM32 互換レイヤーが保持している値を返すため、**IME が以前 Hiragana モードで
+あった記憶が残っているだけで NATIVE=true を返しうる**。実際に InputSite 子
+ウィンドウ側で TSF の compose sink が新しいフォーカスに対して再アタッチ・
+準備完了しているかどうかとは別物のはずだが、`on_conversion_mode_read` は
+値が読めた事実だけで `confirmed=true` にしてしまうため、`ms_ime_gate_defer`
+は「安全」と誤認して即座に romaji を送信する。969ms 後でも 69 秒後でも、
+この一度きりの読み取りが先に完了して `confirmed=true` を立てていれば、
+実際の compose sink 準備状況に関わらず同じ穴を通る。
+
+**未確定な点:** 「conv=NATIVE=true という読み取り自体が正しく、TSF compose
+sink 側の準備だけが遅れている」という因果関係は、`IMC_GETCONVERSIONMODE` と
+実際の compose 可能性を独立に検証するログがまだ無いため確定していない
+（BUG-55 で懸念された「`ImmGetDefaultIMEWnd` が返す互換ウィンドウがそもそも
+InputSite の実体と無関係」という可能性も依然排除できていない）。次回実機
+確認時は、リテラル化した瞬間の `conv` 読み取り値と、直後に UI Automation 等
+実際の compose 状態を独立に取得できるログを追加できるとよい。
+
+**修正（2026-08-07、上記候補の「フラグ分離」案を採用）:** `ImeModeFsm` に
+`on_conversion_mode_hint(mode: Option<u32>)` を新設した。`on_conversion_mode_read`
+と異なり `state` は更新するが `confirmed` は一切変更しない。`Output` に対応する
+薄いラッパー `update_ime_mode_hint_from_imc` を追加し、`platform.rs::
+gji_on_focus_change` の FocusChange 直後 cold 判定用ポーリング（1回限り、
+`IMC_GETCONVERSIONMODE` タイムアウト50ms）の呼び出し先を
+`update_ime_mode_from_imc` からこちらへ差し替えた。
+
+これにより「参考情報収集のための1回読み」と「BUG-13 の confirm-then-transmit
+ゲートが要求する、実際に安全と確認された読み」が同じ `confirmed` フラグを
+共有しなくなる。FocusChange 直後は `state` が正しく `Hiragana`/`Off` に
+更新される（Unicode cold-start 観測ゲート等の既存消費者には従来どおり効く）が
+`is_native_ready()` は `false` のままなので、その後の最初の romaji 送信は
+`ms_ime_gate_defer` → `start_ms_ime_ready_poll`/`MsImeReadyCoro` の
+confirm-then-transmit ゲートを必ず通過するようになり、BUG-13 が本来意図した
+「実際に compose 可能と確認できてから送信する」という保護が FocusChange
+直後にも及ぶ。
+
+検討した他の2案（`on_conversion_mode_read` への引数追加、BUG-56 型の2回連続
+デバウンス）は不採用。前者はフラグ分離と実質同じ効果をより煩雑な呼び出し規約
+（呼び出し元ごとに bool を渡し忘れるリスク）で実現するだけで利点が薄く、
+後者は「2回目のポーリングをいつ・誰が発行するか」を新たに設計する必要があり
+今回のスコープに対して過剰だった。
+
+**検証:** `cargo check`/`cargo clippy -p awase-windows --target
+x86_64-pc-windows-gnu --lib -- -D warnings`（warning ゼロ）、`cargo test -p
+awase-windows --lib --test golden_scenarios --test architecture_guard --test
+layer_boundary_guard --test ime_key_sequence_golden`（14+22+8 件 pass、
+`ime_key_sequence_golden` は `#[cfg(windows)]` のため Linux では 0 件）。
+`tsf/ime_mode_fsm.rs` に `conversion_mode_hint_updates_state_without_confirming`
+（ヒントは `state` を更新するが `is_native_ready()` を true にしないことを
+直接固定）と `conversion_mode_hint_ignores_none` を追加。この2件は
+`#[cfg(windows)]` のため `--target x86_64-pc-windows-gnu --lib --no-run` で
+コンパイル成功のみ確認済み（wine 未導入のためこのサンドボックスでは実行不可）。
+**Windows 実機での再現確認・修正確認は未実施** — 次回実機で、Windows Terminal
+へのフォーカス変更直後（idle 時間を問わず）に最初の文字が正しく compose
+されることを確認すること。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/ime_mode_fsm.rs`
+（`on_conversion_mode_read`, `on_conversion_mode_hint`（新設）, `is_native_ready`）、
+`crates/awase-windows/src/platform.rs`（`gji_on_focus_change`、FocusChange 直後の
+1回限り IMC ポーリング）、`crates/awase-windows/src/output/mod.rs`
+（`update_ime_mode_from_imc`, `update_ime_mode_hint_from_imc`（新設））、
+`crates/awase-windows/src/output/vk_send.rs`（`ms_ime_gate_defer`）、
+`crates/awase-windows/src/tsf/warmup/ms_ime_ready_coro.rs`
+（`MsImeReadyCoro`、confirm-then-transmit ゲート本体）。関連: BUG-13（本バグが
+無効化してしまっていた confirm-then-transmit ゲートの導入元）、BUG-55
+（同じ `IMC_GETCONVERSIONMODE`/`ImmGetDefaultIMEWnd` 経路の hwnd ターゲット
+問題、本バグとは独立な懸念として残存）、BUG-56（単発観測での即確定を2回連続
+デバウンスに直した前例、不採用案の検討材料として参照）。
+
