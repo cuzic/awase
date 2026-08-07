@@ -205,6 +205,21 @@ pub struct GeneralConfig {
     /// 別ウィンドウへの生 VK 誤注入を防ぐための安全策で、ユーザーが設定できる
     /// 範囲ではない。
     pub muhenkan_solo_tap_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に無変換(`VK_NONCONVERT`)を割り当てている
+    /// 場合に限り効く設定。変換キーや Space 等他の VK には一切影響しない。
+    ///
+    /// 無変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
+    /// （OS に一切送出しない）。
+    ///
+    /// MS-IME は「キーとタッチのカスタマイズ」で無変換キー単独打鍵に既定で
+    /// 「かな切替」（IME オン相当）を割り当てている。awase が composing して
+    /// いない場面で無変換の生 VK を素通しすると、この既定割当てに横取りされて
+    /// awase の管理外で IME モードが切り替わる（2026-08-07 実機: composing=false
+    /// の無変換単独タップ直後に `VK_DBE_ALPHANUMERIC`→`VK_DBE_HIRAGANA` が非注入で
+    /// 観測され、shadow toggle が IME を ON にした）。既定値は `true`
+    /// （無変換単独タップは常に無視する）。無変換キー本来の機能（かな変換の
+    /// 取り消し等）を Windows 全般で使いたい場合のみ `false` にする。
+    pub muhenkan_solo_tap_always_suppress: bool,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
     ///
@@ -262,6 +277,7 @@ impl Default for GeneralConfig {
             space_thumb_ignore_composing_guard: true,
             space_thumb_shift_literal: true,
             muhenkan_solo_tap_ignore_composing_guard: false,
+            muhenkan_solo_tap_always_suppress: true,
             henkan_solo_tap_ignore_composing_guard: false,
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,

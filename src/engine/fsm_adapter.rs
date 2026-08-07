@@ -114,12 +114,14 @@ impl FsmAdapter {
         &mut self,
         muhenkan_vk: Option<crate::types::VkCode>,
         muhenkan_ignore_composing_guard: bool,
+        muhenkan_always_suppress: bool,
         henkan_vk: Option<crate::types::VkCode>,
         henkan_ignore_composing_guard: bool,
     ) {
         self.fsm.set_thumb_key_solo_tap_config(
             muhenkan_vk,
             muhenkan_ignore_composing_guard,
+            muhenkan_always_suppress,
             henkan_vk,
             henkan_ignore_composing_guard,
         );

@@ -97,16 +97,20 @@ impl Engine {
     /// 無変換/変換に解決された場合の VK コード（Platform 層が判定して渡す。
     /// 割り当てられていなければ `None`）。各 `ignore_composing_guard` は
     /// `GeneralConfig` の同名フィールドにそのまま対応する。
+    /// `muhenkan_always_suppress` は `GeneralConfig::muhenkan_solo_tap_always_suppress`
+    /// にそのまま対応する。
     pub const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<VkCode>,
         muhenkan_ignore_composing_guard: bool,
+        muhenkan_always_suppress: bool,
         henkan_vk: Option<VkCode>,
         henkan_ignore_composing_guard: bool,
     ) {
         self.adapter.set_thumb_key_solo_tap_config(
             muhenkan_vk,
             muhenkan_ignore_composing_guard,
+            muhenkan_always_suppress,
             henkan_vk,
             henkan_ignore_composing_guard,
         );

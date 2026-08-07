@@ -856,6 +856,7 @@ pub(super) fn run_all() -> Result<()> {
     engine.set_thumb_key_solo_tap_config(
         muhenkan_vk,
         config.general.muhenkan_solo_tap_ignore_composing_guard,
+        config.general.muhenkan_solo_tap_always_suppress,
         henkan_vk,
         config.general.henkan_solo_tap_ignore_composing_guard,
     );

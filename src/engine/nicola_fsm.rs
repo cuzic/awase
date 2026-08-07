@@ -142,6 +142,20 @@ pub struct NicolaFsm {
     /// 生 VK を送出するか。`muhenkan_vk` が `None` なら無効。
     muhenkan_solo_tap_ignore_composing_guard: bool,
 
+    /// 無変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
+    /// （OS に一切送出しない）。`muhenkan_vk` が `None` なら無効。既定値は `true`
+    /// （composing の有無を問わず無変換単独タップは常に無視する）。
+    ///
+    /// MS-IME は「キーとタッチのカスタマイズ」で無変換キー単独打鍵に既定で
+    /// 「かな切替」（IME オン相当）を割り当てている（`msime_key_assignment.rs`
+    /// 参照）。awase が composing していない場面で無変換の生 VK を素通しすると、
+    /// この既定割当てに横取りされて awase の管理外で IME モードが切り替わる
+    /// （2026-08-07 実機: 無変換単独タップ直後に `VK_DBE_ALPHANUMERIC`→
+    /// `VK_DBE_HIRAGANA` が非注入で観測され、shadow toggle が IME を ON にした）。
+    /// `true` にすると、この経路を完全に断つため composing 中かどうかを問わず
+    /// 無変換単独タップを常に抑制する。
+    muhenkan_solo_tap_always_suppress: bool,
+
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
     henkan_vk: Option<VkCode>,
@@ -210,6 +224,7 @@ impl NicolaFsm {
             // 揃えて false（従来通り composing 中は抑制）。
             muhenkan_vk: None,
             muhenkan_solo_tap_ignore_composing_guard: false,
+            muhenkan_solo_tap_always_suppress: true,
             henkan_vk: None,
             henkan_solo_tap_ignore_composing_guard: false,
             // Enter の VK は Platform 層が set_enter_thumb_config() で明示的に配線する
@@ -412,15 +427,19 @@ impl NicolaFsm {
     /// 割り当てられていなければ `None` を渡すこと。各 `ignore_composing_guard` は
     /// `GeneralConfig::muhenkan_solo_tap_ignore_composing_guard`/
     /// `henkan_solo_tap_ignore_composing_guard` にそのまま対応する。
+    /// `muhenkan_always_suppress` は `GeneralConfig::muhenkan_solo_tap_always_suppress`
+    /// にそのまま対応する。
     pub const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<VkCode>,
         muhenkan_ignore_composing_guard: bool,
+        muhenkan_always_suppress: bool,
         henkan_vk: Option<VkCode>,
         henkan_ignore_composing_guard: bool,
     ) {
         self.muhenkan_vk = muhenkan_vk;
         self.muhenkan_solo_tap_ignore_composing_guard = muhenkan_ignore_composing_guard;
+        self.muhenkan_solo_tap_always_suppress = muhenkan_always_suppress;
         self.henkan_vk = henkan_vk;
         self.henkan_solo_tap_ignore_composing_guard = henkan_ignore_composing_guard;
     }
@@ -1111,6 +1130,16 @@ impl NicolaFsm {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
         // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
         if modifier_key.is_some() {
+            return ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            };
+        }
+
+        // 無変換単独タップの常時抑制（composing の有無を問わない）。MS-IME の既定
+        // キー割当て（無変換単独打鍵→かな切替）に、composing していない場面での
+        // 生 VK 素通しを横取りされないようにするための明示オプトイン。
+        if self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_always_suppress {
             return ResolvedAction {
                 actions: SmallVec::new(),
                 output: OutputUpdate::None,
