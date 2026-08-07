@@ -550,11 +550,27 @@ impl Runtime {
         // FocusChange が applied=Unknown にリセットするため、フォーカスごとに
         // 1 回だけ force-apply される。Win-held スキップ（UnsafeToToggle）や
         // 失敗時は applied が更新されないため次の refresh が再試行する。
-        if matches!(
-            self.platform_state.ime.model().applied,
-            crate::state::ime_model::AppliedImeState::Optimistic(true)
-                | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
-        ) {
+        //
+        // `conv_mode_policy = force` のときはこのスロットルを無視し、毎 refresh
+        // （既定 500ms 間隔）で無条件に再送する。Blacklist アプリは実状態を
+        // ポーリングできないため、`applied` が一度でも誤って「成功」記録される
+        // と（実 IME が別経路で無音のうちに OFF へ戻った等）、このスロットルが
+        // 永久に再送を止めてしまい `belief=ON` × `実 IME=OFF` の乖離を検出も
+        // 訂正もできない（2026-08-07 実機: 「なぜかIME OFF Engine ONの状態に
+        // なった」ユーザー報告）。conv モードの `desired_mode` 強制と同じ設計
+        // 意図（観測を信じず awase 自身の意図を権威にする）を open/close 軸にも
+        // 適用する。
+        let force_policy = matches!(
+            self.platform.output.conv_mode.policy(),
+            crate::state::ConvModePolicy::Force
+        );
+        if !force_policy
+            && matches!(
+                self.platform_state.ime.model().applied,
+                crate::state::ime_model::AppliedImeState::Optimistic(true)
+                    | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
+            )
+        {
             return;
         }
         // `platform.set_ime_open` は IMM 専用実装で、Imm32Unavailable / TSF-native
