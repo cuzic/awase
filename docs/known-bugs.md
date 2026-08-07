@@ -6258,3 +6258,74 @@ focused_hwnd=...` が InputSite 子 hwnd（`read_ime_state_full` の
 発見された `apply_force_on_for_imm_broken` の無限ループ、本バグの発見は
 その修正ビルドの実機検証中に判明）、ADR-083（`conv_mode_policy=force` の
 設計記録）。
+
+## BUG-56: `learn_imm_capability_on_focus` が `ImmGetDefaultIMEWnd`=NULL を1回観測しただけで `Unavailable` を確定し、ジェネリックなクラス名を共有する本物のテキスト入力欄まで巻き込んで物理IMEキーが漏れ文字が重複コミットされる
+
+**症状:** LINE（Qt663QWindowIcon、`AppImeProfile::Standard`）で「なにをうっても
+でででになる」「はさささ→はははは」という実機報告（2026-08-07、BUG-54/BUG-55
+修正ビルドでの再テスト中）。debug ログでは、awase 自身の `send_keys` は該当文字を
+**1回しか送信していない**のに、画面には同じ仮名が複数回コミットされていた。
+
+**IME:** Microsoft IME。LINE（Qt ベース、`class="Qt663QWindowIcon"`）。
+
+**原因（コード確認済み）:** `focus/imm_learning.rs::learn_imm_capability_on_focus`
+は、フォーカスされたウィンドウの `class_name` に対して `ImmGetDefaultIMEWnd` が
+NULL を返した**その場**で、`ImmCapability::Unavailable` を即座に確定・永続化
+（`cache.toml` の `[imm_capability]`）していた。`cache.toml` を確認したところ
+実際に `Qt663QWindowIcon = "unavailable"` が記録されていた。
+
+Qt はウィンドウクラス名をアプリ内の複数の異なるウィジェット（本物のチャット入力欄・
+通知アイコン絡みの一時ウィンドウ等）で使い回すことがある。フォーカス解決に使う
+`GetGUIThreadInfo().hwndFocus` が、たまたまテキスト入力とは無関係な一時ウィンドウ
+（同じクラス名）を指した瞬間に `ImmGetDefaultIMEWnd` が NULL を返すと、それが
+**単発の観測だけで即確定**し、`class_name` をキーとする学習キャッシュ経由で
+本物のチャット入力欄（同じクラス名）まで巻き込んで `Imm32Unavailable` に降格
+した。この降格により、LINE 向けに歴史的に確立していた「ImmCross アプリには
+物理 IME キーを見せない」設計原則
+（[[feedback_immcross_owns_kanji]]、`project_kanji_imecross_spurious_vk3.md`）が
+崩れ、`Blacklist force-ON`（`VK_IME_ON` を物理キーとして LINE へ定期送信）が
+発火するようになった。物理 IME キーが LINE 側の composition/commit ロジックへ
+漏れたことが、同じ文字の重複コミット（「でででで」）の実害だったと推測される
+（正確な二重コミットの内部メカニズムまでは未確認）。
+
+**暫定回避（実機で確認済み）:** `cache.toml` の `[imm_capability]` セクションから
+`Qt663QWindowIcon` のエントリを削除し、awase を再起動（`ImmCapabilityStore` は
+起動時に一度だけ `cache.toml` を読み込むため、ファイル修正だけでは反映されない）。
+これにより「でででで」「はははは」は再発しなくなった（ユーザー確認済み、
+2026-08-07）。ただしこれは学習し直しの起点をリセットしただけで、同じ一時
+ウィンドウが再度 NULL を返せば再発しうる対症療法。
+
+**恒久修正:** `ImmCapabilityStore` に `pending_unavailable: HashMap<String, u32>`
+（永続化しないセッション内カウンタ）を追加し、`record_null_probe()`／
+`clear_pending_unavailable()` を新設。NULL 観測は即確定せず、同じ `class_name` で
+`UNAVAILABLE_CONFIRM_THRESHOLD`（= 2）回**連続**観測して初めて `Unavailable` を
+確定・永続化するようにした（BUG-19 の「非カタカナ→カタカナ遷移を2回連続観測する
+まで確定させない」デバウンスと同じ考え方、`.claude/rules/ime-belief-architecture.md`
+参照）。途中で non-NULL 観測（本物の入力欄が応答した）が挟まればカウントをクリア
+する。`learn_imm_capability_on_focus` はこの2メソッドに委譲するだけに変更した。
+
+これは対症療法ではなく根本原因（単発誤判定への脆弱性）への対応だが、完全な解決
+ではない — 同じ一時ウィンドウが2回連続でたまたま先にフォーカスされれば依然として
+誤確定しうる（閾値を上げれば緩和されるが、真に IMM32 が使えないアプリの検出が
+遅れるトレードオフがある）。
+
+**検証:** `cargo xwin check --tests`/`cargo xwin clippy --tests -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ、pre-existing の
+`e2e_windows.rs`/`gji_fsm.rs` 等の pedantic 警告とは無関係と確認）。
+`focus/classifier.rs` に `imm_capability_store_tests` を新設し、単発 NULL では
+確定しないこと・2回連続で確定すること・non-NULL 観測でカウントがリセットされる
+ことを検証する4件のユニットテストを追加した。`focus::classifier` モジュールは
+`#[cfg(windows)]` のためこのサンドボックス（Linux, wine 未導入）ではコンパイル
+検査のみで実行はできていない。次回実機確認で、LINE 通知ポップアップ等の連続
+フォーカスでも `Qt663QWindowIcon` が誤って `Unavailable` に降格しないことを
+確認すること。
+
+**関連ファイル:** `crates/awase-windows/src/focus/imm_learning.rs`
+（`learn_imm_capability_on_focus`）、
+`crates/awase-windows/src/focus/classifier.rs`（`ImmCapabilityStore`、
+`record_null_probe`/`clear_pending_unavailable`/`imm_capability_store_tests`）、
+`crates/awase-windows/src/focus/tracker.rs`（`FocusTracker` 薄いラッパー）、
+`crates/awase-windows/src/platform.rs`（`WindowsPlatform` 薄いラッパー）。
+関連: BUG-54・BUG-55（同じ実機検証セッションで連鎖的に発見）、
+[[feedback_immcross_owns_kanji]]、`project_kanji_imecross_spurious_vk3.md`
+（LINE に物理 IME キーを見せてはいけない設計原則の由来）。

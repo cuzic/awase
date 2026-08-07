@@ -153,12 +153,30 @@ impl ForceOverrides {
 pub struct ImmCapabilityStore {
     cache: std::collections::HashMap<String, ImmCapability>,
     base_dir: std::path::PathBuf,
+    /// `ImmGetDefaultIMEWnd`=NULL の連続観測回数（class_name ごと、未確定分のみ）。
+    /// ディスクへは永続化しない — セッションをまたいで引き継ぐ必要はなく、
+    /// 再起動のたびに空から積み直せば十分（BUG-56対策）。
+    pending_unavailable: std::collections::HashMap<String, u32>,
 }
 
 impl ImmCapabilityStore {
+    /// `ImmGetDefaultIMEWnd`=NULL の連続観測がこの回数に達したら `Unavailable` として
+    /// 確定・永続化する。Qt 等のジェネリックなウィンドウクラス名は、本物のテキスト
+    /// 入力欄と無関係な一時ウィンドウ（通知アイコン等）で使い回されることがあり、
+    /// 単発の NULL 観測だけで確定すると本物の入力欄まで巻き込んで誤って IMM32
+    /// クロスプロセス制御を諦めてしまう（2026-08-07 実機: LINE で「でででで」
+    /// 「はははは」等の文字重複コミット。`docs/known-bugs.md` BUG-56、
+    /// `.claude/rules/ime-belief-architecture.md` の BUG-19 由来の 2 回連続観測
+    /// デバウンスと同じ考え方）。
+    const UNAVAILABLE_CONFIRM_THRESHOLD: u32 = 2;
+
     pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
         let cache = Self::load(&base_dir);
-        Self { cache, base_dir }
+        Self {
+            cache,
+            base_dir,
+            pending_unavailable: std::collections::HashMap::new(),
+        }
     }
 
     pub(crate) fn get(&self, class_name: &str) -> Option<ImmCapability> {
@@ -168,6 +186,26 @@ impl ImmCapabilityStore {
     pub(crate) fn learn(&mut self, class_name: String, cap: ImmCapability) {
         self.cache.insert(class_name, cap);
         self.save();
+    }
+
+    /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する。閾値回連続で観測されて初めて
+    /// `Unavailable` として確定・永続化する（`UNAVAILABLE_CONFIRM_THRESHOLD` 参照）。
+    /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの class_name を
+    /// スキップ済みの前提。
+    pub(crate) fn record_null_probe(&mut self, class_name: String) {
+        let count = self.pending_unavailable.entry(class_name.clone()).or_insert(0);
+        *count += 1;
+        if *count >= Self::UNAVAILABLE_CONFIRM_THRESHOLD {
+            self.pending_unavailable.remove(&class_name);
+            self.learn(class_name, ImmCapability::Unavailable);
+        }
+    }
+
+    /// 非 NULL 観測（IMM32 が応答した）を得たら、その class_name の「疑い」カウントを
+    /// クリアする。決め打ちの一時ウィンドウが NULL を返した直後に本物の入力欄が
+    /// フォーカスされて non-NULL を返すケースで、疑いが誤って積み上がらないようにする。
+    pub(crate) fn clear_pending_unavailable(&mut self, class_name: &str) {
+        self.pending_unavailable.remove(class_name);
     }
 
     fn load(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
@@ -304,6 +342,68 @@ impl InjectionModeStore {
         log::debug!(
             "Saved injection mode cache: {} TSF classes",
             self.tsf_classes.len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod imm_capability_store_tests {
+    use super::{ImmCapability, ImmCapabilityStore};
+
+    /// テストごとに衝突しない一時ディレクトリを作る。`std::fs` のみで完結するため
+    /// Win32 依存なしで Linux 上でも実行できる（`journal.rs` の一時ファイル方式と同じ）。
+    fn temp_store() -> ImmCapabilityStore {
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "awase_imm_capability_store_test_{n}_{:?}",
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir for ImmCapabilityStore test");
+        ImmCapabilityStore::new(dir)
+    }
+
+    // BUG-56: 単発の NULL 観測だけでは Unavailable を確定しない。
+    #[test]
+    fn single_null_probe_does_not_confirm_unavailable() {
+        let mut store = temp_store();
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        assert_eq!(store.get("Qt663QWindowIcon"), None);
+    }
+
+    // BUG-56: 閾値回（2回）連続で NULL を観測して初めて Unavailable が確定する。
+    #[test]
+    fn two_consecutive_null_probes_confirm_unavailable() {
+        let mut store = temp_store();
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        assert_eq!(
+            store.get("Qt663QWindowIcon"),
+            Some(ImmCapability::Unavailable)
+        );
+    }
+
+    // BUG-56: 途中で非 NULL 観測（本物の入力欄が応答した）が挟まると疑いカウントが
+    // リセットされ、次の NULL 単発では確定しない。
+    #[test]
+    fn non_null_observation_resets_pending_count() {
+        let mut store = temp_store();
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.clear_pending_unavailable("Qt663QWindowIcon");
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        assert_eq!(store.get("Qt663QWindowIcon"), None);
+    }
+
+    // 既に確定済みの class_name はカウントに影響されず安定した値を返す。
+    #[test]
+    fn already_confirmed_capability_is_stable() {
+        let mut store = temp_store();
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.record_null_probe("Qt663QWindowIcon".to_string());
+        assert_eq!(
+            store.get("Qt663QWindowIcon"),
+            Some(ImmCapability::Unavailable)
         );
     }
 }
