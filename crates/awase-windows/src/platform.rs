@@ -465,6 +465,23 @@ impl WindowsPlatform {
         // 「安全に送信してよい」と誤認し、フォーカス変更直後の未準備な状態へ
         // romaji を即送信して先頭文字がリテラル化した。`confirmed` を立てない
         // `update_ime_mode_hint_from_imc` を使うこと。
+        //
+        // BUG-59 追補: `conv_mode_policy = Force`（ADR-083）は GJI 側の cold 転換
+        // （`ColdWarmupSequence::run_start`、`needs_f2_probe()=true` の場合のみ発火）
+        // でしか awase トレイの `desired_mode` を強制していなかった。MS-IME
+        // （`MsImeStrategy::needs_f2_probe()=false`）はこの経路を一切通らないため、
+        // Force を選んでいても FocusChange 後にカタカナ固着等の drift があっても
+        // 一切訂正されなかった（ユーザー報告: Ctrl+Shift+無変換→Ctrl+Shift+変換 の
+        // 手動リセットでのみ回復）。FocusChange は「観測」ではなく「トレイで選んだ
+        // 目標へ強制で引き戻してよい」機会でもあるため、GJI と同じ `desired_mode`
+        // を同じ FocusChange 契機で MS-IME にも書き込む。
+        let forced_target = match self.output.conv_mode.policy() {
+            crate::state::ConvModePolicy::Observe => None,
+            crate::state::ConvModePolicy::Force => {
+                Some(self.output.conv_mode.desired_mode().to_conv_bits())
+            }
+        };
+        let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
         win32_async::spawn_local(async move {
             let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             let _ = crate::with_app(|runtime| {
@@ -477,6 +494,22 @@ impl WindowsPlatform {
                     );
                 }
             });
+            if let (Some(target), true) = (forced_target, conv_mutation_allowed) {
+                let current_gen =
+                    crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                        .unwrap_or_else(|| ime_mode_gen.wrapping_add(1));
+                if current_gen == ime_mode_gen {
+                    log::debug!(
+                        "[conv-mode] FocusChange force write (BUG-59 追補): target=0x{target:08X}"
+                    );
+                    let _ = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
+                } else {
+                    log::debug!(
+                        "[conv-mode] FocusChange force write: stale gen={ime_mode_gen} \
+                         current={current_gen} → skip"
+                    );
+                }
+            }
         });
     }
 
