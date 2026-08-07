@@ -6479,7 +6479,8 @@ conv を書き込まないため対象外（`key_pipeline.rs:1289`）。entry �
   追い越す。`app/mod.rs:409-419` が記録している Ctrl↑ 順序バグと同型の実害が
   Shift↑ について新たに起きる。
 
-**修正（2026-08-07、案E: `OutputActiveGuard` を Phase 2 直前へ遅延取得）:**
+**修正（2026-08-07、案E: `OutputActiveGuard` を Phase 2 直前へ遅延取得、
+コミット `38b5a4ee`）:**
 `MsImeReadyCoro`（`tsf/warmup/ms_ime_ready_coro.rs`）の Phase 1（IMC 観測待ち、
 無出力）は SendInput を一切行わないにも関わらず、`MsImeReadyCoro::new()` の
 時点で `OutputActiveGuard` を確保し Phase 1 の間ずっと保持していたことが
