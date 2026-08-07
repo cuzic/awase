@@ -394,7 +394,7 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     true
 }
 
-/// 現在のフォアグラウンドウィンドウの IME 変換モード生値を返す（診断ログ専用）。
+/// 現在フォーカスされているウィンドウの IME 変換モード生値を返す（診断ログ専用）。
 ///
 /// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010
 ///
@@ -402,9 +402,10 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
 /// Calls Win32 APIs.
 #[must_use]
 pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す可能性があるが
-    //         detect_ime_conversion_for_hwnd 内の non_null() チェックで処理される。
-    detect_ime_conversion_for_hwnd(unsafe { GetForegroundWindow() })
+    // SAFETY: get_focused_hwnd は unsafe fn で GetGUIThreadInfo().hwndFocus を優先し
+    //         GetForegroundWindow にフォールバックする（BUG-55 参照）。NULL を返す可能性が
+    //         あるが detect_ime_conversion_for_hwnd 内の non_null() チェックで処理される。
+    detect_ime_conversion_for_hwnd(unsafe { get_focused_hwnd() })
 }
 
 /// タイムアウト指定版 IME 変換モード取得（H1 タイミング計測専用）。
@@ -416,10 +417,20 @@ pub unsafe fn get_ime_conversion_mode_raw() -> Option<u32> {
 /// Calls Win32 APIs.
 #[must_use]
 pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32> {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が `?` で None を返す。
-    let hwnd = unsafe { GetForegroundWindow() }.non_null()?;
+    // SAFETY: get_focused_hwnd は unsafe fn。NULL を返す場合は non_null() が `?` で None を返す。
+    //
+    // BUG-55（2026-08-07 実機）: 以前は GetForegroundWindow()（トップレベル）を使っていたが、
+    // Windows Terminal のような「トップレベルとは別の子ウィンドウ
+    // (Windows.UI.Input.InputSite.WindowClass) が実際の TSF composition を持つ」アプリでは
+    // ImmGetDefaultIMEWnd(トップレベル) がその composition とは無関係な（プロセス/スレッド
+    // 単位のグローバルな）互換ウィンドウを返し、conv 読み取りが実態と乖離していた。
+    // read_ime_state_full と同じ GetGUIThreadInfo().hwndFocus 基準（get_focused_hwnd）に
+    // 揃えることで、実際にテキスト入力を受けている子ウィンドウを対象にする。
+    let hwnd = unsafe { get_focused_hwnd() }.non_null()?;
     // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
+    let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) };
+    log::debug!("[idle-conv-check-diag] focused_hwnd={hwnd:?} ime_wnd={ime_wnd:?}");
+    let ime_wnd = ime_wnd?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
     unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, timeout_ms) }
@@ -491,9 +502,16 @@ unsafe fn modify_conv_mode(
 /// Calls Win32 APIs. Must be called from the main thread.
 #[must_use]
 pub unsafe fn set_ime_romaji_mode() -> bool {
-    // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が None を返し
+    // SAFETY: get_focused_hwnd は unsafe fn。NULL を返す場合は non_null() が None を返し
     //         早期リターンする。
-    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
+    //
+    // BUG-55（2026-08-07 実機）: 以前は GetForegroundWindow()（トップレベル）を対象にして
+    // いたため、Windows Terminal のように実際の TSF composition を別の子ウィンドウ
+    // （InputSite）が持つアプリでは、この書き込みが実態と無関係な互換ウィンドウに送られ
+    // 「成功」ログを出しながら実際には JIS かな入力ロックから復旧できない不具合があった。
+    // get_focused_hwnd（GetGUIThreadInfo().hwndFocus 優先）に揃えることで、実際に
+    // テキスト入力を受けている子ウィンドウを対象にする。
+    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
         return false;
     };
     // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
@@ -763,7 +781,9 @@ pub async fn set_ime_romaji_mode_async() -> bool {
 #[must_use]
 pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool {
     use crate::imm::IME_CMODE_ROMAN;
-    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
+    // SAFETY: get_focused_hwnd は unsafe fn。BUG-55（set_ime_romaji_mode 参照）と同じ理由で
+    //         GetForegroundWindow ではなく get_focused_hwnd を使う。
+    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
         return false;
     };
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {

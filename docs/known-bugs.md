@@ -6079,3 +6079,253 @@ warnings`（warning ゼロ）での型検査のみ実施。実機/Windows 環境
 BUG-41（`alt_impersonation.rs` 移設と同じ「純粋判定を Linux でテスト可能にする」
 再発防止パターンの前例）、BUG-23（`reset_physical_key_state` によるセッション
 ロック解除時の全 VK リセット、同種の stuck-modifier 対策の前例）。
+
+## BUG-54: `apply_force_on_for_imm_broken` の `conv_mode_policy=force` 経路が20msごとのVK_IME_ON無限再送ループに縮退し、体感遅延・ガタつきを引き起こす
+
+**症状:** Windows Terminal（MS-IME、TsfNative/InputSite プロファイル）で
+`conv_mode_policy=force` 運用中、ユーザーから「動きが少しがたついているというか、
+遅延がとてもあり、ギリギリ使えなくてもないがかなりストレスフル」という報告
+（2026-08-07）。実機 debug ログでは以下のブロックが **~35〜50ms 間隔で無限に
+繰り返され**、900ms の抜粋だけで20回以上観測された:
+
+```
+[stage-observe] strategy=SkipTyping/Blacklist belief_on=true explicit_intent=Some(true)
+[apply-ime] MS-IME direct: send 0x0016 (IME ON)
+[ime-mode] SendInput vk=0x16 ...
+[apply-ime] open=true eff=true conf=true → outcome=Applied
+Blacklist force-ON: apply_ime_open(true) → Applied
+[ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+[composition] ImeEffect::SetOpen(true) → marking cold
+[composition] marked cold reason=SetOpenTrue ... → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+Timer set: logical=101, ms=20, os_id=...
+...(UIA async 問い合わせ等)...
+Timer killed: logical=101, os_id=...
+read_ime_state_full: ... ime_on=None (preserving state)
+```
+打鍵の有無に関係なく常時回り続けており、実際にユーザーが打鍵した Enter
+（この抜粋の末尾）が挟まってもループ自体は継続していた。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+
+**原因（確定、コード読解 + ログでの因果確認済み）:** `runtime/mod.rs::
+apply_force_on_for_imm_broken` は「`applied` が既に ON 記録済みなら送らない」
+という自己スロットルを持っていたが、`893254c9`（本ブランチに先立って別セッション
+がマージ、`feat(awase-windows): conv_mode_policy=forceをIME ON/OFF軸にも適用`）
+が `conv_mode_policy=force` のときこのスロットルを完全にバイパスするよう変更
+していた。ところが呼び出し連鎖は次の通りで、このスロットルが同時に
+「`on_ime_apply_complete` → `platform.post_ime_refresh()` が無条件に仕込む
+20ms 後の確認 refresh チェーン」を1回で自己終了させる安全弁も兼ねていた:
+
+```
+TIMER_IME_REFRESH(20ms) 発火
+  → run_ime_refresh_with_prefetched()
+    → apply_force_on_for_imm_broken()   // force policy でスロットル無効化
+      → VK_IME_ON 送信、on_ime_apply_complete()
+        → platform.post_ime_refresh()   // 無条件で 20ms 後に TIMER_IME_REFRESH 再セット
+          → (最初に戻る、無限)
+```
+
+TsfNative ウィンドウでは `reschedule_ime_refresh()` 自体が
+`is_tsf_native || explicit_intent().is_some()` で常に早期 return するため、
+`post_ime_refresh()` の 20ms 確認チェーンが `apply_force_on_for_imm_broken` を
+再度呼ぶ**唯一の経路**になっている。`893254c9` のコミットメッセージが想定していた
+「500ms poll ごとに無条件で再送する」という設計意図は TsfNative では成立せず、
+実際には 20ms 周期の自己駆動ループに縮退していた。
+
+**修正:** `force_policy` 分岐に、`Runtime` の新規フィールド
+`last_force_on_resend_ms: Option<u64>` を使った自前のレート制限を追加した。
+`ime_poll_interval_ms`（既定 500ms）未経過なら実送信をスキップし、残り時間
+だけ次の refresh を予約して抜ける（force-policy の周期監視自体は止めない）。
+`discard_actuation()`（FocusChanged 等で `active_actuation` を破棄する既存の
+唯一の口）に併せてこのフィールドもリセットし、新しいフォーカス先で前の待機を
+持ち越さないようにした。ADR-080 の `Actuation`（`ir_apply_drift_correction`
+専用、`desired`/`FocusChanged`/`Resolution` 確定で破棄・再構築）への統合も
+検討したが、`apply_force_on_for_imm_broken` は `check_drift_correction` を
+経由しない別経路のため、大きな設計変更なしに転用できず、今回は見送った
+（将来の統合候補として残す）。
+
+**検証:** `cargo xwin check`/`cargo xwin clippy -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ）、`cargo test -p
+awase-windows --lib --test golden_scenarios --test architecture_guard`
+（320 件 pass）。wine 未導入のためこのサンドボックスでは実機相当のテスト
+実行は未実施。次回実機確認で、当該ログブロックの再送間隔が
+`ime_poll_interval_ms` 相当（既定500ms）に戻っていることを確認すること。
+
+**未対応（残存）:** BUG-51 で修正した OFF 方向（`ir_apply_drift_correction`
+経由の `KatakanaShadowOff` 誤検知の可能性、実機再現待ち）とは別軸の問題。
+`apply_force_on_for_imm_broken` と ADR-080 `Actuation` の設計統合は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/mod.rs`
+（`apply_force_on_for_imm_broken`、`Runtime::last_force_on_resend_ms`）、
+`crates/awase-windows/src/runtime/ime_actuation.rs`（`discard_actuation`）、
+`crates/awase-windows/src/platform.rs`（`post_ime_refresh`）。関連: BUG-51
+（TsfNative drift correction の再起動漏れ、同じ `TIMER_IME_REFRESH`/20ms 系統）、
+ADR-083（`conv_mode_policy=force` の設計記録）、ADR-080（`Actuation` 型付き
+トランザクション、統合の将来候補）。
+
+## BUG-55: `get_ime_wnd`/`set_ime_romaji_mode` が `GetForegroundWindow()`（トップレベル）基準の `ImmGetDefaultIMEWnd` を使うため、InputSite 子ウィンドウの実際の変換モードとは無関係な標的に書き込み、JISかな入力ロックから復旧できなくなる
+
+**症状:** Windows Terminal（MS-IME、TsfNative/InputSite プロファイル）で
+`conv_mode_policy=force` 運用中（BUG-54 の 20ms 無限ループ修正を適用した
+ビルドで検証）、「なぜか、JISかなが有効になって、入力不能になった」という
+実機報告（2026-08-07）。ログでは awase 側は一貫して「ローマ字モードへの
+訂正に成功した」と記録し続けていた:
+
+```
+[conv-mode] Hiragana/roma → Hiragana/kana (conv=0x00000009)   // FocusChange 直後、実IMEがかな入力で復元
+[imm-romaji] conv 0x00000009 → 0x00000019 success=true         // set_ime_romaji_mode が「成功」
+[idle-conv-check] TsfNative: conv=0x00000019 → belief AssumedRomaji 変更なし  // 以後もローマ字のまま、と観測し続ける
+```
+しかし実際に画面上で見えていた IME は JIS かな入力のままで、awase 経由の
+物理キー入力が正しいローマ字として解釈されず入力不能になった。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+
+**原因（コード確認済み、実機での完全な因果特定は未確定）:** BUG-54 の調査で
+追加した診断ログ（`[idle-conv-check-diag] foreground_hwnd=... ime_wnd=...`）
+により、`get_ime_wnd`（`ImmGetDefaultIMEWnd(GetForegroundWindow())`）が返す
+`ime_wnd` が、フォーカスの実体（`Windows.UI.Input.InputSite.WindowClass`,
+`HWND(0x20954)`）とは異なる `HWND(0x70a8a)` で、かつセッションを通して
+一貫して同じ値のまま変化しないことを確認した。`GetForegroundWindow()` 自体も
+常にトップレベルウィンドウ（`HWND(0x20942)`, `CASCADIA_HOSTING_WINDOW_CLASS`）
+を返し、実際にテキスト入力を受けている InputSite 子ウィンドウ
+（`HWND(0x20954)`）を指していない。
+
+`ime.rs::set_ime_romaji_mode()`（`MsImeDirectStrategy::apply(open=true, ..)`
+内で「ROMAN ビットを先に立てる」ために呼ばれる）と `get_ime_conversion_mode_
+raw_timeout()`（`idle-conv-check`/`focus-conv-check` が使う conv 読み取り）は
+**どちらも同じ `get_ime_wnd(GetForegroundWindow())` 経路**を使っている。
+`IMC_SETCONVERSIONMODE`/`IMC_GETCONVERSIONMODE` はレガシー IMM32 互換の
+「デフォルト IME ウィンドウ」に送られる `WM_IME_CONTROL` であり、TSF3
+ネイティブな InputSite 子ウィンドウの実際の composition/conversion 状態とは
+別物の可能性が高い。読み取り・書き込みの双方が一貫して同じ的外れな標的を
+指しているため、awase の belief（`AssumedRomaji`、`conv=0x00000019`）と
+実際に画面へ反映される IME 状態が食い違ったまま自己整合してしまい、
+`success=true` ログが実害の発見を遅らせる。
+
+**未確定な点:** 上記は診断ログから読み取れる構造的な疑わしさであり、
+「`ime_wnd`/`foreground_hwnd` が InputSite と無関係な標的である」ことが
+JISかなロックそのものの直接の原因と実機で1対1に確認できたわけではない
+（`set_ime_romaji_mode` 呼び出し直後に実際の画面表示を確認する追加ログは
+まだ入れていない）。
+
+**修正:** `crate::ime::get_focused_hwnd()`（`GetGUIThreadInfo().hwndFocus`
+優先・`GetForegroundWindow()` フォールバック、30ms タイムアウト）という
+**まさに正しい既存ヘルパーが `send_f2_via_sendmessage` の1箇所でしか使われて
+いなかった**ことが判明した。`read_ime_state_full` も同じ `GetGUIThreadInfo`
+経路（`get_gui_thread_info_with_timeout`）で `focused_hwnd` を解決しており、
+実機ログで `HWND(0x20954)`（InputSite 子）を正しく返している。一方
+`get_ime_conversion_mode_raw`/`get_ime_conversion_mode_raw_timeout`/
+`set_ime_romaji_mode`/`set_ime_romaji_mode_with_target` の4関数だけが
+`GetForegroundWindow()` に取り残されていた。この4関数をすべて
+`get_focused_hwnd()` 基準に統一した。
+
+なお `read_ime_state_fast()` は意図的に `GetForegroundWindow()` を使い続けて
+いる（`profile.can_read_imm32_open_status()` で読み取り不能プロファイルを
+別途ガードしており、「トップレベル hwnd の方が TSF 互換ブリッジに応答
+しやすい」場合があるという別の設計意図によるもの、doc コメント参照）。
+今回の変更対象には含めていない。
+
+**修正が届く範囲:** `set_ime_romaji_mode`/`set_ime_romaji_mode_with_target`
+は `MsImeDirectStrategy::apply(open=true, ..)` と
+`tsf/warmup/cold_warmup.rs::ColdWarmupSequence::run_start`（`conv_mode_policy`
+の observe/force 両方）の双方から呼ばれているため、この2経路すべてに修正が
+及ぶ。`get_ime_conversion_mode_raw_timeout` は `idle-conv-check`/
+`focus-conv-check`（`KatakanaShadowOff` 等の判定根拠）にも使われており、
+BUG-51/BUG-54 で扱った conv 観測の信頼性そのものにも波及する可能性がある。
+
+**検証:** `cargo xwin check`/`cargo xwin clippy -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ）、`cargo test -p
+awase-windows --lib --test golden_scenarios --test architecture_guard --test
+ime_key_sequence_golden`（284+22+14 件 pass、golden は `#[cfg(windows)]` の
+ため Linux では 0 件）。wine 未導入のためこのサンドボックスでは実機相当の
+テスト実行は未実施。**次回実機確認が必須**: `conv_mode_policy=force` で
+Windows Terminal に再度フォーカスを移し、(a) JISかなロックが再発しないこと、
+(b) `[imm-romaji] conv ... → ... success=true` 直後に画面上の IME が実際に
+ローマ字入力へ切り替わっていること、(c) `[idle-conv-check-diag]
+focused_hwnd=...` が InputSite 子 hwnd（`read_ime_state_full` の
+`focused_hwnd` と一致）を指すことを確認すること。「上記は診断ログから
+読み取れる構造的な疑わしさであり、実機で1対1に確認できたわけではない」
+（旧稿の「未確定な点」）は本コミット時点でもまだ解消していない。
+
+**関連ファイル:** `crates/awase-windows/src/ime.rs`（`set_ime_romaji_mode`、
+`set_ime_romaji_mode_with_target`、`get_ime_conversion_mode_raw`、
+`get_ime_conversion_mode_raw_timeout`、`get_focused_hwnd`）、
+`crates/awase-windows/src/imm.rs`（`get_ime_wnd`）、
+`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy::apply`）、
+`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`
+（`ColdWarmupSequence::run_start`）。関連: BUG-54（同じ実機セッションで先に
+発見された `apply_force_on_for_imm_broken` の無限ループ、本バグの発見は
+その修正ビルドの実機検証中に判明）、ADR-083（`conv_mode_policy=force` の
+設計記録）。
+
+## BUG-56: `learn_imm_capability_on_focus` が `ImmGetDefaultIMEWnd`=NULL を1回観測しただけで `Unavailable` を確定し、ジェネリックなクラス名を共有する本物のテキスト入力欄まで巻き込んで物理IMEキーが漏れ文字が重複コミットされる
+
+**症状:** LINE（Qt663QWindowIcon、`AppImeProfile::Standard`）で「なにをうっても
+でででになる」「はさささ→はははは」という実機報告（2026-08-07、BUG-54/BUG-55
+修正ビルドでの再テスト中）。debug ログでは、awase 自身の `send_keys` は該当文字を
+**1回しか送信していない**のに、画面には同じ仮名が複数回コミットされていた。
+
+**IME:** Microsoft IME。LINE（Qt ベース、`class="Qt663QWindowIcon"`）。
+
+**原因（コード確認済み）:** `focus/imm_learning.rs::learn_imm_capability_on_focus`
+は、フォーカスされたウィンドウの `class_name` に対して `ImmGetDefaultIMEWnd` が
+NULL を返した**その場**で、`ImmCapability::Unavailable` を即座に確定・永続化
+（`cache.toml` の `[imm_capability]`）していた。`cache.toml` を確認したところ
+実際に `Qt663QWindowIcon = "unavailable"` が記録されていた。
+
+Qt はウィンドウクラス名をアプリ内の複数の異なるウィジェット（本物のチャット入力欄・
+通知アイコン絡みの一時ウィンドウ等）で使い回すことがある。フォーカス解決に使う
+`GetGUIThreadInfo().hwndFocus` が、たまたまテキスト入力とは無関係な一時ウィンドウ
+（同じクラス名）を指した瞬間に `ImmGetDefaultIMEWnd` が NULL を返すと、それが
+**単発の観測だけで即確定**し、`class_name` をキーとする学習キャッシュ経由で
+本物のチャット入力欄（同じクラス名）まで巻き込んで `Imm32Unavailable` に降格
+した。この降格により、LINE 向けに歴史的に確立していた「ImmCross アプリには
+物理 IME キーを見せない」設計原則
+（[[feedback_immcross_owns_kanji]]、`project_kanji_imecross_spurious_vk3.md`）が
+崩れ、`Blacklist force-ON`（`VK_IME_ON` を物理キーとして LINE へ定期送信）が
+発火するようになった。物理 IME キーが LINE 側の composition/commit ロジックへ
+漏れたことが、同じ文字の重複コミット（「でででで」）の実害だったと推測される
+（正確な二重コミットの内部メカニズムまでは未確認）。
+
+**暫定回避（実機で確認済み）:** `cache.toml` の `[imm_capability]` セクションから
+`Qt663QWindowIcon` のエントリを削除し、awase を再起動（`ImmCapabilityStore` は
+起動時に一度だけ `cache.toml` を読み込むため、ファイル修正だけでは反映されない）。
+これにより「でででで」「はははは」は再発しなくなった（ユーザー確認済み、
+2026-08-07）。ただしこれは学習し直しの起点をリセットしただけで、同じ一時
+ウィンドウが再度 NULL を返せば再発しうる対症療法。
+
+**恒久修正:** `ImmCapabilityStore` に `pending_unavailable: HashMap<String, u32>`
+（永続化しないセッション内カウンタ）を追加し、`record_null_probe()`／
+`clear_pending_unavailable()` を新設。NULL 観測は即確定せず、同じ `class_name` で
+`UNAVAILABLE_CONFIRM_THRESHOLD`（= 2）回**連続**観測して初めて `Unavailable` を
+確定・永続化するようにした（BUG-19 の「非カタカナ→カタカナ遷移を2回連続観測する
+まで確定させない」デバウンスと同じ考え方、`.claude/rules/ime-belief-architecture.md`
+参照）。途中で non-NULL 観測（本物の入力欄が応答した）が挟まればカウントをクリア
+する。`learn_imm_capability_on_focus` はこの2メソッドに委譲するだけに変更した。
+
+これは対症療法ではなく根本原因（単発誤判定への脆弱性）への対応だが、完全な解決
+ではない — 同じ一時ウィンドウが2回連続でたまたま先にフォーカスされれば依然として
+誤確定しうる（閾値を上げれば緩和されるが、真に IMM32 が使えないアプリの検出が
+遅れるトレードオフがある）。
+
+**検証:** `cargo xwin check --tests`/`cargo xwin clippy --tests -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ、pre-existing の
+`e2e_windows.rs`/`gji_fsm.rs` 等の pedantic 警告とは無関係と確認）。
+`focus/classifier.rs` に `imm_capability_store_tests` を新設し、単発 NULL では
+確定しないこと・2回連続で確定すること・non-NULL 観測でカウントがリセットされる
+ことを検証する4件のユニットテストを追加した。`focus::classifier` モジュールは
+`#[cfg(windows)]` のためこのサンドボックス（Linux, wine 未導入）ではコンパイル
+検査のみで実行はできていない。次回実機確認で、LINE 通知ポップアップ等の連続
+フォーカスでも `Qt663QWindowIcon` が誤って `Unavailable` に降格しないことを
+確認すること。
+
+**関連ファイル:** `crates/awase-windows/src/focus/imm_learning.rs`
+（`learn_imm_capability_on_focus`）、
+`crates/awase-windows/src/focus/classifier.rs`（`ImmCapabilityStore`、
+`record_null_probe`/`clear_pending_unavailable`/`imm_capability_store_tests`）、
+`crates/awase-windows/src/focus/tracker.rs`（`FocusTracker` 薄いラッパー）、
+`crates/awase-windows/src/platform.rs`（`WindowsPlatform` 薄いラッパー）。
+関連: BUG-54・BUG-55（同じ実機検証セッションで連鎖的に発見）、
+[[feedback_immcross_owns_kanji]]、`project_kanji_imecross_spurious_vk3.md`
+（LINE に物理 IME キーを見せてはいけない設計原則の由来）。

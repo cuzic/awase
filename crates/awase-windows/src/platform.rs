@@ -1066,6 +1066,16 @@ impl WindowsPlatform {
         self.focus.learn_imm_capability(class_name, cap);
     }
 
+    /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する（BUG-56: 閾値回連続で初めて確定）。
+    pub fn record_imm_null_probe(&mut self, class_name: String) {
+        self.focus.record_imm_null_probe(class_name);
+    }
+
+    /// 非 NULL 観測を得たら「疑い」カウントをクリアする（BUG-56）。
+    pub fn clear_imm_pending_unavailable(&mut self, class_name: &str) {
+        self.focus.clear_imm_pending_unavailable(class_name);
+    }
+
     /// UIA ワーカーへの送信チャネルを設定する。
     pub fn set_uia_sender(
         &mut self,

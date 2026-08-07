@@ -226,6 +226,14 @@ impl FocusTracker {
         self.imm_learning.learn(class_name, cap);
     }
 
+    pub(crate) fn record_imm_null_probe(&mut self, class_name: String) {
+        self.imm_learning.record_null_probe(class_name);
+    }
+
+    pub(crate) fn clear_imm_pending_unavailable(&mut self, class_name: &str) {
+        self.imm_learning.clear_pending_unavailable(class_name);
+    }
+
     // ── Injection モード学習 ────────────────────────────────────────────────
 
     /// class_name が Tsf モード必要と学習済みかどうか。
