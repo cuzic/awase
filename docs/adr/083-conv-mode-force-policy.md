@@ -131,6 +131,37 @@ conv モードで `desired_mode` を導入した動機（BUG-47/BUG-19）と全�
 という構造的な穴を塞ぐ対症的な対策であり、`applied` 誤記録自体の発生経路の
 調査は今後の課題。実機での動作確認は未実施。
 
+## 追記2（2026-08-06）: `reschedule_ime_refresh` の早期 return が force 再送そのものを止めていた
+
+**きっかけ:** 追記1の修正（`apply_force_on_for_imm_broken` の `applied` スロットル
+無視）を適用・実機で有効化（`conv_mode_policy=force` 設定済みを確認）した後も、
+「またＩＭＥ OFF Engine ON の状態にまたなりました」という同一症状のユーザー
+再報告。ログには長い無操作期間（ロック解除後の静寂）の直前・直後で focus が
+TsfNative（Windows Terminal）に落ち着いている。
+
+**構造的な原因:** `apply_force_on_for_imm_broken()` は独立に定期実行されている
+わけではなく、`reschedule_ime_refresh()` が再スケジュールし続ける periodic な
+`ime_refresh` 連鎖（`ir_stage_notify` の Phase 4a）に相乗りする形で呼ばれている。
+一方 `reschedule_ime_refresh()` には「TsfNative は `read_ime_state_full` が常に
+`None` を返し観測が無意味だから」という理由で、`is_tsf_native ||
+explicit_intent().is_some()` のときに連鎖自体を止めて `return` する早期 return が
+あった。この早期 return は「観測しても何も読めないから無駄」という observe 専用
+の最適化のつもりだったが、同じ連鎖に相乗りしている Phase 4a の actuation
+（force 再送）まで一緒に止めてしまっていた。結果、フォーカスが TsfNative に
+落ち着いた後の無操作期間は、`conv_mode_policy=force` を設定していても一切の
+force 再送が起きなくなり、追記1の修正だけでは実効性がなかった。
+
+**修正:** `reschedule_ime_refresh()` に `conv_mode_policy == Force` のときは
+この早期 return をスキップする分岐を追加（`crates/awase-windows/src/runtime/mod.rs`）。
+これにより TsfNative フォーカス中も `ime_poll_interval_ms` 間隔で連鎖が回り
+続け、Phase 4a の force 再送が無操作期間中も継続する。observe（デフォルト）
+時の挙動は変更していない。
+
+**未対応:** 追記1と同様、`applied`（あるいは今回で言えば belief=ON×実IME=OFF の
+乖離そのもの）がなぜ最初に発生するのかという根本トリガーは依然未解明。本追記は
+「force 再送の機会が構造的に失われていた」という別レイヤーの穴を塞ぐもので、
+発生経路の調査は今後の課題のまま。実機での動作確認は未実施。
+
 ## 関連ファイル
 
 `src/config.rs`（`ConvModePolicy`）、`src/engine/conv.rs`（`ConvMode::to_conv_bits`）、
