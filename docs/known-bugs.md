@@ -6209,23 +6209,52 @@ JISかなロックそのものの直接の原因と実機で1対1に確認でき
 （`set_ime_romaji_mode` 呼び出し直後に実際の画面表示を確認する追加ログは
 まだ入れていない）。
 
-**未修正（本エントリは記録のみ、fix は次回以降）:** `get_ime_wnd`/
-`set_ime_romaji_mode`/`get_ime_conversion_mode_raw_timeout` を
-`GetForegroundWindow()` ではなく実際にフォーカスされている InputSite 子
-hwnd 基準にする案が有力だが、影響範囲が read/write 双方・複数関数に及ぶため
-未着手。当面の回避策として `conv_mode_policy` を `force` 以外に戻すことを
-ユーザーに依頼した。
+**修正:** `crate::ime::get_focused_hwnd()`（`GetGUIThreadInfo().hwndFocus`
+優先・`GetForegroundWindow()` フォールバック、30ms タイムアウト）という
+**まさに正しい既存ヘルパーが `send_f2_via_sendmessage` の1箇所でしか使われて
+いなかった**ことが判明した。`read_ime_state_full` も同じ `GetGUIThreadInfo`
+経路（`get_gui_thread_info_with_timeout`）で `focused_hwnd` を解決しており、
+実機ログで `HWND(0x20954)`（InputSite 子）を正しく返している。一方
+`get_ime_conversion_mode_raw`/`get_ime_conversion_mode_raw_timeout`/
+`set_ime_romaji_mode`/`set_ime_romaji_mode_with_target` の4関数だけが
+`GetForegroundWindow()` に取り残されていた。この4関数をすべて
+`get_focused_hwnd()` 基準に統一した。
 
-**検証状況:** コード読解（`ime.rs::set_ime_romaji_mode`/
-`get_ime_conversion_mode_raw_timeout`/`imm::get_ime_wnd` の呼び出し関係確認）
-+ 実機診断ログでの `ime_wnd`/`foreground_hwnd` の恒常性確認。追加の実機検証
-（`set_ime_romaji_mode` 呼び出し直後の実画面確認、InputSite 子 hwnd 基準への
-書き換え後の再検証）が必要。
+なお `read_ime_state_fast()` は意図的に `GetForegroundWindow()` を使い続けて
+いる（`profile.can_read_imm32_open_status()` で読み取り不能プロファイルを
+別途ガードしており、「トップレベル hwnd の方が TSF 互換ブリッジに応答
+しやすい」場合があるという別の設計意図によるもの、doc コメント参照）。
+今回の変更対象には含めていない。
+
+**修正が届く範囲:** `set_ime_romaji_mode`/`set_ime_romaji_mode_with_target`
+は `MsImeDirectStrategy::apply(open=true, ..)` と
+`tsf/warmup/cold_warmup.rs::ColdWarmupSequence::run_start`（`conv_mode_policy`
+の observe/force 両方）の双方から呼ばれているため、この2経路すべてに修正が
+及ぶ。`get_ime_conversion_mode_raw_timeout` は `idle-conv-check`/
+`focus-conv-check`（`KatakanaShadowOff` 等の判定根拠）にも使われており、
+BUG-51/BUG-54 で扱った conv 観測の信頼性そのものにも波及する可能性がある。
+
+**検証:** `cargo xwin check`/`cargo xwin clippy -- -D warnings`
+（`x86_64-pc-windows-msvc`、いずれも warning ゼロ）、`cargo test -p
+awase-windows --lib --test golden_scenarios --test architecture_guard --test
+ime_key_sequence_golden`（284+22+14 件 pass、golden は `#[cfg(windows)]` の
+ため Linux では 0 件）。wine 未導入のためこのサンドボックスでは実機相当の
+テスト実行は未実施。**次回実機確認が必須**: `conv_mode_policy=force` で
+Windows Terminal に再度フォーカスを移し、(a) JISかなロックが再発しないこと、
+(b) `[imm-romaji] conv ... → ... success=true` 直後に画面上の IME が実際に
+ローマ字入力へ切り替わっていること、(c) `[idle-conv-check-diag]
+focused_hwnd=...` が InputSite 子 hwnd（`read_ime_state_full` の
+`focused_hwnd` と一致）を指すことを確認すること。「上記は診断ログから
+読み取れる構造的な疑わしさであり、実機で1対1に確認できたわけではない」
+（旧稿の「未確定な点」）は本コミット時点でもまだ解消していない。
 
 **関連ファイル:** `crates/awase-windows/src/ime.rs`（`set_ime_romaji_mode`、
-`get_ime_conversion_mode_raw_timeout`、`get_ime_wnd` 呼び出し箇所全般）、
+`set_ime_romaji_mode_with_target`、`get_ime_conversion_mode_raw`、
+`get_ime_conversion_mode_raw_timeout`、`get_focused_hwnd`）、
 `crates/awase-windows/src/imm.rs`（`get_ime_wnd`）、
-`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy::apply`）。
-関連: BUG-54（同じ実機セッションで先に発見された `apply_force_on_for_imm_
-broken` の無限ループ、本バグの発見はその修正ビルドの実機検証中に判明）、
-ADR-083（`conv_mode_policy=force` の設計記録）。
+`crates/awase-windows/src/ime_controller.rs`（`MsImeDirectStrategy::apply`）、
+`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`
+（`ColdWarmupSequence::run_start`）。関連: BUG-54（同じ実機セッションで先に
+発見された `apply_force_on_for_imm_broken` の無限ループ、本バグの発見は
+その修正ビルドの実機検証中に判明）、ADR-083（`conv_mode_policy=force` の
+設計記録）。
