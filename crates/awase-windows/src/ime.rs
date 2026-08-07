@@ -419,7 +419,16 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
     // SAFETY: GetForegroundWindow はスレッドセーフで、NULL を返す場合は non_null() が `?` で None を返す。
     let hwnd = unsafe { GetForegroundWindow() }.non_null()?;
     // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
+    let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) };
+    // 診断用（2026-08-07 実機調査）: TsfNative(InputSite) ウィンドウで idle-conv-check の
+    // KatakanaShadowOff 誤検知が続く（[drift] correction が 148〜153秒以上収束しない）
+    // 事象の原因仮説を検証するためのログ。ImmGetDefaultIMEWnd はレガシー IMM32 互換の
+    // 「デフォルト IME ウィンドウ」を返すだけで、TSF3 ネイティブな InputSite 子ウィンドウの
+    // 実際の composition とは別物（プロセス/スレッド単位の互換コンテキスト）である疑いが
+    // ある。foreground hwnd と ime_wnd の対応関係、および ime_wnd が別フォーカス間で
+    // 使い回されていないかを実機ログで確認する。
+    log::debug!("[idle-conv-check-diag] foreground_hwnd={hwnd:?} ime_wnd={ime_wnd:?}");
+    let ime_wnd = ime_wnd?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
     unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, timeout_ms) }
