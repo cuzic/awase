@@ -35,6 +35,23 @@
 //! probe 中に届いた後続キーは既存の deferred VK 機構
 //! （`defer_if_probe_in_flight` / `defer_vk_if_probe_in_flight`）に積まれ、
 //! dispatcher の `Transmit` アームが送信直後に flush する（順序保証）。
+//!
+//! # `OutputActiveGuard` は Phase 1 では確保しない（BUG-58）
+//!
+//! Phase 1（NATIVE 確認待ち）は `IMC_GETCONVERSIONMODE` の読み取り結果を待つだけで
+//! 一切 SendInput を行わない。にも関わらず旧実装は `MsImeReadyCoro::new()` の時点で
+//! `OutputActiveGuard` を確保し、Phase 1 の間ずっと保持していた。これは
+//! `OUTPUT_GATE.active` を通じて `app/mod.rs` の物理キー分配
+//! （`handle_wm_key_from_hook` 呼び出し）自体を止めてしまう。小指シフト面の
+//! チョード（例: Shift+1=「！」）では、conv を Off→NATIVE に戻せる唯一の経路
+//! （`kp_shift_conv_guard_key_up`、物理 Shift KeyUp 契機）がまさにこのブロックの
+//! 対象になり、「NATIVE を待つゲート」と「NATIVE に戻す処理の起動」が互いを
+//! 塞ぎ合う循環待ちに陥って `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms）の
+//! 満了まで毎回フリーズしていた（docs/known-bugs.md BUG-58）。
+//!
+//! 現在の実装は `OutputActiveGuard` を Phase 2（Transmit 直前）でのみ確保する。
+//! Phase 1 は無出力のまま物理キー分配を妨げないため、Shift KeyUp が実時間で
+//! 処理され復元が正常に走り、循環が構造的に解消される。
 
 use std::rc::Rc;
 
@@ -111,6 +128,25 @@ async fn ms_ime_ready_coro_body(
     // dispatcher が romaji 送信 → deferred VK flush → warm マークまで行う。
     // F2 前置は不要（MS-IME は VK_DBE_HIRAGANA warmup を必要としない）。
     // LiteralDetect は GJI 観測（candidate window / write_bytes）前提のため使わない。
+    //
+    // BUG-58: `OutputActiveGuard` は実際に SendInput を伴う Phase 2 に入る
+    // 直前でのみ確保する（Phase 1 は IMC 観測を待つだけで無出力）。
+    // Phase 1 の間も保持していた旧実装は、`OUTPUT_GATE.active` が
+    // `app/mod.rs` の物理キー分配（`handle_wm_key_from_hook`）そのものを
+    // 止めてしまうことを見落としていた。conv を Off→NATIVE に戻せる唯一の
+    // 経路（`kp_shift_conv_guard_key_up` は物理 Shift KeyUp が
+    // `handle_wm_key_from_hook` に届いて初めて起動する）がこの間ブロックされ、
+    // 「NATIVE を待つゲート」と「NATIVE に戻す処理の起動」が互いを塞ぎ合う
+    // 循環待ちになり、`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms）の
+    // 安全弁満了まで毎回フリーズしていた（詳細: docs/known-bugs.md BUG-58）。
+    // Phase 1 を無出力のまま `OutputActiveGuard` なしで待たせることで、
+    // 物理 Shift KeyUp が実時間で処理され復元が正常に走るようになり、
+    // 循環が構造的に解消される。後続キーの出力順序は本モジュール冒頭の
+    // module doc のとおり `defer_if_probe_in_flight`/`defer_vk_if_probe_in_flight`
+    // （engine 経由の romaji）と `run_passthrough_pipeline` の
+    // `has_pending_tsf_work()` チェック（PassThrough 全般、BUG-58 で追加）
+    // が別途保証するため、`OutputActiveGuard` を Phase 1 で持つ必要はない。
+    let _guard = OutputActiveGuard::begin();
     yield_step(
         ch,
         vec![
@@ -138,8 +174,10 @@ async fn ms_ime_ready_coro_body(
 pub(crate) struct MsImeReadyCoro {
     coro: StepCoro<TsfEnvSnapshot, Vec<ProbeAction>>,
     cold_seq: Generation,
-    /// RAII guard。drop で `OUTPUT_GATE.active=false`。
-    _guard: OutputActiveGuard,
+    // BUG-58: `OutputActiveGuard` はここでは確保しない（Phase 1 は無出力）。
+    // `ms_ime_ready_coro_body` の Phase 2 直前でローカルに確保し、コルーチンの
+    // 完了（Done yield 後の future 完了）まで保持する。詳細は Phase 2 直前の
+    // コメント参照。
 }
 
 impl MsImeReadyCoro {
@@ -149,7 +187,6 @@ impl MsImeReadyCoro {
         deadline_ms: u64,
         target: TransmitTarget,
     ) -> Self {
-        let guard = OutputActiveGuard::begin();
         let romaji = romaji.to_string();
         let mut coro = StepCoro::new(async move |ch| {
             ms_ime_ready_coro_body(ch, cold_seq, romaji, deadline_ms, target).await;
@@ -161,11 +198,7 @@ impl MsImeReadyCoro {
             matches!(&primed, CoroStep::Yielded(actions) if actions.is_empty()),
             "MsImeReadyCoro prime() は空の ProbeAction を yield するはず: {primed:?}"
         );
-        Self {
-            coro,
-            cold_seq,
-            _guard: guard,
-        }
+        Self { coro, cold_seq }
     }
 }
 
@@ -202,6 +235,17 @@ mod tests {
         }
     }
 
+    /// BUG-58 レビュー指摘: `OUTPUT_GATE`（`tsf/probe_bridge.rs`）はプロセス全体で
+    /// 共有される static。Phase 2（Transmit yield 直前）に到達するテストは
+    /// `OutputActiveGuard::begin()` を実際に呼ぶため、`cargo test` の既定の
+    /// マルチスレッド実行下では、このファイル内で Phase 2 に到達する複数テストが
+    /// 互いの `depth`/`active` を汚染しうる（同ファイル外の
+    /// `GjiWarmupCoro`/`ChromeProbe`/`LiteralDetectFsm` 等も同じ static を触るため、
+    /// クレート全体での競合は完全には排除できないが、少なくともこのファイル内の
+    /// テスト同士は直列化する）。Phase 2 に到達する全テストの先頭でこのロックを
+    /// 取ること。
+    static GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn native_ready_requires_confirmation() {
         // belief だけ（unconfirmed）では準備完了と見なさない — BUG-13 はまさに
@@ -226,6 +270,9 @@ mod tests {
 
     #[test]
     fn coro_waits_until_confirmed_then_transmits() {
+        let _lk = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = crate::hook::current_tick_ms() + 60_000;
         let mut coro = MsImeReadyCoro::new("wo", Generation::new(7), deadline, TransmitTarget::Tsf);
 
@@ -251,6 +298,9 @@ mod tests {
     /// `TransmitTarget::Tsf` へのハードコードが復活する退行を防ぐための固定テスト。
     #[test]
     fn coro_transmits_via_chrome_target_when_installed_for_vk_mode() {
+        let _lk = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = crate::hook::current_tick_ms() + 60_000;
         let mut coro =
             MsImeReadyCoro::new("ka", Generation::new(9), deadline, TransmitTarget::Chrome);
@@ -270,6 +320,9 @@ mod tests {
 
     #[test]
     fn coro_transmits_on_deadline_even_without_confirmation() {
+        let _lk = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // 安全弁: IMC が読めない環境でも期限でタイピングを止めない。
         let deadline = crate::hook::current_tick_ms(); // 即座に期限切れ
         let mut coro = MsImeReadyCoro::new("ka", Generation::new(8), deadline, TransmitTarget::Tsf);
@@ -296,6 +349,9 @@ mod tests {
     /// 発見する結果になった — 今後同じ回帰を作らないための直接固定。
     #[test]
     fn coro_does_not_expire_while_confirm_gate_is_overridden_to_max() {
+        let _lk = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let deadline = crate::hook::current_tick_ms(); // 元の期限は即座に切れる
         let mut coro = MsImeReadyCoro::new("!", Generation::new(10), deadline, TransmitTarget::Tsf);
 
@@ -341,6 +397,48 @@ mod tests {
             actions.is_empty(),
             "deadline_ms は既に過ぎているが、より遅い override が優先されて \
              待機し続けるはず: {actions:?}"
+        );
+    }
+
+    /// BUG-58 の直接固定: Phase 1（NATIVE 未確認で待機中）は `OUTPUT_GATE.active`
+    /// を立てない。これが立ったままだと、conv を Off→NATIVE に戻す唯一の経路
+    /// （物理 Shift KeyUp 契機の `kp_shift_conv_guard_key_up`）が
+    /// `app/mod.rs::handle_wm_key_from_hook` への到達自体をブロックされ、
+    /// 循環待ちで `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms）まで
+    /// フリーズする（docs/known-bugs.md BUG-58）。`OUTPUT_GATE` はプロセス全体で
+    /// 共有される static のため、他の並行テストの影響を避けるべく「このテスト内での
+    /// 遷移」だけを確認する（テスト開始時点で depth==0、Phase 1 中は変化なし、
+    /// Transmit と同時に active になる、を確認）。
+    #[test]
+    fn phase1_does_not_hold_output_gate_only_phase2_does() {
+        use crate::tsf::probe_bridge::OUTPUT_GATE;
+
+        let _lk = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active_before = OUTPUT_GATE.is_active();
+        let deadline = crate::hook::current_tick_ms() + 60_000;
+        let mut coro = MsImeReadyCoro::new("!", Generation::new(12), deadline, TransmitTarget::Tsf);
+
+        // Phase 1: 未確認の間、tick を重ねても OUTPUT_GATE は動かない。
+        for _ in 0..3 {
+            let actions = coro.tick(env(ImeModeState::Off, true));
+            assert!(actions.is_empty(), "未確認中は待機するはず: {actions:?}");
+            assert_eq!(
+                OUTPUT_GATE.is_active(),
+                active_before,
+                "Phase 1（無出力の待機）は OUTPUT_GATE.active を変化させてはならない \
+                 （変化すると物理キー分配がブロックされ BUG-58 の循環待ちが再発する）"
+            );
+        }
+
+        // Phase 2: NATIVE 確認 → Transmit と同時に OUTPUT_GATE.active になる。
+        let actions = coro.tick(env(ImeModeState::Hiragana, true));
+        assert_eq!(actions.len(), 2);
+        assert!(matches!(&actions[0], ProbeAction::Transmit { romaji, .. } if romaji == "!"));
+        assert!(
+            OUTPUT_GATE.is_active(),
+            "Phase 2（Transmit 直前）で OUTPUT_GATE.active になっているはず"
         );
     }
 }

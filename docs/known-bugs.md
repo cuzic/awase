@@ -5360,7 +5360,9 @@ architecture_guard 含む）は無影響で全 green（本修正は `ImeModel`/r
 `layout/nicola.yab`（`[ローマ字小指シフト]`）。
 関連: BUG-13（MS-IME cold-start 保護）、BUG-15（shift-conv-guard 導入経緯）、
 BUG-25（左Shift単独タップ持続トグル、GJI entry 撤回）、BUG-47（記号 cold-start
-半角化、本件と症状は類似だが原因は別）、ADR-064（`ConvModePolicy`）、
+半角化、本件と症状は類似だが原因は別）、BUG-58（追補2で導入した
+`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 5000ms 安全弁が、その安全弁自身の
+前提を破って別のデッドロックを生んだ実例）、ADR-064（`ConvModePolicy`）、
 ADR-072（conv authority 再同期）、ADR-078（belief 3分割）、ADR-083
 （`InjectionMode` per-VK 統一investigation、NO-GO）。
 
@@ -6400,3 +6402,162 @@ belief に残留する」問題が、英数判定以外の経路で再発する�
 関連: BUG-11（UIA キャッシュ汚染）、BUG-18（AppKind Uwp 往復での文字欠落） —
 いずれも「無関係なフォーカス遷移が belief/キャッシュを汚す」という同じテーマの
 別発生箇所。
+
+## BUG-58: 小指シフト面のチョード（Shift+数字等）が `OutputActiveGuard` と `shift-conv-guard` 復元の循環待ちに陥り、通常速度の打鍵でも毎回 ~5 秒フリーズする（対応済み・実機未検証）
+
+**症状（2026-08-07 ユーザー報告、MS-IME/TSF-native、Windows Terminal）:** 「よくなりましたね！」
+「き！ほげ」のように文中に小指シフト面の記号（`!` = Shift+1）を打つと、`!` が
+画面に表示されるまで **約5秒間、キー入力が一切反映されない**（他のキーを押しても
+何も起きない）。フリーズが解けた瞬間、その間に押していた文字（`!` を含む後続の
+文字列や Enter まで）が一気にまとめて出力される。実機ログで2回再現・確認済み
+（1回目: `!` 単体、2回目: `き!ほげ` の `!` 部分）。
+
+**原因（確定、実機ログ2件 + コード読解 + Opus によるコードベース検証で確認）:**
+以下の循環待ちが発生している。
+
+1. 物理 `Shift` 押下（`!` を打つための Shift+1 チョードの一部）で
+   `kp_shift_conv_guard_key_down`（`runtime/key_pipeline.rs:1219`）が MS-IME の
+   「Shift単独タップで英数へ誤切替する」クセを打ち消すため、判別未確定の時点で
+   先回りして `actuate_conv_mode(HalfWidthAlnum)` を呼び conv を `0x00000000`
+   （英数）へ書き換える。同時に BUG-49 追補2（ADR-084 Phase 2）の安全弁として
+   `confirm_gate_deadline_override_ms` を `押下時刻 + SHIFT_CONV_GUARD_ENTRY_
+   SUSPEND_CAP_MS`（5000ms、`tuning.rs:185`）にセットする。
+2. `!` の romaji 送信は `ms_ime_gate_defer`（`output/vk_send.rs:356`）に捕まる
+   （conv が NATIVE ではないため `is_native_ready()==false`）。ここで
+   `MsImeReadyCoro`（`tsf/warmup/ms_ime_ready_coro.rs:152`）が
+   `OutputActiveGuard::begin()` を保持し `OUTPUT_GATE.active=true` にする。
+3. `OUTPUT_GATE.active=true` の間、フックから来る**物理キーイベントは
+   `handle_wm_key_from_hook` に一切到達しない**（`app/mod.rs:406-407`、
+   無条件で `INPUT_DEFER.defer_during_output(event)` へ退避。抜け道なしを
+   コード読解で確認済み）。
+4. conv を `0x0`→NATIVE に戻せる経路は、チョード（Shift単独タップではない）の
+   場合 `kp_shift_conv_guard_key_up`（`key_pipeline.rs:1297`、Shift KeyUp 契機）
+   → `kp_restore_kana_from_half_width`（同1371、`VK_DBE_HIRAGANA` 注入 + IMC
+   write の非同期リトライ）**一択**（他の呼び出し口は全て
+   `half_width_alnum_toggle_active` ガード付きで、チョード時はこのフラグが
+   立たないため通らない）。
+5. しかしその Shift KeyUp 自体が手順3により `INPUT_DEFER` に退避されており、
+   `OUTPUT_GATE` が解除されるまで `kp_restore_kana_from_half_width` は
+   **絶対に起動しない**。結果、`env_native_ready()`
+   （`ms_ime_ready_coro.rs:52`）はこの経路を通る限り原理的に真になり得ず、
+   `deadline_ms.max(override)`（同95）＝ entry がセットした
+   `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms）の満了を待つしかない。
+   実機ログの `delta=4730ms`（Shift KeyUp の受理時刻と drain 時刻の差）から
+   逆算すると Shift の保持自体はごく普通の速度（~270ms）であり、そこから
+   期限切れまでの ~4.7 秒がまるごと無駄なフリーズになっている。
+
+`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS`（5000ms）は BUG-49 追補2で
+「Shift の KeyUp が**何らかの理由でフックに届かない異常時**（ロック画面・
+セキュアデスクトップ遷移等）」への安全弁として導入されたものだが、
+**その「届かない」状況を `OutputActiveGuard` 自身が作り出している**という
+自己矛盾が本バグの本質。BUG-49 が想定していた「ユーザーが意図的/誤って
+Shift を長時間保持し続けた場合の劣化」とは異なり、**普通の速さの
+Shift+数字チョードで毎回・決定論的に発生する**。
+
+**回避されるケース:** GJI（MS-IME 以外）は `kp_shift_conv_guard_key_down` が
+conv を書き込まないため対象外（`key_pipeline.rs:1289`）。entry の早期 return
+条件（`effective_open`/`is_japanese_ime`/`is_user_enabled`/
+`conv_mutation_allowed` のいずれかが偽）に該当する場合も対象外。
+
+**検討した修正案（採否）:** Opus によるコードベース検証を経て以下を検討し、
+「案E」を採用した。他の案は **NO-GO と判断済み・再提案しないこと**:
+
+- **案B（`OUTPUT_GATE` の責務を「OS への実出力」だけに絞る大改造）**: NO-GO。
+  `OUTPUT_GATE` は「送出中の再入防止」と「reinject 順序保証」の2責務を
+  同時に担っており（`app/mod.rs:409-419` の Ctrl↑ 順序バグの記録参照）、
+  分離は広域リファクタになる。BUG-49 が pass-5 まで要した領域で同時に
+  大改造するのは危険。
+- **案C（`SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` を 5000ms から短縮する対症療法）**:
+  NO-GO。`.claude/rules/tuning-constants.md` の禁止パターン（実測なしの
+  エスカレーション/対症療法）そのもの。この値は「Shift KeyUp が本当に
+  届かない異常時」の安全弁として意味があり、復元リトライ（0/160/320/480ms）
+  の実所要 ~640ms を割ると BUG-49 が release 側で再発する。**800ms 未満には
+  構造的に下げられない**ため再提案しないこと。
+- **案D（`VK_LSHIFT`/`VK_RSHIFT` の KeyUp を無条件で `OUTPUT_GATE` の defer 対象から
+  除外する）**: NO-GO。物理イベントを即座に `handle_wm_key_from_hook` に通すと
+  `PassThrough` 判定時にその場で OS へ再注入され、`INPUT_DEFER` の先行キーを
+  追い越す。`app/mod.rs:409-419` が記録している Ctrl↑ 順序バグと同型の実害が
+  Shift↑ について新たに起きる。
+
+**修正（2026-08-07、案E: `OutputActiveGuard` を Phase 2 直前へ遅延取得）:**
+`MsImeReadyCoro`（`tsf/warmup/ms_ime_ready_coro.rs`）の Phase 1（IMC 観測待ち、
+無出力）は SendInput を一切行わないにも関わらず、`MsImeReadyCoro::new()` の
+時点で `OutputActiveGuard` を確保し Phase 1 の間ずっと保持していたことが
+循環待ちの直接原因だった。`OutputActiveGuard::begin()` の呼び出しを
+Phase 2（`ProbeAction::Transmit` を yield する直前）のローカル変数
+（`let _guard = OutputActiveGuard::begin();`、コルーチン完了まで生存）に
+移し、Phase 1 では一切 `OUTPUT_GATE` を触らないようにした。これにより
+Phase 1 中も物理キー分配（`handle_wm_key_from_hook`）がブロックされなくなり、
+conv を Off→NATIVE に戻す唯一の経路（`kp_shift_conv_guard_key_up`、物理
+Shift KeyUp 契機）が実時間で起動する。循環そのものが構造的に解消され、
+BUG-49 の核心（`ms_ime_gate_defer` の NATIVE 確認待ち）は一切変更していない。
+
+この修正が成立する前提として、`kp_stage_post_decision`
+（`key_pipeline.rs:214`、内部で `kp_stage_shift_conv_guard` を呼ぶ）が
+`kp_stage_execute`（同227、`run_passthrough_pipeline` 経由で物理 Shift KeyUp を
+reinject キューへ退避しうる）**より必ず先に**実行される、という既存の
+暗黙の順序に依存している。物理イベント自体が defer されても、conv 復元の
+副作用（`kp_shift_conv_guard_key_up` の呼び出し）はこの順序のおかげで
+defer 有無に関係なく発火する。この順序不変条件は `kp_stage_shift_conv_guard`
+の doc コメントに明記した（Opus レビュー指摘）。**この呼び出し順を変更する
+場合は本バグが再発しないか必ず確認すること。**
+
+**ハイブリッド対応（PassThrough キーの追い越し対策）:**
+`runtime/executor.rs::run_passthrough_pipeline` の output guard defer 判定
+（step C）に `platform.has_pending_tsf_work()` を OR で追加した。これにより
+Phase 1 待機中の PassThrough キーは `check_output_guard_defer` で
+ReinjectKey 化されるようになり、既存の `reinject_wait_remaining`
+（`Enter`/`Space`/`Escape` の KeyDown＝composition 確定キー限定で
+`has_pending_tsf_work()` が下りるまで park する仕組み）が Phase 1 待機中にも
+初めて実効化する。**ただしそれ以外の PassThrough（矢印キー・Tab・Ctrl+C 等）は
+`OUTPUT_GUARD_MS` 窓を過ぎていれば依然として即 reinject され、Phase 1 待機
+（実測 ~180ms）中にまだ送信されていない romaji を追い越しうる**（残存する
+既知の限界。BUG-58 のフリーズ解消と比べて実害は小さいと判断、PassThrough
+全般を defer する対応は将来課題）。
+
+**テスト:** `tsf/warmup/ms_ime_ready_coro.rs` に
+`phase1_does_not_hold_output_gate_only_phase2_does`（Phase 1 中は
+`OUTPUT_GATE.is_active()` が変化せず、Transmit と同時に true になることを
+直接固定）を追加。`OUTPUT_GATE` はプロセス全体の static で `cargo test` は
+既定でマルチスレッド実行のため、同ファイル内で Phase 2 に到達する既存4テスト
+（`coro_waits_until_confirmed_then_transmits` 等）と合わせて計5テストを
+`GATE_TEST_LOCK`（`std::sync::Mutex<()>`）で直列化した（クレート全体の他
+モジュール——`GjiWarmupCoro`/`ChromeProbe`/`LiteralDetectFsm` 等——も同じ
+static を触るため、クレート全体での競合までは排除できない点はコメントに
+明記済み）。`output`/`tsf` モジュールが `#[cfg(windows)]` ゲート下にあるため
+Windows target でのみコンパイル対象（`cargo check -p awase-windows --target
+x86_64-pc-windows-gnu --tests` で型検査・`cargo clippy -p awase-windows
+--target x86_64-pc-windows-gnu --lib -- -A clippy::cargo_common_metadata -D
+warnings -W clippy::cognitive_complexity` で lint、いずれも green。wine
+未導入のためこのサンドボックスでは実行不可 — **Linux 側の green は本修正を
+一切検証していない点に注意**）。`cargo test -p awase-windows`（Linux 実行分、
+lib 284件・golden_scenarios 22件・architecture_guard 14件・
+layer_boundary_guard 8件）は無影響で全 green（本修正が触れる `tsf`/`runtime`
+モジュールの一部は Linux ネイティブビルドでは対象外のため、無回帰確認としては
+限定的）。実機での再現確認・修正確認は未実施（Windows 実機セッション必須）。
+
+**未確認・次のセッションでの実機確認事項:**
+- 「よくなりましたね！」「き！ほげ」の再現手順で、実際にフリーズが解消される
+  （Phase 1 待機が実測 ~180ms 程度に短縮される）ことの実機確認。
+- PassThrough キー追い越し（矢印キー等）が実害として観測されるか。観測された
+  場合は上記ハイブリッド対応の拡大を検討。
+- レビュー時に確認した「`kp_stage_post_decision` → `kp_stage_execute` の順序」
+  という暗黙の前提が、将来のリファクタで意図せず崩れていないかの継続的な注意。
+
+**レビュー:** Opus による2ラウンドの設計・実装レビューを経て確定
+（1ラウンド目: 案A〜Dを提示し案E採用を決定、2ラウンド目: 実装差分を
+GO-WITH-CHANGES→上記の順序コメント追加・executor.rs コメント是正・
+テスト直列化を反映）。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/warmup/ms_ime_ready_coro.rs`
+（`MsImeReadyCoro`、`OutputActiveGuard` 遅延取得の本体）、
+`crates/awase-windows/src/runtime/executor.rs`（`run_passthrough_pipeline`、
+`has_pending_tsf_work()` 追加）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shift_conv_guard` の順序不変条件コメント、
+`kp_shift_conv_guard_key_down`/`kp_shift_conv_guard_key_up`/
+`kp_restore_kana_from_half_width`）、`crates/awase-windows/src/app/mod.rs`
+（`OUTPUT_GATE` ディスパッチ）、`crates/awase-windows/src/tsf/probe_bridge.rs`
+（`OutputActiveGuard`/`OUTPUT_GATE`）、`crates/awase-windows/src/output/vk_send.rs`
+（`ms_ime_gate_defer`）。関連: BUG-13（MS-IME cold-start 保護）、
+BUG-49（本バグの直接の前提となった Phase 1・Phase 2、特に追補2の5000ms安全弁）、
+ADR-084。

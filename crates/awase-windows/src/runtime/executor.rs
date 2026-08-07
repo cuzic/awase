@@ -469,7 +469,24 @@ impl DecisionExecutor {
         // C. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
-        let has_pending = self.has_pending();
+        // BUG-58: `self.has_pending()` は executor 自身の effect queue しか見ない。
+        // `MsImeReadyCoro` の Phase 1（NATIVE 確認待ち、無出力）は
+        // `OutputActiveGuard` を持たなくなった（`ms_ime_ready_coro.rs` 参照）ため、
+        // `has_pending_tsf_work()` を OR することで、この待機中の PassThrough キーも
+        // `check_output_guard_defer` により ReinjectKey 化されるようにする。
+        //
+        // ただし実効的に保護されるのは Enter/Space/Escape の KeyDown（composition
+        // 確定キー）のみである点に注意: `drain_deferred` 側の
+        // `reinject_wait_remaining`（本ファイル下部）が `is_composition_confirm_key()`
+        // の場合に限り `has_pending_tsf_work()` が下りるまで park する。この1行が
+        // ORで加えたことで、その既存保護が Phase 1 待機中に初めて実効化する
+        // （従来は `OutputActiveGuard` がフック分配自体を止めていたため、この
+        // reinject 経路にすら到達しなかった）。矢印キー・Tab・Ctrl+C 等それ以外の
+        // PassThrough は `OUTPUT_GUARD_MS` 窓を過ぎていれば即 reinject されるため、
+        // Phase 1 待機（実測 ~180ms）中にまだ送信されていない romaji を追い越しうる
+        // ケースは残存する既知の限界（BUG-58 のフリーズ解消と比べて実害は小さいと
+        // 判断、将来 PassThrough 全般を defer する場合は改めて検討）。
+        let has_pending = self.has_pending() || platform.has_pending_tsf_work();
         log::debug!(
             "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
             raw_event.vk_code,

@@ -1098,6 +1098,19 @@ impl Runtime {
     /// 移行）。もう一度単独タップしたら通常の復元を実行してトグルを解除する。
     /// 右Shift単独タップ・チョードの場合は常に安全網通り即座に復元する（右Shift
     /// タップはトグルの「緊急解除」としても働く）。
+    /// BUG-58 が依存する順序不変条件: このステージ（`kp_stage_post_decision` から
+    /// 呼ばれる）は `kp_stage_execute`（`run_passthrough_pipeline` 経由で物理
+    /// Shift KeyUp を reinject キューへ退避しうる）より**必ず先に**実行される
+    /// （呼び出し順は `kp_run_inner`: `kp_stage_post_decision` → `kp_stage_execute`）。
+    /// このおかげで、`kp_shift_conv_guard_key_up` が起動する conv 復元
+    /// （`kp_restore_kana_from_half_width`）の副作用は、対応する物理イベント自体が
+    /// 出力ゲート待ちで defer されているかどうかに関係なく必ず発火する。
+    /// **この順序が逆転すると BUG-58（小指シフト面チョードが `OutputActiveGuard`
+    /// と shift-conv-guard 復元の循環待ちに陥り毎回 ~5 秒フリーズする）が再発する**
+    /// （`ms_ime_ready_coro.rs` の Phase 1/Phase 2 分離だけでは、この順序依存が
+    /// 崩れると復元の起動自体が遅れてしまい効果が消える）。この関数または
+    /// `kp_run_inner`/`kp_stage_execute` の呼び出し順を変更する場合は、必ず
+    /// docs/known-bugs.md BUG-58 を読み、循環待ちが再発しないか確認すること。
     fn kp_stage_shift_conv_guard(&mut self, event: &RawKeyEvent) {
         use awase::types::ModifierKey;
 
