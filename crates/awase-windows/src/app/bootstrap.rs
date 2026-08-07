@@ -13,7 +13,7 @@ use crate::vk::VkCodeExt;
 use crate::win32::HwndExt as _;
 use awase::config::ValidatedConfig;
 use awase::engine::SpecialKeyCombos;
-use awase::engine::{Engine, NicolaFsm};
+use awase::engine::{Engine, NicolaFsm, ThumbKeySoloTapGuard};
 use awase::types::VkCode;
 use awase::yab::YabLayout;
 
@@ -855,10 +855,15 @@ pub(super) fn run_all() -> Result<()> {
         .find(|&vk| vk == crate::vk::VK_CONVERT);
     engine.set_thumb_key_solo_tap_config(
         muhenkan_vk,
-        config.general.muhenkan_solo_tap_ignore_composing_guard,
-        config.general.muhenkan_solo_tap_always_suppress,
+        ThumbKeySoloTapGuard {
+            ignore_composing_guard: config.general.muhenkan_solo_tap_ignore_composing_guard,
+            always_suppress: config.general.muhenkan_solo_tap_always_suppress,
+        },
         henkan_vk,
-        config.general.henkan_solo_tap_ignore_composing_guard,
+        ThumbKeySoloTapGuard {
+            ignore_composing_guard: config.general.henkan_solo_tap_ignore_composing_guard,
+            always_suppress: config.general.henkan_solo_tap_always_suppress,
+        },
     );
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を

@@ -429,15 +429,18 @@ fn make_engine_with_thumb_key_solo_tap_config(
         muhenkan_ignore_composing_guard,
         false,
         henkan_ignore_composing_guard,
+        false,
     )
 }
 
 /// `make_engine_with_thumb_key_solo_tap_config` に加え、
-/// `muhenkan_solo_tap_always_suppress` も明示設定できる版。
+/// `muhenkan_solo_tap_always_suppress`/`henkan_solo_tap_always_suppress` も
+/// 明示設定できる版。
 fn make_engine_with_thumb_key_solo_tap_config_ex(
     muhenkan_ignore_composing_guard: bool,
     muhenkan_always_suppress: bool,
     henkan_ignore_composing_guard: bool,
+    henkan_always_suppress: bool,
 ) -> TestHarness {
     let mut engine = NicolaFsm::new(
         make_layout(),
@@ -449,10 +452,15 @@ fn make_engine_with_thumb_key_solo_tap_config_ex(
     );
     engine.set_thumb_key_solo_tap_config(
         Some(VK_NONCONVERT),
-        muhenkan_ignore_composing_guard,
-        muhenkan_always_suppress,
+        ThumbKeySoloTapGuard {
+            ignore_composing_guard: muhenkan_ignore_composing_guard,
+            always_suppress: muhenkan_always_suppress,
+        },
         Some(VK_CONVERT),
-        henkan_ignore_composing_guard,
+        ThumbKeySoloTapGuard {
+            ignore_composing_guard: henkan_ignore_composing_guard,
+            always_suppress: henkan_always_suppress,
+        },
     );
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
@@ -505,7 +513,7 @@ fn test_henkan_thumb_emits_while_composing_when_guard_enabled() {
 /// 切り替わる事故（2026-08-07 実機）を防ぐためのガード。
 #[test]
 fn test_muhenkan_always_suppress_blocks_even_when_not_composing() {
-    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false);
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
 
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
@@ -524,7 +532,7 @@ fn test_muhenkan_always_suppress_blocks_even_when_not_composing() {
 /// より優先される。
 #[test]
 fn test_muhenkan_always_suppress_overrides_ignore_composing_guard() {
-    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(true, true, false);
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(true, true, false, false);
 
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
@@ -542,7 +550,7 @@ fn test_muhenkan_always_suppress_overrides_ignore_composing_guard() {
 /// 従来通り生 VK_NONCONVERT が送出される（既定を外した場合の後方互換確認）。
 #[test]
 fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
-    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, false);
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, false, false);
 
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
@@ -555,6 +563,65 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
             .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
         "muhenkan_solo_tap_always_suppress=false なら composing=false のとき \
          従来通り VK_NONCONVERT を送出すべき"
+    );
+}
+
+/// `henkan_solo_tap_always_suppress=true`（既定値）なら、composing=false でも
+/// 変換単独タップは一切送出されない。無変換と対称のガード（BUG-58 関連調査で発覚:
+/// 従来 変換キーにはこの抑制手段が無く、composing していない場面では常に
+/// 生 VK_CONVERT が送出されていた）。
+#[test]
+fn test_henkan_always_suppress_blocks_even_when_not_composing() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, false, true);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "henkan_solo_tap_always_suppress=true なら composing=false でも \
+         VK_CONVERT を送出してはならない"
+    );
+}
+
+/// `henkan_solo_tap_always_suppress=true` は
+/// `henkan_solo_tap_ignore_composing_guard=true`（composing 中の素通しオプトイン）
+/// より優先される。
+#[test]
+fn test_henkan_always_suppress_overrides_ignore_composing_guard() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, true, true);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "henkan_solo_tap_always_suppress=true なら ignore_composing_guard=true でも \
+         composing 中の VK_CONVERT 送出を抑制すべき"
+    );
+}
+
+/// `henkan_solo_tap_always_suppress=false` なら、composing=false のときは
+/// 従来通り生 VK_CONVERT が送出される（既定を外した場合の後方互換確認）。
+#[test]
+fn test_henkan_always_suppress_false_preserves_legacy_passthrough() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, false, false);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "henkan_solo_tap_always_suppress=false なら composing=false のとき \
+         従来通り VK_CONVERT を送出すべき"
     );
 }
 
@@ -5967,7 +6034,15 @@ mod engine_integration_tests {
         // set_thumb_key_solo_tap_config が no-op に壊れると、muhenkan_vk が None のままになり、
         // 同様に composing 中の生 VK 出力が抑制されたままになる。
         let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(Some(VK_NONCONVERT), true, false, None, false);
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ThumbKeySoloTapGuard {
+                ignore_composing_guard: true,
+                always_suppress: false,
+            },
+            None,
+            ThumbKeySoloTapGuard::default(),
+        );
 
         let composing_ctx = InputContext {
             composing: true,

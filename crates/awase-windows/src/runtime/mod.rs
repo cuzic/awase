@@ -14,7 +14,9 @@ pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;
-use awase::engine::{Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos};
+use awase::engine::{
+    Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos, ThumbKeySoloTapGuard,
+};
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, RawKeyEvent, VkCode};
 
@@ -1046,10 +1048,15 @@ impl Runtime {
                 .find(|&vk| vk == crate::vk::VK_CONVERT);
             self.engine.set_thumb_key_solo_tap_config(
                 muhenkan_vk,
-                config.general.muhenkan_solo_tap_ignore_composing_guard,
-                config.general.muhenkan_solo_tap_always_suppress,
+                ThumbKeySoloTapGuard {
+                    ignore_composing_guard: config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    always_suppress: config.general.muhenkan_solo_tap_always_suppress,
+                },
                 henkan_vk,
-                config.general.henkan_solo_tap_ignore_composing_guard,
+                ThumbKeySoloTapGuard {
+                    ignore_composing_guard: config.general.henkan_solo_tap_ignore_composing_guard,
+                    always_suppress: config.general.henkan_solo_tap_always_suppress,
+                },
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()

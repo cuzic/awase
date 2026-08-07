@@ -969,6 +969,19 @@ impl SettingsApp {
         {
             ui.indent("henkan_thumb_options", |ui| {
                 ui.checkbox(
+                    &mut self.config.general.henkan_solo_tap_always_suppress,
+                    "変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
+                )
+                .on_hover_text(
+                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
+                     変換キーの単独タップを常に完全に無視します。\n\
+                     MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、設定次第では\n\
+                     IME オン相当の割当ても可能なため、OFF にすると変換候補ウィンドウが出ていない\n\
+                     場面で awase の管理外に IME モードが切り替わることがあります。\n\
+                     変換キー本来の機能（再変換等）を Windows 全般で使いたい場合のみ\n\
+                     OFF にしてください。",
+                );
+                ui.checkbox(
                     &mut self.config.general.henkan_solo_tap_ignore_composing_guard,
                     "変換候補ウィンドウ表示中でも変換キー単独タップを送出する",
                 )
@@ -976,7 +989,8 @@ impl SettingsApp {
                     "OFF(既定)の場合、変換候補ウィンドウ表示中は変換キーの単独タップを\n\
                      抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
                      ON にすると、変換候補ウィンドウ表示中でも変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。",
+                     IME によっては誤って入力モードが切り替わることがあります。\n\
+                     上の「常に無視する」が ON の間はこの設定は効きません。",
                 );
             });
         }

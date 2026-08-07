@@ -16,8 +16,8 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
     BypassReason, ClassifiedEvent, ComposingHint, EngineState, Face, IdleIntent, KeyClass,
-    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, TimerIntent,
-    TIMER_PENDING, TIMER_SPECULATIVE,
+    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, ThumbKeySoloTapGuard,
+    TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 use super::timing;
 
@@ -164,6 +164,17 @@ pub struct NicolaFsm {
     /// 生 VK を送出するか。`henkan_vk` が `None` なら無効。
     henkan_solo_tap_ignore_composing_guard: bool,
 
+    /// 変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
+    /// （OS に一切送出しない）。`henkan_vk` が `None` なら無効。既定値は `true`
+    /// （composing の有無を問わず変換単独タップは常に無視する）。
+    ///
+    /// `muhenkan_solo_tap_always_suppress` と対称の設定（BUG-58 関連調査で発覚:
+    /// 変換キーには従来この抑制手段が無く、composing していない場面では常に
+    /// 生 VK_CONVERT が送出されていた。MS-IME は「キーとタッチのカスタマイズ」で
+    /// 変換キー単独打鍵に既定で「再変換」を割り当てており、設定次第では
+    /// IME-オン相当の割当ても可能なため、無変換と同じ横取りリスクがある）。
+    henkan_solo_tap_always_suppress: bool,
+
     /// `left_thumb_key`/`right_thumb_key` のいずれかが Enter (`VK_RETURN`) に
     /// 割り当てられている場合、その VK コード。`space_thumb_vk` と同様、実際の VK
     /// 番号は Platform 層の責務で、core は等値比較のみ行う。
@@ -227,6 +238,7 @@ impl NicolaFsm {
             muhenkan_solo_tap_always_suppress: true,
             henkan_vk: None,
             henkan_solo_tap_ignore_composing_guard: false,
+            henkan_solo_tap_always_suppress: true,
             // Enter の VK は Platform 層が set_enter_thumb_config() で明示的に配線する
             // まで None。ガード既定値は GeneralConfig::default() と揃えて Space と
             // 同じ true（composing 中も変換確定/改行として素通し）。
@@ -424,24 +436,25 @@ impl NicolaFsm {
     ///
     /// `muhenkan_vk`/`henkan_vk` は `left_thumb_key`/`right_thumb_key` がそれぞれ
     /// 無変換/変換に解決された場合の VK コード（Platform 層が判定して渡す）。
-    /// 割り当てられていなければ `None` を渡すこと。各 `ignore_composing_guard` は
-    /// `GeneralConfig::muhenkan_solo_tap_ignore_composing_guard`/
-    /// `henkan_solo_tap_ignore_composing_guard` にそのまま対応する。
-    /// `muhenkan_always_suppress` は `GeneralConfig::muhenkan_solo_tap_always_suppress`
-    /// にそのまま対応する。
+    /// 割り当てられていなければ `None` を渡すこと。`muhenkan`/`henkan` の各フィールド
+    /// は `GeneralConfig` の同名フィールド（`muhenkan_solo_tap_ignore_composing_guard`/
+    /// `muhenkan_solo_tap_always_suppress`/`henkan_solo_tap_ignore_composing_guard`/
+    /// `henkan_solo_tap_always_suppress`）にそのまま対応する
+    /// （`ThumbKeySoloTapGuard` へのグルーピングは `clippy::fn_params_excessive_bools`
+    /// 対策、BUG-58 関連調査参照）。
     pub const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<VkCode>,
-        muhenkan_ignore_composing_guard: bool,
-        muhenkan_always_suppress: bool,
+        muhenkan: ThumbKeySoloTapGuard,
         henkan_vk: Option<VkCode>,
-        henkan_ignore_composing_guard: bool,
+        henkan: ThumbKeySoloTapGuard,
     ) {
         self.muhenkan_vk = muhenkan_vk;
-        self.muhenkan_solo_tap_ignore_composing_guard = muhenkan_ignore_composing_guard;
-        self.muhenkan_solo_tap_always_suppress = muhenkan_always_suppress;
+        self.muhenkan_solo_tap_ignore_composing_guard = muhenkan.ignore_composing_guard;
+        self.muhenkan_solo_tap_always_suppress = muhenkan.always_suppress;
         self.henkan_vk = henkan_vk;
-        self.henkan_solo_tap_ignore_composing_guard = henkan_ignore_composing_guard;
+        self.henkan_solo_tap_ignore_composing_guard = henkan.ignore_composing_guard;
+        self.henkan_solo_tap_always_suppress = henkan.always_suppress;
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -1140,6 +1153,14 @@ impl NicolaFsm {
         // キー割当て（無変換単独打鍵→かな切替）に、composing していない場面での
         // 生 VK 素通しを横取りされないようにするための明示オプトイン。
         if self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_always_suppress {
+            return ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            };
+        }
+
+        // 変換単独タップの常時抑制（composing の有無を問わない）。無変換と対称。
+        if self.henkan_vk == Some(vk_code) && self.henkan_solo_tap_always_suppress {
             return ResolvedAction {
                 actions: SmallVec::new(),
                 output: OutputUpdate::None,

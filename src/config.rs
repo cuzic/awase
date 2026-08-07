@@ -227,6 +227,16 @@ pub struct GeneralConfig {
     /// （`composing`）でも構わず生 VK_CONVERT を送出するか。既定値・注意点は
     /// `muhenkan_solo_tap_ignore_composing_guard` と同様。
     pub henkan_solo_tap_ignore_composing_guard: bool,
+    /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
+    /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
+    ///
+    /// 変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
+    /// （OS に一切送出しない）。既定値・注意点は `muhenkan_solo_tap_always_suppress`
+    /// と同様（BUG-58 関連調査で判明: 従来 `henkan_solo_tap_ignore_composing_guard`
+    /// は composing 中の挙動しか制御できず、composing していない場面では常に
+    /// 生 VK_CONVERT が送出されていた。無変換と対称になるよう新設）。既定値は
+    /// `true`（変換単独タップは常に無視する）。
+    pub henkan_solo_tap_always_suppress: bool,
     /// `left_thumb_key`/`right_thumb_key` に Enter (`VK_RETURN`) を割り当てている
     /// 場合に限り効く設定。無変換/変換や Space 等他の VK には一切影響しない。
     ///
@@ -279,6 +289,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
             henkan_solo_tap_ignore_composing_guard: false,
+            henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
         }

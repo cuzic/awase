@@ -29,7 +29,8 @@ pub use decision::{
 pub use engine::Engine;
 pub use fsm_types::{
     ClassifiedEvent, ComposingHint, EngineState, KeyClass, ModifierState, OutputUpdate,
-    ParseAction, PendingKey, PendingThumbData, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    ParseAction, PendingKey, PendingThumbData, ThumbKeySoloTapGuard, TimerIntent, TIMER_PENDING,
+    TIMER_SPECULATIVE,
 };
 pub use idle_check::should_run_idle_conv_check;
 pub use key_lifecycle::KeyLifecycle;

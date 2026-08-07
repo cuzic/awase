@@ -424,6 +424,24 @@ impl PendingThumbData {
     }
 }
 
+/// 無変換/変換キー単独タップの composing 中ガードの扱い（`NicolaFsm::
+/// set_thumb_key_solo_tap_config` 用）。
+///
+/// muhenkan/henkan で共通の2フラグを1構造体にまとめることで、関数シグネチャの
+/// bool パラメータ数を `clippy::fn_params_excessive_bools`（上限3）以下に抑える
+/// （BUG-58 関連調査で `henkan_solo_tap_always_suppress` を追加した際に発覚）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ThumbKeySoloTapGuard {
+    /// 単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
+    /// 生 VK を送出するか。`GeneralConfig::muhenkan_solo_tap_ignore_composing_guard`/
+    /// `henkan_solo_tap_ignore_composing_guard` にそのまま対応する。
+    pub ignore_composing_guard: bool,
+    /// composing 中かどうかに関わらず常に完全に抑制する（OS に一切送出しない）。
+    /// `GeneralConfig::muhenkan_solo_tap_always_suppress`/
+    /// `henkan_solo_tap_always_suppress` にそのまま対応する。
+    pub always_suppress: bool,
+}
+
 // ModifierState は crate::types::ModifierState として定義済み（上の use で import）
 pub use crate::types::ModifierState;
 
