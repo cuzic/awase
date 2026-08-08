@@ -50,6 +50,9 @@ spurious OFF の実害を防いでいた）・根治の方針（spurious apply �
 
 - 対象ファイルの目安: `output/`（vk_send / probe_io / ime_apply_planner / tsf_warmup 系）、
   `tsf/`、`focus/`、`state/ime_*`、`runtime/ime_coordinator.rs`、`ime_controller.rs`、
-  `tuning.rs`。
+  `tuning.rs`、`platform.rs`、`runtime/conv_actuation.rs`、`ime.rs`（ADR-084/086
+  の force-write / actuation ターゲット対象。BUG-59 追補〈`9c102b02`〉が
+  `platform.rs` 単体の変更だったため本ルールの対象外扱いになっていた穴を
+  2026-08-08 に埋めた）。
 - 純粋なリファクタや docs のみの revert には適用しない（挙動が変わらないため）。
 - 定数値の変更を含む場合は [tuning-constants](./tuning-constants.md) の実測義務も併せて満たすこと。

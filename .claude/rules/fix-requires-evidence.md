@@ -19,8 +19,9 @@
 | warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `output/ime_apply_planner.rs`, `tuning.rs` |
 | focus 遷移 | `focus/`, `runtime/focus_tracking.rs` |
 | IME belief | `state/ime_model.rs`, `state/observation_store.rs`, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
-| conv mode | `state/conv_mode.rs`, `focus/classify.rs` |
+| conv mode | `state/conv_mode.rs`, `focus/classify.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs` |
+| force-write / actuation ターゲット（ADR-084/086） | `platform.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 
 ## テストの置き場所（このリポジトリの既存資産）
 
