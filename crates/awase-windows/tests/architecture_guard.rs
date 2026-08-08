@@ -1109,13 +1109,20 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
 /// - `runtime/ime_refresh.rs::ir_post_focus_change_snapshot`（open/close 軸、
 ///   `gji_on_focus_change` 直後——`ime_mode_focus_gen` が今回のフォーカス変更分
 ///   だけ進んだ直後の単一集約点。`ir_notify_focus_changed` ではない——同関数の
-///   実行時点では gen がまだ古いため）は `force_open_pending` を立てる
-///   （武装のみ）ことは許されるが、`apply_ime_open_with_belief`/
+///   実行時点では gen がまだ古いため）は `Runtime::arm_force_open_pending`
+///   （武装のみ）を呼ぶことは許されるが、`apply_ime_open_with_belief`/
 ///   `apply_ime_open_with_view`/`send_ime_mode_key`/`on_ime_apply_complete` を
 ///   **直接**呼んではならない（実際の書き込みは Phase 3 item 1 の消費点
-///   `kp_run_inner::consume_force_open_pending` からのみ起きること。
-///   `apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制、force-write とは
-///   無関係の既存機構〉は対象外）。
+///   `kp_run_inner::consume_force_open_pending` からのみ起きること）。
+///   `apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制〉/
+///   `set_ime_open`〈IME OFF 強制〉は force-write とは無関係の既存機構として
+///   同関数内に実在するため、禁止リストには含めず出現数を固定する
+///   （`ir_post_focus_change_snapshot_write_call_sites_are_accounted_for` 参照）
+///   ——ホワイトリスト除外だと将来これらのラッパー経由で force-write が
+///   紛れ込んでもガードをすり抜けるため（2026-08-08 2回目 opus レビュー M2）。
+/// - `runtime/mod.rs::arm_force_open_pending`（武装専用に抽出した小関数）も
+///   同じ禁止リストで走査する。代入以外を含まないため必ず通るはずだが、
+///   将来ここに書き込みが追加されたら即座に検知する回帰ガードとして機能する。
 #[test]
 fn force_write_is_not_triggered_by_raw_focus_change() {
     let cases: &[(&str, &str, &[&str])] = &[
@@ -1138,6 +1145,18 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
                 "on_ime_apply_complete(",
             ],
         ),
+        (
+            "src/runtime/mod.rs",
+            "fn arm_force_open_pending",
+            &[
+                "apply_ime_open_with_belief(",
+                "apply_ime_open_with_view(",
+                "apply_ime_open_with_applied(",
+                "send_ime_mode_key(",
+                "set_ime_open(",
+                "on_ime_apply_complete(",
+            ],
+        ),
     ];
 
     for (path, fn_needle, forbidden_list) in cases {
@@ -1157,6 +1176,44 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
             );
         }
     }
+}
+
+/// ADR-086 §4 INV-15（2026-08-08、2回目 opus アドバーサリアルレビュー M2）:
+/// `ir_post_focus_change_snapshot` に実在する既存の open 書き込み
+/// （`apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制〉/
+/// `set_ime_open`〈IME OFF 強制〉、force-write とは無関係）の出現数を固定する。
+///
+/// `force_write_is_not_triggered_by_raw_focus_change` の禁止リストからこの
+/// 2 つを除外する代わりに、ここで出現数を固定することで「新しい force-write
+/// 経路がこれらのラッパー経由で紛れ込んでも検知できない」という穴を塞ぐ
+/// （`apply_ime_open_with_applied` は `apply_ime_open_with_belief` の薄い
+/// ラッパーであり、禁止リストへの単純な追加では素通りしてしまう）。
+#[test]
+fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
+    let path = "src/runtime/ime_refresh.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn ir_post_focus_change_snapshot");
+
+    let applied_count = count_real_calls(body, "apply_ime_open_with_applied(");
+    assert_eq!(
+        applied_count, 1,
+        "{path}::ir_post_focus_change_snapshot 内の `apply_ime_open_with_applied(` \
+         出現数が想定(1 = GJI TsfNative VK_IME_ON 強制)と異なります(実際: \
+         {applied_count})。新しい呼び出しを追加した場合はこの期待値を更新し、\
+         それが force-write（ADR-086 INV-15 の対象）でないことを確認すること。"
+    );
+
+    // `set_ime_open(` は実呼び出し1件（IME OFF 強制）+ ログメッセージ1件
+    // （`log::debug!("... set_ime_open(false) called ...")`）で計2件。
+    let set_ime_open_count = count_real_calls(body, "set_ime_open(");
+    assert_eq!(
+        set_ime_open_count, 2,
+        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open(` 出現数が \
+         想定(2 = 実呼び出し1件 + ログメッセージ1件)と異なります(実際: \
+         {set_ime_open_count})。新しい呼び出しを追加した場合はこの期待値を \
+         更新し、それが force-write でないことを確認すること。"
+    );
 }
 
 /// ADR-086 §6段3-4（2026-08-08、Phase 3 設計調査に伴い新設）:

@@ -442,12 +442,10 @@ impl Runtime {
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
-        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸の force-write トリガーは
-        // 「入力意図に紐づくイベント」のみに限定される。FocusChange 自体は
-        // 書き込みを起こさず、次のキーイベント（`kp_run_inner::
-        // consume_force_open_pending`）が消費するまでの「武装」だけを行う。
-        // `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
-        // `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない。
+        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸の force-write を
+        // ここでは武装するだけ（`Runtime::arm_force_open_pending` 参照）。
+        // FocusChange 自体は書き込みを起こさず、次のキーイベント
+        // （`kp_run_inner::consume_force_open_pending`）が消費するまで待つ。
         //
         // ここで武装する理由（`ir_notify_focus_changed` ではない）:
         // `ime_mode_focus_gen` は直前行の `gji_on_focus_change`
@@ -455,9 +453,7 @@ impl Runtime {
         // 進む。`ir_notify_focus_changed`（Stage 1）はこの bump より前に走るため、
         // そちらで捕獲すると 1 世代古い値を武装してしまい、`consume_force_open_pending`
         // の gen 照合が常に不一致になる。
-        self.force_open_pending = (self.platform.output.is_force_policy()
-            && !self.can_use_imm32_cross_process())
-        .then(|| self.platform.output.ime_mode_focus_gen.get());
+        self.arm_force_open_pending();
 
         // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
         // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は

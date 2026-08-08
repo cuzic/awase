@@ -675,6 +675,30 @@ impl Runtime {
         outcome
     }
 
+    /// `force_open_pending`（open/close 軸の force-write 武装フラグ）を
+    /// 立てる、またはクリアする（ADR-086 Phase 3 item 1、INV-15）。
+    ///
+    /// `ir_post_focus_change_snapshot` の `gji_on_focus_change` 呼び出し直後
+    /// から呼ぶこと（`ime_mode_focus_gen` が今回のフォーカス変更分だけ進んだ
+    /// 直後——武装以外の処理を一切含まない、この専用関数へ抽出したのは
+    /// `architecture_guard::force_write_is_not_triggered_by_raw_focus_change`
+    /// が「武装のみ許可」を機械的に固定できるようにするため（2026-08-08、
+    /// 2回目 opus アドバーサリアルレビュー M2。当初は
+    /// `ir_post_focus_change_snapshot` 全体を走査対象にする案だったが、
+    /// 同関数は GJI TsfNative VK_IME_ON 強制等の正当な既存書き込みも含むため
+    /// ホワイトリスト例外が必要になり、将来別のラッパー経由で force-write が
+    /// 紛れ込んでもガードをすり抜けてしまう。本関数は代入以外何もしないため
+    /// 素朴な禁止リストで確実に検知できる）。
+    ///
+    /// `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
+    /// `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない
+    /// （`.then()` により対象外なら明示的に `None` へクリアする）。
+    pub(crate) fn arm_force_open_pending(&mut self) {
+        self.force_open_pending = (self.platform.output.is_force_policy()
+            && !self.can_use_imm32_cross_process())
+        .then(|| self.platform.output.ime_mode_focus_gen.get());
+    }
+
     /// `force_open_pending` を消費し、武装済みなら force-ON を起こす
     /// （ADR-086 Phase 3 item 1、INV-15）。
     ///
