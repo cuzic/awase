@@ -786,6 +786,16 @@ pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool 
     let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
         return false;
     };
+    // ADR-086 §5 Phase1a（診断のみ、挙動は変えない）: この関数は呼ばれた瞬間に
+    // get_focused_hwnd() をライブクエリして書き込み先を決める（target identity を
+    // 持たない、ADR-086 §1.2 欠陥1）。起案時点（呼び出し元が target_conv を計算した
+    // 時点）と実行時点でここに来る hwnd が変わっていないかを、将来の実機ソークで
+    // 突き合わせられるようにするための可視化ログ。挙動は変えない。
+    log::debug!(
+        "[imm-romaji] write target: hwnd={hwnd:?} class={} target={:?}",
+        crate::focus::classify::get_class_name_string(hwnd),
+        target_conv.map(|v| format!("0x{v:08X}")),
+    );
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
