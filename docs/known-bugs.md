@@ -6874,8 +6874,32 @@ GJI 側のみ有効）。
 **未対応:** 原因未確定。BUG-59 追補の revert により再発するかどうかの
 経過観察が最初のステップ。
 
+**追補1（2026-08-08、ADR-086 Phase 2 実装完了・実機ソーク待ち）: MS-IME で
+force-write が発火するのは Phase 2 が初めて。**
+
+コード読解で判明: `9c102b02` revert 後の `develop` では、force-write の唯一の
+発火点が `cold_warmup.rs::run_start`（cold 転換時）であり、そこへ到達するには
+`prepend_f2_warmup`（`warmup_coord.needs_f2_probe()`）が必要だった。
+`MsImeStrategy::needs_f2_probe()` は常に `false` を返すため、**Phase 2 実装
+着手前の `develop` では MS-IME + force-write が構造的に一度も発火していない**。
+つまり本バグ報告があった時点（2026-08-07〜08）で force-write を疑うなら、
+唯一発火しうるのは GJI 系ストラテジ（`needs_f2_probe()=true`）経由のみで、
+LINE の症状が MS-IME 由来なら §1.3 の「BUG-59 追補のターゲット競合で BUG-08 の
+ROMAN 復元系が別ウィンドウに書いていて効いていなかった」筋の方が可能性が高い
+（BUG-59 追補は revert 済みのため、この経路自体は解消されているはず）。
+
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) Phase 2
+（`Output::send_romaji`/`send_kana_char` を消費点とする `force_pending` 機構）の
+実装により、**MS-IME を含む全ストラテジで force-write が初めて発火するように
+なる**。これは本バグの唯一の現実的な再現機会でもある —— Phase 2 の実機ソーク
+（タスク #17 と同一セッション）で LINE × MS-IME × `conv_mode_policy = force` の
+組み合わせを試し、上記「再現時に取るべきログ」を収集すること。ソーク前に
+`conv_mode_policy = force` を有効にしても、MS-IME 環境では実質 observe と
+同じ（force-write が発火しない）状態が続く点に注意。
+
 **関連:** BUG-59 とその追補（同時期の報告、ターゲット競合の疑い）、BUG-08
 （外部注入 `VK_KANA` による JIS かな化の既知パターン）、
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.3（未確定の
-仮説として同じ整理を記載）。
+仮説として同じ整理を記載）・§5 Phase 2（MS-IME で force-write が初めて発火する
+実装、追補1参照）。
 

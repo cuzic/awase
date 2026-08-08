@@ -3,9 +3,12 @@
 ## ステータス
 
 **北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。
-Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）は実装完了
-（2026-08-08）。Phase 2〜4（トリガー条件の是正、open/close 軸への適用、
-コンパイラ強制）は未着手。いずれも Windows 実機での動作確認は未実施。**
+Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）、Phase 2
+（INV-15 トリガー条件の是正、`force_pending` による arm-on-focus /
+fire-on-intent）は実装完了（2026-08-08）。Phase 2 は実機ソーク未実施
+（測定項目は §5 Phase 2、タスク #17 と同一セッションで実施予定）。
+Phase 3〜4（open/close 軸への適用、コンパイラ強制）は未着手。
+いずれも Windows 実機での動作確認は未実施。**
 
 本 ADR は個別バグの修正手順書ではなく、**以後の実装判断を評価するための基準**である。
 `develop`（`59e96fc8`）時点のコードは §4 の INV-12〜INV-19 のいずれにも適合していなかった。
@@ -720,7 +723,8 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
 
 ### Phase 2（INV-15: トリガーを arm-on-focus / fire-on-intent へ、中リスク）
 
-**状態（2026-08-08）: 実装着手前の設計調査完了（opus アドバーサリアルレビュー）。**
+**状態（2026-08-08）: 実装完了（opus アドバーサリアルレビューによる設計是正を反映）。
+実機ソーク（下記）は未実施。**
 下記は当初案からの訂正を反映した確定版。§7-9 に訂正の経緯を残す。
 
 0. **`actuate_conv_mode` を `Runtime` から `Output` へ移設する**（`output/conv_actuation.rs`
@@ -773,9 +777,13 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
    保護であり、当初案の「`forced_target` を移す」という文言をそのまま丸ごと削除と
    読むと全ユーザー（force 未使用者を含む大多数）からこの保護が失われる。
    `Force` アーム削除により `needs_f2_probe()` への依存が消え、案 B の MS-IME の穴が
-   塞がる（副次効果: `ConvModePolicy::Force` を直接読む箇所が
-   `cold_warmup.rs`/`runtime/mod.rs`×2 の3箇所から2箇所に減り、§6段3-4 の
-   `force_policy_is_read_from_a_single_decision_point` に近づく）。
+   塞がる。**実装時の訂正（2026-08-08）**: 当初「`ConvModePolicy::Force` を直接読む
+   箇所が3→2箇所に減る」と見込んでいたが、`cold_warmup.rs` の読み取りは
+   `on_ime_mode_focus_changed`（item2 の武装点）の読み取りに置き換わっただけで、
+   実際の読み取り箇所数（`output/mod.rs` の武装点 + `runtime/mod.rs`×2 の
+   open/close 軸）は3箇所のまま変わらない。§6段3-4 の
+   `force_policy_is_read_from_a_single_decision_point` への接近は Phase 3
+   （open/close 軸を同じ `force_pending` 機構へ統合したとき）まで持ち越しとする。
 5. **再武装（当初案に無かった追加項目、opus レビューで必須と判明）**:
    `force_pending` は同期的に消費（`None` へ）するが、実際の書き込みは
    `actuate_conv_mode` 内の `spawn_local` 内で非同期に行われ、`ActuationTarget::capture`

@@ -49,21 +49,16 @@ impl<'a> ColdWarmupSequence<'a> {
         // async ラッパーを spawn_local で起動して退避する。
         //
         // カタカナ/英数への明示的復元（KATAKANA/FULLSHAPE ビット等）は BUG-19 の
-        // ロックイン事故を受けて撤去した。`conv_mode_policy = observe`（デフォルト）
-        // では常に None（ROMAN ビット確保のみ）を書き戻す（`docs/known-bugs.md`
-        // BUG-19 参照）。
+        // ロックイン事故を受けて撤去した。ここは常に `None`（ROMAN ビット確保のみ）を
+        // 書き戻す observation-based な保護であり、`conv_mode_policy` の値に関わらず
+        // 行う（`docs/known-bugs.md` BUG-19 参照）。
         //
-        // `conv_mode_policy = force`（オプトイン設定）のときのみ、awase トレイで
-        // 選択した `desired_mode` を毎回 cold 転換時に冪等に強制する。BUG-19 と
-        // 異なり「観測したカタカナに追従する」のではなく「observation に関係なく
-        // 常に同じ目標へ引き戻す」一方向の書き込みのため、自己増幅ループにはならない。
+        // `conv_mode_policy = force` の force-write は ADR-086 Phase 2（INV-15）により
+        // ここでは行わない。cold 転換という生のトリガーではなく、送信要求という
+        // 入力意図に紐づく唯一の消費点（`Output::send_romaji`/`send_kana_char` の
+        // `consume_force_pending_and_actuate`）へ移設済み（2026-08-08、旧実装は
+        // ここで直接 `desired_mode` を書いていた）。
         let conv_mutation_allowed = self.output.conv_mutation_allowed.get();
-        let forced_target = match self.output.conv_mode.policy() {
-            crate::state::ConvModePolicy::Observe => None,
-            crate::state::ConvModePolicy::Force => {
-                Some(self.output.conv_mode.desired_mode().to_conv_bits())
-            }
-        };
         // ADR-086 INV-14: 起案時点の hwnd を capture してから spawn_local へ渡す。
         // フォーカス世代（ime_mode_focus_gen）は `self.output`（借用、'static でない）
         // をそのまま async へ持ち込めないため、`with_app` 経由で毎回読み直す
@@ -85,19 +80,18 @@ impl<'a> ColdWarmupSequence<'a> {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} write={conv_mutation_allowed} \
-                 forced_target={} capture_target={target:?}",
+                 capture_target={target:?}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_KATAKANA)),
-                forced_target.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
             );
             if conv_mutation_allowed {
                 let Some(target) = target else {
                     log::debug!("[cold-diag] capture 失敗（フォーカス無し） → 書き込み中止");
                     return;
                 };
-                let outcome = crate::ime::set_ime_conv_for_target(target, forced_target, || {
+                let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
                     crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
                         .unwrap_or_else(|| focus_gen.wrapping_add(1))
                 })

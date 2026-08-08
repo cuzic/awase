@@ -49,21 +49,29 @@ impl ConvModeAuthority {
 
 // ─── conv-mode actuator（ADR-084 P1/INV-1）─────────────────────────────────────
 
-/// `Runtime::actuate_conv_mode`（`runtime/conv_actuation.rs`）が受け取る書き込み目標。
+/// `Output::actuate_conv_mode`（`output/conv_actuation.rs`）が受け取る書き込み目標。
 ///
 /// [ADR-084](../../../../docs/adr/084-conv-mode-single-ownership-and-width-ssot.md) の
 /// 提案する完全版（`Kana{katakana}`/`HalfWidthAlnum`/`Restore`）のうち、実際に
-/// 移行済みの呼び出し元（`kp_shift_conv_guard_key_down` の MS-IME entry のみ）が
-/// 必要とする variant のみを定義する。他の呼び出し元（`kp_restore_kana_from_half_width`
-/// の復元リトライ、`cold_warmup.rs`/`executor.rs`/idle-conv-check 側の romaji 復元）は
-/// 未移行（`docs/known-bugs.md` ADR-084 追補参照）。それらを移行する際に variant を
-/// 追加すること — 使われない variant を先回りで用意しない（憶測での API 拡張を避ける）。
+/// 移行済みの呼び出し元（`kp_shift_conv_guard_key_down` の MS-IME entry、
+/// [ADR-086](../../../../docs/adr/086-force-write-trigger-and-target-identity.md)
+/// Phase 2 の force-write）が必要とする variant のみを定義する。他の呼び出し元
+/// （`kp_restore_kana_from_half_width` の復元リトライ、`cold_warmup.rs`/`executor.rs`/
+/// idle-conv-check 側の romaji 復元）は未移行（`docs/known-bugs.md` ADR-084 追補参照）。
+/// それらを移行する際に variant を追加すること — 使われない variant を先回りで
+/// 用意しない（憶測での API 拡張を避ける）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ConvModeTarget {
     /// IME-ON 半角英数（`conv=0x0000`）。MS-IME が Shift 単独タップを英数切替と
     /// 誤認する前に、awase 側から先回りで同じ状態を書き込む安全網。
     HalfWidthAlnum,
+    /// `conv_mode_policy = force` の目標値（`ConvModeMgr::desired_mode()`）。
+    /// **`u32` の生値ではなく `ConvMode` で受け取る**（ADR-086 INV-17: force の目標値は
+    /// `romaji == true` である限り必ず `IME_CMODE_ROMAN` を含まなければならず、
+    /// `to_conv_bits()` を経由しない生の `u32` を渡せる形にすると、この保証を型で
+    /// 強制できなくなる）。
+    Desired(ConvMode),
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -73,6 +81,7 @@ impl ConvModeTarget {
     pub(crate) const fn imm_conv_value(self) -> u32 {
         match self {
             Self::HalfWidthAlnum => 0,
+            Self::Desired(mode) => mode.to_conv_bits(),
         }
     }
 }
@@ -89,6 +98,10 @@ pub(crate) enum ConvMutationReason {
     /// MS-IME が物理 Shift 単独タップを半角英数切替と誤認するのを打ち消す安全網
     /// （`kp_shift_conv_guard_key_down`、BUG-15/BUG-49）。
     ShiftSoloTapCounter,
+    /// `conv_mode_policy = force` による force-write（ADR-086 Phase 2、INV-18: 観測に
+    /// 基づく是正〈`DriftCorrection`/`ImmBrokenCorrection`〉と strategy variant を
+    /// 共有しない）。
+    ForcePolicy,
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -98,6 +111,7 @@ impl ConvMutationReason {
     pub(crate) const fn as_unconfirm_label(self) -> &'static str {
         match self {
             Self::ShiftSoloTapCounter => "shift-conv-guard entry",
+            Self::ForcePolicy => "conv-mode-policy force",
         }
     }
 }
@@ -386,6 +400,49 @@ mod tests {
         assert!(ConvModeAuthority::AwaseOwned.allows_conv_mutation());
         assert!(!ConvModeAuthority::UserOwned.allows_conv_mutation());
         assert!(!ConvModeAuthority::Unknown.allows_conv_mutation());
+    }
+
+    /// ADR-086 INV-17 の回帰テスト: `ConvModeTarget::Desired` の `imm_conv_value()` は
+    /// `romaji == true` である限り、charset に関わらず必ず `IME_CMODE_ROMAN`（0x10）を
+    /// 含む。含まなくなると romaji 入力中に engine が非対応と誤認し BUG-08 系の
+    /// 文字化けを再発する。全 charset を網羅する（1つだけ確認すると、その charset
+    /// だけ特別扱いする実装ミスを見逃す）。
+    #[test]
+    fn desired_target_preserves_roman_bit_for_all_charsets() {
+        const IME_CMODE_ROMAN: u32 = 0x10;
+        for charset in [
+            Charset::Hiragana,
+            Charset::ZenkakuKatakana,
+            Charset::HankakuKatakana,
+            Charset::ZenkakuAlpha,
+            Charset::HankakuAlpha,
+        ] {
+            let mode = ConvMode {
+                charset,
+                romaji: true,
+            };
+            let raw = ConvModeTarget::Desired(mode).imm_conv_value();
+            assert_eq!(
+                raw & IME_CMODE_ROMAN,
+                IME_CMODE_ROMAN,
+                "charset={charset:?} で ROMAN ビットが落ちている (raw=0x{raw:08X})"
+            );
+        }
+    }
+
+    /// force-write の `ConvMutationReason::ForcePolicy` は観測是正系の reason
+    /// （`ShiftSoloTapCounter` は投機的安全網だが force ではない）とログラベルを
+    /// 共有しない（INV-18: force と observation-based correction を型で区別する）。
+    #[test]
+    fn force_policy_uses_distinct_unconfirm_label() {
+        assert_eq!(
+            ConvMutationReason::ForcePolicy.as_unconfirm_label(),
+            "conv-mode-policy force"
+        );
+        assert_ne!(
+            ConvMutationReason::ForcePolicy.as_unconfirm_label(),
+            ConvMutationReason::ShiftSoloTapCounter.as_unconfirm_label()
+        );
     }
 
     /// BUG-19: 一発だけのカタカナ観測は確定させない（`GetForegroundWindow` 基準の
