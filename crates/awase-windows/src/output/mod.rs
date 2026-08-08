@@ -426,12 +426,15 @@ impl Output {
         // ADR-086 Phase 2（INV-15）: force-write のトリガーは「入力意図に紐づくイベント」
         // のみに限定される。FocusChange 自体は書き込みを起こさず、次の送信要求
         // （`consume_force_pending_and_actuate`）が消費するまでの「武装」だけを行う。
-        // `Force` policy でないときは武装しない（Observe では force-write 自体が
-        // 存在しないため、無条件に立てても消費側で無駄な actuate_conv_mode 呼び出し
-        // （即 Rejected か、無意味な自己上書き）が発生するだけ）。
-        if self.is_force_policy() {
-            self.force_pending.set(Some(self.ime_mode_focus_gen.get()));
-        }
+        // `Force` policy でないときは明示的に `None` へクリアする（訂正、2026-08-08
+        // 2回目 opus アドバーサリアルレビュー L1）: 当初は `if` で武装のみ行い
+        // policy 非対象時は既存の値に触れないままにしていたため、`reload_config`
+        // 等で `Force` → `Observe` へ切り替えた直後、前のフォーカスで武装済みの
+        // `force_pending` が1回だけ残留して発火しうる残留武装バグがあった。
+        // open 軸の `Runtime::arm_force_open_pending`（`.then()` で対象外なら
+        // 明示的に `None` へクリアする）と規律を揃える。
+        self.force_pending
+            .set(self.is_force_policy().then(|| self.ime_mode_focus_gen.get()));
         // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は
         // shift-conv-guard の hold が想定する「同一ウィンドウ内で完結する」
         // 前提が崩れたことを意味する。Shift の KeyUp がフックに届かないまま
@@ -1485,6 +1488,25 @@ mod tests {
             o.force_pending.get(),
             Some(o.ime_mode_focus_gen.get()),
             "Force policy では FocusChange が現在の focus_gen で武装する"
+        );
+    }
+
+    /// L1（2026-08-08 2回目 opus アドバーサリアルレビュー）の回帰テスト:
+    /// `Force` → `Observe` へ切り替えた直後の FocusChange で、前のフォーカスで
+    /// 武装済みの `force_pending` が残留せず明示的にクリアされること。
+    #[test]
+    fn focus_change_clears_stale_force_pending_after_policy_switches_back_to_observe() {
+        let o = make_output();
+        o.conv_mode.set_policy(crate::state::ConvModePolicy::Force);
+        o.on_ime_mode_focus_changed();
+        assert!(o.force_pending.get().is_some());
+
+        o.conv_mode.set_policy(crate::state::ConvModePolicy::Observe);
+        o.on_ime_mode_focus_changed();
+        assert_eq!(
+            o.force_pending.get(),
+            None,
+            "Observe へ切り替えた後の FocusChange は残留武装を明示的にクリアする"
         );
     }
 
