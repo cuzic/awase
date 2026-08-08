@@ -165,7 +165,27 @@ pub struct Runtime {
     /// 旧 `last_force_on_resend_ms`（`apply_force_on_for_imm_broken` の
     /// force-policy 経路が使っていた周期レート制限）は本フィールドへの移行に
     /// 伴い撤去済み（2026-08-08、ADR-086 Phase 3 item 1）。
-    force_open_pending: Option<u32>,
+    ///
+    /// **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー M4）**: タプルの
+    /// 第2要素は `Failed`（Win32 呼び出し自体の失敗）の再武装試行回数
+    /// （armed_gen ごとにリセット、上限は `FORCE_OPEN_FAILED_RETRY_LIMIT`）。
+    /// 周期フォールバックを撤去した以上、`Failed` を再武装しないと次の
+    /// FocusChange まで永久に迂回できなくなるが、無制限に再武装すると
+    /// `Failed` が恒久的に返る環境で打鍵のたびに同期 IMC write を伴う
+    /// 再試行が延々と続く（`ImeOpenOutcome::UnsafeToToggle` は Win キー
+    /// 解放という外部条件で必ず終わるため上限不要）。
+    force_open_pending: Option<(u32, u8)>,
+    /// force-ON の実送信レート制限（M3 対応、2026-08-08）。最後に
+    /// `force_on_and_correct_romaji` を実際に呼んだ tick（ms）。
+    ///
+    /// フォーカスチャーン環境（Chrome 連続フォーカスイベント=BUG-37、UWP
+    /// 2段フォーカス、通知フォーカスチャーン=BUG-57）下で高速タイピングすると
+    /// 「毎打鍵で再武装→毎打鍵で発火」＝20〜50ms 間隔になりうる（§1.2 欠陥4
+    /// が実機記録した `9c102b02` の連打問題と同じレート、周期版より悪化）。
+    /// `ime_poll_interval_ms`（既定500ms、撤去した `last_force_on_resend_ms`
+    /// が与えていた下限と同一値）を実送信の下限間隔として使う。新規タイミング
+    /// 定数は導入しない（`.claude/rules/tuning-constants.md` 準拠）。
+    last_force_open_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -719,10 +739,11 @@ impl Runtime {
     /// `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
     /// `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない
     /// （`.then()` により対象外なら明示的に `None` へクリアする）。
+    /// 試行回数（タプル第2要素）は新規武装のたびに `0` から始まる。
     pub(crate) fn arm_force_open_pending(&mut self) {
         self.force_open_pending = (self.platform.output.is_force_policy()
             && !self.can_use_imm32_cross_process())
-        .then(|| self.platform.output.ime_mode_focus_gen.get());
+        .then(|| (self.platform.output.ime_mode_focus_gen.get(), 0u8));
     }
 
     /// `force_open_pending` を消費し、武装済みなら force-ON を起こす
@@ -757,13 +778,33 @@ impl Runtime {
     /// を読むと趣旨と矛盾する。後日「重複ガードだ」として誤って足さないこと
     /// （ADR-086 §5 Phase 3 item 1 参照）。
     pub(crate) fn consume_force_open_pending(&mut self) {
-        let Some(armed_gen) = self.force_open_pending else {
+        // Failed の再武装に許す最大試行回数（armed_gen ごとにリセット）。
+        // UnsafeToToggle は Win キー解放という外部条件で必ず終わるため対象外
+        // （M4、無制限に再武装してよい）。値の根拠は ADR-080 の
+        // `FeedbackPolicy::Blind{max_attempts}` と同型の「有限リトライで
+        // 折り合いをつける」という設計判断であり、実測値ではない
+        // （`.claude/rules/tuning-constants.md` はタイミング値の実測義務を
+        // 課すもので、この試行回数カウンタには適用されない）。
+        const FORCE_OPEN_FAILED_RETRY_LIMIT: u8 = 2;
+
+        let Some((armed_gen, attempts)) = self.force_open_pending else {
             return;
         };
         if !(self.engine.is_user_enabled()
             && self.platform_state.ime.is_eligible_for_ime_force_on())
         {
             return;
+        }
+        // M3: 実送信のレート制限。フォーカスチャーン環境で毎打鍵ごとに
+        // 再武装→消費が起きても、実際の apply は ime_poll_interval_ms
+        // 間隔まで間引く。掛かった場合は武装を維持し、次のキーイベントで
+        // 再試行する（破棄すると BUG-16 型のリテラル化取りこぼしに直結する）。
+        let now = crate::hook::current_tick_ms();
+        if let Some(last) = self.last_force_open_ms {
+            let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
+            if now.saturating_sub(last) < interval_ms {
+                return;
+            }
         }
         // ここから実際に消費する（以降の早期 return は武装を戻さない限り再武装しない）。
         self.force_open_pending = None;
@@ -779,11 +820,25 @@ impl Runtime {
         }
         let outcome = self
             .force_on_and_correct_romaji(crate::state::ime_event::OpenApplyReason::ForcePolicyResend);
-        // ADR-086 Phase 2 の consume_force_pending_and_actuate と同じスコープ判断:
-        // Aborted 相当（ここでは UnsafeToToggle、Win キー押下中等）のときのみ
-        // 再武装する。Failed（Win32 呼び出し自体の失敗）は対象外。
-        if outcome == awase::platform::ImeOpenOutcome::UnsafeToToggle {
-            self.force_open_pending = Some(armed_gen);
+        // AlreadyMatched（未送信）ではレート制限のスタンプを更新しない。
+        if outcome != awase::platform::ImeOpenOutcome::AlreadyMatched {
+            self.last_force_open_ms = Some(now);
+        }
+        // ADR-086 Phase 2 の consume_force_pending_and_actuate と同じ大枠の
+        // スコープ判断（UnsafeToToggle のみ再武装）に加え、M4（2回目 opus
+        // アドバーサリアルレビュー）を受けて Failed も試行回数上限付きで
+        // 再武装する——周期フォールバックを撤去した以上、Failed を一切
+        // 再武装しないと次の FocusChange まで永久に迂回できなくなるため。
+        match outcome {
+            awase::platform::ImeOpenOutcome::UnsafeToToggle => {
+                self.force_open_pending = Some((armed_gen, attempts));
+            }
+            awase::platform::ImeOpenOutcome::Failed
+                if attempts < FORCE_OPEN_FAILED_RETRY_LIMIT =>
+            {
+                self.force_open_pending = Some((armed_gen, attempts + 1));
+            }
+            _ => {}
         }
     }
 
@@ -1012,6 +1067,7 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             force_open_pending: None,
+            last_force_open_ms: None,
         }
     }
 
