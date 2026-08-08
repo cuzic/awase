@@ -427,7 +427,18 @@ pub unsafe fn get_ime_conversion_mode_raw_timeout(timeout_ms: u32) -> Option<u32
     // read_ime_state_full と同じ GetGUIThreadInfo().hwndFocus 基準（get_focused_hwnd）に
     // 揃えることで、実際にテキスト入力を受けている子ウィンドウを対象にする。
     let hwnd = unsafe { get_focused_hwnd() }.non_null()?;
-    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
+    unsafe { get_ime_conversion_mode_for_hwnd(hwnd, timeout_ms) }
+}
+
+/// `get_ime_conversion_mode_raw_timeout` の実体（hwnd 指定版）。
+///
+/// [`get_ime_conv_for_target`] と共有する（ADR-086 §2.3 P7 と同じ「hwnd 解決を
+/// 呼び出し元の責務として切り離す」パターン。`set_ime_romaji_mode_for_hwnd` 参照）。
+///
+/// # Safety
+/// Calls Win32 APIs.
+unsafe fn get_ime_conversion_mode_for_hwnd(hwnd: HWND, timeout_ms: u32) -> Option<u32> {
+    // SAFETY: hwnd は呼び出し元が確定した有効なウィンドウハンドル。
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) };
     log::debug!("[idle-conv-check-diag] focused_hwnd={hwnd:?} ime_wnd={ime_wnd:?}");
     let ime_wnd = ime_wnd?;
@@ -1135,6 +1146,37 @@ pub(crate) enum TargetVerifyOutcome {
     GenStale,
     /// フォーカス世代は同じだが、実際の hwnd が起案時点と異なる。
     TargetMoved,
+}
+
+/// `ActuationTarget` が捕獲した hwnd に対して conv-mode を読み取る（read-modify-write
+/// の read 側、ADR-086 §2.3 P7）。
+///
+/// [`set_ime_conv_for_target`] と異なり `verify_still_current` を**行わない**。
+/// 読み取りは非破壊であり、検証を write の1箇所に集約したほうが Win32 往復も
+/// 競合窓も増えないため（opus 設計相談 2026-08-08）。呼び出し元は
+/// `ActuationTarget::capture` で得た同じ `target` を、この後の
+/// `set_ime_conv_for_target` にもそのまま渡すこと（read/write で同じ hwnd を
+/// 使い回すことが目的）。
+// `target`（HWND を含み Send でない）を引数に取るため Future が Send にならない。
+// verify_still_current/set_ime_conv_for_target と同じ理由で実害なし
+// （win32_async::spawn_local 経由でのみ呼ばれる前提）。
+#[allow(clippy::future_not_send)]
+pub(crate) async fn get_ime_conv_for_target(
+    target: ActuationTarget,
+    timeout_ms: u32,
+) -> Option<u32> {
+    // HWND は Send でないため get_focused_hwnd_async と同じ SendableHwnd イディオムで包む。
+    struct SendableHwnd(HWND);
+    // SAFETY: HWND はプロセス内で有効なグローバルリソースへのハンドルであり、
+    //         スレッド間で共有しても安全。
+    unsafe impl Send for SendableHwnd {}
+    let target_hwnd = SendableHwnd(target.hwnd);
+    offload_unsafe(move || {
+        let target_hwnd = target_hwnd;
+        let SendableHwnd(hwnd) = target_hwnd;
+        unsafe { get_ime_conversion_mode_for_hwnd(hwnd, timeout_ms) }
+    })
+    .await
 }
 
 /// [`set_ime_conv_for_target`] の結果（ADR-086 §2.3 P7）。`#[must_use]` は

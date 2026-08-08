@@ -846,9 +846,10 @@ fn conv_write_call_sites_are_target_explicit() {
         // conv_actuation.rs / cold_warmup.rs（#19）・executor.rs（#20）は
         // ADR-086 Phase1b で ActuationTarget::capture + set_ime_conv_for_target
         // 経由へ移行済み。
-        // key_pipeline.rs: 3箇所中1箇所（BUG-08 ROMAN復元、#21）を移行済み、残り2箇所
-        // （1072, 1528）は #22/#23 で対応予定。
-        ("src/runtime/key_pipeline.rs", 2),
+        // key_pipeline.rs: 3箇所中2箇所（BUG-08 ROMAN復元 #21、
+        // kp_reset_to_hiragana_romaji_capsoff #22）を移行済み、残り1箇所
+        // （kp_restore_kana_from_half_width）は #23 で対応予定。
+        ("src/runtime/key_pipeline.rs", 1),
     ];
 
     // BUG-59 追補（`9c102b02`）は known_sites のどのファイルにも無かった

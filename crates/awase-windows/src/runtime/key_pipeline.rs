@@ -1020,7 +1020,9 @@ impl Runtime {
                 )
                 && is_default_ime_on_combo
             {
-                Self::kp_reset_to_hiragana_romaji_capsoff();
+                Self::kp_reset_to_hiragana_romaji_capsoff(
+                    self.platform.output.ime_mode_focus_gen.get(),
+                );
             }
 
             // SetOpen(true) 後 input_mode=ObservedEisu が残ると engine が NotRomajiInput で
@@ -1079,7 +1081,9 @@ impl Runtime {
     /// 無関係なビットは保持しつつ NATIVE|FULLSHAPE|ROMAN を立てて KATAKANA を落とす）、
     /// 実 OS の Caps Lock を OFF にする。トレイメニューの「状態をリセット」
     /// (`TrayCommand::ResetState`、`tray.rs`) と同じ変換モードのマスクを使う。
-    fn kp_reset_to_hiragana_romaji_capsoff() {
+    /// `focus_gen`（`Output::ime_mode_focus_gen`）は呼び出し元が起案時点で読んで渡す
+    /// （ADR-086 §7-3: `ime.rs` は Runtime/Output の内部状態に依存しないため）。
+    fn kp_reset_to_hiragana_romaji_capsoff(focus_gen: u32) {
         // Caps Lock はトグル表示灯の読み取り (GetKeyState) + 条件付き SendInput のみで、
         // クロスプロセス IMM 呼び出しを含まないためフックスレッドから直接呼んで安全
         // （`is_physical_key_down`/`GetAsyncKeyState` 等、他の同期呼び出しと同水準）。
@@ -1096,21 +1100,40 @@ impl Runtime {
         // IMC read/write はクロスプロセスメッセージを含むため、フックスレッドから直接
         // 呼ばず shift-conv-guard と同じパターンで spawn_local する。現在の conv を
         // 読んでから mask するのは、記号入力等の無関係なビットを保持するため
-        // （`set_ime_romaji_mode_with_target_async` は target を丸ごと置換するので、
-        // 事前に現在値を読んでマスク計算してから渡す）。
-        win32_async::spawn_local(async {
-            let current = win32_async::offload(|| unsafe {
-                crate::ime::get_ime_conversion_mode_raw_timeout(50)
-            })
-            .await;
+        // （target を丸ごと置換するので、事前に現在値を読んでマスク計算してから渡す）。
+        //
+        // ADR-086 INV-14: capture はブロック先頭・他の await より前に置く
+        // （opus レビュー指摘 2026-08-08、executor.rs/cold_warmup.rs で capture を
+        // 後置していたバグの教訓）。read（get_ime_conv_for_target）と write
+        // （set_ime_conv_for_target）の両方に同じ検証済み target を使い回すことで、
+        // 「別窓の conv を読んで自窓に書く」不整合を避ける。
+        //
+        // スコープ注意: この経路は conv_mutation_allowed ゲートも
+        // actuate_conv_mode の unconfirm() も通っていない（既存のまま）。
+        // INV-14（ターゲット同一性）は満たすが INV-1（単一窓口経由）は
+        // 未達のまま — ConvModeTarget に read-modify-write 用の variant が無く、
+        // actuate_conv_mode 経由にすると conv_mutation_allowed 却下が新たに
+        // 効いて挙動が変わってしまうため、今回は見送る。
+        win32_async::spawn_local(async move {
+            let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                log::debug!("[ime-on-combo] capture 失敗（フォーカス無し） → リセット中止");
+                return;
+            };
+            let current = crate::ime::get_ime_conv_for_target(target, 50).await;
             let set_mask = crate::imm::IME_CMODE_NATIVE
                 | crate::imm::IME_CMODE_FULLSHAPE
                 | crate::imm::IME_CMODE_ROMAN;
             let clear_mask = crate::imm::IME_CMODE_KATAKANA;
-            let target = current.map_or(set_mask, |c| (c | set_mask) & !clear_mask);
-            let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
-            if !ok {
-                log::warn!("[ime-on-combo] ひらがな＋ローマ字リセットの conv write に失敗");
+            let mask_target = current.map_or(set_mask, |c| (c | set_mask) & !clear_mask);
+            let outcome = crate::ime::set_ime_conv_for_target(target, Some(mask_target), || {
+                crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                    .unwrap_or_else(|| focus_gen.wrapping_add(1))
+            })
+            .await;
+            if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
+                log::warn!(
+                    "[ime-on-combo] ひらがな＋ローマ字リセットの conv write に失敗: {outcome:?}"
+                );
             }
         });
     }
