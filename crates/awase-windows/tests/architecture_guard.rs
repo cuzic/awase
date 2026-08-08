@@ -38,6 +38,74 @@ fn read_crate_file(rel_path: &str) -> String {
     raw.replace("\r\n", "\n")
 }
 
+/// `content` から `needle`（関数呼び出しの `fn_name(` 形）の**実呼び出し**箇所数を
+/// 数える。行コメント（`//`/`///`/`//!`、trim 後に先頭一致）と、`fn `/`async fn `
+/// 直後に続く関数定義そのものの行を除外する。
+///
+/// 素朴な `content.matches(needle).count()` だと、doc コメント中の
+/// `` `set_ime_romaji_mode_with_target_async(None)` `` のような例示（実際に
+/// `conv_classify.rs` に存在する）や、関数定義自身のシグネチャ行
+/// （`pub async fn set_ime_romaji_mode_with_target_async(` in `ime.rs`）まで
+/// 「呼び出し」として誤カウントしてしまう。
+fn count_real_calls(content: &str, needle: &str) -> usize {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("//") // `//` / `///` / `//!` すべて除外
+        })
+        .filter(|line| line.contains(needle))
+        .filter(|line| {
+            let fn_name = needle.trim_end_matches('(');
+            !line.contains(&format!("fn {fn_name}("))
+        })
+        .count()
+}
+
+/// `src/` 以下の全 `.rs` ファイルを再帰的に列挙し、crate ルートからの相対パス
+/// （例: `"src/runtime/executor.rs"`）を返す。
+///
+/// 固定ファイルリストに対する grep だけでは「新しいファイルに呼び出しが追加された」
+/// パターン（BUG-59 追補が `platform.rs` という当時どのリストにも無かったファイルに
+/// 直接呼び出しを追加した実例）を検知できない。全ファイル走査が必須。
+///
+/// 走査自体は既存の `walk_rs_files`（元々3テストにそれぞれローカル関数として
+/// 重複定義されていたもの、本ヘルパー新設時にトップレベルへ集約）を再利用する。
+fn list_src_files() -> Vec<String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src_root = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src_root, &mut files);
+    files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(manifest_dir)
+                .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect()
+}
+
+/// `dir` 以下の `.rs` ファイルを再帰的に `out` へ集める。
+///
+/// 3つのテスト（`user_ime_on_paths_are_paired_with_eisu_reset` /
+/// `focus_probe_observation_is_limited_to_real_probe_path` /
+/// `apply_ime_open_with_belief_call_sites_are_accounted_for`）がそれぞれ
+/// ローカル関数として同一実装を持っていたため、トップレベルへ集約した。
+fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir({}): {e}", dir.display()))
+    {
+        let entry = entry.unwrap_or_else(|e| panic!("read_dir entry: {e}"));
+        let path = entry.path();
+        if path.is_dir() {
+            walk_rs_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 /// `#[cfg(test)]\nmod tests {` より前の「本番コード」部分だけを取り出す。
 /// テストコード内での使用（意図的な stale-intent シミュレーション等）は
 /// このチェックの対象外とする。
@@ -259,17 +327,6 @@ fn input_mode_applied_construction_sites_are_accounted_for() {
 /// `eisu_recovery.rs` の対応表とこのテストの期待値を更新すること。**
 #[test]
 fn user_ime_on_paths_are_paired_with_eisu_reset() {
-    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk_rs_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
@@ -361,17 +418,6 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
 /// は「実際に read_ime_state_fast を実行した」ことを意味する）。
 #[test]
 fn focus_probe_observation_is_limited_to_real_probe_path() {
-    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk_rs_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
@@ -520,17 +566,6 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// 場合は単にカウントを更新すること。
 #[test]
 fn apply_ime_open_with_belief_call_sites_are_accounted_for() {
-    fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk_rs_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let src = Path::new(manifest_dir).join("src");
     let mut files = Vec::new();
@@ -781,4 +816,102 @@ fn ime_open_close_functions_send_expected_vk_codes() {
         "{path} の post_kanji_toggle_to_focused 内 VK_KANJI down/up 送信回数が想定(1, 1)と \
          異なります(実際: ({down_count}, {up_count}))。"
     );
+}
+
+/// ADR-086 §4 INV-14/INV-19: `set_ime_romaji_mode_with_target_async`（実行時に
+/// `get_focused_hwnd()` をライブクエリして書き込み先を決める、ターゲット同一性を
+/// 持たない低レベル API）を直接呼んでいる箇所数をファイルごとに固定する。
+///
+/// この関数は起案時点と実行時点で書き込み先ウィンドウが変わっても検知できない
+/// （ADR-086 §1.2 欠陥1）。BUG-59 追補（`9c102b02`）は `platform.rs` に7番目の
+/// 直接呼び出しを追加したが、当時このテストが存在せず検知できなかった（実機で
+/// LINE の全打鍵が「い」になる等の実害が出て revert 済み、`docs/known-bugs.md`
+/// BUG-59 追補参照）。
+///
+/// このテストが失敗したら: (a) 新しい呼び出しは
+/// `runtime/conv_actuation.rs::actuate_conv_mode`（ADR-084 INV-1 単一窓口）を
+/// 経由できないか検討する。(b) やむを得ず直接呼ぶ場合は、
+/// `unmigrated_conv_write_list_is_monotonically_decreasing` が固定している
+/// `conv_actuation.rs` の module doc「未移行」リストに追記してから、この関数の
+/// `known_sites` を更新すること。ADR-086 §5 Phase1b で `ActuationTarget` 経由へ
+/// 段階移行するにつれて、このテストの期待値は減っていくのが正しい変化である
+/// （増える変化は原則として拒否する）。
+#[test]
+fn conv_write_call_sites_are_target_explicit() {
+    const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
+    // ADR-086 Phase1b で ActuationTarget 経由へ移行するまでの既知の呼び出し元。
+    // "src/ime.rs" 自体（関数定義 + async ラッパー内の1回の委譲呼び出し）は
+    // 「呼び出し元」ではなく定義そのものなので対象外。conv_actuation.rs の1箇所は
+    // ADR-084 P1 の単一窓口自身の実装であり、残り3ファイルが「未移行」
+    // （conv_actuation.rs の module doc 参照）。
+    let known_sites: &[(&str, usize)] = &[
+        ("src/runtime/conv_actuation.rs", 1),
+        ("src/tsf/warmup/cold_warmup.rs", 1),
+        ("src/runtime/executor.rs", 1),
+        ("src/runtime/key_pipeline.rs", 3),
+    ];
+
+    // BUG-59 追補（`9c102b02`）は known_sites のどのファイルにも無かった
+    // `platform.rs` に直接呼び出しを追加した。固定リストへの grep だけでは
+    // 「新しいファイルに呼び出しが増えた」ケースを検知できないため、
+    // `src/` 全体を走査して実際に呼び出しを含むファイル集合を求め、
+    // known_sites のキー集合と完全一致することも別途検証する。
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
+    }
+    files_with_calls.sort();
+
+    let mut expected: Vec<(String, usize)> = known_sites
+        .iter()
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
+         想定: {expected:?}\n実際: {files_with_calls:?}\n\
+         新しいファイルでの直接呼び出しは、ADR-086 §4 INV-14/INV-19 に従い \
+         runtime/conv_actuation.rs::actuate_conv_mode（ADR-084 INV-1 単一窓口）\
+         経由への移行を優先検討すること。やむを得ず直接呼ぶ場合は \
+         conv_actuation.rs の module doc「未移行」リストへの追記とセットで \
+         この known_sites を更新すること（BUG-59 追補は platform.rs への \
+         追加時にこの手順を踏まなかった）。"
+    );
+}
+
+/// ADR-086 §4 INV-19: `conv_actuation.rs` の module doc が列挙する「未移行」経路
+/// （`cold_warmup.rs` / `executor.rs` / `key_pipeline.rs`）への言及が、実際に
+/// 直接呼び出しを持つファイルと対応し続けていることを固定する。
+///
+/// `9c102b02`（BUG-59 追補）は `platform.rs` に直接呼び出しを追加したが、この
+/// module doc のリストには一度も載らなかった（`conv_write_call_sites_are_target_explicit`
+/// と対になり、「新しいファイルで直接呼び出しを追加したのに、このリストへの
+/// 追記を怠る」パターンを検知する）。
+#[test]
+fn unmigrated_conv_write_list_is_monotonically_decreasing() {
+    let path = "src/runtime/conv_actuation.rs";
+    let doc = read_crate_file(path);
+    let idx = doc.find("未移行（次段のスコープ）").unwrap_or_else(|| {
+        panic!("{path} の module doc に「未移行（次段のスコープ）」セクションが見つかりません")
+    });
+    let unmigrated_doc = &doc[idx..];
+
+    for filename in ["cold_warmup.rs", "executor.rs", "key_pipeline.rs"] {
+        assert!(
+            unmigrated_doc.contains(filename),
+            "{path} の module doc「未移行」リストに {filename} への言及が見つかりません。\
+             実際にはこのファイルが `set_ime_romaji_mode_with_target_async` を直接呼んでいます \
+             （conv_write_call_sites_are_target_explicit 参照）。移行が完了したのであれば \
+             この参照を消してよいが、その場合は conv_write_call_sites_are_target_explicit の \
+             期待値も同じコミットで更新すること。"
+        );
+    }
 }
