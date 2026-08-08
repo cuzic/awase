@@ -798,11 +798,14 @@ impl DecisionExecutor {
                     }
                     crate::ime::ActuationOutcome::Aborted(reason) => {
                         // INV-14: Aborted は「一度も書いていない」ので Applied 扱いに
-                        // しない。UnsafeToToggle は on_ime_apply_complete が
-                        // applied_snapshot/belief を一切更新せずに return する
+                        // しない。UnsafeToToggle は on_ime_apply_complete の C/D
+                        // （SSOT の applied/belief 書き込み）を一切実行させない
                         // （apply は行われていないため）。フォールバック
                         // （apply_skipping_imm の SendInput）も、検証済みでない
                         // hwnd への意図しない送信を避けるため通さない。
+                        // E（post_ime_refresh）だけは UnsafeToToggle でも走るため、
+                        // Aborted(GenStale) の取りこぼしは 20ms 後の refresh で拾われる
+                        // （opus レビュー指摘 F3、2026-08-08 是正、on_ime_apply_complete 参照）。
                         log::debug!("[dispatch-ime] open Aborted({reason:?}) → UnsafeToToggle");
                         awase::platform::ImeOpenOutcome::UnsafeToToggle
                     }

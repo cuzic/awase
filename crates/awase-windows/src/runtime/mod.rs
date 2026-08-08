@@ -317,6 +317,17 @@ impl Runtime {
     ) {
         use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 
+        // E: UnsafeToToggle でも必ずスケジュールする。UnsafeToToggle は
+        // Win-held 等の genuine skip に加え、ADR-086 の `ActuationOutcome::Aborted`
+        // （フォーカス移動/世代不一致で書き込みを中止）や capture 失敗も含む。
+        // 特に `Aborted(GenStale)`（同一ウィンドウのままフォーカス世代だけ進んだ
+        // ケース）は意図（IME open/close）自体は依然有効なのに、それを再試行する
+        // 自然なトリガー（新しいフォーカス変更）が発生しない。以前はここで早期
+        // return しており、次に無関係なイベントが来るまで無期限に取りこぼされ
+        // 得た（opus レビュー指摘 F3、2026-08-08 是正、`ime::
+        // set_ime_open_then_conv_for_target` の doc 参照）。
+        self.platform.post_ime_refresh();
+
         if outcome == ImeOpenOutcome::UnsafeToToggle {
             return;
         }
@@ -333,9 +344,6 @@ impl Runtime {
         if accepted {
             self.platform.on_ime_applied(open, outcome);
         }
-
-        // E: IME 状態ポーリングをスケジュール
-        self.platform.post_ime_refresh();
     }
 
     /// sync path の outcome リストを一括 dispatch する。

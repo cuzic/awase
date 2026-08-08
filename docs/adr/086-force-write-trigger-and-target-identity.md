@@ -706,11 +706,16 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
    （復元リトライループ、hwnd はループ外で1回 capture して全試行で使い回す —
    毎試行 capture は検証を no-op 化するため不採用、opus アドバーサリアル
    レビュー 2026-08-08）。
+   **追補（2026-08-08、2回目 opus レビュー F2）:** 上記6経路の洗い出し自体に
+   漏れがあり、`key_pipeline.rs::apply_focus_probe` 内の `ImmCrossProbe`
+   かなモード補正書き込みが未移行のまま残っていた（実質 7 経路目）。
+   `ActuationTarget::capture` を先頭 await に置く専用の `spawn_local` へ
+   切り出し、同様に移行済み（`docs/known-bugs.md` BUG-49 追補4 参照）。
 6. ✅ 完了（2026-08-08）: 全経路の移行が済んだため
    `set_ime_romaji_mode_with_target(_async)`（ライブクエリ版）を**削除**した
    （§6 段1 のコンパイラ強制の前段）。`tests/architecture_guard.rs` に
    `actuation_target_capture_call_sites_are_accounted_for` を新設し、
-   `ActuationTarget::capture` の呼び出し箇所数（6）を固定することで
+   `ActuationTarget::capture` の呼び出し箇所数（7、上記追補後）を固定することで
    INV-19 の「未追跡の新規経路を検知する」役割を引き継いだ。
 
 ### Phase 2（INV-15: トリガーを arm-on-focus / fire-on-intent へ、中リスク）

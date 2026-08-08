@@ -5537,7 +5537,7 @@ BUG-49 追補2の時点で既に存在していた。
 （`.claude/rules/tuning-constants.md` 準拠）。
 
 **検証:** cargo check/clippy --target x86_64-pc-windows-gnu --lib（警告ゼロ）、
-cargo test -p awase-windows --test architecture_guard（16件pass）。
+cargo test -p awase-windows --test architecture_guard（17件pass）。
 `kp_restore_kana_from_half_width` は実機フック依存で自動テスト不可
 （BUG-25 に明記の既存制約）。**Windows 実機での動作確認は未実施。**
 
@@ -5547,6 +5547,69 @@ cargo test -p awase-windows --test architecture_guard（16件pass）。
 （`SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`）。関連:
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §2.3/§4 INV-14、
 BUG-59 とその追補（本移行の発端）。
+
+### BUG-49 追補4（2026-08-08）: 2回目 opus レビュー（F1〜F6）反映
+
+**F1（High、修正済み）:** `kp_restore_kana_from_half_width` のリトライループが
+NATIVE 確認（復元完了判定）に使っていた読み取りが、書き込みと同じ検証済み
+`target` を経由しない生のライブクエリ（`get_ime_conversion_mode_raw_timeout`）
+だった。write が `Aborted`（フォーカス移動で中止）でも、無関係な別ウィンドウ B
+から偶然 NATIVE ビットが読めてしまえば「復元完了」と誤判定しかねない。
+`get_ime_conv_for_target(target, 10)` に変更し、読み取りも書き込みと同じ
+target を経由するようにした。
+
+**F2（High、修正済み）:** `apply_focus_probe` 内の `ImmCrossProbe` かなモード
+補正書き込み（romaji 復元）が、6箇所の移行対象一覧から漏れており
+`ActuationTarget` を経由しない生の `set_ime_romaji_mode_async()` のままだった。
+capture を先頭 await に置く専用の `spawn_local` へ切り出し、
+`ActuationTarget::capture` → `set_ime_conv_for_target` 経由に移行した
+（7箇所目の移行）。
+
+**F3（High、修正済み）:** `on_ime_apply_complete` は `UnsafeToToggle`
+（Win-held 等の genuine skip に加え、`ActuationOutcome::Aborted`/capture 失敗も
+含む）で C/D だけでなく E（`post_ime_refresh`）まで早期 return でスキップして
+いた。`Aborted(GenStale)`（同一ウィンドウのままフォーカス世代だけ進んだケース）
+は意図（IME open/close）自体は有効なのに、これを再試行する自然なトリガー
+（新しいフォーカス変更）が発生せず、次に無関係なイベントが来るまで無期限に
+取りこぼされ得た。E だけは UnsafeToToggle でも必ず実行するよう
+`runtime/mod.rs::on_ime_apply_complete` を修正し、20ms 後の refresh サイクルを
+再試行の起点にした。
+
+**F4（Medium、実機計測待ち）:** `ActuationTarget::capture`/`verify_still_current`
+はそれぞれ独立に `get_focused_hwnd_async()`（内部で
+`get_gui_thread_info_with_timeout(30ms)`）を1回呼ぶ。1回の actuation
+（capture 1回 + verify 1回）で GUI query の予算は最大 30ms×2 = 60ms になる。
+移行前、宛先を自己決定していたライブクエリ版（`set_ime_romaji_mode_with_target_async`
+等、削除済み）は同種のクエリを1回だけ呼んでいた。往復回数が増えた分の
+レイテンシ増分は Windows 実機で計測していない。`.claude/rules/tuning-constants.md`
+に従い、実測なしに `30ms` の値自体は変更していない——ここに記録するのは
+「予算構造が変わった」という事実と実機計測が必要という既知の未検証事項であり、
+タスク #17（ADR-086 Phase1a→1b ゲート: 実機計測）が完了するまで未解決として扱う。
+
+**F5（修正済み）:** 上記 F2 の修正で `apply_focus_probe` 内に新たな入れ子の
+`spawn_local` ブロックが生まれ、`architecture_guard.rs` の
+`actuation_target_capture_is_first_await_in_spawn_local_block` が入れ子ブロックを
+検出できず誤判定した。ブロック抽出を再帰化（`collect_balanced_blocks`）し、
+外側ブロックの「先頭 await」判定時に入れ子ブロックの中身をマスクする
+（`mask_nested_needle_blocks`）よう修正。あわせて `{{`/`}}`（Rust フォーマット
+文字列のエスケープ）を波括弧マッチングが誤カウントする問題（文字列リテラル非対応の
+`find_balanced_close`）も、文字列リテラル対応の実装に置き換えて修正した。
+いずれもミューテーションテスト（バグを一時的に再現 → 検出確認 → revert）で
+検出できることを確認済み。
+
+**F6（Low、修正済み）:** `ImmCrossOutcome` に `#[must_use]` を追加。
+本追補の「16件pass」を実際のテスト数（17件）に修正。
+
+**検証:** cargo check/clippy --target x86_64-pc-windows-gnu --lib（警告ゼロ）、
+cargo test -p awase-windows --test architecture_guard（17件pass、mutation testing
+で F1/F5 相当のバグ再現→検出→revert を確認）。**Windows 実機での動作確認は未実施。**
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_restore_kana_from_half_width`/`apply_focus_probe`）、
+`crates/awase-windows/src/runtime/mod.rs`（`on_ime_apply_complete`）、
+`crates/awase-windows/src/ime.rs`（`get_ime_conv_for_target`/`ImmCrossOutcome`）、
+`crates/awase-windows/tests/architecture_guard.rs`。関連:
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-14、§7。
 
 ## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
 

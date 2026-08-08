@@ -143,12 +143,59 @@ fn extract_fn_body<'a>(content: &'a str, fn_signature_needle: &str) -> &'a str {
     panic!("unbalanced braces while extracting body of {fn_signature_needle:?}");
 }
 
+/// `content[open_brace..]` の `open_brace` に対応する閉じ括弧の絶対バイト位置を
+/// 返す（波括弧の対応を数える）。**文字列リテラル（`"..."`、`\"` エスケープ考慮）
+/// の中身は無視する** — `log::debug!("... {{ ... }}")` のような Rust の
+/// format 文字列エスケープ（`{{`/`}}` はリテラルの `{`/`}` 1文字を表し、
+/// コード構造上の波括弧ではない）が深さカウントを狂わせるのを防ぐため
+/// （opus レビュー指摘、変異テストで実際に誤検知を確認済み、2026-08-08）。
+/// 文字列リテラルの開始判定は簡易的（生文字列 `r"..."`/`r#"..."#` 等は未対応）
+/// だが、このファイルが対象とする通常の Rust コードには十分。
+fn find_balanced_close(content: &str, open_brace: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (i, ch) in content[open_brace..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open_brace + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// `extract_fn_body` の複数箇所版。`content` 内で `needle` が出現するたびに、
 /// その直後の最初の `{` から波括弧の対応を数えて閉じ括弧までを切り出し、
 /// 全出現分をベクタで返す（例: 同一ファイル内の複数の `spawn_local(async move {`
-/// ブロックをそれぞれ独立に検査したい場合に使う）。
+/// ブロックをそれぞれ独立に検査したい場合に使う）。**ネストした出現も再帰的に
+/// 検出する**（例: 外側の `spawn_local` ブロックの中でさらに `spawn_local` が
+/// 呼ばれている場合、両方を別々の要素として返す。外側の要素の中身には内側の
+/// ブロックがそのまま含まれる点に注意 — 外側だけを解析したい場合は
+/// [`mask_nested_needle_blocks`] で内側を除去してから使うこと）。
 fn extract_all_balanced_blocks<'a>(content: &'a str, needle: &str) -> Vec<&'a str> {
     let mut blocks = Vec::new();
+    collect_balanced_blocks(content, needle, &mut blocks);
+    blocks
+}
+
+fn collect_balanced_blocks<'a>(content: &'a str, needle: &str, out: &mut Vec<&'a str>) {
     let mut search_from = 0usize;
     while let Some(rel_start) = content[search_from..].find(needle) {
         let start = search_from + rel_start;
@@ -156,28 +203,48 @@ fn extract_all_balanced_blocks<'a>(content: &'a str, needle: &str) -> Vec<&'a st
             break;
         };
         let open_brace = start + rel_open;
-        let mut depth = 0i32;
-        let mut end = None;
-        for (i, ch) in content[open_brace..].char_indices() {
-            match ch {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(open_brace + i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(end) = end else {
+        let Some(end) = find_balanced_close(content, open_brace) else {
             panic!("unbalanced braces while extracting block for {needle:?} at byte {start}");
         };
-        blocks.push(&content[open_brace..=end]);
+        let block = &content[open_brace..=end];
+        out.push(block);
+        // ネストした出現を再帰的に探す（block 自身の '{'/'}' は含めず内側だけ）。
+        if end > open_brace {
+            collect_balanced_blocks(&content[open_brace + 1..end], needle, out);
+        }
         search_from = end + 1;
     }
-    blocks
+}
+
+/// `block` 内にネストした `needle`（例: `"spawn_local(async"`）付きのブロックを
+/// プレースホルダに置き換えて除去した文字列を返す。
+///
+/// 外側のブロック自身の「最初の await はどれか」を判定する際、独立して
+/// スケジュールされるネストした `spawn_local` タスクの中身（別の実行タイミングで
+/// 走る）を混入させないために使う。
+fn mask_nested_needle_blocks(block: &str, needle: &str) -> String {
+    let mut result = String::with_capacity(block.len());
+    let mut search_from = 0usize;
+    loop {
+        let Some(rel_start) = block[search_from..].find(needle) else {
+            result.push_str(&block[search_from..]);
+            break;
+        };
+        let start = search_from + rel_start;
+        let Some(rel_open) = block[start..].find('{') else {
+            result.push_str(&block[search_from..]);
+            break;
+        };
+        let open_brace = start + rel_open;
+        let Some(end) = find_balanced_close(block, open_brace) else {
+            result.push_str(&block[search_from..]);
+            break;
+        };
+        result.push_str(&block[search_from..start]);
+        result.push_str("/* nested spawn_local masked */");
+        search_from = end + 1;
+    }
+    result
 }
 
 /// `ImeEvent::PanicReset` は `apply_panic_reset` のみが dispatch する。
@@ -924,7 +991,7 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/runtime/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口）
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),       // dispatch_ime_set_open（ImmCross async path）
-        ("src/runtime/key_pipeline.rs", 3), // kp_stage_idle_conv_check(BUG-08) / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width
+        ("src/runtime/key_pipeline.rs", 4), // kp_stage_idle_conv_check(BUG-08) / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)
     ];
 
     let all_files = list_src_files();
@@ -990,17 +1057,23 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
             .collect::<Vec<_>>()
             .join("\n");
         for block in extract_all_balanced_blocks(&stripped, "spawn_local(async") {
-            if !block.contains("ActuationTarget::capture(") {
-                continue; // この spawn_local は conv write と無関係
+            // ネストした spawn_local（独立してスケジュールされ、外側ブロックとは
+            // 別の実行タイミングで走る）の中身は、外側ブロック自身の「最初の
+            // await」判定に混入させない。extract_all_balanced_blocks は入れ子も
+            // 別要素として返すため、ネストしたブロック自身は別途このループの
+            // 後続イテレーションで独立に検査される。
+            let masked = mask_nested_needle_blocks(block, "spawn_local(async");
+            if !masked.contains("ActuationTarget::capture(") {
+                continue; // この spawn_local（自身のスコープ内）は conv write と無関係
             }
             checked += 1;
-            let first_await = block.find(".await").unwrap_or_else(|| {
+            let first_await = masked.find(".await").unwrap_or_else(|| {
                 panic!(
                     "{path}: ActuationTarget::capture を含む spawn_local ブロックに \
                      .await が見つかりません"
                 )
             });
-            let prefix = &block[..first_await];
+            let prefix = &masked[..first_await];
             assert!(
                 prefix.contains("ActuationTarget::capture("),
                 "{path}: spawn_local ブロック内で最初の .await が \
@@ -1010,14 +1083,14 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
                  一致してしまい ADR-086 INV-14 の検証が効かなくなります \
                  （executor.rs/cold_warmup.rs で実際に踏んだバグ、2026-08-08）。\
                  ブロック冒頭:\n{}",
-                &block[..block.len().min(300)]
+                &masked[..masked.len().min(300)]
             );
         }
     }
     assert_eq!(
-        checked, 6,
+        checked, 7,
         "ActuationTarget::capture を含む spawn_local ブロックの検査対象数が \
-         想定(6)と異なります。新しい経路を追加/削除した場合は \
+         想定(7)と異なります。新しい経路を追加/削除した場合は \
          actuation_target_capture_call_sites_are_accounted_for と合わせて \
          この期待値も更新すること。"
     );

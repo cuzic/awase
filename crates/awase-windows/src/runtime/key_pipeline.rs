@@ -1633,10 +1633,14 @@ impl Runtime {
                         }
                     }
                     win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
-                    let conv = win32_async::offload(|| unsafe {
-                        crate::ime::get_ime_conversion_mode_raw_timeout(10)
-                    })
-                    .await;
+                    // opus レビュー指摘（2026-08-08）: write は capture 済み target に
+                    // 固定したのに、打ち切り判定の read だけライブクエリのままだと
+                    // write 先と read 先が別ウィンドウになりうる（write が Aborted
+                    // でフォーカスが別窓 B へ移っていた場合、ライブ read は B の
+                    // conv を読んで「NATIVE 確認 → 復元完了」と誤判定し、A の復元を
+                    // 打ち切ってしまう）。read も同じ target（write と同一 hwnd）を
+                    // 使う。
+                    let conv = crate::ime::get_ime_conv_for_target(target, 10).await;
                     if let Some(c) = conv {
                         if c & crate::imm::IME_CMODE_NATIVE != 0 {
                             log::debug!(
@@ -2043,18 +2047,48 @@ impl Runtime {
                 if let (Some(true), Some(conv)) = (snap.ime_on, snap.conversion_mode) {
                     let mode = awase::engine::ConvMode::from_u32(conv);
                     if !mode.is_eisu() && !mode.romaji {
-                        let should_restore = crate::with_app(|app| {
+                        // opus レビュー指摘（2026-08-08）: `set_ime_romaji_mode_async`
+                        // （ライブクエリ版、ADR-086 削除対象の
+                        // `set_ime_romaji_mode_with_target_async` と同じ危険を持つ）
+                        // への呼び出しが未移行のまま残っていた。focus_gen も
+                        // should_restore と同じ with_app 呼び出しでまとめて読み、
+                        // ネストした spawn_local の**先頭**で capture する
+                        // （この外側ブロックは probe 読み取りが最初の await のため、
+                        // capture をここに直接置くと「ブロック先頭で capture」の
+                        // 規律から外れてしまう）。
+                        let (should_restore, focus_gen) = crate::with_app(|app| {
                             let ime = &app.platform_state.ime;
-                            ime.effective_open()
-                                && !matches!(ime.input_mode(), InputModeState::ObservedKana)
+                            let should_restore = ime.effective_open()
+                                && !matches!(ime.input_mode(), InputModeState::ObservedKana);
+                            (should_restore, app.platform.output.ime_mode_focus_gen.get())
                         })
-                        .unwrap_or(false);
+                        .unwrap_or((false, 0));
                         if should_restore {
                             log::debug!(
                                 "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
                                  → romaji 修正 (MS-IME かなモード修正)"
                             );
-                            let _ = crate::ime::set_ime_romaji_mode_async().await;
+                            win32_async::spawn_local(async move {
+                                let Some(target) =
+                                    crate::ime::ActuationTarget::capture(focus_gen).await
+                                else {
+                                    log::debug!(
+                                        "[ImmCrossProbe] romaji 修正: capture 失敗（フォーカス無し）"
+                                    );
+                                    return;
+                                };
+                                let outcome =
+                                    crate::ime::set_ime_conv_for_target(target, None, || {
+                                        crate::with_app(|runtime| {
+                                            runtime.platform.output.ime_mode_focus_gen.get()
+                                        })
+                                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                                    })
+                                    .await;
+                                if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
+                                    log::warn!("[ImmCrossProbe] romaji 修正に失敗: {outcome:?}");
+                                }
+                            });
                         }
                     }
                 }

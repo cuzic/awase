@@ -1267,6 +1267,7 @@ pub(crate) enum ConvAfterOpen {
 }
 
 /// [`set_ime_open_then_conv_for_target`] の結果。
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ImmCrossOutcome {
     pub open: ActuationOutcome,
@@ -1286,9 +1287,17 @@ pub(crate) struct ImmCrossOutcome {
 /// 得た hwnd を両方の書き込みに使い回すことでこれを構造的に防ぐ。
 ///
 /// `target`/`read_current_focus_gen` は [`ActuationTarget::capture`]/
-/// [`set_ime_conv_for_target`] と同じ規約。呼び出し元は `open` が
-/// `Aborted`/`Failed` のとき `applied_snapshot` 等の楽観的更新を巻き戻すこと
-/// （INV-14: Aborted を成功として記録してはならない）。
+/// [`set_ime_conv_for_target`] と同じ規約。`open` が `Aborted`/`Failed` のとき、
+/// 呼び出し元（`executor.rs`）は SSOT（`ImeModel::applied`）を明示的に巻き戻す
+/// 必要はない —— `UnsafeToToggle` を `Runtime::on_ime_apply_complete` に渡すと
+/// C/D（SSOT 書き込み）はスキップされる（INV-14: 一度も書いていないので Applied
+/// として記録しない）ため、SSOT は元々「未確定」のまま変化しない。ただし
+/// `Aborted(GenStale)`（同一ウィンドウのままフォーカス世代だけが進んだケース）は
+/// 意図（IME を開く/閉じる）自体は依然として有効なのに、これを再試行する自然な
+/// トリガー（新しいフォーカス変更）が発生しない。`on_ime_apply_complete` は
+/// `UnsafeToToggle` でも E（`post_ime_refresh`）だけは必ず実行するため、20ms 後の
+/// refresh サイクルが乖離を検出し再試行の起点になる（opus レビュー指摘 F3、
+/// 2026-08-08 是正）。
 #[allow(clippy::future_not_send)]
 pub(crate) async fn set_ime_open_then_conv_for_target(
     target: ActuationTarget,
