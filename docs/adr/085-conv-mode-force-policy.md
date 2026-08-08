@@ -5,6 +5,12 @@
 実装済み（2026-08-05）。デフォルトは `observe`（従来動作、無効）。Windows 実機での
 動作確認は未実施。
 
+**[ADR-086](086-force-write-trigger-and-target-identity.md) との関係**: 本 ADR が定めるのは
+force の**目標値**（`desired_mode`）と大枠の方針のみ。**いつ・どこへ・どの窓口で
+実際に書き込むか**は ADR-086 が規律する。現状の実装（本文中の `cold_warmup.rs::run_start`
+および「追記」節の `apply_force_on_for_imm_broken` 双方）は ADR-084/086 の actuator
+規律の外にあり、ADR-086 §1.2 が構造的な欠陥として指摘している。
+
 ## コンテキスト
 
 BUG-52（`docs/known-bugs.md`）の調査を通じて、`VK_DBE_KATAKANA`/`VK_DBE_ALPHANUMERIC`
@@ -180,3 +186,7 @@ force 再送が起きなくなり、追記1の修正だけでは実効性がな�
 - `docs/known-bugs.md` BUG-19: 観測追従型の自己増幅ループ（本 ADR の設計が
   再現を避ける対象）。
 - `docs/known-bugs.md` BUG-52: 本 ADR のきっかけとなった物理キー漏洩バグ。
+- ADR-084: conv-mode の単一所有権（`actuate_conv_mode` 単一窓口、INV-1/INV-2）。
+  本 ADR の force 書き込みは現状この窓口を経由していない（未移行）。
+- ADR-086: force-write の単一規律（**本 ADR に規律を与える**。トリガー条件と
+  書き込みターゲット同一性。BUG-59 追補の実機報告がきっかけ）。
