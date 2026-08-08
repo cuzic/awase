@@ -16,9 +16,8 @@
 //! **未移行（次段のスコープ）**: `kp_restore_kana_from_half_width` の復元リトライ
 //! ループ（`shift_conv_guard_gen`/`confirm_gate_deadline_override_ms` と密結合し、
 //! BUG-49 で複数回のレビューを経て確立した挙動のため本コミットでは触れていない）、
-//! `runtime/executor.rs`、`kp_stage_idle_conv_check` のローマ字復元経路
-//! （`runtime/key_pipeline.rs` 内複数箇所）。これらは
-//! `set_ime_romaji_mode_with_target_async` を直接呼び続けている
+//! `kp_stage_idle_conv_check` のローマ字復元経路（`runtime/key_pipeline.rs` 内
+//! 複数箇所）。これらは `set_ime_romaji_mode_with_target_async` を直接呼び続けている
 //! （`docs/known-bugs.md` ADR-084 追補参照）。よって INV-1 が求める「低レベル API を
 //! private にしてこの関数だけが呼べるようにする」というコンパイラ強制は、これら全ての
 //! 移行が完了するまで導入できない。

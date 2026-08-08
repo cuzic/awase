@@ -754,10 +754,25 @@ impl DecisionExecutor {
             // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
             let belief_input_mode = self.belief_input_mode;
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            // ADR-086 INV-14: 「set_ime_open_cross_process と同じウィンドウへ ROMAN
+            // ビットを補完する」という意図を保つため、この一連の処理の起案時点
+            // （spawn_local へ渡す直前、他の await より前）の focus_gen を捕獲する。
+            let focus_gen = platform.output.ime_mode_focus_gen.get();
             win32_async::spawn_local(async move {
                 let ok = crate::ime::set_ime_open_cross_process_async(open).await;
                 if ok && open && !matches!(belief_input_mode, InputModeState::ObservedKana) {
-                    let _ = crate::ime::set_ime_romaji_mode_with_target_async(None).await;
+                    if let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await {
+                        let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
+                            crate::with_app(|runtime| {
+                                runtime.platform.output.ime_mode_focus_gen.get()
+                            })
+                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                        })
+                        .await;
+                        log::debug!("[dispatch-ime] ROMAN 補完結果: {outcome:?}");
+                    } else {
+                        log::debug!("[dispatch-ime] ROMAN 補完: capture 失敗（フォーカス無し）");
+                    }
                 }
                 let outcome = if ok {
                     awase::platform::ImeOpenOutcome::Applied

@@ -840,12 +840,12 @@ fn conv_write_call_sites_are_target_explicit() {
     const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
     // ADR-086 Phase1b で ActuationTarget 経由へ移行するまでの既知の呼び出し元。
     // "src/ime.rs" 自体（関数定義 + async ラッパー内の1回の委譲呼び出し）は
-    // 「呼び出し元」ではなく定義そのものなので対象外。残り2ファイルが
+    // 「呼び出し元」ではなく定義そのものなので対象外。残り1ファイルが
     // 「未移行」（conv_actuation.rs の module doc 参照）。
     let known_sites: &[(&str, usize)] = &[
-        // conv_actuation.rs / cold_warmup.rs は ADR-086 Phase1b（タスク #19）で
-        // ActuationTarget::capture + set_ime_conv_for_target 経由へ移行済み。
-        ("src/runtime/executor.rs", 1),
+        // conv_actuation.rs / cold_warmup.rs（#19）・executor.rs（#20）は
+        // ADR-086 Phase1b で ActuationTarget::capture + set_ime_conv_for_target
+        // 経由へ移行済み。
         ("src/runtime/key_pipeline.rs", 3),
     ];
 
@@ -935,17 +935,18 @@ fn unmigrated_conv_write_list_is_monotonically_decreasing() {
         );
     }
 
-    for filename in ["executor.rs", "key_pipeline.rs"] {
-        let still_has_calls = files_with_calls
-            .iter()
-            .any(|f| Path::new(f).file_name().is_some_and(|n| n == filename));
-        assert!(
-            still_has_calls,
-            "{path} の module doc「未移行」リストは {filename} を挙げていますが、\
-             実際にはこのファイルに `set_ime_romaji_mode_with_target_async` の \
-             直接呼び出しがもう存在しません。移行が完了したのであれば、module doc \
-             からこの参照を削除すること（conv_write_call_sites_are_target_explicit \
-             の期待値も同じコミットで更新すること）。"
-        );
-    }
+    // 現時点で「未移行」リストに残るのは key_pipeline.rs のみ（#19/#20 で
+    // conv_actuation.rs/cold_warmup.rs/executor.rs は移行済み）。
+    let filename = "key_pipeline.rs";
+    let still_has_calls = files_with_calls
+        .iter()
+        .any(|f| Path::new(f).file_name().is_some_and(|n| n == filename));
+    assert!(
+        still_has_calls,
+        "{path} の module doc「未移行」リストは {filename} を挙げていますが、\
+         実際にはこのファイルに `set_ime_romaji_mode_with_target_async` の \
+         直接呼び出しがもう存在しません。移行が完了したのであれば、module doc \
+         からこの参照を削除すること（conv_write_call_sites_are_target_explicit \
+         の期待値も同じコミットで更新すること）。"
+    );
 }
