@@ -273,7 +273,7 @@ INV-15（トリガー条件）は force-write にのみ適用される。**
 | 「今どこへ書くべきか」の決定 | **書き込みを起案した時点のコンポーネント**。決定した hwnd を値として運ぶ（`ActuationTarget`） | 低レベル write 関数が `get_focused_hwnd()` をライブクエリして宛先を自分で決めること |
 | 決定時点と実行時点のターゲット同一性の検証 | **低レベル write 関数の内部**。実行直前に再確認し、不一致なら書き込まず `Aborted` を返す | 世代カウンタのチェックだけで「陳腐化していない」とみなすこと（gen は時間軸のみを守り、空間軸を守らない） |
 | conv-mode force-write の実行 | **`Runtime::actuate_conv_mode`（ADR-084 INV-1）**。`ConvMutationReason::ForcePolicy` として申告する | `platform.rs` / `cold_warmup.rs` が独自に `set_ime_romaji_mode_with_target_async` を呼ぶこと |
-| open/close force-write の実行 | **既存の apply 経路（`apply_ime_open_with_belief` → `on_ime_apply_complete`）**。force であることを `InputModeApplyStrategy::ForcePolicyResend` で申告する | force 判断・レート制限・再スケジュールを `apply_force_on_for_imm_broken` の関数本体に埋め込むこと |
+| open/close force-write の実行 | **既存の apply 経路（`apply_ime_open_with_belief` → `on_ime_apply_complete`）**。force であることを `OpenApplyReason::ForcePolicyResend` で申告する（§5 Phase 3 item 2） | force 判断・レート制限・再スケジュールを `apply_force_on_for_imm_broken` の関数本体に埋め込むこと |
 | force-write のトリガー条件 | **入力意図（入力の直前・cold 転換）に紐づく単一の判定関数** | 生の `FocusChange` / 生のタイマー周期をトリガーにすること |
 | force-write の再スケジュール | **外部の周期（`ime_poll_interval_ms`）にのみ従う独立した予約** | actuation の完了ハンドラが次の actuation を無条件に予約すること（自己駆動ループ） |
 
@@ -850,19 +850,171 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
 
 ### Phase 3（INV-13/INV-16: open/close 軸を同じ規律へ、中リスク）
 
-1. `apply_force_on_for_imm_broken` の force 分岐を、関数本体に埋め込まれた
-   レート制限（`last_force_on_resend_ms`）ごと、Phase 2 の `force_pending` 機構へ移す。
-   周期トリガー（案 D）から入力意図トリガー（案 C）へ変える。
-2. `InputModeApplyStrategy::ForcePolicyResend` を追加し、force による ON 再送が
-   ログ・ジャーナルから一意に識別できるようにする（INV-18）。
-3. `apply_ime_open_with_belief` の送信先も `ActuationTarget` で守る（INV-14）。
-   `SendInput` はフォアグラウンドに届くため、IMC write とは別の検証形になる
-   （送信直前のフォアグラウンド一致確認）。**この形が実際に守れるかは未検証**であり、
-   守れないなら「open/close 軸は SendInput のためターゲット検証が構造的に不可能」と
-   いう事実を INV-13 の例外として明記する（隠さない、ADR-084 INV-7 と同じ姿勢）。
+**状態（2026-08-08）: 実装着手前の設計調査完了（opus アドバーサリアルレビュー）。**
+下記は当初案からの訂正を反映した確定版。§7-10 に訂正の経緯を残す。
 
-**Phase 3 が実機で否定されても Phase 1+2 で conv 軸の実害は解決済みのため撤退可能である。**
-この撤退可能性が段階分割の主目的である。
+**前提として確定した事実（コード読解）:**
+
+- `apply_force_on_for_imm_broken` の呼び出し元は `runtime/ime_refresh.rs::ir_stage_notify`
+  （周期リフレッシュ連鎖の末尾）**1 箇所のみ**。これは INV-15 が禁止する「生の周期
+  タイマー」トリガーそのものである。
+- open 軸には conv 軸（Phase 2）と同じ confirm-then-transmit ゲートが**既に配線
+  済み**: `platform.rs::on_ime_applied` が `Applied`/`FallbackSent` のとき
+  `ime_mode_fsm.on_set_open_applied(open)` で belief を unconfirm し、以降の送信は
+  `Output::ms_ime_gate_defer`（BUG-13）が `is_native_ready()` で自動的に待つ。
+  よって Phase 3 も Phase 2 と同じ論法（新規タイミング定数ゼロ）が使える。
+- TsfNative（Blacklist）環境は IMC が構造的に読めず、`ir_apply_drift_correction`
+  （観測ベースの是正）は観測が存在しないため発火できない。**open 軸の TsfNative
+  では、周期 force-ON が唯一の自己回復手段**であり、これを単純に「入力意図待ち」
+  へ倒すと、周期 poll の谷間で実 IME が OFF に落ちたケースを打鍵まで検知できない
+  空白期間が生まれる（§7-2 参照、conv 軸より実害が具体的）。
+- `apply_ime_open_with_belief` → `ime_controller::CONTROLLER.apply` の呼び出し
+  チェーンは**完全に同期**（`spawn_local` を使わない）。Phase 1/2 が非同期
+  `ActuationTarget::capture` を要した理由（BUG-34、フックスレッドのブロック禁止）は
+  フックスレッド固有の制約であり、ここはメインスレッド（メッセージループ）上の
+  呼び出しのため直接は当てはまらない。
+- `ime_controller.rs` の `ImmCrossProcessStrategy::apply`（L72）と
+  `MsImeDirectStrategy::apply`（L175）が **`crate::ime::set_ime_romaji_mode()`
+  （宛先をライブクエリで自己決定する同期 IMC write）を呼んでいる**ことが本調査で
+  判明した。これは INV-14 未移行かつ `conv_actuation.rs` の未移行リストにも
+  `architecture_guard` の出現数固定にも載っていない——**INV-19 違反**（未追跡の
+  新規経路）でもある。Phase 1〜2 の「7 経路」の数え漏れであり、item 0 として
+  独立に処理する（下記）。
+
+0. **`ime_controller.rs:72`/`:175` の `set_ime_romaji_mode()` を INV-14/19 準拠へ**
+   （item 3 の着手前に必須）。`ActuationTarget` 経由へ移行するか、移行が難しい
+   場合は `runtime/conv_actuation.rs` の未移行リストへ明記して INV-19 を満たす。
+   これを放置したまま force を打鍵時トリガーへ移す（item 1）と、この同期 IMC
+   write が打鍵ホットパスに載り BUG-34 の再発条件になる。
+1. `apply_force_on_for_imm_broken` の force 分岐を、関数本体に埋め込まれた
+   レート制限（`last_force_on_resend_ms`）ごと、**専用の武装フラグ**
+   `Runtime::force_open_pending: Option<u32>`（武装時の `ime_mode_focus_gen`）へ
+   移す。周期トリガー（案 D）から入力意図トリガー（案 C）へ変える——これは
+   「呼び出し元（`ir_stage_notify` の周期）を残したまま武装/消費だけ分離する」
+   のではなく、**実際の書き込みが起きる場所自体を周期リフレッシュから
+   打鍵イベントへ移す**ことを意味する（そうでなければ消費点も周期のままで
+   INV-15 を満たさない）。
+   - **Phase 2 の `Output::force_pending`（conv-mode 専用）とは統合しない**。
+     層が異なる（open 軸は `Runtime::on_ime_apply_complete`（`&mut Runtime`、
+     record_ime_apply_result + post_ime_refresh + on_ime_applied の SSOT）を
+     必ず経由する必要があり、`Output::send_romaji`（`&self`、`with_app` の
+     内側）から `with_app` を再度呼ぶと再入する）。消費すべきタイミングも違う
+     （conv は「文字を出す瞬間」でよいが、open は VK_IME_ON が romaji VK より
+     先に届く猶予を作るため「キーが届いた瞬間」まで前倒しする必要がある）。
+     再武装のセマンティクスも違う（open の apply は完全同期で `Aborted` 概念が
+     なく、代わりに既存の `ImeOpenOutcome::UnsafeToToggle` が「送らなかった」を
+     表す）。INV-13 が要求する対称性は「同じ変数」ではなく「同じ規律」——
+     (a) 同じ policy 判定関数（`is_force_policy()`、item 0.5 相当。
+     `output/mod.rs::on_ime_mode_focus_changed`・
+     `runtime/mod.rs::apply_force_on_for_imm_broken`・`::reschedule_ime_refresh`
+     の3箇所の `ConvModePolicy::Force` 直接読みをこれへ集約し、§6段3-4
+     `force_policy_is_read_from_a_single_decision_point` を満たす）、
+     (b) 同じ arm-on-focus 契機（`ir_notify_focus_changed`。
+     `platform.rs::gji_on_focus_change` には書かない——`architecture_guard::
+     force_write_is_not_triggered_by_raw_focus_change` の走査対象に
+     `ir_notify_focus_changed` を追加し、「武装のみ許可」を機械的に固定する）、
+     (c) 同じ provenance 記録（item 2 参照）、で満たす。
+   - 消費点は **`runtime/key_pipeline.rs::kp_run_inner`**（`&mut Runtime` を持つ
+     全キーイベントの唯一の入口）。`try_hold_key`（TsfGate hold）の早期 return と
+     ime-off-rescue のネスト再入（`skip_rescue_defer=true`）**より後**、
+     `build_input_context` **より前**に置くこと。ここより前で消費すると、
+     hold されたキーで武装だけ消費され、実際の打鍵は再処理時になる
+     （force だけ先に飛んで打鍵が来ない——Phase 2 の「早期 return の後ろにあって
+     到達不能だった」の裏返し）。
+   - 消費直前と `apply_ime_open_with_belief` 呼び出し直前の2点で
+     `ime_mode_focus_gen` を照合する時間軸フェンスを入れる（item 3 で
+     空間軸検証を諦める分の代替、下記参照）。
+   - `ImeOpenOutcome::UnsafeToToggle`（Win キー押下中）は再武装する。
+     `Failed`（Win32 呼び出し自体の失敗）は再武装しない（Phase 2 の
+     `consume_force_pending_and_actuate` と同じスコープ判断）。
+   - **既存の `AppliedImeState` スロットル**（`Optimistic(true)|Confirmed{open:
+     true}` なら送らない、force 分岐には適用されない）は新しい打鍵時消費でも
+     引き続き読まない——force の趣旨は「applied が誤って ON にラッチされた
+     状態を破ること」であり、このスロットルを読むと趣旨と矛盾する。後日
+     「重複ガードだ」として誤って足されないよう、コードに否定コメントを残す。
+   - **段階導入**: まず本項目（案 C、周期を落として打鍵に紐づける）だけを
+     入れて実機ソーク（§5 Phase 3 実機ソーク参照）で「フォーカス不変のまま
+     IME が OFF に落ちる」ケースが実際に再現するかを測る。再現したら案 F
+     （idle 明け武装）か、INV-16 の自己駆動禁止を守れる形（外部周期にのみ
+     従う独立予約）を追加検討する。両方を一度に入れると、どちらが効いたか
+     切り分けられなくなる（Phase 0 が `9c102b02` を revert した理由と同じ
+     失敗パターン）。
+2. **provenance 記録**。当初案の `InputModeApplyStrategy::ForcePolicyResend`
+   は不採用——同 enum は input_mode（ローマ字/かな等）の**補正手段**専用であり、
+   open/close 自体の適用理由を運ぶ経路ではない。加えて調査の結果、
+   **force-ON は現状イベントを1つも出していない**ことが判明した:
+   `record_ime_apply_result`（`state/platform_state.rs:562`）は
+   `generation.is_some()` のときだけ `ImeEvent::from_apply_outcome` を
+   dispatch するが、force 分岐・bootstrap・drift correction はすべて
+   `generation: None` を渡している。variant を足すだけでは INV-18 を
+   満たせない。
+   - `state/ime_event.rs` に `OpenApplyReason`（`EngineDecision`/
+     `ForcePolicyResend`/`ImmBrokenForceOn`/`Bootstrap`/`DriftCorrection`/
+     `ShadowToggle`）を新設し、`Runtime::on_ime_apply_complete` へ**必須引数**
+     として追加する（`Option` にしない——デフォルトが入ると provenance が
+     欠落する）。呼び出し元 6 箇所を機械的に更新する。
+   - `reason` はジャーナルへ残す（`on_ime_apply_complete` 内で
+     `journal.record(...)` を1行追加。`ir_apply_drift_correction` が
+     `ActuationRecord::new(act_origin, ..)` で同種のことを既に行っている
+     前例に倣う）。
+   - `generation` 化（force 経路にも `allocate_event_generation()` を払い出し
+     既存の `ImeApplySucceeded`/`Failed` イベント自体を発火させる）は
+     **本 Phase のスコープ外**とする。`pending_generation()` の照合セマンティクス
+     と `discard_actuation` の相互作用の再設計が要るため、§7 に未解決論点として
+     起票し Phase 4 以降へ回す。
+3. **`apply_ime_open_with_belief` の送信先を `ActuationTarget` で守る（INV-14）
+   —— 不採用。SendInput 経路は撤退し、INV-13 の例外として明記する。**
+   検討した3案:
+   - (a) 同期の軽量ターゲット確認（`GetForegroundWindow()` を送信直前に呼び、
+     事前に記録した hwnd と比較）。**効果が小さい**: `send_ime_mode_key`
+     （`ime.rs`）は SendInput 直前に `win_key_held()`（キャッシュ読み）と
+     `HeldModifiers::read()`（`GetAsyncKeyState`、ローカル数 µs）しか挟まず、
+     Win32 往復ゼロ——P7 が言う「検証窓を Win32 呼び出し1回分に縮める」目標は
+     この経路ではほぼ達成済み。加えて**比較対象となる「起案時 hwnd」がそもそも
+     存在しない**（`PlatformState` に現在フォーカス HWND のキャッシュは無い、
+     §7-3 で確定済み）——`get_focused_hwnd_async()`（30ms）を打鍵ホットパスに
+     持ち込むことになり、得るものより失うものが大きい。
+   - (b) 既存の非同期 `ActuationTarget` を流用し `apply_force_on_for_imm_broken`
+     自体を非同期化する。**波及が大きすぎる**: `apply_ime_open_with_belief` は
+     完全同期で戻り値を呼び出し元が同期的に `on_ime_apply_complete` へ渡す設計
+     契約（`executor.rs::dispatch_ime_set_open` の `sync_outcomes` 契約、
+     `kp_stage_shadow_ime_toggle` の同期分岐、`ir_apply_drift_correction` の
+     ADR-080 epoch/attempts 管理）に依存する複数の呼び出し元を再設計することに
+     なる。
+   - (c) **採用**: SendInput にはターゲット検証が構造的に適用できないと結論し、
+     INV-13 の例外として明記する。`SendInput` は宛先 hwnd を指定するパラメータを
+     持たず「OS が今フォーカスを持つとみなすウィンドウ」へ配送する仕様のため、
+     `ActuationTarget`（IMC write 向けに「特定の hwnd への書き込み」を検証する
+     ために設計されたパターン）をそのまま持ち込む対象が無い。
+   - **ただし撤退するのは SendInput 部分だけ**。同じ呼び出しチェーンに紛れている
+     `ime_controller.rs` の `set_ime_romaji_mode()`（IMC write）は item 0 で
+     別途処理し、撤退対象に含めない。
+   - 空間軸の検証を諦める代わりに、item 1 で述べた**時間軸フェンス**
+     （消費点と apply 直前の2点で `ime_mode_focus_gen` を照合）を入れる。
+     空間軸が構造的に取れない経路では時間軸だけでも入れる方が良い、という
+     理由を明記する。UWP の2段フォーカス（親→InputSite、§1.2）で1操作あたり
+     複数回 FocusChange が来るケースを実際に弾ける。
+   - この「SendInput にはターゲット検証を適用できない」旨は
+     `runtime/key_pipeline.rs`（`VK_DBE_HIRAGANA` 注入について）に既に同趣旨の
+     注記が存在する。本 ADR を SSOT とし、コード側のコメントは本節への
+     ポインタへ差し替える。
+
+**Phase 3 全体を撤退する必要はない。** item 1（周期を落として打鍵に紐づける）は
+既存の confirm-then-transmit ゲートに乗るため新規タイミング定数ゼロで実装でき、
+撤退も item 1+item「周期削除」の1コミットの revert で済む。item 3 だけが
+構造的に不可能で、本 ADR がその可能性を最初から織り込んでいる（隠さない、
+ADR-084 INV-7 と同じ姿勢）。
+
+**実機ソーク（実装完了後、タスク #17 と同一セッションで行わないこと——理由は
+下記）**: 測定項目は (a) フォーカス後1打鍵目の追加レイテンシと
+`MS_IME_READY_CONFIRM_MS`（400ms）到達率——TsfNative（Windows Terminal /
+WezTerm）× MS-IME / GJI の4組、(b) 周期撤去後に「フォーカス不変のまま IME が
+OFF」（2026-08-06 実機報告のロック解除後静寂期パターン）が再現するか、
+(c) 1打鍵目のリテラル化（`bあ`/`korede` 系）が増えないか、(d)
+`UnsafeToToggle`/gen 不一致による再武装頻度。**Phase 2 のソーク（#17）を先に
+単独で回してベースラインを取ってから、本 Phase の消費点コミットをマージする
+こと**——両者を同一セッションで一緒に測ると、上記副作用が conv 軸由来か
+open 軸由来か切り分けられなくなる。
 
 ### Phase 4（INV-1/INV-19 のコンパイラ強制、低リスク・Phase 1〜3 完了後）
 
@@ -897,8 +1049,13 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
 - **INV-12**: Phase 4 で低レベル API を `conv_actuation` モジュールの private にする。
 - **INV-17**: force の目標値を `u32` の生値ではなく `ConvMode` で受け取り、
   `to_conv_bits()` を通す形に限定する（生の `u32` を force の目標に渡せなくする）。
-- **INV-18**: `InputModeApplyStrategy` に `ForcePolicyConv` / `ForcePolicyResend` の
-  新 variant を追加させる（既存の運用どおり）。
+- **INV-18**: conv 軸は `ConvMutationReason::ForcePolicy`、open/close 軸は
+  `OpenApplyReason::ForcePolicyResend`（§5 Phase 3 item 2）を使う。
+  **訂正（2026-08-08）**: 当初 `InputModeApplyStrategy` に `ForcePolicyConv`/
+  `ForcePolicyResend` を追加する案だったが、同 enum は input_mode 補正専用
+  であり意味論が合わないため採らなかった（Phase 2 は `ConvMutationReason`
+  という別の型で解決済み、Phase 3 も同様に `OpenApplyReason` という別の型
+  で解決する）。
 
 ### 段2: dylint（HIR レベル、意味論的偽装の検出のみ）
 
@@ -972,6 +1129,16 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
    案 D（低頻度の周期チェック）を分オーダーで別枠に置く選択肢も残るが、
    **INV-16 の自己駆動禁止を守れる形（外部周期にのみ従う独立予約）でしか採用しない**。
    間隔は実測に基づくこと。
+   **open 軸での追記（2026-08-08、Phase 3 設計調査）**: conv 軸ではこれは理論上の
+   懸念だったが、open 軸（TsfNative Blacklist）では**実害が既に報告されている**。
+   TsfNative は IMC が構造的に読めず、観測ベースの是正（`ir_apply_drift_correction`）
+   は観測が存在しないため発火できない。周期 force-ON がこの環境で唯一の自己回復
+   手段であり、Phase 3 item 1 でこれを入力意図トリガーへ倒すと、周期 poll の谷間で
+   実 IME が OFF に落ちたケースを次の打鍵まで検知できない空白期間が生まれる
+   （2026-08-06 実機報告「ロック解除後の長い静寂期間で belief=ON × 実IME=OFF」が
+   この空白期間の実例）。このため Phase 3 item 1 は段階導入とし、実機ソークで
+   この懸念が実際に顕在化するかを見てから案 F 等の追加武装トリガーを検討する
+   （§5 Phase 3 参照）。
 
 3. **`ActuationTarget::verify_still_current()` のコスト。** `get_focused_hwnd()` は
    `get_gui_thread_info_with_timeout(30ms)` を含む。書き込みごとに 2 回呼ぶのが
@@ -1086,6 +1253,28 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
      `actuate_conv_mode` の `Output` への移設を item 0 として追加した。
    - outbox 経由の案を検討し、drain タイミング（送信後）が Phase 2 の目的と
      正反対になるため却下した。
+
+10. **Phase 3 の当初案からの訂正経緯（2026-08-08、実装着手前の opus アドバーサリアル
+    レビュー）。** §5 Phase 3 は当初案から次の点を訂正した確定版に置き換えた。
+    - item 0（新規追加）: `ime_controller.rs` の `set_ime_romaji_mode()`
+      ライブクエリ IMC write が INV-14/19 未対応のまま残っていたと判明
+      （7 経路の数え漏れ）。item 1 着手前に処理する前提を明記。
+    - item 1「呼び出し元（周期）はそのまま、武装/消費だけ分離する」と読める
+      曖昧さを排除し、「実際の書き込みが起きる場所自体を打鍵イベントへ移す」
+      と明記。Phase 2 の `Output::force_pending` とは統合せず、`Runtime` 側に
+      専用の `force_open_pending` を新設する方針に確定（層・タイミング・
+      再武装セマンティクスが conv 軸と異なるため）。
+    - item 2「`InputModeApplyStrategy::ForcePolicyResend`」→「`OpenApplyReason`
+      新設 + `on_ime_apply_complete` への必須引数追加」（前者は input_mode
+      補正専用の enum で意味論が合わない。加えて force-ON が現状イベントを
+      1つも出していないという、当初案が見落としていた前提条件が判明した）。
+    - item 3「実際に守れるかは未検証」→「(a)(b)(c) 案を評価した結果 (c)（撤退 +
+      時間軸フェンスのみ）に確定」。SendInput が宛先 hwnd を持たない構造的
+      制約と、`apply_ime_open_with_belief` の同期呼び出し契約への波及の大きさ
+      を根拠に明記した。
+    - 段階導入（案 C のみ先行、実機ソークを見てから案 F を検討）を明記。
+      TsfNative では周期 force-ON が `ir_apply_drift_correction` の代替に
+      なっておらず唯一の自己回復手段であるという §7-2 の追記と対応する。
 
 ---
 

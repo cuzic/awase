@@ -309,13 +309,30 @@ impl Runtime {
     /// sync 経路では `execute_one` が `post_apply_ime_open`（B）を済ませた後、
     /// 呼び出し元が sync_outcomes ループ経由でここへ来る。
     /// async 経路では spawn_local 内で B を済ませた後に直接呼ばれる。
+    ///
+    /// `reason`（ADR-086 §4 INV-18、Phase 3 item 2）は「なぜこの apply が
+    /// 起きたか」を申告する必須引数。`Option` にしない——デフォルトを許すと
+    /// provenance が欠落する呼び出しが紛れ込む。`record_ime_apply_result` は
+    /// `generation.is_some()` のときだけ `ImeEvent` を dispatch するため
+    /// （force 系の適用は generation を持たずこの経路を通らない）、`reason` は
+    /// ジャーナルへ直接記録することで force 系も含めた全経路の provenance を
+    /// 一意に残す。
     pub fn on_ime_apply_complete(
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
         generation: Option<u64>,
+        reason: crate::state::ime_event::OpenApplyReason,
     ) {
         use awase::platform::{ImeOpenOutcome, TsfComposition as _};
+
+        self.platform_state.ime.journal.record(
+            crate::journal::JournalEntry::ImeOpenApplied {
+                open,
+                outcome,
+                reason,
+            },
+        );
 
         // E: UnsafeToToggle でも必ずスケジュールする。UnsafeToToggle は
         // Win-held 等の genuine skip に加え、ADR-086 の `ActuationOutcome::Aborted`
@@ -349,7 +366,12 @@ impl Runtime {
     /// sync path の outcome リストを一括 dispatch する。
     pub(crate) fn dispatch_outcomes(&mut self, outcomes: Vec<ImeApplyPair>) {
         for completion in outcomes {
-            self.on_ime_apply_complete(completion.open, completion.outcome, completion.generation);
+            self.on_ime_apply_complete(
+                completion.open,
+                completion.outcome,
+                completion.generation,
+                completion.reason,
+            );
         }
     }
 
@@ -488,10 +510,7 @@ impl Runtime {
         // フォーカスが TsfNative（Windows Terminal 等）に落ち着いた後の無操作期間は
         // 一切の force 再送が起きなくなる（2026-08-06 実機: ロック解除後の長い静寂期間で
         // `belief=ON` × `実IME=OFF` の乖離が force policy でも訂正されなかった不具合）。
-        let force_policy = matches!(
-            self.platform.output.conv_mode.policy(),
-            crate::state::ConvModePolicy::Force
-        );
+        let force_policy = self.platform.output.is_force_policy();
         if !force_policy {
             let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
                 self.platform.current_app_profile(),
@@ -592,10 +611,7 @@ impl Runtime {
         // なった」ユーザー報告）。conv モードの `desired_mode` 強制と同じ設計
         // 意図（観測を信じず awase 自身の意図を権威にする）を open/close 軸にも
         // 適用する。
-        let force_policy = matches!(
-            self.platform.output.conv_mode.policy(),
-            crate::state::ConvModePolicy::Force
-        );
+        let force_policy = self.platform.output.is_force_policy();
         if force_policy {
             // TsfNative では `reschedule_ime_refresh` の周期ポーリング自体が
             // is_tsf_native 早期 return で止まっているため、この関数を再度呼ぶ
@@ -637,7 +653,12 @@ impl Runtime {
         };
         let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
         log::info!("Blacklist force-ON: apply_ime_open(true) → {outcome:?}");
-        self.on_ime_apply_complete(true, outcome, None);
+        let reason = if force_policy {
+            crate::state::ime_event::OpenApplyReason::ForcePolicyResend
+        } else {
+            crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn
+        };
+        self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
                 log::info!(
@@ -682,7 +703,12 @@ impl Runtime {
             };
             let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
             log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
-            self.on_ime_apply_complete(true, outcome, None);
+            self.on_ime_apply_complete(
+                true,
+                outcome,
+                None,
+                crate::state::ime_event::OpenApplyReason::Bootstrap,
+            );
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
         }
     }

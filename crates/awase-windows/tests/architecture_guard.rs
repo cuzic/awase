@@ -1130,3 +1130,44 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
         );
     }
 }
+
+/// ADR-086 §6段3-4（2026-08-08、Phase 3 設計調査に伴い新設）:
+/// `ConvModePolicy::Force` の直接読み取りは `Output::is_force_policy()` の
+/// 定義内 1 箇所のみに限定される。
+///
+/// conv 軸（`on_ime_mode_focus_changed`）と open 軸
+/// （`runtime/mod.rs::apply_force_on_for_imm_broken`/`::reschedule_ime_refresh`）が
+/// それぞれ独自に `matches!(.., ConvModePolicy::Force)` を書くと、INV-13
+/// （軸の対称性）が要求する「同じ policy 判定関数」が構造的に保証されなくなる
+/// （条件が将来ズレても気づけない）。`is_force_policy()` を唯一の判定点にする
+/// ことで、新しい force-write 経路を追加するときも自然にこの1点を経由させる。
+#[test]
+fn force_policy_is_read_from_a_single_decision_point() {
+    const NEEDLE: &str = "ConvModePolicy::Force";
+    let all_files = list_src_files();
+    let mut total = 0usize;
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            total += count;
+            sites.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        total, 1,
+        "`{NEEDLE}` の本番コードでの直接参照が想定(1 = \
+         output/mod.rs::is_force_policy の定義のみ)と異なります。\n実際: {sites:?}\n\
+         新しい force-write 経路を追加する場合は Output::is_force_policy() 経由で \
+         判定し、`ConvModePolicy::Force` を直接 matches! しないこと \
+         （ADR-086 §6段3-4、INV-13 の軸対称性）。"
+    );
+    assert_eq!(
+        sites,
+        vec![("src/output/mod.rs".to_string(), 1)],
+        "`{NEEDLE}` の唯一の直接参照は src/output/mod.rs（is_force_policy の定義）に \
+         あるはずです。実際: {sites:?}"
+    );
+}

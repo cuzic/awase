@@ -287,6 +287,20 @@ impl Output {
         self.conv_mutation_allowed.set(allowed);
     }
 
+    /// `conv_mode_policy = force` かどうかの唯一の判定点（ADR-086 §6段3-4
+    /// `force_policy_is_read_from_a_single_decision_point`）。
+    ///
+    /// conv 軸（`on_ime_mode_focus_changed`）・open 軸
+    /// （`runtime/mod.rs::apply_force_on_for_imm_broken`）の両方がここを経由する
+    /// ことで、INV-13（軸の対称性）の「同じ policy 判定関数」を満たす。
+    /// `ConvModePolicy::Force` を直接 `matches!` するコードを新たに書かないこと
+    /// —— `architecture_guard.rs::force_policy_is_read_from_a_single_decision_point`
+    /// が本関数の定義以外での直接参照を検知する。
+    #[must_use]
+    pub(crate) fn is_force_policy(&self) -> bool {
+        matches!(self.conv_mode.policy(), crate::state::ConvModePolicy::Force)
+    }
+
     /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。
     ///
     /// `Platform::send_keys` が Unicode モード + 未学習クラスのときに呼ぶ。
@@ -415,7 +429,7 @@ impl Output {
         // `Force` policy でないときは武装しない（Observe では force-write 自体が
         // 存在しないため、無条件に立てても消費側で無駄な actuate_conv_mode 呼び出し
         // （即 Rejected か、無意味な自己上書き）が発生するだけ）。
-        if matches!(self.conv_mode.policy(), crate::state::ConvModePolicy::Force) {
+        if self.is_force_policy() {
             self.force_pending.set(Some(self.ime_mode_focus_gen.get()));
         }
         // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は

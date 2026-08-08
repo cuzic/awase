@@ -720,7 +720,12 @@ impl Runtime {
                 .platform
                 .apply_ime_open_with_belief(desired, None, belief);
             log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
-            self.on_ime_apply_complete(desired, outcome, None);
+            self.on_ime_apply_complete(
+                desired,
+                outcome,
+                None,
+                crate::state::ime_event::OpenApplyReason::DriftCorrection,
+            );
         }
 
         // 実送信したので試行回数と世代を1つ進める（`advance_epoch`）。`Blind` はこれが

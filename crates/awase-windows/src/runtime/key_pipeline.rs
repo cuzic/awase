@@ -688,7 +688,12 @@ impl Runtime {
             let outcome = self
                 .platform
                 .apply_ime_open_with_belief(false, None, belief);
-            self.on_ime_apply_complete(false, outcome, None);
+            self.on_ime_apply_complete(
+                false,
+                outcome,
+                None,
+                crate::state::ime_event::OpenApplyReason::DriftCorrection,
+            );
         }
     }
 
@@ -889,14 +894,24 @@ impl Runtime {
                     };
                     // B+C(ts更新)+D(noop)+E
                     let _ = crate::with_app(|app| {
-                        app.on_ime_apply_complete(false, outcome, None);
+                        app.on_ime_apply_complete(
+                            false,
+                            outcome,
+                            None,
+                            crate::state::ime_event::OpenApplyReason::ShadowToggle,
+                        );
                     });
                     drop(guard);
                 });
             } else {
                 let outcome = crate::ime_controller::CONTROLLER.apply(false, &view);
                 // B+C+D(noop)+E
-                self.on_ime_apply_complete(false, outcome, None);
+                self.on_ime_apply_complete(
+                    false,
+                    outcome,
+                    None,
+                    crate::state::ime_event::OpenApplyReason::ShadowToggle,
+                );
             }
             log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false");
         }

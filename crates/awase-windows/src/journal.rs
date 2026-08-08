@@ -151,6 +151,19 @@ pub enum JournalEntry {
     ImeActuation {
         record: crate::state::ime_actuation::ActuationRecord,
     },
+    /// IME open/close 適用の完了（ADR-086 §4 INV-18、Phase 3 item 2）。
+    ///
+    /// `record_ime_apply_result` は `generation.is_some()` のときだけ
+    /// `ImeEvent::from_apply_outcome`（`ImeEvent` 経由で `JournalEntry::ImeEvent` に
+    /// 記録される）を dispatch する。force 系の適用（force-ON・bootstrap・drift
+    /// correction）は generation を持たずこの経路を通らないため、`reason` を
+    /// 一意に journal へ残す唯一の場所として `Runtime::on_ime_apply_complete` に
+    /// 本エントリを追加した。
+    ImeOpenApplied {
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        reason: crate::state::ime_event::OpenApplyReason,
+    },
     /// ダンプトリガー発動
     DumpTriggered,
 }

@@ -323,6 +323,11 @@ pub(crate) fn post_async_ime_apply_complete(
 ///
 /// ImmCross async apply の完了通知。sync path の `sync_outcomes` と対称に、
 /// generation 照合を含む単一入口 `on_ime_apply_complete`（B+C+D+E）へ合流する。
+///
+/// `reason` は `OpenApplyReason::EngineDecision` 固定。このメッセージは
+/// `executor.rs::dispatch_ime_set_open`（`Decision::SetOpen` エフェクト駆動、
+/// ImmCross async 経路）の2箇所からしか post されないため、wparam/lparam へ
+/// 追加でエンコードせずここで直接指定する（唯一の生成元が常に同じ値のため）。
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let open = (wparam & 1) != 0;
     let generation = match (wparam >> 1) as u64 {
@@ -333,7 +338,12 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     if outcome == ImeOpenOutcome::Failed {
         log::warn!("apply_ime_open({open}) failed (async)");
     }
-    app.on_ime_apply_complete(open, outcome, generation);
+    app.on_ime_apply_complete(
+        open,
+        outcome,
+        generation,
+        crate::state::ime_event::OpenApplyReason::EngineDecision,
+    );
 }
 
 /// WM_PANIC_RESET ハンドラ

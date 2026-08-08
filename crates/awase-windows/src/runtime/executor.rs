@@ -34,6 +34,9 @@ pub(crate) struct ImeApplyCompletion {
     pub open: bool,
     pub outcome: awase::platform::ImeOpenOutcome,
     pub generation: Option<u64>,
+    /// ADR-086 §4 INV-18 の provenance。sync path（`execute_one`）は常に
+    /// `Decision::SetOpen` エフェクト駆動のため `EngineDecision` 固定。
+    pub reason: crate::state::ime_event::OpenApplyReason,
 }
 
 pub(crate) type ImeApplyPair = ImeApplyCompletion;
@@ -593,6 +596,7 @@ impl DecisionExecutor {
                     open,
                     outcome,
                     generation,
+                    reason: crate::state::ime_event::OpenApplyReason::EngineDecision,
                 }
             })
     }

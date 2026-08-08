@@ -263,6 +263,37 @@ pub enum InputModeApplyResult {
     Skipped,
 }
 
+/// `Runtime::on_ime_apply_complete`（IME open/close 適用の完了）が
+/// 「なぜこの apply が起きたか」を申告する理由（ADR-086 §4 INV-18、Phase 3 item 2）。
+///
+/// `InputModeApplyStrategy` とは別の型——あちらは input_mode（ローマ字/かな等）の
+/// **補正手段**専用であり、open/close 自体の適用理由を運ぶ経路ではない
+/// （conv-mode 軸の `ConvMutationReason` と同型の役割分担、ADR-086 §5 Phase 3
+/// item 2 の訂正経緯参照）。ログ・ジャーナルから「これは force による書き込みか、
+/// 観測に基づく是正か、エンジンの通常の決定か」が一意に読めるようにする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum OpenApplyReason {
+    /// `Engine::on_input`/`on_timeout` の `Decision::SetOpen` エフェクトによる、
+    /// 通常のキー入力駆動の適用（`executor.rs::execute_one`/`dispatch_ime_set_open`）。
+    EngineDecision,
+    /// `conv_mode_policy = force` による open 再送（ADR-086 Phase 3 item 1、
+    /// `Runtime::force_open_pending` の消費点から発火）。
+    ForcePolicyResend,
+    /// IMM32 クロスプロセス制御が使えないアプリ（TsfNative 等）向けの、
+    /// `force_policy` によらない applied スロットル付き強制 ON
+    /// （`apply_force_on_for_imm_broken` の非 force 分岐、既存挙動）。
+    ImmBrokenForceOn,
+    /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したときの一時 force-ON
+    /// （`try_force_on_bootstrap`）。
+    Bootstrap,
+    /// 観測値（conv/IMC 読み取り）と belief の乖離を検出しての是正
+    /// （`ir_apply_drift_correction`、`kp_apply_conv_engine_sync` の
+    /// `EngineSync::DirectInput` 分岐）。
+    DriftCorrection,
+    /// Shadow IME belief のトグル（`kp_stage_shadow_ime_toggle`）に伴う適用。
+    ShadowToggle,
+}
+
 /// IME 状態モデルへの全 event。
 ///
 /// 時刻情報は `ImeEventEnvelope::time` に集約する (event 内に重複させない)。
