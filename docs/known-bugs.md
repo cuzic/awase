@@ -6162,8 +6162,10 @@ awase-windows --lib --test golden_scenarios --test architecture_guard`
 `crates/awase-windows/src/runtime/ime_actuation.rs`（`discard_actuation`）、
 `crates/awase-windows/src/platform.rs`（`post_ime_refresh`）。関連: BUG-51
 （TsfNative drift correction の再起動漏れ、同じ `TIMER_IME_REFRESH`/20ms 系統）、
-ADR-083（`conv_mode_policy=force` の設計記録）、ADR-080（`Actuation` 型付き
-トランザクション、統合の将来候補）。
+[ADR-085](adr/085-conv-mode-force-policy.md)（`conv_mode_policy=force` の設計記録。
+本文中「ADR-083」表記は誤り、正しくは ADR-085）、ADR-080（`Actuation` 型付き
+トランザクション、統合の将来候補）、[ADR-086](adr/086-force-write-trigger-and-target-identity.md)
+（本エントリが記録する自己駆動ループが INV-16 の一次証拠）。
 
 ## BUG-55: `get_ime_wnd`/`set_ime_romaji_mode` が `GetForegroundWindow()`（トップレベル）基準の `ImmGetDefaultIMEWnd` を使うため、InputSite 子ウィンドウの実際の変換モードとは無関係な標的に書き込み、JISかな入力ロックから復旧できなくなる
 
@@ -6258,8 +6260,9 @@ focused_hwnd=...` が InputSite 子 hwnd（`read_ime_state_full` の
 `crates/awase-windows/src/tsf/warmup/cold_warmup.rs`
 （`ColdWarmupSequence::run_start`）。関連: BUG-54（同じ実機セッションで先に
 発見された `apply_force_on_for_imm_broken` の無限ループ、本バグの発見は
-その修正ビルドの実機検証中に判明）、ADR-083（`conv_mode_policy=force` の
-設計記録）。
+その修正ビルドの実機検証中に判明）、[ADR-085](adr/085-conv-mode-force-policy.md)
+（`conv_mode_policy=force` の設計記録。本文中「ADR-083」表記は誤り、正しくは
+ADR-085）。
 
 ## BUG-56: `learn_imm_capability_on_focus` が `ImmGetDefaultIMEWnd`=NULL を1回観測しただけで `Unavailable` を確定し、ジェネリックなクラス名を共有する本物のテキスト入力欄まで巻き込んで物理IMEキーが漏れ文字が重複コミットされる
 
@@ -6699,7 +6702,7 @@ opt-in 設定、試験運用中に発生）。
 あとで LINE 側の入力が壊れる（全打鍵が「い」になる／IME が JIS かなになる）。
 
 **原因（コード読解で確定、詳細は
-[ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md) §1.2）:**
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.2）:**
 実際に IME へ書き込む `set_ime_romaji_mode_with_target`（`ime.rs:782`）は、
 実行された**その瞬間**に `get_focused_hwnd()` をライブクエリして書き込み先を
 決める。`gji_on_focus_change` 側の世代カウンタ（`ime_mode_focus_gen`）チェックは
@@ -6720,15 +6723,57 @@ BUG-60 として別途起票した。
 本エントリの直前にあった「BUG-59 追補」節）を取り消した。埋めようとしていた穴
 （`MsImeStrategy::needs_f2_probe()` が常に `false` のため、`conv_mode_policy =
 force` が MS-IME では一度も発火しない）という**指摘自体は正しい**。この穴は
-[ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md) Phase 2 の
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) Phase 2 の
 「arm-on-focus / fire-on-intent」方式（FocusChange は武装フラグを立てるだけで、
 実際の書き込みは次の送信直前まで遅延させる）で、ターゲット競合を起こさない形で
 再導入する予定。**それまで `conv_mode_policy = force` は MS-IME（TsfNative）の
 FocusChange 直後のドリフト訂正を持たない**（`cold_warmup.rs::run_start` 経由の
 GJI 側のみ有効）。
 
-**関連:** [ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md)
+**関連:** [ADR-086](adr/086-force-write-trigger-and-target-identity.md)
 （本件が発端。§1.2 欠陥1〜2 に原因の詳細、§5 に revert の判断根拠）、
-[ADR-085](../docs/adr/085-conv-mode-force-policy.md)（`conv_mode_policy = force`
+[ADR-085](adr/085-conv-mode-force-policy.md)（`conv_mode_policy = force`
 本体）、BUG-60（LINE「い」化・JIS かな化の未確定な症状、本件と同時期の報告）。
+
+## BUG-60: `conv_mode_policy = force` 運用中に LINE で全打鍵が「い」になる／IME が JIS かなになる（原因未確定）
+
+**症状（2026-08-08 実機報告、ユーザー口頭）:**
+
+- LINE（Qt、`ImmCross` プロファイル）で何を押しても「い」になる。
+- 突然 IME がローマ字ではなく JIS かなになった。
+
+`conv_mode_policy = force`（ADR-085）を試験運用中に発生。BUG-59 追補
+（`9c102b02`、ターゲットウィンドウ競合を持つ force 書き込み、revert 済み）と
+同時期の報告のため関連が疑われるが、**因果はログで確定できていない**。
+
+**確定した事実（コード読解、原因の切り分けに使う）:**
+
+- force-write 自身は「JIS かな化」を直接起こせない。`ConvMode::to_conv_bits()`
+  （`src/engine/conv.rs:158`）は `romaji == true` のとき必ず `IME_CMODE_ROMAN` を
+  含み、`desired_mode` の唯一の書き込み点である
+  `message_handlers.rs::set_desired_conv_mode`（:528-536）は常に `romaji: true`
+  を渡す。したがって「force が ROMAN ビットを消した」という説明は成立しない。
+- むしろ疑うべきは逆方向: BUG-59 追補が持っていたターゲットウィンドウ競合
+  （[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.2 欠陥1）
+  により、BUG-08 の JIS かな復元系（`[idle-conv-check] JISかな化を検出 →
+  ローマ字入力を復元`）も別ウィンドウへ書き込んでいて効いていなかった、という筋。
+  BUG-59 追補は revert 済みのため、この経路自体は次回発生時には無くなっている
+  はずだが、LINE の「い」全打鍵化の機構は未解明のまま残っている。
+
+**再現時に取るべきログ（次回実機で再現した場合）:**
+
+1. 書き込み直前・直後の hwnd とウィンドウクラス名
+2. 書き込み後の `IMC_GETCONVERSIONMODE` 再読み値
+3. `[idle-conv-check] JISかな化を検出` ログの有無とタイミング
+4. `[relay-passthrough]` に記録される実際の VK 列（「い」を出している打鍵が
+   本当に別の文字キーなのか、それとも VK 列自体が「い」に対応するものなのかを
+   区別する）
+
+**未対応:** 原因未確定。BUG-59 追補の revert により再発するかどうかの
+経過観察が最初のステップ。
+
+**関連:** BUG-59 とその追補（同時期の報告、ターゲット競合の疑い）、BUG-08
+（外部注入 `VK_KANA` による JIS かな化の既知パターン）、
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.3（未確定の
+仮説として同じ整理を記載）。
 
