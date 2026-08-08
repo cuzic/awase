@@ -840,12 +840,11 @@ fn conv_write_call_sites_are_target_explicit() {
     const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
     // ADR-086 Phase1b で ActuationTarget 経由へ移行するまでの既知の呼び出し元。
     // "src/ime.rs" 自体（関数定義 + async ラッパー内の1回の委譲呼び出し）は
-    // 「呼び出し元」ではなく定義そのものなので対象外。conv_actuation.rs の1箇所は
-    // ADR-084 P1 の単一窓口自身の実装であり、残り3ファイルが「未移行」
-    // （conv_actuation.rs の module doc 参照）。
+    // 「呼び出し元」ではなく定義そのものなので対象外。残り2ファイルが
+    // 「未移行」（conv_actuation.rs の module doc 参照）。
     let known_sites: &[(&str, usize)] = &[
-        ("src/runtime/conv_actuation.rs", 1),
-        ("src/tsf/warmup/cold_warmup.rs", 1),
+        // conv_actuation.rs / cold_warmup.rs は ADR-086 Phase1b（タスク #19）で
+        // ActuationTarget::capture + set_ime_conv_for_target 経由へ移行済み。
         ("src/runtime/executor.rs", 1),
         ("src/runtime/key_pipeline.rs", 3),
     ];
@@ -936,7 +935,7 @@ fn unmigrated_conv_write_list_is_monotonically_decreasing() {
         );
     }
 
-    for filename in ["cold_warmup.rs", "executor.rs", "key_pipeline.rs"] {
+    for filename in ["executor.rs", "key_pipeline.rs"] {
         let still_has_calls = files_with_calls
             .iter()
             .any(|f| Path::new(f).file_name().is_some_and(|n| n == filename));

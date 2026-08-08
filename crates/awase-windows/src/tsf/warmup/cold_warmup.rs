@@ -64,6 +64,11 @@ impl<'a> ColdWarmupSequence<'a> {
                 Some(self.output.conv_mode.desired_mode().to_conv_bits())
             }
         };
+        // ADR-086 INV-14: 起案時点の hwnd を capture してから spawn_local へ渡す。
+        // フォーカス世代（ime_mode_focus_gen）は `self.output`（借用、'static でない）
+        // をそのまま async へ持ち込めないため、`with_app` 経由で毎回読み直す
+        // （`runtime::conv_actuation::actuate_conv_mode` と同じ手法）。
+        let focus_gen = self.output.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
@@ -76,7 +81,16 @@ impl<'a> ColdWarmupSequence<'a> {
                 forced_target.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
             );
             if conv_mutation_allowed {
-                let _ = crate::ime::set_ime_romaji_mode_with_target_async(forced_target).await;
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!("[cold-diag] capture 失敗（フォーカス無し） → 書き込み中止");
+                    return;
+                };
+                let outcome = crate::ime::set_ime_conv_for_target(target, forced_target, || {
+                    crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                })
+                .await;
+                log::debug!("[cold-diag] 結果: {outcome:?}");
             }
         });
 

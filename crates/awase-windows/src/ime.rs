@@ -1067,20 +1067,16 @@ pub async fn get_focused_hwnd_async() -> HWND {
 /// レイヤーであるため、gen 値そのものはこの型・この関数群では読まない。
 /// 呼び出し元（`runtime::conv_actuation` 等）が `capture`/`verify_still_current`
 /// の引数として供給する。
-// ADR-086 Phase1b: このスコープを消費する呼び出し元（conv_actuation.rs 等 6 経路）の
-// 移行はタスク #19〜#23 で段階的に行う。それまで dead_code 警告を許容する。
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ActuationTarget {
     hwnd: HWND,
-    focus_gen: u64,
+    focus_gen: u32,
 }
 
-#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
 impl ActuationTarget {
     /// 起案時点の hwnd を捕獲する。hwnd が取得できない場合（フォーカス無し等）は
     /// `None`。
-    pub(crate) async fn capture(focus_gen: u64) -> Option<Self> {
+    pub(crate) async fn capture(focus_gen: u32) -> Option<Self> {
         let hwnd = get_focused_hwnd_async().await;
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
     }
@@ -1104,7 +1100,7 @@ impl ActuationTarget {
     #[allow(clippy::future_not_send)]
     pub(crate) async fn verify_still_current(
         self,
-        read_current_focus_gen: impl FnOnce() -> u64,
+        read_current_focus_gen: impl FnOnce() -> u32,
     ) -> TargetVerifyOutcome {
         let current_hwnd = get_focused_hwnd_async().await;
         if self.focus_gen != read_current_focus_gen() {
@@ -1143,7 +1139,6 @@ pub(crate) enum TargetVerifyOutcome {
 
 /// [`set_ime_conv_for_target`] の結果（ADR-086 §2.3 P7）。`#[must_use]` は
 /// `Aborted` の握り潰し防止（ADR-086 §6 段1）。
-#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use]
 pub(crate) enum ActuationOutcome {
@@ -1159,7 +1154,6 @@ pub(crate) enum ActuationOutcome {
 
 /// [`ActuationOutcome::Aborted`] の理由。[`TargetVerifyOutcome`] の
 /// `GenStale`/`TargetMoved` をそのまま引き継ぐ。
-#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AbortReason {
     /// フォーカス世代が起案時点から進んでいる。
@@ -1183,15 +1177,13 @@ pub(crate) enum AbortReason {
 /// ここでは読まない。`ActuationTarget::capture`/`verify_still_current` と
 /// 同じ理由）。`verify_still_current` に転送し、hwnd のライブクエリ完了直後の
 /// 最新値として使われる。
-#[allow(dead_code)]
-// ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
 // `target`（HWND を含み Send でない）を await をまたいで保持するため Future が
 // Send にならない。verify_still_current と同じ理由で実害なし。
 #[allow(clippy::future_not_send)]
 pub(crate) async fn set_ime_conv_for_target(
     target: ActuationTarget,
     conv: Option<u32>,
-    read_current_focus_gen: impl FnOnce() -> u64,
+    read_current_focus_gen: impl FnOnce() -> u32,
 ) -> ActuationOutcome {
     match target.verify_still_current(read_current_focus_gen).await {
         TargetVerifyOutcome::GenStale => {

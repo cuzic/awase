@@ -7,12 +7,18 @@
 //! を新設し、既存の呼び出し元のうち `kp_shift_conv_guard_key_down` の MS-IME entry
 //! 書き込み**のみ**をこの関数経由に移行した。
 //!
+//! [ADR-086](../../../../docs/adr/086-force-write-trigger-and-target-identity.md)
+//! INV-14（ターゲット同一性）に従い、実際の書き込みは
+//! `ActuationTarget::capture` → `set_ime_conv_for_target` 経由で行う
+//! （起案時点の hwnd を確定し、実行直前に再検証してから書く。BUG-59 追補が
+//! 実機で踏んだ「別ウィンドウへの誤爆」を構造的に防ぐ）。
+//!
 //! **未移行（次段のスコープ）**: `kp_restore_kana_from_half_width` の復元リトライ
 //! ループ（`shift_conv_guard_gen`/`confirm_gate_deadline_override_ms` と密結合し、
 //! BUG-49 で複数回のレビューを経て確立した挙動のため本コミットでは触れていない）、
-//! `tsf/warmup/cold_warmup.rs::preamble`、`runtime/executor.rs`、
-//! `kp_stage_idle_conv_check` のローマ字復元経路（`runtime/key_pipeline.rs` 内複数箇所）。
-//! これらは `set_ime_romaji_mode_with_target_async` を直接呼び続けている
+//! `runtime/executor.rs`、`kp_stage_idle_conv_check` のローマ字復元経路
+//! （`runtime/key_pipeline.rs` 内複数箇所）。これらは
+//! `set_ime_romaji_mode_with_target_async` を直接呼び続けている
 //! （`docs/known-bugs.md` ADR-084 追補参照）。よって INV-1 が求める「低レベル API を
 //! private にしてこの関数だけが呼べるようにする」というコンパイラ強制は、これら全ての
 //! 移行が完了するまで導入できない。
@@ -72,9 +78,26 @@ impl Runtime {
 
         let raw_target = target.imm_conv_value();
         log::info!("[conv-actuate] {reason:?} → target=0x{raw_target:08X} 書き込み (spawn)");
+        // ADR-086 INV-14: 起案時点（＝今、unconfirm と同一トランザクション内）の
+        // hwnd を capture してから spawn_local へ渡す。フォーカス世代
+        // （ime_mode_focus_gen）は `with_app` 経由でしか読めない（`ime.rs` は
+        // Runtime/Output に依存しないため、verify_still_current へは
+        // クロージャとして渡す）。`with_app` が None を返す場合（再入不可）は
+        // 安全側に倒して起案時点の gen と一致しない値を返し、書き込みを
+        // 中止させる（BUG-59 追補が使っていたのと同じフォールバック手法:
+        // `wrapping_add(1)`）。
+        let focus_gen = self.platform.output.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
-            let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(raw_target)).await;
-            log::info!("[conv-actuate] IMC write 結果: ok={ok}");
+            let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                log::debug!("[conv-actuate] {reason:?} → capture 失敗（フォーカス無し）");
+                return;
+            };
+            let outcome = crate::ime::set_ime_conv_for_target(target, Some(raw_target), || {
+                crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                    .unwrap_or_else(|| focus_gen.wrapping_add(1))
+            })
+            .await;
+            log::info!("[conv-actuate] {reason:?} → 結果: {outcome:?}");
         });
 
         ConvActuationOutcome::Actuated
