@@ -1411,6 +1411,15 @@ ON 方向には対称の実装（`apply_force_on_for_imm_broken`、`runtime/mod.
 Linux 上でのユニットテストは書けない（`ime_key_sequence_golden.rs` と同じ制約）。
 実機（Windows Terminal/Chrome + GJI）での動作確認は未実施。
 
+**追補2（2026-08-08、ADR-086 Phase 3 実装時の巻き添え発見）:** この
+non-ImmCross 分岐は `runtime/mod.rs::reschedule_ime_refresh` の周期リフレッシュ
+連鎖（`is_tsf_native` 早期 return を force_policy のときだけスキップする例外）
+に相乗りして呼ばれている。ADR-086 Phase 3 実装時にこの例外を一度撤去した際、
+本分岐の周期実行機会も巻き添えで失われるところだった（2回目 opus アドバーサリアル
+レビューで発見・例外を復元、詳細は
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §7-12・
+[docs/experiments.md](experiments.md) エントリ13）。
+
 **追補（2026-07-21、修正が dead code で一度も実行されていなかったことが判明・再修正済み）:**
 
 **症状:** Windows Terminal（`Windows.UI.Input.InputSite.WindowClass`、`force-tsf` 判定で

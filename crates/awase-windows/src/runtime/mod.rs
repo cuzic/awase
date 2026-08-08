@@ -539,19 +539,45 @@ impl Runtime {
         // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）/
         // `kp_apply_conv_engine_sync` の ReportOpenInference（BUG-51、20ms）。
         //
-        // 2026-08-06〜2026-08-08: `conv_mode_policy = force` のときこの早期 return を
-        // スキップする例外があった（`apply_force_on_for_imm_broken` の周期 force-ON
-        // 再送を同じリフレッシュ連鎖に相乗りさせるため）。ADR-086 Phase 3 で
-        // force-ON のトリガーを周期からキー入力の直前へ移し
-        // （`kp_run_inner::consume_force_open_pending`）、この連鎖に依存しなくなった
-        // ため例外を撤去した（#42/#43 と同一コミット。撤去単独では TsfNative + force
-        // policy で無期限に force-ON が止まる退行になるため分離しない）。
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
-        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
-            return;
+        // 2026-08-06: `conv_mode_policy = force` のときこの早期 return をスキップする
+        // 例外が入った（`apply_force_on_for_imm_broken` の周期 force-ON 再送を同じ
+        // リフレッシュ連鎖に相乗りさせるため）。2026-08-08 ADR-086 Phase 3 実装時、
+        // force-ON のトリガーを周期からキー入力の直前へ移したため
+        // （`kp_run_inner::consume_force_open_pending`）「この連鎖に依存しなくなった」
+        // と判断し例外を一度撤去したが、Phase 3 実装完了後の2回目 opus アドバーサリアル
+        // レビュー（M5）で、この撤去が `ir_apply_drift_correction`（BUG-20 が追加した
+        // non-ImmCross/TsfNative 向け分岐）の周期実行機会も巻き添えで奪っていたと
+        // 判明し、例外を復元した。
+        //
+        // **この復元は「force-ON 用に戻した」わけではない**（force-ON は
+        // `apply_force_on_for_imm_broken` が `is_force_policy()` で即 return する
+        // ため、この連鎖が復活しても force-ON の周期スパムは再発しない——ただし
+        // この安全性は「別関数の早期 return に依存する暗黙の前提」であり、
+        // `architecture_guard::is_force_policy_call_sites_are_accounted_for` で
+        // `is_force_policy()` の呼び出し箇所数を固定して守っている）。
+        // 復元の実体は「Phase 3 が force-ON の周期経路を撤去した際に巻き添えで
+        // 落ちた `ir_apply_drift_correction` の周期実行機会の最小復元」であり、
+        // **observe policy の TsfNative ユーザーは元々この周期を持っていない**
+        // （この `is_tsf_native` 早期 return 自体がポリシー非依存のため）。
+        // つまり本復元は「force policy ユーザーだけが周期 drift correction を
+        // 持つ」という新たな非対称を意図せず生む。本来はポリシー非依存に
+        // 判断すべき論点であり、ADR-086 §7-12 に未解決論点として起票してある
+        // （実機ソークで TsfNative × observe 環境の drift 未検出が問題になる
+        // ようなら、この例外条件を `is_effectively_tsf_native()` へ広げる
+        // ことを検討する）。
+        //
+        // 注記: この訂正は実機で観測した失敗ではなく、コード読解で判明した
+        // 巻き添え（`.claude/rules/experiment-logging.md` が求める実測とは
+        // 性質が異なる）。`docs/experiments.md` にもその旨を明記して残す。
+        let force_policy = self.platform.output.is_force_policy();
+        if !force_policy {
+            let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
+                self.platform.current_app_profile(),
+                self.platform.focus.class_name(),
+            );
+            if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+                return;
+            }
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }

@@ -367,3 +367,37 @@ GJI の cold 転換（`cold_warmup.rs::run_start`）でしか `desired_mode` を
   「実機ソーク未実施」と明記していても opt-in 設定の試験運用者は実際に
   被弾する。恒久対応は [ADR-086](adr/086-force-write-trigger-and-target-identity.md)
   Phase 2（arm-on-focus / fire-on-intent）に委ねた。
+
+---
+
+## エントリ 13: `reschedule_ime_refresh` の force_policy 例外を撤去→復元（**実機未確認・コード読解による判断**）
+
+**背景**: [ADR-086](adr/086-force-write-trigger-and-target-identity.md) Phase 3
+実装時、`apply_force_on_for_imm_broken`（force-ON）のトリガーを周期リフレッシュ
+からキー入力直前へ移した。周期経路に相乗りしていた force_policy 例外
+（2026-08-06 追加）は「force-ON の周期再送のためだけに存在する」と判断し、
+Phase 3 と同一コミットで撤去した。
+
+**訂正の経緯**: Phase 3 実装完了直後の2回目 opus アドバーサリアルレビューで、
+この撤去が `ir_apply_drift_correction`（BUG-20 が追加した non-ImmCross/TsfNative
+向け分岐）の周期実行機会も巻き添えで奪っていたと**コード読解で**指摘された。
+**実機での再現・実測は行っていない**——以下は「コードを読んだ結果、force-ON
+以外にもこの周期チェーンに依存する経路があると判明した」という静的解析上の
+訂正であり、`.claude/rules/experiment-logging.md`/`.claude/rules/tuning-constants.md`
+が求める実機実測とは性質が異なる。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-08 | force-ON がキー入力直前トリガーへ移行した以上、`reschedule_ime_refresh` の force_policy 周期継続例外は不要なはず | TsfNative（Windows Terminal 等）× `conv_mode_policy=force`（実機未実施、コード読解のみ） | `reschedule_ime_refresh` の force_policy 早期 return スキップ例外を撤去 | 実機未検証。コード読解で `ir_apply_drift_correction` の non-ImmCross 分岐（BUG-20）も同じ周期チェーンに依存しており、撤去すると TsfNative × force policy で drift correction の周期実行機会が失われると判明 | 復元（例外を戻す）。ただし「force policy ユーザーだけが周期 drift correction を持つ」という新たな非対称が残る（ADR-086 §7-12 に未解決論点として起票） | Phase 3 実装コミット群 → 本訂正コミット |
+
+**学び**:
+
+- 「この例外は force-ON のためだけに存在する」という判断は、例外条件
+  （`is_force_policy()`）が実際に守っているコードパスをすべて洗い出さずに
+  下してしまった。1つの条件式が複数の目的（force-ON の周期再送 / drift
+  correction の周期実行機会）を偶然同時に満たしていることがあるため、
+  ガード条件を撤去する前に「このガードで守られている経路は他にないか」を
+  網羅的に確認する必要がある。
+- 実機が使えないサンドボックスでの開発では、この種の「コード読解による
+  巻き添え発見」を実測と混同せず、別カテゴリとして記録することが重要
+  （本エントリはそのための記録）。

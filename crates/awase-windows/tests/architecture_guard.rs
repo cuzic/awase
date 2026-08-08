@@ -1256,3 +1256,43 @@ fn force_policy_is_read_from_a_single_decision_point() {
          あるはずです。実際: {sites:?}"
     );
 }
+
+/// ADR-086 §7-12（2026-08-08、2回目 opus アドバーサリアルレビュー M5）:
+/// `Output::is_force_policy()` の呼び出し箇所数を固定する。
+///
+/// `runtime/mod.rs::reschedule_ime_refresh` は「`apply_force_on_for_imm_broken`
+/// が `is_force_policy()` で即 return するため、周期リフレッシュ連鎖が復活しても
+/// force-ON の周期スパムは再発しない」という**別関数の早期 return に依存する
+/// 暗黙の前提**の上に成り立っている。呼び出し箇所数を固定することで、
+/// 片方だけが変更されて前提が崩れることを検知する（2026-08-06〜2026-08-08 で
+/// この関係が一度崩れかけた経緯があるため）。
+///
+/// 現在の呼び出し箇所（4）: `output/mod.rs::on_ime_mode_focus_changed`（conv 軸
+/// 武装）、`runtime/mod.rs::arm_force_open_pending`（open 軸武装）、
+/// `runtime/mod.rs::apply_force_on_for_imm_broken`（force policy 時は
+/// 周期経路を使わない早期 return）、`runtime/mod.rs::reschedule_ime_refresh`
+/// （drift correction 用の周期継続例外）。
+#[test]
+fn is_force_policy_call_sites_are_accounted_for() {
+    const NEEDLE: &str = "is_force_policy()";
+    let all_files = list_src_files();
+    let mut total = 0usize;
+    let mut sites: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            total += count;
+            sites.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        total, 4,
+        "`{NEEDLE}` の呼び出し箇所数が想定(4)と異なります。\n実際: {sites:?}\n\
+         `runtime/mod.rs::reschedule_ime_refresh` の force policy 例外は \
+         `apply_force_on_for_imm_broken` が同条件で早期 return することに \
+         暗黙で依存している（ADR-086 §7-12）。呼び出し箇所を変更した場合は \
+         この依存関係が崩れていないか確認し、この期待値を更新すること。"
+    );
+}
