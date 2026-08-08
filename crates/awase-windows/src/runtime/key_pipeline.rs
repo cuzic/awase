@@ -570,20 +570,34 @@ impl Runtime {
             && now_tick.saturating_sub(self.platform.output.last_roman_restore_ms.get())
                 >= ROMAN_RESTORE_MIN_INTERVAL_MS
         {
+            // pre-stamp: Failed（恒久的に効かない環境）が毎打鍵ごとに叩き続けるのを
+            // 防ぐレート制限として、spawn 前に先に打つ（既存どおり）。ただし
+            // Aborted（ターゲット競合）や capture 失敗は「一度も書いていない」ため、
+            // このスタンプだけ消費すると JIS かな化が最大 ROMAN_RESTORE_MIN_INTERVAL_MS
+            // (3000ms) 続く新しい退行になる（opus レビュー指摘 2026-08-08）。
+            // async 完了時に Aborted/capture 失敗のときだけ CAS 風に巻き戻す
+            // （待機中に他経路が成功スタンプしていたら壊さないよう、値が
+            // still ours のときのみ戻す）。
+            let stamp_before = self.platform.output.last_roman_restore_ms.get();
             self.platform.output.last_roman_restore_ms.set(now_tick.0);
             log::info!(
                 "[idle-conv-check] JISかな化を検出 (conv=0x{conv:08X}, ROMAN 喪失) → \
                  ローマ字入力を復元"
             );
             // ADR-086 INV-14: 起案時点（＝今、レート制限チェックと同一の同期区間）の
-            // focus_gen を捕獲する。Aborted（ターゲット競合）の場合は明示的なリトライを
-            // 行わない — ROMAN_RESTORE_MIN_INTERVAL_MS のレート制限下で次回の
-            // idle-conv-check が自然に再試行するため、この既存の冪等な周期構造が
-            // 実質的なリトライ機構を兼ねる（opus レビュー指摘 2026-08-08）。
+            // focus_gen を捕獲する。
             let focus_gen = self.platform.output.ime_mode_focus_gen.get();
             win32_async::spawn_local(async move {
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    log::debug!("[idle-conv-check] capture 失敗（フォーカス無し） → 次回に委ねる");
+                    log::debug!(
+                        "[idle-conv-check] capture 失敗（フォーカス無し） → スタンプ巻き戻し"
+                    );
+                    let _ = crate::with_app(|runtime| {
+                        let cell = &runtime.platform.output.last_roman_restore_ms;
+                        if cell.get() == now_tick.0 {
+                            cell.set(stamp_before);
+                        }
+                    });
                     return;
                 };
                 let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
@@ -593,6 +607,17 @@ impl Runtime {
                 .await;
                 if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
                     log::warn!("[idle-conv-check] ローマ字入力復元できず: {outcome:?}");
+                }
+                if matches!(outcome, crate::ime::ActuationOutcome::Aborted(_)) {
+                    // Aborted は「一度も書いていない」ので、スタンプが待機中に
+                    // 他経路の成功で更新されていない限り巻き戻す（次回 idle-conv-check
+                    // を 3000ms 待たせず最短 500ms 台まで早める）。
+                    let _ = crate::with_app(|runtime| {
+                        let cell = &runtime.platform.output.last_roman_restore_ms;
+                        if cell.get() == now_tick.0 {
+                            cell.set(stamp_before);
+                        }
+                    });
                 }
             });
         }

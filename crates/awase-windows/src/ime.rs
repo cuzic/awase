@@ -1237,6 +1237,111 @@ pub(crate) async fn set_ime_conv_for_target(
     }
 }
 
+/// [`set_ime_open_then_conv_for_target`] が `open` 成功後に conv-mode も
+/// 書くかどうかの指定。`Option<Option<u32>>` を避けるための3値 enum
+/// （`clippy::option_option`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConvAfterOpen {
+    /// conv は書かない。
+    Skip,
+    /// `open` が成功したら続けて書く。`None` は ROMAN ビット確保のみ
+    /// （既存 conv に `IME_CMODE_ROMAN` を追加）、`Some(v)` は `v` をそのまま設定。
+    Write(Option<u32>),
+}
+
+/// [`set_ime_open_then_conv_for_target`] の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ImmCrossOutcome {
+    pub open: ActuationOutcome,
+    /// `conv_after_open` が `Some` かつ `open` が `Written` だったときのみ `Some`。
+    pub conv: Option<ActuationOutcome>,
+}
+
+/// IME を ON/OFF し、成功かつ `conv_after_open` が `Some` なら続けて conv-mode を
+/// 書き込む（ImmCross async path 専用、ADR-086 §1.2 欠陥1 の是正）。
+///
+/// [`set_ime_conv_for_target`] と違い、両方の書き込みを**同一の検証済み hwnd・
+/// 同一の `offload_unsafe` クロージャ内**で行う。open と conv を別々に
+/// `verify_still_current` すると、open の完了を待つ間にフォーカスが動いても
+/// `ime_mode_focus_gen` の更新がメインスレッドのキュー処理を経て遅れるため、
+/// conv 側の再検証だけでは検知できず、無関係な別ウィンドウへ ROMAN が着弾しうる
+/// （opus レビュー指摘 2026-08-08、BUG-59 追補と同じクラスの誤爆）。1回の検証で
+/// 得た hwnd を両方の書き込みに使い回すことでこれを構造的に防ぐ。
+///
+/// `target`/`read_current_focus_gen` は [`ActuationTarget::capture`]/
+/// [`set_ime_conv_for_target`] と同じ規約。呼び出し元は `open` が
+/// `Aborted`/`Failed` のとき `applied_snapshot` 等の楽観的更新を巻き戻すこと
+/// （INV-14: Aborted を成功として記録してはならない）。
+#[allow(clippy::future_not_send)]
+pub(crate) async fn set_ime_open_then_conv_for_target(
+    target: ActuationTarget,
+    open: bool,
+    conv_after_open: ConvAfterOpen,
+    read_current_focus_gen: impl FnOnce() -> u32,
+) -> ImmCrossOutcome {
+    match target.verify_still_current(read_current_focus_gen).await {
+        TargetVerifyOutcome::GenStale => {
+            log::debug!("[imm-cross-actuate] Aborted(GenStale): open={open}");
+            ImmCrossOutcome {
+                open: ActuationOutcome::Aborted(AbortReason::GenStale),
+                conv: None,
+            }
+        }
+        TargetVerifyOutcome::TargetMoved => {
+            log::debug!("[imm-cross-actuate] Aborted(TargetMoved): open={open}");
+            ImmCrossOutcome {
+                open: ActuationOutcome::Aborted(AbortReason::TargetMoved),
+                conv: None,
+            }
+        }
+        TargetVerifyOutcome::Current(hwnd) => {
+            // SAFETY: set_ime_open_for_target/set_ime_romaji_mode_for_hwnd は unsafe fn。
+            //         offload_unsafe はワーカースレッドで実行するが両者とも
+            //         SendMessageTimeoutW によるクロスプロセス呼び出しのためスレッドに
+            //         依存しない。HWND は SendableHwnd と同じ理由（プロセス内で有効な
+            //         グローバルリソース）でスレッド間送信して安全。
+            struct SendableHwnd(HWND);
+            // SAFETY: 上記と同じ。
+            unsafe impl Send for SendableHwnd {}
+            let target_hwnd = SendableHwnd(hwnd);
+            let (open_ok, conv_ok) = offload_unsafe(move || {
+                // disjoint closure capture がラッパーを迂回するのを防ぐための
+                // 既知のイディオム（set_ime_conv_for_target 参照）。
+                let target_hwnd = target_hwnd;
+                let SendableHwnd(hwnd) = target_hwnd;
+                let open_ok = unsafe { set_ime_open_for_target(hwnd, open) };
+                let conv_ok = match (open_ok, conv_after_open) {
+                    (true, ConvAfterOpen::Write(target_conv)) => {
+                        Some(unsafe { set_ime_romaji_mode_for_hwnd(hwnd, target_conv) })
+                    }
+                    (false, _) | (true, ConvAfterOpen::Skip) => None,
+                };
+                (open_ok, conv_ok)
+            })
+            .await;
+            let open_outcome = if open_ok {
+                ActuationOutcome::Written
+            } else {
+                ActuationOutcome::Failed
+            };
+            let conv_outcome = conv_ok.map(|ok| {
+                if ok {
+                    ActuationOutcome::Written
+                } else {
+                    ActuationOutcome::Failed
+                }
+            });
+            log::debug!(
+                "[imm-cross-actuate] hwnd={hwnd:?} open={open_outcome:?} conv={conv_outcome:?}"
+            );
+            ImmCrossOutcome {
+                open: open_outcome,
+                conv: conv_outcome,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod actuation_target_tests {
     use super::{ActuationTarget, TargetVerifyOutcome};

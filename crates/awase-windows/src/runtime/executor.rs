@@ -754,48 +754,79 @@ impl DecisionExecutor {
             // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
             let belief_input_mode = self.belief_input_mode;
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
-            // ADR-086 INV-14: 「set_ime_open_cross_process と同じウィンドウへ ROMAN
-            // ビットを補完する」という意図を保つため、この一連の処理の起案時点
-            // （spawn_local へ渡す直前、他の await より前）の focus_gen を捕獲する。
+            // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
+            // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
+            // 別々に検証していたのでは保証できない（open 完了を待つ間にフォーカスが
+            // 動いても ime_mode_focus_gen の更新が遅れるため、conv 側の再検証だけでは
+            // 検知できず無関係な別ウィンドウへ ROMAN が着弾しうる）。起案時点の
+            // focus_gen を捕獲し、実際の verify → open → conv はすべて
+            // set_ime_open_then_conv_for_target 1回に閉じ込めて同一 hwnd を使い回す。
             let focus_gen = platform.output.ime_mode_focus_gen.get();
-            win32_async::spawn_local(async move {
-                let ok = crate::ime::set_ime_open_cross_process_async(open).await;
-                if ok && open && !matches!(belief_input_mode, InputModeState::ObservedKana) {
-                    if let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await {
-                        let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
-                            crate::with_app(|runtime| {
-                                runtime.platform.output.ime_mode_focus_gen.get()
-                            })
-                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
-                        })
-                        .await;
-                        log::debug!("[dispatch-ime] ROMAN 補完結果: {outcome:?}");
-                    } else {
-                        log::debug!("[dispatch-ime] ROMAN 補完: capture 失敗（フォーカス無し）");
-                    }
-                }
-                let outcome = if ok {
-                    awase::platform::ImeOpenOutcome::Applied
+            let conv_after_open =
+                if open && !matches!(belief_input_mode, InputModeState::ObservedKana) {
+                    crate::ime::ConvAfterOpen::Write(None)
                 } else {
-                    // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
-                    //         spawn_local はメインスレッドのメッセージループで実行される。
-                    let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
-                    if actual == Some(open) {
-                        log::debug!(
-                            "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
-                             already matches desired={open}, skip fallback"
-                        );
-                        awase::platform::ImeOpenOutcome::AlreadyMatched
-                    } else {
-                        log::debug!(
-                            "[apply-ime] ImmCross failed (async), trying fallback \
-                             (actual ime_on={actual:?})"
-                        );
-                        crate::with_app(|app| {
-                            crate::ime_controller::CONTROLLER
-                                .apply_skipping_imm(open, &app.shadow_ime_control_view())
-                        })
-                        .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                    crate::ime::ConvAfterOpen::Skip
+                };
+            win32_async::spawn_local(async move {
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!("[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle");
+                    crate::runtime::message_handlers::post_async_ime_apply_complete(
+                        open,
+                        awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                        generation,
+                    );
+                    drop(guard);
+                    return;
+                };
+                let result = crate::ime::set_ime_open_then_conv_for_target(
+                    target,
+                    open,
+                    conv_after_open,
+                    || {
+                        crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                    },
+                )
+                .await;
+                if let Some(conv_outcome) = result.conv {
+                    log::debug!("[dispatch-ime] ROMAN 補完結果: {conv_outcome:?}");
+                }
+                let outcome = match result.open {
+                    crate::ime::ActuationOutcome::Written => {
+                        awase::platform::ImeOpenOutcome::Applied
+                    }
+                    crate::ime::ActuationOutcome::Aborted(reason) => {
+                        // INV-14: Aborted は「一度も書いていない」ので Applied 扱いに
+                        // しない。UnsafeToToggle は on_ime_apply_complete が
+                        // applied_snapshot/belief を一切更新せずに return する
+                        // （apply は行われていないため）。フォールバック
+                        // （apply_skipping_imm の SendInput）も、検証済みでない
+                        // hwnd への意図しない送信を避けるため通さない。
+                        log::debug!("[dispatch-ime] open Aborted({reason:?}) → UnsafeToToggle");
+                        awase::platform::ImeOpenOutcome::UnsafeToToggle
+                    }
+                    crate::ime::ActuationOutcome::Failed => {
+                        // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
+                        //         spawn_local はメインスレッドのメッセージループで実行される。
+                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
+                        if actual == Some(open) {
+                            log::debug!(
+                                "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
+                                 already matches desired={open}, skip fallback"
+                            );
+                            awase::platform::ImeOpenOutcome::AlreadyMatched
+                        } else {
+                            log::debug!(
+                                "[apply-ime] ImmCross failed (async), trying fallback \
+                                 (actual ime_on={actual:?})"
+                            );
+                            crate::with_app(|app| {
+                                crate::ime_controller::CONTROLLER
+                                    .apply_skipping_imm(open, &app.shadow_ime_control_view())
+                            })
+                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
+                        }
                     }
                 };
                 // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と

@@ -70,10 +70,22 @@ impl<'a> ColdWarmupSequence<'a> {
         // （`runtime::conv_actuation::actuate_conv_mode` と同じ手法）。
         let focus_gen = self.output.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
+            // opus レビュー指摘（2026-08-08）: `ActuationTarget::capture` は
+            // spawn した async ブロックの**先頭**、いかなる await よりも前に
+            // 置くこと。以前は診断用の conv 読み取り(~50ms)の後に capture して
+            // いたため、その待機中にフォーカスが変わると gen 更新が間に合わず
+            // 空虚に一致してしまい検証が効かなかった（conv_actuation.rs だけが
+            // 正しい順序だった）。`conv_mutation_allowed=false` のときは
+            // capture 自体が無駄な Win32 往復になるため行わない。
+            let target = if conv_mutation_allowed {
+                crate::ime::ActuationTarget::capture(focus_gen).await
+            } else {
+                None
+            };
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
             log::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} write={conv_mutation_allowed} \
-                 forced_target={}",
+                 forced_target={} capture_target={target:?}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
                 conv_pre.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_ROMAN)),
@@ -81,7 +93,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 forced_target.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
             );
             if conv_mutation_allowed {
-                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                let Some(target) = target else {
                     log::debug!("[cold-diag] capture 失敗（フォーカス無し） → 書き込み中止");
                     return;
                 };
