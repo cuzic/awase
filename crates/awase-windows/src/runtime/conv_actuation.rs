@@ -11,13 +11,15 @@
 //! INV-14（ターゲット同一性）に従い、実際の書き込みは
 //! `ActuationTarget::capture` → `set_ime_conv_for_target` 経由で行う
 //! （起案時点の hwnd を確定し、実行直前に再検証してから書く。BUG-59 追補が
-//! 実機で踏んだ「別ウィンドウへの誤爆」を構造的に防ぐ）。
+//! 実機で踏んだ「別ウィンドウへの誤爆」を構造的に防ぐ）。`kp_stage_idle_conv_check`
+//! の BUG-08 ローマ字復元（`runtime/key_pipeline.rs`）も移行済み。
 //!
 //! **未移行（次段のスコープ）**: `kp_restore_kana_from_half_width` の復元リトライ
 //! ループ（`shift_conv_guard_gen`/`confirm_gate_deadline_override_ms` と密結合し、
 //! BUG-49 で複数回のレビューを経て確立した挙動のため本コミットでは触れていない）、
-//! `kp_stage_idle_conv_check` のローマ字復元経路（`runtime/key_pipeline.rs` 内
-//! 複数箇所）。これらは `set_ime_romaji_mode_with_target_async` を直接呼び続けている
+//! `kp_reset_to_hiragana_romaji_capsoff`（`runtime/key_pipeline.rs`、read-modify-write
+//! で conv を読んでからマスク計算して書く経路）。これらは
+//! `set_ime_romaji_mode_with_target_async` を直接呼び続けている
 //! （`docs/known-bugs.md` ADR-084 追補参照）。よって INV-1 が求める「低レベル API を
 //! private にしてこの関数だけが呼べるようにする」というコンパイラ強制は、これら全ての
 //! 移行が完了するまで導入できない。

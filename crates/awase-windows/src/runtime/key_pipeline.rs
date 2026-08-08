@@ -575,10 +575,24 @@ impl Runtime {
                 "[idle-conv-check] JISかな化を検出 (conv=0x{conv:08X}, ROMAN 喪失) → \
                  ローマ字入力を復元"
             );
-            win32_async::spawn_local(async {
-                let ok = crate::ime::set_ime_romaji_mode_with_target_async(None).await;
-                if !ok {
-                    log::warn!("[idle-conv-check] ローマ字入力復元に失敗 (IMC_SETCONVERSIONMODE)");
+            // ADR-086 INV-14: 起案時点（＝今、レート制限チェックと同一の同期区間）の
+            // focus_gen を捕獲する。Aborted（ターゲット競合）の場合は明示的なリトライを
+            // 行わない — ROMAN_RESTORE_MIN_INTERVAL_MS のレート制限下で次回の
+            // idle-conv-check が自然に再試行するため、この既存の冪等な周期構造が
+            // 実質的なリトライ機構を兼ねる（opus レビュー指摘 2026-08-08）。
+            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+            win32_async::spawn_local(async move {
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!("[idle-conv-check] capture 失敗（フォーカス無し） → 次回に委ねる");
+                    return;
+                };
+                let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
+                    crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                })
+                .await;
+                if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
+                    log::warn!("[idle-conv-check] ローマ字入力復元できず: {outcome:?}");
                 }
             });
         }

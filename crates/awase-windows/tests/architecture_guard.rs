@@ -846,7 +846,9 @@ fn conv_write_call_sites_are_target_explicit() {
         // conv_actuation.rs / cold_warmup.rs（#19）・executor.rs（#20）は
         // ADR-086 Phase1b で ActuationTarget::capture + set_ime_conv_for_target
         // 経由へ移行済み。
-        ("src/runtime/key_pipeline.rs", 3),
+        // key_pipeline.rs: 3箇所中1箇所（BUG-08 ROMAN復元、#21）を移行済み、残り2箇所
+        // （1072, 1528）は #22/#23 で対応予定。
+        ("src/runtime/key_pipeline.rs", 2),
     ];
 
     // BUG-59 追補（`9c102b02`）は known_sites のどのファイルにも無かった
