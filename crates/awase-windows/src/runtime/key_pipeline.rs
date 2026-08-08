@@ -1508,12 +1508,12 @@ impl Runtime {
             // という追補7の教訓を、hold 中より窓が長い持続トグルにも徹底するため、
             // `effective_open()==false` の場合は注入をスキップし IMC write のみに
             // 留める（フォーカス変更で他アプリに切り替わった直後等を想定）。
-            // ADR-086 INV-14 のスコープ注記: 以下の VK_DBE_HIRAGANA 注入は
-            // SendInput ベースであり、IMC write と違って宛先 hwnd を指定できない
-            // （SendInput は配送時点のフォーカス先へ届く）。ActuationTarget の
-            // ターゲット同一性検証はこの経路には構造的に適用できないため、
-            // 今回のスコープ外とする（ADR-086 §5 Phase3 で SendInput 経路の
-            // ターゲット保護を別途検討する）。
+            // ADR-086 INV-13 の例外（確定、§4 INV-13/§5 Phase 3 item 3 参照）:
+            // 以下の VK_DBE_HIRAGANA 注入は SendInput ベースであり、IMC write と
+            // 違って宛先 hwnd を指定できない（SendInput は配送時点のフォーカス先へ
+            // 届く）。`ActuationTarget` のターゲット同一性検証（INV-14）は
+            // この経路には構造的に適用できないと判断済み——`SendInput` を使う
+            // 書き込み全般に共通する構造的な制約であり、この箇所固有の先送りではない。
             if self.platform_state.ime.effective_open() {
                 let mut f2_inputs = Vec::with_capacity(3);
                 if prepend_synthetic_shift_up {

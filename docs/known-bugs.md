@@ -6897,9 +6897,41 @@ ROMAN 復元系が別ウィンドウに書いていて効いていなかった�
 `conv_mode_policy = force` を有効にしても、MS-IME 環境では実質 observe と
 同じ（force-write が発火しない）状態が続く点に注意。
 
+**追補2（2026-08-08、ADR-086 Phase 3 実装完了・実機ソーク未実施）: open/close 軸の
+force-ON トリガーを周期リフレッシュからキー入力直前へ移行。**
+
+`Runtime::apply_force_on_for_imm_broken`（TsfNative/Blacklist アプリ向けの
+force-ON）は従来 `ir_stage_notify`（周期リフレッシュ、既定 500ms 間隔）から
+呼ばれていた。ADR-086 Phase 3（INV-15）により、この関数の force-policy 分岐を
+撤去し、`Runtime::force_open_pending`（`ir_post_focus_change_snapshot` で武装、
+`kp_run_inner::consume_force_open_pending` で消費）という新しい武装/消費モデルへ
+置き換えた。実際の force-ON は最初のキー入力の直前まで前倒しされる
+（詳細は [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §5 Phase 3）。
+
+**テスト状況（`.claude/rules/fix-requires-evidence.md` (b) 適用）**: `Runtime`
+全体を構築する既存のテストヘルパーが本リポジトリに無く（`Output::new()` 相当の
+軽量コンストラクタが `Runtime` には存在しない）、`consume_force_open_pending`/
+`ir_post_focus_change_snapshot` の武装・消費・再武装ロジックを単体テストで
+直接検証できていない。`tests/architecture_guard.rs::
+force_write_is_not_triggered_by_raw_focus_change` が「武装点が生の FocusChange
+ハンドラ本体で直接書き込みを行っていないこと」という構造的な性質のみを
+機械的に固定しており、実際の発火タイミング・レイテンシ・再武装の正しさは
+Windows 実機での検証が必須。
+
+**実機ソークで確認すべき項目**（§5 Phase 3 参照、Phase 2 のソーク #17 の
+**後に**別セッションで実施し、conv 軸由来か open 軸由来かの副作用を
+切り分けること）:
+1. フォーカス後 1 打鍵目の追加レイテンシと `MS_IME_READY_CONFIRM_MS`
+   （400ms）到達率（TsfNative × MS-IME/GJI）。
+2. 周期撤去後に「フォーカス不変のまま IME が OFF に落ちる」
+   （2026-08-06 実機報告のロック解除後静寂期パターン）が再現するか
+   ——再現すれば案 F（idle 明け武装）等の追加トリガーを検討する。
+3. 1 打鍵目のリテラル化（`bあ`/`korede` 系）が増えないか。
+4. `UnsafeToToggle`（Win キー押下中等）による再武装の頻度。
+
 **関連:** BUG-59 とその追補（同時期の報告、ターゲット競合の疑い）、BUG-08
 （外部注入 `VK_KANA` による JIS かな化の既知パターン）、
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.3（未確定の
 仮説として同じ整理を記載）・§5 Phase 2（MS-IME で force-write が初めて発火する
-実装、追補1参照）。
+実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2参照）。
 

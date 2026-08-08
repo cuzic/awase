@@ -4,10 +4,13 @@
 
 **北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。
 Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）、Phase 2
-（INV-15 トリガー条件の是正、`force_pending` による arm-on-focus /
-fire-on-intent）は実装完了（2026-08-08）。Phase 2 は実機ソーク未実施
-（測定項目は §5 Phase 2、タスク #17 と同一セッションで実施予定）。
-Phase 3〜4（open/close 軸への適用、コンパイラ強制）は未着手。
+（conv 軸の INV-15 是正、`force_pending` による arm-on-focus /
+fire-on-intent）、Phase 3（open/close 軸への同適用、`force_open_pending`。
+item 3 の SendInput ターゲット検証のみ INV-13 の例外として撤退）は
+実装完了（2026-08-08）。Phase 2/3 とも実機ソーク未実施（測定項目は
+§5 Phase 2/Phase 3、タスク #17 と同一セッションで実施予定。Phase 3 の
+ソークは #17 の**後に**別セッションで行い、conv 軸/open 軸の副作用を
+切り分けること）。Phase 4（コンパイラ強制）は未着手。
 いずれも Windows 実機での動作確認は未実施。**
 
 本 ADR は個別バグの修正手順書ではなく、**以後の実装判断を評価するための基準**である。
@@ -557,11 +560,25 @@ ADR-084 の INV-1〜INV-11 を継承し、INV-12 から採番する（採番理�
   直接呼ぶ形は許容しない。
 
 - **INV-13（軸の対称性）**: conv 軸の force-write と IME open/close 軸の force-write は、
-  **同一の規律に従う**。具体的には (a) 同じトリガー判定（INV-15）、(b) 同じターゲット
-  規律（INV-14）、(c) 同じ記録先（`InputModeApplied` + ADR-080/082 ジャーナル）、
-  (d) 同じ `ConvModePolicy` 設定を単一の判定関数から読む。
+  **同一の規律に従う**。具体的には (a) 同じトリガー判定（INV-15、`force_pending`/
+  `force_open_pending` の武装＝FocusChange・消費＝入力意図という同型の2段構え）、
+  (b) 同じターゲット規律（INV-14）、(c) 同じ記録先（軸ごとに専用の型
+  ——conv 軸は `ConvMutationReason`、open/close 軸は `OpenApplyReason`
+  ——を使うが、いずれも「force か観測是正か」がログ・ジャーナルから
+  一意に読める、という記録先の**規律**は同一。既存の `InputModeApplyStrategy`
+  や ADR-080/082 ジャーナルへ両軸を無理に相乗りさせるという意味ではない
+  ——Phase 3 item 2 の訂正経緯、§7-10 参照）、(d) 同じ `ConvModePolicy` 設定を
+  単一の判定関数（`Output::is_force_policy()`）から読む。
   片方の軸にだけガードや安全弁を追加してはならない —— 追加する場合は他方にも
   必要かを検討し、不要と判断した理由をコード内に残す（ADR-084 INV-7 と同型の対称性要求）。
+  **例外（Phase 3 item 3 で確定、2026-08-08）**: (b) のターゲット規律は
+  `SendInput` を使う書き込み（`ime.rs::send_ime_mode_key` 等）には構造的に
+  適用できない——`SendInput` は宛先 hwnd を指定するパラメータを持たず、
+  `ActuationTarget`（IMC write 向けに「特定の hwnd への書き込み」を検証する
+  ために設計されたパターン）を持ち込む対象が無い。この経路は時間軸フェンス
+  （`ime_mode_focus_gen` の照合）のみで代替する。IMC write（`set_ime_romaji_mode()`
+  等）は例外の対象外——SendInput と同じ呼び出しチェーンに紛れていても
+  (b) の対象のまま（詳細は §5 Phase 3 item 3）。
 
 - **INV-14（ターゲット同一性 / target identity）**: 外部 IME 状態への書き込み
   （IMC write・conv 系 VK 注入・`SendInput` による IME 制御キー）は、

@@ -344,6 +344,12 @@ pub unsafe fn post_gji_ime_off() {
 /// ロック解除 → Win+Ctrl+→ デスクトップ切替中の IME ON apply がここでスキップ
 /// されたのに Applied 記録され、Terminal で「これで」→「korede」化。BUG-16 追補）。
 ///
+/// **ADR-086 INV-13 の例外（§4 INV-13/§5 Phase 3 item 3）**: 本関数は
+/// `SendInput` を使うため宛先 hwnd を指定できず（配送時点のフォーカス先へ届く）、
+/// `ActuationTarget` によるターゲット同一性検証（INV-14）を構造的に適用できない。
+/// force-ON（`Runtime::consume_force_open_pending`）はこの制約の代わりに
+/// `Output::ime_mode_focus_gen` の照合（時間軸フェンス）のみで守る。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
