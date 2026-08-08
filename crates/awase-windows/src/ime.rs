@@ -1085,8 +1085,14 @@ impl ActuationTarget {
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
     }
 
-    /// 実行直前に呼ぶ。`current_focus_gen`（呼び出し元が直前に読んだ最新の
-    /// gen 値）と実際の現在の hwnd の両方を起案時点と突き合わせる。
+    /// 実行直前に呼ぶ。`read_current_focus_gen` は呼び出し元が最新の gen 値
+    /// （典型的には `Cell<u64>::get`）を読むためのクロージャで、**hwnd の
+    /// ライブクエリが完了した直後**（このメソッド内の唯一の await の後）に
+    /// 呼ばれる。gen を先に固定してから ~30ms かかりうる hwnd クエリを待つ
+    /// 順序だと、そのクエリ中に新たな FocusChange が起きても検知できない
+    /// 窓が残るため（opus レビュー指摘、2026-08-08）、gen は「実際に hwnd を
+    /// 読み終えた瞬間」にできるだけ近いタイミングで読む。
+    ///
     /// [`TargetVerifyOutcome`] 参照。呼び出し元は `Current` 以外なら書き込まずに
     /// `Aborted` として扱うこと（INV-14）。
     // `self`（HWND を含み Send でない）を await をまたいで保持するため、この
@@ -1096,11 +1102,14 @@ impl ActuationTarget {
     // ことは Win32 API の性質であり、get_focused_hwnd_async 等の既存 async 関数
     // 群と同じ制約。
     #[allow(clippy::future_not_send)]
-    pub(crate) async fn verify_still_current(self, current_focus_gen: u64) -> TargetVerifyOutcome {
-        if self.focus_gen != current_focus_gen {
+    pub(crate) async fn verify_still_current(
+        self,
+        read_current_focus_gen: impl FnOnce() -> u64,
+    ) -> TargetVerifyOutcome {
+        let current_hwnd = get_focused_hwnd_async().await;
+        if self.focus_gen != read_current_focus_gen() {
             return TargetVerifyOutcome::GenStale;
         }
-        let current_hwnd = get_focused_hwnd_async().await;
         Self::compare(self.hwnd, current_hwnd)
     }
 
@@ -1165,10 +1174,15 @@ pub(crate) enum AbortReason {
 /// 実行直前に `target.verify_still_current` で再検証し、起案時点と一致する
 /// 場合のみ実際に `IMC_SETCONVERSIONMODE` を発行する。不一致なら書き込まず
 /// `Aborted` を返す（INV-14: `Aborted` を成功として記録してはならない）。
+/// `Written`/`Aborted`/`Failed` いずれの結果も debug ログに残す（INV-14 が
+/// 要求する「`Aborted` は必ずログに残す」を満たす。実機での競合頻度を
+/// 事後に測れるようにするのが目的、opus レビュー指摘 2026-08-08）。
 ///
-/// `current_focus_gen` は呼び出し元が検証直前に読んだ最新の gen 値
-/// （`ime.rs` は Runtime/Output の内部状態に依存しないため、ここでは読まない。
-/// `ActuationTarget::capture`/`verify_still_current` と同じ理由）。
+/// `read_current_focus_gen` は呼び出し元が最新の gen 値を読むためのクロージャ
+/// （`ime.rs` は Runtime/Output の内部状態に依存しないため、gen 値そのものは
+/// ここでは読まない。`ActuationTarget::capture`/`verify_still_current` と
+/// 同じ理由）。`verify_still_current` に転送し、hwnd のライブクエリ完了直後の
+/// 最新値として使われる。
 #[allow(dead_code)]
 // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
 // `target`（HWND を含み Send でない）を await をまたいで保持するため Future が
@@ -1177,11 +1191,23 @@ pub(crate) enum AbortReason {
 pub(crate) async fn set_ime_conv_for_target(
     target: ActuationTarget,
     conv: Option<u32>,
-    current_focus_gen: u64,
+    read_current_focus_gen: impl FnOnce() -> u64,
 ) -> ActuationOutcome {
-    match target.verify_still_current(current_focus_gen).await {
-        TargetVerifyOutcome::GenStale => ActuationOutcome::Aborted(AbortReason::GenStale),
-        TargetVerifyOutcome::TargetMoved => ActuationOutcome::Aborted(AbortReason::TargetMoved),
+    match target.verify_still_current(read_current_focus_gen).await {
+        TargetVerifyOutcome::GenStale => {
+            log::debug!(
+                "[conv-actuate] Aborted(GenStale): target={:?}",
+                conv.map(|v| format!("0x{v:08X}")),
+            );
+            ActuationOutcome::Aborted(AbortReason::GenStale)
+        }
+        TargetVerifyOutcome::TargetMoved => {
+            log::debug!(
+                "[conv-actuate] Aborted(TargetMoved): target={:?}",
+                conv.map(|v| format!("0x{v:08X}")),
+            );
+            ActuationOutcome::Aborted(AbortReason::TargetMoved)
+        }
         TargetVerifyOutcome::Current(hwnd) => {
             // SAFETY: set_ime_romaji_mode_for_hwnd は unsafe fn。offload_unsafe は
             //         ワーカースレッドで実行するが SendMessageTimeoutW はクロス
@@ -1203,8 +1229,16 @@ pub(crate) async fn set_ime_conv_for_target(
             })
             .await;
             if success {
+                log::debug!(
+                    "[conv-actuate] Written: hwnd={hwnd:?} target={:?}",
+                    conv.map(|v| format!("0x{v:08X}")),
+                );
                 ActuationOutcome::Written
             } else {
+                log::debug!(
+                    "[conv-actuate] Failed: hwnd={hwnd:?} target={:?}",
+                    conv.map(|v| format!("0x{v:08X}")),
+                );
                 ActuationOutcome::Failed
             }
         }
