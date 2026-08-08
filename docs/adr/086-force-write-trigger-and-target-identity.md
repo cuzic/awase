@@ -720,24 +720,121 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
 
 ### Phase 2（INV-15: トリガーを arm-on-focus / fire-on-intent へ、中リスク）
 
-1. `ConvMutationReason::ForcePolicy` と `ConvModeTarget::Explicit(u32)` を追加し、
-   `actuate_conv_mode` が force の目標値を書けるようにする（INV-12）。
-   ADR-084 INV-2 に従い `unconfirm()` を同期的に呼ぶ。
-2. `force_pending`（1 回分の武装フラグ）を `Output` に新設。`FocusChange` は
-   これを立てるだけにする。
-3. 消費点を **1 箇所**に集約する: 送信要求が送信ゲートを通過する直前
-   （`ms_ime_gate_defer` / `defer_vk_if_probe_in_flight` の手前）。
-   ここは既に「今この窓へ送ろうとしている」ことが確定しており、
-   `ActuationTarget` を自然に埋められる。
-4. `cold_warmup.rs::run_start` の `forced_target` を `actuate_conv_mode` 経由に移し、
-   同じ `force_pending` を消費する形にする（二重発火の防止）。
-   これにより `needs_f2_probe()` への依存が消え、案 B の MS-IME の穴が塞がる。
+**状態（2026-08-08）: 実装着手前の設計調査完了（opus アドバーサリアルレビュー）。**
+下記は当初案からの訂正を反映した確定版。§7-9 に訂正の経緯を残す。
 
-**実測義務**: 「最初の 1 文字が force の完了を待つべきか」を決めるため、
-`actuate_conv_mode` の IMC write 完了から IMC read で目標 conv が確認できるまでの
-実測 ms が要る。**ADR-084 Phase 1 が要求している実測と同一のもの**であり、
-まとめて 1 回の実機セッションで取ればよい。既存の `MS_IME_READY_CONFIRM_MS`（400ms）は
-IME OFF→ON 遷移の実測であり、conv 書き換えの実測ではない。流用してはならない。
+0. **`actuate_conv_mode` を `Runtime` から `Output` へ移設する**（`output/conv_actuation.rs`
+   新設）。当初「`Output` 層（武装点・消費点候補）と `Runtime` 層（`actuate_conv_mode`）の
+   非対称性をどう橋渡しするか」を論点としたが、調査の結果 `actuate_conv_mode` の同期部は
+   `self.platform.output.*` しか読んでおらず（`with_app` を呼ぶのは `spawn_local` 後の
+   非同期部のみ）、**実体は既に `Output` のメソッドだった**。非対称性は実在しない。
+   `Runtime::actuate_conv_mode` は `self.platform.output.actuate_conv_mode(..)` への
+   1 行 delegate として残す（ADR-084 INV-1 が指す関数名を変えないため、および
+   `key_pipeline.rs::kp_shift_conv_guard_key_down` 等の既存呼び出し元を触らないため）。
+1. `ConvMutationReason::ForcePolicy` と `ConvModeTarget::Desired(ConvMode)`
+   （**`Explicit(u32)` ではない** — INV-17「生の `u32` を force の目標に渡せなくする」と
+   直接矛盾するため。`imm_conv_value()` 内で `ConvMode::to_conv_bits()` を通す。
+   `to_conv_bits` は `const fn` のため `imm_conv_value` の `const` 指定は維持できる）
+   を追加し、`actuate_conv_mode` が force の目標値を書けるようにする（INV-12）。
+   ADR-084 INV-2 に従い `unconfirm()` を同期的に呼ぶ。
+2. `force_pending: Cell<Option<u32>>`（1 回分の武装フラグ。`Some` の中身は武装時点の
+   `ime_mode_focus_gen`）を `Output` に新設する。武装点は `Output::on_ime_mode_focus_changed`
+   （`output/mod.rs:391`、フォーカス系の単一集約点。呼び出し元は `platform.rs:455` の
+   1 箇所のみ）とする。**生の `FocusChange` イベントハンドラ（`platform.rs::gji_on_focus_change`）
+   に直接書いてはならない** — `tests/architecture_guard.rs` の
+   `force_write_is_not_triggered_by_raw_focus_change` がその関数本体を走査する設計であり、
+   武装コード自体をそこに置くと将来の書き込みロジック追加時に誤って引っかかる／
+   検知をすり抜ける双方のリスクがある。`Output` にはフォーカス関連のもう 1 つの
+   契機（`CompositionOutput::on_focus_changed`、`output/mod.rs:597`）が存在するため、
+   採用しなかった方をコメントで明示的に否定しておくこと（bool 二重武装は無害だが、
+   片方しか発火しない契機を見落とすと force が黙って発火しなくなる）。
+3. 消費点を **消費判断を行う関数 1 箇所**に集約する: `Output::send_romaji`
+   （`output/mod.rs:1040`、`InjectionMode::Vk`/`Tsf`/`Unicode` すべての合流点かつ
+   `vk_send.rs` 内のどの早期 `return`（`prepend_f2_warmup` 分岐等）よりも前）。
+   **当初案の「`ms_ime_gate_defer` / `defer_vk_if_probe_in_flight` の手前」は不採用**
+   —— 理由は3つ。(a) `ms_ime_gate_defer` の呼び出し箇所自体が2箇所
+   （`vk_send.rs:214`/`:324`）あり「1箇所」の要求に反する。(b) 両方とも
+   `prepend_f2_warmup` 分岐の `return` の後ろにあるため **cold パスでは到達しない**
+   —— cold パスこそ次項4が `cold_warmup.rs` から force を移してくる先であり、
+   この位置では item 3 と item 4 が同じフラグを共有できず二重発火防止が働かない。
+   (c) `defer_vk_if_probe_in_flight` の呼び出し元は BUG-47 追補で既に死にコード化して
+   いる（同関数の doc コメント参照）。`Output::send_romaji` なら `InjectionMode::Unicode`
+   （WezTerm 等、`ms_ime_gate_defer` を元々呼ばない）も含め確実に1回通る。
+   `send_kana_char`（記号入力、`output/mod.rs:1048`）も消費点として扱う（推奨: 消費する
+   — 記号打鍵も入力意図であることに変わりはない）。この場合「消費判断を行う関数
+   （`consume_force_pending_and_actuate`）は1つ、呼び出し箇所は2つ」という形になる。
+   `Output::flush_raw_tsf_literal_romaji`（`output/mod.rs:1107`）は意図的に対象外
+   —— 既に打った文字の再送であり、force を再発火させてはならないため。
+   コード側に「意図的に経由しない」旨を明記し、後日「経路漏れ」として誤って
+   配線されないようにする。
+4. `cold_warmup.rs::run_start` の `forced_target` の **`ConvModePolicy::Force` アームのみ**
+   削除する。**`Observe`（デフォルト設定）アームの `None` 書き込みは削除しない** ——
+   これは force ではなく BUG-19 由来の「ROMAN ビット確保のみ」の observation-based な
+   保護であり、当初案の「`forced_target` を移す」という文言をそのまま丸ごと削除と
+   読むと全ユーザー（force 未使用者を含む大多数）からこの保護が失われる。
+   `Force` アーム削除により `needs_f2_probe()` への依存が消え、案 B の MS-IME の穴が
+   塞がる（副次効果: `ConvModePolicy::Force` を直接読む箇所が
+   `cold_warmup.rs`/`runtime/mod.rs`×2 の3箇所から2箇所に減り、§6段3-4 の
+   `force_policy_is_read_from_a_single_decision_point` に近づく）。
+5. **再武装（当初案に無かった追加項目、opus レビューで必須と判明）**:
+   `force_pending` は同期的に消費（`None` へ）するが、実際の書き込みは
+   `actuate_conv_mode` 内の `spawn_local` 内で非同期に行われ、`ActuationTarget::capture`
+   が `None`（フォーカス無し）を返す、または `set_ime_conv_for_target` が
+   `Aborted{TargetMoved|GenStale}` を返すことがある（Phase 1 が導入した経路であり
+   実際に到達可能）。これらの場合、**消費済み・未書き込み**のまま次の `FocusChange`
+   まで force が永久に発火しない穴ができる。async 完了時に capture 失敗/Aborted なら
+   再武装すること。再武装は INV-16（自己駆動の禁止）には抵触しない —— 次の
+   actuation を無条件に予約するのではなく、次の**入力意図**があったときにのみ発火する
+   状態に戻すだけであるため（この理由はコードコメントに残し、後日 INV-16 違反として
+   誤って削除されないようにする）。ただし同一 `focus_gen` 内での
+   arm↔abort ピンポンを防ぐガードが要る —— `force_pending` を `Cell<Option<u32>>`
+   （武装時の gen を保持）にしてあるのはこのため。abort 時の現在 gen が武装時の gen と
+   同じなら再武装しない、変わっていれば（＝別の正規の FocusChange 武装が既に起きている）
+   何もしない。
+
+**`Rejected` の扱い**: `ConvActuationOutcome` を `let _ = ` で捨てないこと。
+`Rejected`（`conv_mutation_allowed=false`、エンジン OFF 中等）は「そもそも書くべきで
+ない」状態なので消費済みのまま再武装しない、と `Aborted`（書きたかったが書けなかった）
+から明示的に区別してログすること。
+
+**実測義務（訂正）**: 当初「最初の 1 文字が force の完了を待つべきか」を決めるための
+新規実測が必要としていたが、**この設計では新しいタイミング定数を1つも導入しない**
+（Phase 1a→1b で採った論法と同一、`.claude/rules/tuning-constants.md` に抵触しない）。
+理由: `actuate_conv_mode` は同期的に `ime_mode_fsm.unconfirm()` を呼び、
+`Output::ms_ime_gate_defer`（`output/vk_send.rs:356`）は `fsm.is_native_ready()` が
+真のときだけ送信を素通しする既存の confirm-then-transmit ゲートを持つ。
+force を発火させると、その直後の打鍵は自動的にこのゲートで待たされ、IMC read で
+確認が取れた時点で解放される —— 「N ms 待つ」ではなく「読めるまで待つ」設計であり、
+新しい待機セマンティクスを持ち込まない。この経路は `kp_shift_conv_guard_key_down` →
+`actuate_conv_mode` で**今日既に動いている**。`FORCE_CONV_CONFIRM_MS` のような定数が
+必要だと感じた時点で実装を止め、実機セッションを待つこと —— それこそが「実測が
+本当に要る」ことのシグナルである。
+
+ただし副作用として、`actuate_conv_mode` は `ms_ime_gate_give_up.set(false)` で
+give-up ラッチを解除する。IMC が構造的に読めないアプリではこのラッチが「もう待たない」
+という短絡を担っており、Phase 2 後は **フォーカス変更のたびに force が発火 → give-up
+解除 → 最初の打鍵が最大 `MS_IME_READY_CONFIRM_MS`（400ms）待たされる**という経路が
+フォーカスを変えるたびに繰り返されうる（現状この経路が起きるのは shift 単独タップ時
+だけなので、頻度が桁で変わる可能性がある）。これは Phase 2 の実機ソーク（下記）で
+必ず測定する。悪化が確認された場合の対策候補は「`ForcePolicy` reason のときは
+give_up を解除しない」だが、これは INV-13（軸対称性）の観点で「なぜ他の reason には
+不要か」をコードに残す必要がある片方向ガードになる。
+
+**却下した代替案（outbox）**: `force_pending` の消費・実書き込みの起動に
+`runtime/outbox.rs::RuntimeRequest` を使う案を検討したが却下した。
+`Runtime::drain_runtime_requests` は `WM_EXECUTE_EFFECTS`/`WM_DRAIN_OUTPUT_QUEUE` の
+**末尾**（`runtime/message_handlers.rs:265`/`:762`）で呼ばれ、つまりキーが**既に送出
+された後**である。outbox 経由では「最初の1文字を送ってから conv を書き換える」という、
+Phase 2 が正すべき順序の正反対になる。
+
+**実機ソーク（Phase 2 完了後、タスク #17 と同一セッションで実施）**: 測定項目は
+(a) force の発火頻度、(b) `ActuationTarget` の `Aborted` 率（§7-8 の「100ms 超なら
+offload 設計を再検討」の判断材料）、(c) フォーカス後最初の打鍵の追加レイテンシ
+（上記 give-up 解除の副作用）、(d) LINE × MS-IME × force で BUG-60 が再現するか
+（§7-1、Phase 2 は MS-IME で force-write が発火する最初の実装になるため、BUG-60 の
+唯一の現実的な再現機会でもある）、(e) `desired_mode` 永続化のユーザー体感（§7-7）、
+(f) ADR-084 Phase 1 の実測（IMC write 完了→IMC read で目標 conv 確認までの ms、
+Phase 2 の実装自体には不要になったが ADR-084 側の義務として残る）。
 
 **Phase 2b（案 F、Phase 2 の実機ソーク後）**: idle 明けの最初の入力を追加の
 武装トリガーにする。閾値の妥当性（`COMPOSITION_TIMEOUT_MS` を流用してよいか）を
@@ -964,6 +1061,23 @@ IME OFF→ON 遷移の実測であり、conv 書き換えの実測ではない�
    遅延を縮める（`offload` の見直し）、(b) そもそも起案を遅らせる（案 C）。
    **本 ADR は (b) を選んでいる**が、(a) が必要なほど遅延が大きい（例: 100ms 超）なら
    `offload_unsafe` の設計自体を再検討する必要がある。数値は実測待ち。
+
+9. **Phase 2 の当初案からの訂正経緯（2026-08-08、実装着手前の opus アドバーサリアル
+   レビュー）。** §5 Phase 2 は当初案から次の点を訂正した確定版に置き換えた。
+   - `ConvModeTarget::Explicit(u32)` → `Desired(ConvMode)`（INV-17 と直接矛盾していた）。
+   - 消費点「`ms_ime_gate_defer` 手前」→「`Output::send_romaji`」（当初案の位置は
+     cold パスで到達不能であり、item 4 の cold_warmup.rs 移行と両立しなかった）。
+   - item 4「`forced_target` を移す」→「`Force` アームのみ削除」（Observe デフォルトの
+     ROMAN 保護を巻き込んで消してしまう誤読を防ぐ明確化）。
+   - 実測義務を撤回し、根拠（既存の confirm-then-transmit ゲートが新定数なしで
+     待機を担う）を明記。
+   - 再武装ロジック（item 5）を追加。当初案は「消費して書き込む」までしか設計しておらず、
+     `ActuationTarget` の `Aborted`/capture 失敗で「消費済み・未書き込み」のまま
+     force が永久に発火しなくなる穴が未検討だった。
+   - `Output`/`Runtime` の非対称性という論点自体が実在しないと判明し、
+     `actuate_conv_mode` の `Output` への移設を item 0 として追加した。
+   - outbox 経由の案を検討し、drain タイミング（送信後）が Phase 2 の目的と
+     正反対になるため却下した。
 
 ---
 
