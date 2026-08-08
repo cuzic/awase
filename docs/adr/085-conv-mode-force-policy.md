@@ -101,7 +101,7 @@ BUG-19 の破綻は「**観測した**カタカナに**追従**して同じ方�
   「観測を信じない」方向への軽量な一歩ではあるが、`ConvModeMgr::update_from_conv`
   の観測・デバウンスロジック自体は変更していない。
 
-## 追記（2026-08-07）: `conv_mode_policy = force` を IME ON/OFF 軸にも適用
+## 追記（2026-08-06）: `conv_mode_policy = force` を IME ON/OFF 軸にも適用
 
 **きっかけ:** ユーザー実機報告「なぜか、IME OFF Engine ONの状態になりました」
 （`test/combined-katakana-fixes` での試験運用中）。タイピングすると変換されず
@@ -137,7 +137,7 @@ conv モードで `desired_mode` を導入した動機（BUG-47/BUG-19）と全�
 という構造的な穴を塞ぐ対症的な対策であり、`applied` 誤記録自体の発生経路の
 調査は今後の課題。実機での動作確認は未実施。
 
-## 追記2（2026-08-06）: `reschedule_ime_refresh` の早期 return が force 再送そのものを止めていた
+## 追記2（2026-08-07）: `reschedule_ime_refresh` の早期 return が force 再送そのものを止めていた
 
 **きっかけ:** 追記1の修正（`apply_force_on_for_imm_broken` の `applied` スロットル
 無視）を適用・実機で有効化（`conv_mode_policy=force` 設定済みを確認）した後も、

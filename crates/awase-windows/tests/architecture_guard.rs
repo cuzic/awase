@@ -94,8 +94,7 @@ fn list_src_files() -> Vec<String> {
 /// `apply_ime_open_with_belief_call_sites_are_accounted_for`）がそれぞれ
 /// ローカル関数として同一実装を持っていたため、トップレベルへ集約した。
 fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir({}): {e}", dir.display()))
-    {
+    for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir({}): {e}", dir.display())) {
         let entry = entry.unwrap_or_else(|e| panic!("read_dir entry: {e}"));
         let path = entry.path();
         if path.is_dir() {
@@ -887,16 +886,23 @@ fn conv_write_call_sites_are_target_explicit() {
     );
 }
 
-/// ADR-086 §4 INV-19: `conv_actuation.rs` の module doc が列挙する「未移行」経路
-/// （`cold_warmup.rs` / `executor.rs` / `key_pipeline.rs`）への言及が、実際に
-/// 直接呼び出しを持つファイルと対応し続けていることを固定する。
+/// ADR-086 §4 INV-19: `conv_actuation.rs` の module doc が列挙する「未移行」経路が、
+/// **実測した**直接呼び出しファイル集合と双方向に一致し続けていることを固定する。
 ///
 /// `9c102b02`（BUG-59 追補）は `platform.rs` に直接呼び出しを追加したが、この
-/// module doc のリストには一度も載らなかった（`conv_write_call_sites_are_target_explicit`
-/// と対になり、「新しいファイルで直接呼び出しを追加したのに、このリストへの
-/// 追記を怠る」パターンを検知する）。
+/// module doc のリストには一度も載らなかった。ハードコードされたファイル名の
+/// 存在チェックだけでは「未知の新しいファイルに呼び出しが増えた」ケースを
+/// 検知できない（doc 側に無い名前を探しようがないため）ので、
+/// `conv_write_call_sites_are_target_explicit` と同じ全ファイル走査で
+/// 「実際に呼び出しを持つファイル」を求め、doc の記載と突き合わせる:
+///
+/// 1. 実際に呼び出しを持つファイルは、必ず doc に言及されていること
+///    （新規ファイルへの呼び出し追加を検知）。
+/// 2. doc が言及しているファイルは、必ず実際にまだ呼び出しを持つこと
+///    （移行済みなのに doc の記載を消し忘れる = 名前の「単調減少」の逆行を検知）。
 #[test]
 fn unmigrated_conv_write_list_is_monotonically_decreasing() {
+    const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
     let path = "src/runtime/conv_actuation.rs";
     let doc = read_crate_file(path);
     let idx = doc.find("未移行（次段のスコープ）").unwrap_or_else(|| {
@@ -904,14 +910,43 @@ fn unmigrated_conv_write_list_is_monotonically_decreasing() {
     });
     let unmigrated_doc = &doc[idx..];
 
-    for filename in ["cold_warmup.rs", "executor.rs", "key_pipeline.rs"] {
+    // conv_actuation.rs 自身（ADR-084 P1 の単一窓口の実装）を除く、実際に
+    // 直接呼び出しを持つファイルを全ファイル走査で求める。
+    let files_with_calls: Vec<String> = list_src_files()
+        .into_iter()
+        .filter(|file| file != path)
+        .filter(|file| {
+            let content = read_crate_file(file);
+            let production = production_code_only(&content);
+            count_real_calls(production, NEEDLE) > 0
+        })
+        .collect();
+
+    for file in &files_with_calls {
+        let basename = Path::new(file)
+            .file_name()
+            .unwrap_or_else(|| panic!("{file} にファイル名部分がありません"))
+            .to_string_lossy();
         assert!(
-            unmigrated_doc.contains(filename),
-            "{path} の module doc「未移行」リストに {filename} への言及が見つかりません。\
-             実際にはこのファイルが `set_ime_romaji_mode_with_target_async` を直接呼んでいます \
-             （conv_write_call_sites_are_target_explicit 参照）。移行が完了したのであれば \
-             この参照を消してよいが、その場合は conv_write_call_sites_are_target_explicit の \
-             期待値も同じコミットで更新すること。"
+            unmigrated_doc.contains(basename.as_ref()),
+            "{path} の module doc「未移行」リストに {file}（実際に直接呼び出しを \
+             持つファイル）への言及が見つかりません。新しいファイルで \
+             `set_ime_romaji_mode_with_target_async` を直接呼ぶ場合は、ADR-086 \
+             §4 INV-19 に従い module doc への追記が必須です。"
+        );
+    }
+
+    for filename in ["cold_warmup.rs", "executor.rs", "key_pipeline.rs"] {
+        let still_has_calls = files_with_calls
+            .iter()
+            .any(|f| Path::new(f).file_name().is_some_and(|n| n == filename));
+        assert!(
+            still_has_calls,
+            "{path} の module doc「未移行」リストは {filename} を挙げていますが、\
+             実際にはこのファイルに `set_ime_romaji_mode_with_target_async` の \
+             直接呼び出しがもう存在しません。移行が完了したのであれば、module doc \
+             からこの参照を削除すること（conv_write_call_sites_are_target_explicit \
+             の期待値も同じコミットで更新すること）。"
         );
     }
 }

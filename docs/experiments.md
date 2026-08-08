@@ -340,3 +340,30 @@ Opus・Fable・Codex の3系統独立レビューの結果、統一自体は BUG
   固有の失敗であり、IMM32 互換アプリでの妥当性を否定するものではない。
   「過去に似た名前の実験が失敗した」という理由だけで再挑戦を諦めないよう、
   失敗条件（アプリ種別）を正確に切り分けて記録することが重要。
+
+---
+
+## エントリ 12: `conv_mode_policy = force` の FocusChange 強制書き込みを MS-IME にも配線（BUG-59 追補）— 実機未検証のまま投入し翌日 revert
+
+**背景**: `conv_mode_policy = force`（[ADR-085](adr/085-conv-mode-force-policy.md)）は
+GJI の cold 転換（`cold_warmup.rs::run_start`）でしか `desired_mode` を強制していな
+かった。`MsImeStrategy::needs_f2_probe()` が常に `false` のため MS-IME では一度も
+発火しない構造的な穴があり、これを埋めるために `platform.rs::gji_on_focus_change`
+に「FocusChange のたびに MS-IME へも強制書き込みする」ロジックを追加した。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-07 | FocusChange 契機で MS-IME にも `desired_mode` を強制書き込みすれば、カタカナ固着等の drift を手動リセットなしで自動回復できるはず | Windows Terminal（TsfNative）↔ LINE（Qt/ImmCross）往復、`conv_mode_policy=force` 試験運用中 | `gji_on_focus_change` に `forced_target` 計算 + `set_ime_romaji_mode_with_target_async` 呼び出しを追加（世代カウンタで陳腐化チェックのみ） | LINE で全打鍵が「い」になる／IME が JIS かなになる（実機報告、2026-08-08）。書き込み先 hwnd を実行時のライブクエリで決めるため、非同期の間隙でフォーカスが移ると無関係な別ウィンドウへ誤爆する競合状態があった（[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.2 欠陥1で確定） | 撤回（revert） | `9c102b02`（投入）→ `9b44f045`（revert） |
+
+**学び**:
+
+- 「MS-IME で発火しない」という穴の指摘自体は正しかったが、直し方（生の
+  `FocusChange` イベントを直接トリガーにする）が、書き込み先ウィンドウの
+  確からしさを壊した。ADR-085 の元設計（GJI 側）は「実際にキー入力を処理
+  しようとした瞬間」というユーザー入力に紐づくトリガーだったため、この
+  問題が顕在化していなかった。トリガーを「観測イベント」から「入力意図」に
+  切り離すと、対象の妥当性まで一緒に失われることがある。
+- 実機未検証のまま `develop` にマージし、翌日ユーザー実機で発覚した。
+  「実機ソーク未実施」と明記していても opt-in 設定の試験運用者は実際に
+  被弾する。恒久対応は [ADR-086](adr/086-force-write-trigger-and-target-identity.md)
+  Phase 2（arm-on-focus / fire-on-intent）に委ねた。
