@@ -84,6 +84,13 @@ impl Runtime {
             }
         }
 
+        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸 force-write の唯一の
+        // 消費点。送信要求という入力意図に紐づく唯一のトリガーであり、
+        // `try_hold_key`/ime-off-rescue の早期 return より後（消費が hold された
+        // キーだけで浪費されないように）・以降の全ステージより前（force-ON の
+        // 結果が belief に反映されてから他の判断が走るように）に置くこと。
+        self.consume_force_open_pending();
+
         // kp_stage_focus_probe が FocusTransition barrier を consume する前に
         // settle 状態をスナップショットしておく（post_decision で使う。
         // 消費後に読むと常に false になり判断できないため）。

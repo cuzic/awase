@@ -1106,13 +1106,16 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
 ///   許されるが、`ActuationTarget::capture`/`actuate_conv_mode`/
 ///   `set_ime_conv_for_target` を**直接**呼んではならない（実際の書き込みは
 ///   `consume_force_pending_and_actuate` からのみ起きること）。
-/// - `runtime/ime_refresh.rs::ir_notify_focus_changed`（open/close 軸、
-///   `discard_actuation` と同じフォーカス変更の単一集約点）は
-///   `force_open_pending` を立てる（武装のみ）ことは許されるが、
-///   `apply_ime_open_with_belief`/`apply_ime_open_with_view`/
-///   `send_ime_mode_key`/`on_ime_apply_complete` を**直接**呼んではならない
-///   （実際の書き込みは Phase 3 item 1 の消費点
-///   `kp_run_inner::consume_force_open_pending` からのみ起きること）。
+/// - `runtime/ime_refresh.rs::ir_post_focus_change_snapshot`（open/close 軸、
+///   `gji_on_focus_change` 直後——`ime_mode_focus_gen` が今回のフォーカス変更分
+///   だけ進んだ直後の単一集約点。`ir_notify_focus_changed` ではない——同関数の
+///   実行時点では gen がまだ古いため）は `force_open_pending` を立てる
+///   （武装のみ）ことは許されるが、`apply_ime_open_with_belief`/
+///   `apply_ime_open_with_view`/`send_ime_mode_key`/`on_ime_apply_complete` を
+///   **直接**呼んではならない（実際の書き込みは Phase 3 item 1 の消費点
+///   `kp_run_inner::consume_force_open_pending` からのみ起きること。
+///   `apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制、force-write とは
+///   無関係の既存機構〉は対象外）。
 #[test]
 fn force_write_is_not_triggered_by_raw_focus_change() {
     let cases: &[(&str, &str, &[&str])] = &[
@@ -1127,7 +1130,7 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
         ),
         (
             "src/runtime/ime_refresh.rs",
-            "fn ir_notify_focus_changed",
+            "fn ir_post_focus_change_snapshot",
             &[
                 "apply_ime_open_with_belief(",
                 "apply_ime_open_with_view(",

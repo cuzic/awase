@@ -88,11 +88,13 @@ impl Runtime {
     /// （`Resolution` 確定）で使う。次の observe tick で必要なら
     /// `actuation_for` が新規構築する。
     ///
-    /// `apply_force_on_for_imm_broken` の force-policy レート制限
-    /// （`last_force_on_resend_ms`）も同じ破棄条件（新しいフォーカス先では
-    /// 前の待機を持ち越さない）が成り立つため、ここで併せてリセットする。
+    /// `force_open_pending`（ADR-086 Phase 3）はここでは触らない。
+    /// フォーカス変更時の武装/解除は `ir_post_focus_change_snapshot` に
+    /// 一元化されており、本関数の呼び出し元には `Resolution` 確定（drift
+    /// correction の収束、フォーカス変更を伴わない）も含まれるため、ここで
+    /// 一緒にクリアすると武装済みの force-ON を無関係なイベントで
+    /// 取りこぼすことになる。
     pub(super) fn discard_actuation(&mut self) {
         self.active_actuation = None;
-        self.last_force_on_resend_ms = None;
     }
 }

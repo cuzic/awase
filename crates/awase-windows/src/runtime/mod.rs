@@ -142,17 +142,6 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
-    /// `apply_force_on_for_imm_broken` の `conv_mode_policy = force` 経路が最後に
-    /// 実送信した tick（ms）。TsfNative では `reschedule_ime_refresh` の周期ポーリング
-    /// 自体が止まっているため、この経路の再送を `ime_poll_interval_ms` 相当の間隔に
-    /// 抑える自前のレート制限が必要（2026-08-07 実機:「ガタつき・遅延がひどい」、
-    /// `apply_force_on_for_imm_broken` の doc コメント参照）。`discard_actuation` と
-    /// 同じタイミング（FocusChanged 等）で `None` に戻す。
-    ///
-    /// **ADR-086 Phase 3（2026-08-08）で撤去予定**: item 1 の消費点配線
-    /// （`kp_run_inner::consume_force_open_pending`）とセットで、この周期
-    /// レート制限自体を `force_open_pending` 武装/消費モデルへ置き換える。
-    last_force_on_resend_ms: Option<u64>,
     /// open/close 軸の force-write 武装フラグ（ADR-086 §4 INV-15、Phase 3 item 1）。
     ///
     /// `Some(gen)` = 武装済み、`gen` は武装した時点の `Output::ime_mode_focus_gen`。
@@ -165,10 +154,17 @@ pub struct Runtime {
     /// いずれも conv 軸と異なるため（`docs/adr/086-force-write-trigger-and-target-identity.md`
     /// §5 Phase 3 item 1 参照）。
     ///
-    /// 武装点は `ir_notify_focus_changed`（`discard_actuation` と同じフォーカス変更の
-    /// 単一集約点）。**生の `FocusChange` イベントハンドラ（`platform.rs::
-    /// gji_on_focus_change`）に書いてはいけない**——`architecture_guard::
-    /// force_write_is_not_triggered_by_raw_focus_change` の走査対象。
+    /// 武装点は `ir_post_focus_change_snapshot`（`gji_on_focus_change` 直後
+    /// ——`ime_mode_focus_gen` が今回のフォーカス変更分だけ進んだ直後の単一
+    /// 集約点。`ir_notify_focus_changed` ではない——同関数の実行時点では
+    /// gen がまだ古いため）。**生の `FocusChange` イベントハンドラ
+    /// （`platform.rs::gji_on_focus_change` 自体の本体）に書いてはいけない**
+    /// ——`architecture_guard::force_write_is_not_triggered_by_raw_focus_change`
+    /// の走査対象。
+    ///
+    /// 旧 `last_force_on_resend_ms`（`apply_force_on_for_imm_broken` の
+    /// force-policy 経路が使っていた周期レート制限）は本フィールドへの移行に
+    /// 伴い撤去済み（2026-08-08、ADR-086 Phase 3 item 1）。
     force_open_pending: Option<u32>,
 }
 
@@ -523,23 +519,19 @@ impl Runtime {
         // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）/
         // `kp_apply_conv_engine_sync` の ReportOpenInference（BUG-51、20ms）。
         //
-        // `conv_mode_policy = force` のときはこの早期 return をしない。この停止は
-        // 「観測しても何も読めないから無駄」という observe 専用の最適化だが、
-        // `ir_stage_notify` の Phase 4a（`apply_force_on_for_imm_broken`）は同じ
-        // リフレッシュ連鎖に相乗りする能動的な actuation であり、observe が無駄でも
-        // actuation は無駄ではない。この早期 return によって連鎖が停止すると、
-        // フォーカスが TsfNative（Windows Terminal 等）に落ち着いた後の無操作期間は
-        // 一切の force 再送が起きなくなる（2026-08-06 実機: ロック解除後の長い静寂期間で
-        // `belief=ON` × `実IME=OFF` の乖離が force policy でも訂正されなかった不具合）。
-        let force_policy = self.platform.output.is_force_policy();
-        if !force_policy {
-            let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-                self.platform.current_app_profile(),
-                self.platform.focus.class_name(),
-            );
-            if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
-                return;
-            }
+        // 2026-08-06〜2026-08-08: `conv_mode_policy = force` のときこの早期 return を
+        // スキップする例外があった（`apply_force_on_for_imm_broken` の周期 force-ON
+        // 再送を同じリフレッシュ連鎖に相乗りさせるため）。ADR-086 Phase 3 で
+        // force-ON のトリガーを周期からキー入力の直前へ移し
+        // （`kp_run_inner::consume_force_open_pending`）、この連鎖に依存しなくなった
+        // ため例外を撤去した（#42/#43 と同一コミット。撤去単独では TsfNative + force
+        // policy で無期限に force-ON が止まる退行になるため分離しない）。
+        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
+            self.platform.current_app_profile(),
+            self.platform.focus.class_name(),
+        );
+        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+            return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
@@ -583,7 +575,8 @@ impl Runtime {
     /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` や
     /// `apply_ime_open_with_applied` を直接呼ぶ経路（`apply_force_on_for_imm_broken`,
     /// `try_force_on_bootstrap`, `ir_apply_drift_correction`,
-    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック）は
+    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック,
+    /// `consume_force_open_pending`〈ADR-086 Phase 3〉）は
     /// `Decision`/`Effect` という抽象を経由しないためそちらのガードが効かない。
     /// これらの呼び出し元は実行前に必ずこれを確認すること。
     ///
@@ -598,8 +591,19 @@ impl Runtime {
     /// Blacklist アプリ（Chrome 等）で IME belief が ON のとき OS に force-ON を送る。
     ///
     /// IMM クロスプロセスが使えるアプリ（通常 IMM アプリ）では何もしない。
+    ///
+    /// `conv_mode_policy = force` のときは何もしない（ADR-086 Phase 3、2026-08-08）。
+    /// force policy 時の force-ON は `kp_run_inner::consume_force_open_pending`
+    /// （キー入力直前、入力意図に紐づくトリガー）に移行済み。この関数は
+    /// `ir_stage_notify` の周期リフレッシュに相乗りする経路であり、INV-15 が
+    /// 禁止する「生の周期タイマー」トリガーに該当するため、force policy を
+    /// 使うぶんはもうここを通さない（`reschedule_ime_refresh` も同時にこの関数の
+    /// ための force policy 例外を撤去済み）。
     pub fn apply_force_on_for_imm_broken(&mut self) {
         if self.can_use_imm32_cross_process() {
+            return;
+        }
+        if self.platform.output.is_force_policy() {
             return;
         }
         if self.ime_apply_should_defer() {
@@ -622,40 +626,7 @@ impl Runtime {
         // FocusChange が applied=Unknown にリセットするため、フォーカスごとに
         // 1 回だけ force-apply される。Win-held スキップ（UnsafeToToggle）や
         // 失敗時は applied が更新されないため次の refresh が再試行する。
-        //
-        // `conv_mode_policy = force` のときはこのスロットルを無視し、毎 refresh
-        // （既定 500ms 間隔）で無条件に再送する。Blacklist アプリは実状態を
-        // ポーリングできないため、`applied` が一度でも誤って「成功」記録される
-        // と（実 IME が別経路で無音のうちに OFF へ戻った等）、このスロットルが
-        // 永久に再送を止めてしまい `belief=ON` × `実 IME=OFF` の乖離を検出も
-        // 訂正もできない（2026-08-07 実機: 「なぜかIME OFF Engine ONの状態に
-        // なった」ユーザー報告）。conv モードの `desired_mode` 強制と同じ設計
-        // 意図（観測を信じず awase 自身の意図を権威にする）を open/close 軸にも
-        // 適用する。
-        let force_policy = self.platform.output.is_force_policy();
-        if force_policy {
-            // TsfNative では `reschedule_ime_refresh` の周期ポーリング自体が
-            // is_tsf_native 早期 return で止まっているため、この関数を再度呼ぶ
-            // 唯一の経路は `on_ime_apply_complete` → `post_ime_refresh()` が
-            // 無条件に仕込む 20ms 後の確認 refresh だけになる。上のスロットルを
-            // 単純に外すと、この 20ms 確認チェーンが「再送 → 20ms 後 refresh →
-            // 再送 → …」と自己駆動の無限ループに縮退する（2026-08-07 実機:
-            // 「ガタつき・遅延がひどい」、20〜50ms 間隔で VK_IME_ON 連打を確認）。
-            // `ime_poll_interval_ms` 相当の間隔を自前で空け、意図どおり「poll
-            // 間隔ごとに1回だけ再送」に戻す。間隔未経過なら実送信はせず、
-            // 残り時間だけ次の refresh を予約して抜ける（force-policy の周期
-            // 監視自体は止めない）。
-            let now = crate::hook::current_tick_ms();
-            let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
-            if let Some(last) = self.last_force_on_resend_ms {
-                let elapsed = now.saturating_sub(last);
-                if elapsed < interval_ms {
-                    self.schedule_ime_refresh(interval_ms - elapsed);
-                    return;
-                }
-            }
-            self.last_force_on_resend_ms = Some(now);
-        } else if matches!(
+        if matches!(
             self.platform_state.ime.model().applied,
             crate::state::ime_model::AppliedImeState::Optimistic(true)
                 | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
@@ -668,23 +639,28 @@ impl Runtime {
         // 律儀に走っても実 IME OFF が直らず「koreha」リテラル化が再発。
         // 手動 Ctrl+変換 = strategy chain 経由の apply は毎回効いていた）。
         // strategy chain（MsImeDirect の冪等 VK_DBE_HIRAGANA 等）で apply する。
+        self.force_on_and_correct_romaji(crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn);
+    }
+
+    /// force-ON を実際に送信し、続けて非ローマ字対応 `input_mode` の補正を行う共通処理。
+    ///
+    /// `apply_force_on_for_imm_broken`（`conv_mode_policy = observe` 経路）と
+    /// `consume_force_open_pending`（ADR-086 Phase 3、`conv_mode_policy = force` 経路）
+    /// が共有する。`reason` 以外の挙動は完全に同一。
+    fn force_on_and_correct_romaji(
+        &mut self,
+        reason: crate::state::ime_event::OpenApplyReason,
+    ) -> awase::platform::ImeOpenOutcome {
         let belief = crate::output::OpenBelief {
             effective_open: true,
             confident: true,
         };
         let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
-        log::info!("Blacklist force-ON: apply_ime_open(true) → {outcome:?}");
-        let reason = if force_policy {
-            crate::state::ime_event::OpenApplyReason::ForcePolicyResend
-        } else {
-            crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn
-        };
+        log::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
-                log::info!(
-                    "Blacklist force-ON: input_mode → AssumedRomaji (IMM broken, ime_on=true)"
-                );
+                log::info!("force-ON ({reason:?}): input_mode → AssumedRomaji (IMM broken, ime_on=true)");
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                 self.apply_input_mode_correction(
                     new_mode,
@@ -693,10 +669,56 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                log::info!(
-                    "Blacklist force-ON: input_mode スキップ (belief=ObservedEisu, eisu guard)"
-                );
+                log::info!("force-ON ({reason:?}): input_mode スキップ (belief=ObservedEisu, eisu guard)");
             }
+        }
+        outcome
+    }
+
+    /// `force_open_pending` を消費し、武装済みなら force-ON を起こす
+    /// （ADR-086 Phase 3 item 1、INV-15）。
+    ///
+    /// `kp_run_inner`（送信要求という入力意図に紐づく唯一の消費点）から呼ぶこと。
+    /// `try_hold_key`/ime-off-rescue の早期 return より後、`build_input_context`
+    /// より前に置く——これより前で消費すると、hold されたキーで武装だけ消費され
+    /// 実際の打鍵は再処理時になる（force だけ先に飛んで打鍵が来ない）。
+    ///
+    /// 未消費のまま return する分岐（`ime_apply_should_defer`/非対象状態）は
+    /// **武装を維持する**——次のキーイベントで再試行できるようにするため
+    /// （`apply_force_on_for_imm_broken` の対応する早期 return とは異なり、
+    /// こちらは「次の周期リフレッシュ」ではなく「次のキー入力」が再試行の
+    /// トリガーになる）。
+    pub(crate) fn consume_force_open_pending(&mut self) {
+        let Some(armed_gen) = self.force_open_pending else {
+            return;
+        };
+        if self.ime_apply_should_defer() {
+            return;
+        }
+        if !(self.engine.is_user_enabled()
+            && self.platform_state.ime.is_eligible_for_ime_force_on())
+        {
+            return;
+        }
+        // ここから実際に消費する（以降の早期 return は武装を戻さない限り再武装しない）。
+        self.force_open_pending = None;
+        // 時間軸フェンス: 消費直前（上の各種チェック）から apply 直前までの間に
+        // 別の正規の FocusChange が武装し直していないか確認する。本経路は完全に
+        // 同期的（await を挟まない）なため、実際にはこの2点の gen は常に一致するが、
+        // 将来この経路に非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する。
+        if self.platform.output.ime_mode_focus_gen.get() != armed_gen {
+            log::debug!(
+                "[force-open-pending] gen 不一致 (armed={armed_gen}) → 別の武装に委ねる"
+            );
+            return;
+        }
+        let outcome = self
+            .force_on_and_correct_romaji(crate::state::ime_event::OpenApplyReason::ForcePolicyResend);
+        // ADR-086 Phase 2 の consume_force_pending_and_actuate と同じスコープ判断:
+        // Aborted 相当（ここでは UnsafeToToggle、Win キー押下中等）のときのみ
+        // 再武装する。Failed（Win32 呼び出し自体の失敗）は対象外。
+        if outcome == awase::platform::ImeOpenOutcome::UnsafeToToggle {
+            self.force_open_pending = Some(armed_gen);
         }
     }
 
@@ -924,7 +946,6 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
-            last_force_on_resend_ms: None,
             force_open_pending: None,
         }
     }

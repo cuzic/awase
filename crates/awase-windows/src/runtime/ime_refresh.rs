@@ -226,15 +226,13 @@ impl Runtime {
         // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
         // ため、attempts を持ち越さず次の tick で作り直す。
         self.discard_actuation();
-        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸の force-write トリガーは
-        // 「入力意図に紐づくイベント」のみに限定される。FocusChange 自体は
-        // 書き込みを起こさず、次のキーイベント（`kp_run_inner::
-        // consume_force_open_pending`）が消費するまでの「武装」だけを行う。
-        // `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
-        // `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない。
-        self.force_open_pending = (self.platform.output.is_force_policy()
-            && !self.can_use_imm32_cross_process())
-        .then(|| self.platform.output.ime_mode_focus_gen.get());
+        // `force_open_pending` の武装は本関数ではなく `ir_post_focus_change_snapshot`
+        // （`gji_on_focus_change` 呼び出し直後）で行う。理由は同関数のコメント参照
+        // ——本関数（Stage 1）の実行時点では `ime_mode_focus_gen` がまだ今回の
+        // フォーカス変更分だけ進んでいない（bump は Stage 3 の
+        // `gji_on_focus_change` 内で起きる）ため、ここで gen を捕獲すると
+        // 1 世代古い値を武装してしまい、直後の `consume_force_open_pending` の
+        // gen 照合が常に不一致になる。
         // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが
         // 変わった場合、半角英数状態を他アプリへ持ち越さないよう即座にかな入力へ
         // 復元する（呼び出し自体を遅延させないという意味で「即座」。復元処理自体は
@@ -444,6 +442,22 @@ impl Runtime {
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
+        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸の force-write トリガーは
+        // 「入力意図に紐づくイベント」のみに限定される。FocusChange 自体は
+        // 書き込みを起こさず、次のキーイベント（`kp_run_inner::
+        // consume_force_open_pending`）が消費するまでの「武装」だけを行う。
+        // `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
+        // `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない。
+        //
+        // ここで武装する理由（`ir_notify_focus_changed` ではない）:
+        // `ime_mode_focus_gen` は直前行の `gji_on_focus_change`
+        // （`Output::on_ime_mode_focus_changed` 内）で今回のフォーカス変更分だけ
+        // 進む。`ir_notify_focus_changed`（Stage 1）はこの bump より前に走るため、
+        // そちらで捕獲すると 1 世代古い値を武装してしまい、`consume_force_open_pending`
+        // の gen 照合が常に不一致になる。
+        self.force_open_pending = (self.platform.output.is_force_policy()
+            && !self.can_use_imm32_cross_process())
+        .then(|| self.platform.output.ime_mode_focus_gen.get());
 
         // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
         // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は
