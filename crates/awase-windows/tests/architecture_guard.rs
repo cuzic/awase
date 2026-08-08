@@ -143,6 +143,43 @@ fn extract_fn_body<'a>(content: &'a str, fn_signature_needle: &str) -> &'a str {
     panic!("unbalanced braces while extracting body of {fn_signature_needle:?}");
 }
 
+/// `extract_fn_body` の複数箇所版。`content` 内で `needle` が出現するたびに、
+/// その直後の最初の `{` から波括弧の対応を数えて閉じ括弧までを切り出し、
+/// 全出現分をベクタで返す（例: 同一ファイル内の複数の `spawn_local(async move {`
+/// ブロックをそれぞれ独立に検査したい場合に使う）。
+fn extract_all_balanced_blocks<'a>(content: &'a str, needle: &str) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel_start) = content[search_from..].find(needle) {
+        let start = search_from + rel_start;
+        let Some(rel_open) = content[start..].find('{') else {
+            break;
+        };
+        let open_brace = start + rel_open;
+        let mut depth = 0i32;
+        let mut end = None;
+        for (i, ch) in content[open_brace..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open_brace + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            panic!("unbalanced braces while extracting block for {needle:?} at byte {start}");
+        };
+        blocks.push(&content[open_brace..=end]);
+        search_from = end + 1;
+    }
+    blocks
+}
+
 /// `ImeEvent::PanicReset` は `apply_panic_reset` のみが dispatch する。
 ///
 /// `IntentSource::Recovery` は廃止され `UserIntentSource` に存在しない（型で強制済み）。
@@ -917,5 +954,71 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
          この known_sites を更新すること。毎試行 capture するループは検証を \
          事実上 no-op 化するため避けること（opus アドバーサリアルレビュー \
          2026-08-08、key_pipeline.rs::kp_restore_kana_from_half_width 参照）。"
+    );
+}
+
+/// ADR-086 §1.2 欠陥1 / opus レビュー指摘（2026-08-08）: `ActuationTarget::capture`
+/// は spawn した async ブロックの先頭、いかなる他の await よりも前に置かれて
+/// いなければならない。executor.rs（open と同じウィンドウへ ROMAN を補完する
+/// はずが、open 完了を待つ間にフォーカスが動くと別ウィンドウへ誤爆しうる）・
+/// cold_warmup.rs（診断 read 待機中に abort 率が自ら上がる）で、この順序が
+/// 守られていなかった実装バグが見つかり個別に修正された（#19〜#21、
+/// `conv_actuation.rs::actuate_conv_mode` だけが最初から正しい順序だった）。
+/// 同じ退行を機械的に検知する。
+///
+/// 判定方法: `spawn_local(async move { ... })`（または `async { ... }`）ブロックを
+/// 対象ファイルから抽出し、`ActuationTarget::capture(` を含むブロックについて、
+/// ブロック内で最初に出現する `.await` が capture 自身の await であることを
+/// 確認する（capture 呼び出しの前に他の await が無いことと等価）。
+#[test]
+fn actuation_target_capture_is_first_await_in_spawn_local_block() {
+    let target_files = [
+        "src/runtime/conv_actuation.rs",
+        "src/tsf/warmup/cold_warmup.rs",
+        "src/runtime/executor.rs",
+        "src/runtime/key_pipeline.rs",
+    ];
+    let mut checked = 0usize;
+    for path in target_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        // 行コメントを除去してから抽出する。`.await` という文字列がコメント中に
+        // 出現すると、ブロック内の実コードより前に「最初の await」と誤認しうる。
+        let stripped: String = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for block in extract_all_balanced_blocks(&stripped, "spawn_local(async") {
+            if !block.contains("ActuationTarget::capture(") {
+                continue; // この spawn_local は conv write と無関係
+            }
+            checked += 1;
+            let first_await = block.find(".await").unwrap_or_else(|| {
+                panic!(
+                    "{path}: ActuationTarget::capture を含む spawn_local ブロックに \
+                     .await が見つかりません"
+                )
+            });
+            let prefix = &block[..first_await];
+            assert!(
+                prefix.contains("ActuationTarget::capture("),
+                "{path}: spawn_local ブロック内で最初の .await が \
+                 ActuationTarget::capture ではありません（他の await が先に \
+                 実行されています）。capture を await するより前に他の await が \
+                 あると、focus_gen 更新の遅延窓で verify_still_current が空虚に \
+                 一致してしまい ADR-086 INV-14 の検証が効かなくなります \
+                 （executor.rs/cold_warmup.rs で実際に踏んだバグ、2026-08-08）。\
+                 ブロック冒頭:\n{}",
+                &block[..block.len().min(300)]
+            );
+        }
+    }
+    assert_eq!(
+        checked, 6,
+        "ActuationTarget::capture を含む spawn_local ブロックの検査対象数が \
+         想定(6)と異なります。新しい経路を追加/削除した場合は \
+         actuation_target_capture_call_sites_are_accounted_for と合わせて \
+         この期待値も更新すること。"
     );
 }
