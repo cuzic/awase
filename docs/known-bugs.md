@@ -6682,72 +6682,53 @@ layer_boundary_guard --test ime_key_sequence_golden`（14+22+8 件 pass、
 問題、本バグとは独立な懸念として残存）、BUG-56（単発観測での即確定を2回連続
 デバウンスに直した前例、不採用案の検討材料として参照）。
 
-### BUG-59 追補: `conv_mode_policy = Force`（ADR-083）が MS-IME の FocusChange では一切発火せず、カタカナ固着等のドリフトを手動リセット（Ctrl+Shift+無変換→Ctrl+Shift+変換）でしか回復できなかった
+### BUG-59 追補（revert 済み）: `conv_mode_policy = Force` の FocusChange 強制書き込みを MS-IME にも配線した変更（`9c102b02`）は、ターゲットウィンドウ競合により revert された
 
-**背景（ユーザー報告、2026-08-07）:** 「けっこう変な状態になることがありますが、
-Ctrl+Shift+無変換 (Engine OFF) => Ctrl+Shift+変換 (Engine ON) の操作をすると
-治ります。たとえば、カタカナに固着するとか、IME OFF Engine ON になっている
-とか。long idle から入力開始のときは同じようなリセットしたらいいのかもね。」
+**経緯:** `9c102b02`（`feat(awase-windows): conv_mode_policy=Force の FocusChange
+強制書き込みを MS-IME にも配線（BUG-59 追補）`、2026-08-07、実機未検証のまま
+`develop` にマージ）は、`platform.rs::gji_on_focus_change` に「`conv_mode_policy
+= force` のとき FocusChange のたびに `desired_mode` を実 IME へ強制書き込みする」
+ロジックを追加した。翌日（2026-08-08）、ユーザーから実機報告があった:
+「LINE で何を押しても『い』になる」「突然 IME がローマ字ではなく JIS かなになった」。
 
-この手動コンボ（`keys.engine_off`/`keys.engine_on`、既定 `Ctrl+Shift+無変換`/
-`Ctrl+Shift+変換`）を追った結果、`platform.rs` の `engine_off_ime_vk`/
-`engine_on_ime_vk` 経由で実際に VK モードキーを送信し、同時に
-`Output::on_ime_mode_vk_sent` → `ImeModeFsm::on_f22_sent`/`on_f21_sent` で
-belief（`confirmed`/`state`）も強制的に作り直すことを確認した。つまり
-「実 IME を能動的に叩き直す」＋「awase 側 belief を作り直す」を一括で行う、
-意図的に強力な手動リセットである。
+**アプリ:** LINE（Qt、`ImmCross` プロファイル） / Windows Terminal（TsfNative）。
+**IME:** Microsoft IME、`conv_mode_policy = force` 有効（デフォルト `observe` の
+opt-in 設定、試験運用中に発生）。
+**再現手順と症状:** `conv_mode_policy = force` 有効時に、Windows Terminal 等へ
+フォーカス移動 → 直後に LINE 等別ウィンドウへフォーカスが戻る、という往復操作の
+あとで LINE 側の入力が壊れる（全打鍵が「い」になる／IME が JIS かなになる）。
 
-**原因（コード確認済み）:** `conv_mode_policy = Force`（`config.toml`
-`GeneralConfig::conv_mode_policy`、ADR-083）は「cold 転換のたびに awase トレイ
-で選んだ `desired_mode`（既定: 全角ひらがな＋ローマ字）へ強制的に引き戻す」
-設計だが、実際に強制書き込みを行う `ColdWarmupSequence::run_start`
-（`tsf/warmup/cold_warmup.rs:45-81`）は `output/vk_send.rs:293`
-の `if prepend_f2_warmup { ... run_start(...) ... }` 分岐からしか呼ばれない。
-`prepend_f2_warmup`（`output/mod.rs::assess_warmth`）は
-`(!warm || session_expired) && self.warmup_coord.needs_f2_probe()` で決まり、
-`MsImeStrategy::needs_f2_probe()` は常に `false`（`tsf/warmup/warmup_strategy.rs:124-126`、
-「MS-IME は常に warm」という BUG-13 以来の前提）。したがって **`conv_mode_policy
-= Force` を選んでいても、MS-IME（Windows Terminal 等 TsfNative）では
-`run_start` が一度も呼ばれず、強制書き込みが一切発火しない**。GJI 専用の
-経路にしか配線されていなかった。
+**原因（コード読解で確定、詳細は
+[ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md) §1.2）:**
+実際に IME へ書き込む `set_ime_romaji_mode_with_target`（`ime.rs:782`）は、
+実行された**その瞬間**に `get_focused_hwnd()` をライブクエリして書き込み先を
+決める。`gji_on_focus_change` 側の世代カウンタ（`ime_mode_focus_gen`）チェックは
+ディスパッチ直前の陳腐化しか検知できず、その後 `spawn_local` → `offload_unsafe`
+（ワーカースレッド）を経て実際に書き込まれるまでの非同期の間隙で別ウィンドウへ
+フォーカスが移っても検知できない。結果、あるウィンドウ向けに計算した conv bits
+が無関係な別ウィンドウの IME コンテキストへ書き込まれ得る。UWP アプリは
+親ウィンドウ→`InputSite` 子ウィンドウの2段でフォーカスが確定するため、1回の
+ユーザー操作で `gji_on_focus_change` が数 ms 間隔で複数回走り、この間隙は実機で
+構造的に開いている。
 
-これが「カタカナに固着」「IME OFF Engine ON」等、observation だけでは
-自己訂正しないドリフトが FocusChange 後も放置され、ユーザーが手動で
-Engine OFF→ON を叩くまで直らなかった理由と一致する。
+**なお、force-write 自身が「JIS かな化」を直接起こすことはできない**（`to_conv_bits()`
+は `romaji: true` のとき必ず `IME_CMODE_ROMAN` を含み、`desired_mode` は常に
+`romaji: true` で書き込まれるため）。JIS かな化との因果は未確定であり、
+BUG-60 として別途起票した。
 
-**修正（2026-08-07）:** `platform.rs::gji_on_focus_change` の FocusChange 直後
-処理に、GJI の `ColdWarmupSequence::run_start` と同じ「`policy()==Force` なら
-`desired_mode().to_conv_bits()` を `conv_mutation_allowed` の下で強制書き込み
-する」ロジックを追加した。BUG-59 本体の cold-hint ポーリングと同じ
-`spawn_local` 内で、同じ `ime_mode_focus_gen` による stale ガードを使って
-`set_ime_romaji_mode_with_target_async` を呼ぶ。GJI 側の `run_start` には
-一切手を入れていない（`needs_f2_probe()=true` の経路は従来どおり）。
+**対応: revert した。** `9c102b02` の差分（`platform.rs` の force 書き込みブロック、
+本エントリの直前にあった「BUG-59 追補」節）を取り消した。埋めようとしていた穴
+（`MsImeStrategy::needs_f2_probe()` が常に `false` のため、`conv_mode_policy =
+force` が MS-IME では一度も発火しない）という**指摘自体は正しい**。この穴は
+[ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md) Phase 2 の
+「arm-on-focus / fire-on-intent」方式（FocusChange は武装フラグを立てるだけで、
+実際の書き込みは次の送信直前まで遅延させる）で、ターゲット競合を起こさない形で
+再導入する予定。**それまで `conv_mode_policy = force` は MS-IME（TsfNative）の
+FocusChange 直後のドリフト訂正を持たない**（`cold_warmup.rs::run_start` 経由の
+GJI 側のみ有効）。
 
-**スコープ:** 今回対応したのは「FocusChange の直後」のみ。ユーザーが例示した
-「long idle から入力開始のとき」のうち、**フォーカス自体は変わらず同じウィンドウで
-長時間無操作だった後に入力を再開するケース**（FocusChange を伴わない drift）は
-今回のログでは実証されておらず、未対応のまま残した。実機で「フォーカスは
-変わっていないのに長時間放置後に変な状態になる」ケースが確認できたら、
-`assess_warmth()` の `session_expired`（`COMPOSITION_TIMEOUT_MS` 起点、既存の
-非 GJI 専用ロジック）を契機に同様の force 書き込みを追加することを検討する
-（今回は実測なしで追加しないという `.claude/rules/tuning-constants.md` の方針に従い見送った）。
-
-**検証:** `cargo check`/`cargo clippy -p awase-windows --target
-x86_64-pc-windows-gnu --lib -- -D warnings`（warning ゼロ）、`cargo test -p
-awase-windows --lib --test golden_scenarios --test architecture_guard --test
-layer_boundary_guard --test ime_key_sequence_golden`（14+22+8 件 pass）。
-`gji_on_focus_change` は async spawn_local を含む orchestration コードで
-既存にも単体テストが無く、今回も追加していない（`with_app`/非同期スケジュール
-のモックが必要で既存テスト基盤の範囲外）。**Windows 実機での動作確認は未実施
-— 次回実機で `conv_mode_policy = force` 設定時、Windows Terminal へフォーカス
-移動直後にカタカナ固着状態から自動的にひらがなへ復帰することを確認すること。**
-
-**関連ファイル:** `crates/awase-windows/src/platform.rs`
-（`gji_on_focus_change`）、`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`
-（`ColdWarmupSequence::run_start`、force 書き込みの元実装）、
-`crates/awase-windows/src/state/conv_mode.rs`（`ConvModeMgr::policy`/
-`desired_mode`）、`crates/awase-windows/src/ime.rs`
-（`set_ime_romaji_mode_with_target_async`）。関連: ADR-083
-（`conv_mode_policy = force` の設計記録）、BUG-13（`MsImeStrategy` が
-「常に warm」前提で cold-start 保護経路自体を持たない設計の起点）。
+**関連:** [ADR-086](../docs/adr/086-force-write-trigger-and-target-identity.md)
+（本件が発端。§1.2 欠陥1〜2 に原因の詳細、§5 に revert の判断根拠）、
+[ADR-085](../docs/adr/085-conv-mode-force-policy.md)（`conv_mode_policy = force`
+本体）、BUG-60（LINE「い」化・JIS かな化の未確定な症状、本件と同時期の報告）。
 
