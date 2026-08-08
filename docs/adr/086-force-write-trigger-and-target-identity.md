@@ -301,9 +301,18 @@ pub(crate) struct ActuationTarget {
 }
 
 impl ActuationTarget {
+    /// フォーカス変化イベント等の非同期経路から捕獲する。
+    /// 内部で `get_focused_hwnd_async()`（`get_focused_hwnd()` の async 版）を
+    /// 呼ぶため async（§7-3 の設計調査で確定、フックスレッドを塞がないため
+    /// 同期版は提供しない）。
+    pub(crate) async fn capture() -> Option<Self>;
+
     /// 実行直前に呼ぶ。フォーカスが動いていれば `None` を返し、呼び出し元は
-    /// 書き込まずに `Aborted` を返す。
-    fn verify_still_current(self) -> Option<HWND>;
+    /// 書き込まずに `Aborted` を返す。`get_focused_hwnd_async()` をもう一度
+    /// 呼ぶため async（§7-3 参照。同期版にすると BUG-55 を避けるために必要な
+    /// `GetGUIThreadInfo` ベースの解決を諦めて `GetForegroundWindow` へ
+    /// 妥協することになりかねないため、非同期のままにする）。
+    pub(crate) async fn verify_still_current(self) -> Option<HWND>;
 }
 ```
 
@@ -835,6 +844,67 @@ IME OFF→ON 遷移の実測であり、conv 書き換えの実測ではない�
    **実測が要る**。`GetForegroundWindow` はトップレベル窓しか返さないため、
    UWP の InputSite 子窓の切り替わりを検知できない可能性がある —— この点は
    BUG-55 で既に問題になった論点であり、安易に軽量版へ倒さないこと。
+
+   **調査結果（2026-08-08、実装着手前の設計調査、コード読解のみ・実測は別途要）:**
+   この論点は「コストが許容できるか」だけでなく、そもそも**「起案時点で誰が
+   hwnd を安全に捕獲できるか」自体が未解決**だったことが分かった。
+
+   - `PlatformState`（`state/platform_state.rs::FocusStore` 他）を全数確認したが、
+     「現在フォーカス中の HWND」を安く同期的に読めるキャッシュは**どこにも
+     存在しない**。`FocusStore` は `focus_epoch`（世代カウンタ、INV-14 の時間軸
+     フェンスと同型）・`app_kind`・`focus_kind` は持つが `HWND` 自体は保持しない。
+     `focus/current.rs::CurrentFocus` も pid/class_name/profile のみで HWND を
+     持たない。`ClassifiedFocus`/`FocusSnapshot` はフォーカス変化イベント処理中に
+     一時的に hwnd を運ぶだけで、後から参照できる形では保存されない。
+   - `set_ime_romaji_mode_with_target` 内の `get_focused_hwnd()`
+     （`ime.rs:786`）は、6 経路すべてにおいて**既に** `spawn_local` +
+     `offload_unsafe`（ワーカースレッド）の内側からのみ呼ばれている
+     （`conv_actuation.rs`/`cold_warmup.rs`/`executor.rs`/`key_pipeline.rs` の
+     いずれも、フック駆動の同期処理経路からは一度も直接呼んでいないことを
+     `grep` で確認済み）。つまり**現状、この関数がフックスレッドを直接
+     ブロックすることは無い**。
+   - `get_focused_hwnd()` 自身が内部で `get_gui_thread_info_with_timeout`
+     （= `win32_async::run_with_timeout`、さらに別のワーカースレッドへ
+     offload してタイムアウト付きで待つラッパー、`win32.rs:139`）を呼んで
+     いるため、**「起案時点」を「6経路の呼び出し元コードが実行される時点
+     （多くはフック駆動の同期処理内）」まで早めて hwnd を捕獲しようとすると、
+     現状ゼロだったフックスレッドの同期ブロックを新規に持ち込む**
+     （BUG-34 の再発条件そのもの）。
+   - 一方、`GetForegroundWindow()` 単体（`run_with_timeout` を挟まない軽量版）
+     へ切り替えて起案時点に同期で呼ぶ案は、BUG-55（`known-bugs.md` 該当項）が
+     「トップレベル窓基準の解決では TsfNative/InputSite 子ウィンドウの実際の
+     ターゲットと食い違い、JIS かな入力ロックから復旧できなくなる」ことを
+     実機で確定させているため**採用できない**。
+
+   **結論（次段の実装方針）:** 「起案時点で同期的に安く hwnd を得る」という
+   前提自体を諦める。代わりに:
+   1. `ime.rs` に `get_focused_hwnd_async()`（`get_focused_hwnd()` を
+      `offload_unsafe` で包んだだけの薄い async 版）を新設する。
+   2. `ActuationTarget`（フィールド private）に
+      `pub(crate) async fn capture() -> Option<Self>` を生やし、内部で
+      `get_focused_hwnd_async()` を呼ぶ。6 経路それぞれの `spawn_local`
+      ブロックの**先頭**（他の `.await` より前）でこれを呼び、以後の処理
+      （`unconfirm()` 呼び出し・実際の IMC write）に運ぶ。「起案からブロック
+      までの間隙をゼロにはできないが、既存の 50ms の conv 事前読み取り等を
+      挟まず最短経路にする」ことで §1.2 欠陥1 の間隙を縮める。
+   3. `verify_still_current()` は **同期関数ではなく非同期関数**にする
+      （ADR §2.3 P7 の擬似コードは同期シグネチャで書いたが、上記の理由により
+      実装時は `pub(crate) async fn verify_still_current(self) -> Option<HWND>`
+      へ修正する）。内部で `get_focused_hwnd_async()` をもう一度呼び、
+      `self.hwnd`・`self.focus_gen` の両方と突き合わせる。
+   4. **配置先は `ime.rs`。** `ActuationTarget`/`get_focused_hwnd_async`/
+      `verify_still_current` はいずれも Win32 hwnd 解決の詳細に密結合するため、
+      既存の `get_focused_hwnd`/`set_ime_romaji_mode_with_target` と同じ
+      ファイルに置く（`ConvModeTarget`/`ConvActuationOutcome` が `state::conv_mode`
+      に、それを使う `actuate_conv_mode` が `runtime::conv_actuation` にある、
+      という既存の「型は state 系、実行は runtime/ime 系」という分離パターンに
+      倣う）。`runtime/conv_actuation.rs` 等の呼び出し元は
+      `crate::ime::ActuationTarget::capture().await` を呼ぶだけでよく、
+      hwnd 解決の詳細を知る必要はない。
+   5. §17（実測ゲート）で測るべき数値はこの結論を前提にする: (a)
+      `ActuationTarget::capture()` から実際の IMC write までの経過 ms、(b)
+      その間の hwnd 不一致率、(c) `verify_still_current()` を追加すること
+      自体のオーバーヘッド（現状より Win32 呼び出しが 1 回増える）。
 
 4. **ADR-078 との統合順序。** ADR-085 の `desired_mode` は ADR-078 の `DesiredMode` の
    先行実装に相当する。本 ADR の Phase 2 は `desired_mode` の**消費点**を整理するが、
