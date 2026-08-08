@@ -23,6 +23,38 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
+/// `consume_force_open_pending` を呼んでよいキーかどうかを判定する
+/// （ADR-086 Phase 3 item 1、INV-15）。
+///
+/// **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー H1）**: 消費点の
+/// 移動先（`kp_stage_focus_probe` 等の後）では `ime_apply_should_defer()`
+/// （settle ガード）が構造的に常に false になり、2026-07-05 に修正した
+/// 「Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に IME を切り替えてしまう」
+/// 事故条件を無自覚に外すことになる。settle ガードの代わりに、「本物の
+/// 入力意図」であることを直接判定する:
+/// - `KeyDown` のみ（KeyUp では発火しない）。
+/// - `!event.injected`（BUG-14: MS-IME が毎打鍵で注入する `VK_KANA` 等の
+///   他プロセス由来キーはユーザーの物理操作ではない）。
+/// - Ctrl/Alt/Win 修飾キー非押下（Alt+Tab 等のショートカットは text-input
+///   意図ではなく、中間ウィンドウへの誤射を防ぐ——settle ガードが本来
+///   防いでいた事故条件をここで直接塞ぐ）。
+/// - そのキー自体が IME モードキー（sync/shadow アクション対象）ではない
+///   （**M6 対応**: IME-ON キーで force-ON と engine の `SetOpen` が同一
+///   イベントで二重に走る、IME-OFF キーの直前に無駄な force-ON フラップが
+///   起きる、を両方防ぐ）。
+///
+/// `Runtime`/Win32 に依存しない純粋関数のため `Runtime` を構築せずに
+/// テストできる（`.claude/rules/fix-requires-evidence.md` (a)）。
+fn is_force_open_consumption_candidate(event: &RawKeyEvent) -> bool {
+    matches!(event.event_type, KeyEventType::KeyDown)
+        && !event.injected
+        && !event.modifier_snapshot.ctrl
+        && !event.modifier_snapshot.alt
+        && !event.modifier_snapshot.win
+        && event.ime_relevance.sync_direction.is_none()
+        && event.ime_relevance.shadow_action.is_none()
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -84,13 +116,6 @@ impl Runtime {
             }
         }
 
-        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸 force-write の唯一の
-        // 消費点。送信要求という入力意図に紐づく唯一のトリガーであり、
-        // `try_hold_key`/ime-off-rescue の早期 return より後（消費が hold された
-        // キーだけで浪費されないように）・以降の全ステージより前（force-ON の
-        // 結果が belief に反映されてから他の判断が走るように）に置くこと。
-        self.consume_force_open_pending();
-
         // kp_stage_focus_probe が FocusTransition barrier を consume する前に
         // settle 状態をスナップショットしておく（post_decision で使う。
         // 消費後に読むと常に false になり判断できないため）。
@@ -102,6 +127,25 @@ impl Runtime {
         self.kp_stage_focus_probe(&mut event);
         self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
+
+        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸 force-write の唯一の
+        // 消費点。送信要求という入力意図に紐づく唯一のトリガーであり、
+        // `try_hold_key`/ime-off-rescue の早期 return より後・以降の全ステージ
+        // より前（force-ON の結果が belief に反映されてから Decision が
+        // 作られるように）に置くこと。
+        //
+        // **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー H1）**:
+        // 当初は `kp_stage_focus_probe` より**前**に置いていた。
+        // `kp_stage_focus_probe` は one-shot の `input_barrier` を無条件消費する
+        // ため、その前だと `consume_force_open_pending` 冒頭の
+        // `ime_apply_should_defer()`（settle ガード）が「barrier 未消費」で
+        // 常に真になり、フォーカス変更後の1打鍵目を必ず取りこぼして2打鍵目で
+        // 発火する——Phase 3 が解決しようとした症状をそのまま1打鍵分だけ
+        // 再現するバグだった。`kp_stage_focus_probe`/`kp_stage_idle_conv_check`/
+        // `kp_stage_shadow_ime_toggle` の後に移した。
+        if is_force_open_consumption_candidate(&event) {
+            self.consume_force_open_pending();
+        }
 
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
@@ -2196,5 +2240,85 @@ mod tests {
             sanitize_focus_probe_open_status(Some(false), AppImeProfile::Standard),
             Some(false)
         );
+    }
+
+    // ── ADR-086 Phase 3: is_force_open_consumption_candidate（H1/M6 対応）──
+
+    fn keydown_event() -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code: awase::types::VkCode(0x41), // 'A'
+            scan_code: awase::types::ScanCode(0x1E),
+            event_type: KeyEventType::KeyDown,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification: awase::types::KeyClassification::Char,
+            physical_pos: None,
+            ime_relevance: awase::types::ImeRelevance::default(),
+            modifier_key: None,
+            modifier_snapshot: awase::types::ModifierState::default(),
+            injected: false,
+        }
+    }
+
+    #[test]
+    fn force_open_candidate_true_for_plain_keydown() {
+        assert!(is_force_open_consumption_candidate(&keydown_event()));
+    }
+
+    #[test]
+    fn force_open_candidate_false_for_keyup() {
+        let mut ev = keydown_event();
+        ev.event_type = KeyEventType::KeyUp;
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_for_injected() {
+        let mut ev = keydown_event();
+        ev.injected = true;
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_when_ctrl_held() {
+        let mut ev = keydown_event();
+        ev.modifier_snapshot.ctrl = true;
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_when_alt_held() {
+        let mut ev = keydown_event();
+        ev.modifier_snapshot.alt = true;
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_when_win_held() {
+        let mut ev = keydown_event();
+        ev.modifier_snapshot.win = true;
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_true_when_shift_held() {
+        // Shift は text-input 意図を否定しない（半角英数/かな入力の一部）。
+        let mut ev = keydown_event();
+        ev.modifier_snapshot.shift = true;
+        assert!(is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_for_sync_key() {
+        let mut ev = keydown_event();
+        ev.ime_relevance.sync_direction = Some(ShadowImeAction::TurnOn);
+        assert!(!is_force_open_consumption_candidate(&ev));
+    }
+
+    #[test]
+    fn force_open_candidate_false_for_shadow_action_key() {
+        let mut ev = keydown_event();
+        ev.ime_relevance.shadow_action = Some(ShadowImeAction::TurnOff);
+        assert!(!is_force_open_consumption_candidate(&ev));
     }
 }

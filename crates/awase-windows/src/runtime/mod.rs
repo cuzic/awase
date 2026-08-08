@@ -646,16 +646,42 @@ impl Runtime {
     ///
     /// `apply_force_on_for_imm_broken`（`conv_mode_policy = observe` 経路）と
     /// `consume_force_open_pending`（ADR-086 Phase 3、`conv_mode_policy = force` 経路）
-    /// が共有する。`reason` 以外の挙動は完全に同一。
+    /// が共有する。`reason` 以外の主要な挙動は同一だが、呼び出し元が通す
+    /// ガード（settle・`AppliedImeState` スロットル等）は異なる——詳細は
+    /// 各呼び出し元の doc を参照。
     fn force_on_and_correct_romaji(
         &mut self,
         reason: crate::state::ime_event::OpenApplyReason,
     ) -> awase::platform::ImeOpenOutcome {
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        // N1（2026-08-08 2回目 opus アドバーサリアルレビュー新規指摘）:
+        // force-ON の同期 IMC write（`MsImeDirectStrategy`/`ImmCrossProcessStrategy`
+        // 内の `set_ime_romaji_mode()`）を、`kp_stage_idle_conv_check` の汚染
+        // 再検証ガード（shift ガード・`last_explicit_ime_action_ms` 一致・
+        // `last_send` 一致）から見える形にする。呼ばないと、Phase 3 で
+        // idle_conv_check の隣（同一キーイベント内）に移動した force-ON 自身の
+        // 書き込みが「外部観測」として idle-conv-check に誤読される
+        // （`platform_state.rs` の `note_explicit_ime_action` doc 参照）。
+        self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        // N2（2026-08-08 2回目 opus アドバーサリアルレビュー新規指摘）:
+        // `apply_ime_open_with_belief(true, None, belief)` は内部で
+        // `belief_input_mode: InputModeState::Unknown` 固定の view を作るため、
+        // `MsImeDirectStrategy`/`ImmCrossProcessStrategy` の「ユーザーが
+        // 意図的にかな入力を選んでいれば romaji 復元で上書きしない」
+        // （`ObservedKana` 保護）ガードが force-ON 経路では一度も効かなかった。
+        // `belief_input_mode = input_mode()` を明示的に埋めた view を使うことで
+        // 保護を効かせる。`applied` は `shadow_ime_control_view()` の
+        // `Some(applied_pair())` ではなく `None` のまま維持する——GJI の
+        // `shadow_on` スキップ（`GjiDirectStrategy` が「既に ON」と誤認して
+        // VK_IME_ON をスキップする）を意図的に外す既存仕様のため
+        // （`ir_post_focus_change_snapshot` の GJI TsfNative 強制 ON と同じ理由）。
+        let mut view = self.platform.build_ime_control_view(None);
+        view.belief_input_mode = self.platform_state.ime.input_mode();
         let belief = crate::output::OpenBelief {
             effective_open: true,
             confident: true,
         };
-        let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
+        let outcome = self.platform.apply_ime_open_with_view(true, &view, belief);
         log::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
@@ -702,23 +728,38 @@ impl Runtime {
     /// `force_open_pending` を消費し、武装済みなら force-ON を起こす
     /// （ADR-086 Phase 3 item 1、INV-15）。
     ///
-    /// `kp_run_inner`（送信要求という入力意図に紐づく唯一の消費点）から呼ぶこと。
-    /// `try_hold_key`/ime-off-rescue の早期 return より後、`build_input_context`
-    /// より前に置く——これより前で消費すると、hold されたキーで武装だけ消費され
-    /// 実際の打鍵は再処理時になる（force だけ先に飛んで打鍵が来ない）。
+    /// 呼び出し元は `kp_run_inner`（送信要求という入力意図に紐づく唯一の消費点、
+    /// `key_pipeline.rs::is_force_open_consumption_candidate` を満たすキーの
+    /// ときだけ呼ばれる）。`try_hold_key`/ime-off-rescue の早期 return より後・
+    /// `kp_stage_focus_probe`/`kp_stage_idle_conv_check`/
+    /// `kp_stage_shadow_ime_toggle` より後・`build_input_context` より前に
+    /// 置く——これより前で消費すると、hold されたキーで武装だけ消費され実際の
+    /// 打鍵は再処理時になる（force だけ先に飛んで打鍵が来ない）。
     ///
-    /// 未消費のまま return する分岐（`ime_apply_should_defer`/非対象状態）は
-    /// **武装を維持する**——次のキーイベントで再試行できるようにするため
-    /// （`apply_force_on_for_imm_broken` の対応する早期 return とは異なり、
-    /// こちらは「次の周期リフレッシュ」ではなく「次のキー入力」が再試行の
-    /// トリガーになる）。
+    /// **`ime_apply_should_defer()`（settle ガード）は呼ばない**（訂正、
+    /// 2026-08-08 2回目 opus アドバーサリアルレビュー H1）。呼び出し元の
+    /// `is_force_open_consumption_candidate` が「本物の入力意図」を直接判定
+    /// することで settle ガードの役割（Alt+Tab 中間ウィンドウへの誤射防止）を
+    /// 代替している——本関数がここでさらに settle ガードを呼ぶと、消費点の
+    /// 移動先では barrier が既に消費済みのため構造的に常に defer 判定になり、
+    /// フォーカス変更後 1 打鍵目を必ず取りこぼす退行を生む（詳細は
+    /// `key_pipeline.rs::is_force_open_consumption_candidate` の doc 参照）。
+    ///
+    /// 未消費のまま return する分岐（非対象状態）は**武装を維持する**——次の
+    /// キーイベントで再試行できるようにするため（`apply_force_on_for_imm_broken`
+    /// の対応する早期 return とは異なり、こちらは「次の周期リフレッシュ」では
+    /// なく「次のキー入力」が再試行のトリガーになる）。
+    ///
+    /// **既存の `AppliedImeState` スロットル**（`apply_force_on_for_imm_broken`
+    /// の非 force 分岐が使う「`Optimistic(true)|Confirmed{open:true}` なら
+    /// 送らない」チェック）は**ここでは意図的に読まない**。force の趣旨は
+    /// 「applied が誤って ON にラッチされた状態を破ること」であり、このスロットル
+    /// を読むと趣旨と矛盾する。後日「重複ガードだ」として誤って足さないこと
+    /// （ADR-086 §5 Phase 3 item 1 参照）。
     pub(crate) fn consume_force_open_pending(&mut self) {
         let Some(armed_gen) = self.force_open_pending else {
             return;
         };
-        if self.ime_apply_should_defer() {
-            return;
-        }
         if !(self.engine.is_user_enabled()
             && self.platform_state.ime.is_eligible_for_ime_force_on())
         {
