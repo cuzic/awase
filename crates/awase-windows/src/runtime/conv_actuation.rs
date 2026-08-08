@@ -7,8 +7,8 @@
 //! という関数名を指しているため、(2) 既存呼び出し元
 //! `runtime/key_pipeline.rs::kp_shift_conv_guard_key_down` を触らずに済むため。
 //!
-//! module doc の詳細（移行済み経路一覧・INV-1 未達箇所・スコープ外事項）は
-//! [`crate::output::conv_actuation`] を SSOT とする。
+//! module doc の詳細（移行済み経路一覧・INV-1 未達箇所・未移行経路）は
+//! [`crate::output::conv_actuation`] を SSOT とする（本ファイルは参照しない）。
 
 use super::Runtime;
 use crate::state::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason, TickMs};

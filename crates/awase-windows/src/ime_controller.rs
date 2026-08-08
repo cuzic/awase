@@ -69,6 +69,12 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
             // MS-IME + ImmCross (LINE 等): かなモードのまま IME ON すると JIS かな入力になる。
             // 先に ROMAN ビットを追加してローマ字モードに戻す。
             // SAFETY: set_ime_romaji_mode は Win32 API。メインスレッドから呼ぶこと。
+            //
+            // ADR-086 INV-14 未対応（2026-08-08 Phase 3 設計調査で判明、
+            // `output/conv_actuation.rs` 未移行リスト参照）: 宛先をライブクエリで
+            // 自己決定する同期 IMC write。`ActuationTarget` 化には `ImeOpenStrategy::apply`
+            // 自体の非同期化が要り、Phase 3（トリガー条件の是正）のスコープを超えるため
+            // 見送っている。
             let _ = unsafe { crate::ime::set_ime_romaji_mode() };
         }
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
@@ -168,6 +174,13 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // 先に ROMAN ビットを立てておくことでフォーカス直後のかな入力化けを防ぐ。
             // ただし ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
             // SAFETY: set_ime_romaji_mode は Win32 API。メインスレッドから呼ぶこと。
+            //
+            // ADR-086 INV-14 未対応（2026-08-08 Phase 3 設計調査で判明、
+            // `output/conv_actuation.rs` 未移行リスト参照）: 宛先をライブクエリで
+            // 自己決定する同期 IMC write。`apply_force_on_for_imm_broken` 等の
+            // force-ON 系（open 軸）から実際に到達するため理論上のリスクではない。
+            // `ActuationTarget` 化には `ImeOpenStrategy::apply` 自体の非同期化が要り、
+            // Phase 3（トリガー条件の是正）のスコープを超えるため見送っている。
             if !matches!(
                 view.belief_input_mode,
                 awase::engine::InputModeState::ObservedKana

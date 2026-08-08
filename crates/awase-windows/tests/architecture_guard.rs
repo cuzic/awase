@@ -1096,38 +1096,63 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
     );
 }
 
-/// ADR-086 §4 INV-15（2026-08-08、Phase 2 実装に伴い新設）: 生の `FocusChange`
-/// イベントハンドラ自体が force-write（conv-mode の実書き込み）を起こしては
-/// ならない。`platform.rs::gji_on_focus_change` は「フォーカスが変わった」ことに
-/// 反応する唯一の生イベントハンドラであり、`BUG-59` 追補（`9c102b02`、revert 済み）は
-/// まさにこの関数へ直接書き込みを追加して実機事故を起こした。
+/// ADR-086 §4 INV-15（2026-08-08、Phase 2/3 実装に伴い新設）: 生の `FocusChange`
+/// イベントハンドラ自体が force-write（conv-mode/open-close の実書き込み）を
+/// 起こしてはならない。`BUG-59` 追補（`9c102b02`、revert 済み）はまさにこの種の
+/// 関数へ直接書き込みを追加して実機事故を起こした。
 ///
-/// Phase 2 の設計では、この関数は `Output::on_ime_mode_focus_changed`（武装のみ、
-/// `force_pending` フラグを立てるだけ）を呼ぶことは許されるが、
-/// `ActuationTarget::capture`/`actuate_conv_mode`/`set_ime_conv_for_target` を
-/// **直接**呼んではならない（実際の書き込みは送信要求という入力意図に紐づく
-/// `consume_force_pending_and_actuate` からのみ起きること）。
+/// - `platform.rs::gji_on_focus_change`（conv 軸、生の FocusChange イベント
+///   ハンドラ本体）は `Output::on_ime_mode_focus_changed`（武装のみ）を呼ぶことは
+///   許されるが、`ActuationTarget::capture`/`actuate_conv_mode`/
+///   `set_ime_conv_for_target` を**直接**呼んではならない（実際の書き込みは
+///   `consume_force_pending_and_actuate` からのみ起きること）。
+/// - `runtime/ime_refresh.rs::ir_notify_focus_changed`（open/close 軸、
+///   `discard_actuation` と同じフォーカス変更の単一集約点）は
+///   `force_open_pending` を立てる（武装のみ）ことは許されるが、
+///   `apply_ime_open_with_belief`/`apply_ime_open_with_view`/
+///   `send_ime_mode_key`/`on_ime_apply_complete` を**直接**呼んではならない
+///   （実際の書き込みは Phase 3 item 1 の消費点
+///   `kp_run_inner::consume_force_open_pending` からのみ起きること）。
 #[test]
 fn force_write_is_not_triggered_by_raw_focus_change() {
-    let content = read_crate_file("src/platform.rs");
-    let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn gji_on_focus_change");
+    let cases: &[(&str, &str, &[&str])] = &[
+        (
+            "src/platform.rs",
+            "fn gji_on_focus_change",
+            &[
+                "ActuationTarget::capture(",
+                "actuate_conv_mode(",
+                "set_ime_conv_for_target(",
+            ],
+        ),
+        (
+            "src/runtime/ime_refresh.rs",
+            "fn ir_notify_focus_changed",
+            &[
+                "apply_ime_open_with_belief(",
+                "apply_ime_open_with_view(",
+                "send_ime_mode_key(",
+                "on_ime_apply_complete(",
+            ],
+        ),
+    ];
 
-    for forbidden in [
-        "ActuationTarget::capture(",
-        "actuate_conv_mode(",
-        "set_ime_conv_for_target(",
-    ] {
-        assert!(
-            !body.contains(forbidden),
-            "platform.rs::gji_on_focus_change 本体に {forbidden:?} が見つかりました。\
-             生の FocusChange イベントハンドラが force-write を直接起こしています \
-             （ADR-086 INV-15 違反、BUG-59 追補 `9c102b02` と同型の事故）。\
-             書き込みは Output::on_ime_mode_focus_changed による武装 \
-             （force_pending フラグ）に留め、実際の書き込みは \
-             consume_force_pending_and_actuate（送信要求という入力意図に紐づく \
-             唯一の消費点）からのみ行うこと。"
-        );
+    for (path, fn_needle, forbidden_list) in cases {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let body = extract_fn_body(production, fn_needle);
+
+        for forbidden in *forbidden_list {
+            assert!(
+                !body.contains(forbidden),
+                "{path}::{fn_needle} 本体に {forbidden:?} が見つかりました。\
+                 生の FocusChange イベントハンドラが force-write を直接起こしています \
+                 （ADR-086 INV-15 違反、BUG-59 追補 `9c102b02` と同型の事故）。\
+                 書き込みは武装（`force_pending`/`force_open_pending` フラグを \
+                 立てるだけ）に留め、実際の書き込みは送信要求という入力意図に \
+                 紐づく唯一の消費点からのみ行うこと。"
+            );
+        }
     }
 }
 

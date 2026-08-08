@@ -226,6 +226,15 @@ impl Runtime {
         // （ADR-080 破棄条件2）。新しいフォーカス先では desired/観測前提が変わる
         // ため、attempts を持ち越さず次の tick で作り直す。
         self.discard_actuation();
+        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸の force-write トリガーは
+        // 「入力意図に紐づくイベント」のみに限定される。FocusChange 自体は
+        // 書き込みを起こさず、次のキーイベント（`kp_run_inner::
+        // consume_force_open_pending`）が消費するまでの「武装」だけを行う。
+        // `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
+        // `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない。
+        self.force_open_pending = (self.platform.output.is_force_policy()
+            && !self.can_use_imm32_cross_process())
+        .then(|| self.platform.output.ime_mode_focus_gen.get());
         // 左Shift単独タップによる「IME-ON 半角英数」持続トグル中にフォーカスが
         // 変わった場合、半角英数状態を他アプリへ持ち越さないよう即座にかな入力へ
         // 復元する（呼び出し自体を遅延させないという意味で「即座」。復元処理自体は

@@ -15,13 +15,42 @@
 //!
 //! **INV-14: 全 7 経路が移行完了（2026-08-08）。** 旧
 //! `set_ime_romaji_mode_with_target`/`_async`（宛先をライブクエリで自己決定する
-//! target 非対応の低レベル API）は `ime.rs` から削除済み。移行済み経路の一覧は
-//! [`crate::runtime::conv_actuation`] の module doc（SSOT）を参照。
+//! target 非対応の低レベル API）は `ime.rs` から削除済み。移行済み経路:
+//! `actuate_conv_mode`（本モジュール）、`cold_warmup.rs::run_start`、
+//! `executor.rs::dispatch_ime_set_open`（`set_ime_open_then_conv_for_target`、
+//! open と conv を同一 hwnd に対して行う特殊版）、`key_pipeline.rs` の
+//! `kp_stage_idle_conv_check`（BUG-08 ローマ字復元）・
+//! `kp_reset_to_hiragana_romaji_capsoff`（read-modify-write、read 側は
+//! `get_ime_conv_for_target`）・`kp_restore_kana_from_half_width`
+//! （shift-conv-guard 復元リトライループ）・`apply_focus_probe`
+//! （`ImmCrossProbe` かなモード補正書き込み）。
 //!
 //! **INV-1 は依然未達（本モジュールが単一窓口になっていない経路が残る）。**
 //! `kp_reset_to_hiragana_romaji_capsoff` は `actuate_conv_mode` を経由しない
-//! （`conv_mutation_allowed` ゲートも `unconfirm()` も通らない）。詳細は
-//! [`crate::runtime::conv_actuation`] を参照。
+//! （`conv_mutation_allowed` ゲートも `unconfirm()` も通らない）。
+//! `ConvModeTarget` に read-modify-write 用の variant が無く、
+//! `actuate_conv_mode` 経由にすると `conv_mutation_allowed` 却下が新たに
+//! 効いて挙動が変わってしまうため、意図的に見送っている
+//! （`key_pipeline.rs` 該当箇所のコメント参照）。
+//!
+//! **未移行（INV-14/19 未対応、2026-08-08 Phase 3 設計調査で判明）:**
+//! `ime_controller.rs` の `ImmCrossProcessStrategy::apply`（L72）と
+//! `MsImeDirectStrategy::apply`（L175）が `crate::ime::set_ime_romaji_mode()`
+//! （宛先をライブクエリで自己決定する同期 IMC write）を呼んでいる。
+//! これは ADR-086 Phase 1〜2 の「7 経路」の数え漏れであり、`ActuationTarget`
+//! 未対応のまま残っている。移行しなかった理由:
+//! これらの `apply()` は完全に同期的な呼び出しチェーン
+//! （`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/
+//! `ir_apply_drift_correction`/`kp_stage_shadow_ime_toggle` 等、
+//! `spawn_local` を使わない同期経路）から直接呼ばれており、`ActuationTarget`
+//! を適用するには `ImeOpenStrategy::apply` 自体を非同期化する必要がある。
+//! これは呼び出し元すべて（`with_app` 再入回避のため意図的に同期設計されている
+//! 箇所を含む）を巻き込む大規模な再設計になり、ADR-086 Phase 3 のスコープ
+//! （open/close の**トリガー条件**の是正）を超える。実害が確認された場合に
+//! 改めて設計すること（`MsImeDirectStrategy::apply` は force-ON 系（open 軸）
+//! から実際に到達するため理論上のリスクではない。`ImmCrossProcessStrategy::apply`
+//! は現状の呼び出し元がいずれも ImmCross 非対応コンテキストに限定されており、
+//! 到達可能性は未確認）。
 //!
 //! **`Runtime` から `Output` への移設（2026-08-08、ADR-086 Phase 2 設計調査）**:
 //! 当初 `impl Runtime` に置かれていたが、本体は `self.platform.output.*` しか

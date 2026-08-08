@@ -148,7 +148,28 @@ pub struct Runtime {
     /// 抑える自前のレート制限が必要（2026-08-07 実機:「ガタつき・遅延がひどい」、
     /// `apply_force_on_for_imm_broken` の doc コメント参照）。`discard_actuation` と
     /// 同じタイミング（FocusChanged 等）で `None` に戻す。
+    ///
+    /// **ADR-086 Phase 3（2026-08-08）で撤去予定**: item 1 の消費点配線
+    /// （`kp_run_inner::consume_force_open_pending`）とセットで、この周期
+    /// レート制限自体を `force_open_pending` 武装/消費モデルへ置き換える。
     last_force_on_resend_ms: Option<u64>,
+    /// open/close 軸の force-write 武装フラグ（ADR-086 §4 INV-15、Phase 3 item 1）。
+    ///
+    /// `Some(gen)` = 武装済み、`gen` は武装した時点の `Output::ime_mode_focus_gen`。
+    /// `None` = 未武装。conv 軸の `Output::force_pending`（Phase 2）とは**統合しない**
+    /// ——層（`Output::send_romaji` は `&self`／`with_app` の内側、open 軸の消費は
+    /// `&mut Runtime` を要する `on_ime_apply_complete` を必ず経由するため
+    /// `kp_run_inner` からしか呼べない）・消費タイミング（open は「キーが届いた瞬間」
+    /// まで前倒しする必要がある）・再武装セマンティクス（open の apply は完全同期で
+    /// `Aborted` 概念が無く、代わりに `ImeOpenOutcome::UnsafeToToggle` を使う）が
+    /// いずれも conv 軸と異なるため（`docs/adr/086-force-write-trigger-and-target-identity.md`
+    /// §5 Phase 3 item 1 参照）。
+    ///
+    /// 武装点は `ir_notify_focus_changed`（`discard_actuation` と同じフォーカス変更の
+    /// 単一集約点）。**生の `FocusChange` イベントハンドラ（`platform.rs::
+    /// gji_on_focus_change`）に書いてはいけない**——`architecture_guard::
+    /// force_write_is_not_triggered_by_raw_focus_change` の走査対象。
+    force_open_pending: Option<u32>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -904,6 +925,7 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             last_force_on_resend_ms: None,
+            force_open_pending: None,
         }
     }
 
