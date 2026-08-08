@@ -780,7 +780,6 @@ pub async fn set_ime_romaji_mode_async() -> bool {
 /// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
 #[must_use]
 pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool {
-    use crate::imm::IME_CMODE_ROMAN;
     // SAFETY: get_focused_hwnd は unsafe fn。BUG-55（set_ime_romaji_mode 参照）と同じ理由で
     //         GetForegroundWindow ではなく get_focused_hwnd を使う。
     let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
@@ -796,6 +795,19 @@ pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool 
         crate::focus::classify::get_class_name_string(hwnd),
         target_conv.map(|v| format!("0x{v:08X}")),
     );
+    unsafe { set_ime_romaji_mode_for_hwnd(hwnd, target_conv) }
+}
+
+/// `set_ime_romaji_mode_with_target` の実体（hwnd 指定版）。
+///
+/// `hwnd` の解決（ライブクエリ or [`ActuationTarget`] 経由の検証済み値）を
+/// 呼び出し元の責務として切り離すため、`ime_wnd` 解決以降のロジックだけを
+/// 独立させた（ADR-086 §2.3 P7、[`set_ime_conv_for_target`] と共有する）。
+///
+/// # Safety
+/// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
+unsafe fn set_ime_romaji_mode_for_hwnd(hwnd: HWND, target_conv: Option<u32>) -> bool {
+    use crate::imm::IME_CMODE_ROMAN;
     let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
         return false;
     };
@@ -1018,6 +1030,215 @@ pub unsafe fn get_focused_hwnd() -> HWND {
     //         可能性は呼び出し元が non_null() 等でチェックすること。
     gui.focused_hwnd
         .unwrap_or_else(|| unsafe { GetForegroundWindow() })
+}
+
+/// `get_focused_hwnd` の async 版（ワーカースレッドで実行）。
+///
+/// [`ActuationTarget`] の捕獲・再検証の両方がこれを使う（ADR-086 §7-3）。
+/// `get_focused_hwnd` は内部で `get_gui_thread_info_with_timeout`（さらに別の
+/// ワーカースレッドへ offload してタイムアウト付きで待つラッパー）を呼ぶため、
+/// フック駆動の同期処理経路から直接同期呼びすると BUG-34（フックスレッドを
+/// ブロックできない制約）を再現する。同期版を公開しないのはそのため。
+pub async fn get_focused_hwnd_async() -> HWND {
+    // HWND（`*mut c_void` を包むだけ）は Send ではないため offload_unsafe の
+    // `T: Send` 境界を満たせない。win32.rs::get_gui_thread_info_with_timeout の
+    // `SendableResult` と同じ手法でラップする（Win32 ウィンドウハンドルは
+    // プロセス内で有効なグローバルリソースであり、スレッド間で安全に送信できる）。
+    struct SendableHwnd(HWND);
+    // SAFETY: HWND はプロセス内で有効なグローバルリソースへのハンドル（ポインタ値）
+    //         であり、スレッド間で共有しても安全。
+    unsafe impl Send for SendableHwnd {}
+
+    let SendableHwnd(hwnd) = offload_unsafe(|| SendableHwnd(unsafe { get_focused_hwnd() })).await;
+    hwnd
+}
+
+/// ある actuation（conv-mode 書き込み等の外部 IME 状態変更）が「どのウィンドウへ
+/// 向けたものか」を運ぶ値（ADR-086 §2.3 P7 / §4 INV-14）。
+///
+/// 起案時点で [`ActuationTarget::capture`] により hwnd を確定し、実際の Win32
+/// 書き込みの直前に [`ActuationTarget::verify_still_current`] で再検証する。
+/// フィールドは private —— `verify_still_current` を経由せずに hwnd を取り出す
+/// ことはできない（ADR-086 §6 段1、`ForceGuardSet.guards` を private 化した
+/// のと同じ手法）。
+///
+/// フォーカス世代番号（`focus_gen`）は `Output::ime_mode_focus_gen` 相当の
+/// カウンタを想定しているが、`ime.rs` は Runtime/Output の内部状態に依存しない
+/// レイヤーであるため、gen 値そのものはこの型・この関数群では読まない。
+/// 呼び出し元（`runtime::conv_actuation` 等）が `capture`/`verify_still_current`
+/// の引数として供給する。
+// ADR-086 Phase1b: このスコープを消費する呼び出し元（conv_actuation.rs 等 6 経路）の
+// 移行はタスク #19〜#23 で段階的に行う。それまで dead_code 警告を許容する。
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActuationTarget {
+    hwnd: HWND,
+    focus_gen: u64,
+}
+
+#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
+impl ActuationTarget {
+    /// 起案時点の hwnd を捕獲する。hwnd が取得できない場合（フォーカス無し等）は
+    /// `None`。
+    pub(crate) async fn capture(focus_gen: u64) -> Option<Self> {
+        let hwnd = get_focused_hwnd_async().await;
+        hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
+    }
+
+    /// 実行直前に呼ぶ。`current_focus_gen`（呼び出し元が直前に読んだ最新の
+    /// gen 値）と実際の現在の hwnd の両方を起案時点と突き合わせる。
+    /// [`TargetVerifyOutcome`] 参照。呼び出し元は `Current` 以外なら書き込まずに
+    /// `Aborted` として扱うこと（INV-14）。
+    // `self`（HWND を含み Send でない）を await をまたいで保持するため、この
+    // 関数の Future は Send にならない。呼び出し元は win32_async::spawn_local
+    // （ローカル・シングルスレッド実行、offload_unsafe 自体と同じ前提）経由でのみ
+    // 実行されるため実害はない。HWND（`*mut c_void` を包むだけ）が Send でない
+    // ことは Win32 API の性質であり、get_focused_hwnd_async 等の既存 async 関数
+    // 群と同じ制約。
+    #[allow(clippy::future_not_send)]
+    pub(crate) async fn verify_still_current(self, current_focus_gen: u64) -> TargetVerifyOutcome {
+        if self.focus_gen != current_focus_gen {
+            return TargetVerifyOutcome::GenStale;
+        }
+        let current_hwnd = get_focused_hwnd_async().await;
+        Self::compare(self.hwnd, current_hwnd)
+    }
+
+    /// 純粋比較ロジック（Win32 呼び出しを含まないため単体テストで固定できる、
+    /// ADR-086 §6 段4 の「トリガー条件と消費回数は純粋ロジックとして必ず
+    /// テストで固定する」と同じ趣旨）。gen の比較は `verify_still_current` 側で
+    /// 行うため、ここでは hwnd の一致のみを見る。
+    fn compare(captured: HWND, current: HWND) -> TargetVerifyOutcome {
+        if captured == current {
+            TargetVerifyOutcome::Current(current)
+        } else {
+            TargetVerifyOutcome::TargetMoved
+        }
+    }
+}
+
+/// [`ActuationTarget::verify_still_current`] の結果。
+///
+/// `GenStale`/`TargetMoved` を区別して返すのは、`runtime::conv_actuation`
+/// 側で `ActuationOutcome::Aborted { reason }`（タスク #12）へそのまま
+/// マッピングできるようにするため。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetVerifyOutcome {
+    /// 起案時点と一致。書き込んでよい。
+    Current(HWND),
+    /// フォーカス世代が起案時点から進んでいる（`ime_mode_focus_gen` 相当）。
+    GenStale,
+    /// フォーカス世代は同じだが、実際の hwnd が起案時点と異なる。
+    TargetMoved,
+}
+
+/// [`set_ime_conv_for_target`] の結果（ADR-086 §2.3 P7）。`#[must_use]` は
+/// `Aborted` の握り潰し防止（ADR-086 §6 段1）。
+#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub(crate) enum ActuationOutcome {
+    /// 書き込み成功。
+    Written,
+    /// ターゲット不一致のため書き込まなかった（INV-14）。`applied` 系キャッシュを
+    /// 更新してはならない — 「成功」として記録すると乖離を検出できなくなる。
+    Aborted(AbortReason),
+    /// ターゲットは一致したが Win32 呼び出し自体が失敗した
+    /// （IME ウィンドウが取得できない等）。
+    Failed,
+}
+
+/// [`ActuationOutcome::Aborted`] の理由。[`TargetVerifyOutcome`] の
+/// `GenStale`/`TargetMoved` をそのまま引き継ぐ。
+#[allow(dead_code)] // ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbortReason {
+    /// フォーカス世代が起案時点から進んでいる。
+    GenStale,
+    /// フォーカス世代は同じだが、実際の hwnd が起案時点と異なる。
+    TargetMoved,
+}
+
+/// [`ActuationTarget`] を通じて conv-mode を書き込む唯一の target-aware 版
+/// （ADR-086 §2.3 P7 / §4 INV-14）。
+///
+/// 実行直前に `target.verify_still_current` で再検証し、起案時点と一致する
+/// 場合のみ実際に `IMC_SETCONVERSIONMODE` を発行する。不一致なら書き込まず
+/// `Aborted` を返す（INV-14: `Aborted` を成功として記録してはならない）。
+///
+/// `current_focus_gen` は呼び出し元が検証直前に読んだ最新の gen 値
+/// （`ime.rs` は Runtime/Output の内部状態に依存しないため、ここでは読まない。
+/// `ActuationTarget::capture`/`verify_still_current` と同じ理由）。
+#[allow(dead_code)]
+// ADR-086 Phase1b、タスク #19〜#23 で配線するまでの暫定
+// `target`（HWND を含み Send でない）を await をまたいで保持するため Future が
+// Send にならない。verify_still_current と同じ理由で実害なし。
+#[allow(clippy::future_not_send)]
+pub(crate) async fn set_ime_conv_for_target(
+    target: ActuationTarget,
+    conv: Option<u32>,
+    current_focus_gen: u64,
+) -> ActuationOutcome {
+    match target.verify_still_current(current_focus_gen).await {
+        TargetVerifyOutcome::GenStale => ActuationOutcome::Aborted(AbortReason::GenStale),
+        TargetVerifyOutcome::TargetMoved => ActuationOutcome::Aborted(AbortReason::TargetMoved),
+        TargetVerifyOutcome::Current(hwnd) => {
+            // SAFETY: set_ime_romaji_mode_for_hwnd は unsafe fn。offload_unsafe は
+            //         ワーカースレッドで実行するが SendMessageTimeoutW はクロス
+            //         プロセス呼び出しのためスレッドに依存しない。HWND は SendableHwnd
+            //         と同じ理由（プロセス内で有効なグローバルリソース）でスレッド間
+            //         送信して安全。
+            struct SendableHwnd(HWND);
+            // SAFETY: 上記と同じ。
+            unsafe impl Send for SendableHwnd {}
+            let target_hwnd = SendableHwnd(hwnd);
+            let success = offload_unsafe(move || {
+                // 2021 edition の disjoint closure capture が `target_hwnd.0`
+                // （中の HWND、Send でない）だけを直接キャプチャして
+                // `SendableHwnd` の `unsafe impl Send` を迂回してしまうのを防ぐため、
+                // 分解する前に一度 `target_hwnd` 全体を束縛し直す（既知のイディオム）。
+                let target_hwnd = target_hwnd;
+                let SendableHwnd(hwnd) = target_hwnd;
+                unsafe { set_ime_romaji_mode_for_hwnd(hwnd, conv) }
+            })
+            .await;
+            if success {
+                ActuationOutcome::Written
+            } else {
+                ActuationOutcome::Failed
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod actuation_target_tests {
+    use super::{ActuationTarget, TargetVerifyOutcome};
+    use windows::Win32::Foundation::HWND;
+
+    fn hwnd(raw: isize) -> HWND {
+        HWND(raw as *mut core::ffi::c_void)
+    }
+
+    #[test]
+    fn compare_current_when_hwnd_matches() {
+        assert_eq!(
+            ActuationTarget::compare(hwnd(1), hwnd(1)),
+            TargetVerifyOutcome::Current(hwnd(1))
+        );
+    }
+
+    #[test]
+    fn compare_target_moved_when_hwnd_differs() {
+        assert_eq!(
+            ActuationTarget::compare(hwnd(1), hwnd(2)),
+            TargetVerifyOutcome::TargetMoved
+        );
+        assert_eq!(
+            ActuationTarget::compare(hwnd(0), hwnd(1)),
+            TargetVerifyOutcome::TargetMoved
+        );
+    }
 }
 
 /// VK_DBE_HIRAGANA (F2) を `SendMessageTimeoutW` でフォーカスウィンドウの wndproc に直接届ける。
