@@ -2,10 +2,13 @@
 
 ## ステータス
 
-**提案（Draft、未実装）。北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。**
+**北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。
+Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）は実装完了
+（2026-08-08）。Phase 2〜4（トリガー条件の是正、open/close 軸への適用、
+コンパイラ強制）は未着手。いずれも Windows 実機での動作確認は未実施。**
 
 本 ADR は個別バグの修正手順書ではなく、**以後の実装判断を評価するための基準**である。
-`develop`（`59e96fc8`）時点のコードは §4 の INV-12〜INV-19 のいずれにも適合していない。
+`develop`（`59e96fc8`）時点のコードは §4 の INV-12〜INV-19 のいずれにも適合していなかった。
 既存コードの一括作り替えは求めない。求めるのは、**「観測を信じずに外部状態へ書き込む」
 機構（= force-write）に触れる変更が、この規律からの距離を縮めるか、少なくとも
 広げないこと**である。
@@ -664,6 +667,15 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
 
 ### Phase 1（INV-14: ターゲット同一性、中リスク）
 
+**状態（2026-08-08）: Phase 1a・1b とも実装完了。** §7-3 の設計調査により
+「新しいタイミング定数を導入しない」設計に確定したため、Phase 1a の実測義務
+（起案-実行間 ms・hwnd 変化率・検証コスト）は新規タイムアウト値の決定には
+使わず、Phase 1b へ直接進んだ（既存の `get_focused_hwnd`/`get_gui_thread_info_with_timeout`
+の値をそのまま流用する設計のため、新規実測が導出に必要な値そのものが無い）。
+実機での競合頻度計測は今後の実機ソークで別途行う。全経路の移行完了に伴い、
+`set_ime_romaji_mode_with_target(_async)`（ライブクエリ版）は削除済み
+（Phase 1b step6、下記 6 参照）。
+
 **Phase 1a（観測のみ、実機データ収集）**
 
 1. `set_ime_romaji_mode_with_target` のログに**書き込み先 hwnd とウィンドウクラス名**を
@@ -683,10 +695,23 @@ force 書き込みが、ワーカースレッド上の `get_focused_hwnd()` ラ�
 4. `set_ime_conv_for_target(target: ActuationTarget, conv: Option<u32>) -> ActuationOutcome`
    を追加（`ActuationOutcome` は `#[must_use]`、`Written` / `Aborted{TargetMoved|GenStale}` /
    `Failed`）。既存の `set_ime_romaji_mode_state_for_target` と同じ hwnd 引数形。
-5. **conv 書き込みの全 7 経路**を段階的にこちらへ移す。移す順序は、実害が確認されて
-   いる順（force 経路 → BUG-08 の ROMAN 復元 → その他）。
-6. 全経路の移行が済んだ時点で、`set_ime_romaji_mode_with_target(_async)`
-   （ライブクエリ版）を**削除**する（§6 段1 のコンパイラ強制）。
+5. **conv 書き込みの全 6 経路**（`9c102b02` の `platform.rs` 経路は §1.2 欠陥1の
+   誤爆バグごと revert 済みのため対象外。実質 6 経路）を段階的にこちらへ移す。
+   ✅ 完了（2026-08-08）: `conv_actuation.rs::actuate_conv_mode`、
+   `cold_warmup.rs::run_start`、`executor.rs::dispatch_ime_set_open`
+   （`set_ime_open_then_conv_for_target`、open/conv を同一 hwnd に対して行う
+   特殊版）、`key_pipeline.rs` の `kp_stage_idle_conv_check`（BUG-08）・
+   `kp_reset_to_hiragana_romaji_capsoff`（read-modify-write、read 側は
+   `get_ime_conv_for_target`）・`kp_restore_kana_from_half_width`
+   （復元リトライループ、hwnd はループ外で1回 capture して全試行で使い回す —
+   毎試行 capture は検証を no-op 化するため不採用、opus アドバーサリアル
+   レビュー 2026-08-08）。
+6. ✅ 完了（2026-08-08）: 全経路の移行が済んだため
+   `set_ime_romaji_mode_with_target(_async)`（ライブクエリ版）を**削除**した
+   （§6 段1 のコンパイラ強制の前段）。`tests/architecture_guard.rs` に
+   `actuation_target_capture_call_sites_are_accounted_for` を新設し、
+   `ActuationTarget::capture` の呼び出し箇所数（6）を固定することで
+   INV-19 の「未追跡の新規経路を検知する」役割を引き継いだ。
 
 ### Phase 2（INV-15: トリガーを arm-on-focus / fire-on-intent へ、中リスク）
 

@@ -11,19 +11,33 @@
 //! INV-14（ターゲット同一性）に従い、実際の書き込みは
 //! `ActuationTarget::capture` → `set_ime_conv_for_target` 経由で行う
 //! （起案時点の hwnd を確定し、実行直前に再検証してから書く。BUG-59 追補が
-//! 実機で踏んだ「別ウィンドウへの誤爆」を構造的に防ぐ）。`kp_stage_idle_conv_check`
-//! の BUG-08 ローマ字復元・`kp_reset_to_hiragana_romaji_capsoff`
-//! （read-modify-write、read 側は `get_ime_conv_for_target`）も移行済み
-//! （いずれも `runtime/key_pipeline.rs`）。
+//! 実機で踏んだ「別ウィンドウへの誤爆」を構造的に防ぐ）。
 //!
-//! **未移行（次段のスコープ）**: `kp_restore_kana_from_half_width`
-//! （`runtime/key_pipeline.rs`）の復元リトライループ（`shift_conv_guard_gen`/
-//! `confirm_gate_deadline_override_ms` と密結合し、BUG-49 で複数回のレビューを
-//! 経て確立した挙動のため本コミットでは触れていない）。これは
-//! `set_ime_romaji_mode_with_target_async` を直接呼び続けている
-//! （`docs/known-bugs.md` ADR-084 追補参照）。よって INV-1 が求める「低レベル API を
-//! private にしてこの関数だけが呼べるようにする」というコンパイラ強制は、これら全ての
-//! 移行が完了するまで導入できない。
+//! **INV-14: 全 6 経路が移行完了（2026-08-08）。** 旧
+//! `set_ime_romaji_mode_with_target`/`_async`（宛先をライブクエリで自己決定する
+//! target 非対応の低レベル API）は `ime.rs` から削除済み。移行済み経路:
+//! `actuate_conv_mode`（本モジュール）、`cold_warmup.rs::run_start`、
+//! `executor.rs::dispatch_ime_set_open`（`set_ime_open_then_conv_for_target`、
+//! open と conv を同一 hwnd に対して行う特殊版）、`key_pipeline.rs` の
+//! `kp_stage_idle_conv_check`（BUG-08 ローマ字復元）・
+//! `kp_reset_to_hiragana_romaji_capsoff`（read-modify-write、read 側は
+//! `get_ime_conv_for_target`）・`kp_restore_kana_from_half_width`
+//! （shift-conv-guard 復元リトライループ、hwnd は `spawn_local` ブロック先頭で
+//! 1回だけ capture し全試行で使い回す — 毎試行 capture すると検証が
+//! 事実上 no-op 化するため。opus アドバーサリアルレビュー 2026-08-08）。
+//!
+//! **INV-1 は依然未達（本モジュールが単一窓口になっていない経路が残る）。**
+//! `kp_reset_to_hiragana_romaji_capsoff` は `actuate_conv_mode` を経由しない
+//! （`conv_mutation_allowed` ゲートも `unconfirm()` も通らない）。
+//! `ConvModeTarget` に read-modify-write 用の variant が無く、
+//! `actuate_conv_mode` 経由にすると `conv_mutation_allowed` 却下が新たに
+//! 効いて挙動が変わってしまうため、意図的に見送っている
+//! （`key_pipeline.rs` 該当箇所のコメント参照）。
+//!
+//! **スコープ外（Phase3 の対象）**: `kp_restore_kana_from_half_width` 内の
+//! scan 付き `VK_DBE_HIRAGANA` 注入は `SendInput` ベースであり、IMC write と
+//! 違って宛先 hwnd を指定できない（配送時点のフォーカス先へ届く）ため、
+//! `ActuationTarget` のターゲット同一性検証を構造的に適用できない。
 
 use super::Runtime;
 use crate::state::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason, TickMs};
@@ -44,7 +58,7 @@ impl Runtime {
     ///    以上、過去の期限切れ判定（IMC 不可読環境へのフォールバック）を持ち越す
     ///    理由がない。
     ///
-    /// 実際の Win32 書き込み（`set_ime_romaji_mode_with_target_async`）は非同期
+    /// 実際の Win32 書き込み（`ActuationTarget::capture` → `set_ime_conv_for_target`）は非同期
     /// （`spawn_local`）のまま行う。1〜3 が「書き込みと同一トランザクション」で
     /// 完結しさえすれば、実際の OS 反映が遅延すること自体は問題ない
     /// （ADR-084 §2 P1 の doc コメント参照）。

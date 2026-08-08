@@ -69,7 +69,9 @@ pub struct ConvTransition {
     /// 復元すべきか。awase の engine は romaji VK を出力するため、engine が open の間に
     /// IME がかな入力になると出力が壊滅する（外部注入 VK_KANA によるかなロック
     /// トグルで実発生、BUG-08）。呼び出し元は conv 権限 (conv_mutation_allowed) と
-    /// レート制限を確認した上で `set_ime_romaji_mode_with_target_async(None)` を送る。
+    /// レート制限を確認した上で `ActuationTarget` 経由で `set_ime_conv_for_target`
+    /// (`None`) を送る（ADR-086 §5 Phase1b、旧 `set_ime_romaji_mode_with_target_async`
+    /// は全経路移行完了に伴い削除済み）。
     ///
     /// steady-state（conv 不変）でも true を返す: 当初は `conv_mode_changed` 遷移時のみ
     /// 発火させていたが、roma→kana の変化検出はフォーカス変更時の refresh 等

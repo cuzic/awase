@@ -154,15 +154,22 @@ pub const MS_IME_READY_POLL_INTERVAL_MS: u64 = 10;
 /// する単発の待ち時間ではない。したがって導出根拠は「復元が始まってから完了
 /// するまでの合計時間」ではなく「1 回の試行が最大でどれだけかかりうるか」:
 ///
-/// - `set_ime_romaji_mode_with_target_async` は IMC write が最大2回
-///   （`ime.rs` の `send_ime_control` 呼び出し、各 50ms タイムアウト）
-///   = 最大 ~100ms。
+/// - ADR-086 INV-14（2026-08-08 追記）: `set_ime_conv_for_target` の
+///   `verify_still_current` が書き込み直前に `get_focused_hwnd_async`
+///   （`get_gui_thread_info_with_timeout`、30ms タイムアウト）を1回はさむ
+///   = 最大 ~30ms。
+/// - `set_ime_conv_for_target`（内部で `set_ime_romaji_mode_for_hwnd` を呼ぶ）は
+///   IMC write が最大2回（`ime.rs` の `send_ime_control` 呼び出し、各 50ms
+///   タイムアウト）= 最大 ~100ms。
 /// - 続く `RETRY_INTERVAL_MS`（160ms）の sleep。
 /// - 続く conv 読み取り（`get_ime_conversion_mode_raw_timeout`、10ms タイムアウト）。
 ///
-/// 1 試行の最大所要 ≈ 100+160+10 = 270ms（実務上の見積り上限 ~280ms）に対し、
+/// 1 試行の最大所要 ≈ 30+100+160+10 = 300ms（実務上の見積り上限 ~310ms）に対し、
 /// 800ms は次の試行が確実に override を再度押し出す前に期限切れしないための
-/// マージン（約 2.8 倍）である。MS-IME の Shift 単独タップ誤切替そのものの
+/// マージン（約 2.7 倍）である。ADR-086 移行前の見積りは verify の 30ms を含まず
+/// 270ms だったが、マージン比率が十分に大きい（2.7 倍）ため 800ms 自体は
+/// 実測なしに動かしていない（`.claude/rules/tuning-constants.md` 準拠）。
+/// MS-IME の Shift 単独タップ誤切替そのものの
 /// 実測タイミング（shift up 後 ~478ms 後の idle-conv-check で観測、
 /// `docs/known-bugs.md` BUG-15 参照）は `MAX_TRIES`（4 回）× `RETRY_INTERVAL_MS`
 /// を決める根拠であり、この定数の根拠ではない（Opus pass-5 レビュー指摘: 旧版の

@@ -1486,6 +1486,12 @@ impl Runtime {
             // という追補7の教訓を、hold 中より窓が長い持続トグルにも徹底するため、
             // `effective_open()==false` の場合は注入をスキップし IMC write のみに
             // 留める（フォーカス変更で他アプリに切り替わった直後等を想定）。
+            // ADR-086 INV-14 のスコープ注記: 以下の VK_DBE_HIRAGANA 注入は
+            // SendInput ベースであり、IMC write と違って宛先 hwnd を指定できない
+            // （SendInput は配送時点のフォーカス先へ届く）。ActuationTarget の
+            // ターゲット同一性検証はこの経路には構造的に適用できないため、
+            // 今回のスコープ外とする（ADR-086 §5 Phase3 で SendInput 経路の
+            // ターゲット保護を別途検討する）。
             if self.platform_state.ime.effective_open() {
                 let mut f2_inputs = Vec::with_capacity(3);
                 if prepend_synthetic_shift_up {
@@ -1521,7 +1527,7 @@ impl Runtime {
             // 注意: 半角英数中の conv 読み取りで conv_mode が HanAlpha に更新されている
             // 場合、imm_conv_target は None → ひらがな target になる（切替前がカタカナ
             // だった記憶は失われる。エッジケースとして許容）。
-            let target = self
+            let target_conv = self
                 .platform
                 .output
                 .conv_mode
@@ -1532,7 +1538,7 @@ impl Runtime {
                         | crate::imm::IME_CMODE_FULLSHAPE
                         | crate::imm::IME_CMODE_ROMAN,
                 );
-            log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target:08X})");
+            log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target_conv:08X})");
 
             // pass-5 レビュー指摘（blocking）: このリトライタスクは detached
             // (`spawn_local`) で、完了は Shift タップ間隔より遅れうる。起動時点の
@@ -1542,6 +1548,16 @@ impl Runtime {
             // 自分がもう override の所有者でないと分かり、上書きも
             // 無関係な conv write も一切行わずに終了する。
             let owner_gen = self.platform.output.shift_conv_guard_gen.get();
+            // ADR-086 INV-14: hwnd は起案時点（＝今、owner_gen 捕獲と同一の同期
+            // 区間）で1回だけ capture し、全リトライ試行で使い回す（opus
+            // アドバーサリアルレビュー 2026-08-08: 毎試行 capture は capture/verify
+            // が数 ms 差のライブクエリ2連発になりほぼ確実に一致するため INV-14 が
+            // 事実上 no-op 化する。1回の capture + 各試行での verify_still_current
+            // が正しい設計）。`ime_mode_focus_gen` は `shift_conv_guard_gen` と
+            // 同一イベント（`on_ime_mode_focus_changed`）で同時に bump されるため、
+            // フォーカス変更は既存の `still_owner` チェックで先に検知される
+            // （時間軸のフェンスは既存。ADR-086 が足すのは hwnd＝空間軸の検証）。
+            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
 
             win32_async::spawn_local(async move {
                 // MS-IME の誤切替は shift up の後いつ来るか不定（実測: 478ms 後の
@@ -1550,6 +1566,10 @@ impl Runtime {
                 // NATIVE が確認できた時点で打ち切る。
                 const RETRY_INTERVAL_MS: u32 = 160;
                 const MAX_TRIES: u32 = 4;
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!("[shift-conv-guard] capture 失敗（フォーカス無し） → 復元中止");
+                    return;
+                };
                 for attempt in 0..MAX_TRIES {
                     // ADR-084（BUG-49 追補2、Opus レビュー指摘1・pass-5 指摘）:
                     // リトライが続いている限り confirm-gate の猶予を「今から
@@ -1587,9 +1607,30 @@ impl Runtime {
                         );
                         return;
                     }
-                    let ok = crate::ime::set_ime_romaji_mode_with_target_async(Some(target)).await;
-                    if !ok {
-                        log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
+                    let outcome =
+                        crate::ime::set_ime_conv_for_target(target, Some(target_conv), || {
+                            crate::with_app(|runtime| {
+                                runtime.platform.output.ime_mode_focus_gen.get()
+                            })
+                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                        })
+                        .await;
+                    match outcome {
+                        crate::ime::ActuationOutcome::Written => {}
+                        crate::ime::ActuationOutcome::Failed => {
+                            log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
+                        }
+                        crate::ime::ActuationOutcome::Aborted(reason) => {
+                            // GenStale はこの直前の still_owner チェックとほぼ同じ条件
+                            // （ime_mode_focus_gen と shift_conv_guard_gen は同一イベントで
+                            // 同時に bump される）だが、念のための多重防御として残す。
+                            // TargetMoved は capture 後にフォーカスだけが動いた
+                            // （gen 更新が伴わない）ケースの検知。どちらも同じ
+                            // capture 済み target のまま次の試行を続ける（write は冪等）。
+                            log::warn!(
+                                "[shift-conv-guard] conv 復元 write #{attempt}: Aborted({reason:?})"
+                            );
+                        }
                     }
                     win32_async::sleep_ms(RETRY_INTERVAL_MS).await;
                     let conv = win32_async::offload(|| unsafe {

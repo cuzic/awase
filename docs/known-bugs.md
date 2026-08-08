@@ -5509,6 +5509,45 @@ wine 未導入のためこのサンドボックスでは実機相当の実行・
 （`kp_shift_conv_guard_key_down`）。関連: ADR-084（P1/INV-1/INV-2）、
 BUG-49 追補1・2（本追補の前提となった entry/restore の既存挙動）。
 
+### BUG-49 追補3（2026-08-08）: `kp_restore_kana_from_half_width` の復元リトライループを ADR-086 INV-14（ターゲット同一性）へ移行
+
+**内容:** `set_ime_romaji_mode_with_target_async`（ライブクエリ版、宛先を自己決定
+する低レベル API）への直接呼び出しを、[ADR-086](adr/086-force-write-trigger-and-target-identity.md)
+の `ActuationTarget::capture` → `set_ime_conv_for_target` 経由に置き換えた。
+
+**BUG-49 領域への影響評価:** リトライループの既存タイミング制御
+（`RETRY_INTERVAL_MS`=160ms・`MAX_TRIES`=4・`extend_confirm_gate_override`
+による猶予延長・`shift_conv_guard_gen` を使った `still_owner` チェック）は
+**一切変更していない**。`ActuationTarget::capture` はループの外（起案時点、
+`owner_gen` 捕獲と同一の同期区間）で1回だけ呼び、全試行で同じ target を使い回す。
+毎試行 capture する設計は当初検討したが、opus アドバーサリアルレビュー
+（2026-08-08）で「capture と verify が数 ms 差のライブクエリ2連発になり
+ほぼ確実に一致してしまい、INV-14 の検証が事実上 no-op 化する」と指摘され
+不採用にした。
+
+`ime_mode_focus_gen`（ADR-086 が使う世代）と `shift_conv_guard_gen`（本ループが
+使う世代）は同一イベント（`Output::on_ime_mode_focus_changed`）で同時に bump
+されるため、フォーカス変更は既存の `still_owner` チェックで先に検知される。
+ADR-086 が追加するのは hwnd（空間軸）の検証のみで、時間軸のフェンスは
+BUG-49 追補2の時点で既に存在していた。
+
+`SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`（800ms）のマージン導出（`tuning.rs`）に
+`verify_still_current` の hwnd クエリ分（最大 ~30ms）を加算したが、マージン
+比率が十分（2.7倍）なため定数値自体は実測なしに変更していない
+（`.claude/rules/tuning-constants.md` 準拠）。
+
+**検証:** cargo check/clippy --target x86_64-pc-windows-gnu --lib（警告ゼロ）、
+cargo test -p awase-windows --test architecture_guard（16件pass）。
+`kp_restore_kana_from_half_width` は実機フック依存で自動テスト不可
+（BUG-25 に明記の既存制約）。**Windows 実機での動作確認は未実施。**
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_restore_kana_from_half_width`）、`crates/awase-windows/src/ime.rs`
+（`ActuationTarget`/`set_ime_conv_for_target`）、`crates/awase-windows/src/tuning.rs`
+（`SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`）。関連:
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §2.3/§4 INV-14、
+BUG-59 とその追補（本移行の発端）。
+
 ## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
 
 **症状:** MS-IME（TSF-native、Windows Terminal / Chrome / UWP アプリ間でフォーカスが

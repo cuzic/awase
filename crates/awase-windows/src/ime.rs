@@ -779,41 +779,21 @@ pub async fn set_ime_romaji_mode_async() -> bool {
     offload_unsafe(|| unsafe { set_ime_romaji_mode() }).await
 }
 
-/// 目標 conv 指定付き `set_ime_romaji_mode`。
+/// 目標 conv 指定付き `set_ime_romaji_mode` の実体（hwnd 指定版）。
+///
+/// ADR-086 §5 Phase1b step6（2026-08-08）: 宛先をライブクエリで自己決定する
+/// `set_ime_romaji_mode_with_target`/`_async`（target identity を持たない、
+/// ADR-086 §1.2 欠陥1）は、全 6 呼び出し経路が [`ActuationTarget`]/
+/// [`set_ime_conv_for_target`] 経由へ移行完了したため削除した。この関数
+/// （`ime_wnd` 解決以降のロジックのみ）は [`set_ime_conv_for_target`]/
+/// [`set_ime_open_then_conv_for_target`] が hwnd 解決済みの状態で共有する
+/// 実体として残る。
 ///
 /// `target_conv` が `Some(v)` の場合は `v` をそのまま `ImmSetConversionStatus` に設定する。
 /// `None` の場合は現在の conv に ROMAN ビットを追加する（`set_ime_romaji_mode` 相当）。
 ///
 /// カタカナ系は `ConvMode::imm_conv_target()` が KATAKANA/FULLSHAPE/ROMAN を含む値を返すため、
 /// VK_DBE_HIRAGANA で失われたビットを正確に復元できる。
-///
-/// # Safety
-/// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
-#[must_use]
-pub unsafe fn set_ime_romaji_mode_with_target(target_conv: Option<u32>) -> bool {
-    // SAFETY: get_focused_hwnd は unsafe fn。BUG-55（set_ime_romaji_mode 参照）と同じ理由で
-    //         GetForegroundWindow ではなく get_focused_hwnd を使う。
-    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
-        return false;
-    };
-    // ADR-086 §5 Phase1a（診断のみ、挙動は変えない）: この関数は呼ばれた瞬間に
-    // get_focused_hwnd() をライブクエリして書き込み先を決める（target identity を
-    // 持たない、ADR-086 §1.2 欠陥1）。起案時点（呼び出し元が target_conv を計算した
-    // 時点）と実行時点でここに来る hwnd が変わっていないかを、将来の実機ソークで
-    // 突き合わせられるようにするための可視化ログ。挙動は変えない。
-    log::debug!(
-        "[imm-romaji] write target: hwnd={hwnd:?} class={} target={:?}",
-        crate::focus::classify::get_class_name_string(hwnd),
-        target_conv.map(|v| format!("0x{v:08X}")),
-    );
-    unsafe { set_ime_romaji_mode_for_hwnd(hwnd, target_conv) }
-}
-
-/// `set_ime_romaji_mode_with_target` の実体（hwnd 指定版）。
-///
-/// `hwnd` の解決（ライブクエリ or [`ActuationTarget`] 経由の検証済み値）を
-/// 呼び出し元の責務として切り離すため、`ime_wnd` 解決以降のロジックだけを
-/// 独立させた（ADR-086 §2.3 P7、[`set_ime_conv_for_target`] と共有する）。
 ///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
@@ -836,11 +816,6 @@ unsafe fn set_ime_romaji_mode_for_hwnd(hwnd: HWND, target_conv: Option<u32>) -> 
         );
     }
     success
-}
-
-/// `set_ime_romaji_mode_with_target` の async 版（ワーカースレッドで実行）
-pub async fn set_ime_romaji_mode_with_target_async(target_conv: Option<u32>) -> bool {
-    offload_unsafe(move || unsafe { set_ime_romaji_mode_with_target(target_conv) }).await
 }
 
 /// クロスプロセスで IME の変換モードをひらがなに強制する。

@@ -817,42 +817,26 @@ fn ime_open_close_functions_send_expected_vk_codes() {
     );
 }
 
-/// ADR-086 §4 INV-14/INV-19: `set_ime_romaji_mode_with_target_async`（実行時に
-/// `get_focused_hwnd()` をライブクエリして書き込み先を決める、ターゲット同一性を
-/// 持たない低レベル API）を直接呼んでいる箇所数をファイルごとに固定する。
+/// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い更新）:
+/// `set_ime_romaji_mode_with_target`/`_async`（実行時に `get_focused_hwnd()` を
+/// ライブクエリして書き込み先を決める、ターゲット同一性を持たない低レベル API）
+/// は `ime.rs` から**削除済み**。このテストは再導入されないことを固定する
+/// tripwire として残す（`known_sites` は空 = 出現数 0 が唯一の正しい状態）。
 ///
 /// この関数は起案時点と実行時点で書き込み先ウィンドウが変わっても検知できない
 /// （ADR-086 §1.2 欠陥1）。BUG-59 追補（`9c102b02`）は `platform.rs` に7番目の
 /// 直接呼び出しを追加したが、当時このテストが存在せず検知できなかった（実機で
 /// LINE の全打鍵が「い」になる等の実害が出て revert 済み、`docs/known-bugs.md`
-/// BUG-59 追補参照）。
-///
-/// このテストが失敗したら: (a) 新しい呼び出しは
-/// `runtime/conv_actuation.rs::actuate_conv_mode`（ADR-084 INV-1 単一窓口）を
-/// 経由できないか検討する。(b) やむを得ず直接呼ぶ場合は、
-/// `unmigrated_conv_write_list_is_monotonically_decreasing` が固定している
-/// `conv_actuation.rs` の module doc「未移行」リストに追記してから、この関数の
-/// `known_sites` を更新すること。ADR-086 §5 Phase1b で `ActuationTarget` 経由へ
-/// 段階移行するにつれて、このテストの期待値は減っていくのが正しい変化である
-/// （増える変化は原則として拒否する）。
+/// BUG-59 追補参照）。このテストが失敗したら、新しい呼び出しは
+/// `ActuationTarget::capture` → `set_ime_conv_for_target`/
+/// `set_ime_open_then_conv_for_target` 経由に置き換えること（低レベル関数を
+/// 再実装しないこと）。
 #[test]
 fn conv_write_call_sites_are_target_explicit() {
     const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
-    // ADR-086 Phase1b で ActuationTarget 経由へ移行するまでの既知の呼び出し元。
-    // "src/ime.rs" 自体（関数定義 + async ラッパー内の1回の委譲呼び出し）は
-    // 「呼び出し元」ではなく定義そのものなので対象外。残り1ファイルが
-    // 「未移行」（conv_actuation.rs の module doc 参照）。
-    let known_sites: &[(&str, usize)] = &[
-        // conv_actuation.rs / cold_warmup.rs（#19）・executor.rs（#20）は
-        // ADR-086 Phase1b で ActuationTarget::capture + set_ime_conv_for_target
-        // 経由へ移行済み。
-        // key_pipeline.rs: 3箇所中2箇所（BUG-08 ROMAN復元 #21、
-        // kp_reset_to_hiragana_romaji_capsoff #22）を移行済み、残り1箇所
-        // （kp_restore_kana_from_half_width）は #23 で対応予定。
-        ("src/runtime/key_pipeline.rs", 1),
-    ];
+    let known_sites: &[(&str, usize)] = &[];
 
-    // BUG-59 追補（`9c102b02`）は known_sites のどのファイルにも無かった
+    // BUG-59 追補（`9c102b02`）は当時の known_sites のどのファイルにも無かった
     // `platform.rs` に直接呼び出しを追加した。固定リストへの grep だけでは
     // 「新しいファイルに呼び出しが増えた」ケースを検知できないため、
     // `src/` 全体を走査して実際に呼び出しを含むファイル集合を求め、
@@ -877,79 +861,61 @@ fn conv_write_call_sites_are_target_explicit() {
 
     assert_eq!(
         files_with_calls, expected,
-        "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
+        "`{NEEDLE}` を含むファイル集合/出現数が想定（空）と異なります。\n\
          想定: {expected:?}\n実際: {files_with_calls:?}\n\
-         新しいファイルでの直接呼び出しは、ADR-086 §4 INV-14/INV-19 に従い \
-         runtime/conv_actuation.rs::actuate_conv_mode（ADR-084 INV-1 単一窓口）\
-         経由への移行を優先検討すること。やむを得ず直接呼ぶ場合は \
-         conv_actuation.rs の module doc「未移行」リストへの追記とセットで \
-         この known_sites を更新すること（BUG-59 追補は platform.rs への \
-         追加時にこの手順を踏まなかった）。"
+         `set_ime_romaji_mode_with_target(_async)` は ADR-086 §5 Phase1b step6 \
+         で削除済みの低レベル API です。再実装せず、`ActuationTarget::capture` \
+         → `set_ime_conv_for_target`/`set_ime_open_then_conv_for_target` \
+         経由で書き込むこと。"
     );
 }
 
-/// ADR-086 §4 INV-19: `conv_actuation.rs` の module doc が列挙する「未移行」経路が、
-/// **実測した**直接呼び出しファイル集合と双方向に一致し続けていることを固定する。
+/// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い新設）:
+/// `ActuationTarget::capture` の呼び出し箇所数をファイルごとに固定する。
 ///
-/// `9c102b02`（BUG-59 追補）は `platform.rs` に直接呼び出しを追加したが、この
-/// module doc のリストには一度も載らなかった。ハードコードされたファイル名の
-/// 存在チェックだけでは「未知の新しいファイルに呼び出しが増えた」ケースを
-/// 検知できない（doc 側に無い名前を探しようがないため）ので、
-/// `conv_write_call_sites_are_target_explicit` と同じ全ファイル走査で
-/// 「実際に呼び出しを持つファイル」を求め、doc の記載と突き合わせる:
-///
-/// 1. 実際に呼び出しを持つファイルは、必ず doc に言及されていること
-///    （新規ファイルへの呼び出し追加を検知）。
-/// 2. doc が言及しているファイルは、必ず実際にまだ呼び出しを持つこと
-///    （移行済みなのに doc の記載を消し忘れる = 名前の「単調減少」の逆行を検知）。
+/// 旧 `set_ime_romaji_mode_with_target_async` の出現数チェック
+/// （`conv_write_call_sites_are_target_explicit`）は、そのライブクエリ版
+/// 自体が削除された今、「新しい force-write 経路が追加されたこと」を検知する
+/// 力を失った（呼び出す対象が無いので誰も呼べない）。代わりに
+/// `ActuationTarget::capture` — 全ての target-aware 書き込みが必ず通る
+/// 唯一の入口 — の呼び出し箇所数を固定することで、同じ役割
+/// （BUG-59 追補のような「新しい経路が未追跡のまま増える」検知）を引き継ぐ。
 #[test]
-fn unmigrated_conv_write_list_is_monotonically_decreasing() {
-    const NEEDLE: &str = "set_ime_romaji_mode_with_target_async(";
-    let path = "src/runtime/conv_actuation.rs";
-    let doc = read_crate_file(path);
-    let idx = doc.find("未移行（次段のスコープ）").unwrap_or_else(|| {
-        panic!("{path} の module doc に「未移行（次段のスコープ）」セクションが見つかりません")
-    });
-    let unmigrated_doc = &doc[idx..];
+fn actuation_target_capture_call_sites_are_accounted_for() {
+    const NEEDLE: &str = "ActuationTarget::capture(";
+    let known_sites: &[(&str, usize)] = &[
+        ("src/runtime/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口）
+        ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
+        ("src/runtime/executor.rs", 1),       // dispatch_ime_set_open（ImmCross async path）
+        ("src/runtime/key_pipeline.rs", 3), // kp_stage_idle_conv_check(BUG-08) / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width
+    ];
 
-    // conv_actuation.rs 自身（ADR-084 P1 の単一窓口の実装）を除く、実際に
-    // 直接呼び出しを持つファイルを全ファイル走査で求める。
-    let files_with_calls: Vec<String> = list_src_files()
-        .into_iter()
-        .filter(|file| file != path)
-        .filter(|file| {
-            let content = read_crate_file(file);
-            let production = production_code_only(&content);
-            count_real_calls(production, NEEDLE) > 0
-        })
-        .collect();
-
-    for file in &files_with_calls {
-        let basename = Path::new(file)
-            .file_name()
-            .unwrap_or_else(|| panic!("{file} にファイル名部分がありません"))
-            .to_string_lossy();
-        assert!(
-            unmigrated_doc.contains(basename.as_ref()),
-            "{path} の module doc「未移行」リストに {file}（実際に直接呼び出しを \
-             持つファイル）への言及が見つかりません。新しいファイルで \
-             `set_ime_romaji_mode_with_target_async` を直接呼ぶ場合は、ADR-086 \
-             §4 INV-19 に従い module doc への追記が必須です。"
-        );
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
     }
+    files_with_calls.sort();
 
-    // 現時点で「未移行」リストに残るのは key_pipeline.rs のみ（#19/#20 で
-    // conv_actuation.rs/cold_warmup.rs/executor.rs は移行済み）。
-    let filename = "key_pipeline.rs";
-    let still_has_calls = files_with_calls
+    let mut expected: Vec<(String, usize)> = known_sites
         .iter()
-        .any(|f| Path::new(f).file_name().is_some_and(|n| n == filename));
-    assert!(
-        still_has_calls,
-        "{path} の module doc「未移行」リストは {filename} を挙げていますが、\
-         実際にはこのファイルに `set_ime_romaji_mode_with_target_async` の \
-         直接呼び出しがもう存在しません。移行が完了したのであれば、module doc \
-         からこの参照を削除すること（conv_write_call_sites_are_target_explicit \
-         の期待値も同じコミットで更新すること）。"
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
+         想定: {expected:?}\n実際: {files_with_calls:?}\n\
+         新しい force-write 経路を追加する場合は ActuationTarget::capture を \
+         起案時点（spawn_local ブロック先頭、他の await より前）で1回呼び、\
+         この known_sites を更新すること。毎試行 capture するループは検証を \
+         事実上 no-op 化するため避けること（opus アドバーサリアルレビュー \
+         2026-08-08、key_pipeline.rs::kp_restore_kana_from_half_width 参照）。"
     );
 }
