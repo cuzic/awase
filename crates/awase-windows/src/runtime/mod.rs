@@ -813,25 +813,20 @@ impl Runtime {
         // 課すもので、この試行回数カウンタには適用されない）。
         const FORCE_OPEN_FAILED_RETRY_LIMIT: u8 = 2;
 
-        let Some((armed_gen, attempts)) = self.force_open_pending else {
-            return;
-        };
-        if !(self.engine.is_user_enabled()
-            && self.platform_state.ime.is_eligible_for_ime_force_on())
-        {
-            return;
-        }
+        let armed = self.force_open_pending;
+        let eligible = self.engine.is_user_enabled()
+            && self.platform_state.ime.is_eligible_for_ime_force_on();
+        let now = crate::hook::current_tick_ms();
+        let ms_since_last = self.last_force_open_ms.map(|last| now.saturating_sub(last));
+        let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
         // M3: 実送信のレート制限。フォーカスチャーン環境で毎打鍵ごとに
         // 再武装→消費が起きても、実際の apply は ime_poll_interval_ms
         // 間隔まで間引く。掛かった場合は武装を維持し、次のキーイベントで
         // 再試行する（破棄すると BUG-16 型のリテラル化取りこぼしに直結する）。
-        let now = crate::hook::current_tick_ms();
-        if let Some(last) = self.last_force_open_ms {
-            let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
-            if now.saturating_sub(last) < interval_ms {
-                return;
-            }
+        if !should_attempt_force_open(armed.is_some(), eligible, ms_since_last, interval_ms) {
+            return;
         }
+        let (armed_gen, attempts) = armed.expect("should_attempt_force_open が true の時点で armed は Some");
         // ここから実際に消費する（以降の早期 return は武装を戻さない限り再武装しない）。
         self.force_open_pending = None;
         // 時間軸フェンス: 消費直前（上の各種チェック）から apply 直前までの間に
@@ -855,17 +850,12 @@ impl Runtime {
         // アドバーサリアルレビュー）を受けて Failed も試行回数上限付きで
         // 再武装する——周期フォールバックを撤去した以上、Failed を一切
         // 再武装しないと次の FocusChange まで永久に迂回できなくなるため。
-        match outcome {
-            awase::platform::ImeOpenOutcome::UnsafeToToggle => {
-                self.force_open_pending = Some((armed_gen, attempts));
-            }
-            awase::platform::ImeOpenOutcome::Failed
-                if attempts < FORCE_OPEN_FAILED_RETRY_LIMIT =>
-            {
-                self.force_open_pending = Some((armed_gen, attempts + 1));
-            }
-            _ => {}
-        }
+        self.force_open_pending = next_force_open_pending_after_outcome(
+            armed_gen,
+            attempts,
+            outcome,
+            FORCE_OPEN_FAILED_RETRY_LIMIT,
+        );
     }
 
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
@@ -1508,6 +1498,47 @@ unsafe fn cancel_ime_composition() {
     );
 }
 
+// ── ADR-086 Phase 3: force_open_pending 消費判定（純粋関数、L4 対応）──
+//
+// `consume_force_open_pending` の判定ロジックのうち、Win32/`Runtime` に
+// 依存しない部分をここへ切り出す。`Runtime` を構築せずに単体テストできる
+// （`.claude/rules/fix-requires-evidence.md` (a)、Phase 2 が `Output` 側に
+// 持つ同種のテストと対称）。
+
+/// `consume_force_open_pending` が実際に `force_on_and_correct_romaji` を
+/// 呼んでよいかを判定する。`armed`/`eligible` が false、またはレート制限に
+/// 掛かっている（`ms_since_last_force_open` が `poll_interval_ms` 未満）
+/// 場合は false——このとき呼び出し元は武装を維持すること。
+fn should_attempt_force_open(
+    armed: bool,
+    eligible: bool,
+    ms_since_last_force_open: Option<u64>,
+    poll_interval_ms: u64,
+) -> bool {
+    if !armed || !eligible {
+        return false;
+    }
+    ms_since_last_force_open.is_none_or(|elapsed| elapsed >= poll_interval_ms)
+}
+
+/// `force_on_and_correct_romaji` の outcome を受けて、次の `force_open_pending`
+/// 状態を決める。`UnsafeToToggle` は無条件に再武装、`Failed` は試行回数
+/// （`failed_retry_limit` 未満のときのみ）付きで再武装、それ以外
+/// （`Applied`/`FallbackSent`/`AlreadyMatched`）は消費済みのままクリアする。
+fn next_force_open_pending_after_outcome(
+    armed_gen: u32,
+    attempts: u8,
+    outcome: awase::platform::ImeOpenOutcome,
+    failed_retry_limit: u8,
+) -> Option<(u32, u8)> {
+    use awase::platform::ImeOpenOutcome;
+    match outcome {
+        ImeOpenOutcome::UnsafeToToggle => Some((armed_gen, attempts)),
+        ImeOpenOutcome::Failed if attempts < failed_retry_limit => Some((armed_gen, attempts + 1)),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod layout_entry_tests {
     use super::LayoutEntry;
@@ -1535,6 +1566,93 @@ mod layout_entry_tests {
         assert_eq!(
             LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"),
             0
+        );
+    }
+}
+
+/// ADR-086 Phase 3: `force_open_pending` 消費判定の単体テスト（L4 対応）。
+#[cfg(test)]
+mod force_open_pending_tests {
+    use super::{next_force_open_pending_after_outcome, should_attempt_force_open};
+    use awase::platform::ImeOpenOutcome;
+
+    // ── should_attempt_force_open ──
+
+    #[test]
+    fn attempts_when_armed_eligible_and_never_sent_before() {
+        assert!(should_attempt_force_open(true, true, None, 500));
+    }
+
+    #[test]
+    fn skips_when_not_armed() {
+        assert!(!should_attempt_force_open(false, true, None, 500));
+    }
+
+    #[test]
+    fn skips_when_not_eligible() {
+        assert!(!should_attempt_force_open(true, false, None, 500));
+    }
+
+    #[test]
+    fn skips_when_rate_limited() {
+        // 前回送信から 100ms しか経っていないのに poll_interval_ms=500。
+        assert!(!should_attempt_force_open(true, true, Some(100), 500));
+    }
+
+    #[test]
+    fn attempts_when_rate_limit_interval_elapsed() {
+        assert!(should_attempt_force_open(true, true, Some(500), 500));
+        assert!(should_attempt_force_open(true, true, Some(600), 500));
+    }
+
+    // ── next_force_open_pending_after_outcome ──
+
+    #[test]
+    fn unsafe_to_toggle_always_rearms_without_consuming_attempts() {
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::UnsafeToToggle, 2),
+            Some((7, 0))
+        );
+        // 試行回数上限に達していても UnsafeToToggle は無条件に再武装する。
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 2, ImeOpenOutcome::UnsafeToToggle, 2),
+            Some((7, 2))
+        );
+    }
+
+    #[test]
+    fn failed_rearms_with_incremented_attempts_until_limit() {
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::Failed, 2),
+            Some((7, 1))
+        );
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 1, ImeOpenOutcome::Failed, 2),
+            Some((7, 2))
+        );
+    }
+
+    #[test]
+    fn failed_gives_up_once_retry_limit_reached() {
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 2, ImeOpenOutcome::Failed, 2),
+            None
+        );
+    }
+
+    #[test]
+    fn applied_and_already_matched_clear_without_rearming() {
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::Applied, 2),
+            None
+        );
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::AlreadyMatched, 2),
+            None
+        );
+        assert_eq!(
+            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::FallbackSent, 2),
+            None
         );
     }
 }
