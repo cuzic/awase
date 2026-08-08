@@ -6929,9 +6929,51 @@ Windows 実機での検証が必須。
 3. 1 打鍵目のリテラル化（`bあ`/`korede` 系）が増えないか。
 4. `UnsafeToToggle`（Win キー押下中等）による再武装の頻度。
 
+**追補3（2026-08-08、2回目 opus アドバーサリアルレビュー）: Phase 3 実装の
+訂正 + item 0 未達の記録。**
+
+Phase 3 実装完了直後、実装内容そのものを2回目のアドバーサリアルレビューに
+かけた結果、High 2件・Medium 5件・Low 4件、レビュー中の新規指摘2件を検出し、
+順次修正した（詳細な経緯は
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §7-11）。
+特に記録しておくべき事実:
+
+- **ADR item 0（`ime_controller.rs` の同期ライブクエリ IMC write）は
+  未移行のまま記録のみで item 1 を先行投入していた**——item 3 着手前に
+  必須としていた自ら定めた前提を満たせていなかった。この同期 IMC write
+  （実測根拠は `tuning.rs` の導出コメントより最大 ~100ms）は force-ON
+  発火のたびに打鍵ホットパスに乗る。非同期化（`ImeOpenStrategy::apply`
+  自体の非同期化）は Phase 3 のスコープを超える大規模改修のため、
+  この事実を記録した上で見送りを維持している。
+- 消費点の配置ミス（`kp_stage_focus_probe` より前だったため、フォーカス
+  変更後 1 打鍵目を必ず取りこぼし 2 打鍵目で発火する）を修正。
+- 消費点を settle ガード（`ime_apply_should_defer`）で守る当初設計は、
+  `kp_stage_focus_probe` の後ろに置くと構造的に無効化される（barrier 消費
+  後は時間に関わらず常に false）ため、Alt+Tab 中間ウィンドウへの誤射防止
+  （2026-07-05 修正）が意図せず無効化されるところだった。入力意図の
+  直接判定（KeyDown・非注入・修飾キー非押下・IME モードキー自体を除外）
+  へ置き換えた。
+- 周期レート制限撤去がフォーカスチャーン環境（Chrome 連続フォーカス
+  イベント=BUG-37、UWP 2段フォーカス、通知フォーカスチャーン=BUG-57）で
+  撤去前より高頻度（20〜50ms 間隔）の force-ON 連打を招く恐れがあったため、
+  実送信のレート制限を追加した。
+- force-ON が `note_explicit_ime_action` を呼んでおらず
+  `kp_stage_idle_conv_check` の汚染防止ガードを素通りしていた問題、
+  および force-ON 経路が常に `belief_input_mode: Unknown` を使うため
+  `ObservedKana` 保護が一度も効いていなかった問題を修正した。
+
+**実機ソークで確認すべき項目に追加**（上記1〜4に加えて）:
+5. force-ON 1回あたりの `kp_run_inner` 滞在時間（item 0 未移行の影響、
+   ~100ms 程度が乗る想定）。
+6. Alt+Tab で Tab を連打したとき、force-ON（`ForcePolicyResend`）ログが
+   中間ウィンドウ宛に出ていないか。
+7. TsfNative × force で `[drift] correction:` が周期で実際に発火するか
+   （`reschedule_ime_refresh` 例外復元の効果確認）。
+
 **関連:** BUG-59 とその追補（同時期の報告、ターゲット競合の疑い）、BUG-08
 （外部注入 `VK_KANA` による JIS かな化の既知パターン）、
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §1.3（未確定の
 仮説として同じ整理を記載）・§5 Phase 2（MS-IME で force-write が初めて発火する
-実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2参照）。
+実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2・3参照）・
+§7-11（2回目レビューの詳細な経緯）・§7-12（M5 の未解決論点）。
 

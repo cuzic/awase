@@ -7,10 +7,20 @@ Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）、Ph
 （conv 軸の INV-15 是正、`force_pending` による arm-on-focus /
 fire-on-intent）、Phase 3（open/close 軸への同適用、`force_open_pending`。
 item 3 の SendInput ターゲット検証のみ INV-13 の例外として撤退）は
-実装完了（2026-08-08）。Phase 2/3 とも実機ソーク未実施（測定項目は
-§5 Phase 2/Phase 3、タスク #17 と同一セッションで実施予定。Phase 3 の
-ソークは #17 の**後に**別セッションで行い、conv 軸/open 軸の副作用を
-切り分けること）。Phase 4（コンパイラ強制）は未着手。
+実装完了（2026-08-08）。**item 0（`ime_controller.rs` の同期ライブクエリ
+IMC write）は未移行のまま記録のみで item 1 を先行投入した**——当初
+「item 3 着手前に必須」としていた前提を満たせていない。この同期 IMC write
+（実測根拠は `tuning.rs` の導出コメントより最大 ~100ms）は force-ON 発火の
+たびに打鍵ホットパスに乗る（§5 Phase 3 item 0 参照）。Phase 2/3 とも
+実機ソーク未実施（測定項目は §5 Phase 2/Phase 3、タスク #17 と同一
+セッションで実施予定。Phase 3 のソークは #17 の**後に**別セッションで行い、
+conv 軸/open 軸の副作用を切り分けること）。Phase 4（コンパイラ強制）は
+未着手。
+
+**2回目 opus アドバーサリアルレビュー（2026-08-08）で Phase 3 実装に
+High 2件・Medium 5件・Low 4件、さらにレビュー中に新規 2件（force-ON が
+idle-conv-check の汚染防止ガードを素通りする／`ObservedKana` 保護が
+force-ON 経路では常に無効）を検出、順次修正中。詳細は §7-11。**
 いずれも Windows 実機での動作確認は未実施。**
 
 本 ADR は個別バグの修正手順書ではなく、**以後の実装判断を評価するための基準**である。
@@ -934,21 +944,75 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
    - 消費点は **`runtime/key_pipeline.rs::kp_run_inner`**（`&mut Runtime` を持つ
      全キーイベントの唯一の入口）。`try_hold_key`（TsfGate hold）の早期 return と
      ime-off-rescue のネスト再入（`skip_rescue_defer=true`）**より後**、
-     `build_input_context` **より前**に置くこと。ここより前で消費すると、
-     hold されたキーで武装だけ消費され、実際の打鍵は再処理時になる
-     （force だけ先に飛んで打鍵が来ない——Phase 2 の「早期 return の後ろにあって
-     到達不能だった」の裏返し）。
-   - 消費直前と `apply_ime_open_with_belief` 呼び出し直前の2点で
-     `ime_mode_focus_gen` を照合する時間軸フェンスを入れる（item 3 で
-     空間軸検証を諦める分の代替、下記参照）。
-   - `ImeOpenOutcome::UnsafeToToggle`（Win キー押下中）は再武装する。
-     `Failed`（Win32 呼び出し自体の失敗）は再武装しない（Phase 2 の
-     `consume_force_pending_and_actuate` と同じスコープ判断）。
+     `kp_stage_focus_probe` → `kp_stage_idle_conv_check` →
+     `kp_stage_shadow_ime_toggle` の**後**、`build_input_context` **より前**に
+     置くこと（**訂正、2026-08-08 2回目 opus アドバーサリアルレビュー**:
+     当初は「`try_hold_key`/ime-off-rescue より後」とだけ書いていたが、それだけ
+     だと `kp_stage_focus_probe` より前に置いてしまい、`kp_stage_focus_probe` が
+     one-shot で消費する `input_barrier` が未消費のまま `ime_apply_should_defer`
+     が真になり続け、**フォーカス変更後の 1 打鍵目を必ず取りこぼして 2 打鍵目で
+     発火する**という、Phase 3 が解決しようとした症状をそのまま 1 打鍵分だけ
+     再現するバグを生んだ）。
+   - **`ime_apply_should_defer()`（settle ガード）は消費点では呼ばない**
+     （**訂正**: 当初はこのガードを流用する想定だったが、`kp_stage_focus_probe`
+     の後ろでは `input_barrier` が既に消費済みのため settle 判定が構造的に
+     常に false になり「ガードを呼んでいるつもり」で実質何も守っていない
+     死んだ条件になる）。代わりに、消費条件そのものを「本物の入力意図」に
+     直接紐づける: `KeyDown` かつ `!event.injected`（BUG-14: MS-IME が
+     毎打鍵で注入する `VK_KANA` 等を除外）かつ Ctrl/Alt/Win 修飾キー非押下
+     （Alt+Tab 等のショートカットは text-input 意図ではない）かつ、その
+     キー自体が IME モードキー（sync/shadow アクション対象）ではないこと。
+     settle ガードが本来防いでいた「フォーカスがまだ確定していない中間
+     ウィンドウ（`XamlExplorerHostIslandWindow` 等）への誤射」（2026-07-05
+     修正）は、この「打鍵が来た＝ユーザーが打とうとしている窓が確定して
+     いる」という直接判定で代替する。
+   - **force-ON は `Output::note_explicit_ime_action` を呼ぶこと**
+     （**追加、2回目レビュー新規指摘**）。`kp_stage_idle_conv_check` の
+     3 つの汚染再検証ガード（shift ガード・`last_explicit_ime_action_ms`
+     一致・`last_send` 一致）は、awase 自身が能動的に IME へ書き込んだ
+     ことをこのフラグで判定する。force-ON の同期 IMC write を呼ばずに
+     いると、Phase 3 で `kp_stage_idle_conv_check` の隣（同一イベント内）に
+     移動した結果、force-ON 自身の書き込みが「外部観測」として idle-conv-check
+     に誤読される衝突が構造的に起きる。
+   - **`ObservedKana` 保護を効かせること**（**追加、2回目レビュー新規指摘**）。
+     `apply_ime_open_with_belief(true, None, belief)` は内部で
+     `belief_input_mode: InputModeState::Unknown` 固定の view を作るため、
+     `MsImeDirectStrategy`/`ImmCrossProcessStrategy` の「ユーザーが意図的に
+     かな入力を選んでいれば romaji 復元で上書きしない」ガードが force-ON
+     経路では一度も効かない。`Runtime::shadow_ime_control_view()` 相当
+     （`belief_input_mode = input_mode()`）を使う経路に変更すること。
+   - 消費直前の1点で `ime_mode_focus_gen` を照合する（**訂正**: 当初「消費直前と
+     apply 直前の2点で照合」としていたが、`ime_mode_focus_gen` を進める唯一の
+     経路の唯一の呼び出し元が武装の直前1行であるため、`armed_gen != current`
+     は構造的に到達不能——武装される瞬間＝gen が進む瞬間なので、2点目の照合は
+     常に1点目と同じ結果にしかならない。実装は1点のみの照合で十分であり、
+     これは「将来この経路が非同期化された場合の回帰検知用の確認」という
+     位置づけにとどまる、実効的なターゲット検証ではない）。
+   - `ImeOpenOutcome::UnsafeToToggle`（Win キー押下中）は無条件に再武装する
+     （外部条件＝Win キー解放で必ず終わるため試行回数上限は不要）。
+     `Failed`（Win32 呼び出し自体の失敗）も再武装するが、**試行回数上限
+     （armed_gen ごとに2回）を付ける**（**訂正**: 当初「Failed は再武装しない」
+     としていたが、これは「次の周期 refresh が拾う」という前提に基づいており、
+     その周期経路自体を本 item で撤去したため前提が崩れている。かといって
+     無制限に再武装すると、`Failed` が恒久的に返る環境で打鍵のたびに
+     同期 IMC write ~100ms を伴う再試行が延々と続く。ADR-080 の
+     `Actuation.attempts`/`FeedbackPolicy::Blind{max_attempts}` と同型の
+     有限リトライで折り合いをつける）。
    - **既存の `AppliedImeState` スロットル**（`Optimistic(true)|Confirmed{open:
      true}` なら送らない、force 分岐には適用されない）は新しい打鍵時消費でも
      引き続き読まない——force の趣旨は「applied が誤って ON にラッチされた
      状態を破ること」であり、このスロットルを読むと趣旨と矛盾する。後日
      「重複ガードだ」として誤って足されないよう、コードに否定コメントを残す。
+   - **実送信のレート制限**（**追加、2回目レビュー指摘 M3**）: フォーカス
+     チャーン環境（Chrome 連続フォーカスイベント、UWP 2段フォーカス、
+     通知フォーカスチャーン）下で高速タイピングすると「毎打鍵で再武装→
+     毎打鍵で発火」＝20〜50ms 間隔になり、§1.2 欠陥4 が実機記録した
+     `9c102b02` の連打問題と同じレート（周期版より悪化）で再現しうる。
+     `ime_poll_interval_ms`（既定500ms、撤去した `last_force_on_resend_ms`
+     が与えていた下限と同一値、新規タイミング定数は導入しない）を実送信の
+     下限間隔として使う。レート制限に掛かった場合は**消費せず武装を維持**
+     する（他の武装維持分岐と同じ扱い。破棄すると BUG-16 型のリテラル化
+     取りこぼしに直結するため）。
    - **段階導入**: まず本項目（案 C、周期を落として打鍵に紐づける）だけを
      入れて実機ソーク（§5 Phase 3 実機ソーク参照）で「フォーカス不変のまま
      IME が OFF に落ちる」ケースが実際に再現するかを測る。再現したら案 F
@@ -1007,10 +1071,18 @@ Phase 2 の実装自体には不要になったが ADR-084 側の義務として
      `ime_controller.rs` の `set_ime_romaji_mode()`（IMC write）は item 0 で
      別途処理し、撤退対象に含めない。
    - 空間軸の検証を諦める代わりに、item 1 で述べた**時間軸フェンス**
-     （消費点と apply 直前の2点で `ime_mode_focus_gen` を照合）を入れる。
-     空間軸が構造的に取れない経路では時間軸だけでも入れる方が良い、という
-     理由を明記する。UWP の2段フォーカス（親→InputSite、§1.2）で1操作あたり
-     複数回 FocusChange が来るケースを実際に弾ける。
+     （消費直前に `ime_mode_focus_gen` を照合）を入れる。空間軸が構造的に
+     取れない経路では時間軸だけでも入れる方が良い、という理由を明記する。
+     **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー）**: 当初
+     「UWP の2段フォーカスで1操作あたり複数回 FocusChange が来るケースを
+     実際に弾ける」としていたが、これは誤り。`ime_mode_focus_gen` を進める
+     唯一の経路（`Output::on_ime_mode_focus_changed`）の唯一の呼び出し元は
+     武装処理の直前1行であるため、gen が進む瞬間＝武装が最新化される瞬間が
+     常に一致し、`armed_gen != current` という不一致状態は構造的に到達
+     不能——2段フォーカスは武装を**弾く**のではなく**上書きして最新化する**
+     だけである。この時間軸フェンスは「弾く」効果を持たず、将来この経路が
+     非同期化された場合の回帰検知用の確認にとどまる（実効的なターゲット
+     検証ではない）。
    - この「SendInput にはターゲット検証を適用できない」旨は
      `runtime/key_pipeline.rs`（`VK_DBE_HIRAGANA` 注入について）に既に同趣旨の
      注記が存在する。本 ADR を SSOT とし、コード側のコメントは本節への
@@ -1028,10 +1100,17 @@ ADR-084 INV-7 と同じ姿勢）。
 WezTerm）× MS-IME / GJI の4組、(b) 周期撤去後に「フォーカス不変のまま IME が
 OFF」（2026-08-06 実機報告のロック解除後静寂期パターン）が再現するか、
 (c) 1打鍵目のリテラル化（`bあ`/`korede` 系）が増えないか、(d)
-`UnsafeToToggle`/gen 不一致による再武装頻度。**Phase 2 のソーク（#17）を先に
-単独で回してベースラインを取ってから、本 Phase の消費点コミットをマージする
-こと**——両者を同一セッションで一緒に測ると、上記副作用が conv 軸由来か
-open 軸由来か切り分けられなくなる。
+`UnsafeToToggle`/gen 不一致による再武装頻度、(e) **force-ON 1回あたりの
+`kp_run_inner` 滞在時間**（item 0 未移行の同期 IMC write により ~100ms 程度が
+乗る想定、§5 Phase 3 item 0 参照）、(f) **Alt+Tab で Tab を連打したとき、
+force-ON（`ForcePolicyResend`）ログが中間ウィンドウ（`XamlExplorerHostIslandWindow`
+等）宛に出ていないか**（`[apply-ime]` のクラス名と併せて確認。item 1 の
+入力意図ガードが機能しているかの確認）、(g) **TsfNative × force で
+`[drift] correction:` が周期で実際に発火するか**（item 1 の
+`reschedule_ime_refresh` 例外復元が意味を持ったかの確認）。
+**Phase 2 のソーク（#17）を先に単独で回してベースラインを取ってから、本
+Phase の消費点コミットをマージすること**——両者を同一セッションで一緒に
+測ると、上記副作用が conv 軸由来か open 軸由来か切り分けられなくなる。
 
 ### Phase 4（INV-1/INV-19 のコンパイラ強制、低リスク・Phase 1〜3 完了後）
 
@@ -1292,6 +1371,56 @@ open 軸由来か切り分けられなくなる。
     - 段階導入（案 C のみ先行、実機ソークを見てから案 F を検討）を明記。
       TsfNative では周期 force-ON が `ir_apply_drift_correction` の代替に
       なっておらず唯一の自己回復手段であるという §7-2 の追記と対応する。
+
+11. **Phase 3 実装完了後の2回目 opus アドバーサリアルレビュー（2026-08-08）と
+    その対応。** §5 Phase 3 の確定版どおりに実装しコミットした後、実装内容
+    そのものを2回目のアドバーサリアルレビューにかけた結果、High 2件・
+    Medium 5件・Low 4件、レビュー中に新規2件（計13件）を検出した。
+    §5 Phase 3 本文は最終的な訂正後の状態のみを記載しており、以下は
+    「一度実装してからレビューで見つかった問題とその訂正」という経緯の記録。
+
+    - **H1（実装済み）**: 消費点を `try_hold_key`/ime-off-rescue より後にしか
+      置いておらず、`kp_stage_focus_probe` より前だったため、フォーカス変更後
+      1打鍵目を必ず取りこぼし2打鍵目で発火する実装ミスがあった。§5 item 1 の
+      「消費点」の記述を `kp_stage_focus_probe` 等の後という訂正版に置き換えた。
+    - **H2（記録のみ、未解消）**: item 0 が実際には未移行のまま item 1 を
+      投入していた。ステータス行に明記。
+    - **M1（ドキュメントのみ訂正）**: gen フェンスが「UWP 2段フォーカスを
+      弾ける」という記述は誤りだった。§5 item 1/item 3 を訂正。
+    - **M2（実装修正）**: `architecture_guard` の走査対象移動案がテストを
+      トートロジー化するところだった。武装専用関数の抽出はしつつ、guard の
+      走査対象自体は移動せず出現数固定方式へ変更する設計に訂正した。
+    - **M3/M4（実装修正）**: 周期レート制限撤去がフォーカスチャーン環境で
+      撤去前より高頻度の連打を招く恐れ、および `Failed` の再武装方針転換
+      （無制限ではなく試行回数上限付き）を §5 item 1 へ統合した。
+    - **M5（実装修正・判断保留付き）**: `reschedule_ime_refresh` の
+      force_policy 例外撤去が `ir_apply_drift_correction`（BUG-20 の
+      non-ImmCross 分岐）の周期実行機会も巻き添えで奪っていた。例外を
+      復元するが、「force policy ユーザーだけが周期 drift correction を
+      持つ」という新たな非対称を生むため、本来はポリシー非依存に判断すべき
+      という留保付きで §7-12 に未解決論点として起票する。
+    - **新規N1（実装修正）**: force-ON が `note_explicit_ime_action` を
+      呼んでおらず、`kp_stage_idle_conv_check` の汚染防止ガードを素通り
+      していた。§5 item 1 に追加。
+    - **新規N2（実装修正）**: force-ON 経路が常に `belief_input_mode:
+      Unknown` を使うため `ObservedKana` 保護（ユーザーが意図的に選んだ
+      かな入力を上書きしない）が一度も効いていなかった。§5 item 1 に追加。
+    - **L1〜L4**: 軽微な訂正・テスト追加（対応状況はコミット履歴参照）。
+
+12. **`reschedule_ime_refresh` の force_policy 例外が生む新たな非対称
+    （M5、2026-08-08、未解決）。** §5 Phase 3 item 1 で復元した例外により、
+    `conv_mode_policy = force` のユーザーだけが TsfNative で周期
+    `ir_apply_drift_correction`（BUG-20 の non-ImmCross 分岐）の実行機会を
+    持ち、`observe`（デフォルト）のユーザーは元々この周期を持たない
+    （`reschedule_ime_refresh` の `is_tsf_native` 早期 return はポリシー
+    非依存のため）。この非対称は Phase 3 が意図して導入したものではなく、
+    force-ON の周期経路を撤去する際に巻き添えで生じた副作用の最小復元に
+    すぎない。本来は「TsfNative で drift correction の周期実行機会を
+    持たせるべきか」を `conv_mode_policy` に関わらず判断すべき論点であり、
+    本 ADR のスコープでは未解決のまま残す。実機ソークで TsfNative × observe
+    環境の drift 未検出頻度が問題になるようなら、この例外条件を
+    `is_force_policy()` ではなく `is_effectively_tsf_native()` （ポリシー
+    非依存）へ広げることを検討する。
 
 ---
 
