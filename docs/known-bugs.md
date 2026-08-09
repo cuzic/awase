@@ -6986,9 +6986,7 @@ Phase 3 実装完了直後、実装内容そのものを2回目のアドバー�
 実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2・3参照）・
 §7-11（2回目レビューの詳細な経緯）・§7-12（M5 の未解決論点）。
 
-## BUG-61: Windows Terminal + MS-IME で JIS かな入力に固定され、Ctrl+変換も tray の
-ローマ字/かなコマンドも復旧できない（`ImmSetConversionStatus` 書き込みが実モードに
-反映されない疑い、手動 VK 注入ハーネスを追加・自動復元は未実施）
+## BUG-61: Windows Terminal + MS-IME で JIS かな入力に固定され、Ctrl+変換も tray のローマ字/かなコマンドも復旧できない（`ImmSetConversionStatus` 書き込みが実モードに反映されない疑い、手動 VK 注入ハーネスを追加・自動復元は未実施）
 
 **症状（2026-08-08〜09 実機報告、Windows Terminal + MS-IME、conv_mode_policy=force
 ソーク中）:**
@@ -6997,22 +6995,33 @@ Phase 3 実装完了直後、実装内容そのものを2回目のアドバー�
   belief ObservedRomaji 変更なし` が繰り返し出続ける。conv=0x9 は
   `NATIVE(0x1)|FULLSHAPE(0x8)` = ひらがな charset だが `ROMAN`(0x10) ビットが無い、
   すなわち JIS かな直接入力状態。
-- Ctrl+変換（IME ON 中のローマ字/かな切替キー）を押してもローマ字に戻らない。
+- Ctrl+変換（IME 既に ON の状態で `kp_reset_to_hiragana_romaji_capsoff` を
+  発火させる awase 側のリセットコンボ）を押してもローマ字に戻らない。
 - awase の tray メニュー「ローマ字」「かな」を選んでも同様に切り替わらない。
 
-BUG-60 が「force-write ソーク中に MS-IME 側で JIS かな化する」と予告していた
-シナリオが、ADR-086 Phase 2/3 実装後に実際に踏まれた最初の実例と位置づけられる。
+BUG-60 は「force-write ソーク中に MS-IME 側で JIS かな化する」報告だったが
+**因果は未確定のまま**（BUG-60 本文参照）。本症状が BUG-60 と同一原因かどうかも
+未検証であり、「BUG-60 が予告していたシナリオの実例」という決めつけはしない。
 
 **確定した事実（コード読解 + 実機報告の突き合わせ）:**
 
-- tray の `InputRomaji`/`InputKana`（`message_handlers.rs:641-650`、修正前）は
+- **最も強い証拠**: `kp_reset_to_hiragana_romaji_capsoff`（`key_pipeline.rs:1152`、
+  Ctrl+変換 コンボで発火）は ADR-086 Phase 1 で `ActuationTarget::capture` →
+  `get_ime_conv_for_target`（read）→ `set_ime_conv_for_target`（write）という
+  ターゲット同一性検証済みの read-modify-write に既に移行済みで、`NATIVE|
+  FULLSHAPE|ROMAN` を明示的に立てて `KATAKANA` を落とす。**この経路ですら
+  直らなかった**ことは、「宛先 hwnd の取り違え」を経路自体が構造的に排除した
+  上での失敗であり、`ImmSetConversionStatus` による ROMAN ビット書き込みが
+  実モードに反映されていないことの最有力な証拠。
+- tray の `InputRomaji`/`InputKana`（`message_handlers.rs:649-668`、修正前）も
   `set_ime_romaji_mode_state_for_target(hwnd, romaji)` で `ImmSetConversionStatus`
   を呼ぶだけで、宛先 `hwnd` は `tray::menu_target_hwnd()`
-  （メニュー表示前に捕捉した実フォーカスウィンドウ）。これは idle-conv-check が
-  conv を読んでいるのと**同じ hwnd**であり、「宛先がズレていて効かない」という
-  説明は成立しない。ユーザーが tray 操作でも直せなかったことは、
-  **`ImmSetConversionStatus` による ROMAN ビット書き込みそのものが実モードに
-  反映されていない**ことの強い証拠になる。
+  （メニュー表示前に捕捉した実フォーカスウィンドウ）——これは idle-conv-check が
+  conv を読んでいるのと同じ hwnd であり、「宛先がズレていて効かない」という
+  説明はここでも成立しない。ただし `menu_target_hwnd()` が `None` を返した場合は
+  `GetForegroundWindow()`（トップレベル）にフォールバックする経路があり
+  （BUG-55 でまさに否定された基準）、この分岐に落ちていた可能性までは
+  ログが無く排除できていない。
 - 別途、tray の `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana`（修正前）は
   `IME_CMODE_ROMAN` に一切触れておらず、JIS かな状態で選んでも JIS かなのまま
   だった（`ResetState` だけが ROMAN を明示的に立てていた）。これは今回の主症状
@@ -7029,8 +7038,8 @@ BUG-60 が「force-write ソーク中に MS-IME 側で JIS かな化する」と
   復旧させており、scan=0 では MS-IME/TSF がモードキーとして処理しない
   （2026-07-07 実機確認）という制約が既知。
 
-**対応（Opus 設計相談 + Fable PM プランニング、2026-08-08〜09、
-`fix/tray-romaji-vk-dbe-roman`）:**
+**対応（Opus 設計相談 + Fable PM プランニング + Opus アドバーサリアルレビュー、
+2026-08-08〜09、`fix/tray-romaji-vk-dbe-roman`）:**
 
 `is_roman_reliable=false`（`state/conv_classify.rs`、TsfNative idle 経路の
 自動判定を常に無効化する既存ガード）の解除や、idle-conv-check からの自動
@@ -7044,34 +7053,65 @@ VK_DBE_ROMAN 発火にはまだ踏み込まない — VK_DBE_ROMAN が方向指�
    `InputRomaji`/`InputKana` から既存の IMC write と**併走**で呼ぶ。MS-IME 限定
    （GJI 未検証）、`effective_open()==false` なら注入をスキップ（BUG-15 追補7の
    かなロックトグルハザード対策）、scan コードは `MapVirtualKeyW` から取得し
-   scan=0 なら `VK_KANA` の JIS scan（0x70）にフォールバック。
+   scan=0 なら**注入自体をスキップ**（この試行は無効と判定できるようにする）。
 3. `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana` の ROMAN ビット欠落を修正。
 
 自動復元（idle-conv-check や `conv_mode_policy=force` からの自動発火）への
 配線は**まだ行っていない**。
 
+**実装後の Opus アドバーサリアルレビュー（2026-08-09）で発見・修正した問題:**
+
+- **Critical**: tray はメニュー表示直前に `SetForegroundWindow` で自分自身に
+  フォーカスを奪い、`WM_COMMAND` は `TrackPopupMenu` のモーダルループ内で
+  同期配送される。そのため `tray_inject_romaji_mode_vk` 実行時点のフォアグラ
+  ウンドは**awase 自身のウィンドウの可能性が高く**、SendInput（宛先を選べない）
+  がそこへ飛んでしまい、ハーネスとして機能しない構造的欠陥だった。修正: 注入前に
+  `SetForegroundWindow(target)` でフォアグラウンドを対象へ明示的に戻し、
+  `get_focused_hwnd()` で実際に戻ったか再検証してから送る。不一致なら
+  注入をスキップし warn ログを出す。
+- **Major**: scan=0 時に物理かなキー (VK_KANA, scan=0x70) へフォールバックする
+  当初案は、それ自体が BUG-08/BUG-15 追補7 と同型の「かなロックトグル」
+  ハザードを踏みに行く（症状と同方向に悪化しうる）ため撤去し、スキップ+warn
+  ログに変更した。
+- **Major**: `note_explicit_ime_action` が MS-IME 限定分岐の中・IMC write より
+  後でしか呼ばれておらず、GJI では一度も呼ばれず、IMC write 自体の抑止に
+  なっていなかった。IMC write の直前・IME 種別を問わず無条件で呼ぶよう修正。
+- 詳細な指摘一覧（M1〜M6・m1〜m12）は `git log fix/tray-romaji-vk-dbe-roman` の
+  該当コミット参照。IMC write と VK 注入の併走が実験結果を交絡させる懸念
+  （M1、下記チェックリストに反映）、`output/conv_actuation.rs` の module doc が
+  今回の新規 VK 経路を未記載（M2、追記済み）は対応済み。
+
 **実機確認チェックリスト（ユーザーが tray 操作で確認すること）:**
 
+0. **`conv_mode_policy` を一時的に `observe` に戻してから 1〜6 を確認する**
+   （force のままだとフォーカス変更のたびに ROMAN 込みで強制書き戻しが起き、
+   VK 単体の効果と区別できない。項目7だけ force のまま確認する）。
 1. JIS かな固定状態で tray「ローマ字」→ ローマ字入力に復帰するか（本命）。
 2. tray「かな」→ JIS かなに切り替わるか。
 3. ローマ字状態で「ローマ字」を連打 → かな化しないか（**最重要**:
-   `VK_DBE_ROMAN` がトグルなら化ける。この結果が自動復元解禁の可否を左右する）。
+   `VK_DBE_ROMAN` がトグルなら化ける。ただし IMC write が毎回 ROMAN=1 を
+   VK 注入の**直前**に書くため、VK がトグルだと「連打すると常にかな化する」
+   という一貫した——しかし直感に反する——パターンになりうる点に注意して
+   解釈すること）。
 4. 「ひらがな」コマンドでも JIS かなから復帰するか（ROMAN ビット修正の確認、
    兼 IMC write 単体の有効性の追加証拠）。
 5. IME 実 OFF 中に tray 操作 → 注入スキップログが出て副作用がないか。
-6. ログの `MapVirtualKeyW` scan 値（0 ならフォールバック経路が動いたか）。
+6. ログの `[tray-romaji-vk]` 行（フォアグラウンド復元の成否・`MapVirtualKeyW`
+   scan 値・実際に送信できたか）を確認する。
 7. `conv_mode_policy=force` 運用中、tray で復帰後に別ウィンドウへ切り替えると
    再度 JIS かな化しないか（force のフォーカス変更時強制書き込みが ROMAN
    込みであることは上記で確認済みだが、念のため実機で観察）。
 
 **やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
 解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
-`kp_restore_kana_from_half_width` への ROMAN 注入追加。いずれも上記チェック
-リストで VK_DBE_ROMAN の挙動（方向指定/トグル）が確定してから着手する。
+`kp_restore_kana_from_half_width` への ROMAN 注入追加、IMC write と VK 注入を
+分離した個別テスト UI（M1 は上記チェックリストの注記で緩和するに留める）。
+いずれも上記チェックリストで VK_DBE_ROMAN の挙動（方向指定/トグル）が確定
+してから着手する。
 
-**関連:** BUG-60（同じ「JIS かな化」症状群、force-write ソーク中の予告
-シナリオ）、BUG-08（`VK_KANA` 注入による JIS かな化の既知パターン）、
-BUG-15 追補7（DBE 系 VK 注入のかなロックトグルハザード）、
+**関連:** BUG-60（同じ「JIS かな化」症状群、因果未確定）、BUG-08（`VK_KANA`
+注入による JIS かな化の既知パターン）、BUG-15 追補7（DBE 系 VK 注入のかな
+ロックトグルハザード）、BUG-55（`GetForegroundWindow` 基準の書き込み先誤り）、
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-13
 （SendInput のターゲット同一性検証が構造的に適用不能という既存の例外）。
 

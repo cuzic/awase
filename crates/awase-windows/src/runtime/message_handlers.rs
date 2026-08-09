@@ -648,20 +648,34 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         }
         Some(tray::TrayCommand::InputRomaji) => {
             if let Some(hwnd) = ime_target {
+                // idle-conv-check が書き込み途中の conv を読まないよう、IMC write の
+                // 前に無条件で抑止する（IME 種別を問わない。Opus レビュー M5:
+                // 従来 tray_inject_romaji_mode_vk の MS-IME 限定分岐内でしか
+                // 呼ばれておらず GJI で漏れていた + IMC write より後で手遅れだった）。
+                let _ = with_app(|app| {
+                    app.platform_state
+                        .ime
+                        .note_explicit_ime_action(crate::state::TickMs(hook::current_tick_ms()));
+                });
                 let success = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, true);
                 log::info!("[tray-romaji] InputRomaji: IMC write success={success}");
+                // BUG-61: IMC write が Windows Terminal + MS-IME で実モードに反映されない
+                // ケースがあるため、実キーイベント経由の VK 注入も併走させる（実機テスト
+                // ハーネス、docs/known-bugs.md BUG-61 参照）。
+                let _ = with_app(|app| app.tray_inject_romaji_mode_vk(true, hwnd));
             }
-            // BUG-61: IMC write が Windows Terminal + MS-IME で実モードに反映されない
-            // ケースがあるため、実キーイベント経由の VK 注入も併走させる（実機テスト
-            // ハーネス、docs/known-bugs.md BUG-61 参照）。
-            let _ = with_app(|app| app.tray_inject_romaji_mode_vk(true));
         }
         Some(tray::TrayCommand::InputKana) => {
             if let Some(hwnd) = ime_target {
+                let _ = with_app(|app| {
+                    app.platform_state
+                        .ime
+                        .note_explicit_ime_action(crate::state::TickMs(hook::current_tick_ms()));
+                });
                 let success = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, false);
                 log::info!("[tray-romaji] InputKana: IMC write success={success}");
+                let _ = with_app(|app| app.tray_inject_romaji_mode_vk(false, hwnd));
             }
-            let _ = with_app(|app| app.tray_inject_romaji_mode_vk(false));
         }
         Some(tray::TrayCommand::ResetState) => {
             let caps_lock_on =

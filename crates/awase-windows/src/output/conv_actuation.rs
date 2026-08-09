@@ -52,6 +52,20 @@
 //! は現状の呼び出し元がいずれも ImmCross 非対応コンテキストに限定されており、
 //! 到達可能性は未確認）。
 //!
+//! **未移行（INV-1、2026-08-09 BUG-61 対応で追加）:**
+//! `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`）が tray の
+//! `InputRomaji`/`InputKana` から `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を直接
+//! SendInput する。conv-mode を変える VK 注入であり ADR-084 INV-1 が求める
+//! 「本モジュール経由」の対象だが、`conv_mutation_allowed` ゲートも
+//! `unconfirm()` も通っていない。意図的な例外: (1) `ImmSetConversionStatus`
+//! が実モードに反映されないケースを疑い、実キーイベント経由の代替手段が
+//! 効くかをユーザーに実機確認してもらう手動トリガー版のハーネスであり、
+//! 恒常的な actuation 経路ではない（自動発火への配線はまだ無い）。
+//! (2) `SendInput` は宛先を選べないため `ActuationTarget`（INV-14）を
+//! 構造的に適用できない——既存の `kp_restore_kana_from_half_width` の
+//! `VK_DBE_HIRAGANA` 注入と同じ制約（ADR-086 §4 INV-13 参照）。詳細は
+//! `docs/known-bugs.md` BUG-61。
+//!
 //! **`Runtime` から `Output` への移設（2026-08-08、ADR-086 Phase 2 設計調査）**:
 //! 当初 `impl Runtime` に置かれていたが、本体は `self.platform.output.*` しか
 //! 読んでおらず（`with_app` を呼ぶのは `spawn_local` 後の非同期部のみ）、実体は
