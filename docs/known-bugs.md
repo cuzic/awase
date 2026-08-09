@@ -6986,3 +6986,92 @@ Phase 3 実装完了直後、実装内容そのものを2回目のアドバー�
 実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2・3参照）・
 §7-11（2回目レビューの詳細な経緯）・§7-12（M5 の未解決論点）。
 
+## BUG-61: Windows Terminal + MS-IME で JIS かな入力に固定され、Ctrl+変換も tray の
+ローマ字/かなコマンドも復旧できない（`ImmSetConversionStatus` 書き込みが実モードに
+反映されない疑い、手動 VK 注入ハーネスを追加・自動復元は未実施）
+
+**症状（2026-08-08〜09 実機報告、Windows Terminal + MS-IME、conv_mode_policy=force
+ソーク中）:**
+
+- typing 中（idle ではない）に `[idle-conv-check] TsfNative: conv=0x00000009 →
+  belief ObservedRomaji 変更なし` が繰り返し出続ける。conv=0x9 は
+  `NATIVE(0x1)|FULLSHAPE(0x8)` = ひらがな charset だが `ROMAN`(0x10) ビットが無い、
+  すなわち JIS かな直接入力状態。
+- Ctrl+変換（IME ON 中のローマ字/かな切替キー）を押してもローマ字に戻らない。
+- awase の tray メニュー「ローマ字」「かな」を選んでも同様に切り替わらない。
+
+BUG-60 が「force-write ソーク中に MS-IME 側で JIS かな化する」と予告していた
+シナリオが、ADR-086 Phase 2/3 実装後に実際に踏まれた最初の実例と位置づけられる。
+
+**確定した事実（コード読解 + 実機報告の突き合わせ）:**
+
+- tray の `InputRomaji`/`InputKana`（`message_handlers.rs:641-650`、修正前）は
+  `set_ime_romaji_mode_state_for_target(hwnd, romaji)` で `ImmSetConversionStatus`
+  を呼ぶだけで、宛先 `hwnd` は `tray::menu_target_hwnd()`
+  （メニュー表示前に捕捉した実フォーカスウィンドウ）。これは idle-conv-check が
+  conv を読んでいるのと**同じ hwnd**であり、「宛先がズレていて効かない」という
+  説明は成立しない。ユーザーが tray 操作でも直せなかったことは、
+  **`ImmSetConversionStatus` による ROMAN ビット書き込みそのものが実モードに
+  反映されていない**ことの強い証拠になる。
+- 別途、tray の `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana`（修正前）は
+  `IME_CMODE_ROMAN` に一切触れておらず、JIS かな状態で選んでも JIS かなのまま
+  だった（`ResetState` だけが ROMAN を明示的に立てていた）。これは今回の主症状
+  とは独立した見落としだが、同じコミットで修正した（下記「対応」参照）。
+- `conv_mode_policy=force` の書き込み値自体は無罪: `ConvMode::to_conv_bits()`
+  （`src/engine/conv.rs:158`）は `romaji==true` のとき必ず `IME_CMODE_ROMAN` を
+  含み、`desired_mode` の唯一の書き込み点 `set_desired_conv_mode` は常に
+  `romaji: true` を渡す（BUG-60 追補1で確認済みの事実の再確認）。force-write が
+  ROMAN ビットを消しているのではない。
+- `VK_DBE_ROMAN`(0xF5)/`VK_DBE_NOROMAN`(0xF6) が MS-IME の TSF ハンドラ上で
+  「方向指定」なのか「トグル」なのかは**未確認**。既存の類似実装
+  `kp_restore_kana_from_half_width`（shift-conv-guard 解放時、MS-IME 限定）は
+  `VK_DBE_HIRAGANA` を scan コード付き SendInput で注入して charset 切替を
+  復旧させており、scan=0 では MS-IME/TSF がモードキーとして処理しない
+  （2026-07-07 実機確認）という制約が既知。
+
+**対応（Opus 設計相談 + Fable PM プランニング、2026-08-08〜09、
+`fix/tray-romaji-vk-dbe-roman`）:**
+
+`is_roman_reliable=false`（`state/conv_classify.rs`、TsfNative idle 経路の
+自動判定を常に無効化する既存ガード）の解除や、idle-conv-check からの自動
+VK_DBE_ROMAN 発火にはまだ踏み込まない — VK_DBE_ROMAN が方向指定かトグルか
+未確認のまま自動化すると、正常なローマ字入力を誤ってかな化させる新しい
+往復ハザードを生みかねないため。代わりに、まず **tray コマンドを実機テスト
+ハーネスとして使う**最小安全な第一歩を実装した:
+
+1. `vk.rs` に `VK_DBE_ROMAN=0xF5`/`VK_DBE_NOROMAN=0xF6` を定義。
+2. `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`）を新設し、tray の
+   `InputRomaji`/`InputKana` から既存の IMC write と**併走**で呼ぶ。MS-IME 限定
+   （GJI 未検証）、`effective_open()==false` なら注入をスキップ（BUG-15 追補7の
+   かなロックトグルハザード対策）、scan コードは `MapVirtualKeyW` から取得し
+   scan=0 なら `VK_KANA` の JIS scan（0x70）にフォールバック。
+3. `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana` の ROMAN ビット欠落を修正。
+
+自動復元（idle-conv-check や `conv_mode_policy=force` からの自動発火）への
+配線は**まだ行っていない**。
+
+**実機確認チェックリスト（ユーザーが tray 操作で確認すること）:**
+
+1. JIS かな固定状態で tray「ローマ字」→ ローマ字入力に復帰するか（本命）。
+2. tray「かな」→ JIS かなに切り替わるか。
+3. ローマ字状態で「ローマ字」を連打 → かな化しないか（**最重要**:
+   `VK_DBE_ROMAN` がトグルなら化ける。この結果が自動復元解禁の可否を左右する）。
+4. 「ひらがな」コマンドでも JIS かなから復帰するか（ROMAN ビット修正の確認、
+   兼 IMC write 単体の有効性の追加証拠）。
+5. IME 実 OFF 中に tray 操作 → 注入スキップログが出て副作用がないか。
+6. ログの `MapVirtualKeyW` scan 値（0 ならフォールバック経路が動いたか）。
+7. `conv_mode_policy=force` 運用中、tray で復帰後に別ウィンドウへ切り替えると
+   再度 JIS かな化しないか（force のフォーカス変更時強制書き込みが ROMAN
+   込みであることは上記で確認済みだが、念のため実機で観察）。
+
+**やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
+解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
+`kp_restore_kana_from_half_width` への ROMAN 注入追加。いずれも上記チェック
+リストで VK_DBE_ROMAN の挙動（方向指定/トグル）が確定してから着手する。
+
+**関連:** BUG-60（同じ「JIS かな化」症状群、force-write ソーク中の予告
+シナリオ）、BUG-08（`VK_KANA` 注入による JIS かな化の既知パターン）、
+BUG-15 追補7（DBE 系 VK 注入のかなロックトグルハザード）、
+[ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-13
+（SendInput のターゲット同一性検証が構造的に適用不能という既存の例外）。
+
