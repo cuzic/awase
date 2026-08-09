@@ -49,6 +49,15 @@ pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
 pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
 pub const VK_DBE_SBCSCHAR: VkCode = VkCode(0xF3);
 pub const VK_DBE_DBCSCHAR: VkCode = VkCode(0xF4);
+/// VK_DBE_ROMAN (0xF5) — ローマ字入力モードへの切替（IME open 状態は変えない）。
+///
+/// `ImeKeyKind`（IME ON/OFF の shadow 追従用）には**含めない**: このキーは
+/// ROMAN ビット（かな入力方式）のみを制御し、`ShadowImeEffect::TurnOn/TurnOff/Toggle`
+/// のいずれにも該当しない。IME 自体の開閉状態を持つ shadow 追従の対象外。
+pub const VK_DBE_ROMAN: VkCode = VkCode(0xF5);
+/// VK_DBE_NOROMAN (0xF6) — JIS かな直接入力モードへの切替（IME open 状態は変えない）。
+/// `VK_DBE_ROMAN` と同じ理由で `ImeKeyKind` には含めない。
+pub const VK_DBE_NOROMAN: VkCode = VkCode(0xF6);
 pub const VK_NONAME: VkCode = VkCode(0xFC);
 
 // ── IME キー種別 ──────────────────────────────────────────
@@ -135,7 +144,7 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
     if is_ime_control(vk_code) {
         return true;
     }
-    matches!(vk_code.0, 0xF0..=0xF5)
+    matches!(vk_code.0, 0xF0..=0xF6)
 }
 
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
@@ -352,6 +361,8 @@ impl VkCodeExt for VkCode {
             "VK_DBE_HIRAGANA" => Some(Self(0xF2)),
             "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(Self(0xF3)),
             "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(Self(0xF4)),
+            "VK_DBE_ROMAN" => Some(Self(0xF5)),
+            "VK_DBE_NOROMAN" => Some(Self(0xF6)),
             "VK_SHIFT" => Some(Self(0x10)),
             "VK_CONTROL" => Some(Self(0x11)),
             "VK_MENU" => Some(Self(0x12)),
