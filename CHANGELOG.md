@@ -4,9 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [1.14.0] - 2026-08-09
+## [1.13.1] - 2026-08-09
 
-### 追加
+### 変更
 
 - **MSIインストール完了直後に awase を自動起動するようにした**
   - 従来はインストールしても次回ログインまで何も起動せず、手動起動かログオフ/再起動が必要だった
