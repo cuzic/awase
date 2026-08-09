@@ -222,8 +222,13 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
 pub fn win_key_held() -> bool {
     use crate::state::win_key_guard::is_held_fresh;
     use crate::vk::{VK_LWIN, VK_RWIN};
-    is_held_fresh(physical_key_held_ms(VK_LWIN), crate::tuning::WIN_KEY_HELD_STALE_MS)
-        || is_held_fresh(physical_key_held_ms(VK_RWIN), crate::tuning::WIN_KEY_HELD_STALE_MS)
+    is_held_fresh(
+        physical_key_held_ms(VK_LWIN),
+        crate::tuning::WIN_KEY_HELD_STALE_MS,
+    ) || is_held_fresh(
+        physical_key_held_ms(VK_RWIN),
+        crate::tuning::WIN_KEY_HELD_STALE_MS,
+    )
 }
 
 /// Alt キー（左右どちらか）が「新鮮に」押下中かを返す（BUG-62）。
@@ -251,9 +256,16 @@ pub fn win_key_held() -> bool {
 pub fn alt_key_held() -> bool {
     use crate::state::win_key_guard::is_held_fresh;
     use crate::vk::{VK_LMENU, VK_MENU, VK_RMENU};
-    is_held_fresh(physical_key_held_ms(VK_MENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
-        || is_held_fresh(physical_key_held_ms(VK_LMENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
-        || is_held_fresh(physical_key_held_ms(VK_RMENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
+    is_held_fresh(
+        physical_key_held_ms(VK_MENU),
+        crate::tuning::WIN_KEY_HELD_STALE_MS,
+    ) || is_held_fresh(
+        physical_key_held_ms(VK_LMENU),
+        crate::tuning::WIN_KEY_HELD_STALE_MS,
+    ) || is_held_fresh(
+        physical_key_held_ms(VK_RMENU),
+        crate::tuning::WIN_KEY_HELD_STALE_MS,
+    )
 }
 
 /// Alt が押下中に、Alt が「何も修飾しなかった」ように見える形でキーを丸ごと

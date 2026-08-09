@@ -193,7 +193,10 @@ impl ImmCapabilityStore {
     /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの class_name を
     /// スキップ済みの前提。
     pub(crate) fn record_null_probe(&mut self, class_name: String) {
-        let count = self.pending_unavailable.entry(class_name.clone()).or_insert(0);
+        let count = self
+            .pending_unavailable
+            .entry(class_name.clone())
+            .or_insert(0);
         *count += 1;
         if *count >= Self::UNAVAILABLE_CONFIRM_THRESHOLD {
             self.pending_unavailable.remove(&class_name);

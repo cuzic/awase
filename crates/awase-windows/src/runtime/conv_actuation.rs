@@ -21,6 +21,8 @@ impl Runtime {
         reason: ConvMutationReason,
         tick_ms: TickMs,
     ) -> ConvActuationOutcome {
-        self.platform.output.actuate_conv_mode(target, reason, tick_ms)
+        self.platform
+            .output
+            .actuate_conv_mode(target, reason, tick_ms)
     }
 }

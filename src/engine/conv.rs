@@ -358,7 +358,10 @@ mod tests {
     #[test]
     fn is_eisu_evidence_ignores_conv_zero_when_ime_off() {
         // IME が閉じている窓の conv=0 は「英数選択」の証拠にならない(BUG-57)。
-        assert_eq!(ConvMode::is_eisu_evidence(Some(false), Some(CONV_EISUU)), None);
+        assert_eq!(
+            ConvMode::is_eisu_evidence(Some(false), Some(CONV_EISUU)),
+            None
+        );
     }
 
     #[test]

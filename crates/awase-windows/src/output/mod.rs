@@ -433,8 +433,10 @@ impl Output {
         // `force_pending` が1回だけ残留して発火しうる残留武装バグがあった。
         // open 軸の `Runtime::arm_force_open_pending`（`.then()` で対象外なら
         // 明示的に `None` へクリアする）と規律を揃える。
-        self.force_pending
-            .set(self.is_force_policy().then(|| self.ime_mode_focus_gen.get()));
+        self.force_pending.set(
+            self.is_force_policy()
+                .then(|| self.ime_mode_focus_gen.get()),
+        );
         // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は
         // shift-conv-guard の hold が想定する「同一ウィンドウ内で完結する」
         // 前提が崩れたことを意味する。Shift の KeyUp がフックに届かないまま
@@ -1501,7 +1503,8 @@ mod tests {
         o.on_ime_mode_focus_changed();
         assert!(o.force_pending.get().is_some());
 
-        o.conv_mode.set_policy(crate::state::ConvModePolicy::Observe);
+        o.conv_mode
+            .set_policy(crate::state::ConvModePolicy::Observe);
         o.on_ime_mode_focus_changed();
         assert_eq!(
             o.force_pending.get(),

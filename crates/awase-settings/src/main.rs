@@ -1706,7 +1706,9 @@ impl SettingsApp {
                     .on_hover_text(conv_mode_policy_tooltip(ConvModePolicy::Force));
                 });
         });
-        ui.label(conv_mode_policy_tooltip(self.config.general.conv_mode_policy));
+        ui.label(conv_mode_policy_tooltip(
+            self.config.general.conv_mode_policy,
+        ));
         ui.label("強制するモードは、awase のトレイメニュー（ひらがな/カタカナ等）から選びます。");
         ui.add_space(8.0);
         ui.checkbox(

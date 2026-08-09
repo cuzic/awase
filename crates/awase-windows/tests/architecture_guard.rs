@@ -990,7 +990,7 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
         ("src/output/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口、2026-08-08 Runtime→Output移設）
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
-        ("src/runtime/executor.rs", 1),       // dispatch_ime_set_open（ImmCross async path）
+        ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
         ("src/runtime/key_pipeline.rs", 4), // kp_stage_idle_conv_check(BUG-08) / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)
     ];
 
