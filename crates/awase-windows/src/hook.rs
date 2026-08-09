@@ -256,6 +256,25 @@ pub fn alt_key_held() -> bool {
         || is_held_fresh(physical_key_held_ms(VK_RMENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
 }
 
+/// Alt が押下中に、Alt が「何も修飾しなかった」ように見える形でキーを丸ごと
+/// swallow するときに呼ぶ（BUG-62 追補2・3）。
+///
+/// Windows は Alt を単独で離すとシステムメニュー（`SC_KEYMENU`、アクセラレータ
+/// 探索モード）を起動する仕様があり、これが起きると以後の入力がメニュー
+/// ナビゲーションとして食われる（AutoHotkey の `#MenuMaskKey` と同じ問題設定）。
+/// ダミーの Ctrl down+up を自己注入し、OS に「Alt は何かを修飾した」と認識させて
+/// `SC_KEYMENU` の発火を防ぐ（AutoHotkey の既定マスクキーと同じ選択: Ctrl は
+/// 可視の副作用を持たない）。呼び出し元は対象キーの KeyDown 時点で1回だけ
+/// 呼ぶこと（KeyUp 側での重複注入は不要）。dwExtraInfo は `INJECTED_MARKER` —
+/// 自己注入として hook 冒頭の `is_self_injected` で弾かれ、エンジンには渡らない。
+fn inject_alt_menu_mask() {
+    let mask_inputs = [
+        crate::tsf::output::make_key_input_ex(crate::vk::VK_CONTROL, false, INJECTED_MARKER),
+        crate::tsf::output::make_key_input_ex(crate::vk::VK_CONTROL, true, INJECTED_MARKER),
+    ];
+    let _ = crate::win32::send_input_safe(&mask_inputs);
+}
+
 /// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
 ///
 /// セッションロック中（Secure Desktop 遷移中）は `WH_KEYBOARD_LL` フックにイベントが
@@ -684,18 +703,34 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     //   注入元特定のため必ず INFO ログを残す（VK_KANA は稀なキーなのでログコストは
     //   無視できる）。単独の VK_KANA は「IME ON」ショートカットであり、
     //   Alt+VK_KANA（入力方式切替）とは異なる操作のため引き続き通過させる。
+    //
+    // BUG-62 追補3（2026-08-09、git bisect で特定）: 上記2つの swallow 分岐は
+    // いずれも Alt 押下中に発火すると、かな キー自体を OS へ一切渡さないため、
+    // OS 視点では「Alt が何も修飾せず単独でタップされた」ことと区別がつかない
+    // （Windows は Alt を単独で離すとシステムメニュー `SC_KEYMENU` を起動し、
+    // 以後の入力がメニューナビゲーションとして食われる）。foreign-injected 分岐
+    // （本ブロックの原型、BUG-08 由来）は Alt の状態を見ずに常時 swallow して
+    // いたため、この副作用は BUG-62 で Alt 押下判定を導入するより前から存在した
+    // 可能性が高い——ユーザー報告「Alt+かな の後は何も入力できなくなる、以前は
+    // 無かった」を `git bisect` で追ったところ、原因はまさにこの分岐を新設した
+    // コミット（`b38d67f8`、2026-07-05）に一致した。両分岐に同じマスク対策
+    // （`inject_alt_menu_mask`）を適用する。
     if vk == crate::vk::VK_KANA {
         let dir = if is_keydown { "down" } else { "up" };
+        let alt_held = alt_key_held();
         if is_injected {
             log::info!(
                 "[hook] foreign-injected VK_KANA {dir} を swallow\
-                 （kana-lock 汚染防止, scan=0x{:X}, extra=0x{:X}）",
+                 （kana-lock 汚染防止, scan=0x{:X}, extra=0x{:X}, alt_held={alt_held}）",
                 kb.scanCode,
                 kb.dwExtraInfo,
             );
+            if is_keydown && alt_held {
+                inject_alt_menu_mask();
+            }
             return LRESULT(1);
         }
-        if alt_key_held() {
+        if alt_held {
             log::info!(
                 "[hook] Alt+VK_KANA {dir} を swallow（BUG-62: MS-IME の Alt+かな＝\
                  ローマ字/JISかな入力方式切替ショートカット。BUG-61 で復旧不能と\
@@ -704,31 +739,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 kb.dwExtraInfo,
             );
             if is_keydown {
-                // BUG-62 追補2: かな キーを丸ごと OS へ渡さないため、OS 視点では
-                // 「Alt が何も修飾せず単独でタップされた」ことと区別がつかない。
-                // Windows は Alt を単独で離すとシステムメニュー（SC_KEYMENU、
-                // アクセラレータ探索モード）を起動する仕様があり、これが起きると
-                // 以後の入力がメニューナビゲーションとして食われる別の不具合を
-                // 誘発しうる（AutoHotkey の `#MenuMaskKey` と同じ問題設定）。
-                // ダミーの Ctrl down+up を自己注入し、OS に「Alt は何かを修飾
-                // した」と認識させて SC_KEYMENU の発火を防ぐ（AutoHotkey の既定
-                // マスクキーと同じ選択: Ctrl は可視の副作用を持たない）。
-                // KeyDown の時点で1回だけ注入すれば足りる（KeyUp 側での重複注入
-                // は不要）。dwExtraInfo は INJECTED_MARKER — 自己注入として
-                // hook 冒頭の is_self_injected で弾かれ、エンジンには渡らない。
-                let mask_inputs = [
-                    crate::tsf::output::make_key_input_ex(
-                        crate::vk::VK_CONTROL,
-                        false,
-                        INJECTED_MARKER,
-                    ),
-                    crate::tsf::output::make_key_input_ex(
-                        crate::vk::VK_CONTROL,
-                        true,
-                        INJECTED_MARKER,
-                    ),
-                ];
-                let _ = crate::win32::send_input_safe(&mask_inputs);
+                inject_alt_menu_mask();
             }
             return LRESULT(1);
         }
