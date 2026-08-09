@@ -110,7 +110,52 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h2>[1.12.0] - 2026-08-01</h2>
+<h2>[1.13.0] - 2026-08-09</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a setting (<code>conv_mode_policy</code>, disabled by default) that periodically force-corrects drift in the IME/conversion mode</strong><ul>
+<li>As a workaround for cases where the actual IME conversion mode (alphanumeric/hiragana/katakana &times; half-width/full-width) drifts from awase's own intent for some reason, you can now select "Force" from the Advanced tab in the settings screen</li>
+<li>When enabled, every time input resumes from a cold state, the mode is force-written back to whatever is selected in the tray menu. This has no effect on IME ON/OFF itself</li>
+</ul>
+</li>
+<li><strong>When Muhenkan/Henkan is assigned to a thumb key, a solo tap while not composing is now fully suppressed by default</strong><ul>
+<li>MS-IME assigns "kana toggle" to a solo Muhenkan tap by default; when awase was not composing and passed the raw key through, this default MS-IME binding could hijack it and switch the IME mode unexpectedly</li>
+<li>Suppression is now the default (can be turned off in settings for users who want the key's native function)</li>
+</ul>
+</li>
+<li><strong>Added "Alphanumeric" to the engine-control/IME-control and IME-detection key pickers</strong><ul>
+<li>It previously worked correctly when hand-written into <code>config.toml</code>; it was simply missing from the settings-screen dropdown</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a bug where punctuation ("。"/"、"), the long-vowel mark ("ー"), and Shift-plane symbols ("！"/"？"/"～"/"＋" etc.) could be emitted half-width immediately after the IME/TSF was cold</strong><ul>
+<li>Caused by the raw-VK symbol-sending path skipping the cold-start warmup check that romaji sending always performs</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where a pinky-shift chord (e.g. Shift+1 for "！") could turn into a half-width symbol in apps such as LINE, or occasionally freeze all key input for about 5 seconds</strong><ul>
+<li>A safeguard meant to counter MS-IME's own "solo Shift tap switches to alphanumeric mode" misdetection was also firing in a case where it wasn't needed (the symbol itself bypasses the IME entirely), temporarily rewriting the conversion mode -- the shared root cause of both symptoms. Narrowed the safeguard to fire only where it's actually needed (the persistent half-width-alphanumeric input toggle)</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, immediately after switching windows, only the first character typed could come out as raw alphanumeric</strong><ul>
+<li>Caused by an insufficiently strict readiness check right after a focus change sometimes judging the IME "ready" prematurely</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where, after a notification popup briefly stole focus, only the first character of the next input could turn into an unintended character</strong></li>
+<li><strong>Fixed a bug in apps such as LINE where the same character could be committed multiple times in a row</strong><ul>
+<li>Caused by deciding too eagerly that a window's class didn't support IME control. Made the decision more conservative</li>
+</ul>
+</li>
+<li><strong>Fixed a bug where the IME could unexpectedly enter katakana conversion mode with no user action, and normal IME ON/OFF operations couldn't recover it</strong></li>
+<li><strong>Fixed a bug where, after explicitly turning the IME OFF, the engine could turn itself back ON a few hundred ms to a few seconds later with no user action</strong></li>
+<li><strong>Fixed a bug where the IME could stay effectively ON for up to about 8 minutes after being turned OFF</strong></li>
+<li><strong>Fixed a bug where, after opening the search UI (Windows key), Ctrl+Henkan/Muhenkan stopped actually turning the IME ON/OFF</strong></li>
+<li><strong>Prevented "Alt+Kana" (an MS-IME input-method-switching shortcut) from unintentionally firing and locking the IME into JIS-kana input</strong><ul>
+<li>Because Win32 has no API to switch the romaji/JIS-kana input method from outside, and awase cannot recover once this happens, this key combination is now detected and suppressed as a preventive measure (can be opted out of in settings)</li>
+</ul>
+</li>
+</ul>
 <h3>Added</h3>
 <ul>
 <li><strong>Added an "About awase" dialog to the tray</strong><ul>
@@ -148,6 +193,7 @@ footer p{margin:0.3rem 0}
 </ul>
 </li>
 </ul>
+<h2>[1.11.0] - 2026-07-28</h2>
 <h3>Added</h3>
 <ul>
 <li><strong>Added the ability to select Enter as a thumb key</strong><ul>
