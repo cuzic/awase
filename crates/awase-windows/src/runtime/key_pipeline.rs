@@ -1204,41 +1204,37 @@ impl Runtime {
         });
     }
 
-    /// Shift 押下→解放間の IME conv 安全網、および左Shift単独タップによる
-    /// 「IME-ON 半角英数」持続トグル判定（BUG-15 撤去 + 新機能、2026-07-11）。
+    /// 左Shift単独タップによる「IME-ON 半角英数」持続トグル判定
+    /// （BUG-15 撤去 + BUG-25 新機能、2026-07-11。チョード安全網は 2026-08-09 撤去、
+    /// 詳細は known-bugs.md BUG-15 追補9参照）。
     ///
-    /// # 安全網（両Shift・チョード問わず無条件）
+    /// # チョード安全網は撤去済み（2026-08-09）
     ///
-    /// MS-IME は（設定で無効化不可能な）「Shift 単独タップで英数モードに切替える」
-    /// 誤検知を持つ。awase が Shift+文字キーのチョード（`.yab` Shift 面）を engine で
-    /// consume すると、OS からは「Shift down→（何も見えない）→Shift up」に見え、
-    /// この誤検知が発火する。これを打ち消すため、物理 Shift（L/R 問わず）の
-    /// 押下→解放のたびに無条件で conv を英数へ→かなへ書き戻す（BUG-15 旧
-    /// `kp_stage_shift_eisu_hold` の無条件挙動を維持）。engine の `input_mode`
-    /// belief には触れないため、engine は常時アクティブなまま Shift+文字のチョード
-    /// （`should_use_shift_plane`/`shift_face_reduce`）を通常通り処理し続ける。
+    /// かつては MS-IME の（設定で無効化不可能な）「Shift 単独タップで英数モードに
+    /// 切替える」誤検知対策として、Shift+文字キーのチョード（`.yab` Shift 面）を
+    /// engine が consume する際にも無条件で conv を英数へ→かなへ書き戻していた
+    /// （BUG-15）。しかし BUG-25 で ASCII 素通し経路（`shift_plane_halfwidth`）を
+    /// 撤去して以降、Shift 面は `should_use_shift_plane`/`shift_face_reduce` が
+    /// 常に `.yab` の値をそのまま Unicode 直接注入する（IME 経由の
+    /// 素通しは発生しない）ため、この安全網はチョードの出力そのものには
+    /// 一切必要なくなっていた。それにもかかわらず conv を一時的に英数へ倒す
+    /// 副作用だけが残り、(a) LINE（Qt/ImmCross）でその窓に着弾した全角記号
+    /// （`'！'` 等）が半角化される実害と、(b) BUG-58（チョードのたびに
+    /// `OutputActiveGuard` と shift-conv-guard 復元が循環待ちして毎回 ~5 秒
+    /// フリーズする）の直接の引き金という2つの実害を生んでいた。チョードに対する
+    /// 先書き込みそのものを撤去したことで、どちらも構造的に発生しなくなる
+    /// （BUG-58 は案E で既に緩和済みだったが、根本原因はこの先書き込み自体だった）。
     ///
-    /// # 左Shift単独タップの持続トグル
+    /// # 左Shift単独タップの持続トグル（維持）
     ///
     /// 左Shift の押下→解放の間に他の非注入物理キーが一切来なかった場合のみ
-    /// 「単独タップ」と判定し、上記の復元を**キャンセル**して代わりに
-    /// `half_width_alnum_toggle_active` を立てる（IME-ON 半角英数の持続トグルへ
-    /// 移行）。もう一度単独タップしたら通常の復元を実行してトグルを解除する。
-    /// 右Shift単独タップ・チョードの場合は常に安全網通り即座に復元する（右Shift
-    /// タップはトグルの「緊急解除」としても働く）。
-    /// BUG-58 が依存する順序不変条件: このステージ（`kp_stage_post_decision` から
-    /// 呼ばれる）は `kp_stage_execute`（`run_passthrough_pipeline` 経由で物理
-    /// Shift KeyUp を reinject キューへ退避しうる）より**必ず先に**実行される
-    /// （呼び出し順は `kp_run_inner`: `kp_stage_post_decision` → `kp_stage_execute`）。
-    /// このおかげで、`kp_shift_conv_guard_key_up` が起動する conv 復元
-    /// （`kp_restore_kana_from_half_width`）の副作用は、対応する物理イベント自体が
-    /// 出力ゲート待ちで defer されているかどうかに関係なく必ず発火する。
-    /// **この順序が逆転すると BUG-58（小指シフト面チョードが `OutputActiveGuard`
-    /// と shift-conv-guard 復元の循環待ちに陥り毎回 ~5 秒フリーズする）が再発する**
-    /// （`ms_ime_ready_coro.rs` の Phase 1/Phase 2 分離だけでは、この順序依存が
-    /// 崩れると復元の起動自体が遅れてしまい効果が消える）。この関数または
-    /// `kp_run_inner`/`kp_stage_execute` の呼び出し順を変更する場合は、必ず
-    /// docs/known-bugs.md BUG-58 を読み、循環待ちが再発しないか確認すること。
+    /// 「単独タップ」と判定し、`half_width_alnum_toggle_active` を立てる
+    /// （IME-ON 半角英数の持続トグルへ移行）。**conv=0x0000 の実書き込みは
+    /// この確定した瞬間（`kp_shift_conv_guard_key_up`）に初めて行う** —
+    /// 旧実装のように Shift down 時点で判別未確定のまま先書き込みはしない。
+    /// もう一度単独タップしたら `kp_restore_kana_from_half_width` でかな入力へ
+    /// 復元してトグルを解除する。右Shift単独タップはトグルの「緊急解除」として
+    /// 働く（トグル非アクティブ時の右Shiftタップ・チョードは何もしない）。
     fn kp_stage_shift_conv_guard(&mut self, event: &RawKeyEvent) {
         use awase::types::ModifierKey;
 
@@ -1274,7 +1270,7 @@ impl Runtime {
             self.platform_state.gate.left_shift_tap_candidate = true;
         }
 
-        // Ctrl/Alt/Win チョード（ショートカット）では安全網自体を発動しない。
+        // Ctrl/Alt/Win チョード（ショートカット）では判定自体を発動しない。
         if event.modifier_snapshot.ctrl
             || event.modifier_snapshot.alt
             || event.modifier_snapshot.win
@@ -1290,117 +1286,85 @@ impl Runtime {
         self.platform_state.gate.shift_conv_guard_pending = true;
 
         if self.platform_state.gate.half_width_alnum_toggle_active {
-            // 既に conv=0x0000 のはず。再送はしない（冪等化、無駄な書き込み回避）。
+            // 既に conv=0x0000 のはず。何もしない。
             return;
         }
 
-        // かな入力コンテキストのみ: IME ON・engine 有効・conv 書込権限。
+        // かな入力コンテキストのみ: IME ON・engine 有効・conv 書込権限。左Shift
+        // 単独タップによる持続トグルは、この条件を満たさない限り
+        // `kp_shift_conv_guard_key_up` 側でも確定させない（かつては conv の
+        // 先書き込みをここで行っていたための早期 override クリアだったが、
+        // 先書き込み自体を撤去したので pending を落とすだけで足りる）。
         if !self.platform_state.ime.effective_open()
             || !self.platform_state.ime.belief.is_japanese_ime()
             || !self.engine.is_user_enabled()
             || !self.platform.output.conv_mutation_allowed.get()
         {
             self.platform_state.gate.shift_conv_guard_pending = false;
-            // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: このガードで早期
-            // return する経路は conv を一切書かないため、override が残って
-            // いてはならない。以前の Shift サイクルで立てた override が
-            // まだ生きている（例: 前回 pending=false のまま key_up の
-            // take() に到達しなかった等）場合の取りこぼしを防ぐ。
-            self.platform
-                .output
-                .confirm_gate_deadline_override_ms
-                .set(0);
-            // pass-5 レビュー指摘と同型の懸念: 単純な `.set(0)` だけでは、
-            // まだ走行中の前回 hold の `kp_restore_kana_from_half_width`
-            // リトライループが次の試行でこの override を再設定してしまい
-            // クリアが無効化される。世代も併せて進め、そのループの
-            // `owner_gen` を無効化してクリアを恒久化する。
-            self.platform.output.bump_shift_conv_guard_gen();
-            return;
         }
 
-        let now_tick = crate::state::TickMs(hook::current_tick_ms());
-        self.platform_state.ime.note_explicit_ime_action(now_tick);
-        log::info!("[shift-conv-guard] Shift 押下 → IME-ON 半角英数へ切替 (conv→0x00000000)");
+        // NOTE（2026-08-09、known-bugs.md BUG-15 追補9）: 以前はここで
+        // 判別未確定のまま無条件に conv=0x0000（IME-ON 半角英数）を先書き込み
+        // していた（Shift+文字キーのチョード全般への MS-IME 誤検知対策
+        // 「安全網」、BUG-15/BUG-25）。BUG-25 で ASCII 素通し経路
+        // （`shift_plane_halfwidth`）を撤去して以降、Shift 面のチョードは
+        // `shift_face_reduce` が `.yab` の値をそのまま Unicode 直接注入する
+        // だけになっており、半角英数モードへの実際の需要は無かった。それにも
+        // かかわらずこの先書き込みが (a) LINE（Qt/ImmCross）で全角記号
+        // （`'！'` 等）がその窓に着弾すると半角化される実害、(b) BUG-58
+        // （チョードのたびに `OutputActiveGuard` と復元が循環待ちして
+        // 毎回 ~5 秒フリーズする）の直接の引き金、という2つの実害を生んでいた
+        // ため撤去した。左Shift単独タップによる持続トグル（BUG-25）の
+        // conv=0x0000 書き込みは `kp_shift_conv_guard_key_up` の
+        // 「本物の単独タップと確定した瞬間」に一本化した。
+    }
 
-        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
-        log::debug!("[shift-conv-guard] entry: active_ime_kind={active_ime_kind:?}");
+    fn kp_shift_conv_guard_key_up(&mut self, event: &RawKeyEvent) {
+        if !std::mem::take(&mut self.platform_state.gate.shift_conv_guard_pending) {
+            return;
+        }
+        // GJI には entry 機構が無い（BUG-25 追補3）ため、左Shift単独タップでも
+        // 持続トグルへは絶対に移行しない（移行すると engine が pass-through に
+        // なり、生ローマ字キーが GJI 自身の未切替のひらがな変換エンジンへ
+        // そのまま入ってかな入力が壊れる）。
+        let toggle_entry_supported = crate::tsf::observer::tsf_obs().active_ime_kind()
+            == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
 
-        // 入口機構は IME 種別で分岐する。
-        //
-        // MS-IME: IMC write（`set_ime_romaji_mode_with_target_async`）。この経路は
-        // 元々の（BUG-15由来の）実装で実績があり、変更しない。
-        //
-        // GJI: **entry 機構は現状存在しない（撤回・保留、2026-07-11）**。
-        // 試した2つの機構がいずれも実機で機能しないことを確認済み:
-        //
-        // 1. **IMC write**（一度は `success=true` かつ verify-read で
-        //    `conv=0x0` を確認したが、実際の打鍵ではひらがなのまま変化しなかった。
-        //    mozc 本家ソース調査で、conversion-mode compartment への書き込みは
-        //    GJI の TIP（`win32/tip/tip_text_service.cc`）にとって UI 表示同期
-        //    専用の一方向ミラーで、実コンポーザへは一切伝播しないと判明——
-        //    read-back の成功は無意味。BUG-25 追補2参照）。
-        // 2. **scan 付き `VK_DBE_ALPHANUMERIC` 注入**（scan=0x3A=物理CapsLock位置
-        //    → CapsLock 汚染で撤回、追補1／scan=0=非衝突値でも `[hook] IME-mode
-        //    vk=0xF0` のログが一度も出現せず、`SendInput` 自体が
-        //    `sent=2/2`（OS的には成功）でも awase 自身のフックにすら届かない
-        //    ——scan の値によらず SendInput 経由の `VK_DBE_ALPHANUMERIC` 注入
-        //    そのものが機能しないと判断。BUG-25 追補3参照）。
-        //
-        // GJI に対しては entry を試みない（SendInput も送らない）。無理に
-        // `half_width_alnum_toggle_active` を立てて engine を pass-through に
-        // すると、GJI の実 conv は ひらがな のまま変化しないため、素通しした
-        // 生ローマ字キーが GJI 自身の未切替のひらがな変換エンジンにそのまま
-        // 入ってしまい、`かな入力が壊れる`という新たな実害が出る（実機確認:
-        // 「こんにちはあいうえお」が素通し中もひらがなのまま出力された）。
-        // 次の候補は `ITfLangBarItemMgr`/`ITfLangBarItemButton` 経由の
-        // 言語バーボタン起動（mozc の `TipTextService` が実登録しており、
-        // 本物のクリック起動と同じ `SwitchInputModeAsync` 経路を通るはず）。
-        // 未着手・未検証。
-        if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
-            log::info!("[shift-conv-guard] MS-IME経路: IMC write (conv=0x0000) 送信");
-            // ADR-084 P1/INV-1/INV-2（第一弾）: 書き込みと belief 無効化を
-            // `Runtime::actuate_conv_mode` に集約した（`runtime/conv_actuation.rs`）。
-            // 実際の書き込みは非同期（spawn_local）だが、belief 無効化（unconfirm）と
-            // give-up latch 解除はこの呼び出しの中で同期的に行われる。async タスク内で
-            // unconfirm すると、その完了前にチョードが解決して送信ゲート
-            // （`Output::ms_ime_gate_defer`）が呼ばれた場合、stale な
-            // `is_native_ready()==true` を素通ししてしまう（本バグの根本原因）。
+        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
+            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        self.platform_state.gate.left_shift_tap_candidate = false;
+
+        if is_left_shift_tap
+            && toggle_entry_supported
+            && !self.platform_state.gate.half_width_alnum_toggle_active
+        {
+            // 本物の単独タップ、1回目 → 半角英数トグルへ移行。conv=0x0000 の
+            // 実書き込みはここで初めて行う（2026-08-09、known-bugs.md BUG-15
+            // 追補9: チョード安全網の先書き込み撤去に伴い、持続トグルの entry
+            // write もここへ一本化した。旧実装は Shift down 時点で判別未確定の
+            // まま先書きしていた）。
+            self.platform_state.gate.half_width_alnum_toggle_active = true;
+            log::info!(
+                "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 書き込み)"
+            );
+            let now_tick = crate::state::TickMs(hook::current_tick_ms());
+            self.platform_state.ime.note_explicit_ime_action(now_tick);
+            // ADR-084 P1/INV-1/INV-2: 書き込みと belief 無効化を
+            // `Runtime::actuate_conv_mode` に集約（`runtime/conv_actuation.rs`）。
             let _ = self.actuate_conv_mode(
                 crate::state::ConvModeTarget::HalfWidthAlnum,
                 crate::state::ConvMutationReason::ShiftSoloTapCounter,
                 now_tick,
             );
             // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
-            // `Output::ms_ime_gate_defer`）の期限を、hold 中は
-            // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ実質的に延長する
-            // （`u64::MAX` の真の無期限ではなく有限キャップ — Shift の KeyUp が
-            // 何らかの理由でフックに届かない場合でも、このキャップを過ぎれば
-            // 自動的に通常の安全弁へ復帰する。Opus レビュー指摘）。
-            // これから conv=0x0000 を書くと分かっている以上、その直後に
-            // チョードが解決して romaji/記号が defer された場合、IMC が
-            // 「読めない」のではなく「awase 自身が書いた値をまだ回復して
-            // いない」だけであり、BUG-13 の安全弁（IMC 不可読環境への
-            // フォールバック）の対象ではない。固定 400ms 窓のまま素通しすると
-            // Shift を長く保持しただけで強制送信（半角化）+ give-up latch
-            // （BUG-13 保護の消失）を招く（実機ログで確認済み）。
-            // `kp_shift_conv_guard_key_up`／`kp_restore_kana_from_half_width`
-            // の復元リトライが Shift 解放後により正確な猶予へ差し替える。
+            // `Output::ms_ime_gate_defer`）の期限を、トグルON中は
+            // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ延長する（詳細は
+            // 旧 entry 実装のコメントを参照、known-bugs.md BUG-15 追補9）。
             self.platform.output.confirm_gate_deadline_override_ms.set(
                 hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS,
             );
-            // pass-5 レビュー指摘（blocking）: 新しい hold の開始を世代として
-            // 記録する。`kp_restore_kana_from_half_width` の detached retry
-            // task はこの値を起動時に `owner_gen` として捕獲し、以後の各試行で
-            // 現在値と一致するかを確認してから override を書く。これにより、
-            // hold #1 の解放直後に hold #2 が始まった場合（連続 Shift タップの
-            // 通常の間隔で起こりうる）、hold #1 の古い retry task が hold #2 の
-            // override を誤ってクリアする事故を防ぐ。
             self.platform.output.bump_shift_conv_guard_gen();
-
-            // 診断用（2026-07-11）: 送信直後に conv を読み取ってログに残す。
-            // MS-IME はこの IMC write 自体が実効的な経路なので、この読み取りは
-            // 有効な確認になる（GJI では entry を試みないため verify も行わない）。
+            // 診断用: 送信直後に conv を読み取ってログに残す。
             win32_async::spawn_local(async {
                 win32_async::sleep_ms(150).await;
                 let conv = win32_async::offload(|| unsafe {
@@ -1427,63 +1391,6 @@ impl Runtime {
                     }
                 }
             });
-        } else {
-            log::info!(
-                "[shift-conv-guard] GJI経路: entry 機構なし (未対応、BUG-25 追補3) → \
-                 タップ判定はするがトグルは発動しない"
-            );
-        }
-    }
-
-    fn kp_shift_conv_guard_key_up(&mut self, event: &RawKeyEvent) {
-        if !std::mem::take(&mut self.platform_state.gate.shift_conv_guard_pending) {
-            return;
-        }
-        // GJI には entry 機構が無い（BUG-25 追補3）ため、左Shift単独タップでも
-        // 持続トグルへは絶対に移行しない（移行すると engine が pass-through に
-        // なり、生ローマ字キーが GJI 自身の未切替のひらがな変換エンジンへ
-        // そのまま入ってかな入力が壊れる）。GJI では常に安全網の復元のみ実行する。
-        let toggle_entry_supported = crate::tsf::observer::tsf_obs().active_ime_kind()
-            == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
-
-        // ADR-084（BUG-49 追補2、round-6 レビュー指摘）: entry でキャップ付きに
-        // 延長した confirm-then-transmit ゲートの期限を、ここ（hold 終了）を
-        // 起点とするフレッシュな猶予に差し替える。放置したままだと、以後の
-        // どんな romaji 送信も `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` まで
-        // defer し続けてしまう。値の導出根拠は `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS`
-        // の doc コメント（tuning.rs）参照 — 復元リトライ 1 試行分の最大所要時間に
-        // マージンを載せたものであり、リトライ全体の合計時間ではない。復元は
-        // `kp_restore_kana_from_half_width` の冪等リトライ（0/160/320/480ms）が
-        // 担い、そのループ自身が進行中は毎回この猶予を押し出す（詳細はそちら参照）。
-        // ここでの設定は、`spawn_local` されたリトライループの最初の tick が
-        // 走るまでの橋渡し。
-        //
-        // entry（`kp_shift_conv_guard_key_down`）が override を書くのは MS-IME
-        // 限定（GJI には entry 機構が無い）なので、ここも対称に MS-IME 限定に
-        // する。GJI で無条件に書くと、対応する entry も retry ループも無い
-        // まま override だけが残り、`clear_confirm_gate_override` を呼ぶ者が
-        // 誰もいない「宙に浮いた」延長になる（自然に期限切れはするが、他の
-        // 経路と非対称で紛らわしい — round-6 レビュー指摘）。
-        if toggle_entry_supported {
-            self.platform
-                .output
-                .confirm_gate_deadline_override_ms
-                .set(hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS);
-        }
-        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
-            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
-        self.platform_state.gate.left_shift_tap_candidate = false;
-
-        if is_left_shift_tap
-            && toggle_entry_supported
-            && !self.platform_state.gate.half_width_alnum_toggle_active
-        {
-            // 本物の単独タップ、1回目 → 復元をスキップして持続トグルへ移行する。
-            self.platform_state.gate.half_width_alnum_toggle_active = true;
-            log::info!(
-                "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 維持)"
-            );
-            let now_tick = crate::state::TickMs(hook::current_tick_ms());
             self.apply_input_mode_correction(
                 InputModeState::ObservedEisu,
                 crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
@@ -1492,9 +1399,26 @@ impl Runtime {
             return;
         }
 
-        // 2回目の左Shiftタップ（トグルOFF）・チョード・右Shift（トグルの緊急解除も
-        // 兼ねる）: 常に安全網の復元を実行する。
-        self.kp_restore_kana_from_half_width(true);
+        if self.platform_state.gate.half_width_alnum_toggle_active {
+            // 2回目の左Shiftタップ（トグルOFF）・右Shift（トグルの緊急解除）:
+            // 復元を実行する。
+            //
+            // ADR-084（BUG-49 追補2、round-6 レビュー指摘）: entry でキャップ付き
+            // に延長した confirm-then-transmit ゲートの期限を、ここ（hold 終了）
+            // を起点とするフレッシュな猶予に差し替える。値の導出根拠は
+            // `SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS` の doc コメント（tuning.rs）
+            // 参照。MS-IME 限定（GJI には entry/持続トグル機構が無い）。
+            if toggle_entry_supported {
+                self.platform.output.confirm_gate_deadline_override_ms.set(
+                    hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_RELEASE_CONFIRM_MS,
+                );
+            }
+            self.kp_restore_kana_from_half_width(true);
+        }
+
+        // チョード（Shift+文字キー）でトグル非アクティブ: conv には一切
+        // 触れていないため何もしない（2026-08-09、known-bugs.md BUG-15
+        // 追補9でチョード安全網を撤去）。
     }
 
     /// 「IME-ON 半角英数」からかな入力への復元（トグルOFF・安全網の復元の共通処理）。
