@@ -744,6 +744,77 @@ BUG-25 参照）。
 
 ---
 
+**追補9（撤去、2026-08-09）: チョード安全網（Shift+文字キーのたびに無条件で
+conv を英数へ→かなへ書き戻す仕組み）そのものを撤去。左Shift単独タップの
+持続トグル（BUG-25）は維持し、entry write のタイミングを Shift down → Shift up
+（単独タップ確定時）へ移した。**
+
+**症状（2026-08-09 ユーザー報告ログ）:** LINE（`Qt663QWindowIcon`、Qt/ImmCross）
+で NICOLA 小指シフト面の `Shift+1`（`.yab` で `'！'` = クォート付き全角リテラル）
+を打つと、awase 自身のログでは `send_keys: mode=Unicode actions=[Char('！')] →
+Char('！') via Unicode` と全角のまま正しく Unicode 直接注入しているにも
+かかわらず、LINE 上の表示は半角 `!` になる。**Windows Terminal（TSF-native）
+では同じチョードで再発しない**（ユーザー確認済み、同一セッション内）。ログの
+タイムスタンプ突合で、`Char('！')` の送出は `[shift-conv-guard] Shift 押下 →
+IME-ON 半角英数へ切替 (conv→0x00000000)` の IMC write 完了後・
+`[shift-conv-guard] かな入力へ復元` の約 200ms 前という、conv が英数
+（NATIVE=false）になっている窓の中で発生していた。
+
+**原因（推定、Windows Terminal と LINE の差から消去法で特定）:** BUG-25 で
+ASCII 素通し経路（`shift_plane_halfwidth`）を撤去して以降、`shift_face_reduce`
+は `.yab` Shift 面の値（クォート付き全角リテラル含む）を常に `Reduce` して
+Unicode 直接注入するだけになっており、チョード安全網の conv=0x0000 先書き込み
+はチョードの出力そのものには一切必要が無くなっていた。一方 LINE
+（Qt ベースの ImmCross アプリ）は、自前の IME 統合レイヤーが挿入直前の
+IME conversion mode（NATIVE ビット）を見て文字の全角/半角を自前で正規化して
+いると推測される — awase が一時的に conv を英数化した窓に全角記号が着弾した
+ため、LINE 側で半角化されたとみられる。TsfNative（Windows Terminal）は
+conv mode を見た幅の再正規化を行わないため症状が出ない、という差分と整合する。
+
+**BUG-58 との関係:** チョード安全網の conv=0x0000 先書き込みは、
+[BUG-58](#bug-58-小指シフト面のチョードshift数字等がoutputactiveguardとshift-conv-guard復元の循環待ちに陥り通常速度の打鍵でも毎回-5秒フリーズする対応済み実機未検証)
+（Shift+数字等のチョードが `OutputActiveGuard` と shift-conv-guard 復元の
+循環待ちに陥り毎回 ~5 秒フリーズする）の直接の引き金でもあった。BUG-58 の
+修正（案E、`38b5a4ee`）は `OutputActiveGuard` の取得タイミングをずらして
+循環そのものを解消したが、引き金（チョードのたびの先書き込み自体）は
+残っていた。本追補でチョードに対する先書き込みを撤去したことで、この
+引き金自体が構造的に消える（案E の修正は持続トグル側の経路には引き続き
+必要なため撤去していない）。
+
+**対応:** `kp_shift_conv_guard_key_down`（`runtime/key_pipeline.rs`）から
+判別未確定のままの conv=0x0000 先書き込みを撤去した。左Shift単独タップに
+よる半角英数持続トグル（BUG-25）の conv=0x0000 書き込みは、単独タップと
+確定した瞬間（`kp_shift_conv_guard_key_up`）に一本化して移動した。チョード
+（トグル非アクティブ時の Shift+文字キー）は conv に一切触れず、
+`kp_restore_kana_from_half_width` も呼ばれない（何もしない）。
+
+**既知のリスク（未検証、次回実機セッションで確認すること）:** 本追補で
+撤去したのは BUG-15 本体の対策（MS-IME 自身の「Shift 単独タップで英数モードに
+切替える」誤検知を先回りして打ち消す仕組み）そのものであり、Shift+文字キーの
+チョード直後に限り BUG-15 の症状（idle-conv-check が ObservedEisu →
+DirectInput → Engine OFF まで連鎖し、数秒〜十数秒かな入力が壊れる）が
+再発する可能性がある。ただし BUG-15 発覚時（2026-07-07）以降、
+`idle-conv-check` 側の安全策（BUG-57 の eisu 汚染修正等）が複数回入っており、
+同じ連鎖が今も成立するかは不明。実機で「小指シフト面のチョードを連打した
+直後のかな入力」を重点的に確認すること。再発した場合は本追補を revert せず、
+BUG-15/BUG-25 の失敗条件（アプリ・IME・再現手順）を追記した上で、チョード
+種別（記号 vs 英字）や IME 種別で分岐する、より狭い対策を検討する
+（`.claude/rules/experiment-logging.md` 参照）。
+
+**テスト:** `crates/awase-windows/tests/golden_scenarios.rs`
+`scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive`
+は entry write の移動後も green（belief 遷移の核心部分）。`kp_stage_shift_conv_guard`
+自体のタップ/チョード判定・LINE での幅再現は BUG-25 と同様、Windows 実機
+フック依存のため自動テスト不可——本追補が再発防止の記録。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_shift_conv_guard_key_down`/`kp_shift_conv_guard_key_up`）
+
+**関連バグ:** BUG-15（本体）、BUG-25（持続トグル）、BUG-58（先書き込みが
+引き金だった循環待ちフリーズ）
+
+---
+
 ## BUG-16: フォーカス遷移の settle スキップに再試行がなく、belief ON × 実 IME OFF が放置される
 
 **症状:** 仮想デスクトップ切替（Win+Ctrl+→）で Windows Terminal にフォーカスが移った
