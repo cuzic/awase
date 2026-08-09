@@ -1755,6 +1755,79 @@ impl Runtime {
         );
     }
 
+    /// tray の「ローマ字」「かな」コマンド用: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を scan コード
+    /// 付き SendInput で注入する（BUG-61 対応の手動トリガー版、実機テストハーネス）。
+    ///
+    /// `ImmSetConversionStatus` による ROMAN ビット書き込みが Windows Terminal + MS-IME で
+    /// 実モードに反映されないケースが実機で確認された（tray の InputRomaji/InputKana は
+    /// idle-conv-check と同じ hwnd へ書いており、宛先ズレ説は棄却済み）。実キーイベントとして
+    /// TSF のキー処理パイプラインを通す SendInput なら反映される可能性を、まず tray からの
+    /// 手動操作でユーザーに実機確認してもらう（自動復元への配線は未実施、Opus/Fable 設計
+    /// 相談 2026-08-08 で合意、`docs/known-bugs.md` BUG-61 参照）。
+    ///
+    /// - MS-IME 限定（`kp_restore_kana_from_half_width` と同じ理由、GJI での挙動は未検証）。
+    /// - `effective_open()==false` の場合は注入をスキップする（BUG-15 追補7: 実 IME が
+    ///   確実に ON でない状態で DBE 系 VK を注入すると、かなロックトグルの同族ハザードがある）。
+    /// - scan コードは `MapVirtualKeyW` から取得する。DBE 系キーは物理キーボードマップに
+    ///   存在しないため scan=0 になりうる（scan=0 では MS-IME/TSF がモードキーとして処理
+    ///   しない、2026-07-07 実機確認）。scan=0 の場合は物理かなキー (VK_KANA) の scan
+    ///   （0x70）にフォールバックする。
+    ///
+    /// 既存の IMC write（`set_ime_romaji_mode_state_for_target`）は保険として並行して残す
+    /// （呼び出し元 `message_handlers.rs::handle_wm_command` 参照）。
+    pub(crate) fn tray_inject_romaji_mode_vk(&mut self, romaji: bool) {
+        // 物理かなキー (VK_KANA, 0x15) の JIS scan。kp_restore_kana_from_half_width の
+        // VK_DBE_HIRAGANA と同じフォールバック値。DBE 系キー自体が scan=0 の場合に使う。
+        const KANA_KEY_FALLBACK_SCAN: u16 = 0x70;
+
+        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+        if active_ime_kind != crate::tsf::observer::ActiveImeKind::MicrosoftIme {
+            log::debug!(
+                "[tray-romaji-vk] active_ime_kind={active_ime_kind:?} のため \
+                 VK 注入をスキップ (MS-IME限定、GJI未検証)"
+            );
+            return;
+        }
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        self.platform_state.ime.note_explicit_ime_action(now_tick);
+        if !self.platform_state.ime.effective_open() {
+            log::debug!(
+                "[tray-romaji-vk] effective_open()=false のため VK 注入をスキップ \
+                 (IMC write のみ、BUG-15追補7の教訓)"
+            );
+            return;
+        }
+        let vk = if romaji {
+            crate::vk::VK_DBE_ROMAN
+        } else {
+            crate::vk::VK_DBE_NOROMAN
+        };
+        // SAFETY: MapVirtualKeyW は有効な VK コードと変換タイプを渡す限り安全。
+        //         戻り値 0 は「対応する scan が無い」を意味し、下でフォールバックする。
+        let scan = unsafe {
+            windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW(
+                u32::from(vk.0),
+                windows::Win32::UI::Input::KeyboardAndMouse::MAPVK_VK_TO_VSC,
+            )
+        } as u16;
+        let (effective_scan, used_fallback) = if scan == 0 {
+            (KANA_KEY_FALLBACK_SCAN, true)
+        } else {
+            (scan, false)
+        };
+        let inputs = [
+            crate::tsf::output::make_tsf_key_input_with_scan(vk, false, effective_scan),
+            crate::tsf::output::make_tsf_key_input_with_scan(vk, true, effective_scan),
+        ];
+        let sent = crate::win32::send_input_safe(&inputs);
+        log::info!(
+            "[tray-romaji-vk] VK_DBE_{} (0x{:02X}) 注入 scan=0x{effective_scan:02X} \
+             (fallback={used_fallback}) sent={sent}/2",
+            if romaji { "ROMAN" } else { "NOROMAN" },
+            vk.0,
+        );
+    }
+
     /// Effects の実行（フックからキューに委譲）
     fn kp_stage_execute(
         &mut self,
