@@ -6986,7 +6986,7 @@ Phase 3 実装完了直後、実装内容そのものを2回目のアドバー�
 実装、追補1参照）・§5 Phase 3（open/close 軸のトリガー是正、追補2・3参照）・
 §7-11（2回目レビューの詳細な経緯）・§7-12（M5 の未解決論点）。
 
-## BUG-61: Windows Terminal + MS-IME で JIS かな入力に固定され、Ctrl+変換も tray のローマ字/かなコマンドも復旧できない（`ImmSetConversionStatus` 書き込みが実モードに反映されない疑い、手動 VK 注入ハーネスを追加・自動復元は未実施）
+## BUG-61: Windows Terminal + MS-IME で JIS かな入力に固定され復旧できない（**解決不能と確定**: Win32 にローマ字/かな入力方式を外部から切り替える公式 API が存在しない、OS/IME の制約）
 
 **症状（2026-08-08〜09 実機報告、Windows Terminal + MS-IME、conv_mode_policy=force
 ソーク中）:**
@@ -7148,22 +7148,45 @@ awase 側からの復旧手段が現状存在しない。
 返してきている**可能性が高い。実害（文字化け・意図しない副作用）は
 観測されていないが、次にこの周辺を調査する際の手がかりとして残す。
 
-**暫定結論（2026-08-09、Ctrl+Alt+R/K の結果時点。IMC write 単体の切り分け
-〈Ctrl+Alt+Shift+R/K〉は確認待ち）**: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` が
-MS-IME の TSF ハンドラ上で「方向指定」か「トグル」かという当初の問いには
-到達できなかった——そもそも Windows Terminal + MS-IME がこれらのキーに
-一切反応しないため。tray 版の IMC write（VK 注入と併走）も無反応だったが、
-IMC write 単体での効果はまだ確認していない。両方とも無反応と確定すれば、
-自動復元の実装（idle-conv-check や `conv_mode_policy=force` からの自動発火）
-は awase の既知の制御手段では原理的に不可能と判断し見送る。今後この症状の
-復旧手段を探る場合は、awase の外側の手段（Windows 言語バーの手動操作で
-復旧するか、フォーカスを完全に失わせて IME コンテキストを再初期化させれば
-直るか等）から切り分けること。
+**実機確認結果・第4段（2026-08-09、Ctrl+Alt+Shift+R/K で IMC write 単体を確認 →
+これも無反応）:** VK 注入と同条件・同アプリで Ctrl+Alt+Shift+R/K を試した
+ところ、こちらも conv には**一切変化なし**。tray 版の「IMC write と VK 注入の
+併走」という交絡を排除した上でも無反応と確定した。
 
-**やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
-解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
-`kp_restore_kana_from_half_width` への ROMAN 注入追加。VK 注入は無反応と
-確定済み、IMC write 単体の結果が出るまでこれらには着手しない。
+**最終結論（2026-08-09、Web 調査により確定・原理的に不可能と判明）:**
+**Win32 には「ローマ字入力 ⇔ JIS かな入力（入力方式そのもの）」を外部プロセス
+から切り替える公式 API が存在しない。** これは awase 側のバグではなく OS の
+制約である。
+
+Microsoft Q&A の同種の質問（"Programatically turn on/off Japanese IME
+Kana/Romaji input mode"）に対する回答で明言されている:
+- `ImmSetConversionStatus`（`IME_CMODE_NATIVE`/`KATAKANA`/`FULLSHAPE`）は
+  ひらがな/カタカナ/英数という**文字種**は制御できるが、「ローマ字変換 vs
+  かな直接入力」という**入力方式**そのものには効かない——今回の実機結果
+  （NATIVE/KATAKANA/FULLSHAPE 系ビットは有効、`ROMAN` ビットだけ無反応）と
+  完全に一致する。
+- 唯一の代替として挙がっているのはレジストリ
+  （`HKCU\SOFTWARE\AppDataLow\Software\Microsoft\IME\15.0\IMEJP\MSIME` の
+  `kanaMd` 値）だが、これは古い IME バージョン（15.0 = 旧世代 MS-IME/Office
+  IME）向けであり、現行 Windows 10/11 標準搭載 MS-IME（TSF ネイティブ）に
+  効くかは不明・未検証。IME プロセスの再起動が必要な可能性が高く、awase から
+  安全に扱える手段ではない。
+- TSF ネイティブの経路 `ITfCompartment`
+  （`GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`）も調査したが、中身は
+  結局 `TF_CONVERSIONMODE_NATIVE` 等の同じ文字種フラグであり、ローマ字/かな
+  入力方式の切り替えには対応していない。
+- コミュニティの推奨は「アプリ側から強制せず、ユーザーに IME 側の UI
+  （言語バー等）で切り替えてもらう」——**IME 自身の内部経路以外に確実な
+  手段は無い**、というのが公式・非公式問わず一致した見解。
+
+**やらないこと（確定によりスコープ外）:** 自動復元、`is_roman_reliable=false`
+の解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
+`kp_restore_kana_from_half_width` への ROMAN 注入追加、レジストリ
+`kanaMd` 書き換え。IMC write・VK 注入いずれも無反応と確定し、かつ
+「そもそも外部から切り替える公式手段が無い」と判明したため、この経路の
+追加投資は行わない。この症状が発生した場合の唯一の確実な回避策は、
+**MS-IME の言語バー（表示されていれば）でユーザー自身がかな/ローマ字を
+手動切り替えする**ことのみ。
 
 **関連:** BUG-60（同じ「JIS かな化」症状群、因果未確定）、BUG-08（`VK_KANA`
 注入による JIS かな化の既知パターン、MS-IME 自身によるエコーの前例）、
