@@ -226,6 +226,36 @@ pub fn win_key_held() -> bool {
         || is_held_fresh(physical_key_held_ms(VK_RWIN), crate::tuning::WIN_KEY_HELD_STALE_MS)
 }
 
+/// Alt キー（左右どちらか）が「新鮮に」押下中かを返す（BUG-62）。
+///
+/// `win_key_held()` と全く同型の対策（`is_held_fresh` を共有し、判定点も
+/// 同じ関数として集約）。BUG-48 が Win キーで踏んだ「KeyUp が
+/// `WH_KEYBOARD_LL` フックチェーンの前段で消費され awase に届かず
+/// `PHYSICAL_KEY_STATE` が恒久的に「押されたまま」スタックする」不具合は、
+/// メカニズム自体が Win キー固有ではなく「何らかの OS/シェル側 UI が
+/// 一瞬でもキーイベントを横取りする」一般的なリスクである。BUG-62（Alt+かな
+/// swallow）実装後、ユーザーから「Alt down はあるが Alt up が（ログにすら）
+/// 一切出ない不具合があるのでは」という指摘があり、これは正にログに残らない
+/// 種類の不具合（フックの前段で消費されるため）で、報告時点では実機ログでの
+/// 直接確認ができない。BUG-48 と同じ防御を先回りで適用する:
+/// **これ自体は BUG-62 の Alt 押下判定（かなキー swallow の可否）が、Alt が
+/// 本当にスタックした場合に恒久的に true を返し続け、以後の単独「かな」
+/// キー（IME ON）まで誤って swallow してしまう二次被害を防ぐ目的もある。**
+///
+/// `WIN_KEY_HELD_STALE_MS` をそのまま再利用する（新規タイミング定数は実測
+/// 無しに追加しない、`.claude/rules/tuning-constants.md`）。この値自体は
+/// Win キー固有の実測ではなく「人間のチョード操作は通常数百ms 以内に完了する」
+/// という定性的推論に基づく暫定値であり、対象キーを問わず適用可能な性質の
+/// ものと判断した。
+#[must_use]
+pub fn alt_key_held() -> bool {
+    use crate::state::win_key_guard::is_held_fresh;
+    use crate::vk::{VK_LMENU, VK_MENU, VK_RMENU};
+    is_held_fresh(physical_key_held_ms(VK_MENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
+        || is_held_fresh(physical_key_held_ms(VK_LMENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
+        || is_held_fresh(physical_key_held_ms(VK_RMENU), crate::tuning::WIN_KEY_HELD_STALE_MS)
+}
+
 /// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
 ///
 /// セッションロック中（Secure Desktop 遷移中）は `WH_KEYBOARD_LL` フックにイベントが
@@ -665,10 +695,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             );
             return LRESULT(1);
         }
-        let alt_held = is_physical_key_down(crate::vk::VK_MENU)
-            || is_physical_key_down(crate::vk::VK_LMENU)
-            || is_physical_key_down(crate::vk::VK_RMENU);
-        if alt_held {
+        if alt_key_held() {
             log::info!(
                 "[hook] Alt+VK_KANA {dir} を swallow（BUG-62: MS-IME の Alt+かな＝\
                  ローマ字/JISかな入力方式切替ショートカット。BUG-61 で復旧不能と\

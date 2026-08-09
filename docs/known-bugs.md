@@ -7222,20 +7222,40 @@ SendInput で送ってくる）`VK_KANA` は無条件で swallow していたが
 ショートカットが発火し、JIS かな入力へ切り替わる——これが「気づかない間に」
 発生する理由を説明する。
 
-**対応:** `hook.rs` の VK_KANA 処理に、`is_physical_key_down` で Alt
-（`VK_MENU`/`VK_LMENU`/`VK_RMENU` のいずれか）が押下中かを確認する分岐を
-追加。Alt 押下中の物理 `VK_KANA` は swallow して OS に一切渡さない
+**対応:** `hook.rs` の VK_KANA 処理に、Alt が押下中かを確認する分岐を追加。
+Alt 押下中の物理 `VK_KANA` は swallow して OS に一切渡さない
 （foreign-injected の場合と同じ `LRESULT(1)` パターン）。Alt 非押下時の物理
 `VK_KANA`（単独の「IME ON」ショートカット、入力方式切替とは別の操作）は
 従来どおり通過させる——併せて、誤っていた「restore_roman が復元する」という
 コメントを是正した。
+
+**追補1（2026-08-09）: Alt 判定に BUG-48 と同型の stale 対策を追加。**
+実装直後にユーザーから「Alt down はあるが Alt up がログにすら出ない不具合が
+あるのでは」という指摘があった——**BUG-48**（Win キー押下で検索 UI が開き、
+その KeyUp が `WH_KEYBOARD_LL` フックチェーンの前段で消費され awase に届かず
+`PHYSICAL_KEY_STATE[Win]` が恒久的に「押されたまま」スタックした不具合）と
+全く同型のメカニズムが Alt でも起きうるという指摘であり、性質上ログには
+一切残らない（フックの前段で消費されるため）ので実機ログでの直接確認は
+できない。加えて、これは本 BUG-62 自身の実装にも影響する: もし Alt が
+本当にスタックすれば、`alt_key_held()`（当初は素の `is_physical_key_down`
+の OR）が恒久的に `true` を返し続け、以後の単独「かな」キー（IME ON）まで
+誤って swallow してしまう二次被害を生む。BUG-48 の対策（`win_key_held()`、
+`WIN_KEY_HELD_STALE_MS` 以上「押されたまま」の値を stale として無視する）
+と全く同型の `alt_key_held()` を新設し、Alt 押下判定をこちらに置き換えた。
+新規タイミング定数は追加せず `WIN_KEY_HELD_STALE_MS`（2,000ms、Win キー用の
+未実測の暫定値）を再利用した——対象キーを問わず「OS 側 UI にキーイベントを
+横取りされた」を検知する一般的な性質の値と判断したため
+（`.claude/rules/tuning-constants.md`: 実測無しの新規定数追加を避ける）。
 
 **検証:** `cargo check`/`clippy`/`cargo test -p awase-windows`（lib 286件・
 architecture_guard 21件・golden_scenarios 22件）全緑。`hook_callback` は
 `unsafe extern "system" fn` で `KBDLLHOOKSTRUCT` を直接扱うため、既存の
 VK_KANA swallow ロジックと同様に Windows 実機以外でのユニットテストは
 できない（`.claude/rules/fix-requires-evidence.md` (b) 適用: 本エントリの
-記録をもって代替する）。**Windows 実機での動作確認は未実施。**
+記録をもって代替する）。**Windows 実機での動作確認は未実施**——特に
+`alt_key_held()` の stale 判定は「Alt が本当にスタックする」事象自体が
+未確認（ユーザーの仮説段階）であり、対策の要否・`WIN_KEY_HELD_STALE_MS`
+流用の妥当性ともに実機での経過観察が必要。
 
 **実機確認してほしいこと:** Alt を押しながら物理「かな」キーを押しても
 JIS かなへ切り替わらなくなったか。また、Alt を押していない単独の「かな」
