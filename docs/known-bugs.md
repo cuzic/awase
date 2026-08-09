@@ -7342,3 +7342,64 @@ ON になるか（回帰が無いか）。
 **関連:** BUG-08（本追補が原因と特定した `b38d67f8` の対策そのもの）、
 BUG-62 追補2（SC_KEYMENU マスク対策の初出）。
 
+**追補4（2026-08-09、実機ログで真因を特定・修正）:** 追補3 を適用した
+`365ae89` を実機（Windows Terminal + MS-IME）で再テストしたところ、
+「Alt+かな の後に入力不能」症状は**再発した**（修正されなかった）。まず
+`inject_alt_menu_mask()` が実際に発火したかを確認するログを追加
+（`d265961`）した上で、ユーザーに Alt+かな 押下を含む区間のログを
+再取得してもらった。
+
+ログを精査した結果、これまで3回分の対策がすべて的外れだったことが
+判明した。ログ中に大量に出現する「foreign-injected VK_KANA」
+swallow（`[hook] foreign-injected VK_KANA {down,up} を swallow`）は、
+Alt の押下有無に関わらず**物理キー操作と無関係に常時**（打鍵ごとに
+数msおきに）発生しており、`inject_alt_menu_mask` も正しく発火して
+いた（`sent=2/2`）。つまり追補1〜3 で強化してきた VK_KANA 分岐は
+正常に動作していたが、そもそも**今回の症状の引き金ではなかった**。
+
+実際の引き金は、Alt を物理的に押しながら「かな」キーを押した瞬間に
+発生していた、以下のイベント列だった:
+
+```
+[engine-input] vk=0xF5 KeyUp   ... mods(...a=true...)
+[relay-passthrough] PassThrough idle: direct OS pass-through (vk=0xf5 up)
+[engine-input] vk=0xF6 KeyDown ... mods(...a=true...)
+may_change_ime key passed through → IME refresh scheduled (20ms)
+[relay-passthrough]（vk=0xf6 down も同様に素通し）
+```
+
+`0xF5` = `VK_DBE_ROMAN`、`0xF6` = `VK_DBE_NOROMAN`。BUG-61 調査で
+発見していた「ローマ字/JIS かな入力方式切替専用の Win32 仮想キー」
+そのものが、**物理 Alt+かな 押下時に Windows のキーボードレイアウト
+ドライバによって `hook_callback` まで届いている**ことが実機ログで
+直接確認できた。`hook.rs` の swallow ロジックはこれまで
+`vk == VK_KANA` しか見ていなかったため、この `0xF5`/`0xF6` は
+完全に素通しで OS に渡り、実際に入力方式の切替（BUG-61 で復旧不能と
+確定済み）を起こしていた。これが3回の対策がすべて効かなかった理由
+そのものである。
+
+**対応:** `hook_callback` に `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` 専用の
+swallow 分岐を追加した（VK_KANA 分岐とは独立、同じ場所に隣接して
+配置）。この2キーは BUG-61 の実機調査で「一度切り替わると
+`ImmSetConversionStatus`・VK 注入のどちらでも復旧不能」と確定済み
+なので、Alt 押下有無を問わず常に swallow する。ただし swallow 時に
+Alt が押されていれば、VK_KANA 分岐と同じ理由（キーを丸ごと OS へ
+渡さないと「Alt 単独タップ」と誤認され `SC_KEYMENU` が起動しうる）
+で `inject_alt_menu_mask()` を適用する。
+
+**この特定はユーザー提供の実機ログを直接読んだことによるもので、
+git bisect のような間接推定ではない**（追補3 との違い）。ただし
+修正版（`VK_DBE_ROMAN`/`NOROMAN` swallow）自体の実機確認はまだ
+できていない。次回 Alt+かな を押した際、入力不能症状が再発しないか、
+かつ `[hook] VK_DBE_ROMAN/NOROMAN ... を swallow` ログが出ているかの
+確認待ち。
+
+**実機確認してほしいこと:** Alt を押しながら物理「かな」キーを押した後、
+通常どおり入力できるか（本命）。ログに
+`[hook] VK_DBE_ROMAN down を swallow` または
+`[hook] VK_DBE_NOROMAN down を swallow` が出ているか。
+
+**関連:** BUG-61（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` そのものの定義と
+「復旧不能」の確定根拠）、BUG-62 追補1〜3（的外れだった VK_KANA 側の
+対策、ただしそれ自体は BUG-08 対策として引き続き必要）。
+

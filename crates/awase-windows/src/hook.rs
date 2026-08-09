@@ -751,6 +751,40 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             kb.dwExtraInfo,
         );
     }
+
+    // BUG-62 追補4（2026-08-09、実機ログで確定）: 追補1〜3 はいずれも VK_KANA
+    // (0x15) のみを見ており効果が無かった。実際に物理 Alt+かな を押した際、
+    // Windows のキーボードレイアウトドライバは VK_KANA ではなく
+    // VK_DBE_ROMAN (0xF5) / VK_DBE_NOROMAN (0xF6) を hook_callback に渡す
+    // （ユーザー提供ログで vk=0xF5 up → vk=0xF6 down が Alt 押下中に
+    // PassThrough で素通りし、直後に IME の入力方式が実際に切り替わったことを
+    // 確認済み）。この2つは BUG-61 の実機調査で「一度切り替わると
+    // ImmSetConversionStatus・VK_DBE_ROMAN 注入のどちらでも復旧不能」と
+    // 確定済みのキーそのものなので、常に未然に swallow する。
+    // VK_KANA 分岐と同じ理由（Alt 押下中に丸ごと swallow すると OS からは
+    // 「Alt 単独タップ」に見え SC_KEYMENU が起動しうる）で `inject_alt_menu_mask`
+    // を適用する。
+    if vk == crate::vk::VK_DBE_ROMAN || vk == crate::vk::VK_DBE_NOROMAN {
+        let dir = if is_keydown { "down" } else { "up" };
+        let name = if vk == crate::vk::VK_DBE_ROMAN {
+            "VK_DBE_ROMAN"
+        } else {
+            "VK_DBE_NOROMAN"
+        };
+        let alt_held = alt_key_held();
+        log::info!(
+            "[hook] {name} {dir} を swallow（BUG-62追補4: Alt+かな の実際のキー\
+             コード。BUG-61 で復旧不能と確定済みのため未然に防ぐ, scan=0x{:X}, \
+             extra=0x{:X}, alt_held={alt_held}）",
+            kb.scanCode,
+            kb.dwExtraInfo,
+        );
+        if is_keydown && alt_held {
+            inject_alt_menu_mask();
+        }
+        return LRESULT(1);
+    }
+
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
     let config = cached_hook_config();
 
