@@ -110,6 +110,20 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.14.0] - 2026-08-09</h2>
+<h3>追加</h3>
+<ul>
+<li><strong>MSIインストール完了直後に awase を自動起動するようにした</strong><ul>
+<li>従来はインストールしても次回ログインまで何も起動せず、手動起動かログオフ/再起動が必要だった</li>
+<li><code>Return=&quot;asyncNoWait&quot;</code> により、常駐アプリの終了を待たずインストーラが完了する</li>
+</ul>
+</li>
+<li><strong>スタートメニューに「Uninstall awase」ショートカットを追加</strong><ul>
+<li>環境によっては「アプリと機能」のアンインストールエントリが登録されないケースを確認したため、ARPの表示有無に依存しない代替のアンインストール手段として追加した</li>
+<li><code>msiexec /x [ProductCode]</code> を直接呼び出す</li>
+</ul>
+</li>
+</ul>
 <h2>[1.13.0] - 2026-08-09</h2>
 <h3>追加</h3>
 <ul>
