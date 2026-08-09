@@ -79,6 +79,14 @@
       <Component Id="AppShortcut" Guid="4C391571-272A-41C6-8F88-043A88758E89">
         <Shortcut Id="AwaseShortcut" Name="awase" Target="[INSTALLDIR]awase.exe" WorkingDirectory="INSTALLDIR" />
         <Shortcut Id="SettingsShortcut" Name="awase Settings" Target="[INSTALLDIR]awase-settings.exe" WorkingDirectory="INSTALLDIR" />
+        <!-- 「アプリと機能」のARPエントリはOS/実行環境側の要因で登録されないことがある
+             （実機検証: RegisterProduct/PublishProductは成功するがUninstallキーが作成されない
+             ケースを確認、最小構成のMSIでも再現）。ARPの表示有無に依存しない
+             アンインストール手段として、msiexecを直接呼ぶショートカットを用意する。 -->
+        <Shortcut Id="UninstallShortcut" Name="Uninstall awase"
+                  Description="Uninstalls awase"
+                  Target="[System64Folder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
         <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="installed"
                        Type="integer" Value="1" KeyPath="yes" />
