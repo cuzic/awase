@@ -48,25 +48,32 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
     app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
 
-    // ── BUG-61 デバッグホットキー: Ctrl+Alt+R / Ctrl+Alt+K ──
-    // VK_DBE_ROMAN/VK_DBE_NOROMAN が MS-IME の TSF ハンドラ上で実際に効くかを
-    // 実機で確認するための暫定機能（docs/known-bugs.md BUG-61）。tray の
-    // 「ローマ字」「かな」コマンドは実機で無反応だったため撤去し、こちらへ
-    // 置き換えた（handle_wm_key_from_hook の通常キー処理経路のため、tray の
-    // WM_COMMAND と違いフォーカスは既に対象アプリのまま）。物理押下のみ
-    // （他プロセス由来の SendInput 注入は injected で除外）。down/up 両方を
-    // 完全に swallow し OS/アプリへは一切通さない（'r'/'k' の誤入力や無関係な
-    // ショートカット発火を防ぐ）。
+    // ── BUG-61 デバッグホットキー: Ctrl+Alt+R/K（VK 注入）・
+    // Ctrl+Alt+Shift+R/K（IMC write 単体）──
+    // VK_DBE_ROMAN/VK_DBE_NOROMAN の SendInput（Ctrl+Alt+R/K）、および
+    // ImmSetConversionStatus による ROMAN ビット単体書き込み（Ctrl+Alt+Shift+R/K）
+    // が MS-IME の TSF ハンドラ上で実際に効くかを実機で確認するための暫定機能
+    // （docs/known-bugs.md BUG-61）。tray の「ローマ字」「かな」コマンドは
+    // 実機で無反応だったため撤去し、こちらへ置き換えた（handle_wm_key_from_hook
+    // の通常キー処理経路のため、tray の WM_COMMAND と違いフォーカスは既に対象
+    // アプリのまま）。Shift の有無で「VK 注入」と「IMC write 単体」を切り分ける
+    // ——両者が無関係に無反応であることを確認するため、互いに併走させない。
+    // 物理押下のみ（他プロセス由来の SendInput 注入は injected で除外）。
+    // down/up 両方を完全に swallow し OS/アプリへは一切通さない（'r'/'k' の
+    // 誤入力や無関係なショートカット発火を防ぐ）。
     if !event.injected
         && event.modifier_snapshot.ctrl
         && event.modifier_snapshot.alt
-        && !event.modifier_snapshot.shift
         && !event.modifier_snapshot.win
         && (event.vk_code == crate::vk::VK_R || event.vk_code == crate::vk::VK_K)
     {
         if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
             let romaji = event.vk_code == crate::vk::VK_R;
-            app.tray_inject_romaji_mode_vk(romaji);
+            if event.modifier_snapshot.shift {
+                app.debug_inject_romaji_mode_imc(romaji);
+            } else {
+                app.tray_inject_romaji_mode_vk(romaji);
+            }
         }
         return;
     }

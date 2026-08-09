@@ -7107,6 +7107,17 @@ tray 版が抱えていたフォーカス奪取の問題が構造的に存在し
    ——同じ「VK_DBE_ROMAN を試す」着想が将来別セッションで再浮上したときに
    同じ失敗を繰り返さないため。
 
+**追加ホットキー（2026-08-09、Ctrl+Alt+Shift+R / Ctrl+Alt+Shift+K）: IMC write
+単体の切り分け。** `Runtime::debug_inject_romaji_mode_imc`（`key_pipeline.rs`）
+が `ImmSetConversionStatus` による ROMAN ビット単体書き込みを、VK 注入を
+一切併走させずに単独で行う。tray 版の IMC write は常に VK 注入と併走して
+いたため、IMC write 単体の効果を見たことがなかった——この切り分けのために
+追加した。`kp_reset_to_hiragana_romaji_capsoff`（Ctrl+変換）と同じ ADR-086
+準拠の `ActuationTarget` 経由 read-modify-write だが、Caps Lock 解除や
+カタカナリセット条件を持たない ROMAN ビット単体の最小構成。ログは
+`[debug-romaji-imc]` タグ。チェック項目は上記1〜6と同様（Ctrl+Alt+R/K の
+代わりに Ctrl+Alt+Shift+R/K を使う）。
+
 **実機確認結果・第3段（2026-08-09、Ctrl+Alt+R/K ホットキーで確認 →
 VK_DBE_ROMAN/NOROMAN も無反応）:**
 
@@ -7137,19 +7148,22 @@ awase 側からの復旧手段が現状存在しない。
 返してきている**可能性が高い。実害（文字化け・意図しない副作用）は
 観測されていないが、次にこの周辺を調査する際の手がかりとして残す。
 
-**結論**: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` が MS-IME の TSF ハンドラ上で
-「方向指定」か「トグル」かという当初の問いには到達できなかった——
-そもそも Windows Terminal + MS-IME がこれらのキーに一切反応しないため。
+**暫定結論（2026-08-09、Ctrl+Alt+R/K の結果時点。IMC write 単体の切り分け
+〈Ctrl+Alt+Shift+R/K〉は確認待ち）**: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` が
+MS-IME の TSF ハンドラ上で「方向指定」か「トグル」かという当初の問いには
+到達できなかった——そもそも Windows Terminal + MS-IME がこれらのキーに
+一切反応しないため。tray 版の IMC write（VK 注入と併走）も無反応だったが、
+IMC write 単体での効果はまだ確認していない。両方とも無反応と確定すれば、
 自動復元の実装（idle-conv-check や `conv_mode_policy=force` からの自動発火）
-は、awase の既知の制御手段では原理的に不可能と判断し**見送りを継続**する。
-今後この症状の復旧手段を探る場合は、awase の外側の手段（Windows 言語バーの
-手動操作で復旧するか、フォーカスを完全に失わせて IME コンテキストを
-再初期化させれば直るか等）から切り分けること。
+は awase の既知の制御手段では原理的に不可能と判断し見送る。今後この症状の
+復旧手段を探る場合は、awase の外側の手段（Windows 言語バーの手動操作で
+復旧するか、フォーカスを完全に失わせて IME コンテキストを再初期化させれば
+直るか等）から切り分けること。
 
 **やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
 解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
-`kp_restore_kana_from_half_width` への ROMAN 注入追加。IMC write・VK 注入
-いずれも無反応と確定したため、これらは着手しない。
+`kp_restore_kana_from_half_width` への ROMAN 注入追加。VK 注入は無反応と
+確定済み、IMC write 単体の結果が出るまでこれらには着手しない。
 
 **関連:** BUG-60（同じ「JIS かな化」症状群、因果未確定）、BUG-08（`VK_KANA`
 注入による JIS かな化の既知パターン、MS-IME 自身によるエコーの前例）、

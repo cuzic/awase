@@ -1827,6 +1827,48 @@ impl Runtime {
         );
     }
 
+    /// Ctrl+Alt+Shift+R / Ctrl+Alt+Shift+K デバッグホットキー用: `ImmSetConversionStatus`
+    /// による ROMAN ビット単体書き込みを、VK 注入を一切併走させずに単独で試す
+    /// （BUG-61 対応、実機テスト用の暫定機能）。
+    ///
+    /// Ctrl+Alt+R/K（`tray_inject_romaji_mode_vk`、`VK_DBE_ROMAN`/`NOROMAN` 注入）が
+    /// 実機で無反応だったため、IMC write 単体でも無反応かを切り分ける
+    /// ——tray 版の IMC write は常に VK 注入と併走していたため、単体の効果を
+    /// 見たことがなかった。`kp_reset_to_hiragana_romaji_capsoff`（Ctrl+変換）と
+    /// 同じ ADR-086 準拠の `ActuationTarget` 経由 read-modify-write を使うが、
+    /// Caps Lock 解除やカタカナリセット条件などの副作用を一切持たない、
+    /// ROMAN ビットのみを対象にした最小構成。
+    pub(crate) fn debug_inject_romaji_mode_imc(&mut self, romaji: bool) {
+        let now_tick = crate::state::TickMs(hook::current_tick_ms());
+        self.platform_state.ime.note_explicit_ime_action(now_tick);
+        let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+        log::info!("[debug-romaji-imc] IMC write 起案 (romaji={romaji}, focus_gen={focus_gen})");
+        win32_async::spawn_local(async move {
+            let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                log::debug!("[debug-romaji-imc] capture 失敗（フォーカス無し） → 中止");
+                return;
+            };
+            let Some(current) = crate::ime::get_ime_conv_for_target(target, 50).await else {
+                log::warn!("[debug-romaji-imc] 現在の conv 読み取りに失敗 → 書き込み中止");
+                return;
+            };
+            let new_conv = if romaji {
+                current | crate::imm::IME_CMODE_ROMAN
+            } else {
+                current & !crate::imm::IME_CMODE_ROMAN
+            };
+            let outcome = crate::ime::set_ime_conv_for_target(target, Some(new_conv), || {
+                crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
+                    .unwrap_or_else(|| focus_gen.wrapping_add(1))
+            })
+            .await;
+            log::info!(
+                "[debug-romaji-imc] IMC write 結果: {outcome:?} \
+                 (before=0x{current:08X}, target=0x{new_conv:08X})"
+            );
+        });
+    }
+
     /// Effects の実行（フックからキューに委譲）
     fn kp_stage_execute(
         &mut self,
