@@ -110,6 +110,20 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.14.0] - 2026-08-09</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>awase now launches automatically immediately after the MSI installation finishes</strong><ul>
+<li>Previously, nothing would start until the next login even after installing; you had to launch it manually or sign out/restart</li>
+<li>Uses <code>Return="asyncNoWait"</code> so the installer completes without waiting for the resident app to exit</li>
+</ul>
+</li>
+<li><strong>Added an "Uninstall awase" shortcut to the Start Menu</strong><ul>
+<li>On some environments the "Apps &amp; Features" uninstall entry was not being registered, so this shortcut was added as an alternative uninstall path that doesn't depend on that entry being visible</li>
+<li>Invokes <code>msiexec /x [ProductCode]</code> directly</li>
+</ul>
+</li>
+</ul>
 <h2>[1.13.0] - 2026-08-09</h2>
 <h3>Added</h3>
 <ul>
@@ -156,6 +170,7 @@ footer p{margin:0.3rem 0}
 </ul>
 </li>
 </ul>
+<h2>[1.12.0] - 2026-08-01</h2>
 <h3>Added</h3>
 <ul>
 <li><strong>Added an "About awase" dialog to the tray</strong><ul>
