@@ -32,7 +32,7 @@
          また ICE64 対策として各ディレクトリに RemoveFolder を追加する。 -->
     <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
       <Component Id="MainExe" Guid="FEE4643D-BD1C-4FBA-A6F0-3422691909C5">
-        <File Source="dist\awase.exe" />
+        <File Id="AwaseExe" Source="dist\awase.exe" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="MainExe"
                        Type="string" Value="" KeyPath="yes" />
         <RegistryValue Root="HKCU"
@@ -91,5 +91,20 @@
       <ComponentGroupRef Id="DataFiles" />
       <ComponentGroupRef Id="Shortcuts" />
     </Feature>
+
+    <!-- インストール完了直後に awase.exe を起動する。
+         perUser インストールなので昇格・偽装は不要（現在のユーザーコンテキストでそのまま実行される）。
+         Return="asyncNoWait" によりインストーラは awase.exe の終了を待たずに完了する
+         （常駐アプリのため待つと永久にハングする）。
+         "NOT Installed" は「このプロダクトが以前からインストール済みでない」場合のみ真になる
+         MSI 標準プロパティで、新規インストール時のみ起動し、修復・アンインストール時には起動しない。 -->
+    <CustomAction Id="LaunchApplication"
+                  FileKey="AwaseExe"
+                  ExeCommand=""
+                  Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApplication" After="InstallFinalize">NOT Installed</Custom>
+    </InstallExecuteSequence>
   </Product>
 </Wix>
