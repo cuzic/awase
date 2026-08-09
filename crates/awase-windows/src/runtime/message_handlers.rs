@@ -574,12 +574,17 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::CapsLock) => {
             crate::ime::toggle_caps_lock();
         }
+        // BUG-61: awase はローマ字出力前提のエンジンのため、NATIVE を立てる conv 指定は
+        // 常に IME_CMODE_ROMAN も維持する（ResetState と同じパターン）。かつては ROMAN
+        // ビットに触れておらず、JIS かな入力に固定された状態で選んでも復旧しなかった。
         Some(tray::TrayCommand::ImeHiragana) => {
             if let Some(hwnd) = ime_target {
                 let _ = crate::ime::set_ime_mode_for_target(
                     hwnd,
                     true,
-                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_FULLSHAPE
+                        | crate::imm::IME_CMODE_ROMAN,
                     crate::imm::IME_CMODE_KATAKANA,
                 );
             }
@@ -592,7 +597,8 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     true,
                     crate::imm::IME_CMODE_NATIVE
                         | crate::imm::IME_CMODE_KATAKANA
-                        | crate::imm::IME_CMODE_FULLSHAPE,
+                        | crate::imm::IME_CMODE_FULLSHAPE
+                        | crate::imm::IME_CMODE_ROMAN,
                     0,
                 );
             }
@@ -627,7 +633,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                 let _ = crate::ime::set_ime_mode_for_target(
                     hwnd,
                     true,
-                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
+                    crate::imm::IME_CMODE_NATIVE
+                        | crate::imm::IME_CMODE_KATAKANA
+                        | crate::imm::IME_CMODE_ROMAN,
                     crate::imm::IME_CMODE_FULLSHAPE,
                 );
             }
