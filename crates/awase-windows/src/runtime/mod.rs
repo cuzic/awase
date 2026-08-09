@@ -1218,6 +1218,9 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        crate::hook::set_swallow_alt_kana_mode_switch(
+            config.general.swallow_alt_kana_input_method_switch,
+        );
         self.platform
             .output
             .conv_mode

@@ -404,6 +404,7 @@ pub(super) fn initialize_app(
     hook::set_thumb_vk_codes(left_thumb_vk, right_thumb_vk);
     hook::set_keyboard_model(config.general.keyboard_model);
     hook::set_alt_impersonation_enabled(left_alt_impersonates, right_alt_impersonates);
+    hook::set_swallow_alt_kana_mode_switch(config.general.swallow_alt_kana_input_method_switch);
 
     let engine_on_ime_vk = config
         .keys

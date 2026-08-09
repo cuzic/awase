@@ -1709,6 +1709,21 @@ impl SettingsApp {
         ui.label(conv_mode_policy_tooltip(self.config.general.conv_mode_policy));
         ui.label("強制するモードは、awase のトレイメニュー（ひらがな/カタカナ等）から選びます。");
         ui.add_space(8.0);
+        ui.checkbox(
+            &mut self.config.general.swallow_alt_kana_input_method_switch,
+            "Alt+かな による IME 入力方式切替（ローマ字⇔JIS かな）を無効化する",
+        )
+        .on_hover_text(
+            "ON(既定)の場合、物理 Alt を押しながら「かな」キーを押しても、\n\
+             MS-IME の「ローマ字入力 ⇔ JIS かな直接入力」切替ショートカットが\n\
+             発動しないようにブロックします。\n\
+             JIS かな直接入力に切り替わると、awase が送出するローマ字綴りの\n\
+             キー列が誤読され、一度切り替わると awase 側からは元に戻せません\n\
+             （Windows にこの入力方式を外部から切り替える公式 API が無いため）。\n\
+             JIS かな直接入力を意図的に使いたい場合（= awase の Engine を OFF に\n\
+             して使う場合など）のみ OFF にしてください。",
+        );
+        ui.add_space(8.0);
         let slider_with_tip = |ui: &mut egui::Ui,
                                label: &str,
                                tip: &str,

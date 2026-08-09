@@ -260,6 +260,16 @@ pub struct GeneralConfig {
     /// と同様（NICOLA の小指シフト面は Shift 単独系で thumb-shift とは組み合わせない
     /// 設計のため、Shift 押下中は安全に即時パススルーできる）。
     pub enter_thumb_shift_literal: bool,
+    /// 物理 Alt を押しながら「かな」キー（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`）を
+    /// 押した際、MS-IME の「ローマ字入力 ⇔ JIS かな直接入力」切替ショートカット
+    /// を OS へ渡さず未然に無効化するか（Windows 固有、`hook.rs` 参照）。
+    ///
+    /// JIS かな直接入力に切り替わると、awase が常時送出しているローマ字綴りの
+    /// VK 列が MS-IME に誤読され、以後の日本語入力が壊れる（BUG-61: 一度
+    /// 切り替わると awase 側から元に戻す公式 API が存在せず復旧不能、BUG-62
+    /// 参照）。既定値は `true`（常に無効化）。JIS かな直接入力を意図的に
+    /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
+    pub swallow_alt_kana_input_method_switch: bool,
 }
 
 impl Default for GeneralConfig {
@@ -292,6 +302,7 @@ impl Default for GeneralConfig {
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
+            swallow_alt_kana_input_method_switch: true,
         }
     }
 }

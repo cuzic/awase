@@ -7388,16 +7388,30 @@ Alt が押されていれば、VK_KANA 分岐と同じ理由（キーを丸ご�
 で `inject_alt_menu_mask()` を適用する。
 
 **この特定はユーザー提供の実機ログを直接読んだことによるもので、
-git bisect のような間接推定ではない**（追補3 との違い）。ただし
-修正版（`VK_DBE_ROMAN`/`NOROMAN` swallow）自体の実機確認はまだ
-できていない。次回 Alt+かな を押した際、入力不能症状が再発しないか、
-かつ `[hook] VK_DBE_ROMAN/NOROMAN ... を swallow` ログが出ているかの
-確認待ち。
+git bisect のような間接推定ではない**（追補3 との違い）。
 
-**実機確認してほしいこと:** Alt を押しながら物理「かな」キーを押した後、
-通常どおり入力できるか（本命）。ログに
-`[hook] VK_DBE_ROMAN down を swallow` または
-`[hook] VK_DBE_NOROMAN down を swallow` が出ているか。
+**実機確認結果（2026-08-09）:** ユーザーが `259aeaed` を実機（Windows
+Terminal + MS-IME）で再検証し、「再発しないようになりました」と確認。
+Alt+かな 後の入力不能症状は解消。
+
+**追補5（2026-08-09、設定でユーザーがオプトアウトできるようにした）:**
+JIS かな直接入力を意図的に使いたいユーザー（想定: awase の Engine を
+OFF にして Windows 標準の JIS かな入力を使う運用）向けに、
+`GeneralConfig::swallow_alt_kana_input_method_switch`（既定値 `true`
+＝従来どおり常時 swallow）で無効化できるようにした。awase-settings の
+「詳細設定」タブに対応するチェックボックスを追加。`false` にした場合、
+Alt+かな は素通しされ MS-IME の入力方式が実際に切り替わる（BUG-61 で
+復旧不能と確定済みなので、その場合の復旧は言語バー等 IME 自身の UI に
+限られる）。
+
+Alt+かな を「JIS かな⇔ローマ字の実用的なトグル機能」として awase が
+積極サポートすることは意図的にやらない選択をした: awase は常にローマ字
+綴りの VK 列で文字を出力しているため（`output/vk_send.rs`）、MS-IME が
+JIS かな直接入力モードに切り替わった状態で awase 経由の入力を続けると
+出力が壊れる。両モードに対応するには awase の出力パイプライン自体を
+ROMAN/NOROMAN ビットに応じて切り替える必要があり、過去に何度も事故って
+きた領域（BUG-08/BUG-15/BUG-61/BUG-62）だけに、思いつきで着手せず必要に
+なったら別途 ADR を切る方針とした。
 
 **関連:** BUG-61（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` そのものの定義と
 「復旧不能」の確定根拠）、BUG-62 追補1〜3（的外れだった VK_KANA 側の

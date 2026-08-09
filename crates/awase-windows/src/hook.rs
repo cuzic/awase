@@ -330,6 +330,10 @@ static CACHED_RIGHT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(fals
 /// キャッシュ。Alt なりすましの発動条件に使う（`hook_callback` 参照）。
 static CACHED_ENGINE_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// `GeneralConfig::swallow_alt_kana_input_method_switch` のキャッシュ（BUG-62 追補5）。
+/// 既定値は `true`（安全側）で、config 読み込み前に発火しても常に swallow する。
+static CACHED_SWALLOW_ALT_KANA_MODE_SWITCH: AtomicBool = AtomicBool::new(true);
+
 /// 直近の Left/Right Alt「新規押下」時点で「なりすまし発動中」だったか。
 ///
 /// 新規押下（離された状態からの KeyDown）時点の判定を、以降の auto-repeat
@@ -391,6 +395,11 @@ pub fn set_alt_impersonation_enabled(left: bool, right: bool) {
 /// Alt なりすましの発動条件（エンジン ON 時のみ発動）に使う。
 pub fn set_engine_enabled(enabled: bool) {
     CACHED_ENGINE_ENABLED.store(enabled, Ordering::Release);
+}
+
+/// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
+pub fn set_swallow_alt_kana_mode_switch(enabled: bool) {
+    CACHED_SWALLOW_ALT_KANA_MODE_SWITCH.store(enabled, Ordering::Release);
 }
 
 /// Alt なりすましが現在発動中か（Left/Right いずれか）。
@@ -760,11 +769,18 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // PassThrough で素通りし、直後に IME の入力方式が実際に切り替わったことを
     // 確認済み）。この2つは BUG-61 の実機調査で「一度切り替わると
     // ImmSetConversionStatus・VK_DBE_ROMAN 注入のどちらでも復旧不能」と
-    // 確定済みのキーそのものなので、常に未然に swallow する。
+    // 確定済みのキーそのものなので、既定では常に未然に swallow する。
     // VK_KANA 分岐と同じ理由（Alt 押下中に丸ごと swallow すると OS からは
     // 「Alt 単独タップ」に見え SC_KEYMENU が起動しうる）で `inject_alt_menu_mask`
     // を適用する。
-    if vk == crate::vk::VK_DBE_ROMAN || vk == crate::vk::VK_DBE_NOROMAN {
+    //
+    // 追補5（2026-08-09）: JIS かな直接入力を意図的に使いたい（= awase の
+    // Engine を OFF にして使う）ユーザー向けに、
+    // `GeneralConfig::swallow_alt_kana_input_method_switch` で無効化できる
+    // ようにした。既定値は `true`（従来どおり常時 swallow）。
+    if (vk == crate::vk::VK_DBE_ROMAN || vk == crate::vk::VK_DBE_NOROMAN)
+        && CACHED_SWALLOW_ALT_KANA_MODE_SWITCH.load(Ordering::Acquire)
+    {
         let dir = if is_keydown { "down" } else { "up" };
         let name = if vk == crate::vk::VK_DBE_ROMAN {
             "VK_DBE_ROMAN"
