@@ -7107,15 +7107,55 @@ tray 版が抱えていたフォーカス奪取の問題が構造的に存在し
    ——同じ「VK_DBE_ROMAN を試す」着想が将来別セッションで再浮上したときに
    同じ失敗を繰り返さないため。
 
+**実機確認結果・第3段（2026-08-09、Ctrl+Alt+R/K ホットキーで確認 →
+VK_DBE_ROMAN/NOROMAN も無反応）:**
+
+Windows Terminal + MS-IME、JIS かな入力（`conv=0x00000009`）に固定された状態で
+Ctrl+Alt+R（`VK_DBE_ROMAN` 注入）・Ctrl+Alt+K（`VK_DBE_NOROMAN` 注入）を
+それぞれ試した。ログで送信自体は確認できる
+（`[engine-input] vk=0xF5 KeyUp`/`vk=0xF6 KeyDown` が Ctrl+Alt+R/K 押下直後に
+出現、`may_change_ime` が真になり 20ms の IME refresh がスケジュールされて
+いる）が、**その後の `[idle-conv-check]` は一貫して `conv=0x00000009 →
+belief ObservedRomaji 変更なし` のままで、実際の conv は一切変化しなかった**。
+
+これにより IMC write（`ImmSetConversionStatus`）に続き、**実キーイベント
+経由の SendInput（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`）でも Windows Terminal +
+MS-IME の JIS かな固定は解除できない**ことが確認された。awase が持つ
+2つの conv-mode 制御手段（IMC write・DBE 系 VK 注入）がいずれも効かない
+——このアプリ・IME の組み合わせでは、一度 JIS かな入力に固定されると
+awase 側からの復旧手段が現状存在しない。
+
+**観測された副次的な現象（実害なし、記録のみ）**: 送信直後、awase 自身の
+注入（`TSF_MARKER` 付き、`is_self_injected` で hook 層にて `CallNextHookEx`
+に握りつぶされ、エンジンには到達しないはず）とは別に、`vk=0xF5`/`0xF6` が
+再度 `[engine-input]` に現れ、`ImeKeyKind::from_vk` の分類対象外のため特別な
+処理をされず通常の `PassThrough` キーとして OS へ素通りしている。`extra_info`
+はログに残していないため断定はできないが、`VK_KANA` を MS-IME 自身が
+`foreign-injected`（`injected=true self_injected=false scan=0x0 extra=0x0`）
+として頻繁にエコーしてくる既知パターン（BUG-08/BUG-14 参照）と同様、
+**MS-IME 自身が awase の DBE 系 VK 注入を受けて別の合成キーイベントを
+返してきている**可能性が高い。実害（文字化け・意図しない副作用）は
+観測されていないが、次にこの周辺を調査する際の手がかりとして残す。
+
+**結論**: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` が MS-IME の TSF ハンドラ上で
+「方向指定」か「トグル」かという当初の問いには到達できなかった——
+そもそも Windows Terminal + MS-IME がこれらのキーに一切反応しないため。
+自動復元の実装（idle-conv-check や `conv_mode_policy=force` からの自動発火）
+は、awase の既知の制御手段では原理的に不可能と判断し**見送りを継続**する。
+今後この症状の復旧手段を探る場合は、awase の外側の手段（Windows 言語バーの
+手動操作で復旧するか、フォーカスを完全に失わせて IME コンテキストを
+再初期化させれば直るか等）から切り分けること。
+
 **やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
 解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
-`kp_restore_kana_from_half_width` への ROMAN 注入追加。いずれも上記チェック
-リストで VK_DBE_ROMAN の挙動（方向指定/トグル、あるいは無反応）が確定して
-から着手する。
+`kp_restore_kana_from_half_width` への ROMAN 注入追加。IMC write・VK 注入
+いずれも無反応と確定したため、これらは着手しない。
 
 **関連:** BUG-60（同じ「JIS かな化」症状群、因果未確定）、BUG-08（`VK_KANA`
-注入による JIS かな化の既知パターン）、BUG-15 追補7（DBE 系 VK 注入のかな
-ロックトグルハザード）、BUG-55（`GetForegroundWindow` 基準の書き込み先誤り）、
+注入による JIS かな化の既知パターン、MS-IME 自身によるエコーの前例）、
+BUG-14（foreign-injected IME モードキーの扱い）、BUG-15 追補7（DBE 系 VK
+注入のかなロックトグルハザード）、BUG-55（`GetForegroundWindow` 基準の
+書き込み先誤り）、
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-13
 （SendInput のターゲット同一性検証が構造的に適用不能という既存の例外）。
 
