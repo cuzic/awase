@@ -1773,12 +1773,32 @@ impl Runtime {
     /// - MS-IME 限定（`kp_restore_kana_from_half_width` と同じ理由、GJI での挙動は未検証）。
     /// - `effective_open()==false` の場合は注入をスキップする（BUG-15 追補7: 実 IME が
     ///   確実に ON でない状態で DBE 系 VK を注入すると、かなロックトグルの同族ハザードがある）。
-    /// - scan コードは `MapVirtualKeyW` から取得する。DBE 系キーは物理キーボードマップに
-    ///   存在しないため scan=0 になりうる（scan=0 では MS-IME/TSF がモードキーとして処理
-    ///   しない、2026-07-07 実機確認）。scan=0 の場合は注入をスキップする——物理かなキー
-    ///   (VK_KANA, scan=0x70) へのフォールバックは検討したが、それ自体が BUG-08/BUG-15
-    ///   追補7と同型の「かなロックトグル」ハザードを踏みに行く（症状と同方向に悪化しうる）
-    ///   ため撤去した（Opus レビュー M4）。
+    /// - scan コードは物理「かな」キーの scan（`0x70`、JIS）を固定で使う
+    ///   （BUG-62 追補6）。
+    ///
+    ///   旧版は `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)` から scan を取得し、0 なら
+    ///   注入をスキップしていた。ただし `MapVirtualKeyW` が DBE 系 VK に対して
+    ///   本当に常に 0 を返すのかは実は確認できていない——`VK_DBE_ALPHANUMERIC`
+    ///   (0xF0) は同じ呼び出しで scan=0x3A（CapsLock 位置との衝突値）を返す
+    ///   前例がある（BUG-15 追補7）ため、`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` も
+    ///   何らかの非ゼロ値を返していた可能性が残る。BUG-61「第3段」（Ctrl+Alt+R/K
+    ///   で `[engine-input] vk=0xF5` 自体は observed だが conv 無反応、と記録）は
+    ///   実際に何らかの scan で送信された結果の可能性が高く、scan=0 skip が
+    ///   常に発動していたと断定はできない。
+    ///
+    ///   scan=0x70 固定はその不確実性を排除するための変更: `MapVirtualKeyW` が
+    ///   何を返すかに関わらず、BUG-62 追補4 の実機ログで**実際に入力方式が
+    ///   切り替わったことを確認済みの値**（物理 Alt+かな 押下時に OS が
+    ///   `hook_callback` に届ける scan、= かな キー自身の scan）をそのまま使う。
+    ///   これにより「第3段」が試していない可能性のある scan 値で再検証できる。
+    ///   ただし `MapVirtualKeyW` が仮に既に 0x70 を返していた場合、この変更は
+    ///   実質的に同じ入力を再送するだけになる——「第3段」で実際に使われた scan
+    ///   値はログに残しておらず不明のため、この再検証が新規の条件かどうかは
+    ///   実機確認するまで確定できない。旧版のコメントが懸念していた
+    ///   「VK_KANA, scan=0x70」へのフォールバック（VK を VK_KANA に変えて注入
+    ///   する案）とは別物で、こちらは VK は `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の
+    ///   まま scan だけを固定するため、BUG-08/BUG-15 追補7の「かなロックトグル」
+    ///   ハザード（VK_KANA 自体を注入する経路）とは異なる。
     pub(crate) fn tray_inject_romaji_mode_vk(&self, romaji: bool) {
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         if active_ime_kind != crate::tsf::observer::ActiveImeKind::MicrosoftIme {
@@ -1800,21 +1820,14 @@ impl Runtime {
         } else {
             crate::vk::VK_DBE_NOROMAN
         };
-        // SAFETY: MapVirtualKeyW は有効な VK コードと変換タイプを渡す限り安全。
-        let scan = unsafe {
-            windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW(
-                u32::from(vk.0),
-                windows::Win32::UI::Input::KeyboardAndMouse::MAPVK_VK_TO_VSC,
-            )
-        } as u16;
-        if scan == 0 {
-            log::warn!(
-                "[debug-romaji-vk] MapVirtualKeyW(0x{:02X})=0 のため VK 注入をスキップ \
-                 (scan=0 では MS-IME/TSF が処理しない、フォールバックはハザードのため撤去済み)",
-                vk.0,
-            );
-            return;
-        }
+        // 物理「かな」キーの scan（JIS）。BUG-62 追補4 の実機ログで、OS が物理
+        // Alt+かな 押下時にこの scan を伴って VK_DBE_ROMAN/NOROMAN を届けている
+        // ことを確認済み（関数 doc 参照）。`MapVirtualKeyW` の戻り値は使わない
+        // ——DBE 系 VK に対し常に 0 を返すとは限らない（`VK_DBE_ALPHANUMERIC` は
+        // scan=0x3A を返す前例あり、BUG-15 追補7）ため、不確実な値に頼らず
+        // 実機で効くと確認済みの値を直接指定する。
+        const KANA_KEY_SCAN: u16 = 0x70;
+        let scan = KANA_KEY_SCAN;
         let inputs = [
             crate::tsf::output::make_tsf_key_input_with_scan(vk, false, scan),
             crate::tsf::output::make_tsf_key_input_with_scan(vk, true, scan),

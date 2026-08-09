@@ -7196,6 +7196,38 @@ BUG-14（foreign-injected IME モードキーの扱い）、BUG-15 追補7（DBE
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-13
 （SendInput のターゲット同一性検証が構造的に適用不能という既存の例外）。
 
+**追補（2026-08-09、「解決不能」の再検討 → Ctrl+Alt+R/K の scan を
+固定値へ変更、実機未検証）:** BUG-62 追補4 で、物理 Alt+かな 押下時に
+OS が **scan 付きで** `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を届けており、
+それを素通しした結果 IME の入力方式が実際に切り替わったことを実機ログで
+確認した（BUG-62 参照）。これは本 BUG の「VK 注入は無反応」という結論と
+一見矛盾するため、差分を検討した。
+
+`Runtime::tray_inject_romaji_mode_vk`（Ctrl+Alt+R/K ホットキー）は
+`MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)` で scan を取得していたが、この
+呼び出しが `VK_DBE_ROMAN`/`NOROMAN` に対し実際に何を返していたかは
+ログに残しておらず不明である。上記「第3段」の記録は「`[engine-input]
+vk=0xF5`」の出現＝送信は確認できたと読めるため、**scan=0 で毎回
+スキップされていたとは断定できない**（`VK_DBE_ALPHANUMERIC` が
+`MapVirtualKeyW` で scan=0x3A を返す前例＝BUG-15 追補7があり、DBE 系
+VK が常に 0 を返すという前提自体が未検証だった）。
+
+`tray_inject_romaji_mode_vk` の scan を `MapVirtualKeyW` 依存から
+**物理「かな」キーの scan（`0x70`、JIS）に固定**する変更を行った
+（`key_pipeline.rs`）。BUG-62 追補4 で実際に効くと確認済みの scan 値を
+そのまま使うことで、「第3段」が試していなかった可能性のある条件を
+明示的に再現する狙い。**ただし `MapVirtualKeyW` が実は既に 0x70 を
+返していた場合、この変更は「第3段」と同じ入力を送るだけになり新規性が
+無い**——「第3段」で実際に使われた scan 値が不明なため、この点は実機で
+確認するまで判断できない。
+
+**実機確認してほしいこと:** JIS かな入力に固定された状態で Ctrl+Alt+R
+（ローマ字復帰）を試し、conv が変化するか。ログの `[debug-romaji-vk]`
+行（`scan=0x70` になっているはず）と、その後の `[idle-conv-check]` の
+conv 値を確認する。効かなかった場合は「第3段」と同じ結論（scan 値に
+関わらず VK_DBE_ROMAN 注入は無反応）として確定させ、`docs/experiments.md`
+に追記する。
+
 ## BUG-62: 物理 Alt+VK_KANA（MS-IME の「ローマ字/JIS かな入力方式切替」ショートカット）を swallow して JIS かな固着を未然に防止（BUG-61 の根本原因特定 + 予防策）
 
 **背景（BUG-61 との関係）**: BUG-61 で「一度 JIS かな入力に固定されると
