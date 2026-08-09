@@ -32,7 +32,7 @@
          また ICE64 対策として各ディレクトリに RemoveFolder を追加する。 -->
     <ComponentGroup Id="ProductComponents" Directory="INSTALLDIR">
       <Component Id="MainExe" Guid="FEE4643D-BD1C-4FBA-A6F0-3422691909C5">
-        <File Source="dist\awase.exe" />
+        <File Id="AwaseExe" Source="dist\awase.exe" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="MainExe"
                        Type="string" Value="" KeyPath="yes" />
         <RegistryValue Root="HKCU"
@@ -79,6 +79,14 @@
       <Component Id="AppShortcut" Guid="4C391571-272A-41C6-8F88-043A88758E89">
         <Shortcut Id="AwaseShortcut" Name="awase" Target="[INSTALLDIR]awase.exe" WorkingDirectory="INSTALLDIR" />
         <Shortcut Id="SettingsShortcut" Name="awase Settings" Target="[INSTALLDIR]awase-settings.exe" WorkingDirectory="INSTALLDIR" />
+        <!-- 「アプリと機能」のARPエントリはOS/実行環境側の要因で登録されないことがある
+             （実機検証: RegisterProduct/PublishProductは成功するがUninstallキーが作成されない
+             ケースを確認、最小構成のMSIでも再現）。ARPの表示有無に依存しない
+             アンインストール手段として、msiexecを直接呼ぶショートカットを用意する。 -->
+        <Shortcut Id="UninstallShortcut" Name="Uninstall awase"
+                  Description="Uninstalls awase"
+                  Target="[System64Folder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
         <RemoveFolder Id="RemoveAppFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="installed"
                        Type="integer" Value="1" KeyPath="yes" />
@@ -91,5 +99,20 @@
       <ComponentGroupRef Id="DataFiles" />
       <ComponentGroupRef Id="Shortcuts" />
     </Feature>
+
+    <!-- インストール完了直後に awase.exe を起動する。
+         perUser インストールなので昇格・偽装は不要（現在のユーザーコンテキストでそのまま実行される）。
+         Return="asyncNoWait" によりインストーラは awase.exe の終了を待たずに完了する
+         （常駐アプリのため待つと永久にハングする）。
+         "NOT Installed" は「このプロダクトが以前からインストール済みでない」場合のみ真になる
+         MSI 標準プロパティで、新規インストール時のみ起動し、修復・アンインストール時には起動しない。 -->
+    <CustomAction Id="LaunchApplication"
+                  FileKey="AwaseExe"
+                  ExeCommand=""
+                  Return="asyncNoWait" />
+
+    <InstallExecuteSequence>
+      <Custom Action="LaunchApplication" After="InstallFinalize">NOT Installed</Custom>
+    </InstallExecuteSequence>
   </Product>
 </Wix>
