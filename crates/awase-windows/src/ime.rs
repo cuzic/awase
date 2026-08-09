@@ -1751,41 +1751,11 @@ pub unsafe fn set_ime_mode_for_target(
     success
 }
 
-/// クロスプロセスで IME のローマ字/かな入力を切り替える。
-///
-/// 呼び出し時点の `GetForegroundWindow()` を対象にする。トレイメニュー等、対象
-/// ウィンドウを別途確定済みの呼び出し元は [`set_ime_romaji_mode_state_for_target`]
-/// を使うこと（理由は [`set_ime_open_for_target`] の doc を参照）。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use]
-pub unsafe fn set_ime_romaji_mode_state(romaji: bool) -> bool {
-    let Some(hwnd) = GetForegroundWindow().non_null() else {
-        return false;
-    };
-    unsafe { set_ime_romaji_mode_state_for_target(hwnd, romaji) }
-}
-
-/// [`set_ime_romaji_mode_state`] のターゲット指定版。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use]
-pub unsafe fn set_ime_romaji_mode_state_for_target(hwnd: HWND, romaji: bool) -> bool {
-    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        return false;
-    };
-    let Some((_, _, _, success)) = (unsafe {
-        modify_conv_mode(ime_wnd, |conv| {
-            if romaji {
-                conv | IME_CMODE_ROMAN
-            } else {
-                conv & !IME_CMODE_ROMAN
-            }
-        })
-    }) else {
-        return false;
-    };
-    success
-}
+// クロスプロセスで IME のローマ字/かな入力を切り替える `set_ime_romaji_mode_state`/
+// `set_ime_romaji_mode_state_for_target`（`ImmSetConversionStatus` ベース）は
+// BUG-61 で撤去した。tray の「ローマ字」「かな」コマンドの唯一の呼び出し元で、
+// 実機確認の結果 IMC write が実モードに反映されず押しても変化しないことが
+// 確認されたため（`docs/known-bugs.md` BUG-61）。代替として
+// `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`、Ctrl+Alt+R/K
+// デバッグホットキー経由）が `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の SendInput で
+// 同じ役割を試験中。

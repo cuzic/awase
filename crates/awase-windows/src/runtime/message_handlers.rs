@@ -48,6 +48,29 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
     // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
     app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
 
+    // ── BUG-61 デバッグホットキー: Ctrl+Alt+R / Ctrl+Alt+K ──
+    // VK_DBE_ROMAN/VK_DBE_NOROMAN が MS-IME の TSF ハンドラ上で実際に効くかを
+    // 実機で確認するための暫定機能（docs/known-bugs.md BUG-61）。tray の
+    // 「ローマ字」「かな」コマンドは実機で無反応だったため撤去し、こちらへ
+    // 置き換えた（handle_wm_key_from_hook の通常キー処理経路のため、tray の
+    // WM_COMMAND と違いフォーカスは既に対象アプリのまま）。物理押下のみ
+    // （他プロセス由来の SendInput 注入は injected で除外）。down/up 両方を
+    // 完全に swallow し OS/アプリへは一切通さない（'r'/'k' の誤入力や無関係な
+    // ショートカット発火を防ぐ）。
+    if !event.injected
+        && event.modifier_snapshot.ctrl
+        && event.modifier_snapshot.alt
+        && !event.modifier_snapshot.shift
+        && !event.modifier_snapshot.win
+        && (event.vk_code == crate::vk::VK_R || event.vk_code == crate::vk::VK_K)
+    {
+        if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
+            let romaji = event.vk_code == crate::vk::VK_R;
+            app.tray_inject_romaji_mode_vk(romaji);
+        }
+        return;
+    }
+
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
     if app.platform_state.focus.focus_kind == FocusKind::NonText {
         app.executor.enqueue_reinject(event);
@@ -644,37 +667,6 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::ImeDirect) => {
             if let Some(hwnd) = ime_target {
                 let _ = crate::ime::set_ime_mode_for_target(hwnd, false, 0, 0);
-            }
-        }
-        Some(tray::TrayCommand::InputRomaji) => {
-            if let Some(hwnd) = ime_target {
-                // idle-conv-check が書き込み途中の conv を読まないよう、IMC write の
-                // 前に無条件で抑止する（IME 種別を問わない。Opus レビュー M5:
-                // 従来 tray_inject_romaji_mode_vk の MS-IME 限定分岐内でしか
-                // 呼ばれておらず GJI で漏れていた + IMC write より後で手遅れだった）。
-                let _ = with_app(|app| {
-                    app.platform_state
-                        .ime
-                        .note_explicit_ime_action(crate::state::TickMs(hook::current_tick_ms()));
-                });
-                let success = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, true);
-                log::info!("[tray-romaji] InputRomaji: IMC write success={success}");
-                // BUG-61: IMC write が Windows Terminal + MS-IME で実モードに反映されない
-                // ケースがあるため、実キーイベント経由の VK 注入も併走させる（実機テスト
-                // ハーネス、docs/known-bugs.md BUG-61 参照）。
-                let _ = with_app(|app| app.tray_inject_romaji_mode_vk(true, hwnd));
-            }
-        }
-        Some(tray::TrayCommand::InputKana) => {
-            if let Some(hwnd) = ime_target {
-                let _ = with_app(|app| {
-                    app.platform_state
-                        .ime
-                        .note_explicit_ime_action(crate::state::TickMs(hook::current_tick_ms()));
-                });
-                let success = crate::ime::set_ime_romaji_mode_state_for_target(hwnd, false);
-                log::info!("[tray-romaji] InputKana: IMC write success={success}");
-                let _ = with_app(|app| app.tray_inject_romaji_mode_vk(false, hwnd));
             }
         }
         Some(tray::TrayCommand::ResetState) => {

@@ -7038,8 +7038,8 @@ BUG-60 は「force-write ソーク中に MS-IME 側で JIS かな化する」報
   復旧させており、scan=0 では MS-IME/TSF がモードキーとして処理しない
   （2026-07-07 実機確認）という制約が既知。
 
-**対応（Opus 設計相談 + Fable PM プランニング + Opus アドバーサリアルレビュー、
-2026-08-08〜09、`fix/tray-romaji-vk-dbe-roman`）:**
+**対応・第1段（Opus 設計相談 + Fable PM プランニング + Opus アドバーサリアル
+レビュー、2026-08-08〜09、`fix/tray-romaji-vk-dbe-roman`）:**
 
 `is_roman_reliable=false`（`state/conv_classify.rs`、TsfNative idle 経路の
 自動判定を常に無効化する既存ガード）の解除や、idle-conv-check からの自動
@@ -7050,64 +7050,68 @@ VK_DBE_ROMAN 発火にはまだ踏み込まない — VK_DBE_ROMAN が方向指�
 
 1. `vk.rs` に `VK_DBE_ROMAN=0xF5`/`VK_DBE_NOROMAN=0xF6` を定義。
 2. `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`）を新設し、tray の
-   `InputRomaji`/`InputKana` から既存の IMC write と**併走**で呼ぶ。MS-IME 限定
-   （GJI 未検証）、`effective_open()==false` なら注入をスキップ（BUG-15 追補7の
-   かなロックトグルハザード対策）、scan コードは `MapVirtualKeyW` から取得し
-   scan=0 なら**注入自体をスキップ**（この試行は無効と判定できるようにする）。
-3. `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana` の ROMAN ビット欠落を修正。
+   `InputRomaji`/`InputKana` から既存の IMC write と**併走**で呼ぶ。
+3. `ImeHiragana`/`ImeFullKatakana`/`ImeHalfKatakana` の ROMAN ビット欠落を修正
+   （こちらは今も有効な修正、下記「対応・第2段」で撤去したのは tray の
+   ローマ字/かなコマンドのみ）。
+
+Opus アドバーサリアルレビュー（2026-08-09）で Critical 1件・Major 5件を検出し
+修正: (1) tray はメニュー表示直前に `SetForegroundWindow` で自分自身にフォー
+カスを奪い、`WM_COMMAND` は `TrackPopupMenu` のモーダルループ内で同期配送
+されるため、`tray_inject_romaji_mode_vk` 実行時点のフォアグラウンドは awase
+自身のウィンドウの可能性が高くハーネスとして機能しない構造的欠陥だった
+（修正: 注入前に `SetForegroundWindow(target)` で対象へ戻し検証）。
+(2) scan=0 時の物理かなキー (0x70) フォールバックは BUG-08/BUG-15 追補7と
+同型のかなロックトグルハザードを踏みに行くため撤去。(3) `note_explicit_
+ime_action` の呼び出し順序を IMC write の前・IME 種別を問わず無条件に修正。
+
+**対応・第2段（2026-08-09、ユーザー実機確認 → tray 経路を全廃しホットキー化）:**
+
+上記の C1 修正を含む版でユーザーが実機確認した結果、**tray「ローマ字」
+「かな」は押しても何も変化しなかった**（IMC write・VK 注入いずれも無反応）。
+tray 経路にはなお交絡要因が残っていた可能性がある（IMC write との併走で
+VK 単体の効果が見えない、メニュー表示自体のフォーカス遷移が TSF 側に副作用を
+起こす等）ため、**tray「ローマ字」「かな」コマンドを完全に撤去**し、
+`set_ime_romaji_mode_state`/`set_ime_romaji_mode_state_for_target`（IMC write
+関数）も唯一の呼び出し元を失ったため削除した。
+
+代わりに、通常のキー処理経路（`handle_wm_key_from_hook`）に **Ctrl+Alt+R
+（`VK_DBE_ROMAN` 注入）/ Ctrl+Alt+K（`VK_DBE_NOROMAN` 注入）のデバッグ
+ホットキー**を追加した。tray の `WM_COMMAND` と違い、この経路はユーザーが
+実際に入力していたウィンドウがフォアグラウンドのままの状態で発火するため、
+tray 版が抱えていたフォーカス奪取の問題が構造的に存在しない。IMC write との
+併走もしない（VK 単体の効果のみを見る）。物理押下限定・down/up 完全 swallow。
+`vk.rs` に `VK_R=0x52`/`VK_K=0x4B` を追加（D-1 ガード: `VkCode(0x..)` リテラル
+は vk.rs 外禁止のため）。`Runtime::tray_inject_romaji_mode_vk`
+（関数名は歴史的に残存、実体はホットキー用）から tray 固有の
+`SetForegroundWindow`/検証ロジックを除去し簡素化した。
 
 自動復元（idle-conv-check や `conv_mode_policy=force` からの自動発火）への
-配線は**まだ行っていない**。
+配線は依然として**行っていない**。
 
-**実装後の Opus アドバーサリアルレビュー（2026-08-09）で発見・修正した問題:**
+**実機確認チェックリスト（Ctrl+Alt+R / Ctrl+Alt+K ホットキーで確認すること）:**
 
-- **Critical**: tray はメニュー表示直前に `SetForegroundWindow` で自分自身に
-  フォーカスを奪い、`WM_COMMAND` は `TrackPopupMenu` のモーダルループ内で
-  同期配送される。そのため `tray_inject_romaji_mode_vk` 実行時点のフォアグラ
-  ウンドは**awase 自身のウィンドウの可能性が高く**、SendInput（宛先を選べない）
-  がそこへ飛んでしまい、ハーネスとして機能しない構造的欠陥だった。修正: 注入前に
-  `SetForegroundWindow(target)` でフォアグラウンドを対象へ明示的に戻し、
-  `get_focused_hwnd()` で実際に戻ったか再検証してから送る。不一致なら
-  注入をスキップし warn ログを出す。
-- **Major**: scan=0 時に物理かなキー (VK_KANA, scan=0x70) へフォールバックする
-  当初案は、それ自体が BUG-08/BUG-15 追補7 と同型の「かなロックトグル」
-  ハザードを踏みに行く（症状と同方向に悪化しうる）ため撤去し、スキップ+warn
-  ログに変更した。
-- **Major**: `note_explicit_ime_action` が MS-IME 限定分岐の中・IMC write より
-  後でしか呼ばれておらず、GJI では一度も呼ばれず、IMC write 自体の抑止に
-  なっていなかった。IMC write の直前・IME 種別を問わず無条件で呼ぶよう修正。
-- 詳細な指摘一覧（M1〜M6・m1〜m12）は `git log fix/tray-romaji-vk-dbe-roman` の
-  該当コミット参照。IMC write と VK 注入の併走が実験結果を交絡させる懸念
-  （M1、下記チェックリストに反映）、`output/conv_actuation.rs` の module doc が
-  今回の新規 VK 経路を未記載（M2、追記済み）は対応済み。
-
-**実機確認チェックリスト（ユーザーが tray 操作で確認すること）:**
-
-0. **`conv_mode_policy` を一時的に `observe` に戻してから 1〜6 を確認する**
+0. **`conv_mode_policy` を一時的に `observe` に戻してから確認する**
    （force のままだとフォーカス変更のたびに ROMAN 込みで強制書き戻しが起き、
-   VK 単体の効果と区別できない。項目7だけ force のまま確認する）。
-1. JIS かな固定状態で tray「ローマ字」→ ローマ字入力に復帰するか（本命）。
-2. tray「かな」→ JIS かなに切り替わるか。
-3. ローマ字状態で「ローマ字」を連打 → かな化しないか（**最重要**:
-   `VK_DBE_ROMAN` がトグルなら化ける。ただし IMC write が毎回 ROMAN=1 を
-   VK 注入の**直前**に書くため、VK がトグルだと「連打すると常にかな化する」
-   という一貫した——しかし直感に反する——パターンになりうる点に注意して
-   解釈すること）。
-4. 「ひらがな」コマンドでも JIS かなから復帰するか（ROMAN ビット修正の確認、
-   兼 IMC write 単体の有効性の追加証拠）。
-5. IME 実 OFF 中に tray 操作 → 注入スキップログが出て副作用がないか。
-6. ログの `[tray-romaji-vk]` 行（フォアグラウンド復元の成否・`MapVirtualKeyW`
-   scan 値・実際に送信できたか）を確認する。
-7. `conv_mode_policy=force` 運用中、tray で復帰後に別ウィンドウへ切り替えると
-   再度 JIS かな化しないか（force のフォーカス変更時強制書き込みが ROMAN
-   込みであることは上記で確認済みだが、念のため実機で観察）。
+   VK 単体の効果と区別できない）。
+1. JIS かな固定状態で Ctrl+Alt+R → ローマ字入力に復帰するか（本命）。
+2. Ctrl+Alt+K → JIS かなに切り替わるか。
+3. ローマ字状態で Ctrl+Alt+R を連打 → かな化しないか（**最重要**:
+   `VK_DBE_ROMAN` がトグルなら化ける。この結果が今後の自動復元解禁の
+   可否を左右する）。
+4. IME 実 OFF 中に Ctrl+Alt+R/K → 注入スキップログが出て副作用がないか。
+5. ログの `[debug-romaji-vk]` 行（MS-IME 限定判定・`MapVirtualKeyW` scan 値・
+   実際に送信できたか）を確認する。
+6. 何も変化しなかった場合、`docs/experiments.md`（`.claude/rules/
+   experiment-logging.md`）に app/IME/再現手順を添えて記録すること
+   ——同じ「VK_DBE_ROMAN を試す」着想が将来別セッションで再浮上したときに
+   同じ失敗を繰り返さないため。
 
 **やらないこと（スコープ外の明示）:** 自動復元、`is_roman_reliable=false` の
 解除、往復ハザード対策（ヒステリシス・give-up ラッチ）、GJI 対応、
-`kp_restore_kana_from_half_width` への ROMAN 注入追加、IMC write と VK 注入を
-分離した個別テスト UI（M1 は上記チェックリストの注記で緩和するに留める）。
-いずれも上記チェックリストで VK_DBE_ROMAN の挙動（方向指定/トグル）が確定
-してから着手する。
+`kp_restore_kana_from_half_width` への ROMAN 注入追加。いずれも上記チェック
+リストで VK_DBE_ROMAN の挙動（方向指定/トグル、あるいは無反応）が確定して
+から着手する。
 
 **関連:** BUG-60（同じ「JIS かな化」症状群、因果未確定）、BUG-08（`VK_KANA`
 注入による JIS かな化の既知パターン）、BUG-15 追補7（DBE 系 VK 注入のかな

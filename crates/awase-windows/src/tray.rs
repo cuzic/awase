@@ -64,8 +64,11 @@ const IDM_IME_FULL_ALPHA: u16 = 203;
 const IDM_IME_HALF_ALPHA: u16 = 204;
 const IDM_IME_HALF_KATAKANA: u16 = 205;
 const IDM_IME_DIRECT: u16 = 206;
-const IDM_INPUT_ROMAJI: u16 = 207;
-const IDM_INPUT_KANA: u16 = 208;
+// IDM_INPUT_ROMAJI(207)/IDM_INPUT_KANA(208) は BUG-61 で撤去。実機確認の結果
+// IMC write（ImmSetConversionStatus）が実モードに反映されず「押しても何も
+// 変化しない」ことが確認されたため、tray 経由の手動テストハーネスとしては
+// 不採用とし、Ctrl+Alt+R / Ctrl+Alt+K の直接ホットキー（フォーカス文脈が
+// 確実に正しい）へ切り替えた。詳細は docs/known-bugs.md BUG-61 参照。
 const IDM_RESET_STATE: u16 = 209;
 
 /// トレイメニューから選択されたコマンド
@@ -88,8 +91,6 @@ pub enum TrayCommand {
     ImeHalfAlpha,
     ImeHalfKatakana,
     ImeDirect,
-    InputRomaji,
-    InputKana,
     ResetState,
 }
 
@@ -581,7 +582,6 @@ pub fn handle_tray_message(
 
         let ime_on = snap.ime_on.unwrap_or(false);
         let conv = snap.conversion_mode.unwrap_or(0);
-        let is_romaji = snap.is_romaji.unwrap_or(true);
 
         let is_native = (conv & crate::imm::IME_CMODE_NATIVE) != 0;
         let is_katakana = (conv & crate::imm::IME_CMODE_KATAKANA) != 0;
@@ -634,19 +634,8 @@ pub fn handle_tray_message(
             );
         }
 
-        let h_input_menu = CreatePopupMenu().unwrap_or_default();
-        if !h_input_menu.is_invalid() {
-            append_menu_item_checked(h_input_menu, IDM_INPUT_ROMAJI, "ローマ字入力", is_romaji);
-            append_menu_item_checked(h_input_menu, IDM_INPUT_KANA, "かな入力", !is_romaji);
-
-            let input_title_wide = crate::win32::to_wide("JISかな / ローマ字");
-            let _ = AppendMenuW(
-                hmenu,
-                MF_POPUP,
-                h_input_menu.0 as usize,
-                PCWSTR(input_title_wide.as_ptr()),
-            );
-        }
+        // 「JISかな / ローマ字」submenu は BUG-61 で撤去（IDM_INPUT_ROMAJI/KANA の
+        // コメント参照）。
 
         append_menu_item(
             hmenu,
@@ -716,8 +705,6 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_IME_HALF_ALPHA => Some(TrayCommand::ImeHalfAlpha),
         IDM_IME_HALF_KATAKANA => Some(TrayCommand::ImeHalfKatakana),
         IDM_IME_DIRECT => Some(TrayCommand::ImeDirect),
-        IDM_INPUT_ROMAJI => Some(TrayCommand::InputRomaji),
-        IDM_INPUT_KANA => Some(TrayCommand::InputKana),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))

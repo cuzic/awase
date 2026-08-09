@@ -1755,24 +1755,20 @@ impl Runtime {
         );
     }
 
-    /// tray の「ローマ字」「かな」コマンド用: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を scan コード
-    /// 付き SendInput で注入する（BUG-61 対応の手動トリガー版、実機テストハーネス）。
+    /// Ctrl+Alt+R / Ctrl+Alt+K デバッグホットキー用: `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を
+    /// scan コード付き SendInput で注入する（BUG-61 対応、実機テスト用の暫定機能）。
     ///
     /// `ImmSetConversionStatus` による ROMAN ビット書き込みが Windows Terminal + MS-IME で
-    /// 実モードに反映されないケースが実機で確認された（tray の InputRomaji/InputKana は
-    /// idle-conv-check と同じ hwnd へ書いており、宛先ズレ説は棄却済み）。実キーイベントとして
-    /// TSF のキー処理パイプラインを通す SendInput なら反映される可能性を、まず tray からの
-    /// 手動操作でユーザーに実機確認してもらう（自動復元への配線は未実施、Opus/Fable 設計
-    /// 相談 2026-08-08 で合意、`docs/known-bugs.md` BUG-61 参照）。
+    /// 実モードに反映されないケースが実機で確認された。tray の「ローマ字」「かな」
+    /// コマンド（IMC write + このメソッドの旧版を併走）で試したが実機で無反応だった
+    /// ため撤去し（`docs/known-bugs.md` BUG-61）、tray 固有の複雑さ（メニュー表示時の
+    /// フォーカス奪取・IMC write との交絡）を排したホットキー版に置き換えた。
     ///
-    /// `target`: `message_handlers.rs::handle_wm_command` が捕捉した `ime_target`
-    /// （tray メニュー表示前に捕捉した実フォーカスウィンドウ）。tray はメニュー表示直前に
-    /// `SetForegroundWindow` で自分自身にフォーカスを奪い、`WM_COMMAND` は
-    /// `TrackPopupMenu` のモーダルループ内で同期配送されるためこの時点のフォアグラウンドは
-    /// tray 自身の可能性が高い —— `SendInput` は宛先を選べないため、送る前に必ず
-    /// `target` へフォアグラウンドを明示的に戻し、戻せたことを検証してから送る
-    /// （Opus アドバーサリアルレビュー 2026-08-09、C1: これを怠ると SendInput が
-    /// awase 自身のウィンドウへ飛び、「VK も効かなかった」という誤った実機結論を生む）。
+    /// `handle_wm_key_from_hook`（`message_handlers.rs`）の通常キー処理経路から呼ぶため、
+    /// 呼び出し時点のフォアグラウンドは既にユーザーが入力していたウィンドウそのもの
+    /// —— tray の `WM_COMMAND`（`TrackPopupMenu` のモーダルループ内で同期配送され、
+    /// tray 自身がフォーカスを奪っている）とは異なりフォーカス復元は不要
+    /// （旧 tray 版が持っていた `SetForegroundWindow`/検証ロジックは撤去した）。
     ///
     /// - MS-IME 限定（`kp_restore_kana_from_half_width` と同じ理由、GJI での挙動は未検証）。
     /// - `effective_open()==false` の場合は注入をスキップする（BUG-15 追補7: 実 IME が
@@ -1783,40 +1779,19 @@ impl Runtime {
     ///   (VK_KANA, scan=0x70) へのフォールバックは検討したが、それ自体が BUG-08/BUG-15
     ///   追補7と同型の「かなロックトグル」ハザードを踏みに行く（症状と同方向に悪化しうる）
     ///   ため撤去した（Opus レビュー M4）。
-    ///
-    /// 既存の IMC write（`set_ime_romaji_mode_state_for_target`）は保険として並行して残す
-    /// （呼び出し元 `message_handlers.rs::handle_wm_command` 参照）。
-    pub(crate) fn tray_inject_romaji_mode_vk(
-        &self,
-        romaji: bool,
-        target: windows::Win32::Foundation::HWND,
-    ) {
+    pub(crate) fn tray_inject_romaji_mode_vk(&self, romaji: bool) {
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         if active_ime_kind != crate::tsf::observer::ActiveImeKind::MicrosoftIme {
             log::debug!(
-                "[tray-romaji-vk] active_ime_kind={active_ime_kind:?} のため \
+                "[debug-romaji-vk] active_ime_kind={active_ime_kind:?} のため \
                  VK 注入をスキップ (MS-IME限定、GJI未検証)"
             );
             return;
         }
         if !self.platform_state.ime.effective_open() {
             log::debug!(
-                "[tray-romaji-vk] effective_open()=false のため VK 注入をスキップ \
-                 (IMC write のみ、BUG-15追補7の教訓)"
-            );
-            return;
-        }
-        // SAFETY: target は呼び出し元が直前に捕捉した有効なウィンドウハンドル。
-        //         SetForegroundWindow は無効な hwnd に対しても false を返すだけで安全。
-        let restored =
-            unsafe { windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow(target) };
-        log::debug!("[tray-romaji-vk] SetForegroundWindow(target={target:?}) → {restored:?}");
-        let actual = unsafe { crate::ime::get_focused_hwnd() };
-        if actual != target {
-            log::warn!(
-                "[tray-romaji-vk] フォアグラウンド復元後も target={target:?} と \
-                 実フォーカス={actual:?} が不一致 → VK 注入をスキップ \
-                 (tray のフォーカス奪取が原因、Opus レビュー C1)"
+                "[debug-romaji-vk] effective_open()=false のため VK 注入をスキップ \
+                 (BUG-15追補7の教訓)"
             );
             return;
         }
@@ -1834,7 +1809,7 @@ impl Runtime {
         } as u16;
         if scan == 0 {
             log::warn!(
-                "[tray-romaji-vk] MapVirtualKeyW(0x{:02X})=0 のため VK 注入をスキップ \
+                "[debug-romaji-vk] MapVirtualKeyW(0x{:02X})=0 のため VK 注入をスキップ \
                  (scan=0 では MS-IME/TSF が処理しない、フォールバックはハザードのため撤去済み)",
                 vk.0,
             );
@@ -1846,8 +1821,7 @@ impl Runtime {
         ];
         let sent = crate::win32::send_input_safe(&inputs);
         log::info!(
-            "[tray-romaji-vk] VK_DBE_{} (0x{:02X}) 注入 target={target:?} scan=0x{scan:02X} \
-             sent={sent}/2",
+            "[debug-romaji-vk] VK_DBE_{} (0x{:02X}) 注入 scan=0x{scan:02X} sent={sent}/2",
             if romaji { "ROMAN" } else { "NOROMAN" },
             vk.0,
         );
