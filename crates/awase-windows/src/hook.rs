@@ -703,6 +703,33 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 kb.scanCode,
                 kb.dwExtraInfo,
             );
+            if is_keydown {
+                // BUG-62 追補2: かな キーを丸ごと OS へ渡さないため、OS 視点では
+                // 「Alt が何も修飾せず単独でタップされた」ことと区別がつかない。
+                // Windows は Alt を単独で離すとシステムメニュー（SC_KEYMENU、
+                // アクセラレータ探索モード）を起動する仕様があり、これが起きると
+                // 以後の入力がメニューナビゲーションとして食われる別の不具合を
+                // 誘発しうる（AutoHotkey の `#MenuMaskKey` と同じ問題設定）。
+                // ダミーの Ctrl down+up を自己注入し、OS に「Alt は何かを修飾
+                // した」と認識させて SC_KEYMENU の発火を防ぐ（AutoHotkey の既定
+                // マスクキーと同じ選択: Ctrl は可視の副作用を持たない）。
+                // KeyDown の時点で1回だけ注入すれば足りる（KeyUp 側での重複注入
+                // は不要）。dwExtraInfo は INJECTED_MARKER — 自己注入として
+                // hook 冒頭の is_self_injected で弾かれ、エンジンには渡らない。
+                let mask_inputs = [
+                    crate::tsf::output::make_key_input_ex(
+                        crate::vk::VK_CONTROL,
+                        false,
+                        INJECTED_MARKER,
+                    ),
+                    crate::tsf::output::make_key_input_ex(
+                        crate::vk::VK_CONTROL,
+                        true,
+                        INJECTED_MARKER,
+                    ),
+                ];
+                let _ = crate::win32::send_input_safe(&mask_inputs);
+            }
             return LRESULT(1);
         }
         log::info!(
