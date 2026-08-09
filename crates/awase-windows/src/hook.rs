@@ -272,7 +272,8 @@ fn inject_alt_menu_mask() {
         crate::tsf::output::make_key_input_ex(crate::vk::VK_CONTROL, false, INJECTED_MARKER),
         crate::tsf::output::make_key_input_ex(crate::vk::VK_CONTROL, true, INJECTED_MARKER),
     ];
-    let _ = crate::win32::send_input_safe(&mask_inputs);
+    let sent = crate::win32::send_input_safe(&mask_inputs);
+    log::info!("[hook] inject_alt_menu_mask: ダミー Ctrl down+up 注入 sent={sent}/2");
 }
 
 /// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
