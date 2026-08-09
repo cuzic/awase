@@ -193,7 +193,10 @@ impl ImmCapabilityStore {
     /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの class_name を
     /// スキップ済みの前提。
     pub(crate) fn record_null_probe(&mut self, class_name: String) {
-        let count = self.pending_unavailable.entry(class_name.clone()).or_insert(0);
+        let count = self
+            .pending_unavailable
+            .entry(class_name.clone())
+            .or_insert(0);
         *count += 1;
         if *count >= Self::UNAVAILABLE_CONFIRM_THRESHOLD {
             self.pending_unavailable.remove(&class_name);
@@ -352,13 +355,22 @@ mod imm_capability_store_tests {
 
     /// テストごとに衝突しない一時ディレクトリを作る。`std::fs` のみで完結するため
     /// Win32 依存なしで Linux 上でも実行できる（`journal.rs` の一時ファイル方式と同じ）。
+    ///
+    /// PID を含めるのは、`cargo nextest`（デフォルトでテストごとに別プロセスを
+    /// 起動する）の下では COUNTER が毎回 0 から・メインスレッドの `ThreadId` も
+    /// 毎回同じ値から始まるため、PID 無しだと全テストが同じパスを計算してしまい、
+    /// 前のテストプロセスが書き残した `cache.toml` を後続のテストが誤って読む
+    /// 事故が起きるため（実機 CI で `single_null_probe_does_not_confirm_unavailable`
+    /// 等が `Some(Unavailable)` を誤って観測して発覚）。
     fn temp_store() -> ImmCapabilityStore {
         static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "awase_imm_capability_store_test_{n}_{:?}",
+            "awase_imm_capability_store_test_{}_{n}_{:?}",
+            std::process::id(),
             std::thread::current().id()
         ));
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir for ImmCapabilityStore test");
         ImmCapabilityStore::new(dir)
     }

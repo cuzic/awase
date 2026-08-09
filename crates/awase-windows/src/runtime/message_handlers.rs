@@ -537,12 +537,13 @@ pub(crate) fn handle_wm_reload_config() {
 /// ビットを無害に付与するだけで意味を持たない）。
 fn set_desired_conv_mode(charset: awase::engine::Charset) {
     let _ = with_app(|app| {
-        app.platform.output.conv_mode.set_desired_mode(
-            awase::engine::ConvMode {
+        app.platform
+            .output
+            .conv_mode
+            .set_desired_mode(awase::engine::ConvMode {
                 charset,
                 romaji: true,
-            },
-        );
+            });
     });
 }
 

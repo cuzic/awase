@@ -213,11 +213,29 @@ fn a2_engine_no_vk_hex_classification() {
 /// `output/probe_io.rs` の 1 箇所のみ (line 309 の `spawn_local(async move {...})` 内)。
 #[test]
 fn b1_with_app_confined_to_orchestrator_modules() {
-    // (path 接尾辞, コード断片) — spawn_local 内で正当に with_app を呼ぶ既知の例外。
-    const ALLOW: &[(&str, &str)] = &[(
-        "output/probe_io.rs",
-        "crate::with_app(|runtime|", // line 309 の spawn_local(async move) 内
-    )];
+    // (path 接尾辞, コード断片) — spawn_local 内で正当に with_app を呼ぶ既知の例外
+    // (layer-boundaries.md B-1: 「spawn_local closure 内 (async path で再エントリ
+    // 回避のため必須)」は許容モジュール)。
+    const ALLOW: &[(&str, &str)] = &[
+        (
+            "output/probe_io.rs",
+            "crate::with_app(|runtime|", // line 309 の spawn_local(async move) 内
+        ),
+        (
+            "output/conv_actuation.rs",
+            "crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())",
+            // actuate_conv_mode_with_completion の spawn_local(async move) 内、
+            // set_ime_conv_for_target の verify_still_current クロージャ。
+            // ime_mode_focus_gen は Runtime/Output 非依存な ime.rs から
+            // 読めないため with_app 経由が必須（ADR-086 INV-14）。
+        ),
+        (
+            "output/conv_actuation.rs",
+            "crate::with_app(|runtime| {",
+            // consume_force_pending_and_actuate の on_async_result コールバック
+            // （spawn_local(async move) 完了後に呼ばれる）内、force_pending の再武装判定。
+        ),
+    ];
     let src = manifest().join("src");
     let dirs = [
         src.join("observer"),

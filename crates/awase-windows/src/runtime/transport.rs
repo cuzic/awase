@@ -469,7 +469,14 @@ mod plan_tests {
             for (profile, active_ime_kind, label) in owned_actuation_cases() {
                 let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
                 assert_eq!(
-                    PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        profile,
+                        false,
+                        false,
+                        false,
+                        active_ime_kind
+                    ),
                     PhysicalKeyDisposition::Suppress,
                     "{vk_label} / {label}: shadow_toggle 不発でも実IMEへの意図しない \
                      モード切替を防ぐため Suppress"

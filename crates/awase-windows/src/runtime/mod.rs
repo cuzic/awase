@@ -363,13 +363,14 @@ impl Runtime {
     ) {
         use awase::platform::{ImeOpenOutcome, TsfComposition as _};
 
-        self.platform_state.ime.journal.record(
-            crate::journal::JournalEntry::ImeOpenApplied {
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ImeOpenApplied {
                 open,
                 outcome,
                 reason,
-            },
-        );
+            });
 
         // E: UnsafeToToggle でも必ずスケジュールする。UnsafeToToggle は
         // Win-held 等の genuine skip に加え、ADR-086 の `ActuationOutcome::Aborted`
@@ -685,7 +686,9 @@ impl Runtime {
         // 律儀に走っても実 IME OFF が直らず「koreha」リテラル化が再発。
         // 手動 Ctrl+変換 = strategy chain 経由の apply は毎回効いていた）。
         // strategy chain（MsImeDirect の冪等 VK_DBE_HIRAGANA 等）で apply する。
-        self.force_on_and_correct_romaji(crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn);
+        self.force_on_and_correct_romaji(
+            crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn,
+        );
     }
 
     /// force-ON を実際に送信し、続けて非ローマ字対応 `input_mode` の補正を行う共通処理。
@@ -732,7 +735,9 @@ impl Runtime {
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
-                log::info!("force-ON ({reason:?}): input_mode → AssumedRomaji (IMM broken, ime_on=true)");
+                log::info!(
+                    "force-ON ({reason:?}): input_mode → AssumedRomaji (IMM broken, ime_on=true)"
+                );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                 self.apply_input_mode_correction(
                     new_mode,
@@ -741,7 +746,9 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                log::info!("force-ON ({reason:?}): input_mode スキップ (belief=ObservedEisu, eisu guard)");
+                log::info!(
+                    "force-ON ({reason:?}): input_mode スキップ (belief=ObservedEisu, eisu guard)"
+                );
             }
         }
         outcome
@@ -814,8 +821,8 @@ impl Runtime {
         const FORCE_OPEN_FAILED_RETRY_LIMIT: u8 = 2;
 
         let armed = self.force_open_pending;
-        let eligible = self.engine.is_user_enabled()
-            && self.platform_state.ime.is_eligible_for_ime_force_on();
+        let eligible =
+            self.engine.is_user_enabled() && self.platform_state.ime.is_eligible_for_ime_force_on();
         let now = crate::hook::current_tick_ms();
         let ms_since_last = self.last_force_open_ms.map(|last| now.saturating_sub(last));
         let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
@@ -826,7 +833,8 @@ impl Runtime {
         if !should_attempt_force_open(armed.is_some(), eligible, ms_since_last, interval_ms) {
             return;
         }
-        let (armed_gen, attempts) = armed.expect("should_attempt_force_open が true の時点で armed は Some");
+        let (armed_gen, attempts) =
+            armed.expect("should_attempt_force_open が true の時点で armed は Some");
         // ここから実際に消費する（以降の早期 return は武装を戻さない限り再武装しない）。
         self.force_open_pending = None;
         // 時間軸フェンス: 消費直前（上の各種チェック）から apply 直前までの間に
@@ -834,13 +842,12 @@ impl Runtime {
         // 同期的（await を挟まない）なため、実際にはこの2点の gen は常に一致するが、
         // 将来この経路に非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する。
         if self.platform.output.ime_mode_focus_gen.get() != armed_gen {
-            log::debug!(
-                "[force-open-pending] gen 不一致 (armed={armed_gen}) → 別の武装に委ねる"
-            );
+            log::debug!("[force-open-pending] gen 不一致 (armed={armed_gen}) → 別の武装に委ねる");
             return;
         }
-        let outcome = self
-            .force_on_and_correct_romaji(crate::state::ime_event::OpenApplyReason::ForcePolicyResend);
+        let outcome = self.force_on_and_correct_romaji(
+            crate::state::ime_event::OpenApplyReason::ForcePolicyResend,
+        );
         // AlreadyMatched（未送信）ではレート制限のスタンプを更新しない。
         if outcome != awase::platform::ImeOpenOutcome::AlreadyMatched {
             self.last_force_open_ms = Some(now);
