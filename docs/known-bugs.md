@@ -7221,12 +7221,33 @@ VK が常に 0 を返すという前提自体が未検証だった）。
 無い**——「第3段」で実際に使われた scan 値が不明なため、この点は実機で
 確認するまで判断できない。
 
-**実機確認してほしいこと:** JIS かな入力に固定された状態で Ctrl+Alt+R
-（ローマ字復帰）を試し、conv が変化するか。ログの `[debug-romaji-vk]`
-行（`scan=0x70` になっているはず）と、その後の `[idle-conv-check]` の
-conv 値を確認する。効かなかった場合は「第3段」と同じ結論（scan 値に
-関わらず VK_DBE_ROMAN 注入は無反応）として確定させ、`docs/experiments.md`
-に追記する。
+**実機確認結果（2026-08-09、決着）:** JIS かな入力に固定された状態
+（`conv=0x00000009`、ROMAN=false）で Ctrl+Alt+R を実行。
+`[debug-romaji-vk] VK_DBE_ROMAN (0xF5) 注入 scan=0x70 sent=2/2` で送信自体は
+確認できたが、その後の `[idle-conv-check]`/`[h1-send]` は注入前後とも
+一貫して `conv=0x00000009 ROMAN=false` のまま——**conv は一切変化しなかった**。
+
+これで「scan=0 でスキップされていたため『第3段』は無反応だった」という
+可能性は排除された。実機で効くと確認済みの scan（0x70）を確実に使っても
+無反応だったため、**scan 値は無関係で、SendInput 経由の
+`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` は MS-IME に一切認識されないと確定した**。
+
+推定される理由（未確認の仮説）: Windows の `SendInput` は必ず
+`LLKHF_INJECTED` フラグ付きでフックに届く。MS-IME の Alt+かな ハンドラが
+「合成入力によるなりすまし防止」のため意図的に injected イベントを無視する
+実装であれば、scan/VK をどう合わせても SendInput では原理的に発火しない
+（本物の物理キー押下のみが有効）。これは BUG-62 の swallow（本物のイベント
+自体を awase 側で OS に届く前に握りつぶす）以外に awase から介入する手段が
+無いことの説明にもなる——「OS に一切渡さず未然に防ぐ」が唯一の実効策で
+あり、「切り替わった後で SendInput によって元に戻す」という方向の対策は
+構造的に成立しない。
+
+**対応（2026-08-09）:** この結果を受け、`Runtime::tray_inject_romaji_mode_vk`
+/`debug_inject_romaji_mode_imc`（Ctrl+Alt+R/K・Ctrl+Alt+Shift+R/K デバッグ
+ホットキー）を完全に撤去した。`vk.rs` の `VK_R`/`VK_K`
+定数、`tsf/output.rs::make_tsf_key_input_with_scan` も唯一の呼び出し元を
+失ったため削除。BUG-61 は実機証拠が揃った「解決不能」として完全にクローズ
+する。
 
 ## BUG-62: 物理 Alt+VK_KANA（MS-IME の「ローマ字/JIS かな入力方式切替」ショートカット）を swallow して JIS かな固着を未然に防止（BUG-61 の根本原因特定 + 予防策）
 

@@ -52,21 +52,14 @@
 //! は現状の呼び出し元がいずれも ImmCross 非対応コンテキストに限定されており、
 //! 到達可能性は未確認）。
 //!
-//! **未移行（INV-1、2026-08-09 BUG-61 対応で追加）:**
-//! `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`）が
-//! `handle_wm_key_from_hook`（`message_handlers.rs`）の Ctrl+Alt+R/K デバッグ
-//! ホットキーから `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` を直接 SendInput する
-//! （tray の `InputRomaji`/`InputKana` は実機で無反応だったため撤去済み、
-//! `docs/known-bugs.md` BUG-61 参照）。conv-mode を変える VK 注入であり
-//! ADR-084 INV-1 が求める「本モジュール経由」の対象だが、
-//! `conv_mutation_allowed` ゲートも `unconfirm()` も通っていない。意図的な
-//! 例外: (1) `ImmSetConversionStatus` が実モードに反映されないケースを疑い、
-//! 実キーイベント経由の代替手段が効くかを実機確認するための暫定機能であり、
-//! 恒常的な actuation 経路ではない（自動発火への配線はまだ無い）。
-//! (2) `SendInput` は宛先を選べないため `ActuationTarget`（INV-14）を
-//! 構造的に適用できない——既存の `kp_restore_kana_from_half_width` の
-//! `VK_DBE_HIRAGANA` 注入と同じ制約（ADR-086 §4 INV-13 参照）。詳細は
-//! `docs/known-bugs.md` BUG-61。
+//! **撤去済み（2026-08-09 BUG-61 対応で追加 → BUG-61/BUG-62 実機確認により
+//! 無用と判明し撤去）:** `Runtime::tray_inject_romaji_mode_vk`
+//! （Ctrl+Alt+R/K デバッグホットキー、`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` 直接
+//! SendInput）は、scan コードを実機で効くと確認済みの値（`0x70`）に固定した
+//! 上で再検証しても conv が一切変化しないことが実機で確認された
+//! （`docs/known-bugs.md` BUG-61 追補）。SendInput 経由の DBE 系 VK 注入で
+//! ROMAN ビットを制御する経路は存在しないと確定したため、本モジュールの
+//! ADR-084 INV-1 例外としての記載も含め撤去した。
 //!
 //! **`Runtime` から `Output` への移設（2026-08-08、ADR-086 Phase 2 設計調査）**:
 //! 当初 `impl Runtime` に置かれていたが、本体は `self.platform.output.*` しか

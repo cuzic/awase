@@ -1755,7 +1755,9 @@ pub unsafe fn set_ime_mode_for_target(
 // `set_ime_romaji_mode_state_for_target`（`ImmSetConversionStatus` ベース）は
 // BUG-61 で撤去した。tray の「ローマ字」「かな」コマンドの唯一の呼び出し元で、
 // 実機確認の結果 IMC write が実モードに反映されず押しても変化しないことが
-// 確認されたため（`docs/known-bugs.md` BUG-61）。代替として
-// `Runtime::tray_inject_romaji_mode_vk`（`key_pipeline.rs`、Ctrl+Alt+R/K
-// デバッグホットキー経由）が `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の SendInput で
-// 同じ役割を試験中。
+// 確認されたため（`docs/known-bugs.md` BUG-61）。代替として試した
+// `Runtime::tray_inject_romaji_mode_vk`（Ctrl+Alt+R/K デバッグホットキー、
+// `VK_DBE_ROMAN`/`VK_DBE_NOROMAN` の SendInput）も、scan コードを実機で
+// 効くと確認済みの値に固定した上で再検証して無反応と確定したため撤去した
+// （BUG-61 追補）。Win32 にこの入力方式を外部から切り替える公式手段は
+// 存在しないと確定している。

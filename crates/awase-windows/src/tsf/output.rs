@@ -111,34 +111,6 @@ pub(crate) fn make_tsf_key_input(vk: awase::types::VkCode, is_keyup: bool) -> IN
     make_scan_key_input(vk, is_keyup, TSF_MARKER)
 }
 
-/// TSF モード用 INPUT 構造体を作成するヘルパー（scan コード明示指定版、TSF_MARKER 付き）。
-///
-/// `MapVirtualKeyW` が scan=0 を返す VK（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` 等、物理
-/// キーボードマップに存在しない DBE 系キー）向けに、呼び出し元が代替 scan を明示
-/// できるようにする。通常は [`make_tsf_key_input`] を使うこと。
-pub(crate) const fn make_tsf_key_input_with_scan(
-    vk: awase::types::VkCode,
-    is_keyup: bool,
-    scan: u16,
-) -> INPUT {
-    INPUT {
-        r#type: INPUT_KEYBOARD,
-        Anonymous: INPUT_0 {
-            ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(vk.0),
-                wScan: scan,
-                dwFlags: if is_keyup {
-                    KEYEVENTF_KEYUP
-                } else {
-                    KEYBD_EVENT_FLAGS(0)
-                },
-                time: 0,
-                dwExtraInfo: TSF_MARKER,
-            },
-        },
-    }
-}
-
 /// INPUT 構造体を作成するヘルパー（dwExtraInfo 指定版）
 pub(crate) const fn make_key_input_ex(
     vk: awase::types::VkCode,
