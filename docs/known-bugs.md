@@ -7196,3 +7196,52 @@ BUG-14（foreign-injected IME モードキーの扱い）、BUG-15 追補7（DBE
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-13
 （SendInput のターゲット同一性検証が構造的に適用不能という既存の例外）。
 
+## BUG-62: 物理 Alt+VK_KANA（MS-IME の「ローマ字/JIS かな入力方式切替」ショートカット）を swallow して JIS かな固着を未然に防止（BUG-61 の根本原因特定 + 予防策）
+
+**背景（BUG-61 との関係）**: BUG-61 で「一度 JIS かな入力に固定されると
+awase 側の制御手段（`ImmSetConversionStatus`・`VK_DBE_ROMAN` 注入）では復旧
+不能」と確定した。本 BUG は、その**固着そのものを未然に防ぐ**ための対策。
+
+**症状（2026-08-09 ユーザー報告）:** 「気づかない間に JIS かなに固着する」
+——deliberate な操作の記憶がないまま発生する。ユーザーの手がかり:
+「ALT + ローマ字キー」。
+
+**原因（Web 調査で特定）:** MS-IME の公式キーボードショートカット
+「**Alt + かな（カタカナ ひらがな ローマ字）キー**」が、ローマ字入力 ⇔
+JIS かな入力という**入力方式そのもの**を切り替える。JIS キーボードの「かな」
+キー（`VK_KANA`, 0x15）は正式には「カタカナ ひらがな ローマ字」とラベルが
+振られており、ユーザーの「ローマ字キー」という表現と一致する。
+
+`hook.rs` は既に BUG-08/BUG-14 対策として **foreign-injected**（MS-IME 自身が
+SendInput で送ってくる）`VK_KANA` は無条件で swallow していたが、**物理押下
+（`injected=false`）の `VK_KANA` は常に通過させていた**（コメント曰く「通した
+結果 JIS かな化しても idle-conv-check の restore_roman が復元する」——この
+前提は BUG-61 で誤りと判明済み）。Alt が物理的に押されたまま「かな」キーに
+指が触れる（あるいは何らかの理由で Alt が押されっぱなしの状態で軽く触れる）
+と、この物理 `VK_KANA` イベントがそのまま OS へ通り、MS-IME の Alt+かな
+ショートカットが発火し、JIS かな入力へ切り替わる——これが「気づかない間に」
+発生する理由を説明する。
+
+**対応:** `hook.rs` の VK_KANA 処理に、`is_physical_key_down` で Alt
+（`VK_MENU`/`VK_LMENU`/`VK_RMENU` のいずれか）が押下中かを確認する分岐を
+追加。Alt 押下中の物理 `VK_KANA` は swallow して OS に一切渡さない
+（foreign-injected の場合と同じ `LRESULT(1)` パターン）。Alt 非押下時の物理
+`VK_KANA`（単独の「IME ON」ショートカット、入力方式切替とは別の操作）は
+従来どおり通過させる——併せて、誤っていた「restore_roman が復元する」という
+コメントを是正した。
+
+**検証:** `cargo check`/`clippy`/`cargo test -p awase-windows`（lib 286件・
+architecture_guard 21件・golden_scenarios 22件）全緑。`hook_callback` は
+`unsafe extern "system" fn` で `KBDLLHOOKSTRUCT` を直接扱うため、既存の
+VK_KANA swallow ロジックと同様に Windows 実機以外でのユニットテストは
+できない（`.claude/rules/fix-requires-evidence.md` (b) 適用: 本エントリの
+記録をもって代替する）。**Windows 実機での動作確認は未実施。**
+
+**実機確認してほしいこと:** Alt を押しながら物理「かな」キーを押しても
+JIS かなへ切り替わらなくなったか。また、Alt を押していない単独の「かな」
+キー押下では従来どおり IME が ON になるか（回帰が無いか）。
+
+**関連:** BUG-61（IMC write・VK_DBE_ROMAN いずれも JIS かな化からの復旧が
+不能と確定、本 BUG の対策方針の根拠）、BUG-08（`VK_KANA` 注入による JIS
+かな化の既知パターン）、BUG-14（foreign-injected IME モードキーの扱い）。
+
