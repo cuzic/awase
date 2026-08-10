@@ -692,11 +692,11 @@ output_mode = "unicode"</div>
 
     <div class="card">
       <h3>自動起動の設定</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">MSI インストーラー・ZIP 版の <code>install.ps1</code> のいずれでインストールした場合も、確認ダイアログなしで Windows ログオン時の自動起動が既定で有効になります。無効にしたい場合は、トレイアイコンのメニューか、以下の <code>auto_start</code> 設定で変更できます。</p>
       <div class="code-block">[general]
 # Windows ログオン時に自動起動する
-#   "enabled"  - 自動起動を有効にする
+#   "enabled"  - 自動起動を有効にする（デフォルト）
 #   "disabled" - 自動起動を無効にする
-#   "ask"      - 初回起動時にダイアログで確認する（デフォルト）
 auto_start = "enabled"</div>
       <p class="note">自動起動は <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> レジストリに登録されます。スタートアップフォルダは使用しません。</p>
     </div>
@@ -880,7 +880,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>ZIP 版（ポータブル）</h3>
       <ol style="padding-left:1.4em;color:var(--text-secondary)">
         <li style="margin-bottom:0.4rem">トレイアイコンを右クリック → 「終了」で awase を終了します</li>
-        <li style="margin-bottom:0.4rem">自動起動を設定している場合はタスクスケジューラから「awase」タスクを削除します</li>
+        <li style="margin-bottom:0.4rem">自動起動を設定している場合はトレイメニューか設定画面で自動起動を無効にします（<code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> レジストリの登録が解除されます）</li>
         <li>解凍したフォルダごと削除します</li>
       </ol>
     </div>

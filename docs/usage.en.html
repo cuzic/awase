@@ -692,11 +692,11 @@ output_mode = "unicode"</div>
 
     <div class="card">
       <h3>Auto-start settings</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Whether you install via the MSI installer or the ZIP distribution's <code>install.ps1</code>, auto-start at Windows logon is enabled by default with no confirmation prompt. You can turn it off from the tray icon menu or with the <code>auto_start</code> setting below.</p>
       <div class="code-block">[general]
 # Start automatically at Windows logon
-#   "enabled"  - enable auto-start
+#   "enabled"  - enable auto-start (default)
 #   "disabled" - disable auto-start
-#   "ask"      - ask with a dialog on first launch (default)
 auto_start = "enabled"</div>
       <p class="note">Auto-start is registered in the <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> registry key. The Startup folder is not used.</p>
     </div>
@@ -878,7 +878,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>ZIP version (portable)</h3>
       <ol style="padding-left:1.4em;color:var(--text-secondary)">
         <li style="margin-bottom:0.4rem">Right-click the tray icon → "Exit" to quit awase</li>
-        <li style="margin-bottom:0.4rem">If you set up auto-start, delete the "awase" task from Task Scheduler</li>
+        <li style="margin-bottom:0.4rem">If you enabled auto-start, disable it from the tray menu or the settings window (this removes the entry from the <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> registry key)</li>
         <li>Delete the entire extracted folder</li>
       </ol>
     </div>
