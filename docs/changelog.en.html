@@ -110,6 +110,30 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.14.0] - 2026-08-10</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added <code>nicola_f.yab</code>, a layout for genuine Fujitsu thumb-shift keyboards (FKB7628-801 and similar)</strong><ul>
+<li>Built from Yamabuki R's <code>NICOLA-F.yab</code> and a physical-layout survey of real FKB7628-801 photos; the kana placement is identical to standard NICOLA</li>
+<li>The physical key layout and scan codes are the same as a JIS keyboard, so you can use it by just changing <code>default_layout</code> to <code>nicola_f.yab</code> while keeping <code>keyboard_model = "jis"</code></li>
+</ul>
+</li>
+<li><strong>Widened how much of a Yamabuki R-compatible <code>.yab</code> layout file awase can load</strong><ul>
+<li>Added support for 9 special keywords (Insert, the 4 arrow keys, Home/End/PageUp/PageDown), VK direct specification via <code>V</code>+hex, F1&ndash;F24 specification via <code>機</code>+number, and escape sequences inside quotes</li>
+<li>Verified that all 15 real files bundled with Yamabuki R 1.62 parse without errors</li>
+<li>Added a VK code editing UI to the layout editor (awase-settings)</li>
+<li>Some faces (e.g. the 6 alphanumeric faces, some pinky-shift faces) and simultaneous-character-key shift layouts are accepted but not yet functional (parsing succeeds, but the feature itself isn't implemented)</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Removed the "Start automatically at logon?" confirmation dialog that used to appear on first launch after an MSI/ZIP install</strong><ul>
+<li>Both the MSI installer and the ZIP distribution's <code>install.ps1</code> already registered auto-start in the registry unconditionally, which made this dialog effectively unreachable</li>
+<li>Changed the behavior to match: auto-start is now enabled by default with no prompt. You can turn it off from the tray menu or the settings window</li>
+</ul>
+</li>
+</ul>
 <h2>[1.13.1] - 2026-08-09</h2>
 <h3>Changed</h3>
 <ul>
