@@ -745,7 +745,12 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         ('＂', 0x32, true),  // 全角" → Shift+2
         ('；', 0xBB, false), // ; (VK_OEM_PLUS, JIS: ;)
         ('：', 0xBA, false), // : (VK_OEM_1, JIS: :)
-        ('－', 0xBD, false), // - (VK_OEM_MINUS) 全角ハイフンマイナス
+        // '－'(全角ハイフンマイナス) は意図的に未登録。VK_OEM_MINUS は IME の
+        // ローマ字かな変換で長音「ー」に特別変換されるため、同じキーを送ると
+        // 「－」ではなく「ー」が出力される（'ー' エントリ参照）。他の記号と違い
+        // 「半角キー→IMEが全角に変換」という一般則が通用しない例外。
+        // symbol_to_vk に無い文字は resolve_char が Unicode 直接注入にフォール
+        // バックするため、そちらで正しく「－」を出す。
         ('／', 0xBF, false), // / (VK_OEM_2)
         ('＾', 0xDE, false), // ^ (VK_OEM_7, JIS)
         ('｀', 0xC0, true),  // Shift+@ (JIS: `)
@@ -957,5 +962,27 @@ mod tests {
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
         assert!(!should_upgrade_is_japanese_ime(false, VkCode(0x41))); // 'A'
+    }
+
+    /// 2026-08-09 ユーザー報告: 「－」（全角ハイフンマイナス、`layout/nicola.yab`
+    /// の無シフト `-` キー）が VK_OEM_MINUS 送信経路では長音「ー」に化ける。
+    /// VK_OEM_MINUS は IME のローマ字かな変換で「ー」に特別変換される専用キー
+    /// のため、'ー' と '－' を同じ (VK, shift) に割り当てると区別できない。
+    /// `symbol_to_vk` に '－' が登録されていないことを固定し、`resolve_char`
+    /// が Unicode 直接注入にフォールバックする経路に合流させる。
+    #[test]
+    fn build_symbol_to_vk_does_not_collide_fullwidth_hyphen_with_choon() {
+        let table = build_symbol_to_vk();
+        assert_eq!(
+            table.get(&'ー').copied(),
+            Some((VkCode(0xBD), false)),
+            "長音「ー」は VK_OEM_MINUS 送信のままであるべき"
+        );
+        assert!(
+            !table.contains_key(&'－'),
+            "全角ハイフン「－」を VK_OEM_MINUS 経由にすると「ー」と区別できず \
+             常に「ー」に化ける（VK_OEM_MINUS は IME 側で長音への特別変換対象）。\
+             Unicode 直接注入にフォールバックさせるため未登録のままにする。"
+        );
     }
 }
