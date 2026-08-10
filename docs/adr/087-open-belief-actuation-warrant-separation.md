@@ -1571,3 +1571,59 @@ M-D（キー粒度を統合しない判断）についても「目的が違う�
 `IntentStore` は「actuation の対象同一性」（ADR-086 INV-14 の空間軸）で
 役割が異なる。§5 Phase 1' item 7 の文言（「3つを統合した `IntentStore` を
 導入する」）は §8.7 の決定に合わせて訂正済み。
+
+### 8.9 技術の横展開: 反復的にバグを踏んだ他の純粋関数への適用（2026-08-10）
+
+`issue_open_warrant` の網羅的組み合わせテスト（§8.8）が「読んで想像する
+レビュー」ではなく「機械的網羅」で収束したことを受け、同じ手法（本番
+実装を見ずに doc コメント/仕様文から独立に書き起こしたオラクル関数と、
+入力空間の全数列挙を突き合わせる）を、このリポジトリで過去に繰り返し
+バグを踏んできた他の純粋関数へ展開した。
+
+- **`classify_conv_transition`（`state/conv_classify.rs`）**: モジュール
+  冒頭が明記する4件の履歴バグ（ROMAN 見落とし `fc18cc7`、KATAKANA 喪失
+  `109b4c9`、HanKata→ZenKata 誤ダウングレード `1544d3f`、HanAlpha→
+  Hiragana `ea3da7f`）に加え BUG-19/BUG-26 の温床だった関数。既存の
+  `smoke_all_major_conv_belief_combinations`（140通り）は不変条件チェック
+  にとどまっていたため、`exhaustive_classify_conv_transition_matches_independent_oracle`
+  を追加: `ConvMode`（`Charset`5種×`romaji`2）×belief代表5種×`is_cold`×
+  `effective_open`×`conv_mode_changed`×`is_roman_reliable` の800通りを
+  全数列挙し、`oracle_transition`（`input_mode_update` は `classify_idle`
+  に委譲、`engine`/`restore_roman` は `Charset` への直接 `matches!` で
+  独立に再導出、production の `has_native`/`has_katakana`/`is_eisu()`
+  ヘルパー経由の導出は使わない）と突き合わせる。初回コンパイルで
+  不一致ゼロ。
+- **`class_names.rs` の分類関数クラスタ**（`AppImeProfile::from_class_name`
+  / `is_effectively_tsf_native` / `cannot_verify_real_ime_state` /
+  `should_reprime_on_lightweight_focus_sync` / 4つの getter）: round3 M1
+  で実際に踏んだ「`profile == AppImeProfile::TsfNative` という直接比較が
+  IMM32_UNAVAILABLE_CLASSES と TSF ネイティブ両方に該当するクラス
+  （CASCADIA_HOSTING_WINDOW_CLASS）を取りこぼす」配線ミスの恒久的な
+  回帰ガードとして、`exhaustive_cluster_matches_independent_oracle` を
+  追加: 「IMM32制御不可か」「TSFネイティブクラスか」の2値が作る4バケット
+  （両方該当/前者のみ/後者のみ/どちらも非該当、それぞれ実クラス名で
+  代表）×`belief_effective_open`(2) を、doc コメントの規則から独立に
+  書き起こした `oracle_for` と突き合わせる。加えて
+  `all_imm32_unavailable_classes_are_classified_as_unavailable` で実定数
+  `IMM32_UNAVAILABLE_CLASSES` の全メンバーを直接反復し、優先順位1が
+  リスト全体に対して成立することを固定した（代表1件だけでなく、将来
+  リストに追加される新しいクラス名にも自動的に効く）。初回コンパイルで
+  不一致ゼロ。
+
+いずれも `cargo test -p awase-windows --lib` 全緑・`cargo clippy -p
+awase-windows --lib --tests`（pedantic/nursery deny）で対象2ファイルへの
+新規指摘ゼロを確認済み（既存の他ファイルの債務は対象外、§8.6 と同じ
+切り分け）。
+
+**フォローアップとして未着手のまま記録する候補**（このセッションでは
+着手しない）: `characterize_strategy`（`ime_controller.rs`）と
+`ime_key_for`（`key_sequence_policy.rs`）も同様の「反復的にバグを踏んだ
+純粋関数」候補だが、いずれも `#[cfg(windows)]` でゲートされたモジュール
+内にあり、Linux サンドボックスでは `cargo test -p awase-windows --lib`
+にそもそも含まれない（コンパイル不能）。適用するには先に
+`alt_impersonation.rs`/`win_key_guard.rs`/`conv_classify.rs` 等が確立した
+「ungate 済みの純粋関数モジュールへ切り出す」パターンに倣ったリファクタ
+が前提になる。この ungate 移動自体は Windows 側のコンパイルを壊さない
+ことを実機（または少なくとも `cargo xwin check`）で確認しないと安全に
+実施できないため、本セッションでは着手せず次セッションへの
+引き継ぎ事項として記録するにとどめる。
