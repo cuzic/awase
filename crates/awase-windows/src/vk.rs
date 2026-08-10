@@ -30,6 +30,15 @@ pub const VK_ESCAPE: VkCode = VkCode(0x1B);
 pub const VK_CONVERT: VkCode = VkCode(0x1C);
 pub const VK_NONCONVERT: VkCode = VkCode(0x1D);
 pub const VK_SPACE: VkCode = VkCode(0x20);
+pub const VK_PRIOR: VkCode = VkCode(0x21);
+pub const VK_NEXT: VkCode = VkCode(0x22);
+pub const VK_END: VkCode = VkCode(0x23);
+pub const VK_HOME: VkCode = VkCode(0x24);
+pub const VK_LEFT: VkCode = VkCode(0x25);
+pub const VK_UP: VkCode = VkCode(0x26);
+pub const VK_RIGHT: VkCode = VkCode(0x27);
+pub const VK_DOWN: VkCode = VkCode(0x28);
+pub const VK_INSERT: VkCode = VkCode(0x2D);
 pub const VK_DELETE: VkCode = VkCode(0x2E);
 /// VK_A (0x41) — 'A' キー。GJI cold-start warmup の犠牲キー (`send_unicode_cold_warmup_keys`) 用途。
 pub const VK_A: VkCode = VkCode(0x41);

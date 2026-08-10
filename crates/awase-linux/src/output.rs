@@ -18,6 +18,15 @@ const fn special_key_to_evdev(sk: SpecialKey) -> u16 {
         SpecialKey::Space => 57,     // KEY_SPACE
         SpecialKey::Escape => 1,     // KEY_ESC
         SpecialKey::Delete => 111,   // KEY_DELETE
+        SpecialKey::Insert => 110,   // KEY_INSERT
+        SpecialKey::Up => 103,       // KEY_UP
+        SpecialKey::Down => 108,     // KEY_DOWN
+        SpecialKey::Left => 105,     // KEY_LEFT
+        SpecialKey::Right => 106,    // KEY_RIGHT
+        SpecialKey::Home => 102,     // KEY_HOME
+        SpecialKey::End => 107,      // KEY_END
+        SpecialKey::PageUp => 104,   // KEY_PAGEUP
+        SpecialKey::PageDown => 109, // KEY_PAGEDOWN
     }
 }
 
@@ -247,6 +256,15 @@ mod tests {
         assert_eq!(special_key_to_evdev(SpecialKey::Space), 57);
         assert_eq!(special_key_to_evdev(SpecialKey::Escape), 1);
         assert_eq!(special_key_to_evdev(SpecialKey::Delete), 111);
+        assert_eq!(special_key_to_evdev(SpecialKey::Insert), 110);
+        assert_eq!(special_key_to_evdev(SpecialKey::Up), 103);
+        assert_eq!(special_key_to_evdev(SpecialKey::Down), 108);
+        assert_eq!(special_key_to_evdev(SpecialKey::Left), 105);
+        assert_eq!(special_key_to_evdev(SpecialKey::Right), 106);
+        assert_eq!(special_key_to_evdev(SpecialKey::Home), 102);
+        assert_eq!(special_key_to_evdev(SpecialKey::End), 107);
+        assert_eq!(special_key_to_evdev(SpecialKey::PageUp), 104);
+        assert_eq!(special_key_to_evdev(SpecialKey::PageDown), 109);
     }
 
     #[test]

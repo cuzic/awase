@@ -9,7 +9,16 @@ pub const fn special_key_to_keycode(sk: SpecialKey) -> u16 {
         SpecialKey::Escape => 0x35,
         SpecialKey::Enter => 0x24,
         SpecialKey::Space => 0x31,
-        SpecialKey::Delete => 0x75,
+        SpecialKey::Delete => 0x75, // Forward Delete
+        SpecialKey::Insert => 0x72, // Help/Insert
+        SpecialKey::Up => 0x7E,
+        SpecialKey::Down => 0x7D,
+        SpecialKey::Left => 0x7B,
+        SpecialKey::Right => 0x7C,
+        SpecialKey::Home => 0x73,
+        SpecialKey::End => 0x77,
+        SpecialKey::PageUp => 0x74,
+        SpecialKey::PageDown => 0x79,
     }
 }
 

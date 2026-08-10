@@ -10,6 +10,15 @@ pub(super) const fn special_key_to_vk(sk: SpecialKey) -> VkCode {
         SpecialKey::Enter => crate::vk::VK_RETURN,
         SpecialKey::Space => crate::vk::VK_SPACE,
         SpecialKey::Delete => crate::vk::VK_DELETE,
+        SpecialKey::Insert => crate::vk::VK_INSERT,
+        SpecialKey::Up => crate::vk::VK_UP,
+        SpecialKey::Down => crate::vk::VK_DOWN,
+        SpecialKey::Left => crate::vk::VK_LEFT,
+        SpecialKey::Right => crate::vk::VK_RIGHT,
+        SpecialKey::Home => crate::vk::VK_HOME,
+        SpecialKey::End => crate::vk::VK_END,
+        SpecialKey::PageUp => crate::vk::VK_PRIOR,
+        SpecialKey::PageDown => crate::vk::VK_NEXT,
     }
 }
 

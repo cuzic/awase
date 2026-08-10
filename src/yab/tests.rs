@@ -59,6 +59,75 @@ fn parse_value_special_keys() {
 }
 
 #[test]
+fn parse_value_extended_special_keys() {
+    // やまぶきR互換: 挿/上/左/右/下/家/終/前/次
+    assert_eq!(YabValue::parse("挿"), YabValue::Special(SpecialKey::Insert));
+    assert_eq!(YabValue::parse("上"), YabValue::Special(SpecialKey::Up));
+    assert_eq!(YabValue::parse("左"), YabValue::Special(SpecialKey::Left));
+    assert_eq!(YabValue::parse("右"), YabValue::Special(SpecialKey::Right));
+    assert_eq!(YabValue::parse("下"), YabValue::Special(SpecialKey::Down));
+    assert_eq!(YabValue::parse("家"), YabValue::Special(SpecialKey::Home));
+    assert_eq!(YabValue::parse("終"), YabValue::Special(SpecialKey::End));
+    assert_eq!(YabValue::parse("前"), YabValue::Special(SpecialKey::PageUp));
+    assert_eq!(
+        YabValue::parse("次"),
+        YabValue::Special(SpecialKey::PageDown)
+    );
+}
+
+#[test]
+fn parse_value_direct_vk() {
+    assert_eq!(YabValue::parse("V1D"), YabValue::Vk(VkCode(0x1D)));
+    assert_eq!(YabValue::parse("V0A"), YabValue::Vk(VkCode(0x0A)));
+    // 小文字の v は対象外（やまぶきR仕様: 半角大文字の V のみ）
+    assert_eq!(YabValue::parse("v1D"), YabValue::Literal("v1D".to_string()));
+    // 16進として不正な場合はリテラルにフォールバック
+    assert_eq!(YabValue::parse("VZZ"), YabValue::Literal("VZZ".to_string()));
+}
+
+#[test]
+fn parse_value_function_key() {
+    assert_eq!(YabValue::parse("機1"), YabValue::Vk(VkCode(0x70)));
+    assert_eq!(YabValue::parse("機13"), YabValue::Vk(VkCode(0x7C)));
+    assert_eq!(YabValue::parse("機24"), YabValue::Vk(VkCode(0x87)));
+    // 範囲外はリテラルにフォールバック
+    assert_eq!(
+        YabValue::parse("機25"),
+        YabValue::Literal("機25".to_string())
+    );
+    assert_eq!(YabValue::parse("機0"), YabValue::Literal("機0".to_string()));
+}
+
+#[test]
+fn parse_value_literal_escape_sequences() {
+    assert_eq!(
+        YabValue::parse("'a\\nb'"),
+        YabValue::Literal("a\nb".to_string())
+    );
+    assert_eq!(
+        YabValue::parse("'a\\tb'"),
+        YabValue::Literal("a\tb".to_string())
+    );
+    assert_eq!(
+        YabValue::parse("'back\\\\slash'"),
+        YabValue::Literal("back\\slash".to_string())
+    );
+    assert_eq!(
+        YabValue::parse("'it\\'s'"),
+        YabValue::Literal("it's".to_string())
+    );
+    assert_eq!(
+        YabValue::parse("\"say \\\"hi\\\"\""),
+        YabValue::Literal("say \"hi\"".to_string())
+    );
+    // \u + 16進コードポイント
+    assert_eq!(
+        YabValue::parse("'\\u25CF'"),
+        YabValue::Literal("●".to_string())
+    );
+}
+
+#[test]
 fn parse_value_single_quoted_literal() {
     assert_eq!(YabValue::parse("'．'"), YabValue::Literal("．".to_string()));
     assert_eq!(YabValue::parse("'ー'"), YabValue::Literal("ー".to_string()));
@@ -565,6 +634,130 @@ fn test_parse_unknown_section_no_data_ok() {
 }
 
 #[test]
+fn test_parse_yamabuki_compat_sections_are_accepted_but_ignored() {
+    // やまぶきRの英数系6面・小指親指複合2面は、rust-nicolaのランタイムでは
+    // まだ参照しない（受理のみ）。データがあってもパースエラーにならないこと、
+    // かつ通常の4面には影響しないことを確認する。
+    let input = "\
+[ローマ字シフト無し]
+ｋａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数シフト無し]
+Ａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数小指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数小指左親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[英数小指右親指シフト]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let layout = YabLayout::parse(input, KeyboardModel::Jis).unwrap();
+    // 通常面はやまぶき互換セクションの影響を受けず正しくパースされる
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "ka".to_string(),
+            kana: None
+        })
+    );
+    assert!(layout.left_thumb.is_empty());
+    assert!(layout.right_thumb.is_empty());
+    assert!(layout.shift.is_empty());
+}
+
+#[test]
+fn test_parse_tolerates_character_key_simultaneous_shift_blocks() {
+    // やまぶきRの「文字キー同時打鍵シフト配列」（`<x>` + 4行ブロックの繰り返しが
+    // 基本4行の後に続く拗音拡張ファイル等で使われる）は、rust-nicola のランタイムでは
+    // まだ参照しない（受理のみ）。基本4行だけを取り込み、それ以降はエラーにせず無視する。
+    let input = "\
+[ローマ字シフト無し]
+１,２,３,４,５,６,７,８,９,０,－,＜,＞
+．,ｋａ,ｔａ,ｋｏ,ｓａ,ｒａ,ｔｉ,ｋｕ,ｔｕ,'，',，,゛
+ｕ,ｓｉ,ｔｅ,ｋｅ,ｓｅ,ｈａ,ｔｏ,ｋｉ,ｉ,ｎｎ,後,逃
+'．',ｈｉ,ｓｕ,ｆｕ,ｈｅ,ｍｅ,ｓｏ,ｎｅ,ｈｏ,'・','＼'
+<r>
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,ｃｈａ,ｋｕｌａ,ｔｕｌａ,ｐｙａ,無,無
+無,無,無,無,無,無,無,ｋｙａ,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+<h>
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,ｒｙａ,無,無,無,無,無,無,無,無,無
+無,ｓｈａ,無,無,無,無,無,無,無,無,無,無
+無,ｈｙａ,無,ｆａ,無,無,無,無,無,無,無";
+
+    let layout = YabLayout::parse(input, KeyboardModel::Jis).unwrap();
+    // 基本4行はそのまま反映される（本家NICOLAと同じ「う」「ち」等）
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(2, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "u".to_string(),
+            kana: None
+        })
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 6)),
+        Some(&YabValue::Romaji {
+            romaji: "ti".to_string(),
+            kana: None
+        })
+    );
+    // `<r>`/`<h>` ブロック（同時打鍵シフト面）の存在によって、定義していない
+    // 他の面（左親指シフト等）にデータが混入したり、パースが壊れたりしない
+    assert!(layout.left_thumb.is_empty());
+    assert!(layout.right_thumb.is_empty());
+    assert!(layout.shift.is_empty());
+}
+
+#[test]
+fn test_parse_face_with_too_few_lines_still_errors() {
+    // 同時打鍵シフトブロックを許容するようになっても、基本4行に満たない場合は
+    // 引き続きエラーであるべき（無条件に許容しているわけではない）。
+    let input = "\
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無";
+
+    let result = YabLayout::parse(input, KeyboardModel::Jis);
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_load_nicola_yab_file() {
     let path = std::path::Path::new("layout/nicola.yab");
     if !path.exists() {
@@ -750,6 +943,21 @@ fn test_serialize_value_special_keys() {
     assert_eq!(YabValue::Special(SpecialKey::Enter).serialize(), "入");
     assert_eq!(YabValue::Special(SpecialKey::Space).serialize(), "空");
     assert_eq!(YabValue::Special(SpecialKey::Delete).serialize(), "消");
+    assert_eq!(YabValue::Special(SpecialKey::Insert).serialize(), "挿");
+    assert_eq!(YabValue::Special(SpecialKey::Up).serialize(), "上");
+    assert_eq!(YabValue::Special(SpecialKey::Left).serialize(), "左");
+    assert_eq!(YabValue::Special(SpecialKey::Right).serialize(), "右");
+    assert_eq!(YabValue::Special(SpecialKey::Down).serialize(), "下");
+    assert_eq!(YabValue::Special(SpecialKey::Home).serialize(), "家");
+    assert_eq!(YabValue::Special(SpecialKey::End).serialize(), "終");
+    assert_eq!(YabValue::Special(SpecialKey::PageUp).serialize(), "前");
+    assert_eq!(YabValue::Special(SpecialKey::PageDown).serialize(), "次");
+}
+
+#[test]
+fn test_serialize_value_vk() {
+    assert_eq!(YabValue::Vk(VkCode(0x1D)).serialize(), "V1D");
+    assert_eq!(YabValue::Vk(VkCode(0x7C)).serialize(), "V7C");
 }
 
 #[test]

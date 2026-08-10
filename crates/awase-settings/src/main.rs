@@ -6,7 +6,7 @@ use eframe::egui;
 
 use awase::kana_table::KanaTable;
 use awase::scanmap::PhysicalPos;
-use awase::types::SpecialKey;
+use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
@@ -60,6 +60,9 @@ enum ValueKind {
     Keystroke,
     Literal,
     Special,
+    /// 仮想キーコード直接指定（やまぶきR互換の `V`+16進数）。
+    /// `layout_edit_value` に16進文字列（`V`無し、例 `"1D"`）を保持する。
+    Vk,
     None,
 }
 
@@ -76,12 +79,21 @@ fn normalize_keystroke_input(input: &str) -> String {
     input.trim().to_halfwidth_str().to_lowercase()
 }
 
-const SPECIAL_KEYS: [(SpecialKey, &str); 5] = [
+const SPECIAL_KEYS: [(SpecialKey, &str); 14] = [
     (SpecialKey::Backspace, "Backspace"),
     (SpecialKey::Escape, "Escape"),
     (SpecialKey::Enter, "Enter"),
     (SpecialKey::Space, "Space"),
     (SpecialKey::Delete, "Delete"),
+    (SpecialKey::Insert, "Insert"),
+    (SpecialKey::Up, "Up"),
+    (SpecialKey::Down, "Down"),
+    (SpecialKey::Left, "Left"),
+    (SpecialKey::Right, "Right"),
+    (SpecialKey::Home, "Home"),
+    (SpecialKey::End, "End"),
+    (SpecialKey::PageUp, "PageUp"),
+    (SpecialKey::PageDown, "PageDown"),
 ];
 
 /// 配列編集タブのコピー履歴に保持する最大件数。
@@ -405,6 +417,10 @@ impl SettingsApp {
                     SPECIAL_KEYS.iter().position(|(k, _)| *k == sk).unwrap_or(0);
                 self.layout_edit_value.clear();
             }
+            Some(YabValue::Vk(vk)) => {
+                self.layout_edit_kind = ValueKind::Vk;
+                self.layout_edit_value = format!("{:X}", vk.0);
+            }
             Some(YabValue::None) | None => {
                 self.layout_edit_kind = ValueKind::None;
                 self.layout_edit_value.clear();
@@ -478,6 +494,17 @@ impl SettingsApp {
                 }
             }
             ValueKind::Special => YabValue::Special(SPECIAL_KEYS[self.layout_edit_special_idx].0),
+            ValueKind::Vk => {
+                let hex = self.layout_edit_value.trim().trim_start_matches('V');
+                if hex.is_empty() {
+                    YabValue::None
+                } else if let Ok(code) = u16::from_str_radix(hex, 16) {
+                    YabValue::Vk(VkCode(code))
+                } else {
+                    self.layout_status = format!("「{hex}」は16進数として解釈できません");
+                    return;
+                }
+            }
             ValueKind::None => YabValue::None,
         };
         self.layout_face_mut(self.layout_current_face)
@@ -1583,7 +1610,15 @@ impl SettingsApp {
                      その文字が出ます。「ー」「…」のような固定記号に向いています。",
                 );
             ui.radio_value(&mut self.layout_edit_kind, ValueKind::Special, "特殊キー")
-                .on_hover_text("Backspace / Escape / Enter / Space / Delete を送信します。");
+                .on_hover_text(
+                    "Backspace / Escape / Enter / Space / Delete / Insert / \n\
+                     矢印 / Home / End / PageUp / PageDown を送信します。",
+                );
+            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Vk, "VKコード")
+                .on_hover_text(
+                    "仮想キーコードを16進数で直接指定します（やまぶきR互換の\n\
+                     「V」+16進数指定）。特殊キーに無いキーを送りたい場合に使います。",
+                );
             ui.radio_value(&mut self.layout_edit_kind, ValueKind::None, "なし")
                 .on_hover_text("このキーへの割り当てを解除します（パススルー）。");
         });
@@ -1658,6 +1693,25 @@ impl SettingsApp {
                         });
                 });
             }
+            ValueKind::Vk => {
+                ui.horizontal(|ui| {
+                    ui.label("VKコード (16進):");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.layout_edit_value)
+                            .desired_width(80.0)
+                            .hint_text("例: 1D"),
+                    );
+                });
+                if !self.layout_edit_value.trim().is_empty()
+                    && u16::from_str_radix(
+                        self.layout_edit_value.trim().trim_start_matches('V'),
+                        16,
+                    )
+                    .is_err()
+                {
+                    ui.colored_label(egui::Color32::RED, "16進数として解釈できません");
+                }
+            }
             ValueKind::None => {
                 ui.label(
                     egui::RichText::new("このキーへの割り当てを解除します")
@@ -1666,8 +1720,12 @@ impl SettingsApp {
             }
         }
 
-        let can_apply = self.layout_edit_kind != ValueKind::Keystroke
-            || find_invalid_keystroke_char(self.layout_edit_value.trim()).is_none();
+        let can_apply = (self.layout_edit_kind != ValueKind::Keystroke
+            || find_invalid_keystroke_char(self.layout_edit_value.trim()).is_none())
+            && (self.layout_edit_kind != ValueKind::Vk
+                || self.layout_edit_value.trim().is_empty()
+                || u16::from_str_radix(self.layout_edit_value.trim().trim_start_matches('V'), 16)
+                    .is_ok());
 
         ui.add_space(6.0);
         if ui
@@ -2728,6 +2786,16 @@ fn cell_display(value: Option<&YabValue>) -> String {
         Some(YabValue::Special(SpecialKey::Escape)) => "ESC".to_string(),
         Some(YabValue::Special(SpecialKey::Space)) => "\u{2423}".to_string(), // ␣
         Some(YabValue::Special(SpecialKey::Delete)) => "DEL".to_string(),
+        Some(YabValue::Special(SpecialKey::Insert)) => "INS".to_string(),
+        Some(YabValue::Special(SpecialKey::Up)) => "\u{2191}".to_string(), // ↑
+        Some(YabValue::Special(SpecialKey::Down)) => "\u{2193}".to_string(), // ↓
+        Some(YabValue::Special(SpecialKey::Left)) => "\u{2190}".to_string(), // ←
+        Some(YabValue::Special(SpecialKey::Right)) => "\u{2192}".to_string(), // →
+        Some(YabValue::Special(SpecialKey::Home)) => "HOME".to_string(),
+        Some(YabValue::Special(SpecialKey::End)) => "END".to_string(),
+        Some(YabValue::Special(SpecialKey::PageUp)) => "PgUp".to_string(),
+        Some(YabValue::Special(SpecialKey::PageDown)) => "PgDn".to_string(),
+        Some(YabValue::Vk(vk)) => format!("V{:X}", vk.0),
         Some(YabValue::None) | None => "\u{2014}".to_string(), // —
     }
 }
@@ -2738,6 +2806,7 @@ const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
         Some(YabValue::Literal(_)) => egui::Color32::from_rgb(210, 230, 255),
         Some(YabValue::Special(_)) => egui::Color32::from_rgb(210, 255, 220),
         Some(YabValue::KeySequence(_)) => egui::Color32::from_rgb(200, 235, 255),
+        Some(YabValue::Vk(_)) => egui::Color32::from_rgb(255, 225, 200),
         Some(YabValue::None) | None => egui::Color32::from_rgb(220, 220, 220),
     }
 }
@@ -2759,6 +2828,7 @@ fn value_description(value: Option<&YabValue>) -> String {
         Some(YabValue::Literal(s)) => format!("リテラル: {s}"),
         Some(YabValue::KeySequence(s)) => format!("キーシーケンス: {s}"),
         Some(YabValue::Special(sk)) => format!("特殊キー: {sk:?}"),
+        Some(YabValue::Vk(vk)) => format!("仮想キーコード: 0x{:X}", vk.0),
         Some(YabValue::None) | None => "割り当てなし".to_string(),
     }
 }

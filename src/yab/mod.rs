@@ -12,6 +12,7 @@ use crate::scanmap::{KeyboardModel, PhysicalPos};
 
 // Re-export SpecialKey for backward compatibility (previously defined here)
 pub use crate::types::SpecialKey;
+use crate::types::VkCode;
 
 /// .yab ファイルからパースされた値
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub enum YabValue {
     KeySequence(String),
     /// 特殊キー
     Special(SpecialKey),
+    /// 仮想キーコード直接指定（やまぶき互換: `V`+16進数、または `機`+数値のファンクションキー指定）
+    Vk(VkCode),
     /// 割り当てなし（パススルー）
     None,
 }
@@ -89,8 +92,16 @@ impl YabValue {
             return Self::Special(*sk);
         }
 
-        if let Some(inner) = strip_paired_quote(trimmed) {
-            return Self::Literal(inner.to_string());
+        if let Some(vk) = parse_direct_vk(trimmed) {
+            return Self::Vk(vk);
+        }
+
+        if let Some(vk) = parse_function_key(trimmed) {
+            return Self::Vk(vk);
+        }
+
+        if let Some((quote, inner)) = strip_paired_quote(trimmed) {
+            return Self::Literal(unescape_literal(inner, quote));
         }
 
         if trimmed.is_all_fullwidth_ascii() {
@@ -112,6 +123,16 @@ impl YabValue {
             Self::Special(SpecialKey::Enter) => "入".to_string(),
             Self::Special(SpecialKey::Space) => "空".to_string(),
             Self::Special(SpecialKey::Delete) => "消".to_string(),
+            Self::Special(SpecialKey::Insert) => "挿".to_string(),
+            Self::Special(SpecialKey::Up) => "上".to_string(),
+            Self::Special(SpecialKey::Left) => "左".to_string(),
+            Self::Special(SpecialKey::Right) => "右".to_string(),
+            Self::Special(SpecialKey::Down) => "下".to_string(),
+            Self::Special(SpecialKey::Home) => "家".to_string(),
+            Self::Special(SpecialKey::End) => "終".to_string(),
+            Self::Special(SpecialKey::PageUp) => "前".to_string(),
+            Self::Special(SpecialKey::PageDown) => "次".to_string(),
+            Self::Vk(vk) => format!("V{:X}", vk.0),
             Self::None => "無".to_string(),
         }
     }
@@ -288,14 +309,99 @@ const SPECIAL_KEYWORDS: &[(&str, SpecialKey)] = &[
     ("入", SpecialKey::Enter),
     ("空", SpecialKey::Space),
     ("消", SpecialKey::Delete),
+    ("挿", SpecialKey::Insert),
+    ("上", SpecialKey::Up),
+    ("左", SpecialKey::Left),
+    ("右", SpecialKey::Right),
+    ("下", SpecialKey::Down),
+    ("家", SpecialKey::Home),
+    ("終", SpecialKey::End),
+    ("前", SpecialKey::PageUp),
+    ("次", SpecialKey::PageDown),
 ];
 
-/// シングルまたはダブルクォートで囲まれた文字列の内側を返す（len > 2 の場合のみ）。
-fn strip_paired_quote(s: &str) -> Option<&str> {
+/// シングルまたはダブルクォートで囲まれた文字列の、クォート種別と内側を返す（len > 2 の場合のみ）。
+///
+/// やまぶきRはシングルクォート＝未確定文字・ダブルクォート＝確定文字という区別を
+/// 持つが、rust-nicola はこの区別を実装しない（受理のみ）。クォート種別はエスケープ
+/// シーケンス解決（`unescape_literal`）にのみ使い、`YabValue::Literal` には残さない。
+fn strip_paired_quote(s: &str) -> Option<(char, &str)> {
     let is_single = s.starts_with('\'') && s.ends_with('\'');
     let is_double = s.starts_with('"') && s.ends_with('"');
-    if (is_single || is_double) && s.len() > 2 {
-        Some(&s[1..s.len() - 1])
+    if is_single && s.len() > 2 {
+        Some(('\'', &s[1..s.len() - 1]))
+    } else if is_double && s.len() > 2 {
+        Some(('"', &s[1..s.len() - 1]))
+    } else {
+        None
+    }
+}
+
+/// クォート内エスケープシーケンスを解決する。
+///
+/// やまぶきR仕様: `\\`→`\`、`\'`→`'`（シングルクォート内）、`\"`→`"`（ダブルクォート内）、
+/// `\n`→改行、`\t`→タブ、`\u`+16進数→Unicodeコードポイント。
+fn unescape_literal(inner: &str, quote: char) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('\\') => {
+                chars.next();
+                out.push('\\');
+            }
+            Some(&q) if q == quote => {
+                chars.next();
+                out.push(q);
+            }
+            Some('n') => {
+                chars.next();
+                out.push('\n');
+            }
+            Some('t') => {
+                chars.next();
+                out.push('\t');
+            }
+            Some('u') => {
+                chars.next();
+                let hex: String = std::iter::from_fn(|| chars.next_if(char::is_ascii_hexdigit))
+                    .take(6)
+                    .collect();
+                if let Some(code_char) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32)
+                {
+                    out.push(code_char);
+                } else {
+                    out.push('u');
+                }
+            }
+            _ => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// `V`+16進数（半角）の仮想キーコード直接指定をパースする（やまぶきR互換）。
+fn parse_direct_vk(s: &str) -> Option<VkCode> {
+    let hex = s.strip_prefix('V')?;
+    if hex.is_empty() || !hex.is_ascii() {
+        return None;
+    }
+    u16::from_str_radix(hex, 16).ok().map(VkCode)
+}
+
+/// `機`+数値（半角、1〜24）のファンクションキー指定をパースする（やまぶきR互換）。
+fn parse_function_key(s: &str) -> Option<VkCode> {
+    let digits = s.strip_prefix('機')?;
+    if digits.is_empty() || !digits.is_ascii() {
+        return None;
+    }
+    let n: u16 = digits.parse().ok()?;
+    if (1..=24).contains(&n) {
+        Some(VkCode(0x70 + (n - 1)))
     } else {
         None
     }
@@ -316,9 +422,29 @@ fn classify_fullwidth(trimmed: &str) -> YabValue {
 
 /// セクションの 4 行分の CSV データを `YabFace` にパースする。
 fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
-    if lines.len() != 4 {
-        bail!("Expected 4 data lines in section, got {}", lines.len());
+    if lines.len() < 4 {
+        bail!(
+            "Expected at least 4 data lines in section, got {}",
+            lines.len()
+        );
     }
+    // やまぶきR互換: 4行の基本面の後に「文字キー同時打鍵シフト配列」
+    // （`<x>` + 4行のブロックの繰り返し）が続くことがある。rust-nicola は
+    // まだこの機能を実装しないため、基本面の4行のみを使い残りは受理のみで無視する。
+    // ただし5行目が `<...>` の形（同時打鍵シフトのトリガー指定）でない場合は、
+    // 単なる行数の指定ミスの可能性が高いので従来通りエラーにする。
+    if lines.len() > 4 {
+        let fifth = lines[4].trim();
+        if !(fifth.starts_with('<') && fifth.ends_with('>') && fifth.len() > 2) {
+            bail!(
+                "Expected 4 data lines in section, got {} (5th line {:?} is not a `<x>` \
+                 simultaneous-shift block marker)",
+                lines.len(),
+                fifth
+            );
+        }
+    }
+    let lines = &lines[..4];
 
     let row_sizes = model.row_sizes();
     let mut face = YabFace::new();
@@ -349,12 +475,28 @@ fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
 }
 
 /// セクション名からフェイスの種類を判別する。
+///
+/// やまぶきR互換のため、rust-nicola がまだランタイムで使わないセクション
+/// （小指シフト中の親指シフト面・英数系6面）も `FaceKind::Ignored` として認識し、
+/// パースエラーにせず読み飛ばす（受理のみ・機能未実装）。
 fn classify_section(name: &str) -> Option<FaceKind> {
     match name {
         "ローマ字シフト無し" => Some(FaceKind::Normal),
         "ローマ字左親指シフト" => Some(FaceKind::LeftThumb),
         "ローマ字右親指シフト" => Some(FaceKind::RightThumb),
         "ローマ字小指シフト" => Some(FaceKind::Shift),
+        "ローマ字小指左親指シフト"
+        | "ローマ字小指右親指シフト"
+        | "英数シフト無し"
+        | "英数左親指シフト"
+        | "英数右親指シフト"
+        | "英数小指シフト"
+        | "英数小指左親指シフト"
+        | "英数小指右親指シフト"
+        | "拡張親指シフト1"
+        | "拡張親指シフト2"
+        | "小指拡張親指シフト1"
+        | "小指拡張親指シフト2" => Some(FaceKind::Ignored),
         _ => None,
     }
 }
@@ -366,6 +508,8 @@ enum FaceKind {
     LeftThumb,
     RightThumb,
     Shift,
+    /// やまぶきR互換のため受理するが、rust-nicola のランタイムでは参照しないセクション。
+    Ignored,
 }
 
 /// 指定されたセクションが存在すれば `parse_face` を呼び、なければ空の `YabFace` を返す。

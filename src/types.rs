@@ -70,6 +70,24 @@ pub enum SpecialKey {
     Space,
     /// Delete
     Delete,
+    /// Insert
+    Insert,
+    /// ↑
+    Up,
+    /// ↓
+    Down,
+    /// ←
+    Left,
+    /// →
+    Right,
+    /// Home
+    Home,
+    /// End
+    End,
+    /// Page Up
+    PageUp,
+    /// Page Down
+    PageDown,
 }
 
 // ── 修飾キー ──

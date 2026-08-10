@@ -51,6 +51,7 @@ impl From<&YabValue> for KeyAction {
             YabValue::Literal(s) => s.chars().next().map_or(Self::Suppress, Self::Char),
             YabValue::KeySequence(s) => Self::KeySequence(s.clone()),
             YabValue::Special(sk) => Self::SpecialKey(*sk),
+            YabValue::Vk(vk) => Self::Key(*vk),
             YabValue::None => Self::Suppress,
         }
     }
