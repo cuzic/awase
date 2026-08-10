@@ -1232,6 +1232,14 @@ impl Runtime {
             .output
             .conv_mode
             .set_policy(config.general.conv_mode_policy);
+        // INV-27（ADR-087 §4）: force⇔observe 切替は `force_open_pending`
+        // （および将来の `OpenWarrant` 発行済みキュー）を無効化しなければ
+        // ならない。放置すると、force→observe 切替直後に「force policy 時に
+        // 武装された pending」が残ったまま `consume_force_open_pending` が
+        // 発火し、observe 経路（drift correction 等）と二重に force-ON が
+        // 走る窓ができる（§7 round2 M8）。次の正当なトリガー（FocusChange 等）
+        // が `arm_force_open_pending` で新しいポリシーに基づき再武装する。
+        self.force_open_pending = None;
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;
