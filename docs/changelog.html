@@ -110,6 +110,30 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.14.0] - 2026-08-10</h2>
+<h3>追加</h3>
+<ul>
+<li><strong>富士通純正親指シフトキーボード（FKB7628-801等）向け配列 <code>nicola_f.yab</code> を追加</strong><ul>
+<li>やまぶきRの <code>NICOLA-F.yab</code> と実機写真の物理配列調査をもとに新設。かな配置は本家NICOLAと同一</li>
+<li>物理キー配列・スキャンコードはJISキーボードと共通なので、<code>keyboard_model = &quot;jis&quot;</code> のまま <code>default_layout</code> を <code>nicola_f.yab</code> に変更するだけで使用できる</li>
+</ul>
+</li>
+<li><strong>やまぶきR互換の <code>.yab</code> 配列ファイルの読み込み範囲を拡張</strong><ul>
+<li>特殊キーワード9個（挿入・矢印4方向・Home/End/PageUp/PageDown）、<code>V</code>+16進数によるVK直接指定、<code>機</code>+数値によるF1〜F24指定、クォート内エスケープシーケンスに対応</li>
+<li>やまぶきR 1.62 同梱の実ファイル15個が全てパースエラーなく読み込めることを確認済み</li>
+<li>配列エディタ（awase-settings）にVKコード編集UIを追加</li>
+<li>一部の面（英数6面・小指シフト面等）や文字キー同時打鍵シフト配列は受理のみ（パースは通すが機能は未実装）</li>
+</ul>
+</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>MSI/ZIPインストール後、初回起動時に出ていた「ログオン時に自動起動しますか？」の確認ダイアログを廃止</strong><ul>
+<li>MSIインストーラー・ZIP版 <code>install.ps1</code> はいずれも以前からレジストリへ無条件で自動起動を登録しており、このダイアログは実質到達不能だった</li>
+<li>実態に合わせ、確認なしで自動起動を既定で有効にするよう変更。無効化はトレイメニューの「ログオン時に自動起動」か設定画面から行える</li>
+</ul>
+</li>
+</ul>
 <h2>[1.13.1] - 2026-08-09</h2>
 <h3>変更</h3>
 <ul>
