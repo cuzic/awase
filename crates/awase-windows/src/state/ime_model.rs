@@ -10,17 +10,63 @@
 //! 3. **AppImePolicy / InputBarrier / ForceGuardSet は後続 Step で追加** (Step 1 では placeholder)
 
 use super::app_ime_policy::AppImePolicy;
-use super::force_guard::{ForceGuardSet, ObserveMissMonitor};
+use super::force_guard::{ForceGuardSet, ForceOnReason, ObserveMissMonitor};
 use awase::engine::InputModeState;
 
 use super::ime_event::{
     ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, ObservationConfidence,
-    UserIntentSource,
+    ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
-use super::observation_store::{ImeObservation, ObservationStore};
+use super::observation_store::{DeriveOutcome, ImeObservation, ObservationStore};
 use super::transition::ImeTransition;
 use std::time::Instant;
+
+// ── resolve_open_at 診断API（ADR-087 §5 Phase 0a item2/3） ──────────────────────
+
+/// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
+/// 「なぜその値になったか」を保持する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenResolution {
+    pub value: bool,
+    pub decided_by: DecidedBy,
+}
+
+/// `effective_open_at()` の判定内訳。
+///
+/// `base`（明示意図/観測/フォールバックのどれで決まったか）と
+/// `guard_override`（`force_guards` が override したか）を分けて持つ——
+/// `ImeModel::effective_open()` の実装が
+/// `force_guards.effective_open(base, has_explicit_intent)` という2段構造に
+/// なっているため（`ime_model.rs` 本体参照）、診断もそれに合わせる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecidedBy {
+    pub base: BaseDecision,
+    pub guard_override: Option<ForceOnReason>,
+}
+
+/// `base`（`force_guards` 適用前の値）がどの経路で決まったか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseDecision {
+    /// `has_user_explicit_intent()==true`、`desired_open` を採用。
+    ExplicitIntent,
+    /// `derive_open_filtered()` が High confidence 単独ソースで確定。
+    DeriveHigh(ObservationSource),
+    /// `derive_open_filtered()` が Medium+ の無競合多数決で確定。
+    /// `second` が `None` なら単独観測、`Some` なら2ソース以上の合意
+    /// （`DeriveOutcome::MediumConsensus` と同じ理由で `Vec` を避ける、
+    /// ADR-087 §7 round4 S-A: `effective_open()` は全 `KeyDown` で呼ばれる
+    /// ホットパスのため）。
+    DeriveMedium {
+        first: ObservationSource,
+        second: Option<ObservationSource>,
+    },
+    /// `derive_open()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
+    /// フォールバック。
+    MostRecentTrusted(ObservationSource),
+    /// 観測が一切なく `desired_open` にフォールバック。
+    DesiredFallback,
+}
 
 // ── AppliedImeState ──────────────────────────────────────────────────────────
 
@@ -220,17 +266,58 @@ impl ImeModel {
     ///   上書きしない。`PanicReset` 等の安全弁は明示的意図があっても override する）
     #[must_use]
     pub fn effective_open(&self) -> bool {
-        let now = Instant::now();
+        self.effective_open_at(Instant::now())
+    }
+
+    /// `effective_open()` の `Instant` 引数化版。ADR-087 §5 Phase 0a item2
+    /// （INV-23: 根拠判定の決定論性）。`effective_open()` はこれの薄い
+    /// ラッパーであり、`Instant::now()` を呼ぶのはこの1箇所（`effective_open()`
+    /// 自身）に限定される——`effective_open_at` 自体は時刻を内部で確定させない
+    /// 純粋関数なので、journal replay やテストで決定論的に呼び出せる。
+    #[must_use]
+    pub fn effective_open_at(&self, now: Instant) -> bool {
+        self.resolve_open_at(now).value
+    }
+
+    /// `effective_open_at()` の判定内訳まで返す診断 API（ADR-087 §5 Phase 0a item3）。
+    ///
+    /// 「なぜこの値になったか」（`DecidedBy`）を journal / テストに残せるようにする。
+    /// 本バグ（`mise`→「くした」）は `effective_open()` が単一の bool しか返さず
+    /// 判定根拠が失われていたために原因追跡に時間がかかった——この API はその
+    /// 反省から追加する。
+    #[must_use]
+    pub fn resolve_open_at(&self, now: Instant) -> OpenResolution {
         let has_explicit_intent = self.has_user_explicit_intent();
-        let base = if has_explicit_intent {
-            self.desired_open
+        let (base, decided_by) = if has_explicit_intent {
+            (self.desired_open, BaseDecision::ExplicitIntent)
+        } else if let Some(outcome) = self.observations.derive_open_filtered(now, |_| true) {
+            let decided_by = match outcome {
+                DeriveOutcome::HighSingle { source, .. } => BaseDecision::DeriveHigh(source),
+                DeriveOutcome::MediumConsensus { first, second, .. } => {
+                    BaseDecision::DeriveMedium { first, second }
+                }
+            };
+            (outcome.value(), decided_by)
+        } else if let Some(trusted) = self.observations.most_recent_trusted(now) {
+            (
+                trusted.open,
+                BaseDecision::MostRecentTrusted(trusted.source),
+            )
         } else {
-            self.observations
-                .derive_open(now)
-                .or_else(|| self.observations.most_recent_trusted(now).map(|o| o.open))
-                .unwrap_or(self.desired_open)
+            (self.desired_open, BaseDecision::DesiredFallback)
         };
-        self.force_guards.effective_open(base, has_explicit_intent)
+        // `ForceGuardSet::resolve()` を唯一の判定点として使う（ADR-087 §7 round4
+        // M-C: 述語を手書きで複製すると「guard が active なだけで override して
+        // いない」場合にも reason を報告してしまう誤情報バグを生む。resolve() は
+        // 実際に値を変えた場合のみ Some を返す）。
+        let (value, guard_override) = self.force_guards.resolve(base, has_explicit_intent);
+        OpenResolution {
+            value,
+            decided_by: DecidedBy {
+                base: decided_by,
+                guard_override,
+            },
+        }
     }
 
     /// `AppliedImeState` を返す。executor の applied_snapshot 同期用。
@@ -731,6 +818,177 @@ mod tests {
         assert!(
             model.effective_open(),
             "Medium confidence の derive_open() 結果が Low fallback より常に優先される"
+        );
+    }
+
+    // ── resolve_open_at / DecidedBy（ADR-087 §5 Phase 0a item2/3） ──────────────
+
+    #[test]
+    fn resolve_open_at_decided_by_explicit_intent() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(!res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::ExplicitIntent);
+        assert_eq!(res.decided_by.guard_override, None);
+    }
+
+    #[test]
+    fn resolve_open_at_decided_by_derive_medium_mise_bug_scenario() {
+        // ADR-087 発端バグ（mise→くした）の belief 側の再現: 明示意図なし、
+        // ConvOpenInference 1件（Medium, open:true）だけがある状態。
+        // belief は ON に復帰する（P13: derive_open() の Medium 単独多数決は
+        // 弱めない、BUG-26 が依拠する挙動）。
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ConvOpenInference,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(
+            res.value,
+            "conv 推論1件で belief は ON に復帰する（BUG-26 の依拠先）"
+        );
+        assert_eq!(
+            res.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ConvOpenInference,
+                second: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_decided_by_desired_fallback() {
+        let model = ImeModel::new(); // desired_open=true, 観測なし, 意図なし
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+    }
+
+    #[test]
+    fn resolve_open_at_reports_guard_override() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value, "PanicReset は明示 OFF 意図を override する");
+        assert_eq!(
+            res.decided_by.base,
+            BaseDecision::ExplicitIntent,
+            "base 自体は明示意図のまま false 側で決まる"
+        );
+        assert_eq!(
+            res.decided_by.guard_override,
+            Some(ForceOnReason::PanicReset),
+            "guard_override に override した reason が残る"
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_guard_override_none_when_guard_active_but_did_not_flip_value() {
+        // ADR-087 §7 round4 M-C の直接の回帰テスト: guard が active でも
+        // base が既に true なら override は起きていないので guard_override は
+        // None であるべき（旧実装は誤って Some を返していた）。
+        let mut model = ImeModel::new(); // desired_open=true, 明示意図なし
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::BrokenAppBootstrap,
+            expires_at: None,
+            generation: 1,
+        });
+        let now = Instant::now();
+        let res = model.resolve_open_at(now);
+        assert!(res.value);
+        assert_eq!(
+            res.decided_by.guard_override, None,
+            "base が既に true（DesiredFallback）なので guard は何も override していない"
+        );
+    }
+
+    #[test]
+    fn resolve_open_at_now_argument_actually_affects_result() {
+        // ADR-087 §7 round4 M-B: 注入した `now` が本当に使われていることの
+        // 直接検証。derive_open() の FRESH ウィンドウ（3秒、observation_store.rs）
+        // を跨ぐ前後で decided_by が変わることを確認する——これが変わらなければ
+        // resolve_open_at が引数を無視している可能性がある。
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        let fresh = model.resolve_open_at(t0);
+        assert_eq!(
+            fresh.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ObserverPoll,
+                second: None,
+            },
+            "FRESH ウィンドウ内では derive_open が観測を採用する"
+        );
+
+        let stale = model.resolve_open_at(t0 + std::time::Duration::from_secs(4));
+        assert_eq!(
+            stale.decided_by.base,
+            BaseDecision::MostRecentTrusted(ObservationSource::ObserverPoll),
+            "FRESH(3s) を超えると derive_open は None になるが、\
+             most_recent_trusted() は expires_at のみを見る（FRESH 窓を見ない）\
+             ため同じ観測を拾い、フォールバック先が DeriveMedium から \
+             MostRecentTrusted に切り替わる——now が本当に効いている証拠"
+        );
+    }
+
+    #[test]
+    fn effective_open_at_matches_effective_open() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported {
+                open: true,
+                source: ObservationSource::ObserverPoll,
+                hwnd: HwndId::NULL,
+                confidence: ObservationConfidence::Medium,
+                focus_epoch: 0,
+            },
+        ));
+        // effective_open() は effective_open_at(Instant::now()) の薄いラッパーで
+        // あるべき。テスト実行中に Instant が動くのは無視できる程度なので、
+        // 両者が同じ bool を返すことだけ確認する。
+        assert_eq!(
+            model.effective_open(),
+            model.effective_open_at(Instant::now())
         );
     }
 
