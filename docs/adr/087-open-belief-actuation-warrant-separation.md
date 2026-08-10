@@ -63,7 +63,7 @@ Win+Ctrl+→
      → effective_open() (ime_model.rs:222) = true
         ├→ build_ctx().ime_on = true
         │    → NICOLA engine が「mise」の I/S/E をかな変換 → 「くした」
-        └→ is_eligible_for_ime_force_on() (platform_state.rs:456) = true
+        └→ is_eligible_for_ime_force_on() (platform_state.rs:478) = true
              → apply_force_on_for_imm_broken (runtime/mod.rs:649)
              → force_on_and_correct_romaji → 実際に VK_DBE_HIRAGANA 等を SendInput
                 → OS 側 IME が物理的に ON になる
@@ -743,12 +743,35 @@ ADR-084 の INV-1〜11、ADR-086 の INV-12〜19 を継承し、INV-20 から採
   `AlreadyMatched`（no-op）を返す（`ime_controller.rs:110`）。warrant が
   `OwnSsot`/`HeuristicGuess` 由来で「実 IME は閉じているはず」と判断して
   いても、`shadow_on`（awase 内部の shadow 状態）が古い ON のままだと
-  この no-op に阻まれ、BUG-16 が実装レベルで再発する（§7 round3 Codex
-  シナリオ6、Critical）。force-ON の送信経路（`force_on_and_correct_romaji`）
-  は、warrant による許可が下りた場合に限り、この `shadow_on` no-op を
-  明示的に bypass しなければならない（`applied` を `None` にする既存の
-  コメント（`runtime/mod.rs:722`）は実装時に `shadow_on` を見落としており、
-  実際に効いていない——Phase 3 実装時にこの食い違いを解消すること）。
+  この no-op に阻まれうる（§7 round3 Codex シナリオ6、Critical）。
+
+  **前提の訂正（2026-08-10、実装記録 §8.10、Opus 再検証で確定）**:
+  上記懸念は「force-write 経路では」既に解消済みだった。
+  `force_on_and_correct_romaji`（`mod.rs:727` 付近のコメント）と
+  `ir_post_focus_change_snapshot`（GJI TsfNative 入場、`ime_refresh.rs:499`）
+  はどちらも `build_ime_control_view(None)` を経由し、
+  `applied.unwrap_or((false, 0))`（`platform.rs:977`）により
+  `control.shadow_on` は必ず `false` になる——つまり `GjiDirectStrategy` の
+  no-op skip は最初から発火しない。`mod.rs` の N2 コメントも「GJI の
+  `shadow_on` スキップを意図的に外す既存仕様」と明記しており、これは
+  バグではなく意図された設計だった。「実装時に見落として効いていない」
+  という当初の記述は誤りだったので訂正する。
+
+  したがって INV-28 が実際に効く箇所は force-write 経路ではなく、
+  **`Effect::Ime(ImeEffect::SetOpen)` の dispatch 経路**（Engine 由来の
+  意図、上表 #1〜#3）に限られる。`executor.rs::dispatch_ime_set_open` は
+  `applied_snapshot.to_pair()`（実値）を `view`/`shadow_ime_control_view()`
+  に渡すため、こちらは no-op skip の影響を受けうる。この経路の warrant 化
+  は Phase 3 の中でも挙動変更を伴う（送信頻度が変わる）ため、item16 を
+  以下の2段階に分割する:
+
+  - **item16(a)（挙動変更なし）**: 上記の「force-write 経路は既に bypass
+    済み」という不変条件を回帰テストとして固定する（このセッションで
+    実施可能）。
+  - **item16(b)（挙動変更あり・実機必須）**: `dispatch_ime_set_open` 側で
+    warrant 許可時に `shadow_on` no-op を bypass する変更。BUG-43
+    （16連続再送）・BUG-50（カタカナデッドロック）の再検証が必要なため
+    次セッション以降に持ち越す。
 
 **明示的に却下する方向（再提案禁止）**:
 - `ConvOpenInference` の confidence を Low へ格下げすること、または
@@ -916,30 +939,67 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
 14. `OpenWarrant` / `WarrantBasis` を新設する（`SelfApplied` はスコープ外、
     P12 参照）。実 actuation 入口の棚卸しをまず正確にやり直す（§7 round1 M5:
     既存の `apply_ime_open_with_belief_call_sites_are_accounted_for` は
-    `apply_ime_open_with_belief(` の呼び出しだけを数えており、
-    `apply_ime_open_with_view`（`force_on_and_correct_romaji` 経由、
-    `runtime/mod.rs:733`、`runtime/executor.rs:887`）、
-    `apply_ime_open_with_applied`（`runtime/ime_refresh.rs:499`）、
-    `set_ime_open`（`platform.rs:729`）、`ir_post_focus_change_snapshot:499`
-    の直接 `apply_ime_open_with_applied(true, None)`（§7 round2 シナリオ8）は
-    対象外。ガードの doc コメント自体も stale。§1.4 item 3 が挙げた drift
-    correction・`EngineSync::DirectInput` も含め、各経路を force-write /
-    observation-based correction のどちらに分類してから warrant 必須化の
-    対象を決める）。
-15. `consume_force_open_pending` の eligibility 判定を `issue_open_warrant()`
-    経由に差し替える（INV-25、P16）。
+    `apply_ime_open_with_belief(` の呼び出しだけを数えており、他の入口は
+    対象外。ガードの doc コメント自体も stale）。
+
+    **実 actuation 入口の全数（2026-08-10 時点、Opus と Codex CLI の独立調査を
+    実ファイル読解で裏取り済み）: 11 経路 + 呼び出し元ゼロの死んだ入口 1つ。**
+
+    | # | 場所 | ラッパー | 分類 | `shadow_on` | `origin` |
+    |---|---|---|---|---|---|
+    | 1 | `executor.rs:894`（`dispatch_ime_set_open` sync 分岐） | `apply_ime_open_with_view` | Engine intent（sync、GjiDirect/KanjiToggle 経路） | 実値（`applied_snapshot.to_pair()`） | 破棄（`SetOpen{open, ..}`、`executor.rs:661`） |
+    | 2 | `executor.rs` 775〜838（`dispatch_ime_set_open` async 分岐） | `set_ime_open_then_conv_for_target`（直接 write） | Engine intent（async、ImmCross-first） | 未使用（`ActuationTarget` 経由の直接検証） | 破棄（同上） |
+    | 3 | `executor.rs:833` | `apply_skipping_imm` | ImmCross 失敗フォールバック | 実値（`shadow_ime_control_view()`） | — |
+    | 4 | `key_pipeline.rs:741` | `apply_ime_open_with_belief(false, None, belief)` | observation-based correction（`EngineSync::DirectInput`、ObservedEisu 検出） | 空（`None`） | — |
+    | 5 | `key_pipeline.rs:941` | `apply_skipping_imm` | shadow toggle OFF、ImmCross 失敗フォールバック | 実値 | — |
+    | 6 | `mod.rs:733`（`force_on_and_correct_romaji`） | `apply_ime_open_with_view(true, &view, belief)` | force-write（ImmBrokenForceOn / ForcePolicyResend 共用） | 空（`build_ime_control_view(None)`、GJI `shadow_on` スキップを**意図的に**無効化する既存仕様、コード内 N2 コメント参照） | — |
+    | 7 | `mod.rs:890`（`try_force_on_bootstrap`） | `apply_ime_open_with_belief(true, None, belief)` | force-write（Bootstrap） | 空 | — |
+    | 8 | `ime_refresh.rs:499`（`ir_post_focus_change_snapshot`） | `apply_ime_open_with_applied(true, None)` | force-write（GJI TsfNative 入場、shadow_on を意図的に無視） | 空 | — |
+    | 9 | `ime_refresh.rs:534` | `set_ime_open(false)` | focus change 強制 OFF（IMM32 のみ） | — | — |
+    | 10 | `ime_refresh.rs:727` | `set_ime_open(desired)` | drift correction（ImmCross） | — | — |
+    | 11 | `ime_refresh.rs:740` | `apply_ime_open_with_belief(desired, None, belief)` | drift correction（非 ImmCross = Blacklist/TsfNative） | 空 | — |
+    | — | `platform.rs:728`（trait `apply_ime_open`）/ `src/platform.rs:210` | — | **呼び出し元ゼロ（死んだ入口）** | — | — |
+
+    `apply_ime_open_with_belief(` の直接呼び出しは4件（上表 #4
+    `key_pipeline.rs:741` / #7 `mod.rs:890` / #11 `ime_refresh.rs:740` +
+    `platform.rs:1034`〈`apply_ime_open_with_applied` 内部からの委譲、#8 の
+    実体〉。#1/#2/#6 は `apply_ime_open_with_view(` 経由で別カウントになる）で、
+    既存ガードの `EXPECTED_TOTAL=5` は `mod.rs:716` の doc コメント中の同名
+    文字列を1件誤カウントしていた（2026-08-10 Opus レビュー S5 で本節の
+    「#4/#6経由ではなく」という誤った除外表現を訂正済み。実装は §5 Phase 3
+    実装記録 §8.11 item2 参照）。
+    §1.4 item 3 が挙げた drift correction・`EngineSync::DirectInput` は上表 #4/#11
+    に対応する。各経路を force-write / observation-based correction のどちらに
+    分類した上で warrant 必須化の対象を決める。
+15. `is_eligible_for_ime_force_on()`（`state/platform_state.rs:478`、
+    `belief.is_japanese_ime() && effective_open()`）の判定を `issue_open_warrant()`
+    経由に差し替える（INV-25、P16）。呼び出し元は3箇所
+    （`runtime/mod.rs:668` `apply_force_on_for_imm_broken`、`825`
+    `consume_force_open_pending`、`872` `try_force_on_bootstrap`）— 3箇所すべてが
+    対象。なお Phase 2' item10（この関数を Step 1〜4 の優先順位ロジックに
+    書き直す）とはスコープが重なっており、実質同一の差し替え作業である。
 16. **warrant による許可と実送信の間にある no-op suppression を bypass する**
-    （INV-28、§7 round3 Codex シナリオ6、Critical）。`GjiDirectStrategy::apply`
-    は `view.control.shadow_on == true` のとき `VK_IME_ON` を送らず
-    `AlreadyMatched` を返す（`ime_controller.rs:110`）。force-ON 経路
-    （`force_on_and_correct_romaji`）は、warrant が下りた場合にこの no-op を
-    確実に bypass するよう修正する（現状のコメント「`applied` を `None` に
-    して bypass する」（`runtime/mod.rs:722`）は実際には `shadow_on` を
-    見ておらず効いていない）。
-17. `effective_open()` に「これは engine の内部挙動決定用であって外部書き込みの
-    根拠ではない」という doc コメントを追加する（名称変更は既存呼び出し
-    （src 全体で 60 件超、テスト・定義を含む）への影響が大きいため、本 Phase
-    では見送り、必要なら別途検討する、§7 round1 N2）。
+    （INV-28、§7 round3 Codex シナリオ6、Critical。**前提を実装記録 §8.10 で
+    訂正済み**、以下 (a)(b) に分割）。
+    - **16(a)（本 Phase で実施、挙動変更なし）**: force-write 経路
+      （`force_on_and_correct_romaji` = `mod.rs:733`、GJI TsfNative 入場
+      = `ime_refresh.rs:499`）は `build_ime_control_view(None)` 経由で
+      `shadow_on` が常に空（`false`）になり、`GjiDirectStrategy::apply`
+      （`ime_controller.rs:110`）の no-op skip を最初から bypass 済みで
+      あることを回帰テストとして固定する。
+    - **16(b)（次セッション・実機必須）**: `Effect::Ime(ImeEffect::SetOpen)`
+      の dispatch 経路（`executor.rs::dispatch_ime_set_open`、上表 #1〜#3）
+      は `applied_snapshot`（実値）を渡すため no-op skip の影響を受けうる。
+      warrant 許可時にこの skip を bypass する変更は VK 送信頻度を変えるため、
+      BUG-43（16連続再送）・BUG-50（カタカナデッドロック）の再検証込みで
+      実機ソークが必要。
+17. `effective_open()`/`effective_open_at()`/`resolve_open_at()` に「これは
+    engine の内部挙動決定用であって外部書き込みの根拠ではない」という doc
+    コメントを追加する（名称変更は既存呼び出し（src 全体で 60 件超、テスト・
+    定義を含む）への影響が大きいため、本 Phase では見送り、必要なら別途検討
+    する、§7 round1 N2）。`is_eligible_for_ime_force_on()`
+    （`state/platform_state.rs:478`）にも「belief 由来の暫定ゲート、Phase 3
+    で `issue_open_warrant()` に置換予定、呼び出し元3箇所」と明記する。
 
 Phase 1'/2' で確立した判定ロジックを型で固めるだけであり、動作変更を伴わない
 リファクタとして提出できる（ADR-081 Phase 1d が躓いた「実機なしで本番経路を
@@ -1627,3 +1687,122 @@ awase-windows --lib --tests`（pedantic/nursery deny）で対象2ファイルへ
 ことを実機（または少なくとも `cargo xwin check`）で確認しないと安全に
 実施できないため、本セッションでは着手せず次セッションへの
 引き継ぎ事項として記録するにとどめる。
+
+### 8.11 Phase 3 前段の安全域実装（2026-08-10、Opus 相談 → タスク化 → 実装）
+
+「配線ミスが繰り返される理由」をユーザーと議論した流れで、Codex CLI に
+read-only で本 ADR の Phase 3（実配線）の危険候補を独立調査させ、続けて
+Opus（`Plan` agent, model: opus）にタスク設計を相談した。Opus は Codex の
+指摘のうち **item16（INV-28）の前提が誤っていた**ことを実ファイル読解で
+発見・訂正した上で、「今セッションで安全に完了できる範囲（Linux +
+`cargo xwin check`/clippy で閉じる）」と「実機必須で次セッション持ち越し
+の範囲」を明確に線引きし、11項目のタスクリストを提示した。全項目を実装:
+
+1. **実 actuation 入口 11 経路の棚卸し**（§5 item14 の表）。
+2. **`architecture_guard.rs` の call-site guard を入口ごとに作り直した**
+   （旧 `apply_ime_open_with_belief_call_sites_are_accounted_for` は
+   コメント1件を誤カウントしており実呼び出しは4件だった。
+   `ime_open_actuation_entry_points_are_accounted_for` に置換、6種の入口を
+   個別に凍結）。
+3. **`PlatformRuntime::apply_ime_open`**（呼び出し元ゼロの死んだ trait
+   メソッド）にその旨の doc を追記（`src/platform.rs`・
+   `crates/awase-windows/src/platform.rs` 両方）。
+4. **INV-28/item16 の前提を訂正**: force-write 経路（`force_on_and_correct_romaji`
+   / GJI TsfNative 強制ON）は `build_ime_control_view(None)` により
+   `shadow_on` が常に false になるため、GJI の no-op skip を**既に**
+   bypass 済みだった（「実装時に見落として効いていない」という当初の
+   記述は誤り）。item16 を (a) 現状維持の確認（本セッション）と
+   (b) `dispatch_ime_set_open` 側の実挙動変更（次セッション・実機必須、
+   BUG-43/BUG-50 再検証要）に分割。
+5. **item16(a) の回帰テスト**を `architecture_guard.rs` に追加
+   （`force_write_paths_bypass_gji_shadow_on_via_none_applied`）。
+6. **`OpenBelief::confident` の死んだ semantics を doc 訂正**
+   （`ime_apply_planner.rs`・`executor.rs`。「confident=false で
+   already_matched を強制」という設計意図に対応する本番分岐は存在せず、
+   実消費者はログのみ）。
+7. **item17**: `effective_open()`/`effective_open_at()`/`resolve_open_at()`
+   と `is_eligible_for_ime_force_on()` に、belief と actuation の区別・
+   置換予定の doc を追記。
+8. **`current_focus: Option<HwndId>`** を `ImeModel` に追加（`FocusChanged`
+   の reducer のみが書き込む write-only フィールド、読み取りアクセサのみ）。
+9. **`IntentStore` を `ImeStateHub` のフィールドとして配線**
+   （`dispatch_event` が `last_user_explicit_off_ms` と同じ条件——SyncKey/
+   PhysicalImeKey/Command 経由の `UserImeSetIntent`——で `record()` する。
+   write-only、読み取り側は Phase 3 本体のスコープ）。
+10. **差分オラクルテスト**
+    (`differential_old_gate_vs_issue_open_warrant`、240通り)を
+    `open_warrant.rs` に追加。`is_eligible_for_ime_force_on()`
+    （`is_japanese_ime && effective_open()`）と `issue_open_warrant(true,
+    target, ctx).is_some()` を同じ入力（explicit intent／observation／
+    force guard／desired_open／app policy）で突き合わせ、方向別に不一致を
+    発見・固定した（§8.12 の Opus 再レビューで policy 軸欠落等の見落としを
+    指摘され拡張済み。詳細な内訳はテスト本体のコメント参照）:
+    - **old-only**（旧だけが force-ON を許可、new の方が厳格・安全側、8件）:
+      `guard=HeuristicOnly` が実観測を無視するケース、
+      `observation=ConvOpenInference`（BeliefOnly 権限）が単独で許可する
+      ケース（**BUG-63「mise」→「くした」誤入力の再現そのもの**）、
+      `policy=ImmCross` の bootstrap force-ON が Phase 3 で丸ごと無効化
+      されるケース（今回判明した中で最大の挙動変化）。
+    - **new-only**（新だけが force-ON を許可、new の方が緩い、1件）:
+      `observation=ConvOpenInference(false)` を新が authority フィルタで
+      除外した結果 Step4c(OwnSsot) が `desired_open=true` を採用してしまう
+      ケース——Phase 3 実配線で新たに force-ON し始める可能性があるため
+      要注意、として明示的に記録した。
+11. **INV-27**（force⇔observe 切替時の `force_open_pending` 無効化）:
+    `apply_config_update`（`runtime/mod.rs`）の `set_policy(...)` 直後に
+    `self.force_open_pending = None;` を追加。force→observe 切替直後に
+    武装済み pending が残って二重 force-ON が発火する窓を塞いだ
+    （observe→force 切替直後に次の FocusChange まで force-ON が無効になる
+    既存の穴は本 ADR 以前からのものとして持ち越し）。
+
+全項目、`cargo test -p awase-windows --lib`（342件、既存341+差分オラクル1）・
+`--test golden_scenarios`（22件）・`--test architecture_guard`（22件、既存21
++item16(a)追加1、旧`apply_ime_open_with_belief_call_sites_are_accounted_for`
+は`ime_open_actuation_entry_points_are_accounted_for`へ置換のため純増1）全緑、
+`cargo xwin check`/`cargo xwin clippy -p awase-windows`
+（pedantic/nursery deny）で新規指摘ゼロを確認済み。Phase 3 本体（item15
+の実差し替え・item16(b)）は引き続き実機必須で次セッション持ち越し。
+
+### 8.12 §8.11 実装の最終レビュー（Opus、2026-08-10）
+
+上記11項目を Opus に実ファイル・`git diff`・ミューテーション試験込みで
+再検証させた。**must-fix 3件を発見・すべて対応済み**:
+
+- **M1**: `force_write_paths_bypass_gji_shadow_on_via_none_applied` の
+  2つ目の assertion が `.contains()`（コメント含む部分文字列一致）だった
+  ため、`ime_refresh.rs:499` の呼び出しを実際に書き換えても検知しない
+  vacuous な assertion だった（ミューテーション試験で実証）。
+  `count_real_calls`（コメント行除外）+ `extract_fn_body`
+  （`ir_post_focus_change_snapshot` スコープ限定）に置換し、同じ
+  ミューテーション試験で正しく fail することを確認した。
+- **M2**: 差分オラクルに `policy` 軸が無く、`ImmCross`（`default_feedback:
+  Read`）を一切測っていなかったため、`try_force_on_bootstrap` 経由の
+  ImmCross bootstrap force-ON が Phase 3 で丸ごと無効化されるという
+  **今回判明した中で最大の挙動変化**が可視化されていなかった。
+  `PolicyDim::{TsfNative, ImmCross}` を軸に追加。
+- **M3**: `observation` 軸に `BeliefOnly(false)` が欠けており、「new 側の
+  みが誤って許可する」ケース（`ConvOpenInference(false)` を new が除外した
+  結果 `OwnSsot` が `desired_open=true` を採用してしまう）が測定対象外
+  だった。かつ件数一致のみの assertion では old-only↔new-only の入れ替わり
+  を検知できなかった。observation 軸に false 極性を追加し、
+  `old_only`/`new_only` を方向別に分離して個別に件数固定（8件/1件）に
+  変更した。
+
+should-fix も可能な範囲で対応: S1（内訳の組合せ数を明記）、S2
+（`ConvOpenInference` の confidence を実装と同じ `Medium` に修正、
+`ObservationDim::BeliefOnlyHigh` → `BeliefOnlyMedium` に改名）、S5
+（item14 の「#4/#6経由ではなく」という自己矛盾した除外表現を訂正）、S6
+（ドリフトしていた行番号を実ファイルで再照合し更新: `executor.rs:887→894`、
+`platform.rs:1028/1016/729/971→1034/1022/735/977`、
+`platform_state.rs:456→478`、`mod.rs:722→727`）。
+
+S3（`extract_fn_body` のブレースカウントが文字列リテラル非対応）・S4
+（`most_recent_trusted`/Step4a `HeuristicDefault` 軸の欠如）・N1〜N3 は
+コスト対効果を鑑み今回は対応せず、次回このテストに手を入れる際の既知の
+制約として本節に記録するにとどめる。
+
+再修正後、`cargo test -p awase-windows --lib`（342件）・
+`--test architecture_guard`（22件）全緑、`cargo xwin clippy -p
+awase-windows -- -A clippy::doc_lazy_continuation -D warnings` 新規指摘
+ゼロを確認済み。**Phase 3 本体（item15 実差し替え・item16(b)）に進む前の
+must-fix は解消済み**（Opus 総評）。
