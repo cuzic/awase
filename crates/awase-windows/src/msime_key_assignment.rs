@@ -148,8 +148,8 @@ mod windows_impl {
 
     /// 競合警告のポップアップを表示し、Yes なら MS-IME 設定画面を開く。
     ///
-    /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックする
-    /// （起動時の `autostart::ask_user` と同じ扱い。フック導入前なので入力への影響はない）。
+    /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックするが、
+    /// フック導入前なので入力への影響はない。
     fn show_conflict_dialog(warning: &str) {
         use windows::core::{w, PCWSTR};
         use windows::Win32::UI::WindowsAndMessaging::{

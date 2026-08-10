@@ -27,7 +27,7 @@ use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
 use super::{
-    build_panic_trigger_combos, find_config_path, init_ime_sync_keys, init_ngram_validated,
+    build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated,
     load_config, parse_key_combos, resolve_relative, run_message_loop, HotKeyGuard,
     RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
     HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
@@ -87,8 +87,7 @@ pub(super) fn init_logging(debug_console: bool) {
 
 /// 自動起動の設定を処理する
 ///
-/// `auto_start` の値に応じて Task Scheduler への登録/解除を行う。
-/// "ask" の場合はダイアログで確認し、結果を config.toml に保存する。
+/// `auto_start` の値（"enabled"/"disabled"）に応じて HKCU Run キーへの登録/解除を行う。
 pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
     use crate::autostart;
 
@@ -96,21 +95,6 @@ pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
     autostart::migrate_from_schtasks();
 
     match config.general.auto_start.as_str() {
-        "ask" => {
-            if !autostart::is_registered() {
-                if autostart::ask_user() {
-                    let _ = autostart::register();
-                    config.general.auto_start = "enabled".to_string();
-                } else {
-                    config.general.auto_start = "disabled".to_string();
-                }
-                if let Ok(config_path) = find_config_path() {
-                    if let Err(e) = config.save(&config_path) {
-                        log::error!("Failed to save auto_start setting: {e}");
-                    }
-                }
-            }
-        }
         "enabled" => {
             if !autostart::is_registered() {
                 let _ = autostart::register();

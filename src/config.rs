@@ -93,7 +93,7 @@ pub struct GeneralConfig {
     /// IME 状態ポーリング間隔（ミリ秒）。
     /// イベント駆動の IME 検出を補完する安全ネット。
     pub ime_poll_interval_ms: u32,
-    /// 自動起動の設定（"ask" = 初回起動時に確認, "enabled" = 有効, "disabled" = 無効）
+    /// 自動起動の設定（"enabled" = 有効, "disabled" = 無効）
     pub auto_start: String,
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
     pub linux_input_backend: String,
@@ -290,7 +290,7 @@ impl Default for GeneralConfig {
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
-            auto_start: "ask".to_string(),
+            auto_start: "enabled".to_string(),
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
