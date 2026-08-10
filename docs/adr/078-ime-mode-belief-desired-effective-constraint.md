@@ -305,3 +305,7 @@ belief には一切通知していない（次の observation 頼み）。これ
 - `.claude/rules/ime-belief-architecture.md` — Observe → pure decision
   → belief の三層分離規約。本 ADR はこの規約に `ModeConstraint` という
   新しい正当な書き込み経路を追加する形で整合させる。
+- [ADR-087](087-open-belief-actuation-warrant-separation.md)（2026-08-10 追記）
+  — 本 ADR が明示的にスコープ外とした open/close 軸（`desired_open`/
+  `effective_open`）を対象に、本 ADR と同じ「観測駆動書き込みの排除」思想を
+  適用する。ADR-078 の再開ではなく独立の ADR（理由は ADR-087 §1.5.1）。

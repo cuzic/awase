@@ -71,6 +71,13 @@ pub mod eisu_recovery;
 pub mod force_guard;
 pub mod ime_event;
 pub mod ime_model;
+// ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated
+// パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように
+// する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
+// （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
+pub mod intent_store;
+// ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
+pub mod open_warrant;
 #[cfg(windows)]
 pub(crate) use ime_model::AppliedImeState;
 pub mod input_barrier;

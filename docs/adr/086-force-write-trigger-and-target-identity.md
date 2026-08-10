@@ -641,6 +641,12 @@ ADR-084 の INV-1〜INV-11 を継承し、INV-12 から採番する（採番理�
   `9c102b02` はリストに載せずに 7 番目の経路（`platform.rs`）を増やした
   —— これを機械的に検知する（§6 段3）。
 
+**INV-20 以降は [ADR-087](087-open-belief-actuation-warrant-separation.md) で
+採番する**（2026-08-10 追記）。ADR-087 は本 ADR が定めなかった第4の軸
+（根拠軸 — どれだけの証拠に裏付けられて発火してよいか）を扱い、
+`consume_force_open_pending` の eligibility 判定が本 ADR §2.1 の force-write
+定義（観測を判断材料にしない）に実装として一致していない点を是正する。
+
 ---
 
 ## 5. 移行計画

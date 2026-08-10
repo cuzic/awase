@@ -149,6 +149,42 @@ pub struct ImeDrift {
     pub started_at: Instant,
 }
 
+/// `derive_open_filtered()` の診断付き結果。「どのソースが決定打だったか」を
+/// 保持する（ADR-087 §2.3 P15 Step 3 が `WarrantBasis::DirectRead`/
+/// `Corroborated` を構築するために必要）。
+///
+/// `MediumConsensus` は `first`/`second` の固定2フィールドで表現し `Vec` を
+/// 使わない——`effective_open()`/`effective_open_at()` は全 `KeyDown` で
+/// 呼ばれる（`key_pipeline.rs::build_input_context`）ホットパスであり、
+/// 打鍵ごとのヒープ確保を避けるため（ADR-087 §7 round4 S-A）。3ソース以上が
+/// 合意した場合、`second` 以降のソースは診断上「2件以上合意した」ことが
+/// わかれば十分なので切り捨てる（`WarrantBasis::Corroborated` も2件しか
+/// 持たない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeriveOutcome {
+    /// High confidence の単一ソースで即採用。
+    HighSingle {
+        source: ObservationSource,
+        open: bool,
+    },
+    /// Medium+ ソースの無競合多数決。`second` が `None` なら実質「単独の間接
+    /// 観測」、`Some` なら複数ソースの合意（corroboration）。
+    MediumConsensus {
+        first: ObservationSource,
+        second: Option<ObservationSource>,
+        open: bool,
+    },
+}
+
+impl DeriveOutcome {
+    #[must_use]
+    pub const fn value(&self) -> bool {
+        match self {
+            Self::HighSingle { open, .. } | Self::MediumConsensus { open, .. } => *open,
+        }
+    }
+}
+
 /// 観測値ストア (Step 3 の SSOT)。
 ///
 /// reducer は以下のような問い合わせができる:
@@ -207,6 +243,25 @@ impl ObservationStore {
             .map(|d| now.saturating_duration_since(d.started_at))
     }
 
+    /// `HeuristicDefault` 観測を返す（実在すれば）。ADR-087 §2.3 P15 Step 4a
+    /// （`open_warrant.rs`）が使う。
+    ///
+    /// **`derive_open_filtered()`（Step 3）と異なり `FRESH`（3秒）の鮮度窓を
+    /// 適用しない**——`is_expired()`（`expires_at`）のみを見る。これは意図的:
+    /// `ObserverReported` 経由で記録される観測は `expires_at: None`（無期限）
+    /// が通常であり、`HeuristicDefault` は「観測が一切無いときの安全
+    /// デフォルト」という性質上、Step 3 のような鮮度による失効を課さない
+    /// （ADR-087 INV-22 撤回の方針: belief/actuation の根拠に鮮度上限を
+    /// 追加で持ち込まない、§7 round2 M3・round4 S-C）。将来 Step 3 と
+    /// 揃えて鮮度窓を足す変更をする場合は、これが BUG-16 の回復力を削らないか
+    /// 確認すること。
+    #[must_use]
+    pub fn heuristic_default(&self, now: Instant) -> Option<&ImeObservation> {
+        self.per_source
+            .get(ObservationSource::HeuristicDefault)
+            .filter(|o| !o.is_expired(now))
+    }
+
     /// 最も信頼できる観測値を返す (confidence 優先、同 confidence なら新しい方)。
     ///
     /// expire 済みの観測は除外する。
@@ -257,6 +312,27 @@ impl ObservationStore {
     /// GJI / ObserverPoll / TSF はイベント駆動または周期同期のため epoch フィルタ対象外。
     #[must_use]
     pub fn derive_open(&self, now: Instant) -> Option<bool> {
+        self.derive_open_filtered(now, |_| true)
+            .map(|outcome| outcome.value())
+    }
+
+    /// `derive_open()` と同じ判定ロジックに、観測ソースを絞り込む述語
+    /// （`accept`）を追加したもの。ADR-087 §2.3 P15 Step 3
+    /// （`authority()==Actuating` な観測のみを対象にする）が、`derive_open()`
+    /// 本体と乖離せずに済むよう共通化する（§7 round3 Opus S5）。
+    ///
+    /// `derive_open(now) == derive_open_filtered(now, |_| true).map(|o| o.value())`
+    /// が常に成り立つ（`accept` が常に true を返すケースが元の `derive_open`
+    /// と完全に同じ結果になることは pinned test で固定する）。
+    ///
+    /// 戻り値は「どのソースが決定打だったか」（`DeriveOutcome`）まで含む
+    /// 診断情報付き。`WarrantBasis::DirectRead`/`Corroborated` の構築に使う。
+    #[must_use]
+    pub fn derive_open_filtered(
+        &self,
+        now: Instant,
+        accept: impl Fn(ObservationSource) -> bool,
+    ) -> Option<DeriveOutcome> {
         const FRESH: Duration = Duration::from_secs(3);
         let current_epoch = self.current_focus_epoch;
 
@@ -275,31 +351,59 @@ impl ObservationStore {
             .per_source
             .iter()
             .filter(|o| {
-                is_fresh(o) && is_epoch_ok(o) && o.confidence == ObservationConfidence::High
+                accept(o.source)
+                    && is_fresh(o)
+                    && is_epoch_ok(o)
+                    && o.confidence == ObservationConfidence::High
             })
             .max_by_key(|o| o.at);
         if let Some(obs) = high {
-            return Some(obs.open);
+            return Some(DeriveOutcome::HighSingle {
+                source: obs.source,
+                open: obs.open,
+            });
         }
 
-        // 2. Medium+ ソースの無競合多数決（1 ソースでも可）
-        let mut true_count = 0u32;
-        let mut false_count = 0u32;
+        // 2. Medium+ ソースの無競合多数決（1 ソースでも可）。ホットパスのため
+        // Vec を使わず、最初の2ソースだけを固定フィールドに保持する
+        // （§7 round4 S-A）。`.expect()` に頼らず `Option` の組で分岐できる
+        // よう `true_first`/`false_first` の Some/None だけで判定する。
+        let mut true_first: Option<ObservationSource> = None;
+        let mut true_second: Option<ObservationSource> = None;
+        let mut false_first: Option<ObservationSource> = None;
+        let mut false_second: Option<ObservationSource> = None;
         for obs in self.per_source.iter() {
-            if !is_fresh(obs) || !is_epoch_ok(obs) || obs.confidence < ObservationConfidence::Medium
+            if !accept(obs.source)
+                || !is_fresh(obs)
+                || !is_epoch_ok(obs)
+                || obs.confidence < ObservationConfidence::Medium
             {
                 continue;
             }
             if obs.open {
-                true_count += 1;
-            } else {
-                false_count += 1;
+                if true_first.is_none() {
+                    true_first = Some(obs.source);
+                } else if true_second.is_none() {
+                    true_second = Some(obs.source);
+                }
+            } else if false_first.is_none() {
+                false_first = Some(obs.source);
+            } else if false_second.is_none() {
+                false_second = Some(obs.source);
             }
         }
-        match (true_count, false_count) {
-            (t, 0) if t >= 1 => Some(true),
-            (0, f) if f >= 1 => Some(false),
-            _ => None, // 矛盾または観測なし → フォールバック
+        match (true_first, false_first) {
+            (Some(first), None) => Some(DeriveOutcome::MediumConsensus {
+                first,
+                second: true_second,
+                open: true,
+            }),
+            (None, Some(first)) => Some(DeriveOutcome::MediumConsensus {
+                first,
+                second: false_second,
+                open: false,
+            }),
+            _ => None, // 矛盾（両方 Some）または観測なし（両方 None）→ フォールバック
         }
     }
 
@@ -718,5 +822,73 @@ mod tests {
         assert_eq!(s.drift_duration(t1), Some(Duration::from_millis(50)));
         s.update_drift(true, true, t1); // 収束 → drift clear
         assert_eq!(s.drift_duration(t1), None);
+    }
+
+    // ── derive_open_filtered / DeriveOutcome（ADR-087 §2.3 P15 Step 3、round3 S5） ──
+
+    #[test]
+    fn derive_open_filtered_accept_all_matches_derive_open() {
+        // derive_open(now) == derive_open_filtered(now, |_| true).map(|o| o.value())
+        // が常に成り立つことを、代表的な入力（Medium 単独）で固定する。
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(true, ObservationSource::ConvOpenInference, now));
+        assert_eq!(s.derive_open(now), Some(true));
+        assert_eq!(
+            s.derive_open_filtered(now, |_| true).map(|o| o.value()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn derive_open_filtered_excludes_rejected_sources() {
+        // ConvOpenInference（BeliefOnly 相当）だけがある場合、
+        // authority()==Actuating のみ受理する述語では None になる。
+        use super::super::ime_event::ObservationAuthority;
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(true, ObservationSource::ConvOpenInference, now));
+        let outcome = s.derive_open_filtered(now, |src| {
+            src.authority() == ObservationAuthority::Actuating
+        });
+        assert_eq!(
+            outcome, None,
+            "ConvOpenInference は BeliefOnly のため Actuating フィルタ後は None"
+        );
+    }
+
+    #[test]
+    fn derive_open_filtered_high_single_reports_source() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let mut o = obs(true, ObservationSource::ImmGetOpenStatus, now);
+        o.confidence = ObservationConfidence::High;
+        s.record(o);
+        assert_eq!(
+            s.derive_open_filtered(now, |_| true),
+            Some(DeriveOutcome::HighSingle {
+                source: ObservationSource::ImmGetOpenStatus,
+                open: true,
+            })
+        );
+    }
+
+    #[test]
+    fn derive_open_filtered_medium_consensus_reports_all_sources() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        s.record(obs(true, ObservationSource::ObserverPoll, now));
+        s.record(obs(true, ObservationSource::Gji, now));
+        let outcome = s.derive_open_filtered(now, |_| true).unwrap();
+        assert_eq!(
+            outcome,
+            DeriveOutcome::MediumConsensus {
+                first: ObservationSource::ObserverPoll,
+                second: Some(ObservationSource::Gji),
+                open: true,
+            },
+            "2 ソースの合意なので corroboration 相当（PerSourceObservations::iter() \
+             の宣言順で ObserverPoll が先）"
+        );
     }
 }

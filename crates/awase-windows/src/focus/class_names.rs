@@ -429,4 +429,153 @@ mod tests {
             assert_eq!(detect_app_kind(class_name), expected, "{class_name}");
         }
     }
+
+    // ── クラスタ全体の組合せ網羅 + 独立オラクル ─────────────────────────────
+    //
+    // `AppImeProfile::from_class_name` / `is_effectively_tsf_native` /
+    // `cannot_verify_real_ime_state` / `should_reprime_on_lightweight_focus_sync` /
+    // 4つの getter は、いずれも「IMM32制御不可クラスか」「TSFネイティブクラスか」の
+    // 2値から導出される派生関数のクラスタである。この2値の掛け合わせ(4通り)を
+    // 個別に見るテストがこれまで無く、実際に CASCADIA_HOSTING_WINDOW_CLASS
+    // （両方に該当）のケースで `profile == AppImeProfile::TsfNative` という直接比較
+    // （4通りのうち「両方該当」を取りこぼす配線ミス）が実機バグを起こした
+    // （このファイル冒頭の回帰テスト、2026-07-05）。同種の配線ミスをクラスタ全体で
+    // 恒久的に検知するため、本体コードを見ずに doc コメントの規則から独立に
+    // 書き起こしたオラクルで全4バケット×belief_effective_open(2)=8通りを突き合わせる。
+
+    /// (is_imm32_unavailable, is_tsf_native_class) の4バケットから、クラスタ全体が
+    /// 返すべき値を独立に導出する。
+    ///
+    /// - `profile`: unavailable が最優先（1）、次に tsf_native（2）、他は Standard（3）
+    ///   — `from_class_name` の doc コメント「優先順」をそのまま転記。
+    /// - `effectively_tsf_native`: is_tsf_native_class そのもの（`profile==TsfNative` は
+    ///   `is_tsf_native_class && !is_unavailable` の場合にしか成立しないため、
+    ///   `profile==TsfNative || is_tsf_native_class` を展開すると is_tsf_native_class に潰れる）。
+    /// - `cannot_verify`: unavailable か、実質 TSF ネイティブかのいずれか。
+    /// - 4つの getter は `profile` のみで決まる真理値表（`app_ime_profile_getters_truth_table`
+    ///   と同じ表だが、独立に書き起こす）。
+    fn oracle_for(is_unavailable: bool, is_tsf_native_class: bool) -> OracleResult {
+        let profile = if is_unavailable {
+            AppImeProfile::Imm32Unavailable
+        } else if is_tsf_native_class {
+            AppImeProfile::TsfNative
+        } else {
+            AppImeProfile::Standard
+        };
+        let effectively_tsf_native = is_tsf_native_class;
+        let cannot_verify = is_unavailable || effectively_tsf_native;
+        let (can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key, can_read_imm32_open_status) =
+            match profile {
+                AppImeProfile::Standard => (true, false, true, true),
+                AppImeProfile::Imm32Unavailable => (false, true, false, false),
+                AppImeProfile::TsfNative => (false, false, true, false),
+            };
+        OracleResult {
+            profile,
+            effectively_tsf_native,
+            cannot_verify,
+            can_use_imm32_cross_process,
+            uses_kanji_toggle,
+            should_pass_physical_key,
+            can_read_imm32_open_status,
+        }
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct OracleResult {
+        profile: AppImeProfile,
+        effectively_tsf_native: bool,
+        cannot_verify: bool,
+        can_use_imm32_cross_process: bool,
+        uses_kanji_toggle: bool,
+        should_pass_physical_key: bool,
+        can_read_imm32_open_status: bool,
+    }
+
+    fn actual_for(class_name: &str) -> OracleResult {
+        let profile = AppImeProfile::from_class_name(class_name);
+        OracleResult {
+            profile,
+            effectively_tsf_native: is_effectively_tsf_native(profile, class_name),
+            cannot_verify: cannot_verify_real_ime_state(profile, class_name),
+            can_use_imm32_cross_process: profile.can_use_imm32_cross_process(),
+            uses_kanji_toggle: profile.uses_kanji_toggle(),
+            should_pass_physical_key: profile.should_pass_physical_key(),
+            can_read_imm32_open_status: profile.can_read_imm32_open_status(),
+        }
+    }
+
+    /// 4バケットそれぞれを代表するクラス名。
+    /// - 両方該当: `CASCADIA_HOSTING_WINDOW_CLASS`（実機バグの震源、回帰テスト参照）
+    /// - unavailable のみ: `Chrome_WidgetWin_1`（`is_tsf_native_window` には非該当）
+    /// - tsf_native のみ: `org.wezfurlong.wezterm`（`IMM32_UNAVAILABLE_CLASSES` には非該当）
+    /// - どちらも非該当: `Notepad`
+    #[test]
+    fn exhaustive_cluster_matches_independent_oracle() {
+        let buckets: [(&str, bool, bool); 4] = [
+            ("CASCADIA_HOSTING_WINDOW_CLASS", true, true),
+            ("Chrome_WidgetWin_1", true, false),
+            ("org.wezfurlong.wezterm", false, true),
+            ("Notepad", false, false),
+        ];
+
+        let mut mismatches = Vec::new();
+        for (class_name, is_unavailable, is_tsf_native_class) in buckets {
+            // バケット分類そのものが実装の集合と一致しているかも確認する
+            // （でなければ以降の突き合わせが無意味になる）。
+            assert_eq!(
+                IMM32_UNAVAILABLE_CLASSES.contains(&class_name),
+                is_unavailable,
+                "{class_name}: IMM32_UNAVAILABLE_CLASSES 該当の想定違い"
+            );
+            assert_eq!(
+                is_tsf_native_window(class_name),
+                is_tsf_native_class,
+                "{class_name}: is_tsf_native_window 該当の想定違い"
+            );
+
+            let expected = oracle_for(is_unavailable, is_tsf_native_class);
+            let actual = actual_for(class_name);
+            if actual != expected {
+                mismatches.push(format!("{class_name}: actual={actual:?} expected(oracle)={expected:?}"));
+            }
+
+            // should_reprime_on_lightweight_focus_sync は cannot_verify && belief_open。
+            for &belief_open in &[false, true] {
+                let expected_reprime = expected.cannot_verify && belief_open;
+                let actual_reprime =
+                    should_reprime_on_lightweight_focus_sync(actual.profile, class_name, belief_open);
+                if actual_reprime != expected_reprime {
+                    mismatches.push(format!(
+                        "{class_name} belief_open={belief_open}: reprime actual={actual_reprime} \
+                         expected(oracle)={expected_reprime}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} 件不一致:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
+    }
+
+    /// `IMM32_UNAVAILABLE_CLASSES` の全メンバーが優先順位1（unavailable最優先）通りに
+    /// 分類されることを実リストに対して全数確認する（バケット代表1件だけでなく、
+    /// リストに新しいクラス名が追加された将来の変更に対しても効く）。
+    #[test]
+    fn all_imm32_unavailable_classes_are_classified_as_unavailable() {
+        for &class_name in IMM32_UNAVAILABLE_CLASSES {
+            assert_eq!(
+                AppImeProfile::from_class_name(class_name),
+                AppImeProfile::Imm32Unavailable,
+                "{class_name}"
+            );
+            assert!(
+                cannot_verify_real_ime_state(AppImeProfile::from_class_name(class_name), class_name),
+                "{class_name}: unavailable は常に cannot_verify=true のはず"
+            );
+        }
+    }
 }

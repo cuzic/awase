@@ -148,6 +148,53 @@ pub enum ObservationSource {
     HeuristicDefault,
 }
 
+/// `ObservationSource` が「外部 IME 状態への書き込み（actuation）の根拠になれるか」
+/// を表す属性。ADR-087 §3 案C / §5 Phase 2' の `authority()`。
+///
+/// `BeliefOnly` の観測は `effective_open()`（engine の内部挙動決定）には使えるが、
+/// `issue_open_warrant()`（actuation の根拠、`open_warrant.rs`）の Step 3 には
+/// 使えない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservationAuthority {
+    /// actuation の根拠になれる（直接 API 読み取り相当）。
+    Actuating,
+    /// belief（engine の内部挙動決定）にのみ使える。actuation の根拠にはならない。
+    BeliefOnly,
+}
+
+impl ObservationSource {
+    /// この観測ソースが actuation（外部 IME 状態への書き込み）の根拠になれるか。
+    ///
+    /// ADR-087 §3 案C。`ConvOpenInference`（conv ビットからの間接推測、§1.3 参照:
+    /// BUG-26 と ADR-087 発端バグは同じ conv 値で実際の IME 状態が正反対であり、
+    /// conv ビットには actuation の根拠となる情報が無い）、`HeuristicDefault`
+    /// （観測ゼロの安全デフォルト）、`HwndCache`（キャッシュ復元、実観測ではない）、
+    /// `FocusProbe`（BUG-33: belief の自己確認が書き戻される経路があり、
+    /// `.claude/rules/ime-belief-architecture.md` の「観測を実際の判断材料にしない」
+    /// 原則に照らして actuation には使わない）は `BeliefOnly`。
+    ///
+    /// `ConvBitsInference`/`GjiIoInference` は input_mode 専用ソースで open/close の
+    /// 観測としては記録されない（`PerSourceObservations::get/set` が None/no-op を
+    /// 返す）ため、この関数の呼び出し元からは到達しない。`ObservationSource` 全体で
+    /// 定義する都合上、網羅性のため `BeliefOnly`（安全側デフォルト）を割り当てる。
+    #[must_use]
+    pub const fn authority(self) -> ObservationAuthority {
+        match self {
+            Self::ImmGetOpenStatus
+            | Self::ImmCrossProbe
+            | Self::ObserverPoll
+            | Self::Gji
+            | Self::Tsf => ObservationAuthority::Actuating,
+            Self::ConvOpenInference
+            | Self::HeuristicDefault
+            | Self::HwndCache
+            | Self::FocusProbe
+            | Self::ConvBitsInference
+            | Self::GjiIoInference => ObservationAuthority::BeliefOnly,
+        }
+    }
+}
+
 /// 観測の信頼度。reducer が profile 別に judge する際に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum ObservationConfidence {
@@ -480,5 +527,83 @@ mod tests {
     fn confidence_ordering() {
         assert!(ObservationConfidence::Low < ObservationConfidence::Medium);
         assert!(ObservationConfidence::Medium < ObservationConfidence::High);
+    }
+
+    // ── ObservationSource::authority()（ADR-087 §3 案C） ──
+
+    #[test]
+    fn conv_open_inference_is_belief_only() {
+        // BUG-26 と ADR-087 発端バグ（mise→くした）は同じ conv 値で
+        // 実際の IME 状態が正反対だった。conv ビットには actuation の
+        // 根拠となる情報が無いため BeliefOnly。
+        assert_eq!(
+            ObservationSource::ConvOpenInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+    }
+
+    #[test]
+    fn heuristic_default_and_hwnd_cache_and_focus_probe_are_belief_only() {
+        assert_eq!(
+            ObservationSource::HeuristicDefault.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+        assert_eq!(
+            ObservationSource::HwndCache.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+        // BUG-33: belief の自己確認が観測として書き戻される経路があるため。
+        assert_eq!(
+            ObservationSource::FocusProbe.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+    }
+
+    #[test]
+    fn direct_read_sources_are_actuating() {
+        assert_eq!(
+            ObservationSource::ImmGetOpenStatus.authority(),
+            ObservationAuthority::Actuating
+        );
+        assert_eq!(
+            ObservationSource::ImmCrossProbe.authority(),
+            ObservationAuthority::Actuating
+        );
+        assert_eq!(
+            ObservationSource::ObserverPoll.authority(),
+            ObservationAuthority::Actuating
+        );
+    }
+
+    /// `Gji`/`Tsf` は型としては `Actuating` だが、production の open 観測
+    /// （`ObserverReported` の dispatch 元）を grep すると実際には一度も
+    /// 書かれない（ADR-087 §7 round3 Opus S6）。この事実は型テストでは
+    /// 検知できないため、コメントとして残す——将来 `Gji`/`Tsf` 由来の
+    /// open 観測を実際に record する経路を追加する場合、この前提が
+    /// 変わることを意識すること。
+    #[test]
+    fn gji_and_tsf_are_actuating_by_type_though_unused_in_practice() {
+        assert_eq!(
+            ObservationSource::Gji.authority(),
+            ObservationAuthority::Actuating
+        );
+        assert_eq!(
+            ObservationSource::Tsf.authority(),
+            ObservationAuthority::Actuating
+        );
+    }
+
+    #[test]
+    fn input_mode_only_sources_default_to_belief_only() {
+        // ConvBitsInference/GjiIoInference は open/close 観測としては
+        // 記録されないため、この分類自体は実質到達しない防御的デフォルト。
+        assert_eq!(
+            ObservationSource::ConvBitsInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
+        assert_eq!(
+            ObservationSource::GjiIoInference.authority(),
+            ObservationAuthority::BeliefOnly
+        );
     }
 }
