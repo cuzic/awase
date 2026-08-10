@@ -175,6 +175,8 @@ u, si,te,ke,se, ha,to,ki, i, nn, 後, 逃
 
 NICOLA 標準配列は `layout/nicola.yab`（JIS 配列）と `layout/nicola_us.yab`（US 配列）として同梱しています。US 配列では無変換/変換キーが物理的に無いため、設定画面で左右 Alt キーを親指キーとしてなりすまさせる、または Space キーを親指キーに割り当てることができます。
 
+富士通純正親指シフトキーボード（FKB7628-801 等）向けに `layout/nicola_f.yab` も同梱しています。物理キー配列・スキャンコードは JIS キーボードと共通のため `keyboard_model` は `"jis"` のままで構いません。`default_layout` を `"nicola_f.yab"` に変更してください。
+
 ---
 
 ## アプリ対応
