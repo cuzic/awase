@@ -27,10 +27,10 @@ use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
 use super::{
-    build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated,
-    load_config, parse_key_combos, resolve_relative, run_message_loop, HotKeyGuard,
-    RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
-    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
+    build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated, load_config,
+    parse_key_combos, resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker,
+    StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE,
+    RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 /// ログ初期化
@@ -88,7 +88,7 @@ pub(super) fn init_logging(debug_console: bool) {
 /// 自動起動の設定を処理する
 ///
 /// `auto_start` の値（"enabled"/"disabled"）に応じて HKCU Run キーへの登録/解除を行う。
-pub(super) fn handle_auto_start(config: &mut awase::config::AppConfig) {
+pub(super) fn handle_auto_start(config: &awase::config::AppConfig) {
     use crate::autostart;
 
     // 旧バージョン（schtasks 方式）からの移行: 古いタスクが残っていれば削除する
@@ -771,7 +771,7 @@ pub(super) fn run_all() -> Result<()> {
     }
 
     let mut raw_config = load_config()?;
-    handle_auto_start(&mut raw_config);
+    handle_auto_start(&raw_config);
     let (config, config_warnings) = raw_config.validate();
     for w in &config_warnings {
         diag.warn(w);

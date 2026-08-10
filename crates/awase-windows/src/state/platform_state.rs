@@ -62,6 +62,14 @@ pub(crate) struct ImeStateHub {
     /// idle-conv-check が明示的 IME 操作直後に belief を上書きしないよう
     /// `EXPLICIT_IME_SUPPRESS_MS` の間スキップするために参照する。
     last_explicit_ime_action_ms: u64,
+
+    /// 対象 (`HwndId`) ごとの明示意図ストア（ADR-087 §5 Phase 3 item15 前提配線）。
+    ///
+    /// `dispatch_event` が `last_user_explicit_off_ms` と同じ条件（SyncKey /
+    /// PhysicalImeKey / Command 経由の `UserImeSetIntent`）で `record()` する
+    /// write-only なフィールド。読み取り側（`issue_open_warrant()` への実配線）は
+    /// まだ無く、Phase 3 本体のスコープ。
+    intent_store: super::intent_store::IntentStore,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -86,6 +94,7 @@ impl ImeStateHub {
             shadow_model: ImeModel::default(),
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
+            intent_store: super::intent_store::IntentStore::default(),
         }
     }
 }
@@ -113,6 +122,11 @@ impl ImeStateHub {
                     self.last_user_explicit_off_ms = 0;
                 } else {
                     self.last_user_explicit_off_ms = tick_ms.0;
+                }
+                // IntentStore: write-only（ADR-087 §5 Phase 3 item15 前提配線）。
+                // current_focus が無い（フォーカス未確定）場合は対象が分からないため記録しない。
+                if let Some(hwnd) = self.shadow_model.current_focus() {
+                    self.intent_store.record(hwnd, *target, *source, tick_ms);
                 }
             }
         }
@@ -453,6 +467,14 @@ impl ImeStateHub {
     ///
     /// `apply_force_on_for_imm_broken` / `try_force_on_bootstrap` で重複していたガード条件。
     /// `engine.is_user_enabled()` と組み合わせて IME force-ON の前提条件として使う。
+    ///
+    /// **belief 由来の暫定ゲート（ADR-087 §5 Phase 3 item15 で
+    /// `issue_open_warrant()` に置換予定、まだ未配線）。** `effective_open()` は
+    /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
+    /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
+    /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は
+    /// 3箇所（`runtime/mod.rs` の `apply_force_on_for_imm_broken` /
+    /// `consume_force_open_pending` / `try_force_on_bootstrap`）。
     pub(crate) fn is_eligible_for_ime_force_on(&self) -> bool {
         self.belief.is_japanese_ime() && self.effective_open()
     }

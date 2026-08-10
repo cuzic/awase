@@ -464,12 +464,16 @@ mod tests {
         };
         let effectively_tsf_native = is_tsf_native_class;
         let cannot_verify = is_unavailable || effectively_tsf_native;
-        let (can_use_imm32_cross_process, uses_kanji_toggle, should_pass_physical_key, can_read_imm32_open_status) =
-            match profile {
-                AppImeProfile::Standard => (true, false, true, true),
-                AppImeProfile::Imm32Unavailable => (false, true, false, false),
-                AppImeProfile::TsfNative => (false, false, true, false),
-            };
+        let (
+            can_use_imm32_cross_process,
+            uses_kanji_toggle,
+            should_pass_physical_key,
+            can_read_imm32_open_status,
+        ) = match profile {
+            AppImeProfile::Standard => (true, false, true, true),
+            AppImeProfile::Imm32Unavailable => (false, true, false, false),
+            AppImeProfile::TsfNative => (false, false, true, false),
+        };
         OracleResult {
             profile,
             effectively_tsf_native,
@@ -537,14 +541,19 @@ mod tests {
             let expected = oracle_for(is_unavailable, is_tsf_native_class);
             let actual = actual_for(class_name);
             if actual != expected {
-                mismatches.push(format!("{class_name}: actual={actual:?} expected(oracle)={expected:?}"));
+                mismatches.push(format!(
+                    "{class_name}: actual={actual:?} expected(oracle)={expected:?}"
+                ));
             }
 
             // should_reprime_on_lightweight_focus_sync は cannot_verify && belief_open。
             for &belief_open in &[false, true] {
                 let expected_reprime = expected.cannot_verify && belief_open;
-                let actual_reprime =
-                    should_reprime_on_lightweight_focus_sync(actual.profile, class_name, belief_open);
+                let actual_reprime = should_reprime_on_lightweight_focus_sync(
+                    actual.profile,
+                    class_name,
+                    belief_open,
+                );
                 if actual_reprime != expected_reprime {
                     mismatches.push(format!(
                         "{class_name} belief_open={belief_open}: reprime actual={actual_reprime} \
@@ -573,7 +582,10 @@ mod tests {
                 "{class_name}"
             );
             assert!(
-                cannot_verify_real_ime_state(AppImeProfile::from_class_name(class_name), class_name),
+                cannot_verify_real_ime_state(
+                    AppImeProfile::from_class_name(class_name),
+                    class_name
+                ),
                 "{class_name}: unavailable は常に cannot_verify=true のはず"
             );
         }

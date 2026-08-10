@@ -850,8 +850,15 @@ impl DecisionExecutor {
             // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
             //
             // 観測値は冒頭で構築済みの view から読む（tsf_obs() の二重呼び出し回避）。
-            // EngineIntent かつ ImmCross/GJI で確認できない環境では
-            // `confident=false` → `already_matched=false` → 必ず apply する（desync 対策）。
+            //
+            // 【doc 訂正、2026-08-10、ADR-087 §5 Phase 3 item14 棚卸しで判明】
+            // 元々このコメントは「EngineIntent かつ ImmCross/GJI で確認できない環境では
+            // confident=false → already_matched=false → 必ず apply する」という設計意図
+            // だったが、`belief.confident` を読んで already_matched 判定に使う本番コードは
+            // 現在存在しない（`already_matched`/`AlreadyMatched` は
+            // `ime_controller::CONTROLLER.apply` が `view.control.shadow_on` から独立に
+            // 判定する）。`belief.confident` の本番消費者は診断ログ
+            // （`platform.rs::apply_ime_open_with_view` の `log::debug!`）のみ。
             let now_ms = crate::hook::current_tick_ms();
 
             // MS-IME + TsfNative の場合のみ conv_mode を直接読む（ground-truth）。

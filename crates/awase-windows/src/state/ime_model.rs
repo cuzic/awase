@@ -14,7 +14,7 @@ use super::force_guard::{ForceGuardSet, ForceOnReason, ObserveMissMonitor};
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ChordKind, ImeEvent, ImeEventEnvelope, InputModeApplyResult, ObservationConfidence,
+    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult, ObservationConfidence,
     ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
@@ -176,6 +176,14 @@ pub struct ImeModel {
     /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
+
+    /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
+    ///
+    /// `FocusChanged` の reducer でのみ更新する write-only なフィールド
+    /// （読み取り側は `current_focus()` アクセサのみ、まだ本番判定には使わない）。
+    /// `WarrantContext.target` に渡す値の供給源を用意するのが目的で、
+    /// `issue_open_warrant()` への実配線（read 側）は Phase 3 本体のスコープ。
+    current_focus: Option<HwndId>,
 }
 
 #[derive(Debug, Clone)]
@@ -200,7 +208,17 @@ impl ImeModel {
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied: AppliedImeState::Unknown,
+            current_focus: None,
         }
+    }
+
+    /// 現在フォーカス中のウィンドウ（読み取り専用アクセサ）。
+    ///
+    /// `FocusChanged` の reducer でのみ更新される。まだ本番判定には使われない
+    /// write-only なフィールドの読み取り口（ADR-087 §5 Phase 3 item15 前提配線）。
+    #[must_use]
+    pub const fn current_focus(&self) -> Option<HwndId> {
+        self.current_focus
     }
 
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
@@ -252,6 +270,16 @@ impl ImeModel {
     }
 
     /// 観測プールと `desired_open` を統合した最終 belief (Step 6)。
+    ///
+    /// **これは belief（間違っていても低リスクな推定）であり、engine の内部挙動
+    /// 決定用。実際に OS の IME を操作してよいかという actuation の根拠には
+    /// 使わないこと**（ADR-087 §5 Phase 3 item17）。`derive_open()` の
+    /// Medium 単一ソース合意がそのまま actuation の根拠として使われたことが
+    /// BUG-63（「mise」→「くした」誤入力）の直接原因だった。actuation
+    /// warrant が必要な場面（IME を実際に force-ON する等）では
+    /// `crate::state::open_warrant::issue_open_warrant()` を使うこと
+    /// （Phase 3 で `is_eligible_for_ime_force_on()` 等の既存呼び出し元を
+    /// 順次差し替える予定、まだ未配線）。
     ///
     /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
     /// - 明示意図なし（フォーカス変化直後等）:
@@ -459,6 +487,9 @@ impl ImeModel {
                 // FocusChanged を受けた時点で policy を更新し、以降の observation は
                 // 新しい policy で評価される。
                 self.app_policy = AppImePolicy::from_profile(profile);
+                // current_focus: write-only（ADR-087 §5 Phase 3 item15 前提配線、
+                // read 側は Phase 3 本体のスコープでまだ無い）。
+                self.current_focus = Some(to);
                 // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;

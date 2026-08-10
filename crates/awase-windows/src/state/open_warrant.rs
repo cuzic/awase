@@ -1059,4 +1059,324 @@ mod tests {
             mismatches[..mismatches.len().min(20)].join("\n")
         );
     }
+
+    // ── 差分オラクル: 旧ゲート is_eligible_for_ime_force_on() vs 新 issue_open_warrant() ──
+    //
+    // ADR-087 §5 Phase 3 item15 は `state/platform_state.rs::is_eligible_for_ime_force_on()`
+    // （`belief.is_japanese_ime() && effective_open()`）を `issue_open_warrant()` 経由に
+    // 差し替える予定だが、実機なしでは「差し替えたときに実際に何が変わるか」を検証できない。
+    // このテストは両者を同じ入力（explicit intent / observation / force guard / desired_open /
+    // is_japanese_ime）に対して並べて評価し、不一致になる組合せを事前に数え上げて固定する
+    // （Opus 相談: 「実差し替え時に実機で何が変わるかを事前に表化する」、ADR-081 の教訓＝
+    // 並走配線ではなく純粋テストで parity を示す、の直接適用）。
+    //
+    // 完全一致を要求しない: 両者は構造的に異なる（新は explicit intent を IntentStore
+    // 経由・BeliefOnly 権限の観測を除外・safety valve を intent より先に評価するが、
+    // 旧は last_intent 経由・観測の権限を区別しない・guard override を intent の後に
+    // 適用する）。不一致数を凍結し、新しい不一致パターンが増えたら気づけるようにする。
+    //
+    // `effective_open()`（belief.rs の `ImeBelief::is_japanese_ime()`）は `ImeStateHub`
+    // 経由の値だが、実体は `is_japanese_ime: bool && ImeModel::effective_open_at(now)` の
+    // 単純な AND なので、`ImeBelief` を経由せずこのテストでは直接 bool として与える。
+    fn old_is_eligible_for_ime_force_on(
+        model: &super::super::ime_model::ImeModel,
+        is_japanese_ime: bool,
+        now: Instant,
+    ) -> bool {
+        is_japanese_ime && model.effective_open_at(now)
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ExplicitIntentDim {
+        None,
+        On,
+        Off,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ObservationDim {
+        None,
+        ActuatingHigh(bool),
+        // ConvOpenInference の唯一の本番生成点
+        // (`platform_state.rs::report_conv_open_inference`) は必ず Medium
+        // confidence（doc に明記）。BUG-63 の忠実な再現のため High ではなく
+        // Medium を使う（2026-08-10 Opus レビュー S2）。
+        BeliefOnlyMedium(bool),
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum GuardDim {
+        Inactive,
+        Override,
+        HeuristicOnly,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum PolicyDim {
+        // default_feedback = Blind。Step4c(OwnSsot) が発火しうる。
+        TsfNative,
+        // default_feedback = Read。Step4c は発火しない
+        // （`step4c_does_not_fire_for_read_profile` 参照）。旧ゲートの
+        // `try_force_on_bootstrap` 呼び出し元はこちら側のプロファイルで
+        // 到達する（`ir_poll_and_learn`／`OsPoll` 経由）。
+        ImmCross,
+    }
+
+    #[test]
+    fn differential_old_gate_vs_issue_open_warrant() {
+        use super::super::ime_event::{EventTime, ImeEventEnvelope};
+        use super::super::ime_model::ImeModel;
+        use crate::state::ime_event::UserIntentSource;
+
+        // 2026-08-10 時点の実測値。old/new の食い違いは方向で2種に分けて数える
+        // （2026-08-10 Opus レビュー M3: 件数一致だけだと「old が誤って許可する
+        // 不一致が1件減り、new が誤って許可する不一致が1件増える」変化を
+        // 見逃す）。
+        // - old_only（old=true, new=false）: new の方が厳格 = 安全側の差分。
+        // - new_only（old=false, new=true）: new の方が緩い = Phase 3 実配線で
+        //   新たに force-ON し始める可能性があるため要注意。
+        //
+        // old_only の内訳（本テストで実測、計8件）:
+        // 1. `policy=ImmCross`・観測/意図/guard 一切無し・`desired_open=true`
+        //    （`try_force_on_bootstrap` 相当、1件）: 旧は observation 皆無時に
+        //    `most_recent_trusted` も外れて `desired_open` にフォールバックし
+        //    true になるが、新は Read プロファイルのため Step4c(OwnSsot) が
+        //    発火せず None——**Phase 3 実配線で ImmCross の bootstrap force-ON
+        //    経路が丸ごと無効化される、今回判明した中で最大の挙動変化**
+        //    （2026-08-10 Opus レビュー M2）。
+        // 2. `guard=HeuristicOnly`（BrokenAppBootstrap）が実際の Actuating 観測
+        //    （ImmGetOpenStatus=false）を無視して force-ON する（旧のみ、
+        //    policy={TsfNative,ImmCross}×desired_open={false,true} の4件、
+        //    guard の効果はどちらの policy でも変わらないため両方に出現）。
+        //    新は Step3 の実観測が Step4b のヒューリスティック推測より優先
+        //    されるため force-ON しない——安全側の差分。
+        // 3. `observation=BeliefOnlyMedium(true)`（ConvOpenInference）が単独で
+        //    force-ON eligibility を作る（旧のみ、3件: policy=TsfNative×
+        //    desired_open=false、policy=ImmCross×desired_open={false,true}。
+        //    TsfNative×desired_open=true は Step4c(OwnSsot) が同じ true を
+        //    返すため偶然 old==new になり不一致に現れない）。**これが BUG-63
+        //    （「mise」→「くした」誤入力）の再現そのもの**——新は authority
+        //    フィルタでこの観測源を actuation の根拠から除外するため発火しない。
+        //
+        // new_only の内訳（本テストで実測、計1件）:
+        // 4. `observation=BeliefOnlyMedium(false)`・intent/guard 無し・
+        //    `policy=TsfNative`・`desired_open=true`: 旧は observation
+        //    （ConvOpenInference=false）を採用し false になるが、新は Step3 で
+        //    この観測源を除外した結果何も残らず Step4c(OwnSsot) が
+        //    `desired_open=true` を採用する——Phase 3 実配線で「今まで
+        //    force-ON しなかった状況で新たに force-ON し始める」ケース
+        //    （`policy=ImmCross` の同条件は Step4c が発火しないため new=false
+        //    のまま old と一致し、不一致に現れない）。
+        //
+        // Phase 3 実配線前にこの件数が増減したら、この変更が意図したものか
+        // （新しい分岐を足した／既存の不一致を解消した）を確認した上で更新すること。
+        const EXPECTED_OLD_ONLY_COUNT: usize = 8;
+        const EXPECTED_NEW_ONLY_COUNT: usize = 1;
+
+        const EXPLICIT_INTENTS: [ExplicitIntentDim; 3] = [
+            ExplicitIntentDim::None,
+            ExplicitIntentDim::On,
+            ExplicitIntentDim::Off,
+        ];
+        const OBSERVATIONS: [ObservationDim; 5] = [
+            ObservationDim::None,
+            ObservationDim::ActuatingHigh(true),
+            ObservationDim::ActuatingHigh(false),
+            ObservationDim::BeliefOnlyMedium(true),
+            ObservationDim::BeliefOnlyMedium(false),
+        ];
+        const GUARDS: [GuardDim; 3] = [
+            GuardDim::Inactive,
+            GuardDim::Override,
+            GuardDim::HeuristicOnly,
+        ];
+        const POLICIES: [PolicyDim; 2] = [PolicyDim::TsfNative, PolicyDim::ImmCross];
+
+        let now = Instant::now();
+        let mut old_only: Vec<String> = Vec::new();
+        let mut new_only: Vec<String> = Vec::new();
+        let mut checked = 0usize;
+
+        for &is_japanese_ime in &[false, true] {
+            for &intent in &EXPLICIT_INTENTS {
+                for &observation in &OBSERVATIONS {
+                    for &guard in &GUARDS {
+                        for &policy_dim in &POLICIES {
+                            for &desired_open in &[false, true] {
+                                // intent が Some の場合、本番の reducer
+                                // (UserImeSetIntent) は last_intent と desired_open
+                                // を必ず同じ値に揃えて書き込む（ime_model.rs::reduce
+                                // 参照）。desired_open を独立変数のまま残すと本番では
+                                // 起こり得ない組合せ（last_intent=ON なのに
+                                // desired_open=false）を作ってしまい、old 側の
+                                // `effective_open_at`（has_explicit_intent 時は
+                                // base=desired_open を採用）が誤って偽の不一致を生む。
+                                // intent!=None のときは desired_open==intent の
+                                // 1通りだけ調べる。
+                                let intent_bool = match intent {
+                                    ExplicitIntentDim::None => None,
+                                    ExplicitIntentDim::On => Some(true),
+                                    ExplicitIntentDim::Off => Some(false),
+                                };
+                                if let Some(v) = intent_bool {
+                                    if desired_open != v {
+                                        continue;
+                                    }
+                                }
+                                checked += 1;
+
+                                let mut model = ImeModel::new();
+                                let mut store = IntentStore::default();
+                                match intent_bool {
+                                    None => model.set_desired_open_for_test(desired_open),
+                                    Some(v) => {
+                                        // 本番と同じ経路 (UserImeSetIntent) で
+                                        // desired_open と last_intent を同時に揃える。
+                                        model.reduce(&ImeEventEnvelope {
+                                            time: EventTime {
+                                                seq: 0,
+                                                monotonic: now,
+                                                tick_ms: 0,
+                                            },
+                                            event:
+                                                super::super::ime_event::ImeEvent::UserImeSetIntent {
+                                                    target: v,
+                                                    source: UserIntentSource::PhysicalImeKey,
+                                                },
+                                        });
+                                        store.record(
+                                            TARGET,
+                                            v,
+                                            UserIntentSource::PhysicalImeKey,
+                                            TickMs(0),
+                                        );
+                                    }
+                                }
+
+                                let mut obs = ObservationStore::default();
+                                match observation {
+                                    ObservationDim::None => {}
+                                    ObservationDim::ActuatingHigh(open) => {
+                                        let o = obs_at(
+                                            open,
+                                            ObservationSource::ImmGetOpenStatus,
+                                            ObservationConfidence::High,
+                                            now,
+                                        );
+                                        model.observations.record(o);
+                                        obs.record(o);
+                                    }
+                                    ObservationDim::BeliefOnlyMedium(open) => {
+                                        // ConvOpenInference: BUG-63(mise→くした) の
+                                        // 直接原因になった BeliefOnly 権限の観測源。
+                                        // 旧ゲートはこれを区別せず
+                                        // derive_open_filtered(|_| true) に含めるが、
+                                        // 新は Step3 で除外する
+                                        // （authority()==Actuating のみ）。
+                                        let o = obs_at(
+                                            open,
+                                            ObservationSource::ConvOpenInference,
+                                            ObservationConfidence::Medium,
+                                            now,
+                                        );
+                                        model.observations.record(o);
+                                        obs.record(o);
+                                    }
+                                }
+
+                                let mut guards_new = ForceGuardSet::default();
+                                match guard {
+                                    GuardDim::Inactive => {}
+                                    GuardDim::Override => {
+                                        model.force_guards.add(ForceGuard {
+                                            reason: ForceOnReason::PanicReset,
+                                            expires_at: None,
+                                            generation: 1,
+                                        });
+                                        guards_new.add(ForceGuard {
+                                            reason: ForceOnReason::PanicReset,
+                                            expires_at: None,
+                                            generation: 1,
+                                        });
+                                    }
+                                    GuardDim::HeuristicOnly => {
+                                        model.force_guards.add(ForceGuard {
+                                            reason: ForceOnReason::BrokenAppBootstrap,
+                                            expires_at: None,
+                                            generation: 1,
+                                        });
+                                        guards_new.add(ForceGuard {
+                                            reason: ForceOnReason::BrokenAppBootstrap,
+                                            expires_at: None,
+                                            generation: 1,
+                                        });
+                                    }
+                                }
+
+                                let policy_profile = match policy_dim {
+                                    PolicyDim::TsfNative => ImePolicyProfile::TsfNative,
+                                    PolicyDim::ImmCross => ImePolicyProfile::ImmCross,
+                                };
+                                let policy = AppImePolicy::from_profile(policy_profile);
+
+                                let old =
+                                    old_is_eligible_for_ime_force_on(&model, is_japanese_ime, now);
+                                let new = issue_open_warrant(
+                                    true,
+                                    TARGET,
+                                    &ctx(
+                                        &store,
+                                        &obs,
+                                        &guards_new,
+                                        &policy,
+                                        desired_open,
+                                        is_japanese_ime,
+                                        now,
+                                        TickMs(0),
+                                    ),
+                                )
+                                .is_some();
+
+                                if old && !new {
+                                    old_only.push(format!(
+                                        "is_japanese_ime={is_japanese_ime} intent={intent:?} \
+                                         observation={observation:?} guard={guard:?} \
+                                         policy={policy_dim:?} desired_open={desired_open} \
+                                         → old={old} new={new}"
+                                    ));
+                                } else if !old && new {
+                                    new_only.push(format!(
+                                        "is_japanese_ime={is_japanese_ime} intent={intent:?} \
+                                         observation={observation:?} guard={guard:?} \
+                                         policy={policy_dim:?} desired_open={desired_open} \
+                                         → old={old} new={new}"
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert_eq!(
+            old_only.len(),
+            EXPECTED_OLD_ONLY_COUNT,
+            "{}/{checked} combinations, old-only 不一致数が想定({EXPECTED_OLD_ONLY_COUNT})と\
+             異なります（old=true,new=false — new の方が厳格）。Phase 3 で\
+             is_eligible_for_ime_force_on() を issue_open_warrant() に差し替える前に、\
+             この差分が既知のものか確認してください:\n{}",
+            old_only.len(),
+            old_only.join("\n")
+        );
+        assert_eq!(
+            new_only.len(),
+            EXPECTED_NEW_ONLY_COUNT,
+            "{}/{checked} combinations, new-only 不一致数が想定({EXPECTED_NEW_ONLY_COUNT})と\
+             異なります（old=false,new=true — new の方が緩い。Phase 3 実配線で新たに\
+             force-ON し始める可能性があるため要注意）:\n{}",
+            new_only.len(),
+            new_only.join("\n")
+        );
+    }
 }

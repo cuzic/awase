@@ -803,7 +803,10 @@ mod tests {
             cm.charset,
             Charset::Hiragana | Charset::ZenkakuKatakana | Charset::HankakuKatakana
         );
-        let has_katakana = matches!(cm.charset, Charset::ZenkakuKatakana | Charset::HankakuKatakana);
+        let has_katakana = matches!(
+            cm.charset,
+            Charset::ZenkakuKatakana | Charset::HankakuKatakana
+        );
 
         match input_mode_update {
             None => {
@@ -820,9 +823,10 @@ mod tests {
             Some(InputModeState::ObservedEisu) => EngineSync::DirectInput,
             Some(new_mode) => {
                 // ObservedRomaji への JISかな回復かつ katakana conv かつ shadow=OFF。
-                let jiskana_katakana_shadow_off = matches!(new_mode, InputModeState::ObservedRomaji)
-                    && has_katakana
-                    && !effective_open;
+                let jiskana_katakana_shadow_off =
+                    matches!(new_mode, InputModeState::ObservedRomaji)
+                        && has_katakana
+                        && !effective_open;
                 // engine 既に open 中に romaji 不可 → 可へ回復。
                 let romaji_recovered_while_open =
                     !was_romaji_capable && new_mode.is_romaji_capable() && effective_open;
@@ -845,8 +849,17 @@ mod tests {
     /// 「ひらがな（NATIVE、非カタカナ）conv で ROMAN ビット無し・engine open 中」を
     /// `Charset::Hiragana` への直接 `matches!` で判定する（本番の
     /// `has_native && !has_katakana` という導出済みフラグの組合せは使わない）。
-    fn oracle_restore_roman(cm: ConvMode, is_cold: bool, effective_open: bool, is_roman_reliable: bool) -> bool {
-        is_roman_reliable && !is_cold && effective_open && !cm.romaji && matches!(cm.charset, Charset::Hiragana)
+    fn oracle_restore_roman(
+        cm: ConvMode,
+        is_cold: bool,
+        effective_open: bool,
+        is_roman_reliable: bool,
+    ) -> bool {
+        is_roman_reliable
+            && !is_cold
+            && effective_open
+            && !cm.romaji
+            && matches!(cm.charset, Charset::Hiragana)
     }
 
     fn oracle_transition(
