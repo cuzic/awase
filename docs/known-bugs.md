@@ -7541,3 +7541,121 @@ ROMAN/NOROMAN ビットに応じて切り替える必要があり、過去に何
 「復旧不能」の確定根拠）、BUG-62 追補1〜3（的外れだった VK_KANA 側の
 対策、ただしそれ自体は BUG-08 対策として引き続き必要）。
 
+---
+
+## BUG-63: 仮想デスクトップ切替後 Windows Terminal で半角のつもりが「くした」とかな変換される（IME belief と actuation の根拠が未分離）
+
+**アプリ:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` →
+`Windows.UI.Input.InputSite.WindowClass`、TsfNative プロファイル）。
+
+**IME:** Google 日本語入力（GJI）。IME OFF（半角英数モード）、conv ビットは
+直前セッションの NATIVE（ひらがな相当）が stale に残留。
+
+**再現手順 / 症状（2026-08-10 実機ログ）:** `Win+Ctrl+→` で仮想デスクトップを
+切替え、Windows Terminal にフォーカスが移った直後、IME キーを一切押さずに
+半角のつもりで `mise` と入力。IME は物理的には閉じたままだったが、engine の
+belief が conv ビット由来の間接推測1件だけで ON に復帰し、後半の `i`/`s`/`e`
+がかな変換され「くした」というリテラルが出力された。さらに実 IME への
+`VK_DBE_HIRAGANA` 相当の force-ON も発火し、実際に IME が意図せず ON に
+なった。
+
+**原因（コード読解で確定）:** `ImeModel::effective_open()`
+（`state/ime_model.rs`）が2つの異なる目的——(1) NICOLA engine の内部挙動決定
+（belief、誤りは可逆・低コストでよい）と (2) OS 側 IME への実際の書き込みの
+授権（actuation、誤りは不可逆・高コスト）——を同じ `bool` で兼ねていた。
+`ObservationStore::derive_open()` の「Medium confidence 観測は無競合なら
+1件でも多数決成立」という仕様（これ自体は別の既知バグ **BUG-26** の修正が
+意図的に依拠している正しい挙動）が、conv ビット由来の間接推測
+（`ObservationSource::ConvOpenInference`）にもそのまま適用され、
+`is_eligible_for_ime_force_on()` がこの `effective_open()` を直接 actuation の
+根拠として読んでいたため、弱い間接観測1件が実 IME への書き込みまで
+authorize してしまっていた。
+
+BUG-26 と本バグは**同じ conv 観測値（NATIVE 系）で実際の IME 状態が正反対**
+（BUG-26 は開いていた、本バグは閉じていた）というペアであり、conv ビットには
+両者を区別する情報が原理的に含まれていない。そのため
+「`ConvOpenInference` の confidence を下げる」「corroboration を必須化する」
+といった confidence モデルの調整では**原理的に解決不可能**（TsfNative には
+第2の open 観測ソースが構造的に存在しないため、これらの調整は必ず BUG-26 を
+再発させる）。
+
+**設計調査:** Opus・Codex CLI との3ラウンドにわたる相互レビュー（シナリオ
+シミュレーション形式）を経て、[ADR-087](adr/087-open-belief-actuation-warrant-separation.md)
+「IME open/close belief における『内部信念』と『actuation の根拠』の分離」を
+策定した。round1〜3 で見つかった主な設計上の落とし穴（詳細は ADR §7）:
+
+- round2: 対症療法（confidence 調整）を修正すると、BUG-16
+  （Windows Terminal で belief=ON・実IME=OFF のまま放置される別バグ）の
+  回復経路が丸ごと消えることが判明——`desired_open`（awase 自身の SSOT）への
+  フォールバック分岐が必要と判明。
+- round3: そのフォールバック分岐（`OwnSsot`）を `AppImeProfile` の生の値で
+  分岐する設計にしたところ、`CASCADIA_HOSTING_WINDOW_CLASS` が
+  `Imm32Unavailable` に誤分類され（`class_names.rs` が「2026-07-05 実機
+  バグ」として明文で禁止している判定方法そのもの）、**同じ BUG-16 が別経路で
+  再発**することが判明——`AppImePolicy.default_feedback` ベースの判定に訂正。
+- 他にも、優先順位付きゲートの Step 順序を誤ると `PanicReset` 安全弁が明示
+  意図に阻まれる新規バグを作る等、複数の「ラウンドNの修正がラウンドN+1で
+  別の穴を生む」という振動が発生した。
+
+**対応（純粋ロジックを実装し Linux 上のテストスイートで固定、2026-08-10）:**
+`.claude/rules/fix-requires-evidence.md` の (a) を満たす形で、belief と
+actuation warrant を型で分離する ADR-087 §2.3 P11〜P16 の純粋ロジックを、
+Windows ゲート無しの新規モジュールとして実装した:
+
+- `state/ime_model.rs`: `resolve_open_at`/`effective_open_at`（`Instant`
+  引数化、判定内訳を返す `DecidedBy` 診断API）
+- `state/observation_store.rs`: `derive_open_filtered`/`DeriveOutcome`
+  （`derive_open()` 本体と乖離しない形で observation の provenance を返す）
+- `state/ime_event.rs`: `ObservationSource::authority()`
+- `state/intent_store.rs`（新設）: `IntentStore`（対象=`HwndId` ごとの明示
+  意図、ON/OFF 非対称 TTL）
+- `state/open_warrant.rs`（新設）: `OpenWarrant`/`WarrantBasis`/
+  `issue_open_warrant()`（Step0〜4 の優先順位付きゲート）
+- `state/force_guard.rs`: `active_override_reason`/`active_heuristic_reason`
+  アクセサ追加
+
+回帰テストは各モジュール内の pinned test として配置（本バグ・BUG-16・
+BUG-19 系・BUG-26 の各シナリオに doc コメントで対応関係を明記）。
+`cargo test -p awase-windows --lib`（326件）・`golden_scenarios`（22件）・
+`architecture_guard`（21件）・`journal_replay`（1件）・
+`drift_correction_replay`（2件）・`layer_boundary_guard`（8件）全緑、
+`cargo clippy -p awase-windows --lib --tests`（pedantic/nursery deny）で
+新規コードに指摘なし。
+
+**未実施（重要な限界）:** 上記は ADR-087 の Phase 0〜2' 相当の**純粋ロジック**
+のみで、実際の `runtime/`・`platform_state.rs`（Windows専用、このセッションの
+サンドボックスでは検証不能）への配線（Phase 3）・GJI `shadow_on` no-op の
+bypass（INV-28）・実機ソークは未実施。**Windows 実機での動作確認は未実施**。
+また、明示意図が一度も無い場合（本バグの実際の再現操作列がまさにこれ）、
+engine の belief が一時的に ON になること自体（症状の前半、かな変換の混入）は
+本 ADR のどの Phase でも解消できない——これは confidence 調整と同じ理由で
+情報論的に不可能なため、意図的に「実 IME への書き込みは必ず止める」ことのみを
+保証する設計とした（ADR-087 §2.3 P13 参照）。
+
+**追補（2026-08-10、round4）:** 上記実装を Opus に最終レビューさせたところ、
+実装して初めて見える新規の欠陥が4件（must-fix）見つかった。特に重要なのは
+`IntentStore` の OFF 意図に有効な失効条件が1つも無く（TTL なし・eviction
+なし）、対象ごとに永続する設計と組み合わさって drift correction が永久に
+再同期できない固着を作りうる欠陥（既存 precedent `HwndImeCache` の
+`HWND_CACHE_MAX_AGE_MS` パターンとの乖離）。修正し、`tuning.rs` に
+`EXPLICIT_OFF_INTENT_TTL_MS`（ON より意図的に長い、`HWND_CACHE_MAX_AGE_MS`
+と同値）を新設。あわせて `resolve_open_at()` の診断フィールド
+`guard_override` が「guard は active だが実際には override していない」
+場合にも誤って値を返す診断API自身のバグも修正した
+（`ForceGuardSet::resolve()` を新設し唯一の判定点に統一）。
+
+さらに、`issue_open_warrant()` の入力（明示意図・guard・観測・
+`HeuristicDefault`・`default_feedback`・`requested` 等）が実質すべて
+有限個の離散値の組み合わせであることに着目し、1152通りの全組み合わせを
+実装から独立に書いたオラクル関数と突き合わせる網羅テストを追加した
+（`exhaustive_step_priority_matches_independently_written_oracle`）。
+シナリオを人手で選ぶ方式では round2→round3 で新しいバグが繰り返し
+見つかったが、この網羅テストは Step 0〜4 の優先順位ロジックについては
+「選ばれなかった組み合わせ」を残さない。詳細は
+[ADR-087 §8.5〜8.8](adr/087-open-belief-actuation-warrant-separation.md#85-実装後の最終レビュー記録round4opus)。
+
+**関連:** BUG-16（同じ Windows Terminal 仮想デスクトップ切替シナリオの逆方向、
+belief=ON・実IME=OFF）、BUG-19（明示 OFF 意図が観測に上書きされない防御）、
+BUG-26（conv 観測1件での belief 復帰、本バグと同じ機構への依拠）、BUG-33
+（`FocusProbe` の belief 書き戻し混入）。
+

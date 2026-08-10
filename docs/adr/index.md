@@ -87,6 +87,7 @@
 | [084](084-conv-mode-single-ownership-and-width-ssot.md) | conv-mode の単一所有権と「出力の幅を IME に委譲しない」原則 — 物理シフト面・belief キャッシュ・送信保証の責務再配置 | 提案（北極星仕様、未実装） |
 | [085](085-conv-mode-force-policy.md) | `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定。ADR-078 全面実装を待たない軽量な緩和策 | 実装済み（デフォルト無効、実機ソーク未実施） |
 | [086](086-force-write-trigger-and-target-identity.md) | force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件（arm-on-focus/fire-on-intent）と書き込みターゲット同一性（ActuationTarget）。ADR-084 の姉妹編、INV-12〜19 | Phase 0〜1（INV-14 全経路移行）実装済み、Phase 2〜4 未着手、実機ソーク未実施 |
+| [087](087-open-belief-actuation-warrant-separation.md) | IME open/close belief における「内部信念」と「actuation の根拠」の分離 — `effective_open()` の二重用途（engine 挙動決定 と 外部書き込みの授権）を `OpenWarrant`/`WarrantBasis` で型分離。ADR-086 の根拠軸、INV-20〜28 | Phase 0〜2' 純粋ロジック実装・テスト済み・Opus 最終確認 must-fix ゼロ（BUG-63）、Phase 3 配線・実機ソーク未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
