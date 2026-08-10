@@ -639,71 +639,75 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
     );
 }
 
-/// `apply_ime_open_with_belief(` の**呼び出し箇所数**を crate 全域で固定する
-/// （関数定義 `fn apply_ime_open_with_belief(` は数えない）。
+/// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
+/// `_with_applied` / `set_ime_open` / `apply_skipping_imm` / `apply_ime_open`）の
+/// **呼び出し箇所数**を、入口ごとに crate 全域で固定する
+/// （各関数の定義行 `fn ...(` は数えない）。
 ///
 /// これは「唯一の窓口」への統合テストではなく、**新しい未レビューの呼び出し元が
-/// 増えたら気づく**ための count guard である。ADR-080 / `docs/known-bugs.md` BUG-43
-/// の根本原因は、raw actuation（IME open の実 actuate）を drift correction ループが
-/// observe tick ごとに無限再送していたことだった。修正（タスク #14）は
-/// `ir_apply_drift_correction` の actuation を `Actuation`/`FeedbackPolicy`
-/// ステートマシンでゲートしたが、**raw send 呼び出し自体は同関数内にインラインで
-/// 意図的に残した**（Phase 1 のスコープは「送るか否か・頻度」の制御であって、
-/// raw send を別モジュールの「単一窓口」に物理的に集約することではない。全呼び出し元の
-/// 棚卸しと統合は Phase 2）。
+/// 増えたら気づく**ための count guard である。旧版（`apply_ime_open_with_belief`
+/// 単体のみ）は ADR-080 / `docs/known-bugs.md` BUG-43（drift correction ループが
+/// raw actuation を observe tick ごとに無限再送した設計欠陥）への対策として作られたが、
+/// `apply_ime_open_with_belief(` の**部分文字列一致**でカウントしていたため
+/// `runtime/mod.rs` の doc コメント中の同名文字列を1件誤って呼び出しとして数えており
+/// （実呼び出しは4件、旧 `EXPECTED_TOTAL=5` の内訳に1件のコメントが混入していた）、
+/// かつ `_with_view`/`_with_applied`/`set_ime_open`/`apply_skipping_imm` 経由の入口は
+/// 対象外だった（ADR-087 §5 Phase 3 item14、2026-08-10 棚卸しで判明）。
 ///
-/// したがってこのテストは「`ir_apply_drift_correction` が raw actuation を直接
-/// 呼ばないこと」は**検証しない**（それは現状の正しいコードに対して偽であり、
-/// 即座に fail する）。代わりに、BUG-43 の設計欠陥（同じ actuate 呼び出しが
-/// 無自覚に増殖した）と同型の増殖を検知するため、呼び出し元の総数を凍結する。
-///
-/// 現在の既知の呼び出し元（file : function、行番号はドリフトするため記載しない）:
-/// - `platform.rs` : `apply_ime_open_with_applied`（shadow のみから belief を作る後方互換ラッパー）
-/// - `runtime/mod.rs` : `apply_force_on_for_imm_broken` / `try_force_on_bootstrap`（Blacklist force-ON、2箇所）
-/// - `runtime/key_pipeline.rs` : ObservedEisu 検出時の DirectInput 補正（false 送信）
-/// - `runtime/ime_refresh.rs` : `ir_apply_drift_correction`（Blacklist/TsfNative の drift 訂正、ADR-080 の直接対象）
-///
-/// 新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ
-/// `Actuation` ベースのゲーティングが必要かどうか（ADR-080 / BUG-43 参照）を
-/// 検討した上で、このカウントと上記一覧を更新すること。呼び出し元を削除した
-/// 場合は単にカウントを更新すること。
+/// 実 actuation 入口 11 経路の全数棚卸し（force-write / observation-based
+/// correction / Engine intent の分類、`shadow_on`/`origin` の扱い）は
+/// `docs/adr/087-open-belief-actuation-warrant-separation.md` §5 item14 の表を
+/// 参照。新しい呼び出し元を追加した場合はこの表を更新し、
+/// `ir_apply_drift_correction` と同じ `Actuation` ベースのゲーティングが必要か
+/// （ADR-080 / BUG-43 参照）を検討した上で、このカウントを更新すること。
 #[test]
-fn apply_ime_open_with_belief_call_sites_are_accounted_for() {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
+fn ime_open_actuation_entry_points_are_accounted_for() {
+    // needle は先頭に `.` を付けたメソッド呼び出し形にする。定義行
+    // (`fn apply_ime_open_with_belief(` 等) は `.` を伴わないため自動的に除外され、
+    // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
+    // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
+    // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
+    const ENTRY_POINTS: [(&str, usize); 6] = [
+        // 内部委譲元(platform.rs 自身): ime_refresh.rs:740 / key_pipeline.rs:741 /
+        // mod.rs:890（ADR-087 §5 item14 表 #11/#4/#7）+ apply_ime_open_with_applied
+        // 内部からの委譲(platform.rs:1028) = 4。
+        (".apply_ime_open_with_belief(", 4),
+        // executor.rs:887 / mod.rs:733（表 #1/#6）+ apply_ime_open_with_belief
+        // 内部からの委譲(platform.rs:1016) = 3。
+        (".apply_ime_open_with_view(", 3),
+        // ime_refresh.rs:499（表 #8）+ apply_ime_open 内部からの委譲(platform.rs:729) = 2。
+        (".apply_ime_open_with_applied(", 2),
+        // ime_refresh.rs:534/727（表 #9/#10）= 2。
+        (".set_ime_open(", 2),
+        // executor.rs:833 / key_pipeline.rs:941（表 #3/#5）= 2。
+        (".apply_skipping_imm(", 2),
+        // 呼び出し元ゼロ(死んだ入口、ADR-087 §5 item14 参照、Task #28 で対処)。
+        (".apply_ime_open(", 0),
+    ];
 
-    const EXPECTED_TOTAL: usize = 5;
-    let mut total = 0usize;
-    let mut breakdown: Vec<(String, usize)> = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = fs::read_to_string(path).unwrap();
-        let production = production_code_only(&content);
-        // 呼び出し箇所のみ数える（定義 `fn apply_ime_open_with_belief(` は除外）。
-        let calls = production.matches("apply_ime_open_with_belief(").count()
-            - production.matches("fn apply_ime_open_with_belief(").count();
-        if calls > 0 {
-            total += calls;
-            breakdown.push((rel, calls));
+    let files = list_src_files();
+    for (needle, expected) in ENTRY_POINTS {
+        let mut total = 0usize;
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                total += count;
+                breakdown.push((path.clone(), count));
+            }
         }
+        assert_eq!(
+            total, expected,
+            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
+             内訳: {breakdown:?}\n\
+             docs/adr/087-open-belief-actuation-warrant-separation.md §5 item14 の\
+             実 actuation 入口棚卸し表を更新し、新しい呼び出し元が force-write / \
+             observation-based correction のどちらに分類され warrant 必須化の対象と\
+             すべきか検討した上でこの期待値を更新してください。"
+        );
     }
-
-    assert_eq!(
-        total, EXPECTED_TOTAL,
-        "`apply_ime_open_with_belief(` の呼び出し箇所数が想定({EXPECTED_TOTAL})と\
-         異なります(実際: {total})。内訳: {breakdown:?}\n\
-         新しい呼び出し元を追加した場合は、`ir_apply_drift_correction` と同じ \
-         Actuation ベースのゲーティングが必要かどうか（ADR-080 / \
-         docs/known-bugs.md BUG-43 参照 — raw actuation が observe tick ごとに\
-         無限再送された設計欠陥）を検討した上で、このカウントを更新してください。\n\
-         呼び出し元を削除した場合は単にこのカウントを更新してください。"
-    );
 }
 
 /// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
@@ -1294,5 +1298,53 @@ fn is_force_policy_call_sites_are_accounted_for() {
          `apply_force_on_for_imm_broken` が同条件で早期 return することに \
          暗黙で依存している（ADR-086 §7-12）。呼び出し箇所を変更した場合は \
          この依存関係が崩れていないか確認し、この期待値を更新すること。"
+    );
+}
+
+/// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
+/// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は
+/// `applied` に `None` を渡すことで `GjiDirectStrategy::apply`
+/// （`ime_controller.rs:110`、`shadow_on == true` のとき `VK_IME_ON` を
+/// no-op skip する）を最初から bypass する設計になっている
+/// （`build_ime_control_view(None)` → `applied.unwrap_or((false, 0))` →
+/// `control.shadow_on = false`、`platform.rs::build_ime_control_view` 参照）。
+///
+/// この不変条件が崩れる（`None` の代わりに実 `applied` 値を渡すよう変更される）と、
+/// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで
+/// 再発しうる。「`applied` を `None` にして bypass する」という意図はコメントでしか
+/// 表現されておらず、コンパイラは強制しないため、テキスト走査で固定する。
+#[test]
+fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
+    // `.contains()` は文字列リテラル（コメント含む）にもマッチし、
+    // 呼び出し箇所を実際に書き換えても壊れなければ vacuous になる
+    // （2026-08-10 Opus レビュー M1: `ime_refresh.rs:481` の行コメントだけで
+    // 2つ目の assertion が偽陽性に通っていた）。`count_real_calls`
+    // （コメント行除外・`fn` 定義行除外）を使い、かつ関数本体スコープに
+    // 限定することで、実際の呼び出しが変更されたときにだけ検知する。
+    let mod_rs = read_crate_file("src/runtime/mod.rs");
+    let mod_production = production_code_only(&mod_rs);
+    let force_on_body = extract_fn_body(mod_production, "fn force_on_and_correct_romaji");
+    assert_eq!(
+        count_real_calls(force_on_body, "build_ime_control_view(None)"),
+        1,
+        "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
+         shadow_on=false を作ることで GJI の no-op skip を bypass する設計。\
+         `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
+    );
+
+    let ime_refresh_rs = read_crate_file("src/runtime/ime_refresh.rs");
+    let ime_refresh_production = production_code_only(&ime_refresh_rs);
+    let focus_change_body =
+        extract_fn_body(ime_refresh_production, "fn ir_post_focus_change_snapshot");
+    assert_eq!(
+        count_real_calls(
+            focus_change_body,
+            ".apply_ime_open_with_applied(true, None)"
+        ),
+        1,
+        "GJI TsfNative 入場時の強制ON（ir_post_focus_change_snapshot）は \
+         apply_ime_open_with_applied(true, None) 経由で shadow_on=false を作ることで \
+         GJI の no-op skip を bypass する設計。`None` 以外の値を渡すよう変更された場合、\
+         ADR-087 INV-28 の前提が崩れる。"
     );
 }
