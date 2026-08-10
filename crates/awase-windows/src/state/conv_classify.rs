@@ -230,7 +230,7 @@ pub struct ConvClassifyFixture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awase::engine::{AssumedReason, InputModeState};
+    use awase::engine::{AssumedReason, Charset, InputModeState};
 
     // ── conv ビット定数（IMM32 変換モード）─────────────────────────────────────
     const NATIVE: u32 = 0x0001;
@@ -765,5 +765,185 @@ mod tests {
             true,
         );
         assert!(!t.restore_roman);
+    }
+
+    // ── 全数網羅 + 独立オラクル ──────────────────────────────────────────────
+    //
+    // このモジュール冒頭のコメントが挙げる通り、`classify_conv_transition` の
+    // 前身（インライン展開された分岐）はビット組合せの見落としを 4 回繰り返した
+    // (fc18cc7 / 109b4c9 / 1544d3f / ea3da7f)。関数として集約した現在も
+    // `smoke_all_major_conv_belief_combinations`（上）は不変条件チェックに
+    // とどまり、「本番実装のロジックそのものが仕様と食い違っている」誤りは
+    // 検出できない（本番の分岐を書いた本人と同じ思い込みを共有するテストに
+    // なりがちなため）。
+    //
+    // ここでは本番コード（`classify_conv_transition` 本体）を見ずに
+    // モジュール冒頭・関数doc・各フィールドdocの文章から独立に書き起こした
+    // オラクル関数 `oracle_transition` を用意し、入力空間を（挙動に効かない
+    // `AssumedReason` のバリエーションを除き）全数列挙して突き合わせる。
+    // `input_mode_update` の計算は `ConvMode::classify_idle` に委譲する
+    // （これは別関数であり、このテストの対象は `classify_conv_transition` が
+    // その結果を正しく使って `engine`/`restore_roman` を導出しているかである）。
+    //
+    // 本番と同じ結論に達する式でも、あえて本番と異なるコード形（if-else連鎖では
+    // なく `match`、`is_eisu()`/`is_katakana()` ヘルパーではなく `Charset` への
+    // 直接 `matches!`）で書くことで、「本番の変数導出そのものが持つバグ」を
+    // オラクル側が無自覚に踏襲する事態を避ける。
+
+    /// `has_native`/`has_katakana` 相当の判定を `Charset` への直接 `matches!` で
+    /// 独立に再導出する（本番の `!cm.is_eisu()` / `charset.is_katakana()` は使わない）。
+    fn oracle_engine(
+        input_mode_update: Option<InputModeState>,
+        was_romaji_capable: bool,
+        cm: ConvMode,
+        effective_open: bool,
+        conv_mode_changed: bool,
+    ) -> EngineSync {
+        let has_native = matches!(
+            cm.charset,
+            Charset::Hiragana | Charset::ZenkakuKatakana | Charset::HankakuKatakana
+        );
+        let has_katakana = matches!(cm.charset, Charset::ZenkakuKatakana | Charset::HankakuKatakana);
+
+        match input_mode_update {
+            None => {
+                if has_native && !effective_open {
+                    EngineSync::ReportOpenInference(if has_katakana {
+                        ConvSyncReason::KatakanaShadowOff
+                    } else {
+                        ConvSyncReason::NativeToggleShadowOff
+                    })
+                } else {
+                    EngineSync::None
+                }
+            }
+            Some(InputModeState::ObservedEisu) => EngineSync::DirectInput,
+            Some(new_mode) => {
+                // ObservedRomaji への JISかな回復かつ katakana conv かつ shadow=OFF。
+                let jiskana_katakana_shadow_off = matches!(new_mode, InputModeState::ObservedRomaji)
+                    && has_katakana
+                    && !effective_open;
+                // engine 既に open 中に romaji 不可 → 可へ回復。
+                let romaji_recovered_while_open =
+                    !was_romaji_capable && new_mode.is_romaji_capable() && effective_open;
+                // NATIVE への切替を検出 かつ shadow=OFF。
+                let native_toggle_shadow_off = conv_mode_changed && has_native && !effective_open;
+
+                if jiskana_katakana_shadow_off {
+                    EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
+                } else if romaji_recovered_while_open {
+                    EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
+                } else if native_toggle_shadow_off {
+                    EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+                } else {
+                    EngineSync::None
+                }
+            }
+        }
+    }
+
+    /// 「ひらがな（NATIVE、非カタカナ）conv で ROMAN ビット無し・engine open 中」を
+    /// `Charset::Hiragana` への直接 `matches!` で判定する（本番の
+    /// `has_native && !has_katakana` という導出済みフラグの組合せは使わない）。
+    fn oracle_restore_roman(cm: ConvMode, is_cold: bool, effective_open: bool, is_roman_reliable: bool) -> bool {
+        is_roman_reliable && !is_cold && effective_open && !cm.romaji && matches!(cm.charset, Charset::Hiragana)
+    }
+
+    fn oracle_transition(
+        cm: ConvMode,
+        current: InputModeState,
+        is_cold: bool,
+        effective_open: bool,
+        conv_mode_changed: bool,
+        is_roman_reliable: bool,
+    ) -> ConvTransition {
+        let input_mode_update = cm.classify_idle(is_cold, current, is_roman_reliable);
+        let engine = oracle_engine(
+            input_mode_update,
+            current.is_romaji_capable(),
+            cm,
+            effective_open,
+            conv_mode_changed,
+        );
+        let restore_roman = oracle_restore_roman(cm, is_cold, effective_open, is_roman_reliable);
+        ConvTransition {
+            input_mode_update,
+            engine,
+            restore_roman,
+        }
+    }
+
+    /// 挙動に効く全次元を全数列挙し、本番実装と独立オラクルを突き合わせる。
+    ///
+    /// `AssumedReason` の5バリアントは `is_romaji_capable()`/`ObservedEisu` 一致判定
+    /// にしか関与せずどれも同じ挙動になるため（本テストは分類ロジックの対象、
+    /// `AssumedReason` の由来追跡は対象外）、代表として `ImmBridgeBroken` のみを使う
+    /// — `smoke_all_major_conv_belief_combinations` の `beliefs` 配列と同じ判断。
+    /// 10 (ConvMode: Charset5 × romaji2) × 5 (belief代表) × 2 (is_cold) ×
+    /// 2 (effective_open) × 2 (conv_mode_changed) × 2 (is_roman_reliable) = 800通り。
+    #[test]
+    fn exhaustive_classify_conv_transition_matches_independent_oracle() {
+        const ALL_CHARSETS: [Charset; 5] = [
+            Charset::Hiragana,
+            Charset::ZenkakuKatakana,
+            Charset::HankakuKatakana,
+            Charset::ZenkakuAlpha,
+            Charset::HankakuAlpha,
+        ];
+        let beliefs = [
+            InputModeState::ObservedRomaji,
+            InputModeState::ObservedKana,
+            InputModeState::ObservedEisu,
+            assumed(),
+            InputModeState::Unknown,
+        ];
+
+        let mut mismatches = Vec::new();
+        for &charset in &ALL_CHARSETS {
+            for &romaji in &[false, true] {
+                let cm = ConvMode { charset, romaji };
+                for &current in &beliefs {
+                    for &is_cold in &[false, true] {
+                        for &effective_open in &[false, true] {
+                            for &conv_mode_changed in &[false, true] {
+                                for &is_roman_reliable in &[false, true] {
+                                    let actual = classify_conv_transition(
+                                        cm,
+                                        current,
+                                        is_cold,
+                                        effective_open,
+                                        conv_mode_changed,
+                                        is_roman_reliable,
+                                    );
+                                    let expected = oracle_transition(
+                                        cm,
+                                        current,
+                                        is_cold,
+                                        effective_open,
+                                        conv_mode_changed,
+                                        is_roman_reliable,
+                                    );
+                                    if actual != expected {
+                                        mismatches.push(format!(
+                                            "cm={cm:?} current={current:?} is_cold={is_cold} \
+                                             effective_open={effective_open} \
+                                             conv_mode_changed={conv_mode_changed} \
+                                             is_roman_reliable={is_roman_reliable}: \
+                                             actual={actual:?} expected(oracle)={expected:?}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} 件不一致:\n{}",
+            mismatches.len(),
+            mismatches.join("\n")
+        );
     }
 }
