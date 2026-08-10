@@ -267,3 +267,36 @@ pub const GJI_SAMPLE_INTERVAL_MS: u32 = 10;
 
 /// GJI モニタが切断後に再アタッチを試みる間隔 (ms)。
 pub const GJI_REATTACH_INTERVAL_MS: u64 = 3_000;
+
+// === IntentStore（ADR-087 §2.3 P15 / §4 INV-24） ===
+
+/// `IntentStore` に記録された **ON 意図**の保持窓 (ms)。
+///
+/// この時間を超えると、対象への明示 ON 意図は `issue_open_warrant()` の
+/// Step 1 から外れる（Step 4 の既定推測にフォールバックする）。
+///
+/// **未実測・暫定値**: 既存の `EXPLICIT_OFF_CACHE_SUPPRESS_MS`
+/// （`runtime/focus_tracking.rs`、Windows専用コードのため本ファイルには
+/// 移設していない。ADR-087 §4 INV-24(a) が将来の統合を求めている）と
+/// 同じ 10 秒を仮に採用した。ON/OFF で TTL を非対称にする理由は
+/// `EXPLICIT_OFF_INTENT_TTL_MS`（下記）を参照。値を変更する場合は
+/// `.claude/rules/tuning-constants.md` に従い実測根拠を示すこと。
+pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
+
+/// `IntentStore` に記録された **OFF 意図**の保持窓 (ms)。ON より意図的に
+/// 長く取る（ADR-087 §4 INV-24(a)、§7 round4 M-A）。
+///
+/// Step 4（`HeuristicGuess`/`OwnSsot`）の既定推測は観測ゼロのとき ON 方向に
+/// のみバイアスを持つ。そのため ON 意図の失効は Step 4 と同じ結論になり
+/// 実害が薄いが、OFF 意図の失効は Step 4 が正反対の結論を出す（round3
+/// シナリオ7/9）。round3 時点では「OFF は無期限（TTL なし）」としていたが、
+/// round4 の Opus レビューで「対象ごとに永続する `IntentStore` では、
+/// フォーカス単位で有界だった旧 `last_intent` と違い、無期限は
+/// drift correction が永久に再同期できない固着を作る」と指摘された
+/// （実 precedent: `HwndImeCache`（`focus/hwnd_cache.rs`）は
+/// `HWND_CACHE_MAX_AGE_MS` で必ず期限を切っている）。
+///
+/// **未実測・暫定値**: 「意図的に ON より長い」以外の根拠は無く、
+/// `HWND_CACHE_MAX_AGE_MS`（既存の「per-対象 IME 状態キャッシュはどれだけ
+/// 保持するか」という同種の判断の precedent）と同じ値を仮に採用した。
+pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = HWND_CACHE_MAX_AGE_MS;
