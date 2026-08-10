@@ -32,7 +32,13 @@ pub(crate) struct OpenBeliefInputs {
 pub(crate) struct OpenBelief {
     /// 現在の IME open 状態の推定値。
     pub effective_open: bool,
-    /// 推定に十分な確信があるか。`false` の場合は already_matched を強制 false にする。
+    /// 推定に十分な確信があるか。
+    ///
+    /// 【doc 訂正、2026-08-10、ADR-087 §5 Phase 3 item14】以前は「`false` の場合は
+    /// already_matched を強制 false にする」という設計意図だったが、この値を読んで
+    /// already_matched 判定に使う本番コードは現在存在しない（判定は
+    /// `ime_controller::CONTROLLER.apply` が `shadow_on` から独立に行う）。現状の
+    /// 本番消費者は診断ログのみ（`platform.rs::apply_ime_open_with_view`）。
     pub confident: bool,
 }
 
@@ -57,7 +63,12 @@ impl OpenBelief {
 /// 検査する。それ以外は常に `true`。
 /// （旧 `is_engine_intent` 条件は 2026-07-06 到達不能パス監査 B6 で撤去 —
 /// SetOpen は常に Engine の意図であり恒真だった。）
-/// `confident=false` は「already_matched を強制 false」つまり「必ず apply する」を意味する。
+///
+/// 【doc 訂正、2026-08-10】`confident=false` は「already_matched を強制 false」
+/// つまり「必ず apply する」という設計意図だったが、`OpenBelief::confident` を
+/// 読む本番コードは現在ログ（`platform.rs`）のみで、already_matched 判定には
+/// 使われていない（判定は `ime_controller::CONTROLLER.apply` が `shadow_on` から
+/// 独立に行う）。
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = inputs.conv_mode.map_or(
         inputs.shadow_on
