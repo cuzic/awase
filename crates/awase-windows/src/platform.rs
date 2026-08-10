@@ -725,6 +725,12 @@ impl PlatformRuntime for WindowsPlatform {
         true
     }
 
+    /// 呼び出し元ゼロ（2026-08-10 確認、ADR-087 §5 Phase 3 item14 実 actuation
+    /// 入口棚卸し）。実際の入口は `apply_ime_open_with_belief`/`_with_view`/
+    /// `_with_applied`（このファイル下部）であり、こちらは誰からも呼ばれない
+    /// trait オーバーライド。`tests/architecture_guard.rs::
+    /// ime_open_actuation_entry_points_are_accounted_for` で呼び出し箇所数 0 を
+    /// 固定している。削除するか実際に使うかは Phase 3 実配線時に判断する。
     fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
         self.apply_ime_open_with_applied(open, None)
     }

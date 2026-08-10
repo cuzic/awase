@@ -200,13 +200,24 @@ pub trait PlatformRuntime {
 
     /// IME の ON/OFF を設定する。成功時 true を返す。
     ///
-    /// 廃止予定: `apply_ime_open` を使うこと。
+    /// このメソッド自体は `awase-windows` の `runtime/ime_refresh.rs`
+    /// （focus change 強制 OFF・drift correction の ImmCross 経路）で実際に
+    /// 呼ばれている。以下の `apply_ime_open`（このトレイトのデフォルト実装）
+    /// を使うようにという doc は実態と逆転していたため訂正する
+    /// （2026-08-10、ADR-087 §5 Phase 3 item14 実 actuation 入口棚卸しで判明）。
     fn set_ime_open(&mut self, open: bool) -> bool;
 
     /// IME の ON/OFF を設定し、実行結果を返す。
     ///
-    /// デフォルト実装は `set_ime_open` をラップする。
-    /// プラットフォーム実装はオーバーライドしてフォールバック戦略を組み込める。
+    /// **2026-08-10 時点で `awase-windows` からの呼び出し元がゼロ**（`WindowsPlatform`
+    /// は `apply_ime_open_with_belief`/`_with_view`/`_with_applied` という別系統の
+    /// 独自メソッド群を実際の入口として使っており、このトレイトメソッドの
+    /// オーバーライド（`crates/awase-windows/src/platform.rs`）はどこからも
+    /// 呼ばれない死んだコードになっている）。ADR-087 §5 Phase 3 で
+    /// `issue_open_warrant()` 経由の入口へ実配線する際に、このメソッドを
+    /// 実際に使うか削除するか判断すること。デフォルト実装は `set_ime_open` を
+    /// ラップする。プラットフォーム実装はオーバーライドしてフォールバック
+    /// 戦略を組み込める。
     fn apply_ime_open(&mut self, open: bool) -> ImeOpenOutcome {
         if self.set_ime_open(open) {
             ImeOpenOutcome::Applied
