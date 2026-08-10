@@ -770,7 +770,7 @@ pub(super) fn run_all() -> Result<()> {
         );
     }
 
-    let mut raw_config = load_config()?;
+    let raw_config = load_config()?;
     handle_auto_start(&raw_config);
     let (config, config_warnings) = raw_config.validate();
     for w in &config_warnings {
