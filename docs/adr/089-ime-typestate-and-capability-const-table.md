@@ -1571,7 +1571,7 @@ clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一
 | C-3 | §6 item 11「`tests/golden_scenarios.rs:175` の期待値を `caps(p,k).chain[0]` へ書き換える」 | `chain[0]` は **K 依存**（`Imm32Unavailable` は `GjiDirect`/`MsImeDirect`）だが、`ImeModel::app_policy` は `FocusChanged` 時点の **profile スナップショット**で K を持たない（§2.5）。そのまま照合できない。なお実際の行は `:175` ではなく `:186` で、`actuator_kind` を 3 variant の否定形で見るシナリオ 4 の assert だった | **`focus_settle_ms` での識別に置き換えた**（profile ごとに一意: 100/500/200）。このテストが見たいのは「reducer が FocusChanged で profile 由来のポリシーへ切り替えたか」であり、K を持ち込む必要がない。値そのものは `caps_settle_values_match_the_pre_phase_c_literals` が固定する |
 | C-4 | §2.8 は `caps` を「機構チェーンの唯一の宣言」とする | `runtime/open_chain.rs::run_open_chain_async` は ImmCross の書き込みを **await した後**にフォールバックへ進み、`fallback_write` が機構ごとに view を作り直して `is_applicable` を再評価する（旧 `apply_skipping_imm` と同じ「完了時点の状態で残りを選ぶ」意味論） | **非同期チェーンだけは `WriteMechanism::ALL` のまま**にした。起案時点の `(p, k)` で chain を固定すると、await 中にフォーカスが動いた場合に「完了時点では適用可能な機構が chain に載っていない」新しい取りこぼしが生まれる（起案時 Standard×MS-IME の chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。`ImeKindId` は推測値であり（INV-45）、await をまたいで K を固定するのは P20 が禁じる「安全側でないゲート」に当たる。§9-20 に残余論点として記録 |
 | C-5 | §6「Phase B でも消えなかったもの」: 「`VerifiedTarget::FocusImplicit` が `Verified` に入っていること自体が INV-14 の未達を表す。**Phase C で潰す**」 | VK 送信機構（`GjiDirect` / `MsImeDirect` / `KanjiToggle`）の実 write は `SendInput` であり、**宛先引数を取らない**（フォアグラウンドのキュー宛）。捕獲すべき hwnd が構造的に存在しない | **潰せない——`FocusImplicit` は「未達」ではなく機構固有の性質である**と訂正した（§9-19）。同期経路で hwnd を持つ唯一の write は ROMAN 補完であり、そちらを `ActuationTarget` 化した。`ImmCrossOp::Untargeted`（`key_pipeline.rs` の shadow-toggle OFF）は依然として未移行（§9-20） |
-| C-6 | §6 item 12「ADR-086 INV-14 の是正（ImmCross 同期 IMC write の `ActuationTarget` 化）」/ ADR-086 と `output/conv_actuation.rs` は「`ImeOpenStrategy::apply` 自体の非同期化が要る」としていた | `ActuationTarget::capture` が実際にやっているのは `get_focused_hwnd()` **1 回**であり、旧 `set_ime_romaji_mode()` が内部で行っていたライブクエリと同一である。**「捕獲を write の外へ出す」だけなら同期のままできる** | `capture_blocking` / `verify_gen_only` / `set_ime_romaji_mode_for_target_blocking` を新設し、**`apply` を非同期化せずに** ROMAN 補完を `ActuationTarget` 経由へ移した。「非同期化が要る」という ADR-086 Phase 3 の判断は、`verify_still_current` の hwnd 再クエリまで必須と読んだ場合にのみ正しい |
+| C-6 | §6 item 12「ADR-086 INV-14 の是正（ImmCross 同期 IMC write の `ActuationTarget` 化）」/ ADR-086 と `output/conv_actuation.rs` は「`ImeOpenStrategy::apply` 自体の非同期化が要る」としていた | `ActuationTarget::capture` が実際にやっているのは `get_focused_hwnd()` **1 回**であり、旧 `set_ime_romaji_mode()` が内部で行っていたライブクエリと同一である。**「捕獲を write の外へ出す」だけなら同期のままできる** | `capture_blocking` / `verify_gen_only` / `set_ime_romaji_mode_for_target_blocking` を新設し、**`apply` を非同期化せずに** ROMAN 補完を `ActuationTarget` 経由へ移した。「非同期化が要る」という ADR-086 Phase 3 の判断は、`verify_still_current` の hwnd 再クエリまで必須と読んだ場合にのみ正しい。**ただし `verify_gen_only` の世代照合は現状では恒真である**（`romaji_pre_write` が捕獲と write に同一の `focus_gen` を渡すため。§9-22） |
 | C-7 | — | 同期経路の `ImmCrossProcessStrategy::apply` の到達可能性を呼び出し元で追跡した（`executor.rs` / `key_pipeline.rs` は `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken` と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、`ir_apply_drift_correction` は `can_use_imm32_cross_process()` なら `set_ime_open` を使う分岐、`ime_refresh.rs:499` と `key_pipeline.rs:742` は TsfNative 限定） | **【2026-08-12 訂正】当初は「同期経路からは到達しない」と結論したが、これは棚卸し漏れによる誤りだった**（Opus レビューで指摘、詳細は §9-21）。`runtime/mod.rs::try_force_on_bootstrap`（`:892`）が `apply_ime_open_with_belief(true, None, belief)` を呼び、そのガードは `detect_miss_count() >= IME_DETECT_MISS_THRESHOLD` / `is_user_enabled()` / `is_eligible_for_ime_force_on()`（= `is_japanese_ime() && effective_open()`）/ `!is_force_on_guard_active()` だけで、**同種の他経路が持つ `!can_use_imm32_cross_process()` プロファイルガードを持たない**。したがって Standard（= `ImmCross` プロファイル、LINE / Qt 等）では `caps` chain の先頭 `ImmCross` が `is_applicable` を満たし、同期経路で `ImmCrossProcessStrategy::apply` に到達する。**Phase C 以前から同じ挙動であり、Phase C が作り込んだ回帰ではない**（Phase C は chain の作り方を `ALL` 走査から `caps` へ変えただけで、`try_force_on_bootstrap` のガードにも ImmCross の適用条件にも触れていない） |
 
 #### 実装したもの
@@ -2195,6 +2195,13 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     したがってこれは**ソーク項目ではなく前提条件**である——
     実機ソークを始める前に、まず push して `windows-build` が緑になることを
     確認する。赤ければ Phase C は実機に持ち込む段階にない。
+    **ソーク項目から外したもう 1 件（旧 17-d）**: 「`Aborted(GenStale)` が
+    実際には発火しないこと。`[imm-romaji] Aborted(GenStale)` のログが出たら
+    設計前提が崩れている」を挙げていたが、**この照合は恒真であり、ログが
+    出る条件が原理的に存在しない**（`romaji_pre_write` が捕獲と write に
+    同一の `focus_gen` を渡す。§9-22）。「出ないこと」を確認しても
+    前提の検証にならないため、ソーク項目としては機能しない。削除した。
+
     以下の 17-b 〜 17-h は、CI が緑でもなお実機でしか確かめられないものだけを
     残してある。
 
@@ -2202,7 +2209,6 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     |---|---|---|---|
     | 17-b | **`ImmCross × MS-IME` で ImmCross が `Failed` を返したときに `KanjiToggle` へ落ちること**。caps chain が `[ImmCross, KanjiToggle]` になった唯一のフォールスルー経路 | LINE / Qt アプリ × MS-IME、`SendMessageTimeout` が実際にタイムアウトする状況 | IME が切り替わらないまま無反応 |
     | 17-c | **ROMAN 補完（`set_ime_romaji_mode_for_target_blocking`）が Phase C 以前と同じ hwnd へ着弾していること**。hwnd 解決の関数・タイムアウト・フォールバックは変えていないが、**捕獲を write の外へ出したこと自体**は実機で初めて確かめられる | Windows Terminal / Edge × MS-IME（BUG-55 の子ウィンドウ問題が出るアプリ）、かなモードから IME ON | 最初の打鍵が JIS かな入力になる（`aiueo` → `ちいすいえの` 等） |
-    | 17-d | **`Aborted(GenStale)` が実際には発火しないこと**（同期経路には await 点が無いため常に一致するはずという設計前提）。`[imm-romaji] Aborted(GenStale)` のログが出たら前提が崩れている | 全アプリ、フォーカス切り替えの多い操作（Alt+Tab 連打） | ROMAN 補完が黙ってスキップされ、17-c と同じ症状 |
     | 17-e | **ROMAN 補完のレイテンシが変わっていないこと**。Win32 往復は 1 回のままだが、`.claude/rules/tuning-constants.md` の実測義務に従い force-ON 経路の実測を取ること | Chrome / Edge × MS-IME、force-ON がホットパスに乗る打鍵 | 打鍵の取りこぼし・体感の引っかかり |
     | 17-f | **`focus_settle_ms` / `default_feedback` が `caps` 経由になっても同じ値で使われていること**。ファサード化なので値は同じはずだが、`settle_until` と drift correction のタイミングに効く | Chrome（500ms）/ WezTerm（200ms）/ LINE（100ms） | フォーカス直後の spurious apply、または drift correction の過剰/過少発火 |
     | 17-g | **`imm_cross_is_first_applicable` の caps 化で async/sync 分岐が変わっていないこと**。`chain[0] == ImmCross` の同一性チェックを外すと GJI 経路が誤って async 分岐へ流れる（実装時に踏みかけた） | Chrome / WezTerm × GJI | `with_app` 再入、または IME 適用の二重発火 |
@@ -2343,6 +2349,60 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     force-ON 経路が丸ごと無効化される、判明した中で最大の挙動変化」と
     記録している論点そのものである。ADR-087 Phase 3 の配線と一緒に
     判断すること。ここで単独に足してはならない。
+
+22. **【Phase C の既知の限界】同期 ROMAN 補完の世代照合
+    （`verify_gen_only`）は構造的に恒真であり、実効的な検出力は無い。**
+    §6 C-6 と `ime_controller.rs::romaji_pre_write` の差分表は
+    「世代照合: 無し → 不一致なら `Aborted`」と書いており、**保護が実効的に
+    働いているかのように読める**が、そうではない（2026-08-12 Opus レビュー）。
+
+    `romaji_pre_write` の実装:
+
+    ```rust
+    let focus_gen = view.focus.focus_gen;            // 1 回だけ読む
+    let target = ActuationTarget::capture_blocking(focus_gen)?;  // 値をそのまま格納
+    let outcome = set_ime_romaji_mode_for_target_blocking(target, focus_gen);
+    //            → target.verify_gen_only(focus_gen)
+    //              → self.focus_gen == current_focus_gen
+    ```
+
+    捕獲側と照合側に**同一の値**を渡しているため、比較は
+    `focus_gen == focus_gen` に退化する。間に `Output::ime_mode_focus_gen` を
+    読み直す点も await 点も無く、**`TargetVerifyOutcome::GenStale` は原理的に
+    返らない**。`TargetMoved` も `verify_gen_only` が hwnd を読み直さない以上
+    返らない（網羅性のために `match` の腕だけ残してある）。
+
+    **これは欠陥ではなく意図した形である**——同期経路には捕獲と write の間に
+    フォーカスが動く余地が構造的に無く、hwnd を読み直せば Win32 往復が
+    1 回から 2 回に倍増して force-ON 経路のレイテンシが変わる
+    （`.claude/rules/tuning-constants.md` の実測義務が掛かる軸）。
+    非同期版の `verify_still_current`（hwnd ライブクエリ + gen 照合）とは
+    保証の強さが違う、というだけのことである。
+
+    **正確な言い方**: 型としては世代照合の構造を持つが、現在の呼び出し方では
+    常に一致するため、**stale target への write を実際に検出・阻止する力は
+    無い**。「`ActuationTarget` 化したので同期 ROMAN 補完は stale write から
+    守られている」と読んではならない。同期経路で守られているのは
+    「宛先を write 関数が自己決定しない」（= 捕獲点が 1 箇所に固定され、
+    ログに残る）ところまでである。
+
+    **実効化する条件**（そのときに初めてこの構造が働き出す）:
+
+    - この経路に await 点が入る（`apply` の非同期化など）、あるいは
+    - `set_ime_romaji_mode_for_target_blocking` の呼び出し元が、write 直前に
+      `Output::ime_mode_focus_gen` を**読み直して**渡す形に変わる。
+
+    後者は `verify_still_current` の設計判断（gen は「hwnd を読み終えた瞬間」に
+    できるだけ近いタイミングで読む、2026-08-08 opus レビュー）と同じ発想で、
+    同期経路でも `Cell::get()` 1 回で実装できる。ただし**同期経路でそれが
+    値を持つのは、捕獲と write の間に別のフォーカス更新が挟まりうる形へ
+    コードが変わったとき**だけであり、現状では単に読み直しコストが増える。
+    入れるなら理由（どの新しい await / 再入が挟まったか）を添えること。
+
+    §9-17 の旧 17-d（「`Aborted(GenStale)` が出ないことを確認する」）は
+    **発火条件が原理的に存在しないためソーク項目として機能しない**ので
+    削除した。ログ `[imm-romaji] Aborted(GenStale)` が万一出たら、それは
+    「前提が崩れた」のではなく「上記のどちらかの実効化が入った」ことを意味する。
 
 ---
 
