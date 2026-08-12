@@ -33,24 +33,39 @@
 //! 効いて挙動が変わってしまうため、意図的に見送っている
 //! （`key_pipeline.rs` 該当箇所のコメント参照）。
 //!
-//! **未移行（INV-14/19 未対応、2026-08-08 Phase 3 設計調査で判明）:**
-//! `ime_controller.rs` の `ImmCrossProcessStrategy::apply`（L72）と
-//! `MsImeDirectStrategy::apply`（L175）が `crate::ime::set_ime_romaji_mode()`
-//! （宛先をライブクエリで自己決定する同期 IMC write）を呼んでいる。
-//! これは ADR-086 Phase 1〜2 の「7 経路」の数え漏れであり、`ActuationTarget`
-//! 未対応のまま残っている。移行しなかった理由:
-//! これらの `apply()` は完全に同期的な呼び出しチェーン
-//! （`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/
-//! `ir_apply_drift_correction`/`kp_stage_shadow_ime_toggle` 等、
-//! `spawn_local` を使わない同期経路）から直接呼ばれており、`ActuationTarget`
-//! を適用するには `ImeOpenStrategy::apply` 自体を非同期化する必要がある。
-//! これは呼び出し元すべて（`with_app` 再入回避のため意図的に同期設計されている
-//! 箇所を含む）を巻き込む大規模な再設計になり、ADR-086 Phase 3 のスコープ
-//! （open/close の**トリガー条件**の是正）を超える。実害が確認された場合に
-//! 改めて設計すること（`MsImeDirectStrategy::apply` は force-ON 系（open 軸）
-//! から実際に到達するため理論上のリスクではない。`ImmCrossProcessStrategy::apply`
-//! は現状の呼び出し元がいずれも ImmCross 非対応コンテキストに限定されており、
-//! 到達可能性は未確認）。
+//! **移行済み（ADR-089 §6 Phase C item 12、2026-08-12）:**
+//! `ime_controller.rs` の `ImmCrossProcessStrategy::apply` と
+//! `MsImeDirectStrategy::apply` が別々に呼んでいた
+//! `crate::ime::set_ime_romaji_mode()`（宛先をライブクエリで自己決定する同期
+//! IMC write。ADR-086 Phase 1〜2 の「7 経路」の数え漏れ）は、
+//! `ime_controller::apply_mechanism` の ROMAN 補完ステップ
+//! （`romaji_pre_write`）1 箇所へ統合し、
+//! `ActuationTarget::capture_blocking` → `set_ime_romaji_mode_for_target_blocking`
+//! 経由へ移した。低レベル API（`set_ime_romaji_mode` / `_async`）は削除済み。
+//!
+//! ADR-086 Phase 3 は「`ActuationTarget` 化には `ImeOpenStrategy::apply` 自体の
+//! 非同期化が必要」として見送っていたが、これは `verify_still_current` の
+//! hwnd 再クエリ（`async`）まで必須と読んだ場合にのみ正しい。**捕獲自体は
+//! `get_focused_hwnd()` 1 回**であり、旧 `set_ime_romaji_mode()` が内部で
+//! やっていたライブクエリと同一なので、「捕獲を write の外へ出す」だけなら
+//! 同期のままできる。再検証は focus 世代の照合のみで行う
+//! （`ActuationTarget::verify_gen_only` の doc 参照）。
+//!
+//! 到達可能性の裏取り（ADR-089 §6 Phase C 実施記録 C-7）: 全呼び出し元を
+//! 追跡した結果、**`ImmCrossProcessStrategy::apply` は同期経路から到達しない**
+//! ことが分かった（`executor.rs`/`key_pipeline.rs` は
+//! `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken`
+//! と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、
+//! `ir_apply_drift_correction` は ImmCross なら `set_ime_open` を使う分岐、
+//! `ime_refresh.rs` の GJI TsfNative 強制 ON と `key_pipeline.rs` の
+//! idle-conv-check は TsfNative 限定）。実際に到達するのは
+//! `MsImeDirectStrategy::apply`（force-ON 系）だけである。
+//!
+//! **残る穴**: 同期 ImmCross の open write（`set_ime_open_cross_process`）は
+//! 依然として自分でライブクエリする（150ms、フォールバック無し）。ROMAN 補完の
+//! 捕獲（30ms + `GetForegroundWindow` フォールバック）と hwnd 解決の意味論が
+//! 異なるため、両者を 1 回の捕獲へ寄せるには実機実測が要る
+//! （ADR-089 §9-18）。上記のとおり現時点で到達しないため潜在的な穴である。
 //!
 //! **撤去済み（2026-08-09 BUG-61 対応で追加 → BUG-61/BUG-62 実機確認により
 //! 無用と判明し撤去）:** `Runtime::tray_inject_romaji_mode_vk`

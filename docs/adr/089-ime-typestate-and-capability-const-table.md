@@ -8,7 +8,11 @@
 **追記（2026-08-12）**: **Phase A（観測側、§6）は実装済み**（`state/evidence.rs`
 新設、`ObservationStore` のプール分離、`architecture_guard.rs` の整理）。
 **Phase B（actuation 側、§6 item 6〜10）も同日実装済み**（実装記録は §6
-「Phase B 実施記録」節）。Phase C は未着手。Phase A 実装時に本文へ入れた訂正は次の 3 点で、いずれも
+「Phase B 実施記録」節）。**Phase C（§6 item 11〜12）も同日実装済み**——
+着手条件（ADR-088 トラック D の復旧）は**ユーザー判断で解除**され、方針は
+「実装 → 実機での長期ソークで検証」に変更された（§6 Phase C「ゲート解除」節、
+実装記録は §6「Phase C 実施記録」節、実機ソークの申し送りは §9-17）。
+Phase A 実装時に本文へ入れた訂正は次の 3 点で、いずれも
 「r5 までの記述が実コードと食い違っていた」ものである:
 
 - **dylint 2 crate は撤去対象ではなかった**（§7・§1.4・§3 冒頭の表・§8.1・§10）。
@@ -1462,10 +1466,19 @@ Phase B の失敗時に切り分けられなくなる。
 - **`ImmCrossOp::Untargeted`**（`key_pipeline.rs` の shadow-toggle OFF 経路）は
   宛先を捕獲しないまま。ADR-086 INV-14 の未移行分であり、`Targeted` へ寄せると
   挙動が変わる（実機ソーク必須）ため Phase C（item 12）。
+  → **Phase C でも移行しなかった**（§9-19/§9-20）。Phase C item 12 の実作業は
+  `set_ime_romaji_mode()` の是正に絞り、`Untargeted` は非同期チェーンの
+  chain 固定問題（§9-20）と同じ段で判断することにした。
 - **`set_ime_romaji_mode()` の同期 IMC write**（`ime_controller.rs` の
   ImmCross / MsImeDirect 内）は手つかず。§6 の分割線どおり Phase C。
+  → **Phase C で是正済み**（§6 Phase C 実施記録の item 12）。2 戦略から撤去し、
+  `apply_mechanism` の ROMAN 補完ステップ 1 箇所へ統合したうえで
+  `ActuationTarget::capture_blocking` → `set_ime_romaji_mode_for_target_blocking`
+  経由にした。低レベル API（`set_ime_romaji_mode` / `_async`）は削除した。
 - **`VerifiedTarget::FocusImplicit`** が `Verified` に入っていること自体が
   INV-14 の未達を表す。Phase C で潰す。
+  → **訂正: 潰せない。「未達」ではなく VK 送信機構の性質である**（§9-19）。
+  `SendInput` は宛先引数を取らないため、捕獲すべき hwnd が構造的に存在しない。
 
 #### 実機検証の状態
 
@@ -1536,6 +1549,90 @@ BUG-19（観測の出自偽装）/ BUG-33（give-up 後の観測書き込み）/
 変わらない。したがって Phase C は「実装しないと危険」ではなく
 「実装しても安全であることをソークで確かめる」種類の作業である。
 
+### Phase C 実施記録（2026-08-12）
+
+**item 11・12 とも実装した。** 改修 9 ファイル（新設ファイルは無し）。
+Linux の `cargo build` / `cargo test -p awase-windows` と、windows-gated コードの
+`cargo xwin check --target x86_64-pc-windows-msvc --all-targets` がグリーン。
+clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一致**
+（`git stash` 比較で diff 無し）。`cargo fmt -- --check` はグリーン
+（HEAD に残っていた既存の 1 件も解消した）。
+
+**`tests/ime_key_sequence_golden.rs` と `tests/golden/ime_key_sequences.txt` は
+1 バイトも変更していない。** これは目標ではなく Phase C の必須条件として
+扱った（実機検証ができない状態で「送るキーと順序」を動かさないため）。
+
+#### ADR の記述と実コードが食い違っていた点（実装時の判断）
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| C-1 | §7「維持するもの」: `tests/ime_key_sequence_golden.rs` に `caps().chain` の (P, K) **10 行を golden に追加する**」 | golden への行追加は golden ファイルの更新を伴い、「キー選択の回帰検知点を無変更で通す」という Phase C の必須条件と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux CI では実行されない | **golden には追加しなかった。** caps の全数テストは `state/app_ime_policy.rs` の `#[cfg(test)]`（**Linux で実行される**）と `ime_controller.rs` の `#[cfg(test)]`（windows-gated、`cargo xwin check --all-targets` で型検査）へ分けて置いた |
+| C-2 | §2.5「`default_feedback` の読み手 3 箇所と `focus_settle_ms` の読み手 4 箇所を `caps` 経由へ寄せる」 | 読み手は `open_warrant.rs` / `platform_state.rs` のアクセサ / `ime_refresh.rs` / `ime_model.rs` / `runtime/mod.rs` に散っており、すべて `ImeModel::app_policy`（`AppImePolicy` 値）を経由する。読み手側を `caps(p, k)` の直接呼び出しへ書き換えると、**`AppImePolicy` が持っていない K を各読み手が自前で調達する**ことになり、§2.5 が警告している「`focus_settle_ms` がフォーカス中に変わりうる動的値になる」変更を読み手の数だけ作り込む | §2.5 が併記していた**もう一方の選択肢「`AppImePolicy` を `caps` の薄いファサードに退化させる」を採った**。リテラルは `caps` 側にしか無いので二重 SSOT は解消し、読み手は 1 行も触らないので挙動リスクがゼロになる。K 分岐を入れるときに改めて読み手を見直す |
+| C-3 | §6 item 11「`tests/golden_scenarios.rs:175` の期待値を `caps(p,k).chain[0]` へ書き換える」 | `chain[0]` は **K 依存**（`Imm32Unavailable` は `GjiDirect`/`MsImeDirect`）だが、`ImeModel::app_policy` は `FocusChanged` 時点の **profile スナップショット**で K を持たない（§2.5）。そのまま照合できない。なお実際の行は `:175` ではなく `:186` で、`actuator_kind` を 3 variant の否定形で見るシナリオ 4 の assert だった | **`focus_settle_ms` での識別に置き換えた**（profile ごとに一意: 100/500/200）。このテストが見たいのは「reducer が FocusChanged で profile 由来のポリシーへ切り替えたか」であり、K を持ち込む必要がない。値そのものは `caps_settle_values_match_the_pre_phase_c_literals` が固定する |
+| C-4 | §2.8 は `caps` を「機構チェーンの唯一の宣言」とする | `runtime/open_chain.rs::run_open_chain_async` は ImmCross の書き込みを **await した後**にフォールバックへ進み、`fallback_write` が機構ごとに view を作り直して `is_applicable` を再評価する（旧 `apply_skipping_imm` と同じ「完了時点の状態で残りを選ぶ」意味論） | **非同期チェーンだけは `WriteMechanism::ALL` のまま**にした。起案時点の `(p, k)` で chain を固定すると、await 中にフォーカスが動いた場合に「完了時点では適用可能な機構が chain に載っていない」新しい取りこぼしが生まれる（起案時 Standard×MS-IME の chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。`ImeKindId` は推測値であり（INV-45）、await をまたいで K を固定するのは P20 が禁じる「安全側でないゲート」に当たる。§9-20 に残余論点として記録 |
+| C-5 | §6「Phase B でも消えなかったもの」: 「`VerifiedTarget::FocusImplicit` が `Verified` に入っていること自体が INV-14 の未達を表す。**Phase C で潰す**」 | VK 送信機構（`GjiDirect` / `MsImeDirect` / `KanjiToggle`）の実 write は `SendInput` であり、**宛先引数を取らない**（フォアグラウンドのキュー宛）。捕獲すべき hwnd が構造的に存在しない | **潰せない——`FocusImplicit` は「未達」ではなく機構固有の性質である**と訂正した（§9-19）。同期経路で hwnd を持つ唯一の write は ROMAN 補完であり、そちらを `ActuationTarget` 化した。`ImmCrossOp::Untargeted`（`key_pipeline.rs` の shadow-toggle OFF）は依然として未移行（§9-20） |
+| C-6 | §6 item 12「ADR-086 INV-14 の是正（ImmCross 同期 IMC write の `ActuationTarget` 化）」/ ADR-086 と `output/conv_actuation.rs` は「`ImeOpenStrategy::apply` 自体の非同期化が要る」としていた | `ActuationTarget::capture` が実際にやっているのは `get_focused_hwnd()` **1 回**であり、旧 `set_ime_romaji_mode()` が内部で行っていたライブクエリと同一である。**「捕獲を write の外へ出す」だけなら同期のままできる** | `capture_blocking` / `verify_gen_only` / `set_ime_romaji_mode_for_target_blocking` を新設し、**`apply` を非同期化せずに** ROMAN 補完を `ActuationTarget` 経由へ移した。「非同期化が要る」という ADR-086 Phase 3 の判断は、`verify_still_current` の hwnd 再クエリまで必須と読んだ場合にのみ正しい |
+| C-7 | — | 同期経路の `ImmCrossProcessStrategy::apply` の到達可能性を全呼び出し元で追跡した結果、**到達しない**ことが分かった（`executor.rs` / `key_pipeline.rs` は `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken` と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、`ir_apply_drift_correction` は `can_use_imm32_cross_process()` なら `set_ime_open` を使う分岐、`ime_refresh.rs:499` と `key_pipeline.rs:742` は TsfNative 限定） | `output/conv_actuation.rs` が「到達可能性は未確認」と書いていた点の**裏取りが取れた**（同ファイルの doc も更新した）。したがって item 12 の実害は `MsImeDirect` 経路にのみあり、そこには ImmCross の open write が無いので「ROMAN と open が別ウィンドウへ着弾する」問題は生じない |
+
+#### 実装したもの
+
+1. **`state/app_ime_policy.rs`（改修）** — `Caps { chain, feedback, focus_settle_ms }` と
+   `caps(p, k)`（10 行の const match）を新設。`AppImePolicy::from_profile` を
+   その薄いファサードへ退化させ、`actuator_kind` / `ImeActuatorKind` を廃止した。
+   Linux ユニットテスト 8 本（表のリテラル照合 / `Plain`・`Unknown` 行の同一性 /
+   K 非依存 / ファサード parity / 旧リテラルとの一致 / 到達不能な末尾要素の禁止）。
+2. **`state/actuation_chain.rs`（改修）** — `WriteMechanism::may_return_failed()`
+   （`ImmCross` のみ真。caps 表の末尾規則の根拠）と `needs_romaji_pre_write`
+   （ROMAN 補完の発火条件、ungated）を新設。ユニットテスト 6 本追加。
+3. **`ime_controller.rs`（改修）** — `apply` の chain を `caps_chain_for(view)` へ。
+   `imm_cross_is_first_applicable` も caps ベース（`chain[0] == ImmCross` の
+   同一性チェック付き）。`apply_mechanism` に ROMAN 補完ステップ
+   （`romaji_pre_write`）を追加し、2 戦略から `set_ime_romaji_mode()` 呼び出しを
+   撤去。windows-gated テスト 3 本を新設（caps chain と旧 ALL 走査の同値性 /
+   chain 全要素の適用可能性 / async 分岐判定の不変性）。
+4. **`ime.rs`（改修）** — `ActuationTarget::capture_blocking` / `verify_gen_only` /
+   `set_ime_romaji_mode_for_target_blocking` を新設し、
+   **`set_ime_romaji_mode()` と `set_ime_romaji_mode_async()` を削除**した
+   （後者は移行前から呼び出し元ゼロ）。
+5. **`state/ime_decision_view.rs` / `platform.rs`（改修）** — `FocusFacts` に
+   `focus_gen` を追加。値は `Output::ime_mode_focus_gen`（executor の async 経路が
+   `ActuationTarget::capture(focus_gen)` に渡すのと同じカウンタ）。
+6. **`runtime/open_chain.rs`（改修）** — chain を `ALL` のまま維持する理由を
+   モジュール doc に明記（C-4）。
+7. **`tests/architecture_guard.rs`（改修）** —
+   `sync_romaji_write_goes_through_a_captured_target` を新設（1 件）。
+8. **`tests/golden_scenarios.rs`（改修）** — `actuator_kind` 期待値の置き換え（C-3）。
+
+#### 新設した architecture_guard（1 件）
+
+- `sync_romaji_write_goes_through_a_captured_target` ——
+  (1) 削除したライブクエリ版（`set_ime_romaji_mode()` / `_async()`）が本番コードに
+  復活していないこと、(2) `ActuationTarget::capture_blocking(` と
+  `set_ime_romaji_mode_for_target_blocking(` の本番呼び出し元が
+  `src/ime_controller.rs` の 1 件ずつであること、(3) その 1 件が
+  `romaji_pre_write` の中にある（= `needs_romaji_pre_write` の条件判定を
+  迂回しない）こと、を固定する。
+
+#### Phase C で **Linux 上のビルド/テストで検証済み**の範囲
+
+| 検証したこと | 手段 |
+|---|---|
+| `caps` 表の 10 行が ADR §2.8 の表どおりであること | `caps_chains_match_the_adr089_table`（Linux 実行） |
+| `Plain`/`Unknown` 行が `ImmCross` 行と同一であること（INV-44） | `plain_and_unknown_caps_are_identical_to_imm_cross`（同上） |
+| `feedback` / `focus_settle_ms` が K 非依存であること（§2.5） | `caps_feedback_and_settle_are_k_independent`（同上） |
+| `caps` の値が Phase C 以前の `AppImePolicy` リテラルと一致すること | `caps_settle_values_match_the_pre_phase_c_literals` / `app_ime_policy_is_a_facade_over_caps`（同上） |
+| chain に到達不能な末尾要素が無いこと（INV-44・§4.9） | `caps_chains_have_no_unreachable_trailing_element`（同上） |
+| ROMAN 補完の発火条件が Phase C 以前の 2 戦略と同値であること | `romaji_pre_write_condition_matches_the_pre_phase_c_strategies`（同上、機構 4 × open 2 × K 2 × input_mode 5 の全数） |
+| 書き込み口の本数（生 write / 同期 ROMAN write / チェーン入口） | `architecture_guard.rs` の件数ガード群（同上） |
+| reducer が profile 由来のポリシーへ切り替えること | `golden_scenarios.rs` シナリオ 4/5（同上） |
+| **caps chain と Phase B までの `ALL` 走査が同じ機構列になること** | `ime_controller.rs::caps_chain_matches_legacy_all_scan`（**windows-gated**。`cargo xwin check --all-targets` で**型検査のみ**。実行は Windows 実機/CI が要る） |
+| windows-gated コード全体の型整合 | `cargo xwin check -p awase-windows --target x86_64-pc-windows-msvc --all-targets` |
+
+#### Phase C で **実機ソークでしか検証できない**残余リスク
+
+§9-17 に列挙した。**次にこのリポジトリを Windows 実機で確認する人は、まず §9-17
+を読むこと。**
+
 ### ADR-081 Phase 1d の凍結（提案）
 
 **`caps` へ寄せるなら、配線前の今が低コストなタイミングである。**
@@ -1605,8 +1702,8 @@ ADR-081 Phase 1a/1b/1c は試験実装済み・未配線であり、今なら撤
 
 | 資産 | 本 ADR での扱い |
 |---|---|
-| `tests/ime_key_sequence_golden.rs` | **維持し、Phase C で `caps().chain` の (P, K) **10 行**を golden に追加する。** 現行の `COMBOS` は 6 行（`ActiveImeKind` 2 値 × `AppImeProfile` 3 値）であり、`caps` の 10 行（`ImePolicyProfile` 5 値 × `ImeKindId` 2 値）とは**粒度が違う**——`Plain`/`Unknown` は `AppImeProfile` に対応物が無い（§1.3(e)）。両方を残し、対応関係を golden のヘッダに注記すること |
-| `tests/golden_scenarios.rs` | **維持。** `:175` の `actuator_kind` 期待値は Phase C で `caps(p,k).chain[0]` へ書き換える（§2.5）。`:190` / `:340` の `owns_physical_kanji` はそのまま |
+| `tests/ime_key_sequence_golden.rs` | **維持。1 バイトも変更していない**（Phase C の必須条件）。r5 までは「Phase C で `caps().chain` の 10 行を golden に追加する」としていたが、**追加しなかった**（§6 Phase C 実施記録 C-1）——行の追加は golden ファイルの更新を伴い「キー選択の回帰検知点を無変更で通す」と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux CI では実行されない。caps の全数テストは `state/app_ime_policy.rs`（Linux 実行）と `ime_controller.rs`（windows-gated）へ分けた。**なお同ファイルの `KEY_DOC` は「直前に `set_ime_romaji_mode()`」という、Phase C で削除した関数名を今も含んでいる**——挙動の記述（ROMAN ビットを先に立てる）は今も正確だが関数名は古い。更新には golden の再生成が要るため、**次に実機で golden を回すときにまとめて直すこと** |
+| `tests/golden_scenarios.rs` | **維持。** `actuator_kind` 期待値は Phase C で `focus_settle_ms` での profile 識別へ書き換えた（ADR が指示していた `caps(p,k).chain[0]` は K 依存で `ImeModel::app_policy` が K を持たないため使えない、§6 Phase C 実施記録 C-3）。`owns_physical_kanji` の 2 件はそのまま |
 | `tests/journal_replay.rs` / `tests/drift_correction_replay.rs` / `tests/journals/` | **維持。** §2.1 の `record_replayed(AnyObservation)` がこれらの入口になる |
 | `lints/no_vk_as_scan` | **維持**（本 ADR と直交する。VK を scan code として使わせない） |
 | `tests/architecture_guard.rs` の維持対象 | `drift_correction_giveup_and_confirmed_do_not_write_observations`（`:808`）、`ime_open_actuation_entry_points_are_accounted_for` の `ENTRY_POINTS`（`:670`）、`actuation_target_capture_is_first_await_in_spawn_local_block`（`:1045`）、`force_write_is_not_triggered_by_raw_focus_change`（`:1131`） |
@@ -1631,8 +1728,16 @@ r5 は「§2.2 のデータ witness 構築子が実配線された後に限り�
 本番コードから呼ばれていないことを `src/` 全体で固定する。これは削除した 1 件より
 広い範囲（witness 構築子の総本数）を 1 本で守る。
 
-`conv_write_call_sites_are_target_explicit`（`:943`）の削除は **Phase C**
-（ADR-086 INV-14 の是正完了後）。
+**訂正（Phase C 実装時、2026-08-12）**: `conv_write_call_sites_are_target_explicit`
+は「Phase C（ADR-086 INV-14 の是正完了後）に削除する」としていたが、
+**削除しなかった**。同テストが見ているのは削除済み API
+（`set_ime_romaji_mode_with_target_async(`）の**復活検知**であって、
+INV-14 の達成度ではない。INV-14 が是正されたからこそ「ライブクエリ版を
+再実装しないこと」を守り続ける必要がある（Phase A の教訓「型を書いたから
+削除してよい、ではない」と同じ理由）。Phase C は同じ役割のガードを 1 件
+**増やした**（`sync_romaji_write_goes_through_a_captured_target`。今回削除した
+`set_ime_romaji_mode()` / `_async()` の復活検知を含む）。
+**Phase A・B に続き、Phase C でも削除できたテキスト検査は正味 0 件である。**
 
 **削除せず「期待値を縮小して残す」もの**:
 
@@ -1779,7 +1884,18 @@ Phase A では対象外）。
   `apply_skipping_imm` は撤去し、ImmCross を機構チェーンの要素にしたことで
   `Failed` 後のフォールスルーは `run_chain_async` が行うようになった。
 - **`AppImePolicy` の死んだフィールド 2 つのうち 1 つ（`actuator_kind`）が消える**
-  （Phase C）。
+  （Phase C）。**実装済み（2026-08-12）** —— `ImeActuatorKind` ごと撤去した。
+  残る `owns_physical_kanji` は本番の読み手ゼロのままだが、BUG-46 の物理キー
+  抑止という別軸の概念なので `caps` へは吸収していない（§2.5）。
+- **capability の宣言が `caps(p, k)` の 1 つの match に集約された**（Phase C、
+  INV-44）。**ただし同期経路のみ**——非同期チェーン（`runtime/open_chain.rs`）は
+  `WriteMechanism::ALL` のままであり、そこでの一意性は「`ALL` は全 `caps`
+  チェーンの和集合である」という論証に依存している（§9-20）。
+- **`AppImePolicy` と `caps` の二重 SSOT は生じていない**（Phase C）。
+  `AppImePolicy::from_profile` を `caps` の薄いファサードへ退化させたため、
+  `focus_settle_ms` / `default_feedback` のリテラルは `caps` 側にしかない。
+  ADR-081 の `ImeProfileDriver` が `AppImePolicy` と parity テストで同期を
+  取っている構造はそのまま残る（SSOT は 2 本のままで、3 本には増えていない）。
 
 #### 保証水準の注記 — INV-43 は「コンパイル時保証」ではない
 
@@ -2042,6 +2158,79 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     述語を使っている（`most_recent_trusted_after(now, gave_up_at).is_some()`）
     ため、receipt に載せる情報は `converged` / `attempts` の 2 つでは足りない
     可能性がある。**API の形は配線時に決めること。**
+
+17. **【Phase C の申し送り】実機ソークでのみ検証できる残余リスク（2026-08-12）。**
+    Phase C は「実装 → 長期ソーク」という方針変更（§6 Phase C「ゲート解除」）の
+    下で入れた。Linux で固定できた範囲は §6「Phase C 実施記録」の表のとおりで、
+    **次の項目は実機でしか確かめられない**。ソーク中に異常が出たら、
+    `.claude/rules/experiment-logging.md` の義務（アプリ / IME 種別と状態 /
+    再現手順と症状）を満たした revert コミットを書くこと。
+
+    | # | 確認すること | 対象アプリ × IME | 異常の見え方 |
+    |---|---|---|---|
+    | 17-a | **`caps` chain 切り替えで送るキー・順序が変わっていないこと**。`caps_chain_matches_legacy_all_scan` は windows-gated で、Linux では型検査しか通っていない | 全 6 組み合わせ（Standard / Imm32Unavailable / TsfNative × GJI / MS-IME） | IME ON/OFF が効かない、または別のキーが飛ぶ |
+    | 17-b | **`ImmCross × MS-IME` で ImmCross が `Failed` を返したときに `KanjiToggle` へ落ちること**。caps chain が `[ImmCross, KanjiToggle]` になった唯一のフォールスルー経路 | LINE / Qt アプリ × MS-IME、`SendMessageTimeout` が実際にタイムアウトする状況 | IME が切り替わらないまま無反応 |
+    | 17-c | **ROMAN 補完（`set_ime_romaji_mode_for_target_blocking`）が Phase C 以前と同じ hwnd へ着弾していること**。hwnd 解決の関数・タイムアウト・フォールバックは変えていないが、**捕獲を write の外へ出したこと自体**は実機で初めて確かめられる | Windows Terminal / Edge × MS-IME（BUG-55 の子ウィンドウ問題が出るアプリ）、かなモードから IME ON | 最初の打鍵が JIS かな入力になる（`aiueo` → `ちいすいえの` 等） |
+    | 17-d | **`Aborted(GenStale)` が実際には発火しないこと**（同期経路には await 点が無いため常に一致するはずという設計前提）。`[imm-romaji] Aborted(GenStale)` のログが出たら前提が崩れている | 全アプリ、フォーカス切り替えの多い操作（Alt+Tab 連打） | ROMAN 補完が黙ってスキップされ、17-c と同じ症状 |
+    | 17-e | **ROMAN 補完のレイテンシが変わっていないこと**。Win32 往復は 1 回のままだが、`.claude/rules/tuning-constants.md` の実測義務に従い force-ON 経路の実測を取ること | Chrome / Edge × MS-IME、force-ON がホットパスに乗る打鍵 | 打鍵の取りこぼし・体感の引っかかり |
+    | 17-f | **`focus_settle_ms` / `default_feedback` が `caps` 経由になっても同じ値で使われていること**。ファサード化なので値は同じはずだが、`settle_until` と drift correction のタイミングに効く | Chrome（500ms）/ WezTerm（200ms）/ LINE（100ms） | フォーカス直後の spurious apply、または drift correction の過剰/過少発火 |
+    | 17-g | **`imm_cross_is_first_applicable` の caps 化で async/sync 分岐が変わっていないこと**。`chain[0] == ImmCross` の同一性チェックを外すと GJI 経路が誤って async 分岐へ流れる（実装時に踏みかけた） | Chrome / WezTerm × GJI | `with_app` 再入、または IME 適用の二重発火 |
+
+    **ソークの最低期間の目安**: `docs/experiments.md` エントリ01 が示すとおり、
+    IME キー選択の不具合は「特定アプリ × 特定 idle 時間」でしか出ないことが
+    ある。1 日の通常利用で 17-a/17-c/17-f をひととおり踏むこと、
+    17-b は再現条件が稀なのでログ（`[apply-ime] ImmCrossProcess failed,
+    trying next fallback`）の有無で事後確認すること。
+
+18. **【Phase C の既知の限界】同期 ImmCross 経路の open write は依然として
+    自分でライブクエリする。**
+    `ImmCrossProcessStrategy::apply` の `set_ime_open_cross_process(open)` は
+    `get_gui_thread_info_with_timeout(150ms).focused_hwnd`（フォールバック無し）
+    で宛先を write 時点に決める。一方 Phase C で `ActuationTarget` 化した
+    ROMAN 補完は `get_focused_hwnd()`（30ms + `GetForegroundWindow`
+    フォールバック）で捕獲する。**したがって同期 ImmCross 経路では
+    ROMAN と open が別ウィンドウへ着弾しうる**（ADR-086 §1.2 欠陥1 と同型）。
+    捕獲を共有させるには 2 つの hwnd 解決のどちらかへ寄せる必要があり、
+    どちらへ寄せても **タイムアウト（30ms ↔ 150ms）とフォールバックの有無**
+    という意味論が変わる——前者へ寄せると hung なフォアグラウンドで
+    `GetForegroundWindow` にフォールバックし BUG-55 の「無関係な互換ウィンドウ
+    へ書く」を再現しうるし、後者へ寄せると MS-IME 経路の最悪レイテンシが
+    +120ms 変わる。**実機ソーク（特に 17-e の実測）が取れてから判断すること。**
+    なお **同期 ImmCross 経路は現時点で到達しない**（§6 Phase C 実施記録 C-7 で
+    全呼び出し元を追跡した）ため、これは「潜在的な穴」であって「今起きている
+    不具合」ではない。到達させる変更を入れるときは同時にここを閉じること。
+
+19. **【訂正】`VerifiedTarget::FocusImplicit` は「INV-14 の未達」ではない。**
+    §6「Phase B でも消えなかったもの」は「`FocusImplicit` が `Verified` に
+    入っていること自体が INV-14 の未達を表す。Phase C で潰す」と書いていたが、
+    **潰せない**。VK 送信機構（`GjiDirect` / `MsImeDirect` / `KanjiToggle`）の
+    実 write は `SendInput` であり、**宛先引数を取らない**（フォアグラウンドの
+    入力キュー宛に配送される）。捕獲すべき hwnd が構造的に存在しない以上、
+    `FocusImplicit` はこれらの機構の**性質**であって未移行の印ではない。
+    INV-14 が意味を持つのは hwnd を引数に取る write（IMC 系）だけであり、
+    同期経路でそれに当たるのは ROMAN 補完のみ——それは Phase C で
+    `ActuationTarget` 化した。**残る `FocusImplicit` の「本当の未移行分」は
+    `ImmCrossOp::Untargeted`（`key_pipeline.rs` の shadow-toggle OFF 経路）
+    1 件だけ**である（§9-20）。
+
+20. **【Phase C の既知の限界】非同期チェーンは `caps` を使っていない。**
+    `runtime/open_chain.rs::run_open_chain_async` の chain は
+    `WriteMechanism::ALL` のままである（§6 Phase C 実施記録 C-4）。理由は
+    「ImmCross の await をまたいでフォーカス（したがって profile と K）が
+    動きうるため、起案時点の `caps(p, k).chain` を固定すると完了時点で
+    適用可能な機構を取りこぼす」——`ImeKindId` が推測値である以上
+    （INV-45）、await をまたいで K を固定するのは P20 が禁じる形のゲートである。
+    したがって **INV-44 の「capability は const 表 1 箇所」は、同期経路では
+    型どおり成立し、非同期経路では『`ALL` は全 `caps` チェーンの和集合であり、
+    `is_applicable` + `falls_through` で絞れば同値』という**論証**に依存して
+    いる**（同値性は `caps_chain_matches_legacy_all_scan` が固定するが、
+    それは「(p, k) が変わらない場合」の同値である）。
+    恒久策の候補は 2 つ:
+    (a) `run_chain_async` が各ステップで chain を引き直せるようにする
+    （`&[WriteMechanism]` ではなく `FnMut() -> &'static [WriteMechanism]` を取る）、
+    (b) `ImmCrossOp::Untargeted` を `Targeted` へ寄せ（§9-19）、
+    ImmCross 完了後にフォーカスが動いていたら `Aborted` にしてチェーン自体を
+    打ち切る。**どちらも実機ソーク必須**であり、Phase C では採らなかった。
 
 ---
 

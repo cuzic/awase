@@ -7,11 +7,32 @@ Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）、Ph
 （conv 軸の INV-15 是正、`force_pending` による arm-on-focus /
 fire-on-intent）、Phase 3（open/close 軸への同適用、`force_open_pending`。
 item 3 の SendInput ターゲット検証のみ INV-13 の例外として撤退）は
-実装完了（2026-08-08）。**item 0（`ime_controller.rs` の同期ライブクエリ
-IMC write）は未移行のまま記録のみで item 1 を先行投入した**——当初
-「item 3 着手前に必須」としていた前提を満たせていない。この同期 IMC write
+実装完了（2026-08-08）。~~**item 0（`ime_controller.rs` の同期ライブクエリ
+IMC write）は未移行のまま記録のみで item 1 を先行投入した**~~——当初
+「item 3 着手前に必須」としていた前提を満たせていなかった。この同期 IMC write
 （実測根拠は `tuning.rs` の導出コメントより最大 ~100ms）は force-ON 発火の
-たびに打鍵ホットパスに乗る（§5 Phase 3 item 0 参照）。Phase 2/3 とも
+たびに打鍵ホットパスに乗る（§5 Phase 3 item 0 参照）。
+
+**追記（2026-08-12）: item 0 は
+[ADR-089](089-ime-typestate-and-capability-const-table.md) の Phase C item 12 で
+是正済み。** `ImmCrossProcessStrategy::apply` / `MsImeDirectStrategy::apply` の
+`set_ime_romaji_mode()` を撤去し、`ime_controller::apply_mechanism` の
+ROMAN 補完ステップ 1 箇所へ統合したうえで
+`ActuationTarget::capture_blocking` → `set_ime_romaji_mode_for_target_blocking`
+経由にした（ライブクエリ版の低レベル API `set_ime_romaji_mode` / `_async` は
+削除）。**「`ImeOpenStrategy::apply` 自体の非同期化が要る」という本 ADR
+Phase 3 の判断は、`verify_still_current` の hwnd 再クエリまで必須と読んだ
+場合にのみ正しかった**——捕獲そのものは `get_focused_hwnd()` 1 回であり、
+旧 `set_ime_romaji_mode()` が内部でやっていたライブクエリと同一なので、
+同期のまま捕獲を write の外へ出せる。再検証は focus 世代の照合のみで行う
+（同期経路には await 点が無く hwnd が動く余地が構造的に無いため。
+Win32 往復の回数は 1 回のまま＝ホットパスのレイテンシも変えていない）。
+**残る穴**: 同期 ImmCross の open write（`set_ime_open_cross_process`）は
+依然として自分でライブクエリする（ADR-089 §9-18。ただし同経路は現時点で
+到達しないことを全呼び出し元の追跡で確認済み）。**実機ソーク未実施**
+（確認項目は ADR-089 §9-17）。
+
+Phase 2/3 とも
 実機ソーク未実施（測定項目は §5 Phase 2/Phase 3、タスク #17 と同一
 セッションで実施予定。Phase 3 のソークは #17 の**後に**別セッションで行い、
 conv 軸/open 軸の副作用を切り分けること）。Phase 4（コンパイラ強制）は
