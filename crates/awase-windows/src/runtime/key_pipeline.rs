@@ -726,10 +726,16 @@ impl Runtime {
         };
         self.platform.timer.kill(TIMER_IME_REFRESH);
         let generation = self.platform_state.ime.allocate_event_generation();
-        self.platform_state
-            .ime
-            .handle_engine_set_open(target, false, false, generation, now_tick);
         if matches!(engine, EngineSync::DirectInput) {
+            // DirectInput: desired_open=false の belief 書き込みが
+            // is_eligible_for_ime_force_on() 経由で force-ON 3経路（ADR-086
+            // conv_mode_policy=force 実機ソーク中の経路含む）・
+            // last_user_explicit_off_ms・from_explicit_off_intent を支えている
+            // load-bearing な書き込みのため、従来どおり handle_engine_set_open を使う
+            // （BUG-51 追補 v3 pre-mortem #2、「なぜ DirectInput を変えないか」）。
+            self.platform_state
+                .ime
+                .handle_engine_set_open(target, false, false, generation, now_tick);
             // conv の英数モード観測は IME-ON の確証。direct belief で already_matched を
             // バイパスして apply する。
             let belief = crate::output::OpenBelief {
@@ -744,6 +750,20 @@ impl Runtime {
                 outcome,
                 None,
                 crate::state::ime_event::OpenApplyReason::DriftCorrection,
+            );
+        } else {
+            // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
+            // 明示操作ではない。発火条件が effective_open==true を要求するため
+            // desired_open へ書くと desired_open := effective_open という循環 echo
+            // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
+            // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
+            // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
+            self.platform_state.ime.handle_engine_activation_sync(
+                target,
+                false,
+                false,
+                generation,
+                now_tick,
             );
         }
     }
@@ -1037,6 +1057,20 @@ impl Runtime {
                     )
                 }
             };
+            if applied
+                && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
+            {
+                // IntentStore（BUG-51 追補 v3）: IME/エンジン ON/OFF コンボ等、
+                // 本物のユーザー操作であることが origin から確定している場合のみ
+                // 記録する。`applied` ゲートは v1 の意味論（chord/focus-settle
+                // フィルタで belief 書き込み自体がスキップされた場合は記録しない）を
+                // そのまま保存する。
+                self.platform_state.ime.record_explicit_intent(
+                    new_ime_on,
+                    crate::state::ime_event::UserIntentSource::Command,
+                    tick_ms,
+                );
+            }
             // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
             // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
             // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に

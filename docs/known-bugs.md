@@ -6148,6 +6148,119 @@ BUG-57（Pushbullet 通知によるプロセス跨ぎのフォーカス奪取）
 BUG-63（`derive_open_filtered` の Medium 単独合意で belief が反転する同型の
 機構）、[ADR-087](adr/087-open-belief-actuation-warrant-separation.md)
 （§5 Phase 1'、`state/intent_store.rs`）。
+
+### 追補2（v3: 3ラウンドの Opus pre-mortem を経た IntentStore 配線の訂正）
+
+上記追補（v1、`21ca84d1`）の実装は、コミット後の独立レビュー（Opus によるアドバ
+ーサリアル pre-mortem、以下同一エージェントで3ラウンド）で **as-written では
+出荷不可** と判定され、設計を2回訂正（v2→v3）した上で3ラウンド目で明示的な
+GO（ブロッキング指摘ゼロ）を得た。実装は v3 設計に基づく。
+
+**pre-mortem #1（v1 に対する必須指摘3件）:**
+
+1. conv 由来の内部同期（`EngineSync::SetOpen(RomajiRecovered)`/`DirectInput`）が
+   `UserImeSetIntent{Command}` を経由するため、v1 の `dispatch_event` が
+   これも無差別に IntentStore へ record してしまい、壊れた conv 読み1件が
+   `FocusChanged` を生き延びる**偽の明示 OFF 意図**になる（v1 適用前より悪化。
+   BUG-19/BUG-48 が既に潰した「観測を意図に偽装する」パターンの再燃）。
+2. `apply_hwnd_cache_restore` の cache-miss 側と `reset_stale_ime_on_for_imm_broken`
+   （BUG-16 系 safety-net）が IntentStore を無効化しないため、この安全デフォルト
+   がstale な IntentStore エントリに黙って握り潰される。
+3. `EXPLICIT_OFF_INTENT_TTL_MS` が `HWND_CACHE_MAX_AGE_MS`（1時間、未実測
+   プレースホルダ）を転用しており、IntentStore が実際に読まれるようになった
+   時点で、上記すべての失敗モードの最悪持続時間になっていた。
+
+**v2 設計 → pre-mortem #2（v2 も no-go、外科的訂正が必要と判定）:**
+
+v2 は「`RomajiRecovered`/`DirectInput` 両方を `handle_engine_activation_sync` へ
+リダイレクト」「hit/miss 両方で無条件 `remove()`」「TTL 30秒」を提案したが、
+以下の理由で却下された。
+
+- `DirectInput` のリダイレクトは危険: その `desired_open=false` 書き込みは
+  `is_eligible_for_ime_force_on()` が gate する3つの force-ON 経路
+  （**うち1つは ADR-086 `conv_mode_policy=force` の実機ソーク中の本番経路**）・
+  `last_user_explicit_off_ms`・`from_explicit_off_intent` の load-bearing な
+  入力であり、外すと BUG-54 型（20ms 無限再送）の退行を再現しかねない。
+  `RomajiRecovered` のみのリダイレクトなら安全（発火条件が `effective_open==true`
+  を要求するため、書き込みは `desired_open := effective_open` という循環 echo
+  ——`ime_model.rs` の `EngineActivationSync` arm が明文で禁じるパターン——の
+  残存インスタンスに過ぎない）。
+- hit 側の無条件 `remove()` は逆リスク: フォーカス滞在が
+  `MIN_FOCUS_DURATION_MS`（100ms）未満だと退場時の cache 保存自体がスキップ
+  され、古い既存キャッシュが残ったまま復帰時に hit する——BUG-57 型の
+  フォーカス奪取（まさに本修正が守りたいシナリオ）で、たった今の新しい
+  明示意図がキャッシュに蒸発させられる。
+- miss 側の `remove()` は目的と矛盾: cache miss で「この窓については何も
+  分からない」状態のときに、唯一残っている情報（明示意図）を消して
+  `HeuristicDefault`（Low confidence の「とりあえず ON」）を勝たせるのは倒錯。
+- 30秒 TTL 自体は妥当だが、`HwndImeCache`（`(pid, class)` キー、独立に
+  `HWND_CACHE_MAX_AGE_MS`=1時間）が `effective_open()` の結果（IntentStore
+  経由で洗浄済みの値）を退場時に保存し `HwndCacheRestored` で `desired_open`
+  へ再注入する**別経路**が新たに発見された——「最悪1時間→30秒」という総括は
+  IntentStore 単体にのみ正しい。
+
+**v3 設計 → pre-mortem #3（GO、ブロッキング指摘ゼロ）:** 実装した内容は以下
+（コード参照は `crates/awase-windows/src/state/platform_state.rs`・
+`crates/awase-windows/src/runtime/key_pipeline.rs`・
+`crates/awase-windows/src/tuning.rs`・
+`crates/awase-windows/src/state/conv_classify.rs`）。
+
+1. `kp_apply_conv_engine_sync`: `EngineSync::SetOpen(RomajiRecovered)` のみ
+   `handle_engine_activation_sync` へ。`DirectInput` は従来どおり
+   `handle_engine_set_open` を使う（actuation で送る VK は両方とも無変更）。
+2. `IntentStore::record()` を `dispatch_event` の汎用フックから、新設した
+   `record_explicit_intent()`（呼び出してよいのは `write_sync_key`/
+   `write_physical_key`/`kp_stage_post_decision` の `ExplicitUserAction`
+   分岐の3箇所のみ、`applied` ゲート付き）へ移設。`DirectInput` は
+   `kp_apply_conv_engine_sync` という別の呼び出し元から `handle_engine_set_open`
+   を呼ぶため、この移設だけで自然に IntentStore から除外される。
+   `tests/architecture_guard.rs::intent_store_record_call_sites_are_limited_to_explicit_user_actions`
+   でこの3箇所限定を機械的に固定。
+3. `apply_hwnd_cache_restore` の `remove()` はタイムスタンプ比較でゲート
+   （`HwndImeSnapshot.recorded_ms >= RecordedTargetIntent.recorded_at_ms` の
+   ときのみ無効化、意図の方が新しければ残す）。`reset_stale_ime_on_for_imm_broken`
+   は `remove()` する代わりに、`last_intent` と対称の early-return を追加
+   （有効な IntentStore エントリがある間は `HeuristicDefault` を書かない）。
+4. `EXPLICIT_OFF_INTENT_TTL_MS` を 1時間→30秒（`EXPLICIT_ON_INTENT_TTL_MS`
+   の3倍）に変更。tuning.rs の doc を「意図の寿命」ではなく「フォーカス断絶
+   ギャップのカバー窓」として書き直し、`HwndImeCache` 経由の1時間残存経路を
+   残存リスクとして明記。
+5. `effective_open()` に override 状態遷移時のみ出す INFO 診断ログを追加
+   （`ImeStateHub::intent_override_logged: Cell<bool>` で dedup）。実機
+   テストが一切実行できない以上、次のインシデントをログから再構築できる
+   ようにするための必須項目（pre-mortem #2 で「推奨」→ #3 で「必須」に格上げ）。
+
+**開示済みの残存リスク（意図的にスコープ外）:**
+
+- `HwndImeCache` 経由で IntentStore 由来の値が最大1時間残存する経路
+  （上記4参照、既存構造でこの修正のスコープ外）。
+- `current_focus` は `FocusChanged`（PID 変化時のみ発火）でしか更新されない
+  ため、IntentStore の実効粒度は「同一ウィンドウ」ではなく実質
+  「最後に PID が変わった時点の対象」＝ per-process に近い
+  （pre-mortem #1 角度1/3、上記追補（v1）の「同一対象（同一 `HwndId`）へ
+  フォーカスが戻った場合に限り」という表現はこの意味で訂正する）。
+- `explicit_intent()`（`check_drift_correction` が使う）は IntentStore を
+  見ない非対称が残る（pre-mortem #1 角度4、実害は限定的と評価済み——
+  actuation 側は hub の `effective_open()` を経由するため綱引きにはならない）。
+- OFF 意図が生きている間 `reset_stale_ime_on_for_imm_broken` の
+  `HeuristicDefault{open:true}` が記録されなくなるため、30秒 TTL 失効の瞬間
+  に shadow 側を ON へ引き戻す足場が v1 より減る（方向としては ON バイアス
+  復活の防止であり改善だが、v1 との挙動差として記録しておく）。
+- 30秒という値自体は実測ではなく `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（10秒）
+  precedent からの類推。今後の調整には実測を伴うこと（`tuning-constants.md`）。
+
+**検証:** `cargo test -p awase-windows --lib`（342件 pass、`state::platform_state`
+は `#[cfg(windows)]` のため対象外）、`cargo test -p awase-windows --test
+architecture_guard`（23件 pass、新設の
+`intent_store_record_call_sites_are_limited_to_explicit_user_actions` 含む）、
+`cargo xwin check --tests`/`cargo xwin clippy -- -D warnings`（msvc target、
+警告ゼロ）、`cargo dylint --all`（gnu target、警告ゼロ）。`platform_state.rs`
+に v3 検証用の回帰テスト十数件を追加（既存5件は `record_explicit_intent`
+経由に書き換え）。**wine 未導入のためこのサンドボックスでは実機相当のテスト
+実行が一切できない点は v1 から変わらず——次回実機で Ctrl+無変換 →
+（プロセスを跨ぐ）フォーカス変更 → 再フォーカスという手順を踏み、Engine が
+ON に戻らないこと、および `[intent-store] effective_open override` ログが
+想定どおりの箇所でのみ出ることを確認すること。**
 ## BUG-52: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
 
 **症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で

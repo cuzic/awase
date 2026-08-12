@@ -444,9 +444,13 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     let expected: &[(&str, usize, &str)] = &[
         (
             "state/platform_state.rs",
-            4,
+            9,
             "typed writer 定義 3 + handle_engine_set_open 内部委譲 1 (Decision 経由 \
-             SetOpen — 救済: kp_stage_post_decision の PostSetOpenEisuReset)",
+             SetOpen — 救済: kp_stage_post_decision の PostSetOpenEisuReset) + \
+             BUG-51 追補 v3 の IntentStore 回帰テスト内での write_sync_key/\
+             write_physical_key 直接呼び出し 5 件（新しい本番 IME-ON 経路ではなく \
+             既存 typed writer をテストから呼んでいるだけなので eisu-reset の \
+             追加配線は不要）",
         ),
         (
             "runtime/key_pipeline.rs",
@@ -621,6 +625,28 @@ fn conv_open_inference_source_is_limited_to_report_and_gate() {
          source-aware gate)と異なります(実際: {count})。\n\
          conv ビット由来の open 推論の dispatch は必ず `report_conv_open_inference()` \
          経由にし、confidence の上限 (Medium) を勝手に上げないでください。"
+    );
+}
+
+/// `IntentStore::record()` を直接呼んでよいのは `record_explicit_intent`
+/// （本物のユーザー操作と確定できる3箇所からのみ呼ばれる）の内部だけ
+/// （BUG-51 追補 v3）。`dispatch_event` の汎用フックから呼ぶと、conv 由来の
+/// 内部同期（`EngineSync::DirectInput` 等が `UserImeSetIntent{Command}` を
+/// dispatch する経路）まで「本物のユーザー操作」として永続化してしまう
+/// （pre-mortem #1 角度2）。
+#[test]
+fn intent_store_record_call_sites_are_limited_to_explicit_user_actions() {
+    let path = "src/state/platform_state.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production.matches("self.intent_store.record(").count();
+    assert_eq!(
+        count, 1,
+        "{path} 内で `self.intent_store.record(` の本番コードでの使用箇所数が \
+         想定(1 = record_explicit_intent 内のみ)と異なります(実際: {count})。\n\
+         新しい呼び出し元を足す前に、それが conv 由来の内部同期ではなく \
+         本物のユーザー操作であることを確認し、record_explicit_intent 経由に \
+         してください。"
     );
 }
 

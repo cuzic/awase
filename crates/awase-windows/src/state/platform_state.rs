@@ -63,13 +63,21 @@ pub(crate) struct ImeStateHub {
     /// `EXPLICIT_IME_SUPPRESS_MS` の間スキップするために参照する。
     last_explicit_ime_action_ms: u64,
 
-    /// 対象 (`HwndId`) ごとの明示意図ストア（ADR-087 §5 Phase 3 item15 前提配線）。
+    /// 対象 (`HwndId`) ごとの明示意図ストア（ADR-087 §5 Phase 1' 配線、
+    /// BUG-51 追補 v3）。
     ///
-    /// `dispatch_event` が `last_user_explicit_off_ms` と同じ条件（SyncKey /
-    /// PhysicalImeKey / Command 経由の `UserImeSetIntent`）で `record()` する
-    /// write-only なフィールド。読み取り側（`issue_open_warrant()` への実配線）は
+    /// `record_explicit_intent`（本物のユーザー操作と確定できる3箇所からのみ
+    /// 呼ばれる）が書き込み、`effective_open()` が `FocusChanged` をまたいだ
+    /// 明示意図の優先読み取りに使う。`issue_open_warrant()` への配線は
     /// まだ無く、Phase 3 本体のスコープ。
     intent_store: super::intent_store::IntentStore,
+
+    /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
+    /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
+    /// ログを出すための dedup 用（BUG-51 追補 v3）。`&self` の `effective_open()`
+    /// から更新するため `Cell`——`ImeStateHub` は単一 UI スレッドが所有する
+    /// （`with_app` パターン）ため `!Sync` でも問題ない。
+    intent_override_logged: std::cell::Cell<bool>,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -95,6 +103,7 @@ impl ImeStateHub {
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
+            intent_override_logged: std::cell::Cell::new(false),
         }
     }
 }
@@ -123,11 +132,12 @@ impl ImeStateHub {
                 } else {
                     self.last_user_explicit_off_ms = tick_ms.0;
                 }
-                // IntentStore（ADR-087 §5 Phase 1' 配線、BUG-51 追補）。
-                // current_focus が無い（フォーカス未確定）場合は対象が分からないため記録しない。
-                if let Some(hwnd) = self.shadow_model.current_focus() {
-                    self.intent_store.record(hwnd, *target, *source, tick_ms);
-                }
+                // IntentStore への record() はここでは行わない（BUG-51 追補 v3 で移設）。
+                // Command ソースは conv 由来の内部同期（EngineSync::DirectInput →
+                // handle_engine_set_open → write_set_open_request）でも dispatch される
+                // ため、このイベントだけでは「本物のユーザー操作」と区別できない。
+                // 記録は実ユーザー操作と確定できる呼び出し元
+                // （record_explicit_intent の doc 参照）が行う。
             }
         }
         let event_for_journal = event.clone();
@@ -445,17 +455,54 @@ impl ImeStateHub {
     /// クリアされない（ON/OFF 非対称 TTL、`intent_store.rs` 参照）。**同一対象への
     /// フォーカスが戻った場合に限り**、`last_intent` 消失後もこのエントリを
     /// `desired_open` の代わりに使うことで、上記の壊れた観測へのフォールバックを
-    /// 回避する（ADR-087 §5 Phase 1' item8 が要求する配線）。
+    /// 回避する（ADR-087 §5 Phase 1' item8 が要求する配線）。`current_focus` は
+    /// `FocusChanged`（PID 変化時のみ発火）でしか更新されないため、実効粒度は
+    /// 「同一ウィンドウ」ではなく実質「最後に PID が変わった時点の対象」＝
+    /// per-process に近い点に注意（pre-mortem #1 角度1/3）。
     ///
-    /// `PanicReset`/`HwndCacheRestored` は同じ対象の `IntentStore` エントリを
-    /// `dispatch_event` 側で無効化してから `desired_open` を書き換えるため、この
-    /// 上書きが安全弁より優先されて古い意図が復活することはない。
+    /// **記録対象は本物のユーザー操作 3 箇所に限定される**（`record_explicit_intent`
+    /// の doc 参照、BUG-51 追補 v3）。conv 由来の内部同期（`EngineSync::
+    /// SetOpen(RomajiRecovered)`/`DirectInput`）はここに記録されない——v1 では
+    /// これらも `UserImeSetIntent{Command}` 経由で記録され、壊れた conv 読み1件が
+    /// `FocusChanged` を生き延びる偽の明示意図になるという、この override 自体が
+    /// 生む新しい退行があった（pre-mortem #1 角度2）。
+    ///
+    /// `PanicReset` は同じ対象の `IntentStore` エントリを無条件に無効化する
+    /// （`apply_panic_reset`、安全弁は時系列比較の余地なく常に最新の決定）。
+    /// `HwndCacheRestored` はキャッシュの記録時刻が意図の記録時刻以上の場合のみ
+    /// 無効化する（`apply_hwnd_cache_restore`、フォーカス滞在が短くキャッシュ
+    /// 保存自体がスキップされた場合に新しい意図をより古いキャッシュへ明け渡さない
+    /// ため、pre-mortem #2）。`reset_stale_ime_on_for_imm_broken`（BUG-16 系
+    /// safety-net）は有効な `IntentStore` エントリがある間、`Low` confidence の
+    /// 安全デフォルトをそもそも書かずに温存する（同、逆転防止）。
     pub(crate) fn effective_open(&self) -> bool {
         if let Some(hwnd) = self.shadow_model.current_focus() {
             let now_ms = TickMs(crate::hook::current_tick_ms());
             if let Some(intent) = self.intent_store.lookup(hwnd, now_ms) {
+                let shadow = self.shadow_model.effective_open();
+                if intent.open != shadow {
+                    if !self.intent_override_logged.get() {
+                        log::info!(
+                            "[intent-store] effective_open override 開始: hwnd={hwnd:?} \
+                             intent.open={} (source={:?}, age={}ms) shadow_model={shadow}",
+                            intent.open,
+                            intent.source,
+                            now_ms.0.saturating_sub(intent.recorded_at_ms.0),
+                        );
+                        self.intent_override_logged.set(true);
+                    }
+                } else if self.intent_override_logged.get() {
+                    log::info!("[intent-store] effective_open override 終了 (shadow が一致)");
+                    self.intent_override_logged.set(false);
+                }
                 return intent.open;
             }
+        }
+        if self.intent_override_logged.get() {
+            log::info!(
+                "[intent-store] effective_open override 終了 (intent 消失/期限切れ/フォーカス変更)"
+            );
+            self.intent_override_logged.set(false);
         }
         self.shadow_model.effective_open()
     }
@@ -806,11 +853,32 @@ impl ImeStateHub {
                 },
                 tick_ms,
             );
-            // IntentStore（BUG-51 追補配線）: このキャッシュ復元と矛盾する古い明示意図が
-            // 同じ対象に残っていると、`effective_open()` がキャッシュ復元より古い意図を
-            // 優先してしまう。apply_panic_reset と同じ理由で無効化する。
+            // IntentStore（BUG-51 追補 v3）: 無条件 remove() は「フォーカス滞在
+            // 100ms 未満（MIN_FOCUS_DURATION_MS）だと退場時の cache 保存自体が
+            // スキップされる」ケース（BUG-57 型のフォーカス奪取）で、たった今の
+            // 新しい明示意図より古いキャッシュを勝たせてしまう（pre-mortem #2）。
+            // 記録時刻を比較し、キャッシュのほうが新しい（意図と同時刻を含む）場合
+            // のみ無効化する。意図の方が新しい場合はエントリを残し、
+            // `effective_open()` が IntentStore を優先することで新しい意図を守る。
             if let Some(hwnd) = self.shadow_model.current_focus() {
-                self.intent_store.remove(hwnd);
+                let intent_recorded_ms: Option<u64> = self
+                    .intent_store
+                    .lookup(hwnd, tick_ms)
+                    .map(|i| i.recorded_at_ms.0);
+                match intent_recorded_ms {
+                    // 意図が無い/期限切れ → remove は無害な掃除（冪等）。
+                    None => self.intent_store.remove(hwnd),
+                    Some(intent_ms) if snap.recorded_ms >= intent_ms => {
+                        self.intent_store.remove(hwnd);
+                    }
+                    Some(intent_ms) => {
+                        log::info!(
+                            "[intent-store] cache restore より新しい明示意図を保持 \
+                             (cache recorded_ms={} < intent recorded_at_ms={intent_ms})",
+                            snap.recorded_ms,
+                        );
+                    }
+                }
             }
             // キャッシュされた input_mode が ObservedEisu の場合、生の観測と同じ強さで
             // engine activation を塞がせない（cache_restore_eisu_guard 参照）。
@@ -852,6 +920,20 @@ impl ImeStateHub {
                 intent.source
             );
             return;
+        }
+        // IntentStore（BUG-51 追補 v3）: last_intent は FocusChanged でクリアされるが、
+        // IntentStore の有効エントリは同一対象への明示意図がまだ生きていることを
+        // 意味する。last_intent と同じ扱いで safety-net（HeuristicDefault ON）を
+        // 書かずに温存する。エントリを消して heuristic を通すのは「観測ゼロの推測が
+        // 明示意図に勝つ」逆転になるため行わない（pre-mortem #2）。
+        if let Some(hwnd) = self.shadow_model.current_focus() {
+            if let Some(intent) = self.intent_store.lookup(hwnd, tick_ms) {
+                log::debug!(
+                    "Imm32Unavailable entry: preserving stored intent open={} (source={:?})",
+                    intent.open, intent.source
+                );
+                return;
+            }
         }
         log::info!(
             "Imm32Unavailable entry without trusted cache: 安全デフォルト ON を Low confidence \
@@ -899,6 +981,27 @@ impl ImeStateHub {
         );
     }
 
+    /// 実ユーザー操作と確定した明示 IME 意図を IntentStore に記録する
+    /// (ADR-087 §5 Phase 1' 配線、BUG-51 追補 v3)。
+    ///
+    /// `dispatch_event` の `UserImeSetIntent` 分岐で record しないのは、
+    /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`）でも
+    /// dispatch されるため。呼び出してよいのは以下の3箇所のみ
+    /// （`tests/architecture_guard.rs` で出現数を固定）:
+    /// - `write_sync_key` / `write_physical_key`（物理 IME キーの shadow toggle）
+    /// - `kp_stage_post_decision` の `SetOpenOrigin::ExplicitUserAction` 分岐
+    ///   （IME ON/OFF コンボ、`applied=true` のときのみ）
+    pub(crate) fn record_explicit_intent(
+        &mut self,
+        target: bool,
+        source: UserIntentSource,
+        tick_ms: TickMs,
+    ) {
+        if let Some(hwnd) = self.shadow_model.current_focus() {
+            self.intent_store.record(hwnd, target, source, tick_ms);
+        }
+    }
+
     pub(crate) fn write_sync_key(&mut self, value: bool, tick_ms: TickMs) {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
@@ -907,6 +1010,7 @@ impl ImeStateHub {
             },
             tick_ms,
         );
+        self.record_explicit_intent(value, UserIntentSource::SyncKey, tick_ms);
     }
 
     pub(crate) fn write_physical_key(&mut self, value: bool, tick_ms: TickMs) {
@@ -917,6 +1021,7 @@ impl ImeStateHub {
             },
             tick_ms,
         );
+        self.record_explicit_intent(value, UserIntentSource::PhysicalImeKey, tick_ms);
     }
 
     pub(crate) fn write_set_open_request(&mut self, value: bool, tick_ms: TickMs) {
@@ -1439,6 +1544,32 @@ mod tests {
         );
     }
 
+    // 修正1a 回帰（BUG-51 追補 v3）: ActivationSync 経由（conv 由来の RomajiRecovered
+    // 相当）は last_intent/desired_open だけでなく IntentStore にも記録されない
+    // こと。v1 のままだと DirectInput/RomajiRecovered が UserImeSetIntent{Command}
+    // を dispatch し IntentStore に「壊れた conv 読み由来の偽の明示意図」が
+    // FocusChanged を生き延びて残ってしまっていた（pre-mortem #1 角度2）。
+    #[test]
+    fn handle_engine_activation_sync_does_not_record_intent_store_entry() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        let applied = ps
+            .ime
+            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        assert!(applied);
+        // IntentStore にエントリが無いことを直接確認する:
+        // conv 観測が effective_open() を反転させても、IntentStore 側からの
+        // 上書きは発生しない（= 生の shadow_model の値がそのまま反映される）。
+        dispatch_conv_open_inference(&mut ps, true, 100);
+        assert_eq!(
+            ps.ime.effective_open(),
+            ps.ime.model().effective_open(),
+            "ActivationSync は IntentStore に記録しないため、hub 版と生の \
+             ImeModel 版の effective_open() は一致し続ける（IntentStore 由来の \
+             上書きが存在しないことの証拠）"
+        );
+    }
+
     // ── report_conv_open_inference / check_drift_correction (BUG-19 再発対策) ──
     //
     // 2026-07-08 実機再発: ユーザーが IME OFF (last_intent=Some(false)) にした
@@ -1559,7 +1690,7 @@ mod tests {
         );
     }
 
-    // ── IntentStore 配線（ADR-087 §5 Phase 1' item8、BUG-51 追補、2026-08-11） ──
+    // ── IntentStore 配線（ADR-087 §5 Phase 1' item8、BUG-51 追補 v3、2026-08-11） ──
     //
     // 実機再発: Ctrl+無変換 で明示 IME OFF を送った直後、同一ウィンドウへの
     // フォーカス再構築（`FocusChanged`、スリープ復帰直後の同一アプリ再フォーカス等）
@@ -1568,6 +1699,11 @@ mod tests {
     // OFF のままなのに `Engine::compute_state` が `ctx.ime_on=true` を受け取って
     // 再活性化する（「IME OFF, Engine ON」）。IntentStore は `HwndId` 単位で
     // `FocusChanged` をまたいで明示意図を保持するため、この反転を防ぐ。
+    //
+    // v3（pre-mortem #1/#2 反映）: IntentStore への record() は
+    // `record_explicit_intent`（本物のユーザー操作と確定できる3箇所のみ）が行う。
+    // 生の `dispatch_event(UserImeSetIntent)` だけでは記録されない
+    // （conv 由来の内部同期がこの経路を偽装できないようにするため）。
 
     use super::super::ime_event::ImePolicyProfile;
 
@@ -1598,6 +1734,21 @@ mod tests {
         );
     }
 
+    /// `write_sync_key`/`kp_stage_post_decision` の `ExplicitUserAction` 分岐が
+    /// 実機で行う「belief 書き込み + IntentStore 記録」の組を1関数にまとめた
+    /// テストダブル。
+    fn dispatch_and_record_explicit_intent(ps: &mut PlatformState, target: bool, tick_ms: u64) {
+        ps.ime.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target,
+                source: UserIntentSource::Command,
+            },
+            TickMs(tick_ms),
+        );
+        ps.ime
+            .record_explicit_intent(target, UserIntentSource::Command, TickMs(tick_ms));
+    }
+
     /// 中核の回帰テスト: 明示 OFF → 同一対象への FocusChanged（last_intent 消失）→
     /// 壊れた ConvOpenInference 観測、という実機再現手順で、生の
     /// `ImeModel::effective_open()` は true に反転してしまうが（退行の証拠として
@@ -1607,13 +1758,7 @@ mod tests {
     fn effective_open_survives_focus_change_via_intent_store() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(100),
-        );
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
         assert!(!ps.ime.effective_open(), "明示 OFF 直後は false");
 
         // 同一対象への FocusChanged（例: スリープ復帰直後の同一アプリ再フォーカス）
@@ -1645,13 +1790,7 @@ mod tests {
     fn effective_open_intent_store_does_not_leak_to_different_target() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(100),
-        );
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
 
         let other_hwnd = HwndId(0x5678);
         dispatch_focus_changed(&mut ps, other_hwnd, 2, 200);
@@ -1669,13 +1808,7 @@ mod tests {
     fn effective_open_intent_store_entry_expires_after_ttl() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(0),
-        );
+        dispatch_and_record_explicit_intent(&mut ps, false, 0);
         dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 0);
         dispatch_conv_open_inference(&mut ps, true, 0);
 
@@ -1694,18 +1827,12 @@ mod tests {
     }
 
     /// PanicReset は同一対象の古い IntentStore エントリより優先される
-    /// （安全弁が古い明示意図に負けてはならない）。
+    /// （安全弁が古い明示意図に負けてはならない、時系列比較の余地なく常に最新の決定）。
     #[test]
     fn effective_open_panic_reset_overrides_stale_intent_store_entry() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::Command,
-            },
-            TickMs(0),
-        );
+        dispatch_and_record_explicit_intent(&mut ps, false, 0);
         assert!(!ps.ime.effective_open());
 
         ps.ime.apply_panic_reset(TickMs(100));
@@ -1717,9 +1844,14 @@ mod tests {
         );
     }
 
-    /// HwndCacheRestored も同様に、同一対象の古い IntentStore エントリより優先される。
+    /// 修正1b 回帰: 生の `dispatch_event(UserImeSetIntent)` だけでは IntentStore に
+    /// 記録されない（`record_explicit_intent` を経由しない限り）。v1 のままだと
+    /// `EngineSync::DirectInput`（conv 由来、`handle_engine_set_open` 経由で
+    /// `UserImeSetIntent{Command}` を dispatch する）が壊れた conv 読み1件を
+    /// FocusChanged を生き延びる偽の明示意図として永続化してしまっていた
+    /// （pre-mortem #1 角度2）。
     #[test]
-    fn effective_open_hwnd_cache_restore_overrides_stale_intent_store_entry() {
+    fn dispatch_event_alone_does_not_record_intent_store_entry() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         ps.ime.dispatch_event(
@@ -1727,24 +1859,122 @@ mod tests {
                 target: false,
                 source: UserIntentSource::Command,
             },
-            TickMs(0),
+            TickMs(100),
         );
-        assert!(!ps.ime.effective_open());
+        assert!(
+            !ps.ime.model().desired_open(),
+            "belief (desired_open) はこれまでどおり書かれる"
+        );
 
+        // 同一対象への FocusChanged が last_intent をクリアする。
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+
+        assert!(
+            ps.ime.effective_open(),
+            "record_explicit_intent を経由しない dispatch_event だけでは \
+             IntentStore に何も残らないため、FocusChanged 後は通常どおり \
+             観測（conv, true）にフォールバックする"
+        );
+    }
+
+    /// 修正1b 正常系: `write_sync_key`/`write_physical_key` は実ユーザー操作として
+    /// IntentStore に記録し、FocusChanged 後も維持される。
+    #[test]
+    fn write_sync_key_records_intent_store_entry_surviving_focus_change() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.write_sync_key(false, TickMs(100));
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            !ps.ime.effective_open(),
+            "write_sync_key の明示 OFF は IntentStore に記録され、\
+             FocusChanged をまたいで維持される"
+        );
+    }
+
+    #[test]
+    fn write_physical_key_records_intent_store_entry_surviving_focus_change() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.write_physical_key(false, TickMs(100));
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            !ps.ime.effective_open(),
+            "write_physical_key の明示 OFF は IntentStore に記録され、\
+             FocusChanged をまたいで維持される"
+        );
+    }
+
+    /// 修正2a (i): キャッシュより新しい明示意図は `apply_hwnd_cache_restore` で
+    /// 消えない（BUG-57 型: フォーカス滞在 100ms 未満だと退場時の cache 保存が
+    /// スキップされ、古いキャッシュが残ったまま復帰することがある）。
+    #[test]
+    fn apply_hwnd_cache_restore_keeps_intent_newer_than_cache() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.write_sync_key(false, TickMs(500));
         ps.ime.apply_hwnd_cache_restore(
             Some(crate::focus::hwnd_cache::HwndImeSnapshot {
                 ime_on: true,
                 input_mode: InputModeState::ObservedRomaji,
-                recorded_ms: 0,
+                recorded_ms: 100,
                 from_explicit_off_intent: false,
             }),
-            TickMs(100),
+            TickMs(600),
         );
+        assert!(
+            !ps.ime.effective_open(),
+            "キャッシュ(recorded_ms=100)より新しい明示意図(recorded_at_ms=500)は \
+             cache restore で消えず、effective_open() は意図側(false)を返す"
+        );
+    }
 
+    /// 修正2a (ii): キャッシュの方が新しい（または同時刻）場合は、意図を除去して
+    /// キャッシュ復元を優先する（v1 と同じ「最新の決定が勝つ」原則）。
+    #[test]
+    fn apply_hwnd_cache_restore_discards_intent_older_than_cache() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.write_sync_key(false, TickMs(100));
+        ps.ime.apply_hwnd_cache_restore(
+            Some(crate::focus::hwnd_cache::HwndImeSnapshot {
+                ime_on: true,
+                input_mode: InputModeState::ObservedRomaji,
+                recorded_ms: 500,
+                from_explicit_off_intent: false,
+            }),
+            TickMs(600),
+        );
         assert!(
             ps.ime.effective_open(),
-            "HwndCacheRestored はキャッシュされた値に戻し、IntentStore の古い \
-             OFF エントリを無効化するため、effective_open() はキャッシュ値に従う"
+            "キャッシュ(recorded_ms=500)より古い意図(recorded_at_ms=100)は \
+             cache restore で無効化され、effective_open() はキャッシュ値(true)を返す"
+        );
+    }
+
+    /// 修正2b: 有効な IntentStore エントリがある間、`reset_stale_ime_on_for_imm_broken`
+    /// （BUG-16 系 safety-net）は `HeuristicDefault` を書かずに温存する。
+    /// 「観測ゼロの推測が明示意図に勝つ」逆転を避ける（pre-mortem #2）。
+    #[test]
+    fn reset_stale_ime_on_for_imm_broken_preserves_valid_intent_store_entry() {
+        let mut ps = PlatformState::new();
+        ps.ime.belief.is_japanese_ime = true;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime.write_sync_key(false, TickMs(100));
+        // 同一対象への FocusChanged が last_intent と observations をクリアする
+        // （safety-net の第一ガードが素通りする状態を作る）。
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
+        assert!(!ps.ime.effective_open());
+
+        ps.ime.reset_stale_ime_on_for_imm_broken(TickMs(300));
+
+        assert!(
+            !ps.ime.effective_open(),
+            "IntentStore に有効な OFF エントリがある間は HeuristicDefault(ON) が \
+             書かれず、effective_open() は false のまま"
         );
     }
 }
