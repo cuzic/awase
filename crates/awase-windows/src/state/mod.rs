@@ -68,8 +68,14 @@ pub mod conv_classify;
 // #[cfg(windows)] の runtime/ のみ。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod eisu_recovery;
+// ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
+pub mod evidence;
 pub mod force_guard;
 pub mod ime_event;
+// ADR-089 §2.8「K 軸の型」。`caps(p, k)` の導入（Phase C）に先立ち、Linux で
+// 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
+// `From<ActiveImeKind>` 1 箇所のみ。
+pub mod ime_kind;
 pub mod ime_model;
 // ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated
 // パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように
