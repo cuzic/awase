@@ -649,6 +649,42 @@ r2 は「1 つの warrant = 高々 1 回の成功 write」と書いていた。*
 書くと、「型で回数が守られている」と誤読して `decide_actuation_action` の
 呼び出しを省く実装が出る——ADR-080/BUG-43 の give-up が効かなくなる経路である。
 
+#### チェーンの「入口」を数えるだけでは足りない（Phase B 追随、2026-08-12）
+
+Phase B 実装への Opus レビューが、**新設した件数ガード 3 件がどれも
+`ime_controller::apply_mechanism(mechanism, open, view)` の呼び出し元を数えて
+いない**ことを指摘した。`legacy_unwarranted_actuation_sites_are_accounted_for` は
+`Actuation` の**起案数**を、`async_imm_cross_actuation_goes_through_the_single_chain_entry`
+は**非同期入口数**を数えているだけで、`apply_mechanism` はチェーンを 1 つも
+構築せずに 1 機構分の実 write（`SendInput` / `post_kanji_toggle_to_focused` /
+`ImmSetOpenStatus`）を起こせる `pub(crate)` 関数のまま残っていた。
+
+実コードで確認した呼び出し元は 2 箇所で、どちらも
+`MechanismWriter` / `AsyncMechanismWriter` の `write` 実装——すなわち
+`run_chain` / `run_chain_async` が駆動する **write ステップそのもの**である
+（`ime_controller.rs::SyncChainWriter::write` と
+`runtime/open_chain.rs::fallback_write`）。したがって「チェーン経由へ書き換える」
+ことは定義上できない（実装の中でチェーンを再度張ると再帰する）し、別モジュール
+から呼ぶ以上 `pub(crate)` 未満にも絞れない。**件数ガードで固定する**のが
+Phase B での結論である:
+
+- `raw_mechanism_write_sites_are_confined_to_chain_writers`（新設）——
+  `apply_mechanism(` の本番呼び出し元を 2 ファイル各 1 件に固定し、さらに
+  それぞれが上記 writer 実装の中にあることまで確認する。
+
+**並行する裏口も同時に塞いだ**: `ImeOpenStrategy` トレイトと 4 戦略構造体は
+`pub(crate)` だったため、crate 内のどこからでも
+`GjiDirectStrategy.apply(open, &view)` と書けば `apply_mechanism` すら経由せずに
+同じ実 write を起こせた。`ime_controller.rs` の外に参照が無いことを確認して
+**モジュール private へ縮小した**（可視性はコンパイラが強制するため、ガードは
+「宣言を再び `pub` へ広げないこと」だけを見る）。
+
+型で完全に閉じる案（`run_chain` だけが構築できる authorization トークンを
+`MechanismWriter::write` の引数に通し、`apply_mechanism` がそれを要求する）は
+**採らなかった**——writer トレイトのシグネチャ変更は §7 の `compile_fail`
+doctest（ケース1 とその「通る双子」）まで波及し、`caps(p, k).chain` を導入する
+Phase C（§2.8）が同じ場所をもう一度触る。§9-15 に残す。
+
 ### 2.4 `GjiFsm` 同期義務 — legacy 等価（outcome 軸のみ）に戻す
 
 #### r2 の K 軸ゲートを全面撤回する
@@ -1402,13 +1438,19 @@ Phase B の失敗時に切り分けられなくなる。
    crate 内の本番呼び出し元 1 箇所（`record_replayed`）を
    `per_source_set_is_confined_to_the_store` が固定する。
 
-#### 新設した architecture_guard（3 件）
+#### 新設した architecture_guard（4 件）
 
 - `legacy_unwarranted_actuation_sites_are_accounted_for`（期待値 2、B-3）
 - `async_imm_cross_actuation_goes_through_the_single_chain_entry` —
   `apply_skipping_imm` がゼロであること、ImmCross の実書き込み API を
   チェーン外から呼ぶ箇所の固定、非同期入口 `run_open_chain_async` が 2 呼び出し
 - `per_source_set_is_confined_to_the_store`（§9-11）
+- `raw_mechanism_write_sites_are_confined_to_chain_writers`（**Phase B 追随、
+  2026-08-12**）—— `apply_mechanism(` の本番呼び出し元 2 件（`SyncChainWriter::write` /
+  `fallback_write`）の固定と、`ImeOpenStrategy` トレイト・4 戦略構造体が
+  `ime_controller.rs` の外へ出ていないことの固定（§2.3「チェーンの『入口』を
+  数えるだけでは足りない」）。**上 3 件はどれもチェーンの入口しか数えておらず、
+  1 機構分の生 write の口が無ガードで残っていた**という Opus レビュー指摘への対応
 
 `ime_open_actuation_entry_points_are_accounted_for` からは
 `.apply_skipping_imm(` の行（期待値 2）を削除した。
@@ -1885,6 +1927,25 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     している**が、この規約自体は機械的に強制されていない——双子を消しても
     テストは緑のまま通る。`trybuild` へ戻すかどうかは、CI が実際に rustc 更新で
     赤くなった実績が出てから判断する。
+
+15. **【Phase B の既知の限界】1 機構分の生 write の口は、型ではなく件数ガードで
+    塞いでいる。**
+    `ime_controller::apply_mechanism(mechanism, open, view)` は
+    `Actuation` 型状態チェーンを 1 つも構築せずに実 write を起こせる
+    `pub(crate)` 関数のままである（§2.3「チェーンの『入口』を数えるだけでは
+    足りない」）。現在の呼び出し元 2 箇所はどちらもチェーンの writer 実装
+    そのもの（`SyncChainWriter::write` / `fallback_write`）であり、
+    可視性の縮小でも「チェーン経由へ書き換え」でも解けないため、
+    `raw_mechanism_write_sites_are_confined_to_chain_writers` が件数で固定して
+    いる。**恒久策は `run_chain` / `run_chain_async` だけが構築できる
+    authorization トークン**（`Actuation<Verified>` の中でのみ生成できる
+    private フィールド持ちの型）を `MechanismWriter::write` /
+    `AsyncMechanismWriter::write` の引数に通し、`apply_mechanism` がそれを
+    要求する形にすること。そうすればチェーン外からの呼び出しはコンパイルを
+    通らなくなる。**Phase B では採らなかった**——writer トレイトのシグネチャ
+    変更は §7 の `compile_fail` doctest（ケース1 とその「通る双子」）まで波及し、
+    `caps(p, k).chain` を導入する Phase C（§2.8）が同じ場所をもう一度触るため。
+    **Phase C で `caps` 表に合わせて writer を書き換えるときに同時に入れること。**
 
 ---
 
