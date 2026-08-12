@@ -4,7 +4,7 @@
 //! ## 位置づけ
 //!
 //! `ImeModel::effective_open()`（`ime_model.rs`）は NICOLA engine の**内部挙動**
-//! （かな変換するか否か）を決める belief であり、`derive_open()` の Medium 単独
+//! （かな変換するか否か）を決める belief であり、`derive_any()` の Medium 単独
 //! 多数決を含め、誤りが可逆・低コストな弱い証拠で決めてよい（BUG-26 がこれに
 //! 依拠している、`ime_model.rs::resolve_open_at` の doc 参照）。
 //!
@@ -21,7 +21,7 @@
 //!           の意味論そのもの。§7 round3 M2）
 //! Step 1: IntentStore に対象への有効な明示意図がある
 //!         → ExplicitUserIntent（成立すれば以降を評価しない）
-//! Step 3: authority()==Actuating な観測が derive_open() 相当の判定を満たす
+//! Step 3: authority()==Actuating な観測が derive_any() 相当の判定を満たす
 //!         → DirectRead / Corroborated
 //! Step 4a: HeuristicDefault 観測が実在する → HeuristicGuess(Observation)
 //! Step 4b: override 権限を持たないヒューリスティック guard が active
@@ -366,12 +366,15 @@ mod tests {
         );
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::ImmGetOpenStatus,
-            ObservationConfidence::High,
-            now,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                ObservationConfidence::High,
+                now,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
         let warrant = issue_open_warrant(
@@ -390,12 +393,15 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::ImmGetOpenStatus,
-            ObservationConfidence::High,
-            now,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                ObservationConfidence::High,
+                now,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
         let warrant = issue_open_warrant(
@@ -417,18 +423,24 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::ObserverPoll,
-            ObservationConfidence::Medium,
-            now,
-        ));
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::Gji,
-            ObservationConfidence::Medium,
-            now,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ObserverPoll,
+                ObservationConfidence::Medium,
+                now,
+            ),
+        );
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::Gji,
+                ObservationConfidence::Medium,
+                now,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
         let warrant = issue_open_warrant(
@@ -449,12 +461,15 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::ConvOpenInference,
-            ObservationConfidence::Medium,
-            now,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ConvOpenInference,
+                ObservationConfidence::Medium,
+                now,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
         let warrant = issue_open_warrant(
@@ -555,12 +570,15 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        rec(&mut obs, obs_at(
-            false,
-            ObservationSource::HeuristicDefault,
-            ObservationConfidence::Low,
-            now,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                false,
+                ObservationSource::HeuristicDefault,
+                ObservationConfidence::Low,
+                now,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::Imm32Unavailable);
         let warrant = issue_open_warrant(
@@ -650,12 +668,15 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let t0 = Instant::now();
-        rec(&mut obs, obs_at(
-            true,
-            ObservationSource::ImmGetOpenStatus,
-            ObservationConfidence::High,
-            t0,
-        ));
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                ObservationConfidence::High,
+                t0,
+            ),
+        );
         let guards = ForceGuardSet::default();
         let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
 
@@ -947,54 +968,75 @@ mod tests {
                                             let mut obs = ObservationStore::default();
                                             match step3 {
                                                 Step3Case::None => {}
-                                                Step3Case::High(v) => rec(&mut obs, obs_at(
-                                                    v,
-                                                    ObservationSource::ImmGetOpenStatus,
-                                                    ObservationConfidence::High,
-                                                    now,
-                                                )),
-                                                Step3Case::MediumSingle(v) => rec(&mut obs, obs_at(
-                                                    v,
-                                                    ObservationSource::ObserverPoll,
-                                                    ObservationConfidence::Medium,
-                                                    now,
-                                                )),
-                                                Step3Case::MediumAgree(v) => {
-                                                    rec(&mut obs, obs_at(
+                                                Step3Case::High(v) => rec(
+                                                    &mut obs,
+                                                    obs_at(
+                                                        v,
+                                                        ObservationSource::ImmGetOpenStatus,
+                                                        ObservationConfidence::High,
+                                                        now,
+                                                    ),
+                                                ),
+                                                Step3Case::MediumSingle(v) => rec(
+                                                    &mut obs,
+                                                    obs_at(
                                                         v,
                                                         ObservationSource::ObserverPoll,
                                                         ObservationConfidence::Medium,
                                                         now,
-                                                    ));
-                                                    rec(&mut obs, obs_at(
-                                                        v,
-                                                        ObservationSource::Gji,
-                                                        ObservationConfidence::Medium,
-                                                        now,
-                                                    ));
+                                                    ),
+                                                ),
+                                                Step3Case::MediumAgree(v) => {
+                                                    rec(
+                                                        &mut obs,
+                                                        obs_at(
+                                                            v,
+                                                            ObservationSource::ObserverPoll,
+                                                            ObservationConfidence::Medium,
+                                                            now,
+                                                        ),
+                                                    );
+                                                    rec(
+                                                        &mut obs,
+                                                        obs_at(
+                                                            v,
+                                                            ObservationSource::Gji,
+                                                            ObservationConfidence::Medium,
+                                                            now,
+                                                        ),
+                                                    );
                                                 }
                                                 Step3Case::MediumConflict => {
-                                                    rec(&mut obs, obs_at(
-                                                        true,
-                                                        ObservationSource::ObserverPoll,
-                                                        ObservationConfidence::Medium,
-                                                        now,
-                                                    ));
-                                                    rec(&mut obs, obs_at(
-                                                        false,
-                                                        ObservationSource::Gji,
-                                                        ObservationConfidence::Medium,
-                                                        now,
-                                                    ));
+                                                    rec(
+                                                        &mut obs,
+                                                        obs_at(
+                                                            true,
+                                                            ObservationSource::ObserverPoll,
+                                                            ObservationConfidence::Medium,
+                                                            now,
+                                                        ),
+                                                    );
+                                                    rec(
+                                                        &mut obs,
+                                                        obs_at(
+                                                            false,
+                                                            ObservationSource::Gji,
+                                                            ObservationConfidence::Medium,
+                                                            now,
+                                                        ),
+                                                    );
                                                 }
                                             }
                                             if let Some(v) = heuristic_default_obs {
-                                                rec(&mut obs, obs_at(
-                                                    v,
-                                                    ObservationSource::HeuristicDefault,
-                                                    ObservationConfidence::Low,
-                                                    now,
-                                                ));
+                                                rec(
+                                                    &mut obs,
+                                                    obs_at(
+                                                        v,
+                                                        ObservationSource::HeuristicDefault,
+                                                        ObservationConfidence::Low,
+                                                        now,
+                                                    ),
+                                                );
                                             }
 
                                             let policy =

@@ -50,9 +50,9 @@ pub struct DecidedBy {
 pub enum BaseDecision {
     /// `has_user_explicit_intent()==true`、`desired_open` を採用。
     ExplicitIntent,
-    /// `derive_open_filtered()` が High confidence 単独ソースで確定。
+    /// `derive_any()` / `derive_actuating()` が High confidence 単独ソースで確定。
     DeriveHigh(ObservationSource),
-    /// `derive_open_filtered()` が Medium+ の無競合多数決で確定。
+    /// `derive_any()` / `derive_actuating()` が Medium+ の無競合多数決で確定。
     /// `second` が `None` なら単独観測、`Some` なら2ソース以上の合意
     /// （`DeriveOutcome::MediumConsensus` と同じ理由で `Vec` を避ける、
     /// ADR-087 §7 round4 S-A: `effective_open()` は全 `KeyDown` で呼ばれる
@@ -61,7 +61,7 @@ pub enum BaseDecision {
         first: ObservationSource,
         second: Option<ObservationSource>,
     },
-    /// `derive_open()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
+    /// `derive_any()` が `None`（観測なし/矛盾）で `most_recent_trusted()` に
     /// フォールバック。
     MostRecentTrusted(ObservationSource),
     /// 観測が一切なく `desired_open` にフォールバック。
@@ -260,7 +260,7 @@ impl ImeModel {
     /// ユーザー/awase の明示的な意図が present かどうか。
     ///
     /// true の場合は `desired_open` を観測より優先する。
-    /// false の場合は observation pool の `derive_open()` 結果を採用し、
+    /// false の場合は observation pool の `derive_any()` 結果を採用し、
     /// 観測が空なら `desired_open` にフォールバックする。
     ///
     /// `last_intent` は `UserImeSetIntent` / `UserImeToggleIntent` のみが設定する。
@@ -273,7 +273,7 @@ impl ImeModel {
     ///
     /// **これは belief（間違っていても低リスクな推定）であり、engine の内部挙動
     /// 決定用。実際に OS の IME を操作してよいかという actuation の根拠には
-    /// 使わないこと**（ADR-087 §5 Phase 3 item17）。`derive_open()` の
+    /// 使わないこと**（ADR-087 §5 Phase 3 item17）。`derive_any()` の
     /// Medium 単一ソース合意がそのまま actuation の根拠として使われたことが
     /// BUG-63（「mise」→「くした」誤入力）の直接原因だった。actuation
     /// warrant が必要な場面（IME を実際に force-ON する等）では
@@ -283,7 +283,7 @@ impl ImeModel {
     ///
     /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
     /// - 明示意図なし（フォーカス変化直後等）:
-    ///   1. `derive_open()`（Medium+ の合意 / High 即採用）の結果を採用
+    ///   1. `derive_any()`（Medium+ の合意 / High 即採用）の結果を採用
     ///   2. それが `None` なら `most_recent_trusted()`（confidence 不問、最新優先）
     ///      にフォールバック。cache-miss 等の安全デフォルト推測（Low confidence の
     ///      `HeuristicDefault`）はここでのみ効き、後から届いた実観測（Lowでも）が
@@ -447,7 +447,7 @@ impl ImeModel {
                 // 当初は `has_user_explicit_intent()==false` の間だけ書いていた）:
                 // `target` は `ctx.ime_on`（≒その時点の `effective_open()`）由来であり、
                 // explicit intent が無い状況では `effective_open()` 自体が観測プール
-                // (`derive_open()`) から計算されている。そこへ `desired_open := target`
+                // (`derive_any()`) から計算されている。そこへ `desired_open := target`
                 // を書くと `desired_open := effective_open()` という循環 echo になり、
                 // 元になった観測が期限切れで消えた後も `effective_open()` の
                 // フォールバック (`unwrap_or(self.desired_open)`) がこの値を恒久化して
@@ -484,7 +484,7 @@ impl ImeModel {
                 // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
-                // 新しい epoch を store に伝える。derive_open() はこれ以降、
+                // 新しい epoch を store に伝える。derive_any() はこれ以降、
                 // 古い epoch の ImmCrossProbe / FocusProbe を無視する。
                 self.observations.clear_on_focus_change(focus_epoch);
                 log::debug!("[explicit-intent] cleared (focus change)");
@@ -564,7 +564,7 @@ impl ImeModel {
             ImeEvent::InputModeObserved {
                 mode, confidence, ..
             } => {
-                // ON/OFF の derive_open() と同じ考え方: Low confidence 単独では
+                // ON/OFF の derive_any() と同じ考え方: Low confidence 単独では
                 // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
                 if confidence >= ObservationConfidence::Medium {
                     self.input_mode = mode;
@@ -718,7 +718,13 @@ mod tests {
         let mut model = ImeModel::new(); // desired_open = true
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(false, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         assert!(model.desired_open, "observer は desired を壊さない");
         assert_eq!(
@@ -754,7 +760,13 @@ mod tests {
 
         model.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ConvOpenInference, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ConvOpenInference,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
 
         assert!(
@@ -785,10 +797,16 @@ mod tests {
     #[test]
     fn effective_open_falls_back_to_most_recent_trusted_when_derive_open_is_none() {
         let mut model = ImeModel::new(); // desired_open = true, 明示 intent なし
-                                         // Low confidence 単独 → derive_open() は None（Medium+ 専用のため）。
+                                         // Low confidence 単独 → derive_any() は None（Medium+ 専用のため）。
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(false, ObservationSource::HeuristicDefault, HwndId::NULL, ObservationConfidence::Low, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::HeuristicDefault,
+                HwndId::NULL,
+                ObservationConfidence::Low,
+                0,
+            )),
         ));
         assert!(
             !model.effective_open(),
@@ -802,15 +820,27 @@ mod tests {
         let mut model = ImeModel::new();
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(false, ObservationSource::HeuristicDefault, HwndId::NULL, ObservationConfidence::Low, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::HeuristicDefault,
+                HwndId::NULL,
+                ObservationConfidence::Low,
+                0,
+            )),
         ));
         model.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         assert!(
             model.effective_open(),
-            "Medium confidence の derive_open() 結果が Low fallback より常に優先される"
+            "Medium confidence の derive_any() 結果が Low fallback より常に優先される"
         );
     }
 
@@ -837,12 +867,18 @@ mod tests {
     fn resolve_open_at_decided_by_derive_medium_mise_bug_scenario() {
         // ADR-087 発端バグ（mise→くした）の belief 側の再現: 明示意図なし、
         // ConvOpenInference 1件（Medium, open:true）だけがある状態。
-        // belief は ON に復帰する（P13: derive_open() の Medium 単独多数決は
+        // belief は ON に復帰する（P13: derive_any() の Medium 単独多数決は
         // 弱めない、BUG-26 が依拠する挙動）。
         let mut model = ImeModel::new();
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ConvOpenInference, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ConvOpenInference,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         let now = Instant::now();
         let res = model.resolve_open_at(now);
@@ -921,14 +957,20 @@ mod tests {
     #[test]
     fn resolve_open_at_now_argument_actually_affects_result() {
         // ADR-087 §7 round4 M-B: 注入した `now` が本当に使われていることの
-        // 直接検証。derive_open() の FRESH ウィンドウ（3秒、observation_store.rs）
+        // 直接検証。derive_any() の FRESH ウィンドウ（3秒、observation_store.rs）
         // を跨ぐ前後で decided_by が変わることを確認する——これが変わらなければ
         // resolve_open_at が引数を無視している可能性がある。
         let mut model = ImeModel::new();
         let t0 = Instant::now();
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         let fresh = model.resolve_open_at(t0);
         assert_eq!(
@@ -956,7 +998,13 @@ mod tests {
         let mut model = ImeModel::new();
         model.reduce(&envelope(
             1,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         // effective_open() は effective_open_at(Instant::now()) の薄いラッパーで
         // あるべき。テスト実行中に Instant が動くのは無視できる程度なので、
@@ -1338,7 +1386,13 @@ mod tests {
         // Medium 観測が false を報告
         model.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(false, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         assert!(
             !model.effective_open(),
@@ -1365,7 +1419,13 @@ mod tests {
         // Medium 観測が false を報告（PanicReset とは違い上書きされない）
         model.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(false, ObservationSource::ObserverPoll, HwndId::NULL, ObservationConfidence::Medium, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
         ));
         assert!(
             model.effective_open(),
@@ -1410,7 +1470,13 @@ mod tests {
         // 実際の API 観測が true を返す（実 IME 状態は ON）
         model.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ImmGetOpenStatus, HwndId::NULL, ObservationConfidence::High, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
         ));
         assert!(
             model.effective_open(),
@@ -1438,7 +1504,13 @@ mod tests {
         ));
         model_intent.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ImmGetOpenStatus, HwndId::NULL, ObservationConfidence::High, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
         ));
         assert!(
             !model_intent.effective_open(),
@@ -1450,7 +1522,13 @@ mod tests {
         model_cache.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
         model_cache.reduce(&envelope(
             2,
-            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(true, ObservationSource::ImmGetOpenStatus, HwndId::NULL, ObservationConfidence::High, 0)),
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                HwndId::NULL,
+                ObservationConfidence::High,
+                0,
+            )),
         ));
         assert!(
             model_cache.effective_open(),

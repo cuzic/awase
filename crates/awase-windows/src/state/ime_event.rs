@@ -115,7 +115,7 @@ pub enum ObservationSource {
     /// conversion mode ビット（`ImmGetConversionStatus` 由来）からの IME open 状態の推定。
     ///
     /// `ConvBitsInference` は input_mode 専用（`PerSourceObservations` には記録されず、
-    /// `derive_open()`/`most_recent_trusted()` からは常に不可視）であり、open/close の
+    /// `derive_any()`/`most_recent_trusted()` からは常に不可視）であり、open/close の
     /// 観測としては扱わない設計になっている。しかし `classify_conv_transition` の
     /// `KatakanaShadowOff`/`NativeToggleShadowOff`（shadow=OFF 中に NATIVE/KATAKANA conv
     /// を観測）は、conv ビットから「OS 側 IME はまだ open らしい」という open 状態の
@@ -141,7 +141,7 @@ pub enum ObservationSource {
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///
     /// 実際の外部観測ではなく awase 側のポリシー的な best-guess のため、
-    /// 必ず `ObservationConfidence::Low` で record すること。`derive_open()` の
+    /// 必ず `ObservationConfidence::Low` で record すること。`derive_any()` の
     /// Medium+ 多数決には参加しないが、他に観測が一切ない場合の
     /// `effective_open()` フォールバックとしてのみ使われる。真の観測（Lowでも）が
     /// 後から届けば、鮮度・信頼度が同等以上のため上書きされる。
@@ -443,7 +443,7 @@ pub enum ImeEvent {
     ///
     /// GJI probe・IMM クエリ・conv_mode ビット変化など passively 取得した値を通知する。
     /// reducer は `confidence >= Medium` の場合のみ `ImeModel::input_mode` をこの値で
-    /// 上書きする（ON/OFF の `derive_open()` と同じ考え方: Low confidence だけでは
+    /// 上書きする（ON/OFF の `derive_any()` と同じ考え方: Low confidence だけでは
     /// belief を動かさない）。`source` に見合わない confidence を付けないこと —
     /// 実際に外部 API/probe を呼んでいない場合はこのイベントを使わず、
     /// awase 自身の能動的な訂正は `InputModeApplied` を使うこと。

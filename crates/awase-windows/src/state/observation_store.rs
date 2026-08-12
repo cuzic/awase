@@ -150,7 +150,7 @@ pub struct ImeDrift {
     pub started_at: Instant,
 }
 
-/// `derive_open_filtered()` の診断付き結果。「どのソースが決定打だったか」を
+/// `derive_any()` / `derive_actuating()` の診断付き結果。「どのソースが決定打だったか」を
 /// 保持する（ADR-087 §2.3 P15 Step 3 が `WarrantBasis::DirectRead`/
 /// `Corroborated` を構築するために必要）。
 ///
@@ -201,7 +201,7 @@ pub struct ObservationStore {
     pub drift: Option<ImeDrift>,
     /// 現在のフォーカスエポック。`FocusChanged` イベントで更新される。
     ///
-    /// `derive_open()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
+    /// `derive_any()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
     /// これにより、stale な高信頼観測が意思決定に使われることを防ぐ。
     pub current_focus_epoch: FocusEpoch,
 }
@@ -269,7 +269,7 @@ impl ObservationStore {
     /// 全ソースを clear する (フォーカス変更時用)。drift も clear。
     ///
     /// `new_epoch` には `FocusStore::focus_epoch` のインクリメント後の値を渡す。
-    /// これ以降 `derive_open()` は古い epoch の ImmCrossProbe / FocusProbe を無視する。
+    /// これ以降 `derive_any()` は古い epoch の ImmCrossProbe / FocusProbe を無視する。
     pub fn clear_on_focus_change(&mut self, new_epoch: FocusEpoch) {
         self.per_source.clear_all();
         self.drift = None;
@@ -300,7 +300,7 @@ impl ObservationStore {
     /// `HeuristicDefault` 観測を返す（実在すれば）。ADR-087 §2.3 P15 Step 4a
     /// （`open_warrant.rs`）が使う。
     ///
-    /// **`derive_open_filtered()`（Step 3）と異なり `FRESH`（3秒）の鮮度窓を
+    /// **`derive_any()` / `derive_actuating()`（Step 3）と異なり `FRESH`（3秒）の鮮度窓を
     /// 適用しない**——`is_expired()`（`expires_at`）のみを見る。これは意図的:
     /// `ObserverReported` 経由で記録される観測は `expires_at: None`（無期限）
     /// が通常であり、`HeuristicDefault` は「観測が一切無いときの安全
@@ -560,6 +560,49 @@ mod tests {
         assert_eq!(p.get(ObservationSource::ConvBitsInference), None);
     }
 
+    /// ADR-089 §6 Phase A item 5 / INV-38: `ConvBitsInference` /
+    /// `GjiIoInference` は open 観測プールに構造的に入らない。
+    ///
+    /// この 2 値に `OpenEvidence` を impl しない判断（§1.3(h)・§2.1）は、
+    /// 「impl すると `record_belief` が黙って no-op になる」ことを根拠に
+    /// している。その前提——`get` が `None` を返し続け、値経由の
+    /// `record_replayed` でも記録されないこと——をここで固定する。
+    #[test]
+    fn input_mode_only_sources_never_enter_the_open_pool() {
+        use super::super::evidence::AnyObservation;
+        let now = Instant::now();
+        for source in [
+            ObservationSource::ConvBitsInference,
+            ObservationSource::GjiIoInference,
+        ] {
+            let mut p = PerSourceObservations::default();
+            p.set(source, obs(true, source, now));
+            assert_eq!(
+                p.get(source),
+                None,
+                "{source:?} は set しても get で見えない（input_mode 専用）"
+            );
+
+            let mut s = ObservationStore::default();
+            s.record_replayed(
+                AnyObservation::restored_from_journal(
+                    true,
+                    source,
+                    HwndId::NULL,
+                    ObservationConfidence::High,
+                    0,
+                ),
+                now,
+            );
+            assert_eq!(
+                s.per_source.iter().count(),
+                0,
+                "{source:?} は record_replayed でもプールに入らない"
+            );
+            assert_eq!(s.derive_any(now), None);
+        }
+    }
+
     #[test]
     fn store_record_and_clear() {
         let mut s = ObservationStore::default();
@@ -586,7 +629,7 @@ mod tests {
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             Some(true),
-            "Medium confidence 単独で derive_open() に反映される (通常の観測ソースと同待遇)"
+            "Medium confidence 単独で derive_any() に反映される (通常の観測ソースと同待遇)"
         );
         s.clear_on_focus_change(1);
         assert!(
@@ -676,7 +719,10 @@ mod tests {
         let mut s = ObservationStore::default();
         let since = Instant::now();
         // ConvOpenInference (間接推論ソース) も since 条件だけで判定され、ソース種別では除外されない。
-        rec(&mut s, obs(true, ObservationSource::ConvOpenInference, since));
+        rec(
+            &mut s,
+            obs(true, ObservationSource::ConvOpenInference, since),
+        );
         assert_eq!(
             s.most_recent_trusted_after(since, since).map(|o| o.open),
             Some(true),
@@ -713,24 +759,28 @@ mod tests {
     // ── derive_any / derive_actuating ──────────────────────────────────────────────────────────
 
     #[test]
-    fn derive_open_empty_returns_none() {
+    fn derive_any_empty_returns_none() {
         let s = ObservationStore::default();
         assert_eq!(s.derive_any(Instant::now()), None, "観測なし → None");
     }
 
     #[test]
-    fn derive_open_high_confidence_wins_immediately() {
+    fn derive_any_high_confidence_wins_immediately() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         // High confidence (ImmCrossProbe) が true → Some(true) を即採用
         let mut high = obs(true, ObservationSource::ImmCrossProbe, now);
         high.confidence = ObservationConfidence::High;
         rec(&mut s, high);
-        assert_eq!(s.derive_any(now).map(|o| o.value()), Some(true), "High confidence 即採用");
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            Some(true),
+            "High confidence 即採用"
+        );
     }
 
     #[test]
-    fn derive_open_high_wins_over_low() {
+    fn derive_any_high_wins_over_low() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         // Low confidence の false (FocusProbe) + High confidence の true (ImmCrossProbe)
@@ -749,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_open_low_confidence_alone_returns_none() {
+    fn derive_any_low_confidence_alone_returns_none() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         // Low confidence だけでは Medium+ ステップでも High ステップでもヒットしない
@@ -764,16 +814,20 @@ mod tests {
     }
 
     #[test]
-    fn derive_open_medium_single_source() {
+    fn derive_any_medium_single_source() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         // Medium 1ソースでも無競合なら採用
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));
-        assert_eq!(s.derive_any(now).map(|o| o.value()), Some(true), "Medium 単独 → Some");
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            Some(true),
+            "Medium 単独 → Some"
+        );
     }
 
     #[test]
-    fn derive_open_medium_conflict_returns_none() {
+    fn derive_any_medium_conflict_returns_none() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));
@@ -786,7 +840,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_open_stale_observation_ignored() {
+    fn derive_any_stale_observation_ignored() {
         let mut s = ObservationStore::default();
         let past = Instant::now() - Duration::from_secs(10);
         // 10 秒前の Medium obs は FRESH(3s) を超えているため無視される
@@ -805,7 +859,7 @@ mod tests {
     /// ガード `f >= 1` が `false` に壊れても既存テストは検知できなかった
     /// （true 側しか検証していなかったため）。
     #[test]
-    fn derive_open_medium_single_source_false() {
+    fn derive_any_medium_single_source_false() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         rec(&mut s, obs(false, ObservationSource::ObserverPoll, now));
@@ -817,10 +871,10 @@ mod tests {
     }
 
     /// epoch フィルタ（`ImmCrossProbe`/`FocusProbe` のみ）が実際に効いていることを固定する。
-    /// `derive_open()` の `is_epoch_ok` match アームが削除されても、このテストが無ければ
+    /// `derive_any()` の `is_epoch_ok` match アームが削除されても、このテストが無ければ
     /// 検知できなかった（stale な High 観測がフォーカス変更後も採用され続ける再発）。
     #[test]
-    fn derive_open_high_confidence_stale_epoch_excluded() {
+    fn derive_any_high_confidence_stale_epoch_excluded() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         let mut stale_high = obs(true, ObservationSource::ImmCrossProbe, now);
@@ -923,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_open_filtered_high_single_reports_source() {
+    fn derive_high_single_reports_source() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         let mut o = obs(true, ObservationSource::ImmGetOpenStatus, now);
@@ -1053,12 +1107,14 @@ mod tests {
                             for conf_b in CONFIDENCES {
                                 for store_epoch in [0_u64, 1] {
                                     for stale_b in [false, true] {
-                                        let mut s = ObservationStore::default();
-                                        s.current_focus_epoch = store_epoch;
+                                        let mut s = ObservationStore {
+                                            current_focus_epoch: store_epoch,
+                                            ..Default::default()
+                                        };
                                         let mut oa = obs(open_a, a, now);
                                         oa.confidence = conf_a;
                                         let at_b = if stale_b {
-                                            now - Duration::from_secs(10)
+                                            now.checked_sub(Duration::from_secs(10)).unwrap()
                                         } else {
                                             now
                                         };
@@ -1138,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_open_filtered_medium_consensus_reports_all_sources() {
+    fn derive_medium_consensus_reports_all_sources() {
         let mut s = ObservationStore::default();
         let now = Instant::now();
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));

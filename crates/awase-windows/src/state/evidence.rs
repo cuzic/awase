@@ -383,7 +383,8 @@ mod tests {
     #[test]
     fn observed_carries_evidence_source_and_confidence() {
         let accepted = AcceptedObservation::for_sync(7);
-        let any: AnyObservation = Observed::<FocusProbe>::from_probe(&accepted, true, HwndId(1)).into();
+        let any: AnyObservation =
+            Observed::<FocusProbe>::from_probe(&accepted, true, HwndId(1)).into();
         assert_eq!(any.source(), ObservationSource::FocusProbe);
         assert_eq!(any.confidence(), ObservationConfidence::Low);
         assert_eq!(any.focus_epoch(), 7);
@@ -425,8 +426,8 @@ mod tests {
 
     fn key_event(injected: bool, shadow: bool, sync: bool) -> awase::types::RawKeyEvent {
         use awase::types::{
-            ImeRelevance, KeyClassification, KeyEventType, ModifierState, ScanCode, ShadowImeAction,
-            VkCode,
+            ImeRelevance, KeyClassification, KeyEventType, ModifierState, ScanCode,
+            ShadowImeAction, VkCode,
         };
         awase::types::RawKeyEvent {
             vk_code: VkCode(0xF2),

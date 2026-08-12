@@ -910,8 +910,7 @@ impl ImeStateHub {
         // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::FocusProbe>::from_probe(&accepted, value, HwndId::NULL)
-                    .into(),
+                Observed::<evidence::FocusProbe>::from_probe(&accepted, value, HwndId::NULL).into(),
             ),
             tick_ms,
         );
@@ -920,7 +919,7 @@ impl ImeStateHub {
     /// ImmCross 非同期プローブ結果を記録する（High confidence）。
     ///
     /// `read_ime_state_full_async` が child hwnd の IMM32 状態を読んだ後に呼ぶ。
-    /// High confidence のため `derive_open()` で即採用される。
+    /// High confidence のため `derive_any()` で即採用される。
     /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`（epoch 照合済み）。
     pub(crate) fn write_imm_cross_probe(
         &mut self,
