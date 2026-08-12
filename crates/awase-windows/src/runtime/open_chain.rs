@@ -31,6 +31,34 @@
 //! - 旧実装は `is_applicable` が偽の戦略を飛ばしていた。本実装は
 //!   「適用不能なら `Failed` を返す」形にしているが、`Failed` は必ず
 //!   フォールスルーするため走査結果は同一である。
+//!
+//! # なぜ Phase C でも chain が `WriteMechanism::ALL` のままなのか
+//!
+//! Phase C（ADR-089 §2.8、INV-44）は `caps(p, k).chain` を機構チェーンの
+//! SSOT にしたが、**この非同期経路だけは `WriteMechanism::ALL` を渡し続ける**。
+//! 理由は「起案時点の `(p, k)` を chain として固定すると挙動が変わる」ため:
+//!
+//! - `run_open_chain_async` は `spawn_local` の中から呼ばれ、ImmCross の
+//!   書き込み（`SendMessageTimeout` を含む）を **await した後**に
+//!   フォールバックへ進む。その間にフォーカスが動きうる。
+//! - [`fallback_write`] は機構ごとに `shadow_ime_control_view()` を作り直して
+//!   `is_applicable` を**その時点の観測で**評価する。つまり旧実装
+//!   （`apply_skipping_imm`）と同じく「完了時点の状態で残り機構を選ぶ」。
+//! - ここに起案時点の `caps(p, k).chain` を渡すと、await 中に profile が
+//!   変わった場合に「完了時点では適用可能な機構が chain に載っていない」
+//!   という新しい取りこぼしが生まれる（例: 起案時 Standard × MS-IME の
+//!   chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると
+//!   旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。
+//! - `ImeKindId` は推測値である（INV-45 / P20）。await をまたいで K を
+//!   固定するのは「推測値に安全側でないゲートを掛ける」に当たる。
+//!
+//! `WriteMechanism::ALL` は全 `caps` チェーンの**和集合**であり、
+//! `is_applicable` による絞り込みと `falls_through`（`Failed` のときだけ次へ）
+//! が同じである以上、`(p, k)` が変わらない限り `caps(p, k).chain` と同じ
+//! 結果になる（同値性は `ime_controller.rs::caps_chain_matches_legacy_all_scan`
+//! が全数で固定）。**同期経路（`ImeController::apply`）は view が 1 つに
+//! 固定されているため caps chain を使う**——差が出るのは await をまたぐ
+//! この経路だけである。ADR-089 §9-20 に残余論点として記録した。
 
 use awase::platform::ImeOpenOutcome;
 

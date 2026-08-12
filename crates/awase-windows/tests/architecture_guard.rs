@@ -1635,8 +1635,10 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
         "`runtime/open_chain.rs` の `apply_mechanism(` は `fallback_write` の中に\
          あること（ADR-089 §2.3）"
     );
-    let async_writer =
-        extract_fn_body(&open_chain, "impl AsyncMechanismWriter for AsyncChainWriter");
+    let async_writer = extract_fn_body(
+        &open_chain,
+        "impl AsyncMechanismWriter for AsyncChainWriter",
+    );
     assert_eq!(
         count_real_calls(open_chain_production, "fallback_write("),
         count_real_calls(async_writer, "fallback_write("),
@@ -1664,6 +1666,94 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
             !line.trim_start().starts_with("pub"),
             "`{decl}` は `ime_controller.rs` の外へ出さないこと（ADR-089 §2.3）。\
              実際の宣言: {line}"
+        );
+    }
+}
+
+/// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
+/// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
+///
+/// Phase C 以前は `ImmCrossProcessStrategy::apply` と `MsImeDirectStrategy::apply`
+/// が `crate::ime::set_ime_romaji_mode()`（宛先をライブクエリで write 時点に
+/// 自己決定する低レベル API）を**別々に**呼んでいた。`output/conv_actuation.rs`
+/// の doc が「ADR-086 Phase 1〜2 の『7 経路』の数え漏れ」と書いていた 2 経路が
+/// これである。Phase C で書き込み口を `ime_controller::romaji_pre_write` の
+/// 1 箇所へ統合し、`ActuationTarget::capture_blocking` →
+/// `set_ime_romaji_mode_for_target_blocking` を通す形にした。
+///
+/// 本テストが守るのは次の 3 点:
+///
+/// 1. 削除したライブクエリ版（`set_ime_romaji_mode()` / `_async()`）が
+///    本番コードに復活していないこと。
+/// 2. 同期捕獲（`ActuationTarget::capture_blocking`）と同期 ROMAN write の
+///    呼び出し元が `ime_controller.rs` の 1 箇所ずつであること。
+/// 3. その 1 箇所が `romaji_pre_write` の中にあること
+///    （= `needs_romaji_pre_write` の条件判定を必ず通ること）。
+#[test]
+fn sync_romaji_write_goes_through_a_captured_target() {
+    let files = list_src_files();
+
+    // 1. 削除済みライブクエリ版の復活検知。
+    for removed in ["set_ime_romaji_mode()", "set_ime_romaji_mode_async("] {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(removed))
+                .count();
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "`{removed}`（宛先をライブクエリで自己決定する同期 IMC write）は \
+             ADR-089 §6 Phase C item 12 で削除済みです。再実装せず、\
+             `ActuationTarget::capture_blocking` → \
+             `set_ime_romaji_mode_for_target_blocking` 経由で書き込むこと。\n\
+             実際: {sites:?}"
+        );
+    }
+
+    // 2. 同期捕獲と同期 ROMAN write の呼び出し元。
+    for needle in [
+        "ActuationTarget::capture_blocking(",
+        "set_ime_romaji_mode_for_target_blocking(",
+    ] {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        sites.sort();
+        assert_eq!(
+            sites,
+            vec![("src/ime_controller.rs".to_string(), 1)],
+            "`{needle}` の本番呼び出し元は `ime_controller.rs` の \
+             `romaji_pre_write` 1 箇所だけに固定されています（ADR-089 Phase C item 12）。\
+             実際: {sites:?}"
+        );
+    }
+
+    // 3. その 1 箇所が `romaji_pre_write` の中にあること。
+    let controller = read_crate_file("src/ime_controller.rs");
+    let pre_write = extract_fn_body(&controller, "fn romaji_pre_write");
+    for needle in [
+        "ActuationTarget::capture_blocking(",
+        "set_ime_romaji_mode_for_target_blocking(",
+    ] {
+        assert_eq!(
+            count_real_calls(pre_write, needle),
+            1,
+            "`{needle}` は `romaji_pre_write` の中で呼ぶこと（条件判定 \
+             `needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
         );
     }
 }

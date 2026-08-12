@@ -507,45 +507,21 @@ unsafe fn modify_conv_mode(
     Some((conv, new_conv, true, success))
 }
 
-/// クロスプロセスで IME をローマ字モードに設定する。
-///
-/// VK_DBE_HIRAGANA (0xF2) による warmup は非同期のため、同一 SendInput バッチ内の
-/// 最初の文字が mode switch 完了前に到達し "koの"/"ho助金" 等の cold-start 文字化けが発生する。
-/// 本関数は IMM32 の IMC_SETCONVERSIONMODE を使って SendInput 前に同期的にローマ字モードへ切り替える。
-///
-/// Returns `true` if the operation succeeded or the mode was already correct.
-///
-/// # Safety
-/// Calls Win32 APIs. Must be called from the main thread.
-#[must_use]
-pub unsafe fn set_ime_romaji_mode() -> bool {
-    // SAFETY: get_focused_hwnd は unsafe fn。NULL を返す場合は non_null() が None を返し
-    //         早期リターンする。
-    //
-    // BUG-55（2026-08-07 実機）: 以前は GetForegroundWindow()（トップレベル）を対象にして
-    // いたため、Windows Terminal のように実際の TSF composition を別の子ウィンドウ
-    // （InputSite）が持つアプリでは、この書き込みが実態と無関係な互換ウィンドウに送られ
-    // 「成功」ログを出しながら実際には JIS かな入力ロックから復旧できない不具合があった。
-    // get_focused_hwnd（GetGUIThreadInfo().hwndFocus 優先）に揃えることで、実際に
-    // テキスト入力を受けている子ウィンドウを対象にする。
-    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
-        return false;
-    };
-    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    let Some(ime_wnd) = (unsafe { crate::imm::get_ime_wnd(hwnd) }) else {
-        return false;
-    };
-
-    let Some((conv, new_conv, changed, success)) =
-        (unsafe { modify_conv_mode(ime_wnd, |conv| conv | IME_CMODE_ROMAN) })
-    else {
-        return false;
-    };
-    if changed {
-        log::debug!("[imm-romaji] conv 0x{conv:08X} → 0x{new_conv:08X} success={success}");
-    }
-    success
-}
+// 旧 `set_ime_romaji_mode()` / `set_ime_romaji_mode_async()`（宛先をライブクエリで
+// 自己決定する同期 IMC write）は **ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の
+// 未移行分の是正）で削除した**。呼び出し元は `ime_controller.rs` の
+// `ImmCrossProcessStrategy::apply` / `MsImeDirectStrategy::apply` の 2 箇所だけで、
+// どちらも `ime_controller::apply_mechanism` の ROMAN 補完ステップ
+// （`ActuationTarget::capture_blocking` → `set_ime_romaji_mode_for_target_blocking`）
+// へ移行済み。
+//
+// `set_ime_romaji_mode_async` は移行前から呼び出し元ゼロ（`set_ime_romaji_mode` を
+// offload するだけのラッパー）だったため、同時に削除した。
+//
+// **再実装しないこと。** ライブクエリ版を復活させると、ROMAN 補完の宛先と
+// 実際に開く/キーを送る宛先が別ウィンドウになりうる（ADR-086 §1.2 欠陥1 と同型）。
+// `tests/architecture_guard.rs::sync_romaji_write_goes_through_a_captured_target` が
+// 書き込み口の数を固定する。
 
 // ─── hwnd 指定版クロスプロセス検出（read_ime_state_full 専用）─────
 
@@ -778,14 +754,7 @@ pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
     offload_unsafe(move || unsafe { set_ime_open_cross_process(open) }).await
 }
 
-/// `set_ime_romaji_mode` の async 版（ワーカースレッドで実行）
-pub async fn set_ime_romaji_mode_async() -> bool {
-    // SAFETY: set_ime_romaji_mode は unsafe fn。win32_async::offload はワーカースレッドで実行するが
-    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    offload_unsafe(|| unsafe { set_ime_romaji_mode() }).await
-}
-
-/// 目標 conv 指定付き `set_ime_romaji_mode` の実体（hwnd 指定版）。
+/// 目標 conv 指定付き ROMAN 補完の実体（hwnd 指定版）。
 ///
 /// ADR-086 §5 Phase1b step6（2026-08-08）: 宛先をライブクエリで自己決定する
 /// `set_ime_romaji_mode_with_target`/`_async`（target identity を持たない、
@@ -1073,6 +1042,59 @@ impl ActuationTarget {
         hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
     }
 
+    /// [`Self::capture`] の同期版（ADR-089 §6 Phase C item 12）。
+    ///
+    /// **`ImeOpenStrategy::apply` の呼び出しチェーンは完全に同期的**であり
+    /// （`apply_force_on_for_imm_broken` / `consume_force_open_pending` /
+    /// `ir_apply_drift_correction` / `kp_stage_shadow_ime_toggle` 等、
+    /// `spawn_local` を使わない経路から直接呼ばれる）、async 版の `capture` を
+    /// そのまま使うことはできない。ADR-086 Phase 3 はこの制約を理由に
+    /// 「`ImeOpenStrategy::apply` 自体の非同期化が要る」として ROMAN 補完の
+    /// `ActuationTarget` 化を見送っていたが、**`capture` が実際にやっている
+    /// ことは `get_focused_hwnd()` 1 回であり**、旧
+    /// `set_ime_romaji_mode()` が内部で行っていたライブクエリと同一である。
+    /// したがって「捕獲を write の外へ出す」だけなら同期のままでできる。
+    ///
+    /// # 実測上の注意
+    /// `get_focused_hwnd` は内部で `get_gui_thread_info_with_timeout(30ms)` を
+    /// 呼び、失敗時は `GetForegroundWindow()` にフォールバックする。
+    /// **旧 `set_ime_romaji_mode()` と同じ関数・同じタイムアウト・同じ
+    /// フォールバック**であり、Win32 往復の回数も 1 回のままである
+    /// （ADR-089 §6「Phase C 実施記録」の C-7）。
+    ///
+    /// # Safety
+    /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+    pub(crate) unsafe fn capture_blocking(focus_gen: u32) -> Option<Self> {
+        // SAFETY: 呼び出し元がメインスレッドであることを保証する。
+        let hwnd = unsafe { get_focused_hwnd() };
+        hwnd.non_null().map(|hwnd| Self { hwnd, focus_gen })
+    }
+
+    /// 同期経路用の再検証。**hwnd のライブクエリを行わず、フォーカス世代だけを
+    /// 照合する**（ADR-089 §6 Phase C item 12）。
+    ///
+    /// [`Self::verify_still_current`] は `get_focused_hwnd_async().await` で
+    /// hwnd を読み直すが、同期経路では
+    ///
+    /// 1. 捕獲から書き込みまでの間に await 点が無く、hwnd が動く余地が構造的に
+    ///    無い（同一フレーム内の連続した文である）。
+    /// 2. 読み直すと Win32 往復が 1 回から 2 回へ倍増し、打鍵ホットパスに乗る
+    ///    force-ON 経路のレイテンシが変わる（`.claude/rules/tuning-constants.md`
+    ///    が実測を要求する軸）。
+    ///
+    /// ため、世代照合のみを行う。**この照合は現状では常に一致する**——
+    /// `consume_force_open_pending` が同じ理由で置いている gen フェンス
+    /// （「本経路は完全に同期的なため実際には常に一致するが、将来この経路に
+    /// 非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する」）と同じ
+    /// 性質のガードである。
+    const fn verify_gen_only(self, current_focus_gen: u32) -> TargetVerifyOutcome {
+        if self.focus_gen == current_focus_gen {
+            TargetVerifyOutcome::Current(self.hwnd)
+        } else {
+            TargetVerifyOutcome::GenStale
+        }
+    }
+
     /// 実行直前に呼ぶ。`read_current_focus_gen` は呼び出し元が最新の gen 値
     /// （典型的には `Cell<u64>::get`）を読むためのクロージャで、**hwnd の
     /// ライブクエリが完了した直後**（このメソッド内の唯一の await の後）に
@@ -1183,6 +1205,57 @@ pub(crate) enum AbortReason {
     GenStale,
     /// フォーカス世代は同じだが、実際の hwnd が起案時点と異なる。
     TargetMoved,
+}
+
+/// 捕獲済みターゲットへ ROMAN ビットを補完する**同期**版
+/// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
+///
+/// 旧 `set_ime_romaji_mode()`（宛先をライブクエリで自己決定していた）の置き換え。
+/// 呼び出し元は `ime_controller::apply_mechanism` の ROMAN 補完ステップ 1 箇所のみ
+/// （`tests/architecture_guard.rs::sync_romaji_write_goes_through_a_captured_target`
+/// が固定）。
+///
+/// [`set_ime_conv_for_target`]（非同期版）との差:
+///
+/// | | 非同期版 | 本関数（同期版） |
+/// |---|---|---|
+/// | 再検証 | `verify_still_current`（hwnd ライブクエリ + gen 照合） | [`ActuationTarget::verify_gen_only`]（gen 照合のみ） |
+/// | Win32 往復 | 捕獲 1 + 再検証 1 + write | 捕獲 1 + write |
+/// | 呼び出し文脈 | `spawn_local` の中（await 点あり） | 完全同期（await 点なし） |
+///
+/// hwnd を読み直さない理由は [`ActuationTarget::verify_gen_only`] の doc を参照。
+/// **`Aborted` を成功として扱わないこと**（INV-14）——呼び出し元は結果を必ず
+/// ログに残す。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub(crate) unsafe fn set_ime_romaji_mode_for_target_blocking(
+    target: ActuationTarget,
+    current_focus_gen: u32,
+) -> ActuationOutcome {
+    let hwnd = match target.verify_gen_only(current_focus_gen) {
+        TargetVerifyOutcome::Current(hwnd) => hwnd,
+        TargetVerifyOutcome::GenStale => {
+            log::debug!(
+                "[imm-romaji] Aborted(GenStale): captured_gen={} current_gen={current_focus_gen}",
+                target.focus_gen
+            );
+            return ActuationOutcome::Aborted(AbortReason::GenStale);
+        }
+        TargetVerifyOutcome::TargetMoved => {
+            // `verify_gen_only` は hwnd を読み直さないため構造的に返らないが、
+            // `TargetVerifyOutcome` の網羅性のために残す。
+            log::debug!("[imm-romaji] Aborted(TargetMoved)");
+            return ActuationOutcome::Aborted(AbortReason::TargetMoved);
+        }
+    };
+    // SAFETY: hwnd は capture_blocking が non_null() で検証済みのウィンドウハンドル。
+    //         set_ime_romaji_mode_for_hwnd は SendMessageTimeoutW ベースでタイムアウト付き。
+    if unsafe { set_ime_romaji_mode_for_hwnd(hwnd, None) } {
+        ActuationOutcome::Written
+    } else {
+        ActuationOutcome::Failed
+    }
 }
 
 /// [`ActuationTarget`] を通じて conv-mode を書き込む唯一の target-aware 版

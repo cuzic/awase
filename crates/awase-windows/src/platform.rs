@@ -1016,6 +1016,10 @@ impl WindowsPlatform {
             focus: crate::state::FocusFacts {
                 class_name,
                 profile: self.current_app_profile(),
+                // ADR-089 §6 Phase C item 12: 同期 ROMAN 補完（ADR-086 INV-14）の
+                // `ActuationTarget` 照合基準。`executor.rs::dispatch_ime_set_open` の
+                // async 経路が `ActuationTarget::capture(focus_gen)` に渡すのと同じ値。
+                focus_gen: self.output.ime_mode_focus_gen.get(),
             },
             observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
