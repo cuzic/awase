@@ -938,27 +938,16 @@ impl Runtime {
                 self.platform_state.ime.mirror_applied_open(false, tick_ms);
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
-                    let ok = crate::ime::set_ime_open_cross_process_async(false).await;
-                    let outcome = if ok {
-                        awase::platform::ImeOpenOutcome::Applied
-                    } else {
-                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
-                        if actual == Some(false) {
-                            log::debug!(
-                                "[shadow-toggle] ImmCross failed but actual=OFF already, skip fallback"
-                            );
-                            awase::platform::ImeOpenOutcome::AlreadyMatched
-                        } else {
-                            log::debug!(
-                                "[shadow-toggle] ImmCross failed (async, actual={actual:?}), trying fallback"
-                            );
-                            crate::with_app(|app| {
-                                crate::ime_controller::CONTROLLER
-                                    .apply_skipping_imm(false, &app.shadow_ime_control_view())
-                            })
-                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
-                        }
-                    };
+                    // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**と
+                    // して実行する。`Failed` のときのフォールスルー（旧
+                    // `apply_skipping_imm`）は `run_chain_async` が行う。
+                    // 宛先の捕獲（ADR-086 INV-14）はこの経路では未移行のため
+                    // `Untargeted` のまま（Phase C）。
+                    let outcome = crate::runtime::open_chain::run_open_chain_async(
+                        false,
+                        crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                    )
+                    .await;
                     // B+C(ts更新)+D(noop)+E
                     let _ = crate::with_app(|app| {
                         app.on_ime_apply_complete(

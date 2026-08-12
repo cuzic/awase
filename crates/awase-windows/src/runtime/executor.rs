@@ -783,59 +783,19 @@ impl DecisionExecutor {
                     drop(guard);
                     return;
                 };
-                let result = crate::ime::set_ime_open_then_conv_for_target(
-                    target,
+                // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**として
+                // 実行する。`Failed` のときのフォールスルー（旧
+                // `apply_skipping_imm`）は `run_chain_async` が行うため、ここに
+                // 分岐は書かない（走査規則の SSOT は `state/actuation_chain.rs`）。
+                let outcome = crate::runtime::open_chain::run_open_chain_async(
                     open,
-                    conv_after_open,
-                    || {
-                        crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                    crate::runtime::open_chain::ImmCrossOp::Targeted {
+                        target,
+                        conv_after_open,
+                        focus_gen,
                     },
                 )
                 .await;
-                if let Some(conv_outcome) = result.conv {
-                    log::debug!("[dispatch-ime] ROMAN 補完結果: {conv_outcome:?}");
-                }
-                let outcome = match result.open {
-                    crate::ime::ActuationOutcome::Written => {
-                        awase::platform::ImeOpenOutcome::Applied
-                    }
-                    crate::ime::ActuationOutcome::Aborted(reason) => {
-                        // INV-14: Aborted は「一度も書いていない」ので Applied 扱いに
-                        // しない。UnsafeToToggle は on_ime_apply_complete の C/D
-                        // （SSOT の applied/belief 書き込み）を一切実行させない
-                        // （apply は行われていないため）。フォールバック
-                        // （apply_skipping_imm の SendInput）も、検証済みでない
-                        // hwnd への意図しない送信を避けるため通さない。
-                        // E（post_ime_refresh）だけは UnsafeToToggle でも走るため、
-                        // Aborted(GenStale) の取りこぼしは 20ms 後の refresh で拾われる
-                        // （opus レビュー指摘 F3、2026-08-08 是正、on_ime_apply_complete 参照）。
-                        log::debug!("[dispatch-ime] open Aborted({reason:?}) → UnsafeToToggle");
-                        awase::platform::ImeOpenOutcome::UnsafeToToggle
-                    }
-                    crate::ime::ActuationOutcome::Failed => {
-                        // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
-                        //         spawn_local はメインスレッドのメッセージループで実行される。
-                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
-                        if actual == Some(open) {
-                            log::debug!(
-                                "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
-                                 already matches desired={open}, skip fallback"
-                            );
-                            awase::platform::ImeOpenOutcome::AlreadyMatched
-                        } else {
-                            log::debug!(
-                                "[apply-ime] ImmCross failed (async), trying fallback \
-                                 (actual ime_on={actual:?})"
-                            );
-                            crate::with_app(|app| {
-                                crate::ime_controller::CONTROLLER
-                                    .apply_skipping_imm(open, &app.shadow_ime_control_view())
-                            })
-                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
-                        }
-                    }
-                };
                 // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
                 // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
                 // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、

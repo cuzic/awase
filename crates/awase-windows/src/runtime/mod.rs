@@ -6,7 +6,9 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
+// ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
+pub(crate) mod open_chain;
 pub(crate) mod outbox;
 mod transport;
 

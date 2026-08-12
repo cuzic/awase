@@ -34,6 +34,7 @@
 
 use awase::platform::ImeOpenOutcome;
 
+use crate::state::actuation_chain::{Actuation, MechanismWriter, VerifiedTarget, WriteMechanism};
 use crate::state::ime_decision_view::ImeControlView;
 use crate::state::key_sequence_policy::{self, ime_key_for, ImeOperation, KeyMechanism};
 use crate::tsf::observer::ActiveImeKind;
@@ -244,80 +245,108 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
     }
 }
 
-// ── ImeController ────────────────────────────────────────────────
-
-/// 戦略リストを走査して最初の有効な戦略を選択・実行するコントローラ。
-pub(crate) struct ImeController {
-    strategies: [&'static dyn ImeOpenStrategy; 4],
-}
+// ── 機構 → 戦略の写像 / ImeController（ADR-089 §2.3）─────────────
 
 static IMM_STRATEGY: ImmCrossProcessStrategy = ImmCrossProcessStrategy;
 static GJI_STRATEGY: GjiDirectStrategy = GjiDirectStrategy;
 static MS_IME_STRATEGY: MsImeDirectStrategy = MsImeDirectStrategy;
 static KANJI_STRATEGY: KanjiToggleStrategy = KanjiToggleStrategy;
 
+/// `WriteMechanism` から実装戦略を引く唯一の写像。
+///
+/// `WriteMechanism`（`state/actuation_chain.rs`、ungated）が chain の語彙で、
+/// ここが Windows 側の実装への橋である。`caps(p, k).chain` を導入する
+/// Phase C（ADR-089 §2.8）でもこの写像はそのまま使える。
+const fn strategy_for(mechanism: WriteMechanism) -> &'static dyn ImeOpenStrategy {
+    match mechanism {
+        WriteMechanism::ImmCross => &IMM_STRATEGY,
+        WriteMechanism::GjiDirect => &GJI_STRATEGY,
+        WriteMechanism::MsImeDirect => &MS_IME_STRATEGY,
+        WriteMechanism::KanjiToggle => &KANJI_STRATEGY,
+    }
+}
+
+/// 機構が現在のコンテキストで適用可能か（`runtime` 層の async writer からも使う）。
+pub(crate) fn mechanism_is_applicable(
+    mechanism: WriteMechanism,
+    view: &ImeControlView<'_>,
+) -> bool {
+    strategy_for(mechanism).is_applicable(view)
+}
+
+/// 機構 1 つ分の同期 write（`runtime` 層の async writer のフォールバック側から使う）。
+pub(crate) fn apply_mechanism(
+    mechanism: WriteMechanism,
+    open: bool,
+    view: &ImeControlView<'_>,
+) -> ImeOpenOutcome {
+    strategy_for(mechanism).apply(open, view)
+}
+
+/// 同期 writer。`view` は呼び出し元が一度だけ構築したものを使い回す
+/// （`tsf_obs()` の二重呼び出しを避ける既存方針をそのまま維持）。
+struct SyncChainWriter<'v, 'a> {
+    view: &'v ImeControlView<'a>,
+}
+
+impl MechanismWriter for SyncChainWriter<'_, '_> {
+    fn is_applicable(&self, mechanism: WriteMechanism) -> bool {
+        mechanism_is_applicable(mechanism, self.view)
+    }
+
+    fn write(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
+        apply_mechanism(mechanism, open, self.view)
+    }
+}
+
+/// 機構チェーンを走査して IME を設定するコントローラ。
+///
+/// **走査規則（`is_applicable` で絞り、`Failed` のときだけ次へ）は
+/// `state/actuation_chain.rs` の `Actuation::<Verified>::run_chain` が SSOT で
+/// ある**（ADR-089 §2.3）。旧 `apply_iter` はここに inline されていたが、
+/// Phase B で ungated 側へ移し、Linux で全数テストできるようにした。
+///
+/// 旧 `apply_skipping_imm`（async IMM が `Failed` を返した後の再走査）は
+/// **撤去した**。ImmCross が chain の要素になったことでフォールスルーは
+/// `run_chain_async` が自動的に行う（`runtime/open_chain.rs`）。
+pub(crate) struct ImeController;
+
 impl ImeController {
     pub(crate) const fn new() -> Self {
-        Self {
-            strategies: [
-                &IMM_STRATEGY,
-                &GJI_STRATEGY,
-                &MS_IME_STRATEGY,
-                &KANJI_STRATEGY,
-            ],
-        }
+        Self
     }
 
-    /// コンテキストに応じた戦略を選択して IME を設定する。
+    /// コンテキストに応じた機構チェーンを走査して IME を設定する（同期経路）。
     ///
-    /// 戦略が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の `SendMessageTimeout` タイムアウト）、
-    /// 次の適用可能な戦略にフォールスルーする。
+    /// 機構が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の
+    /// `SendMessageTimeout` タイムアウト）、次の適用可能な機構へフォールスルーする。
     pub(crate) fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        Self::apply_iter(&self.strategies, open, view)
-    }
-
-    /// `ImmCrossProcessStrategy` を除いた戦略リストで IME を設定する。
-    ///
-    /// async 化された IMM クロスプロセス経路が `Failed` を返した後のフォールバック用。
-    /// `strategies[0]` (IMM) をスキップして GJI / KanjiToggle のみで再試行する。
-    pub(crate) fn apply_skipping_imm(
-        &self,
-        open: bool,
-        view: &ImeControlView<'_>,
-    ) -> ImeOpenOutcome {
-        Self::apply_iter(&self.strategies[1..], open, view)
+        // ADR-087 の `issue_open_warrant()` は本番未配線のため暫定授権を使う
+        // （`state/actuation_chain.rs` モジュール doc の「差分」3）。宛先は VK 送信
+        // 機構がフォーカスへ送る前提のまま（ADR-086 INV-14 の未移行分、Phase C）。
+        let actuation = Actuation::request(open)
+            .warrant_pending_adr087()
+            .verify(VerifiedTarget::FocusImplicit);
+        let mut writer = SyncChainWriter { view };
+        let outcome = actuation.run_chain(&WriteMechanism::ALL, &mut writer);
+        if outcome == ImeOpenOutcome::Failed {
+            log::warn!(
+                "[apply-ime] all strategies failed for class={}",
+                view.focus.class_name
+            );
+        }
+        outcome
     }
 
     /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能か。
     ///
-    /// dispatch 側で「async 経路 (IMM)」と「sync 経路 (GJI/Kanji)」を branch するための判定。
-    /// `strategies` の構築順 (`new` で IMM が index 0) に依存する。
+    /// dispatch 側で「async 経路 (IMM)」と「sync 経路 (GJI/Kanji)」を branch する
+    /// ための判定。`WriteMechanism::ALL` の並び（IMM が index 0）に依存する。
     pub(crate) fn imm_cross_is_first_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        self.strategies
+        WriteMechanism::ALL
             .iter()
-            .position(|s| s.is_applicable(view))
+            .position(|m| mechanism_is_applicable(*m, view))
             .is_some_and(|idx| idx == 0)
-    }
-
-    fn apply_iter(
-        strategies: &[&'static dyn ImeOpenStrategy],
-        open: bool,
-        view: &ImeControlView<'_>,
-    ) -> ImeOpenOutcome {
-        for strategy in strategies {
-            if strategy.is_applicable(view) {
-                let outcome = strategy.apply(open, view);
-                if outcome != ImeOpenOutcome::Failed {
-                    return outcome;
-                }
-                log::debug!("[apply-ime] strategy failed, trying next fallback");
-            }
-        }
-        log::warn!(
-            "[apply-ime] all strategies failed for class={}",
-            view.focus.class_name
-        );
-        ImeOpenOutcome::Failed
     }
 }
 
@@ -335,27 +364,24 @@ pub(crate) static CONTROLLER: ImeController = ImeController::new();
 // `apply()` は Win32 SendInput 副作用を持つため呼ばない。ここで評価するのは
 // 純粋な `is_applicable` のみ（戦略の「選択」だけを固定し、送信キー自体は
 // ゴールデンファイル側にソース由来のドキュメントとして注記する）。
-// 本番経路（`apply` / `apply_skipping_imm`）からは参照されない。
-
-/// `strategies` 配列と同順の戦略名。`ImeController::new` の構築順に一致させること。
-const STRATEGY_NAMES: [&str; 4] = ["ImmCrossProcess", "GjiDirect", "MsImeDirect", "KanjiToggle"];
+// 本番経路（`ImeController::apply` / `runtime/open_chain.rs`）からは参照されない。
 
 impl ImeController {
-    /// 与えた view で最初に `is_applicable` を返す戦略の名前（`apply` は実行しない）。
+    /// 与えた view で最初に `is_applicable` を返す機構の名前（`apply` は実行しない）。
     fn first_applicable_name(&self, view: &ImeControlView<'_>) -> &'static str {
-        self.strategies
+        WriteMechanism::ALL
             .iter()
-            .position(|s| s.is_applicable(view))
-            .map_or("None", |i| STRATEGY_NAMES[i])
+            .find(|m| mechanism_is_applicable(**m, view))
+            .map_or("None", |m| m.name())
     }
 
-    /// `ImmCrossProcessStrategy` を除いた（async IMM が `Failed` を返した後の）
-    /// フォールバック選択の名前。`apply_skipping_imm` と同じ走査範囲。
+    /// `ImmCross` を除いた（async IMM が `Failed` を返した後の）フォールバック
+    /// 選択の名前。`run_chain_async` が ImmCross の `Failed` 後に辿る範囲と同じ。
     fn first_applicable_name_skipping_imm(&self, view: &ImeControlView<'_>) -> &'static str {
-        self.strategies[1..]
+        WriteMechanism::ALL[1..]
             .iter()
-            .position(|s| s.is_applicable(view))
-            .map_or("None", |i| STRATEGY_NAMES[i + 1])
+            .find(|m| mechanism_is_applicable(**m, view))
+            .map_or("None", |m| m.name())
     }
 }
 
