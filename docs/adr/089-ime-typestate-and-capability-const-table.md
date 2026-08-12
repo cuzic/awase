@@ -324,7 +324,7 @@ dispatch される（`runtime/key_pipeline.rs:597` = `ConvBitsInference`、
 | 既存 | 何を定めたか | 本 ADR との関係 |
 |---|---|---|
 | [ADR-078](078-ime-mode-belief-desired-effective-constraint.md) | conv/mode belief の3分割（Phase 1a のみ実装） | **無関係**（本 ADR は belief の分割ではなく、既存 belief の**構築経路**を型で閉じる） |
-| [ADR-080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | actuation ライフサイクルと epoch fencing。不変条件6「`ReadBack` の産物を観測として記録しない」 | **一部を型化**。§2.5 の `ConvergedReceipt` が「`Observed<E>` / `AnyObservation` へ変換不能」であることでコンパイラ強制になる。ADR-080 の決定は変更しない |
+| [ADR-080](080-ime-actuation-lifecycle-and-epoch-fenced-drift-correction.md) | actuation ライフサイクルと epoch fencing。不変条件6「`ReadBack` の産物を観測として記録しない」 | **一部を型化**。§2.5 の `ConvergedReceipt` が「`Observed<E>` / `AnyObservation` へ変換不能」であることでコンパイラ強制になる（**Phase B 時点では receipt が制御フローに配線されておらず、この強制は空回りしている**——§8.1 の訂正 / §9-16）。ADR-080 の決定は変更しない |
 | [ADR-081](081-per-profile-capability-driver-decomposition.md) | プロファイル別 capability 駆動ドライバへの分離（Phase 1a/1b/1c 試験実装・**未配線**、1d/1e 未着手） | **一部を廃止提案**。§2.8 の `caps` const 表は ADR-081 の「capability 表」部分を**別の形（trait ではなく const 表）で実現する**。さらに §2.4 が同期義務を outcome 軸へ移すため、ADR-081 Phase 1c の**不変条件4・5 と `GjiDirectAccess` token は根拠を失う**（§6「ADR-081 Phase 1d 凍結」） |
 | [ADR-082](082-journal-structured-replay-and-event-origin.md) | journal 構造化リプレイと `EventOrigin` | **制約として受ける**。§2.1 の `record_replayed(AnyObservation)` は journal / fixture 復元専用の口であり、ここだけ実行時 match が残る |
 | [ADR-084](084-conv-mode-single-ownership-and-width-ssot.md) | conv 単一 actuator（P1/INV-1）、書き込みと belief 無効化の不可分性（INV-2） | **維持**。§2.3 の Actuation チェーンは INV-1 の「低レベル API を actuator の外から呼ばない」を型で表現する試み |
@@ -1397,7 +1397,7 @@ Phase B の失敗時に切り分けられなくなる。
 | B-3 | §2.3 `Actuation<Requested>::warrant(w: OpenWarrant)` | **`issue_open_warrant()` の本番呼び出し元はゼロ**（`src/` 全体を grep、2026-08-12。ADR-087 Phase 3 の配線が未了で、呼び出しは同ファイルのテストのみ） | 既存経路に warrant を要求すると ADR-087 Phase 3 を Phase B に巻き込む。**`warrant_pending_adr087()` という名前付きの暫定入口を分け**、件数を `legacy_unwarranted_actuation_sites_are_accounted_for`（期待値 **2**）で固定した。ADR-087 Phase 3 が進むたびにこの期待値は減るのが正しい方向 |
 | B-4 | §2.3 `Actuation<Verified>` は「ADR-086 INV-14 の capture 済みターゲットを保持する」 | `crate::ime::ActuationTarget` は**フィールドを private にして「`verify_still_current` を経由せずに hwnd を取り出せない」ことを型で保証している**（ADR-086 §6 段1） | hwnd を取り出すアクセサを生やすとその保証を壊す。**`VerifiedTarget::Captured` を payload 無しにした**。VK 送信機構向けの `FocusImplicit` は INV-14 未移行分であることを型の doc に明記（Phase C で潰す） |
 | B-5 | §2.4 細目5「`ImeProfileDriver::uses_gji_direct` を撤去する」 | 撤去すると `GjiDirectMechanism::access_for`（token の唯一の発行口）→ `GjiDirectAccess` → `GjiDirectMechanism::actuate` → `GjiActuation` が芋づるで根拠を失う | **連鎖して撤去した**（§4.7 が「維持」を明示的に却下しているため）。ADR-081 側にステータス追記済み。**ただし ADR-081 の凍結そのもの（§9-4）は未決定のまま**——`ImeProfileDriver` 本体と `driver_for` レジストリは残している |
-| B-6 | §6 item 10「`ConvergedReceipt` を `ReadBack` の戻り値型にする」 | **`ReadBack` という型・関数は存在しない**（§1.3(i) の記述どおり） | 読み戻しの帰結が実際に確定するのは `ir_apply_drift_correction` の `Read` 収束判定と `Blind` give-up 判定の 2 箇所。**そこで `ConvergedReceipt` を構築するようにした**（INV-46 の「観測へ変換できない」は型として成立している） |
+| B-6 | §6 item 10「`ConvergedReceipt` を `ReadBack` の戻り値型にする」 | **`ReadBack` という型・関数は存在しない**（§1.3(i) の記述どおり） | 読み戻しの帰結が実際に確定するのは `ir_apply_drift_correction` の `Read` 収束判定と `Blind` give-up 判定の 2 箇所。**そこで `ConvergedReceipt` を構築するようにした**（INV-46 の「観測へ変換できない」は型として成立している）。**ただし receipt は制御フローに使われず `log::debug!` に渡るだけで、収束判定は従来どおり `most_recent_trusted_after` の返す `ImeObservation` が担っている**（§9-16、§8.1 の訂正） |
 | B-7 | §7「新設するもの — `trybuild`（compile-fail テスト、4 ケース）」 | `trybuild` は未導入。§7 自身が「rustc 更新で `stderr` が変わり CI が赤くなる」保守負担を明記している | **`compile_fail` doctest で代替した**（stderr を照合しないため rustc バージョンに依存せず、dev-dependency も増えない）。`compile_fail` は「何らかの理由で落ちれば通る」ため、**1 行だけ違う「通る双子」を必ず併記**して、落ちている理由が目的の型エラーであることを示す形にした。ケース 1（`Warranted` から `run_chain`）・3（`ConvergedReceipt` → `AnyObservation`）・4（未束縛の `ActuationReceipt`）を実装。**ケース2（`record_belief` に `ActuatingPool` の evidence）は Phase A の範囲**であり本 Phase では追加していない |
 | B-8 | §9-1「`Drop` の `debug_assert` が panic unwind 中に double panic を起こしうる。Phase B 実装時に決める」 | — | **`std::thread::panicking()` で unwind 中を除外する形を採った**。double panic → abort になると**本来の panic の原因が失われる**（`panic_detect.rs` のクラッシュ報告も元の payload を拾えなくなる）ため |
 | B-9 | §9-9「receipt を持つ呼び出しフレームの特定が済んでいない」 | `platform.rs::on_ime_applied`（`&mut self` の中）が唯一の同期点 | receipt を**同メソッドのローカル値**として作り、同じフレームで `settle(self)` する形で解決した。async 境界をまたがない（async 経路も完了 outcome を WM 経由で `on_ime_apply_complete` へ返してから同期するため）ので、§9-1 の double panic と await 中断の相互作用は生じない |
@@ -1430,6 +1430,8 @@ Phase B の失敗時に切り分けられなくなる。
    不要になった理由である（item 6 の「二重経路解消」）。
 6. **`state/ime_actuation.rs`（改修）** — `ConvergedReceipt`（item 10、INV-46）。
    `runtime/ime_refresh.rs` の `Read` 収束 / `Blind` give-up の 2 箇所で構築。
+   **構築するだけで、制御フローには配線していない**（判定は従来どおり
+   `most_recent_trusted_after` の返す `ImeObservation` を見る）。§9-16。
 7. **`state/ime_profile_driver.rs`（改修）** — `uses_gji_direct` 撤去（item 8）。
    contract test の不変条件4・5 を「ドライバの静的宣言が同期義務をゲートしない
    こと」の確認へ置き換え。
@@ -1702,11 +1704,36 @@ Phase A では対象外）。
   を新設した。dylint 2 crate も撤去対象ではなかった（§7 の訂正）。
   **型化の成果は「ガードの本数が減ること」ではなく「同じ本数のガードが、
   より広い範囲（witness 構築子の総本数）を守る形に置き換わること」だった。**
-- **BUG-19 / BUG-33 の 2 ファミリーは、型として再発不能になる**
-  （INV-39 / INV-46）。どちらも「その API が存在しない」形の保証である——
-  プール毎 derive を提供しない（INV-39）、`ConvergedReceipt` から
-  `Observed<E>` / `AnyObservation` への変換を提供しない（INV-46）。
-  **release ビルドでも有効で、`cfg` にも依存しない。**
+- **BUG-19 / BUG-33 の 2 ファミリーは、型として再発不能に「なる」——
+  ただし配線が済んだ後の話である。**
+  どちらの保証も「その API が存在しない」形であり——プール毎 derive を
+  提供しない（INV-39）、`ConvergedReceipt` から `Observed<E>` /
+  `AnyObservation` への変換を提供しない（INV-46）——**release ビルドでも
+  有効で、`cfg` にも依存しない。**
+  **訂正（Phase B 実装後の実測、2026-08-12）**: r5 まで本項は
+  「BUG-19 / BUG-33 の 2 ファミリーは型として再発不能になる」と**完了形で**
+  書いていた。**Phase B 時点でこれは成立していない。**
+  - **BUG-33（INV-46）**: `ConvergedReceipt` は
+    `runtime/ime_refresh.rs` の 2 箇所（`Read` 収束判定 / `Blind` give-up
+    判定）で構築されているが、**その値は `log::debug!` の引数にしかなって
+    いない**（`receipt.converged()` / `receipt.attempts()`）。実際の読み戻しは
+    従来どおり `ObservationStore::most_recent_trusted_after(now, since)` が
+    `Option<&ImeObservation>` を直接返し、収束判定
+    （`.is_some_and(|o| o.open == desired)`）も give-up 後の復旧判定
+    （`.is_some()`）もその `ImeObservation` を見て行う。**`ConvergedReceipt` を
+    削除しても制御フローは 1 ビットも変わらない。** したがって
+    BUG-33（読み戻しの産物を観測として記録し、収束を偽装する）を今も止めて
+    いるのは、`ime_refresh.rs` の「observations には一切書き込まない」という
+    コードとコメントの規約、およびそれを見張るテキスト検査
+    `drift_correction_giveup_and_confirmed_do_not_write_observations` である。
+    型が効くのは「`ConvergedReceipt` を持っている人が、それを観測に変換
+    しようとしたとき」だけであり、**その状況が本番コードに存在しない**以上、
+    現状の INV-46 は**空回りしている**（§9-16）。
+  - **BUG-19（INV-39）**: §9-10 が Phase A の既知の限界として既に書いている
+    とおり、`record` / `record_belief` の本番呼び出し元がゼロで、本番の観測は
+    すべて `AnyObservation`（`Pool` の型情報を落とした値）を経由する。
+  **どちらも「型を置いた」段階であって「型で守られている」段階ではない。**
+  配線は Phase C 以降（§9-10 / §9-16）。
 - **BUG-18・22（`GjiFsm` 同期欠落）は「型として再発不能」にはならない。
   実効は debug ビルドでの実行時検出にとどまる**（下記の保証水準の注記）。
 - **`ime_controller.rs` の 2 経路（`apply` / `apply_skipping_imm`）が
@@ -1946,6 +1973,33 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     変更は §7 の `compile_fail` doctest（ケース1 とその「通る双子」）まで波及し、
     `caps(p, k).chain` を導入する Phase C（§2.8）が同じ場所をもう一度触るため。
     **Phase C で `caps` 表に合わせて writer を書き換えるときに同時に入れること。**
+
+16. **【Phase B の既知の限界】`ConvergedReceipt` が制御フローに配線されて
+    いない（INV-46 が空回りしている）。**
+    §8.1 の訂正のとおり、`ConvergedReceipt` は `runtime/ime_refresh.rs` の
+    2 箇所で構築されるが**値は `log::debug!` にしか渡っていない**。実際の
+    読み戻しは `ObservationStore::most_recent_trusted_after(now, since)` が
+    `Option<&ImeObservation>` を直接返し、収束判定も give-up 後の復旧判定も
+    その `ImeObservation` を見て行う。**receipt を削除しても制御フローは
+    変わらない。** INV-46（`ConvergedReceipt` → `Observed<E>` /
+    `AnyObservation` の変換が存在しない）は型としては成立しているが、
+    **変換したくなる人が本番コードに居ない**ため、BUG-33 を今止めているのは
+    依然としてコード規約と
+    `drift_correction_giveup_and_confirmed_do_not_write_observations`
+    （テキスト検査）である。
+    **Phase C で配線する形**: `most_recent_trusted_after` の**戻り値を
+    そのまま返さない**読み戻し API（例
+    `ObservationStore::read_back(now, since, desired) -> ConvergedReceipt`）を
+    作り、`ir_apply_drift_correction` がそれだけを見て収束/復旧を判定する。
+    そうして初めて「読み戻しの産物は `ImeObservation` として手に入らない」
+    ——ADR-080 不変条件6 のコンパイラ強制——が成立する。
+    **その時点まで §7 の「削除するもの」から
+    `drift_correction_giveup_and_confirmed_do_not_write_observations` を
+    削ってはならない**（§9-10 の Phase A の限界と同じ理由）。
+    なお `give-up` 側は復旧判定に「値は不問、鮮度だけを見る」という別の
+    述語を使っている（`most_recent_trusted_after(now, gave_up_at).is_some()`）
+    ため、receipt に載せる情報は `converged` / `attempts` の 2 つでは足りない
+    可能性がある。**API の形は配線時に決めること。**
 
 ---
 
