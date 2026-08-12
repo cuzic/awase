@@ -6033,6 +6033,121 @@ correctionの修正）、BUG-43（対称に「検知タイマー自体が止ま�
 （同種の長時間ドリフトが観測されたカタカナ復旧不能バグ）、
 [experiment-logging](../.claude/rules/experiment-logging.md)、
 [tuning-constants](../.claude/rules/tuning-constants.md)。
+
+### 追補（2026-08-11 実機再発・root cause 訂正・IntentStore 配線）
+
+**症状:** MS-IME（TsfNative、Windows Terminal `Windows.UI.Input.InputSite.WindowClass`、
+`app_kind=Uwp`）で、~3.5時間のスリープ/ロックから復帰した直後に日本語入力が
+正常に動作していた状態から、Ctrl+無変換（既定の IME OFF コンボ）を押した。
+ユーザーの直接確認（実機）: **「IME OFF 直接英数入力で、Engine ON でした」**
+——実 IME は正しく OFF になり直接英数入力が成功していたが、awase 自身の
+Engine（NicolaFsm の親指シフト/ローマ字処理）は ON のままだった。ログには
+`desired_open=false` 確定後、`[idle-conv-check] TsfNative: conv=0x00000009`
+（`NativeToggleShadowOff`）が `ObserverReported` として記録され続け、drift
+correction が `VK_1A` を GiveUp→再試行のサイクルで送り続ける様子が残っていた。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+
+**当初の誤診断（撤回済み）:** 最初に立てた仮説は「`most_recent_trusted()` に
+`ConvOpenInference`（BUG-55 で診断済みの `ime_wnd` 解離により実態と無関係な
+`conv=0x9` から推論される、`ObservationAuthority::BeliefOnly` 観測）が紛れ込み、
+これが `effective_open()`（`Engine::compute_state` が直接参照する `ctx.ime_on` の
+根拠）を ON に反転させている」というものだった。この仮説を Opus に独立レビューさせた
+結果、方向性は正しいが機構の特定が誤りだったと判明した:
+
+- 実際のフリップ経路は `most_recent_trusted()` ではなく
+  `derive_open_filtered()` の Medium 単独合意（TsfNative では他に競合する
+  open 観測が無いため、`ConvOpenInference` 1 件だけで `Some(true)` が確定する）
+  ——これは BUG-63 で既に確定していた機構と同型。`most_recent_trusted()` は
+  `derive_open_filtered()` が失効した後（`FRESH=3s` 超過後）にこの反転を
+  無期限に固着させる二次要因ではあるが、最初にフリップさせる犯人ではない。
+- トリガーは「同一アプリ内 hwnd のバタつき」では起こらない。
+  `ImeEvent::FocusChanged` の本番 dispatch 箇所は
+  `runtime/focus_tracking.rs::on_focus_process_changed` の1箇所のみで、
+  **PID が変わった場合にしか発火しない**。Windows Terminal の
+  `CASCADIA_HOSTING_WINDOW_CLASS` と `Windows.UI.Input.InputSite.WindowClass`
+  は同一プロセスなので、hwnd がどれだけバタついても `last_intent` はクリア
+  されない。本当に必要なのは**プロセスを跨ぐ実フォーカス変更**（他アプリへの
+  一瞬のフォーカス奪取と復帰、例: BUG-57 の Pushbullet 通知、または当日の
+  スリープ復帰直後のフォーカス再構築）であり、これは 2026-08-11 のログ抜粋
+  範囲では直接確認できていない（未確定のまま）。
+- また、ログの時系列（OFF直後 ~1.5秒間 `idle-conv-check` が連発しているように
+  見える記述）は `should_run_idle_conv_check`（`EXPLICIT_IME_SUPPRESS_MS=1500ms`
+  の間 idle-conv-check 自体を抑止するガード）とそのままでは整合しない点も
+  指摘された。
+
+**検討したが撤回した修正案:** `ObservationSource::authority()` が既に
+`ConvOpenInference` を `ObservationAuthority::BeliefOnly`（`Actuating` ではない）
+と分類していることを利用し、TsfNative（`FeedbackPolicy::Blind`）プロファイル
+限定で `derive_open_filtered()`/`most_recent_trusted()` の両方を
+`authority()==Actuating` のみに絞る案を検討したが、**実装前に撤回した**。
+理由: `docs/adr/087-open-belief-actuation-warrant-separation.md` §7 が
+「`ConvOpenInference` の confidence を下げる/絞り込む」方向を BUG-26 再発の
+理由で明文で再提案禁止としており、MS-IME×TsfNative では open 観測が
+`ConvOpenInference` 以外に構造的にゼロ（`Gji`/`Tsf` ソースは本番コードに
+記録サイトが無く、`Blacklist` 経路は IMM クエリ自体をスキップする）ため、
+これを弾くと Engine が二度と ON に復帰できなくなる（BUG-26 そのもの）。
+さらに `most_recent_trusted()` は drift correction（`check_drift_correction`）
+自身の収束判定にも使われており、シグネチャを変えると「Engine ON は消えるが
+実 IME も OFF に戻らない」というより悪い状態を作りかねない。
+
+**修正（本追補、IntentStore 配線）:** ADR-087 §5 Phase 1' で設計され
+`state/intent_store.rs` として純粋ロジックのみ実装済み（`HwndId` 単位、
+ON/OFF 非対称 TTL）だった `IntentStore` を、`PlatformState::effective_open()`
+（`state/platform_state.rs`）から実際に読み取るよう配線した
+（ADR §5 Phase 1' item8 が要求していた統合、これまで未配線だった）。
+
+- `ImeStateHub::effective_open()` は、`shadow_model.current_focus()` が
+  `Some(hwnd)` かつ `intent_store.lookup(hwnd, now)` が有効なエントリを返す間は
+  その `open` 値をそのまま採用し、`ImeModel::effective_open()`（`last_intent`/
+  `derive_open_filtered`/`most_recent_trusted` の通常経路）にフォールバック
+  しない。`IntentStore` は `FocusChanged` でクリアされないため、**同一対象
+  （同一 `HwndId`）へフォーカスが戻った場合に限り**、直前の明示 OFF/ON 意図が
+  壊れた `ConvOpenInference` 観測に負けなくなる。
+- `apply_panic_reset`/`apply_hwnd_cache_restore`（`ImeEvent::PanicReset`/
+  `HwndCacheRestored` を dispatch する唯一の designated 関数）は、
+  現在の対象の `IntentStore` エントリを無効化してから `desired_open` を
+  書き換える。これにより、これらの安全弁がこの新しい優先ロジックによって
+  古い明示意図に負けることはない。
+- `ImeModel::effective_open()`/`resolve_open_at()` 自体（`Instant` ベースの
+  純粋ロジック）は一切変更していない——変更は `ImeStateHub` 層の薄い上書きに
+  限定される。
+
+**効果範囲（誠実に書く）:** ADR-087 §5 Phase 1' 自身が明記するとおり、この
+配線が効くのは**直前に明示 IME 操作があった場合に限る**。フォーカス変更前に
+一度も IME キーを押していない場合（BUG-63 の再現手順そのもの）や、対象
+（`HwndId`）が実際に変わった場合は、従来どおり観測ベースの
+`derive_open_filtered()`/`most_recent_trusted()` にフォールバックする
+（=このバグの再現手順のように「直前に Ctrl+無変換 を押していた」ケースには
+効くが、万能の修正ではない）。また Opus レビューで指摘された別経路
+（`conv_classify::EngineSync::SetOpen(RomajiRecovered)` が conv 由来の再同期を
+`UserImeSetIntent{Command}` として偽装し `last_intent`/`desired_open` を
+両方 ON に書き換えてしまう抜け道）はこの追補では未対応——別バグとして
+今後切り出す。
+
+**検証:** `cargo test -p awase-windows --lib`（Linux native、342 件 pass、
+`state::platform_state` は `#[cfg(windows)]` のためこの中に含まれない）、
+`cargo test -p awase-windows --test architecture_guard`（22 件 pass、
+`panic_reset_event_is_limited_to_apply_panic_reset`/
+`hwnd_cache_restored_event_is_limited_to_apply_hwnd_cache_restore` を含めて
+全緑）、`cargo xwin check --tests -p awase-windows --target
+x86_64-pc-windows-msvc`（警告ゼロ）、`cargo xwin clippy -p awase-windows
+--target x86_64-pc-windows-msvc -- -D warnings`（`--tests` 抜き、警告ゼロ、
+`--tests` 込みは本追補と無関係な既存 pedantic 指摘が残っており従来通り除外）。
+`state/platform_state.rs` に本追補用の回帰テスト6件
+（`effective_open_survives_focus_change_via_intent_store` ほか）を追加、
+Windows 専用のため型検査のみで実行はできていない。**wine 未導入のため
+このサンドボックスでは実機相当のテスト実行が一切できず、本追補は
+コードレビューと静的検証のみに基づく——次回実機で Ctrl+無変換 →
+（プロセスを跨ぐ）フォーカス変更 → 再フォーカスという手順を踏み、
+Engine が ON に戻らないことを確認すること。**
+
+**関連:** BUG-26（`ConvOpenInference` を安易に弾くと再発する Engine 復帰不能）、
+BUG-55（`ime_wnd` が InputSite の実態と無関係な固定ハンドルを返す）、
+BUG-57（Pushbullet 通知によるプロセス跨ぎのフォーカス奪取）、
+BUG-63（`derive_open_filtered` の Medium 単独合意で belief が反転する同型の
+機構）、[ADR-087](adr/087-open-belief-actuation-warrant-separation.md)
+（§5 Phase 1'、`state/intent_store.rs`）。
 ## BUG-52: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
 
 **症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で
