@@ -26,7 +26,9 @@
 use std::marker::PhantomData;
 
 use super::conv_classify::ConvSyncReason;
-use super::ime_event::{HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource};
+use super::ime_event::{
+    HwndId, ImePolicyProfile, ObservationAuthority, ObservationConfidence, ObservationSource,
+};
 use super::probe_admission::{AcceptedObservation, FocusEpoch};
 
 mod sealed {
@@ -34,7 +36,14 @@ mod sealed {
 }
 
 /// 観測プールの種別。`ActuatingPool` / `BeliefPool` の 2 値のみ。
-pub trait PoolKind: sealed::Sealed {}
+pub trait PoolKind: sealed::Sealed {
+    /// このプールに属する観測が持つ authority。
+    ///
+    /// `ObservationSource::authority()`（実行時タグ側の SSOT）と食い違うと
+    /// `declare_evidence!` の `const _: () = assert!(..)` が**コンパイルを
+    /// 失敗させる**（ADR-089 §6 Phase A item 5、INV-38）。
+    const AUTHORITY: ObservationAuthority;
+}
 
 /// actuation（外部 IME 状態への書き込み）の根拠にしてよい観測のプール。
 #[derive(Debug)]
@@ -44,9 +53,27 @@ pub struct ActuatingPool;
 pub struct BeliefPool;
 
 impl sealed::Sealed for ActuatingPool {}
-impl PoolKind for ActuatingPool {}
+impl PoolKind for ActuatingPool {
+    const AUTHORITY: ObservationAuthority = ObservationAuthority::Actuating;
+}
 impl sealed::Sealed for BeliefPool {}
-impl PoolKind for BeliefPool {}
+impl PoolKind for BeliefPool {
+    const AUTHORITY: ObservationAuthority = ObservationAuthority::BeliefOnly;
+}
+
+/// `ObservationAuthority` の const 比較（`PartialEq::eq` は const fn ではない）。
+const fn authority_eq(a: ObservationAuthority, b: ObservationAuthority) -> bool {
+    matches!(
+        (a, b),
+        (
+            ObservationAuthority::Actuating,
+            ObservationAuthority::Actuating
+        ) | (
+            ObservationAuthority::BeliefOnly,
+            ObservationAuthority::BeliefOnly
+        )
+    )
+}
 
 /// open 観測の「根拠としての種別」。1 型につき impl は 1 つしか書けない。
 pub trait OpenEvidence: sealed::Sealed {
@@ -62,6 +89,10 @@ pub trait OpenEvidence: sealed::Sealed {
 
 /// evidence 型を宣言する。`type Pool` はここでしか書けないため、
 /// 二重所属は構造的に表現できない（INV-38）。
+///
+/// あわせて **`Pool` の割り当てと `SOURCE.authority()` の一致をコンパイル時に
+/// 検査する**（`const _: () = assert!(..)`）。プールを取り違えて宣言すると
+/// テストを 1 本も走らせる前に `cargo build` が落ちる。
 macro_rules! declare_evidence {
     ($( $(#[$meta:meta])* $name:ident => $pool:ty, $source:ident, $conf:ident );* $(;)?) => {
         $(
@@ -74,6 +105,18 @@ macro_rules! declare_evidence {
                 const SOURCE: ObservationSource = ObservationSource::$source;
                 const CONFIDENCE: ObservationConfidence = ObservationConfidence::$conf;
             }
+            const _: () = assert!(
+                authority_eq(
+                    <$pool as PoolKind>::AUTHORITY,
+                    ObservationSource::$source.authority(),
+                ),
+                concat!(
+                    stringify!($name),
+                    " の Pool 割り当てが ObservationSource::",
+                    stringify!($source),
+                    ".authority() と食い違っている（ADR-089 INV-38）",
+                ),
+            );
         )*
     };
 }
@@ -327,16 +370,44 @@ impl IntentWitness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::ime_event::ObservationAuthority;
 
-    /// `OpenEvidence::SOURCE` と `ObservationSource::authority()` が
-    /// evidence 型 9 個の全数で一致すること（ADR-089 §6 Phase A item 5、INV-38）。
+    /// `E::Pool`（型）・`E::SOURCE.authority()`（実行時タグ）・手書き期待値の
+    /// **3 者**が一致することを evidence 型 9 個の全数で確認する
+    /// （ADR-089 §6 Phase A item 5、INV-38）。
+    ///
+    /// `E::Pool` を**実際に参照する**のが要点。`E::SOURCE.authority()` と
+    /// 手書き期待値だけを比べる形だと、`declare_evidence!` のプール割り当てを
+    /// 取り違えても（`record`/`record_belief` の呼び出し元がまだ無い Phase A では）
+    /// どこも落ちない。なお同じ一致は `declare_evidence!` 内の
+    /// `const _: () = assert!(..)` がコンパイル時にも見ているため、取り違えは
+    /// **ビルドが通らない**か、この全数テストが落ちるかのいずれかになる。
     fn assert_pool<E: OpenEvidence>(expected: ObservationAuthority) {
         assert_eq!(
-            E::SOURCE.authority(),
+            <E::Pool as PoolKind>::AUTHORITY,
             expected,
+            "{:?} の OpenEvidence::Pool が期待するプールと違う",
+            E::SOURCE
+        );
+        assert_eq!(
+            E::SOURCE.authority(),
+            <E::Pool as PoolKind>::AUTHORITY,
             "{:?} の authority() が OpenEvidence::Pool と食い違っている",
             E::SOURCE
+        );
+    }
+
+    /// プール型そのものの authority 割り当て（上の全数テストの基準点）。
+    #[test]
+    fn pool_kinds_carry_their_authority() {
+        assert_eq!(
+            ActuatingPool::AUTHORITY,
+            ObservationAuthority::Actuating,
+            "ActuatingPool の AUTHORITY"
+        );
+        assert_eq!(
+            BeliefPool::AUTHORITY,
+            ObservationAuthority::BeliefOnly,
+            "BeliefPool の AUTHORITY"
         );
     }
 
