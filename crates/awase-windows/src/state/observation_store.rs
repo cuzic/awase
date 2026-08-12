@@ -873,6 +873,207 @@ mod tests {
         );
     }
 
+    // ── pinned test（ADR-089 §6 Phase A の「先にやること」、§2.1） ──────────────
+    //
+    // プール分離（`derive_actuating` / `derive_any`）が導出結果を変えていない
+    // ことを固定する。オラクルは**リファクタ前**の `derive_open_filtered` の
+    // 逐語コピーであり、production 側が変わってもここは変えない
+    // （変えるとリファクタ前後の比較という目的が消える）。
+    // 比較は `DeriveOutcome` の等値で行う——`.value()` の bool だけを比べると
+    // `WarrantBasis` の構築に使う `source` / `first` / `second` の変化を
+    // 検出できない（ADR-087）。
+
+    /// リファクタ前の `ObservationStore::derive_open_filtered` の逐語コピー。
+    fn legacy_derive_open_filtered(
+        store: &ObservationStore,
+        now: Instant,
+        accept: impl Fn(ObservationSource) -> bool,
+    ) -> Option<DeriveOutcome> {
+        const FRESH: Duration = Duration::from_secs(3);
+        let current_epoch = store.current_focus_epoch;
+
+        let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
+
+        let is_epoch_ok = |o: &ImeObservation| match o.source {
+            ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
+                o.focus_epoch == current_epoch
+            }
+            _ => true,
+        };
+
+        let high = store
+            .per_source
+            .iter()
+            .filter(|o| {
+                accept(o.source)
+                    && is_fresh(o)
+                    && is_epoch_ok(o)
+                    && o.confidence == ObservationConfidence::High
+            })
+            .max_by_key(|o| o.at);
+        if let Some(obs) = high {
+            return Some(DeriveOutcome::HighSingle {
+                source: obs.source,
+                open: obs.open,
+            });
+        }
+
+        let mut true_first: Option<ObservationSource> = None;
+        let mut true_second: Option<ObservationSource> = None;
+        let mut false_first: Option<ObservationSource> = None;
+        let mut false_second: Option<ObservationSource> = None;
+        for obs in store.per_source.iter() {
+            if !accept(obs.source)
+                || !is_fresh(obs)
+                || !is_epoch_ok(obs)
+                || obs.confidence < ObservationConfidence::Medium
+            {
+                continue;
+            }
+            if obs.open {
+                if true_first.is_none() {
+                    true_first = Some(obs.source);
+                } else if true_second.is_none() {
+                    true_second = Some(obs.source);
+                }
+            } else if false_first.is_none() {
+                false_first = Some(obs.source);
+            } else if false_second.is_none() {
+                false_second = Some(obs.source);
+            }
+        }
+        match (true_first, false_first) {
+            (Some(first), None) => Some(DeriveOutcome::MediumConsensus {
+                first,
+                second: true_second,
+                open: true,
+            }),
+            (None, Some(first)) => Some(DeriveOutcome::MediumConsensus {
+                first,
+                second: false_second,
+                open: false,
+            }),
+            _ => None,
+        }
+    }
+
+    /// `PerSourceObservations` に実フィールドを持つ 9 ソース（ADR-089 §1.3(h)）。
+    const RECORDABLE_SOURCES: [ObservationSource; 9] = [
+        ObservationSource::ImmGetOpenStatus,
+        ObservationSource::ImmCrossProbe,
+        ObservationSource::ObserverPoll,
+        ObservationSource::Gji,
+        ObservationSource::Tsf,
+        ObservationSource::ConvOpenInference,
+        ObservationSource::HeuristicDefault,
+        ObservationSource::HwndCache,
+        ObservationSource::FocusProbe,
+    ];
+
+    const CONFIDENCES: [ObservationConfidence; 3] = [
+        ObservationConfidence::Low,
+        ObservationConfidence::Medium,
+        ObservationConfidence::High,
+    ];
+
+    /// 2 ソースの全組み合わせ（値 × confidence × epoch × 鮮度）でストアを作る。
+    fn pinned_matrix() -> Vec<(String, ObservationStore, Instant)> {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        for a in RECORDABLE_SOURCES {
+            for b in RECORDABLE_SOURCES {
+                for open_a in [true, false] {
+                    for open_b in [true, false] {
+                        for conf_a in CONFIDENCES {
+                            for conf_b in CONFIDENCES {
+                                for store_epoch in [0_u64, 1] {
+                                    for stale_b in [false, true] {
+                                        let mut s = ObservationStore::default();
+                                        s.current_focus_epoch = store_epoch;
+                                        let mut oa = obs(open_a, a, now);
+                                        oa.confidence = conf_a;
+                                        let at_b = if stale_b {
+                                            now - Duration::from_secs(10)
+                                        } else {
+                                            now
+                                        };
+                                        let mut ob = obs(open_b, b, at_b);
+                                        ob.confidence = conf_b;
+                                        s.record(oa);
+                                        s.record(ob);
+                                        out.push((
+                                            format!(
+                                                "{a:?}({open_a},{conf_a:?}) + {b:?}({open_b},{conf_b:?},stale={stale_b}) \
+                                                 store_epoch={store_epoch}"
+                                            ),
+                                            s,
+                                            now,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn pinned_derive_any_equals_legacy_accept_all() {
+        for (label, store, now) in pinned_matrix() {
+            assert_eq!(
+                store.derive_open_filtered(now, |_| true),
+                legacy_derive_open_filtered(&store, now, |_| true),
+                "derive_any が旧 derive_open_filtered(|_| true) と乖離: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn pinned_derive_actuating_equals_legacy_actuating_filter() {
+        use super::super::ime_event::ObservationAuthority;
+        let actuating = |s: ObservationSource| s.authority() == ObservationAuthority::Actuating;
+        for (label, store, now) in pinned_matrix() {
+            assert_eq!(
+                store.derive_open_filtered(now, actuating),
+                legacy_derive_open_filtered(&store, now, actuating),
+                "derive_actuating が旧 derive_open_filtered(Actuating) と乖離: {label}"
+            );
+        }
+    }
+
+    /// ADR-089 §9-6: epoch フィルタ（`ImmCrossProbe` = Actuating /
+    /// `FocusProbe` = BeliefOnly）がプール分離で意味を変えていないこと。
+    #[test]
+    fn pinned_epoch_filter_applies_across_both_pools() {
+        use super::super::ime_event::ObservationAuthority;
+        let actuating = |s: ObservationSource| s.authority() == ObservationAuthority::Actuating;
+        let now = Instant::now();
+        for source in [
+            ObservationSource::ImmCrossProbe,
+            ObservationSource::FocusProbe,
+        ] {
+            let mut s = ObservationStore::default();
+            let mut o = obs(true, source, now);
+            o.confidence = ObservationConfidence::High;
+            o.focus_epoch = 0;
+            s.record(o);
+            s.current_focus_epoch = 1;
+            assert_eq!(
+                s.derive_open_filtered(now, |_| true),
+                None,
+                "{source:?}: stale epoch は derive_any でも除外される"
+            );
+            assert_eq!(
+                s.derive_open_filtered(now, actuating),
+                None,
+                "{source:?}: stale epoch は derive_actuating でも除外される"
+            );
+        }
+    }
+
     #[test]
     fn derive_open_filtered_medium_consensus_reports_all_sources() {
         let mut s = ObservationStore::default();
