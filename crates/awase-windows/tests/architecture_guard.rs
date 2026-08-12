@@ -599,12 +599,36 @@ fn katakana_and_native_toggle_shadow_off_never_use_set_open() {
     }
 }
 
-// `conv_open_inference_source_is_limited_to_report_and_gate` は ADR-089 §7 に
-// 従い削除した（Phase A）。`ObservationSource::ConvOpenInference` を名乗るには
-// `Observed::<evidence::ConvOpenInference>::from_conv(reason, ..)` を通す必要が
-// あり、conv ビットを分類した事実（`ConvSyncReason`）を持たないコードは
-// この観測を構築できない。confidence の上限（Medium）も evidence 型が固定する
-// ため、呼び出し元は選べない（BUG-19 再発対策の型化、INV-40）。
+/// conv ビット由来の open 推論を**構築**できるのは
+/// `report_conv_open_inference()` の 1 箇所だけ（ADR-089 §2.1・§7、INV-40）。
+///
+/// 5a37333 で「型が subsume した」として一度削除したが、**それは早すぎた**ので
+/// 復活させた（needle は `ObservationSource::ConvOpenInference` から
+/// `evidence::ConvOpenInference` へ、期待値は 2 → 1 へ更新している）。型が
+/// 守るのは「`ConvSyncReason` を持たないコードはこの観測を構築できない」
+/// 「confidence の上限は Medium で呼び出し元は選べない」までであり、
+/// **`ConvSyncReason` は普通の public enum なので誰でも構築できる**
+/// （ADR-089 §9-11 の witness 強度の不均一）。したがって「conv 推論を名乗る
+/// 経路が 1 本しかない」ことはテキスト検査でしか守れない。
+///
+/// なお `check_drift_correction()` の source-aware gate（BUG-19 再発対策）は
+/// `ObservationSource::ConvOpenInference` を**読む**だけで観測を作らないため、
+/// この needle には掛からない（旧テストの期待値 2 のうち 1 件がそれだった）。
+#[test]
+fn conv_open_inference_source_is_limited_to_report_and_gate() {
+    let path = "src/state/platform_state.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production.matches("evidence::ConvOpenInference").count();
+    assert_eq!(
+        count, 1,
+        "{path} 内の `evidence::ConvOpenInference` 構築箇所数が想定(1 = \
+         report_conv_open_inference の dispatch)と異なります(実際: {count})。\n\
+         conv ビット由来の open 推論の dispatch は必ず `report_conv_open_inference()` \
+         経由にし、confidence の上限 (Medium) を勝手に上げないでください \
+         (`Observed::<evidence::ConvOpenInference>::from_conv` が Medium を固定します)。"
+    );
+}
 
 /// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
 /// （`Command`）の 1 箇所だけ（ADR-089 §2.2・§7、INV-40）。
