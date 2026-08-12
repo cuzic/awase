@@ -51,21 +51,38 @@
 //! 同期のままできる。再検証は focus 世代の照合のみで行う
 //! （`ActuationTarget::verify_gen_only` の doc 参照）。
 //!
-//! 到達可能性の裏取り（ADR-089 §6 Phase C 実施記録 C-7）: 全呼び出し元を
-//! 追跡した結果、**`ImmCrossProcessStrategy::apply` は同期経路から到達しない**
-//! ことが分かった（`executor.rs`/`key_pipeline.rs` は
-//! `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken`
-//! と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、
-//! `ir_apply_drift_correction` は ImmCross なら `set_ime_open` を使う分岐、
-//! `ime_refresh.rs` の GJI TsfNative 強制 ON と `key_pipeline.rs` の
-//! idle-conv-check は TsfNative 限定）。実際に到達するのは
-//! `MsImeDirectStrategy::apply`（force-ON 系）だけである。
+//! 到達可能性（ADR-089 §6 Phase C 実施記録 C-7 と §9-21 の訂正）:
+//! `executor.rs`/`key_pipeline.rs` は `imm_cross_is_first_applicable` で async
+//! 分岐、`apply_force_on_for_imm_broken` と `arm_force_open_pending` は
+//! `!can_use_imm32_cross_process()` を要求、`ir_apply_drift_correction` は
+//! ImmCross なら `set_ime_open` を使う分岐、`ime_refresh.rs` の GJI TsfNative
+//! 強制 ON と `key_pipeline.rs` の idle-conv-check は TsfNative 限定——
+//! **ただしこれで全部ではない**。
+//!
+//! **`runtime/mod.rs::try_force_on_bootstrap`（`:892`）から
+//! `ImmCrossProcessStrategy::apply` に同期で到達する。**
+//! 同関数のガードは `detect_miss_count()` / `is_user_enabled()` /
+//! `is_eligible_for_ime_force_on()`（`is_japanese_ime() && effective_open()`）/
+//! `!is_force_on_guard_active()` だけで、上記 2 経路が持つ
+//! `!can_use_imm32_cross_process()` の**プロファイルガードを持たない**。
+//! したがって Standard（LINE / Qt 等）で IME 検出ミスが閾値回連続したときの
+//! bootstrap force-ON は `caps` chain の先頭 `ImmCross` に入る
+//! （`state/open_warrant.rs:1166`/`:1187` のテストコメントも
+//! 「`try_force_on_bootstrap` 呼び出し元は ImmCross プロファイル側で
+//! 到達する」と記録している）。2026-08-12 の Phase C 記録は当初これを
+//! 数え落として「同期経路からは到達しない」と書いていた（ADR-089 §9-21 で訂正）。
 //!
 //! **残る穴**: 同期 ImmCross の open write（`set_ime_open_cross_process`）は
 //! 依然として自分でライブクエリする（150ms、フォールバック無し）。ROMAN 補完の
 //! 捕獲（30ms + `GetForegroundWindow` フォールバック）と hwnd 解決の意味論が
 //! 異なるため、両者を 1 回の捕獲へ寄せるには実機実測が要る
-//! （ADR-089 §9-18）。上記のとおり現時点で到達しないため潜在的な穴である。
+//! （ADR-089 §9-18）。上記のとおり**この穴は現に到達しうる**が、
+//! **Phase C 以前から同じ挙動**である——旧実装でも同じ呼び出し元から
+//! `ImmCrossProcessStrategy::apply` に入り、その中の `set_ime_romaji_mode()`
+//! と `set_ime_open_cross_process()` が別々に宛先をライブクエリしていた。
+//! Phase C は前者を捕獲済み `ActuationTarget` へ移しただけで、2 つの hwnd
+//! 解決が別物である点は変えていない（新規の回帰ではない）。実機での確認は
+//! ADR-089 §9-17 の 17-h。
 //!
 //! **撤去済み（2026-08-09 BUG-61 対応で追加 → BUG-61/BUG-62 実機確認により
 //! 無用と判明し撤去）:** `Runtime::tray_inject_romaji_mode_vk`

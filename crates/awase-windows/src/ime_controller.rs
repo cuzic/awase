@@ -316,10 +316,15 @@ pub(crate) fn apply_mechanism(
 /// 着弾する可能性は同期 ImmCross 経路に残っている。捕獲を共有させるには
 /// hwnd 解決のタイムアウトとフォールバックの意味論を変える必要があり
 /// （30ms+fallback ↔ 150ms+no-fallback）、実機ソーク無しでは動かせない。
-/// なお現時点で `ImmCrossProcessStrategy::apply` は同期経路から到達しない
-/// （すべての同期呼び出し元が `imm_cross_is_first_applicable` で async 経路へ
-/// 分岐するか、`!can_use_imm32_cross_process()` に限定されている）ため、
-/// 実害は `MsImeDirect` 経路には無い。
+///
+/// **この穴は到達しうる**——初出時は「同期呼び出し元はすべて
+/// `imm_cross_is_first_applicable` で async 分岐するか
+/// `!can_use_imm32_cross_process()` に限定されているので到達しない」と
+/// 書いていたが、`runtime/mod.rs::try_force_on_bootstrap`（`:892`）が
+/// プロファイルガードを持たないため Standard でも同期で到達する
+/// （ADR-089 §9-21 の訂正、実機確認は §9-17 の 17-h）。
+/// ただし **Phase C 以前から同じ挙動**であり、Phase C が作り込んだ
+/// 回帰ではない。
 fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView<'_>) {
     if !needs_romaji_pre_write(
         mechanism,
