@@ -1566,7 +1566,7 @@ clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一
 
 | # | ADR の記述 | 実コード | 採った判断 |
 |---|---|---|---|
-| C-1 | §7「維持するもの」: `tests/ime_key_sequence_golden.rs` に `caps().chain` の (P, K) **10 行を golden に追加する**」 | golden への行追加は golden ファイルの更新を伴い、「キー選択の回帰検知点を無変更で通す」という Phase C の必須条件と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux CI では実行されない | **golden には追加しなかった。** caps の全数テストは `state/app_ime_policy.rs` の `#[cfg(test)]`（**Linux で実行される**）と `ime_controller.rs` の `#[cfg(test)]`（windows-gated、`cargo xwin check --all-targets` で型検査）へ分けて置いた |
+| C-1 | §7「維持するもの」: `tests/ime_key_sequence_golden.rs` に `caps().chain` の (P, K) **10 行を golden に追加する**」 | golden への行追加は golden ファイルの更新を伴い、「キー選択の回帰検知点を無変更で通す」という Phase C の必須条件と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux の `test` ジョブでは実行されない（`windows-build` ジョブでは実行される。だが「Linux で全数を回せる場所に置く」という §7 の方針からは外れる） | **golden には追加しなかった。** caps の全数テストは `state/app_ime_policy.rs` の `#[cfg(test)]`（**Linux で実行される**）と `ime_controller.rs` の `#[cfg(test)]`（windows-gated、`cargo xwin check --all-targets` で型検査）へ分けて置いた |
 | C-2 | §2.5「`default_feedback` の読み手 3 箇所と `focus_settle_ms` の読み手 4 箇所を `caps` 経由へ寄せる」 | 読み手は `open_warrant.rs` / `platform_state.rs` のアクセサ / `ime_refresh.rs` / `ime_model.rs` / `runtime/mod.rs` に散っており、すべて `ImeModel::app_policy`（`AppImePolicy` 値）を経由する。読み手側を `caps(p, k)` の直接呼び出しへ書き換えると、**`AppImePolicy` が持っていない K を各読み手が自前で調達する**ことになり、§2.5 が警告している「`focus_settle_ms` がフォーカス中に変わりうる動的値になる」変更を読み手の数だけ作り込む | §2.5 が併記していた**もう一方の選択肢「`AppImePolicy` を `caps` の薄いファサードに退化させる」を採った**。リテラルは `caps` 側にしか無いので二重 SSOT は解消し、読み手は 1 行も触らないので挙動リスクがゼロになる。K 分岐を入れるときに改めて読み手を見直す |
 | C-3 | §6 item 11「`tests/golden_scenarios.rs:175` の期待値を `caps(p,k).chain[0]` へ書き換える」 | `chain[0]` は **K 依存**（`Imm32Unavailable` は `GjiDirect`/`MsImeDirect`）だが、`ImeModel::app_policy` は `FocusChanged` 時点の **profile スナップショット**で K を持たない（§2.5）。そのまま照合できない。なお実際の行は `:175` ではなく `:186` で、`actuator_kind` を 3 variant の否定形で見るシナリオ 4 の assert だった | **`focus_settle_ms` での識別に置き換えた**（profile ごとに一意: 100/500/200）。このテストが見たいのは「reducer が FocusChanged で profile 由来のポリシーへ切り替えたか」であり、K を持ち込む必要がない。値そのものは `caps_settle_values_match_the_pre_phase_c_literals` が固定する |
 | C-4 | §2.8 は `caps` を「機構チェーンの唯一の宣言」とする | `runtime/open_chain.rs::run_open_chain_async` は ImmCross の書き込みを **await した後**にフォールバックへ進み、`fallback_write` が機構ごとに view を作り直して `is_applicable` を再評価する（旧 `apply_skipping_imm` と同じ「完了時点の状態で残りを選ぶ」意味論） | **非同期チェーンだけは `WriteMechanism::ALL` のまま**にした。起案時点の `(p, k)` で chain を固定すると、await 中にフォーカスが動いた場合に「完了時点では適用可能な機構が chain に載っていない」新しい取りこぼしが生まれる（起案時 Standard×MS-IME の chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。`ImeKindId` は推測値であり（INV-45）、await をまたいで K を固定するのは P20 が禁じる「安全側でないゲート」に当たる。§9-20 に残余論点として記録 |
@@ -1625,7 +1625,7 @@ clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一
 | ROMAN 補完の発火条件が Phase C 以前の 2 戦略と同値であること | `romaji_pre_write_condition_matches_the_pre_phase_c_strategies`（同上、機構 4 × open 2 × K 2 × input_mode 5 の全数） |
 | 書き込み口の本数（生 write / 同期 ROMAN write / チェーン入口） | `architecture_guard.rs` の件数ガード群（同上） |
 | reducer が profile 由来のポリシーへ切り替えること | `golden_scenarios.rs` シナリオ 4/5（同上） |
-| **caps chain と Phase B までの `ALL` 走査が同じ機構列になること** | `ime_controller.rs::caps_chain_matches_legacy_all_scan`（**windows-gated**。`cargo xwin check --all-targets` で**型検査のみ**。実行は Windows 実機/CI が要る） |
+| **caps chain と Phase B までの `ALL` 走査が同じ機構列になること** | `ime_controller.rs::caps_chain_matches_legacy_all_scan`（**windows-gated**。ローカル Linux では `cargo xwin check --all-targets` の**型検査のみ**。**実行は push/PR 毎の通常 CI（`windows-build` ジョブの `cargo nextest run --lib -p awase-windows`）が行う**——実機ソークを待つ必要はない。§9-17 冒頭の「先に片付く前提条件」参照） |
 | windows-gated コード全体の型整合 | `cargo xwin check -p awase-windows --target x86_64-pc-windows-msvc --all-targets` |
 
 #### Phase C で **実機ソークでしか検証できない**残余リスク
@@ -2166,9 +2166,40 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     `.claude/rules/experiment-logging.md` の義務（アプリ / IME 種別と状態 /
     再現手順と症状）を満たした revert コミットを書くこと。
 
+    **先に片付く前提条件（実機ソークではなく通常の CI で検証される）**:
+    かつてここには 17-a として「`caps` chain 切り替えで送るキー・順序が
+    変わっていないこと（`caps_chain_matches_legacy_all_scan` は windows-gated
+    なので Linux では型検査しか通っていない）」を実機ソーク項目として挙げて
+    いたが、**これは実機ソークを待つ必要がない**（2026-08-12 Opus レビューで
+    訂正）。`.github/workflows/ci.yml` の `windows-build` ジョブ
+    （`runs-on: windows-latest`、`push: [main, develop]` と同ブランチ宛の
+    `pull_request` で起動する通常 CI）が
+
+    - `cargo nextest run --lib -p awase-windows`
+      → `ime_controller.rs` の windows-gated ユニットテスト
+      （`caps_chain_matches_legacy_all_scan` /
+      `every_caps_chain_element_is_applicable_in_its_row` /
+      `imm_cross_first_applicable_is_unchanged_by_caps`）を**実行**する
+    - `cargo nextest run -p awase-windows --test architecture_guard
+      --test golden_scenarios --test layer_boundary_guard
+      --test ime_key_sequence_golden`
+      → 戦略選択と送信キー列の golden を**実行**する
+
+    ため、**`caps` 一本化が golden 期待値および旧 `ALL` 走査と一致するか
+    どうかは、push した時点で自動的に判定される**。Linux 側の `test` ジョブで
+    0 テストになるのは事実だが、「どこでも実行されない」わけではない
+    （この 2 ステップは 2026-07-25／07-26 に、まさに windows-gated テストが
+    push/PR 毎に走っていなかった穴を埋めるために追加されたもの。
+    `ci.yml` の該当コメント参照）。
+
+    したがってこれは**ソーク項目ではなく前提条件**である——
+    実機ソークを始める前に、まず push して `windows-build` が緑になることを
+    確認する。赤ければ Phase C は実機に持ち込む段階にない。
+    以下の 17-b 〜 17-h は、CI が緑でもなお実機でしか確かめられないものだけを
+    残してある。
+
     | # | 確認すること | 対象アプリ × IME | 異常の見え方 |
     |---|---|---|---|
-    | 17-a | **`caps` chain 切り替えで送るキー・順序が変わっていないこと**。`caps_chain_matches_legacy_all_scan` は windows-gated で、Linux では型検査しか通っていない | 全 6 組み合わせ（Standard / Imm32Unavailable / TsfNative × GJI / MS-IME） | IME ON/OFF が効かない、または別のキーが飛ぶ |
     | 17-b | **`ImmCross × MS-IME` で ImmCross が `Failed` を返したときに `KanjiToggle` へ落ちること**。caps chain が `[ImmCross, KanjiToggle]` になった唯一のフォールスルー経路 | LINE / Qt アプリ × MS-IME、`SendMessageTimeout` が実際にタイムアウトする状況 | IME が切り替わらないまま無反応 |
     | 17-c | **ROMAN 補完（`set_ime_romaji_mode_for_target_blocking`）が Phase C 以前と同じ hwnd へ着弾していること**。hwnd 解決の関数・タイムアウト・フォールバックは変えていないが、**捕獲を write の外へ出したこと自体**は実機で初めて確かめられる | Windows Terminal / Edge × MS-IME（BUG-55 の子ウィンドウ問題が出るアプリ）、かなモードから IME ON | 最初の打鍵が JIS かな入力になる（`aiueo` → `ちいすいえの` 等） |
     | 17-d | **`Aborted(GenStale)` が実際には発火しないこと**（同期経路には await 点が無いため常に一致するはずという設計前提）。`[imm-romaji] Aborted(GenStale)` のログが出たら前提が崩れている | 全アプリ、フォーカス切り替えの多い操作（Alt+Tab 連打） | ROMAN 補完が黙ってスキップされ、17-c と同じ症状 |
@@ -2179,7 +2210,7 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
 
     **ソークの最低期間の目安**: `docs/experiments.md` エントリ01 が示すとおり、
     IME キー選択の不具合は「特定アプリ × 特定 idle 時間」でしか出ないことが
-    ある。1 日の通常利用で 17-a/17-c/17-f をひととおり踏むこと、
+    ある。1 日の通常利用で 17-c/17-f をひととおり踏むこと、
     17-b と 17-h は再現条件が稀なのでログ（17-b は
     `[apply-ime] ImmCrossProcess failed, trying next fallback`、17-h は
     `force-on bootstrap: apply_ime_open(true)`）の有無で事後確認すること。
