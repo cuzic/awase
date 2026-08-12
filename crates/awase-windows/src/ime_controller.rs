@@ -40,7 +40,15 @@ use crate::state::key_sequence_policy::{self, ime_key_for, ImeOperation, KeyMech
 use crate::tsf::observer::ActiveImeKind;
 
 /// IME ON/OFF を実行する戦略インターフェース。
-pub(crate) trait ImeOpenStrategy: Sync {
+///
+/// **このモジュールの外へは出さない**（ADR-089 §2.3、Phase B 追随）。
+/// `pub(crate)` のままだと `GjiDirectStrategy.apply(open, &view)` と書くだけで
+/// `Actuation` 型状態チェーンを一切構築せずに 1 機構分の実 write
+/// （`SendInput` / `post_kanji_toggle_to_focused`）を起こせてしまう。
+/// crate 内の唯一の write 入口は `apply_mechanism`（呼び出し元 2 箇所を
+/// `tests/architecture_guard.rs` の
+/// `raw_mechanism_write_sites_are_confined_to_chain_writers` が固定）である。
+trait ImeOpenStrategy: Sync {
     /// このコンテキストで戦略が有効かどうか。
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool;
     /// IME を指定状態に設定しその結果を返す。
@@ -52,7 +60,7 @@ pub(crate) trait ImeOpenStrategy: Sync {
 /// `ImmSetOpenStatus`（cross-process）を使う標準戦略。
 ///
 /// IMM-bridge が機能しているウィンドウにのみ適用可能。
-pub(crate) struct ImmCrossProcessStrategy;
+struct ImmCrossProcessStrategy;
 
 impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
@@ -101,7 +109,7 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 ///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
-pub(crate) struct GjiDirectStrategy;
+struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
@@ -154,7 +162,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 /// 適用条件:
 /// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
 /// - `can_use_imm32_cross_process() == false`（IMM32 が使えない TSF アプリ）
-pub(crate) struct MsImeDirectStrategy;
+struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
@@ -227,7 +235,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
 ///
 /// VK_KANJI はトグルキーのため冪等ではなく、`already_matched` の判定は行わず送信する。
 /// GJI / MS-IME 環境では前段の戦略が処理するため、このフォールバックは稀にしか使われない。
-pub(crate) struct KanjiToggleStrategy;
+struct KanjiToggleStrategy;
 
 impl ImeOpenStrategy for KanjiToggleStrategy {
     fn is_applicable(&self, _view: &ImeControlView<'_>) -> bool {
@@ -275,6 +283,26 @@ pub(crate) fn mechanism_is_applicable(
 }
 
 /// 機構 1 つ分の同期 write（`runtime` 層の async writer のフォールバック側から使う）。
+///
+/// # 呼び出してよい場所（ADR-089 §2.3、Phase B 追随）
+///
+/// **この関数は `Actuation` 型状態チェーンを構築せずに実 write
+/// （`SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus`）を起こせる
+/// 唯一の口である。** 呼んでよいのは
+/// `MechanismWriter` / `AsyncMechanismWriter` の `write` 実装
+/// （= `run_chain` / `run_chain_async` が駆動する write ステップそのもの）だけ:
+///
+/// 1. `SyncChainWriter::write`（本ファイル、同期チェーン）
+/// 2. `runtime::open_chain::fallback_write`（非同期チェーンの ImmCross 以降）
+///
+/// writer 実装は「チェーンの write ステップ」なので、定義上これ以上チェーンを
+/// 経由させることができない（`impl` の中でチェーンを再度張ると再帰する）。
+/// そのため型では閉じられず、**呼び出し元の件数を
+/// `tests/architecture_guard.rs::raw_mechanism_write_sites_are_confined_to_chain_writers`
+/// が固定している**（`warrant_pending_adr087` / `run_open_chain_async` の件数ガードと
+/// 同じパターン）。ここを増やすと、`falls_through` 規則も
+/// `Actuation` のアフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない
+/// 3 本目の write 経路になる。
 pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,

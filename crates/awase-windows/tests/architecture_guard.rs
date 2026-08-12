@@ -1564,3 +1564,106 @@ fn per_source_set_is_confined_to_the_store() {
          （ADR-089 §2.1・§9-11）。実際: {breakdown:?}"
     );
 }
+
+/// 機構 1 つ分の実 write（`ime_controller::apply_mechanism`）の呼び出し元を、
+/// **チェーンの writer 実装 2 つだけ**に固定する（ADR-089 §2.3、Phase B 追随）。
+///
+/// # なぜ必要か
+///
+/// `legacy_unwarranted_actuation_sites_are_accounted_for`（`Actuation` の起案数）と
+/// `async_imm_cross_actuation_goes_through_the_single_chain_entry`（非同期入口数）は
+/// **チェーンの入口だけ**を数えており、`apply_mechanism` の呼び出し元は誰も
+/// 数えていなかった。`apply_mechanism` は `Actuation` 型状態チェーンを一切構築せずに
+/// `SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus` を起こせる。
+/// ここに 3 本目の呼び出し元が生えると、`falls_through` 規則（次へ進むのは `Failed`
+/// のときだけ、特に `UnsafeToToggle` で `VK_KANJI` へ落ちない）も `Actuation` の
+/// アフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない write 経路になる。
+///
+/// # なぜ型で閉じないのか
+///
+/// 現在の 2 箇所はどちらも `MechanismWriter` / `AsyncMechanismWriter` の `write`
+/// 実装、すなわち `run_chain` / `run_chain_async` が駆動する **write ステップ
+/// そのもの**である。「チェーンを経由させる」ことが定義上できない（実装の中で
+/// チェーンを再度張ると再帰する）ため、可視性の縮小でも解けない
+/// （`runtime/open_chain.rs` は別モジュールなので `pub(crate)` 未満にできない）。
+/// 恒久策は `run_chain` だけが構築できる authorization トークンを
+/// `MechanismWriter::write` の引数に通すこと（ADR-089 §9-15）で、Phase C 送り。
+#[test]
+fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
+    let files = list_src_files();
+
+    // 1. `apply_mechanism(` の本番呼び出し元はこの 2 箇所だけ。
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "apply_mechanism(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    breakdown.sort();
+    assert_eq!(
+        breakdown,
+        vec![
+            ("src/ime_controller.rs".to_string(), 1),
+            ("src/runtime/open_chain.rs".to_string(), 1),
+        ],
+        "`apply_mechanism(` の呼び出し元は機構チェーンの writer 実装 2 つだけに\
+         固定されています（ADR-089 §2.3）。実際: {breakdown:?}\n\
+         チェーン外から 1 機構分の実 write を起こす経路を増やさないでください。"
+    );
+
+    // 2. 同期側の 1 件は `impl MechanismWriter for SyncChainWriter` の中にある。
+    let controller = read_crate_file("src/ime_controller.rs");
+    let sync_writer = extract_fn_body(&controller, "impl MechanismWriter for SyncChainWriter");
+    assert_eq!(
+        count_real_calls(sync_writer, "apply_mechanism("),
+        1,
+        "`ime_controller.rs` の `apply_mechanism(` は \
+         `impl MechanismWriter for SyncChainWriter` の中にあること（ADR-089 §2.3）"
+    );
+
+    // 3. 非同期側の 1 件は `fallback_write` の中にあり、その `fallback_write` は
+    //    `impl AsyncMechanismWriter for AsyncChainWriter` からのみ呼ばれる。
+    let open_chain = read_crate_file("src/runtime/open_chain.rs");
+    let open_chain_production = production_code_only(&open_chain);
+    let fallback = extract_fn_body(&open_chain, "fn fallback_write");
+    assert_eq!(
+        count_real_calls(fallback, "apply_mechanism("),
+        1,
+        "`runtime/open_chain.rs` の `apply_mechanism(` は `fallback_write` の中に\
+         あること（ADR-089 §2.3）"
+    );
+    let async_writer =
+        extract_fn_body(&open_chain, "impl AsyncMechanismWriter for AsyncChainWriter");
+    assert_eq!(
+        count_real_calls(open_chain_production, "fallback_write("),
+        count_real_calls(async_writer, "fallback_write("),
+        "`fallback_write(` は `impl AsyncMechanismWriter for AsyncChainWriter` の\
+         外から呼ばないこと（ADR-089 §2.3）"
+    );
+
+    // 4. 並行する裏口（`ImeOpenStrategy::apply` の直接呼び出し）が塞がれていること。
+    //    `pub(crate) struct GjiDirectStrategy` のままだと、crate 内のどこからでも
+    //    `GjiDirectStrategy.apply(open, &view)` と書けば `apply_mechanism` を
+    //    経由せずに同じ実 write を起こせる。可視性はコンパイラが強制するので、
+    //    ここで固定するのは「宣言を再び `pub` へ広げないこと」だけでよい。
+    for decl in [
+        "trait ImeOpenStrategy",
+        "struct ImmCrossProcessStrategy",
+        "struct GjiDirectStrategy",
+        "struct MsImeDirectStrategy",
+        "struct KanjiToggleStrategy",
+    ] {
+        let line = controller
+            .lines()
+            .find(|line| line.contains(decl) && !line.trim_start().starts_with("//"))
+            .unwrap_or_else(|| panic!("`{decl}` の宣言が `ime_controller.rs` に見つかりません"));
+        assert!(
+            !line.trim_start().starts_with("pub"),
+            "`{decl}` は `ime_controller.rs` の外へ出さないこと（ADR-089 §2.3）。\
+             実際の宣言: {line}"
+        );
+    }
+}
