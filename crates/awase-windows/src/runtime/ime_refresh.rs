@@ -647,9 +647,21 @@ impl Runtime {
                             if let Some(actuation) = self.active_actuation.as_mut() {
                                 actuation.gave_up_at = Some(now);
                             }
+                            // ADR-089 §2.5（INV-46）: 打ち切りの帰結は
+                            // `ConvergedReceipt` で表す。**この型は
+                            // `Observed<E>` / `AnyObservation` へ変換できない**
+                            // ため、give-up したのに観測を書いて収束したように
+                            // 見せる（BUG-33 型の収束偽装）ことが構造的に
+                            // 不可能である。
+                            let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
+                                crate::state::ime_actuation::Resolution::GaveUp,
+                                act_attempts,
+                            );
                             log::debug!(
                                 "[drift] actuation gave up (Blind): desired={desired} \
-                                 observed={observed} attempts={act_attempts}"
+                                 observed={observed} converged={} attempts={}",
+                                receipt.converged(),
+                                receipt.attempts()
                             );
                         }
                         Some(gave_up_at) => {
@@ -688,7 +700,20 @@ impl Runtime {
                     .most_recent_trusted_after(now, act_sent_at)
                     .is_some_and(|o| o.open == desired);
                 if confirmed {
-                    log::debug!("[drift] actuation confirmed (Read): desired={desired} → 破棄");
+                    // ADR-089 §2.5（INV-46）: 収束の帰結も `ConvergedReceipt`。
+                    // 観測ストアへは何も書かない（`Confirmed` は「既に観測が
+                    // desired と一致していた」という読み取りの帰結であって、
+                    // 新しい観測ではない）。
+                    let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
+                        crate::state::ime_actuation::Resolution::Confirmed,
+                        act_attempts,
+                    );
+                    log::debug!(
+                        "[drift] actuation confirmed (Read): desired={desired} \
+                         converged={} attempts={} → 破棄",
+                        receipt.converged(),
+                        receipt.attempts()
+                    );
                     self.discard_actuation();
                     return;
                 }

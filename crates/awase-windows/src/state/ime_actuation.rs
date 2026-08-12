@@ -37,6 +37,91 @@ pub enum Resolution {
     GaveUp,
 }
 
+/// 読み戻し（`ReadBack`）の帰結（ADR-089 §2.5、INV-46）。
+///
+/// # なぜ専用型なのか — 収束偽装を型で不可能にする
+///
+/// **[`Observed<E>`] にも [`AnyObservation`] にも変換手段を提供しない**
+/// （`From` / `Into` / コンストラクタ引数のいずれも無い）。これは ADR-080
+/// 不変条件6「`ReadBack` の産物を観測として記録しない」の型化であり、
+/// BUG-33 型の**収束偽装**——give-up したのに観測を書いて収束したように
+/// 見せる——を構造的に不可能にする。
+///
+/// 「その API が存在しない」形の保証なので、**release ビルドでも有効で
+/// `cfg` にも依存しない**（ADR-089 §8.1）。
+///
+/// [`Observed<E>`]: super::evidence::Observed
+/// [`AnyObservation`]: super::evidence::AnyObservation
+///
+/// # compile-fail ケース（ADR-089 §7 ケース3）
+///
+/// 通る双子（witness 構築子を通った観測は `AnyObservation` になれる）:
+///
+/// ```
+/// use awase_windows::state::evidence::{AnyObservation, HeuristicDefault, Observed};
+/// use awase_windows::state::ime_event::{HwndId, ImePolicyProfile};
+///
+/// let observed = Observed::<HeuristicDefault>::at_startup(
+///     ImePolicyProfile::ImmCross,
+///     true,
+///     HwndId(1),
+///     0,
+/// );
+/// let any: AnyObservation = observed.into();
+/// assert!(any.open());
+/// ```
+///
+/// `ConvergedReceipt` からは作れない（`Observed<E>` を receipt に
+/// 差し替えただけ）:
+///
+/// ```compile_fail
+/// use awase_windows::state::evidence::AnyObservation;
+/// use awase_windows::state::ime_actuation::{ConvergedReceipt, Resolution};
+///
+/// let receipt = ConvergedReceipt::new(Resolution::Confirmed, 3);
+/// // error[E0277]: the trait bound `AnyObservation: From<ConvergedReceipt>`
+/// //               is not satisfied
+/// let _any: AnyObservation = receipt.into();
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "ReadBack の帰結は呼び出し元が処理すること（観測へは変換できない、INV-46）"]
+pub struct ConvergedReceipt {
+    converged: bool,
+    attempts: u32,
+}
+
+impl ConvergedReceipt {
+    /// 唯一の構築経路。`Resolution` と試行回数から作る。
+    pub const fn new(resolution: Resolution, attempts: u32) -> Self {
+        Self {
+            converged: matches!(resolution, Resolution::Confirmed),
+            attempts,
+        }
+    }
+
+    /// 収束したか（`Resolution::Confirmed`）。
+    #[must_use]
+    pub const fn converged(&self) -> bool {
+        self.converged
+    }
+
+    /// この episode で消費した試行回数。
+    #[must_use]
+    pub const fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    /// 元の `Resolution`。
+    #[must_use]
+    pub const fn resolution(&self) -> Resolution {
+        if self.converged {
+            Resolution::Confirmed
+        } else {
+            Resolution::GaveUp
+        }
+    }
+}
+
 /// `decide_actuation_action` の判定結果。次に actuate すべきか、打ち切るべきか。
 ///
 /// `serde` 導出は `DriftCorrectionFixture`（下記）の `expected` フィールド用。
