@@ -696,7 +696,7 @@ fn any_observation_replay_door_is_not_used_in_production() {
 }
 
 /// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
-/// `_with_applied` / `set_ime_open` / `apply_skipping_imm` / `apply_ime_open`）の
+/// `_with_applied` / `set_ime_open` / `apply_ime_open`）の
 /// **呼び出し箇所数**を、入口ごとに crate 全域で固定する
 /// （各関数の定義行 `fn ...(` は数えない）。
 ///
@@ -709,6 +709,12 @@ fn any_observation_replay_door_is_not_used_in_production() {
 /// （実呼び出しは4件、旧 `EXPECTED_TOTAL=5` の内訳に1件のコメントが混入していた）、
 /// かつ `_with_view`/`_with_applied`/`set_ime_open`/`apply_skipping_imm` 経由の入口は
 /// 対象外だった（ADR-087 §5 Phase 3 item14、2026-08-10 棚卸しで判明）。
+///
+/// **2026-08-12（ADR-089 Phase B）**: `apply_skipping_imm` は撤去した。ImmCross が
+/// 機構チェーンの要素になったことで、`Failed` 後のフォールスルーは
+/// `state/actuation_chain.rs::run_chain_async` が行う（`runtime/open_chain.rs`）。
+/// 非同期経路の入口は `run_open_chain_async` に一本化されており、その件数は
+/// `open_chain_is_the_only_async_actuation_entry` が固定する。
 ///
 /// 実 actuation 入口 11 経路の全数棚卸し（force-write / observation-based
 /// correction / Engine intent の分類、`shadow_on`/`origin` の扱い）は
@@ -723,7 +729,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
     // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
     // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
-    const ENTRY_POINTS: [(&str, usize); 6] = [
+    const ENTRY_POINTS: [(&str, usize); 5] = [
         // 内部委譲元(platform.rs 自身): ime_refresh.rs:740 / key_pipeline.rs:741 /
         // mod.rs:890（ADR-087 §5 item14 表 #11/#4/#7）+ apply_ime_open_with_applied
         // 内部からの委譲(platform.rs:1028) = 4。
@@ -735,8 +741,6 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         (".apply_ime_open_with_applied(", 2),
         // ime_refresh.rs:534/727（表 #9/#10）= 2。
         (".set_ime_open(", 2),
-        // executor.rs:833 / key_pipeline.rs:941（表 #3/#5）= 2。
-        (".apply_skipping_imm(", 2),
         // 呼び出し元ゼロ(死んだ入口、ADR-087 §5 item14 参照、Task #28 で対処)。
         (".apply_ime_open(", 0),
     ];
@@ -1402,5 +1406,161 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
          apply_ime_open_with_applied(true, None) 経由で shadow_on=false を作ることで \
          GJI の no-op skip を bypass する設計。`None` 以外の値を渡すよう変更された場合、\
          ADR-087 INV-28 の前提が崩れる。"
+    );
+}
+
+// ── ADR-089 Phase B（§2.3・§6 item 6/7）─────────────────────────────────────
+
+/// `Actuation<Warranted>` を **warrant なしで**作る暫定入口
+/// （`warrant_pending_adr087`）の呼び出し箇所数を固定する。
+///
+/// ADR-087 の `issue_open_warrant()` は本番未配線（呼び出し元ゼロ、2026-08-12
+/// 確認）であり、既存の apply 経路は `OpenWarrant` を持たない。Phase B は
+/// ADR-087 Phase 3 を巻き込まないため、warrant を持たない経路のための
+/// 名前付きの入口を分けた（`state/actuation_chain.rs` モジュール doc の
+/// 「差分」3）。
+///
+/// **この件数は増やさないこと。** ADR-087 Phase 3 の配線が進むたびに、この
+/// 期待値は減っていくのが正しい方向である。
+#[test]
+fn legacy_unwarranted_actuation_sites_are_accounted_for() {
+    // ime_controller.rs（同期チェーン）と runtime/open_chain.rs（非同期チェーン）
+    // の 2 箇所のみ。
+    const EXPECTED: usize = 2;
+    let files = list_src_files();
+    let mut total = 0usize;
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "warrant_pending_adr087(");
+        if count > 0 {
+            total += count;
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        total, EXPECTED,
+        "`warrant_pending_adr087(` の呼び出し箇所数が想定({EXPECTED})と異なります\
+         (実際: {total})。内訳: {breakdown:?}\n\
+         ADR-087 の `issue_open_warrant()` を通さずに actuation を起こす経路を\
+         増やさないでください（ADR-089 §2.3、`state/actuation_chain.rs` 参照）。"
+    );
+}
+
+/// ImmCross を含む非同期 actuation の入口が `run_open_chain_async` 1 本である
+/// ことを固定する（ADR-089 §6 Phase B item 6、二重経路の解消）。
+///
+/// 旧 `apply_skipping_imm`（async IMM が `Failed` を返した後の 2 本目の走査
+/// 入口）は撤去済み。`spawn_local` の中で ImmCross の書き込みを直接呼ぶコードを
+/// 足すと、フォールスルー規則（`state/actuation_chain.rs::falls_through`）を
+/// 迂回する 2 本目の経路が復活する。
+#[test]
+fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
+    // ImmCross の実書き込み API を、機構チェーン外から呼ぶ既知の箇所（後述）。
+    const IMM_WRITE_SITES: [(&str, &[(&str, usize)]); 2] = [
+        (
+            "set_ime_open_then_conv_for_target(",
+            &[("src/runtime/open_chain.rs", 1)],
+        ),
+        (
+            "set_ime_open_cross_process_async(",
+            &[
+                ("src/runtime/open_chain.rs", 1),
+                ("src/platform.rs", 1),
+                ("src/runtime/mod.rs", 2),
+            ],
+        ),
+    ];
+    let files = list_src_files();
+
+    // 1. `apply_skipping_imm` は完全に消えていること。
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        assert_eq!(
+            count_real_calls(production, "apply_skipping_imm("),
+            0,
+            "{path} に `apply_skipping_imm(` が残っています（ADR-089 Phase B で撤去済み）"
+        );
+    }
+
+    // 2. ImmCross の実書き込み API を、機構チェーン外から呼ぶ箇所を固定する。
+    //
+    // `set_ime_open_then_conv_for_target`（ADR-086 INV-14 準拠の open+conv 書き込み）は
+    // チェーン専用。`set_ime_open_cross_process_async` は「open を 1 回書く」だけの
+    // 低レベル API で、チェーン以外にも **actuation ではない**既知の用途がある:
+    //
+    // - `platform.rs::set_ime_open`（fire-and-forget。outcome を呼び出し元へ返さず
+    //   フォールバックも持たないため、そもそもチェーンの対象ではない）
+    // - `runtime/mod.rs::panic_reset`（OFF → ON を 1 タスク内で直列化する復旧手順。
+    //   ADR-087 の SafetyValve 相当であり、戦略選択の対象ではない）
+    //
+    // ここを増やす＝フォールスルー規則を迂回する経路を増やす、なので件数で固定する。
+    for (needle, expected_sites) in IMM_WRITE_SITES {
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            // 定義元（`ime.rs`）は `fn ...(` 行が除外されるが、内部委譲があるため除く。
+            if path == "src/ime.rs" {
+                continue;
+            }
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                breakdown.push((path.clone(), count));
+            }
+        }
+        breakdown.sort();
+        let mut expected: Vec<(String, usize)> = expected_sites
+            .iter()
+            .map(|(p, n)| ((*p).to_string(), *n))
+            .collect();
+        expected.sort();
+        assert_eq!(
+            breakdown, expected,
+            "`{needle}` の呼び出し箇所が想定と異なります。ImmCross を機構チェーンの\
+             外で書くとフォールスルー規則（`state/actuation_chain.rs::falls_through`）を\
+             迂回する 2 本目の経路になります（ADR-089 §2.3）。"
+        );
+    }
+
+    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
+    let mut entry_calls = 0usize;
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        entry_calls += count_real_calls(production, "run_open_chain_async(");
+    }
+    assert_eq!(
+        entry_calls, 2,
+        "`run_open_chain_async(` の呼び出し箇所数が想定(2: executor.rs / \
+         key_pipeline.rs)と異なります(実際: {entry_calls})。"
+    );
+}
+
+/// `PerSourceObservations::set` の本番呼び出し元を `ObservationStore` 内の
+/// 1 箇所（`record_replayed`）に固定する（ADR-089 §9-11 の「裏口」封じ）。
+///
+/// Phase A の時点では `set` が `pub` で、`store.per_source.set(ImeObservation { .. })`
+/// と書けば witness も `record`/`record_belief` も経由せずに観測を注入できた。
+/// Phase B で `pub(crate)` へ縮小したうえで、crate 内の呼び出し元数もここで固定する。
+#[test]
+fn per_source_set_is_confined_to_the_store() {
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "per_source.set(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        breakdown,
+        vec![("src/state/observation_store.rs".to_string(), 1)],
+        "`per_source.set(` は `ObservationStore::record_replayed` からのみ呼ぶこと\
+         （ADR-089 §2.1・§9-11）。実際: {breakdown:?}"
     );
 }

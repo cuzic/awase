@@ -94,8 +94,17 @@ impl PerSourceObservations {
         }
     }
 
-    /// 指定ソースの最新値をセットする
-    pub const fn set(&mut self, source: ObservationSource, obs: ImeObservation) {
+    /// 指定ソースの最新値をセットする。
+    ///
+    /// **ADR-089 Phase B（§9-11、2026-08-12）で `pub(crate)` へ縮小した。**
+    /// crate の外（統合テストや将来の別 crate）からこの口を使うと、
+    /// `Observed<E>` の witness 構築子（§2.2）も `record`/`record_belief` の
+    /// プール分離（§2.1）も経由せずに任意の `ObservationSource` /
+    /// `ObservationConfidence` を名乗った観測を注入できてしまう。
+    /// crate 内の唯一の本番呼び出し元は `ObservationStore::record_replayed`
+    /// （`tests/architecture_guard.rs::per_source_set_is_confined_to_the_store`
+    /// が固定する）。
+    pub(crate) const fn set(&mut self, source: ObservationSource, obs: ImeObservation) {
         match source {
             ObservationSource::FocusProbe => self.focus_probe = Some(obs),
             ObservationSource::ObserverPoll => self.observer_poll = Some(obs),
