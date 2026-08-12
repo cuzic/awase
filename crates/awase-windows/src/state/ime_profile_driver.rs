@@ -15,10 +15,15 @@
 //! - Phase 1c: [`driver_for`] レジストリ + contract test スイート（不変条件5件）。
 //!
 //! GJI 横断性（`active_ime_kind` = GJI/MS-IME は実行時観測で profile 軸と直交）は
-//! design B に従い、各ドライバが [`ImeProfileDriver::uses_gji_direct`] を静的に宣言
-//! するだけとし、GJI 直接制御そのものは共有機構
-//! [`state/gji_direct_mechanism.rs`](super::gji_direct_mechanism) に1箇所集約する
-//! （ドライバ内に GJI 分岐を複製しない）。
+//! design B に従い、各ドライバが `uses_gji_direct()` を静的に宣言するだけとし、
+//! GJI 直接制御そのものを共有機構に1箇所集約する形をとっていた。
+//!
+//! **`uses_gji_direct()` は ADR-089 Phase B（§6 item 8、§4.7）で撤去した**
+//! （2026-08-12）。同期義務の宣言軸は profile 軸ではなく outcome 軸である
+//! （ADR-089 INV-42）ことが確定し、profile 軸での宣言が根拠を失ったため。
+//! 同期義務は
+//! [`state/gji_direct_mechanism.rs`](super::gji_direct_mechanism) の
+//! `legacy_gji_sync_obligation` / `ActuationReceipt` が引き取っている。
 //!
 //! # 依存の制約（Linux でテスト可能にするため）
 //!
@@ -62,11 +67,8 @@ pub enum ImeOpenMechanism {
     /// 共有の冪等キー機構（`active_ime_kind` に応じ GJI 直接制御 or MS-IME 直接制御）へ
     /// 委譲する。具体 VK はドライバではなくランタイム側の合成が決める。
     ///
-    /// GJI が active な場合の経路は `state/gji_direct_mechanism.rs` の共有機構に
-    /// 排他集約されており、その入口は `uses_gji_direct()` の宣言でゲートされる
-    /// （ADR-081 Phase 1c 不変条件5）。送信キーは既存 SSOT
-    /// `state/key_sequence_policy.rs::ime_key_for` が握るため、ドライバが VK を
-    /// 直書きすることはない。
+    /// 送信キーは既存 SSOT `state/key_sequence_policy.rs::ime_key_for` が握るため、
+    /// ドライバが VK を直書きすることはない。
     SharedImeKeyDispatch,
 }
 
@@ -95,27 +97,13 @@ pub trait ImeProfileDriver: Sync {
     /// （`state/app_ime_policy.rs::AppImePolicy::owns_physical_kanji` 相当）。
     ///
     /// **注意（BUG-46）**: これは profile 軸（静的）のみの宣言であり、実効的な
-    /// disposition の SSOT ではない。`false` を宣言していても [`uses_gji_direct`]
-    /// が `true`（GJI/MS-IME actuate 時）なら、実際には
+    /// disposition の SSOT ではない。`false` を宣言していても GJI / MS-IME が
+    /// actuate する場合は、実際には
     /// `runtime/transport.rs::PhysicalKeyDisposition::plan` が物理キーを Suppress
-    /// する（TsfNative + GJI の実例）。本 trait を Phase 1d で suppress 判定の SSOT
-    /// にする場合は、この2軸（`owns_physical_kanji` と `uses_gji_direct`）を
+    /// する（TsfNative + GJI の実例）。本 trait を suppress 判定の SSOT に
+    /// する場合は、profile 軸（本メソッド）と `active_ime_kind`（実行時観測）を
     /// `plan()` と同じ形で合成すること。
-    ///
-    /// [`uses_gji_direct`]: Self::uses_gji_direct
     fn owns_physical_kanji(&self) -> bool;
-
-    /// GJI が active IME のとき、共有 GJI 直接制御機構
-    /// （`state/gji_direct_mechanism.rs`）を経由するか。
-    ///
-    /// ADR-081 design B の中核。profile 軸（静的）と `active_ime_kind` 軸（GJI /
-    /// MS-IME、動的）を分離し、ドライバは GJI / MS-IME の**動的分岐を持たず**、
-    /// 「共有 GJI 機構を使うか」だけを静的に宣言する。`true` を宣言したドライバ
-    /// だけが `GjiDirectMechanism::access_for` から token を得られる（不変条件5）。
-    ///
-    /// `ImmCross` は cross-process API（`ImmSetOpenStatus`）が一次経路のため
-    /// `false`。GJI フォールバックの合成はランタイム（Phase 1d）の責務。
-    fn uses_gji_direct(&self) -> bool;
 
     /// このドライバが IME を OFF→ON にする経路を持つか（不変条件1 の一般化）。
     ///
@@ -180,13 +168,6 @@ impl ImeProfileDriver for ImmCrossDriver {
     fn owns_physical_kanji(&self) -> bool {
         // Step 1/1b の決定（`state/app_ime_policy.rs` と同値）。
         true
-    }
-
-    fn uses_gji_direct(&self) -> bool {
-        // ImmCross は `ImmSetOpenStatus` の cross-process 制御が一次経路。
-        // GJI 検出時のフォールバック合成はランタイム（Phase 1d）の責務であり、
-        // 本ドライバは共有 GJI 機構を静的な一次経路としては宣言しない。
-        false
     }
 
     fn has_ime_on_path(&self) -> bool {
@@ -262,11 +243,6 @@ impl ImeProfileDriver for Imm32UnavailableDriver {
         true
     }
 
-    fn uses_gji_direct(&self) -> bool {
-        // IMM32 が使えないため、GJI が active な場合は共有 GJI 機構が一次経路。
-        true
-    }
-
     fn has_ime_on_path(&self) -> bool {
         true
     }
@@ -307,8 +283,8 @@ impl ImeProfileDriver for Imm32UnavailableDriver {
 /// TSF ネイティブアプリ。`VK_DBE_HIRAGANA` + TSF probe が必要で、cold-start に
 /// composition context の非同期初期化待ちがある（BUG-01）。TSF が KANJI を正しく
 /// 処理するため物理 KANJI は**通す**（`owns_physical_kanji=false`、profile 軸のみ）。
-/// ただし GJI/MS-IME が actuate する場合（`uses_gji_direct=true`）は実効的には
-/// Suppress される（BUG-46、`owns_physical_kanji` の doc 参照）。読み戻し不能の
+/// ただし GJI/MS-IME が actuate する場合は実効的に Suppress される
+/// （BUG-46、`owns_physical_kanji` の doc 参照）。読み戻し不能の
 /// ため feedback は `Blind`。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TsfNativeDriver;
@@ -317,14 +293,8 @@ impl ImeProfileDriver for TsfNativeDriver {
     fn owns_physical_kanji(&self) -> bool {
         // WezTerm 等は TSF が KANJI を正しく処理するため通す（profile 軸のみ）。
         // （`AppImePolicy::from_profile(TsfNative)` と同値）。GJI/MS-IME actuate 時の
-        // 実効 disposition は `uses_gji_direct` doc と BUG-46 を参照。
+        // 実効 disposition は `owns_physical_kanji` doc と BUG-46 を参照。
         false
-    }
-
-    fn uses_gji_direct(&self) -> bool {
-        // TSF アプリでも GJI が active なら共有 GJI 機構経由（VK_IME_ON/OFF は
-        // TSF 層で処理される、`ime_controller.rs::GjiDirectStrategy` doc 参照）。
-        true
     }
 
     fn has_ime_on_path(&self) -> bool {
@@ -510,7 +480,8 @@ mod tests {
     fn registry_maps_profiles_to_expected_driver_capabilities() {
         // `driver_for` が各 profile を正しいドライバへ写像し、集約
         // （ImmCross/Plain/Unknown → ImmCrossDriver）が期待通りであることを
-        // capability（owns_physical_kanji / uses_gji_direct）で確認する。
+        // capability（owns_physical_kanji / ime_open_mechanism）で確認する。
+        // `uses_gji_direct` は ADR-089 Phase B で撤去済み（§4.7）。
         for profile in [
             ImePolicyProfile::ImmCross,
             ImePolicyProfile::Plain,
@@ -518,12 +489,16 @@ mod tests {
         ] {
             let d = driver_for(profile);
             assert!(d.owns_physical_kanji(), "{profile:?} → ImmCross");
-            assert!(
-                !d.uses_gji_direct(),
+            assert_eq!(
+                d.ime_open_mechanism(true),
+                ImeOpenMechanism::CrossProcessApi,
                 "{profile:?} → ImmCross (cross-process 一次)"
             );
         }
-        assert!(driver_for(ImePolicyProfile::Imm32Unavailable).uses_gji_direct());
+        assert_eq!(
+            driver_for(ImePolicyProfile::Imm32Unavailable).ime_open_mechanism(true),
+            ImeOpenMechanism::SharedImeKeyDispatch
+        );
         assert!(!driver_for(ImePolicyProfile::TsfNative).owns_physical_kanji());
     }
 
@@ -621,55 +596,31 @@ mod tests {
         }
     }
 
-    /// 不変条件4: belief を actuate 抜きで ON にする高速パスは必ず `GjiFsm` を同期させる。
+    /// 不変条件4・5 は ADR-089 Phase B で引き取った（§6 item 8、§4.7、2026-08-12）。
     ///
-    /// 型レベル: GJI の IME-ON キーを取り出す唯一の経路（共有機構の `actuate`）が
-    /// `GjiFsmSync::OnImeOn` 同期義務と分離不能であることを、各 GJI ドライバ経由で確認する。
+    /// - 不変条件4（belief を actuate 抜きで ON にする高速パスは必ず `GjiFsm` を
+    ///   同期させる）→ INV-43。`ActuationReceipt` が `#[must_use]` + `Drop` の
+    ///   `debug_assert` で運ぶ（`gji_direct_mechanism.rs`）。**保証水準は
+    ///   「debug ビルドでの実行時検出」までである**（ADR-089 §8.1）。
+    /// - 不変条件5（どのドライバ経由でも同一の `GjiFsm` 同期を通る）→ INV-42。
+    ///   同期義務が profile 軸ではなく outcome 軸だけで決まることが確定したため、
+    ///   「ドライバ経由でゲートする」という前提自体が消えた。
+    ///
+    /// ここに残すのは、**ドライバの静的宣言が実際の同期義務をゲートしないこと**
+    /// の確認である: 共有キー委譲を宣言するドライバかどうかに関わらず、
+    /// `legacy_gji_sync_obligation` は同じ答えを返す。
     #[test]
-    fn invariant_4_gji_ime_on_is_inseparable_from_fsm_sync() {
-        use crate::state::gji_direct_mechanism::{GjiDirectMechanism, GjiFsmSync};
+    fn sync_obligation_does_not_depend_on_driver_declaration() {
+        use crate::state::gji_direct_mechanism::{legacy_gji_sync_obligation, GjiFsmSync};
         for d in ALL_DRIVERS {
-            let Some(access) = GjiDirectMechanism::access_for(*d) else {
-                continue;
-            };
-            let on = GjiDirectMechanism::actuate(&access, true);
+            // ドライバの宣言（CrossProcessApi / SharedImeKeyDispatch）を読んでも、
+            // 同期義務は変わらない（INV-42）。
+            let _declared = d.ime_open_mechanism(true);
             assert_eq!(
-                on.fsm_sync,
-                GjiFsmSync::OnImeOn,
-                "IME-ON キーは OnImeOn 同期義務と束ねられていなければならない（BUG-18/22）"
+                legacy_gji_sync_obligation(true, awase::platform::ImeOpenOutcome::Applied),
+                Some(GjiFsmSync::OnImeOn),
+                "同期義務は profile 軸（ドライバ）に依存しない"
             );
-        }
-    }
-
-    /// 不変条件5: GJI 機構の状態遷移はどのドライバ経由で呼ばれても同一の `GjiFsm`
-    /// 同期を通る（= `uses_gji_direct()==true` を宣言しないドライバから共有 GJI 機構を
-    /// 呼び出せない）。
-    #[test]
-    fn invariant_5_gji_access_gated_by_static_declaration() {
-        use crate::state::gji_direct_mechanism::GjiDirectMechanism;
-        for d in ALL_DRIVERS {
-            assert_eq!(
-                GjiDirectMechanism::access_for(*d).is_some(),
-                d.uses_gji_direct(),
-                "共有 GJI 機構へのアクセスは uses_gji_direct() の静的宣言でゲートされる"
-            );
-        }
-    }
-
-    /// design B の一貫性: `uses_gji_direct()` を宣言するドライバは共有キー機構へ
-    /// 委譲する（`SharedImeKeyDispatch`）。cross-process API 経路と混同しないこと。
-    #[test]
-    fn uses_gji_direct_implies_shared_key_dispatch_mechanism() {
-        for d in ALL_DRIVERS {
-            if d.uses_gji_direct() {
-                for open in [true, false] {
-                    assert_eq!(
-                        d.ime_open_mechanism(open),
-                        ImeOpenMechanism::SharedImeKeyDispatch,
-                        "uses_gji_direct ドライバの機構は共有キー委譲でなければならない"
-                    );
-                }
-            }
         }
     }
 }

@@ -18,6 +18,35 @@ Phase 1d（実機ソーク必須の strangler-fig 配線）・1e（旧経路撤�
 実機セッションが取れたタイミングで着手すること。詳細は「Phase 1a/1b/1c 実施記録」
 節の「Phase 1d への申し送り」を参照。
 
+### 追記（2026-08-12）: Phase 1c の一部を ADR-089 Phase B が引き取った
+
+[ADR-089](089-ime-typestate-and-capability-const-table.md) §2.4（INV-42/43）が
+**`GjiFsm` 同期義務の宣言軸を profile 軸から outcome 軸へ移した**ことにより、
+Phase 1c の次の 3 つが根拠を失い、ADR-089 Phase B（§6 item 8、§4.7）で
+**撤去**された:
+
+| 撤去したもの | 引き取り先 | 理由 |
+|---|---|---|
+| `ImeProfileDriver::uses_gji_direct()`（trait メソッド + 3 impl） | — | 同期義務が profile 軸で決まらないことが確定したため、宣言する対象が無くなった |
+| `GjiDirectAccess` token / `GjiDirectMechanism::access_for` / `GjiDirectMechanism::actuate` / `GjiActuation`（不変条件5） | ADR-089 INV-42（`legacy_gji_sync_obligation` が唯一の導出式） | token でアクセスを絞る前提（「`uses_gji_direct()` を宣言したドライバだけが同期義務を得る」）が消えた |
+| contract test 不変条件4（belief を actuate 抜きで ON にする高速パスは必ず `GjiFsm` を同期させる） | ADR-089 INV-43（`ActuationReceipt` の `#[must_use]` + `Drop` の `debug_assert`） | **保証水準は「debug ビルドでの実行時検出」までに下がる**（ADR-089 §8.1）。落とす前提として ADR-089 §7 の compile-fail ケース4 が実際に赤くなることを確認済み（`state/gji_direct_mechanism.rs` の `compile_fail` doctest） |
+
+**Phase 1c 不変条件1・2・3 は撤去していない**（ADR-089 は引き取らない）:
+
+- 不変条件1（IME-ON 経路と stale `ObservedEisu` 救済の対）— `has_ime_on_path` /
+  `stale_eisu_recovery_paired` として `ImeProfileDriver` に残っている。
+- 不変条件2（`owns_physical_kanji==true` のドライバは物理 KANJI を漏らさない）—
+  ADR-089 §2.5 のとおり `AppImePolicy` 側に残る軸であり、対象外。
+- 不変条件3（`Blind` give-up 後に observation を書かない）— `default_feedback` /
+  `decide_actuation_action` として残っている。
+
+**Phase 1d/1e の位置づけ**: ADR-089 §6 は Phase 1d の**凍結を提案**しているが、
+その採否は未決定（ADR-089 §9-4）。本追記は「同期義務の宣言軸」という 1 点に
+ついてのみ、実装が ADR-089 側へ移ったことを記録するものである。
+`ImeProfileDriver` 自体（`owns_physical_kanji` / `has_ime_on_path` /
+`stale_eisu_recovery_paired` / `default_feedback` / `ime_open_mechanism` /
+`probe_budget_ms`）と `driver_for` レジストリは**残っている**。
+
 ## コンテキスト
 
 ### 「共通化」を前提にしてきたことへの疑い

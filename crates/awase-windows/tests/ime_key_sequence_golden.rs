@@ -252,8 +252,12 @@ fn driver_shadow_strategy_name(active_gji: bool, profile: &str) -> &'static str 
     let driver = driver_for(app_profile_to_policy_profile(profile));
     match driver.ime_open_mechanism(true) {
         ImeOpenMechanism::CrossProcessApi => "ImmCrossProcess",
+        // `uses_gji_direct()` は ADR-089 Phase B（§4.7）で撤去済み。
+        // `SharedImeKeyDispatch` を宣言するドライバ（Imm32Unavailable /
+        // TsfNative）はいずれも GJI 直接制御を一次経路に持つため、
+        // 実行時観測 `active_gji` だけで GJI / MS-IME を分ければ以前と同値になる。
         ImeOpenMechanism::SharedImeKeyDispatch => {
-            if active_gji && driver.uses_gji_direct() {
+            if active_gji {
                 "GjiDirect"
             } else {
                 "MsImeDirect"
