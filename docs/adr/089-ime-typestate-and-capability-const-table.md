@@ -7,7 +7,8 @@
 
 **追記（2026-08-12）**: **Phase A（観測側、§6）は実装済み**（`state/evidence.rs`
 新設、`ObservationStore` のプール分離、`architecture_guard.rs` の整理）。
-Phase B / C は未着手。Phase A 実装時に本文へ入れた訂正は次の 3 点で、いずれも
+**Phase B（actuation 側、§6 item 6〜10）も同日実装済み**（実装記録は §6
+「Phase B 実施記録」節）。Phase C は未着手。Phase A 実装時に本文へ入れた訂正は次の 3 点で、いずれも
 「r5 までの記述が実コードと食い違っていた」ものである:
 
 - **dylint 2 crate は撤去対象ではなかった**（§7・§1.4・§3 冒頭の表・§8.1・§10）。
@@ -1343,6 +1344,93 @@ ADR-088 の INV-29〜37 を継承し、**INV-38 から**採番する。
 未移行のまま残しており、それを型状態リファクタに便乗して再吸収すると、
 Phase B の失敗時に切り分けられなくなる。
 
+### Phase B 実施記録（2026-08-12）
+
+**item 6〜10 すべて実装した。** 新設 2 ファイル
+（`state/actuation_chain.rs` / `runtime/open_chain.rs`）、改修 8 ファイル。
+`cargo build` / `cargo test -p awase-windows`（Linux）と
+`cargo xwin check --target x86_64-pc-windows-msvc`（windows-gated コードの
+型検査）がグリーン。clippy の警告件数は HEAD と同数（`git stash` で比較）。
+
+#### ADR の記述と実コードが食い違っていた点（実装時の判断）
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| B-1 | §2.3 `async fn run_chain(self, chain) -> ImeOpenOutcome` | 実 write は Win32 FFI であり `state/` は `#[cfg(windows)]` に依存できない（ADR-065） | **writer を引数に取る形にした**（`MechanismWriter` / `AsyncMechanismWriter`）。走査・フォールスルー判定・アフィン性だけを ungated 側が持ち、Linux で全数テストする |
+| B-2 | §2.3 `run_chain` は async 1 本 | GJI/MS-IME/KanjiToggle は `SendInput` のみで非ブロッキング。これらを await 越しにすると打鍵ホットパスのレイテンシが変わる（§8.2 が実機ソーク必須と書いている軸） | **同期版・非同期版の 2 本にした。判定（`Actuation::classify`）は 1 箇所に集約**。二重化しているのは「future を駆動する殻」であって、フォールスルー述語でも戦略選択でもない |
+| B-3 | §2.3 `Actuation<Requested>::warrant(w: OpenWarrant)` | **`issue_open_warrant()` の本番呼び出し元はゼロ**（`src/` 全体を grep、2026-08-12。ADR-087 Phase 3 の配線が未了で、呼び出しは同ファイルのテストのみ） | 既存経路に warrant を要求すると ADR-087 Phase 3 を Phase B に巻き込む。**`warrant_pending_adr087()` という名前付きの暫定入口を分け**、件数を `legacy_unwarranted_actuation_sites_are_accounted_for`（期待値 **2**）で固定した。ADR-087 Phase 3 が進むたびにこの期待値は減るのが正しい方向 |
+| B-4 | §2.3 `Actuation<Verified>` は「ADR-086 INV-14 の capture 済みターゲットを保持する」 | `crate::ime::ActuationTarget` は**フィールドを private にして「`verify_still_current` を経由せずに hwnd を取り出せない」ことを型で保証している**（ADR-086 §6 段1） | hwnd を取り出すアクセサを生やすとその保証を壊す。**`VerifiedTarget::Captured` を payload 無しにした**。VK 送信機構向けの `FocusImplicit` は INV-14 未移行分であることを型の doc に明記（Phase C で潰す） |
+| B-5 | §2.4 細目5「`ImeProfileDriver::uses_gji_direct` を撤去する」 | 撤去すると `GjiDirectMechanism::access_for`（token の唯一の発行口）→ `GjiDirectAccess` → `GjiDirectMechanism::actuate` → `GjiActuation` が芋づるで根拠を失う | **連鎖して撤去した**（§4.7 が「維持」を明示的に却下しているため）。ADR-081 側にステータス追記済み。**ただし ADR-081 の凍結そのもの（§9-4）は未決定のまま**——`ImeProfileDriver` 本体と `driver_for` レジストリは残している |
+| B-6 | §6 item 10「`ConvergedReceipt` を `ReadBack` の戻り値型にする」 | **`ReadBack` という型・関数は存在しない**（§1.3(i) の記述どおり） | 読み戻しの帰結が実際に確定するのは `ir_apply_drift_correction` の `Read` 収束判定と `Blind` give-up 判定の 2 箇所。**そこで `ConvergedReceipt` を構築するようにした**（INV-46 の「観測へ変換できない」は型として成立している） |
+| B-7 | §7「新設するもの — `trybuild`（compile-fail テスト、4 ケース）」 | `trybuild` は未導入。§7 自身が「rustc 更新で `stderr` が変わり CI が赤くなる」保守負担を明記している | **`compile_fail` doctest で代替した**（stderr を照合しないため rustc バージョンに依存せず、dev-dependency も増えない）。`compile_fail` は「何らかの理由で落ちれば通る」ため、**1 行だけ違う「通る双子」を必ず併記**して、落ちている理由が目的の型エラーであることを示す形にした。ケース 1（`Warranted` から `run_chain`）・3（`ConvergedReceipt` → `AnyObservation`）・4（未束縛の `ActuationReceipt`）を実装。**ケース2（`record_belief` に `ActuatingPool` の evidence）は Phase A の範囲**であり本 Phase では追加していない |
+| B-8 | §9-1「`Drop` の `debug_assert` が panic unwind 中に double panic を起こしうる。Phase B 実装時に決める」 | — | **`std::thread::panicking()` で unwind 中を除外する形を採った**。double panic → abort になると**本来の panic の原因が失われる**（`panic_detect.rs` のクラッシュ報告も元の payload を拾えなくなる）ため |
+| B-9 | §9-9「receipt を持つ呼び出しフレームの特定が済んでいない」 | `platform.rs::on_ime_applied`（`&mut self` の中）が唯一の同期点 | receipt を**同メソッドのローカル値**として作り、同じフレームで `settle(self)` する形で解決した。async 境界をまたがない（async 経路も完了 outcome を WM 経由で `on_ime_apply_complete` へ返してから同期するため）ので、§9-1 の double panic と await 中断の相互作用は生じない |
+
+#### 実装したもの
+
+1. **`state/actuation_chain.rs`（新設、ungated）** — `WriteMechanism`（4 値、キー値は
+   持たない）、`falls_through`（**フォールスルー述語の SSOT**、`Failed` のときだけ真）、
+   `Actuation<Requested/Warranted/Verified>`、`WriteErr`、`VerifiedTarget`、
+   `Authorization`、`MechanismWriter` / `AsyncMechanismWriter`、
+   `run_chain` / `run_chain_async`、`DriftEpisode`（item 9）。
+   Linux ユニットテスト 12 本（`UnsafeToToggle` が `KanjiToggle` へ落ちないこと、
+   同期版と非同期版が全 outcome 組み合わせで一致すること、`DriftEpisode` が
+   `Blind` の `max_attempts` で払い出しを止めること等）。
+2. **`state/gji_direct_mechanism.rs`（改修）** — `GjiSyncSink` trait と
+   `ActuationReceipt` を新設し、`GjiDirectAccess` / `GjiDirectMechanism` /
+   `GjiActuation` を撤去（B-5）。`settle` が全 `ImeOpenOutcome` × `open` で
+   `legacy_gji_sync_obligation` と一致することを全数テスト（INV-42）。
+3. **`platform.rs`（改修）** — `impl GjiSyncSink for WindowsPlatform` を追加し、
+   `on_ime_applied` の `gji_on_ime_on` / `gji_on_ime_off` 直接呼び出しを
+   `receipt.settle(self)` へ置換（item 7）。`injection_mode` は sink 実装内で
+   settle 時点に読む（§2.4 細目2）。
+4. **`ime_controller.rs`（改修）** — `apply_iter` を撤去し `run_chain` へ委譲。
+   `ImeController` から `strategies` フィールドが消え（`WriteMechanism::ALL` +
+   `strategy_for` の写像に置換）、**`apply_skipping_imm` を撤去**。
+5. **`runtime/open_chain.rs`（新設）** — **ImmCross を機構チェーンの要素にした**。
+   `executor.rs` / `key_pipeline.rs` の `spawn_local` に inline されていた
+   ImmCross 書き込みをここへ移し、`Failed` 後のフォールスルーを
+   `run_chain_async` に任せた。これが `apply_skipping_imm`（2 本目の走査入口）が
+   不要になった理由である（item 6 の「二重経路解消」）。
+6. **`state/ime_actuation.rs`（改修）** — `ConvergedReceipt`（item 10、INV-46）。
+   `runtime/ime_refresh.rs` の `Read` 収束 / `Blind` give-up の 2 箇所で構築。
+7. **`state/ime_profile_driver.rs`（改修）** — `uses_gji_direct` 撤去（item 8）。
+   contract test の不変条件4・5 を「ドライバの静的宣言が同期義務をゲートしない
+   こと」の確認へ置き換え。
+8. **`state/observation_store.rs`（改修、§9-11）** — `PerSourceObservations::set`
+   を `pub(crate)` へ縮小し、**crate 外からの観測注入という裏口を塞いだ**。
+   crate 内の本番呼び出し元 1 箇所（`record_replayed`）を
+   `per_source_set_is_confined_to_the_store` が固定する。
+
+#### 新設した architecture_guard（3 件）
+
+- `legacy_unwarranted_actuation_sites_are_accounted_for`（期待値 2、B-3）
+- `async_imm_cross_actuation_goes_through_the_single_chain_entry` —
+  `apply_skipping_imm` がゼロであること、ImmCross の実書き込み API を
+  チェーン外から呼ぶ箇所の固定、非同期入口 `run_open_chain_async` が 2 呼び出し
+- `per_source_set_is_confined_to_the_store`（§9-11）
+
+`ime_open_actuation_entry_points_are_accounted_for` からは
+`.apply_skipping_imm(` の行（期待値 2）を削除した。
+
+#### Phase B でも消えなかったもの（Phase C / 別 ADR 送り）
+
+- **`ImmCrossOp::Untargeted`**（`key_pipeline.rs` の shadow-toggle OFF 経路）は
+  宛先を捕獲しないまま。ADR-086 INV-14 の未移行分であり、`Targeted` へ寄せると
+  挙動が変わる（実機ソーク必須）ため Phase C（item 12）。
+- **`set_ime_romaji_mode()` の同期 IMC write**（`ime_controller.rs` の
+  ImmCross / MsImeDirect 内）は手つかず。§6 の分割線どおり Phase C。
+- **`VerifiedTarget::FocusImplicit`** が `Verified` に入っていること自体が
+  INV-14 の未達を表す。Phase C で潰す。
+
+#### 実機検証の状態
+
+**未実施。** 本 Phase の変更は `cargo xwin check` による型検査までしか通って
+おらず、Windows 実機での動作確認はしていない（サンドボックスに実機が無い、
+§6 Phase C 着手条件と同じ制約）。§8.2 が求める**レイテンシ実測も未実施**——
+ただし B-2 のとおり**同期経路を async 化していない**ため、打鍵ホットパスの
+await 点は Phase B 以前と同数である（ImmCross 経路は元から `spawn_local`）。
+
 ### Phase C（**ゲートあり**。実機ソーク必須）
 
 11. `caps` 一本化 + `ime_controller.rs` の書き換え + `actuator_kind` 廃止
@@ -1580,7 +1668,9 @@ Phase A では対象外）。
 - **BUG-18・22（`GjiFsm` 同期欠落）は「型として再発不能」にはならない。
   実効は debug ビルドでの実行時検出にとどまる**（下記の保証水準の注記）。
 - **`ime_controller.rs` の 2 経路（`apply` / `apply_skipping_imm`）が
-  `run_chain` に一本化される**（Phase B）。
+  `run_chain` に一本化される**（Phase B）。**実装済み（2026-08-12）**——
+  `apply_skipping_imm` は撤去し、ImmCross を機構チェーンの要素にしたことで
+  `Failed` 後のフォールスルーは `run_chain_async` が行うようになった。
 - **`AppImePolicy` の死んだフィールド 2 つのうち 1 つ（`actuator_kind`）が消える**
   （Phase C）。
 
@@ -1755,6 +1845,46 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     Phase A で絞ると `runtime/` 側の既存呼び出し元が一斉に壊れ、
     型化そのものとは無関係な差分でレビューが埋まる。
     §9-8 の `write_set_open_request` の可視性案（b）と同じ段でまとめて検討する。
+    **Phase B での前進（2026-08-12）**: `PerSourceObservations::set` を
+    `pub(crate)` へ縮小し、crate 外からの注入は塞いだ。crate 内の呼び出し元は
+    `per_source_set_is_confined_to_the_store` が 1 件に固定している。
+    `ObservationStore::per_source` フィールドと `ImeObservation` の各フィールドは
+    `pub` のままである（`tests/golden_scenarios.rs` が読んでいるため）。
+
+12. **【Phase B の既知の限界】`Actuation` は warrant を持っていない。**
+    §2.3 は `Actuation<Requested>::warrant(w: OpenWarrant)` を正規経路として
+    いるが、**`issue_open_warrant()`（ADR-087）の本番呼び出し元は依然ゼロ**で
+    あり、Phase B が配線した 2 経路（`ime_controller.rs` の同期チェーンと
+    `runtime/open_chain.rs` の非同期チェーン）はどちらも
+    `warrant_pending_adr087()` を通る。したがって
+    **「warrant なしに write しない」は現時点で型としては効いていない**——
+    効いているのは「`run_chain` は `Actuation<Verified>` にしか生えない」
+    （段階の順序）と「1 値 = 高々 1 回の成功 write」（アフィン性）の 2 点である。
+    これを閉じるのは ADR-087 Phase 3（`issue_open_warrant()` の実配線）であり、
+    本 ADR の Phase C ではない。件数ガード
+    （`legacy_unwarranted_actuation_sites_are_accounted_for`、期待値 2）が
+    増加を検出する。
+
+13. **【Phase B の既知の限界】非同期チェーンのフォールバックが機構ごとに
+    `ImeControlView` を作り直す。**
+    旧 `apply_skipping_imm` は `with_app` の中で 1 つの view を作って残り戦略を
+    すべて評価していたが、`runtime/open_chain.rs` の `fallback_write` は
+    機構ごとに `shadow_ime_control_view()` を作る。実害が無いと判断した根拠は
+    「`Failed` を返す戦略が `ImmCrossProcessStrategy` だけ」（§2.3）であり、
+    ImmCross 以降で 2 回以上 write が走ることが構造的に無いためである。
+    **`GjiDirectStrategy` / `MsImeDirectStrategy` が将来 `Failed` を返すように
+    変わったら、この前提は崩れる**（§2.8 の「`KanjiToggle` を末尾に足すか」の
+    判断と同じタイミングで見直すこと）。
+
+14. **【Phase B の既知の限界】compile-fail を `trybuild` ではなく doctest で
+    固定した。**
+    §7 は `trybuild` を指定していたが、同節自身が挙げる保守負担（rustc 更新で
+    `stderr` が変わり CI が赤くなる）を避けて `compile_fail` doctest にした
+    （§6「Phase B 実施記録」B-7）。**`compile_fail` は「何らかの理由で
+    コンパイルが落ちれば通る」ため、双子の passing doctest を必ず併記する規約に
+    している**が、この規約自体は機械的に強制されていない——双子を消しても
+    テストは緑のまま通る。`trybuild` へ戻すかどうかは、CI が実際に rustc 更新で
+    赤くなった実績が出てから判断する。
 
 ---
 
