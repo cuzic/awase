@@ -806,6 +806,28 @@ impl PlatformRuntime for WindowsPlatform {
     }
 }
 
+/// ADR-089 §2.4（INV-42）: `GjiFsm` 同期義務の実行口。
+///
+/// ungated 側（`state/gji_direct_mechanism.rs`）は `GjiFsm` に依存できないため
+/// （ADR-065）、同期義務は `GjiFsmSync` という値で受け取り、実 FSM への写像を
+/// ここだけが行う。1 回の同期は `output.gji_on_event(..)` が返す
+/// `Response<GjiAction, GjiTimer>` を `dispatch_gji_response` へ流すところまでを
+/// 含むため、`&mut GjiFsm` ではなく `&mut WindowsPlatform` が要る（§1.3(f)）。
+impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
+    fn sync_gji(&mut self, sync: crate::state::gji_direct_mechanism::GjiFsmSync) {
+        use crate::state::gji_direct_mechanism::GjiFsmSync;
+        match sync {
+            GjiFsmSync::OnImeOn => {
+                // settle 時点の値を読む（receipt 生成時に積むと、actuation 中に
+                // mode が変わった場合に古い値で同期する。ADR-089 §2.4 細目2）。
+                let mode = self.output.injection_mode;
+                self.gji_on_ime_on(mode);
+            }
+            GjiFsmSync::OnImeOff => self.gji_on_ime_off(),
+        }
+    }
+}
+
 impl TsfComposition for WindowsPlatform {
     fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
         Some(&self.output)
@@ -825,8 +847,22 @@ impl TsfComposition for WindowsPlatform {
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
+        // ADR-089 §2.4（INV-42/43）: `GjiFsm` 同期義務を `ActuationReceipt` として
+        // 明示的に運ぶ。同期の要否を決める式は
+        // `state/gji_direct_mechanism.rs::legacy_gji_sync_obligation` ただ 1 箇所で
+        // あり（`outcome != UnsafeToToggle`）、ここに条件を書き足してはならない
+        // ——profile 軸でも K 軸でもゲートしないことが INV-42 の本体である。
+        //
+        // receipt は **この呼び出しフレームのローカル値**として持ち、同じフレームで
+        // settle する。`WindowsPlatform` のフィールドに持たせると
+        // `receipt.settle(&mut self)` が `&mut self` からの二重可変借用になる
+        // （ADR-089 §2.4 細目3）。
+        let mut receipt = crate::state::gji_direct_mechanism::ActuationReceipt::new(open, outcome);
         // UnsafeToToggle: 送信しなかったので何もしない（executor 側で早期リターン済みだが念のため）
         if outcome == ImeOpenOutcome::UnsafeToToggle {
+            // 同期義務は無い（`legacy_gji_sync_obligation` が `None`）が、
+            // settle 済みにしないと `Drop` の `debug_assert` が発火する。
+            receipt.settle(self);
             return;
         }
         let effective = match outcome {
@@ -880,14 +916,15 @@ impl TsfComposition for WindowsPlatform {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            let mode = self.output.injection_mode;
-            self.gji_on_ime_on(mode);
+            // `injection_mode` は receipt にも settle の引数にも積まない。
+            // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
+            receipt.settle(self);
             self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
-            self.gji_on_ime_off();
+            receipt.settle(self);
         }
     }
 
