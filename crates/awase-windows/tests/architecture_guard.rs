@@ -329,25 +329,28 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
 /// (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
-/// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている。
-/// 「観測がない」状況を `UserImeSetIntent` で偽装することは禁止（confidence ガードをバイパスするため）。
-/// 新しい使用箇所を追加する場合は、本当に「観測データが存在しない」状況かを確認し、
-/// `UserImeSetIntent` ではなく `ObserverReported` + Low confidence を使う理由を明記すること。
+/// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている
+/// （confidence は `Observed<HeuristicDefault>` 側で Low 固定、ADR-089 §2.2）。
+///
+/// **ADR-089 §7 はこのガードの削除を挙げているが、§9-2 の但し書き
+/// （witness `ImePolicyProfile` は「起点を限定する」効果はあるが「起動時に
+/// 限定する」効果は無い）に従い、needle を witness 構築子へ付け替えて残す。**
+/// 型が守るのは「HeuristicDefault を名乗るには profile が要る」までであり、
+/// 「起動直後の 1 箇所からしか呼ばない」はテキスト検査でしか守れない。
 #[test]
 fn heuristic_default_observation_is_limited_to_designated_methods() {
     let path = "src/state/platform_state.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let count = production
-        .matches("ObservationSource::HeuristicDefault")
-        .count();
+    let count = production.matches("evidence::HeuristicDefault").count();
     assert_eq!(
         count, 1,
-        "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
+        "{path} 内の `evidence::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
          想定: reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の1箇所のみ。\n\
          (reset_to_off_for_tsf_native_cache_miss は 37883d0 で TsfNative SSOT 化に伴い削除済み)\n\
          新しい安全デフォルト推測を追加する場合は `UserImeSetIntent` を使わず \
-         `ObserverReported + ObservationConfidence::Low` を使い、このカウントを更新してください。"
+         `Observed::<evidence::HeuristicDefault>::at_startup` を使い、このカウントを \
+         更新してください。"
     );
 }
 
@@ -596,34 +599,26 @@ fn katakana_and_native_toggle_shadow_off_never_use_set_open() {
     }
 }
 
-/// `ObservationSource::ConvOpenInference` への参照は2箇所のみに限定される。
-///
-/// - `report_conv_open_inference()`: `ObserverReported` の dispatch（唯一の書き込み点）。
-///   他の箇所がこの source を直接名乗って `ObserverReported` を dispatch すると、
-///   実際には conv ビットからの間接推論ではない値を「conv 推論」と偽装できてしまう
-///   （`ime-belief-architecture.md` が禁じる観測偽装パターンの一種）。confidence の
-///   上限（Medium）も `report_conv_open_inference()` 内で固定されているため、
-///   新しい呼び出し元を増やす場合はこの関数を経由すること。
-/// - `check_drift_correction()`: 明示意図が無い間はこの source 単独で drift
-///   correction を発火させない source-aware gate（BUG-19 再発対策）。
-#[test]
-fn conv_open_inference_source_is_limited_to_report_and_gate() {
-    let path = "src/state/platform_state.rs";
-    let content = read_crate_file(path);
-    let production = production_code_only(&content);
-    let count = production
-        .matches("ObservationSource::ConvOpenInference")
-        .count();
-    assert_eq!(
-        count, 2,
-        "{path} 内の `ObservationSource::ConvOpenInference` 参照箇所数が想定(2 = \
-         report_conv_open_inference の dispatch + check_drift_correction の \
-         source-aware gate)と異なります(実際: {count})。\n\
-         conv ビット由来の open 推論の dispatch は必ず `report_conv_open_inference()` \
-         経由にし、confidence の上限 (Medium) を勝手に上げないでください。"
-    );
-}
+// `conv_open_inference_source_is_limited_to_report_and_gate` は ADR-089 §7 に
+// 従い削除した（Phase A）。`ObservationSource::ConvOpenInference` を名乗るには
+// `Observed::<evidence::ConvOpenInference>::from_conv(reason, ..)` を通す必要が
+// あり、conv ビットを分類した事実（`ConvSyncReason`）を持たないコードは
+// この観測を構築できない。confidence の上限（Medium）も evidence 型が固定する
+// ため、呼び出し元は選べない（BUG-19 再発対策の型化、INV-40）。
 
+/// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
+/// （`Command`）の 1 箇所だけ（ADR-089 §2.2・§7、INV-40）。
+///
+/// `SyncKey` / `PhysicalImeKey` は `IntentWitness::from_sync_key` /
+/// `from_physical` が運ぶようになったため、リテラルは残っていない——
+/// 「注入されていない実キーイベント」（`&RawKeyEvent`, `injected == false`）が
+/// 無ければ意図を名乗れない（BUG-14 の型化）。
+///
+/// **`Command` は engine 内部判断であり、引数の型で起点を限定できる外部事実が
+/// 無いため witness 化できない**（ADR-089 §9-8）。したがってこのガードは
+/// 削除せず、期待値 1 で残す。**ゼロにする変更は単独で行わないこと**——
+/// BUG-19 の再発条件（間接推測が `Command` を名乗って `desired_open` を
+/// 書き換える）に直接関係する。
 #[test]
 fn user_intent_source_construction_is_limited_to_typed_writers() {
     let path = "src/state/platform_state.rs";
@@ -631,12 +626,49 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
     let production = production_code_only(&content);
     let count = production.matches("source: UserIntentSource::").count();
     assert_eq!(
-        count, 3,
-        "{path} 内の `source: UserIntentSource::` リテラル構築箇所数が想定(3)と異なります(実際: {count})。\n\
-         想定: write_sync_key / write_physical_key / write_set_open_request の3箇所のみ。\n\
-         `UserImeSetIntent` は typed writer 経由で発行し、直接 dispatch_event() を呼ばないこと。\n\
-         新しい UserIntentSource variant を追加する場合は typed writer メソッドを追加してください。"
+        count, 1,
+        "{path} 内の `source: UserIntentSource::` リテラル構築箇所数が想定(1)と異なります(実際: {count})。\n\
+         想定: write_set_open_request (`Command`) の1箇所のみ。\n\
+         `SyncKey` / `PhysicalImeKey` は `IntentWitness` が source を運ぶため、\n\
+         リテラルで名乗ってはいけません（ADR-089 §2.2）。\n\
+         新しい UserIntentSource variant を追加する場合は、witness に載せられる \n\
+         外部事実があるかをまず検討してください（ADR-089 §9-8）。"
     );
+}
+
+/// `AnyObservation::restored_from_journal` は journal / fixture 復元専用の口で
+/// あり、本番コードから呼んではならない（ADR-089 §2.1）。
+///
+/// 本番の観測は必ず `Observed<E>` の witness 構築子（`from_probe` /
+/// `from_cross_probe` / `from_poll` / `at_startup` / `from_conv`）を通す。
+/// この口を本番から使うと、witness を持たないコードが任意の
+/// `ObservationSource` と `ObservationConfidence` を名乗れてしまい、
+/// §2.2 のデータ witness が丸ごと迂回される。
+#[test]
+fn any_observation_replay_door_is_not_used_in_production() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = production_code_only(&content);
+        let count = production.matches("restored_from_journal(").count();
+        // 定義そのもの（`pub const fn restored_from_journal(`）は evidence.rs に 1 件。
+        let expected = usize::from(rel == "state/evidence.rs");
+        assert_eq!(
+            count, expected,
+            "src/{rel} が `restored_from_journal(` を本番コードで使っています\
+             (実際: {count}, 想定: {expected})。観測は `Observed<E>` の witness \
+             構築子を通してください（ADR-089 §2.1・§2.2、INV-40）。"
+        );
+    }
 }
 
 /// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
