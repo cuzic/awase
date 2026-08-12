@@ -1711,7 +1711,7 @@ ADR-081 Phase 1a/1b/1c は試験実装済み・未配線であり、今なら撤
 
 | 資産 | 本 ADR での扱い |
 |---|---|
-| `tests/ime_key_sequence_golden.rs` | **維持。1 バイトも変更していない**（Phase C の必須条件）。r5 までは「Phase C で `caps().chain` の 10 行を golden に追加する」としていたが、**追加しなかった**（§6 Phase C 実施記録 C-1）——行の追加は golden ファイルの更新を伴い「キー選択の回帰検知点を無変更で通す」と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux CI では実行されない。caps の全数テストは `state/app_ime_policy.rs`（Linux 実行）と `ime_controller.rs`（windows-gated）へ分けた。**なお同ファイルの `KEY_DOC` は「直前に `set_ime_romaji_mode()`」という、Phase C で削除した関数名を今も含んでいる**——挙動の記述（ROMAN ビットを先に立てる）は今も正確だが関数名は古い。更新には golden の再生成が要るため、**次に実機で golden を回すときにまとめて直すこと** |
+| `tests/ime_key_sequence_golden.rs` | **維持。1 バイトも変更していない**（Phase C の必須条件）。r5 までは「Phase C で `caps().chain` の 10 行を golden に追加する」としていたが、**追加しなかった**（§6 Phase C 実施記録 C-1）——行の追加は golden ファイルの更新を伴い「キー選択の回帰検知点を無変更で通す」と両立しない。加えて同ファイルは `#![cfg(windows)]` で **Linux では 0 テスト**であり、caps の全数検査をそこへ置いても Linux CI では実行されない。caps の全数テストは `state/app_ime_policy.rs`（Linux 実行）と `ime_controller.rs`（windows-gated）へ分けた。**なお同ファイルの `KEY_DOC` は「直前に `set_ime_romaji_mode()`」という、Phase C で削除した関数名を今も含んでいる**——挙動の記述（ROMAN ビットを先に立てる）は今も正確だが関数名は古い。~~更新には golden の再生成が要るため、次に実機で golden を回すときにまとめて直すこと~~ **【訂正（[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md) §2.G）: 実機は要らない。** `KEY_DOC` は `build_report()` が `push_str` するだけの定数であり、`.rs` と `.txt` を同時に手で直せば CI の `windows-build` ジョブ（`--test ime_key_sequence_golden` を実行する）が一致を判定する。**あわせて stale な名前は 1 つではない**——Phase B で撤去した `apply_skipping_imm` が golden 本文に **7 箇所**（dispatch 列の値 6 + 凡例 1）残っている。対応方針は ADR-090 §2.G】 |
 | `tests/golden_scenarios.rs` | **維持。** `actuator_kind` 期待値は Phase C で `focus_settle_ms` での profile 識別へ書き換えた（ADR が指示していた `caps(p,k).chain[0]` は K 依存で `ImeModel::app_policy` が K を持たないため使えない、§6 Phase C 実施記録 C-3）。`owns_physical_kanji` の 2 件はそのまま |
 | `tests/journal_replay.rs` / `tests/drift_correction_replay.rs` / `tests/journals/` | **維持。** §2.1 の `record_replayed(AnyObservation)` がこれらの入口になる |
 | `lints/no_vk_as_scan` | **維持**（本 ADR と直交する。VK を scan code として使わせない） |
@@ -1985,10 +1985,22 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
    混同すると「capability 表を見たのに戦略チェーンの表だった」という読み違いが
    起きる。
 
-4. **ADR-081 Phase 1d を凍結するかどうか**（§6）。凍結が最も低コストだが、
+4. **~~ADR-081 Phase 1d を凍結するかどうか~~**（§6）。~~凍結が最も低コストだが、
    ADR-081 の Phase 1a/1b/1c は 3 ファイル分の実装であり、撤去そのものの
    レビューコストがゼロではない。**凍結しない場合の二重定義期間の管理方法**を
-   決めていない。
+   決めていない。~~
+   **決定済み（[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md)
+   §2.F、実装は未着手）: 凍結する。** 根拠は「長期間放置されているから」でも
+   「実機が無いから」でもなく、(1) `ImeProfileDriver` の 7 メソッドのうち
+   `default_feedback` / `focus_settle_ms` / `ime_open_mechanism` の 3 つが
+   `caps(p, k)` と完全に重複し、`caps` のほうが K 軸を含む分だけ細かいこと、
+   (2) Phase 1d は §4.1 が「再提案禁止」で却下した capability の trait 静的分岐の
+   配線そのものであること、(3) Phase 1e のブロッカーだった「`GjiFsm` 同期義務の
+   非対称」が Phase B の INV-42/43 で解決済みであること、の 3 点。
+   `ImeProfileDriver` は trait ごと削除せず、`caps` と重複する 4 メソッド
+   （上記 3 + 未配線・未実測の `probe_budget_ms`）だけを削り、
+   `owns_physical_kanji` / `has_ime_on_path` / `stale_eisu_recovery_paired` を
+   持つ**契約宣言**として残す。
 
 5. **~~Phase C の着手条件（ADR-088 トラック D の復旧）が満たされる見込みが無い。~~**
    **解消（2026-08-12、ユーザー判断でゲート解除）。** ADR-088 §7 のとおり、
@@ -2445,6 +2457,12 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
   （`ObservationStore` に何が入るか）を §2.1〜2.2 が型で守る。`WarrantBasis` の
   7 variant は増やさない。** ADR-087 §8 の「純粋関数として切り出して Linux で
   全数テストする」方針を Phase A/B が継承する
+- [ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md): **本 ADR の
+  続編（ドラフト、実装未着手）。** §9 に残った「型は入ったが効いていない」
+  5 件（§9-8/§9-11/§9-12/§9-16/§9-20）と、§6 の ADR-081 Phase 1d 凍結提案、
+  §7 の golden の stale な名前を、優先順位・規模感つきの設計へ落としたもの。
+  **§9-4（ADR-081 凍結の可否）と §7 の「golden 再生成には実機が要る」は
+  ADR-090 で解消・訂正済み**
 - [ADR-088](088-ime-axis-capability-and-charset-owner.md): **姉妹編。**
   ADR-088 = 「何が壊れているか」（4軸モデル + `CharsetOwner` の発見の記録）、
   本 ADR = 「それを Rust の型でどう表現するか」。
