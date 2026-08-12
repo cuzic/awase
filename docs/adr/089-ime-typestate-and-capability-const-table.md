@@ -1572,7 +1572,7 @@ clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一
 | C-4 | §2.8 は `caps` を「機構チェーンの唯一の宣言」とする | `runtime/open_chain.rs::run_open_chain_async` は ImmCross の書き込みを **await した後**にフォールバックへ進み、`fallback_write` が機構ごとに view を作り直して `is_applicable` を再評価する（旧 `apply_skipping_imm` と同じ「完了時点の状態で残りを選ぶ」意味論） | **非同期チェーンだけは `WriteMechanism::ALL` のまま**にした。起案時点の `(p, k)` で chain を固定すると、await 中にフォーカスが動いた場合に「完了時点では適用可能な機構が chain に載っていない」新しい取りこぼしが生まれる（起案時 Standard×MS-IME の chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。`ImeKindId` は推測値であり（INV-45）、await をまたいで K を固定するのは P20 が禁じる「安全側でないゲート」に当たる。§9-20 に残余論点として記録 |
 | C-5 | §6「Phase B でも消えなかったもの」: 「`VerifiedTarget::FocusImplicit` が `Verified` に入っていること自体が INV-14 の未達を表す。**Phase C で潰す**」 | VK 送信機構（`GjiDirect` / `MsImeDirect` / `KanjiToggle`）の実 write は `SendInput` であり、**宛先引数を取らない**（フォアグラウンドのキュー宛）。捕獲すべき hwnd が構造的に存在しない | **潰せない——`FocusImplicit` は「未達」ではなく機構固有の性質である**と訂正した（§9-19）。同期経路で hwnd を持つ唯一の write は ROMAN 補完であり、そちらを `ActuationTarget` 化した。`ImmCrossOp::Untargeted`（`key_pipeline.rs` の shadow-toggle OFF）は依然として未移行（§9-20） |
 | C-6 | §6 item 12「ADR-086 INV-14 の是正（ImmCross 同期 IMC write の `ActuationTarget` 化）」/ ADR-086 と `output/conv_actuation.rs` は「`ImeOpenStrategy::apply` 自体の非同期化が要る」としていた | `ActuationTarget::capture` が実際にやっているのは `get_focused_hwnd()` **1 回**であり、旧 `set_ime_romaji_mode()` が内部で行っていたライブクエリと同一である。**「捕獲を write の外へ出す」だけなら同期のままできる** | `capture_blocking` / `verify_gen_only` / `set_ime_romaji_mode_for_target_blocking` を新設し、**`apply` を非同期化せずに** ROMAN 補完を `ActuationTarget` 経由へ移した。「非同期化が要る」という ADR-086 Phase 3 の判断は、`verify_still_current` の hwnd 再クエリまで必須と読んだ場合にのみ正しい |
-| C-7 | — | 同期経路の `ImmCrossProcessStrategy::apply` の到達可能性を全呼び出し元で追跡した結果、**到達しない**ことが分かった（`executor.rs` / `key_pipeline.rs` は `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken` と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、`ir_apply_drift_correction` は `can_use_imm32_cross_process()` なら `set_ime_open` を使う分岐、`ime_refresh.rs:499` と `key_pipeline.rs:742` は TsfNative 限定） | `output/conv_actuation.rs` が「到達可能性は未確認」と書いていた点の**裏取りが取れた**（同ファイルの doc も更新した）。したがって item 12 の実害は `MsImeDirect` 経路にのみあり、そこには ImmCross の open write が無いので「ROMAN と open が別ウィンドウへ着弾する」問題は生じない |
+| C-7 | — | 同期経路の `ImmCrossProcessStrategy::apply` の到達可能性を呼び出し元で追跡した（`executor.rs` / `key_pipeline.rs` は `imm_cross_is_first_applicable` で async 分岐、`apply_force_on_for_imm_broken` と `arm_force_open_pending` は `!can_use_imm32_cross_process()` を要求、`ir_apply_drift_correction` は `can_use_imm32_cross_process()` なら `set_ime_open` を使う分岐、`ime_refresh.rs:499` と `key_pipeline.rs:742` は TsfNative 限定） | **【2026-08-12 訂正】当初は「同期経路からは到達しない」と結論したが、これは棚卸し漏れによる誤りだった**（Opus レビューで指摘、詳細は §9-21）。`runtime/mod.rs::try_force_on_bootstrap`（`:892`）が `apply_ime_open_with_belief(true, None, belief)` を呼び、そのガードは `detect_miss_count() >= IME_DETECT_MISS_THRESHOLD` / `is_user_enabled()` / `is_eligible_for_ime_force_on()`（= `is_japanese_ime() && effective_open()`）/ `!is_force_on_guard_active()` だけで、**同種の他経路が持つ `!can_use_imm32_cross_process()` プロファイルガードを持たない**。したがって Standard（= `ImmCross` プロファイル、LINE / Qt 等）では `caps` chain の先頭 `ImmCross` が `is_applicable` を満たし、同期経路で `ImmCrossProcessStrategy::apply` に到達する。**Phase C 以前から同じ挙動であり、Phase C が作り込んだ回帰ではない**（Phase C は chain の作り方を `ALL` 走査から `caps` へ変えただけで、`try_force_on_bootstrap` のガードにも ImmCross の適用条件にも触れていない） |
 
 #### 実装したもの
 
@@ -2175,12 +2175,14 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     | 17-e | **ROMAN 補完のレイテンシが変わっていないこと**。Win32 往復は 1 回のままだが、`.claude/rules/tuning-constants.md` の実測義務に従い force-ON 経路の実測を取ること | Chrome / Edge × MS-IME、force-ON がホットパスに乗る打鍵 | 打鍵の取りこぼし・体感の引っかかり |
     | 17-f | **`focus_settle_ms` / `default_feedback` が `caps` 経由になっても同じ値で使われていること**。ファサード化なので値は同じはずだが、`settle_until` と drift correction のタイミングに効く | Chrome（500ms）/ WezTerm（200ms）/ LINE（100ms） | フォーカス直後の spurious apply、または drift correction の過剰/過少発火 |
     | 17-g | **`imm_cross_is_first_applicable` の caps 化で async/sync 分岐が変わっていないこと**。`chain[0] == ImmCross` の同一性チェックを外すと GJI 経路が誤って async 分岐へ流れる（実装時に踏みかけた） | Chrome / WezTerm × GJI | `with_app` 再入、または IME 適用の二重発火 |
+    | 17-h | **bootstrap force-ON（`try_force_on_bootstrap`）が同期 ImmCross 経路に入ったときの着弾先**。この経路は `!can_use_imm32_cross_process()` ガードを持たず、Standard プロファイルでも `ImmCrossProcessStrategy::apply` に到達する（§9-18・§9-21）。ROMAN 補完は `get_focused_hwnd()`（30ms + `GetForegroundWindow` フォールバック）で捕獲した hwnd、open write は `get_gui_thread_info_with_timeout(150ms)`（フォールバック無し）で、**別ウィンドウへ着弾しうる**。ログ `IME detection failed N times, forcing OS ime_on=true` と `force-on bootstrap: apply_ime_open(true) → ...` の有無で発火を確認する。**Phase C 以前から同じ挙動なので、異常が出ても Phase C の revert では直らない**（§9-18 の恒久策が要る） | LINE / Qt（Standard）× MS-IME または GJI、IME 検出が `IME_DETECT_MISS_THRESHOLD` 回連続で失敗する状況（`ir_poll_and_learn` の `OsPoll` 経由） | IME は ON になるが最初の打鍵が JIS かな入力になる（17-c と同じ症状）、または force-ON 自体が無反応 |
 
     **ソークの最低期間の目安**: `docs/experiments.md` エントリ01 が示すとおり、
     IME キー選択の不具合は「特定アプリ × 特定 idle 時間」でしか出ないことが
     ある。1 日の通常利用で 17-a/17-c/17-f をひととおり踏むこと、
-    17-b は再現条件が稀なのでログ（`[apply-ime] ImmCrossProcess failed,
-    trying next fallback`）の有無で事後確認すること。
+    17-b と 17-h は再現条件が稀なのでログ（17-b は
+    `[apply-ime] ImmCrossProcess failed, trying next fallback`、17-h は
+    `force-on bootstrap: apply_ime_open(true)`）の有無で事後確認すること。
 
 18. **【Phase C の既知の限界】同期 ImmCross 経路の open write は依然として
     自分でライブクエリする。**
@@ -2196,9 +2198,24 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     `GetForegroundWindow` にフォールバックし BUG-55 の「無関係な互換ウィンドウ
     へ書く」を再現しうるし、後者へ寄せると MS-IME 経路の最悪レイテンシが
     +120ms 変わる。**実機ソーク（特に 17-e の実測）が取れてから判断すること。**
-    なお **同期 ImmCross 経路は現時点で到達しない**（§6 Phase C 実施記録 C-7 で
-    全呼び出し元を追跡した）ため、これは「潜在的な穴」であって「今起きている
-    不具合」ではない。到達させる変更を入れるときは同時にここを閉じること。
+
+    **【2026-08-12 訂正】この穴は「潜在的」ではなく、現に到達しうる。**
+    初出時は「同期 ImmCross 経路は現時点で到達しない」と書いていたが、
+    それは `runtime/mod.rs::try_force_on_bootstrap`（`:892`）を数え落とした
+    誤りである（§9-21、§6 Phase C 実施記録 C-7 の訂正）。同関数は
+    `apply_ime_open_with_belief(true, None, belief)` を同期で呼び、
+    `!can_use_imm32_cross_process()` ガードを持たないため、**Standard
+    （= `ImmCross` プロファイル、LINE / Qt 等）で IME 検出ミスが
+    `IME_DETECT_MISS_THRESHOLD` 回連続したときの bootstrap force-ON**
+    がこの経路に入る。したがって「ROMAN 補完と open write が別ウィンドウへ
+    着弾しうる」ことは、その条件下では実際に起こりうる。
+    **ただし Phase C 以前から同じ挙動である**——旧実装でも同じ呼び出し元から
+    `ImmCrossProcessStrategy::apply` に入り、その中で
+    `set_ime_romaji_mode()`（ライブクエリ）と `set_ime_open_cross_process()`
+    （別のライブクエリ）が別々に宛先を決めていた。Phase C は前者を捕獲済み
+    `ActuationTarget` へ移しただけで、**2 つの hwnd 解決が別物である点は
+    Phase C 以前から変わっていない**（新規の回帰ではない）。実機ソーク項目
+    17-h を参照。
 
 19. **【訂正】`VerifiedTarget::FocusImplicit` は「INV-14 の未達」ではない。**
     §6「Phase B でも消えなかったもの」は「`FocusImplicit` が `Verified` に
@@ -2231,6 +2248,70 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
     (b) `ImmCrossOp::Untargeted` を `Targeted` へ寄せ（§9-19）、
     ImmCross 完了後にフォーカスが動いていたら `Aborted` にしてチェーン自体を
     打ち切る。**どちらも実機ソーク必須**であり、Phase C では採らなかった。
+
+21. **【訂正】「`ImmCrossProcessStrategy::apply` は同期経路から到達しない」は
+    誤りだった（2026-08-12 Opus レビュー）。**
+    §6 Phase C 実施記録 C-7 と §9-18 初出、および
+    `output/conv_actuation.rs` のモジュール doc は「全呼び出し元を追跡した
+    結果、同期経路からは到達しない」と書いていたが、**棚卸しから
+    `runtime/mod.rs::try_force_on_bootstrap`（`:892`）が漏れていた**。
+
+    実際の経路:
+
+    ```
+    ir_poll_and_learn（OsPoll、ime_refresh.rs:383）
+      → try_force_on_bootstrap（runtime/mod.rs:871）
+        → platform.apply_ime_open_with_belief(true, None, belief)  // :892
+          → apply_ime_open_with_view → CONTROLLER.apply(open, view)  // 同期
+            → run_chain(caps_chain_for(view), SyncChainWriter)
+              → caps(ImmCross, MsIme).chain = [ImmCross, KanjiToggle]
+              → ImmCrossProcessStrategy::apply                      // ← 到達する
+    ```
+
+    **なぜ漏れたか**: `try_force_on_bootstrap` の doc コメントが
+    「未知 Imm32Unavailable アプリで…」と書いており、名前と説明から
+    Imm32Unavailable 限定だと読めてしまう。しかし**実際のガードは
+    プロファイルを一切見ない**——
+
+    | ガード | 内容 | プロファイルを見るか |
+    |---|---|---|
+    | `detect_miss_count() >= IME_DETECT_MISS_THRESHOLD` | IME 検出の連続失敗回数 | 見ない |
+    | `engine.is_user_enabled()` | エンジン有効 | 見ない |
+    | `is_eligible_for_ime_force_on()` | `is_japanese_ime() && effective_open()` | 見ない |
+    | `!is_force_on_guard_active()` | force-ON guard 未発動 | 見ない |
+
+    同種の force-ON 経路である `apply_force_on_for_imm_broken`（`:652`）と
+    `arm_force_open_pending`（`:780`）は**どちらも
+    `!can_use_imm32_cross_process()` を要求する**（前者は満たさなければ即
+    `return`、後者は武装条件そのもの）。`try_force_on_bootstrap` だけが
+    このプロファイルガードを持たない。したがって Standard
+    （`can_use_imm32_cross_process() == true`、LINE / Qt 等）でも到達する。
+
+    この非対称は `state/open_warrant.rs` のテストコメント（`:1166`・`:1187`）が
+    既に明示していた——「`try_force_on_bootstrap` 呼び出し元はこちら側
+    （`ImmCross` プロファイル）で到達する（`ir_poll_and_learn`／`OsPoll` 経由）」
+    「`policy=ImmCross`・観測/意図/guard 一切無し・`desired_open=true`
+    （`try_force_on_bootstrap` 相当）」。C-7 の棚卸しはこの既存記述と
+    突き合わせていなかった。
+
+    **Phase C の回帰ではない。** Phase C は chain の作り方を
+    `WriteMechanism::ALL` の走査から `caps(p, k).chain` へ変えただけで、
+    `try_force_on_bootstrap` のガードにも `ImmCrossProcessStrategy` の
+    `is_applicable`（`profile.can_use_imm32_cross_process()`）にも触れていない。
+    Phase C 以前も同じ呼び出し元から同じ戦略に入っていた。**したがって
+    コードの修正は要らない**（誤っていたのは ADR とコード doc の記述だけ）。
+
+    **この訂正が波及する記述**: §6 C-7、§9-18（「潜在的な穴」→「到達しうる」）、
+    §9-17 の新項目 17-h、`output/conv_actuation.rs` のモジュール doc、
+    `ime_controller.rs::romaji_pre_write` の doc。
+
+    **次にこの領域を触る人へ**: `try_force_on_bootstrap` に
+    `!can_use_imm32_cross_process()` を足すのは**挙動変更**であり
+    （Standard での bootstrap force-ON が丸ごと止まる）、
+    `open_warrant.rs` の差分テストが「Phase 3 実配線で ImmCross の bootstrap
+    force-ON 経路が丸ごと無効化される、判明した中で最大の挙動変化」と
+    記録している論点そのものである。ADR-087 Phase 3 の配線と一緒に
+    判断すること。ここで単独に足してはならない。
 
 ---
 
