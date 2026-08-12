@@ -138,12 +138,50 @@ impl WriteMechanism {
     }
 
     /// 全機構（`ime_controller.rs::ImeController::new` の構築順）。
+    ///
+    /// **これは「全 `caps` チェーンの和集合」であって、どれか 1 つの
+    /// (profile, IME種別) のチェーンではない**（ADR-089 §2.8、Phase C）。
+    /// 実際に走査する順序は `caps(p, k).chain`（`state/app_ime_policy.rs`）で
+    /// あり、`ALL` を直接 chain として使ってよいのは
+    /// 「起案時点の (p, k) を固定できない経路」だけである
+    /// （`runtime/open_chain.rs` の非同期チェーン。同モジュール doc 参照）。
     pub const ALL: [Self; 4] = [
         Self::ImmCross,
         Self::GjiDirect,
         Self::MsImeDirect,
         Self::KanjiToggle,
     ];
+
+    /// この機構が [`ImeOpenOutcome::Failed`] を返しうるか
+    /// （= 後続要素へフォールスルーしうるか）。
+    ///
+    /// `ae64431d`〜現在の `ime_controller.rs` を実コードで確認した事実:
+    ///
+    /// | 機構 | 返しうる outcome |
+    /// |---|---|
+    /// | `ImmCross` | `Applied` / **`Failed`**（`set_ime_open_cross_process` の失敗） |
+    /// | `GjiDirect` | `AlreadyMatched` / `Applied` / `UnsafeToToggle` |
+    /// | `MsImeDirect` | `Applied` / `UnsafeToToggle` |
+    /// | `KanjiToggle` | `FallbackSent` のみ |
+    ///
+    /// **`caps(p, k).chain` の末尾以外の要素は、必ずこれが真でなければならない**
+    /// ——偽の機構の後ろに要素を置くと、その要素は現行のフォールスルー述語
+    /// （[`falls_through`]、`Failed` のときだけ次へ）では**到達不能**になる
+    /// （ADR-089 §2.8・§4.9、INV-44）。
+    /// `state/app_ime_policy.rs::caps_chains_have_no_unreachable_trailing_element`
+    /// が全 (p, k) で固定する。
+    ///
+    /// **この表が実装から drift していないこと**は、Windows 側の
+    /// `ime_controller.rs::caps_chain_matches_legacy_all_scan` が
+    /// （`is_applicable` × フォールスルー述語の実挙動と突き合わせる形で）固定する。
+    /// 将来 `GjiDirectStrategy` / `MsImeDirectStrategy` が `Failed` を返すように
+    /// 変わったら、ここを更新したうえで `caps` の末尾に `KanjiToggle` を足すか
+    /// どうかを**実機ソーク付きで**判断すること
+    /// （`.claude/rules/fix-requires-evidence.md` の「キー選択」ファミリー）。
+    #[must_use]
+    pub const fn may_return_failed(self) -> bool {
+        matches!(self, Self::ImmCross)
+    }
 }
 
 /// フォールスルー述語の SSOT（ADR-089 §2.3、INV-44）。
@@ -158,6 +196,50 @@ impl WriteMechanism {
 #[must_use]
 pub const fn falls_through(outcome: ImeOpenOutcome) -> bool {
     matches!(outcome, ImeOpenOutcome::Failed)
+}
+
+/// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
+/// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
+///
+/// # なぜこの述語がここ（ungated）にあるのか
+///
+/// Phase C 以前、この条件は `ime_controller.rs` の 2 つの戦略の中に**別々に**
+/// 書かれていた（`ImmCrossProcessStrategy::apply` と
+/// `MsImeDirectStrategy::apply`。どちらも `crate::ime::set_ime_romaji_mode()` を
+/// 直接呼んでいた）。どちらも Win32 FFI と同居していたため Linux から
+/// 条件を検査できず、`output/conv_actuation.rs` の doc が
+/// 「ADR-086 Phase 1〜2 の『7 経路』の数え漏れ」と書いていた 2 経路そのもので
+/// あった。Phase C で **書き込み口を 1 箇所（`ime_controller::apply_mechanism`）に
+/// 統合**し、その発火条件だけをここへ純粋関数として切り出した。
+///
+/// # 条件（Phase C 以前と同値であること）
+///
+/// - `open == true` のときだけ（OFF 方向は ROMAN を触らない）。
+/// - 機構が `ImmCross` または `MsImeDirect` のときだけ
+///   （`GjiDirect` / `KanjiToggle` は元から ROMAN を書かない）。
+/// - `kind == MsIme` のときだけ。旧 `ImmCrossProcessStrategy` は
+///   `active_ime_kind == MicrosoftIme` を明示的に見ており、旧
+///   `MsImeDirectStrategy` は見ていなかったが、`MsImeDirect` の
+///   `is_applicable` 自体が `MicrosoftIme` を要求するため**同値**である
+///   （`apply_mechanism` は `is_applicable` が真の機構に対してしか呼ばれない）。
+/// - `belief_input_mode != ObservedKana` のときだけ——ユーザーが意図的に
+///   かな入力を選んでいる状態を ROMAN で上書きしない（既存の保護、
+///   `runtime/mod.rs::force_on_and_correct_romaji` の N2 も参照）。
+#[must_use]
+pub const fn needs_romaji_pre_write(
+    mechanism: WriteMechanism,
+    open: bool,
+    kind: crate::state::ime_kind::ImeKindId,
+    belief_input_mode: awase::engine::InputModeState,
+) -> bool {
+    open && matches!(
+        mechanism,
+        WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
+    ) && matches!(kind, crate::state::ime_kind::ImeKindId::MsIme)
+        && !matches!(
+            belief_input_mode,
+            awase::engine::InputModeState::ObservedKana
+        )
 }
 
 // ── 型状態 ────────────────────────────────────────────────────────────────────
@@ -709,6 +791,102 @@ mod tests {
         };
         assert_eq!(outcome, ImeOpenOutcome::Failed);
         assert_eq!(next.target(), target, "フォールバック後も同じ宛先");
+    }
+
+    /// `may_return_failed` は `ImmCross` だけが真（ADR-089 §2.3 の実コード調査）。
+    #[test]
+    fn only_imm_cross_may_return_failed() {
+        for mechanism in WriteMechanism::ALL {
+            assert_eq!(
+                mechanism.may_return_failed(),
+                mechanism == WriteMechanism::ImmCross,
+                "{mechanism:?}"
+            );
+        }
+    }
+
+    /// `may_return_failed` が真の機構だけが `falls_through` を起こしうる
+    /// ——`run_chain` の走査と `caps` の末尾規則が同じ事実に依っていることの確認。
+    #[test]
+    fn only_failed_capable_mechanisms_can_fall_through() {
+        for mechanism in WriteMechanism::ALL {
+            let reachable_fall_through = ALL_OUTCOMES
+                .iter()
+                .filter(|o| falls_through(**o))
+                .any(|_| mechanism.may_return_failed());
+            assert_eq!(reachable_fall_through, mechanism.may_return_failed());
+        }
+    }
+
+    // ── needs_romaji_pre_write（ADR-089 Phase C item 12 / ADR-086 INV-14）──
+
+    use crate::state::ime_kind::ImeKindId;
+    use awase::engine::{AssumedReason, InputModeState};
+
+    const ALL_INPUT_MODES: [InputModeState; 5] = [
+        InputModeState::ObservedRomaji,
+        InputModeState::ObservedKana,
+        InputModeState::ObservedEisu,
+        InputModeState::AssumedRomaji {
+            reason: AssumedReason::ImmBridgeBroken,
+        },
+        InputModeState::Unknown,
+    ];
+
+    /// Phase C 以前の 2 戦略の条件と同値であることを全数で固定する。
+    ///
+    /// 旧条件:
+    /// - `ImmCrossProcessStrategy::apply`:
+    ///   `open && active_ime_kind == MicrosoftIme && belief != ObservedKana`
+    /// - `MsImeDirectStrategy::apply`: `open && belief != ObservedKana`
+    ///   （`is_applicable` が `MicrosoftIme` を要求するため kind 条件は暗黙）
+    #[test]
+    fn romaji_pre_write_condition_matches_the_pre_phase_c_strategies() {
+        for mechanism in WriteMechanism::ALL {
+            for open in [true, false] {
+                for kind in ImeKindId::ALL {
+                    for mode in ALL_INPUT_MODES {
+                        let expected =
+                            open && matches!(
+                                mechanism,
+                                WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
+                            ) && kind == ImeKindId::MsIme
+                                && mode != InputModeState::ObservedKana;
+                        assert_eq!(
+                            needs_romaji_pre_write(mechanism, open, kind, mode),
+                            expected,
+                            "{mechanism:?} open={open} {kind:?} {mode:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// GJI 経路では ROMAN 補完を一切行わない（Phase C 以前も同じ）。
+    #[test]
+    fn romaji_pre_write_never_fires_for_gji_mechanisms() {
+        for mechanism in [WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle] {
+            for kind in ImeKindId::ALL {
+                assert!(!needs_romaji_pre_write(
+                    mechanism,
+                    true,
+                    kind,
+                    InputModeState::Unknown
+                ));
+            }
+        }
+    }
+
+    /// `ObservedKana`（ユーザーが意図的にかな入力を選んだ状態）は上書きしない。
+    #[test]
+    fn romaji_pre_write_respects_observed_kana() {
+        assert!(!needs_romaji_pre_write(
+            WriteMechanism::MsImeDirect,
+            true,
+            ImeKindId::MsIme,
+            InputModeState::ObservedKana
+        ));
     }
 
     /// 機構名は golden（`tests/ime_key_sequence_golden.rs`）の綴りと一致する。

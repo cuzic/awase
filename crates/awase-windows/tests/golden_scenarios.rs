@@ -34,6 +34,7 @@
 
 use std::time::Instant;
 
+use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::ime_event::{
     ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
@@ -180,14 +181,22 @@ fn scenario_4_chrome_no_imm32_ime_off_works() {
         user_intent(false, UserIntentSource::Command), // Ctrl+無変換 由来の SetOpenRequest
     ]);
     assert!(!model.desired_open(), "Chrome でも IME OFF intent が効く");
-    // AppImePolicy が Imm32Unavailable に切り替わっていることを確認
-    assert!(
-        !matches!(
-            model.app_policy.actuator_kind,
-            awase_windows::state::app_ime_policy::ImeActuatorKind::ImmCross
-                | awase_windows::state::app_ime_policy::ImeActuatorKind::Standard
-                | awase_windows::state::app_ime_policy::ImeActuatorKind::TsfNative
-        ),
+    // AppImePolicy が Imm32Unavailable に切り替わっていることを確認。
+    //
+    // ADR-089 §6 Phase C item 11 で `AppImePolicy::actuator_kind` を廃止した
+    // （`caps(p, k).chain[0]` と情報が完全に重複し、本番の読み手はゼロだった）。
+    // ADR は「期待値を `caps(p,k).chain[0]` へ書き換える」としていたが、
+    // `chain[0]` は K（IME 種別）に依存する一方 `ImeModel::app_policy` は
+    // profile スナップショットで K を持たないため、そのままでは照合できない
+    // （ADR-089 §6 Phase C 実施記録 C-3）。ここで見たいのは「reducer が
+    // FocusChanged で profile 由来のポリシーへ切り替えたか」なので、
+    // profile ごとに一意な `focus_settle_ms`（ImmCross=100 / Imm32Unavailable=500
+    // / TsfNative=200）で識別する。値そのものは
+    // `state/app_ime_policy.rs::caps_settle_values_match_the_pre_phase_c_literals`
+    // が固定している。
+    assert_eq!(
+        model.app_policy.focus_settle_ms,
+        AppImePolicy::from_profile(ImePolicyProfile::Imm32Unavailable).focus_settle_ms,
         "Chrome は Imm32Unavailable profile"
     );
 }
