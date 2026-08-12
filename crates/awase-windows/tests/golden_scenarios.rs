@@ -34,6 +34,7 @@
 
 use std::time::Instant;
 
+use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::ime_event::{
     ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
     ObservationConfidence, ObservationSource, UserIntentSource,
@@ -58,13 +59,23 @@ fn user_intent(target: bool, source: UserIntentSource) -> ImeEvent {
 }
 
 fn observer_reported(open: bool, source: ObservationSource) -> ImeEvent {
-    ImeEvent::ObserverReported {
+    observer_reported_with(open, source, ObservationConfidence::Medium)
+}
+
+/// journal / fixture 復元と同じ口（ADR-089 §2.1）でテスト用の観測イベントを作る。
+/// 本番の観測は `state::evidence::Observed<E>` の witness 構築子を通る。
+fn observer_reported_with(
+    open: bool,
+    source: ObservationSource,
+    confidence: ObservationConfidence,
+) -> ImeEvent {
+    ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
         open,
         source,
-        hwnd: HwndId::NULL,
-        confidence: ObservationConfidence::Medium,
-        focus_epoch: 0,
-    }
+        HwndId::NULL,
+        confidence,
+        0,
+    ))
 }
 
 fn focus_changed(profile: ImePolicyProfile) -> ImeEvent {
@@ -368,13 +379,11 @@ fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
     let model = run_reducer(vec![
         ImeEvent::HwndCacheRestored { target: false },
         // 実際の API 観測が IME ON を返す（実 IME 状態はキャッシュと異なる）
-        ImeEvent::ObserverReported {
-            open: true,
-            source: ObservationSource::ImmGetOpenStatus,
-            hwnd: HwndId::NULL,
-            confidence: ObservationConfidence::High,
-            focus_epoch: 0,
-        },
+        observer_reported_with(
+            true,
+            ObservationSource::ImmGetOpenStatus,
+            ObservationConfidence::High,
+        ),
     ]);
     assert!(
         !model.desired_open(),
@@ -398,13 +407,7 @@ fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
 // この違いが「キャッシュ復元はユーザーの能動的操作ではない」という設計の証明。
 #[test]
 fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
-    let stale_observation = ImeEvent::ObserverReported {
-        open: true,
-        source: ObservationSource::ObserverPoll,
-        hwnd: HwndId::NULL,
-        confidence: ObservationConfidence::Medium,
-        focus_epoch: 0,
-    };
+    let stale_observation = observer_reported(true, ObservationSource::ObserverPoll);
 
     // UserImeSetIntent: ユーザーが IME OFF を明示した → 観測で上書きされない
     let model_intent = run_reducer(vec![

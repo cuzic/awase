@@ -330,7 +330,10 @@ impl Runtime {
                     } else {
                         self.platform_state
                             .ime
-                            .reset_stale_ime_on_for_imm_broken(tick_ms);
+                            .reset_stale_ime_on_for_imm_broken(
+                                crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
+                                tick_ms,
+                            );
                     }
                 }
             }

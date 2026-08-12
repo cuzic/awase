@@ -8,6 +8,7 @@
 
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::state::evidence::IntentWitness;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use awase::engine::InputModeState;
@@ -817,10 +818,25 @@ impl Runtime {
             current,
             new_val,
         );
+        // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
+        // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
+        // 型側でも要求するため、ここで None になることは無い。
         match kind {
-            IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val, tick_ms),
+            IntentKind::SyncKey => {
+                let Some(witness) = IntentWitness::from_sync_key(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_sync_key(&witness, new_val, tick_ms);
+            }
             IntentKind::PhysicalImeKey => {
-                self.platform_state.ime.write_physical_key(new_val, tick_ms);
+                let Some(witness) = IntentWitness::from_physical(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_physical_key(&witness, new_val, tick_ms);
             }
         }
         if self.platform_state.ime.effective_open() == current {

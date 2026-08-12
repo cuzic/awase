@@ -406,17 +406,15 @@ pub enum ImeEvent {
         error: ApplyError,
     },
 
-    /// 外部観測が値を報告した (desired を直接書き換えない)
-    ObserverReported {
-        open: bool,
-        source: ObservationSource,
-        hwnd: HwndId,
-        confidence: ObservationConfidence,
-        /// 観測が受理されたフォーカスエポック (`probe_admission::FocusEpoch`)。
-        /// 同期 probe は呼び出し時点の現在エポック。
-        /// 非同期 probe は `ImmLikeTicket::admit()` が照合済みのエポック。
-        focus_epoch: crate::state::probe_admission::FocusEpoch,
-    },
+    /// 外部観測が値を報告した (desired を直接書き換えない)。
+    ///
+    /// payload の [`AnyObservation`](crate::state::evidence::AnyObservation) は
+    /// **evidence ごとの witness を通してしか構築できない**（ADR-089 §2.2、
+    /// INV-40）。「実際には probe していないのに `FocusProbe` を名乗る」形の
+    /// 観測偽装は、witness（`&AcceptedObservation` 等）を用意できないため
+    /// 構築段階で止まる。confidence も evidence 型が固定するので、呼び出し元は
+    /// 選べない。
+    ObserverReported(crate::state::evidence::AnyObservation),
 
     /// フォーカスが変わった
     FocusChanged {

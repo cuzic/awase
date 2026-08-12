@@ -41,7 +41,7 @@
 use super::app_ime_policy::AppImePolicy;
 use super::force_guard::{ForceGuardSet, ForceOnReason};
 use super::ime_actuation::FeedbackPolicy;
-use super::ime_event::{HwndId, ObservationAuthority, ObservationSource};
+use super::ime_event::{HwndId, ObservationSource};
 use super::intent_store::{IntentStore, RecordedTargetIntent};
 use super::observation_store::{DeriveOutcome, ObservationStore};
 use super::TickMs;
@@ -157,9 +157,7 @@ pub fn issue_open_warrant(
     }
 
     // Step 3: authority()==Actuating な観測。
-    if let Some(outcome) = ctx.obs.derive_open_filtered(ctx.now, |src| {
-        src.authority() == ObservationAuthority::Actuating
-    }) {
+    if let Some(outcome) = ctx.obs.derive_actuating(ctx.now) {
         let basis = match outcome {
             DeriveOutcome::HighSingle { source, .. } => WarrantBasis::DirectRead(source),
             DeriveOutcome::MediumConsensus {
@@ -252,6 +250,12 @@ mod tests {
             now,
             now_ms,
         }
+    }
+
+    /// テスト用の直接記録（ADR-089 §2.1: 本番経路は `Observed<E>` の witness
+    /// 構築子を通るが、ストアの単体テストは任意ソースを仕込む必要がある）。
+    fn rec(store: &mut ObservationStore, o: ImeObservation) {
+        store.per_source.set(o.source, o);
     }
 
     fn obs_at(
@@ -362,7 +366,7 @@ mod tests {
         );
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::ImmGetOpenStatus,
             ObservationConfidence::High,
@@ -386,7 +390,7 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::ImmGetOpenStatus,
             ObservationConfidence::High,
@@ -413,13 +417,13 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::ObserverPoll,
             ObservationConfidence::Medium,
             now,
         ));
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::Gji,
             ObservationConfidence::Medium,
@@ -445,7 +449,7 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::ConvOpenInference,
             ObservationConfidence::Medium,
@@ -551,7 +555,7 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let now = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             false,
             ObservationSource::HeuristicDefault,
             ObservationConfidence::Low,
@@ -646,7 +650,7 @@ mod tests {
         let store = IntentStore::default();
         let mut obs = ObservationStore::default();
         let t0 = Instant::now();
-        obs.record(obs_at(
+        rec(&mut obs, obs_at(
             true,
             ObservationSource::ImmGetOpenStatus,
             ObservationConfidence::High,
@@ -943,26 +947,26 @@ mod tests {
                                             let mut obs = ObservationStore::default();
                                             match step3 {
                                                 Step3Case::None => {}
-                                                Step3Case::High(v) => obs.record(obs_at(
+                                                Step3Case::High(v) => rec(&mut obs, obs_at(
                                                     v,
                                                     ObservationSource::ImmGetOpenStatus,
                                                     ObservationConfidence::High,
                                                     now,
                                                 )),
-                                                Step3Case::MediumSingle(v) => obs.record(obs_at(
+                                                Step3Case::MediumSingle(v) => rec(&mut obs, obs_at(
                                                     v,
                                                     ObservationSource::ObserverPoll,
                                                     ObservationConfidence::Medium,
                                                     now,
                                                 )),
                                                 Step3Case::MediumAgree(v) => {
-                                                    obs.record(obs_at(
+                                                    rec(&mut obs, obs_at(
                                                         v,
                                                         ObservationSource::ObserverPoll,
                                                         ObservationConfidence::Medium,
                                                         now,
                                                     ));
-                                                    obs.record(obs_at(
+                                                    rec(&mut obs, obs_at(
                                                         v,
                                                         ObservationSource::Gji,
                                                         ObservationConfidence::Medium,
@@ -970,13 +974,13 @@ mod tests {
                                                     ));
                                                 }
                                                 Step3Case::MediumConflict => {
-                                                    obs.record(obs_at(
+                                                    rec(&mut obs, obs_at(
                                                         true,
                                                         ObservationSource::ObserverPoll,
                                                         ObservationConfidence::Medium,
                                                         now,
                                                     ));
-                                                    obs.record(obs_at(
+                                                    rec(&mut obs, obs_at(
                                                         false,
                                                         ObservationSource::Gji,
                                                         ObservationConfidence::Medium,
@@ -985,7 +989,7 @@ mod tests {
                                                 }
                                             }
                                             if let Some(v) = heuristic_default_obs {
-                                                obs.record(obs_at(
+                                                rec(&mut obs, obs_at(
                                                     v,
                                                     ObservationSource::HeuristicDefault,
                                                     ObservationConfidence::Low,
@@ -1263,8 +1267,8 @@ mod tests {
                                             ObservationConfidence::High,
                                             now,
                                         );
-                                        model.observations.record(o);
-                                        obs.record(o);
+                                        rec(&mut model.observations, o);
+                                        rec(&mut obs, o);
                                     }
                                     ObservationDim::BeliefOnlyMedium(open) => {
                                         // ConvOpenInference: BUG-63(mise→くした) の
@@ -1279,8 +1283,8 @@ mod tests {
                                             ObservationConfidence::Medium,
                                             now,
                                         );
-                                        model.observations.record(o);
-                                        obs.record(o);
+                                        rec(&mut model.observations, o);
+                                        rec(&mut obs, o);
                                     }
                                 }
 

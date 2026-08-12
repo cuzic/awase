@@ -2,11 +2,12 @@ use crate::focus::{AppKind, FocusKind};
 use awase::engine::InputModeState;
 
 use super::belief::ImeBelief;
+use super::evidence::{self, IntentWitness, Observed};
 use super::force_guard::{ForceGuard, ForceOnReason};
 use super::hook_state::SyncKeyGate;
 use super::ime_event::{
-    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult, InputModeApplyStrategy,
-    ObservationConfidence, ObservationSource, UserIntentSource,
+    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, InputModeApplyResult,
+    InputModeApplyStrategy, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::ImeModel;
@@ -701,13 +702,14 @@ impl ImeStateHub {
         }
         if let Some(obs) = update.observer_poll {
             self.dispatch_event(
-                ImeEvent::ObserverReported {
-                    open: obs.value,
-                    source: ObservationSource::ObserverPoll,
-                    hwnd: HwndId::NULL,
-                    confidence: ObservationConfidence::Medium,
-                    focus_epoch: accepted.focus_epoch,
-                },
+                ImeEvent::ObserverReported(
+                    Observed::<evidence::ObserverPoll>::from_poll(
+                        &accepted,
+                        obs.value,
+                        HwndId::NULL,
+                    )
+                    .into(),
+                ),
                 tick_ms,
             );
         }
@@ -797,7 +799,11 @@ impl ImeStateHub {
     /// `desired_open` は書き換えない。
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
-    pub(crate) fn reset_stale_ime_on_for_imm_broken(&mut self, tick_ms: TickMs) {
+    pub(crate) fn reset_stale_ime_on_for_imm_broken(
+        &mut self,
+        profile: ImePolicyProfile,
+        tick_ms: TickMs,
+    ) {
         if !self.belief.is_japanese_ime() || self.shadow_model.effective_open() {
             return;
         }
@@ -815,13 +821,15 @@ impl ImeStateHub {
         );
         let focus_epoch = self.shadow_model.observations.current_focus_epoch;
         self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open: true,
-                source: ObservationSource::HeuristicDefault,
-                hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::Low,
-                focus_epoch,
-            },
+            ImeEvent::ObserverReported(
+                Observed::<evidence::HeuristicDefault>::at_startup(
+                    profile,
+                    true,
+                    HwndId::NULL,
+                    focus_epoch,
+                )
+                .into(),
+            ),
             tick_ms,
         );
     }
@@ -843,32 +851,39 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open: value,
-                source: ObservationSource::ObserverPoll,
-                hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::Medium,
-                focus_epoch: accepted.focus_epoch,
+            ImeEvent::ObserverReported(
+                Observed::<evidence::ObserverPoll>::from_poll(&accepted, value, HwndId::NULL)
+                    .into(),
+            ),
+            tick_ms,
+        );
+    }
+
+    /// 設定された同期キー由来の意図。`IntentWitness::from_sync_key` を通った
+    /// 「注入されていない実キーイベント」がないと呼べない（ADR-089 §2.2、
+    /// BUG-14 の型化）。source は witness が運ぶ。
+    pub(crate) fn write_sync_key(&mut self, witness: &IntentWitness, value: bool, tick_ms: TickMs) {
+        self.dispatch_event(
+            ImeEvent::UserImeSetIntent {
+                target: value,
+                source: witness.source(),
             },
             tick_ms,
         );
     }
 
-    pub(crate) fn write_sync_key(&mut self, value: bool, tick_ms: TickMs) {
+    /// 物理 IME キー由来の意図。`IntentWitness::from_physical` を通った
+    /// 「注入されていない実キーイベント」がないと呼べない。
+    pub(crate) fn write_physical_key(
+        &mut self,
+        witness: &IntentWitness,
+        value: bool,
+        tick_ms: TickMs,
+    ) {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: value,
-                source: UserIntentSource::SyncKey,
-            },
-            tick_ms,
-        );
-    }
-
-    pub(crate) fn write_physical_key(&mut self, value: bool, tick_ms: TickMs) {
-        self.dispatch_event(
-            ImeEvent::UserImeSetIntent {
-                target: value,
-                source: UserIntentSource::PhysicalImeKey,
+                source: witness.source(),
             },
             tick_ms,
         );
@@ -890,16 +905,14 @@ impl ImeStateHub {
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
+        // confidence は `Observed<FocusProbe>` 側で Low 固定
+        // （top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる
+        // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
         self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open: value,
-                source: ObservationSource::FocusProbe,
-                hwnd: HwndId::NULL,
-                // Low: top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる場合がある。
-                // High confidence の ImmCrossProbe が後から上書きする。
-                confidence: ObservationConfidence::Low,
-                focus_epoch: accepted.focus_epoch,
-            },
+            ImeEvent::ObserverReported(
+                Observed::<evidence::FocusProbe>::from_probe(&accepted, value, HwndId::NULL)
+                    .into(),
+            ),
             tick_ms,
         );
     }
@@ -916,13 +929,14 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open: value,
-                source: ObservationSource::ImmCrossProbe,
-                hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::High,
-                focus_epoch: accepted.focus_epoch,
-            },
+            ImeEvent::ObserverReported(
+                Observed::<evidence::ImmCrossProbe>::from_cross_probe(
+                    &accepted,
+                    value,
+                    HwndId::NULL,
+                )
+                .into(),
+            ),
             tick_ms,
         );
     }
@@ -953,13 +967,15 @@ impl ImeStateHub {
         log::debug!("[conv-open-inference] reason={reason:?} open={open}");
         let focus_epoch = self.shadow_model.observations.current_focus_epoch;
         self.dispatch_event(
-            ImeEvent::ObserverReported {
-                open,
-                source: ObservationSource::ConvOpenInference,
-                hwnd: HwndId::NULL,
-                confidence: ObservationConfidence::Medium,
-                focus_epoch,
-            },
+            ImeEvent::ObserverReported(
+                Observed::<evidence::ConvOpenInference>::from_conv(
+                    reason,
+                    open,
+                    HwndId::NULL,
+                    focus_epoch,
+                )
+                .into(),
+            ),
             tick_ms,
         );
     }
@@ -1186,7 +1202,8 @@ mod tests {
     #[test]
     fn imm_broken_reset_does_not_touch_desired_open() {
         let mut ps = ps_with_shadow(false, None, true);
-        ps.ime.reset_stale_ime_on_for_imm_broken(TickMs(0));
+        ps.ime
+            .reset_stale_ime_on_for_imm_broken(ImePolicyProfile::Imm32Unavailable, TickMs(0));
         assert!(
             !ps.ime.model().desired_open(),
             "desired_open はユーザーの真の意図のまま変更されない"
