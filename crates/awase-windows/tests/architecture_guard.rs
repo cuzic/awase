@@ -105,13 +105,58 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// `#[cfg(test)]\nmod tests {` より前の「本番コード」部分だけを取り出す。
+/// `#[cfg(test)] mod tests {` より前の「本番コード」部分だけを取り出す。
 /// テストコード内での使用（意図的な stale-intent シミュレーション等）は
 /// このチェックの対象外とする。
+///
+/// # 改行コードに依存してはいけない（Windows CI で実際に壊れた）
+///
+/// 以前は `"#[cfg(test)]\nmod tests"` という**改行込みの固定リテラル**を
+/// `find` していた。GitHub の windows ランナーは git 既定の
+/// `core.autocrlf=true` で checkout するため `src/*.rs` は CRLF になり、
+/// この needle は 1 件もマッチしない。`map_or(content, ..)` のフォールバックが
+/// **ファイル全体を「本番コード」として返す**ため、
+/// `production_code_only` を使うガード群が Windows で丸ごと誤判定していた。
+/// `.gitattributes` の `eol=lf` 固定は `tests/golden/**` にしか掛かっていない。
+///
+/// 実害の顕在化: `any_observation_replay_door_is_not_used_in_production` が
+/// `state/ime_model.rs` の `#[cfg(test)] mod tests` 内にある
+/// `restored_from_journal(` 13 件を本番使用と誤検出して落ちた
+/// （PR #59 の windows-build。それまでは同ジョブが手前の clippy ステップで
+/// 落ちており、テストステップまで到達していなかったため露出しなかった）。
 fn production_code_only(content: &str) -> &str {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(rel) = content[from..].find(MARKER) {
+        let idx = from + rel;
+        // `#[cfg(test)]` と `mod tests` の間の空白/改行（LF でも CRLF でも）を跨ぐ。
+        if content[idx + MARKER.len()..]
+            .trim_start()
+            .starts_with("mod tests")
+        {
+            return &content[..idx];
+        }
+        from = idx + MARKER.len();
+    }
     content
-        .find("#[cfg(test)]\nmod tests")
-        .map_or(content, |idx| &content[..idx])
+}
+
+/// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
+/// 切り落とすことの回帰テスト（上の doc 参照）。
+#[test]
+fn production_code_only_strips_test_module_with_crlf() {
+    let lf = "fn prod() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); }\n}\n";
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(production_code_only(lf).matches("needle(").count(), 1, "LF");
+    assert_eq!(
+        production_code_only(&crlf).matches("needle(").count(),
+        1,
+        "CRLF: windows ランナーの core.autocrlf=true でも本番コードだけを数えること"
+    );
+    // `#[cfg(test)]` が付いた別要素（`mod tests` ではない）では切らない。
+    let other =
+        "#[cfg(test)]\nfn helper() { needle(); }\n#[cfg(test)]\r\nmod tests {\n needle();\n}\n";
+    assert_eq!(production_code_only(other).matches("needle(").count(), 1);
 }
 
 /// `content` 内で `fn_signature_needle`（例: `"fn some_handler"`）が最初に
