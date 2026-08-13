@@ -54,6 +54,16 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
+        with:
+          # cargo-xwin が初回にダウンロードする Windows SDK/MSVC CRT
+          # (~/.cache/cargo-xwin) はデフォルトの rust-cache 対象外。dylint ジョブでは
+          # 未キャッシュ時のダウンロードに ~15 分かかることが実測済み(b89cb443)。
+          # このジョブはこれまで `--target` 欠落でホスト(Linux)ビルドに
+          # フォールバックしており SDK を一度もダウンロードしていなかったため、
+          # dylint ジョブと違ってキャッシュ設定が不要に見えていた。--target を
+          # 付けた以上、同じ設定が必須（無いと毎 run ~15 分の追加、本ジョブの
+          # 存在意義である「高速フィードバック」が失われる）。
+          cache-directories: /home/runner/.cache/cargo-xwin
       - uses: taiki-e/install-action@cargo-xwin
       # 実際に配布している awase.exe/awase-settings.exe は MSVC ABI（windows-build
       # ジョブの windows-latest ランナーが使う既定ツールチェイン）。以前はここで
@@ -115,8 +125,13 @@ jobs:
           # (~/.cache/cargo-xwin) はデフォルトの rust-cache 対象外で、キャッシュしないと
           # 毎回 15 分前後かけて再ダウンロードしていた（実測: dylint ジョブ全体 ~17分中
           # ~15分がこのダウンロード、GitHub Actions run 30987463824 で確認）。
-          # dylint 本体の型チェックは残り ~1.5分。windows-cross-check ジョブと違い
-          # env サブコマンドを直接叩くためこのジョブだけダウンロードが顕在化していた。
+          # dylint 本体の型チェックは残り ~1.5分。
+          # 【訂正】当初ここには「windows-cross-check ジョブと違い env サブコマンドを
+          # 直接叩くためこのジョブだけダウンロードが顕在化していた」と書いていたが、
+          # 真因は env サブコマンドの有無ではなく、windows-cross-check ジョブ側が
+          # `--target` 欠落でホスト(Linux)ビルドにフォールバックしており Windows
+          # ターゲットを一度もビルドしていなかったこと。同ジョブの `--target` を
+          # 修正した際に同じ cache-directories を追加済み。
           cache-directories: /home/runner/.cache/cargo-xwin
       - uses: taiki-e/install-action@cargo-xwin
       - name: Install cargo-dylint
