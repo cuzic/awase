@@ -140,22 +140,33 @@ F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエ�
 実際のconfig1.dbには、この用途向けに`ConvertToHiragana`/`ConvertToFullKatakana`/
 `ConvertToHalfWidth`/`ConvertToFullAlphanumeric`/`ConvertToHalfAlphanumeric`という
 別系統のコマンドが既に存在し、デフォルトでF6-F10に割り当て済みだった(実機確認済み)。
-さらに、MS-IMEの無変換単独打鍵のネイティブな挙動(precomposition時は
-「全角カタカナ→半角カタカナ→ひらがな」の循環)を再現したい場合、GJI側の
-`SwitchKanaType`/`CompositionModeSwitchKanaType`(相対トグル系、
-`GjiModeCommand::ToggleKanaType`として`awase-gji-config`が既に分類済み)を
-Composition/Conversion状態に割り当てることで実現できる。無変換単独の
-状態別バインド例:
+
+**無変換単独打鍵は、GJIの「MS-IME」キー設定プリセットを選ぶだけでMS-IME本来の
+挙動を再現できる(実機カスタム設定は不要)。** mozc本家ソース
+(`google/mozc`、`src/data/keymap/ms-ime.tsv`、Apache-2.0)を直接確認した結果:
 
 | status | key | command |
 |---|---|---|
-| Precomposition/DirectInput/Prediction/Suggestion | Muhenkan | `SwitchKanaType`(または`CompositionModeHiragana`等の絶対指定) |
-| Composition/Conversion | Muhenkan | `SwitchKanaType`または`ConvertTo*` |
+| Precomposition | Muhenkan | `CompositionModeSwitchKanaType` |
+| Composition | Muhenkan | `SwitchKanaType` |
+| Conversion | Muhenkan | `SwitchKanaType` |
 
-現在のconfig1.dbには無変換単独の割り当ては存在しない(空白、実機確認済み)ため、
-GJI組み込みの「MS-IME互換」キー設定プリセットが標準でこれを含んでいるかは
-別途確認が必要(§5 未解決)。含んでいなければ、上表のように`custom_keymap_table`へ
-明示的に追加する。
+これは実際のMS-IMEネイティブ動作(precomposition時「全角カタカナ→半角カタカナ→
+ひらがな」循環、Web検索で確認済み)と完全に一致する。**GJI組み込みのMS-IME互換
+プリセットが標準でこの挙動を含んでいる**ため、決定4で無変換単独に依存する
+MS-IME習慣ユーザーがGJIへ乗り換える際の障壁にならない。
+
+参考までに、mozc本家のATOK互換プリセット(`atok.tsv`)は全く異なる思想で、
+Precomposition時のMuhenkanを`CancelAndIMEOff`(IME自体を閉じる)、Composition時を
+`ToggleAlphanumericMode`(かな循環ではなく英数トグル)に割り当てている。ことえり
+互換プリセット(`kotoeri.tsv`、macOS)にはMuhenkanの割り当て自体が存在しない
+(macOSキーボードに無変換キーが無いため)。
+
+**運用方針**: ユーザーはGJIのキー設定で「MS-IME」プリセットを選択し(無変換単独の
+循環動作を含む変換中サブ軸の挙動一式が揃う)、その上に決定3の入力モードサブ軸用
+F15-F19バインドを`custom_keymap_table`で追加する。プリセット選択とカスタム追加は
+共存できる(実際のconfig1.dbで`session_keymap`フィールドとカスタムオーバーレイの
+共存を確認済み)。
 
 - awase側は、charset軸の**入力モードサブ軸**の意図(ユーザーがトレイ操作等で
   明示的にモードを選んだとき、または`conv_mode_policy=force`のような既存機構が
@@ -293,11 +304,13 @@ idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/0
 
 1. `gji_composition_probe.rs`のシナリオ分離を改善(未確定compositionの明示
    キャンセル)した上で、henkan中の`CompositionMode*`押下の挙動を再検証する。
-2. GJIの「MS-IME互換」キー設定プリセットが、無変換単独打鍵の状態別挙動
-   (precomposition時は`SwitchKanaType`相当の循環、composition時は文字種変換)を
-   標準で含んでいるか実機で確認する。含んでいればそのプリセットを推奨設定として
-   案内し、含んでいなければ決定3の状態別バインド例を`custom_keymap_table`へ
-   追加する形で補う。
+2. ~~GJIの「MS-IME互換」キー設定プリセットが無変換単独打鍵の状態別挙動を
+   標準で含んでいるか確認する~~ **解決済み**(2026-08-13、mozc本家ソース
+   `src/data/keymap/ms-ime.tsv`を直接確認。Precomposition→
+   `CompositionModeSwitchKanaType`、Composition/Conversion→`SwitchKanaType`が
+   標準で含まれている。決定3参照)。残る実機確認事項は、GJI側で実際に
+   「MS-IME」プリセットを選択した上でF15-F19の`custom_keymap_table`追加が
+   問題なく共存するかの一度きりの動作確認のみ。
 3. `ConvertToHalfWidth`(半角カタカナ専用ではなく汎用の半角変換コマンド)が、
    Composition/Conversion状態でF17(半角カタカナ)ターゲットに対して期待通り
    動作するか実機で確認する。
