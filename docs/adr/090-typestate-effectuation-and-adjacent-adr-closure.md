@@ -368,6 +368,16 @@ IMM32 のみ）と `:752`（drift correction の ImmCross 分岐）で、**ど�
 > `.set_ime_open(` に一致しない。**実際の 2 件目は `:752`** である。
 > A-1 でこのガードを作り替えるときに**コメントも直す**こと。
 
+> **【この「8」は過小である。A-1 実施後に判明】** 上の needle 群は
+> **`WindowsPlatform` のメソッド呼び出ししか捕まえられない**ため、
+> `ime_controller::CONTROLLER.apply` や
+> `runtime/open_chain::run_open_chain_async` を直接呼んで
+> `crate::ime::set_ime_open_cross_process(_async)` に到達する **ImmCross 経路の
+> 実 actuation 入口 3 件**（`key_pipeline.rs` の shadow-toggle OFF 2 件と
+> `executor.rs` の engine decision ImmCross 非同期 1 件）が**この表に 1 行も
+> 現れていない**。実際の起案点は **11 箇所**である。詳細と数え直しの再現手順は
+> A.6 の食い違い表 **A-1'** を見ること。
+
 #### A.3 具体的な設計案
 
 **設計案 1: `ActuationOrder` 値を作り、入口で warrant を発行して運ぶ。**
@@ -516,10 +526,39 @@ ImmCross 本体は既に `ActuationTarget::verify_still_current` でフォーカ
 | 23 | **未実施**（実機ソーク。この環境では走らせられない） |
 
 **実 actuation 起案点 11 箇所の `strategy` 識別子**（A-2 が入口ごとに分割する単位。
-`[warrant-shadow]` ログと journal でこの文字列を見る）。数え直しの根拠は
-`grep -rn 'issue_actuation_order(\|issue_actuation_order_with_origin' crates/awase-windows/src/`
-から helper 定義（`runtime/mod.rs:266,275,288` / `state/platform_state.rs:574` /
-`runtime/executor.rs:70,81`）を除いた 11 行:
+`[warrant-shadow]` ログと journal でこの文字列を見る）。
+
+数え直しの再現手順（**2026-08-12 に `cde24796` 時点で実行して確認**。
+本 ADR は当初 needle を 2 つしか挙げておらず、`executor.rs` の free 関数
+`issue_order` を数え漏らしていた——それだと除外後 10 行にしかならず 11 と合わない。
+`runtime/mod.rs:279`（`fn issue_actuation_order_with_origin`）が除外リストから
+漏れ、逆に `runtime/executor.rs:70` は needle に当たらないのに除外リストへ
+入っていた、という 2 つの誤りが打ち消し合っていた）:
+
+```console
+$ cd /path/to/repo
+$ grep -rn 'issue_actuation_order(\|issue_actuation_order_with_origin(\|issue_order(' \
+    crates/awase-windows/src/ | wc -l
+18
+$ grep -rn 'issue_actuation_order(\|issue_actuation_order_with_origin(\|issue_order(' \
+    crates/awase-windows/src/ | grep -v 'fn issue' | grep -v '(open, origin' | wc -l
+11
+```
+
+生の 18 行から落としている 7 行は、すべて起案 helper 自身である:
+
+- **定義 4 行**（`grep -v 'fn issue'`）: `state/platform_state.rs:574`
+  （`fn issue_actuation_order`、実体）/ `runtime/mod.rs:266`
+  （`fn issue_actuation_order`、`Runtime` 側の薄いラッパ）/ `runtime/mod.rs:279`
+  （`fn issue_actuation_order_with_origin`）/ `runtime/executor.rs:70`
+  （`fn issue_order`、`Runtime` を持たない executor 用の free 関数）
+- **委譲 3 行**（`grep -v '(open, origin'`）: `runtime/mod.rs:275` /
+  `runtime/mod.rs:288` / `runtime/executor.rs:81`。いずれも helper の本体が
+  `(open, origin, ...)` を素の変数のまま下へ渡している行で、**起案点は
+  `open`/`desired` と `strategy` 文字列（または `act_origin`）をリテラルで
+  与える**ため、この needle で helper だけを機械的に落とせる
+
+残る 11 行が下表と 1 対 1 に対応する:
 
 | # | 入口（コード上の位置） | `strategy` |
 |---|---|---|
@@ -539,7 +578,7 @@ ImmCross 本体は既に `ActuationTarget::verify_still_current` でフォーカ
 
 | # | ADR の記述 | 実コード | 採った判断 |
 |---|---|---|---|
-| A-1' | §2.A.2(3) は「実 actuation 入口は**外部 8** + 内部委譲 3」 | 実際に `ActuationOrder` を配線した起案点は **11 箇所**（`key_pipeline.rs` 3 / `ime_refresh.rs` 4 / `executor.rs` 2 / `runtime/mod.rs` 2）。差の 3 件は (a) `key_pipeline.rs` の shadow-toggle OFF が **imm_first で async/sync に分岐**しており両方が起案する、(b) drift correction の 2 分岐（ImmCross / チェーン）が §2.A.2(3) の表では別々の needle（`.set_ime_open(` と `.apply_ime_open_with_belief(`）に数えられており、**かつ両分岐がそれぞれ独立に起案する（＝起案点としては 2 箇所）** | **11 箇所すべてに配線した。** §2.A.2(3) の「8」は needle 別の集計であって「起案点の数」ではない。A-2 は起案点単位で分割するので、`strategy` も 11 起案点すべてに付けた（ただし**文字列は 9 種の固定リテラル + drift 用の 2 種**で、drift の 2 分岐は同じ `act_origin` を引き継ぐため文字列を共有する。drift 側の `drift_correction_read` / `drift_correction_blind` は `FeedbackPolicy` 由来なので、ImmCross 分岐かチェーン分岐かとは 1 対 1 に対応しない——**A-2 で drift を入口ごとに倒したくなったら、ここで文字列を分ける必要がある**）。**2026-08-12 の独立レビューで訂正**: 本記録は当初 drift の 2 分岐を 1 起案点と数えて「10 箇所」と書いていたが、実コードでは `ime_refresh.rs:773` と `:785` が別々に `issue_actuation_order_with_origin()` を呼んでおり、正しくは 11 箇所である |
+| A-1' | §2.A.2(3) は「実 actuation 入口は**外部 8** + 内部委譲 3」 | 実際に `ActuationOrder` を配線した起案点は **11 箇所**（`key_pipeline.rs` 3 / `ime_refresh.rs` 4 / `executor.rs` 2 / `runtime/mod.rs` 2）。**差の 3 件は「§2.A.2(3) の needle 群（`.apply_ime_open_with_belief(` / `_with_view(` / `_with_applied(` / `.set_ime_open(` / `.apply_ime_open(`）にそもそも当たらなかった入口」であり、旧 8 箇所の集計に 1 件も含まれていなかった**——(i) `key_pipeline.rs` の shadow-toggle OFF **2 件**（`:944` `shadow_toggle_off` / `:969` `shadow_toggle_off_sync`。A-1 前は前者が `run_open_chain_async(false, Untargeted)`、後者が `ime_controller::CONTROLLER.apply(false, &view)` を直接呼んでおり、**`WindowsPlatform` のメソッドを 1 つも経由しない**）、(ii) `executor.rs:793` の `engine_decision_async` **1 件**（A-1 前は `run_open_chain_async(open, Targeted { .. })`）。**drift correction の 2 分岐は差にまったく寄与しない**——ImmCross 分岐は `.set_ime_open(`、チェーン分岐は `.apply_ime_open_with_belief(` として、**旧 8 箇所の集計にも既に別々の起案点として含まれていた**（A-1 直前 `9024f11d` での実測: `_with_belief(` 外部 3 = `ime_refresh.rs:778`〈drift チェーン分岐〉/ `key_pipeline.rs:742` / `mod.rs:892`、`_with_view(` 外部 2 = `executor.rs:854` / `mod.rs:735`、`_with_applied(` 外部 1 = `ime_refresh.rs:499`、`.set_ime_open(` 外部 2 = `ime_refresh.rs:534` / `:765`〈drift ImmCross 分岐〉。計 8。8 + 3 = 11 で総数は合う） | **11 箇所すべてに配線した。** §2.A.2(3) の「外部 8」は「起案点の数」ではなく **5 つの needle に当たった呼び出し箇所の数**であって、needle が届かない起案点は最初から視界に入っていなかった。**【この差が露出させた盲点】`.apply_ime_open*` / `.set_ime_open(` という needle 群は `WindowsPlatform` のメソッド呼び出ししか捕まえられず、`ime_controller::CONTROLLER.apply`（→ `ImmCrossProcessStrategy::apply`、`ime_controller.rs:78` の `set_ime_open_cross_process(`）や `runtime/open_chain::run_open_chain_async`（→ `open_chain.rs:156` の `set_ime_open_cross_process_async(`）を直接呼んで IMM32 に到達する ImmCross 経路を取りこぼす。**したがって `architecture_guard.rs::ime_open_actuation_entry_points_are_accounted_for`（§2.A.2(3) の「8」の出どころ）は、A-1 以前は実 actuation 入口 11 のうち 3 を数えていなかった**。この盲点は「入口の全数棚卸し」に固有のもので、低レベル書き込み API 側は別ガード `async_imm_cross_actuation_goes_through_the_single_chain_entry` が `set_ime_open_cross_process_async(` の呼び出し箇所をファイル別内訳で固定しているが、そちらは**チェーン外の既知の非 actuation 用途**（`platform.rs::set_ime_open` の fire-and-forget、`runtime/mod.rs::panic_reset` の OFF→ON 直列化）を許す設計なので、入口の数え上げには使えない。**入口の全数は今後、needle 別 count guard ではなく `issue_actuation_order` / `issue_order` の grep（上記レシピ）と `actuation_is_only_requested_through_actuation_order`（A-5'）で数えること。** A-2 は起案点単位で分割するので、`strategy` も 11 起案点すべてに付けた（ただし**文字列は 9 種の固定リテラル + drift 用の 2 種**で、drift の 2 分岐は同じ `act_origin` を引き継ぐため文字列を共有する。drift 側の `drift_correction_read` / `drift_correction_blind` は `FeedbackPolicy` 由来なので、ImmCross 分岐かチェーン分岐かとは 1 対 1 に対応しない——**A-2 で drift を入口ごとに倒したくなったら、ここで文字列を分ける必要がある**）。**2026-08-12 の独立レビューで 2 度訂正した**: 1 度目は「drift の 2 分岐を 1 起案点と数えて 10 箇所」→ 11 箇所（`ime_refresh.rs:773` と `:785` が別々に `issue_actuation_order_with_origin()` を呼ぶ）。2 度目が本行の**差 3 件の帰属**で、当初は「(a) shadow-toggle の async/sync 分岐 + (b) drift の 2 分岐」と書いていたが、(b) は旧集計に含まれており差ではない。**総数 11 は 2 度の訂正を通じて変わっていない** |
 | A-2' | §2.A 設計案 1 の `ActuationOrder::into_actuation()` は `Option<Actuation<Warranted>>` を返し、A-1 では「`None` でも書き込みを止めない」 | `Option` を返す 1 本だけだと、A-1 の呼び出し元が `None` を握りつぶす形（`unwrap_or_else` で別経路を組む）になり、**「止めない」が呼び出し元の作法に依存する** | **`into_actuation_shadow()`（常に `Warranted`）と `into_actuation()`（`Option`、A-2 用）の 2 本にした。** A-1 の 2 つのチェーン入口は前者だけを呼ぶ。A-2 で入口を倒すときは後者へ差し替える——**差し替えが型として見える**ぶん、A-1 → A-2 の移行が追跡しやすい |
 | A-3' | §6 ステップ 5 item 20 は「`set_ime_open` トレイトメソッドを死んだ入口として doc に明記し、期待値を 2 → 0 に下げる」 | `WindowsPlatform` には**もう 1 つ**死んだトレイトオーバーライド `apply_ime_open`（`platform.rs:734`、呼び出し元ゼロ）があり、それが `apply_ime_open_with_applied` を呼んでいた。`ActuationOrder` を通そうにも `WindowsPlatform` は `ImeStateHub` を持たない（§2.A.2(1)） | **`WindowsPlatform::apply_ime_open` のオーバーライドを削除した**（`awase` 側のトレイト既定実装が残る）。§2.A.2(3) が「呼び出し元ゼロの死んだ入口」「削除するか実際に使うかは Phase 3 実配線時に判断する」と書いていたものの決着。副作用として `.apply_ime_open_with_applied(` の期待値が 2 → 1 になった（内部委譲 1 件が消えた） |
 | A-4' | §2.A.2(1) は「`ImeController` から `ImeStateHub` に手を伸ばす唯一の手段は `with_app`」 | `DecisionExecutor` の 4 つの公開入口（`execute_from_hook` / `execute_from_loop` / `drain_deferred` / `on_output_guard_timer`）は**既に `ime: &ImeStateHub` を引数で受け取っていた**。`dispatch_ime_set_open` まで 2 段（`execute_one` / `dispatch_effect`）通すだけで届く | **`with_app` を一切使わずに配線できた。** executor 経路は `Runtime` を持たないので `Runtime::issue_actuation_order` を使えないが、`executor.rs` に同等の free 関数 `issue_order(ime, open, strategy)` を置いた。§2.A.2(1) の結論（warrant は引数で運ぶ）はそのまま正しい |
