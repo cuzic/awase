@@ -112,6 +112,16 @@ impl AsyncMechanismWriter for AsyncChainWriter {
         }
     }
 
+    // `AsyncChainWriter` は `ImmCrossOp`（`ActuationTarget` の HWND =
+    // `*mut c_void`）を保持するため `Send` ではなく、その `&mut self` を await
+    // をまたいで持つこの future も `Send` にならない。**シングルスレッド実行が
+    // 前提の設計**であり、Send にする必要が本質的に無い:
+    // この future を駆動するのは `win32_async::spawn_local`（= winmsg-executor、
+    // 「現在のスレッドのメッセージループ」で回す）だけで、他スレッドへ送られる
+    // 経路が無い。そもそも HWND を別スレッドへ送って IMM32 を叩くのは Win32 側の
+    // スレッドアフィニティに反する（`ActuationTarget::verify_still_current` が
+    // 同じ制約を持つ）。`run_open_chain_async` の同名 allow と対。
+    #[allow(clippy::future_not_send)]
     async fn write(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         match mechanism {
             WriteMechanism::ImmCross => {
@@ -127,6 +137,11 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 
 /// ImmCross の実書き込み。旧 `executor.rs` / `key_pipeline.rs` の分岐をそのまま
 /// 持ってきたもの。
+// `ImmCrossOp::Targeted` が保持する `ActuationTarget` は HWND(`*mut c_void`) を
+// 含むため future は `Send` にならない。`AsyncChainWriter::write` と同じ理由
+// （`spawn_local` のシングルスレッド実行が前提、HWND はスレッドアフィニティを
+// 持つ）で Send は要求しない。
+#[allow(clippy::future_not_send)]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     let raw = match op {
         ImmCrossOp::Targeted {
