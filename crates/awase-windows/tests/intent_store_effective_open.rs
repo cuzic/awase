@@ -29,10 +29,10 @@
 
 use std::time::Instant;
 
-use awase_windows::state::evidence::AnyObservation;
+use awase_windows::state::conv_classify::ConvSyncReason;
+use awase_windows::state::evidence::{ConvOpenInference, Observed};
 use awase_windows::state::ime_event::{
-    EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, ObservationConfidence,
-    ObservationSource, UserIntentSource,
+    EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
 use awase_windows::state::intent_store::IntentStore;
@@ -61,18 +61,31 @@ fn focus_changed(to: HwndId, focus_epoch: u64) -> ImeEvent {
     }
 }
 
-/// TsfNative の壊れた conv 由来 open 推論（`NativeToggleShadowOff` 相当）。
-/// 本番では `PlatformState::report_conv_open_inference()` が
-/// `Observed<evidence::ConvOpenInference>` の witness 構築子経由で作る。
-/// テストからは journal 復元と同じ口（ADR-089 §2.1）を使う。
+/// TsfNative の壊れた conv 由来 open 推論（`NativeToggleShadowOff`）。
+///
+/// **本番の観測構築経路そのもの**を使う: `ImeStateHub::report_conv_open_inference()`
+/// は `Observed::<evidence::ConvOpenInference>::from_conv(reason, open, HwndId::NULL,
+/// focus_epoch).into()` を `ObserverReported` として dispatch する
+/// （`state/platform_state.rs`）。ここではその式をそのまま組み立てる。
+///
+/// `report_conv_open_inference()` 自体を呼ばないのは、それが
+/// `#[cfg(windows)]` な `ImeStateHub` の `pub(crate)` メソッドであり、
+/// Linux の統合テスト（別クレート扱い）からは型としても存在しないため。
+/// 代わりに、その中身のうち**観測の作り方**（どの witness 構築子を通り、
+/// confidence が何になるか）を完全に共有する。リプレイ用バックドア
+/// （`AnyObservation::restored_from_journal`、ADR-089 §2.1）は使わない——
+/// 任意の source/confidence を後から手で書けてしまい、`from_conv` が
+/// `Medium` を固定しているという本番側の性質を検証しなくなるため。
 fn broken_conv_open_inference(focus_epoch: u64) -> ImeEvent {
-    ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
-        true,
-        ObservationSource::ConvOpenInference,
-        HwndId::NULL,
-        ObservationConfidence::Medium,
-        focus_epoch,
-    ))
+    ImeEvent::ObserverReported(
+        Observed::<ConvOpenInference>::from_conv(
+            ConvSyncReason::NativeToggleShadowOff,
+            true,
+            HwndId::NULL,
+            focus_epoch,
+        )
+        .into(),
+    )
 }
 
 /// 明示 IME OFF（Ctrl+無変換 等）。実機では

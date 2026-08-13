@@ -1086,12 +1086,26 @@ impl ImeStateHub {
     ///
     /// `dispatch_event` の `UserImeSetIntent` 分岐で record しないのは、
     /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`）でも
-    /// dispatch されるため。呼び出してよいのは以下の3箇所のみ
-    /// （`tests/architecture_guard.rs` で出現数を固定）:
+    /// dispatch されるため。呼び出してよいのは以下の3箇所のみ:
     /// - `write_sync_key` / `write_physical_key`（物理 IME キーの shadow toggle。
     ///   `IntentWitness` が「注入されていない実キーイベント」を型で要求する）
     /// - `kp_stage_post_decision` の `SetOpenOrigin::ExplicitUserAction` 分岐
     ///   （IME ON/OFF コンボ、`applied=true` のときのみ）
+    ///
+    /// # どのガードが何を固定しているか（2026-08-13 訂正）
+    ///
+    /// v3 のこの doc は当初「3箇所のみ（`tests/architecture_guard.rs` で出現数を
+    /// 固定）」と書いていたが、実際に固定されていたのは
+    /// `intent_store_record_call_sites_are_limited_to_explicit_user_actions`
+    /// による `self.intent_store.record(`（本ファイル内、1箇所＝本メソッド内）
+    /// だけで、**`record_explicit_intent` 自身の呼び出し元の数は固定されて
+    /// いなかった**（3箇所目のある `runtime/key_pipeline.rs` はそのガードの
+    /// 走査対象ですらなかった）。BUG-51 追補を develop へ統合した際のレビューで
+    /// 発覚し、`record_explicit_intent_call_sites_are_limited_to_real_user_actions`
+    /// （`src/` 全走査でファイルごとの出現数を固定）を新設して穴を埋めた。
+    /// 現在は 2 本のガードが二段で効く:
+    /// - 「`IntentStore` へ record できるのは本メソッドだけ」＝ 前者
+    /// - 「本メソッドを呼べるのは上記3箇所だけ」＝ 後者
     pub(crate) fn record_explicit_intent(
         &mut self,
         target: bool,

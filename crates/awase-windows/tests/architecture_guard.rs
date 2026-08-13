@@ -690,7 +690,10 @@ fn intent_store_record_call_sites_are_limited_to_explicit_user_actions() {
     let path = "src/state/platform_state.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let count = production.matches("self.intent_store.record(").count();
+    // 行コメントを除外する（`count_real_calls`）。素の `matches()` だと、
+    // `record_explicit_intent` の doc が「どのガードが何を固定しているか」を
+    // 説明するためにこの needle を引用しただけで落ちる（2026-08-13 実際に発生）。
+    let count = count_real_calls(production, "self.intent_store.record(");
     assert_eq!(
         count, 1,
         "{path} 内で `self.intent_store.record(` の本番コードでの使用箇所数が \
@@ -698,6 +701,135 @@ fn intent_store_record_call_sites_are_limited_to_explicit_user_actions() {
          新しい呼び出し元を足す前に、それが conv 由来の内部同期ではなく \
          本物のユーザー操作であることを確認し、record_explicit_intent 経由に \
          してください。"
+    );
+}
+
+/// `record_explicit_intent()` を呼んでよい箇所を `src/` 全走査で固定する
+/// （BUG-51 追補 v3、2026-08-13 に新設）。
+///
+/// # なぜ上の `intent_store_record_call_sites_are_limited_to_explicit_user_actions`
+/// だけでは足りなかったか
+///
+/// 上のガードが固定しているのは `state/platform_state.rs` 内の
+/// `self.intent_store.record(` の出現数（1 = `record_explicit_intent` の中だけ）で
+/// あり、**`record_explicit_intent` 自身の呼び出し元の数は誰も固定していなかった**。
+/// `record_explicit_intent` の doc は「呼び出してよいのは3箇所のみ
+/// （`tests/architecture_guard.rs` で出現数を固定）」と書いていたが、3箇所目の
+/// `runtime/key_pipeline.rs` は上のガードの走査対象（`platform_state.rs` 1 ファイル）
+/// にすら入っていない。つまり `key_pipeline.rs` に4箇所目の
+/// `record_explicit_intent(..)` を足しても、どのテストも落ちなかった。
+///
+/// 「conv 由来の内部同期を明示ユーザー意図として `IntentStore` に永続化しない」
+/// （pre-mortem #1 角度2）という不変条件を守るには、**record の一次窓口
+/// （＝上のガード）と、その窓口を叩ける入口の集合（＝本ガード）の両方**を
+/// 固定する必要がある。新しい呼び出し元を足すときは、それが `IntentWitness`
+/// （注入されていない実キーイベント）か `SetOpenOrigin::ExplicitUserAction` の
+/// ように「本物のユーザー操作」であることが型/分岐で確定していることを
+/// 確認してから known_sites を更新すること。
+#[test]
+fn record_explicit_intent_call_sites_are_limited_to_real_user_actions() {
+    const NEEDLE: &str = "record_explicit_intent(";
+    let known_sites: &[(&str, usize)] = &[
+        // write_sync_key / write_physical_key（どちらも `IntentWitness` が
+        // 「注入されていない実キーイベント」を型で要求する）。
+        ("src/state/platform_state.rs", 2),
+        // kp_stage_post_decision の `SetOpenOrigin::ExplicitUserAction` 分岐
+        // （`applied == true` のときのみ）。
+        ("src/runtime/key_pipeline.rs", 1),
+    ];
+
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
+    }
+    files_with_calls.sort();
+
+    let mut expected: Vec<(String, usize)> = known_sites
+        .iter()
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
+         想定: {expected:?}\n実際: {files_with_calls:?}\n\
+         IntentStore への記録は「本物のユーザー操作」に限定される（BUG-51 追補 v3、\
+         pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput` 等が \
+         `UserImeSetIntent{{Command}}` を dispatch する経路）からは呼ばないこと。"
+    );
+}
+
+/// `ImeStateHub::effective_open()` が `IntentStore::resolve_effective_open()` を
+/// 必ず通ることを固定する（BUG-51 追補 v3 の配線そのもの、2026-08-13 に新設）。
+///
+/// # なぜテキスト検査でしか守れないか
+///
+/// 判定本体（`state/intent_store.rs`、ungated）には Linux で走る回帰テスト
+/// （`tests/intent_store_effective_open.rs`）があるが、**それを
+/// `ImeStateHub::effective_open()` が実際に呼んでいるという配線自体**は
+/// `state/platform_state.rs` が `#[cfg(windows)]` であるため Linux では
+/// 1 行も実行されない（その中の `mod tests` も同様）。配線を外して
+/// `shadow_model.effective_open()` を直接返す実装に戻しても、Linux CI は
+/// 全緑のまま——BUG-51 追補の再発（明示 IME OFF が壊れた `ConvOpenInference`
+/// 1 件で反転する）を誰も検知できない。
+///
+/// そこで「呼び出しが本番コードに 1 箇所だけ存在し、それが
+/// `fn effective_open` の本体の中にある」ことを機械的に固定する。
+#[test]
+fn effective_open_is_wired_to_the_intent_store_decision() {
+    const NEEDLE: &str = "resolve_effective_open(";
+    let known_sites: &[(&str, usize)] = &[("src/state/platform_state.rs", 1)];
+
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
+    }
+    files_with_calls.sort();
+
+    let mut expected: Vec<(String, usize)> = known_sites
+        .iter()
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
+         想定: {expected:?}\n実際: {files_with_calls:?}"
+    );
+
+    // 呼び出しが `ImeStateHub::effective_open()` の本体にあること。
+    let content = read_crate_file("src/state/platform_state.rs");
+    let production = production_code_only(&content);
+    let bodies = extract_all_balanced_blocks(production, "fn effective_open(&self) -> bool");
+    assert_eq!(
+        bodies.len(),
+        1,
+        "`fn effective_open(&self) -> bool` が {} 箇所あります（想定: 1）",
+        bodies.len()
+    );
+    assert_eq!(
+        count_real_calls(bodies[0], NEEDLE),
+        1,
+        "`ImeStateHub::effective_open()` の本体から `{NEEDLE}` が消えています。\n\
+         belief（`Engine::compute_state` の `ctx.ime_on`）が IntentStore の \
+         明示意図上書きを通らなくなると、BUG-51 追補の再現手順\n\
+         （明示 IME OFF → プロセスを跨ぐフォーカス変更 → 壊れた \
+         `ConvOpenInference` 1 件）で Engine だけが ON へ戻る退行が復活します。\n\
+         判定本体の回帰は tests/intent_store_effective_open.rs にあります。"
     );
 }
 
