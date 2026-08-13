@@ -1642,7 +1642,16 @@ clippy の警告・エラー行は Linux / xwin の両方で HEAD と**完全一
 §9-17 に列挙した。**次にこのリポジトリを Windows 実機で確認する人は、まず §9-17
 を読むこと。**
 
-### ADR-081 Phase 1d の凍結（提案）
+### ADR-081 Phase 1d の凍結（提案）→ **採択・実施済み（2026-08-12、ADR-090 §2.F）**
+
+> **本節は提案として書かれた。採否は [ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md)
+> §2.F 決定 F-1 で「凍結する」と確定し、同日実装した**（ADR-081 側のステータス
+> 節にも記録済み）。以下の提案本文はそのまま残すが、**根拠 2 点のうち後者
+> （`uses_gji_direct()` の根拠が消える）は Phase B で既に実行済み**であり、
+> ADR-090 は根拠を 3 点（表現手段の重複 / §4.1 の再提案禁止 / Phase 1e の
+> 成果物が INV-43 で禁止されて moot）へ整理し直している。
+> **「凍結する場合、成果物に ADR-081 のステータス更新を含めること」の要求は
+> 満たした**（ADR-081「追記（2026-08-12 その2）」節）。
 
 **`caps` へ寄せるなら、配線前の今が低コストなタイミングである。**
 ADR-081 Phase 1a/1b/1c は試験実装済み・未配線であり、今なら撤去コストが
@@ -1989,18 +1998,27 @@ BUG-18/22 型の再発条件を作りかけた（§1.3(f)）のと同じ轍を�
    ADR-081 の Phase 1a/1b/1c は 3 ファイル分の実装であり、撤去そのものの
    レビューコストがゼロではない。**凍結しない場合の二重定義期間の管理方法**を
    決めていない。~~
-   **決定済み（[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md)
-   §2.F、実装は未着手）: 凍結する。** 根拠は「長期間放置されているから」でも
-   「実機が無いから」でもなく、(1) `ImeProfileDriver` の 7 メソッドのうち
+   **解消（[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md)
+   §2.F、2026-08-12 に決定・実装とも完了）: 凍結した。** 根拠は
+   「長期間放置されているから」でも「実機が無いから」でもなく、
+   (1) `ImeProfileDriver` の 7 メソッドのうち
    `default_feedback` / `focus_settle_ms` / `ime_open_mechanism` の 3 つが
    `caps(p, k)` と完全に重複し、`caps` のほうが K 軸を含む分だけ細かいこと、
    (2) Phase 1d は §4.1 が「再提案禁止」で却下した capability の trait 静的分岐の
-   配線そのものであること、(3) Phase 1e のブロッカーだった「`GjiFsm` 同期義務の
-   非対称」が Phase B の INV-42/43 で解決済みであること、の 3 点。
+   配線そのものであること、(3) ~~Phase 1e のブロッカーだった「`GjiFsm` 同期義務の
+   非対称」が Phase B の INV-42/43 で解決済みであること~~
+   **【訂正（ADR-090 §2.F 決定 F-1 根拠 3）: 非対称そのものは INV-42 で
+   解消したが、Phase 1e の成果物である legacy 同期（`platform.rs:879-891`）の
+   撤去は INV-43 が明示的に禁止している。「ブロッカーが解決した」ではなく
+   「成果物が禁止されて moot になった」。前者と書くと次の担当者が
+   「では着手できる」と読む】**、の 3 点。
    `ImeProfileDriver` は trait ごと削除せず、`caps` と重複する 4 メソッド
-   （上記 3 + 未配線・未実測の `probe_budget_ms`）だけを削り、
+   （上記 3 + 未配線・未実測の `probe_budget_ms`）と `ImeOpenMechanism` enum・
+   `BLIND_MAX_ATTEMPTS` / `blind_feedback()` を削り、
    `owns_physical_kanji` / `has_ime_on_path` / `stale_eisu_recovery_paired` を
-   持つ**契約宣言**として残す。
+   持つ**契約宣言**として残した（ADR-090 INV-53）。
+   **contract test 不変条件2 は恒真だったので `caps` 駆動へ作り直し**、
+   不変条件3 の駆動元も `caps(p, k).feedback` へ移した（ADR-090 決定 F-2'）。
 
 5. **~~Phase C の着手条件（ADR-088 トラック D の復旧）が満たされる見込みが無い。~~**
    **解消（2026-08-12、ユーザー判断でゲート解除）。** ADR-088 §7 のとおり、

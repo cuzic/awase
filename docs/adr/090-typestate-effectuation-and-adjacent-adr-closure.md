@@ -1245,6 +1245,52 @@ ADR-081 / ADR-089 の 4 つ）。**起票時の「小〜中」から上方修正
 contract test 不変条件2・3 の差し替えを数えていなかった。
 **Linux で完結、挙動変更ゼロ**（未配線コードの削除であるため）。
 
+#### F.6 実施記録（2026-08-12）— **実施済み**
+
+§6 ステップ 3 の 10〜16 をすべて実装した。触ったファイルは 4 つ
+（`src/state/ime_profile_driver.rs` / `tests/ime_key_sequence_golden.rs` /
+`docs/adr/081-*.md` / `docs/adr/089-*.md`）で、見積りどおり。
+**実測 net −149 行**（`ime_profile_driver.rs` −273 / 差し替え・doc 追記 +64、
+`ime_key_sequence_golden.rs` −60 / 削除理由コメント +21）。
+
+| 項 | 実装 |
+|---|---|
+| 10 | 不変条件3 の駆動元を `driver.default_feedback()` → `caps(p, k).feedback` へ。全 profile × 全 K で `decide_actuation_action` を回し、`Blind` は `max_attempts` で `GiveUp` / `max_attempts - 1` で `Send`、`Read` は `u32::MAX` でも `Send` を固定 |
+| 11 | 不変条件2 を `caps` 駆動へ作り直し（決定 F-2'）。**赤→緑を確認済み**（`CHAIN_IMM_CROSS_THEN_KANJI` を `[KanjiToggle, ImmCross]` に反転させると `ImmCross × MsIme` で落ちることを確認してから戻した） |
+| 12 | `default_feedback` / `focus_settle_ms` / `ime_open_mechanism` / `probe_budget_ms`、`ImeOpenMechanism` enum、`BLIND_MAX_ATTEMPTS` / `blind_feedback()`、および parity テスト群を削除 |
+| 13 | `tests/ime_key_sequence_golden.rs` から `driver_shadow_parity_matches_characterize_strategy_primary_path` とヘルパ 2 本・import を削除（**削除理由を同ファイルのコメントとして残した**） |
+| 14 | モジュール doc を「プロファイル別のコード構造契約の宣言」へ全面書き換え。「capability をここへ戻してはならない」を冒頭に明記 |
+| 15 | ADR-081 のステータス節 + 「追記（2026-08-12 その2）」節を新設（凍結の根拠 3 点 / 4 メソッドの廃止理由表 / `probe_budget_ms` の復元元 / 不変条件1 の達成状況「`AppImeProfile::` 側とテキスト走査ガードは未達のまま確定」/ コアループ 3 箇所とそれが `caps` で回収されない理由） |
+| 16 | ADR-089 §9-4 を「解消」へ。あわせて §6「ADR-081 Phase 1d の凍結（提案）」節の冒頭に採択済みの注記を追加 |
+
+##### ADR の記述と実コードが食い違っていた点
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| F-1' | §2.F 決定 F-2' は不変条件2 を「`owns_physical_kanji`（`app_ime_policy.rs:220`）が真なプロファイル」で回すとしている | `AppImePolicy::owns_physical_kanji` は `!matches!(profile, TsfNative)` のフィールドで、`ImeProfileDriver::owns_physical_kanji()` は同じ値を driver 側から返す（parity テストが固定） | **`driver_for(profile).owns_physical_kanji()` を条件にした。** INV-53 が「contract test は driver が返す値どうし、または **driver × `caps`** で閉じる形にする」と要求しているため、driver 側を読むほうが趣旨に合う（値は同一なので判定は変わらない） |
+| F-2'' | §2.F.2 の表は残す 3 メソッドを「contract test に必要」とするだけ | `registry_maps_profiles_to_expected_driver_capabilities` は `ime_open_mechanism` に依存しており、削除するとレジストリの写像検査が半分消える | **`registry_maps_profiles_to_expected_driver`（改名）として残し、`owns_physical_kanji` だけで写像を検査する形にした。** `ImmCross`/`Plain`/`Unknown` → `ImmCrossDriver` の集約は `owns_physical_kanji=true` で識別でき、`TsfNative` だけが `false` なので、レジストリの誤配線は依然として検出できる |
+| F-3' | §6 ステップ 3 は `sync_obligation_does_not_depend_on_driver_declaration` に触れていない | 同テストは `d.ime_open_mechanism(true)` を「読んでも同期義務が変わらない」ことの表現として使っており、削除で入力が消える | **`sync_obligation_does_not_depend_on_profile_or_chain` へ作り直した**（駆動元を `caps(p, k).chain` へ）。INV-42（同期義務は outcome 軸のみ）の表現としてはむしろ正確になる——「driver がどう宣言しても」より「実際にどの機構で書くことになっていても」のほうが強い |
+| F-4' | §2.F.2 の表は「不変条件3 は `caps` 由来の `FeedbackPolicy` で駆動する形へ書き換える」とだけ書く | そのまま書き換えると、`caps` 表から `Read` か `Blind` の片方が消えたときにループが空回りして**恒真になる**（旧不変条件2 と同じ失敗モード） | **`saw_blind` / `saw_read` フラグで「両方の variant が実際に現れた」ことを assert した。** 不変条件2 側も同様に「検査対象が 4 profile × K あった」ことを固定した。P22（「効いていない」を正直に書く）を、恒真テストにも適用する |
+
+##### 「必須条件」との差分（**要注意・意図的な逸脱**）
+
+本作業の指示には
+「`tests/ime_key_sequence_golden.rs` と `tests/golden/` 配下は G 項の修正以外では
+無変更」という必須条件があったが、**§6 ステップ 3 item 13（`driver_shadow_parity`
+の削除）はその条件と両立しない**——`ime_open_mechanism()` がこのテストの唯一の
+入力なので、削除するなら同ファイルを触るしかない。判断:
+
+- **`tests/golden/ime_key_sequences.txt` は本項では 1 バイトも変更していない。**
+- `COMBOS` / `HEADER` / `KEY_DOC` / `WARMUP_DOC` / `build_report()` /
+  `characterize_strategy` の呼び出し / `strategy_selection_invariants` /
+  `ime_key_strategy_selection_matches_golden` も**すべて無変更**。
+- 削除したのは **ADR-081 由来の driver parity 検査 1 本とヘルパ 2 本だけ**で、
+  キー選択・送信順序の回帰検知点には触れていない。
+
+必須条件の趣旨（ADR-089 Phase C 実施記録の言葉で「実機検証ができない状態で
+『送るキーと順序』を動かさない」）は満たしていると判断した。**それでも
+「同ファイルを触った」事実は残るので、ここに明記する。**
+
 ---
 
 ### G. golden の stale な名前を CI 検証付きで直す

@@ -31,8 +31,6 @@
 use std::path::PathBuf;
 
 use awase_windows::ime_controller::characterize_strategy;
-use awase_windows::state::ime_event::ImePolicyProfile;
-use awase_windows::state::ime_profile_driver::{driver_for, ImeOpenMechanism};
 
 /// 戦略選択テーブルの走査対象。`(active_ime_kind ラベル, active_gji, profile)`。
 ///
@@ -205,83 +203,22 @@ fn strategy_selection_invariants() {
     );
 }
 
-// ── ADR-081 Phase 1d shadow parity（Linux 側前倒し）─────────────────
+// ── ADR-081 Phase 1d shadow parity は削除した（ADR-090 §2.F 決定 F-2、
+//    §6 ステップ 3 item 13、2026-08-12）──────────────────────────────
 //
-// ADR-081 の `ImeProfileDriver`（`state/ime_profile_driver.rs`）は Phase 1c 時点で
-// 未配線（実 apply 経路には一切繋がっていない）。Phase 1d（実機ソーク必須のランタイム
-// 配線）そのものはこのサンドボックスでは実行できないが、「ドライバの静的宣言だけから
-// 一次経路の戦略名を導出し、既存 `characterize_strategy` と一致するか」は Win32 の
-// 副作用を一切伴わない read-only 比較であり、Linux（cross-compile での --no-run）でも
-// 固定できる。実 apply には触れない。
+// ここには `driver_shadow_parity_matches_characterize_strategy_primary_path` と
+// ヘルパ 2 本（`driver_shadow_strategy_name` / `app_profile_to_policy_profile`）が
+// あり、`ImeProfileDriver::ime_open_mechanism()` の静的宣言から一次経路の戦略名を
+// 導出して `characterize_strategy` と突き合わせていた。
 //
-// 未解決（スコープ外ではなく、Phase 1d の残タスク）: `skip_imm=true`（ImmCross 失敗後の
-// GJI/MsImeDirect/KanjiToggle フォールバック合成）は `ImeProfileDriver` にまだそれを表現
-// するメソッドが無い。ADR-081 は「GJI フォールバックの合成はランタイム（Phase 1d）の責務」
-// と述べるのみで、具体的にどう表現するかは未確定。2026-08-02 の Phase 1d 検討（Opus 2周
-// レビュー）で、当初計画していたランタイム shadow 配線（旧経路 vs ドライバ経路の parity を
-// 実行時ログで比較する）は安全性の根拠が本リポジトリでは成立しないと判明し（`&self` も
-// `forbid(unsafe_code)` も実 actuate 経路の write を止めない、詳細は
-// `docs/adr/081-per-profile-capability-driver-decomposition.md` の Phase 1d 実施記録節）
-// 見送った。したがって `skip_imm=true` の driver 側表現は依然として未着手であり、Phase 1e
-// 着手前に解決すべき残作業として残っている（`state/gji_direct_mechanism.rs` の
-// `legacy_gji_sync_obligation` が発見した GjiFsm 同期義務の非対称と合わせて、
-// Phase 1e の2大ブロッカー）。よってこの比較は `skip_imm=false` の一次経路のみを対象とする。
-
-/// `characterize_strategy` の `profile: &str` 引数と `ImePolicyProfile` の対応。
-///
-/// `AppImeProfile`（windows-gated、3値: Standard/Imm32Unavailable/TsfNative）と
-/// `ImePolicyProfile`（`state/`、Linux 可視、5値）は別の型だが、`driver_for` の
-/// レジストリが `ImmCross`/`Plain`/`Unknown` を単一の `ImmCrossDriver` に集約している
-/// ため、`"Standard"` は `ImmCross` に写せば十分（`Plain`/`Unknown` は
-/// `AppImeProfile` に対応する値がなく本テストの対象外）。
-fn app_profile_to_policy_profile(profile: &str) -> ImePolicyProfile {
-    match profile {
-        "Standard" => ImePolicyProfile::ImmCross,
-        "Imm32Unavailable" => ImePolicyProfile::Imm32Unavailable,
-        "TsfNative" => ImePolicyProfile::TsfNative,
-        other => panic!("unknown profile: {other}"),
-    }
-}
-
-/// `ImeProfileDriver` の静的宣言のみから、`characterize_strategy` の一次経路
-/// （`skip_imm=false`）に相当する戦略名を導出する read-only アダプタ。
-///
-/// `apply()` を含む本番経路（`ime_controller.rs::CONTROLLER`）からは一切参照されない
-/// テスト専用のシームであり、Win32 副作用を持たない。
-fn driver_shadow_strategy_name(active_gji: bool, profile: &str) -> &'static str {
-    let driver = driver_for(app_profile_to_policy_profile(profile));
-    match driver.ime_open_mechanism(true) {
-        ImeOpenMechanism::CrossProcessApi => "ImmCrossProcess",
-        // `uses_gji_direct()` は ADR-089 Phase B（§4.7）で撤去済み。
-        // `SharedImeKeyDispatch` を宣言するドライバ（Imm32Unavailable /
-        // TsfNative）はいずれも GJI 直接制御を一次経路に持つため、
-        // 実行時観測 `active_gji` だけで GJI / MS-IME を分ければ以前と同値になる。
-        ImeOpenMechanism::SharedImeKeyDispatch => {
-            if active_gji {
-                "GjiDirect"
-            } else {
-                "MsImeDirect"
-            }
-        }
-    }
-}
-
-/// ADR-081 Phase 1d の shadow parity を前倒しで固定する。
-///
-/// `ImeProfileDriver` ベースの導出（`driver_shadow_strategy_name`）と、現行の
-/// `ImeController` 戦略選択（`characterize_strategy`、`skip_imm=false`）が
-/// `COMBOS`（golden と同じ全組み合わせ）で一致することを検証する。不一致は
-/// ADR-081 の想定するドライバ配線（Phase 1d）が現行実装と drift していることを
-/// 意味するため、golden 更新ではなく設計の見直しが必要。
-#[test]
-fn driver_shadow_parity_matches_characterize_strategy_primary_path() {
-    for &(active_label, active_gji, profile) in COMBOS {
-        let expected = characterize_strategy(active_gji, profile, false);
-        let actual = driver_shadow_strategy_name(active_gji, profile);
-        assert_eq!(
-            actual, expected,
-            "ADR-081 driver-based 選択が現行 characterize_strategy から drift: \
-             active_ime_kind={active_label} profile={profile} (skip_imm=false)"
-        );
-    }
-}
+// **ADR-090 が ADR-081 Phase 1d/1e を凍結し、`ime_open_mechanism()` を削除した**
+// （capability の宣言点は `state/app_ime_policy.rs::caps(p, k)` 1 箇所、
+// ADR-089 INV-44 / ADR-090 INV-53）。このテストの唯一の入力がそのメソッドだった
+// ため、テストごと削除した。
+//
+// **戦略選択の回帰検知は失われていない**——`caps(p, k).chain` と現行の戦略選択が
+// 一致することは `src/ime_controller.rs` の windows-gated テスト（ADR-089 Phase C
+// 新設、caps chain と旧 `WriteMechanism::ALL` 走査の同値性）が固定しており、
+// 送信キー列そのものは本ファイルの golden（`ime_key_strategy_selection_matches_golden`）
+// と `strategy_selection_invariants` が固定している。**この削除で
+// `tests/golden/ime_key_sequences.txt` は 1 バイトも変わらない。**
