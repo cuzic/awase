@@ -1,5 +1,8 @@
 [alias]
 # 循環的複雑度を含む全 lint チェック（CI と同じ条件）
 cc = "clippy --lib -- -A clippy::cargo_common_metadata -D warnings -W clippy::cognitive_complexity"
-# Windows GNU クロスコンパイル向け warning 自動修正（cargo win-fix）
-win-fix = "fix --target x86_64-pc-windows-gnu --allow-dirty --lib -p awase-windows --tests"
+# Windows クロスコンパイル向け warning 自動修正（cargo win-fix）。
+# ターゲットは実配布 ABI の MSVC（55d80dfb で CI も mingw から MSVC へ移行済み）。
+# `--target` は省略禁止: 省略するとホスト(Linux)向けの fix になり、
+# awase-windows の #[cfg(windows)] 配下が対象から丸ごと外れる。
+win-fix = "fix --target x86_64-pc-windows-msvc --allow-dirty --lib -p awase-windows --tests"

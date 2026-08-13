@@ -1,13 +1,19 @@
 [tools]
 rust = "latest"
 
+# `--target` は省略禁止: 省略するとホスト(Linux)向けの check になり、
+# awase-windows の Windows API 依存 ([target.'cfg(windows)'.dependencies] の
+# win32-async / win32-worker / windows) が引かれず #[cfg(windows)] 配下が
+# 丸ごと未検査になる。ターゲットは実配布 ABI の MSVC
+# (55d80dfb で CI も mingw から MSVC へ移行済み)。check/clippy はリンクしないので
+# cargo-xwin の環境変数なしで素の cargo のまま通る (Linux 上で実測確認済み)。
 [tasks.check]
 description = "Compile check (Windows target)"
-run = "cargo check --target x86_64-pc-windows-gnu -p awase -p awase-windows"
+run = "cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows"
 
 [tasks.clippy]
 description = "Run clippy lints (Windows target)"
-run = "cargo clippy --target x86_64-pc-windows-gnu -p awase -- -A clippy::cargo"
+run = "cargo clippy --target x86_64-pc-windows-msvc -p awase -- -A clippy::cargo"
 
 [tasks.test]
 description = "Run tests (lib only, host target)"
