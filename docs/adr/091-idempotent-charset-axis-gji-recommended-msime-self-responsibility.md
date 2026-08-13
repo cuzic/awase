@@ -133,7 +133,7 @@ mozc本家ソース(`google/mozc`、Apache-2.0)を直接確認した結果、cha
   composition/conversion時はネイティブのトグルを尊重する、**専用の新設Fnキー**を
   介して扱う(下記3.2)。
 
-#### 3.2 新設Fnキー: 5個(F15-F19)、いずれもPrecomposition/Composition二段バインド
+#### 3.2 新設Fnキー: 5個(F15-F19)、Precomposition/Composition二段バインド
 
 各Fnキーは、**単一の絶対指定コマンドではなく、「Precomposition用の絶対指定
 ターゲット」と「Composition/Conversion用のネイティブトグルコマンド」の2つを
@@ -141,13 +141,23 @@ mozc本家ソース(`google/mozc`、Apache-2.0)を直接確認した結果、cha
 コマンドを解釈するため、**awase側は「今composition中かどうか」を一切判定しない**
 ——物理キー押下時に現在のbeliefだけを見て、対応するFnキーを1つ選んで送るだけでよい。
 
+**バインド対象状態はPrecompositionのみに限定する。** 当初DirectInput/
+Prediction/Suggestionも絶対指定側の対象に含めていたが、mozc本家
+`ms-ime.tsv`でMuhenkan/Shift+Muhenkanの実際のバインドを全状態にわたって
+確認した結果、**両キーともPrecomposition/Composition/Conversionの3状態にしか
+バインドが無く、DirectInput/Prediction/Suggestionには一切バインドが無い**
+(Eisu/Hiragana/Katakanaキーは全てDirectInput→`IMEOn`を明示的に持つのとは
+対照的)。ネイティブのMuhenkan/Shift+Muhenkanが定義していない状態にまで
+新設Fnキーの絶対指定を広げる根拠が無いため、これに合わせてPrecomposition
+限定とした。
+
 **Muhenkan相当(3キー)** — mozc本家`src/session/session.cc::
 Session::CompositionModeSwitchKanaType`を直接確認し、ひらがな→全角カタカナ→
 半角カタカナ→(循環)という3状態サイクルであることを検証済み(英数系モード中は
 このコマンド自体が無効/no-opであることも確認済み)。「beliefがXのとき、次の
 状態Yへ絶対指定で進める」キーを、サイクルの3つの出発点それぞれについて用意する:
 
-| Fn | 使用条件(現在のbelief) | Precomposition/DirectInput/Prediction/Suggestion | Composition/Conversion |
+| Fn | 使用条件(現在のbelief) | Precomposition | Composition/Conversion |
 |---|---|---|---|
 | F15 | belief=ひらがな | `CompositionModeFullKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
 | F16 | belief=全角カタカナ | `CompositionModeHalfKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
@@ -160,10 +170,24 @@ Composer::ToggleInputMode`を直接確認した結果、**「半角英数⇄全�
 全角英数・半角英数のいずれからでも〉押すとひらがなへ戻る。全角英数は
 この経路の目的地に一度もならない):
 
-| Fn | 使用条件(現在のbelief) | Precomposition/DirectInput/Prediction/Suggestion | Composition/Conversion |
+| Fn | 使用条件(現在のbelief) | Precomposition | Composition/Conversion |
 |---|---|---|---|
 | F18 | belief=ひらがな | `CompositionModeHalfAlphanumeric`(絶対指定) | `ToggleAlphanumericMode`(ネイティブ) |
 | F19 | belief≠ひらがな(カタカナ2種・英数2種のいずれか) | `CompositionModeHiragana`(絶対指定) | `ToggleAlphanumericMode`(ネイティブ) |
+
+**注記(Shift+Muhenkanの非対称性)**: `Shift+Muhenkan`はPrecompositionでは
+`Eisu`と同一の`ToggleAlphanumericMode`だが、Composition/Conversionでは
+`ConvertToFullAlphanumeric`(トグルではなく、変換中の文字列を問答無用で
+全角英数に変換する一方向アクション)であり、`Eisu`単独とは異なる
+(`Eisu`はComposition中も`ToggleAlphanumericMode`のまま)。CharsetSlotは
+Composition/Conversion中は一切介入せずネイティブに委ねるため、この違いは
+CharsetSlotの実装に影響しない——Precompositionでの遷移先(`Eisu`と同一)
+だけが実装上重要である。
+
+DirectInput状態(IMEが閉じている)については、Muhenkan/Shift+Muhenkanは
+ネイティブにも一切バインドが無い(押しても何も起きず、IME ONにすらならない)。
+新設Fnキーもこれに倣い、DirectInput状態でのバインドは設けない(Phase 1で
+実機確認)。
 
 F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエスケープシーケンス
 漏れ・DirectInputゲーム競合で捨てられたキー、F21-F24は旧awase config1.db管理機構
@@ -179,7 +203,7 @@ F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエ�
 |---|---|
 | `Muhenkan`(単独) | 現在のbeliefを見てF15/F16/F17のいずれかを選び送信 |
 | `Eisu` | 現在のbeliefを見てF18/F19のいずれかを選び送信 |
-| `Shift+Muhenkan` | `Eisu`と同一ロジック(ms-ime.tsvで両者とも`ToggleAlphanumericMode`に割り当て済み、実質的に同じ機能の別トリガー) |
+| `Shift+Muhenkan` | Precompositionでの遷移先は`Eisu`と同一(`ToggleAlphanumericMode`)なのでF18/F19選択ロジックを共有する。Composition/Conversion中のネイティブ動作は`Eisu`と異なる(`ConvertToFullAlphanumeric`、§3.2注記)が、CharsetSlotはその状態に介入しないため実装上は無関係 |
 
 **`Hiragana`/`Katakana`物理キーは対象外**(既に絶対指定でbelief乖離リスクが
 無いため、awase側での介入・swallow自体が不要。BUG-52対応の無条件Suppressから
