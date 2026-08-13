@@ -6261,6 +6261,88 @@ architecture_guard`（23件 pass、新設の
 （プロセスを跨ぐ）フォーカス変更 → 再フォーカスという手順を踏み、Engine が
 ON に戻らないこと、および `[intent-store] effective_open override` ログが
 想定どおりの箇所でのみ出ることを確認すること。**
+
+### 追補3（2026-08-13、develop 統合レビューで発見: belief 側と warrant 側で「安全弁 vs 明示意図」の優先順位が逆）
+
+**発見の経緯:** 追補2（v3）を develop へ統合する作業中の Opus レビューで、
+`IntentStore` を読む 2 つの経路が**逆順で評価している**ことが判明した。追補2 自体は
+この食い違いを記録していない（`explicit_intent()` が IntentStore を見ない非対称は
+「開示済みの残存リスク」に挙がっているが、それとは別の項目）。
+
+**食い違いの実体（コードで確認済み）:**
+
+- **belief 側** `ImeStateHub::effective_open()`（`state/platform_state.rs`）は、
+  まず `shadow_model.effective_open()` を評価する。その内部
+  （`ImeModel::resolve_open_at()`）が `force_guards.resolve(base, has_explicit_intent)`
+  を適用して guard 由来の force-ON を織り込んだ**後**に、`IntentStore` の上書きを
+  重ねる。つまり **IntentStore の明示意図が安全弁（`PanicReset`）に勝つ**。
+- **warrant 側** `issue_open_warrant()`（`state/open_warrant.rs`）は逆で、
+  Step 0 が `guards.active_override_reason()`（`overrides_explicit_intent()==true`
+  の reason ＝ `PanicReset` / `ProfilePolicy`）、Step 1 が
+  `intent_store.lookup()` の順。つまり **安全弁が明示意図に勝つ**（ADR-087 §7
+  round3 M2 が明文で意図した順序）。
+
+同じ `IntentStore` を材料にしながら、belief は「意図優先」、actuation 授権は
+「安全弁優先」で答えるため、原理的には **warrant=ON / belief=OFF** の乖離が生じうる。
+
+**なぜ実害が限定的か（コードで裏取りした4点）:**
+
+1. `overrides_explicit_intent()` が true の reason は `PanicReset` と
+   `ProfilePolicy` の2つだけで、`ProfilePolicy` guard を `add` する本番コードは
+   存在しない（`force_guard.rs` の `ProfilePolicy` 出現はすべてテスト内）。
+   実質 `PanicReset` の1本だけが問題になる。
+2. `apply_panic_reset()` は guard を立てるのと同時に、`current_focus` の
+   `IntentStore` エントリを明示的に `remove()` する。したがって
+   「PanicReset × 直前の明示 OFF」の綱引きは**同一対象では自己解消する**。
+3. `ImeEvent::FocusChanged` の reducer は `force_guards.clear_for_focus_change()`
+   で guard を全解除する（`ime_model.rs`）。かつ warrant の `target` は
+   `issue_actuation_order()` が常に `shadow_model.current_focus()` から渡すため、
+   belief 側と warrant 側が**別の対象を見ることはない**。つまり当初レビューが
+   想定した「PanicReset guard 有効中にフォーカスが別対象へ移った窓」は、
+   フォーカス移動そのものが guard を消すので成立しない。
+   実際に残る窓は「PanicReset 直後、guard がまだ生きているうち
+   （`apply_ime_update` の `clear_force_on_panic_reset` を伴う観測が届く前）に、
+   ユーザーが同一対象で明示 IME OFF を押して新しい `IntentStore` エントリが
+   record される」ケース——`UserImeSetIntent` の reducer は guard を消さないので、
+   このとき belief=OFF / warrant=ON になる。
+4. `issue_open_warrant()` は現時点で **ADR-090 A-1 の shadow モード**であり、
+   授権が下りなくても書き込みは止まらない（`Authorization::LegacyUnwarranted`
+   の `would_have_blocked` をログ・journal に残すだけ）。したがって今この乖離が
+   実際に壊すのは shadow ログの数値であって、実挙動ではない。
+
+**今後もし直すなら（未実施）:** `apply_panic_reset()` の
+`intent_store.remove(current_focus)` を `intent_store.clear()` に変えると、
+対象を跨いだ古い意図も一掃されて「安全弁の後に古い意図が復活する」形の乖離が
+構造的に消える。ただし `clear()` は他対象の正当な明示意図まで捨てるため
+（BUG-26 型の「Engine が ON に戻れない」方向のリスクではなく、逆に
+「他アプリへ戻ったとき明示 OFF が守られない」方向の劣化）、トレードオフの
+評価が要る。**A-2（warrant を強制へ倒す段階）に進む前には、この順序差を
+どちらかに揃えること**——強制した瞬間に、上記4の「ログだけ」という緩衝が消える。
+
+**この追補で入れた変更（コードは順序差そのものには手を付けていない）:**
+
+- `record_explicit_intent` の doc の誤りを訂正した。「呼び出してよいのは3箇所のみ
+  （`tests/architecture_guard.rs` で出現数を固定）」と書いていたが、実際に
+  固定されていたのは `state/platform_state.rs` 内の `IntentStore::record` 呼び出し
+  数（1）だけで、`record_explicit_intent` 自身の呼び出し元数は固定されておらず、
+  3箇所目のある `runtime/key_pipeline.rs` はそのガードの走査対象ですらなかった。
+- `tests/architecture_guard.rs::record_explicit_intent_call_sites_are_limited_to_real_user_actions`
+  を新設（`src/` 全走査、`platform_state.rs` 2 + `key_pipeline.rs` 1 で固定）。
+- `tests/architecture_guard.rs::effective_open_is_wired_to_the_intent_store_decision`
+  を新設。`tests/intent_store_effective_open.rs` は判定本体
+  （`IntentStore::resolve_effective_open()`）だけを検証しており、
+  **`ImeStateHub::effective_open()` がそれを呼んでいるという配線自体**は
+  `#[cfg(windows)]` のため Linux では 1 行も実行されない。配線を外しても Linux CI が
+  全緑のままになる穴を、テキスト検査（本番コード中の呼び出しが 1 箇所で、それが
+  `fn effective_open` の本体にあること）で塞いだ。実際に配線を外す変異を入れて
+  本テストが落ちることを確認済み。
+- `tests/intent_store_effective_open.rs` の壊れた conv 観測の作り方を、リプレイ用
+  バックドア（`AnyObservation::restored_from_journal`）から本番と同じ witness 構築子
+  （`Observed::<evidence::ConvOpenInference>::from_conv`、`report_conv_open_inference()`
+  が使うもの）へ変更した。`report_conv_open_inference()` 自体は `#[cfg(windows)]` な
+  `ImeStateHub` の `pub(crate)` メソッドで統合テストからは呼べないため、
+  「観測の作り方」だけを本番と共有する形に留めている。
+
 ## BUG-52: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
 
 **症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で
