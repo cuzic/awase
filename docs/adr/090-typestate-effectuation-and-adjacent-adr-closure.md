@@ -1034,6 +1034,45 @@ dylint は安くない。`.github/workflows/ci.yml:84` の `dylint` ジョブは
 優先度 **中**（緊急ではないが、決めておかないと 5 回目の再提案が出る）。
 規模 **極小**（ドキュメントのみ、プロダクションコード 0 行）。
 
+#### E.5 実施記録（2026-08-12）— **実施済み**
+
+§6 ステップ 4 の item 17 を実装した。**プロダクションコードは 0 行変更**
+（E-R3 が定めたとおり、成果物は (a) 本 ADR §2.E と (b)
+`.claude/rules/ime-belief-architecture.md` の「段2（dylint）」節への追記の 2 つ）。
+
+追記した内容（同ルールの「この規約を実際に強制する仕組み」節の下に
+`### 段2（dylint）の恒久方針` を新設）:
+
+- 恒久方針（型化で置き換えない）と、4 回続けて同じ誤りが出た経緯。
+- 2 crate が Phase A の型化範囲と重ならない理由の表（input_mode 軸 vs open 軸 /
+  escape hatch は観測でも意図でもない）。
+- `observation_source_guard` を降ろせる 3 条件（INV-51、AND 条件）と、
+  `ime_event_guard` は降ろさないこと。
+- dylint がテキスト検査に勝る 3 点（crate 全体走査 / `typeck` による variant
+  解決 / `EngineActivationSync` の単独防御）と、**過大評価しないための注記**
+  （`path_expr_ident` は変数経由の間接構築を検出できない）。
+- ピン留め nightly が壊れたときの 3 手順。**降格 PR の必須項目として
+  `EngineActivationSync` のテキスト検査新設**を明記。
+
+##### 実コードとの照合結果（決定が現状と矛盾しないことの確認）
+
+本項は「決定が実コードと矛盾しないことの確認」が主目的なので、§2.E が
+根拠に挙げた事実を 1 つずつ突き合わせた。
+
+| §2.E の記述 | 実コード | 判定 |
+|---|---|---|
+| `RESTRICTED_VARIANTS`（`lints/ime_event_guard/src/lib.rs:73`）は 3 variant | `:73` に `&["PanicReset", "HwndCacheRestored", "EngineActivationSync"]` | **一致**（行番号も一致） |
+| `EngineActivationSync` には `architecture_guard` の等価な検査が無い | `grep -n EngineActivationSync crates/awase-windows/tests/architecture_guard.rs` がヒット 0 | **一致**（`PanicReset` は `:260`、`HwndCacheRestored` は `:280`、`InputModeObserved` は `:300` に存在） |
+| `ci.yml:84` の `dylint` ジョブが nightly を `nightly-2026-05-22` にピン留めし `cargo-dylint` 6.0.0 を入れる | `.github/workflows/ci.yml:84` が `dylint:` ジョブの開始行。`toolchain: nightly-2026-05-22` / `--version 6.0.0 --locked` | **一致** |
+| lint 本体の型検査は ~1.5 分（~17 分はキャッシュ導入前の値） | `ci.yml` の `cache-directories` コメントが「dylint 本体の型チェックは残り ~1.5分」と記録 | **一致** |
+| `path_expr_ident`（`lib.rs:196-202`）は最終セグメントしか見ない | 実装は同じだが**位置は `lints/observation_source_guard/src/lib.rs:191`**（`:196-202` は実在しない） | **行番号のみ不一致** → ルール側には `:191` と書いた（下記） |
+
+##### ADR の記述と実コードが食い違っていた点
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| E-1' | §2.E 決定 E-1 と §4.8 は `path_expr_ident` を「`lints/observation_source_guard/src/lib.rs:196-202`」と書く | 実際は **`:191`**（関数定義行）。ADR-090 は「実コードを読んで現状を確定させた」ことを自ら規律に掲げており、レビュー 2 巡目でも行番号の誤りを 3 件訂正している。これは 4 件目 | **`.claude/rules/` 側には正しい `:191` を書いた。** ADR 本文の `:196-202` は本節でこう記録することで訂正とする（本文の他の箇所を書き換えると、レビュー履歴の「何をどう間違えたか」の表と整合しなくなる） |
+
 ---
 
 ### F. ADR-081 Phase 1d/1e を凍結する

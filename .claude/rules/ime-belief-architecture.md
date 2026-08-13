@@ -135,6 +135,88 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 
 新しい「観測が乏しい状況での安全デフォルト」や「awase 自身の能動的訂正」を追加するときは、上記のどの仕組みにも引っかからないからといって「近道が許されている」わけではない。まず本当に `ObserverReported`（confidence 付き）/ `InputModeApplied`（strategy 付き）で表現できないか検討すること。
 
+### 段2（dylint）の恒久方針 — 降ろせる条件と、壊れたときの手順（2026-08-12 追記）
+
+**`lints/ime_event_guard` と `lints/observation_source_guard` は恒久的に
+dylint のまま残す。型化で置き換えない。**
+（[ADR-090](../../docs/adr/090-typestate-effectuation-and-adjacent-adr-closure.md)
+§2.E 決定 E-1〜E-3、INV-51）
+
+#### なぜ明文化するのか — 4 回続けて同じ誤りが出た
+
+ADR-089 の r2〜r5 は **4 ラウンド連続で**「この 2 crate は Phase A の型化
+（`Observed<E>` + プール分離）で置き換えられる」と書き、実装時の実コード照合で
+誤りと判明した。2 crate が見ているものは Phase A の型化範囲と**重ならない**:
+
+| dylint crate | 見ているもの | Phase A（open 軸の型化）との関係 |
+|---|---|---|
+| `observation_source_guard` | `ImeEvent::InputModeObserved { source: .. }` の source 偽装。すなわち **input_mode 軸** | 無関係。Phase A が型化したのは `ObserverReported`（**open 軸**） |
+| `ime_event_guard` | `PanicReset` / `HwndCacheRestored` / `EngineActivationSync` の designated 関数外での構築 | 無関係。この 3 variant は**観測でも意図でもない**（`desired_open` の直接書き込み口＝ escape hatch）ため `Observed<E>` にも witness にも載らない |
+
+`ime_event_guard` を型化しない理由は「できない」ではなく
+**「型化しても保証が上がらない」**である。`Observed<E>` の witness が成立するのは
+「probe を実行した」「物理キーが来た」といった**引数として渡せる外部事実**が
+あるからで、escape hatch の 3 variant にはそれが無い。designated 関数の中でしか
+作れないトークンを要求する形にしても、そのトークンは crate 内では `pub` に
+ならざるを得ず（構築点と reduce 側が別モジュール）、結局「designated 関数の中で
+作られていること」は件数ガードでしか担保できない。
+
+#### `observation_source_guard` を降ろしてよい 3 条件（INV-51、AND 条件）
+
+input_mode 軸の型化は**ありうる**が、それは ADR-088 トラック A
+（`AxisCapability` + `CharsetOwner`、4 軸への一般化）の成果になる。
+次の 3 つが**すべて**満たされたときに限り降ろしてよい:
+
+1. `InputModeState` の観測に `Observed<E>` 相当（source と confidence が
+   evidence 型から決まる形）が入り、
+2. `ImeEvent::InputModeObserved` の本番構築点がその witness 経由だけになり、
+3. `ConvBitsInference` / `GjiIoInference` の 2 ソースが evidence 型として
+   表現される（現在は `PerSourceObservations` にフィールドを持たない）。
+
+**`lints/ime_event_guard` は降ろさない**（上記のとおり型化しても保証が上がらない）。
+
+#### dylint がテキスト検査に勝っている点（降格で失うもの）
+
+1. **crate 全体を走査する。** `architecture_guard.rs` の同種検査
+   （`panic_reset_event_is_limited_to_apply_panic_reset` /
+   `hwnd_cache_restored_event_is_limited_to_apply_hwnd_cache_restore` /
+   `input_mode_observed_construction_sites_are_accounted_for`）は
+   **ファイル名と件数のペアを直書き**しており、新しいファイルで構築されると
+   気付けない。dylint は HIR 全体を見るのでファイル一覧の保守が要らない。
+2. **型で variant を解決する。** テキスト検査は文字列の出現数を数えるだけで、
+   同名 variant を持つ別型やコメント／マクロ展開の差で誤検出・見逃しが
+   起きうる。dylint は `is_ime_event()` で `typeck` 結果の ADT が
+   `ime_event::ImeEvent` であることを確認してから判定する。
+3. **`EngineActivationSync` は dylint 単独防御である。**
+   `RESTRICTED_VARIANTS`（`lints/ime_event_guard/src/lib.rs:73`）の 3 variant の
+   うち `PanicReset` / `HwndCacheRestored` には `architecture_guard` の等価な
+   テキスト検査があるが、**`EngineActivationSync`（BUG-48）には無い**
+   （`grep -n EngineActivationSync crates/awase-windows/tests/architecture_guard.rs`
+   がヒットしないことで確認できる）。
+
+**過大評価しないこと**: `observation_source_guard` の `path_expr_ident`
+（`lints/observation_source_guard/src/lib.rs:191`）は `ExprKind::Path` の
+**最終セグメント**しか見ないので、`let src = ObservationSource::X; .. source: src`
+のように**変数を経由した間接構築は検出できない**（variant path を直接書く
+`ime_event_guard` 側はこの制約に当たらない）。dylint の優位は上記 3 点であって
+「あらゆる偽装を捕まえる」ことではない。
+
+#### ピン留め nightly が壊れたときの手順
+
+dylint は安くない。`.github/workflows/ci.yml` の `dylint` ジョブは nightly を
+**`nightly-2026-05-22` にピン留め**し、`cargo-dylint` 6.0.0 をインストールして
+走る（`no_vk_as_scan` を含む 3 crate が同じ toolchain を共有する）。
+ピン留めした nightly はいずれ壊れる。**保守コストの本体はランタイムではなく
+`rustc_private` API 追従である**（lint 本体の型検査は ~1.5 分）。
+
+1. まず nightly のピンを上げて追従する（3 crate 同時のコミットになる）。
+2. それが現実的でなくなったら、**`architecture_guard.rs` のテキスト検査へ
+   降格する**（`lints/` を削除して「守らなくてよい」にはしない）。
+   降格 PR の**必須項目**: 上記 3 点のうち **(3) `EngineActivationSync` の
+   テキスト検査を新設すること**。これをしないと降格と同時に防御がゼロになる。
+   失う検出力（(1)(2)）も ADR に記録する。
+3. **「dylint が壊れたから規律をやめる」は選択肢に入れない。**
+
 ## `ImeModel` 以外の belief 的状態への適用範囲（2026-07-23 追記）
 
 `GjiFsm`（TSF composition の warm/cold、`tsf/gji_fsm.rs`）にはこの3段防御が
