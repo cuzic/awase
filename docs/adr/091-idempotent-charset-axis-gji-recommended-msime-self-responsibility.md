@@ -108,36 +108,70 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
 
 §1.3の通り。JISかな入力方式は非サポート。物理Alt+かなは予防的swallowを維持する。
 
-### 決定3(charset軸): GJIを推奨IMEとし、F15-F19 + config1.dbバインドで冪等制御する。
+### 決定3(charset軸): GJIを推奨IMEとし、config1.dbバインドで制御する。冪等原則は「入力モード」サブ軸のみに適用する。
 
-- config1.dbの`custom_keymap_table`に、F15-F19を以下へバインドする
-  (ユーザーがGJIのキー設定→編集→インポートで設定、または将来的にawaseが
-  `awase-gji-config`の書き込み機能拡張で自動化):
+**冪等キー限定の原則は、charset軸のうち「次に入力する文字のデフォルトモード」
+(以下「入力モードサブ軸」)にのみ適用する。「今まさに画面に見えている
+composition文字列の文字種変換」(以下「変換中サブ軸」)には適用しない。**
 
-  | VK | コマンド | Charset |
-  |---|---|---|
-  | F15 | `CompositionModeHiragana` | ひらがな |
-  | F16 | `CompositionModeFullKatakana` | 全角カタカナ |
-  | F17 | `CompositionModeHalfKatakana` | 半角カタカナ |
-  | F18 | `CompositionModeFullAlphanumeric` | 全角英数 |
-  | F19 | `CompositionModeHalfAlphanumeric` | 半角英数 |
+理由: 冪等原則がそもそも防ごうとしていたのは、open/romaji軸のように「間違えると
+気づかないまま状態が持続する」危険である(open軸はawaseのbeliefと実状態が
+silent desyncする、romaji軸は復旧不能になる、等)。composition中の文字列は
+画面に表示されており即座にフィードバックがあるため、仮に循環トグルで一段
+ズレても目視で気づいて押し直せばよく、実害の質が全く異なる。したがって
+変換中サブ軸ではGJIのネイティブなトグル系コマンドを採用してよい。
 
-  F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエスケープシーケンス
-  漏れ・DirectInputゲーム競合で捨てられたキー、F21-F24は旧awase config1.db管理機構
-  [ADR-067で削除済み]の残骸バインドが実機に残存していることを確認済み)。
+**入力モードサブ軸(Precomposition/DirectInput/Prediction/Suggestion): 冪等・絶対指定。**
+config1.dbの`custom_keymap_table`に、F15-F19を以下へバインドする:
 
-- awase側は、charset軸の意図(ユーザーがトレイ操作等で明示的にモードを選んだとき、
-  または`conv_mode_policy=force`のような既存機構がdesired_modeを持つとき)を、
-  GJI検出時はF15-F19のSendInputに変換して送信する。IMC write(`ImmSetConversionStatus`)
-  ではなくVK注入を使う理由: GJI(mozc)のTIPはIMC writeをUIミラーとしてのみ扱い、
-  実コンポーザには反映しない(BUG-25追補2、mozc本家ソース確認済み)。
+| VK | コマンド | Charset |
+|---|---|---|
+| F15 | `CompositionModeHiragana` | ひらがな |
+| F16 | `CompositionModeFullKatakana` | 全角カタカナ |
+| F17 | `CompositionModeHalfKatakana` | 半角カタカナ |
+| F18 | `CompositionModeFullAlphanumeric` | 全角英数 |
+| F19 | `CompositionModeHalfAlphanumeric` | 半角英数 |
+
+F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエスケープシーケンス
+漏れ・DirectInputゲーム競合で捨てられたキー、F21-F24は旧awase config1.db管理機構
+[ADR-067で削除済み]の残骸バインドが実機に残存していることを確認済み)。
+
+**変換中サブ軸(Composition/Conversion): GJIネイティブのトグル系コマンドを許容する。**
+実際のconfig1.dbには、この用途向けに`ConvertToHiragana`/`ConvertToFullKatakana`/
+`ConvertToHalfWidth`/`ConvertToFullAlphanumeric`/`ConvertToHalfAlphanumeric`という
+別系統のコマンドが既に存在し、デフォルトでF6-F10に割り当て済みだった(実機確認済み)。
+さらに、MS-IMEの無変換単独打鍵のネイティブな挙動(precomposition時は
+「全角カタカナ→半角カタカナ→ひらがな」の循環)を再現したい場合、GJI側の
+`SwitchKanaType`/`CompositionModeSwitchKanaType`(相対トグル系、
+`GjiModeCommand::ToggleKanaType`として`awase-gji-config`が既に分類済み)を
+Composition/Conversion状態に割り当てることで実現できる。無変換単独の
+状態別バインド例:
+
+| status | key | command |
+|---|---|---|
+| Precomposition/DirectInput/Prediction/Suggestion | Muhenkan | `SwitchKanaType`(または`CompositionModeHiragana`等の絶対指定) |
+| Composition/Conversion | Muhenkan | `SwitchKanaType`または`ConvertTo*` |
+
+現在のconfig1.dbには無変換単独の割り当ては存在しない(空白、実機確認済み)ため、
+GJI組み込みの「MS-IME互換」キー設定プリセットが標準でこれを含んでいるかは
+別途確認が必要(§5 未解決)。含んでいなければ、上表のように`custom_keymap_table`へ
+明示的に追加する。
+
+- awase側は、charset軸の**入力モードサブ軸**の意図(ユーザーがトレイ操作等で
+  明示的にモードを選んだとき、または`conv_mode_policy=force`のような既存機構が
+  desired_modeを持つとき)を、GJI検出時はF15-F19のSendInputに変換して送信する。
+  IMC write(`ImmSetConversionStatus`)ではなくVK注入を使う理由: GJI(mozc)のTIPは
+  IMC writeをUIミラーとしてのみ扱い、実コンポーザには反映しない(BUG-25追補2、
+  mozc本家ソース確認済み)。
 
 - **`CharsetSlot`(GJI向け、物理DBEキー→F15-F19変換機構)**: 現状、物理DBEキー
   (`VK_DBE_HIRAGANA`/`KATAKANA`/`SBCSCHAR`/`DBCSCHAR`/`ALPHANUMERIC`)の押下は
   `ime_actuation_owned`なら無条件Suppressされ、ユーザーの意図(「カタカナキーを
   押した」等)が握りつぶされて消えている(BUG-52対応の副作用)。`CharsetSlot`は
   この握りつぶされた物理キーの意図を、対応するF15-F19のSendInputへ変換する
-  単純な変換表として実装する。
+  単純な変換表として実装する(入力モードサブ軸のみが対象。無変換単独等、
+  変換中サブ軸で使うキーはGJI自身へのパススルーで足り、CharsetSlotの変換対象
+  ではない)。
 
   GJI自身が`custom_keymap_table`のstatus別コマンド解釈(Precomposition/
   Composition/Conversion/Prediction/Suggestion)を内部で行うため、**awase側は
@@ -255,10 +289,18 @@ idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/0
    status別解釈はGJI自身に委ねるため、composition中かどうかの判定はawase側で
    行わない(§4参照)。
 
-### Phase 2(候補ウィンドウ挙動の追試)
+### Phase 2(候補ウィンドウ挙動・変換中サブ軸の追試)
 
-`gji_composition_probe.rs`のシナリオ分離を改善(未確定compositionの明示キャンセル)
-した上で、henkan中の`CompositionMode*`押下の挙動を再検証する。
+1. `gji_composition_probe.rs`のシナリオ分離を改善(未確定compositionの明示
+   キャンセル)した上で、henkan中の`CompositionMode*`押下の挙動を再検証する。
+2. GJIの「MS-IME互換」キー設定プリセットが、無変換単独打鍵の状態別挙動
+   (precomposition時は`SwitchKanaType`相当の循環、composition時は文字種変換)を
+   標準で含んでいるか実機で確認する。含んでいればそのプリセットを推奨設定として
+   案内し、含んでいなければ決定3の状態別バインド例を`custom_keymap_table`へ
+   追加する形で補う。
+3. `ConvertToHalfWidth`(半角カタカナ専用ではなく汎用の半角変換コマンド)が、
+   Composition/Conversion状態でF17(半角カタカナ)ターゲットに対して期待通り
+   動作するか実機で確認する。
 
 ### Phase 3(MS-IME自己責任ポリシーのドキュメント化)
 
