@@ -510,32 +510,36 @@ ImmCross 本体は既に `ActuationTarget::verify_still_current` でフォーカ
 |---|---|
 | 18 | `ImeStateHub::warrant_context(now, now_ms)` を新設（INV-48）。`intent_store` は private のままで、この 1 本だけが読む。あわせて `ImeStateHub::issue_actuation_order(open, origin, now, now_ms)` を新設（`current_focus()` が `None` なら `HwndId::NULL` を渡す、A-R4） |
 | 19 | `state/actuation_chain.rs` に `ActuationOrder`（`issue` / `open` / `origin` / `would_have_blocked` / `into_actuation_shadow` / `into_actuation`）を新設（INV-47） |
-| 20 | 実 actuation 入口 **外部 8 経路すべて**を `ActuationOrder::issue()` 経由へ。`set_ime_open` トレイト経路の 2 件は `WindowsPlatform::set_ime_open_ordered` へ移し、`.set_ime_open(` の期待値を 2 → 0 に下げた（ガードは残す）。`ime_open_actuation_entry_points_are_accounted_for` のコメントの stale な行番号（`ime_refresh.rs:727` → `:752`）も直した |
+| 20 | 実 actuation 入口 **外部 8 needle 分 = 起案点 11 箇所すべて**を `ActuationOrder::issue()` 経由へ（内訳は下表。`key_pipeline.rs` 3 / `ime_refresh.rs` 4 / `executor.rs` 2 / `runtime/mod.rs` 2）。`set_ime_open` トレイト経路の 2 件は `WindowsPlatform::set_ime_open_ordered` へ移し、`.set_ime_open(` の期待値を 2 → 0 に下げた（ガードは残す）。`ime_open_actuation_entry_points_are_accounted_for` のコメントの stale な行番号（`ime_refresh.rs:727` → `:752`）も直した |
 | 21 | `Authorization::LegacyUnwarranted { would_have_blocked, origin }` に拡張。ログ点は `ime_controller::log_shadow_warrant`（`[warrant-shadow]`）1 本 |
 | 22 | `warrant_pending_adr087()` を**削除**。`legacy_unwarranted_actuation_sites_are_accounted_for` を `actuation_is_only_requested_through_actuation_order` へ作り替えた |
 | 23 | **未実施**（実機ソーク。この環境では走らせられない） |
 
-**実 actuation 入口 8 経路の `strategy` 識別子**（A-2 が入口ごとに分割する単位。
-`[warrant-shadow]` ログと journal でこの文字列を見る）:
+**実 actuation 起案点 11 箇所の `strategy` 識別子**（A-2 が入口ごとに分割する単位。
+`[warrant-shadow]` ログと journal でこの文字列を見る）。数え直しの根拠は
+`grep -rn 'issue_actuation_order(\|issue_actuation_order_with_origin' crates/awase-windows/src/`
+から helper 定義（`runtime/mod.rs:266,275,288` / `state/platform_state.rs:574` /
+`runtime/executor.rs:70,81`）を除いた 11 行:
 
-| # | 入口 | `strategy` |
+| # | 入口（コード上の位置） | `strategy` |
 |---|---|---|
-| 1 | `runtime/executor.rs` engine decision（同期） | `engine_decision_sync` |
-| 2 | `runtime/executor.rs` engine decision（ImmCross 非同期） | `engine_decision_async` |
-| 3 | `runtime/key_pipeline.rs` idle-conv-check の DirectInput | `idle_conv_check_direct_input` |
-| 4 | `runtime/key_pipeline.rs` shadow-toggle OFF（非同期） | `shadow_toggle_off` |
-| 5 | `runtime/key_pipeline.rs` shadow-toggle OFF（同期分岐） | `shadow_toggle_off_sync` |
-| 6 | `runtime/mod.rs::force_on_and_correct_romaji` | `force_on_and_correct_romaji` |
-| 7 | `runtime/mod.rs::try_force_on_bootstrap` | `try_force_on_bootstrap` |
-| 8 | `runtime/ime_refresh.rs` GJI TsfNative 強制 ON | `focus_change_tsf_native_gji_force_on` |
-| 9 | `runtime/ime_refresh.rs` focus change 強制 OFF | `focus_change_enforce_off` |
-| 10 | `runtime/ime_refresh.rs` drift correction（ImmCross 分岐 / チェーン分岐） | 既存の `act_origin` をそのまま使う（`drift_correction_read` / `drift_correction_blind`） |
+| 1 | `runtime/executor.rs:889` engine decision（同期） | `engine_decision_sync` |
+| 2 | `runtime/executor.rs:793` engine decision（ImmCross 非同期） | `engine_decision_async` |
+| 3 | `runtime/key_pipeline.rs:741` idle-conv-check の DirectInput | `idle_conv_check_direct_input` |
+| 4 | `runtime/key_pipeline.rs:944` shadow-toggle OFF（非同期） | `shadow_toggle_off` |
+| 5 | `runtime/key_pipeline.rs:969` shadow-toggle OFF（同期分岐） | `shadow_toggle_off_sync` |
+| 6 | `runtime/mod.rs:773` `force_on_and_correct_romaji` | `force_on_and_correct_romaji` |
+| 7 | `runtime/mod.rs:936` `try_force_on_bootstrap` | `try_force_on_bootstrap` |
+| 8 | `runtime/ime_refresh.rs:500` GJI TsfNative 強制 ON | `focus_change_tsf_native_gji_force_on` |
+| 9 | `runtime/ime_refresh.rs:538` focus change 強制 OFF | `focus_change_enforce_off` |
+| 10 | `runtime/ime_refresh.rs:773` drift correction（ImmCross 分岐、`set_ime_open_ordered`） | 既存の `act_origin` をそのまま使う（`FeedbackPolicy` により `drift_correction_read` / `drift_correction_blind`） |
+| 11 | `runtime/ime_refresh.rs:785` drift correction（チェーン分岐、`apply_ime_open_with_belief`） | 同上 |
 
 ##### ADR の記述と実コードが食い違っていた点
 
 | # | ADR の記述 | 実コード | 採った判断 |
 |---|---|---|---|
-| A-1' | §2.A.2(3) は「実 actuation 入口は**外部 8** + 内部委譲 3」 | 実際に `ActuationOrder` を配線した起案点は **10 箇所**。差の 2 件は (a) `key_pipeline.rs` の shadow-toggle OFF が **imm_first で async/sync に分岐**しており両方が起案する、(b) drift correction の 2 分岐（ImmCross / チェーン）が §2.A.2(3) の表では別々の needle（`.set_ime_open(` と `.apply_ime_open_with_belief(`）に数えられていた | **10 箇所すべてに配線した。** §2.A.2(3) の「8」は needle 別の集計であって「起案点の数」ではない。A-2 は起案点単位で分割するので、`strategy` 識別子も 10 通り用意した |
+| A-1' | §2.A.2(3) は「実 actuation 入口は**外部 8** + 内部委譲 3」 | 実際に `ActuationOrder` を配線した起案点は **11 箇所**（`key_pipeline.rs` 3 / `ime_refresh.rs` 4 / `executor.rs` 2 / `runtime/mod.rs` 2）。差の 3 件は (a) `key_pipeline.rs` の shadow-toggle OFF が **imm_first で async/sync に分岐**しており両方が起案する、(b) drift correction の 2 分岐（ImmCross / チェーン）が §2.A.2(3) の表では別々の needle（`.set_ime_open(` と `.apply_ime_open_with_belief(`）に数えられており、**かつ両分岐がそれぞれ独立に起案する（＝起案点としては 2 箇所）** | **11 箇所すべてに配線した。** §2.A.2(3) の「8」は needle 別の集計であって「起案点の数」ではない。A-2 は起案点単位で分割するので、`strategy` も 11 起案点すべてに付けた（ただし**文字列は 9 種の固定リテラル + drift 用の 2 種**で、drift の 2 分岐は同じ `act_origin` を引き継ぐため文字列を共有する。drift 側の `drift_correction_read` / `drift_correction_blind` は `FeedbackPolicy` 由来なので、ImmCross 分岐かチェーン分岐かとは 1 対 1 に対応しない——**A-2 で drift を入口ごとに倒したくなったら、ここで文字列を分ける必要がある**）。**2026-08-12 の独立レビューで訂正**: 本記録は当初 drift の 2 分岐を 1 起案点と数えて「10 箇所」と書いていたが、実コードでは `ime_refresh.rs:773` と `:785` が別々に `issue_actuation_order_with_origin()` を呼んでおり、正しくは 11 箇所である |
 | A-2' | §2.A 設計案 1 の `ActuationOrder::into_actuation()` は `Option<Actuation<Warranted>>` を返し、A-1 では「`None` でも書き込みを止めない」 | `Option` を返す 1 本だけだと、A-1 の呼び出し元が `None` を握りつぶす形（`unwrap_or_else` で別経路を組む）になり、**「止めない」が呼び出し元の作法に依存する** | **`into_actuation_shadow()`（常に `Warranted`）と `into_actuation()`（`Option`、A-2 用）の 2 本にした。** A-1 の 2 つのチェーン入口は前者だけを呼ぶ。A-2 で入口を倒すときは後者へ差し替える——**差し替えが型として見える**ぶん、A-1 → A-2 の移行が追跡しやすい |
 | A-3' | §6 ステップ 5 item 20 は「`set_ime_open` トレイトメソッドを死んだ入口として doc に明記し、期待値を 2 → 0 に下げる」 | `WindowsPlatform` には**もう 1 つ**死んだトレイトオーバーライド `apply_ime_open`（`platform.rs:734`、呼び出し元ゼロ）があり、それが `apply_ime_open_with_applied` を呼んでいた。`ActuationOrder` を通そうにも `WindowsPlatform` は `ImeStateHub` を持たない（§2.A.2(1)） | **`WindowsPlatform::apply_ime_open` のオーバーライドを削除した**（`awase` 側のトレイト既定実装が残る）。§2.A.2(3) が「呼び出し元ゼロの死んだ入口」「削除するか実際に使うかは Phase 3 実配線時に判断する」と書いていたものの決着。副作用として `.apply_ime_open_with_applied(` の期待値が 2 → 1 になった（内部委譲 1 件が消えた） |
 | A-4' | §2.A.2(1) は「`ImeController` から `ImeStateHub` に手を伸ばす唯一の手段は `with_app`」 | `DecisionExecutor` の 4 つの公開入口（`execute_from_hook` / `execute_from_loop` / `drain_deferred` / `on_output_guard_timer`）は**既に `ime: &ImeStateHub` を引数で受け取っていた**。`dispatch_ime_set_open` まで 2 段（`execute_one` / `dispatch_effect`）通すだけで届く | **`with_app` を一切使わずに配線できた。** executor 経路は `Runtime` を持たないので `Runtime::issue_actuation_order` を使えないが、`executor.rs` に同等の free 関数 `issue_order(ime, open, strategy)` を置いた。§2.A.2(1) の結論（warrant は引数で運ぶ）はそのまま正しい |
@@ -554,12 +558,51 @@ ImmCross 本体は既に `ActuationTarget::verify_still_current` でフォーカ
 
 - 本作業では `rustup target add x86_64-pc-windows-msvc` を実行したうえで
   **`cargo xwin check -p awase-windows --all-targets --target x86_64-pc-windows-msvc`**
-  と `cargo xwin clippy ... --target x86_64-pc-windows-msvc` で検証した
-  （clippy の警告・エラー行は HEAD と `git stash` 比較で完全一致）。
-- **`.git/hooks/pre-commit` の `cargo xwin check -p awase-windows` も
-  `--target` を明示していない**ため、同じ穴がある。windows-gated コードの
-  型検査を pre-commit に期待しないこと（CI の `windows-build` ジョブは
-  別途 msvc ターゲットで走る）。
+  と `cargo xwin clippy ... --target x86_64-pc-windows-msvc` で検証した。
+- **clippy はグリーンではない。**`cargo xwin clippy -p awase-windows --all-targets
+  --target x86_64-pc-windows-msvc` は **lib 8 件 / lib test 24 件の deny 違反で
+  赤のまま**である。ただしこれは ADR-090 着手前（`958e21c2`）と
+  **件数・lint 種別・ファイルとも完全に同一**で、**本作業による新規の指摘はゼロ**
+  （2026-08-12 に `958e21c2` を detached worktree にチェックアウトして同じコマンドを
+  流し、両者の出力を突き合わせて確認した。差分は追加コードによる行番号のずれだけ——
+  `platform_state.rs:865/879→924/938`、`ime_controller.rs:408/443/490/499→439/477/524/533`、
+  `observation_store.rs:854/925→1189/1260`、`platform_state.rs:1475/1512→1534/1571`。
+  他の診断行は行番号も不変）。指摘の種類は
+  `clone_on_copy`（`focus/kinds.rs`）/ `unused_self`（`ime_controller.rs` ×4）/
+  `trivially_copy_pass_by_ref`（`platform_state.rs` ×2、`IntentWitness`）/
+  非 `Send` future（`runtime/open_chain.rs` ×2）/
+  `unchecked_duration_subtraction`（`force_guard.rs`・`observation_store.rs` ×2・
+  `platform_state.rs` ×2）/ `assert_eq!` with literal bool（`ime_model.rs` ×3・
+  `ime_observer.rs` ×3）/ `items_after_test_module`（`ime_observer.rs`・
+  `gji_monitor.rs`）/ `items_after_statements`（`gji_fsm.rs` ×2）で、
+  **どれも ADR-090 が触っていない既存コードの指摘**である
+  （表示される診断行は lib 区間 9 行 + lib test 区間 15 行 = 24 行。cargo が
+  ユニット間で同一診断を抑制するため、`due to N previous errors` の 8 / 24 とは
+  行数が一致しない。この見え方も両時点で同じ）。
+  **「clippy で検証した」＝「clippy が緑になった」ではない**ので、この区別を残す。
+- **`--target` の欠落は pre-commit だけの問題ではない。** 同じ穴が
+  **`.githooks/pre-push`（`:73` の `cargo xwin check -p awase-windows`）** と
+  **CI の `windows-cross-check` ジョブ（`.github/workflows/ci.yml:72` の
+  `cargo xwin build --tests -p awase-windows`）** にも及ぶ。とくに後者は
+  mingw → MSVC 切替コミット `55d80dfb`（2026-07-24）以来、
+  `dtolnay/rust-toolchain` で msvc ターゲットを**インストールしてはいるが**
+  ビルドコマンドで指定していないため、**Ubuntu 上で Linux をビルドしていた疑いが
+  濃い**。`.githooks/pre-push` は `:72` で
+  `cargo clean -p awase-windows --target x86_64-pc-windows-msvc` と msvc の
+  キャッシュだけを消してから `:73` でホストを check しており、
+  「キャッシュ汚染を防ぐ」という当初の意図（同ファイル `:4-6` のコメント）自体が
+  成立していない。なお CI の `dylint` ジョブ（`ci.yml:130`）は
+  `--target x86_64-pc-windows-msvc` を明示しているので影響を受けない。
+  **CI workflow 自体の修正（`--target` 追加）は本 ADR-090 実装の範囲外**であり、
+  別ブランチ `fix/windows-cross-check-missing-target` で対応中である。
+- **ただし「msvc ターゲット未インストール」のほうは、現在アクティブな
+  toolchain（`1.97.1`）に固有の状態であって、過去の実施記録への疑義にはならない。**
+  `RUSTUP_TOOLCHAIN=1.96.1 rustup target list --installed` と
+  `RUSTUP_TOOLCHAIN=nightly-2026-05-22 rustup target list --installed` はどちらも
+  `x86_64-pc-windows-msvc` を含む（2026-08-12 確認）。ADR-089 Phase A/B/C を実装した
+  当時の toolchain はこの 2 つであり、**Phase A/B/C の「Windows 向け型チェック済み」
+  という報告は有効**である。未インストールだったのは 1.97.1 だけで、本作業中に
+  `rustup target add` した。
 - ADR-089 §6 Phase C 実施記録が「`cargo xwin check --target x86_64-pc-windows-msvc
   --all-targets` がグリーン」と書いているのは `--target` 明示ありなので、
   そちらは有効な検証である。**`--target` を省いた呼び方が無効**という話。
@@ -1366,8 +1409,18 @@ contract test 不変条件2・3 の差し替えを数えていなかった。
 §6 ステップ 3 の 10〜16 をすべて実装した。触ったファイルは 4 つ
 （`src/state/ime_profile_driver.rs` / `tests/ime_key_sequence_golden.rs` /
 `docs/adr/081-*.md` / `docs/adr/089-*.md`）で、見積りどおり。
-**実測 net −149 行**（`ime_profile_driver.rs` −273 / 差し替え・doc 追記 +64、
-`ime_key_sequence_golden.rs` −60 / 削除理由コメント +21）。
+**実測 net −238 行**（コード 2 ファイル分。`git show 146934ec --numstat` の実出力:
+`crates/awase-windows/src/state/ime_profile_driver.rs` **+217 / −392 = net −175**、
+`crates/awase-windows/tests/ime_key_sequence_golden.rs` **+17 / −80 = net −63**。
+同コミットに含まれる ADR 3 ファイルの doc 追記（`081-*.md` +123/−9、
+`089-*.md` +26/−8、`090-*.md` +46/−0）は「コードの純減」には数えない）。
+
+> **2026-08-12 の独立レビューで訂正**: 本記録は当初「実測 net −149 行
+> （`ime_profile_driver.rs` −273 / +64、`ime_key_sequence_golden.rs` −60 / +21）」
+> と書いていた。この内訳自体の合計は −248 で、掲げた −149 とも食い違って
+> いた（自己矛盾）。`git show 146934ec --numstat` を実行して正しい値
+> （−175 と −63、合計 **−238**）へ差し替えた。**行数の誤りであって、
+> コミット `146934ec` の内容そのものに問題は見つかっていない。**
 
 | 項 | 実装 |
 |---|---|
@@ -1520,17 +1573,20 @@ CI の `windows-build` ジョブは引き続き本物の `characterize_strategy`
 |---|---|---|---|---|---|---|---|
 | 1 | **C** | 観測ストアの裏口を可視性で塞ぐ + 閉じられない witness の理由確定 | 高 | 小 | Linux | 無し | **実施済み**（§2.C.6） |
 | 2 | **B** | `ConvergedReceipt` 配線 + `most_recent_trusted_after` を private 化 | 高 | 小〜中 | Linux | 無し（bit-identical） | **実施済み**（§2.B.5） |
-| 3 | **F** | ADR-081 Phase 1d/1e 凍結 + `ImeProfileDriver` の縮小 | 中〜高 | 中（実測 net −149 行） | Linux | 無し（未配線コードの削除） | **実施済み**（§2.F.6） |
+| 3 | **F** | ADR-081 Phase 1d/1e 凍結 + `ImeProfileDriver` の縮小 | 中〜高 | 中（実測 net −238 行） | Linux | 無し（未配線コードの削除） | **実施済み**（§2.F.6） |
 | 4 | **E** | dylint 2 crate の恒久方針を確定（ドキュメントのみ） | 中 | 極小 | — | 無し | **実施済み**（§2.E.5） |
 | 5 | **A-1** | `ActuationOrder` を全入口へ配線（shadow モード） | 中〜高 | 中 | Linux | 無し（ログ/journal のみ増える） | **実施済み**（§2.A.6）。**実機ソーク（item 23）は未実施** |
 | 6 | **D** | 非同期チェーンの `caps` 再抽選化 | 中 | 中 | Linux + **実機ソーク** | 有り（等価のはず） | **未着手** |
 | 7 | **A-2** | warrant の強制（入口ごとに 1 つずつ） | 高（価値）／低（着手可能性） | 大 | **実機ソーク必須** | **有り（最大 9 通り）** | **未着手**（A-1 の shadow ログが取れるまで着手不可） |
 | 8 | **G** | golden の stale な名前を直す | 低 | 極小 | CI（`windows-build`） | 無し | **実施済み**（§2.G.6） |
 
-**F の規模は起票時の見積り（net −280〜330 行）より小さかった**——F-R4 の内訳は
-`#[cfg(test)]` 内の parity / 予算テスト群を ~150 行と見積もっていたが、実際に
-削除したのは重複していた assert だけで、残す 3 契約のテストは形を変えて残った
-（§2.F.6）。
+**F の実測は net −238 行**（コード 2 ファイル分、§2.F.6）で、起票時の見積り
+**net −280〜330 行の下限を 42 行下回った**（−15%）。桁は合っており、
+**見積りはおおむね妥当だった**——「大きく外した」という話ではない。
+ずれの原因は F-R4 の内訳のうち `#[cfg(test)]` 内の parity / 予算テスト群を
+~150 行と見積もっていた点で、実際に消えたのは重複していた assert だけで、
+残す 3 契約のテストは形を変えて残った（＝差し替えで足し戻す分が見積りより
+多かった）。
 
 ### 順序の根拠
 
@@ -1787,7 +1843,8 @@ ADR-087 Phase 3 の差分テストが「判明した中で最大の挙動変化�
 18. `ImeStateHub::warrant_context(now, now_ms)` を新設する（INV-48）。
     `intent_store` は private フィールドのままにし、この 1 本だけが読む。
 19. `state/actuation_chain.rs` に `ActuationOrder` を新設する（INV-47）。
-20. 実 actuation 入口（外部 8 経路）を `ActuationOrder::issue()` 経由へ移す。
+20. 実 actuation 入口（外部 8 needle 分。**実装時に起案点としては 11 箇所と
+    判明した**——§2.A.6 の A-1' 行）を `ActuationOrder::issue()` 経由へ移す。
     `set_ime_open` トレイト経路の 2 件は
     `WindowsPlatform::set_ime_open_ordered` へ移し、トレイトメソッドを
     死んだ入口として doc に明記する（期待値 2 → 0）。**同時に
@@ -1911,6 +1968,32 @@ ADR-087 Phase 3 の差分テストが「判明した中で最大の挙動変化�
    `probe_budget_ms` と同じく `.claude/rules/tuning-constants.md` の実測義務が
    かかるため、実機の測定なしに設計だけ進めても値が決まらない。
    **「ADR-081 の不変条件1 は達成済み」と書かないこと**が本項の目的である。
+
+9. **【本 ADR のどの項にも属さない申し送り】`cargo xwin` の `--target` 欠落は
+   pre-commit だけでなく pre-push と CI にも及ぶ**（詳細は §2.A.6 の
+   「検証環境の欠陥を 1 件発見した」）。A-1 実施中に
+   `.git/hooks/pre-commit` の `cargo xwin check -p awase-windows` が
+   `--target` を持たない（＝ホストの Linux を check している）ことに気づいたが、
+   2026-08-12 の独立レビューで**同じ穴が次の 2 箇所にもある**ことが確定した:
+
+   | 箇所 | コマンド | 状態 |
+   |---|---|---|
+   | `.git/hooks/pre-commit` | `cargo xwin check -p awase-windows` | `--target` 無し |
+   | `.githooks/pre-push:73` | `cargo xwin check -p awase-windows` | `--target` 無し。直前の `:72` は `cargo clean -p awase-windows --target x86_64-pc-windows-msvc` と msvc 側のキャッシュだけ消しており、同ファイル `:4-6` が謳う「キャッシュ汚染防止」が成立していない |
+   | `.github/workflows/ci.yml:72`（`windows-cross-check` ジョブ） | `cargo xwin build --tests -p awase-windows` | `--target` 無し。`dtolnay/rust-toolchain` の `targets: x86_64-pc-windows-msvc` で**ターゲットは入れているが指定していない**ため、mingw → MSVC 切替コミット `55d80dfb`（2026-07-24）以来 **Ubuntu 上で Linux をビルドしていた疑いが濃い** |
+   | `.github/workflows/ci.yml:130`（`dylint` ジョブ） | `cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` | **`--target` 明示あり。影響なし** |
+
+   **`--target` の追加そのものは本 ADR-090 の範囲外**であり、別ブランチ
+   `fix/windows-cross-check-missing-target` で対応中である。ここには
+   「A-1 実施記録の pre-commit という書き方は範囲が狭すぎた」という訂正だけを
+   残す。
+
+   **一方で「msvc ターゲット未インストール」は過去の実施記録への疑義にならない。**
+   未インストールだったのは現在アクティブな `1.97.1` だけで、ADR-089
+   Phase A/B/C を実装した当時の toolchain（`1.96.1` と
+   `nightly-2026-05-22`）はどちらも `x86_64-pc-windows-msvc` を持っている
+   （2026-08-12 に `RUSTUP_TOOLCHAIN=<tc> rustup target list --installed` で確認）。
+   **Phase A/B/C の「Windows 向け型チェック済み」という報告は有効**である。
 
 ---
 
