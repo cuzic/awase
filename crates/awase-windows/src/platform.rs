@@ -1020,7 +1020,7 @@ impl WindowsPlatform {
     /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
-    /// 戦略選択と実行は [`crate::ime_controller::CONTROLLER`] が唯一の SSOT として担う。
+    /// 戦略選択と実行は [`crate::ime_controller::ImeController`] が唯一の SSOT として担う。
     /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
     // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
     // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
@@ -1032,7 +1032,7 @@ impl WindowsPlatform {
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
         let open = order.open();
-        let outcome = crate::ime_controller::CONTROLLER.apply(order, view);
+        let outcome = crate::ime_controller::ImeController::apply(order, view);
         log::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,

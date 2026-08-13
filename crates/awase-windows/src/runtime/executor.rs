@@ -759,7 +759,7 @@ impl DecisionExecutor {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
-        let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+        let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
@@ -850,7 +850,7 @@ impl DecisionExecutor {
             // confident=false → already_matched=false → 必ず apply する」という設計意図
             // だったが、`belief.confident` を読んで already_matched 判定に使う本番コードは
             // 現在存在しない（`already_matched`/`AlreadyMatched` は
-            // `ime_controller::CONTROLLER.apply` が `view.control.shadow_on` から独立に
+            // `ime_controller::ImeController::apply` が `view.control.shadow_on` から独立に
             // 判定する）。`belief.confident` の本番消費者は診断ログ
             // （`platform.rs::apply_ime_open_with_view` の `log::debug!`）のみ。
             let now_ms = crate::hook::current_tick_ms();

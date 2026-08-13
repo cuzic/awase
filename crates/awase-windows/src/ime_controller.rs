@@ -394,6 +394,15 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
 /// 旧 `apply_skipping_imm`（async IMM が `Failed` を返した後の再走査）は
 /// **撤去した**。ImmCross が chain の要素になったことでフォールスルーは
 /// `run_chain_async` が自動的に行う（`runtime/open_chain.rs`）。
+///
+/// # なぜインスタンスを持たない（すべて関連関数なのか）
+///
+/// Phase B で `strategies` フィールドが消え（chain は `caps(p, k).chain` /
+/// `WriteMechanism::ALL` が SSOT、ADR-089 §2.3・§2.8）、この型は状態を 1 つも
+/// 持たない ZST になった。したがって `&self` を取る意味が無く、
+/// **`ImeController::apply(..)` のような関連関数として呼ぶ**。
+/// 状態を持たせる方向（`ImeStateHub` を直接読む等）は ADR-090 §4.2 で
+/// `with_app` 再入を理由に却下済みなので、将来 `self` が要る見込みも無い。
 pub(crate) struct ImeController;
 
 /// A-1 shadow の測定点（ADR-090 §2.A 設計案 2、§6 ステップ 5 item 21）。
@@ -428,15 +437,11 @@ pub(crate) fn log_shadow_warrant(chain: &str, order: &ActuationOrder) {
 }
 
 impl ImeController {
-    pub(crate) const fn new() -> Self {
-        Self
-    }
-
     /// コンテキストに応じた機構チェーンを走査して IME を設定する（同期経路）。
     ///
     /// 機構が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の
     /// `SendMessageTimeout` タイムアウト）、次の適用可能な機構へフォールスルーする。
-    pub(crate) fn apply(&self, order: ActuationOrder, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply(order: ActuationOrder, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
         // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
         // 書き込みは止めず `Authorization::LegacyUnwarranted { would_have_blocked }`
@@ -474,7 +479,7 @@ impl ImeController {
     /// `TsfNative` の chain は `[GjiDirect]` / `[MsImeDirect]` なので、
     /// 「chain 中で最初に適用可能な要素の index が 0 か」だけを見ると真になって
     /// しまい、GJI 経路が誤って async 分岐へ流れる。
-    pub(crate) fn imm_cross_is_first_applicable(&self, view: &ImeControlView<'_>) -> bool {
+    pub(crate) fn imm_cross_is_first_applicable(view: &ImeControlView<'_>) -> bool {
         let chain = caps_chain_for(view);
         chain.first() == Some(&WriteMechanism::ImmCross)
             && chain.iter().position(|m| mechanism_is_applicable(*m, view)) == Some(0)
@@ -494,12 +499,10 @@ fn caps_chain_for(view: &ImeControlView<'_>) -> &'static [WriteMechanism] {
     .chain
 }
 
-/// モジュール公開のコントローラインスタンス。
-///
-/// `WindowsPlatform::apply_ime_open` と `DecisionExecutor::dispatch_effect` の
-/// async branch 経路の双方から参照される（ImmCross が first applicable かどうかで
-/// async / sync 経路を切り替えるため、両所で同じインスタンスを共有する必要がある）。
-pub(crate) static CONTROLLER: ImeController = ImeController::new();
+// 旧 `pub(crate) static CONTROLLER: ImeController` は撤去した。Phase B で
+// `strategies` フィールドが消えて `ImeController` が ZST になり、
+// 「両所で同じインスタンスを共有する」という当時の理由（状態の共有）が
+// 実体を失ったため。呼び出しは `ImeController::apply(..)` 等の関連関数で行う。
 
 // ── キャラクタライゼーションテスト用シーム ──────────────────────────
 //
@@ -521,7 +524,7 @@ impl ImeController {
     /// （`chain[1..]` が空になる組み合わせがある）が変わって golden が壊れる。
     /// **caps chain が ALL 走査と同じ結論になること**は
     /// `caps_chain_matches_legacy_all_scan` が別途固定する。
-    fn first_applicable_name(&self, view: &ImeControlView<'_>) -> &'static str {
+    fn first_applicable_name(view: &ImeControlView<'_>) -> &'static str {
         WriteMechanism::ALL
             .iter()
             .find(|m| mechanism_is_applicable(**m, view))
@@ -530,7 +533,7 @@ impl ImeController {
 
     /// `ImmCross` を除いた（async IMM が `Failed` を返した後の）フォールバック
     /// 選択の名前。`run_chain_async` が ImmCross の `Failed` 後に辿る範囲と同じ。
-    fn first_applicable_name_skipping_imm(&self, view: &ImeControlView<'_>) -> &'static str {
+    fn first_applicable_name_skipping_imm(view: &ImeControlView<'_>) -> &'static str {
         WriteMechanism::ALL[1..]
             .iter()
             .find(|m| mechanism_is_applicable(**m, view))
@@ -582,9 +585,9 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
         belief_input_mode: awase::engine::InputModeState::Unknown,
     };
     if skip_imm {
-        CONTROLLER.first_applicable_name_skipping_imm(&view)
+        ImeController::first_applicable_name_skipping_imm(&view)
     } else {
-        CONTROLLER.first_applicable_name(&view)
+        ImeController::first_applicable_name(&view)
     }
 }
 
@@ -691,7 +694,7 @@ mod tests {
                 .position(|m| mechanism_is_applicable(*m, &view))
                 == Some(0);
             assert_eq!(
-                CONTROLLER.imm_cross_is_first_applicable(&view),
+                ImeController::imm_cross_is_first_applicable(&view),
                 legacy,
                 "{profile:?} × {kind:?}"
             );

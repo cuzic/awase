@@ -934,7 +934,8 @@ impl Runtime {
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.platform_state.ime.effective_open() {
             let view = self.shadow_ime_control_view();
-            let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+            let imm_first =
+                crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
                 self.platform_state.ime.mirror_applied_open(false, tick_ms);
@@ -967,7 +968,7 @@ impl Runtime {
                 });
             } else {
                 let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
-                let outcome = crate::ime_controller::CONTROLLER.apply(order, &view);
+                let outcome = crate::ime_controller::ImeController::apply(order, &view);
                 // B+C+D(noop)+E
                 self.on_ime_apply_complete(
                     false,
