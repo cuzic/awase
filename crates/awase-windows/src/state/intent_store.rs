@@ -51,6 +51,33 @@ pub struct RecordedTargetIntent {
     pub recorded_at_ms: TickMs,
 }
 
+/// [`IntentStore::resolve_effective_open`] の判定内訳。
+///
+/// `intent` が `Some` かつ `value != shadow_open` のときだけ「実際に
+/// 上書きした」ことになる（`ImeStateHub::effective_open()` の INFO ログは
+/// この遷移でのみ出す）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntentOverride {
+    /// 最終的な belief 値。
+    pub value: bool,
+    /// 上書きに使ったエントリ。`None` なら shadow をそのまま採用した。
+    pub intent: Option<RecordedTargetIntent>,
+}
+
+/// [`IntentStore::invalidate_for_cache_restore`] の判定結果（BUG-51 追補 v3 修正2a）。
+///
+/// 呼び出し元（`ImeStateHub::apply_hwnd_cache_restore`）は `Kept` のときだけ
+/// INFO ログを出す。エントリの削除自体はこのメソッドの中で完結する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheRestoreVerdict {
+    /// 有効な明示意図が無かった（未記録または TTL 超過）。掃除だけ行った。
+    NoIntent,
+    /// キャッシュのほうが新しい（同時刻を含む）ため明示意図を無効化した。
+    Invalidated { intent_recorded_at_ms: u64 },
+    /// 明示意図のほうが新しいためエントリを保持した（キャッシュに負けさせない）。
+    Kept { intent_recorded_at_ms: u64 },
+}
+
 /// 対象ごとの明示意図を保持するストア。
 #[derive(Debug, Default, Clone)]
 pub struct IntentStore {
@@ -108,6 +135,80 @@ impl IntentStore {
             return None;
         }
         Some(entry)
+    }
+
+    /// belief（`ImeModel::effective_open()` の値）に明示意図の上書きを重ねる
+    /// **判定本体**（BUG-51 追補 v3）。`ImeStateHub::effective_open()` は
+    /// ログの重複排除を除きこのメソッドの結果をそのまま返す。
+    ///
+    /// `focus` が `None`（フォーカス未確定）か、その対象に有効なエントリが
+    /// 無ければ `shadow_open` をそのまま返す。
+    ///
+    /// # なぜ判定を `platform_state.rs` から切り出すのか
+    ///
+    /// `state/platform_state.rs` は `#[cfg(windows)]` であり、その中の
+    /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
+    /// **1 件もコンパイルされない**（BUG-51 追補 v3 の回帰テスト群がまさに
+    /// それで、Windows クロスチェックでの型検査しか受けていなかった）。
+    /// 判定本体をこの ungated モジュールへ置くことで、
+    /// `tests/intent_store_effective_open.rs` が Linux CI で
+    /// 「壊れた `ConvOpenInference` 1 件だけでは `effective_open()` が反転
+    /// しない」ことを実際に走らせて固定できる。
+    #[must_use]
+    pub fn resolve_effective_open(
+        &self,
+        focus: Option<HwndId>,
+        shadow_open: bool,
+        now: TickMs,
+    ) -> IntentOverride {
+        focus.and_then(|target| self.lookup(target, now)).map_or(
+            IntentOverride {
+                value: shadow_open,
+                intent: None,
+            },
+            |intent| IntentOverride {
+                value: intent.open,
+                intent: Some(*intent),
+            },
+        )
+    }
+
+    /// `HwndCacheRestored`（`ImeStateHub::apply_hwnd_cache_restore`）が、対象の
+    /// 明示意図を無効化してよいかを判定し、必要なら実際に削除する**判定本体**
+    /// （BUG-51 追補 v3 修正2a）。
+    ///
+    /// 無条件 `remove()` は「フォーカス滞在 100ms 未満（`MIN_FOCUS_DURATION_MS`）
+    /// だと退場時の cache 保存自体がスキップされる」ケース（BUG-57 型のフォーカス
+    /// 奪取）で、たった今の新しい明示意図より古いキャッシュを勝たせてしまう
+    /// （pre-mortem #2）。記録時刻を比較し、キャッシュのほうが新しい（**同時刻を
+    /// 含む** = 「最新の決定が勝つ」）場合のみ無効化する。
+    ///
+    /// `resolve_effective_open()` と同じ理由でこの ungated モジュールに置く——
+    /// `state/platform_state.rs` は `#[cfg(windows)]` で、そこに書いた
+    /// `mod tests` は Linux CI では 1 件もコンパイルされない（追補4）。
+    pub fn invalidate_for_cache_restore(
+        &mut self,
+        target: HwndId,
+        cache_recorded_ms: u64,
+        now: TickMs,
+    ) -> CacheRestoreVerdict {
+        let intent_recorded_at_ms = self.lookup(target, now).map(|i| i.recorded_at_ms.0);
+        match intent_recorded_at_ms {
+            // 意図が無い/期限切れ → remove は無害な掃除（冪等）。
+            None => {
+                self.remove(target);
+                CacheRestoreVerdict::NoIntent
+            }
+            Some(intent_ms) if cache_recorded_ms >= intent_ms => {
+                self.remove(target);
+                CacheRestoreVerdict::Invalidated {
+                    intent_recorded_at_ms: intent_ms,
+                }
+            }
+            Some(intent_ms) => CacheRestoreVerdict::Kept {
+                intent_recorded_at_ms: intent_ms,
+            },
+        }
     }
 
     /// 対象のエントリを削除する。
@@ -245,6 +346,96 @@ mod tests {
         store.remove(TARGET_A);
         assert!(store.lookup(TARGET_A, TickMs(0)).is_none());
         assert!(store.lookup(TARGET_B, TickMs(0)).is_some());
+    }
+
+    // ── invalidate_for_cache_restore（修正2a、追補4 で Linux 実行可能化）─────
+
+    #[test]
+    fn cache_restore_keeps_intent_newer_than_cache() {
+        // BUG-57 型: フォーカス滞在 100ms 未満だと退場時の cache 保存が
+        // スキップされ、たった今の明示意図より古いキャッシュが復元される。
+        let mut store = IntentStore::default();
+        store.record(
+            TARGET_A,
+            false,
+            UserIntentSource::PhysicalImeKey,
+            TickMs(500),
+        );
+        let verdict = store.invalidate_for_cache_restore(TARGET_A, 100, TickMs(600));
+        assert_eq!(
+            verdict,
+            CacheRestoreVerdict::Kept {
+                intent_recorded_at_ms: 500
+            }
+        );
+        assert!(
+            store.lookup(TARGET_A, TickMs(600)).is_some(),
+            "キャッシュより新しい明示意図はエントリごと残る"
+        );
+    }
+
+    #[test]
+    fn cache_restore_invalidates_intent_older_than_cache() {
+        let mut store = IntentStore::default();
+        store.record(
+            TARGET_A,
+            false,
+            UserIntentSource::PhysicalImeKey,
+            TickMs(100),
+        );
+        let verdict = store.invalidate_for_cache_restore(TARGET_A, 500, TickMs(600));
+        assert_eq!(
+            verdict,
+            CacheRestoreVerdict::Invalidated {
+                intent_recorded_at_ms: 100
+            }
+        );
+        assert!(store.lookup(TARGET_A, TickMs(600)).is_none());
+    }
+
+    #[test]
+    fn cache_restore_invalidates_intent_recorded_at_the_same_ms() {
+        // 同時刻はキャッシュ側の勝ち（v1 と同じ「最新の決定が勝つ」の境界）。
+        let mut store = IntentStore::default();
+        store.record(
+            TARGET_A,
+            false,
+            UserIntentSource::PhysicalImeKey,
+            TickMs(300),
+        );
+        assert_eq!(
+            store.invalidate_for_cache_restore(TARGET_A, 300, TickMs(300)),
+            CacheRestoreVerdict::Invalidated {
+                intent_recorded_at_ms: 300
+            }
+        );
+        assert!(store.lookup(TARGET_A, TickMs(300)).is_none());
+    }
+
+    #[test]
+    fn cache_restore_sweeps_expired_intent_as_no_intent() {
+        let mut store = IntentStore::default();
+        store.record(TARGET_A, false, UserIntentSource::PhysicalImeKey, TickMs(0));
+        let off_ttl = crate::tuning::EXPLICIT_OFF_INTENT_TTL_MS;
+        // 期限切れなら「意図より新しいキャッシュ」判定に入らず掃除だけ行う。
+        assert_eq!(
+            store.invalidate_for_cache_restore(TARGET_A, 0, TickMs(off_ttl + 1)),
+            CacheRestoreVerdict::NoIntent
+        );
+        assert!(store.lookup(TARGET_A, TickMs(off_ttl + 1)).is_none());
+    }
+
+    #[test]
+    fn cache_restore_of_one_target_does_not_touch_another() {
+        let mut store = IntentStore::default();
+        store.record(TARGET_A, false, UserIntentSource::PhysicalImeKey, TickMs(0));
+        store.record(TARGET_B, false, UserIntentSource::PhysicalImeKey, TickMs(0));
+        let _ = store.invalidate_for_cache_restore(TARGET_A, 100, TickMs(100));
+        assert!(store.lookup(TARGET_A, TickMs(100)).is_none());
+        assert!(
+            store.lookup(TARGET_B, TickMs(100)).is_some(),
+            "別対象のエントリは cache restore で消えない"
+        );
     }
 
     #[test]

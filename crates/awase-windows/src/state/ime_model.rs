@@ -179,10 +179,12 @@ pub struct ImeModel {
 
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
-    /// `FocusChanged` の reducer でのみ更新する write-only なフィールド
-    /// （読み取り側は `current_focus()` アクセサのみ、まだ本番判定には使わない）。
-    /// `WarrantContext.target` に渡す値の供給源を用意するのが目的で、
-    /// `issue_open_warrant()` への実配線（read 側）は Phase 3 本体のスコープ。
+    /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
+    /// `ImeStateHub::effective_open()`/`record_explicit_intent()`/
+    /// `apply_hwnd_cache_restore()`/`reset_stale_ime_on_for_imm_broken()`
+    /// （BUG-51 追補 v3、IntentStore の対象キーとして）が本番判定に使用する
+    /// （`WarrantContext.target` 用の `issue_open_warrant()` への実配線は
+    /// 依然 Phase 3 本体のスコープ）。
     current_focus: Option<HwndId>,
 }
 

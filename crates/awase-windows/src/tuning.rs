@@ -296,7 +296,22 @@ pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
 /// （実 precedent: `HwndImeCache`（`focus/hwnd_cache.rs`）は
 /// `HWND_CACHE_MAX_AGE_MS` で必ず期限を切っている）。
 ///
-/// **未実測・暫定値**: 「意図的に ON より長い」以外の根拠は無く、
-/// `HWND_CACHE_MAX_AGE_MS`（既存の「per-対象 IME 状態キャッシュはどれだけ
-/// 保持するか」という同種の判断の precedent）と同じ値を仮に採用した。
-pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = HWND_CACHE_MAX_AGE_MS;
+/// この定数が答えるべき問いは「明示意図はどれだけ長く有効か」ではなく
+/// 「`last_intent` を消すフォーカス断絶（奪取→復帰）のギャップを何秒まで
+/// カバーするか」である（2026-08-11 BUG-51 追補 v3、pre-mortem #2 で再定義）。
+/// 実際に観測された断絶は sub-second〜数秒のオーダー: BUG-57 の Pushbullet
+/// 通知による奪取（sub-second）、スリープ復帰直後のフォーカス再構築（数秒）。
+/// 既存の同種判断 `EXPLICIT_OFF_CACHE_SUPPRESS_MS`（`runtime/focus_tracking.rs`、
+/// 10秒 = 「明示 OFF をフォーカス遷移からどれだけ保護するか」の precedent）と
+/// `EXPLICIT_ON_INTENT_TTL_MS`（10秒）に対し、OFF 側は非対称に3倍の 30秒とし、
+/// 観測オーダー（数秒）に対して十分なマージンを持たせる。
+///
+/// 当初 `HWND_CACHE_MAX_AGE_MS`（1時間）を転用していたが、`IntentStore` が
+/// `effective_open()` から実際に読まれるようになると、誤記録・stale 化などの
+/// あらゆる失敗モードの最悪持続時間そのものになるため、30秒へ短縮した。
+/// なお `HwndImeCache`（`(pid, class)` キー、`HWND_CACHE_MAX_AGE_MS`=1時間）は
+/// `IntentStore` とは別経路として残る（`docs/known-bugs.md` BUG-51 追補の
+/// 残存リスク参照——`effective_open()` の結果を洗浄済みの値として保存し、
+/// `HwndCacheRestored` で `desired_open` へ再注入するため、この30秒 TTL の
+/// 外側で最大1時間 IntentStore 由来の値が生き残る経路が別途存在する）。
+pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
