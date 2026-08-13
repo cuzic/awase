@@ -31,10 +31,115 @@ pub enum FeedbackPolicy {
 
 /// actuation 試行の帰結。`GaveUp`/deadline超過時は observations ストアへ一切書き込まない
 /// （これを破るとBUG-33と同型の収束偽装バグになる — 絶対に守ること）。
+///
+/// **ADR-090 §2.B 設計案 1 で 2 値から 4 値へ広げた。** 読み戻し
+/// （`ObservationStore::read_back`）の帰結を表すには、旧来の
+/// `Confirmed` / `GaveUp` では足りない——`ir_apply_drift_correction` が実際に
+/// 分岐している判定は「give-up 後に外界が動いた」（`ExternalChange`）と
+/// 「まだ収束していないので再送する」（`Pending`）の 2 つを含んでいた。
+/// 旧実装の `ConvergedReceipt` は `converged: bool` しか持たず、
+/// `resolution()` がそこから 2 値を再構成する**非可逆**な形だったため、
+/// この 2 つを表現できなかった（ADR-089 §9-16）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
+    /// 読み戻しが desired と一致した（`Read`）。
     Confirmed,
+    /// `max_attempts` 到達で打ち切った（`Blind`）。give-up 後にまだ外界が
+    /// 動いていない場合も含む（parked のまま）。
     GaveUp,
+    /// give-up 後に「値は不問の」新しい観測が来た（＝外界が動いた）。
+    /// 試行を破棄して次 tick でやり直す合図。
+    ExternalChange,
+    /// まだ収束していない（再送する）。
+    Pending,
+}
+
+/// 読み戻し（`ReadBack`）の帰結（ADR-089 §2.5、INV-46）。
+///
+/// # なぜ専用型なのか — 収束偽装を型で不可能にする
+///
+/// **[`Observed<E>`] にも [`AnyObservation`] にも変換手段を提供しない**
+/// （`From` / `Into` / コンストラクタ引数のいずれも無い）。これは ADR-080
+/// 不変条件6「`ReadBack` の産物を観測として記録しない」の型化であり、
+/// BUG-33 型の**収束偽装**——give-up したのに観測を書いて収束したように
+/// 見せる——を構造的に不可能にする。
+///
+/// 「その API が存在しない」形の保証なので、**release ビルドでも有効で
+/// `cfg` にも依存しない**（ADR-089 §8.1）。
+///
+/// [`Observed<E>`]: super::evidence::Observed
+/// [`AnyObservation`]: super::evidence::AnyObservation
+///
+/// # compile-fail ケース（ADR-089 §7 ケース3）
+///
+/// 通る双子（witness 構築子を通った観測は `AnyObservation` になれる）:
+///
+/// ```
+/// use awase_windows::state::evidence::{AnyObservation, HeuristicDefault, Observed};
+/// use awase_windows::state::ime_event::{HwndId, ImePolicyProfile};
+///
+/// let observed = Observed::<HeuristicDefault>::at_startup(
+///     ImePolicyProfile::ImmCross,
+///     true,
+///     HwndId(1),
+///     0,
+/// );
+/// let any: AnyObservation = observed.into();
+/// assert!(any.open());
+/// ```
+///
+/// `ConvergedReceipt` からは作れない（`Observed<E>` を receipt に
+/// 差し替えただけ）:
+///
+/// ```compile_fail
+/// use awase_windows::state::evidence::AnyObservation;
+/// use awase_windows::state::ime_actuation::{ConvergedReceipt, Resolution};
+///
+/// let receipt = ConvergedReceipt::new(Resolution::Confirmed, 3);
+/// // error[E0277]: the trait bound `AnyObservation: From<ConvergedReceipt>`
+/// //               is not satisfied
+/// let _any: AnyObservation = receipt.into();
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "ReadBack の帰結は呼び出し元が処理すること（観測へは変換できない、INV-46）"]
+pub struct ConvergedReceipt {
+    /// **ADR-090 §2.B: `converged: bool` から `Resolution` そのものへ変えた。**
+    /// `bool` に潰すと `ExternalChange` / `Pending` が `GaveUp` と区別できず、
+    /// `resolution()` が非可逆になる。
+    resolution: Resolution,
+    attempts: u32,
+}
+
+impl ConvergedReceipt {
+    /// 唯一の構築経路。`Resolution` と試行回数から作る。
+    ///
+    /// **`pub` のままにする**（ADR-090 §4.4）——receipt を偽造しても
+    /// `AnyObservation` へは変換できない（INV-46 がそこを守っている）ので
+    /// 害が無く、テストが receipt を組み立てられるほうが有用である。
+    pub const fn new(resolution: Resolution, attempts: u32) -> Self {
+        Self {
+            resolution,
+            attempts,
+        }
+    }
+
+    /// 収束したか（`Resolution::Confirmed`）。
+    #[must_use]
+    pub const fn converged(&self) -> bool {
+        matches!(self.resolution, Resolution::Confirmed)
+    }
+
+    /// この episode で消費した試行回数。
+    #[must_use]
+    pub const fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    /// 元の `Resolution`。
+    #[must_use]
+    pub const fn resolution(&self) -> Resolution {
+        self.resolution
+    }
 }
 
 /// `decide_actuation_action` の判定結果。次に actuate すべきか、打ち切るべきか。

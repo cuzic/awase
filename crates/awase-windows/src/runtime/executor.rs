@@ -54,6 +54,33 @@ pub(crate) struct BatchResult {
     pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
+/// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
+///
+/// `DecisionExecutor` は `Runtime` を持たないため
+/// `Runtime::issue_actuation_order` を使えないが、4 つの公開入口
+/// （`execute_from_hook` / `execute_from_loop` / `drain_deferred` /
+/// `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を受け取っている**ので、
+/// それを `dispatch_ime_set_open` まで通すだけで warrant を発行できる。
+///
+/// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
+/// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
+/// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
+/// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
+/// （ADR-090 §2.A.2(1)・§4.2）。
+fn issue_order(
+    ime: &ImeStateHub,
+    open: bool,
+    strategy: &'static str,
+) -> crate::state::actuation_chain::ActuationOrder {
+    let origin = crate::state::event_origin::EventOrigin::new(
+        crate::state::event_origin::EventSource::SelfActuated { strategy },
+        crate::state::event_origin::Generation::INITIAL,
+    );
+    let now = std::time::Instant::now();
+    let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+    ime.issue_actuation_order(open, origin, now, now_ms)
+}
+
 pub(crate) struct DecisionExecutor {
     /// Effects キュー（FIFO 順序保証）
     queue: VecDeque<Effect>,
@@ -196,7 +223,7 @@ impl DecisionExecutor {
         let mut sync_outcomes = Vec::new();
         for effect in effects {
             let generation = ime.model().pending_generation();
-            if let Some(o) = self.execute_one(platform, effect, generation) {
+            if let Some(o) = self.execute_one(platform, ime, effect, generation) {
                 sync_outcomes.push(o);
             }
         }
@@ -240,7 +267,7 @@ impl DecisionExecutor {
             }
             let effect = Effect::Input(InputEffect::ReinjectKey(event));
             let generation = ime.model().pending_generation();
-            if let Some(o) = self.execute_one(platform, effect, generation) {
+            if let Some(o) = self.execute_one(platform, ime, effect, generation) {
                 sync_outcomes.push(o);
             }
             reinject_guard_passed = true;
@@ -269,7 +296,7 @@ impl DecisionExecutor {
                 reinject_guard_passed = false;
             }
             let generation = ime.model().pending_generation();
-            if let Some(o) = self.execute_one(platform, effect, generation) {
+            if let Some(o) = self.execute_one(platform, ime, effect, generation) {
                 sync_outcomes.push(o);
             }
         }
@@ -426,7 +453,7 @@ impl DecisionExecutor {
                 for effect in effects {
                     if matches!(effect, Effect::Timer(_)) {
                         let generation = ime.model().pending_generation();
-                        if let Some(o) = self.execute_one(platform, effect, generation) {
+                        if let Some(o) = self.execute_one(platform, ime, effect, generation) {
                             sync_outcomes.push(o);
                         }
                     } else {
@@ -582,6 +609,7 @@ impl DecisionExecutor {
     fn execute_one(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         effect: Effect,
         generation: Option<u64>,
     ) -> Option<ImeApplyCompletion> {
@@ -589,7 +617,7 @@ impl DecisionExecutor {
             self.handle_reinject(platform, event);
             return None;
         }
-        self.dispatch_effect(platform, effect, generation)
+        self.dispatch_effect(platform, ime, effect, generation)
             .map(|(open, outcome)| {
                 self.update_intra_batch_applied(open, outcome);
                 ImeApplyCompletion {
@@ -652,6 +680,7 @@ impl DecisionExecutor {
     fn dispatch_effect(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         effect: Effect,
         generation: Option<u64>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
@@ -659,7 +688,7 @@ impl DecisionExecutor {
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
         if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
-            return self.dispatch_ime_set_open(platform, open, generation);
+            return self.dispatch_ime_set_open(platform, ime, open, generation);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
@@ -723,13 +752,14 @@ impl DecisionExecutor {
     fn dispatch_ime_set_open(
         &mut self,
         platform: &WindowsPlatform,
+        ime: &ImeStateHub,
         open: bool,
         generation: Option<u64>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
-        let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+        let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
@@ -757,6 +787,10 @@ impl DecisionExecutor {
             // ImmCross アプリは ir_poll_and_learn で ObservedKana の観測を抑制するため
             // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
             let belief_input_mode = self.belief_input_mode;
+            // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
+            // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
+            // （ADR-090 §4.2）。
+            let order = issue_order(ime, open, "engine_decision_async");
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
             // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
@@ -783,59 +817,19 @@ impl DecisionExecutor {
                     drop(guard);
                     return;
                 };
-                let result = crate::ime::set_ime_open_then_conv_for_target(
-                    target,
-                    open,
-                    conv_after_open,
-                    || {
-                        crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                            .unwrap_or_else(|| focus_gen.wrapping_add(1))
+                // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**として
+                // 実行する。`Failed` のときのフォールスルー（旧
+                // `apply_skipping_imm`）は `run_chain_async` が行うため、ここに
+                // 分岐は書かない（走査規則の SSOT は `state/actuation_chain.rs`）。
+                let outcome = crate::runtime::open_chain::run_open_chain_async(
+                    order,
+                    crate::runtime::open_chain::ImmCrossOp::Targeted {
+                        target,
+                        conv_after_open,
+                        focus_gen,
                     },
                 )
                 .await;
-                if let Some(conv_outcome) = result.conv {
-                    log::debug!("[dispatch-ime] ROMAN 補完結果: {conv_outcome:?}");
-                }
-                let outcome = match result.open {
-                    crate::ime::ActuationOutcome::Written => {
-                        awase::platform::ImeOpenOutcome::Applied
-                    }
-                    crate::ime::ActuationOutcome::Aborted(reason) => {
-                        // INV-14: Aborted は「一度も書いていない」ので Applied 扱いに
-                        // しない。UnsafeToToggle は on_ime_apply_complete の C/D
-                        // （SSOT の applied/belief 書き込み）を一切実行させない
-                        // （apply は行われていないため）。フォールバック
-                        // （apply_skipping_imm の SendInput）も、検証済みでない
-                        // hwnd への意図しない送信を避けるため通さない。
-                        // E（post_ime_refresh）だけは UnsafeToToggle でも走るため、
-                        // Aborted(GenStale) の取りこぼしは 20ms 後の refresh で拾われる
-                        // （opus レビュー指摘 F3、2026-08-08 是正、on_ime_apply_complete 参照）。
-                        log::debug!("[dispatch-ime] open Aborted({reason:?}) → UnsafeToToggle");
-                        awase::platform::ImeOpenOutcome::UnsafeToToggle
-                    }
-                    crate::ime::ActuationOutcome::Failed => {
-                        // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
-                        //         spawn_local はメインスレッドのメッセージループで実行される。
-                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
-                        if actual == Some(open) {
-                            log::debug!(
-                                "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
-                                 already matches desired={open}, skip fallback"
-                            );
-                            awase::platform::ImeOpenOutcome::AlreadyMatched
-                        } else {
-                            log::debug!(
-                                "[apply-ime] ImmCross failed (async), trying fallback \
-                                 (actual ime_on={actual:?})"
-                            );
-                            crate::with_app(|app| {
-                                crate::ime_controller::CONTROLLER
-                                    .apply_skipping_imm(open, &app.shadow_ime_control_view())
-                            })
-                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
-                        }
-                    }
-                };
                 // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
                 // 対称に、完了 outcome を WM 経由で Runtime の単一入口へ委譲する。
                 // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
@@ -856,7 +850,7 @@ impl DecisionExecutor {
             // confident=false → already_matched=false → 必ず apply する」という設計意図
             // だったが、`belief.confident` を読んで already_matched 判定に使う本番コードは
             // 現在存在しない（`already_matched`/`AlreadyMatched` は
-            // `ime_controller::CONTROLLER.apply` が `view.control.shadow_on` から独立に
+            // `ime_controller::ImeController::apply` が `view.control.shadow_on` から独立に
             // 判定する）。`belief.confident` の本番消費者は診断ログ
             // （`platform.rs::apply_ime_open_with_view` の `log::debug!`）のみ。
             let now_ms = crate::hook::current_tick_ms();
@@ -891,7 +885,9 @@ impl DecisionExecutor {
                 conv_mode,
                 view.focus.profile
             );
-            let outcome = platform.apply_ime_open_with_view(open, &view, belief);
+            // ADR-090 §2.A A-1（shadow）。
+            let order = issue_order(ime, open, "engine_decision_sync");
+            let outcome = platform.apply_ime_open_with_view(order, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 log::warn!("apply_ime_open({open}) failed");
             }

@@ -725,16 +725,6 @@ impl PlatformRuntime for WindowsPlatform {
         true
     }
 
-    /// 呼び出し元ゼロ（2026-08-10 確認、ADR-087 §5 Phase 3 item14 実 actuation
-    /// 入口棚卸し）。実際の入口は `apply_ime_open_with_belief`/`_with_view`/
-    /// `_with_applied`（このファイル下部）であり、こちらは誰からも呼ばれない
-    /// trait オーバーライド。`tests/architecture_guard.rs::
-    /// ime_open_actuation_entry_points_are_accounted_for` で呼び出し箇所数 0 を
-    /// 固定している。削除するか実際に使うかは Phase 3 実配線時に判断する。
-    fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        self.apply_ime_open_with_applied(open, None)
-    }
-
     fn post_ime_refresh(&mut self) {
         // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
         // 統合タイマー経由で短い遅延後にリフレッシュする。
@@ -806,6 +796,28 @@ impl PlatformRuntime for WindowsPlatform {
     }
 }
 
+/// ADR-089 §2.4（INV-42）: `GjiFsm` 同期義務の実行口。
+///
+/// ungated 側（`state/gji_direct_mechanism.rs`）は `GjiFsm` に依存できないため
+/// （ADR-065）、同期義務は `GjiFsmSync` という値で受け取り、実 FSM への写像を
+/// ここだけが行う。1 回の同期は `output.gji_on_event(..)` が返す
+/// `Response<GjiAction, GjiTimer>` を `dispatch_gji_response` へ流すところまでを
+/// 含むため、`&mut GjiFsm` ではなく `&mut WindowsPlatform` が要る（§1.3(f)）。
+impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
+    fn sync_gji(&mut self, sync: crate::state::gji_direct_mechanism::GjiFsmSync) {
+        use crate::state::gji_direct_mechanism::GjiFsmSync;
+        match sync {
+            GjiFsmSync::OnImeOn => {
+                // settle 時点の値を読む（receipt 生成時に積むと、actuation 中に
+                // mode が変わった場合に古い値で同期する。ADR-089 §2.4 細目2）。
+                let mode = self.output.injection_mode;
+                self.gji_on_ime_on(mode);
+            }
+            GjiFsmSync::OnImeOff => self.gji_on_ime_off(),
+        }
+    }
+}
+
 impl TsfComposition for WindowsPlatform {
     fn composition_output(&self) -> Option<&dyn awase::platform::CompositionOutput> {
         Some(&self.output)
@@ -825,8 +837,22 @@ impl TsfComposition for WindowsPlatform {
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
+        // ADR-089 §2.4（INV-42/43）: `GjiFsm` 同期義務を `ActuationReceipt` として
+        // 明示的に運ぶ。同期の要否を決める式は
+        // `state/gji_direct_mechanism.rs::legacy_gji_sync_obligation` ただ 1 箇所で
+        // あり（`outcome != UnsafeToToggle`）、ここに条件を書き足してはならない
+        // ——profile 軸でも K 軸でもゲートしないことが INV-42 の本体である。
+        //
+        // receipt は **この呼び出しフレームのローカル値**として持ち、同じフレームで
+        // settle する。`WindowsPlatform` のフィールドに持たせると
+        // `receipt.settle(&mut self)` が `&mut self` からの二重可変借用になる
+        // （ADR-089 §2.4 細目3）。
+        let mut receipt = crate::state::gji_direct_mechanism::ActuationReceipt::new(open, outcome);
         // UnsafeToToggle: 送信しなかったので何もしない（executor 側で早期リターン済みだが念のため）
         if outcome == ImeOpenOutcome::UnsafeToToggle {
+            // 同期義務は無い（`legacy_gji_sync_obligation` が `None`）が、
+            // settle 済みにしないと `Drop` の `debug_assert` が発火する。
+            receipt.settle(self);
             return;
         }
         let effective = match outcome {
@@ -880,14 +906,15 @@ impl TsfComposition for WindowsPlatform {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            let mode = self.output.injection_mode;
-            self.gji_on_ime_on(mode);
+            // `injection_mode` は receipt にも settle の引数にも積まない。
+            // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
+            receipt.settle(self);
             self.output.send_eager_tsf_warmup(Some(effective));
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
-            self.gji_on_ime_off();
+            receipt.settle(self);
         }
     }
 
@@ -979,6 +1006,10 @@ impl WindowsPlatform {
             focus: crate::state::FocusFacts {
                 class_name,
                 profile: self.current_app_profile(),
+                // ADR-089 §6 Phase C item 12: 同期 ROMAN 補完（ADR-086 INV-14）の
+                // `ActuationTarget` 照合基準。`executor.rs::dispatch_ime_set_open` の
+                // async 経路が `ActuationTarget::capture(focus_gen)` に渡すのと同じ値。
+                focus_gen: self.output.ime_mode_focus_gen.get(),
             },
             observed: crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs()),
             control: crate::state::ControlLog { shadow_on },
@@ -989,18 +1020,19 @@ impl WindowsPlatform {
     /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
-    /// 戦略選択と実行は [`crate::ime_controller::CONTROLLER`] が唯一の SSOT として担う。
+    /// 戦略選択と実行は [`crate::ime_controller::ImeController`] が唯一の SSOT として担う。
     /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
     // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
     // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
     #[allow(clippy::unused_self)]
     pub(crate) fn apply_ime_open_with_view(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
-        let outcome = crate::ime_controller::CONTROLLER.apply(open, view);
+        let open = order.open();
+        let outcome = crate::ime_controller::ImeController::apply(order, view);
         log::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,
@@ -1014,12 +1046,12 @@ impl WindowsPlatform {
     /// 呼び出し元が view を持たない場合（refresh / probe 完了後等）のラッパー。
     pub(crate) fn apply_ime_open_with_belief(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
         let view = self.build_ime_control_view(applied);
-        self.apply_ime_open_with_view(open, &view, belief)
+        self.apply_ime_open_with_view(order, &view, belief)
     }
 
     /// shadow のみから自明なビリーフを作る後方互換ラッパー。
@@ -1027,15 +1059,44 @@ impl WindowsPlatform {
     /// ImmCross 非経路かつ EngineIntent 外の呼び出しに使う。
     pub(crate) fn apply_ime_open_with_applied(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
         let shadow_on = applied.is_some_and(|(s, _)| s);
         self.apply_ime_open_with_belief(
-            open,
+            order,
             applied,
             crate::output::OpenBelief::from_shadow(shadow_on),
         )
+    }
+
+    /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版
+    /// （ADR-090 §2.A 設計案 3、§6 ステップ 5 item 20）。
+    ///
+    /// # なぜトレイトメソッドではなくこちらを使うのか
+    ///
+    /// `PlatformRuntime::set_ime_open(&mut self, open: bool) -> bool`
+    /// （`src/platform.rs` の**トレイト定義**）には引数を足せない。実 actuation
+    /// 入口 8 つのうち 2 つ（`ime_refresh.rs` の focus change 強制 OFF と
+    /// drift correction の ImmCross 分岐）がそのトレイトメソッドを通っていたため、
+    /// `WindowsPlatform` の inherent メソッドとして `ActuationOrder` を受ける
+    /// 版を足し、そちらへ移した。**トレイトメソッド側は呼び出し元ゼロの
+    /// 死んだ入口になる**（`ime_open_actuation_entry_points_are_accounted_for`
+    /// が `.set_ime_open(` の本番呼び出し 0 件を固定する）。
+    ///
+    /// A-1 は shadow モードなので、授権が下りていなくても書き込みは止めない。
+    pub(crate) fn set_ime_open_ordered(
+        &mut self,
+        order: crate::state::actuation_chain::ActuationOrder,
+    ) -> bool {
+        crate::ime_controller::log_shadow_warrant("set_ime_open", &order);
+        let open = order.open();
+        // `order` は**値で**受け取り、ここで消費する。1 つの `ActuationOrder`
+        // = 高々 1 回の write という `Actuation` のアフィン性（ADR-089 INV-41）を、
+        // チェーンを通らないこの経路でも保つため——参照で受けると同じ order で
+        // 2 回書けてしまう。
+        drop(order);
+        PlatformRuntime::set_ime_open(self, open)
     }
 
     // ── タイマー問い合わせ ──

@@ -8,6 +8,7 @@
 
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::state::evidence::IntentWitness;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use awase::engine::InputModeState;
@@ -742,9 +743,11 @@ impl Runtime {
                 effective_open: true,
                 confident: true,
             };
+            // ADR-090 §2.A A-1（shadow）。
+            let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
             let outcome = self
                 .platform
-                .apply_ime_open_with_belief(false, None, belief);
+                .apply_ime_open_with_belief(order, None, belief);
             self.on_ime_apply_complete(
                 false,
                 outcome,
@@ -758,13 +761,9 @@ impl Runtime {
             // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
             // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
             // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
-            self.platform_state.ime.handle_engine_activation_sync(
-                target,
-                false,
-                false,
-                generation,
-                now_tick,
-            );
+            self.platform_state
+                .ime
+                .handle_engine_activation_sync(target, false, false, generation, now_tick);
         }
     }
 
@@ -837,10 +836,25 @@ impl Runtime {
             current,
             new_val,
         );
+        // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
+        // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
+        // 型側でも要求するため、ここで None になることは無い。
         match kind {
-            IntentKind::SyncKey => self.platform_state.ime.write_sync_key(new_val, tick_ms),
+            IntentKind::SyncKey => {
+                let Some(witness) = IntentWitness::from_sync_key(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_sync_key(witness, new_val, tick_ms);
+            }
             IntentKind::PhysicalImeKey => {
-                self.platform_state.ime.write_physical_key(new_val, tick_ms);
+                let Some(witness) = IntentWitness::from_physical(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_physical_key(witness, new_val, tick_ms);
             }
         }
         if self.platform_state.ime.effective_open() == current {
@@ -936,33 +950,27 @@ impl Runtime {
         // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
         if !self.platform_state.ime.effective_open() {
             let view = self.shadow_ime_control_view();
-            let imm_first = crate::ime_controller::CONTROLLER.imm_cross_is_first_applicable(&view);
+            let imm_first =
+                crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
                 self.platform_state.ime.mirror_applied_open(false, tick_ms);
+                // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
+                // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
+                // （ADR-090 §4.2）。
+                let order = self.issue_actuation_order(false, "shadow_toggle_off");
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
-                    let ok = crate::ime::set_ime_open_cross_process_async(false).await;
-                    let outcome = if ok {
-                        awase::platform::ImeOpenOutcome::Applied
-                    } else {
-                        let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
-                        if actual == Some(false) {
-                            log::debug!(
-                                "[shadow-toggle] ImmCross failed but actual=OFF already, skip fallback"
-                            );
-                            awase::platform::ImeOpenOutcome::AlreadyMatched
-                        } else {
-                            log::debug!(
-                                "[shadow-toggle] ImmCross failed (async, actual={actual:?}), trying fallback"
-                            );
-                            crate::with_app(|app| {
-                                crate::ime_controller::CONTROLLER
-                                    .apply_skipping_imm(false, &app.shadow_ime_control_view())
-                            })
-                            .unwrap_or(awase::platform::ImeOpenOutcome::Failed)
-                        }
-                    };
+                    // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**と
+                    // して実行する。`Failed` のときのフォールスルー（旧
+                    // `apply_skipping_imm`）は `run_chain_async` が行う。
+                    // 宛先の捕獲（ADR-086 INV-14）はこの経路では未移行のため
+                    // `Untargeted` のまま（Phase C）。
+                    let outcome = crate::runtime::open_chain::run_open_chain_async(
+                        order,
+                        crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                    )
+                    .await;
                     // B+C(ts更新)+D(noop)+E
                     let _ = crate::with_app(|app| {
                         app.on_ime_apply_complete(
@@ -975,7 +983,8 @@ impl Runtime {
                     drop(guard);
                 });
             } else {
-                let outcome = crate::ime_controller::CONTROLLER.apply(false, &view);
+                let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
+                let outcome = crate::ime_controller::ImeController::apply(order, &view);
                 // B+C+D(noop)+E
                 self.on_ime_apply_complete(
                     false,
@@ -1039,13 +1048,28 @@ impl Runtime {
             //   `desired_open` のみ更新する。
             let applied = match origin {
                 awase::engine::SetOpenOrigin::ExplicitUserAction => {
-                    self.platform_state.ime.handle_engine_set_open(
+                    let applied = self.platform_state.ime.handle_engine_set_open(
                         new_ime_on,
                         event.modifier_snapshot.ctrl,
                         focus_transition_was_pending,
                         generation,
                         tick_ms,
-                    )
+                    );
+                    if applied {
+                        // IntentStore（BUG-51 追補 v3）: IME/エンジン ON/OFF コンボ等、
+                        // 本物のユーザー操作であることが origin から確定している場合のみ
+                        // 記録する。`applied` ゲートは v1 の意味論（chord/focus-settle
+                        // フィルタで belief 書き込み自体がスキップされた場合は記録しない）を
+                        // そのまま保存する。記録を**この arm の中**に置くことで、
+                        // `ActivationSync`（conv 由来の対称 echo）が偽の明示意図を
+                        // 永続化する経路が構造的に存在しなくなる。
+                        self.platform_state.ime.record_explicit_intent(
+                            new_ime_on,
+                            crate::state::ime_event::UserIntentSource::Command,
+                            tick_ms,
+                        );
+                    }
+                    applied
                 }
                 awase::engine::SetOpenOrigin::ActivationSync => {
                     self.platform_state.ime.handle_engine_activation_sync(
@@ -1057,20 +1081,6 @@ impl Runtime {
                     )
                 }
             };
-            if applied
-                && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
-            {
-                // IntentStore（BUG-51 追補 v3）: IME/エンジン ON/OFF コンボ等、
-                // 本物のユーザー操作であることが origin から確定している場合のみ
-                // 記録する。`applied` ゲートは v1 の意味論（chord/focus-settle
-                // フィルタで belief 書き込み自体がスキップされた場合は記録しない）を
-                // そのまま保存する。
-                self.platform_state.ime.record_explicit_intent(
-                    new_ime_on,
-                    crate::state::ime_event::UserIntentSource::Command,
-                    tick_ms,
-                );
-            }
             // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
             // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
             // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に
@@ -2002,7 +2012,7 @@ impl Runtime {
         // ImmCross アプリ（Qt/LINE 等）: FocusProbe は top-level hwnd の IMC を読むが、
         // GJI 使用時は child hwnd と IME 状態が異なる場合がある（Qt の IME コンテキスト分割）。
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
-        // これにより FocusProbe (Low) が誤って false を返しても derive_open() で正しく上書きされる。
+        // これにより FocusProbe (Low) が誤って false を返しても derive_any() で正しく上書きされる。
         //
         // エポック照合: FocusProbe の admit() 済み epoch を引き継ぐ。
         // apply_focus_probe の呼び出し前に epoch チェックを通過しているため

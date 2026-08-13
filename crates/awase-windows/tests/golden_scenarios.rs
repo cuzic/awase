@@ -34,6 +34,8 @@
 
 use std::time::Instant;
 
+use awase_windows::state::app_ime_policy::AppImePolicy;
+use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::ime_event::{
     ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
     ObservationConfidence, ObservationSource, UserIntentSource,
@@ -58,13 +60,23 @@ fn user_intent(target: bool, source: UserIntentSource) -> ImeEvent {
 }
 
 fn observer_reported(open: bool, source: ObservationSource) -> ImeEvent {
-    ImeEvent::ObserverReported {
+    observer_reported_with(open, source, ObservationConfidence::Medium)
+}
+
+/// journal / fixture 復元と同じ口（ADR-089 §2.1）でテスト用の観測イベントを作る。
+/// 本番の観測は `state::evidence::Observed<E>` の witness 構築子を通る。
+fn observer_reported_with(
+    open: bool,
+    source: ObservationSource,
+    confidence: ObservationConfidence,
+) -> ImeEvent {
+    ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
         open,
         source,
-        hwnd: HwndId::NULL,
-        confidence: ObservationConfidence::Medium,
-        focus_epoch: 0,
-    }
+        HwndId::NULL,
+        confidence,
+        0,
+    ))
 }
 
 fn focus_changed(profile: ImePolicyProfile) -> ImeEvent {
@@ -169,14 +181,22 @@ fn scenario_4_chrome_no_imm32_ime_off_works() {
         user_intent(false, UserIntentSource::Command), // Ctrl+無変換 由来の SetOpenRequest
     ]);
     assert!(!model.desired_open(), "Chrome でも IME OFF intent が効く");
-    // AppImePolicy が Imm32Unavailable に切り替わっていることを確認
-    assert!(
-        !matches!(
-            model.app_policy.actuator_kind,
-            awase_windows::state::app_ime_policy::ImeActuatorKind::ImmCross
-                | awase_windows::state::app_ime_policy::ImeActuatorKind::Standard
-                | awase_windows::state::app_ime_policy::ImeActuatorKind::TsfNative
-        ),
+    // AppImePolicy が Imm32Unavailable に切り替わっていることを確認。
+    //
+    // ADR-089 §6 Phase C item 11 で `AppImePolicy::actuator_kind` を廃止した
+    // （`caps(p, k).chain[0]` と情報が完全に重複し、本番の読み手はゼロだった）。
+    // ADR は「期待値を `caps(p,k).chain[0]` へ書き換える」としていたが、
+    // `chain[0]` は K（IME 種別）に依存する一方 `ImeModel::app_policy` は
+    // profile スナップショットで K を持たないため、そのままでは照合できない
+    // （ADR-089 §6 Phase C 実施記録 C-3）。ここで見たいのは「reducer が
+    // FocusChanged で profile 由来のポリシーへ切り替えたか」なので、
+    // profile ごとに一意な `focus_settle_ms`（ImmCross=100 / Imm32Unavailable=500
+    // / TsfNative=200）で識別する。値そのものは
+    // `state/app_ime_policy.rs::caps_settle_values_match_the_pre_phase_c_literals`
+    // が固定している。
+    assert_eq!(
+        model.app_policy.focus_settle_ms,
+        AppImePolicy::from_profile(ImePolicyProfile::Imm32Unavailable).focus_settle_ms,
         "Chrome は Imm32Unavailable profile"
     );
 }
@@ -309,7 +329,12 @@ fn drift_tracking_reflects_intent_observer_mismatch() {
     assert!(model.observations.drift.is_some(), "drift が記録される");
     assert_eq!(model.desired_open(), true, "desired は intent の true");
     assert_eq!(
-        model.observations.per_source.observer_poll.map(|o| o.open),
+        // ADR-090 §2.C（INV-49）: `per_source` は `pub(crate)` になったので、
+        // crate 外からは読み取り専用アクセサ `observation(source)` を使う。
+        model
+            .observations
+            .observation(ObservationSource::ObserverPoll)
+            .map(|o| o.open),
         Some(false),
         "observer は false を報告"
     );
@@ -352,7 +377,10 @@ fn focus_change_clears_intent_and_observations() {
     ]);
     assert!(model.last_intent.is_none(), "intent は focus 変更で clear");
     assert!(
-        model.observations.per_source.gji.is_none(),
+        model
+            .observations
+            .observation(ObservationSource::Gji)
+            .is_none(),
         "observation も focus 変更で clear"
     );
 }
@@ -368,13 +396,11 @@ fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
     let model = run_reducer(vec![
         ImeEvent::HwndCacheRestored { target: false },
         // 実際の API 観測が IME ON を返す（実 IME 状態はキャッシュと異なる）
-        ImeEvent::ObserverReported {
-            open: true,
-            source: ObservationSource::ImmGetOpenStatus,
-            hwnd: HwndId::NULL,
-            confidence: ObservationConfidence::High,
-            focus_epoch: 0,
-        },
+        observer_reported_with(
+            true,
+            ObservationSource::ImmGetOpenStatus,
+            ObservationConfidence::High,
+        ),
     ]);
     assert!(
         !model.desired_open(),
@@ -398,13 +424,7 @@ fn scenario_9_hwnd_cache_restored_can_be_overridden_by_observation() {
 // この違いが「キャッシュ復元はユーザーの能動的操作ではない」という設計の証明。
 #[test]
 fn scenario_10_user_intent_blocks_observation_but_hwnd_cache_does_not() {
-    let stale_observation = ImeEvent::ObserverReported {
-        open: true,
-        source: ObservationSource::ObserverPoll,
-        hwnd: HwndId::NULL,
-        confidence: ObservationConfidence::Medium,
-        focus_epoch: 0,
-    };
+    let stale_observation = observer_reported(true, ObservationSource::ObserverPoll);
 
     // UserImeSetIntent: ユーザーが IME OFF を明示した → 観測で上書きされない
     let model_intent = run_reducer(vec![

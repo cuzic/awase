@@ -22,7 +22,7 @@ cargo install cargo-dylint dylint-link --version 6.0.0 --locked
 # Windows ターゲットへ cross-compile して check する。
 # DYLINT_RUSTFLAGS=-D warnings で Warn レベルの lint 違反を失敗として扱う（CI と同一）。
 DYLINT_RUSTFLAGS="-D warnings" \
-  cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-gnu
+  cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc
 ```
 
 lint の toolchain バージョン（`lints/*/rust-toolchain` の `channel`）を変更する場合は、

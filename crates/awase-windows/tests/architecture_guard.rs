@@ -105,13 +105,58 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
-/// `#[cfg(test)]\nmod tests {` より前の「本番コード」部分だけを取り出す。
+/// `#[cfg(test)] mod tests {` より前の「本番コード」部分だけを取り出す。
 /// テストコード内での使用（意図的な stale-intent シミュレーション等）は
 /// このチェックの対象外とする。
+///
+/// # 改行コードに依存してはいけない（Windows CI で実際に壊れた）
+///
+/// 以前は `"#[cfg(test)]\nmod tests"` という**改行込みの固定リテラル**を
+/// `find` していた。GitHub の windows ランナーは git 既定の
+/// `core.autocrlf=true` で checkout するため `src/*.rs` は CRLF になり、
+/// この needle は 1 件もマッチしない。`map_or(content, ..)` のフォールバックが
+/// **ファイル全体を「本番コード」として返す**ため、
+/// `production_code_only` を使うガード群が Windows で丸ごと誤判定していた。
+/// `.gitattributes` の `eol=lf` 固定は `tests/golden/**` にしか掛かっていない。
+///
+/// 実害の顕在化: `any_observation_replay_door_is_not_used_in_production` が
+/// `state/ime_model.rs` の `#[cfg(test)] mod tests` 内にある
+/// `restored_from_journal(` 13 件を本番使用と誤検出して落ちた
+/// （PR #59 の windows-build。それまでは同ジョブが手前の clippy ステップで
+/// 落ちており、テストステップまで到達していなかったため露出しなかった）。
 fn production_code_only(content: &str) -> &str {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(rel) = content[from..].find(MARKER) {
+        let idx = from + rel;
+        // `#[cfg(test)]` と `mod tests` の間の空白/改行（LF でも CRLF でも）を跨ぐ。
+        if content[idx + MARKER.len()..]
+            .trim_start()
+            .starts_with("mod tests")
+        {
+            return &content[..idx];
+        }
+        from = idx + MARKER.len();
+    }
     content
-        .find("#[cfg(test)]\nmod tests")
-        .map_or(content, |idx| &content[..idx])
+}
+
+/// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
+/// 切り落とすことの回帰テスト（上の doc 参照）。
+#[test]
+fn production_code_only_strips_test_module_with_crlf() {
+    let lf = "fn prod() { needle(); }\n#[cfg(test)]\nmod tests {\n    fn t() { needle(); }\n}\n";
+    let crlf = lf.replace('\n', "\r\n");
+    assert_eq!(production_code_only(lf).matches("needle(").count(), 1, "LF");
+    assert_eq!(
+        production_code_only(&crlf).matches("needle(").count(),
+        1,
+        "CRLF: windows ランナーの core.autocrlf=true でも本番コードだけを数えること"
+    );
+    // `#[cfg(test)]` が付いた別要素（`mod tests` ではない）では切らない。
+    let other =
+        "#[cfg(test)]\nfn helper() { needle(); }\n#[cfg(test)]\r\nmod tests {\n needle();\n}\n";
+    assert_eq!(production_code_only(other).matches("needle(").count(), 1);
 }
 
 /// `content` 内で `fn_signature_needle`（例: `"fn some_handler"`）が最初に
@@ -329,25 +374,28 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
 /// (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
-/// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている。
-/// 「観測がない」状況を `UserImeSetIntent` で偽装することは禁止（confidence ガードをバイパスするため）。
-/// 新しい使用箇所を追加する場合は、本当に「観測データが存在しない」状況かを確認し、
-/// `UserImeSetIntent` ではなく `ObserverReported` + Low confidence を使う理由を明記すること。
+/// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている
+/// （confidence は `Observed<HeuristicDefault>` 側で Low 固定、ADR-089 §2.2）。
+///
+/// **ADR-089 §7 はこのガードの削除を挙げているが、§9-2 の但し書き
+/// （witness `ImePolicyProfile` は「起点を限定する」効果はあるが「起動時に
+/// 限定する」効果は無い）に従い、needle を witness 構築子へ付け替えて残す。**
+/// 型が守るのは「HeuristicDefault を名乗るには profile が要る」までであり、
+/// 「起動直後の 1 箇所からしか呼ばない」はテキスト検査でしか守れない。
 #[test]
 fn heuristic_default_observation_is_limited_to_designated_methods() {
     let path = "src/state/platform_state.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let count = production
-        .matches("ObservationSource::HeuristicDefault")
-        .count();
+    let count = production.matches("evidence::HeuristicDefault").count();
     assert_eq!(
         count, 1,
-        "{path} 内の `ObservationSource::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
+        "{path} 内の `evidence::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
          想定: reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の1箇所のみ。\n\
          (reset_to_off_for_tsf_native_cache_miss は 37883d0 で TsfNative SSOT 化に伴い削除済み)\n\
          新しい安全デフォルト推測を追加する場合は `UserImeSetIntent` を使わず \
-         `ObserverReported + ObservationConfidence::Low` を使い、このカウントを更新してください。"
+         `Observed::<evidence::HeuristicDefault>::at_startup` を使い、このカウントを \
+         更新してください。"
     );
 }
 
@@ -600,31 +648,34 @@ fn katakana_and_native_toggle_shadow_off_never_use_set_open() {
     }
 }
 
-/// `ObservationSource::ConvOpenInference` への参照は2箇所のみに限定される。
+/// conv ビット由来の open 推論を**構築**できるのは
+/// `report_conv_open_inference()` の 1 箇所だけ（ADR-089 §2.1・§7、INV-40）。
 ///
-/// - `report_conv_open_inference()`: `ObserverReported` の dispatch（唯一の書き込み点）。
-///   他の箇所がこの source を直接名乗って `ObserverReported` を dispatch すると、
-///   実際には conv ビットからの間接推論ではない値を「conv 推論」と偽装できてしまう
-///   （`ime-belief-architecture.md` が禁じる観測偽装パターンの一種）。confidence の
-///   上限（Medium）も `report_conv_open_inference()` 内で固定されているため、
-///   新しい呼び出し元を増やす場合はこの関数を経由すること。
-/// - `check_drift_correction()`: 明示意図が無い間はこの source 単独で drift
-///   correction を発火させない source-aware gate（BUG-19 再発対策）。
+/// 5a37333 で「型が subsume した」として一度削除したが、**それは早すぎた**ので
+/// 復活させた（needle は `ObservationSource::ConvOpenInference` から
+/// `evidence::ConvOpenInference` へ、期待値は 2 → 1 へ更新している）。型が
+/// 守るのは「`ConvSyncReason` を持たないコードはこの観測を構築できない」
+/// 「confidence の上限は Medium で呼び出し元は選べない」までであり、
+/// **`ConvSyncReason` は普通の public enum なので誰でも構築できる**
+/// （ADR-089 §9-11 の witness 強度の不均一）。したがって「conv 推論を名乗る
+/// 経路が 1 本しかない」ことはテキスト検査でしか守れない。
+///
+/// なお `check_drift_correction()` の source-aware gate（BUG-19 再発対策）は
+/// `ObservationSource::ConvOpenInference` を**読む**だけで観測を作らないため、
+/// この needle には掛からない（旧テストの期待値 2 のうち 1 件がそれだった）。
 #[test]
 fn conv_open_inference_source_is_limited_to_report_and_gate() {
     let path = "src/state/platform_state.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let count = production
-        .matches("ObservationSource::ConvOpenInference")
-        .count();
+    let count = production.matches("evidence::ConvOpenInference").count();
     assert_eq!(
-        count, 2,
-        "{path} 内の `ObservationSource::ConvOpenInference` 参照箇所数が想定(2 = \
-         report_conv_open_inference の dispatch + check_drift_correction の \
-         source-aware gate)と異なります(実際: {count})。\n\
+        count, 1,
+        "{path} 内の `evidence::ConvOpenInference` 構築箇所数が想定(1 = \
+         report_conv_open_inference の dispatch)と異なります(実際: {count})。\n\
          conv ビット由来の open 推論の dispatch は必ず `report_conv_open_inference()` \
-         経由にし、confidence の上限 (Medium) を勝手に上げないでください。"
+         経由にし、confidence の上限 (Medium) を勝手に上げないでください \
+         (`Observed::<evidence::ConvOpenInference>::from_conv` が Medium を固定します)。"
     );
 }
 
@@ -650,6 +701,19 @@ fn intent_store_record_call_sites_are_limited_to_explicit_user_actions() {
     );
 }
 
+/// `UserIntentSource` をリテラルで名乗れるのは `write_set_open_request`
+/// （`Command`）の 1 箇所だけ（ADR-089 §2.2・§7、INV-40）。
+///
+/// `SyncKey` / `PhysicalImeKey` は `IntentWitness::from_sync_key` /
+/// `from_physical` が運ぶようになったため、リテラルは残っていない——
+/// 「注入されていない実キーイベント」（`&RawKeyEvent`, `injected == false`）が
+/// 無ければ意図を名乗れない（BUG-14 の型化）。
+///
+/// **`Command` は engine 内部判断であり、引数の型で起点を限定できる外部事実が
+/// 無いため witness 化できない**（ADR-089 §9-8）。したがってこのガードは
+/// 削除せず、期待値 1 で残す。**ゼロにする変更は単独で行わないこと**——
+/// BUG-19 の再発条件（間接推測が `Command` を名乗って `desired_open` を
+/// 書き換える）に直接関係する。
 #[test]
 fn user_intent_source_construction_is_limited_to_typed_writers() {
     let path = "src/state/platform_state.rs";
@@ -657,16 +721,53 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
     let production = production_code_only(&content);
     let count = production.matches("source: UserIntentSource::").count();
     assert_eq!(
-        count, 3,
-        "{path} 内の `source: UserIntentSource::` リテラル構築箇所数が想定(3)と異なります(実際: {count})。\n\
-         想定: write_sync_key / write_physical_key / write_set_open_request の3箇所のみ。\n\
-         `UserImeSetIntent` は typed writer 経由で発行し、直接 dispatch_event() を呼ばないこと。\n\
-         新しい UserIntentSource variant を追加する場合は typed writer メソッドを追加してください。"
+        count, 1,
+        "{path} 内の `source: UserIntentSource::` リテラル構築箇所数が想定(1)と異なります(実際: {count})。\n\
+         想定: write_set_open_request (`Command`) の1箇所のみ。\n\
+         `SyncKey` / `PhysicalImeKey` は `IntentWitness` が source を運ぶため、\n\
+         リテラルで名乗ってはいけません（ADR-089 §2.2）。\n\
+         新しい UserIntentSource variant を追加する場合は、witness に載せられる \n\
+         外部事実があるかをまず検討してください（ADR-089 §9-8）。"
     );
 }
 
+/// `AnyObservation::restored_from_journal` は journal / fixture 復元専用の口で
+/// あり、本番コードから呼んではならない（ADR-089 §2.1）。
+///
+/// 本番の観測は必ず `Observed<E>` の witness 構築子（`from_probe` /
+/// `from_cross_probe` / `from_poll` / `at_startup` / `from_conv`）を通す。
+/// この口を本番から使うと、witness を持たないコードが任意の
+/// `ObservationSource` と `ObservationConfidence` を名乗れてしまい、
+/// §2.2 のデータ witness が丸ごと迂回される。
+#[test]
+fn any_observation_replay_door_is_not_used_in_production() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = production_code_only(&content);
+        let count = production.matches("restored_from_journal(").count();
+        // 定義そのもの（`pub const fn restored_from_journal(`）は evidence.rs に 1 件。
+        let expected = usize::from(rel == "state/evidence.rs");
+        assert_eq!(
+            count, expected,
+            "src/{rel} が `restored_from_journal(` を本番コードで使っています\
+             (実際: {count}, 想定: {expected})。観測は `Observed<E>` の witness \
+             構築子を通してください（ADR-089 §2.1・§2.2、INV-40）。"
+        );
+    }
+}
+
 /// 実 IME actuation 入口 6 種（`apply_ime_open_with_belief` / `_with_view` /
-/// `_with_applied` / `set_ime_open` / `apply_skipping_imm` / `apply_ime_open`）の
+/// `_with_applied` / `set_ime_open` / `apply_ime_open`）の
 /// **呼び出し箇所数**を、入口ごとに crate 全域で固定する
 /// （各関数の定義行 `fn ...(` は数えない）。
 ///
@@ -679,6 +780,12 @@ fn user_intent_source_construction_is_limited_to_typed_writers() {
 /// （実呼び出しは4件、旧 `EXPECTED_TOTAL=5` の内訳に1件のコメントが混入していた）、
 /// かつ `_with_view`/`_with_applied`/`set_ime_open`/`apply_skipping_imm` 経由の入口は
 /// 対象外だった（ADR-087 §5 Phase 3 item14、2026-08-10 棚卸しで判明）。
+///
+/// **2026-08-12（ADR-089 Phase B）**: `apply_skipping_imm` は撤去した。ImmCross が
+/// 機構チェーンの要素になったことで、`Failed` 後のフォールスルーは
+/// `state/actuation_chain.rs::run_chain_async` が行う（`runtime/open_chain.rs`）。
+/// 非同期経路の入口は `run_open_chain_async` に一本化されており、その件数は
+/// `open_chain_is_the_only_async_actuation_entry` が固定する。
 ///
 /// 実 actuation 入口 11 経路の全数棚卸し（force-write / observation-based
 /// correction / Engine intent の分類、`shadow_on`/`origin` の扱い）は
@@ -693,21 +800,42 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
     // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
     // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
+    //
+    // **2026-08-12（ADR-090 §2.A A-1）**: 実 actuation 入口を `ActuationOrder`
+    // 経由へ移した（§6 ステップ 5 item 20）。件数の変化は次の 2 つだけで、
+    // **入口の数そのものは変わっていない**:
+    //
+    // - `.set_ime_open(` 2 → **0**。トレイトメソッド（`src/platform.rs` の
+    //   トレイト定義）には引数を足せないため、外部 2 件
+    //   （`ime_refresh.rs` の focus change 強制 OFF と drift correction の
+    //   ImmCross 分岐）を inherent な `set_ime_open_ordered` へ移した。
+    //   **トレイトメソッド側はガードとして残す**（ゼロになったことが可視化
+    //   される。ADR-090 §2.A 設計案 3）。
+    // - `.apply_ime_open_with_applied(` 2 → **1**。呼び出し元ゼロの死んだ
+    //   trait オーバーライド `WindowsPlatform::apply_ime_open` を削除したため、
+    //   その内部委譲 1 件が消えた（`awase` 側のトレイト既定実装が残る）。
     const ENTRY_POINTS: [(&str, usize); 6] = [
-        // 内部委譲元(platform.rs 自身): ime_refresh.rs:740 / key_pipeline.rs:741 /
-        // mod.rs:890（ADR-087 §5 item14 表 #11/#4/#7）+ apply_ime_open_with_applied
-        // 内部からの委譲(platform.rs:1028) = 4。
+        // 外部 3（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check /
+        // mod.rs try_force_on_bootstrap、ADR-087 §5 item14 表 #11/#4/#7）
+        // + apply_ime_open_with_applied 内部からの委譲 1 = 4。
         (".apply_ime_open_with_belief(", 4),
-        // executor.rs:887 / mod.rs:733（表 #1/#6）+ apply_ime_open_with_belief
-        // 内部からの委譲(platform.rs:1016) = 3。
+        // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
+        // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         (".apply_ime_open_with_view(", 3),
-        // ime_refresh.rs:499（表 #8）+ apply_ime_open 内部からの委譲(platform.rs:729) = 2。
-        (".apply_ime_open_with_applied(", 2),
-        // ime_refresh.rs:534/727（表 #9/#10）= 2。
-        (".set_ime_open(", 2),
-        // executor.rs:833 / key_pipeline.rs:941（表 #3/#5）= 2。
-        (".apply_skipping_imm(", 2),
-        // 呼び出し元ゼロ(死んだ入口、ADR-087 §5 item14 参照、Task #28 で対処)。
+        // 外部 1（ime_refresh.rs の GJI TsfNative 強制 ON、表 #8）= 1。
+        // 死んだ trait オーバーライドの削除で内部委譲 1 件が消えた。
+        (".apply_ime_open_with_applied(", 1),
+        // ADR-090 A-1 で `set_ime_open_ordered` へ移したため本番呼び出しゼロ。
+        // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
+        // actuation 入口が復活したことを意味する。
+        (".set_ime_open(", 0),
+        // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
+        // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
+        // ——近いのは `log::warn!` の文字列（`:725`）で、先頭に `.` が無いため
+        // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
+        (".set_ime_open_ordered(", 2),
+        // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
+        // ADR-090 A-1 で削除し、`awase` 側のトレイト既定実装だけが残る。
         (".apply_ime_open(", 0),
     ];
 
@@ -1234,15 +1362,26 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
          それが force-write（ADR-086 INV-15 の対象）でないことを確認すること。"
     );
 
-    // `set_ime_open(` は実呼び出し1件（IME OFF 強制）+ ログメッセージ1件
-    // （`log::debug!("... set_ime_open(false) called ...")`）で計2件。
+    // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
+    // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
+    // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
+    // （`log::debug!("... set_ime_open(false) called ...")`）だけ。
     let set_ime_open_count = count_real_calls(body, "set_ime_open(");
     assert_eq!(
-        set_ime_open_count, 2,
+        set_ime_open_count, 1,
         "{path}::ir_post_focus_change_snapshot 内の `set_ime_open(` 出現数が \
-         想定(2 = 実呼び出し1件 + ログメッセージ1件)と異なります(実際: \
-         {set_ime_open_count})。新しい呼び出しを追加した場合はこの期待値を \
-         更新し、それが force-write でないことを確認すること。"
+         想定(1 = ログメッセージのみ。実呼び出しは set_ime_open_ordered へ移行)と\
+         異なります(実際: {set_ime_open_count})。トレイトメソッド \
+         `set_ime_open` を直接呼ぶと warrant を通さない actuation 入口が\
+         復活します（ADR-090 §2.A・INV-47）。"
+    );
+    let ordered_count = count_real_calls(body, "set_ime_open_ordered(");
+    assert_eq!(
+        ordered_count, 1,
+        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open_ordered(` \
+         出現数が想定(1 = IME OFF 強制)と異なります(実際: {ordered_count})。\
+         新しい呼び出しを追加した場合はこの期待値を更新し、それが force-write \
+         でないことを確認すること。"
     );
 }
 
@@ -1362,15 +1501,529 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
     let ime_refresh_production = production_code_only(&ime_refresh_rs);
     let focus_change_body =
         extract_fn_body(ime_refresh_production, "fn ir_post_focus_change_snapshot");
+    // **ADR-090 A-1**: 第1引数が `true`（生の open 値）から `order`
+    // （`ActuationOrder`、warrant 込み）へ変わった。**検査したい不変条件は
+    // 第2引数の `None`** ——`applied` に実値を渡すと GJI の no-op skip に
+    // 阻まれる——なので、needle も `order, None` に追随させる。
     assert_eq!(
         count_real_calls(
             focus_change_body,
-            ".apply_ime_open_with_applied(true, None)"
+            ".apply_ime_open_with_applied(order, None)"
         ),
         1,
         "GJI TsfNative 入場時の強制ON（ir_post_focus_change_snapshot）は \
-         apply_ime_open_with_applied(true, None) 経由で shadow_on=false を作ることで \
+         apply_ime_open_with_applied(order, None) 経由で shadow_on=false を作ることで \
          GJI の no-op skip を bypass する設計。`None` 以外の値を渡すよう変更された場合、\
          ADR-087 INV-28 の前提が崩れる。"
     );
+}
+
+// ── ADR-089 Phase B（§2.3・§6 item 6/7）─────────────────────────────────────
+
+/// 実 actuation の起案が `ActuationOrder::issue()` 1 本を通ることを固定する
+/// （ADR-090 §2.A A-1、INV-47）。
+///
+/// # 何が変わったか（ADR-089 Phase B → ADR-090 A-1）
+///
+/// Phase B の時点では `issue_open_warrant()`（ADR-087）の本番呼び出し元が
+/// ゼロで、既存の apply 経路は `OpenWarrant` を持たなかった。そのため
+/// warrant を素通しする暫定入口 `warrant_pending_adr087()` を 2 箇所
+/// （同期チェーン / 非同期チェーン）が通っており、本テストはその件数
+/// （2）を固定していた。
+///
+/// **ADR-090 A-1 で `warrant_pending_adr087()` は削除した。**
+/// `Requested → Warranted` の経路は
+/// (a) `Actuation::warrant(OpenWarrant)`（実 warrant を要求）と
+/// (b) `ActuationOrder::into_actuation_shadow()` / `into_actuation()` だけで
+/// あり、`ActuationOrder` の唯一の構築経路 `issue()` は
+/// `issue_open_warrant()` の戻り値をそのまま受ける。したがって
+/// **「warrant を発行せずに actuation を起案する」ことが型として書けない**。
+///
+/// 本テストは残った実行時の抜け道——`Actuation::request(` を
+/// `ActuationOrder` の外で呼ぶこと——を件数で塞ぐ。
+///
+/// # 【重要】本テストが今固定しているのは「死んだコードが 2 箇所」である
+///
+/// 下で内訳 `[("src/state/actuation_chain.rs", 2)]` に固定している 2 箇所
+/// （`ActuationOrder::into_actuation` / `DriftEpisode::next_attempt`）は、
+/// **どちらも本番から到達不能**である（2026-08-12 の PR 最終レビューで確認）:
+///
+/// - `into_actuation` の参照は定義自体・`actuation_chain.rs` のモジュール doc・
+///   本コメントだけで、本番呼び出し元はゼロ。
+/// - `DriftEpisode::new` の呼び出しは `actuation_chain.rs` の
+///   `#[cfg(test)] mod tests` にしか無く、`DriftEpisode` 型ごと本番未配線。
+///
+/// A-1 後に本番で生きている `Requested → Warranted` 経路は
+/// **`into_actuation_shadow`（`ime_controller.rs` / `runtime/open_chain.rs`）
+/// の 1 本だけ**であり、それは warrant の有無に関わらず `Warranted` へ進める
+/// （授権が無ければ `Authorization::LegacyUnwarranted { would_have_blocked: true }`
+/// を載せるだけで**書き込みは止めない**）。つまり **A-1 の時点では
+/// `Warranted` は「実 `OpenWarrant` がある」ことを意味しない**。
+/// ADR-089 §2.3 が意図した型による保証が効き始めるのは、**A-2 で入口ごとに
+/// `into_actuation_shadow` → `into_actuation` へ差し替え終えたとき**である
+/// （入口ごとに実機ソークが必須、ADR-090 §6 ステップ 7 / §2.A A-5'）。
+/// **本テストが緑であることを「INV-47 は守られている」と読まないこと。**
+///
+/// # なぜ型で閉じないのか
+///
+/// `Actuation::request` を `pub(crate)` 未満にはできない
+/// （`state/actuation_chain.rs` のモジュール doc の compile_fail doctest が
+/// crate 外から `Actuation::request(..).warrant(..)` を組み立てており、
+/// それは**正規経路の説明**として必要）。
+#[test]
+fn actuation_is_only_requested_through_actuation_order() {
+    // どちらも `state/actuation_chain.rs` の中で、**実 `OpenWarrant` を伴う**
+    // 構築だけ（ただし**2 箇所とも本番未配線の死んだコード**。上の doc 参照）:
+    //   1. `ActuationOrder::into_actuation`（A-2 用。本番呼び出し元ゼロ）
+    //   2. `DriftEpisode::next_attempt`（同一 warrant からの再試行。回数制限は
+    //      `decide_actuation_action` が持つ、INV-41。`DriftEpisode::new` は
+    //      テストからしか呼ばれておらず、これも本番未配線）
+    // **`state/actuation_chain.rs` の外に出たら、それは warrant を持たない
+    // 起案経路が復活したということ。**
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "Actuation::request(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        breakdown,
+        vec![("src/state/actuation_chain.rs".to_string(), 2)],
+        "`Actuation::request(` の本番呼び出しは `state/actuation_chain.rs` の \
+         2 箇所（`ActuationOrder::into_actuation` / `DriftEpisode::next_attempt`、\
+         どちらも実 `OpenWarrant` を伴い、どちらも A-2 まで本番未配線）\
+         だけにすること。実際: {breakdown:?}\n\
+         実 actuation は `ActuationOrder::issue()`（= `issue_open_warrant()` を\
+         必ず通る）から起案してください（ADR-090 §2.A・INV-47）。"
+    );
+    // 素通し入口が復活していないこと（ADR-090 A-1 で削除済み）。
+    // コメント行は除外する——`state/actuation_chain.rs` のモジュール doc は
+    // 「Phase B ではこの入口があった / A-1 で削除した」という経緯を
+    // 名前付きで残しており（`.claude/rules/experiment-logging.md` の
+    // 「なぜ前回それを捨てたのかを辿れるようにする」規約）、それは残すべき記録
+    // である。塞ぎたいのは**実際の呼び出しと定義**の復活だけ。
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let live = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains("warrant_pending_adr087"))
+            .count();
+        assert_eq!(
+            live, 0,
+            "{path}: `warrant_pending_adr087` は ADR-090 A-1 で削除した。\
+             warrant を素通しする入口を再導入しないこと（INV-47）。"
+        );
+    }
+}
+
+/// `WarrantContext` の組み立てが `ImeStateHub::warrant_context()` 1 箇所に
+/// 限られることを固定する（ADR-090 §2.A A-R3、INV-48）。
+///
+/// `WarrantContext` は 8 フィールドで、うち `intent_store` は `ImeStateHub` の
+/// **private フィールド**である。実 actuation 入口は外部 8 経路あるので、
+/// 各入口がリテラルで組み立てると (a) `intent_store` の private を崩すか、
+/// (b) 同じ組み立てが 8 箇所に散る（ADR-087 §7 round4 N-A が
+/// `WarrantContext` を導入して避けたかったもの）。
+#[test]
+fn warrant_context_is_built_in_one_place() {
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains("WarrantContext {"))
+            .count();
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        breakdown,
+        vec![("src/state/platform_state.rs".to_string(), 1)],
+        "`WarrantContext {{` のリテラル構築は `ImeStateHub::warrant_context()` の\
+         1 箇所だけにすること（ADR-090 INV-48）。実際: {breakdown:?}"
+    );
+}
+
+/// ImmCross を含む非同期 actuation の入口が `run_open_chain_async` 1 本である
+/// ことを固定する（ADR-089 §6 Phase B item 6、二重経路の解消）。
+///
+/// 旧 `apply_skipping_imm`（async IMM が `Failed` を返した後の 2 本目の走査
+/// 入口）は撤去済み。`spawn_local` の中で ImmCross の書き込みを直接呼ぶコードを
+/// 足すと、フォールスルー規則（`state/actuation_chain.rs::falls_through`）を
+/// 迂回する 2 本目の経路が復活する。
+#[test]
+fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
+    // ImmCross の実書き込み API を、機構チェーン外から呼ぶ既知の箇所（後述）。
+    const IMM_WRITE_SITES: [(&str, &[(&str, usize)]); 2] = [
+        (
+            "set_ime_open_then_conv_for_target(",
+            &[("src/runtime/open_chain.rs", 1)],
+        ),
+        (
+            "set_ime_open_cross_process_async(",
+            &[
+                ("src/runtime/open_chain.rs", 1),
+                ("src/platform.rs", 1),
+                ("src/runtime/mod.rs", 2),
+            ],
+        ),
+    ];
+    let files = list_src_files();
+
+    // 1. `apply_skipping_imm` は完全に消えていること。
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        assert_eq!(
+            count_real_calls(production, "apply_skipping_imm("),
+            0,
+            "{path} に `apply_skipping_imm(` が残っています（ADR-089 Phase B で撤去済み）"
+        );
+    }
+
+    // 2. ImmCross の実書き込み API を、機構チェーン外から呼ぶ箇所を固定する。
+    //
+    // `set_ime_open_then_conv_for_target`（ADR-086 INV-14 準拠の open+conv 書き込み）は
+    // チェーン専用。`set_ime_open_cross_process_async` は「open を 1 回書く」だけの
+    // 低レベル API で、チェーン以外にも **actuation ではない**既知の用途がある:
+    //
+    // - `platform.rs::set_ime_open`（fire-and-forget。outcome を呼び出し元へ返さず
+    //   フォールバックも持たないため、そもそもチェーンの対象ではない）
+    // - `runtime/mod.rs::panic_reset`（OFF → ON を 1 タスク内で直列化する復旧手順。
+    //   ADR-087 の SafetyValve 相当であり、戦略選択の対象ではない）
+    //
+    // ここを増やす＝フォールスルー規則を迂回する経路を増やす、なので件数で固定する。
+    for (needle, expected_sites) in IMM_WRITE_SITES {
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            // 定義元（`ime.rs`）は `fn ...(` 行が除外されるが、内部委譲があるため除く。
+            if path == "src/ime.rs" {
+                continue;
+            }
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                breakdown.push((path.clone(), count));
+            }
+        }
+        breakdown.sort();
+        let mut expected: Vec<(String, usize)> = expected_sites
+            .iter()
+            .map(|(p, n)| ((*p).to_string(), *n))
+            .collect();
+        expected.sort();
+        assert_eq!(
+            breakdown, expected,
+            "`{needle}` の呼び出し箇所が想定と異なります。ImmCross を機構チェーンの\
+             外で書くとフォールスルー規則（`state/actuation_chain.rs::falls_through`）を\
+             迂回する 2 本目の経路になります（ADR-089 §2.3）。"
+        );
+    }
+
+    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
+    let mut entry_calls = 0usize;
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        entry_calls += count_real_calls(production, "run_open_chain_async(");
+    }
+    assert_eq!(
+        entry_calls, 2,
+        "`run_open_chain_async(` の呼び出し箇所数が想定(2: executor.rs / \
+         key_pipeline.rs)と異なります(実際: {entry_calls})。"
+    );
+}
+
+/// `PerSourceObservations::set` の本番呼び出し元を `ObservationStore` 内の
+/// 1 箇所（`record_replayed`）に固定する（ADR-089 §9-11 の「裏口」封じ）。
+///
+/// Phase A の時点では `set` が `pub` で、`store.per_source.set(ImeObservation { .. })`
+/// と書けば witness も `record`/`record_belief` も経由せずに観測を注入できた。
+/// Phase B で `pub(crate)` へ縮小したうえで、crate 内の呼び出し元数もここで固定する。
+#[test]
+fn per_source_set_is_confined_to_the_store() {
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "per_source.set(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        breakdown,
+        vec![("src/state/observation_store.rs".to_string(), 1)],
+        "`per_source.set(` は `ObservationStore::record_replayed` からのみ呼ぶこと\
+         （ADR-089 §2.1・§9-11）。実際: {breakdown:?}"
+    );
+}
+
+/// `per_source` の**フィールドへの直接代入**が本番コードに存在しないことを固定する
+/// （ADR-090 §2.C 設計案 3、INV-49）。
+///
+/// # なぜ `per_source_set_is_confined_to_the_store` だけでは足りないのか
+///
+/// ADR-089 Phase B が縮小したのは `PerSourceObservations::set` だけだったが、
+/// `set` は「フィールド代入の便利メソッド」であって唯一の入口ではなかった。
+///
+/// ```ignore
+/// store.per_source.observer_poll = Some(ImeObservation { source: .., .. });
+/// ```
+///
+/// と書けば `set` を通らずに観測を注入できる。crate 外からの経路は
+/// ADR-090 §2.C が `per_source` の `pub(crate)` 化 + `ImeObservation` の
+/// `#[non_exhaustive]` で構造的に塞いだが、**crate 内では依然として書ける**。
+/// 型で消せない残余なので、本番コードでの件数をここで 0 に固定する。
+///
+/// テストコード（`#[cfg(test)] mod tests` 以降）は対象外——`platform_state.rs` の
+/// stale 観測シミュレーション（`.at = stale_at`）のように、状態を人為的に作る
+/// 必要がある。
+#[test]
+fn per_source_fields_are_not_assigned_directly() {
+    // `PerSourceObservations` の 9 フィールド（`observation_store.rs`）。
+    const FIELDS: [&str; 9] = [
+        "focus_probe",
+        "observer_poll",
+        "gji",
+        "imm_get_open_status",
+        "tsf",
+        "hwnd_cache",
+        "imm_cross_probe",
+        "heuristic_default",
+        "conv_open_inference",
+    ];
+    let files = list_src_files();
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        for (lineno, line) in production.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !trimmed.contains("per_source") {
+                continue;
+            }
+            for field in FIELDS {
+                // `per_source.<field> =` / `per_source\n  .<field> = ` の
+                // 素朴な形。複数行に割れた代入は検出できないが、
+                // `per_source` を含む行自体が本番に 0 行であることを
+                // 別途この走査が示すので実害は無い。
+                if trimmed.contains(&format!("per_source.{field}")) {
+                    hits.push(format!("{path}:{}: {}", lineno + 1, trimmed));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "`per_source` の各フィールドへ本番コードから直接触らないこと\
+         （ADR-090 §2.C / INV-49）。観測の書き込みは `record` / `record_belief` / \
+         `record_replayed` の 3 口のみ、読み取りは `ObservationStore::observation()` \
+         または `PerSourceObservations::get()` を使う。実際: {hits:?}"
+    );
+}
+
+/// 機構 1 つ分の実 write（`ime_controller::apply_mechanism`）の呼び出し元を、
+/// **チェーンの writer 実装 2 つだけ**に固定する（ADR-089 §2.3、Phase B 追随）。
+///
+/// # なぜ必要か
+///
+/// `legacy_unwarranted_actuation_sites_are_accounted_for`（`Actuation` の起案数）と
+/// `async_imm_cross_actuation_goes_through_the_single_chain_entry`（非同期入口数）は
+/// **チェーンの入口だけ**を数えており、`apply_mechanism` の呼び出し元は誰も
+/// 数えていなかった。`apply_mechanism` は `Actuation` 型状態チェーンを一切構築せずに
+/// `SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus` を起こせる。
+/// ここに 3 本目の呼び出し元が生えると、`falls_through` 規則（次へ進むのは `Failed`
+/// のときだけ、特に `UnsafeToToggle` で `VK_KANJI` へ落ちない）も `Actuation` の
+/// アフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない write 経路になる。
+///
+/// # なぜ型で閉じないのか
+///
+/// 現在の 2 箇所はどちらも `MechanismWriter` / `AsyncMechanismWriter` の `write`
+/// 実装、すなわち `run_chain` / `run_chain_async` が駆動する **write ステップ
+/// そのもの**である。「チェーンを経由させる」ことが定義上できない（実装の中で
+/// チェーンを再度張ると再帰する）ため、可視性の縮小でも解けない
+/// （`runtime/open_chain.rs` は別モジュールなので `pub(crate)` 未満にできない）。
+/// 恒久策は `run_chain` だけが構築できる authorization トークンを
+/// `MechanismWriter::write` の引数に通すこと（ADR-089 §9-15）で、Phase C 送り。
+#[test]
+fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
+    let files = list_src_files();
+
+    // 1. `apply_mechanism(` の本番呼び出し元はこの 2 箇所だけ。
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "apply_mechanism(");
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    breakdown.sort();
+    assert_eq!(
+        breakdown,
+        vec![
+            ("src/ime_controller.rs".to_string(), 1),
+            ("src/runtime/open_chain.rs".to_string(), 1),
+        ],
+        "`apply_mechanism(` の呼び出し元は機構チェーンの writer 実装 2 つだけに\
+         固定されています（ADR-089 §2.3）。実際: {breakdown:?}\n\
+         チェーン外から 1 機構分の実 write を起こす経路を増やさないでください。"
+    );
+
+    // 2. 同期側の 1 件は `impl MechanismWriter for SyncChainWriter` の中にある。
+    let controller = read_crate_file("src/ime_controller.rs");
+    let sync_writer = extract_fn_body(&controller, "impl MechanismWriter for SyncChainWriter");
+    assert_eq!(
+        count_real_calls(sync_writer, "apply_mechanism("),
+        1,
+        "`ime_controller.rs` の `apply_mechanism(` は \
+         `impl MechanismWriter for SyncChainWriter` の中にあること（ADR-089 §2.3）"
+    );
+
+    // 3. 非同期側の 1 件は `fallback_write` の中にあり、その `fallback_write` は
+    //    `impl AsyncMechanismWriter for AsyncChainWriter` からのみ呼ばれる。
+    let open_chain = read_crate_file("src/runtime/open_chain.rs");
+    let open_chain_production = production_code_only(&open_chain);
+    let fallback = extract_fn_body(&open_chain, "fn fallback_write");
+    assert_eq!(
+        count_real_calls(fallback, "apply_mechanism("),
+        1,
+        "`runtime/open_chain.rs` の `apply_mechanism(` は `fallback_write` の中に\
+         あること（ADR-089 §2.3）"
+    );
+    let async_writer = extract_fn_body(
+        &open_chain,
+        "impl AsyncMechanismWriter for AsyncChainWriter",
+    );
+    assert_eq!(
+        count_real_calls(open_chain_production, "fallback_write("),
+        count_real_calls(async_writer, "fallback_write("),
+        "`fallback_write(` は `impl AsyncMechanismWriter for AsyncChainWriter` の\
+         外から呼ばないこと（ADR-089 §2.3）"
+    );
+
+    // 4. 並行する裏口（`ImeOpenStrategy::apply` の直接呼び出し）が塞がれていること。
+    //    `pub(crate) struct GjiDirectStrategy` のままだと、crate 内のどこからでも
+    //    `GjiDirectStrategy.apply(open, &view)` と書けば `apply_mechanism` を
+    //    経由せずに同じ実 write を起こせる。可視性はコンパイラが強制するので、
+    //    ここで固定するのは「宣言を再び `pub` へ広げないこと」だけでよい。
+    for decl in [
+        "trait ImeOpenStrategy",
+        "struct ImmCrossProcessStrategy",
+        "struct GjiDirectStrategy",
+        "struct MsImeDirectStrategy",
+        "struct KanjiToggleStrategy",
+    ] {
+        let line = controller
+            .lines()
+            .find(|line| line.contains(decl) && !line.trim_start().starts_with("//"))
+            .unwrap_or_else(|| panic!("`{decl}` の宣言が `ime_controller.rs` に見つかりません"));
+        assert!(
+            !line.trim_start().starts_with("pub"),
+            "`{decl}` は `ime_controller.rs` の外へ出さないこと（ADR-089 §2.3）。\
+             実際の宣言: {line}"
+        );
+    }
+}
+
+/// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
+/// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
+///
+/// Phase C 以前は `ImmCrossProcessStrategy::apply` と `MsImeDirectStrategy::apply`
+/// が `crate::ime::set_ime_romaji_mode()`（宛先をライブクエリで write 時点に
+/// 自己決定する低レベル API）を**別々に**呼んでいた。`output/conv_actuation.rs`
+/// の doc が「ADR-086 Phase 1〜2 の『7 経路』の数え漏れ」と書いていた 2 経路が
+/// これである。Phase C で書き込み口を `ime_controller::romaji_pre_write` の
+/// 1 箇所へ統合し、`ActuationTarget::capture_blocking` →
+/// `set_ime_romaji_mode_for_target_blocking` を通す形にした。
+///
+/// 本テストが守るのは次の 3 点:
+///
+/// 1. 削除したライブクエリ版（`set_ime_romaji_mode()` / `_async()`）が
+///    本番コードに復活していないこと。
+/// 2. 同期捕獲（`ActuationTarget::capture_blocking`）と同期 ROMAN write の
+///    呼び出し元が `ime_controller.rs` の 1 箇所ずつであること。
+/// 3. その 1 箇所が `romaji_pre_write` の中にあること
+///    （= `needs_romaji_pre_write` の条件判定を必ず通ること）。
+#[test]
+fn sync_romaji_write_goes_through_a_captured_target() {
+    let files = list_src_files();
+
+    // 1. 削除済みライブクエリ版の復活検知。
+    for removed in ["set_ime_romaji_mode()", "set_ime_romaji_mode_async("] {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = production
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| line.contains(removed))
+                .count();
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        assert!(
+            sites.is_empty(),
+            "`{removed}`（宛先をライブクエリで自己決定する同期 IMC write）は \
+             ADR-089 §6 Phase C item 12 で削除済みです。再実装せず、\
+             `ActuationTarget::capture_blocking` → \
+             `set_ime_romaji_mode_for_target_blocking` 経由で書き込むこと。\n\
+             実際: {sites:?}"
+        );
+    }
+
+    // 2. 同期捕獲と同期 ROMAN write の呼び出し元。
+    for needle in [
+        "ActuationTarget::capture_blocking(",
+        "set_ime_romaji_mode_for_target_blocking(",
+    ] {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        sites.sort();
+        assert_eq!(
+            sites,
+            vec![("src/ime_controller.rs".to_string(), 1)],
+            "`{needle}` の本番呼び出し元は `ime_controller.rs` の \
+             `romaji_pre_write` 1 箇所だけに固定されています（ADR-089 Phase C item 12）。\
+             実際: {sites:?}"
+        );
+    }
+
+    // 3. その 1 箇所が `romaji_pre_write` の中にあること。
+    let controller = read_crate_file("src/ime_controller.rs");
+    let pre_write = extract_fn_body(&controller, "fn romaji_pre_write");
+    for needle in [
+        "ActuationTarget::capture_blocking(",
+        "set_ime_romaji_mode_for_target_blocking(",
+    ] {
+        assert_eq!(
+            count_real_calls(pre_write, needle),
+            1,
+            "`{needle}` は `romaji_pre_write` の中で呼ぶこと（条件判定 \
+             `needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
+        );
+    }
 }

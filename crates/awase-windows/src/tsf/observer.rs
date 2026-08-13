@@ -502,6 +502,18 @@ pub(crate) enum ActiveImeKind {
     MicrosoftIme,
 }
 
+/// ADR-089 §2.8: windows-gated な観測型から ungated な `ImeKindId` への唯一の
+/// 変換点（`focus/class_names.rs` の `From<AppImeProfile> for ImePolicyProfile`
+/// と同じ形）。
+impl From<ActiveImeKind> for crate::state::ime_kind::ImeKindId {
+    fn from(kind: ActiveImeKind) -> Self {
+        match kind {
+            ActiveImeKind::GoogleJapaneseInput => Self::Gji,
+            ActiveImeKind::MicrosoftIme => Self::MsIme,
+        }
+    }
+}
+
 // ── 下位モジュールへの委譲 ──
 //
 // GJI I/O モニターと WinEvent 観察フックは専用モジュールに分離している。

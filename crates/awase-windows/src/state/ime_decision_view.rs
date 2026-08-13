@@ -23,6 +23,13 @@ pub(crate) struct FocusFacts<'a> {
     pub class_name: &'a str,
     /// フォーカス中アプリの IME 制御プロファイル
     pub profile: AppImeProfile,
+    /// view 構築時点のフォーカス世代（`Output::ime_mode_focus_gen`）。
+    ///
+    /// ADR-086 INV-14 の同期 write（`ime_controller::apply_mechanism` の
+    /// ROMAN 補完）が `ActuationTarget` を捕獲・照合するために使う
+    /// （ADR-089 §6 Phase C item 12）。`ime_controller.rs` は Runtime/Output の
+    /// 内部状態を直接読めないため、view のフィールドとして運ぶ。
+    pub focus_gen: u32,
 }
 
 /// OS から直接観測した揮発性状態（tick 境界でアトミックをロードしてスナップショット化）。
