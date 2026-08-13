@@ -921,7 +921,7 @@ impl ImeStateHub {
     /// 設定された同期キー由来の意図。`IntentWitness::from_sync_key` を通った
     /// 「注入されていない実キーイベント」がないと呼べない（ADR-089 §2.2、
     /// BUG-14 の型化）。source は witness が運ぶ。
-    pub(crate) fn write_sync_key(&mut self, witness: &IntentWitness, value: bool, tick_ms: TickMs) {
+    pub(crate) fn write_sync_key(&mut self, witness: IntentWitness, value: bool, tick_ms: TickMs) {
         self.dispatch_event(
             ImeEvent::UserImeSetIntent {
                 target: value,
@@ -935,7 +935,7 @@ impl ImeStateHub {
     /// 「注入されていない実キーイベント」がないと呼べない。
     pub(crate) fn write_physical_key(
         &mut self,
-        witness: &IntentWitness,
+        witness: IntentWitness,
         value: bool,
         tick_ms: TickMs,
     ) {

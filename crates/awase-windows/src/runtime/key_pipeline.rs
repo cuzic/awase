@@ -830,7 +830,7 @@ impl Runtime {
                 };
                 self.platform_state
                     .ime
-                    .write_sync_key(&witness, new_val, tick_ms);
+                    .write_sync_key(witness, new_val, tick_ms);
             }
             IntentKind::PhysicalImeKey => {
                 let Some(witness) = IntentWitness::from_physical(event) else {
@@ -838,7 +838,7 @@ impl Runtime {
                 };
                 self.platform_state
                     .ime
-                    .write_physical_key(&witness, new_val, tick_ms);
+                    .write_physical_key(witness, new_val, tick_ms);
             }
         }
         if self.platform_state.ime.effective_open() == current {
