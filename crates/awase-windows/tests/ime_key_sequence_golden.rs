@@ -20,7 +20,7 @@
 //! # 実行方法
 //! Windows 専用コードのため実行は Windows 上でのみ可能:
 //! ```text
-//! cargo test --target x86_64-pc-windows-gnu --test ime_key_sequence_golden -p awase-windows
+//! cargo test --target x86_64-pc-windows-msvc --test ime_key_sequence_golden -p awase-windows
 //! ```
 //! Linux ホストではコンパイル確認のみ（`--no-run`）。ゴールデンを再生成/更新するには:
 //! ```text
