@@ -70,4 +70,11 @@ fi
 echo "[pre-push] awase-windows xwin キャッシュをクリアして再チェック ..."
 # awase-windows 自身のキャッシュのみクリア（依存クレートは保持）
 cargo clean -p awase-windows --target x86_64-pc-windows-msvc 2>/dev/null || true
-cargo xwin check -p awase-windows 2>&1
+# --target は必須（省略禁止）。cargo-xwin は --target が無いと Windows 向けの
+# 設定を一切適用せず、素の cargo check（= ホストの x86_64-unknown-linux-gnu 向け）
+# にフォールバックする。awase-windows の Windows API 依存は
+# [target.'cfg(windows)'.dependencies] にあるため、ホストターゲットでは
+# windows crate すら extern されず #[cfg(windows)] 配下が丸ごと未検査になる。
+# 上の cargo clean が msvc ターゲットのキャッシュを消しているのに check が
+# ホスト向けだと、クリーンチェックの意味自体が消える。
+cargo xwin check --target x86_64-pc-windows-msvc -p awase-windows 2>&1

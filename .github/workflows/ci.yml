@@ -69,7 +69,22 @@ jobs:
       # Cargo の優先順位で最上位のため、これを設定するとターゲット別 rustflags を
       # 丸ごと上書きしてクロスリンクが壊れる。warning-as-error 化は実 Windows で
       # 走る windows-build ジョブの clippy ステップ（-D warnings）に任せる。
-      - run: cargo xwin build --tests -p awase-windows
+      #
+      # `--target x86_64-pc-windows-msvc` は必須（省略禁止）。cargo-xwin は
+      # `--target` が無いと Windows 向けの設定を一切適用せず、素の
+      # `cargo build`（= ホストの x86_64-unknown-linux-gnu 向けビルド）に
+      # フォールバックする。awase-windows の Windows API 依存は Cargo.toml で
+      # `[target.'cfg(windows)'.dependencies]` に置かれているため、ホスト
+      # ターゲットでは windows crate すら extern されず、#[cfg(windows)] 配下の
+      # コードは丸ごとコンパイル対象外になる。つまりこのジョブは「緑」でありながら
+      # Windows 固有の型エラーを1つも検出できない状態になる。
+      # 実際、mingw から MSVC へ切り替えた 55d80dfb（2026-07-24）で
+      # 旧コマンド `cargo test --target x86_64-pc-windows-gnu --no-run -p awase-windows`
+      # の `--target` が引き継がれず、以来このジョブは Ubuntu ランナー上で
+      # Linux をビルドし続けていた（GitHub Actions run 31388703098 の
+      # windows-cross-check ジョブのログで確認: Windows SDK のダウンロードも
+      # windows crate のコンパイルも発生せず、3 クレート 5.63 秒で Finished）。
+      - run: cargo xwin build --tests --target x86_64-pc-windows-msvc -p awase-windows
 
   clippy:
     runs-on: ubuntu-latest
