@@ -725,16 +725,6 @@ impl PlatformRuntime for WindowsPlatform {
         true
     }
 
-    /// 呼び出し元ゼロ（2026-08-10 確認、ADR-087 §5 Phase 3 item14 実 actuation
-    /// 入口棚卸し）。実際の入口は `apply_ime_open_with_belief`/`_with_view`/
-    /// `_with_applied`（このファイル下部）であり、こちらは誰からも呼ばれない
-    /// trait オーバーライド。`tests/architecture_guard.rs::
-    /// ime_open_actuation_entry_points_are_accounted_for` で呼び出し箇所数 0 を
-    /// 固定している。削除するか実際に使うかは Phase 3 実配線時に判断する。
-    fn apply_ime_open(&mut self, open: bool) -> awase::platform::ImeOpenOutcome {
-        self.apply_ime_open_with_applied(open, None)
-    }
-
     fn post_ime_refresh(&mut self) {
         // SetOpen 後の IME 状態反映に数十ms かかるため、即時ではなく
         // 統合タイマー経由で短い遅延後にリフレッシュする。
@@ -1037,11 +1027,12 @@ impl WindowsPlatform {
     #[allow(clippy::unused_self)]
     pub(crate) fn apply_ime_open_with_view(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
-        let outcome = crate::ime_controller::CONTROLLER.apply(open, view);
+        let open = order.open();
+        let outcome = crate::ime_controller::CONTROLLER.apply(order, view);
         log::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,
@@ -1055,12 +1046,12 @@ impl WindowsPlatform {
     /// 呼び出し元が view を持たない場合（refresh / probe 完了後等）のラッパー。
     pub(crate) fn apply_ime_open_with_belief(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
         belief: crate::output::OpenBelief,
     ) -> awase::platform::ImeOpenOutcome {
         let view = self.build_ime_control_view(applied);
-        self.apply_ime_open_with_view(open, &view, belief)
+        self.apply_ime_open_with_view(order, &view, belief)
     }
 
     /// shadow のみから自明なビリーフを作る後方互換ラッパー。
@@ -1068,15 +1059,44 @@ impl WindowsPlatform {
     /// ImmCross 非経路かつ EngineIntent 外の呼び出しに使う。
     pub(crate) fn apply_ime_open_with_applied(
         &self,
-        open: bool,
+        order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
     ) -> awase::platform::ImeOpenOutcome {
         let shadow_on = applied.is_some_and(|(s, _)| s);
         self.apply_ime_open_with_belief(
-            open,
+            order,
             applied,
             crate::output::OpenBelief::from_shadow(shadow_on),
         )
+    }
+
+    /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版
+    /// （ADR-090 §2.A 設計案 3、§6 ステップ 5 item 20）。
+    ///
+    /// # なぜトレイトメソッドではなくこちらを使うのか
+    ///
+    /// `PlatformRuntime::set_ime_open(&mut self, open: bool) -> bool`
+    /// （`src/platform.rs` の**トレイト定義**）には引数を足せない。実 actuation
+    /// 入口 8 つのうち 2 つ（`ime_refresh.rs` の focus change 強制 OFF と
+    /// drift correction の ImmCross 分岐）がそのトレイトメソッドを通っていたため、
+    /// `WindowsPlatform` の inherent メソッドとして `ActuationOrder` を受ける
+    /// 版を足し、そちらへ移した。**トレイトメソッド側は呼び出し元ゼロの
+    /// 死んだ入口になる**（`ime_open_actuation_entry_points_are_accounted_for`
+    /// が `.set_ime_open(` の本番呼び出し 0 件を固定する）。
+    ///
+    /// A-1 は shadow モードなので、授権が下りていなくても書き込みは止めない。
+    pub(crate) fn set_ime_open_ordered(
+        &mut self,
+        order: crate::state::actuation_chain::ActuationOrder,
+    ) -> bool {
+        crate::ime_controller::log_shadow_warrant("set_ime_open", &order);
+        let open = order.open();
+        // `order` は**値で**受け取り、ここで消費する。1 つの `ActuationOrder`
+        // = 高々 1 回の write という `Actuation` のアフィン性（ADR-089 INV-41）を、
+        // チェーンを通らないこの経路でも保つため——参照で受けると同じ order で
+        // 2 回書けてしまう。
+        drop(order);
+        PlatformRuntime::set_ime_open(self, open)
     }
 
     // ── タイマー問い合わせ ──

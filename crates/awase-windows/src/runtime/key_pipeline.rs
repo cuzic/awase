@@ -737,9 +737,11 @@ impl Runtime {
                 effective_open: true,
                 confident: true,
             };
+            // ADR-090 §2.A A-1（shadow）。
+            let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
             let outcome = self
                 .platform
-                .apply_ime_open_with_belief(false, None, belief);
+                .apply_ime_open_with_belief(order, None, belief);
             self.on_ime_apply_complete(
                 false,
                 outcome,
@@ -936,6 +938,10 @@ impl Runtime {
             if imm_first {
                 // 楽観的 C: async 完了前から ImeModel を OFF に同期する。
                 self.platform_state.ime.mirror_applied_open(false, tick_ms);
+                // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
+                // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
+                // （ADR-090 §4.2）。
+                let order = self.issue_actuation_order(false, "shadow_toggle_off");
                 let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
                 win32_async::spawn_local(async move {
                     // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**と
@@ -944,7 +950,7 @@ impl Runtime {
                     // 宛先の捕獲（ADR-086 INV-14）はこの経路では未移行のため
                     // `Untargeted` のまま（Phase C）。
                     let outcome = crate::runtime::open_chain::run_open_chain_async(
-                        false,
+                        order,
                         crate::runtime::open_chain::ImmCrossOp::Untargeted,
                     )
                     .await;
@@ -960,7 +966,8 @@ impl Runtime {
                     drop(guard);
                 });
             } else {
-                let outcome = crate::ime_controller::CONTROLLER.apply(false, &view);
+                let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
+                let outcome = crate::ime_controller::CONTROLLER.apply(order, &view);
                 // B+C+D(noop)+E
                 self.on_ime_apply_complete(
                     false,

@@ -729,19 +729,42 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
     // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
     // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
-    const ENTRY_POINTS: [(&str, usize); 5] = [
-        // 内部委譲元(platform.rs 自身): ime_refresh.rs:740 / key_pipeline.rs:741 /
-        // mod.rs:890（ADR-087 §5 item14 表 #11/#4/#7）+ apply_ime_open_with_applied
-        // 内部からの委譲(platform.rs:1028) = 4。
+    //
+    // **2026-08-12（ADR-090 §2.A A-1）**: 実 actuation 入口を `ActuationOrder`
+    // 経由へ移した（§6 ステップ 5 item 20）。件数の変化は次の 2 つだけで、
+    // **入口の数そのものは変わっていない**:
+    //
+    // - `.set_ime_open(` 2 → **0**。トレイトメソッド（`src/platform.rs` の
+    //   トレイト定義）には引数を足せないため、外部 2 件
+    //   （`ime_refresh.rs` の focus change 強制 OFF と drift correction の
+    //   ImmCross 分岐）を inherent な `set_ime_open_ordered` へ移した。
+    //   **トレイトメソッド側はガードとして残す**（ゼロになったことが可視化
+    //   される。ADR-090 §2.A 設計案 3）。
+    // - `.apply_ime_open_with_applied(` 2 → **1**。呼び出し元ゼロの死んだ
+    //   trait オーバーライド `WindowsPlatform::apply_ime_open` を削除したため、
+    //   その内部委譲 1 件が消えた（`awase` 側のトレイト既定実装が残る）。
+    const ENTRY_POINTS: [(&str, usize); 6] = [
+        // 外部 3（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check /
+        // mod.rs try_force_on_bootstrap、ADR-087 §5 item14 表 #11/#4/#7）
+        // + apply_ime_open_with_applied 内部からの委譲 1 = 4。
         (".apply_ime_open_with_belief(", 4),
-        // executor.rs:887 / mod.rs:733（表 #1/#6）+ apply_ime_open_with_belief
-        // 内部からの委譲(platform.rs:1016) = 3。
+        // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
+        // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         (".apply_ime_open_with_view(", 3),
-        // ime_refresh.rs:499（表 #8）+ apply_ime_open 内部からの委譲(platform.rs:729) = 2。
-        (".apply_ime_open_with_applied(", 2),
-        // ime_refresh.rs:534/727（表 #9/#10）= 2。
-        (".set_ime_open(", 2),
-        // 呼び出し元ゼロ(死んだ入口、ADR-087 §5 item14 参照、Task #28 で対処)。
+        // 外部 1（ime_refresh.rs の GJI TsfNative 強制 ON、表 #8）= 1。
+        // 死んだ trait オーバーライドの削除で内部委譲 1 件が消えた。
+        (".apply_ime_open_with_applied(", 1),
+        // ADR-090 A-1 で `set_ime_open_ordered` へ移したため本番呼び出しゼロ。
+        // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
+        // actuation 入口が復活したことを意味する。
+        (".set_ime_open(", 0),
+        // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
+        // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
+        // ——近いのは `log::warn!` の文字列（`:725`）で、先頭に `.` が無いため
+        // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
+        (".set_ime_open_ordered(", 2),
+        // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
+        // ADR-090 A-1 で削除し、`awase` 側のトレイト既定実装だけが残る。
         (".apply_ime_open(", 0),
     ];
 
@@ -1268,15 +1291,26 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
          それが force-write（ADR-086 INV-15 の対象）でないことを確認すること。"
     );
 
-    // `set_ime_open(` は実呼び出し1件（IME OFF 強制）+ ログメッセージ1件
-    // （`log::debug!("... set_ime_open(false) called ...")`）で計2件。
+    // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
+    // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
+    // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
+    // （`log::debug!("... set_ime_open(false) called ...")`）だけ。
     let set_ime_open_count = count_real_calls(body, "set_ime_open(");
     assert_eq!(
-        set_ime_open_count, 2,
+        set_ime_open_count, 1,
         "{path}::ir_post_focus_change_snapshot 内の `set_ime_open(` 出現数が \
-         想定(2 = 実呼び出し1件 + ログメッセージ1件)と異なります(実際: \
-         {set_ime_open_count})。新しい呼び出しを追加した場合はこの期待値を \
-         更新し、それが force-write でないことを確認すること。"
+         想定(1 = ログメッセージのみ。実呼び出しは set_ime_open_ordered へ移行)と\
+         異なります(実際: {set_ime_open_count})。トレイトメソッド \
+         `set_ime_open` を直接呼ぶと warrant を通さない actuation 入口が\
+         復活します（ADR-090 §2.A・INV-47）。"
+    );
+    let ordered_count = count_real_calls(body, "set_ime_open_ordered(");
+    assert_eq!(
+        ordered_count, 1,
+        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open_ordered(` \
+         出現数が想定(1 = IME OFF 強制)と異なります(実際: {ordered_count})。\
+         新しい呼び出しを追加した場合はこの期待値を更新し、それが force-write \
+         でないことを確認すること。"
     );
 }
 
@@ -1396,14 +1430,18 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
     let ime_refresh_production = production_code_only(&ime_refresh_rs);
     let focus_change_body =
         extract_fn_body(ime_refresh_production, "fn ir_post_focus_change_snapshot");
+    // **ADR-090 A-1**: 第1引数が `true`（生の open 値）から `order`
+    // （`ActuationOrder`、warrant 込み）へ変わった。**検査したい不変条件は
+    // 第2引数の `None`** ——`applied` に実値を渡すと GJI の no-op skip に
+    // 阻まれる——なので、needle も `order, None` に追随させる。
     assert_eq!(
         count_real_calls(
             focus_change_body,
-            ".apply_ime_open_with_applied(true, None)"
+            ".apply_ime_open_with_applied(order, None)"
         ),
         1,
         "GJI TsfNative 入場時の強制ON（ir_post_focus_change_snapshot）は \
-         apply_ime_open_with_applied(true, None) 経由で shadow_on=false を作ることで \
+         apply_ime_open_with_applied(order, None) 経由で shadow_on=false を作ることで \
          GJI の no-op skip を bypass する設計。`None` 以外の値を渡すよう変更された場合、\
          ADR-087 INV-28 の前提が崩れる。"
     );
@@ -1411,40 +1449,113 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
 
 // ── ADR-089 Phase B（§2.3・§6 item 6/7）─────────────────────────────────────
 
-/// `Actuation<Warranted>` を **warrant なしで**作る暫定入口
-/// （`warrant_pending_adr087`）の呼び出し箇所数を固定する。
+/// 実 actuation の起案が `ActuationOrder::issue()` 1 本を通ることを固定する
+/// （ADR-090 §2.A A-1、INV-47）。
 ///
-/// ADR-087 の `issue_open_warrant()` は本番未配線（呼び出し元ゼロ、2026-08-12
-/// 確認）であり、既存の apply 経路は `OpenWarrant` を持たない。Phase B は
-/// ADR-087 Phase 3 を巻き込まないため、warrant を持たない経路のための
-/// 名前付きの入口を分けた（`state/actuation_chain.rs` モジュール doc の
-/// 「差分」3）。
+/// # 何が変わったか（ADR-089 Phase B → ADR-090 A-1）
 ///
-/// **この件数は増やさないこと。** ADR-087 Phase 3 の配線が進むたびに、この
-/// 期待値は減っていくのが正しい方向である。
+/// Phase B の時点では `issue_open_warrant()`（ADR-087）の本番呼び出し元が
+/// ゼロで、既存の apply 経路は `OpenWarrant` を持たなかった。そのため
+/// warrant を素通しする暫定入口 `warrant_pending_adr087()` を 2 箇所
+/// （同期チェーン / 非同期チェーン）が通っており、本テストはその件数
+/// （2）を固定していた。
+///
+/// **ADR-090 A-1 で `warrant_pending_adr087()` は削除した。**
+/// `Requested → Warranted` の経路は
+/// (a) `Actuation::warrant(OpenWarrant)`（実 warrant を要求）と
+/// (b) `ActuationOrder::into_actuation_shadow()` / `into_actuation()` だけで
+/// あり、`ActuationOrder` の唯一の構築経路 `issue()` は
+/// `issue_open_warrant()` の戻り値をそのまま受ける。したがって
+/// **「warrant を発行せずに actuation を起案する」ことが型として書けない**。
+///
+/// 本テストは残った実行時の抜け道——`Actuation::request(` を
+/// `ActuationOrder` の外で呼ぶこと——を件数で塞ぐ。
+///
+/// # なぜ型で閉じないのか
+///
+/// `Actuation::request` を `pub(crate)` 未満にはできない
+/// （`state/actuation_chain.rs` のモジュール doc の compile_fail doctest が
+/// crate 外から `Actuation::request(..).warrant(..)` を組み立てており、
+/// それは**正規経路の説明**として必要）。
 #[test]
-fn legacy_unwarranted_actuation_sites_are_accounted_for() {
-    // ime_controller.rs（同期チェーン）と runtime/open_chain.rs（非同期チェーン）
-    // の 2 箇所のみ。
-    const EXPECTED: usize = 2;
+fn actuation_is_only_requested_through_actuation_order() {
+    // どちらも `state/actuation_chain.rs` の中で、**実 `OpenWarrant` を伴う**
+    // 構築だけ:
+    //   1. `ActuationOrder::into_actuation`（A-2 用、warrant が `Some` のときのみ）
+    //   2. `DriftEpisode::next_attempt`（同一 warrant からの再試行。回数制限は
+    //      `decide_actuation_action` が持つ、INV-41）
+    // **`state/actuation_chain.rs` の外に出たら、それは warrant を持たない
+    // 起案経路が復活したということ。**
     let files = list_src_files();
-    let mut total = 0usize;
     let mut breakdown: Vec<(String, usize)> = Vec::new();
     for path in &files {
         let content = read_crate_file(path);
         let production = production_code_only(&content);
-        let count = count_real_calls(production, "warrant_pending_adr087(");
+        let count = count_real_calls(production, "Actuation::request(");
         if count > 0 {
-            total += count;
             breakdown.push((path.clone(), count));
         }
     }
     assert_eq!(
-        total, EXPECTED,
-        "`warrant_pending_adr087(` の呼び出し箇所数が想定({EXPECTED})と異なります\
-         (実際: {total})。内訳: {breakdown:?}\n\
-         ADR-087 の `issue_open_warrant()` を通さずに actuation を起こす経路を\
-         増やさないでください（ADR-089 §2.3、`state/actuation_chain.rs` 参照）。"
+        breakdown,
+        vec![("src/state/actuation_chain.rs".to_string(), 2)],
+        "`Actuation::request(` の本番呼び出しは `state/actuation_chain.rs` の \
+         2 箇所（`ActuationOrder::into_actuation` / `DriftEpisode::next_attempt`、\
+         どちらも実 `OpenWarrant` を伴う）だけにすること。実際: {breakdown:?}\n\
+         実 actuation は `ActuationOrder::issue()`（= `issue_open_warrant()` を\
+         必ず通る）から起案してください（ADR-090 §2.A・INV-47）。"
+    );
+    // 素通し入口が復活していないこと（ADR-090 A-1 で削除済み）。
+    // コメント行は除外する——`state/actuation_chain.rs` のモジュール doc は
+    // 「Phase B ではこの入口があった / A-1 で削除した」という経緯を
+    // 名前付きで残しており（`.claude/rules/experiment-logging.md` の
+    // 「なぜ前回それを捨てたのかを辿れるようにする」規約）、それは残すべき記録
+    // である。塞ぎたいのは**実際の呼び出しと定義**の復活だけ。
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let live = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains("warrant_pending_adr087"))
+            .count();
+        assert_eq!(
+            live, 0,
+            "{path}: `warrant_pending_adr087` は ADR-090 A-1 で削除した。\
+             warrant を素通しする入口を再導入しないこと（INV-47）。"
+        );
+    }
+}
+
+/// `WarrantContext` の組み立てが `ImeStateHub::warrant_context()` 1 箇所に
+/// 限られることを固定する（ADR-090 §2.A A-R3、INV-48）。
+///
+/// `WarrantContext` は 8 フィールドで、うち `intent_store` は `ImeStateHub` の
+/// **private フィールド**である。実 actuation 入口は外部 8 経路あるので、
+/// 各入口がリテラルで組み立てると (a) `intent_store` の private を崩すか、
+/// (b) 同じ組み立てが 8 箇所に散る（ADR-087 §7 round4 N-A が
+/// `WarrantContext` を導入して避けたかったもの）。
+#[test]
+fn warrant_context_is_built_in_one_place() {
+    let files = list_src_files();
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .filter(|line| line.contains("WarrantContext {"))
+            .count();
+        if count > 0 {
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        breakdown,
+        vec![("src/state/platform_state.rs".to_string(), 1)],
+        "`WarrantContext {{` のリテラル構築は `ImeStateHub::warrant_context()` の\
+         1 箇所だけにすること（ADR-090 INV-48）。実際: {breakdown:?}"
     );
 }
 

@@ -1,6 +1,5 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use awase::engine::{ConvMode, EngineCommand, InputModeState};
-use awase::platform::PlatformRuntime;
 
 use super::Runtime;
 use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
@@ -496,7 +495,10 @@ impl Runtime {
             if obs.gji_monitor_ok
                 && obs.active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
             {
-                let _ = self.platform.apply_ime_open_with_applied(true, None);
+                // ADR-090 §2.A A-1（shadow）。
+                let order =
+                    self.issue_actuation_order(true, "focus_change_tsf_native_gji_force_on");
+                let _ = self.platform.apply_ime_open_with_applied(order, None);
                 log::debug!(
                     "[composition] FocusChange: TsfNative IME ON → GJI VK_IME_ON 強制 (shadow_on を無視)"
                 );
@@ -531,7 +533,10 @@ impl Runtime {
         }
 
         if !applied_ime_on && !new_profile_is_tsf_native {
-            let _ = self.platform.set_ime_open(false);
+            // ADR-090 §2.A 設計案 3: トレイトメソッド `set_ime_open` には引数を
+            // 足せないため inherent な `set_ime_open_ordered` へ移した。
+            let order = self.issue_actuation_order(false, "focus_change_enforce_off");
+            let _ = self.platform.set_ime_open_ordered(order);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
@@ -762,7 +767,11 @@ impl Runtime {
             tick_ms,
         );
         if self.can_use_imm32_cross_process() {
-            let _ = self.platform.set_ime_open(desired);
+            // ADR-090 §2.A 設計案 3 / A-1（shadow）。drift correction は既に
+            // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
+            // order の出所として使う（journal の `ImeActuation` と揃う）。
+            let order = self.issue_actuation_order_with_origin(desired, act_origin);
+            let _ = self.platform.set_ime_open_ordered(order);
             self.platform_state
                 .ime
                 .mirror_applied_open_with_ts(desired, 0);
@@ -773,9 +782,10 @@ impl Runtime {
                 effective_open: desired,
                 confident: true,
             };
+            let order = self.issue_actuation_order_with_origin(desired, act_origin);
             let outcome = self
                 .platform
-                .apply_ime_open_with_belief(desired, None, belief);
+                .apply_ime_open_with_belief(order, None, belief);
             log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(
                 desired,

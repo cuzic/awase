@@ -35,15 +35,22 @@
 //!    **走査規則（[`Actuation::classify`]）を単一の SSOT に置いたうえで**
 //!    駆動側だけ 2 本にした。二重経路になっているのは「future を駆動する殻」で
 //!    あって、フォールスルー述語でも戦略選択でもない。
-//! 3. **`Actuation<Warranted>` の構築に [`Authorization::LegacyUnwarranted`] を
-//!    用意した。** ADR §2.3 は `warrant(self, w: OpenWarrant)` だけを想定して
-//!    いるが、`issue_open_warrant()`（ADR-087）の**本番呼び出し元は現時点で
-//!    ゼロ**（`src/` を grep して確認、2026-08-12。ADR-087 Phase 3 の配線が
-//!    未了）。既存の apply 経路に warrant を要求すると ADR-087 Phase 3 を
-//!    Phase B に巻き込むことになるため、warrant を持たない既存経路のための
-//!    名前付きの入口を分けた。件数は
-//!    `tests/architecture_guard.rs::legacy_unwarranted_actuation_sites_are_accounted_for`
-//!    が固定しており、増やすには期待値の更新が要る。
+//! 3. ~~**`Actuation<Warranted>` の構築に `Authorization::LegacyUnwarranted` を
+//!    用意した。**~~ **【解消: ADR-090 §2.A A-1（2026-08-12）】**
+//!    Phase B 時点では `issue_open_warrant()`（ADR-087）の本番呼び出し元が
+//!    ゼロだったため、warrant を持たない既存経路のための素通し入口
+//!    `warrant_pending_adr087()` を分けていた。**ADR-090 A-1 で
+//!    [`ActuationOrder`] を新設し、実 actuation 入口が
+//!    `issue_open_warrant()` を必ず通るようにしたので、素通し入口は削除した**
+//!    （INV-47）。`Requested → Warranted` の経路は
+//!    (a) [`Actuation::warrant`]（実 `OpenWarrant` を要求）と
+//!    (b) [`ActuationOrder::into_actuation_shadow`] / [`ActuationOrder::into_actuation`]
+//!    の 2 つだけである。
+//!
+//!    **ただし A-1 は shadow モードであり、授権が下りなくても書き込みは
+//!    止めない**——止めるのは A-2（入口ごと・実機ソーク必須）。
+//!    `Authorization::LegacyUnwarranted { would_have_blocked }` はその測定値で
+//!    ある（[`Authorization`] の doc を参照）。
 //!
 //! # compile-fail ケース（ADR-089 §7 ケース1）
 //!
@@ -62,6 +69,7 @@
 //! use awase_windows::state::actuation_chain::{
 //!     Actuation, MechanismWriter, VerifiedTarget, WriteMechanism,
 //! };
+//! use awase_windows::state::open_warrant::{OpenWarrant, WarrantBasis};
 //!
 //! struct W;
 //! impl MechanismWriter for W {
@@ -71,8 +79,10 @@
 //!     }
 //! }
 //!
+//! let w = OpenWarrant { target: true, basis: WarrantBasis::OwnSsot };
 //! let act = Actuation::request(true)
-//!     .warrant_pending_adr087()
+//!     .warrant(w)
+//!     .unwrap()
 //!     .verify(VerifiedTarget::FocusImplicit);
 //! assert_eq!(act.run_chain(&WriteMechanism::ALL, &mut W), ImeOpenOutcome::Applied);
 //! ```
@@ -85,6 +95,7 @@
 //! use awase_windows::state::actuation_chain::{
 //!     Actuation, MechanismWriter, WriteMechanism,
 //! };
+//! use awase_windows::state::open_warrant::{OpenWarrant, WarrantBasis};
 //!
 //! struct W;
 //! impl MechanismWriter for W {
@@ -94,7 +105,8 @@
 //!     }
 //! }
 //!
-//! let act = Actuation::request(true).warrant_pending_adr087();
+//! let w = OpenWarrant { target: true, basis: WarrantBasis::OwnSsot };
+//! let act = Actuation::request(true).warrant(w).unwrap();
 //! // error[E0599]: no method named `run_chain` found for `Actuation<Warranted>`
 //! let _ = act.run_chain(&WriteMechanism::ALL, &mut W);
 //! ```
@@ -103,8 +115,10 @@ use std::marker::PhantomData;
 
 use awase::platform::ImeOpenOutcome;
 
+use super::event_origin::EventOrigin;
 use super::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
-use super::open_warrant::OpenWarrant;
+use super::ime_event::HwndId;
+use super::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
 
 // ── WriteMechanism ────────────────────────────────────────────────────────────
 
@@ -276,12 +290,172 @@ pub enum VerifiedTarget {
 /// 授権の根拠。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Authorization {
-    /// ADR-087 の `issue_open_warrant()` が発行した warrant。
+    /// ADR-087 の `issue_open_warrant()` が発行した warrant（正規経路）。
     Warrant(OpenWarrant),
-    /// ADR-087 Phase 3（`issue_open_warrant()` の本番配線）が未了の既存経路。
+    /// **A-1 shadow モード**（ADR-090 §2.A 設計案 2）: `issue_open_warrant()` は
+    /// 呼んだが授権が下りなかった経路。
     ///
-    /// **新しい呼び出し元を足さないこと。** 件数は architecture_guard が固定する。
-    LegacyUnwarranted,
+    /// # なぜ書き込みを止めないのか
+    ///
+    /// 差分オラクル（`open_warrant.rs::differential_old_gate_vs_issue_open_warrant`）は
+    /// 旧ゲートと新 warrant の判定が **9 通りで食い違う**ことを既に測っている
+    /// （old-only 8 / new-only 1）。そのまま強制すると 9 通りの挙動が変わり、
+    /// うち `try_force_on_bootstrap` の消滅は「判明した中で最大の挙動変化」で
+    /// ある（ADR-090 §2.A 設計案 2 の表 old-1）。
+    ///
+    /// 差分オラクルが測っているのは **240 通りの組合せ**であって、
+    /// **実機でどの組合せが実際に起きるか**は測っていない。A-1 はそれを
+    /// 測るための shadow モードであり、`would_have_blocked` がその測定値
+    /// そのものである。**入口ごとに実機ソークで頻度を測ってから**、
+    /// A-2 で 1 つずつ強制へ倒す。
+    ///
+    /// `origin` が `None` なのは [`Actuation::request`] 直後（まだ授権判定を
+    /// していない `Requested` 段階）だけである。
+    LegacyUnwarranted {
+        /// A-2 で強制したらこの write が止まっていたか。
+        would_have_blocked: bool,
+        /// どの入口が起案したか（ADR-082 `EventOrigin`）。
+        origin: Option<EventOrigin>,
+    },
+}
+
+impl Authorization {
+    /// `Requested` 段階のプレースホルダ。まだ授権判定をしていない。
+    const PENDING: Self = Self::LegacyUnwarranted {
+        would_have_blocked: false,
+        origin: None,
+    };
+
+    /// A-2 で強制したらこの write が止まっていたか（shadow の測定値）。
+    #[must_use]
+    pub const fn would_have_blocked(&self) -> bool {
+        matches!(
+            self,
+            Self::LegacyUnwarranted {
+                would_have_blocked: true,
+                ..
+            }
+        )
+    }
+
+    /// 起案した入口（`ActuationOrder::issue` を通っていれば `Some`）。
+    #[must_use]
+    pub const fn origin(&self) -> Option<EventOrigin> {
+        match self {
+            Self::LegacyUnwarranted { origin, .. } => *origin,
+            Self::Warrant(_) => None,
+        }
+    }
+}
+
+// ── ActuationOrder（ADR-090 §2.A 設計案 1、INV-47）─────────────────────────────
+
+/// 実 actuation 入口が起案する 1 件の指示。[`Actuation`] チェーンの材料。
+///
+/// # なぜ「値として運ぶ」のか
+///
+/// warrant を発行できる型（`WarrantContext` の材料を持つ `ImeStateHub`）と
+/// warrant を消費する型（`ImeController` / `run_open_chain_async`）が別物で
+/// あり、消費側から発行側へ手を伸ばす唯一の手段 `crate::with_app` は
+/// **消費側のフレームが既に `with_app` の内側にいる**ため再入する
+/// （ADR-090 §2.A.2(1)・§4.2）。しかも `with_app` は再入時に panic せず
+/// `None` を返すので、**取れなかったことが「授権が下りなかった」と区別
+/// できない形で静かに落ちる**——A-1 の shadow ログが測ろうとしている当のものが
+/// 汚染される。したがって warrant は**既に `&ImeStateHub` を持っている入口側**で
+/// 作り、引数として運ぶ。
+///
+/// **`ImeControlView` には載せない**（ADR-090 §4.1）。理由は `Copy` ではなく
+/// 責務: (a) view の構築点 `WindowsPlatform::build_ime_control_view` は
+/// `ImeStateHub` を持たない、(b) view には actuation でない読み手
+/// （`is_applicable` / `characterize_strategy` 等）が居り、読み取りのたびに
+/// 授権を発行することになる、(c) view は `fallback_write` がチェーンの機構ごとに
+/// 作り直すため warrant がチェーン途中で暗黙に再発行される。
+///
+/// # 唯一の構築経路（INV-47）
+///
+/// [`ActuationOrder::issue`] だけが `ActuationOrder` を作る。
+/// `issue_open_warrant()` の戻り値をそのまま受ける形にすることで、
+/// **「warrant を発行せずに actuation を起案する」ことが型として書けない**。
+#[derive(Debug, Clone)]
+#[must_use = "起案した order は actuation チェーンへ渡すこと"]
+pub struct ActuationOrder {
+    open: bool,
+    /// `issue_open_warrant()` の結果。`None` = 授権が下りなかった。
+    warrant: Option<OpenWarrant>,
+    /// どの入口が起案したか（ADR-082 `EventOrigin` と journal を揃える）。
+    origin: EventOrigin,
+}
+
+impl ActuationOrder {
+    /// 唯一の構築経路（INV-47）。**`issue_open_warrant()` の戻り値をそのまま
+    /// 受ける形**にして、warrant を「作らない」選択肢を型から消す。
+    ///
+    /// `target` が `HwndId::NULL`（フォーカス不明）でも判定は壊れない——
+    /// Step 1（`IntentStore::lookup`）が必ず外れるだけで、Step 0/3/4a/4b/4c は
+    /// `target` を使わない（ADR-090 A-R4）。「対象不明」は `origin` 側の
+    /// `strategy` で区別する。
+    pub fn issue(
+        open: bool,
+        target: HwndId,
+        ctx: &WarrantContext<'_>,
+        origin: EventOrigin,
+    ) -> Self {
+        Self {
+            open,
+            warrant: issue_open_warrant(open, target, ctx),
+            origin,
+        }
+    }
+
+    /// この actuation が目指す open 値。
+    #[must_use]
+    pub const fn open(&self) -> bool {
+        self.open
+    }
+
+    /// 起案した入口。
+    #[must_use]
+    pub const fn origin(&self) -> EventOrigin {
+        self.origin
+    }
+
+    /// A-2 で強制したらこの write が止まっていたか（shadow の測定値）。
+    #[must_use]
+    pub const fn would_have_blocked(&self) -> bool {
+        self.warrant.is_none()
+    }
+
+    /// **A-1 shadow**: 授権の有無に関わらず `Warranted` へ進む。
+    ///
+    /// 授権が下りていなければ [`Authorization::LegacyUnwarranted`] に
+    /// `would_have_blocked: true` と `origin` を載せる。**書き込みは止めない**
+    /// ——止めるのは A-2（入口ごと・実機ソーク必須）である。
+    pub fn into_actuation_shadow(self) -> Actuation<Warranted> {
+        let authorization = self.warrant.map_or(
+            Authorization::LegacyUnwarranted {
+                would_have_blocked: true,
+                origin: Some(self.origin),
+            },
+            Authorization::Warrant,
+        );
+        Actuation {
+            open: self.open,
+            authorization,
+            target: None,
+            _state: PhantomData,
+        }
+    }
+
+    /// **A-2（強制）用。現時点で本番呼び出し元は無い。**
+    ///
+    /// 授権が下りていれば `Warranted`、下りていなければ `None`。
+    /// 入口ごとに A-1 の shadow ログで `would_have_blocked` の実発火頻度を
+    /// 測ってから、1 つずつこちらへ倒す（ADR-090 §6 ステップ 7）。
+    /// `try_force_on_bootstrap` は**最後**に回すこと（§4.9）。
+    #[must_use]
+    pub fn into_actuation(self) -> Option<Actuation<Warranted>> {
+        Actuation::request(self.open).warrant(self.warrant?)
+    }
 }
 
 /// actuation 1 回分の値。**1 値 = 高々 1 回の成功 write**（INV-41）。
@@ -313,7 +487,7 @@ impl Actuation<Requested> {
     pub const fn request(open: bool) -> Self {
         Self {
             open,
-            authorization: Authorization::LegacyUnwarranted,
+            authorization: Authorization::PENDING,
             target: None,
             _state: PhantomData,
         }
@@ -334,20 +508,6 @@ impl Actuation<Requested> {
             target: None,
             _state: PhantomData,
         })
-    }
-
-    /// ADR-087 Phase 3 が未配線の既存経路のための暫定授権（モジュール doc の
-    /// 「ADR-089 の記述との差分」3 を参照）。
-    ///
-    /// **新規の呼び出し元を足さないこと。**
-    #[must_use]
-    pub fn warrant_pending_adr087(self) -> Actuation<Warranted> {
-        Actuation {
-            open: self.open,
-            authorization: Authorization::LegacyUnwarranted,
-            target: None,
-            _state: PhantomData,
-        }
     }
 }
 
@@ -575,7 +735,8 @@ mod tests {
 
     fn verified(open: bool) -> Actuation<Verified> {
         Actuation::request(open)
-            .warrant_pending_adr087()
+            .warrant(warrant(open))
+            .expect("warrant.target == open")
             .verify(VerifiedTarget::FocusImplicit)
     }
 
@@ -783,7 +944,8 @@ mod tests {
     fn verified_target_is_preserved_across_fallthrough() {
         let target = VerifiedTarget::Captured;
         let act = Actuation::request(true)
-            .warrant_pending_adr087()
+            .warrant(warrant(true))
+            .expect("warrant.target == open")
             .verify(target);
         assert_eq!(act.target(), target);
         let Err(WriteErr::Retryable(next, outcome)) = act.classify(ImeOpenOutcome::Failed) else {

@@ -487,6 +487,70 @@ ImmCross 本体は既に `ActuationTarget::verify_still_current` でフォーカ
 - **A-2（強制）**: 優先度 **高（価値）／低（着手可能性）**。規模 **大**
   （入口ごとに分割し、それぞれ実機ソーク）。**A-1 のログが取れるまで着手不可**。
 
+#### A.6 A-1 実施記録（2026-08-12）— **実施済み**（A-2 は未着手）
+
+§6 ステップ 5 の 18〜22 を実装した。**23（実機ソーク）は環境が無いため未実施。**
+挙動変更ゼロ（ログと journal 用の起案が増えるだけ）。
+`tests/golden/` と `tests/ime_key_sequence_golden.rs` は本項では無変更。
+
+| 項 | 実装 |
+|---|---|
+| 18 | `ImeStateHub::warrant_context(now, now_ms)` を新設（INV-48）。`intent_store` は private のままで、この 1 本だけが読む。あわせて `ImeStateHub::issue_actuation_order(open, origin, now, now_ms)` を新設（`current_focus()` が `None` なら `HwndId::NULL` を渡す、A-R4） |
+| 19 | `state/actuation_chain.rs` に `ActuationOrder`（`issue` / `open` / `origin` / `would_have_blocked` / `into_actuation_shadow` / `into_actuation`）を新設（INV-47） |
+| 20 | 実 actuation 入口 **外部 8 経路すべて**を `ActuationOrder::issue()` 経由へ。`set_ime_open` トレイト経路の 2 件は `WindowsPlatform::set_ime_open_ordered` へ移し、`.set_ime_open(` の期待値を 2 → 0 に下げた（ガードは残す）。`ime_open_actuation_entry_points_are_accounted_for` のコメントの stale な行番号（`ime_refresh.rs:727` → `:752`）も直した |
+| 21 | `Authorization::LegacyUnwarranted { would_have_blocked, origin }` に拡張。ログ点は `ime_controller::log_shadow_warrant`（`[warrant-shadow]`）1 本 |
+| 22 | `warrant_pending_adr087()` を**削除**。`legacy_unwarranted_actuation_sites_are_accounted_for` を `actuation_is_only_requested_through_actuation_order` へ作り替えた |
+| 23 | **未実施**（実機ソーク。この環境では走らせられない） |
+
+**実 actuation 入口 8 経路の `strategy` 識別子**（A-2 が入口ごとに分割する単位。
+`[warrant-shadow]` ログと journal でこの文字列を見る）:
+
+| # | 入口 | `strategy` |
+|---|---|---|
+| 1 | `runtime/executor.rs` engine decision（同期） | `engine_decision_sync` |
+| 2 | `runtime/executor.rs` engine decision（ImmCross 非同期） | `engine_decision_async` |
+| 3 | `runtime/key_pipeline.rs` idle-conv-check の DirectInput | `idle_conv_check_direct_input` |
+| 4 | `runtime/key_pipeline.rs` shadow-toggle OFF（非同期） | `shadow_toggle_off` |
+| 5 | `runtime/key_pipeline.rs` shadow-toggle OFF（同期分岐） | `shadow_toggle_off_sync` |
+| 6 | `runtime/mod.rs::force_on_and_correct_romaji` | `force_on_and_correct_romaji` |
+| 7 | `runtime/mod.rs::try_force_on_bootstrap` | `try_force_on_bootstrap` |
+| 8 | `runtime/ime_refresh.rs` GJI TsfNative 強制 ON | `focus_change_tsf_native_gji_force_on` |
+| 9 | `runtime/ime_refresh.rs` focus change 強制 OFF | `focus_change_enforce_off` |
+| 10 | `runtime/ime_refresh.rs` drift correction（ImmCross 分岐 / チェーン分岐） | 既存の `act_origin` をそのまま使う（`drift_correction_read` / `drift_correction_blind`） |
+
+##### ADR の記述と実コードが食い違っていた点
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| A-1' | §2.A.2(3) は「実 actuation 入口は**外部 8** + 内部委譲 3」 | 実際に `ActuationOrder` を配線した起案点は **10 箇所**。差の 2 件は (a) `key_pipeline.rs` の shadow-toggle OFF が **imm_first で async/sync に分岐**しており両方が起案する、(b) drift correction の 2 分岐（ImmCross / チェーン）が §2.A.2(3) の表では別々の needle（`.set_ime_open(` と `.apply_ime_open_with_belief(`）に数えられていた | **10 箇所すべてに配線した。** §2.A.2(3) の「8」は needle 別の集計であって「起案点の数」ではない。A-2 は起案点単位で分割するので、`strategy` 識別子も 10 通り用意した |
+| A-2' | §2.A 設計案 1 の `ActuationOrder::into_actuation()` は `Option<Actuation<Warranted>>` を返し、A-1 では「`None` でも書き込みを止めない」 | `Option` を返す 1 本だけだと、A-1 の呼び出し元が `None` を握りつぶす形（`unwrap_or_else` で別経路を組む）になり、**「止めない」が呼び出し元の作法に依存する** | **`into_actuation_shadow()`（常に `Warranted`）と `into_actuation()`（`Option`、A-2 用）の 2 本にした。** A-1 の 2 つのチェーン入口は前者だけを呼ぶ。A-2 で入口を倒すときは後者へ差し替える——**差し替えが型として見える**ぶん、A-1 → A-2 の移行が追跡しやすい |
+| A-3' | §6 ステップ 5 item 20 は「`set_ime_open` トレイトメソッドを死んだ入口として doc に明記し、期待値を 2 → 0 に下げる」 | `WindowsPlatform` には**もう 1 つ**死んだトレイトオーバーライド `apply_ime_open`（`platform.rs:734`、呼び出し元ゼロ）があり、それが `apply_ime_open_with_applied` を呼んでいた。`ActuationOrder` を通そうにも `WindowsPlatform` は `ImeStateHub` を持たない（§2.A.2(1)） | **`WindowsPlatform::apply_ime_open` のオーバーライドを削除した**（`awase` 側のトレイト既定実装が残る）。§2.A.2(3) が「呼び出し元ゼロの死んだ入口」「削除するか実際に使うかは Phase 3 実配線時に判断する」と書いていたものの決着。副作用として `.apply_ime_open_with_applied(` の期待値が 2 → 1 になった（内部委譲 1 件が消えた） |
+| A-4' | §2.A.2(1) は「`ImeController` から `ImeStateHub` に手を伸ばす唯一の手段は `with_app`」 | `DecisionExecutor` の 4 つの公開入口（`execute_from_hook` / `execute_from_loop` / `drain_deferred` / `on_output_guard_timer`）は**既に `ime: &ImeStateHub` を引数で受け取っていた**。`dispatch_ime_set_open` まで 2 段（`execute_one` / `dispatch_effect`）通すだけで届く | **`with_app` を一切使わずに配線できた。** executor 経路は `Runtime` を持たないので `Runtime::issue_actuation_order` を使えないが、`executor.rs` に同等の free 関数 `issue_order(ime, open, strategy)` を置いた。§2.A.2(1) の結論（warrant は引数で運ぶ）はそのまま正しい |
+| A-5' | INV-47 は「`ActuationOrder::issue()` を通ってのみ起案される」 | `Actuation::request(` の本番呼び出しは**2 箇所残る**——`ActuationOrder::into_actuation`（A-2 用）と `DriftEpisode::next_attempt`（同一 warrant からの再試行、INV-41）。後者は実 `OpenWarrant` を伴うので INV-47 の趣旨には反しない | ガード `actuation_is_only_requested_through_actuation_order` を**件数ではなくファイル別内訳**で固定した（`[("src/state/actuation_chain.rs", 2)]`）。**`state/actuation_chain.rs` の外に出たら、それは warrant を持たない起案経路が復活したということ**である |
+| A-6' | A-R5「`Authorization::LegacyUnwarranted` に payload を足すと Phase B の compile-fail doctest が壊れうる」 | 壊れたのは `Authorization` ではなく **`warrant_pending_adr087()` の削除**のほう——モジュール doc の 2 つの doctest（通る双子 / compile_fail）がその名前を使っていた | doctest を `Actuation::request(true).warrant(OpenWarrant { target: true, basis: WarrantBasis::OwnSsot }).unwrap()` へ書き換えた。**「通る双子」と compile_fail の差が `verify(..)` の 1 行だけである**という構造は維持している（ADR-089 §9-14 の規約） |
+
+##### 【重要】検証環境の欠陥を 1 件発見した
+
+**`cargo xwin check -p awase-windows` は `--target` を明示しないと
+`x86_64-pc-windows-msvc` ではなくホスト（Linux）をチェックする。**
+本作業の途中で `.set_ime_open(` の型不一致がホスト check を通過したことで発覚し、
+`rustup target list --installed` を見ると **msvc ターゲットが未インストール**
+だった（`x86_64-unknown-linux-gnu` のみ）。
+
+したがって:
+
+- 本作業では `rustup target add x86_64-pc-windows-msvc` を実行したうえで
+  **`cargo xwin check -p awase-windows --all-targets --target x86_64-pc-windows-msvc`**
+  と `cargo xwin clippy ... --target x86_64-pc-windows-msvc` で検証した
+  （clippy の警告・エラー行は HEAD と `git stash` 比較で完全一致）。
+- **`.git/hooks/pre-commit` の `cargo xwin check -p awase-windows` も
+  `--target` を明示していない**ため、同じ穴がある。windows-gated コードの
+  型検査を pre-commit に期待しないこと（CI の `windows-build` ジョブは
+  別途 msvc ターゲットで走る）。
+- ADR-089 §6 Phase C 実施記録が「`cargo xwin check --target x86_64-pc-windows-msvc
+  --all-targets` がグリーン」と書いているのは `--target` 明示ありなので、
+  そちらは有効な検証である。**`--target` を省いた呼び方が無効**という話。
+
 ---
 
 ### B. `ConvergedReceipt` を制御フローへ配線し、`ImeObservation` を返す読み口を塞ぐ

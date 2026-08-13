@@ -35,7 +35,7 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::actuation_chain::{
-    needs_romaji_pre_write, Actuation, MechanismWriter, VerifiedTarget, WriteMechanism,
+    needs_romaji_pre_write, ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
 use crate::state::app_ime_policy::caps;
 use crate::state::ime_decision_view::ImeControlView;
@@ -277,7 +277,7 @@ pub(crate) fn mechanism_is_applicable(
 /// 経由させることができない（`impl` の中でチェーンを再度張ると再帰する）。
 /// そのため型では閉じられず、**呼び出し元の件数を
 /// `tests/architecture_guard.rs::raw_mechanism_write_sites_are_confined_to_chain_writers`
-/// が固定している**（`warrant_pending_adr087` / `run_open_chain_async` の件数ガードと
+/// が固定している**（`ActuationOrder` / `run_open_chain_async` の件数ガードと
 /// 同じパターン）。ここを増やすと、`falls_through` 規則も
 /// `Actuation` のアフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない
 /// 3 本目の write 経路になる。
@@ -396,6 +396,37 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
 /// `run_chain_async` が自動的に行う（`runtime/open_chain.rs`）。
 pub(crate) struct ImeController;
 
+/// A-1 shadow の測定点（ADR-090 §2.A 設計案 2、§6 ステップ 5 item 21）。
+///
+/// 「実機で実際にどの入口が何回 warrant を取れないか」を測るための唯一のログ点。
+/// **差分オラクル（`open_warrant.rs`）は 240 通りの組合せを測っているが、
+/// 実機でどの組合せが実際に起きるかは測っていない。** A-2（強制）の対象入口は
+/// このログがゼロだった入口から順に決める。
+///
+/// # 「ゼロだったから安全」と「そもそも発火していない」を混同しないこと
+///
+/// ADR-090 §7-1 が指摘するとおり、`try_force_on_bootstrap` の発火条件
+/// （`IME_DETECT_MISS_THRESHOLD` 回連続の検出失敗）は稀であり、1 日の通常利用
+/// では一度も踏まない可能性が高い。そのため**授権が下りた場合も 1 行出す**
+/// ——入口が発火したこと自体をログに残さないと、`would_have_blocked` の
+/// ゼロが「安全」なのか「未測定」なのか区別できない。
+pub(crate) fn log_shadow_warrant(chain: &str, order: &ActuationOrder) {
+    if order.would_have_blocked() {
+        log::info!(
+            "[warrant-shadow] chain={chain} open={} origin={:?} would_have_blocked=true \
+             (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)",
+            order.open(),
+            order.origin(),
+        );
+    } else {
+        log::debug!(
+            "[warrant-shadow] chain={chain} open={} origin={:?} warranted",
+            order.open(),
+            order.origin(),
+        );
+    }
+}
+
 impl ImeController {
     pub(crate) const fn new() -> Self {
         Self
@@ -405,9 +436,11 @@ impl ImeController {
     ///
     /// 機構が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の
     /// `SendMessageTimeout` タイムアウト）、次の適用可能な機構へフォールスルーする。
-    pub(crate) fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // ADR-087 の `issue_open_warrant()` は本番未配線のため暫定授権を使う
-        // （`state/actuation_chain.rs` モジュール doc の「差分」3）。
+    pub(crate) fn apply(&self, order: ActuationOrder, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
+        // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
+        // 書き込みは止めず `Authorization::LegacyUnwarranted { would_have_blocked }`
+        // として記録するだけである（止めるのは A-2、入口ごと・実機ソーク必須）。
         //
         // 宛先: VK 送信機構（GjiDirect / MsImeDirect / KanjiToggle）は SendInput が
         // フォアグラウンドのフォーカスへ配送するため、hwnd を捕獲する余地が
@@ -416,8 +449,9 @@ impl ImeController {
         // ある（ADR-089 §9-19 の訂正）。同期経路で hwnd を持つ唯一の write は
         // ROMAN 補完であり、そちらは `apply_mechanism` が
         // `ActuationTarget::capture_blocking` で捕獲する（Phase C item 12）。
-        let actuation = Actuation::request(open)
-            .warrant_pending_adr087()
+        log_shadow_warrant("sync", &order);
+        let actuation = order
+            .into_actuation_shadow()
             .verify(VerifiedTarget::FocusImplicit);
         let mut writer = SyncChainWriter { view };
         let outcome = actuation.run_chain(caps_chain_for(view), &mut writer);

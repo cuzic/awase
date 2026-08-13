@@ -524,6 +524,65 @@ impl ImeStateHub {
         &self.shadow_model
     }
 
+    // ── warrant（ADR-087 / ADR-090 §2.A）──────────────────────────────────
+
+    /// `issue_open_warrant()` が要求する状態一式を組み立てる**唯一の場所**
+    /// （ADR-090 INV-48）。
+    ///
+    /// # なぜ 1 箇所に絞るのか
+    ///
+    /// `WarrantContext` の 8 材料のうち先頭 5 つ（`intent_store` / `obs` /
+    /// `guards` / `policy` / `desired_open`）はすべて `ImeStateHub` 配下に
+    /// あり、`intent_store` は**private フィールド**である。実 actuation 入口は
+    /// 外部 8 経路あるので（ADR-090 §2.A.2(3)）、各入口がリテラルで
+    /// `WarrantContext { .. }` を組み立てると `intent_store` の private を
+    /// 崩すか、8 箇所に同じ組み立てが散る（ADR-087 §7 round4 N-A が
+    /// `WarrantContext` を導入して避けたかったもの）。本メソッド 1 本だけが
+    /// 読む形にすることで、private を維持したまま読み手を集約する。
+    /// `tests/architecture_guard.rs::warrant_context_is_built_in_one_place` が
+    /// 本番コードに `WarrantContext {` のリテラル構築が無いことを固定する。
+    ///
+    /// `now` / `now_ms` は呼び出し元が注入する（ADR-087 INV-23:
+    /// `issue_open_warrant` は時刻を内部で取らない純粋関数。加えて `state/` 層は
+    /// `hook::current_tick_ms()` を直接呼ばない規約）。
+    pub(crate) fn warrant_context(
+        &self,
+        now: std::time::Instant,
+        now_ms: TickMs,
+    ) -> super::open_warrant::WarrantContext<'_> {
+        super::open_warrant::WarrantContext {
+            intent_store: &self.intent_store,
+            obs: &self.shadow_model.observations,
+            guards: &self.shadow_model.force_guards,
+            policy: &self.shadow_model.app_policy,
+            desired_open: self.shadow_model.desired_open(),
+            is_japanese_ime: self.belief.is_japanese_ime(),
+            now,
+            now_ms,
+        }
+    }
+
+    /// 実 actuation の 1 件を起案する（ADR-090 §2.A 設計案 1、INV-47）。
+    ///
+    /// 実 actuation 入口（外部 8 経路）はすべてこれを通る。
+    /// `target` は `ImeModel::current_focus()`——`None`（フォーカス不明）の
+    /// ときは `HwndId::NULL` を渡す。Step 1（`IntentStore::lookup`）が必ず
+    /// 外れるだけで他の Step の判定は変わらない（ADR-090 A-R4）。
+    ///
+    /// **A-1（shadow）の時点では、返り値の `would_have_blocked` は
+    /// ログ・journal にしか効かない。** 書き込みを止めるのは A-2。
+    pub(crate) fn issue_actuation_order(
+        &self,
+        open: bool,
+        origin: super::event_origin::EventOrigin,
+        now: std::time::Instant,
+        now_ms: TickMs,
+    ) -> super::actuation_chain::ActuationOrder {
+        let target = self.shadow_model.current_focus().unwrap_or(HwndId::NULL);
+        let ctx = self.warrant_context(now, now_ms);
+        super::actuation_chain::ActuationOrder::issue(open, target, &ctx, origin)
+    }
+
     // ── Desired state / drift correction ──
 
     /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。

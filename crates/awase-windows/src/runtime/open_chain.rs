@@ -64,7 +64,7 @@ use awase::platform::ImeOpenOutcome;
 
 use crate::ime::{ActuationOutcome, ActuationTarget, ConvAfterOpen};
 use crate::state::actuation_chain::{
-    Actuation, AsyncMechanismWriter, VerifiedTarget, WriteMechanism,
+    ActuationOrder, AsyncMechanismWriter, VerifiedTarget, WriteMechanism,
 };
 
 /// ImmCross 機構の書き込み方法。呼び出し元が起案時に決める。
@@ -220,12 +220,16 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
 // `Send` にならない。`win32_async::spawn_local`（シングルスレッド実行）経由で
 // のみ呼ばれるため実害はない（`ActuationTarget::verify_still_current` と同じ制約）。
 #[allow(clippy::future_not_send)]
-pub(crate) async fn run_open_chain_async(open: bool, imm: ImmCrossOp) -> ImeOpenOutcome {
-    // ADR-087 の `issue_open_warrant()` は本番未配線のため暫定授権を使う
-    // （`state/actuation_chain.rs` モジュール doc の「差分」3）。
-    let actuation = Actuation::request(open)
-        .warrant_pending_adr087()
-        .verify(imm.verified_target());
+pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp) -> ImeOpenOutcome {
+    // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
+    // 発行済み。**shadow モード**なので授権が下りていなくても書き込みは
+    // 止めない（止めるのは A-2）。
+    //
+    // なお `order` は起案時点の状態に基づくのに write は完了時点で起きる。
+    // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
+    // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
+    crate::ime_controller::log_shadow_warrant("async", &order);
+    let actuation = order.into_actuation_shadow().verify(imm.verified_target());
     let mut writer = AsyncChainWriter { imm: Some(imm) };
     actuation
         .run_chain_async(&WriteMechanism::ALL, &mut writer)
