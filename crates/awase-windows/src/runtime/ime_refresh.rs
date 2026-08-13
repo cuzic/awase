@@ -1,6 +1,5 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use awase::engine::{ConvMode, EngineCommand, InputModeState};
-use awase::platform::PlatformRuntime;
 
 use super::Runtime;
 use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
@@ -496,7 +495,10 @@ impl Runtime {
             if obs.gji_monitor_ok
                 && obs.active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
             {
-                let _ = self.platform.apply_ime_open_with_applied(true, None);
+                // ADR-090 §2.A A-1（shadow）。
+                let order =
+                    self.issue_actuation_order(true, "focus_change_tsf_native_gji_force_on");
+                let _ = self.platform.apply_ime_open_with_applied(order, None);
                 log::debug!(
                     "[composition] FocusChange: TsfNative IME ON → GJI VK_IME_ON 強制 (shadow_on を無視)"
                 );
@@ -531,7 +533,10 @@ impl Runtime {
         }
 
         if !applied_ime_on && !new_profile_is_tsf_native {
-            let _ = self.platform.set_ime_open(false);
+            // ADR-090 §2.A 設計案 3: トレイトメソッド `set_ime_open` には引数を
+            // 足せないため inherent な `set_ime_open_ordered` へ移した。
+            let order = self.issue_actuation_order(false, "focus_change_enforce_off");
+            let _ = self.platform.set_ime_open_ordered(order);
             log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
@@ -647,9 +652,21 @@ impl Runtime {
                             if let Some(actuation) = self.active_actuation.as_mut() {
                                 actuation.gave_up_at = Some(now);
                             }
+                            // ADR-089 §2.5（INV-46）: 打ち切りの帰結は
+                            // `ConvergedReceipt` で表す。**この型は
+                            // `Observed<E>` / `AnyObservation` へ変換できない**
+                            // ため、give-up したのに観測を書いて収束したように
+                            // 見せる（BUG-33 型の収束偽装）ことが構造的に
+                            // 不可能である。
+                            let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
+                                crate::state::ime_actuation::Resolution::GaveUp,
+                                act_attempts,
+                            );
                             log::debug!(
                                 "[drift] actuation gave up (Blind): desired={desired} \
-                                 observed={observed} attempts={act_attempts}"
+                                 observed={observed} converged={} attempts={}",
+                                receipt.converged(),
+                                receipt.attempts()
                             );
                         }
                         Some(gave_up_at) => {
@@ -658,17 +675,28 @@ impl Runtime {
                             // して次 tick の `actuation_for` に attempts=0・新しい sent_at・
                             // gave_up_at=None で作り直させる。実際の再送は次 tick に任せ、
                             // discard した同じ tick では送らない（ロジックを単純に保つ）。
-                            let fresh = self
-                                .platform_state
-                                .ime
-                                .model()
-                                .observations
-                                .most_recent_trusted_after(now, gave_up_at)
-                                .is_some();
-                            if fresh {
+                            //
+                            // ADR-090 §2.B（INV-52）: 読み戻しは
+                            // `ObservationStore::read_back` の 1 本だけを通る。
+                            // 戻り値は `ConvergedReceipt` であって
+                            // `ImeObservation` ではないので、復旧判定に使った
+                            // 読み取りの産物を観測として書き戻すことが型として
+                            // 書けない。述語（`.is_some()`）はそのまま
+                            // `ReadBackQuery::AnyFreshEvidence` の中へ移した
+                            // だけで、判定は bit-identical である。
+                            let receipt = self.platform_state.ime.model().observations.read_back(
+                                now,
+                                gave_up_at,
+                                crate::state::observation_store::ReadBackQuery::AnyFreshEvidence,
+                                act_attempts,
+                            );
+                            if receipt.resolution()
+                                == crate::state::ime_actuation::Resolution::ExternalChange
+                            {
                                 log::debug!(
                                     "[drift] fresh observation after give-up → 試行を破棄して\
-                                     再試行: desired={desired} observed={observed}"
+                                     再試行: desired={desired} observed={observed} attempts={}",
+                                    receipt.attempts()
                                 );
                                 self.discard_actuation();
                             }
@@ -680,15 +708,30 @@ impl Runtime {
             FeedbackPolicy::Read { .. } => {
                 // `sent_at` 以降の trusted 観測が desired と一致していれば収束済み
                 // （`Resolution::Confirmed`）。再送不要なので試行を破棄する。
-                let confirmed = self
-                    .platform_state
-                    .ime
-                    .model()
-                    .observations
-                    .most_recent_trusted_after(now, act_sent_at)
-                    .is_some_and(|o| o.open == desired);
-                if confirmed {
-                    log::debug!("[drift] actuation confirmed (Read): desired={desired} → 破棄");
+                //
+                // ADR-089 §2.5（INV-46）: 収束の帰結は `ConvergedReceipt`。
+                // 観測ストアへは何も書かない（`Confirmed` は「既に観測が
+                // desired と一致していた」という読み取りの帰結であって、
+                // 新しい観測ではない）。
+                // ADR-090 §2.B（INV-52）: その receipt を**読み戻し API から
+                // 直接受け取る**形にした。以前は `most_recent_trusted_after` が
+                // 返す `ImeObservation` で判定してから receipt を別途組み立てて
+                // いたため、receipt は log にしか効いていなかった（§9-16）。
+                // 述語（`.is_some_and(|o| o.open == desired)`）はそのまま
+                // `ReadBackQuery::Converged` の中へ移しただけで bit-identical。
+                let receipt = self.platform_state.ime.model().observations.read_back(
+                    now,
+                    act_sent_at,
+                    crate::state::observation_store::ReadBackQuery::Converged { desired },
+                    act_attempts,
+                );
+                if receipt.converged() {
+                    log::debug!(
+                        "[drift] actuation confirmed (Read): desired={desired} \
+                         converged={} attempts={} → 破棄",
+                        receipt.converged(),
+                        receipt.attempts()
+                    );
                     self.discard_actuation();
                     return;
                 }
@@ -724,7 +767,11 @@ impl Runtime {
             tick_ms,
         );
         if self.can_use_imm32_cross_process() {
-            let _ = self.platform.set_ime_open(desired);
+            // ADR-090 §2.A 設計案 3 / A-1（shadow）。drift correction は既に
+            // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
+            // order の出所として使う（journal の `ImeActuation` と揃う）。
+            let order = self.issue_actuation_order_with_origin(desired, act_origin);
+            let _ = self.platform.set_ime_open_ordered(order);
             self.platform_state
                 .ime
                 .mirror_applied_open_with_ts(desired, 0);
@@ -735,9 +782,10 @@ impl Runtime {
                 effective_open: desired,
                 confident: true,
             };
+            let order = self.issue_actuation_order_with_origin(desired, act_origin);
             let outcome = self
                 .platform
-                .apply_ime_open_with_belief(desired, None, belief);
+                .apply_ime_open_with_belief(order, None, belief);
             log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(
                 desired,

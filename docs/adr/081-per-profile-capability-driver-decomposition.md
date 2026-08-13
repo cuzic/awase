@@ -13,10 +13,153 @@ Phase 0（第一歩）は実施済み（PR #31）。Phase 0.5 は ADR-082 側で
 節参照）。Phase 1a（`Imm32UnavailableDriver`）/1b（`TsfNativeDriver`）/1c
 （ドライバレジストリ + contract test 5件）は試験実装済みだが**ランタイムには
 未配線**（`AppImePolicy`/`ime_controller.rs` の既存経路が引き続き使われている）。
-Phase 1d（実機ソーク必須の strangler-fig 配線）・1e（旧経路撤去）は未着手 ——
+~~Phase 1d（実機ソーク必須の strangler-fig 配線）・1e（旧経路撤去）は未着手 ——
 このサンドボックスには Windows 実機（wine）が無く実行できないため、次に Windows
-実機セッションが取れたタイミングで着手すること。詳細は「Phase 1a/1b/1c 実施記録」
-節の「Phase 1d への申し送り」を参照。
+実機セッションが取れたタイミングで着手すること。~~
+**【2026-08-12: Phase 1d / 1e は[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md)
+§2.F により凍結した。着手しない。** capability の表現は ADR-089 の
+`caps(profile, kind)` に一本化し、`ImeProfileDriver` は `caps` と重複する
+4 メソッドを削って**コード構造契約の宣言**（`owns_physical_kanji` /
+`has_ime_on_path` / `stale_eisu_recovery_paired`）として残した。
+詳細は下記「追記（2026-08-12 その2）」節。**凍結の根拠に「実機が無いから」は
+使っていない**——その論法は ADR-089 Phase C も同じ理由で捨てられることに
+なるため（ADR-089 §6）】
+詳細は「Phase 1a/1b/1c 実施記録」節の「Phase 1d への申し送り」を参照。
+
+### 追記（2026-08-12）: Phase 1c の一部を ADR-089 Phase B が引き取った
+
+[ADR-089](089-ime-typestate-and-capability-const-table.md) §2.4（INV-42/43）が
+**`GjiFsm` 同期義務の宣言軸を profile 軸から outcome 軸へ移した**ことにより、
+Phase 1c の次の 3 つが根拠を失い、ADR-089 Phase B（§6 item 8、§4.7）で
+**撤去**された:
+
+| 撤去したもの | 引き取り先 | 理由 |
+|---|---|---|
+| `ImeProfileDriver::uses_gji_direct()`（trait メソッド + 3 impl） | — | 同期義務が profile 軸で決まらないことが確定したため、宣言する対象が無くなった |
+| `GjiDirectAccess` token / `GjiDirectMechanism::access_for` / `GjiDirectMechanism::actuate` / `GjiActuation`（不変条件5） | ADR-089 INV-42（`legacy_gji_sync_obligation` が唯一の導出式） | token でアクセスを絞る前提（「`uses_gji_direct()` を宣言したドライバだけが同期義務を得る」）が消えた |
+| contract test 不変条件4（belief を actuate 抜きで ON にする高速パスは必ず `GjiFsm` を同期させる） | ADR-089 INV-43（`ActuationReceipt` の `#[must_use]` + `Drop` の `debug_assert`） | **保証水準は「debug ビルドでの実行時検出」までに下がる**（ADR-089 §8.1）。落とす前提として ADR-089 §7 の compile-fail ケース4 が実際に赤くなることを確認済み（`state/gji_direct_mechanism.rs` の `compile_fail` doctest） |
+
+**Phase 1c 不変条件1・2・3 は撤去していない**（ADR-089 は引き取らない）:
+
+- 不変条件1（IME-ON 経路と stale `ObservedEisu` 救済の対）— `has_ime_on_path` /
+  `stale_eisu_recovery_paired` として `ImeProfileDriver` に残っている。
+- 不変条件2（`owns_physical_kanji==true` のドライバは物理 KANJI を漏らさない）—
+  ADR-089 §2.5 のとおり `AppImePolicy` 側に残る軸であり、対象外。
+  **【2026-08-12: 旧 assert は恒真だったので ADR-090 決定 F-2' で作り直した。
+  下記「追記（2026-08-12 その2）」参照】**
+- 不変条件3（`Blind` give-up 後に observation を書かない）— ~~`default_feedback` /~~
+  `decide_actuation_action` として残っている。
+  **【2026-08-12: 駆動元は `driver.default_feedback()` から
+  `caps(p, k).feedback` へ移した（ADR-090 決定 F-2）】**
+
+~~**Phase 1d/1e の位置づけ**: ADR-089 §6 は Phase 1d の**凍結を提案**しているが、
+その採否は未決定（ADR-089 §9-4）。~~ **【解消: 下記「追記（2026-08-12 その2）」
+のとおり凍結を決定・実施した】** 本追記は「同期義務の宣言軸」という 1 点に
+ついてのみ、実装が ADR-089 側へ移ったことを記録するものである。
+
+### 追記（2026-08-12 その2）: Phase 1d / 1e を**凍結**した（ADR-090 §2.F）
+
+**[ADR-090](090-typestate-effectuation-and-adjacent-adr-closure.md) 決定 F-1 に
+より、Phase 1d（`AppImePolicy` 参照のドライバ呼び出しへの置換）と
+Phase 1e（旧経路撤去）は凍結する。着手しない。** 実装も同日行った
+（ADR-090 §6 ステップ 3）。
+
+**capability の表現は ADR-089 の `caps(profile, kind)`（`state/app_ime_policy.rs`）に
+一本化した。** `ImeProfileDriver` は capability を宣言しない
+（ADR-090 INV-53）。
+
+凍結の根拠は 3 点（**「実機が無くて止まっているから」は根拠にしない**——
+その論法を認めると ADR-089 Phase C も同じ理由で捨てられることになる）:
+
+1. **表現手段が重複しており、`caps` のほうが細かい。** 本 ADR の trait は
+   profile 軸（静的）のみ、`caps` は (profile, IME 種別) の 2 軸。本 ADR が
+   「GJI 横断性の設計」節で design B（profile 軸と IME 軸の分離）を採ったのは
+   trait だと 2 軸を扱えないからであり、`caps` は const 表なのでその制約が無い。
+2. **ADR-089 §4.1 が capability の trait 静的分岐を「再提案禁止」で却下している。**
+   Phase 1d はまさにその trait 静的分岐の配線であり、**凍結しないことは
+   却下済みの案の実装を続けることを意味する。**
+3. **Phase 1e の成果物は「解決した」のではなく「禁止されて moot になった」。**
+   非対称そのもの（`GjiFsm` 同期義務が profile 軸で非対称、本 ADR `:696-726`）は
+   `uses_gji_direct()` の撤去で消えた（ADR-089 INV-42）。しかし Phase 1e が
+   目指していた **legacy（`on_ime_applied` の直接呼び出し）の撤去**（本 ADR
+   `:505`, `:708`）は、**ADR-089 INV-43 が明示的に禁止している**——
+   「『型で守られている』を根拠に `platform.rs:879-891` の legacy 同期を
+   撤去しないこと」。理由は `ActuationReceipt` の強制力が debug ビルドの
+   実行時検出までしか無いこと（ADR-089 §8.1）。
+   **「ブロッカーが取れて着手可能になった」と書いてはならない。**
+
+#### `ImeProfileDriver` の縮小（ADR-090 決定 F-2、実施済み）
+
+**trait ごとの削除はしない**（ADR-090 §4.7）。残す 3 メソッドは
+**capability の値ではなくコード構造についての契約宣言**であり、const 表に載る
+種類の情報ではない。
+
+| メソッド | 処遇 | 廃止理由 / 残す理由 |
+|---|---|---|
+| `default_feedback()` | **削除** | `caps(p, k).feedback` が SSOT。contract test 不変条件3 は `caps` 由来の `FeedbackPolicy` で駆動する形へ書き換えた（主題が SSOT へ寄るぶん強くなる） |
+| `focus_settle_ms()` | **削除** | `caps(p, k).focus_settle_ms` が SSOT |
+| `ime_open_mechanism()` + `ImeOpenMechanism` enum | **削除** | `caps(p, k).chain` が SSOT（しかも K 軸を含む分だけ細かい）。唯一の読み手だった `tests/ime_key_sequence_golden.rs::driver_shadow_parity_matches_characterize_strategy_primary_path` とヘルパ 2 本も同時に削除 |
+| `probe_budget_ms()` | **削除** | 未配線・未実測。`is_confirm_key` 軸は実装内で未使用、`ColdReason` 軸の精緻化は `.claude/rules/tuning-constants.md` の実測義務により着手不能。**設計のスケッチ（BUG-01 / BUG-21 の重症度別予算）の復元元は、本 ADR の「Phase 1a/1b/1c 実施記録」節・「Phase 1d への申し送り」節と、削除コミットの git 履歴である**（実測が取れた段で復元できる） |
+| `BLIND_MAX_ATTEMPTS` / `blind_feedback()` | **削除** | `default_feedback()` の実装専用だった。`app_ime_policy.rs::IME_ACTUATION_BLIND_MAX_ATTEMPTS` が SSOT |
+| `owns_physical_kanji()` | **残す** | ADR-089 §2.5 が `caps` に入れないと決定済み（BUG-46）。doc の「実効的な disposition の SSOT ではない」注記は必須（`runtime/transport.rs::PhysicalKeyDisposition::plan` が実 SSOT） |
+| `has_ime_on_path()` / `stale_eisu_recovery_paired()` | **残す** | contract test 不変条件1（BUG-07/22/37 ファミリー）の宣言点 |
+| `driver_for` レジストリ / `ALL_DRIVERS` | **残す** | 上記 3 メソッドの contract test に必要 |
+
+contract test 3 件は次の形になった（**恒真な assert を置かない**、ADR-090 INV-53）:
+
+- 不変条件1 — driver のみで閉じる（無改修）。
+- 不変条件2 — **作り直した。** 旧 assert
+  `matches!(driver.ime_open_mechanism(open), CrossProcessApi | SharedImeKeyDispatch)` は
+  `ImeOpenMechanism` が 2 variant しか持たないため**恒真**（どう実装を壊しても
+  落ちない）だった。「代替なしに消える契約」ではなく「元から効いていなかった
+  契約」なので、意図を実際に検査する形——`owns_physical_kanji` が真な
+  プロファイルについて `caps(p, k).chain` の**先頭**が `KanjiToggle` でない
+  こと——へ移した（driver × caps）。**先頭**を条件にするのは
+  `(ImmCross, MsIme)` の chain が `[ImmCross, KanjiToggle]` だからで、末尾の
+  `KanjiToggle` は `ImmCross` が `Failed` を返したときのフォールバックとして
+  正当である（ADR-089 INV-44 の到達可能性検査が保証）。
+- 不変条件3 — 駆動元を `driver.default_feedback()` から `caps(p, k).feedback` へ
+  差し替えた。
+
+#### 「不変条件（Phase 1 着手時に強制する候補）」の達成状況（正直に書く）
+
+本 ADR の同名節の 1 つ目——「コアループのソースに `ImeActuatorKind::` **や**
+`AppImeProfile::` へのパターンマッチが出現しないことをテキスト走査で固定する」
+——は、**半分しか達成しないまま凍結で確定する**。
+
+| 半分 | 状況 |
+|---|---|
+| `ImeActuatorKind::` | **達成**。ADR-089 Phase C item 11 で型ごと廃止（`crates/` `lints/` の全 `.rs` を grep してヒットゼロ。本 ADR 本文の記述のみが残る） |
+| `AppImeProfile::` | **未達のまま確定**。非テストコードに variant へのパターンマッチ／直接比較が **7 サイト（variant 出現 9 個）**残る |
+| テキスト走査ガード | **未達のまま確定**。`tests/architecture_guard.rs` に `AppImeProfile` を対象にした検査は存在しない |
+
+**「凍結＝達成」と読まないこと。** 残存 7 サイトのうち、変換点
+（`focus/class_names.rs:199-201` の `From<AppImeProfile> for ImePolicyProfile`）と
+「この直接比較を呼び出し元に書かせないための関数」の中身
+（`focus/class_names.rs:76`/`:87`）、分類の内部（`focus/tracker.rs:149`）は
+**残るのが設計意図どおり**である。実質的にコアループの分岐と言えるのは
+次の 3 箇所:
+
+- `runtime/key_pipeline.rs:1981-1984`（`matches!(.., Standard)`）
+- `runtime/focus_tracking.rs:255-258`（`matches!(.., Imm32Unavailable)`）
+- `runtime/focus_tracking.rs:382-385`（`matches!(.., Standard)`）
+
+いずれも「ImmCross プロファイルのときだけ IMM32 の追加 probe を spawn する」
+（`:255-258` は逆に `Imm32Unavailable` なら実状態を読めないとみなす）という
+**読み取り（probe）側**のプロファイル分岐であり、**`caps` では回収されない**
+——`caps(p, k)` は「どう**書く**か」の表であって「どう**読む**か（probe するか）」
+の軸を持たないからである。回収するなら `Caps` に読み取り軸を足すか、
+ADR-088 トラック A の 4 軸一般化で扱うことになるが、`probe_budget_ms` と同じく
+`.claude/rules/tuning-constants.md` の実測義務がかかるため実機の測定なしには
+値が決まらない（ADR-090 §7-8 に未回収の残作業として記録）。
+
+#### 凍結しても捨てないもの
+
+**問題意識は捨てない。** 本 ADR Phase 0 の定量調査（known-bugs 43 件の分類、
+cross-profile spillover 11 件 = 26%）は ADR-089 も ADR-090 も前提として使って
+いる。凍結するのは**表現手段（trait 静的分岐）**であって
+**問題意識（プロファイル差分を 1 箇所に閉じる）**ではない。
+`caps(p, k)` がその問題意識を引き継いでいる。
 
 ## コンテキスト
 

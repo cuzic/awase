@@ -6,7 +6,9 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
+// ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
+pub(crate) mod open_chain;
 pub(crate) mod outbox;
 mod transport;
 
@@ -248,6 +250,42 @@ impl Runtime {
     #[must_use]
     pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
         self.platform_state.focus.focus_epoch
+    }
+
+    // ── 実 actuation の起案（ADR-090 §2.A A-1、INV-47）────────────────────
+
+    /// 実 actuation 入口が 1 件の指示を起案する（shadow モード）。
+    ///
+    /// `strategy` は「どの入口が起案したか」を表す識別子で、A-1 の shadow ログ
+    /// （`[warrant-shadow]`）と journal から入口を区別するために使う。
+    /// **入口ごとに一意な文字列にすること**——A-2 は「`would_have_blocked` が
+    /// ゼロだった入口から順に強制へ倒す」ので、入口が識別できないと分割できない
+    /// （ADR-090 §6 ステップ 7）。
+    ///
+    /// 時刻は `state/` 層へ注入する規約に従い、ここ（`runtime/`）で取得する。
+    fn issue_actuation_order(
+        &self,
+        open: bool,
+        strategy: &'static str,
+    ) -> crate::state::actuation_chain::ActuationOrder {
+        let origin = crate::state::event_origin::EventOrigin::new(
+            crate::state::event_origin::EventSource::SelfActuated { strategy },
+            crate::state::event_origin::Generation::INITIAL,
+        );
+        self.issue_actuation_order_with_origin(open, origin)
+    }
+
+    /// 呼び出し元が既に `EventOrigin` を持っている場合（drift correction 等）。
+    fn issue_actuation_order_with_origin(
+        &self,
+        open: bool,
+        origin: crate::state::event_origin::EventOrigin,
+    ) -> crate::state::actuation_chain::ActuationOrder {
+        let now = std::time::Instant::now();
+        let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state
+            .ime
+            .issue_actuation_order(open, origin, now, now_ms)
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
@@ -730,7 +768,10 @@ impl Runtime {
             effective_open: true,
             confident: true,
         };
-        let outcome = self.platform.apply_ime_open_with_view(true, &view, belief);
+        // ADR-090 §2.A A-1（shadow）: 実 actuation 入口は `ActuationOrder` を
+        // 起案する。授権が下りなくても書き込みは止めない（A-2 で倒す）。
+        let order = self.issue_actuation_order(true, "force_on_and_correct_romaji");
+        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
         log::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
@@ -887,7 +928,15 @@ impl Runtime {
                 effective_open: true,
                 confident: true,
             };
-            let outcome = self.platform.apply_ime_open_with_belief(true, None, belief);
+            // ADR-090 §2.A A-1（shadow）。**この入口は差分オラクルが
+            // 「判明した中で最大の挙動変化」と記録している old-1 そのもの**
+            // （`ImmCross` は `default_feedback = Read` なので Step 4c が
+            // 発火せず、観測も意図も guard も無い bootstrap では warrant が
+            // `None` になる）。A-2 で倒すのは**最後**に回すこと（ADR-090 §4.9）。
+            let order = self.issue_actuation_order(true, "try_force_on_bootstrap");
+            let outcome = self
+                .platform
+                .apply_ime_open_with_belief(order, None, belief);
             log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
             self.on_ime_apply_complete(
                 true,

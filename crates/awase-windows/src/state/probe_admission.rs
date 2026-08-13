@@ -109,8 +109,16 @@ impl AcceptedObservation {
     ///
     /// シングルスレッド実行のため、spawn 〜 complete 間にフォーカスが変わることは
     /// ない（epoch mismatch 不可）。epoch は観測の来歴記録・epoch フィルタ用。
+    ///
+    /// 呼び出し元は `runtime` 層の 3 箇所のみ（ADR-089 §1.3(b)・§6 Phase A item 4
+    /// に従い `pub` から `pub(crate)` へ縮小した）。この関数は
+    /// `Observed<FocusProbe>` / `Observed<ImmCrossProbe>` / `Observed<ObserverPoll>`
+    /// の witness を作れる唯一の同期経路であり、crate 外へ出す理由が無い。
+    /// 唯一の呼び出し元 `runtime/` は `#[cfg(windows)]` のため、非 Windows では
+    /// 未使用になる（`state/mod.rs` の ungated モジュール群と同じ局所抑制）。
+    #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
-    pub fn for_sync(focus_epoch: FocusEpoch) -> Self {
+    pub(crate) fn for_sync(focus_epoch: FocusEpoch) -> Self {
         Self {
             focus_epoch,
             _private: (),

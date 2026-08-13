@@ -49,15 +49,19 @@ pub(crate) mod win_key_guard;
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
 pub mod event_origin;
 pub mod ime_actuation;
+// ADR-089 §2.3/§2.6: Actuation の型状態チェーンと再試行 episode。ungated（走査
+// 規則を Linux で全数テストするため）。実 write は Windows 側の
+// `MechanismWriter` 実装（`ime_controller.rs`）が担う。
+pub mod actuation_chain;
 // ADR-081 Phase 0 試験実装（未配線）。app_ime_policy と同じ ungated パターンで
 // Linux 上の `cargo test -p awase-windows --lib` から実行できるようにする。
 // 呼び出し元は Windows/非 Windows どちらにも現時点で存在しない
 // （配線は Phase 1 のスコープ）ため、両ターゲットで dead_code を許可する。
 #[allow(dead_code)]
 pub mod ime_profile_driver;
-// ADR-081 Phase 1c: 共有 GJI 直接制御機構（design B）。ドライバ同様まだ未配線
-// （配線は Phase 1d のスコープ）のため両ターゲットで dead_code を許可する。
-#[allow(dead_code)]
+// ADR-089 §2.4: `GjiFsm` 同期義務（INV-42/43）。ADR-081 Phase 1c の共有 GJI 機構
+// として起こされ、Phase B（2026-08-12）で `ActuationReceipt` + `GjiSyncSink` へ
+// 置き換えて本番（`platform.rs::on_ime_applied`）へ配線した。
 pub mod gji_direct_mechanism;
 // 純粋関数モジュール。テストを Linux CI で実行できるよう ungated にするが、唯一の
 // 呼び出し元 runtime/key_pipeline.rs は #[cfg(windows)] のため非 Windows では未使用に
@@ -68,8 +72,14 @@ pub mod conv_classify;
 // #[cfg(windows)] の runtime/ のみ。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod eisu_recovery;
+// ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
+pub mod evidence;
 pub mod force_guard;
 pub mod ime_event;
+// ADR-089 §2.8「K 軸の型」。`caps(p, k)` の導入（Phase C）に先立ち、Linux で
+// 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
+// `From<ActiveImeKind>` 1 箇所のみ。
+pub mod ime_kind;
 pub mod ime_model;
 // ADR-087 Phase 1' 試験実装。app_ime_policy/ime_profile_driver と同じ ungated
 // パターンで Linux 上の `cargo test -p awase-windows --lib` から実行できるように

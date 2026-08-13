@@ -37,7 +37,7 @@ pub(crate) struct OpenBelief {
     /// 【doc 訂正、2026-08-10、ADR-087 §5 Phase 3 item14】以前は「`false` の場合は
     /// already_matched を強制 false にする」という設計意図だったが、この値を読んで
     /// already_matched 判定に使う本番コードは現在存在しない（判定は
-    /// `ime_controller::CONTROLLER.apply` が `shadow_on` から独立に行う）。現状の
+    /// `ime_controller::ImeController::apply` が `shadow_on` から独立に行う）。現状の
     /// 本番消費者は診断ログのみ（`platform.rs::apply_ime_open_with_view`）。
     pub confident: bool,
 }
@@ -67,7 +67,7 @@ impl OpenBelief {
 /// 【doc 訂正、2026-08-10】`confident=false` は「already_matched を強制 false」
 /// つまり「必ず apply する」という設計意図だったが、`OpenBelief::confident` を
 /// 読む本番コードは現在ログ（`platform.rs`）のみで、already_matched 判定には
-/// 使われていない（判定は `ime_controller::CONTROLLER.apply` が `shadow_on` から
+/// 使われていない（判定は `ime_controller::ImeController::apply` が `shadow_on` から
 /// 独立に行う）。
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = inputs.conv_mode.map_or(
