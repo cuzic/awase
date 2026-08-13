@@ -735,6 +735,42 @@ crate 内では依然として `per_source` へ書けるが、その入口は
 （`observation_store.rs` + `tests/golden_scenarios.rs` 2 行 +
 ガード 1 件 + ADR の表）。**Linux で完結、挙動変更ゼロ、実機不要。**
 
+#### C.6 実施記録（2026-08-12）— **実施済み**
+
+§6 ステップ 1 の 1〜5 をすべて実装した。触ったファイルは 3 つ
+（`src/state/observation_store.rs` / `tests/golden_scenarios.rs` /
+`tests/architecture_guard.rs`）。挙動変更ゼロ、`ime_key_sequence_golden.rs` と
+`tests/golden/` は無変更。
+
+| 項 | 実装 |
+|---|---|
+| 1 | `ObservationStore::observation(source)` を新設（`PerSourceObservations::get` への `pub const fn` 委譲）。`tests/golden_scenarios.rs` の 2 行（`:332` / `:375`）を書き換えた |
+| 2 | `ObservationStore::per_source` と `PerSourceObservations` の 9 フィールドを `pub(crate)` へ縮小 |
+| 3 | `ImeObservation` に `#[non_exhaustive]`。compile_fail doctest 1 組（通る双子 = crate 外からの `observation()` 読み取り、落ちる側 = crate 外からの構造体リテラル構築 `E0639`） |
+| 4 | `tests/architecture_guard.rs::per_source_fields_are_not_assigned_directly` を新設（INV-49） |
+| 5 | §2.C 設計案 4 の表（閉じられない witness 4 件の理由・塞ぐ場合の設計・代わりに残す防御）は起票時点で本 ADR 本文に既に書かれており、追加作業なし |
+
+**ADR の記述と実コードの食い違い: 無し。** §2.C.2 が確定させた事実
+（crate 外の依存は `tests/golden_scenarios.rs` の 2 行だけ、`src/` の 4 箇所は
+すべて `#[cfg(test)]` の中）は実装時にそのまま成立した——`per_source` を
+`pub(crate)` にしても `src/` 側は 1 行も直す必要がなかった（同一 crate 内なので
+`#[cfg(test)]` かどうかに関わらず到達できる）。
+
+**新設ガードの検出力を実際に確認した。** `observation_store.rs::record_replayed`
+の中に `self.per_source.gji = None;` を一時的に挿入したところ
+`per_source_fields_are_not_assigned_directly` が落ちること
+（`src/state/observation_store.rs:308` を指摘）を確認してから削除した。
+ADR-089 §9-14 の「compile_fail は何かの理由で落ちれば通ってしまう」と同じ理由で、
+**テキスト検査ガードも「落ちるはずのものが落ちる」ことを一度確認しないと
+入れたつもりになる**（C-R4 が予告していた失敗モード）。
+
+**INV-49 の到達範囲についての注記（実装時に確定させた限界）。** 新設ガードは
+`per_source.<field>` を含む本番コード行が 1 行も無いことを見ており、
+「代入」と「読み取り」を区別していない。区別しないほうが強い
+（読み取りも `observation()` / `get()` に寄せたい）が、**複数行に割れた
+フィールドアクセス**（`per_source\n    .gji = ..`）は検出できない。
+本番に `per_source` を含む行がそもそもゼロなので現状は差が出ない。
+
 ---
 
 ### D. 非同期チェーンを `caps` へ寄せる（完了時点で引き直す形）

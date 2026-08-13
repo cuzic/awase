@@ -23,7 +23,56 @@ use super::probe_admission::FocusEpoch;
 /// `focus_epoch` は観測が受理された時点のフォーカスエポック。
 /// 同期 probe は呼び出し時点のエポック（= 現在のフォーカス）を持つ。
 /// 非同期 probe は `ImmLikeTicket::admit()` が照合したエポックを持つ。
+///
+/// # なぜ `#[non_exhaustive]` なのか（ADR-090 §2.C、INV-49）
+///
+/// `#[non_exhaustive]` は **crate 外からの構造体リテラル構築と網羅的分配束縛を
+/// 禁じ、フィールドの読み取りは許す**。ADR-089 Phase B が
+/// `PerSourceObservations::set` を `pub(crate)` へ縮小した時点では、
+/// `store.per_source.observer_poll = Some(ImeObservation { source: .., .. })`
+/// というフィールド直接代入が crate 外に残っていた（`set` は「フィールド代入の
+/// 便利メソッド」であって唯一の入口ではなかった）。`per_source` の
+/// `pub(crate)` 化（下記）と本属性の 2 つで、crate 外から任意の
+/// `ObservationSource` / `ObservationConfidence` を名乗る観測を注入する経路が
+/// 構造的に消える。
+///
+/// **フィールドを private にはしない**——読み取り側（`tests/golden_scenarios.rs`、
+/// `derive_*`、drift 判定）まで壊れてアクセサを 7 本生やすことになる
+/// （ADR-090 §4.5）。欲しい保証（構築だけを禁じる）と過不足なく一致するのが
+/// `#[non_exhaustive]` である。
+///
+/// # compile-fail ケース（ADR-089 §9-14 の「通る双子」併記規約）
+///
+/// 通る双子（crate 外からの**読み取り**は塞がない）:
+///
+/// ```
+/// use awase_windows::state::ime_event::ObservationSource;
+/// use awase_windows::state::observation_store::ObservationStore;
+///
+/// let store = ObservationStore::default();
+/// // 読み取り専用アクセサは crate 外から使える。
+/// assert!(store.observation(ObservationSource::ObserverPoll).is_none());
+/// ```
+///
+/// crate 外からは構築できない:
+///
+/// ```compile_fail
+/// use awase_windows::state::ime_event::{HwndId, ObservationConfidence, ObservationSource};
+/// use awase_windows::state::observation_store::ImeObservation;
+///
+/// // error[E0639]: cannot create non-exhaustive struct using struct expression
+/// let _obs = ImeObservation {
+///     open: true,
+///     source: ObservationSource::ImmGetOpenStatus,
+///     at: std::time::Instant::now(),
+///     hwnd: HwndId(1),
+///     confidence: ObservationConfidence::High,
+///     expires_at: None,
+///     focus_epoch: 0,
+/// };
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ImeObservation {
     pub open: bool,
     pub source: ObservationSource,
@@ -56,22 +105,30 @@ impl ImeObservation {
 }
 
 /// ソース別の最新観測値。各ソースで独立に最新値を保持する。
+///
+/// **全フィールドは ADR-090 §2.C（INV-49）で `pub(crate)` へ縮小した。**
+/// crate 外からの読み取りは `ObservationStore::observation(source)` を使うこと
+/// （`PerSourceObservations::get` と同じもの）。書き込み口は crate 内でも
+/// `set`（`record_any` の 1 呼び出しのみ）に限定されており、フィールドへの
+/// 直接代入が本番コードに存在しないことを
+/// `tests/architecture_guard.rs::per_source_fields_are_not_assigned_directly`
+/// が固定する。
 #[derive(Debug, Default, Clone)]
 pub struct PerSourceObservations {
-    pub focus_probe: Option<ImeObservation>,
-    pub observer_poll: Option<ImeObservation>,
-    pub gji: Option<ImeObservation>,
-    pub imm_get_open_status: Option<ImeObservation>,
-    pub tsf: Option<ImeObservation>,
-    pub hwnd_cache: Option<ImeObservation>,
+    pub(crate) focus_probe: Option<ImeObservation>,
+    pub(crate) observer_poll: Option<ImeObservation>,
+    pub(crate) gji: Option<ImeObservation>,
+    pub(crate) imm_get_open_status: Option<ImeObservation>,
+    pub(crate) tsf: Option<ImeObservation>,
+    pub(crate) hwnd_cache: Option<ImeObservation>,
     /// フォーカス変更後の ImmCross 非同期プローブ（Qt/LINE 等の child hwnd 高信頼読み取り）
-    pub imm_cross_probe: Option<ImeObservation>,
+    pub(crate) imm_cross_probe: Option<ImeObservation>,
     /// 観測が一切ない場合の安全デフォルト推測（常に Low confidence）
-    pub heuristic_default: Option<ImeObservation>,
+    pub(crate) heuristic_default: Option<ImeObservation>,
     /// conv ビットからの open 状態推定（`KatakanaShadowOff`/`NativeToggleShadowOff`）。
     /// `ConvBitsInference`（input_mode 専用）とは別枠で、こちらは open/close の
     /// 観測として正式に扱う。常に `ObservationConfidence::Medium` 以下で record される。
-    pub conv_open_inference: Option<ImeObservation>,
+    pub(crate) conv_open_inference: Option<ImeObservation>,
 }
 
 impl PerSourceObservations {
@@ -205,7 +262,9 @@ impl DeriveOutcome {
 /// - `is_source_flapping(source, window)` — 短期間で flapping しているか (今後実装)
 #[derive(Debug, Default, Clone)]
 pub struct ObservationStore {
-    pub per_source: PerSourceObservations,
+    /// **ADR-090 §2.C（INV-49）で `pub` から `pub(crate)` へ縮小した。**
+    /// crate 外からの読み取りは `observation(source)` を使う。
+    pub(crate) per_source: PerSourceObservations,
     /// desired との乖離追跡
     pub drift: Option<ImeDrift>,
     /// 現在のフォーカスエポック。`FocusChanged` イベントで更新される。
@@ -273,6 +332,17 @@ impl ObservationStore {
                 focus_epoch: observed.focus_epoch(),
             },
         );
+    }
+
+    /// 指定ソースの最新観測（**読み取り専用**、ADR-090 §2.C 設計案 1）。
+    ///
+    /// `per_source` を `pub(crate)` へ縮小した代わりの公開窓口。
+    /// 「書き込みの裏口を塞ぐのに読み取りを犠牲にする必要はない」——
+    /// crate 外（統合テスト）が特定ソースの観測を検査したいという用途は
+    /// 正当なので、読み取りだけを 1 本のアクセサで通す。
+    #[must_use]
+    pub const fn observation(&self, source: ObservationSource) -> Option<&ImeObservation> {
+        self.per_source.get(source)
     }
 
     /// 全ソースを clear する (フォーカス変更時用)。drift も clear。

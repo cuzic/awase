@@ -329,7 +329,12 @@ fn drift_tracking_reflects_intent_observer_mismatch() {
     assert!(model.observations.drift.is_some(), "drift が記録される");
     assert_eq!(model.desired_open(), true, "desired は intent の true");
     assert_eq!(
-        model.observations.per_source.observer_poll.map(|o| o.open),
+        // ADR-090 §2.C（INV-49）: `per_source` は `pub(crate)` になったので、
+        // crate 外からは読み取り専用アクセサ `observation(source)` を使う。
+        model
+            .observations
+            .observation(ObservationSource::ObserverPoll)
+            .map(|o| o.open),
         Some(false),
         "observer は false を報告"
     );
@@ -372,7 +377,10 @@ fn focus_change_clears_intent_and_observations() {
     ]);
     assert!(model.last_intent.is_none(), "intent は focus 変更で clear");
     assert!(
-        model.observations.per_source.gji.is_none(),
+        model
+            .observations
+            .observation(ObservationSource::Gji)
+            .is_none(),
         "observation も focus 変更で clear"
     );
 }

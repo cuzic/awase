@@ -1565,6 +1565,70 @@ fn per_source_set_is_confined_to_the_store() {
     );
 }
 
+/// `per_source` の**フィールドへの直接代入**が本番コードに存在しないことを固定する
+/// （ADR-090 §2.C 設計案 3、INV-49）。
+///
+/// # なぜ `per_source_set_is_confined_to_the_store` だけでは足りないのか
+///
+/// ADR-089 Phase B が縮小したのは `PerSourceObservations::set` だけだったが、
+/// `set` は「フィールド代入の便利メソッド」であって唯一の入口ではなかった。
+///
+/// ```ignore
+/// store.per_source.observer_poll = Some(ImeObservation { source: .., .. });
+/// ```
+///
+/// と書けば `set` を通らずに観測を注入できる。crate 外からの経路は
+/// ADR-090 §2.C が `per_source` の `pub(crate)` 化 + `ImeObservation` の
+/// `#[non_exhaustive]` で構造的に塞いだが、**crate 内では依然として書ける**。
+/// 型で消せない残余なので、本番コードでの件数をここで 0 に固定する。
+///
+/// テストコード（`#[cfg(test)] mod tests` 以降）は対象外——`platform_state.rs` の
+/// stale 観測シミュレーション（`.at = stale_at`）のように、状態を人為的に作る
+/// 必要がある。
+#[test]
+fn per_source_fields_are_not_assigned_directly() {
+    // `PerSourceObservations` の 9 フィールド（`observation_store.rs`）。
+    const FIELDS: [&str; 9] = [
+        "focus_probe",
+        "observer_poll",
+        "gji",
+        "imm_get_open_status",
+        "tsf",
+        "hwnd_cache",
+        "imm_cross_probe",
+        "heuristic_default",
+        "conv_open_inference",
+    ];
+    let files = list_src_files();
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        for (lineno, line) in production.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || !trimmed.contains("per_source") {
+                continue;
+            }
+            for field in FIELDS {
+                // `per_source.<field> =` / `per_source\n  .<field> = ` の
+                // 素朴な形。複数行に割れた代入は検出できないが、
+                // `per_source` を含む行自体が本番に 0 行であることを
+                // 別途この走査が示すので実害は無い。
+                if trimmed.contains(&format!("per_source.{field}")) {
+                    hits.push(format!("{path}:{}: {}", lineno + 1, trimmed));
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "`per_source` の各フィールドへ本番コードから直接触らないこと\
+         （ADR-090 §2.C / INV-49）。観測の書き込みは `record` / `record_belief` / \
+         `record_replayed` の 3 口のみ、読み取りは `ObservationStore::observation()` \
+         または `PerSourceObservations::get()` を使う。実際: {hits:?}"
+    );
+}
+
 /// 機構 1 つ分の実 write（`ime_controller::apply_mechanism`）の呼び出し元を、
 /// **チェーンの writer 実装 2 つだけ**に固定する（ADR-089 §2.3、Phase B 追随）。
 ///
