@@ -250,6 +250,37 @@ mozc本家の3プリセットを比較した結果、この種のキーの意味
   別タスクとする(§5 Phase構成)。当面はユーザーがGJIの設定UIで手動インポートする
   運用とする。
 
+#### 3.6 belief同期: 即時更新+定期再同期の二本立て(過去のMS-IME設計を踏襲)
+
+CharsetSlotがFnキーを送る判断はawaseのbeliefに依存するため、beliefが実際の
+GJI状態からズレたままだと誤った遷移先を送りうる。ドリフトの発生源は
+CharsetSlot自身の送信だけでなく、`Hiragana`/`Katakana`物理キー(既に絶対指定
+なので変換自体は不要だが、押されたという事実はawaseに伝わらない)、トレイ操作、
+GJI自身のUI操作、F6-F10系の`ConvertTo*`(§3.1で言及)等、多岐にわたる。
+対策は過去のMS-IME向け設計(ADR-084 INV-11、ADR-078等)と同様に2本立てとする:
+
+1. **即時・楽観的更新**: CharsetSlotがFnキーを送信したら、そのFnキーが示す
+   絶対指定ターゲットへbeliefを即座に更新する(precomposition分岐が実際に
+   発火した前提。§3.3で既述)。
+2. **定期的な実観測による再同期**: 既存の`ConvModeMgr`/idle-conv-check機構
+   (`apply_idle_conv_check`等)をGJI向けにも適用し、`ImmGetConversionStatus`で
+   読んだ実際のconversion_modeでbeliefを補正する。発生源を問わず網羅的に
+   ドリフトを検出できる。conversion_modeの読み取りはcomposition中でも安全に
+   行えることは`gji_composition_probe.rs`の実機検証(§1.4項目4)で確認済み
+   ——「今composition中かどうか」を判定する必要はなく、単に現在のビット値を
+   読むだけでよい。
+
+**F6-F10はCharsetSlotの送信先には使わない。** F6-F10は実在する物理キーで
+あり、GJIが`ConvertTo*`として消費するのはComposition/Conversion状態のときに
+限られる(§3.1)。もしawaseがSendInputでF6-F10を送った時点でGJIが実際には
+Precomposition状態だった場合、GJI側に未バインドのため**フォーカス中の
+アプリケーションへそのまま素通りし**、ブラウザ更新・スペルチェック等の
+無関係なアプリケーションショートカットとして誤発火しうる。F15-F19が安全なのは
+「物理キーが存在しない安全域」(ADR-057)だからであり、F6-F10にはこの安全性が
+無い——F13/F14を避けたのと同じ理由がF6-F10にも当てはまる。F6-F10は
+(ユーザーが実際にComposition中に押した場合の)**観測対象**としてのみ、
+上記2の定期再同期に含めてよい。
+
 ### 決定4(charset軸・MS-IME): `CharsetSlot`は作らない。パススルー+自己責任とする。
 
 **MS-IMEでは、charset軸のモードトグルキー(無変換単独打鍵等)の物理押下を
@@ -352,6 +383,9 @@ idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/0
    でbelief乖離リスクが無いため、素通しでも安全なはず)。
 5. `VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`がmozcのキー名語彙上どの物理トークンに
    対応するか(あるいは対応が無いか)を確認する。
+6. **belief同期機構(§3.6)を実装する。** 既存の`ConvModeMgr`/idle-conv-check
+   機構をGJI検出時にも適用し、`ImmGetConversionStatus`による定期再同期で
+   CharsetSlotのbeliefを補正する。F6-F10等の観測対象キーの扱いも含める。
 
 ### Phase 2(候補ウィンドウ挙動・実機ソークの追試)
 
