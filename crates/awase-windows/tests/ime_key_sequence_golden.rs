@@ -53,7 +53,7 @@ const HEADER: &str = "\
 #
 # ── 戦略選択テーブル ──────────────────────────────────────────────
 # ImeController の is_applicable のみを評価した実行結果（apply は未実行）。
-# dispatch: apply = 通常経路 / apply_skipping_imm = async IMM が Failed を返した後の経路。
+# dispatch: apply = 通常経路 / async_fallback = async IMM が Failed を返した後の経路。
 # 列: active_ime_kind <TAB> profile <TAB> dispatch <TAB> selected_strategy
 ";
 
@@ -65,7 +65,7 @@ const KEY_DOC: &str = "\
 # ImmCrossProcess (is_applicable: profile==Standard):
 #   ON/OFF ともに ImmSetOpenStatus クロスプロセス呼び出し = ime::set_ime_open_cross_process(open)。
 #   成功→Applied / 失敗→Failed（次の適用可能戦略へフォールスルー）。VK キーは送らない。
-#   MS-IME + ImmCross + open かつ belief!=ObservedKana のとき、直前に set_ime_romaji_mode()
+#   MS-IME + ImmCross + open かつ belief!=ObservedKana のとき、直前に romaji_pre_write()
 #   （ROMAN ビット付与）で JIS かな入力化けを防ぐ。
 #
 # GjiDirect (is_applicable: active_ime_kind==GoogleJapaneseInput):
@@ -77,7 +77,7 @@ const KEY_DOC: &str = "\
 #   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）
 #
 # MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme && !can_use_imm32_cross_process()):
-#   ON  → （belief!=ObservedKana のとき set_ime_romaji_mode() 後）
+#   ON  → （belief!=ObservedKana のとき romaji_pre_write() 後）
 #         VK_IME_ON (0x16) = ime::post_ime_on_direct() → Applied。conv-mode に触れないため
 #         AlreadyMatched スキップは不要（2026-08-06 まで VK_DBE_HIRAGANA を使っており、現 conv が
 #         KATAKANA ビット立ちなら送信をスキップするガードが必要だった。このガードが
@@ -119,7 +119,7 @@ fn build_report() -> String {
     let mut out = String::new();
     out.push_str(HEADER);
     for &(active, active_gji, profile) in COMBOS {
-        for (dispatch, skip_imm) in [("apply", false), ("apply_skipping_imm", true)] {
+        for (dispatch, skip_imm) in [("apply", false), ("async_fallback", true)] {
             let selected = characterize_strategy(active_gji, profile, skip_imm);
             out.push_str(&format!("{active}\t{profile}\t{dispatch}\t{selected}\n"));
         }

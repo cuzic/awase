@@ -1466,6 +1466,39 @@ out.push_str(WARMUP_DOC);
 規模 **極小**（2 ファイル、定数文字列のみ）。**実機不要・CI で検証可能**
 （ADR-089 §7 の記述はこの点で誤っていた）。
 
+#### G.6 実施記録（2026-08-12）— **実施済み**
+
+§6 ステップ 8 の item 30 を実装した。**単独コミット**（G-R1）。
+
+| 直したもの | `.rs` | `.txt` |
+|---|---|---|
+| `set_ime_romaji_mode()` → `romaji_pre_write()` | `KEY_DOC` 内 2 箇所 | 2 箇所 |
+| `apply_skipping_imm` → `async_fallback` | `HEADER` の凡例 1 + `build_report()` の `for` 式ラベル 1 = 2 箇所 | dispatch 列 6 + 凡例 1 = **7 箇所** |
+
+§2.G.1 の件数（`.txt` に 7 箇所、`.rs` に 2 + 2 箇所）は実コードと一致した。
+
+**`characterize_strategy(active_gji, profile, skip_imm)` のシグネチャは変えていない**
+（`skip_imm: bool` は「チェーンの 2 番目以降を走る」意味であり、その意味自体は
+残っている）。**戦略選択の期待値（最終列の `GjiDirect` / `KanjiToggle` 等）は
+1 文字も変えていない**（G-R1）。
+
+##### 実機も CI 待ちもせずに一致を検証した方法
+
+`ime_key_sequence_golden.rs` は `#![cfg(windows)]` なので Linux では実行できず、
+`UPDATE_GOLDEN=1` も回せない。そこで**`build_report()` の連結規則を Python で
+再現して `.txt` と突き合わせた**:
+
+1. `.rs` から `HEADER` / `KEY_DOC` / `WARMUP_DOC` / `COMBOS` を正規表現で抽出。
+2. 最終列（戦略名）は `git show HEAD:...ime_key_sequences.txt` から取る
+   ——**この列は CI（`windows-build` ジョブ）が検証済みの値であり、G では
+   1 文字も変えないため**、`characterize_strategy` を実行する必要が無い。
+3. `HEADER + rows + "\n" + KEY_DOC + "\n" + WARMUP_DOC` を組み立てて
+   新しい `.txt` と比較 → **byte-identical**。
+
+これで「`.rs` と `.txt` の手編集がずれる」（G-R2）を push 前に潰せる。
+CI の `windows-build` ジョブは引き続き本物の `characterize_strategy` で
+最終列を検証する。
+
 ---
 
 ## 3. 優先順位と規模の一覧
