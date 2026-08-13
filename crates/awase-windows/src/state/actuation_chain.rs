@@ -325,28 +325,16 @@ impl Authorization {
         would_have_blocked: false,
         origin: None,
     };
-
-    /// A-2 で強制したらこの write が止まっていたか（shadow の測定値）。
-    #[must_use]
-    pub const fn would_have_blocked(&self) -> bool {
-        matches!(
-            self,
-            Self::LegacyUnwarranted {
-                would_have_blocked: true,
-                ..
-            }
-        )
-    }
-
-    /// 起案した入口（`ActuationOrder::issue` を通っていれば `Some`）。
-    #[must_use]
-    pub const fn origin(&self) -> Option<EventOrigin> {
-        match self {
-            Self::LegacyUnwarranted { origin, .. } => *origin,
-            Self::Warrant(_) => None,
-        }
-    }
 }
+
+// `Authorization` に `would_have_blocked()` / `origin()` の inherent accessor は
+// 置かない。**shadow ログを出すのは起案側（`ActuationOrder`）であり**、
+// `ActuationOrder::would_have_blocked()` / `origin()` が実際に使われている
+// （`ime_controller.rs::log_actuation_order_shadow`）。同名の accessor を
+// `Authorization` にも生やすと、呼び出し元ゼロのまま「どちらを呼ぶのが正か」
+// が曖昧な二重 API になる（2026-08-12 の PR #59 最終レビューで指摘・削除）。
+// A-2 で `Actuation` 側から授権の中身を読む必要が出たら、
+// `Actuation::authorization()` からパターンマッチすること。
 
 // ── ActuationOrder（ADR-090 §2.A 設計案 1、INV-47）─────────────────────────────
 
