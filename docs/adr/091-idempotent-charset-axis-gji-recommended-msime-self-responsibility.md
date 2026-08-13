@@ -93,6 +93,16 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
    核心の結論(conversion_modeの直接一致)には影響しないが、変換中の詳細な挙動を厳密に
    詰めるには追試が要る(§5 未解決参照)。
 
+   **注記**: この検証は「F15-F19にCompositionMode*を全状態で統一バインドする」という
+   単純な構成で行い、SendInputでF-keyを送ればGJIのconv bitsを確実に動かせるという
+   **機構自体**の実証が目的だった。その後の設計深化(§3.2)で、F15-F19の**実際の
+   バインド内容**はより精緻な「Precomposition=絶対指定/Composition=ネイティブ
+   トグル」の二段構成に置き換わっている。両者は同じ物理キー番号(F15-F19)を再利用
+   しているが、config1.dbへ実際にバインドする内容は異なる——採用するのは§3.2の
+   二段構成であり、本節の検証はその土台となる基礎機構(SendInputの到達性・
+   `ImmGetConversionStatus`での確認可能性)の証明として扱うこと。§3.2の二段構成
+   そのものの実機検証はPhase 2(§5)で行う。
+
 5. **MS-IMEの物理DBEキー再発行機構(`CharsetSlot`)は撤回**: 詳細は§4。
 
 ---
@@ -108,91 +118,109 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
 
 §1.3の通り。JISかな入力方式は非サポート。物理Alt+かなは予防的swallowを維持する。
 
-### 決定3(charset軸): GJIを推奨IMEとし、config1.dbバインドで制御する。冪等原則は「入力モード」サブ軸のみに適用する。
+### 決定3(charset軸): GJIを推奨IMEとし、config1.dbバインドで制御する。5個の新設Fnキーで「belief強制」と「composition中のネイティブ挙動尊重」を両立する。
 
-**冪等キー限定の原則は、charset軸のうち「次に入力する文字のデフォルトモード」
-(以下「入力モードサブ軸」)にのみ適用する。「今まさに画面に見えている
-composition文字列の文字種変換」(以下「変換中サブ軸」)には適用しない。**
+#### 3.1 基本方針: キーの性質によって扱いを分ける
 
-理由: 冪等原則がそもそも防ごうとしていたのは、open/romaji軸のように「間違えると
-気づかないまま状態が持続する」危険である(open軸はawaseのbeliefと実状態が
-silent desyncする、romaji軸は復旧不能になる、等)。composition中の文字列は
-画面に表示されており即座にフィードバックがあるため、仮に循環トグルで一段
-ズレても目視で気づいて押し直せばよく、実害の質が全く異なる。したがって
-変換中サブ軸ではGJIのネイティブなトグル系コマンドを採用してよい。
+mozc本家ソース(`google/mozc`、Apache-2.0)を直接確認した結果、charset軸に関わる
+物理キーは性質が2種類に分かれることが分かった。
 
-**入力モードサブ軸(Precomposition/DirectInput/Prediction/Suggestion): 冪等・絶対指定。**
-config1.dbの`custom_keymap_table`に、F15-F19を以下へバインドする:
+- **元々絶対指定なキー(Hiragana/Katakana)**: 何もしなくてよい。`src/data/keymap/
+  ms-ime.tsv`で、Precomposition/Composition/Conversionの全状態を通じて
+  `CompositionModeHiragana`/`CompositionModeFullKatakana`という同一の絶対指定
+  コマンドがそのまま割り当てられている。beliefとの乖離リスクが元々無い。
+- **元々トグルなキー(Muhenkan/Eisu)**: precomposition時はbeliefを強制し、
+  composition/conversion時はネイティブのトグルを尊重する、**専用の新設Fnキー**を
+  介して扱う(下記3.2)。
 
-| VK | コマンド | Charset |
-|---|---|---|
-| F15 | `CompositionModeHiragana` | ひらがな |
-| F16 | `CompositionModeFullKatakana` | 全角カタカナ |
-| F17 | `CompositionModeHalfKatakana` | 半角カタカナ |
-| F18 | `CompositionModeFullAlphanumeric` | 全角英数 |
-| F19 | `CompositionModeHalfAlphanumeric` | 半角英数 |
+#### 3.2 新設Fnキー: 5個(F15-F19)、いずれもPrecomposition/Composition二段バインド
+
+各Fnキーは、**単一の絶対指定コマンドではなく、「Precomposition用の絶対指定
+ターゲット」と「Composition/Conversion用のネイティブトグルコマンド」の2つを
+状態別に持つ**。GJI自身がPrecomposition/Composition/Conversionを区別して
+コマンドを解釈するため、**awase側は「今composition中かどうか」を一切判定しない**
+——物理キー押下時に現在のbeliefだけを見て、対応するFnキーを1つ選んで送るだけでよい。
+
+**Muhenkan相当(3キー)** — mozc本家`src/session/session.cc::
+Session::CompositionModeSwitchKanaType`を直接確認し、ひらがな→全角カタカナ→
+半角カタカナ→(循環)という3状態サイクルであることを検証済み(英数系モード中は
+このコマンド自体が無効/no-opであることも確認済み)。「beliefがXのとき、次の
+状態Yへ絶対指定で進める」キーを、サイクルの3つの出発点それぞれについて用意する:
+
+| Fn | 使用条件(現在のbelief) | Precomposition/DirectInput/Prediction/Suggestion | Composition/Conversion |
+|---|---|---|---|
+| F15 | belief=ひらがな | `CompositionModeFullKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
+| F16 | belief=全角カタカナ | `CompositionModeHalfKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
+| F17 | belief=半角カタカナ | `CompositionModeHiragana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
+
+**Eisu相当(2キー)** — mozc本家`src/composer/composer.cc::
+Composer::ToggleInputMode`を直接確認した結果、**「半角英数⇄全角英数」の
+トグルではなく「ひらがな⇄半角英数」の二値トグル**であると判明した
+(ひらがなから押すと半角英数へ、それ以外〈全角カタカナ・半角カタカナ・
+全角英数・半角英数のいずれからでも〉押すとひらがなへ戻る。全角英数は
+この経路の目的地に一度もならない):
+
+| Fn | 使用条件(現在のbelief) | Precomposition/DirectInput/Prediction/Suggestion | Composition/Conversion |
+|---|---|---|---|
+| F18 | belief=ひらがな | `CompositionModeHalfAlphanumeric`(絶対指定) | `ToggleAlphanumericMode`(ネイティブ) |
+| F19 | belief≠ひらがな(カタカナ2種・英数2種のいずれか) | `CompositionModeHiragana`(絶対指定) | `ToggleAlphanumericMode`(ネイティブ) |
 
 F13/F14/F21-F24は使わない(F13/F14はADR-057当時ターミナルへのエスケープシーケンス
 漏れ・DirectInputゲーム競合で捨てられたキー、F21-F24は旧awase config1.db管理機構
 [ADR-067で削除済み]の残骸バインドが実機に残存していることを確認済み)。
 
-**変換中サブ軸(Composition/Conversion): GJIネイティブのトグル系コマンドを許容する。**
-実際のconfig1.dbには、この用途向けに`ConvertToHiragana`/`ConvertToFullKatakana`/
-`ConvertToHalfWidth`/`ConvertToFullAlphanumeric`/`ConvertToHalfAlphanumeric`という
-別系統のコマンドが既に存在し、デフォルトでF6-F10に割り当て済みだった(実機確認済み)。
+#### 3.3 物理トリガーとCharsetSlotのロジック
 
-**無変換単独打鍵は、GJIの「MS-IME」キー設定プリセットを選ぶだけでMS-IME本来の
-挙動を再現できる(実機カスタム設定は不要)。** mozc本家ソース
-(`google/mozc`、`src/data/keymap/ms-ime.tsv`、Apache-2.0)を直接確認した結果:
+`awase-gji-config`のmozc本家ソース照合により、charset軸に関わる全ての物理
+モードキー(ms-ime.tsvのPrecomposition全16行を精査)を洗い出した。ケアが
+必要なのは以下の3トリガーのみ:
 
-| status | key | command |
-|---|---|---|
-| Precomposition | Muhenkan | `CompositionModeSwitchKanaType` |
-| Composition | Muhenkan | `SwitchKanaType` |
-| Conversion | Muhenkan | `SwitchKanaType` |
+| 物理キー | 対応 |
+|---|---|
+| `Muhenkan`(単独) | 現在のbeliefを見てF15/F16/F17のいずれかを選び送信 |
+| `Eisu` | 現在のbeliefを見てF18/F19のいずれかを選び送信 |
+| `Shift+Muhenkan` | `Eisu`と同一ロジック(ms-ime.tsvで両者とも`ToggleAlphanumericMode`に割り当て済み、実質的に同じ機能の別トリガー) |
 
-これは実際のMS-IMEネイティブ動作(precomposition時「全角カタカナ→半角カタカナ→
-ひらがな」循環、Web検索で確認済み)と完全に一致する。**GJI組み込みのMS-IME互換
-プリセットが標準でこの挙動を含んでいる**ため、決定4で無変換単独に依存する
-MS-IME習慣ユーザーがGJIへ乗り換える際の障壁にならない。
+**`Hiragana`/`Katakana`物理キーは対象外**(既に絶対指定でbelief乖離リスクが
+無いため、awase側での介入・swallow自体が不要。BUG-52対応の無条件Suppressから
+この2キーを除外することを検討する、§5 Phase 1)。`Henkan`(変換キー)は
+`Reconvert`という別機能でcharsetのモード切替とは無関係、対象外。
+`Hankaku/Zenkaku`/`Kanji`/`ON`/`OFF`はopen軸(決定1の範囲)で対象外。
+`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`がmozcのキー名語彙に対応する物理トークンを
+持つかは未確認(§5 Phase 1で要調査)。
 
-参考までに、mozc本家のATOK互換プリセット(`atok.tsv`)は全く異なる思想で、
-Precomposition時のMuhenkanを`CancelAndIMEOff`(IME自体を閉じる)、Composition時を
-`ToggleAlphanumericMode`(かな循環ではなく英数トグル)に割り当てている。ことえり
-互換プリセット(`kotoeri.tsv`、macOS)にはMuhenkanの割り当て自体が存在しない
-(macOSキーボードに無変換キーが無いため)。
+送信後、awaseは自身のbeliefを「送ったFnキーが示す絶対指定ターゲット」に
+楽観的に更新する(precomposition分岐が実際に発火した前提)。実際には
+composition/conversion中でネイティブトグルが発火していた場合、beliefは
+実状態とズレるが、composition文字列は画面に見えており低リスク(決定3の
+根底にある原則、§1.4参照)。
 
-**運用方針**: ユーザーはGJIのキー設定で「MS-IME」プリセットを選択し(無変換単独の
-循環動作を含む変換中サブ軸の挙動一式が揃う)、その上に決定3の入力モードサブ軸用
-F15-F19バインドを`custom_keymap_table`で追加する。プリセット選択とカスタム追加は
-共存できる(実際のconfig1.dbで`session_keymap`フィールドとカスタムオーバーレイの
-共存を確認済み)。
+#### 3.4 なぜMS-IME互換プリセットを基準にしたか(ATOK/ことえりとの比較)
 
-- awase側は、charset軸の**入力モードサブ軸**の意図(ユーザーがトレイ操作等で
-  明示的にモードを選んだとき、または`conv_mode_policy=force`のような既存機構が
-  desired_modeを持つとき)を、GJI検出時はF15-F19のSendInputに変換して送信する。
-  IMC write(`ImmSetConversionStatus`)ではなくVK注入を使う理由: GJI(mozc)のTIPは
-  IMC writeをUIミラーとしてのみ扱い、実コンポーザには反映しない(BUG-25追補2、
-  mozc本家ソース確認済み)。
+mozc本家の3プリセットを比較した結果、この種のキーの意味論はIME文化ごとに
+大きく異なると判明した:
 
-- **`CharsetSlot`(GJI向け、物理DBEキー→F15-F19変換機構)**: 現状、物理DBEキー
-  (`VK_DBE_HIRAGANA`/`KATAKANA`/`SBCSCHAR`/`DBCSCHAR`/`ALPHANUMERIC`)の押下は
-  `ime_actuation_owned`なら無条件Suppressされ、ユーザーの意図(「カタカナキーを
-  押した」等)が握りつぶされて消えている(BUG-52対応の副作用)。`CharsetSlot`は
-  この握りつぶされた物理キーの意図を、対応するF15-F19のSendInputへ変換する
-  単純な変換表として実装する(入力モードサブ軸のみが対象。無変換単独等、
-  変換中サブ軸で使うキーはGJI自身へのパススルーで足り、CharsetSlotの変換対象
-  ではない)。
+- **MS-IME互換**(採用): Muhenkan=かな循環、Eisu(+Shift+Muhenkan)=ひらがな⇄
+  半角英数トグル。
+- **ATOK互換**: Muhenkanは`CancelAndIMEOff`(IME自体を閉じる、MS-IMEと正反対)。
+  英数トグル相当は`Eisu`/`F10`/`Kana`/`Shift+Muhenkan`の**4キー**に分散。
+- **ことえり互換**(macOS): `Eisu`のみ存在、Muhenkan/Kana/Katakana/Hiragana
+  相当のキー自体が無い(macOSキーボードにこれらの物理キーが無いため)。
 
-  GJI自身が`custom_keymap_table`のstatus別コマンド解釈(Precomposition/
-  Composition/Conversion/Prediction/Suggestion)を内部で行うため、**awase側は
-  「今入力中かどうか」を判定する必要がない**——1つの物理キー押下に対して
-  1つのF-keyを送るだけの単純な対応表で足りる(物理VKとF15-F19ターゲットの
-  正確な対応は`vk.rs`の`ImeKeyKind`分類を出発点にPhase 1で確定する)。これは
-  MS-IME向けに検討していた「入力中/非入力中で正しい書き込み値を判定する」という
-  複雑さ(候補ウィンドウ非可視性問題)を、GJI自身への委譲によって回避できている
-  ことの帰結である。
+普遍的な正解は無いため、Windowsで最も一般的なMS-IME互換の意味論を基準に選んだ。
+ユーザーはGJIのキー設定で「MS-IME」プリセットを選択し(§1.4項目4で確認した
+5モードの`CompositionMode*`絶対指定に加え、Muhenkan/Eisuのネイティブトグルも
+標準で揃う)、その上に3.2のFnキー(F15-F19)を`custom_keymap_table`で追加する。
+プリセット選択とカスタム追加は共存できる(実際のconfig1.dbで`session_keymap`
+フィールドとカスタムオーバーレイの共存を確認済み)。
 
+#### 3.5 実装の要点
+
+- `CharsetSlot`(GJI向け、物理キー→Fnキー変換機構): 物理`Muhenkan`/`Eisu`/
+  `Shift+Muhenkan`の押下を検知し、現在のbeliefに応じて3.2の表からFnキーを
+  選んでSendInputする。IMC write(`ImmSetConversionStatus`)ではなくVK注入を
+  使う理由: GJI(mozc)のTIPはIMC writeをUIミラーとしてのみ扱い、実コンポーザ
+  には反映しない(BUG-25追補2、mozc本家ソース確認済み)。
 - 書き込み機構: `awase-gji-config`crateは現状読み取り専用(`extract_ime_keys`/
   `extract_mode_keys`)。config1.dbへの書き込み機能の実装は本ADRのスコープ外の
   別タスクとする(§5 Phase構成)。当面はユーザーがGJIの設定UIで手動インポートする
@@ -289,31 +317,27 @@ idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/0
 
 1. `awase-gji-config`にconfig1.db書き込み機能を追加する(バックアップ・
    原子的置換・既存バインドとの衝突検出込み)。
-2. awase起動時またはGJI検出時に、F15-F19バインドの存在を確認し、
-   無ければユーザーに設定を促す(自動書き込みは要検討、§3の保守コスト論点)。
-3. charset軸の意図(トレイ操作等)をGJI検出時はF15-F19のSendInputへ変換する
-   実装を、既存の`ime_controller.rs`のStrategy群に追加する。
-4. **`CharsetSlot`(物理DBEキー→F15-F19変換表)を実装する。** `vk.rs`の
-   `ImeKeyKind`分類を出発点に、`VK_DBE_HIRAGANA`/`KATAKANA`/`SBCSCHAR`/
-   `DBCSCHAR`/`ALPHANUMERIC`のうちGJI検出時に`ime_actuation_owned`で
-   Suppressされているものを、対応するF15-F19のSendInputへ変換して送信する。
-   status別解釈はGJI自身に委ねるため、composition中かどうかの判定はawase側で
-   行わない(§4参照)。
+2. awase起動時またはGJI検出時に、F15-F19の5個の二段バインド(§3.2)の存在を
+   確認し、無ければユーザーに「MS-IME」プリセット選択+`custom_keymap_table`
+   追加を促す(自動書き込みは要検討、§3の保守コスト論点)。
+3. **`CharsetSlot`(物理Muhenkan/Eisu/Shift+Muhenkan→F15-F19変換ロジック)を
+   実装する。** §3.3の対応表に基づき、物理キー押下時のawase側belief(現在の
+   charset目標値)を見て、5つのFnキーから1つを選びSendInputする。
+4. `Hiragana`/`Katakana`物理キー(`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)を
+   BUG-52対応の無条件Suppress対象から除外できるか検証する(§3.3、既に絶対指定
+   でbelief乖離リスクが無いため、素通しでも安全なはず)。
+5. `VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`がmozcのキー名語彙上どの物理トークンに
+   対応するか(あるいは対応が無いか)を確認する。
 
-### Phase 2(候補ウィンドウ挙動・変換中サブ軸の追試)
+### Phase 2(候補ウィンドウ挙動・実機ソークの追試)
 
-1. `gji_composition_probe.rs`のシナリオ分離を改善(未確定compositionの明示
-   キャンセル)した上で、henkan中の`CompositionMode*`押下の挙動を再検証する。
-2. ~~GJIの「MS-IME互換」キー設定プリセットが無変換単独打鍵の状態別挙動を
-   標準で含んでいるか確認する~~ **解決済み**(2026-08-13、mozc本家ソース
-   `src/data/keymap/ms-ime.tsv`を直接確認。Precomposition→
-   `CompositionModeSwitchKanaType`、Composition/Conversion→`SwitchKanaType`が
-   標準で含まれている。決定3参照)。残る実機確認事項は、GJI側で実際に
-   「MS-IME」プリセットを選択した上でF15-F19の`custom_keymap_table`追加が
-   問題なく共存するかの一度きりの動作確認のみ。
-3. `ConvertToHalfWidth`(半角カタカナ専用ではなく汎用の半角変換コマンド)が、
-   Composition/Conversion状態でF17(半角カタカナ)ターゲットに対して期待通り
-   動作するか実機で確認する。
+1. `gji_composition_probe.rs`を拡張し、§3.2の5個のFnキー(状態別二段バインド)を
+   実機で送信して、Precomposition時は絶対指定通りの`conversion_mode`になるか、
+   Composition/Conversion時はネイティブトグル(`SwitchKanaType`/
+   `ToggleAlphanumericMode`)が実際に発火し破壊的な影響が無いかを検証する。
+2. `ConvertToHalfWidth`等のF6-F10系コマンド(§3.1で言及、変換候補の再変換用途と
+   推定)の正確な用途を確認し、決定3の設計と混同しないよう整理する(現時点では
+   F15-F19の設計に必須ではない)。
 
 ### Phase 3(MS-IME自己責任ポリシーのドキュメント化)
 
@@ -336,6 +360,14 @@ idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/0
 - `docs/adr/057-gji-keybind-f13f14-to-f21f22.md`(F13/F14を避ける根拠)、
   `docs/adr/067-vk-ime-on-off-migration.md`(config1.dbバインド撤廃の経緯、
   今回の復活判断の前提確認元)。
+- mozc本家ソース(`github.com/google/mozc`、Apache-2.0、2026-08-13時点の
+  masterブランチを直接確認):
+  - `src/data/keymap/ms-ime.tsv`/`atok.tsv`/`kotoeri.tsv` — 3プリセットの
+    キーバインド定義。決定3.2/3.4の直接的な根拠。
+  - `src/session/session.cc::Session::CompositionModeSwitchKanaType` —
+    かな循環(ひらがな→全角カタカナ→半角カタカナ)の実装。
+  - `src/composer/composer.cc::Composer::ToggleInputMode` — 英数トグル
+    (ひらがな⇄半角英数の二値トグル、全角英数は経由しない)の実装。
 
 ## 7. 関連ADR
 
