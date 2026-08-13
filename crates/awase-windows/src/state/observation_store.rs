@@ -15,8 +15,37 @@
 use std::time::{Duration, Instant};
 
 use super::evidence::{ActuatingPool, AnyObservation, BeliefPool, Observed, OpenEvidence};
+use super::ime_actuation::{ConvergedReceipt, Resolution};
 use super::ime_event::{HwndId, ObservationAuthority, ObservationConfidence, ObservationSource};
 use super::probe_admission::FocusEpoch;
+
+/// 読み戻しの**問い**（ADR-080 不変条件6 / ADR-089 INV-46 / ADR-090 §2.B）。
+///
+/// `ObservationStore::read_back` の引数。「since 以降の観測を見る」という
+/// 同じ機械的操作でも、drift correction が問うている意味は 2 通りあり、
+/// **その区別を型として宣言させる**のがこの enum の役割である。
+/// `ime_refresh.rs:640` 付近のコメントが説明しているとおり、この 2 つを
+/// 取り違えると「give-up が即座に無効化される」か「無限再送」のどちらかに
+/// 落ちる（BUG-33 / BUG-43 ファミリー）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadBackQuery {
+    /// `since` 以降の trusted 観測が `desired` と一致したか（`Read` の収束確認）。
+    ///
+    /// 一致 → `Resolution::Confirmed`、それ以外 → `Resolution::Pending`。
+    Converged { desired: bool },
+    /// `since` 以降に trusted 観測が**何であれ**記録されたか
+    /// （`Blind` give-up からの復旧判定。**値ではなく鮮度だけを見る**）。
+    ///
+    /// 記録あり → `Resolution::ExternalChange`、無し → `Resolution::GaveUp`。
+    ///
+    /// **値で判定してはならない。** drift 補正は `observed != desired` が続く
+    /// 間しか走らず、open/close は bool なので「間違った値」は `!desired` の
+    /// 1 通りしか存在しない。「target と異なる値の観測が来たら復旧」は
+    /// ほぼ毎 tick 真になり give-up を即座に無効化する（乖離の定義そのもの
+    /// だから）。意味のある信号は「諦めた時刻以降に**新しい**観測が record
+    /// されたか」＝世界で何かが動いたか、である。
+    AnyFreshEvidence,
+}
 
 /// 単一の観測値レコード。受理済みの観測のみがここに格納される。
 ///
@@ -395,9 +424,65 @@ impl ObservationStore {
             .filter(|o| !o.is_expired(now))
     }
 
+    /// actuation の**読み戻し**の唯一の公開窓口（ADR-080 不変条件6 /
+    /// ADR-089 INV-46 / ADR-090 §2.B 設計案 2、INV-52）。
+    ///
+    /// # なぜ `ConvergedReceipt` を返すのか
+    ///
+    /// **戻り値は `ImeObservation` ではない**——したがって「読み戻しの産物を
+    /// 観測として書き戻す」ことが型として書けない。`ConvergedReceipt` は
+    /// `Observed<E>` にも `AnyObservation` にも変換手段を持たないので
+    /// （INV-46）、BUG-33 型の収束偽装が構造的に不可能になる。
+    ///
+    /// ADR-089 Phase C の時点では `ConvergedReceipt` は構築されるだけで
+    /// `log::debug!` にしか渡らず、実際の収束判定は
+    /// `most_recent_trusted_after` が返す `ImeObservation` が担っていた
+    /// （§9-16「効いていない」）。本メソッドと `most_recent_trusted_after` の
+    /// module private 化で、初めてコンパイラ強制になる。
+    ///
+    /// # `most_recent_trusted`（`_after` 無し）との違い
+    ///
+    /// あちらは **belief のフォールバック専用**（`ime_model.rs` /
+    /// `platform_state.rs`）であり、actuation の読み戻しではないので `pub` の
+    /// まま残す。**この 2 つを混同しないことが本設計の要点**である
+    /// （混同すると belief の読み取りまで receipt 越しになり ADR-078 の
+    /// 3 層分離が壊れる）。
+    pub fn read_back(
+        &self,
+        now: Instant,
+        since: Instant,
+        query: ReadBackQuery,
+        attempts: u32,
+    ) -> ConvergedReceipt {
+        let latest = self.most_recent_trusted_after(now, since);
+        let resolution = match query {
+            // 旧: `most_recent_trusted_after(now, act_sent_at).is_some_and(|o| o.open == desired)`
+            ReadBackQuery::Converged { desired } => {
+                if latest.is_some_and(|o| o.open == desired) {
+                    Resolution::Confirmed
+                } else {
+                    Resolution::Pending
+                }
+            }
+            // 旧: `most_recent_trusted_after(now, gave_up_at).is_some()`
+            ReadBackQuery::AnyFreshEvidence => {
+                if latest.is_some() {
+                    Resolution::ExternalChange
+                } else {
+                    Resolution::GaveUp
+                }
+            }
+        };
+        ConvergedReceipt::new(resolution, attempts)
+    }
+
     /// 最も信頼できる観測値を返す (confidence 優先、同 confidence なら新しい方)。
     ///
     /// expire 済みの観測は除外する。
+    ///
+    /// **`_after` 付きと違い `pub` のまま**（ADR-090 §2.B 設計案 2）。
+    /// こちらは belief のフォールバック（`ime_model.rs::resolve_open_at` /
+    /// `platform_state.rs`）専用であり、actuation の読み戻しではない。
     #[must_use]
     pub fn most_recent_trusted(&self, now: Instant) -> Option<&ImeObservation> {
         self.per_source
@@ -410,12 +495,16 @@ impl ObservationStore {
     /// 対象にする条件を追加したもの。actuation を送信した時刻以降の観測だけを見て収束判定
     /// したい場合に使う（BUG-43対策、ADR-080参照）。全ソース対象（`ConvOpenInference`を
     /// 除外しない — BUG-43の直接トリガーだったソースを含めないと意味がないため）。
+    ///
+    /// **ADR-090 §2.B（INV-52）で `pub` から module private へ縮小した。**
+    /// `ImeObservation` を返すこの口が公開されている限り、`read_back()` を
+    /// 足しても「読み戻しの産物は `ImeObservation` として手に入らない」
+    /// （ADR-080 不変条件6）は成立しない——**B の本体は receipt を作ることでは
+    /// なく、この since-fenced 読み口を塞ぐことである**。新しい読み戻し用途が
+    /// 出たら `ReadBackQuery` に variant を足すのが正しい形であり、それが
+    /// 「読み戻しの意味を宣言させる」という本設計の狙いである（B-R2）。
     #[must_use]
-    pub fn most_recent_trusted_after(
-        &self,
-        now: Instant,
-        since: Instant,
-    ) -> Option<&ImeObservation> {
+    fn most_recent_trusted_after(&self, now: Instant, since: Instant) -> Option<&ImeObservation> {
         self.per_source
             .iter()
             .filter(|o| !o.is_expired(now) && o.at >= since)
@@ -806,6 +895,182 @@ mod tests {
             s.most_recent_trusted_after(since, since).map(|o| o.open),
             Some(true),
             "ConvOpenInference もソース種別では除外されず全ソース対象"
+        );
+    }
+
+    // ── ADR-090 §2.B: `read_back` の全数同値テスト ────────────────────────
+    //
+    // `ir_apply_drift_correction` の 2 箇所を `most_recent_trusted_after` の
+    // 直接呼び出しから `read_back` へ移した。**移行前後の判定が bit-identical**
+    // であることを、旧述語をこのテスト内で再現して全数比較する形で固定する
+    // （ADR-090 §6 ステップ 2 の 8「移行前後の同値を Linux 全数テストで固定して
+    // から書き換えること」/ B-R1）。
+    //
+    // 軸: `since` の前後（before / at / after）× `desired`（true/false）×
+    // confidence 3 値（Low/Medium/High）× 観測の open 値（true/false）。
+
+    /// 旧実装の `Read` 収束述語（`ime_refresh.rs:700` にあったもの）。
+    fn legacy_confirmed(s: &ObservationStore, now: Instant, since: Instant, desired: bool) -> bool {
+        s.most_recent_trusted_after(now, since)
+            .is_some_and(|o| o.open == desired)
+    }
+
+    /// 旧実装の `Blind` give-up 復旧述語（`ime_refresh.rs:678` にあったもの）。
+    fn legacy_fresh(s: &ObservationStore, now: Instant, since: Instant) -> bool {
+        s.most_recent_trusted_after(now, since).is_some()
+    }
+
+    #[test]
+    fn read_back_converged_matches_the_legacy_predicate_exhaustively() {
+        // `Instant` の減算を避けるため基準点を先に取り、`since` をそこから進める
+        // （clippy::unchecked_time_subtraction）。
+        let base = Instant::now();
+        let since = base + Duration::from_millis(10);
+        let offsets = [
+            ("before", base),
+            ("at", since),
+            ("after", since + Duration::from_millis(10)),
+        ];
+        let confidences = [
+            ObservationConfidence::Low,
+            ObservationConfidence::Medium,
+            ObservationConfidence::High,
+        ];
+        // 観測ゼロの場合も含める（`None` → Pending）。
+        {
+            let s = ObservationStore::default();
+            for desired in [false, true] {
+                let receipt = s.read_back(since, since, ReadBackQuery::Converged { desired }, 7);
+                assert!(!receipt.converged(), "観測ゼロなら収束していない");
+                assert_eq!(receipt.resolution(), Resolution::Pending);
+                assert_eq!(receipt.attempts(), 7, "attempts はそのまま receipt に載る");
+                assert_eq!(
+                    receipt.converged(),
+                    legacy_confirmed(&s, since, since, desired)
+                );
+            }
+        }
+        for (label, at) in offsets {
+            for confidence in confidences {
+                for open in [false, true] {
+                    for desired in [false, true] {
+                        let mut s = ObservationStore::default();
+                        let mut o = obs(open, ObservationSource::ObserverPoll, at);
+                        o.confidence = confidence;
+                        rec(&mut s, o);
+                        let now = since + Duration::from_millis(20);
+                        let receipt =
+                            s.read_back(now, since, ReadBackQuery::Converged { desired }, 3);
+                        let legacy = legacy_confirmed(&s, now, since, desired);
+                        assert_eq!(
+                            receipt.converged(),
+                            legacy,
+                            "read_back(Converged) が旧述語と食い違った \
+                             (at={label} confidence={confidence:?} open={open} desired={desired})"
+                        );
+                        assert_eq!(
+                            receipt.resolution(),
+                            if legacy {
+                                Resolution::Confirmed
+                            } else {
+                                Resolution::Pending
+                            },
+                            "収束していないときの帰結は Pending（GaveUp ではない）"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn read_back_any_fresh_evidence_matches_the_legacy_predicate_exhaustively() {
+        let base = Instant::now();
+        let since = base + Duration::from_millis(10);
+        let offsets = [
+            ("before", base),
+            ("at", since),
+            ("after", since + Duration::from_millis(10)),
+        ];
+        let confidences = [
+            ObservationConfidence::Low,
+            ObservationConfidence::Medium,
+            ObservationConfidence::High,
+        ];
+        {
+            let s = ObservationStore::default();
+            let receipt = s.read_back(since, since, ReadBackQuery::AnyFreshEvidence, 5);
+            assert_eq!(receipt.resolution(), Resolution::GaveUp);
+            assert!(!legacy_fresh(&s, since, since));
+        }
+        for (label, at) in offsets {
+            for confidence in confidences {
+                for open in [false, true] {
+                    let mut s = ObservationStore::default();
+                    let mut o = obs(open, ObservationSource::ConvOpenInference, at);
+                    o.confidence = confidence;
+                    rec(&mut s, o);
+                    let now = since + Duration::from_millis(20);
+                    let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+                    let legacy = legacy_fresh(&s, now, since);
+                    assert_eq!(
+                        receipt.resolution() == Resolution::ExternalChange,
+                        legacy,
+                        "read_back(AnyFreshEvidence) が旧述語と食い違った \
+                         (at={label} confidence={confidence:?} open={open})"
+                    );
+                    // **値では判定しない**ことの固定（ADR-080 / BUG-43）。
+                    assert_ne!(
+                        receipt.resolution(),
+                        Resolution::Confirmed,
+                        "AnyFreshEvidence は値を見ないので Confirmed にはならない"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `AnyFreshEvidence` は `open` の値に依存しない——同じ `since` で
+    /// `open=true` と `open=false` の観測を入れ替えても帰結が変わらないこと。
+    ///
+    /// 「target と異なる値の観測が来たら復旧」という素朴な実装に戻すと
+    /// give-up が毎 tick 無効化される（乖離の定義そのものだから）。その
+    /// 誤りに戻れないようにするための固定（`ime_refresh.rs` の該当コメント）。
+    #[test]
+    fn read_back_any_fresh_evidence_ignores_the_observed_value() {
+        let since = Instant::now();
+        let now = since + Duration::from_millis(20);
+        let mut a = ObservationStore::default();
+        rec(&mut a, obs(true, ObservationSource::Gji, now));
+        let mut b = ObservationStore::default();
+        rec(&mut b, obs(false, ObservationSource::Gji, now));
+        assert_eq!(
+            a.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 0),
+            b.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 0),
+            "AnyFreshEvidence は鮮度だけを見る（値は不問）"
+        );
+    }
+
+    /// expire 済みの観測は `read_back` にも現れない（`most_recent_trusted_after`
+    /// の `is_expired` フィルタをそのまま引き継ぐ）。
+    #[test]
+    fn read_back_excludes_expired_observations() {
+        let since = Instant::now();
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        let mut o = obs(true, ObservationSource::Gji, now);
+        o.expires_at = Some(now);
+        rec(&mut s, o);
+        assert_eq!(
+            s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 0)
+                .resolution(),
+            Resolution::GaveUp,
+            "expire 済みは新しい証拠として数えない"
+        );
+        assert_eq!(
+            s.read_back(now, since, ReadBackQuery::Converged { desired: true }, 0)
+                .resolution(),
+            Resolution::Pending
         );
     }
 

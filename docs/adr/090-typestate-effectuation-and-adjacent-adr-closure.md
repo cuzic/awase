@@ -618,6 +618,42 @@ if receipt.resolution() == Resolution::ExternalChange { self.discard_actuation()
 **Linux で完結し、挙動を bit-identical に保てる。**
 ADR-089 が入れた型のうち「効いていない」ものを最も安く「効く」に変えられる。
 
+#### B.5 実施記録（2026-08-12）— **実施済み**
+
+§6 ステップ 2 の 6〜9 をすべて実装した。触ったファイルは見積りどおり 3 つ。
+挙動は bit-identical（下記の全数同値テストで固定）。
+`ime_key_sequence_golden.rs` と `tests/golden/` は無変更。
+
+| 項 | 実装 |
+|---|---|
+| 6 | `Resolution` を `Confirmed` / `GaveUp` / `ExternalChange` / `Pending` の 4 値へ。`ConvergedReceipt` のフィールドを `converged: bool` → `resolution: Resolution` に置換（`converged()` は `matches!(.., Confirmed)` で互換維持、`resolution()` は非可逆な再構成をやめて素直な getter になった） |
+| 7 | `ReadBackQuery { Converged { desired }, AnyFreshEvidence }` と `ObservationStore::read_back(now, since, query, attempts) -> ConvergedReceipt` を新設。`most_recent_trusted_after` を `pub` → module private（`fn`）へ縮小（INV-52） |
+| 8 | `ir_apply_drift_correction` の 2 箇所（`Blind` give-up 復旧 `:678` / `Read` 収束 `:700`）を `read_back` 経由へ。**述語は 1 文字も書き換えず `ReadBackQuery` の中へ移した** |
+| 9 | `drift_correction_giveup_and_confirmed_do_not_write_observations` は削除していない（B-R3）。禁止リスト（`dispatch_event(` / `ObserverReported` / `observations.record(` …）は `observations.read_back(` と一致しないため無改修で通る |
+
+**移行前後の同値は Linux 全数テストで固定した**（§6 ステップ 2 の 8 の要求）。
+`state/observation_store.rs` の `#[cfg(test)] mod tests` に旧述語
+（`legacy_confirmed` = `most_recent_trusted_after(..).is_some_and(|o| o.open == desired)`、
+`legacy_fresh` = `most_recent_trusted_after(..).is_some()`）を再現し、
+**`since` の前後 3 通り × confidence 3 値 × 観測 `open` 2 値 × `desired` 2 値
+＋観測ゼロ**を全数で突き合わせるテストを 2 本追加した
+（`read_back_converged_matches_the_legacy_predicate_exhaustively` /
+`read_back_any_fresh_evidence_matches_the_legacy_predicate_exhaustively`）。
+あわせて `AnyFreshEvidence` が **`open` の値に依存しない**こと
+（`read_back_any_fresh_evidence_ignores_the_observed_value`）と、
+expire 済み観測が read_back にも現れないことを固定した。
+前者は「target と異なる値の観測が来たら復旧」という素朴な実装に戻すと
+give-up が毎 tick 無効化される（B-R1 / BUG-43）という、
+`ime_refresh.rs:640` 付近のコメントが説明している落とし穴そのものである。
+
+#### ADR の記述と実コードが食い違っていた点
+
+| # | ADR の記述 | 実コード | 採った判断 |
+|---|---|---|---|
+| B-1 | §2.B 設計案 3 のスケッチは `receipt.resolution() == Resolution::ExternalChange` で give-up 復旧を判定する | そのまま成立する。ただしスケッチは `Read` 側を `if receipt.converged()` と書いており、**`Pending` を明示的に見ていない**。実コードでは `Read` 分岐は「収束したら return、しなければ下の実送信へ落ちる」構造なので、`Pending` を分岐で受ける必要が無い | **スケッチどおりに実装した。** `Pending` は「`converged()` が false」の内訳を receipt に残すためのものであり、現時点で `Pending` を直接 match する本番コードは無い（`Resolution` は crate 内で網羅させたいので `#[non_exhaustive]` は付けていない、B-R4） |
+| B-2 | §7-2「`AnyFreshEvidence` を `ConvergedReceipt` に載せるべきか。別型 `RecoveryReceipt` に分ける案もある」 | 分けると INV-46（観測へ変換できない）を 2 型で守ることになり、`read_back` の戻り値型が query によって変わる（= 戻り値型を query で分岐させる generic か enum が要る）。呼び出し元 2 箇所のうち片方でしか使わない型が増える | **分けなかった。** `Resolution` を 4 値にしたことで「収束したか」と「外界が動いたか」は `resolution()` の値として区別でき、型を分ける必要が無くなった。名前（`ConvergedReceipt`）は `converged()` が主用途である `Read` 側に寄っているが、**型を増やすコストのほうが大きい**と判断した。§7-2 はこれで解消とする |
+| B-3 | §2.B 設計案 2 は `most_recent_trusted_after` を「`fn`（モジュール private）へ縮小する」 | `#[cfg(test)] mod tests` は同モジュールの子なので private のままテストから呼べる。旧述語の再現（全数同値テスト）にはこれが必要 | **そのまま module private にした。** 既存の `most_recent_trusted_after_*` テスト 3 本も無改修で通る |
+
 ---
 
 ### C. 観測ストアの裏口を可視性で塞ぎ、閉じられない witness の理由を確定する

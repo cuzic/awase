@@ -670,17 +670,28 @@ impl Runtime {
                             // して次 tick の `actuation_for` に attempts=0・新しい sent_at・
                             // gave_up_at=None で作り直させる。実際の再送は次 tick に任せ、
                             // discard した同じ tick では送らない（ロジックを単純に保つ）。
-                            let fresh = self
-                                .platform_state
-                                .ime
-                                .model()
-                                .observations
-                                .most_recent_trusted_after(now, gave_up_at)
-                                .is_some();
-                            if fresh {
+                            //
+                            // ADR-090 §2.B（INV-52）: 読み戻しは
+                            // `ObservationStore::read_back` の 1 本だけを通る。
+                            // 戻り値は `ConvergedReceipt` であって
+                            // `ImeObservation` ではないので、復旧判定に使った
+                            // 読み取りの産物を観測として書き戻すことが型として
+                            // 書けない。述語（`.is_some()`）はそのまま
+                            // `ReadBackQuery::AnyFreshEvidence` の中へ移した
+                            // だけで、判定は bit-identical である。
+                            let receipt = self.platform_state.ime.model().observations.read_back(
+                                now,
+                                gave_up_at,
+                                crate::state::observation_store::ReadBackQuery::AnyFreshEvidence,
+                                act_attempts,
+                            );
+                            if receipt.resolution()
+                                == crate::state::ime_actuation::Resolution::ExternalChange
+                            {
                                 log::debug!(
                                     "[drift] fresh observation after give-up → 試行を破棄して\
-                                     再試行: desired={desired} observed={observed}"
+                                     再試行: desired={desired} observed={observed} attempts={}",
+                                    receipt.attempts()
                                 );
                                 self.discard_actuation();
                             }
@@ -692,22 +703,24 @@ impl Runtime {
             FeedbackPolicy::Read { .. } => {
                 // `sent_at` 以降の trusted 観測が desired と一致していれば収束済み
                 // （`Resolution::Confirmed`）。再送不要なので試行を破棄する。
-                let confirmed = self
-                    .platform_state
-                    .ime
-                    .model()
-                    .observations
-                    .most_recent_trusted_after(now, act_sent_at)
-                    .is_some_and(|o| o.open == desired);
-                if confirmed {
-                    // ADR-089 §2.5（INV-46）: 収束の帰結も `ConvergedReceipt`。
-                    // 観測ストアへは何も書かない（`Confirmed` は「既に観測が
-                    // desired と一致していた」という読み取りの帰結であって、
-                    // 新しい観測ではない）。
-                    let receipt = crate::state::ime_actuation::ConvergedReceipt::new(
-                        crate::state::ime_actuation::Resolution::Confirmed,
-                        act_attempts,
-                    );
+                //
+                // ADR-089 §2.5（INV-46）: 収束の帰結は `ConvergedReceipt`。
+                // 観測ストアへは何も書かない（`Confirmed` は「既に観測が
+                // desired と一致していた」という読み取りの帰結であって、
+                // 新しい観測ではない）。
+                // ADR-090 §2.B（INV-52）: その receipt を**読み戻し API から
+                // 直接受け取る**形にした。以前は `most_recent_trusted_after` が
+                // 返す `ImeObservation` で判定してから receipt を別途組み立てて
+                // いたため、receipt は log にしか効いていなかった（§9-16）。
+                // 述語（`.is_some_and(|o| o.open == desired)`）はそのまま
+                // `ReadBackQuery::Converged` の中へ移しただけで bit-identical。
+                let receipt = self.platform_state.ime.model().observations.read_back(
+                    now,
+                    act_sent_at,
+                    crate::state::observation_store::ReadBackQuery::Converged { desired },
+                    act_attempts,
+                );
+                if receipt.converged() {
                     log::debug!(
                         "[drift] actuation confirmed (Read): desired={desired} \
                          converged={} attempts={} → 破棄",
