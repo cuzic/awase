@@ -811,25 +811,53 @@ fn effective_open_is_wired_to_the_intent_store_decision() {
          想定: {expected:?}\n実際: {files_with_calls:?}"
     );
 
-    // 呼び出しが `ImeStateHub::effective_open()` の本体にあること。
+    // 呼び出しが `ImeStateHub::effective_open_at()`（判定本体）にあること。
     let content = read_crate_file("src/state/platform_state.rs");
     let production = production_code_only(&content);
-    let bodies = extract_all_balanced_blocks(production, "fn effective_open(&self) -> bool");
+    let bodies = extract_all_balanced_blocks(
+        production,
+        "fn effective_open_at(&self, now_ms: TickMs) -> bool",
+    );
     assert_eq!(
         bodies.len(),
         1,
-        "`fn effective_open(&self) -> bool` が {} 箇所あります（想定: 1）",
+        "`fn effective_open_at(&self, now_ms: TickMs) -> bool` が {} 箇所あります（想定: 1）",
         bodies.len()
     );
     assert_eq!(
         count_real_calls(bodies[0], NEEDLE),
         1,
-        "`ImeStateHub::effective_open()` の本体から `{NEEDLE}` が消えています。\n\
+        "`ImeStateHub::effective_open_at()` の本体から `{NEEDLE}` が消えています。\n\
          belief（`Engine::compute_state` の `ctx.ime_on`）が IntentStore の \
          明示意図上書きを通らなくなると、BUG-51 追補の再現手順\n\
          （明示 IME OFF → プロセスを跨ぐフォーカス変更 → 壊れた \
          `ConvOpenInference` 1 件）で Engine だけが ON へ戻る退行が復活します。\n\
          判定本体の回帰は tests/intent_store_effective_open.rs にあります。"
+    );
+
+    // 引数なしの `effective_open()` は「壁時計を読んで `effective_open_at()` に
+    // 委譲するだけ」であること（追補4）。本番の唯一の呼び出し口がこの 2 行を
+    // 保つ限り、belief は必ず IntentStore 判定を通り、かつ TTL 判定に使う時刻は
+    // record 側（`runtime/key_pipeline.rs` の `hook::current_tick_ms()`）と
+    // 同じ時間軸に揃う。ここに合成 tick を持ち込むと、テストだけが通って
+    // 実機では上書きが沈黙する 2026-08-13 windows-build 型の欠陥に戻る。
+    let wrapper = extract_all_balanced_blocks(production, "fn effective_open(&self) -> bool");
+    assert_eq!(
+        wrapper.len(),
+        1,
+        "`fn effective_open(&self) -> bool` が {} 箇所あります（想定: 1）",
+        wrapper.len()
+    );
+    assert_eq!(
+        count_real_calls(wrapper[0], "effective_open_at("),
+        1,
+        "`ImeStateHub::effective_open()` が `effective_open_at()` へ委譲していません。"
+    );
+    assert_eq!(
+        count_real_calls(wrapper[0], "current_tick_ms("),
+        1,
+        "`ImeStateHub::effective_open()` が `hook::current_tick_ms()`（record 側と \
+         同じ時間軸）以外の時刻で IntentStore を評価しようとしています。"
     );
 }
 

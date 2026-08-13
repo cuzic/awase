@@ -483,8 +483,33 @@ impl ImeStateHub {
     /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
     /// 1 件も走らない**——Linux CI で毎回走る回帰は
     /// `tests/intent_store_effective_open.rs` にある。
+    ///
+    /// # 時刻の出どころ（追補4、2026-08-13 windows-build 失敗の原因）
+    ///
+    /// `IntentStore` の TTL 判定に使う「現在時刻」は
+    /// `crate::hook::current_tick_ms()`（`GetTickCount64`、= OS 起動からの経過 ms）
+    /// である。本番では `record_explicit_intent()` に渡る `tick_ms` も同じ
+    /// `current_tick_ms()` 由来（`runtime/key_pipeline.rs` の 3 箇所すべて）なので
+    /// 整合している。一方、`mod tests` が `TickMs(100)` のような**合成 tick** で
+    /// エントリを記録してから引数なしの本メソッドを呼ぶと、実機では
+    /// `GetTickCount64()` が数分〜数日を返すため `EXPLICIT_OFF_INTENT_TTL_MS`
+    /// (30 秒) を必ず超え、**IntentStore 上書きが一度も発火しない**。合成 tick を
+    /// 使うテストは必ず [`Self::effective_open_at`] を呼ぶこと。
     pub(crate) fn effective_open(&self) -> bool {
-        let now_ms = TickMs(crate::hook::current_tick_ms());
+        self.effective_open_at(TickMs(crate::hook::current_tick_ms()))
+    }
+
+    /// [`Self::effective_open`] の判定本体。`now_ms` を明示的に受け取る版。
+    ///
+    /// 本番の呼び出し口は引数なしの [`Self::effective_open`] 一択（壁時計を読む）。
+    /// 合成 tick でイベントを流すテストは、同じ時間軸を渡すためにこちらを使う。
+    ///
+    /// この形（時刻を注入する）が `state/mod.rs` の `TickMs` doc が定めた
+    /// 「state/ 層は `hook::current_tick_ms()` を直接呼ばず、runtime 層から
+    /// タイムスタンプを注入する」原則に沿う。`effective_open()` が壁時計を
+    /// 読んでいるのは、その 29 箇所ある runtime 側呼び出し元をまだ書き換えて
+    /// いないため（追補4 の残タスク、`docs/known-bugs.md` BUG-51 追補4 参照）。
+    pub(crate) fn effective_open_at(&self, now_ms: TickMs) -> bool {
         let shadow = self.shadow_model.effective_open();
         let decision = self.intent_store.resolve_effective_open(
             self.shadow_model.current_focus(),
@@ -937,24 +962,21 @@ impl ImeStateHub {
             // 記録時刻を比較し、キャッシュのほうが新しい（意図と同時刻を含む）場合
             // のみ無効化する。意図の方が新しい場合はエントリを残し、
             // `effective_open()` が IntentStore を優先することで新しい意図を守る。
+            //
+            // 判定本体は `IntentStore::invalidate_for_cache_restore()`（ungated、
+            // Linux CI で走る）にある。ここはログだけ（追補4）。
             if let Some(hwnd) = self.shadow_model.current_focus() {
-                let intent_recorded_ms: Option<u64> = self
-                    .intent_store
-                    .lookup(hwnd, tick_ms)
-                    .map(|i| i.recorded_at_ms.0);
-                match intent_recorded_ms {
-                    // 意図が無い/期限切れ → remove は無害な掃除（冪等）。
-                    None => self.intent_store.remove(hwnd),
-                    Some(intent_ms) if snap.recorded_ms >= intent_ms => {
-                        self.intent_store.remove(hwnd);
-                    }
-                    Some(intent_ms) => {
-                        log::info!(
-                            "[intent-store] cache restore より新しい明示意図を保持 \
-                             (cache recorded_ms={} < intent recorded_at_ms={intent_ms})",
-                            snap.recorded_ms,
-                        );
-                    }
+                if let crate::state::intent_store::CacheRestoreVerdict::Kept {
+                    intent_recorded_at_ms,
+                } =
+                    self.intent_store
+                        .invalidate_for_cache_restore(hwnd, snap.recorded_ms, tick_ms)
+                {
+                    log::info!(
+                        "[intent-store] cache restore より新しい明示意図を保持 \
+                         (cache recorded_ms={} < intent recorded_at_ms={intent_recorded_at_ms})",
+                        snap.recorded_ms,
+                    );
                 }
             }
             // キャッシュされた input_mode が ObservedEisu の場合、生の観測と同じ強さで
@@ -1678,7 +1700,7 @@ mod tests {
         // 上書きは発生しない（= 生の shadow_model の値がそのまま反映される）。
         dispatch_conv_open_inference(&mut ps, true, 100);
         assert_eq!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(100)),
             ps.ime.model().effective_open(),
             "ActivationSync は IntentStore に記録しないため、hub 版と生の \
              ImeModel 版の effective_open() は一致し続ける（IntentStore 由来の \
@@ -1891,6 +1913,13 @@ mod tests {
     /// `write_sync_key`/`kp_stage_post_decision` の `ExplicitUserAction` 分岐が
     /// 実機で行う「belief 書き込み + IntentStore 記録」の組を1関数にまとめた
     /// テストダブル。
+    ///
+    /// **注意（追補4）**: これで記録した `IntentStore` エントリを読むときは、
+    /// 必ず `ps.ime.effective_open_at(TickMs(..))` を使い、ここで渡した合成 tick と
+    /// 同じ時間軸で評価すること。引数なしの `effective_open()` は
+    /// `GetTickCount64()`（実機では数分〜数日）を読むため、合成 tick で記録した
+    /// エントリは常に TTL 超過となり、上書きが一度も発火しないまま「テストは
+    /// 通っている」状態になる（実際に 2026-08-13 の windows-build 失敗を招いた）。
     fn dispatch_and_record_explicit_intent(ps: &mut PlatformState, target: bool, tick_ms: u64) {
         ps.ime.dispatch_event(
             ImeEvent::UserImeSetIntent {
@@ -1913,7 +1942,10 @@ mod tests {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
-        assert!(!ps.ime.effective_open(), "明示 OFF 直後は false");
+        assert!(
+            !ps.ime.effective_open_at(TickMs(100)),
+            "明示 OFF 直後は false"
+        );
 
         // 同一対象への FocusChanged（例: スリープ復帰直後の同一アプリ再フォーカス）
         // が last_intent をクリアする。
@@ -1932,7 +1964,7 @@ mod tests {
              ConvOpenInference 1 件だけで true に反転する（BUG-63 と同型の機構）"
         );
         assert!(
-            !ps.ime.effective_open(),
+            !ps.ime.effective_open_at(TickMs(300)),
             "IntentStore 込みの PlatformState::effective_open() は同一対象なら \
              明示 OFF 意図を維持し、Engine の ctx.ime_on が誤って true に反転しない"
         );
@@ -1951,7 +1983,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 300);
 
         assert!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(300)),
             "別ウィンドウへの本物のフォーカス変更では、IntentStore は別対象の \
              エントリを漏らさず、その対象の観測（true）に従う"
         );
@@ -1968,13 +2000,13 @@ mod tests {
 
         let off_ttl = crate::tuning::EXPLICIT_OFF_INTENT_TTL_MS;
         // まだ TTL 内: IntentStore が効いて false を維持。
-        assert!(!ps.ime.effective_open());
+        assert!(!ps.ime.effective_open_at(TickMs(off_ttl)));
 
         // TTL 超過後に再度観測を読む（IntentStore.record は行われていないので
         // エントリ自体は動かない、現在時刻だけ進める）。
         dispatch_conv_open_inference(&mut ps, true, off_ttl + 1);
         assert!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(off_ttl + 1)),
             "OFF 意図が TTL を超えたら IntentStore は無期限固着せず、\
              観測ベースの effective_open() にフォールバックする"
         );
@@ -1987,12 +2019,12 @@ mod tests {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 0);
-        assert!(!ps.ime.effective_open());
+        assert!(!ps.ime.effective_open_at(TickMs(0)));
 
         ps.ime.apply_panic_reset(TickMs(100));
 
         assert!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(100)),
             "PanicReset は desired_open=true に戻し、IntentStore の古い OFF \
              エントリを無効化するため、effective_open() は true になる"
         );
@@ -2025,7 +2057,7 @@ mod tests {
         dispatch_conv_open_inference(&mut ps, true, 300);
 
         assert!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(300)),
             "record_explicit_intent を経由しない dispatch_event だけでは \
              IntentStore に何も残らないため、FocusChanged 後は通常どおり \
              観測（conv, true）にフォールバックする"
@@ -2043,7 +2075,7 @@ mod tests {
         dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
         dispatch_conv_open_inference(&mut ps, true, 300);
         assert!(
-            !ps.ime.effective_open(),
+            !ps.ime.effective_open_at(TickMs(300)),
             "write_sync_key の明示 OFF は IntentStore に記録され、\
              FocusChanged をまたいで維持される"
         );
@@ -2058,7 +2090,7 @@ mod tests {
         dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
         dispatch_conv_open_inference(&mut ps, true, 300);
         assert!(
-            !ps.ime.effective_open(),
+            !ps.ime.effective_open_at(TickMs(300)),
             "write_physical_key の明示 OFF は IntentStore に記録され、\
              FocusChanged をまたいで維持される"
         );
@@ -2083,7 +2115,7 @@ mod tests {
             TickMs(600),
         );
         assert!(
-            !ps.ime.effective_open(),
+            !ps.ime.effective_open_at(TickMs(600)),
             "キャッシュ(recorded_ms=100)より新しい明示意図(recorded_at_ms=500)は \
              cache restore で消えず、effective_open() は意図側(false)を返す"
         );
@@ -2107,7 +2139,7 @@ mod tests {
             TickMs(600),
         );
         assert!(
-            ps.ime.effective_open(),
+            ps.ime.effective_open_at(TickMs(600)),
             "キャッシュ(recorded_ms=500)より古い意図(recorded_at_ms=100)は \
              cache restore で無効化され、effective_open() はキャッシュ値(true)を返す"
         );
@@ -2126,13 +2158,13 @@ mod tests {
         // 同一対象への FocusChanged が last_intent と observations をクリアする
         // （safety-net の第一ガードが素通りする状態を作る）。
         dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
-        assert!(!ps.ime.effective_open());
+        assert!(!ps.ime.effective_open_at(TickMs(200)));
 
         ps.ime
             .reset_stale_ime_on_for_imm_broken(ImePolicyProfile::Imm32Unavailable, TickMs(300));
 
         assert!(
-            !ps.ime.effective_open(),
+            !ps.ime.effective_open_at(TickMs(300)),
             "IntentStore に有効な OFF エントリがある間は HeuristicDefault(ON) が \
              書かれず、effective_open() は false のまま"
         );

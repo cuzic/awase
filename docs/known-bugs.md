@@ -6343,6 +6343,75 @@ ON に戻らないこと、および `[intent-store] effective_open override` �
   `ImeStateHub` の `pub(crate)` メソッドで統合テストからは呼べないため、
   「観測の作り方」だけを本番と共有する形に留めている。
 
+### 追補4（2026-08-13、PR #60 の windows-build で初検出: `effective_open()` が壁時計を読むため、合成 tick で書かれた回帰テストが実機で 1 件も上書きを発火させない）
+
+**症状（CI）:** PR #60（BUG-51 追補 v3 を develop へ統合）の `windows-build` ジョブで
+`state::platform_state::tests::apply_hwnd_cache_restore_keeps_intent_newer_than_cache`
+が失敗した（GitHub Actions run 31673333355、`488 passed; 1 failed`、nextest の
+fail-fast により残り 161 件は未実行）。
+
+**原因（統合作業による退行ではない）:** `ImeStateHub::effective_open()` は
+`IntentStore` の TTL 判定に `crate::hook::current_tick_ms()`（`GetTickCount64` =
+OS 起動からの経過 ms）を読む。これは v1（`21ca84d1`）からずっとそうで、統合時の
+リファクタ（判定本体の `IntentStore::resolve_effective_open()` への切り出し）でも
+ADR-089 Phase A/B/C でも変わっていない。一方、`mod tests` は `TickMs(100)` 〜
+`TickMs(600)` という**合成 tick** でイベントを流し `IntentStore` にエントリを
+記録してから、引数なしの `effective_open()` を呼んでいた。実機の
+`GetTickCount64()` は数分〜数日を返すため `EXPLICIT_OFF_INTENT_TTL_MS`（30 秒）を
+常に超え、`lookup()` は必ず `None` を返す。つまり **IntentStore 上書きは実機の
+テストでは一度も発火していなかった**。
+
+- 失敗した `..._keeps_intent_newer_than_cache` は「意図（false）が勝つ」ことを
+  期待するため、上書きが沈黙すると `HwndCacheRestored{target:true}` が復元した
+  `desired_open=true` がそのまま出て落ちる。
+- 直前に PASS していた `..._discards_intent_older_than_cache` は期待値が
+  「キャッシュ値（true）」なので、**間違った理由で通っていた**（上書きが
+  効いていないのと、意図が正しく除去されたのとが同じ結果になる）。
+- 未実行だった `effective_open_survives_focus_change_via_intent_store` /
+  `..._entry_expires_after_ttl` / `write_sync_key_records_...` /
+  `reset_stale_ime_on_for_imm_broken_preserves_valid_intent_store_entry` も、
+  同じ理由で実機では落ちる状態だった（fail-fast で走らなかっただけ）。
+
+**本番の挙動は正しい**（この 1 点は確認済み）: `record_explicit_intent()` に渡る
+`tick_ms` は `runtime/key_pipeline.rs` の 3 箇所すべてで
+`hook::current_tick_ms()` 由来であり、記録側と評価側の時間軸は本番では一致する。
+壊れていたのはテストの前提だけで、実機の IntentStore 上書きは動く。
+
+**修正:**
+
+- `ImeStateHub::effective_open_at(&self, now_ms: TickMs)` を新設し、判定本体を
+  そちらへ移した。引数なしの `effective_open()` は
+  `TickMs(hook::current_tick_ms())` を渡して委譲するだけの薄いラッパー。
+  合成 tick でイベントを流すテストは `effective_open_at()` を使うよう全面的に
+  書き換えた（期待値は 1 つも変えていない）。
+- `apply_hwnd_cache_restore()` のタイムスタンプ比較ゲートを
+  `IntentStore::invalidate_for_cache_restore()`（ungated な `state/intent_store.rs`、
+  戻り値 `CacheRestoreVerdict::{NoIntent, Invalidated, Kept}`）へ切り出し、
+  `platform_state.rs` 側はログだけにした。**BUG-51 v3 の設計意図（キャッシュの
+  記録時刻が意図の記録時刻以上のときだけ無効化する）は不変**で、置き場所だけを
+  Linux でも走る側へ動かした。
+- Linux で毎回走る回帰を追加:
+  `tests/intent_store_effective_open.rs` に `cache_restore_keeps_intent_newer_than_cache`
+  /`cache_restore_discards_intent_older_than_cache`/`intent_recorded_on_a_different_clock_never_overrides`
+  （**今回の欠陥そのもの**——記録と評価で時間軸がずれると上書きが沈黙することを
+  固定する）、`state/intent_store.rs` の unit tests に境界条件 5 件
+  （同時刻はキャッシュ勝ち、TTL 超過は `NoIntent`、他対象は無傷 等）。
+- `tests/architecture_guard.rs::effective_open_is_wired_to_the_intent_store_decision`
+  を拡張し、(1) `resolve_effective_open(` が `effective_open_at()` の本体にあること、
+  (2) `effective_open()` が `effective_open_at()` へ 1 回だけ委譲し、
+  `current_tick_ms(` を 1 回だけ読む（＝ record 側と同じ時間軸で評価する）ことを
+  固定した。
+
+**残タスク（構造的な原因）:** `state/mod.rs` の `TickMs` の doc は
+「state/ 層は `hook::current_tick_ms()` を直接呼ばず、runtime 層から
+タイムスタンプを注入する」と定めているが、`effective_open()` はこれに違反して
+いる（runtime 側の呼び出し元が 29 箇所あり、今回の修正では書き換えていない）。
+恒久対策は 29 箇所を `effective_open_at(tick)` へ寄せて state/ から壁時計読みを
+無くすこと。より一般的な再発防止としては、`#[cfg(windows)]` な `mod tests` に
+新しいロジックを書く前に、**判定本体を ungated モジュールへ置いて
+`tests/*.rs` から Linux で走らせる**（BUG-41 で hook.rs の純粋関数を移設したのと
+同じパターン）。
+
 ## BUG-52: `PhysicalKeyDisposition::plan` が `VK_DBE_KATAKANA` の KeyDown を「shadow_toggle 不発なら安全」として素通しし、MS-IME が仕様通りカタカナへ切り替わる
 
 **症状:** WindowsTerminal（Cascadia、GJI/MS-IME、`AppImeProfile::TsfNative`）で

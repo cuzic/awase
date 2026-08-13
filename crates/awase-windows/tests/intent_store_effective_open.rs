@@ -35,7 +35,7 @@ use awase_windows::state::ime_event::{
     EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
-use awase_windows::state::intent_store::IntentStore;
+use awase_windows::state::intent_store::{CacheRestoreVerdict, IntentStore};
 use awase_windows::state::TickMs;
 
 const TARGET: HwndId = HwndId(0x1234);
@@ -250,4 +250,132 @@ fn unknown_focus_never_overrides() {
         store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(100));
     assert!(decision.value, "対象が分からなければ上書きしない");
     assert!(decision.intent.is_none());
+}
+
+// ── HwndCacheRestored × IntentStore（追補4 で Linux 実行可能化）──────────────
+//
+// `ImeStateHub::apply_hwnd_cache_restore()`（`#[cfg(windows)]`）が行う 2 手:
+//   (1) `ImeEvent::HwndCacheRestored { target }` を reduce（desired_open を復元）
+//   (2) `IntentStore::invalidate_for_cache_restore()` で明示意図の生殺を判定
+// のうち、(2) の判定本体は ungated なのでここで実際に走らせられる。
+// この組み合わせが Windows 側 unit test でしか固定されていなかったため、
+// 2026-08-13 の windows-build まで「合成 tick で記録したエントリを壁時計で
+// 読んでいて上書きが一度も発火しない」という欠陥が誰にも見えなかった。
+
+/// 修正2a (i): キャッシュより新しい明示意図は cache restore で消えず、
+/// `effective_open()` は意図側（OFF）を返す。
+/// （BUG-57 型: フォーカス滞在 100ms 未満だと退場時の cache 保存がスキップされ、
+/// 古いキャッシュが残ったまま復帰する）
+#[test]
+fn cache_restore_keeps_intent_newer_than_cache() {
+    let mut model = ImeModel::default();
+    let mut store = IntentStore::default();
+
+    reduce(&mut model, 1, 0, focus_changed(TARGET, 1));
+    explicit_off(&mut model, &mut store, 2, 500);
+
+    // キャッシュ復元（recorded_ms=100、明示 OFF より 400ms 古い）。
+    reduce(
+        &mut model,
+        3,
+        600,
+        ImeEvent::HwndCacheRestored { target: true },
+    );
+    let verdict = store.invalidate_for_cache_restore(TARGET, 100, TickMs(600));
+    assert_eq!(
+        verdict,
+        CacheRestoreVerdict::Kept {
+            intent_recorded_at_ms: 500
+        }
+    );
+
+    assert!(
+        model.effective_open(),
+        "前提: HwndCacheRestored は desired_open を true に復元する"
+    );
+    let decision =
+        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(600));
+    assert!(
+        !decision.value,
+        "キャッシュ(recorded_ms=100)より新しい明示意図(recorded_at_ms=500)は \
+         cache restore で消えず、effective_open() は意図側(false)を返す"
+    );
+}
+
+/// 修正2a (ii): キャッシュのほうが新しい（同時刻を含む）場合は意図を無効化し、
+/// 復元されたキャッシュ値を採用する（v1 と同じ「最新の決定が勝つ」原則）。
+#[test]
+fn cache_restore_discards_intent_older_than_cache() {
+    let mut model = ImeModel::default();
+    let mut store = IntentStore::default();
+
+    reduce(&mut model, 1, 0, focus_changed(TARGET, 1));
+    explicit_off(&mut model, &mut store, 2, 100);
+
+    reduce(
+        &mut model,
+        3,
+        600,
+        ImeEvent::HwndCacheRestored { target: true },
+    );
+    let verdict = store.invalidate_for_cache_restore(TARGET, 500, TickMs(600));
+    assert_eq!(
+        verdict,
+        CacheRestoreVerdict::Invalidated {
+            intent_recorded_at_ms: 100
+        }
+    );
+
+    let decision =
+        store.resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(600));
+    assert!(
+        decision.value,
+        "キャッシュ(recorded_ms=500)より古い意図(recorded_at_ms=100)は無効化され、\
+         effective_open() はキャッシュ値(true)を返す"
+    );
+    assert!(decision.intent.is_none(), "エントリ自体が削除されている");
+}
+
+/// 追補4 の回帰そのもの: `IntentStore` の TTL 判定に**エントリ記録時と別の
+/// 時間軸**（実機の `GetTickCount64()` 相当の大きな値）を渡すと、上書きは
+/// 一切発火しない。`ImeStateHub::effective_open()` が引数なしで壁時計を読む
+/// 一方、`mod tests` が合成 tick で記録していたのが 2026-08-13 windows-build
+/// 失敗の原因だった（Linux では 1 件もコンパイルされないため気づけなかった）。
+#[test]
+fn intent_recorded_on_a_different_clock_never_overrides() {
+    let mut model = ImeModel::default();
+    let mut store = IntentStore::default();
+
+    reduce(&mut model, 1, 0, focus_changed(TARGET, 1));
+    explicit_off(&mut model, &mut store, 2, 500);
+    // 同一対象への FocusChanged が last_intent を落とし、壊れた conv 観測 1 件で
+    // 生の belief が true へ反転する（BUG-51 追補の再現手順そのもの）。
+    reduce(&mut model, 3, 600, focus_changed(TARGET, 2));
+    reduce(&mut model, 4, 700, broken_conv_open_inference(2));
+    assert!(
+        model.effective_open(),
+        "前提: 生の belief は true に反転する"
+    );
+
+    // 同じ時間軸（合成 tick）で読めば上書きは効く。
+    assert!(
+        !store
+            .resolve_effective_open(model.current_focus(), model.effective_open(), TickMs(700))
+            .value
+    );
+
+    // 実機の GetTickCount64（OS 起動からの経過 ms）に相当する値で読むと、
+    // 30 秒 TTL を必ず超えてエントリは存在しないものとして扱われる。
+    let wall_clock_like = TickMs(10 * 60 * 1000);
+    assert!(
+        store
+            .resolve_effective_open(
+                model.current_focus(),
+                model.effective_open(),
+                wall_clock_like
+            )
+            .value,
+        "記録と評価で時間軸がずれると IntentStore 上書きは沈黙する——\
+         合成 tick でイベントを流すテストは effective_open_at() を使うこと"
+    );
 }
