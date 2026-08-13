@@ -476,36 +476,52 @@ impl ImeStateHub {
     /// ため、pre-mortem #2）。`reset_stale_ime_on_for_imm_broken`（BUG-16 系
     /// safety-net）は有効な `IntentStore` エントリがある間、`Low` confidence の
     /// 安全デフォルトをそもそも書かずに温存する（同、逆転防止）。
+    ///
+    /// 判定本体は `IntentStore::resolve_effective_open()`（`state/intent_store.rs`、
+    /// `#[cfg(windows)]` の**外**）にあり、本メソッドはそこに INFO ログの重複排除を
+    /// 被せるだけ。**このモジュールは `#[cfg(windows)]` なので、ここに書いた
+    /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
+    /// 1 件も走らない**——Linux CI で毎回走る回帰は
+    /// `tests/intent_store_effective_open.rs` にある。
     pub(crate) fn effective_open(&self) -> bool {
-        if let Some(hwnd) = self.shadow_model.current_focus() {
-            let now_ms = TickMs(crate::hook::current_tick_ms());
-            if let Some(intent) = self.intent_store.lookup(hwnd, now_ms) {
-                let shadow = self.shadow_model.effective_open();
-                if intent.open != shadow {
-                    if !self.intent_override_logged.get() {
-                        log::info!(
-                            "[intent-store] effective_open override 開始: hwnd={hwnd:?} \
-                             intent.open={} (source={:?}, age={}ms) shadow_model={shadow}",
-                            intent.open,
-                            intent.source,
-                            now_ms.0.saturating_sub(intent.recorded_at_ms.0),
-                        );
-                        self.intent_override_logged.set(true);
-                    }
-                } else if self.intent_override_logged.get() {
+        let now_ms = TickMs(crate::hook::current_tick_ms());
+        let shadow = self.shadow_model.effective_open();
+        let decision = self.intent_store.resolve_effective_open(
+            self.shadow_model.current_focus(),
+            shadow,
+            now_ms,
+        );
+        match decision.intent {
+            Some(intent) if decision.value != shadow => {
+                if !self.intent_override_logged.get() {
+                    log::info!(
+                        "[intent-store] effective_open override 開始: hwnd={:?} \
+                         intent.open={} (source={:?}, age={}ms) shadow_model={shadow}",
+                        intent.target,
+                        intent.open,
+                        intent.source,
+                        now_ms.0.saturating_sub(intent.recorded_at_ms.0),
+                    );
+                    self.intent_override_logged.set(true);
+                }
+            }
+            Some(_) => {
+                if self.intent_override_logged.get() {
                     log::info!("[intent-store] effective_open override 終了 (shadow が一致)");
                     self.intent_override_logged.set(false);
                 }
-                return intent.open;
+            }
+            None => {
+                if self.intent_override_logged.get() {
+                    log::info!(
+                        "[intent-store] effective_open override 終了 \
+                         (intent 消失/期限切れ/フォーカス変更)"
+                    );
+                    self.intent_override_logged.set(false);
+                }
             }
         }
-        if self.intent_override_logged.get() {
-            log::info!(
-                "[intent-store] effective_open override 終了 (intent 消失/期限切れ/フォーカス変更)"
-            );
-            self.intent_override_logged.set(false);
-        }
-        self.shadow_model.effective_open()
+        decision.value
     }
 
     /// フォーカス切替直後の settle 期間内（`settle_until` 未経過）かどうか。

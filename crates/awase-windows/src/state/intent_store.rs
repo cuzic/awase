@@ -51,6 +51,19 @@ pub struct RecordedTargetIntent {
     pub recorded_at_ms: TickMs,
 }
 
+/// [`IntentStore::resolve_effective_open`] の判定内訳。
+///
+/// `intent` が `Some` かつ `value != shadow_open` のときだけ「実際に
+/// 上書きした」ことになる（`ImeStateHub::effective_open()` の INFO ログは
+/// この遷移でのみ出す）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntentOverride {
+    /// 最終的な belief 値。
+    pub value: bool,
+    /// 上書きに使ったエントリ。`None` なら shadow をそのまま採用した。
+    pub intent: Option<RecordedTargetIntent>,
+}
+
 /// 対象ごとの明示意図を保持するストア。
 #[derive(Debug, Default, Clone)]
 pub struct IntentStore {
@@ -108,6 +121,42 @@ impl IntentStore {
             return None;
         }
         Some(entry)
+    }
+
+    /// belief（`ImeModel::effective_open()` の値）に明示意図の上書きを重ねる
+    /// **判定本体**（BUG-51 追補 v3）。`ImeStateHub::effective_open()` は
+    /// ログの重複排除を除きこのメソッドの結果をそのまま返す。
+    ///
+    /// `focus` が `None`（フォーカス未確定）か、その対象に有効なエントリが
+    /// 無ければ `shadow_open` をそのまま返す。
+    ///
+    /// # なぜ判定を `platform_state.rs` から切り出すのか
+    ///
+    /// `state/platform_state.rs` は `#[cfg(windows)]` であり、その中の
+    /// `mod tests`（`cfg(test)`）は Linux の `cargo test -p awase-windows` では
+    /// **1 件もコンパイルされない**（BUG-51 追補 v3 の回帰テスト群がまさに
+    /// それで、Windows クロスチェックでの型検査しか受けていなかった）。
+    /// 判定本体をこの ungated モジュールへ置くことで、
+    /// `tests/intent_store_effective_open.rs` が Linux CI で
+    /// 「壊れた `ConvOpenInference` 1 件だけでは `effective_open()` が反転
+    /// しない」ことを実際に走らせて固定できる。
+    #[must_use]
+    pub fn resolve_effective_open(
+        &self,
+        focus: Option<HwndId>,
+        shadow_open: bool,
+        now: TickMs,
+    ) -> IntentOverride {
+        focus.and_then(|target| self.lookup(target, now)).map_or(
+            IntentOverride {
+                value: shadow_open,
+                intent: None,
+            },
+            |intent| IntentOverride {
+                value: intent.open,
+                intent: Some(*intent),
+            },
+        )
     }
 
     /// 対象のエントリを削除する。
