@@ -188,6 +188,12 @@ pub struct Runtime {
     /// が与えていた下限と同一値）を実送信の下限間隔として使う。新規タイミング
     /// 定数は導入しない（`.claude/rules/tuning-constants.md` 準拠）。
     last_force_open_ms: Option<u64>,
+    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
+    /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
+    /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
+    /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
+    /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
+    dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1140,7 +1146,15 @@ impl Runtime {
             active_actuation: None,
             force_open_pending: None,
             last_force_open_ms: None,
+            dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
         }
+    }
+
+    /// `config.general.dbe_mode_key_policy` を反映する。起動時
+    /// （`bootstrap.rs`、`conv_mode.set_policy` と同じ post-construction 経路）と
+    /// `apply_config_update`（reload 時）の両方から呼ぶ。
+    pub(crate) fn set_dbe_mode_key_policy(&mut self, policy: awase::config::DbeModeKeyPolicy) {
+        self.dbe_mode_key_policy = policy;
     }
 
     /// トレイアイコンの HWND を返す。
@@ -1274,6 +1288,7 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );

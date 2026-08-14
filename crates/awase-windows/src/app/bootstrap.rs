@@ -463,6 +463,7 @@ pub(super) fn initialize_app(
             .output
             .conv_mode
             .set_policy(config.general.conv_mode_policy);
+        app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

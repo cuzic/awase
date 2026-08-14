@@ -1756,6 +1756,7 @@ impl Runtime {
             is_tsf_mode,
             f2_warmup_owned,
             active_ime_kind,
+            self.dbe_mode_key_policy,
         );
         if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
             let reason = if event.vk_code == crate::vk::VK_DBE_HIRAGANA {

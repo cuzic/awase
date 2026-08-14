@@ -39,6 +39,32 @@ pub enum ConvModePolicy {
     Force,
 }
 
+/// BUG-52 の「DBE レンジ」キーをパススルーしてよいかどうか（隠し設定、上級者向け）。
+///
+/// 物理 Hiragana/Katakana/Eisu キー等が生成する `VK_DBE_ALPHANUMERIC` /
+/// `VK_DBE_KATAKANA` / `VK_DBE_SBCSCHAR` / `VK_DBE_DBCSCHAR`
+/// （`crates/awase-windows/src/runtime/transport.rs`）が対象。
+///
+/// `VK_DBE_HIRAGANA`（かな入力キー本来の VK、F2 warmup 関連）はこの設定の
+/// 対象外（別分岐で処理される、`transport.rs` 参照）。
+///
+/// 素のパススルーは、MS-IME の既定キー割当て（無変換単独打鍵→かな切替相当）や
+/// OS 側キーボードレイアウト変換層の状態依存トグル（物理「IME ON」キーが
+/// `VK_DBE_HIRAGANA` の代わりに `VK_DBE_KATAKANA` を生成することがある）に
+/// 横取りされ、awase の管理外で IME モードが切り替わるリスクがある
+/// （2026-08-05 実機、`docs/known-bugs.md` BUG-52）。既定値は `Suppress`
+/// （常に抑制、現状維持）。[ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
+/// §D3.6 参照。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DbeModeKeyPolicy {
+    /// 常に抑制する（OS に一切送出しない、従来動作）。
+    #[default]
+    Suppress,
+    /// 素の VK をパススルーする（BUG-52 のリスクを引き受ける、上級者向け）。
+    Passthrough,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmMode {
@@ -220,6 +246,25 @@ pub struct GeneralConfig {
     /// （無変換単独タップは常に無視する）。無変換キー本来の機能（かな変換の
     /// 取り消し等）を Windows 全般で使いたい場合のみ `false` にする。
     pub muhenkan_solo_tap_always_suppress: bool,
+    /// 無変換単独タップを、素の `VK_NONCONVERT` の代わりに専用 Fn キーへ
+    /// 変換して送出する（隠し設定、上級者向け）。`VkCode::from_name` が受理する
+    /// VK 名（例: `"F21"`）を指定する。`None`（既定）なら無効で、
+    /// `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
+    /// による従来の抑制/パススルー判定がそのまま適用される。
+    ///
+    /// 有効な場合は既存の抑制/パススルー判定より**手前**で分岐し、composing の
+    /// 有無や `always_suppress` の値に関わらず常にこの Fn キーを送出する
+    /// （Google 日本語入力の `config1.db` にこの Fn キーを Composition/
+    /// Conversion 時の `SwitchKanaType` としてバインドしておくことで、GJI が
+    /// 自身の内部状態を見てかな形状をトグルする。awase 側は belief を持たず、
+    /// GJI 未対応の場面では単に何も起きない安全域のキーを送るだけ）。
+    /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
+    /// §D3.2 参照。
+    pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
+    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
+    /// `SBCSCHAR`/`DBCSCHAR`）を無条件抑制のままにするか、パススルーを
+    /// 許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
+    pub dbe_mode_key_policy: DbeModeKeyPolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
     ///
@@ -298,6 +343,8 @@ impl Default for GeneralConfig {
             space_thumb_shift_literal: true,
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
+            muhenkan_solo_tap_dedicated_fn_key: None,
+            dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
