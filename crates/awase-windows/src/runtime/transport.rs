@@ -176,12 +176,13 @@ impl PhysicalKeyDisposition {
             // 抜け道。`shadow_toggled`/KeyUp 側の既存 Suppress 条件は変更しない。
             let is_dbe_mode_key_down = matches!(dbe_mode_key_policy, DbeModeKeyPolicy::Suppress)
                 && matches!(
-                event.vk_code,
-                crate::vk::VK_DBE_ALPHANUMERIC
-                    | crate::vk::VK_DBE_KATAKANA
-                    | crate::vk::VK_DBE_SBCSCHAR
-                    | crate::vk::VK_DBE_DBCSCHAR
-            ) && event.event_type == KeyEventType::KeyDown;
+                    event.vk_code,
+                    crate::vk::VK_DBE_ALPHANUMERIC
+                        | crate::vk::VK_DBE_KATAKANA
+                        | crate::vk::VK_DBE_SBCSCHAR
+                        | crate::vk::VK_DBE_DBCSCHAR
+                )
+                && event.event_type == KeyEventType::KeyDown;
             ime_actuation_owned
                 && (shadow_toggled
                     || is_dbe_mode_key_down
@@ -541,6 +542,62 @@ mod plan_tests {
                     "{vk_label} / {label}: dbe_mode_key_policy=Passthrough なら \
                      shadow_toggle 不発の DBE レンジキーは Allow"
                 );
+            }
+        }
+    }
+
+    /// `dbe_mode_key_policy=Passthrough` でも、`shadow_toggled=true`（awase 自身が
+    /// 意図した切替）の KeyDown は引き続き Suppress される。Passthrough が緩めるのは
+    /// 「shadow_toggle 不発の DBE レンジキー」という BUG-52 の再現条件のみであり、
+    /// awase が能動的に actuate した場面まで緩めてはならない。
+    #[test]
+    fn dbe_mode_keydown_still_suppressed_when_shadow_toggled_even_with_passthrough() {
+        for (vk, action, vk_label) in dbe_mode_vks() {
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        profile,
+                        true,
+                        false,
+                        false,
+                        active_ime_kind,
+                        DbeModeKeyPolicy::Passthrough
+                    ),
+                    PhysicalKeyDisposition::Suppress,
+                    "{vk_label} / {label}: dbe_mode_key_policy=Passthrough でも \
+                     shadow_toggled=true の KeyDown は引き続き Suppress"
+                );
+            }
+        }
+    }
+
+    /// `dbe_mode_key_policy=Passthrough` でも、DBE レンジキーの KeyUp は
+    /// （`shadow_toggled` の値に関わらず）引き続き Suppress される
+    /// （`owned_actuation_keyup_always_suppressed` と同じ既存条件、Passthrough は
+    /// `is_dbe_mode_key_down` のゲートにのみ作用し KeyUp 側の条件は変更しない）。
+    #[test]
+    fn dbe_mode_keyup_still_suppressed_with_passthrough() {
+        for (vk, action, _vk_label) in dbe_mode_vks() {
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                for shadow_toggled in [false, true] {
+                    let ev = dbe_mode_event(vk, action, KeyEventType::KeyUp);
+                    assert_eq!(
+                        PhysicalKeyDisposition::plan(
+                            &ev,
+                            profile,
+                            shadow_toggled,
+                            false,
+                            false,
+                            active_ime_kind,
+                            DbeModeKeyPolicy::Passthrough
+                        ),
+                        PhysicalKeyDisposition::Suppress,
+                        "{label}: dbe_mode_key_policy=Passthrough でも DBE レンジ \
+                         KeyUp は shadow_toggled={shadow_toggled} に関わらず Suppress"
+                    );
+                }
             }
         }
     }

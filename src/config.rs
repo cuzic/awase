@@ -53,7 +53,16 @@ pub enum ConvModePolicy {
 /// `VK_DBE_HIRAGANA` の代わりに `VK_DBE_KATAKANA` を生成することがある）に
 /// 横取りされ、awase の管理外で IME モードが切り替わるリスクがある
 /// （2026-08-05 実機、`docs/known-bugs.md` BUG-52）。既定値は `Suppress`
-/// （常に抑制、現状維持）。[ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
+/// （常に抑制、現状維持）。
+///
+/// **`Passthrough` が実際に緩めるのは限定的**: `shadow_toggle` が発火した
+/// KeyDown（awase 自身が意図した切替）と全 KeyUp は `Passthrough` でも
+/// 引き続き Suppress される（`transport.rs::plan` 参照）。緩むのは
+/// `shadow_toggle` 不発の KeyDown（＝ IME が既に目的の状態にあるのに OS が
+/// 状態依存で `VK_DBE_*` を誤生成したケース、BUG-52 の再現条件そのもの）に
+/// 限られる。また `ImmCross` プロファイル（LINE/Qt 等）では `plan` が
+/// この判定に到達する前に別分岐で Suppress を決定するため、この設定は
+/// そもそも無視される。[ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
 /// §D3.6 参照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -247,10 +256,16 @@ pub struct GeneralConfig {
     /// 取り消し等）を Windows 全般で使いたい場合のみ `false` にする。
     pub muhenkan_solo_tap_always_suppress: bool,
     /// 無変換単独タップを、素の `VK_NONCONVERT` の代わりに専用 Fn キーへ
-    /// 変換して送出する（隠し設定、上級者向け）。`VkCode::from_name` が受理する
-    /// VK 名（例: `"F21"`）を指定する。`None`（既定）なら無効で、
+    /// 変換して送出する（隠し設定、上級者向け）。`None`（既定）なら無効で、
     /// `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
     /// による従来の抑制/パススルー判定がそのまま適用される。
+    ///
+    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F18"`、`"F18"` の
+    /// ような短縮形は不可）を指定する。`validate_dedicated_fn_key` が
+    /// `VK_F15`-`VK_F20`/`VK_F23`/`VK_F24`（物理キー非存在で安全、ADR-057）の
+    /// 範囲外を警告する（`VK_NONCONVERT`/`VK_IME_ON`/`VK_KANJI` 等の危険なキー、
+    /// および BUG-64 の config1.db 残骸バインドと衝突しうる
+    /// `VK_F13`/`VK_F14`/`VK_F21`/`VK_F22` を避けるため）。
     ///
     /// 有効な場合は既存の抑制/パススルー判定より**手前**で分岐し、composing の
     /// 有無や `always_suppress` の値に関わらず常にこの Fn キーを送出する
@@ -259,8 +274,6 @@ pub struct GeneralConfig {
     /// 自身の内部状態を見てかな形状をトグルする。awase 側は belief を持たず、
     /// GJI 未対応の場面では単に何も起きない安全域のキーを送るだけ）。
     ///
-    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F21"`、`"F21"` の
-    /// ような短縮形は不可）で指定する。
     /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
     /// §D3.2 参照。
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
@@ -587,6 +600,31 @@ impl AppConfig {
         }
     }
 
+    /// 専用 Fn キー変換（ADR-091 §D3.2）の設定値が安全な範囲か検証する。
+    ///
+    /// 範囲を絞らないと `VK_NONCONVERT`（`muhenkan_solo_tap_always_suppress` を
+    /// 迂回して素の無変換キーが常時飛ぶ、2026-08-07 実機の再発）や `VK_IME_ON`/
+    /// `VK_KANJI`（belief を経ない open 軸 actuation が engine 層に生える）を
+    /// 指定できてしまう。`VK_F13`/`VK_F14`/`VK_F21`/`VK_F22` は ADR-057 が
+    /// ターミナル漏れ等で危険と確認済み、または `docs/known-bugs.md` BUG-64 の
+    /// config1.db 残骸バインドと自己衝突しうるため対象から除外し、
+    /// `VK_F15`-`VK_F20`/`VK_F23`/`VK_F24`（物理キー非存在で安全、ADR-057）のみ許可する。
+    fn validate_dedicated_fn_key(g: &GeneralConfig, w: &mut Vec<String>) {
+        const SAFE_RANGE: &[&str] = &[
+            "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19", "VK_F20", "VK_F23", "VK_F24",
+        ];
+        if let Some(name) = &g.muhenkan_solo_tap_dedicated_fn_key {
+            if !SAFE_RANGE.contains(&name.as_str()) {
+                w.push(format!(
+                    "muhenkan_solo_tap_dedicated_fn_key = {name:?} は安全な範囲外です \
+                     （VK_F15〜VK_F20 / VK_F23 / VK_F24 のみ許可、ADR-091 §D3.2）。\
+                     VK_NONCONVERT 等の危険なキーや、BUG-64 の config1.db 残骸バインドと \
+                     衝突しうる VK_F13/VK_F14/VK_F21/VK_F22 は指定しないこと。"
+                ));
+            }
+        }
+    }
+
     fn validate_thumb_keys(g: &GeneralConfig, w: &mut Vec<String>) {
         if g.left_thumb_key == "Kana"
             || g.left_thumb_key == "VK_KANA"
@@ -709,6 +747,7 @@ impl AppConfig {
         Self::validate_thresholds(&mut general, &mut warnings);
         Self::validate_layouts(&mut general, &mut warnings);
         Self::validate_thumb_keys(&general, &mut warnings);
+        Self::validate_dedicated_fn_key(&general, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);

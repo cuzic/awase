@@ -29,6 +29,26 @@ use crate::runtime::executor::ImeApplyPair;
 use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
 
+/// `GeneralConfig::muhenkan_solo_tap_dedicated_fn_key`（ADR-091 §D3.2）を
+/// `VkCode` に解決する。`bootstrap.rs`（起動時）と `apply_config_update`
+/// （reload 時）の両方から呼ぶ。
+///
+/// `Some(name)` なのに `VkCode::from_name` が解決できない場合（誤字・
+/// `"F21"` のような短縮形など）は、専用 Fn キー変換が黙って無効化される
+/// （＝設定前と同じ挙動に留まる、安全側）が、原因が分かるよう警告ログを出す。
+pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
+    let name = name?;
+    let resolved = VkCode::from_name(name);
+    if resolved.is_none() {
+        log::warn!(
+            "[config] muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として \
+             解決できませんでした。専用 Fn キー変換は無効のままです \
+             （\"VK_F18\" のような完全な VK 名が必要、\"F18\" 等の短縮形は不可）"
+        );
+    }
+    resolved
+}
+
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。
@@ -1355,13 +1375,10 @@ impl Runtime {
                     always_suppress: config.general.henkan_solo_tap_always_suppress,
                 },
             );
-            self.engine.set_muhenkan_dedicated_fn_key(
-                config
-                    .general
-                    .muhenkan_solo_tap_dedicated_fn_key
-                    .as_deref()
-                    .and_then(VkCode::from_name),
-            );
+            self.engine
+                .set_muhenkan_solo_tap_dedicated_fn_key(resolve_dedicated_fn_key(
+                    config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
+                ));
             let enter_thumb_vk = [left, right]
                 .into_iter()
                 .find(|&vk| vk == crate::vk::VK_RETURN);

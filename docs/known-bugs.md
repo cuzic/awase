@@ -8053,13 +8053,19 @@ BUG-26（conv 観測1件での belief 復帰、本バグと同じ機構への依
 現行コードのどの経路からも意図して送信されていない（=バグではない）。
 
 **なぜ記録するか:** ADR-091 §D3.2 が新設する専用 Fn キー変換モードは
-**F21** を Composition/Conversion 時の `SwitchKanaType` バインド先として
-使う計画である。**上記の残骸バインドと同一のキー番号(F21)であり、
-自己衝突が最優先で検出すべきケースになる。** `awase-gji-config` の書き込み
-機能（衝突検出）を実装する際、この既知の残骸を「他アプリ由来の未知の
-衝突」と誤認せず、awase 自身の残骸として正しく上書き・除去できる設計に
-すること。次に `config1.db` 関連の作業をする際、この残骸バインドの存在
-自体に驚かないための記録でもある。
+当初 **F21** を Composition/Conversion 時の `SwitchKanaType` バインド先
+として想定していたが、**上記の残骸バインドと同一のキー番号であり自己衝突の
+リスクがある**ため、Phase 1（`GeneralConfig::muhenkan_solo_tap_dedicated_fn_key`
+の実装、2026-08-14）では `validate_dedicated_fn_key`（`src/config.rs`）が
+`VK_F13`/`VK_F14`/`VK_F21`/`VK_F22` を安全範囲から明示的に除外し、
+`VK_F15`-`VK_F20`/`VK_F23`/`VK_F24` のみを許可する設計にした。config1.db
+自動判定・書き込み機能（`awase-gji-config` の配線、衝突検出込み、ADR-091
+§4 Phase1-1/3）が実装されるまでは、ユーザーがこの隠し設定を手動で有効化
+する場合も F21/F22 を指定しないこと。`awase-gji-config` の書き込み機能を
+実装する際は、この既知の残骸を「他アプリ由来の未知の衝突」と誤認せず、
+awase 自身の残骸として正しく上書き・除去できる設計にすること。次に
+`config1.db` 関連の作業をする際、この残骸バインドの存在自体に驚かないため
+の記録でもある。
 
 **関連:** [ADR-091](adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
 §1.4、[ADR-057](adr/057-gji-keybind-f13f14-to-f21f22.md)（F13/F14 を避け

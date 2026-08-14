@@ -163,7 +163,7 @@ pub struct NicolaFsm {
     /// （composing の有無を問わない、belief 不要）。`GeneralConfig::
     /// muhenkan_solo_tap_dedicated_fn_key` に対応する。`None`（既定）なら無効で
     /// 従来通り。
-    muhenkan_dedicated_fn_key: Option<VkCode>,
+    muhenkan_solo_tap_dedicated_fn_key: Option<VkCode>,
 
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
@@ -245,7 +245,7 @@ impl NicolaFsm {
             muhenkan_vk: None,
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
-            muhenkan_dedicated_fn_key: None,
+            muhenkan_solo_tap_dedicated_fn_key: None,
             henkan_vk: None,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
@@ -473,8 +473,8 @@ impl NicolaFsm {
     /// `set_thumb_key_solo_tap_config` で設定した抑制/パススルー判定を経由せず
     /// 常に `vk` を送出する（`resolve_pending_thumb_as_single` 参照）。`None`
     /// （既定）なら無効。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
-    pub const fn set_muhenkan_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
-        self.muhenkan_dedicated_fn_key = vk;
+    pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
+        self.muhenkan_solo_tap_dedicated_fn_key = vk;
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -1176,7 +1176,7 @@ impl NicolaFsm {
         // 時の `SwitchKanaType` としてバインドしておくことで、GJI が自身の
         // 内部状態を見てかな形状をトグルする（awase 側は belief を持たない）。
         if self.muhenkan_vk == Some(vk_code) {
-            if let Some(fn_key) = self.muhenkan_dedicated_fn_key {
+            if let Some(fn_key) = self.muhenkan_solo_tap_dedicated_fn_key {
                 let action = KeyAction::Key(fn_key);
                 let output = OutputUpdate::record(scan_code, &action, None);
                 return ResolvedAction {

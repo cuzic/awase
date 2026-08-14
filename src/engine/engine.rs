@@ -116,8 +116,8 @@ impl Engine {
     /// 無変換単独タップの専用 Fn キー変換モード（ADR-091 §D3.2）を設定する。
     /// `GeneralConfig::muhenkan_solo_tap_dedicated_fn_key` を解決した VK コードを
     /// 渡す。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
-    pub const fn set_muhenkan_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
-        self.adapter.set_muhenkan_dedicated_fn_key(vk);
+    pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
+        self.adapter.set_muhenkan_solo_tap_dedicated_fn_key(vk);
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。

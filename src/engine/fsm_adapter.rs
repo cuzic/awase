@@ -122,8 +122,11 @@ impl FsmAdapter {
     }
 
     /// 無変換単独タップの専用 Fn キー変換モード（ADR-091 §D3.2）を設定する。
-    pub(super) const fn set_muhenkan_dedicated_fn_key(&mut self, vk: Option<crate::types::VkCode>) {
-        self.fsm.set_muhenkan_dedicated_fn_key(vk);
+    pub(super) const fn set_muhenkan_solo_tap_dedicated_fn_key(
+        &mut self,
+        vk: Option<crate::types::VkCode>,
+    ) {
+        self.fsm.set_muhenkan_solo_tap_dedicated_fn_key(vk);
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
