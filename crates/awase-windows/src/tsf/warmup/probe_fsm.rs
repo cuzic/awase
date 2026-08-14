@@ -1096,7 +1096,9 @@ mod tests {
         // テストは元々ロックを一切持たず、他ファイルのテストと無防備にTSF_OBSを
         // 奪い合っていた(2026-07-25、Windows実機での初回cargo test実行で
         // クロスファイルの汚染が判明)。
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -1191,7 +1193,9 @@ mod tests {
         use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
@@ -1261,7 +1265,9 @@ mod tests {
         use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);

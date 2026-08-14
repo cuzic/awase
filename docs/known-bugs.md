@@ -8076,3 +8076,48 @@ ADR-091 §4 Phase1-3）はまだ実装されていないため、**config1.db �
 F21/F22 へ移行した経緯）、[ADR-067](adr/067-vk-ime-on-off-migration.md)
 （config1.db バインド撤廃の経緯）。
 
+## BUG-65: `TSF_OBS_TEST_LOCK` 共有ロックが `.lock().unwrap()` で non-poison-resilient なため、1テストの真の失敗が無関係な10テストの偽陽性失敗を誘発する（テスト分離バグ、行4661 の再発・別軸）
+
+**症状:** 2026-08-14、ADR-091 Phase 1（T4-T10）ブランチを実機 Windows で
+`cargo test -p awase -p awase-windows -p awase-gji-config` 実行したところ、
+私（Claude）が一切触れていない `tsf::probe`・`tsf::warmup::literal_detect_fsm`・
+`tsf::warmup::probe_fsm` の3ファイルにまたがって計10件の `PoisonError` 起因の
+テスト失敗が発生した（`cargo test` 標準の並列実行下）。
+
+**真因:** `tsf::probe::tests::probe_fallback_waits_total_max_ms`
+（`probe.rs:776`、`GetTickCount64`/`Instant::now()` 実時間依存のフォール
+バック待機テスト）が実機ハードウェア上でのみ顕在化するタイミング非決定性
+（同ファイル内 `check_now_returns_stale_confirm_when_write_evidence_predates_epoch`
+のコメントが2026-07-25に同種の非決定性を既に記録済み）により
+`assert!(elapsed >= 60, "fallback too short: {elapsed}ms")` で真に失敗し、
+`TSF_OBS_TEST_LOCK.lock().unwrap()` を保持したままパニックした。
+
+`TSF_OBS_TEST_LOCK` は行4661（2026-07-25、`TSF_OBS` 保護のためのロック統一）
+以降、`observer.rs`/`probe.rs`/`literal_detect_fsm.rs`/`probe_fsm.rs` の
+4ファイルで正しく同一インスタンスを共有している（統一自体は機能している）。
+しかし全23箇所の取得コードが素の `.lock().unwrap()` だったため、上記1件の
+真の失敗がロックを **poison** させ、その後 `cargo test` が同一プロセス内で
+実行する他の22テストのうち10件が `.lock().unwrap()` の時点で
+`PoisonError` を受けて連鎖的に失敗した（実際のテスト内容とは無関係な
+偽陽性）。`tsf::warmup::ms_ime_ready_coro` は独自の別ロック
+（`GATE_TEST_LOCK`、`OUTPUT_GATE` 保護用）を使っており、かつ
+`.lock().unwrap_or_else(std::sync::PoisonError::into_inner)` で
+poison-resilient に書かれていたため、この連鎖には巻き込まれなかった
+（が、同テストの assertion 自体は別途、真に失敗していた。原因未確定・
+本バグの対象外）。
+
+**修正:** `TSF_OBS_TEST_LOCK`/`VETO_TEST_LOCK` を取得する全23箇所
+（`observer.rs` 4箇所、`probe.rs` 12箇所、`literal_detect_fsm.rs` 4箇所、
+`probe_fsm.rs` 3箇所）を `ms_ime_ready_coro.rs::GATE_TEST_LOCK` と同じ
+`.lock().unwrap_or_else(std::sync::PoisonError::into_inner)` に統一した。
+各テストは取得直後に自分が使うグローバル状態（`TSF_OBS` の関連フィールド）
+を明示的に `store()`/`reset_*()` で上書きしてから assert する作りのため、
+前のテストが poison させた状態を引き継いでも安全（既存コードの前提を
+変えていない）。`probe_fallback_waits_total_max_ms` 自体の実時間非決定性
+（真因）は未修正のまま残っている——次にこのテストが再度真に失敗しても、
+今回のような無関係テストへの連鎖は起きなくなるが、このテスト自体の
+flaky性を根治するものではない。
+
+**関連:** 行4661（`TSF_OBS_TEST_LOCK` 統一の初出）、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
+

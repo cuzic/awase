@@ -774,7 +774,9 @@ mod tests {
     /// GJI モニター不可のとき、total_max_ms ぶん待機して返る（フォールバックパス）
     #[test]
     fn probe_fallback_waits_total_max_ms() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
         let start = Instant::now();
@@ -791,7 +793,9 @@ mod tests {
     /// GJI モニター有効・warmup 後にすでに 80ms+ 静止していれば即 settled
     #[test]
     fn probe_phase2_detects_already_settled() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now_ms = crate::hook::current_tick_ms();
 
         // warmup 200ms 前、GJI 最終 I/O は warmup の 50ms 後（= 150ms 前）
@@ -817,7 +821,9 @@ mod tests {
     /// phase1: min_ms が経過するまで probe は I/O 観測を信頼しない
     #[test]
     fn probe_phase1_min_wait_respected() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now_ms = crate::hook::current_tick_ms();
 
         // GJI は settled 状態だが min_ms=80 のため phase1 で 80ms 待機する
@@ -843,7 +849,9 @@ mod tests {
     /// warmup 後に GJI I/O が発生しない場合は min_ms 経過後に即解放（WezTerm 等の正常ケース）
     #[test]
     fn probe_phase2_ready_immediately_when_no_io_after_warmup() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now_ms = crate::hook::current_tick_ms();
 
         // GJI I/O は warmup より前 → warmup 後に I/O なし → 既に正常状態 → min_ms 経過で即解放
@@ -871,7 +879,9 @@ mod tests {
     /// 不要に settle 予算(1500/2000ms)を拡張してしまう（回帰防止）。
     #[test]
     fn confirm_key_cold_mark_resets_idle_instead_of_accumulating() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let state = CompositionState::new();
 
         // 実際のローマ字送信 (send_keys 相当) を模擬した baseline。
@@ -910,7 +920,9 @@ mod tests {
     /// 確認した（docs/known-bugs.md BUG-27 追補5）。
     #[test]
     fn check_now_confirms_via_candidate_show_when_write_bytes_below_threshold() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(1_000, SeqCst);
 
         let detector = LiteralDetector::new_with_pre_send_baseline(1_000, true);
@@ -935,7 +947,9 @@ mod tests {
     /// `SuspectedLiteral` を返すことを確認する（本物の literal 化検出は壊さない）。
     #[test]
     fn check_now_still_detects_suspected_literal_when_neither_signal_fires() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(2_000, SeqCst);
         let baseline_show = TSF_OBS.gji_candidate_show.baseline();
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
@@ -960,7 +974,9 @@ mod tests {
     /// 裏付けられていれば、従来通り即座に `CompositionConfirmed` を返す。
     #[test]
     fn check_now_confirms_when_write_evidence_is_fresh() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(4_000, SeqCst);
         let detector = LiteralDetector::new_with_pre_send_baseline(4_000, true);
         let now_ms = crate::hook::current_tick_ms();
@@ -981,7 +997,9 @@ mod tests {
     /// 実機トレースが示す誤帰属パターンの再発防止）。
     #[test]
     fn check_now_returns_stale_confirm_when_write_evidence_predates_epoch() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
         let detector = LiteralDetector::new_with_pre_send_baseline(5_000, true); // epoch > stale_write_ms
                                                                                  // detector構築時刻(epoch_send_ms)より確実に前のwrite根拠を模擬する。
@@ -1012,7 +1030,9 @@ mod tests {
     /// `gji_last_write_ms` が追いつけば `CompositionConfirmed` に確定する。
     #[test]
     fn check_now_holds_show_only_confirm_then_resolves_fresh_within_grace() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(6_000, SeqCst);
         let epoch_ms = crate::hook::current_tick_ms();
         TSF_OBS
@@ -1045,7 +1065,9 @@ mod tests {
     /// `StaleConfirm` として確定する。
     #[test]
     fn check_now_show_only_confirm_becomes_stale_after_grace_expires() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_write_bytes.store(7_000, SeqCst);
         let epoch_ms = crate::hook::current_tick_ms();
         TSF_OBS
@@ -1076,7 +1098,9 @@ mod tests {
     /// 温床にならないようにする）。
     #[test]
     fn check_now_fencing_inactive_when_last_write_ms_unobserved() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
         TSF_OBS.gji_write_bytes.store(8_000, SeqCst);
 
