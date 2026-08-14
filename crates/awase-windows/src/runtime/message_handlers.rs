@@ -383,6 +383,17 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
         crate::msime_key_assignment::check_and_warn();
     }
+
+    // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）を
+    // 自動判定する（同§D3.1項目1）。MS-IME 割当てチェックと対称に、この
+    // 「IME 種別に依存する副作用の単一の合流点」に置く。
+    crate::gji_charset_autodetect::sync_gji_charset_autodetect(
+        app,
+        matches!(
+            kind,
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        ),
+    );
 }
 
 /// WM_IME_KIND_CHANGED ハンドラ

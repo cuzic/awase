@@ -215,6 +215,13 @@ pub struct Runtime {
     /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
     /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
     dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
+    /// `config.general.muhenkan_solo_tap_dedicated_fn_key` がユーザーにより
+    /// 明示設定されているか（`Some`）。`true` の間は
+    /// `state::gji_charset_autodetect`（ADR-091 §D3.1項目1）が専用Fnキー
+    /// 変換モードに一切介入しない（手動設定が常に優先、GJI 検出時の自動
+    /// 有効化・離脱時の自動解除いずれも行わない）。`apply_config_update`/
+    /// 起動時に反映される。
+    muhenkan_dedicated_fn_key_is_manual: bool,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1168,6 +1175,7 @@ impl Runtime {
             force_open_pending: None,
             last_force_open_ms: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
+            muhenkan_dedicated_fn_key_is_manual: false,
         }
     }
 
@@ -1176,6 +1184,36 @@ impl Runtime {
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_dbe_mode_key_policy(&mut self, policy: awase::config::DbeModeKeyPolicy) {
         self.dbe_mode_key_policy = policy;
+    }
+
+    /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
+    /// を反映する。`is_manual` は `config.general.muhenkan_solo_tap_dedicated_fn_key`
+    /// が `Some` かどうか（`state::gji_charset_autodetect` が介入してよいかの
+    /// ゲート）。起動時（`bootstrap.rs`）と `apply_config_update`（reload 時）の
+    /// 両方から呼ぶ。
+    pub(crate) fn set_muhenkan_dedicated_fn_key_config(
+        &mut self,
+        vk: Option<VkCode>,
+        is_manual: bool,
+    ) {
+        self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
+        self.muhenkan_dedicated_fn_key_is_manual = is_manual;
+    }
+
+    /// `state::gji_charset_autodetect` が GJI 検出/離脱時に専用Fnキー変換モードを
+    /// 自動的に有効化/解除するための入口。手動設定（`muhenkan_dedicated_fn_key_is_manual`）
+    /// が有効な間は何もしない（手動設定が常に優先）。
+    pub(crate) fn set_muhenkan_dedicated_fn_key_auto(&mut self, vk: Option<VkCode>) {
+        if self.muhenkan_dedicated_fn_key_is_manual {
+            return;
+        }
+        self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
+    }
+
+    /// `state::gji_charset_autodetect` が手動設定かどうかを判定するための読み取り専用アクセサ。
+    #[must_use]
+    pub(crate) const fn muhenkan_dedicated_fn_key_is_manual(&self) -> bool {
+        self.muhenkan_dedicated_fn_key_is_manual
     }
 
     /// トレイアイコンの HWND を返す。
@@ -1375,10 +1413,11 @@ impl Runtime {
                     always_suppress: config.general.henkan_solo_tap_always_suppress,
                 },
             );
-            self.engine
-                .set_muhenkan_solo_tap_dedicated_fn_key(resolve_dedicated_fn_key(
-                    config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
-                ));
+            let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
+            self.set_muhenkan_dedicated_fn_key_config(
+                resolve_dedicated_fn_key(manual_fn_key),
+                manual_fn_key.is_some(),
+            );
             let enter_thumb_vk = [left, right]
                 .into_iter()
                 .find(|&vk| vk == crate::vk::VK_RETURN);

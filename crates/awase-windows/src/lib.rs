@@ -22,6 +22,7 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
+pub mod gji_charset_autodetect;
 pub mod msime_key_assignment;
 pub mod scanmap;
 pub mod single_thread_cell;

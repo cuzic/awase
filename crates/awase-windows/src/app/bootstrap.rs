@@ -464,6 +464,11 @@ pub(super) fn initialize_app(
             .conv_mode
             .set_policy(config.general.conv_mode_policy);
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
+        let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
+        app.set_muhenkan_dedicated_fn_key_config(
+            crate::runtime::resolve_dedicated_fn_key(manual_fn_key),
+            manual_fn_key.is_some(),
+        );
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
@@ -851,9 +856,6 @@ pub(super) fn run_all() -> Result<()> {
             always_suppress: config.general.henkan_solo_tap_always_suppress,
         },
     );
-    engine.set_muhenkan_solo_tap_dedicated_fn_key(crate::runtime::resolve_dedicated_fn_key(
-        config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
-    ));
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
     // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal

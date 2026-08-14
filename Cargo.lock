@@ -551,6 +551,7 @@ version = "1.14.0"
 dependencies = [
  "anyhow",
  "awase",
+ "awase-gji-config",
  "env_logger",
  "itertools",
  "log",
