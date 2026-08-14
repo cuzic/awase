@@ -12,6 +12,8 @@ pub(crate) const VK_A: VkCode = VkCode(0x41);
 pub(crate) const VK_S: VkCode = VkCode(0x53);
 pub(crate) const VK_NONCONVERT: VkCode = VkCode(0x1D);
 pub(crate) const VK_CONVERT: VkCode = VkCode(0x1C);
+/// ADR-091 §D3.2 の専用 Fn キー変換モードのテスト用（実際の値は `"VK_F21"` に対応）。
+pub(crate) const VK_F21: VkCode = VkCode(0x84);
 
 // ── スキャンコード ──
 

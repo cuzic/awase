@@ -566,6 +566,56 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     );
 }
 
+/// ADR-091 §D3.2: `set_muhenkan_dedicated_fn_key(Some(vk))` が設定されている場合、
+/// `muhenkan_solo_tap_always_suppress=true`（既定値）による抑制より優先され、
+/// composing=false でも素の VK_NONCONVERT ではなく専用 Fn キーが送出される。
+#[test]
+fn test_muhenkan_dedicated_fn_key_sends_fn_key_instead_of_raw_vk() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_muhenkan_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "専用 Fn キーモードが有効なら composing=false でも VK_F21 を送出すべき"
+    );
+    assert!(
+        !result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "専用 Fn キーモードが有効なら素の VK_NONCONVERT は送出してはならない"
+    );
+}
+
+/// ADR-091 §D3.2/C1: 専用 Fn キーモードは `muhenkan_solo_tap_always_suppress` の
+/// 早期 return より手前で分岐するため、composing=true・always_suppress=true
+/// （通常なら completely suppress される条件）でも Fn キーが送出される。
+#[test]
+fn test_muhenkan_dedicated_fn_key_overrides_always_suppress_while_composing() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_muhenkan_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "専用 Fn キーモードは always_suppress=true・composing=true でも \
+         既存の抑制判定より優先されるべき"
+    );
+}
+
 /// `henkan_solo_tap_always_suppress=true`（既定値）なら、composing=false でも
 /// 変換単独タップは一切送出されない。無変換と対称のガード（BUG-58 関連調査で発覚:
 /// 従来 変換キーにはこの抑制手段が無く、composing していない場面では常に

@@ -851,6 +851,13 @@ pub(super) fn run_all() -> Result<()> {
             always_suppress: config.general.henkan_solo_tap_always_suppress,
         },
     );
+    engine.set_muhenkan_dedicated_fn_key(
+        config
+            .general
+            .muhenkan_solo_tap_dedicated_fn_key
+            .as_deref()
+            .and_then(VkCode::from_name),
+    );
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
     // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal

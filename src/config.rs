@@ -258,6 +258,9 @@ pub struct GeneralConfig {
     /// Conversion 時の `SwitchKanaType` としてバインドしておくことで、GJI が
     /// 自身の内部状態を見てかな形状をトグルする。awase 側は belief を持たず、
     /// GJI 未対応の場面では単に何も起きない安全域のキーを送るだけ）。
+    ///
+    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F21"`、`"F21"` の
+    /// ような短縮形は不可）で指定する。
     /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
     /// §D3.2 参照。
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,

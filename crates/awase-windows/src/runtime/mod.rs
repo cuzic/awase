@@ -26,6 +26,7 @@ use crate::focus::cache::DetectionSource;
 use crate::focus::classifier::InjectionHint;
 use crate::platform::WindowsPlatform;
 use crate::runtime::executor::ImeApplyPair;
+use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
@@ -1353,6 +1354,13 @@ impl Runtime {
                     ignore_composing_guard: config.general.henkan_solo_tap_ignore_composing_guard,
                     always_suppress: config.general.henkan_solo_tap_always_suppress,
                 },
+            );
+            self.engine.set_muhenkan_dedicated_fn_key(
+                config
+                    .general
+                    .muhenkan_solo_tap_dedicated_fn_key
+                    .as_deref()
+                    .and_then(VkCode::from_name),
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()
