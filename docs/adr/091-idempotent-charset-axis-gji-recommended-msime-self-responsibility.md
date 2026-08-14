@@ -1,21 +1,30 @@
-# ADR-091: 冪等キー中心のIME制御 — open/romaji/charset 3軸の結論、GJI推奨・Muhenkan用F21-F23設計、MS-IME自己責任ポリシー
+# ADR-091: 冪等キー中心のIME制御 — open/romaji/charset 3軸の結論、GJI推奨・かな形状は設定+ベストエフォート助言(新規beliefなし)、MS-IME自己責任ポリシー
 
 ## ステータス
 
-**決定・実装未着手。charset軸(GJI)のみ実機でconv bits直接読み取りによる検証済み。**
+**決定・実装未着手。charset軸のGJI SendInput到達性は実機でconv bits直接読み取りによる検証済み
+(ただし、その検証を経て採用した「完全パススルー」版の`CharsetSlot`は不採用となり、
+「ユーザー設定+ベストエフォート助言」方式に再収束した。§3参照)。**
 
 本ADRは、awaseのIME状態制御の設計思想を「awase自身がIME状態を能動的にトグル管理する」から
 「基本的にキーはパススルーし、IME状態を動かすキーは冪等(絶対指定)キーだけを使う」へ転換する、
 という2026-08-13のセッションでの方針転換を記録する。open/romaji軸は既存の対応を追認するのみ、
 charset軸が本ADRの新規決定の中心である。
 
-**本ADRは、同セッション内で先行して5ラウンドのFable×Opus pre-mortemを経た`CharsetSlot`設計
-(物理DBEキー押下をbeliefに基づき冪等に再発行する機構、当初MS-IME向けとして設計)の対象を
-GJI向けへ付け替える。** MS-IMEはcomposition中判定が不能なため安全な変換ができず、
-GJIはF21-F23という実証済みの変換先とstatus別解釈の委譲により判定不要で成立する
-(当初F15-F19を計画したが、実機でのターミナル漏洩不具合を受けF21-F23へ変更。
-Eisu対応は範囲縮小のため見送った、決定3参照)。
-経緯は§4に記す。
+**charset軸の結論は、検討の過程で複数回反転している。** 当初は物理DBEキー押下を
+beliefに基づき冪等に再発行する`CharsetSlot`という機構を5ラウンドのFable×Opus pre-mortem
+で設計し(MS-IME向け→GJI向けへ付け替え、F15-F19→F21-F23への変更を経た)、実機検証まで
+行った(§1.4)。その後、GJIのMS-IME互換プリセットが物理`Muhenkan`1キーで
+belief不要の自己完結サイクルを既にネイティブ提供していると判明し、「かな形状は
+awaseが一切感知・強制・観測しない、完全パススルー」へ一度反転した。しかしこの
+「完全パススルー」自体が、既存の2つの実機インシデント対応保護機構
+(`muhenkan_solo_tap_always_suppress`、BUG-52のDBEレンジSuppress)と正面衝突する
+ことが第2回Opusレビューで判明し、**最終的に「抑止/パススルーをユーザー設定で選べ、
+awaseはconfig1.db/レジストリの読み取りに基づきベストエフォートで安全な構成を助言・
+支援する」という3層構成に再収束した(決定3 §D3.1)。** かな形状(3値)について
+新しいbeliefを持たないという結論自体は一貫して維持されている。理由は決定3(§2)と
+§3に記す。この一連の反転を、当初の設計・実機検証の記録ごと本ADRに残す
+(このリポジトリの`.claude/rules/experiment-logging.md`が定める「反転の記録」規約に倣う)。
 
 ---
 
@@ -86,14 +95,22 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
    | F19 | CompositionModeHalfAlphanumeric | 16 | ROMAN | ✅ |
 
    5モード全てで、テキストの見た目ではなく`ImmGetConversionStatus`という権威あるAPIの
-   読み取り値が期待通りに一致した。**F15-F19 + config1.db `CompositionMode*`バインドは、
-   GJIのcharset軸を冪等に絶対制御する、実証済みの機構である。**
+   読み取り値が期待通りに一致した。**注意: F15(Hiragana)の期待ビットのみ`ROMAN`が
+   含まれていない(9=NATIVE|FULLSHAPE、他4行は16=ROMANを含む)。これが
+   `CompositionModeHiragana`コマンド自体の意図した挙動なのか、それとも当時の
+   期待値設定・観測いずれかの誤りなのか、この記録の時点では未解明のまま残っている。
+   本ADRの最終決定(決定3)はこの検証結果に依存しないため実害は無いが、この
+   `gji_composition_probe.rs`のデータを将来再利用する場合は先に再測定して
+   確認すること。**
+
+   F15-F19 + config1.db `CompositionMode*`バインドは、
+   GJIのcharset軸を冪等に絶対制御する、実証済みの機構である。
 
    なお候補ウィンドウ表示中(henkan)シナリオでは、F15押下後にEnterで確定した結果に
    予期しない漢字変換("居合"等)が混入する現象が観測された。プローブ側のシナリオ間で
    IME未確定compositionのキャンセルを行っていなかったことによる測定汚染の疑いが強く、
    核心の結論(conversion_modeの直接一致)には影響しないが、変換中の詳細な挙動を厳密に
-   詰めるには追試が要る(§5 未解決参照)。
+   詰めるには追試が要る(§4 Phase 2参照)。
 
    **注記**: この検証は「F15-F19にCompositionMode*を全状態で統一バインドする」という
    単純な構成で行い、SendInputでF-keyを送ればGJIのconv bitsを確実に動かせるという
@@ -102,10 +119,20 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
    絶対指定/Composition=ネイティブトグル」の二段構成・キー番号もF21-F23へ
    変更した(§3.2)。本節の検証はF15-F19という危険な番号を使った点を除けば、
    基礎機構(SendInputの到達性・`ImmGetConversionStatus`での確認可能性)の
-   証明としては有効であり、§3.2の二段構成・新番号での実機検証はPhase 2(§5)で
-   改めて行う。
+   証明としては有効であり、当時計画していたPhase 2の新番号での実機検証は
+   §3.2の反転により不要になった(§3参照)。
 
-5. **MS-IMEの物理DBEキー再発行機構(`CharsetSlot`)は撤回**: 詳細は§4。
+5. **`CharsetSlot`は、MS-IME向け→GJI向けへの付け替えを経たのち、最終的に不採用**:
+   詳細は§3。上記1-4で実証したのは「SendInputでGJIのcharset軸を絶対指定で確実に
+   動かせる」という**機構としての実現可能性**であり、この事実そのものは有効なまま
+   残る。しかし、この機構を実際に採用するかどうかの検討で、(a) mozc本家の
+   MS-IME互換プリセットが物理`Muhenkan`1キーに対し、awase側のbeliefを一切使わない
+   自己完結的な3状態サイクルを既にネイティブで提供していること、(b) このかな形状の
+   値を消費するawase側の機能が`state/conv_mode.rs::Charset`(トレイアイコン表示のみ)
+   に限られ、機能的な判断には使われていないこと、(c) NICOLAエンジンON中は既存の
+   ADR-084/086 force-writeがconv modeをRomajiHiraganaへ強制するためこの軸自体が
+   実質作用しないこと、の3点が判明し、`CharsetSlot`を作る積極的な理由が無いと
+   結論した。決定3参照。
 
 ---
 
@@ -120,187 +147,227 @@ BUG-61(`docs/known-bugs.md`)で、Win32にはローマ字入力⇔JISかな入�
 
 §1.3の通り。JISかな入力方式は非サポート。物理Alt+かなは予防的swallowを維持する。
 
-### 決定3(charset軸): GJIを推奨IMEとし、config1.dbバインドで制御する。Muhenkan単独打鍵のみ、3個の新設Fnキーで「belief強制」と「composition中のネイティブ挙動尊重」を両立する。
+### 決定3(charset軸・GJI): config1.dbの自動判定を主UXとし、必要な判断のみポップアップで問う。持続的なユーザー設定は前面に出さない。beliefは持たない。
 
-#### 3.1 スコープ: Muhenkan単独打鍵のみに絞る(Eisuは対象外)
+#### D3.1 結論
 
-**当初Muhenkan相当3キー+Eisu相当2キーの計5キー(F15-F19)を計画していたが、
-実機でF15-F19使用時にターミナルアプリ(WezTerm等)へ不審なエスケープ
-シーケンスが残留する不具合が判明したため、範囲を縮小した。**
+**GJIのcharset軸(かな形状・かな⇔英数境界)について、awaseが特定の状態を予測して
+belief化することはしない。** また、**設定画面の煩雑化を避けるため、ユーザーが
+手動で選ぶ持続的な設定を主UXにはしない。** 代わりに、config1.db/レジストリの
+読み取りに基づく自動判定を主とし、ユーザーへの問いかけは「今すぐ行うべき判断が
+あるとき」のポップアップに限定する:
 
-原因は当初の想定違いだった。ADR-057は「F15〜F20も物理キーが存在しないが」
-としつつ、実際には**F15-F20を意図的に避けてF21/F22を選んだ**——
-「より高い番号ほど実使用例(≒ターミナルのエスケープシーケンス割当て)が
-少ない」という経験則に基づき、実測で問題が無いことを確認できたのはF21/F22
-だけだった(ADR-057:81-85)。F15-F19を安全域として扱ったのは、この経緯を
-見落とした誤りだった。
+1. **自動判定(主UX)**: GJI検出時、awaseはconfig1.db(`session_keymap`/
+   `custom_keymap_table`、`awase-gji-config`の既存読み取り機構)を確認する。
+   §D3.2の専用Fnキーバインドが既に存在すれば、**ユーザーの手動設定なしに**
+   「専用Fnキー変換」モードを自動的に有効化する(Composition中のかな形状トグルが
+   使えるようになる)。存在しなければ既定の「抑止」のまま据え置く。
+2. **ポップアップ(判断が必要なときのみ)**:
+   - **GJI、Fnキー未設定**: 無変換単独打鍵がGJI既定の「文字種変更」動作のまま
+     素のパススルーに(手動で)設定されており、かつ§D3.2のFnキー設定が
+     まだ完了していない場合、設定を促すポップアップを出す(新規、後述)。
+   - **MS-IME、既定のかな切替のままパススルー**: 決定4のとおり、GJI利用を
+     推奨するポップアップを出す。
+3. **設定支援**: ポップアップからユーザーが同意すれば、§D3.2の専用Fnキーの
+   config1.dbへの追加をawaseが実行する(バックアップ・原子的置換・既存バインド
+   との衝突検出込み。無断・自動では書き込まない、必ずポップアップでの同意が前提)。
+4. **手動設定(上級者向けの逃げ道)**: `Hiragana`/`Katakana`物理キー・`Eisu`/
+   `Shift+Muhenkan`の「抑止/素のパススルー」、無変換単独打鍵の
+   「抑止/素のパススルー/専用Fnキー変換」は、設定ファイル上は残すが、通常の
+   設定画面の前面には出さない(既存の`muhenkan_solo_tap_always_suppress`相当の
+   位置づけ、上級者向け)。専用Fnキー変換が有効化される主経路は上記1の自動判定で
+   あり、この手動設定は非標準構成向けの明示的オーバーライドに限る。
 
-mozc本家`src/composer/key_parser.cc`のキートークン語彙(`kSpecialKeyMap`)を
-確認した結果、関数キーはF24が上限で、F23/F24はADR-057同様未実測、テンキー系
-キー(`numpad0`-`9`/`multiply`/`add`/`separator`/`subtract`/`decimal`/
-`divide`/`equals`/`comma`/`clear`)はF-keyのVT/xterm規約の対象外の可能性が
-あるが未実測。マルチメディア/ブラウザ/音量キーはmozcのキートークン語彙に
-そもそも存在せず、config1.dbで紐付け不可能なため使えない。
+**いずれの経路でも、動作を保証するものではない(ベストエフォート、自己責任)。**
+`Henkan`(変換キー)は`Reconvert`という別機能でcharsetのモード切替とは無関係、対象外。
+`Hankaku/Zenkaku`/`Kanji`/`ON`/`OFF`はopen軸(決定1の範囲、既に冪等キーで解決済みの
+ためこの自動判定の対象外、§1.2)。
 
-**結論: 実測確認済みのF21/F22の安全性だけに依拠し、範囲をMuhenkan単独打鍵
-(3状態サイクル)だけに絞る。** Eisu(英数キー)のbelief強制は諦め、ネイティブの
-`ToggleAlphanumericMode`にそのまま委ねる(決定4のMS-IME同様、パススルー+
-自己責任的な扱い)。
+**「belief を持たない」のはかな形状(3値サイクル)に限った話である。** かな⇔英数の
+境界(2値)は、エンジンON/OFF判断に使われる既存の別機構(`state/eisu_recovery.rs`の
+ObservedEisu救済、BUG-57)が引き続き担う(§D3.4、本ADRの対象外、変更しない)。
 
-#### 3.2 新設Fnキー: 3個(F21-F23)、Precomposition限定の絶対指定+Composition/Conversionはネイティブトグル
+#### D3.2 推奨構成: Composition/Conversion限定の専用Fnキー(Precompositionは意図的に未バインド)
 
-各Fnキーは、「Precomposition用の絶対指定ターゲット」と「Composition/
-Conversion用のネイティブトグルコマンド(`SwitchKanaType`)」の2つを状態別に
-持つ。GJI自身がPrecomposition/Composition/Conversionを区別してコマンドを
-解釈するため、**awase側は「今composition中かどうか」を一切判定しない**
-——物理`Muhenkan`押下時に現在のbeliefだけを見て、対応するFnキーを1つ選んで
-送るだけでよい。
+無変換の素のパススルーは、後述(§D3.3)のとおり既存の複数の保護機構と衝突するため、
+**推奨構成では素のMuhenkan/Hiragana/Katakanaは送らず、代わりに専用のFnキー1個
+(例: 実測済みで安全な`F21`、ADR-057)を新設する**。config1.dbには次の1エントリ
+のみを追加する:
 
-mozc本家`src/session/session.cc::Session::CompositionModeSwitchKanaType`を
-直接確認し、ひらがな→全角カタカナ→半角カタカナ→(循環)という3状態サイクル
-であることを検証済み(英数系モード中はこのコマンド自体が無効/no-opである
-ことも確認済み)。「beliefがXのとき、次の状態Yへ絶対指定で進める」キーを、
-サイクルの3つの出発点それぞれについて用意する:
+| 状態 | コマンド |
+|---|---|
+| Precomposition | (バインドしない) |
+| Composition/Conversion | `SwitchKanaType` |
+| Prediction/Suggestion | `SwitchKanaType`(候補表示中も対称に扱う。第3回Opusレビュー
+  指摘: `awase-gji-config::keymap.rs`はこの2状態をIME-ON statusに含めており、
+  対応を欠くと候補表示中にFnキーが未バインドのままアプリへ漏れる) |
 
-| Fn | 使用条件(現在のbelief) | Precomposition | Composition/Conversion |
-|---|---|---|---|
-| F21 | belief=ひらがな | `CompositionModeFullKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
-| F22 | belief=全角カタカナ | `CompositionModeHalfKatakana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
-| F23 | belief=半角カタカナ | `CompositionModeHiragana`(絶対指定) | `SwitchKanaType`(ネイティブ) |
+Precomposition・Prediction・Suggestion(候補表示中を含む、`awase-gji-config`の
+`keymap.rs`がIME-ON statusとして扱う範囲)時にこのFnキーを送っても、GJI側に対応
+バインドが無ければフォーカス中のアプリケーションへそのまま流れる可能性がある。
+**この設計が許容できる根拠は、F21が「物理キーが存在しない安全域」(ADR-057で
+WezTerm実測済み)という、キー番号そのものの性質にある**——たとえアプリへ漏れても
+実害が低いという前提でこの構成を採用する(第3回Opusレビューで、ADR-057の実測が
+「全状態にバインドした構成」でのものであり「未バインド時に安全に流れる」ことまでは
+実測していないという指摘を受けたが、漏れた先でF21自体が無害という理由でこの
+リスクは許容する、というのが本ADRの判断)。**未バインド時の実際の挙動(本当に
+アプリへ流れるのか、GJIが別の形で処理するのか)はPhase 2で実機検証する。**
+Composition/Conversion時は`SwitchKanaType`がGJI自身の今の実際の内部状態を見て
+トグルする(mozc本家`session.cc`で確認済みの通り、外部beliefを一切参照しないため
+driftが原理的に発生しない)。
 
-F21/F22はADR-057でWezTermにおける実測でエスケープシーケンスを生成しないと
-確認済み。**F23は未実測**(§5 Phase 2で実機確認すること)。F13/F14/F24は
-使わない(F13/F14はADR-057当時ターミナルへのエスケープシーケンス漏れ・
-DirectInputゲーム競合で捨てられたキー、F24は実測情報が無い)。旧awase
-config1.db管理機構[ADR-067で削除済み]によるF21/F22の残骸バインドは、
-本ADRの作業中に実機で確認・削除済み(§1.4項目3)。
+物理無変換の単独打鍵を検知したら、awaseは(素のVK_NONCONVERTを送るのではなく)
+**常に**このFnキーをSendInputする。GJIの状態によって送信するキーを選ぶ必要が
+無いため、CharsetSlotのようなbelief駆動の選択ロジックは不要になる。
 
-DirectInput状態(IMEが閉じている)については、mozc本家`ms-ime.tsv`で
-Muhenkan/Shift+Muhenkanがそもそも一切バインドされていない(押しても
-何も起きず、IME ONにすらならない)。新設Fnキーもこれに倣い、DirectInput
-状態でのバインドは設けない。
+**この構成による新機能追加**: 「専用Fnキー変換」モードを選んだ場合、Composition/
+Conversion時にかな形状トグルという新機能が使えるようになる。これは
+`muhenkan_solo_tap_always_suppress`(既定の「抑止」)とは独立したモードであり、
+「抑止」を選んでいる限りは現状の全面抑制のまま変わらない(§D3.1)。
 
-#### 3.3 物理トリガーとCharsetSlotのロジック
+(この専用Fnキー案に至るまで、Fnキー3個(F21-F23)にawaseのbeliefを基にした絶対指定
+コマンドを充てる、より複雑な`CharsetSlot`機構を設計・実機検証していた。その撤回の
+経緯は§3(設計変遷)に保存する。)
 
-**ケアするのは物理`Muhenkan`(単独)キーのみ。** `Eisu`・`Shift+Muhenkan`は
-CharsetSlotの対象外とし、GJIのネイティブな`ToggleAlphanumericMode`/
-`ConvertToFullAlphanumeric`にそのまま委ねる(パススルー、動作保証はしない)。
+**設定未完了時のポップアップ(新規)**: GJIが検出され、かつ無変換単独打鍵がGJI既定の
+「文字種変更」動作のまま(§D3.5のMS-IME互換プリセット下での挙動)手動で「素の
+パススルー」に設定されているが、config1.dbに§D3.2のFnキーバインドがまだ存在しない
+場合、awaseは設定変更を促すポップアップを出す(「専用Fnキー変換を有効にしますか?
+GJIの設定ファイルに安全なFnキーバインドを追加します」)。**同意されれば、
+上記の設定支援(§D3.1項目3)でconfig1.dbへ書き込む。** これはD3.1の自動判定が
+「Fnキー未設定→抑止のまま据え置く」を選ぶ通常経路の外側にある状態(ユーザーが
+手動でパススルーへ上書きしている場合)をカバーするための、決定4のMS-IME向け
+ポップアップに対応するGJI向けの片割れである。
 
-**`Hiragana`/`Katakana`物理キーも対象外**(既に絶対指定でbelief乖離リスクが
-無いため、awase側での介入・swallow自体が不要。BUG-52対応の無条件Suppressから
-この2キーを除外することを検討する、§5 Phase 1)。`Henkan`(変換キー)は
-`Reconvert`という別機能でcharsetのモード切替とは無関係、対象外。
-`Hankaku/Zenkaku`/`Kanji`/`ON`/`OFF`はopen軸(決定1の範囲)で対象外。
+#### D3.3 なぜ素のパススルーではダメなのか: 既存の保護機構とその理由
 
-送信後、awaseは自身のbeliefを「送ったFnキーが示す絶対指定ターゲット」に
-楽観的に更新する(precomposition分岐が実際に発火した前提)。実際には
-composition/conversion中でネイティブトグルが発火していた場合、beliefは
-実状態とズレるが、composition文字列は画面に見えており低リスク(決定3の
-根底にある原則、§1.4参照)。beliefが英数系(全角/半角英数)にある場合、
-Muhenkanの循環コマンド自体がno-op(§3.2)なので、CharsetSlotはこの場合
-何もしない(Eisu状態からの復帰はネイティブのEisuキー/Shift+Muhenkanに
-委ねる、パススルー)。
+無変換単独打鍵・`Hiragana`/`Katakana`物理キーの**素のパススルー**には、以下の
+既存の防御機構が既に存在し、いずれも実機インシデントの再発防止のために追加された:
 
-#### 3.4 なぜMS-IME互換プリセットを基準にしたか(ATOK/ことえりとの比較)
+- **`muhenkan_solo_tap_always_suppress`**(既定`true`、`src/config.rs:222`): MS-IMEの
+  「キーとタッチのカスタマイズ」既定で、無変換キー単独打鍵に「かな切替」(≈IMEオン
+  相当)が割り当てられている。composing=falseの場面で素の無変換を送出すると、この
+  MS-IME既定割当てに横取りされawaseの管理外でIMEモードが切り替わる
+  (2026-08-07実機、composing=falseの単独タップ直後に非注入の`VK_DBE_ALPHANUMERIC`→
+  `VK_DBE_HIRAGANA`が観測されshadow toggleがIMEをONにした)。
+- **BUG-52のDBEレンジSuppress**(`runtime/transport.rs`、`ime_actuation_owned`時):
+  NICOLAの物理「IME ON」キー(scan 0x70、JIS配列の「カタカナ・ひらがな・ローマ字」
+  キー位置)を、IMEが既にONの状態で押すと、**Windowsのキーボードレイアウト変換層が
+  `VK_DBE_HIRAGANA`(0xF2)の代わりに`VK_DBE_KATAKANA`(0xF1)を生成することがある**
+  (同一物理キーに対するOS側の状態依存トグル変換、awaseの関与しない層)。これを
+  素通しするとMS-IMEが仕様通りカタカナへ能動的に切り替わってしまう(2026-08-05実機、
+  ユーザー報告「また謎にカタカナになる事象が再発しました」)。**アプリが謎に
+  VK_DBE_*を送出しているのではなく、OS自身のキー変換層が特定の物理キーに対して
+  状態依存で異なるVKを生成する既知の挙動であり、awaseの観測やbeliefの話ではない。**
+
+**いずれもawaseのbelief管理とは無関係で、「パススルーそのものがOS/MS-IME側の
+副作用を誘発する」という別種のリスクへの防御である。** 「観測も強制もしない」という
+本ADRの思想を採用しても、この種のパススルー起因のリスクは消えない。そのため、
+§D3.2の専用Fnキー(素のVK_NONCONVERT/DBEキーを一切送らない)を推奨構成とし、
+それでも素のパススルーを選びたいユーザーには§D3.1のとおり設定と助言を提供する、
+という切り分けにした。
+
+なお`has_katakana`(`state/conv_classify.rs`)がエンジンopen belief推論・BUG-50の
+復旧理由選択に使われている件は、**新しいbeliefを必要とせず既存の観測
+(`ConvModeMgr`/idle-conv-check)を読むだけ**であり、本決定の「新しいbeliefは
+持たない」という原則と衝突しない。
+
+#### D3.4 かな⇔英数境界(Eisu)は別軸: 既存機構を変更しない
+
+エンジンON/OFFのようにawaseの能動的な挙動を左右する判断は、かな⇔英数のどちらに
+いるかを知っている必要があり、これは既存の別機構(`state/eisu_recovery.rs`の
+ObservedEisu救済、BUG-57で追加済み)が既に担っている。この機構は物理Eisuキーの
+挙動を横取りするのではなく観測(conv bits読み取り)で動くため、`Eisu`/
+`Shift+Muhenkan`をパススルー(または抑止、ユーザー設定次第)にしても影響を受けない。
+本ADRはこの既存機構を変更しない。
+
+#### D3.5 なぜMS-IME互換プリセットを推奨するか(ATOK/ことえりとの比較)
 
 mozc本家の3プリセットを比較した結果、この種のキーの意味論はIME文化ごとに
 大きく異なると判明した:
 
-- **MS-IME互換**(採用): Muhenkan=かな循環、Eisu(+Shift+Muhenkan)=ひらがな⇄
+- **MS-IME互換**(推奨): Muhenkan=かな循環相当、Eisu(+Shift+Muhenkan)=ひらがな⇄
   半角英数トグル。
 - **ATOK互換**: Muhenkanは`CancelAndIMEOff`(IME自体を閉じる、MS-IMEと正反対)。
   英数トグル相当は`Eisu`/`F10`/`Kana`/`Shift+Muhenkan`の**4キー**に分散。
 - **ことえり互換**(macOS): `Eisu`のみ存在、Muhenkan/Kana/Katakana/Hiragana
   相当のキー自体が無い(macOSキーボードにこれらの物理キーが無いため)。
 
-普遍的な正解は無いため、Windowsで最も一般的なMS-IME互換の意味論を基準に選んだ。
-ユーザーはGJIのキー設定で「MS-IME」プリセットを選択し(Hiragana/Katakanaの
-`CompositionMode*`絶対指定に加え、Muhenkan/Eisuのネイティブトグルも標準で
-揃う)、その上に3.2のFnキー(F21-F23)を`custom_keymap_table`で追加する。
-プリセット選択とカスタム追加は共存できる(実際のconfig1.dbで`session_keymap`
-フィールドとカスタムオーバーレイの共存を確認済み)。Eisuについては決定3.1の
-通りawaseは関与せず、ネイティブの`ToggleAlphanumericMode`のままとなる。
+普遍的な正解は無いため、Windowsで最も一般的なMS-IME互換の意味論を基準に推奨する。
+「MS-IME」プリセット選択の有無はconfig1.dbの`session_keymap`フィールド(既存の
+`awase-gji-config::wire::parse_top_level`が読み取り済み)からベストエフォートで
+確認できる(§D3.1項目2)。
 
-#### 3.5 実装の要点
+物理無変換キーが存在しないキーボード(US配列等、`nicola_us.yab`系)では、
+この決定は単に無関係になる(Muhenkanの物理トリガー自体が無いため)。
 
-- `CharsetSlot`(GJI向け、物理キー→Fnキー変換機構): 物理`Muhenkan`/`Eisu`/
-  `Shift+Muhenkan`の押下を検知し、現在のbeliefに応じて3.2の表からFnキーを
-  選んでSendInputする。IMC write(`ImmSetConversionStatus`)ではなくVK注入を
-  使う理由: GJI(mozc)のTIPはIMC writeをUIミラーとしてのみ扱い、実コンポーザ
-  には反映しない(BUG-25追補2、mozc本家ソース確認済み)。
-- 書き込み機構: `awase-gji-config`crateは現状読み取り専用(`extract_ime_keys`/
-  `extract_mode_keys`)。config1.dbへの書き込み機能の実装は本ADRのスコープ外の
-  別タスクとする(§5 Phase構成)。当面はユーザーがGJIの設定UIで手動インポートする
-  運用とする。
+#### D3.6 実装の要点
 
-#### 3.6 belief同期: 即時更新+定期再同期の二本立て(過去のMS-IME設計を踏襲)
+- **自動判定ロジック(主UX)**: GJI検出時にconfig1.dbを読み、§D3.2のFnキー
+  バインドの有無を確認する。存在すれば「専用Fnキー変換」モードを自動的に
+  有効化する(ユーザー操作不要)。存在しなければ既定の「抑止」のまま据え置き、
+  D3.1項目2の条件を満たす場合のみポップアップで案内する。設定画面には、
+  この自動判定の結果(現在有効なモード)を表示するだけで足り、ユーザーが
+  持続的に選び続ける項目にはしない。
+- **手動設定(隠し/上級者向け)**: `Hiragana`/`Katakana`物理キー・`Eisu`/
+  `Shift+Muhenkan`は「抑止/素のパススルー」の2択、無変換単独打鍵は
+  「抑止/素のパススルー/専用Fnキー変換」の3択を設定ファイル上に残すが、
+  通常の設定画面の前面には出さない。既存`muhenkan_solo_tap_always_suppress`
+  相当のbool群を拡張するのではなく、キーごとの意味論が異なる(Muhenkanは3択、
+  他は2択、`Shift+Muhenkan`は独立VKではなくModifier+VKの組)ため、専用の
+  struct/enumで表現する(第3回Opusレビュー指摘、既存`GeneralConfig`の単純な
+  bool群への相乗りは避ける)。既定はすべて「抑止」で現状維持。
+- **「専用Fnキー変換」モードの実装は`muhenkan_solo_tap_always_suppress`の
+  早期returnより手前で分岐させる**(C1、第3回Opusレビュー指摘)。
+  `src/engine/nicola_fsm.rs`の単独タップ確定処理で、このモード(自動判定または
+  手動設定のいずれかで有効)なら既存のsuppress判定を経由せず直接Fnキー送出へ
+  回す独立した経路とする。物理無変換単独打鍵を検知したら、素のVK_NONCONVERTでは
+  なく§D3.2の専用Fnキーを常に送る。beliefは不要。
+- `awase-gji-config`にconfig1.db書き込み機能を追加し、§D3.2の専用Fnキーエントリの
+  追加をポップアップでのユーザー同意を経てのみ実行する(バックアップ・原子的
+  置換・既存バインドとの衝突検出込み)。現状`awase-gji-config`はどこからも
+  依存されていない単体crateであり、config1.dbのパス探索・読み込み呼び出し元・
+  依存追加・GJI検出フックへの配線も本Phase 1の作業に含む(第3回Opusレビュー指摘)。
+- ポップアップロジック: GJI向け(D3.2「設定未完了時のポップアップ」)・MS-IME向け
+  (決定4)の2種類。いずれも状況判定は起動時・IME検出時に一度行い、継続的な
+  ポーリングは行わない(D3.1で述べた「新しいbeliefは持たない」原則と整合)。
 
-CharsetSlotがFnキーを送る判断はawaseのbeliefに依存するため、beliefが実際の
-GJI状態からズレたままだと誤った遷移先を送りうる。ドリフトの発生源は
-CharsetSlot自身の送信だけでなく、`Hiragana`/`Katakana`物理キー(既に絶対指定
-なので変換自体は不要だが、押されたという事実はawaseに伝わらない)、トレイ操作、
-GJI自身のUI操作、F6-F10系の`ConvertTo*`(§3.1で言及)等、多岐にわたる。
-対策は過去のMS-IME向け設計(ADR-084 INV-11、ADR-078等)と同様に2本立てとする:
+### 決定4(charset軸・MS-IME): レジストリの無変換キー割当てを見て、IME ON/OFFへのカスタマイズなら決定1のopen軸機構を横取り実装で肩代わりし、既定のかな切替のままならGJI利用を推奨するポップアップを出す。
 
-1. **即時・楽観的更新**: CharsetSlotがFnキーを送信したら、そのFnキーが示す
-   絶対指定ターゲットへbeliefを即座に更新する(precomposition分岐が実際に
-   発火した前提。§3.3で既述)。
-2. **定期的な実観測による再同期**: 既存の`ConvModeMgr`/idle-conv-check機構
-   (`apply_idle_conv_check`等)をGJI向けにも適用し、`ImmGetConversionStatus`で
-   読んだ実際のconversion_modeでbeliefを補正する。発生源を問わず網羅的に
-   ドリフトを検出できる。conversion_modeの読み取りはcomposition中でも安全に
-   行えることは`gji_composition_probe.rs`の実機検証(§1.4項目4)で確認済み
-   ——「今composition中かどうか」を判定する必要はなく、単に現在のビット値を
-   読むだけでよい。
+**決定3と同じ枠組み(自動判定を主UXとし、必要な判断のみポップアップで問う)を、
+MS-IMEにも適用する。** ただしMS-IMEにはGJIのconfig1.dbに相当するawase側から
+編集可能なキーマップ機構が無いため、§D3.2のような「専用Fnキーで安全に置き換える」
+設計はMS-IME向けには存在しない。代わりに、**MS-IMEにはawase自身が既に確立した
+open軸の冪等機構(決定1、`VK_IME_ON`/`VK_IME_OFF`をbeliefに基づいて送信する。
+config1.db相当の追加セットアップ一切不要、全環境で動作確認済み)がある**ため、
+これを転用できる場面ではそちらを使う。
 
-**F6-F10はCharsetSlotの送信先には使わない。** F6-F10は実在する物理キーで
-あり、GJIが`ConvertTo*`として消費するのはComposition/Conversion状態のときに
-限られる(§3.1)。もしawaseがSendInputでF6-F10を送った時点でGJIが実際には
-Precomposition状態だった場合、GJI側に未バインドのため**フォーカス中の
-アプリケーションへそのまま素通りし**、ブラウザ更新・スペルチェック等の
-無関係なアプリケーションショートカットとして誤発火しうる。F21-F23が安全なのは(F23は未実測)
-「物理キーが存在しない安全域」(ADR-057)だからであり、F6-F10にはこの安全性が
-無い——F13/F14を避けたのと同じ理由がF6-F10にも当てはまる。F6-F10は
-(ユーザーが実際にComposition中に押した場合の)**観測対象**としてのみ、
-上記2の定期再同期に含めてよい。
+**ベストエフォート助言は、同じレジストリ読み取り(`enabled`/`muhenkan_ime_off`、
+`msime_key_assignment.rs::read_from_registry()`)から2つの分岐を導く:**
 
-### 決定4(charset軸・MS-IME): `CharsetSlot`は作らない。パススルー+自己責任とする。
+| レジストリ状態(`enabled && muhenkan_ime_off`) | 意味 | awaseの対応 |
+|---|---|---|
+| 真(無変換=IME ON/OFFへカスタマイズ済み) | ユーザーは無変換キーにIME ON/OFFの意味を明示的に与えている。素通しするとMS-IMEのネイティブ処理がawaseのbeliefと無関係にIME状態を変えてしまう(既知の二重オーナー問題) | **新設(今回の着想)**: 素通しせず、awase自身が物理無変換単独打鍵を検知して抑制し、代わりに決定1のopen軸機構(belief駆動の`VK_IME_ON`/`VK_IME_OFF`送信)で同じ意図を安全に実現する。ユーザーの意図(無変換=IME ON/OFF)はそのまま尊重しつつ、実現手段をMS-IMEのネイティブ処理からawase自身の冪等機構へ差し替える。**既存の`conflict_warning()`によるカスタマイズ解除の呼びかけは不要になる**(警告して回避を頼むのではなく、awase側で安全に肩代わりする)。`henkan_ime_on`(変換=IME ON)も対称に扱う。 |
+| 偽(無変換=既定のかな切替のまま) | 素のパススルーを選ぶと2026-08-07インシデントと同型のリスクがある(この場合はawase側に肩代わりできる冪等な代替機構が無い、かな形状軸はGJIのようなstatus別解釈委譲が無いため) | 前回設計のまま: ユーザーが無変換単独打鍵を「パススルー」に設定している場合のみ、起動時にGJI利用を推奨するポップアップを表示する(「無変換キーのかな切替がMS-IME既定のままパススルー設定になっています。この組み合わせは意図しないIME切替を招くことがあります。GJI〈Google日本語入力〉の利用を推奨します」といった内容) |
 
-**MS-IMEでは、charset軸のモードトグルキー(無変換単独打鍵等)の物理押下を
-awaseは一切インターセプト・変換しない。素通しする。** GJIと違い、MS-IMEには
-「入力中かどうかをawase側で判定せずに済む」ようなstatus別コマンド解釈の仕組みが
-無い。物理キー押下を安全に冪等な書き込みへ変換するには、awase自身が「今
-composition中かどうか」を知る必要があるが、この情報をawaseは観測できない
-(既知の制約、§1.4末尾)。この状態で変換を試みると、変換中の文字列を意図せず
-壊す・確定させる等の実害を生みうる。**判定できない条件で分岐する変換機構は
-安全に作れないため、GJI向けの`CharsetSlot`とは異なりMS-IME向けには作らない。**
+いずれもレジストリへの書き込みは行わない(既存方針を維持)。上段の肩代わり機構は
+`muhenkan_solo_tap_always_suppress`とは独立した経路とし、決定3 §D3.6で述べた
+「専用Fnキー変換」と同様、`src/engine/nicola_fsm.rs`の単独タップ確定処理で
+既存のsuppress判定より手前に分岐させる。
 
-- 物理DBEキーは、BUG-52対応の無条件Suppressをこの用途には適用せず、MS-IME
-  ネイティブのモードトグル処理へそのまま渡す(パススルー)。
-- 動作の質(意図通りに切り替わるか、スプリアスな挙動が無いか)はMS-IME自身の
-  実装に依存し、awaseは保証しない(自己責任)。気になるユーザーはMS-IME設定で
-  該当キーの割り当てを無効化するか、GJIへの乗り換えを検討する。
-
----
-
-## 3. GJIのcharset軸が実証されたことによる既存決定への影響
-
-- **config1.db書き込み復活の正当化**: 2026-08-11の「config1.db書き込みは復活させない」
-  という判断の根拠は、ADR-067の前提(`VK_IME_ON`/`OFF`は冪等でconfig1.db不要)が
-  open軸限定であり、charset軸には元々適用されないことが本ADRで確認された。ただし
-  ADR-067が挙げたもう一つの反論(GJIプロセス再起動要否・登録状態監視・セットアップUI
-  という保守コスト)は今回も同型で残る。今回の設計はF13/F14ではなくF21-F23という
-  安全域(F23は未実測)を使うことで**到達性の問題(a)は回避できるが、保守コストの問題(b)には
-  正面から答えていない**。書き込み機構の実装着手時に改めて評価すること。
-- **候補ウィンドウ問題の位置づけ**: §1.4項目4の実機結果により、「候補ウィンドウ
-  表示の有無をawaseは観測できない」という既知の制約(§1.4末尾)は、GJI側の
-  `CompositionMode*`コマンドが変換中でも何らかの形で処理を続ける(単純に無視は
-  されない)ことを示唆しているが、詳細な安全性はまだ厳密には検証できていない。
-  「区別しない、GJI側の挙動に委ねる」という方針を維持しつつ、追試を推奨する。
+- 物理DBEキー(`VK_DBE_HIRAGANA`/`KATAKANA`/`ALPHANUMERIC`等)へのBUG-52対応
+  Suppressは、決定3の新設ユーザー設定(§D3.6)の対象に含める(既定は「抑止」で
+  現状維持)。
+- 動作の質(意図通りに切り替わるか、スプリアスな挙動が無いか)は、パススルーを
+  選んだ場合(下段)はMS-IME自身の実装に依存し、awaseは保証しない(自己責任)。
+  上段(IME ON/OFFカスタマイズ済み)の肩代わりは決定1の既存冪等機構を使うため、
+  他のopen軸制御と同水準の動作を期待できる。
 
 ---
 
-## 4. `CharsetSlot`の対象をMS-IMEからGJIへ付け替えた経緯
+## 3. `CharsetSlot`の設計変遷 — MS-IMEからGJIへの付け替え、完全パススルーへの撤回、そして設定+助言方式への再収束
+
+### 3.1 第1の付け替え: MS-IME向け`ImmSetConversionStatus`書き込み → GJI向けFnキー変換
 
 2026-08-13の同セッション内で、Fable(レビュアー)×Opus(設計者)のpre-mortemを
 **5ラウンド**回し、MS-IMEの物理DBEキー押下(無変換等、BUG-52修正以降
@@ -310,111 +377,227 @@ awase自身がbeliefに基づいて`ImmSetConversionStatus`へ冪等に再発行
 訂正1〜11を含む詳細設計。実コード裏取り済み、round5でCONVERGED判定)。
 
 **この設計(MS-IME向け、`ImmSetConversionStatus`書き込み)は不採用とし、
-`CharsetSlot`という概念自体はGJI向け(決定3、Muhenkan単独打鍵→F21-F23への変換)へ付け替える。**
-撤回ではなく対象の変更であり、「物理キーの握りつぶされた意図を冪等な書き込みへ
-変換する」という`CharsetSlot`の中核アイデア自体は維持される。
+`CharsetSlot`という概念自体はGJI向け(物理Muhenkan単独打鍵→Fnキーへの変換)へ
+付け替えた。** 撤回ではなく対象の変更であり、「物理キーの握りつぶされた意図を
+冪等な書き込みへ変換する」という`CharsetSlot`の中核アイデア自体は維持された。
 
-**MS-IME向け実装を採らない理由**:
+**MS-IME向け実装を採らなかった理由**:
 
 1. MS-IME向けの`CharsetSlot`は、物理キー押下を正しい`ImmSetConversionStatus`
    書き込み値へ変換するために、**awase自身が「今composition中かどうか」を
-   判定する必要があった**。この情報はawaseから観測できない(既知の制約、
-   §1.4末尾)。判定できない条件で安全に分岐する変換機構は作れない。
+   判定する必要があった**。この情報はawaseから安定して観測できない
+   (TSFネイティブアプリではcomposition context自体がIMM32互換レイヤーに
+   現れない、候補ウィンドウ可視性はcomposition開始前のかな入力段階を
+   捉えられない、等)。判定できない条件で安全に分岐する変換機構は作れない。
 2. GJIには、awase側の判定を不要にする仕組み(config1.dbの`custom_keymap_table`
    がstatus別にコマンドを解釈する)が既に存在し、かつ実機でF15-F19の効果が
-   検証できた。**同じ「物理キー→冪等書き込み」という変換アイデアを、
-   awase側の状態判定が不要なGJI向けに転用すれば、判定不能問題を回避できる**。
-3. MS-IMEの候補ウィンドウ表示中の挙動の違いを区別できない制約
-   (§2.4.7、既知の制約として設計に組み込み済み)や、TsfNative限定の
-   鮮度スタンプ供給(INV-74)、トレイ経由のfresh intent不足(INV-75)等、
-   MS-IME向け設計固有の複雑さは、GJI向けの単純な変換表には持ち越さない
-   (GJI向けはstatus別解釈をGJI自身に委ねるため、これらの複雑さが
-   構造的に発生しない)。
+   検証できた。同じ「物理キー→冪等書き込み」という変換アイデアを、
+   awase側の状態判定が不要なGJI向けに転用すれば、判定不能問題を回避できる、
+   という見立てだった(この見立て自体は§3.2で述べる通りさらに後で覆る)。
 
 **破棄しない情報**: MS-IME向け`CharsetSlot`設計時に確定した実機事実(BUG-52の
 無条件Suppress挙動、MS-IMEでのIMC write到達性、TsfNative/ImmCrossの
 idle-conv-check非対称性等)は`docs/known-bugs.md`・既存ADR(084/086/087/088)に
 既に記録されており、失われない。INV-54〜77・S27〜S47・P23〜38の番号空間は
-**MS-IME向けの意味では本ADRで使用しない**(GJI向け`CharsetSlot`の実装〈決定3〉は
-別途新しい番号を起こす。MS-IME向けの`ImmSetConversionStatus`ベース書き込みを
-将来再提案する場合は、このセクションを読み、composition中判定不能問題が
-未解決のままであることを踏まえること)。
+**MS-IME向けの意味では本ADRで使用しない**。MS-IME向けの`ImmSetConversionStatus`
+ベース書き込みを将来再提案する場合は、このセクションを読み、composition中
+判定不能問題が未解決のままであることを踏まえること。
+
+### 3.2 第2の付け替え: GJI向けFnキー変換(F15-F19→F21-F23) → 完全パススルーへ撤回
+
+GJI向けに付け替えた`CharsetSlot`は、実際にF21-F23への二段バインド(Precomposition=
+絶対指定/Composition・Conversion=ネイティブトグル)・belief同期(ヒューリスティック
+ゲート+定期再同期)まで設計し、機構としての到達性を実機で検証した(§1.4)。
+その後のOpusレビューで、mozc本家のMS-IME互換プリセットが物理`Muhenkan`1キーに
+対し**awase側のbeliefを一切使わない自己完結的な3状態サイクル**を既にネイティブで
+提供している(`ms-ime.tsv:151`/`49`)ことを指摘され、既存コード調査で
+(a) かな形状の値を消費するawase側の機能が無い(トレイ表示のみ)、(b) NICOLAエンジンON中は
+既存のADR-084/086 force-writeがconv modeを強制固定するためこの軸が実質作用しない、
+の2点が追加で判明した(当時の見立て)。
+
+**これらを総合し、GJI向け`CharsetSlot`も撤回し、かな形状軸はawaseがbeliefを
+一切持たない完全パススルーへ反転した。** F21-F23への二段バインド設計・
+実機検証結果自体は無駄ではなく、「SendInputでGJIのcharset軸を絶対指定で確実に
+動かせる」という機構としての実現可能性の証明として、§1.4に保存した
+(将来、何らかの理由でawase側の能動的な介入が必要になった場合の再利用材料)。
+
+### 3.3 第2回Opusレビューで判明した「完全パススルー」の誤り、設定+助言方式への再収束
+
+第2回Opusレビューで、§3.2の「完全パススルー」自体が実コードと矛盾することが
+判明した:
+
+1. (a)の「消費先はトレイ表示のみ」は誤りだった。`state/conv_classify.rs`の
+   `has_katakana`が`ConvSyncReason::KatakanaShadowOff`(エンジンopen belief推論)・
+   BUG-50の復旧理由選択に使われている。ただしこれは既存の観測(`ConvModeMgr`)を
+   読むだけで新しいbeliefを必要としないため、実害のある衝突ではなく単なる
+   記述ミスと判明した(決定3 §D3.3で訂正済み)。
+2. (b)の「force-writeがRomajiHiraganaへ強制ロックする」は誤りだった。
+   `ConvModePolicy`は既定`Observe`(Force化はオプトイン)であり、Force時の
+   ターゲットもトレイが選んだモードであって固定`RomajiHiragana`ではない。
+3. **最も重大な誤り**: 「無変換・Hiragana・Katakana物理キーは単純にパススルー
+   できる」という前提そのものが、実在する2つの保護機構と正面衝突していた——
+   `muhenkan_solo_tap_always_suppress`(既定`true`、2026-08-07実機: MS-IMEの
+   「キーとタッチのカスタマイズ」既定かな切替への横取り)と、BUG-52のDBEレンジ
+   Suppress(2026-08-05実機: 物理「IME ON」キーがOS側の状態依存トグル変換で
+   `VK_DBE_KATAKANA`を誤生成しMS-IMEが仕様通りカタカナへ切り替わる)。
+   いずれもawaseのbelief管理とは無関係な、パススルー自体が引き起こす副作用への
+   既存の防御であり、「観測も強制もしない」という思想を採用してもこのリスクは
+   消えない。
+
+**これを受けて、ユーザーとの対話で最終的に決定3 §D3.1-D3.6の「設定+ベストエフォート
+助言+任意の設定支援」という3層構成に収束した。** 中心的な技術的着想は、素の
+Muhenkan/DBEキーを送らず、GJIのconfig1.dbに新設する専用Fnキー(Precomposition
+未バインド・Composition/Conversionのみ`SwitchKanaType`)を代わりに送るという
+決定3 §D3.2の設計であり、これにより既存の2つの保護機構に一切触れずに
+Composition中のかな形状トグルという新機能を安全に提供できる。**「beliefを
+持たない」という結論そのものは維持されている**(専用Fnキー方式はGJIの実際の
+内部状態を読むだけで、awase側の予測beliefを必要としない)。
 
 ---
 
-## 5. 移行計画
+## 4. 移行計画
 
 ### Phase 0(記録のみ)
 
-1. 本ADRを`docs/adr/091-*.md`として追加し、`docs/adr/index.md`に登録する。
-2. `docs/known-bugs.md`に、config1.dbの残骸バインド(F13/F14/F21/F22)が
-   実機に残存しうる既知の事実として記録する(次にconfig1.db関連の作業をする際、
-   同じ残骸に驚かないため)。
+1. 本ADRを`docs/adr/091-*.md`として追加し、`docs/adr/index.md`に登録する
+   (既存の`index.md:94`はF15-F19/`CharsetSlot`前提の古い要約になっているため、
+   本ADRの最終版〈設定+ベストエフォート助言方式〉に合わせて書き換える)。
+2. `docs/known-bugs.md`に、config1.dbの残骸バインド(F13/F14/F21/F22。§1.4項目3で
+   検出・削除済みの旧awase実験由来のもの)が実機に残存しうる既知の事実として
+   記録する(次にconfig1.db関連の作業をする際、同じ残骸に驚かないため)。
 
-### Phase 1(GJI charset軸の本実装、実機ソーク必須)
+### Phase 1(自動判定・config1.db書き込み・ポップアップロジックの実装)
 
-1. `awase-gji-config`にconfig1.db書き込み機能を追加する(バックアップ・
-   原子的置換・既存バインドとの衝突検出込み)。
-2. awase起動時またはGJI検出時に、F21-F23の3個の二段バインド(§3.2)の存在を
-   確認し、無ければユーザーに「MS-IME」プリセット選択+`custom_keymap_table`
-   追加を促す(自動書き込みは要検討、§3の保守コスト論点)。
-3. **`CharsetSlot`(物理Muhenkan単独打鍵→F21-F23変換ロジック)を
-   実装する。** §3.3の対応表に基づき、物理キー押下時のawase側belief(現在の
-   charset目標値)を見て、5つのFnキーから1つを選びSendInputする。
-4. `Hiragana`/`Katakana`物理キー(`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`)を
-   BUG-52対応の無条件Suppress対象から除外できるか検証する(§3.3、既に絶対指定
-   でbelief乖離リスクが無いため、素通しでも安全なはず)。
-5. `VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`がmozcのキー名語彙上どの物理トークンに
-   対応するか(あるいは対応が無いか)を確認する。
-6. **belief同期機構(§3.6)を実装する。** 既存の`ConvModeMgr`/idle-conv-check
-   機構をGJI検出時にも適用し、`ImmGetConversionStatus`による定期再同期で
-   CharsetSlotのbeliefを補正する。F6-F10等の観測対象キーの扱いも含める。
+1. GJI向け自動判定ロジックを実装する: GJI検出時にconfig1.db
+   (`session_keymap`/`custom_keymap_table`)を読み、§D3.2のFnキーバインドの
+   有無を確認する。存在すれば「専用Fnキー変換」モードを自動的に有効化する
+   (ユーザー操作不要)。設定画面には現在有効なモードの表示のみを追加し、
+   持続的な選択項目としては前面に出さない(D3.1、設定画面の煩雑化を避ける)。
+2. `Hiragana`/`Katakana`物理キー(BUG-52のDBEレンジSuppress対象)・`Eisu`/
+   `Shift+Muhenkan`の「抑止/素のパススルー」、無変換単独打鍵の
+   「抑止/素のパススルー/専用Fnキー変換」を、設定ファイル上の隠し/上級者向け
+   項目として追加する(既存bool群への相乗りではなく専用struct/enumで表現、
+   §D3.6)。既定は全て「抑止」、現状維持。
+3. `awase-gji-config`を実際の呼び出し元に配線する(現状どこからも依存されて
+   いない単体crate。config1.dbのパス探索、依存追加、GJI検出フックへの接続を
+   含む)。書き込み機能を追加し(バックアップ・原子的置換・既存バインドとの
+   衝突検出込み)、§D3.2の専用Fnキーエントリ(例F21、Precomposition・
+   DirectInputは未バインド、Composition/Conversion/Prediction/Suggestionは
+   `SwitchKanaType`)の追加を、後述のポップアップでの明示的な同意を経てのみ
+   実行する(自動・無断では書き込まない)。
+4. 「専用Fnキー変換」モードを実装する。`muhenkan_solo_tap_always_suppress`の
+   早期returnより手前(`src/engine/nicola_fsm.rs`の単独タップ確定処理)で
+   分岐する独立経路とし、既存のsuppress判定を経由しない(C1)。有効時は
+   物理無変換単独打鍵の検知ごとに、素のVK_NONCONVERTの代わりに専用Fnキーを
+   送る。beliefは不要(決定3 §D3.2)。
+5. GJI向けポップアップ(新規、決定3 §D3.2「設定未完了時のポップアップ」):
+   無変換単独打鍵がGJI既定の「文字種変更」動作のまま手動で「素のパススルー」に
+   設定されており、かつ§D3.2のFnキーバインドがconfig1.dbに存在しない場合、
+   設定完了を促すポップアップを表示し、同意されれば項目3の書き込みを実行する。
+6. MS-IME向け肩代わり機構+ポップアップ(新規、決定4): `msime_key_assignment.rs`の
+   既存レジストリ読み取り(`enabled`/`muhenkan_ime_off`、`henkan_ime_on`)を、
+   2つの分岐の判定に再利用する。
+   (a) `enabled && muhenkan_ime_off`(無変換=IME ON/OFFへカスタマイズ済み、
+   `henkan_ime_on`も対称に扱う)の場合は、物理無変換単独打鍵を検知して素通しを
+   抑制し、代わりに決定1のopen軸機構(belief駆動の`VK_IME_ON`/`VK_IME_OFF`
+   送信)を発火させる肩代わり経路を実装する。`muhenkan_solo_tap_always_suppress`
+   とは独立させ、決定3 §D3.6の「専用Fnキー変換」と同様、
+   `src/engine/nicola_fsm.rs`の単独タップ確定処理で既存suppress判定より手前に
+   分岐させる。これにより既存の`conflict_warning()`によるカスタマイズ解除の
+   呼びかけは不要になる(ユーザーの意図は尊重したまま安全に実現する)。
+   (b) `!(enabled && muhenkan_ime_off)`(無変換=既定のかな切替のまま)は
+   新規ロジックで判定し、この条件が真・MS-IMEがアクティブIME・ユーザーが
+   無変換単独打鍵を「パススルー」に設定している場合、起動時にGJI利用を
+   推奨するポップアップを表示する。
+7. `VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`がmozcのキー名語彙上どの物理トークンに
+   対応するか(あるいは対応が無いか)を確認する(`key_parser.cc`の`kSpecialKeyMap`に
+   DBE系トークンは存在しないと確認済み、追加調査不要、注記のみ)。
 
-### Phase 2(候補ウィンドウ挙動・実機ソークの追試)
+### Phase 2(実機ソークでの確認)
 
-1. `gji_composition_probe.rs`を拡張し、§3.2の5個のFnキー(状態別二段バインド)を
-   実機で送信して、Precomposition時は絶対指定通りの`conversion_mode`になるか、
-   Composition/Conversion時はネイティブトグル(`SwitchKanaType`/
-   `ToggleAlphanumericMode`)が実際に発火し破壊的な影響が無いかを検証する。
-2. `ConvertToHalfWidth`等のF6-F10系コマンド(§3.1で言及、変換候補の再変換用途と
-   推定)の正確な用途を確認し、決定3の設計と混同しないよう整理する(現時点では
-   F21-F23の設計に必須ではない)。
+1. §D3.2の専用Fnキー(Precomposition/DirectInput未バインド、Composition/
+   Conversion/Prediction/Suggestionは`SwitchKanaType`)を実機に投入し、
+   未バインド状態時の実際の挙動(フォーカス中アプリへ実害なく流れるか、GJIが
+   何らかの形で処理するか、第3回Opusレビュー指摘)、Composition/Conversion時に
+   破壊的な影響(意図しない確定・文字列破損)なくトグルすることを確認する。
+2. パススルー設定を有効化した場合、`muhenkan_solo_tap_always_suppress`/
+   BUG-52 Suppressを無効化した状態でGJI環境における実際のリスク(2026-08-05/
+   2026-08-07の各インシデントがGJI環境でも再現するか)を確認する。
+3. ベストエフォート助言ロジック(GJI/MS-IME双方)が誤った推奨を出さないか
+   (config1.dbの`session_keymap`列挙値とプリセット名の対応関係、MS-IME
+   レジストリ判定の誤検知・見逃しを含め)実機で確認する。
 
-### Phase 3(MS-IME自己責任ポリシーのドキュメント化)
+### Phase 3(ドキュメント化)
 
-ユーザー向けドキュメント(`docs/usage.html`等)に、MS-IME使用時はモードトグルキーの
-無効化を推奨する旨、無効化しない場合は動作保証外である旨を明記する。
+ユーザー向けドキュメント(`docs/usage.html`等)に、以下を明記する:
+
+- 無変換単独打鍵・`Hiragana`/`Katakana`・`Eisu`/`Shift+Muhenkan`の抑止/パススルーは
+  設定可能であり、既定は安全側(抑止)であること。無変換単独打鍵には追加で
+  「専用Fnキー変換」(GJI向け)の選択肢があること。
+- パススルーを選ぶとMS-IME/GJI側の副作用(BUG-52等)が発生しうること、awaseは
+  ベストエフォートで推奨設定を助言するが動作を保証しないこと(自己責任)。
+- GJI使用時は「MS-IME」プリセット+§D3.2の専用Fnキー構成を推奨する旨(決定3 §D3.5)。
+- MS-IME使用時、無変換キーが既定の「かな切替」のままパススルーを選ぶと、
+  起動時にGJI利用を推奨するポップアップが出ることがある旨(決定4)。
 
 ---
 
-## 6. 関連ファイル
+## 5. 関連ファイル
 
 - `crates/awase-gji-config/`(`command.rs`/`keymap.rs`/`tsv.rs`/`wire.rs`) —
-  読み取り機構は既存、書き込み機能はPhase 1で追加。
-- `crates/awase-windows/examples/gji_composition_probe.rs` — 本ADRの検証に
-  使った自前IMM32プローブ。使い捨てツールとして残す。
-- `crates/awase-windows/src/runtime/transport.rs` — MS-IME物理DBEキーの
-  無条件Suppress(BUG-52対応)。決定4により変更しない(自己責任ポリシーの下では
-  現状維持で問題ない)。
-- `docs/known-bugs.md` BUG-25(GJI SendInput/IMC write到達性)・BUG-52
-  (物理DBEキー漏洩)・BUG-61(romaji軸解決不能)・BUG-62(Alt+かなswallow)。
-- `docs/adr/057-gji-keybind-f13f14-to-f21f22.md`(F13/F14を避ける根拠)、
-  `docs/adr/067-vk-ime-on-off-migration.md`(config1.dbバインド撤廃の経緯、
-  今回の復活判断の前提確認元)。
+  読み取り機構は既存。config1.db書き込み機能(§D3.2の専用Fnキー追加支援用)を
+  Phase 1で新設する。
+- `crates/awase-windows/examples/gji_composition_probe.rs` — 本ADRの検証(§1.4)に
+  使った自前IMM32プローブ。「完全パススルー」版`CharsetSlot`は不採用になったが、
+  SendInputのGJIへの到達性・`ImmGetConversionStatus`による確認可能性の実証記録
+  として使い捨てツールのまま残す。§D3.2の専用Fnキー構成の実機検証(Phase 2)にも
+  再利用する。
+- `crates/awase-windows/src/runtime/transport.rs` — BUG-52対応のDBEレンジ
+  無条件Suppress。Phase 1で決定3 §D3.6の新設ユーザー設定によって条件分岐する
+  よう変更する(既定は現状維持の「常にSuppress」)。
+- `src/config.rs` — `muhenkan_solo_tap_always_suppress`(既存)。Phase 1で
+  `Hiragana`/`Katakana`/`Eisu`/`Shift+Muhenkan`向けの対になる設定項目を追加する。
+- `crates/awase-windows/src/msime_key_assignment.rs` — MS-IMEキー割当ての
+  レジストリ読み取り+警告(`check_and_warn()`)。決定4 §D3.1のベストエフォート
+  助言ロジックがこの既存パターンを踏襲する(実装追加は不要、位置づけの追認のみ)。
+- `crates/awase-windows/src/state/conv_classify.rs` — `has_katakana`が
+  `ConvSyncReason::KatakanaShadowOff`(BUG-50)に使われている。既存の観測
+  ベースの機構であり、決定3が新設する設定・Fnキーには影響を受けない(§D3.3)。
+- `crates/awase-windows/src/state/eisu_recovery.rs` — かな⇔英数境界の
+  belief回復(ObservedEisu、BUG-57)。決定3 §D3.4で、かな形状とは別軸として
+  参照するのみで変更しない。
+- `docs/known-bugs.md` BUG-14(MS-IME打鍵毎DBEキー送出)・BUG-25(GJI
+  SendInput/IMC write到達性)・BUG-50(カタカナ復旧デッドロック)・BUG-52
+  (物理DBEキー漏洩、2026-08-05実機)・BUG-57(ObservedEisu救済)・
+  BUG-61(romaji軸解決不能)・BUG-62(Alt+かなswallow)。muhenkan_solo_tap_always_suppress
+  導入根拠の2026-08-07実機事象(既知バグ番号未確認、`src/config.rs:217`の
+  docコメント参照)。
+- `docs/adr/057-gji-keybind-f13f14-to-f21f22.md`(F13/F14を避ける根拠。
+  F21/F22が安全な理由の直接的な根拠として§1.4/§3で参照)、
+  `docs/adr/067-vk-ime-on-off-migration.md`(config1.dbバインド撤廃の経緯)。
 - mozc本家ソース(`github.com/google/mozc`、Apache-2.0、2026-08-13時点の
   masterブランチを直接確認):
   - `src/data/keymap/ms-ime.tsv`/`atok.tsv`/`kotoeri.tsv` — 3プリセットの
-    キーバインド定義。決定3.2/3.4の直接的な根拠。
-  - `src/session/session.cc::Session::CompositionModeSwitchKanaType` —
-    かな循環(ひらがな→全角カタカナ→半角カタカナ)の実装。
+    キーバインド定義。決定3 §D3.2/§D3.5の直接的な根拠。
+  - `src/session/session.cc::Session::CompositionModeSwitchKanaType`/
+    `SwitchKanaType`/`SwitchInputMode` — かな循環の実装。`SwitchInputMode`が
+    永続`input_mode`を書き換えるのに対し`SwitchKanaType`(Composition/
+    Conversion用)はそれを書き換えない、という非対称性の根拠(決定3 §D3.2)。
   - `src/composer/composer.cc::Composer::ToggleInputMode` — 英数トグル
     (ひらがな⇄半角英数の二値トグル、全角英数は経由しない)の実装。
+  - `src/composer/key_parser.cc::kSpecialKeyMap` — キートークン語彙。F24上限、
+    DBE系・マルチメディア系トークンが存在しないことの根拠(§1.4項目3類)。
 
-## 7. 関連ADR
+## 6. 関連ADR
 
 - ADR-067: open軸のVK_IME_ON/OFF移行。本ADRのopen軸の結論はこれを維持。
-- ADR-085/086/087: force-write・warrant分離。charset軸の意図管理(トレイ操作等)は
-  これらの既存機構と整合させる(Phase 1実装時に詳細設計)。
+- ADR-084/086: conv-mode単一所有権・force-write。**当初は「エンジンON中は
+  ConvModeAuthority::AwaseOwnedがconv modeをRomajiHiraganaへ強制ロックするため
+  かな形状の切替が実質無意味になる」という論拠に使ったが、第2回Opusレビューで
+  誤りと判明した(`ConvModePolicy`既定は`Observe`でForce化はオプトイン、Force時の
+  ターゲットもトレイ選択モードであって固定`RomajiHiragana`ではない)。この論拠は
+  撤回し、決定3は§D3.2の専用Fnキー構成に一本化した。**
 - ADR-088/089/090: 軸capabilityモデル・型状態パターン。本ADRのcharset軸の
-  「GJI推奨・MS-IME自己責任」という結論は、これらが提案していた「プロファイルごとの
-  能力表」という考え方の実践例と位置づけられる(GJI=Idempotent、MS-IME=対象外)。
+  「GJI推奨、抑止/パススルーはユーザー設定+ベストエフォート助言、awaseは新しい
+  beliefを持たない」という結論は、これらが提案していた「プロファイルごとの
+  能力表」という考え方の実践例と位置づけられる。
