@@ -222,6 +222,17 @@ pub struct Runtime {
     /// 有効化・離脱時の自動解除いずれも行わない）。`apply_config_update`/
     /// 起動時に反映される。
     muhenkan_dedicated_fn_key_is_manual: bool,
+    /// 専用Fnキー変換モードが現在有効か（`set_muhenkan_dedicated_fn_key_config`/
+    /// `set_muhenkan_dedicated_fn_key_auto` に渡された最新の値が `Some` か）。
+    /// `gji_charset_popup` が「既に有効なら設定支援ポップアップを出さない」
+    /// 判定に使う。
+    muhenkan_dedicated_fn_key_active: bool,
+    /// `!config.general.muhenkan_solo_tap_always_suppress`（無変換単独タップが
+    /// 素のパススルー設定になっているか）。GJI向け設定支援ポップアップ
+    /// （ADR-091 §D3.2「設定未完了時のポップアップ」、`gji_charset_popup`）が
+    /// 「ポップアップを出すべきか」の判定に使う。`apply_config_update`/
+    /// 起動時に反映される。
+    muhenkan_solo_tap_is_passthrough: bool,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1176,6 +1187,8 @@ impl Runtime {
             last_force_open_ms: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_is_manual: false,
+            muhenkan_dedicated_fn_key_active: false,
+            muhenkan_solo_tap_is_passthrough: false,
         }
     }
 
@@ -1198,6 +1211,7 @@ impl Runtime {
     ) {
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_is_manual = is_manual;
+        self.muhenkan_dedicated_fn_key_active = vk.is_some();
     }
 
     /// `state::gji_charset_autodetect` が GJI 検出/離脱時に専用Fnキー変換モードを
@@ -1208,12 +1222,34 @@ impl Runtime {
             return;
         }
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
+        self.muhenkan_dedicated_fn_key_active = vk.is_some();
     }
 
     /// `state::gji_charset_autodetect` が手動設定かどうかを判定するための読み取り専用アクセサ。
     #[must_use]
     pub(crate) const fn muhenkan_dedicated_fn_key_is_manual(&self) -> bool {
         self.muhenkan_dedicated_fn_key_is_manual
+    }
+
+    /// `gji_charset_popup` が「専用Fnキー変換が既に有効なら設定支援ポップアップを
+    /// 出さない」判定に使う読み取り専用アクセサ。
+    #[must_use]
+    pub(crate) const fn muhenkan_dedicated_fn_key_active(&self) -> bool {
+        self.muhenkan_dedicated_fn_key_active
+    }
+
+    /// `config.general.muhenkan_solo_tap_always_suppress` の反転値を反映する。
+    /// 起動時（`bootstrap.rs`）と `apply_config_update`（reload 時）の両方から呼ぶ。
+    pub(crate) fn set_muhenkan_solo_tap_is_passthrough(&mut self, is_passthrough: bool) {
+        self.muhenkan_solo_tap_is_passthrough = is_passthrough;
+    }
+
+    /// `gji_charset_popup`（ADR-091 §D3.2「設定未完了時のポップアップ」）が
+    /// 「無変換単独タップが素のパススルー設定になっているか」を判定するための
+    /// 読み取り専用アクセサ。
+    #[must_use]
+    pub(crate) const fn muhenkan_solo_tap_is_passthrough(&self) -> bool {
+        self.muhenkan_solo_tap_is_passthrough
     }
 
     /// トレイアイコンの HWND を返す。
@@ -1417,6 +1453,9 @@ impl Runtime {
             self.set_muhenkan_dedicated_fn_key_config(
                 resolve_dedicated_fn_key(manual_fn_key),
                 manual_fn_key.is_some(),
+            );
+            self.set_muhenkan_solo_tap_is_passthrough(
+                !config.general.muhenkan_solo_tap_always_suppress,
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()

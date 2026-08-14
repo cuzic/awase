@@ -469,6 +469,7 @@ pub(super) fn initialize_app(
             crate::runtime::resolve_dedicated_fn_key(manual_fn_key),
             manual_fn_key.is_some(),
         );
+        app.set_muhenkan_solo_tap_is_passthrough(!config.general.muhenkan_solo_tap_always_suppress);
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

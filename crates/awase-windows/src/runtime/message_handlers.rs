@@ -394,6 +394,14 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
             crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
         ),
     );
+    if detected
+        && matches!(
+            kind,
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        )
+    {
+        crate::gji_charset_popup::maybe_show_setup_popup(app);
+    }
 }
 
 /// WM_IME_KIND_CHANGED ハンドラ
