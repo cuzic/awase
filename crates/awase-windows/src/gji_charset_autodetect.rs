@@ -133,6 +133,18 @@ mod windows_impl {
         let Some(raw) = awase_gji_config::wire::parse_top_level(&bytes) else {
             return;
         };
+        if raw.session_keymap != Some(awase_gji_config::SESSION_KEYMAP_CUSTOM) {
+            // session_keymap が CUSTOM でなければ（ATOK/MS-IME 等のプリセット
+            // 選択中）、custom_keymap_table に何が残っていても GJI はそれを
+            // 参照しない。古いカスタムテーブルの残骸を誤って有効と判定しない
+            // ための必須ガード（Opus レビュー指摘）。
+            log::debug!(
+                "[gji-charset-autodetect] session_keymap が CUSTOM ではないため \
+                 自動判定をスキップ: {:?}",
+                raw.session_keymap
+            );
+            return;
+        }
         let Some(table) = raw.custom_keymap_table else {
             return;
         };

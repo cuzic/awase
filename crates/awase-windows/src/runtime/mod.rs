@@ -1450,10 +1450,17 @@ impl Runtime {
                 },
             );
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-            self.set_muhenkan_dedicated_fn_key_config(
-                resolve_dedicated_fn_key(manual_fn_key),
-                manual_fn_key.is_some(),
-            );
+            if manual_fn_key.is_some() || self.muhenkan_dedicated_fn_key_is_manual() {
+                // 手動設定が今回あるか、直前まで手動設定だった（＝今回外れた）場合
+                // のみ反映する。手動設定が既に無い（自動判定/ポップアップに委ねて
+                // いる）場合はここで触らない — 無関係な設定リロードのたびに
+                // 自動判定/ポップアップが有効化した専用Fnキーを None で
+                // 上書きしてしまう回帰を防ぐ（Opus レビュー指摘）。
+                self.set_muhenkan_dedicated_fn_key_config(
+                    resolve_dedicated_fn_key(manual_fn_key),
+                    manual_fn_key.is_some(),
+                );
+            }
             self.set_muhenkan_solo_tap_is_passthrough(
                 !config.general.muhenkan_solo_tap_always_suppress,
             );

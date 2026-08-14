@@ -68,6 +68,14 @@ pub fn read_gji_mode_keys(bytes: &[u8]) -> GjiModeKeys {
     keymap::extract_mode_keys(&table)
 }
 
+/// Mozc `SessionKeymap` enum の `CUSTOM` 値。
+///
+/// `config.proto`（非公式知識だが `google/mozc` 本家ソースで確認済み:
+/// `NONE=-1, CUSTOM=0, ATOK=1, MSIME=2, KOTOERI=3, MOBILE=4, CHROMEOS=5, ...`）。
+/// `session_keymap` がこの値でない（ATOK/MS-IME 等のプリセットが選択されている）
+/// 場合、GJI は `custom_keymap_table` を一切参照しない。
+pub const SESSION_KEYMAP_CUSTOM: i64 = 0;
+
 /// `write_dedicated_fn_key_binding` の失敗理由。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteDedicatedFnKeyError {
@@ -81,6 +89,14 @@ pub enum WriteDedicatedFnKeyError {
         /// 衝突の原因になった既存の行（`status\tkey\tcommand`）。
         rows: Vec<String>,
     },
+    /// `session_keymap` が [`SESSION_KEYMAP_CUSTOM`] でない（ATOK/MS-IME 等の
+    /// プリセットが選択されている）。この状態で `custom_keymap_table` を
+    /// 書いても GJI はそれを一切参照しないため、書き込む意味が無く中止する。
+    /// ユーザーが GJI の「キー設定」を「カスタム」に切り替えてから再試行する
+    /// 必要がある（`session_keymap` 自体の書き換えは、他の既存カスタム
+    /// バインド全体の有効/無効を左右する影響範囲の大きい変更になるため、
+    /// このクレートは行わない）。
+    NotCustomKeymap,
 }
 
 /// `config1.db` の生バイト列に、専用Fnキー変換（ADR-091 §D3.2）のエントリを
@@ -101,13 +117,17 @@ pub enum WriteDedicatedFnKeyError {
 ///
 /// # Errors
 ///
-/// `bytes` が protobuf として解釈できない場合、または `vk_key` の既存バインドが
+/// `bytes` が protobuf として解釈できない場合、`session_keymap` が
+/// [`SESSION_KEYMAP_CUSTOM`] でない場合、または `vk_key` の既存バインドが
 /// 既知の残骸パターンと一致しない場合。
 pub fn write_dedicated_fn_key_binding(
     bytes: &[u8],
     vk_key: &str,
 ) -> Result<Vec<u8>, WriteDedicatedFnKeyError> {
     let raw = wire::parse_top_level(bytes).ok_or(WriteDedicatedFnKeyError::UnparsableConfig)?;
+    if raw.session_keymap != Some(SESSION_KEYMAP_CUSTOM) {
+        return Err(WriteDedicatedFnKeyError::NotCustomKeymap);
+    }
     let existing_table = raw.custom_keymap_table.unwrap_or_default();
     if let write::ExistingBinding::Conflict { rows } =
         write::classify_existing_binding(&existing_table, vk_key)
@@ -125,10 +145,15 @@ mod tests {
         read_gji_ime_keys, write_dedicated_fn_key_binding, GjiImeKeys, WriteDedicatedFnKeyError,
     };
 
-    /// field 42 (LEN) に `table` を積んだだけの最小 protobuf バイト列を作る
-    /// （`end_to_end_from_encoded_custom_keymap_table` と同じ手法）。
+    /// `session_keymap = SESSION_KEYMAP_CUSTOM`（field 22）と
+    /// `custom_keymap_table = table`（field 42）を積んだ最小 protobuf バイト列を
+    /// 作る。`write_dedicated_fn_key_binding` は `session_keymap ==
+    /// Some(SESSION_KEYMAP_CUSTOM)` を前提とするため、このヘルパーはその前提を
+    /// 満たす「カスタムキーマップ選択中」のフィクスチャを表す。
     fn encode_custom_keymap_table_only(table: &str) -> Vec<u8> {
-        let mut bytes = vec![0xD2u8, 0x02];
+        let mut bytes = vec![176u8, 1, 0]; // field 22 (session_keymap) = CUSTOM(0)
+        bytes.push(0xD2u8);
+        bytes.push(0x02);
         bytes.push(u8::try_from(table.len()).expect("fixture length fits in u8"));
         bytes.extend_from_slice(table.as_bytes());
         bytes
@@ -202,28 +227,84 @@ Conversion\tF21\tIMEOn
     /// 中止し、書き込まない。
     #[test]
     fn write_dedicated_fn_key_binding_refuses_on_conflict() {
-        let table = "status\tkey\tcommand\nComposition\tF21\tSwitchKanaType\n";
+        let table = "status\tkey\tcommand\nComposition\tF21\tBackspace\n";
         let bytes = encode_custom_keymap_table_only(table);
         let err = write_dedicated_fn_key_binding(&bytes, "F21").expect_err("should conflict");
         assert!(matches!(err, WriteDedicatedFnKeyError::Conflict { .. }));
     }
 
+    /// `write_dedicated_fn_key_binding` は冪等: 一度書き込んだ結果に対して
+    /// 再度呼んでも衝突扱いにならず、同じ内容を返す（同一セッション内の
+    /// ポップアップ再試行、または複数セッションでの再検出のいずれでも
+    /// 失敗しないことの固定）。
+    #[test]
+    fn write_dedicated_fn_key_binding_is_idempotent() {
+        let bytes = encode_custom_keymap_table_only("status\tkey\tcommand\n");
+        let once = write_dedicated_fn_key_binding(&bytes, "F21").expect("should write");
+        let twice = write_dedicated_fn_key_binding(&once, "F21").expect("should write again");
+        assert_eq!(once, twice);
+    }
+
     #[test]
     fn write_dedicated_fn_key_binding_on_unparsable_bytes_is_error() {
-        // group wire type (3) は未対応のため中止する。
-        let bytes = [(5 << 3) | 3];
+        // session_keymap = CUSTOM を先に置き、その後ろに group wire type (3、
+        // 未対応)を続ける。session_keymap チェックは通過させた上で、
+        // replace_custom_keymap_table 側の再走査が壊れたバイト列を検出することを
+        // 固定する（session_keymap チェックより先に UnparsableConfig を返す
+        // ケースの回帰）。
+        let mut bytes = vec![176u8, 1, 0]; // field 22 (session_keymap) = CUSTOM(0)
+        bytes.push((5 << 3) | 3); // field 5, group wire type (未対応)
         let err = write_dedicated_fn_key_binding(&bytes, "F21").expect_err("should be unparsable");
         assert_eq!(err, WriteDedicatedFnKeyError::UnparsableConfig);
     }
 
-    /// `custom_keymap_table`（field 42）自体が元々存在しなくても書き込める
-    /// （新規追加、GJIがプリセットキーマップ選択中の場合等）。
+    /// `parse_top_level` 自体が空バイト列で `None` を返すケース
+    /// （session_keymap チェックに到達する前に中止する）。
+    #[test]
+    fn write_dedicated_fn_key_binding_on_empty_bytes_is_unparsable() {
+        let err = write_dedicated_fn_key_binding(&[], "F21").expect_err("should be unparsable");
+        assert_eq!(err, WriteDedicatedFnKeyError::UnparsableConfig);
+    }
+
+    /// `custom_keymap_table`（field 42）自体が元々存在しなくても、
+    /// `session_keymap = CUSTOM` でさえあれば新規追加できる
+    /// （カスタムキーマップを選択した直後、まだ何もカスタマイズしていない状態）。
     #[test]
     fn write_dedicated_fn_key_binding_creates_table_when_absent() {
-        // field 22 (varint=1) のみ、field 42 は無し。
-        let bytes: &[u8] = &[176, 1, 1];
+        // field 22 (session_keymap = CUSTOM) のみ、field 42 は無し。
+        let bytes: &[u8] = &[176, 1, 0];
         let written = write_dedicated_fn_key_binding(bytes, "F21").expect("should write");
         let mode_keys = super::read_gji_mode_keys(&written);
         assert_eq!(mode_keys.toggle_kana_type, vec!["VK_F21".to_string()]);
+    }
+
+    /// `session_keymap` が `CUSTOM` でない（プリセット選択中、またはフィールド
+    /// 自体が無い）場合、`custom_keymap_table` に何が書かれていても GJI は
+    /// それを参照しないため、書き込みを中止する（Opus レビュー指摘）。
+    #[test]
+    fn write_dedicated_fn_key_binding_refuses_when_not_custom_keymap() {
+        // field 22 (session_keymap = ATOK = 1)。
+        let bytes: &[u8] = &[176, 1, 1];
+        let err = write_dedicated_fn_key_binding(bytes, "F21").expect_err("should refuse");
+        assert_eq!(err, WriteDedicatedFnKeyError::NotCustomKeymap);
+    }
+
+    /// `session_keymap` フィールド自体が無い場合も同様に中止する
+    /// （デフォルトが `CUSTOM` である保証がない、安全側に倒す）。
+    #[test]
+    fn write_dedicated_fn_key_binding_refuses_when_session_keymap_absent() {
+        let bytes =
+            encode_custom_keymap_table_only_without_session_keymap("status\tkey\tcommand\n");
+        let err = write_dedicated_fn_key_binding(&bytes, "F21").expect_err("should refuse");
+        assert_eq!(err, WriteDedicatedFnKeyError::NotCustomKeymap);
+    }
+
+    /// `session_keymap` を含めない `custom_keymap_table` のみのフィクスチャ
+    /// （`refuses_when_session_keymap_absent` 専用）。
+    fn encode_custom_keymap_table_only_without_session_keymap(table: &str) -> Vec<u8> {
+        let mut bytes = vec![0xD2u8, 0x02];
+        bytes.push(u8::try_from(table.len()).expect("fixture length fits in u8"));
+        bytes.extend_from_slice(table.as_bytes());
+        bytes
     }
 }

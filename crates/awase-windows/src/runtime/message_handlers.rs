@@ -24,7 +24,7 @@ use crate::{
     TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
 };
 use awase::platform::ImeOpenOutcome;
-use awase::types::ContextChange;
+use awase::types::{ContextChange, VkCode};
 
 use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
 
@@ -346,6 +346,25 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     );
 }
 
+/// WM_GJI_CHARSET_FN_KEY_ACTIVATED ハンドラ。
+///
+/// `gji_charset_popup` がバックグラウンドスレッドで `config1.db` への書き込みに
+/// 成功した直後に `post_to_main_thread_with` で投函する（`wparam` に
+/// 有効化する `VkCode` の生値を積む）。メインスレッドに戻ってから
+/// `with_app` 経由で反映することで、`SingleThreadCell`（`RUNTIME`）への
+/// クロススレッドアクセスを避ける。
+pub(crate) fn handle_wm_gji_charset_fn_key_activated(app: &mut Runtime, wparam: usize) {
+    let Ok(raw) = u16::try_from(wparam) else {
+        log::warn!(
+            "[gji-charset-popup] WM_GJI_CHARSET_FN_KEY_ACTIVATED: wparam が VkCode 範囲外: {wparam}"
+        );
+        return;
+    };
+    let vk = VkCode(raw);
+    log::info!("[gji-charset-popup] config1.db 書き込み成功をメインスレッドで反映: {vk:?}");
+    app.set_muhenkan_dedicated_fn_key_auto(Some(vk));
+}
+
 /// WM_PANIC_RESET ハンドラ
 pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
@@ -386,13 +405,16 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
 
     // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）を
     // 自動判定する（同§D3.1項目1）。MS-IME 割当てチェックと対称に、この
-    // 「IME 種別に依存する副作用の単一の合流点」に置く。
+    // 「IME 種別に依存する副作用の単一の合流点」に置き、同じ理由で detected
+    // を見る（未検出時の active_ime_kind() が安全デフォルトとして
+    // MicrosoftIme を返す実装詳細に暗黙に依存せず、明示的にゲートする）。
     crate::gji_charset_autodetect::sync_gji_charset_autodetect(
         app,
-        matches!(
-            kind,
-            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        ),
+        detected
+            && matches!(
+                kind,
+                crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+            ),
     );
     if detected
         && matches!(

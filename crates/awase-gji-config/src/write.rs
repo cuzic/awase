@@ -33,26 +33,44 @@ pub enum ExistingBinding {
     },
 }
 
+/// ある1行（`status`/`command`）が「安全に上書きできる」と認識できるか。
+///
+/// 2パターンを認識する:
+/// - `IMEOn`/`IMEOff`（BUG-64 が記録する旧 ADR-057 世代の残骸パターン）。
+/// - `SwitchKanaType`（`ToggleKanaType` に分類される）かつ `status` が
+///   [`TARGET_STATUSES`] のいずれか。これは [`upsert_dedicated_fn_key_entries`]
+///   自身が書き込む内容と同じであり、**既に自分が書き込んだ結果を「衝突」と
+///   誤判定して2回目以降の書き込みが失敗する非冪等な挙動を防ぐ**
+///   （再実行・別セッションでの再検出いずれでも同じ結果になるべきため）。
+fn is_recognized_safe(status: &str, command: &str) -> bool {
+    match classify_command(command) {
+        GjiModeCommand::ImeOn | GjiModeCommand::ImeOff => true,
+        GjiModeCommand::ToggleKanaType => TARGET_STATUSES.contains(&status),
+        GjiModeCommand::SetMode(_)
+        | GjiModeCommand::ToggleAlphanumericMode
+        | GjiModeCommand::Other => false,
+    }
+}
+
 /// `existing_table`（現在の `custom_keymap_table` TSV）における `vk_key` の
 /// 既存バインドを検査する（ADR-091 §4 Phase1-3 の「既存バインドとの衝突検出」）。
 #[must_use]
 pub fn classify_existing_binding(existing_table: &str, vk_key: &str) -> ExistingBinding {
-    let rows: Vec<String> = parse_custom_keymap_table(existing_table)
+    let matching_rows: Vec<_> = parse_custom_keymap_table(existing_table)
         .into_iter()
         .filter(|row| row.key == vk_key)
-        .map(|row| format!("{}\t{}\t{}", row.status, row.key, row.command))
         .collect();
-    if rows.is_empty() {
+    if matching_rows.is_empty() {
         return ExistingBinding::None;
     }
-    let all_are_ime_on_off = rows.iter().all(|row| {
-        let command = row.rsplit('\t').next().unwrap_or("");
-        matches!(
-            classify_command(command),
-            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff
-        )
-    });
-    if all_are_ime_on_off {
+    let rows: Vec<String> = matching_rows
+        .iter()
+        .map(|row| format!("{}\t{}\t{}", row.status, row.key, row.command))
+        .collect();
+    let all_recognized = matching_rows
+        .iter()
+        .all(|row| is_recognized_safe(&row.status, &row.command));
+    if all_recognized {
         ExistingBinding::KnownAwaseResidual { rows }
     } else {
         ExistingBinding::Conflict { rows }
@@ -125,13 +143,37 @@ Conversion\tF22\tIMEOff
         ));
     }
 
-    /// 既存行に `SwitchKanaType`（他アプリ or ユーザー自身の既存設定）が
-    /// 混ざっていれば、既知の残骸パターンとは一致しないため衝突扱い。
+    /// 既存行に `IMEOn`/`IMEOff`/`SwitchKanaType`（対象 status）のいずれでもない
+    /// コマンドが混ざっていれば、既知の残骸パターンとは一致しないため衝突扱い。
     #[test]
     fn unrelated_command_is_conflict() {
-        let table = "status\tkey\tcommand\nComposition\tF21\tSwitchKanaType\n";
+        let table = "status\tkey\tcommand\nComposition\tF21\tBackspace\n";
         let classification = classify_existing_binding(table, "F21");
         assert!(matches!(classification, ExistingBinding::Conflict { .. }));
+    }
+
+    /// `SwitchKanaType` でも、[`TARGET_STATUSES`] に含まれない `status`
+    /// （例: `Precomposition`、D3.2 で意図的に未バインドとする状態）に
+    /// バインドされていれば、`upsert_dedicated_fn_key_entries` が書く内容とは
+    /// 異なるため衝突扱いのまま。
+    #[test]
+    fn switch_kana_type_at_precomposition_is_still_conflict() {
+        let table = "status\tkey\tcommand\nPrecomposition\tF21\tSwitchKanaType\n";
+        let classification = classify_existing_binding(table, "F21");
+        assert!(matches!(classification, ExistingBinding::Conflict { .. }));
+    }
+
+    /// `upsert_dedicated_fn_key_entries` 自身が書き込んだ内容
+    /// （Composition/Conversion/Prediction/Suggestion への `SwitchKanaType`）は
+    /// 「既に自分が書き込んだ結果」として安全に上書きできる（冪等性の根拠）。
+    #[test]
+    fn own_prior_output_is_known_safe_not_conflict() {
+        let table = upsert_dedicated_fn_key_entries("", "F21");
+        let classification = classify_existing_binding(&table, "F21");
+        assert!(
+            matches!(classification, ExistingBinding::KnownAwaseResidual { .. }),
+            "自分が直前に書き込んだ内容は衝突扱いにならないはず: {classification:?}"
+        );
     }
 
     #[test]

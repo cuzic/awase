@@ -83,6 +83,13 @@ mod windows_impl {
     }
 
     /// ユーザー同意後、実際に `config1.db` へ書き込み、結果を通知する。
+    ///
+    /// この関数はダイアログスレッド（非メインスレッド）で動く。`RUNTIME`
+    /// （`SingleThreadCell`）はメインスレッド以外からのアクセスを許さないため
+    /// （`crate::with_app` を直接呼んではいけない）、成功時は
+    /// `WM_GJI_CHARSET_FN_KEY_ACTIVATED` をメインスレッドへ投函し、
+    /// `runtime::message_handlers::handle_wm_gji_charset_fn_key_activated` が
+    /// `with_app` 経由で実際の反映を行う。
     fn apply_and_notify() {
         match crate::gji_charset_write::apply_dedicated_fn_key_binding(RECOMMENDED_GJI_KEY) {
             Ok(()) => {
@@ -90,19 +97,31 @@ mod windows_impl {
                     "[gji-charset-popup] config1.db へ専用Fnキー変換を書き込みました \
                      （{RECOMMENDED_GJI_KEY}）"
                 );
-                // 書き込みと同時に、次回 GJI 再起動を待たずともこのプロセス内では
+                // 書き込みと同時に、次回 GJI 起動を待たずともこのプロセス内では
                 // 即座にエンジン側も有効化する（手動設定ではなく自動判定扱い、
-                // 手動設定フラグは立てない）。
-                let _ = crate::with_app(|app| {
-                    app.set_muhenkan_dedicated_fn_key_auto(crate::vk::VkCodeExt::from_name(
-                        RECOMMENDED_VK_NAME,
-                    ));
-                });
+                // 手動設定フラグは立てない）。メインスレッドへ投函するのみで、
+                // ここでは Runtime に一切触れない。
+                if let Some(vk) =
+                    <awase::types::VkCode as crate::vk::VkCodeExt>::from_name(RECOMMENDED_VK_NAME)
+                {
+                    crate::win32::post_to_main_thread_with(
+                        crate::WM_GJI_CHARSET_FN_KEY_ACTIVATED,
+                        usize::from(vk.0),
+                        0,
+                    );
+                }
+                // GJI が起動中のまま config1.db を直接書き換えているため、GJI
+                // 終了時にメモリ上の（書き込み前の）内容で上書きされるリスクが
+                // ある。「タスクトレイから終了→起動」はまさにこの上書きを
+                // 誘発しうるため案内しない。サインアウト/インはセッション内の
+                // 全プロセスを確実に終了させてから起動し直すため、この上書き
+                // リスクを避けられる。
                 show_result_dialog(
                     "設定を追加しました。\n\n\
-                     Google 日本語入力を再起動すると（タスクトレイのアイコンを右クリック\
-                     →終了して再度起動、またはサインアウト/インで）、\
-                     変換中のかな形状トグルが専用Fnキー経由で使えるようになります。",
+                     Google 日本語入力（GJI）は現在起動中のため、今すぐ確実に反映するには\
+                     サインアウトしてからサインインし直してください。\n\
+                     （GJI が起動したまま「タスクトレイから終了して再起動」を行うと、\
+                     GJI 終了時に書き込み前の設定で上書きされ、この変更が消えることがあります）",
                 );
             }
             Err(err) => {

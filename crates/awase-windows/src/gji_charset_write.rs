@@ -45,6 +45,13 @@ impl std::fmt::Display for ApplyError {
                     rows.join("\n")
                 )
             }
+            Self::Convert(awase_gji_config::WriteDedicatedFnKeyError::NotCustomKeymap) => write!(
+                f,
+                "Google 日本語入力の「キー設定」がカスタム以外（ATOK 風/MS-IME 風等の\
+                 プリセット）になっているため、設定を追加できませんでした。\n\n\
+                 GJI の設定メニューから「キー設定」を「カスタム」に切り替えてから、\
+                 もう一度お試しください。"
+            ),
             Self::WriteFailed => write!(
                 f,
                 "config1.db への書き込みに失敗しました（バックアップは作成済みです）"
