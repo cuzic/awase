@@ -8121,3 +8121,38 @@ flaky性を根治するものではない。
 **関連:** 行4661（`TSF_OBS_TEST_LOCK` 統一の初出）、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
 
+**2026-08-14 追補（残る2件のうち `ms_ime_ready_coro` 側の真因を特定・修正）:**
+上記の poison-resilience 対応後にユーザーが実機で再実行したところ、10件の
+連鎖失敗は解消し、`probe_fallback_waits_total_max_ms`（真因未修正、上記のまま）
+に加えて `tsf::warmup::ms_ime_ready_coro::tests::phase1_does_not_hold_output_gate_only_phase2_does`
+が単独で失敗した（`OUTPUT_GATE.is_active()` が Phase 2 到達時点で期待に反し
+`false`）。
+
+このテストは自前の `GATE_TEST_LOCK`（当時ファイルローカル）を取得してから
+`OutputActiveGuard::begin()` を実際に呼ぶ Phase 2 へ進むが、
+`output/probe_io.rs` の GJI 系テスト2件
+（`tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect`、
+`long_idle_tsf_mode_keeps_literal_detect`。いずれも `plan.needs_literal=true`
+で `dispatch_probe_actions` → `GjiWarmupCoro::apply_transmit_done` →
+`literal_detect_guard = Some(OutputActiveGuard::begin())` に到達する）が
+**一切ロックを取らずに同じプロセス全体共有 `OUTPUT_GATE` を実際にミューテート**
+していた。`TsfProbeCoro` 用の `make_chrome_machine()`（同ファイル）は
+`OutputActiveGuard::noop_for_test()` を経由するよう既に対処済みだったが、
+`GjiWarmupCoro` の `literal_detect_guard` は construction 時ではなく
+tick 中に遅延生成されるため同じ回避策がなく、この非対称性が見落とされていた。
+`cargo test` の並列実行下で、この2件のいずれかが `ms_ime_ready_coro` の
+Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテストで
+共有されてしまい、`ms_ime_ready_coro` 側が `is_active()` を確認する瞬間に
+`probe_io.rs` 側が先に drop してしまう（またはその逆）ことで偽陽性の
+失敗を起こしうる。
+
+**修正:** `tsf/probe_bridge.rs` に `TSF_OBS_TEST_LOCK` と同型の
+`OUTPUT_GATE_TEST_LOCK`（`#[cfg(test)]`）を新設し、`ms_ime_ready_coro.rs`
+のファイルローカル `GATE_TEST_LOCK` をこれへの re-export に置き換えた上で、
+`output/probe_io.rs` の上記2テストにも同じロックを追加した。`TransmitSingleVk`
+アクションを dispatch するテストは本ファイルに存在しない
+（`apply_vk_sent` 経由の同種の穴は現状なし）ことを grep で確認済み。
+
+**関連:** BUG-58（`OutputActiveGuard` を Phase 2 のみで確保する設計の初出）、
+`tsf/probe_bridge.rs::OUTPUT_GATE_TEST_LOCK`。
+

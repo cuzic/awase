@@ -235,16 +235,19 @@ mod tests {
         }
     }
 
-    /// BUG-58 レビュー指摘: `OUTPUT_GATE`（`tsf/probe_bridge.rs`）はプロセス全体で
-    /// 共有される static。Phase 2（Transmit yield 直前）に到達するテストは
-    /// `OutputActiveGuard::begin()` を実際に呼ぶため、`cargo test` の既定の
-    /// マルチスレッド実行下では、このファイル内で Phase 2 に到達する複数テストが
-    /// 互いの `depth`/`active` を汚染しうる（同ファイル外の
-    /// `GjiWarmupCoro`/`ChromeProbe`/`LiteralDetectFsm` 等も同じ static を触るため、
-    /// クレート全体での競合は完全には排除できないが、少なくともこのファイル内の
-    /// テスト同士は直列化する）。Phase 2 に到達する全テストの先頭でこのロックを
-    /// 取ること。
-    static GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// BUG-58 レビュー指摘・BUG-65 追補（2026-08-14）: `OUTPUT_GATE`
+    /// （`tsf/probe_bridge.rs`）はプロセス全体で共有される static。Phase 2
+    /// （Transmit yield 直前）に到達するテストは `OutputActiveGuard::begin()` を
+    /// 実際に呼ぶため、`cargo test` の既定のマルチスレッド実行下では、同じ static を
+    /// 触る他ファイルのテスト（`output::probe_io` の GJI 系 `needs_literal: true`
+    /// テスト等）と競合しうる。`observer.rs::TSF_OBS_TEST_LOCK` と同型のロック統一
+    /// として `probe_bridge.rs::OUTPUT_GATE_TEST_LOCK` に1本化した
+    /// （旧: このファイルローカルの `GATE_TEST_LOCK` だけでは他ファイルを守れず、
+    /// `output::probe_io::tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect`
+    /// 等が無施錠で `OUTPUT_GATE` を実際にミューテートしていたため実機で稀に
+    /// このファイルの Phase 2 アサーションが偽陽性で失敗しうる状態だった）。
+    /// Phase 2 に到達する全テストの先頭でこのロックを取ること。
+    use crate::tsf::probe_bridge::OUTPUT_GATE_TEST_LOCK as GATE_TEST_LOCK;
 
     #[test]
     fn native_ready_requires_confirmation() {

@@ -64,6 +64,16 @@ impl OutputGate {
 
 pub static OUTPUT_GATE: OutputGate = OutputGate::new();
 
+/// `OUTPUT_GATE` はプロセス全体で共有される単一の `static` であり、`cargo test`は
+/// デフォルトで複数スレッド並行実行する。`OutputActiveGuard::begin()`（noop でない方）
+/// を実際に呼ぶテストは、この global を実際にミューテートするため互いに排他する必要が
+/// ある（`tsf::warmup::ms_ime_ready_coro`・`output::probe_io` の GJI 系テストで共有、
+/// 詳細は `ms_ime_ready_coro.rs` の `phase1_does_not_hold_output_gate_only_phase2_does`
+/// コメント参照）。`TSF_OBS_TEST_LOCK`（`observer.rs`）と同型のロック統一（BUG-65 の
+/// 続き、2026-08-14）。
+#[cfg(test)]
+pub(crate) static OUTPUT_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 出力セッションを RAII で管理するガード（参照カウント方式）。
 ///
 /// `begin()` で深度をインクリメントし、深度 0→1 のとき `OUTPUT_GATE.active=true` をセット。
