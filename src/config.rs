@@ -260,12 +260,14 @@ pub struct GeneralConfig {
     /// `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
     /// による従来の抑制/パススルー判定がそのまま適用される。
     ///
-    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F18"`、`"F18"` の
+    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F21"`、`"F21"` の
     /// ような短縮形は不可）を指定する。`validate_dedicated_fn_key` が
-    /// `VK_F15`-`VK_F20`/`VK_F23`/`VK_F24`（物理キー非存在で安全、ADR-057）の
-    /// 範囲外を警告する（`VK_NONCONVERT`/`VK_IME_ON`/`VK_KANJI` 等の危険なキー、
-    /// および BUG-64 の config1.db 残骸バインドと衝突しうる
-    /// `VK_F13`/`VK_F14`/`VK_F21`/`VK_F22` を避けるため）。
+    /// `VK_F15`-`VK_F24`（`VK_F13`/`VK_F14` を除く、物理キー非存在で安全、
+    /// ADR-057）の範囲外を警告する（`VK_NONCONVERT`/`VK_IME_ON`/`VK_KANJI` 等の
+    /// 危険なキー、およびターミナルエスケープシーケンス漏れが実機確認済みの
+    /// `VK_F13`/`VK_F14` を避けるため）。`VK_F21`/`VK_F22` は BUG-64 の
+    /// config1.db 残骸バインドと同番号のため、GJI 側の既存キー設定と
+    /// 衝突していないか確認してから使うこと。
     ///
     /// 有効な場合は既存の抑制/パススルー判定より**手前**で分岐し、composing の
     /// 有無や `always_suppress` の値に関わらず常にこの Fn キーを送出する
@@ -605,21 +607,33 @@ impl AppConfig {
     /// 範囲を絞らないと `VK_NONCONVERT`（`muhenkan_solo_tap_always_suppress` を
     /// 迂回して素の無変換キーが常時飛ぶ、2026-08-07 実機の再発）や `VK_IME_ON`/
     /// `VK_KANJI`（belief を経ない open 軸 actuation が engine 層に生える）を
-    /// 指定できてしまう。`VK_F13`/`VK_F14`/`VK_F21`/`VK_F22` は ADR-057 が
-    /// ターミナル漏れ等で危険と確認済み、または `docs/known-bugs.md` BUG-64 の
-    /// config1.db 残骸バインドと自己衝突しうるため対象から除外し、
-    /// `VK_F15`-`VK_F20`/`VK_F23`/`VK_F24`（物理キー非存在で安全、ADR-057）のみ許可する。
+    /// 指定できてしまう。`VK_F13`/`VK_F14` は ADR-057 が実機（WezTerm/xterm）で
+    /// ターミナルエスケープシーケンス漏れ・DirectInput ゲームとの競合を確認済みの
+    /// 物理キーであり、config1.db の状態に関係なく危険なため除外する。
+    ///
+    /// `VK_F15`-`VK_F24`（F13/F14 を除く）は ADR-057 が WezTerm 実機で
+    /// エスケープシーケンスを生成しないことを確認済みの Windows 予約 VK
+    /// （物理キーボード対応なし）で、いずれも許可する。`VK_F21`/`VK_F22` は
+    /// `docs/known-bugs.md` BUG-64 が記録する旧 ADR-057 設計の config1.db
+    /// 残骸バインドと同じ番号だが、この残骸は 2026-08-13 に実機で確認・削除済み
+    /// であり VK 自体が危険なわけではない。`awase-gji-config` の衝突検出機能
+    /// （ADR-091 §4 Phase1-3、未実装）が入るまでは、GJI 側の既存キー設定に
+    /// 同じ番号が使われていないかをユーザー自身が確認すること。
     fn validate_dedicated_fn_key(g: &GeneralConfig, w: &mut Vec<String>) {
         const SAFE_RANGE: &[&str] = &[
-            "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19", "VK_F20", "VK_F23", "VK_F24",
+            "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19", "VK_F20", "VK_F21", "VK_F22",
+            "VK_F23", "VK_F24",
         ];
         if let Some(name) = &g.muhenkan_solo_tap_dedicated_fn_key {
             if !SAFE_RANGE.contains(&name.as_str()) {
                 w.push(format!(
                     "muhenkan_solo_tap_dedicated_fn_key = {name:?} は安全な範囲外です \
-                     （VK_F15〜VK_F20 / VK_F23 / VK_F24 のみ許可、ADR-091 §D3.2）。\
-                     VK_NONCONVERT 等の危険なキーや、BUG-64 の config1.db 残骸バインドと \
-                     衝突しうる VK_F13/VK_F14/VK_F21/VK_F22 は指定しないこと。"
+                     （VK_F15〜VK_F24 のうち VK_F13/VK_F14 を除く番号のみ許可、\
+                     ADR-091 §D3.2）。VK_NONCONVERT 等の危険なキーは指定しないこと。\
+                     VK_F13/VK_F14 はターミナルエスケープシーケンス漏れの実機確認が \
+                     あり常に避けること。VK_F21/VK_F22 を使う場合は、GJI 側の既存 \
+                     キー設定（config1.db）で既に別の意味に割り当てられていないか \
+                     確認すること（BUG-64 参照）。"
                 ));
             }
         }
@@ -1164,6 +1178,38 @@ default_layout = "nicola.yab"
         assert_eq!(validated.general.speculative_delay_ms, 30);
         assert_eq!(validated.general.layouts_dir, "layout");
         assert_eq!(validated.general.default_layout, "nicola.yab");
+    }
+
+    /// ADR-091 §D3.2: `VK_F15`-`VK_F24`（`VK_F13`/`VK_F14` を除く）は
+    /// `validate_dedicated_fn_key` の安全範囲内で警告なし。`VK_F21`/`VK_F22` は
+    /// BUG-64 の config1.db 残骸バインドと同番号だが、VK 自体は ADR-057 で
+    /// ターミナル安全と確認済みのため許可範囲に含む（GJI 側の既存設定との
+    /// 衝突確認はユーザーの責務、警告文に明記）。
+    #[test]
+    fn test_validate_dedicated_fn_key_safe_range_no_warning() {
+        for vk in [
+            "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19", "VK_F20", "VK_F21", "VK_F22",
+            "VK_F23", "VK_F24",
+        ] {
+            let mut general = GeneralConfig::default();
+            general.muhenkan_solo_tap_dedicated_fn_key = Some(vk.to_string());
+            let mut warnings = Vec::new();
+            AppConfig::validate_dedicated_fn_key(&general, &mut warnings);
+            assert!(warnings.is_empty(), "{vk} は警告なしで許可されるべき");
+        }
+    }
+
+    /// `VK_F13`/`VK_F14`（ターミナルエスケープシーケンス漏れ実機確認済み、
+    /// ADR-057）と、危険な VK（`VK_NONCONVERT` 等）は安全範囲外として警告する。
+    #[test]
+    fn test_validate_dedicated_fn_key_rejects_dangerous_and_terminal_unsafe_keys() {
+        for vk in ["VK_F13", "VK_F14", "VK_NONCONVERT", "VK_IME_ON", "VK_KANJI"] {
+            let mut general = GeneralConfig::default();
+            general.muhenkan_solo_tap_dedicated_fn_key = Some(vk.to_string());
+            let mut warnings = Vec::new();
+            AppConfig::validate_dedicated_fn_key(&general, &mut warnings);
+            assert_eq!(warnings.len(), 1, "{vk} は安全範囲外として警告されるべき");
+        }
     }
 
     // parse_key_combo テストは awase-windows に移動済み

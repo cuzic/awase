@@ -39,11 +39,11 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
     ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
@@ -428,9 +428,7 @@ fn main() -> anyhow::Result<()> {
     pump_messages(Duration::from_millis(300));
 
     // SAFETY: edit は直前に作成した有効な子ウィンドウ。
-    let _ = unsafe {
-        SetFocus(Some(edit))
-    };
+    let _ = unsafe { SetFocus(Some(edit)) };
     pump_messages(Duration::from_millis(200));
 
     // コントロールテストは IME を開く**前**に行う。IME が開いた状態で
