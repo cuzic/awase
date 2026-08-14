@@ -8038,3 +8038,31 @@ belief=ON・実IME=OFF）、BUG-19（明示 OFF 意図が観測に上書きさ�
 BUG-26（conv 観測1件での belief 復帰、本バグと同じ機構への依拠）、BUG-33
 （`FocusProbe` の belief 書き戻し混入）。
 
+## BUG-64: config1.db に旧 awase 実験由来の残骸バインドが実在する（F13/F14/F21/F22、バグではなく既知の事実の記録）
+
+**症状ではなく事実の記録:** ADR-091（charset 軸の設計）§1.4 項目3 の実機
+`config1.db` 抽出（clipwire 経由で取得、`wire.rs` の protobuf 最小パーサで
+`custom_keymap_table` を復元）で、以下の旧 awase 実験由来の残骸バインドが
+ユーザー実機に実在すると確認・削除した:
+
+- **F13**: `DirectInput → IMEOn`
+- **F14**: `Precomposition`/`Composition`/`Conversion → IMEOff`
+- **F21/F22**: `IME ON`/`IME OFF`
+
+いずれも過去のセッションで `config1.db` へ書き込んだ実験の残骸であり、
+現行コードのどの経路からも意図して送信されていない（=バグではない）。
+
+**なぜ記録するか:** ADR-091 §D3.2 が新設する専用 Fn キー変換モードは
+**F21** を Composition/Conversion 時の `SwitchKanaType` バインド先として
+使う計画である。**上記の残骸バインドと同一のキー番号(F21)であり、
+自己衝突が最優先で検出すべきケースになる。** `awase-gji-config` の書き込み
+機能（衝突検出）を実装する際、この既知の残骸を「他アプリ由来の未知の
+衝突」と誤認せず、awase 自身の残骸として正しく上書き・除去できる設計に
+すること。次に `config1.db` 関連の作業をする際、この残骸バインドの存在
+自体に驚かないための記録でもある。
+
+**関連:** [ADR-091](adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
+§1.4、[ADR-057](adr/057-gji-keybind-f13f14-to-f21f22.md)（F13/F14 を避け
+F21/F22 へ移行した経緯）、[ADR-067](adr/067-vk-ime-on-off-migration.md)
+（config1.db バインド撤廃の経緯）。
+
