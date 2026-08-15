@@ -371,8 +371,8 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 }
 
 /// MS-IME レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`
-/// （ADR-092 決定D Step4a）を読み、`engine.set_ime_toggle_auto_keys` へ反映する。
-/// 呼び出し元は2つ:
+/// （ADR-092 決定D Step4a）と `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan`
+/// （決定A・決定D Step4b）を読み、`Engine` へ反映する。呼び出し元は2つ:
 /// - `sync_ime_kind_from_observation` から MS-IME 確定のたびに呼ばれる
 ///   （決定C R2、計算は毎回やり直す）。
 /// - `app/mod.rs::reload_config`（設定リロード時、ADR-092 Step4b前提条件3の
@@ -380,14 +380,25 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 ///   再発生しないため、設定リロード時にも再読みしないと、ユーザーが
 ///   Windows の設定画面でレジストリを変更してもセッション中反映されない）。
 ///
-/// `Engine` 側が `special_keys.ime_toggle`（手動設定）が空の場合のみ本関数の
-/// 結果を参照するため（決定C R1、明示>自動）、ここでは無条件に呼んでよい。
+/// `Engine` 側が `special_keys.ime_toggle`（手動設定）が空の場合のみ
+/// `set_ime_toggle_auto_keys` の結果を参照するため（決定C R1、明示>自動）、
+/// ここでは無条件に呼んでよい。`set_muhenkan/henkan_delegate_to_open_axis`は
+/// `muhenkan_solo_tap_dedicated_fn_key`（専用Fnキー）が設定されていれば
+/// `Engine`側でそちらが優先されるため、こちらも無条件に呼んでよい。
 pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
-    let assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
-    log::info!("[msime-keyassign] toggle assignment: {assignment:?}");
+    let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
+    log::info!("[msime-keyassign] toggle assignment: {toggle_assignment:?}");
     let skip_shift_space = app.space_is_thumb_key();
     app.engine
-        .set_ime_toggle_auto_keys(assignment.to_combos(skip_shift_space));
+        .set_ime_toggle_auto_keys(toggle_assignment.to_combos(skip_shift_space));
+
+    let delegate_assignment =
+        crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
+    log::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    app.engine
+        .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
+    app.engine
+        .set_henkan_delegate_to_open_axis(delegate_assignment.henkan);
 }
 
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。

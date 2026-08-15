@@ -1041,6 +1041,49 @@ IME状態に応じてON/OFFが決まる）を `keys.ime_on`/`ime_off`（方向�
 `conflict_warning()` の警告撤去は**実機で肩代わりが効くと確認できた
 後の別コミット**とする（それまでは二重警告でも実害はない）。
 
+**実装セッション（2026-08-15）での設計変更・発見（Opusコードレビュー・
+実装過程で判明、当初案からの重要な訂正）**:
+
+1. **witnessは`UserIntentSource::SyncKey`ではなく既存の`Command`を使う。**
+   当初案（`ImeDetectConfig`に無変換/変換のVKを登録し`SyncKey` witnessを
+   得る）はOpusコードレビューで**致命的な欠陥**が判明し撤回した:
+   `enrich_ime_relevance`は登録VKに`sync_direction`を無条件に立て、
+   `kp_stage_shadow_ime_toggle`（`engine.on_input`より前に実行）が
+   `sync_direction`があればKeyDownのたびに`write_sync_key(!effective_open())`
+   する——単独タップ確定かどうかを一切見ない。無変換は左親指キーとして
+   ほぼ全打鍵で押されるため、登録すると「か」を打つたびにIMEがON/OFF
+   する壊滅的な回帰になる。代わりに、`NicolaFsm`に`engine_off_requested`
+   と同型のワンショットチャネル（`ime_open_requested: Option<ShadowImeAction>`）
+   を追加し、`resolve_pending_thumb_as_single`が確定した単独タップでのみ
+   これをセット、`Engine::on_input`/`on_timeout`が取り出して
+   `Effect::Ime(SetOpen{origin: ExplicitUserAction})`を（`Decision`の
+   既存効果を保ったまま`push_effect`で）追加する。これは`ime_on`/`ime_off`
+   コンボキーが既に使っている完成経路と同じで、`origin ==
+   ExplicitUserAction`なら自動的に`UserIntentSource::Command`
+   （「awaseエンジン内部の判断」向けに元々存在する）として記録される。
+   round1懸念4-4（`ExplicitUserAction`のdocが「ユーザーが明示的に要求した」
+   でレジストリ宣言経由に当てはまらない）はこれで実質解消——`Command`は
+   元々「Engineから SetOpen要求等」という一般的な文言のdocを持つ。
+2. **`SoloTapAction`に`DelegateToOpenAxis`variantは追加しなかった。**
+   `DedicatedFnKey`と同じ理由（自動検出値がconfig reloadで消去される
+   のを防ぐ）で、`muhenkan_delegate_to_open_axis`/
+   `henkan_delegate_to_open_axis: Option<ShadowImeAction>`という
+   `NicolaFsm`の独立フィールドとして実装した。優先順位:
+   専用Fnキー＞delegate_to_open_axis＞`ModeKeyConfig`ベースの判定。
+3. **新たに判明した構造的な範囲境界**: `Engine::compute_active`は
+   `ctx.ime_on`を判定条件に含むため、`ime_on=false`の間はPhase 2で
+   無条件`pass_through()`を返しPhase 3（`resolve_pending_thumb_as_single`
+   を含む）に到達しない。つまり`DelegateToOpenAxis`は**IMEが既にON
+   の状態からの操作でしか発火し得ない**（`TurnOff`/`Toggle`（ON→OFF側）
+   は届くが、`TurnOn`（OFFからONへ）は届かない）。これは実装のバグ
+   ではなく「背景」節が既に指摘していた構造的な穴（Step 3の対象）の
+   自然な帰結——engineが非活性（IME OFF）の間はawaseが無変換/変換の
+   生VKをそもそも横取りしないため、MS-IME/GJI自身のネイティブなキー
+   割当て処理（`KeyAssignmentHenkan=1`等）にそのまま委ねられる形に
+   なる（＝TurnOn方向は代わりにIME自身のネイティブ処理が担う）。
+   回帰テスト（`delegate_to_open_axis_*`系）は全て`ime_on_ctx()`
+   （engine active）を前提にする。
+
 #### Step 5（`dbe_mode_key_policy` の `ModeKeyConfig` への統合）
 
 **当初案からの変更**（round1 レビュー懸念2-4・5-2）: 「背景」節に

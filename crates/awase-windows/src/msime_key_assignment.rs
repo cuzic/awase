@@ -74,6 +74,22 @@ impl MsImeToggleAssignment {
     }
 }
 
+/// `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を `ShadowImeAction` として
+/// 解釈した結果（ADR-092 決定A・決定D Step4b）。
+///
+/// 実測で確認済みの値（2026-07-06・2026-08-15 実機 dragonflyg4）:
+/// Muhenkan `{1: TurnOff, 2: Toggle}`、Henkan `{1: TurnOn, 2: Toggle}`。
+/// それ以外の値・未読み取りは「宣言なし」として `None` に倒す（決定C R3、
+/// 推測しない）。`Some(0)`（既定のかな切替/再変換）も `None` として扱う——
+/// これは「open 軸の宣言が無い」ことを意味するのであって、`ModeKeyConfig`
+/// による既存の抑止判断（`mode_key_muhenkan`/`mode_key_henkan`）は
+/// このAPIとは独立に維持される。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MsImeDelegateToOpenAxisAssignment {
+    pub muhenkan: Option<awase::types::ShadowImeAction>,
+    pub henkan: Option<awase::types::ShadowImeAction>,
+}
+
 /// MS-IME キー割当ての読み取り結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MsImeKeyAssignment {
@@ -207,6 +223,29 @@ mod windows_impl {
         }
     }
 
+    /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
+    /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
+    #[must_use]
+    pub fn read_delegate_to_open_axis_assignment_from_registry(
+    ) -> super::MsImeDelegateToOpenAxisAssignment {
+        use awase::types::ShadowImeAction;
+        use windows::core::w;
+        if read_dword(w!("IsKeyAssignmentEnabled")) != Some(1) {
+            return super::MsImeDelegateToOpenAxisAssignment::default();
+        }
+        let muhenkan = match read_dword(w!("KeyAssignmentMuhenkan")) {
+            Some(1) => Some(ShadowImeAction::TurnOff),
+            Some(2) => Some(ShadowImeAction::Toggle),
+            _ => None,
+        };
+        let henkan = match read_dword(w!("KeyAssignmentHenkan")) {
+            Some(1) => Some(ShadowImeAction::TurnOn),
+            Some(2) => Some(ShadowImeAction::Toggle),
+            _ => None,
+        };
+        super::MsImeDelegateToOpenAxisAssignment { muhenkan, henkan }
+    }
+
     /// 競合警告のポップアップを表示し、Yes なら MS-IME 設定画面を開く。
     ///
     /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックするが、
@@ -270,7 +309,10 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{check_and_warn, read_toggle_assignment_from_registry};
+pub use windows_impl::{
+    check_and_warn, read_delegate_to_open_axis_assignment_from_registry,
+    read_toggle_assignment_from_registry,
+};
 
 #[cfg(test)]
 mod tests {

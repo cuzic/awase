@@ -4516,6 +4516,7 @@ mod engine_integration_tests {
     };
     use crate::engine::engine::Engine;
     use crate::engine::nicola_fsm::NicolaFsm;
+    use crate::types::ShadowImeAction;
 
     fn empty_special_keys() -> SpecialKeyCombos {
         SpecialKeyCombos {
@@ -5157,6 +5158,133 @@ mod engine_integration_tests {
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──
+    //
+    // 重要な前提（テスト設計時に判明）: `Engine::compute_active` は
+    // `ctx.ime_on` を判定条件に含むため（判定順: user_enabled → is_japanese_ime →
+    // ime_on → is_romaji）、`ime_on=false` の間は Phase 2 で無条件
+    // `Decision::pass_through()` を返し Phase 3（NicolaFsm、
+    // `resolve_pending_thumb_as_single` を含む）に到達しない。つまり
+    // `DelegateToOpenAxis` は **IME が既に ON の状態からの操作**でしか
+    // 発火し得ない（`TurnOff`/`Toggle(ime_on=true→false)` は届くが、
+    // `TurnOn`（IME OFF から ON へ）は届かない）。これは実装のバグではなく
+    // ADR-092 背景節が明記する既存の構造的な穴（Step3 の対象、本ADRでは
+    // 意図的に対象外）——engine が非活性（＝IME OFF）の間は awase がそもそも
+    // 無変換/変換の生 VK を横取りしないため、MS-IME/GJI 自身のネイティブな
+    // キー割当て処理（`KeyAssignmentHenkan=1` 等）にそのまま委ねられる形に
+    // なる。以下のテストは全て `ime_on_ctx()`（engine active）を前提にする。
+
+    /// `muhenkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用）。
+    fn make_test_engine_with_muhenkan() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine
+    }
+
+    /// 無変換単独タップが**確定**（timeout）した時点で `DelegateToOpenAxis` が
+    /// 発火し、`Effect::Ime(SetOpen)` が生成され、かつ生 VK_NONCONVERT は
+    /// 送出されない。
+    #[test]
+    fn delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "solo tap should be pending, not passthrough"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "IME effect must not fire before solo tap is confirmed"
+        );
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// **chord のタイミングウィンドウ内の誤確定では発火しない**（ADR-092
+    /// リスク節が明記する回帰テスト要件）。無変換キーの直後、閾値内に文字キーが
+    /// 来た場合は同時打鍵として確定し、`DelegateToOpenAxis`（単独タップ確定
+    /// 専用の経路）は一切発火しない。
+    #[test]
+    fn delegate_to_open_axis_does_not_fire_during_chord_timing_window() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+        // 同時打鍵の閾値内（make_test_engine の threshold_ms=100）に文字キーが来る
+        // → 同時打鍵として確定し、単独タップの delegate_to_open_axis 経路には
+        // 一切到達しない。
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(_)))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(_))),
+            "chord confirmation must not trigger IME open axis delegation, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
+    }
+
+    /// `ShadowImeAction::Toggle` は確定時点の `ctx.ime_on`（belief）を見て
+    /// 反転方向を決める。
+    #[test]
+    fn delegate_to_open_axis_toggle_resolves_via_ctx_ime_on() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "Toggle while ime_on=true must resolve to SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）は `delegate_to_open_axis`
+    /// より優先される。
+    #[test]
+    fn dedicated_fn_key_takes_priority_over_delegate_to_open_axis() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "dedicated_fn_key must take priority, no IME effect expected, got {:?}",
+            effects_of(&d)
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Input(InputEffect::SendKeys(actions))
+                if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21))
         )));
     }
 

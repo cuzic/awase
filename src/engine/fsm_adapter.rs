@@ -141,6 +141,30 @@ impl FsmAdapter {
         self.fsm.take_engine_off_requested()
     }
 
+    /// 無変換/変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D
+    /// Step4b）を設定する。
+    pub(super) const fn set_muhenkan_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_muhenkan_delegate_to_open_axis(action);
+    }
+
+    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    pub(super) const fn set_henkan_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_henkan_delegate_to_open_axis(action);
+    }
+
+    /// IME open 軸への副作用要求を取り出す（1ショット、ADR-092 決定D Step4b）。
+    pub(super) const fn take_ime_open_requested(
+        &mut self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.take_ime_open_requested()
+    }
+
     /// エンジンが有効かどうかを返す。
     #[must_use]
     pub(super) const fn is_enabled(&self) -> bool {

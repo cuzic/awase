@@ -12,7 +12,7 @@
 //! - Engine は InputContext のスナップショットだけで判断する（先読みしない）
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
+use crate::types::{ContextChange, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode};
 
 use super::decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
@@ -132,6 +132,19 @@ impl Engine {
     /// 渡す。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
     pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
         self.adapter.set_muhenkan_solo_tap_dedicated_fn_key(vk);
+    }
+
+    /// 無変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D Step4b、
+    /// MS-IME レジストリ/GJI config1.db の宣言由来）を設定する。
+    /// `set_thumb_key_solo_tap_config`/`set_muhenkan_solo_tap_dedicated_fn_key`
+    /// とは独立して呼び出せる。
+    pub const fn set_muhenkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_muhenkan_delegate_to_open_axis(action);
+    }
+
+    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    pub const fn set_henkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_henkan_delegate_to_open_axis(action);
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -328,6 +341,7 @@ impl Engine {
             self.lifecycle.on_key_down_consumed(&event);
         }
         decision.prepend_effects(transition_effects);
+        self.apply_ime_open_request(&mut decision, ctx);
         decision
     }
 
@@ -344,7 +358,7 @@ impl Engine {
                 .flush(ContextChange::ImeOff, ComposingHint::Unknown);
         }
 
-        let decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
+        let mut decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
 
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {
@@ -353,7 +367,33 @@ impl Engine {
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
 
+        self.apply_ime_open_request(&mut decision, ctx);
         decision
+    }
+
+    /// `NicolaFsm::take_ime_open_requested`（ADR-092 決定D Step4b、無変換/変換
+    /// 単独タップの IME open 軸への肩代わり）を確認し、あれば `decision` の
+    /// 既存の効果（キー抑止・タイマー等）を保ったまま `Effect::Ime(SetOpen)`
+    /// を追加する。`origin: ExplicitUserAction` は `Effect::Ime(SetOpen)` の
+    /// 既存の消費経路（`awase-windows::key_pipeline::kp_stage_post_decision`）
+    /// で `UserIntentSource::Command`（「awase エンジン内部の判断」）として
+    /// 記録される——新しい witness 種別は不要（Opus コードレビュー指摘、
+    /// 当初案の `SyncKey` witness は無変換/変換の毎打鍵で誤発火する致命的な
+    /// 欠陥があった）。
+    fn apply_ime_open_request(&mut self, decision: &mut Decision, ctx: &InputContext) {
+        let Some(action) = self.adapter.take_ime_open_requested() else {
+            return;
+        };
+        let new_open = match action {
+            ShadowImeAction::TurnOn => true,
+            ShadowImeAction::TurnOff => false,
+            ShadowImeAction::Toggle => !ctx.ime_on,
+        };
+        log::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
+            open: new_open,
+            origin: SetOpenOrigin::ExplicitUserAction,
+        }));
     }
 
     /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかを取得する（1 ショット）。
