@@ -2,7 +2,27 @@
 
 ## ステータス
 
-**ドラフト・実装未着手。** ADR-092（外部ソース由来のキー意味論の吸収）決定A-5の
+**実装済み（2026-08-15）。** `crates/awase-windows/src/vk.rs::is_synthetic_dbe_ime_hotkey`
+（0xF0-0xF4 の5 VK を判定する純粋関数、ユニットテスト4件付き）を追加し、
+`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` の冒頭（BUG-14 の
+注入イベント除外より前）で `self.platform_state.ime.set_is_japanese_ime(true)`
+を呼ぶよう配線した。決定した通り、`false` へのダウングレードには一切
+関与しない（既存の `apply_focus_probe` 内の probe ベース downgrade
+経路は無変更）。BUG-14 の注入イベント除外チェックより手前に置いた
+理由: BUG-14 が問題視したのは「注入イベントをユーザー意図
+（`PhysicalImeKey`）に昇格させること」であり「IME の存在を示す証拠として
+扱うこと」ではないため、この upgrade は注入イベントにも適用してよいと
+判断した（2026-07-06 実機で観測された外部注入 `VK_DBE_HIRAGANA` 自体、
+MS-IME という実在する日本語 IME が発生源だった）。
+
+`tests/architecture_guard.rs` の `set_is_japanese_ime` 呼び出し件数固定
+テストは存在せず、リスク節が懸念していた影響は無かった
+（`cargo test -p awase-windows --lib`: 394件パス、`--test
+architecture_guard`: 34件パス、`--test golden_scenarios`: 22件パス、
+いずれも回帰なし）。実機（dragonflyg4）での grace 期間中の実際の
+false 誤答訂正確認は未実施。
+
+以下は実装着手前（2026-08-15設計時点）の記述。ADR-092（外部ソース由来のキー意味論の吸収）決定A-5の
 検討過程で見つかった、別軸の小さな穴を切り出した ADR。ADR-092 の主題（レジストリ/
 config1.db という**外部宣言**の吸収）とは異なり、本 ADR は awase 内部の
 `is_japanese_ime()` という**確率的信念（belief）の精度不足**を扱う。

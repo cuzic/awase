@@ -778,6 +778,28 @@ impl Runtime {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
+        // ADR-093: VK_DBE_ALPHANUMERIC/KATAKANA/HIRAGANA/SBCSCHAR/DBCSCHAR
+        // (0xF0-0xF4) は通常の物理キーボードには存在しない IME 専用の合成 VK
+        // コードであり、この KeyDown が届くこと自体が「何らかの IME がこの
+        // キーを処理・報告している」証拠になる。is_japanese_ime() は probe
+        // ベースの確率的信念で、スリープ復帰/フォーカス変更直後の grace 期間中
+        // 一時的に false を誤答しうる既知の弱点がある
+        // (apply_focus_probe の non_ascii コメント参照)。この5 VK の受信を
+        // is_japanese_ime() の即時 true 更新トリガーに使い、grace 中の
+        // false 誤答を訂正する。
+        //
+        // false へのダウングレードには一切関与しない — この5 VK が「来ない」
+        // ことは「日本語 IME でない」ことの証拠にはならない（既存の probe
+        // ベースの downgrade 経路は変更しない）。BUG-14 の注入イベント除外
+        // (下記) より前に置く — 2026-07-06 実機で外部注入 VK_DBE_HIRAGANA が
+        // 観測された事例（下記コメント参照）自体、MS-IME という実在する
+        // 日本語 IME が発生源だった。BUG-14 が問題視したのは「注入イベントを
+        // ユーザー意図 (PhysicalImeKey) に昇格させること」であり、「IME の
+        // 存在を示す証拠として扱うこと」ではないため、この upgrade は
+        // 注入イベントにも適用してよい。
+        if crate::vk::is_synthetic_dbe_ime_hotkey(event.vk_code) {
+            self.platform_state.ime.set_is_japanese_ime(true);
+        }
         // BUG-14: 注入イベント (LLKHF_INJECTED、awase 自身のマーカーなし = MS-IME/CTF 等の
         // SendInput) はユーザーの物理操作ではないため、SyncKey / PhysicalImeKey の
         // ユーザー意図に昇格させない。2026-07-06 実機: 外部注入 VK_DBE_HIRAGANA down+up
