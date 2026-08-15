@@ -35,6 +35,20 @@ pub enum GjiCompositionMode {
     HalfAlphanumeric,
 }
 
+impl GjiCompositionMode {
+    /// この絶対モードに遷移させる GJI コマンド名を返す（[`classify_command`]の逆写像）。
+    #[must_use]
+    pub const fn command_name(self) -> &'static str {
+        match self {
+            Self::Hiragana => "CompositionModeHiragana",
+            Self::FullKatakana => "CompositionModeFullKatakana",
+            Self::HalfKatakana => "CompositionModeHalfKatakana",
+            Self::FullAlphanumeric => "CompositionModeFullAlphanumeric",
+            Self::HalfAlphanumeric => "CompositionModeHalfAlphanumeric",
+        }
+    }
+}
+
 /// `custom_keymap_table` の `command` 列を分類した結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GjiModeCommand {
@@ -142,6 +156,24 @@ mod tests {
             "SomeFutureMozcCommand",
         ] {
             assert_eq!(classify_command(command), GjiModeCommand::Other);
+        }
+    }
+
+    /// `GjiCompositionMode::command_name` は `classify_command` の逆写像。
+    /// 全バリアントで round-trip することを固定する。
+    #[test]
+    fn command_name_round_trips_through_classify_command() {
+        for mode in [
+            GjiCompositionMode::Hiragana,
+            GjiCompositionMode::FullKatakana,
+            GjiCompositionMode::HalfKatakana,
+            GjiCompositionMode::FullAlphanumeric,
+            GjiCompositionMode::HalfAlphanumeric,
+        ] {
+            assert_eq!(
+                classify_command(mode.command_name()),
+                GjiModeCommand::SetMode(mode)
+            );
         }
     }
 }

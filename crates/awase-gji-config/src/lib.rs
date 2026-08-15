@@ -33,7 +33,7 @@ pub mod write;
 
 pub use command::{GjiCompositionMode, GjiModeCommand};
 pub use keymap::{GjiImeKeys, GjiModeKeys};
-pub use write::ExistingBinding;
+pub use write::{DedicatedFnKeySpec, ExistingBinding, RECOMMENDED_DEDICATED_FN_KEYS};
 
 /// `config1.db` の生バイト列から、IME ON/OFF 検出用の VK 名集合を抽出する。
 ///
@@ -139,10 +139,41 @@ pub fn write_dedicated_fn_key_binding(
         .ok_or(WriteDedicatedFnKeyError::UnparsableConfig)
 }
 
+/// `config1.db` の生バイト列に、[`RECOMMENDED_DEDICATED_FN_KEYS`] 全キー
+/// （F21-F24）のエントリを一度に追加した新しいバイト列を返す。
+///
+/// [`write_dedicated_fn_key_binding`] の単一キー版と同じ手順を4キーぶん
+/// まとめて行う（`session_keymap` チェック→衝突検出→TSV組み立て→
+/// フィールド差し替え）。**呼び出しは1回のファイル書き込み・1回のGJI再起動で
+/// 完結する** ——ユーザーに何度もサインアウト/インを依頼しないための設計
+/// （2026-08-15、ユーザー要望）。
+///
+/// # Errors
+///
+/// [`write_dedicated_fn_key_binding`] と同様。ただし衝突は4キーのうち1つでも
+/// 検出されれば、書き込みは行わず全体を中止する
+/// （[`write::classify_existing_binding_set`] 参照）。
+pub fn write_dedicated_fn_key_set(bytes: &[u8]) -> Result<Vec<u8>, WriteDedicatedFnKeyError> {
+    let raw = wire::parse_top_level(bytes).ok_or(WriteDedicatedFnKeyError::UnparsableConfig)?;
+    if raw.session_keymap != Some(SESSION_KEYMAP_CUSTOM) {
+        return Err(WriteDedicatedFnKeyError::NotCustomKeymap);
+    }
+    let existing_table = raw.custom_keymap_table.unwrap_or_default();
+    if let write::ExistingBinding::Conflict { rows } =
+        write::classify_existing_binding_set(&existing_table)
+    {
+        return Err(WriteDedicatedFnKeyError::Conflict { rows });
+    }
+    let new_table = write::upsert_dedicated_fn_key_set(&existing_table);
+    wire::replace_custom_keymap_table(bytes, &new_table)
+        .ok_or(WriteDedicatedFnKeyError::UnparsableConfig)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        read_gji_ime_keys, write_dedicated_fn_key_binding, GjiImeKeys, WriteDedicatedFnKeyError,
+        read_gji_ime_keys, read_gji_mode_keys, write_dedicated_fn_key_binding,
+        write_dedicated_fn_key_set, GjiImeKeys, WriteDedicatedFnKeyError,
     };
 
     /// `session_keymap = SESSION_KEYMAP_CUSTOM`（field 22）と
@@ -306,5 +337,61 @@ Conversion\tF21\tIMEOn
         bytes.push(u8::try_from(table.len()).expect("fixture length fits in u8"));
         bytes.extend_from_slice(table.as_bytes());
         bytes
+    }
+
+    // ── write_dedicated_fn_key_set ────────────────────────────────────────
+
+    /// F21 は全 status で `SwitchKanaType`（単一の役割）のため
+    /// `read_gji_mode_keys`（`extract_mode_keys` の「1キー1役割」前提、
+    /// `keymap.rs` のモジュールdoc・関数doc参照）で正しく検出できる。
+    /// F22-24 は status によって役割が変わる（Precomposition では
+    /// `CompositionModeX`、Composition 系では `SwitchKanaType`）ため、
+    /// `extract_mode_keys` の設計上あえて拾わない（「遷移先が一意に定まらない」
+    /// として意図的にスキップされる）。F22-24 の中身は生の TSV 文字列で検証する
+    /// （`classify_existing_binding_set`/`upsert_dedicated_fn_key_set` の
+    /// テストと同じレイヤー）。
+    #[test]
+    fn write_dedicated_fn_key_set_end_to_end_on_empty_config() {
+        let bytes = encode_custom_keymap_table_only("status\tkey\tcommand\n");
+        let written = write_dedicated_fn_key_set(&bytes).expect("should write");
+
+        let mode_keys = read_gji_mode_keys(&written);
+        assert_eq!(mode_keys.toggle_kana_type, vec!["VK_F21".to_string()]);
+
+        let raw = crate::wire::parse_top_level(&written).expect("should parse");
+        let table = raw.custom_keymap_table.unwrap_or_default();
+        assert!(table.contains("Precomposition\tF22\tCompositionModeHiragana"));
+        assert!(table.contains("Precomposition\tF23\tCompositionModeFullKatakana"));
+        assert!(table.contains("Precomposition\tF24\tCompositionModeHalfKatakana"));
+        for key in ["F21", "F22", "F23", "F24"] {
+            for status in ["Composition", "Conversion", "Prediction", "Suggestion"] {
+                assert!(table.contains(&format!("{status}\t{key}\tSwitchKanaType")));
+            }
+        }
+    }
+
+    #[test]
+    fn write_dedicated_fn_key_set_is_idempotent() {
+        let bytes = encode_custom_keymap_table_only("status\tkey\tcommand\n");
+        let once = write_dedicated_fn_key_set(&bytes).expect("should write");
+        let twice = write_dedicated_fn_key_set(&once).expect("should write again");
+        assert_eq!(once, twice);
+    }
+
+    /// 4キーのうち1つ（F23）が他アプリ/ユーザー由来と思われる未知のコマンドと
+    /// 衝突していれば、他の3キーが安全でも全体を中止し、何も書き込まない。
+    #[test]
+    fn write_dedicated_fn_key_set_refuses_on_partial_conflict() {
+        let table = "status\tkey\tcommand\nComposition\tF23\tBackspace\n";
+        let bytes = encode_custom_keymap_table_only(table);
+        let err = write_dedicated_fn_key_set(&bytes).expect_err("should conflict");
+        assert!(matches!(err, WriteDedicatedFnKeyError::Conflict { .. }));
+    }
+
+    #[test]
+    fn write_dedicated_fn_key_set_refuses_when_not_custom_keymap() {
+        let bytes: &[u8] = &[176, 1, 1]; // session_keymap = ATOK
+        let err = write_dedicated_fn_key_set(bytes).expect_err("should refuse");
+        assert_eq!(err, WriteDedicatedFnKeyError::NotCustomKeymap);
     }
 }
