@@ -779,12 +779,17 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         TSF_OBS.gji_monitor_ok.store(false, SeqCst);
 
-        let start = Instant::now();
         let now_ms = crate::hook::current_tick_ms();
         let probe = TsfReadinessProbe::new(now_ms, Generation::INITIAL, 0);
         poll_until_ready(&probe, 100);
 
-        let elapsed = start.elapsed().as_millis();
+        // `check_now()` 自体が `current_tick_ms()`（GetTickCount64）で判定するため、
+        // 経過時間の検証も同じクロックで行う。以前は `std::time::Instant`（別クロック、
+        // QueryPerformanceCounter 由来）で計測していたが、VM 環境ではハイパーバイザーが
+        // GetTickCount64 側だけを定期的に補正しジャンプさせることがあり、SUT は正しく
+        // 反応しているのに無関係な別クロックとの不一致でテストだけ誤検知で失敗しうる
+        // （2026-08-15 実機、"fallback too short: 10ms" を確認。BUG-65 追補3参照）。
+        let elapsed = crate::hook::current_tick_ms().saturating_sub(now_ms);
         // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
         assert!(elapsed >= 60, "fallback too short: {elapsed}ms");
         assert!(elapsed < 400, "fallback too long: {elapsed}ms");

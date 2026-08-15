@@ -8196,3 +8196,27 @@ Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテ
 
 **関連:** `tsf/probe_bridge.rs::OutputActiveGuard`。
 
+**2026-08-15 追補3（残る `probe_fallback_waits_total_max_ms` も真因判明・修正）:**
+追補2の修正後、`ms_ime_ready_coro` 側は実機で解消を確認したが、
+`probe_fallback_waits_total_max_ms`（"fallback too short: 10ms"）は
+2回とも同じ場所・同じ結果で再現した（665 passed; 1 failed）。
+
+真因はテストが**2つの異なるクロック**を混在させていたこと。`check_now()`
+（SUT・被テストコード）は `crate::hook::current_tick_ms()`
+（`GetTickCount64`）で残り時間を判定するが、テストの `elapsed` 計測は
+`std::time::Instant`（`QueryPerformanceCounter` 由来、GetTickCount64 とは
+独立した別クロック）を使っていた。VM 環境ではハイパーバイザーが
+ゲストの `GetTickCount64` 側だけを定期的にホスト時刻へ補正（ジャンプ）
+させることがあり、`Instant` は影響を受けない。このため「`GetTickCount64`
+上は 100ms 経過した（=SUT は正しくフォールバックを完了した）のに、
+`Instant` 上はまだ 10ms しか経っていない」という、SUT の挙動としては
+正しいのにテストの計測クロックが食い違うことによる誤検知が起きていた
+（実際に SUT にバグがあったことは一度もない）。
+
+**修正:** `elapsed` の計測を `Instant` から `current_tick_ms()`（SUT と
+同じクロック）に変更した。同ファイル内の他の `Instant` 使用テスト
+（`probe_phase2_detects_already_settled` 等）は本バグの報告対象では
+なかったため未変更。
+
+**関連:** `tsf/probe.rs::probe_fallback_waits_total_max_ms`。
+
