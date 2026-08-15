@@ -1242,6 +1242,32 @@ impl Runtime {
         self.muhenkan_dedicated_fn_key_is_manual
     }
 
+    /// `gji_charset_autodetect` が config1.db から自動検出した IME ON/OFF/
+    /// トグルキーを反映するための入口（ADR-092 決定D Step4c）。手動設定
+    /// （`KeysConfig.ime_toggle`等）が空でない間は`Engine`側
+    /// （`match_ime_on_off_auto`/`match_ime_toggle_auto`）が自動リストを
+    /// 無視するため、ここでは手動設定の有無を確認せずそのまま反映してよい
+    /// （`set_muhenkan_dedicated_fn_key_auto`と異なりRuntime側にゲートは不要）。
+    pub(crate) fn set_gji_ime_on_off_toggle_auto_keys(
+        &mut self,
+        on: Vec<awase::config::ParsedKeyCombo>,
+        off: Vec<awase::config::ParsedKeyCombo>,
+        toggle: Vec<awase::config::ParsedKeyCombo>,
+    ) {
+        self.engine.set_ime_on_auto_keys(on);
+        self.engine.set_ime_off_auto_keys(off);
+        self.engine.set_ime_toggle_auto_keys(toggle);
+    }
+
+    /// GJI 離脱時、`ime_on_auto`/`ime_off_auto`（GJI 専用、MS-IME 側に対応する
+    /// setter が無い）だけを解除する。`ime_toggle_auto`は意図的に含めない
+    /// （MS-IME 側とも共有しており、GJI→MS-IME遷移時に MS-IME 側が先に
+    /// 設定した値を上書き消去してしまうため。詳細は呼び出し元のコメント参照）。
+    pub(crate) fn clear_gji_ime_on_off_auto_keys(&mut self) {
+        self.engine.set_ime_on_auto_keys(Vec::new());
+        self.engine.set_ime_off_auto_keys(Vec::new());
+    }
+
     /// `gji_charset_popup` が「専用Fnキー変換が既に有効なら設定支援ポップアップを
     /// 出さない」判定に使う読み取り専用アクセサ。
     #[must_use]

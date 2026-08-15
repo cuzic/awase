@@ -30,11 +30,12 @@
 //! 解除はユーザー自身に `ms-settings:regionlanguage-jpnime` で行ってもらう。
 
 /// `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`（ADR-092 決定D Step4a）が
-/// トグル（値2）に設定されているか。2026-08-15 実機（dragonflyg4）で
-/// `IsKeyAssignmentEnabled=1` かつこれら2値が `2` になることを確認済み。
-/// 個別オン/オフの割当ては MS-IME の「キーとタッチのカスタマイズ」に
-/// 存在しないと確認済みのため、`2`（トグル）以外は「宣言なし」として
-/// 扱う（推測しない、決定C R3）。
+/// トグル（値2）に設定されているか。
+///
+/// 2026-08-15 実機（dragonflyg4）で `IsKeyAssignmentEnabled=1` かつこれら2値が
+/// `2` になることを確認済み。個別オン/オフの割当ては MS-IME の「キーとタッチの
+/// カスタマイズ」に存在しないと確認済みのため、`2`（トグル）以外は
+/// 「宣言なし」として扱う（推測しない、決定C R3）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MsImeToggleAssignment {
     /// `KeyAssignmentCtrlSpace == 2`

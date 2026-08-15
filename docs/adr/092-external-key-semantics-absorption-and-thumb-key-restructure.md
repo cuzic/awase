@@ -2,11 +2,51 @@
 
 ## ステータス
 
-**Step1・Step2・Step6 実装済み（2026-08-15、Opusコードレビュー2巡を経て確定）。**
-Step3・Step4・Step5 は未着手のまま次フェーズへ先送り（セッション内のユーザー判断:
-Step0調査の結果`899b416f`以降BUG-50再現記録なしと確認できたためStep3見送り、
-Step4はCtrl+Space個別オン/オフ値未確認・GJI側かな生成VK判定ロジック未実装・
-ATOK実機未検証等の複数の未解決事項を理由に次フェーズへ）。
+**Step1・Step2・Step4a・Step4b・Step4c・Step6 実装済み（2026-08-15、Opus
+コードレビューを経て確定）。** Step3・Step5 は今回のセッションでも見送り
+（下記「Step3/Step5見送りの最終判断」参照）。
+
+**Step4（決定4 上段・肩代わり本体）の実装状況（追記、2026-08-15）**:
+- **Step4a（Ctrl+Space/Shift+Space トグル）**: 実機（dragonflyg4）で
+  `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` がトグル（値`2`）
+  以外を取り得ないと確認済み（「キーとタッチのカスタマイズ」に個別
+  オン/オフの選択肢が無い、ユーザー確認）。このため当初懸念していた
+  「個別オン/オフ値の解釈」は不要と判明し、`KeysConfig.ime_toggle`
+  （方向不定コンボの新規リスト）と`SpecialKeyMatch::ImeToggle`のみで
+  完結した。
+- **Step4b（無変換/変換 delegate-to-open-axis）**: 当初案の
+  `UserIntentSource::SyncKey` witness登録方式はOpusレビューで
+  「か」等の通常打鍵のたびにIMEがON/OFFする致命的回帰を招くと判明し
+  撤回、ワンショットチャネル方式（`ime_open_requested`）へ全面設計変更。
+  詳細は決定D Step4bの「実装セッションでの設計変更・発見」を参照。
+- **Step4c（GJI config1.db 側の宣言読み取り）**: 当初案は「無変換/変換/
+  Ctrl+Space/Shift+Space に該当するVKがGJI側でon/off/toggleに含まれて
+  いれば」という**特定4キーとの一致判定**を想定していたが、実装時に
+  `awase-gji-config::keymap::mozc_key_to_vk_name`の出力範囲がF1-F24と
+  `Kanji`/`Hankaku-Zenkaku`/`ON`/`OFF`/`Eisu`の4エイリアスのみに
+  限定されており、無変換/変換のVK名がそもそも出力され得ないと判明した
+  （GJIは親指キーにIME ON/OFFを割り当てる手段を持たない）。このため
+  「特定4キーとの一致」ではなく、**GJIが宣言する任意のVKのうち安全範囲
+  （F15-F24、ADR-091の`is_in_safe_autodetect_range`を再利用）内のものを
+  無条件でon/off/toggle自動候補として採用する**方式に一般化した——
+  Step4aがCtrl+Space/Shift+Space以外の任意コンボも許容する設計である
+  こととも整合する。`VK_KANJI`/`VK_IME_ON`/`VK_IME_OFF`/
+  `VK_DBE_ALPHANUMERIC`（4エイリアス）はBUG-14（注入イベント衝突
+  リスク）を理由に安全範囲から機械的に除外される。GJI離脱時、
+  `ime_on_auto`/`ime_off_auto`（GJI専用）は即座に解除するが、
+  `ime_toggle_auto`（MS-IME側とも共有）はGJI→MS-IME遷移時にMS-IME側が
+  先に設定した値を上書き消去してしまう順序ハザードを避けるため解除
+  対象から外した（GJI再突入時に必ず自分の現在値で上書きするため実害
+  なし、詳細は`gji_charset_autodetect.rs`内コメント参照）。
+
+**Step3/Step5見送りの最終判断（2026-08-15）**: Step0調査の結果
+`899b416f`以降BUG-50再現記録なしと確認できたため、Step3
+（engine非活性時バイパス経路の抑止）は動機を欠くと判断し見送った。
+Step5はStep3完了が前提のため連動して見送り。いずれも「消費者のいない
+機構を先回りして作らない」という本ADR全体の原則（決定D Step2の
+`DelegateToOpenAxis` variant見送り等と同じ判断軸）に基づく——Opus
+による実装タスクリストレビューでも独立に同じ結論（動機の再確認なしに
+Step3/5へ着手すべきでない）が示された。
 
 **実装済みStepの要約**:
 - **Step1**: `engine_on_ime_key`/`engine_off_ime_key`の既定値をNoneへ変更

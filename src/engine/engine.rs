@@ -50,13 +50,22 @@ pub(super) enum SpecialKeyMatch {
 pub struct Engine {
     adapter: FsmAdapter,
     special_keys: SpecialKeyCombos,
-    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a、MS-IME レジストリの
-    /// `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` 由来）。`special_keys.ime_toggle`
-    /// （ユーザーが `config.toml` に明示設定した分）とは別に保持し、
-    /// `config.toml` へは一切書き込まない（決定C: Manual は永続化、AutoDetected は
-    /// ライブ計算のみ）。`special_keys.ime_toggle` が空の場合のみ参照される
-    /// （決定C R1、明示>自動）。
+    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a/Step4c、MS-IME
+    /// レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`、または
+    /// GJI config1.db の `GjiImeKeys.toggle` 由来。両ソースは排他——呼び出し元
+    /// が IME 種別確定イベントごとにどちらか一方だけを呼ぶ）。
+    /// `special_keys.ime_toggle`（ユーザーが `config.toml` に明示設定した分）
+    /// とは別に保持し、`config.toml` へは一切書き込まない（決定C: Manual は
+    /// 永続化、AutoDetected はライブ計算のみ）。`special_keys.ime_toggle` が
+    /// 空の場合のみ参照される（決定C R1、明示>自動）。
     ime_toggle_auto: Vec<ParsedKeyCombo>,
+    /// 自動検出された IME ON キー（ADR-092 決定D Step4c、GJI config1.db の
+    /// `GjiImeKeys.on` 由来）。`ime_toggle_auto` と同じ規約
+    /// （`config.toml` 非書き込み、`special_keys.ime_on` が空の場合のみ参照）。
+    ime_on_auto: Vec<ParsedKeyCombo>,
+    /// 自動検出された IME OFF キー（ADR-092 決定D Step4c、GJI config1.db の
+    /// `GjiImeKeys.off` 由来）。`ime_on_auto` と対称。
+    ime_off_auto: Vec<ParsedKeyCombo>,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
     /// 直前の実効状態（遷移検知用）
@@ -73,17 +82,31 @@ impl Engine {
             adapter: FsmAdapter::new(fsm),
             special_keys,
             ime_toggle_auto: Vec::new(),
+            ime_on_auto: Vec::new(),
+            ime_off_auto: Vec::new(),
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             solo_off_notify: false,
         }
     }
 
-    /// MS-IME レジストリ自動検出（Ctrl+Space/Shift+Space）由来の IME トグルキーを
-    /// 設定する（ADR-092 決定D Step4a）。IME 種別確定イベントのたびに呼び直され、
+    /// MS-IME レジストリ自動検出（Ctrl+Space/Shift+Space）または GJI
+    /// config1.db（`GjiImeKeys.toggle`）由来の IME トグルキーを設定する
+    /// （ADR-092 決定D Step4a/Step4c）。IME 種別確定イベントのたびに呼び直され、
     /// 呼ばれるたびに丸ごと置き換わる（決定C R2、計算は毎回やり直す）。
     pub fn set_ime_toggle_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
         self.ime_toggle_auto = keys;
+    }
+
+    /// GJI config1.db（`GjiImeKeys.on`）由来の自動検出 IME ON キーを設定する
+    /// （ADR-092 決定D Step4c）。`set_ime_toggle_auto_keys` と同じ規約。
+    pub fn set_ime_on_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_on_auto = keys;
+    }
+
+    /// `set_ime_on_auto_keys` と対称（`GjiImeKeys.off` 由来）。
+    pub fn set_ime_off_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_off_auto = keys;
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
@@ -649,11 +672,40 @@ impl Engine {
                 self.adapter.is_enabled(),
                 self.compute_active(ctx),
             )
+            .or_else(|| self.match_ime_on_off_auto(ctx, event))
             .or_else(|| self.match_ime_toggle_auto(ctx, event))
     }
 
-    /// MS-IME レジストリ自動検出由来の IME トグルキー（`ime_toggle_auto`）との
-    /// マッチ判定（ADR-092 決定D Step4a）。ユーザーが `keys.ime_toggle` を
+    /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
+    /// 決定D Step4c、GJI config1.db の `GjiImeKeys.on`/`off` 由来）との
+    /// マッチ判定。ユーザーが `keys.ime_on`/`ime_off` を明示設定している場合は
+    /// 一切参照しない（決定C R1、明示>自動）。
+    fn match_ime_on_off_auto(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
+        if self.special_keys.ime_on.is_empty()
+            && self
+                .ime_on_auto
+                .iter()
+                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        {
+            return Some(SpecialKeyMatch::ImeOn);
+        }
+        if self.special_keys.ime_off.is_empty()
+            && self
+                .ime_off_auto
+                .iter()
+                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        {
+            return Some(SpecialKeyMatch::ImeOff);
+        }
+        None
+    }
+
+    /// 自動検出由来の IME トグルキー（`ime_toggle_auto`）とのマッチ判定
+    /// （ADR-092 決定D Step4a/Step4c）。ユーザーが `keys.ime_toggle` を
     /// 明示設定している場合は一切参照しない（決定C R1、明示>自動）。
     fn match_ime_toggle_auto(
         &self,

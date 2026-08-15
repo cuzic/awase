@@ -18,6 +18,7 @@
 //!   静かに何もしない（既定の「抑止」のまま）。`awase-gji-config`crate自体の
 //!   「パース失敗は常に空の結果に静かにフォールバック」という既存方針を踏襲する。
 
+use awase::config::ParsedKeyCombo;
 use awase::types::VkCode;
 
 use crate::vk::VkCodeExt as _;
@@ -69,6 +70,51 @@ pub(crate) fn detect_dedicated_fn_key(custom_keymap_table: &str) -> Option<VkCod
     VkCode::from_name(only)
 }
 
+/// `config1.db`の`custom_keymap_table`から、IME ON/OFF/トグルの自動検出用
+/// `ParsedKeyCombo`リストを判定する（ADR-092 決定D Step4c）。戻り値は
+/// `(on, off, toggle)`で、それぞれ`Engine::set_ime_on_auto_keys`等へ渡す。
+///
+/// `awase_gji_config::keymap::extract_ime_keys`が返すVK名は`VK_KANJI`
+/// （Hankaku/Zenkakuも同一）・`VK_IME_ON`・`VK_IME_OFF`・`VK_DBE_ALPHANUMERIC`
+/// （Eisu）を含みうる。これらはBUG-14で確認済みの「MS-IME/CTFが注入する
+/// 合成イベントと衝突しうるキー」であり、`SpecialKeyCombos::match_event`が
+/// `event.injected`を見ずにマッチするため、そのまま採用するとBUG-14と同種の
+/// 誤トグルを招く。[`is_in_safe_autodetect_range`]（専用FnキーF15-F24のみ）
+/// で必ず絞り込み、上記4エイリアスを一律除外する。
+///
+/// GJIが無変換/変換等の親指キーにIME ON/OFFを割り当てるケースは、そもそも
+/// `mozc_key_to_vk_name`の出力範囲（F1-F24と上記4エイリアスのみ）に無変換/
+/// 変換のVK名が含まれないため発生しない（Step4bの無変換/変換
+/// delegate-to-open-axisとは競合し得ない）。
+#[must_use]
+fn extract_ime_on_off_toggle_combos(
+    custom_keymap_table: &str,
+) -> (
+    Vec<ParsedKeyCombo>,
+    Vec<ParsedKeyCombo>,
+    Vec<ParsedKeyCombo>,
+) {
+    let keys = awase_gji_config::keymap::extract_ime_keys(custom_keymap_table);
+    let to_combos = |names: &[String]| -> Vec<ParsedKeyCombo> {
+        names
+            .iter()
+            .filter(|name| is_in_safe_autodetect_range(name))
+            .filter_map(|name| VkCode::from_name(name))
+            .map(|vk| ParsedKeyCombo {
+                ctrl: false,
+                shift: false,
+                alt: false,
+                vk,
+            })
+            .collect()
+    };
+    (
+        to_combos(&keys.on),
+        to_combos(&keys.off),
+        to_combos(&keys.toggle),
+    )
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::sync_gji_charset_autodetect;
 
@@ -78,7 +124,7 @@ mod windows_impl {
 
     use crate::runtime::Runtime;
 
-    use super::detect_dedicated_fn_key;
+    use super::{detect_dedicated_fn_key, extract_ime_on_off_toggle_combos};
 
     const NOT_GJI: u8 = 0;
     const GJI_CHECKED: u8 = 1;
@@ -107,9 +153,22 @@ mod windows_impl {
         if !is_gji {
             if LAST_GJI_STREAK_CHECKED.swap(NOT_GJI, Ordering::Relaxed) == GJI_CHECKED {
                 log::info!(
-                    "[gji-charset-autodetect] GJI から離脱: 自動検出した専用Fnキー変換を解除"
+                    "[gji-charset-autodetect] GJI から離脱: 自動検出した専用Fnキー変換・\
+                     IME ON/OFFキーを解除"
                 );
                 app.set_muhenkan_dedicated_fn_key_auto(None);
+                // ime_on_auto/ime_off_auto は GJI 専用（MS-IME 側に対応する
+                // setter が無い）ため、ここで明示的に解除しないと GJI 離脱後も
+                // 別アプリ/別IMEの文脈にF21等のバインドが残留してしまう。
+                // 一方 ime_toggle_auto は MS-IME 側（sync_ime_toggle_auto_detect）
+                // とも共有しており、GJI→MS-IME遷移では MS-IME 側の同期が
+                // 既に新しい値を設定済み（呼び出し順で MS-IME 側が先行、
+                // message_handlers::sync_ime_kind_from_observation 参照）ため、
+                // ここで解除すると MS-IME 側が設定した値を上書き消去して
+                // しまう。GJI 側は次にアクティブになった際に必ず自分の
+                // 現在値（0件を含む）で上書きするため、ここで触らなくても
+                // 破綻しない。
+                app.clear_gji_ime_on_off_auto_keys();
             }
             return;
         }
@@ -148,6 +207,22 @@ mod windows_impl {
         let Some(table) = raw.custom_keymap_table else {
             return;
         };
+
+        // ADR-092 決定D Step4c: IME ON/OFF/トグルキーの自動検出は専用Fnキー
+        // 変換（ToggleKanaType）の検出可否に依存しない、独立した判定のため
+        // 早期returnより前に行う。手動設定が優先される規約は
+        // `Engine::match_ime_on_off_auto`/`match_ime_toggle_auto`側が
+        // `special_keys.ime_on/ime_off/ime_toggle`が空の時のみ自動リストを
+        // 参照するため、ここでの事前チェックは不要（Step4aと同じ規約）。
+        let (on, off, toggle) = extract_ime_on_off_toggle_combos(&table);
+        if !on.is_empty() || !off.is_empty() || !toggle.is_empty() {
+            log::info!(
+                "[gji-charset-autodetect] config1.db から IME ON/OFF/トグルキーを \
+                 自動検出しました: on={on:?} off={off:?} toggle={toggle:?}"
+            );
+        }
+        app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
+
         let Some(vk) = detect_dedicated_fn_key(&table) else {
             return;
         };
@@ -181,7 +256,7 @@ mod windows_impl {
 
 #[cfg(test)]
 mod tests {
-    use super::detect_dedicated_fn_key;
+    use super::{detect_dedicated_fn_key, extract_ime_on_off_toggle_combos};
     use crate::vk::VkCodeExt as _;
     use awase::types::VkCode;
 
@@ -265,5 +340,80 @@ mod tests {
                       Prediction\tF21\tSwitchKanaType\n\
                       Suggestion\tF21\tSwitchKanaType\n";
         assert_eq!(detect_dedicated_fn_key(table), VkCode::from_name("VK_F21"));
+    }
+
+    // ── extract_ime_on_off_toggle_combos (ADR-092 決定D Step4c) ──
+
+    fn combo(vk_name: &str) -> awase::config::ParsedKeyCombo {
+        awase::config::ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VkCode::from_name(vk_name).unwrap(),
+        }
+    }
+
+    #[test]
+    fn no_bindings_yields_all_empty() {
+        let (on, off, toggle) = extract_ime_on_off_toggle_combos("");
+        assert_eq!(on, vec![]);
+        assert_eq!(off, vec![]);
+        assert_eq!(toggle, vec![]);
+    }
+
+    /// `awase-gji-config::keymap`側の`extracts_toggle_on_off_from_fixture`と
+    /// 同じフィクスチャ。安全範囲外（F13/`VK_DBE_ALPHANUMERIC`/`VK_IME_ON`/
+    /// `VK_IME_OFF`/`VK_KANJI`）は全て除外され、F15-F24範囲内のF21/F22だけが
+    /// 残ることを確認する（BUG-14 注入イベント衝突リスクの回避、Opusレビュー
+    /// 指摘の反映）。
+    #[test]
+    fn filters_out_bug14_risky_aliases_and_out_of_range_fn_keys() {
+        let table = "status\tkey\tcommand
+Composition\tHankaku/Zenkaku\tIMEOff
+Conversion\tHankaku/Zenkaku\tIMEOff
+DirectInput\tHankaku/Zenkaku\tIMEOn
+Precomposition\tHankaku/Zenkaku\tIMEOff
+Composition\tKanji\tIMEOff
+Conversion\tKanji\tIMEOff
+DirectInput\tKanji\tIMEOn
+Precomposition\tKanji\tIMEOff
+DirectInput\tF13\tIMEOn
+DirectInput\tF21\tIMEOn
+Precomposition\tF21\tIMEOn
+Composition\tF21\tIMEOn
+Conversion\tF21\tIMEOn
+Precomposition\tF22\tIMEOff
+Composition\tF22\tIMEOff
+Conversion\tF22\tIMEOff
+Composition\tON\tIMEOn
+Composition\tOFF\tIMEOff
+Conversion\tON\tIMEOn
+Conversion\tOFF\tIMEOff
+DirectInput\tON\tIMEOn
+Precomposition\tON\tIMEOn
+Precomposition\tOFF\tIMEOff
+DirectInput\tEisu\tIMEOn
+Composition\tEisu\tToggleAlphanumericMode
+Conversion\tEisu\tToggleAlphanumericMode
+Precomposition\tEisu\tToggleAlphanumericMode
+";
+        let (on, off, toggle) = extract_ime_on_off_toggle_combos(table);
+        // 生の GjiImeKeys.on は [VK_DBE_ALPHANUMERIC, VK_F13, VK_F21, VK_IME_ON]
+        // だが、安全範囲(F15-F24)外を全て除外すると VK_F21 のみ残る。
+        assert_eq!(on, vec![combo("VK_F21")]);
+        // 生の GjiImeKeys.off は [VK_F22, VK_IME_OFF] だが VK_IME_OFF は除外。
+        assert_eq!(off, vec![combo("VK_F22")]);
+        // 生の GjiImeKeys.toggle は [VK_KANJI] のみで、安全範囲外のため全除外。
+        assert_eq!(toggle, vec![]);
+    }
+
+    /// 安全範囲内（F15-F24）のトグルキーはそのまま採用される。
+    #[test]
+    fn safe_range_toggle_key_is_kept() {
+        let table = "status\tkey\tcommand\nDirectInput\tF20\tIMEOn\nPrediction\tF20\tIMEOff\n";
+        let (on, off, toggle) = extract_ime_on_off_toggle_combos(table);
+        assert_eq!(on, vec![]);
+        assert_eq!(off, vec![]);
+        assert_eq!(toggle, vec![combo("VK_F20")]);
     }
 }

@@ -5161,6 +5161,131 @@ mod engine_integration_tests {
         )));
     }
 
+    // ── ADR-092 決定D Step4c: GJI config1.db 由来の自動検出 IME ON/OFF/
+    //    トグルキー（`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`） ──
+
+    /// 手動設定（`keys.ime_on`）が空の間、自動検出リスト（`ime_on_auto`）が
+    /// 効く。
+    #[test]
+    fn ime_on_auto_fires_when_manual_ime_on_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// 手動設定（`keys.ime_off`）が空の間、自動検出リスト（`ime_off_auto`）が
+    /// 効く。
+    #[test]
+    fn ime_off_auto_fires_when_manual_ime_off_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_off_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    /// 手動設定（`keys.ime_toggle`）が空の間、自動検出リスト
+    /// （`ime_toggle_auto`）が効く。
+    #[test]
+    fn ime_toggle_auto_fires_when_manual_ime_toggle_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    /// 決定C R1（明示 > 自動）: `keys.ime_on` が同じ物理キーへ手動設定済みの
+    /// 場合、`ime_on_auto` に同じキーが入っていても`match_ime_on_off_auto`は
+    /// 一切参照されない。挙動としては手動側がそのまま処理するため観測上の
+    /// 差は出ないが、ここでは「手動設定があってもクラッシュ・二重発火しない」
+    /// ことと、手動側の判定結果が優先されることを確認する。
+    #[test]
+    fn manual_ime_on_takes_priority_over_ime_on_auto() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_on: vec![combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        // 自動リストにも同じキーを設定するが、手動リストが非空なので
+        // match_ime_on_off_auto 側は無視されるはず。
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// 自動検出リストのキーは、手動 `ime_toggle` が非空なら一切参照されない
+    /// （決定C R1）。ここでは手動 `ime_toggle` に割り当てたキーとは別の
+    /// キーを `ime_toggle_auto` に入れ、自動側キーの押下が無視される
+    /// （consume されない = PassThrough のまま）ことを確認する。
+    #[test]
+    fn ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_toggle: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_ime_toggle_auto_keys(vec![auto_combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
     // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──
     //
     // 重要な前提（テスト設計時に判明）: `Engine::compute_active` は
