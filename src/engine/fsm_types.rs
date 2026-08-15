@@ -424,22 +424,141 @@ impl PendingThumbData {
     }
 }
 
-/// 無変換/変換キー単独タップの composing 中ガードの扱い（`NicolaFsm::
-/// set_thumb_key_solo_tap_config` 用）。
+/// 無変換/変換キー単独タップ確定時、idle/composing それぞれの2値の行動
+/// （ADR-092 決定B）。
 ///
-/// muhenkan/henkan で共通の2フラグを1構造体にまとめることで、関数シグネチャの
-/// bool パラメータ数を `clippy::fn_params_excessive_bools`（上限3）以下に抑える
-/// （BUG-58 関連調査で `henkan_solo_tap_always_suppress` を追加した際に発覚）。
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ThumbKeySoloTapGuard {
-    /// 単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
-    /// 生 VK を送出するか。`GeneralConfig::muhenkan_solo_tap_ignore_composing_guard`/
-    /// `henkan_solo_tap_ignore_composing_guard` にそのまま対応する。
+/// 専用Fnキー変換（`SoloTapAction::DedicatedFnKey`）はここには含まれない
+/// ——`gji_charset_autodetect` が実行時に独立して自動検出・設定するため
+/// （`NicolaFsm::set_muhenkan_solo_tap_dedicated_fn_key`）、`ModeKeyConfig`
+/// （設定リロードで丸ごと再設定される）に畳み込むと config reload の
+/// たびに自動検出値が消去される回帰を招く。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GuardAction {
+    /// OS に一切送出しない。
+    #[default]
+    Suppress,
+    /// 生 VK をそのまま送出する。
+    Passthrough,
+}
+
+/// 無変換/変換キー単独タップ確定時の行動を、composing の有無に対する
+/// 総関数として表現する（ADR-092 決定B）。
+///
+/// `NicolaFsm::set_thumb_key_solo_tap_config` 用。旧
+/// `ThumbKeySoloTapGuard{ignore_composing_guard, always_suppress}` の
+/// 2bool直積表現を置き換える——直積表現は `{always_suppress: false,
+/// ignore_composing_guard: true}` のように「idle/composing 双方に別々の
+/// 意味を持つ2フラグの組み合わせ」を経由しないと目的の行動へたどり着けず、
+/// 意図が読み取りにくかった。`idle`/`composing` を直接指定する総関数へ
+/// することで、両者の組み合わせに常に一意の意味を持たせる。
+///
+/// `Default` は意図的に導出しない（Opus コードレビュー指摘）:
+/// derive すると `{idle: Suppress, composing: Suppress}` になり、これは
+/// たまたま `GeneralConfig::default()`（`always_suppress=true`）と
+/// 一致するが、それは偶然の一致であって契約ではない。実際の既定値が
+/// 必要な箇所は `ModeKeyConfig::from_legacy_bools` を明示的に呼ぶこと。
+#[derive(Debug, Clone, Copy)]
+pub struct ModeKeyConfig {
+    /// composing していないときの単独タップの行き先。
+    pub idle: GuardAction,
+    /// composing 中の単独タップの行き先。
+    pub composing: GuardAction,
+}
+
+impl ModeKeyConfig {
+    /// 旧 `ThumbKeySoloTapGuard` の2bool表現（`GeneralConfig` の
+    /// `muhenkan_solo_tap_ignore_composing_guard`/`muhenkan_solo_tap_always_suppress`
+    /// 等）から構築する。既存の実効表（`always_suppress` が最優先、
+    /// 次に `ignore_composing_guard`）と完全に同じ結果になる。
+    #[must_use]
+    pub const fn from_legacy_bools(ignore_composing_guard: bool, always_suppress: bool) -> Self {
+        if always_suppress {
+            Self {
+                idle: GuardAction::Suppress,
+                composing: GuardAction::Suppress,
+            }
+        } else if ignore_composing_guard {
+            Self {
+                idle: GuardAction::Passthrough,
+                composing: GuardAction::Passthrough,
+            }
+        } else {
+            Self {
+                idle: GuardAction::Passthrough,
+                composing: GuardAction::Suppress,
+            }
+        }
+    }
+
+    /// `composing` の値に応じて `idle`/`composing` のどちらを採用するかを返す。
+    #[must_use]
+    pub const fn for_composing(self, composing: bool) -> GuardAction {
+        if composing {
+            self.composing
+        } else {
+            self.idle
+        }
+    }
+
+    /// 非 composing（idle）時に単独タップが素通し（`GuardAction::Passthrough`）か。
+    ///
+    /// `gji_charset_popup.rs` の設定支援ポップアップ（無変換単独タップが
+    /// 「素のパススルー」設定のまま=GJI 既定のかな切替に横取りされうる状態か）
+    /// の判定に使う、`!always_suppress` の新表現（ADR-092 実装時の Opus
+    /// コードレビュー指摘: 同じ事実を legacy bool から独立に導出していた
+    /// `Runtime::muhenkan_solo_tap_is_passthrough` を、この単一の判定へ
+    /// 一本化した）。専用Fnキー（`DedicatedFnKey`）が有効かどうかはこの
+    /// メソッドの関知するところではない——呼び出し元が別途チェックする
+    /// （`gji_charset_popup.rs::maybe_show_setup_popup` は
+    /// `muhenkan_dedicated_fn_key_active()` を本メソッドより先に見ている）。
+    #[must_use]
+    pub const fn is_passthrough(self) -> bool {
+        matches!(self.idle, GuardAction::Passthrough)
+    }
+}
+
+/// 無変換/変換キー単独タップ確定時の最終的な行動（ADR-092 決定B）。
+/// `resolve_pending_thumb_as_single` の戻り値の中間表現。`DedicatedFnKey`
+/// は `ModeKeyConfig` を経由せず独立に優先される（上記 doc 参照）。
+///
+/// ADR-092 決定Bは4つ目の variant `DelegateToOpenAxis(ShadowImeAction)`
+/// （MS-IME/GJI 宣言に基づく IME open 軸への肩代わり、ADR 決定D Step4）も
+/// 定義しているが、Step4 は本実装のスコープ外（消費者が存在しない）のため
+/// 今回は追加しない。Step4 着手時にこの enum へ追加すること。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoloTapAction {
+    /// OS に一切送出しない。
+    Suppress,
+    /// 生 VK をそのまま送出する。
+    Passthrough,
+    /// 専用Fnキーへ変換して送出する（ADR-091 §D3.2）。
+    DedicatedFnKey(VkCode),
+}
+
+impl From<GuardAction> for SoloTapAction {
+    fn from(action: GuardAction) -> Self {
+        match action {
+            GuardAction::Suppress => Self::Suppress,
+            GuardAction::Passthrough => Self::Passthrough,
+        }
+    }
+}
+
+/// Space/Enter 親指キー（IME の正規機能を持つキー）の設定（ADR-092 決定B）。
+/// 無変換/変換（`ModeKeyConfig`、IME モードキー）とは異なり、composing 中も
+/// 既定で素通しする正規機能のキーのため、`ignore_composing_guard`/
+/// `shift_literal` という別の2軸を持つ。
+///
+/// `Default` は意図的に導出しない（Opus コードレビュー指摘）: derive すると
+/// `{ignore_composing_guard: false, shift_literal: false}` になるが、
+/// Space/Enter の実際の既定値は両方 `true`（`GeneralConfig::default()`）で
+/// 真逆——`ModeKeyConfig` と異なり偶然の一致すら無い明確な罠だった。
+#[derive(Debug, Clone, Copy)]
+pub struct TextKeyConfig {
+    /// composing 中でも常に生 VK を送出するか。
     pub ignore_composing_guard: bool,
-    /// composing 中かどうかに関わらず常に完全に抑制する（OS に一切送出しない）。
-    /// `GeneralConfig::muhenkan_solo_tap_always_suppress`/
-    /// `henkan_solo_tap_always_suppress` にそのまま対応する。
-    pub always_suppress: bool,
+    /// Shift 同時押し時、同時打鍵判定を試みず即座にリテラル送出するか。
+    pub shift_literal: bool,
 }
 
 // ModifierState は crate::types::ModifierState として定義済み（上の use で import）
@@ -448,6 +567,67 @@ pub use crate::types::ModifierState;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-092 決定B の実効表（`modifier_key=None` の場合）を、
+    /// `ModeKeyConfig::from_legacy_bools` 単体で固定する。統合テスト
+    /// （`nicola_fsm.rs` 経由）とは独立に、変換ロジックそのものを検証する。
+    #[test]
+    fn mode_key_config_from_legacy_bools_matches_adr_092_decision_b_table() {
+        // (ignore_composing_guard, always_suppress) -> (idle, composing)
+        let cases = [
+            (false, true, GuardAction::Suppress, GuardAction::Suppress),
+            (true, true, GuardAction::Suppress, GuardAction::Suppress),
+            (
+                false,
+                false,
+                GuardAction::Passthrough,
+                GuardAction::Suppress,
+            ),
+            (
+                true,
+                false,
+                GuardAction::Passthrough,
+                GuardAction::Passthrough,
+            ),
+        ];
+        for (ignore_composing_guard, always_suppress, expected_idle, expected_composing) in cases {
+            let config = ModeKeyConfig::from_legacy_bools(ignore_composing_guard, always_suppress);
+            assert_eq!(
+                config.for_composing(false),
+                expected_idle,
+                "ignore_composing_guard={ignore_composing_guard}, always_suppress={always_suppress}: idle"
+            );
+            assert_eq!(
+                config.for_composing(true),
+                expected_composing,
+                "ignore_composing_guard={ignore_composing_guard}, always_suppress={always_suppress}: composing"
+            );
+        }
+    }
+
+    #[test]
+    fn guard_action_into_solo_tap_action_preserves_meaning() {
+        assert_eq!(
+            SoloTapAction::from(GuardAction::Suppress),
+            SoloTapAction::Suppress
+        );
+        assert_eq!(
+            SoloTapAction::from(GuardAction::Passthrough),
+            SoloTapAction::Passthrough
+        );
+    }
+
+    /// `is_passthrough()` は idle が `Passthrough` の場合のみ true
+    /// （`gji_charset_popup.rs` が「無変換単独タップが素のパススルー設定の
+    /// まま」を判定するのに使う、旧`!always_suppress`の新表現）。
+    #[test]
+    fn mode_key_config_is_passthrough_matches_idle_state() {
+        assert!(!ModeKeyConfig::from_legacy_bools(false, true).is_passthrough()); // always_suppress
+        assert!(ModeKeyConfig::from_legacy_bools(false, false).is_passthrough());
+        assert!(ModeKeyConfig::from_legacy_bools(true, false).is_passthrough());
+        assert!(!ModeKeyConfig::from_legacy_bools(true, true).is_passthrough());
+        // always_suppress優先
+    }
     use crate::scanmap::PhysicalPos;
     use crate::types::{KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};
 

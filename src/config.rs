@@ -417,14 +417,17 @@ pub struct KeysConfig {
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが有効になったとき、このキーを `SendInput` で送信して
-    /// IME を全角/ひらがなモードに切り替える。
-    /// デフォルト: `"VK_DBE_DBCSCHAR"` (0xF4 = 全角モード)
+    /// IME を全角/ひらがなモードに強制する。open 軸（IME の開閉）と
+    /// charset 軸（全角/半角モード強制）を1つのキーで束ねる複合副作用キー
+    /// であり、ADR-091 決定1（open 軸は `VK_IME_ON`/`VK_IME_OFF` で決着済み）
+    /// より前の機構の残骸。既定 `None`（ADR-092 決定D Step1、2026-08-15）。
+    /// 上級者が明示的に設定した場合のみ有効化される。
     pub engine_on_ime_key: Option<String>,
     /// Engine OFF 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが無効になったとき、このキーを `SendInput` で送信して
-    /// IME を半角/直接入力モードに切り替える。
-    /// デフォルト: `"VK_DBE_SBCSCHAR"` (0xF3 = 半角モード)
+    /// IME を半角/直接入力モードに強制する。`engine_on_ime_key` と同種の
+    /// 複合副作用キーの残骸。既定 `None`（ADR-092 決定D Step1）。
     pub engine_off_ime_key: Option<String>,
 }
 
@@ -437,8 +440,8 @@ impl Default for KeysConfig {
             ime_off: vec!["Ctrl+無変換".to_string()],
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
-            engine_on_ime_key: Some("VK_DBE_DBCSCHAR".to_string()),
-            engine_off_ime_key: Some("VK_DBE_SBCSCHAR".to_string()),
+            engine_on_ime_key: None,
+            engine_off_ime_key: None,
         }
     }
 }
@@ -829,6 +832,30 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.right_thumb_key, "変換");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
+    }
+
+    /// ADR-092 決定D Step1: engine_on_ime_key/engine_off_ime_key の既定値は
+    /// 複合副作用キー（open + charset強制を1発で行う）の残骸であり、
+    /// 既定 None に固定する（2026-08-15、実装時に既定値を変更）。
+    #[test]
+    fn test_keys_config_default_has_no_engine_ime_mode_keys() {
+        let keys = KeysConfig::default();
+        assert_eq!(keys.engine_on_ime_key, None);
+        assert_eq!(keys.engine_off_ime_key, None);
+    }
+
+    /// 新規インストール（config.toml に該当キー未指定）は None のまま
+    /// パースされる。既存 config.toml に明示値がある場合は
+    /// `AppConfig::save` が全フィールドを明示出力する仕様上、この
+    /// デフォルト変更は新規/未保存ユーザーにのみ効く（ADR-092 決定D Step1）。
+    #[test]
+    fn test_parse_app_config_engine_ime_keys_default_to_none() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keys.engine_on_ime_key, None);
+        assert_eq!(config.keys.engine_off_ime_key, None);
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が

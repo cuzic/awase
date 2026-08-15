@@ -156,6 +156,51 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0xF0..=0xF6)
 }
 
+/// この VK は通常の物理キーボードには存在しない、IME 専用の合成 VK コード
+/// （`VK_DBE_ALPHANUMERIC`/`KATAKANA`/`HIRAGANA`/`SBCSCHAR`/`DBCSCHAR`、
+/// 0xF0-0xF4）か（ADR-093）。
+///
+/// awase のフックにこの VK の `WM_KEYDOWN` が届くこと自体、何らかの IME が
+/// このキーを処理・報告しているという事実であり、`is_japanese_ime()` の
+/// 即時 `true` 更新トリガーとして使える（`false` へのダウングレードには
+/// 使わないこと——このキーが「来ない」ことは「日本語 IME でない」ことの
+/// 証拠にはならない）。
+///
+/// `may_change_ime` とは異なり `VK_DBE_ROMAN`/`NOROMAN`（0xF5/0xF6）は
+/// **含めない**——このペアは ROMAN ビット（かな入力方式）のみを制御し
+/// IME の開閉状態を変えないため（`ImeKeyKind` から除外されている理由と同じ）。
+/// `VK_KANA`/`VK_IME_ON`/`VK_JUNJA`/`VK_KANJI`/`VK_IME_OFF`（0x15-0x1A）も
+/// 含めない——これらは通常の物理/仮想キーであり、IME 専用の合成コードでは
+/// ないため「受信自体が IME 存在の証拠」という性質を持たない。
+#[must_use]
+pub const fn is_synthetic_dbe_ime_hotkey(vk_code: VkCode) -> bool {
+    matches!(
+        ImeKeyKind::from_vk(vk_code),
+        Some(
+            ImeKeyKind::Alphanumeric
+                | ImeKeyKind::Katakana
+                | ImeKeyKind::Activate
+                | ImeKeyKind::Deactivate
+                | ImeKeyKind::ActivatePair
+        )
+    )
+}
+
+/// `is_japanese_ime()` の即時 `true` 更新トリガーを発火すべきか（ADR-093、
+/// `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` から呼ぶ）。
+///
+/// `is_synthetic_dbe_ime_hotkey` に加えて **`injected` を除外する**
+/// （Opus コードレビュー指摘）: `is_japanese_ime()` は force-ON actuation
+/// ゲート `is_eligible_for_ime_force_on()` を含む複数箇所が読むグローバルな
+/// belief であり、外部プロセスの `SendInput`（BUG-14 の実例では MS-IME/CTF
+/// 自身）を信頼してこれを actuation の根拠に昇格させると、BUG-14
+/// （注入イベントをユーザー意図に過剰昇格させた失敗）の別ルートでの
+/// 再発になりうるため、物理キー入力のみを対象にする。
+#[must_use]
+pub const fn should_upgrade_is_japanese_ime(injected: bool, vk_code: VkCode) -> bool {
+    !injected && is_synthetic_dbe_ime_hotkey(vk_code)
+}
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
@@ -770,7 +815,10 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ascii_to_vk, build_symbol_to_vk, vk_pair_to_ascii, VkCode};
+    use super::{
+        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey,
+        should_upgrade_is_japanese_ime, vk_pair_to_ascii, ImeKeyKind, VkCode,
+    };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
     /// （2026-08-03 ユーザー報告 BUG-47: 句読点「。」「、」・長音「ー」が
@@ -838,5 +886,76 @@ mod tests {
                 vk.0
             );
         }
+    }
+
+    // ── ADR-093: is_synthetic_dbe_ime_hotkey ──
+
+    /// 対象の5 VK（0xF0-0xF4）は全て true。
+    #[test]
+    fn is_synthetic_dbe_ime_hotkey_true_for_all_five_synthetic_codes() {
+        for raw in 0xF0u16..=0xF4 {
+            assert!(
+                is_synthetic_dbe_ime_hotkey(VkCode(raw)),
+                "0x{raw:02X} は5 VK(ALPHANUMERIC/KATAKANA/HIRAGANA/SBCSCHAR/DBCSCHAR)の \
+                 いずれかのはずだが false だった"
+            );
+        }
+    }
+
+    /// `VK_DBE_ROMAN`/`NOROMAN`（0xF5/0xF6）は `may_change_ime` には含まれるが、
+    /// IME open 状態を変えないため `is_synthetic_dbe_ime_hotkey` には含めない
+    /// （ADR-093、`ImeKeyKind` から除外されている理由と同じ）。
+    #[test]
+    fn is_synthetic_dbe_ime_hotkey_false_for_roman_noroman() {
+        assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xF5)));
+        assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xF6)));
+    }
+
+    /// `VK_KANA`/`VK_IME_ON`/`VK_JUNJA`/`VK_KANJI`/`VK_IME_OFF`（0x15-0x1A）は
+    /// `ImeKeyKind` には含まれる（`shadow_effect` を持つ）が、通常の物理/仮想
+    /// キーであり IME 専用の合成コードではないため対象外（ADR-093）。
+    #[test]
+    fn is_synthetic_dbe_ime_hotkey_false_for_non_synthetic_ime_key_kind_variants() {
+        for vk in [0x15u16, 0x16, 0x17, 0x19, 0x1A] {
+            assert!(
+                ImeKeyKind::from_vk(VkCode(vk)).is_some(),
+                "0x{vk:02X} は ImeKeyKind に分類されるはず(前提条件)"
+            );
+            assert!(
+                !is_synthetic_dbe_ime_hotkey(VkCode(vk)),
+                "0x{vk:02X} は合成コードではないので false のはず"
+            );
+        }
+    }
+
+    /// 通常の文字キー・未分類の VK は false。
+    #[test]
+    fn is_synthetic_dbe_ime_hotkey_false_for_unrelated_vk() {
+        assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0x41))); // 'A'
+        assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xEF))); // 0xF0 の直前
+        assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xFC))); // VK_NONAME
+    }
+
+    // ── ADR-093: should_upgrade_is_japanese_ime ──
+
+    /// 物理（非注入）の5 VK なら true。
+    #[test]
+    fn should_upgrade_is_japanese_ime_true_for_physical_synthetic_dbe_hotkey() {
+        assert!(should_upgrade_is_japanese_ime(false, VkCode(0xF2))); // HIRAGANA
+    }
+
+    /// 注入イベントは、5 VK であっても false
+    /// （Opus コードレビュー指摘: is_japanese_ime() は force-ON actuation
+    /// ゲート等のグローバルな belief であり、外部注入イベントを信頼して
+    /// actuation の根拠に昇格させると BUG-14 と同種の失敗になりうるため）。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_injected_synthetic_dbe_hotkey() {
+        assert!(!should_upgrade_is_japanese_ime(true, VkCode(0xF2))); // HIRAGANA, injected
+    }
+
+    /// 物理イベントでも、5 VK でなければ false。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
+        assert!(!should_upgrade_is_japanese_ime(false, VkCode(0x41))); // 'A'
     }
 }

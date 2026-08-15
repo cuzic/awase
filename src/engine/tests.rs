@@ -452,15 +452,9 @@ fn make_engine_with_thumb_key_solo_tap_config_ex(
     );
     engine.set_thumb_key_solo_tap_config(
         Some(VK_NONCONVERT),
-        ThumbKeySoloTapGuard {
-            ignore_composing_guard: muhenkan_ignore_composing_guard,
-            always_suppress: muhenkan_always_suppress,
-        },
+        ModeKeyConfig::from_legacy_bools(muhenkan_ignore_composing_guard, muhenkan_always_suppress),
         Some(VK_CONVERT),
-        ThumbKeySoloTapGuard {
-            ignore_composing_guard: henkan_ignore_composing_guard,
-            always_suppress: henkan_always_suppress,
-        },
+        ModeKeyConfig::from_legacy_bools(henkan_ignore_composing_guard, henkan_always_suppress),
     );
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
@@ -880,7 +874,13 @@ fn make_engine_with_space_thumb(ignore_composing_guard: bool, shift_literal: boo
         ConfirmMode::Wait,
         30,
     );
-    engine.set_space_thumb_config(Some(VK_SPACE), ignore_composing_guard, shift_literal);
+    engine.set_space_thumb_config(
+        Some(VK_SPACE),
+        TextKeyConfig {
+            ignore_composing_guard,
+            shift_literal,
+        },
+    );
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
         engine,
@@ -1019,7 +1019,13 @@ fn make_engine_with_enter_thumb(ignore_composing_guard: bool, shift_literal: boo
         ConfirmMode::Wait,
         30,
     );
-    engine.set_enter_thumb_config(Some(VK_RETURN), ignore_composing_guard, shift_literal);
+    engine.set_enter_thumb_config(
+        Some(VK_RETURN),
+        TextKeyConfig {
+            ignore_composing_guard,
+            shift_literal,
+        },
+    );
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
         engine,
@@ -6136,7 +6142,13 @@ mod engine_integration_tests {
         // ignore_composing_guard=true を指定しても composing 中は無条件 suppress
         // されてしまう（生 VK_SPACE が出力されない）。
         let mut engine = make_test_engine();
-        engine.set_space_thumb_config(Some(VK_SPACE), true, false);
+        engine.set_space_thumb_config(
+            Some(VK_SPACE),
+            TextKeyConfig {
+                ignore_composing_guard: true,
+                shift_literal: false,
+            },
+        );
 
         let composing_ctx = InputContext {
             composing: true,
@@ -6166,12 +6178,11 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         engine.set_thumb_key_solo_tap_config(
             Some(VK_NONCONVERT),
-            ThumbKeySoloTapGuard {
-                ignore_composing_guard: true,
-                always_suppress: false,
-            },
+            ModeKeyConfig::from_legacy_bools(true, false),
             None,
-            ThumbKeySoloTapGuard::default(),
+            // 旧 `ThumbKeySoloTapGuard::default()`（ignore_composing_guard=false,
+            // always_suppress=false）と同値。
+            ModeKeyConfig::from_legacy_bools(false, false),
         );
 
         let composing_ctx = InputContext {
@@ -6199,7 +6210,13 @@ mod engine_integration_tests {
         // ignore_composing_guard=true を指定しても composing 中は無条件 suppress
         // されてしまう（生 VK_RETURN が出力されない）。
         let mut engine = make_test_engine();
-        engine.set_enter_thumb_config(Some(VK_RETURN), true, false);
+        engine.set_enter_thumb_config(
+            Some(VK_RETURN),
+            TextKeyConfig {
+                ignore_composing_guard: true,
+                shift_literal: false,
+            },
+        );
 
         let composing_ctx = InputContext {
             composing: true,

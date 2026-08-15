@@ -16,8 +16,8 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
     BypassReason, ClassifiedEvent, ComposingHint, EngineState, Face, IdleIntent, KeyClass,
-    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, ThumbKeySoloTapGuard,
-    TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    ModeKeyConfig, OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction,
+    SoloTapAction, TextKeyConfig, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 use super::timing;
 
@@ -126,26 +126,19 @@ pub struct NicolaFsm {
     /// を判定する（`GeneralConfig::space_thumb_ignore_composing_guard` 等参照）。
     space_thumb_vk: Option<VkCode>,
 
-    /// Space 親指キー単独タップ確定時、IME 変換候補ウィンドウ表示中
-    /// （`composing`）でも生 VK を送出するか。`space_thumb_vk` が `None` なら無効。
-    space_thumb_ignore_composing_guard: bool,
-
-    /// Shift を押しながら Space 親指キーを押した場合、同時打鍵判定を試みず
-    /// 即座にリテラルなスペースとして送出するか。`space_thumb_vk` が `None` なら無効。
-    space_thumb_shift_literal: bool,
+    /// Space 親指キー単独タップの設定（ADR-092 決定B、`TextKeyConfig`）。
+    /// `space_thumb_vk` が `None` なら無効。
+    text_key_space: TextKeyConfig,
 
     /// `left_thumb_key`/`right_thumb_key` のいずれかが無変換 (`VK_NONCONVERT`) に
     /// 割り当てられている場合、その VK コード。`space_thumb_vk` と同様、実際の VK
     /// 番号は Platform 層の責務で、core は等値比較のみ行う。
     muhenkan_vk: Option<VkCode>,
 
-    /// 無変換キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
-    /// 生 VK を送出するか。`muhenkan_vk` が `None` なら無効。
-    muhenkan_solo_tap_ignore_composing_guard: bool,
-
-    /// 無変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
-    /// （OS に一切送出しない）。`muhenkan_vk` が `None` なら無効。既定値は `true`
-    /// （composing の有無を問わず無変換単独タップは常に無視する）。
+    /// 無変換キー単独タップの設定（ADR-092 決定B、`ModeKeyConfig`）。
+    /// `muhenkan_vk` が `None` なら無効。既定値は idle/composing とも
+    /// `GuardAction::Suppress`（composing の有無を問わず無変換単独タップは
+    /// 常に無視する）。
     ///
     /// MS-IME は「キーとタッチのカスタマイズ」で無変換キー単独打鍵に既定で
     /// 「かな切替」（IME オン相当）を割り当てている（`msime_key_assignment.rs`
@@ -153,56 +146,48 @@ pub struct NicolaFsm {
     /// この既定割当てに横取りされて awase の管理外で IME モードが切り替わる
     /// （2026-08-07 実機: 無変換単独タップ直後に `VK_DBE_ALPHANUMERIC`→
     /// `VK_DBE_HIRAGANA` が非注入で観測され、shadow toggle が IME を ON にした）。
-    /// `true` にすると、この経路を完全に断つため composing 中かどうかを問わず
+    /// 既定 Suppress は、この経路を完全に断つため composing 中かどうかを問わず
     /// 無変換単独タップを常に抑制する。
-    muhenkan_solo_tap_always_suppress: bool,
+    mode_key_muhenkan: ModeKeyConfig,
 
     /// 専用 Fn キー変換モード（ADR-091 §D3.2）。`Some(vk)` なら、無変換単独タップ
-    /// 確定時に `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
-    /// による既存の抑制/パススルー判定を一切経由せず、常にこの Fn キーを送出する
-    /// （composing の有無を問わない、belief 不要）。`GeneralConfig::
-    /// muhenkan_solo_tap_dedicated_fn_key` に対応する。`None`（既定）なら無効で
-    /// 従来通り。
+    /// 確定時に `mode_key_muhenkan` による既存の抑制/パススルー判定を一切経由せず、
+    /// 常にこの Fn キーを送出する（composing の有無を問わない、belief 不要）。
+    /// `GeneralConfig::muhenkan_solo_tap_dedicated_fn_key` に対応する。`None`
+    /// （既定）なら無効で従来通り。
+    ///
+    /// `ModeKeyConfig` には統合しない（ADR-092 決定B）——`gji_charset_autodetect`
+    /// が実行時に独立して自動検出・設定する値であり、`set_thumb_key_solo_tap_config`
+    /// によるconfig reloadのたびに上書き消去されると自動検出機能（ADR-091 F21）が
+    /// 壊れるため、専用の独立フィールド・独立setterのまま維持する。
     muhenkan_solo_tap_dedicated_fn_key: Option<VkCode>,
 
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
     henkan_vk: Option<VkCode>,
 
-    /// 変換キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
-    /// 生 VK を送出するか。`henkan_vk` が `None` なら無効。
-    henkan_solo_tap_ignore_composing_guard: bool,
-
-    /// 変換キー単独タップを、composing 中かどうかに関わらず常に完全に抑制する
-    /// （OS に一切送出しない）。`henkan_vk` が `None` なら無効。既定値は `true`
-    /// （composing の有無を問わず変換単独タップは常に無視する）。
-    ///
-    /// `muhenkan_solo_tap_always_suppress` と対称の設定（BUG-58 関連調査で発覚:
-    /// 変換キーには従来この抑制手段が無く、composing していない場面では常に
-    /// 生 VK_CONVERT が送出されていた。MS-IME は「キーとタッチのカスタマイズ」で
-    /// 変換キー単独打鍵に既定で「再変換」を割り当てており、設定次第では
-    /// IME-オン相当の割当ても可能なため、無変換と同じ横取りリスクがある）。
-    henkan_solo_tap_always_suppress: bool,
+    /// 変換キー単独タップの設定（ADR-092 決定B、`ModeKeyConfig`）。
+    /// `henkan_vk` が `None` なら無効。`mode_key_muhenkan` と対称
+    /// （BUG-58 関連調査で発覚: 変換キーには従来この抑制手段が無く、composing
+    /// していない場面では常に生 VK_CONVERT が送出されていた。MS-IME は
+    /// 「キーとタッチのカスタマイズ」で変換キー単独打鍵に既定で「再変換」を
+    /// 割り当てており、設定次第では IME-オン相当の割当ても可能なため、無変換と
+    /// 同じ横取りリスクがある）。
+    mode_key_henkan: ModeKeyConfig,
 
     /// `left_thumb_key`/`right_thumb_key` のいずれかが Enter (`VK_RETURN`) に
     /// 割り当てられている場合、その VK コード。`space_thumb_vk` と同様、実際の VK
     /// 番号は Platform 層の責務で、core は等値比較のみ行う。
     enter_thumb_vk: Option<VkCode>,
 
-    /// Enter 親指キー単独タップ確定時、IME 変換候補ウィンドウ表示中（`composing`）でも
-    /// 生 VK_RETURN を送出するか。`enter_thumb_vk` が `None` なら無効。
+    /// Enter 親指キー単独タップの設定（ADR-092 決定B、`TextKeyConfig`）。
+    /// `enter_thumb_vk` が `None` なら無効。
     ///
     /// Enter は IME 変換候補の確定という正規機能を持つため、既定値は Space と同じ
-    /// `true`（常時送出）。無変換/変換と異なり `false` を既定にすると、変換候補
-    /// ウィンドウ表示中に Enter 単独タップが丸ごと抑制され、変換確定そのものが
-    /// できなくなってしまう。
-    enter_thumb_ignore_composing_guard: bool,
-
-    /// Shift を押しながら Enter 親指キーを押した場合、同時打鍵判定を一切試みず
-    /// 即座にリテラルな Enter として送出するか。`enter_thumb_vk` が `None` なら無効。
-    /// Shift+Enter（ソフト改行）は NICOLA の小指シフト面と組み合わせない設計のため、
-    /// `space_thumb_shift_literal` と同じ理由で既定値は `true`。
-    enter_thumb_shift_literal: bool,
+    /// `ignore_composing_guard: true`（常時送出）。無変換/変換と異なり `false` を
+    /// 既定にすると、変換候補ウィンドウ表示中に Enter 単独タップが丸ごと抑制され、
+    /// 変換確定そのものができなくなってしまう。
+    text_key_enter: TextKeyConfig,
 }
 
 // ── 公開 API ──
@@ -237,24 +222,27 @@ impl NicolaFsm {
             // 有効）。実際の Space VK は Platform 層が set_space_thumb_config() で
             // 明示的に配線する（config.rs の doc 参照）。
             space_thumb_vk: None,
-            space_thumb_ignore_composing_guard: true,
-            space_thumb_shift_literal: true,
+            text_key_space: TextKeyConfig {
+                ignore_composing_guard: true,
+                shift_literal: true,
+            },
             // 無変換/変換の VK は Platform 層が set_thumb_key_solo_tap_config() で
             // 明示的に配線するまで None。ガード既定値は GeneralConfig::default() と
-            // 揃えて false（従来通り composing 中は抑制）。
+            // 揃えて ignore_composing_guard=false, always_suppress=true 相当
+            // （従来通り composing の有無を問わず抑制）。
             muhenkan_vk: None,
-            muhenkan_solo_tap_ignore_composing_guard: false,
-            muhenkan_solo_tap_always_suppress: true,
+            mode_key_muhenkan: ModeKeyConfig::from_legacy_bools(false, true),
             muhenkan_solo_tap_dedicated_fn_key: None,
             henkan_vk: None,
-            henkan_solo_tap_ignore_composing_guard: false,
-            henkan_solo_tap_always_suppress: true,
+            mode_key_henkan: ModeKeyConfig::from_legacy_bools(false, true),
             // Enter の VK は Platform 層が set_enter_thumb_config() で明示的に配線する
             // まで None。ガード既定値は GeneralConfig::default() と揃えて Space と
-            // 同じ true（composing 中も変換確定/改行として素通し）。
+            // 同じ ignore_composing_guard=true（composing 中も変換確定/改行として素通し）。
             enter_thumb_vk: None,
-            enter_thumb_ignore_composing_guard: true,
-            enter_thumb_shift_literal: true,
+            text_key_enter: TextKeyConfig {
+                ignore_composing_guard: true,
+                shift_literal: true,
+            },
         }
     }
 
@@ -428,18 +416,15 @@ impl NicolaFsm {
     /// `space_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
     /// Space (`VK_SPACE`) に解決された場合の VK コード（Platform 層が
     /// `crate::vk::VK_SPACE` との等値比較で判定し渡す）。どちらも Space でなければ
-    /// `None` を渡すこと。`ignore_composing_guard`/`shift_literal` は
-    /// `GeneralConfig::space_thumb_ignore_composing_guard`/
-    /// `space_thumb_shift_literal` にそのまま対応する。
+    /// `None` を渡すこと。`config` は `GeneralConfig::space_thumb_ignore_composing_guard`/
+    /// `space_thumb_shift_literal` にそのまま対応する（ADR-092 決定B、`TextKeyConfig`）。
     pub const fn set_space_thumb_config(
         &mut self,
         space_thumb_vk: Option<VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: TextKeyConfig,
     ) {
         self.space_thumb_vk = space_thumb_vk;
-        self.space_thumb_ignore_composing_guard = ignore_composing_guard;
-        self.space_thumb_shift_literal = shift_literal;
+        self.text_key_space = config;
     }
 
     /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
@@ -449,22 +434,25 @@ impl NicolaFsm {
     /// 割り当てられていなければ `None` を渡すこと。`muhenkan`/`henkan` の各フィールド
     /// は `GeneralConfig` の同名フィールド（`muhenkan_solo_tap_ignore_composing_guard`/
     /// `muhenkan_solo_tap_always_suppress`/`henkan_solo_tap_ignore_composing_guard`/
-    /// `henkan_solo_tap_always_suppress`）にそのまま対応する
-    /// （`ThumbKeySoloTapGuard` へのグルーピングは `clippy::fn_params_excessive_bools`
-    /// 対策、BUG-58 関連調査参照）。
+    /// `henkan_solo_tap_always_suppress`）から`ModeKeyConfig::from_legacy_bools`で
+    /// 変換した値を渡す（ADR-092 決定B。`ThumbKeySoloTapGuard` へのグルーピングは
+    /// `clippy::fn_params_excessive_bools` 対策だった、BUG-58 関連調査参照）。
+    ///
+    /// **専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）はこの呼び出しでは
+    /// 変更されない。** `set_muhenkan_solo_tap_dedicated_fn_key` で独立に設定する
+    /// こと——`gji_charset_autodetect` による実行時の自動検出値をこの呼び出しで
+    /// 上書き消去しないための意図的な分離。
     pub const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<VkCode>,
-        muhenkan: ThumbKeySoloTapGuard,
+        muhenkan: ModeKeyConfig,
         henkan_vk: Option<VkCode>,
-        henkan: ThumbKeySoloTapGuard,
+        henkan: ModeKeyConfig,
     ) {
         self.muhenkan_vk = muhenkan_vk;
-        self.muhenkan_solo_tap_ignore_composing_guard = muhenkan.ignore_composing_guard;
-        self.muhenkan_solo_tap_always_suppress = muhenkan.always_suppress;
+        self.mode_key_muhenkan = muhenkan;
         self.henkan_vk = henkan_vk;
-        self.henkan_solo_tap_ignore_composing_guard = henkan.ignore_composing_guard;
-        self.henkan_solo_tap_always_suppress = henkan.always_suppress;
+        self.mode_key_henkan = henkan;
     }
 
     /// 無変換単独タップの専用 Fn キー変換モード（ADR-091 §D3.2）を設定する。
@@ -482,18 +470,15 @@ impl NicolaFsm {
     /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
     /// Enter (`VK_RETURN`) に解決された場合の VK コード（Platform 層が
     /// `crate::vk::VK_RETURN` との等値比較で判定し渡す）。どちらも Enter でなければ
-    /// `None` を渡すこと。`ignore_composing_guard`/`shift_literal` は
-    /// `GeneralConfig::enter_thumb_ignore_composing_guard`/
-    /// `enter_thumb_shift_literal` にそのまま対応する。
+    /// `None` を渡すこと。`config` は `GeneralConfig::enter_thumb_ignore_composing_guard`/
+    /// `enter_thumb_shift_literal` にそのまま対応する（ADR-092 決定B、`TextKeyConfig`）。
     pub const fn set_enter_thumb_config(
         &mut self,
         enter_thumb_vk: Option<VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: TextKeyConfig,
     ) {
         self.enter_thumb_vk = enter_thumb_vk;
-        self.enter_thumb_ignore_composing_guard = ignore_composing_guard;
-        self.enter_thumb_shift_literal = shift_literal;
+        self.text_key_enter = config;
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
@@ -780,7 +765,7 @@ impl NicolaFsm {
     /// 組み合わせない設計のため、Shift 押下中の Space 親指キーを `PendingThumb` に
     /// 入れず即座に素通しにしても、通常の同時打鍵判定と衝突しない。
     const fn is_space_thumb_shift_literal(&self, ev: &ClassifiedEvent) -> bool {
-        self.space_thumb_shift_literal
+        self.text_key_space.shift_literal
             && self.phys.modifiers.shift
             && ev.key_class.is_thumb()
             && matches!(self.space_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
@@ -791,7 +776,7 @@ impl NicolaFsm {
     /// `is_space_thumb_shift_literal` と同じ理由付け（NICOLA の小指シフト面とは
     /// 組み合わせない設計）。
     const fn is_enter_thumb_shift_literal(&self, ev: &ClassifiedEvent) -> bool {
-        self.enter_thumb_shift_literal
+        self.text_key_enter.shift_literal
             && self.phys.modifiers.shift
             && ev.key_class.is_thumb()
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
@@ -1130,19 +1115,21 @@ impl NicolaFsm {
     /// hook 層で bypass されてここには来ないので、Windows 全般での 無変換 / 変換 キー
     /// 機能は composing していない場面では引き続き使える。
     ///
-    /// **Space の例外**: `space_thumb_vk` に一致し `space_thumb_ignore_composing_guard`
-    /// が true の場合、composing 中でも常に生 VK_SPACE を送出する。MS-IME/Google 日本語
-    /// 入力とも Space による「変換候補送り」は正規機能であり、無変換/変換と同じ理由
-    /// （かな/カタカナ切替・再変換の誤発火防止）で composing 中に抑制すると、通常の
-    /// 変換操作そのものが壊れるため。
+    /// **Space の例外**: `space_thumb_vk` に一致し `text_key_space.ignore_composing_guard`
+    /// （`TextKeyConfig`、ADR-092 決定B）が true の場合、composing 中でも常に生 VK_SPACE
+    /// を送出する。MS-IME/Google 日本語入力とも Space による「変換候補送り」は正規機能
+    /// であり、無変換/変換と同じ理由（かな/カタカナ切替・再変換の誤発火防止）で
+    /// composing 中に抑制すると、通常の変換操作そのものが壊れるため。
     ///
-    /// **無変換/変換の明示的なオプトアウト**: `muhenkan_vk`/`henkan_vk` に一致し、
-    /// それぞれ対応する `*_solo_tap_ignore_composing_guard` が true の場合も同様に
-    /// composing 中でも生 VK を送出する。既定値は `false`（従来通り抑制）で、
-    /// ユーザーが明示的に有効化した場合のみ、上記のかな/カタカナ切替等の副作用
-    /// リスクを引き受けて composing 中の単独タップを素通しさせる。
+    /// **無変換/変換**: `muhenkan_vk`/`henkan_vk` に一致した場合、`mode_key_muhenkan`/
+    /// `mode_key_henkan`（`ModeKeyConfig`、ADR-092 決定B）が idle/composing それぞれの
+    /// 行動（`Suppress`/`Passthrough`）を総関数として決める。既定値は idle/composing
+    /// とも `Suppress`（従来通り常時抑制）で、ユーザーが明示的に緩めた場合のみ
+    /// かな/カタカナ切替等の副作用リスクを引き受けて素通しさせる。専用Fnキー
+    /// （`muhenkan_solo_tap_dedicated_fn_key`）が設定されている場合は
+    /// `ModeKeyConfig` より優先される（上記コード参照）。
     ///
-    /// **Enter の例外**: `enter_thumb_vk` に一致し `enter_thumb_ignore_composing_guard`
+    /// **Enter の例外**: `enter_thumb_vk` に一致し `text_key_enter.ignore_composing_guard`
     /// が true の場合も、Space と同じ理由（IME 変換候補確定は正規機能であり、
     /// 無変換/変換と同じガードを適用すると通常の変換確定操作が丸ごと壊れる）で
     /// composing 中でも常に生 VK_RETURN を送出する。既定値は `true`。
@@ -1169,53 +1156,59 @@ impl NicolaFsm {
             };
         }
 
-        // 専用 Fn キー変換モード（ADR-091 §D3.2）。既存の抑制/パススルー判定
-        // （このメソッドの残り全体）より手前で分岐し、composing の有無や
-        // `muhenkan_solo_tap_always_suppress` の値に関わらず常にこの Fn キーを
-        // 送出する。GJI の config1.db にこの Fn キーを Composition/Conversion
-        // 時の `SwitchKanaType` としてバインドしておくことで、GJI が自身の
-        // 内部状態を見てかな形状をトグルする（awase 側は belief を持たない）。
-        if self.muhenkan_vk == Some(vk_code) {
-            if let Some(fn_key) = self.muhenkan_solo_tap_dedicated_fn_key {
-                let action = KeyAction::Key(fn_key);
-                let output = OutputUpdate::record(scan_code, &action, None);
-                return ResolvedAction {
-                    actions: smallvec![action],
-                    output,
-                };
-            }
-        }
+        // 無変換/変換は ModeKeyConfig 経由で SoloTapAction を解決する（ADR-092
+        // 決定B）。専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）は
+        // `ModeKeyConfig` の外側で独立に最優先判定する——既存の抑制/パススルー
+        // 判定より手前で分岐し、composing の有無や `mode_key_muhenkan` の値に
+        // 関わらず常にこの Fn キーを送出する（ADR-091 §D3.2）。GJI の
+        // config1.db にこの Fn キーを Composition/Conversion 時の
+        // `SwitchKanaType` としてバインドしておくことで、GJI が自身の内部状態を
+        // 見てかな形状をトグルする（awase 側は belief を持たない）。
+        let mode_key_action = if self.muhenkan_vk == Some(vk_code) {
+            Some(self.muhenkan_solo_tap_dedicated_fn_key.map_or_else(
+                || SoloTapAction::from(self.mode_key_muhenkan.for_composing(composing)),
+                SoloTapAction::DedicatedFnKey,
+            ))
+        } else if self.henkan_vk == Some(vk_code) {
+            Some(SoloTapAction::from(
+                self.mode_key_henkan.for_composing(composing),
+            ))
+        } else {
+            None
+        };
 
-        // 無変換単独タップの常時抑制（composing の有無を問わない）。MS-IME の既定
-        // キー割当て（無変換単独打鍵→かな切替）に、composing していない場面での
-        // 生 VK 素通しを横取りされないようにするための明示オプトイン。
-        if self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_always_suppress {
-            return ResolvedAction {
-                actions: SmallVec::new(),
-                output: OutputUpdate::None,
+        if let Some(action) = mode_key_action {
+            return match action {
+                SoloTapAction::Suppress => ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                SoloTapAction::Passthrough => {
+                    let action = KeyAction::Key(vk_code);
+                    let output = OutputUpdate::record(scan_code, &action, None);
+                    ResolvedAction {
+                        actions: smallvec![action],
+                        output,
+                    }
+                }
+                SoloTapAction::DedicatedFnKey(fn_key) => {
+                    let action = KeyAction::Key(fn_key);
+                    let output = OutputUpdate::record(scan_code, &action, None);
+                    ResolvedAction {
+                        actions: smallvec![action],
+                        output,
+                    }
+                }
             };
         }
 
-        // 変換単独タップの常時抑制（composing の有無を問わない）。無変換と対称。
-        if self.henkan_vk == Some(vk_code) && self.henkan_solo_tap_always_suppress {
-            return ResolvedAction {
-                actions: SmallVec::new(),
-                output: OutputUpdate::None,
-            };
-        }
-
+        // Space/Enter（TextKeyConfig、正規機能キー）。無変換/変換の ModeKeyConfig
+        // とは別の総関数——composing 中も既定で素通しする点が異なる。
         let is_space_with_fallback =
-            self.space_thumb_vk == Some(vk_code) && self.space_thumb_ignore_composing_guard;
-        let is_muhenkan_with_fallback =
-            self.muhenkan_vk == Some(vk_code) && self.muhenkan_solo_tap_ignore_composing_guard;
-        let is_henkan_with_fallback =
-            self.henkan_vk == Some(vk_code) && self.henkan_solo_tap_ignore_composing_guard;
+            self.space_thumb_vk == Some(vk_code) && self.text_key_space.ignore_composing_guard;
         let is_enter_with_fallback =
-            self.enter_thumb_vk == Some(vk_code) && self.enter_thumb_ignore_composing_guard;
-        let ignore_composing_guard = is_space_with_fallback
-            || is_muhenkan_with_fallback
-            || is_henkan_with_fallback
-            || is_enter_with_fallback;
+            self.enter_thumb_vk == Some(vk_code) && self.text_key_enter.ignore_composing_guard;
+        let ignore_composing_guard = is_space_with_fallback || is_enter_with_fallback;
         if composing && !ignore_composing_guard {
             return ResolvedAction {
                 actions: SmallVec::new(),

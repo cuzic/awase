@@ -778,6 +778,35 @@ impl Runtime {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
+        // ADR-093: VK_DBE_ALPHANUMERIC/KATAKANA/HIRAGANA/SBCSCHAR/DBCSCHAR
+        // (0xF0-0xF4) は通常の物理キーボードには存在しない IME 専用の合成 VK
+        // コードであり、この KeyDown が届くこと自体が「何らかの IME がこの
+        // キーを処理・報告している」証拠になる。is_japanese_ime() は probe
+        // ベースの確率的信念で、スリープ復帰/フォーカス変更直後の grace 期間中
+        // 一時的に false を誤答しうる既知の弱点がある
+        // (apply_focus_probe の non_ascii コメント参照)。この5 VK の受信を
+        // is_japanese_ime() の即時 true 更新トリガーに使い、grace 中の
+        // false 誤答を訂正する。
+        //
+        // false へのダウングレードには一切関与しない — この5 VK が「来ない」
+        // ことは「日本語 IME でない」ことの証拠にはならない（既存の probe
+        // ベースの downgrade 経路は変更しない）。
+        //
+        // **物理（非注入）イベントに限定する**（Opus コードレビュー指摘で
+        // 追加した制約、当初案は BUG-14 の注入イベント除外より前に無条件で
+        // 置いていた）。`is_japanese_ime()` は force-ON actuation ゲート
+        // `is_eligible_for_ime_force_on()`（`state/platform_state.rs:599`、
+        // `is_japanese_ime() && effective_open()`）を含む約10箇所の消費者を
+        // 持つグローバルな belief であり、ここを true にすると次の打鍵から
+        // force-ON 等の actuation 経路が新たに解禁される。注入イベント
+        // （外部プロセスの SendInput、BUG-14 の実例では MS-IME/CTF 自身）を
+        // 信頼して actuation の根拠にすると、BUG-14 と同じ「注入イベントを
+        // 過度に信頼する」失敗の再発になりうるため、この upgrade は物理
+        // キー入力のみに限定する（`event.injected` の判定自体は下記 BUG-14
+        // ブロックの早期 return より前に確認する必要があるため、ここで直接見る）。
+        if crate::vk::should_upgrade_is_japanese_ime(event.injected, event.vk_code) {
+            self.platform_state.ime.set_is_japanese_ime(true);
+        }
         // BUG-14: 注入イベント (LLKHF_INJECTED、awase 自身のマーカーなし = MS-IME/CTF 等の
         // SendInput) はユーザーの物理操作ではないため、SyncKey / PhysicalImeKey の
         // ユーザー意図に昇格させない。2026-07-06 実機: 外部注入 VK_DBE_HIRAGANA down+up

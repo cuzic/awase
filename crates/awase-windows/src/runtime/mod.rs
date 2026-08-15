@@ -17,7 +17,8 @@ pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;
 use awase::engine::{
-    Engine, EngineCommand, InputContext, InputModeState, SpecialKeyCombos, ThumbKeySoloTapGuard,
+    Engine, EngineCommand, InputContext, InputModeState, ModeKeyConfig, SpecialKeyCombos,
+    TextKeyConfig,
 };
 use awase::ngram::NgramModel;
 use awase::types::{ContextChange, RawKeyEvent, VkCode};
@@ -1428,8 +1429,10 @@ impl Runtime {
                 .find(|&vk| vk == crate::vk::VK_SPACE);
             self.engine.set_space_thumb_config(
                 space_thumb_vk,
-                config.general.space_thumb_ignore_composing_guard,
-                config.general.space_thumb_shift_literal,
+                TextKeyConfig {
+                    ignore_composing_guard: config.general.space_thumb_ignore_composing_guard,
+                    shift_literal: config.general.space_thumb_shift_literal,
+                },
             );
             let muhenkan_vk = [left, right]
                 .into_iter()
@@ -1439,15 +1442,15 @@ impl Runtime {
                 .find(|&vk| vk == crate::vk::VK_CONVERT);
             self.engine.set_thumb_key_solo_tap_config(
                 muhenkan_vk,
-                ThumbKeySoloTapGuard {
-                    ignore_composing_guard: config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    always_suppress: config.general.muhenkan_solo_tap_always_suppress,
-                },
+                ModeKeyConfig::from_legacy_bools(
+                    config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    config.general.muhenkan_solo_tap_always_suppress,
+                ),
                 henkan_vk,
-                ThumbKeySoloTapGuard {
-                    ignore_composing_guard: config.general.henkan_solo_tap_ignore_composing_guard,
-                    always_suppress: config.general.henkan_solo_tap_always_suppress,
-                },
+                ModeKeyConfig::from_legacy_bools(
+                    config.general.henkan_solo_tap_ignore_composing_guard,
+                    config.general.henkan_solo_tap_always_suppress,
+                ),
             );
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             if manual_fn_key.is_some() || self.muhenkan_dedicated_fn_key_is_manual() {
@@ -1462,15 +1465,21 @@ impl Runtime {
                 );
             }
             self.set_muhenkan_solo_tap_is_passthrough(
-                !config.general.muhenkan_solo_tap_always_suppress,
+                ModeKeyConfig::from_legacy_bools(
+                    config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    config.general.muhenkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()
                 .find(|&vk| vk == crate::vk::VK_RETURN);
             self.engine.set_enter_thumb_config(
                 enter_thumb_vk,
-                config.general.enter_thumb_ignore_composing_guard,
-                config.general.enter_thumb_shift_literal,
+                TextKeyConfig {
+                    ignore_composing_guard: config.general.enter_thumb_ignore_composing_guard,
+                    shift_literal: config.general.enter_thumb_shift_literal,
+                },
             );
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",

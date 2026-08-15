@@ -568,22 +568,17 @@ footer p{margin-bottom:0.3rem}
         <tr><td>Right thumb key</td><td>The key used for the right thumb-shift key (default: VK_CONVERT = Henkan)</td></tr>
         <tr><td>Engine ON key</td><td>The key that turns the NICOLA engine ON. Multiple entries allowed</td></tr>
         <tr><td>Engine OFF key</td><td>The key that turns the NICOLA engine OFF. Multiple entries allowed</td></tr>
-        <tr><td>IME ON key</td><td>The key that turns the IME ON (idempotent). Multiple entries allowed</td></tr>
-        <tr><td>IME OFF key</td><td>The key that turns the IME OFF (idempotent). Multiple entries allowed</td></tr>
         <tr><td>Engine-toggle hotkey</td><td>A global hotkey that toggles the engine ON/OFF</td></tr>
       </table>
-    </div>
-
-    <div class="card">
-      <h3>IME Detection tab</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">These are the key settings awase uses to track changes in IME state. The defaults are usually fine.</p>
-      <table class="tab-table">
+      <p class="note" style="margin-top:0.7rem">Opening "Advanced settings" at the bottom of this tab (collapsed by default) reveals two more key settings. The defaults are usually fine.</p>
+      <table class="tab-table" style="margin-top:0.5rem">
         <tr><th>Item</th><th>Description</th></tr>
-        <tr><td>Toggle key</td><td>The key the OS uses to toggle the IME ON/OFF (e.g. Hankaku/Zenkaku)</td></tr>
-        <tr><td>ON key</td><td>The key the OS uses to turn the IME ON</td></tr>
-        <tr><td>OFF key</td><td>The key the OS uses to turn the IME OFF</td></tr>
+        <tr><td>awase &rarr; IME ON/OFF keys</td><td>The keys awase actively sends to turn the IME ON/OFF (idempotent). Multiple entries allowed</td></tr>
+        <tr><td>IME &rarr; awase toggle key</td><td>The key awase interprets as the OS/IME toggling the IME ON/OFF (e.g. Hankaku/Zenkaku)</td></tr>
+        <tr><td>IME &rarr; awase ON key</td><td>The key awase interprets as the OS/IME turning the IME ON</td></tr>
+        <tr><td>IME &rarr; awase OFF key</td><td>The key awase interprets as the OS/IME turning the IME OFF</td></tr>
       </table>
-      <p class="note" style="margin-top:0.7rem">The "Restore defaults" button returns these to the standard settings.</p>
+      <p class="note">The "IME &rarr; awase" side has a "Restore defaults" button. The arrows show the direction: "awase &rarr; IME" is keys awase actively sends; "IME &rarr; awase" is keys awase interprets as external IME state changes.</p>
     </div>
 
     <div class="card">
@@ -639,13 +634,8 @@ ime_off = ["Ctrl+無変換"]
 # Emergency: pressing Muhenkan alone three times within 400 ms turns the engine OFF.
 # A last resort for when Ctrl gets stuck and the shortcuts stop working.
 # Disable it with an empty string "" or by deleting the line.
-engine_off_solo_triple = "VK_NONCONVERT"
-
-# IME mode key sent when the engine turns ON (switch to full-width hiragana mode)
-engine_on_ime_key = "VK_DBE_DBCSCHAR"
-
-# IME mode key sent when the engine turns OFF (switch to half-width alphanumeric mode)
-engine_off_ime_key = "VK_DBE_SBCSCHAR"</div>
+engine_off_solo_triple = "VK_NONCONVERT"</div>
+      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code> (an advanced setting that force-sends an IME full-width/half-width mode key when the engine turns ON/OFF) are disabled (unset) by default. This bundles opening/closing the IME with forcing its mode into a single key, so <code>ime_on</code>/<code>ime_off</code> above is usually enough. You can enable it by adding these lines to <code>config.toml</code> manually.</p>
       <p class="note" style="margin-top:0.7rem">To assign multiple keys, add them to the array: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
       <p class="note">A global hotkey (which works regardless of app focus) is set with <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> under <code>[general]</code>.</p>
     </div>
