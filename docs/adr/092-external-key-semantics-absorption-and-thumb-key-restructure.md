@@ -463,15 +463,25 @@ ADR-091 で確認済み）ため、読み取り元が無く決定A-2/A-3は機�
 プリセットごとに Muhenkan/Henkan の意味を awase 側にハードコードする。**
 
 **2026-08-15、`google/mozc` の `src/data/keymap/{ms-ime,atok,kotoeri}.tsv`
-（該当コミット時点の最新、Apache-2.0）を直接確認した結果:**
+を直接確認した結果（実装セッションで再訂正、下記「取得元コミット」参照）:**
 
 | プリセット | 状態 | Muhenkan | Henkan |
 |---|---|---|---|
-| **ms-ime.tsv** | DirectInput | (未定義) | (未定義) |
+| **ms-ime.tsv** | DirectInput | (未定義) | `Reconvert` |
 | | Precomposition | `CompositionModeSwitchKanaType` | `Reconvert` |
+| | Composition | `SwitchKanaType` | `Convert` |
+| | Conversion | `SwitchKanaType` | `ConvertNext` |
 | **atok.tsv** | DirectInput | `IMEOn` | `IMEOn` |
 | | Precomposition | `CancelAndIMEOff` | `CancelAndIMEOff` |
 | **kotoeri.tsv** | (Muhenkan/Henkan の定義自体が無い、macOS向けのため) | — | — |
+
+**訂正（実装セッション、2026-08-15）**: 当初表は「DirectInput: Muhenkan/Henkan
+とも未定義」としていたが誤りだった。実際には **DirectInput の Henkan は
+`Reconvert` が定義済み**（Muhenkanのみ未定義）。またComposition/Conversion
+状態の行が表から抜けていた（上表で補完）。ただし本節の結論
+（ms-ime.tsvにIMEOn/IMEOffに相当する行が無い＝MS-IMEプリセットはopen軸の
+決定A-2/A-3の対象外のまま）は変わらない——Henkanの`Reconvert`はopen軸と
+無関係（「解釈」節参照）。
 
 **解釈**:
 
@@ -521,9 +531,15 @@ awase 側のハードコードテーブルは追随しない（config1.db 読み
 違い、実行時ではなくビルド時に固定される）。取得元コミット
 （本節執筆時点の `google/mozc` HEAD）を記録し、将来の GJI アップデートで
 挙動が変わった疑いが出た場合は本節を読み直し、最新の TSV と再照合
-すること。**取得元コミットハッシュは本節執筆時点でまだ記録されていない
-（2巡目レビュー指摘、未解消の欠落）。実装着手前に該当コミットを
-特定し、ここに追記すること。**
+すること。
+
+**取得元コミット（2026-08-15確認、GitHub API直接照会）**:
+- `src/data/keymap/ms-ime.tsv`: `b4bbc42ff5524ec16a53cb4914166f6aed45056a`
+  （2025-12-17、"Rename InputMode* -> CompositionMode*..."）
+- `src/data/keymap/atok.tsv`・`kotoeri.tsv`: `bc9eab5b11e1ad9fcf863ff0c8a2736dc10f64b0`
+  （2020-09-26）
+- 確認時点の `master` HEAD: `851c3fe33060d2a6090363e4d7ec44fafde2c03d`
+  （2026-08-14）
 
 #### 決定A-5（round4追加、2巡目レビューで撤回・縮小）: 複合副作用キーの観測は既に `vk.rs` で実装済みであり、`ImeDetectConfig` への追加は行わない
 
@@ -1158,8 +1174,9 @@ vk.rs重複・安全性後退、GUIギャップの事実誤認、決定Cのデ�
 6. **決定A-4のATOK `CancelAndIMEOff` を Precomposition 限定にする対策**
    （2巡目レビュー指摘M6）は机上の設計であり、ATOK 実機での検証が
    まだない。
-7. **Mozc 取得元コミットハッシュが未記録**（2巡目レビュー指摘、決定A-4）。
-   実装着手前に埋めること。
+7. ~~Mozc 取得元コミットハッシュが未記録~~ — 2026-08-15実装セッションで記録済み
+   （決定A-4節参照）。記録の過程で表の誤り（DirectInput Henkanの`Reconvert`
+   欠落、Composition/Conversion行の欠落）も発見・訂正した。
 
 ## 関連
 
