@@ -413,10 +413,24 @@ impl Engine {
             ShadowImeAction::Toggle => !ctx.ime_on,
         };
         log::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
-        decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
-            open: new_open,
-            origin: SetOpenOrigin::ExplicitUserAction,
-        }));
+        // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
+        // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
+        // 直接 push_effect してはならない。上のdoc参照）。
+        for effect in self.ime_set_open_effects(ctx, new_open) {
+            decision.push_effect(effect);
+        }
+    }
+
+    /// `ime_open_requested`（あれば）を適用せずに捨てる。`on_command` の
+    /// `ToggleEngine`/`SwapLayout` アーム専用（コメント参照）。
+    ///
+    /// `on_input`/`on_timeout` は `apply_ime_open_request` を必ず呼ぶため、
+    /// このワンショットチャネルが「取り出されないまま残留し、無関係な
+    /// 次のイベントで誤発火する」経路を `on_command` の全アームで塞ぐ必要が
+    /// ある（Opus コードレビュー指摘: `ToggleEngine`/`SwapLayout` は
+    /// `on_command` 経由でのみ到達し、どちらも取り出し漏れがあった）。
+    fn discard_ime_open_request(&mut self) {
+        let _ = self.adapter.take_ime_open_requested();
     }
 
     /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかを取得する（1 ショット）。
@@ -450,6 +464,16 @@ impl Engine {
                 } else {
                     self.apply_active_transition(old_active, new_active, &mut decision);
                 }
+                // `self.adapter.toggle_enabled()` 内部の flush が保留中の親指キーを
+                // 「単独タップ確定」として解決しうるため、ADR-092 Step4b の
+                // `ime_open_requested` がセットされている可能性がある（Opus
+                // コードレビュー指摘）。しかしこれはユーザーが無変換/変換を実際に
+                // タップしたのではなく、トレイ操作等の無関係な外部イベントによって
+                // 強制的に解決されたものであり、「単独タップ=IME切替意図」という
+                // ただでさえ推定である解釈（決定D Step4bのリスク1参照）をさらに弱める。
+                // 適用せず捨てる（次の無関係な打鍵でスプリアスな SetOpen が
+                // 発火する回帰を防ぐ）。
+                self.discard_ime_open_request();
                 decision
             }
             // InvalidateContext は外部コンテキスト喪失（IME OFF・言語切替等）の汎用通知
@@ -457,7 +481,12 @@ impl Engine {
             EngineCommand::InvalidateContext(reason) => {
                 self.adapter.flush(reason, ComposingHint::Unknown)
             }
-            EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
+            EngineCommand::SwapLayout(layout) => {
+                let decision = self.adapter.swap_layout(layout);
+                // ToggleEngine と同じ理由（上記コメント参照）で discard する。
+                self.discard_ime_open_request();
+                decision
+            }
             EngineCommand::ReloadKeys { special } => {
                 self.special_keys = special;
                 Decision::pass_through()
@@ -614,18 +643,23 @@ impl Engine {
         }
     }
 
-    /// IME ON/OFF コンボキーに対する Decision を構築する。
-    ///
     /// `open` を反映した擬似 `InputContext` で新 `ActivationState` を求め、
-    /// `transition_activation` で `SetOpen + EngineStateChanged` を発行する。
-    /// 状態が遷移しない場合（例: `user_enabled=false` で既に Inactive）は
-    /// `SetOpen` のみを明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
+    /// `transition_activation` で `SetOpen + EngineStateChanged` を発行する
+    /// （ユーザー明示操作起点、`origin: ExplicitUserAction` 固定）。状態が遷移
+    /// しない場合（例: `user_enabled=false` で既に Inactive）は `SetOpen` のみを
+    /// 明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
     ///
     /// # 二重 enqueue 防止
     ///
     /// `transition_activation` で `prev_activation` を新状態に推進するため、
     /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
-    fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
+    /// **呼び出し元は必ずこのヘルパー経由で `SetOpen` 効果を生成すること**
+    /// （`build_ime_set_open_decision`/`apply_ime_open_request` 共通。Opus
+    /// コードレビュー指摘: `apply_ime_open_request` が当初これを経由せず
+    /// `Decision::push_effect` で `SetOpen` を直接追加していたため
+    /// `prev_activation` が進まず、次の打鍵で `ActivationSync` 起点の重複
+    /// `SetOpen` + 不要な `EngineStateChanged` が再発火する回帰があった）。
+    fn ime_set_open_effects(&mut self, ctx: &InputContext, open: bool) -> EffectVec {
         let pseudo_ctx = InputContext {
             ime_on: open,
             ..*ctx
@@ -634,7 +668,6 @@ impl Engine {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        // IME ON/OFF コンボキーそのものがユーザーの明示操作。
         let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
@@ -644,7 +677,13 @@ impl Engine {
                 origin: SetOpenOrigin::ExplicitUserAction,
             }));
         }
-        Decision::consumed_with(effects)
+        effects
+    }
+
+    /// IME ON/OFF コンボキーに対する Decision を構築する（`ime_set_open_effects`
+    /// 参照）。
+    fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
+        Decision::consumed_with(self.ime_set_open_effects(ctx, open))
     }
 
     /// 与えられたイベントが IME OFF コンボキーにマッチするかを副作用なしで返す。
@@ -680,11 +719,22 @@ impl Engine {
     /// 決定D Step4c、GJI config1.db の `GjiImeKeys.on`/`off` 由来）との
     /// マッチ判定。ユーザーが `keys.ime_on`/`ime_off` を明示設定している場合は
     /// 一切参照しない（決定C R1、明示>自動）。
+    ///
+    /// `event.injected` な合成イベントにはマッチしない（BUG-14: MS-IME/CTF
+    /// 由来の注入イベントを信用してはならない、という既存原則。手動設定の
+    /// `ime_on`/`ime_off`/`engine_on`/`engine_off` は挙動を変えない
+    /// （ユーザーがマクロツール等から意図的に注入する運用を妨げないため）
+    /// が、自動検出リストはユーザーが存在を意識せず追加されるため、
+    /// 注入イベントへの露出を正当化する根拠が無い。Opus コードレビュー
+    /// 指摘）。
     fn match_ime_on_off_auto(
         &self,
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
+        if event.injected {
+            return None;
+        }
         if self.special_keys.ime_on.is_empty()
             && self
                 .ime_on_auto
@@ -707,12 +757,14 @@ impl Engine {
     /// 自動検出由来の IME トグルキー（`ime_toggle_auto`）とのマッチ判定
     /// （ADR-092 決定D Step4a/Step4c）。ユーザーが `keys.ime_toggle` を
     /// 明示設定している場合は一切参照しない（決定C R1、明示>自動）。
+    /// `event.injected`な合成イベントも対象外（`match_ime_on_off_auto`と
+    /// 同じ理由、doc参照）。
     fn match_ime_toggle_auto(
         &self,
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        if !self.special_keys.ime_toggle.is_empty() {
+        if event.injected || !self.special_keys.ime_toggle.is_empty() {
             return None;
         }
         self.ime_toggle_auto

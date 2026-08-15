@@ -128,6 +128,7 @@ impl Ev {
             scan: vk_to_scan(vk),
             ts: 0,
             event_type: KeyEventType::KeyDown,
+            injected: false,
         }
     }
     fn up(vk: VkCode) -> EvBuilder {
@@ -136,6 +137,7 @@ impl Ev {
             scan: vk_to_scan(vk),
             ts: 0,
             event_type: KeyEventType::KeyUp,
+            injected: false,
         }
     }
 }
@@ -145,6 +147,7 @@ struct EvBuilder {
     scan: ScanCode,
     ts: Timestamp,
     event_type: KeyEventType,
+    injected: bool,
 }
 
 impl EvBuilder {
@@ -154,6 +157,10 @@ impl EvBuilder {
     }
     fn scan(mut self, sc: ScanCode) -> Self {
         self.scan = sc;
+        self
+    }
+    fn injected(mut self, injected: bool) -> Self {
+        self.injected = injected;
         self
     }
     fn build(self) -> RawKeyEvent {
@@ -169,7 +176,7 @@ impl EvBuilder {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key: classify_test_modifier(self.vk),
             modifier_snapshot: Default::default(),
-            injected: false,
+            injected: self.injected,
         }
     }
 }
@@ -5227,34 +5234,120 @@ mod engine_integration_tests {
         )));
     }
 
-    /// 決定C R1（明示 > 自動）: `keys.ime_on` が同じ物理キーへ手動設定済みの
-    /// 場合、`ime_on_auto` に同じキーが入っていても`match_ime_on_off_auto`は
-    /// 一切参照されない。挙動としては手動側がそのまま処理するため観測上の
-    /// 差は出ないが、ここでは「手動設定があってもクラッシュ・二重発火しない」
-    /// ことと、手動側の判定結果が優先されることを確認する。
+    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_on_auto`/
+    /// `ime_off_auto`は`event.injected`な合成イベントにマッチしない。
+    /// 手動設定の `ime_on`/`ime_off` と異なり、自動検出リストはユーザーが
+    /// 存在を意識せず追加されるため、注入イベントへの露出を正当化する
+    /// 根拠が無い。
     #[test]
-    fn manual_ime_on_takes_priority_over_ime_on_auto() {
+    fn ime_on_auto_ignores_injected_event() {
         let combo = ParsedKeyCombo {
             ctrl: false,
             shift: false,
             alt: false,
             vk: VK_F21,
         };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d = engine.on_input(
+            Ev::down(VK_F21).at(100).injected(true).build(),
+            &ime_on_ctx(),
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "injected event must not trigger ime_on_auto, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 上記の `ime_toggle_auto` 版。
+    #[test]
+    fn ime_toggle_auto_ignores_injected_event() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![combo]);
+
+        let d = engine.on_input(
+            Ev::down(VK_F21).at(100).injected(true).build(),
+            &ime_on_ctx(),
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "injected event must not trigger ime_toggle_auto, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 決定C R1（明示 > 自動）: `keys.ime_on` が非空の間、`ime_on_auto` は
+    /// 一切参照されない。手動リストと自動リストに**別のキー**を割り当て、
+    /// 自動側キーの押下が無視される（consume されない = PassThrough のまま）
+    /// ことを確認する（Opus コードレビュー指摘: 旧版は手動・自動に同じ
+    /// キーを設定していたため、優先順位が逆転していても観測上の差が
+    /// 出ない検証不能なテストだった。`ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty`
+    /// と同じ設計に修正）。
+    #[test]
+    fn ime_on_auto_ignored_when_manual_ime_on_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
         let special = SpecialKeyCombos {
-            ime_on: vec![combo],
+            ime_on: vec![manual_combo],
             ..empty_special_keys()
         };
         let mut engine = make_engine_with_special(special);
-        // 自動リストにも同じキーを設定するが、手動リストが非空なので
-        // match_ime_on_off_auto 側は無視されるはず。
-        engine.set_ime_on_auto_keys(vec![combo]);
+        engine.set_ime_on_auto_keys(vec![auto_combo]);
 
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
+        // `ime_off_ctx()` は使わない: engine の `prev_activation` 初期値は
+        // Active であり、ime_off_ctx() 自体が最初の呼び出しで無関係な
+        // ActivationSync 起点の SetOpen(false) を誘発してしまう
+        // （ime_on_auto のマッチとは無関係なノイズ）。優先順位検証には
+        // `ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty` と
+        // 同じ `ime_on_ctx()`（active のまま維持）を使う。
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
+    /// `ime_on_auto_ignored_when_manual_ime_on_non_empty` の `ime_off` 版
+    /// （決定C R1、Opus コードレビュー指摘: `ime_off` 側の手動優先テストが
+    /// 欠落していた）。
+    #[test]
+    fn ime_off_auto_ignored_when_manual_ime_off_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_off: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_ime_off_auto_keys(vec![auto_combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
     }
 
     /// 自動検出リストのキーは、手動 `ime_toggle` が非空なら一切参照されない
@@ -5309,6 +5402,21 @@ mod engine_integration_tests {
             Some(VK_NONCONVERT),
             ModeKeyConfig::from_legacy_bools(false, true),
             None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine
+    }
+
+    /// `henkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用、
+    /// `make_test_engine_with_muhenkan` の対称版。Opus コードレビュー指摘:
+    /// 既存の `delegate_to_open_axis_*` 系テストは全て無変換のみで、変換側の
+    /// `resolve_pending_thumb_as_single` の分岐が未検証だった）。
+    fn make_test_engine_with_henkan() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+            Some(VK_CONVERT),
             ModeKeyConfig::from_legacy_bools(false, true),
         );
         engine
@@ -5411,6 +5519,128 @@ mod engine_integration_tests {
             Effect::Input(InputEffect::SendKeys(actions))
                 if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21))
         )));
+    }
+
+    /// M1 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
+    /// `apply_ime_open_request` が `ime_set_open_effects`（`prev_activation`を
+    /// 推進する）を経由せず直接 `push_effect` していたため、確定した単独タップ
+    /// による `SetOpen(false)` の**次の**打鍵で `ActivationSync` 起点の重複
+    /// `SetOpen` + 不要な `EngineStateChanged{send_ime_key:true}` が再発火して
+    /// いた。`ime_off_combo_does_not_double_emit_set_open_on_next_input`
+    /// と同型のテスト。
+    #[test]
+    fn delegate_to_open_axis_confirmed_tap_does_not_double_emit_set_open_on_next_input() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d1 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert_eq!(
+            count_set_open_effects(&d1),
+            1,
+            "confirmed solo tap should emit exactly 1 SetOpen, got {:?}",
+            effects_of(&d1)
+        );
+
+        // Platform 層は SetOpen(false) を見て preconditions.ime_on=false を反映する。
+        // 次の on_input は新しい ctx (ime_on=false) で呼ばれる。
+        let d2 = engine.on_input(Ev::up(VK_NONCONVERT).at(110).build(), &ime_off_ctx());
+        assert_eq!(
+            count_set_open_effects(&d2),
+            0,
+            "next on_input must NOT re-emit SetOpen (prev_activation should have been \
+             advanced by ime_set_open_effects), got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    /// M2 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
+    /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
+    /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の
+    /// flush が `ComposingHint::Trusted` で保留キーを強制的に単独タップ
+    /// 確定させ、`ime_open_requested` をセットしうる。この「確定」は
+    /// ユーザーが実際に無変換をタップしたのではなくトレイ操作等の無関係な
+    /// 外部イベントによる強制解決であり、`apply_ime_open_request` を素通り
+    /// させると（当時のバグ）無関係な次の打鍵でスプリアスな `SetOpen` が
+    /// 発火していた。`discard_ime_open_request` で捨てることを固定する。
+    #[test]
+    fn toggle_engine_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        // 無変換を物理的に押下（まだ単独タップ確定前、PendingThumb）。
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        // トレイ操作等で ToggleEngine が届く → 内部 flush で強制的に単独タップ
+        // 確定 → ime_open_requested がセットされうる。もう一度 ToggleEngine を
+        // 呼んで元の enabled 状態へ戻す（Idle 状態での2回目の flush は no-op）。
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+
+        // 無関係な後続キー入力に、捨てられたはずの ime_open_requested に由来する
+        // SetOpen が漏れ出さないこと。
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from ToggleEngine's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// M2 回帰防止（`SwapLayout` 版、上記 `ToggleEngine` 版と対称）。
+    #[test]
+    fn swap_layout_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        let new_layout = make_layout();
+        let _ = engine.on_command(EngineCommand::SwapLayout(new_layout), &ime_on_ctx());
+
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from SwapLayout's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// `delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap` の変換
+    /// （henkan）版。`resolve_pending_thumb_as_single`のhenkan分岐
+    /// （`dedicated_fn_key`は常に`None`、`ModeKeyConfig`のみ）を固定する
+    /// （テストカバレッジ欠落の指摘への対応）。
+    #[test]
+    fn delegate_to_open_axis_fires_on_confirmed_henkan_solo_tap() {
+        let mut engine = make_test_engine_with_henkan();
+        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "solo tap should be pending, not passthrough"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "IME effect must not fire before solo tap is confirmed"
+        );
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
+            )),
+            "raw VK_CONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
     }
 
     // 二重 enqueue 回帰防止: IME OFF コンボ後の次キーで SetOpen が再発行されないこと。

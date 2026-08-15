@@ -33,11 +33,46 @@
   こととも整合する。`VK_KANJI`/`VK_IME_ON`/`VK_IME_OFF`/
   `VK_DBE_ALPHANUMERIC`（4エイリアス）はBUG-14（注入イベント衝突
   リスク）を理由に安全範囲から機械的に除外される。GJI離脱時、
-  `ime_on_auto`/`ime_off_auto`（GJI専用）は即座に解除するが、
-  `ime_toggle_auto`（MS-IME側とも共有）はGJI→MS-IME遷移時にMS-IME側が
-  先に設定した値を上書き消去してしまう順序ハザードを避けるため解除
-  対象から外した（GJI再突入時に必ず自分の現在値で上書きするため実害
-  なし、詳細は`gji_charset_autodetect.rs`内コメント参照）。
+  `ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を全て解除する。
+
+**Step4c実装への2巡目Opusコードレビュー（2026-08-15、実機テストプローブで
+実証）で判明した4件のmust-fixを反映済み**:
+1. `apply_ime_open_request`が`prev_activation`を推進する経路
+   （`ime_set_open_effects`、`build_ime_set_open_decision`と共有）を経由
+   せず直接`push_effect`していたため、確定した単独タップによる
+   `SetOpen`の**次の**打鍵で`ActivationSync`起点の重複`SetOpen`+
+   不要な`EngineStateChanged`が再発火する回帰があった。共有ヘルパーへ
+   統合して修正。
+2. `EngineCommand::ToggleEngine`/`SwapLayout`（`on_command`経由、内部の
+   flushが保留中の親指キーを`ComposingHint::Trusted`で強制的に単独タップ
+   確定させうる）が`ime_open_requested`を消費していなかったため、
+   トレイ操作等の無関係な外部イベントで強制解決された「単独タップ」が
+   無関係な次の打鍵でスプリアスな`SetOpen`を発火させていた。両アームで
+   `discard_ime_open_request`により明示的に捨てるよう修正（適用ではなく
+   破棄——「単独タップ=IME切替意図」という解釈自体が推定であり、外部
+   イベントによる強制解決はその推定をさらに弱めるため）。
+3. GJI離脱時に`ime_toggle_auto`を解除しない当初の判断は、その根拠
+   （「GJI再突入時に必ず自分の現在値で上書きする」）が誤りだった——
+   `set_gji_ime_on_off_toggle_auto_keys`への到達経路には複数の早期return
+   があり必ずしも上書きされず、GJI→(MS-IMEでもGJIでもない状態)への
+   遷移では誰も解除しない欠落があった。`message_handlers::
+   sync_ime_kind_from_observation`のGJI同期をMS-IME同期より**先**に
+   呼ぶ順序へ変更し、GJI離脱時に3リスト全て解除するよう修正（順序を
+   変えたことで、GJI→MS-IME遷移時はGJI離脱の解除の直後にMS-IME側が
+   新しい値で上書きする正しい順序になる）。
+4. Step4cのIME ON/OFF/トグルキー自動検出が
+   `muhenkan_dedicated_fn_key_is_manual()`（専用Fnキーの手動設定判定、
+   本来Step4cとは無関係）の早期returnより後に置かれており、専用Fnキーを
+   手動設定しているユーザーはStep4cの機能を丸ごと失っていた。
+   手動優先ガードを専用Fnキー検出のみに限定するよう構造を修正。
+
+加えて2件のnice-to-haveも反映: `ime_on_auto`/`ime_toggle_auto`の
+マッチ判定に`event.injected`（合成イベント）除外を追加（BUG-14と同種の
+リスクへの予防）。手動優先を検証するテストのうち手動/自動に同じキーを
+割り当てていた1件（優先順位が逆転していても観測上の差が出ない検証
+不能な設計だった）を、異なるキーを使う設計に修正し、`ime_off`側の
+欠落していた対称テストと変換（henkan）側のdelegate_to_open_axisテストも
+追加。
 
 **Step3/Step5見送りの最終判断（2026-08-15）**: Step0調査の結果
 `899b416f`以降BUG-50再現記録なしと確認できたため、Step3

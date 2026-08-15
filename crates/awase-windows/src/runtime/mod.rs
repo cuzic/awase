@@ -1259,13 +1259,21 @@ impl Runtime {
         self.engine.set_ime_toggle_auto_keys(toggle);
     }
 
-    /// GJI 離脱時、`ime_on_auto`/`ime_off_auto`（GJI 専用、MS-IME 側に対応する
-    /// setter が無い）だけを解除する。`ime_toggle_auto`は意図的に含めない
-    /// （MS-IME 側とも共有しており、GJI→MS-IME遷移時に MS-IME 側が先に
-    /// 設定した値を上書き消去してしまうため。詳細は呼び出し元のコメント参照）。
+    /// GJI 離脱時、`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を全て解除する。
+    ///
+    /// `ime_toggle_auto`はMS-IME側（`sync_ime_toggle_auto_detect`）とも共有する
+    /// フィールドだが、`message_handlers::sync_ime_kind_from_observation`が
+    /// GJI側の同期をMS-IME側より**先に**呼ぶ順序になっているため
+    /// （Opusコードレビュー指摘で修正、意図的な順序——詳細は呼び出し元の
+    /// コメント参照）、ここで解除してもGJI→MS-IME遷移では直後にMS-IME側が
+    /// 新しい値で上書きするため破綻しない。GJI→(MS-IMEでもGJIでもない状態)
+    /// では、この解除が無いと専用Fnキー同様にF15-F24のバインドが無関係な
+    /// IMEの文脈に残留してしまう（過去のレビューでこの解除漏れが実際の
+    /// バグとして指摘された）。
     pub(crate) fn clear_gji_ime_on_off_auto_keys(&mut self) {
         self.engine.set_ime_on_auto_keys(Vec::new());
         self.engine.set_ime_off_auto_keys(Vec::new());
+        self.engine.set_ime_toggle_auto_keys(Vec::new());
     }
 
     /// `gji_charset_popup` が「専用Fnキー変換が既に有効なら設定支援ポップアップを

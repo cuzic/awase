@@ -136,19 +136,27 @@ mod windows_impl {
 
     /// `runtime::message_handlers::sync_ime_kind_from_observation`から呼ぶ、
     /// GJI検出/離脱の唯一の合流点（`msime_key_assignment::check_and_warn`と対）。
+    /// 専用Fnキー変換（ADR-091）とIME ON/OFF/トグルキー（ADR-092 Step4c）の
+    /// 2つの独立した自動判定を行う。
     ///
     /// - **GJI以外への遷移**: 直前がGJI継続区間だった場合のみ、自動検出して
-    ///   いた専用Fnキー変換を解除する。
-    /// - **GJIへの新規遷移**: `config1.db`を読み、安全範囲内のFnキーバインドが
-    ///   ちょうど1つ見つかれば自動的に有効化する。既にこのGJI継続区間で
-    ///   チェック済みなら（ラッチが`GJI_CHECKED`のまま）何もしない
-    ///   ——継続的なポーリングをしないため（ADR-091決定3項目2）。
+    ///   いた専用Fnキー変換・`ime_on_auto`/`ime_off_auto`を解除する
+    ///   （`ime_toggle_auto`は意図的に対象外、関数内コメント参照）。
+    /// - **GJIへの新規遷移**: `config1.db`を読み、(1)安全範囲内のFnキー
+    ///   バインドがちょうど1つ見つかれば専用Fnキー変換として自動的に有効化し、
+    ///   (2)宣言されているIME ON/OFF/トグルキー（安全範囲内のみ）を
+    ///   `Engine`の自動検出リストへ反映する。既にこのGJI継続区間でチェック
+    ///   済みなら（ラッチが`GJI_CHECKED`のまま）何もしない——継続的な
+    ///   ポーリングをしないため（ADR-091決定3項目2）。
     ///
-    /// いずれも `app.muhenkan_dedicated_fn_key_is_manual()` が `true`
-    /// （ユーザーが `muhenkan_solo_tap_dedicated_fn_key` を明示設定済み）の間は
-    /// 一切介入しない（`Runtime::set_muhenkan_dedicated_fn_key_auto` が
-    /// 内部で同じガードを持つため、ここでの事前チェックは主にログ・ファイル
-    /// I/O の無駄な実行を避けるための早期return）。
+    /// `app.muhenkan_dedicated_fn_key_is_manual()`（ユーザーが
+    /// `muhenkan_solo_tap_dedicated_fn_key`を明示設定済み）による手動優先
+    /// ガードは**専用Fnキー変換の自動検出にのみ**適用され、IME ON/OFF/
+    /// トグルキーの自動検出（Step4c）には適用されない——Step4c側の手動優先
+    /// は`Engine::match_ime_on_off_auto`/`match_ime_toggle_auto`が
+    /// `special_keys`側で独立に行う（Opus コードレビュー指摘: 以前は
+    /// この関数全体が同じガードで早期returnしており、専用Fnキーを手動
+    /// 設定しているユーザーがStep4cの機能を丸ごと失っていた）。
     pub(crate) fn sync_gji_charset_autodetect(app: &mut Runtime, is_gji: bool) {
         if !is_gji {
             if LAST_GJI_STREAK_CHECKED.swap(NOT_GJI, Ordering::Relaxed) == GJI_CHECKED {
@@ -157,29 +165,25 @@ mod windows_impl {
                      IME ON/OFFキーを解除"
                 );
                 app.set_muhenkan_dedicated_fn_key_auto(None);
-                // ime_on_auto/ime_off_auto は GJI 専用（MS-IME 側に対応する
-                // setter が無い）ため、ここで明示的に解除しないと GJI 離脱後も
-                // 別アプリ/別IMEの文脈にF21等のバインドが残留してしまう。
-                // 一方 ime_toggle_auto は MS-IME 側（sync_ime_toggle_auto_detect）
-                // とも共有しており、GJI→MS-IME遷移では MS-IME 側の同期が
-                // 既に新しい値を設定済み（呼び出し順で MS-IME 側が先行、
-                // message_handlers::sync_ime_kind_from_observation 参照）ため、
-                // ここで解除すると MS-IME 側が設定した値を上書き消去して
-                // しまう。GJI 側は次にアクティブになった際に必ず自分の
-                // 現在値（0件を含む）で上書きするため、ここで触らなくても
-                // 破綻しない。
+                // ime_on_auto/ime_off_auto/ime_toggle_auto を全て解除する
+                // （さもないと GJI 離脱後も別アプリ/別IMEの文脈にF15-F24の
+                // バインドが残留してしまう）。ime_toggle_auto は MS-IME 側
+                // （sync_ime_toggle_auto_detect）とも共有するフィールドだが、
+                // 呼び出し元（message_handlers::sync_ime_kind_from_observation）
+                // が GJI 側の同期を MS-IME 側より**先に**呼ぶ順序になっている
+                // ため、GJI→MS-IME遷移ではここで解除した直後に MS-IME 側が
+                // 新しい値で上書きし、破綻しない（Opus コードレビュー指摘:
+                // 以前は逆順だったため、ここで解除すると MS-IME 側の値を
+                // 上書き消去してしまう懸念からime_toggle_autoを対象外にして
+                // いたが、その代わりの前提「GJI側は次回アクティブ化時に
+                // 必ず自分の現在値で上書きする」も
+                // `muhenkan_dedicated_fn_key_is_manual()`等の早期returnで
+                // 成立しない場合があり誤りだった）。
                 app.clear_gji_ime_on_off_auto_keys();
             }
             return;
         }
         if LAST_GJI_STREAK_CHECKED.swap(GJI_CHECKED, Ordering::Relaxed) == GJI_CHECKED {
-            return;
-        }
-        if app.muhenkan_dedicated_fn_key_is_manual() {
-            log::debug!(
-                "[gji-charset-autodetect] muhenkan_solo_tap_dedicated_fn_key が \
-                 手動設定済みのため自動判定をスキップ"
-            );
             return;
         }
         let Some(bytes) = read_config1_db() else {
@@ -209,11 +213,16 @@ mod windows_impl {
         };
 
         // ADR-092 決定D Step4c: IME ON/OFF/トグルキーの自動検出は専用Fnキー
-        // 変換（ToggleKanaType）の検出可否に依存しない、独立した判定のため
-        // 早期returnより前に行う。手動設定が優先される規約は
-        // `Engine::match_ime_on_off_auto`/`match_ime_toggle_auto`側が
-        // `special_keys.ime_on/ime_off/ime_toggle`が空の時のみ自動リストを
-        // 参照するため、ここでの事前チェックは不要（Step4aと同じ規約）。
+        // 変換（ToggleKanaType）の検出可否・`muhenkan_dedicated_fn_key_is_manual`
+        // に依存しない、独立した判定のため、下の専用Fnキー検出（手動設定
+        // ガード付き）より前に行う（Opus コードレビュー指摘: 以前はこの
+        // ブロックが `muhenkan_dedicated_fn_key_is_manual()` の早期return
+        // より後にあり、専用Fnキーを手動設定しているユーザーは本Stepの
+        // 機能を丸ごと失っていた——doc の「独立した判定」という主張と矛盾
+        // していた）。手動設定が優先される規約は`Engine::match_ime_on_off_auto`/
+        // `match_ime_toggle_auto`側が`special_keys.ime_on/ime_off/ime_toggle`
+        // が空の時のみ自動リストを参照するため、ここでの事前チェックは
+        // 不要（Step4aと同じ規約）。
         let (on, off, toggle) = extract_ime_on_off_toggle_combos(&table);
         if !on.is_empty() || !off.is_empty() || !toggle.is_empty() {
             log::info!(
@@ -223,6 +232,18 @@ mod windows_impl {
         }
         app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
 
+        // 専用Fnキー変換の自動検出は、Step4cと異なり手動設定
+        // （`muhenkan_solo_tap_dedicated_fn_key`）が優先される
+        // （`Runtime::set_muhenkan_dedicated_fn_key_auto` が内部で同じ
+        // ガードを持つため、ここでの事前チェックは主にログ・処理の無駄な
+        // 実行を避けるための早期return）。
+        if app.muhenkan_dedicated_fn_key_is_manual() {
+            log::debug!(
+                "[gji-charset-autodetect] muhenkan_solo_tap_dedicated_fn_key が \
+                 手動設定済みのため専用Fnキーの自動判定をスキップ"
+            );
+            return;
+        }
         let Some(vk) = detect_dedicated_fn_key(&table) else {
             return;
         };
