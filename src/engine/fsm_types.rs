@@ -424,13 +424,14 @@ impl PendingThumbData {
     }
 }
 
-/// 無変換/変換キー単独タップ確定時、composing していない（idle）/している
-/// （composing）場合の2値の行動（ADR-092 決定B）。専用Fnキー変換
-/// （`SoloTapAction::DedicatedFnKey`）はここには含まれない——`gji_charset_autodetect`
-/// が実行時に独立して自動検出・設定するため（`NicolaFsm::
-/// set_muhenkan_solo_tap_dedicated_fn_key`）、`ModeKeyConfig`（設定リロードで
-/// 丸ごと再設定される）に畳み込むと config reload のたびに自動検出値が
-/// 消去される回帰を招く。
+/// 無変換/変換キー単独タップ確定時、idle/composing それぞれの2値の行動
+/// （ADR-092 決定B）。
+///
+/// 専用Fnキー変換（`SoloTapAction::DedicatedFnKey`）はここには含まれない
+/// ——`gji_charset_autodetect` が実行時に独立して自動検出・設定するため
+/// （`NicolaFsm::set_muhenkan_solo_tap_dedicated_fn_key`）、`ModeKeyConfig`
+/// （設定リロードで丸ごと再設定される）に畳み込むと config reload の
+/// たびに自動検出値が消去される回帰を招く。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GuardAction {
     /// OS に一切送出しない。
@@ -441,8 +442,10 @@ pub enum GuardAction {
 }
 
 /// 無変換/変換キー単独タップ確定時の行動を、composing の有無に対する
-/// 総関数として表現する（ADR-092 決定B、`NicolaFsm::set_thumb_key_solo_tap_config`
-/// 用）。旧 `ThumbKeySoloTapGuard{ignore_composing_guard, always_suppress}` の
+/// 総関数として表現する（ADR-092 決定B）。
+///
+/// `NicolaFsm::set_thumb_key_solo_tap_config` 用。旧
+/// `ThumbKeySoloTapGuard{ignore_composing_guard, always_suppress}` の
 /// 2bool直積表現を置き換える——直積表現は `{always_suppress: false,
 /// ignore_composing_guard: true}` のように「idle/composing 双方に別々の
 /// 意味を持つ2フラグの組み合わせ」を経由しないと目的の行動へたどり着けず、
