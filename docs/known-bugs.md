@@ -8310,3 +8310,63 @@ composition ロジック自体を変更していない。フォーカス競合�
 
 **関連:** `crates/awase-windows/tests/e2e_windows.rs::INTERACTIVE_TEST_LOCK`。
 
+---
+
+## BUG-66: 全角ハイフンマイナス「－」が Chrome/Firefox 等（VK/TSF 送信経路）で長音「ー」に化ける（`build_symbol_to_vk` の VK_OEM_MINUS 二重登録、対応済み・実機未検証）
+
+（このセッション時点で develop に既に別件の BUG-63「仮想デスクトップ切替後
+Windows Terminal で～」が存在していたため、本エントリは rebase 時に
+BUG-63→BUG-66 へ改番した。番号衝突は並行開発ブランチが同じ番号を独立採番
+した結果であり、本文内容に変更はない。）
+
+**症状（2026-08-09 ユーザー報告）:** 「`-`とか`ー`とか`―`とかの区別がイマイチ」
+「`.yab`ファイルで長音記号が正しく処理できていないのでは」——`layout/nicola.yab`
+上、無シフトの `-` キーには全角ハイフンマイナス「－」（U+FF0D、`nicola.yab:5`）、
+左親指シフト+`X`キーには長音記号「ー」（U+30FC、`nicola.yab:14`）が割り当てら
+れているが、実際の出力ではこの2キーが区別できず、「－」を打っても「ー」に
+なる。全角ダッシュ「―」（U+2015）はそもそも `layout/nicola.yab`/`nicola_us.yab`
+に定義が存在しない。
+
+**原因（コード確認済み）:** Unicode 直接注入を受け付けないアプリ（Chrome/
+Firefox/WezTerm/Teams WebView 等の `AppKind::TsfNative`、
+`focus/class_names.rs:421-422`）向けに、`crates/awase-windows/src/vk.rs` の
+`build_symbol_to_vk()`（`KeyInjector::resolve_char` 経由で
+`output/vk_send.rs::send_char_as_tsf`/`send_char_as_vk` が使用）は「物理
+ASCII キーを送信し IME 既定のローマ字かな変換に任せる」設計になっている。
+ほとんどの記号（`、`/`,`・`。`/`.`・`「`/`[` 等）はこの設計で問題ない——
+IME は既定でこれら半角記号入力を対応する全角記号へ自動変換するため、
+全角側の文字を要求されたときに半角キーを送れば正しい全角記号が出る。
+
+しかし `-`（VK_OEM_MINUS）だけはこの一般則の**例外**で、IME のローマ字かな
+変換ルールが `-` を全角ハイフンではなく長音記号「ー」へ**専用変換**する
+（`vk.rs` の既存コメント・テスト `vk_pair_to_ascii_covers_reported_symbols`
+参照）。にもかかわらず `build_symbol_to_vk` には「ー」(0xBD, false) と
+「－」(0xBD, false) の両方が登録されており（旧694行目）、「－」を要求しても
+実際には「ー」が出力される。`nicola.yab` 側は無シフト `-` キー＝「－」・
+左親指シフト+X＝「ー」と正しく物理的に区別しているにもかかわらず、出力側の
+このテーブルが両者を同じ VK 送信に潰していたことが実害の直接原因。
+
+**調査で判明した非該当ケース（誤って疑ったが実害なし）:** `build_symbol_to_vk`
+には他にも同じ `(VkCode, shift)` に全角/半角の記号ペアが多数登録されている
+（`、`/`,`、`。`/`.`、`「`/`[`、`｛`/`{` 等、計40組超）。しかしこれらは上記の
+「半角キー送信→IME既定で全角変換」という一般則どおりに動作するため意図した
+設計であり、`nicola.yab` は半角記号リテラルを一切出力しない（`nicola_us.yab`
+含め確認済み）ため衝突による実害はない。テスト
+`vk_pair_to_ascii_covers_every_build_symbol_to_vk_pair` のコメントにも
+「値の重複は許容」と明記されている。長音「ー」だけが IME 側の特別変換規則の
+例外に該当し、真に修正が必要だったのはこの1件のみ。
+
+**対応:** `build_symbol_to_vk()` から「－」(U+FF0D) のエントリを削除。
+`symbol_to_vk` に無い文字は `resolve_char` が `CharResolution::Unicode(ch)`
+にフォールバックし、`KEYEVENTF_UNICODE` による直接注入で送られるため、IME の
+ローマ字かな変換に依存せず正しく「－」が出力される。回帰テスト
+`build_symbol_to_vk_does_not_collide_fullwidth_hyphen_with_choon`
+（`crates/awase-windows/src/vk.rs`）を追加し、「ー」が引き続き VK_OEM_MINUS
+経由であること・「－」が登録されていないことを固定した。全角ダッシュ「―」
+（U+2015）は `layout/nicola.yab` に定義が無いため対象外（配列側で未定義）。
+
+**検証:** `cargo test -p awase-windows`（lib 288件・その他golden/guard系
+全て）全緑。**Windows 実機での動作確認は未実施**——Chrome で無シフト `-` キー
+を押して「－」が出ること、左親指シフト+X で「ー」が出ることを実機で確認して
+ほしい。
+
