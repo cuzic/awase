@@ -372,10 +372,17 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 
 /// MS-IME レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`
 /// （ADR-092 決定D Step4a）を読み、`engine.set_ime_toggle_auto_keys` へ反映する。
-/// `sync_ime_kind_from_observation` から MS-IME 確定のたびに呼ばれる
-/// （決定C R2、計算は毎回やり直す。`Engine`側で`ime_toggle_configured_manually`
-/// なら参照されないため、明示>自動の優先順位は`Engine`側で最終的に守られる）。
-fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
+/// 呼び出し元は2つ:
+/// - `sync_ime_kind_from_observation` から MS-IME 確定のたびに呼ばれる
+///   （決定C R2、計算は毎回やり直す）。
+/// - `app/mod.rs::reload_config`（設定リロード時、ADR-092 Step4b前提条件3の
+///   stale化対策——MS-IME 単独ユーザーはセッション中 IME 種別確定イベントが
+///   再発生しないため、設定リロード時にも再読みしないと、ユーザーが
+///   Windows の設定画面でレジストリを変更してもセッション中反映されない）。
+///
+/// `Engine` 側が `special_keys.ime_toggle`（手動設定）が空の場合のみ本関数の
+/// 結果を参照するため（決定C R1、明示>自動）、ここでは無条件に呼んでよい。
+pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
     log::info!("[msime-keyassign] toggle assignment: {assignment:?}");
     let skip_shift_space = app.space_is_thumb_key();
