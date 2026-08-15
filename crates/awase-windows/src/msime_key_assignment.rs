@@ -29,6 +29,51 @@
 //! （動作中 IME への反映タイミングが保証されず、ユーザー設定への侵襲になるため）。
 //! 解除はユーザー自身に `ms-settings:regionlanguage-jpnime` で行ってもらう。
 
+/// `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`（ADR-092 決定D Step4a）が
+/// トグル（値2）に設定されているか。2026-08-15 実機（dragonflyg4）で
+/// `IsKeyAssignmentEnabled=1` かつこれら2値が `2` になることを確認済み。
+/// 個別オン/オフの割当ては MS-IME の「キーとタッチのカスタマイズ」に
+/// 存在しないと確認済みのため、`2`（トグル）以外は「宣言なし」として
+/// 扱う（推測しない、決定C R3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MsImeToggleAssignment {
+    /// `KeyAssignmentCtrlSpace == 2`
+    pub ctrl_space_is_toggle: bool,
+    /// `KeyAssignmentShiftSpace == 2`
+    pub shift_space_is_toggle: bool,
+}
+
+impl MsImeToggleAssignment {
+    /// `Engine::set_ime_toggle_auto_keys` に渡す `ParsedKeyCombo` 列へ変換する。
+    ///
+    /// `skip_shift_space` が `true` の場合、Shift+Space は含めない
+    /// （呼び出し元が Space を親指キーに設定している場合に使う——Shift+Space
+    /// 親指キーのリテラル送出機能（`text_key_space.shift_literal`）と
+    /// Phase 1 の特殊キーマッチが衝突しないようにするため、Opus コード
+    /// レビュー指摘）。
+    #[must_use]
+    pub fn to_combos(self, skip_shift_space: bool) -> Vec<awase::config::ParsedKeyCombo> {
+        let mut combos = Vec::new();
+        if self.ctrl_space_is_toggle {
+            combos.push(awase::config::ParsedKeyCombo {
+                ctrl: true,
+                shift: false,
+                alt: false,
+                vk: crate::vk::VK_SPACE,
+            });
+        }
+        if self.shift_space_is_toggle && !skip_shift_space {
+            combos.push(awase::config::ParsedKeyCombo {
+                ctrl: false,
+                shift: true,
+                alt: false,
+                vk: crate::vk::VK_SPACE,
+            });
+        }
+        combos
+    }
+}
+
 /// MS-IME キー割当ての読み取り結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MsImeKeyAssignment {
@@ -146,6 +191,22 @@ mod windows_impl {
         }
     }
 
+    /// レジストリから `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`
+    /// （ADR-092 決定D Step4a）を読み取る。マスタースイッチ
+    /// （`IsKeyAssignmentEnabled`）が無効なら両方 `false`（MS-IME 自身も
+    /// この割当てを無視するため）。
+    #[must_use]
+    pub fn read_toggle_assignment_from_registry() -> super::MsImeToggleAssignment {
+        use windows::core::w;
+        if read_dword(w!("IsKeyAssignmentEnabled")) != Some(1) {
+            return super::MsImeToggleAssignment::default();
+        }
+        super::MsImeToggleAssignment {
+            ctrl_space_is_toggle: read_dword(w!("KeyAssignmentCtrlSpace")) == Some(2),
+            shift_space_is_toggle: read_dword(w!("KeyAssignmentShiftSpace")) == Some(2),
+        }
+    }
+
     /// 競合警告のポップアップを表示し、Yes なら MS-IME 設定画面を開く。
     ///
     /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックするが、
@@ -209,11 +270,11 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::check_and_warn;
+pub use windows_impl::{check_and_warn, read_toggle_assignment_from_registry};
 
 #[cfg(test)]
 mod tests {
-    use super::MsImeKeyAssignment;
+    use super::{MsImeKeyAssignment, MsImeToggleAssignment};
 
     fn assign(enabled: bool, muhenkan: bool, henkan: bool) -> MsImeKeyAssignment {
         MsImeKeyAssignment {
@@ -252,5 +313,48 @@ mod tests {
     fn warns_on_both_assignments() {
         let w = assign(true, true, true).conflict_warning().unwrap();
         assert!(w.contains("無変換キー → IME-オフ、変換キー → IME-オン"));
+    }
+
+    // ── ADR-092 決定D Step4a: MsImeToggleAssignment::to_combos ──
+
+    #[test]
+    fn to_combos_empty_when_neither_is_toggle() {
+        let assignment = MsImeToggleAssignment::default();
+        assert!(assignment.to_combos(false).is_empty());
+    }
+
+    #[test]
+    fn to_combos_includes_ctrl_space_when_toggle() {
+        let assignment = MsImeToggleAssignment {
+            ctrl_space_is_toggle: true,
+            shift_space_is_toggle: false,
+        };
+        let combos = assignment.to_combos(false);
+        assert_eq!(combos.len(), 1);
+        assert!(combos[0].ctrl && !combos[0].shift);
+    }
+
+    #[test]
+    fn to_combos_includes_shift_space_when_toggle_and_not_skipped() {
+        let assignment = MsImeToggleAssignment {
+            ctrl_space_is_toggle: false,
+            shift_space_is_toggle: true,
+        };
+        let combos = assignment.to_combos(false);
+        assert_eq!(combos.len(), 1);
+        assert!(combos[0].shift && !combos[0].ctrl);
+    }
+
+    /// Space が親指キーの場合、Shift+Space の自動検出は反映しない
+    /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため）。
+    #[test]
+    fn to_combos_skips_shift_space_when_requested() {
+        let assignment = MsImeToggleAssignment {
+            ctrl_space_is_toggle: true,
+            shift_space_is_toggle: true,
+        };
+        let combos = assignment.to_combos(true);
+        assert_eq!(combos.len(), 1);
+        assert!(combos[0].ctrl && !combos[0].shift);
     }
 }

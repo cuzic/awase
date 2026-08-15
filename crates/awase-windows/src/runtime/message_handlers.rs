@@ -370,6 +370,19 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
 }
 
+/// MS-IME レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`
+/// （ADR-092 決定D Step4a）を読み、`engine.set_ime_toggle_auto_keys` へ反映する。
+/// `sync_ime_kind_from_observation` から MS-IME 確定のたびに呼ばれる
+/// （決定C R2、計算は毎回やり直す。`Engine`側で`ime_toggle_configured_manually`
+/// なら参照されないため、明示>自動の優先順位は`Engine`側で最終的に守られる）。
+fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
+    let assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
+    log::info!("[msime-keyassign] toggle assignment: {assignment:?}");
+    let skip_shift_space = app.space_is_thumb_key();
+    app.engine
+        .set_ime_toggle_auto_keys(assignment.to_combos(skip_shift_space));
+}
+
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。
 ///
 /// IME 種別に依存する副作用の**単一の合流点**。呼び出し元は2つ:
@@ -401,6 +414,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     // MicrosoftIme を返すため — これを見ないと GJI ユーザーの起動時にも誤発動する。
     if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
         crate::msime_key_assignment::check_and_warn();
+        sync_ime_toggle_auto_detect(app);
     }
 
     // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）を

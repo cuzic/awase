@@ -50,6 +50,13 @@ pub(super) enum SpecialKeyMatch {
 pub struct Engine {
     adapter: FsmAdapter,
     special_keys: SpecialKeyCombos,
+    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a、MS-IME レジストリの
+    /// `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` 由来）。`special_keys.ime_toggle`
+    /// （ユーザーが `config.toml` に明示設定した分）とは別に保持し、
+    /// `config.toml` へは一切書き込まない（決定C: Manual は永続化、AutoDetected は
+    /// ライブ計算のみ）。`special_keys.ime_toggle` が空の場合のみ参照される
+    /// （決定C R1、明示>自動）。
+    ime_toggle_auto: Vec<ParsedKeyCombo>,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
     /// 直前の実効状態（遷移検知用）
@@ -65,10 +72,18 @@ impl Engine {
         Self {
             adapter: FsmAdapter::new(fsm),
             special_keys,
+            ime_toggle_auto: Vec::new(),
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             solo_off_notify: false,
         }
+    }
+
+    /// MS-IME レジストリ自動検出（Ctrl+Space/Shift+Space）由来の IME トグルキーを
+    /// 設定する（ADR-092 決定D Step4a）。IME 種別確定イベントのたびに呼び直され、
+    /// 呼ばれるたびに丸ごと置き換わる（決定C R2、計算は毎回やり直す）。
+    pub fn set_ime_toggle_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_toggle_auto = keys;
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
@@ -587,12 +602,31 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        self.special_keys.match_event(
-            event,
-            ctx.modifiers,
-            self.adapter.is_enabled(),
-            self.compute_active(ctx),
-        )
+        self.special_keys
+            .match_event(
+                event,
+                ctx.modifiers,
+                self.adapter.is_enabled(),
+                self.compute_active(ctx),
+            )
+            .or_else(|| self.match_ime_toggle_auto(ctx, event))
+    }
+
+    /// MS-IME レジストリ自動検出由来の IME トグルキー（`ime_toggle_auto`）との
+    /// マッチ判定（ADR-092 決定D Step4a）。ユーザーが `keys.ime_toggle` を
+    /// 明示設定している場合は一切参照しない（決定C R1、明示>自動）。
+    fn match_ime_toggle_auto(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
+        if !self.special_keys.ime_toggle.is_empty() {
+            return None;
+        }
+        self.ime_toggle_auto
+            .iter()
+            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+            .then_some(SpecialKeyMatch::ImeToggle)
     }
 
     /// テスト専用: `match_special_keys` を公開する。

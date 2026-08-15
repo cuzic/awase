@@ -234,6 +234,15 @@ pub struct Runtime {
     /// 「ポップアップを出すべきか」の判定に使う。`apply_config_update`/
     /// 起動時に反映される。
     muhenkan_solo_tap_is_passthrough: bool,
+    /// `config.general.left_thumb_key`/`right_thumb_key` のいずれかが
+    /// `"VK_SPACE"` か。`true` の場合、MS-IME レジストリ自動検出の
+    /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
+    /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため、
+    /// Opus コードレビュー指摘）。`apply_config_update`/起動時に反映される。
+    /// `keys.ime_toggle`（明示設定）優先の判定自体は `Engine` が
+    /// `special_keys.ime_toggle.is_empty()` を直接見て行うため、
+    /// `Runtime` 側に対応するフィールドは不要（決定C R1）。
+    space_is_thumb_key: bool,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1190,6 +1199,7 @@ impl Runtime {
             muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_active: false,
             muhenkan_solo_tap_is_passthrough: false,
+            space_is_thumb_key: false,
         }
     }
 
@@ -1251,6 +1261,20 @@ impl Runtime {
     #[must_use]
     pub(crate) const fn muhenkan_solo_tap_is_passthrough(&self) -> bool {
         self.muhenkan_solo_tap_is_passthrough
+    }
+
+    /// `config.general.left_thumb_key`/`right_thumb_key` 由来のキャッシュを
+    /// 更新する（ADR-092 決定D Step4a）。起動時（`bootstrap.rs`）と
+    /// `apply_config_update`（reload 時）の両方から呼ぶ。
+    pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
+        self.space_is_thumb_key = space_is_thumb_key;
+    }
+
+    /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
+    /// 自動検出を反映すべきかの判定に使う。
+    #[must_use]
+    pub(crate) const fn space_is_thumb_key(&self) -> bool {
+        self.space_is_thumb_key
     }
 
     /// トレイアイコンの HWND を返す。
@@ -1470,6 +1494,10 @@ impl Runtime {
                     config.general.muhenkan_solo_tap_always_suppress,
                 )
                 .is_passthrough(),
+            );
+            self.set_space_is_thumb_key(
+                config.general.left_thumb_key == "VK_SPACE"
+                    || config.general.right_thumb_key == "VK_SPACE",
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()

@@ -476,6 +476,10 @@ pub(super) fn initialize_app(
             )
             .is_passthrough(),
         );
+        app.set_space_is_thumb_key(
+            config.general.left_thumb_key == "VK_SPACE"
+                || config.general.right_thumb_key == "VK_SPACE",
+        );
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
