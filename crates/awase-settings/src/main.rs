@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod key_capture;
+
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -109,6 +111,28 @@ enum CaptureTarget {
     NewFrom,
     /// 新規ルールの to 主キー
     NewTo,
+}
+
+/// `combo_key_list_ui` が扱う4リストの識別子（`SettingsApp` の該当フィールドへ
+/// ディスパッチするために使う）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComboListId {
+    EngineOn,
+    EngineOff,
+    ImeOn,
+    ImeOff,
+}
+
+/// `combo_key_list_ui`（親指シフト ON/OFF・awase → IME ON/OFFキー）の
+/// OS レベルキーキャプチャ対象（2026-08-15、`key_capture` モジュール参照）。
+/// `CaptureTarget`（ショートカット再割当タブの egui キーイベント方式）とは
+/// 検出源が異なるため独立させている。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComboCaptureTarget {
+    /// 既存エントリを丸ごと置き換える。
+    Existing(ComboListId, usize),
+    /// 新規追加行のバッファ（`NewComboBuf`）へ反映する。
+    New(ComboListId),
 }
 
 /// ログ初期化。
@@ -240,9 +264,6 @@ struct SettingsApp {
     new_engine_off: NewComboBuf,
     new_ime_on: NewComboBuf,
     new_ime_off: NewComboBuf,
-    new_ime_toggle_key: String,
-    new_ime_detect_on_key: String,
-    new_ime_detect_off_key: String,
     // Keymap rule add-buffers
     new_keymap_app: String,
     new_keymap_from_ctrl: bool,
@@ -252,6 +273,10 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
+    // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ
+    // （None = 非キャプチャ中）。guard を保持している間だけフックが有効。
+    combo_capturing: Option<ComboCaptureTarget>,
+    combo_capture_guard: Option<key_capture::CaptureGuard>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
     // post_bypass add-buffers
@@ -307,9 +332,6 @@ impl SettingsApp {
             new_engine_off: NewComboBuf::default(),
             new_ime_on: NewComboBuf::default(),
             new_ime_off: NewComboBuf::default(),
-            new_ime_toggle_key: String::new(),
-            new_ime_detect_on_key: String::new(),
-            new_ime_detect_off_key: String::new(),
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,
@@ -317,6 +339,8 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
+            combo_capturing: None,
+            combo_capture_guard: None,
             new_override_bufs: Default::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -716,6 +740,68 @@ impl SettingsApp {
             }
         }
     }
+
+    /// `combo_capturing` が指すリスト（`config.keys.*`）への可変参照を返す。
+    fn combo_list_mut(&mut self, list: ComboListId) -> &mut Vec<String> {
+        match list {
+            ComboListId::EngineOn => &mut self.config.keys.engine_on,
+            ComboListId::EngineOff => &mut self.config.keys.engine_off,
+            ComboListId::ImeOn => &mut self.config.keys.ime_on,
+            ComboListId::ImeOff => &mut self.config.keys.ime_off,
+        }
+    }
+
+    /// `combo_capturing` が指すリストの「新規追加」バッファへの可変参照を返す。
+    fn combo_new_buf_mut(&mut self, list: ComboListId) -> &mut NewComboBuf {
+        match list {
+            ComboListId::EngineOn => &mut self.new_engine_on,
+            ComboListId::EngineOff => &mut self.new_engine_off,
+            ComboListId::ImeOn => &mut self.new_ime_on,
+            ComboListId::ImeOff => &mut self.new_ime_off,
+        }
+    }
+
+    /// `combo_capturing` 中に OS レベルフックが検出したキーを処理する
+    /// （`process_keymap_capture` の OS フック版）。
+    ///
+    /// Esc によるキャンセルは egui 側の検出に任せる（`key_capture` は
+    /// 観測対象を安全な固定 VK 集合に絞っており Esc を含まないため、
+    /// `process_keymap_capture` と対称にここでチェックする）。
+    fn process_combo_capture(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.combo_capturing else {
+            return;
+        };
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.combo_capturing = None;
+            self.combo_capture_guard = None;
+            return;
+        }
+        let captured: Option<key_capture::CapturedKey> = key_capture::take_captured();
+        let Some(captured) = captured else {
+            return;
+        };
+        self.combo_capturing = None;
+        self.combo_capture_guard = None;
+        match target {
+            ComboCaptureTarget::Existing(list, i) => {
+                if let Some(entry) = self.combo_list_mut(list).get_mut(i) {
+                    *entry = format_combo(
+                        captured.ctrl,
+                        captured.shift,
+                        captured.alt,
+                        captured.internal,
+                    );
+                }
+            }
+            ComboCaptureTarget::New(list) => {
+                let buf = self.combo_new_buf_mut(list);
+                buf.ctrl = captured.ctrl;
+                buf.shift = captured.shift;
+                buf.alt = captured.alt;
+                buf.main = captured.internal.to_string();
+            }
+        }
+    }
 }
 
 /// `process_keymap_capture` の内部結果型。
@@ -732,34 +818,41 @@ enum CapturedKey {
 // ── Tab methods ──
 
 impl SettingsApp {
+    #[expect(clippy::too_many_lines)]
     fn tab_basic(&mut self, ui: &mut egui::Ui) {
         ui.heading("基本設定");
         ui.add_space(4.0);
 
+        let threshold_hover = "同時打鍵と判定する時間の幅です。この値を大きくするほど判定が甘く\n(親指シフトが入りやすく)なりますが、遅延が増えます。\n100ms が NICOLA 規格の標準値です。";
         ui.horizontal(|ui| {
-            ui.label("同時打鍵閾値:").on_hover_text("同時打鍵と判定する時間の幅です。\n大きいほど判定が甘く(親指シフトが入りやすく)なりますが、遅延が増えます。\n100ms が NICOLA 規格の標準値です。");
+            ui.label("同時打鍵閾値:").on_hover_text(threshold_hover);
             ui.add(
                 egui::Slider::new(&mut self.config.general.simultaneous_threshold_ms, 10..=500)
                     .suffix(" ms"),
-            );
+            )
+            .on_hover_text(threshold_hover);
         });
+        let confirm_mode_hover =
+            "文字の確定方法を選びます。\nモードごとに速度と正確さのバランスが異なります。";
         ui.horizontal(|ui| {
-            ui.label("確定モード:").on_hover_text("文字の確定方法を選びます。\nモードごとに速度と正確さのバランスが異なります。");
+            ui.label("確定モード:").on_hover_text(confirm_mode_hover);
             egui::ComboBox::from_id_salt("confirm_mode")
                 .selected_text(confirm_mode_label(self.config.general.confirm_mode))
                 .show_ui(ui, |ui| {
                     use awase::config::ConfirmMode;
                     ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Wait, "待機 (wait)")
-                        .on_hover_text("タイムアウトまで出力を保留します。\n最も正確ですが、入力に少し遅延を感じます。");
+                        .on_hover_text("選ぶと: タイムアウトまで出力を保留します。\n最も正確ですが、入力に少し遅延を感じます。");
                     ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Speculative, "先行確定 (speculative)")
-                        .on_hover_text("即座に出力し、親指シフトと判定されたら差し替えます。\n高速ですが、まれに画面がちらつきます。");
+                        .on_hover_text("選ぶと: 即座に出力し、親指シフトと判定されたら差し替えます。\n高速ですが、まれに画面がちらつきます。");
                     ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::TwoPhase, "二段タイマー (two_phase)")
-                        .on_hover_text("短い待機の後に投機出力します。\nwait と speculative の中間的な動作です。");
+                        .on_hover_text("選ぶと: 短い待機の後に投機出力します。\nwait と speculative の中間的な動作です。");
                     ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::AdaptiveTiming, "適応タイミング (adaptive_timing)")
-                        .on_hover_text("連続入力中は待機、途切れたら投機出力します。\nタイピング速度に自動適応します。");
+                        .on_hover_text("選ぶと: 連続入力中は待機、途切れたら投機出力します。\nタイピング速度に自動適応します。");
                     ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::NgramPredictive, "n-gram 予測 (ngram_predictive)")
-                        .on_hover_text("統計データで次の文字を予測し、判定を最適化します。\nn-gram ファイル未指定時は二段タイマーとして動作します。");
-                });
+                        .on_hover_text("選ぶと: 統計データで次の文字を予測し、判定を最適化します。\nn-gram ファイル未指定時は二段タイマーとして動作します。");
+                })
+                .response
+                .on_hover_text(confirm_mode_hover);
         });
         ui.label(confirm_mode_tooltip(self.config.general.confirm_mode));
         let spec_enabled = matches!(
@@ -769,17 +862,22 @@ impl SettingsApp {
                 | awase::config::ConfirmMode::NgramPredictive
         );
         ui.add_enabled_ui(spec_enabled, |ui| {
+            let spec_delay_hover = "投機出力までの待機時間です。この値が短いほど応答が速くなりますが、\n誤判定が増えます。TwoPhase/AdaptiveTiming と、NgramPredictive の\nフォールバック動作で使用されます。";
             ui.horizontal(|ui| {
-                ui.label("投機出力待機:").on_hover_text("投機出力までの待機時間です。\n短いほど応答が速くなりますが、誤判定が増えます。\nTwoPhase/AdaptiveTiming と、NgramPredictive のフォールバック動作で使用されます。");
+                ui.label("投機出力待機:").on_hover_text(spec_delay_hover);
                 ui.add(
                     egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
                         .suffix(" ms"),
-                );
+                )
+                .on_hover_text(spec_delay_hover);
             });
         });
-        ui.label("出力方式: アプリごとに最適な注入方式を自動選択します（設定不要）");
+        ui.label("出力方式: アプリごとに最適な注入方式を自動選択します（設定不要）")
+            .on_hover_text(
+                "フォアグラウンドのアプリ種別を判別し、VK送信・TSF送信等の\n最適な文字注入方式を自動的に切り替えます。手動設定は不要です。",
+            );
         let mut auto_start_checked = self.config.general.auto_start == "enabled";
-        if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
+        if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("ONにすると: Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
             self.config.general.auto_start = if auto_start_checked {
                 "enabled"
             } else {
@@ -787,13 +885,15 @@ impl SettingsApp {
             }
             .to_string();
         }
-        ui.horizontal(|ui| {
-            ui.label("キーボード配列:").on_hover_text(
-                "物理キーボードの配列です。\n\
+        let keyboard_model_hover = "物理キーボードの配列です。\n\
                  JIS: 無変換/変換キーが物理的に存在する日本語キーボード。\n\
                  US: ANSI 104キー配列。無変換/変換キーが無いため、\n\
-                 親指キーとホットキーを別途 US 向けに変更する必要があります。",
-            );
+                 親指キーとホットキーを別途 US 向けに変更する必要があります。\n\
+                 切り替えると: 親指キー・ホットキーの既定値が自動的にJIS/US向けへ\n\
+                 入れ替わります（下の説明参照）。";
+        ui.horizontal(|ui| {
+            ui.label("キーボード配列:")
+                .on_hover_text(keyboard_model_hover);
             let prev_keyboard_model = self.config.general.keyboard_model;
             egui::ComboBox::from_id_salt("keyboard_model")
                 .selected_text(keyboard_model_label(self.config.general.keyboard_model))
@@ -809,7 +909,9 @@ impl SettingsApp {
                         KeyboardModel::Us,
                         "US (ANSI 104キー)",
                     );
-                });
+                })
+                .response
+                .on_hover_text(keyboard_model_hover);
             // US → JIS への切替時、Space/Left Alt/Right Alt・独自ホットキー等
             // US 向けに変更していた設定が JIS では意味が変わる/使えないまま残る
             // （Space は単独タップの意味が変わり、Alt はなりすまし設定自体が
@@ -848,19 +950,20 @@ impl SettingsApp {
                  下の「レイアウト」で nicola_us.yab を選び、キー設定タブで\n\
                  親指キーを変更してください（Ctrl/Win は OS 予約修飾キーのため\n\
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
-                 F13-F24 等へ物理リマップするか、Space を検討してください。\n\
+                 F13-F20 等へ物理リマップするか、Space を検討してください。\n\
                  キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
-                 エンジン ON 時のみ Alt キーを親指キーとして使えます）。\n\
+                 親指シフト ON 時のみ Alt キーを親指キーとして使えます）。\n\
                  \n\
-                 エンジン ON/OFF・IME ON/OFF・単独5連打OFF のホットキーも未設定に\n\
+                 親指シフト ON/OFF・IME ON/OFF・単独5連打OFF のホットキーも未設定に\n\
                  なっています（無変換/変換前提の既定値は US では動かないため）。\n\
                  「キー設定」タブで、動作する物理キーの組み合わせを設定してください。\n\
                  単独5連打OFF は、親指キーとして設定した物理キー自体を指定してください\n\
                  （それ以外のキーを指定しても発火しません）。",
             );
         }
+        let layout_hover = "使用する配列定義ファイルを選びます。\n選ぶと: 「配列」タブの内容がこのファイルに切り替わります。\nlayout フォルダ内の .yab ファイルが表示されます。";
         ui.horizontal(|ui| {
-            ui.label("レイアウト:").on_hover_text("使用する配列定義ファイルを選びます。\nlayout フォルダ内の .yab ファイルが表示されます。");
+            ui.label("レイアウト:").on_hover_text(layout_hover);
             let current = self
                 .config
                 .general
@@ -875,43 +978,52 @@ impl SettingsApp {
                             self.config.general.default_layout = format!("{name}.yab");
                         }
                     }
-                });
-            if ui.button("再スキャン").clicked() {
+                })
+                .response
+                .on_hover_text(layout_hover);
+            if ui
+                .button("再スキャン")
+                .on_hover_text(
+                    "押すと: layout フォルダを再読み込みし、上の選択肢一覧を更新します。",
+                )
+                .clicked()
+            {
                 self.available_layouts = scan_layout_names(&self.config.general.layouts_dir);
             }
         });
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_keys(&mut self, ui: &mut egui::Ui) {
         ui.heading("キー設定");
         ui.add_space(4.0);
 
         // Thumb keys
         ui.label("親指キー");
-        ui.horizontal(|ui| {
-            ui.label("  左親指:").on_hover_text(
-                "左の親指シフトキーに使うキーです。通常は「無変換」キーを使います。\n\
-                 「Left Alt」を選ぶと、物理 Left Alt キーをエンジン ON 時に限り\n\
+        let left_thumb_hover = "左の親指シフトキーに使うキーです。通常は「無変換」キーを使います。\n\
+                 「Left Alt」を選ぶと、物理 Left Alt キーを親指シフト ON 時に限り\n\
                  左親指キーとして使います（OFF 時は通常の Alt として機能し、\n\
                  Alt+Tab 等を損ないません。PowerToys 等の OS レベルキーリマップと\n\
-                 同様の効果を awase 単体で実現する機能です）。",
-            );
+                 同様の効果を awase 単体で実現する機能です）。";
+        ui.horizontal(|ui| {
+            ui.label("  左親指:").on_hover_text(left_thumb_hover);
             thumb_key_combo(
                 ui,
                 "left_thumb_key",
                 &mut self.config.general.left_thumb_key,
+                left_thumb_hover,
             );
         });
+        let right_thumb_hover = "右の親指シフトキーに使うキーです。通常は「変換」キーを使います。\n\
+                 「Right Alt」を選ぶと、物理 Right Alt キーを親指シフト ON 時に限り\n\
+                 右親指キーとして使います（詳細は左親指のヒントを参照）。";
         ui.horizontal(|ui| {
-            ui.label("  右親指:").on_hover_text(
-                "右の親指シフトキーに使うキーです。通常は「変換」キーを使います。\n\
-                 「Right Alt」を選ぶと、物理 Right Alt キーをエンジン ON 時に限り\n\
-                 右親指キーとして使います（詳細は左親指のヒントを参照）。",
-            );
+            ui.label("  右親指:").on_hover_text(right_thumb_hover);
             thumb_key_combo(
                 ui,
                 "right_thumb_key",
                 &mut self.config.general.right_thumb_key,
+                right_thumb_hover,
             );
         });
         if self.config.general.left_thumb_key == "VK_SPACE"
@@ -1023,125 +1135,92 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         // Engine on/off
-        ui.label("エンジン制御");
+        ui.label("親指シフト ON/OFF");
         combo_key_list_ui(
             ui,
-            "エンジン ON",
+            "親指シフト ON",
             "eng_on",
+            ComboListId::EngineOn,
             &mut self.config.keys.engine_on,
             &mut self.new_engine_on,
-            "エンジンを ON にするキーの組み合わせです。\n複数登録できます。",
+            &mut self.combo_capturing,
+            &mut self.combo_capture_guard,
+            "親指シフトを ON にするキーの組み合わせです。\n複数登録できます。",
         );
         combo_key_list_ui(
             ui,
-            "エンジン OFF",
+            "親指シフト OFF",
             "eng_off",
+            ComboListId::EngineOff,
             &mut self.config.keys.engine_off,
             &mut self.new_engine_off,
-            "エンジンを OFF にするキーの組み合わせです。\n複数登録できます。",
+            &mut self.combo_capturing,
+            &mut self.combo_capture_guard,
+            "親指シフトを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
+        let solo_triple_hover = "指定キーを単独で素早く5回連続押下すると親指シフトを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
         ui.horizontal(|ui| {
-            ui.label("  単独5連打で OFF:").on_hover_text(
-                "指定キーを単独で素早く5回連続押下するとエンジンを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。",
+            ui.label("  単独5連打で OFF:")
+                .on_hover_text(solo_triple_hover);
+            solo_triple_combo(
+                ui,
+                &mut self.config.keys.engine_off_solo_triple,
+                solo_triple_hover,
             );
-            solo_triple_combo(ui, &mut self.config.keys.engine_off_solo_triple);
         });
         ui.add_space(8.0);
 
         // Toggle hotkey
         ui.label("トグルホットキー");
+        let engine_toggle_hover =
+            "親指シフトの ON/OFF をトグルするホットキーです。\nシステム全体で有効です。";
         ui.horizontal(|ui| {
-            ui.label("  エンジン切替:").on_hover_text(
-                "エンジンの ON/OFF をトグルするホットキーです。\nシステム全体で有効です。",
-            );
+            ui.label("  親指シフト切替:")
+                .on_hover_text(engine_toggle_hover);
             hotkey_combo_ui(
                 ui,
                 "engine_toggle_hotkey",
                 &mut self.config.general.engine_toggle_hotkey,
+                engine_toggle_hover,
             );
         });
         ui.add_space(8.0);
 
-        // ADR-092 決定E（round4）: 「IME 制御」（awase → IME ON/OFFキー）と
-        // 「IME 検出」（IME → awase ON/OFFキー、旧 tab_ime_detect）を、
-        // 送信/受信の向きが伝わる対称な名前にしたうえで上級者向け折りたたみに
-        // まとめる。親指キー割り当て・エンジン制御・トグルホットキーは
-        // 多くのユーザーが実際に触る設定のため常時展開のまま上に残す
-        // （Progressive Disclosure）。
-        egui::CollapsingHeader::new("上級者向け設定")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.label(
-                    "通常はデフォルトのままで問題ありません。\n\
-                     矢印は設定の向きを表します: 「awase → IME」は awase が能動的に\n\
-                     送信するキー、「IME → awase」は外部 IME の状態変化を awase が\n\
-                     解釈するためのキーです。",
-                );
-                ui.add_space(8.0);
-
-                ui.label("awase → IME ON/OFFキー");
-                combo_key_list_ui(
-                    ui,
-                    "IME ON",
-                    "ime_on",
-                    &mut self.config.keys.ime_on,
-                    &mut self.new_ime_on,
-                    "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
-                );
-                combo_key_list_ui(
-                    ui,
-                    "IME OFF",
-                    "ime_off",
-                    &mut self.config.keys.ime_off,
-                    &mut self.new_ime_off,
-                    "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
-                );
-                ui.add_space(8.0);
-
-                ui.label("IME → awase ON/OFFキー");
-                ui.label(
-                    "IME の ON/OFF 切り替えを検出するためのキー設定です。\n\
-                     半角/全角キーなど、IME を切り替えるキーを登録します。",
-                );
-                self.ime_detect_keys_ui(ui);
-            });
+        // 2026-08-15 ユーザー判断: ADR-092 決定E の折りたたみ「上級者向け設定」は
+        // 撤去した。「awase → IME ON/OFFキー」は多くのユーザーが実際に設定
+        // したい項目であり、「上級者向け」の裏に隠す理由が無い。「IME → awase
+        // ON/OFFキー」（`ime_detect.toggle/on/off`、旧 `tab_ime_detect`）自体は
+        // GUI から撤去した——既定値の VK_KANJI（漢字）を変える利用者はほぼ
+        // おらず、他の候補 VK_IME_ON/VK_IME_OFF は物理キーとして存在しない
+        // ため GUI で選ばせる価値が薄いという判断。`ImeDetectConfig`
+        // （データ構造・config.toml 手動編集）自体は変更していない——既定値は
+        // 引き続き機能し、必要な上級者は config.toml へ直接書ける。
+        ui.label("awase → IME ON/OFFキー");
+        combo_key_list_ui(
+            ui,
+            "IME ON",
+            "ime_on",
+            ComboListId::ImeOn,
+            &mut self.config.keys.ime_on,
+            &mut self.new_ime_on,
+            &mut self.combo_capturing,
+            &mut self.combo_capture_guard,
+            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+        );
+        combo_key_list_ui(
+            ui,
+            "IME OFF",
+            "ime_off",
+            ComboListId::ImeOff,
+            &mut self.config.keys.ime_off,
+            &mut self.new_ime_off,
+            &mut self.combo_capturing,
+            &mut self.combo_capture_guard,
+            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+        );
     }
 
-    /// 「IME → awase ON/OFFキー」（旧 `tab_ime_detect`、`ImeDetectConfig` の
-    /// toggle/on/off 3リスト）。`tab_keys` の上級者向け折りたたみから呼ぶ
-    /// （ADR-092 決定E、決定D Step6）。
-    fn ime_detect_keys_ui(&mut self, ui: &mut egui::Ui) {
-        bare_key_list_ui(
-            ui,
-            "トグルキー（ON/OFF 切替）",
-            "ime_det_toggle",
-            &mut self.config.keys.ime_detect.toggle,
-            &mut self.new_ime_toggle_key,
-            "IME の ON/OFF をトグルするキーです。\n押すたびに ON/OFF が切り替わります。\n例: 半角/全角キー",
-        );
-        bare_key_list_ui(
-            ui,
-            "ON キー（IME を ON にする）",
-            "ime_det_on",
-            &mut self.config.keys.ime_detect.on,
-            &mut self.new_ime_detect_on_key,
-            "IME を ON にするキーです。\n押すと必ず ON になります。",
-        );
-        bare_key_list_ui(
-            ui,
-            "OFF キー（IME を OFF にする）",
-            "ime_det_off",
-            &mut self.config.keys.ime_detect.off,
-            &mut self.new_ime_detect_off_key,
-            "IME を OFF にするキーです。\n押すと必ず OFF になります。",
-        );
-
-        ui.add_space(8.0);
-        if ui.button("デフォルトに戻す").clicked() {
-            self.config.keys.ime_detect = awase::config::ImeDetectConfig::default();
-        }
-    }
-
+    #[expect(clippy::too_many_lines)]
     fn tab_keymap(&mut self, ui: &mut egui::Ui) {
         ui.heading("ショートカット再割当");
         ui.label(
@@ -1175,6 +1254,7 @@ impl SettingsApp {
                                 .desired_width(120.0)
                                 .hint_text("全アプリ"),
                         )
+                        .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。")
                         .changed()
                     {
                         rule.app = if app_buf.is_empty() {
@@ -1190,7 +1270,12 @@ impl SettingsApp {
                     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
                     changed |= ui.checkbox(&mut shift, "Shift").changed();
                     changed |= ui.checkbox(&mut alt, "Alt").changed();
-                    if main_key_combo(ui, &format!("from_main_{i}"), &mut main) {
+                    if main_key_combo(
+                        ui,
+                        &format!("from_main_{i}"),
+                        &mut main,
+                        "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                    ) {
                         changed = true;
                     }
                     let from_target = CaptureTarget::ExistingFrom(i);
@@ -1203,7 +1288,12 @@ impl SettingsApp {
 
                     // to: main key only + capture button
                     let mut to_main = rule.to.clone().unwrap_or_default();
-                    if main_key_combo_optional(ui, &format!("to_main_{i}"), &mut to_main) {
+                    if main_key_combo_optional(
+                        ui,
+                        &format!("to_main_{i}"),
+                        &mut to_main,
+                        "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。",
+                    ) {
                         rule.to = if to_main.is_empty() {
                             None
                         } else {
@@ -1213,7 +1303,11 @@ impl SettingsApp {
                     let to_target = CaptureTarget::ExistingTo(i);
                     capture_button(ui, &mut capturing, to_target);
 
-                    if ui.small_button("x").clicked() {
+                    if ui
+                        .small_button("x")
+                        .on_hover_text("押すと: このルールを削除します。")
+                        .clicked()
+                    {
                         rm = Some(i);
                     }
                 });
@@ -1235,29 +1329,51 @@ impl SettingsApp {
                     egui::TextEdit::singleline(&mut self.new_keymap_app)
                         .desired_width(180.0)
                         .hint_text("vim.exe など（空欄=全アプリ）"),
-                );
+                )
+                .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.end_row();
 
-                ui.label("  from:");
+                let from_hover = "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。";
+                ui.label("  from:").on_hover_text(from_hover);
                 ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
                     ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
                     ui.checkbox(&mut self.new_keymap_from_alt, "Alt");
-                    main_key_combo(ui, "new_from_main", &mut self.new_keymap_from_main);
+                    main_key_combo(
+                        ui,
+                        "new_from_main",
+                        &mut self.new_keymap_from_main,
+                        from_hover,
+                    );
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
-                });
+                })
+                .response
+                .on_hover_text(from_hover);
                 ui.end_row();
 
-                ui.label("  to:")
-                    .on_hover_text("再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけ。");
+                let to_hover =
+                    "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。";
+                ui.label("  to:").on_hover_text(to_hover);
                 ui.horizontal_wrapped(|ui| {
-                    main_key_combo_optional(ui, "new_to_main", &mut self.new_keymap_to_main);
+                    main_key_combo_optional(
+                        ui,
+                        "new_to_main",
+                        &mut self.new_keymap_to_main,
+                        to_hover,
+                    );
                     capture_button(ui, &mut capturing, CaptureTarget::NewTo);
-                });
+                })
+                .response
+                .on_hover_text(to_hover);
                 ui.end_row();
             });
         self.capturing = capturing;
-        if ui.button("+追加").clicked() && !self.new_keymap_from_main.is_empty() {
+        if ui
+            .button("+追加")
+            .on_hover_text("押すと: 上で組み立てたルールを一覧に追加します。")
+            .clicked()
+            && !self.new_keymap_from_main.is_empty()
+        {
             let from = format_combo(
                 self.new_keymap_from_ctrl,
                 self.new_keymap_from_shift,
@@ -1286,6 +1402,7 @@ impl SettingsApp {
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリ別オーバーライド");
         ui.label(
@@ -1354,7 +1471,11 @@ impl SettingsApp {
                         &rule.class
                     },
                 ));
-                if ui.small_button("x").clicked() {
+                if ui
+                    .small_button("x")
+                    .on_hover_text("押すと: この行を削除します。")
+                    .clicked()
+                {
                     rm = Some(i);
                 }
             });
@@ -1362,20 +1483,28 @@ impl SettingsApp {
         if let Some(i) = rm {
             self.config.post_bypass.remove(i);
         }
+        let pb_key_hover = "Ctrl+このキーが素通しされた直後の次の1キーを NICOLA 変換せず\nそのまま通します（tmux の Ctrl+B 等の prefix キー用）。";
         ui.horizontal(|ui| {
-            ui.label("Ctrl+");
-            main_key_combo(ui, "new_pb_key", &mut self.new_pb_key);
+            ui.label("Ctrl+").on_hover_text(pb_key_hover);
+            main_key_combo(ui, "new_pb_key", &mut self.new_pb_key, pb_key_hover);
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_pb_process)
                     .desired_width(120.0)
                     .hint_text("プロセス名 (部分一致)"),
-            );
+            )
+            .on_hover_text("対象プロセス名（部分一致）。空欄はすべてのプロセスにマッチします。");
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_pb_class)
                     .desired_width(120.0)
                     .hint_text("クラス名 (部分一致)"),
-            );
-            if ui.button("+追加").clicked() && !self.new_pb_key.is_empty() {
+            )
+            .on_hover_text("対象ウィンドウのクラス名（部分一致）。空欄はすべてにマッチします。");
+            if ui
+                .button("+追加")
+                .on_hover_text("押すと: 上で組み立てたルールを一覧に追加します。")
+                .clicked()
+                && !self.new_pb_key.is_empty()
+            {
                 // ランタイムの parse は "Ctrl+<キー>" 形式（Ctrl 必須）を要求する
                 self.config.post_bypass.push(awase::config::PostBypassRule {
                     key: format_combo(true, false, false, &std::mem::take(&mut self.new_pb_key)),
@@ -1409,24 +1538,49 @@ impl SettingsApp {
 
         // ツールバー
         ui.horizontal(|ui| {
-            if ui.button("開く").clicked() {
+            if ui
+                .button("開く")
+                .on_hover_text(
+                    "押すと: ファイル選択ダイアログを開いて別の .yab ファイルを読み込みます。",
+                )
+                .clicked()
+            {
                 self.layout_do_open_dialog();
             }
-            if ui.button("保存").clicked() {
+            if ui
+                .button("保存")
+                .on_hover_text("押すと: 現在編集中の内容を今開いているファイルへ上書き保存します。")
+                .clicked()
+            {
                 self.layout_do_save();
             }
-            if ui.button("名前を付けて保存").clicked() {
+            if ui
+                .button("名前を付けて保存")
+                .on_hover_text("押すと: 保存先を選ぶダイアログを開き、別名/別の場所へ保存します。")
+                .clicked()
+            {
                 self.layout_do_save_as_dialog();
             }
-            if ui.button("再読み込み").clicked() {
+            if ui
+                .button("再読み込み")
+                .on_hover_text(
+                    "押すと: ディスク上のファイルを読み直します（未保存の編集は失われます）。",
+                )
+                .clicked()
+            {
                 self.layout_do_reload();
             }
         });
         ui.horizontal(|ui| {
-            ui.label("パス:");
-            let resp = ui.add(
-                egui::TextEdit::singleline(&mut self.layout_file_path_buf).desired_width(300.0),
+            ui.label("パス:").on_hover_text(
+                "開いている .yab ファイルのパスです。書き換えて Enter を押すと\nそのパスのファイルを開きます。",
             );
+            let resp = ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.layout_file_path_buf)
+                        .desired_width(300.0),
+                )
+                .on_hover_text("Enter を押すと: このパスのファイルを開きます。");
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.layout_do_open_from_text_box();
             }
@@ -1465,7 +1619,11 @@ impl SettingsApp {
                 } else {
                     egui::RichText::new(*label)
                 };
-                if ui.selectable_label(is_active, btn_text).clicked() {
+                if ui
+                    .selectable_label(is_active, btn_text)
+                    .on_hover_text("クリックすると: このシフト面のキー配列に切り替えて表示します。")
+                    .clicked()
+                {
                     self.layout_current_face = *face;
                     self.layout_selected_pos = None;
                 }
@@ -1651,12 +1809,18 @@ impl SettingsApp {
         match self.layout_edit_kind {
             ValueKind::Keystroke => {
                 ui.horizontal(|ui| {
-                    ui.label("打鍵:");
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.layout_edit_value)
-                            .desired_width(120.0)
-                            .hint_text("例: ka, si, tsu, !, 1"),
+                    ui.label("打鍵:").on_hover_text(
+                        "ローマ字（例: ka, si, tsu）または半角記号/数字（例: !, 1）を入力します。",
                     );
+                    let resp = ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.layout_edit_value)
+                                .desired_width(120.0)
+                                .hint_text("例: ka, si, tsu, !, 1"),
+                        )
+                        .on_hover_text(
+                            "ローマ字（例: ka, si, tsu）または半角記号/数字（例: !, 1）を入力します。",
+                        );
                     if resp.changed() {
                         self.layout_edit_value = normalize_keystroke_input(&self.layout_edit_value);
                     }
@@ -1691,12 +1855,14 @@ impl SettingsApp {
             }
             ValueKind::Literal => {
                 ui.horizontal(|ui| {
-                    ui.label("文字:");
+                    ui.label("文字:")
+                        .on_hover_text("このキーを押したときに直接送信する文字列です。");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.layout_edit_value)
                             .desired_width(120.0)
                             .hint_text("例: ー、…"),
-                    );
+                    )
+                    .on_hover_text("このキーを押したときに直接送信する文字列です。");
                 });
                 ui.label(
                     egui::RichText::new("※ Unicode 文字をそのまま送信します")
@@ -1705,25 +1871,30 @@ impl SettingsApp {
                 );
             }
             ValueKind::Special => {
+                let special_hover = "このキーを押したときに送信する特殊キーを選びます。";
                 ui.horizontal(|ui| {
-                    ui.label("特殊キー:");
+                    ui.label("特殊キー:").on_hover_text(special_hover);
                     egui::ComboBox::from_id_salt("special_key")
                         .selected_text(SPECIAL_KEYS[self.layout_edit_special_idx].1)
                         .show_ui(ui, |ui| {
                             for (i, (_, name)) in SPECIAL_KEYS.iter().enumerate() {
                                 ui.selectable_value(&mut self.layout_edit_special_idx, i, *name);
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text(special_hover);
                 });
             }
             ValueKind::Vk => {
                 ui.horizontal(|ui| {
-                    ui.label("VKコード (16進):");
+                    ui.label("VKコード (16進):")
+                        .on_hover_text("送信する仮想キーコードを16進数で指定します（例: 1D）。");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.layout_edit_value)
                             .desired_width(80.0)
                             .hint_text("例: 1D"),
-                    );
+                    )
+                    .on_hover_text("送信する仮想キーコードを16進数で指定します（例: 1D）。");
                 });
                 if !self.layout_edit_value.trim().is_empty()
                     && u16::from_str_radix(
@@ -1756,19 +1927,23 @@ impl SettingsApp {
                 can_apply,
                 egui::Button::new(egui::RichText::new("適用").strong()),
             )
+            .on_hover_text(
+                "押すと: 上で入力した内容を選択中のセルへ反映します（ファイルへの\n保存は別途「保存」ボタンで行います）。",
+            )
             .clicked()
         {
             self.apply_layout_edit();
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("詳細設定");
         ui.add_space(4.0);
+        let conv_mode_policy_hover = "IME の変換モード（英数/ひらがな/カタカナ×半角/全角）を\nawase が能動的に管理するかどうかです。IME ON/OFF とは別の設定です。";
         ui.horizontal(|ui| {
-            ui.label("IME 変換モード:").on_hover_text(
-                "IME の変換モード（英数/ひらがな/カタカナ×半角/全角）を\nawase が能動的に管理するかどうかです。IME ON/OFF とは別の設定です。",
-            );
+            ui.label("IME 変換モード:")
+                .on_hover_text(conv_mode_policy_hover);
             egui::ComboBox::from_id_salt("conv_mode_policy")
                 .selected_text(conv_mode_policy_label(self.config.general.conv_mode_policy))
                 .show_ui(ui, |ui| {
@@ -1785,7 +1960,9 @@ impl SettingsApp {
                         "強制 (force)",
                     )
                     .on_hover_text(conv_mode_policy_tooltip(ConvModePolicy::Force));
-                });
+                })
+                .response
+                .on_hover_text(conv_mode_policy_hover);
         });
         ui.label(conv_mode_policy_tooltip(
             self.config.general.conv_mode_policy,
@@ -1814,7 +1991,8 @@ impl SettingsApp {
                                range: std::ops::RangeInclusive<u32>| {
             ui.horizontal(|ui| {
                 ui.label(label).on_hover_text(tip);
-                ui.add(egui::Slider::new(val, range).suffix(" ms"));
+                ui.add(egui::Slider::new(val, range).suffix(" ms"))
+                    .on_hover_text(tip);
             });
         };
         let ngram_enabled = matches!(
@@ -1827,10 +2005,11 @@ impl SettingsApp {
             );
         }
         ui.add_enabled_ui(ngram_enabled, |ui| {
+        let ngram_file_hover = "n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\nngram_predictive モードで使用されます。";
         ui.horizontal(|ui| {
-            ui.label("n-gram ファイル:").on_hover_text("n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\nngram_predictive モードで使用されます。");
+            ui.label("n-gram ファイル:").on_hover_text(ngram_file_hover);
             let mut buf = self.config.general.ngram_file.clone().unwrap_or_default();
-            if ui.text_edit_singleline(&mut buf).changed() {
+            if ui.text_edit_singleline(&mut buf).on_hover_text(ngram_file_hover).changed() {
                 self.config.general.ngram_file = if buf.is_empty() { None } else { Some(buf) };
             }
         });
@@ -1872,9 +2051,11 @@ impl SettingsApp {
             100..=5000,
         );
         ui.horizontal(|ui| {
+            let layouts_dir_hover = "配列定義ファイル (.yab) を格納するフォルダです。";
             ui.label("レイアウトディレクトリ:")
-                .on_hover_text("配列定義ファイル (.yab) を格納するフォルダです。");
-            ui.text_edit_singleline(&mut self.config.general.layouts_dir);
+                .on_hover_text(layouts_dir_hover);
+            ui.text_edit_singleline(&mut self.config.general.layouts_dir)
+                .on_hover_text(layouts_dir_hover);
         });
     }
 }
@@ -1909,6 +2090,11 @@ impl eframe::App for SettingsApp {
             self.process_keymap_capture(ctx);
             ctx.request_repaint();
         }
+        // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ。
+        if self.combo_capturing.is_some() {
+            self.process_combo_capture(ctx);
+            ctx.request_repaint();
+        }
 
         // 現在編集している config.toml の実パスを常時表示する。
         //
@@ -1933,14 +2119,14 @@ impl eframe::App for SettingsApp {
                          起動方法（コマンドライン引数の有無・カレントディレクトリ）によっては\n\
                          別のファイルを指している場合があります。",
                     );
-                if ui.small_button("フォルダを開く").clicked() {
-                    if let Some(dir) = display_path.parent() {
-                        let _ = std::process::Command::new("explorer")
-                            .arg("/select,")
-                            .arg(&display_path)
-                            .spawn()
-                            .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
-                    }
+                if ui.small_button("フォルダを開く").clicked()
+                    && let Some(dir) = display_path.parent()
+                {
+                    let _ = std::process::Command::new("explorer")
+                        .arg("/select,")
+                        .arg(&display_path)
+                        .spawn()
+                        .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
                 }
                 // バージョン表示要望（2026-07-29）: これまでインストール済みファイル名
                 // でしかバージョンを確認できなかったため、常時見える位置に出す。
@@ -2040,10 +2226,16 @@ fn override_list_ui(
     for (i, e) in entries.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.label(format!("    {} / {}", e.process, e.class));
-            if ui.small_button("x").clicked() {
+            if ui
+                .small_button("x")
+                .on_hover_text("押すと: この行を削除します。")
+                .clicked()
+            {
                 rm = Some(i);
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     }
     if let Some(i) = rm {
         entries.remove(i);
@@ -2054,14 +2246,24 @@ fn override_list_ui(
                 .desired_width(150.0)
                 .hint_text("プロセス名 (例: msedge.exe)")
                 .id(egui::Id::new(format!("{id}_proc"))),
-        );
+        )
+        .on_hover_text("対象プロセスの実行ファイル名です。完全一致で判定します。");
         ui.add(
             egui::TextEdit::singleline(&mut buf.1)
                 .desired_width(200.0)
                 .hint_text("クラス名 (完全一致)")
                 .id(egui::Id::new(format!("{id}_class"))),
+        )
+        .on_hover_text(
+            "対象ウィンドウのクラス名です。完全一致で判定します。\nログの [focus-sync] 行などで確認できます。",
         );
-        if ui.button("+追加").clicked() && !buf.0.is_empty() && !buf.1.is_empty() {
+        if ui
+            .button("+追加")
+            .on_hover_text("押すと: 入力したプロセス名・クラス名の組み合わせを一覧に追加します。")
+            .clicked()
+            && !buf.0.is_empty()
+            && !buf.1.is_empty()
+        {
             entries.push(awase::config::AppOverrideEntry {
                 process: std::mem::take(&mut buf.0),
                 class: std::mem::take(&mut buf.1),
@@ -2072,7 +2274,7 @@ fn override_list_ui(
 }
 
 /// `engine_off_solo_triple`（単独5連打でエンジン OFF にするキー）の選択 UI。
-fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>) {
+fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
     let display = current.as_deref().map_or_else(
         || "（無効）".to_string(),
         |v| {
@@ -2097,7 +2299,9 @@ fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>) {
                     *current = Some((*internal).to_string());
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
 }
 
 /// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。
@@ -2112,16 +2316,20 @@ struct NewComboBuf {
 /// エンジン制御・IME制御キー用のキーリスト UI。
 ///
 /// 自由記述テキストの代わりに、Ctrl/Shift/Alt の修飾チェックボックスと
-/// `THUMB_KEY_OPTIONS`（変換/無変換/かな/F13-F24 等の安全な候補のみ）から選ぶ
+/// `THUMB_KEY_OPTIONS`（変換/無変換/かな/F13-F20 等の安全な候補のみ）から選ぶ
 /// メインキーのドロップダウンで組み立てる。既存エントリもその場で編集できる。
 /// `parse_combo_str`/`format_combo`（keymap タブと共通）で文字列化するため、
 /// バックエンドのパース（`vk::parse_key_combo`）・config 形式は変更不要。
+#[expect(clippy::too_many_arguments)]
 fn combo_key_list_ui(
     ui: &mut egui::Ui,
     label: &str,
     id: &str,
+    list: ComboListId,
     keys: &mut Vec<String>,
     new_entry: &mut NewComboBuf,
+    combo_capturing: &mut Option<ComboCaptureTarget>,
+    combo_capture_guard: &mut Option<key_capture::CaptureGuard>,
     tooltip: &str,
 ) {
     ui.label(format!("  {label}:")).on_hover_text(tooltip);
@@ -2133,16 +2341,28 @@ fn combo_key_list_ui(
             changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
             changed |= ui.checkbox(&mut shift, "Shift").changed();
             changed |= ui.checkbox(&mut alt, "Alt").changed();
-            if engine_key_combo(ui, &format!("{id}_{i}"), &mut main) {
+            if engine_key_combo(ui, &format!("{id}_{i}"), &mut main, tooltip) {
                 changed = true;
             }
             if changed {
                 *key = format_combo(ctrl, shift, alt, &main);
             }
-            if ui.small_button("x").clicked() {
+            combo_capture_button(
+                ui,
+                combo_capturing,
+                combo_capture_guard,
+                ComboCaptureTarget::Existing(list, i),
+            );
+            if ui
+                .small_button("x")
+                .on_hover_text("押すと: この組み合わせを削除します。")
+                .clicked()
+            {
                 rm = Some(i);
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     }
     if let Some(i) = rm {
         keys.remove(i);
@@ -2151,8 +2371,19 @@ fn combo_key_list_ui(
         ui.checkbox(&mut new_entry.ctrl, "Ctrl");
         ui.checkbox(&mut new_entry.shift, "Shift");
         ui.checkbox(&mut new_entry.alt, "Alt");
-        engine_key_combo(ui, &format!("{id}_new"), &mut new_entry.main);
-        if ui.button("+追加").clicked() && !new_entry.main.is_empty() {
+        engine_key_combo(ui, &format!("{id}_new"), &mut new_entry.main, tooltip);
+        combo_capture_button(
+            ui,
+            combo_capturing,
+            combo_capture_guard,
+            ComboCaptureTarget::New(list),
+        );
+        if ui
+            .button("+追加")
+            .on_hover_text("押すと: 上で組み立てたキーの組み合わせを一覧に追加します。")
+            .clicked()
+            && !new_entry.main.is_empty()
+        {
             keys.push(format_combo(
                 new_entry.ctrl,
                 new_entry.shift,
@@ -2164,10 +2395,42 @@ fn combo_key_list_ui(
     });
 }
 
+/// `combo_key_list_ui` 用のキャプチャボタン（`capture_button` の OS
+/// フック版）。押すと `key_capture::start()` でフックを起動し、次に押される
+/// 対象キーを待つ（`process_combo_capture` が毎フレーム消費する）。
+/// 待機中に再度押す、または他のボタンを押すとキャンセルされる
+/// （フックの guard が差し替わり Drop で解除される）。
+fn combo_capture_button(
+    ui: &mut egui::Ui,
+    capturing: &mut Option<ComboCaptureTarget>,
+    guard: &mut Option<key_capture::CaptureGuard>,
+    target: ComboCaptureTarget,
+) {
+    let is_active = *capturing == Some(target);
+    let label = if is_active { "⌨ 待機…" } else { "⌨" };
+    if ui
+        .selectable_label(is_active, label)
+        .on_hover_text(
+            "押すと: 実際に使いたいキー（無変換/変換/かな/F13-F20 等、\n\
+             修飾キーは押しっぱなしでOK）を待ち受けます。押されたキーが\n\
+             そのまま登録されます（Esc でキャンセル）。",
+        )
+        .clicked()
+    {
+        if is_active {
+            *capturing = None;
+            *guard = None;
+        } else {
+            *guard = key_capture::start();
+            *capturing = if guard.is_some() { Some(target) } else { None };
+        }
+    }
+}
+
 /// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
 /// `IME_MODE_KEY_OPTIONS`。Alt impersonation 候補は含めない。必須選択・空欄なし）。
 /// 変更時は true を返す。
-fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
     let options = THUMB_KEY_OPTIONS.iter().chain(IME_MODE_KEY_OPTIONS);
     let display = options
         .clone()
@@ -2189,83 +2452,21 @@ fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
                     changed = true;
                 }
             }
-        });
-    changed
-}
-
-/// 修飾キー無しのキーリスト UI（「IME 検出」タブ専用）。
-///
-/// `ime_detect.toggle/on/off` は `VkCode::from_name` 直読みで修飾キーを
-/// 一切使わないため、`combo_key_list_ui` と違いチェックボックスは出さず、
-/// メインキーのドロップダウン（`THUMB_KEY_OPTIONS` + `IME_DETECT_EXTRA_OPTIONS`）
-/// だけで構成する。
-fn bare_key_list_ui(
-    ui: &mut egui::Ui,
-    label: &str,
-    id: &str,
-    keys: &mut Vec<String>,
-    new_buf: &mut String,
-    tooltip: &str,
-) {
-    ui.label(format!("  {label}:")).on_hover_text(tooltip);
-    let mut rm = None;
-    for (i, key) in keys.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            ime_detect_key_combo(ui, &format!("{id}_{i}"), key);
-            if ui.small_button("x").clicked() {
-                rm = Some(i);
-            }
-        });
-    }
-    if let Some(i) = rm {
-        keys.remove(i);
-    }
-    ui.horizontal(|ui| {
-        ime_detect_key_combo(ui, &format!("{id}_new"), new_buf);
-        if ui.button("+追加").clicked() && !new_buf.is_empty() {
-            keys.push(std::mem::take(new_buf));
-        }
-    });
-}
-
-/// 「IME 検出」タブ用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
-/// `IME_DETECT_EXTRA_OPTIONS` + `IME_MODE_KEY_OPTIONS`）。修飾キー欄は無い。
-/// 変更時は true を返す。
-fn ime_detect_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
-    let options = THUMB_KEY_OPTIONS
-        .iter()
-        .chain(IME_DETECT_EXTRA_OPTIONS)
-        .chain(IME_MODE_KEY_OPTIONS);
-    let display = options
-        .clone()
-        .find(|(_, internal)| *internal == current.as_str())
-        .map_or(current.as_str(), |(d, _)| *d)
-        .to_string();
-    let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(if current.is_empty() {
-            "（未選択）"
-        } else {
-            &display
         })
-        .width(110.0)
-        .show_ui(ui, |ui| {
-            for (label, internal) in options {
-                if ui.selectable_label(current == internal, *label).clicked() {
-                    *current = (*internal).to_string();
-                    changed = true;
-                }
-            }
-        });
+        .response
+        .on_hover_text(tooltip);
     changed
 }
 
 /// 親指キー選択用候補一覧（表示名, config 内部表記）。
 ///
-/// F13-F24: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
+/// F13-F20: 物理キーとしては存在しない拡張ファンクションキー。プログラマブル
 /// キーボード（QMK/ZMK 等）で親指位置のキーに割り当てて使う想定。US 配列で
 /// 無変換/変換キーが無い場合の代替はこちらの範囲を推奨する。
 ///
+/// F21-F24 は意図的に含めていない。awase 内部（ADR-091 の GJI 専用Fnキー
+/// 自動検出等）で使う予約範囲のため、ユーザー側の親指キー/ホットキー選択に
+/// 割り当てさせない（2026-08-15 ユーザー判断）。
 /// 意図的に含めていないもの: VK_LCONTROL/VK_RCONTROL（Ctrl）・VK_LWIN/VK_RWIN（Win）。
 /// これらは `ModifierState::is_os_modifier_held` の対象で、`bypass_reason` が
 /// そのキーの KeyDown を即座に `OsModifierHeld` として素通しするため、親指キーに
@@ -2295,10 +2496,6 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("F18", "VK_F18"),
     ("F19", "VK_F19"),
     ("F20", "VK_F20"),
-    ("F21", "VK_F21"),
-    ("F22", "VK_F22"),
-    ("F23", "VK_F23"),
-    ("F24", "VK_F24"),
 ];
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
@@ -2320,30 +2517,9 @@ const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
 /// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_triple_combo`
 /// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
 /// IME モード専用キーをそこに混入させると意図しない組み合わせが選択可能に
-/// なってしまう。`ALT_IMPERSONATION_OPTIONS`/`IME_DETECT_EXTRA_OPTIONS` と同じ
+/// なってしまう。`ALT_IMPERSONATION_OPTIONS` と同じ
 /// 「用途ごとに候補リストを分離する」既存パターンに倣う。
 const IME_MODE_KEY_OPTIONS: &[(&str, &str)] = &[("英数", "VK_DBE_ALPHANUMERIC")];
-
-/// 「IME → awase ON/OFFキー」（`ime_detect.toggle/on/off`）の候補にのみ
-/// 追加するエントリ。
-///
-/// これらは `VkCode::from_name` 直読み（`app/mod.rs::parse_vk_list`、
-/// `vk::parse_key_combo` 経由ではない）で解決される単発 VK で、修飾キーは
-/// 使われない。デフォルト値（`ImeDetectConfig::default`）が 漢字/IMEオン/IMEオフ
-/// のため、`THUMB_KEY_OPTIONS` に無いこの3つをここで補う。
-///
-/// 半角/全角（`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`）は ADR-092 決定A-5の
-/// 唯一の実装項目として追加した。ひらがな/カタカナ/英数は既に
-/// `THUMB_KEY_OPTIONS`/`IME_MODE_KEY_OPTIONS` に存在するため対象外
-/// （決定A-5は `ImeDetectConfig` へのコード変更・既定値追加は行わず、
-/// 上級者が手動指定したい場合の選択肢を増やすだけに留める）。
-const IME_DETECT_EXTRA_OPTIONS: &[(&str, &str)] = &[
-    ("漢字", "VK_KANJI"),
-    ("IMEオン", "VK_IME_ON"),
-    ("IMEオフ", "VK_IME_OFF"),
-    ("半角", "VK_DBE_SBCSCHAR"),
-    ("全角", "VK_DBE_DBCSCHAR"),
-];
 
 #[cfg(test)]
 mod ime_mode_key_options_tests {
@@ -2442,6 +2618,22 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("F10", "VK_F10"),
     ("F11", "VK_F11"),
     ("F12", "VK_F12"),
+    // F13-F20: 物理キーとしては存在しない拡張ファンクションキー
+    // （`THUMB_KEY_OPTIONS` の doc コメント参照）。プログラマブルキーボードで
+    // 割り当てて使う想定。egui のキーイベントには対応する `Key` 変種が無く
+    // ショートカット再割当タブの⌨キャプチャでは検出できないため、この
+    // ドロップダウンが唯一の設定手段（2026-08-15 ユーザー要望）。
+    // F21-F24 は意図的に含めていない。awase 内部（ADR-091 の GJI 専用Fnキー
+    // 自動検出等）の予約範囲のため（2026-08-15 ユーザー判断、
+    // `THUMB_KEY_OPTIONS` doc 参照）。
+    ("F13", "VK_F13"),
+    ("F14", "VK_F14"),
+    ("F15", "VK_F15"),
+    ("F16", "VK_F16"),
+    ("F17", "VK_F17"),
+    ("F18", "VK_F18"),
+    ("F19", "VK_F19"),
+    ("F20", "VK_F20"),
     // 制御キー
     ("Space", "VK_SPACE"),
     ("Enter", "VK_RETURN"),
@@ -2569,7 +2761,7 @@ fn format_combo(ctrl: bool, shift: bool, alt: bool, main: &str) -> String {
 }
 
 /// 親指キー選択ドロップダウン。変更時は true を返す。
-fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
     let options = THUMB_KEY_OPTIONS.iter().chain(ALT_IMPERSONATION_OPTIONS);
     let display = options
         .clone()
@@ -2594,12 +2786,14 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
                     changed = true;
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     changed
 }
 
 /// main key ドロップダウン（必須選択版）。変更時は true を返す。
-fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
@@ -2616,7 +2810,9 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
                     changed = true;
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     changed
 }
 
@@ -2628,19 +2824,19 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
 /// メインキー候補は IME 系ではなく英数字/F1-F12/OEM記号中心の `KEYMAP_MAIN_KEYS`
 /// （デフォルト値 `"Ctrl+Shift+F12"` と同系統）を使う。メインキー未選択の状態は
 /// ホットキー無効（`None`）として扱う。
-fn hotkey_combo_ui(ui: &mut egui::Ui, id: &str, current: &mut Option<String>) {
+fn hotkey_combo_ui(ui: &mut egui::Ui, id: &str, current: &mut Option<String>, tooltip: &str) {
     let (mut ctrl, mut shift, mut alt, mut main) =
         parse_combo_str(current.as_deref().unwrap_or(""));
     let mut changed = false;
     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
     changed |= ui.checkbox(&mut shift, "Shift").changed();
     changed |= ui.checkbox(&mut alt, "Alt").changed();
-    if main_key_combo(ui, id, &mut main) {
+    if main_key_combo(ui, id, &mut main, tooltip) {
         changed = true;
     }
     if ui
         .small_button("解除")
-        .on_hover_text("ホットキーを無効にします")
+        .on_hover_text("押すと: このホットキーの設定を解除します（未設定に戻します）。")
         .clicked()
     {
         *current = None;
@@ -2755,7 +2951,12 @@ fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
 }
 
 /// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。変更時は true を返す。
-fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) -> bool {
+fn main_key_combo_optional(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &mut String,
+    tooltip: &str,
+) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
@@ -2780,7 +2981,9 @@ fn main_key_combo_optional(ui: &mut egui::Ui, id: &str, current: &mut String) ->
                     changed = true;
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(tooltip);
     changed
 }
 
@@ -3019,9 +3222,6 @@ mod layout_tab_repro {
             new_engine_off: NewComboBuf::default(),
             new_ime_on: NewComboBuf::default(),
             new_ime_off: NewComboBuf::default(),
-            new_ime_toggle_key: String::new(),
-            new_ime_detect_on_key: String::new(),
-            new_ime_detect_off_key: String::new(),
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,
@@ -3029,6 +3229,8 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
+            combo_capturing: None,
+            combo_capture_guard: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -3091,15 +3293,14 @@ mod layout_tab_repro {
         });
     }
 
-    /// ADR-092 決定D Step6: `tab_ime_detect` を `tab_keys` の
-    /// `egui::CollapsingHeader`（「上級者向け設定」）へ統合した。折りたたみ済み
-    /// （既定）の `tab_keys` 全体と、折りたたみの中身（`ime_detect_keys_ui`、
-    /// 旧 `tab_ime_detect` の内容）の双方がパニックしないことを固定する
+    /// `tab_keys`（無変換/変換の条件付き indent ブロックと「awase → IME
+    /// ON/OFFキー」を含む、折りたたみ「上級者向け設定」は2026-08-15に撤去済み）
+    /// がパニックしないことを固定する
     /// （`full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。無変換/変換を親指キーへ割り当て、`tab_keys` 内の条件付き
     /// indent ブロック（無変換/変換オプション）も一通り描画させる。
     #[test]
-    fn full_tab_keys_render_with_collapsing_header_does_not_panic() {
+    fn full_tab_keys_render_does_not_panic() {
         let config_path = find_config_path();
         let mut config = awase::config::AppConfig::load(&config_path).unwrap_or_else(|e| {
             panic!(
@@ -3113,18 +3314,60 @@ mod layout_tab_repro {
         let mut app = test_settings_app(config);
 
         let ctx = eframe::egui::Context::default();
-        // tab_keys 全体（上級者向け設定は既定で折りたたみ済み）。
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
             eframe::egui::CentralPanel::default().show(ctx, |ui| {
                 app.tab_keys(ui);
             });
         });
+    }
 
-        // 折りたたみの中身（IME → awase ON/OFFキー、旧 tab_ime_detect）を
-        // 直接描画させる。
+    /// `tab_basic`/`tab_keymap`/`tab_app_rules`/`tab_advanced` がパニックしない
+    /// ことを固定する（2026-08-15、ホバーヒント拡充で全タブに手を入れたため
+    /// 追加。`full_tab_layout_render_with_real_config_does_not_panic` と同じ
+    /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
+    /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/
+    /// `main_key_combo_optional` を含む行）も描画させる。
+    #[test]
+    fn remaining_tabs_render_does_not_panic() {
+        let config_path = find_config_path();
+        let mut config = awase::config::AppConfig::load(&config_path).unwrap_or_else(|e| {
+            panic!(
+                "テスト前提: {} の読み込みに失敗した: {e}",
+                config_path.display()
+            )
+        });
+        config.keymaps.push(awase::config::KeymapRule {
+            app: Some("vim.exe".to_string()),
+            from: "Ctrl+I".to_string(),
+            to: Some("VK_F7".to_string()),
+        });
+        config.post_bypass.push(awase::config::PostBypassRule {
+            key: "Ctrl+B".to_string(),
+            process: String::new(),
+            class: String::new(),
+        });
+
+        let mut app = test_settings_app(config);
+
+        let ctx = eframe::egui::Context::default();
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
             eframe::egui::CentralPanel::default().show(ctx, |ui| {
-                app.ime_detect_keys_ui(ui);
+                app.tab_basic(ui);
+            });
+        });
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_keymap(ui);
+            });
+        });
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_app_rules(ui);
+            });
+        });
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_advanced(ui);
             });
         });
     }

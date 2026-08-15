@@ -566,19 +566,15 @@ footer p{margin-bottom:0.3rem}
         <tr><th>項目</th><th>説明</th></tr>
         <tr><td>左親指キー</td><td>左親指シフトキーに使うキー（デフォルト: VK_NONCONVERT = 無変換）</td></tr>
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
-        <tr><td>エンジン ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
-        <tr><td>エンジン OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
-        <tr><td>エンジン切替ホットキー</td><td>グローバルホットキーでエンジン ON/OFF をトグル</td></tr>
+        <tr><td>親指シフト ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
+        <tr><td>親指シフト OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
+        <tr><td>親指シフト切替ホットキー</td><td>グローバルホットキーで親指シフト ON/OFF をトグル</td></tr>
       </table>
-      <p class="note" style="margin-top:0.7rem">画面下部の「上級者向け設定」（既定で折りたたみ）を開くと、以下の2種類のキー設定が現れます。通常はデフォルトのままで問題ありません。</p>
       <table class="tab-table" style="margin-top:0.5rem">
         <tr><th>項目</th><th>説明</th></tr>
         <tr><td>awase → IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
-        <tr><td>IME → awase トグルキー</td><td>OS/IME が IME ON/OFF をトグルするキーを awase が解釈するための設定（例: 半角/全角）</td></tr>
-        <tr><td>IME → awase ON キー</td><td>OS/IME が IME を ON にするキーを awase が解釈するための設定</td></tr>
-        <tr><td>IME → awase OFF キー</td><td>OS/IME が IME を OFF にするキーを awase が解釈するための設定</td></tr>
       </table>
-      <p class="note">「IME → awase」側は「デフォルトに戻す」ボタンで標準設定に戻せます。矢印は設定の向きを表します: 「awase → IME」は awase が能動的に送信するキー、「IME → awase」は外部 IME の状態変化を awase が解釈するためのキーです。</p>
+      <p class="note">「IME → awase」方向（外部 IME の状態変化を awase が解釈するための設定、半角/全角キー等）は GUI から撤去しました。既定値の漢字キーを変える利用者はほとんどおらず、他の候補（IME オン/オフキー）は物理的に存在しないキーのため GUI で選ばせる価値が薄いと判断したためです。必要な場合は下記「IME 検出キーの手動設定」の通り <code>config.toml</code> を直接編集すれば引き続き設定できます。</p>
     </div>
 
     <div class="card">
@@ -723,15 +719,15 @@ force_tsf = [
 
     <div class="card">
       <h3>IME 検出キーの手動設定</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">通常は自動検出で十分ですが、特殊なキーボードや IME を使う場合に手動設定します。</p>
-      <div class="code-block">[ime_sync]
-# IME ON/OFF をトグルするキー（例: 半角/全角）
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（既定値の漢字キーで通常は十分なため、GUI からは意図的に外してあります）。</p>
+      <div class="code-block">[keys.ime_detect]
+# IME ON/OFF をトグルするキー（既定: ["漢字"]）
 # toggle = ["VK_KANJI"]
 
-# IME を直接 ON にするキー
+# IME を直接 ON にするキー（既定: ["IMEオン"]）
 # on = ["VK_DBE_HIRAGANA"]
 
-# IME を直接 OFF にするキー
+# IME を直接 OFF にするキー（既定: ["IMEオフ"]）
 # off = ["VK_DBE_SBCSCHAR"]</div>
     </div>
   </div>
