@@ -102,20 +102,18 @@ impl FsmAdapter {
     pub(super) const fn set_space_thumb_config(
         &mut self,
         space_thumb_vk: Option<crate::types::VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: super::fsm_types::TextKeyConfig,
     ) {
-        self.fsm
-            .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
+        self.fsm.set_space_thumb_config(space_thumb_vk, config);
     }
 
     /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
     pub(super) const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<crate::types::VkCode>,
-        muhenkan: super::fsm_types::ThumbKeySoloTapGuard,
+        muhenkan: super::fsm_types::ModeKeyConfig,
         henkan_vk: Option<crate::types::VkCode>,
-        henkan: super::fsm_types::ThumbKeySoloTapGuard,
+        henkan: super::fsm_types::ModeKeyConfig,
     ) {
         self.fsm
             .set_thumb_key_solo_tap_config(muhenkan_vk, muhenkan, henkan_vk, henkan);
@@ -133,11 +131,9 @@ impl FsmAdapter {
     pub(super) const fn set_enter_thumb_config(
         &mut self,
         enter_thumb_vk: Option<crate::types::VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: super::fsm_types::TextKeyConfig,
     ) {
-        self.fsm
-            .set_enter_thumb_config(enter_thumb_vk, ignore_composing_guard, shift_literal);
+        self.fsm.set_enter_thumb_config(enter_thumb_vk, config);
     }
 
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。

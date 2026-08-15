@@ -19,8 +19,7 @@ use super::decision::{
     InputContext, InputEffect, SetOpenOrigin, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
-use super::fsm_types::ThumbKeySoloTapGuard;
-use super::fsm_types::{ComposingHint, ModifierState};
+use super::fsm_types::{ComposingHint, ModeKeyConfig, ModifierState, TextKeyConfig};
 use super::input_tracker::PhysicalKeyState;
 use super::key_lifecycle::KeyLifecycle;
 use super::nicola_fsm::NicolaFsm;
@@ -85,11 +84,9 @@ impl Engine {
     pub const fn set_space_thumb_config(
         &mut self,
         space_thumb_vk: Option<VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: TextKeyConfig,
     ) {
-        self.adapter
-            .set_space_thumb_config(space_thumb_vk, ignore_composing_guard, shift_literal);
+        self.adapter.set_space_thumb_config(space_thumb_vk, config);
     }
 
     /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
@@ -105,9 +102,9 @@ impl Engine {
     pub const fn set_thumb_key_solo_tap_config(
         &mut self,
         muhenkan_vk: Option<VkCode>,
-        muhenkan: ThumbKeySoloTapGuard,
+        muhenkan: ModeKeyConfig,
         henkan_vk: Option<VkCode>,
-        henkan: ThumbKeySoloTapGuard,
+        henkan: ModeKeyConfig,
     ) {
         self.adapter
             .set_thumb_key_solo_tap_config(muhenkan_vk, muhenkan, henkan_vk, henkan);
@@ -129,11 +126,9 @@ impl Engine {
     pub const fn set_enter_thumb_config(
         &mut self,
         enter_thumb_vk: Option<VkCode>,
-        ignore_composing_guard: bool,
-        shift_literal: bool,
+        config: TextKeyConfig,
     ) {
-        self.adapter
-            .set_enter_thumb_config(enter_thumb_vk, ignore_composing_guard, shift_literal);
+        self.adapter.set_enter_thumb_config(enter_thumb_vk, config);
     }
 
     /// InputContext から実効状態を `ActivationState` で返す。

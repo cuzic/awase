@@ -13,7 +13,7 @@ use crate::vk::VkCodeExt;
 use crate::win32::HwndExt as _;
 use awase::config::ValidatedConfig;
 use awase::engine::SpecialKeyCombos;
-use awase::engine::{Engine, NicolaFsm, ThumbKeySoloTapGuard};
+use awase::engine::{Engine, ModeKeyConfig, NicolaFsm, TextKeyConfig};
 use awase::types::VkCode;
 use awase::yab::YabLayout;
 
@@ -832,8 +832,10 @@ pub(super) fn run_all() -> Result<()> {
         .find(|&vk| vk == crate::vk::VK_SPACE);
     engine.set_space_thumb_config(
         space_thumb_vk,
-        config.general.space_thumb_ignore_composing_guard,
-        config.general.space_thumb_shift_literal,
+        TextKeyConfig {
+            ignore_composing_guard: config.general.space_thumb_ignore_composing_guard,
+            shift_literal: config.general.space_thumb_shift_literal,
+        },
     );
 
     // 同様に、left/right のいずれかが無変換/変換に割り当てられている場合、
@@ -847,15 +849,15 @@ pub(super) fn run_all() -> Result<()> {
         .find(|&vk| vk == crate::vk::VK_CONVERT);
     engine.set_thumb_key_solo_tap_config(
         muhenkan_vk,
-        ThumbKeySoloTapGuard {
-            ignore_composing_guard: config.general.muhenkan_solo_tap_ignore_composing_guard,
-            always_suppress: config.general.muhenkan_solo_tap_always_suppress,
-        },
+        ModeKeyConfig::from_legacy_bools(
+            config.general.muhenkan_solo_tap_ignore_composing_guard,
+            config.general.muhenkan_solo_tap_always_suppress,
+        ),
         henkan_vk,
-        ThumbKeySoloTapGuard {
-            ignore_composing_guard: config.general.henkan_solo_tap_ignore_composing_guard,
-            always_suppress: config.general.henkan_solo_tap_always_suppress,
-        },
+        ModeKeyConfig::from_legacy_bools(
+            config.general.henkan_solo_tap_ignore_composing_guard,
+            config.general.henkan_solo_tap_always_suppress,
+        ),
     );
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
@@ -866,8 +868,10 @@ pub(super) fn run_all() -> Result<()> {
         .find(|&vk| vk == crate::vk::VK_RETURN);
     engine.set_enter_thumb_config(
         enter_thumb_vk,
-        config.general.enter_thumb_ignore_composing_guard,
-        config.general.enter_thumb_shift_literal,
+        TextKeyConfig {
+            ignore_composing_guard: config.general.enter_thumb_ignore_composing_guard,
+            shift_literal: config.general.enter_thumb_shift_literal,
+        },
     );
 
     if let Some(vk) = config
