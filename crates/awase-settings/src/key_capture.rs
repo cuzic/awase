@@ -1,12 +1,16 @@
 //! OS レベルの低レベルキーボードフックによる、egui のキーイベントでは
-//! 検出できないキー（無変換/変換/かな/カタカナ/ひらがな/英数、F13-F24）の
+//! 検出できないキー（無変換/変換/かな/カタカナ/ひらがな/英数、F13-F20）の
 //! キャプチャ機構。
+//!
+//! F21-F24 は awase 内部（ADR-091 の GJI 専用Fnキー自動検出等）の予約範囲
+//! のため対象外（`main.rs::THUMB_KEY_OPTIONS` doc 参照、2026-08-15
+//! ユーザー判断）。
 //!
 //! # なぜ egui の Key イベントでは不十分か
 //!
 //! `main.rs::egui_key_to_internal`（ショートカット再割当タブのキャプチャで
 //! 使用）は winit/egui の `Key` enum を経由するが、IME 専用の仮想キー
-//! （無変換/変換/かな/カタカナ/ひらがな/英数）や F13-F24 に対応する `Key`
+//! （無変換/変換/かな/カタカナ/ひらがな/英数）や F13-F20 に対応する `Key`
 //! 変種が存在せず検出できない（`egui_key_to_internal` の doc コメント参照）。
 //! これらはまさに「親指シフト ON/OFF」「awase → IME ON/OFFキー」の既定値
 //! （例: `Ctrl+変換`）で使われるキーそのものであり、キャプチャ機能から
@@ -56,6 +60,8 @@ mod windows_impl {
 
     /// 対象として認識する VK（`THUMB_KEY_OPTIONS`/`IME_MODE_KEY_OPTIONS` の
     /// main key 候補と一致させること。新しい候補を追加したらここにも追加する）。
+    /// F21-F24 は awase 内部の予約範囲のため意図的に含めない
+    /// （モジュール doc 参照）。
     const ALLOWED_VK: &[(u32, &str)] = &[
         (0x20, "VK_SPACE"),
         (0x0D, "VK_RETURN"),
@@ -73,10 +79,6 @@ mod windows_impl {
         (0x81, "VK_F18"),
         (0x82, "VK_F19"),
         (0x83, "VK_F20"),
-        (0x84, "VK_F21"),
-        (0x85, "VK_F22"),
-        (0x86, "VK_F23"),
-        (0x87, "VK_F24"),
     ];
 
     fn vk_to_internal(vk: u32) -> Option<&'static str> {
