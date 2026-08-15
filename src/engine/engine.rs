@@ -429,7 +429,7 @@ impl Engine {
     /// 次のイベントで誤発火する」経路を `on_command` の全アームで塞ぐ必要が
     /// ある（Opus コードレビュー指摘: `ToggleEngine`/`SwapLayout` は
     /// `on_command` 経由でのみ到達し、どちらも取り出し漏れがあった）。
-    fn discard_ime_open_request(&mut self) {
+    const fn discard_ime_open_request(&mut self) {
         let _ = self.adapter.take_ime_open_requested();
     }
 
