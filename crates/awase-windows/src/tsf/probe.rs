@@ -791,7 +791,20 @@ mod tests {
         // （2026-08-15 実機、"fallback too short: 10ms" を確認。BUG-65 追補3参照）。
         let elapsed = crate::hook::current_tick_ms().saturating_sub(now_ms);
         // フォールバック: warmup_ms=now, remaining=100ms → sleep_ms(100)
-        assert!(elapsed >= 60, "fallback too short: {elapsed}ms");
+        //
+        // 診断用（2026-08-15）: `check_now()` の第一分岐は
+        // `!gji_monitor_ok → return now >= max_deadline` であり、`current_tick_ms()`
+        // は単調増加のため、この分岐で `true` が返るなら本アサーション時点の
+        // `elapsed` は理論上必ず 100ms 以上になるはず。elapsed が 60ms 未満で
+        // 落ちるということは、この分岐を通っていない＝`gji_monitor_ok` が
+        // `true` のまま観測された、という意味のはず。原因の切り分けのため
+        // 失敗メッセージに現在値を含める。
+        assert!(
+            elapsed >= 60,
+            "fallback too short: {elapsed}ms (gji_monitor_ok={}, gji_last_io_ms={})",
+            TSF_OBS.gji_monitor_ok.load(Ordering::Acquire),
+            TSF_OBS.gji_last_io_ms.load(Ordering::Relaxed),
+        );
         assert!(elapsed < 400, "fallback too long: {elapsed}ms");
     }
 
