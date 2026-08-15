@@ -73,6 +73,7 @@ fn main() -> Result<()> {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         },
     );
 

@@ -162,6 +162,26 @@ pub struct NicolaFsm {
     /// 壊れるため、専用の独立フィールド・独立setterのまま維持する。
     muhenkan_solo_tap_dedicated_fn_key: Option<VkCode>,
 
+    /// MS-IME レジストリ/GJI config1.db の宣言に基づき、無変換キー単独タップを
+    /// IME open 軸への操作へ肩代わりする（ADR-092 決定D Step4b）。`Some(action)`
+    /// なら、`mode_key_muhenkan`/`muhenkan_solo_tap_dedicated_fn_key` のいずれよりも
+    /// 後・`ModeKeyConfig` ベースの抑制/パススルー判定より前に評価される
+    /// （`dedicated_fn_key` が最優先、その次にこれ）。`ModeKeyConfig` には
+    /// 統合しない——`dedicated_fn_key` と同じ理由（自動検出由来の値が
+    /// config reload で消去されるのを防ぐ）。
+    muhenkan_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
+
+    /// `muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    henkan_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
+
+    /// `resolve_pending_thumb_as_single` が `DelegateToOpenAxis` 相当の判定を
+    /// 下した直後、`Engine` 層が次の `on_input`/`on_timeout` で取り出すまで
+    /// 保持するワンショットの副作用要求（ADR-092 決定D Step4b）。
+    /// `engine_off_requested`（`:119`、`take_engine_off_requested`）と同型。
+    /// `NicolaFsm`/`ParseAction`/`ResolvedAction` は IME への副作用を出す経路を
+    /// 持たないため、このワンショットチャネルだけが唯一の伝達経路になる。
+    ime_open_requested: Option<crate::types::ShadowImeAction>,
+
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
     henkan_vk: Option<VkCode>,
@@ -233,6 +253,9 @@ impl NicolaFsm {
             muhenkan_vk: None,
             mode_key_muhenkan: ModeKeyConfig::from_legacy_bools(false, true),
             muhenkan_solo_tap_dedicated_fn_key: None,
+            muhenkan_delegate_to_open_axis: None,
+            henkan_delegate_to_open_axis: None,
+            ime_open_requested: None,
             henkan_vk: None,
             mode_key_henkan: ModeKeyConfig::from_legacy_bools(false, true),
             // Enter の VK は Platform 層が set_enter_thumb_config() で明示的に配線する
@@ -306,18 +329,24 @@ impl NicolaFsm {
             EngineState::PendingThumb(thumb) => {
                 // 保留中の親指キーを単独確定。composing を信頼できない場合は
                 // Space 例外も含め無条件 suppress する（上記 doc 参照）。
-                let resolved = match composing {
+                let (resolved, ime_open_request) = match composing {
                     ComposingHint::Trusted(c) => self.resolve_pending_thumb_as_single(
                         thumb.scan_code,
                         thumb.vk_code,
                         thumb.modifier_key,
                         c,
                     ),
-                    ComposingHint::Unknown => ResolvedAction {
-                        actions: SmallVec::new(),
-                        output: OutputUpdate::None,
-                    },
+                    ComposingHint::Unknown => (
+                        ResolvedAction {
+                            actions: SmallVec::new(),
+                            output: OutputUpdate::None,
+                        },
+                        None,
+                    ),
                 };
+                if ime_open_request.is_some() {
+                    self.ime_open_requested = ime_open_request;
+                }
                 self.update_history(resolved.output);
                 Response::emit(resolved.actions.into_vec())
             }
@@ -463,6 +492,35 @@ impl NicolaFsm {
     /// （既定）なら無効。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
     pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
         self.muhenkan_solo_tap_dedicated_fn_key = vk;
+    }
+
+    /// 無変換/変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D
+    /// Step4b）を設定する。`Some(action)` を渡すと、`muhenkan_vk`/`henkan_vk`
+    /// の単独タップ確定時に `mode_key_muhenkan`/`mode_key_henkan` による
+    /// 抑制/パススルー判定を経由せず、`action` を `ime_open_requested`
+    /// （`Engine` が次の `on_input`/`on_timeout` で取り出す）へセットする。
+    /// `None`（既定）なら無効。専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）
+    /// より優先度が低い（両方 `Some` の場合は専用Fnキーが勝つ）。
+    pub const fn set_muhenkan_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.muhenkan_delegate_to_open_axis = action;
+    }
+
+    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    pub const fn set_henkan_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.henkan_delegate_to_open_axis = action;
+    }
+
+    /// `resolve_pending_thumb_as_single` がセットした IME open 軸への副作用
+    /// 要求を取り出す（1ショット、ADR-092 決定D Step4b）。`Engine::on_input`/
+    /// `on_timeout` が呼ぶ。
+    pub const fn take_ime_open_requested(&mut self) -> Option<crate::types::ShadowImeAction> {
+        self.ime_open_requested.take()
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -880,12 +938,15 @@ impl NicolaFsm {
                     ev.timestamp,
                 );
                 self.go_idle();
-                let resolved = self.resolve_pending_thumb_as_single(
+                let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
                     thumb.scan_code,
                     thumb.vk_code,
                     thumb.modifier_key,
                     self.phys.composing,
                 );
+                if ime_open_request.is_some() {
+                    self.ime_open_requested = ime_open_request;
+                }
                 resolved.into_reduce_and_continue(*ev)
             }
         }
@@ -1045,12 +1106,15 @@ impl NicolaFsm {
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
-        let resolved = self.resolve_pending_thumb_as_single(
+        let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
             thumb.vk_code,
             thumb.modifier_key,
             self.phys.composing,
         );
+        if ime_open_request.is_some() {
+            self.ime_open_requested = ime_open_request;
+        }
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -1058,12 +1122,15 @@ impl NicolaFsm {
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
         self.go_idle();
-        let resolved = self.resolve_pending_thumb_as_single(
+        let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
             thumb.vk_code,
             thumb.modifier_key,
             self.phys.composing,
         );
+        if ime_open_request.is_some() {
+            self.ime_open_requested = ime_open_request;
+        }
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -1140,45 +1207,81 @@ impl NicolaFsm {
     /// `composing`/VK 種別を一切見ずに常時 suppress していたため、フォーカス変更や
     /// 別キー割り込みで Space が消えることがあった（この不整合を解消するために
     /// `composing`/`modifier_key` を明示的に受け取る形にした）。
+    ///
+    /// 戻り値の第2要素は、無変換/変換単独タップが IME open 軸への肩代わり
+    /// （ADR-092 決定D Step4b、`DelegateToOpenAxis`）に該当した場合の
+    /// `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
+    /// `self.ime_open_requested` へセットすること（このメソッド自体は `&self`
+    /// のため直接セットできない）。
     fn resolve_pending_thumb_as_single(
         &self,
         scan_code: ScanCode,
         vk_code: VkCode,
         modifier_key: Option<crate::types::ModifierKey>,
         composing: bool,
-    ) -> ResolvedAction {
+    ) -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
         // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
         if modifier_key.is_some() {
-            return ResolvedAction {
-                actions: SmallVec::new(),
-                output: OutputUpdate::None,
-            };
+            return (
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                None,
+            );
         }
 
-        // 無変換/変換は ModeKeyConfig 経由で SoloTapAction を解決する（ADR-092
-        // 決定B）。専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）は
-        // `ModeKeyConfig` の外側で独立に最優先判定する——既存の抑制/パススルー
-        // 判定より手前で分岐し、composing の有無や `mode_key_muhenkan` の値に
-        // 関わらず常にこの Fn キーを送出する（ADR-091 §D3.2）。GJI の
-        // config1.db にこの Fn キーを Composition/Conversion 時の
-        // `SwitchKanaType` としてバインドしておくことで、GJI が自身の内部状態を
-        // 見てかな形状をトグルする（awase 側は belief を持たない）。
-        let mode_key_action = if self.muhenkan_vk == Some(vk_code) {
-            Some(self.muhenkan_solo_tap_dedicated_fn_key.map_or_else(
-                || SoloTapAction::from(self.mode_key_muhenkan.for_composing(composing)),
-                SoloTapAction::DedicatedFnKey,
-            ))
-        } else if self.henkan_vk == Some(vk_code) {
-            Some(SoloTapAction::from(
-                self.mode_key_henkan.for_composing(composing),
-            ))
-        } else {
-            None
-        };
+        // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b）:
+        // 1. 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
+        // 2. IME open 軸への肩代わり（`*_delegate_to_open_axis`、決定D Step4b）
+        // 3. `ModeKeyConfig` ベースの Suppress/Passthrough
+        // 1・2 はいずれも `ModeKeyConfig` の外側で独立に判定する——config reload で
+        // `ModeKeyConfig` が丸ごと再設定されても、自動検出由来のこれらの値が
+        // 消去されないようにするため。GJI の config1.db にこの Fn キーを
+        // Composition/Conversion 時の `SwitchKanaType` としてバインドしておく
+        // ことで、GJI が自身の内部状態を見てかな形状をトグルする
+        // （awase 側は belief を持たない）。
+        let (dedicated_fn_key, delegate_to_open_axis, mode_key_config) =
+            if self.muhenkan_vk == Some(vk_code) {
+                (
+                    self.muhenkan_solo_tap_dedicated_fn_key,
+                    self.muhenkan_delegate_to_open_axis,
+                    Some(self.mode_key_muhenkan),
+                )
+            } else if self.henkan_vk == Some(vk_code) {
+                (
+                    None,
+                    self.henkan_delegate_to_open_axis,
+                    Some(self.mode_key_henkan),
+                )
+            } else {
+                (None, None, None)
+            };
 
-        if let Some(action) = mode_key_action {
-            return match action {
+        if let Some(fn_key) = dedicated_fn_key {
+            let action = KeyAction::Key(fn_key);
+            let output = OutputUpdate::record(scan_code, &action, None);
+            return (
+                ResolvedAction {
+                    actions: smallvec![action],
+                    output,
+                },
+                None,
+            );
+        }
+        if let Some(open_axis_action) = delegate_to_open_axis {
+            return (
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                Some(open_axis_action),
+            );
+        }
+        if let Some(mode_key_config) = mode_key_config {
+            let action = SoloTapAction::from(mode_key_config.for_composing(composing));
+            let resolved = match action {
                 SoloTapAction::Suppress => ResolvedAction {
                     actions: SmallVec::new(),
                     output: OutputUpdate::None,
@@ -1191,6 +1294,9 @@ impl NicolaFsm {
                         output,
                     }
                 }
+                // dedicated_fn_key は上で既に処理済みのため、ここには来ない
+                // （`SoloTapAction::from(GuardAction)` は Suppress/Passthrough
+                // のいずれかしか生成しない）。
                 SoloTapAction::DedicatedFnKey(fn_key) => {
                     let action = KeyAction::Key(fn_key);
                     let output = OutputUpdate::record(scan_code, &action, None);
@@ -1200,6 +1306,7 @@ impl NicolaFsm {
                     }
                 }
             };
+            return (resolved, None);
         }
 
         // Space/Enter（TextKeyConfig、正規機能キー）。無変換/変換の ModeKeyConfig
@@ -1210,18 +1317,24 @@ impl NicolaFsm {
             self.enter_thumb_vk == Some(vk_code) && self.text_key_enter.ignore_composing_guard;
         let ignore_composing_guard = is_space_with_fallback || is_enter_with_fallback;
         if composing && !ignore_composing_guard {
-            return ResolvedAction {
-                actions: SmallVec::new(),
-                output: OutputUpdate::None,
-            };
+            return (
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                None,
+            );
         }
 
         let action = KeyAction::Key(vk_code);
         let output = OutputUpdate::record(scan_code, &action, None);
-        ResolvedAction {
-            actions: smallvec![action],
-            output,
-        }
+        (
+            ResolvedAction {
+                actions: smallvec![action],
+                output,
+            },
+            None,
+        )
     }
 
     /// 3 鍵仲裁で char1+thumb を優先するかを判定する（純粋関数）。
@@ -1401,8 +1514,10 @@ impl NicolaFsm {
     fn handle_key_up_pending(&mut self, event: &RawKeyEvent) -> Resp {
         let old_state = std::mem::replace(&mut self.state, EngineState::Idle);
 
-        let resolved = match old_state {
-            EngineState::PendingChar(pending) => self.resolve_pending_char_as_single(&pending),
+        let (resolved, ime_open_request) = match old_state {
+            EngineState::PendingChar(pending) => {
+                (self.resolve_pending_char_as_single(&pending), None)
+            }
             EngineState::PendingThumb(thumb) => self.resolve_pending_thumb_as_single(
                 thumb.scan_code,
                 thumb.vk_code,
@@ -1416,12 +1531,18 @@ impl NicolaFsm {
                     "unexpected state in handle_key_up_pending: {:?}",
                     self.state
                 );
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                }
+                (
+                    ResolvedAction {
+                        actions: SmallVec::new(),
+                        output: OutputUpdate::None,
+                    },
+                    None,
+                )
             }
         };
+        if ime_open_request.is_some() {
+            self.ime_open_requested = ime_open_request;
+        }
         self.update_history(resolved.output);
         let mut result = resolved.actions;
         self.append_key_up_for(&mut result, event.scan_code);
@@ -1489,8 +1610,11 @@ impl NicolaFsm {
         //
         // suppress/送出の判定（composing ガード・Space 例外・OS 修飾キーガード）は
         // resolve_pending_thumb_as_single に委譲し、flush 経路と挙動を統一する。
-        let resolved =
+        let (resolved, ime_open_request) =
             self.resolve_pending_thumb_as_single(scan_code, vk_code, modifier_key, composing);
+        if ime_open_request.is_some() {
+            self.ime_open_requested = ime_open_request;
+        }
         self.update_history(resolved.output);
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }

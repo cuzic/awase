@@ -293,6 +293,9 @@ pub struct SpecialKeyCombos {
     pub engine_off: Vec<ParsedKeyCombo>,
     pub ime_on: Vec<ParsedKeyCombo>,
     pub ime_off: Vec<ParsedKeyCombo>,
+    /// IME トグルキー（ADR-092 決定D Step4a）。`ime_on`/`ime_off` の後に
+    /// マッチさせること（明示方向優先、`SpecialKeyCombos::match_event` 参照）。
+    pub ime_toggle: Vec<ParsedKeyCombo>,
 }
 
 /// Engine への外部コマンド

@@ -128,6 +128,7 @@ impl Ev {
             scan: vk_to_scan(vk),
             ts: 0,
             event_type: KeyEventType::KeyDown,
+            injected: false,
         }
     }
     fn up(vk: VkCode) -> EvBuilder {
@@ -136,6 +137,7 @@ impl Ev {
             scan: vk_to_scan(vk),
             ts: 0,
             event_type: KeyEventType::KeyUp,
+            injected: false,
         }
     }
 }
@@ -145,6 +147,7 @@ struct EvBuilder {
     scan: ScanCode,
     ts: Timestamp,
     event_type: KeyEventType,
+    injected: bool,
 }
 
 impl EvBuilder {
@@ -154,6 +157,10 @@ impl EvBuilder {
     }
     fn scan(mut self, sc: ScanCode) -> Self {
         self.scan = sc;
+        self
+    }
+    fn injected(mut self, injected: bool) -> Self {
+        self.injected = injected;
         self
     }
     fn build(self) -> RawKeyEvent {
@@ -169,7 +176,7 @@ impl EvBuilder {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key: classify_test_modifier(self.vk),
             modifier_snapshot: Default::default(),
-            injected: false,
+            injected: self.injected,
         }
     }
 }
@@ -4516,6 +4523,7 @@ mod engine_integration_tests {
     };
     use crate::engine::engine::Engine;
     use crate::engine::nicola_fsm::NicolaFsm;
+    use crate::types::ShadowImeAction;
 
     fn empty_special_keys() -> SpecialKeyCombos {
         SpecialKeyCombos {
@@ -4523,6 +4531,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         }
     }
 
@@ -4884,6 +4893,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -4919,6 +4929,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled(), "user_enabled は最初から true");
@@ -4959,6 +4970,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled());
@@ -4988,6 +5000,7 @@ mod engine_integration_tests {
             engine_off: vec![combo],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled());
@@ -5016,6 +5029,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5040,6 +5054,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5049,6 +5064,583 @@ mod engine_integration_tests {
             e,
             Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
+    }
+
+    /// ADR-092 決定D Step4a: `SpecialKeyMatch::ImeToggle` は `ctx.ime_on` を見て
+    /// 反転方向を決める（`ime_on`/`ime_off` の方向固定コンボとは異なる）。
+    #[test]
+    fn special_key_ime_toggle_combo_flips_to_off_when_currently_on() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn special_key_ime_toggle_combo_flips_to_on_when_currently_off() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_off_ctx().modifiers
+            },
+            ..ime_off_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// 明示方向（`ime_on`）は同じ物理キーに対してトグルより優先される
+    /// （`match_event` 内でトグルは ime_on/ime_off の後にチェックされる）。
+    #[test]
+    fn special_key_ime_on_takes_priority_over_toggle_for_same_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        // ime_on_ctx (ime_on: true) で検証する: トグルが勝つなら false になる
+        // はずが、明示 ime_on コンボが優先されれば true のまま
+        // (SetOpen(true)) になる。
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    // ── ADR-092 決定D Step4c: GJI config1.db 由来の自動検出 IME ON/OFF/
+    //    トグルキー（`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`） ──
+
+    /// 手動設定（`keys.ime_on`）が空の間、自動検出リスト（`ime_on_auto`）が
+    /// 効く。
+    #[test]
+    fn ime_on_auto_fires_when_manual_ime_on_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// 手動設定（`keys.ime_off`）が空の間、自動検出リスト（`ime_off_auto`）が
+    /// 効く。
+    #[test]
+    fn ime_off_auto_fires_when_manual_ime_off_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_off_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    /// 手動設定（`keys.ime_toggle`）が空の間、自動検出リスト
+    /// （`ime_toggle_auto`）が効く。
+    #[test]
+    fn ime_toggle_auto_fires_when_manual_ime_toggle_empty() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_on_auto`/
+    /// `ime_off_auto`は`event.injected`な合成イベントにマッチしない。
+    /// 手動設定の `ime_on`/`ime_off` と異なり、自動検出リストはユーザーが
+    /// 存在を意識せず追加されるため、注入イベントへの露出を正当化する
+    /// 根拠が無い。
+    #[test]
+    fn ime_on_auto_ignores_injected_event() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d = engine.on_input(
+            Ev::down(VK_F21).at(100).injected(true).build(),
+            &ime_on_ctx(),
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "injected event must not trigger ime_on_auto, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 上記の `ime_toggle_auto` 版。
+    #[test]
+    fn ime_toggle_auto_ignores_injected_event() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![combo]);
+
+        let d = engine.on_input(
+            Ev::down(VK_F21).at(100).injected(true).build(),
+            &ime_on_ctx(),
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "injected event must not trigger ime_toggle_auto, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 決定C R1（明示 > 自動）: `keys.ime_on` が非空の間、`ime_on_auto` は
+    /// 一切参照されない。手動リストと自動リストに**別のキー**を割り当て、
+    /// 自動側キーの押下が無視される（consume されない = PassThrough のまま）
+    /// ことを確認する（Opus コードレビュー指摘: 旧版は手動・自動に同じ
+    /// キーを設定していたため、優先順位が逆転していても観測上の差が
+    /// 出ない検証不能なテストだった。`ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty`
+    /// と同じ設計に修正）。
+    #[test]
+    fn ime_on_auto_ignored_when_manual_ime_on_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_on: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_ime_on_auto_keys(vec![auto_combo]);
+
+        // `ime_off_ctx()` は使わない: engine の `prev_activation` 初期値は
+        // Active であり、ime_off_ctx() 自体が最初の呼び出しで無関係な
+        // ActivationSync 起点の SetOpen(false) を誘発してしまう
+        // （ime_on_auto のマッチとは無関係なノイズ）。優先順位検証には
+        // `ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty` と
+        // 同じ `ime_on_ctx()`（active のまま維持）を使う。
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
+    /// `ime_on_auto_ignored_when_manual_ime_on_non_empty` の `ime_off` 版
+    /// （決定C R1、Opus コードレビュー指摘: `ime_off` 側の手動優先テストが
+    /// 欠落していた）。
+    #[test]
+    fn ime_off_auto_ignored_when_manual_ime_off_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_off: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_ime_off_auto_keys(vec![auto_combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
+    /// 自動検出リストのキーは、手動 `ime_toggle` が非空なら一切参照されない
+    /// （決定C R1）。ここでは手動 `ime_toggle` に割り当てたキーとは別の
+    /// キーを `ime_toggle_auto` に入れ、自動側キーの押下が無視される
+    /// （consume されない = PassThrough のまま）ことを確認する。
+    #[test]
+    fn ime_toggle_auto_ignored_when_manual_ime_toggle_non_empty() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_toggle: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+        engine.set_ime_toggle_auto_keys(vec![auto_combo]);
+
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
+    // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──
+    //
+    // 重要な前提（テスト設計時に判明）: `Engine::compute_active` は
+    // `ctx.ime_on` を判定条件に含むため（判定順: user_enabled → is_japanese_ime →
+    // ime_on → is_romaji）、`ime_on=false` の間は Phase 2 で無条件
+    // `Decision::pass_through()` を返し Phase 3（NicolaFsm、
+    // `resolve_pending_thumb_as_single` を含む）に到達しない。つまり
+    // `DelegateToOpenAxis` は **IME が既に ON の状態からの操作**でしか
+    // 発火し得ない（`TurnOff`/`Toggle(ime_on=true→false)` は届くが、
+    // `TurnOn`（IME OFF から ON へ）は届かない）。これは実装のバグではなく
+    // ADR-092 背景節が明記する既存の構造的な穴（Step3 の対象、本ADRでは
+    // 意図的に対象外）——engine が非活性（＝IME OFF）の間は awase がそもそも
+    // 無変換/変換の生 VK を横取りしないため、MS-IME/GJI 自身のネイティブな
+    // キー割当て処理（`KeyAssignmentHenkan=1` 等）にそのまま委ねられる形に
+    // なる。以下のテストは全て `ime_on_ctx()`（engine active）を前提にする。
+
+    /// `muhenkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用）。
+    fn make_test_engine_with_muhenkan() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine
+    }
+
+    /// `henkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用、
+    /// `make_test_engine_with_muhenkan` の対称版。Opus コードレビュー指摘:
+    /// 既存の `delegate_to_open_axis_*` 系テストは全て無変換のみで、変換側の
+    /// `resolve_pending_thumb_as_single` の分岐が未検証だった）。
+    fn make_test_engine_with_henkan() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+            Some(VK_CONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine
+    }
+
+    /// 無変換単独タップが**確定**（timeout）した時点で `DelegateToOpenAxis` が
+    /// 発火し、`Effect::Ime(SetOpen)` が生成され、かつ生 VK_NONCONVERT は
+    /// 送出されない。
+    #[test]
+    fn delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "solo tap should be pending, not passthrough"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "IME effect must not fire before solo tap is confirmed"
+        );
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// **chord のタイミングウィンドウ内の誤確定では発火しない**（ADR-092
+    /// リスク節が明記する回帰テスト要件）。無変換キーの直後、閾値内に文字キーが
+    /// 来た場合は同時打鍵として確定し、`DelegateToOpenAxis`（単独タップ確定
+    /// 専用の経路）は一切発火しない。
+    #[test]
+    fn delegate_to_open_axis_does_not_fire_during_chord_timing_window() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+        // 同時打鍵の閾値内（make_test_engine の threshold_ms=100）に文字キーが来る
+        // → 同時打鍵として確定し、単独タップの delegate_to_open_axis 経路には
+        // 一切到達しない。
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(_)))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(_))),
+            "chord confirmation must not trigger IME open axis delegation, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
+    }
+
+    /// `ShadowImeAction::Toggle` は確定時点の `ctx.ime_on`（belief）を見て
+    /// 反転方向を決める。
+    #[test]
+    fn delegate_to_open_axis_toggle_resolves_via_ctx_ime_on() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "Toggle while ime_on=true must resolve to SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）は `delegate_to_open_axis`
+    /// より優先される。
+    #[test]
+    fn dedicated_fn_key_takes_priority_over_delegate_to_open_axis() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "dedicated_fn_key must take priority, no IME effect expected, got {:?}",
+            effects_of(&d)
+        );
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Input(InputEffect::SendKeys(actions))
+                if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21))
+        )));
+    }
+
+    /// M1 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
+    /// `apply_ime_open_request` が `ime_set_open_effects`（`prev_activation`を
+    /// 推進する）を経由せず直接 `push_effect` していたため、確定した単独タップ
+    /// による `SetOpen(false)` の**次の**打鍵で `ActivationSync` 起点の重複
+    /// `SetOpen` + 不要な `EngineStateChanged{send_ime_key:true}` が再発火して
+    /// いた。`ime_off_combo_does_not_double_emit_set_open_on_next_input`
+    /// と同型のテスト。
+    #[test]
+    fn delegate_to_open_axis_confirmed_tap_does_not_double_emit_set_open_on_next_input() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d1 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert_eq!(
+            count_set_open_effects(&d1),
+            1,
+            "confirmed solo tap should emit exactly 1 SetOpen, got {:?}",
+            effects_of(&d1)
+        );
+
+        // Platform 層は SetOpen(false) を見て preconditions.ime_on=false を反映する。
+        // 次の on_input は新しい ctx (ime_on=false) で呼ばれる。
+        let d2 = engine.on_input(Ev::up(VK_NONCONVERT).at(110).build(), &ime_off_ctx());
+        assert_eq!(
+            count_set_open_effects(&d2),
+            0,
+            "next on_input must NOT re-emit SetOpen (prev_activation should have been \
+             advanced by ime_set_open_effects), got {:?}",
+            effects_of(&d2)
+        );
+    }
+
+    /// M2 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
+    /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
+    /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の
+    /// flush が `ComposingHint::Trusted` で保留キーを強制的に単独タップ
+    /// 確定させ、`ime_open_requested` をセットしうる。この「確定」は
+    /// ユーザーが実際に無変換をタップしたのではなくトレイ操作等の無関係な
+    /// 外部イベントによる強制解決であり、`apply_ime_open_request` を素通り
+    /// させると（当時のバグ）無関係な次の打鍵でスプリアスな `SetOpen` が
+    /// 発火していた。`discard_ime_open_request` で捨てることを固定する。
+    #[test]
+    fn toggle_engine_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        // 無変換を物理的に押下（まだ単独タップ確定前、PendingThumb）。
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        // トレイ操作等で ToggleEngine が届く → 内部 flush で強制的に単独タップ
+        // 確定 → ime_open_requested がセットされうる。もう一度 ToggleEngine を
+        // 呼んで元の enabled 状態へ戻す（Idle 状態での2回目の flush は no-op）。
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+
+        // 無関係な後続キー入力に、捨てられたはずの ime_open_requested に由来する
+        // SetOpen が漏れ出さないこと。
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from ToggleEngine's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// M2 回帰防止（`SwapLayout` 版、上記 `ToggleEngine` 版と対称）。
+    #[test]
+    fn swap_layout_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        let new_layout = make_layout();
+        let _ = engine.on_command(EngineCommand::SwapLayout(new_layout), &ime_on_ctx());
+
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from SwapLayout's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// `delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap` の変換
+    /// （henkan）版。`resolve_pending_thumb_as_single`のhenkan分岐
+    /// （`dedicated_fn_key`は常に`None`、`ModeKeyConfig`のみ）を固定する
+    /// （テストカバレッジ欠落の指摘への対応）。
+    #[test]
+    fn delegate_to_open_axis_fires_on_confirmed_henkan_solo_tap() {
+        let mut engine = make_test_engine_with_henkan();
+        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            d.is_consumed(),
+            "solo tap should be pending, not passthrough"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "IME effect must not fire before solo tap is confirmed"
+        );
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
+            )),
+            "raw VK_CONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
     }
 
     // 二重 enqueue 回帰防止: IME OFF コンボ後の次キーで SetOpen が再発行されないこと。
@@ -5073,6 +5665,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5107,6 +5700,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5141,6 +5735,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         engine.set_user_enabled(false); // Inactive 状態に
@@ -5183,6 +5778,7 @@ mod engine_integration_tests {
             engine_off: vec![combo],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5713,6 +6309,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5982,6 +6579,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let engine = make_engine_with_special(special);
 
@@ -6007,6 +6605,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_ctrl = InputContext {
@@ -6041,6 +6640,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_shift = InputContext {
@@ -6075,6 +6675,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_alt = InputContext {
@@ -6109,6 +6710,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let d = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());

@@ -234,6 +234,15 @@ pub struct Runtime {
     /// 「ポップアップを出すべきか」の判定に使う。`apply_config_update`/
     /// 起動時に反映される。
     muhenkan_solo_tap_is_passthrough: bool,
+    /// `config.general.left_thumb_key`/`right_thumb_key` のいずれかが
+    /// `"VK_SPACE"` か。`true` の場合、MS-IME レジストリ自動検出の
+    /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
+    /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため、
+    /// Opus コードレビュー指摘）。`apply_config_update`/起動時に反映される。
+    /// `keys.ime_toggle`（明示設定）優先の判定自体は `Engine` が
+    /// `special_keys.ime_toggle.is_empty()` を直接見て行うため、
+    /// `Runtime` 側に対応するフィールドは不要（決定C R1）。
+    space_is_thumb_key: bool,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1190,6 +1199,7 @@ impl Runtime {
             muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_active: false,
             muhenkan_solo_tap_is_passthrough: false,
+            space_is_thumb_key: false,
         }
     }
 
@@ -1232,6 +1242,40 @@ impl Runtime {
         self.muhenkan_dedicated_fn_key_is_manual
     }
 
+    /// `gji_charset_autodetect` が config1.db から自動検出した IME ON/OFF/
+    /// トグルキーを反映するための入口（ADR-092 決定D Step4c）。手動設定
+    /// （`KeysConfig.ime_toggle`等）が空でない間は`Engine`側
+    /// （`match_ime_on_off_auto`/`match_ime_toggle_auto`）が自動リストを
+    /// 無視するため、ここでは手動設定の有無を確認せずそのまま反映してよい
+    /// （`set_muhenkan_dedicated_fn_key_auto`と異なりRuntime側にゲートは不要）。
+    pub(crate) fn set_gji_ime_on_off_toggle_auto_keys(
+        &mut self,
+        on: Vec<awase::config::ParsedKeyCombo>,
+        off: Vec<awase::config::ParsedKeyCombo>,
+        toggle: Vec<awase::config::ParsedKeyCombo>,
+    ) {
+        self.engine.set_ime_on_auto_keys(on);
+        self.engine.set_ime_off_auto_keys(off);
+        self.engine.set_ime_toggle_auto_keys(toggle);
+    }
+
+    /// GJI 離脱時、`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を全て解除する。
+    ///
+    /// `ime_toggle_auto`はMS-IME側（`sync_ime_toggle_auto_detect`）とも共有する
+    /// フィールドだが、`message_handlers::sync_ime_kind_from_observation`が
+    /// GJI側の同期をMS-IME側より**先に**呼ぶ順序になっているため
+    /// （Opusコードレビュー指摘で修正、意図的な順序——詳細は呼び出し元の
+    /// コメント参照）、ここで解除してもGJI→MS-IME遷移では直後にMS-IME側が
+    /// 新しい値で上書きするため破綻しない。GJI→(MS-IMEでもGJIでもない状態)
+    /// では、この解除が無いと専用Fnキー同様にF15-F24のバインドが無関係な
+    /// IMEの文脈に残留してしまう（過去のレビューでこの解除漏れが実際の
+    /// バグとして指摘された）。
+    pub(crate) fn clear_gji_ime_on_off_auto_keys(&mut self) {
+        self.engine.set_ime_on_auto_keys(Vec::new());
+        self.engine.set_ime_off_auto_keys(Vec::new());
+        self.engine.set_ime_toggle_auto_keys(Vec::new());
+    }
+
     /// `gji_charset_popup` が「専用Fnキー変換が既に有効なら設定支援ポップアップを
     /// 出さない」判定に使う読み取り専用アクセサ。
     #[must_use]
@@ -1251,6 +1295,20 @@ impl Runtime {
     #[must_use]
     pub(crate) const fn muhenkan_solo_tap_is_passthrough(&self) -> bool {
         self.muhenkan_solo_tap_is_passthrough
+    }
+
+    /// `config.general.left_thumb_key`/`right_thumb_key` 由来のキャッシュを
+    /// 更新する（ADR-092 決定D Step4a）。起動時（`bootstrap.rs`）と
+    /// `apply_config_update`（reload 時）の両方から呼ぶ。
+    pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
+        self.space_is_thumb_key = space_is_thumb_key;
+    }
+
+    /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
+    /// 自動検出を反映すべきかの判定に使う。
+    #[must_use]
+    pub(crate) const fn space_is_thumb_key(&self) -> bool {
+        self.space_is_thumb_key
     }
 
     /// トレイアイコンの HWND を返す。
@@ -1470,6 +1528,10 @@ impl Runtime {
                     config.general.muhenkan_solo_tap_always_suppress,
                 )
                 .is_passthrough(),
+            );
+            self.set_space_is_thumb_key(
+                config.general.left_thumb_key == "VK_SPACE"
+                    || config.general.right_thumb_key == "VK_SPACE",
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()

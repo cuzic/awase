@@ -370,6 +370,37 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
 }
 
+/// MS-IME レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`
+/// （ADR-092 決定D Step4a）と `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan`
+/// （決定A・決定D Step4b）を読み、`Engine` へ反映する。呼び出し元は2つ:
+/// - `sync_ime_kind_from_observation` から MS-IME 確定のたびに呼ばれる
+///   （決定C R2、計算は毎回やり直す）。
+/// - `app/mod.rs::reload_config`（設定リロード時、ADR-092 Step4b前提条件3の
+///   stale化対策——MS-IME 単独ユーザーはセッション中 IME 種別確定イベントが
+///   再発生しないため、設定リロード時にも再読みしないと、ユーザーが
+///   Windows の設定画面でレジストリを変更してもセッション中反映されない）。
+///
+/// `Engine` 側が `special_keys.ime_toggle`（手動設定）が空の場合のみ
+/// `set_ime_toggle_auto_keys` の結果を参照するため（決定C R1、明示>自動）、
+/// ここでは無条件に呼んでよい。`set_muhenkan/henkan_delegate_to_open_axis`は
+/// `muhenkan_solo_tap_dedicated_fn_key`（専用Fnキー）が設定されていれば
+/// `Engine`側でそちらが優先されるため、こちらも無条件に呼んでよい。
+pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
+    let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
+    log::info!("[msime-keyassign] toggle assignment: {toggle_assignment:?}");
+    let skip_shift_space = app.space_is_thumb_key();
+    app.engine
+        .set_ime_toggle_auto_keys(toggle_assignment.to_combos(skip_shift_space));
+
+    let delegate_assignment =
+        crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
+    log::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    app.engine
+        .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
+    app.engine
+        .set_henkan_delegate_to_open_axis(delegate_assignment.henkan);
+}
+
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。
 ///
 /// IME 種別に依存する副作用の**単一の合流点**。呼び出し元は2つ:
@@ -394,20 +425,24 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         app.platform.gji_on_ime_on(mode);
     }
 
-    // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
-    // 競合し belief 乖離を起こす）をチェックして解除を案内する
-    // （ポップアップは同一内容につき一度、内容が変われば再警告）。
-    // detected を見るのは、未検出時の active_ime_kind() が安全デフォルトとして
-    // MicrosoftIme を返すため — これを見ないと GJI ユーザーの起動時にも誤発動する。
-    if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
-        crate::msime_key_assignment::check_and_warn();
-    }
-
-    // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）を
-    // 自動判定する（同§D3.1項目1）。MS-IME 割当てチェックと対称に、この
-    // 「IME 種別に依存する副作用の単一の合流点」に置き、同じ理由で detected
-    // を見る（未検出時の active_ime_kind() が安全デフォルトとして
-    // MicrosoftIme を返す実装詳細に暗黙に依存せず、明示的にゲートする）。
+    // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）と
+    // IME ON/OFF/トグルキー（ADR-092 決定D Step4c）を自動判定する。MS-IME
+    // 割当てチェックと対称に、この「IME 種別に依存する副作用の単一の
+    // 合流点」に置き、同じ理由で detected を見る（未検出時の
+    // active_ime_kind() が安全デフォルトとして MicrosoftIme を返す実装
+    // 詳細に暗黙に依存せず、明示的にゲートする）。
+    //
+    // **MS-IME 側（次のブロック）より先に呼ぶこと（Opus コードレビュー
+    // 指摘、意図的な順序）**: `ime_toggle_auto` は GJI/MS-IME 両方の
+    // 自動検出が共有する`Engine`フィールドで、GJI 離脱時に
+    // `sync_gji_charset_autodetect` が（自分専用の`ime_on_auto`/
+    // `ime_off_auto`と一緒に）`ime_toggle_auto`も解除する。GJI→MS-IME の
+    // 遷移で MS-IME 側が先に新しい値を設定してしまうと、後から走る GJI
+    // 離脱処理がその値を上書き消去してしまう（実際に発生していた回帰、
+    // 詳細は`gji_charset_autodetect.rs`のコメント参照）。GJI 側を先に
+    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で3リストとも解除→直後に
+    // MS-IME側が`ime_toggle_auto`を新しい値で上書き」という正しい順序に
+    // なる。
     crate::gji_charset_autodetect::sync_gji_charset_autodetect(
         app,
         detected
@@ -423,6 +458,16 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         )
     {
         crate::gji_charset_popup::maybe_show_setup_popup(app);
+    }
+
+    // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
+    // 競合し belief 乖離を起こす）をチェックして解除を案内する
+    // （ポップアップは同一内容につき一度、内容が変われば再警告）。
+    // detected を見るのは、未検出時の active_ime_kind() が安全デフォルトとして
+    // MicrosoftIme を返すため — これを見ないと GJI ユーザーの起動時にも誤発動する。
+    if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
+        crate::msime_key_assignment::check_and_warn();
+        sync_ime_toggle_auto_detect(app);
     }
 }
 

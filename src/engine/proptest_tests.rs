@@ -93,6 +93,7 @@ fn empty_special_keys() -> SpecialKeyCombos {
         engine_off: vec![],
         ime_on: vec![],
         ime_off: vec![],
+        ime_toggle: vec![],
     }
 }
 

@@ -2,11 +2,86 @@
 
 ## ステータス
 
-**Step1・Step2・Step6 実装済み（2026-08-15、Opusコードレビュー2巡を経て確定）。**
-Step3・Step4・Step5 は未着手のまま次フェーズへ先送り（セッション内のユーザー判断:
-Step0調査の結果`899b416f`以降BUG-50再現記録なしと確認できたためStep3見送り、
-Step4はCtrl+Space個別オン/オフ値未確認・GJI側かな生成VK判定ロジック未実装・
-ATOK実機未検証等の複数の未解決事項を理由に次フェーズへ）。
+**Step1・Step2・Step4a・Step4b・Step4c・Step6 実装済み（2026-08-15、Opus
+コードレビューを経て確定）。** Step3・Step5 は今回のセッションでも見送り
+（下記「Step3/Step5見送りの最終判断」参照）。
+
+**Step4（決定4 上段・肩代わり本体）の実装状況（追記、2026-08-15）**:
+- **Step4a（Ctrl+Space/Shift+Space トグル）**: 実機（dragonflyg4）で
+  `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` がトグル（値`2`）
+  以外を取り得ないと確認済み（「キーとタッチのカスタマイズ」に個別
+  オン/オフの選択肢が無い、ユーザー確認）。このため当初懸念していた
+  「個別オン/オフ値の解釈」は不要と判明し、`KeysConfig.ime_toggle`
+  （方向不定コンボの新規リスト）と`SpecialKeyMatch::ImeToggle`のみで
+  完結した。
+- **Step4b（無変換/変換 delegate-to-open-axis）**: 当初案の
+  `UserIntentSource::SyncKey` witness登録方式はOpusレビューで
+  「か」等の通常打鍵のたびにIMEがON/OFFする致命的回帰を招くと判明し
+  撤回、ワンショットチャネル方式（`ime_open_requested`）へ全面設計変更。
+  詳細は決定D Step4bの「実装セッションでの設計変更・発見」を参照。
+- **Step4c（GJI config1.db 側の宣言読み取り）**: 当初案は「無変換/変換/
+  Ctrl+Space/Shift+Space に該当するVKがGJI側でon/off/toggleに含まれて
+  いれば」という**特定4キーとの一致判定**を想定していたが、実装時に
+  `awase-gji-config::keymap::mozc_key_to_vk_name`の出力範囲がF1-F24と
+  `Kanji`/`Hankaku-Zenkaku`/`ON`/`OFF`/`Eisu`の4エイリアスのみに
+  限定されており、無変換/変換のVK名がそもそも出力され得ないと判明した
+  （GJIは親指キーにIME ON/OFFを割り当てる手段を持たない）。このため
+  「特定4キーとの一致」ではなく、**GJIが宣言する任意のVKのうち安全範囲
+  （F15-F24、ADR-091の`is_in_safe_autodetect_range`を再利用）内のものを
+  無条件でon/off/toggle自動候補として採用する**方式に一般化した——
+  Step4aがCtrl+Space/Shift+Space以外の任意コンボも許容する設計である
+  こととも整合する。`VK_KANJI`/`VK_IME_ON`/`VK_IME_OFF`/
+  `VK_DBE_ALPHANUMERIC`（4エイリアス）はBUG-14（注入イベント衝突
+  リスク）を理由に安全範囲から機械的に除外される。GJI離脱時、
+  `ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を全て解除する。
+
+**Step4c実装への2巡目Opusコードレビュー（2026-08-15、実機テストプローブで
+実証）で判明した4件のmust-fixを反映済み**:
+1. `apply_ime_open_request`が`prev_activation`を推進する経路
+   （`ime_set_open_effects`、`build_ime_set_open_decision`と共有）を経由
+   せず直接`push_effect`していたため、確定した単独タップによる
+   `SetOpen`の**次の**打鍵で`ActivationSync`起点の重複`SetOpen`+
+   不要な`EngineStateChanged`が再発火する回帰があった。共有ヘルパーへ
+   統合して修正。
+2. `EngineCommand::ToggleEngine`/`SwapLayout`（`on_command`経由、内部の
+   flushが保留中の親指キーを`ComposingHint::Trusted`で強制的に単独タップ
+   確定させうる）が`ime_open_requested`を消費していなかったため、
+   トレイ操作等の無関係な外部イベントで強制解決された「単独タップ」が
+   無関係な次の打鍵でスプリアスな`SetOpen`を発火させていた。両アームで
+   `discard_ime_open_request`により明示的に捨てるよう修正（適用ではなく
+   破棄——「単独タップ=IME切替意図」という解釈自体が推定であり、外部
+   イベントによる強制解決はその推定をさらに弱めるため）。
+3. GJI離脱時に`ime_toggle_auto`を解除しない当初の判断は、その根拠
+   （「GJI再突入時に必ず自分の現在値で上書きする」）が誤りだった——
+   `set_gji_ime_on_off_toggle_auto_keys`への到達経路には複数の早期return
+   があり必ずしも上書きされず、GJI→(MS-IMEでもGJIでもない状態)への
+   遷移では誰も解除しない欠落があった。`message_handlers::
+   sync_ime_kind_from_observation`のGJI同期をMS-IME同期より**先**に
+   呼ぶ順序へ変更し、GJI離脱時に3リスト全て解除するよう修正（順序を
+   変えたことで、GJI→MS-IME遷移時はGJI離脱の解除の直後にMS-IME側が
+   新しい値で上書きする正しい順序になる）。
+4. Step4cのIME ON/OFF/トグルキー自動検出が
+   `muhenkan_dedicated_fn_key_is_manual()`（専用Fnキーの手動設定判定、
+   本来Step4cとは無関係）の早期returnより後に置かれており、専用Fnキーを
+   手動設定しているユーザーはStep4cの機能を丸ごと失っていた。
+   手動優先ガードを専用Fnキー検出のみに限定するよう構造を修正。
+
+加えて2件のnice-to-haveも反映: `ime_on_auto`/`ime_toggle_auto`の
+マッチ判定に`event.injected`（合成イベント）除外を追加（BUG-14と同種の
+リスクへの予防）。手動優先を検証するテストのうち手動/自動に同じキーを
+割り当てていた1件（優先順位が逆転していても観測上の差が出ない検証
+不能な設計だった）を、異なるキーを使う設計に修正し、`ime_off`側の
+欠落していた対称テストと変換（henkan）側のdelegate_to_open_axisテストも
+追加。
+
+**Step3/Step5見送りの最終判断（2026-08-15）**: Step0調査の結果
+`899b416f`以降BUG-50再現記録なしと確認できたため、Step3
+（engine非活性時バイパス経路の抑止）は動機を欠くと判断し見送った。
+Step5はStep3完了が前提のため連動して見送り。いずれも「消費者のいない
+機構を先回りして作らない」という本ADR全体の原則（決定D Step2の
+`DelegateToOpenAxis` variant見送り等と同じ判断軸）に基づく——Opus
+による実装タスクリストレビューでも独立に同じ結論（動機の再確認なしに
+Step3/5へ着手すべきでない）が示された。
 
 **実装済みStepの要約**:
 - **Step1**: `engine_on_ime_key`/`engine_off_ime_key`の既定値をNoneへ変更
@@ -463,15 +538,25 @@ ADR-091 で確認済み）ため、読み取り元が無く決定A-2/A-3は機�
 プリセットごとに Muhenkan/Henkan の意味を awase 側にハードコードする。**
 
 **2026-08-15、`google/mozc` の `src/data/keymap/{ms-ime,atok,kotoeri}.tsv`
-（該当コミット時点の最新、Apache-2.0）を直接確認した結果:**
+を直接確認した結果（実装セッションで再訂正、下記「取得元コミット」参照）:**
 
 | プリセット | 状態 | Muhenkan | Henkan |
 |---|---|---|---|
-| **ms-ime.tsv** | DirectInput | (未定義) | (未定義) |
+| **ms-ime.tsv** | DirectInput | (未定義) | `Reconvert` |
 | | Precomposition | `CompositionModeSwitchKanaType` | `Reconvert` |
+| | Composition | `SwitchKanaType` | `Convert` |
+| | Conversion | `SwitchKanaType` | `ConvertNext` |
 | **atok.tsv** | DirectInput | `IMEOn` | `IMEOn` |
 | | Precomposition | `CancelAndIMEOff` | `CancelAndIMEOff` |
 | **kotoeri.tsv** | (Muhenkan/Henkan の定義自体が無い、macOS向けのため) | — | — |
+
+**訂正（実装セッション、2026-08-15）**: 当初表は「DirectInput: Muhenkan/Henkan
+とも未定義」としていたが誤りだった。実際には **DirectInput の Henkan は
+`Reconvert` が定義済み**（Muhenkanのみ未定義）。またComposition/Conversion
+状態の行が表から抜けていた（上表で補完）。ただし本節の結論
+（ms-ime.tsvにIMEOn/IMEOffに相当する行が無い＝MS-IMEプリセットはopen軸の
+決定A-2/A-3の対象外のまま）は変わらない——Henkanの`Reconvert`はopen軸と
+無関係（「解釈」節参照）。
 
 **解釈**:
 
@@ -521,9 +606,15 @@ awase 側のハードコードテーブルは追随しない（config1.db 読み
 違い、実行時ではなくビルド時に固定される）。取得元コミット
 （本節執筆時点の `google/mozc` HEAD）を記録し、将来の GJI アップデートで
 挙動が変わった疑いが出た場合は本節を読み直し、最新の TSV と再照合
-すること。**取得元コミットハッシュは本節執筆時点でまだ記録されていない
-（2巡目レビュー指摘、未解消の欠落）。実装着手前に該当コミットを
-特定し、ここに追記すること。**
+すること。
+
+**取得元コミット（2026-08-15確認、GitHub API直接照会）**:
+- `src/data/keymap/ms-ime.tsv`: `b4bbc42ff5524ec16a53cb4914166f6aed45056a`
+  （2025-12-17、"Rename InputMode* -> CompositionMode*..."）
+- `src/data/keymap/atok.tsv`・`kotoeri.tsv`: `bc9eab5b11e1ad9fcf863ff0c8a2736dc10f64b0`
+  （2020-09-26）
+- 確認時点の `master` HEAD: `851c3fe33060d2a6090363e4d7ec44fafde2c03d`
+  （2026-08-14）
 
 #### 決定A-5（round4追加、2巡目レビューで撤回・縮小）: 複合副作用キーの観測は既に `vk.rs` で実装済みであり、`ImeDetectConfig` への追加は行わない
 
@@ -1025,6 +1116,49 @@ IME状態に応じてON/OFFが決まる）を `keys.ime_on`/`ime_off`（方向�
 `conflict_warning()` の警告撤去は**実機で肩代わりが効くと確認できた
 後の別コミット**とする（それまでは二重警告でも実害はない）。
 
+**実装セッション（2026-08-15）での設計変更・発見（Opusコードレビュー・
+実装過程で判明、当初案からの重要な訂正）**:
+
+1. **witnessは`UserIntentSource::SyncKey`ではなく既存の`Command`を使う。**
+   当初案（`ImeDetectConfig`に無変換/変換のVKを登録し`SyncKey` witnessを
+   得る）はOpusコードレビューで**致命的な欠陥**が判明し撤回した:
+   `enrich_ime_relevance`は登録VKに`sync_direction`を無条件に立て、
+   `kp_stage_shadow_ime_toggle`（`engine.on_input`より前に実行）が
+   `sync_direction`があればKeyDownのたびに`write_sync_key(!effective_open())`
+   する——単独タップ確定かどうかを一切見ない。無変換は左親指キーとして
+   ほぼ全打鍵で押されるため、登録すると「か」を打つたびにIMEがON/OFF
+   する壊滅的な回帰になる。代わりに、`NicolaFsm`に`engine_off_requested`
+   と同型のワンショットチャネル（`ime_open_requested: Option<ShadowImeAction>`）
+   を追加し、`resolve_pending_thumb_as_single`が確定した単独タップでのみ
+   これをセット、`Engine::on_input`/`on_timeout`が取り出して
+   `Effect::Ime(SetOpen{origin: ExplicitUserAction})`を（`Decision`の
+   既存効果を保ったまま`push_effect`で）追加する。これは`ime_on`/`ime_off`
+   コンボキーが既に使っている完成経路と同じで、`origin ==
+   ExplicitUserAction`なら自動的に`UserIntentSource::Command`
+   （「awaseエンジン内部の判断」向けに元々存在する）として記録される。
+   round1懸念4-4（`ExplicitUserAction`のdocが「ユーザーが明示的に要求した」
+   でレジストリ宣言経由に当てはまらない）はこれで実質解消——`Command`は
+   元々「Engineから SetOpen要求等」という一般的な文言のdocを持つ。
+2. **`SoloTapAction`に`DelegateToOpenAxis`variantは追加しなかった。**
+   `DedicatedFnKey`と同じ理由（自動検出値がconfig reloadで消去される
+   のを防ぐ）で、`muhenkan_delegate_to_open_axis`/
+   `henkan_delegate_to_open_axis: Option<ShadowImeAction>`という
+   `NicolaFsm`の独立フィールドとして実装した。優先順位:
+   専用Fnキー＞delegate_to_open_axis＞`ModeKeyConfig`ベースの判定。
+3. **新たに判明した構造的な範囲境界**: `Engine::compute_active`は
+   `ctx.ime_on`を判定条件に含むため、`ime_on=false`の間はPhase 2で
+   無条件`pass_through()`を返しPhase 3（`resolve_pending_thumb_as_single`
+   を含む）に到達しない。つまり`DelegateToOpenAxis`は**IMEが既にON
+   の状態からの操作でしか発火し得ない**（`TurnOff`/`Toggle`（ON→OFF側）
+   は届くが、`TurnOn`（OFFからONへ）は届かない）。これは実装のバグ
+   ではなく「背景」節が既に指摘していた構造的な穴（Step 3の対象）の
+   自然な帰結——engineが非活性（IME OFF）の間はawaseが無変換/変換の
+   生VKをそもそも横取りしないため、MS-IME/GJI自身のネイティブなキー
+   割当て処理（`KeyAssignmentHenkan=1`等）にそのまま委ねられる形に
+   なる（＝TurnOn方向は代わりにIME自身のネイティブ処理が担う）。
+   回帰テスト（`delegate_to_open_axis_*`系）は全て`ime_on_ctx()`
+   （engine active）を前提にする。
+
 #### Step 5（`dbe_mode_key_policy` の `ModeKeyConfig` への統合）
 
 **当初案からの変更**（round1 レビュー懸念2-4・5-2）: 「背景」節に
@@ -1158,8 +1292,9 @@ vk.rs重複・安全性後退、GUIギャップの事実誤認、決定Cのデ�
 6. **決定A-4のATOK `CancelAndIMEOff` を Precomposition 限定にする対策**
    （2巡目レビュー指摘M6）は机上の設計であり、ATOK 実機での検証が
    まだない。
-7. **Mozc 取得元コミットハッシュが未記録**（2巡目レビュー指摘、決定A-4）。
-   実装着手前に埋めること。
+7. ~~Mozc 取得元コミットハッシュが未記録~~ — 2026-08-15実装セッションで記録済み
+   （決定A-4節参照）。記録の過程で表の誤り（DirectInput Henkanの`Reconvert`
+   欠落、Composition/Conversion行の欠落）も発見・訂正した。
 
 ## 関連
 

@@ -12,7 +12,7 @@
 //! - Engine は InputContext のスナップショットだけで判断する（先読みしない）
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyEventType, RawKeyEvent, VkCode};
+use crate::types::{ContextChange, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode};
 
 use super::decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
@@ -31,6 +31,8 @@ pub(super) enum SpecialKeyMatch {
     EngineOff,
     ImeOn,
     ImeOff,
+    /// IME の ON/OFF を反転する（ADR-092 決定D Step4a）。
+    ImeToggle,
 }
 
 /// 統合エンジン: NicolaFsm + 特殊キー処理
@@ -48,6 +50,22 @@ pub(super) enum SpecialKeyMatch {
 pub struct Engine {
     adapter: FsmAdapter,
     special_keys: SpecialKeyCombos,
+    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a/Step4c、MS-IME
+    /// レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`、または
+    /// GJI config1.db の `GjiImeKeys.toggle` 由来。両ソースは排他——呼び出し元
+    /// が IME 種別確定イベントごとにどちらか一方だけを呼ぶ）。
+    /// `special_keys.ime_toggle`（ユーザーが `config.toml` に明示設定した分）
+    /// とは別に保持し、`config.toml` へは一切書き込まない（決定C: Manual は
+    /// 永続化、AutoDetected はライブ計算のみ）。`special_keys.ime_toggle` が
+    /// 空の場合のみ参照される（決定C R1、明示>自動）。
+    ime_toggle_auto: Vec<ParsedKeyCombo>,
+    /// 自動検出された IME ON キー（ADR-092 決定D Step4c、GJI config1.db の
+    /// `GjiImeKeys.on` 由来）。`ime_toggle_auto` と同じ規約
+    /// （`config.toml` 非書き込み、`special_keys.ime_on` が空の場合のみ参照）。
+    ime_on_auto: Vec<ParsedKeyCombo>,
+    /// 自動検出された IME OFF キー（ADR-092 決定D Step4c、GJI config1.db の
+    /// `GjiImeKeys.off` 由来）。`ime_on_auto` と対称。
+    ime_off_auto: Vec<ParsedKeyCombo>,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
     /// 直前の実効状態（遷移検知用）
@@ -63,10 +81,32 @@ impl Engine {
         Self {
             adapter: FsmAdapter::new(fsm),
             special_keys,
+            ime_toggle_auto: Vec::new(),
+            ime_on_auto: Vec::new(),
+            ime_off_auto: Vec::new(),
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             solo_off_notify: false,
         }
+    }
+
+    /// MS-IME レジストリ自動検出（Ctrl+Space/Shift+Space）または GJI
+    /// config1.db（`GjiImeKeys.toggle`）由来の IME トグルキーを設定する
+    /// （ADR-092 決定D Step4a/Step4c）。IME 種別確定イベントのたびに呼び直され、
+    /// 呼ばれるたびに丸ごと置き換わる（決定C R2、計算は毎回やり直す）。
+    pub fn set_ime_toggle_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_toggle_auto = keys;
+    }
+
+    /// GJI config1.db（`GjiImeKeys.on`）由来の自動検出 IME ON キーを設定する
+    /// （ADR-092 決定D Step4c）。`set_ime_toggle_auto_keys` と同じ規約。
+    pub fn set_ime_on_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_on_auto = keys;
+    }
+
+    /// `set_ime_on_auto_keys` と対称（`GjiImeKeys.off` 由来）。
+    pub fn set_ime_off_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
+        self.ime_off_auto = keys;
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
@@ -115,6 +155,19 @@ impl Engine {
     /// 渡す。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
     pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
         self.adapter.set_muhenkan_solo_tap_dedicated_fn_key(vk);
+    }
+
+    /// 無変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D Step4b、
+    /// MS-IME レジストリ/GJI config1.db の宣言由来）を設定する。
+    /// `set_thumb_key_solo_tap_config`/`set_muhenkan_solo_tap_dedicated_fn_key`
+    /// とは独立して呼び出せる。
+    pub const fn set_muhenkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_muhenkan_delegate_to_open_axis(action);
+    }
+
+    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    pub const fn set_henkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_henkan_delegate_to_open_axis(action);
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -311,6 +364,7 @@ impl Engine {
             self.lifecycle.on_key_down_consumed(&event);
         }
         decision.prepend_effects(transition_effects);
+        self.apply_ime_open_request(&mut decision, ctx);
         decision
     }
 
@@ -327,7 +381,7 @@ impl Engine {
                 .flush(ContextChange::ImeOff, ComposingHint::Unknown);
         }
 
-        let decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
+        let mut decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
 
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {
@@ -336,7 +390,47 @@ impl Engine {
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
 
+        self.apply_ime_open_request(&mut decision, ctx);
         decision
+    }
+
+    /// `NicolaFsm::take_ime_open_requested`（ADR-092 決定D Step4b、無変換/変換
+    /// 単独タップの IME open 軸への肩代わり）を確認し、あれば `decision` の
+    /// 既存の効果（キー抑止・タイマー等）を保ったまま `Effect::Ime(SetOpen)`
+    /// を追加する。`origin: ExplicitUserAction` は `Effect::Ime(SetOpen)` の
+    /// 既存の消費経路（`awase-windows::key_pipeline::kp_stage_post_decision`）
+    /// で `UserIntentSource::Command`（「awase エンジン内部の判断」）として
+    /// 記録される——新しい witness 種別は不要（Opus コードレビュー指摘、
+    /// 当初案の `SyncKey` witness は無変換/変換の毎打鍵で誤発火する致命的な
+    /// 欠陥があった）。
+    fn apply_ime_open_request(&mut self, decision: &mut Decision, ctx: &InputContext) {
+        let Some(action) = self.adapter.take_ime_open_requested() else {
+            return;
+        };
+        let new_open = match action {
+            ShadowImeAction::TurnOn => true,
+            ShadowImeAction::TurnOff => false,
+            ShadowImeAction::Toggle => !ctx.ime_on,
+        };
+        log::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
+        // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
+        // 直接 push_effect してはならない。上のdoc参照）。
+        for effect in self.ime_set_open_effects(ctx, new_open) {
+            decision.push_effect(effect);
+        }
+    }
+
+    /// `ime_open_requested`（あれば）を適用せずに捨てる。`on_command` の
+    /// `ToggleEngine`/`SwapLayout` アーム専用（コメント参照）。
+    ///
+    /// `on_input`/`on_timeout` は `apply_ime_open_request` を必ず呼ぶため、
+    /// このワンショットチャネルが「取り出されないまま残留し、無関係な
+    /// 次のイベントで誤発火する」経路を `on_command` の全アームで塞ぐ必要が
+    /// ある（Opus コードレビュー指摘: `ToggleEngine`/`SwapLayout` は
+    /// `on_command` 経由でのみ到達し、どちらも取り出し漏れがあった）。
+    const fn discard_ime_open_request(&mut self) {
+        let _ = self.adapter.take_ime_open_requested();
     }
 
     /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかを取得する（1 ショット）。
@@ -370,6 +464,16 @@ impl Engine {
                 } else {
                     self.apply_active_transition(old_active, new_active, &mut decision);
                 }
+                // `self.adapter.toggle_enabled()` 内部の flush が保留中の親指キーを
+                // 「単独タップ確定」として解決しうるため、ADR-092 Step4b の
+                // `ime_open_requested` がセットされている可能性がある（Opus
+                // コードレビュー指摘）。しかしこれはユーザーが無変換/変換を実際に
+                // タップしたのではなく、トレイ操作等の無関係な外部イベントによって
+                // 強制的に解決されたものであり、「単独タップ=IME切替意図」という
+                // ただでさえ推定である解釈（決定D Step4bのリスク1参照）をさらに弱める。
+                // 適用せず捨てる（次の無関係な打鍵でスプリアスな SetOpen が
+                // 発火する回帰を防ぐ）。
+                self.discard_ime_open_request();
                 decision
             }
             // InvalidateContext は外部コンテキスト喪失（IME OFF・言語切替等）の汎用通知
@@ -377,7 +481,12 @@ impl Engine {
             EngineCommand::InvalidateContext(reason) => {
                 self.adapter.flush(reason, ComposingHint::Unknown)
             }
-            EngineCommand::SwapLayout(layout) => self.adapter.swap_layout(layout),
+            EngineCommand::SwapLayout(layout) => {
+                let decision = self.adapter.swap_layout(layout);
+                // ToggleEngine と同じ理由（上記コメント参照）で discard する。
+                self.discard_ime_open_request();
+                decision
+            }
             EngineCommand::ReloadKeys { special } => {
                 self.special_keys = special;
                 Decision::pass_through()
@@ -534,18 +643,23 @@ impl Engine {
         }
     }
 
-    /// IME ON/OFF コンボキーに対する Decision を構築する。
-    ///
     /// `open` を反映した擬似 `InputContext` で新 `ActivationState` を求め、
-    /// `transition_activation` で `SetOpen + EngineStateChanged` を発行する。
-    /// 状態が遷移しない場合（例: `user_enabled=false` で既に Inactive）は
-    /// `SetOpen` のみを明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
+    /// `transition_activation` で `SetOpen + EngineStateChanged` を発行する
+    /// （ユーザー明示操作起点、`origin: ExplicitUserAction` 固定）。状態が遷移
+    /// しない場合（例: `user_enabled=false` で既に Inactive）は `SetOpen` のみを
+    /// 明示的に追加する（IME 制御の意図を Platform 層に伝えるため）。
     ///
     /// # 二重 enqueue 防止
     ///
     /// `transition_activation` で `prev_activation` を新状態に推進するため、
     /// 次回の `check_active_transition` は no-op となり、構造的に重複を排除する。
-    fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
+    /// **呼び出し元は必ずこのヘルパー経由で `SetOpen` 効果を生成すること**
+    /// （`build_ime_set_open_decision`/`apply_ime_open_request` 共通。Opus
+    /// コードレビュー指摘: `apply_ime_open_request` が当初これを経由せず
+    /// `Decision::push_effect` で `SetOpen` を直接追加していたため
+    /// `prev_activation` が進まず、次の打鍵で `ActivationSync` 起点の重複
+    /// `SetOpen` + 不要な `EngineStateChanged` が再発火する回帰があった）。
+    fn ime_set_open_effects(&mut self, ctx: &InputContext, open: bool) -> EffectVec {
         let pseudo_ctx = InputContext {
             ime_on: open,
             ..*ctx
@@ -554,7 +668,6 @@ impl Engine {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        // IME ON/OFF コンボキーそのものがユーザーの明示操作。
         let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
@@ -564,7 +677,13 @@ impl Engine {
                 origin: SetOpenOrigin::ExplicitUserAction,
             }));
         }
-        Decision::consumed_with(effects)
+        effects
+    }
+
+    /// IME ON/OFF コンボキーに対する Decision を構築する（`ime_set_open_effects`
+    /// 参照）。
+    fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
+        Decision::consumed_with(self.ime_set_open_effects(ctx, open))
     }
 
     /// 与えられたイベントが IME OFF コンボキーにマッチするかを副作用なしで返す。
@@ -585,12 +704,73 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        self.special_keys.match_event(
-            event,
-            ctx.modifiers,
-            self.adapter.is_enabled(),
-            self.compute_active(ctx),
-        )
+        self.special_keys
+            .match_event(
+                event,
+                ctx.modifiers,
+                self.adapter.is_enabled(),
+                self.compute_active(ctx),
+            )
+            .or_else(|| self.match_ime_on_off_auto(ctx, event))
+            .or_else(|| self.match_ime_toggle_auto(ctx, event))
+    }
+
+    /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
+    /// 決定D Step4c、GJI config1.db の `GjiImeKeys.on`/`off` 由来）との
+    /// マッチ判定。ユーザーが `keys.ime_on`/`ime_off` を明示設定している場合は
+    /// 一切参照しない（決定C R1、明示>自動）。
+    ///
+    /// `event.injected` な合成イベントにはマッチしない（BUG-14: MS-IME/CTF
+    /// 由来の注入イベントを信用してはならない、という既存原則。手動設定の
+    /// `ime_on`/`ime_off`/`engine_on`/`engine_off` は挙動を変えない
+    /// （ユーザーがマクロツール等から意図的に注入する運用を妨げないため）
+    /// が、自動検出リストはユーザーが存在を意識せず追加されるため、
+    /// 注入イベントへの露出を正当化する根拠が無い。Opus コードレビュー
+    /// 指摘）。
+    fn match_ime_on_off_auto(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
+        if event.injected {
+            return None;
+        }
+        if self.special_keys.ime_on.is_empty()
+            && self
+                .ime_on_auto
+                .iter()
+                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        {
+            return Some(SpecialKeyMatch::ImeOn);
+        }
+        if self.special_keys.ime_off.is_empty()
+            && self
+                .ime_off_auto
+                .iter()
+                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        {
+            return Some(SpecialKeyMatch::ImeOff);
+        }
+        None
+    }
+
+    /// 自動検出由来の IME トグルキー（`ime_toggle_auto`）とのマッチ判定
+    /// （ADR-092 決定D Step4a/Step4c）。ユーザーが `keys.ime_toggle` を
+    /// 明示設定している場合は一切参照しない（決定C R1、明示>自動）。
+    /// `event.injected`な合成イベントも対象外（`match_ime_on_off_auto`と
+    /// 同じ理由、doc参照）。
+    fn match_ime_toggle_auto(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<SpecialKeyMatch> {
+        if event.injected || !self.special_keys.ime_toggle.is_empty() {
+            return None;
+        }
+        self.ime_toggle_auto
+            .iter()
+            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+            .then_some(SpecialKeyMatch::ImeToggle)
     }
 
     /// テスト専用: `match_special_keys` を公開する。
@@ -648,6 +828,14 @@ impl Engine {
             SpecialKeyMatch::ImeOff => {
                 log::info!("IME OFF (key combo)");
                 self.build_ime_set_open_decision(ctx, false)
+            }
+            SpecialKeyMatch::ImeToggle => {
+                // `ctx.ime_on` は belief（`InputContext::ime_on`）であり、drift 時は
+                // トグル方向が反転しうる——既存の `ImeDetectConfig.toggle` 経由の
+                // VK_KANJI トグルと同じ弱点で、新規リスクではない。
+                let new_open = !ctx.ime_on;
+                log::info!("IME Toggle (key combo) → {new_open}");
+                self.build_ime_set_open_decision(ctx, new_open)
             }
         }
     }
@@ -743,6 +931,23 @@ impl SpecialKeyCombos {
                 event.extra_info
             );
             return Some(SpecialKeyMatch::ImeOff);
+        }
+        // ime_on/ime_off（方向固定、明示指定）の後にトグルをチェックする
+        // （ADR-092 決定D Step4a、明示方向優先）。
+        if self
+            .ime_toggle
+            .iter()
+            .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            log::debug!(
+                "[special-key] IME Toggle match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
+            return Some(SpecialKeyMatch::ImeToggle);
         }
 
         None

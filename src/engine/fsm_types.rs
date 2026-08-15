@@ -521,10 +521,18 @@ impl ModeKeyConfig {
 /// `resolve_pending_thumb_as_single` の戻り値の中間表現。`DedicatedFnKey`
 /// は `ModeKeyConfig` を経由せず独立に優先される（上記 doc 参照）。
 ///
-/// ADR-092 決定Bは4つ目の variant `DelegateToOpenAxis(ShadowImeAction)`
-/// （MS-IME/GJI 宣言に基づく IME open 軸への肩代わり、ADR 決定D Step4）も
-/// 定義しているが、Step4 は本実装のスコープ外（消費者が存在しない）のため
-/// 今回は追加しない。Step4 着手時にこの enum へ追加すること。
+/// ADR-092 決定Bが4つ目の variant として定義していた `DelegateToOpenAxis
+/// (ShadowImeAction)`（MS-IME/GJI 宣言に基づく IME open 軸への肩代わり、
+/// 決定D Step4b）は、この enum には**追加しない**（Step4b 実装時の設計判断）。
+/// `DedicatedFnKey` と同様「`ModeKeyConfig` を経由せず独立に優先される」
+/// 自動検出由来の上書きであり、`NicolaFsm` の独立フィールド
+/// （`muhenkan_delegate_to_open_axis`/`henkan_delegate_to_open_axis`）として
+/// 保持し、`resolve_pending_thumb_as_single` が `SoloTapAction` を構築する
+/// **前**に判定する（`dedicated_fn_key` と同じ理由: config reload で
+/// `ModeKeyConfig` が丸ごと再設定されても自動検出値を消さないため）。
+/// IME open 軸への副作用要求は `ResolvedAction` を経由せず、
+/// `NicolaFsm::ime_open_requested`（`take_engine_off_requested` と同型の
+/// ワンショットチャネル）で `Engine` 層へ伝える。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SoloTapAction {
     /// OS に一切送出しない。

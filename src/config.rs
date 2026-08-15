@@ -406,6 +406,13 @@ pub struct KeysConfig {
     pub ime_on: Vec<String>,
     /// IME OFF keys — IME を OFF にするキーコンボ
     pub ime_off: Vec<String>,
+    /// IME トグル keys — IME の ON/OFF を反転するキーコンボ（ADR-092 決定D Step4a）
+    ///
+    /// `ime_on`/`ime_off`（方向固定）とは異なり、押した時点の実際の IME
+    /// 状態（`InputContext::ime_on`、belief）を見て反転方向を決める。
+    /// MS-IME の「キーとタッチのカスタマイズ」で Ctrl+Space/Shift+Space に
+    /// 「IME ON/OFF」（トグル）を割り当てた場合の自動反映先。
+    pub ime_toggle: Vec<String>,
     /// IME 検出設定
     pub ime_detect: ImeDetectConfig,
     /// ソロ5連打でエンジン OFF するキー（None または空文字列で無効）
@@ -438,6 +445,7 @@ impl Default for KeysConfig {
             engine_off: vec!["Ctrl+Shift+無変換".to_string()],
             ime_on: vec!["Ctrl+変換".to_string()],
             ime_off: vec!["Ctrl+無変換".to_string()],
+            ime_toggle: Vec::new(),
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
             engine_on_ime_key: None,

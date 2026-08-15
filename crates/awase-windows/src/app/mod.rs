@@ -520,6 +520,11 @@ pub(crate) fn reload_config() {
     let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
     let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
     let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
+    let ime_toggle = parse_key_combos(
+        &config.keys.ime_toggle,
+        "IME control Toggle keys",
+        &mut key_diag,
+    );
     let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
     let panic_trigger_combos = build_panic_trigger_combos(&ime_on, &ime_off);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
@@ -530,9 +535,25 @@ pub(crate) fn reload_config() {
         engine_off,
         ime_on,
         ime_off,
+        ime_toggle,
     };
     let _ = with_app(|app| {
         app.apply_config_update(&config, special_keys, toggle, on, off);
+        // ADR-092 決定D Step4b前提条件3: MS-IME レジストリの Ctrl+Space/
+        // Shift+Space トグル割当てを設定リロードのたびに再読みする
+        // （stale化対策、apply_config_update が space_is_thumb_key を
+        // 更新した直後に呼ぶ必要がある）。MS-IME/GJI は排他（決定A-2/A-3）
+        // のため、現在確定している IME 種別が MS-IME の場合のみ読み直す
+        // （`sync_ime_kind_from_observation` と同じガード）。
+        let obs = crate::tsf::observer::tsf_obs();
+        if obs.ime_kind_detected()
+            && matches!(
+                obs.active_ime_kind(),
+                crate::tsf::observer::ActiveImeKind::MicrosoftIme
+            )
+        {
+            message_handlers::sync_ime_toggle_auto_detect(app);
+        }
     });
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
