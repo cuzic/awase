@@ -1465,7 +1465,11 @@ impl Runtime {
                 );
             }
             self.set_muhenkan_solo_tap_is_passthrough(
-                !config.general.muhenkan_solo_tap_always_suppress,
+                ModeKeyConfig::from_legacy_bools(
+                    config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    config.general.muhenkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
             );
             let enter_thumb_vk = [left, right]
                 .into_iter()

@@ -2,18 +2,27 @@
 
 ## ステータス
 
-**実装済み（2026-08-15）。** `crates/awase-windows/src/vk.rs::is_synthetic_dbe_ime_hotkey`
+**実装済み（2026-08-15、Opusコードレビューでの指摘を反映して修正済み）。**
+`crates/awase-windows/src/vk.rs::is_synthetic_dbe_ime_hotkey`
 （0xF0-0xF4 の5 VK を判定する純粋関数、ユニットテスト4件付き）を追加し、
-`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` の冒頭（BUG-14 の
-注入イベント除外より前）で `self.platform_state.ime.set_is_japanese_ime(true)`
-を呼ぶよう配線した。決定した通り、`false` へのダウングレードには一切
-関与しない（既存の `apply_focus_probe` 内の probe ベース downgrade
-経路は無変更）。BUG-14 の注入イベント除外チェックより手前に置いた
-理由: BUG-14 が問題視したのは「注入イベントをユーザー意図
-（`PhysicalImeKey`）に昇格させること」であり「IME の存在を示す証拠として
-扱うこと」ではないため、この upgrade は注入イベントにも適用してよいと
-判断した（2026-07-06 実機で観測された外部注入 `VK_DBE_HIRAGANA` 自体、
-MS-IME という実在する日本語 IME が発生源だった）。
+`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` の冒頭で
+`self.platform_state.ime.set_is_japanese_ime(true)` を呼ぶよう配線した。
+決定した通り、`false` へのダウングレードには一切関与しない（既存の
+`apply_focus_probe` 内の probe ベース downgrade 経路は無変更）。
+
+**当初案からの訂正（Opusコードレビュー指摘）**: 当初は BUG-14 の注入
+イベント除外チェックより前に無条件で置き、注入イベントにも upgrade を
+適用する設計だった（「BUG-14 が問題視したのは注入イベントをユーザー意図
+に昇格させることであり、IME の存在を示す証拠として扱うことではない」
+という理屈）。しかしレビューで、`is_japanese_ime()` は
+`is_eligible_for_ime_force_on()`（`state/platform_state.rs:599`、
+`is_japanese_ime() && effective_open()`、force-ON actuation ゲート）
+を含む約10箇所の消費者を持つグローバルな belief であり、注入イベント
+（外部プロセスの SendInput）を信頼してこの belief を actuation の根拠に
+昇格させると、BUG-14 と同じ「注入イベントを過度に信頼する」失敗の
+別ルートでの再発になりうると指摘された。**この upgrade は `!event.injected`
+（物理キー入力のみ）に限定するよう修正した。** ADR本文の決定節・リスク節の
+「この5VKの受信」は物理受信を指すものと読み替えること。
 
 `tests/architecture_guard.rs` の `set_is_japanese_ime` 呼び出し件数固定
 テストは存在せず、リスク節が懸念していた影響は無かった

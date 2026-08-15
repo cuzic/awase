@@ -448,7 +448,13 @@ pub enum GuardAction {
 /// 意味を持つ2フラグの組み合わせ」を経由しないと目的の行動へたどり着けず、
 /// 意図が読み取りにくかった。`idle`/`composing` を直接指定する総関数へ
 /// することで、両者の組み合わせに常に一意の意味を持たせる。
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// `Default` は意図的に導出しない（Opus コードレビュー指摘）:
+/// derive すると `{idle: Suppress, composing: Suppress}` になり、これは
+/// たまたま `GeneralConfig::default()`（`always_suppress=true`）と
+/// 一致するが、それは偶然の一致であって契約ではない。実際の既定値が
+/// 必要な箇所は `ModeKeyConfig::from_legacy_bools` を明示的に呼ぶこと。
+#[derive(Debug, Clone, Copy)]
 pub struct ModeKeyConfig {
     /// composing していないときの単独タップの行き先。
     pub idle: GuardAction,
@@ -490,6 +496,22 @@ impl ModeKeyConfig {
             self.idle
         }
     }
+
+    /// 非 composing（idle）時に単独タップが素通し（`GuardAction::Passthrough`）か。
+    ///
+    /// `gji_charset_popup.rs` の設定支援ポップアップ（無変換単独タップが
+    /// 「素のパススルー」設定のまま=GJI 既定のかな切替に横取りされうる状態か）
+    /// の判定に使う、`!always_suppress` の新表現（ADR-092 実装時の Opus
+    /// コードレビュー指摘: 同じ事実を legacy bool から独立に導出していた
+    /// `Runtime::muhenkan_solo_tap_is_passthrough` を、この単一の判定へ
+    /// 一本化した）。専用Fnキー（`DedicatedFnKey`）が有効かどうかはこの
+    /// メソッドの関知するところではない——呼び出し元が別途チェックする
+    /// （`gji_charset_popup.rs::maybe_show_setup_popup` は
+    /// `muhenkan_dedicated_fn_key_active()` を本メソッドより先に見ている）。
+    #[must_use]
+    pub const fn is_passthrough(self) -> bool {
+        matches!(self.idle, GuardAction::Passthrough)
+    }
 }
 
 /// 無変換/変換キー単独タップ確定時の最終的な行動（ADR-092 決定B）。
@@ -523,7 +545,12 @@ impl From<GuardAction> for SoloTapAction {
 /// 無変換/変換（`ModeKeyConfig`、IME モードキー）とは異なり、composing 中も
 /// 既定で素通しする正規機能のキーのため、`ignore_composing_guard`/
 /// `shift_literal` という別の2軸を持つ。
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// `Default` は意図的に導出しない（Opus コードレビュー指摘）: derive すると
+/// `{ignore_composing_guard: false, shift_literal: false}` になるが、
+/// Space/Enter の実際の既定値は両方 `true`（`GeneralConfig::default()`）で
+/// 真逆——`ModeKeyConfig` と異なり偶然の一致すら無い明確な罠だった。
+#[derive(Debug, Clone, Copy)]
 pub struct TextKeyConfig {
     /// composing 中でも常に生 VK を送出するか。
     pub ignore_composing_guard: bool,
@@ -576,6 +603,17 @@ mod tests {
             SoloTapAction::from(GuardAction::Passthrough),
             SoloTapAction::Passthrough
         );
+    }
+
+    /// `is_passthrough()` は idle が `Passthrough` の場合のみ true
+    /// （`gji_charset_popup.rs` が「無変換単独タップが素のパススルー設定の
+    /// まま」を判定するのに使う、旧`!always_suppress`の新表現）。
+    #[test]
+    fn mode_key_config_is_passthrough_matches_idle_state() {
+        assert!(!ModeKeyConfig::from_legacy_bools(false, true).is_passthrough()); // always_suppress
+        assert!(ModeKeyConfig::from_legacy_bools(false, false).is_passthrough());
+        assert!(ModeKeyConfig::from_legacy_bools(true, false).is_passthrough());
+        assert!(!ModeKeyConfig::from_legacy_bools(true, true).is_passthrough()); // always_suppress優先
     }
     use crate::scanmap::PhysicalPos;
     use crate::types::{KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};

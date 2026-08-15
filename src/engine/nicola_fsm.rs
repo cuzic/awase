@@ -1115,19 +1115,21 @@ impl NicolaFsm {
     /// hook 層で bypass されてここには来ないので、Windows 全般での 無変換 / 変換 キー
     /// 機能は composing していない場面では引き続き使える。
     ///
-    /// **Space の例外**: `space_thumb_vk` に一致し `space_thumb_ignore_composing_guard`
-    /// が true の場合、composing 中でも常に生 VK_SPACE を送出する。MS-IME/Google 日本語
-    /// 入力とも Space による「変換候補送り」は正規機能であり、無変換/変換と同じ理由
-    /// （かな/カタカナ切替・再変換の誤発火防止）で composing 中に抑制すると、通常の
-    /// 変換操作そのものが壊れるため。
+    /// **Space の例外**: `space_thumb_vk` に一致し `text_key_space.ignore_composing_guard`
+    /// （`TextKeyConfig`、ADR-092 決定B）が true の場合、composing 中でも常に生 VK_SPACE
+    /// を送出する。MS-IME/Google 日本語入力とも Space による「変換候補送り」は正規機能
+    /// であり、無変換/変換と同じ理由（かな/カタカナ切替・再変換の誤発火防止）で
+    /// composing 中に抑制すると、通常の変換操作そのものが壊れるため。
     ///
-    /// **無変換/変換の明示的なオプトアウト**: `muhenkan_vk`/`henkan_vk` に一致し、
-    /// それぞれ対応する `*_solo_tap_ignore_composing_guard` が true の場合も同様に
-    /// composing 中でも生 VK を送出する。既定値は `false`（従来通り抑制）で、
-    /// ユーザーが明示的に有効化した場合のみ、上記のかな/カタカナ切替等の副作用
-    /// リスクを引き受けて composing 中の単独タップを素通しさせる。
+    /// **無変換/変換**: `muhenkan_vk`/`henkan_vk` に一致した場合、`mode_key_muhenkan`/
+    /// `mode_key_henkan`（`ModeKeyConfig`、ADR-092 決定B）が idle/composing それぞれの
+    /// 行動（`Suppress`/`Passthrough`）を総関数として決める。既定値は idle/composing
+    /// とも `Suppress`（従来通り常時抑制）で、ユーザーが明示的に緩めた場合のみ
+    /// かな/カタカナ切替等の副作用リスクを引き受けて素通しさせる。専用Fnキー
+    /// （`muhenkan_solo_tap_dedicated_fn_key`）が設定されている場合は
+    /// `ModeKeyConfig` より優先される（上記コード参照）。
     ///
-    /// **Enter の例外**: `enter_thumb_vk` に一致し `enter_thumb_ignore_composing_guard`
+    /// **Enter の例外**: `enter_thumb_vk` に一致し `text_key_enter.ignore_composing_guard`
     /// が true の場合も、Space と同じ理由（IME 変換候補確定は正規機能であり、
     /// 無変換/変換と同じガードを適用すると通常の変換確定操作が丸ごと壊れる）で
     /// composing 中でも常に生 VK_RETURN を送出する。既定値は `true`。

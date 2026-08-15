@@ -186,6 +186,21 @@ pub const fn is_synthetic_dbe_ime_hotkey(vk_code: VkCode) -> bool {
     )
 }
 
+/// `is_japanese_ime()` の即時 `true` 更新トリガーを発火すべきか（ADR-093、
+/// `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` から呼ぶ）。
+///
+/// `is_synthetic_dbe_ime_hotkey` に加えて **`injected` を除外する**
+/// （Opus コードレビュー指摘）: `is_japanese_ime()` は force-ON actuation
+/// ゲート `is_eligible_for_ime_force_on()` を含む複数箇所が読むグローバルな
+/// belief であり、外部プロセスの `SendInput`（BUG-14 の実例では MS-IME/CTF
+/// 自身）を信頼してこれを actuation の根拠に昇格させると、BUG-14
+/// （注入イベントをユーザー意図に過剰昇格させた失敗）の別ルートでの
+/// 再発になりうるため、物理キー入力のみを対象にする。
+#[must_use]
+pub const fn should_upgrade_is_japanese_ime(injected: bool, vk_code: VkCode) -> bool {
+    !injected && is_synthetic_dbe_ime_hotkey(vk_code)
+}
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
@@ -801,8 +816,8 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey, vk_pair_to_ascii, ImeKeyKind,
-        VkCode,
+        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey, should_upgrade_is_japanese_ime,
+        vk_pair_to_ascii, ImeKeyKind, VkCode,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
@@ -919,5 +934,28 @@ mod tests {
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0x41))); // 'A'
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xEF))); // 0xF0 の直前
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xFC))); // VK_NONAME
+    }
+
+    // ── ADR-093: should_upgrade_is_japanese_ime ──
+
+    /// 物理（非注入）の5 VK なら true。
+    #[test]
+    fn should_upgrade_is_japanese_ime_true_for_physical_synthetic_dbe_hotkey() {
+        assert!(should_upgrade_is_japanese_ime(false, VkCode(0xF2))); // HIRAGANA
+    }
+
+    /// 注入イベントは、5 VK であっても false
+    /// （Opus コードレビュー指摘: is_japanese_ime() は force-ON actuation
+    /// ゲート等のグローバルな belief であり、外部注入イベントを信頼して
+    /// actuation の根拠に昇格させると BUG-14 と同種の失敗になりうるため）。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_injected_synthetic_dbe_hotkey() {
+        assert!(!should_upgrade_is_japanese_ime(true, VkCode(0xF2))); // HIRAGANA, injected
+    }
+
+    /// 物理イベントでも、5 VK でなければ false。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
+        assert!(!should_upgrade_is_japanese_ime(false, VkCode(0x41))); // 'A'
     }
 }

@@ -6181,9 +6181,7 @@ mod engine_integration_tests {
             ModeKeyConfig::from_legacy_bools(true, false),
             None,
             // 旧 `ThumbKeySoloTapGuard::default()`（ignore_composing_guard=false,
-            // always_suppress=false）と同値。`ModeKeyConfig::default()` は
-            // 別の既定（Suppress/Suppress）を持つため使わないこと（ADR-092
-            // 決定B実装時に判明した罠）。
+            // always_suppress=false）と同値。
             ModeKeyConfig::from_legacy_bools(false, false),
         );
 

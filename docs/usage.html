@@ -568,22 +568,17 @@ footer p{margin-bottom:0.3rem}
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
         <tr><td>エンジン ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
         <tr><td>エンジン OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
-        <tr><td>IME ON キー</td><td>IME を ON にするキー（冪等）。複数登録可</td></tr>
-        <tr><td>IME OFF キー</td><td>IME を OFF にするキー（冪等）。複数登録可</td></tr>
         <tr><td>エンジン切替ホットキー</td><td>グローバルホットキーでエンジン ON/OFF をトグル</td></tr>
       </table>
-    </div>
-
-    <div class="card">
-      <h3>IME 検出タブ</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">awase が IME 状態の変化を把握するためのキー設定です。通常はデフォルトのままで問題ありません。</p>
-      <table class="tab-table">
+      <p class="note" style="margin-top:0.7rem">画面下部の「上級者向け設定」（既定で折りたたみ）を開くと、以下の2種類のキー設定が現れます。通常はデフォルトのままで問題ありません。</p>
+      <table class="tab-table" style="margin-top:0.5rem">
         <tr><th>項目</th><th>説明</th></tr>
-        <tr><td>トグルキー</td><td>OS が IME ON/OFF をトグルするキー（例: 半角/全角）</td></tr>
-        <tr><td>ON キー</td><td>OS が IME を ON にするキー</td></tr>
-        <tr><td>OFF キー</td><td>OS が IME を OFF にするキー</td></tr>
+        <tr><td>awase → IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
+        <tr><td>IME → awase トグルキー</td><td>OS/IME が IME ON/OFF をトグルするキーを awase が解釈するための設定（例: 半角/全角）</td></tr>
+        <tr><td>IME → awase ON キー</td><td>OS/IME が IME を ON にするキーを awase が解釈するための設定</td></tr>
+        <tr><td>IME → awase OFF キー</td><td>OS/IME が IME を OFF にするキーを awase が解釈するための設定</td></tr>
       </table>
-      <p class="note" style="margin-top:0.7rem">「デフォルトに戻す」ボタンで標準設定に戻せます。</p>
+      <p class="note">「IME → awase」側は「デフォルトに戻す」ボタンで標準設定に戻せます。矢印は設定の向きを表します: 「awase → IME」は awase が能動的に送信するキー、「IME → awase」は外部 IME の状態変化を awase が解釈するためのキーです。</p>
     </div>
 
     <div class="card">
@@ -639,13 +634,8 @@ ime_off = ["Ctrl+無変換"]
 # 緊急用: 無変換を単独で 400ms 以内に 3 連打するとエンジン OFF になる
 # Ctrl がスタックしてショートカットが効かなくなったときの最終手段。
 # 空文字列 "" または削除で無効化できる。
-engine_off_solo_triple = "VK_NONCONVERT"
-
-# エンジン ON 時に送る IME モードキー（全角ひらがなモードへ切替）
-engine_on_ime_key = "VK_DBE_DBCSCHAR"
-
-# エンジン OFF 時に送る IME モードキー（半角英数モードへ切替）
-engine_off_ime_key = "VK_DBE_SBCSCHAR"</div>
+engine_off_solo_triple = "VK_NONCONVERT"</div>
+      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME の全角/半角モードを強制送信する上級者向け設定）は既定で無効（未設定）です。IME の開閉（ON/OFF）とモード強制を1つのキーで同時に行う複合的な設定のため、通常は上記の <code>ime_on</code>/<code>ime_off</code> で十分です。手動で <code>config.toml</code> に追記すれば有効化できます。</p>
       <p class="note" style="margin-top:0.7rem">複数キーを割り当てるには配列に追加してください: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
       <p class="note">グローバルホットキー（アプリのフォーカスに関係なく機能）は <code>[general]</code> の <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> で設定します。</p>
     </div>

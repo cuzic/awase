@@ -2,7 +2,46 @@
 
 ## ステータス
 
-**ドラフト・実装未着手。** Opus エージェント（設計提案、2026-08-15）→ 別セッションの
+**Step1・Step2・Step6 実装済み（2026-08-15、Opusコードレビュー2巡を経て確定）。**
+Step3・Step4・Step5 は未着手のまま次フェーズへ先送り（セッション内のユーザー判断:
+Step0調査の結果`899b416f`以降BUG-50再現記録なしと確認できたためStep3見送り、
+Step4はCtrl+Space個別オン/オフ値未確認・GJI側かな生成VK判定ロジック未実装・
+ATOK実機未検証等の複数の未解決事項を理由に次フェーズへ）。
+
+**実装済みStepの要約**:
+- **Step1**: `engine_on_ime_key`/`engine_off_ime_key`の既定値をNoneへ変更
+  （`src/config.rs`）。`AppConfig::save`が全フィールドを明示出力するため、
+  設定GUIで一度でも保存済みの既存ユーザーには効かない（新規/config.toml
+  未生成ユーザーのみ影響）。**実機（dragonflyg4）でのEngine ON/OFFトグル時の
+  IME挙動確認はまだ未実施**（実装・テストは完了、実機確認のみ残タスク）。
+- **Step2**: 決定Bの`ThumbKeySoloTapGuard`→`ModeKeyConfig`/`TextKeyConfig`
+  再設計を実装。**本文からの意図的な逸脱**: `#[serde(alias=...)]`による
+  config.tomlフィールド名の直接移行は行わず、`GeneralConfig`の8個のflat
+  boolフィールドは無変更のまま、`ModeKeyConfig::from_legacy_bools()`で
+  都度変換するブリッジ方式を採用した（自己評価で「serde後方互換の具体形は
+  未検証」と挙げていたリスクを、config.toml形式を変えずに済むこの方式で
+  回避）。専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 F21
+  自動検出）は`ModeKeyConfig`に統合せず独立フィールドのまま維持
+  （config reload時に自動検出値が上書き消去される回帰を避けるため）。
+  `SoloTapAction`の4つ目のvariant`DelegateToOpenAxis`（Step4専用）は
+  今回追加していない（消費者のいないvariantを作らない原則、Step4着手時に
+  追加すること）。
+- **Step6**: `tab_ime_detect`廃止・`tab_keys`内`egui::CollapsingHeader`
+  「上級者向け設定」への統合、決定E round4の対称命名（「awase → IME
+  ON/OFFキー」/「IME → awase ON/OFFキー」）、決定A-5残タスク（半角/全角
+  オプション追加）を実装。`SettingSource`バッジ表示（決定E-1〜E-5）は
+  MS-IME/GJIレジストリ由来のAutoDetectedソースがStep4未実装のため対象外
+  のまま（GUI側は別プロセスのためどのみち実行中Runtimeの自動検出値を
+  読み戻す経路が無いことが実装時に判明、専用Fnキーの自動検出値についても
+  同様）。
+
+Opusコードレビュー（2巡目）で追加指摘された8件（is_japanese_ime belief
+グローバル書き換えの波及範囲・ドキュメント追随漏れ・`Default`derive の
+罠・`muhenkan_solo_tap_is_passthrough`の二重管理等）はいずれも本文・
+コードへ反映済み。詳細は`feat/adr092-step1-2-6-key-semantics`ブランチの
+コミット履歴参照。
+
+以下は設計時点（実装着手前、2026-08-15）の記述。Opus エージェント（設計提案、2026-08-15）→ 別セッションの
 Opus エージェント（批判的レビュー、round1: **Go with modifications**）→ ユーザーによる
 スコープ拡大の判断（round2〜round4、決定A-3/A-4/A-5・決定E の複数回の修正）→
 **別セッションの Opus エージェントによる2巡目レビュー（2026-08-15、must-fix 6件

@@ -790,14 +790,21 @@ impl Runtime {
         //
         // false へのダウングレードには一切関与しない — この5 VK が「来ない」
         // ことは「日本語 IME でない」ことの証拠にはならない（既存の probe
-        // ベースの downgrade 経路は変更しない）。BUG-14 の注入イベント除外
-        // (下記) より前に置く — 2026-07-06 実機で外部注入 VK_DBE_HIRAGANA が
-        // 観測された事例（下記コメント参照）自体、MS-IME という実在する
-        // 日本語 IME が発生源だった。BUG-14 が問題視したのは「注入イベントを
-        // ユーザー意図 (PhysicalImeKey) に昇格させること」であり、「IME の
-        // 存在を示す証拠として扱うこと」ではないため、この upgrade は
-        // 注入イベントにも適用してよい。
-        if crate::vk::is_synthetic_dbe_ime_hotkey(event.vk_code) {
+        // ベースの downgrade 経路は変更しない）。
+        //
+        // **物理（非注入）イベントに限定する**（Opus コードレビュー指摘で
+        // 追加した制約、当初案は BUG-14 の注入イベント除外より前に無条件で
+        // 置いていた）。`is_japanese_ime()` は force-ON actuation ゲート
+        // `is_eligible_for_ime_force_on()`（`state/platform_state.rs:599`、
+        // `is_japanese_ime() && effective_open()`）を含む約10箇所の消費者を
+        // 持つグローバルな belief であり、ここを true にすると次の打鍵から
+        // force-ON 等の actuation 経路が新たに解禁される。注入イベント
+        // （外部プロセスの SendInput、BUG-14 の実例では MS-IME/CTF 自身）を
+        // 信頼して actuation の根拠にすると、BUG-14 と同じ「注入イベントを
+        // 過度に信頼する」失敗の再発になりうるため、この upgrade は物理
+        // キー入力のみに限定する（`event.injected` の判定自体は下記 BUG-14
+        // ブロックの早期 return より前に確認する必要があるため、ここで直接見る）。
+        if crate::vk::should_upgrade_is_japanese_ime(event.injected, event.vk_code) {
             self.platform_state.ime.set_is_japanese_ime(true);
         }
         // BUG-14: 注入イベント (LLKHF_INJECTED、awase 自身のマーカーなし = MS-IME/CTF 等の
