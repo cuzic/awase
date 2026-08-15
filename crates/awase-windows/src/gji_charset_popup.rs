@@ -21,10 +21,13 @@ mod windows_impl {
 
     use crate::runtime::Runtime;
 
-    /// ADR-091 §D3.2 の推奨Fnキー（実測済みで安全、ADR-057）。
-    /// GJI キー表記（`awase_gji_config`/Mozc `key_parser` 形式）と、
-    /// awase 側の VK 名の両方が必要（前者は書き込み対象、後者はエンジンへの
-    /// 即時反映用）。
+    /// ADR-091 §D3.2 の推奨Fnキー（実測済みで安全、ADR-057）。無変換単独
+    /// タップで実際に送信する「主役」キー。GJI キー表記
+    /// （`awase_gji_config`/Mozc `key_parser` 形式）と、awase 側の VK 名の
+    /// 両方が必要（前者はログ表示用、後者はエンジンへの即時反映用）。
+    /// `apply_and_notify`が書き込むのはこのキー1つだけではなく、
+    /// `awase_gji_config::write_dedicated_fn_key_set`によるF21-F24一式
+    /// （2026-08-15拡張、将来の予約キーを含めて一度に書き込む）。
     const RECOMMENDED_GJI_KEY: &str = "F21";
     const RECOMMENDED_VK_NAME: &str = "VK_F21";
 
@@ -64,8 +67,10 @@ mod windows_impl {
              無変換キーの単独打鍵が「素のパススルー」に設定されているため、\
              GJI 側のデフォルト動作（文字種変更）に依存しています。\n\n\
              専用のFnキー（F21）を使った、より安全な変換方式を有効にしますか？\n\
-             （GJI の設定ファイルに、変換中のかな形状トグル用のバインドを1つ追加します。\
-             反映には GJI の再起動が必要です）";
+             （GJI の設定ファイルに、変換中のかな形状トグル用のバインドを追加します。\
+             あわせて将来 awase が使う可能性のある予備のバインド（F22-F24）も\
+             一度に追加するため、後日別の機能のために再度サインアウト/インを\
+             お願いすることが少なくなります。反映には GJI の再起動が必要です）";
         let text_wide = crate::win32::to_wide(text);
 
         // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
@@ -91,11 +96,11 @@ mod windows_impl {
     /// `runtime::message_handlers::handle_wm_gji_charset_fn_key_activated` が
     /// `with_app` 経由で実際の反映を行う。
     fn apply_and_notify() {
-        match crate::gji_charset_write::apply_dedicated_fn_key_binding(RECOMMENDED_GJI_KEY) {
+        match crate::gji_charset_write::apply_dedicated_fn_key_set_binding() {
             Ok(()) => {
                 log::info!(
-                    "[gji-charset-popup] config1.db へ専用Fnキー変換を書き込みました \
-                     （{RECOMMENDED_GJI_KEY}）"
+                    "[gji-charset-popup] config1.db へ専用Fnキー変換一式を書き込みました \
+                     （主役: {RECOMMENDED_GJI_KEY}、予備: F22-F24）"
                 );
                 // 書き込みと同時に、次回 GJI 起動を待たずともこのプロセス内では
                 // 即座にエンジン側も有効化する（手動設定ではなく自動判定扱い、

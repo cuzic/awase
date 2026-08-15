@@ -44,13 +44,25 @@ fn is_in_safe_autodetect_range(vk_name: &str) -> bool {
     )
 }
 
+/// `write_dedicated_fn_key_set`（ADR-091 §D3.2、2026-08-15拡張）が書き込む
+/// 専用Fnキー一式のうち、無変換単独タップで実際に送信する「主役」キー。
+/// F22-24 も同じ状態（Composition系）で`SwitchKanaType`を持つため、
+/// [`detect_dedicated_fn_key`]は複数候補の中からこのキーを優先する。
+const PRIMARY_GJI_KEY_VK_NAME: &str = "VK_F21";
+
 /// `config1.db`の`custom_keymap_table`（TSV文字列）から、専用Fnキー変換として
 /// 自動的に有効化すべき`VkCode`を判定する（ADR-091 §D3.1項目1）。
 ///
 /// 安全範囲内（[`is_in_safe_autodetect_range`]）で`SwitchKanaType`
-/// （`ToggleKanaType`に分類される）に割り当てられているキーがちょうど1つ
-/// なら、それを採用する。0個、または複数（どれを使うべきか一意に定まらない）
-/// なら`None`（安全側、既定の「抑止」のまま変更しない）。
+/// （`ToggleKanaType`に分類される）に割り当てられているキーの中に
+/// [`PRIMARY_GJI_KEY_VK_NAME`]（F21）が含まれていれば、他に何個候補があっても
+/// 常にそれを採用する——`write_dedicated_fn_key_set`はF21-24全てに
+/// `SwitchKanaType`を書き込むため、F21は「主役」として複数候補の中でも
+/// 一意に定まる（F22-24は将来awase側が判断して送信する予約キーであり、
+/// 無変換単独タップの送信先としては使わない）。F21が候補に無い場合は、
+/// 従来通り「安全範囲内でちょうど1つ」の場合のみ採用する（ユーザー自身が
+/// 手動で別のFnキーを設定したケースとの後方互換）。0個、またはF21不在で
+/// 複数（どれを使うべきか一意に定まらない）なら`None`（安全側）。
 #[must_use]
 pub(crate) fn detect_dedicated_fn_key(custom_keymap_table: &str) -> Option<VkCode> {
     let mode_keys = awase_gji_config::keymap::extract_mode_keys(custom_keymap_table);
@@ -58,6 +70,13 @@ pub(crate) fn detect_dedicated_fn_key(custom_keymap_table: &str) -> Option<VkCod
         .toggle_kana_type
         .iter()
         .filter(|vk_name| is_in_safe_autodetect_range(vk_name));
+    if mode_keys
+        .toggle_kana_type
+        .iter()
+        .any(|vk_name| vk_name == PRIMARY_GJI_KEY_VK_NAME)
+    {
+        return VkCode::from_name(PRIMARY_GJI_KEY_VK_NAME);
+    }
     let only = candidates.next()?;
     if candidates.next().is_some() {
         log::warn!(
@@ -238,12 +257,27 @@ mod tests {
 
     /// 安全範囲内に複数のToggleKanaTypeキーが存在する場合、どちらを使うべきか
     /// 一意に定まらないため採用しない（安全側）。
+    /// F21 が候補に含まれない、真に一意に定まらないケース（F21 不在）。
     #[test]
-    fn multiple_safe_range_candidates_yields_none() {
+    fn multiple_safe_range_candidates_without_f21_yields_none() {
+        let table = "status\tkey\tcommand\n\
+                      Composition\tF22\tSwitchKanaType\n\
+                      Composition\tF23\tSwitchKanaType\n";
+        assert_eq!(detect_dedicated_fn_key(table), None);
+    }
+
+    /// `write_dedicated_fn_key_set`（ADR-091 §D3.2拡張、2026-08-15）はF21-24の
+    /// 全てにComposition系`SwitchKanaType`を書き込むため、複数候補が見える。
+    /// F21が「主役」として一意に定まる（F22-24は将来の予約キーであり、
+    /// 無変換単独タップの送信先には使わない）。
+    #[test]
+    fn f21_is_preferred_among_multiple_candidates_including_f21() {
         let table = "status\tkey\tcommand\n\
                       Composition\tF21\tSwitchKanaType\n\
-                      Composition\tF22\tSwitchKanaType\n";
-        assert_eq!(detect_dedicated_fn_key(table), None);
+                      Composition\tF22\tSwitchKanaType\n\
+                      Composition\tF23\tSwitchKanaType\n\
+                      Composition\tF24\tSwitchKanaType\n";
+        assert_eq!(detect_dedicated_fn_key(table), VkCode::from_name("VK_F21"));
     }
 
     /// BUG-64のconfig1.db残骸バインド（F21→IMEOn）が残っていても、この関数は

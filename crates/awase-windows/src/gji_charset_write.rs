@@ -1,9 +1,12 @@
-//! `config1.db` への専用Fnキー変換バインドの書き込み（ADR-091 §D3.2/§4 Phase1-3）。
+//! `config1.db` への専用Fnキー変換バインド一式（F21-F24）の書き込み
+//! （ADR-091 §D3.2/§4 Phase1-3、2026-08-15拡張）。
 //!
-//! 変換ロジック本体は `awase_gji_config::write_dedicated_fn_key_binding`
-//! （メモリ上のバイト列変換、衝突検出込み）。ここではファイル I/O・
-//! バックアップ・原子的置換のみを担う。**呼び出しはユーザーの明示的な同意
-//! （`gji_charset_popup`）を経てのみ行うこと。無断・自動では書き込まない。**
+//! 変換ロジック本体は `awase_gji_config::write_dedicated_fn_key_set`
+//! （メモリ上のバイト列変換、衝突検出込み。F21-24 の4キーぶんを1回でまとめて
+//! 書く——ユーザーに何度もサインアウト/インを依頼しないための設計）。
+//! ここではファイル I/O・バックアップ・原子的置換のみを担う。**呼び出しは
+//! ユーザーの明示的な同意（`gji_charset_popup`）を経てのみ行うこと。
+//! 無断・自動では書き込まない。**
 
 /// 書き込み失敗の理由（呼び出し元がユーザーへ説明する文言を組み立てるための分類）。
 #[derive(Debug)]
@@ -61,19 +64,19 @@ impl std::fmt::Display for ApplyError {
 }
 
 #[cfg(windows)]
-pub(crate) use windows_impl::apply_dedicated_fn_key_binding;
+pub(crate) use windows_impl::apply_dedicated_fn_key_set_binding;
 
 #[cfg(windows)]
 mod windows_impl {
     use super::ApplyError;
 
-    /// `config1.db` へ専用Fnキー変換のバインドを書き込む。
+    /// `config1.db` へ専用Fnキー変換のバインド一式（F21-F24）を書き込む。
     ///
     /// 手順: (1) 現在の `config1.db` を読む。(2)
-    /// `awase_gji_config::write_dedicated_fn_key_binding` で新しいバイト列を
-    /// 得る（既存バインドが既知の残骸パターンと一致しなければここで失敗し、
-    /// 何も書き込まない）。(3) 元のファイルを `.awase-backup` へコピー
-    /// （バックアップ）。(4) 同じディレクトリへ一時ファイルとして書き、
+    /// `awase_gji_config::write_dedicated_fn_key_set` で新しいバイト列を
+    /// 得る（F21-24 いずれかの既存バインドが既知の残骸パターンと一致しなければ
+    /// 全体を中止し、何も書き込まない）。(3) 元のファイルを `.awase-backup` へ
+    /// コピー（バックアップ）。(4) 同じディレクトリへ一時ファイルとして書き、
     /// `rename` で原子的に置換する（書き込み途中でクラッシュしても
     /// 元のファイルが壊れた状態で残らない）。
     ///
@@ -82,11 +85,11 @@ mod windows_impl {
     /// 終了時にメモリ上の内容で上書きすることがあるため）。呼び出し元
     /// （`gji_charset_popup`）は書き込み成功後、ユーザーに GJI の再起動を
     /// 案内すること。
-    pub(crate) fn apply_dedicated_fn_key_binding(vk_key: &str) -> Result<(), ApplyError> {
+    pub(crate) fn apply_dedicated_fn_key_set_binding() -> Result<(), ApplyError> {
         let path = config1_db_path().ok_or(ApplyError::PathNotFound)?;
         let original = std::fs::read(&path).map_err(|_| ApplyError::ReadFailed)?;
-        let new_bytes = awase_gji_config::write_dedicated_fn_key_binding(&original, vk_key)
-            .map_err(ApplyError::Convert)?;
+        let new_bytes =
+            awase_gji_config::write_dedicated_fn_key_set(&original).map_err(ApplyError::Convert)?;
 
         let backup_path = backup_path(&path);
         std::fs::copy(&path, &backup_path).map_err(|_| ApplyError::BackupFailed)?;
@@ -99,7 +102,7 @@ mod windows_impl {
         std::fs::write(&tmp_path, &new_bytes).map_err(|_| ApplyError::WriteFailed)?;
         std::fs::rename(&tmp_path, &path).map_err(|_| ApplyError::WriteFailed)?;
         log::info!(
-            "[gji-charset-write] config1.db へ専用Fnキー変換({vk_key})を書き込みました \
+            "[gji-charset-write] config1.db へ専用Fnキー変換一式(F21-F24)を書き込みました \
              （GJI プロセスの再起動まで反映されません）"
         );
         Ok(())
