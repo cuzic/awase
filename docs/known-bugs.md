@@ -8220,3 +8220,51 @@ Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテ
 
 **関連:** `tsf/probe.rs::probe_fallback_waits_total_max_ms`。
 
+**2026-08-15 追補4（追補3は誤診断・真因は別ファイルの無施錠 `gji_monitor_ok` 書き込み4箇所）:**
+追補3のクロック統一後も実機で再現し続け（"fallback too short: 0ms"）、
+ユーザーに `--test-threads=1` で再実行してもらったところ **666 件全て pass**
+した。並列実行時のみ失敗する＝真のデータ競合であることが確定し、追補3の
+「クロック不一致」という診断は誤りだったと判明した（クロック統一自体は
+無害な改善だが、今回の失敗の真因ではなかった）。
+
+失敗メッセージに `gji_monitor_ok`/`gji_last_io_ms` の実値を出す診断コミット
+（`b8df49b8`）を追加して再実行してもらったところ
+`gji_monitor_ok=true`（テストは直前に `store(false)` 済みのはず）と判明。
+`current_tick_ms()` の単調性から、この分岐に入っていれば `elapsed` は
+理論上 100ms 未満になり得ないため、`check_now()` が
+`gji_monitor_ok=true` 側の即時 return 分岐（"warmup 後に GJI I/O が
+来ていない→即解放"）を通っていたことが確定した。
+
+`TSF_OBS.gji_monitor_ok` への書き込み箇所を crate 全体で再監査したところ、
+**単一行 grep（`gji_monitor_ok.store(`）では検出できない複数行にまたがる
+書き込みが2箇所**見つかった（`TSF_OBS\n    .gji_monitor_ok\n    .store(...)`
+という改行を挟むフォーマット）:
+
+- `tsf/warmup/chrome_probe.rs::chrome_probe_apply_vk_sent_reaches_inner_coro`
+  （ロック一切なし）
+- `tsf/warmup/probe_fsm.rs::ready_chrome_probe()`（ヘルパー関数、ロック
+  一切なし）— これを呼ぶ7テストのうち3件
+  （`chrome_gji_active_enters_per_vk_confirm_as_safety_net`、
+  `chrome_without_gji_active_skips_literal_detect`、
+  `chrome_per_vk_vk_sent_unset_does_not_backspace`）も無施錠だった
+  （残り4件は既に `TSF_OBS_TEST_LOCK` を取得済みで無関係）。
+
+計4箇所が `TSF_OBS_TEST_LOCK` を一切取得せずに `gji_monitor_ok=true` を
+書き込み、書き込み後もリセットしていなかった。これが
+`probe_fallback_waits_total_max_ms`（`gji_monitor_ok=false` を前提に
+100ms のフォールバック待機を検証する）の実行中に競合すると、
+`check_now()` が「モニター健全・warmup 後 I/O なし＝正常状態」の
+即時 return 分岐に化けて `elapsed=0ms` 前後で返ってしまう。
+
+**教訓:** `grep -n "field.method("` のような単一行パターンは、
+`rustfmt` がメソッドチェーンを改行する（レシーバが長い・引数が多い等）
+と検出漏れする。crate 全体の「この global を書き込む全箇所」監査では
+`perl -0777`（複数行対応）や AST ベースの検索（`ast-grep` 等）を使うか、
+少なくとも `field\s*\n?\s*\.\s*method` のような改行許容パターンを
+併用すること。単一行 grep だけで「全箇所ロック済みを確認した」と
+結論づけない。
+
+**修正:** 上記4箇所すべてに `TSF_OBS_TEST_LOCK` の取得を追加した。
+
+**関連:** BUG-65 本体・追補1〜3（同じ調査の一連の流れ）。
+

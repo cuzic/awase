@@ -81,6 +81,14 @@ mod tests {
     // 検出できなかった（テストが通っていたのに実機では毎回再現した理由）。
     #[test]
     fn chrome_probe_apply_vk_sent_reaches_inner_coro() {
+        // `TSF_OBS.gji_monitor_ok` はプロセス全体で共有される static のため、
+        // `probe.rs`/`observer.rs`/`literal_detect_fsm.rs`/`probe_fsm.rs` と
+        // 共有するロックで直列化する（BUG-65 追補4: この関数だけロックを持たず
+        // 無施錠で書き換えており、`tsf::probe::tests::probe_fallback_waits_total_max_ms`
+        // を実機で決定論的に誤検知させていた）。
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::TSF_OBS
             .gji_monitor_ok
             .store(true, std::sync::atomic::Ordering::SeqCst);
