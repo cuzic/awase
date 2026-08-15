@@ -229,6 +229,32 @@ Conversion時にかな形状トグルという新機能が使えるようにな�
 コマンドを充てる、より複雑な`CharsetSlot`機構を設計・実機検証していた。その撤回の
 経緯は§3(設計変遷)に保存する。)
 
+**2026-08-15追記(F22-F24の予約バインド追加、ユーザー要望)**: `write_dedicated_fn_key_set`
+(`awase-gji-config::write`)は、上記のF21(主役、Composition系のみ`SwitchKanaType`)に
+加えて、F22/F23/F24にも以下を**同じ1回の書き込みで**まとめて追加するよう拡張した:
+
+| キー | Precomposition | Composition/Conversion/Prediction/Suggestion |
+|---|---|---|
+| F22 | `CompositionModeHiragana`(絶対設定、冪等) | `SwitchKanaType` |
+| F23 | `CompositionModeFullKatakana`(絶対設定、冪等) | `SwitchKanaType` |
+| F24 | `CompositionModeHalfKatakana`(絶対設定、冪等) | `SwitchKanaType` |
+
+**動機**: config1.dbへの書き込みはユーザーにサインアウト/インを要求する高コストな
+操作。将来awaseが使う可能性のある構成を先にまとめて書いておけば、後日別の機能の
+ためにこの操作を繰り返し依頼せずに済む。
+
+**上記の`CharsetSlot`撤回との違い(重要)**: この拡張は`CharsetSlot`の再導入では
+ない。F22-24のPrecompositionバインドは「GJI側の受け皿」を用意するだけであり、
+**どのキーを実際にいつ送信するかを決めるawase側のロジックは今回一切実装していない**
+(`RECOMMENDED_DEDICATED_FN_KEYS`のdocコメント参照)。無変換単独タップは引き続き
+F21のみを送る(挙動は今回変更なし)。config1.dbの`custom_keymap_table`は
+「キー→固定コマンド」の表しか持てず「awaseの内部状態を見て」という条件分岐
+そのものを表現できないため、belief駆動の判断ロジックはGJI側にもawase側にも
+今回持ち込んでいない——`CharsetSlot`撤回時に問題になった「beliefに基づく絶対指定
+コマンドの選択」自体は依然として未実装のままである。F22-24が将来実際に使われる
+ときは、その判断ロジックを設計する回に本ADRを再度参照し、no-new-belief原則との
+整合を再検討すること。
+
 **設定未完了時のポップアップ(新規)**: GJIが検出され、かつ無変換単独打鍵がGJI既定の
 「文字種変更」動作のまま(§D3.5のMS-IME互換プリセット下での挙動)手動で「素の
 パススルー」に設定されているが、config1.dbに§D3.2のFnキーバインドがまだ存在しない
