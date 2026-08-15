@@ -816,8 +816,8 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey, should_upgrade_is_japanese_ime,
-        vk_pair_to_ascii, ImeKeyKind, VkCode,
+        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey,
+        should_upgrade_is_japanese_ime, vk_pair_to_ascii, ImeKeyKind, VkCode,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である

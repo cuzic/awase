@@ -574,11 +574,20 @@ mod tests {
         let cases = [
             (false, true, GuardAction::Suppress, GuardAction::Suppress),
             (true, true, GuardAction::Suppress, GuardAction::Suppress),
-            (false, false, GuardAction::Passthrough, GuardAction::Suppress),
-            (true, false, GuardAction::Passthrough, GuardAction::Passthrough),
+            (
+                false,
+                false,
+                GuardAction::Passthrough,
+                GuardAction::Suppress,
+            ),
+            (
+                true,
+                false,
+                GuardAction::Passthrough,
+                GuardAction::Passthrough,
+            ),
         ];
-        for (ignore_composing_guard, always_suppress, expected_idle, expected_composing) in cases
-        {
+        for (ignore_composing_guard, always_suppress, expected_idle, expected_composing) in cases {
             let config = ModeKeyConfig::from_legacy_bools(ignore_composing_guard, always_suppress);
             assert_eq!(
                 config.for_composing(false),
@@ -613,7 +622,8 @@ mod tests {
         assert!(!ModeKeyConfig::from_legacy_bools(false, true).is_passthrough()); // always_suppress
         assert!(ModeKeyConfig::from_legacy_bools(false, false).is_passthrough());
         assert!(ModeKeyConfig::from_legacy_bools(true, false).is_passthrough());
-        assert!(!ModeKeyConfig::from_legacy_bools(true, true).is_passthrough()); // always_suppress優先
+        assert!(!ModeKeyConfig::from_legacy_bools(true, true).is_passthrough());
+        // always_suppress優先
     }
     use crate::scanmap::PhysicalPos;
     use crate::types::{KeyEventType, ModifierKey, RawKeyEvent, ScanCode, VkCode};
