@@ -8156,3 +8156,43 @@ Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテ
 **関連:** BUG-58（`OutputActiveGuard` を Phase 2 のみで確保する設計の初出）、
 `tsf/probe_bridge.rs::OUTPUT_GATE_TEST_LOCK`。
 
+**2026-08-15 追補2（真因はロック不足ではなく `noop_for_test()` 自体の実装バグと判明）:**
+上記のロック追加（`OUTPUT_GATE_TEST_LOCK`）を実機で再検証したところ、
+`phase1_does_not_hold_output_gate_only_phase2_does` は**まったく同じ行**で
+**まったく同じ結果**（100%決定論的、レースではない）で失敗し続けた。
+
+真因は `OutputActiveGuard` がフィールドを持たないユニット構造体だったこと。
+`begin()`（`depth` を実際に +1 する）と `noop_for_test()`（何もしないはず）の
+両方が同じ型 `Self` を返すため、`Drop` 実装は生成経路を区別できず、
+**`noop_for_test()` で作ったガードが drop されるときも無条件に
+`OUTPUT_GATE.depth.fetch_sub(1)` を実行していた**。`depth: AtomicU32` は
+0 からの `fetch_sub` でパニックせず `u32::MAX` 付近へラップアラウンドする
+（atomic 演算はデバッグビルドでもオーバーフローパニックしない）。
+
+`output/probe_io.rs::make_chrome_machine()`・`tsf/warmup/chrome_probe.rs`
+（2箇所）・`tsf/warmup/probe_fsm.rs` の計4箇所が `noop_for_test()` を使っており、
+これらを使うテスト（`probe_io.rs` の `TsfProbeCoro` 系テストの大半、
+`chrome_probe.rs`・`probe_fsm.rs` の一部）が1つでも走ると、その `machine`
+変数が drop される瞬間に `OUTPUT_GATE.depth` が本来ありえない値まで
+壊れる。一度ラップすると、以降どれだけ本物の `begin()` が `depth` を
++1 しても `prev == 0`（`OUTPUT_GATE.active` を `true` にする唯一の条件）
+に二度と一致しなくなり、**`cargo test` 1プロセスの残り全テストで
+`OUTPUT_GATE.active` が恒久的に `true` にならない**。テスト実行順序が
+機械ごとにおおむね安定しているため、ロックの有無に関わらず同じ
+テストバイナリでは同じ失敗が再現し続けていた（見かけ上「レース」に
+見えたが実際は蓄積した破損状態、真の意味でのデータ競合ではなかった）。
+
+**修正:** `OutputActiveGuard` に `real: bool` フィールドを追加し、
+`begin()` は `real: true`、`noop_for_test()` は `real: false` を持つように
+した。`Drop` は `real == false` なら即 return し、`OUTPUT_GATE` に一切
+触れないようにした。上記のロック追加（追補1）は無駄ではなく
+（本物の並行 `begin()` 同士の保護として引き続き有効）残してある。
+
+**教訓:** ゼロフィールドのユニット構造体で「複数のコンストラクタ経路を
+使い分ける」設計は、`Drop` 実装が経路を判別する手段を持てないため、
+最低1つは生成経路を区別できるフィールドが必要（コンパイラは警告しない
+——`Drop::drop` はどのコンストラクタ経由かを知る術がなく、常に同じ
+コードパスを実行する）。
+
+**関連:** `tsf/probe_bridge.rs::OutputActiveGuard`。
+
