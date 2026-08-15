@@ -64,6 +64,16 @@ impl OutputGate {
 
 pub static OUTPUT_GATE: OutputGate = OutputGate::new();
 
+/// `OUTPUT_GATE` はプロセス全体で共有される単一の `static` であり、`cargo test`は
+/// デフォルトで複数スレッド並行実行する。`OutputActiveGuard::begin()`（noop でない方）
+/// を実際に呼ぶテストは、この global を実際にミューテートするため互いに排他する必要が
+/// ある（`tsf::warmup::ms_ime_ready_coro`・`output::probe_io` の GJI 系テストで共有、
+/// 詳細は `ms_ime_ready_coro.rs` の `phase1_does_not_hold_output_gate_only_phase2_does`
+/// コメント参照）。`TSF_OBS_TEST_LOCK`（`observer.rs`）と同型のロック統一（BUG-65 の
+/// 続き、2026-08-14）。
+#[cfg(test)]
+pub(crate) static OUTPUT_GATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// 出力セッションを RAII で管理するガード（参照カウント方式）。
 ///
 /// `begin()` で深度をインクリメントし、深度 0→1 のとき `OUTPUT_GATE.active=true` をセット。
@@ -71,14 +81,32 @@ pub static OUTPUT_GATE: OutputGate = OutputGate::new();
 ///
 /// TSF probe 延期中は `TsfProbeData` がガードを保持し続けることで、
 /// `OutputSession` が drop しても `OUTPUT_GATE.active` が維持される。
+///
+/// `real` フィールド（BUG-65 追補2、2026-08-15）: 以前はゼロフィールドの
+/// ユニット構造体で `noop_for_test()`（生成時は depth に触れない）と
+/// `begin()`（生成時に depth を +1 する）を区別していたが、`Drop` は
+/// 型に対して1つしか実装できず、生成方法を問わず無条件に
+/// `depth.fetch_sub(1)` していた。このため `noop_for_test()` で作った
+/// ガードが drop されるたびに、実際には一度も +1 していない
+/// `OUTPUT_GATE.depth`（`AtomicU32`）が -1 され、0 から `fetch_sub` すると
+/// `u32::MAX` 付近へラップアラウンドしていた。一度ラップすると、以降の
+/// 本物の `begin()` がいくら `depth` を +1 しても `prev == 0` の等値判定に
+/// 二度と一致しなくなり、`OUTPUT_GATE.active` が恒久的に `true` にならない
+/// （`tsf::warmup::ms_ime_ready_coro::tests::phase1_does_not_hold_output_gate_only_phase2_does`
+/// が実機で毎回決定論的に失敗していた真因。`output/probe_io.rs`・
+/// `tsf/warmup/chrome_probe.rs`・`tsf/warmup/probe_fsm.rs` の `noop_for_test()`
+/// 呼び出しが同じプロセス内の他の全テストの `OUTPUT_GATE` を汚染し続けていた）。
+/// `real` で生成経路を保持し、`Drop`側でノーオペレーションを実際に無害化する。
 #[derive(Debug)]
-pub(crate) struct OutputActiveGuard;
+pub(crate) struct OutputActiveGuard {
+    real: bool,
+}
 
 impl OutputActiveGuard {
-    /// テスト専用: OUTPUT_GATE を変更しない NOOP ガード。
+    /// テスト専用: OUTPUT_GATE を変更しない NOOP ガード（生成時・drop時とも無害）。
     #[cfg(test)]
     pub(crate) const fn noop_for_test() -> Self {
-        Self
+        Self { real: false }
     }
 
     pub(crate) fn begin() -> Self {
@@ -86,12 +114,15 @@ impl OutputActiveGuard {
         if prev == 0 {
             OUTPUT_GATE.active.store(true, Ordering::Release);
         }
-        Self
+        Self { real: true }
     }
 }
 
 impl Drop for OutputActiveGuard {
     fn drop(&mut self) {
+        if !self.real {
+            return;
+        }
         let prev = OUTPUT_GATE.depth.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
             OUTPUT_GATE.active.store(false, Ordering::Release);

@@ -157,6 +157,14 @@ pub struct NicolaFsm {
     /// 無変換単独タップを常に抑制する。
     muhenkan_solo_tap_always_suppress: bool,
 
+    /// 専用 Fn キー変換モード（ADR-091 §D3.2）。`Some(vk)` なら、無変換単独タップ
+    /// 確定時に `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
+    /// による既存の抑制/パススルー判定を一切経由せず、常にこの Fn キーを送出する
+    /// （composing の有無を問わない、belief 不要）。`GeneralConfig::
+    /// muhenkan_solo_tap_dedicated_fn_key` に対応する。`None`（既定）なら無効で
+    /// 従来通り。
+    muhenkan_solo_tap_dedicated_fn_key: Option<VkCode>,
+
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
     henkan_vk: Option<VkCode>,
@@ -237,6 +245,7 @@ impl NicolaFsm {
             muhenkan_vk: None,
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
+            muhenkan_solo_tap_dedicated_fn_key: None,
             henkan_vk: None,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
@@ -456,6 +465,16 @@ impl NicolaFsm {
         self.henkan_vk = henkan_vk;
         self.henkan_solo_tap_ignore_composing_guard = henkan.ignore_composing_guard;
         self.henkan_solo_tap_always_suppress = henkan.always_suppress;
+    }
+
+    /// 無変換単独タップの専用 Fn キー変換モード（ADR-091 §D3.2）を設定する。
+    ///
+    /// `Some(vk)` を渡すと、`muhenkan_vk` の単独タップ確定時に
+    /// `set_thumb_key_solo_tap_config` で設定した抑制/パススルー判定を経由せず
+    /// 常に `vk` を送出する（`resolve_pending_thumb_as_single` 参照）。`None`
+    /// （既定）なら無効。`set_thumb_key_solo_tap_config` とは独立して呼び出せる。
+    pub const fn set_muhenkan_solo_tap_dedicated_fn_key(&mut self, vk: Option<VkCode>) {
+        self.muhenkan_solo_tap_dedicated_fn_key = vk;
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -1148,6 +1167,23 @@ impl NicolaFsm {
                 actions: SmallVec::new(),
                 output: OutputUpdate::None,
             };
+        }
+
+        // 専用 Fn キー変換モード（ADR-091 §D3.2）。既存の抑制/パススルー判定
+        // （このメソッドの残り全体）より手前で分岐し、composing の有無や
+        // `muhenkan_solo_tap_always_suppress` の値に関わらず常にこの Fn キーを
+        // 送出する。GJI の config1.db にこの Fn キーを Composition/Conversion
+        // 時の `SwitchKanaType` としてバインドしておくことで、GJI が自身の
+        // 内部状態を見てかな形状をトグルする（awase 側は belief を持たない）。
+        if self.muhenkan_vk == Some(vk_code) {
+            if let Some(fn_key) = self.muhenkan_solo_tap_dedicated_fn_key {
+                let action = KeyAction::Key(fn_key);
+                let output = OutputUpdate::record(scan_code, &action, None);
+                return ResolvedAction {
+                    actions: smallvec![action],
+                    output,
+                };
+            }
         }
 
         // 無変換単独タップの常時抑制（composing の有無を問わない）。MS-IME の既定

@@ -630,6 +630,13 @@ where
 mod tests {
     use super::*;
     use crate::tsf::probe_bridge::OutputActiveGuard;
+    /// `make_gji_machine()` 経由で `plan.needs_literal=true` を dispatch するテストは
+    /// `GjiWarmupCoro::apply_transmit_done`（`literal_detect_guard`）を通じて
+    /// プロセス全体で共有される `OUTPUT_GATE`（`tsf/probe_bridge.rs`）を実際に
+    /// ミューテートする（`TsfProbeCoro` 用の `make_chrome_machine()` と異なり
+    /// `noop_for_test()` を経由しない）。`tsf::warmup::ms_ime_ready_coro` と共有する
+    /// ロックで直列化する（BUG-65 追補、詳細は `OUTPUT_GATE_TEST_LOCK` のdoc参照）。
+    use crate::tsf::probe_bridge::OUTPUT_GATE_TEST_LOCK as GATE_TEST_LOCK;
     use crate::tsf::warmup::probe_fsm::{ProbeAction, TransmitPlan, TransmitTarget};
     use std::cell::Cell;
 
@@ -1035,6 +1042,9 @@ mod tests {
         // decide_transmit_plan: nc_fired=false + is_tsf_mode=true + gji_active=true + gji_long_idle=true
         // → used_eager_path=false (VK), needs_literal=true (TSF mode override)。
         // VK path でリテラル化した場合に BS 再送で回収できるよう LiteralDetect を有効化する。
+        let _g = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {
@@ -1092,6 +1102,9 @@ mod tests {
     fn long_idle_tsf_mode_keeps_literal_detect() {
         // gji_long_idle + tsf_mode: GJI 応答未確認 → LiteralDetect 有効。
         // VK がリテラル化した場合の回収パスが必要。
+        let _g = GATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let io = FakeProbeIo::default();
         let mut machine = make_gji_machine();
         let actions = vec![ProbeAction::Transmit {

@@ -566,6 +566,136 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     );
 }
 
+/// ADR-091 §D3.2: `set_muhenkan_solo_tap_dedicated_fn_key(Some(vk))` が設定されている場合、
+/// `muhenkan_solo_tap_always_suppress=true`（既定値）による抑制より優先され、
+/// composing=false でも素の VK_NONCONVERT ではなく専用 Fn キーが送出される。
+#[test]
+fn test_muhenkan_solo_tap_dedicated_fn_key_sends_fn_key_instead_of_raw_vk() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "専用 Fn キーモードが有効なら composing=false でも VK_F21 を送出すべき"
+    );
+    assert!(
+        !result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "専用 Fn キーモードが有効なら素の VK_NONCONVERT は送出してはならない"
+    );
+}
+
+/// ADR-091 §D3.2/C1: 専用 Fn キーモードは `muhenkan_solo_tap_always_suppress` の
+/// 早期 return より手前で分岐するため、composing=true・always_suppress=true
+/// （通常なら completely suppress される条件）でも Fn キーが送出される。
+#[test]
+fn test_muhenkan_solo_tap_dedicated_fn_key_overrides_always_suppress_while_composing() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "専用 Fn キーモードは always_suppress=true・composing=true でも \
+         既存の抑制判定より優先されるべき"
+    );
+}
+
+/// `set_muhenkan_solo_tap_dedicated_fn_key` が `None`（既定）のままなら、
+/// 専用 Fn キー分岐は完全に無効で、既存の抑制/パススルー判定のみが効く
+/// （回帰: 新規分岐を追加したことで既定挙動そのものが変わっていないことの固定）。
+#[test]
+fn test_muhenkan_solo_tap_dedicated_fn_key_none_preserves_existing_behavior() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    // set_muhenkan_solo_tap_dedicated_fn_key を一切呼ばない = None のまま。
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert_eq!(
+        result.actions.len(),
+        0,
+        "専用 Fn キー未設定なら、従来通り always_suppress=true で無変換単独タップは \
+         一切送出されないはず"
+    );
+}
+
+/// 専用 Fn キーモードは、変換(henkan)キーの単独タップには影響しない
+/// （`muhenkan_vk` との等値比較でゲートされているため）。
+#[test]
+fn test_muhenkan_solo_tap_dedicated_fn_key_does_not_affect_henkan() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, false, false, false);
+    engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "muhenkan 向けの専用 Fn キー設定は henkan の単独タップ（従来通り \
+         always_suppress=false で素の VK_CONVERT を送出）に影響してはならない"
+    );
+    assert!(
+        !result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "henkan 単独タップで VK_F21 が送出されてはならない"
+    );
+}
+
+/// ADR-091 §D3.2: 専用 Fn キーモードは `resolve_pending_thumb_as_single` を呼ぶ
+/// 全経路で一貫して効く。タイムアウト経路だけでなく、フラッシュ経路
+/// （`swap_layout` 等によるコンテキスト変更）でも Fn キーが送出されることを
+/// `test_swap_layout_flushes_pending_thumb` と対照して固定する。
+#[test]
+fn test_muhenkan_solo_tap_dedicated_fn_key_applies_on_flush_path() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
+    assert_pending(&result);
+
+    let new_layout = make_layout();
+    let result = engine.swap_layout(new_layout);
+    result.assert_consumed();
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21)),
+        "フラッシュ経路（swap_layout 由来）でも専用 Fn キーが送出されるべき \
+         （always_suppress=true なら本来 VK_NONCONVERT すら出ない状況）"
+    );
+    assert!(
+        !result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT)),
+        "フラッシュ経路で素の VK_NONCONVERT が送出されてはならない"
+    );
+}
+
 /// `henkan_solo_tap_always_suppress=true`（既定値）なら、composing=false でも
 /// 変換単独タップは一切送出されない。無変換と対称のガード（BUG-58 関連調査で発覚:
 /// 従来 変換キーにはこの抑制手段が無く、composing していない場面では常に

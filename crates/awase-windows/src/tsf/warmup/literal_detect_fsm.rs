@@ -620,7 +620,9 @@ mod tests {
     // hold（None を返してポーリング継続）すべき。
     #[test]
     fn poll_vetoes_backspace_while_candidate_visible() {
-        let _g = VETO_TEST_LOCK.lock().unwrap();
+        let _g = VETO_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_tsf_obs_for_veto_test();
 
         // 送信直前（可視になる前）に detector のベースラインを取る。veto_eligible=true
@@ -656,7 +658,9 @@ mod tests {
     // backspace はせず無回収の Done で打ち切るべき（固着ウィンドウに対する安全弁）。
     #[test]
     fn poll_gives_up_without_backspace_after_veto_cap_expires() {
-        let _g = VETO_TEST_LOCK.lock().unwrap();
+        let _g = VETO_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_tsf_obs_for_veto_test();
 
         let detector = LiteralDetector::new(true);
@@ -708,7 +712,9 @@ mod tests {
     // 候補ウィンドウが可視でも veto を適用せず従来通り backspace 回収するべき。
     #[test]
     fn poll_does_not_veto_on_per_vk_confirm_path() {
-        let _g = VETO_TEST_LOCK.lock().unwrap();
+        let _g = VETO_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_tsf_obs_for_veto_test();
 
         TSF_OBS.gji_write_bytes.store(5_000, SeqCst);
@@ -757,7 +763,9 @@ mod tests {
     /// docs/known-bugs.md BUG-33 追補、`probe_fsm.rs` 側の同種修正コメント参照）。
     #[test]
     fn poll_recovers_like_suspected_literal_when_stale_confirm_detected() {
-        let _g = VETO_TEST_LOCK.lock().unwrap();
+        let _g = VETO_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_tsf_obs_for_veto_test();
 
         TSF_OBS.gji_write_bytes.store(9_000, SeqCst);

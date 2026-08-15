@@ -8038,3 +8038,275 @@ belief=ON・実IME=OFF）、BUG-19（明示 OFF 意図が観測に上書きさ�
 BUG-26（conv 観測1件での belief 復帰、本バグと同じ機構への依拠）、BUG-33
 （`FocusProbe` の belief 書き戻し混入）。
 
+## BUG-64: config1.db に旧 awase 実験由来の残骸バインドが実在する（F13/F14/F21/F22、バグではなく既知の事実の記録）
+
+**症状ではなく事実の記録:** ADR-091（charset 軸の設計）§1.4 項目3 の実機
+`config1.db` 抽出（clipwire 経由で取得、`wire.rs` の protobuf 最小パーサで
+`custom_keymap_table` を復元）で、以下の旧 awase 実験由来の残骸バインドが
+ユーザー実機に実在すると確認・削除した:
+
+- **F13**: `DirectInput → IMEOn`
+- **F14**: `Precomposition`/`Composition`/`Conversion → IMEOff`
+- **F21/F22**: `IME ON`/`IME OFF`
+
+いずれも過去のセッションで `config1.db` へ書き込んだ実験の残骸であり、
+現行コードのどの経路からも意図して送信されていない（=バグではない）。
+
+**なぜ記録するか:** ADR-091 §D3.2 が新設する専用 Fn キー変換モードは
+**F21** を Composition/Conversion 時の `SwitchKanaType` バインド先として
+想定しており、上記の残骸バインドと同一のキー番号である。この残骸自体は
+2026-08-13 の実機確認で既に削除済みであり、`VK_F21`/`VK_F22` は ADR-057 が
+物理キー非存在・ターミナル安全と確認済みの VK のため危険なキーではない
+（`VK_F13`/`VK_F14` とは異なる。あちらはターミナルエスケープシーケンス漏れの
+実機確認があり常に危険）。そのため Phase 1（`GeneralConfig::
+muhenkan_solo_tap_dedicated_fn_key` の実装、2026-08-14）の
+`validate_dedicated_fn_key`（`src/config.rs`）は `VK_F21`/`VK_F22` を許可
+範囲に含めている。ただし `awase-gji-config` の書き込み機能（衝突検出込み、
+ADR-091 §4 Phase1-3）はまだ実装されていないため、**config1.db 自動判定が
+入るまでの間、ユーザーがこの隠し設定を手動で有効化する際は GJI 側の既存
+キー設定（config1.db）で F21/F22 が既に別の意味に割り当てられていないか
+自分で確認すること**（`validate_dedicated_fn_key` の警告文にも明記）。
+`awase-gji-config` の書き込み機能を実装する際は、この既知の残骸を
+「他アプリ由来の未知の衝突」と誤認せず、awase 自身の残骸として正しく
+上書き・除去できる設計にすること。次に `config1.db` 関連の作業をする際、
+この残骸バインドの存在自体に驚かないための記録でもある。
+
+**関連:** [ADR-091](adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
+§1.4、[ADR-057](adr/057-gji-keybind-f13f14-to-f21f22.md)（F13/F14 を避け
+F21/F22 へ移行した経緯）、[ADR-067](adr/067-vk-ime-on-off-migration.md)
+（config1.db バインド撤廃の経緯）。
+
+## BUG-65: `TSF_OBS_TEST_LOCK` 共有ロックが `.lock().unwrap()` で non-poison-resilient なため、1テストの真の失敗が無関係な10テストの偽陽性失敗を誘発する（テスト分離バグ、行4661 の再発・別軸）
+
+**症状:** 2026-08-14、ADR-091 Phase 1（T4-T10）ブランチを実機 Windows で
+`cargo test -p awase -p awase-windows -p awase-gji-config` 実行したところ、
+私（Claude）が一切触れていない `tsf::probe`・`tsf::warmup::literal_detect_fsm`・
+`tsf::warmup::probe_fsm` の3ファイルにまたがって計10件の `PoisonError` 起因の
+テスト失敗が発生した（`cargo test` 標準の並列実行下）。
+
+**真因:** `tsf::probe::tests::probe_fallback_waits_total_max_ms`
+（`probe.rs:776`、`GetTickCount64`/`Instant::now()` 実時間依存のフォール
+バック待機テスト）が実機ハードウェア上でのみ顕在化するタイミング非決定性
+（同ファイル内 `check_now_returns_stale_confirm_when_write_evidence_predates_epoch`
+のコメントが2026-07-25に同種の非決定性を既に記録済み）により
+`assert!(elapsed >= 60, "fallback too short: {elapsed}ms")` で真に失敗し、
+`TSF_OBS_TEST_LOCK.lock().unwrap()` を保持したままパニックした。
+
+`TSF_OBS_TEST_LOCK` は行4661（2026-07-25、`TSF_OBS` 保護のためのロック統一）
+以降、`observer.rs`/`probe.rs`/`literal_detect_fsm.rs`/`probe_fsm.rs` の
+4ファイルで正しく同一インスタンスを共有している（統一自体は機能している）。
+しかし全23箇所の取得コードが素の `.lock().unwrap()` だったため、上記1件の
+真の失敗がロックを **poison** させ、その後 `cargo test` が同一プロセス内で
+実行する他の22テストのうち10件が `.lock().unwrap()` の時点で
+`PoisonError` を受けて連鎖的に失敗した（実際のテスト内容とは無関係な
+偽陽性）。`tsf::warmup::ms_ime_ready_coro` は独自の別ロック
+（`GATE_TEST_LOCK`、`OUTPUT_GATE` 保護用）を使っており、かつ
+`.lock().unwrap_or_else(std::sync::PoisonError::into_inner)` で
+poison-resilient に書かれていたため、この連鎖には巻き込まれなかった
+（が、同テストの assertion 自体は別途、真に失敗していた。原因未確定・
+本バグの対象外）。
+
+**修正:** `TSF_OBS_TEST_LOCK`/`VETO_TEST_LOCK` を取得する全23箇所
+（`observer.rs` 4箇所、`probe.rs` 12箇所、`literal_detect_fsm.rs` 4箇所、
+`probe_fsm.rs` 3箇所）を `ms_ime_ready_coro.rs::GATE_TEST_LOCK` と同じ
+`.lock().unwrap_or_else(std::sync::PoisonError::into_inner)` に統一した。
+各テストは取得直後に自分が使うグローバル状態（`TSF_OBS` の関連フィールド）
+を明示的に `store()`/`reset_*()` で上書きしてから assert する作りのため、
+前のテストが poison させた状態を引き継いでも安全（既存コードの前提を
+変えていない）。`probe_fallback_waits_total_max_ms` 自体の実時間非決定性
+（真因）は未修正のまま残っている——次にこのテストが再度真に失敗しても、
+今回のような無関係テストへの連鎖は起きなくなるが、このテスト自体の
+flaky性を根治するものではない。
+
+**関連:** 行4661（`TSF_OBS_TEST_LOCK` 統一の初出）、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
+
+**2026-08-14 追補（残る2件のうち `ms_ime_ready_coro` 側の真因を特定・修正）:**
+上記の poison-resilience 対応後にユーザーが実機で再実行したところ、10件の
+連鎖失敗は解消し、`probe_fallback_waits_total_max_ms`（真因未修正、上記のまま）
+に加えて `tsf::warmup::ms_ime_ready_coro::tests::phase1_does_not_hold_output_gate_only_phase2_does`
+が単独で失敗した（`OUTPUT_GATE.is_active()` が Phase 2 到達時点で期待に反し
+`false`）。
+
+このテストは自前の `GATE_TEST_LOCK`（当時ファイルローカル）を取得してから
+`OutputActiveGuard::begin()` を実際に呼ぶ Phase 2 へ進むが、
+`output/probe_io.rs` の GJI 系テスト2件
+（`tsf_mode_nc_not_fired_gji_long_idle_gji_healthy_enables_literal_detect`、
+`long_idle_tsf_mode_keeps_literal_detect`。いずれも `plan.needs_literal=true`
+で `dispatch_probe_actions` → `GjiWarmupCoro::apply_transmit_done` →
+`literal_detect_guard = Some(OutputActiveGuard::begin())` に到達する）が
+**一切ロックを取らずに同じプロセス全体共有 `OUTPUT_GATE` を実際にミューテート**
+していた。`TsfProbeCoro` 用の `make_chrome_machine()`（同ファイル）は
+`OutputActiveGuard::noop_for_test()` を経由するよう既に対処済みだったが、
+`GjiWarmupCoro` の `literal_detect_guard` は construction 時ではなく
+tick 中に遅延生成されるため同じ回避策がなく、この非対称性が見落とされていた。
+`cargo test` の並列実行下で、この2件のいずれかが `ms_ime_ready_coro` の
+Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテストで
+共有されてしまい、`ms_ime_ready_coro` 側が `is_active()` を確認する瞬間に
+`probe_io.rs` 側が先に drop してしまう（またはその逆）ことで偽陽性の
+失敗を起こしうる。
+
+**修正:** `tsf/probe_bridge.rs` に `TSF_OBS_TEST_LOCK` と同型の
+`OUTPUT_GATE_TEST_LOCK`（`#[cfg(test)]`）を新設し、`ms_ime_ready_coro.rs`
+のファイルローカル `GATE_TEST_LOCK` をこれへの re-export に置き換えた上で、
+`output/probe_io.rs` の上記2テストにも同じロックを追加した。`TransmitSingleVk`
+アクションを dispatch するテストは本ファイルに存在しない
+（`apply_vk_sent` 経由の同種の穴は現状なし）ことを grep で確認済み。
+
+**関連:** BUG-58（`OutputActiveGuard` を Phase 2 のみで確保する設計の初出）、
+`tsf/probe_bridge.rs::OUTPUT_GATE_TEST_LOCK`。
+
+**2026-08-15 追補2（真因はロック不足ではなく `noop_for_test()` 自体の実装バグと判明）:**
+上記のロック追加（`OUTPUT_GATE_TEST_LOCK`）を実機で再検証したところ、
+`phase1_does_not_hold_output_gate_only_phase2_does` は**まったく同じ行**で
+**まったく同じ結果**（100%決定論的、レースではない）で失敗し続けた。
+
+真因は `OutputActiveGuard` がフィールドを持たないユニット構造体だったこと。
+`begin()`（`depth` を実際に +1 する）と `noop_for_test()`（何もしないはず）の
+両方が同じ型 `Self` を返すため、`Drop` 実装は生成経路を区別できず、
+**`noop_for_test()` で作ったガードが drop されるときも無条件に
+`OUTPUT_GATE.depth.fetch_sub(1)` を実行していた**。`depth: AtomicU32` は
+0 からの `fetch_sub` でパニックせず `u32::MAX` 付近へラップアラウンドする
+（atomic 演算はデバッグビルドでもオーバーフローパニックしない）。
+
+`output/probe_io.rs::make_chrome_machine()`・`tsf/warmup/chrome_probe.rs`
+（2箇所）・`tsf/warmup/probe_fsm.rs` の計4箇所が `noop_for_test()` を使っており、
+これらを使うテスト（`probe_io.rs` の `TsfProbeCoro` 系テストの大半、
+`chrome_probe.rs`・`probe_fsm.rs` の一部）が1つでも走ると、その `machine`
+変数が drop される瞬間に `OUTPUT_GATE.depth` が本来ありえない値まで
+壊れる。一度ラップすると、以降どれだけ本物の `begin()` が `depth` を
++1 しても `prev == 0`（`OUTPUT_GATE.active` を `true` にする唯一の条件）
+に二度と一致しなくなり、**`cargo test` 1プロセスの残り全テストで
+`OUTPUT_GATE.active` が恒久的に `true` にならない**。テスト実行順序が
+機械ごとにおおむね安定しているため、ロックの有無に関わらず同じ
+テストバイナリでは同じ失敗が再現し続けていた（見かけ上「レース」に
+見えたが実際は蓄積した破損状態、真の意味でのデータ競合ではなかった）。
+
+**修正:** `OutputActiveGuard` に `real: bool` フィールドを追加し、
+`begin()` は `real: true`、`noop_for_test()` は `real: false` を持つように
+した。`Drop` は `real == false` なら即 return し、`OUTPUT_GATE` に一切
+触れないようにした。上記のロック追加（追補1）は無駄ではなく
+（本物の並行 `begin()` 同士の保護として引き続き有効）残してある。
+
+**教訓:** ゼロフィールドのユニット構造体で「複数のコンストラクタ経路を
+使い分ける」設計は、`Drop` 実装が経路を判別する手段を持てないため、
+最低1つは生成経路を区別できるフィールドが必要（コンパイラは警告しない
+——`Drop::drop` はどのコンストラクタ経由かを知る術がなく、常に同じ
+コードパスを実行する）。
+
+**関連:** `tsf/probe_bridge.rs::OutputActiveGuard`。
+
+**2026-08-15 追補3（残る `probe_fallback_waits_total_max_ms` も真因判明・修正）:**
+追補2の修正後、`ms_ime_ready_coro` 側は実機で解消を確認したが、
+`probe_fallback_waits_total_max_ms`（"fallback too short: 10ms"）は
+2回とも同じ場所・同じ結果で再現した（665 passed; 1 failed）。
+
+真因はテストが**2つの異なるクロック**を混在させていたこと。`check_now()`
+（SUT・被テストコード）は `crate::hook::current_tick_ms()`
+（`GetTickCount64`）で残り時間を判定するが、テストの `elapsed` 計測は
+`std::time::Instant`（`QueryPerformanceCounter` 由来、GetTickCount64 とは
+独立した別クロック）を使っていた。VM 環境ではハイパーバイザーが
+ゲストの `GetTickCount64` 側だけを定期的にホスト時刻へ補正（ジャンプ）
+させることがあり、`Instant` は影響を受けない。このため「`GetTickCount64`
+上は 100ms 経過した（=SUT は正しくフォールバックを完了した）のに、
+`Instant` 上はまだ 10ms しか経っていない」という、SUT の挙動としては
+正しいのにテストの計測クロックが食い違うことによる誤検知が起きていた
+（実際に SUT にバグがあったことは一度もない）。
+
+**修正:** `elapsed` の計測を `Instant` から `current_tick_ms()`（SUT と
+同じクロック）に変更した。同ファイル内の他の `Instant` 使用テスト
+（`probe_phase2_detects_already_settled` 等）は本バグの報告対象では
+なかったため未変更。
+
+**関連:** `tsf/probe.rs::probe_fallback_waits_total_max_ms`。
+
+**2026-08-15 追補4（追補3は誤診断・真因は別ファイルの無施錠 `gji_monitor_ok` 書き込み4箇所）:**
+追補3のクロック統一後も実機で再現し続け（"fallback too short: 0ms"）、
+ユーザーに `--test-threads=1` で再実行してもらったところ **666 件全て pass**
+した。並列実行時のみ失敗する＝真のデータ競合であることが確定し、追補3の
+「クロック不一致」という診断は誤りだったと判明した（クロック統一自体は
+無害な改善だが、今回の失敗の真因ではなかった）。
+
+失敗メッセージに `gji_monitor_ok`/`gji_last_io_ms` の実値を出す診断コミット
+（`b8df49b8`）を追加して再実行してもらったところ
+`gji_monitor_ok=true`（テストは直前に `store(false)` 済みのはず）と判明。
+`current_tick_ms()` の単調性から、この分岐に入っていれば `elapsed` は
+理論上 100ms 未満になり得ないため、`check_now()` が
+`gji_monitor_ok=true` 側の即時 return 分岐（"warmup 後に GJI I/O が
+来ていない→即解放"）を通っていたことが確定した。
+
+`TSF_OBS.gji_monitor_ok` への書き込み箇所を crate 全体で再監査したところ、
+**単一行 grep（`gji_monitor_ok.store(`）では検出できない複数行にまたがる
+書き込みが2箇所**見つかった（`TSF_OBS\n    .gji_monitor_ok\n    .store(...)`
+という改行を挟むフォーマット）:
+
+- `tsf/warmup/chrome_probe.rs::chrome_probe_apply_vk_sent_reaches_inner_coro`
+  （ロック一切なし）
+- `tsf/warmup/probe_fsm.rs::ready_chrome_probe()`（ヘルパー関数、ロック
+  一切なし）— これを呼ぶ7テストのうち3件
+  （`chrome_gji_active_enters_per_vk_confirm_as_safety_net`、
+  `chrome_without_gji_active_skips_literal_detect`、
+  `chrome_per_vk_vk_sent_unset_does_not_backspace`）も無施錠だった
+  （残り4件は既に `TSF_OBS_TEST_LOCK` を取得済みで無関係）。
+
+計4箇所が `TSF_OBS_TEST_LOCK` を一切取得せずに `gji_monitor_ok=true` を
+書き込み、書き込み後もリセットしていなかった。これが
+`probe_fallback_waits_total_max_ms`（`gji_monitor_ok=false` を前提に
+100ms のフォールバック待機を検証する）の実行中に競合すると、
+`check_now()` が「モニター健全・warmup 後 I/O なし＝正常状態」の
+即時 return 分岐に化けて `elapsed=0ms` 前後で返ってしまう。
+
+**教訓:** `grep -n "field.method("` のような単一行パターンは、
+`rustfmt` がメソッドチェーンを改行する（レシーバが長い・引数が多い等）
+と検出漏れする。crate 全体の「この global を書き込む全箇所」監査では
+`perl -0777`（複数行対応）や AST ベースの検索（`ast-grep` 等）を使うか、
+少なくとも `field\s*\n?\s*\.\s*method` のような改行許容パターンを
+併用すること。単一行 grep だけで「全箇所ロック済みを確認した」と
+結論づけない。
+
+**修正:** 上記4箇所すべてに `TSF_OBS_TEST_LOCK` の取得を追加した。
+
+**関連:** BUG-65 本体・追補1〜3（同じ調査の一連の流れ）。
+
+**2026-08-15 追補5（`cargo test`全体では緑化・`tests/e2e_windows.rs` で同種の穴を発見）:**
+追補4の修正後、`cargo test -p awase-windows --lib` は実機で緑化した。続けて
+`crates/awase-windows/tests/e2e_windows.rs`（実 Win32 ウィンドウ・実 GJI
+IME に対する SendInput/SendMessage ベースの interactive E2E テスト、
+`--lib` とは別の統合テストバイナリ）を実行したところ、2件が失敗した:
+
+- `e2e_message_unicode_chars`: `win.clear()` 後に 'ア'/'イ' のみ送ったはずが
+  `get_text()` が `"アイn"` を返した。
+- `e2e_gji_kanji_conversion_interactive`: `namae` を GJI 経由で入力したのに
+  composition が `"あまえ"`（先頭の `な` が `あ` に化ける、"n" が消失した
+  典型的な cold-start literal パターン）になった。同テストの診断ログでは
+  自分のウィンドウ生成直後に `Foreground match: false` が出ていた。
+
+原因は BUG-65 本体・追補4と同型: このファイルには
+`INTERACTIVE_TEST_LOCK`（「Phase 2-3 tests contest foreground focus when
+run in parallel. This lock serializes them.」というコメント付きの専用
+Mutex）が既に用意されていたが、**Phase 2 系テストの一部だけが実際には
+取得していなかった**。`TestEditWindow::create()` は内部で
+`force_foreground()`/`SetFocus()` を呼び、OS 全体で単一のグローバル状態
+（foreground window・キーボードフォーカス）を書き換えるため、ロックを
+取っていないテストが他の（ロックを取っている・取っていない問わず）
+interactive テストと並行実行されると、フォーカスの奪い合いが起きる。
+`e2e_gji_kanji_conversion_interactive` は正しくロックを取得していたが、
+相手側の `e2e_message_unicode_chars`（未取得）が並行して
+`force_foreground()` を呼べたため、ロックは片側だけでは無力だった
+（BUG-65 追補4の `noop_for_test()`/`ready_chrome_probe()` と同じ
+「意図された保護が一部の呼び出し元だけ抜けていた」パターン）。
+
+同ファイルを全 `#[test]` 関数に対して機械的に監査（`TestEditWindow::create()`
+または `force_foreground` を呼ぶが `INTERACTIVE_TEST_LOCK` を取得していない
+関数を検出）したところ、`e2e_message_unicode_chars` の他に
+`e2e_message_edit_control`・`e2e_message_special_keys`・
+`e2e_message_long_text` の計3件も同様に取得漏れだった。計4件に
+`INTERACTIVE_TEST_LOCK` の取得を追加した。
+
+`e2e_gji_kanji_conversion_interactive` の "な→あ" 化については、GJI
+composition ロジック自体を変更していない。フォーカス競合が解消されれば
+再現しなくなる可能性が高いという仮説だが、実機での再検証が必要
+（この追補の時点では未確認）。
+
+**関連:** `crates/awase-windows/tests/e2e_windows.rs::INTERACTIVE_TEST_LOCK`。
+

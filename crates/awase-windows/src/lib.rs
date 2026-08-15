@@ -22,6 +22,9 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod focus;
+pub mod gji_charset_autodetect;
+pub mod gji_charset_popup;
+pub mod gji_charset_write;
 pub mod msime_key_assignment;
 pub mod scanmap;
 pub mod single_thread_cell;
@@ -298,6 +301,21 @@ pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 /// generation 照合を含む単一入口 `on_ime_apply_complete` へ合流させる。
 #[cfg(windows)]
 pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
+
+/// GJI 向け設定支援ポップアップ（`gji_charset_popup`）が別スレッドで
+/// `config1.db` への書き込みに成功したことをメインスレッドへ通知する。
+///
+/// `gji_charset_popup::apply_and_notify` はダイアログ表示のため
+/// `std::thread::spawn` した非メインスレッドで動く。`RUNTIME`
+/// （`SingleThreadCell`）はメインスレッド以外からのアクセスを許さないため、
+/// `with_app` を直接呼ばず `wparam` に `VkCode`（`u16`）を積んで
+/// `post_to_main_thread_with` 経由でメインスレッドへ投函し、
+/// `handle_wm_gji_charset_fn_key_activated` が `with_app` 経由で
+/// `set_muhenkan_dedicated_fn_key_auto` を呼ぶ（`WM_ASYNC_IME_APPLY_COMPLETE`
+/// と同じ「ワーカースレッドは with_app を握らない」パターン）。
+#[cfg(windows)]
+pub const WM_GJI_CHARSET_FN_KEY_ACTIVATED: u32 =
+    windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

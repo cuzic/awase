@@ -463,6 +463,13 @@ pub(super) fn initialize_app(
             .output
             .conv_mode
             .set_policy(config.general.conv_mode_policy);
+        app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
+        let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
+        app.set_muhenkan_dedicated_fn_key_config(
+            crate::runtime::resolve_dedicated_fn_key(manual_fn_key),
+            manual_fn_key.is_some(),
+        );
+        app.set_muhenkan_solo_tap_is_passthrough(!config.general.muhenkan_solo_tap_always_suppress);
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

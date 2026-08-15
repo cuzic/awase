@@ -963,6 +963,10 @@ mod tests {
     // Chrome reinit のフルコース）を撤去した。gji_active なら inline LiteralDetect /
     // per-VK confirm を安全網として残し、直接 Chrome へ送信する。
 
+    /// `TSF_OBS.gji_monitor_ok` を書き換えるため、呼び出し元は必ず
+    /// `TSF_OBS_TEST_LOCK` を保持していること（BUG-65 追補4参照。この関数自体は
+    /// ロックを取らない — 呼び出し元ごとに他の TSF_OBS フィールドの初期化と
+    /// まとめてロックを取りたいケースがあるため）。
     fn ready_chrome_probe() -> TsfProbeCoro {
         // total_max_ms=0 → check_now が最初の tick で即 ready になる。
         crate::tsf::observer::TSF_OBS
@@ -975,6 +979,9 @@ mod tests {
 
     #[test]
     fn chrome_gji_active_enters_per_vk_confirm_as_safety_net() {
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // literal_session_confirmed はプロセスグローバルなので、他テストの実行順序に
         // 依存しないよう明示的にリセットする。
         crate::tsf::observer::reset_literal_session_confirmed();
@@ -998,6 +1005,9 @@ mod tests {
 
     #[test]
     fn chrome_without_gji_active_skips_literal_detect() {
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // !gji_active（GJI モニター不健全）: needs_literal=false（安全網なしの直接送信）。
         let mut machine = ready_chrome_probe();
         let actions = machine.tick(TsfEnvSnapshot {
@@ -1032,6 +1042,9 @@ mod tests {
     /// 固定する回帰テスト。
     #[test]
     fn chrome_per_vk_vk_sent_unset_does_not_backspace() {
+        let _g = crate::tsf::observer::TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
         let mut machine = ready_chrome_probe();
         let first_actions = machine.tick(TsfEnvSnapshot {
@@ -1096,7 +1109,9 @@ mod tests {
         // テストは元々ロックを一切持たず、他ファイルのテストと無防備にTSF_OBSを
         // 奪い合っていた(2026-07-25、Windows実機での初回cargo test実行で
         // クロスファイルの汚染が判明)。
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
@@ -1191,7 +1206,9 @@ mod tests {
         use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);
@@ -1261,7 +1278,9 @@ mod tests {
         use crate::tsf::observer::{TSF_OBS, TSF_OBS_TEST_LOCK};
         use std::sync::atomic::Ordering::SeqCst;
 
-        let _g = TSF_OBS_TEST_LOCK.lock().unwrap();
+        let _g = TSF_OBS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::tsf::observer::reset_literal_session_confirmed();
         TSF_OBS.gji_candidate_visible.store(false, SeqCst);
         TSF_OBS.gji_last_write_ms.store(0, SeqCst);

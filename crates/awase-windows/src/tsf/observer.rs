@@ -537,7 +537,9 @@ mod tests {
     /// 確認済みにならない。
     #[test]
     fn unconfirmed_state_is_never_confirmed() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_literal_session_confirmed();
 
         assert!(!literal_session_confirmed(Generation::new(1)));
@@ -548,7 +550,9 @@ mod tests {
     /// 問い合わせれば確認済みになる。
     #[test]
     fn same_generation_query_is_confirmed() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_literal_session_confirmed();
 
         mark_literal_session_confirmed(Generation::new(301));
@@ -566,7 +570,9 @@ mod tests {
     /// "こっか"→"koっか"）の回帰防止。
     #[test]
     fn new_cold_generation_invalidates_prior_confirmation_without_explicit_reset() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_literal_session_confirmed();
 
         mark_literal_session_confirmed(Generation::new(301));
@@ -585,7 +591,9 @@ mod tests {
     /// 引き続き提供する、世代比較はこれを代替するのではなく補完する）。
     #[test]
     fn explicit_reset_invalidates_same_generation_confirmation() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         reset_literal_session_confirmed();
 
         mark_literal_session_confirmed(Generation::new(301));
