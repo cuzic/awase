@@ -25,7 +25,6 @@ enum Tab {
     // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
     #[allow(dead_code)]
     AppRules,
-    ImeDetect,
     Layout,
     Advanced,
 }
@@ -1049,26 +1048,6 @@ impl SettingsApp {
         });
         ui.add_space(8.0);
 
-        // IME on/off
-        ui.label("IME 制御");
-        combo_key_list_ui(
-            ui,
-            "IME ON",
-            "ime_on",
-            &mut self.config.keys.ime_on,
-            &mut self.new_ime_on,
-            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
-        );
-        combo_key_list_ui(
-            ui,
-            "IME OFF",
-            "ime_off",
-            &mut self.config.keys.ime_off,
-            &mut self.new_ime_off,
-            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
-        );
-        ui.add_space(8.0);
-
         // Toggle hotkey
         ui.label("トグルホットキー");
         ui.horizontal(|ui| {
@@ -1081,6 +1060,86 @@ impl SettingsApp {
                 &mut self.config.general.engine_toggle_hotkey,
             );
         });
+        ui.add_space(8.0);
+
+        // ADR-092 決定E（round4）: 「IME 制御」（awase → IME ON/OFFキー）と
+        // 「IME 検出」（IME → awase ON/OFFキー、旧 tab_ime_detect）を、
+        // 送信/受信の向きが伝わる対称な名前にしたうえで上級者向け折りたたみに
+        // まとめる。親指キー割り当て・エンジン制御・トグルホットキーは
+        // 多くのユーザーが実際に触る設定のため常時展開のまま上に残す
+        // （Progressive Disclosure）。
+        egui::CollapsingHeader::new("上級者向け設定")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.label(
+                    "通常はデフォルトのままで問題ありません。\n\
+                     矢印は設定の向きを表します: 「awase → IME」は awase が能動的に\n\
+                     送信するキー、「IME → awase」は外部 IME の状態変化を awase が\n\
+                     解釈するためのキーです。",
+                );
+                ui.add_space(8.0);
+
+                ui.label("awase → IME ON/OFFキー");
+                combo_key_list_ui(
+                    ui,
+                    "IME ON",
+                    "ime_on",
+                    &mut self.config.keys.ime_on,
+                    &mut self.new_ime_on,
+                    "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+                );
+                combo_key_list_ui(
+                    ui,
+                    "IME OFF",
+                    "ime_off",
+                    &mut self.config.keys.ime_off,
+                    &mut self.new_ime_off,
+                    "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+                );
+                ui.add_space(8.0);
+
+                ui.label("IME → awase ON/OFFキー");
+                ui.label(
+                    "IME の ON/OFF 切り替えを検出するためのキー設定です。\n\
+                     半角/全角キーなど、IME を切り替えるキーを登録します。",
+                );
+                self.ime_detect_keys_ui(ui);
+            });
+    }
+
+    /// 「IME → awase ON/OFFキー」（旧 `tab_ime_detect`、`ImeDetectConfig` の
+    /// toggle/on/off 3リスト）。`tab_keys` の上級者向け折りたたみから呼ぶ
+    /// （ADR-092 決定E、決定D Step6）。
+    fn ime_detect_keys_ui(&mut self, ui: &mut egui::Ui) {
+        bare_key_list_ui(
+            ui,
+            "トグルキー（ON/OFF 切替）",
+            "ime_det_toggle",
+            &mut self.config.keys.ime_detect.toggle,
+            &mut self.new_ime_toggle_key,
+            "IME の ON/OFF をトグルするキーです。\n押すたびに ON/OFF が切り替わります。\n例: 半角/全角キー",
+        );
+        bare_key_list_ui(
+            ui,
+            "ON キー（IME を ON にする）",
+            "ime_det_on",
+            &mut self.config.keys.ime_detect.on,
+            &mut self.new_ime_detect_on_key,
+            "IME を ON にするキーです。\n押すと必ず ON になります。",
+        );
+        bare_key_list_ui(
+            ui,
+            "OFF キー（IME を OFF にする）",
+            "ime_det_off",
+            &mut self.config.keys.ime_detect.off,
+            &mut self.new_ime_detect_off_key,
+            "IME を OFF にするキーです。\n押すと必ず OFF になります。",
+        );
+
+        ui.add_space(8.0);
+        if ui.button("デフォルトに戻す").clicked() {
+            self.config.keys.ime_detect = awase::config::ImeDetectConfig::default();
+        }
     }
 
     fn tab_keymap(&mut self, ui: &mut egui::Ui) {
@@ -1325,42 +1384,6 @@ impl SettingsApp {
                 });
             }
         });
-    }
-
-    fn tab_ime_detect(&mut self, ui: &mut egui::Ui) {
-        ui.heading("IME 検出");
-        ui.label("IME の ON/OFF 切り替えを検出するためのキー設定です。\n通常はデフォルトのままで問題ありません。\n半角/全角キーなど、IME を切り替えるキーを登録します。");
-        ui.add_space(8.0);
-
-        bare_key_list_ui(
-            ui,
-            "トグルキー（ON/OFF 切替）",
-            "ime_det_toggle",
-            &mut self.config.keys.ime_detect.toggle,
-            &mut self.new_ime_toggle_key,
-            "IME の ON/OFF をトグルするキーです。\n押すたびに ON/OFF が切り替わります。\n例: 半角/全角キー",
-        );
-        bare_key_list_ui(
-            ui,
-            "ON キー（IME を ON にする）",
-            "ime_det_on",
-            &mut self.config.keys.ime_detect.on,
-            &mut self.new_ime_detect_on_key,
-            "IME を ON にするキーです。\n押すと必ず ON になります。",
-        );
-        bare_key_list_ui(
-            ui,
-            "OFF キー（IME を OFF にする）",
-            "ime_det_off",
-            &mut self.config.keys.ime_detect.off,
-            &mut self.new_ime_detect_off_key,
-            "IME を OFF にするキーです。\n押すと必ず OFF になります。",
-        );
-
-        ui.add_space(8.0);
-        if ui.button("デフォルトに戻す").clicked() {
-            self.config.keys.ime_detect = awase::config::ImeDetectConfig::default();
-        }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -1948,7 +1971,6 @@ impl eframe::App for SettingsApp {
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Keymap, "ショートカット"),
-                    (Tab::ImeDetect, "IME 検出"),
                     (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "詳細設定"),
                 ] {
@@ -1995,7 +2017,6 @@ impl eframe::App for SettingsApp {
                     Tab::Keys => self.tab_keys(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::AppRules => self.tab_app_rules(ui),
-                    Tab::ImeDetect => self.tab_ime_detect(ui),
                     Tab::Layout => self.tab_layout(ui),
                     Tab::Advanced => self.tab_advanced(ui),
                 });
@@ -2303,16 +2324,25 @@ const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
 /// 「用途ごとに候補リストを分離する」既存パターンに倣う。
 const IME_MODE_KEY_OPTIONS: &[(&str, &str)] = &[("英数", "VK_DBE_ALPHANUMERIC")];
 
-/// 「IME 検出」タブ（`ime_detect.toggle/on/off`）の候補にのみ追加するエントリ。
+/// 「IME → awase ON/OFFキー」（`ime_detect.toggle/on/off`）の候補にのみ
+/// 追加するエントリ。
 ///
 /// これらは `VkCode::from_name` 直読み（`app/mod.rs::parse_vk_list`、
 /// `vk::parse_key_combo` 経由ではない）で解決される単発 VK で、修飾キーは
 /// 使われない。デフォルト値（`ImeDetectConfig::default`）が 漢字/IMEオン/IMEオフ
 /// のため、`THUMB_KEY_OPTIONS` に無いこの3つをここで補う。
+///
+/// 半角/全角（`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`）は ADR-092 決定A-5の
+/// 唯一の実装項目として追加した。ひらがな/カタカナ/英数は既に
+/// `THUMB_KEY_OPTIONS`/`IME_MODE_KEY_OPTIONS` に存在するため対象外
+/// （決定A-5は `ImeDetectConfig` へのコード変更・既定値追加は行わず、
+/// 上級者が手動指定したい場合の選択肢を増やすだけに留める）。
 const IME_DETECT_EXTRA_OPTIONS: &[(&str, &str)] = &[
     ("漢字", "VK_KANJI"),
     ("IMEオン", "VK_IME_ON"),
     ("IMEオフ", "VK_IME_OFF"),
+    ("半角", "VK_DBE_SBCSCHAR"),
+    ("全角", "VK_DBE_DBCSCHAR"),
 ];
 
 #[cfg(test)]
@@ -3057,6 +3087,44 @@ mod layout_tab_repro {
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
             eframe::egui::CentralPanel::default().show(ctx, |ui| {
                 app.tab_layout(ui);
+            });
+        });
+    }
+
+    /// ADR-092 決定D Step6: `tab_ime_detect` を `tab_keys` の
+    /// `egui::CollapsingHeader`（「上級者向け設定」）へ統合した。折りたたみ済み
+    /// （既定）の `tab_keys` 全体と、折りたたみの中身（`ime_detect_keys_ui`、
+    /// 旧 `tab_ime_detect` の内容）の双方がパニックしないことを固定する
+    /// （`full_tab_layout_render_with_real_config_does_not_panic` と同じ
+    /// パターン）。無変換/変換を親指キーへ割り当て、`tab_keys` 内の条件付き
+    /// indent ブロック（無変換/変換オプション）も一通り描画させる。
+    #[test]
+    fn full_tab_keys_render_with_collapsing_header_does_not_panic() {
+        let config_path = find_config_path();
+        let mut config = awase::config::AppConfig::load(&config_path).unwrap_or_else(|e| {
+            panic!(
+                "テスト前提: {} の読み込みに失敗した: {e}",
+                config_path.display()
+            )
+        });
+        config.general.left_thumb_key = "無変換".to_string();
+        config.general.right_thumb_key = "変換".to_string();
+
+        let mut app = test_settings_app(config);
+
+        let ctx = eframe::egui::Context::default();
+        // tab_keys 全体（上級者向け設定は既定で折りたたみ済み）。
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_keys(ui);
+            });
+        });
+
+        // 折りたたみの中身（IME → awase ON/OFFキー、旧 tab_ime_detect）を
+        // 直接描画させる。
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.ime_detect_keys_ui(ui);
             });
         });
     }
