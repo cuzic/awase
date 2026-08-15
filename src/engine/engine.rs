@@ -31,6 +31,8 @@ pub(super) enum SpecialKeyMatch {
     EngineOff,
     ImeOn,
     ImeOff,
+    /// IME の ON/OFF を反転する（ADR-092 決定D Step4a）。
+    ImeToggle,
 }
 
 /// 統合エンジン: NicolaFsm + 特殊キー処理
@@ -649,6 +651,14 @@ impl Engine {
                 log::info!("IME OFF (key combo)");
                 self.build_ime_set_open_decision(ctx, false)
             }
+            SpecialKeyMatch::ImeToggle => {
+                // `ctx.ime_on` は belief（`InputContext::ime_on`）であり、drift 時は
+                // トグル方向が反転しうる——既存の `ImeDetectConfig.toggle` 経由の
+                // VK_KANJI トグルと同じ弱点で、新規リスクではない。
+                let new_open = !ctx.ime_on;
+                log::info!("IME Toggle (key combo) → {new_open}");
+                self.build_ime_set_open_decision(ctx, new_open)
+            }
         }
     }
 
@@ -743,6 +753,23 @@ impl SpecialKeyCombos {
                 event.extra_info
             );
             return Some(SpecialKeyMatch::ImeOff);
+        }
+        // ime_on/ime_off（方向固定、明示指定）の後にトグルをチェックする
+        // （ADR-092 決定D Step4a、明示方向優先）。
+        if self
+            .ime_toggle
+            .iter()
+            .any(|k| matches_key_combo(*k, event, modifiers))
+        {
+            log::debug!(
+                "[special-key] IME Toggle match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                event.vk_code,
+                modifiers.ctrl,
+                modifiers.shift,
+                modifiers.alt,
+                event.extra_info
+            );
+            return Some(SpecialKeyMatch::ImeToggle);
         }
 
         None

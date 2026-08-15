@@ -805,6 +805,11 @@ pub(super) fn run_all() -> Result<()> {
         parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut diag);
     let ime_control_off_keys =
         parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
+    let ime_control_toggle_keys = parse_key_combos(
+        &config.keys.ime_toggle,
+        "IME control Toggle keys",
+        &mut diag,
+    );
     let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
         init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
     check_conflicting_software(&mut diag);
@@ -826,6 +831,7 @@ pub(super) fn run_all() -> Result<()> {
             engine_off: engine_off_keys,
             ime_on: ime_control_on_keys,
             ime_off: ime_control_off_keys,
+            ime_toggle: ime_control_toggle_keys,
         },
     );
 

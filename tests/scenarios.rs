@@ -36,6 +36,7 @@ fn make_nicola_engine() -> Engine {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         },
     );
     engine.set_prev_active(true);

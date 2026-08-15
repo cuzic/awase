@@ -4523,6 +4523,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         }
     }
 
@@ -4884,6 +4885,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -4919,6 +4921,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled(), "user_enabled は最初から true");
@@ -4959,6 +4962,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled());
@@ -4988,6 +4992,7 @@ mod engine_integration_tests {
             engine_off: vec![combo],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         assert!(engine.is_user_enabled());
@@ -5016,6 +5021,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5040,6 +5046,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5048,6 +5055,108 @@ mod engine_integration_tests {
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    /// ADR-092 決定D Step4a: `SpecialKeyMatch::ImeToggle` は `ctx.ime_on` を見て
+    /// 反転方向を決める（`ime_on`/`ime_off` の方向固定コンボとは異なる）。
+    #[test]
+    fn special_key_ime_toggle_combo_flips_to_off_when_currently_on() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn special_key_ime_toggle_combo_flips_to_on_when_currently_off() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_off_ctx().modifiers
+            },
+            ..ime_off_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// 明示方向（`ime_on`）は同じ物理キーに対してトグルより優先される
+    /// （`match_event` 内でトグルは ime_on/ime_off の後にチェックされる）。
+    #[test]
+    fn special_key_ime_on_takes_priority_over_toggle_for_same_combo() {
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        // ime_on_ctx (ime_on: true) で検証する: トグルが勝つなら false になる
+        // はずが、明示 ime_on コンボが優先されれば true のまま
+        // (SetOpen(true)) になる。
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_SPACE).at(100).build(), &ctx);
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
         )));
     }
 
@@ -5073,6 +5182,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5107,6 +5217,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5141,6 +5252,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         engine.set_user_enabled(false); // Inactive 状態に
@@ -5183,6 +5295,7 @@ mod engine_integration_tests {
             engine_off: vec![combo],
             ime_on: vec![],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5713,6 +5826,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
 
@@ -5982,6 +6096,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![],
             ime_off: vec![combo],
+            ime_toggle: vec![],
         };
         let engine = make_engine_with_special(special);
 
@@ -6007,6 +6122,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_ctrl = InputContext {
@@ -6041,6 +6157,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_shift = InputContext {
@@ -6075,6 +6192,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let ctx_with_alt = InputContext {
@@ -6109,6 +6227,7 @@ mod engine_integration_tests {
             engine_off: vec![],
             ime_on: vec![combo],
             ime_off: vec![],
+            ime_toggle: vec![],
         };
         let mut engine = make_engine_with_special(special);
         let d = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());

@@ -520,6 +520,11 @@ pub(crate) fn reload_config() {
     let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
     let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
     let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
+    let ime_toggle = parse_key_combos(
+        &config.keys.ime_toggle,
+        "IME control Toggle keys",
+        &mut key_diag,
+    );
     let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
     let panic_trigger_combos = build_panic_trigger_combos(&ime_on, &ime_off);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
@@ -530,6 +535,7 @@ pub(crate) fn reload_config() {
         engine_off,
         ime_on,
         ime_off,
+        ime_toggle,
     };
     let _ = with_app(|app| {
         app.apply_config_update(&config, special_keys, toggle, on, off);
