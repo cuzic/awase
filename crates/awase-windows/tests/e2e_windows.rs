@@ -722,6 +722,11 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
 #[test]
 fn e2e_message_edit_control() {
     init_test_logging();
+    // 他の Phase 2/3 interactive テストと foreground/focus を取り合わないよう
+    // 直列化する（BUG-65 追補5、`e2e_message_unicode_chars` と同種の取得漏れ）。
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     log::info!("=== E2E Phase 2: SendMessage + Edit control ===");
 
     unsafe {
@@ -878,6 +883,11 @@ fn e2e_sendinput_interactive() {
 #[test]
 fn e2e_message_special_keys() {
     init_test_logging();
+    // 他の Phase 2/3 interactive テストと foreground/focus を取り合わないよう
+    // 直列化する（BUG-65 追補5、`e2e_message_unicode_chars` と同種の取得漏れ）。
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     log::info!("=== E2E Phase 2: Special keys via SendMessage ===");
 
     unsafe {
@@ -2447,6 +2457,16 @@ fn e2e_config_validation() {
 #[test]
 fn e2e_message_unicode_chars() {
     init_test_logging();
+    // `TestEditWindow::create()` は force_foreground/SetFocus で foreground/focus
+    // という OS 全体で単一のグローバル状態を書き換えるため、同じ状態を書き換える
+    // 他の interactive テスト（Phase 3 の e2e_gji_kanji_conversion_interactive 等）
+    // と並行実行されると競合する。他のテストは `INTERACTIVE_TEST_LOCK` を
+    // 取得しているが、本テスト（Phase 2）だけ取得漏れがあり、実機で
+    // `cargo test` の既定の並列実行下において稀に文字化け（"アイ" の後に
+    // 別テストのキー入力が紛れ込み "アイn" になる等）を起こしていた。
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     log::info!("=== E2E Phase 2: Unicode characters via SendMessage ===");
 
     unsafe {
@@ -2504,6 +2524,11 @@ fn e2e_message_unicode_chars() {
 #[test]
 fn e2e_message_long_text() {
     init_test_logging();
+    // 他の Phase 2/3 interactive テストと foreground/focus を取り合わないよう
+    // 直列化する（BUG-65 追補5、`e2e_message_unicode_chars` と同種の取得漏れ）。
+    let _lock = INTERACTIVE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     log::info!("=== E2E Phase 2: Long text input ===");
 
     unsafe {

@@ -8268,3 +8268,45 @@ Phase 2 の直前・最中に割り込むと、`OUTPUT_GATE.depth` が2つのテ
 
 **関連:** BUG-65 本体・追補1〜3（同じ調査の一連の流れ）。
 
+**2026-08-15 追補5（`cargo test`全体では緑化・`tests/e2e_windows.rs` で同種の穴を発見）:**
+追補4の修正後、`cargo test -p awase-windows --lib` は実機で緑化した。続けて
+`crates/awase-windows/tests/e2e_windows.rs`（実 Win32 ウィンドウ・実 GJI
+IME に対する SendInput/SendMessage ベースの interactive E2E テスト、
+`--lib` とは別の統合テストバイナリ）を実行したところ、2件が失敗した:
+
+- `e2e_message_unicode_chars`: `win.clear()` 後に 'ア'/'イ' のみ送ったはずが
+  `get_text()` が `"アイn"` を返した。
+- `e2e_gji_kanji_conversion_interactive`: `namae` を GJI 経由で入力したのに
+  composition が `"あまえ"`（先頭の `な` が `あ` に化ける、"n" が消失した
+  典型的な cold-start literal パターン）になった。同テストの診断ログでは
+  自分のウィンドウ生成直後に `Foreground match: false` が出ていた。
+
+原因は BUG-65 本体・追補4と同型: このファイルには
+`INTERACTIVE_TEST_LOCK`（「Phase 2-3 tests contest foreground focus when
+run in parallel. This lock serializes them.」というコメント付きの専用
+Mutex）が既に用意されていたが、**Phase 2 系テストの一部だけが実際には
+取得していなかった**。`TestEditWindow::create()` は内部で
+`force_foreground()`/`SetFocus()` を呼び、OS 全体で単一のグローバル状態
+（foreground window・キーボードフォーカス）を書き換えるため、ロックを
+取っていないテストが他の（ロックを取っている・取っていない問わず）
+interactive テストと並行実行されると、フォーカスの奪い合いが起きる。
+`e2e_gji_kanji_conversion_interactive` は正しくロックを取得していたが、
+相手側の `e2e_message_unicode_chars`（未取得）が並行して
+`force_foreground()` を呼べたため、ロックは片側だけでは無力だった
+（BUG-65 追補4の `noop_for_test()`/`ready_chrome_probe()` と同じ
+「意図された保護が一部の呼び出し元だけ抜けていた」パターン）。
+
+同ファイルを全 `#[test]` 関数に対して機械的に監査（`TestEditWindow::create()`
+または `force_foreground` を呼ぶが `INTERACTIVE_TEST_LOCK` を取得していない
+関数を検出）したところ、`e2e_message_unicode_chars` の他に
+`e2e_message_edit_control`・`e2e_message_special_keys`・
+`e2e_message_long_text` の計3件も同様に取得漏れだった。計4件に
+`INTERACTIVE_TEST_LOCK` の取得を追加した。
+
+`e2e_gji_kanji_conversion_interactive` の "な→あ" 化については、GJI
+composition ロジック自体を変更していない。フォーカス競合が解消されれば
+再現しなくなる可能性が高いという仮説だが、実機での再検証が必要
+（この追補の時点では未確認）。
+
+**関連:** `crates/awase-windows/tests/e2e_windows.rs::INTERACTIVE_TEST_LOCK`。
+
