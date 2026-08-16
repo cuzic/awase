@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod gji_charset_write;
+
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -249,6 +251,9 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
+    // GJI 専用Fnキー変換の config1.db 書き込みボタンの結果表示
+    // （true = 成功、メッセージ本文）。
+    dedicated_fn_key_write_result: Option<(bool, String)>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
     // post_bypass add-buffers
@@ -311,6 +316,7 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
+            dedicated_fn_key_write_result: None,
             new_override_bufs: Default::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -1040,6 +1046,64 @@ impl SettingsApp {
                             dedicated_fn_key_hover,
                         );
                     });
+                    ui.add_space(4.0);
+
+                    // 上のドロップダウンは awase 側の設定（無変換単独タップで
+                    // どの Fn キーを送るか）のみを変える。GJI 側の config1.db に
+                    // 「そのFnキーで文字種を切り替える」バインドが無ければ
+                    // 効果が無いため、このボタンで GJI 側の設定も一括で
+                    // 用意する（gji_charset_write、GJI が同意の上で書き込む
+                    // ADR-091 §4 Phase1-3 の仕組みを awase-settings からも
+                    // 呼べるようにしたもの）。
+                    let selected_gji_key = self
+                        .config
+                        .general
+                        .muhenkan_solo_tap_dedicated_fn_key
+                        .as_deref()
+                        .and_then(|internal| {
+                            DEDICATED_FN_KEY_OPTIONS
+                                .iter()
+                                .find(|(_, v)| *v == internal)
+                                .map(|(label, _)| *label)
+                        });
+                    ui.add_enabled_ui(selected_gji_key.is_some(), |ui| {
+                        if ui
+                            .button("config1.db へ書き込む")
+                            .on_hover_text(
+                                "押すと: 上で選んだ専用Fnキーに「かな種別切替」を割り当てる\n\
+                                 設定を GJI の config1.db へ追加します（上書き前に\n\
+                                 .awase-backup へバックアップを作成）。反映には GJI の\n\
+                                 再起動（推奨: サインアウト→サインイン）が必要です。\n\
+                                 詳しい手順は本アプリの使い方ページを参照してください。\n\
+                                 専用Fnキーが未選択の間は押せません。",
+                            )
+                            .clicked()
+                            && let Some(gji_key) = selected_gji_key
+                        {
+                            self.dedicated_fn_key_write_result =
+                                Some(match gji_charset_write::apply_dedicated_fn_key_binding(gji_key) {
+                                    Ok(()) => (
+                                        true,
+                                        "config1.db に設定を追加しました。GJI が起動中の\
+                                         場合、確実に反映するにはサインアウトしてから\
+                                         サインインし直してください\
+                                         （タスクトレイからの「終了して再起動」では、\
+                                         GJI 終了時に書き込み前の設定で上書きされ、\
+                                         今回の変更が消えることがあります）。"
+                                            .to_string(),
+                                    ),
+                                    Err(e) => (false, e.to_string()),
+                                });
+                        }
+                    });
+                    if let Some((ok, message)) = &self.dedicated_fn_key_write_result {
+                        let color = if *ok {
+                            egui::Color32::from_rgb(0, 140, 0)
+                        } else {
+                            egui::Color32::from_rgb(200, 40, 0)
+                        };
+                        ui.colored_label(color, message);
+                    }
                 });
         }
         if self.config.general.left_thumb_key == "変換"
@@ -3153,6 +3217,7 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
+            dedicated_fn_key_write_result: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
