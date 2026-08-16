@@ -990,29 +990,14 @@ impl SettingsApp {
             || self.config.general.right_thumb_key == "無変換"
         {
             ui.indent("muhenkan_thumb_options", |ui| {
-                ui.checkbox(
+                solo_tap_suppress_combo(
+                    ui,
+                    "無変換",
+                    "MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
+                     割り当てているため、送出すると awase の管理外で IME モードが\n\
+                     切り替わることがあります（2026-08-07 実機で確認）。",
                     &mut self.config.general.muhenkan_solo_tap_always_suppress,
-                    "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                )
-                .on_hover_text(
-                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                     無変換キーの単独タップを常に完全に無視します。\n\
-                     MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
-                     割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
-                     awase の管理外に IME モードが切り替わることがあります。\n\
-                     無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
-                     場合のみ OFF にしてください。",
-                );
-                ui.checkbox(
                     &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
-                )
-                .on_hover_text(
-                    "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
-                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                     ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。\n\
-                     上の「常に無視する」が ON の間はこの設定は効きません。",
                 );
             });
 
@@ -1022,7 +1007,7 @@ impl SettingsApp {
             // config1.db の設定を自動判定するのが主経路のため、通常は手動設定
             // 不要——このドロップダウンは自動判定がうまく働かない場合や、
             // 特定の Fn キーへ固定したい場合の上級者向け上書き。
-            egui::CollapsingHeader::new("上級者向け設定（GJI 専用Fnキー変換）")
+            egui::CollapsingHeader::new("GJI 専用Fnキー変換")
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.label(
@@ -1116,29 +1101,14 @@ impl SettingsApp {
             || self.config.general.right_thumb_key == "変換"
         {
             ui.indent("henkan_thumb_options", |ui| {
-                ui.checkbox(
+                solo_tap_suppress_combo(
+                    ui,
+                    "変換",
+                    "MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、\n\
+                     設定次第では IME オン相当の割当ても可能なため、送出すると\n\
+                     awase の管理外で IME モードが切り替わることがあります。",
                     &mut self.config.general.henkan_solo_tap_always_suppress,
-                    "変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                )
-                .on_hover_text(
-                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                     変換キーの単独タップを常に完全に無視します。\n\
-                     MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、設定次第では\n\
-                     IME オン相当の割当ても可能なため、OFF にすると変換候補ウィンドウが出ていない\n\
-                     場面で awase の管理外に IME モードが切り替わることがあります。\n\
-                     変換キー本来の機能（再変換等）を Windows 全般で使いたい場合のみ\n\
-                     OFF にしてください。",
-                );
-                ui.checkbox(
                     &mut self.config.general.henkan_solo_tap_ignore_composing_guard,
-                    "変換候補ウィンドウ表示中でも変換キー単独タップを送出する",
-                )
-                .on_hover_text(
-                    "OFF(既定)の場合、変換候補ウィンドウ表示中は変換キーの単独タップを\n\
-                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                     ON にすると、変換候補ウィンドウ表示中でも変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。\n\
-                     上の「常に無視する」が ON の間はこの設定は効きません。",
                 );
             });
         }
@@ -2344,6 +2314,115 @@ fn dedicated_fn_key_combo(ui: &mut egui::Ui, current: &mut Option<String>, toolt
         })
         .response
         .on_hover_text(tooltip);
+}
+
+/// 無変換/変換キー単独タップの抑制方針。実体は `*_solo_tap_always_suppress`/
+/// `*_solo_tap_ignore_composing_guard` の2boolだが、`always_suppress=true`の間は
+/// `ignore_composing_guard`が無視される（実質3択）ため、GUI上は独立した2つの
+/// チェックボックスではなく1つの3状態コンボボックスとして見せる。config.tomlの
+/// スキーマ・エンジン側（`nicola_fsm.rs`等）は従来通り2bool独立のまま変更しない。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SoloTapSuppressMode {
+    AlwaysSuppress,
+    SuppressWhileComposing,
+    NeverSuppress,
+}
+
+impl SoloTapSuppressMode {
+    const ALL: [Self; 3] = [
+        Self::AlwaysSuppress,
+        Self::SuppressWhileComposing,
+        Self::NeverSuppress,
+    ];
+
+    fn from_bools(always_suppress: bool, ignore_composing_guard: bool) -> Self {
+        if always_suppress {
+            Self::AlwaysSuppress
+        } else if ignore_composing_guard {
+            Self::NeverSuppress
+        } else {
+            Self::SuppressWhileComposing
+        }
+    }
+
+    fn apply(self, always_suppress: &mut bool, ignore_composing_guard: &mut bool) {
+        match self {
+            Self::AlwaysSuppress => *always_suppress = true,
+            Self::SuppressWhileComposing => {
+                *always_suppress = false;
+                *ignore_composing_guard = false;
+            }
+            Self::NeverSuppress => {
+                *always_suppress = false;
+                *ignore_composing_guard = true;
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AlwaysSuppress => "常に無視する（既定）",
+            Self::SuppressWhileComposing => "変換候補ウィンドウ表示中のみ抑制する",
+            Self::NeverSuppress => "常に送出する（変換候補ウィンドウ表示中も含む）",
+        }
+    }
+
+    fn hover_text(self, key_label: &str, default_hijack_risk: &str) -> String {
+        match self {
+            Self::AlwaysSuppress => format!(
+                "変換候補ウィンドウの表示有無を問わず、{key_label}キーの単独タップを\n\
+                 常に完全に無視します（OS へ一切送出しません）。\n\
+                 {default_hijack_risk}\n\
+                 {key_label}キー本来の機能を Windows 全般で使いたい場合のみ\n\
+                 他の選択肢にしてください。"
+            ),
+            Self::SuppressWhileComposing => format!(
+                "変換候補ウィンドウ表示中は{key_label}キーの単独タップを抑制し\n\
+                 （IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）、\n\
+                 それ以外の場面では{key_label}キー本来の機能を送出します。"
+            ),
+            Self::NeverSuppress => format!(
+                "変換候補ウィンドウの表示有無に関わらず、常に{key_label}キー本来の\n\
+                 機能を送出します。IME によっては誤って入力モードが切り替わる\n\
+                 ことがあります（{default_hijack_risk}）。"
+            ),
+        }
+    }
+}
+
+/// 無変換/変換キー単独タップの抑制方針コンボボックス。`key_label`は
+/// 表示用（例:「無変換」「変換」）、`default_hijack_risk`はそのキーの
+/// 単独タップを素通しした際にMS-IME既定割当てへ横取りされるリスクの説明
+/// （既存の各チェックボックスの`on_hover_text`から引き継いだ、キーごとに
+/// 異なる根拠）。
+fn solo_tap_suppress_combo(
+    ui: &mut egui::Ui,
+    key_label: &str,
+    default_hijack_risk: &str,
+    always_suppress: &mut bool,
+    ignore_composing_guard: &mut bool,
+) {
+    let mut mode = SoloTapSuppressMode::from_bools(*always_suppress, *ignore_composing_guard);
+    ui.horizontal(|ui| {
+        ui.label(format!("{key_label}キー単独タップ:"));
+        egui::ComboBox::from_id_salt(format!("{key_label}_solo_tap_suppress"))
+            .selected_text(mode.label())
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                for option in SoloTapSuppressMode::ALL {
+                    if ui
+                        .selectable_label(mode == option, option.label())
+                        .on_hover_text(option.hover_text(key_label, default_hijack_risk))
+                        .clicked()
+                    {
+                        mode = option;
+                    }
+                }
+            })
+            .response
+            .on_hover_text(mode.hover_text(key_label, default_hijack_risk));
+    });
+    mode.apply(always_suppress, ignore_composing_guard);
 }
 
 /// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。
