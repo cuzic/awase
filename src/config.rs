@@ -387,7 +387,19 @@ pub struct ImeDetectConfig {
 impl Default for ImeDetectConfig {
     fn default() -> Self {
         Self {
-            toggle: vec!["漢字".to_string()],
+            // 2026-08-16: 「漢字」（VK_KANJI）を既定から外した。
+            // `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
+            // 自身が能動的に漢字キーを消費し冪等な VK_IME_ON/OFF へ変換して
+            // 送出する）が同じ VK_KANJI を既定で持つようになったため、両方が
+            // 既定で有効だと同一の物理キー押下に対して
+            // `kp_stage_shadow_ime_toggle`（このフィールド由来、belief を
+            // 反転）→ `Engine::apply_special_key_match`（`keys.ime_toggle`
+            // 由来、反転後の belief を読んで逆方向へ再反転しキーを consume）
+            // という二重処理が発生し、「押しても IME が動かない」壊れた
+            // キーになっていた（Opusコードレビュー指摘）。`keys.ime_toggle`
+            // が漢字キーを能動的に consume する以上、素通しを前提にした
+            // このフィールドの観測は漢字キーに対しては意味を持たない。
+            toggle: Vec::new(),
             on: vec!["IMEオン".to_string()],
             off: vec!["IMEオフ".to_string()],
         }

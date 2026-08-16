@@ -985,4 +985,57 @@ mod tests {
              Unicode 直接注入にフォールバックさせるため未登録のままにする。"
         );
     }
+
+    /// `keys.{ime_on,ime_off,ime_toggle}`（awase が能動的にキーを消費し
+    /// 冪等な VK_IME_ON/OFF へ変換して送出する、`Engine::apply_special_key_match`
+    /// 経由）と `keys.ime_detect.{on,off,toggle}`（awase が素通し前提で
+    /// 観測するだけの、`kp_stage_shadow_ime_toggle`/`enrich_ime_relevance`
+    /// 経由）の既定値が同一キーコンボを指してはならない。
+    ///
+    /// 同一コンボが両方の既定に入っていると、1回の物理キー押下で
+    /// `kp_stage_shadow_ime_toggle`（`ime_detect`側、belief を反転）→
+    /// `Engine::apply_special_key_match`（`keys`側、反転後の belief を読んで
+    /// 逆方向へ再反転しキーを consume）という二重処理が発生し、「押しても
+    /// IME が動かない」壊れたキーになる（2026-08-16 Opusコードレビュー指摘、
+    /// `keys.ime_toggle`の既定値をVK_KANJIにした際に`ime_detect.toggle`の
+    /// 既存の既定値「漢字」（同じVkCode）と衝突していた実例）。
+    #[test]
+    fn keys_defaults_do_not_collide_with_ime_detect_defaults() {
+        use super::parse_key_combo;
+
+        let keys = awase::config::KeysConfig::default();
+        let active: Vec<&String> = keys
+            .ime_on
+            .iter()
+            .chain(&keys.ime_off)
+            .chain(&keys.ime_toggle)
+            .collect();
+        let passive: Vec<&String> = keys
+            .ime_detect
+            .on
+            .iter()
+            .chain(&keys.ime_detect.off)
+            .chain(&keys.ime_detect.toggle)
+            .collect();
+
+        for a in &active {
+            let Some(a_combo) = parse_key_combo(a) else {
+                continue;
+            };
+            for p in &passive {
+                let Some(p_combo) = parse_key_combo(p) else {
+                    continue;
+                };
+                assert!(
+                    !(a_combo.ctrl == p_combo.ctrl
+                        && a_combo.shift == p_combo.shift
+                        && a_combo.alt == p_combo.alt
+                        && a_combo.vk == p_combo.vk),
+                    "keys側の既定コンボ {a:?} と ime_detect側の既定コンボ {p:?} が \
+                     同じキーを指している（二重処理で押しても IME が動かない \
+                     キーになる）"
+                );
+            }
+        }
+    }
 }

@@ -843,6 +843,7 @@ impl SettingsApp {
                 self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
                 self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
                 self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
+                self.config.keys.ime_toggle = vec!["VK_KANJI".to_string()];
                 self.config.keys.engine_off_solo_triple = Some("VK_NONCONVERT".to_string());
             }
             // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
@@ -857,6 +858,7 @@ impl SettingsApp {
                 self.config.keys.engine_off.clear();
                 self.config.keys.ime_on.clear();
                 self.config.keys.ime_off.clear();
+                self.config.keys.ime_toggle.clear();
                 self.config.keys.engine_off_solo_triple = None;
             }
         });
