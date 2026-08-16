@@ -536,6 +536,7 @@ name = "awase-settings"
 version = "1.14.0"
 dependencies = [
  "awase",
+ "awase-gji-config",
  "eframe",
  "env_logger",
  "log",

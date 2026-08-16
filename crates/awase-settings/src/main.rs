@@ -1,6 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod key_capture;
+mod gji_charset_write;
 
 use std::path::{Path, PathBuf};
 
@@ -111,28 +111,6 @@ enum CaptureTarget {
     NewFrom,
     /// 新規ルールの to 主キー
     NewTo,
-}
-
-/// `combo_key_list_ui` が扱う4リストの識別子（`SettingsApp` の該当フィールドへ
-/// ディスパッチするために使う）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComboListId {
-    EngineOn,
-    EngineOff,
-    ImeOn,
-    ImeOff,
-}
-
-/// `combo_key_list_ui`（親指シフト ON/OFF・awase → IME ON/OFFキー）の
-/// OS レベルキーキャプチャ対象（2026-08-15、`key_capture` モジュール参照）。
-/// `CaptureTarget`（ショートカット再割当タブの egui キーイベント方式）とは
-/// 検出源が異なるため独立させている。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComboCaptureTarget {
-    /// 既存エントリを丸ごと置き換える。
-    Existing(ComboListId, usize),
-    /// 新規追加行のバッファ（`NewComboBuf`）へ反映する。
-    New(ComboListId),
 }
 
 /// ログ初期化。
@@ -273,10 +251,9 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
-    // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ
-    // （None = 非キャプチャ中）。guard を保持している間だけフックが有効。
-    combo_capturing: Option<ComboCaptureTarget>,
-    combo_capture_guard: Option<key_capture::CaptureGuard>,
+    // GJI 専用Fnキー変換の config1.db 書き込みボタンの結果表示
+    // （true = 成功、メッセージ本文）。
+    dedicated_fn_key_write_result: Option<(bool, String)>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
     // post_bypass add-buffers
@@ -339,8 +316,7 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            combo_capturing: None,
-            combo_capture_guard: None,
+            dedicated_fn_key_write_result: None,
             new_override_bufs: Default::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -740,68 +716,6 @@ impl SettingsApp {
             }
         }
     }
-
-    /// `combo_capturing` が指すリスト（`config.keys.*`）への可変参照を返す。
-    fn combo_list_mut(&mut self, list: ComboListId) -> &mut Vec<String> {
-        match list {
-            ComboListId::EngineOn => &mut self.config.keys.engine_on,
-            ComboListId::EngineOff => &mut self.config.keys.engine_off,
-            ComboListId::ImeOn => &mut self.config.keys.ime_on,
-            ComboListId::ImeOff => &mut self.config.keys.ime_off,
-        }
-    }
-
-    /// `combo_capturing` が指すリストの「新規追加」バッファへの可変参照を返す。
-    fn combo_new_buf_mut(&mut self, list: ComboListId) -> &mut NewComboBuf {
-        match list {
-            ComboListId::EngineOn => &mut self.new_engine_on,
-            ComboListId::EngineOff => &mut self.new_engine_off,
-            ComboListId::ImeOn => &mut self.new_ime_on,
-            ComboListId::ImeOff => &mut self.new_ime_off,
-        }
-    }
-
-    /// `combo_capturing` 中に OS レベルフックが検出したキーを処理する
-    /// （`process_keymap_capture` の OS フック版）。
-    ///
-    /// Esc によるキャンセルは egui 側の検出に任せる（`key_capture` は
-    /// 観測対象を安全な固定 VK 集合に絞っており Esc を含まないため、
-    /// `process_keymap_capture` と対称にここでチェックする）。
-    fn process_combo_capture(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.combo_capturing else {
-            return;
-        };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.combo_capturing = None;
-            self.combo_capture_guard = None;
-            return;
-        }
-        let captured: Option<key_capture::CapturedKey> = key_capture::take_captured();
-        let Some(captured) = captured else {
-            return;
-        };
-        self.combo_capturing = None;
-        self.combo_capture_guard = None;
-        match target {
-            ComboCaptureTarget::Existing(list, i) => {
-                if let Some(entry) = self.combo_list_mut(list).get_mut(i) {
-                    *entry = format_combo(
-                        captured.ctrl,
-                        captured.shift,
-                        captured.alt,
-                        captured.internal,
-                    );
-                }
-            }
-            ComboCaptureTarget::New(list) => {
-                let buf = self.combo_new_buf_mut(list);
-                buf.ctrl = captured.ctrl;
-                buf.shift = captured.shift;
-                buf.alt = captured.alt;
-                buf.main = captured.internal.to_string();
-            }
-        }
-    }
 }
 
 /// `process_keymap_capture` の内部結果型。
@@ -1076,62 +990,152 @@ impl SettingsApp {
             || self.config.general.right_thumb_key == "無変換"
         {
             ui.indent("muhenkan_thumb_options", |ui| {
-                ui.checkbox(
+                solo_tap_suppress_combo(
+                    ui,
+                    "無変換",
+                    "MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
+                     割り当てているため、送出すると awase の管理外で IME モードが\n\
+                     切り替わることがあります（2026-08-07 実機で確認）。",
                     &mut self.config.general.muhenkan_solo_tap_always_suppress,
-                    "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                )
-                .on_hover_text(
-                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                     無変換キーの単独タップを常に完全に無視します。\n\
-                     MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
-                     割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
-                     awase の管理外に IME モードが切り替わることがあります。\n\
-                     無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
-                     場合のみ OFF にしてください。",
-                );
-                ui.checkbox(
                     &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
-                )
-                .on_hover_text(
-                    "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
-                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                     ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。\n\
-                     上の「常に無視する」が ON の間はこの設定は効きません。",
                 );
             });
+
+            // 2026-08-15 ユーザー判断: ADR-091 §D3.2「専用Fnキー変換」（GJI の
+            // config1.db と組み合わせ、無変換キー単独タップで文字種をトグル
+            // するハック）を上級者向け設定として GUI に明示する。GJI 検出時に
+            // config1.db の設定を自動判定するのが主経路のため、通常は手動設定
+            // 不要——このドロップダウンは自動判定がうまく働かない場合や、
+            // 特定の Fn キーへ固定したい場合の上級者向け上書き。
+            egui::CollapsingHeader::new("GJI 専用Fnキー変換")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(
+                        "無変換キーの単独タップで文字種（ひらがな/カタカナ等）を\n\
+                         トグルしたく、かつ「モードずれ」（awase側の想定とGJI側の\n\
+                         実際の状態が食い違う）の問題を避けたい上級者向けの設定です。\n\
+                         \n\
+                         GJI（Google 日本語入力）を使っている場合、無変換キーの単独タップで\n\
+                         生の無変換キーを送る代わりに、専用のFnキー（既定候補: F21）を送る\n\
+                         よう切り替えられます。GJI 側の config1.db でこの Fn キーに\n\
+                         「かな種別切替」を割り当てておけば、awase を介さず GJI 自身の\n\
+                         機能で文字種をトグルできます。この「かな種別切替」はGJI自身が\n\
+                         今の実際の内部状態を見てトグルする動作のため、awase側が\n\
+                         GJIの状態を予測・記憶する必要がなく、モードずれが原理的に\n\
+                         発生しません（ADR-091 §D3.2）。\n\
+                         \n\
+                         GJI 検出時に config1.db の設定を自動判定するのが主経路のため、\n\
+                         通常はここでの手動設定は不要です。自動判定がうまく働かない場合や、\n\
+                         意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
+                    );
+                    let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
+                    ui.horizontal(|ui| {
+                        ui.label("  専用Fnキー:").on_hover_text(dedicated_fn_key_hover);
+                        dedicated_fn_key_combo(
+                            ui,
+                            &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
+                            dedicated_fn_key_hover,
+                        );
+                    });
+                    ui.add_space(4.0);
+
+                    // 上のドロップダウンは awase 側の設定（無変換単独タップで
+                    // どの Fn キーを送るか）のみを変える。GJI 側の config1.db に
+                    // 「そのFnキーで文字種を切り替える」バインドが無ければ
+                    // 効果が無いため、このボタンで GJI 側の設定も一括で
+                    // 用意する（gji_charset_write、GJI が同意の上で書き込む
+                    // ADR-091 §4 Phase1-3 の仕組みを awase-settings からも
+                    // 呼べるようにしたもの）。
+                    let selected_gji_key = self
+                        .config
+                        .general
+                        .muhenkan_solo_tap_dedicated_fn_key
+                        .as_deref()
+                        .and_then(|internal| {
+                            DEDICATED_FN_KEY_OPTIONS
+                                .iter()
+                                .find(|(_, v)| *v == internal)
+                                .map(|(label, _)| *label)
+                        });
+                    ui.add_enabled_ui(selected_gji_key.is_some(), |ui| {
+                        if ui
+                            .button("config1.db へ書き込む")
+                            .on_hover_text(
+                                "押すと: 上で選んだ専用Fnキーに「かな種別切替」を割り当てる\n\
+                                 設定を GJI の config1.db へ追加します（上書き前に\n\
+                                 .awase-backup へバックアップを作成）。反映には GJI の\n\
+                                 再起動（推奨: サインアウト→サインイン）が必要です。\n\
+                                 詳しい手順は本アプリの使い方ページを参照してください。\n\
+                                 専用Fnキーが未選択の間は押せません。",
+                            )
+                            .clicked()
+                            && let Some(gji_key) = selected_gji_key
+                        {
+                            self.dedicated_fn_key_write_result =
+                                Some(match gji_charset_write::apply_dedicated_fn_key_binding(gji_key) {
+                                    Ok(()) => (
+                                        true,
+                                        "config1.db に設定を追加しました。GJI が起動中の\
+                                         場合、確実に反映するにはサインアウトしてから\
+                                         サインインし直してください\
+                                         （タスクトレイからの「終了して再起動」では、\
+                                         GJI 終了時に書き込み前の設定で上書きされ、\
+                                         今回の変更が消えることがあります）。"
+                                            .to_string(),
+                                    ),
+                                    Err(e) => (false, e.to_string()),
+                                });
+                        }
+                    });
+                    if let Some((ok, message)) = &self.dedicated_fn_key_write_result {
+                        let color = if *ok {
+                            egui::Color32::from_rgb(0, 140, 0)
+                        } else {
+                            egui::Color32::from_rgb(200, 40, 0)
+                        };
+                        ui.colored_label(color, message);
+                    }
+                });
         }
         if self.config.general.left_thumb_key == "変換"
             || self.config.general.right_thumb_key == "変換"
         {
             ui.indent("henkan_thumb_options", |ui| {
-                ui.checkbox(
+                solo_tap_suppress_combo(
+                    ui,
+                    "変換",
+                    "MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、\n\
+                     設定次第では IME オン相当の割当ても可能なため、送出すると\n\
+                     awase の管理外で IME モードが切り替わることがあります。",
                     &mut self.config.general.henkan_solo_tap_always_suppress,
-                    "変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                )
-                .on_hover_text(
-                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                     変換キーの単独タップを常に完全に無視します。\n\
-                     MS-IME は変換キー単独打鍵に既定で「再変換」を割り当てており、設定次第では\n\
-                     IME オン相当の割当ても可能なため、OFF にすると変換候補ウィンドウが出ていない\n\
-                     場面で awase の管理外に IME モードが切り替わることがあります。\n\
-                     変換キー本来の機能（再変換等）を Windows 全般で使いたい場合のみ\n\
-                     OFF にしてください。",
-                );
-                ui.checkbox(
                     &mut self.config.general.henkan_solo_tap_ignore_composing_guard,
-                    "変換候補ウィンドウ表示中でも変換キー単独タップを送出する",
-                )
-                .on_hover_text(
-                    "OFF(既定)の場合、変換候補ウィンドウ表示中は変換キーの単独タップを\n\
-                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                     ON にすると、変換候補ウィンドウ表示中でも変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。\n\
-                     上の「常に無視する」が ON の間はこの設定は効きません。",
                 );
             });
         }
+        ui.add_space(8.0);
+
+        // 2026-08-15 ユーザー判断: 「awase → IME ON/OFFキー」は単に
+        // 「IME ON/OFFキー」へ改称。「IME → awase ON/OFFキー」（旧
+        // `tab_ime_detect`）は既に GUI から撤去済みで対比する相手が無くなった
+        // ため「awase → 」を残す意味が無い。多くのユーザーが実際に設定したい
+        // 項目のため、親指シフト ON/OFF より上に表示する。
+        ui.label("IME ON/OFFキー");
+        combo_key_list_ui(
+            ui,
+            "IME ON",
+            "ime_on",
+            &mut self.config.keys.ime_on,
+            &mut self.new_ime_on,
+            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+        );
+        combo_key_list_ui(
+            ui,
+            "IME OFF",
+            "ime_off",
+            &mut self.config.keys.ime_off,
+            &mut self.new_ime_off,
+            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+        );
         ui.add_space(8.0);
 
         // Engine on/off
@@ -1140,22 +1144,16 @@ impl SettingsApp {
             ui,
             "親指シフト ON",
             "eng_on",
-            ComboListId::EngineOn,
             &mut self.config.keys.engine_on,
             &mut self.new_engine_on,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "親指シフトを ON にするキーの組み合わせです。\n複数登録できます。",
         );
         combo_key_list_ui(
             ui,
             "親指シフト OFF",
             "eng_off",
-            ComboListId::EngineOff,
             &mut self.config.keys.engine_off,
             &mut self.new_engine_off,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "親指シフトを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
         let solo_triple_hover = "指定キーを単独で素早く5回連続押下すると親指シフトを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
@@ -1184,40 +1182,6 @@ impl SettingsApp {
                 engine_toggle_hover,
             );
         });
-        ui.add_space(8.0);
-
-        // 2026-08-15 ユーザー判断: ADR-092 決定E の折りたたみ「上級者向け設定」は
-        // 撤去した。「awase → IME ON/OFFキー」は多くのユーザーが実際に設定
-        // したい項目であり、「上級者向け」の裏に隠す理由が無い。「IME → awase
-        // ON/OFFキー」（`ime_detect.toggle/on/off`、旧 `tab_ime_detect`）自体は
-        // GUI から撤去した——既定値の VK_KANJI（漢字）を変える利用者はほぼ
-        // おらず、他の候補 VK_IME_ON/VK_IME_OFF は物理キーとして存在しない
-        // ため GUI で選ばせる価値が薄いという判断。`ImeDetectConfig`
-        // （データ構造・config.toml 手動編集）自体は変更していない——既定値は
-        // 引き続き機能し、必要な上級者は config.toml へ直接書ける。
-        ui.label("awase → IME ON/OFFキー");
-        combo_key_list_ui(
-            ui,
-            "IME ON",
-            "ime_on",
-            ComboListId::ImeOn,
-            &mut self.config.keys.ime_on,
-            &mut self.new_ime_on,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
-            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
-        );
-        combo_key_list_ui(
-            ui,
-            "IME OFF",
-            "ime_off",
-            ComboListId::ImeOff,
-            &mut self.config.keys.ime_off,
-            &mut self.new_ime_off,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
-            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
-        );
     }
 
     #[expect(clippy::too_many_lines)]
@@ -2090,11 +2054,6 @@ impl eframe::App for SettingsApp {
             self.process_keymap_capture(ctx);
             ctx.request_repaint();
         }
-        // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ。
-        if self.combo_capturing.is_some() {
-            self.process_combo_capture(ctx);
-            ctx.request_repaint();
-        }
 
         // 現在編集している config.toml の実パスを常時表示する。
         //
@@ -2304,6 +2263,159 @@ fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &
         .on_hover_text(tooltip);
 }
 
+/// 専用Fnキー変換（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）の
+/// 候補一覧。`src/config.rs::validate_dedicated_fn_key`の`SAFE_RANGE`
+/// （VK_F15-VK_F24）と一致させること。`THUMB_KEY_OPTIONS`と異なり
+/// VK_F21-VK_F24 を意図的に含む——このハック自体が awase 内部で F21-F24 を
+/// 予約している用途そのもののため。
+const DEDICATED_FN_KEY_OPTIONS: &[(&str, &str)] = &[
+    ("F15", "VK_F15"),
+    ("F16", "VK_F16"),
+    ("F17", "VK_F17"),
+    ("F18", "VK_F18"),
+    ("F19", "VK_F19"),
+    ("F20", "VK_F20"),
+    ("F21", "VK_F21"),
+    ("F22", "VK_F22"),
+    ("F23", "VK_F23"),
+    ("F24", "VK_F24"),
+];
+
+/// `muhenkan_solo_tap_dedicated_fn_key` の選択 UI。`None` は「自動検出に
+/// 任せる」（GJI 検出時に config1.db を読んで判定、主経路）を意味する。
+fn dedicated_fn_key_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
+    let display = current.as_deref().map_or_else(
+        || "（未設定・自動検出）".to_string(),
+        |v| {
+            DEDICATED_FN_KEY_OPTIONS
+                .iter()
+                .find(|(_, internal)| *internal == v)
+                .map_or_else(|| v.to_string(), |(d, _)| (*d).to_string())
+        },
+    );
+    egui::ComboBox::from_id_salt("muhenkan_dedicated_fn_key")
+        .selected_text(display)
+        .width(140.0)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(current.is_none(), "（未設定・自動検出）")
+                .clicked()
+            {
+                *current = None;
+            }
+            for (label, internal) in DEDICATED_FN_KEY_OPTIONS {
+                if ui
+                    .selectable_label(current.as_deref() == Some(*internal), *label)
+                    .clicked()
+                {
+                    *current = Some((*internal).to_string());
+                }
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+}
+
+/// 無変換/変換キー単独タップの抑制方針。実体は `*_solo_tap_always_suppress`/
+/// `*_solo_tap_ignore_composing_guard` の2boolだが、GUI上は「常に無視する」/
+/// 「常に送出する」の2択コンボボックスとして見せる。当初は変換候補ウィンドウ
+/// 表示中かどうかで挙動を変える中間状態も設けていたが、その判定（composing、
+/// UIA/MSAAのフォーカス監視に依存）自体がこのリポジトリでは何度も裏切ってきた
+/// 実績があり（例: BUG-11 の UIA キャッシュ汚染）、信頼できない判定を条件にした
+/// 中間状態を持たせても挙動が読めないだけと判断し2026-08-15に2択へ簡略化した
+/// （ユーザー判断）。config.tomlのスキーマ・エンジン側（`nicola_fsm.rs`等）は
+/// 従来通り2bool独立のまま変更しない——「常に送出する」選択時は
+/// `ignore_composing_guard`を`true`に固定することで、常にcomposing判定を
+/// 無視した一貫した挙動にする。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SoloTapSuppressMode {
+    AlwaysSuppress,
+    PassThrough,
+}
+
+impl SoloTapSuppressMode {
+    const ALL: [Self; 2] = [Self::AlwaysSuppress, Self::PassThrough];
+
+    fn from_bools(always_suppress: bool) -> Self {
+        if always_suppress {
+            Self::AlwaysSuppress
+        } else {
+            Self::PassThrough
+        }
+    }
+
+    fn apply(self, always_suppress: &mut bool, ignore_composing_guard: &mut bool) {
+        match self {
+            Self::AlwaysSuppress => *always_suppress = true,
+            Self::PassThrough => {
+                *always_suppress = false;
+                *ignore_composing_guard = true;
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::AlwaysSuppress => "常に無視する（既定）",
+            Self::PassThrough => "常に送出する（パススルー）",
+        }
+    }
+
+    fn hover_text(self, key_label: &str, default_hijack_risk: &str) -> String {
+        match self {
+            Self::AlwaysSuppress => format!(
+                "{key_label}キーの単独タップを常に完全に無視します\n\
+                 （OS へ一切送出しません）。\n\
+                 {default_hijack_risk}\n\
+                 {key_label}キー本来の機能を Windows 全般で使いたい場合のみ\n\
+                 「常に送出する」にしてください。"
+            ),
+            Self::PassThrough => format!(
+                "{key_label}キーの単独タップを常に{key_label}キー本来の機能として\n\
+                 OS へ送出します。変換候補ウィンドウの表示有無では挙動を\n\
+                 変えません（この判定自体がフォーカス監視に依存し必ずしも\n\
+                 信頼できないため、中間の挙動は設けていません）。\n\
+                 {default_hijack_risk}"
+            ),
+        }
+    }
+}
+
+/// 無変換/変換キー単独タップの抑制方針コンボボックス。`key_label`は
+/// 表示用（例:「無変換」「変換」）、`default_hijack_risk`はそのキーの
+/// 単独タップを素通しした際にMS-IME既定割当てへ横取りされるリスクの説明
+/// （既存の各チェックボックスの`on_hover_text`から引き継いだ、キーごとに
+/// 異なる根拠）。
+fn solo_tap_suppress_combo(
+    ui: &mut egui::Ui,
+    key_label: &str,
+    default_hijack_risk: &str,
+    always_suppress: &mut bool,
+    ignore_composing_guard: &mut bool,
+) {
+    let mut mode = SoloTapSuppressMode::from_bools(*always_suppress);
+    ui.horizontal(|ui| {
+        ui.label(format!("{key_label}キー単独タップ:"));
+        egui::ComboBox::from_id_salt(format!("{key_label}_solo_tap_suppress"))
+            .selected_text(mode.label())
+            .width(300.0)
+            .show_ui(ui, |ui| {
+                for option in SoloTapSuppressMode::ALL {
+                    if ui
+                        .selectable_label(mode == option, option.label())
+                        .on_hover_text(option.hover_text(key_label, default_hijack_risk))
+                        .clicked()
+                    {
+                        mode = option;
+                    }
+                }
+            })
+            .response
+            .on_hover_text(mode.hover_text(key_label, default_hijack_risk));
+    });
+    mode.apply(always_suppress, ignore_composing_guard);
+}
+
 /// `combo_key_list_ui` の「新規追加」行が保持する一時入力状態。
 #[derive(Default)]
 struct NewComboBuf {
@@ -2320,16 +2432,12 @@ struct NewComboBuf {
 /// メインキーのドロップダウンで組み立てる。既存エントリもその場で編集できる。
 /// `parse_combo_str`/`format_combo`（keymap タブと共通）で文字列化するため、
 /// バックエンドのパース（`vk::parse_key_combo`）・config 形式は変更不要。
-#[expect(clippy::too_many_arguments)]
 fn combo_key_list_ui(
     ui: &mut egui::Ui,
     label: &str,
     id: &str,
-    list: ComboListId,
     keys: &mut Vec<String>,
     new_entry: &mut NewComboBuf,
-    combo_capturing: &mut Option<ComboCaptureTarget>,
-    combo_capture_guard: &mut Option<key_capture::CaptureGuard>,
     tooltip: &str,
 ) {
     ui.label(format!("  {label}:")).on_hover_text(tooltip);
@@ -2347,12 +2455,6 @@ fn combo_key_list_ui(
             if changed {
                 *key = format_combo(ctrl, shift, alt, &main);
             }
-            combo_capture_button(
-                ui,
-                combo_capturing,
-                combo_capture_guard,
-                ComboCaptureTarget::Existing(list, i),
-            );
             if ui
                 .small_button("x")
                 .on_hover_text("押すと: この組み合わせを削除します。")
@@ -2372,12 +2474,6 @@ fn combo_key_list_ui(
         ui.checkbox(&mut new_entry.shift, "Shift");
         ui.checkbox(&mut new_entry.alt, "Alt");
         engine_key_combo(ui, &format!("{id}_new"), &mut new_entry.main, tooltip);
-        combo_capture_button(
-            ui,
-            combo_capturing,
-            combo_capture_guard,
-            ComboCaptureTarget::New(list),
-        );
         if ui
             .button("+追加")
             .on_hover_text("押すと: 上で組み立てたキーの組み合わせを一覧に追加します。")
@@ -2393,38 +2489,6 @@ fn combo_key_list_ui(
             *new_entry = NewComboBuf::default();
         }
     });
-}
-
-/// `combo_key_list_ui` 用のキャプチャボタン（`capture_button` の OS
-/// フック版）。押すと `key_capture::start()` でフックを起動し、次に押される
-/// 対象キーを待つ（`process_combo_capture` が毎フレーム消費する）。
-/// 待機中に再度押す、または他のボタンを押すとキャンセルされる
-/// （フックの guard が差し替わり Drop で解除される）。
-fn combo_capture_button(
-    ui: &mut egui::Ui,
-    capturing: &mut Option<ComboCaptureTarget>,
-    guard: &mut Option<key_capture::CaptureGuard>,
-    target: ComboCaptureTarget,
-) {
-    let is_active = *capturing == Some(target);
-    let label = if is_active { "⌨ 待機…" } else { "⌨" };
-    if ui
-        .selectable_label(is_active, label)
-        .on_hover_text(
-            "押すと: 実際に使いたいキー（無変換/変換/かな/F13-F20 等、\n\
-             修飾キーは押しっぱなしでOK）を待ち受けます。押されたキーが\n\
-             そのまま登録されます（Esc でキャンセル）。",
-        )
-        .clicked()
-    {
-        if is_active {
-            *capturing = None;
-            *guard = None;
-        } else {
-            *guard = key_capture::start();
-            *capturing = if guard.is_some() { Some(target) } else { None };
-        }
-    }
 }
 
 /// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
@@ -3229,8 +3293,7 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            combo_capturing: None,
-            combo_capture_guard: None,
+            dedicated_fn_key_write_result: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
