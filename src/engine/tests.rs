@@ -129,6 +129,7 @@ impl Ev {
             ts: 0,
             event_type: KeyEventType::KeyDown,
             injected: false,
+            sync_direction: None,
         }
     }
     fn up(vk: VkCode) -> EvBuilder {
@@ -138,6 +139,7 @@ impl Ev {
             ts: 0,
             event_type: KeyEventType::KeyUp,
             injected: false,
+            sync_direction: None,
         }
     }
 }
@@ -148,6 +150,7 @@ struct EvBuilder {
     ts: Timestamp,
     event_type: KeyEventType,
     injected: bool,
+    sync_direction: Option<crate::types::ShadowImeAction>,
 }
 
 impl EvBuilder {
@@ -163,6 +166,13 @@ impl EvBuilder {
         self.injected = injected;
         self
     }
+    /// `keys.ime_detect.on/off/toggle` にこのキーが一致した体で
+    /// `ime_relevance.sync_direction` を設定する（`match_special_keys`が
+    /// `keys.ime_on/off/toggle`側の能動処理をスキップするガードのテスト用）。
+    fn sync_direction(mut self, action: crate::types::ShadowImeAction) -> Self {
+        self.sync_direction = Some(action);
+        self
+    }
     fn build(self) -> RawKeyEvent {
         let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
@@ -173,7 +183,10 @@ impl EvBuilder {
             timestamp: self.ts,
             key_classification: kc,
             physical_pos: pos,
-            ime_relevance: crate::types::ImeRelevance::default(),
+            ime_relevance: crate::types::ImeRelevance {
+                sync_direction: self.sync_direction,
+                ..Default::default()
+            },
             modifier_key: classify_test_modifier(self.vk),
             modifier_snapshot: Default::default(),
             injected: self.injected,
@@ -5383,6 +5396,66 @@ mod engine_integration_tests {
             e,
             Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
+    }
+
+    /// 2026-08-16 Opusコードレビュー指摘の恒久対策: `keys.ime_toggle`
+    /// （手動設定）と`keys.ime_detect.toggle`が同じキーを指すよう設定
+    /// されていても、二重処理で「押しても何も起きない」壊れたキーには
+    /// ならない。`ime_detect`側が観測済み（`ime_relevance.sync_direction`
+    /// が Some）のイベントは、`keys.ime_toggle`側の能動処理（consume して
+    /// 逆方向へ送り直す）を一切行わない — Platform 層の
+    /// `kp_stage_shadow_ime_toggle`（このEngineの外側、フックレベルで
+    /// belief をすでに更新済み）に処理を譲る。
+    #[test]
+    fn manual_ime_toggle_does_not_fire_when_event_is_also_an_ime_detect_sync_key() {
+        let manual_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let special = SpecialKeyCombos {
+            ime_toggle: vec![manual_combo],
+            ..empty_special_keys()
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let event = Ev::down(VK_F21)
+            .at(100)
+            .sync_direction(ShadowImeAction::Toggle)
+            .build();
+        let d = engine.on_input(event, &ime_on_ctx());
+        assert!(
+            !d.is_consumed(),
+            "ime_detect側が観測済みのキーは keys.ime_toggle 側で consume してはならない"
+        );
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
+    }
+
+    /// 上記の自動検出（`ime_toggle_auto`）版。GJI config1.db 宣言や
+    /// MS-IMEレジストリ自動検出が`ime_detect`側と同じキーを指す場合も
+    /// 同様に二重処理を防ぐ。
+    #[test]
+    fn auto_ime_toggle_does_not_fire_when_event_is_also_an_ime_detect_sync_key() {
+        let auto_combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_F21,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![auto_combo]);
+
+        let event = Ev::down(VK_F21)
+            .at(100)
+            .sync_direction(ShadowImeAction::Toggle)
+            .build();
+        let d = engine.on_input(event, &ime_on_ctx());
+        assert!(
+            !d.is_consumed(),
+            "ime_detect側が観測済みのキーは ime_toggle_auto 側で consume してはならない"
+        );
+        assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
     }
 
     // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──

@@ -744,7 +744,9 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        if event.injected {
+        // `SpecialKeyCombos::match_event` と同じ理由・同じガード
+        // （2026-08-16、`ime_detect` 側との二重処理防止、doc参照）。
+        if event.injected || event.ime_relevance.sync_direction.is_some() {
             return None;
         }
         if self
@@ -774,7 +776,8 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        if event.injected {
+        // `match_ime_on_off_auto`と同じ理由・同じガード（doc参照）。
+        if event.injected || event.ime_relevance.sync_direction.is_some() {
             return None;
         }
         self.ime_toggle_auto
@@ -912,52 +915,69 @@ impl SpecialKeyCombos {
         // などの特殊コンボが一切効かなくなる回帰を招いたため 9e879cf で除去した。
         // ModifierTiming の grace 猶予廃止（OS 実状態のみ使用）で誤マッチリスクも
         // 解消済み。thumb_vks フィールド自体もその後 write-only の死んだ状態として撤去。
-        if self
-            .ime_on
-            .iter()
-            .any(|k| matches_key_combo(*k, event, modifiers))
-        {
-            log::debug!(
-                "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code,
-                modifiers.ctrl,
-                modifiers.shift,
-                modifiers.alt,
-                event.extra_info
-            );
-            return Some(SpecialKeyMatch::ImeOn);
-        }
-        if self
-            .ime_off
-            .iter()
-            .any(|k| matches_key_combo(*k, event, modifiers))
-        {
-            log::debug!(
-                "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code,
-                modifiers.ctrl,
-                modifiers.shift,
-                modifiers.alt,
-                event.extra_info
-            );
-            return Some(SpecialKeyMatch::ImeOff);
-        }
-        // ime_on/ime_off（方向固定、明示指定）の後にトグルをチェックする
-        // （ADR-092 決定D Step4a、明示方向優先）。
-        if self
-            .ime_toggle
-            .iter()
-            .any(|k| matches_key_combo(*k, event, modifiers))
-        {
-            log::debug!(
-                "[special-key] IME Toggle match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
-                event.vk_code,
-                modifiers.ctrl,
-                modifiers.shift,
-                modifiers.alt,
-                event.extra_info
-            );
-            return Some(SpecialKeyMatch::ImeToggle);
+        //
+        // `event.ime_relevance.sync_direction.is_some()`（このキーが
+        // `keys.ime_detect.on/off/toggle` にも一致する）の間は、この3チェックを
+        // 一切行わない（2026-08-16 Opusコードレビュー指摘の恒久対策）。
+        // `ime_detect` 側は「素通し前提でawaseは belief を追随するだけ」の
+        // 観測専用機構であり、その観測は Platform 層の
+        // `kp_stage_shadow_ime_toggle` がこの `match_event` より**前**に
+        // 無条件で実行し belief を既に更新済み（Engine 側では止められない）。
+        // 同じキーをここでも能動的にconsumeして逆方向へ送り直すと、1回の
+        // 押下で「観測が belief を反転→ここが反転後の belief を読んで
+        // 逆方向へ再反転しキーをconsume」という二重処理になり、キーを
+        // 押しても何も起きなくなる（`keys.ime_toggle`既定値VK_KANJIが
+        // `keys.ime_detect.toggle`既定値「漢字」と衝突していた実例で発覚）。
+        // 既定値では衝突しないよう調整済みだが、ユーザーが手動で同じキーを
+        // 両方に設定した場合も構造的に壊れないよう、ここで一括ガードする。
+        if event.ime_relevance.sync_direction.is_none() {
+            if self
+                .ime_on
+                .iter()
+                .any(|k| matches_key_combo(*k, event, modifiers))
+            {
+                log::debug!(
+                    "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                    event.vk_code,
+                    modifiers.ctrl,
+                    modifiers.shift,
+                    modifiers.alt,
+                    event.extra_info
+                );
+                return Some(SpecialKeyMatch::ImeOn);
+            }
+            if self
+                .ime_off
+                .iter()
+                .any(|k| matches_key_combo(*k, event, modifiers))
+            {
+                log::debug!(
+                    "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                    event.vk_code,
+                    modifiers.ctrl,
+                    modifiers.shift,
+                    modifiers.alt,
+                    event.extra_info
+                );
+                return Some(SpecialKeyMatch::ImeOff);
+            }
+            // ime_on/ime_off（方向固定、明示指定）の後にトグルをチェックする
+            // （ADR-092 決定D Step4a、明示方向優先）。
+            if self
+                .ime_toggle
+                .iter()
+                .any(|k| matches_key_combo(*k, event, modifiers))
+            {
+                log::debug!(
+                    "[special-key] IME Toggle match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
+                    event.vk_code,
+                    modifiers.ctrl,
+                    modifiers.shift,
+                    modifiers.alt,
+                    event.extra_info
+                );
+                return Some(SpecialKeyMatch::ImeToggle);
+            }
         }
 
         None
