@@ -219,10 +219,10 @@ mod windows_impl {
         // ブロックが `muhenkan_dedicated_fn_key_is_manual()` の早期return
         // より後にあり、専用Fnキーを手動設定しているユーザーは本Stepの
         // 機能を丸ごと失っていた——doc の「独立した判定」という主張と矛盾
-        // していた）。手動設定が優先される規約は`Engine::match_ime_on_off_auto`/
-        // `match_ime_toggle_auto`側が`special_keys.ime_on/ime_off/ime_toggle`
-        // が空の時のみ自動リストを参照するため、ここでの事前チェックは
-        // 不要（Step4aと同じ規約）。
+        // していた）。2026-08-16 ユーザー判断: `Engine::match_ime_on_off_auto`/
+        // `match_ime_toggle_auto`は`special_keys.ime_on/ime_off/ime_toggle`が
+        // 非空でも自動リストを併用する（明示 ∪ 自動、手動排他ではない）ため、
+        // ここでの事前チェックは元々不要（Step4aと同じ規約）。
         let (on, off, toggle) = extract_ime_on_off_toggle_combos(&table);
         if !on.is_empty() || !off.is_empty() || !toggle.is_empty() {
             log::info!(

@@ -56,12 +56,16 @@ pub struct Engine {
     /// が IME 種別確定イベントごとにどちらか一方だけを呼ぶ）。
     /// `special_keys.ime_toggle`（ユーザーが `config.toml` に明示設定した分）
     /// とは別に保持し、`config.toml` へは一切書き込まない（決定C: Manual は
-    /// 永続化、AutoDetected はライブ計算のみ）。`special_keys.ime_toggle` が
-    /// 空の場合のみ参照される（決定C R1、明示>自動）。
+    /// 永続化、AutoDetected はライブ計算のみ）。`special_keys.ime_toggle` の
+    /// 内容に関わらず常に併用される（2026-08-16 ユーザー判断、明示 ∪ 自動。
+    /// 既定で `ime_on`/`ime_off`/`ime_toggle` が非空なため、旧・決定C R1の
+    /// 「手動が非空なら自動を一切見ない」仕様のままでは自動検出が既定設定の
+    /// ユーザーには永久に効かなかった）。
     ime_toggle_auto: Vec<ParsedKeyCombo>,
     /// 自動検出された IME ON キー（ADR-092 決定D Step4c、GJI config1.db の
     /// `GjiImeKeys.on` 由来）。`ime_toggle_auto` と同じ規約
-    /// （`config.toml` 非書き込み、`special_keys.ime_on` が空の場合のみ参照）。
+    /// （`config.toml` 非書き込み、`special_keys.ime_on` の内容に関わらず
+    /// 常に併用）。
     ime_on_auto: Vec<ParsedKeyCombo>,
     /// 自動検出された IME OFF キー（ADR-092 決定D Step4c、GJI config1.db の
     /// `GjiImeKeys.off` 由来）。`ime_on_auto` と対称。
@@ -717,8 +721,16 @@ impl Engine {
 
     /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
     /// 決定D Step4c、GJI config1.db の `GjiImeKeys.on`/`off` 由来）との
-    /// マッチ判定。ユーザーが `keys.ime_on`/`ime_off` を明示設定している場合は
-    /// 一切参照しない（決定C R1、明示>自動）。
+    /// マッチ判定。手動設定（`keys.ime_on`/`ime_off`）の**追加**として働く
+    /// （2026-08-16 ユーザー判断で「明示 > 自動」の排他から「明示 ∪ 自動」の
+    /// 併用へ変更）——`ime_on`/`ime_off` は既定で非空（`Ctrl+変換`/
+    /// `Ctrl+無変換`）なため、旧来の「手動が非空なら自動を一切見ない」規則
+    /// （決定C R1、`match_special_keys` 経由で常に手動リストへ先に照合済み
+    /// だった前提）のままだと、既定設定のユーザーには自動検出（GJI の
+    /// config1.db 宣言キー等）が事実上永久に発火しない死んだ機能になって
+    /// いた。手動リストは `match_event` 内で既にこのメソッドより先に照合
+    /// 済みのため、ここでの追加判定は「手動キーでは一致しなかった押下を
+    /// 自動検出キーでも試す」という素直な union になる。
     ///
     /// `event.injected` な合成イベントにはマッチしない（BUG-14: MS-IME/CTF
     /// 由来の注入イベントを信用してはならない、という既存原則。手動設定の
@@ -735,19 +747,17 @@ impl Engine {
         if event.injected {
             return None;
         }
-        if self.special_keys.ime_on.is_empty()
-            && self
-                .ime_on_auto
-                .iter()
-                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        if self
+            .ime_on_auto
+            .iter()
+            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
         {
             return Some(SpecialKeyMatch::ImeOn);
         }
-        if self.special_keys.ime_off.is_empty()
-            && self
-                .ime_off_auto
-                .iter()
-                .any(|k| matches_key_combo(*k, event, ctx.modifiers))
+        if self
+            .ime_off_auto
+            .iter()
+            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
         {
             return Some(SpecialKeyMatch::ImeOff);
         }
@@ -755,16 +765,16 @@ impl Engine {
     }
 
     /// 自動検出由来の IME トグルキー（`ime_toggle_auto`）とのマッチ判定
-    /// （ADR-092 決定D Step4a/Step4c）。ユーザーが `keys.ime_toggle` を
-    /// 明示設定している場合は一切参照しない（決定C R1、明示>自動）。
-    /// `event.injected`な合成イベントも対象外（`match_ime_on_off_auto`と
-    /// 同じ理由、doc参照）。
+    /// （ADR-092 決定D Step4a/Step4c）。`match_ime_on_off_auto`と同じ理由
+    /// （2026-08-16 ユーザー判断）で、手動設定（`keys.ime_toggle`）の
+    /// **追加**として働く（排他ではない）。`event.injected`な合成イベントも
+    /// 対象外（`match_ime_on_off_auto`と同じ理由、doc参照）。
     fn match_ime_toggle_auto(
         &self,
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        if event.injected || !self.special_keys.ime_toggle.is_empty() {
+        if event.injected {
             return None;
         }
         self.ime_toggle_auto
