@@ -566,14 +566,12 @@ footer p{margin-bottom:0.3rem}
         <tr><th>項目</th><th>説明</th></tr>
         <tr><td>左親指キー</td><td>左親指シフトキーに使うキー（デフォルト: VK_NONCONVERT = 無変換）</td></tr>
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
+        <tr><td>IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
         <tr><td>親指シフト ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
         <tr><td>親指シフト OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
         <tr><td>親指シフト切替ホットキー</td><td>グローバルホットキーで親指シフト ON/OFF をトグル</td></tr>
       </table>
-      <table class="tab-table" style="margin-top:0.5rem">
-        <tr><th>項目</th><th>説明</th></tr>
-        <tr><td>awase → IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
-      </table>
+      <p class="note">無変換キーを親指キーに選んでいる場合、「上級者向け設定（無変換キーの文字種トグル）」という折りたたみが追加で現れます。素の無変換キーで（awase を介さず）IME 側の文字種トグル機能をそのまま使いたい場合のみ開いてください。</p>
       <p class="note">「IME → awase」方向（外部 IME の状態変化を awase が解釈するための設定、半角/全角キー等）は GUI から撤去しました。既定値の漢字キーを変える利用者はほとんどおらず、他の候補（IME オン/オフキー）は物理的に存在しないキーのため GUI で選ばせる価値が薄いと判断したためです。必要な場合は下記「IME 検出キーの手動設定」の通り <code>config.toml</code> を直接編集すれば引き続き設定できます。</p>
     </div>
 

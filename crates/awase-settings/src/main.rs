@@ -983,32 +983,38 @@ impl SettingsApp {
         if self.config.general.left_thumb_key == "無変換"
             || self.config.general.right_thumb_key == "無変換"
         {
-            ui.indent("muhenkan_thumb_options", |ui| {
-                ui.checkbox(
-                    &mut self.config.general.muhenkan_solo_tap_always_suppress,
-                    "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                )
-                .on_hover_text(
-                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                     無変換キーの単独タップを常に完全に無視します。\n\
-                     MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
-                     割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
-                     awase の管理外に IME モードが切り替わることがあります。\n\
-                     無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
-                     場合のみ OFF にしてください。",
-                );
-                ui.checkbox(
-                    &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
-                )
-                .on_hover_text(
-                    "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
-                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                     ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
-                     IME によっては誤って入力モードが切り替わることがあります。\n\
-                     上の「常に無視する」が ON の間はこの設定は効きません。",
-                );
-            });
+            // 2026-08-15 ユーザー判断: 素の無変換キーで（awase を介さず）IME 側の
+            // 文字種トグル機能をそのまま使いたい、という上級者向けの設定のため
+            // 折りたたみにする。既定（常に無視する=ON）のままで問題ないユーザーが
+            // 大半のため。
+            egui::CollapsingHeader::new("上級者向け設定（無変換キーの文字種トグル）")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.checkbox(
+                        &mut self.config.general.muhenkan_solo_tap_always_suppress,
+                        "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
+                    )
+                    .on_hover_text(
+                        "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
+                         無変換キーの単独タップを常に完全に無視します。\n\
+                         MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
+                         割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
+                         awase の管理外に IME モードが切り替わることがあります。\n\
+                         無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
+                         場合のみ OFF にしてください。",
+                    );
+                    ui.checkbox(
+                        &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
+                        "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
+                    )
+                    .on_hover_text(
+                        "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
+                         抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
+                         ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
+                         IME によっては誤って入力モードが切り替わることがあります。\n\
+                         上の「常に無視する」が ON の間はこの設定は効きません。",
+                    );
+                });
         }
         if self.config.general.left_thumb_key == "変換"
             || self.config.general.right_thumb_key == "変換"
@@ -1040,6 +1046,30 @@ impl SettingsApp {
                 );
             });
         }
+        ui.add_space(8.0);
+
+        // 2026-08-15 ユーザー判断: 「awase → IME ON/OFFキー」は単に
+        // 「IME ON/OFFキー」へ改称。「IME → awase ON/OFFキー」（旧
+        // `tab_ime_detect`）は既に GUI から撤去済みで対比する相手が無くなった
+        // ため「awase → 」を残す意味が無い。多くのユーザーが実際に設定したい
+        // 項目のため、親指シフト ON/OFF より上に表示する。
+        ui.label("IME ON/OFFキー");
+        combo_key_list_ui(
+            ui,
+            "IME ON",
+            "ime_on",
+            &mut self.config.keys.ime_on,
+            &mut self.new_ime_on,
+            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+        );
+        combo_key_list_ui(
+            ui,
+            "IME OFF",
+            "ime_off",
+            &mut self.config.keys.ime_off,
+            &mut self.new_ime_off,
+            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+        );
         ui.add_space(8.0);
 
         // Engine on/off
@@ -1086,34 +1116,6 @@ impl SettingsApp {
                 engine_toggle_hover,
             );
         });
-        ui.add_space(8.0);
-
-        // 2026-08-15 ユーザー判断: ADR-092 決定E の折りたたみ「上級者向け設定」は
-        // 撤去した。「awase → IME ON/OFFキー」は多くのユーザーが実際に設定
-        // したい項目であり、「上級者向け」の裏に隠す理由が無い。「IME → awase
-        // ON/OFFキー」（`ime_detect.toggle/on/off`、旧 `tab_ime_detect`）自体は
-        // GUI から撤去した——既定値の VK_KANJI（漢字）を変える利用者はほぼ
-        // おらず、他の候補 VK_IME_ON/VK_IME_OFF は物理キーとして存在しない
-        // ため GUI で選ばせる価値が薄いという判断。`ImeDetectConfig`
-        // （データ構造・config.toml 手動編集）自体は変更していない——既定値は
-        // 引き続き機能し、必要な上級者は config.toml へ直接書ける。
-        ui.label("awase → IME ON/OFFキー");
-        combo_key_list_ui(
-            ui,
-            "IME ON",
-            "ime_on",
-            &mut self.config.keys.ime_on,
-            &mut self.new_ime_on,
-            "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
-        );
-        combo_key_list_ui(
-            ui,
-            "IME OFF",
-            "ime_off",
-            &mut self.config.keys.ime_off,
-            &mut self.new_ime_off,
-            "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
-        );
     }
 
     #[expect(clippy::too_many_lines)]
