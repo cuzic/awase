@@ -567,6 +567,7 @@ footer p{margin-bottom:0.3rem}
         <tr><td>左親指キー</td><td>左親指シフトキーに使うキー（デフォルト: VK_NONCONVERT = 無変換）</td></tr>
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
         <tr><td>IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
+        <tr><td>IME ON/OFF トグル</td><td>押した時点の IME 状態に応じて ON⇔OFF を反転するキー。既定: 漢字キー。複数登録可</td></tr>
         <tr><td>親指シフト ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
         <tr><td>親指シフト OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
         <tr><td>親指シフト切替ホットキー</td><td>グローバルホットキーで親指シフト ON/OFF をトグル</td></tr>
@@ -646,6 +647,9 @@ ime_on = ["Ctrl+変換"]
 
 # IME OFF（直接入力モードへ）
 ime_off = ["Ctrl+無変換"]
+
+# IME ON/OFF トグル（押した時点の IME 状態に応じて反転）
+ime_toggle = ["VK_KANJI"]
 
 # 緊急用: 無変換を単独で 400ms 以内に 3 連打するとエンジン OFF になる
 # Ctrl がスタックしてショートカットが効かなくなったときの最終手段。

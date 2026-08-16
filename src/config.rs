@@ -445,7 +445,7 @@ impl Default for KeysConfig {
             engine_off: vec!["Ctrl+Shift+無変換".to_string()],
             ime_on: vec!["Ctrl+変換".to_string()],
             ime_off: vec!["Ctrl+無変換".to_string()],
-            ime_toggle: Vec::new(),
+            ime_toggle: vec!["VK_KANJI".to_string()],
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
             engine_on_ime_key: None,
@@ -864,6 +864,17 @@ default_layout = "nicola.yab"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.keys.engine_on_ime_key, None);
         assert_eq!(config.keys.engine_off_ime_key, None);
+    }
+
+    /// `keys.ime_toggle` の既定値は漢字キー（`VK_KANJI`）（2026-08-16
+    /// ユーザー要望）。`VK_KANJI` は ADR-091 §1.2 で「Imm32Unavailable
+    /// プロファイル向けの真のトグル」として既に確立済みの冪等な IME
+    /// ON/OFF トグルキーであり、新設の GUI「IME ON/OFF トグル」欄の
+    /// 既定候補として妥当（`msime_key_assignment.rs`のドキュメント参照）。
+    #[test]
+    fn test_keys_config_default_ime_toggle_is_kanji_key() {
+        let keys = KeysConfig::default();
+        assert_eq!(keys.ime_toggle, vec!["VK_KANJI".to_string()]);
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が
