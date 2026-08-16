@@ -932,6 +932,93 @@ engine_off_solo_triple = "VK_NONCONVERT"
   </div>
 </section>
 
+<!-- よくある質問 -->
+<section id="faq">
+  <div class="container">
+    <h2 class="section-title">よくある質問（FAQ）</h2>
+    <p class="section-lead">利用者から寄せられた質問と回答をまとめました。</p>
+
+    <div class="card">
+      <h3>「と」と打つと「から」になるなど、法則的に文字化けする</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        IME の入力方式が「ローマ字入力」ではなく「かな入力」になっている可能性が高いです。
+        たとえば「と」（ローマ字では <code>to</code>）を JIS かな配列のキー位置として読むと「から」に、
+        「か」（<code>ka</code>）は「のち」になる、というように、打ったローマ字がそのまま
+        JIS かな配列上の文字として出力されると再現する症状です。
+      </p>
+      <p class="note">
+        awase はローマ字入力であることを前提に動作しています。IME 側の設定を確認し、
+        入力方式を「ローマ字入力」に戻してください。awase 側から IME を JIS かな入力へ
+        遷移させる手段は存在しないため、awase が自動的にこの状態を検出して直すことはできません。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>変換候補の選択がスペースキーでしかできない（親指キーで次候補に送れない）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        既定では、IME の誤動作防止のため親指キー（変換・無変換）の単独タップは常に無視されます
+        （設定画面「キー設定」タブの「変換キー単独タップを常に無視する」「無変換キー単独タップを
+        常に無視する」がいずれも既定で有効）。
+      </p>
+      <p class="note">
+        親指キーの単独タップを変換候補の送り選びに使いたい場合は、実際に親指キーへ割り当てている方
+        （左親指キーが無変換なら「無変換キー単独タップを常に無視する」、右親指キーが変換なら
+        「変換キー単独タップを常に無視する」）のチェックを外してください。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>単語の途中で無変換キーが誤反応する（意図せずかな種別が切り替わる等）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        同時打鍵のつもりで打った他のキーが、タイミングによって無変換キーの単独タップとして
+        検出されてしまうことがあります。上の項目でチェックを外している場合、この単独タップが
+        そのまま OS・IME に送られ、意図しないモード切り替えを引き起こします。
+      </p>
+      <p class="note">
+        「無変換キー単独タップを常に無視する」にチェックを入れる（既定は有効）と、単独タップを
+        一切送出しなくなり誤反応を防げます。ただし、この設定を有効にすると上の項目の
+        「親指キーで候補送り」はできなくなるため、両立しない点に注意してください。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>同時打鍵がシビアで特定の文字（「れ」等）が入力しづらい</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        基本設定タブの「同時打鍵閾値」（既定 100ms）を少し上げてみてください。自分の打鍵速度に
+        合わせて 150〜250ms あたりで調整すると改善することがあります。<code>config.toml</code> を
+        直接編集する場合は <code>simultaneous_threshold_ms</code> を書き換えます。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>Chrome / Edge / Brave 等で最初の1文字入力時に一瞬「あ」など別の文字が見えて消える</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        正常動作です。「捨て打ち機能」による cold start 対策で、IME の入力受付準備ができているかを
+        確認するために一瞬だけダミー文字を送っています。詳しくは「初期設定の手順」の
+        「Chrome / Edge での入力がうまくいかない場合」を参照してください。テキストエディタなど
+        アプリによっては warm 状態が保たれているため、この現象自体が起きないこともあります。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>：や＠などの記号がどのキーに割り当てられているか知りたい</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        ページ上部の「NICOLA 標準配列図」に全キーの割り当てが図示されています。独自配置にしたい
+        場合は、設定画面の「配列編集」タブまたは <code>.yab</code> ファイルの直接編集で変更できます。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>他の親指シフトソフト・IME 常駐ソフトと併用すると調子が悪い</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem">
+        Japanist・やまぶきR など、awase と同じくキーボード入力をフックする常駐ソフトとの併用は
+        避けてください。競合により入力が不安定になることがあります。awase に乗り換える場合は、
+        既存の親指シフトソフトをアンインストールしてから使用してください。
+      </p>
+    </div>
+  </div>
+</section>
+
 <!-- Footer -->
 <footer>
   <p><a href="index.html">トップページ</a> | <a href="https://github.com/cuzic/awase">GitHub</a></p>
