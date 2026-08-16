@@ -1,7 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod key_capture;
-
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -111,28 +109,6 @@ enum CaptureTarget {
     NewFrom,
     /// 新規ルールの to 主キー
     NewTo,
-}
-
-/// `combo_key_list_ui` が扱う4リストの識別子（`SettingsApp` の該当フィールドへ
-/// ディスパッチするために使う）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComboListId {
-    EngineOn,
-    EngineOff,
-    ImeOn,
-    ImeOff,
-}
-
-/// `combo_key_list_ui`（親指シフト ON/OFF・awase → IME ON/OFFキー）の
-/// OS レベルキーキャプチャ対象（2026-08-15、`key_capture` モジュール参照）。
-/// `CaptureTarget`（ショートカット再割当タブの egui キーイベント方式）とは
-/// 検出源が異なるため独立させている。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ComboCaptureTarget {
-    /// 既存エントリを丸ごと置き換える。
-    Existing(ComboListId, usize),
-    /// 新規追加行のバッファ（`NewComboBuf`）へ反映する。
-    New(ComboListId),
 }
 
 /// ログ初期化。
@@ -273,10 +249,6 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
-    // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ
-    // （None = 非キャプチャ中）。guard を保持している間だけフックが有効。
-    combo_capturing: Option<ComboCaptureTarget>,
-    combo_capture_guard: Option<key_capture::CaptureGuard>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
     // post_bypass add-buffers
@@ -339,8 +311,6 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            combo_capturing: None,
-            combo_capture_guard: None,
             new_override_bufs: Default::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -740,68 +710,6 @@ impl SettingsApp {
             }
         }
     }
-
-    /// `combo_capturing` が指すリスト（`config.keys.*`）への可変参照を返す。
-    fn combo_list_mut(&mut self, list: ComboListId) -> &mut Vec<String> {
-        match list {
-            ComboListId::EngineOn => &mut self.config.keys.engine_on,
-            ComboListId::EngineOff => &mut self.config.keys.engine_off,
-            ComboListId::ImeOn => &mut self.config.keys.ime_on,
-            ComboListId::ImeOff => &mut self.config.keys.ime_off,
-        }
-    }
-
-    /// `combo_capturing` が指すリストの「新規追加」バッファへの可変参照を返す。
-    fn combo_new_buf_mut(&mut self, list: ComboListId) -> &mut NewComboBuf {
-        match list {
-            ComboListId::EngineOn => &mut self.new_engine_on,
-            ComboListId::EngineOff => &mut self.new_engine_off,
-            ComboListId::ImeOn => &mut self.new_ime_on,
-            ComboListId::ImeOff => &mut self.new_ime_off,
-        }
-    }
-
-    /// `combo_capturing` 中に OS レベルフックが検出したキーを処理する
-    /// （`process_keymap_capture` の OS フック版）。
-    ///
-    /// Esc によるキャンセルは egui 側の検出に任せる（`key_capture` は
-    /// 観測対象を安全な固定 VK 集合に絞っており Esc を含まないため、
-    /// `process_keymap_capture` と対称にここでチェックする）。
-    fn process_combo_capture(&mut self, ctx: &egui::Context) {
-        let Some(target) = self.combo_capturing else {
-            return;
-        };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.combo_capturing = None;
-            self.combo_capture_guard = None;
-            return;
-        }
-        let captured: Option<key_capture::CapturedKey> = key_capture::take_captured();
-        let Some(captured) = captured else {
-            return;
-        };
-        self.combo_capturing = None;
-        self.combo_capture_guard = None;
-        match target {
-            ComboCaptureTarget::Existing(list, i) => {
-                if let Some(entry) = self.combo_list_mut(list).get_mut(i) {
-                    *entry = format_combo(
-                        captured.ctrl,
-                        captured.shift,
-                        captured.alt,
-                        captured.internal,
-                    );
-                }
-            }
-            ComboCaptureTarget::New(list) => {
-                let buf = self.combo_new_buf_mut(list);
-                buf.ctrl = captured.ctrl;
-                buf.shift = captured.shift;
-                buf.alt = captured.alt;
-                buf.main = captured.internal.to_string();
-            }
-        }
-    }
 }
 
 /// `process_keymap_capture` の内部結果型。
@@ -1140,22 +1048,16 @@ impl SettingsApp {
             ui,
             "親指シフト ON",
             "eng_on",
-            ComboListId::EngineOn,
             &mut self.config.keys.engine_on,
             &mut self.new_engine_on,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "親指シフトを ON にするキーの組み合わせです。\n複数登録できます。",
         );
         combo_key_list_ui(
             ui,
             "親指シフト OFF",
             "eng_off",
-            ComboListId::EngineOff,
             &mut self.config.keys.engine_off,
             &mut self.new_engine_off,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "親指シフトを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
         let solo_triple_hover = "指定キーを単独で素早く5回連続押下すると親指シフトを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
@@ -1200,22 +1102,16 @@ impl SettingsApp {
             ui,
             "IME ON",
             "ime_on",
-            ComboListId::ImeOn,
             &mut self.config.keys.ime_on,
             &mut self.new_ime_on,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
         );
         combo_key_list_ui(
             ui,
             "IME OFF",
             "ime_off",
-            ComboListId::ImeOff,
             &mut self.config.keys.ime_off,
             &mut self.new_ime_off,
-            &mut self.combo_capturing,
-            &mut self.combo_capture_guard,
             "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
         );
     }
@@ -2090,11 +1986,6 @@ impl eframe::App for SettingsApp {
             self.process_keymap_capture(ctx);
             ctx.request_repaint();
         }
-        // 親指シフト ON/OFF・awase → IME ON/OFFキーの OS レベルキーキャプチャ。
-        if self.combo_capturing.is_some() {
-            self.process_combo_capture(ctx);
-            ctx.request_repaint();
-        }
 
         // 現在編集している config.toml の実パスを常時表示する。
         //
@@ -2320,16 +2211,12 @@ struct NewComboBuf {
 /// メインキーのドロップダウンで組み立てる。既存エントリもその場で編集できる。
 /// `parse_combo_str`/`format_combo`（keymap タブと共通）で文字列化するため、
 /// バックエンドのパース（`vk::parse_key_combo`）・config 形式は変更不要。
-#[expect(clippy::too_many_arguments)]
 fn combo_key_list_ui(
     ui: &mut egui::Ui,
     label: &str,
     id: &str,
-    list: ComboListId,
     keys: &mut Vec<String>,
     new_entry: &mut NewComboBuf,
-    combo_capturing: &mut Option<ComboCaptureTarget>,
-    combo_capture_guard: &mut Option<key_capture::CaptureGuard>,
     tooltip: &str,
 ) {
     ui.label(format!("  {label}:")).on_hover_text(tooltip);
@@ -2347,12 +2234,6 @@ fn combo_key_list_ui(
             if changed {
                 *key = format_combo(ctrl, shift, alt, &main);
             }
-            combo_capture_button(
-                ui,
-                combo_capturing,
-                combo_capture_guard,
-                ComboCaptureTarget::Existing(list, i),
-            );
             if ui
                 .small_button("x")
                 .on_hover_text("押すと: この組み合わせを削除します。")
@@ -2372,12 +2253,6 @@ fn combo_key_list_ui(
         ui.checkbox(&mut new_entry.shift, "Shift");
         ui.checkbox(&mut new_entry.alt, "Alt");
         engine_key_combo(ui, &format!("{id}_new"), &mut new_entry.main, tooltip);
-        combo_capture_button(
-            ui,
-            combo_capturing,
-            combo_capture_guard,
-            ComboCaptureTarget::New(list),
-        );
         if ui
             .button("+追加")
             .on_hover_text("押すと: 上で組み立てたキーの組み合わせを一覧に追加します。")
@@ -2393,38 +2268,6 @@ fn combo_key_list_ui(
             *new_entry = NewComboBuf::default();
         }
     });
-}
-
-/// `combo_key_list_ui` 用のキャプチャボタン（`capture_button` の OS
-/// フック版）。押すと `key_capture::start()` でフックを起動し、次に押される
-/// 対象キーを待つ（`process_combo_capture` が毎フレーム消費する）。
-/// 待機中に再度押す、または他のボタンを押すとキャンセルされる
-/// （フックの guard が差し替わり Drop で解除される）。
-fn combo_capture_button(
-    ui: &mut egui::Ui,
-    capturing: &mut Option<ComboCaptureTarget>,
-    guard: &mut Option<key_capture::CaptureGuard>,
-    target: ComboCaptureTarget,
-) {
-    let is_active = *capturing == Some(target);
-    let label = if is_active { "⌨ 待機…" } else { "⌨" };
-    if ui
-        .selectable_label(is_active, label)
-        .on_hover_text(
-            "押すと: 実際に使いたいキー（無変換/変換/かな/F13-F20 等、\n\
-             修飾キーは押しっぱなしでOK）を待ち受けます。押されたキーが\n\
-             そのまま登録されます（Esc でキャンセル）。",
-        )
-        .clicked()
-    {
-        if is_active {
-            *capturing = None;
-            *guard = None;
-        } else {
-            *guard = key_capture::start();
-            *capturing = if guard.is_some() { Some(target) } else { None };
-        }
-    }
 }
 
 /// エンジン制御・IME制御用の main key ドロップダウン（`THUMB_KEY_OPTIONS` +
@@ -3229,8 +3072,6 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            combo_capturing: None,
-            combo_capture_guard: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
