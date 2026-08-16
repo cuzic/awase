@@ -983,37 +983,63 @@ impl SettingsApp {
         if self.config.general.left_thumb_key == "無変換"
             || self.config.general.right_thumb_key == "無変換"
         {
-            // 2026-08-15 ユーザー判断: 素の無変換キーで（awase を介さず）IME 側の
-            // 文字種トグル機能をそのまま使いたい、という上級者向けの設定のため
-            // 折りたたみにする。既定（常に無視する=ON）のままで問題ないユーザーが
-            // 大半のため。
-            egui::CollapsingHeader::new("上級者向け設定（無変換キーの文字種トグル）")
+            ui.indent("muhenkan_thumb_options", |ui| {
+                ui.checkbox(
+                    &mut self.config.general.muhenkan_solo_tap_always_suppress,
+                    "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
+                )
+                .on_hover_text(
+                    "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
+                     無変換キーの単独タップを常に完全に無視します。\n\
+                     MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
+                     割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
+                     awase の管理外に IME モードが切り替わることがあります。\n\
+                     無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
+                     場合のみ OFF にしてください。",
+                );
+                ui.checkbox(
+                    &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
+                    "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
+                )
+                .on_hover_text(
+                    "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
+                     抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
+                     ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
+                     IME によっては誤って入力モードが切り替わることがあります。\n\
+                     上の「常に無視する」が ON の間はこの設定は効きません。",
+                );
+            });
+
+            // 2026-08-15 ユーザー判断: ADR-091 §D3.2「専用Fnキー変換」（GJI の
+            // config1.db と組み合わせ、無変換キー単独タップで文字種をトグル
+            // するハック）を上級者向け設定として GUI に明示する。GJI 検出時に
+            // config1.db の設定を自動判定するのが主経路のため、通常は手動設定
+            // 不要——このドロップダウンは自動判定がうまく働かない場合や、
+            // 特定の Fn キーへ固定したい場合の上級者向け上書き。
+            egui::CollapsingHeader::new("上級者向け設定（GJI 専用Fnキー変換）")
                 .default_open(false)
                 .show(ui, |ui| {
-                    ui.checkbox(
-                        &mut self.config.general.muhenkan_solo_tap_always_suppress,
-                        "無変換キー単独タップを常に無視する（変換候補ウィンドウの表示有無を問わない）",
-                    )
-                    .on_hover_text(
-                        "ON(既定)の場合、変換候補ウィンドウが出ていないときも含めて、\n\
-                         無変換キーの単独タップを常に完全に無視します。\n\
-                         MS-IME は無変換キー単独打鍵に既定で「かな切替」（IME オン相当）を\n\
-                         割り当てているため、OFF にすると変換候補ウィンドウが出ていない場面で\n\
-                         awase の管理外に IME モードが切り替わることがあります。\n\
-                         無変換キー本来の機能（かな変換の取り消し等）を Windows 全般で使いたい\n\
-                         場合のみ OFF にしてください。",
+                    ui.label(
+                        "GJI（Google 日本語入力）を使っている場合、無変換キーの単独タップで\n\
+                         生の無変換キーを送る代わりに、専用のFnキー（既定候補: F21）を送る\n\
+                         よう切り替えられます。GJI 側の config1.db でこの Fn キーに\n\
+                         「かな種別切替」を割り当てておけば、awase を介さず GJI 自身の\n\
+                         機能で文字種（ひらがな/カタカナ等）をトグルできます\n\
+                         （ADR-091 §D3.2）。\n\
+                         \n\
+                         GJI 検出時に config1.db の設定を自動判定するのが主経路のため、\n\
+                         通常はここでの手動設定は不要です。自動判定がうまく働かない場合や、\n\
+                         意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
                     );
-                    ui.checkbox(
-                        &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
-                        "変換候補ウィンドウ表示中でも無変換キー単独タップを送出する",
-                    )
-                    .on_hover_text(
-                        "OFF(既定)の場合、変換候補ウィンドウ表示中は無変換キーの単独タップを\n\
-                         抑制します（IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）。\n\
-                         ON にすると、変換候補ウィンドウ表示中でも無変換キー本来の機能が使えますが、\n\
-                         IME によっては誤って入力モードが切り替わることがあります。\n\
-                         上の「常に無視する」が ON の間はこの設定は効きません。",
-                    );
+                    let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
+                    ui.horizontal(|ui| {
+                        ui.label("  専用Fnキー:").on_hover_text(dedicated_fn_key_hover);
+                        dedicated_fn_key_combo(
+                            ui,
+                            &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
+                            dedicated_fn_key_hover,
+                        );
+                    });
                 });
         }
         if self.config.general.left_thumb_key == "変換"
@@ -2185,6 +2211,59 @@ fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &
                 *current = None;
             }
             for (label, internal) in THUMB_KEY_OPTIONS {
+                if ui
+                    .selectable_label(current.as_deref() == Some(*internal), *label)
+                    .clicked()
+                {
+                    *current = Some((*internal).to_string());
+                }
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+}
+
+/// 専用Fnキー変換（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）の
+/// 候補一覧。`src/config.rs::validate_dedicated_fn_key`の`SAFE_RANGE`
+/// （VK_F15-VK_F24）と一致させること。`THUMB_KEY_OPTIONS`と異なり
+/// VK_F21-VK_F24 を意図的に含む——このハック自体が awase 内部で F21-F24 を
+/// 予約している用途そのもののため。
+const DEDICATED_FN_KEY_OPTIONS: &[(&str, &str)] = &[
+    ("F15", "VK_F15"),
+    ("F16", "VK_F16"),
+    ("F17", "VK_F17"),
+    ("F18", "VK_F18"),
+    ("F19", "VK_F19"),
+    ("F20", "VK_F20"),
+    ("F21", "VK_F21"),
+    ("F22", "VK_F22"),
+    ("F23", "VK_F23"),
+    ("F24", "VK_F24"),
+];
+
+/// `muhenkan_solo_tap_dedicated_fn_key` の選択 UI。`None` は「自動検出に
+/// 任せる」（GJI 検出時に config1.db を読んで判定、主経路）を意味する。
+fn dedicated_fn_key_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
+    let display = current.as_deref().map_or_else(
+        || "（未設定・自動検出）".to_string(),
+        |v| {
+            DEDICATED_FN_KEY_OPTIONS
+                .iter()
+                .find(|(_, internal)| *internal == v)
+                .map_or_else(|| v.to_string(), |(d, _)| (*d).to_string())
+        },
+    );
+    egui::ComboBox::from_id_salt("muhenkan_dedicated_fn_key")
+        .selected_text(display)
+        .width(140.0)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(current.is_none(), "（未設定・自動検出）")
+                .clicked()
+            {
+                *current = None;
+            }
+            for (label, internal) in DEDICATED_FN_KEY_OPTIONS {
                 if ui
                     .selectable_label(current.as_deref() == Some(*internal), *label)
                     .clicked()
