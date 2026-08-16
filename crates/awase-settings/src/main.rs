@@ -1029,14 +1029,11 @@ impl SettingsApp {
                          意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
                     );
                     let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
-                    ui.horizontal(|ui| {
-                        ui.label("  専用Fnキー:").on_hover_text(dedicated_fn_key_hover);
-                        dedicated_fn_key_combo(
-                            ui,
-                            &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
-                            dedicated_fn_key_hover,
-                        );
-                    });
+                    dedicated_fn_key_combo(
+                        ui,
+                        &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
+                        dedicated_fn_key_hover,
+                    );
                     ui.add_space(4.0);
 
                     // 上のドロップダウンは awase 側の設定（無変換単独タップで
@@ -1169,7 +1166,7 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         // Toggle hotkey
-        ui.label("トグルホットキー");
+        ui.label("親指シフト ON/OFF トグル");
         let engine_toggle_hover =
             "親指シフトの ON/OFF をトグルするホットキーです。\nシステム全体で有効です。";
         ui.horizontal(|ui| {
