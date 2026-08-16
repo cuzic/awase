@@ -2317,42 +2317,37 @@ fn dedicated_fn_key_combo(ui: &mut egui::Ui, current: &mut Option<String>, toolt
 }
 
 /// 無変換/変換キー単独タップの抑制方針。実体は `*_solo_tap_always_suppress`/
-/// `*_solo_tap_ignore_composing_guard` の2boolだが、`always_suppress=true`の間は
-/// `ignore_composing_guard`が無視される（実質3択）ため、GUI上は独立した2つの
-/// チェックボックスではなく1つの3状態コンボボックスとして見せる。config.tomlの
-/// スキーマ・エンジン側（`nicola_fsm.rs`等）は従来通り2bool独立のまま変更しない。
+/// `*_solo_tap_ignore_composing_guard` の2boolだが、GUI上は「常に無視する」/
+/// 「常に送出する」の2択コンボボックスとして見せる。当初は変換候補ウィンドウ
+/// 表示中かどうかで挙動を変える中間状態も設けていたが、その判定（composing、
+/// UIA/MSAAのフォーカス監視に依存）自体がこのリポジトリでは何度も裏切ってきた
+/// 実績があり（例: BUG-11 の UIA キャッシュ汚染）、信頼できない判定を条件にした
+/// 中間状態を持たせても挙動が読めないだけと判断し2026-08-15に2択へ簡略化した
+/// （ユーザー判断）。config.tomlのスキーマ・エンジン側（`nicola_fsm.rs`等）は
+/// 従来通り2bool独立のまま変更しない——「常に送出する」選択時は
+/// `ignore_composing_guard`を`true`に固定することで、常にcomposing判定を
+/// 無視した一貫した挙動にする。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SoloTapSuppressMode {
     AlwaysSuppress,
-    SuppressWhileComposing,
-    NeverSuppress,
+    PassThrough,
 }
 
 impl SoloTapSuppressMode {
-    const ALL: [Self; 3] = [
-        Self::AlwaysSuppress,
-        Self::SuppressWhileComposing,
-        Self::NeverSuppress,
-    ];
+    const ALL: [Self; 2] = [Self::AlwaysSuppress, Self::PassThrough];
 
-    fn from_bools(always_suppress: bool, ignore_composing_guard: bool) -> Self {
+    fn from_bools(always_suppress: bool) -> Self {
         if always_suppress {
             Self::AlwaysSuppress
-        } else if ignore_composing_guard {
-            Self::NeverSuppress
         } else {
-            Self::SuppressWhileComposing
+            Self::PassThrough
         }
     }
 
     fn apply(self, always_suppress: &mut bool, ignore_composing_guard: &mut bool) {
         match self {
             Self::AlwaysSuppress => *always_suppress = true,
-            Self::SuppressWhileComposing => {
-                *always_suppress = false;
-                *ignore_composing_guard = false;
-            }
-            Self::NeverSuppress => {
+            Self::PassThrough => {
                 *always_suppress = false;
                 *ignore_composing_guard = true;
             }
@@ -2362,29 +2357,25 @@ impl SoloTapSuppressMode {
     fn label(self) -> &'static str {
         match self {
             Self::AlwaysSuppress => "常に無視する（既定）",
-            Self::SuppressWhileComposing => "変換候補ウィンドウ表示中のみ抑制する",
-            Self::NeverSuppress => "常に送出する（変換候補ウィンドウ表示中も含む）",
+            Self::PassThrough => "常に送出する（パススルー）",
         }
     }
 
     fn hover_text(self, key_label: &str, default_hijack_risk: &str) -> String {
         match self {
             Self::AlwaysSuppress => format!(
-                "変換候補ウィンドウの表示有無を問わず、{key_label}キーの単独タップを\n\
-                 常に完全に無視します（OS へ一切送出しません）。\n\
+                "{key_label}キーの単独タップを常に完全に無視します\n\
+                 （OS へ一切送出しません）。\n\
                  {default_hijack_risk}\n\
                  {key_label}キー本来の機能を Windows 全般で使いたい場合のみ\n\
-                 他の選択肢にしてください。"
+                 「常に送出する」にしてください。"
             ),
-            Self::SuppressWhileComposing => format!(
-                "変換候補ウィンドウ表示中は{key_label}キーの単独タップを抑制し\n\
-                 （IME のかな/カタカナ切替・再変換が誤って起きるのを防ぐため）、\n\
-                 それ以外の場面では{key_label}キー本来の機能を送出します。"
-            ),
-            Self::NeverSuppress => format!(
-                "変換候補ウィンドウの表示有無に関わらず、常に{key_label}キー本来の\n\
-                 機能を送出します。IME によっては誤って入力モードが切り替わる\n\
-                 ことがあります（{default_hijack_risk}）。"
+            Self::PassThrough => format!(
+                "{key_label}キーの単独タップを常に{key_label}キー本来の機能として\n\
+                 OS へ送出します。変換候補ウィンドウの表示有無では挙動を\n\
+                 変えません（この判定自体がフォーカス監視に依存し必ずしも\n\
+                 信頼できないため、中間の挙動は設けていません）。\n\
+                 {default_hijack_risk}"
             ),
         }
     }
@@ -2402,7 +2393,7 @@ fn solo_tap_suppress_combo(
     always_suppress: &mut bool,
     ignore_composing_guard: &mut bool,
 ) {
-    let mut mode = SoloTapSuppressMode::from_bools(*always_suppress, *ignore_composing_guard);
+    let mut mode = SoloTapSuppressMode::from_bools(*always_suppress);
     ui.horizontal(|ui| {
         ui.label(format!("{key_label}キー単独タップ:"));
         egui::ComboBox::from_id_salt(format!("{key_label}_solo_tap_suppress"))
