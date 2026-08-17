@@ -451,9 +451,6 @@ impl Runtime {
         now_tick_at_spawn: crate::state::TickMs,
         explicit_action_ms_at_spawn: u64,
     ) {
-        // JISかな化復元（Apply(3)）のレート制限。この関数末尾の restore_roman 分岐でのみ使う。
-        const ROMAN_RESTORE_MIN_INTERVAL_MS: u64 = 3_000;
-
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
         if self.platform_state.gate.shift_conv_guard_pending
             || self.platform_state.gate.half_width_alnum_toggle_active
@@ -607,72 +604,6 @@ impl Runtime {
         // Apply(2): engine 同期を 1 経路で dispatch する（従来 5 箇所の
         // handle_engine_set_open をここに集約）。
         self.kp_apply_conv_engine_sync(transition.engine, conv, now_tick);
-
-        // Apply(3): JISかな化（ひらがな conv で ROMAN 無し）→ ローマ字入力の復元（BUG-08）。
-        // 外部注入 VK_KANA 等でかなロックがトグルされると GJI/MS-IME がかな入力に
-        // 反転し、engine の romaji VK 出力が壊滅する。awase が conv を所有する
-        // ウィンドウ（conv_mutation_allowed）でのみ、非同期・冪等に ROMAN を立て直す。
-        //
-        // レート制限: classify は steady-state の JISかな conv でも復元を要求する
-        // （変化検出は別経路が先に消費するため頼れない）ので、送信間隔をここで抑える。
-        // 復元が成功すれば次回 conv=ROMAN 付きになり要求自体が止まる。復元が効かない
-        // 環境でも最悪この間隔で IMC_SETCONVERSIONMODE を打つだけ（冪等・非同期）。
-        if transition.restore_roman
-            && self.platform.output.conv_mutation_allowed.get()
-            && now_tick.saturating_sub(self.platform.output.last_roman_restore_ms.get())
-                >= ROMAN_RESTORE_MIN_INTERVAL_MS
-        {
-            // pre-stamp: Failed（恒久的に効かない環境）が毎打鍵ごとに叩き続けるのを
-            // 防ぐレート制限として、spawn 前に先に打つ（既存どおり）。ただし
-            // Aborted（ターゲット競合）や capture 失敗は「一度も書いていない」ため、
-            // このスタンプだけ消費すると JIS かな化が最大 ROMAN_RESTORE_MIN_INTERVAL_MS
-            // (3000ms) 続く新しい退行になる（opus レビュー指摘 2026-08-08）。
-            // async 完了時に Aborted/capture 失敗のときだけ CAS 風に巻き戻す
-            // （待機中に他経路が成功スタンプしていたら壊さないよう、値が
-            // still ours のときのみ戻す）。
-            let stamp_before = self.platform.output.last_roman_restore_ms.get();
-            self.platform.output.last_roman_restore_ms.set(now_tick.0);
-            log::info!(
-                "[idle-conv-check] JISかな化を検出 (conv=0x{conv:08X}, ROMAN 喪失) → \
-                 ローマ字入力を復元"
-            );
-            // ADR-086 INV-14: 起案時点（＝今、レート制限チェックと同一の同期区間）の
-            // focus_gen を捕獲する。
-            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
-            win32_async::spawn_local(async move {
-                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    log::debug!(
-                        "[idle-conv-check] capture 失敗（フォーカス無し） → スタンプ巻き戻し"
-                    );
-                    let _ = crate::with_app(|runtime| {
-                        let cell = &runtime.platform.output.last_roman_restore_ms;
-                        if cell.get() == now_tick.0 {
-                            cell.set(stamp_before);
-                        }
-                    });
-                    return;
-                };
-                let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
-                    crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())
-                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
-                })
-                .await;
-                if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                    log::warn!("[idle-conv-check] ローマ字入力復元できず: {outcome:?}");
-                }
-                if matches!(outcome, crate::ime::ActuationOutcome::Aborted(_)) {
-                    // Aborted は「一度も書いていない」ので、スタンプが待機中に
-                    // 他経路の成功で更新されていない限り巻き戻す（次回 idle-conv-check
-                    // を 3000ms 待たせず最短 500ms 台まで早める）。
-                    let _ = crate::with_app(|runtime| {
-                        let cell = &runtime.platform.output.last_roman_restore_ms;
-                        if cell.get() == now_tick.0 {
-                            cell.set(stamp_before);
-                        }
-                    });
-                }
-            });
-        }
     }
 
     /// idle-conv-check の engine 同期を単一経路で適用する。

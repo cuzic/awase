@@ -280,17 +280,33 @@ ROMAN ビットを信用しない設計）のため conv=0x0009 を読んでも 
    `restore_roman` は `is_roman_reliable=true` の文脈のみ発火する仕様に変更 —
    TsfNative idle 経路（常に false）では発火せず、実質 hook 層の VK_KANA swallow が
    本物のかなロックトグルへの防御となる。docs/experiments.md エントリ 03 参照。
+   **【2026-08-17 撤去（BUG-61）】** 層2（`restore_roman`）はこの時点で既に
+   構造的に発火しえなくなっていた——`classify_conv_transition` の唯一の本番
+   呼び出し元 `kp_stage_idle_conv_check` は TsfNative アプリ限定（ガード2）かつ
+   `is_roman_reliable` を常に `false` で渡すため。加えて BUG-61 の実機検証で、
+   そもそも復元の書き込み手段（IMC write・VK 注入）自体が Windows Terminal +
+   MS-IME で一切効かない（Win32 に入力方式を切り替える公式 API が存在しない）
+   と確定した。この二重の理由（構造的に発火しない・発火しても効かない）から
+   `restore_roman` フィールド・関連コード・unit test 6本・`ROMAN_RESTORE_MIN_
+   INTERVAL_MS`・`last_roman_restore_ms` を全て撤去した。**唯一の防御は
+   hook 層1（VK_KANA swallow）のみになった。**
 
-**再発防止テスト:** `state/conv_classify.rs` の unit tests（`jiskana_transition_while_open_requests_restore_roman` 等 6 件 + 不変条件）、
-`tests/journals/jiskana-vk-kana-injection.json`（実機ログからの リプレイ fixture、Linux でも実行可）。
+**再発防止テスト:** `state/conv_classify.rs::exhaustive_classify_conv_transition_matches_independent_oracle`
+（全数網羅オラクル、層2撤去後も engine 同期ロジックの回帰は引き続きこれで検知する）、
+`tests/journals/jiskana-vk-kana-injection.json`（実機ログからのリプレイ fixture、Linux でも実行可。
+層2撤去に伴い期待値からは `restore_roman` を削除済み、反転記録として本文は残してある）。
 
-**関連ファイル:** `hook.rs`（swallow）、`state/conv_classify.rs`（検出）、
-`runtime/key_pipeline.rs`（Apply(3) 復元）、`ime.rs::set_ime_romaji_mode_with_target`
+**関連ファイル:** `hook.rs`（swallow、唯一現存する防御）、`state/conv_classify.rs`（検出、
+`restore_roman` は撤去済み）
 
-**残存リスク:** 注入元が VK_KANA 以外の経路（ImmSetConversionStatus 直叩き等）でかな化
-させる場合は hook 層では防げないが、その場合も idle-conv-check 層が数秒で復元する。
-物理 VK_KANA を意図的に押した場合も同様に復元される（awase engine ON 中の JIS かな入力は
-サポートしない設計判断）。
+**残存リスク（2026-08-17 訂正）:** 注入元が VK_KANA 以外の経路
+（`ImmSetConversionStatus` 直叩き等）でかな化させる場合、または物理 VK_KANA を
+意図的に押した場合、hook 層の swallow をすり抜けると **awase 側に復旧手段は
+存在しない**（BUG-61 で確定）。旧記述「idle-conv-check 層が数秒で復元する」は
+誤りだった——この誤った前提のまま `hook.rs` が別の物理キー（Alt+かな）を
+素通しする判断根拠にも使われ、BUG-62（無回復のまま JIS かな化する事例）が
+2026-08-09 まで見過ごされる一因になった。唯一の確実な回避策は、MS-IME の
+言語バー等で**ユーザー自身が手動で切り替える**ことのみ（BUG-61 参照）。
 
 ---
 
