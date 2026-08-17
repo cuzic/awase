@@ -158,9 +158,6 @@ pub struct Output {
     /// `send_eager_tsf_warmup` / `ImmSetConversionStatus` 等の conv mutation を一括ガードする。
     /// `Platform::set_conv_mode_authority` が `allows_conv_mutation()` の結果を push する。
     pub(crate) conv_mutation_allowed: std::cell::Cell<bool>,
-    /// JISかな化からのローマ字入力復元（BUG-08 Apply(3)）を最後に送った時刻
-    /// （`GetTickCount64` 由来）。steady-state 検出のレート制限に使う。
-    pub(crate) last_roman_restore_ms: std::cell::Cell<u64>,
     /// `send_chrome_gji_reinit_and_poll` を最後に送った時刻（`GetTickCount64` 由来）。
     ///
     /// BUG-33: per-VK confirm の give-up（`RawTsfLiteralRecovery` 連続失敗）から
@@ -264,7 +261,6 @@ impl Output {
             shift_conv_guard_gen: std::cell::Cell::new(0),
             observe_unicode_literal: std::sync::atomic::AtomicBool::new(false),
             conv_mutation_allowed: std::cell::Cell::new(false),
-            last_roman_restore_ms: std::cell::Cell::new(0),
             last_gji_reinit_ms: std::cell::Cell::new(0),
             pending_gji_reinit_cold_seq: std::cell::Cell::new(None),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),

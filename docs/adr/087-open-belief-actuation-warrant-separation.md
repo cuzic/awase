@@ -1652,7 +1652,8 @@ M-D（キー粒度を統合しない判断）についても「目的が違う�
   に委譲、`engine`/`restore_roman` は `Charset` への直接 `matches!` で
   独立に再導出、production の `has_native`/`has_katakana`/`is_eisu()`
   ヘルパー経由の導出は使わない）と突き合わせる。初回コンパイルで
-  不一致ゼロ。
+  不一致ゼロ（`restore_roman`自体は2026-08-17、BUG-61を受けて撤去済み。
+  `docs/known-bugs.md` BUG-08参照）。
 - **`class_names.rs` の分類関数クラスタ**（`AppImeProfile::from_class_name`
   / `is_effectively_tsf_native` / `cannot_verify_real_ime_state` /
   `should_reprime_on_lightweight_focus_sync` / 4つの getter）: round3 M1

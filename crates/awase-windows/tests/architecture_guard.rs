@@ -1309,7 +1309,7 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/output/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口、2026-08-08 Runtime→Output移設）
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
-        ("src/runtime/key_pipeline.rs", 4), // kp_stage_idle_conv_check(BUG-08) / kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)
+        ("src/runtime/key_pipeline.rs", 3), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)（apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
     ];
 
     let all_files = list_src_files();
@@ -1406,9 +1406,9 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
         }
     }
     assert_eq!(
-        checked, 7,
+        checked, 6,
         "ActuationTarget::capture を含む spawn_local ブロックの検査対象数が \
-         想定(7)と異なります。新しい経路を追加/削除した場合は \
+         想定(6)と異なります。新しい経路を追加/削除した場合は \
          actuation_target_capture_call_sites_are_accounted_for と合わせて \
          この期待値も更新すること。"
     );
