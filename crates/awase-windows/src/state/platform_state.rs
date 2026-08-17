@@ -445,7 +445,7 @@ impl ImeStateHub {
     /// 観測プールの `derive_open_filtered()`/`most_recent_trusted()` にフォールバック
     /// する。TsfNative（MS-IME 等、conv ビットからの間接推論しか観測源が無い
     /// プロファイル）ではこのフォールバックが `ConvOpenInference`
-    /// （`NativeToggleShadowOff`/`KatakanaShadowOff`、conv=NATIVE を「open」と誤読する
+    /// （`NativeToggleShadowOff`（旧 `KatakanaShadowOff` を統合済み）、conv=NATIVE を「open」と誤読する
     /// BUG-55 由来の壊れた観測）1 件だけで確定してしまい、`desired_open` が正しく
     /// false のままでも `effective_open()` が true に反転する。`Engine::compute_state`
     /// はこれを直接 `ctx.ime_on` として使うため、実 IME は正しく OFF なのに Engine
@@ -1213,7 +1213,7 @@ impl ImeStateHub {
     }
 
     /// idle-conv-check の conv ビット推論から得た IME open 状態を観測として記録する
-    /// (`KatakanaShadowOff` / `NativeToggleShadowOff`、`conv_classify::EngineSync::
+    /// (`NativeToggleShadowOff`（旧 `KatakanaShadowOff` を統合済み）、`conv_classify::EngineSync::
     /// ReportOpenInference` 経由)。
     ///
     /// `desired_open` を直接書き換えない — `ObserverReported` として `observations`
@@ -1725,7 +1725,7 @@ mod tests {
     fn report_conv_open_inference_does_not_touch_desired_open_or_last_intent() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
         ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         assert!(
             !ps.ime.model().desired_open(),
             "conv 由来の open 推論は desired_open を書き換えない"
@@ -1744,7 +1744,7 @@ mod tests {
     ) {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
         ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
         let explicit_intent = ps.ime.explicit_intent();
         match ps.ime.check_drift_correction(now, explicit_intent) {
@@ -1766,7 +1766,7 @@ mod tests {
     fn check_drift_correction_ignores_conv_inference_alone_without_explicit_intent() {
         let mut ps = ps_with_shadow(false, None, true);
         ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         // 明示意図が無いので threshold=DRIFT_CORRECTION_THRESHOLD_MS。実時間 sleep を
         // 避けるため drift.started_at を直接バックデートして閾値超過を模す。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
@@ -1789,7 +1789,7 @@ mod tests {
     fn check_drift_correction_none_when_conv_inference_matches_desired() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::PhysicalImeKey), true);
         ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
         let explicit_intent = ps.ime.explicit_intent();
         assert_eq!(
@@ -1806,7 +1806,7 @@ mod tests {
     fn check_drift_correction_ignores_stale_conv_inference_beyond_max_age() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
         ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::KatakanaShadowOff, TickMs(0));
+            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let stale_at = std::time::Instant::now()
             - std::time::Duration::from_millis(
                 crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200,

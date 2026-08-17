@@ -2,6 +2,10 @@
 
 ## ステータス
 
+**廃止（[ADR-094](094-charset-axis-and-force-policy-removal.md)、2026-08-17）。**
+`conv_mode_policy` 設定と本 ADR が定める force の目標値・大枠の方針は全撤去した。
+charset 軸自体の追跡を撤去したことに伴う撤去であり、以下は歴史的記録として残す。
+
 実装済み（2026-08-05）。デフォルトは `observe`（従来動作、無効）。Windows 実機での
 動作確認は未実施。
 

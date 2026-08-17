@@ -323,9 +323,6 @@ pub enum OpenApplyReason {
     /// `Engine::on_input`/`on_timeout` の `Decision::SetOpen` エフェクトによる、
     /// 通常のキー入力駆動の適用（`executor.rs::execute_one`/`dispatch_ime_set_open`）。
     EngineDecision,
-    /// `conv_mode_policy = force` による open 再送（ADR-086 Phase 3 item 1、
-    /// `Runtime::force_open_pending` の消費点から発火）。
-    ForcePolicyResend,
     /// IMM32 クロスプロセス制御が使えないアプリ（TsfNative 等）向けの、
     /// `force_policy` によらない applied スロットル付き強制 ON
     /// （`apply_force_on_for_imm_broken` の非 force 分岐、既存挙動）。

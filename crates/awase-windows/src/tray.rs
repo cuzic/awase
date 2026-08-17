@@ -14,7 +14,7 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DestroyWindow, GetCursorPos, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED, MF_POPUP,
+    TrackPopupMenu, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, ICONINFO, MF_CHECKED,
     MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL, TPM_BOTTOMALIGN, TPM_LEFTALIGN, WM_CLOSE, WM_COMMAND,
     WM_DESTROY, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPEDWINDOW,
 };
@@ -56,14 +56,10 @@ const IDM_EXIT: u16 = 1002;
 /// 配列選択メニュー項目のベース ID
 const IDM_LAYOUT_BASE: u16 = 100;
 
-/// Caps Lock / IME 状態 / JISかな・ローマ字 メニュー項目 ID
+/// Caps Lock / IME 状態リセット メニュー項目 ID
 const IDM_CAPSLOCK: u16 = 200;
-const IDM_IME_HIRAGANA: u16 = 201;
-const IDM_IME_FULL_KATAKANA: u16 = 202;
-const IDM_IME_FULL_ALPHA: u16 = 203;
-const IDM_IME_HALF_ALPHA: u16 = 204;
-const IDM_IME_HALF_KATAKANA: u16 = 205;
-const IDM_IME_DIRECT: u16 = 206;
+// IDM_IME_HIRAGANA(201)〜IDM_IME_DIRECT(206) は 2026-08-17、ADR-094 で
+// charset 軸（ひらがな/カタカナ×全角/半角の追跡）自体を撤去したのに伴い削除。
 // IDM_INPUT_ROMAJI(207)/IDM_INPUT_KANA(208) は BUG-61 で撤去。実機確認の結果
 // IMC write（ImmSetConversionStatus）が実モードに反映されず「押しても何も
 // 変化しない」ことが確認されたため、tray 経由の手動テストハーネスとしては
@@ -85,12 +81,6 @@ pub enum TrayCommand {
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
     CapsLock,
-    ImeHiragana,
-    ImeFullKatakana,
-    ImeFullAlpha,
-    ImeHalfAlpha,
-    ImeHalfKatakana,
-    ImeDirect,
     ResetState,
 }
 
@@ -576,71 +566,20 @@ pub fn handle_tray_message(
             append_menu_sep(hmenu);
         }
 
-        // Caps Lock / IME 状態 / JISかな・ローマ字
+        // Caps Lock
         let caps_lock_on = crate::ime::is_caps_lock_on();
-        let snap = crate::ime::read_ime_state_full();
-
-        let ime_on = snap.ime_on.unwrap_or(false);
-        let conv = snap.conversion_mode.unwrap_or(0);
-
-        let is_native = (conv & crate::imm::IME_CMODE_NATIVE) != 0;
-        let is_katakana = (conv & crate::imm::IME_CMODE_KATAKANA) != 0;
-        let is_fullshape = (conv & crate::imm::IME_CMODE_FULLSHAPE) != 0;
-
-        let hiragana_checked = ime_on && is_native && !is_katakana && is_fullshape;
-        let full_katakana_checked = ime_on && is_native && is_katakana && is_fullshape;
-        let full_alpha_checked = ime_on && !is_native && is_fullshape;
-        let half_alpha_checked = ime_on && !is_native && !is_fullshape;
-        let half_katakana_checked = ime_on && is_native && is_katakana && !is_fullshape;
-        let direct_checked = !ime_on;
-
         append_menu_item_checked(hmenu, IDM_CAPSLOCK, "Caps Lock", caps_lock_on);
 
-        let h_ime_menu = CreatePopupMenu().unwrap_or_default();
-        if !h_ime_menu.is_invalid() {
-            append_menu_item_checked(h_ime_menu, IDM_IME_HIRAGANA, "ひらがな", hiragana_checked);
-            append_menu_item_checked(
-                h_ime_menu,
-                IDM_IME_FULL_KATAKANA,
-                "全角カタカナ",
-                full_katakana_checked,
-            );
-            append_menu_item_checked(
-                h_ime_menu,
-                IDM_IME_FULL_ALPHA,
-                "全角英数",
-                full_alpha_checked,
-            );
-            append_menu_item_checked(
-                h_ime_menu,
-                IDM_IME_HALF_ALPHA,
-                "半角英数",
-                half_alpha_checked,
-            );
-            append_menu_item_checked(
-                h_ime_menu,
-                IDM_IME_HALF_KATAKANA,
-                "半角カタカナ",
-                half_katakana_checked,
-            );
-            append_menu_item_checked(h_ime_menu, IDM_IME_DIRECT, "直接入力", direct_checked);
-
-            let ime_title_wide = crate::win32::to_wide("IME 状態");
-            let _ = AppendMenuW(
-                hmenu,
-                MF_POPUP,
-                h_ime_menu.0 as usize,
-                PCWSTR(ime_title_wide.as_ptr()),
-            );
-        }
-
+        // 「IME 状態」サブメニュー（ひらがな/全角カタカナ/全角英数/半角英数/
+        // 半角カタカナ/直接入力の charset 選択）は 2026-08-17、ADR-094 で
+        // charset 軸の追跡自体を撤去したのに伴い削除した。
         // 「JISかな / ローマ字」submenu は BUG-61 で撤去（IDM_INPUT_ROMAJI/KANA の
         // コメント参照）。
 
         append_menu_item(
             hmenu,
             IDM_RESET_STATE,
-            "状態をリセット (Engine ON/Caps OFF/ひらがな/ローマ字)",
+            "状態をリセット (Engine ON/Caps OFF/ひらがな)",
         );
 
         // 実験: cold warmup（F2送信/probe待機/捨て駒スキップ、per-VK confirm）は
@@ -699,12 +638,6 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_RESTART => Some(TrayCommand::Restart),
         IDM_ABOUT => Some(TrayCommand::About),
         IDM_CAPSLOCK => Some(TrayCommand::CapsLock),
-        IDM_IME_HIRAGANA => Some(TrayCommand::ImeHiragana),
-        IDM_IME_FULL_KATAKANA => Some(TrayCommand::ImeFullKatakana),
-        IDM_IME_FULL_ALPHA => Some(TrayCommand::ImeFullAlpha),
-        IDM_IME_HALF_ALPHA => Some(TrayCommand::ImeHalfAlpha),
-        IDM_IME_HALF_KATAKANA => Some(TrayCommand::ImeHalfKatakana),
-        IDM_IME_DIRECT => Some(TrayCommand::ImeDirect),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))

@@ -224,16 +224,10 @@ fn b1_with_app_confined_to_orchestrator_modules() {
         (
             "output/conv_actuation.rs",
             "crate::with_app(|runtime| runtime.platform.output.ime_mode_focus_gen.get())",
-            // actuate_conv_mode_with_completion の spawn_local(async move) 内、
+            // actuate_conv_mode の spawn_local(async move) 内、
             // set_ime_conv_for_target の verify_still_current クロージャ。
             // ime_mode_focus_gen は Runtime/Output 非依存な ime.rs から
             // 読めないため with_app 経由が必須（ADR-086 INV-14）。
-        ),
-        (
-            "output/conv_actuation.rs",
-            "crate::with_app(|runtime| {",
-            // consume_force_pending_and_actuate の on_async_result コールバック
-            // （spawn_local(async move) 完了後に呼ばれる）内、force_pending の再武装判定。
         ),
     ];
     let src = manifest().join("src");

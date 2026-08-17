@@ -16,11 +16,13 @@ use awase::engine::{ConvMode, InputModeState};
 /// engine ON 同期の理由。ログとテストの両方で「どの規則が発火したか」を固定する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConvSyncReason {
-    /// カタカナ (NATIVE+KATAKANA) を観測し shadow=OFF → engine ON 同期。
-    KatakanaShadowOff,
     /// belief が romaji 不可→可 に回復 かつ shadow=ON → engine 再起動。
     RomajiRecovered,
     /// ひらがな/カタカナ (NATIVE) への切替を観測し shadow=OFF → engine ON 同期。
+    ///
+    /// 2026-08-17、ADR-094 で charset 軸（ひらがな/カタカナの区別）の追跡を
+    /// 撤去したのに伴い、かつて別 variant だった `KatakanaShadowOff` はこちらへ
+    /// 統合した。
     NativeToggleShadowOff,
 }
 
@@ -43,8 +45,7 @@ pub enum EngineSync {
     /// 確証（conv=0x10 は ROMAN ビット付き半角英数）のため、`effective_open=true` の
     /// belief を直接注入して apply する。
     DirectInput,
-    /// conv ビットが shadow=OFF 中に NATIVE/KATAKANA への切替を示した
-    /// (`KatakanaShadowOff` / `NativeToggleShadowOff`)。
+    /// conv ビットが shadow=OFF 中に NATIVE への切替を示した (`NativeToggleShadowOff`)。
     ///
     /// かつては `SetOpen` として `handle_engine_set_open(true)` を直接呼び、
     /// `UserImeSetIntent{Command}` を偽装して `desired_open` を書き換えていた。
@@ -98,9 +99,9 @@ pub fn classify_conv_transition(
     is_roman_reliable: bool,
 ) -> ConvTransition {
     let input_mode_update = cm.classify_idle(is_cold, current, is_roman_reliable);
-    // NATIVE=0 ⟺ 英数モード (is_eisu)。KATAKANA は Charset で判定する。
+    // NATIVE=0 ⟺ 英数モード (is_eisu)。charset 軸（ひらがな/カタカナの区別）は
+    // 2026-08-17 ADR-094 で追跡を撤去したため、NATIVE の有無だけで判断する。
     let has_native = !cm.is_eisu();
-    let has_katakana = cm.charset.is_katakana();
     let was_romaji_capable = current.is_romaji_capable();
 
     // belief 変化なし (None) の場合:
@@ -124,23 +125,13 @@ pub fn classify_conv_transition(
     // `effective_open` を要求する romaji 回復分岐と排他になる。
     let engine = input_mode_update.map_or(
         if has_native && !effective_open {
-            let reason = if has_katakana {
-                ConvSyncReason::KatakanaShadowOff
-            } else {
-                ConvSyncReason::NativeToggleShadowOff
-            };
-            EngineSync::ReportOpenInference(reason)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         } else {
             EngineSync::None
         },
         |new_mode| {
             if matches!(new_mode, InputModeState::ObservedEisu) {
                 EngineSync::DirectInput
-            } else if matches!(new_mode, InputModeState::ObservedRomaji)
-                && has_katakana
-                && !effective_open
-            {
-                EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
             } else if !was_romaji_capable && new_mode.is_romaji_capable() && effective_open {
                 EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
             } else if conv_mode_changed && has_native && !effective_open {
@@ -199,7 +190,7 @@ pub struct ConvClassifyFixture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awase::engine::{AssumedReason, Charset, InputModeState};
+    use awase::engine::{AssumedReason, InputModeState};
 
     // ── conv ビット定数（IMM32 変換モード）─────────────────────────────────────
     const NATIVE: u32 = 0x0001;
@@ -275,47 +266,63 @@ mod tests {
         assert_eq!(t.engine, EngineSync::None);
     }
 
-    // ── カタカナ（NATIVE+KATAKANA）──────────────────────────────────────────────
+    // ── NATIVE (旧カタカナ conv 値、ROMAN 無し) ──────────────────────────────────
+    //
+    // 2026-08-17、ADR-094 で charset 軸（ひらがな/カタカナの区別）の追跡を撤去した
+    // のに伴い、CONV_ZENKATA/CONV_HANKATA（KATAKANA ビット付き conv 値）はもはや
+    // 「カタカナだから romaji-capable 扱い」という特別扱いを受けず、CONV_JISKANA と
+    // 同じ「NATIVE=1・ROMAN=0」として一様に扱われる（`ConvMode::classify_idle` の
+    // is_roman_reliable=false 分岐、`.claude/rules/experiment-logging.md` は対象外
+    // ——挙動変更であり revert ではないため）。
 
-    /// 1544d3f 回帰: 半角カタカナ (HanKata, conv=0x0003) を認識する。
-    /// TsfNative では ROMAN=0 だが KATAKANA は romaji-capable 扱い → ObservedRomaji。
+    /// 1544d3f 由来の conv 値 (HanKata, conv=0x0003) でも、charset 軸撤去後は
+    /// NATIVE+ROMAN=0 の一般ケースとして TsfNative 回復 (AssumedRomaji) を経る。
     #[test]
-    fn hankata_from_non_romaji_recovers_to_observed_romaji() {
+    fn hankata_conv_recovers_to_assumed_romaji() {
         let t = classify(CONV_HANKATA, InputModeState::ObservedKana, false, true);
-        assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
-        // shadow=OFF + カタカナ検出 → ObserverReported として記録するだけ (engine は actuate しない)
+        assert_eq!(
+            t.input_mode_update,
+            Some(InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken
+            })
+        );
         assert_eq!(
             t.engine,
-            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
     #[test]
-    fn zenkata_shadow_off_engine_on() {
+    fn zenkata_conv_shadow_off_engine_on() {
         let t = classify(CONV_ZENKATA, InputModeState::ObservedKana, false, true);
-        assert_eq!(t.input_mode_update, Some(InputModeState::ObservedRomaji));
+        assert_eq!(
+            t.input_mode_update,
+            Some(InputModeState::AssumedRomaji {
+                reason: AssumedReason::ImmBridgeBroken
+            })
+        );
         assert_eq!(
             t.engine,
-            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
     #[test]
-    fn zenkata_shadow_on_no_engine_change() {
+    fn zenkata_conv_shadow_on_no_engine_change() {
         // 既に romaji_capable なら input_mode 変化なし、effective_open=true なら engine も不変。
         let t = classify(CONV_ZENKATA, assumed(), true, true);
         assert_eq!(t.input_mode_update, None);
         assert_eq!(t.engine, EngineSync::None);
     }
 
-    /// 0f75b5b 回帰: カタカナ + shadow=OFF + conv 不変でも engine を復帰させる唯一の経路。
+    /// 0f75b5b 回帰: NATIVE + shadow=OFF + conv 不変でも engine を復帰させる唯一の経路。
     #[test]
-    fn katakana_shadow_off_conv_unchanged_still_recovers_engine() {
+    fn native_shadow_off_conv_unchanged_still_recovers_engine() {
         let t = classify(CONV_ZENKATA, assumed(), false, false);
         assert_eq!(t.input_mode_update, None);
         assert_eq!(
             t.engine,
-            EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         );
     }
 
@@ -595,21 +602,17 @@ mod tests {
                         }
                         // SetOpen は RomajiRecovered 専用で、effective_open (engine 既に ON)
                         // の belief 再同期にのみ使う — shadow=OFF から新規に ON 意図を
-                        // 作り出す KatakanaShadowOff/NativeToggleShadowOff はここには来ない
+                        // 作り出す NativeToggleShadowOff はここには来ない
                         // (ReportOpenInference に分離済み、BUG-19 再発対策)。
                         if let EngineSync::SetOpen(reason) = t.engine {
                             assert_eq!(reason, ConvSyncReason::RomajiRecovered);
                             assert!(open);
                         }
-                        // ReportOpenInference (KatakanaShadowOff/NativeToggleShadowOff) は
-                        // !effective_open でのみ発火し、desired_open は変更しない
-                        // (ObserverReported として記録するだけ)。
+                        // ReportOpenInference (NativeToggleShadowOff) は !effective_open で
+                        // のみ発火し、desired_open は変更しない (ObserverReported として
+                        // 記録するだけ)。
                         if let EngineSync::ReportOpenInference(reason) = t.engine {
-                            assert!(matches!(
-                                reason,
-                                ConvSyncReason::KatakanaShadowOff
-                                    | ConvSyncReason::NativeToggleShadowOff
-                            ));
+                            assert_eq!(reason, ConvSyncReason::NativeToggleShadowOff);
                             assert!(!open);
                         }
                     }
@@ -637,12 +640,12 @@ mod tests {
     // その結果を正しく使って `engine` を導出しているかである）。
     //
     // 本番と同じ結論に達する式でも、あえて本番と異なるコード形（if-else連鎖では
-    // なく `match`、`is_eisu()`/`is_katakana()` ヘルパーではなく `Charset` への
-    // 直接 `matches!`）で書くことで、「本番の変数導出そのものが持つバグ」を
-    // オラクル側が無自覚に踏襲する事態を避ける。
+    // なく `match`、`is_eisu()` ヘルパーではなく `eisu` フィールドへの直接参照）で
+    // 書くことで、「本番の変数導出そのものが持つバグ」をオラクル側が無自覚に
+    // 踏襲する事態を避ける。
 
-    /// `has_native`/`has_katakana` 相当の判定を `Charset` への直接 `matches!` で
-    /// 独立に再導出する（本番の `!cm.is_eisu()` / `charset.is_katakana()` は使わない）。
+    /// `has_native` 相当の判定を `ConvMode.eisu` フィールドへの直接参照で
+    /// 独立に再導出する（本番の `!cm.is_eisu()` は使わない）。
     fn oracle_engine(
         input_mode_update: Option<InputModeState>,
         was_romaji_capable: bool,
@@ -650,43 +653,25 @@ mod tests {
         effective_open: bool,
         conv_mode_changed: bool,
     ) -> EngineSync {
-        let has_native = matches!(
-            cm.charset,
-            Charset::Hiragana | Charset::ZenkakuKatakana | Charset::HankakuKatakana
-        );
-        let has_katakana = matches!(
-            cm.charset,
-            Charset::ZenkakuKatakana | Charset::HankakuKatakana
-        );
+        let has_native = !cm.eisu;
 
         match input_mode_update {
             None => {
                 if has_native && !effective_open {
-                    EngineSync::ReportOpenInference(if has_katakana {
-                        ConvSyncReason::KatakanaShadowOff
-                    } else {
-                        ConvSyncReason::NativeToggleShadowOff
-                    })
+                    EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
                 } else {
                     EngineSync::None
                 }
             }
             Some(InputModeState::ObservedEisu) => EngineSync::DirectInput,
             Some(new_mode) => {
-                // ObservedRomaji への JISかな回復かつ katakana conv かつ shadow=OFF。
-                let jiskana_katakana_shadow_off =
-                    matches!(new_mode, InputModeState::ObservedRomaji)
-                        && has_katakana
-                        && !effective_open;
                 // engine 既に open 中に romaji 不可 → 可へ回復。
                 let romaji_recovered_while_open =
                     !was_romaji_capable && new_mode.is_romaji_capable() && effective_open;
                 // NATIVE への切替を検出 かつ shadow=OFF。
                 let native_toggle_shadow_off = conv_mode_changed && has_native && !effective_open;
 
-                if jiskana_katakana_shadow_off {
-                    EngineSync::ReportOpenInference(ConvSyncReason::KatakanaShadowOff)
-                } else if romaji_recovered_while_open {
+                if romaji_recovered_while_open {
                     EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
                 } else if native_toggle_shadow_off {
                     EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
@@ -725,17 +710,10 @@ mod tests {
     /// にしか関与せずどれも同じ挙動になるため（本テストは分類ロジックの対象、
     /// `AssumedReason` の由来追跡は対象外）、代表として `ImmBridgeBroken` のみを使う
     /// — `smoke_all_major_conv_belief_combinations` の `beliefs` 配列と同じ判断。
-    /// 10 (ConvMode: Charset5 × romaji2) × 5 (belief代表) × 2 (is_cold) ×
-    /// 2 (effective_open) × 2 (conv_mode_changed) × 2 (is_roman_reliable) = 800通り。
+    /// 4 (ConvMode: eisu2 × romaji2) × 5 (belief代表) × 2 (is_cold) ×
+    /// 2 (effective_open) × 2 (conv_mode_changed) × 2 (is_roman_reliable) = 320通り。
     #[test]
     fn exhaustive_classify_conv_transition_matches_independent_oracle() {
-        const ALL_CHARSETS: [Charset; 5] = [
-            Charset::Hiragana,
-            Charset::ZenkakuKatakana,
-            Charset::HankakuKatakana,
-            Charset::ZenkakuAlpha,
-            Charset::HankakuAlpha,
-        ];
         let beliefs = [
             InputModeState::ObservedRomaji,
             InputModeState::ObservedKana,
@@ -745,9 +723,9 @@ mod tests {
         ];
 
         let mut mismatches = Vec::new();
-        for &charset in &ALL_CHARSETS {
+        for &eisu in &[false, true] {
             for &romaji in &[false, true] {
-                let cm = ConvMode { charset, romaji };
+                let cm = ConvMode { eisu, romaji };
                 for &current in &beliefs {
                     for &is_cold in &[false, true] {
                         for &effective_open in &[false, true] {

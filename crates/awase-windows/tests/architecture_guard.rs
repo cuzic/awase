@@ -613,39 +613,35 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
     }
 }
 
-/// `EngineSync::SetOpen` は `RomajiRecovered` 専用。`KatakanaShadowOff`/
-/// `NativeToggleShadowOff` は `EngineSync::ReportOpenInference` を使うこと。
+/// `EngineSync::SetOpen` は `RomajiRecovered` 専用。`NativeToggleShadowOff` は
+/// `EngineSync::ReportOpenInference` を使うこと。
 ///
-/// 2026-07-08 BUG-19 再発: `KatakanaShadowOff` が `SetOpen(true)` 経由で
+/// 2026-07-08 BUG-19 再発: 当時 `KatakanaShadowOff` という別 variant（2026-08-17
+/// ADR-094 で `NativeToggleShadowOff` へ統合）が `SetOpen(true)` 経由で
 /// `handle_engine_set_open` → `UserImeSetIntent{Command}` を偽装し、`desired_open`
 /// を直接書き換えていた。これによりユーザーが明示的に IME OFF にした直後でも、
 /// conv の一発誤読（GJI 候補ポップアップへのフォーカス flicker 等）を理由に engine
-/// が勝手に ON へ戻る再発バグを起こした。修正後は `KatakanaShadowOff`/
-/// `NativeToggleShadowOff` を `ReportOpenInference`（`ObserverReported` として
-/// 記録するだけ、`desired_open` は変更しない、`PlatformState::
-/// report_conv_open_inference()` が唯一の消費経路）に分離した。この境界が将来
-/// 再び崩れないよう、`SetOpen(ConvSyncReason::KatakanaShadowOff)` /
+/// が勝手に ON へ戻る再発バグを起こした。修正後は `NativeToggleShadowOff` を
+/// `ReportOpenInference`（`ObserverReported` として記録するだけ、`desired_open` は
+/// 変更しない、`PlatformState::report_conv_open_inference()` が唯一の消費経路）に
+/// 分離した。この境界が将来再び崩れないよう、
 /// `SetOpen(ConvSyncReason::NativeToggleShadowOff)` という組み合わせが本番コードに
 /// 一切出現しないことを固定する。
 #[test]
-fn katakana_and_native_toggle_shadow_off_never_use_set_open() {
+fn native_toggle_shadow_off_never_uses_set_open() {
     let path = "src/state/conv_classify.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    for forbidden in [
-        "SetOpen(ConvSyncReason::KatakanaShadowOff)",
-        "SetOpen(ConvSyncReason::NativeToggleShadowOff)",
-    ] {
-        assert!(
-            !production.contains(forbidden),
-            "{path} に `{forbidden}` が出現しています。\n\
-             KatakanaShadowOff/NativeToggleShadowOff は SetOpen（engine を直接 \
-             actuate し、UserImeSetIntent{{Command}} を偽装して desired_open を \
-             書き換える）を使ってはならず、必ず ReportOpenInference（ObserverReported \
-             として記録するだけ）を使うこと。さもないとユーザーの明示 IME OFF が \
-             conv の一発誤読で上書きされる再発バグ（2026-07-08, BUG-19 再発）が戻ります。"
-        );
-    }
+    let forbidden = "SetOpen(ConvSyncReason::NativeToggleShadowOff)";
+    assert!(
+        !production.contains(forbidden),
+        "{path} に `{forbidden}` が出現しています。\n\
+         NativeToggleShadowOff は SetOpen（engine を直接 actuate し、\
+         UserImeSetIntent{{Command}} を偽装して desired_open を書き換える）を \
+         使ってはならず、必ず ReportOpenInference（ObserverReported として記録する \
+         だけ）を使うこと。さもないとユーザーの明示 IME OFF が conv の一発誤読で \
+         上書きされる再発バグ（2026-07-08, BUG-19 再発）が戻ります。"
+    );
 }
 
 /// conv ビット由来の open 推論を**構築**できるのは
@@ -1415,84 +1411,44 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
 }
 
 /// ADR-086 §4 INV-15（2026-08-08、Phase 2/3 実装に伴い新設）: 生の `FocusChange`
-/// イベントハンドラ自体が force-write（conv-mode/open-close の実書き込み）を
-/// 起こしてはならない。`BUG-59` 追補（`9c102b02`、revert 済み）はまさにこの種の
-/// 関数へ直接書き込みを追加して実機事故を起こした。
+/// イベントハンドラ自体が force-write（conv-mode の実書き込み）を起こしては
+/// ならない。`BUG-59` 追補（`9c102b02`、revert 済み）はまさにこの種の関数へ
+/// 直接書き込みを追加して実機事故を起こした。
 ///
 /// - `platform.rs::gji_on_focus_change`（conv 軸、生の FocusChange イベント
 ///   ハンドラ本体）は `Output::on_ime_mode_focus_changed`（武装のみ）を呼ぶことは
 ///   許されるが、`ActuationTarget::capture`/`actuate_conv_mode`/
-///   `set_ime_conv_for_target` を**直接**呼んではならない（実際の書き込みは
-///   `consume_force_pending_and_actuate` からのみ起きること）。
-/// - `runtime/ime_refresh.rs::ir_post_focus_change_snapshot`（open/close 軸、
-///   `gji_on_focus_change` 直後——`ime_mode_focus_gen` が今回のフォーカス変更分
-///   だけ進んだ直後の単一集約点。`ir_notify_focus_changed` ではない——同関数の
-///   実行時点では gen がまだ古いため）は `Runtime::arm_force_open_pending`
-///   （武装のみ）を呼ぶことは許されるが、`apply_ime_open_with_belief`/
-///   `apply_ime_open_with_view`/`send_ime_mode_key`/`on_ime_apply_complete` を
-///   **直接**呼んではならない（実際の書き込みは Phase 3 item 1 の消費点
-///   `kp_run_inner::consume_force_open_pending` からのみ起きること）。
-///   `apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制〉/
-///   `set_ime_open`〈IME OFF 強制〉は force-write とは無関係の既存機構として
-///   同関数内に実在するため、禁止リストには含めず出現数を固定する
-///   （`ir_post_focus_change_snapshot_write_call_sites_are_accounted_for` 参照）
-///   ——ホワイトリスト除外だと将来これらのラッパー経由で force-write が
-///   紛れ込んでもガードをすり抜けるため（2026-08-08 2回目 opus レビュー M2）。
-/// - `runtime/mod.rs::arm_force_open_pending`（武装専用に抽出した小関数）も
-///   同じ禁止リストで走査する。代入以外を含まないため必ず通るはずだが、
-///   将来ここに書き込みが追加されたら即座に検知する回帰ガードとして機能する。
+///   `set_ime_conv_for_target` を**直接**呼んではならない。
+///
+/// NOTE: open/close 軸の force-write（`arm_force_open_pending`/
+/// `consume_force_open_pending`、ADR-086 Phase 3）は 2026-08-17、ADR-094 で
+/// force ポリシー自体を撤去したのに伴い削除した。この2つ目の走査対象
+/// （`runtime/ime_refresh.rs::ir_post_focus_change_snapshot` と
+/// `runtime/mod.rs::arm_force_open_pending`）も同時に削除した。
 #[test]
 fn force_write_is_not_triggered_by_raw_focus_change() {
-    let cases: &[(&str, &str, &[&str])] = &[
-        (
-            "src/platform.rs",
-            "fn gji_on_focus_change",
-            &[
-                "ActuationTarget::capture(",
-                "actuate_conv_mode(",
-                "set_ime_conv_for_target(",
-            ],
-        ),
-        (
-            "src/runtime/ime_refresh.rs",
-            "fn ir_post_focus_change_snapshot",
-            &[
-                "apply_ime_open_with_belief(",
-                "apply_ime_open_with_view(",
-                "send_ime_mode_key(",
-                "on_ime_apply_complete(",
-            ],
-        ),
-        (
-            "src/runtime/mod.rs",
-            "fn arm_force_open_pending",
-            &[
-                "apply_ime_open_with_belief(",
-                "apply_ime_open_with_view(",
-                "apply_ime_open_with_applied(",
-                "send_ime_mode_key(",
-                "set_ime_open(",
-                "on_ime_apply_complete(",
-            ],
-        ),
+    let path = "src/platform.rs";
+    let fn_needle = "fn gji_on_focus_change";
+    let forbidden_list: &[&str] = &[
+        "ActuationTarget::capture(",
+        "actuate_conv_mode(",
+        "set_ime_conv_for_target(",
     ];
 
-    for (path, fn_needle, forbidden_list) in cases {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let body = extract_fn_body(production, fn_needle);
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, fn_needle);
 
-        for forbidden in *forbidden_list {
-            assert!(
-                !body.contains(forbidden),
-                "{path}::{fn_needle} 本体に {forbidden:?} が見つかりました。\
-                 生の FocusChange イベントハンドラが force-write を直接起こしています \
-                 （ADR-086 INV-15 違反、BUG-59 追補 `9c102b02` と同型の事故）。\
-                 書き込みは武装（`force_pending`/`force_open_pending` フラグを \
-                 立てるだけ）に留め、実際の書き込みは送信要求という入力意図に \
-                 紐づく唯一の消費点からのみ行うこと。"
-            );
-        }
+    for forbidden in forbidden_list {
+        assert!(
+            !body.contains(forbidden),
+            "{path}::{fn_needle} 本体に {forbidden:?} が見つかりました。\
+             生の FocusChange イベントハンドラが force-write を直接起こしています \
+             （ADR-086 INV-15 違反、BUG-59 追補 `9c102b02` と同型の事故）。\
+             書き込みは武装（`force_pending` フラグを立てるだけ）に留め、\
+             実際の書き込みは送信要求という入力意図に紐づく唯一の消費点からのみ \
+             行うこと。"
+        );
     }
 }
 
@@ -1545,86 +1501,10 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     );
 }
 
-/// ADR-086 §6段3-4（2026-08-08、Phase 3 設計調査に伴い新設）:
-/// `ConvModePolicy::Force` の直接読み取りは `Output::is_force_policy()` の
-/// 定義内 1 箇所のみに限定される。
-///
-/// conv 軸（`on_ime_mode_focus_changed`）と open 軸
-/// （`runtime/mod.rs::apply_force_on_for_imm_broken`/`::reschedule_ime_refresh`）が
-/// それぞれ独自に `matches!(.., ConvModePolicy::Force)` を書くと、INV-13
-/// （軸の対称性）が要求する「同じ policy 判定関数」が構造的に保証されなくなる
-/// （条件が将来ズレても気づけない）。`is_force_policy()` を唯一の判定点にする
-/// ことで、新しい force-write 経路を追加するときも自然にこの1点を経由させる。
-#[test]
-fn force_policy_is_read_from_a_single_decision_point() {
-    const NEEDLE: &str = "ConvModePolicy::Force";
-    let all_files = list_src_files();
-    let mut total = 0usize;
-    let mut sites: Vec<(String, usize)> = Vec::new();
-    for path in &all_files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let count = count_real_calls(production, NEEDLE);
-        if count > 0 {
-            total += count;
-            sites.push((path.clone(), count));
-        }
-    }
-    assert_eq!(
-        total, 1,
-        "`{NEEDLE}` の本番コードでの直接参照が想定(1 = \
-         output/mod.rs::is_force_policy の定義のみ)と異なります。\n実際: {sites:?}\n\
-         新しい force-write 経路を追加する場合は Output::is_force_policy() 経由で \
-         判定し、`ConvModePolicy::Force` を直接 matches! しないこと \
-         （ADR-086 §6段3-4、INV-13 の軸対称性）。"
-    );
-    assert_eq!(
-        sites,
-        vec![("src/output/mod.rs".to_string(), 1)],
-        "`{NEEDLE}` の唯一の直接参照は src/output/mod.rs（is_force_policy の定義）に \
-         あるはずです。実際: {sites:?}"
-    );
-}
-
-/// ADR-086 §7-12（2026-08-08、2回目 opus アドバーサリアルレビュー M5）:
-/// `Output::is_force_policy()` の呼び出し箇所数を固定する。
-///
-/// `runtime/mod.rs::reschedule_ime_refresh` は「`apply_force_on_for_imm_broken`
-/// が `is_force_policy()` で即 return するため、周期リフレッシュ連鎖が復活しても
-/// force-ON の周期スパムは再発しない」という**別関数の早期 return に依存する
-/// 暗黙の前提**の上に成り立っている。呼び出し箇所数を固定することで、
-/// 片方だけが変更されて前提が崩れることを検知する（2026-08-06〜2026-08-08 で
-/// この関係が一度崩れかけた経緯があるため）。
-///
-/// 現在の呼び出し箇所（4）: `output/mod.rs::on_ime_mode_focus_changed`（conv 軸
-/// 武装）、`runtime/mod.rs::arm_force_open_pending`（open 軸武装）、
-/// `runtime/mod.rs::apply_force_on_for_imm_broken`（force policy 時は
-/// 周期経路を使わない早期 return）、`runtime/mod.rs::reschedule_ime_refresh`
-/// （drift correction 用の周期継続例外）。
-#[test]
-fn is_force_policy_call_sites_are_accounted_for() {
-    const NEEDLE: &str = "is_force_policy()";
-    let all_files = list_src_files();
-    let mut total = 0usize;
-    let mut sites: Vec<(String, usize)> = Vec::new();
-    for path in &all_files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let count = count_real_calls(production, NEEDLE);
-        if count > 0 {
-            total += count;
-            sites.push((path.clone(), count));
-        }
-    }
-    assert_eq!(
-        total, 4,
-        "`{NEEDLE}` の呼び出し箇所数が想定(4)と異なります。\n実際: {sites:?}\n\
-         `runtime/mod.rs::reschedule_ime_refresh` の force policy 例外は \
-         `apply_force_on_for_imm_broken` が同条件で早期 return することに \
-         暗黙で依存している（ADR-086 §7-12）。呼び出し箇所を変更した場合は \
-         この依存関係が崩れていないか確認し、この期待値を更新すること。"
-    );
-}
+// NOTE: `force_policy_is_read_from_a_single_decision_point` と
+// `is_force_policy_call_sites_are_accounted_for`（ADR-086 §6段3-4/§7-12）は
+// 2026-08-17、ADR-094 で `conv_mode_policy`/`Output::is_force_policy()` 自体を
+// 撤去したのに伴い削除した。
 
 /// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
 /// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は

@@ -1913,35 +1913,6 @@ impl SettingsApp {
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("詳細設定");
         ui.add_space(4.0);
-        let conv_mode_policy_hover = "IME の変換モード（英数/ひらがな/カタカナ×半角/全角）を\nawase が能動的に管理するかどうかです。IME ON/OFF とは別の設定です。";
-        ui.horizontal(|ui| {
-            ui.label("IME 変換モード:")
-                .on_hover_text(conv_mode_policy_hover);
-            egui::ComboBox::from_id_salt("conv_mode_policy")
-                .selected_text(conv_mode_policy_label(self.config.general.conv_mode_policy))
-                .show_ui(ui, |ui| {
-                    use awase::config::ConvModePolicy;
-                    ui.selectable_value(
-                        &mut self.config.general.conv_mode_policy,
-                        ConvModePolicy::Observe,
-                        "観測のみ (observe)",
-                    )
-                    .on_hover_text(conv_mode_policy_tooltip(ConvModePolicy::Observe));
-                    ui.selectable_value(
-                        &mut self.config.general.conv_mode_policy,
-                        ConvModePolicy::Force,
-                        "強制 (force)",
-                    )
-                    .on_hover_text(conv_mode_policy_tooltip(ConvModePolicy::Force));
-                })
-                .response
-                .on_hover_text(conv_mode_policy_hover);
-        });
-        ui.label(conv_mode_policy_tooltip(
-            self.config.general.conv_mode_policy,
-        ));
-        ui.label("強制するモードは、awase のトレイメニュー（ひらがな/カタカナ等）から選びます。");
-        ui.add_space(8.0);
         ui.checkbox(
             &mut self.config.general.swallow_alt_kana_input_method_switch,
             "Alt+かな による IME 入力方式切替（ローマ字⇔JIS かな）を無効化する",
@@ -2778,26 +2749,6 @@ const fn confirm_mode_tooltip(mode: awase::config::ConfirmMode) -> &'static str 
         }
         ConfirmMode::NgramPredictive => {
             "  n-gram 統計で投機/待機を動的判断。モデル未指定時は二段タイマー動作。"
-        }
-    }
-}
-
-const fn conv_mode_policy_label(policy: awase::config::ConvModePolicy) -> &'static str {
-    use awase::config::ConvModePolicy;
-    match policy {
-        ConvModePolicy::Observe => "観測のみ (observe)",
-        ConvModePolicy::Force => "強制 (force)",
-    }
-}
-
-const fn conv_mode_policy_tooltip(policy: awase::config::ConvModePolicy) -> &'static str {
-    use awase::config::ConvModePolicy;
-    match policy {
-        ConvModePolicy::Observe => {
-            "  awase は IME の変換モード（英数/ひらがな/カタカナ×半角/全角）を観測するのみで、\n  能動的な書き換えは行いません（デフォルト、従来動作）。"
-        }
-        ConvModePolicy::Force => {
-            "  入力が cold から再開するたびに、下のトレイメニューで選んだモードへ\n  強制的に書き戻します。IME 側で意図せずモードが変わる問題の回避策です。\n  IME ON/OFF 自体には影響しません。"
         }
     }
 }
