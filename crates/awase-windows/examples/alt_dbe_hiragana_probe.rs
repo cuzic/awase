@@ -36,6 +36,14 @@
 //! 検証する（Alt を単独でタップするだけならフォーカス自体は移動しない —
 //! Alt+Tab とは違う）。
 //!
+//! # ビット解釈と体感の食い違い（v3 で対処）
+//!
+//! v2 の実測で `roman` ビットの解釈とユーザーの実際のタイプ体感が食い違う
+//! 場面があった。数値ビットだけに頼らず、Alt+F2 注入の直後に実際に "aiu" を
+//! 打鍵し、`ImmGetCompositionStringW` で変換結果を直接確認する
+//! （`typed_comp_str`）。ローマ字入力なら「あいう」になるはずで、JIS かな
+//! 直接入力なら物理 A/I/U キー位置のローマ字と無関係な別のかなが出るはず。
+//!
 //! # 使い方（Windows 実機のみ）
 //!
 //! ```powershell
@@ -73,8 +81,8 @@ use serde::Serialize;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
-    IME_CONVERSION_MODE, IME_SENTENCE_MODE, ImmGetContext, ImmGetConversionStatus,
-    ImmGetOpenStatus, ImmReleaseContext,
+    HIMC, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE, ImmGetCompositionStringW,
+    ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus, ImmReleaseContext,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT,
@@ -82,9 +90,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, MSG, PM_REMOVE,
-    PeekMessageW, RegisterClassW, SW_SHOW, SetForegroundWindow, ShowWindow, TranslateMessage,
-    WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    DispatchMessageW, GetClassNameW, GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, MSG, PM_REMOVE, PeekMessageW, RegisterClassW, SW_SHOW,
+    SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage, WM_DESTROY, WNDCLASSW,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::PCWSTR;
 
@@ -138,6 +147,12 @@ struct ProbeEvent {
     roman_dropped: bool,
     /// `before.open_status == Some(true) && after.open_status == Some(false)`。
     ime_closed: bool,
+    /// "aiu" を実際に打鍵したときの未確定 composition 文字列
+    /// （`GCS_COMPSTR`）。ローマ字入力なら「あいう」になるはず。
+    typed_comp_str: String,
+    /// 同じ打鍵後の EDIT コントロールの確定テキスト。IME が閉じていれば
+    /// 素の "aiu" がここに入る。
+    typed_edit_text: String,
 }
 
 fn read_conv_snapshot(hwnd: HWND) -> ConvSnapshot {
@@ -389,6 +404,108 @@ unsafe fn send_vk_tap(vk: u16) {
     }
 }
 
+/// "aiu" を打鍵したとき QWERTY の A/I/U キー位置に来る VK コード。
+const ROMAJI_PROBE_VKS: [u16; 3] = [0x41, 0x49, 0x55]; // 'A', 'I', 'U'
+
+/// # Safety
+/// SendInput はプロセス全体に影響する。診断目的でのみ呼ぶこと。
+unsafe fn send_romaji_probe_string() {
+    for &vk in &ROMAJI_PROBE_VKS {
+        // SAFETY: 呼び出し元の契約と同じ。
+        unsafe { send_vk_tap(vk) };
+    }
+}
+
+/// `ImmGetCompositionStringW` で GCS_COMPSTR (未確定 composition 文字列) を読む
+/// （`gji_composition_probe.rs::read_comp_str` と同じ）。
+///
+/// # Safety
+/// `himc` は `ImmGetContext` で得た有効な HIMC であること。
+unsafe fn read_comp_str(himc: HIMC) -> Option<String> {
+    const GCS_COMPSTR: u32 = 0x0008;
+    // SAFETY: lpBuf=None かつ dwBufLen=0 で呼んでバイト長を取得する公式パターン。
+    let byte_len =
+        unsafe { ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(GCS_COMPSTR), None, 0) };
+    if byte_len < 0 {
+        return None;
+    }
+    let byte_len = usize::try_from(byte_len).unwrap_or(0);
+    if byte_len == 0 {
+        return Some(String::new());
+    }
+    let mut buf = vec![0u16; byte_len.div_ceil(2)];
+    // SAFETY: buf は十分なサイズを確保済み。WCHAR バッファとして書き込まれる。
+    let written = unsafe {
+        ImmGetCompositionStringW(
+            himc,
+            IME_COMPOSITION_STRING(GCS_COMPSTR),
+            Some(buf.as_mut_ptr().cast()),
+            u32::try_from(buf.len() * 2).unwrap_or(0),
+        )
+    };
+    if written <= 0 {
+        return None;
+    }
+    let char_count = usize::try_from(written).unwrap_or(0) / 2;
+    Some(String::from_utf16_lossy(&buf[..char_count]))
+}
+
+fn get_edit_text(hwnd: HWND) -> String {
+    // SAFETY: hwnd は create_probe_window で作成した有効な EDIT コントロール。
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; usize::try_from(len).unwrap_or(0) + 1];
+    let written = unsafe { GetWindowTextW(hwnd, &mut buf) };
+    let written = usize::try_from(written).unwrap_or(0);
+    String::from_utf16_lossy(&buf[..written])
+}
+
+fn clear_edit_text(hwnd: HWND) {
+    let empty = to_wide("");
+    // SAFETY: hwnd は有効な EDIT コントロール。empty は NUL 終端済み。
+    let _ = unsafe { SetWindowTextW(hwnd, PCWSTR(empty.as_ptr())) };
+}
+
+/// Alt+F2 注入の直後に "aiu" を打鍵し、実際にどう変換されたかを直接確認する。
+///
+/// - ローマ字入力なら "aiu" → 未確定 composition 「あいう」になるはず。
+/// - JIS かな直接入力なら、物理 A/I/U キー位置に割り当てられた**ローマ字と
+///   無関係な別のかな**が出るはず（人が見て一目で分かる）。
+/// - IME が閉じていれば素の "aiu"（ASCII）がそのまま edit テキストに入る。
+///
+/// 数値ビットの解釈だけに頼らない、挙動そのものの直接証拠を得るための関数
+/// （前回の実測でユーザー体感と `roman` ビットの解釈が食い違ったため追加）。
+fn probe_romaji_typing(edit: HWND) -> (String, String) {
+    clear_edit_text(edit);
+    // SAFETY: 診断目的の単発呼び出し。
+    unsafe { send_romaji_probe_string() };
+    pump_messages(Duration::from_millis(300));
+
+    // SAFETY: edit は有効なウィンドウ。
+    let himc = unsafe { ImmGetContext(edit) };
+    let comp_str = if himc.is_invalid() {
+        None
+    } else {
+        // SAFETY: himc は直前に取得した有効なハンドル。
+        let s = unsafe { read_comp_str(himc) };
+        // SAFETY: edit/himc は対応する有効なペア。
+        let _ = unsafe { ImmReleaseContext(edit, himc) };
+        s
+    };
+    let edit_text = get_edit_text(edit);
+
+    // 後始末: 未確定 composition が残ると次回計測に影響するため Escape で破棄し、
+    // 入力済みテキストもクリアする。
+    // SAFETY: 診断目的の単発呼び出し。
+    unsafe { send_vk_tap(0x1B) }; // VK_ESCAPE
+    pump_messages(Duration::from_millis(100));
+    clear_edit_text(edit);
+
+    (comp_str.unwrap_or_default(), edit_text)
+}
+
 fn key_down(vk: i32) -> bool {
     // SAFETY: GetAsyncKeyState は任意の vk コードに対して安全に呼べる。
     (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
@@ -415,11 +532,15 @@ fn run_probe(seq: u32, trigger: &'static str, start: Instant, edit: HWND) -> Pro
     pump_messages(Duration::from_millis(150));
     let after = read_conv_snapshot(edit);
 
+    let (typed_comp_str, typed_edit_text) = probe_romaji_typing(edit);
+
     let roman_dropped = before.roman == Some(true) && after.roman == Some(false);
     let ime_closed = before.open_status == Some(true) && after.open_status == Some(false);
     // before/after のどちらかで ImmGetContext 自体が失敗した（= 計測不能。
     // 「変化なし」と紛らわしいので明示的に区別する）。
     let read_failed = before.roman.is_none() || after.roman.is_none();
+    // "aiu" が正しく「あいう」（ローマ字→ひらがな変換）になったか。
+    let typed_as_expected = typed_comp_str == "あいう";
 
     let event = ProbeEvent {
         seq,
@@ -430,11 +551,13 @@ fn run_probe(seq: u32, trigger: &'static str, start: Instant, edit: HWND) -> Pro
         after,
         roman_dropped,
         ime_closed,
+        typed_comp_str,
+        typed_edit_text,
     };
 
     println!(
         "[{seq:>4}] trigger={trigger:<8} fg={:<28} before(open={:?} native={:?} roman={:?}) \
-         → after(open={:?} native={:?} roman={:?}){}{}{}",
+         → after(open={:?} native={:?} roman={:?}) typed comp_str={:?} edit_text={:?}{}{}{}{}",
         event.foreground_class,
         event.before.open_status,
         event.before.native,
@@ -442,6 +565,8 @@ fn run_probe(seq: u32, trigger: &'static str, start: Instant, edit: HWND) -> Pro
         event.after.open_status,
         event.after.native,
         event.after.roman,
+        event.typed_comp_str,
+        event.typed_edit_text,
         if read_failed {
             "  !!! 計測失敗（ImmGetContext が無効な HIMC を返した。foreground_class が \
              本ツール自身のウィンドウでない場合、Alt でフォーカスが奪われた可能性） !!!"
@@ -455,6 +580,12 @@ fn run_probe(seq: u32, trigger: &'static str, start: Instant, edit: HWND) -> Pro
         },
         if event.ime_closed {
             "  !!! IME が閉じました !!!"
+        } else {
+            ""
+        },
+        if !typed_as_expected && !event.typed_comp_str.is_empty() {
+            "  !!! \"aiu\" が「あいう」以外に変換されました（JIS かな直接入力の可能性、\
+             目視でも確認してください） !!!"
         } else {
             ""
         },
