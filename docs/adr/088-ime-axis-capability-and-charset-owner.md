@@ -859,9 +859,17 @@ ADR-084 の INV-1〜11、ADR-086 の INV-12〜19、ADR-087 の INV-20〜28 を�
 
 ### 5.3 dead code だが管理対象に残すべき送信口
 
+**2026-08-17追記（`send_f2_via_sendmessage` は撤去済み）:** BUG-67
+（`docs/known-bugs.md`）の調査で `VK_DBE_HIRAGANA` の合成送信箇所を
+棚卸しした際、本項が dead のまま残すべきとしていた `send_f2_via_sendmessage`/
+`send_f2_via_sendmessage_async` を実際に削除した。「復活しうる送信口として
+管理対象に残す」という当時の判断を覆す新しい理由があったわけではなく、
+今回の棚卸しの機会に合わせてユーザーが撤去を選択した。以下の表・
+「単一関門の唯一の例外」の記述は削除前の状態の記録として残す。
+
 | 場所 | 関数 | 状態 |
 |---|---|---|
-| `ime.rs:1419` | `send_f2_via_sendmessage` | **呼び出し元は「ゼロ」ではなく1つ**（`ime.rs:883`、`send_f2_via_sendmessage_async`（宣言 `:880`）が `offload_unsafe` 経由で呼ぶ）。**その async ラッパー自身の呼び出し元がゼロ**なので、結果として実質 dead code である（引き継ぎ時点の要約「呼び出し元ゼロ」は1段浅い観測だったので訂正）。**復活しうる送信口として管理対象には残す** |
+| ~~`ime.rs:1419`~~ | ~~`send_f2_via_sendmessage`~~（撤去済み） | **呼び出し元は「ゼロ」ではなく1つ**（`ime.rs:883`、`send_f2_via_sendmessage_async`（宣言 `:880`）が `offload_unsafe` 経由で呼ぶ）。**その async ラッパー自身の呼び出し元がゼロ**なので、結果として実質 dead code である（引き継ぎ時点の要約「呼び出し元ゼロ」は1段浅い観測だったので訂正）。~~**復活しうる送信口として管理対象には残す**~~ |
 | `ime.rs:290` / `:303` / `:312` / `:320` | `post_ime_on_direct` / `post_ime_off_direct` / `post_gji_ime_on` / `post_gji_ime_off` | production 呼び出し元ゼロ。**「テストのみ参照」も厳密には誤り**（訂正）——`tests/architecture_guard.rs:866/882/902/907` は `extract_fn_body(production, "pub unsafe fn post_ime_on_direct(")` で `src/ime.rs` を**テキストとして走査**しているだけ、`tests/ime_key_sequence_golden.rs:75/76/83/88` と `state/key_sequence_policy.rs:110/113/114` はコメント中の言及のみ。**コンパイル上のリンクは一切存在しない。** それでも削除してはならない: `tests/architecture_guard.rs:859` の `ime_open_close_functions_send_expected_vk_codes()` がこれらの**本体テキスト**を検査対象にしており、削除するとエントリ01（5日間6回反転）の回帰検知が消える |
 
 **`send_f2_via_sendmessage` は §5.2 発見4（単一関門）の唯一の例外でもある**:

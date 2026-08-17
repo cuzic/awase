@@ -8370,3 +8370,91 @@ IME は既定でこれら半角記号入力を対応する全角記号へ自動�
 を押して「－」が出ること、左親指シフト+X で「ー」が出ることを実機で確認して
 ほしい。
 
+---
+
+## BUG-67: Alt 押下中の合成 `VK_DBE_HIRAGANA` 注入で MS-IME が JIS かな直接入力へ切り替わる（`kp_restore_kana_from_half_width`、実機診断で確認・対応済み・実機未検証）
+
+**症状（ユーザー報告）:** 「突然 JIS かなモードになる」——原因不明のまま
+ローマ字入力が JIS かな直接入力へ切り替わってしまう報告がちらほらあった。
+BUG-61/62 は物理 Alt+かな キー押下がこの切替を起こすことを既に確定させて
+いたが、awase 自身がユーザーの物理操作なしに同じ切替を誘発している可能性が
+未検証のまま残っていた。
+
+**調査（2026-08-17、専用診断ツールによる実機検証）:** ユーザーの仮説
+「awase 自身の合成 `VK_DBE_HIRAGANA` 送信が、たまたま Alt が押されている
+タイミングと重なると同じ切替が起きるのではないか」を検証するため、
+`crates/awase-windows/examples/alt_dbe_hiragana_probe.rs`（診断専用、
+使い捨てツール）を作成した。classic Win32 EDIT コントロールを持つ自前
+ウィンドウを起動時にフォーカスし、Alt キー押下の立ち上がりエッジで
+`crate::tsf::output::make_scan_key_input` と同じ方式（scan code 付き、
+`KEYEVENTF_SCANCODE` は使わない）で `VK_DBE_HIRAGANA` down+up を
+SendInput、直後に "aiu" を実際に打鍵して `ImmGetCompositionStringW`
+(GCS_COMPSTR) で変換結果を直接確認する構成にした。
+
+`ImmGetConversionStatus` の ROMAN ビット読み取りだけでは実際の入力挙動と
+食い違う場面があった（IME 実装依存でビット解釈が一様でないため）ため、
+数値だけでなく実際の打鍵結果で判定したのが決め手になった。ある試行で
+"aiu"（A・I・U の3キーのみ、N キーは一切送っていない）の変換結果が
+「に」になった。ローマ字変換テーブル経由ではこの3キーからどう組み合わせ
+ても「に」（ローマ字 "ni"）は導出できない——JIS かな配列の物理キー位置に
+固定された直接対応（標準 JIS X 4064 配列で "I" キー位置＝「に」）でしか
+説明がつかない。他の試行では3キーのうち一部が空になる（欠落する）結果も
+観測され、Alt+F2 直後の入力方式切替処理中に IME 側がキーを取りこぼす
+タイミング競合が起きていることを示唆した。これは「稀にしか起きない・
+毎回同じ壊れ方をしない」というユーザー報告の性質とも一致する。
+
+**原因（コード確認済み）:** `hook.rs` の既存 Alt+かなガード（物理
+`VK_KANA`/`VK_DBE_ROMAN`/`VK_DBE_NOROMAN` 押下時に BUG-62 で追加した
+swallow）は、自己注入キー（`is_self_injected`、`INJECTED_MARKER`/
+`TSF_MARKER`/`IME_KANJI_MARKER` 付き）を判定より前に無条件で OS へ
+通しているため、**awase 自身が送る `VK_DBE_HIRAGANA` はこのガードの対象外**
+だった。
+
+`VK_DBE_HIRAGANA` を合成送信している箇所を Opus に調査させたところ、
+3箇所のうち実際に MS-IME で必要なのは `runtime/key_pipeline.rs`
+`kp_restore_kana_from_half_width`（「IME-ON 半角英数」持続トグル解除時の
+かな入力復元）の1箇所のみと判明した:
+
+- `tsf/send.rs::send_vk_dbe_hiragana_pair`（F2 cold-start warmup）は
+  `needs_f2_probe()` が MS-IME 戦略では既に `false` を返すため、MS-IME
+  では元から送信されない（GJI 専用）。`ms_ime_ready_coro.rs` にも
+  「F2 前置は不要（MS-IME は VK_DBE_HIRAGANA warmup を必要としない）」と
+  明記済み。
+- `ime.rs::send_f2_via_sendmessage`（`SendMessageTimeoutW` 版）は
+  呼び出し元が実質ゼロ（`docs/adr/088-ime-axis-capability-and-charset-owner.md`
+  §9-1 参照）の到達不能コードだったため、本対応で撤去した
+  （`send_f2_via_sendmessage_async` も合わせて削除）。
+- `kp_restore_kana_from_half_width` は BUG-15 追補3/4 の実機検証で、
+  MS-IME (TSF-native) の「英数→かな」方向の復元が scan 付き
+  `VK_DBE_HIRAGANA` 注入以外（IMC write・scan なし注入）では効かないと
+  確定しており、`active_ime_kind == MicrosoftIme` の場合に限定して
+  無条件に実行される。ここだけは削れない。
+
+**修正:** `kp_restore_kana_from_half_width` の `VK_DBE_HIRAGANA` 注入直前で
+`hook::win_key_held() || hook::alt_key_held()` を確認し、いずれか押下中は
+注入をスキップする（保険の IMC write リトライだけが残る）。
+
+- Win: `tsf/send.rs::send_vk_dbe_hiragana_pair` が既に持つ
+  `win_key_held()` ガードと同じ理由・同じ判定関数で統一した（Win 押下中に
+  送ると Win+F2 としてスタートメニューが開きうる、既知のリスク）。
+- Alt: 本 BUG で確認した切替リスクへの対処。Shift のように synthetic な
+  modifier-up を同一 SendInput バッチへ前置する案も検討したが、Alt/Win は
+  単独タップで OS のメニュー系機能（`SC_KEYMENU`/スタートメニュー）を
+  起動する特殊な扱いを受けており、実機未検証のままそれを回避する細工を
+  追加するリスクを避け、検証済みの Win ガードと同じ「スキップ」方式に
+  統一した。
+- Ctrl はケアしていない。この VK に対する Ctrl 起因の既知の危険がコード
+  上・過去のバグ報告上見当たらないため、実測なしの憶測でガードは追加
+  しなかった（`.claude/rules/fix-requires-evidence.md`）。
+
+**検証:** `cargo build`/`cargo test -p awase -p awase-windows -p awase-settings`
+（lib 770件・その他golden/guard系全て）・`cargo clippy --lib`（CI `clippy`
+job相当）・`cargo xwin check`/`cargo xwin clippy -p awase-windows`（CI
+`windows-build` job相当）・`cargo fmt --check` すべて緑。**Windows 実機での
+再検証は未実施**——`alt_dbe_hiragana_probe` で Alt を連打しても
+`typed_comp_str` が「あいう」以外にならないことを確認してほしい。
+
+**関連:** `crates/awase-windows/examples/alt_dbe_hiragana_probe.rs`（診断
+ツール、使い捨て）。BUG-61（JIS かな直接入力は復旧不能）・BUG-62（物理
+Alt+かな のガード導入）。
+

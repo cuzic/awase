@@ -1555,7 +1555,32 @@ impl Runtime {
             // 届く）。`ActuationTarget` のターゲット同一性検証（INV-14）は
             // この経路には構造的に適用できないと判断済み——`SendInput` を使う
             // 書き込み全般に共通する構造的な制約であり、この箇所固有の先送りではない。
-            if self.platform_state.ime.effective_open() {
+            // Win/Alt が押下中は VK_DBE_HIRAGANA 注入自体をスキップする。
+            //
+            // Win: `tsf/send.rs::send_vk_dbe_hiragana_pair` と同じ理由
+            // （Win を押したまま送ると Win+F2 として届き、Win↑ 時にスタート
+            // メニューが開く）。あちらは唯一の判定点 `hook::win_key_held()`
+            // を使っており、ここも同じ関数を使うことで判定基準を統一する。
+            //
+            // Alt: 実機診断（2026-08-17、専用プローブツールでの検証）で、
+            // Alt 押下中に合成 VK_DBE_HIRAGANA を送ると MS-IME の「Alt+かな」
+            // ローマ字⇔JISかな直接入力切替ショートカット（BUG-61/62 で
+            // 物理キー押下について確認済みの機構）と同様に解釈され、実際に
+            // JIS かな直接入力へ切り替わることを確認した（`hook.rs` の
+            // 既存 Alt+かなガードは `VK_KANA`/`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`
+            // のみを対象とし、自己注入キー〈`is_self_injected`〉は無条件に
+            // 素通しするため、awase 自身のこの注入は対象外だった）。
+            //
+            // Shift のように synthetic な modifier-up を同一バッチへ前置する
+            // 案も検討したが、Alt/Win は単独タップで OS のメニュー系機能
+            // （`SC_KEYMENU`/スタートメニュー）を起動する特殊な扱いを受けており、
+            // 実機未検証のままそれを回避する細工を追加するリスクを避け、
+            // 検証済みの Win ガードと同じ「スキップ」方式に統一した。
+            // スキップした場合、直後の IMC write リトライ（保険、上記コメント
+            // 参照）だけが残るため実モードの復元は保証されないが、これは
+            // Win ガード導入時から許容されている既存のトレードオフと同じ。
+            let blocking_modifier_held = hook::win_key_held() || hook::alt_key_held();
+            if self.platform_state.ime.effective_open() && !blocking_modifier_held {
                 let mut f2_inputs = Vec::with_capacity(3);
                 if prepend_synthetic_shift_up {
                     // 呼び出し元が物理 Shift up の reinject をまだ行っていない場合、OS
@@ -1579,6 +1604,11 @@ impl Runtime {
                 let _ = crate::win32::send_input_safe(&f2_inputs);
                 log::debug!(
                     "[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元"
+                );
+            } else if blocking_modifier_held {
+                log::debug!(
+                    "[shift-conv-guard] Win/Alt 押下中のため VK_DBE_HIRAGANA 注入をスキップ \
+                     (IMC write のみ。Alt+かな誤発火/Win+F2のスタートメニュー起動を防ぐ)"
                 );
             } else {
                 log::debug!(
