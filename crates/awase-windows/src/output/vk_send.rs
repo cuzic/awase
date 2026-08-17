@@ -157,8 +157,9 @@ impl Output {
                 cold_seq = cold_seq.value(),
             );
 
-            // SendMessageTimeoutW 系の同期呼び出し (set_ime_romaji_mode + send_f2_via_sendmessage)
-            // を with_app の外で実行するため、async タスクへオフロードする。
+            // SendMessageTimeoutW 系の同期呼び出しを with_app の外で実行するため、
+            // async タスクへオフロードする（旧 set_ime_romaji_mode/send_f2_via_sendmessage
+            // はいずれも削除済み、当時の設計意図の記録として残す）。
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックが
             // キーを INPUT_DEFER に退避し、cold start シーケンスと race しないようにする。
             //

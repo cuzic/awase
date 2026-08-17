@@ -1,15 +1,11 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetConversionStatus, ImmGetOpenStatus, IME_COMPOSITION_STRING,
     IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyboardLayout, MapVirtualKeyW, INPUT, MAPVK_VK_TO_VSC,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_KEYDOWN, WM_KEYUP,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardLayout, INPUT};
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus::class_names::is_tsf_native_window;
 use crate::imm::{
@@ -842,16 +838,6 @@ pub async fn set_ime_hiragana_mode_cross_process_async() -> bool {
     offload_unsafe(|| unsafe { set_ime_hiragana_mode_cross_process() }).await
 }
 
-/// `send_f2_via_sendmessage` の async 版（ワーカースレッドで実行）
-///
-/// メインスレッドの `with_app` 再入を避けるため、`SendMessageTimeoutW` (×2) を
-/// ワーカースレッドで実行する。メッセージループは await 中も継続する。
-pub async fn send_f2_via_sendmessage_async() -> bool {
-    // SAFETY: send_f2_via_sendmessage は unsafe fn。win32_async::offload はワーカースレッドで実行するが
-    //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない。
-    offload_unsafe(|| unsafe { send_f2_via_sendmessage() }).await
-}
-
 /// `get_ime_conversion_mode_raw_timeout` の async 版（ワーカースレッドで実行）
 ///
 /// `with_app` 再入を避けるためにワーカースレッドへオフロードする。加えて、
@@ -1475,63 +1461,6 @@ mod actuation_target_tests {
             TargetVerifyOutcome::TargetMoved
         );
     }
-}
-
-/// VK_DBE_HIRAGANA (F2) を `SendMessageTimeoutW` でフォーカスウィンドウの wndproc に直接届ける。
-///
-/// `SendInput` は OS 入力キューを経由するため、その後の `SendMessageTimeoutW` による
-/// probe よりも低優先度で処理される（QS_SENDMESSAGE > QS_INPUT）。
-/// 本関数は入力キューを迂回して wndproc に同期的に届けるため、return 後は
-/// Chrome が WM_KEYDOWN を処理済みであることが保証される。
-///
-/// Returns `true` if both WM_KEYDOWN and WM_KEYUP were delivered without timeout.
-///
-/// # Safety
-/// Calls Win32 APIs. Must be called from the main thread.
-#[must_use]
-pub unsafe fn send_f2_via_sendmessage() -> bool {
-    // SAFETY: get_focused_hwnd は unsafe fn で GetForegroundWindow または GetGUIThreadInfo から
-    //         HWND を返す。non_null() で NULL チェックを行い、NULL なら早期リターンする。
-    let Some(hwnd) = unsafe { get_focused_hwnd() }.non_null() else {
-        return false;
-    };
-    // SAFETY: MapVirtualKeyW はスレッドセーフで任意のスレッドから呼び出せる。
-    //         VK_DBE_HIRAGANA (0xF2) は有効な仮想キーコードであり MAPVK_VK_TO_VSC は有効な変換タイプ。
-    let scan = unsafe { MapVirtualKeyW(u32::from(crate::vk::VK_DBE_HIRAGANA.0), MAPVK_VK_TO_VSC) };
-    let lparam_down = LPARAM(1_isize | (isize::try_from(scan).unwrap_or(0) << 16));
-    let lparam_up = LPARAM(lparam_down.0 | (1 << 30) | (1_isize << 31));
-    let mut result = 0usize;
-    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
-    //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
-    let ok_down = unsafe {
-        SendMessageTimeoutW(
-            hwnd,
-            WM_KEYDOWN,
-            WPARAM(crate::vk::VK_DBE_HIRAGANA.0 as usize),
-            lparam_down,
-            SMTO_ABORTIFHUNG,
-            100,
-            Some(&raw mut result),
-        )
-    };
-    // SAFETY: hwnd は non_null() で NULL チェック済みの有効なウィンドウハンドル。
-    //         result はスタック上の初期化済み変数へのポインタで呼び出し中は有効。
-    //         SMTO_ABORTIFHUNG + タイムアウト 100ms により応答なしプロセスでもブロックしない。
-    let ok_up = unsafe {
-        SendMessageTimeoutW(
-            hwnd,
-            WM_KEYUP,
-            WPARAM(crate::vk::VK_DBE_HIRAGANA.0 as usize),
-            lparam_up,
-            SMTO_ABORTIFHUNG,
-            100,
-            Some(&raw mut result),
-        )
-    };
-    let success = ok_down.0 != 0 && ok_up.0 != 0;
-    log::debug!("[f2-sendmsg] hwnd={hwnd:?} scan=0x{scan:02X} success={success}");
-    success
 }
 
 /// フォーカスウィンドウの IMM32 HIMC に composition string が存在するか確認する。
