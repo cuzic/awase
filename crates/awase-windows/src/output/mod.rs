@@ -182,18 +182,6 @@ pub struct Output {
     /// H-4-b: vk_send.rs Chrome cold パスが `StartTsfProbe` を積み、
     /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
     pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
-    /// `conv_mode_policy = force` の武装フラグ（ADR-086 Phase 2、INV-15）。
-    ///
-    /// `Some(gen)` = 武装済み、`gen` は武装した時点の `ime_mode_focus_gen`。`None` = 未武装。
-    /// **生の `FocusChange` イベント自体が書き込みを起こしてはならない**（INV-15）ため、
-    /// `on_ime_mode_focus_changed` はこのフラグを立てるだけで、実際の書き込みは
-    /// `consume_force_pending_and_actuate`（`Output::send_romaji`/`send_kana_char` から
-    /// 呼ばれる、送信要求という入力意図に紐づくトリガー）が消費するまで起きない。
-    /// `gen` を保持するのは、`ActuationTarget` の `Aborted`/capture 失敗時に
-    /// 再武装するかどうかを判定するため（`output/conv_actuation.rs` 参照。
-    /// 同一 gen のまま再武装＝同一フォーカス内の一時的失敗、gen が変わっていれば
-    /// 別の正規の `FocusChange` 武装が既に起きているので何もしない）。
-    pub(crate) force_pending: std::cell::Cell<Option<u32>>,
 }
 
 impl std::fmt::Debug for Output {
@@ -264,7 +252,6 @@ impl Output {
             last_gji_reinit_ms: std::cell::Cell::new(0),
             pending_gji_reinit_cold_seq: std::cell::Cell::new(None),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
-            force_pending: std::cell::Cell::new(None),
         }
     }
 
@@ -281,20 +268,6 @@ impl Output {
     /// `Platform::set_conv_mode_authority` が `ConvModeAuthority::allows_conv_mutation()` の結果を push する。
     pub(crate) fn set_conv_mutation_allowed(&self, allowed: bool) {
         self.conv_mutation_allowed.set(allowed);
-    }
-
-    /// `conv_mode_policy = force` かどうかの唯一の判定点（ADR-086 §6段3-4
-    /// `force_policy_is_read_from_a_single_decision_point`）。
-    ///
-    /// conv 軸（`on_ime_mode_focus_changed`）・open 軸
-    /// （`runtime/mod.rs::apply_force_on_for_imm_broken`）の両方がここを経由する
-    /// ことで、INV-13（軸の対称性）の「同じ policy 判定関数」を満たす。
-    /// `ConvModePolicy::Force` を直接 `matches!` するコードを新たに書かないこと
-    /// —— `architecture_guard.rs::force_policy_is_read_from_a_single_decision_point`
-    /// が本関数の定義以外での直接参照を検知する。
-    #[must_use]
-    pub(crate) fn is_force_policy(&self) -> bool {
-        matches!(self.conv_mode.policy(), crate::state::ConvModePolicy::Force)
     }
 
     /// 次の Unicode モード Romaji 送信後に GJI write 観測を行うようリクエストする。
@@ -419,20 +392,6 @@ impl Output {
             .set(self.ime_mode_focus_gen.get().wrapping_add(1));
         // 新しいフォーカス先では IMC が読める可能性があるため give-up latch を解除する。
         self.ms_ime_gate_give_up.set(false);
-        // ADR-086 Phase 2（INV-15）: force-write のトリガーは「入力意図に紐づくイベント」
-        // のみに限定される。FocusChange 自体は書き込みを起こさず、次の送信要求
-        // （`consume_force_pending_and_actuate`）が消費するまでの「武装」だけを行う。
-        // `Force` policy でないときは明示的に `None` へクリアする（訂正、2026-08-08
-        // 2回目 opus アドバーサリアルレビュー L1）: 当初は `if` で武装のみ行い
-        // policy 非対象時は既存の値に触れないままにしていたため、`reload_config`
-        // 等で `Force` → `Observe` へ切り替えた直後、前のフォーカスで武装済みの
-        // `force_pending` が1回だけ残留して発火しうる残留武装バグがあった。
-        // open 軸の `Runtime::arm_force_open_pending`（`.then()` で対象外なら
-        // 明示的に `None` へクリアする）と規律を揃える。
-        self.force_pending.set(
-            self.is_force_policy()
-                .then(|| self.ime_mode_focus_gen.get()),
-        );
         // ADR-084（BUG-49 追補2、Opus レビュー指摘2）: フォーカス変更は
         // shift-conv-guard の hold が想定する「同一ウィンドウ内で完結する」
         // 前提が崩れたことを意味する。Shift の KeyUp がフックに届かないまま
@@ -634,11 +593,6 @@ impl Output {
     /// 従来の `mark_composition_cold()` 呼び出しの代わりに使う（明示的なコールド化も同時に行う）。
     pub fn on_focus_changed(&self) {
         self.composition.on_focus_changed();
-        // フォーカス変更後 1500ms 以内の HanKata→ZenKata ダウングレードを抑制するため
-        // タイムスタンプを記録する（TsfNative IMM/TSF 乖離対策）。
-        #[cfg(windows)]
-        self.conv_mode
-            .on_focus_changed(crate::state::TickMs(crate::hook::current_tick_ms()));
         // deferred_vks は TsfProbeData に内包されているため、
         // pending_tsf が Some の場合は probe と一緒にドロップされる。
     }
@@ -1076,10 +1030,6 @@ impl Output {
 
 impl awase::platform::CompositionOutput for Output {
     fn send_romaji(&self, romaji: &str) {
-        // ADR-086 Phase 2（INV-15 item 3）: force-write の唯一の消費点。
-        // `InjectionMode::Vk`/`Tsf`/`Unicode` すべての合流点かつ、以下の各送信関数
-        // 内部のどの早期 return（`prepend_f2_warmup` 分岐等）よりも前で必ず1回通る。
-        self.consume_force_pending_and_actuate();
         match self.injection_mode {
             InjectionMode::Vk => self.send_romaji_batched(romaji),
             InjectionMode::Tsf => self.send_romaji_as_tsf(romaji),
@@ -1088,10 +1038,6 @@ impl awase::platform::CompositionOutput for Output {
     }
 
     fn send_kana_char(&self, ch: char) {
-        // 記号打鍵も入力意図であることに変わりはないため、`send_romaji` と同じく
-        // 消費点として扱う（ADR-086 Phase 2 item 3 の「1箇所」は消費判断を行う
-        // 関数が1つという意味で読み替える。呼び出し箇所は2つになる）。
-        self.consume_force_pending_and_actuate();
         self.send_char_as_tsf(ch);
     }
 
@@ -1150,12 +1096,6 @@ impl Output {
     /// `RAW_TSF_LITERAL.romaji` に退避されたローマ字を読み取り、`send_romaji_as_tsf` で再送する。
     /// cold 状態（RawTsfLiteralRecovery）で呼ばれるため warmup probe が走り正しく compose される。
     /// drain キーの前に呼ぶことで「backspace → raw TSF literal char → drain keys」の順を保証する。
-    ///
-    /// **`consume_force_pending_and_actuate` を意図的に呼ばない**（ADR-086 Phase 2）。
-    /// `send_romaji_batched`/`send_romaji_as_tsf` を `CompositionOutput::send_romaji`
-    /// （消費点）を経由せず直接呼ぶのはこのためで、経路漏れではない —— これは
-    /// 既に打った文字の再送であり、新しい入力意図ではないため force を再発火させては
-    /// ならない。
     pub fn flush_raw_tsf_literal_romaji(&self) {
         let romaji = {
             let mut guard = crate::RAW_TSF_LITERAL
@@ -1458,85 +1398,6 @@ mod tests {
         let g2 = o.bump_shift_conv_guard_gen();
         assert_ne!(g1, g2);
         assert_eq!(o.shift_conv_guard_gen.get(), g2);
-    }
-
-    // ── ADR-086 Phase 2: force_pending 武装/消費（INV-15） ──────────────────────
-    //
-    // `consume_force_pending_and_actuate` の書き込みが実際に起きる分岐は
-    // `win32_async::spawn_local`（メッセージループ上で動く executor）を必要とし、
-    // `cargo test` 単体では実行できない（Windows 実機/wine でのみ検証可能）。
-    // ここでは `conv_mutation_allowed = false`（`Output::new()` のデフォルト、
-    // spawn_local に到達せず同期的に `Rejected` を返す）を保った状態で、
-    // 武装・消費のフラグ操作という純粋な部分だけを固定する。
-
-    #[test]
-    fn focus_change_arms_force_pending_only_under_force_policy() {
-        let o = make_output();
-        assert_eq!(o.conv_mode.policy(), crate::state::ConvModePolicy::Observe);
-        o.on_ime_mode_focus_changed();
-        assert_eq!(
-            o.force_pending.get(),
-            None,
-            "Observe policy では FocusChange は武装しない"
-        );
-
-        o.conv_mode.set_policy(crate::state::ConvModePolicy::Force);
-        o.on_ime_mode_focus_changed();
-        assert_eq!(
-            o.force_pending.get(),
-            Some(o.ime_mode_focus_gen.get()),
-            "Force policy では FocusChange が現在の focus_gen で武装する"
-        );
-    }
-
-    /// L1（2026-08-08 2回目 opus アドバーサリアルレビュー）の回帰テスト:
-    /// `Force` → `Observe` へ切り替えた直後の FocusChange で、前のフォーカスで
-    /// 武装済みの `force_pending` が残留せず明示的にクリアされること。
-    #[test]
-    fn focus_change_clears_stale_force_pending_after_policy_switches_back_to_observe() {
-        let o = make_output();
-        o.conv_mode.set_policy(crate::state::ConvModePolicy::Force);
-        o.on_ime_mode_focus_changed();
-        assert!(o.force_pending.get().is_some());
-
-        o.conv_mode
-            .set_policy(crate::state::ConvModePolicy::Observe);
-        o.on_ime_mode_focus_changed();
-        assert_eq!(
-            o.force_pending.get(),
-            None,
-            "Observe へ切り替えた後の FocusChange は残留武装を明示的にクリアする"
-        );
-    }
-
-    #[test]
-    fn consume_force_pending_clears_flag_without_writing_when_mutation_disallowed() {
-        let o = make_output();
-        o.conv_mode.set_policy(crate::state::ConvModePolicy::Force);
-        o.on_ime_mode_focus_changed();
-        assert!(o.force_pending.get().is_some());
-
-        // conv_mutation_allowed はデフォルト false のまま —— actuate_conv_mode が
-        // 同期的に Rejected を返し、spawn_local（メッセージループ必須）に到達しない。
-        assert!(!o.conv_mutation_allowed.get());
-        o.consume_force_pending_and_actuate();
-        assert_eq!(
-            o.force_pending.get(),
-            None,
-            "消費は同期的にフラグを降ろす（Rejected でも再武装しない）"
-        );
-    }
-
-    #[test]
-    fn consume_force_pending_is_noop_when_not_armed() {
-        let o = make_output();
-        assert_eq!(o.force_pending.get(), None);
-        o.consume_force_pending_and_actuate();
-        assert_eq!(
-            o.force_pending.get(),
-            None,
-            "未武装の consume は何もせず force_pending も None のまま"
-        );
     }
 
     // ── 既存テスト ─────────────────────────────────────────────────────────────

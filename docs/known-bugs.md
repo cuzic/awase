@@ -5707,7 +5707,7 @@ cargo test -p awase-windows --test architecture_guard（17件pass、mutation tes
 `crates/awase-windows/tests/architecture_guard.rs`。関連:
 [ADR-086](adr/086-force-write-trigger-and-target-identity.md) §4 INV-14、§7。
 
-## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消のみ対応済み、トリガー未確定）
+## BUG-50: 一度カタカナに入ると IME-ON コンボを押しても永久に復旧できない（デッドロック解消・トリガーとも解消済み、詳細は追補参照）
 
 **症状:** MS-IME（TSF-native、Windows Terminal / Chrome / UWP アプリ間でフォーカスが
 頻繁に切り替わる環境）で、ユーザーが特にカタカナ切替キーを意識的に押した形跡が無い
@@ -5794,6 +5794,25 @@ invariant を追補し、`ConvModeMgr` の確定値が `UserOriginated` か
 内部の誤 belief 起源のカタカナは自動是正できるようにする方向性が有力（後述の
 ADR-084 追補参照）。仮説A〜Cのどれが実際のトリガーかは実機の debug ログでの
 再現が必須。
+
+**追補（2026-08-17、コミット時系列からの再検討・ユーザー指摘）:** 原因2を
+未確定のまま残していたが、`git log` のタイムスタンプを確認したところ、
+本 BUG の Phase 1 修正（`21a6b6b6`、2026-08-05 04:12）の**わずか1.5時間後**に
+BUG-52 の修正（`bdf4a139`、2026-08-05 05:49、「NICOLA の物理『IME ON』キー
+(scan 0x70) を IME が既に ON の状態で押すと、Windows のキーボードレイアウト
+変換層が `VK_DBE_HIRAGANA` の代わりに `VK_DBE_KATAKANA` を生成することがあり、
+当時の suppress ロジックの穴〈`shadow_toggled` 条件でしかガードしていなかった〉
+を素通りして実際に MS-IME をカタカナへ切り替えていた」）が同日中に入っている
+ことが判明した。症状の記述（「謎にカタカナになる」）も酷似しており、本 BUG の
+2026-08-05 実機報告は、当時まだ存在していた BUG-52 の穴が原因だった可能性が
+高い（仮説A〜Cのいずれよりも状況証拠が強い、原因2の未検討だった第4の候補）。
+BUG-52 の修正で最有力の発生原因が塞がれ、翌日の `7fcb89aa`（2026-08-06
+18:12、`MsImeDirectStrategy` の IME-ON キーを `VK_DBE_HIRAGANA` → `VK_IME_ON`
+に変更、ガード3の根治）で構造的デッドロック（原因1）も別途根治済みのため、
+Phase 1 のカタカナ観測ベースの復旧（`observed_katakana` 条件）は、この2つが
+塞がる**前**に書かれた対症療法だったと判断し、charset 軸の追跡撤去（ADR-094）
+に合わせて撤去した。原因2の仮説A〜Cは検証されないまま未決着だが、実害の
+発生源として最有力だったものは解消済みと考えてよい。
 
 **テスト:** `tests/ime_key_sequence_golden.rs` に、belief=Off かつ観測 conv が
 カタカナの状態で IME-ON コンボを押すとひらがなリセットが起動することを固定する

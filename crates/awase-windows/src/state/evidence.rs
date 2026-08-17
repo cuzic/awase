@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn conv_open_inference_is_capped_at_medium() {
         let any: AnyObservation = Observed::<ConvOpenInference>::from_conv(
-            ConvSyncReason::KatakanaShadowOff,
+            ConvSyncReason::NativeToggleShadowOff,
             true,
             HwndId::NULL,
             3,

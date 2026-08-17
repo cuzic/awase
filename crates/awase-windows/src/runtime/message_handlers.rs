@@ -615,24 +615,6 @@ pub(crate) fn handle_wm_reload_config() {
     reload_config();
 }
 
-/// トレイの Ime系コマンドから `ConvModeMgr::desired_mode` を更新する。
-///
-/// `conv_mode_policy = force`（`config.toml`）のときに cold 転換のたびに
-/// 強制される目標モードを、awase 自身のトレイ選択でのみ更新する唯一の書き込み点。
-/// romaji は常に `true` を渡す（英数系 charset では `to_conv_bits` が ROMAN
-/// ビットを無害に付与するだけで意味を持たない）。
-fn set_desired_conv_mode(charset: awase::engine::Charset) {
-    let _ = with_app(|app| {
-        app.platform
-            .output
-            .conv_mode
-            .set_desired_mode(awase::engine::ConvMode {
-                charset,
-                romaji: true,
-            });
-    });
-}
-
 /// WM_COMMAND ハンドラ
 pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
     // トレイメニューの IME コマンドは、メニュー表示前に捕捉したウィンドウ
@@ -661,91 +643,21 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::CapsLock) => {
             crate::ime::toggle_caps_lock();
         }
-        // BUG-61: awase はローマ字出力前提のエンジンのため、NATIVE を立てる conv 指定は
-        // 常に IME_CMODE_ROMAN も維持する（ResetState と同じパターン）。かつては ROMAN
-        // ビットに触れておらず、JIS かな入力に固定された状態で選んでも復旧しなかった。
-        Some(tray::TrayCommand::ImeHiragana) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(
-                    hwnd,
-                    true,
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_FULLSHAPE
-                        | crate::imm::IME_CMODE_ROMAN,
-                    crate::imm::IME_CMODE_KATAKANA,
-                );
-            }
-            set_desired_conv_mode(awase::engine::Charset::Hiragana);
-        }
-        Some(tray::TrayCommand::ImeFullKatakana) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(
-                    hwnd,
-                    true,
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_KATAKANA
-                        | crate::imm::IME_CMODE_FULLSHAPE
-                        | crate::imm::IME_CMODE_ROMAN,
-                    0,
-                );
-            }
-            set_desired_conv_mode(awase::engine::Charset::ZenkakuKatakana);
-        }
-        Some(tray::TrayCommand::ImeFullAlpha) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(
-                    hwnd,
-                    true,
-                    crate::imm::IME_CMODE_FULLSHAPE,
-                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_KATAKANA,
-                );
-            }
-            set_desired_conv_mode(awase::engine::Charset::ZenkakuAlpha);
-        }
-        Some(tray::TrayCommand::ImeHalfAlpha) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(
-                    hwnd,
-                    true,
-                    0,
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_KATAKANA
-                        | crate::imm::IME_CMODE_FULLSHAPE,
-                );
-            }
-            set_desired_conv_mode(awase::engine::Charset::HankakuAlpha);
-        }
-        Some(tray::TrayCommand::ImeHalfKatakana) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(
-                    hwnd,
-                    true,
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_KATAKANA
-                        | crate::imm::IME_CMODE_ROMAN,
-                    crate::imm::IME_CMODE_FULLSHAPE,
-                );
-            }
-            set_desired_conv_mode(awase::engine::Charset::HankakuKatakana);
-        }
-        Some(tray::TrayCommand::ImeDirect) => {
-            if let Some(hwnd) = ime_target {
-                let _ = crate::ime::set_ime_mode_for_target(hwnd, false, 0, 0);
-            }
-        }
         Some(tray::TrayCommand::ResetState) => {
             let caps_lock_on =
                 windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
             if caps_lock_on {
                 crate::ime::toggle_caps_lock();
             }
+            // 2026-08-17、ADR-094 で charset 軸の追跡を撤去したのに伴い、書き込み
+            // マスクから IME_CMODE_ROMAN を外した（ユーザーの明示決定。romaji/JISかな
+            // の区別自体は ADR-091 決定3 §D3.4 により別軸として残るが、この
+            // リセット操作の対象からは外す）。
             if let Some(hwnd) = ime_target {
                 let _ = crate::ime::set_ime_mode_for_target(
                     hwnd,
                     true,
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_FULLSHAPE
-                        | crate::imm::IME_CMODE_ROMAN,
+                    crate::imm::IME_CMODE_NATIVE | crate::imm::IME_CMODE_FULLSHAPE,
                     crate::imm::IME_CMODE_KATAKANA,
                 );
             }

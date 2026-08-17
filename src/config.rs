@@ -11,33 +11,17 @@ use crate::types::VkCode;
 //   INPUT_DEFER 対称性/NonText パススルー等）の登場以降テストされておらず撤去。
 // - OutputMode (output_mode): per-window の InjectionMode（injection_hint + AppKind
 //   から自動決定）に完全置換済みで、フィールドは書き込みのみの死に設定だった。
+// - ConvModePolicy (conv_mode_policy): 2026-08-17、ADR-094 で charset 軸
+//   （ひらがな/カタカナ×全角/半角の追跡）自体を撤去したのに伴い削除。
+//   `Observe`/`Force` という2値のうち `Force`（conv モードの能動的な強制
+//   書き戻し）は charset 軸の存在が前提のため道連れになった。ADR-091 決定3
+//   §D3.4「かな⇔英数の2値境界は別軸として残す」の対象（`is_eisu()`）は
+//   config 設定なしで引き続き機能する。
 //
 // keyboard_model は 2026-07-06 に「レイアウトパースが KeyboardModel::Jis 固定で
 // 一度も配線されなかった」として撤去されたが、2026-07-08 に US 配列対応
 // (scanmap の JIS/US テーブル分離・layout/nicola_us.yab 追加) と合わせて
 // 実際に配線した上で再導入した。旧 config.toml の "jis"/"us" はそのまま解釈される。
-
-/// IME 変換モード（英数/ひらがな/カタカナ × 半角/全角）を awase が積極的に
-/// 強制するかどうかのポリシー。
-///
-/// `IME ON/OFF`（`ImeModel::desired_open`）とは独立した別軸の設定。conv
-/// モードは 2026-08 時点で物理キーの意図しない漏洩（`docs/known-bugs.md`
-/// BUG-52）等により実 IME 側と乖離することがあるため、`Force` はこの乖離を
-/// cold 転換のたびに強制的に正すためのオプトイン機能。
-///
-/// `Observe`（デフォルト）は従来通り、awase は conv モードを観測するのみで
-/// 能動的な強制書き込みは行わない。カタカナ/英数への追従警告は BUG-19 で
-/// 自己増幅ループを起こした前例があるため、デフォルトは安全側（観測のみ）
-/// のままにしている。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ConvModePolicy {
-    /// 観測のみ。awase は conv モードを能動的に書き換えない（従来動作）。
-    #[default]
-    Observe,
-    /// 強制。cold 転換のたびに、トレイで選択した目標モードへ冪等に書き戻す。
-    Force,
-}
 
 /// BUG-52 の「DBE レンジ」キーをパススルーしてよいかどうか（隠し設定、上級者向け）。
 ///
@@ -116,9 +100,6 @@ pub struct GeneralConfig {
     pub ngram_max_threshold_ms: u32,
     /// 確定モード（デフォルト: wait）
     pub confirm_mode: ConfirmMode,
-    /// conv モード（英数/ひらがな/カタカナ × 半角/全角）強制ポリシー
-    /// （デフォルト: observe＝従来通り観測のみ）
-    pub conv_mode_policy: ConvModePolicy,
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming と
     /// NgramPredictive のフォールバック/投機待機で使用）
     pub speculative_delay_ms: u32,
@@ -349,7 +330,6 @@ impl Default for GeneralConfig {
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
             confirm_mode: ConfirmMode::Wait,
-            conv_mode_policy: ConvModePolicy::Observe,
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,

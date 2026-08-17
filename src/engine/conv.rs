@@ -1,8 +1,11 @@
 //! IME 変換モード (`ImmGetConversionStatus`) の型安全な表現と分類ロジック。
 //!
-//! `ConvMode` は Windows IMM32 の u32 ビットフィールドを意味のある 2 軸
-//! （`Charset` + `romaji`）に変換した値型。Win32 API を呼ばないため
-//! Linux でもコンパイル・テスト可能。
+//! `ConvMode` は Windows IMM32 の u32 ビットフィールドのうち、awase が
+//! 追跡する2軸（`eisu`: 英数かどうか、`romaji`: ローマ字入力かどうか）
+//! だけを取り出した値型。かな形状（ひらがな/カタカナ・全角/半角）の軸は
+//! ADR-094 で追跡を撤去した（ADR-091 決定3 §D3.1「charset 軸について
+//! awase が特定の状態を予測して belief 化することはしない」の実装）。
+//! Win32 API を呼ばないため Linux でもコンパイル・テスト可能。
 
 use std::fmt;
 
@@ -10,64 +13,31 @@ use crate::engine::{AssumedReason, InputModeState};
 
 // ImmGetConversionStatus のビット定数 (imm.h)
 const IME_CMODE_NATIVE: u32 = 0x0001;
-const IME_CMODE_KATAKANA: u32 = 0x0002;
-const IME_CMODE_FULLSHAPE: u32 = 0x0008;
 const IME_CMODE_ROMAN: u32 = 0x0010;
-
-/// IME が出力する文字の種類。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Charset {
-    /// ひらがな (NATIVE|FULLSHAPE)
-    Hiragana,
-    /// 全角カタカナ (NATIVE|KATAKANA|FULLSHAPE)
-    ZenkakuKatakana,
-    /// 半角カタカナ (NATIVE|KATAKANA)
-    HankakuKatakana,
-    /// 全角英数 (FULLSHAPE のみ)
-    ZenkakuAlpha,
-    /// 半角英数 (フラグなし)
-    HankakuAlpha,
-}
-
-impl Charset {
-    /// カタカナ系（全角・半角）かどうか。
-    #[must_use]
-    pub const fn is_katakana(self) -> bool {
-        matches!(self, Self::ZenkakuKatakana | Self::HankakuKatakana)
-    }
-}
-
-impl fmt::Display for Charset {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Hiragana => "Hiragana",
-            Self::ZenkakuKatakana => "ZenKata",
-            Self::HankakuKatakana => "HanKata",
-            Self::ZenkakuAlpha => "ZenAlpha",
-            Self::HankakuAlpha => "HanAlpha",
-        })
-    }
-}
 
 impl fmt::Display for ConvMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "{}/{}",
-            self.charset,
+            if self.eisu { "Eisu" } else { "Kana" },
             if self.romaji { "roma" } else { "kana" }
         )
     }
 }
 
-/// IME 変換モードを文字種と入力方式の 2 軸で表す値型。
+/// IME 変換モードのうち awase が追跡する2軸を表す値型。
 ///
-/// `romaji` フィールドは Hiragana/Katakana 系のみ意味を持つ。
-/// - `true`  = ローマ字入力 (ROMAN ビットあり)
-/// - `false` = JISかな直接入力 (ROMAN ビットなし)
+/// - `eisu`: 英数モードかどうか（NATIVE ビット無し）。親指シフトエンジンの
+///   活性判断（`ObservedEisu`、`state/eisu_recovery.rs`）に使う。
+/// - `romaji`: ローマ字入力かどうか（ROMAN ビットあり）。`false` は JIS
+///   かな直接入力を意味する。awase はこの入力方式を非サポートとしており
+///   （ADR-091 決定2、BUG-61 で「Win32 に外部から切り替える公式 API が
+///   存在しない」と実機確定済み）、`swallow_alt_kana_input_method_switch`
+///   が遷移そのものを予防的に遮断する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvMode {
-    pub charset: Charset,
+    pub eisu: bool,
     pub romaji: bool,
 }
 
@@ -75,40 +45,19 @@ impl ConvMode {
     /// `ImmGetConversionStatus` の raw conv 値から生成する。
     #[must_use]
     pub const fn from_u32(conv: u32) -> Self {
-        let has_native = conv & IME_CMODE_NATIVE != 0;
-        let has_katakana = conv & IME_CMODE_KATAKANA != 0;
-        let has_fullshape = conv & IME_CMODE_FULLSHAPE != 0;
-        let has_roman = conv & IME_CMODE_ROMAN != 0;
-
-        let charset = if !has_native {
-            if has_fullshape {
-                Charset::ZenkakuAlpha
-            } else {
-                Charset::HankakuAlpha
-            }
-        } else if has_katakana {
-            if has_fullshape {
-                Charset::ZenkakuKatakana
-            } else {
-                Charset::HankakuKatakana
-            }
-        } else {
-            Charset::Hiragana
-        };
-
         Self {
-            charset,
-            romaji: has_roman,
+            eisu: conv & IME_CMODE_NATIVE == 0,
+            romaji: conv & IME_CMODE_ROMAN != 0,
         }
     }
 
     /// 英数モード (NATIVE=0) かどうか。ROMAN ビットの有無は関係ない。
     ///
     /// MS-IME は半角英数モードでも ROMAN ビット (0x10) をセットしたまま返す場合がある
-    /// (conv=0x0010)。charset が Alpha 系であれば英数モードとして扱う。
+    /// (conv=0x0010)。
     #[must_use]
     pub const fn is_eisu(self) -> bool {
-        matches!(self.charset, Charset::HankakuAlpha | Charset::ZenkakuAlpha)
+        self.eisu
     }
 
     /// `conv` が「ユーザーが英数モードを選んだ」証拠として使えるかどうかを判定する。
@@ -128,46 +77,6 @@ impl ConvMode {
             return None;
         }
         conv.map(|c| Self::from_u32(c).is_eisu())
-    }
-
-    /// `ImmSetConversionStatus` の目標 conv 値を返す。
-    ///
-    /// カタカナ系は KATAKANA/FULLSHAPE ビットを明示的に復元する必要があるため `Some(conv)` を返す。
-    /// それ以外は `current_conv | ROMAN` で十分なため `None`。
-    #[must_use]
-    pub const fn imm_conv_target(self) -> Option<u32> {
-        match self.charset {
-            Charset::ZenkakuKatakana => {
-                Some(IME_CMODE_NATIVE | IME_CMODE_KATAKANA | IME_CMODE_FULLSHAPE | IME_CMODE_ROMAN)
-            }
-            Charset::HankakuKatakana => {
-                Some(IME_CMODE_NATIVE | IME_CMODE_KATAKANA | IME_CMODE_ROMAN)
-            }
-            _ => None,
-        }
-    }
-
-    /// この `ConvMode` が表す状態そのものを表す完全な conv ビット列を返す。
-    ///
-    /// `imm_conv_target` と異なり `current` 値に依存せず、`self` の
-    /// `charset`/`romaji` だけから常に完全なビット列を計算する純粋関数。
-    /// 「観測された現在値をどう直すか」ではなく「この目標モードを強制したい」
-    /// という用途（`conv_mode_policy = force`、cold 転換時の強制書き込み等）
-    /// 向け。
-    #[must_use]
-    pub const fn to_conv_bits(self) -> u32 {
-        let charset_bits = match self.charset {
-            Charset::Hiragana => IME_CMODE_NATIVE | IME_CMODE_FULLSHAPE,
-            Charset::ZenkakuKatakana => IME_CMODE_NATIVE | IME_CMODE_KATAKANA | IME_CMODE_FULLSHAPE,
-            Charset::HankakuKatakana => IME_CMODE_NATIVE | IME_CMODE_KATAKANA,
-            Charset::ZenkakuAlpha => IME_CMODE_FULLSHAPE,
-            Charset::HankakuAlpha => 0,
-        };
-        if self.romaji {
-            charset_bits | IME_CMODE_ROMAN
-        } else {
-            charset_bits
-        }
     }
 
     /// idle 中の conv ポーリング値から belief の `InputModeState` を分類する。
@@ -202,27 +111,21 @@ impl ConvMode {
             // ローマ字モード
             return (!current.is_romaji_capable()).then_some(ObservedRomaji);
         }
-        // ROMAN=0 かつ NATIVE=1
-        match self.charset {
-            Charset::ZenkakuKatakana | Charset::HankakuKatakana => {
-                // カタカナ (NICOLA は romaji-capable として扱う)
-                (!current.is_romaji_capable()).then_some(ObservedRomaji)
-            }
-            _ => {
-                if is_roman_reliable {
-                    // ROMAN=0 が信頼できる: ひらがな conv = JISかな。romaji-capable なら訂正。
-                    current.is_romaji_capable().then_some(ObservedKana)
-                } else {
-                    // ROMAN=0 が信頼できない (TsfNative): ひらがな conv はローマ字/JISかな不明。
-                    // romaji-capable なら変更なし。そうでなければ AssumedRomaji に回復。
-                    if current.is_romaji_capable() {
-                        None
-                    } else {
-                        Some(InputModeState::AssumedRomaji {
-                            reason: AssumedReason::ImmBridgeBroken,
-                        })
-                    }
-                }
+        // ROMAN=0 かつ NATIVE=1（charset 軸は追跡しないため、かな形状に関わらず
+        // 同一に扱う。ADR-091 決定2 により JIS かな入力は非サポートのため、この
+        // 分岐は「JIS かな直接入力を観測した」という単一の意味になる）。
+        if is_roman_reliable {
+            // ROMAN=0 が信頼できる: JISかな。romaji-capable なら訂正。
+            current.is_romaji_capable().then_some(ObservedKana)
+        } else {
+            // ROMAN=0 が信頼できない (TsfNative): ローマ字/JISかな不明。
+            // romaji-capable なら変更なし。そうでなければ AssumedRomaji に回復。
+            if current.is_romaji_capable() {
+                None
+            } else {
+                Some(InputModeState::AssumedRomaji {
+                    reason: AssumedReason::ImmBridgeBroken,
+                })
             }
         }
     }
@@ -248,8 +151,7 @@ impl ConvMode {
         }
         // ROMAN ビット変化 かつ NATIVE あり → ひらがな↔ローマ字切り替え
         let roman_changed = prev.romaji != self.romaji;
-        let curr_has_native =
-            !matches!(self.charset, Charset::HankakuAlpha | Charset::ZenkakuAlpha);
+        let curr_has_native = !self.eisu;
         if !(roman_changed && curr_has_native) {
             return None;
         }
@@ -288,42 +190,26 @@ mod tests {
     const CONV_ZENALPHA: u32 = 0x0008; // 全角英数 (FULLSHAPE)
     const CONV_HIRAGANA: u32 = 0x0019; // ひらがなローマ字 (NATIVE|FULLSHAPE|ROMAN)
     const CONV_JISAKANA: u32 = 0x0009; // JISかな (NATIVE|FULLSHAPE)
-    const CONV_ZENKATA: u32 = 0x000B; // 全角カタカナ (NATIVE|KATAKANA|FULLSHAPE)
-    const CONV_HANKATA: u32 = 0x0003; // 半角カタカナ (NATIVE|KATAKANA)
 
     // ── from_u32 ────────────────────────────────────────────────────────────
     #[test]
     fn from_u32_hiragana_romaji() {
         let m = cm(CONV_HIRAGANA);
-        assert_eq!(m.charset, Charset::Hiragana);
+        assert!(!m.eisu);
         assert!(m.romaji);
     }
 
     #[test]
     fn from_u32_jisakana() {
         let m = cm(CONV_JISAKANA);
-        assert_eq!(m.charset, Charset::Hiragana);
-        assert!(!m.romaji);
-    }
-
-    #[test]
-    fn from_u32_zenkata() {
-        let m = cm(CONV_ZENKATA);
-        assert_eq!(m.charset, Charset::ZenkakuKatakana);
-        assert!(!m.romaji);
-    }
-
-    #[test]
-    fn from_u32_hankata() {
-        let m = cm(CONV_HANKATA);
-        assert_eq!(m.charset, Charset::HankakuKatakana);
+        assert!(!m.eisu);
         assert!(!m.romaji);
     }
 
     #[test]
     fn from_u32_eisuu() {
         let m = cm(CONV_EISUU);
-        assert_eq!(m.charset, Charset::HankakuAlpha);
+        assert!(m.eisu);
         assert!(!m.romaji);
         assert!(m.is_eisu());
     }
@@ -331,7 +217,7 @@ mod tests {
     #[test]
     fn from_u32_zenalpha() {
         let m = cm(CONV_ZENALPHA);
-        assert_eq!(m.charset, Charset::ZenkakuAlpha);
+        assert!(m.eisu);
         assert!(!m.romaji);
         assert!(m.is_eisu());
     }
@@ -340,16 +226,16 @@ mod tests {
     fn from_u32_hanalpha_roma() {
         // MS-IME が半角英数モードで ROMAN ビット (0x10) をセットする場合
         let m = cm(0x0010);
-        assert_eq!(m.charset, Charset::HankakuAlpha);
+        assert!(m.eisu);
         assert!(m.romaji);
-        assert!(m.is_eisu()); // charset が Alpha なら ROMAN ビット不問
+        assert!(m.is_eisu()); // NATIVE=0 なら ROMAN ビット不問
     }
 
     #[test]
     fn from_u32_zenalpha_roma() {
         // 全角英数 + ROMAN ビット (0x0018)
         let m = cm(0x0018);
-        assert_eq!(m.charset, Charset::ZenkakuAlpha);
+        assert!(m.eisu);
         assert!(m.romaji);
         assert!(m.is_eisu());
     }
@@ -393,47 +279,6 @@ mod tests {
     #[test]
     fn is_eisu_evidence_none_when_conv_unknown() {
         assert_eq!(ConvMode::is_eisu_evidence(Some(true), None), None);
-    }
-
-    // ── imm_conv_target ──────────────────────────────────────────────────────
-    #[test]
-    fn imm_conv_target_zenkata() {
-        assert_eq!(cm(CONV_ZENKATA).imm_conv_target(), Some(0x000B | 0x0010)); // NATIVE|KATA|FULL|ROMAN
-    }
-
-    #[test]
-    fn imm_conv_target_hankata() {
-        assert_eq!(cm(CONV_HANKATA).imm_conv_target(), Some(0x0003 | 0x0010)); // NATIVE|KATA|ROMAN
-    }
-
-    #[test]
-    fn imm_conv_target_hiragana_none() {
-        assert_eq!(cm(CONV_HIRAGANA).imm_conv_target(), None);
-    }
-
-    // ── to_conv_bits ─────────────────────────────────────────────────────────
-    #[test]
-    fn to_conv_bits_round_trips_all_charsets_with_roman() {
-        for &conv in &[
-            CONV_HIRAGANA,
-            CONV_ZENKATA,
-            CONV_HANKATA,
-            CONV_EISUU,
-            CONV_ZENALPHA,
-        ] {
-            let mode = cm(conv | 0x0010); // ROMAN 付きで正規化
-            assert_eq!(
-                mode.to_conv_bits(),
-                conv | 0x0010,
-                "conv=0x{conv:04X} は to_conv_bits() で往復する必要がある"
-            );
-        }
-    }
-
-    #[test]
-    fn to_conv_bits_without_roman() {
-        assert_eq!(cm(CONV_ZENKATA).to_conv_bits(), CONV_ZENKATA);
-        assert_eq!(ConvMode::from_u32(0).to_conv_bits(), 0); // 半角英数・ROMANなし
     }
 
     // ── classify_idle (is_roman_reliable=true: 通常 IMM32) ────────────────────
@@ -521,40 +366,6 @@ mod tests {
         assert_eq!(
             cm(CONV_JISAKANA).classify_idle(true, ObservedRomaji, true),
             Some(ObservedKana)
-        );
-    }
-
-    // 全角カタカナ (NICOLA)
-    #[test]
-    fn idle_zenkata_from_kana_yields_romaji() {
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_idle(false, ObservedKana, true),
-            Some(ObservedRomaji)
-        );
-    }
-
-    #[test]
-    fn idle_zenkata_from_romaji_yields_none() {
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_idle(false, ObservedRomaji, true),
-            None
-        );
-    }
-
-    #[test]
-    fn idle_zenkata_cold_start_classifies() {
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_idle(true, ObservedKana, true),
-            Some(ObservedRomaji)
-        );
-    }
-
-    // 半角カタカナ
-    #[test]
-    fn idle_hankata_from_kana_yields_romaji() {
-        assert_eq!(
-            cm(CONV_HANKATA).classify_idle(false, ObservedKana, true),
-            Some(ObservedRomaji)
         );
     }
 
@@ -680,15 +491,6 @@ mod tests {
         );
     }
 
-    // カタカナ conv も is_roman_reliable に依存しない
-    #[test]
-    fn idle_zenkata_tsf_from_kana_yields_romaji() {
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_idle(false, ObservedKana, false),
-            Some(ObservedRomaji)
-        );
-    }
-
     // ── classify_transition ──────────────────────────────────────────────────
 
     // 英数遷移
@@ -739,35 +541,25 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tr_no_roman_change_yields_none() {
-        // JISかな → 全角カタカナ: どちらも ROMAN=0 → 変化なし
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_transition(cm(CONV_JISAKANA), ObservedKana),
-            None
-        );
-    }
-
-    /// `&&`→`||` の反転を殺すテスト。`tr_no_roman_change_yields_none` は
-    /// `roman_changed=false, curr_has_native=true` を使うが、`current` に
-    /// `ObservedKana`（`self.romaji=false` と一致）を渡していたため、
-    /// mutants で `||` に反転しても後続の第2ガード（belief 一致判定）が
-    /// 偶然 `None` を返し、結果が変わらず検知できなかった。ここでは
-    /// `self.romaji=false` と *不一致* な `ObservedRomaji` を渡すことで、
-    /// 第2ガードでは None にならないケースを作り、第1ガード
+    /// `&&`→`||` の反転を殺すテスト。`roman_changed=false, curr_has_native=true`
+    /// を使うが、`current` に `ObservedKana`（`self.romaji=false` と一致）を
+    /// 渡していたため、mutants で `||` に反転しても後続の第2ガード（belief
+    /// 一致判定）が偶然 `None` を返し、結果が変わらず検知できなかった。
+    /// ここでは `self.romaji=false` と *不一致* な `ObservedRomaji` を渡す
+    /// ことで、第2ガードでは None にならないケースを作り、第1ガード
     /// (`roman_changed && curr_has_native`) 自体の反転を露出させる。
     #[test]
     fn tr_no_roman_change_yields_none_even_with_mismatched_belief() {
-        // ZENKATA(romaji=false) ← JISAKANA(romaji=false): roman_changed=false,
-        // curr_has_native=true(ZenkakuKatakana は Alpha 系ではない)。
+        // JISAKANA(romaji=false) ← JISAKANA(romaji=false): roman_changed=false,
+        // curr_has_native=true。
         assert_eq!(
-            cm(CONV_ZENKATA).classify_transition(cm(CONV_JISAKANA), ObservedRomaji),
+            cm(CONV_JISAKANA).classify_transition(cm(CONV_JISAKANA), ObservedRomaji),
             None
         );
     }
 
     /// 上記の対称ケース: `roman_changed=true, curr_has_native=false`。
-    /// `curr_has_native=false` にするには self が eisu(Alpha系) である必要があるが、
+    /// `curr_has_native=false` にするには self が eisu である必要があるが、
     /// 単純に eisu へ遷移すると最初の分岐（`self.is_eisu() && !prev.is_eisu()`）が
     /// 先に発火してしまうため、`prev` も eisu にして最初の分岐を回避する
     /// （HankakuAlpha は romaji ビットの有無を問わず eisu = true。
@@ -780,15 +572,6 @@ mod tests {
         assert_eq!(
             cm(0x0010).classify_transition(cm(CONV_EISUU), ObservedKana),
             None
-        );
-    }
-
-    #[test]
-    fn tr_hiragana_to_zenkata_yields_kana() {
-        // 0x19 → 0x0B: ROMAN 1→0, NATIVE=1 → Kana
-        assert_eq!(
-            cm(CONV_ZENKATA).classify_transition(cm(CONV_HIRAGANA), ObservedRomaji),
-            Some(ObservedKana)
         );
     }
 
@@ -813,13 +596,10 @@ mod tests {
     }
 
     #[test]
-    fn all_romaji_modes_from_kana_yield_romaji_on_idle() {
-        for conv in [CONV_HIRAGANA, CONV_ZENKATA, CONV_HANKATA] {
-            assert_eq!(
-                cm(conv).classify_idle(false, ObservedKana, true),
-                Some(ObservedRomaji),
-                "conv=0x{conv:08X}"
-            );
-        }
+    fn hiragana_from_kana_yields_romaji_on_idle() {
+        assert_eq!(
+            cm(CONV_HIRAGANA).classify_idle(false, ObservedKana, true),
+            Some(ObservedRomaji)
+        );
     }
 }

@@ -166,50 +166,6 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
-    /// open/close 軸の force-write 武装フラグ（ADR-086 §4 INV-15、Phase 3 item 1）。
-    ///
-    /// `Some(gen)` = 武装済み、`gen` は武装した時点の `Output::ime_mode_focus_gen`。
-    /// `None` = 未武装。conv 軸の `Output::force_pending`（Phase 2）とは**統合しない**
-    /// ——層（`Output::send_romaji` は `&self`／`with_app` の内側、open 軸の消費は
-    /// `&mut Runtime` を要する `on_ime_apply_complete` を必ず経由するため
-    /// `kp_run_inner` からしか呼べない）・消費タイミング（open は「キーが届いた瞬間」
-    /// まで前倒しする必要がある）・再武装セマンティクス（open の apply は完全同期で
-    /// `Aborted` 概念が無く、代わりに `ImeOpenOutcome::UnsafeToToggle` を使う）が
-    /// いずれも conv 軸と異なるため（`docs/adr/086-force-write-trigger-and-target-identity.md`
-    /// §5 Phase 3 item 1 参照）。
-    ///
-    /// 武装点は `ir_post_focus_change_snapshot`（`gji_on_focus_change` 直後
-    /// ——`ime_mode_focus_gen` が今回のフォーカス変更分だけ進んだ直後の単一
-    /// 集約点。`ir_notify_focus_changed` ではない——同関数の実行時点では
-    /// gen がまだ古いため）。**生の `FocusChange` イベントハンドラ
-    /// （`platform.rs::gji_on_focus_change` 自体の本体）に書いてはいけない**
-    /// ——`architecture_guard::force_write_is_not_triggered_by_raw_focus_change`
-    /// の走査対象。
-    ///
-    /// 旧 `last_force_on_resend_ms`（`apply_force_on_for_imm_broken` の
-    /// force-policy 経路が使っていた周期レート制限）は本フィールドへの移行に
-    /// 伴い撤去済み（2026-08-08、ADR-086 Phase 3 item 1）。
-    ///
-    /// **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー M4）**: タプルの
-    /// 第2要素は `Failed`（Win32 呼び出し自体の失敗）の再武装試行回数
-    /// （armed_gen ごとにリセット、上限は `FORCE_OPEN_FAILED_RETRY_LIMIT`）。
-    /// 周期フォールバックを撤去した以上、`Failed` を再武装しないと次の
-    /// FocusChange まで永久に迂回できなくなるが、無制限に再武装すると
-    /// `Failed` が恒久的に返る環境で打鍵のたびに同期 IMC write を伴う
-    /// 再試行が延々と続く（`ImeOpenOutcome::UnsafeToToggle` は Win キー
-    /// 解放という外部条件で必ず終わるため上限不要）。
-    force_open_pending: Option<(u32, u8)>,
-    /// force-ON の実送信レート制限（M3 対応、2026-08-08）。最後に
-    /// `force_on_and_correct_romaji` を実際に呼んだ tick（ms）。
-    ///
-    /// フォーカスチャーン環境（Chrome 連続フォーカスイベント=BUG-37、UWP
-    /// 2段フォーカス、通知フォーカスチャーン=BUG-57）下で高速タイピングすると
-    /// 「毎打鍵で再武装→毎打鍵で発火」＝20〜50ms 間隔になりうる（§1.2 欠陥4
-    /// が実機記録した `9c102b02` の連打問題と同じレート、周期版より悪化）。
-    /// `ime_poll_interval_ms`（既定500ms、撤去した `last_force_on_resend_ms`
-    /// が与えていた下限と同一値）を実送信の下限間隔として使う。新規タイミング
-    /// 定数は導入しない（`.claude/rules/tuning-constants.md` 準拠）。
-    last_force_open_ms: Option<u64>,
     /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
     /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
     /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
@@ -634,45 +590,18 @@ impl Runtime {
         // 再開トリガー: フォーカス変更 / may_change_ime キー（20ms タイマー）/
         // `kp_apply_conv_engine_sync` の ReportOpenInference（BUG-51、20ms）。
         //
-        // 2026-08-06: `conv_mode_policy = force` のときこの早期 return をスキップする
-        // 例外が入った（`apply_force_on_for_imm_broken` の周期 force-ON 再送を同じ
-        // リフレッシュ連鎖に相乗りさせるため）。2026-08-08 ADR-086 Phase 3 実装時、
-        // force-ON のトリガーを周期からキー入力の直前へ移したため
-        // （`kp_run_inner::consume_force_open_pending`）「この連鎖に依存しなくなった」
-        // と判断し例外を一度撤去したが、Phase 3 実装完了後の2回目 opus アドバーサリアル
-        // レビュー（M5）で、この撤去が `ir_apply_drift_correction`（BUG-20 が追加した
-        // non-ImmCross/TsfNative 向け分岐）の周期実行機会も巻き添えで奪っていたと
-        // 判明し、例外を復元した。
-        //
-        // **この復元は「force-ON 用に戻した」わけではない**（force-ON は
-        // `apply_force_on_for_imm_broken` が `is_force_policy()` で即 return する
-        // ため、この連鎖が復活しても force-ON の周期スパムは再発しない——ただし
-        // この安全性は「別関数の早期 return に依存する暗黙の前提」であり、
-        // `architecture_guard::is_force_policy_call_sites_are_accounted_for` で
-        // `is_force_policy()` の呼び出し箇所数を固定して守っている）。
-        // 復元の実体は「Phase 3 が force-ON の周期経路を撤去した際に巻き添えで
-        // 落ちた `ir_apply_drift_correction` の周期実行機会の最小復元」であり、
-        // **observe policy の TsfNative ユーザーは元々この周期を持っていない**
-        // （この `is_tsf_native` 早期 return 自体がポリシー非依存のため）。
-        // つまり本復元は「force policy ユーザーだけが周期 drift correction を
-        // 持つ」という新たな非対称を意図せず生む。本来はポリシー非依存に
-        // 判断すべき論点であり、ADR-086 §7-12 に未解決論点として起票してある
-        // （実機ソークで TsfNative × observe 環境の drift 未検出が問題になる
-        // ようなら、この例外条件を `is_effectively_tsf_native()` へ広げる
-        // ことを検討する）。
-        //
-        // 注記: この訂正は実機で観測した失敗ではなく、コード読解で判明した
-        // 巻き添え（`.claude/rules/experiment-logging.md` が求める実測とは
-        // 性質が異なる）。`docs/experiments.md` にもその旨を明記して残す。
-        let force_policy = self.platform.output.is_force_policy();
-        if !force_policy {
-            let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-                self.platform.current_app_profile(),
-                self.platform.focus.class_name(),
-            );
-            if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
-                return;
-            }
+        // NOTE: `conv_mode_policy = force` に応じてこの早期 return をスキップする
+        // 例外が過去に存在した（`apply_force_on_for_imm_broken` の周期 force-ON
+        // 再送を同じリフレッシュ連鎖に相乗りさせるため）。2026-08-17、ADR-094 で
+        // force ポリシー自体を撤去したのに伴い削除した。`apply_force_on_for_imm_broken`
+        // は常時この早期 return の影響を受ける（force policy 分岐が無くなった今、
+        // 周期リフレッシュに乗るのが唯一の force-ON 経路になった）。
+        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
+            self.platform.current_app_profile(),
+            self.platform.focus.class_name(),
+        );
+        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+            return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
     }
@@ -716,8 +645,7 @@ impl Runtime {
     /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` や
     /// `apply_ime_open_with_applied` を直接呼ぶ経路（`apply_force_on_for_imm_broken`,
     /// `try_force_on_bootstrap`, `ir_apply_drift_correction`,
-    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック,
-    /// `consume_force_open_pending`〈ADR-086 Phase 3〉）は
+    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック）は
     /// `Decision`/`Effect` という抽象を経由しないためそちらのガードが効かない。
     /// これらの呼び出し元は実行前に必ずこれを確認すること。
     ///
@@ -733,18 +661,17 @@ impl Runtime {
     ///
     /// IMM クロスプロセスが使えるアプリ（通常 IMM アプリ）では何もしない。
     ///
-    /// `conv_mode_policy = force` のときは何もしない（ADR-086 Phase 3、2026-08-08）。
-    /// force policy 時の force-ON は `kp_run_inner::consume_force_open_pending`
-    /// （キー入力直前、入力意図に紐づくトリガー）に移行済み。この関数は
-    /// `ir_stage_notify` の周期リフレッシュに相乗りする経路であり、INV-15 が
-    /// 禁止する「生の周期タイマー」トリガーに該当するため、force policy を
-    /// 使うぶんはもうここを通さない（`reschedule_ime_refresh` も同時にこの関数の
-    /// ための force policy 例外を撤去済み）。
+    /// NOTE: `conv_mode_policy = force` 時にこの関数を止める早期 return が過去に
+    /// 存在した（force-ON を `kp_run_inner::consume_force_open_pending` という
+    /// 入力意図に紐づくトリガーへ移行していたため）。2026-08-17、ADR-094 で
+    /// force ポリシー自体を撤去したのに伴い削除した。この関数は
+    /// `ir_stage_notify` の周期リフレッシュに相乗りする経路であり、
+    /// [ADR-086](../../../../docs/adr/086-force-write-trigger-and-target-identity.md)
+    /// INV-15 が禁止する「生の周期タイマー」トリガーに該当する既知の逸脱として
+    /// 残る（ADR-094 参照。`consume_force_open_pending` という INV-15 準拠の
+    /// 代替経路自体も本 ADR で撤去したため、この関数が唯一の force-ON 経路になった）。
     pub fn apply_force_on_for_imm_broken(&mut self) {
         if self.can_use_imm32_cross_process() {
-            return;
-        }
-        if self.platform.output.is_force_policy() {
             return;
         }
         if self.ime_apply_should_defer() {
@@ -787,11 +714,9 @@ impl Runtime {
 
     /// force-ON を実際に送信し、続けて非ローマ字対応 `input_mode` の補正を行う共通処理。
     ///
-    /// `apply_force_on_for_imm_broken`（`conv_mode_policy = observe` 経路）と
-    /// `consume_force_open_pending`（ADR-086 Phase 3、`conv_mode_policy = force` 経路）
-    /// が共有する。`reason` 以外の主要な挙動は同一だが、呼び出し元が通す
-    /// ガード（settle・`AppliedImeState` スロットル等）は異なる——詳細は
-    /// 各呼び出し元の doc を参照。
+    /// `apply_force_on_for_imm_broken` から呼ばれる（かつての `conv_mode_policy = force`
+    /// 経路 `consume_force_open_pending` は 2026-08-17、ADR-094 で force ポリシー
+    /// 撤去に伴い削除済み）。
     fn force_on_and_correct_romaji(
         &mut self,
         reason: crate::state::ime_event::OpenApplyReason,
@@ -849,117 +774,6 @@ impl Runtime {
             }
         }
         outcome
-    }
-
-    /// `force_open_pending`（open/close 軸の force-write 武装フラグ）を
-    /// 立てる、またはクリアする（ADR-086 Phase 3 item 1、INV-15）。
-    ///
-    /// `ir_post_focus_change_snapshot` の `gji_on_focus_change` 呼び出し直後
-    /// から呼ぶこと（`ime_mode_focus_gen` が今回のフォーカス変更分だけ進んだ
-    /// 直後——武装以外の処理を一切含まない、この専用関数へ抽出したのは
-    /// `architecture_guard::force_write_is_not_triggered_by_raw_focus_change`
-    /// が「武装のみ許可」を機械的に固定できるようにするため（2026-08-08、
-    /// 2回目 opus アドバーサリアルレビュー M2。当初は
-    /// `ir_post_focus_change_snapshot` 全体を走査対象にする案だったが、
-    /// 同関数は GJI TsfNative VK_IME_ON 強制等の正当な既存書き込みも含むため
-    /// ホワイトリスト例外が必要になり、将来別のラッパー経由で force-write が
-    /// 紛れ込んでもガードをすり抜けてしまう。本関数は代入以外何もしないため
-    /// 素朴な禁止リストで確実に検知できる）。
-    ///
-    /// `is_force_policy()` でも ImmCross 対応アプリ（force-ON の対象外、
-    /// `apply_force_on_for_imm_broken` と同じスコープ判断）では武装しない
-    /// （`.then()` により対象外なら明示的に `None` へクリアする）。
-    /// 試行回数（タプル第2要素）は新規武装のたびに `0` から始まる。
-    pub(crate) fn arm_force_open_pending(&mut self) {
-        self.force_open_pending = (self.platform.output.is_force_policy()
-            && !self.can_use_imm32_cross_process())
-        .then(|| (self.platform.output.ime_mode_focus_gen.get(), 0u8));
-    }
-
-    /// `force_open_pending` を消費し、武装済みなら force-ON を起こす
-    /// （ADR-086 Phase 3 item 1、INV-15）。
-    ///
-    /// 呼び出し元は `kp_run_inner`（送信要求という入力意図に紐づく唯一の消費点、
-    /// `key_pipeline.rs::is_force_open_consumption_candidate` を満たすキーの
-    /// ときだけ呼ばれる）。`try_hold_key`/ime-off-rescue の早期 return より後・
-    /// `kp_stage_focus_probe`/`kp_stage_idle_conv_check`/
-    /// `kp_stage_shadow_ime_toggle` より後・`build_input_context` より前に
-    /// 置く——これより前で消費すると、hold されたキーで武装だけ消費され実際の
-    /// 打鍵は再処理時になる（force だけ先に飛んで打鍵が来ない）。
-    ///
-    /// **`ime_apply_should_defer()`（settle ガード）は呼ばない**（訂正、
-    /// 2026-08-08 2回目 opus アドバーサリアルレビュー H1）。呼び出し元の
-    /// `is_force_open_consumption_candidate` が「本物の入力意図」を直接判定
-    /// することで settle ガードの役割（Alt+Tab 中間ウィンドウへの誤射防止）を
-    /// 代替している——本関数がここでさらに settle ガードを呼ぶと、消費点の
-    /// 移動先では barrier が既に消費済みのため構造的に常に defer 判定になり、
-    /// フォーカス変更後 1 打鍵目を必ず取りこぼす退行を生む（詳細は
-    /// `key_pipeline.rs::is_force_open_consumption_candidate` の doc 参照）。
-    ///
-    /// 未消費のまま return する分岐（非対象状態）は**武装を維持する**——次の
-    /// キーイベントで再試行できるようにするため（`apply_force_on_for_imm_broken`
-    /// の対応する早期 return とは異なり、こちらは「次の周期リフレッシュ」では
-    /// なく「次のキー入力」が再試行のトリガーになる）。
-    ///
-    /// **既存の `AppliedImeState` スロットル**（`apply_force_on_for_imm_broken`
-    /// の非 force 分岐が使う「`Optimistic(true)|Confirmed{open:true}` なら
-    /// 送らない」チェック）は**ここでは意図的に読まない**。force の趣旨は
-    /// 「applied が誤って ON にラッチされた状態を破ること」であり、このスロットル
-    /// を読むと趣旨と矛盾する。後日「重複ガードだ」として誤って足さないこと
-    /// （ADR-086 §5 Phase 3 item 1 参照）。
-    pub(crate) fn consume_force_open_pending(&mut self) {
-        // Failed の再武装に許す最大試行回数（armed_gen ごとにリセット）。
-        // UnsafeToToggle は Win キー解放という外部条件で必ず終わるため対象外
-        // （M4、無制限に再武装してよい）。値の根拠は ADR-080 の
-        // `FeedbackPolicy::Blind{max_attempts}` と同型の「有限リトライで
-        // 折り合いをつける」という設計判断であり、実測値ではない
-        // （`.claude/rules/tuning-constants.md` はタイミング値の実測義務を
-        // 課すもので、この試行回数カウンタには適用されない）。
-        const FORCE_OPEN_FAILED_RETRY_LIMIT: u8 = 2;
-
-        let armed = self.force_open_pending;
-        let eligible =
-            self.engine.is_user_enabled() && self.platform_state.ime.is_eligible_for_ime_force_on();
-        let now = crate::hook::current_tick_ms();
-        let ms_since_last = self.last_force_open_ms.map(|last| now.saturating_sub(last));
-        let interval_ms = u64::from(self.platform_state.focus.ime_poll_interval_ms);
-        // M3: 実送信のレート制限。フォーカスチャーン環境で毎打鍵ごとに
-        // 再武装→消費が起きても、実際の apply は ime_poll_interval_ms
-        // 間隔まで間引く。掛かった場合は武装を維持し、次のキーイベントで
-        // 再試行する（破棄すると BUG-16 型のリテラル化取りこぼしに直結する）。
-        if !should_attempt_force_open(armed.is_some(), eligible, ms_since_last, interval_ms) {
-            return;
-        }
-        let (armed_gen, attempts) =
-            armed.expect("should_attempt_force_open が true の時点で armed は Some");
-        // ここから実際に消費する（以降の早期 return は武装を戻さない限り再武装しない）。
-        self.force_open_pending = None;
-        // 時間軸フェンス: 消費直前（上の各種チェック）から apply 直前までの間に
-        // 別の正規の FocusChange が武装し直していないか確認する。本経路は完全に
-        // 同期的（await を挟まない）なため、実際にはこの2点の gen は常に一致するが、
-        // 将来この経路に非同期処理が挟まれた場合の回帰を防ぐため明示的に確認する。
-        if self.platform.output.ime_mode_focus_gen.get() != armed_gen {
-            log::debug!("[force-open-pending] gen 不一致 (armed={armed_gen}) → 別の武装に委ねる");
-            return;
-        }
-        let outcome = self.force_on_and_correct_romaji(
-            crate::state::ime_event::OpenApplyReason::ForcePolicyResend,
-        );
-        // AlreadyMatched（未送信）ではレート制限のスタンプを更新しない。
-        if outcome != awase::platform::ImeOpenOutcome::AlreadyMatched {
-            self.last_force_open_ms = Some(now);
-        }
-        // ADR-086 Phase 2 の consume_force_pending_and_actuate と同じ大枠の
-        // スコープ判断（UnsafeToToggle のみ再武装）に加え、M4（2回目 opus
-        // アドバーサリアルレビュー）を受けて Failed も試行回数上限付きで
-        // 再武装する——周期フォールバックを撤去した以上、Failed を一切
-        // 再武装しないと次の FocusChange まで永久に迂回できなくなるため。
-        self.force_open_pending = next_force_open_pending_after_outcome(
-            armed_gen,
-            attempts,
-            outcome,
-            FORCE_OPEN_FAILED_RETRY_LIMIT,
-        );
     }
 
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
@@ -1194,8 +1008,6 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
-            force_open_pending: None,
-            last_force_open_ms: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_active: false,
@@ -1448,18 +1260,6 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
-        self.platform
-            .output
-            .conv_mode
-            .set_policy(config.general.conv_mode_policy);
-        // INV-27（ADR-087 §4）: force⇔observe 切替は `force_open_pending`
-        // （および将来の `OpenWarrant` 発行済みキュー）を無効化しなければ
-        // ならない。放置すると、force→observe 切替直後に「force policy 時に
-        // 武装された pending」が残ったまま `consume_force_open_pending` が
-        // 発火し、observe 経路（drift correction 等）と二重に force-ON が
-        // 走る窓ができる（§7 round2 M8）。次の正当なトリガー（FocusChange 等）
-        // が `arm_force_open_pending` で新しいポリシーに基づき再武装する。
-        self.force_open_pending = None;
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;
@@ -1763,47 +1563,6 @@ unsafe fn cancel_ime_composition() {
     );
 }
 
-// ── ADR-086 Phase 3: force_open_pending 消費判定（純粋関数、L4 対応）──
-//
-// `consume_force_open_pending` の判定ロジックのうち、Win32/`Runtime` に
-// 依存しない部分をここへ切り出す。`Runtime` を構築せずに単体テストできる
-// （`.claude/rules/fix-requires-evidence.md` (a)、Phase 2 が `Output` 側に
-// 持つ同種のテストと対称）。
-
-/// `consume_force_open_pending` が実際に `force_on_and_correct_romaji` を
-/// 呼んでよいかを判定する。`armed`/`eligible` が false、またはレート制限に
-/// 掛かっている（`ms_since_last_force_open` が `poll_interval_ms` 未満）
-/// 場合は false——このとき呼び出し元は武装を維持すること。
-fn should_attempt_force_open(
-    armed: bool,
-    eligible: bool,
-    ms_since_last_force_open: Option<u64>,
-    poll_interval_ms: u64,
-) -> bool {
-    if !armed || !eligible {
-        return false;
-    }
-    ms_since_last_force_open.is_none_or(|elapsed| elapsed >= poll_interval_ms)
-}
-
-/// `force_on_and_correct_romaji` の outcome を受けて、次の `force_open_pending`
-/// 状態を決める。`UnsafeToToggle` は無条件に再武装、`Failed` は試行回数
-/// （`failed_retry_limit` 未満のときのみ）付きで再武装、それ以外
-/// （`Applied`/`FallbackSent`/`AlreadyMatched`）は消費済みのままクリアする。
-fn next_force_open_pending_after_outcome(
-    armed_gen: u32,
-    attempts: u8,
-    outcome: awase::platform::ImeOpenOutcome,
-    failed_retry_limit: u8,
-) -> Option<(u32, u8)> {
-    use awase::platform::ImeOpenOutcome;
-    match outcome {
-        ImeOpenOutcome::UnsafeToToggle => Some((armed_gen, attempts)),
-        ImeOpenOutcome::Failed if attempts < failed_retry_limit => Some((armed_gen, attempts + 1)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod layout_entry_tests {
     use super::LayoutEntry;
@@ -1831,93 +1590,6 @@ mod layout_entry_tests {
         assert_eq!(
             LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"),
             0
-        );
-    }
-}
-
-/// ADR-086 Phase 3: `force_open_pending` 消費判定の単体テスト（L4 対応）。
-#[cfg(test)]
-mod force_open_pending_tests {
-    use super::{next_force_open_pending_after_outcome, should_attempt_force_open};
-    use awase::platform::ImeOpenOutcome;
-
-    // ── should_attempt_force_open ──
-
-    #[test]
-    fn attempts_when_armed_eligible_and_never_sent_before() {
-        assert!(should_attempt_force_open(true, true, None, 500));
-    }
-
-    #[test]
-    fn skips_when_not_armed() {
-        assert!(!should_attempt_force_open(false, true, None, 500));
-    }
-
-    #[test]
-    fn skips_when_not_eligible() {
-        assert!(!should_attempt_force_open(true, false, None, 500));
-    }
-
-    #[test]
-    fn skips_when_rate_limited() {
-        // 前回送信から 100ms しか経っていないのに poll_interval_ms=500。
-        assert!(!should_attempt_force_open(true, true, Some(100), 500));
-    }
-
-    #[test]
-    fn attempts_when_rate_limit_interval_elapsed() {
-        assert!(should_attempt_force_open(true, true, Some(500), 500));
-        assert!(should_attempt_force_open(true, true, Some(600), 500));
-    }
-
-    // ── next_force_open_pending_after_outcome ──
-
-    #[test]
-    fn unsafe_to_toggle_always_rearms_without_consuming_attempts() {
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::UnsafeToToggle, 2),
-            Some((7, 0))
-        );
-        // 試行回数上限に達していても UnsafeToToggle は無条件に再武装する。
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 2, ImeOpenOutcome::UnsafeToToggle, 2),
-            Some((7, 2))
-        );
-    }
-
-    #[test]
-    fn failed_rearms_with_incremented_attempts_until_limit() {
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::Failed, 2),
-            Some((7, 1))
-        );
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 1, ImeOpenOutcome::Failed, 2),
-            Some((7, 2))
-        );
-    }
-
-    #[test]
-    fn failed_gives_up_once_retry_limit_reached() {
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 2, ImeOpenOutcome::Failed, 2),
-            None
-        );
-    }
-
-    #[test]
-    fn applied_and_already_matched_clear_without_rearming() {
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::Applied, 2),
-            None
-        );
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::AlreadyMatched, 2),
-            None
-        );
-        assert_eq!(
-            next_force_open_pending_after_outcome(7, 0, ImeOpenOutcome::FallbackSent, 2),
-            None
         );
     }
 }

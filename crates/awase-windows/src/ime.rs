@@ -763,9 +763,6 @@ pub async fn set_ime_open_cross_process_async(open: bool) -> bool {
 /// `target_conv` が `Some(v)` の場合は `v` をそのまま `ImmSetConversionStatus` に設定する。
 /// `None` の場合は現在の conv に ROMAN ビットを追加する（`set_ime_romaji_mode` 相当）。
 ///
-/// カタカナ系は `ConvMode::imm_conv_target()` が KATAKANA/FULLSHAPE/ROMAN を含む値を返すため、
-/// VK_DBE_HIRAGANA で失われたビットを正確に復元できる。
-///
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread or worker thread via offload.
 unsafe fn set_ime_romaji_mode_for_hwnd(hwnd: HWND, target_conv: Option<u32>) -> bool {

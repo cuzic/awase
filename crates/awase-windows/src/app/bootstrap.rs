@@ -459,10 +459,6 @@ pub(super) fn initialize_app(
         post_bypass_rules,
     ));
     let _ = with_app(|app| {
-        app.platform
-            .output
-            .conv_mode
-            .set_policy(config.general.conv_mode_policy);
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(

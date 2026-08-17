@@ -24,38 +24,6 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
-/// `consume_force_open_pending` を呼んでよいキーかどうかを判定する
-/// （ADR-086 Phase 3 item 1、INV-15）。
-///
-/// **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー H1）**: 消費点の
-/// 移動先（`kp_stage_focus_probe` 等の後）では `ime_apply_should_defer()`
-/// （settle ガード）が構造的に常に false になり、2026-07-05 に修正した
-/// 「Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に IME を切り替えてしまう」
-/// 事故条件を無自覚に外すことになる。settle ガードの代わりに、「本物の
-/// 入力意図」であることを直接判定する:
-/// - `KeyDown` のみ（KeyUp では発火しない）。
-/// - `!event.injected`（BUG-14: MS-IME が毎打鍵で注入する `VK_KANA` 等の
-///   他プロセス由来キーはユーザーの物理操作ではない）。
-/// - Ctrl/Alt/Win 修飾キー非押下（Alt+Tab 等のショートカットは text-input
-///   意図ではなく、中間ウィンドウへの誤射を防ぐ——settle ガードが本来
-///   防いでいた事故条件をここで直接塞ぐ）。
-/// - そのキー自体が IME モードキー（sync/shadow アクション対象）ではない
-///   （**M6 対応**: IME-ON キーで force-ON と engine の `SetOpen` が同一
-///   イベントで二重に走る、IME-OFF キーの直前に無駄な force-ON フラップが
-///   起きる、を両方防ぐ）。
-///
-/// `Runtime`/Win32 に依存しない純粋関数のため `Runtime` を構築せずに
-/// テストできる（`.claude/rules/fix-requires-evidence.md` (a)）。
-fn is_force_open_consumption_candidate(event: &RawKeyEvent) -> bool {
-    matches!(event.event_type, KeyEventType::KeyDown)
-        && !event.injected
-        && !event.modifier_snapshot.ctrl
-        && !event.modifier_snapshot.alt
-        && !event.modifier_snapshot.win
-        && event.ime_relevance.sync_direction.is_none()
-        && event.ime_relevance.shadow_action.is_none()
-}
-
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -128,25 +96,6 @@ impl Runtime {
         self.kp_stage_focus_probe(&mut event);
         self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
-
-        // ADR-086 Phase 3 item 1（INV-15）: open/close 軸 force-write の唯一の
-        // 消費点。送信要求という入力意図に紐づく唯一のトリガーであり、
-        // `try_hold_key`/ime-off-rescue の早期 return より後・以降の全ステージ
-        // より前（force-ON の結果が belief に反映されてから Decision が
-        // 作られるように）に置くこと。
-        //
-        // **訂正（2026-08-08 2回目 opus アドバーサリアルレビュー H1）**:
-        // 当初は `kp_stage_focus_probe` より**前**に置いていた。
-        // `kp_stage_focus_probe` は one-shot の `input_barrier` を無条件消費する
-        // ため、その前だと `consume_force_open_pending` 冒頭の
-        // `ime_apply_should_defer()`（settle ガード）が「barrier 未消費」で
-        // 常に真になり、フォーカス変更後の1打鍵目を必ず取りこぼして2打鍵目で
-        // 発火する——Phase 3 が解決しようとした症状をそのまま1打鍵分だけ
-        // 再現するバグだった。`kp_stage_focus_probe`/`kp_stage_idle_conv_check`/
-        // `kp_stage_shadow_ime_toggle` の後に移した。
-        if is_force_open_consumption_candidate(&event) {
-            self.consume_force_open_pending();
-        }
 
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
@@ -513,11 +462,7 @@ impl Runtime {
 
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        let conv_mode_changed = self
-            .platform
-            .output
-            .conv_mode
-            .update_from_conv(conv, now_tick);
+        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv);
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
@@ -1068,26 +1013,21 @@ impl Runtime {
                 && !event.modifier_snapshot.shift
                 && !event.modifier_snapshot.alt
                 && !event.modifier_snapshot.win;
-            // BUG-50 (2026-08-05): `was_open_before` は belief（`effective_open()`）で
-            // あり、drift（例: KatakanaShadowOff 由来の誤確定で belief=Off のまま実
-            // conv がカタカナ）が起きていると常に false になる。この場合、上のリセ
-            // ットが発火せず「カタカナから誰も戻さない」デッドロックになる（実機ログ
-            // で確認、docs/known-bugs.md BUG-50）。判定は
-            // `should_reset_katakana_on_ime_on_combo`（Linux でテスト可能な純粋関数、
-            // `state/conv_mode.rs`）に集約する。
-            let observed_katakana = self
-                .platform
-                .output
-                .conv_mode
-                .get()
-                .is_some_and(|m| m.charset.is_katakana());
+            // BUG-50 (2026-08-05): 当初 `was_open_before`（belief）単独でこのリセット
+            // を条件付けていたが、belief が drift で誤って false になっている
+            // （IME は既にカタカナへ入っているのに belief は「まだ閉じている」と
+            // 誤認している）ケースでリセットが発火せず、カタカナから永久に復旧
+            // できないデッドロックになっていた（`docs/known-bugs.md` BUG-50）。
+            // 当時は「実際に観測されたカタカナ」を追加条件にして凌いでいたが、
+            // charset 軸の観測自体を 2026-08-17 ADR-094 で撤去したのに伴い、
+            // `was_open_before` の判定も含めて撤去し、IME-ON コンボ押下では
+            // 常にひらがなへ寄せる（この破壊的リセットは冪等——既にひらがな
+            // なら実質no-op）。BUG-50 の originally-undetermined だった発生原因は
+            // 追補（2026-08-17）で BUG-52 の機構と特定・修正済みであり、この
+            // 無条件化はその機構への対症療法ではなく、charset 軸撤去の帰結。
             if applied
                 && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
                 && new_ime_on
-                && crate::state::conv_mode::should_reset_katakana_on_ime_on_combo(
-                    was_open_before,
-                    observed_katakana,
-                )
                 && is_default_ime_on_combo
             {
                 Self::kp_reset_to_hiragana_romaji_capsoff(
@@ -1547,21 +1487,13 @@ impl Runtime {
                      (IMC write のみ、BUG-15 追補7の教訓)"
                 );
             }
-            // カタカナ入力中は KATAKANA ビット込みで復元、それ以外はローマ字ひらがな。
-            // 注意: 半角英数中の conv 読み取りで conv_mode が HanAlpha に更新されている
-            // 場合、imm_conv_target は None → ひらがな target になる（切替前がカタカナ
-            // だった記憶は失われる。エッジケースとして許容）。
-            let target_conv = self
-                .platform
-                .output
-                .conv_mode
-                .get()
-                .and_then(awase::engine::ConvMode::imm_conv_target)
-                .unwrap_or(
-                    crate::imm::IME_CMODE_NATIVE
-                        | crate::imm::IME_CMODE_FULLSHAPE
-                        | crate::imm::IME_CMODE_ROMAN,
-                );
+            // charset 軸（ひらがな/カタカナ等）の追跡を 2026-08-17 ADR-094 で撤去した
+            // のに伴い、切替前がカタカナだったかに関わらず常にローマ字ひらがなへ復元する
+            // （かつては KATAKANA ビット込みで復元していたが、ADR-091 決定3 §D3.1 の
+            // 「charset 軸は追跡しない」を徹底する）。
+            let target_conv = crate::imm::IME_CMODE_NATIVE
+                | crate::imm::IME_CMODE_FULLSHAPE
+                | crate::imm::IME_CMODE_ROMAN;
             log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target_conv:08X})");
 
             // pass-5 レビュー指摘（blocking）: このリトライタスクは detached
@@ -1987,10 +1919,7 @@ impl Runtime {
             if in_flight != u64::MAX {
                 // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
                 if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) } {
-                    self.platform
-                        .output
-                        .conv_mode
-                        .update_from_conv(conv, now_tick_ms);
+                    self.platform.output.conv_mode.update_from_conv(conv);
                     self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                     log::debug!(
                         "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
@@ -2199,85 +2128,5 @@ mod tests {
             sanitize_focus_probe_open_status(Some(false), AppImeProfile::Standard),
             Some(false)
         );
-    }
-
-    // ── ADR-086 Phase 3: is_force_open_consumption_candidate（H1/M6 対応）──
-
-    fn keydown_event() -> RawKeyEvent {
-        RawKeyEvent {
-            vk_code: awase::types::VkCode(0x41), // 'A'
-            scan_code: awase::types::ScanCode(0x1E),
-            event_type: KeyEventType::KeyDown,
-            extra_info: 0,
-            timestamp: 0,
-            key_classification: awase::types::KeyClassification::Char,
-            physical_pos: None,
-            ime_relevance: awase::types::ImeRelevance::default(),
-            modifier_key: None,
-            modifier_snapshot: awase::types::ModifierState::default(),
-            injected: false,
-        }
-    }
-
-    #[test]
-    fn force_open_candidate_true_for_plain_keydown() {
-        assert!(is_force_open_consumption_candidate(&keydown_event()));
-    }
-
-    #[test]
-    fn force_open_candidate_false_for_keyup() {
-        let mut ev = keydown_event();
-        ev.event_type = KeyEventType::KeyUp;
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_for_injected() {
-        let mut ev = keydown_event();
-        ev.injected = true;
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_when_ctrl_held() {
-        let mut ev = keydown_event();
-        ev.modifier_snapshot.ctrl = true;
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_when_alt_held() {
-        let mut ev = keydown_event();
-        ev.modifier_snapshot.alt = true;
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_when_win_held() {
-        let mut ev = keydown_event();
-        ev.modifier_snapshot.win = true;
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_true_when_shift_held() {
-        // Shift は text-input 意図を否定しない（半角英数/かな入力の一部）。
-        let mut ev = keydown_event();
-        ev.modifier_snapshot.shift = true;
-        assert!(is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_for_sync_key() {
-        let mut ev = keydown_event();
-        ev.ime_relevance.sync_direction = Some(ShadowImeAction::TurnOn);
-        assert!(!is_force_open_consumption_candidate(&ev));
-    }
-
-    #[test]
-    fn force_open_candidate_false_for_shadow_action_key() {
-        let mut ev = keydown_event();
-        ev.ime_relevance.shadow_action = Some(ShadowImeAction::TurnOff);
-        assert!(!is_force_open_consumption_candidate(&ev));
     }
 }

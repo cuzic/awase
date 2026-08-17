@@ -96,12 +96,15 @@
 //! **`Runtime` から `Output` への移設（2026-08-08、ADR-086 Phase 2 設計調査）**:
 //! 当初 `impl Runtime` に置かれていたが、本体は `self.platform.output.*` しか
 //! 読んでおらず（`with_app` を呼ぶのは `spawn_local` 後の非同期部のみ）、実体は
-//! 既に `Output` のメソッドだった。ADR-086 Phase 2 が `Output` 層に新設する
-//! `force_pending`（武装フラグ）・消費点（`Output::send_romaji`）と同じ層に
-//! 揃えるため本モジュールへ移設した。`Runtime::actuate_conv_mode`
-//! （`runtime/conv_actuation.rs`）は 1 行 delegate として残す
-//! （ADR-084 INV-1 が指す関数名を変えないため、および既存呼び出し元
+//! 既に `Output` のメソッドだった。`Output` 層へ揃えるため本モジュールへ移設した。
+//! `Runtime::actuate_conv_mode`（`runtime/conv_actuation.rs`）は 1 行 delegate として
+//! 残す（ADR-084 INV-1 が指す関数名を変えないため、および既存呼び出し元
 //! `key_pipeline.rs::kp_shift_conv_guard_key_down` を触らないため）。
+//!
+//! **`force_pending`（force-write の武装フラグ）・`consume_force_pending_and_actuate`
+//! は 2026-08-17、ADR-094 で `conv_mode_policy = force` ポリシー自体を撤去した
+//! のに伴い削除した。** ADR-086 Phase 2/3 が本モジュールに導入した force-write
+//! 機構（conv 軸・open 軸の両方）は本 ADR で全撤去されている。詳細は ADR-094 参照。
 
 use super::Output;
 use crate::state::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason, TickMs};
@@ -138,25 +141,7 @@ impl Output {
         &self,
         target: ConvModeTarget,
         reason: ConvMutationReason,
-        tick_ms: TickMs,
-    ) -> ConvActuationOutcome {
-        self.actuate_conv_mode_with_completion(target, reason, tick_ms, |_outcome| {})
-    }
-
-    /// [`Self::actuate_conv_mode`] の内部実装。非同期書き込みの完了時に
-    /// `on_async_result` を呼ぶ点だけが異なる（`consume_force_pending_and_actuate` の
-    /// 再武装判定専用、ADR-086 Phase 2 item 5）。
-    ///
-    /// `on_async_result` は書き込みが実際に起きた場合のみ呼ばれる
-    /// （`Rejected` で早期 return した場合は呼ばれない —— 呼び出し元は同期の
-    /// 戻り値 `ConvActuationOutcome::Rejected` で判定できるため）。`None` は
-    /// `ActuationTarget::capture` 失敗（フォーカス無し）を表す。
-    fn actuate_conv_mode_with_completion(
-        &self,
-        target: ConvModeTarget,
-        reason: ConvMutationReason,
         _tick_ms: TickMs,
-        on_async_result: impl FnOnce(Option<crate::ime::ActuationOutcome>) + 'static,
     ) -> ConvActuationOutcome {
         if !self.conv_mutation_allowed.get() {
             log::debug!(
@@ -185,7 +170,6 @@ impl Output {
         win32_async::spawn_local(async move {
             let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
                 log::debug!("[conv-actuate] {reason:?} → capture 失敗（フォーカス無し）");
-                on_async_result(None);
                 return;
             };
             let outcome = crate::ime::set_ime_conv_for_target(target, Some(raw_target), || {
@@ -194,77 +178,8 @@ impl Output {
             })
             .await;
             log::info!("[conv-actuate] {reason:?} → 結果: {outcome:?}");
-            on_async_result(Some(outcome));
         });
 
         ConvActuationOutcome::Actuated
-    }
-
-    /// `force_pending`（ADR-086 Phase 2 の武装フラグ）を消費し、武装済みなら
-    /// `actuate_conv_mode` で force-write を起こす。
-    ///
-    /// `Output::send_romaji`/`send_kana_char`（送信要求という入力意図に紐づく
-    /// 唯一の消費点、INV-15 item 3）から呼ぶこと。武装を**同期的に**消費してから
-    /// 実際の書き込みを非同期で起案する —— 同期消費でないと同一バッチ内の後続
-    /// 送信要求が二重に消費してしまう。
-    ///
-    /// **再武装（item 5）**: 消費後の非同期書き込みが `ActuationTarget::capture`
-    /// 失敗または `Aborted` だった場合、「消費済み・未書き込み」のまま次の
-    /// `FocusChange` まで force が永久に発火しない穴ができる。これを防ぐため、
-    /// 完了時に **武装した時点からフォーカス世代が変わっていない**（＝同一フォーカス
-    /// 内での一時的な失敗であり、`on_ime_mode_focus_changed` による新しい武装が
-    /// 割り込んでいない）ことを確認してから再武装する。世代が変わっていれば、
-    /// 既にその新しいフォーカスに対する正規の武装が（あるいは force policy が
-    /// 有効なら）別途行われているはずなので、ここでは何もしない —— 古い世代の
-    /// 値で再武装すると、新しい正規の武装を誤って上書きしてしまう。
-    ///
-    /// `Failed`（Win32 呼び出し自体の失敗、ターゲット不一致ではない）は再武装
-    /// 対象に含めない。持続的に失敗する環境で毎回の入力ごとに書き込みを再試行
-    /// することは入力意図に紐づく限り自己駆動（INV-16）ではないが、スコープを
-    /// 「消費済み・未書き込みの穴を塞ぐ」に絞るため、Aborted/capture 失敗のみを
-    /// 対象とする。
-    pub(crate) fn consume_force_pending_and_actuate(&self) {
-        let Some(armed_gen) = self.force_pending.take() else {
-            return;
-        };
-        let target = ConvModeTarget::Desired(self.conv_mode.desired_mode());
-        let tick_ms = TickMs(crate::hook::current_tick_ms());
-        let outcome = self.actuate_conv_mode_with_completion(
-            target,
-            ConvMutationReason::ForcePolicy,
-            tick_ms,
-            move |async_result| {
-                let should_rearm = matches!(
-                    async_result,
-                    None | Some(crate::ime::ActuationOutcome::Aborted(_))
-                );
-                if !should_rearm {
-                    return;
-                }
-                let _ = crate::with_app(|runtime| {
-                    let output = &runtime.platform.output;
-                    if output.ime_mode_focus_gen.get() == armed_gen {
-                        log::debug!(
-                            "[force-pending] 消費済み・未書き込み（{async_result:?}）→ \
-                             同一フォーカス内のため再武装 (gen={armed_gen})"
-                        );
-                        output.force_pending.set(Some(armed_gen));
-                    } else {
-                        log::debug!(
-                            "[force-pending] 消費済み・未書き込み（{async_result:?}）だが \
-                             フォーカス世代が武装時から変化（armed={armed_gen}, \
-                             current={}）→ 再武装しない（別の正規の武装を上書きしないため）",
-                            output.ime_mode_focus_gen.get()
-                        );
-                    }
-                });
-            },
-        );
-        if matches!(outcome, ConvActuationOutcome::Rejected) {
-            log::debug!(
-                "[force-pending] 消費 (gen={armed_gen}) → conv_mutation_allowed=false の \
-                 ため actuate は却下（再武装しない — エンジン非活性中に書くべきでないため）"
-            );
-        }
     }
 }

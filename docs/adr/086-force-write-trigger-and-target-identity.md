@@ -2,7 +2,17 @@
 
 ## ステータス
 
-**北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。
+**Phase 2（conv 軸）・Phase 3（open/close 軸）は
+[ADR-094](094-charset-axis-and-force-policy-removal.md)（2026-08-17）で全撤去。**
+`conv_mode_policy` 自体を撤去したのに伴い、`force_pending`/`force_open_pending`
+とその武装・消費機構（`arm_force_open_pending`/`consume_force_open_pending`/
+`consume_force_pending_and_actuate`）が全て消えた。**Phase 0〜1（INV-14
+ターゲット同一性、`ActuationTarget`）は撤去していない**——`actuate_conv_mode`
+が `ConvModeTarget::HalfWidthAlnum`（shift-conv-guard 用）の書き込みで今も
+使っているため、本 ADR は完全な廃止ではない。以下は Phase 2/3 実装当時の
+記録として残す。
+
+北極星仕様。ADR-084 の姉妹編（invariant 番号空間を共有する）。
 Phase 0〜1（記録・INV-14 ターゲット同一性の全経路移行）、Phase 2
 （conv 軸の INV-15 是正、`force_pending` による arm-on-focus /
 fire-on-intent）、Phase 3（open/close 軸への同適用、`force_open_pending`。

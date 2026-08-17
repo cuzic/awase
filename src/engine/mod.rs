@@ -21,7 +21,7 @@ pub mod timing;
 
 // Public re-exports
 
-pub use conv::{Charset, ConvMode};
+pub use conv::ConvMode;
 pub use decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InputContext,
     InputEffect, SetOpenOrigin, SpecialKeyCombos, TimerEffect, UiEffect,
