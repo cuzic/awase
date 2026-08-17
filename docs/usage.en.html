@@ -572,30 +572,31 @@ footer p{margin-bottom:0.3rem}
         <tr><td>Thumb Shift OFF key</td><td>The key that turns the NICOLA engine OFF. Multiple entries allowed</td></tr>
         <tr><td>Thumb Shift-toggle hotkey</td><td>A global hotkey that toggles the engine ON/OFF</td></tr>
       </table>
-      <p class="note">If you choose Muhenkan as a thumb key, an extra dedicated Fn-key conversion section appears. This is for advanced users who want to toggle the character type (hiragana/katakana etc.) via a Muhenkan solo tap, and who also want to avoid "mode drift" (awase's assumption about GJI's state diverging from GJI's actual state). With GJI (Google Japanese Input), you can switch the Muhenkan solo tap to send a dedicated Fn key (default candidate: F21) instead of the raw Muhenkan key. If you assign "kana type switch" to that Fn key in GJI's own config1.db, GJI's own feature toggles the character type directly, bypassing awase. That "kana type switch" action reads GJI's own actual current internal state at the moment it fires, so awase never needs to predict or remember GJI's state — mode drift cannot occur by construction (ADR-091 §D3.2). Auto-detection from config1.db is the primary path when GJI is detected, so manual configuration is usually unnecessary. See "Setting up GJI dedicated Fn-key conversion" below for the manual steps.</p>
+      <p class="note">If you use GJI (Google Japanese Input) and have Muhenkan set as a thumb key, awase.exe reads config1.db at startup and whenever GJI is detected, and automatically decides whether to send a dedicated Fn key (default candidate: F21) instead of the raw Muhenkan key on a Muhenkan solo tap ("dedicated Fn-key conversion", ADR-091 §D3.2). This is for advanced users who want to toggle the character type (hiragana/katakana etc.) via a Muhenkan solo tap, and who also want to avoid "mode drift" (awase's assumption about GJI's state diverging from GJI's actual state). If GJI's config1.db doesn't yet have the "kana type switch" binding for that Fn key, awase.exe offers to add it via a popup (with your consent, backed up). There's currently no manual control for this in the settings screen. To pin a specific Fn key, edit <code>config.toml</code> directly, as shown in "Manually configuring GJI dedicated Fn-key conversion" below.</p>
       <p class="note">The "IME &rarr; awase" direction (keys awase interprets as external IME state changes, e.g. Hankaku/Zenkaku) has been removed from the GUI. It defaults to empty and is rarely needed, and the other candidates (IME-ON/IME-OFF keys) aren't physical keys, so exposing them in the GUI wasn't worth the clutter. You can still configure it by editing <code>config.toml</code> directly, as shown in "Manually setting IME-detection keys" below — but don't assign it the same key as "IME ON/OFF toggle" above, or that key will be double-processed and stop working correctly.</p>
     </div>
 
     <div class="card">
-      <h3>Setting up GJI dedicated Fn-key conversion</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">
-        Manual setup steps if you use Google Japanese Input (GJI) and want the Muhenkan
-        solo tap to trigger "kana type switch" (Hiragana &harr; Katakana etc). Normally
-        awase auto-detects this when GJI is detected, so these steps are only needed
-        for troubleshooting when auto-detection doesn't work, or if you want to pin a
-        specific Fn key intentionally.
+      <h3>Manually configuring GJI dedicated Fn-key conversion</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Normally awase.exe auto-detects this when GJI is detected (offering a popup to
+        add the binding if needed), and no manual action is required. Only edit
+        <code>config.toml</code> directly as shown below if auto-detection doesn't work,
+        or if you want to pin a specific Fn key intentionally (there's currently no
+        setting for this in the settings screen).
       </p>
-      <ol style="color:var(--text-secondary);font-size:0.93rem;line-height:1.8">
-        <li><strong>Prerequisite:</strong> Google Japanese Input (GJI) is installed and working as your normal IME.</li>
-        <li><strong>Switch GJI's own key settings to "Custom":</strong> Open GJI's properties dialog (right-click the GJI icon in the tray &rarr; "Properties"), go to the "Key settings" tab, and switch the "Input assistance" dropdown to "Custom". Skip if it's already Custom. <span style="color:var(--text-secondary)">(Without this, the binding written by the button below is never read by GJI.)</span></li>
-        <li><strong>Open the "Key Settings" tab in awase-settings:</strong> Set either the left or right thumb key to "Muhenkan" (skip if it's already Muhenkan).</li>
-        <li><strong>Find the dedicated Fn-key conversion section:</strong> It's always shown on the Keys tab once Muhenkan is set as a thumb key.</li>
-        <li><strong>Pick a dedicated Fn key:</strong> Choose one from the dropdown (when unsure, use the recommended <code>F21</code>).</li>
-        <li><strong>Click "Write to config1.db":</strong> This adds a binding to GJI's config1.db that maps the chosen Fn key to the kana-type-switch action (the pre-write content is backed up to <code>config1.db.awase-backup</code>). If an error appears, follow the message shown (most commonly: forgot step 2, switching to Custom).</li>
-        <li><strong>Restart GJI reliably:</strong> <strong>Sign out and sign back in.</strong> Do not use the tray icon's "Exit and restart" &mdash; when GJI exits that way, it can overwrite the file with its in-memory (pre-write) settings, discarding the change from step 6.</li>
-        <li><strong>Save and apply the awase-side settings:</strong> Click "Save" in awase-settings, then "Apply" on the awase.exe side (config reload).</li>
-        <li><strong>Verify:</strong> With GJI running, tap the Muhenkan key alone and confirm the kana type (Hiragana &harr; Katakana, etc.) toggles.</li>
-      </ol>
+      <div class="code-block">[general]
+# Dedicated Fn key to send on a Muhenkan solo tap (default: unset — defer to auto-detection)
+# muhenkan_solo_tap_dedicated_fn_key = "VK_F21"</div>
+      <p class="note" style="margin-top:0.7rem">
+        The Fn key you specify must have a "kana type switch" binding in GJI's own
+        config1.db. Switch GJI's "Input assistance" to "Custom" (right-click the GJI
+        tray icon &rarr; "Properties" &rarr; "Key settings" tab), then start awase.exe
+        (or focus GJI) to get the popup that offers to add the binding. The write only
+        reliably takes effect in GJI after you <strong>sign out and sign back in</strong>.
+        Using the tray icon's "Exit and restart" instead can overwrite the file with
+        GJI's in-memory (pre-write) settings, discarding the change.
+      </p>
     </div>
 
     <div class="card">

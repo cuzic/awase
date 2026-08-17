@@ -1,7 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod gji_charset_write;
-
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
@@ -252,9 +250,6 @@ struct SettingsApp {
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
-    // GJI 専用Fnキー変換の config1.db 書き込みボタンの結果表示
-    // （true = 成功、メッセージ本文）。
-    dedicated_fn_key_write_result: Option<(bool, String)>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
     // post_bypass add-buffers
@@ -318,7 +313,6 @@ impl SettingsApp {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            dedicated_fn_key_write_result: None,
             new_override_bufs: Default::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
@@ -1004,104 +998,16 @@ impl SettingsApp {
                     &mut self.config.general.muhenkan_solo_tap_ignore_composing_guard,
                 );
             });
-
-            // 2026-08-15 ユーザー判断: ADR-091 §D3.2「専用Fnキー変換」（GJI の
-            // config1.db と組み合わせ、無変換キー単独タップで文字種をトグル
-            // するハック）を上級者向け設定として GUI に明示する。GJI 検出時に
-            // config1.db の設定を自動判定するのが主経路のため、通常は手動設定
-            // 不要——このドロップダウンは自動判定がうまく働かない場合や、
-            // 特定の Fn キーへ固定したい場合の上級者向け上書き。
-            //
-            // 2026-08-17 ユーザー判断: 「GJI 専用Fnキー変換」という見出し・
-            // 折りたたみ（CollapsingHeader）は撤去し、中身（説明文・
-            // ドロップダウン・書き込みボタン）は常時展開のまま
-            // muhenkan_thumb_options と同じ ui.indent に統合した。機能・
-            // 説明文の内容は変更していない。
-            ui.indent("gji_dedicated_fn_key_options", |ui| {
-                ui.label(
-                    "無変換キーの単独タップで文字種（ひらがな/カタカナ等）を\n\
-                     トグルしたく、かつ「モードずれ」（awase側の想定とGJI側の\n\
-                     実際の状態が食い違う）の問題を避けたい上級者向けの設定です。\n\
-                     \n\
-                     GJI（Google 日本語入力）を使っている場合、無変換キーの単独タップで\n\
-                     生の無変換キーを送る代わりに、専用のFnキー（既定候補: F21）を送る\n\
-                     よう切り替えられます。GJI 側の config1.db でこの Fn キーに\n\
-                     「かな種別切替」を割り当てておけば、awase を介さず GJI 自身の\n\
-                     機能で文字種をトグルできます。この「かな種別切替」はGJI自身が\n\
-                     今の実際の内部状態を見てトグルする動作のため、awase側が\n\
-                     GJIの状態を予測・記憶する必要がなく、モードずれが原理的に\n\
-                     発生しません（ADR-091 §D3.2）。\n\
-                     \n\
-                     GJI 検出時に config1.db の設定を自動判定するのが主経路のため、\n\
-                     通常はここでの手動設定は不要です。自動判定がうまく働かない場合や、\n\
-                     意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
-                );
-                let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
-                dedicated_fn_key_combo(
-                    ui,
-                    &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
-                    dedicated_fn_key_hover,
-                );
-                ui.add_space(4.0);
-
-                // 上のドロップダウンは awase 側の設定（無変換単独タップで
-                // どの Fn キーを送るか）のみを変える。GJI 側の config1.db に
-                // 「そのFnキーで文字種を切り替える」バインドが無ければ
-                // 効果が無いため、このボタンで GJI 側の設定も一括で
-                // 用意する（gji_charset_write、GJI が同意の上で書き込む
-                // ADR-091 §4 Phase1-3 の仕組みを awase-settings からも
-                // 呼べるようにしたもの）。
-                let selected_gji_key = self
-                    .config
-                    .general
-                    .muhenkan_solo_tap_dedicated_fn_key
-                    .as_deref()
-                    .and_then(|internal| {
-                        DEDICATED_FN_KEY_OPTIONS
-                            .iter()
-                            .find(|(_, v)| *v == internal)
-                            .map(|(label, _)| *label)
-                    });
-                ui.add_enabled_ui(selected_gji_key.is_some(), |ui| {
-                    if ui
-                        .button("config1.db へ書き込む")
-                        .on_hover_text(
-                            "押すと: 上で選んだ専用Fnキーに「かな種別切替」を割り当てる\n\
-                             設定を GJI の config1.db へ追加します（上書き前に\n\
-                             .awase-backup へバックアップを作成）。反映には GJI の\n\
-                             再起動（推奨: サインアウト→サインイン）が必要です。\n\
-                             詳しい手順は本アプリの使い方ページを参照してください。\n\
-                             専用Fnキーが未選択の間は押せません。",
-                        )
-                        .clicked()
-                        && let Some(gji_key) = selected_gji_key
-                    {
-                        self.dedicated_fn_key_write_result =
-                            Some(match gji_charset_write::apply_dedicated_fn_key_binding(gji_key) {
-                                Ok(()) => (
-                                    true,
-                                    "config1.db に設定を追加しました。GJI が起動中の\
-                                     場合、確実に反映するにはサインアウトしてから\
-                                     サインインし直してください\
-                                     （タスクトレイからの「終了して再起動」では、\
-                                     GJI 終了時に書き込み前の設定で上書きされ、\
-                                     今回の変更が消えることがあります）。"
-                                        .to_string(),
-                                ),
-                                Err(e) => (false, e.to_string()),
-                            });
-                    }
-                });
-                if let Some((ok, message)) = &self.dedicated_fn_key_write_result {
-                    let color = if *ok {
-                        egui::Color32::from_rgb(0, 140, 0)
-                    } else {
-                        egui::Color32::from_rgb(200, 40, 0)
-                    };
-                    ui.colored_label(color, message);
-                }
-            });
         }
+        // 2026-08-17 ユーザー判断: GJI 専用Fnキー変換（ADR-091 §D3.2）の
+        // 手動設定 UI（専用Fnキードロップダウン・config1.dbへの書き込み
+        // ボタン）は一旦、設定画面から撤去した（実装自体は撤去していない、
+        // `muhenkan_solo_tap_dedicated_fn_key` は config.toml で引き続き
+        // 設定可能）。GJI検出時のconfig1.db自動判定・awase.exe起動時の
+        // ポップアップ同意フロー（`gji_charset_autodetect.rs`/
+        // `gji_charset_popup.rs`）が主経路として機能し続けるため、通常の
+        // 利用に支障はない。無変換キー単独タップのすぐ下に変換キー単独
+        // タップが並ぶよう、この節を撤去した分だけ表示順も詰まる。
         if self.config.general.left_thumb_key == "変換"
             || self.config.general.right_thumb_key == "変換"
         {
@@ -2276,59 +2182,6 @@ fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &
         .on_hover_text(tooltip);
 }
 
-/// 専用Fnキー変換（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）の
-/// 候補一覧。`src/config.rs::validate_dedicated_fn_key`の`SAFE_RANGE`
-/// （VK_F15-VK_F24）と一致させること。`THUMB_KEY_OPTIONS`と異なり
-/// VK_F21-VK_F24 を意図的に含む——このハック自体が awase 内部で F21-F24 を
-/// 予約している用途そのもののため。
-const DEDICATED_FN_KEY_OPTIONS: &[(&str, &str)] = &[
-    ("F15", "VK_F15"),
-    ("F16", "VK_F16"),
-    ("F17", "VK_F17"),
-    ("F18", "VK_F18"),
-    ("F19", "VK_F19"),
-    ("F20", "VK_F20"),
-    ("F21", "VK_F21"),
-    ("F22", "VK_F22"),
-    ("F23", "VK_F23"),
-    ("F24", "VK_F24"),
-];
-
-/// `muhenkan_solo_tap_dedicated_fn_key` の選択 UI。`None` は「自動検出に
-/// 任せる」（GJI 検出時に config1.db を読んで判定、主経路）を意味する。
-fn dedicated_fn_key_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
-    let display = current.as_deref().map_or_else(
-        || "（未設定・自動検出）".to_string(),
-        |v| {
-            DEDICATED_FN_KEY_OPTIONS
-                .iter()
-                .find(|(_, internal)| *internal == v)
-                .map_or_else(|| v.to_string(), |(d, _)| (*d).to_string())
-        },
-    );
-    egui::ComboBox::from_id_salt("muhenkan_dedicated_fn_key")
-        .selected_text(display)
-        .width(140.0)
-        .show_ui(ui, |ui| {
-            if ui
-                .selectable_label(current.is_none(), "（未設定・自動検出）")
-                .clicked()
-            {
-                *current = None;
-            }
-            for (label, internal) in DEDICATED_FN_KEY_OPTIONS {
-                if ui
-                    .selectable_label(current.as_deref() == Some(*internal), *label)
-                    .clicked()
-                {
-                    *current = Some((*internal).to_string());
-                }
-            }
-        })
-        .response
-        .on_hover_text(tooltip);
-}
-
 /// 無変換/変換キー単独タップの抑制方針。実体は `*_solo_tap_always_suppress`/
 /// `*_solo_tap_ignore_composing_guard` の2boolだが、GUI上は「常に無視する」/
 /// 「常に送出する」の2択コンボボックスとして見せる。当初は変換候補ウィンドウ
@@ -3321,7 +3174,6 @@ mod layout_tab_repro {
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
-            dedicated_fn_key_write_result: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
