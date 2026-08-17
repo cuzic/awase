@@ -89,6 +89,10 @@ pub struct ConvTransition {
 /// - `conv_mode_changed`: `ConvModeMgr::update_from_conv` が変化を検出したか。
 /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるか。TsfNative の idle 経路では
 ///   常に `false`。
+/// - `explicit_off_intent`: 直近のユーザー明示意図が IME OFF か
+///   (`PlatformState::explicit_intent() == Some(false)`)。true の間は
+///   `has_native` による BUG-26 回復 (`NativeToggleShadowOff`) を発火させない
+///   （2026-08-17 実機再発、下記コメント参照）。
 #[must_use]
 pub fn classify_conv_transition(
     cm: ConvMode,
@@ -97,6 +101,7 @@ pub fn classify_conv_transition(
     effective_open: bool,
     conv_mode_changed: bool,
     is_roman_reliable: bool,
+    explicit_off_intent: bool,
 ) -> ConvTransition {
     let input_mode_update = cm.classify_idle(is_cold, current, is_roman_reliable);
     // NATIVE=0 ⟺ 英数モード (is_eisu)。charset 軸（ひらがな/カタカナの区別）は
@@ -117,14 +122,25 @@ pub fn classify_conv_transition(
     //   BUG-26 参照）。
     // - AssumedRomaji は常に classify_idle=None を返すため、この分岐が None
     //   ケースでの唯一の回復経路になる。
+    // - ただし `explicit_off_intent` が真の間はこの回復を止める（BUG-68）。
+    //   IMM32 の conv (NATIVE ビット) は「変換モードの好み」であって開閉状態では
+    //   なく、MS-IME は VK_IME_OFF で閉じた後も NATIVE ビットを持ち続ける。BUG-26
+    //   の steady-state 回復は元々「conv 不変を無視せず拾う」ためのものだったが、
+    //   同じ steady-state 判定がユーザーが Ctrl+無変換 で明示的に閉じた直後にも
+    //   無条件で成立してしまい、以後のタイピングのたびに「IME が再び開いた」という
+    //   偽の ReportOpenInference を出し続け、drift correction の VK_IME_OFF 再送
+    //   ループ（give up→再武装を無限反復）を引き起こしていた（2026-08-17 実機再発、
+    //   docs/known-bugs.md BUG-68）。ユーザーの明示 OFF 意図がある間はこの偽シグナル
+    //   より意図を信頼する。
     //
     // belief を更新する (Some) 場合は、更新後の new_mode を見て engine を同期する。
     // 従来コードは複数の if を順に評価していたが、発火するアクションは互いに排他
     // （対象 open が衝突しない）なので単一アクションに集約できる。ObservedEisu
     // (NATIVE=0) は NativeToggle 系と、`!effective_open` を要求する分岐は
     // `effective_open` を要求する romaji 回復分岐と排他になる。
+    let native_toggle_recovery_allowed = has_native && !effective_open && !explicit_off_intent;
     let engine = input_mode_update.map_or(
-        if has_native && !effective_open {
+        if native_toggle_recovery_allowed {
             EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
         } else {
             EngineSync::None
@@ -134,7 +150,7 @@ pub fn classify_conv_transition(
                 EngineSync::DirectInput
             } else if !was_romaji_capable && new_mode.is_romaji_capable() && effective_open {
                 EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
-            } else if conv_mode_changed && has_native && !effective_open {
+            } else if conv_mode_changed && native_toggle_recovery_allowed {
                 EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
             } else {
                 EngineSync::None
@@ -181,6 +197,10 @@ pub struct ConvClassifyFixture {
     pub effective_open: bool,
     pub conv_mode_changed: bool,
     pub is_roman_reliable: bool,
+    /// BUG-68 で追加。既存フィクスチャ（この項目が無い JSON）は `false`
+    /// （旧来の無条件回復動作）として読み込む。
+    #[serde(default)]
+    pub explicit_off_intent: bool,
     /// 期待される `ConvTransition`。実機ダンプをそのまま転記した直後はバグを
     /// 含む「実際の」出力になっていることがあるため、修正後は必ず「あるべき」
     /// 出力に手で書き換えてからコミットすること。
@@ -228,6 +248,7 @@ mod tests {
             false,
             effective_open,
             conv_mode_changed,
+            false,
             false,
         )
     }
@@ -435,6 +456,7 @@ mod tests {
             true,
             false,
             false,
+            false,
         );
         assert_eq!(t.input_mode_update, None);
     }
@@ -449,6 +471,7 @@ mod tests {
             false,
             true,
             true,
+            false,
         );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
     }
@@ -478,6 +501,7 @@ mod tests {
             false, // effective_open=false (NativeToggleShadowOff の条件は満たす)
             false, // conv_mode_changed=false ← ここが false なら発火しないはず
             true,
+            false,
         );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
         assert_eq!(
@@ -501,12 +525,63 @@ mod tests {
             true, // effective_open=true ← ここが true なら発火しないはず
             true, // conv_mode_changed=true (NativeToggleShadowOff の条件は満たす)
             true,
+            false,
         );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
         assert_eq!(
             t.engine,
             EngineSync::None,
             "effective_open=true so NativeToggleShadowOff must not fire, got {:?}",
+            t.engine
+        );
+    }
+
+    /// BUG-68: 明示 IME OFF 意図が生きている間は NativeToggleShadowOff が
+    /// 発火しないはず（他の条件は全て揃っていても）。3つ目のガード
+    /// (`!explicit_off_intent`) が抜けると、Ctrl+無変換 直後もタイピングの
+    /// たびに偽の「IME が再び開いた」観測が出続け、drift correction が
+    /// VK_IME_OFF を無限に再送する（2026-08-17 実機再発）。
+    #[test]
+    fn native_toggle_requires_no_explicit_off_intent() {
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_JISKANA),
+            assumed(),
+            false,
+            false, // effective_open=false (NativeToggleShadowOff の条件は満たす)
+            true,  // conv_mode_changed=true (NativeToggleShadowOff の条件は満たす)
+            true,
+            true, // explicit_off_intent=true ← ここが true なら発火しないはず
+        );
+        assert_eq!(t.input_mode_update, Some(InputModeState::ObservedKana));
+        assert_eq!(
+            t.engine,
+            EngineSync::None,
+            "explicit_off_intent=true so NativeToggleShadowOff must not fire, got {:?}",
+            t.engine
+        );
+    }
+
+    /// BUG-68 steady-state 版: `hiragana_belief_romaji_capable_shadow_off_steady_state_still_syncs_engine`
+    /// と同じ steady-state (conv_mode_changed=false, belief 変化なし) だが、
+    /// explicit_off_intent=true の場合は BUG-26 回復自体を止める。これがまさに
+    /// 2026-08-17 に実機再発したケース（Ctrl+無変換 の直後、conv は不変のまま
+    /// タイピングが続く）。
+    #[test]
+    fn explicit_off_intent_suppresses_native_toggle_shadow_off_steady_state() {
+        let t = classify_conv_transition(
+            ConvMode::from_u32(CONV_HIRAGANA),
+            InputModeState::ObservedRomaji,
+            false,
+            false, // effective_open=false
+            false, // conv_mode_changed=false (steady-state)
+            false,
+            true, // explicit_off_intent=true
+        );
+        assert_eq!(t.input_mode_update, None);
+        assert_eq!(
+            t.engine,
+            EngineSync::None,
+            "explicit_off_intent=true so steady-state NativeToggleShadowOff must not fire, got {:?}",
             t.engine
         );
     }
@@ -524,6 +599,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(t.input_mode_update, None);
     }
@@ -536,6 +612,7 @@ mod tests {
             true,
             false,
             true,
+            false,
             false,
         );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
@@ -652,12 +729,17 @@ mod tests {
         cm: ConvMode,
         effective_open: bool,
         conv_mode_changed: bool,
+        explicit_off_intent: bool,
     ) -> EngineSync {
         let has_native = !cm.eisu;
+        // BUG-68: ユーザーが明示的に IME OFF を意図している間は、conv の NATIVE
+        // ビット（開閉状態ではなく変換モードの好み、閉じても消えない）を「再度
+        // 開いた」証拠として扱わない。
+        let recovery_allowed = has_native && !effective_open && !explicit_off_intent;
 
         match input_mode_update {
             None => {
-                if has_native && !effective_open {
+                if recovery_allowed {
                     EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
                 } else {
                     EngineSync::None
@@ -668,8 +750,8 @@ mod tests {
                 // engine 既に open 中に romaji 不可 → 可へ回復。
                 let romaji_recovered_while_open =
                     !was_romaji_capable && new_mode.is_romaji_capable() && effective_open;
-                // NATIVE への切替を検出 かつ shadow=OFF。
-                let native_toggle_shadow_off = conv_mode_changed && has_native && !effective_open;
+                // NATIVE への切替を検出 かつ shadow=OFF かつ 明示 OFF 意図なし。
+                let native_toggle_shadow_off = conv_mode_changed && recovery_allowed;
 
                 if romaji_recovered_while_open {
                     EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
@@ -689,6 +771,7 @@ mod tests {
         effective_open: bool,
         conv_mode_changed: bool,
         is_roman_reliable: bool,
+        explicit_off_intent: bool,
     ) -> ConvTransition {
         let input_mode_update = cm.classify_idle(is_cold, current, is_roman_reliable);
         let engine = oracle_engine(
@@ -697,6 +780,7 @@ mod tests {
             cm,
             effective_open,
             conv_mode_changed,
+            explicit_off_intent,
         );
         ConvTransition {
             input_mode_update,
@@ -711,7 +795,8 @@ mod tests {
     /// `AssumedReason` の由来追跡は対象外）、代表として `ImmBridgeBroken` のみを使う
     /// — `smoke_all_major_conv_belief_combinations` の `beliefs` 配列と同じ判断。
     /// 4 (ConvMode: eisu2 × romaji2) × 5 (belief代表) × 2 (is_cold) ×
-    /// 2 (effective_open) × 2 (conv_mode_changed) × 2 (is_roman_reliable) = 320通り。
+    /// 2 (effective_open) × 2 (conv_mode_changed) × 2 (is_roman_reliable) ×
+    /// 2 (explicit_off_intent, BUG-68) = 640通り。
     #[test]
     fn exhaustive_classify_conv_transition_matches_independent_oracle() {
         let beliefs = [
@@ -731,30 +816,35 @@ mod tests {
                         for &effective_open in &[false, true] {
                             for &conv_mode_changed in &[false, true] {
                                 for &is_roman_reliable in &[false, true] {
-                                    let actual = classify_conv_transition(
-                                        cm,
-                                        current,
-                                        is_cold,
-                                        effective_open,
-                                        conv_mode_changed,
-                                        is_roman_reliable,
-                                    );
-                                    let expected = oracle_transition(
-                                        cm,
-                                        current,
-                                        is_cold,
-                                        effective_open,
-                                        conv_mode_changed,
-                                        is_roman_reliable,
-                                    );
-                                    if actual != expected {
-                                        mismatches.push(format!(
-                                            "cm={cm:?} current={current:?} is_cold={is_cold} \
-                                             effective_open={effective_open} \
-                                             conv_mode_changed={conv_mode_changed} \
-                                             is_roman_reliable={is_roman_reliable}: \
-                                             actual={actual:?} expected(oracle)={expected:?}"
-                                        ));
+                                    for &explicit_off_intent in &[false, true] {
+                                        let actual = classify_conv_transition(
+                                            cm,
+                                            current,
+                                            is_cold,
+                                            effective_open,
+                                            conv_mode_changed,
+                                            is_roman_reliable,
+                                            explicit_off_intent,
+                                        );
+                                        let expected = oracle_transition(
+                                            cm,
+                                            current,
+                                            is_cold,
+                                            effective_open,
+                                            conv_mode_changed,
+                                            is_roman_reliable,
+                                            explicit_off_intent,
+                                        );
+                                        if actual != expected {
+                                            mismatches.push(format!(
+                                                "cm={cm:?} current={current:?} is_cold={is_cold} \
+                                                 effective_open={effective_open} \
+                                                 conv_mode_changed={conv_mode_changed} \
+                                                 is_roman_reliable={is_roman_reliable} \
+                                                 explicit_off_intent={explicit_off_intent}: \
+                                                 actual={actual:?} expected(oracle)={expected:?}"
+                                            ));
+                                        }
                                     }
                                 }
                             }
