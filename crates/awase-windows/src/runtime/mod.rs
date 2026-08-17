@@ -239,9 +239,10 @@ pub struct Runtime {
     /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
     /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため、
     /// Opus コードレビュー指摘）。`apply_config_update`/起動時に反映される。
-    /// `keys.ime_toggle`（明示設定）優先の判定自体は `Engine` が
-    /// `special_keys.ime_toggle.is_empty()` を直接見て行うため、
-    /// `Runtime` 側に対応するフィールドは不要（決定C R1）。
+    /// `keys.ime_toggle`（明示設定）とのマッチ判定自体は `Engine` の
+    /// `special_keys` が直接持つため、`Runtime` 側に対応するフィールドは
+    /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
+    /// 一方を排他しない）。
     space_is_thumb_key: bool,
 }
 
@@ -1243,10 +1244,11 @@ impl Runtime {
     }
 
     /// `gji_charset_autodetect` が config1.db から自動検出した IME ON/OFF/
-    /// トグルキーを反映するための入口（ADR-092 決定D Step4c）。手動設定
-    /// （`KeysConfig.ime_toggle`等）が空でない間は`Engine`側
-    /// （`match_ime_on_off_auto`/`match_ime_toggle_auto`）が自動リストを
-    /// 無視するため、ここでは手動設定の有無を確認せずそのまま反映してよい
+    /// トグルキーを反映するための入口（ADR-092 決定D Step4c）。`Engine`側
+    /// （`match_ime_on_off_auto`/`match_ime_toggle_auto`）は手動設定
+    /// （`KeysConfig.ime_on`/`ime_off`/`ime_toggle`）の内容に関わらず常に
+    /// 自動リストも併用する（2026-08-16 ユーザー判断、明示 ∪ 自動）ため、
+    /// ここでは手動設定の有無を確認せずそのまま反映してよい
     /// （`set_muhenkan_dedicated_fn_key_auto`と異なりRuntime側にゲートは不要）。
     pub(crate) fn set_gji_ime_on_off_toggle_auto_keys(
         &mut self,

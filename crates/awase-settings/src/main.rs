@@ -242,6 +242,7 @@ struct SettingsApp {
     new_engine_off: NewComboBuf,
     new_ime_on: NewComboBuf,
     new_ime_off: NewComboBuf,
+    new_ime_toggle: NewComboBuf,
     // Keymap rule add-buffers
     new_keymap_app: String,
     new_keymap_from_ctrl: bool,
@@ -309,6 +310,7 @@ impl SettingsApp {
             new_engine_off: NewComboBuf::default(),
             new_ime_on: NewComboBuf::default(),
             new_ime_off: NewComboBuf::default(),
+            new_ime_toggle: NewComboBuf::default(),
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,
@@ -841,6 +843,7 @@ impl SettingsApp {
                 self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
                 self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
                 self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
+                self.config.keys.ime_toggle = vec!["VK_KANJI".to_string()];
                 self.config.keys.engine_off_solo_triple = Some("VK_NONCONVERT".to_string());
             }
             // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
@@ -855,6 +858,7 @@ impl SettingsApp {
                 self.config.keys.engine_off.clear();
                 self.config.keys.ime_on.clear();
                 self.config.keys.ime_off.clear();
+                self.config.keys.ime_toggle.clear();
                 self.config.keys.engine_off_solo_triple = None;
             }
         });
@@ -1029,14 +1033,11 @@ impl SettingsApp {
                          意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
                     );
                     let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
-                    ui.horizontal(|ui| {
-                        ui.label("  専用Fnキー:").on_hover_text(dedicated_fn_key_hover);
-                        dedicated_fn_key_combo(
-                            ui,
-                            &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
-                            dedicated_fn_key_hover,
-                        );
-                    });
+                    dedicated_fn_key_combo(
+                        ui,
+                        &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
+                        dedicated_fn_key_hover,
+                    );
                     ui.add_space(4.0);
 
                     // 上のドロップダウンは awase 側の設定（無変換単独タップで
@@ -1136,6 +1137,14 @@ impl SettingsApp {
             &mut self.new_ime_off,
             "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
         );
+        combo_key_list_ui(
+            ui,
+            "IME ON/OFF トグル",
+            "ime_toggle",
+            &mut self.config.keys.ime_toggle,
+            &mut self.new_ime_toggle,
+            "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。",
+        );
         ui.add_space(8.0);
 
         // Engine on/off
@@ -1169,7 +1178,7 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         // Toggle hotkey
-        ui.label("トグルホットキー");
+        ui.label("親指シフト ON/OFF トグル");
         let engine_toggle_hover =
             "親指シフトの ON/OFF をトグルするホットキーです。\nシステム全体で有効です。";
         ui.horizontal(|ui| {
@@ -2577,13 +2586,16 @@ const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
 /// 解決可能で `config.toml` に手書きすれば従来から機能していたが、
 /// `THUMB_KEY_OPTIONS` に候補が無く GUI 上選べなかった
 /// （2026-08-03 ユーザー報告「エンジンOFFの条件で英数キーが選択出来ない」）。
+/// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）の既定値
+/// （2026-08-16 ユーザー要望）として選べるようにするため追加。
 ///
 /// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_triple_combo`
 /// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
 /// IME モード専用キーをそこに混入させると意図しない組み合わせが選択可能に
 /// なってしまう。`ALT_IMPERSONATION_OPTIONS` と同じ
 /// 「用途ごとに候補リストを分離する」既存パターンに倣う。
-const IME_MODE_KEY_OPTIONS: &[(&str, &str)] = &[("英数", "VK_DBE_ALPHANUMERIC")];
+const IME_MODE_KEY_OPTIONS: &[(&str, &str)] =
+    &[("英数", "VK_DBE_ALPHANUMERIC"), ("漢字", "VK_KANJI")];
 
 #[cfg(test)]
 mod ime_mode_key_options_tests {
@@ -2597,6 +2609,17 @@ mod ime_mode_key_options_tests {
             IME_MODE_KEY_OPTIONS
                 .iter()
                 .any(|(label, internal)| *label == "英数" && *internal == "VK_DBE_ALPHANUMERIC")
+        );
+    }
+
+    /// 「漢字」が IME ON/OFF トグル欄のドロップダウン候補に出るようにする
+    /// （`keys.ime_toggle` の既定値 `VK_KANJI` が選択可能である必要がある）。
+    #[test]
+    fn ime_mode_key_options_contains_kanji() {
+        assert!(
+            IME_MODE_KEY_OPTIONS
+                .iter()
+                .any(|(label, internal)| *label == "漢字" && *internal == "VK_KANJI")
         );
     }
 
@@ -3286,6 +3309,7 @@ mod layout_tab_repro {
             new_engine_off: NewComboBuf::default(),
             new_ime_on: NewComboBuf::default(),
             new_ime_off: NewComboBuf::default(),
+            new_ime_toggle: NewComboBuf::default(),
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,

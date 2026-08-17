@@ -387,7 +387,19 @@ pub struct ImeDetectConfig {
 impl Default for ImeDetectConfig {
     fn default() -> Self {
         Self {
-            toggle: vec!["漢字".to_string()],
+            // 2026-08-16: 「漢字」（VK_KANJI）を既定から外した。
+            // `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
+            // 自身が能動的に漢字キーを消費し冪等な VK_IME_ON/OFF へ変換して
+            // 送出する）が同じ VK_KANJI を既定で持つようになったため、両方が
+            // 既定で有効だと同一の物理キー押下に対して
+            // `kp_stage_shadow_ime_toggle`（このフィールド由来、belief を
+            // 反転）→ `Engine::apply_special_key_match`（`keys.ime_toggle`
+            // 由来、反転後の belief を読んで逆方向へ再反転しキーを consume）
+            // という二重処理が発生し、「押しても IME が動かない」壊れた
+            // キーになっていた（Opusコードレビュー指摘）。`keys.ime_toggle`
+            // が漢字キーを能動的に consume する以上、素通しを前提にした
+            // このフィールドの観測は漢字キーに対しては意味を持たない。
+            toggle: Vec::new(),
             on: vec!["IMEオン".to_string()],
             off: vec!["IMEオフ".to_string()],
         }
@@ -445,7 +457,7 @@ impl Default for KeysConfig {
             engine_off: vec!["Ctrl+Shift+無変換".to_string()],
             ime_on: vec!["Ctrl+変換".to_string()],
             ime_off: vec!["Ctrl+無変換".to_string()],
-            ime_toggle: Vec::new(),
+            ime_toggle: vec!["VK_KANJI".to_string()],
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
             engine_on_ime_key: None,
@@ -864,6 +876,17 @@ default_layout = "nicola.yab"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.keys.engine_on_ime_key, None);
         assert_eq!(config.keys.engine_off_ime_key, None);
+    }
+
+    /// `keys.ime_toggle` の既定値は漢字キー（`VK_KANJI`）（2026-08-16
+    /// ユーザー要望）。`VK_KANJI` は ADR-091 §1.2 で「Imm32Unavailable
+    /// プロファイル向けの真のトグル」として既に確立済みの冪等な IME
+    /// ON/OFF トグルキーであり、新設の GUI「IME ON/OFF トグル」欄の
+    /// 既定候補として妥当（`msime_key_assignment.rs`のドキュメント参照）。
+    #[test]
+    fn test_keys_config_default_ime_toggle_is_kanji_key() {
+        let keys = KeysConfig::default();
+        assert_eq!(keys.ime_toggle, vec!["VK_KANJI".to_string()]);
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が
