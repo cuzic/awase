@@ -1011,92 +1011,96 @@ impl SettingsApp {
             // config1.db の設定を自動判定するのが主経路のため、通常は手動設定
             // 不要——このドロップダウンは自動判定がうまく働かない場合や、
             // 特定の Fn キーへ固定したい場合の上級者向け上書き。
-            egui::CollapsingHeader::new("GJI 専用Fnキー変換")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.label(
-                        "無変換キーの単独タップで文字種（ひらがな/カタカナ等）を\n\
-                         トグルしたく、かつ「モードずれ」（awase側の想定とGJI側の\n\
-                         実際の状態が食い違う）の問題を避けたい上級者向けの設定です。\n\
-                         \n\
-                         GJI（Google 日本語入力）を使っている場合、無変換キーの単独タップで\n\
-                         生の無変換キーを送る代わりに、専用のFnキー（既定候補: F21）を送る\n\
-                         よう切り替えられます。GJI 側の config1.db でこの Fn キーに\n\
-                         「かな種別切替」を割り当てておけば、awase を介さず GJI 自身の\n\
-                         機能で文字種をトグルできます。この「かな種別切替」はGJI自身が\n\
-                         今の実際の内部状態を見てトグルする動作のため、awase側が\n\
-                         GJIの状態を予測・記憶する必要がなく、モードずれが原理的に\n\
-                         発生しません（ADR-091 §D3.2）。\n\
-                         \n\
-                         GJI 検出時に config1.db の設定を自動判定するのが主経路のため、\n\
-                         通常はここでの手動設定は不要です。自動判定がうまく働かない場合や、\n\
-                         意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
-                    );
-                    let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
-                    dedicated_fn_key_combo(
-                        ui,
-                        &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
-                        dedicated_fn_key_hover,
-                    );
-                    ui.add_space(4.0);
+            //
+            // 2026-08-17 ユーザー判断: 「GJI 専用Fnキー変換」という見出し・
+            // 折りたたみ（CollapsingHeader）は撤去し、中身（説明文・
+            // ドロップダウン・書き込みボタン）は常時展開のまま
+            // muhenkan_thumb_options と同じ ui.indent に統合した。機能・
+            // 説明文の内容は変更していない。
+            ui.indent("gji_dedicated_fn_key_options", |ui| {
+                ui.label(
+                    "無変換キーの単独タップで文字種（ひらがな/カタカナ等）を\n\
+                     トグルしたく、かつ「モードずれ」（awase側の想定とGJI側の\n\
+                     実際の状態が食い違う）の問題を避けたい上級者向けの設定です。\n\
+                     \n\
+                     GJI（Google 日本語入力）を使っている場合、無変換キーの単独タップで\n\
+                     生の無変換キーを送る代わりに、専用のFnキー（既定候補: F21）を送る\n\
+                     よう切り替えられます。GJI 側の config1.db でこの Fn キーに\n\
+                     「かな種別切替」を割り当てておけば、awase を介さず GJI 自身の\n\
+                     機能で文字種をトグルできます。この「かな種別切替」はGJI自身が\n\
+                     今の実際の内部状態を見てトグルする動作のため、awase側が\n\
+                     GJIの状態を予測・記憶する必要がなく、モードずれが原理的に\n\
+                     発生しません（ADR-091 §D3.2）。\n\
+                     \n\
+                     GJI 検出時に config1.db の設定を自動判定するのが主経路のため、\n\
+                     通常はここでの手動設定は不要です。自動判定がうまく働かない場合や、\n\
+                     意図的に特定の Fn キーへ固定したい場合のみ指定してください。",
+                );
+                let dedicated_fn_key_hover = "無変換キー単独タップで送信する専用Fnキーです。\n未設定なら自動検出に任せます（推奨）。\nGJI 側の config1.db でこのキーに「かな種別切替」等を\n割り当てておく必要があります。";
+                dedicated_fn_key_combo(
+                    ui,
+                    &mut self.config.general.muhenkan_solo_tap_dedicated_fn_key,
+                    dedicated_fn_key_hover,
+                );
+                ui.add_space(4.0);
 
-                    // 上のドロップダウンは awase 側の設定（無変換単独タップで
-                    // どの Fn キーを送るか）のみを変える。GJI 側の config1.db に
-                    // 「そのFnキーで文字種を切り替える」バインドが無ければ
-                    // 効果が無いため、このボタンで GJI 側の設定も一括で
-                    // 用意する（gji_charset_write、GJI が同意の上で書き込む
-                    // ADR-091 §4 Phase1-3 の仕組みを awase-settings からも
-                    // 呼べるようにしたもの）。
-                    let selected_gji_key = self
-                        .config
-                        .general
-                        .muhenkan_solo_tap_dedicated_fn_key
-                        .as_deref()
-                        .and_then(|internal| {
-                            DEDICATED_FN_KEY_OPTIONS
-                                .iter()
-                                .find(|(_, v)| *v == internal)
-                                .map(|(label, _)| *label)
-                        });
-                    ui.add_enabled_ui(selected_gji_key.is_some(), |ui| {
-                        if ui
-                            .button("config1.db へ書き込む")
-                            .on_hover_text(
-                                "押すと: 上で選んだ専用Fnキーに「かな種別切替」を割り当てる\n\
-                                 設定を GJI の config1.db へ追加します（上書き前に\n\
-                                 .awase-backup へバックアップを作成）。反映には GJI の\n\
-                                 再起動（推奨: サインアウト→サインイン）が必要です。\n\
-                                 詳しい手順は本アプリの使い方ページを参照してください。\n\
-                                 専用Fnキーが未選択の間は押せません。",
-                            )
-                            .clicked()
-                            && let Some(gji_key) = selected_gji_key
-                        {
-                            self.dedicated_fn_key_write_result =
-                                Some(match gji_charset_write::apply_dedicated_fn_key_binding(gji_key) {
-                                    Ok(()) => (
-                                        true,
-                                        "config1.db に設定を追加しました。GJI が起動中の\
-                                         場合、確実に反映するにはサインアウトしてから\
-                                         サインインし直してください\
-                                         （タスクトレイからの「終了して再起動」では、\
-                                         GJI 終了時に書き込み前の設定で上書きされ、\
-                                         今回の変更が消えることがあります）。"
-                                            .to_string(),
-                                    ),
-                                    Err(e) => (false, e.to_string()),
-                                });
-                        }
+                // 上のドロップダウンは awase 側の設定（無変換単独タップで
+                // どの Fn キーを送るか）のみを変える。GJI 側の config1.db に
+                // 「そのFnキーで文字種を切り替える」バインドが無ければ
+                // 効果が無いため、このボタンで GJI 側の設定も一括で
+                // 用意する（gji_charset_write、GJI が同意の上で書き込む
+                // ADR-091 §4 Phase1-3 の仕組みを awase-settings からも
+                // 呼べるようにしたもの）。
+                let selected_gji_key = self
+                    .config
+                    .general
+                    .muhenkan_solo_tap_dedicated_fn_key
+                    .as_deref()
+                    .and_then(|internal| {
+                        DEDICATED_FN_KEY_OPTIONS
+                            .iter()
+                            .find(|(_, v)| *v == internal)
+                            .map(|(label, _)| *label)
                     });
-                    if let Some((ok, message)) = &self.dedicated_fn_key_write_result {
-                        let color = if *ok {
-                            egui::Color32::from_rgb(0, 140, 0)
-                        } else {
-                            egui::Color32::from_rgb(200, 40, 0)
-                        };
-                        ui.colored_label(color, message);
+                ui.add_enabled_ui(selected_gji_key.is_some(), |ui| {
+                    if ui
+                        .button("config1.db へ書き込む")
+                        .on_hover_text(
+                            "押すと: 上で選んだ専用Fnキーに「かな種別切替」を割り当てる\n\
+                             設定を GJI の config1.db へ追加します（上書き前に\n\
+                             .awase-backup へバックアップを作成）。反映には GJI の\n\
+                             再起動（推奨: サインアウト→サインイン）が必要です。\n\
+                             詳しい手順は本アプリの使い方ページを参照してください。\n\
+                             専用Fnキーが未選択の間は押せません。",
+                        )
+                        .clicked()
+                        && let Some(gji_key) = selected_gji_key
+                    {
+                        self.dedicated_fn_key_write_result =
+                            Some(match gji_charset_write::apply_dedicated_fn_key_binding(gji_key) {
+                                Ok(()) => (
+                                    true,
+                                    "config1.db に設定を追加しました。GJI が起動中の\
+                                     場合、確実に反映するにはサインアウトしてから\
+                                     サインインし直してください\
+                                     （タスクトレイからの「終了して再起動」では、\
+                                     GJI 終了時に書き込み前の設定で上書きされ、\
+                                     今回の変更が消えることがあります）。"
+                                        .to_string(),
+                                ),
+                                Err(e) => (false, e.to_string()),
+                            });
                     }
                 });
+                if let Some((ok, message)) = &self.dedicated_fn_key_write_result {
+                    let color = if *ok {
+                        egui::Color32::from_rgb(0, 140, 0)
+                    } else {
+                        egui::Color32::from_rgb(200, 40, 0)
+                    };
+                    ui.colored_label(color, message);
+                }
+            });
         }
         if self.config.general.left_thumb_key == "変換"
             || self.config.general.right_thumb_key == "変換"
