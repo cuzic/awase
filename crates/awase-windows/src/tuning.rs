@@ -226,6 +226,68 @@ pub const DRIFT_CORRECTION_THRESHOLD_MS: u64 = 400;
 /// この時間より古い観測値は stale とみなしてドリフト補正の根拠として使わない。
 pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 
+/// `Blind` drift correction が `GiveUp` した後、次の再武装判定を許可するまでの
+/// 最小間隔 (ms)。
+///
+/// **これは実測ではなく、レート制限のためのポリシー値**（`.claude/rules/
+/// tuning-constants.md` が要求する「何 ms 待てば十分か」の実測が原理的に
+/// 存在しない種類の定数——待つべき対象が「OS の準備完了」のような測れる
+/// 事象ではなく「無限に再試行して良い頻度」という設計判断のため）。
+///
+/// # なぜ必要か（BUG-68、2026-08-17）
+///
+/// 再武装判定 `ObservationStore::read_back(.., ReadBackQuery::AnyFreshEvidence, ..)`
+/// は「`gave_up_at` 以降に新しい信頼できる観測が record されたか」だけを見る
+/// （値は問わない、`state/observation_store.rs` 参照）。`kp_stage_idle_conv_check`
+/// 自体は「毎打鍵」ではなく `should_run_idle_conv_check`（`src/engine/idle_check.rs`）
+/// の4ガード——うち特にガード3「`output_in_flight_ms()`（awase 自身の最終出力
+/// からの経過 ms）が `TYPING_IDLE_MS`（500ms）を超えた最初の KeyDown」——を通過した
+/// ときだけ実行される。MS-IME × TsfNative で IME/Engine が OFF の間、通常の文字
+/// キーは PassThrough で awase 自身の出力を伴わないため `output_in_flight_ms()`
+/// はほぼ経過し続けるが、**drift correction 自身の `VK_IME_OFF` 再送も出力として
+/// このタイマーをリセットする**。結果、give-up バーストのたびに次の idle-conv-check
+/// が数百ms〜1秒未満のうちに再度走り、毎回同じ `ConvOpenInference` 観測
+/// （IMM32 の NATIVE ビットは開閉状態と無関係な持続的な変換モード設定で、
+/// `VK_IME_OFF` で閉じても消えない）を新しいタイムスタンプで record する。
+/// そのため「鮮度」は「新情報」の代理指標として機能せず、タイピングを続ける限り
+/// 実質連続的に再武装 → `VK_IME_OFF` 再送 → 5 回で GiveUp → 直後の
+/// idle-conv-check で再武装、という短周期ループになっていた（実機ログ、
+/// `docs/known-bugs.md` BUG-68。ログ上の give-up 巡回間隔は概ね数百ms）。
+///
+/// # なぜ「二度と再武装しない」ではなく「間隔を空ける」なのか
+///
+/// conv ビットだけでは「実 IME は正しく閉じたが持続ビットが残っているだけ」
+/// （BUG-68）と「実 IME が本当に開いたまま」（BUG-51、`docs/known-bugs.md`
+/// BUG-63 参照）を区別できない——原理的に情報が無い。再武装を完全に止めると
+/// BUG-51（明示 OFF 後も実 IME が閉じず最大8分放置された不具合）の「いずれ
+/// 回復する」性質を失う。間隔を空けることで、BUG-68（短周期の無駄な連打）は
+/// 収まりつつ、BUG-51（低頻度でも良いので回復チャンスが欲しい）は満たされる。
+///
+/// # 値の根拠
+///
+/// 実機ログで観測された give-up 巡回間隔は数百ms〜1秒未満（1巡が
+/// `DRIFT_CORRECTION_THRESHOLD_MS`=400ms 級の間隔で最大5回送信、巡回ごとに
+/// 次の idle-conv-check で即再武装）。タイピング中の実用的な間隔として明確に
+/// 体感できる差を作るため 3 秒とした（実測ではなくレート制限ポリシー、上記
+/// 参照）。実機ソークで「まだ体感できる」「長すぎて BUG-51 が再現する」
+/// いずれかが判明したら実測に基づき調整すること。
+///
+/// # 既知の限界（BUG-68 記録時点、未対処）
+///
+/// - フォーカス変更（`ImeEvent::FocusChanged`）は `Actuation` ごと（`gave_up_at`
+///   含め）破棄する既存仕様のため、クールダウン中に対象を跨ぐフォーカス変更
+///   （BUG-57 の通知ポップアップ等、プロセスを跨ぐ場合のみ発火）が起きると
+///   このクールダウンは無効化され、新しい `Actuation` が即座に5回まで送信
+///   できる状態から再開する。連続した無限ループの再発ではなく、フォーカス
+///   変更のたびに高々5回の再送という有界な事象に留まる。
+/// - `FeedbackPolicy::Blind::backoff` フィールド（`state/ime_actuation.rs`、
+///   `AppImePolicy::from_profile` が 400ms を設定）は構築されるだけで
+///   `ir_apply_drift_correction` から一度も読まれていない。つまり give-up
+///   バースト**内**の最大5回の送信自体は無間隔（本クールダウンが効くのは
+///   バースト**間**のみ）。本クールダウンとは独立した別の改善余地として
+///   記録しておく（本 BUG では対処しない）。
+pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
+
 /// `PHYSICAL_KEY_STATE[VK_LWIN/VK_RWIN]` が「押されたまま」と信頼できる最大保持時間 (ms)。
 ///
 /// これより長く「押されたまま」の値が続いている場合は、KeyUp が

@@ -8493,3 +8493,178 @@ job相当）・`cargo xwin check`/`cargo xwin clippy -p awase-windows`（CI
 ツール、使い捨て）。BUG-61（JIS かな直接入力は復旧不能）・BUG-62（物理
 Alt+かな のガード導入）。
 
+---
+
+## BUG-68: `Blind` drift correction の give-up 後再武装が「鮮度」を「新情報」の代理指標として使うため、TsfNative で短周期に再武装し VK_IME_OFF を送り続ける
+
+**症状（実機ログ、2026-08-17）:** Windows Terminal（`WindowsTerminal.exe`、
+`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`、
+MS-IME、TsfNative）で Ctrl+無変換（既定の IME OFF コンボ）を押下し
+`desired_open=false` を確定させた。`ime_on=false` の diag-ctx は以後一貫して
+維持されていたが（＝ engine 自体はユーザーの意図通り OFF のまま）、約1.2秒間
+（23:22:46.356〜47.559）で `[idle-conv-check] TsfNative: conv observation
+open=true reason=NativeToggleShadowOff (conv=0x00000009) → ObserverReported
+として記録` が最低2ラウンド発火し、そのたびに `drift_correction_blind` が
+`VK_IME_OFF`（`0x1A`）を5回連打→`give up`→次の打鍵で新しい観測が生成され
+即座に再武装、というサイクルを繰り返した。ユーザー報告のタイトルは「IME OFF
+Engine ON が再発しました」（BUG-45 追補と同じ症状カテゴリの再発と認識）。
+ビルドは develop 最新（`ed03a3c9`、PR #64まで反映、BUG-51 追補 v3
+IntentStore 実装済み）だった。
+
+**IME:** Microsoft IME。TsfNative プロファイル（Windows Terminal / InputSite）。
+GJI/`Blacklist` プロファイルの `ir_apply_drift_correction` でも同型の
+`conv` 誤読が起点になりうるが、本エントリは MS-IME 実機ログで確認した
+経路（`kp_stage_idle_conv_check` → `classify_conv_transition` →
+`ReportOpenInference(NativeToggleShadowOff)`）に絞って記録する。
+
+**当初の誤診断（撤回）:** 最初は BUG-45 追補と同じ「`ConvOpenInference` が
+`desired_open`/belief を汚染している」経路を疑ったが、ログを読むと
+`desired_open` は一度も揺れておらず `ime_on=false` を保ち続けていた。
+IntentStore（BUG-51 追補、develop へ 2026-08-16 マージ済み）が守る対象は
+「壊れた観測が明示意図を上書きする」ことであり、本バグはその手前——**壊れた
+観測そのものが繰り返し生成され、drift correction を無駄撃ちさせ続ける**
+——ことが問題だった。
+
+**検討したが撤回した修正案（Opus レビューで却下）:** 最初に実装したのは
+`classify_conv_transition` に `explicit_off_intent: bool` を追加し、
+`has_native && !effective_open` による `ReportOpenInference` 発火（BUG-26 が
+「conv 不変でも steady-state で回復する」ために無条件化した分岐）を、明示
+OFF 意図がある間は止める案だった。単体テスト・320→640通りの独立オラクル
+全数一致・xwin check/clippy/dylint まで緑にした上で Opus に独立レビューさせた
+ところ、**BUG-51 の検出経路を同一条件で殺す**という blocking な指摘を受け撤回した:
+`ReportOpenInference` 分岐は `report_conv_open_inference`（観測記録）と
+`schedule_ime_refresh(20)`（BUG-51 が追加した、TsfNative で恒久停止する
+`TIMER_IME_REFRESH` の代わりのキック）を両方担っており、観測の生成自体を
+止めるとこの両方が消える。BUG-51（Ctrl+無変換 後も実 IME が閉じないまま
+最大8分放置された不具合）と BUG-68（本バグ、実 IME は正しく閉じたのに
+持続する conv ビットを再オープンと誤読）は、乖離が続く間 conv が
+`has_native && !effective_open` を満たし続けるという**同一の入力**になり、
+BUG-63 が明記するとおり conv ビットだけでは両者を原理的に区別できない。
+観測生成そのものを止める修正は、区別できないはずの2つのバグの一方だけを
+「区別できた体で」黙らせてしまう誤りだった。
+
+**原因（コード確認済み）:** 真因はもっと下流、`runtime/ime_refresh.rs`
+`ir_apply_drift_correction` の **give-up 後再武装判定**にあった。
+`Blind` が `max_attempts`（5）で `GiveUp` した後、`ObservationStore::
+read_back(.., ReadBackQuery::AnyFreshEvidence, ..)` は「`gave_up_at` 以降に
+新しい信頼できる観測が record されたか」だけを見て再武装する（値は問わない
+——`observation_store.rs` のコメントに明記のとおり、bool の乖離では
+「間違った値」は desired と異なる1通りしかなく、値ベースの判定はほぼ毎 tick
+真になり無意味なため、意図的に「鮮度」を「外部で状況が動いた証拠」の代理
+指標として採用した設計、BUG-43 追補）。
+
+この代理指標は、**同一の乖離観測が短周期に再生成されるプロファイルを
+想定していなかった**。MS-IME × TsfNative では:
+
+1. `reschedule_ime_refresh`（`runtime/mod.rs`）は TsfNative では
+   `read_ime_state_full` が常に `None` を返すため、通常の周期ポーリング
+   （`TIMER_IME_REFRESH`）を**常に**停止する。再開経路はフォーカス変更・
+   IME トグルキー・`ReportOpenInference` の `schedule_ime_refresh(20)`
+   キックの3つのみ。
+2. 通常の文字キー（本ログの き/う/w/i/n 等）は `FocusTracker::
+   enrich_ime_relevance`（`runtime/focus_tracker.rs`）で `may_change_ime`
+   にならないため、上記いずれの再開経路にも入らない。
+3. `kp_stage_idle_conv_check` 自体は「毎打鍵」ではなく
+   `should_run_idle_conv_check`（`src/engine/idle_check.rs`）のガード3
+   ——`output_in_flight_ms()`（awase 自身が最後に出力を送ってからの経過
+   ms）が `TYPING_IDLE_MS`（500ms）を超えた最初の KeyDown——を満たした
+   ときだけ実行される（第1版のレビューで「毎打鍵」という誤った前提を
+   Opus に指摘され訂正した）。IME/Engine が OFF の間、通常の文字キーは
+   PassThrough で awase 自身の出力を伴わないためこのタイマーは経過し
+   続けるが、**drift correction 自身の `VK_IME_OFF` 再送も出力として
+   このタイマーをリセットする**。IMM32 の `NATIVE` ビットは変換モードの
+   好みであり開閉状態と独立で、`VK_IME_OFF` で閉じてもクリアされない
+   （本ログでも `conv=0x00000009` は Ctrl+無変換 の前後で一切変化して
+   いない）ため、`classify_conv_transition` の BUG-26 回復分岐
+   （`has_native && !effective_open`）が give-up バーストの直後の
+   idle-conv-check でも `ReportOpenInference` を発火し、
+   `kp_apply_conv_engine_sync` の `schedule_ime_refresh(20)` キックも
+   同様に短周期で発火する。
+
+結果、give-up の 20ms 後に見る「gave_up_at 以降の新しい観測」は、**まさに
+そのキック自身が今しがた record したのと同じ情報の再掲**でしかないのに、
+タイムスタンプが新しいというだけで「外部で状況が動いた証拠」として
+即座に再武装 → `VK_IME_OFF` 再送 → 5回で再度 GiveUp → 直後の
+idle-conv-check でまた再武装、という短周期ループ（実機ログでは概ね
+数百ms〜1秒未満で1巡）になっていた。
+
+**BUG-51 との関係（なぜ「鮮度」を単純に「値の変化」へ置き換えられないか）:**
+BUG-51 のシナリオ（実 IME が本当に開いたまま）でも、乖離が続く間 conv は
+BUG-68 と同じ値を返し続ける。「値が変わったか」を再武装条件にすると
+BUG-51・BUG-68 のどちらでも一度も再武装しなくなり、これは「一度諦めたら
+`desired` が変わるまで永久に再送しない」という ADR-080 当初案そのもの
+（BUG-51 が「8分放置」で問題視した硬直）に逆戻りする。conv ビットに
+両者を区別する情報が無い以上（BUG-63）、値ベースの判定でこの2つを両立
+させることはできない。
+
+**修正:** give-up 後の再武装判定に**最小クールダウン**を追加した
+（`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` = 3秒、`tuning.rs`）。
+`gave_up_at` からこの時間が経過するまでは `read_back` 自体を評価せず
+（＝再武装しない）、経過後は従来どおり `AnyFreshEvidence` の判定
+（鮮度ベース、変更なし）を行う。判定本体は Linux でテスト可能な純粋関数
+`state/ime_actuation.rs::blind_rearm_cooldown_elapsed(gave_up_at, now,
+cooldown_ms)` に切り出した（`decide_actuation_action` と同じ「runtime 層は
+Linux で実行できないため核心ロジックだけ state 層に置く」パターン）。
+
+この設計は BUG-26/BUG-51 の既存経路を一切変更しない——観測は従来どおりの
+頻度で記録され続け（belief の自己修復は無傷）、`schedule_ime_refresh(20)`
+キックも従来どおり発火し続ける（BUG-51 が必要とした「死んだタイマーを
+起こす」役割は無傷）。変わるのは「give-up 直後に即座に再武装するか、
+クールダウンを空けるか」だけであり、BUG-51 のシナリオでも、クールダウン
+経過後に到来する次のキックで回復チャンスが巡ってくる（「二度と再送しない」
+への逆戻りではない）。3秒という値は実測ではなく、タイピング中に体感できる
+差を作るためのレート制限ポリシーであることを `tuning.rs` のコメントに
+明記した（`.claude/rules/tuning-constants.md` が要求する「待つべき対象」
+自体が測れる事象ではないため）。
+
+**既知の限界（2巡目の Opus レビューで指摘、未対処）:**
+
+- **フォーカス変更によるクールダウン無効化**: `ImeEvent::FocusChanged` は
+  `Actuation`（`gave_up_at` 含む）を丸ごと破棄する既存仕様
+  （`runtime/ime_actuation.rs` 破棄条件2）のため、クールダウン中に対象を
+  跨ぐフォーカス変更（プロセスを跨ぐ場合のみ発火——BUG-57 の通知ポップアップ
+  等）が起きると、新しい `Actuation` が即座に最大5回まで送信できる状態から
+  再開する。ただしこれは連続した無限ループの再発ではなく、フォーカス変更の
+  たびに高々5回という有界な事象に留まる。
+- **`FeedbackPolicy::Blind::backoff` が死んでいる**: `state/ime_actuation.rs`
+  の `backoff` フィールド（`AppImePolicy::from_profile` が 400ms を設定）は
+  構築されるだけで `ir_apply_drift_correction` から一度も読まれていない
+  （2巡目レビューで発見）。つまり give-up バースト**内**の最大5回の送信
+  自体は無間隔のままで、本クールダウンが効くのはバースト**間**のみ。
+  `state/app_ime_policy.rs` のコメントは「5 × backoff で最悪 ~2秒」と
+  backoff が効いている前提で `max_attempts=5` を正当化しているが、これは
+  実態と異なる。バースト内隔の是正は本 BUG のスコープ外として別途扱う。
+
+**テスト:** `state/ime_actuation.rs` に `blind_rearm_cooldown_elapsed`
+の単体テスト6件を追加（give-up 直後は不許可・境界の1ms手前は不許可・
+境界ちょうどは許可・大幅超過後は許可・cooldown=0は常に許可・時刻巻き戻り
+は安全側、`decide_actuation_action` と同じ形式）。`cargo test -p
+awase-windows --lib`（393件）・`--test journal_replay`（1件）・
+`--test architecture_guard`（32件）・`--test golden_scenarios`（22件）・
+`--test layer_boundary_guard`（8件）、全緑。`cargo xwin check --tests
+--target x86_64-pc-windows-msvc -p awase-windows`・`cargo xwin clippy
+-p awase-windows --target x86_64-pc-windows-msvc -- -D warnings`・
+`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc`
+警告ゼロ。**`ir_apply_drift_correction` 本体は `runtime/` 配下
+（`#[cfg(windows)]`）のため Linux ではクロスコンパイル型検査のみで
+実行テスト不可**（`decide_actuation_action` の呼び出し側と同じ既存の
+制約であり、`bug43_tight_loop_is_bounded_not_infinite` のような
+journal リプレイ回帰への昇格は今回見送った——本クールダウンの核心
+ロジック自体は既に純粋関数として全境界値をテスト済みで、リプレイ
+基盤の追加投資は別 BUG/タスクとして再検討する）。**Windows 実機での
+確認は未実施**——次回、Ctrl+無変換 で MS-IME を閉じた直後に Windows
+Terminal でタイピングを続け、`drift_correction_blind` の連続発火が
+3 秒間隔以上に収まること、`ime_on=false` が乱れないことを確認すること。
+
+**関連:** BUG-19（観測が `desired_open` を直接書き換えない設計の由来）、
+BUG-26（本バグで問題になった無条件回復分岐そのものの導入）、BUG-43
+（GJI/Blacklist 側の同型 drift correction 無限再送、`ir_apply_
+drift_correction` の別経路、「鮮度を新情報の代理指標にする」設計の
+初出）、BUG-45 追補（同じ「IME OFF Engine ON」症状タイトルでの過去
+インシデント、IntentStore による `desired_open` 保護——本バグはその
+手前の再武装レートの問題）、BUG-51（`schedule_ime_refresh(20)` 明示
+キックの導入経緯、本バグの修正が壊してはならない経路）、BUG-63
+（conv ビットが open/close を原理的に区別できないことの確定）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
+[tuning-constants](../.claude/rules/tuning-constants.md)。

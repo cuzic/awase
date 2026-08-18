@@ -647,6 +647,31 @@ impl Runtime {
                             );
                         }
                         Some(gave_up_at) => {
+                            // BUG-68: 再武装判定（`AnyFreshEvidence`）は「gave_up_at 以降に
+                            // 新しい信頼できる観測が record されたか」（値は不問）だけを見る。
+                            // MS-IME × TsfNative では `kp_stage_idle_conv_check` は毎打鍵では
+                            // なく `should_run_idle_conv_check`（`src/engine/idle_check.rs`）の
+                            // ガード3（awase 自身の最終出力から500ms超）を通過した打鍵でのみ
+                            // 実行されるが、drift correction 自身の `VK_IME_OFF` 再送も
+                            // その「最終出力」に数えられるため、give-up バーストのたびに
+                            // 短時間で次の idle-conv-check が走る。そのたびに同じ
+                            // `ConvOpenInference` 観測（IMM32 の NATIVE ビットは開閉状態と
+                            // 無関係な持続的な変換モード設定で、`VK_IME_OFF` で閉じても
+                            // 消えない）を新しいタイムスタンプで record するため、「鮮度」が
+                            // 「新情報」の代理指標として機能せず、gave_up_at を刻んだ直後には
+                            // もう「新しい」観測が存在し即座に再武装してしまう（実機ログ、
+                            // docs/known-bugs.md BUG-68、tuning.rs の定数コメント参照）。
+                            // クールダウン未経過の間は `read_back` 自体を評価しない
+                            // （＝再武装しない）ことで、この短周期ループを防ぐ。
+                            // クールダウンを空けているだけなので、BUG-51（明示 OFF 後も
+                            // 実 IME が閉じないケース）の「いずれ回復する」性質は保たれる。
+                            if !crate::state::ime_actuation::blind_rearm_cooldown_elapsed(
+                                gave_up_at,
+                                now,
+                                crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS,
+                            ) {
+                                return;
+                            }
                             // 既に parked。gave_up_at 以降に新しい trusted 観測が record
                             // されていれば（値は不問＝外部で状況が動いた証拠）、試行を破棄
                             // して次 tick の `actuation_for` に attempts=0・新しい sent_at・

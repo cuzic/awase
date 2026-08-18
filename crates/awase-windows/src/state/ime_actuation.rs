@@ -173,6 +173,31 @@ pub fn decide_actuation_action(policy: FeedbackPolicy, attempts: u32) -> Actuati
     }
 }
 
+/// `Blind` が `GiveUp` した後、再武装判定（`ReadBackQuery::AnyFreshEvidence`）を
+/// 評価してよいかを判定する純粋関数（BUG-68）。
+///
+/// 再武装判定自体は「`gave_up_at` 以降に新しい信頼できる観測が record されたか」
+/// （値は問わない）を見る設計のままだが、この判定を毎 tick 評価すると、
+/// 同一の乖離観測が定期的に record され続けるプロファイル（TsfNative の
+/// `kp_stage_idle_conv_check` は毎打鍵で実行される）では「鮮度」が「新情報」の
+/// 代理指標として機能せず、`gave_up_at` を刻んだ次の瞬間にはもう新しい観測が
+/// 存在し即座に再武装してしまう。`gave_up_at` から
+/// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` 経過するまでは、この関数が
+/// `false` を返して呼び出し元に `read_back` 自体をスキップさせる（＝再武装
+/// 判定を評価しない）ことで、無条件の高速再武装ループを防ぐ。
+///
+/// `now < gave_up_at` の場合（時刻の巻き戻り、テスト用の異常値）は安全側
+/// （クールダウン未経過）に倒す。
+#[must_use]
+pub fn blind_rearm_cooldown_elapsed(
+    gave_up_at: std::time::Instant,
+    now: std::time::Instant,
+    cooldown_ms: u64,
+) -> bool {
+    now.checked_duration_since(gave_up_at)
+        .is_some_and(|elapsed| elapsed >= std::time::Duration::from_millis(cooldown_ms))
+}
+
 // ── EventOrigin 配線（ADR-082 Phase 0.5）──────────────────────────────────────
 //
 // drift correction の actuation 試行に「出所（誰が起こしたか）」と「世代（何回目か）」を
@@ -376,6 +401,56 @@ mod tests {
                 "Read は試行回数で打ち切らない (attempts={attempts})"
             );
         }
+    }
+
+    // ── blind_rearm_cooldown_elapsed（BUG-68）────────────────────────────────
+
+    #[test]
+    fn rearm_cooldown_blocks_immediately_after_give_up() {
+        let gave_up_at = std::time::Instant::now();
+        let now = gave_up_at + std::time::Duration::from_millis(1);
+        assert!(
+            !blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000),
+            "give-up 直後の再観測（BUG-68 の毎打鍵ケース）は再武装を許可しないはず"
+        );
+    }
+
+    #[test]
+    fn rearm_cooldown_blocks_just_before_boundary() {
+        let gave_up_at = std::time::Instant::now();
+        let now = gave_up_at + std::time::Duration::from_millis(2_999);
+        assert!(!blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
+    }
+
+    #[test]
+    fn rearm_cooldown_allows_exactly_at_boundary() {
+        let gave_up_at = std::time::Instant::now();
+        let now = gave_up_at + std::time::Duration::from_millis(3_000);
+        assert!(blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
+    }
+
+    #[test]
+    fn rearm_cooldown_allows_well_after_boundary() {
+        let gave_up_at = std::time::Instant::now();
+        let now = gave_up_at + std::time::Duration::from_secs(60);
+        assert!(blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
+    }
+
+    #[test]
+    fn rearm_cooldown_zero_always_allows() {
+        // cooldown_ms=0 は「クールダウンなし」= 従来（BUG-68 修正前）と同じ挙動。
+        let gave_up_at = std::time::Instant::now();
+        assert!(blind_rearm_cooldown_elapsed(gave_up_at, gave_up_at, 0));
+    }
+
+    #[test]
+    fn rearm_cooldown_treats_now_before_gave_up_as_not_elapsed() {
+        // 時刻の巻き戻り（本来起こらないが、防御的に安全側へ倒す）。単一の `now` から
+        // 両方を導出し、2回の `Instant::now()` 呼び出しの間隔に依存しない形にする。
+        let base = std::time::Instant::now();
+        let gave_up_at = base + std::time::Duration::from_millis(100);
+        let now = base;
+        assert!(!blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
     }
 
     // ── EventOrigin 配線（ADR-082 Phase 0.5）─────────────────────────────────
