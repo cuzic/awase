@@ -130,8 +130,6 @@ pub enum JournalEntry {
         effective_open: bool,
         conv_mode_changed: bool,
         is_roman_reliable: bool,
-        /// BUG-68: 直近のユーザー明示意図が IME OFF か。
-        explicit_off_intent: bool,
         result: crate::state::conv_classify::ConvTransition,
     },
     /// IME actuation 試行（awase 自身の能動的訂正、drift correction 等）1回分の

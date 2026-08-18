@@ -487,12 +487,6 @@ impl Runtime {
             .conv_mode
             .get()
             .unwrap_or_else(|| awase::engine::ConvMode::from_u32(conv));
-        // BUG-68: 直近のユーザー明示意図が IME OFF の間は、conv の NATIVE ビット
-        // （持続する変換モード設定であり開閉状態ではない）を「IME が再び開いた」
-        // 証拠として扱わない。`explicit_intent()` は `last_intent`（ユーザー操作
-        // のみが設定、FocusChanged でクリア）を返すため、ここでは明示的な OFF が
-        // 生きている間だけ true になる。
-        let explicit_off_intent = matches!(self.platform_state.ime.explicit_intent(), Some(false));
         let transition = crate::state::conv_classify::classify_conv_transition(
             cm,
             current,
@@ -500,7 +494,6 @@ impl Runtime {
             effective_open,
             conv_mode_changed,
             false,
-            explicit_off_intent,
         );
         // P1: リプレイ回帰基盤用に呼び出し全体を構造化記録する。実機でこの周辺の
         // バグに気づいたらダンプし、tests/journals/ のフィクスチャへ転記する
@@ -515,7 +508,6 @@ impl Runtime {
                 effective_open,
                 conv_mode_changed,
                 is_roman_reliable: false,
-                explicit_off_intent,
                 result: transition,
             });
 

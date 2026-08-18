@@ -61,7 +61,6 @@ fn replay_all_journal_fixtures() {
                 fixture.effective_open,
                 fixture.conv_mode_changed,
                 fixture.is_roman_reliable,
-                fixture.explicit_off_intent,
             );
             if actual != fixture.expected {
                 failures.push(format!(
