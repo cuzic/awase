@@ -2,7 +2,13 @@
 
 ## ステータス
 
-決定・実装は codex CLI に着手させる（本 ADR 執筆時点でコード変更なし）。
+実装済み（2026-08-19、codex CLI による実装、Claude が検証・マージ）。
+`cargo test -p awase-windows --lib`（399件）・`journal_replay`・
+`drift_correction_replay`・`architecture_guard`（32件の固定件数テスト、
+更新不要）すべて green。`cargo xwin build --target x86_64-pc-windows-msvc`
+でリンク成功、clippy 新規警告なし。**Windows 実機での動作確認は未実施**
+（[ADR-095](095-tray-bug-report-cloudflare-intake.md) 側の既知の限界と
+同様）。
 
 ## コンテキスト
 
@@ -100,6 +106,45 @@ process_name, profile }`）へ `focus/current.rs::CurrentFocus.process_name`
 をコピーするようフィールドを1つ追加する。既存フィールド（vk_code 等）は
 変更しない。
 
+### 実装（2026-08-19、codex CLI）
+
+- `UnifiedJournal` を `JournalLanes`（`state`/`timing`/`actuation`/
+  `key_input` の4つの `JournalLane`）に分割。`JournalEntry::lane_kind()`
+  が各 variant をどのレーンに振り分けるかを1箇所で決定する。`seq` は
+  レーン共有の単調増加カウンタのまま。`to_json()`/`dump_to_file()` は
+  全レーンを `seq` 昇順にマージし、外部 JSON の形は変更なし。
+- `tsf/gji_fsm.rs`（`GjiFsm`）は `journal`/`state` 層への依存を追加せず、
+  `state_label()`（状態の `&'static str` 表現）だけを公開。既存の
+  `ImeWarmupStrategy` トレイト（ADR-047）に `diagnostic_state_label()`
+  というデフォルトメソッドを追加し、`GjiFsm` 実装がこれを `state_label()`
+  経由でオーバーライドする形にした。レイヤー境界（layer-boundaries.md）
+  を侵さずに GJI 固有の状態ラベルを `platform.rs` から読めるようにする
+  ための最小限の橋渡し。
+- `WindowsPlatform` は `UnifiedJournal` を直接持たない（`platform_state`
+  側にある）ため、`platform.rs` の GJI/TSF probe 関連メソッド
+  （`dispatch_gji_event`/`advance_tsf_probe`/`install_pending_tsf_and_set_timer`
+  等）は `pending_journal_entries: Vec<JournalEntry>` という保留キューに
+  `GjiFsmTransition`/`TsfProbeStarted`/`TsfProbeCompleted` を積み、
+  `runtime/` 側の各呼び出し元（`WM_TIMER` ハンドラ・
+  `sync_ime_kind_from_observation`・`BugReport` ハンドラ・
+  `WM_DRAIN_OUTPUT_QUEUE` 等）が `drain_journal_entries()` で取り出して
+  `journal.record()` する設計にした。
+- `runtime/focus_tracking.rs`（`ImeEvent::FocusChanged` の唯一の構築元）
+  から、同タイミングで `JournalEntry::FocusTransition { process_name,
+  profile, .. }` を直接 `journal.record()` する。`ImeEvent` 本体
+  （16ファイルが参照するコア型）は一切変更していない。
+
+### 検証結果
+
+`cargo test -p awase-windows --lib`（399件）・
+`cargo test -p awase-windows --test journal_replay --test
+drift_correction_replay --test architecture_guard`（`architecture_guard`
+の32件の固定件数テストを含む）すべて green。**`architecture_guard.rs`
+の期待件数は変更不要だった**（既存 guard が journal の `.record(` を
+固定件数対象から明示的に除外していたため）。`cargo xwin build --target
+x86_64-pc-windows-msvc -p awase-windows` でリンク成功、`cargo clippy -p
+awase-windows --lib` は新規警告なし（既存の無関係な dead_code 警告のみ）。
+
 ## 保持するもの（変更しないもの）
 
 - `JournalEntry` の既存 variant（`KeyInput`/`TimerFired`/`ImeEvent`/
@@ -122,10 +167,6 @@ process_name, profile }`）へ `focus/current.rs::CurrentFocus.process_name`
 - `runtime/focus_tracking.rs` から `CurrentFocus.process_name` を参照する
   際、`journal.record` 呼び出し時点で process_name が最新（stale でない）
   ことの確認が必要。
-- `tests/architecture_guard.rs` には `.record(` 呼び出し件数を数える
-  grep ベースの固定件数テストがある。新しい記録呼び出し箇所を追加する際
-  はこのテストの期待件数を更新すること（意図的な追加であることを明示
-  する）。
 - Windows 実機での「不具合を報告」操作からログが期待通り届くかの一連の
   実機確認は [ADR-095](095-tray-bug-report-cloudflare-intake.md) 側の
   既知の限界として引き続き残る。
