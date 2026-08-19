@@ -163,6 +163,19 @@ round2 決定に基づき、Worker バックエンドとタスクトレイ UI �
 これにより round1 C-1（Cloudflare のカード登録要否）は解消し、「既知の
 限界・未決定事項」の実デプロイ関連項目も解消した（詳細は同節）。
 
+### schema v2 への再デプロイ（2026-08-19、決定7・決定8）
+
+決定7（症状カテゴリ）・決定8（IME・キーボード環境情報）の実装後、
+`wrangler deploy` で Worker を再デプロイし、`schema_version: 2` の
+有効なペイロードで疎通確認した。デプロイ直後の数秒はエッジへの伝播
+待ちで `unsupported_schema_version`（400）が返ったが、15〜20秒程度で
+解消し `HTTP/2 201` + `report_id` を確認。`wrangler r2 object get`
+で決定7・決定8の全フィールド（`symptom_category`/`ime_product_name`/
+`keyboard_model`/`windows_keyboard_layout`/`competing_software`）が
+R2オブジェクトに正しく反映されていることも確認した。確認用オブジェクト
+は削除済み。まだ実利用者がいない機能のため、v1→v2 の移行期間や
+後方互換は設けていない。
+
 ## 決定
 
 ### 1. 受け口の非公開化
