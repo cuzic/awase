@@ -1,5 +1,6 @@
 import {
   assertBodySizeFromContentLength,
+  handleRequest,
   HttpError,
   incrementDailyRateLimit,
   MAX_BODY_BYTES,
@@ -7,10 +8,11 @@ import {
 } from "../src/index";
 
 const validPayload = {
-  schema_version: 1,
+  schema_version: 2,
   app_version: "1.15.0",
   os_version: "Windows 11 Build 22631",
   ime_kind: "Gji",
+  symptom_category: "WrongCharacterOutput",
   description: "変換が意図通りに動きません",
   attach_log: true,
   log_excerpt: "journal excerpt",
@@ -39,6 +41,14 @@ class MemoryKv {
   }
 }
 
+class MemoryBucket {
+  puts: Array<{ key: string; value: string }> = [];
+
+  async put(key: string, value: string): Promise<void> {
+    this.puts.push({ key, value });
+  }
+}
+
 describe("payload validation", () => {
   it("accepts the documented payload shape", () => {
     expect(parseAndValidatePayload(JSON.stringify(validPayload))).toEqual(validPayload);
@@ -48,7 +58,7 @@ describe("payload validation", () => {
     expectHttpError(() => parseAndValidatePayload("{"), 400, "invalid_json");
   });
 
-  it("rejects missing required fields", () => {
+  it("rejects missing description fields", () => {
     const { description: _description, ...payload } = validPayload;
 
     expectHttpError(
@@ -60,9 +70,97 @@ describe("payload validation", () => {
 
   it("rejects unsupported schema versions", () => {
     expectHttpError(
-      () => parseAndValidatePayload(JSON.stringify({ ...validPayload, schema_version: 2 })),
+      () => parseAndValidatePayload(JSON.stringify({ ...validPayload, schema_version: 1 })),
       400,
       "unsupported_schema_version"
+    );
+  });
+
+  it("rejects missing symptom categories", () => {
+    const { symptom_category: _symptomCategory, ...payload } = validPayload;
+
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify(payload)),
+      400,
+      "invalid_symptom_category"
+    );
+  });
+
+  it("rejects invalid symptom categories", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        symptom_category: "KeyboardLag"
+      })),
+      400,
+      "invalid_symptom_category"
+    );
+  });
+
+  it("accepts an empty description for non-other symptom categories", () => {
+    expect(parseAndValidatePayload(JSON.stringify({
+      ...validPayload,
+      description: ""
+    }))).toEqual({
+      ...validPayload,
+      description: ""
+    });
+  });
+
+  it("rejects an empty description for other symptom categories", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        symptom_category: "Other",
+        description: " \n\t"
+      })),
+      400,
+      "description_required_for_other_category"
+    );
+  });
+
+  it("accepts a description for other symptom categories", () => {
+    const payload = {
+      ...validPayload,
+      symptom_category: "Other",
+      description: "一覧にない症状です"
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+});
+
+describe("request validation", () => {
+  it("returns 400 when symptom_category is missing", async () => {
+    const { symptom_category: _symptomCategory, ...payload } = validPayload;
+
+    await expectPostStatus(payload, 400, "invalid_symptom_category");
+  });
+
+  it("returns 400 when symptom_category is invalid", async () => {
+    await expectPostStatus(
+      { ...validPayload, symptom_category: "KeyboardLag" },
+      400,
+      "invalid_symptom_category"
+    );
+  });
+
+  it("returns 201 when description is empty for a non-other category", async () => {
+    await expectPostStatus({ ...validPayload, description: "" }, 201);
+  });
+
+  it("returns 400 when description is empty for other category", async () => {
+    await expectPostStatus(
+      { ...validPayload, symptom_category: "Other", description: "" },
+      400,
+      "description_required_for_other_category"
+    );
+  });
+
+  it("returns 201 when description is present for other category", async () => {
+    await expectPostStatus(
+      { ...validPayload, symptom_category: "Other", description: "一覧にない症状です" },
+      201
     );
   });
 });
@@ -118,4 +216,29 @@ function expectHttpError(action: () => unknown, status: number, message: string)
   }
 
   throw new Error("expected HttpError");
+}
+
+async function expectPostStatus(
+  payload: unknown,
+  status: number,
+  error?: string
+): Promise<void> {
+  const response = await handleRequest(
+    new Request("https://report.awase.cc/v1/reports", {
+      method: "POST",
+      headers: {
+        "CF-Connecting-IP": "203.0.113.10",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }),
+    {
+      REPORT_BUCKET: new MemoryBucket() as unknown as R2Bucket,
+      RATE_LIMIT_KV: new MemoryKv() as unknown as KVNamespace
+    }
+  );
+  expect(response.status).toBe(status);
+  if (error !== undefined) {
+    await expect(response.json()).resolves.toEqual({ error });
+  }
 }

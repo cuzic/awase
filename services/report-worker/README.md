@@ -5,7 +5,7 @@ Cloudflare Workers + R2 based private intake endpoint for awase tray bug reports
 ## Implemented endpoint
 
 - `POST https://report.awase.cc/v1/reports`
-- Accepts the schema documented in `payload-schema.md` with `schema_version: 1`.
+- Accepts the schema documented in `payload-schema.md` with `schema_version: 2`.
 - Rejects request bodies over 512 KiB.
 - Applies a per-IP daily rate limit of 20 reports/day using KV. The IP address is hashed before it is used in the KV key and is not stored in the R2 report object.
 - Writes reports only with `env.REPORT_BUCKET.put(...)`. The Worker does not call R2 `get`, `list`, or `delete`.
