@@ -4,7 +4,7 @@ pub(crate) use bootstrap::detect_conflicting_software;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
@@ -153,6 +153,45 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
 fn resolve_relative(path: &str) -> PathBuf {
     awase::paths::resolve_relative_to_exe(path)
+}
+
+/// 不具合報告用に `config.toml` と現在有効な `.yab` の生テキストを読み込む。
+///
+/// 両方ともベストエフォート。読めない場合は journal dump と同様に warn ログへ
+/// 留め、呼び出し元には非致命的な `None` として返す。
+pub(crate) fn read_bug_report_attachments(
+    active_layout_name: &str,
+) -> (Option<String>, Option<String>) {
+    let config_toml = match find_config_path().and_then(|path| {
+        std::fs::read_to_string(&path).with_context(|| format!("{} read failed", path.display()))
+    }) {
+        Ok(text) => Some(text),
+        Err(e) => {
+            log::warn!("[bug-report] config.toml read failed: {e}");
+            None
+        }
+    };
+
+    let layout_yab = config_toml.as_deref().and_then(|toml_text| {
+        let parsed: AppConfig = match toml::from_str(toml_text) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                log::warn!("[bug-report] config.toml parse failed: {e}");
+                return None;
+            }
+        };
+        let layouts_dir = resolve_relative(&parsed.general.layouts_dir);
+        let yab_path = layouts_dir.join(format!("{active_layout_name}.yab"));
+        match std::fs::read_to_string(&yab_path) {
+            Ok(text) => Some(text),
+            Err(e) => {
+                log::warn!("[bug-report] {} read failed: {e}", yab_path.display());
+                None
+            }
+        }
+    });
+
+    (config_toml, layout_yab)
 }
 
 /// キーコンボ文字列のリストをパースし、失敗時は診断に警告を出す

@@ -14,7 +14,7 @@ pub const REPORT_HOST: &str = "report.awase.cc";
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
 pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
 pub const LOG_EXCERPT_MAX_BYTES: usize = 256 * 1024;
-pub const SCHEMA_VERSION: u8 = 2;
+pub const SCHEMA_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BugReportImeKind {
@@ -93,6 +93,17 @@ impl SymptomCategory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportStateSnapshot {
+    pub desired_open: bool,
+    pub effective_open: bool,
+    pub input_mode: String,
+    pub applied: String,
+    pub app_kind: String,
+    pub focus_kind: String,
+    pub gji_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportPayload {
     pub schema_version: u8,
     pub app_version: String,
@@ -106,6 +117,9 @@ pub struct BugReportPayload {
     pub description: String,
     pub attach_log: bool,
     pub log_excerpt: Option<String>,
+    pub state_snapshot: Option<BugReportStateSnapshot>,
+    pub config_toml: Option<String>,
+    pub layout_yab: Option<String>,
     pub reported_at: String,
 }
 
@@ -115,6 +129,9 @@ pub struct BugReportDiagnostics {
     pub keyboard_model: String,
     pub windows_keyboard_layout: String,
     pub competing_software: Vec<String>,
+    pub state_snapshot: Option<BugReportStateSnapshot>,
+    pub config_toml: Option<String>,
+    pub layout_yab: Option<String>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -124,6 +141,9 @@ impl Default for BugReportDiagnostics {
             keyboard_model: "Jis".to_owned(),
             windows_keyboard_layout: "unavailable".to_owned(),
             competing_software: Vec::new(),
+            state_snapshot: None,
+            config_toml: None,
+            layout_yab: None,
         }
     }
 }
@@ -141,6 +161,12 @@ pub struct BugReportInput<'a> {
     pub description: &'a str,
     pub attach_log: bool,
     pub journal_json: Option<&'a str>,
+    pub state_snapshot: Option<BugReportStateSnapshot>,
+    pub attach_state_snapshot: bool,
+    pub config_toml: Option<&'a str>,
+    pub attach_config: bool,
+    pub layout_yab: Option<&'a str>,
+    pub attach_layout: bool,
     pub reported_at: &'a str,
 }
 
@@ -166,6 +192,21 @@ pub fn build_payload(
     } else {
         None
     };
+    let state_snapshot = if input.attach_state_snapshot {
+        input.state_snapshot.clone()
+    } else {
+        None
+    };
+    let config_toml = if input.attach_config {
+        input.config_toml.map(str::to_owned)
+    } else {
+        None
+    };
+    let layout_yab = if input.attach_layout {
+        input.layout_yab.map(str::to_owned)
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -179,6 +220,9 @@ pub fn build_payload(
         description,
         attach_log: input.attach_log,
         log_excerpt,
+        state_snapshot,
+        config_toml,
+        layout_yab,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -315,7 +359,25 @@ mod tests {
             description,
             attach_log,
             journal_json,
+            state_snapshot: Some(test_state_snapshot()),
+            attach_state_snapshot: true,
+            config_toml: Some("general.default_layout = \"nicola\""),
+            attach_config: true,
+            layout_yab: Some("あ\tい"),
+            attach_layout: true,
             reported_at: "2026-08-19T12:34:56Z",
+        }
+    }
+
+    fn test_state_snapshot() -> BugReportStateSnapshot {
+        BugReportStateSnapshot {
+            desired_open: true,
+            effective_open: false,
+            input_mode: "ObservedRomaji".to_owned(),
+            applied: "Unknown".to_owned(),
+            app_kind: "Win32".to_owned(),
+            focus_kind: "Text".to_owned(),
+            gji_state: "ready".to_owned(),
         }
     }
 
@@ -327,7 +389,7 @@ mod tests {
             Some(r#"[{"seq":1}]"#),
         ))
         .unwrap();
-        assert_eq!(payload.schema_version, 2);
+        assert_eq!(payload.schema_version, 3);
         assert_eq!(payload.ime_kind, "Gji");
         assert_eq!(
             payload.ime_product_name.as_deref(),
@@ -344,6 +406,26 @@ mod tests {
             SymptomCategory::WrongCharacterOutput
         );
         assert_eq!(payload.log_excerpt.as_deref(), Some(r#"[{"seq":1}]"#));
+    }
+
+    #[test]
+    fn attachments_are_included_only_when_requested() {
+        let mut input = input("説明", true, Some("[]"));
+        let payload = build_payload(&input).unwrap();
+        assert_eq!(payload.state_snapshot, Some(test_state_snapshot()));
+        assert_eq!(
+            payload.config_toml.as_deref(),
+            Some("general.default_layout = \"nicola\"")
+        );
+        assert_eq!(payload.layout_yab.as_deref(), Some("あ\tい"));
+
+        input.attach_state_snapshot = false;
+        input.attach_config = false;
+        input.attach_layout = false;
+        let detached = build_payload(&input).unwrap();
+        assert_eq!(detached.state_snapshot, None);
+        assert_eq!(detached.config_toml, None);
+        assert_eq!(detached.layout_yab, None);
     }
 
     #[test]
@@ -411,7 +493,7 @@ mod tests {
     #[test]
     fn payload_json_matches_schema_names() {
         let json = build_payload_json(&input("説明", true, Some("[]"))).unwrap();
-        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"schema_version\": 3"));
         assert!(json.contains("\"ime_product_name\": \"Google 日本語入力\""));
         assert!(json.contains("\"keyboard_model\": \"Jis\""));
         assert!(json.contains("\"windows_keyboard_layout\": \"LANGID=0x0411 (Japanese=true)\""));
@@ -419,6 +501,9 @@ mod tests {
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
+        assert!(json.contains("\"state_snapshot\": {"));
+        assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
+        assert!(json.contains("\"layout_yab\": \"あ\\tい\""));
         assert!(!json.contains("JournalEntry"));
     }
 
