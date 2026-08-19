@@ -26,7 +26,9 @@ use crate::{
 use awase::platform::ImeOpenOutcome;
 use awase::types::{ContextChange, VkCode};
 
-use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
+use crate::app::{
+    check_keyboard_layout_on_change, launch_bug_report, launch_settings, reload_config,
+};
 
 /// `Engine::on_timeout` 呼び出し直後に、ソロ連打緊急 OFF（ADR-055 追補）が
 /// 発動していればトレイ通知を出す。
@@ -640,6 +642,28 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::Restart) => tray::restart_self(),
         Some(tray::TrayCommand::About) => tray::show_about_dialog(),
+        Some(tray::TrayCommand::BugReport) => {
+            let ime_kind = current_bug_report_ime_kind();
+            let dump_result = with_app(|app| {
+                app.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::DumpTriggered);
+                app.platform_state.ime.journal.dump_to_file()
+            });
+            match dump_result {
+                Some(Ok(path)) => launch_bug_report(&path, ime_kind),
+                Some(Err(e)) => {
+                    log::error!("[bug-report] journal dump failed: {e}");
+                    let _ = with_app(|app| {
+                        app.platform
+                            .tray
+                            .show_balloon("awase bug report", "journal の添付準備に失敗しました");
+                    });
+                }
+                None => log::error!("[bug-report] runtime unavailable"),
+            }
+        }
         Some(tray::TrayCommand::CapsLock) => {
             crate::ime::toggle_caps_lock();
         }
@@ -666,6 +690,21 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let _ = with_app(Runtime::force_engine_on);
         }
         Some(tray::TrayCommand::ClearImmCache) | None => {}
+    }
+}
+
+fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
+    let obs = crate::tsf::observer::tsf_obs();
+    if !obs.ime_kind_detected() {
+        return crate::bug_report::BugReportImeKind::Unknown;
+    }
+    match obs.active_ime_kind() {
+        crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput => {
+            crate::bug_report::BugReportImeKind::Gji
+        }
+        crate::tsf::observer::ActiveImeKind::MicrosoftIme => {
+            crate::bug_report::BugReportImeKind::MsIme
+        }
     }
 }
 

@@ -473,6 +473,24 @@ fn run_message_loop(taskbar_created_msg: u32) {
 
 /// 設定画面 (awase-settings) を起動する
 pub(crate) fn launch_settings() {
+    launch_settings_with_args(Vec::<String>::new());
+}
+
+pub(crate) fn launch_bug_report(
+    journal_path: &std::path::Path,
+    ime_kind: crate::bug_report::BugReportImeKind,
+) {
+    launch_settings_with_args([
+        "--bug-report".to_owned(),
+        "--journal".to_owned(),
+        journal_path.to_string_lossy().into_owned(),
+        "--ime-kind".to_owned(),
+        ime_kind.as_str().to_owned(),
+    ]);
+}
+
+fn launch_settings_with_args(args: impl IntoIterator<Item = String>) {
+    let args: Vec<String> = args.into_iter().collect();
     let names = if cfg!(windows) {
         vec!["awase-settings.exe"]
     } else {
@@ -489,7 +507,7 @@ pub(crate) fn launch_settings() {
     for name in &names {
         let path = dir.join(name);
         if path.exists() {
-            let _ = std::process::Command::new(&path).spawn();
+            let _ = std::process::Command::new(&path).args(&args).spawn();
             return;
         }
     }

@@ -9,6 +9,8 @@ use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 
+mod bug_report;
+
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
 #[cfg(target_os = "windows")]
 const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
@@ -206,6 +208,10 @@ fn main() -> eframe::Result<()> {
     init_logging(debug_console);
     install_panic_logging_hook();
 
+    if args.iter().any(|a| a == "--bug-report") {
+        return bug_report::run(&parse_bug_report_args(&args));
+    }
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
@@ -223,6 +229,23 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(SettingsApp::new(cc)))),
     )
+}
+
+fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
+    let journal_path = arg_value(args, "--journal").map(PathBuf::from);
+    let ime_kind = arg_value(args, "--ime-kind")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(awase_windows::bug_report::BugReportImeKind::Unknown);
+    bug_report::BugReportArgs {
+        journal_path,
+        ime_kind,
+    }
+}
+
+fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].as_str())
 }
 
 /// 各 bool は無関係な由来（keymap キャプチャの修飾キー3つ、配列編集タブの
