@@ -200,6 +200,8 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
+    /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
+    keyboard_model: awase::scanmap::KeyboardModel,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1013,7 +1015,16 @@ impl Runtime {
             muhenkan_dedicated_fn_key_active: false,
             muhenkan_solo_tap_is_passthrough: false,
             space_is_thumb_key: false,
+            keyboard_model: awase::scanmap::KeyboardModel::default(),
         }
+    }
+
+    pub(crate) const fn keyboard_model(&self) -> awase::scanmap::KeyboardModel {
+        self.keyboard_model
+    }
+
+    pub(crate) const fn set_keyboard_model(&mut self, model: awase::scanmap::KeyboardModel) {
+        self.keyboard_model = model;
     }
 
     /// `config.general.dbe_mode_key_policy` を反映する。起動時
@@ -1256,6 +1267,7 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        self.set_keyboard_model(config.general.keyboard_model);
         self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

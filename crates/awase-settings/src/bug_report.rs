@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST, RETENTION_HINT,
-    build_payload_json, unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST,
+    RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -11,15 +11,18 @@ use eframe::egui;
 pub(crate) struct BugReportArgs {
     pub(crate) journal_path: Option<PathBuf>,
     pub(crate) ime_kind: BugReportImeKind,
+    pub(crate) diagnostics_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 pub(crate) struct BugReportApp {
+    symptom_category: Option<SymptomCategory>,
     description: String,
     attach_log: bool,
     journal_json: Option<String>,
     journal_status: String,
     ime_kind: BugReportImeKind,
+    diagnostics: BugReportDiagnostics,
     os_version: String,
     reported_at: String,
     preview_json: String,
@@ -53,17 +56,20 @@ impl BugReportApp {
         };
         let reported_at = current_reported_at();
         let os_version = detect_os_version();
+        let diagnostics = load_diagnostics(args.diagnostics_path.as_ref());
         let mut app = Self {
+            symptom_category: None,
             description: String::new(),
             attach_log: true,
             journal_json,
             journal_status,
             ime_kind: args.ime_kind,
+            diagnostics,
             os_version,
             reported_at,
             preview_json: String::new(),
             last_generated_preview: String::new(),
-            status: "説明を入力して、送信前の内容を確認してください。".to_owned(),
+            status: "症状カテゴリを選択して、送信前の内容を確認してください。".to_owned(),
             pending: None,
         };
         app.refresh_preview_if_unedited();
@@ -80,28 +86,32 @@ impl BugReportApp {
                 self.last_generated_preview = json;
             }
             Err(e) => {
-                let json = format!(
-                    "{{\n  \"error\": \"{}\"\n}}",
-                    escape_json_string(&e.to_string())
-                );
+                let json = format!("{{\n  \"error\": \"{}\"\n}}", escape_json_string(&e));
                 self.preview_json.clone_from(&json);
                 self.last_generated_preview = json;
             }
         }
     }
 
-    fn generated_preview(
-        &self,
-    ) -> Result<String, awase_windows::bug_report::BugReportPayloadError> {
+    fn generated_preview(&self) -> Result<String, String> {
+        let symptom_category = self
+            .symptom_category
+            .ok_or_else(|| "症状カテゴリを選択してください".to_owned())?;
         build_payload_json(&BugReportInput {
             app_version: env!("CARGO_PKG_VERSION"),
             os_version: &self.os_version,
             ime_kind: self.ime_kind,
+            ime_product_name: self.diagnostics.ime_product_name.as_deref(),
+            keyboard_model: &self.diagnostics.keyboard_model,
+            windows_keyboard_layout: &self.diagnostics.windows_keyboard_layout,
+            competing_software: self.diagnostics.competing_software.clone(),
+            symptom_category,
             description: &self.description,
             attach_log: self.attach_log,
             journal_json: self.journal_json.as_deref(),
             reported_at: &self.reported_at,
         })
+        .map_err(|e| e.to_string())
     }
 
     fn poll_send_result(&mut self) {
@@ -139,8 +149,12 @@ impl BugReportApp {
         if self.pending.is_some() {
             return;
         }
-        if self.description.trim().is_empty() {
-            "説明は必須です。".clone_into(&mut self.status);
+        let Some(symptom_category) = self.symptom_category else {
+            "症状カテゴリを選択してください。".clone_into(&mut self.status);
+            return;
+        };
+        if symptom_category == SymptomCategory::Other && self.description.trim().is_empty() {
+            "その他の場合は説明を入力してください。".clone_into(&mut self.status);
             return;
         }
         let body = self.preview_json.clone();
@@ -160,6 +174,16 @@ impl BugReportApp {
     }
 }
 
+fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
+    let Some(path) = path else {
+        return BugReportDiagnostics::default();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<BugReportDiagnostics>(&json).ok())
+        .unwrap_or_default()
+}
+
 impl eframe::App for BugReportApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_send_result();
@@ -174,7 +198,26 @@ impl eframe::App for BugReportApp {
             ui.label("保持期間は ADR-095 の未決定事項の暫定値として、調査に必要な期間と削除の見通しを両立する90日を表示しています。");
             ui.add_space(8.0);
 
-            ui.label("説明（必須）");
+            ui.label("症状カテゴリ");
+            let previous_category = self.symptom_category;
+            egui::ComboBox::from_id_salt("symptom_category")
+                .selected_text(
+                    self.symptom_category
+                        .map_or("選択してください", SymptomCategory::label),
+                )
+                .show_ui(ui, |ui| {
+                    for category in SymptomCategory::ALL {
+                        ui.selectable_value(
+                            &mut self.symptom_category,
+                            Some(category),
+                            category.label(),
+                        );
+                    }
+                });
+            let category_changed = self.symptom_category != previous_category;
+
+            ui.add_space(8.0);
+            ui.label("説明（任意）");
             let desc_changed = ui
                 .add(
                     egui::TextEdit::multiline(&mut self.description)
@@ -188,7 +231,7 @@ impl eframe::App for BugReportApp {
                 .changed();
             ui.label(&self.journal_status);
 
-            if desc_changed || attach_changed {
+            if category_changed || desc_changed || attach_changed {
                 self.refresh_preview_if_unedited();
             }
 
@@ -203,8 +246,11 @@ impl eframe::App for BugReportApp {
 
             ui.separator();
             ui.horizontal(|ui| {
+                let can_send = self.symptom_category.is_some()
+                    && (self.symptom_category != Some(SymptomCategory::Other)
+                        || !self.description.trim().is_empty());
                 if ui
-                    .add_enabled(!pending, egui::Button::new("送信"))
+                    .add_enabled(!pending && can_send, egui::Button::new("送信"))
                     .clicked()
                 {
                     self.start_send();

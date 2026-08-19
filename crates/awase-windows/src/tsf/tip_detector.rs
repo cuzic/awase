@@ -14,6 +14,7 @@
 //! 生成スレッド以外で使ってはいけない。
 
 use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use windows::core::{Interface as _, GUID};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
@@ -22,13 +23,22 @@ use windows::Win32::UI::TextServices::{
     GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE, TF_PROFILETYPE_INPUTPROCESSOR,
 };
 
-use super::observer::ActiveImeKind;
+use super::observer::{ActiveImeKind, TSF_OBS};
 
 /// このセッションで発見した GJI の TIP CLSID キャッシュ（プロセス内のみ）。
 ///
 /// `discover_and_cache_gji_clsid` により一度だけセットされる。
 /// `None` = GJI 未インストールまたは `EnumProfiles` で発見できなかった。
 static GJI_CLSID: OnceLock<GUID> = OnceLock::new();
+static PROFILE_DESCRIPTIONS: RwLock<Vec<ProfileDescription>> = RwLock::new(Vec::new());
+
+#[derive(Debug, Clone)]
+struct ProfileDescription {
+    clsid: GUID,
+    langid: u16,
+    profile_guid: GUID,
+    description: String,
+}
 
 // ── COM オブジェクト生成 ──────────────────────────────────────────────────
 
@@ -124,8 +134,11 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
 
         if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
             // IMM32 ベースの HKL → MS-IME 系とみなす
+            TSF_OBS.set_ime_product_name(None);
             return Some(ActiveImeKind::MicrosoftIme);
         }
+
+        TSF_OBS.set_ime_product_name(cached_profile_description(&prof));
 
         if let Some(gji_clsid) = GJI_CLSID.get() {
             if prof.clsid == *gji_clsid {
@@ -173,6 +186,9 @@ pub(super) fn dump_profiles(
                 .ok()
                 .map(|b| b.to_string())
                 .unwrap_or_default();
+            if prof.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR {
+                cache_profile_description(&prof, &desc);
+            }
             log::info!(
                 "[tip-detect] {kind} clsid={clsid} profile={pguid} lang={lang:04x} \
                  desc={desc:?}",
@@ -202,4 +218,45 @@ fn fmt_guid(g: &GUID) -> String {
         g.data4[6],
         g.data4[7],
     )
+}
+
+fn cache_profile_description(prof: &TF_INPUTPROCESSORPROFILE, description: &str) {
+    let mut guard = PROFILE_DESCRIPTIONS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(existing) = guard
+        .iter_mut()
+        .find(|entry| profile_description_matches(entry, prof))
+    {
+        description.clone_into(&mut existing.description);
+        return;
+    }
+    guard.push(ProfileDescription {
+        clsid: prof.clsid,
+        langid: prof.langid,
+        profile_guid: prof.guidProfile,
+        description: description.to_owned(),
+    });
+}
+
+fn cached_profile_description(prof: &TF_INPUTPROCESSORPROFILE) -> Option<String> {
+    PROFILE_DESCRIPTIONS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|entry| profile_description_matches(entry, prof))
+        .and_then(|entry| (!entry.description.is_empty()).then(|| entry.description.clone()))
+}
+
+fn profile_description_matches(
+    entry: &ProfileDescription,
+    prof: &TF_INPUTPROCESSORPROFILE,
+) -> bool {
+    if entry.clsid != prof.clsid {
+        return false;
+    }
+    if entry.langid != prof.langid {
+        return false;
+    }
+    entry.profile_guid == prof.guidProfile
 }

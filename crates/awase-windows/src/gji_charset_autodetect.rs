@@ -29,6 +29,7 @@ use crate::vk::VkCodeExt as _;
 /// うち`VK_F13`/`VK_F14`を除く）。`VK_F13`/`VK_F14`はターミナルエスケープ
 /// シーケンス漏れが実機確認済み（ADR-057）のため、config1.dbにこれらへの
 /// バインドが見つかっても絶対に採用しない。
+#[cfg_attr(not(windows), allow(dead_code))]
 fn is_in_safe_autodetect_range(vk_name: &str) -> bool {
     matches!(
         vk_name,
@@ -53,6 +54,7 @@ fn is_in_safe_autodetect_range(vk_name: &str) -> bool {
 /// なら、それを採用する。0個、または複数（どれを使うべきか一意に定まらない）
 /// なら`None`（安全側、既定の「抑止」のまま変更しない）。
 #[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn detect_dedicated_fn_key(custom_keymap_table: &str) -> Option<VkCode> {
     let mode_keys = awase_gji_config::keymap::extract_mode_keys(custom_keymap_table);
     let mut candidates = mode_keys
@@ -87,6 +89,7 @@ pub(crate) fn detect_dedicated_fn_key(custom_keymap_table: &str) -> Option<VkCod
 /// 変換のVK名が含まれないため発生しない（Step4bの無変換/変換
 /// delegate-to-open-axisとは競合し得ない）。
 #[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
 fn extract_ime_on_off_toggle_combos(
     custom_keymap_table: &str,
 ) -> (

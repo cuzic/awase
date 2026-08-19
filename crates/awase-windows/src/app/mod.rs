@@ -1,5 +1,6 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 mod bootstrap;
+pub(crate) use bootstrap::detect_conflicting_software;
 
 use std::path::PathBuf;
 
@@ -479,14 +480,20 @@ pub(crate) fn launch_settings() {
 pub(crate) fn launch_bug_report(
     journal_path: &std::path::Path,
     ime_kind: crate::bug_report::BugReportImeKind,
+    diagnostics_path: Option<&std::path::Path>,
 ) {
-    launch_settings_with_args([
+    let mut args = vec![
         "--bug-report".to_owned(),
         "--journal".to_owned(),
         journal_path.to_string_lossy().into_owned(),
         "--ime-kind".to_owned(),
         ime_kind.as_str().to_owned(),
-    ]);
+    ];
+    if let Some(path) = diagnostics_path {
+        args.push("--diagnostics".to_owned());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    launch_settings_with_args(args);
 }
 
 fn launch_settings_with_args(args: impl IntoIterator<Item = String>) {

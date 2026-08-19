@@ -653,7 +653,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::About) => tray::show_about_dialog(),
         Some(tray::TrayCommand::BugReport) => {
             let ime_kind = current_bug_report_ime_kind();
-            let dump_result = with_app(|app| {
+            let Some((dump_result, diagnostics)) = with_app(|app| {
                 for entry in app.platform.drain_journal_entries() {
                     app.platform_state.ime.journal.absorb(entry);
                 }
@@ -668,14 +668,26 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     .ime
                     .journal
                     .record(crate::journal::JournalEntry::DumpTriggered);
-                app.platform_state
+                let dump_result = app
+                    .platform_state
                     .ime
                     .journal
-                    .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES)
-            });
+                    .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES);
+                (dump_result, current_bug_report_diagnostics(app))
+            }) else {
+                log::error!("[bug-report] runtime unavailable");
+                return;
+            };
+            let diagnostics_path = match write_bug_report_diagnostics(&diagnostics) {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    log::warn!("[bug-report] diagnostics dump failed: {e}");
+                    None
+                }
+            };
             match dump_result {
-                Some(Ok(path)) => launch_bug_report(&path, ime_kind),
-                Some(Err(e)) => {
+                Ok(path) => launch_bug_report(&path, ime_kind, diagnostics_path.as_deref()),
+                Err(e) => {
                     log::error!("[bug-report] journal dump failed: {e}");
                     let _ = with_app(|app| {
                         app.platform
@@ -683,7 +695,6 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                             .show_balloon("awase bug report", "journal の添付準備に失敗しました");
                     });
                 }
-                None => log::error!("[bug-report] runtime unavailable"),
             }
         }
         Some(tray::TrayCommand::CapsLock) => {
@@ -728,6 +739,33 @@ fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
             crate::bug_report::BugReportImeKind::MsIme
         }
     }
+}
+
+fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReportDiagnostics {
+    let (is_japanese, lang_id) = crate::ime::keyboard_layout_info();
+    crate::bug_report::BugReportDiagnostics {
+        ime_product_name: crate::tsf::observer::current_ime_product_name(),
+        keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
+        windows_keyboard_layout: format!("LANGID=0x{lang_id:04X} (Japanese={is_japanese})"),
+        competing_software: crate::app::detect_conflicting_software(),
+    }
+}
+
+const fn bug_report_keyboard_model(model: awase::scanmap::KeyboardModel) -> &'static str {
+    match model {
+        awase::scanmap::KeyboardModel::Jis => "Jis",
+        awase::scanmap::KeyboardModel::Us => "Us",
+    }
+}
+
+fn write_bug_report_diagnostics(
+    diagnostics: &crate::bug_report::BugReportDiagnostics,
+) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    let tick = hook::current_tick_ms();
+    let path = std::env::temp_dir().join(format!("awase_bug_report_diagnostics_{tick}.json"));
+    let json = serde_json::to_string_pretty(diagnostics)?;
+    std::fs::write(&path, json)?;
+    Ok(path)
 }
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ

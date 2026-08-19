@@ -14,7 +14,7 @@ pub const REPORT_HOST: &str = "report.awase.cc";
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
 pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
 pub const LOG_EXCERPT_MAX_BYTES: usize = 256 * 1024;
-pub const SCHEMA_VERSION: u8 = 1;
+pub const SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BugReportImeKind {
@@ -47,16 +47,85 @@ impl std::str::FromStr for BugReportImeKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SymptomCategory {
+    WrongCharacterOutput,
+    CharacterDropped,
+    StuckInRomaji,
+    UnexpectedWidthOrKana,
+    ImeToggledUnexpectedly,
+    ThumbKeyMisbehavior,
+    BrokenAfterAppSwitch,
+    BrokenAfterIdle,
+    NoResponse,
+    Other,
+}
+
+impl SymptomCategory {
+    pub const ALL: [Self; 10] = [
+        Self::WrongCharacterOutput,
+        Self::CharacterDropped,
+        Self::StuckInRomaji,
+        Self::UnexpectedWidthOrKana,
+        Self::ImeToggledUnexpectedly,
+        Self::ThumbKeyMisbehavior,
+        Self::BrokenAfterAppSwitch,
+        Self::BrokenAfterIdle,
+        Self::NoResponse,
+        Self::Other,
+    ];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::WrongCharacterOutput => "入力した文字と違う文字が出た（変換ミス）",
+            Self::CharacterDropped => "一部の文字が消えた／出力されなかった",
+            Self::StuckInRomaji => "ローマ字のまま出る／ひらがなに戻らない",
+            Self::UnexpectedWidthOrKana => "全角・半角やカタカナが意図せず切り替わった",
+            Self::ImeToggledUnexpectedly => "日本語入力（IME）が勝手にON/OFFになった",
+            Self::ThumbKeyMisbehavior => "親指キー（無変換・変換など）が効かない、誤動作する",
+            Self::BrokenAfterAppSwitch => "別のアプリに切り替えた直後におかしくなった",
+            Self::BrokenAfterIdle => "しばらく操作しなかった後、最初の入力がおかしい",
+            Self::NoResponse => "キーを押しても反応しない",
+            Self::Other => "その他",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportPayload {
     pub schema_version: u8,
     pub app_version: String,
     pub os_version: String,
     pub ime_kind: String,
+    pub ime_product_name: Option<String>,
+    pub keyboard_model: String,
+    pub windows_keyboard_layout: String,
+    pub competing_software: Vec<String>,
+    pub symptom_category: SymptomCategory,
     pub description: String,
     pub attach_log: bool,
     pub log_excerpt: Option<String>,
     pub reported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportDiagnostics {
+    pub ime_product_name: Option<String>,
+    pub keyboard_model: String,
+    pub windows_keyboard_layout: String,
+    pub competing_software: Vec<String>,
+}
+
+impl Default for BugReportDiagnostics {
+    fn default() -> Self {
+        Self {
+            ime_product_name: None,
+            keyboard_model: "Jis".to_owned(),
+            windows_keyboard_layout: "unavailable".to_owned(),
+            competing_software: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +133,11 @@ pub struct BugReportInput<'a> {
     pub app_version: &'a str,
     pub os_version: &'a str,
     pub ime_kind: BugReportImeKind,
+    pub ime_product_name: Option<&'a str>,
+    pub keyboard_model: &'a str,
+    pub windows_keyboard_layout: &'a str,
+    pub competing_software: Vec<String>,
+    pub symptom_category: SymptomCategory,
     pub description: &'a str,
     pub attach_log: bool,
     pub journal_json: Option<&'a str>,
@@ -72,8 +146,8 @@ pub struct BugReportInput<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum BugReportPayloadError {
-    #[error("説明を入力してください")]
-    EmptyDescription,
+    #[error("症状カテゴリがその他の場合は説明を入力してください")]
+    DescriptionRequiredForOther,
     #[error("JSON シリアライズ失敗: {0}")]
     Serialize(#[from] serde_json::Error),
 }
@@ -82,8 +156,8 @@ pub fn build_payload(
     input: &BugReportInput<'_>,
 ) -> Result<BugReportPayload, BugReportPayloadError> {
     let description = truncate_chars(input.description.trim(), DESCRIPTION_MAX_CHARS);
-    if description.is_empty() {
-        return Err(BugReportPayloadError::EmptyDescription);
+    if input.symptom_category == SymptomCategory::Other && description.is_empty() {
+        return Err(BugReportPayloadError::DescriptionRequiredForOther);
     }
     let log_excerpt = if input.attach_log {
         input
@@ -97,6 +171,11 @@ pub fn build_payload(
         app_version: input.app_version.to_owned(),
         os_version: input.os_version.to_owned(),
         ime_kind: input.ime_kind.as_str().to_owned(),
+        ime_product_name: input.ime_product_name.map(str::to_owned),
+        keyboard_model: input.keyboard_model.to_owned(),
+        windows_keyboard_layout: input.windows_keyboard_layout.to_owned(),
+        competing_software: input.competing_software.clone(),
+        symptom_category: input.symptom_category,
         description,
         attach_log: input.attach_log,
         log_excerpt,
@@ -228,6 +307,11 @@ mod tests {
             app_version: "1.14.0",
             os_version: "Windows 11 Build 22631",
             ime_kind: BugReportImeKind::Gji,
+            ime_product_name: Some("Google 日本語入力"),
+            keyboard_model: "Jis",
+            windows_keyboard_layout: "LANGID=0x0411 (Japanese=true)",
+            competing_software: vec!["やまぶき".to_owned()],
+            symptom_category: SymptomCategory::WrongCharacterOutput,
             description,
             attach_log,
             journal_json,
@@ -243,15 +327,40 @@ mod tests {
             Some(r#"[{"seq":1}]"#),
         ))
         .unwrap();
-        assert_eq!(payload.schema_version, 1);
+        assert_eq!(payload.schema_version, 2);
         assert_eq!(payload.ime_kind, "Gji");
+        assert_eq!(
+            payload.ime_product_name.as_deref(),
+            Some("Google 日本語入力")
+        );
+        assert_eq!(payload.keyboard_model, "Jis");
+        assert_eq!(
+            payload.windows_keyboard_layout,
+            "LANGID=0x0411 (Japanese=true)"
+        );
+        assert_eq!(payload.competing_software, vec!["やまぶき"]);
+        assert_eq!(
+            payload.symptom_category,
+            SymptomCategory::WrongCharacterOutput
+        );
         assert_eq!(payload.log_excerpt.as_deref(), Some(r#"[{"seq":1}]"#));
     }
 
     #[test]
-    fn empty_description_is_rejected_after_trim() {
-        let err = build_payload(&input("  \n\t", true, Some("[]"))).unwrap_err();
-        assert!(matches!(err, BugReportPayloadError::EmptyDescription));
+    fn empty_description_is_allowed_for_specific_category() {
+        let payload = build_payload(&input("  \n\t", true, Some("[]"))).unwrap();
+        assert_eq!(payload.description, "");
+    }
+
+    #[test]
+    fn empty_description_is_rejected_for_other_category_after_trim() {
+        let mut input = input("  \n\t", true, Some("[]"));
+        input.symptom_category = SymptomCategory::Other;
+        let err = build_payload(&input).unwrap_err();
+        assert!(matches!(
+            err,
+            BugReportPayloadError::DescriptionRequiredForOther
+        ));
     }
 
     #[test]
@@ -302,7 +411,12 @@ mod tests {
     #[test]
     fn payload_json_matches_schema_names() {
         let json = build_payload_json(&input("説明", true, Some("[]"))).unwrap();
-        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"ime_product_name\": \"Google 日本語入力\""));
+        assert!(json.contains("\"keyboard_model\": \"Jis\""));
+        assert!(json.contains("\"windows_keyboard_layout\": \"LANGID=0x0411 (Japanese=true)\""));
+        assert!(json.contains("\"competing_software\": ["));
+        assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
         assert!(!json.contains("JournalEntry"));
