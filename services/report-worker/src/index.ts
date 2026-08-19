@@ -3,7 +3,7 @@ export interface Env {
   RATE_LIMIT_KV: KVNamespace;
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const MAX_BODY_BYTES = 512 * 1024;
 export const DAILY_REPORT_LIMIT_PER_IP = 20;
 
@@ -22,7 +22,7 @@ type SymptomCategory =
   | "Other";
 
 export interface BugReportPayload {
-  schema_version: 2;
+  schema_version: 3;
   app_version: string;
   os_version: string;
   ime_kind: ImeKind;
@@ -34,6 +34,12 @@ export interface BugReportPayload {
   description: string;
   attach_log: boolean;
   log_excerpt: string | null;
+  attach_state_snapshot: boolean;
+  state_snapshot: Record<string, unknown> | null;
+  attach_config: boolean;
+  config_toml: string | null;
+  attach_layout: boolean;
+  layout_yab: string | null;
   reported_at: string;
 }
 
@@ -188,6 +194,12 @@ export function validatePayload(value: unknown): BugReportPayload {
 
   const attachLog = requiredBoolean(value, "attach_log");
   const logExcerpt = requiredNullableString(value, "log_excerpt");
+  const attachStateSnapshot = requiredBoolean(value, "attach_state_snapshot");
+  const stateSnapshot = requiredNullableRecord(value, "state_snapshot");
+  const attachConfig = requiredBoolean(value, "attach_config");
+  const configToml = requiredNullableString(value, "config_toml");
+  const attachLayout = requiredBoolean(value, "attach_layout");
+  const layoutYab = requiredNullableString(value, "layout_yab");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -195,6 +207,15 @@ export function validatePayload(value: unknown): BugReportPayload {
 
   if (!attachLog && logExcerpt !== null) {
     throw new HttpError(400, "log_excerpt_requires_attach_log");
+  }
+  if (!attachStateSnapshot && stateSnapshot !== null) {
+    throw new HttpError(400, "state_snapshot_requires_attach_state_snapshot");
+  }
+  if (!attachConfig && configToml !== null) {
+    throw new HttpError(400, "config_toml_requires_attach_config");
+  }
+  if (!attachLayout && layoutYab !== null) {
+    throw new HttpError(400, "layout_yab_requires_attach_layout");
   }
 
   return {
@@ -210,6 +231,12 @@ export function validatePayload(value: unknown): BugReportPayload {
     description,
     attach_log: attachLog,
     log_excerpt: logExcerpt,
+    attach_state_snapshot: attachStateSnapshot,
+    state_snapshot: stateSnapshot,
+    attach_config: attachConfig,
+    config_toml: configToml,
+    attach_layout: attachLayout,
+    layout_yab: layoutYab,
     reported_at: reportedAt
   };
 }
@@ -310,6 +337,17 @@ function requiredBoolean(value: Record<string, unknown>, field: string): boolean
 function requiredNullableString(value: Record<string, unknown>, field: string): string | null {
   const fieldValue = value[field];
   if (fieldValue === null || typeof fieldValue === "string") {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_required`);
+}
+
+function requiredNullableRecord(
+  value: Record<string, unknown>,
+  field: string
+): Record<string, unknown> | null {
+  const fieldValue = value[field];
+  if (fieldValue === null || isRecord(fieldValue)) {
     return fieldValue;
   }
   throw new HttpError(400, `${field}_required`);
