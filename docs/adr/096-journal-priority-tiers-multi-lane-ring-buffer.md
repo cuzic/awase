@@ -3,12 +3,16 @@
 ## ステータス
 
 実装済み（2026-08-19、codex CLI による実装、Claude が検証・マージ）。
-`cargo test -p awase-windows --lib`（399件）・`journal_replay`・
-`drift_correction_replay`・`architecture_guard`（32件の固定件数テスト、
-更新不要）すべて green。`cargo xwin build --target x86_64-pc-windows-msvc`
-でリンク成功、clippy 新規警告なし。**Windows 実機での動作確認は未実施**
-（[ADR-095](095-tray-bug-report-cloudflare-intake.md) 側の既知の限界と
-同様）。
+初回実装後、Opus によるアドバーサリアルレビューで must-fix 1件・
+should-fix 4件（B-1〜B-5、詳細は「round2: レビュー指摘と是正」節）が
+見つかり、[docs/design/journal-diagnostic-fidelity-fixes.md](../design/journal-diagnostic-fidelity-fixes.md)
+（Opus 設計）に基づき是正済み。`cargo test -p awase-windows --lib`
+（407件）・`journal_replay`・`drift_correction_replay`・
+`architecture_guard`（33件の固定件数テスト、B-1 再発防止ガード追加分で
+32→33）すべて green。`cargo xwin build`/`check --target
+x86_64-pc-windows-msvc` でリンク成功、clippy 新規警告なし。
+**Windows 実機での動作確認は未実施**（[ADR-095](095-tray-bug-report-cloudflare-intake.md)
+側の既知の限界と同様）。
 
 ## コンテキスト
 
@@ -145,18 +149,62 @@ drift_correction_replay --test architecture_guard`（`architecture_guard`
 x86_64-pc-windows-msvc -p awase-windows` でリンク成功、`cargo clippy -p
 awase-windows --lib` は新規警告なし（既存の無関係な dead_code 警告のみ）。
 
+## round2: レビュー指摘と是正（2026-08-19）
+
+初回実装を Opus にアドバーサリアルレビューさせたところ（「過去バグ検証に
+十分な情報があるか」を含めて依頼）、must-fix 1件・should-fix 4件が
+見つかった。設計は Opus に別途「あるべき設計」として検討させ、
+[docs/design/journal-diagnostic-fidelity-fixes.md](../design/journal-diagnostic-fidelity-fixes.md)
+にまとめた上で codex CLI に実装させた。Claude が各指摘の実在をコードで
+裏取りし（`from: None` 固定・`update_focus_info` 呼び出し元1箇所・
+reducer が `from` を読んでいないこと等）、設計書の主要な主張も検証済み。
+
+- **B-1（must-fix）**: `bug_report.rs::truncate_utf8_bytes` が
+  `input[..end]` で**先頭（最古）**を残し、報告ボタン押下直前（症状発生
+  の瞬間）の記録を丸ごと切り捨てていた。`UnifiedJournal::to_json_capped`
+  （直近 `seq` から予算内に収める capped シリアライザ、レーン別予備枠
+  Timing35/State30/Actuation20/KeyInput15%）と、`bug_report.rs` 側の
+  末尾優先・JSON妥当性を保証するフォールバックの二層防御に置き換えた。
+- **B-2**: `FocusTransition.from`/`ImeEvent::FocusChanged.from` が常に
+  `None` だった。`CurrentFocus.hwnd` 追加と、`apply_focus_probe_result`
+  冒頭（`classify_focus_probe` が `app_kind`/`focus_kind` を破壊的更新
+  する**前**）でのスナップショットにより実値化した。`ImeEvent` の型は
+  変更していない。
+- **B-3**: `FocusTransition` がプロセス変更時にしか発火せず、同一
+  プロセス内でのウィンドウ/AppKind/FocusKind 往復（BUG-17/18型）を
+  検出できなかった。`FocusChangedAxes` による edge-triggered 記録に
+  一本化した。
+- **B-4**: `WindowsPlatform` の保留キューが「発生時刻」でなく「drain
+  された時刻」で `seq`/`elapsed_ms` を確定していたため、因果順が乱れ
+  うる構造だった。`JournalStamper`（採番・時刻採取だけのハンドル）を
+  push 時に使うことで発生順の `seq` を確定するよう変更した。
+- **B-5**: `TsfProbeTick` を無条件・毎tick記録しており、timing レーン
+  が無変化 tick に埋まりうる構造だった。`journal_policy::probe_tick_is_notable`
+  で有意な tick のみ記録するよう変更した。
+
+`journal_policy.rs`（新設、ungated）に純粋な判定ロジック（レーン容量・
+予算配分・tick 抑制判定）を集約し、Linux CI で回帰テストできるように
+した。`architecture_guard.rs` は32→33件（B-1 の再発防止ガード追加分）。
+検証結果は「ステータス」節を参照。
+
 ## 保持するもの（変更しないもの）
 
-- `JournalEntry` の既存 variant（`KeyInput`/`TimerFired`/`ImeEvent`/
-  `ConvClassifyCall`/`ImeActuation`/`ImeOpenApplied`/`DumpTriggered`）の
-  既存フィールドは変更しない（`KeyEventSummary` への `injected` 追加のみ
-  例外）。
+- `state::ime_event::ImeEvent` の型そのもの（`FocusChanged` のフィールド
+  構成）。`from` フィールドに実値を入れるようになったが（round2 B-2）、
+  型・reducer の挙動は変更していない。
 - `docs/journal-replay-guide.md` の `ConvClassifyFixture` 抽出フローと
   `tests/journal_replay.rs`。`ConvClassifyCall` の中身は変更しないため
   影響なし。
-- `crates/awase-windows/src/bug_report.rs`（ADR-095）。`dump_to_file()`
-  の出力を不透明な文字列として読み込み256KiBに切り詰めて添付するだけの
-  設計であり、内部レーン分割やレコード種別の追加による変更は不要。
+- 3系統の時間軸（`elapsed_ms`/`tick_ms`/`timestamp_us`）は統一しない
+  （round2 の設計判断、既存の `tuning-constants` ルール対象への波及と
+  テストのモック時計破壊を避けるため）。かわりに `ClockAnchor` entry で
+  相互変換可能にした。
+
+> **訂正**: 初版で「`crates/awase-windows/src/bug_report.rs` は変更不要」
+> としていたが、round2 の B-1 是正でこの前提は誤りだったと判明した
+> （`dump_to_file()` の出力を不透明な文字列として先頭切り詰めしていた
+> ことが、まさに症状発生直前の記録を失う原因だった）。`bug_report.rs`
+> は round2 で変更対象になっている。
 
 ## 既知の限界・未決定事項
 
@@ -164,9 +212,26 @@ awase-windows --lib` は新規警告なし（既存の無関係な dead_code 警
   基づく初期値であり、実運用での発火頻度を見て調整が要る。
 - `timing` レーンの実装は Windows 実機での検証が必須（GJI/TSF warmup の
   実際の発火パターンは Linux では再現できない）。
-- `runtime/focus_tracking.rs` から `CurrentFocus.process_name` を参照する
+- ~~`runtime/focus_tracking.rs` から `CurrentFocus.process_name` を参照する
   際、`journal.record` 呼び出し時点で process_name が最新（stale でない）
-  ことの確認が必要。
+  ことの確認が必要。~~ → round2 レビューで確認済み。`update_focus_info()`
+  が先に `process_name` を再取得してから記録するため、記録時点で最新。
 - Windows 実機での「不具合を報告」操作からログが期待通り届くかの一連の
   実機確認は [ADR-095](095-tray-bug-report-cloudflare-intake.md) 側の
   既知の限界として引き続き残る。
+- **round2 レビュー（C. 見落とし）で挙がったが今回は対応しなかった項目**
+  （別 ADR での対応候補）:
+  - `class_name` の欠落（`FocusEndpoint` には含まれるが `KeyEventSummary`
+    等には無い）・`RawKeyEvent.extra_info` の欠落。BUG-56/08/14 で
+    `process_name` と同格以上に効いた識別子。
+  - **literal-detect 判定結果（`DetectionResult`、per-VK の状態、
+    `raw_tsf_literal_consecutive_count`、give-up 分岐）が0%収録**。
+    round2 レビューは「ADR-096 が塞いだ3ギャップの次に大きい穴」と
+    評価している（BUG-03/24/27/29/30/36/38/40/45 の9件で決め手だった）。
+  - IME 種別変化（`WM_IME_KIND_CHANGED`/`set_active_ime_kind`）が
+    journal に記録されない。
+  - TSF固有シグナル（`gji_candidate_show`/`gji_candidate_visible_now()`
+    の区別、`himc_null`）が0%収録。
+  - hook 層で swallow される外部注入キー（`VK_KANA`/`VK_DBE_ROMAN`/
+    `VK_DBE_NOROMAN` 等）は原理的に journal に現れない
+    （BUG-08/62 型の決定的証拠は現状の設計では再現不能）。
