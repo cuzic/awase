@@ -2,8 +2,7 @@ name = "awase-report-worker"
 main = "src/index.ts"
 compatibility_date = "2026-08-19"
 
-# TODO: Replace with the real Cloudflare account ID before deploying.
-account_id = "00000000000000000000000000000000"
+account_id = "3d71617e6be5e59d2e2cc4004e4a7c99"
 
 # Custom domain routing for the report intake endpoint.
 # Note: the custom domain must still be enabled separately in the Cloudflare
@@ -14,10 +13,8 @@ routes = [
 
 [[r2_buckets]]
 binding = "REPORT_BUCKET"
-# TODO: Replace with the real private R2 bucket name.
-bucket_name = "awase-report-bucket-placeholder"
+bucket_name = "awase-report-bucket"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
-# TODO: Replace with the real KV namespace ID.
-id = "00000000000000000000000000000000"
+id = "9b1b037d92934d2595146c998edb5e08"
