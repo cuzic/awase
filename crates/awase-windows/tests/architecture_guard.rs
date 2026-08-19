@@ -141,6 +141,17 @@ fn production_code_only(content: &str) -> &str {
     content
 }
 
+fn non_comment_lines(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("//")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
 /// 切り落とすことの回帰テスト（上の doc 参照）。
 #[test]
@@ -157,6 +168,26 @@ fn production_code_only_strips_test_module_with_crlf() {
     let other =
         "#[cfg(test)]\nfn helper() { needle(); }\n#[cfg(test)]\r\nmod tests {\n needle();\n}\n";
     assert_eq!(production_code_only(other).matches("needle(").count(), 1);
+}
+
+#[test]
+fn output_and_tsf_production_code_do_not_reference_journal_directly() {
+    let offenders: Vec<String> = list_src_files()
+        .into_iter()
+        .filter(|path| path.starts_with("src/output/") || path.starts_with("src/tsf/"))
+        .filter_map(|path| {
+            let content = read_crate_file(&path);
+            let production = non_comment_lines(production_code_only(&content));
+            let direct_journal_refs = production.matches("crate::journal").count()
+                - production.matches("crate::journal_policy").count();
+            (direct_journal_refs > 0).then_some(format!("{path}: {direct_journal_refs}"))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "output/ and tsf/ production code must pass literal-detect facts upward as data, \
+         leaving JournalEntry conversion to platform.rs: {offenders:?}"
+    );
 }
 
 /// `content` 内で `fn_signature_needle`（例: `"fn some_handler"`）が最初に

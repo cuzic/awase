@@ -29,6 +29,9 @@ use std::rc::Rc;
 use awase::types::VkCode;
 
 use crate::state::event_origin::Generation;
+use crate::tsf::literal_facts::{
+    DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralVerdict,
+};
 
 /// probe 進行中に蓄積する後続 VK。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +161,15 @@ pub(crate) enum TransmitTarget {
     Chrome,
 }
 
+impl From<TransmitTarget> for DetectTarget {
+    fn from(value: TransmitTarget) -> Self {
+        match value {
+            TransmitTarget::Tsf => Self::Tsf,
+            TransmitTarget::Chrome => Self::Chrome,
+        }
+    }
+}
+
 /// ステートマシン → dispatcher 方向の宣言的アクション。
 #[derive(Debug)]
 pub(crate) enum ProbeAction {
@@ -188,6 +200,8 @@ pub(crate) enum ProbeAction {
         /// この VK の confirm 待ちタイムアウト（ms）。`plan.literal_detect_ms` を渡す。
         timeout_ms: u64,
         is_last: bool,
+        idx: u16,
+        last_idx: u16,
         /// 送信先（`Tsf`: WezTerm 等 TSF-native、`Chrome`: Chrome/Edge）。
         /// dispatcher が VK 送信関数（`send_single_tsf_vk`/`send_single_chrome_vk`）と
         /// detector 構築方式（SHOW ベース/write-bytes ベース）を切り替えるために使う。
@@ -201,6 +215,7 @@ pub(crate) enum ProbeAction {
         /// `true` = partial literal（candidate 表示中に一部だけ literal 化）回収。
         /// バックスペース前に `VK_ESCAPE` を送って composition を確実に破棄する。
         escape_composition: bool,
+        facts: LiteralDetectFacts,
     },
     /// Unicode モードで GJI write が観測されなかった。
     ///
@@ -230,6 +245,12 @@ pub(crate) enum ProbeAction {
     CompositionConfirmed {
         cold_seq: Generation,
         mark_literal_session: bool,
+        facts: LiteralDetectFacts,
+    },
+    /// literal-detect の判定は確定したが、dispatcher 側の副作用が不要な診断専用 action。
+    LiteralDetectNote {
+        cold_seq: Generation,
+        facts: LiteralDetectFacts,
     },
     /// プローブ完了。dispatcher は `TIMER_TSF_PROBE` を kill する。
     Done,
@@ -300,6 +321,32 @@ fn per_vk_confirm_tags(target: TransmitTarget) -> (&'static str, &'static str, &
     }
 }
 
+fn idx_u16(idx: usize) -> u16 {
+    u16::try_from(idx).unwrap_or(u16::MAX)
+}
+
+fn literal_facts(
+    detection: &crate::tsf::probe::DetectionResult,
+    route: DetectRoute,
+    path: DetectPath,
+    target: TransmitTarget,
+    vk: Option<VkCode>,
+    idx: usize,
+    last_idx: usize,
+    evidence: DetectEvidence,
+) -> LiteralDetectFacts {
+    LiteralDetectFacts {
+        verdict: LiteralVerdict::from(detection),
+        route,
+        path,
+        target: target.into(),
+        vk: vk.map(|vk| vk.0),
+        idx: idx_u16(idx),
+        last_idx: idx_u16(last_idx),
+        evidence,
+    }
+}
+
 /// 1 VK 分の [`DetectionResult`] を確定させる（[`run_per_vk_confirm`] から抽出）。
 ///
 /// BUG-29/BUG-30: 候補ウィンドウが既に表示中なら literal-detect の polling をスキップする。
@@ -318,7 +365,11 @@ async fn await_vk_detection(
     last_idx: usize,
     vk: VkCode,
     env: TsfEnvSnapshot,
-) -> crate::tsf::probe::DetectionResult {
+) -> (
+    crate::tsf::probe::DetectionResult,
+    DetectRoute,
+    DetectEvidence,
+) {
     use crate::tsf::probe::DetectionResult;
 
     if env.gji_candidate_visible_now {
@@ -362,12 +413,16 @@ async fn await_vk_detection(
                 "visible_fencing_verdict は CompositionConfirmed/StaleConfirm のみ返す"
             ),
         }
-        return verdict;
+        let evidence = sent.detector.evidence_now(env.gji_candidate_visible_now);
+        return (verdict, DetectRoute::VisibleFencing, evidence);
     }
     loop {
         let poll_input = yield_step(ch.clone(), vec![]).await;
         if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
-            break d;
+            let evidence = sent
+                .detector
+                .evidence_now(poll_input.env.gji_candidate_visible_now);
+            break (d, DetectRoute::CheckNow, evidence);
         }
         let _ = poll_input;
     }
@@ -411,6 +466,8 @@ pub(crate) async fn run_per_vk_confirm(
             needs_shift,
             timeout_ms: plan.literal_detect_ms,
             is_last,
+            idx: idx_u16(idx),
+            last_idx: idx_u16(last_idx),
             target,
         });
         let vk_input = yield_step(ch.clone(), actions).await;
@@ -437,7 +494,7 @@ pub(crate) async fn run_per_vk_confirm(
         // スナップショット）を全 VK で使い回すと、後続 VK の可視性変化を無視してしまい
         // 挙動が変わる。`ProbeTickInput.env` は tick ごとに更新されるため、これが
         // 旧実装のライブ読みに最も近い等価物。
-        let detection = await_vk_detection(
+        let (detection, route, evidence) = await_vk_detection(
             &ch,
             &sent,
             log_tag,
@@ -448,6 +505,16 @@ pub(crate) async fn run_per_vk_confirm(
             vk_input.env,
         )
         .await;
+        let facts = literal_facts(
+            &detection,
+            route,
+            DetectPath::PerVk,
+            target,
+            Some(vk),
+            idx,
+            last_idx,
+            evidence,
+        );
 
         match detection {
             DetectionResult::CompositionConfirmed => {
@@ -461,6 +528,7 @@ pub(crate) async fn run_per_vk_confirm(
                 pending_confirm = Some(ProbeAction::CompositionConfirmed {
                     cold_seq,
                     mark_literal_session: false,
+                    facts,
                 });
             }
             DetectionResult::SuspectedLiteral => {
@@ -481,6 +549,7 @@ pub(crate) async fn run_per_vk_confirm(
                     romaji.to_string(),
                     backs,
                     escape_composition,
+                    facts,
                 );
                 yield_step(ch.clone(), actions).await;
                 return;
@@ -520,6 +589,7 @@ pub(crate) async fn run_per_vk_confirm(
                     romaji.to_string(),
                     backs,
                     escape_composition,
+                    facts,
                 );
                 yield_step(ch.clone(), actions).await;
                 return;
@@ -542,6 +612,16 @@ pub(crate) async fn run_per_vk_confirm(
             ProbeAction::CompositionConfirmed {
                 cold_seq,
                 mark_literal_session: true,
+                facts: LiteralDetectFacts {
+                    verdict: LiteralVerdict::CompositionConfirmed,
+                    route: DetectRoute::CheckNow,
+                    path: DetectPath::PerVk,
+                    target: target.into(),
+                    vk: None,
+                    idx: idx_u16(last_idx),
+                    last_idx: idx_u16(last_idx),
+                    evidence: DetectEvidence::default(),
+                },
             },
             ProbeAction::Done,
         ],
@@ -624,11 +704,21 @@ async fn tsf_probe_coro_body(
 
     loop {
         use crate::tsf::probe::DetectionResult;
-        yield_step(ch.clone(), vec![]).await;
+        let poll_input = yield_step(ch.clone(), vec![]).await;
 
         let Some(detection) = detector.check_now(deadline_ms) else {
             continue;
         };
+        let facts = literal_facts(
+            &detection,
+            DetectRoute::CheckNow,
+            DetectPath::Word,
+            TransmitTarget::Chrome,
+            None,
+            0,
+            0,
+            detector.evidence_now(poll_input.env.gji_candidate_visible_now),
+        );
 
         let final_actions = match detection {
             DetectionResult::SuspectedLiteral => {
@@ -644,6 +734,7 @@ async fn tsf_probe_coro_body(
                         backs,
                         romaji: recovery_romaji,
                         escape_composition,
+                        facts,
                     },
                     ProbeAction::Done,
                 ]
@@ -654,7 +745,10 @@ async fn tsf_probe_coro_body(
                     cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "confirmed");
-                vec![ProbeAction::Done]
+                vec![
+                    ProbeAction::LiteralDetectNote { cold_seq, facts },
+                    ProbeAction::Done,
+                ]
             }
             DetectionResult::StaleConfirm => {
                 // ADR-079 Stage 1 追補: 「検出のみ・recovery なし」は実機で
@@ -683,6 +777,7 @@ async fn tsf_probe_coro_body(
                         backs,
                         romaji: recovery_romaji,
                         escape_composition,
+                        facts,
                     },
                     ProbeAction::Done,
                 ]

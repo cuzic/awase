@@ -8,6 +8,7 @@
 use std::sync::atomic::Ordering;
 
 use crate::state::event_origin::Generation;
+use crate::tsf::literal_facts::{DetectEvidence, LiteralVerdict};
 use crate::tsf::observer::{Baseline, TSF_OBS};
 use crate::tuning::{GJI_IDLE_MS, POST_IDLE_MARGIN_MS};
 
@@ -536,6 +537,16 @@ pub enum DetectionResult {
     StaleConfirm,
 }
 
+impl From<&DetectionResult> for LiteralVerdict {
+    fn from(value: &DetectionResult) -> Self {
+        match value {
+            DetectionResult::CompositionConfirmed => Self::CompositionConfirmed,
+            DetectionResult::SuspectedLiteral => Self::SuspectedLiteral,
+            DetectionResult::StaleConfirm => Self::StaleConfirm,
+        }
+    }
+}
+
 impl LiteralDetector {
     /// SHOW イベントは write-bytes ポーリング（`GJI_SAMPLE_INTERVAL_MS`）より
     /// 早く届きうるため、fencing 判定前に最大2ポーリング分だけ
@@ -596,6 +607,22 @@ impl LiteralDetector {
     ///
     /// 実機ログ 5 サンプル（Chrome）に基づく。cold/warm の中間値 350 バイトを閾値とする。
     const COMPOSITION_BYTES_THRESHOLD: u64 = 350;
+
+    /// 判定確定時点の生の観測値を返す。判定や内部状態の更新は行わない。
+    #[must_use]
+    pub(crate) fn evidence_now(&self, candidate_visible: bool) -> DetectEvidence {
+        let last_write_ms = crate::tsf::observer::gji_last_write_ms();
+        let fencing_active = last_write_ms != 0;
+        DetectEvidence {
+            show_changed: TSF_OBS
+                .gji_candidate_show
+                .has_changed(self.gji_show_baseline),
+            candidate_visible,
+            write_delta: crate::tsf::observer::gji_write_bytes()
+                .saturating_sub(self.write_bytes_baseline),
+            evidence_fresh: !fencing_active || last_write_ms >= self.epoch_send_ms,
+        }
+    }
 
     /// タイマーポーリング用ノンブロッキング判定。
     ///

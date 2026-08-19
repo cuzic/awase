@@ -46,6 +46,21 @@ pub const fn probe_tick_is_notable(f: ProbeTickFacts) -> bool {
         || f.is_first_tick
 }
 
+#[must_use]
+pub fn literal_detect_is_notable(record: &crate::tsf::literal_facts::LiteralDetectRecord) -> bool {
+    use crate::tsf::literal_facts::LiteralVerdict;
+    match record.facts.verdict {
+        LiteralVerdict::SuspectedLiteral
+        | LiteralVerdict::StaleConfirm
+        | LiteralVerdict::VetoExpired
+        | LiteralVerdict::PlanSkippedLiteral
+        | LiteralVerdict::AbortedNoVerdict => true,
+        LiteralVerdict::CompositionConfirmed if record.session_marked => true,
+        LiteralVerdict::CompositionConfirmed => record.consecutive_before > 0 || record.gave_up,
+        LiteralVerdict::SessionSkip => record.consecutive_before > 0,
+    }
+}
+
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
     (LaneKind::Timing, 35),
     (LaneKind::State, 30),
@@ -207,5 +222,79 @@ mod tests {
             is_first_tick: true,
             ..ProbeTickFacts::default()
         }));
+    }
+
+    fn literal_record(
+        verdict: crate::tsf::literal_facts::LiteralVerdict,
+    ) -> crate::tsf::literal_facts::LiteralDetectRecord {
+        use crate::tsf::literal_facts::{
+            DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts,
+        };
+        crate::tsf::literal_facts::LiteralDetectRecord {
+            cold_seq: crate::state::event_origin::Generation::INITIAL,
+            facts: LiteralDetectFacts {
+                verdict,
+                route: DetectRoute::CheckNow,
+                path: DetectPath::Word,
+                target: DetectTarget::Tsf,
+                vk: None,
+                idx: 0,
+                last_idx: 0,
+                evidence: DetectEvidence::default(),
+            },
+            consecutive_before: 0,
+            gave_up: false,
+            backs: 0,
+            escape_composition: false,
+            session_marked: false,
+        }
+    }
+
+    #[test]
+    fn literal_detect_is_notable_for_failure_and_absence_verdicts() {
+        use crate::tsf::literal_facts::LiteralVerdict::{
+            AbortedNoVerdict, PlanSkippedLiteral, StaleConfirm, SuspectedLiteral, VetoExpired,
+        };
+        for verdict in [
+            SuspectedLiteral,
+            StaleConfirm,
+            VetoExpired,
+            PlanSkippedLiteral,
+            AbortedNoVerdict,
+        ] {
+            assert!(literal_detect_is_notable(&literal_record(verdict)));
+        }
+    }
+
+    #[test]
+    fn literal_detect_suppresses_healthy_confirm_repetition() {
+        use crate::tsf::literal_facts::LiteralVerdict;
+        assert!(!literal_detect_is_notable(&literal_record(
+            LiteralVerdict::CompositionConfirmed
+        )));
+
+        let mut session_marked = literal_record(LiteralVerdict::CompositionConfirmed);
+        session_marked.session_marked = true;
+        assert!(literal_detect_is_notable(&session_marked));
+
+        let mut recovering = literal_record(LiteralVerdict::CompositionConfirmed);
+        recovering.consecutive_before = 1;
+        assert!(literal_detect_is_notable(&recovering));
+
+        let mut gave_up = literal_record(LiteralVerdict::CompositionConfirmed);
+        gave_up.gave_up = true;
+        assert!(literal_detect_is_notable(&gave_up));
+    }
+
+    #[test]
+    fn literal_detect_session_skip_only_records_during_failure_chain() {
+        use crate::tsf::literal_facts::LiteralVerdict;
+        assert!(!literal_detect_is_notable(&literal_record(
+            LiteralVerdict::SessionSkip
+        )));
+
+        let mut recovering = literal_record(LiteralVerdict::SessionSkip);
+        recovering.consecutive_before = 1;
+        assert!(literal_detect_is_notable(&recovering));
     }
 }

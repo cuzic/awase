@@ -212,6 +212,7 @@ pub(crate) struct StepProbeResult {
     /// `advance_tsf_probe` がフォーカス中クラスを Tsf に昇格する。
     pub learned_tsf: bool,
     pub completed_cold_seq: Option<u64>,
+    pub literal_detect: crate::tsf::literal_facts::LiteralDetectTrace,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -927,6 +928,7 @@ impl Output {
                 needs_gji_composition_reset: false,
                 learned_tsf: false,
                 completed_cold_seq: None,
+                literal_detect: crate::tsf::literal_facts::LiteralDetectTrace::default(),
             };
         };
         let cold_seq = machine.cold_seq_hint().value();
@@ -936,7 +938,9 @@ impl Output {
             tick_t
         );
         let actions = machine.tick(env);
-        let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
+        let mut literal_detect = crate::tsf::literal_facts::LiteralDetectTrace::default();
+        let dispatch =
+            probe_io::dispatch_probe_actions(machine.as_mut(), actions, self, &mut literal_detect);
         match dispatch {
             probe_io::DispatchResult::Done => {
                 self.on_tsf_probe_ready();
@@ -959,6 +963,7 @@ impl Output {
                     needs_gji_composition_reset,
                     learned_tsf: false,
                     completed_cold_seq: Some(cold_seq),
+                    literal_detect,
                 }
             }
             probe_io::DispatchResult::Continue => {
@@ -973,6 +978,7 @@ impl Output {
                     needs_gji_composition_reset,
                     learned_tsf: false,
                     completed_cold_seq: None,
+                    literal_detect,
                 }
             }
             probe_io::DispatchResult::LearnedTsf => {
@@ -987,6 +993,7 @@ impl Output {
                     needs_gji_composition_reset,
                     learned_tsf: true,
                     completed_cold_seq: Some(cold_seq),
+                    literal_detect,
                 }
             }
         }

@@ -196,6 +196,7 @@ pub enum JournalEntry {
         source: String,
         cold_seq: u64,
         gji_state: String,
+        consecutive_at_start: u32,
     },
     /// TSF/GJI probe の完了・中断・学習完了。
     TsfProbeCompleted {
@@ -204,6 +205,12 @@ pub enum JournalEntry {
         elapsed_ms: u64,
         tick_count: u32,
         gji_state: String,
+    },
+    /// literal-detect（raw TSF literal 判定）1 回分の結果。
+    LiteralDetect {
+        record: crate::tsf::literal_facts::LiteralDetectRecord,
+        suppressed_confirms: u16,
+        since_vk_sent_ms: u64,
     },
     /// `elapsed_ms` / OS tick / hook timestamp の対応を取るためのアンカー。
     ClockAnchor { tick_ms: u64, hook_us: u64 },
@@ -344,7 +351,8 @@ impl JournalEntry {
             | Self::DumpTriggered => LaneKind::State,
             Self::GjiFsmTransition { .. }
             | Self::TsfProbeStarted { .. }
-            | Self::TsfProbeCompleted { .. } => LaneKind::Timing,
+            | Self::TsfProbeCompleted { .. }
+            | Self::LiteralDetect { .. } => LaneKind::Timing,
             Self::ImeActuation { .. } | Self::ConvClassifyCall { .. } | Self::TimerFired { .. } => {
                 LaneKind::Actuation
             }

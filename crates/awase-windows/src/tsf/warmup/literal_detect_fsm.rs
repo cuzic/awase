@@ -27,6 +27,9 @@
 //! - 判定待ち → `None`（`LiteralDetectFsm::tick` では `vec![]`、タイマー継続）
 
 use crate::state::event_origin::Generation;
+use crate::tsf::literal_facts::{
+    DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralVerdict,
+};
 use crate::tsf::probe::LiteralDetector;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::TsfEnvSnapshot;
@@ -161,6 +164,7 @@ pub(crate) fn emit_recovery_actions(
     romaji: String,
     backs: usize,
     escape_composition: bool,
+    facts: LiteralDetectFacts,
 ) -> Vec<ProbeAction> {
     vec![
         ProbeAction::RawTsfLiteralRecovery {
@@ -168,9 +172,28 @@ pub(crate) fn emit_recovery_actions(
             backs,
             romaji,
             escape_composition,
+            facts,
         },
         ProbeAction::Done,
     ]
+}
+
+fn word_facts(
+    verdict: LiteralVerdict,
+    route: DetectRoute,
+    target: DetectTarget,
+    evidence: DetectEvidence,
+) -> LiteralDetectFacts {
+    LiteralDetectFacts {
+        verdict,
+        route,
+        path: DetectPath::Word,
+        target,
+        vk: None,
+        idx: 0,
+        last_idx: 0,
+        evidence,
+    }
 }
 
 /// warm パス（`LiteralDetectFsm`）と cold パス（`GjiWarmupCoro` Phase 6）が共有する
@@ -187,6 +210,8 @@ pub(crate) struct LiteralDetectCore {
     observations: ProbeObservations,
     /// composition 確認 / raw literal 検出器
     detector: LiteralDetector,
+    /// 判定対象。
+    target: DetectTarget,
     /// LiteralDetect タイムアウト絶対時刻（ms）
     deadline_ms: u64,
     /// raw literal 検出時に送るバックスペース数
@@ -214,6 +239,7 @@ impl LiteralDetectCore {
         romaji: String,
         observations: ProbeObservations,
         detector: LiteralDetector,
+        target: DetectTarget,
         deadline_ms: u64,
         ze_bs_count: usize,
         consecutive: u32,
@@ -223,6 +249,7 @@ impl LiteralDetectCore {
             romaji,
             observations,
             detector,
+            target,
             deadline_ms,
             ze_bs_count,
             consecutive,
@@ -249,10 +276,27 @@ impl LiteralDetectCore {
                 "[literal-detect] cold={} セッション確認済み → スキップ",
                 self.cold_seq.value()
             );
-            return Some(vec![ProbeAction::Done]);
+            return Some(vec![
+                ProbeAction::LiteralDetectNote {
+                    cold_seq: self.cold_seq,
+                    facts: word_facts(
+                        LiteralVerdict::SessionSkip,
+                        DetectRoute::SessionFlag,
+                        self.target,
+                        DetectEvidence::default(),
+                    ),
+                },
+                ProbeAction::Done,
+            ]);
         }
 
         let detection = self.detector.check_now(self.deadline_ms)?;
+        let facts = word_facts(
+            LiteralVerdict::from(&detection),
+            DetectRoute::CheckNow,
+            self.target,
+            self.detector.evidence_now(env.gji_candidate_visible_now),
+        );
 
         match detection {
             DetectionResult::CompositionConfirmed => {
@@ -272,7 +316,14 @@ impl LiteralDetectCore {
                         crate::tsf::observer::gji_idle_ms(),
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "partial-literal");
-                    return Some(self.recovery(PARTIAL_LITERAL_BS, true));
+                    return Some(self.recovery(
+                        PARTIAL_LITERAL_BS,
+                        true,
+                        LiteralDetectFacts {
+                            verdict: LiteralVerdict::CompositionConfirmed,
+                            ..facts
+                        },
+                    ));
                 }
 
                 log::debug!(
@@ -288,6 +339,7 @@ impl LiteralDetectCore {
                     ProbeAction::CompositionConfirmed {
                         cold_seq: self.cold_seq,
                         mark_literal_session: true,
+                        facts,
                     },
                     ProbeAction::Done,
                 ])
@@ -308,7 +360,18 @@ impl LiteralDetectCore {
                         crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
                     );
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "veto-expired");
-                    Some(vec![ProbeAction::Done])
+                    Some(vec![
+                        ProbeAction::LiteralDetectNote {
+                            cold_seq: self.cold_seq,
+                            facts: word_facts(
+                                LiteralVerdict::VetoExpired,
+                                DetectRoute::CheckNow,
+                                self.target,
+                                self.detector.evidence_now(env.gji_candidate_visible_now),
+                            ),
+                        },
+                        ProbeAction::Done,
+                    ])
                 }
                 VetoDecision::NotApplicable => {
                     log::debug!(
@@ -321,7 +384,7 @@ impl LiteralDetectCore {
                     crate::ime_diagnostic::log_composition_probe(self.cold_seq, "suspected");
                     let (backs, escape_composition) =
                         word_level_recovery_params(false, self.ze_bs_count);
-                    Some(self.recovery(backs, escape_composition))
+                    Some(self.recovery(backs, escape_composition, facts))
                 }
             },
             DetectionResult::StaleConfirm => {
@@ -338,17 +401,23 @@ impl LiteralDetectCore {
                 crate::ime_diagnostic::log_composition_probe(self.cold_seq, "epoch-fence-stale");
                 let (backs, escape_composition) =
                     word_level_recovery_params(true, self.ze_bs_count);
-                Some(self.recovery(backs, escape_composition))
+                Some(self.recovery(backs, escape_composition, facts))
             }
         }
     }
 
-    fn recovery(&mut self, backs: usize, escape_composition: bool) -> Vec<ProbeAction> {
+    fn recovery(
+        &mut self,
+        backs: usize,
+        escape_composition: bool,
+        facts: LiteralDetectFacts,
+    ) -> Vec<ProbeAction> {
         emit_recovery_actions(
             self.cold_seq,
             std::mem::take(&mut self.romaji),
             backs,
             escape_composition,
+            facts,
         )
     }
 
@@ -419,6 +488,7 @@ impl LiteralDetectFsm {
                 romaji,
                 observations,
                 detector,
+                DetectTarget::Tsf,
                 deadline_ms,
                 ze_bs_count,
                 consecutive,
@@ -501,6 +571,15 @@ mod tests {
         }
     }
 
+    fn test_facts() -> LiteralDetectFacts {
+        word_facts(
+            LiteralVerdict::SuspectedLiteral,
+            DetectRoute::CheckNow,
+            DetectTarget::Tsf,
+            DetectEvidence::default(),
+        )
+    }
+
     // CompositionConfirmed が partial literal 条件を満たす場合 → RawTsfLiteralRecovery
     #[test]
     fn composition_confirmed_tsf_nc_false_multi_char_forces_recovery() {
@@ -569,6 +648,7 @@ mod tests {
             "ltu".to_string(),
             PARTIAL_LITERAL_BS,
             true,
+            test_facts(),
         );
         match &actions[0] {
             ProbeAction::RawTsfLiteralRecovery {
@@ -585,7 +665,13 @@ mod tests {
     // （composition が存在しないため ESC は不要、既存の chars.len() ベース BS のみ）。
     #[test]
     fn emit_recovery_actions_suspected_literal_keeps_escape_composition_false() {
-        let actions = emit_recovery_actions(Generation::INITIAL, "ko".to_string(), 2, false);
+        let actions = emit_recovery_actions(
+            Generation::INITIAL,
+            "ko".to_string(),
+            2,
+            false,
+            test_facts(),
+        );
         match &actions[0] {
             ProbeAction::RawTsfLiteralRecovery {
                 escape_composition, ..
@@ -636,6 +722,7 @@ mod tests {
             "ko".to_string(),
             obs(true),
             detector,
+            DetectTarget::Tsf,
             now_ms,
             2,
             0,
@@ -672,6 +759,7 @@ mod tests {
             "ko".to_string(),
             obs(true),
             detector,
+            DetectTarget::Tsf,
             now_ms,
             2,
             0,
@@ -727,6 +815,7 @@ mod tests {
             "s".to_string(),
             obs(true),
             detector,
+            DetectTarget::Tsf,
             now_ms,
             1,
             0,
@@ -788,6 +877,7 @@ mod tests {
             "fu".to_string(),
             obs(true),
             detector,
+            DetectTarget::Tsf,
             now_ms,
             2,
             0,

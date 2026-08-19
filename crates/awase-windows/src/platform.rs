@@ -45,6 +45,18 @@ pub struct WindowsPlatform {
     active_tsf_probe_started_ms: Option<(u64, u64)>,
     probe_tick_index: u32,
     suppressed_probe_ticks: u32,
+    suppressed_literal_confirms: u16,
+    pending_literal_vk: Option<PendingLiteralVk>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingLiteralVk {
+    cold_seq: u64,
+    vk: u16,
+    idx: u16,
+    last_idx: u16,
+    target: crate::tsf::literal_facts::DetectTarget,
+    sent_at_ms: u64,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -115,6 +127,8 @@ impl WindowsPlatform {
             active_tsf_probe_started_ms: None,
             probe_tick_index: 0,
             suppressed_probe_ticks: 0,
+            suppressed_literal_confirms: 0,
+            pending_literal_vk: None,
         }
     }
 
@@ -158,8 +172,90 @@ impl WindowsPlatform {
     }
 
     fn reset_probe_tick_counters(&mut self) {
+        self.flush_pending_literal_vk_as_aborted();
         self.probe_tick_index = 0;
         self.suppressed_probe_ticks = 0;
+        self.suppressed_literal_confirms = 0;
+    }
+
+    fn note_literal_detect_record(
+        &mut self,
+        record: crate::tsf::literal_facts::LiteralDetectRecord,
+        since_vk_sent_ms: u64,
+    ) {
+        if crate::journal_policy::literal_detect_is_notable(&record) {
+            let suppressed_confirms = self.suppressed_literal_confirms;
+            self.suppressed_literal_confirms = 0;
+            self.push_journal_entry(crate::journal::JournalEntry::LiteralDetect {
+                record,
+                suppressed_confirms,
+                since_vk_sent_ms,
+            });
+        } else {
+            self.suppressed_literal_confirms = self.suppressed_literal_confirms.saturating_add(1);
+        }
+    }
+
+    fn flush_pending_literal_vk_as_aborted(&mut self) {
+        let Some(pending) = self.pending_literal_vk.take() else {
+            return;
+        };
+        let now = crate::hook::current_tick_ms();
+        let record = crate::tsf::literal_facts::LiteralDetectRecord {
+            cold_seq: Generation::new(pending.cold_seq),
+            facts: crate::tsf::literal_facts::LiteralDetectFacts {
+                verdict: crate::tsf::literal_facts::LiteralVerdict::AbortedNoVerdict,
+                route: crate::tsf::literal_facts::DetectRoute::ProbeEnd,
+                path: crate::tsf::literal_facts::DetectPath::PerVk,
+                target: pending.target,
+                vk: Some(pending.vk),
+                idx: pending.idx,
+                last_idx: pending.last_idx,
+                evidence: crate::tsf::literal_facts::DetectEvidence::default(),
+            },
+            consecutive_before: self.output.composition.consecutive_count(),
+            gave_up: false,
+            backs: 0,
+            escape_composition: false,
+            session_marked: false,
+        };
+        self.note_literal_detect_record(record, now.saturating_sub(pending.sent_at_ms));
+    }
+
+    fn consume_literal_detect_trace(
+        &mut self,
+        trace: crate::tsf::literal_facts::LiteralDetectTrace,
+        terminal_timer: bool,
+    ) {
+        for item in trace.0 {
+            match item {
+                crate::tsf::literal_facts::LiteralDetectTraceItem::VkSent {
+                    cold_seq,
+                    vk,
+                    idx,
+                    last_idx,
+                    target,
+                } => {
+                    self.pending_literal_vk = Some(PendingLiteralVk {
+                        cold_seq,
+                        vk,
+                        idx,
+                        last_idx,
+                        target,
+                        sent_at_ms: crate::hook::current_tick_ms(),
+                    });
+                }
+                crate::tsf::literal_facts::LiteralDetectTraceItem::Verdict(record) => {
+                    let since_vk_sent_ms = self.pending_literal_vk.take().map_or(0, |pending| {
+                        crate::hook::current_tick_ms().saturating_sub(pending.sent_at_ms)
+                    });
+                    self.note_literal_detect_record(record, since_vk_sent_ms);
+                }
+            }
+        }
+        if terminal_timer {
+            self.flush_pending_literal_vk_as_aborted();
+        }
     }
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
@@ -276,6 +372,7 @@ impl WindowsPlatform {
             source: "install_pending_tsf_and_set_timer".to_owned(),
             cold_seq,
             gji_state: self.gji_state_label(),
+            consecutive_at_start: self.output.composition.consecutive_count(),
         });
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {
@@ -302,6 +399,7 @@ impl WindowsPlatform {
                 id: crate::TIMER_TSF_PROBE
             }
         );
+        self.consume_literal_detect_trace(result.literal_detect, terminal_timer);
         let notable =
             crate::journal_policy::probe_tick_is_notable(crate::journal_policy::ProbeTickFacts {
                 state_changed: state_before_step != state_after_step,
@@ -404,6 +502,7 @@ impl WindowsPlatform {
                         source: "GjiAction::StartProbe".to_owned(),
                         cold_seq: u64::from(probe_id.0),
                         gji_state: self.gji_state_label(),
+                        consecutive_at_start: self.output.composition.consecutive_count(),
                     });
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
