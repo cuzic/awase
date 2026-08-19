@@ -178,7 +178,7 @@ fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (
 }
 
 /// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
-pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
+pub(crate) fn detect_conflicting_software() -> Vec<String> {
     use std::mem::size_of;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -208,15 +208,15 @@ pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
 
     // SAFETY: CreateToolhelp32Snapshot / Process32FirstW / Process32NextW は
     //         有効なハンドルと dwSize 設定済み PROCESSENTRY32W を渡す標準的な呼び出し。
-    let found: Vec<&str> = unsafe {
+    unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return;
+            return Vec::new();
         };
         let mut entry = PROCESSENTRY32W {
             dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
             ..Default::default()
         };
-        let mut results = Vec::new();
+        let mut results: Vec<String> = Vec::new();
         if Process32FirstW(snap, &raw mut entry).is_ok() {
             loop {
                 let end = entry
@@ -226,8 +226,10 @@ pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
                     .unwrap_or(entry.szExeFile.len());
                 let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
                 for conflict in CONFLICTS {
-                    if exe_name.eq_ignore_ascii_case(conflict.exe) {
-                        results.push(conflict.display);
+                    if exe_name.eq_ignore_ascii_case(conflict.exe)
+                        && !results.iter().any(|name| name == conflict.display)
+                    {
+                        results.push(conflict.display.to_owned());
                         break;
                     }
                 }
@@ -238,9 +240,11 @@ pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
         }
         let _ = CloseHandle(snap);
         results
-    };
+    }
+}
 
-    for name in found {
+pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
+    for name in detect_conflicting_software() {
         diag.warn(format!(
             "競合する親指シフトソフトウェア「{name}」が起動中です。\
              awase と同時に使用するとキー入力が二重になるなどの不具合が生じます。\
@@ -468,6 +472,7 @@ pub(super) fn initialize_app(
         post_bypass_rules,
     ));
     let _ = with_app(|app| {
+        app.set_keyboard_model(config.general.keyboard_model);
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(

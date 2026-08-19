@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST, RETENTION_HINT, SymptomCategory,
-    build_payload_json, unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST,
+    RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -11,6 +11,7 @@ use eframe::egui;
 pub(crate) struct BugReportArgs {
     pub(crate) journal_path: Option<PathBuf>,
     pub(crate) ime_kind: BugReportImeKind,
+    pub(crate) diagnostics_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -21,6 +22,7 @@ pub(crate) struct BugReportApp {
     journal_json: Option<String>,
     journal_status: String,
     ime_kind: BugReportImeKind,
+    diagnostics: BugReportDiagnostics,
     os_version: String,
     reported_at: String,
     preview_json: String,
@@ -54,6 +56,7 @@ impl BugReportApp {
         };
         let reported_at = current_reported_at();
         let os_version = detect_os_version();
+        let diagnostics = load_diagnostics(args.diagnostics_path.as_ref());
         let mut app = Self {
             symptom_category: None,
             description: String::new(),
@@ -61,6 +64,7 @@ impl BugReportApp {
             journal_json,
             journal_status,
             ime_kind: args.ime_kind,
+            diagnostics,
             os_version,
             reported_at,
             preview_json: String::new(),
@@ -97,6 +101,10 @@ impl BugReportApp {
             app_version: env!("CARGO_PKG_VERSION"),
             os_version: &self.os_version,
             ime_kind: self.ime_kind,
+            ime_product_name: self.diagnostics.ime_product_name.as_deref(),
+            keyboard_model: &self.diagnostics.keyboard_model,
+            windows_keyboard_layout: &self.diagnostics.windows_keyboard_layout,
+            competing_software: self.diagnostics.competing_software.clone(),
             symptom_category,
             description: &self.description,
             attach_log: self.attach_log,
@@ -164,6 +172,16 @@ impl BugReportApp {
             let _ = tx.send(outcome);
         });
     }
+}
+
+fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
+    let Some(path) = path else {
+        return BugReportDiagnostics::default();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<BugReportDiagnostics>(&json).ok())
+        .unwrap_or_default()
 }
 
 impl eframe::App for BugReportApp {

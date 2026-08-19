@@ -12,6 +12,10 @@ const validPayload = {
   app_version: "1.15.0",
   os_version: "Windows 11 Build 22631",
   ime_kind: "Gji",
+  ime_product_name: "Google 日本語入力",
+  keyboard_model: "Jis",
+  windows_keyboard_layout: "LANGID=0x0411 (Japanese=true)",
+  competing_software: ["やまぶき"],
   symptom_category: "WrongCharacterOutput",
   description: "変換が意図通りに動きません",
   attach_log: true,
@@ -54,6 +58,16 @@ describe("payload validation", () => {
     expect(parseAndValidatePayload(JSON.stringify(validPayload))).toEqual(validPayload);
   });
 
+  it("accepts null ime product name and no competing software", () => {
+    const payload = {
+      ...validPayload,
+      ime_product_name: null,
+      competing_software: []
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
   it("rejects invalid JSON", () => {
     expectHttpError(() => parseAndValidatePayload("{"), 400, "invalid_json");
   });
@@ -94,6 +108,39 @@ describe("payload validation", () => {
       })),
       400,
       "invalid_symptom_category"
+    );
+  });
+
+  it("rejects invalid keyboard models", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        keyboard_model: "Jp"
+      })),
+      400,
+      "keyboard_model_required"
+    );
+  });
+
+  it("rejects empty Windows keyboard layout strings", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        windows_keyboard_layout: ""
+      })),
+      400,
+      "windows_keyboard_layout_required"
+    );
+  });
+
+  it("rejects non-string competing software entries", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        competing_software: ["やまぶき", 42]
+      })),
+      400,
+      "competing_software_required"
     );
   });
 

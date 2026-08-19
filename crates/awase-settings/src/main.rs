@@ -233,12 +233,14 @@ fn main() -> eframe::Result<()> {
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
     let journal_path = arg_value(args, "--journal").map(PathBuf::from);
+    let diagnostics_path = arg_value(args, "--diagnostics").map(PathBuf::from);
     let ime_kind = arg_value(args, "--ime-kind")
         .and_then(|s| s.parse().ok())
         .unwrap_or(awase_windows::bug_report::BugReportImeKind::Unknown);
     bug_report::BugReportArgs {
         journal_path,
         ime_kind,
+        diagnostics_path,
     }
 }
 
@@ -1592,9 +1594,9 @@ impl SettingsApp {
                     let display = cell_display(value);
                     let bg_color = cell_color(value);
                     let stroke = if is_selected {
-                        egui::Stroke::new(2.5, egui::Color32::from_rgb(30, 100, 220))
+                        egui::Stroke::new(2.5_f32, egui::Color32::from_rgb(30, 100, 220))
                     } else {
-                        egui::Stroke::new(1.0, egui::Color32::from_rgb(160, 160, 160))
+                        egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(160, 160, 160))
                     };
 
                     let tip = cell_tooltip(value, pos);
@@ -1842,7 +1844,6 @@ impl SettingsApp {
         }
     }
 
-    #[expect(clippy::too_many_lines)]
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("詳細設定");
         ui.add_space(4.0);
@@ -2913,7 +2914,7 @@ fn color_legend(ui: &mut egui::Ui, color: egui::Color32, label: &str) {
     ui.painter().rect_stroke(
         rect,
         2.0,
-        egui::Stroke::new(1.0, egui::Color32::GRAY),
+        egui::Stroke::new(1.0_f32, egui::Color32::GRAY),
         egui::StrokeKind::Middle,
     );
     ui.label(label);
@@ -3088,7 +3089,6 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-#[expect(clippy::missing_const_for_fn)]
 fn send_reload_config_message() {
     #[cfg(target_os = "windows")]
     {

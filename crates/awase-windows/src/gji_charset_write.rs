@@ -7,6 +7,7 @@
 
 /// 書き込み失敗の理由（呼び出し元がユーザーへ説明する文言を組み立てるための分類）。
 #[derive(Debug)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ApplyError {
     /// `config1.db` のパスを解決できない（`%USERPROFILE%` 未設定等、通常起きない）。
     PathNotFound,

@@ -8,6 +8,7 @@ export const MAX_BODY_BYTES = 512 * 1024;
 export const DAILY_REPORT_LIMIT_PER_IP = 20;
 
 type ImeKind = "Gji" | "MsIme" | "Unknown";
+type KeyboardModel = "Jis" | "Us";
 type SymptomCategory =
   | "WrongCharacterOutput"
   | "CharacterDropped"
@@ -25,6 +26,10 @@ export interface BugReportPayload {
   app_version: string;
   os_version: string;
   ime_kind: ImeKind;
+  ime_product_name: string | null;
+  keyboard_model: KeyboardModel;
+  windows_keyboard_layout: string;
+  competing_software: string[];
   symptom_category: SymptomCategory;
   description: string;
   attach_log: boolean;
@@ -168,6 +173,13 @@ export function validatePayload(value: unknown): BugReportPayload {
   const appVersion = requiredString(value, "app_version");
   const osVersion = requiredString(value, "os_version");
   const imeKind = requiredImeKind(value.ime_kind);
+  const imeProductName = requiredNullableString(value, "ime_product_name");
+  const keyboardModel = requiredKeyboardModel(value.keyboard_model);
+  const windowsKeyboardLayout = requiredString(value, "windows_keyboard_layout");
+  if (windowsKeyboardLayout.length === 0) {
+    throw new HttpError(400, "windows_keyboard_layout_required");
+  }
+  const competingSoftware = requiredStringArray(value, "competing_software");
   const symptomCategory = requiredSymptomCategory(value.symptom_category);
   const description = requiredString(value, "description").trim();
   if (symptomCategory === "Other" && description.length === 0) {
@@ -190,6 +202,10 @@ export function validatePayload(value: unknown): BugReportPayload {
     app_version: appVersion,
     os_version: osVersion,
     ime_kind: imeKind,
+    ime_product_name: imeProductName,
+    keyboard_model: keyboardModel,
+    windows_keyboard_layout: windowsKeyboardLayout,
+    competing_software: competingSoftware,
     symptom_category: symptomCategory,
     description,
     attach_log: attachLog,
@@ -299,11 +315,26 @@ function requiredNullableString(value: Record<string, unknown>, field: string): 
   throw new HttpError(400, `${field}_required`);
 }
 
+function requiredStringArray(value: Record<string, unknown>, field: string): string[] {
+  const fieldValue = value[field];
+  if (!Array.isArray(fieldValue) || fieldValue.some((item) => typeof item !== "string")) {
+    throw new HttpError(400, `${field}_required`);
+  }
+  return fieldValue;
+}
+
 function requiredImeKind(value: unknown): ImeKind {
   if (value === "Gji" || value === "MsIme" || value === "Unknown") {
     return value;
   }
   throw new HttpError(400, "ime_kind_required");
+}
+
+function requiredKeyboardModel(value: unknown): KeyboardModel {
+  if (value === "Jis" || value === "Us") {
+    return value;
+  }
+  throw new HttpError(400, "keyboard_model_required");
 }
 
 function requiredSymptomCategory(value: unknown): SymptomCategory {

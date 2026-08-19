@@ -19,6 +19,7 @@
 //! [`win_event_obs`]: super::win_event_obs
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::RwLock;
 
 use crate::state::event_origin::Generation;
 
@@ -199,6 +200,12 @@ pub struct TsfObservations {
     ///
     /// `active_ime_kind()` はこの値を優先し、0（未取得）の場合のみ `gji_monitor_ok` から派生する。
     pub(super) tsf_active_kind: AtomicU8,
+
+    /// `GetLanguageProfileDescription` で観測済みのアクティブ IME 製品名。
+    ///
+    /// COM/TSF 呼び出しは `gji-io-monitor` スレッド側に閉じ、BugReport 生成時は
+    /// このキャッシュだけを読む。
+    pub(super) ime_product_name: RwLock<Option<String>>,
 }
 
 impl Default for TsfObservations {
@@ -226,6 +233,7 @@ impl TsfObservations {
             ime_show_seq: ChangeCounter::new(),
             ime_change_seq: ChangeCounter::new(),
             tsf_active_kind: AtomicU8::new(0),
+            ime_product_name: RwLock::new(None),
         }
     }
 
@@ -279,6 +287,14 @@ impl TsfObservations {
             ActiveImeKind::MicrosoftIme => 2,
         };
         self.tsf_active_kind.swap(val, Ordering::Release) != val
+    }
+
+    pub(super) fn set_ime_product_name(&self, name: Option<String>) {
+        let mut guard = self
+            .ime_product_name
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = name;
     }
 }
 
@@ -371,6 +387,17 @@ pub(crate) fn gji_write_bytes() -> u64 {
 pub(crate) fn gji_is_active_ime() -> bool {
     TSF_OBS.gji_monitor_ok.load(Ordering::Acquire)
         && TSF_OBS.tsf_active_kind.load(Ordering::Acquire) == 1
+}
+
+/// BugReport 用: 既存の TSF プロファイル列挙で観測済みの IME 製品名を返す。
+///
+/// ここでは COM/TSF API を呼ばず、`gji-io-monitor` が更新したキャッシュを読むだけ。
+pub(crate) fn current_ime_product_name() -> Option<String> {
+    TSF_OBS
+        .ime_product_name
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。

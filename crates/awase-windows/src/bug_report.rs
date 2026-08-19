@@ -98,6 +98,10 @@ pub struct BugReportPayload {
     pub app_version: String,
     pub os_version: String,
     pub ime_kind: String,
+    pub ime_product_name: Option<String>,
+    pub keyboard_model: String,
+    pub windows_keyboard_layout: String,
+    pub competing_software: Vec<String>,
     pub symptom_category: SymptomCategory,
     pub description: String,
     pub attach_log: bool,
@@ -105,11 +109,34 @@ pub struct BugReportPayload {
     pub reported_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportDiagnostics {
+    pub ime_product_name: Option<String>,
+    pub keyboard_model: String,
+    pub windows_keyboard_layout: String,
+    pub competing_software: Vec<String>,
+}
+
+impl Default for BugReportDiagnostics {
+    fn default() -> Self {
+        Self {
+            ime_product_name: None,
+            keyboard_model: "Jis".to_owned(),
+            windows_keyboard_layout: "unavailable".to_owned(),
+            competing_software: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BugReportInput<'a> {
     pub app_version: &'a str,
     pub os_version: &'a str,
     pub ime_kind: BugReportImeKind,
+    pub ime_product_name: Option<&'a str>,
+    pub keyboard_model: &'a str,
+    pub windows_keyboard_layout: &'a str,
+    pub competing_software: Vec<String>,
     pub symptom_category: SymptomCategory,
     pub description: &'a str,
     pub attach_log: bool,
@@ -144,6 +171,10 @@ pub fn build_payload(
         app_version: input.app_version.to_owned(),
         os_version: input.os_version.to_owned(),
         ime_kind: input.ime_kind.as_str().to_owned(),
+        ime_product_name: input.ime_product_name.map(str::to_owned),
+        keyboard_model: input.keyboard_model.to_owned(),
+        windows_keyboard_layout: input.windows_keyboard_layout.to_owned(),
+        competing_software: input.competing_software.clone(),
         symptom_category: input.symptom_category,
         description,
         attach_log: input.attach_log,
@@ -276,6 +307,10 @@ mod tests {
             app_version: "1.14.0",
             os_version: "Windows 11 Build 22631",
             ime_kind: BugReportImeKind::Gji,
+            ime_product_name: Some("Google 日本語入力"),
+            keyboard_model: "Jis",
+            windows_keyboard_layout: "LANGID=0x0411 (Japanese=true)",
+            competing_software: vec!["やまぶき".to_owned()],
             symptom_category: SymptomCategory::WrongCharacterOutput,
             description,
             attach_log,
@@ -294,6 +329,16 @@ mod tests {
         .unwrap();
         assert_eq!(payload.schema_version, 2);
         assert_eq!(payload.ime_kind, "Gji");
+        assert_eq!(
+            payload.ime_product_name.as_deref(),
+            Some("Google 日本語入力")
+        );
+        assert_eq!(payload.keyboard_model, "Jis");
+        assert_eq!(
+            payload.windows_keyboard_layout,
+            "LANGID=0x0411 (Japanese=true)"
+        );
+        assert_eq!(payload.competing_software, vec!["やまぶき"]);
         assert_eq!(
             payload.symptom_category,
             SymptomCategory::WrongCharacterOutput
@@ -367,6 +412,10 @@ mod tests {
     fn payload_json_matches_schema_names() {
         let json = build_payload_json(&input("説明", true, Some("[]"))).unwrap();
         assert!(json.contains("\"schema_version\": 2"));
+        assert!(json.contains("\"ime_product_name\": \"Google 日本語入力\""));
+        assert!(json.contains("\"keyboard_model\": \"Jis\""));
+        assert!(json.contains("\"windows_keyboard_layout\": \"LANGID=0x0411 (Japanese=true)\""));
+        assert!(json.contains("\"competing_software\": ["));
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
