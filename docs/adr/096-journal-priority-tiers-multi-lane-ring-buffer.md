@@ -6,12 +6,15 @@
 初回実装後、Opus によるアドバーサリアルレビューで must-fix 1件・
 should-fix 4件（B-1〜B-5、詳細は「round2: レビュー指摘と是正」節）が
 見つかり、[docs/design/journal-diagnostic-fidelity-fixes.md](../design/journal-diagnostic-fidelity-fixes.md)
-（Opus 設計）に基づき是正済み。`cargo test -p awase-windows --lib`
-（407件）・`journal_replay`・`drift_correction_replay`・
-`architecture_guard`（33件の固定件数テスト、B-1 再発防止ガード追加分で
-32→33）すべて green。`cargo xwin build`/`check --target
-x86_64-pc-windows-msvc` でリンク成功、clippy 新規警告なし。
-**Windows 実機での動作確認は未実施**（[ADR-095](095-tray-bug-report-cloudflare-intake.md)
+（Opus 設計）に基づき是正済み。さらに round2 レビューが「次に大きい穴」
+と評価した literal-detect 判定結果の収録（C-1〜C-6）も同じ PR に含めた
+（詳細は「round3: literal-detect の収録」節、
+[docs/design/journal-literal-detect-capture.md](../design/journal-literal-detect-capture.md)）。
+`cargo test -p awase-windows --lib`（410件）・`journal_replay`・
+`drift_correction_replay`・`architecture_guard`（34件の固定件数テスト、
+round2 で32→33、round3 で33→34）すべて green。`cargo xwin build`/
+`check --target x86_64-pc-windows-msvc` でリンク成功、clippy 新規警告
+なし。**Windows 実機での動作確認は未実施**（[ADR-095](095-tray-bug-report-cloudflare-intake.md)
 側の既知の限界と同様）。
 
 ## コンテキスト
@@ -187,6 +190,51 @@ reducer が `from` を読んでいないこと等）、設計書の主要な主�
 した。`architecture_guard.rs` は32→33件（B-1 の再発防止ガード追加分）。
 検証結果は「ステータス」節を参照。
 
+## round3: literal-detect の収録（2026-08-19）
+
+round2 レビューが「ADR-096 が塞いだ3ギャップの次に大きい穴」と評価した
+literal-detect 判定結果（`DetectionResult`・per-VK の状態・
+`raw_tsf_literal_consecutive_count` の give-up 分岐）の0%収録を、
+同じ PR で解消した。設計は
+[docs/design/journal-literal-detect-capture.md](../design/journal-literal-detect-capture.md)
+（Opus 設計、`DetectionResult` の判定ロジック自体は不変・`yield_step`
+呼び出し回数を変更前後で確認し probe タイミングを一切変えていないこと
+を Claude が実コードで裏取り）。
+
+- **C-1**: `tsf/literal_facts.rs`（新規・ungated）に判定結果を表す純粋
+  データ型（`LiteralVerdict`/`DetectRoute`/`DetectPath`/`DetectTarget`/
+  `DetectEvidence`）を追加。`LiteralDetector::evidence_now()`（読み取り
+  専用）と `DetectionResult → LiteralVerdict` の変換を追加。
+- **C-2**: `ProbeAction`（`RawTsfLiteralRecovery`/`CompositionConfirmed`/
+  `TransmitSingleVk`、新設 `LiteralDetectNote`）に判定結果を相乗り。
+  verdict はアクションから逆算できない（`per_vk_recovery_params` が
+  `SuspectedLiteral@idx>0` と `StaleConfirm@idx>0` を同じ
+  `(backs=0, escape=true)` に潰すことをコードで確認済み、BUG-33 追補4の
+  区別そのもの）ため。
+- **C-3**: `dispatch_probe_actions` に `LiteralDetectTrace` out パラメータ
+  を追加し、`StepProbeResult` 経由で `platform.rs` まで持ち上げる
+  （`output/probe_io.rs`・`tsf/probe.rs`・`tsf/warmup/*` は `crate::journal`
+  を一切参照しない、ADR-096 決定2の継続）。
+- **C-4**: `journal_policy::literal_detect_is_notable`（7 verdict の
+  記録要否を純粋関数で判定、Linux CI 回帰テスト付き）。BUG-27/45 の
+  「ログの不在」型の決め手は、`platform.rs` の `pending_literal_vk` に
+  よる `AbortedNoVerdict` の再構成（`yield_step` を増やさずに実現）で
+  対応。
+- **C-5**: `JournalEntry::LiteralDetect`（`timing` レーン）追加、
+  `TsfProbeStarted` に `consecutive_at_start` を追加。
+- **C-6**: レーン容量・予備枠は実測前のため
+  [tuning-constants ルール](../../.claude/rules/tuning-constants.md)
+  に従い変更せず。実機測定3項目を残した。
+
+`architecture_guard.rs` に新規ガードを追加（33→34件）:
+「`src/output/**`・`src/tsf/**` の本番コードが `crate::journal`
+（`journal_policy` を除く）を参照しないこと」。ADR-096 決定2 と
+round2 の Y-2 を機械可読にする。
+
+過去バグ9件（BUG-03/24/27/29/30/33/36/38/40/45）と、本設計で残る
+フィールドの対応表は設計書末尾を参照。検証結果は「ステータス」節を
+参照。
+
 ## 保持するもの（変更しないもの）
 
 - `state::ime_event::ImeEvent` の型そのもの（`FocusChanged` のフィールド
@@ -224,14 +272,18 @@ reducer が `from` を読んでいないこと等）、設計書の主要な主�
   - `class_name` の欠落（`FocusEndpoint` には含まれるが `KeyEventSummary`
     等には無い）・`RawKeyEvent.extra_info` の欠落。BUG-56/08/14 で
     `process_name` と同格以上に効いた識別子。
-  - **literal-detect 判定結果（`DetectionResult`、per-VK の状態、
-    `raw_tsf_literal_consecutive_count`、give-up 分岐）が0%収録**。
-    round2 レビューは「ADR-096 が塞いだ3ギャップの次に大きい穴」と
-    評価している（BUG-03/24/27/29/30/36/38/40/45 の9件で決め手だった）。
+  - ~~literal-detect 判定結果が0%収録~~ → round3（C-1〜C-6）で解消。
   - IME 種別変化（`WM_IME_KIND_CHANGED`/`set_active_ime_kind`）が
     journal に記録されない。
   - TSF固有シグナル（`gji_candidate_show`/`gji_candidate_visible_now()`
-    の区別、`himc_null`）が0%収録。
+    の区別、`himc_null`）は **literal-detect 判定の文脈でのみ**
+    round3 の `DetectEvidence`（`show_changed`/`candidate_visible`）で
+    部分的に解消した。判定と無関係な単独のタイミング（例えば cold
+    セッション外での candidate show/hide）は引き続き0%収録。
   - hook 層で swallow される外部注入キー（`VK_KANA`/`VK_DBE_ROMAN`/
     `VK_DBE_NOROMAN` 等）は原理的に journal に現れない
     （BUG-08/62 型の決定的証拠は現状の設計では再現不能）。
+  - round3 自身が残した限界（設計書末尾）: `nc_fired`/`gji_settled`
+    （`ProbeObservations`）自体は記録しない（BUG-40 は「検出がスキップ
+    された」ことまでは読めるが「なぜ `nc_fired` が true に化けたか」は
+    読めない）。`grace_hold_verdict` の hold 中の内部状態も記録しない。
