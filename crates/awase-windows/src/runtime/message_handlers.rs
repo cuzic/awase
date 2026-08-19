@@ -161,6 +161,9 @@ pub(crate) unsafe fn handle_wm_timer(
             crate::ime_diagnostic::set_tsf_probe_snap(snap);
             app.platform.advance_tsf_probe();
             crate::ime_diagnostic::clear_tsf_probe_snap();
+            for entry in app.platform.drain_journal_entries() {
+                app.platform_state.ime.journal.record(entry);
+            }
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);
@@ -189,6 +192,9 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == TIMER_GJI_LONG_IDLE => {
             app.platform.timer.kill(TIMER_GJI_LONG_IDLE);
             app.platform.gji_on_timer_long_idle();
+            for entry in app.platform.drain_journal_entries() {
+                app.platform_state.ime.journal.record(entry);
+            }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             let last_activity = hook::hook_alive_tick_ms();
@@ -425,6 +431,9 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         let mode = app.platform.output.injection_mode;
         log::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
         app.platform.gji_on_ime_on(mode);
+        for entry in app.platform.drain_journal_entries() {
+            app.platform_state.ime.journal.record(entry);
+        }
     }
 
     // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）と
@@ -645,6 +654,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::BugReport) => {
             let ime_kind = current_bug_report_ime_kind();
             let dump_result = with_app(|app| {
+                for entry in app.platform.drain_journal_entries() {
+                    app.platform_state.ime.journal.record(entry);
+                }
                 app.platform_state
                     .ime
                     .journal
@@ -723,6 +735,9 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 
     let _ = with_app(|runtime| {
         runtime.platform.flush_raw_tsf_literal_recovery();
+        for entry in runtime.platform.drain_journal_entries() {
+            runtime.platform_state.ime.journal.record(entry);
+        }
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
@@ -824,6 +839,9 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             "[probe-admission] rejected since last dump: epoch_mismatch={}",
             stats.epoch_mismatch
         );
+    }
+    for entry in app.platform.drain_journal_entries() {
+        app.platform_state.ime.journal.record(entry);
     }
     app.platform_state
         .ime

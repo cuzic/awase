@@ -11,6 +11,10 @@ use std::time::Duration;
 use serde::Serialize;
 
 pub const DEFAULT_CAPACITY: usize = 2048;
+pub const STATE_LANE_CAPACITY: usize = 1024;
+pub const TIMING_LANE_CAPACITY: usize = 512;
+pub const ACTUATION_LANE_CAPACITY: usize = 512;
+pub const KEY_INPUT_LANE_CAPACITY: usize = 512;
 
 const TRIGGER_WINDOW: Duration = Duration::from_secs(3);
 
@@ -36,6 +40,7 @@ pub struct KeyEventSummary {
     pub vk_code: u16,
     pub scan_code: u32,
     pub is_down: bool,
+    pub injected: bool,
     pub timestamp_us: u64,
     pub key_class: &'static str,
     pub alt: bool,
@@ -51,6 +56,7 @@ impl KeyEventSummary {
             vk_code: event.vk_code.0,
             scan_code: event.scan_code.0,
             is_down: matches!(event.event_type, KeyEventType::KeyDown),
+            injected: event.injected,
             timestamp_us: event.timestamp,
             key_class: match event.key_classification {
                 KeyClassification::Char => "Char",
@@ -164,6 +170,33 @@ pub enum JournalEntry {
         outcome: awase::platform::ImeOpenOutcome,
         reason: crate::state::ime_event::OpenApplyReason,
     },
+    /// `ImeEvent::FocusChanged` と同じタイミングで、reducer に渡さない診断専用の
+    /// アプリ名付きフォーカス遷移を記録する。
+    FocusTransition {
+        from: Option<crate::state::ime_event::HwndId>,
+        to: crate::state::ime_event::HwndId,
+        process_name: String,
+        profile: String,
+    },
+    /// GJI FSM の入力イベント/タイムアウト前後の状態。
+    GjiFsmTransition {
+        trigger: String,
+        state_before: String,
+        state_after: String,
+    },
+    /// TSF/GJI probe の開始。
+    TsfProbeStarted {
+        source: String,
+        cold_seq: u64,
+        gji_state: String,
+    },
+    /// TSF/GJI probe の完了・中断・学習完了。
+    TsfProbeCompleted {
+        outcome: String,
+        cold_seq: Option<u64>,
+        elapsed_ms: u64,
+        gji_state: String,
+    },
     /// ダンプトリガー発動
     DumpTriggered,
 }
@@ -180,6 +213,99 @@ pub struct JournalEnvelope {
 
 // ── UnifiedJournal ────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy)]
+struct LaneCapacities {
+    state: usize,
+    timing: usize,
+    actuation: usize,
+    key_input: usize,
+}
+
+impl LaneCapacities {
+    const DEFAULT: Self = Self {
+        state: STATE_LANE_CAPACITY,
+        timing: TIMING_LANE_CAPACITY,
+        actuation: ACTUATION_LANE_CAPACITY,
+        key_input: KEY_INPUT_LANE_CAPACITY,
+    };
+
+    const fn uniform(capacity: usize) -> Self {
+        Self {
+            state: capacity,
+            timing: capacity,
+            actuation: capacity,
+            key_input: capacity,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct JournalLane {
+    buffer: VecDeque<JournalEnvelope>,
+    capacity: usize,
+}
+
+impl JournalLane {
+    fn new(capacity: usize) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, envelope: JournalEnvelope) {
+        if self.buffer.len() == self.capacity {
+            self.buffer.pop_front();
+        }
+        self.buffer.push_back(envelope);
+    }
+}
+
+#[derive(Debug)]
+struct JournalLanes {
+    state: JournalLane,
+    timing: JournalLane,
+    actuation: JournalLane,
+    key_input: JournalLane,
+}
+
+impl JournalLanes {
+    fn new(capacities: LaneCapacities) -> Self {
+        Self {
+            state: JournalLane::new(capacities.state),
+            timing: JournalLane::new(capacities.timing),
+            actuation: JournalLane::new(capacities.actuation),
+            key_input: JournalLane::new(capacities.key_input),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalLaneKind {
+    State,
+    Timing,
+    Actuation,
+    KeyInput,
+}
+
+impl JournalEntry {
+    const fn lane_kind(&self) -> JournalLaneKind {
+        match self {
+            Self::ImeEvent { .. }
+            | Self::ImeOpenApplied { .. }
+            | Self::FocusTransition { .. }
+            | Self::DumpTriggered => JournalLaneKind::State,
+            Self::GjiFsmTransition { .. }
+            | Self::TsfProbeStarted { .. }
+            | Self::TsfProbeCompleted { .. } => JournalLaneKind::Timing,
+            Self::ImeActuation { .. } | Self::ConvClassifyCall { .. } | Self::TimerFired { .. } => {
+                JournalLaneKind::Actuation
+            }
+            Self::KeyInput { .. } => JournalLaneKind::KeyInput,
+        }
+    }
+}
+
 /// 統合イベントジャーナル。
 ///
 /// タイムスタンプは注入された `quanta::Clock` で自己採取するため、
@@ -187,16 +313,17 @@ pub struct JournalEnvelope {
 pub struct UnifiedJournal {
     clock: quanta::Clock,
     start: quanta::Instant,
-    buffer: VecDeque<JournalEnvelope>,
+    lanes: JournalLanes,
     next_seq: u64,
-    capacity: usize,
 }
 
 impl std::fmt::Debug for UnifiedJournal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UnifiedJournal")
-            .field("len", &self.buffer.len())
-            .field("capacity", &self.capacity)
+            .field("state_len", &self.lanes.state.buffer.len())
+            .field("timing_len", &self.lanes.timing.buffer.len())
+            .field("actuation_len", &self.lanes.actuation.buffer.len())
+            .field("key_input_len", &self.lanes.key_input.buffer.len())
             .field("next_seq", &self.next_seq)
             .finish_non_exhaustive()
     }
@@ -206,58 +333,80 @@ impl UnifiedJournal {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         let clock = quanta::Clock::new();
-        let start = clock.now();
-        Self {
-            clock,
-            start,
-            buffer: VecDeque::with_capacity(capacity),
-            next_seq: 0,
-            capacity,
-        }
+        let capacities = if capacity == DEFAULT_CAPACITY {
+            LaneCapacities::DEFAULT
+        } else {
+            LaneCapacities::uniform(capacity)
+        };
+        Self::new_with_clock_and_capacities(clock, capacities)
     }
 
     /// テスト用: 外部から `quanta::Clock` を注入してジャーナルを作成する。
     #[must_use]
     pub fn new_with_clock(capacity: usize, clock: quanta::Clock) -> Self {
+        let capacities = if capacity == DEFAULT_CAPACITY {
+            LaneCapacities::DEFAULT
+        } else {
+            LaneCapacities::uniform(capacity)
+        };
+        Self::new_with_clock_and_capacities(clock, capacities)
+    }
+
+    fn new_with_clock_and_capacities(clock: quanta::Clock, capacities: LaneCapacities) -> Self {
         let start = clock.now();
         Self {
             clock,
             start,
-            buffer: VecDeque::with_capacity(capacity),
+            lanes: JournalLanes::new(capacities),
             next_seq: 0,
-            capacity,
         }
     }
 
-    /// エントリを記録する。タイムスタンプは内部クロックで自己採取。容量超過時は最古を破棄。
+    /// エントリを記録する。タイムスタンプは内部クロックで自己採取。容量超過時はレーン内の最古を破棄。
     pub fn record(&mut self, entry: JournalEntry) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
         let elapsed_ms = (self.clock.now() - self.start).as_millis() as u64;
-        if self.buffer.len() == self.capacity {
-            self.buffer.pop_front();
-        }
-        self.buffer.push_back(JournalEnvelope {
+        let lane = entry.lane_kind();
+        let envelope = JournalEnvelope {
             seq,
             elapsed_ms,
             entry,
-        });
+        };
+        match lane {
+            JournalLaneKind::State => self.lanes.state.push(envelope),
+            JournalLaneKind::Timing => self.lanes.timing.push(envelope),
+            JournalLaneKind::Actuation => self.lanes.actuation.push(envelope),
+            JournalLaneKind::KeyInput => self.lanes.key_input.push(envelope),
+        }
         seq
     }
 
     #[must_use]
     pub fn len(&self) -> usize {
-        self.buffer.len()
+        self.lanes.state.buffer.len()
+            + self.lanes.timing.buffer.len()
+            + self.lanes.actuation.buffer.len()
+            + self.lanes.key_input.buffer.len()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
+        self.len() == 0
     }
 
     /// 全エントリを JSON 文字列にシリアライズして返す。
     pub fn to_json(&self) -> Result<String, DumpError> {
-        let entries: Vec<&JournalEnvelope> = self.buffer.iter().collect();
+        let mut entries: Vec<&JournalEnvelope> = self
+            .lanes
+            .state
+            .buffer
+            .iter()
+            .chain(self.lanes.timing.buffer.iter())
+            .chain(self.lanes.actuation.buffer.iter())
+            .chain(self.lanes.key_input.buffer.iter())
+            .collect();
+        entries.sort_by_key(|entry| entry.seq);
         Ok(serde_json::to_string_pretty(&entries)?)
     }
 
@@ -437,17 +586,44 @@ mod tests {
         (UnifiedJournal::new_with_clock(10, clock), mock)
     }
 
-    fn make_entry() -> JournalEntry {
+    fn make_state_entry() -> JournalEntry {
         JournalEntry::ImeEvent {
             event: crate::state::ime_event::ImeEvent::PanicReset { target: true },
+        }
+    }
+
+    fn make_timing_entry() -> JournalEntry {
+        JournalEntry::GjiFsmTransition {
+            trigger: "test".to_owned(),
+            state_before: "before".to_owned(),
+            state_after: "after".to_owned(),
+        }
+    }
+
+    fn make_key_input_entry() -> JournalEntry {
+        JournalEntry::KeyInput {
+            event: KeyEventSummary {
+                vk_code: 65,
+                scan_code: 30,
+                is_down: true,
+                injected: true,
+                timestamp_us: 123,
+                key_class: "Char",
+                alt: false,
+                ctrl: false,
+                shift: false,
+            },
+            state_before: "engine-before".to_owned(),
+            state_after: "engine-after".to_owned(),
+            decision: DecisionKind::PassThrough,
         }
     }
 
     #[test]
     fn journal_record_increments_seq() {
         let (mut j, _mock) = mock_journal();
-        let s0 = j.record(make_entry());
-        let s1 = j.record(make_entry());
+        let s0 = j.record(make_state_entry());
+        let s1 = j.record(make_timing_entry());
         assert_eq!(s0, 0);
         assert_eq!(s1, 1);
     }
@@ -455,30 +631,55 @@ mod tests {
     #[test]
     fn journal_elapsed_ms_advances_with_clock() {
         let (mut j, mock) = mock_journal();
-        j.record(make_entry());
+        j.record(make_state_entry());
         mock.increment(Duration::from_millis(42));
-        j.record(make_entry());
-        let elapsed: Vec<u64> = j.buffer.iter().map(|e| e.elapsed_ms).collect();
+        j.record(make_state_entry());
+        let elapsed: Vec<u64> = j.lanes.state.buffer.iter().map(|e| e.elapsed_ms).collect();
         assert_eq!(elapsed[0], 0);
         assert_eq!(elapsed[1], 42);
     }
 
     #[test]
-    fn journal_capacity_drops_oldest() {
-        let (mut j, _mock) = mock_journal();
-        for _ in 0..12 {
-            j.record(make_entry());
+    fn journal_lane_capacity_drops_oldest_per_lane() {
+        let (clock, _mock) = quanta::Clock::mock();
+        let mut j = UnifiedJournal::new_with_clock_and_capacities(
+            clock,
+            LaneCapacities {
+                state: 2,
+                timing: 2,
+                actuation: 2,
+                key_input: 2,
+            },
+        );
+        for _ in 0..3 {
+            j.record(make_state_entry());
         }
-        assert_eq!(j.len(), 10);
-        let seqs: Vec<u64> = j.buffer.iter().map(|e| e.seq).collect();
-        assert_eq!(seqs[0], 2);
-        assert_eq!(seqs[9], 11);
+        for _ in 0..3 {
+            j.record(make_key_input_entry());
+        }
+        assert_eq!(j.len(), 4);
+        let state_seqs: Vec<u64> = j.lanes.state.buffer.iter().map(|e| e.seq).collect();
+        let key_seqs: Vec<u64> = j.lanes.key_input.buffer.iter().map(|e| e.seq).collect();
+        assert_eq!(state_seqs, vec![1, 2]);
+        assert_eq!(key_seqs, vec![4, 5]);
+    }
+
+    #[test]
+    fn journal_to_json_merges_lanes_by_seq() {
+        let (mut j, _mock) = mock_journal();
+        j.record(make_state_entry());
+        j.record(make_key_input_entry());
+        j.record(make_timing_entry());
+        let json = j.to_json().unwrap();
+        let values: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+        let seqs: Vec<u64> = values.iter().map(|v| v["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![0, 1, 2]);
     }
 
     #[test]
     fn journal_to_json_produces_array() {
         let (mut j, _mock) = mock_journal();
-        j.record(make_entry());
+        j.record(make_state_entry());
         let json = j.to_json().unwrap();
         assert!(json.starts_with('['));
         assert!(json.contains("ImeEvent"));

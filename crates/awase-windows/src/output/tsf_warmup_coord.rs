@@ -81,6 +81,10 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().needs_f2_probe()
     }
 
+    pub(crate) fn gji_state_label(&self) -> String {
+        self.tsf_warmup.borrow().diagnostic_state_label()
+    }
+
     /// 検出した IME 種別に応じてウォームアップ戦略を切り替える。
     pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
         use crate::tsf::observer::ActiveImeKind;

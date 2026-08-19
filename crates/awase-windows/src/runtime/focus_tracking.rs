@@ -228,18 +228,28 @@ impl Runtime {
         // クリアしても、複数の rapid focus 変化（仮想デスクトップ切替等）で
         // 2 回目以降の guard が機能し続けるよう ImeStateHub 側で永続保持している。
         let pre_focus_explicit_off_ms = self.platform_state.ime.persistent_explicit_off_ms();
+        let ime_profile = crate::state::ime_event::ImePolicyProfile::from(new_profile);
+        let process_name = self.platform.focus.process_name().to_owned();
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::FocusTransition {
+                from: None,
+                to: new_hwnd,
+                process_name: process_name.clone(),
+                profile: format!("{ime_profile:?}"),
+            });
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::FocusChanged {
                 from: None,
                 to: new_hwnd,
-                profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
+                profile: ime_profile,
                 focus_epoch: self.platform_state.focus.focus_epoch,
             },
             tick_ms,
         );
 
         {
-            let process_name = self.platform.focus.process_name().to_owned();
             self.platform_state.keymap.active_keymaps =
                 self.all_keymaps.filter_active(&process_name);
             log::debug!(
@@ -367,6 +377,9 @@ impl Runtime {
                 ) {
                     let mode = self.platform.output.injection_mode;
                     self.platform.gji_on_ime_on(mode);
+                    for entry in self.platform.drain_journal_entries() {
+                        self.platform_state.ime.journal.record(entry);
+                    }
                 }
             }
         }

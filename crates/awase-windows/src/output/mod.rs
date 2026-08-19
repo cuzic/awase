@@ -211,6 +211,7 @@ pub(crate) struct StepProbeResult {
     /// `UnicodeLiteralObserverFsm` が GJI write なしと判断したとき true になる。
     /// `advance_tsf_probe` がフォーカス中クラスを Tsf に昇格する。
     pub learned_tsf: bool,
+    pub completed_cold_seq: Option<u64>,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -354,6 +355,10 @@ impl Output {
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
         self.warmup_coord.gji_on_event(event)
+    }
+
+    pub(crate) fn gji_state_label(&self) -> String {
+        self.warmup_coord.gji_state_label()
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -921,8 +926,10 @@ impl Output {
                 gji_response: None,
                 needs_gji_composition_reset: false,
                 learned_tsf: false,
+                completed_cold_seq: None,
             };
         };
+        let cold_seq = machine.cold_seq_hint().value();
         log::debug!(
             "[tsf-probe-tick] cold={} t={}ms",
             machine.cold_seq_hint().value(),
@@ -951,6 +958,7 @@ impl Output {
                     gji_response,
                     needs_gji_composition_reset,
                     learned_tsf: false,
+                    completed_cold_seq: Some(cold_seq),
                 }
             }
             probe_io::DispatchResult::Continue => {
@@ -964,6 +972,7 @@ impl Output {
                     gji_response: None,
                     needs_gji_composition_reset,
                     learned_tsf: false,
+                    completed_cold_seq: None,
                 }
             }
             probe_io::DispatchResult::LearnedTsf => {
@@ -977,6 +986,7 @@ impl Output {
                     gji_response: None,
                     needs_gji_composition_reset,
                     learned_tsf: true,
+                    completed_cold_seq: Some(cold_seq),
                 }
             }
         }
