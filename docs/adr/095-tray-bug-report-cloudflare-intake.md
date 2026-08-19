@@ -2,9 +2,10 @@
 
 ## ステータス
 
-実装済み（2026-08-19、codex CLI による実装。Windows 実機での動作確認・
-Cloudflare への実デプロイ・DNS カスタムドメイン有効化・R2/KV の実作成は
-未実施）。
+実装済み・Cloudflare 側は実デプロイ済み（2026-08-19）。`report.awase.cc`
+は実際に稼働しており、`POST /v1/reports` が R2 書き込みまで到達すること
+をエンドツーエンドで確認済み（詳細は「実デプロイ」節）。**Windows 実機
+での動作確認（タスクトレイ UI からの一連の操作）は未実施**。
 
 ## コンテキスト
 
@@ -116,9 +117,8 @@ round2 決定に基づき、Worker バックエンドとタスクトレイ UI �
 - **送信データ形式**: JSON（multipart は不採用）。
 - **レート制限・サイズ上限の具体値**: 20件/IP/日、ボディ512KiB、説明欄
   4,000文字、ログ抜粋256KiB（クライアント側でUTF-8境界を壊さず切り詰め）。
-- **R2 保持期間**: 90日を暫定値として採用（`services/report-worker/README.md`
-  に `wrangler r2 bucket lifecycle add` の実行例を記載。**実際の
-  Cloudflare 上への適用はユーザーの手作業**、まだ設定されていない）。
+- **R2 保持期間**: 90日を暫定値として採用し、`wrangler r2 bucket lifecycle
+  add` で実際に Cloudflare 上へ適用済み（後述「実デプロイ」節）。
 - **送信元 IP の扱い**: レート制限のカウンタキー生成にのみ使用し
   （SHA-256ハッシュ化）、R2 に保存するレポート本体には含めない。
 - **Worker のソース置き場所**: このリポジトリ内 `services/report-worker/`
@@ -126,6 +126,42 @@ round2 決定に基づき、Worker バックエンドとタスクトレイ UI �
 - **添付するログの範囲**: 新規の範囲指定は設けず、既存の journal ダンプ
   機構（直近最大2048エントリ、`UnifiedJournal::dump_to_file`）をそのまま
   使い、クライアント側で合計256KiBに切り詰める方針にした。
+
+### 実デプロイ（2026-08-19）
+
+`services/report-worker/README.md` の手順に沿って、ユーザーの Cloudflare
+アカウント（`tomoya.kaw@gmail.com`、既に `wrangler` が OAuth 認証済み）に
+実際にデプロイした。
+
+1. **R2 の有効化（round1 C-1 の実地確認）**: `wrangler r2 bucket create`
+   は初回 `Please enable R2 through the Cloudflare Dashboard. [code:
+   10042]` で失敗した。ダッシュボードで R2 を明示的に有効化する操作が
+   必要で、**クレジットカード登録は求められなかった**（無料枠の範囲内で
+   完結した）。有効化後は `wrangler` から問題なくバケット作成できた。
+2. **R2 バケット/KV namespace 作成**: `awase-report-bucket` と
+   `RATE_LIMIT_KV`（id `9b1b037d92934d2595146c998edb5e08`）を作成し、
+   `wrangler.toml` のプレースホルダ3箇所（`account_id`/`bucket_name`/
+   `kv_namespaces[0].id`）を実値に置き換えた。
+3. **90日 lifecycle 削除ルール**: `wrangler r2 bucket lifecycle add
+   awase-report-bucket delete-old-reports reports/ --expire-days 90`
+   を実行し適用済み。
+4. **デプロイ**: `wrangler deploy` 成功。`wrangler.toml` の `routes`
+   （`report.awase.cc/*`、zone_name `awase.cc`）も同時に登録された。
+5. **DNS**: デプロイ直後は `report.awase.cc` の DNS レコードが存在せず
+   （`NXDOMAIN`）、Worker route は登録されていても到達不能だった。
+   Workers の「Custom Domain」機能ではなく、**ユーザーが手動で
+   `report.awase.cc` の CNAME レコード（proxied）を作成**することで
+   解決した。Custom Domain 機能は結果的に使わなかった（手動 CNAME +
+   `wrangler.toml` の `routes` の組み合わせで十分に機能した）。
+6. **エンドツーエンド疎通確認**: 有効なペイロードで
+   `POST https://report.awase.cc/v1/reports` を実行し、`HTTP/2 201` と
+   `{"report_id":"..."}` を確認。`wrangler r2 object get ... --remote`
+   で該当オブジェクトが実際に R2 に書き込まれていることも確認した。
+   確認用のテストオブジェクトはその後 `wrangler r2 object delete` で
+   削除済み。
+
+これにより round1 C-1（Cloudflare のカード登録要否）は解消し、「既知の
+限界・未決定事項」の実デプロイ関連項目も解消した（詳細は同節）。
 
 ## 決定
 
@@ -221,14 +257,13 @@ GitHub Issues ではなく非公開フォームで受け付ける（前述、変
 
 実装（前述「実装」節）で解消した項目は取り消し線で示す。
 
-- **Cloudflare R2 の有効化にカード登録が必要かどうか**は未検証のまま。
-  codex はこの確認を実施できない（実アカウント操作が必要）ため、
-  ユーザー自身が確認し、結果を日付付きで本 ADR に追記すること
-  （round1 C-1）。
+- ~~Cloudflare R2 の有効化にカード登録が必要かどうか~~ → 2026-08-19
+  にユーザーの実アカウントで確認済み（round1 C-1）。ダッシュボードでの
+  明示的な有効化操作は必要だったが、**カード登録は求められなかった**
+  （無料枠の範囲内）。詳細は「実デプロイ」節。
 - ~~R2 の保持期間（自動削除までの日数）・送信元 IP を保存するか否か~~
-  → 実装で決定（90日を暫定値として README に手順記載、IP は非保存）。
-  ただし **90日ルールの実際の Cloudflare 上への適用（`wrangler r2 bucket
-  lifecycle add` の実行）はまだ行われていない**。
+  → 実装で決定（90日、IP は非保存）し、**実際の Cloudflare 上にも
+  `wrangler r2 bucket lifecycle add` で適用済み**（2026-08-19）。
 - ~~添付するログ/内部状態の範囲~~ → 既存の journal ダンプ機構をそのまま
   流用する方針で実装（新規の範囲指定ロジックは作らなかった）。ただし
   これが [fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)
@@ -259,12 +294,12 @@ GitHub Issues ではなく非公開フォームで受け付ける（前述、変
 - **Windows 実機での動作確認は未実施。** `cargo xwin build`/`cargo test`
   （Linux）では検証したが、実際に awase.exe から「不具合を報告」を選び、
   journal ダンプ→別プロセス起動→ WinHTTP 送信という一連の経路が実機で
-  動くかは未確認。`report.awase.cc` 自体も未デプロイのため、送信は
-  現状ネットワークエラーで失敗する（ローカル保存フォールバックの経路が
-  代わりに動作するはず、という点も含め実機確認が必要）。
-- **実デプロイ一式が未実施**: `wrangler login`、R2 バケット/KV
-  namespace の作成、`wrangler.toml` のプレースホルダ（account_id・
-  bucket_name・kv id）の実値差し替え、`report.awase.cc` の Custom
-  Domain 有効化、R2 lifecycle 削除ルールの適用。いずれも
-  `services/report-worker/README.md` に手順を記載済みだが、ユーザーの
-  手作業が必要。
+  動くかは未確認。**`report.awase.cc` 自体は実際に稼働している**ため
+  （前述「実デプロイ」節）、実機確認では実際に送信されるところまで
+  確認できるはず。
+- ~~実デプロイ一式~~ → 2026-08-19 に完了（前述「実デプロイ」節）。
+  `report.awase.cc` は Workers の「Custom Domain」機能ではなく、
+  ユーザーが手動作成した CNAME レコード（proxied）+ `wrangler.toml` の
+  `routes` で疎通している。R2 バケット・KV namespace・90日 lifecycle
+  ルールも実際に作成・適用済み。エンドツーエンドの疎通確認（有効な
+  ペイロードで 201 応答・R2 書き込みまで）も実施済み。
