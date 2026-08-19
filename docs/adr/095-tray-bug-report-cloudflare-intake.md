@@ -267,6 +267,40 @@ GitHub Issues ではなく非公開フォームで受け付ける（前述、変
   （このリポジトリでは1クライアント実装のみで後方互換を気にする実利用者
   がまだいないため、バージョン分岐実装は行わない）。
 
+### 8. IME・キーボード環境情報の追加（2026-08-19 追加、ユーザー決定）
+
+決定7と同じ `schema_version: 2`（未デプロイの機能なのでバージョンを
+分けず1本にまとめた）に、以下4フィールドを追加した:
+
+- `ime_product_name: string | null` — `GetLanguageProfileDescription` に
+  基づく IME の実際の製品名（例: 「Google 日本語入力」）。既存の
+  `ime_kind`（Gji/MsIme/Unknown の粗い3値）を補う。**新規の COM/TSF 呼び出しは
+  追加しない**: `tsf/tip_detector.rs::dump_profiles()` が既に取得している
+  説明文字列を `(clsid, langid, profile_guid)` キーでキャッシュし、
+  `query_active_kind()` がアクティブプロファイルと照合して
+  `tsf/observer.rs::TSF_OBS` の `RwLock<Option<String>>` に反映する。
+  不具合報告生成時はこのキャッシュを読むだけ（取得できなければ `null`）。
+- `keyboard_model: "Jis" | "Us"` — awase 自身の `GeneralConfig.keyboard_model`
+  設定。
+- `windows_keyboard_layout: string` — `GetKeyboardLayout` による Windows
+  自身の認識するキーボードレイアウト（`LANGID=0x.... (Japanese=..)`）。
+  報告生成時にその場で呼び出す副作用のない読み取り専用 API のため
+  キャッシュ不要。
+- `competing_software: string[]` — ADR-060 の競合ソフトウェア検出
+  （やまぶき/やまぶきR/紅皿、`WH_KEYBOARD_LL` フックが衝突しうる他の
+  親指シフトエミュレータ）を、起動時の一度きりの警告からも報告生成時
+  からも呼べる関数 `detect_conflicting_software()` として抽出し再利用。
+
+「キーボードドライバ」情報として物理ハードウェアドライバ名までは
+含めない（Windows は簡単に取得できる標準 API を持たず、取得コストが
+見合わないと判断）。最も近い概念である「競合するキーボードフック
+ソフトウェア」の検出で代替する。
+
+新規の COM/TSF 呼び出しをタスクトレイの常駐プロセス（`awase.exe`）側の
+既存スレッド・既存タイミング以外から追加しないことを徹底した
+（`tsf/observer.rs` は過去のバグの多くの震源地であり、新規の呼び出し元
+追加はそれ自体がリスクのため）。
+
 ### 選ばなかった選択肢
 
 - **GitHub Issues**: 公開性がプライバシー要件と相容れないため不採用。
