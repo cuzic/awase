@@ -536,11 +536,13 @@ name = "awase-settings"
 version = "1.14.0"
 dependencies = [
  "awase",
+ "awase-windows",
  "eframe",
  "env_logger",
  "log",
  "pollster",
  "rfd",
+ "serde_json",
  "toml",
  "windows 0.58.0",
 ]

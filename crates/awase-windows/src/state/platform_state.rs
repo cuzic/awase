@@ -1283,6 +1283,11 @@ pub(crate) struct FocusStore {
     /// 最後にフォアグラウンドプロセスが変わった時刻（ms, GetTickCount 系）。
     /// IME 診断ログで「フォーカス変更からの経過時間」を表示するために使う。
     pub last_focus_change_ms: u64,
+    /// journal 専用: 最後に FocusTransition を記録した時刻（ms, GetTickCount 系）。
+    ///
+    /// プロセス変更以外の window / app_kind / focus_kind 変化も含む。既存の
+    /// `last_focus_change_ms` はキャッシュ保存判定の意味を持つため流用しない。
+    pub last_focus_transition_ms: u64,
     pub focus_debounce_ms: u32,
     pub ime_poll_interval_ms: u32,
     /// フォーカスプロセス変更のエポック番号。
@@ -1299,6 +1304,7 @@ impl FocusStore {
             app_kind: AppKind::Win32,
             focus_kind: FocusKind::Undetermined,
             last_focus_change_ms: 0,
+            last_focus_transition_ms: 0,
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             focus_epoch: 0,

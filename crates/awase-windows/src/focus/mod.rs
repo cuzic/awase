@@ -6,6 +6,7 @@
 // ── 純粋サブモジュール（全プラットフォーム）──────────────────────────────────────
 pub mod cache;
 pub mod class_names;
+pub mod current;
 pub mod kinds;
 
 pub use kinds::{AppKind, FocusKind};
@@ -15,8 +16,6 @@ pub use kinds::{AppKind, FocusKind};
 pub mod classifier;
 #[cfg(windows)]
 pub mod classify;
-#[cfg(windows)]
-pub mod current;
 #[cfg(windows)]
 pub mod hwnd_cache;
 #[cfg(windows)]

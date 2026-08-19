@@ -432,6 +432,14 @@ pub(super) fn initialize_app(
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
     // RefCell が排他借用中でないことは構造的に保証されている。
+    ps.ime
+        .journal
+        .record(crate::journal::JournalEntry::ClockAnchor {
+            tick_ms: hook::current_tick_ms(),
+            hook_us: hook::now_timestamp_us(),
+        });
+    let journal_stamper = ps.ime.journal.stamper();
+
     RUNTIME.set(Runtime::new(
         engine,
         executor::DecisionExecutor::new(),
@@ -449,6 +457,7 @@ pub(super) fn initialize_app(
                 crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
             crate::tsf::composition_fsm::CompositionFsm::new(),
+            journal_stamper,
         ),
         layouts,
         sync_toggle_keys,

@@ -5,6 +5,10 @@
 
 use crate::output::{KeyInjector, Output, VkMarker, VkSequence, WarmupOutcome};
 use crate::state::event_origin::Generation;
+use crate::tsf::literal_facts::{
+    DetectEvidence, DetectPath, DetectRoute, LiteralDetectFacts, LiteralDetectRecord,
+    LiteralDetectTrace, LiteralDetectTraceItem, LiteralVerdict,
+};
 use crate::tsf::output::ColdReason;
 use crate::tsf::warmup::probe_fsm::DeferredVk;
 use crate::tsf::TsfGateState;
@@ -362,6 +366,31 @@ fn flush_deferred_and_mark_warmup(io: &impl ProbeIo, marker: VkMarker) {
     store_gji_warmup_if_probing(io);
 }
 
+fn plan_skipped_record(
+    cold_seq: Generation,
+    target: crate::tsf::warmup::probe_fsm::TransmitTarget,
+    consecutive_before: u32,
+) -> LiteralDetectRecord {
+    LiteralDetectRecord {
+        cold_seq,
+        facts: LiteralDetectFacts {
+            verdict: LiteralVerdict::PlanSkippedLiteral,
+            route: DetectRoute::PlanDecision,
+            path: DetectPath::Word,
+            target: target.into(),
+            vk: None,
+            idx: 0,
+            last_idx: 0,
+            evidence: DetectEvidence::default(),
+        },
+        consecutive_before,
+        gave_up: false,
+        backs: 0,
+        escape_composition: false,
+        session_marked: false,
+    }
+}
+
 /// `dispatch_probe_actions` の結果。
 pub(crate) enum DispatchResult {
     /// probe 完了（タイマー停止）。
@@ -390,6 +419,7 @@ pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,
     initial_actions: Vec<crate::tsf::warmup::probe_fsm::ProbeAction>,
     io: &I,
+    trace: &mut LiteralDetectTrace,
 ) -> DispatchResult
 where
     M: crate::tsf::warmup::tickable_fsm::TickableFsm + ?Sized,
@@ -459,6 +489,15 @@ where
                         // GjiFsm bridge: 送信完了時の warmup 結果を一時バッファに保存する。
                         // step_probe が probe 完了を確認した後に取り出して WarmupComplete に変換する。
                         flush_deferred_and_mark_warmup(io, VkMarker::Tsf);
+                        if !plan.needs_literal {
+                            trace
+                                .0
+                                .push(LiteralDetectTraceItem::Verdict(plan_skipped_record(
+                                    cold_seq,
+                                    target,
+                                    io.consecutive_count(),
+                                )));
+                        }
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -480,6 +519,15 @@ where
                         io.transmit_chrome(&romaji, &chars);
                         // GjiFsm bridge: Chrome 経由でも同様に warmup 結果を保存する。
                         flush_deferred_and_mark_warmup(io, VkMarker::InjectedWithScan);
+                        if !plan.needs_literal {
+                            trace
+                                .0
+                                .push(LiteralDetectTraceItem::Verdict(plan_skipped_record(
+                                    cold_seq,
+                                    target,
+                                    io.consecutive_count(),
+                                )));
+                        }
                         if machine.apply_transmit_done(
                             romaji,
                             ze_bs_count,
@@ -498,8 +546,11 @@ where
                 needs_shift,
                 timeout_ms,
                 is_last,
+                idx,
+                last_idx,
                 target,
             } => {
+                debug_assert_eq!(is_last, idx == last_idx);
                 // `gate_is_bypass()` は TSF composition context の readiness ゲートで
                 // Chrome には適用されない（Chrome は常に gate=Bypass 運用）。
                 // Tsf 向けのときだけ確認する。
@@ -534,6 +585,13 @@ where
                     // GjiFsm bridge: romaji 全体の送信完了に相当するタイミングで warmup 結果を保存する。
                     flush_deferred_and_mark_warmup(io, marker);
                 }
+                trace.0.push(LiteralDetectTraceItem::VkSent {
+                    cold_seq: cold_seq.value(),
+                    vk: vk.0,
+                    idx,
+                    last_idx,
+                    target: target.into(),
+                });
                 machine.apply_vk_sent(detector, deadline_ms);
             }
 
@@ -560,11 +618,23 @@ where
                 backs,
                 romaji,
                 escape_composition,
+                facts,
             } => {
                 // emit_recovery_actions は常にこのアクションを emit する（捨て駒キー
                 // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                 // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                 let consecutive = io.consecutive_count();
+                trace
+                    .0
+                    .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
+                        cold_seq,
+                        facts,
+                        consecutive_before: consecutive,
+                        gave_up: consecutive != 0,
+                        backs,
+                        escape_composition,
+                        session_marked: false,
+                    }));
                 if consecutive == 0 {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
@@ -610,7 +680,20 @@ where
             ProbeAction::CompositionConfirmed {
                 cold_seq,
                 mark_literal_session,
+                facts,
             } => {
+                let consecutive = io.consecutive_count();
+                trace
+                    .0
+                    .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
+                        cold_seq,
+                        facts,
+                        consecutive_before: consecutive,
+                        gave_up: false,
+                        backs: 0,
+                        escape_composition: false,
+                        session_marked: mark_literal_session,
+                    }));
                 // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
                 // 本物の CompositionConfirmed が挟まれば連続ではなくなるため、
                 // 必ずリセットする（従来は FocusChange/SetOpenTrue でしかリセット
@@ -620,6 +703,20 @@ where
                 if mark_literal_session {
                     crate::tsf::observer::mark_literal_session_confirmed(cold_seq);
                 }
+            }
+
+            ProbeAction::LiteralDetectNote { cold_seq, facts } => {
+                trace
+                    .0
+                    .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
+                        cold_seq,
+                        facts,
+                        consecutive_before: io.consecutive_count(),
+                        gave_up: false,
+                        backs: 0,
+                        escape_composition: false,
+                        session_marked: false,
+                    }));
             }
         }
     }
@@ -774,11 +871,36 @@ mod tests {
         )
     }
 
+    fn dispatch_for_test<M>(
+        machine: &mut M,
+        actions: Vec<ProbeAction>,
+        io: &FakeProbeIo,
+    ) -> DispatchResult
+    where
+        M: crate::tsf::warmup::tickable_fsm::TickableFsm + ?Sized,
+    {
+        let mut trace = LiteralDetectTrace::default();
+        dispatch_probe_actions(machine, actions, io, &mut trace)
+    }
+
+    fn test_facts(verdict: LiteralVerdict) -> LiteralDetectFacts {
+        LiteralDetectFacts {
+            verdict,
+            route: DetectRoute::CheckNow,
+            path: DetectPath::Word,
+            target: crate::tsf::literal_facts::DetectTarget::Tsf,
+            vk: None,
+            idx: 0,
+            last_idx: 0,
+            evidence: DetectEvidence::default(),
+        }
+    }
+
     #[test]
     fn done_action_returns_true_without_side_effects() {
         let io = FakeProbeIo::default();
         let mut machine = make_chrome_machine();
-        let result = dispatch_probe_actions(&mut machine, vec![ProbeAction::Done], &io);
+        let result = dispatch_for_test(&mut machine, vec![ProbeAction::Done], &io);
         assert!(result.is_done());
         assert!(!io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
@@ -798,7 +920,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_chrome_called.get());
         assert!(!io.transmit_tsf_called.get());
@@ -820,7 +942,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Chrome,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
             !result.is_done(),
             "should not be Done — LiteralDetect phase pending"
@@ -845,7 +967,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(!io.transmit_tsf_called.get());
     }
@@ -866,7 +988,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
             result.is_done(),
             "should be Done — LiteralDetect must be skipped when GJI is long-idle"
@@ -888,7 +1010,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(!io.transmit_chrome_called.get());
@@ -910,7 +1032,7 @@ mod tests {
             romaji: "ki".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
@@ -929,10 +1051,11 @@ mod tests {
                 backs: 2,
                 romaji: "ka".to_string(),
                 escape_composition: false,
+                facts: test_facts(LiteralVerdict::SuspectedLiteral),
             },
             ProbeAction::Done,
         ];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.set_raw_literal_called.get());
         assert!(io.mark_cold_raw_tsf_called.get());
@@ -977,7 +1100,7 @@ mod tests {
             romaji: "ka".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
@@ -1002,7 +1125,7 @@ mod tests {
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
@@ -1028,7 +1151,7 @@ mod tests {
             romaji: "i".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done());
         assert!(io.transmit_tsf_called.get());
         assert!(
@@ -1057,7 +1180,7 @@ mod tests {
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
             !result.is_done(),
             "plan.needs_literal=true → LiteralDetect phase: Done を即返さないべき"
@@ -1085,7 +1208,7 @@ mod tests {
             romaji: "ko".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(result.is_done(), "plan.needs_literal=false → Done を即返す");
         assert!(io.transmit_tsf_called.get());
     }
@@ -1117,7 +1240,7 @@ mod tests {
             romaji: "to".to_string(),
             target: TransmitTarget::Tsf,
         }];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let result = dispatch_for_test(&mut machine, actions, &io);
         assert!(
             !result.is_done(),
             "plan.needs_literal=true → LiteralDetect フェーズへ移行"
@@ -1140,11 +1263,23 @@ mod tests {
                 backs: 2,
                 romaji: "ko".to_string(),
                 escape_composition: false,
+                facts: test_facts(LiteralVerdict::SuspectedLiteral),
             },
             ProbeAction::Done,
         ];
-        let result = dispatch_probe_actions(&mut machine, actions, &io);
+        let mut trace = LiteralDetectTrace::default();
+        let result = dispatch_probe_actions(&mut machine, actions, &io, &mut trace);
         assert!(result.is_done());
+        assert!(
+            trace.0.iter().any(|item| matches!(
+                item,
+                LiteralDetectTraceItem::Verdict(record)
+                    if record.gave_up
+                        && record.consecutive_before == 1
+                        && record.facts.verdict == LiteralVerdict::SuspectedLiteral
+            )),
+            "give-up 分岐では gave_up=true の Verdict が trace に残るべき: {trace:?}"
+        );
         assert!(
             io.set_raw_literal_called.get(),
             "consecutive > 0: BS cleanup のため set_raw_literal を呼ぶべき (romaji は空で再送なし)"

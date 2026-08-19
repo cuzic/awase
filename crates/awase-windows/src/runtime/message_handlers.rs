@@ -26,7 +26,9 @@ use crate::{
 use awase::platform::ImeOpenOutcome;
 use awase::types::{ContextChange, VkCode};
 
-use crate::app::{check_keyboard_layout_on_change, launch_settings, reload_config};
+use crate::app::{
+    check_keyboard_layout_on_change, launch_bug_report, launch_settings, reload_config,
+};
 
 /// `Engine::on_timeout` 呼び出し直後に、ソロ連打緊急 OFF（ADR-055 追補）が
 /// 発動していればトレイ通知を出す。
@@ -159,6 +161,9 @@ pub(crate) unsafe fn handle_wm_timer(
             crate::ime_diagnostic::set_tsf_probe_snap(snap);
             app.platform.advance_tsf_probe();
             crate::ime_diagnostic::clear_tsf_probe_snap();
+            for entry in app.platform.drain_journal_entries() {
+                app.platform_state.ime.journal.absorb(entry);
+            }
         }
         Some(id) if id == TIMER_TSF_GATE => {
             app.platform.timer.kill(TIMER_TSF_GATE);
@@ -187,6 +192,9 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == TIMER_GJI_LONG_IDLE => {
             app.platform.timer.kill(TIMER_GJI_LONG_IDLE);
             app.platform.gji_on_timer_long_idle();
+            for entry in app.platform.drain_journal_entries() {
+                app.platform_state.ime.journal.absorb(entry);
+            }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             let last_activity = hook::hook_alive_tick_ms();
@@ -423,6 +431,9 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         let mode = app.platform.output.injection_mode;
         log::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
         app.platform.gji_on_ime_on(mode);
+        for entry in app.platform.drain_journal_entries() {
+            app.platform_state.ime.journal.absorb(entry);
+        }
     }
 
     // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）と
@@ -640,6 +651,41 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::Restart) => tray::restart_self(),
         Some(tray::TrayCommand::About) => tray::show_about_dialog(),
+        Some(tray::TrayCommand::BugReport) => {
+            let ime_kind = current_bug_report_ime_kind();
+            let dump_result = with_app(|app| {
+                for entry in app.platform.drain_journal_entries() {
+                    app.platform_state.ime.journal.absorb(entry);
+                }
+                app.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ClockAnchor {
+                        tick_ms: hook::current_tick_ms(),
+                        hook_us: hook::now_timestamp_us(),
+                    });
+                app.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::DumpTriggered);
+                app.platform_state
+                    .ime
+                    .journal
+                    .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES)
+            });
+            match dump_result {
+                Some(Ok(path)) => launch_bug_report(&path, ime_kind),
+                Some(Err(e)) => {
+                    log::error!("[bug-report] journal dump failed: {e}");
+                    let _ = with_app(|app| {
+                        app.platform
+                            .tray
+                            .show_balloon("awase bug report", "journal の添付準備に失敗しました");
+                    });
+                }
+                None => log::error!("[bug-report] runtime unavailable"),
+            }
+        }
         Some(tray::TrayCommand::CapsLock) => {
             crate::ime::toggle_caps_lock();
         }
@@ -669,6 +715,21 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
     }
 }
 
+fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
+    let obs = crate::tsf::observer::tsf_obs();
+    if !obs.ime_kind_detected() {
+        return crate::bug_report::BugReportImeKind::Unknown;
+    }
+    match obs.active_ime_kind() {
+        crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput => {
+            crate::bug_report::BugReportImeKind::Gji
+        }
+        crate::tsf::observer::ActiveImeKind::MicrosoftIme => {
+            crate::bug_report::BugReportImeKind::MsIme
+        }
+    }
+}
+
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
 pub(crate) unsafe fn handle_wm_drain_output_queue() {
     // [drain-start] order-bug 調査用: OUTPUT_GATE 解除から drain 開始までのギャップを観測する。
@@ -684,6 +745,9 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
 
     let _ = with_app(|runtime| {
         runtime.platform.flush_raw_tsf_literal_recovery();
+        for entry in runtime.platform.drain_journal_entries() {
+            runtime.platform_state.ime.journal.absorb(entry);
+        }
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
@@ -786,6 +850,16 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             stats.epoch_mismatch
         );
     }
+    for entry in app.platform.drain_journal_entries() {
+        app.platform_state.ime.journal.absorb(entry);
+    }
+    app.platform_state
+        .ime
+        .journal
+        .record(crate::journal::JournalEntry::ClockAnchor {
+            tick_ms: hook::current_tick_ms(),
+            hook_us: hook::now_timestamp_us(),
+        });
     app.platform_state
         .ime
         .journal

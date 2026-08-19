@@ -50,6 +50,7 @@ const IDM_CLEAR_IMM_CACHE: u16 = 52;
 const IDM_AUTOSTART: u16 = 54;
 const IDM_RESTART: u16 = 56;
 const IDM_ABOUT: u16 = 57;
+const IDM_BUG_REPORT: u16 = 58;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -78,6 +79,7 @@ pub enum TrayCommand {
     ToggleAutoStart,
     Restart,
     About,
+    BugReport,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
     CapsLock,
@@ -604,6 +606,7 @@ pub fn handle_tray_message(
 
         append_menu_sep(hmenu);
         append_menu_item(hmenu, IDM_ABOUT, "awase について");
+        append_menu_item(hmenu, IDM_BUG_REPORT, "不具合を報告...");
         append_menu_item(hmenu, IDM_TOGGLE, "有効/無効切替");
         append_menu_item(hmenu, IDM_EXIT, "終了");
 
@@ -637,6 +640,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_AUTOSTART => Some(TrayCommand::ToggleAutoStart),
         IDM_RESTART => Some(TrayCommand::Restart),
         IDM_ABOUT => Some(TrayCommand::About),
+        IDM_BUG_REPORT => Some(TrayCommand::BugReport),
         IDM_CAPSLOCK => Some(TrayCommand::CapsLock),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {

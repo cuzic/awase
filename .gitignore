@@ -23,3 +23,5 @@ src/engine/repomix-output.md
 !.claude/hooks/
 !.claude/hooks/**
 mutants.out/
+services/report-worker/node_modules/
+services/report-worker/.wrangler/

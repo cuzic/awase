@@ -288,6 +288,10 @@ impl GjiFsm {
         &self.state
     }
 
+    pub(crate) fn state_label(&self) -> &'static str {
+        state_label(&self.state)
+    }
+
     fn alloc_probe_id(&mut self) -> ProbeId {
         let id = ProbeId(self.next_probe_id);
         self.next_probe_id = self.next_probe_id.wrapping_add(1);

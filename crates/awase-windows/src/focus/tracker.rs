@@ -110,8 +110,8 @@ impl FocusTracker {
 
     /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出したうえで、
     /// 実測学習（`ImmCapabilityStore`）による降格を適用する。
-    pub(crate) fn update(&mut self, pid: u32, class_name: String) {
-        self.current.update(pid, class_name);
+    pub(crate) fn update(&mut self, pid: u32, class_name: String, hwnd: usize) {
+        self.current.update(pid, class_name, hwnd);
         let learned = self.imm_learning.get(&self.current.class_name);
         let overridden = Self::apply_learned_imm_capability(self.current.app_profile, learned);
         if overridden != self.current.app_profile {

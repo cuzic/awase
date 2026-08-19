@@ -6,6 +6,7 @@
 //! 親モジュール（`runtime/mod.rs`）のフィールドに `self.*` でアクセスできる。
 
 use crate::focus::cache::DetectionSource;
+use crate::focus::current::FocusIdentity;
 use crate::focus::FocusKind;
 use windows::Win32::Foundation::HWND;
 
@@ -23,6 +24,51 @@ pub(super) struct ClassifiedFocus {
 }
 
 impl Runtime {
+    fn focus_identity_snapshot(&self) -> FocusIdentity {
+        FocusIdentity {
+            hwnd: self.platform.focus.current.hwnd,
+            pid: self.platform.focus.current.pid,
+            class_name: self.platform.focus.current.class_name.clone(),
+            process_name: self.platform.focus.current.process_name.clone(),
+            app_profile: self.platform.focus.current.app_profile,
+            app_kind: self.platform_state.focus.app_kind,
+            focus_kind: self.platform_state.focus.focus_kind,
+        }
+    }
+
+    fn record_focus_transition_if_changed(
+        &mut self,
+        prev: &FocusIdentity,
+        next: &FocusIdentity,
+        prev_started_ms: u64,
+    ) {
+        if next.hwnd == 0 {
+            return;
+        }
+        let changed = prev.changed_axes(next);
+        if !changed.any() {
+            return;
+        }
+        let now_ms = crate::hook::current_tick_ms();
+        let dwell_ms = if prev.hwnd == 0 {
+            0
+        } else {
+            now_ms.saturating_sub(prev_started_ms)
+        };
+        self.platform_state.focus.last_focus_transition_ms = now_ms;
+        let profile = crate::state::ime_event::ImePolicyProfile::from(next.app_profile);
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::FocusTransition {
+                changed,
+                from: (prev.hwnd != 0).then(|| focus_endpoint(prev)),
+                to: focus_endpoint(next),
+                dwell_ms,
+                profile: format!("{profile:?}"),
+            });
+    }
+
     /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
     /// detect_and_update_focus の fetch 部分を除いた apply のみ。
     /// async drain 後に with_app 内で呼ぶ用途に使う。
@@ -30,10 +76,14 @@ impl Runtime {
         &mut self,
         probe: Option<crate::focus::probe::FocusSnapshot>,
     ) -> bool {
+        let prev = self.focus_identity_snapshot();
+        let prev_started_ms = self.platform_state.focus.last_focus_transition_ms;
         let Some(classified) = self.classify_focus_probe(probe) else {
             return false;
         };
         let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
+        let next = self.focus_identity_snapshot();
+        self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
         // injection_mode を push — advance_focus_tracking() で last_focus_info が更新された後に
         // 呼ぶことで injection_hint() が新ウィンドウ (WezTerm 等) を正しく参照できる。
         {
@@ -45,7 +95,7 @@ impl Runtime {
             self.platform.update_injection_mode(new_mode);
         }
         if process_changed {
-            self.on_focus_process_changed(&classified, prev_pid);
+            self.on_focus_process_changed(&classified, prev_pid, &prev);
         } else if classified.kind == FocusKind::Undetermined {
             self.platform
                 .focus
@@ -186,8 +236,11 @@ impl Runtime {
             }
         }
 
-        self.platform
-            .update_focus_info(classified.process_id, classified.class_name.clone());
+        self.platform.update_focus_info(
+            classified.process_id,
+            classified.class_name.clone(),
+            classified.hwnd.0 as usize,
+        );
 
         self.platform_state.ime.set_prev_conversion_mode(None);
 
@@ -199,7 +252,12 @@ impl Runtime {
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
     #[expect(clippy::cognitive_complexity)]
-    fn on_focus_process_changed(&mut self, classified: &ClassifiedFocus, prev_pid: Option<u32>) {
+    fn on_focus_process_changed(
+        &mut self,
+        classified: &ClassifiedFocus,
+        prev_pid: Option<u32>,
+        prev: &FocusIdentity,
+    ) {
         log::info!(
             "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
@@ -228,18 +286,19 @@ impl Runtime {
         // クリアしても、複数の rapid focus 変化（仮想デスクトップ切替等）で
         // 2 回目以降の guard が機能し続けるよう ImeStateHub 側で永続保持している。
         let pre_focus_explicit_off_ms = self.platform_state.ime.persistent_explicit_off_ms();
+        let ime_profile = crate::state::ime_event::ImePolicyProfile::from(new_profile);
+        let process_name = self.platform.focus.process_name().to_owned();
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::FocusChanged {
-                from: None,
+                from: (prev.hwnd != 0).then_some(crate::state::ime_event::HwndId(prev.hwnd)),
                 to: new_hwnd,
-                profile: crate::state::ime_event::ImePolicyProfile::from(new_profile),
+                profile: ime_profile,
                 focus_epoch: self.platform_state.focus.focus_epoch,
             },
             tick_ms,
         );
 
         {
-            let process_name = self.platform.focus.process_name().to_owned();
             self.platform_state.keymap.active_keymaps =
                 self.all_keymaps.filter_active(&process_name);
             log::debug!(
@@ -367,6 +426,9 @@ impl Runtime {
                 ) {
                     let mode = self.platform.output.injection_mode;
                     self.platform.gji_on_ime_on(mode);
+                    for entry in self.platform.drain_journal_entries() {
+                        self.platform_state.ime.journal.absorb(entry);
+                    }
                 }
             }
         }
@@ -438,6 +500,17 @@ impl Runtime {
     pub(super) unsafe fn detect_and_update_focus(&mut self) -> bool {
         let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
         self.apply_focus_probe_result(probe)
+    }
+}
+
+fn focus_endpoint(identity: &FocusIdentity) -> crate::journal::FocusEndpoint {
+    crate::journal::FocusEndpoint {
+        hwnd: crate::state::ime_event::HwndId(identity.hwnd),
+        pid: identity.pid,
+        process_name: identity.process_name.clone(),
+        class_name: identity.class_name.clone(),
+        app_kind: format!("{:?}", identity.app_kind),
+        focus_kind: format!("{:?}", identity.focus_kind),
     }
 }
 

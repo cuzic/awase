@@ -225,7 +225,11 @@ impl Runtime {
                 .on_ctrl_key_up(event.vk_code, tick_ms);
         }
 
-        self.kp_stage_execute(decision, &event, shadow_toggled)
+        let callback = self.kp_stage_execute(decision, &event, shadow_toggled);
+        for entry in self.platform.drain_journal_entries() {
+            self.platform_state.ime.journal.absorb(entry);
+        }
+        callback
     }
 
     /// フォーカス切替直後の非同期プローブ

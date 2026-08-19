@@ -211,6 +211,8 @@ pub(crate) struct StepProbeResult {
     /// `UnicodeLiteralObserverFsm` が GJI write なしと判断したとき true になる。
     /// `advance_tsf_probe` がフォーカス中クラスを Tsf に昇格する。
     pub learned_tsf: bool,
+    pub completed_cold_seq: Option<u64>,
+    pub literal_detect: crate::tsf::literal_facts::LiteralDetectTrace,
 }
 
 /// `ensure_tsf_warm` の戻り値。warmup フローの結果を表す。
@@ -354,6 +356,10 @@ impl Output {
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
         self.warmup_coord.gji_on_event(event)
+    }
+
+    pub(crate) fn gji_state_label(&self) -> String {
+        self.warmup_coord.gji_state_label()
     }
 
     /// `OnComposing` 状態の現在 epoch を返す。`EndComposition` イベント送信に使う。
@@ -921,15 +927,20 @@ impl Output {
                 gji_response: None,
                 needs_gji_composition_reset: false,
                 learned_tsf: false,
+                completed_cold_seq: None,
+                literal_detect: crate::tsf::literal_facts::LiteralDetectTrace::default(),
             };
         };
+        let cold_seq = machine.cold_seq_hint().value();
         log::debug!(
             "[tsf-probe-tick] cold={} t={}ms",
             machine.cold_seq_hint().value(),
             tick_t
         );
         let actions = machine.tick(env);
-        let dispatch = probe_io::dispatch_probe_actions(machine.as_mut(), actions, self);
+        let mut literal_detect = crate::tsf::literal_facts::LiteralDetectTrace::default();
+        let dispatch =
+            probe_io::dispatch_probe_actions(machine.as_mut(), actions, self, &mut literal_detect);
         match dispatch {
             probe_io::DispatchResult::Done => {
                 self.on_tsf_probe_ready();
@@ -951,6 +962,8 @@ impl Output {
                     gji_response,
                     needs_gji_composition_reset,
                     learned_tsf: false,
+                    completed_cold_seq: Some(cold_seq),
+                    literal_detect,
                 }
             }
             probe_io::DispatchResult::Continue => {
@@ -964,6 +977,8 @@ impl Output {
                     gji_response: None,
                     needs_gji_composition_reset,
                     learned_tsf: false,
+                    completed_cold_seq: None,
+                    literal_detect,
                 }
             }
             probe_io::DispatchResult::LearnedTsf => {
@@ -977,6 +992,8 @@ impl Output {
                     gji_response: None,
                     needs_gji_composition_reset,
                     learned_tsf: true,
+                    completed_cold_seq: Some(cold_seq),
+                    literal_detect,
                 }
             }
         }

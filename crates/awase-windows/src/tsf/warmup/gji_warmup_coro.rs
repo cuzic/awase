@@ -226,6 +226,7 @@ async fn gji_coro_body(
         td.romaji,
         observations,
         td.detector,
+        crate::tsf::literal_facts::DetectTarget::Tsf,
         td.deadline_ms,
         td.ze_bs_count,
         ctx.consecutive,

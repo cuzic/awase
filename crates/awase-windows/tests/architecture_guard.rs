@@ -141,6 +141,17 @@ fn production_code_only(content: &str) -> &str {
     content
 }
 
+fn non_comment_lines(content: &str) -> String {
+    content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with("//")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
 /// 切り落とすことの回帰テスト（上の doc 参照）。
 #[test]
@@ -157,6 +168,26 @@ fn production_code_only_strips_test_module_with_crlf() {
     let other =
         "#[cfg(test)]\nfn helper() { needle(); }\n#[cfg(test)]\r\nmod tests {\n needle();\n}\n";
     assert_eq!(production_code_only(other).matches("needle(").count(), 1);
+}
+
+#[test]
+fn output_and_tsf_production_code_do_not_reference_journal_directly() {
+    let offenders: Vec<String> = list_src_files()
+        .into_iter()
+        .filter(|path| path.starts_with("src/output/") || path.starts_with("src/tsf/"))
+        .filter_map(|path| {
+            let content = read_crate_file(&path);
+            let production = non_comment_lines(production_code_only(&content));
+            let direct_journal_refs = production.matches("crate::journal").count()
+                - production.matches("crate::journal_policy").count();
+            (direct_journal_refs > 0).then_some(format!("{path}: {direct_journal_refs}"))
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "output/ and tsf/ production code must pass literal-detect facts upward as data, \
+         leaving JournalEntry conversion to platform.rs: {offenders:?}"
+    );
 }
 
 /// `content` 内で `fn_signature_needle`（例: `"fn some_handler"`）が最初に
@@ -1124,8 +1155,9 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     // ‐ ADR-082 Phase 0.5 で追加された `self.platform_state.ime.journal.record(..)`（監査用
     // ジャーナルへの書き込み、`observations` とは無関係）にも誤って一致してしまう。
     // `journal` は書き込み専用の監査ログで、drift 検知の収束判定（`check_drift_correction`/
-    // `most_recent_trusted`）が読み取ることは一切無い（`grep -rn '\.journal\b'` で確認済み、
-    // 全呼び出しが `.record(..)` か `.dump_to_file()` のみ）ため、不変条件6のスコープ外。
+    // `most_recent_trusted`）が読み取ることは一切無い。`record`/`absorb`/`stamper` は
+    // 監査ログへの書き込み・採番用、`dump_to_file`/`dump_to_file_capped` は診断出力用であり、
+    // いずれも `observations` とは無関係なので、不変条件6のスコープ外。
     for forbidden in [
         "dispatch_event(",
         "ObserverReported",
@@ -1146,6 +1178,19 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
              が再発します。実送信は match ブロックの後（`log::warn!(\"[drift] correction: \
              observed=...\")` 以降）でのみ行い、そこでの `DriftDetected` dispatch は \
              不変条件6 のスコープ外です。"
+        );
+    }
+}
+
+#[test]
+fn bug_report_journal_truncation_does_not_slice_from_the_front() {
+    let content = read_crate_file("src/bug_report.rs");
+    let production = production_code_only(&content);
+    for forbidden in ["[..max_bytes]", "[..end]", "input[.."] {
+        assert!(
+            !production.contains(forbidden),
+            "bug_report.rs の journal 添付切り詰めで `{forbidden}` が見つかりました。\
+             添付ログは古い先頭ではなく、症状直前の末尾 entry を JSON 配列として妥当に残す必要があります。"
         );
     }
 }

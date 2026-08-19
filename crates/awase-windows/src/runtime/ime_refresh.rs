@@ -434,6 +434,9 @@ impl Runtime {
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
+        for entry in self.platform.drain_journal_entries() {
+            self.platform_state.ime.journal.absorb(entry);
+        }
 
         // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
         // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は

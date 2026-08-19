@@ -40,6 +40,23 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
+    stamper: crate::journal::JournalStamper,
+    pending_journal_entries: Vec<crate::journal::JournalEnvelope>,
+    active_tsf_probe_started_ms: Option<(u64, u64)>,
+    probe_tick_index: u32,
+    suppressed_probe_ticks: u32,
+    suppressed_literal_confirms: u16,
+    pending_literal_vk: Option<PendingLiteralVk>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingLiteralVk {
+    cold_seq: u64,
+    vk: u16,
+    idx: u16,
+    last_idx: u16,
+    target: crate::tsf::literal_facts::DetectTarget,
+    sent_at_ms: u64,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -94,6 +111,7 @@ impl WindowsPlatform {
         suppress_engine_state_key: bool,
         focus: FocusTracker,
         composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
+        stamper: crate::journal::JournalStamper,
     ) -> Self {
         Self {
             output,
@@ -104,6 +122,139 @@ impl WindowsPlatform {
             suppress_engine_state_key,
             focus,
             composition_fsm,
+            stamper,
+            pending_journal_entries: Vec::new(),
+            active_tsf_probe_started_ms: None,
+            probe_tick_index: 0,
+            suppressed_probe_ticks: 0,
+            suppressed_literal_confirms: 0,
+            pending_literal_vk: None,
+        }
+    }
+
+    pub(crate) fn drain_journal_entries(&mut self) -> Vec<crate::journal::JournalEnvelope> {
+        std::mem::take(&mut self.pending_journal_entries)
+    }
+
+    pub(crate) fn gji_state_label(&self) -> String {
+        self.output.gji_state_label()
+    }
+
+    fn push_journal_entry(&mut self, entry: crate::journal::JournalEntry) {
+        if self.pending_journal_entries.len() >= 4096 {
+            self.pending_journal_entries.remove(0);
+        }
+        self.pending_journal_entries.push(self.stamper.stamp(entry));
+    }
+
+    fn note_gji_transition(&mut self, trigger: impl Into<String>, state_before: String) {
+        let state_after = self.gji_state_label();
+        self.push_journal_entry(crate::journal::JournalEntry::GjiFsmTransition {
+            trigger: trigger.into(),
+            state_before,
+            state_after,
+        });
+    }
+
+    fn note_tsf_probe_completed(&mut self, outcome: impl Into<String>, cold_seq: Option<u64>) {
+        let now = crate::hook::current_tick_ms();
+        let elapsed_ms = self
+            .active_tsf_probe_started_ms
+            .take()
+            .map_or(0, |(started_ms, _)| now.saturating_sub(started_ms));
+        self.push_journal_entry(crate::journal::JournalEntry::TsfProbeCompleted {
+            outcome: outcome.into(),
+            cold_seq,
+            elapsed_ms,
+            tick_count: self.probe_tick_index,
+            gji_state: self.gji_state_label(),
+        });
+    }
+
+    fn reset_probe_tick_counters(&mut self) {
+        self.flush_pending_literal_vk_as_aborted();
+        self.probe_tick_index = 0;
+        self.suppressed_probe_ticks = 0;
+        self.suppressed_literal_confirms = 0;
+    }
+
+    fn note_literal_detect_record(
+        &mut self,
+        record: crate::tsf::literal_facts::LiteralDetectRecord,
+        since_vk_sent_ms: u64,
+    ) {
+        if crate::journal_policy::literal_detect_is_notable(&record) {
+            let suppressed_confirms = self.suppressed_literal_confirms;
+            self.suppressed_literal_confirms = 0;
+            self.push_journal_entry(crate::journal::JournalEntry::LiteralDetect {
+                record,
+                suppressed_confirms,
+                since_vk_sent_ms,
+            });
+        } else {
+            self.suppressed_literal_confirms = self.suppressed_literal_confirms.saturating_add(1);
+        }
+    }
+
+    fn flush_pending_literal_vk_as_aborted(&mut self) {
+        let Some(pending) = self.pending_literal_vk.take() else {
+            return;
+        };
+        let now = crate::hook::current_tick_ms();
+        let record = crate::tsf::literal_facts::LiteralDetectRecord {
+            cold_seq: Generation::new(pending.cold_seq),
+            facts: crate::tsf::literal_facts::LiteralDetectFacts {
+                verdict: crate::tsf::literal_facts::LiteralVerdict::AbortedNoVerdict,
+                route: crate::tsf::literal_facts::DetectRoute::ProbeEnd,
+                path: crate::tsf::literal_facts::DetectPath::PerVk,
+                target: pending.target,
+                vk: Some(pending.vk),
+                idx: pending.idx,
+                last_idx: pending.last_idx,
+                evidence: crate::tsf::literal_facts::DetectEvidence::default(),
+            },
+            consecutive_before: self.output.composition.consecutive_count(),
+            gave_up: false,
+            backs: 0,
+            escape_composition: false,
+            session_marked: false,
+        };
+        self.note_literal_detect_record(record, now.saturating_sub(pending.sent_at_ms));
+    }
+
+    fn consume_literal_detect_trace(
+        &mut self,
+        trace: crate::tsf::literal_facts::LiteralDetectTrace,
+        terminal_timer: bool,
+    ) {
+        for item in trace.0 {
+            match item {
+                crate::tsf::literal_facts::LiteralDetectTraceItem::VkSent {
+                    cold_seq,
+                    vk,
+                    idx,
+                    last_idx,
+                    target,
+                } => {
+                    self.pending_literal_vk = Some(PendingLiteralVk {
+                        cold_seq,
+                        vk,
+                        idx,
+                        last_idx,
+                        target,
+                        sent_at_ms: crate::hook::current_tick_ms(),
+                    });
+                }
+                crate::tsf::literal_facts::LiteralDetectTraceItem::Verdict(record) => {
+                    let since_vk_sent_ms = self.pending_literal_vk.take().map_or(0, |pending| {
+                        crate::hook::current_tick_ms().saturating_sub(pending.sent_at_ms)
+                    });
+                    self.note_literal_detect_record(record, since_vk_sent_ms);
+                }
+            }
+        }
+        if terminal_timer {
+            self.flush_pending_literal_vk_as_aborted();
         }
     }
 
@@ -214,6 +365,15 @@ impl WindowsPlatform {
         &mut self,
         machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>,
     ) {
+        let cold_seq = machine.cold_seq_hint().value();
+        self.active_tsf_probe_started_ms = Some((crate::hook::current_tick_ms(), cold_seq));
+        self.reset_probe_tick_counters();
+        self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
+            source: "install_pending_tsf_and_set_timer".to_owned(),
+            cold_seq,
+            gji_state: self.gji_state_label(),
+            consecutive_at_start: self.output.composition.consecutive_count(),
+        });
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {
             self.apply_timer_command(cmd);
@@ -229,7 +389,41 @@ impl WindowsPlatform {
         // drain を tick() の後に置くと、最初の tick で composition_was_seen=false になり
         // Phase 1 即再送に落ちて IPC race が再発する。
         self.drain_pending_composition_events();
+        let state_before_step = self.gji_state_label();
         let result = self.output.step_probe();
+        let state_after_step = self.gji_state_label();
+        self.probe_tick_index = self.probe_tick_index.saturating_add(1);
+        let terminal_timer = matches!(
+            result.timer_cmd,
+            crate::output::TimerCommand::Kill {
+                id: crate::TIMER_TSF_PROBE
+            }
+        );
+        self.consume_literal_detect_trace(result.literal_detect, terminal_timer);
+        let notable =
+            crate::journal_policy::probe_tick_is_notable(crate::journal_policy::ProbeTickFacts {
+                state_changed: state_before_step != state_after_step,
+                needs_composition_reset: result.needs_gji_composition_reset,
+                has_gji_response: result.gji_response.is_some(),
+                learned_tsf: result.learned_tsf,
+                completed: result.completed_cold_seq.is_some(),
+                terminal_timer,
+                is_first_tick: self.probe_tick_index == 1,
+            });
+        if notable {
+            let suppressed = self.suppressed_probe_ticks;
+            self.suppressed_probe_ticks = 0;
+            self.push_journal_entry(crate::journal::JournalEntry::GjiFsmTransition {
+                trigger: format!(
+                    "TsfProbeTick(#{}, skipped={suppressed})",
+                    self.probe_tick_index
+                ),
+                state_before: state_before_step,
+                state_after: state_after_step,
+            });
+        } else {
+            self.suppressed_probe_ticks = self.suppressed_probe_ticks.saturating_add(1);
+        }
         if result.needs_gji_composition_reset {
             self.gji_on_composition_reset();
         }
@@ -249,6 +443,14 @@ impl WindowsPlatform {
             // 次の文字送信が cold-start TSF probe を正しく踏むよう composition を cold にリセット。
             self.output
                 .mark_composition_cold(crate::output::ColdReason::FocusChange);
+        }
+        if result.completed_cold_seq.is_some() || result.learned_tsf {
+            let outcome = if result.learned_tsf {
+                "LearnedTsf"
+            } else {
+                "Done"
+            };
+            self.note_tsf_probe_completed(outcome, result.completed_cold_seq);
         }
         self.apply_timer_command(result.timer_cmd);
     }
@@ -293,6 +495,15 @@ impl WindowsPlatform {
                         params.is_long_cold
                     );
                     self.output.gji_store_probe_id(*probe_id);
+                    let now_ms = crate::hook::current_tick_ms();
+                    self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
+                    self.reset_probe_tick_counters();
+                    self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
+                        source: "GjiAction::StartProbe".to_owned(),
+                        cold_seq: u64::from(probe_id.0),
+                        gji_state: self.gji_state_label(),
+                        consecutive_at_start: self.output.composition.consecutive_count(),
+                    });
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
@@ -318,9 +529,15 @@ impl WindowsPlatform {
                                 );
                             }
                         }
+                        let state_before = self.gji_state_label();
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
                         });
+                        self.note_gji_transition("WarmupComplete(unicode)", state_before);
+                        self.note_tsf_probe_completed(
+                            "UnicodeImmediate",
+                            Some(u64::from(probe_id.0)),
+                        );
                         self.dispatch_gji_response(&warmup_resp);
                     }
                 }
@@ -330,6 +547,7 @@ impl WindowsPlatform {
                         // pending_tsf / OUTPUT_GATE ガード / probe_id を一括キャンセルする。
                         self.output.cancel_probe();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
+                        self.note_tsf_probe_completed("Canceled", Some(u64::from(probe_id.0)));
                     }
                 }
                 // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
@@ -442,12 +660,17 @@ impl WindowsPlatform {
             None,
         );
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        let state_before = self.gji_state_label();
         let resp = self
             .output
             .gji_on_event(crate::tsf::gji_fsm::GjiEvent::FocusChange {
                 injection_mode,
                 gji_idle_ms,
             });
+        self.note_gji_transition(
+            format!("FocusChange(gji_idle_ms={gji_idle_ms})"),
+            state_before,
+        );
         self.dispatch_gji_response(&resp);
         // ImeModeFsm: フォーカス変更で Unknown に戻す（次の IMC 確認待ち）。
         // on_ime_mode_focus_changed が ime_mode_focus_gen をインクリメントするため、
@@ -483,28 +706,38 @@ impl WindowsPlatform {
     /// IME ON を GjiFsm に通知する（`on_ime_applied(open=true)` から呼ぶ）。
     pub(crate) fn gji_on_ime_on(&mut self, injection_mode: crate::output::types::InjectionMode) {
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        let state_before = self.gji_state_label();
         let resp = self
             .output
             .gji_on_event(crate::tsf::gji_fsm::GjiEvent::ImeOn {
                 injection_mode,
                 gji_idle_ms,
             });
+        self.note_gji_transition(format!("ImeOn(gji_idle_ms={gji_idle_ms})"), state_before);
         self.dispatch_gji_response(&resp);
     }
 
-    fn dispatch_gji_event(&mut self, event: crate::tsf::gji_fsm::GjiEvent) {
+    fn dispatch_gji_event(
+        &mut self,
+        trigger: impl Into<String>,
+        event: crate::tsf::gji_fsm::GjiEvent,
+    ) {
+        let state_before = self.gji_state_label();
         let resp = self.output.gji_on_event(event);
+        self.note_gji_transition(trigger, state_before);
         self.dispatch_gji_response(&resp);
     }
 
     /// IME OFF を GjiFsm に通知する（`on_ime_applied(open=false)` から呼ぶ）。
     pub(crate) fn gji_on_ime_off(&mut self) {
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::ImeOff);
+        self.dispatch_gji_event("ImeOff", crate::tsf::gji_fsm::GjiEvent::ImeOff);
     }
 
     /// TIMER_GJI_LONG_IDLE ハンドラ。LongIdle タイムアウトを GjiFsm に通知する。
     pub(crate) fn gji_on_timer_long_idle(&mut self) {
+        let state_before = self.gji_state_label();
         let resp = self.output.gji_on_long_idle();
+        self.note_gji_transition("LongIdleTimeout", state_before);
         self.dispatch_gji_response(&resp);
     }
 
@@ -518,7 +751,10 @@ impl WindowsPlatform {
         // かけ、genuinely warm（Short）なら cold へ倒さず `OnWarm` を維持する
         // （BUG-33 追補3: 弱い代理指標のみで無条件に cold 化していた回帰の修正）。
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::CompositionReset { gji_idle_ms });
+        self.dispatch_gji_event(
+            format!("CompositionReset(gji_idle_ms={gji_idle_ms})"),
+            crate::tsf::gji_fsm::GjiEvent::CompositionReset { gji_idle_ms },
+        );
     }
 
     /// TSF mode で物理 F2 が消費されたことを GjiFsm に通知する（`on_reinject_key` の NativeF2Consumed パス）。
@@ -528,7 +764,10 @@ impl WindowsPlatform {
     /// 再検証込み）。
     pub(crate) fn gji_on_native_f2_consumed(&mut self) {
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed { gji_idle_ms });
+        self.dispatch_gji_event(
+            format!("NativeF2Consumed(gji_idle_ms={gji_idle_ms})"),
+            crate::tsf::gji_fsm::GjiEvent::NativeF2Consumed { gji_idle_ms },
+        );
     }
 
     /// GJI candidate SHOW → GjiFsm::StartComposition を dispatch する。
@@ -537,7 +776,10 @@ impl WindowsPlatform {
     /// `advance_tsf_probe` / `send_keys` で `take_pending_start_composition()` が true を返したときに呼ぶ。
     pub(crate) fn gji_on_start_composition(&mut self) {
         log::debug!("[gji-fsm] StartComposition (candidate SHOW)");
-        self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::StartComposition);
+        self.dispatch_gji_event(
+            "StartComposition(candidate SHOW)",
+            crate::tsf::gji_fsm::GjiEvent::StartComposition,
+        );
     }
 
     /// GJI candidate HIDE → GjiFsm::EndComposition を dispatch する。
@@ -548,7 +790,10 @@ impl WindowsPlatform {
     pub(crate) fn gji_on_end_composition(&mut self) {
         if let Some(epoch) = self.output.gji_current_composition_epoch() {
             log::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
-            self.dispatch_gji_event(crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch });
+            self.dispatch_gji_event(
+                format!("EndComposition(candidate HIDE, epoch={epoch:?})"),
+                crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch },
+            );
             // BUG-24 追補: 候補ウィンドウ HIDE = IME セッションの終了。次のセッションの
             // 最初の1文字は改めて literal-detect の確認を受けるようリセットする。
             crate::tsf::observer::reset_literal_session_confirmed();
@@ -1132,8 +1377,8 @@ impl WindowsPlatform {
     }
 
     /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
-    pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
-        self.focus.update(process_id, class_name);
+    pub fn update_focus_info(&mut self, process_id: u32, class_name: String, hwnd: usize) {
+        self.focus.update(process_id, class_name, hwnd);
     }
 
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。

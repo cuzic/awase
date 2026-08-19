@@ -63,6 +63,11 @@ pub(crate) trait ImeWarmupStrategy {
     fn needs_f2_probe(&self) -> bool {
         true
     }
+
+    /// 診断ログ用の現在状態ラベル。
+    fn diagnostic_state_label(&self) -> String {
+        "MsImeStrategy".to_owned()
+    }
 }
 
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
@@ -100,6 +105,10 @@ impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
 
     fn is_next_key_long_cold(&self) -> bool {
         Self::is_next_key_long_cold(self)
+    }
+
+    fn diagnostic_state_label(&self) -> String {
+        self.state_label().to_owned()
     }
 }
 

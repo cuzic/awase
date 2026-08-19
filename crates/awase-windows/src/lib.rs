@@ -21,10 +21,12 @@
 //! `vk`（`parse_hotkey` のみ windows-gated）などの純粋モジュールのみコンパイルされる。
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
+pub mod bug_report;
 pub mod focus;
 pub mod gji_charset_autodetect;
 pub mod gji_charset_popup;
 pub mod gji_charset_write;
+pub mod journal_policy;
 pub mod msime_key_assignment;
 pub mod scanmap;
 pub mod single_thread_cell;

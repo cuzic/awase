@@ -1,0 +1,20 @@
+name = "awase-report-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-19"
+
+account_id = "3d71617e6be5e59d2e2cc4004e4a7c99"
+
+# Custom domain routing for the report intake endpoint.
+# Note: the custom domain must still be enabled separately in the Cloudflare
+# dashboard or with `wrangler`; this route placeholder alone is not sufficient.
+routes = [
+  { pattern = "report.awase.cc/*", zone_name = "awase.cc" }
+]
+
+[[r2_buckets]]
+binding = "REPORT_BUCKET"
+bucket_name = "awase-report-bucket"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "9b1b037d92934d2595146c998edb5e08"
