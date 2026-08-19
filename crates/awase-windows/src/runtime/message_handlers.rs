@@ -162,7 +162,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.advance_tsf_probe();
             crate::ime_diagnostic::clear_tsf_probe_snap();
             for entry in app.platform.drain_journal_entries() {
-                app.platform_state.ime.journal.record(entry);
+                app.platform_state.ime.journal.absorb(entry);
             }
         }
         Some(id) if id == TIMER_TSF_GATE => {
@@ -193,7 +193,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(TIMER_GJI_LONG_IDLE);
             app.platform.gji_on_timer_long_idle();
             for entry in app.platform.drain_journal_entries() {
-                app.platform_state.ime.journal.record(entry);
+                app.platform_state.ime.journal.absorb(entry);
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
@@ -432,7 +432,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         log::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
         app.platform.gji_on_ime_on(mode);
         for entry in app.platform.drain_journal_entries() {
-            app.platform_state.ime.journal.record(entry);
+            app.platform_state.ime.journal.absorb(entry);
         }
     }
 
@@ -655,13 +655,23 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let ime_kind = current_bug_report_ime_kind();
             let dump_result = with_app(|app| {
                 for entry in app.platform.drain_journal_entries() {
-                    app.platform_state.ime.journal.record(entry);
+                    app.platform_state.ime.journal.absorb(entry);
                 }
                 app.platform_state
                     .ime
                     .journal
+                    .record(crate::journal::JournalEntry::ClockAnchor {
+                        tick_ms: hook::current_tick_ms(),
+                        hook_us: hook::now_timestamp_us(),
+                    });
+                app.platform_state
+                    .ime
+                    .journal
                     .record(crate::journal::JournalEntry::DumpTriggered);
-                app.platform_state.ime.journal.dump_to_file()
+                app.platform_state
+                    .ime
+                    .journal
+                    .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES)
             });
             match dump_result {
                 Some(Ok(path)) => launch_bug_report(&path, ime_kind),
@@ -736,7 +746,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     let _ = with_app(|runtime| {
         runtime.platform.flush_raw_tsf_literal_recovery();
         for entry in runtime.platform.drain_journal_entries() {
-            runtime.platform_state.ime.journal.record(entry);
+            runtime.platform_state.ime.journal.absorb(entry);
         }
     });
 
@@ -841,8 +851,15 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         );
     }
     for entry in app.platform.drain_journal_entries() {
-        app.platform_state.ime.journal.record(entry);
+        app.platform_state.ime.journal.absorb(entry);
     }
+    app.platform_state
+        .ime
+        .journal
+        .record(crate::journal::JournalEntry::ClockAnchor {
+            tick_ms: hook::current_tick_ms(),
+            hook_us: hook::now_timestamp_us(),
+        });
     app.platform_state
         .ime
         .journal

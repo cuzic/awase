@@ -40,8 +40,11 @@ pub struct WindowsPlatform {
     /// warm 判定そのものは GjiFsm が SSOT であり、この FSM は「confirm キー KeyDown 後、
     /// KeyUp まで warmup を保留する」遷移を所有する。
     pub(crate) composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
-    pending_journal_entries: Vec<crate::journal::JournalEntry>,
+    stamper: crate::journal::JournalStamper,
+    pending_journal_entries: Vec<crate::journal::JournalEnvelope>,
     active_tsf_probe_started_ms: Option<(u64, u64)>,
+    probe_tick_index: u32,
+    suppressed_probe_ticks: u32,
 }
 
 impl std::fmt::Debug for WindowsPlatform {
@@ -96,6 +99,7 @@ impl WindowsPlatform {
         suppress_engine_state_key: bool,
         focus: FocusTracker,
         composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
+        stamper: crate::journal::JournalStamper,
     ) -> Self {
         Self {
             output,
@@ -106,12 +110,15 @@ impl WindowsPlatform {
             suppress_engine_state_key,
             focus,
             composition_fsm,
+            stamper,
             pending_journal_entries: Vec::new(),
             active_tsf_probe_started_ms: None,
+            probe_tick_index: 0,
+            suppressed_probe_ticks: 0,
         }
     }
 
-    pub(crate) fn drain_journal_entries(&mut self) -> Vec<crate::journal::JournalEntry> {
+    pub(crate) fn drain_journal_entries(&mut self) -> Vec<crate::journal::JournalEnvelope> {
         std::mem::take(&mut self.pending_journal_entries)
     }
 
@@ -120,7 +127,10 @@ impl WindowsPlatform {
     }
 
     fn push_journal_entry(&mut self, entry: crate::journal::JournalEntry) {
-        self.pending_journal_entries.push(entry);
+        if self.pending_journal_entries.len() >= 4096 {
+            self.pending_journal_entries.remove(0);
+        }
+        self.pending_journal_entries.push(self.stamper.stamp(entry));
     }
 
     fn note_gji_transition(&mut self, trigger: impl Into<String>, state_before: String) {
@@ -142,8 +152,14 @@ impl WindowsPlatform {
             outcome: outcome.into(),
             cold_seq,
             elapsed_ms,
+            tick_count: self.probe_tick_index,
             gji_state: self.gji_state_label(),
         });
+    }
+
+    fn reset_probe_tick_counters(&mut self) {
+        self.probe_tick_index = 0;
+        self.suppressed_probe_ticks = 0;
     }
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
@@ -255,6 +271,7 @@ impl WindowsPlatform {
     ) {
         let cold_seq = machine.cold_seq_hint().value();
         self.active_tsf_probe_started_ms = Some((crate::hook::current_tick_ms(), cold_seq));
+        self.reset_probe_tick_counters();
         self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
             source: "install_pending_tsf_and_set_timer".to_owned(),
             cold_seq,
@@ -277,7 +294,38 @@ impl WindowsPlatform {
         self.drain_pending_composition_events();
         let state_before_step = self.gji_state_label();
         let result = self.output.step_probe();
-        self.note_gji_transition("TsfProbeTick", state_before_step);
+        let state_after_step = self.gji_state_label();
+        self.probe_tick_index = self.probe_tick_index.saturating_add(1);
+        let terminal_timer = matches!(
+            result.timer_cmd,
+            crate::output::TimerCommand::Kill {
+                id: crate::TIMER_TSF_PROBE
+            }
+        );
+        let notable =
+            crate::journal_policy::probe_tick_is_notable(crate::journal_policy::ProbeTickFacts {
+                state_changed: state_before_step != state_after_step,
+                needs_composition_reset: result.needs_gji_composition_reset,
+                has_gji_response: result.gji_response.is_some(),
+                learned_tsf: result.learned_tsf,
+                completed: result.completed_cold_seq.is_some(),
+                terminal_timer,
+                is_first_tick: self.probe_tick_index == 1,
+            });
+        if notable {
+            let suppressed = self.suppressed_probe_ticks;
+            self.suppressed_probe_ticks = 0;
+            self.push_journal_entry(crate::journal::JournalEntry::GjiFsmTransition {
+                trigger: format!(
+                    "TsfProbeTick(#{}, skipped={suppressed})",
+                    self.probe_tick_index
+                ),
+                state_before: state_before_step,
+                state_after: state_after_step,
+            });
+        } else {
+            self.suppressed_probe_ticks = self.suppressed_probe_ticks.saturating_add(1);
+        }
         if result.needs_gji_composition_reset {
             self.gji_on_composition_reset();
         }
@@ -351,6 +399,7 @@ impl WindowsPlatform {
                     self.output.gji_store_probe_id(*probe_id);
                     let now_ms = crate::hook::current_tick_ms();
                     self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
+                    self.reset_probe_tick_counters();
                     self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
                         source: "GjiAction::StartProbe".to_owned(),
                         cold_seq: u64::from(probe_id.0),
@@ -1229,8 +1278,8 @@ impl WindowsPlatform {
     }
 
     /// フォーカス情報と `AppImeProfile` キャッシュをアトミックに更新する。
-    pub fn update_focus_info(&mut self, process_id: u32, class_name: String) {
-        self.focus.update(process_id, class_name);
+    pub fn update_focus_info(&mut self, process_id: u32, class_name: String, hwnd: usize) {
+        self.focus.update(process_id, class_name, hwnd);
     }
 
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。

@@ -88,7 +88,7 @@ pub fn build_payload(
     let log_excerpt = if input.attach_log {
         input
             .journal_json
-            .map(|log| truncate_utf8_bytes(log, LOG_EXCERPT_MAX_BYTES))
+            .map(|log| truncate_journal_json_tail(log, LOG_EXCERPT_MAX_BYTES))
     } else {
         None
     };
@@ -114,15 +114,76 @@ pub fn truncate_chars(input: &str, max_chars: usize) -> String {
 }
 
 #[must_use]
-pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
+pub fn truncate_journal_json_tail(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
         return input.to_owned();
     }
-    let mut end = max_bytes;
-    while !input.is_char_boundary(end) {
-        end -= 1;
+    if let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(input) {
+        return truncate_json_values_tail(&values, max_bytes);
     }
-    input[..end].to_owned()
+    truncate_pretty_json_array_tail(input, max_bytes)
+}
+
+fn truncate_json_values_tail(values: &[serde_json::Value], max_bytes: usize) -> String {
+    if max_bytes < 2 {
+        return "[]".to_owned();
+    }
+    let mut selected = Vec::new();
+    let mut used = 2usize;
+    for value in values.iter().rev() {
+        let Ok(item) = serde_json::to_string(value) else {
+            continue;
+        };
+        let cost = item.len() + usize::from(!selected.is_empty());
+        if used + cost <= max_bytes {
+            used += cost;
+            selected.push(item);
+        }
+    }
+    selected.reverse();
+    let mut json = String::from("[");
+    for (index, item) in selected.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push_str(item);
+    }
+    json.push(']');
+    json
+}
+
+fn truncate_pretty_json_array_tail(input: &str, max_bytes: usize) -> String {
+    if max_bytes < 2 {
+        return "[]".to_owned();
+    }
+    let lower = input.len().saturating_sub(max_bytes.saturating_sub(2));
+    let Some(relative_start) = input.get(lower..).and_then(|tail| tail.find("\n  {")) else {
+        return "[]".to_owned();
+    };
+    let start = lower + relative_start;
+    let tail = input.get(start..).unwrap_or("");
+    let mut json = String::with_capacity(tail.len() + 2);
+    json.push('[');
+    json.push_str(tail.trim_end());
+    if !json.ends_with(']') {
+        json.push('\n');
+        json.push(']');
+    }
+    while json.len() > max_bytes {
+        let Some(remove_start) = json.get(1..).and_then(|tail| tail.find("\n  {")) else {
+            return "[]".to_owned();
+        };
+        let remove_start = remove_start + 1;
+        let Some(next_start) = json
+            .get(remove_start + 1..)
+            .and_then(|tail| tail.find("\n  {"))
+        else {
+            return "[]".to_owned();
+        };
+        let next_start = remove_start + 1 + next_start;
+        json.replace_range(1..next_start, "");
+    }
+    json
 }
 
 #[must_use]
@@ -203,7 +264,8 @@ mod tests {
 
     #[test]
     fn log_is_attached_only_when_requested_and_truncated_by_utf8_boundary() {
-        let log = "あ".repeat((LOG_EXCERPT_MAX_BYTES / 3) + 10);
+        let log =
+            serde_json::to_string(&vec!["あ".repeat((LOG_EXCERPT_MAX_BYTES / 3) + 10)]).unwrap();
         let payload = build_payload(&input("説明", true, Some(&log))).unwrap();
         let excerpt = payload.log_excerpt.unwrap();
         assert!(excerpt.len() <= LOG_EXCERPT_MAX_BYTES);
@@ -211,6 +273,30 @@ mod tests {
 
         let detached = build_payload(&input("説明", false, Some(&log))).unwrap();
         assert_eq!(detached.log_excerpt, None);
+    }
+
+    #[test]
+    fn journal_log_truncation_keeps_newer_tail_and_valid_json() {
+        let log = serde_json::to_string_pretty(&vec![
+            serde_json::json!({"seq": 0, "entry": {"type": "Old"}}),
+            serde_json::json!({"seq": 1, "entry": {"type": "Middle"}}),
+            serde_json::json!({"seq": 2, "entry": {"type": "Newest"}}),
+        ])
+        .unwrap();
+        let excerpt = truncate_journal_json_tail(&log, 95);
+        let values: Vec<serde_json::Value> = serde_json::from_str(&excerpt).unwrap();
+        let seqs: Vec<u64> = values.iter().map(|v| v["seq"].as_u64().unwrap()).collect();
+        assert!(seqs.contains(&2));
+        assert!(!seqs.contains(&0));
+    }
+
+    #[test]
+    fn broken_pretty_journal_fallback_keeps_top_level_tail_as_array() {
+        let log = "[\n  {\"seq\":0,\"payload\":\"old\"},\n  {\"seq\":1,\"payload\":\"new\"}\n";
+        let excerpt = truncate_journal_json_tail(log, 40);
+        let values: Vec<serde_json::Value> = serde_json::from_str(&excerpt).unwrap();
+        let seqs: Vec<u64> = values.iter().map(|v| v["seq"].as_u64().unwrap()).collect();
+        assert_eq!(seqs, vec![1]);
     }
 
     #[test]

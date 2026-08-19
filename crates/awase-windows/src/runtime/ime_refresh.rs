@@ -435,7 +435,7 @@ impl Runtime {
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
         for entry in self.platform.drain_journal_entries() {
-            self.platform_state.ime.journal.record(entry);
+            self.platform_state.ime.journal.absorb(entry);
         }
 
         // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`

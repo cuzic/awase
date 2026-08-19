@@ -1124,8 +1124,9 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
     // ‐ ADR-082 Phase 0.5 で追加された `self.platform_state.ime.journal.record(..)`（監査用
     // ジャーナルへの書き込み、`observations` とは無関係）にも誤って一致してしまう。
     // `journal` は書き込み専用の監査ログで、drift 検知の収束判定（`check_drift_correction`/
-    // `most_recent_trusted`）が読み取ることは一切無い（`grep -rn '\.journal\b'` で確認済み、
-    // 全呼び出しが `.record(..)` か `.dump_to_file()` のみ）ため、不変条件6のスコープ外。
+    // `most_recent_trusted`）が読み取ることは一切無い。`record`/`absorb`/`stamper` は
+    // 監査ログへの書き込み・採番用、`dump_to_file`/`dump_to_file_capped` は診断出力用であり、
+    // いずれも `observations` とは無関係なので、不変条件6のスコープ外。
     for forbidden in [
         "dispatch_event(",
         "ObserverReported",
@@ -1146,6 +1147,19 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
              が再発します。実送信は match ブロックの後（`log::warn!(\"[drift] correction: \
              observed=...\")` 以降）でのみ行い、そこでの `DriftDetected` dispatch は \
              不変条件6 のスコープ外です。"
+        );
+    }
+}
+
+#[test]
+fn bug_report_journal_truncation_does_not_slice_from_the_front() {
+    let content = read_crate_file("src/bug_report.rs");
+    let production = production_code_only(&content);
+    for forbidden in ["[..max_bytes]", "[..end]", "input[.."] {
+        assert!(
+            !production.contains(forbidden),
+            "bug_report.rs の journal 添付切り詰めで `{forbidden}` が見つかりました。\
+             添付ログは古い先頭ではなく、症状直前の末尾 entry を JSON 配列として妥当に残す必要があります。"
         );
     }
 }
