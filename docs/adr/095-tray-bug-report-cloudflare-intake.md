@@ -2,8 +2,9 @@
 
 ## ステータス
 
-提案中（設計フェーズ。Opus round1 アドバーサリアルレビューの must-fix
-指摘をユーザー判断で反映し round2 化。実装未着手）。
+実装済み（2026-08-19、codex CLI による実装。Windows 実機での動作確認・
+Cloudflare への実デプロイ・DNS カスタムドメイン有効化・R2/KV の実作成は
+未実施）。
 
 ## コンテキスト
 
@@ -78,6 +79,53 @@ allowlist 化）・D-1（乱用対策の実装詳細）は、ユーザー判断�
 （決定3・決定5・決定6）。C-1（Cloudflare のカード登録要否）・B-3 の
 保持期間日数など、実装前の事実確認や細部の数値は「既知の限界・
 未決定事項」に残す。
+
+### 実装（2026-08-19、codex CLI）
+
+round2 決定に基づき、Worker バックエンドとタスクトレイ UI を codex CLI
+（`codex exec`、write 権限）に実装させた。2つの独立した git worktree で
+並行実装させ、完了後に Claude が差分を検証・修正してマージした。
+
+- **`services/report-worker/`**（新設ディレクトリ、TypeScript + wrangler +
+  vitest）: `POST /v1/reports` を実装。ボディサイズ上限 **512KiB**、
+  レート制限 **20件/IP/日**（KV カウンタ、IP は SHA-256 ハッシュ化して
+  キーにのみ使用し R2 本体には保存しない）、`report_id` は Worker 内で
+  生成する ULID 相当、R2 書き込みは `put()` のみ（決定5 の書き込み専用
+  方針を実装レベルで担保）。`pnpm install`/`pnpm test`/`pnpm run typecheck`
+  で確認済み（vitest 7件 green）。実デプロイ・`wrangler login`・実際の
+  DNS/R2/KV 作成は行っていない（`services/report-worker/README.md` に
+  手作業手順を記載）。
+- **タスクトレイ UI**（`crates/awase-windows/src/bug_report.rs` +
+  `crates/awase-settings/src/bug_report.rs`）: トレイに「不具合を報告...」
+  を追加。既存の journal ダンプ導線（`UnifiedJournal::dump_to_file`）と
+  既存の設定画面起動パターン（`launch_settings`）を再利用し、
+  `awase-settings --bug-report` を別プロセスとして起動する（決定3、
+  awase.exe 本体からは送信しない）。送信は新規 crate を追加せず
+  `windows` crate の `Win32_Networking_WinHttp` feature で実装。送信
+  ペイロードは `JournalEntry` を直接 serialize せず専用の
+  `BugReportPayload` allowlist 型に変換する（決定3/B-5）。送信前
+  プレビューは省略不可のステップとして実装し、生成される JSON 全文を
+  デフォルトで編集可能な状態のまま表示する（決定4）。送信失敗時は
+  `%TEMP%/awase_bug_report_failed_<unix>.json` に内容を保存し手動送付
+  導線を出す。`cargo test -p awase-windows --lib`（399件 green）・
+  `cargo xwin build --target x86_64-pc-windows-msvc -p awase-settings`
+  （リンク成功、新規警告なし）で確認済み。
+
+実装の過程で以下を確定・上書きした（未決定事項の一部を解消）:
+
+- **送信データ形式**: JSON（multipart は不採用）。
+- **レート制限・サイズ上限の具体値**: 20件/IP/日、ボディ512KiB、説明欄
+  4,000文字、ログ抜粋256KiB（クライアント側でUTF-8境界を壊さず切り詰め）。
+- **R2 保持期間**: 90日を暫定値として採用（`services/report-worker/README.md`
+  に `wrangler r2 bucket lifecycle add` の実行例を記載。**実際の
+  Cloudflare 上への適用はユーザーの手作業**、まだ設定されていない）。
+- **送信元 IP の扱い**: レート制限のカウンタキー生成にのみ使用し
+  （SHA-256ハッシュ化）、R2 に保存するレポート本体には含めない。
+- **Worker のソース置き場所**: このリポジトリ内 `services/report-worker/`
+  に同居（別リポジトリ化はしない）。
+- **添付するログの範囲**: 新規の範囲指定は設けず、既存の journal ダンプ
+  機構（直近最大2048エントリ、`UnifiedJournal::dump_to_file`）をそのまま
+  使い、クライアント側で合計256KiBに切り詰める方針にした。
 
 ## 決定
 
@@ -171,30 +219,52 @@ GitHub Issues ではなく非公開フォームで受け付ける（前述、変
 
 ## 既知の限界・未決定事項
 
-- **Cloudflare R2 の有効化にカード登録が必要かどうか**は未検証。実装
-  着手前に実アカウントで確認し、結果を日付付きで本 ADR に追記する
+実装（前述「実装」節）で解消した項目は取り消し線で示す。
+
+- **Cloudflare R2 の有効化にカード登録が必要かどうか**は未検証のまま。
+  codex はこの確認を実施できない（実アカウント操作が必要）ため、
+  ユーザー自身が確認し、結果を日付付きで本 ADR に追記すること
   （round1 C-1）。
-- R2 の保持期間（自動削除までの日数）・送信元 IP を保存するか否かは
-  未確定。
-- 添付するログ/内部状態の範囲（直近何秒・どのイベント種別を含めるか）、
-  合計サイズの上限は未確定。[fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)
-  が要求する「アプリ×IME×再現手順」を機械的に満たせる粒度を今後詰める。
-- 送信データの形式（JSON か multipart か）は未確定。
-- レート制限・サイズ上限の具体的な閾値は未確定。
+- ~~R2 の保持期間（自動削除までの日数）・送信元 IP を保存するか否か~~
+  → 実装で決定（90日を暫定値として README に手順記載、IP は非保存）。
+  ただし **90日ルールの実際の Cloudflare 上への適用（`wrangler r2 bucket
+  lifecycle add` の実行）はまだ行われていない**。
+- ~~添付するログ/内部状態の範囲~~ → 既存の journal ダンプ機構をそのまま
+  流用する方針で実装（新規の範囲指定ロジックは作らなかった）。ただし
+  これが [fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)
+  の「アプリ×IME×再現手順」を機械的に満たすのに十分な粒度かは、実際に
+  収集された報告を見てから判断する必要がある。
+- ~~送信データの形式~~ → JSON に決定・実装済み。
+- ~~レート制限・サイズ上限の具体的な閾値~~ → 20件/IP/日・512KiB・
+  説明4,000文字・ログ256KiB で実装済み（実運用で調整が必要になる可能性
+  はある）。
 - R2 に溜まった報告をメンテナがどう閲覧・トリアージするか（ダッシュボード
   無しで手動 DL するのか、簡易ビューアを別途作るか）、報告到着の通知
-  手段（webhook 等）は未確定。
+  手段（webhook 等）は依然として未確定。R2 の閲覧用トークン（決定5、
+  Worker のトークンとは別）もまだ発行されていない。
 - `main.rs` に既存の「awase.log を添えて GitHub Issue でご報告ください」
   という案内文言があり、本 ADR の決定（非公開フォームへの一本化 or
-  併存）と整理が必要。既存の journal ダンプ導線（Alt+変換→Alt+無変換 ×2、
-  [docs/journal-replay-guide.md](../journal-replay-guide.md)）との関係も
-  未整理（round1 D-4）。
-- awase バージョン・Windows ビルド番号・IME 種別など、再現に必須の
-  メタデータを送信に含めることを不変条件にするかは未確定。
+  併存）と整理が必要。**この文言は今回の実装で変更していない**
+  （round1 D-4、未対応のまま）。
+- ~~awase バージョン・Windows ビルド番号・IME 種別など、再現に必須の
+  メタデータを送信に含めることを不変条件にするか~~ → スキーマの必須
+  フィールド（`app_version`/`os_version`/`ime_kind`）として実装済み。
 - プライバシーポリシーの掲示場所（`awase.cc` への追加ページ等）は未確定
-  （round1 B-4）。
-- Worker のソースコード置き場所・デプロイ手段（このリポジトリに同居
-  させるか別リポジトリにするか、GitHub Secrets 管理）は未確定
-  （round1 D-3）。
-- タスクトレイ側 UI（ダイアログの詳細レイアウト）は未設計。
-- Windows 実機での動作確認は当然ながら未実施（実装がまだ無い）。
+  のまま（round1 B-4、未対応）。
+- ~~Worker のソースコード置き場所・デプロイ手段~~ → このリポジトリ内
+  `services/report-worker/` に同居する方針で実装済み。CI 組み込み
+  （GitHub Actions からの `wrangler deploy`、Secrets 管理）は未着手。
+- ~~タスクトレイ側 UI（ダイアログの詳細レイアウト）~~ → egui ベースで
+  実装済み（`crates/awase-settings/src/bug_report.rs`）。
+- **Windows 実機での動作確認は未実施。** `cargo xwin build`/`cargo test`
+  （Linux）では検証したが、実際に awase.exe から「不具合を報告」を選び、
+  journal ダンプ→別プロセス起動→ WinHTTP 送信という一連の経路が実機で
+  動くかは未確認。`report.awase.cc` 自体も未デプロイのため、送信は
+  現状ネットワークエラーで失敗する（ローカル保存フォールバックの経路が
+  代わりに動作するはず、という点も含め実機確認が必要）。
+- **実デプロイ一式が未実施**: `wrangler login`、R2 バケット/KV
+  namespace の作成、`wrangler.toml` のプレースホルダ（account_id・
+  bucket_name・kv id）の実値差し替え、`report.awase.cc` の Custom
+  Domain 有効化、R2 lifecycle 削除ルールの適用。いずれも
+  `services/report-worker/README.md` に手順を記載済みだが、ユーザーの
+  手作業が必要。
