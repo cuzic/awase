@@ -8,7 +8,7 @@ import {
 } from "../src/index";
 
 const validPayload = {
-  schema_version: 2,
+  schema_version: 3,
   app_version: "1.15.0",
   os_version: "Windows 11 Build 22631",
   ime_kind: "Gji",
@@ -20,6 +20,12 @@ const validPayload = {
   description: "変換が意図通りに動きません",
   attach_log: true,
   log_excerpt: "journal excerpt",
+  attach_state_snapshot: false,
+  state_snapshot: null,
+  attach_config: false,
+  config_toml: null,
+  attach_layout: false,
+  layout_yab: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -84,7 +90,7 @@ describe("payload validation", () => {
 
   it("rejects unsupported schema versions", () => {
     expectHttpError(
-      () => parseAndValidatePayload(JSON.stringify({ ...validPayload, schema_version: 1 })),
+      () => parseAndValidatePayload(JSON.stringify({ ...validPayload, schema_version: 2 })),
       400,
       "unsupported_schema_version"
     );
@@ -171,6 +177,58 @@ describe("payload validation", () => {
       ...validPayload,
       symptom_category: "Other",
       description: "一覧にない症状です"
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it("rejects a state snapshot unless explicitly attached", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_state_snapshot: false,
+        state_snapshot: { desired_open: true }
+      })),
+      400,
+      "state_snapshot_requires_attach_state_snapshot"
+    );
+  });
+
+  it("rejects config TOML unless explicitly attached", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_config: false,
+        config_toml: "[general]\n"
+      })),
+      400,
+      "config_toml_requires_attach_config"
+    );
+  });
+
+  it("rejects layout YAB unless explicitly attached", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_layout: false,
+        layout_yab: "# layout\n"
+      })),
+      400,
+      "layout_yab_requires_attach_layout"
+    );
+  });
+
+  it("accepts an explicitly attached state snapshot object", () => {
+    const payload = {
+      ...validPayload,
+      attach_state_snapshot: true,
+      state_snapshot: {
+        desired_open: true,
+        input_mode: "ObservedRomaji",
+        nested: {
+          app_kind: "Editor"
+        }
+      }
     };
 
     expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);

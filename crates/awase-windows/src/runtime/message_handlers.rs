@@ -743,11 +743,25 @@ fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
 
 fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReportDiagnostics {
     let (is_japanese, lang_id) = crate::ime::keyboard_layout_info();
+    let state_snapshot = crate::bug_report::BugReportStateSnapshot {
+        desired_open: app.platform_state.ime.desired_open(),
+        effective_open: app.platform_state.ime.effective_open(),
+        input_mode: format!("{:?}", app.platform_state.ime.input_mode()),
+        applied: format!("{:?}", app.platform_state.ime.applied_state()),
+        app_kind: format!("{:?}", app.platform_state.focus.app_kind),
+        focus_kind: format!("{:?}", app.platform_state.focus.focus_kind),
+        gji_state: app.platform.gji_state_label(),
+    };
+    let (config_toml, layout_yab) =
+        crate::app::read_bug_report_attachments(app.platform.tray.current_layout_name());
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
         windows_keyboard_layout: format!("LANGID=0x{lang_id:04X} (Japanese={is_japanese})"),
         competing_software: crate::app::detect_conflicting_software(),
+        state_snapshot: Some(state_snapshot),
+        config_toml,
+        layout_yab,
     }
 }
 

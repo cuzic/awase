@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST,
-    RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, MAX_BODY_BYTES,
+    REPORT_HOST, RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -19,6 +19,9 @@ pub(crate) struct BugReportApp {
     symptom_category: Option<SymptomCategory>,
     description: String,
     attach_log: bool,
+    attach_state_snapshot: bool,
+    attach_config: bool,
+    attach_layout: bool,
     journal_json: Option<String>,
     journal_status: String,
     ime_kind: BugReportImeKind,
@@ -61,6 +64,9 @@ impl BugReportApp {
             symptom_category: None,
             description: String::new(),
             attach_log: true,
+            attach_state_snapshot: true,
+            attach_config: true,
+            attach_layout: true,
             journal_json,
             journal_status,
             ime_kind: args.ime_kind,
@@ -109,6 +115,12 @@ impl BugReportApp {
             description: &self.description,
             attach_log: self.attach_log,
             journal_json: self.journal_json.as_deref(),
+            state_snapshot: self.diagnostics.state_snapshot.clone(),
+            attach_state_snapshot: self.attach_state_snapshot,
+            config_toml: self.diagnostics.config_toml.as_deref(),
+            attach_config: self.attach_config,
+            layout_yab: self.diagnostics.layout_yab.as_deref(),
+            attach_layout: self.attach_layout,
             reported_at: &self.reported_at,
         })
         .map_err(|e| e.to_string())
@@ -158,6 +170,14 @@ impl BugReportApp {
             return;
         }
         let body = self.preview_json.clone();
+        if body.len() > MAX_BODY_BYTES {
+            self.status = format!(
+                "送信内容が大きすぎます({}KB > {}KB上限)。journal ログや設定ファイルの添付を外してください。",
+                body.len() / 1024,
+                MAX_BODY_BYTES / 1024,
+            );
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
         "送信中です...".clone_into(&mut self.status);
@@ -226,23 +246,51 @@ impl eframe::App for BugReportApp {
                 )
                 .changed();
 
-            let attach_changed = ui
+            let attach_log_changed = ui
                 .checkbox(&mut self.attach_log, "journal ログを添付する")
+                .changed();
+            let attach_state_snapshot_changed = ui
+                .checkbox(
+                    &mut self.attach_state_snapshot,
+                    "内部状態スナップショットを添付する",
+                )
+                .changed();
+            let attach_config_changed = ui
+                .checkbox(
+                    &mut self.attach_config,
+                    "設定ファイル(config.toml)を添付する",
+                )
+                .changed();
+            let attach_layout_changed = ui
+                .checkbox(&mut self.attach_layout, "配列ファイル(.yab)を添付する")
                 .changed();
             ui.label(&self.journal_status);
 
-            if category_changed || desc_changed || attach_changed {
+            if category_changed
+                || desc_changed
+                || attach_log_changed
+                || attach_state_snapshot_changed
+                || attach_config_changed
+                || attach_layout_changed
+            {
                 self.refresh_preview_if_unedited();
             }
 
             ui.separator();
-            ui.label("送信前プレビュー（この内容を編集してから送信できます）");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.preview_json)
-                    .desired_rows(18)
-                    .code_editor()
-                    .lock_focus(true),
-            );
+            ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）");
+            egui::ScrollArea::vertical()
+                .id_salt("bug_report_preview_scroll")
+                .max_height(320.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.preview_json)
+                            .desired_rows(18)
+                            .desired_width(f32::INFINITY)
+                            .code_editor()
+                            .lock_focus(true),
+                    );
+                });
 
             ui.separator();
             ui.horizontal(|ui| {

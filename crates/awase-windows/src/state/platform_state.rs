@@ -10,7 +10,7 @@ use super::ime_event::{
     InputModeApplyStrategy, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::ime_event_log::ImeEventLog;
-use super::ime_model::ImeModel;
+use super::ime_model::{AppliedImeState, ImeModel};
 use super::input_barrier::InputBarrier;
 use super::TickMs;
 use crate::journal::{JournalEntry, UnifiedJournal};
@@ -564,12 +564,22 @@ impl ImeStateHub {
         self.shadow_model.force_guards.requires_on()
     }
 
+    /// awase が IME をこうしたい状態を返す（BugReport 診断用）。
+    pub(crate) fn desired_open(&self) -> bool {
+        self.shadow_model.desired_open()
+    }
+
     /// 現在の入力モードを返す（SSOT = `shadow_model.input_mode`）。
     ///
     /// H-3-d 以降、`belief.input_mode` は private 化されたため、
     /// 呼び出し元はすべてこのメソッドを使うこと。
     pub(crate) fn input_mode(&self) -> InputModeState {
         self.shadow_model.input_mode()
+    }
+
+    /// 最後に actuator が成功させた IME 開閉状態の確信度を返す（BugReport 診断用）。
+    pub(crate) fn applied_state(&self) -> AppliedImeState {
+        self.shadow_model.applied_state()
     }
 
     /// `poll_and_classify_ime` / `classify_fetched_snapshot` に渡す 4 フィールドを一括取得する。

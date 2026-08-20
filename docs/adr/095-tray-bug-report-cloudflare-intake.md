@@ -314,6 +314,86 @@ GitHub Issues ではなく非公開フォームで受け付ける（前述、変
 （`tsf/observer.rs` は過去のバグの多くの震源地であり、新規の呼び出し元
 追加はそれ自体がリスクのため）。
 
+### 9. 内部状態スナップショット・設定ファイル・配列ファイルの添付（2026-08-19 追加、ユーザー決定）
+
+決定7・決定8までで journal ログ（何が起きたか）と静的な環境情報は
+送信できるようになったが、**その瞬間 awase が何を信じて・どう設定されて
+動いていたか**は欠けていた。awase のバグの多くは例外を出さずサイレントに
+違う挙動をするため（決定7の背景と同じ理由）、症状発生時の内部状態
+（IME belief・conv 状態）と実際の設定内容が診断に必須になる場面が多い。
+[fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)・
+[experiment-logging](../../.claude/rules/experiment-logging.md) が
+コミット本文に実測・失敗条件を残すことを求めているのと同じ精神を、
+ユーザーからの不具合報告にも適用する。
+
+`schema_version` を **3** に上げ、以下3つを追加した。いずれも決定4の
+journal ログと同じ設計（**マスキングしない生データ、既定 ON、個別に
+外せる、送信前プレビューで必ず全文表示**）を踏襲する。新規のマスキング
+ロジックは作らず、安全弁は決定4のプレビュー UI に一本化する。
+
+- **`state_snapshot`**（`attach_state_snapshot: bool` で個別 ON/OFF）:
+  報告生成時点での IME belief/conv 状態のスナップショット。すべて
+  `with_app` クロージャ内の既存インメモリ状態の読み取りのみで、
+  新規の COM/TSF 呼び出しは追加しない（決定8の原則を踏襲）。
+  - `desired_open` / `effective_open`（`ImeModel`/`ImeStateHub` の
+    既存アクセサ）
+  - `input_mode`（`InputModeState` の文字列表現。
+    `ObservedRomaji`/`ObservedKana`/`ObservedEisu`/`AssumedRomaji{reason}`/
+    `Unknown` — 実質的な conv 状態を表す）
+  - `applied`（`AppliedImeState` の文字列表現）
+  - `app_kind` / `focus_kind`（`FocusStore` の分類結果）
+  - `gji_state`（`WindowsPlatform::gji_state_label()` の既存の
+    フォーマット済み文字列をそのまま流用）
+
+  **既知の限界**: 現在アクティブな `WriteMechanism`
+  （ImmCross/GjiDirect/MsImeDirect/KanjiToggle）を返すライブ関数は
+  存在しない（`ime_controller.rs::characterize_strategy` はテスト専用
+  ヘルパー）。今回のスコープには含めず、将来課題として残す。
+
+- **`config_toml`**（`attach_config: bool`）: 現在使用中の `config.toml`
+  の生テキスト。`Runtime` はブート時に `AppConfig` 全体を保持せず個別
+  フィールドに分解済みのため、シリアライズではなく
+  `app::find_config_path()`（既存）でパスを特定してディスクから
+  再読み込みする。副作用のない読み取り専用 I/O であり、決定8の
+  `windows_keyboard_layout`（`GetKeyboardLayout` を都度呼ぶ）と同じ
+  「キャッシュ不要な読み取り専用 API」の扱いに準じる。
+
+- **`layout_yab`**（`attach_layout: bool`）: 現在有効な `.yab` 配列
+  ファイルの生テキスト。`config_toml` から `general.layouts_dir` を
+  取り出して解決し、`app.platform.tray.current_layout_name()`
+  （トレイから保存せず切り替えた最新のレイアウト名を返す既存アクセサ）
+  と結合して読み込む。`config.general.default_layout`（保存済みの値）
+  ではなく実行時の現在値を使うことで、「設定を保存せずレイアウトだけ
+  切り替えた状態で発生したバグ」も正しく再現できるようにする。
+
+**プライバシー注記**: `layouts_dir`/`default_layout` にユーザーが絶対
+パスを入力していた場合、Windows のユーザー名が含まれる可能性がある。
+決定4の journal ログ同様マスキングはせず、送信前プレビューでの手動編集
+のみを安全弁とする。実測サイズは典型的な `config.toml` で数 KB、`.yab`
+で数 KB 程度（既存の `layout/*.yab` 実例は 1.4〜1.9KB）であり、
+`log_excerpt` の上限 `LOG_EXCERPT_MAX_BYTES`（256KiB）や全体の
+`MAX_BODY_BYTES`（512KiB）に対して十分小さいため、journal ログのような
+末尾切り詰めロジックは設けない。ただし合計サイズが `MAX_BODY_BYTES` を
+超える極端なケース（巨大な journal ログ＋大きい `config.toml`/`.yab` の
+組み合わせ）に備え、クライアント側で送信前に本文サイズを見て
+「添付を外してください」と案内する軽量なガードのみ入れている
+（サーバ側の実際の上限はサーバ側定数がSSOT、クライアント側の値は
+早期に分かりやすく警告するためだけの複製）。
+
+**既知の限界（レビューで指摘、2026-08-19）**: `config_toml`/`layout_yab`
+は報告生成時点でディスクから読み直すため、`Runtime` が実際にロード済み
+の設定（起動時または最後の `WM_RELOAD_CONFIG` 時点の値）とズレる場合が
+ある。具体的には、ユーザーが `config.toml` を手編集したが設定リロード
+（トレイの「設定を再読み込み」またはアプリ再起動）をしていない状態で
+不具合報告すると、添付される `config_toml` は編集後の内容になり、
+実際に動いていた設定とは異なる。この場合、「その設定で動いていた」と
+調査側が誤読するリスクがある。`layouts_dir`（config由来）は
+`AppConfig::validate()` を通した値を使うため決定9初版にあった正規化漏れ
+（`layouts_dir` に `..` を含む値が生のまま使われるバグ）は修正済みだが、
+「設定リロード前後のズレ」自体は残る既知の限界であり、今回のスコープでは
+対処しない（`state_snapshot` 側に「設定ファイルの mtime とロード時刻の
+一致フラグ」を足す等の対策は将来課題）。
+
 ### 選ばなかった選択肢
 
 - **GitHub Issues**: 公開性がプライバシー要件と相容れないため不採用。
