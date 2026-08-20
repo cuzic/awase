@@ -3935,6 +3935,134 @@ apply 時点の値の**一致比較**に変更した（`ImeStateHub::last_explic
 `crates/awase-windows/src/state/platform_state.rs`（`ImeStateHub::note_explicit_ime_action`,
 `last_explicit_ime_action_ms_raw`）。
 
+**追補（横展開、2026-08-19）:** `kp_stage_idle_conv_check` 以外にも、同じ
+`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` ベースの同期呼び出しがエンジンスレッド上に
+5箇所残っていた（低確率で全キー swallow される謎バグの調査から発見）。Opus に
+architect/reviewer 役を分けて2巡の premortem（「もう出荷され実機で壊れた」前提で
+遡って原因を語らせる手法）にかけたところ、1巡目の設計（fence を単純に横展開する案）が
+**新しいサイレント機能停止**を生むと判明した——`Output::send_keys` が冒頭・末尾で
+呼ぶ `mark_send()` は NICOLA の通常の文字出力（conv を一切変えない）でも発火するため、
+`last_send`/`output_in_flight_ms()` ベースの fence は (a) 文字出力のたびに誤って落ち、
+かつ (b) 本来検出すべき `send_vk_dbe_hiragana_pair`（`mark_send` を通らない）を
+一度も捕捉できていなかった。
+
+対処（実装済み、`fix/bug34-sync-ime-calls` ブランチ）:
+
+1. **`conv_mutation_seq`**（新規、`conv_mutation.rs`）: conv ワードを変えうる VK
+   （`VK_KANA`/`VK_CONVERT`/`VK_DBE_*`、`vk::vk_may_mutate_conv` が判定）を送信した
+   ときだけ増分する専用カウンタ。列挙は `win32::send_input_safe`（全 `SendInput` の
+   唯一のチョークポイント）に一本化——名前付きラッパー単位の列挙では
+   `ime.rs::send_ime_mode_key`（ユーザー設定 VK を送るため、同じ関数が open-only にも
+   conv-mutating にもなる）を正しく分類できないため、実行時に VK 値そのもので
+   判定する設計にした。`key_pipeline.rs::apply_idle_conv_check` の fence(c) を
+   これに置き換え、旧 fence が誤って落ちる/検出漏れする二重の欠陥を修正。
+2. **`SendHealth`**（新規、`send_health.rs`）: `imm.rs::send_ime_control` の実測msを
+   記録し、直近 slow だった場合は同期サイトの発行を見送るサーキットブレーカ。
+   `ime_refresh.rs`（旧 site A）・`ime_controller.rs::romaji_pre_write`（旧 site E）・
+   `key_pipeline.rs::apply_focus_probe`（旧 site C）に適用。**初回の ~5s ブロックは
+   防げない**（再発だけ止める）——真の解消には各サイトの offload 化が要る。
+3. **`with_app_or_repost_with`**（既存関数を配線）: `WM_ASYNC_IME_APPLY_COMPLETE` の
+   受け口が `let _ = with_app(...)` で再入時に完了を黙って捨てていた穴を修正。
+4. **旧 site B**（`executor.rs::dispatch_ime_set_open` の sync path、MS-IME
+   TsfNative の conv 読み取り）: 読んだ値は `apply_ime_open_with_view` が
+   `log::debug!` に渡すだけで実 actuation には配線されていない（`ImeController::apply`
+   は belief 引数を取らない）と判明したため、単純に read を削除し `conv_mode: None`
+   を渡すだけに縮小。fence も degrade 方針も不要。
+5. **旧 site D**（`runtime/mod.rs::try_force_on_bootstrap`）: 同期
+   `ImmCrossProcessStrategy::apply` chain から `run_open_chain_async`（`executor.rs`
+   の ImmCross async path と同じ経路）へ移行。前提として `ImeModel.pending`
+   の期限切れパージ（`ImeTransition.timeout_at` は元々存在したが呼び出し元が
+   ゼロだった）と、`UnsafeToToggle` 完了時に pending を解放する修正
+   （旧経路は早期 return で `record_ime_apply_result` に到達せず pending が
+   永久残留し、以後の別 generation の完了が全部 stale 判定される固着を生みうた）を
+   先に入れた。`WM_ASYNC_IME_APPLY_COMPLETE` の wparam に reason bit を追加し
+   （`OpenApplyReason::Bootstrap` vs `EngineDecision`）、async 完了後も
+   provenance が失われないようにした。
+6. **旧 site E**（`ime_controller.rs::romaji_pre_write`）: `open_chain.rs::fallback_write`
+   が `with_app` の `RUNTIME` borrow を握ったまま同期ブロックする実装は変えず
+   （hwnd 解決統一を伴う完全な非同期化は実機ソーク前提で見送り）、SendHealth の
+   gate のみ追加した。この borrow 保持中は、他の完了メッセージが上記3の修正で
+   再入時に再送されるようになったため「ブロック中に他の完了が永久に失われる」
+   という最悪の帰結は防げている。
+
+**見送った項目（実機ソーク必須のため）**: site A（`ime_refresh.rs` の conv prefetch
+を async 化する設計、`ConvModeMgr` の last-writer-wins 競合が先に塞がっていないと
+悪化する）と `ConvModeMgr` → `ConvObservation` への格上げ（B-2）。
+
+**追補2（Opus レビューで発見・同日中に修正、2026-08-19）:** 実装完了後に Opus に
+実コード（ツールアクセス付き）でレビューさせたところ、上記の実装自体に新しい
+欠陥が複数見つかった。いずれも「BUG-34 横展開1巡目 premortem が指摘した欠陥と
+同型のものが、直した箇所とは別の場所に再発していた」というパターンで、
+修正済み:
+
+1. **`conv_mutation_seq` が IMC 経由の conv 書き込みを1つも数えていなかった**
+   （最重要）: ゲートを `win32::send_input_safe`（SendInput 経由）にしか置いて
+   おらず、`set_ime_romaji_mode_for_hwnd` が使う `imm.rs::send_ime_control` の
+   `IMC_SETCONVERSIONMODE` 経路を見ていなかった。旧 `last_send` fence が
+   「本来検出すべき自己出力を1つも捕捉できていなかった」のとまったく同型の
+   欠陥が、直したはずの箇所の**すぐ隣**に残っていた。`send_ime_control` にも
+   `IMC_SETCONVERSIONMODE` 時の bump を追加（2箇所ゲート体制に）。
+2. **B（executor.rs）の診断用 offload が毎打鍵で OS スレッドを spawn していた**:
+   削除した同期 read の代わりに追加した「log 専用の fire-and-forget offload」に
+   in-flight ガードが無く、この経路が「毎打鍵で走る」ことと衝突し、GJI ハング中に
+   打鍵ごとに ~5s ブロックするワーカースレッドが積み上がる（かつその読み取り
+   結果が `send_health::record` に給餌されグローバルブレーカを誤作動させうる）
+   実装になっていた。唯一の消費先がログだけである以上、診断ごと削除した。
+3. **`idle_conv_check_in_flight` が `with_app` の1回の再入失敗で永久にラッチする**:
+   Step0-b で `WM_ASYNC_IME_APPLY_COMPLETE` に対して直したのと同型の欠陥。
+   ただし被害はこちらの方が重い（完了1件の消失ではなく、idle-conv-check が
+   プロセスの寿命いっぱい発火しなくなる）。`bool` を `Option<u64>`（spawn 時刻）
+   に変更し、`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`（8000ms）を超えたら
+   「放棄された」とみなして自己回復するようにした。
+4. **`ImeModel.pending` の 1 秒タイムアウトが、この横展開が対象にしている
+   最悪ケース（`HungAppTimeout` ≒ 5000ms、BUG-34 実測 5741ms）より短かった**:
+   D-prep で有効化したパージが、正当な in-flight apply（offload 先が実際に
+   ハング境界までブロックしている場合）を「放棄された」と誤判定し、後から
+   届く完了を stale として黙って捨てる新しい失敗モードを生んでいた。
+   `IME_APPLY_PENDING_TIMEOUT_MS`（tuning.rs、8000ms）に延長。
+5. **A（`ime_refresh.rs`）のブレーカ degrade が eisu guard の存在理由を踏み外して
+   いた**: 見送り時に一律 `None` へ degrade すると `eisu_guard_active=false` と
+   なり fail-open で warmup が送られ、ユーザーが tray で明示的に半角英数にして
+   いた場合でもひらがなへ戻してしまう。`ConvModeMgr` の直近キャッシュ値へ
+   degrade するよう変更（「不明＝英数ではない」という一番弱い仮定を避ける）。
+6. **E（`romaji_pre_write`）のブレーカ gate に再試行経路が無かった**: この関数は
+   フリー関数で `Runtime` にアクセスできず、スキップ時に再試行をスケジュール
+   する手段がなかった。gate だけ入れると「ブロックする」を「ROMAN ビットが
+   次の明示トグルまで静かに補完されないまま固着する」というログにも残らない
+   不具合に置き換えるだけだったため、gate を撤去し元の常時試行に戻した
+   （再試行機構込みの設計は E 本体に持ち越し）。
+7. **`SendHealth` が単発スパイク1回でブレーカを作動させていた**:
+   `consecutive_slow` を記録はするが判断に使っておらず、GC 停止等の一時的な
+   遅延1回で A/C/E の3サイトが2秒間まとめて degrade しうた。2回連続の slow
+   判定で初めて作動するよう変更（`TRIP_AFTER_CONSECUTIVE_SLOW=2`）。
+8. `win32::input_may_mutate_conv`（INPUT 構造体からの VK 抽出・Unicode モード
+   除外ロジック）にテストが1件も無かったため4件追加。
+
+指摘のうち残した/見送ったもの: `try_force_on_bootstrap` が in-flight の
+`pending` を上書きしうる新経路（新設の警告ログで検知可能、頻度は低い）、
+`with_app_or_repost_with` に再試行上限が無い（既存のプリミティブへの変更で
+影響範囲が広いため見送り、残存リスクとして記録）。
+
+**検証状況:** `cargo test -p awase-windows --lib`（Linux、pure logic 全418件）、
+`architecture_guard.rs`/`layer_boundary_guard.rs`/`golden_scenarios.rs`/
+`journal_replay.rs`/`drift_correction_replay.rs`/`intent_store_effective_open.rs`
+（Linux 実行可能な全 tests/ 全緑）、`cargo xwin check`/`cargo xwin build --tests`/
+`cargo xwin clippy -p awase-windows --lib`（Windows ターゲットのコンパイル・
+テストビルド・lint、クリーン。`--all-targets` はこの変更と無関係な既存箇所で
+多数指摘が出るが、CI の clippy ジョブのスコープは `--lib` のみ）で確認済み。
+**Windows 実機での実行検証は未実施**（このセッションには Windows 実行環境が無く、
+wine 等でのクロス実行もできなかったため、windows-gated なモジュール
+（`send_health.rs`/`platform_state.rs`/`win32.rs` 等）のテストは型検証・
+テストビルドのみで実行は未確認。CI の windows-latest ジョブでは実行される）。
+
+**関連（追補分）:** `crates/awase-windows/src/conv_mutation.rs`,
+`crates/awase-windows/src/send_health.rs`,
+`crates/awase-windows/src/runtime/open_chain.rs`（`fallback_write`）,
+`crates/awase-windows/src/state/transition.rs`（`ImeTransition::is_timed_out`）,
+`crates/awase-windows/src/runtime/mod.rs`（`try_force_on_bootstrap`）,
+`docs/adr/087-open-belief-actuation-warrant-separation.md` §5 item14（実
+actuation 入口棚卸し表の #7 訂正）。
+
 ---
 
 ## BUG-35: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として

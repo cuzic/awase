@@ -953,7 +953,7 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     | 4 | `key_pipeline.rs:741` | `apply_ime_open_with_belief(false, None, belief)` | observation-based correction（`EngineSync::DirectInput`、ObservedEisu 検出） | 空（`None`） | — |
     | 5 | `key_pipeline.rs:941` | `apply_skipping_imm` | shadow toggle OFF、ImmCross 失敗フォールバック | 実値 | — |
     | 6 | `mod.rs:733`（`force_on_and_correct_romaji`） | `apply_ime_open_with_view(true, &view, belief)` | force-write（ImmBrokenForceOn / ForcePolicyResend 共用） | 空（`build_ime_control_view(None)`、GJI `shadow_on` スキップを**意図的に**無効化する既存仕様、コード内 N2 コメント参照） | — |
-    | 7 | `mod.rs:890`（`try_force_on_bootstrap`） | `apply_ime_open_with_belief(true, None, belief)` | force-write（Bootstrap） | 空 | — |
+    | 7 | `mod.rs:890`（`try_force_on_bootstrap`） | ~~`apply_ime_open_with_belief(true, None, belief)`~~ → `run_open_chain_async`（2026-08-19、BUG-34 横展開 D、下記注参照） | force-write（Bootstrap） | 空 | — |
     | 8 | `ime_refresh.rs:499`（`ir_post_focus_change_snapshot`） | `apply_ime_open_with_applied(true, None)` | force-write（GJI TsfNative 入場、shadow_on を意図的に無視） | 空 | — |
     | 9 | `ime_refresh.rs:534` | `set_ime_open(false)` | focus change 強制 OFF（IMM32 のみ） | — | — |
     | 10 | `ime_refresh.rs:727` | `set_ime_open(desired)` | drift correction（ImmCross） | — | — |
@@ -971,6 +971,25 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     §1.4 item 3 が挙げた drift correction・`EngineSync::DirectInput` は上表 #4/#11
     に対応する。各経路を force-write / observation-based correction のどちらに
     分類した上で warrant 必須化の対象を決める。
+
+    **訂正（2026-08-19、BUG-34 横展開 D）**: 上表 #7（`try_force_on_bootstrap`）は
+    `docs/known-bugs.md` BUG-34（`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` が
+    呼び出し中に相手がハングし始めた場合には効かず、宣言タイムアウトを大幅に
+    超えて `HungAppTimeout`(~5s) までエンジンスレッドをブロックしうる）の横展開
+    調査で、`apply_ime_open_with_belief` → `ImeController::apply`（同期 chain）→
+    `ImmCrossProcessStrategy::apply` → `set_ime_open_cross_process`（150ms 宣言
+    タイムアウトの `SendMessageTimeoutW`）という経路が、ADR-089 §9-21 の訂正
+    どおり Standard プロファイルでも到達しうる同期ブロッキングサイトだったと
+    判明した。`executor.rs` の ImmCross async path（上表 #2）と同じ
+    `run_open_chain_async` へ委譲するよう変更し、`.apply_ime_open_with_belief(`
+    の直接呼び出しは4件→3件（#4/#11 + `apply_ime_open_with_applied` 内部委譲）に
+    減った。`run_open_chain_async(` の呼び出し元は2件→3件（executor.rs /
+    key_pipeline.rs / mod.rs）に増えた。分類は force-write（Bootstrap）のまま
+    変わらない——移行したのは同期/非同期の別であり、warrant の要否判断（A-2 で
+    倒すのは最後、ADR-090 §4.9）には影響しない。回帰テストは
+    `tests/architecture_guard.rs` の `actuation_target_capture_call_sites_are_accounted_for`
+    / `ime_open_actuation_entry_points_are_accounted_for` /
+    `async_imm_cross_actuation_goes_through_the_single_chain_entry` を更新済み。
 15. `is_eligible_for_ime_force_on()`（`state/platform_state.rs:478`、
     `belief.is_japanese_ime() && effective_open()`）の判定を `issue_open_warrant()`
     経由に差し替える（INV-25、P16）。呼び出し元は3箇所

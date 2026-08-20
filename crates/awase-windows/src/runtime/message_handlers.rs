@@ -313,13 +313,28 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 ///
 /// spawn_local の future（メインスレッド上でポーリングされる）から呼ぶこと。
 /// `with_app` を握らずメッセージループ経由で `on_ime_apply_complete` に合流させる。
+///
+/// `reason` は wparam の bit1 にエンコードする（BUG-34 横展開 D、2026-08-19）。
+/// 以前はこの経路の唯一の生成元が `executor.rs::dispatch_ime_set_open`
+/// （常に `EngineDecision`）だったため固定値にしていたが、
+/// `try_force_on_bootstrap`（`Bootstrap`）が2つ目の生成元として加わったため、
+/// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision` と
+/// `Bootstrap` の2値のみエンコードする**（1 bit）。この async 経路に将来
+/// 別の `OpenApplyReason` を渡す呼び出し元を追加する場合は、この関数と
+/// `decode_reason` のビット幅を拡張すること（さもないと未知の reason が
+/// 静かに `EngineDecision` に丸められる）。
 pub(crate) fn post_async_ime_apply_complete(
     open: bool,
     outcome: ImeOpenOutcome,
     generation: Option<u64>,
+    reason: crate::state::ime_event::OpenApplyReason,
 ) {
     let generation = generation.unwrap_or(0);
-    let wparam = ((generation as usize) << 1) | usize::from(open);
+    let reason_bit = usize::from(matches!(
+        reason,
+        crate::state::ime_event::OpenApplyReason::Bootstrap
+    ));
+    let wparam = ((generation as usize) << 2) | (reason_bit << 1) | usize::from(open);
     crate::win32::post_to_main_thread_with(
         crate::WM_ASYNC_IME_APPLY_COMPLETE,
         wparam,
@@ -327,18 +342,23 @@ pub(crate) fn post_async_ime_apply_complete(
     );
 }
 
+/// [`post_async_ime_apply_complete`] の reason bit の逆変換。
+fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
+    if (wparam >> 1) & 1 != 0 {
+        crate::state::ime_event::OpenApplyReason::Bootstrap
+    } else {
+        crate::state::ime_event::OpenApplyReason::EngineDecision
+    }
+}
+
 /// WM_ASYNC_IME_APPLY_COMPLETE ハンドラ
 ///
 /// ImmCross async apply の完了通知。sync path の `sync_outcomes` と対称に、
 /// generation 照合を含む単一入口 `on_ime_apply_complete`（B+C+D+E）へ合流する。
-///
-/// `reason` は `OpenApplyReason::EngineDecision` 固定。このメッセージは
-/// `executor.rs::dispatch_ime_set_open`（`Decision::SetOpen` エフェクト駆動、
-/// ImmCross async 経路）の2箇所からしか post されないため、wparam/lparam へ
-/// 追加でエンコードせずここで直接指定する（唯一の生成元が常に同じ値のため）。
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let open = (wparam & 1) != 0;
-    let generation = match (wparam >> 1) as u64 {
+    let reason = decode_reason(wparam);
+    let generation = match (wparam >> 2) as u64 {
         0 => None,
         generation => Some(generation),
     };
@@ -346,12 +366,7 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     if outcome == ImeOpenOutcome::Failed {
         log::warn!("apply_ime_open({open}) failed (async)");
     }
-    app.on_ime_apply_complete(
-        open,
-        outcome,
-        generation,
-        crate::state::ime_event::OpenApplyReason::EngineDecision,
-    );
+    app.on_ime_apply_complete(open, outcome, generation, reason);
 }
 
 /// WM_GJI_CHARSET_FN_KEY_ACTIVATED ハンドラ。

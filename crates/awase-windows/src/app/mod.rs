@@ -362,8 +362,16 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // ImmCross async apply の完了。sync path の sync_outcomes と対称に
                 // on_ime_apply_complete（単一入口）へ合流させる。
                 // wparam/lparam はポスト元 post_async_ime_apply_complete がパックした (open, outcome)。
+                //
+                // BUG-34 横展開 Step0-b: `let _ = with_app(...)` は再入時（RUNTIME が
+                // 既に borrow 中）に完了を黙って捨てる（lib.rs:208 の warn ログのみ）。
+                // 同期ブロッキングサイト（例: open_chain.rs の fallback_write）が
+                // RUNTIME borrow を握ったまま数秒ブロックする間にこの完了が届くと、
+                // このメッセージは二度と再送されないため apply の完了が永久に失われる。
+                // with_app_or_repost_with で再入時に同一メッセージを自スレッドへ
+                // 再 post させ、次のメッセージループ周回で確実に処理させる。
                 let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                let _ = with_app(|app| {
+                with_app_or_repost_with(WM_ASYNC_IME_APPLY_COMPLETE, wparam, lparam, |app| {
                     message_handlers::handle_wm_async_ime_apply_complete(app, wparam, lparam);
                 });
             }

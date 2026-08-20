@@ -156,6 +156,38 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0xF0..=0xF6)
 }
 
+/// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、
+/// `imm.rs::IME_CMODE_*`）を変えうるかどうかを判定する（BUG-34 横展開
+/// Step0-a、`conv_mutation::bump()` の唯一のゲート）。
+///
+/// **`may_change_ime`/`is_ime_control` とは判定軸が異なる**: あちらは
+/// 「IME の開閉を含む何らかの状態」を変えうるかを問うのに対し、これは
+/// 「conv ワードそのもの」を変えうるかだけを問う。
+///
+/// - `true`（conv-mutating）: `VK_KANA`（0x15）・`VK_CONVERT`（0x1C）・
+///   `VK_DBE_ALPHANUMERIC`〜`VK_DBE_NOROMAN`（0xF0-0xF6、英数/カタカナ/
+///   ひらがな/半角/全角/ローマ字/かな直接の各モード切替）。
+/// - `false`（open-only、無害）: `VK_IME_ON`（0x16）・`VK_IME_OFF`（0x1A）・
+///   `VK_KANJI`（0x19）——これらは IME の開閉のみを切り替え、conv ワードには
+///   触れない（`KanjiToggleStrategy`/`MsImeDirectStrategy` が根拠に使う
+///   前提と同じ）。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
+///   キーであり mode 選択キーではない。
+///
+/// `send_ime_mode_key`（`ime.rs`）はユーザー設定 VK（`engine_on_ime_vk`/
+/// `engine_off_ime_vk`）を送るため、同じ関数呼び出しが open-only にも
+/// conv-mutating にもなりうる。呼び出し元（call site）単位では区別できず、
+/// **実際に送信する VK の値**で判定する必要がある——`win32::send_input_safe`
+/// がこの関数を唯一のゲートとして経由する設計はこのため。
+#[must_use]
+pub(crate) const fn vk_may_mutate_conv(vk_code: VkCode) -> bool {
+    matches!(
+        vk_code.0,
+        0x15 // VK_KANA
+        | 0x1C // VK_CONVERT
+        | 0xF0..=0xF6 // VK_DBE_ALPHANUMERIC..=VK_DBE_NOROMAN
+    )
+}
+
 /// この VK は通常の物理キーボードには存在しない、IME 専用の合成 VK コード
 /// （`VK_DBE_ALPHANUMERIC`/`KATAKANA`/`HIRAGANA`/`SBCSCHAR`/`DBCSCHAR`、
 /// 0xF0-0xF4）か（ADR-093）。
@@ -822,7 +854,7 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 mod tests {
     use super::{
         ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey,
-        should_upgrade_is_japanese_ime, vk_pair_to_ascii, ImeKeyKind, VkCode,
+        should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
@@ -939,6 +971,42 @@ mod tests {
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0x41))); // 'A'
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xEF))); // 0xF0 の直前
         assert!(!is_synthetic_dbe_ime_hotkey(VkCode(0xFC))); // VK_NONAME
+    }
+
+    // ── BUG-34 横展開 Step0-a: vk_may_mutate_conv ──
+
+    /// VK_KANA・VK_CONVERT・VK_DBE_ALPHANUMERIC〜NOROMAN(0xF0-0xF6)は
+    /// conv ワードを変えるため true。
+    #[test]
+    fn vk_may_mutate_conv_true_for_kana_convert_and_all_dbe_mode_keys() {
+        assert!(vk_may_mutate_conv(VkCode(0x15)), "VK_KANA");
+        assert!(vk_may_mutate_conv(VkCode(0x1C)), "VK_CONVERT");
+        for raw in 0xF0u16..=0xF6 {
+            assert!(
+                vk_may_mutate_conv(VkCode(raw)),
+                "0x{raw:02X} は VK_DBE_ALPHANUMERIC..=NOROMAN の範囲のはず"
+            );
+        }
+    }
+
+    /// VK_IME_ON/OFF・VK_KANJI は開閉のみを切り替え conv ワードには触れないため false。
+    /// `send_ime_mode_key` がこれらと VK_DBE_* の両方を送る唯一の関数であり、
+    /// call site ではなく VK 値で区別する必要があることの根拠となる境界値。
+    #[test]
+    fn vk_may_mutate_conv_false_for_open_only_keys() {
+        assert!(!vk_may_mutate_conv(VkCode(0x16)), "VK_IME_ON");
+        assert!(!vk_may_mutate_conv(VkCode(0x1A)), "VK_IME_OFF");
+        assert!(!vk_may_mutate_conv(VkCode(0x19)), "VK_KANJI");
+    }
+
+    /// VK_NONCONVERT（composition キャンセル、mode 選択キーではない）・
+    /// 通常の文字キー・0xF0-0xF6 の範囲外は false。
+    #[test]
+    fn vk_may_mutate_conv_false_for_nonconvert_and_unrelated_vk() {
+        assert!(!vk_may_mutate_conv(VkCode(0x1D)), "VK_NONCONVERT");
+        assert!(!vk_may_mutate_conv(VkCode(0x41)), "'A'");
+        assert!(!vk_may_mutate_conv(VkCode(0xEF)), "0xF0 の直前");
+        assert!(!vk_may_mutate_conv(VkCode(0xF7)), "0xF6 の直後");
     }
 
     // ── ADR-093: should_upgrade_is_japanese_ime ──

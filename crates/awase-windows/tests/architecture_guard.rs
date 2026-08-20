@@ -1002,10 +1002,17 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     //   trait オーバーライド `WindowsPlatform::apply_ime_open` を削除したため、
     //   その内部委譲 1 件が消えた（`awase` 側のトレイト既定実装が残る）。
     const ENTRY_POINTS: [(&str, usize); 6] = [
-        // 外部 3（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check /
-        // mod.rs try_force_on_bootstrap、ADR-087 §5 item14 表 #11/#4/#7）
-        // + apply_ime_open_with_applied 内部からの委譲 1 = 4。
-        (".apply_ime_open_with_belief(", 4),
+        // 外部 2（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check、
+        // ADR-087 §5 item14 表 #11/#4）+ apply_ime_open_with_applied 内部からの
+        // 委譲 1 = 3。
+        //
+        // **2026-08-19（BUG-34 横展開 D）**: 表 #7 の mod.rs try_force_on_bootstrap は
+        // ここから外れた。同期 ImmCrossProcessStrategy::apply（150ms 宣言
+        // タイムアウトの SendMessageTimeoutW をエンジンスレッドで直接ブロックする
+        // 経路）を経由しなくなり、executor.rs の ImmCross async path と同じ
+        // run_open_chain_async へ委譲するようになったため
+        // （`async_imm_cross_actuation_goes_through_the_single_chain_entry` 参照）。
+        (".apply_ime_open_with_belief(", 3),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         (".apply_ime_open_with_view(", 3),
@@ -1351,6 +1358,7 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
         ("src/runtime/key_pipeline.rs", 3), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)（apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
+        ("src/runtime/mod.rs", 1), // try_force_on_bootstrap（BUG-34 横展開 D、2026-08-19: 同期 ImmCrossProcessStrategy::apply 経由の force-on を run_open_chain_async へ移行）
     ];
 
     let all_files = list_src_files();
@@ -1816,7 +1824,12 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         );
     }
 
-    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
+    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 3）。
+    //
+    // **2026-08-19（BUG-34 横展開 D）**: mod.rs::try_force_on_bootstrap が
+    // 3本目の呼び出し元として加わった（executor.rs / key_pipeline.rs は既存）。
+    // 同期 ImmCrossProcessStrategy::apply（エンジンスレッドを直接ブロックする
+    // SendMessageTimeoutW 経路）から、この単一チェーン入口へ移行したもの。
     let mut entry_calls = 0usize;
     for path in &files {
         let content = read_crate_file(path);
@@ -1824,9 +1837,9 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         entry_calls += count_real_calls(production, "run_open_chain_async(");
     }
     assert_eq!(
-        entry_calls, 2,
-        "`run_open_chain_async(` の呼び出し箇所数が想定(2: executor.rs / \
-         key_pipeline.rs)と異なります(実際: {entry_calls})。"
+        entry_calls, 3,
+        "`run_open_chain_async(` の呼び出し箇所数が想定(3: executor.rs / \
+         key_pipeline.rs / runtime/mod.rs)と異なります(実際: {entry_calls})。"
     );
 }
 

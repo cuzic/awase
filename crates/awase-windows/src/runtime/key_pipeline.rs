@@ -353,21 +353,38 @@ impl Runtime {
         //
         // 多重 in-flight 防止: GJI が本当にハングしている間、断続的なタイピングで
         // offload 呼び出しが積み上がるのを防ぐ（1 件 in-flight の間は新規 spawn しない）。
-        if self.platform_state.gate.idle_conv_check_in_flight {
-            log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
-            return;
+        //
+        // BUG-34 横展開レビュー指摘: 完了 closure（下記 `with_app`）が再入で `None` を
+        // 返した場合、フラグを戻す機会が失われ、以後 idle-conv-check が永久に発火
+        // しなくなる恐れがあった。spawn 時刻を持たせ、
+        // `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS` を超えていれば「放棄された」とみなして
+        // 新規 spawn を許可することで自己回復させる。
+        let now_ms_for_gate = hook::current_tick_ms();
+        if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
+            let elapsed = now_ms_for_gate.saturating_sub(since);
+            if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
+                log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
+                return;
+            }
+            log::warn!(
+                "[idle-conv-check] 前回の in-flight が {elapsed}ms 未解放 → 放棄されたとみなし再武装"
+            );
         }
-        self.platform_state.gate.idle_conv_check_in_flight = true;
+        self.platform_state.gate.idle_conv_check_in_flight_since_ms = Some(now_ms_for_gate);
 
         // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch 照合し
         // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型）。
         let ticket = crate::state::probe_admission::ImmLikeTicket {
             focus_epoch: self.platform_state.focus.focus_epoch,
         };
+        // BUG-34 横展開 Step0-a: 自己出力の再検証を conv_mutation_seq のビット一致に
+        // 一本化する（旧 output_in_flight_ms ベースの last_send 比較は
+        // apply_idle_conv_check 側で撤去、下記 doc 参照）。
+        let conv_mutation_seq_at_spawn = crate::conv_mutation::current();
         win32_async::spawn_local(async move {
             let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
             let _ = crate::with_app(|app| {
-                app.platform_state.gate.idle_conv_check_in_flight = false;
+                app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
                 let Some(conv) = conv else { return };
                 crate::state::probe_admission::admit_epoch_in_app(
                     app,
@@ -376,8 +393,7 @@ impl Runtime {
                     |app, _accepted| {
                         app.apply_idle_conv_check(
                             conv,
-                            output_idle_ms_at_spawn,
-                            now_tick_at_spawn,
+                            conv_mutation_seq_at_spawn,
                             explicit_action_ms_at_spawn,
                         );
                     },
@@ -392,16 +408,15 @@ impl Runtime {
     ///
     /// 読み取りが in-flight の間（旧同期コードでは起こり得なかった隙間）に、
     /// awase 自身が (a) shift ガードを立てる、(b) explicit IME 操作を記録する、
-    /// (c) warmup 等で実際に出力を送る、のいずれかを行っていたら、読み取った
-    /// `conv` は awase 自身の遷移途中を拾った汚染値の可能性がある。spawn 時の
-    /// スナップショット（`output_idle_ms_at_spawn` / `now_tick_at_spawn` /
+    /// (c) conv ワードを変えうる書き込みを送る、のいずれかを行っていたら、
+    /// 読み取った `conv` は awase 自身の遷移途中を拾った汚染値の可能性がある。
+    /// spawn 時のスナップショット（`conv_mutation_seq_at_spawn` /
     /// `explicit_action_ms_at_spawn`）と apply 時点を突き合わせて、これらが
     /// 起きていないことを再確認してから適用する。
     fn apply_idle_conv_check(
         &mut self,
         conv: u32,
-        output_idle_ms_at_spawn: u64,
-        now_tick_at_spawn: crate::state::TickMs,
+        conv_mutation_seq_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
@@ -435,6 +450,11 @@ impl Runtime {
             );
             return;
         }
+        // この age 比較は spawn〜apply 間の変化検出には使わない（そちらは上の (b1) の
+        // ビット一致が担う）。ここは「suppress window 内かどうか」という独立した
+        // 業務ルールの判定であり、年齢は足切りとしてのみ使う
+        // （BUG-34 追補が否定したのは「経過時間で spawn〜apply 間の変化を判定する」
+        // パターンであり、この suppress window 判定はそれとは別軸）。
         let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
         if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
             log::debug!(
@@ -445,24 +465,29 @@ impl Runtime {
             return;
         }
 
-        // (c) 自己出力の再検証: spawn〜apply の間に awase 自身が SendInput/warmup で
-        // 出力していれば、conv は遷移途中を拾った可能性が高い。`output_in_flight_ms()`
-        // （最終送信からの経過 ms）を spawn 時と apply 時で絶対時刻に換算して突き合わせ、
-        // 最終送信時刻そのものが変わっていないかを確認する（経過 ms の単純比較では
-        // 待機時間の分だけ必ず増えるため使えない）。
-        let output_idle_ms_now = self.platform.output_in_flight_ms();
-        let last_send_abs_ms_at_spawn = (output_idle_ms_at_spawn != u64::MAX)
-            .then(|| now_tick_at_spawn.0.saturating_sub(output_idle_ms_at_spawn));
-        let last_send_abs_ms_now =
-            (output_idle_ms_now != u64::MAX).then(|| now_tick.0.saturating_sub(output_idle_ms_now));
-        if last_send_abs_ms_at_spawn != last_send_abs_ms_now {
+        // (c) 自己出力の再検証: spawn〜apply の間に awase 自身が conv ワードを
+        // 変えうる書き込み（VK_DBE_*/VK_KANA/VK_CONVERT 送信）を行っていれば、
+        // conv は遷移途中を拾った可能性が高い。
+        //
+        // BUG-34 横展開 Step0-a: 旧実装は `output_in_flight_ms()`（最終送信からの
+        // 経過 ms）を絶対時刻に換算して突き合わせていたが、`Output::send_keys` が
+        // 冒頭・末尾で呼ぶ `mark_send()` は **NICOLA の通常の文字出力（conv を
+        // 一切変えない）でも呼ばれる**ため、打鍵のたびにこの fence が誤って
+        // 落ちていた。しかも `send_eager_tsf_warmup` が呼ぶ `send_vk_dbe_hiragana_pair`
+        // （本来検出すべき自己出力の代表例）は `mark_send` を一切通らないため、
+        // 検出すべきものを1つも捕捉できていなかった（過剰かつ不足の二重の
+        // 誤判定）。`conv_mutation_seq`（`win32::send_input_safe` の唯一のゲート、
+        // conv ワードを変えうる VK でのみ増分）のビット一致に置き換える。
+        let conv_mutation_seq_now = crate::conv_mutation::current();
+        if conv_mutation_seq_now != conv_mutation_seq_at_spawn {
             log::debug!(
-                "[idle-conv-check] apply 時に自己出力を検出 (last_send {last_send_abs_ms_at_spawn:?}→{last_send_abs_ms_now:?}) → \
-                 読み取り結果 conv=0x{conv:08X} を破棄 (mid-warmup 汚染の可能性)"
+                "[idle-conv-check] apply 時に自己出力(conv変異)を検出 \
+                 (conv_mutation_seq {conv_mutation_seq_at_spawn}→{conv_mutation_seq_now}) → \
+                 読み取り結果 conv=0x{conv:08X} を破棄"
             );
             return;
         }
-        let in_flight = output_idle_ms_now;
+        let in_flight = self.platform.output_in_flight_ms();
 
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
@@ -1921,13 +1946,34 @@ impl Runtime {
             let in_flight = self.platform.output_in_flight_ms();
             // cold start: ROMAN ビットが信頼できないためスキップ
             if in_flight != u64::MAX {
-                // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
-                if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) } {
-                    self.platform.output.conv_mode.update_from_conv(conv);
-                    self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+                // BUG-34 横展開 C: この読み取りは apply_focus_probe 内で完全に同期
+                // （直前・直後に await 点が無い）なため、conv_mutation_seq のような
+                // spawn-to-apply 型の fence を足す意味はない（比較対象となる
+                // 「spawn 時と apply 時」の間に何も起こり得ない）。一方で
+                // SendMessageTimeoutW ベースの同期呼び出しであることは変わらないため、
+                // Step0-c の SendHealth ブレーカで直近 slow 判定後は発行を見送る。
+                //
+                // 【完全な修正を見送った理由】この読み取りを probe の await と
+                // 並行実行（join）に切り出せば、より応答性の良い設計にできる
+                // （round-2 premortem の C 是正案）。ただしその場合は
+                // ImmLikeTicket/focus-epoch 照合を新タスクにも引き継がせる必要があり
+                // （既存の epoch fence を落とす退行を避けるため）、実機ソーク無しに
+                // ここだけ先走ると新しい race を作り込む恐れがある。E-prep
+                // （open_chain.rs::fallback_write）と同じ理由で、今回は見送る。
+                if crate::send_health::blocking_allowed(hook::current_tick_ms()) {
+                    // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
+                    if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
+                    {
+                        self.platform.output.conv_mode.update_from_conv(conv);
+                        self.platform_state.ime.set_prev_conversion_mode(Some(conv));
+                        log::debug!(
+                            "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
+                             フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）"
+                        );
+                    }
+                } else {
                     log::debug!(
-                        "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
-                         フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）"
+                        "[focus-conv-check] SendHealth degrade で conv 読み取りを見送り"
                     );
                 }
             }

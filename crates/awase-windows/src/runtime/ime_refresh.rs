@@ -495,12 +495,32 @@ impl Runtime {
         //   NATIVE=0 のまま VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため。
         // 旧 eisu_guard は conv=0x0000 のみを対象としていたが、MS-IME は 0x0010 (ROMAN=1,NATIVE=0)
         // を返すことがあるため is_eisu() に統一する。
-        let focus_change_conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) };
-        if let Some(conv) = focus_change_conv {
-            self.platform.output.conv_mode.update_from_conv(conv);
-        }
-        let eisu_guard_active = applied_open == Some(true)
-            && focus_change_conv.is_some_and(|conv| ConvMode::from_u32(conv).is_eisu());
+        // BUG-34 横展開 Step0-c: この読み取りはまだ同期(A、フルな offload+fence 化は
+        // 保留中)。SendHealth が直近 slow を検出している間は発行を見送る。
+        //
+        // BUG-34 横展開レビュー指摘: 見送り時に一律 None へ degrade すると
+        // eisu_guard_active=false（=通常どおり warmup 送信）へ fail-open し、
+        // ユーザーが tray で明示的に半角英数にしていた場合でもひらがなへ
+        // 強制的に戻してしまう——このガードが存在する理由そのものを踏み外す。
+        // ブレーカ作動中は代わりに ConvModeMgr の直近キャッシュ値
+        // （前回の実測で得た conv、フォーカス変更のたびに毎回リセットされる
+        // ものではない）を使う。「不明＝英数ではない」という一番弱い仮定を
+        // 避け、直近の実測に基づいて判断する。
+        let now_ms_for_health = crate::hook::current_tick_ms();
+        let is_eisu_now = if crate::send_health::blocking_allowed(now_ms_for_health) {
+            // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
+            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }.map(|conv| {
+                self.platform.output.conv_mode.update_from_conv(conv);
+                ConvMode::from_u32(conv).is_eisu()
+            })
+        } else {
+            log::debug!(
+                "[composition] FocusChange: SendHealth degrade で conv 読み取りを見送り、\
+                 ConvModeMgr のキャッシュ値で代替"
+            );
+            self.platform.output.conv_mode.get().map(ConvMode::is_eisu)
+        };
+        let eisu_guard_active = applied_open == Some(true) && is_eisu_now == Some(true);
         if eisu_guard_active {
             log::info!(
                 "[composition] FocusChange: applied_open=true だが conv=英数 → warmup スキップ (tray 半角英数 保護)"

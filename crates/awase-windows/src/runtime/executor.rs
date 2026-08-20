@@ -813,6 +813,7 @@ impl DecisionExecutor {
                         open,
                         awase::platform::ImeOpenOutcome::UnsafeToToggle,
                         generation,
+                        crate::state::ime_event::OpenApplyReason::EngineDecision,
                     );
                     drop(guard);
                     return;
@@ -835,7 +836,10 @@ impl DecisionExecutor {
                 // spawn_local の future 内で with_app を直接握らないことで再入面を減らし、
                 // generation 照合を含む B+C+D+E を on_ime_apply_complete に一元化する。
                 crate::runtime::message_handlers::post_async_ime_apply_complete(
-                    open, outcome, generation,
+                    open,
+                    outcome,
+                    generation,
+                    crate::state::ime_event::OpenApplyReason::EngineDecision,
                 );
                 drop(guard);
             });
@@ -855,17 +859,36 @@ impl DecisionExecutor {
             // （`platform.rs::apply_ime_open_with_view` の `log::debug!`）のみ。
             let now_ms = crate::hook::current_tick_ms();
 
-            // MS-IME + TsfNative の場合のみ conv_mode を直接読む（ground-truth）。
-            // ImmCross 対応アプリはこの branch に来ない。GJI 環境は conv_mode 不要。
-            let conv_mode = if view.observed.active_ime_kind
-                == crate::tsf::observer::ActiveImeKind::MicrosoftIme
-                && !view.focus.profile.can_use_imm32_cross_process()
-            {
-                // SAFETY: Win32 IMM API。メインスレッド前提。
-                unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(5) }
-            } else {
-                None
-            };
+            // BUG-34 横展開 B: 以前はここで MS-IME + TsfNative の場合のみ
+            // get_ime_conversion_mode_raw_timeout(5) を同期的に呼んでいた
+            // （SendMessageTimeoutW ベース、SMTO_ABORTIFHUNG は呼び出し中に
+            // ハングし始めた相手には効かず最大 HungAppTimeout ~5s ブロックしうる、
+            // known-bugs.md BUG-34）。この打鍵経路は毎打鍵で走るため、ブロックすると
+            // その打鍵の IME open/close 判定そのものが Win32 往復の後ろに回る。
+            //
+            // この read の唯一の消費先は belief_inputs.conv_mode →
+            // reduce_open_belief → belief.effective_open/confident だが、
+            // apply_ime_open_with_view (platform.rs) は belief を log::debug! に
+            // 渡すだけで、実行本体 ImeController::apply(order, view) は belief
+            // 引数を受け取っていない（読んだ値は最終的にログ2行にしか影響しない）。
+            // そのため fence や degrade 方針を設計する必要はなく、単純に conv_mode
+            // を常に None にして同期 read を削除するだけで安全に打鍵経路の
+            // ブロックを解消できる。
+            //
+            // BUG-34 横展開レビュー指摘: 当初はここに fire-and-forget の診断読み取り
+            // （spawn_local + offload、結果は log のみ）を残していたが、この経路は
+            // 「毎打鍵で走る」（本関数冒頭のコメント参照）ため、キー入力のたびに
+            // OS スレッドを spawn する（`win32_async::offload` は呼び出しごとに
+            // `std::thread::spawn`）・宣言タイムアウトを 5ms→50ms に引き上げた
+            // クロスプロセス `SendMessageTimeoutW` を送る・その結果が
+            // `send_health::record` に給餌されグローバルなサーキットブレーカを
+            // 誤って作動させうる、という副作用があった。BUG-34 の第1修正
+            // （`kp_stage_idle_conv_check`）がまさにこの積み上がりを防ぐために
+            // in-flight ガードを持つのに対し、この診断はその保護を持たない
+            // 一回性イベント向けの idiom（shift-conv-guard entry verify）を
+            // 毎打鍵経路へ転用したものだった。唯一の消費先がログだけである以上、
+            // 削除するのが最も一貫した選択（fence/ガードを新設する価値がない）。
+            let conv_mode = None;
 
             let belief_inputs = crate::output::OpenBeliefInputs {
                 shadow_on: view.control.shadow_on,

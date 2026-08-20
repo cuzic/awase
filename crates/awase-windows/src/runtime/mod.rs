@@ -413,7 +413,7 @@ impl Runtime {
         generation: Option<u64>,
         reason: crate::state::ime_event::OpenApplyReason,
     ) {
-        use awase::platform::{ImeOpenOutcome, TsfComposition as _};
+        use awase::platform::TsfComposition as _;
 
         self.platform_state
             .ime
@@ -435,9 +435,12 @@ impl Runtime {
         // set_ime_open_then_conv_for_target` の doc 参照）。
         self.platform.post_ime_refresh();
 
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
-            return;
-        }
+        // BUG-34 横展開 D-prep: UnsafeToToggle をここで早期 return すると、
+        // generation 付きで立てた pending が record_ime_apply_result まで
+        // 届かず永久に残留する（以後の別 generation の完了が全て stale
+        // 判定され続ける固着になる）。record_ime_apply_result 自身が
+        // UnsafeToToggle を判別して pending だけ解放し applied は動かさない
+        // ため、ここでは早期 return せず必ず通す。
 
         // C+D: ImeModel write-back + generation 照合 dispatch
         let accepted = self.platform_state.ime.record_ime_apply_result(
@@ -794,28 +797,89 @@ impl Runtime {
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime.detect_miss_count()
             );
-            // set_ime_open は IMM 専用実装で Imm32Unavailable では常に no-op
-            // （apply_force_on_for_imm_broken と同じ穴）。strategy chain で apply する。
-            let belief = crate::output::OpenBelief {
-                effective_open: true,
-                confident: true,
-            };
+
+            // BUG-34 横展開 D: 従来この経路は apply_ime_open_with_belief →
+            // ImeController::apply（同期 chain）を経由し、ImmCrossProcessStrategy::apply
+            // → set_ime_open_cross_process（150ms 宣言タイムアウトの
+            // SendMessageTimeoutW）をエンジンスレッド上で直接ブロックしていた
+            // （ADR-089 §9-21 の訂正どおり、Standard プロファイルでも到達しうる）。
+            // executor.rs::dispatch_ime_set_open の ImmCross async path と同じ構成で
+            // run_open_chain_async へ委譲する: 起案（generation の発行 + pending の
+            // 設置 + warrant order + OutputActiveGuard）は spawn_local の**外**で
+            // 行う（future の中では with_app 再入で ImeStateHub に届かないため、
+            // ADR-090 §4.2）。
+            //
+            // generation は `allocate_event_generation()` を呼ぶだけでなく、
+            // 必ず `ImeApplyRequested` を dispatch して `pending` を実際に立てる
+            // （round-2 premortem で判明: generation を割り当てるだけで
+            // ImeApplyRequested を dispatch しないと `record_ime_apply_result` の
+            // generation 照合が常に不一致になり、完了が全て stale として捨てられる
+            // 「空の generation」になる）。D-prep（pending の期限切れパージ・
+            // UnsafeToToggle での解放・上書き検出ログ）が入っているため、
+            // capture 失敗等で完了が来なかった場合も pending は 1 秒で自然に
+            // パージされる。
+            let now_ms = crate::hook::current_tick_ms();
+            let generation = self.platform_state.ime.allocate_event_generation();
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation,
+                    ctrl_held: false,
+                },
+                crate::state::TickMs(now_ms),
+            );
             // ADR-090 §2.A A-1（shadow）。**この入口は差分オラクルが
             // 「判明した中で最大の挙動変化」と記録している old-1 そのもの**
             // （`ImmCross` は `default_feedback = Read` なので Step 4c が
             // 発火せず、観測も意図も guard も無い bootstrap では warrant が
             // `None` になる）。A-2 で倒すのは**最後**に回すこと（ADR-090 §4.9）。
             let order = self.issue_actuation_order(true, "try_force_on_bootstrap");
-            let outcome = self
-                .platform
-                .apply_ime_open_with_belief(order, None, belief);
-            log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
-            self.on_ime_apply_complete(
-                true,
-                outcome,
-                None,
-                crate::state::ime_event::OpenApplyReason::Bootstrap,
-            );
+            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+            // MsImeDirect/ImmCross の ROMAN 補完と同じ判断（executor.rs
+            // dispatch_ime_set_open の async path 参照）: ObservedKana（ユーザーが
+            // 意図的にかな入力に設定した状態）以外は open と同じ hwnd へ ROMAN
+            // ビットを補完する。
+            let conv_after_open = if matches!(
+                self.platform_state.ime.input_mode(),
+                InputModeState::ObservedKana
+            ) {
+                crate::ime::ConvAfterOpen::Skip
+            } else {
+                crate::ime::ConvAfterOpen::Write(None)
+            };
+            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            win32_async::spawn_local(async move {
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!(
+                        "[force-on-bootstrap] capture 失敗（フォーカス無し） → UnsafeToToggle"
+                    );
+                    message_handlers::post_async_ime_apply_complete(
+                        true,
+                        awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                        Some(generation),
+                        crate::state::ime_event::OpenApplyReason::Bootstrap,
+                    );
+                    drop(guard);
+                    return;
+                };
+                let outcome = open_chain::run_open_chain_async(
+                    order,
+                    open_chain::ImmCrossOp::Targeted {
+                        target,
+                        conv_after_open,
+                        focus_gen,
+                    },
+                )
+                .await;
+                log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
+                message_handlers::post_async_ime_apply_complete(
+                    true,
+                    outcome,
+                    Some(generation),
+                    crate::state::ime_event::OpenApplyReason::Bootstrap,
+                );
+                drop(guard);
+            });
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
         }
     }

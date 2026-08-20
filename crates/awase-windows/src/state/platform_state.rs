@@ -790,12 +790,29 @@ impl ImeStateHub {
             }
         }
 
+        // BUG-34 横展開 D-prep: UnsafeToToggle は「送っていない」であって
+        // 「完了していない」ではない。以前は呼び出し元（on_ime_apply_complete）が
+        // ここに来る前に早期 return しており、generation 付きの pending が
+        // 一度も clear されず、以後の別 generation の完了が全て stale 判定され
+        // 続ける固着を生んでいた。ここで from_apply_outcome の既存の
+        // UnsafeToToggle → ImeApplyFailed マッピング（元々定義済みだったが
+        // 呼び出し元の早期 return により到達不能だった）を使って pending だけを
+        // 解放し、applied のミラーリングは行わない（何が実際の IME 状態かは
+        // 依然不明なため）。
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            if let Some(generation) = generation {
+                let event = ImeEvent::from_apply_outcome(open, outcome, generation);
+                self.dispatch_event(event, TickMs(ts));
+            }
+            return false;
+        }
+
         let effective = match outcome {
             ImeOpenOutcome::Applied
             | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle => unreachable!("上で早期 return 済み"),
         };
         self.mirror_applied_open_with_ts(effective, ts);
 
@@ -1371,14 +1388,29 @@ pub(crate) struct GateStore {
     /// と同じ理由: conv=0x0000は awase自身の意図的な状態のため）。
     pub half_width_alnum_toggle_active: bool,
     /// `kp_stage_idle_conv_check` の conv 読み取り（offload 済み、`SendMessageTimeoutW`
-    /// ベース）が in-flight かどうか。
+    /// ベース）が in-flight かどうか。spawn 時の `hook::current_tick_ms()` を持つ
+    /// （BUG-34 横展開レビュー指摘: 単なる bool だと、完了時に `with_app` が
+    /// 再入で `None` を返した場合にフラグが永久に立ちっぱなしになり、以後
+    /// idle-conv-check がプロセスの寿命いっぱい発火しなくなる。単なる bool 化
+    /// 解除だけでなく、経過時間で自動的に「放棄された」とみなして再武装できる
+    /// ようにするため `Option<u64>`（spawn 時刻）にする）。
     ///
     /// GJI が本当にハングしている間に断続的なタイピングが続くと、idle ゲートを
     /// 通過するたびに新しい offload 呼び出しが積み上がりワーカースレッドが増え続ける。
     /// 1 件 in-flight の間は新規 spawn をスキップし、完了時（epoch 棄却時も含む）に
-    /// `with_app` 内で必ず false へ戻す。
-    pub idle_conv_check_in_flight: bool,
+    /// `with_app` 内で必ず `None` へ戻す。それに加えて、spawn からの経過時間が
+    /// [`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`] を超えていれば in-flight とはみなさず
+    /// 新規 spawn を許可する（完了取りこぼし時の自己回復）。
+    pub idle_conv_check_in_flight_since_ms: Option<u64>,
 }
+
+/// [`GateStore::idle_conv_check_in_flight_since_ms`] の自己回復しきい値。
+///
+/// BUG-34 の実測（WezTerm, ~5741ms、docs/known-bugs.md）が示す
+/// `HungAppTimeout` の既定値（~5000ms）+ マージンで、正当な in-flight 読み取り
+/// （offload 先のワーカースレッドが実際にハング境界までブロックしている場合）を
+/// 誤って「放棄された」と判定しないようにする。
+pub(crate) const IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS: u64 = 8_000;
 
 impl GateStore {
     pub(crate) fn new() -> Self {
@@ -1389,7 +1421,7 @@ impl GateStore {
             left_shift_tap_candidate: false,
             shift_conv_guard_pending: false,
             half_width_alnum_toggle_active: false,
-            idle_conv_check_in_flight: false,
+            idle_conv_check_in_flight_since_ms: None,
         }
     }
 }
@@ -1534,6 +1566,80 @@ mod tests {
             "focus transition が pending でなければ通常通り適用される"
         );
         assert!(ps.ime.model().desired_open());
+    }
+
+    // ── BUG-34 横展開 D-prep: record_ime_apply_result の UnsafeToToggle 処理 ────
+    //
+    // 以前は呼び出し元 (`runtime/mod.rs::on_ime_apply_complete`) が
+    // `UnsafeToToggle` をここへ到達する前に早期 return しており、generation 付き
+    // で立てた pending が一度も解放されず、以後の別 generation の完了が全て
+    // stale 判定され続ける固着になっていた（round-2 premortem で発見）。
+
+    /// `UnsafeToToggle` は pending を解放するが、`applied` はミラーリングしない
+    /// (実際には何も送っていないため、どちらの状態か分からない)。
+    #[test]
+    fn unsafe_to_toggle_releases_pending_without_mirroring_applied() {
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 5,
+                ctrl_held: false,
+            },
+            TickMs(0),
+        );
+        assert_eq!(ps.ime.model().pending_generation(), Some(5));
+
+        let accepted = ps.ime.record_ime_apply_result(
+            true,
+            awase::platform::ImeOpenOutcome::UnsafeToToggle,
+            Some(5),
+            100,
+        );
+
+        assert!(
+            !accepted,
+            "UnsafeToToggle は composition 更新(on_ime_applied)を誘発しない"
+        );
+        assert!(
+            ps.ime.model().pending_generation().is_none(),
+            "UnsafeToToggle でも pending は解放される — 解放しないと以後の別 \
+             generation の完了が全て stale 判定され続ける固着になる"
+        );
+        assert!(
+            ps.ime.model().applied.applied_open().is_none(),
+            "何を実際に適用したか不明なため applied はミラーリングしない"
+        );
+    }
+
+    /// generation が一致しない UnsafeToToggle 完了は、他の outcome と同様
+    /// stale として無視され pending に触れない。
+    #[test]
+    fn unsafe_to_toggle_with_stale_generation_does_not_touch_pending() {
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 5,
+                ctrl_held: false,
+            },
+            TickMs(0),
+        );
+
+        let accepted = ps.ime.record_ime_apply_result(
+            true,
+            awase::platform::ImeOpenOutcome::UnsafeToToggle,
+            Some(4),
+            100,
+        );
+
+        assert!(!accepted);
+        assert_eq!(
+            ps.ime.model().pending_generation(),
+            Some(5),
+            "generation 不一致の UnsafeToToggle は stale として無視され、現在の \
+             pending を消費しない"
+        );
     }
 
     // 既存の CtrlImeChord フィルタが、focus_transition フィルタ追加後も

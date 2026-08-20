@@ -407,6 +407,22 @@ impl ImeModel {
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
+        // BUG-34 横展開 D-prep: pending transition の期限切れを毎 dispatch で
+        // 遅延パージする。`ImeTransition.timeout_at` は Step 7 導入時から存在したが
+        // 呼び出し元がゼロで、実際には一度も評価されていなかった。パージが無いと、
+        // 完了イベント（generation 照合）が届かないまま pending が残留した場合
+        // （典型例: `ImeOpenOutcome::UnsafeToToggle` を早期 return で捨てていた旧経路）
+        // 以後の別 generation の完了が全て stale 判定され続ける固着になる。
+        if let Some(pending) = &self.pending {
+            if pending.is_timed_out(envelope.time.monotonic) {
+                log::debug!(
+                    "[ime-model] pending transition timed out (generation={}, target={}) — purge",
+                    pending.generation,
+                    pending.target
+                );
+                self.pending = None;
+            }
+        }
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 let target = !self.desired_open;
@@ -515,13 +531,35 @@ impl ImeModel {
                 generation,
                 ctrl_held,
             } => {
+                // BUG-34 横展開 D-prep: 進行中の未期限切れ pending を無条件で
+                // 上書きしない。上書きすると、進行中の別 apply（例: 打鍵駆動の
+                // apply）の完了が届いたときに generation 不一致で stale 判定され、
+                // その apply の結果が黙って捨てられる（`applied_open` が古いまま
+                // 固定され drift correction が再送を繰り返す事故につながる）。
+                // 【現時点では拒否ではなく警告ログのみ】正当な高頻度連続要求
+                // （例: force-on の即時リトライ）を誤って落とさないため、実機で
+                // 実際の発生頻度を確認してから拒否に倒すかどうかを判断する。
+                if let Some(existing) = &self.pending {
+                    if !existing.is_timed_out(envelope.time.monotonic) {
+                        log::warn!(
+                            "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
+                             が進行中の pending(generation={}, target={}) を上書きする — \
+                             その apply の完了が今後 stale 判定される可能性がある",
+                            existing.generation,
+                            existing.target
+                        );
+                    }
+                }
                 // Step 7: pending transition を立てる。
                 // 実際の timeout / actuator 詳細は呼び出し元 (Phase 3 cleanup) が
                 // 個別 dispatch で渡す想定。Step 7 では最低限の placeholder。
                 self.pending = Some(ImeTransition {
                     target,
                     generation,
-                    timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
+                    timeout_at: envelope.time.monotonic
+                        + std::time::Duration::from_millis(
+                            crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS,
+                        ),
                 });
                 // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
                 // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
@@ -1348,6 +1386,129 @@ mod tests {
         assert!(
             model.pending_generation().is_none(),
             "一致する generation の失敗完了で pending を消費する"
+        );
+    }
+
+    // ── BUG-34 横展開 D-prep: pending purge / UnsafeToToggle 解放 ──────────────
+
+    /// `ImeTransition.timeout_at` は元々存在したが呼び出し元がゼロで、期限切れの
+    /// pending が生存し続けていた。`reduce()` の先頭で毎 dispatch パージすることで、
+    /// 期限切れ後に届く無関係なイベントが pending を自然に解放することを確認する。
+    #[test]
+    fn pending_purges_lazily_after_timeout_on_next_event() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(model.pending_generation(), Some(10));
+
+        // timeout_at は ImeApplyRequested から IME_APPLY_PENDING_TIMEOUT_MS 後
+        // （tuning.rs 参照、BUG-34 実測の HungAppTimeout ~5741ms に安全マージンを
+        // 載せた 8000ms）。期限をわずかに超えた時刻で、pending と無関係な
+        // イベントを送る。
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(timeout_ms + 1),
+                tick_ms: timeout_ms + 1,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert!(
+            model.pending_generation().is_none(),
+            "期限を過ぎたら、無関係な後続イベントの処理時に pending が自然にパージされる"
+        );
+    }
+
+    /// 期限内であれば無関係なイベントが来ても pending はパージされないことを確認する
+    /// （`pending_purges_lazily_after_timeout_on_next_event` の対称テスト）。
+    #[test]
+    fn pending_survives_unrelated_event_within_timeout() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(500),
+                tick_ms: 500,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(10),
+            "期限(1秒)内なら無関係なイベントで pending を失わない"
+        );
+    }
+
+    /// 進行中の未期限切れ pending を別の `ImeApplyRequested` が上書きしても、
+    /// クラッシュせず新しい generation の pending に置き換わることを確認する
+    /// （拒否はしない設計、警告ログのみ。ログ出力自体はここでは検証しない）。
+    #[test]
+    fn overwriting_live_pending_replaces_generation() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(model.pending_generation(), Some(10));
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(50),
+                tick_ms: 50,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 11,
+                ctrl_held: false,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(11),
+            "上書きは拒否しない(警告ログのみ) — 新しい generation が pending になる"
         );
     }
 

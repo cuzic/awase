@@ -377,3 +377,22 @@ pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
 /// `HwndCacheRestored` で `desired_open` へ再注入するため、この30秒 TTL の
 /// 外側で最大1時間 IntentStore 由来の値が生き残る経路が別途存在する）。
 pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
+
+/// `ImeModel.pending`（`ImeApplyRequested` で立てる apply transaction）の
+/// タイムアウト（BUG-34 横展開 D-prep、2026-08-19）。
+///
+/// `ImeTransition.timeout_at` は Step 7 導入時からのプレースホルダで、
+/// `1_000`(1秒) のまま呼び出し元がゼロ（一度も評価されていなかった）だった。
+/// D-prep でこれを実際にパージする経路を配線した際、レビュー指摘で「1秒は
+/// この横展開が対象にしている最悪ケース（`SendMessageTimeoutW` が
+/// `HungAppTimeout` ≒ 5000ms までブロックしうる、BUG-34 実測 WezTerm
+/// 5741ms）より短い」と判明した。1秒のままだと、正当な in-flight apply
+/// （offload 先が実際にハング境界までブロックしている場合）が完了するより
+/// **先に** pending がパージされ、後から届く完了が `record_ime_apply_result`
+/// で generation 不一致の stale として黙って捨てられる——「pending 固着」を
+/// 「ハング時に完了を取りこぼす」という別の失敗モードに置き換えてしまう。
+///
+/// BUG-34 実測（~5741ms）に安全マージンを載せた
+/// `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`（`state/platform_state.rs`、8000ms）と
+/// 同じ根拠・同じ値を採用する。
+pub const IME_APPLY_PENDING_TIMEOUT_MS: u64 = 8_000;

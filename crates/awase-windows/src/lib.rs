@@ -38,6 +38,8 @@ pub mod vk;
 #[cfg(windows)]
 pub mod autostart;
 #[cfg(windows)]
+pub(crate) mod conv_mutation;
+#[cfg(windows)]
 pub mod hook;
 #[cfg(windows)]
 pub mod ime;
@@ -63,6 +65,8 @@ pub mod panic_detect;
 pub mod platform;
 #[cfg(windows)]
 pub mod runtime;
+#[cfg(windows)]
+pub(crate) mod send_health;
 #[cfg(windows)]
 pub mod timer;
 #[cfg(windows)]
