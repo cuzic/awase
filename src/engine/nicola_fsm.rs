@@ -112,7 +112,15 @@ pub struct NicolaFsm {
     /// 親指+小指シフト複合面を有効にするか。
     ///
     /// 親指キー自体が Shift 修飾キーに割り当てられている場合は、親指押下だけで
-    /// Shift が立つため false にする。
+    /// Shift が立つため false にする。`new()` は `left_thumb_vk`/`right_thumb_vk`
+    /// が実際に Shift かどうかを（Platform 層依存の判定になるため）core 層だけでは
+    /// 判定できず、`false`（無効・従来面のみ）で初期化する。**Platform 層は
+    /// 起動直後に必ず `set_thumb_shift_faces_enabled()` を呼んで実際の値を
+    /// 設定すること**（`crates/awase-windows/src/app/bootstrap.rs`・
+    /// `crates/awase-linux/src/main.rs`・`crates/awase-macos/src/main.rs` 参照）。
+    /// 呼び忘れても「複合面が使えない」に留まり、親指自体が Shift のケースで
+    /// 複合面が誤って有効化される（誤出力）方向には倒れない——`true` を既定にすると
+    /// 呼び忘れ時にこの誤出力が起こるため、意図的に安全側の `false` を既定にしている。
     thumb_shift_faces_enabled: bool,
 
     /// ソロ確定の連続回数を追跡する汎用カウンター。
@@ -241,7 +249,10 @@ impl NicolaFsm {
             phys: PhysicalKeyState::empty(),
             left_thumb_consumed: None,
             right_thumb_consumed: None,
-            thumb_shift_faces_enabled: true,
+            // 既定は無効（安全側）。Platform 層が起動直後に
+            // set_thumb_shift_faces_enabled() で実際の値を設定する（フィールドの
+            // doc コメント参照）。
+            thumb_shift_faces_enabled: false,
             solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
@@ -636,6 +647,16 @@ impl NicolaFsm {
             .and_then(|(_, k)| k)
     }
 
+    /// `pos` が現在の Shift レベルで複合面（LeftThumbShift/RightThumbShift）に
+    /// 定義されているかを返す。`classify_idle_intent` が「和音の成立を複合面定義の
+    /// あるキーに限って待つ」ために使う（下記参照）。
+    fn thumb_shift_face_defines(&self, pos: Option<PhysicalPos>) -> bool {
+        let Some(pos) = pos else { return false };
+        self.thumb_shift_faces_enabled
+            && (self.layout.left_thumb_shift.contains_key(&pos)
+                || self.layout.right_thumb_shift.contains_key(&pos))
+    }
+
     /// 親指側と現在の Shift レベルから、部分定義に対応した実際の親指面を解決する。
     ///
     /// 複合面が無い、またはそのキー位置が未定義なら従来の親指面へフォールバックする。
@@ -898,12 +919,10 @@ impl NicolaFsm {
                 // 親指面に定義がない → Shift 面または確定モードに委譲（fall through）
             }
         }
-        // Shift plane
-        if self.should_use_shift_plane(ev)
-            && self
-                .lookup_face(ev.pos, self.get_face(Face::Shift))
-                .is_some()
-        {
+        // Shift plane（複合面がこの位置を定義しているときだけ、和音の成立を待つために譲る。
+        // それ以外は ADR-097 決定2どおり即座に Shift 面へ確定する——shift_face_reduce
+        // 自身が未定義キーを PassThrough させるため、ここで追加のガードは要らない）
+        if self.should_use_shift_plane(ev) && !self.thumb_shift_face_defines(ev.pos) {
             return IdleIntent::ShiftPlane;
         }
         // Non-layout key

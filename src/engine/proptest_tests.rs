@@ -109,7 +109,7 @@ fn empty_special_keys() -> SpecialKeyCombos {
 /// Create an Engine for high-level tests.
 fn make_test_engine() -> Engine {
     let layout = make_layout();
-    let fsm = NicolaFsm::new(
+    let mut fsm = NicolaFsm::new(
         layout,
         VK_NONCONVERT,
         VK_CONVERT,
@@ -117,6 +117,9 @@ fn make_test_engine() -> Engine {
         ConfirmMode::Wait,
         30,
     );
+    // 既定 false（安全側）なので、fuzz 対象に親指小指シフト複合面のコードパスも
+    // 含めるため明示的に有効化する（このヘルパーの親指キーはどちらも Shift ではない）。
+    fsm.set_thumb_shift_faces_enabled(true);
     let mut engine = Engine::new(fsm, empty_special_keys());
     engine.set_prev_active(true);
     engine
@@ -130,16 +133,18 @@ struct TestHarness {
 
 impl TestHarness {
     fn new() -> Self {
+        let mut fsm = NicolaFsm::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        fsm.set_thumb_shift_faces_enabled(true);
         Self {
             tracker: InputTracker::new(),
-            fsm: NicolaFsm::new(
-                make_layout(),
-                VK_NONCONVERT,
-                VK_CONVERT,
-                100,
-                ConfirmMode::Wait,
-                30,
-            ),
+            fsm,
         }
     }
 

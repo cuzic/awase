@@ -894,6 +894,10 @@ fn make_engine_with_space_thumb(ignore_composing_guard: bool, shift_literal: boo
         ConfirmMode::Wait,
         30,
     );
+    // 既定 false（安全側）。Space 親指キーは Shift 修飾キーではないため true でよい
+    // （`test_shift_space_literal_disabled_reaches_thumb_shift_face` 等、複合面へ
+    // 到達する経路のテストが依存する）。
+    engine.set_thumb_shift_faces_enabled(true);
     engine.set_space_thumb_config(
         Some(VK_SPACE),
         TextKeyConfig {
@@ -1489,16 +1493,22 @@ fn make_engine_with_thumb_shift_faces() -> TestHarness {
     layout.shift.insert(POS_S, lit('シ'));
     layout.left_thumb_shift.insert(POS_A, lit('左'));
     layout.right_thumb_shift.insert(POS_A, lit('右'));
+    let mut engine = NicolaFsm::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
+    // `thumb_shift_faces_enabled` は安全側で既定 false（Platform 層が起動直後に
+    // 実際の判定結果を設定する設計、nicola_fsm.rs のフィールド doc 参照）。
+    // 実機の Platform 層と同じく、ここで明示的に true を設定する
+    // （このヘルパーの親指キーはどちらも Shift ではないため true でよい）。
+    engine.set_thumb_shift_faces_enabled(true);
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(
-            layout,
-            VK_NONCONVERT,
-            VK_CONVERT,
-            100,
-            ConfirmMode::Wait,
-            30,
-        ),
+        engine,
     }
 }
 
@@ -1603,6 +1613,25 @@ fn test_thumb_shift_faces_disabled_for_shift_thumb_key() {
     engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
     let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
     assert_single_char(&result, 'を');
+}
+
+/// ADR-097 テストケース6: 複合面・Shift面のどちらにも定義が無いキーは、Normal面に
+/// 定義があって `is_layout_key` が true になっていても、Shift 押下中は
+/// `shift_face_reduce` の未定義フォールバックにより PassThrough する
+/// （F1 回帰ガード。`classify_idle_intent` の Shift plane ガードを
+/// `!self.thumb_shift_face_defines(pos)` ではなく誤って `lookup_face(...).is_some()`
+/// 型の条件に戻すと、この経路が ConfirmMode 側へ逸れて通常面の仮名を出力してしまう）。
+#[test]
+fn test_shift_held_key_absent_from_shift_and_compound_face_passes_through() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    // POS_D は make_engine_with_thumb_shift_faces() のどの面にも定義が無い
+    // （tests.rs 上部の VK_D コメント参照）。Normal 面にだけ追加して
+    // is_layout_key(POS_D) を true にする一方、Shift 面・複合面には入れない。
+    engine.layout.normal.insert(POS_D, lit('で'));
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine
+        .on_event(Ev::down(VK_D).at(10_000).build())
+        .assert_pass_through();
 }
 
 #[test]

@@ -70,8 +70,17 @@ fn main() -> Result<()> {
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
     );
+    // 親指キー自体が Shift（evdev KEY_LEFTSHIFT/KEY_RIGHTSHIFT）に割り当てられて
+    // いる場合、親指押下だけで Shift レベルが立つため複合面を無効化する
+    // （Windows 側 `crates/awase-windows/src/app/bootstrap.rs` の
+    // `thumb_shift_faces_enabled_for` と同じ判定方針。magic number を
+    // `hook::classify_modifier` 呼び出しに置き換え重複を解消、2026-08-20
+    // 独立レビューで指摘）。
+    use awase::types::ModifierKey;
     fsm.set_thumb_shift_faces_enabled(
-        !matches!(left_thumb.0, 42 | 54) && !matches!(right_thumb.0, 42 | 54),
+        awase_linux::hook::classify_modifier(u32::from(left_thumb.0)) != Some(ModifierKey::Shift)
+            && awase_linux::hook::classify_modifier(u32::from(right_thumb.0))
+                != Some(ModifierKey::Shift),
     );
     let mut engine = Engine::new(
         fsm,
@@ -121,12 +130,25 @@ fn main() -> Result<()> {
         let event_type = event.event_type;
         modifiers.update(&event);
         let is_down = matches!(event.event_type, KeyEventType::KeyDown);
+        // auto-repeat KeyDown では最初のタイムスタンプを上書きしない
+        // （Windows 実装 `crates/awase-windows/src/hook.rs` の `update_thumb`
+        // クロージャと同じセマンティクス。上書きすると `left_thumb_consumed`
+        // との比較で「消費済み」が auto-repeat のたびに剥がれてしまう、
+        // 2026-08-20 独立レビューで発覚）。
         match event.key_classification {
             KeyClassification::LeftThumb => {
-                left_thumb_down = is_down.then_some(event.timestamp);
+                left_thumb_down = if is_down {
+                    left_thumb_down.or(Some(event.timestamp))
+                } else {
+                    None
+                };
             }
             KeyClassification::RightThumb => {
-                right_thumb_down = is_down.then_some(event.timestamp);
+                right_thumb_down = if is_down {
+                    right_thumb_down.or(Some(event.timestamp))
+                } else {
+                    None
+                };
             }
             KeyClassification::Char | KeyClassification::Passthrough => {}
         }

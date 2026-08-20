@@ -66,8 +66,14 @@ fn main() -> Result<()> {
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
     );
+    // 親指キー自体が Shift（macOS keycode 0x38/0x3C）に割り当てられている場合、
+    // 親指押下だけで Shift レベルが立つため複合面を無効化する（Windows/Linux 側と
+    // 同じ判定方針。magic number を `hook::classify_modifier` 呼び出しに置き換え
+    // 重複を解消、2026-08-20 独立レビューで指摘）。
+    use awase::types::ModifierKey;
     fsm.set_thumb_shift_faces_enabled(
-        !matches!(left_thumb.0, 0x38 | 0x3C) && !matches!(right_thumb.0, 0x38 | 0x3C),
+        awase_macos::hook::classify_modifier(left_thumb.0) != Some(ModifierKey::Shift)
+            && awase_macos::hook::classify_modifier(right_thumb.0) != Some(ModifierKey::Shift),
     );
     let _engine = Engine::new(
         fsm,

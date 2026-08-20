@@ -178,12 +178,28 @@ impl InputTracker {
     }
 
     /// 親指キーの押下/解放状態を更新する
+    /// 親指キー押下中の最初のタイムスタンプだけを保持する（auto-repeat KeyDown で
+    /// 上書きしない）。上書きすると `left_thumb_consumed != left_thumb_down` になり、
+    /// 同時打鍵で消費済みの親指が auto-repeat のたびに「未消費」へ戻ってしまう
+    /// （`NicolaFsm::is_thumb_consumed` 参照）。Windows 実装
+    /// （`crates/awase-windows/src/hook.rs` の `update_thumb` クロージャ、
+    /// `prev == 0` のときだけ書き込む形）と同じセマンティクスに揃える
+    /// （2026-08-20 の独立レビューで、旧実装が毎回上書きしておりプラットフォーム間で
+    /// 挙動が食い違っていたと判明。修正）。
     fn update_thumb_state(&mut self, ev: &ClassifiedEvent, event: &RawKeyEvent) {
         let is_down = matches!(event.event_type, KeyEventType::KeyDown);
         if ev.key_class.is_left_thumb() {
-            self.left_thumb_down = if is_down { Some(ev.timestamp) } else { None };
+            self.left_thumb_down = if is_down {
+                self.left_thumb_down.or(Some(ev.timestamp))
+            } else {
+                None
+            };
         } else if ev.key_class == KeyClass::RightThumb {
-            self.right_thumb_down = if is_down { Some(ev.timestamp) } else { None };
+            self.right_thumb_down = if is_down {
+                self.right_thumb_down.or(Some(ev.timestamp))
+            } else {
+                None
+            };
         }
     }
 }
@@ -300,6 +316,45 @@ mod tests {
         let phys = tracker.process(&event);
         assert_eq!(phys.left_thumb_down, None);
         assert_eq!(phys.right_thumb_down, Some(600));
+    }
+
+    /// auto-repeat KeyDown（OS が押しっぱなし中に連射する KeyDown）は最初の
+    /// タイムスタンプを上書きしない。上書きすると `left_thumb_consumed` との
+    /// 比較で「消費済み」が auto-repeat のたびに剥がれ、同じ物理押下で
+    /// 後続キーが二重にシフトされてしまう（`NicolaFsm::consume_thumb`/
+    /// `is_thumb_consumed` 参照、Windows 実装との整合性、2026-08-20 独立レビュー）。
+    #[test]
+    fn process_thumb_key_auto_repeat_keydown_does_not_overwrite_timestamp() {
+        let mut tracker = InputTracker::new();
+
+        let mut first = make_event(KeyEventType::KeyDown);
+        first.key_classification = KeyClassification::LeftThumb;
+        first.timestamp = 500;
+        let phys = tracker.process(&first);
+        assert_eq!(phys.left_thumb_down, Some(500));
+
+        // OS の auto-repeat: 同じ物理キーの KeyDown が押しっぱなし中に繰り返し届く。
+        let mut repeat = make_event(KeyEventType::KeyDown);
+        repeat.key_classification = KeyClassification::LeftThumb;
+        repeat.timestamp = 550;
+        let phys = tracker.process(&repeat);
+        assert_eq!(
+            phys.left_thumb_down,
+            Some(500),
+            "auto-repeat KeyDown must not overwrite the original press timestamp"
+        );
+
+        // 離してから改めて押せば、新しいタイムスタンプに更新される。
+        let mut up = make_event(KeyEventType::KeyUp);
+        up.key_classification = KeyClassification::LeftThumb;
+        up.timestamp = 600;
+        tracker.process(&up);
+
+        let mut down_again = make_event(KeyEventType::KeyDown);
+        down_again.key_classification = KeyClassification::LeftThumb;
+        down_again.timestamp = 700;
+        let phys = tracker.process(&down_again);
+        assert_eq!(phys.left_thumb_down, Some(700));
     }
 
     #[test]
