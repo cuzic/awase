@@ -186,6 +186,10 @@ static PHYSICAL_KEY_STATE: [AtomicBool; 256] = [const { AtomicBool::new(false) }
 /// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
 static PHYSICAL_KEY_DOWN_AT_MS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
 
+/// Alt なりすまし適用後の左右親指キー押下時刻（µs）。0 = 押下されていない。
+static LEFT_THUMB_DOWN_AT_US: AtomicU64 = AtomicU64::new(0);
+static RIGHT_THUMB_DOWN_AT_US: AtomicU64 = AtomicU64::new(0);
+
 /// 物理 VK が押下中かを返す。SendInput では更新されないため信頼できる物理状態。
 #[must_use]
 pub fn is_physical_key_down(vk: VkCode) -> bool {
@@ -309,6 +313,8 @@ pub fn reset_physical_key_state() {
     for slot in &PHYSICAL_KEY_DOWN_AT_MS {
         slot.store(0, Ordering::Relaxed);
     }
+    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
     log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
@@ -387,6 +393,18 @@ pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
         (u32::from(left.0) << 16) | u32::from(right.0),
         Ordering::Release,
     );
+    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+}
+
+/// 現在押下中の左右親指キーの KeyDown 時刻（µs）を返す。
+#[must_use]
+pub fn thumb_down_timestamps() -> (Option<Timestamp>, Option<Timestamp>) {
+    let to_option = |value| (value != 0).then_some(value);
+    (
+        to_option(LEFT_THUMB_DOWN_AT_US.load(Ordering::Relaxed)),
+        to_option(RIGHT_THUMB_DOWN_AT_US.load(Ordering::Relaxed)),
+    )
 }
 
 /// キーボードモデル（JIS/US）を設定する（config 読み込み後に呼ぶ）
@@ -845,6 +863,25 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         );
     }
     vk = rewritten_vk;
+
+    if !is_injected {
+        let update_thumb = |slot: &AtomicU64| {
+            if is_keydown {
+                let prev = slot.load(Ordering::Relaxed);
+                if prev == 0 {
+                    slot.store(now_timestamp(), Ordering::Relaxed);
+                }
+            } else {
+                slot.store(0, Ordering::Relaxed);
+            }
+        };
+        if vk == config.left_thumb_vk {
+            update_thumb(&LEFT_THUMB_DOWN_AT_US);
+        }
+        if vk == config.right_thumb_vk {
+            update_thumb(&RIGHT_THUMB_DOWN_AT_US);
+        }
+    }
 
     // Ctrl consumption tracking
     if crate::vk::is_ctrl_variant(vk) {

@@ -141,6 +141,22 @@ fn production_code_only(content: &str) -> &str {
     content
 }
 
+#[test]
+fn build_input_context_callers_do_not_drop_thumb_down_state() {
+    for rel_path in [
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/message_handlers.rs",
+        "src/runtime/mod.rs",
+    ] {
+        let content = read_crate_file(rel_path);
+        assert!(
+            !content.contains("build_input_context(\n")
+                || !content.contains("None,\n            None,"),
+            "{rel_path} must not pass literal None, None to build_input_context"
+        );
+    }
+}
+
 fn non_comment_lines(content: &str) -> String {
     content
         .lines()

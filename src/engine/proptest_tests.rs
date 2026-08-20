@@ -52,6 +52,8 @@ const VK_POOL: &[VkCode] = &[
     VkCode(0x1C),
     VkCode(0x1D), // Convert, Nonconvert (thumb)
     VkCode(0x10),
+    VkCode(0xA0),
+    VkCode(0xA1),
     VkCode(0x11),
     VkCode(0x12), // Shift, Ctrl, Alt
     VkCode(0x0D),
@@ -78,12 +80,19 @@ fn make_layout() -> YabLayout {
     right_thumb.insert(PhysicalPos::new(2, 0), lit('ゔ'));
     right_thumb.insert(PhysicalPos::new(2, 1), lit('じ'));
 
+    let mut left_thumb_shift = YabFace::new();
+    left_thumb_shift.insert(PhysicalPos::new(2, 0), lit('左'));
+    let mut right_thumb_shift = YabFace::new();
+    right_thumb_shift.insert(PhysicalPos::new(2, 1), lit('右'));
+
     YabLayout {
         name: String::from("proptest"),
         normal,
         left_thumb,
         right_thumb,
         shift: YabFace::new(),
+        left_thumb_shift,
+        right_thumb_shift,
     }
 }
 

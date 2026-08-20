@@ -48,6 +48,9 @@ impl NicolaFsm {
 
     /// Idle + Speculative モード: 文字キーは即時出力して SpeculativeChar へ遷移
     pub(crate) fn idle_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        if self.phys.modifiers.shift {
+            return self.idle_wait(ev);
+        }
         if ev.key_class.is_thumb() {
             // Thumb key → same as Wait mode (pending thumb)
             return self.idle_wait(ev);
@@ -75,6 +78,9 @@ impl NicolaFsm {
     /// 親指キーは Wait モードと同じ扱い。
     /// 文字キーは短い待機（speculative_delay_us）の後、投機出力に遷移する。
     pub(crate) const fn idle_two_phase(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        if self.phys.modifiers.shift {
+            return self.idle_wait(ev);
+        }
         if ev.key_class.is_thumb() {
             // Thumb keys use Wait mode (same as Speculative)
             return self.idle_wait(ev);
@@ -96,6 +102,9 @@ impl NicolaFsm {
     /// 文字キーは通常面と親指面の n-gram スコアを比較し、
     /// 通常面が明らかに有利なら Speculative、そうでなければ Wait。
     pub(crate) fn idle_ngram(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        if self.phys.modifiers.shift {
+            return self.idle_wait(ev);
+        }
         if ev.key_class.is_thumb() {
             return self.idle_wait(ev);
         }

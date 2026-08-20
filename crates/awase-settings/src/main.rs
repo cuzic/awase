@@ -31,20 +31,24 @@ enum Tab {
     Advanced,
 }
 
-/// 配列編集タブの4面。
+/// 配列編集タブの6面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Face {
     Normal,
     LeftThumb,
     RightThumb,
     Shift,
+    LeftThumbShift,
+    RightThumbShift,
 }
 
-const FACES: [(Face, &str); 4] = [
+const FACES: [(Face, &str); 6] = [
     (Face::Normal, "通常面"),
     (Face::LeftThumb, "左親指シフト"),
     (Face::RightThumb, "右親指シフト"),
     (Face::Shift, "小指シフト"),
+    (Face::LeftThumbShift, "小指左親指シフト"),
+    (Face::RightThumbShift, "小指右親指シフト"),
 ];
 
 /// 配列編集タブのセル編集時の種別。
@@ -400,6 +404,8 @@ impl SettingsApp {
             Face::LeftThumb => &mut self.layout.left_thumb,
             Face::RightThumb => &mut self.layout.right_thumb,
             Face::Shift => &mut self.layout.shift,
+            Face::LeftThumbShift => &mut self.layout.left_thumb_shift,
+            Face::RightThumbShift => &mut self.layout.right_thumb_shift,
         }
     }
 
@@ -409,6 +415,8 @@ impl SettingsApp {
             Face::LeftThumb => &self.layout.left_thumb,
             Face::RightThumb => &self.layout.right_thumb,
             Face::Shift => &self.layout.shift,
+            Face::LeftThumbShift => &self.layout.left_thumb_shift,
+            Face::RightThumbShift => &self.layout.right_thumb_shift,
         }
     }
 
@@ -3003,6 +3011,8 @@ fn empty_yab_layout() -> YabLayout {
         left_thumb: YabFace::new(),
         right_thumb: YabFace::new(),
         shift: YabFace::new(),
+        left_thumb_shift: YabFace::new(),
+        right_thumb_shift: YabFace::new(),
     }
 }
 

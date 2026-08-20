@@ -2,8 +2,11 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use awase::config::AppConfig;
-use awase::engine::{Engine, InputContext, InputModeState, NicolaFsm, SpecialKeyCombos};
+use awase::engine::{
+    Engine, InputContext, InputModeState, ModifierState, NicolaFsm, SpecialKeyCombos,
+};
 use awase::scanmap::KeyboardModel;
+use awase::types::{KeyClassification, KeyEventType, Timestamp};
 use awase::yab::YabLayout;
 
 use awase_linux::hook::EvdevInput;
@@ -59,13 +62,16 @@ fn main() -> Result<()> {
     };
 
     // 5. Build Engine
-    let fsm = NicolaFsm::new(
+    let mut fsm = NicolaFsm::new(
         layout,
         left_thumb,
         right_thumb,
         config.general.simultaneous_threshold_ms,
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
+    );
+    fsm.set_thumb_shift_faces_enabled(
+        !matches!(left_thumb.0, 42 | 54) && !matches!(right_thumb.0, 42 | 54),
     );
     let mut engine = Engine::new(
         fsm,
@@ -106,23 +112,33 @@ fn main() -> Result<()> {
     // 9. Run blocking event loop
     log::info!("awase-linux running. Press Ctrl+C to exit.");
 
+    let mut modifiers = ModifierState::default();
+    let mut left_thumb_down: Option<Timestamp> = None;
+    let mut right_thumb_down: Option<Timestamp> = None;
+
     evdev.run_blocking(|event| {
         let vk = event.vk_code;
         let event_type = event.event_type;
+        modifiers.update(&event);
+        let is_down = matches!(event.event_type, KeyEventType::KeyDown);
+        match event.key_classification {
+            KeyClassification::LeftThumb => {
+                left_thumb_down = is_down.then_some(event.timestamp);
+            }
+            KeyClassification::RightThumb => {
+                right_thumb_down = is_down.then_some(event.timestamp);
+            }
+            KeyClassification::Char | KeyClassification::Passthrough => {}
+        }
 
         let ctx = InputContext {
             ime_on: true, // Assume IME ON for now
             input_mode: InputModeState::ObservedRomaji,
             is_japanese_ime: true,
             composing: false, // Linux では composition 検出未実装
-            modifiers: awase::engine::ModifierState {
-                ctrl: false,
-                alt: false,
-                shift: false,
-                win: false,
-            },
-            left_thumb_down: None,
-            right_thumb_down: None,
+            modifiers,
+            left_thumb_down,
+            right_thumb_down,
         };
         let decision = engine.on_input(event, &ctx);
 

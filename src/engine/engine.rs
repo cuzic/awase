@@ -188,6 +188,11 @@ impl Engine {
         self.adapter.set_enter_thumb_config(enter_thumb_vk, config);
     }
 
+    /// 親指+小指シフト複合面の有効/無効を設定する。
+    pub const fn set_thumb_shift_faces_enabled(&mut self, enabled: bool) {
+        self.adapter.set_thumb_shift_faces_enabled(enabled);
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji

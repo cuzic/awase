@@ -17,7 +17,7 @@ use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
     BypassReason, ClassifiedEvent, ComposingHint, EngineState, Face, IdleIntent, KeyClass,
     ModeKeyConfig, OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction,
-    SoloTapAction, TextKeyConfig, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    SoloTapAction, TextKeyConfig, ThumbSide, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 use super::timing;
 
@@ -108,6 +108,12 @@ pub struct NicolaFsm {
 
     /// 消費済み右親指キーの押下タイムスタンプ（左と同様）。
     pub(crate) right_thumb_consumed: Option<Timestamp>,
+
+    /// 親指+小指シフト複合面を有効にするか。
+    ///
+    /// 親指キー自体が Shift 修飾キーに割り当てられている場合は、親指押下だけで
+    /// Shift が立つため false にする。
+    thumb_shift_faces_enabled: bool,
 
     /// ソロ確定の連続回数を追跡する汎用カウンター。
     solo_counter: ConsecutiveSoloCounter,
@@ -235,6 +241,7 @@ impl NicolaFsm {
             phys: PhysicalKeyState::empty(),
             left_thumb_consumed: None,
             right_thumb_consumed: None,
+            thumb_shift_faces_enabled: true,
             solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
@@ -355,7 +362,9 @@ impl NicolaFsm {
                 thumb,
                 char1_released,
             } => {
-                // 文字+親指を同時打鍵として確定
+                // ContextChange による異常系 flush では現在の Shift 状態を面解決に
+                // 使わない。フォーカス変更後の modifier snapshot は別ウィンドウの
+                // 状態を指しうるため、通常の親指面で安全側に倒す（ADR-097 決定2 #9）。
                 let resolved = self.resolve_char_thumb_as_simultaneous(&char_key, thumb.face());
                 self.update_history(resolved.output);
                 let mut actions = resolved.actions;
@@ -539,6 +548,14 @@ impl NicolaFsm {
         self.text_key_enter = config;
     }
 
+    /// 親指+小指シフト複合面を有効化/無効化する。
+    ///
+    /// 親指キー自体が Shift 修飾キーに割り当てられている構成では、親指押下だけで
+    /// Shift レベルが立つため、Platform 層は false を渡すこと。
+    pub const fn set_thumb_shift_faces_enabled(&mut self, enabled: bool) {
+        self.thumb_shift_faces_enabled = enabled;
+    }
+
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         std::mem::take(&mut self.engine_off_requested)
@@ -591,6 +608,8 @@ impl NicolaFsm {
             Face::LeftThumb => &self.layout.left_thumb,
             Face::RightThumb => &self.layout.right_thumb,
             Face::Shift => &self.layout.shift,
+            Face::LeftThumbShift => &self.layout.left_thumb_shift,
+            Face::RightThumbShift => &self.layout.right_thumb_shift,
         }
     }
 
@@ -617,9 +636,29 @@ impl NicolaFsm {
             .and_then(|(_, k)| k)
     }
 
+    /// 親指側と現在の Shift レベルから、部分定義に対応した実際の親指面を解決する。
+    ///
+    /// 複合面が無い、またはそのキー位置が未定義なら従来の親指面へフォールバックする。
+    /// `YabValue::None` は `YabFace::contains_key` 上は定義ありとして扱い、明示的に
+    /// フォールバックを遮断する。
+    fn resolve_thumb_face(&self, side: ThumbSide, pos: Option<PhysicalPos>) -> Option<Face> {
+        let pos = pos?;
+        let shift_held = self.thumb_shift_faces_enabled && self.phys.modifiers.shift;
+        let preferred = Face::resolve(Some(side), shift_held);
+        if self.get_face(preferred).contains_key(&pos) {
+            return Some(preferred);
+        }
+        let fallback = Face::resolve(Some(side), false);
+        if self.get_face(fallback).contains_key(&pos) {
+            Some(fallback)
+        } else {
+            None
+        }
+    }
+
     /// `PendingCharThumb` 状態で char1+thumb を同時打鍵として解決し、アクション列と OutputUpdate を返す。
     ///
-    /// 親指キーの物理押下状態を「消費」する。消費後は `active_thumb_face()` が `None` を
+    /// 親指キーの物理押下状態を「消費」する。消費後は `active_thumb_side()` が `None` を
     /// 返すようになり、後続のキーが同じ親指押下で二重にシフトされるのを防ぐ。
     fn resolve_char_thumb_as_simultaneous(
         &mut self,
@@ -646,10 +685,10 @@ impl NicolaFsm {
     /// や KeyUp）タイムスタンプが不一致になり、自動的に「未消費」に戻る。
     /// 同時打鍵として消費されたことはソロ連打ではないため、ソロ連打カウンターをリセットする。
     const fn consume_thumb(&mut self, face: Face) {
-        match face {
-            Face::LeftThumb => self.left_thumb_consumed = self.phys.left_thumb_down,
-            Face::RightThumb => self.right_thumb_consumed = self.phys.right_thumb_down,
-            Face::Normal | Face::Shift => {} // 親指面以外は消費対象なし
+        match face.thumb_side() {
+            Some(ThumbSide::Left) => self.left_thumb_consumed = self.phys.left_thumb_down,
+            Some(ThumbSide::Right) => self.right_thumb_consumed = self.phys.right_thumb_down,
+            None => {} // 親指面以外は消費対象なし
         }
         self.solo_counter.reset();
     }
@@ -850,18 +889,22 @@ impl NicolaFsm {
         if self.is_enter_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;
         }
-        // Shift plane
-        if self.should_use_shift_plane(ev) {
-            return IdleIntent::ShiftPlane;
-        }
         // Active thumb combo
         if !ev.key_class.is_thumb() {
-            if let Some(face) = self.active_thumb_face() {
-                if self.lookup_face(ev.pos, self.get_face(face)).is_some() {
+            if let Some(side) = self.active_thumb_side() {
+                if let Some(face) = self.resolve_thumb_face(side, ev.pos) {
                     return IdleIntent::ActiveThumb(face);
                 }
-                // 親指面に定義がない → 確定モードに委譲（fall through）
+                // 親指面に定義がない → Shift 面または確定モードに委譲（fall through）
             }
+        }
+        // Shift plane
+        if self.should_use_shift_plane(ev)
+            && self
+                .lookup_face(ev.pos, self.get_face(Face::Shift))
+                .is_some()
+        {
+            return IdleIntent::ShiftPlane;
         }
         // Non-layout key
         if !ev.key_class.is_thumb() && !self.is_layout_key(ev.pos) {
@@ -1008,26 +1051,32 @@ impl NicolaFsm {
     /// Idle に戻って親指キーを新規イベントとして再処理する。
     fn step_speculative_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let pending = self.state.expect_speculative_char();
-        let face = Face::from_thumb(ev.key_class);
+        let side = if ev.key_class.is_left_thumb() {
+            ThumbSide::Left
+        } else {
+            ThumbSide::Right
+        };
 
         // Look up what the simultaneous keystroke would produce
-        if let Some((thumb_action, thumb_kana)) = self.lookup_face(pending.pos, self.get_face(face))
-        {
-            if self
-                .timing_judge()
-                .is_simultaneous(pending.timestamp, ev.timestamp, thumb_kana)
+        if let Some(face) = self.resolve_thumb_face(side, pending.pos) {
+            if let Some((thumb_action, thumb_kana)) =
+                self.lookup_face(pending.pos, self.get_face(face))
             {
-                // Within threshold → retract speculative output + emit thumb face
+                if self
+                    .timing_judge()
+                    .is_simultaneous(pending.timestamp, ev.timestamp, thumb_kana)
+                {
+                    // Within threshold → retract speculative output + emit thumb face
 
-                // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                self.consume_thumb(face);
-                self.go_idle();
-                return Self::retract_and_replace(pending, &thumb_action, thumb_kana);
+                    // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
+                    self.consume_thumb(face);
+                    self.go_idle();
+                    return Self::retract_and_replace(pending, &thumb_action, thumb_kana);
+                }
+                // Outside threshold → speculative was correct, process thumb as new key
             }
-            // Outside threshold → speculative was correct, process thumb as new key
-        } else {
-            // No thumb face entry → speculative was correct
         }
+        // No thumb face entry → speculative was correct
         // Go idle and re-process the thumb key
         self.go_idle();
         ParseAction::ReduceAndContinue {
@@ -1041,8 +1090,14 @@ impl NicolaFsm {
     fn step_pending_char_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let pending = self.state.expect_pending_char();
         // 親指面で保留文字キーの候補を取得し閾値を調整
-        let candidate_face = Face::from_thumb(ev.key_class);
-        let candidate = self.lookup_face(pending.pos, self.get_face(candidate_face));
+        let side = if ev.key_class.is_left_thumb() {
+            ThumbSide::Left
+        } else {
+            ThumbSide::Right
+        };
+        let candidate = self
+            .resolve_thumb_face(side, pending.pos)
+            .and_then(|face| self.lookup_face(pending.pos, self.get_face(face)));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
         if self
@@ -1083,8 +1138,8 @@ impl NicolaFsm {
     fn step_pending_thumb_char(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
         // 親指面で到着文字キーの候補を取得し閾値を調整
-        let pending_face = thumb.face();
-        let candidate = self.lookup_face(ev.pos, self.get_face(pending_face));
+        let pending_face = self.resolve_thumb_face(thumb.side(), ev.pos);
+        let candidate = pending_face.and_then(|face| self.lookup_face(ev.pos, self.get_face(face)));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
 
         if self
@@ -1094,7 +1149,9 @@ impl NicolaFsm {
             if let Some((action, kana)) = candidate {
                 // 保留=親指, 到着=文字 → 同時打鍵
                 // 親指を消費: 同じ押下で後続キーが二重シフトされるのを防ぐ
-                self.consume_thumb(thumb.face());
+                if let Some(face) = pending_face {
+                    self.consume_thumb(face);
+                }
                 self.go_idle();
                 return ParseAction::Reduce {
                     actions: smallvec![action.clone()],
@@ -1351,11 +1408,13 @@ impl NicolaFsm {
         if char1_released {
             return false;
         }
-        let thumb_face = thumb.face();
+        let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
         let judge = self.timing_judge();
-        let char1_thumb_kana = self.lookup_kana_at(pending.pos, thumb_face);
+        let char1_thumb_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
         let char1_single_kana = self.lookup_kana_at(pending.pos, Face::Normal);
-        let char2_thumb_kana = self.lookup_kana_at(ev.pos, thumb_face);
+        let char2_thumb_kana = self
+            .resolve_thumb_face(thumb.side(), ev.pos)
+            .and_then(|face| self.lookup_kana_at(ev.pos, face));
         judge.three_key_pairing(
             pending.timestamp,
             thumb.timestamp,
@@ -1370,10 +1429,13 @@ impl NicolaFsm {
     fn reduce_char_thumb_and_continue(
         &mut self,
         pending: PendingKey,
-        thumb_face: Face,
+        thumb_face: Option<Face>,
         remaining: ClassifiedEvent,
     ) -> ParseAction {
-        let resolved = self.resolve_char_thumb_as_simultaneous(&pending, thumb_face);
+        let resolved = match thumb_face {
+            Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
+            None => self.resolve_pending_char_as_single(&pending),
+        };
         resolved.into_reduce_and_continue(remaining)
     }
 
@@ -1389,7 +1451,7 @@ impl NicolaFsm {
     /// より自然な日本語になるほうを選ぶ。
     fn step_pending_char_thumb_3key(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let (pending, thumb, char1_released) = self.state.expect_pending_char_thumb();
-        let thumb_face = thumb.face();
+        let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
         self.go_idle();
 
         // 新しい親指キーが来た → char1+thumb を同時打鍵として確定し、新しい親指を再処理
@@ -1405,17 +1467,20 @@ impl NicolaFsm {
 
         // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
         let char1_resolved = self.resolve_pending_char_as_single(&pending);
-        if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(thumb_face)) {
-            // char1 の履歴を先に更新してから char2+thumb を確定
-            self.update_history(char1_resolved.output);
-            self.consume_thumb(thumb_face);
-            let mut all_actions = char1_resolved.actions;
-            all_actions.push(action.clone());
-            return ParseAction::Reduce {
-                actions: all_actions,
-                record: OutputUpdate::record(ev.scan_code, &action, kana),
-                timer: TimerIntent::CancelAll,
-            };
+        let char2_thumb_face = self.resolve_thumb_face(thumb.side(), ev.pos);
+        if let Some(face) = char2_thumb_face {
+            if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
+                // char1 の履歴を先に更新してから char2+thumb を確定
+                self.update_history(char1_resolved.output);
+                self.consume_thumb(face);
+                let mut all_actions = char1_resolved.actions;
+                all_actions.push(action.clone());
+                return ParseAction::Reduce {
+                    actions: all_actions,
+                    record: OutputUpdate::record(ev.scan_code, &action, kana),
+                    timer: TimerIntent::CancelAll,
+                };
+            }
         }
         // 親指面に char2 の定義がない → char1 単独確定、char2 を再処理
         char1_resolved.into_reduce_and_continue(*ev)
@@ -1489,7 +1554,10 @@ impl NicolaFsm {
 
         // char1+thumb を同時打鍵として確定する
         self.go_idle();
-        let resolved = self.resolve_char_thumb_as_simultaneous(&pending, thumb.face());
+        let resolved = match self.resolve_thumb_face(thumb.side(), pending.pos) {
+            Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
+            None => self.resolve_pending_char_as_single(&pending),
+        };
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
 
@@ -1623,10 +1691,13 @@ impl NicolaFsm {
     fn timeout_pending_char_thumb(
         &mut self,
         char_key: &PendingKey,
-        thumb_face: Face,
+        thumb_side: ThumbSide,
         char1_released: bool,
     ) -> Resp {
-        let resolved = self.resolve_char_thumb_as_simultaneous(char_key, thumb_face);
+        let resolved = match self.resolve_thumb_face(thumb_side, char_key.pos) {
+            Some(face) => self.resolve_char_thumb_as_simultaneous(char_key, face),
+            None => self.resolve_pending_char_as_single(char_key),
+        };
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
         if char1_released {
@@ -1685,21 +1756,21 @@ impl NicolaFsm {
     /// 消費タイムスタンプが現在の物理押下と一致すれば消費済み。
     /// 物理状態が変わると自動的に不一致になるため、明示的なリセットは不要。
     fn is_thumb_consumed(&self, face: Face) -> bool {
-        let (phys_down, consumed) = match face {
-            Face::LeftThumb => (self.phys.left_thumb_down, self.left_thumb_consumed),
-            Face::RightThumb => (self.phys.right_thumb_down, self.right_thumb_consumed),
-            Face::Normal | Face::Shift => return false,
+        let (phys_down, consumed) = match face.thumb_side() {
+            Some(ThumbSide::Left) => (self.phys.left_thumb_down, self.left_thumb_consumed),
+            Some(ThumbSide::Right) => (self.phys.right_thumb_down, self.right_thumb_consumed),
+            None => return false,
         };
         phys_down.is_some() && consumed == phys_down
     }
 
-    /// 現在押下中かつ未消費の親指キーに対応するシフト面を返す。
-    fn active_thumb_face(&self) -> Option<Face> {
+    /// 現在押下中かつ未消費の親指キーの側を返す。
+    fn active_thumb_side(&self) -> Option<ThumbSide> {
         if self.phys.left_thumb_down.is_some() && !self.is_thumb_consumed(Face::LeftThumb) {
-            Some(Face::LeftThumb)
+            Some(ThumbSide::Left)
         } else if self.phys.right_thumb_down.is_some() && !self.is_thumb_consumed(Face::RightThumb)
         {
-            Some(Face::RightThumb)
+            Some(ThumbSide::Right)
         } else {
             None
         }
@@ -1720,6 +1791,8 @@ impl NicolaFsm {
             || has_output(self.get_face(Face::LeftThumb))
             || has_output(self.get_face(Face::RightThumb))
             || has_output(self.get_face(Face::Shift))
+            || has_output(self.get_face(Face::LeftThumbShift))
+            || has_output(self.get_face(Face::RightThumbShift))
     }
 
     /// キーイベントがエンジン処理をバイパスすべきかを判定する
@@ -1824,7 +1897,7 @@ impl NicolaFsm {
                 char_key,
                 thumb,
                 char1_released,
-            } => self.timeout_pending_char_thumb(&char_key, thumb.face(), char1_released),
+            } => self.timeout_pending_char_thumb(&char_key, thumb.side(), char1_released),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }
@@ -1847,6 +1920,8 @@ mod tests {
                 left_thumb: YabFace::new(),
                 right_thumb: YabFace::new(),
                 shift: YabFace::new(),
+                left_thumb_shift: YabFace::new(),
+                right_thumb_shift: YabFace::new(),
             },
             VkCode(0x1D),
             VkCode(0x1C),

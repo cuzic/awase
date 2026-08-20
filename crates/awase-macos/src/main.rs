@@ -58,13 +58,16 @@ fn main() -> Result<()> {
     };
 
     // 6. Build Engine (NicolaFsm + InputTracker + empty ImeSyncKeys/SpecialKeyCombos)
-    let fsm = NicolaFsm::new(
+    let mut fsm = NicolaFsm::new(
         layout,
         left_thumb,
         right_thumb,
         config.general.simultaneous_threshold_ms,
         config.general.confirm_mode,
         config.general.speculative_delay_ms,
+    );
+    fsm.set_thumb_shift_faces_enabled(
+        !matches!(left_thumb.0, 0x38 | 0x3C) && !matches!(right_thumb.0, 0x38 | 0x3C),
     );
     let _engine = Engine::new(
         fsm,
