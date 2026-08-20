@@ -180,7 +180,14 @@ pub(crate) fn read_bug_report_attachments(
                 return None;
             }
         };
-        let layouts_dir = resolve_relative(&parsed.general.layouts_dir);
+        // 実行時と同じ経路（`reload_config`）で validate() を通す。生の
+        // `layouts_dir` をそのまま使うと `..` を含む値の正規化（`validate_layouts`）
+        // が反映されず、実際に読まれている .yab と異なる場所を見に行く。
+        let (validated, warnings) = parsed.validate();
+        for w in &warnings {
+            log::warn!("[bug-report] config.toml validation warning: {w}");
+        }
+        let layouts_dir = resolve_relative(&validated.general.layouts_dir);
         let yab_path = layouts_dir.join(format!("{active_layout_name}.yab"));
         match std::fs::read_to_string(&yab_path) {
             Ok(text) => Some(text),

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, REPORT_HOST,
-    RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, MAX_BODY_BYTES,
+    REPORT_HOST, RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -170,6 +170,14 @@ impl BugReportApp {
             return;
         }
         let body = self.preview_json.clone();
+        if body.len() > MAX_BODY_BYTES {
+            self.status = format!(
+                "送信内容が大きすぎます({}KB > {}KB上限)。journal ログや設定ファイルの添付を外してください。",
+                body.len() / 1024,
+                MAX_BODY_BYTES / 1024,
+            );
+            return;
+        }
         let (tx, rx) = mpsc::channel();
         self.pending = Some(rx);
         "送信中です...".clone_into(&mut self.status);
@@ -269,13 +277,20 @@ impl eframe::App for BugReportApp {
             }
 
             ui.separator();
-            ui.label("送信前プレビュー（この内容を編集してから送信できます）");
-            ui.add(
-                egui::TextEdit::multiline(&mut self.preview_json)
-                    .desired_rows(18)
-                    .code_editor()
-                    .lock_focus(true),
-            );
+            ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）");
+            egui::ScrollArea::vertical()
+                .id_salt("bug_report_preview_scroll")
+                .max_height(320.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.preview_json)
+                            .desired_rows(18)
+                            .desired_width(f32::INFINITY)
+                            .code_editor()
+                            .lock_focus(true),
+                    );
+                });
 
             ui.separator();
             ui.horizontal(|ui| {

@@ -15,6 +15,10 @@ pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
 pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
 pub const LOG_EXCERPT_MAX_BYTES: usize = 256 * 1024;
 pub const SCHEMA_VERSION: u8 = 3;
+/// `services/report-worker/src/index.ts` の `MAX_BODY_BYTES` と同じ値。
+/// サーバ側の 413 応答を待たず、送信前にクライアント側で分かりやすく警告する
+/// ための閾値としてのみ使う（サーバ側の実際の上限はサーバ側定数がSSOT）。
+pub const MAX_BODY_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BugReportImeKind {
@@ -115,11 +119,14 @@ pub struct BugReportPayload {
     pub competing_software: Vec<String>,
     pub symptom_category: SymptomCategory,
     pub description: String,
+    pub attach_state_snapshot: bool,
+    pub state_snapshot: Option<BugReportStateSnapshot>,
+    pub attach_config: bool,
+    pub config_toml: Option<String>,
+    pub attach_layout: bool,
+    pub layout_yab: Option<String>,
     pub attach_log: bool,
     pub log_excerpt: Option<String>,
-    pub state_snapshot: Option<BugReportStateSnapshot>,
-    pub config_toml: Option<String>,
-    pub layout_yab: Option<String>,
     pub reported_at: String,
 }
 
@@ -218,11 +225,14 @@ pub fn build_payload(
         competing_software: input.competing_software.clone(),
         symptom_category: input.symptom_category,
         description,
+        attach_state_snapshot: input.attach_state_snapshot,
+        state_snapshot,
+        attach_config: input.attach_config,
+        config_toml,
+        attach_layout: input.attach_layout,
+        layout_yab,
         attach_log: input.attach_log,
         log_excerpt,
-        state_snapshot,
-        config_toml,
-        layout_yab,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -412,19 +422,25 @@ mod tests {
     fn attachments_are_included_only_when_requested() {
         let mut input = input("説明", true, Some("[]"));
         let payload = build_payload(&input).unwrap();
+        assert!(payload.attach_state_snapshot);
         assert_eq!(payload.state_snapshot, Some(test_state_snapshot()));
+        assert!(payload.attach_config);
         assert_eq!(
             payload.config_toml.as_deref(),
             Some("general.default_layout = \"nicola\"")
         );
+        assert!(payload.attach_layout);
         assert_eq!(payload.layout_yab.as_deref(), Some("あ\tい"));
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
         input.attach_layout = false;
         let detached = build_payload(&input).unwrap();
+        assert!(!detached.attach_state_snapshot);
         assert_eq!(detached.state_snapshot, None);
+        assert!(!detached.attach_config);
         assert_eq!(detached.config_toml, None);
+        assert!(!detached.attach_layout);
         assert_eq!(detached.layout_yab, None);
     }
 
@@ -501,8 +517,11 @@ mod tests {
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
+        assert!(json.contains("\"attach_state_snapshot\": true"));
         assert!(json.contains("\"state_snapshot\": {"));
+        assert!(json.contains("\"attach_config\": true"));
         assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
+        assert!(json.contains("\"attach_layout\": true"));
         assert!(json.contains("\"layout_yab\": \"あ\\tい\""));
         assert!(!json.contains("JournalEntry"));
     }
