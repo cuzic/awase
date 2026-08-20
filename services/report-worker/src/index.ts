@@ -34,6 +34,10 @@ export interface BugReportPayload {
   description: string;
   attach_log: boolean;
   log_excerpt: string | null;
+  /** 実際の `log::` 出力（awase.log）の末尾。BUG-34 横展開で追加（後方互換のため
+   * 省略可能扱い＝クライアントが送らなくても null 扱いで受理する。旧クライアントの
+   * 報告を拒否しないため、他の必須フィールドと違い optionalNullableString で読む）。 */
+  app_log_excerpt: string | null;
   attach_state_snapshot: boolean;
   state_snapshot: Record<string, unknown> | null;
   attach_config: boolean;
@@ -194,6 +198,10 @@ export function validatePayload(value: unknown): BugReportPayload {
 
   const attachLog = requiredBoolean(value, "attach_log");
   const logExcerpt = requiredNullableString(value, "log_excerpt");
+  // BUG-34 横展開: フィールド自体が存在しない（この変更より前のクライアント）
+  // 場合も null として受理する。log_excerpt 等の既存必須フィールドと違い、
+  // このフィールドを送らない旧クライアントの報告を拒否してはならない。
+  const appLogExcerpt = optionalNullableString(value, "app_log_excerpt");
   const attachStateSnapshot = requiredBoolean(value, "attach_state_snapshot");
   const stateSnapshot = requiredNullableRecord(value, "state_snapshot");
   const attachConfig = requiredBoolean(value, "attach_config");
@@ -207,6 +215,9 @@ export function validatePayload(value: unknown): BugReportPayload {
 
   if (!attachLog && logExcerpt !== null) {
     throw new HttpError(400, "log_excerpt_requires_attach_log");
+  }
+  if (!attachLog && appLogExcerpt !== null) {
+    throw new HttpError(400, "app_log_excerpt_requires_attach_log");
   }
   if (!attachStateSnapshot && stateSnapshot !== null) {
     throw new HttpError(400, "state_snapshot_requires_attach_state_snapshot");
@@ -231,6 +242,7 @@ export function validatePayload(value: unknown): BugReportPayload {
     description,
     attach_log: attachLog,
     log_excerpt: logExcerpt,
+    app_log_excerpt: appLogExcerpt,
     attach_state_snapshot: attachStateSnapshot,
     state_snapshot: stateSnapshot,
     attach_config: attachConfig,
@@ -340,6 +352,23 @@ function requiredNullableString(value: Record<string, unknown>, field: string): 
     return fieldValue;
   }
   throw new HttpError(400, `${field}_required`);
+}
+
+/**
+ * `requiredNullableString` と異なり、フィールド自体が存在しない（`undefined`）
+ * 場合も `null` として受理する。新しいフィールドを追加するとき、既存の
+ * （このフィールドをまだ送らない）クライアントの報告を拒否しないために使う
+ * （BUG-34 横展開、app_log_excerpt で導入）。
+ */
+function optionalNullableString(value: Record<string, unknown>, field: string): string | null {
+  const fieldValue = value[field];
+  if (fieldValue === undefined || fieldValue === null) {
+    return null;
+  }
+  if (typeof fieldValue === "string") {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_invalid`);
 }
 
 function requiredNullableRecord(

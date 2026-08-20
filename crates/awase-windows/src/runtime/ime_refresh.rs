@@ -514,7 +514,10 @@ impl Runtime {
                 ConvMode::from_u32(conv).is_eisu()
             })
         } else {
-            log::debug!(
+            // warn: バグ報告に添付する awase.log（info レベル既定）に残すため。
+            // この行が出ていれば SendHealth ブレーカが直近作動していたと分かる
+            // （BUG-34 横展開の切り分け材料）。
+            log::warn!(
                 "[composition] FocusChange: SendHealth degrade で conv 読み取りを見送り、\
                  ConvModeMgr のキャッシュ値で代替"
             );

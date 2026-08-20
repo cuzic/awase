@@ -4063,6 +4063,37 @@ wine 等でのクロス実行もできなかったため、windows-gated なモ�
 `docs/adr/087-open-belief-actuation-warrant-separation.md` §5 item14（実
 actuation 入口棚卸し表の #7 訂正）。
 
+**追補3（タスクトレイ不具合報告の切り分け強化、2026-08-20）:** 今回の横展開で
+残した A/C/E のブレーカ degrade は、発生してもユーザーには「何も起きなかった」
+としか見えず、発生有無を事後に確認する手段がなかった。ADR-095 の不具合報告
+機能（内部状態スナップショット・journal 添付）を拡張し、この不具合の再発を
+実際のユーザー報告から切り分けられるようにした:
+
+1. `BugReportStateSnapshot` に `send_health_last_elapsed_ms` /
+   `send_health_consecutive_slow` / `send_health_breaker_tripped` /
+   `idle_conv_check_in_flight_ms` を追加（報告クリック時点のスナップショット）。
+2. A/C の degrade 発生ログ（`ime_refresh.rs`/`key_pipeline.rs`）を
+   `log::debug!` から `log::warn!` へ格上げ——本番既定の `info` レベルログ
+   （`awase.log`）に残らなければ、報告に添付しても意味が無いため。
+3. `awase.log`（実際の `log::` 出力）の末尾を journal とは別系統で報告に
+   添付できるようにした（`BugReportPayload.app_log_excerpt`、既存の
+   `attach_log` チェックボックスで journal と一緒に制御）。journal は構造化
+   イベントであり `log::warn!`/`log::debug!` の生テキストを含まないため、
+   これが無いと `[send-health]`/`[idle-conv-check]` の警告が報告から読み取れ
+   なかった。
+4. `services/report-worker` 側は `app_log_excerpt` を **省略可能**として
+   受理する（無ければ `null` 扱い）——この変更前のクライアントが送る報告を
+   拒否しないための後方互換設計。
+
+**検証状況（追補3）:** `cargo test -p awase-windows --lib`（421件）/
+`architecture_guard`（34件）/ `cargo xwin check`・`build --tests`・
+`clippy --lib --bins`（awase-windows・awase-settings）で確認済み。
+`services/report-worker` は `pnpm test`（29件）・`pnpm typecheck` で確認済み
+だが **`wrangler deploy` によるデプロイは未実施**（サーバ側の変更が本番に
+反映されるまでは、クライアントが送る `app_log_excerpt` は現行の本番
+report-worker では単に無視される——`validatePayload` が既知フィールドのみを
+picking する実装のため、エラーにはならないが保存もされない）。
+
 ---
 
 ## BUG-35: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として

@@ -1,6 +1,7 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 mod bootstrap;
 pub(crate) use bootstrap::detect_conflicting_software;
+pub(crate) use bootstrap::log_path as bug_report_log_path;
 
 use std::path::PathBuf;
 
@@ -535,6 +536,7 @@ pub(crate) fn launch_bug_report(
     journal_path: &std::path::Path,
     ime_kind: crate::bug_report::BugReportImeKind,
     diagnostics_path: Option<&std::path::Path>,
+    app_log_path: Option<&std::path::Path>,
 ) {
     let mut args = vec![
         "--bug-report".to_owned(),
@@ -545,6 +547,13 @@ pub(crate) fn launch_bug_report(
     ];
     if let Some(path) = diagnostics_path {
         args.push("--diagnostics".to_owned());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    // BUG-34 横展開: journal（構造化イベント）とは別に、実際の log::warn!/info!/
+    // debug! 出力（awase.log）の末尾も添付できるようにする。journal には無い
+    // send_health/degrade 系の警告ログを拾うため。
+    if let Some(path) = app_log_path {
+        args.push("--applog".to_owned());
         args.push(path.to_string_lossy().into_owned());
     }
     launch_settings_with_args(args);

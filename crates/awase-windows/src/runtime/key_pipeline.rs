@@ -1972,9 +1972,9 @@ impl Runtime {
                         );
                     }
                 } else {
-                    log::debug!(
-                        "[focus-conv-check] SendHealth degrade で conv 読み取りを見送り"
-                    );
+                    // warn: バグ報告に添付する awase.log（info レベル既定）に残す
+                    // ため。BUG-34 横展開の切り分け材料。
+                    log::warn!("[focus-conv-check] SendHealth degrade で conv 読み取りを見送り");
                 }
             }
         }

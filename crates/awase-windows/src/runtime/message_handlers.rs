@@ -700,8 +700,15 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     None
                 }
             };
+            let app_log_path = crate::app::bug_report_log_path();
+            let app_log_path = app_log_path.exists().then_some(app_log_path.as_path());
             match dump_result {
-                Ok(path) => launch_bug_report(&path, ime_kind, diagnostics_path.as_deref()),
+                Ok(path) => launch_bug_report(
+                    &path,
+                    ime_kind,
+                    diagnostics_path.as_deref(),
+                    app_log_path,
+                ),
                 Err(e) => {
                     log::error!("[bug-report] journal dump failed: {e}");
                     let _ = with_app(|app| {
@@ -758,6 +765,7 @@ fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
 
 fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReportDiagnostics {
     let (is_japanese, lang_id) = crate::ime::keyboard_layout_info();
+    let now_ms = hook::current_tick_ms();
     let state_snapshot = crate::bug_report::BugReportStateSnapshot {
         desired_open: app.platform_state.ime.desired_open(),
         effective_open: app.platform_state.ime.effective_open(),
@@ -766,6 +774,15 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
         app_kind: format!("{:?}", app.platform_state.focus.app_kind),
         focus_kind: format!("{:?}", app.platform_state.focus.focus_kind),
         gji_state: app.platform.gji_state_label(),
+        // BUG-34 横展開の切り分け用（docs/known-bugs.md BUG-34 参照）。
+        send_health_last_elapsed_ms: crate::send_health::last_elapsed_ms(),
+        send_health_consecutive_slow: crate::send_health::consecutive_slow(),
+        send_health_breaker_tripped: !crate::send_health::blocking_allowed(now_ms),
+        idle_conv_check_in_flight_ms: app
+            .platform_state
+            .gate
+            .idle_conv_check_in_flight_since_ms
+            .map(|since| now_ms.saturating_sub(since)),
     };
     let (config_toml, layout_yab) =
         crate::app::read_bug_report_attachments(app.platform.tray.current_layout_name());

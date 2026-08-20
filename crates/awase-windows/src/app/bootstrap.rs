@@ -41,11 +41,18 @@ use super::{
 /// `debug_console=false`（通常起動）: 実行ファイルと同じディレクトリの `awase.log` に出力。
 /// `debug_console=true`（`--debug` フラグ）: 親プロセスのコンソール（WezTerm/PowerShell）に
 /// stderr で出力する。ログレベルを debug に上げ、リアルタイムに観察できる。
-pub(super) fn init_logging(debug_console: bool) {
-    let log_path = std::env::current_exe()
+/// 実行ファイルと同じディレクトリの `awase.log` の絶対パスを返す。
+/// `init_logging` と不具合報告機能（`app::bug_report_log_path` 経由で
+/// awase.log の末尾を報告に添付する、BUG-34 横展開）が同じ導出ロジックを共有する。
+pub(crate) fn log_path() -> PathBuf {
+    std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awase.log")))
-        .unwrap_or_else(|| PathBuf::from("awase.log"));
+        .unwrap_or_else(|| PathBuf::from("awase.log"))
+}
+
+pub(super) fn init_logging(debug_console: bool) {
+    let log_path = log_path();
 
     if debug_console {
         // #![windows_subsystem = "windows"] だとコンソールウィンドウがないため、

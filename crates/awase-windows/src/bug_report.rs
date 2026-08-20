@@ -105,6 +105,18 @@ pub struct BugReportStateSnapshot {
     pub app_kind: String,
     pub focus_kind: String,
     pub gji_state: String,
+    /// BUG-34 横展開の切り分け用（docs/known-bugs.md BUG-34 参照）:
+    /// 直近の `SendMessageTimeoutW` 呼び出しの実測ms。
+    pub send_health_last_elapsed_ms: u64,
+    /// `send_health` の連続 slow 判定回数（ブレーカ作動の予兆、閾値未満でも記録）。
+    pub send_health_consecutive_slow: u32,
+    /// 報告時点で SendHealth サーキットブレーカが作動中（同期サイトの発行を
+    /// 見送っている）かどうか。
+    pub send_health_breaker_tripped: bool,
+    /// `kp_stage_idle_conv_check` の offload 読み取りが in-flight のままの経過ms。
+    /// `None` なら in-flight なし。長時間 `Some` が続く場合は完了取りこぼし
+    /// （旧: 永久ラッチのバグ、レビューで修正済みだが再発検知用に残す）を疑う。
+    pub idle_conv_check_in_flight_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,6 +139,10 @@ pub struct BugReportPayload {
     pub layout_yab: Option<String>,
     pub attach_log: bool,
     pub log_excerpt: Option<String>,
+    /// 実際の `log::` 出力（`awase.log`）の末尾。`log_excerpt`（構造化 journal）
+    /// には無い send_health/degrade 系の警告等を拾うための別系統の添付
+    /// （BUG-34 横展開）。`attach_log` チェックボックスで両方まとめて制御する。
+    pub app_log_excerpt: Option<String>,
     pub reported_at: String,
 }
 
@@ -168,6 +184,9 @@ pub struct BugReportInput<'a> {
     pub description: &'a str,
     pub attach_log: bool,
     pub journal_json: Option<&'a str>,
+    /// 実際の `log::` 出力（`awase.log`）の生テキスト。`attach_log` で
+    /// `journal_json` と一緒に添付するかどうかを制御する（BUG-34 横展開）。
+    pub app_log: Option<&'a str>,
     pub state_snapshot: Option<BugReportStateSnapshot>,
     pub attach_state_snapshot: bool,
     pub config_toml: Option<&'a str>,
@@ -196,6 +215,13 @@ pub fn build_payload(
         input
             .journal_json
             .map(|log| truncate_journal_json_tail(log, LOG_EXCERPT_MAX_BYTES))
+    } else {
+        None
+    };
+    let app_log_excerpt = if input.attach_log {
+        input
+            .app_log
+            .map(|log| truncate_text_tail(log, LOG_EXCERPT_MAX_BYTES))
     } else {
         None
     };
@@ -233,6 +259,7 @@ pub fn build_payload(
         layout_yab,
         attach_log: input.attach_log,
         log_excerpt,
+        app_log_excerpt,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -244,6 +271,25 @@ pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugRepor
 #[must_use]
 pub fn truncate_chars(input: &str, max_chars: usize) -> String {
     input.chars().take(max_chars).collect()
+}
+
+/// プレーンテキストログ（`awase.log`）の末尾を `max_bytes` 以内に切り詰める。
+///
+/// `truncate_journal_json_tail` と異なり JSON 構造を意識しない単純なバイト末尾
+/// 切り出しで、UTF-8 文字境界のみ尊重する（境界がずれる場合は見つかるまで
+/// 1 バイトずつ後方へ寄せる）。バグ報告は診断目的であり、先頭が途中の行から
+/// 始まっても実害はない——直近の出来事（BUG-34 の切り分けに必要な
+/// `[send-health]`/`[idle-conv-check]` 等の警告）を優先して残すことが重要。
+#[must_use]
+pub fn truncate_text_tail(input: &str, max_bytes: usize) -> String {
+    if input.len() <= max_bytes {
+        return input.to_owned();
+    }
+    let mut start = input.len() - max_bytes;
+    while start < input.len() && !input.is_char_boundary(start) {
+        start += 1;
+    }
+    input[start..].to_owned()
 }
 
 #[must_use]
@@ -369,6 +415,7 @@ mod tests {
             description,
             attach_log,
             journal_json,
+            app_log: Some("[2026-08-20T00:00:00Z INFO awase] started"),
             state_snapshot: Some(test_state_snapshot()),
             attach_state_snapshot: true,
             config_toml: Some("general.default_layout = \"nicola\""),
@@ -388,6 +435,10 @@ mod tests {
             app_kind: "Win32".to_owned(),
             focus_kind: "Text".to_owned(),
             gji_state: "ready".to_owned(),
+            send_health_last_elapsed_ms: 12,
+            send_health_consecutive_slow: 0,
+            send_health_breaker_tripped: false,
+            idle_conv_check_in_flight_ms: None,
         }
     }
 
@@ -416,6 +467,10 @@ mod tests {
             SymptomCategory::WrongCharacterOutput
         );
         assert_eq!(payload.log_excerpt.as_deref(), Some(r#"[{"seq":1}]"#));
+        assert_eq!(
+            payload.app_log_excerpt.as_deref(),
+            Some("[2026-08-20T00:00:00Z INFO awase] started")
+        );
     }
 
     #[test]
@@ -483,6 +538,42 @@ mod tests {
     }
 
     #[test]
+    fn app_log_is_attached_only_when_requested_and_truncated_by_utf8_boundary() {
+        let long_log = "あ".repeat((LOG_EXCERPT_MAX_BYTES / 3) + 10);
+        let mut base = input("説明", true, Some("[]"));
+        base.app_log = Some(&long_log);
+        let payload = build_payload(&base).unwrap();
+        let excerpt = payload.app_log_excerpt.unwrap();
+        assert!(excerpt.len() <= LOG_EXCERPT_MAX_BYTES);
+        assert!(excerpt.is_char_boundary(excerpt.len()));
+        // 末尾優先: 切り詰め後は元テキストの末尾がそのまま残っている。
+        assert!(long_log.ends_with(&excerpt));
+
+        base.attach_log = false;
+        let detached = build_payload(&base).unwrap();
+        assert_eq!(detached.app_log_excerpt, None);
+    }
+
+    #[test]
+    fn truncate_text_tail_keeps_short_input_unchanged() {
+        assert_eq!(truncate_text_tail("hello", 100), "hello");
+    }
+
+    #[test]
+    fn truncate_text_tail_truncates_at_utf8_boundary_keeping_the_tail() {
+        // "あ" は UTF-8 で3バイト。max_bytes=4 の素朴なバイト末尾切り出しは
+        // "あ"(5..8) の途中(byte 7)を指すため、境界(byte 8)まで前方へ
+        // 寄せる必要がある。結果は max_bytes 以下（境界調整は常に切り詰め側、
+        // 超過方向には動かない）。
+        let input_text = "ab".to_owned() + &"あ".repeat(3); // "ab" + 9バイト = 11バイト
+        let truncated = truncate_text_tail(&input_text, 4);
+        assert!(truncated.is_char_boundary(0));
+        assert!(input_text.ends_with(&truncated));
+        assert!(truncated.len() <= 4);
+        assert_eq!(truncated, "あ"); // byte 8..11 の最後の1文字のみ残る
+    }
+
+    #[test]
     fn journal_log_truncation_keeps_newer_tail_and_valid_json() {
         let log = serde_json::to_string_pretty(&vec![
             serde_json::json!({"seq": 0, "entry": {"type": "Old"}}),
@@ -517,8 +608,14 @@ mod tests {
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
+        assert!(json.contains(
+            "\"app_log_excerpt\": \"[2026-08-20T00:00:00Z INFO awase] started\""
+        ));
         assert!(json.contains("\"attach_state_snapshot\": true"));
         assert!(json.contains("\"state_snapshot\": {"));
+        assert!(json.contains("\"send_health_last_elapsed_ms\": 12"));
+        assert!(json.contains("\"send_health_breaker_tripped\": false"));
+        assert!(json.contains("\"idle_conv_check_in_flight_ms\": null"));
         assert!(json.contains("\"attach_config\": true"));
         assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
         assert!(json.contains("\"attach_layout\": true"));

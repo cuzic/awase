@@ -84,6 +84,22 @@ pub(crate) fn record(elapsed_ms: u64, now_ms: u64) {
     }
 }
 
+/// 直近の `imm::send_ime_control` 呼び出しの実測ms。
+///
+/// バグ報告の内部状態スナップショットに載せる診断用（BUG-34 の切り分け）。
+/// 呼び出しが一度も無ければ 0。
+pub(crate) fn last_elapsed_ms() -> u64 {
+    SEND_HEALTH.last_elapsed_ms.load(Ordering::Relaxed)
+}
+
+/// `SLOW_THRESHOLD_MS` 以上かかった呼び出しの連続回数。
+///
+/// バグ報告の内部状態スナップショットに載せる診断用。`TRIP_AFTER_CONSECUTIVE_SLOW`
+/// 未満でもブレーカ作動の予兆として意味がある。
+pub(crate) fn consecutive_slow() -> u32 {
+    SEND_HEALTH.consecutive_slow.load(Ordering::Relaxed)
+}
+
 /// 同期サイトがこの瞬間に IMM 読み書きを発行してよいか。
 ///
 /// 偽が返った場合、呼び出し元は読み書きを発行せず degrade(例: `None` を渡す/

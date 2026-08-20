@@ -12,6 +12,9 @@ pub(crate) struct BugReportArgs {
     pub(crate) journal_path: Option<PathBuf>,
     pub(crate) ime_kind: BugReportImeKind,
     pub(crate) diagnostics_path: Option<PathBuf>,
+    /// 実際の `log::` 出力（`awase.log`）のパス。journal（構造化イベント）とは
+    /// 別系統の添付（BUG-34 横展開）。
+    pub(crate) app_log_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -24,6 +27,8 @@ pub(crate) struct BugReportApp {
     attach_layout: bool,
     journal_json: Option<String>,
     journal_status: String,
+    app_log: Option<String>,
+    app_log_status: String,
     ime_kind: BugReportImeKind,
     diagnostics: BugReportDiagnostics,
     os_version: String,
@@ -57,6 +62,16 @@ impl BugReportApp {
             },
             None => (None, "添付ログ: なし".to_owned()),
         };
+        let (app_log, app_log_status) = match args.app_log_path.as_ref() {
+            Some(path) => match std::fs::read_to_string(path) {
+                Ok(text) => (Some(text), format!("添付ログ(awase.log): {}", path.display())),
+                Err(e) => (
+                    None,
+                    format!("添付ログ(awase.log)を読めませんでした: {} ({e})", path.display()),
+                ),
+            },
+            None => (None, "添付ログ(awase.log): なし".to_owned()),
+        };
         let reported_at = current_reported_at();
         let os_version = detect_os_version();
         let diagnostics = load_diagnostics(args.diagnostics_path.as_ref());
@@ -69,6 +84,8 @@ impl BugReportApp {
             attach_layout: true,
             journal_json,
             journal_status,
+            app_log,
+            app_log_status,
             ime_kind: args.ime_kind,
             diagnostics,
             os_version,
@@ -80,6 +97,36 @@ impl BugReportApp {
         };
         app.refresh_preview_if_unedited();
         app
+    }
+
+    /// 添付チェックボックス4つとその下のステータスラベルを描画する。
+    /// `update` の行数を抑えるための抽出（clippy::too_many_lines）。
+    /// 戻り値: いずれかのチェックボックスが変化したか。
+    fn draw_attachment_checkboxes(&mut self, ui: &mut egui::Ui) -> bool {
+        let attach_log_changed = ui
+            .checkbox(&mut self.attach_log, "ログを添付する（journal + awase.log）")
+            .changed();
+        let attach_state_snapshot_changed = ui
+            .checkbox(
+                &mut self.attach_state_snapshot,
+                "内部状態スナップショットを添付する",
+            )
+            .changed();
+        let attach_config_changed = ui
+            .checkbox(
+                &mut self.attach_config,
+                "設定ファイル(config.toml)を添付する",
+            )
+            .changed();
+        let attach_layout_changed = ui
+            .checkbox(&mut self.attach_layout, "配列ファイル(.yab)を添付する")
+            .changed();
+        ui.label(&self.journal_status);
+        ui.label(&self.app_log_status);
+        attach_log_changed
+            || attach_state_snapshot_changed
+            || attach_config_changed
+            || attach_layout_changed
     }
 
     fn refresh_preview_if_unedited(&mut self) {
@@ -115,6 +162,7 @@ impl BugReportApp {
             description: &self.description,
             attach_log: self.attach_log,
             journal_json: self.journal_json.as_deref(),
+            app_log: self.app_log.as_deref(),
             state_snapshot: self.diagnostics.state_snapshot.clone(),
             attach_state_snapshot: self.attach_state_snapshot,
             config_toml: self.diagnostics.config_toml.as_deref(),
@@ -246,33 +294,9 @@ impl eframe::App for BugReportApp {
                 )
                 .changed();
 
-            let attach_log_changed = ui
-                .checkbox(&mut self.attach_log, "journal ログを添付する")
-                .changed();
-            let attach_state_snapshot_changed = ui
-                .checkbox(
-                    &mut self.attach_state_snapshot,
-                    "内部状態スナップショットを添付する",
-                )
-                .changed();
-            let attach_config_changed = ui
-                .checkbox(
-                    &mut self.attach_config,
-                    "設定ファイル(config.toml)を添付する",
-                )
-                .changed();
-            let attach_layout_changed = ui
-                .checkbox(&mut self.attach_layout, "配列ファイル(.yab)を添付する")
-                .changed();
-            ui.label(&self.journal_status);
+            let attachments_changed = self.draw_attachment_checkboxes(ui);
 
-            if category_changed
-                || desc_changed
-                || attach_log_changed
-                || attach_state_snapshot_changed
-                || attach_config_changed
-                || attach_layout_changed
-            {
+            if category_changed || desc_changed || attachments_changed {
                 self.refresh_preview_if_unedited();
             }
 

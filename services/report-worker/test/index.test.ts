@@ -20,6 +20,7 @@ const validPayload = {
   description: "変換が意図通りに動きません",
   attach_log: true,
   log_excerpt: "journal excerpt",
+  app_log_excerpt: "app log excerpt",
   attach_state_snapshot: false,
   state_snapshot: null,
   attach_config: false,
@@ -72,6 +73,45 @@ describe("payload validation", () => {
     };
 
     expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it("accepts payloads without app_log_excerpt (pre-BUG-34 clients) and normalizes to null", () => {
+    const { app_log_excerpt: _appLogExcerpt, ...payload } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      app_log_excerpt: null
+    });
+  });
+
+  it("accepts an explicit null app_log_excerpt", () => {
+    const payload = { ...validPayload, app_log_excerpt: null };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it("rejects a non-string, non-null app_log_excerpt", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        app_log_excerpt: 42
+      })),
+      400,
+      "app_log_excerpt_invalid"
+    );
+  });
+
+  it("rejects app_log_excerpt unless attach_log is set", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_log: false,
+        log_excerpt: null,
+        app_log_excerpt: "app log excerpt"
+      })),
+      400,
+      "app_log_excerpt_requires_attach_log"
+    );
   });
 
   it("rejects invalid JSON", () => {
