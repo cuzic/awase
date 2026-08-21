@@ -1001,10 +1001,21 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     // - `.apply_ime_open_with_applied(` 2 → **1**。呼び出し元ゼロの死んだ
     //   trait オーバーライド `WindowsPlatform::apply_ime_open` を削除したため、
     //   その内部委譲 1 件が消えた（`awase` 側のトレイト既定実装が残る）。
+    //
+    // **2026-08-21（ADR-097 決定2、BUG-69）**: `ir_post_focus_change_snapshot`
+    // の TsfNative force-on ブロック（`apply_ime_open_with_applied(order, None)`
+    // の唯一の本番呼び出し元）を撤去した。`apply_ime_open_with_applied` 自体も
+    // 呼び出し元ゼロになったためメソッドごと削除し（未使用の force-write API を
+    // 残さない方針、`.claude/rules/experiment-logging.md`）、その内部委譲だった
+    // `.apply_ime_open_with_belief(` の1件も連鎖して消える。
+    // - `.apply_ime_open_with_belief(` 3 → **2**（`apply_ime_open_with_applied`
+    //   内部委譲の消滅）。
+    // - `.apply_ime_open_with_applied(` 1 → **0**（メソッドごと削除。ガードは
+    //   残す——0 でなくなったら死んだ API が復活したことを意味する）。
     const ENTRY_POINTS: [(&str, usize); 6] = [
         // 外部 2（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check、
-        // ADR-087 §5 item14 表 #11/#4）+ apply_ime_open_with_applied 内部からの
-        // 委譲 1 = 3。
+        // ADR-087 §5 item14 表 #11/#4）。ADR-097 決定2 で内部委譲元
+        // （apply_ime_open_with_applied）が消えたため 3→2。
         //
         // **2026-08-19（BUG-34 横展開 D）**: 表 #7 の mod.rs try_force_on_bootstrap は
         // ここから外れた。同期 ImmCrossProcessStrategy::apply（150ms 宣言
@@ -1012,13 +1023,15 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 経路）を経由しなくなり、executor.rs の ImmCross async path と同じ
         // run_open_chain_async へ委譲するようになったため
         // （`async_imm_cross_actuation_goes_through_the_single_chain_entry` 参照）。
-        (".apply_ime_open_with_belief(", 3),
+        (".apply_ime_open_with_belief(", 2),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
+        // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
+        // からではないため ADR-097 決定2 の影響を受けない。）
         (".apply_ime_open_with_view(", 3),
-        // 外部 1（ime_refresh.rs の GJI TsfNative 強制 ON、表 #8）= 1。
-        // 死んだ trait オーバーライドの削除で内部委譲 1 件が消えた。
-        (".apply_ime_open_with_applied(", 1),
+        // ADR-097 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
+        // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
+        (".apply_ime_open_with_applied(", 0),
         // ADR-090 A-1 で `set_ime_open_ordered` へ移したため本番呼び出しゼロ。
         // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
         // actuation 入口が復活したことを意味する。
@@ -1054,6 +1067,97 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
              実 actuation 入口棚卸し表を更新し、新しい呼び出し元が force-write / \
              observation-based correction のどちらに分類され warrant 必須化の対象と\
              すべきか検討した上でこの期待値を更新してください。"
+        );
+    }
+}
+
+/// `ImeStateHub::record_optimistic`/`record_confirmed`（ADR-097 決定6-a、BUG-69）の
+/// crate 全域の呼び出し箇所数を固定する。
+///
+/// `mirror_applied_open`/`mirror_applied_open_with_ts`（旧 API、`ts==0` センチネルで
+/// `Optimistic`/`Confirmed` を選んでいた）は、決定6-a でこの2メソッドに置き換える
+/// までの間、**architecture_guard 34本のうち1本にも守られていなかった**
+/// （`rg mirror_applied_open crates/awase-windows/tests/` が no match、設計討議で
+/// 実測確認済み）。`applied` への書き込みは BUG-16/BUG-20/BUG-69 が繰り返し
+/// 踏んできた「belief を actuation の記録として書く」誤用の温床であり
+/// （INV-A97-1）、新しい呼び出し元が無審査で増えたら気づけるよう、旧 API と
+/// 同じ「呼び出し元ゼロの穴」を新 API で再現しないためのガードとして追加する。
+///
+/// 期待値の内訳（すべて `docs/adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md`
+/// F6 の6サイトに対応。新しいサイトを追加した場合は、それが実 actuation の記録
+/// （`record_confirmed`/`record_optimistic`）か belief の書き戻し（INV-A97-1 違反）
+/// かを判定した上でこの期待値を更新すること）:
+///
+/// - `.record_optimistic(` = 1（`ir_apply_drift_correction`、ImmCross 分岐）。
+/// - `.record_confirmed(` = 5（`record_ime_apply_result` 内部/`ir_post_focus_change_snapshot`
+///   〈決定1-a、TsfNative ではスキップされ非 TsfNative のみ到達〉/
+///   `kp_stage_shadow_ime_toggle`/`focus_tracking.rs` hard pre-sync/
+///   `process_deferred_keys`〈本番到達不能なデッドコード、決定5参照〉）。
+#[test]
+fn applied_state_recorders_call_sites_are_accounted_for() {
+    const RECORDERS: [(&str, usize); 2] = [(".record_optimistic(", 1), (".record_confirmed(", 5)];
+
+    let files = list_src_files();
+    for (needle, expected) in RECORDERS {
+        let mut total = 0usize;
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                total += count;
+                breakdown.push((path.clone(), count));
+            }
+        }
+        assert_eq!(
+            total, expected,
+            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
+             内訳: {breakdown:?}\n\
+             ADR-097 決定0 INV-A97-1（`ImeModel.applied` は実際に OS への actuation を\
+             試みた経路だけが書いてよい）を確認し、新しい呼び出しがそれに違反しないか\
+             （belief を actuation の記録として書いていないか）確認した上でこの期待値を\
+             更新してください。既存の5箇所のうち3箇所（`ir_post_focus_change_snapshot`\
+             の非TsfNative分岐・`focus_tracking.rs` の hard pre-sync・\
+             `process_deferred_keys`〈dead code〉）は actuation を伴わない belief\
+             ミラーとして ADR-097 決定5 が明示的に許容した既知の例外です\
+             （`state/platform_state.rs` の `record_optimistic` doc 参照）。"
+        );
+    }
+}
+
+/// ADR-097 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
+/// （BUG-69）が `force_on_attempt_allowed`/`note_force_on_attempt` を経由し続けている
+/// ことを固定する。0 になるとループ封鎖そのものが外れる（実装記録「実装順序・
+/// テスト コミット1」の必須回帰テスト）。
+#[test]
+fn force_on_retry_cooldown_gate_call_sites_are_accounted_for() {
+    const GATES: [(&str, usize); 2] = [
+        (".force_on_attempt_allowed(", 1),
+        (".note_force_on_attempt(", 1),
+    ];
+
+    let files = list_src_files();
+    for (needle, expected) in GATES {
+        let mut total = 0usize;
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                total += count;
+                breakdown.push((path.clone(), count));
+            }
+        }
+        assert_eq!(
+            total, expected,
+            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
+             内訳: {breakdown:?}\n\
+             ADR-097 決定1-c（BUG-69 の 20ms 無限再試行ループ封鎖）が\
+             `apply_force_on_for_imm_broken` 内で経由し続けているか確認してください。\
+             0 になるとクールダウンが外れ、TsfNative で cold-mark を伴う実効 50Hz の\
+             再試行ループが再発します。"
         );
     }
 }
@@ -1507,29 +1611,25 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
 
 /// ADR-086 §4 INV-15（2026-08-08、2回目 opus アドバーサリアルレビュー M2）:
 /// `ir_post_focus_change_snapshot` に実在する既存の open 書き込み
-/// （`apply_ime_open_with_applied`〈GJI TsfNative VK_IME_ON 強制〉/
-/// `set_ime_open`〈IME OFF 強制〉、force-write とは無関係）の出現数を固定する。
+/// （`set_ime_open`〈IME OFF 強制〉、force-write とは無関係）の出現数を固定する。
 ///
-/// `force_write_is_not_triggered_by_raw_focus_change` の禁止リストからこの
-/// 2 つを除外する代わりに、ここで出現数を固定することで「新しい force-write
-/// 経路がこれらのラッパー経由で紛れ込んでも検知できない」という穴を塞ぐ
-/// （`apply_ime_open_with_applied` は `apply_ime_open_with_belief` の薄い
-/// ラッパーであり、禁止リストへの単純な追加では素通りしてしまう）。
+/// `force_write_is_not_triggered_by_raw_focus_change` の禁止リストからこれを
+/// 除外する代わりに、ここで出現数を固定することで「新しい force-write
+/// 経路がこのラッパー経由で紛れ込んでも検知できない」という穴を塞ぐ。
+///
+/// **2026-08-21（ADR-097 決定2、BUG-69）**: `apply_ime_open_with_applied(`
+/// のガード（旧: 1 = GJI TsfNative VK_IME_ON 強制）は撤去した。この関数内の
+/// 唯一の呼び出し元だった TsfNative force-on ブロック自体を削除し、
+/// `apply_ime_open_with_applied` メソッドごと削除したため、`.apply_ime_open_with_applied(`
+/// の出現数ゼロは `ime_open_actuation_entry_points_are_accounted_for`
+/// （crate 全域の入口カウント）が固定する。本関数専用のガードとしては
+/// 二重になるため撤去する。
 #[test]
 fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     let path = "src/runtime/ime_refresh.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
     let body = extract_fn_body(production, "fn ir_post_focus_change_snapshot");
-
-    let applied_count = count_real_calls(body, "apply_ime_open_with_applied(");
-    assert_eq!(
-        applied_count, 1,
-        "{path}::ir_post_focus_change_snapshot 内の `apply_ime_open_with_applied(` \
-         出現数が想定(1 = GJI TsfNative VK_IME_ON 強制)と異なります(実際: \
-         {applied_count})。新しい呼び出しを追加した場合はこの期待値を更新し、\
-         それが force-write（ADR-086 INV-15 の対象）でないことを確認すること。"
-    );
 
     // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
     // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
@@ -1571,6 +1671,14 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 /// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで
 /// 再発しうる。「`applied` を `None` にして bypass する」という意図はコメントでしか
 /// 表現されておらず、コンパイラは強制しないため、テキスト走査で固定する。
+///
+/// **2026-08-21（ADR-097 決定2、BUG-69）**: 旧第2 assertion（`ir_post_focus_change_snapshot`
+/// の `apply_ime_open_with_applied(order, None)` 1件を固定）は撤去した。
+/// TsfNative force-on ブロック（唯一の呼び出し元）を削除したため。決定1適用後は
+/// `shadow_on=false` になった通常 strategy chain と、決定1-c で有界化された
+/// `apply_force_on_for_imm_broken`（本テストが固定する `force_on_and_correct_romaji`
+/// 経由）の両方が INV-28 の bypass を担う——**この関数（`force_on_and_correct_romaji`）
+/// だけが INV-28 の唯一の enforcement 拠点**であることに注意。
 #[test]
 fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
     // `.contains()` は文字列リテラル（コメント含む）にもマッチし、
@@ -1588,26 +1696,6 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
         "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
          shadow_on=false を作ることで GJI の no-op skip を bypass する設計。\
          `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
-    );
-
-    let ime_refresh_rs = read_crate_file("src/runtime/ime_refresh.rs");
-    let ime_refresh_production = production_code_only(&ime_refresh_rs);
-    let focus_change_body =
-        extract_fn_body(ime_refresh_production, "fn ir_post_focus_change_snapshot");
-    // **ADR-090 A-1**: 第1引数が `true`（生の open 値）から `order`
-    // （`ActuationOrder`、warrant 込み）へ変わった。**検査したい不変条件は
-    // 第2引数の `None`** ——`applied` に実値を渡すと GJI の no-op skip に
-    // 阻まれる——なので、needle も `order, None` に追随させる。
-    assert_eq!(
-        count_real_calls(
-            focus_change_body,
-            ".apply_ime_open_with_applied(order, None)"
-        ),
-        1,
-        "GJI TsfNative 入場時の強制ON（ir_post_focus_change_snapshot）は \
-         apply_ime_open_with_applied(order, None) 経由で shadow_on=false を作ることで \
-         GJI の no-op skip を bypass する設計。`None` 以外の値を渡すよう変更された場合、\
-         ADR-087 INV-28 の前提が崩れる。"
     );
 }
 
