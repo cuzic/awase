@@ -887,7 +887,7 @@ impl Runtime {
             let imm_first =
                 crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
             if imm_first {
-                // async 完了前から ImeModel を OFF に確定させる（ADR-097 決定5/6-a:
+                // async 完了前から ImeModel を OFF に確定させる（ADR-098 決定5/6-a:
                 // 旧コメント「楽観的 C」は実体（Confirmed）と食い違っていたため訂正。
                 // 直前の `!effective_open()` 確認 + 直後の実 ImmCross apply を伴う
                 // ため、belief laundering ではなく正当な pre-actuation write）。
@@ -1732,7 +1732,7 @@ impl Runtime {
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA
             && matches!(event.event_type, KeyEventType::KeyDown)
         {
-            // ADR-097 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
+            // ADR-098 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
             let warmup_ime_on = self.platform_state.ime.warmup_ime_on();
             self.platform.composition_native_f2_down(warmup_ime_on);
         }

@@ -1,4 +1,4 @@
-# ADR-097: TsfNative フォーカス復帰時の `applied` 偽装確定を止め、到達不能な force-on ブロックを撤去する（BUG-69）
+# ADR-098: TsfNative フォーカス復帰時の `applied` 偽装確定を止め、到達不能な force-on ブロックを撤去する（BUG-69）
 
 ## ステータス
 
@@ -106,7 +106,7 @@ let ime_on_now = self.platform_state.ime.effective_open();
 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
 self.platform_state.ime.mirror_applied_open(ime_on_now, tick_ms);
 
-// 変更後（ADR-097 INV-A97-1）
+// 変更後（ADR-098 INV-A97-1）
 // 判定は `AppImeProfile::TsfNative` の単純 match ではなく
 // `is_effectively_tsf_native` を使うこと——Windows Terminal
 // (CASCADIA_HOSTING_WINDOW_CLASS) は AppImeProfile 上は Imm32Unavailable に
@@ -133,7 +133,7 @@ if !new_profile_is_tsf_native {
 
 ```rust
 // src/platform.rs、ImeOpenOutcome の直後、ForegroundInfo の前に挿入
-/// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-097 決定1-b、BUG-69）。
+/// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-098 決定1-b、BUG-69）。
 ///
 /// `Option<bool>` ではなく専用型にする理由: warmup 経路は `applied` が
 /// `Unknown` のとき `None → unwrap_or(false)` に潰れる。決定1-a で TsfNative
@@ -234,7 +234,7 @@ pub(crate) fn warmup_ime_on(
 
 ```rust
 // state/ime_actuation.rs、blind_rearm_cooldown_elapsed の直後
-/// force-ON（`apply_force_on_for_imm_broken`）の直近試行時刻（ADR-097 決定1-c、BUG-69）。
+/// force-ON（`apply_force_on_for_imm_broken`）の直近試行時刻（ADR-098 決定1-c、BUG-69）。
 ///
 /// `ImeEvent::FocusChanged` でリセットする＝クールダウンの単位は「1 フォーカス」。
 /// 試行回数の上限は**設けない**——`FocusChanged` はプロセス変更時にしか発火せず
@@ -260,7 +260,7 @@ impl ForceOnRetryState {
     }
 }
 
-/// force-ON を今送ってよいか（ADR-097 決定1-c、BUG-69）。
+/// force-ON を今送ってよいか（ADR-098 決定1-c、BUG-69）。
 #[must_use]
 pub fn force_on_attempt_allowed(
     applied: AppliedImeState,
@@ -310,7 +310,7 @@ if outcome != awase::platform::ImeOpenOutcome::UnsafeToToggle {
 **クールダウン値は新規に発明せず、`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` と同じ 3000ms を再利用する**（`tuning.rs`）:
 
 ```rust
-/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-097 決定1-c、BUG-69）。
+/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-098 決定1-c、BUG-69）。
 ///
 /// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` と同値・同根拠。実測値ではなく
 /// レート制限ポリシーだが、`.claude/rules/tuning-constants.md` の趣旨に合わせ
@@ -396,7 +396,7 @@ force-ON 自体は、決定1-c 適用後は TsfNative フォーカス入場ご�
 決定0〜5は BUG-69 という1インスタンスを直すが、「belief が evidence として再流入する」というクラス自体は閉じない（F2 はこのクラスの5例目、過去に BUG-19/33/48/68 で独立に4回再発見されている）。ユーザーの依頼を受け、architect/reviewer 2エージェントによる俯瞰的討議を実施した。
 
 **検討して不採用にした案（`ActuationRecord` 型 + `&ActuationOrder` アンカー）**: 全ての `applied` 書き込みを「`ActuationOrder` を提示しないと作れない」型に強制する案を検討したが、reviewer が実コードで以下を確認し不成立と判定した:
-- 正典の書き込みサイト `record_ime_apply_result`（`platform_state.rs:774`）には `&ActuationOrder` が構造的に届かない。async 完了は Win32 メッセージ境界を跨ぐため（`handle_wm_async_ime_apply_complete` は wparam/lparam のビットから状態を再構成するだけ）、かつ **force-ON・shadow-toggle 経路（ADR-097 が対象とする経路そのもの）は `generation: None` を渡す**ため generation キーでの照合すら効かない。
+- 正典の書き込みサイト `record_ime_apply_result`（`platform_state.rs:774`）には `&ActuationOrder` が構造的に届かない。async 完了は Win32 メッセージ境界を跨ぐため（`handle_wm_async_ime_apply_complete` は wparam/lparam のビットから状態を再構成するだけ）、かつ **force-ON・shadow-toggle 経路（ADR-098 が対象とする経路そのもの）は `generation: None` を渡す**ため generation キーでの照合すら効かない。
 - 相乗りを想定した既存の architecture_guard（`actuation_is_only_requested_through_actuation_order`）は `ActuationOrder` の構築を一切制約しておらず、テスト自身の doc コメントが「これを INV-47 遵守の証拠と読むな」と明記している。
 - `ActuationOrder::issue` は `pub`、`WarrantContext` は全フィールド `pub`、依存する4型は全て `Default` 構築可能なため、ダミー `ActuationOrder` は約8行で作れる——型の壁ではなく段差でしかない。
 - 「例外2件」の想定で設計した `BeliefWaiver` は、実際には F6 の6サイト中4サイト（`ime_refresh.rs:433` の非 TsfNative 分岐・`focus_tracking.rs:409`・`record_ime_apply_result` 自身・`runtime/mod.rs:1019`）が waiver 行きになり、`Option<bool>` が担っていた役割をより高い儀式コストで再現するだけに終わる。
@@ -451,7 +451,7 @@ fn clear_pending_if_matches(&mut self, value: bool) {
 // tests/architecture_guard.rs
 #[test]
 fn applied_state_recorders_call_sites_are_accounted_for() {
-    // F6 (ADR-097) の6サイト + 決定6-a で揃えた呼び出し形。
+    // F6 (ADR-098) の6サイト + 決定6-a で揃えた呼び出し形。
     // 数が動いたら「新しい belief-laundering サイトが無審査で増えた」
     // 可能性を疑うこと（BUG-20/69 と同型の穴）。
     let production = production_code_only();

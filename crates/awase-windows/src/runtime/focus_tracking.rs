@@ -398,7 +398,7 @@ impl Runtime {
 
         // 非 TsfNative（Standard/ImmCross/Plain/Unknown）: VK_KANJI はトグルのため、
         // desired=true でキャッシュが ON なら applied=true に先同期して冗長な
-        // VK_KANJI を防ぐ（ADR-097 決定5: 旧コメント「Imm32Unavailable (Chrome 等)
+        // VK_KANJI を防ぐ（ADR-098 決定5: 旧コメント「Imm32Unavailable (Chrome 等)
         // のみ」は実際のガード条件 `!is_effectively_tsf_native` と食い違っていた
         // ため訂正——`Standard`+MS-IME の `CHAIN_IMM_CROSS_THEN_KANJI` が今も
         // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。

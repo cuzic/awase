@@ -432,7 +432,7 @@ impl Runtime {
         // `AppImeProfile::from_class_name` の優先順位により `Imm32Unavailable` に分類され
         // `TsfNative` には決してならないため、直接比較だと誤って「非 TSF ネイティブ」と
         // 判定してしまう（2026-07-05: これが原因で enforce IME OFF ブロックが
-        // Windows Terminal に対して誤発火していた）。ADR-097 決定1-a のために
+        // Windows Terminal に対して誤発火していた）。ADR-098 決定1-a のために
         // 算出位置を mirror 書き込みより前へ移した。
         let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
@@ -440,13 +440,13 @@ impl Runtime {
         );
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        // ADR-097 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
+        // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
         // `Unknown` のまま維持する（`focus_tracking.rs` の hard pre-sync が
         // 非 TsfNative について既に守っている不変条件——INV-A97-1——を
         // ここでも適用する）。何も apply していないのに belief を `applied
         // = Confirmed` として書くと、`apply_force_on_for_imm_broken` の
         // スパムガードが恒久的に早期 return し、BUG-16 の修正が TsfNative で
-        // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-097）。
+        // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-098）。
         if !new_profile_is_tsf_native {
             let ime_on_now = self.platform_state.ime.effective_open();
             self.platform_state
@@ -468,14 +468,14 @@ impl Runtime {
             .applied_open()
             .unwrap_or(false);
 
-        // ADR-097 決定2: 旧 TsfNative force-on ブロック（GJI VK_IME_ON を
+        // ADR-098 決定2: 旧 TsfNative force-on ブロック（GJI VK_IME_ON を
         // shadow_on 無視で強制送信）はここに存在した。決定1-a が `applied` を
         // 偽装しなくなったことで、通常の strategy chain（`shadow_on=false`
         // になる）と、決定1-c で有界化された `apply_force_on_for_imm_broken`
         // の両方が正しく VK_IME_ON を送れるようになったため撤去した。撤去の
-        // 詳細な根拠は known-bugs.md BUG-69 / ADR-097 決定2 参照。
+        // 詳細な根拠は known-bugs.md BUG-69 / ADR-098 決定2 参照。
 
-        // ADR-097 決定1-b: `applied.applied_open()` の生値ではなく `warmup_ime_on()`
+        // ADR-098 決定1-b: `applied.applied_open()` の生値ではなく `warmup_ime_on()`
         // （`applied ?? belief`）を使う。決定1-a により TsfNative では `applied`
         // が `Unknown` のまま残るため、生値のままだと `unwrap_or(false)` で
         // warmup が握り潰され BUG-02 のリテラル化が再燃する。

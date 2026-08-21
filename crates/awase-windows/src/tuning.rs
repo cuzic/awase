@@ -288,9 +288,9 @@ pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 ///   記録しておく（本 BUG では対処しない）。
 pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
 
-/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-097 決定1-c、BUG-69）。
+/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-098 決定1-c、BUG-69）。
 ///
-/// ADR-097 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown`
+/// ADR-098 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown`
 /// のまま残るようになる。従来のスパムガード（`applied` が ON 相当なら送らない）
 /// は、strategy chain が `Failed` を返した場合に生成される `Confirmed{open:false}`
 /// を素通ししてしまい、`post_ime_refresh()` が outcome によらず無条件に張る
@@ -331,7 +331,7 @@ pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
 /// 修正前（`mirror_applied_open` の偽装により force-ON が実質恒久的に不発
 /// だった状態）からの後退ではなく厳密な改善だが、継続的な打鍵がある限り
 /// 「最短 cooldown 間隔」であって「cooldown 間隔ちょうどに周期実行される」
-/// わけではない点に注意（詳細は ADR-097「既知の限界・未検証事項」）。
+/// わけではない点に注意（詳細は ADR-098「既知の限界・未検証事項」）。
 ///
 /// # 値の根拠
 ///

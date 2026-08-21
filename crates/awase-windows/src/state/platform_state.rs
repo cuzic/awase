@@ -163,7 +163,7 @@ impl ImeStateHub {
 
     /// 非同期送信済み・未確認の actuation を記録する（`applied = Optimistic`）。
     ///
-    /// ADR-097 決定6-a: 旧 `mirror_applied_open_with_ts(value, 0)` に相当する。
+    /// ADR-098 決定6-a: 旧 `mirror_applied_open_with_ts(value, 0)` に相当する。
     /// `ts==0` というマジック値ではなく、呼び出し元がどちらの構築子を呼ぶかで
     /// `Optimistic`/`Confirmed` を選ばせることで、「時刻のつもりで渡した値が
     /// 副作用として Confirmed を意味してしまう」という取り違え（BUG-69 F2 の
@@ -176,7 +176,7 @@ impl ImeStateHub {
     /// （`ir_post_focus_change_snapshot` の非TsfNative分岐、
     /// `focus_tracking.rs` の hard pre-sync、`process_deferred_keys`〈dead
     /// code〉）は actuation を伴わない belief ミラーであり、この不変条件の
-    /// 対象外として ADR-097 決定5 で明示的に許容している（Standard/GJI
+    /// 対象外として ADR-098 決定5 で明示的に許容している（Standard/GJI
     /// プロファイルは `read_ime_state_full` で実状態を確認できるため、
     /// ミラーが誤りでも次の観測で自己修正される——TsfNative のような
     /// 観測不能プロファイルでのみ有害だったのが BUG-69 の本質）。新しい
@@ -190,7 +190,7 @@ impl ImeStateHub {
 
     /// 完了が確認された actuation を記録する（`applied = Confirmed`）。
     ///
-    /// ADR-097 決定6-a: 旧 `mirror_applied_open_with_ts(value, ts)`（`ts>0`）に相当。
+    /// ADR-098 決定6-a: 旧 `mirror_applied_open_with_ts(value, ts)`（`ts>0`）に相当。
     /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
     pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
@@ -513,7 +513,7 @@ impl ImeStateHub {
         self.effective_open_at(TickMs(crate::hook::current_tick_ms()))
     }
 
-    /// eager warmup の `ime_on` 入力を解決する（ADR-097 決定1-b、INV-A97-2）。
+    /// eager warmup の `ime_on` 入力を解決する（ADR-098 決定1-b、INV-A97-2）。
     ///
     /// `applied`（実 actuation の記録）が既知ならそれを、`Unknown` のときだけ
     /// belief（`effective_open()`）へフォールバックする——**belief を `applied`
@@ -651,7 +651,7 @@ impl ImeStateHub {
         self.belief.is_japanese_ime() && self.effective_open()
     }
 
-    /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいか（ADR-097 決定1-c、BUG-69）。
+    /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいか（ADR-098 決定1-c、BUG-69）。
     pub(crate) fn force_on_attempt_allowed(&self, now_ms: u64) -> bool {
         crate::state::ime_actuation::force_on_attempt_allowed(
             self.model().applied,
@@ -661,7 +661,7 @@ impl ImeStateHub {
         )
     }
 
-    /// force-ON を実際に試行したことを記録する（クールダウンの起点、ADR-097 決定1-c）。
+    /// force-ON を実際に試行したことを記録する（クールダウンの起点、ADR-098 決定1-c）。
     pub(crate) fn note_force_on_attempt(&mut self, now_ms: u64) {
         self.shadow_model.force_on_retry.note_attempt(now_ms);
     }
@@ -872,7 +872,7 @@ impl ImeStateHub {
         };
         // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
         // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
-        // 常に `record_confirmed`（ADR-097 決定6-a）。
+        // 常に `record_confirmed`（ADR-098 決定6-a）。
         self.record_confirmed(effective, ts);
 
         if let Some(generation) = generation {

@@ -1002,7 +1002,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     //   trait オーバーライド `WindowsPlatform::apply_ime_open` を削除したため、
     //   その内部委譲 1 件が消えた（`awase` 側のトレイト既定実装が残る）。
     //
-    // **2026-08-21（ADR-097 決定2、BUG-69）**: `ir_post_focus_change_snapshot`
+    // **2026-08-21（ADR-098 決定2、BUG-69）**: `ir_post_focus_change_snapshot`
     // の TsfNative force-on ブロック（`apply_ime_open_with_applied(order, None)`
     // の唯一の本番呼び出し元）を撤去した。`apply_ime_open_with_applied` 自体も
     // 呼び出し元ゼロになったためメソッドごと削除し（未使用の force-write API を
@@ -1014,7 +1014,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     //   残す——0 でなくなったら死んだ API が復活したことを意味する）。
     const ENTRY_POINTS: [(&str, usize); 6] = [
         // 外部 2（ime_refresh.rs drift correction / key_pipeline.rs idle-conv-check、
-        // ADR-087 §5 item14 表 #11/#4）。ADR-097 決定2 で内部委譲元
+        // ADR-087 §5 item14 表 #11/#4）。ADR-098 決定2 で内部委譲元
         // （apply_ime_open_with_applied）が消えたため 3→2。
         //
         // **2026-08-19（BUG-34 横展開 D）**: 表 #7 の mod.rs try_force_on_bootstrap は
@@ -1027,9 +1027,9 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
-        // からではないため ADR-097 決定2 の影響を受けない。）
+        // からではないため ADR-098 決定2 の影響を受けない。）
         (".apply_ime_open_with_view(", 3),
-        // ADR-097 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
+        // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
         // ADR-090 A-1 で `set_ime_open_ordered` へ移したため本番呼び出しゼロ。
@@ -1071,7 +1071,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
     }
 }
 
-/// `ImeStateHub::record_optimistic`/`record_confirmed`（ADR-097 決定6-a、BUG-69）の
+/// `ImeStateHub::record_optimistic`/`record_confirmed`（ADR-098 決定6-a、BUG-69）の
 /// crate 全域の呼び出し箇所数を固定する。
 ///
 /// `mirror_applied_open`/`mirror_applied_open_with_ts`（旧 API、`ts==0` センチネルで
@@ -1083,7 +1083,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
 /// （INV-A97-1）、新しい呼び出し元が無審査で増えたら気づけるよう、旧 API と
 /// 同じ「呼び出し元ゼロの穴」を新 API で再現しないためのガードとして追加する。
 ///
-/// 期待値の内訳（すべて `docs/adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md`
+/// 期待値の内訳（すべて `docs/adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md`
 /// F6 の6サイトに対応。新しいサイトを追加した場合は、それが実 actuation の記録
 /// （`record_confirmed`/`record_optimistic`）か belief の書き戻し（INV-A97-1 違反）
 /// かを判定した上でこの期待値を更新すること）:
@@ -1114,19 +1114,19 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
             total, expected,
             "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
              内訳: {breakdown:?}\n\
-             ADR-097 決定0 INV-A97-1（`ImeModel.applied` は実際に OS への actuation を\
+             ADR-098 決定0 INV-A97-1（`ImeModel.applied` は実際に OS への actuation を\
              試みた経路だけが書いてよい）を確認し、新しい呼び出しがそれに違反しないか\
              （belief を actuation の記録として書いていないか）確認した上でこの期待値を\
              更新してください。既存の5箇所のうち3箇所（`ir_post_focus_change_snapshot`\
              の非TsfNative分岐・`focus_tracking.rs` の hard pre-sync・\
              `process_deferred_keys`〈dead code〉）は actuation を伴わない belief\
-             ミラーとして ADR-097 決定5 が明示的に許容した既知の例外です\
+             ミラーとして ADR-098 決定5 が明示的に許容した既知の例外です\
              （`state/platform_state.rs` の `record_optimistic` doc 参照）。"
         );
     }
 }
 
-/// ADR-097 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
+/// ADR-098 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
 /// （BUG-69）が `force_on_attempt_allowed`/`note_force_on_attempt` を経由し続けている
 /// ことを固定する。0 になるとループ封鎖そのものが外れる（実装記録「実装順序・
 /// テスト コミット1」の必須回帰テスト）。
@@ -1154,7 +1154,7 @@ fn force_on_retry_cooldown_gate_call_sites_are_accounted_for() {
             total, expected,
             "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
              内訳: {breakdown:?}\n\
-             ADR-097 決定1-c（BUG-69 の 20ms 無限再試行ループ封鎖）が\
+             ADR-098 決定1-c（BUG-69 の 20ms 無限再試行ループ封鎖）が\
              `apply_force_on_for_imm_broken` 内で経由し続けているか確認してください。\
              0 になるとクールダウンが外れ、TsfNative で cold-mark を伴う実効 50Hz の\
              再試行ループが再発します。"
@@ -1617,7 +1617,7 @@ fn force_write_is_not_triggered_by_raw_focus_change() {
 /// 除外する代わりに、ここで出現数を固定することで「新しい force-write
 /// 経路がこのラッパー経由で紛れ込んでも検知できない」という穴を塞ぐ。
 ///
-/// **2026-08-21（ADR-097 決定2、BUG-69）**: `apply_ime_open_with_applied(`
+/// **2026-08-21（ADR-098 決定2、BUG-69）**: `apply_ime_open_with_applied(`
 /// のガード（旧: 1 = GJI TsfNative VK_IME_ON 強制）は撤去した。この関数内の
 /// 唯一の呼び出し元だった TsfNative force-on ブロック自体を削除し、
 /// `apply_ime_open_with_applied` メソッドごと削除したため、`.apply_ime_open_with_applied(`
@@ -1672,7 +1672,7 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 /// 再発しうる。「`applied` を `None` にして bypass する」という意図はコメントでしか
 /// 表現されておらず、コンパイラは強制しないため、テキスト走査で固定する。
 ///
-/// **2026-08-21（ADR-097 決定2、BUG-69）**: 旧第2 assertion（`ir_post_focus_change_snapshot`
+/// **2026-08-21（ADR-098 決定2、BUG-69）**: 旧第2 assertion（`ir_post_focus_change_snapshot`
 /// の `apply_ime_open_with_applied(order, None)` 1件を固定）は撤去した。
 /// TsfNative force-on ブロック（唯一の呼び出し元）を削除したため。決定1適用後は
 /// `shadow_on=false` になった通常 strategy chain と、決定1-c で有界化された

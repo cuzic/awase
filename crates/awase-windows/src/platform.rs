@@ -260,7 +260,7 @@ impl WindowsPlatform {
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
-    /// `warmup_ime_on` を指定して eager warmup を送信する（ADR-097 決定1-b）。
+    /// `warmup_ime_on` を指定して eager warmup を送信する（ADR-098 決定1-b）。
     pub(crate) fn send_eager_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
         self.output.send_eager_tsf_warmup(warmup_ime_on);
     }
@@ -560,7 +560,7 @@ impl WindowsPlatform {
 
     /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
     ///
-    /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-097 決定1-b）。
+    /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-098 決定1-b）。
     /// 戻り値は F2 を consume すべきか（`ConsumeF2` アクションの有無）で、TSF mode
     /// で物理 F2 を swallow する判断に使う。
     fn dispatch_composition_response(

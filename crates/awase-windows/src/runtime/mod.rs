@@ -655,7 +655,7 @@ impl Runtime {
     /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に、これらの直接呼び出しが
     /// settle 前の不安定な状態に基づいて IME を実際に切り替えてしまうバグの修正。
     ///
-    /// **2026-08-21（ADR-097 決定2/4、BUG-69）訂正**: 旧記載にあった
+    /// **2026-08-21（ADR-098 決定2/4、BUG-69）訂正**: 旧記載にあった
     /// `apply_ime_open_with_applied` / `ir_post_focus_change_snapshot` 内の
     /// 「GJI 強制 ON ブロック」は、到達不能だったため決定2 で撤去済み
     /// （メソッド自体も削除）。同関数内の「IME OFF 強制ブロック」（enforce-OFF）
@@ -707,7 +707,7 @@ impl Runtime {
         {
             return;
         }
-        // ADR-097 決定1-c（BUG-69）: 従来ここは「applied が既に ON なら送らない」
+        // ADR-098 決定1-c（BUG-69）: 従来ここは「applied が既に ON なら送らない」
         // だけの判定だった。決定1-a で TsfNative の `applied` がフォーカス入場後
         // `Unknown` のまま残るようになると、strategy chain が `Failed` を返した
         // 場合に `record_ime_apply_result` が `applied = Confirmed{open:false}`
@@ -774,7 +774,7 @@ impl Runtime {
         // `Some(applied_pair())` ではなく `None` のまま維持する——GJI の
         // `shadow_on` スキップ（`GjiDirectStrategy` が「既に ON」と誤認して
         // VK_IME_ON をスキップする）を意図的に外す既存仕様のため
-        // （ADR-097 決定2 で撤去済みの `ir_post_focus_change_snapshot` 内
+        // （ADR-098 決定2 で撤去済みの `ir_post_focus_change_snapshot` 内
         // TsfNative force-on ブロックも、到達不能になる前は同じ理由で
         // `None` を使っていた）。
         let mut view = self.platform.build_ime_control_view(None);
@@ -1043,7 +1043,7 @@ impl Runtime {
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
         //
-        // ADR-097 決定5: この関数（`process_deferred_keys`）自体は `SyncKeyGate::
+        // ADR-098 決定5: この関数（`process_deferred_keys`）自体は `SyncKeyGate::
         // activate()`/`try_push()` の呼び出し元が現状ゼロのため本番到達不能——
         // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
         // `effective_open()`（belief、explicit-intent 分岐が優先される）を

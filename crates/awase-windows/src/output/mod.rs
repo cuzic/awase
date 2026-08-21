@@ -666,7 +666,7 @@ impl Output {
 
     /// 現在の TSF 準備状態を多次元スナップショットとして返す。
     ///
-    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態（ADR-097
+    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態（ADR-098
     /// 決定1-b）。`WarmupImeOn` の構築経路は `applied` が既知ならそれを、
     /// `Unknown` のときだけ belief にフォールバックする——呼び出し側が
     /// `unwrap_or(false)` を書く必要はもう無い。
@@ -689,7 +689,7 @@ impl Output {
     /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
     /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
     ///
-    /// `warmup_ime_on`: 呼び出し元が知っている IME 開閉状態（ADR-097 決定1-b、
+    /// `warmup_ime_on`: 呼び出し元が知っている IME 開閉状態（ADR-098 決定1-b、
     /// `WarmupImeOn` 参照）。`is_on()==false` または TSF モード以外では何もしない。
     ///
     /// 実際に送信できた場合のみ `eager_warmup_sent_ms` を現在時刻で更新する。Win キー

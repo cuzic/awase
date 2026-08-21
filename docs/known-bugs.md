@@ -9058,7 +9058,7 @@ BUG-34 追補4（この調査の発端、eisu ガード撤去）、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
 
 **実装済み（2026-08-21 追記）:** 上記「推奨する修正順序」に沿って
-ADR-097（[docs/adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md](adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)）
+ADR-098（[docs/adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)）
 の決定0・1-a・1-b・1-c・2・4・6-a・6-b・6-c を実装した。
 
 - **F2 対策（決定1-a/6-a）**: `mirror_applied_open`/`mirror_applied_open_with_ts`
@@ -9103,4 +9103,4 @@ ADR-097（[docs/adr/097-tsfnative-applied-confirmed-laundering-and-force-on-remo
   `VK_IME_ON` vs `VK_DBE_HIRAGANA`、`docs/experiments.md` へ先送り）、
   決定4-b（enforce-OFF を settle-retry 化する代替設計）、および
   `focus_tracking.rs`/`key_pipeline.rs` に残る軽微な belief-laundering
-  箇所（コメント修正のみで動作は維持、ADR-097 決定5参照）。
+  箇所（コメント修正のみで動作は維持、ADR-098 決定5参照）。

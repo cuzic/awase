@@ -168,7 +168,7 @@ pub enum ImeOpenOutcome {
     UnsafeToToggle,
 }
 
-/// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-097 決定1-b、BUG-69）。
+/// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-098 決定1-b、BUG-69）。
 ///
 /// # なぜ `Option<bool>` ではなく専用型か
 ///
@@ -353,7 +353,7 @@ pub trait TsfComposition {
     /// 戻り値: `true` なら KeyUp タイミングで eager warmup を送るべき（warmup deferred）。
     /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態。`applied` が
     /// `Unknown`（TsfNative のフォーカス復帰直後など）のときは belief にフォール
-    /// バックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-097 決定1-b）。
+    /// バックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-098 決定1-b）。
     /// 呼び出し側が生の `bool`/`Option<bool>` を渡すことはできない。
     fn on_passthrough_key(
         &mut self,
@@ -368,7 +368,7 @@ pub trait TsfComposition {
     ///
     /// F2-TSF deferred / confirm キー reinject の mark_cold + eager warmup を処理する。
     ///
-    /// `warmup_ime_on`: 上記 `on_passthrough_key` と同じ（ADR-097 決定1-b）。
+    /// `warmup_ime_on`: 上記 `on_passthrough_key` と同じ（ADR-098 決定1-b）。
     fn on_reinject_key(
         &mut self,
         _vk: crate::types::VkCode,

@@ -198,7 +198,7 @@ pub fn blind_rearm_cooldown_elapsed(
         .is_some_and(|elapsed| elapsed >= std::time::Duration::from_millis(cooldown_ms))
 }
 
-// ── force-ON 再試行の有界化（ADR-097 決定1-c、BUG-69）──────────────────────────
+// ── force-ON 再試行の有界化（ADR-098 決定1-c、BUG-69）──────────────────────────
 
 /// `apply_force_on_for_imm_broken` の直近試行時刻。
 ///
@@ -231,7 +231,7 @@ impl ForceOnRetryState {
 }
 
 /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいかを判定する純粋関数
-/// （ADR-097 決定1-c、BUG-69）。
+/// （ADR-098 決定1-c、BUG-69）。
 ///
 /// 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown` のまま
 /// 残るようになる。従来のスパムガード（`Optimistic(true) | Confirmed{open:true}`
@@ -523,7 +523,7 @@ mod tests {
         assert!(!blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
     }
 
-    // ── force_on_attempt_allowed（ADR-097 決定1-c、BUG-69）──────────────────
+    // ── force_on_attempt_allowed（ADR-098 決定1-c、BUG-69）──────────────────
 
     use super::super::ime_model::AppliedImeState;
 
