@@ -168,6 +168,64 @@ pub enum ImeOpenOutcome {
     UnsafeToToggle,
 }
 
+/// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-097 決定1-b、BUG-69）。
+///
+/// # なぜ `Option<bool>` ではなく専用型か
+///
+/// warmup 経路は「実 actuation の記録（`applied`）」が不明のとき `None` →
+/// `unwrap_or(false)` に潰れる。`applied` が長く `Unknown` のままになりうる
+/// 状況（TsfNative のフォーカス復帰直後など）では、この潰れが「belief は
+/// ON なのに warmup が送られない」窓を複数の呼び出し箇所に同時に開ける
+/// （実際、この型を導入する直前の設計ラウンドで1箇所しか付け替えず6箇所を
+/// 見落とし、cold-start リテラル化を再燃させかけた）。
+///
+/// かといって呼び出し側に生の belief を渡させると、belief が evidence
+/// として再流入する既知の欠陥パターン（BUG-19/33/48/68/69）を warmup 経路に
+/// 量産することになる。値の作り方をコンストラクタ3種に限定し、フィールドを
+/// private にすることで「生値を渡す」経路をコンパイラで塞ぐ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WarmupImeOn(bool);
+
+impl WarmupImeOn {
+    /// 実 actuation の結果として得た確定値（`on_ime_applied` の `effective` 等）。
+    #[must_use]
+    pub const fn from_actuated(open: bool) -> Self {
+        Self(open)
+    }
+
+    /// `applied` があればそれを、`Unknown` のときだけ belief を使う（`applied ?? belief`）。
+    ///
+    /// 「belief にフォールバックする」ことを明示的に許すのはこのコンストラクタ
+    /// だけであり、それも `applied` が既知の間は決して belief を優先しない
+    /// （単調性: `applied` が `Some` の間は今日と同じ値を返す）。
+    #[must_use]
+    pub const fn from_applied_or_belief(applied: Option<bool>, belief_open: bool) -> Self {
+        match applied {
+            Some(open) => Self(open),
+            None => Self(belief_open),
+        }
+    }
+
+    /// 「IME 状態不明・warmup しない」。
+    ///
+    /// 用途は2種類: (1) 到達不能な保険経路（呼び出し規約上ここには来ない
+    /// はずだが、シグネチャ上 `WarmupImeOn` が必須なので安全側の値を渡す）。
+    /// (2) warmup を出さないイベント種別（例: `CompositionEvent::FocusChange`
+    /// は `EmitWarmup` を一切返さないため値そのものが don't-care）に対する
+    /// 明示的なプレースホルダ。いずれも「この値で実際に warmup が発火する」
+    /// ことは無い、という点は共通。
+    #[must_use]
+    pub const fn off() -> Self {
+        Self(false)
+    }
+
+    /// warmup 判定に使う IME 開状態。
+    #[must_use]
+    pub const fn is_on(self) -> bool {
+        self.0
+    }
+}
+
 /// フォアグラウンドウィンドウ情報（プラットフォーム非依存）
 #[derive(Debug, Clone)]
 pub struct ForegroundInfo {
@@ -293,12 +351,15 @@ pub trait TsfComposition {
     /// executor がキーを OS に通す直前（late path — output_guard_defer チェック後）に呼ぶ。
     ///
     /// 戻り値: `true` なら KeyUp タイミングで eager warmup を送るべき（warmup deferred）。
-    /// `applied_ime_on`: executor が保持する最後の apply 済み IME 状態。eager warmup 判定に使う。
+    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態。`applied` が
+    /// `Unknown`（TsfNative のフォーカス復帰直後など）のときは belief にフォール
+    /// バックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-097 決定1-b）。
+    /// 呼び出し側が生の `bool`/`Option<bool>` を渡すことはできない。
     fn on_passthrough_key(
         &mut self,
         _vk: crate::types::VkCode,
         _is_keydown: bool,
-        _applied_ime_on: Option<bool>,
+        _warmup_ime_on: WarmupImeOn,
     ) -> bool {
         false
     }
@@ -307,12 +368,12 @@ pub trait TsfComposition {
     ///
     /// F2-TSF deferred / confirm キー reinject の mark_cold + eager warmup を処理する。
     ///
-    /// `applied_ime_on`: executor が保持する最後の apply 済み IME 状態。eager warmup 判定に使う。
+    /// `warmup_ime_on`: 上記 `on_passthrough_key` と同じ（ADR-097 決定1-b）。
     fn on_reinject_key(
         &mut self,
         _vk: crate::types::VkCode,
         _is_keydown: bool,
-        _applied_ime_on: Option<bool>,
+        _warmup_ime_on: WarmupImeOn,
     ) {
     }
 }

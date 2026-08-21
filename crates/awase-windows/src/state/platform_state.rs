@@ -161,31 +161,45 @@ impl ImeStateHub {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
 
-    /// applied_open / applied_at_ms を更新する（apply 完了時の SSOT 更新）。
+    /// 非同期送信済み・未確認の actuation を記録する（`applied = Optimistic`）。
     ///
-    /// ImeModel アクセス可能なサイトで `set_ime_apply_latch` の代わりに呼ぶ。
-    /// executor 内部 (PlatformState 非アクセス) は ImeApplySucceeded event 経由で更新される。
+    /// ADR-097 決定6-a: 旧 `mirror_applied_open_with_ts(value, 0)` に相当する。
+    /// `ts==0` というマジック値ではなく、呼び出し元がどちらの構築子を呼ぶかで
+    /// `Optimistic`/`Confirmed` を選ばせることで、「時刻のつもりで渡した値が
+    /// 副作用として Confirmed を意味してしまう」という取り違え（BUG-69 F2 の
+    /// 発生機構）を型の形から消す。
     ///
-    /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
-    pub(crate) fn mirror_applied_open(&mut self, value: bool, tick_ms: TickMs) {
-        self.mirror_applied_open_with_ts(value, tick_ms.0);
+    /// # INV-A97-1（決定0）と既知の例外
+    ///
+    /// 原則: `applied` は実際に OS actuation を試みた経路からのみ書く。
+    /// ただし `record_confirmed` の呼び出し元5箇所のうち3箇所
+    /// （`ir_post_focus_change_snapshot` の非TsfNative分岐、
+    /// `focus_tracking.rs` の hard pre-sync、`process_deferred_keys`〈dead
+    /// code〉）は actuation を伴わない belief ミラーであり、この不変条件の
+    /// 対象外として ADR-097 決定5 で明示的に許容している（Standard/GJI
+    /// プロファイルは `read_ime_state_full` で実状態を確認できるため、
+    /// ミラーが誤りでも次の観測で自己修正される——TsfNative のような
+    /// 観測不能プロファイルでのみ有害だったのが BUG-69 の本質）。新しい
+    /// `record_confirmed`/`record_optimistic` 呼び出しを追加する際は、
+    /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
+    /// 必ず確認すること。
+    pub(crate) fn record_optimistic(&mut self, open: bool) {
+        self.shadow_model.applied = AppliedImeState::Optimistic(open);
+        self.clear_pending_if_matches(open);
     }
 
-    /// `applied` を指定タイムスタンプで更新する。
+    /// 完了が確認された actuation を記録する（`applied = Confirmed`）。
     ///
-    /// `ts = 0` → `Optimistic`（ImmCross async 送信直後など、楽観的未確認）
-    /// `ts > 0` → `Confirmed`（実 apply 完了後）
-    pub(crate) fn mirror_applied_open_with_ts(&mut self, value: bool, ts: u64) {
-        use crate::state::ime_model::AppliedImeState;
-        self.shadow_model.applied = if ts == 0 {
-            AppliedImeState::Optimistic(value)
-        } else {
-            AppliedImeState::Confirmed {
-                open: value,
-                at_ms: ts,
-            }
-        };
-        // 同じ apply が完了した扱いなので pending も clear
+    /// ADR-097 決定6-a: 旧 `mirror_applied_open_with_ts(value, ts)`（`ts>0`）に相当。
+    /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
+    /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
+    pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
+        self.shadow_model.applied = AppliedImeState::Confirmed { open, at_ms };
+        self.clear_pending_if_matches(open);
+    }
+
+    /// 同じ apply が完了した扱いになったので pending も clear する。
+    fn clear_pending_if_matches(&mut self, value: bool) {
         if let Some(p) = &self.shadow_model.pending {
             if p.target == value {
                 self.shadow_model.pending = None;
@@ -499,6 +513,31 @@ impl ImeStateHub {
         self.effective_open_at(TickMs(crate::hook::current_tick_ms()))
     }
 
+    /// eager warmup の `ime_on` 入力を解決する（ADR-097 決定1-b、INV-A97-2）。
+    ///
+    /// `applied`（実 actuation の記録）が既知ならそれを、`Unknown` のときだけ
+    /// belief（`effective_open()`）へフォールバックする——**belief を `applied`
+    /// へ書き戻さない**。読む向きだけ belief を見るのが F2（belief を `applied`
+    /// に書いて下流全部を汚染した）との決定的な違いである。
+    ///
+    /// `applied` を引数で受け取るのは、executor が持つスナップショット
+    /// （`applied_snapshot`、batch 内で更新されうる）と hub の live な
+    /// `model().applied` の両方から呼べるようにするため。
+    pub(crate) fn resolve_warmup_ime_on(
+        &self,
+        applied: AppliedImeState,
+    ) -> awase::platform::WarmupImeOn {
+        awase::platform::WarmupImeOn::from_applied_or_belief(
+            applied.applied_open(),
+            self.effective_open(),
+        )
+    }
+
+    /// [`Self::resolve_warmup_ime_on`] を `model().applied` に対して呼ぶ版。
+    pub(crate) fn warmup_ime_on(&self) -> awase::platform::WarmupImeOn {
+        self.resolve_warmup_ime_on(self.model().applied)
+    }
+
     /// [`Self::effective_open`] の判定本体。`now_ms` を明示的に受け取る版。
     ///
     /// 本番の呼び出し口は引数なしの [`Self::effective_open`] 一択（壁時計を読む）。
@@ -604,10 +643,27 @@ impl ImeStateHub {
     /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
     /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
     /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は
-    /// 3箇所（`runtime/mod.rs` の `apply_force_on_for_imm_broken` /
-    /// `consume_force_open_pending` / `try_force_on_bootstrap`）。
+    /// 2箇所（`runtime/mod.rs` の `apply_force_on_for_imm_broken` /
+    /// `try_force_on_bootstrap`）。**旧記載の3箇所目 `consume_force_open_pending`
+    /// は ADR-094（2026-08-17、`conv_mode_policy` force-write 機構の全撤去）で
+    /// 削除済み——doc の記載漏れだったため訂正（2026-08-21）。**
     pub(crate) fn is_eligible_for_ime_force_on(&self) -> bool {
         self.belief.is_japanese_ime() && self.effective_open()
+    }
+
+    /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいか（ADR-097 決定1-c、BUG-69）。
+    pub(crate) fn force_on_attempt_allowed(&self, now_ms: u64) -> bool {
+        crate::state::ime_actuation::force_on_attempt_allowed(
+            self.model().applied,
+            self.model().force_on_retry,
+            now_ms,
+            crate::tuning::FORCE_ON_RETRY_COOLDOWN_MS,
+        )
+    }
+
+    /// force-ON を実際に試行したことを記録する（クールダウンの起点、ADR-097 決定1-c）。
+    pub(crate) fn note_force_on_attempt(&mut self, now_ms: u64) {
+        self.shadow_model.force_on_retry.note_attempt(now_ms);
     }
 
     /// 現在のアプリの focus settle 期間（ms、`AppImePolicy` 由来）。
@@ -814,7 +870,10 @@ impl ImeStateHub {
             ImeOpenOutcome::Failed => !open,
             ImeOpenOutcome::UnsafeToToggle => unreachable!("上で早期 return 済み"),
         };
-        self.mirror_applied_open_with_ts(effective, ts);
+        // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
+        // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
+        // 常に `record_confirmed`（ADR-097 決定6-a）。
+        self.record_confirmed(effective, ts);
 
         if let Some(generation) = generation {
             let event = ImeEvent::from_apply_outcome(open, outcome, generation);

@@ -198,6 +198,76 @@ pub fn blind_rearm_cooldown_elapsed(
         .is_some_and(|elapsed| elapsed >= std::time::Duration::from_millis(cooldown_ms))
 }
 
+// ── force-ON 再試行の有界化（ADR-097 決定1-c、BUG-69）──────────────────────────
+
+/// `apply_force_on_for_imm_broken` の直近試行時刻。
+///
+/// `ImeEvent::FocusChanged` でリセットする＝クールダウンの単位は「1 フォーカス」。
+/// 試行回数の上限は**設けない**——`FocusChanged` はプロセス変更時にしか発火せず、
+/// 同一プロセス内のウィンドウ/タブ切替では 1 セッションが数十分続きうる。その間
+/// `applied` は drift correction・ユーザー明示操作等で繰り返し blocking 状態から
+/// 外れる。1 フォーカスあたりの試行回数に上限を設けると、observer の揺れが
+/// クールダウン窓より長く続いた場合に予算を使い切り、そのプロセスに居る限り
+/// force-ON が二度と飛ばなくなる——BUG-16 の原症状（settle 明け再試行の恒久
+/// no-op）を作り直すことになる（ラウンド3 レビューで発見・rejected）。止める
+/// べきは再試行そのものではなく再試行密度であり、クールダウン単独で十分。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForceOnRetryState {
+    last_attempt_ms: u64,
+}
+
+impl ForceOnRetryState {
+    /// `last_attempt_ms == 0`（`Default`）を「未試行」の意味に使う。決定6-a が
+    /// `AppliedImeState` から追放した `ts==0` センチネルと同型の設計に見えるが、
+    /// あちらは「時刻のつもりで渡した値が誤って Confirmed を意味してしまう」
+    /// という**型の取り違えリスク**が問題だった。こちらは `u64` 単独の値で
+    /// `Option<u64>` へラップするほどの複雑さを要求せず、`GetTickCount64()`
+    /// が実際に 0 を返すのはシステム起動直後のごく短い窓に限られ実害が無い
+    /// （`blind_rearm_cooldown_elapsed` の `Instant` ベース設計とは表現力が
+    /// 異なるため、同一パターンへの統一はしない）。
+    pub fn note_attempt(&mut self, now_ms: u64) {
+        self.last_attempt_ms = now_ms;
+    }
+}
+
+/// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいかを判定する純粋関数
+/// （ADR-097 決定1-c、BUG-69）。
+///
+/// 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown` のまま
+/// 残るようになる。従来のスパムガード（`Optimistic(true) | Confirmed{open:true}`
+/// のときだけ送らない）は、chain が `Failed` を返した場合に生成される
+/// `Confirmed{open:false}` を素通ししてしまい、`post_ime_refresh()` が
+/// outcome によらず無条件に張る 20ms タイマーと組み合わさって、TsfNative では
+/// これを上書きする周期ポーリングが無いため実効 50Hz の無限再試行ループを
+/// 開く（打鍵中かどうかを問わず `mark_composition_cold` を伴う、BUG-31 族の
+/// 最悪形）。このクールダウンがその歯止めになる。
+#[must_use]
+pub fn force_on_attempt_allowed(
+    applied: super::ime_model::AppliedImeState,
+    retry: ForceOnRetryState,
+    now_ms: u64,
+    cooldown_ms: u64,
+) -> bool {
+    // (1) 既に ON を apply 済み → 送らない（500ms poll ごとの F2 再送スパム防止、BUG-16 由来）。
+    if matches!(
+        applied,
+        super::ime_model::AppliedImeState::Optimistic(true)
+            | super::ime_model::AppliedImeState::Confirmed { open: true, .. }
+    ) {
+        return false;
+    }
+    // (2) 未試行（last_attempt_ms == 0）は無条件に通す。
+    //     決定1-a 適用後、TsfNative フォーカス復帰直後は必ずここを通る——
+    //     これが決定1の主目的（BUG-16 の修正を TsfNative で初めて実効させる）。
+    if retry.last_attempt_ms == 0 {
+        return true;
+    }
+    // (3) クールダウン: 20ms リフレッシュ連鎖に相乗りした高速再試行を潰す。
+    //     GetTickCount の巻き戻りでは saturating_sub が 0 になり
+    //     「未経過」＝安全側（送らない）に倒れる。
+    now_ms.saturating_sub(retry.last_attempt_ms) >= cooldown_ms
+}
+
 // ── EventOrigin 配線（ADR-082 Phase 0.5）──────────────────────────────────────
 //
 // drift correction の actuation 試行に「出所（誰が起こしたか）」と「世代（何回目か）」を
@@ -451,6 +521,100 @@ mod tests {
         let gave_up_at = base + std::time::Duration::from_millis(100);
         let now = base;
         assert!(!blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
+    }
+
+    // ── force_on_attempt_allowed（ADR-097 決定1-c、BUG-69）──────────────────
+
+    use super::super::ime_model::AppliedImeState;
+
+    #[test]
+    fn force_on_allowed_when_applied_unknown_and_unattempted() {
+        // crux: 決定1-a 適用後、TsfNative フォーカス復帰直後は必ずこの状態。
+        // ここが false になったら決定1が無意味化している。
+        assert!(force_on_attempt_allowed(
+            AppliedImeState::Unknown,
+            ForceOnRetryState::default(),
+            1_000,
+            3_000,
+        ));
+    }
+
+    #[test]
+    fn force_on_blocked_when_applied_confirmed_open() {
+        // 従来のスパムガードの保存: 既に ON を apply 済みなら送らない。
+        // `retry` はあえて「試行済み・cooldown 経過済み」（分岐(3)なら true を
+        // 返すはずの状態）にして、分岐(1)（`applied` が既に ON）がそれより
+        // 先に効いて block することを検証する。
+        let mut retry = ForceOnRetryState::default();
+        retry.note_attempt(500);
+        assert!(!force_on_attempt_allowed(
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 500
+            },
+            retry,
+            10_000,
+            3_000,
+        ));
+    }
+
+    #[test]
+    fn force_on_blocked_when_applied_optimistic_open() {
+        assert!(!force_on_attempt_allowed(
+            AppliedImeState::Optimistic(true),
+            ForceOnRetryState::default(),
+            1_000,
+            3_000,
+        ));
+    }
+
+    #[test]
+    fn force_on_blocked_within_cooldown_after_failed_attempt() {
+        // 20ms 無限ループの封鎖そのもの: Failed → Confirmed{open:false} で
+        // 試行済みになった直後（20ms 後）は送らない。
+        let mut retry = ForceOnRetryState::default();
+        retry.note_attempt(1_000);
+        assert!(!force_on_attempt_allowed(
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 1_000
+            },
+            retry,
+            1_020,
+            3_000,
+        ));
+    }
+
+    #[test]
+    fn force_on_allowed_after_cooldown_elapses() {
+        // 過渡的失敗からの復帰が死んでいないこと（BUG-16 の意図を保つ）。
+        let mut retry = ForceOnRetryState::default();
+        retry.note_attempt(1_000);
+        assert!(force_on_attempt_allowed(
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 1_000
+            },
+            retry,
+            4_000,
+            3_000,
+        ));
+    }
+
+    #[test]
+    fn force_on_tick_wraparound_is_treated_as_not_elapsed() {
+        // GetTickCount の巻き戻り（本来起こらないが防御的に安全側へ倒す）。
+        let mut retry = ForceOnRetryState::default();
+        retry.note_attempt(5_000);
+        assert!(!force_on_attempt_allowed(
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 5_000
+            },
+            retry,
+            100, // now < last_attempt_ms
+            3_000,
+        ));
     }
 
     // ── EventOrigin 配線（ADR-082 Phase 0.5）─────────────────────────────────

@@ -647,15 +647,27 @@ impl Runtime {
     /// フォーカス遷移の settle 期間中に実行されるべきでないかどうかを判定する。
     ///
     /// `execute_decision`/`execute_decision_suppressed` 経由の `Decision` ベースの経路は
-    /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` や
-    /// `apply_ime_open_with_applied` を直接呼ぶ経路（`apply_force_on_for_imm_broken`,
-    /// `try_force_on_bootstrap`, `ir_apply_drift_correction`,
-    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック）は
-    /// `Decision`/`Effect` という抽象を経由しないためそちらのガードが効かない。
-    /// これらの呼び出し元は実行前に必ずこれを確認すること。
+    /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` を
+    /// 直接呼ぶ経路（`apply_force_on_for_imm_broken`, `try_force_on_bootstrap`,
+    /// `ir_apply_drift_correction`）は `Decision`/`Effect` という抽象を経由しないため
+    /// そちらのガードが効かない。これらの呼び出し元は実行前に必ずこれを確認すること。
     ///
     /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に、これらの直接呼び出しが
     /// settle 前の不安定な状態に基づいて IME を実際に切り替えてしまうバグの修正。
+    ///
+    /// **2026-08-21（ADR-097 決定2/4、BUG-69）訂正**: 旧記載にあった
+    /// `apply_ime_open_with_applied` / `ir_post_focus_change_snapshot` 内の
+    /// 「GJI 強制 ON ブロック」は、到達不能だったため決定2 で撤去済み
+    /// （メソッド自体も削除）。同関数内の「IME OFF 強制ブロック」（enforce-OFF）
+    /// は、そもそもここに含めるべきではなかった——`Standard`（ImmCross）
+    /// でしか実効せず、到達までに `ImeDiagnosticSnapshot::capture()` が
+    /// 最大 ~250ms ブロックしうる（ImmCross の settle は 100ms）ため、
+    /// defer チェックを足すと「診断キャプチャがどれだけブロックしたか」で
+    /// 発火が決まる非決定的な挙動になり、正常時は不発・ハング時だけ発火する
+    /// という意図と正反対になる。加えて `ImeDiagnosticSnapshot::capture` は
+    /// BUG-34 が撤去/非同期化の対象とする同族の同期 `SendMessageTimeoutW` を
+    /// 含むため、BUG-34 が進めばこのゲートは静かに「常に不発」へ反転する。
+    /// enforce-OFF ブロック自体はこの関数を呼ばないまま維持する（決定4）。
     pub(crate) fn ime_apply_should_defer(&self) -> bool {
         self.platform_state
             .ime
@@ -695,15 +707,22 @@ impl Runtime {
         {
             return;
         }
-        // applied が既に ON なら送らない（500ms poll ごとの F2 再送スパム防止）。
-        // FocusChange が applied=Unknown にリセットするため、フォーカスごとに
-        // 1 回だけ force-apply される。Win-held スキップ（UnsafeToToggle）や
-        // 失敗時は applied が更新されないため次の refresh が再試行する。
-        if matches!(
-            self.platform_state.ime.model().applied,
-            crate::state::ime_model::AppliedImeState::Optimistic(true)
-                | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
-        ) {
+        // ADR-097 決定1-c（BUG-69）: 従来ここは「applied が既に ON なら送らない」
+        // だけの判定だった。決定1-a で TsfNative の `applied` がフォーカス入場後
+        // `Unknown` のまま残るようになると、strategy chain が `Failed` を返した
+        // 場合に `record_ime_apply_result` が `applied = Confirmed{open:false}`
+        // を書き、この従来ガード（Optimistic(true)|Confirmed{open:true} のみ
+        // 見る）を素通りする。`on_ime_apply_complete` は outcome によらず
+        // `post_ime_refresh()` で 20ms 後の再試行を無条件に張り、TsfNative は
+        // それを上書きする周期ポーリングが無い（`reschedule_ime_refresh` が
+        // 早期 return する）ため、実効 50Hz の無限再試行ループになる——
+        // 毎回 `mark_composition_cold`（打鍵中かどうかを問わない）と 2 発目の
+        // eager warmup を伴う BUG-31 族の最悪形。クールダウン + 「未試行なら
+        // 必ず通す」で有界化する（BUG-68 の `DRIFT_CORRECTION_BLIND_REARM_
+        // COOLDOWN_MS` と同じ形）。試行回数の上限は設けない——理由は
+        // `force_on_attempt_allowed`/`FORCE_ON_RETRY_COOLDOWN_MS` の doc 参照。
+        let now_ms = crate::hook::current_tick_ms();
+        if !self.platform_state.ime.force_on_attempt_allowed(now_ms) {
             return;
         }
         // `platform.set_ime_open` は IMM 専用実装で、Imm32Unavailable / TSF-native
@@ -712,9 +731,17 @@ impl Runtime {
         // 律儀に走っても実 IME OFF が直らず「koreha」リテラル化が再発。
         // 手動 Ctrl+変換 = strategy chain 経由の apply は毎回効いていた）。
         // strategy chain（MsImeDirect の冪等 VK_DBE_HIRAGANA 等）で apply する。
-        self.force_on_and_correct_romaji(
+        let outcome = self.force_on_and_correct_romaji(
             crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn,
         );
+        // UnsafeToToggle（Win キー保持等の genuine skip）は「送っていない」ので
+        // クールダウンの起点にしない——数えると Win 長押し中に次のフォーカス
+        // 変更まで再試行できなくなる。この場合 `applied` も更新されないため
+        // （`record_ime_apply_result` が pending 解放だけして早期 return する）、
+        // 次の 20ms リフレッシュがそのまま再試行する（既存の自己回復を保存）。
+        if outcome != awase::platform::ImeOpenOutcome::UnsafeToToggle {
+            self.platform_state.ime.note_force_on_attempt(now_ms);
+        }
     }
 
     /// force-ON を実際に送信し、続けて非ローマ字対応 `input_mode` の補正を行う共通処理。
@@ -747,7 +774,9 @@ impl Runtime {
         // `Some(applied_pair())` ではなく `None` のまま維持する——GJI の
         // `shadow_on` スキップ（`GjiDirectStrategy` が「既に ON」と誤認して
         // VK_IME_ON をスキップする）を意図的に外す既存仕様のため
-        // （`ir_post_focus_change_snapshot` の GJI TsfNative 強制 ON と同じ理由）。
+        // （ADR-097 決定2 で撤去済みの `ir_post_focus_change_snapshot` 内
+        // TsfNative force-on ブロックも、到達不能になる前は同じ理由で
+        // `None` を使っていた）。
         let mut view = self.platform.build_ime_control_view(None);
         view.belief_input_mode = self.platform_state.ime.input_mode();
         let belief = crate::output::OpenBelief {
@@ -1013,10 +1042,17 @@ impl Runtime {
         // last_applied が stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
+        //
+        // ADR-097 決定5: この関数（`process_deferred_keys`）自体は `SyncKeyGate::
+        // activate()`/`try_push()` の呼び出し元が現状ゼロのため本番到達不能——
+        // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
+        // `effective_open()`（belief、explicit-intent 分岐が優先される）を
+        // そのまま書く点に注意。将来 sync key gate を復活させる際は
+        // `focus_tracking.rs:409` と同型のプロファイル分岐を検討すること。
         let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state
             .ime
-            .mirror_applied_open(observed_ime_on, tick_ms);
+            .record_confirmed(observed_ime_on, tick_ms.0);
         log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。

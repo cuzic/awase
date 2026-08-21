@@ -99,6 +99,26 @@ impl AppliedImeState {
     }
 
     /// apply 済みの open 値を返す（Optimistic も含む）。Unknown は None。
+    ///
+    /// **証拠用アクセサ（ADR-097 決定6-c）**: belief フォールバックを持たない。
+    /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
+    /// で不可逆な被害を生む用途）にのみ使うこと。現在の production 呼び出し元は
+    /// `sync_ime_kind_from_observation`（GjiFsm 遷移トリガー）/
+    /// `ir_post_focus_change_snapshot` の enforce-OFF ゲート/
+    /// `send_engine_state_ime_key` のモードキー抑止判断の3箇所（決定1-b で
+    /// 7箇所を `WarmupImeOn`/`warmup_ime_on()` へ移した残り）に加え、
+    /// `ImeStateHub::resolve_warmup_ime_on`（`state/platform_state.rs`）自身が
+    /// `WarmupImeOn::from_applied_or_belief` へ渡すための橋渡しとして呼ぶ
+    /// 4箇所目がある——こちらは「evidence-only の値を belief フォールバック
+    /// 可能な `WarmupImeOn` へ変換する」ための正規の窓口であり、上記3箇所の
+    /// ような直接の証拠判定ではない。
+    ///
+    /// eager warmup のような「belief にフォールバックしてよい」情報用途には
+    /// `ImeStateHub::warmup_ime_on()`（`WarmupImeOn::from_applied_or_belief`）を
+    /// 使うこと——ここで `unwrap_or(false)` してはならない。`applied` が
+    /// `Unknown` の窓（TsfNative のフォーカス復帰直後等）でこの値をそのまま
+    /// belief 相当として扱うと、warmup が握り潰され BUG-02 系のリテラル化が
+    /// 再燃した実例がある（このセッションの設計討議ラウンド1）。
     #[must_use]
     pub const fn applied_open(self) -> Option<bool> {
         match self {
@@ -177,6 +197,13 @@ pub struct ImeModel {
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
 
+    /// `apply_force_on_for_imm_broken` の再試行クールダウン状態（ADR-097 決定1-c、BUG-69）。
+    ///
+    /// `applied` と同じ `FocusChanged` reducer arm でリセットする——予算の単位を
+    /// 「1 フォーカス」に揃え、`applied` だけリセットされ予算はされない窓が
+    /// 構造的に生じないようにするため。
+    pub force_on_retry: crate::state::ime_actuation::ForceOnRetryState,
+
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
     /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
@@ -210,6 +237,7 @@ impl ImeModel {
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied: AppliedImeState::Unknown,
+            force_on_retry: crate::state::ime_actuation::ForceOnRetryState::default(),
             current_focus: None,
         }
     }
@@ -507,6 +535,11 @@ impl ImeModel {
                 self.observations.clear_on_focus_change(focus_epoch);
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
+                // ADR-097 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
+                // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
+                // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
+                // ダウン中と判定され飛ばない事故になる。
+                self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
                 // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
                 self.force_guards.clear_for_focus_change();
                 // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット

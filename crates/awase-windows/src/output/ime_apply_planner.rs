@@ -42,16 +42,6 @@ pub(crate) struct OpenBelief {
     pub confident: bool,
 }
 
-impl OpenBelief {
-    /// shadow のみから自明なビリーフを作る（後方互換ラッパー用）。
-    pub(crate) fn from_shadow(shadow_on: bool) -> Self {
-        Self {
-            effective_open: shadow_on,
-            confident: true,
-        }
-    }
-}
-
 /// 観測値を純粋に還元して `OpenBelief` を返す。
 ///
 /// # effective_open の計算

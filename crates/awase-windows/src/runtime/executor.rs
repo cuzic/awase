@@ -406,7 +406,7 @@ impl DecisionExecutor {
                         sync_outcomes: Vec::new(),
                     };
                 }
-                let callback = self.run_passthrough_pipeline(platform, raw_event);
+                let callback = self.run_passthrough_pipeline(platform, ime, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
                     callback,
@@ -482,6 +482,7 @@ impl DecisionExecutor {
     fn run_passthrough_pipeline(
         &mut self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         raw_event: &RawKeyEvent,
     ) -> CallbackResult {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
@@ -493,8 +494,8 @@ impl DecisionExecutor {
         }
 
         // B. [platform] 副作用（defer されても FSM は進める）
-        self.try_pending_warmup_on_keyup(platform, raw_event);
-        self.handle_ctrl_up_recovery(platform, raw_event);
+        self.try_pending_warmup_on_keyup(platform, ime, raw_event);
+        self.handle_ctrl_up_recovery(platform, ime, raw_event);
 
         // C. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
@@ -540,7 +541,7 @@ impl DecisionExecutor {
         }
 
         // D. [platform] 確認キー後処理
-        self.handle_confirm_key_passthrough(platform, raw_event);
+        self.handle_confirm_key_passthrough(platform, ime, raw_event);
 
         if matches!(
             raw_event.key_classification,
@@ -562,12 +563,17 @@ impl DecisionExecutor {
     ///
     /// 保留状態は `CompositionFsm` が `PendingWarmupOnKeyUp` として持つ。
     /// KeyUp を FSM に feed し、保留があれば dispatcher が warmup を送信する。
-    fn try_pending_warmup_on_keyup(&self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
+    fn try_pending_warmup_on_keyup(
+        &self,
+        platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
+        raw_event: &RawKeyEvent,
+    ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
             platform.composition_confirm_key_up(
                 raw_event.vk_code,
-                self.applied_snapshot.applied_open(),
+                ime.resolve_warmup_ime_on(self.applied_snapshot),
             );
         }
     }
@@ -576,10 +582,15 @@ impl DecisionExecutor {
     /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
     /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
     /// cold 判定・warmup 送信は `CompositionFsm`（CtrlUp）に委譲する。副作用のみ。
-    fn handle_ctrl_up_recovery(&self, platform: &mut WindowsPlatform, raw_event: &RawKeyEvent) {
+    fn handle_ctrl_up_recovery(
+        &self,
+        platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
+        raw_event: &RawKeyEvent,
+    ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
-            platform.composition_ctrl_up(self.applied_snapshot.applied_open());
+            platform.composition_ctrl_up(ime.resolve_warmup_ime_on(self.applied_snapshot));
         }
     }
 
@@ -588,6 +599,7 @@ impl DecisionExecutor {
     fn handle_confirm_key_passthrough(
         &self,
         platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
         raw_event: &RawKeyEvent,
     ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
@@ -599,7 +611,7 @@ impl DecisionExecutor {
             platform.on_passthrough_key(
                 raw_event.vk_code,
                 true,
-                self.applied_snapshot.applied_open(),
+                ime.resolve_warmup_ime_on(self.applied_snapshot),
             );
         }
     }
@@ -614,7 +626,7 @@ impl DecisionExecutor {
         generation: Option<u64>,
     ) -> Option<ImeApplyCompletion> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            self.handle_reinject(platform, event);
+            self.handle_reinject(platform, ime, event);
             return None;
         }
         self.dispatch_effect(platform, ime, effect, generation)
@@ -630,7 +642,12 @@ impl DecisionExecutor {
     }
 
     /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
-    fn handle_reinject(&self, platform: &mut WindowsPlatform, event: RawKeyEvent) {
+    fn handle_reinject(
+        &self,
+        platform: &mut WindowsPlatform,
+        ime: &ImeStateHub,
+        event: RawKeyEvent,
+    ) {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 
@@ -640,7 +657,11 @@ impl DecisionExecutor {
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
             if is_key_down {
                 // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.applied_open());
+                platform.on_reinject_key(
+                    event.vk_code,
+                    true,
+                    ime.resolve_warmup_ime_on(self.applied_snapshot),
+                );
             } else {
                 log::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
@@ -659,7 +680,11 @@ impl DecisionExecutor {
         // on_reinject_key を reinject() の前後どちらで呼んでも観測可能な差がない。
         // これにより spawn_local 内の with_app 呼び出しを除去できる。
         if is_key_down && event.vk_code.is_composition_confirm_key() {
-            platform.on_reinject_key(event.vk_code, true, self.applied_snapshot.applied_open());
+            platform.on_reinject_key(
+                event.vk_code,
+                true,
+                ime.resolve_warmup_ime_on(self.applied_snapshot),
+            );
         }
 
         // OutputActiveGuard を先に取得してから spawn_local で SendInput を RUNTIME 借用外に移す。

@@ -1,5 +1,5 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
-use awase::engine::{ConvMode, EngineCommand, InputModeState};
+use awase::engine::{EngineCommand, InputModeState};
 
 use super::Runtime;
 use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
@@ -426,11 +426,33 @@ impl Runtime {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
         }
         log::debug!("[composition] focus change → marking cold");
-        let ime_on_now = self.platform_state.ime.effective_open();
+
+        // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
+        // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は
+        // `AppImeProfile::from_class_name` の優先順位により `Imm32Unavailable` に分類され
+        // `TsfNative` には決してならないため、直接比較だと誤って「非 TSF ネイティブ」と
+        // 判定してしまう（2026-07-05: これが原因で enforce IME OFF ブロックが
+        // Windows Terminal に対して誤発火していた）。ADR-097 決定1-a のために
+        // 算出位置を mirror 書き込みより前へ移した。
+        let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
+            self.platform.current_app_profile(),
+            self.platform.focus.class_name(),
+        );
+
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state
-            .ime
-            .mirror_applied_open(ime_on_now, tick_ms);
+        // ADR-097 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
+        // `Unknown` のまま維持する（`focus_tracking.rs` の hard pre-sync が
+        // 非 TsfNative について既に守っている不変条件——INV-A97-1——を
+        // ここでも適用する）。何も apply していないのに belief を `applied
+        // = Confirmed` として書くと、`apply_force_on_for_imm_broken` の
+        // スパムガードが恒久的に早期 return し、BUG-16 の修正が TsfNative で
+        // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-097）。
+        if !new_profile_is_tsf_native {
+            let ime_on_now = self.platform_state.ime.effective_open();
+            self.platform_state
+                .ime
+                .record_confirmed(ime_on_now, tick_ms.0);
+        }
         self.platform.mark_composition_cold_focus_change();
         let mode = self.platform.output.injection_mode;
         self.platform.gji_on_focus_change(mode);
@@ -438,16 +460,6 @@ impl Runtime {
             self.platform_state.ime.journal.absorb(entry);
         }
 
-        // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
-        // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は
-        // `AppImeProfile::from_class_name` の優先順位により `Imm32Unavailable` に分類され
-        // `TsfNative` には決してならないため、直接比較だと誤って「非 TSF ネイティブ」と
-        // 判定してしまう（2026-07-05: これが原因で下の「enforce IME OFF」ブロックが
-        // Windows Terminal に対して誤発火していた）。
-        let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
         let applied_ime_on = self
             .platform_state
             .ime
@@ -456,84 +468,45 @@ impl Runtime {
             .applied_open()
             .unwrap_or(false);
 
-        // TsfNative (WezTerm 等) + IME ON でフォーカス入場: GJI VK_IME_ON を shadow_on なしで強制送信。
-        //
-        // 通常の GjiDirectStrategy は shadow_on=true を見て「既に ON」と判断し VK_IME_ON をスキップする。
-        // しかしフォーカス変更時の shadow_on は直前ウィンドウ（Chrome 等）の applied 値が
-        // hard pre-sync で引き継がれており、WezTerm の実 GJI IME が OFF でも VK_IME_ON が送られない。
-        // apply_ime_open_with_applied(true, None) で shadow_on=∅(false) にして VK_IME_ON を確実に送る。
-        // VK_IME_ON は GJI が既に ON の場合も no-op（冪等）なので副作用なし。
-        // GJI 未使用環境（MS-IME + TsfNative）で KanjiToggle が誤送信されないよう GJI ガードを設ける。
-        //
-        // ガードは gji_monitor_ok（GJI プロセスの生存）ではなく active_ime_kind（CLSID ベースの
-        // 実際のアクティブ IME 判定）を見ること。GJI プロセスは他ウィンドウ（例: msedge）が
-        // 使用中で生きているだけのことがあり、その場合 gji_monitor_ok=true でもこのウィンドウの
-        // 実際の IME は MS-IME であり得る。gji_monitor_ok だけで判定すると、通常の
-        // belief 駆動 apply-ime（MsImeDirectStrategy）に続けて VK_DBE_HIRAGANA が二重送信され、
-        // TSF アクティベーション中の conv mode 破壊（roma→kana 化け）を誘発し得る。
-        // 2026-07-05: is_effectively_tsf_native への修正で XamlExplorerHostIslandWindow
-        // (Alt+Tab スイッチャーの中間ウィンドウ、is_tsf_native_window に該当) も true になる
-        // ようになったため、settle 期間中はこのブロック自体もフィルタする。
-        if applied_ime_on && new_profile_is_tsf_native && !self.ime_apply_should_defer() {
-            let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
-            if obs.gji_monitor_ok
-                && obs.active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-            {
-                // ADR-090 §2.A A-1（shadow）。
-                let order =
-                    self.issue_actuation_order(true, "focus_change_tsf_native_gji_force_on");
-                let _ = self.platform.apply_ime_open_with_applied(order, None);
-                log::debug!(
-                    "[composition] FocusChange: TsfNative IME ON → GJI VK_IME_ON 強制 (shadow_on を無視)"
-                );
-            }
-        }
+        // ADR-097 決定2: 旧 TsfNative force-on ブロック（GJI VK_IME_ON を
+        // shadow_on 無視で強制送信）はここに存在した。決定1-a が `applied` を
+        // 偽装しなくなったことで、通常の strategy chain（`shadow_on=false`
+        // になる）と、決定1-c で有界化された `apply_force_on_for_imm_broken`
+        // の両方が正しく VK_IME_ON を送れるようになったため撤去した。撤去の
+        // 詳細な根拠は known-bugs.md BUG-69 / ADR-097 決定2 参照。
 
-        let applied_open = self.platform_state.ime.model().applied.applied_open();
-        // tray で英数／カタカナ等に切り替えた直後の conv を読む。
-        // 英数モード (is_eisu) なら warmup をスキップする:
-        //   NATIVE=0 のまま VK_DBE_HIRAGANA を送るとひらがなモードに戻ってしまうため。
-        // 旧 eisu_guard は conv=0x0000 のみを対象としていたが、MS-IME は 0x0010 (ROMAN=1,NATIVE=0)
-        // を返すことがあるため is_eisu() に統一する。
-        // BUG-34 横展開 Step0-c: この読み取りはまだ同期(A、フルな offload+fence 化は
-        // 保留中)。SendHealth が直近 slow を検出している間は発行を見送る。
+        // ADR-097 決定1-b: `applied.applied_open()` の生値ではなく `warmup_ime_on()`
+        // （`applied ?? belief`）を使う。決定1-a により TsfNative では `applied`
+        // が `Unknown` のまま残るため、生値のままだと `unwrap_or(false)` で
+        // warmup が握り潰され BUG-02 のリテラル化が再燃する。
+        let warmup_ime_on = self.platform_state.ime.warmup_ime_on();
+        // 旧 eisu_guard（tray で英数／カタカナ等に切り替えた直後の conv を読み、英数なら
+        // warmup をスキップする防御）は 2026-08-20、BUG-34 横展開の一環として撤去した。
         //
-        // BUG-34 横展開レビュー指摘: 見送り時に一律 None へ degrade すると
-        // eisu_guard_active=false（=通常どおり warmup 送信）へ fail-open し、
-        // ユーザーが tray で明示的に半角英数にしていた場合でもひらがなへ
-        // 強制的に戻してしまう——このガードが存在する理由そのものを踏み外す。
-        // ブレーカ作動中は代わりに ConvModeMgr の直近キャッシュ値
-        // （前回の実測で得た conv、フォーカス変更のたびに毎回リセットされる
-        // ものではない）を使う。「不明＝英数ではない」という一番弱い仮定を
-        // 避け、直近の実測に基づいて判断する。
-        let now_ms_for_health = crate::hook::current_tick_ms();
-        let is_eisu_now = if crate::send_health::blocking_allowed(now_ms_for_health) {
-            // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
-            unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }.map(|conv| {
-                self.platform.output.conv_mode.update_from_conv(conv);
-                ConvMode::from_u32(conv).is_eisu()
-            })
-        } else {
-            // warn: バグ報告に添付する awase.log（info レベル既定）に残すため。
-            // この行が出ていれば SendHealth ブレーカが直近作動していたと分かる
-            // （BUG-34 横展開の切り分け材料）。
-            log::warn!(
-                "[composition] FocusChange: SendHealth degrade で conv 読み取りを見送り、\
-                 ConvModeMgr のキャッシュ値で代替"
-            );
-            self.platform.output.conv_mode.get().map(ConvMode::is_eisu)
-        };
-        let eisu_guard_active = applied_open == Some(true) && is_eisu_now == Some(true);
-        if eisu_guard_active {
-            log::info!(
-                "[composition] FocusChange: applied_open=true だが conv=英数 → warmup スキップ (tray 半角英数 保護)"
-            );
-        } else {
-            self.platform.send_eager_warmup(applied_open);
-            log::debug!(
-                "[composition] FocusChange: send_eager_tsf_warmup called (guarded by applied_open)"
-            );
-        }
+        // この読み取りは `SendMessageTimeoutW` ベースで、エンジンスレッドを塞ぐ BUG-34
+        // の対象そのものだった。これを塞がずに済ませる設計を3ラウンドの Opus premortem
+        // レビューで検討したが、いずれも致命的な欠陥に行き着いた:
+        //   - 非同期化して warmup 自体を遅らせる案 → WARMUP_GRACE_MS / GJI settle-grace
+        //     が無効化され spurious IME OFF を再燃させる。
+        //   - focus_epoch でキャッシュの鮮度を判定する案 → epoch は Site A 到達前に
+        //     必ず上がっているため、キャッシュは常に「別ウィンドウ由来」と判定され
+        //     ガードが恒久的に不発になる。
+        //   - pid+timestamp でキャッシュする案 → (a) Site A 自身の書き込みを消すと
+        //     直後の idle-conv-check の conv_mode_changed 判定が反転し、
+        //     docs/experiments.md エントリ03 に記録済みの spurious Engine ON を
+        //     再燃させる、(b) キャッシュ更新契機（idle-conv-check/Site C）はいずれも
+        //     打鍵駆動のため、ガードが本来検出すべき「トレイでの無操作切替」を
+        //     観測できず陳腐化したキャッシュが warmup を誤スキップさせる、
+        //     (c) 対象アプリも WezTerm/Windows Terminal 程度まで縮小する。
+        // 詳細は docs/known-bugs.md BUG-34 追補4 参照。
+        //
+        // 結論として、ユーザーが tray で明示的に半角英数へ切り替えた直後にフォーカス
+        // 復帰すると、この warmup で一度だけひらがなへ戻る（既知の制限として受け入れ、
+        // ガードでの防御はしない）。
+        self.platform.send_eager_warmup(warmup_ime_on);
+        log::debug!(
+            "[composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())"
+        );
 
         if !applied_ime_on && !new_profile_is_tsf_native {
             // ADR-090 §2.A 設計案 3: トレイトメソッド `set_ime_open` には引数を
@@ -800,9 +773,7 @@ impl Runtime {
             // order の出所として使う（journal の `ImeActuation` と揃う）。
             let order = self.issue_actuation_order_with_origin(desired, act_origin);
             let _ = self.platform.set_ime_open_ordered(order);
-            self.platform_state
-                .ime
-                .mirror_applied_open_with_ts(desired, 0);
+            self.platform_state.ime.record_optimistic(desired);
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
             // apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。

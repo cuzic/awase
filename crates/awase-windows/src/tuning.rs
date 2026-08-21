@@ -288,6 +288,64 @@ pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 ///   記録しておく（本 BUG では対処しない）。
 pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
 
+/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-097 決定1-c、BUG-69）。
+///
+/// ADR-097 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown`
+/// のまま残るようになる。従来のスパムガード（`applied` が ON 相当なら送らない）
+/// は、strategy chain が `Failed` を返した場合に生成される `Confirmed{open:false}`
+/// を素通ししてしまい、`post_ime_refresh()` が outcome によらず無条件に張る
+/// 20ms タイマーと、TsfNative ではそれを上書きする周期ポーリングが無いことが
+/// 組み合わさって、実効 50Hz の無限再試行ループ（打鍵中かどうかを問わず
+/// `mark_composition_cold` を伴う、BUG-31 族の最悪形）を開く。
+///
+/// # 実測値ではなくレート制限ポリシーである
+///
+/// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`（直上）と同じ位置づけであり、
+/// `.claude/rules/tuning-constants.md` の実測義務は「OS の準備が整うまで何 ms
+/// 待つか」という待機定数に対するもので、本定数は「壊れた再試行を何 Hz に
+/// 制限するか」という上限——値を変えても機能の成否（初回 force-ON が飛ぶか）
+/// は変わらず、変わるのは再試行の密度だけである。
+///
+/// # なぜ試行回数の上限を設けず、クールダウンのみにするのか
+///
+/// `FocusChanged` はプロセス変更時にしか発火しない（`focus_tracking.rs` の
+/// PID 比較）。同一プロセス内のウィンドウ/タブ切替では 1 フォーカスセッションが
+/// 数十分続きうる。その間 `applied` は drift correction・ユーザー明示操作等で
+/// 繰り返し blocking 状態から外れる。1 フォーカスあたりの試行回数に上限を
+/// 設けると、observer の揺れ（実測: GJI VK 受付 181ms・Chrome TSF 再初期化
+/// 326ms・F22 コールド ~750ms）がクールダウン窓より長く続いた場合に予算を
+/// 使い切り、そのプロセスに居る限り force-ON が二度と飛ばなくなる——BUG-16
+/// の原症状（settle 明け再試行の恒久 no-op）を作り直すことになる（設計討議
+/// ラウンド3のレビューで発見・rejected）。止めるべきは再試行そのものではなく
+/// 再試行密度であり、クールダウン単独で十分（50Hz → 1/3Hz 未満に落ちれば
+/// cold-mark の連打は消える）。
+///
+/// # 再武装はイベント駆動であり周期的ではない（2026-08-21 追記）
+///
+/// 上記「1/3Hz 未満に落ちる」という表現は周期ポーリングを連想させるが、
+/// 実態は違う。TsfNative では `reschedule_ime_refresh`（`runtime/mod.rs`）が
+/// 早期 return するため、cooldown 満了後の次回試行は「`may_change_ime` キー
+/// の passthrough」（`key_pipeline.rs` の `schedule_ime_refresh(20)`）または
+/// BUG-51 の `ReportOpenInference` 経由の同呼び出しでのみ再武装される。
+/// **ユーザーが打鍵を止めている間は自動的な再試行が発生しない。** これは
+/// 修正前（`mirror_applied_open` の偽装により force-ON が実質恒久的に不発
+/// だった状態）からの後退ではなく厳密な改善だが、継続的な打鍵がある限り
+/// 「最短 cooldown 間隔」であって「cooldown 間隔ちょうどに周期実行される」
+/// わけではない点に注意（詳細は ADR-097「既知の限界・未検証事項」）。
+///
+/// # 値の根拠
+///
+/// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` と同値・同根拠を援用した。新規の
+/// 未実測値を発明せず、既存 in-tree の前例（同種のランナウェイ再試行対策）に
+/// 揃えることを優先した。
+///
+/// # ソークで測ること（値を改訂する条件）
+///
+/// `force-ON (ImmBrokenForceOn): apply_ime_open(true) → Failed` の連続回数と
+/// 間隔。安定して収束するなら短縮を検討してよいが、実測を伴わない短縮は
+/// 行わないこと。
+pub const FORCE_ON_RETRY_COOLDOWN_MS: u64 = 3_000;
+
 /// `PHYSICAL_KEY_STATE[VK_LWIN/VK_RWIN]` が「押されたまま」と信頼できる最大保持時間 (ms)。
 ///
 /// これより長く「押されたまま」の値が続いている場合は、KeyUp が

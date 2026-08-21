@@ -260,9 +260,9 @@ impl WindowsPlatform {
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
-    /// `applied_ime_on` を指定して eager warmup を送信する。
-    pub(crate) fn send_eager_warmup(&self, applied_ime_on: Option<bool>) {
-        self.output.send_eager_tsf_warmup(applied_ime_on);
+    /// `warmup_ime_on` を指定して eager warmup を送信する（ADR-097 決定1-b）。
+    pub(crate) fn send_eager_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
+        self.output.send_eager_tsf_warmup(warmup_ime_on);
     }
 
     /// conv mode 制御権限を更新する (H-3-e)。
@@ -560,15 +560,16 @@ impl WindowsPlatform {
 
     /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
     ///
-    /// `applied_ime_on` は `EmitWarmup` の送信先 IME 状態。戻り値は F2 を consume すべきか
-    /// （`ConsumeF2` アクションの有無）で、TSF mode で物理 F2 を swallow する判断に使う。
+    /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-097 決定1-b）。
+    /// 戻り値は F2 を consume すべきか（`ConsumeF2` アクションの有無）で、TSF mode
+    /// で物理 F2 を swallow する判断に使う。
     fn dispatch_composition_response(
         &mut self,
         response: &timed_fsm::Response<
             crate::tsf::composition_fsm::CompositionAction,
             std::convert::Infallible,
         >,
-        applied_ime_on: Option<bool>,
+        warmup_ime_on: awase::platform::WarmupImeOn,
     ) -> bool {
         use crate::tsf::composition_fsm::CompositionAction;
         let mut consume_f2 = false;
@@ -578,7 +579,7 @@ impl WindowsPlatform {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
                     // conv mutation の可否は Output::send_eager_tsf_warmup が
                     // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
-                    self.output.send_eager_tsf_warmup(applied_ime_on);
+                    self.output.send_eager_tsf_warmup(warmup_ime_on);
                 }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
@@ -602,11 +603,11 @@ impl WindowsPlatform {
     fn feed_composition_event(
         &mut self,
         event: crate::tsf::composition_fsm::CompositionEvent,
-        applied_ime_on: Option<bool>,
+        warmup_ime_on: awase::platform::WarmupImeOn,
     ) -> bool {
         use timed_fsm::TimedStateMachine;
         let response = self.composition_fsm.on_event(event);
-        let consume_f2 = self.dispatch_composition_response(&response, applied_ime_on);
+        let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on);
         log::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
@@ -618,31 +619,34 @@ impl WindowsPlatform {
     pub(crate) fn composition_confirm_key_up(
         &mut self,
         vk: awase::types::VkCode,
-        applied_ime_on: Option<bool>,
+        warmup_ime_on: awase::platform::WarmupImeOn,
     ) {
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::ConfirmKeyUp { vk },
-            applied_ime_on,
+            warmup_ime_on,
         );
     }
 
     /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
-    pub(crate) fn composition_ctrl_up(&mut self, applied_ime_on: Option<bool>) {
+    pub(crate) fn composition_ctrl_up(&mut self, warmup_ime_on: awase::platform::WarmupImeOn) {
         let warm = self.output.is_composition_warm();
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
-            applied_ime_on,
+            warmup_ime_on,
         );
     }
 
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
-    pub(crate) fn composition_native_f2_down(&mut self, applied_ime_on: Option<bool>) -> bool {
+    pub(crate) fn composition_native_f2_down(
+        &mut self,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+    ) -> bool {
         let tsf_mode = self.output.is_tsf_mode();
         let warm = self.output.is_composition_warm();
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
-            applied_ime_on,
+            warmup_ime_on,
         )
     }
 
@@ -655,9 +659,11 @@ impl WindowsPlatform {
     ) {
         // CompositionFsm の epoch を進めて、フォーカスを跨いだ保留 warmup を無効化する。
         let tsf_mode = matches!(injection_mode, crate::output::types::InjectionMode::Tsf);
+        // `FocusChange` arm は `EmitWarmup` を一切出さない（composition_fsm.rs
+        // の当該 match アーム参照）ため、この値は don't-care。`off()` で明示する。
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::FocusChange { tsf_mode },
-            None,
+            awase::platform::WarmupImeOn::off(),
         );
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let state_before = self.gji_state_label();
@@ -1146,7 +1152,8 @@ impl TsfComposition for WindowsPlatform {
         } else {
             crate::tsf::composition_fsm::CompositionEvent::ImeOff
         };
-        self.feed_composition_event(comp_event, Some(effective));
+        let warmup_ime_on = awase::platform::WarmupImeOn::from_actuated(effective);
+        self.feed_composition_event(comp_event, warmup_ime_on);
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
@@ -1154,7 +1161,7 @@ impl TsfComposition for WindowsPlatform {
             // `injection_mode` は receipt にも settle の引数にも積まない。
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);
-            self.output.send_eager_tsf_warmup(Some(effective));
+            self.output.send_eager_tsf_warmup(warmup_ime_on);
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
@@ -1167,7 +1174,7 @@ impl TsfComposition for WindowsPlatform {
         &mut self,
         vk: awase::types::VkCode,
         is_keydown: bool,
-        applied_ime_on: Option<bool>,
+        warmup_ime_on: awase::platform::WarmupImeOn,
     ) -> bool {
         use crate::tsf::composition_fsm::CompositionEvent;
         use crate::vk::VkCodeExt as _;
@@ -1182,7 +1189,7 @@ impl TsfComposition for WindowsPlatform {
             let warm = self.output.is_composition_warm();
             self.feed_composition_event(
                 CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
-                applied_ime_on,
+                warmup_ime_on,
             );
             return self.composition_fsm.pending_warmup_vk() == Some(vk);
         }
@@ -1193,10 +1200,9 @@ impl TsfComposition for WindowsPlatform {
         &mut self,
         vk: awase::types::VkCode,
         is_keydown: bool,
-        applied_ime_on: Option<bool>,
+        warmup_ime_on: awase::platform::WarmupImeOn,
     ) {
         use crate::vk::VkCodeExt as _;
-        let applied = applied_ime_on;
 
         if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
             log::debug!(
@@ -1206,7 +1212,7 @@ impl TsfComposition for WindowsPlatform {
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
             // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output.send_eager_tsf_warmup(applied);
+            self.output.send_eager_tsf_warmup(warmup_ime_on);
             return;
         }
 
@@ -1227,7 +1233,7 @@ impl TsfComposition for WindowsPlatform {
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
             // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output.send_eager_tsf_warmup(applied);
+            self.output.send_eager_tsf_warmup(warmup_ime_on);
         }
     }
 }
@@ -1297,22 +1303,6 @@ impl WindowsPlatform {
     ) -> awase::platform::ImeOpenOutcome {
         let view = self.build_ime_control_view(applied);
         self.apply_ime_open_with_view(order, &view, belief)
-    }
-
-    /// shadow のみから自明なビリーフを作る後方互換ラッパー。
-    ///
-    /// ImmCross 非経路かつ EngineIntent 外の呼び出しに使う。
-    pub(crate) fn apply_ime_open_with_applied(
-        &self,
-        order: crate::state::actuation_chain::ActuationOrder,
-        applied: Option<(bool, u64)>,
-    ) -> awase::platform::ImeOpenOutcome {
-        let shadow_on = applied.is_some_and(|(s, _)| s);
-        self.apply_ime_open_with_belief(
-            order,
-            applied,
-            crate::output::OpenBelief::from_shadow(shadow_on),
-        )
     }
 
     /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版
