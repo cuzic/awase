@@ -434,6 +434,7 @@ impl ImeModel {
     ///
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
+    #[expect(clippy::cognitive_complexity)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         // BUG-34 横展開 D-prep: pending transition の期限切れを毎 dispatch で
         // 遅延パージする。`ImeTransition.timeout_at` は Step 7 導入時から存在したが
