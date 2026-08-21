@@ -99,6 +99,26 @@ impl AppliedImeState {
     }
 
     /// apply 済みの open 値を返す（Optimistic も含む）。Unknown は None。
+    ///
+    /// **証拠用アクセサ（ADR-098 決定6-c）**: belief フォールバックを持たない。
+    /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
+    /// で不可逆な被害を生む用途）にのみ使うこと。現在の production 呼び出し元は
+    /// `sync_ime_kind_from_observation`（GjiFsm 遷移トリガー）/
+    /// `ir_post_focus_change_snapshot` の enforce-OFF ゲート/
+    /// `send_engine_state_ime_key` のモードキー抑止判断の3箇所（決定1-b で
+    /// 7箇所を `WarmupImeOn`/`warmup_ime_on()` へ移した残り）に加え、
+    /// `ImeStateHub::resolve_warmup_ime_on`（`state/platform_state.rs`）自身が
+    /// `WarmupImeOn::from_applied_or_belief` へ渡すための橋渡しとして呼ぶ
+    /// 4箇所目がある——こちらは「evidence-only の値を belief フォールバック
+    /// 可能な `WarmupImeOn` へ変換する」ための正規の窓口であり、上記3箇所の
+    /// ような直接の証拠判定ではない。
+    ///
+    /// eager warmup のような「belief にフォールバックしてよい」情報用途には
+    /// `ImeStateHub::warmup_ime_on()`（`WarmupImeOn::from_applied_or_belief`）を
+    /// 使うこと——ここで `unwrap_or(false)` してはならない。`applied` が
+    /// `Unknown` の窓（TsfNative のフォーカス復帰直後等）でこの値をそのまま
+    /// belief 相当として扱うと、warmup が握り潰され BUG-02 系のリテラル化が
+    /// 再燃した実例がある（このセッションの設計討議ラウンド1）。
     #[must_use]
     pub const fn applied_open(self) -> Option<bool> {
         match self {
@@ -177,6 +197,13 @@ pub struct ImeModel {
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
 
+    /// `apply_force_on_for_imm_broken` の再試行クールダウン状態（ADR-098 決定1-c、BUG-69）。
+    ///
+    /// `applied` と同じ `FocusChanged` reducer arm でリセットする——予算の単位を
+    /// 「1 フォーカス」に揃え、`applied` だけリセットされ予算はされない窓が
+    /// 構造的に生じないようにするため。
+    pub force_on_retry: crate::state::ime_actuation::ForceOnRetryState,
+
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
     /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
@@ -210,6 +237,7 @@ impl ImeModel {
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
             applied: AppliedImeState::Unknown,
+            force_on_retry: crate::state::ime_actuation::ForceOnRetryState::default(),
             current_focus: None,
         }
     }
@@ -406,7 +434,24 @@ impl ImeModel {
     ///
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
+    #[expect(clippy::cognitive_complexity)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
+        // BUG-34 横展開 D-prep: pending transition の期限切れを毎 dispatch で
+        // 遅延パージする。`ImeTransition.timeout_at` は Step 7 導入時から存在したが
+        // 呼び出し元がゼロで、実際には一度も評価されていなかった。パージが無いと、
+        // 完了イベント（generation 照合）が届かないまま pending が残留した場合
+        // （典型例: `ImeOpenOutcome::UnsafeToToggle` を早期 return で捨てていた旧経路）
+        // 以後の別 generation の完了が全て stale 判定され続ける固着になる。
+        if let Some(pending) = &self.pending {
+            if pending.is_timed_out(envelope.time.monotonic) {
+                log::debug!(
+                    "[ime-model] pending transition timed out (generation={}, target={}) — purge",
+                    pending.generation,
+                    pending.target
+                );
+                self.pending = None;
+            }
+        }
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 let target = !self.desired_open;
@@ -491,6 +536,11 @@ impl ImeModel {
                 self.observations.clear_on_focus_change(focus_epoch);
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
+                // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
+                // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
+                // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
+                // ダウン中と判定され飛ばない事故になる。
+                self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
                 // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
                 self.force_guards.clear_for_focus_change();
                 // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
@@ -515,13 +565,35 @@ impl ImeModel {
                 generation,
                 ctrl_held,
             } => {
+                // BUG-34 横展開 D-prep: 進行中の未期限切れ pending を無条件で
+                // 上書きしない。上書きすると、進行中の別 apply（例: 打鍵駆動の
+                // apply）の完了が届いたときに generation 不一致で stale 判定され、
+                // その apply の結果が黙って捨てられる（`applied_open` が古いまま
+                // 固定され drift correction が再送を繰り返す事故につながる）。
+                // 【現時点では拒否ではなく警告ログのみ】正当な高頻度連続要求
+                // （例: force-on の即時リトライ）を誤って落とさないため、実機で
+                // 実際の発生頻度を確認してから拒否に倒すかどうかを判断する。
+                if let Some(existing) = &self.pending {
+                    if !existing.is_timed_out(envelope.time.monotonic) {
+                        log::warn!(
+                            "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
+                             が進行中の pending(generation={}, target={}) を上書きする — \
+                             その apply の完了が今後 stale 判定される可能性がある",
+                            existing.generation,
+                            existing.target
+                        );
+                    }
+                }
                 // Step 7: pending transition を立てる。
                 // 実際の timeout / actuator 詳細は呼び出し元 (Phase 3 cleanup) が
                 // 個別 dispatch で渡す想定。Step 7 では最低限の placeholder。
                 self.pending = Some(ImeTransition {
                     target,
                     generation,
-                    timeout_at: envelope.time.monotonic + std::time::Duration::from_secs(1),
+                    timeout_at: envelope.time.monotonic
+                        + std::time::Duration::from_millis(
+                            crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS,
+                        ),
                 });
                 // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
                 // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
@@ -1348,6 +1420,129 @@ mod tests {
         assert!(
             model.pending_generation().is_none(),
             "一致する generation の失敗完了で pending を消費する"
+        );
+    }
+
+    // ── BUG-34 横展開 D-prep: pending purge / UnsafeToToggle 解放 ──────────────
+
+    /// `ImeTransition.timeout_at` は元々存在したが呼び出し元がゼロで、期限切れの
+    /// pending が生存し続けていた。`reduce()` の先頭で毎 dispatch パージすることで、
+    /// 期限切れ後に届く無関係なイベントが pending を自然に解放することを確認する。
+    #[test]
+    fn pending_purges_lazily_after_timeout_on_next_event() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(model.pending_generation(), Some(10));
+
+        // timeout_at は ImeApplyRequested から IME_APPLY_PENDING_TIMEOUT_MS 後
+        // （tuning.rs 参照、BUG-34 実測の HungAppTimeout ~5741ms に安全マージンを
+        // 載せた 8000ms）。期限をわずかに超えた時刻で、pending と無関係な
+        // イベントを送る。
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(timeout_ms + 1),
+                tick_ms: timeout_ms + 1,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert!(
+            model.pending_generation().is_none(),
+            "期限を過ぎたら、無関係な後続イベントの処理時に pending が自然にパージされる"
+        );
+    }
+
+    /// 期限内であれば無関係なイベントが来ても pending はパージされないことを確認する
+    /// （`pending_purges_lazily_after_timeout_on_next_event` の対称テスト）。
+    #[test]
+    fn pending_survives_unrelated_event_within_timeout() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(500),
+                tick_ms: 500,
+            },
+            event: ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(10),
+            "期限(1秒)内なら無関係なイベントで pending を失わない"
+        );
+    }
+
+    /// 進行中の未期限切れ pending を別の `ImeApplyRequested` が上書きしても、
+    /// クラッシュせず新しい generation の pending に置き換わることを確認する
+    /// （拒否はしない設計、警告ログのみ。ログ出力自体はここでは検証しない）。
+    #[test]
+    fn overwriting_live_pending_replaces_generation() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: 10,
+                ctrl_held: false,
+            },
+        });
+        assert_eq!(model.pending_generation(), Some(10));
+
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(50),
+                tick_ms: 50,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: 11,
+                ctrl_held: false,
+            },
+        });
+
+        assert_eq!(
+            model.pending_generation(),
+            Some(11),
+            "上書きは拒否しない(警告ログのみ) — 新しい generation が pending になる"
         );
     }
 

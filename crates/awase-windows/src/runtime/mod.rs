@@ -419,7 +419,7 @@ impl Runtime {
         generation: Option<u64>,
         reason: crate::state::ime_event::OpenApplyReason,
     ) {
-        use awase::platform::{ImeOpenOutcome, TsfComposition as _};
+        use awase::platform::TsfComposition as _;
 
         self.platform_state
             .ime
@@ -441,9 +441,12 @@ impl Runtime {
         // set_ime_open_then_conv_for_target` の doc 参照）。
         self.platform.post_ime_refresh();
 
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
-            return;
-        }
+        // BUG-34 横展開 D-prep: UnsafeToToggle をここで早期 return すると、
+        // generation 付きで立てた pending が record_ime_apply_result まで
+        // 届かず永久に残留する（以後の別 generation の完了が全て stale
+        // 判定され続ける固着になる）。record_ime_apply_result 自身が
+        // UnsafeToToggle を判別して pending だけ解放し applied は動かさない
+        // ため、ここでは早期 return せず必ず通す。
 
         // C+D: ImeModel write-back + generation 照合 dispatch
         let accepted = self.platform_state.ime.record_ime_apply_result(
@@ -650,15 +653,27 @@ impl Runtime {
     /// フォーカス遷移の settle 期間中に実行されるべきでないかどうかを判定する。
     ///
     /// `execute_decision`/`execute_decision_suppressed` 経由の `Decision` ベースの経路は
-    /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` や
-    /// `apply_ime_open_with_applied` を直接呼ぶ経路（`apply_force_on_for_imm_broken`,
-    /// `try_force_on_bootstrap`, `ir_apply_drift_correction`,
-    /// `ir_post_focus_change_snapshot` 内の GJI 強制 ON / IME OFF 強制ブロック）は
-    /// `Decision`/`Effect` という抽象を経由しないためそちらのガードが効かない。
-    /// これらの呼び出し元は実行前に必ずこれを確認すること。
+    /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` を
+    /// 直接呼ぶ経路（`apply_force_on_for_imm_broken`, `try_force_on_bootstrap`,
+    /// `ir_apply_drift_correction`）は `Decision`/`Effect` という抽象を経由しないため
+    /// そちらのガードが効かない。これらの呼び出し元は実行前に必ずこれを確認すること。
     ///
     /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に、これらの直接呼び出しが
     /// settle 前の不安定な状態に基づいて IME を実際に切り替えてしまうバグの修正。
+    ///
+    /// **2026-08-21（ADR-098 決定2/4、BUG-69）訂正**: 旧記載にあった
+    /// `apply_ime_open_with_applied` / `ir_post_focus_change_snapshot` 内の
+    /// 「GJI 強制 ON ブロック」は、到達不能だったため決定2 で撤去済み
+    /// （メソッド自体も削除）。同関数内の「IME OFF 強制ブロック」（enforce-OFF）
+    /// は、そもそもここに含めるべきではなかった——`Standard`（ImmCross）
+    /// でしか実効せず、到達までに `ImeDiagnosticSnapshot::capture()` が
+    /// 最大 ~250ms ブロックしうる（ImmCross の settle は 100ms）ため、
+    /// defer チェックを足すと「診断キャプチャがどれだけブロックしたか」で
+    /// 発火が決まる非決定的な挙動になり、正常時は不発・ハング時だけ発火する
+    /// という意図と正反対になる。加えて `ImeDiagnosticSnapshot::capture` は
+    /// BUG-34 が撤去/非同期化の対象とする同族の同期 `SendMessageTimeoutW` を
+    /// 含むため、BUG-34 が進めばこのゲートは静かに「常に不発」へ反転する。
+    /// enforce-OFF ブロック自体はこの関数を呼ばないまま維持する（決定4）。
     pub(crate) fn ime_apply_should_defer(&self) -> bool {
         self.platform_state
             .ime
@@ -698,15 +713,22 @@ impl Runtime {
         {
             return;
         }
-        // applied が既に ON なら送らない（500ms poll ごとの F2 再送スパム防止）。
-        // FocusChange が applied=Unknown にリセットするため、フォーカスごとに
-        // 1 回だけ force-apply される。Win-held スキップ（UnsafeToToggle）や
-        // 失敗時は applied が更新されないため次の refresh が再試行する。
-        if matches!(
-            self.platform_state.ime.model().applied,
-            crate::state::ime_model::AppliedImeState::Optimistic(true)
-                | crate::state::ime_model::AppliedImeState::Confirmed { open: true, .. }
-        ) {
+        // ADR-098 決定1-c（BUG-69）: 従来ここは「applied が既に ON なら送らない」
+        // だけの判定だった。決定1-a で TsfNative の `applied` がフォーカス入場後
+        // `Unknown` のまま残るようになると、strategy chain が `Failed` を返した
+        // 場合に `record_ime_apply_result` が `applied = Confirmed{open:false}`
+        // を書き、この従来ガード（Optimistic(true)|Confirmed{open:true} のみ
+        // 見る）を素通りする。`on_ime_apply_complete` は outcome によらず
+        // `post_ime_refresh()` で 20ms 後の再試行を無条件に張り、TsfNative は
+        // それを上書きする周期ポーリングが無い（`reschedule_ime_refresh` が
+        // 早期 return する）ため、実効 50Hz の無限再試行ループになる——
+        // 毎回 `mark_composition_cold`（打鍵中かどうかを問わない）と 2 発目の
+        // eager warmup を伴う BUG-31 族の最悪形。クールダウン + 「未試行なら
+        // 必ず通す」で有界化する（BUG-68 の `DRIFT_CORRECTION_BLIND_REARM_
+        // COOLDOWN_MS` と同じ形）。試行回数の上限は設けない——理由は
+        // `force_on_attempt_allowed`/`FORCE_ON_RETRY_COOLDOWN_MS` の doc 参照。
+        let now_ms = crate::hook::current_tick_ms();
+        if !self.platform_state.ime.force_on_attempt_allowed(now_ms) {
             return;
         }
         // `platform.set_ime_open` は IMM 専用実装で、Imm32Unavailable / TSF-native
@@ -715,9 +737,17 @@ impl Runtime {
         // 律儀に走っても実 IME OFF が直らず「koreha」リテラル化が再発。
         // 手動 Ctrl+変換 = strategy chain 経由の apply は毎回効いていた）。
         // strategy chain（MsImeDirect の冪等 VK_DBE_HIRAGANA 等）で apply する。
-        self.force_on_and_correct_romaji(
+        let outcome = self.force_on_and_correct_romaji(
             crate::state::ime_event::OpenApplyReason::ImmBrokenForceOn,
         );
+        // UnsafeToToggle（Win キー保持等の genuine skip）は「送っていない」ので
+        // クールダウンの起点にしない——数えると Win 長押し中に次のフォーカス
+        // 変更まで再試行できなくなる。この場合 `applied` も更新されないため
+        // （`record_ime_apply_result` が pending 解放だけして早期 return する）、
+        // 次の 20ms リフレッシュがそのまま再試行する（既存の自己回復を保存）。
+        if outcome != awase::platform::ImeOpenOutcome::UnsafeToToggle {
+            self.platform_state.ime.note_force_on_attempt(now_ms);
+        }
     }
 
     /// force-ON を実際に送信し、続けて非ローマ字対応 `input_mode` の補正を行う共通処理。
@@ -750,7 +780,9 @@ impl Runtime {
         // `Some(applied_pair())` ではなく `None` のまま維持する——GJI の
         // `shadow_on` スキップ（`GjiDirectStrategy` が「既に ON」と誤認して
         // VK_IME_ON をスキップする）を意図的に外す既存仕様のため
-        // （`ir_post_focus_change_snapshot` の GJI TsfNative 強制 ON と同じ理由）。
+        // （ADR-098 決定2 で撤去済みの `ir_post_focus_change_snapshot` 内
+        // TsfNative force-on ブロックも、到達不能になる前は同じ理由で
+        // `None` を使っていた）。
         let mut view = self.platform.build_ime_control_view(None);
         view.belief_input_mode = self.platform_state.ime.input_mode();
         let belief = crate::output::OpenBelief {
@@ -800,28 +832,89 @@ impl Runtime {
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime.detect_miss_count()
             );
-            // set_ime_open は IMM 専用実装で Imm32Unavailable では常に no-op
-            // （apply_force_on_for_imm_broken と同じ穴）。strategy chain で apply する。
-            let belief = crate::output::OpenBelief {
-                effective_open: true,
-                confident: true,
-            };
+
+            // BUG-34 横展開 D: 従来この経路は apply_ime_open_with_belief →
+            // ImeController::apply（同期 chain）を経由し、ImmCrossProcessStrategy::apply
+            // → set_ime_open_cross_process（150ms 宣言タイムアウトの
+            // SendMessageTimeoutW）をエンジンスレッド上で直接ブロックしていた
+            // （ADR-089 §9-21 の訂正どおり、Standard プロファイルでも到達しうる）。
+            // executor.rs::dispatch_ime_set_open の ImmCross async path と同じ構成で
+            // run_open_chain_async へ委譲する: 起案（generation の発行 + pending の
+            // 設置 + warrant order + OutputActiveGuard）は spawn_local の**外**で
+            // 行う（future の中では with_app 再入で ImeStateHub に届かないため、
+            // ADR-090 §4.2）。
+            //
+            // generation は `allocate_event_generation()` を呼ぶだけでなく、
+            // 必ず `ImeApplyRequested` を dispatch して `pending` を実際に立てる
+            // （round-2 premortem で判明: generation を割り当てるだけで
+            // ImeApplyRequested を dispatch しないと `record_ime_apply_result` の
+            // generation 照合が常に不一致になり、完了が全て stale として捨てられる
+            // 「空の generation」になる）。D-prep（pending の期限切れパージ・
+            // UnsafeToToggle での解放・上書き検出ログ）が入っているため、
+            // capture 失敗等で完了が来なかった場合も pending は 1 秒で自然に
+            // パージされる。
+            let now_ms = crate::hook::current_tick_ms();
+            let generation = self.platform_state.ime.allocate_event_generation();
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation,
+                    ctrl_held: false,
+                },
+                crate::state::TickMs(now_ms),
+            );
             // ADR-090 §2.A A-1（shadow）。**この入口は差分オラクルが
             // 「判明した中で最大の挙動変化」と記録している old-1 そのもの**
             // （`ImmCross` は `default_feedback = Read` なので Step 4c が
             // 発火せず、観測も意図も guard も無い bootstrap では warrant が
             // `None` になる）。A-2 で倒すのは**最後**に回すこと（ADR-090 §4.9）。
             let order = self.issue_actuation_order(true, "try_force_on_bootstrap");
-            let outcome = self
-                .platform
-                .apply_ime_open_with_belief(order, None, belief);
-            log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
-            self.on_ime_apply_complete(
-                true,
-                outcome,
-                None,
-                crate::state::ime_event::OpenApplyReason::Bootstrap,
-            );
+            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+            // MsImeDirect/ImmCross の ROMAN 補完と同じ判断（executor.rs
+            // dispatch_ime_set_open の async path 参照）: ObservedKana（ユーザーが
+            // 意図的にかな入力に設定した状態）以外は open と同じ hwnd へ ROMAN
+            // ビットを補完する。
+            let conv_after_open = if matches!(
+                self.platform_state.ime.input_mode(),
+                InputModeState::ObservedKana
+            ) {
+                crate::ime::ConvAfterOpen::Skip
+            } else {
+                crate::ime::ConvAfterOpen::Write(None)
+            };
+            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            win32_async::spawn_local(async move {
+                let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                    log::debug!(
+                        "[force-on-bootstrap] capture 失敗（フォーカス無し） → UnsafeToToggle"
+                    );
+                    message_handlers::post_async_ime_apply_complete(
+                        true,
+                        awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                        Some(generation),
+                        crate::state::ime_event::OpenApplyReason::Bootstrap,
+                    );
+                    drop(guard);
+                    return;
+                };
+                let outcome = open_chain::run_open_chain_async(
+                    order,
+                    open_chain::ImmCrossOp::Targeted {
+                        target,
+                        conv_after_open,
+                        focus_gen,
+                    },
+                )
+                .await;
+                log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
+                message_handlers::post_async_ime_apply_complete(
+                    true,
+                    outcome,
+                    Some(generation),
+                    crate::state::ime_event::OpenApplyReason::Bootstrap,
+                );
+                drop(guard);
+            });
             self.platform_state.ime.set_force_on_broken_app_bootstrap();
         }
     }
@@ -955,10 +1048,17 @@ impl Runtime {
         // last_applied が stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
         // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
         // Chrome では IME が逆転するバグを防ぐ。
+        //
+        // ADR-098 決定5: この関数（`process_deferred_keys`）自体は `SyncKeyGate::
+        // activate()`/`try_push()` の呼び出し元が現状ゼロのため本番到達不能——
+        // 到達すれば、直前の `poll_and_classify_ime` の新鮮な観測を経由せず
+        // `effective_open()`（belief、explicit-intent 分岐が優先される）を
+        // そのまま書く点に注意。将来 sync key gate を復活させる際は
+        // `focus_tracking.rs:409` と同型のプロファイル分岐を検討すること。
         let observed_ime_on = self.platform_state.ime.effective_open();
         self.platform_state
             .ime
-            .mirror_applied_open(observed_ime_on, tick_ms);
+            .record_confirmed(observed_ime_on, tick_ms.0);
         log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。

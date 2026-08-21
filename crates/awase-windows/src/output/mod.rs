@@ -666,14 +666,18 @@ impl Output {
 
     /// 現在の TSF 準備状態を多次元スナップショットとして返す。
     ///
-    /// `applied_ime_on`: 呼び出し元が知っている「最後に apply された IME 開閉状態」。
-    /// executor は `applied_snapshot` から渡す。不明な場合は `None`（`false` として扱われる）。
-    /// 条件判定には返り値のメソッド（`can_warmup()` 等）を使う。
+    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態（ADR-098
+    /// 決定1-b）。`WarmupImeOn` の構築経路は `applied` が既知ならそれを、
+    /// `Unknown` のときだけ belief にフォールバックする——呼び出し側が
+    /// `unwrap_or(false)` を書く必要はもう無い。
     #[must_use]
-    pub fn tsf_readiness(&self, applied_ime_on: Option<bool>) -> crate::tsf::TsfReadiness {
+    pub fn tsf_readiness(
+        &self,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+    ) -> crate::tsf::TsfReadiness {
         crate::tsf::TsfReadiness {
             gate: self.tsf_gate.state(),
-            ime_on: applied_ime_on.unwrap_or(false),
+            ime_on: warmup_ime_on.is_on(),
             is_tsf_mode: self.is_tsf_mode(),
         }
     }
@@ -685,15 +689,15 @@ impl Output {
     /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
     /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
     ///
-    /// `applied_ime_on`: 呼び出し元が知っている IME 開閉状態。`None` で latch にフォールバック。
-    /// 値が false（IME OFF）または TSF モード以外では何もしない。
+    /// `warmup_ime_on`: 呼び出し元が知っている IME 開閉状態（ADR-098 決定1-b、
+    /// `WarmupImeOn` 参照）。`is_on()==false` または TSF モード以外では何もしない。
     ///
     /// 実際に送信できた場合のみ `eager_warmup_sent_ms` を現在時刻で更新する。Win キー
     /// 押下中で送信がスキップされた場合は更新しない（BUG-32: スキップを送信成功扱いに
     /// すると、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する）。
     /// 送信できた場合、NativeF2Consumed 等の前に `mark_composition_cold` が呼ばれて
     /// 0 にリセットされるため二重更新は発生しない。
-    pub fn send_eager_tsf_warmup(&self, applied_ime_on: Option<bool>) {
+    pub fn send_eager_tsf_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
         if !self.conv_mutation_allowed.get() {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
@@ -702,7 +706,7 @@ impl Output {
             log::trace!("[tsf-eager-warmup] non-GJI strategy → warmup スキップ");
             return;
         }
-        if !self.tsf_readiness(applied_ime_on).can_warmup() {
+        if !self.tsf_readiness(warmup_ime_on).can_warmup() {
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）

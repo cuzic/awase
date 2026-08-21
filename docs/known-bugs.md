@@ -3935,6 +3935,228 @@ apply 時点の値の**一致比較**に変更した（`ImeStateHub::last_explic
 `crates/awase-windows/src/state/platform_state.rs`（`ImeStateHub::note_explicit_ime_action`,
 `last_explicit_ime_action_ms_raw`）。
 
+**追補（横展開、2026-08-19）:** `kp_stage_idle_conv_check` 以外にも、同じ
+`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` ベースの同期呼び出しがエンジンスレッド上に
+5箇所残っていた（低確率で全キー swallow される謎バグの調査から発見）。Opus に
+architect/reviewer 役を分けて2巡の premortem（「もう出荷され実機で壊れた」前提で
+遡って原因を語らせる手法）にかけたところ、1巡目の設計（fence を単純に横展開する案）が
+**新しいサイレント機能停止**を生むと判明した——`Output::send_keys` が冒頭・末尾で
+呼ぶ `mark_send()` は NICOLA の通常の文字出力（conv を一切変えない）でも発火するため、
+`last_send`/`output_in_flight_ms()` ベースの fence は (a) 文字出力のたびに誤って落ち、
+かつ (b) 本来検出すべき `send_vk_dbe_hiragana_pair`（`mark_send` を通らない）を
+一度も捕捉できていなかった。
+
+対処（実装済み、`fix/bug34-sync-ime-calls` ブランチ）:
+
+1. **`conv_mutation_seq`**（新規、`conv_mutation.rs`）: conv ワードを変えうる VK
+   （`VK_KANA`/`VK_CONVERT`/`VK_DBE_*`、`vk::vk_may_mutate_conv` が判定）を送信した
+   ときだけ増分する専用カウンタ。列挙は `win32::send_input_safe`（全 `SendInput` の
+   唯一のチョークポイント）に一本化——名前付きラッパー単位の列挙では
+   `ime.rs::send_ime_mode_key`（ユーザー設定 VK を送るため、同じ関数が open-only にも
+   conv-mutating にもなる）を正しく分類できないため、実行時に VK 値そのもので
+   判定する設計にした。`key_pipeline.rs::apply_idle_conv_check` の fence(c) を
+   これに置き換え、旧 fence が誤って落ちる/検出漏れする二重の欠陥を修正。
+2. **`SendHealth`**（新規、`send_health.rs`）: `imm.rs::send_ime_control` の実測msを
+   記録し、直近 slow だった場合は同期サイトの発行を見送るサーキットブレーカ。
+   `ime_refresh.rs`（旧 site A）・`ime_controller.rs::romaji_pre_write`（旧 site E）・
+   `key_pipeline.rs::apply_focus_probe`（旧 site C）に適用。**初回の ~5s ブロックは
+   防げない**（再発だけ止める）——真の解消には各サイトの offload 化が要る。
+3. **`with_app_or_repost_with`**（既存関数を配線）: `WM_ASYNC_IME_APPLY_COMPLETE` の
+   受け口が `let _ = with_app(...)` で再入時に完了を黙って捨てていた穴を修正。
+4. **旧 site B**（`executor.rs::dispatch_ime_set_open` の sync path、MS-IME
+   TsfNative の conv 読み取り）: 読んだ値は `apply_ime_open_with_view` が
+   `log::debug!` に渡すだけで実 actuation には配線されていない（`ImeController::apply`
+   は belief 引数を取らない）と判明したため、単純に read を削除し `conv_mode: None`
+   を渡すだけに縮小。fence も degrade 方針も不要。
+5. **旧 site D**（`runtime/mod.rs::try_force_on_bootstrap`）: 同期
+   `ImmCrossProcessStrategy::apply` chain から `run_open_chain_async`（`executor.rs`
+   の ImmCross async path と同じ経路）へ移行。前提として `ImeModel.pending`
+   の期限切れパージ（`ImeTransition.timeout_at` は元々存在したが呼び出し元が
+   ゼロだった）と、`UnsafeToToggle` 完了時に pending を解放する修正
+   （旧経路は早期 return で `record_ime_apply_result` に到達せず pending が
+   永久残留し、以後の別 generation の完了が全部 stale 判定される固着を生みうた）を
+   先に入れた。`WM_ASYNC_IME_APPLY_COMPLETE` の wparam に reason bit を追加し
+   （`OpenApplyReason::Bootstrap` vs `EngineDecision`）、async 完了後も
+   provenance が失われないようにした。
+6. **旧 site E**（`ime_controller.rs::romaji_pre_write`）: `open_chain.rs::fallback_write`
+   が `with_app` の `RUNTIME` borrow を握ったまま同期ブロックする実装は変えず
+   （hwnd 解決統一を伴う完全な非同期化は実機ソーク前提で見送り）、SendHealth の
+   gate のみ追加した。この borrow 保持中は、他の完了メッセージが上記3の修正で
+   再入時に再送されるようになったため「ブロック中に他の完了が永久に失われる」
+   という最悪の帰結は防げている。
+
+**見送った項目（実機ソーク必須のため）**: site A（`ime_refresh.rs` の conv prefetch
+を async 化する設計、`ConvModeMgr` の last-writer-wins 競合が先に塞がっていないと
+悪化する）と `ConvModeMgr` → `ConvObservation` への格上げ（B-2）。
+
+**追補2（Opus レビューで発見・同日中に修正、2026-08-19）:** 実装完了後に Opus に
+実コード（ツールアクセス付き）でレビューさせたところ、上記の実装自体に新しい
+欠陥が複数見つかった。いずれも「BUG-34 横展開1巡目 premortem が指摘した欠陥と
+同型のものが、直した箇所とは別の場所に再発していた」というパターンで、
+修正済み:
+
+1. **`conv_mutation_seq` が IMC 経由の conv 書き込みを1つも数えていなかった**
+   （最重要）: ゲートを `win32::send_input_safe`（SendInput 経由）にしか置いて
+   おらず、`set_ime_romaji_mode_for_hwnd` が使う `imm.rs::send_ime_control` の
+   `IMC_SETCONVERSIONMODE` 経路を見ていなかった。旧 `last_send` fence が
+   「本来検出すべき自己出力を1つも捕捉できていなかった」のとまったく同型の
+   欠陥が、直したはずの箇所の**すぐ隣**に残っていた。`send_ime_control` にも
+   `IMC_SETCONVERSIONMODE` 時の bump を追加（2箇所ゲート体制に）。
+2. **B（executor.rs）の診断用 offload が毎打鍵で OS スレッドを spawn していた**:
+   削除した同期 read の代わりに追加した「log 専用の fire-and-forget offload」に
+   in-flight ガードが無く、この経路が「毎打鍵で走る」ことと衝突し、GJI ハング中に
+   打鍵ごとに ~5s ブロックするワーカースレッドが積み上がる（かつその読み取り
+   結果が `send_health::record` に給餌されグローバルブレーカを誤作動させうる）
+   実装になっていた。唯一の消費先がログだけである以上、診断ごと削除した。
+3. **`idle_conv_check_in_flight` が `with_app` の1回の再入失敗で永久にラッチする**:
+   Step0-b で `WM_ASYNC_IME_APPLY_COMPLETE` に対して直したのと同型の欠陥。
+   ただし被害はこちらの方が重い（完了1件の消失ではなく、idle-conv-check が
+   プロセスの寿命いっぱい発火しなくなる）。`bool` を `Option<u64>`（spawn 時刻）
+   に変更し、`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`（8000ms）を超えたら
+   「放棄された」とみなして自己回復するようにした。
+4. **`ImeModel.pending` の 1 秒タイムアウトが、この横展開が対象にしている
+   最悪ケース（`HungAppTimeout` ≒ 5000ms、BUG-34 実測 5741ms）より短かった**:
+   D-prep で有効化したパージが、正当な in-flight apply（offload 先が実際に
+   ハング境界までブロックしている場合）を「放棄された」と誤判定し、後から
+   届く完了を stale として黙って捨てる新しい失敗モードを生んでいた。
+   `IME_APPLY_PENDING_TIMEOUT_MS`（tuning.rs、8000ms）に延長。
+5. **A（`ime_refresh.rs`）のブレーカ degrade が eisu guard の存在理由を踏み外して
+   いた**: 見送り時に一律 `None` へ degrade すると `eisu_guard_active=false` と
+   なり fail-open で warmup が送られ、ユーザーが tray で明示的に半角英数にして
+   いた場合でもひらがなへ戻してしまう。`ConvModeMgr` の直近キャッシュ値へ
+   degrade するよう変更（「不明＝英数ではない」という一番弱い仮定を避ける）。
+6. **E（`romaji_pre_write`）のブレーカ gate に再試行経路が無かった**: この関数は
+   フリー関数で `Runtime` にアクセスできず、スキップ時に再試行をスケジュール
+   する手段がなかった。gate だけ入れると「ブロックする」を「ROMAN ビットが
+   次の明示トグルまで静かに補完されないまま固着する」というログにも残らない
+   不具合に置き換えるだけだったため、gate を撤去し元の常時試行に戻した
+   （再試行機構込みの設計は E 本体に持ち越し）。
+7. **`SendHealth` が単発スパイク1回でブレーカを作動させていた**:
+   `consecutive_slow` を記録はするが判断に使っておらず、GC 停止等の一時的な
+   遅延1回で A/C/E の3サイトが2秒間まとめて degrade しうた。2回連続の slow
+   判定で初めて作動するよう変更（`TRIP_AFTER_CONSECUTIVE_SLOW=2`）。
+8. `win32::input_may_mutate_conv`（INPUT 構造体からの VK 抽出・Unicode モード
+   除外ロジック）にテストが1件も無かったため4件追加。
+
+指摘のうち残した/見送ったもの: `try_force_on_bootstrap` が in-flight の
+`pending` を上書きしうる新経路（新設の警告ログで検知可能、頻度は低い）、
+`with_app_or_repost_with` に再試行上限が無い（既存のプリミティブへの変更で
+影響範囲が広いため見送り、残存リスクとして記録）。
+
+**検証状況:** `cargo test -p awase-windows --lib`（Linux、pure logic 全418件）、
+`architecture_guard.rs`/`layer_boundary_guard.rs`/`golden_scenarios.rs`/
+`journal_replay.rs`/`drift_correction_replay.rs`/`intent_store_effective_open.rs`
+（Linux 実行可能な全 tests/ 全緑）、`cargo xwin check`/`cargo xwin build --tests`/
+`cargo xwin clippy -p awase-windows --lib`（Windows ターゲットのコンパイル・
+テストビルド・lint、クリーン。`--all-targets` はこの変更と無関係な既存箇所で
+多数指摘が出るが、CI の clippy ジョブのスコープは `--lib` のみ）で確認済み。
+**Windows 実機での実行検証は未実施**（このセッションには Windows 実行環境が無く、
+wine 等でのクロス実行もできなかったため、windows-gated なモジュール
+（`send_health.rs`/`platform_state.rs`/`win32.rs` 等）のテストは型検証・
+テストビルドのみで実行は未確認。CI の windows-latest ジョブでは実行される）。
+
+**関連（追補分）:** `crates/awase-windows/src/conv_mutation.rs`,
+`crates/awase-windows/src/send_health.rs`,
+`crates/awase-windows/src/runtime/open_chain.rs`（`fallback_write`）,
+`crates/awase-windows/src/state/transition.rs`（`ImeTransition::is_timed_out`）,
+`crates/awase-windows/src/runtime/mod.rs`（`try_force_on_bootstrap`）,
+`docs/adr/087-open-belief-actuation-warrant-separation.md` §5 item14（実
+actuation 入口棚卸し表の #7 訂正）。
+
+**追補3（タスクトレイ不具合報告の切り分け強化、2026-08-20）:** 今回の横展開で
+残した A/C/E のブレーカ degrade は、発生してもユーザーには「何も起きなかった」
+としか見えず、発生有無を事後に確認する手段がなかった。ADR-095 の不具合報告
+機能（内部状態スナップショット・journal 添付）を拡張し、この不具合の再発を
+実際のユーザー報告から切り分けられるようにした:
+
+1. `BugReportStateSnapshot` に `send_health_last_elapsed_ms` /
+   `send_health_consecutive_slow` / `send_health_breaker_tripped` /
+   `idle_conv_check_in_flight_ms` を追加（報告クリック時点のスナップショット）。
+2. A/C の degrade 発生ログ（`ime_refresh.rs`/`key_pipeline.rs`）を
+   `log::debug!` から `log::warn!` へ格上げ——本番既定の `info` レベルログ
+   （`awase.log`）に残らなければ、報告に添付しても意味が無いため。
+3. `awase.log`（実際の `log::` 出力）の末尾を journal とは別系統で報告に
+   添付できるようにした（`BugReportPayload.app_log_excerpt`、既存の
+   `attach_log` チェックボックスで journal と一緒に制御）。journal は構造化
+   イベントであり `log::warn!`/`log::debug!` の生テキストを含まないため、
+   これが無いと `[send-health]`/`[idle-conv-check]` の警告が報告から読み取れ
+   なかった。
+4. `services/report-worker` 側は `app_log_excerpt` を **省略可能**として
+   受理する（無ければ `null` 扱い）——この変更前のクライアントが送る報告を
+   拒否しないための後方互換設計。
+
+**検証状況（追補3）:** `cargo test -p awase-windows --lib`（421件）/
+`architecture_guard`（34件）/ `cargo xwin check`・`build --tests`・
+`clippy --lib --bins`（awase-windows・awase-settings）で確認済み。
+`services/report-worker` は `pnpm test`（29件）・`pnpm typecheck` で確認済み
+だが **`wrangler deploy` によるデプロイは未実施**（サーバ側の変更が本番に
+反映されるまでは、クライアントが送る `app_log_excerpt` は現行の本番
+report-worker では単に無視される——`validatePayload` が既知フィールドのみを
+picking する実装のため、エラーにはならないが保存もされない）。
+
+**追補4（Site A: `ir_post_focus_change_snapshot` の eisu ガード撤去、2026-08-20）:**
+横展開の最後の1箇所（A）に残っていた同期 `SendMessageTimeoutW`（
+`get_ime_conversion_mode_raw_timeout(10)`、`send_health` ブレーカでのみ
+ガード）を、他の箇所と同じく非同期化できないか3ラウンドの Opus premortem
+レビューで検討したが、いずれも実コードで確認済みの致命的な欠陥に行き着き、
+**「eisu ガード機能そのものを撤去する」判断に至った**:
+
+1. **設計1（warmup 自体を非同期尾部に）**: `send_eager_warmup` を非同期化すると
+   `eager_warmup_sent_ms` が同期的に立たなくなり、`WARMUP_GRACE_MS`/GJI
+   settle-grace が同時に無効化される。フォーカス変更直後の最初のキーで
+   spurious `apply_ime_open(false)` が無抑制で発火する——この repo が
+   繰り返し戦ってきた障害ファミリー（[[project_edge_fake_focus_probe_fix]]、
+   ADR-079 epoch fencing と同型）の再燃。
+2. **設計2（ConvModeMgr を `focus_epoch` でキー化してキャッシュ）**:
+   `focus_epoch` は Site A 到達より厳密に先行して増分される（`ir_stage_focus`
+   → `ir_stage_observe`）ため、Site A で `get_for_epoch(現在epoch)` は
+   **確率1で `None` を返す**。キャッシュへの書き手（idle-conv-check/Site C）は
+   いずれも打鍵駆動で Site A より後にしか発火しないため、「1つ前の epoch の
+   観測」が Site A の実行時点では原理的に存在しない。ガードが恒久的に不発になる。
+3. **設計3（ConvModeMgr を pid+timestamp でキー化、Site A は受動的 lookup のみ）**:
+   epoch キーの構造的欠陥は解消したが、別の3つの欠陥が独立に発生した:
+   - Site A 自身の `update_from_conv` 書き込みを撤去すると、直後の初回
+     idle-conv-check が「前のアプリの conv」と比較することになり
+     `conv_mode_changed` が反転、`EngineSync::ReportOpenInference(
+     NativeToggleShadowOff)` が誤発火する。これは
+     [docs/experiments.md](experiments.md) エントリ03 に実機記録済みの
+     「直接入力中の spurious Engine ON」の再燃条件そのもの。
+   - キャッシュ更新契機（idle-conv-check/Site C）はいずれも打鍵駆動のため、
+     ガードが本来検出すべき「トレイでの無操作な conv 切替」を観測できず、
+     陳腐化したキャッシュが warmup を誤スキップさせる新規の cold-start
+     literal 化（BUG-02/BUG-45 系）を生む。
+   - `ConvModeMgr` は単一スロットのキャッシュのため、TsfNative アプリ同士を
+     行き来しただけでも上書きされ、ガードが実効するのは事実上 WezTerm/
+     Windows Terminal 程度まで縮小する。
+
+   3設計とも共通して、「Site A が知りたいのは『前回このアプリにいたときの
+   conv』であり、その答えは定義上 Site A の実行時点より過去にしか存在せず、
+   かつユーザーの tray 操作はその答えを更新する打鍵を伴わない」という
+   構造的な壁に突き当たった。
+
+**結論・現在の実装:** `ir_post_focus_change_snapshot` の eisu ガード（
+`is_eisu_now`/`eisu_guard_active` の算出と、それに伴う同期 Win32 呼び出し・
+`send_health` ブレーカ分岐）を完全に削除した。`send_eager_warmup` は
+`applied_open` のみをガードとして無条件に呼ぶ。
+
+**既知の制限（新規、意図的に受容）:** ユーザーが tray から明示的に半角英数へ
+切り替えた直後にそのウィンドウへフォーカス復帰すると、この eager warmup が
+`VK_DBE_HIRAGANA` を送信し、一度だけひらがなモードへ戻る。以前は Site A の
+同期読み取りがこれを検出しスキップしていたが、BUG-34 対応のため撤去した。
+再現条件: 任意アプリ + awase engine ON の状態で、IME ツールバー/タスクトレイ
+から半角英数（またはカタカナ等）へ切り替えた直後に Alt+Tab 等でフォーカスが
+外れ、再度そのウィンドウへフォーカスが戻ったタイミング。
+
+**Site A における BUG-34 の解消状況:** この撤去により、Site A は
+`SendMessageTimeoutW` を一切呼ばなくなった——ブレーカによる「上限付け」では
+なく、当該箇所の BUG-34 リスクは完全に除去された。横展開 A〜E のうち E
+（`romaji_pre_write`、task #108）のみ実機ソーク待ちで残存。
+
+**検証状況（追補4）:** `cargo xwin check`/`build --tests`/`clippy --lib`
+（awase-windows）で確認済み。この箇所を直接演習する Windows-gated 以外の
+単体テストは元々存在しない（`ir_post_focus_change_snapshot` は Runtime 全体の
+統合的な状態を要するため）。Windows 実機での検証は未実施。
+
 ---
 
 ## BUG-35: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として
@@ -8668,3 +8890,217 @@ drift_correction` の別経路、「鮮度を新情報の代理指標にする�
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
 [tuning-constants](../.claude/rules/tuning-constants.md)。
+
+---
+
+## BUG-69: `ir_post_focus_change_snapshot` が belief を `applied=Confirmed` へ偽装し、TsfNative の force-on / BUG-16 修正を無効化。eager warmup だけが未監査の副作用で偶然穴を塞いでいる
+
+**2026-08-21 追記: 本文中「実装は一切行っていない」等の記述は発見時点（調査のみ）のもの。
+実装は完了済み。詳細は本エントリ末尾の「実装済み（2026-08-21 追記）」節を参照。**
+
+**発見の経緯:** BUG-34 横展開（追補4、eisu ガード撤去）の直後、ユーザーから
+「send_eager_warmup も GJI なら要らないのでは」という疑問が出たのを機に、
+eager warmup・drift correction・TsfNative force-on ブロックの3機構の
+相互作用を Opus premortem レビューで監査した。発見当初は実装を一切行わず、
+本エントリはレビュー結果の記録のみだった（F2 の修正案を別途 premortem
+レビューしてから着手する方針だった）。
+
+**症状（未確認・実機ログなし、コード読解で構築した想定シナリオ）:**
+WezTerm または Windows Terminal（TsfNative プロファイル）+ Google 日本語
+入力（GJI）で、`Win+Ctrl+→` 等の仮想デスクトップ切替（Win キー押下中は
+IME キー注入がスキップされるため、実 GJI が閉じたまま belief だけ ON で
+残留しうる）の後、`Win+Ctrl+←` で当該ウィンドウへ復帰し直後に打鍵すると:
+- 最初の1文字がリテラル ASCII になる（`これで→korede`、BUG-16 と同じ
+  見え方）、または
+- eager warmup の `VK_DBE_HIRAGANA`（scan=0x70、物理かなキー位置）が
+  閉じた IME 文脈に着弾し、kbd106 のかなロックを誤トグルして JIS かな
+  入力に固着する（BUG-08/BUG-55 と同根のハザード）。
+
+**原因（コード読解で確定、実機ログでの再現は未実施）:**
+
+1. **F1: TsfNative force-on ブロックは到達不能。** `ir_post_focus_change_snapshot`
+   は `focus.focus_changed`（= `process_changed`）のときにしか呼ばれず
+   （`ime_refresh.rs:193-195`）、その `on_focus_process_changed` が同じ
+   tick 内で既に `input_barrier = FocusTransition{settle_until: now +
+   focus_settle_ms}` を armed 済み（`ime_model.rs:517-522`、TsfNative は
+   200ms）。Stage1→Stage3 間の実処理はサブミリ秒（`skip_imm_query=true`
+   経路では `ImeDiagnosticSnapshot::capture()` すら `if !skip_imm_query`
+   でスキップされる）。ゆえに `applied_ime_on && new_profile_is_tsf_native
+   && !self.ime_apply_should_defer()` は**常に false**。兄弟ブロック
+   （drift correction 等）と違い `schedule_settle_retry` も無いため、
+   一度も再試行されない。ログ文字列 `"TsfNative IME ON → GJI VK_IME_ON
+   強制"` は `docs/` 配下のどの実機ログにも一度も出現しない。
+2. **F2: `mirror_applied_open` が belief を `applied=Confirmed` へ偽装する。**
+   `ir_post_focus_change_snapshot` 冒頭（`ime_refresh.rs:429-433`）が
+   全プロファイルで無条件に
+   `self.platform_state.ime.mirror_applied_open(ime_on_now, tick_ms)`
+   を呼ぶ。`tick_ms`（`GetTickCount64`）は常に非ゼロなので
+   `mirror_applied_open_with_ts` の規約上これは
+   `AppliedImeState::Confirmed{open: belief}` を**実際には何も apply
+   していないのに**確定させる。これは `focus_tracking.rs:398-402` が
+   TsfNative を hard pre-sync から明示的に除外している理由
+   （「TsfNative は SSOT model: applied=Unknown のまま維持し、最初の
+   キーで SetOpen を発行する」）に真っ向から反する——Stage1 が意図的に
+   `Unknown` のまま残した `applied` を、Stage3 が数百マイクロ秒後に
+   上書きする。
+   - この偽装が `GjiDirectStrategy::apply`（`ime_controller.rs:109-113`）
+     の `if open && view.control.shadow_on { return AlreadyMatched; }`
+     を誤発火させ、F1 の force-on ブロックはまさにこれを打ち消す
+     ためのワークアラウンドとして書かれていた（コメント参照）——
+     つまり F1 は F2 の症状に対する対症療法であり、その対症療法自体が
+     到達不能になっている。
+   - `apply_force_on_for_imm_broken`（BUG-16 の修正）のスパムガード
+     （`runtime/mod.rs:704-710`）が `Confirmed{open:true}` で早期
+     return するため、TsfNative では**事実上恒久的に不発**になる。
+     このガードの正当化コメント「FocusChange が applied=Unknown に
+     リセットするため、フォーカスごとに1回だけ force-apply される」
+     は F2 により成立しない。BUG-16 追補2 が「TsfNative では引き続き
+     発火するはず」と想定していた前提が崩れている。
+   - `apply_force_on_for_imm_broken` が defer 時に積む
+     `schedule_settle_retry`（~250ms後）も無意味——再試行 tick でも
+     `applied` は F2 が書いた偽の `Confirmed{true}` のままなので、
+     再びスパムガードで早期 return する。これは BUG-16 が修正した
+     はずの「settle 明け再試行が『何もしない関数』の再試行だった」と
+     全く同じ失敗パターンが、別経路で再現している。
+3. **F3: 結果として、TsfNative+GJI のフォーカス復帰時に実際に発火する
+   IME actuation は eager warmup（`send_eager_tsf_warmup`）だけになる。**
+   `ir_stage_notify` 内の他の actuation（force-on、
+   `apply_force_on_for_imm_broken`、drift correction）は全て
+   `ime_apply_should_defer()`（focus settle barrier）でゲートされて
+   いるが、eager warmup だけがこのチェックを経由せず単独で通過する。
+   さらに `reschedule_ime_refresh`（`runtime/mod.rs:604-609`）は
+   TsfNative で周期リフレッシュ自体を恒久停止するため（コメント
+   「周期リフレッシュに乗るのが唯一の force-ON 経路になった」）、
+   force-ON には他のトリガーも無い。
+4. **F4: eager warmup 自身が「開く」副作用を持つ、監査されていない
+   force-open 機構になっている。** `send_vk_dbe_hiragana_pair` →
+   `make_tsf_key_input` は `wScan = MapVirtualKeyW(0xF2,
+   MAPVK_VK_TO_VSC)` = 0x70（物理かなキー位置）付きで送信する
+   （scan=0 ではない）。`ime_controller.rs:143-149` のコメントは
+   `VK_DBE_HIRAGANA` が「開く」と「ひらがなに強制する」を1つの副作用に
+   束ねていることを明記しており（BUG-50 デッドロックの直接の前提。
+   MS-IME の ON キーはこれを理由に 2026-08-06 に他キーへ移行済み）、
+   BUG-15 追補7 は「**IME モードキーの注入は実 IME が確実に ON でない
+   限りしてはならない**」と、まさにこの scan 付き `VK_DBE_HIRAGANA`
+   注入の危険性を名指しで警告している（`kp_restore_kana_from_
+   half_width` は `effective_open()==false` のときこの注入を
+   スキップし IMC write のみに留める設計——BUG-34 追補4 で削除した
+   eisu ガード撤去とは無関係に、この安全則自体は他所で現に守られて
+   いる）。しかし `can_warmup()`（`tsf_gate.rs:348-350`）のゲート
+   `ime_on` は `applied_ime_on`——F2 により実質 `effective_open()`
+   の再ラベルに過ぎず、real/observed state を一切参照しない。
+   つまり eager warmup は「belief 上 ON」であることしか確認せずに、
+   このリポジトリが他所で明示的に禁止しているのと同じ危険な注入を
+   行っている。
+
+**波及（未確認、PLAUSIBLE）:** eager warmup が書く NATIVE conv bit は
+`report_conv_open_inference` の `NativeToggleShadowOff` 経路を通じて
+`ConvOpenInference(open=true)` として観測されうる。`check_drift_
+correction` は `trusted.open == desired` で早期 return するため
+（`platform_state.rs:760-762`）、belief=ON・実 GJI=OFF の乖離があっても
+warmup が書いた conv bit が「乖離なし」という偽の証拠を作り、drift
+correction 自身を沈黙させる可能性がある——ただし BUG-68 の実機ログは
+MS-IME（`needs_f2_probe()==false` で warmup 自体が no-op、`warmup_
+strategy.rs:133-135`）であり、GJI × TsfNative でのこの経路は実機での
+確認が無い。
+
+**このリポジトリの既知バグ全体を貫く根本パターンとの一致:** BUG-19
+（misread な conv が warmup で実体化しロックインされる）、BUG-33
+（belief を観測として書き戻す循環）、BUG-48（対称 SetOpen echo が
+ユーザー意図を上書き）、BUG-68（補正の出力が自分の再武装条件を生成）
+と同型の「**belief が evidence として再流入する**」欠陥の6例目。
+`ime-belief-architecture.md` の禁止パターン2（観測の偽装）は observer
+層を対象にしていたが、`mirror_applied_open` は actuation 完了の記録
+という**別の層**で同じ違反を犯している点が新しい。
+
+**現時点での評決（Opus premortem レビュー、実装なし）:**
+
+| 機構 | 評決 |
+|---|---|
+| eager warmup | KEEP、ただし SIMPLIFY（F2/F1 を先に直してからゲート強化。単独でゲートを足すと F3 が露見し即座に regression する） |
+| drift correction | KEEP AS-IS（唯一生きている機構。BUG-68 の cooldown は適切、`Blind::backoff` 未消費と `FocusChanged` が `gave_up_at` を破棄する点は軽微な既知の残課題） |
+| TsfNative force-on ブロック | REMOVE。ただし F2（`mirror_applied_open`）の修正が必須の代替——ブロックだけ消すと F2 は残ったまま force-on の唯一のワークアラウンドが消えるだけになる |
+| enforce-OFF ブロック（同一関数、対象外だったが同じ穴あり） | SIMPLIFY。`ime_apply_should_defer()` チェックが無く、`ime_apply_should_defer` 自身の doc コメントが呼び出し元としてこのブロックを名指ししているにも関わらず未実装 |
+
+**推奨する修正順序:** F2（`mirror_applied_open` を TsfNative で呼ばない
+か `Optimistic` に留める）→ F1（force-on ブロック削除、F2 修正後は
+不要になるはず）→ warmup のゲート強化。この順序を守らないと、
+どの1つを単独で直しても他の2つの死んだ機構が露見して regression する
+（BUG-34 追補4 の3ラウンド premortem と同じ「単独修正が別の未監査の
+穴を露出させる」構造）。
+
+**未実施:** 実装そのもの・実機再現・回帰テスト・修正案自体の premortem
+レビュー。次回、F2 の修正案を単独で設計し、これまでと同様 Opus に
+念入りな premortem レビューをかけてから着手する。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_post_focus_change_snapshot`、`ir_apply_drift_correction`）、
+`crates/awase-windows/src/runtime/mod.rs`（`apply_force_on_for_imm_broken`、
+`reschedule_ime_refresh`、`ime_apply_should_defer`）、
+`crates/awase-windows/src/output/mod.rs`（`send_eager_tsf_warmup`、
+`tsf_readiness`）、`crates/awase-windows/src/tsf/tsf_gate.rs`
+（`TsfReadiness::can_warmup`）、`crates/awase-windows/src/tsf/send.rs`
+（`send_vk_dbe_hiragana_pair`）、`crates/awase-windows/src/ime_controller.rs`
+（`GjiDirectStrategy::apply`）、`crates/awase-windows/src/runtime/
+focus_tracking.rs`（TsfNative hard pre-sync 除外）。
+
+**関連:** BUG-16（`apply_force_on_for_imm_broken` の settle 明け再試行
+無効化パターンの初出、本バグは同じ失敗が別経路で再現）、BUG-08/BUG-55
+（scan 付き IME モードキー注入が JIS かなロックを誤トグルするハザード
+の原型）、BUG-15 追補7（IME モードキー注入は実 IME 確実 ON 時のみ、
+という安全則の初出）、BUG-19（belief 実体化ロックインの原型）、BUG-33
+（belief を観測として書き戻す循環の原型）、BUG-48（対称 echo が
+ユーザー意図を上書きする同型パターン）、BUG-50（`VK_DBE_HIRAGANA` の
+open+conv 束縛副作用、MS-IME 側は既に移行済み）、BUG-68（自己再武装
+フィードバックループ、conv ビットの open/close 原理的区別不能性）、
+BUG-34 追補4（この調査の発端、eisu ガード撤去）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
+
+**実装済み（2026-08-21 追記）:** 上記「推奨する修正順序」に沿って
+ADR-098（[docs/adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)）
+の決定0・1-a・1-b・1-c・2・4・6-a・6-b・6-c を実装した。
+
+- **F2 対策（決定1-a/6-a）**: `mirror_applied_open`/`mirror_applied_open_with_ts`
+  （`ts==0` センチネルで `Optimistic`/`Confirmed` を切り替えていた設計）を撤去し、
+  `record_optimistic(open)`/`record_confirmed(open, at_ms)` に分離
+  （`state/platform_state.rs`）。`ir_post_focus_change_snapshot` は
+  TsfNative では `record_confirmed` を呼ばなくなった（`applied` は
+  `Unknown` のまま維持され、Stage1 の意図を Stage3 が上書きしない）。
+- **F1 対策（決定2）**: 到達不能だった TsfNative force-on ブロックを
+  `ir_post_focus_change_snapshot` から完全削除。ワークアラウンドではなく
+  F2 の根治で不要になった。
+- **F3/BUG-16 スパムガード対策（決定1-c）**: `apply_force_on_for_imm_broken`
+  のスパムガードを、偽装された `Confirmed{open:true}` に依存する早期
+  return から、`force_on_attempt_allowed`（`state/ime_actuation.rs`、
+  新設 `ForceOnRetryState`・`FORCE_ON_RETRY_COOLDOWN_MS=3000ms`）による
+  cooldown ベースの再試行許可判定に置き換え。`FocusChanged` で
+  `force_on_retry` もリセットされる。
+- **F4 対策（決定1-b）**: eager warmup の `ime_on` 入力を、生の belief/
+  `Option<bool>::unwrap_or(false)` ではなく `WarmupImeOn` 型
+  （`src/platform.rs`、3種のプライベートコンストラクタのみ）経由の
+  `resolve_warmup_ime_on`/`warmup_ime_on()`（`applied ?? belief` を
+  1箇所に集約）に統一。`TsfComposition::on_passthrough_key`/
+  `on_reinject_key` のシグネチャも `WarmupImeOn` を受け取るよう変更。
+- **enforce-OFF ブロック（決定4）**: 意図的に `ime_apply_should_defer()`
+  を経由させない設計として doc comment で明文化（追加の barrier は
+  導入しない）。
+- **決定6-b**: `architecture_guard.rs` に
+  `applied_state_recorders_call_sites_are_accounted_for` を新設し、
+  `record_optimistic`/`record_confirmed` の呼び出し箇所数
+  （1箇所・5箇所）を固定してレビュー漏れを機械検知。
+- **決定6-c**: `AppliedImeState::applied_open()` の doc comment を
+  「証拠用アクセサ」として書き換え、実利用箇所（3箇所）と
+  情報用途は `warmup_ime_on()` を使うべきという指針を明記。
+- **検証**: `cargo xwin check/build --tests/clippy --lib -D warnings` は
+  全てクリーン。`cargo test -p awase-windows --lib`（427件）、
+  `architecture_guard`（36件）、`golden_scenarios`（22件）、
+  `drift_correction_replay`（2件）、`intent_store_effective_open`（8件）、
+  `journal_replay`（1件）、`layer_boundary_guard`（8件）、いずれも
+  全件成功。**Windows 実機での検証・ソークは未実施**（クロスコンパイル
+  環境での静的検証のみ）。
+- **未実施のまま残るもの**: 決定3-c（GJI warmup キーの再選定実験、
+  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、`docs/experiments.md` へ先送り）、
+  決定4-b（enforce-OFF を settle-retry 化する代替設計）、および
+  `focus_tracking.rs`/`key_pipeline.rs` に残る軽微な belief-laundering
+  箇所（コメント修正のみで動作は維持、ADR-098 決定5参照）。

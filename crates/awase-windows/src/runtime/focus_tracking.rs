@@ -396,8 +396,12 @@ impl Runtime {
             }
         }
 
-        // Imm32Unavailable (Chrome 等) のみ: VK_KANJI はトグルのため、desired=true で
-        // キャッシュが ON なら applied=true に先同期して冗長な VK_KANJI を防ぐ。
+        // 非 TsfNative（Standard/ImmCross/Plain/Unknown）: VK_KANJI はトグルのため、
+        // desired=true でキャッシュが ON なら applied=true に先同期して冗長な
+        // VK_KANJI を防ぐ（ADR-098 決定5: 旧コメント「Imm32Unavailable (Chrome 等)
+        // のみ」は実際のガード条件 `!is_effectively_tsf_native` と食い違っていた
+        // ため訂正——`Standard`+MS-IME の `CHAIN_IMM_CROSS_THEN_KANJI` が今も
+        // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。
         // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
         // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
         if !crate::focus::class_names::is_effectively_tsf_native(
@@ -406,7 +410,7 @@ impl Runtime {
         ) {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
-                self.platform_state.ime.mirror_applied_open(true, tick_ms);
+                self.platform_state.ime.record_confirmed(true, tick_ms.0);
                 log::debug!(
                     "[focus] Imm32Unavailable hard pre-sync applied=true \
                      (prevent spurious VK_KANJI on first character key)"

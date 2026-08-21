@@ -125,6 +125,24 @@ pub(crate) unsafe fn send_ime_control(
     timeout_ms: u32,
 ) -> Option<usize> {
     let mut result = 0usize;
+    // BUG-34 横展開 Step0-c: SMTO_ABORTIFHUNG は呼び出し中に相手がハングし始めた
+    // 場合には効かず、宣言 timeout_ms を大幅に超えて HungAppTimeout(~5s)までブロック
+    // しうる。実測msを記録して SendHealth のサーキットブレーカへフィードする
+    // (このクレートの全 SendMessageTimeoutW 呼び出しは本関数を経由する唯一の
+    // チョークポイントのため、ここ1箇所で全サイトを計測できる)。
+    //
+    // BUG-34 横展開レビュー指摘: conv_mutation_seq（win32::send_input_safe が
+    // ゲート）は SendInput 経由の conv 変更しか捕捉しておらず、IMC write
+    // （`set_ime_romaji_mode_for_hwnd` 等が使う IMC_SETCONVERSIONMODE）を
+    // 1つも数えていなかった——旧last_send fenceが「本来検出すべき自己出力を
+    // 1つも捕捉できていなかった」のと同型の欠陥が別経路で再発していた。
+    // IMC_SETCONVERSIONMODE はこの関数（唯一のチョークポイント）を必ず通るため、
+    // ここでも bump する（成功/失敗を問わない——メッセージが実際に処理されたかは
+    // 判定できないため、安全側に倒して常に「変わった可能性がある」として扱う）。
+    if cmd == IMC_SETCONVERSIONMODE {
+        crate::conv_mutation::bump();
+    }
+    let start_ms = crate::hook::current_tick_ms();
     // SAFETY: ime_wnd は呼出元が ImmGetDefaultIMEWnd で取得した有効な IME ウィンドウハンドル。
     //         SMTO_ABORTIFHUNG によりハングしたスレッドで無期限にブロックしない。
     //         result はスタック上の有効な usize でポインタ渡しが安全。
@@ -139,5 +157,7 @@ pub(crate) unsafe fn send_ime_control(
             Some(&raw mut result),
         )
     };
+    let end_ms = crate::hook::current_tick_ms();
+    crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
     (ok.0 != 0).then_some(result)
 }

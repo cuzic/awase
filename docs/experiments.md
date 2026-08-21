@@ -487,3 +487,39 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
   対策が失われた点は未検証のリスクとして known-bugs.md に明記した。次に
   チョード直後のかな入力破壊が再発したら、まずこのエントリと BUG-15/BUG-25/
   BUG-58 を確認すること。
+
+---
+
+## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、事前登録・未実施）
+
+**背景**: BUG-69（`docs/known-bugs.md`）/ [ADR-098](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
+決定3 の調査で、eager TSF warmup（`send_eager_tsf_warmup`、
+`output/mod.rs`）が `send_vk_dbe_hiragana_pair` 経由で物理かなキー位置
+（scan=0x70）付きの `VK_DBE_HIRAGANA` を送信していることが判明した。
+`ime_controller.rs` のコメントは `VK_DBE_HIRAGANA` が「IME を開く」と
+「ひらがなに強制する」を1つの副作用に束ねていることを明記しており
+（BUG-50 デッドロックの直接の前提。MS-IME 側の ON キーは同じ理由で
+2026-08-06 に他キーへ移行済み）、BUG-15 追補7 は「IME モードキーの注入は
+実 IME が確実に ON でない限りしてはならない」とこの注入パターン自体の
+危険性を警告している。ADR-098 決定3 は現状の eager warmup を KEEP（他の
+2機構と違い唯一生きている実効的な cold-start 対策のため）とした上で、
+将来的に `VK_IME_ON`（open のみ、conv には触れない）へ置き換えられれば
+BUG-50 系のリスクを構造的に消せるのではないか、という代替案を残した。
+
+**未実施の理由**: `VK_IME_ON` が TSF composition context の cold-start
+（BUG-02 系）を `VK_DBE_HIRAGANA` と同等に解消できるかは実機での検証が
+必要で、ADR-098 のスコープ外として先送りした（decision1〜2 の本体修正を
+優先）。
+
+**このエントリは事前登録**。実機実験に着手する際は以下を測定・記録すること:
+
+| 項目 | 合格基準（案） | 意味 |
+| --- | --- | --- |
+| WezTerm/Windows Terminal で `VK_IME_ON` 送信後の初回入力リテラル化 | 発生しない（`VK_DBE_HIRAGANA` と同等） | cold-start 対策として代替になるか |
+| conv モード（かな/ローマ字）への意図しない影響 | 無し | `VK_DBE_HIRAGANA` が持つ「ひらがなに強制する」副作用が消えることの確認 |
+| BUG-50 系デッドロックの再現有無 | 再現しない | 置き換えの本来の目的（危険な副作用の除去）が達成されているか |
+
+**学び（暫定）**: 「唯一生きている機構だから触らない」という判断（決定3
+KEEP）と、「触るなら安全な代替キーに変えたい」という改善方向は両立する。
+前者は今回の BUG-69 修正のスコープ、後者は実機検証を要する別トピックとして
+分離して記録することで、どちらも見失わずに残せる。

@@ -351,6 +351,17 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
     ) {
         return;
     }
+    // BUG-34 横展開 Step0-c/レビュー: set_ime_romaji_mode_for_target_blocking は
+    // SendMessageTimeoutW ベースで同期ブロックしうる（フルな offload+hwnd 統一化は
+    // E として保留中）。当初ここに SendHealth::blocking_allowed の gate を入れて
+    // いたが、この関数はフリー関数で Runtime にアクセスできず、スキップ時に
+    // 再試行をスケジュールする手段が無かった。ブレーカのcooldown中にopen遷移が
+    // 重なると、ROMAN ビットが**次にユーザーが明示的に開閉トグルするまで**
+    // 補完されないまま放置される——「ブロックする」を「静かに間違った状態のまま
+    // 固着する」に置き換えるだけで、後者は診断ログも残らず前者より発見しにくい。
+    // 再試行の仕組み（E の一部として、hwnd 解決統一と合わせて実機ソーク前提で
+    // 設計する必要がある）が無いまま gate だけ入れるのは見送り、元の常時試行に
+    // 戻す。
     let focus_gen = view.focus.focus_gen;
     // SAFETY: capture_blocking / set_ime_romaji_mode_for_target_blocking はいずれも
     //         Win32 API を呼ぶ unsafe fn。`ImeOpenStrategy::apply` の呼び出しチェーンは

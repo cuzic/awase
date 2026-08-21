@@ -216,6 +216,38 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// ImmCross 以外の機構の同期 write。view は完了時点の状態から作り直す
 /// （旧 `apply_skipping_imm` が `with_app` 内で `shadow_ime_control_view()` を
 /// 作り直していたのと同じ）。
+///
+/// # BUG-34 横展開 E-prep: 残存する同期ブロッキング（意図的に未解消）
+///
+/// この関数は `with_app`（`RUNTIME` の排他 borrow）を握ったまま
+/// `apply_mechanism` → `romaji_pre_write` を呼ぶ。`romaji_pre_write` が
+/// `SendMessageTimeoutW` ベースの `set_ime_romaji_mode_for_target_blocking` を
+/// 呼ぶ経路では、`run_open_chain_async`（async chain の中、`spawn_local` 経由）に
+/// いてもエンジンスレッドを同期的に、かつ `RUNTIME` borrow を握ったままブロック
+/// しうる（round-2 premortem で発見: D を非同期化しても ImmCross が `Failed` を
+/// 返しここへフォールスルーする限りこの露出は残る）。
+///
+/// **完全な修正（この呼び出しを `offload` で本当にワーカースレッドへ追い出す）は
+/// 意図的にここでは行っていない。** `apply_mechanism` が受け取る
+/// `&ImeControlView<'_>` は `Runtime` から借用したライフタイム付きの値であり、
+/// これを `with_app` の外へ持ち出すには「捕獲した hwnd/focus_gen だけを渡して
+/// ブロッキング write だけを外に出し、その後に別の view で strategy apply を
+/// 再実行する」という 2 段階へ分割する必要がある。これは view1（捕獲時点）と
+/// view2（write 完了後の strategy apply 時点）の間に新しい spawn-to-apply の
+/// 窓を作る変更であり、E（`romaji_pre_write` の hwnd 解決統一、タスク #108）が
+/// 実機ソークを前提に慎重に対処しようとしている問題そのもの。ソーク無しに
+/// ここだけ先走って分割すると、BUG-34 追補と同型の「fence 無しの新しい race」を
+/// 作り込む恐れがあるため、#108 の前提条件が揃うまで見送る。
+///
+/// **代わりに今回入れた緩和策**: `romaji_pre_write` 自体
+/// （`ime_controller.rs`）が Step0-c の `SendHealth::blocking_allowed` を見て
+/// おり、直近で slow 判定が出た後の cooldown 期間中はこの書き込みを発行しない
+/// （degrade）。加えて `with_app_or_repost_with`（Step0-b）により、この関数が
+/// `RUNTIME` borrow を握ってブロックしている間に他の完了メッセージ
+/// （`WM_ASYNC_IME_APPLY_COMPLETE` 等）が届いても、以前のように黙って
+/// 捨てられることはなく、次のメッセージループ周回で確実に再処理される。
+/// 「初回のブロックそのもの」は残るが、「ブロック中に他の完了が永久に
+/// 失われる」という round-2 の指摘した最悪の帰結は防げている。
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let view = app.shadow_ime_control_view();

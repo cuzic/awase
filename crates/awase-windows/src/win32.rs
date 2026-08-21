@@ -5,7 +5,9 @@
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
 };
@@ -87,12 +89,42 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
     }
 }
 
+/// `send_input_safe` に渡された `INPUT` が conv-mode ワードを変えうる VK の
+/// キーボードイベントかどうかを判定する（BUG-34 横展開 Step0-a）。
+///
+/// Unicode モード（`KEYEVENTF_UNICODE`）の `INPUT` は `wVk` が常に 0 で
+/// 意味を持たない（`wScan` が UTF-16 code unit を運ぶ）ため対象外にする。
+fn input_may_mutate_conv(input: &INPUT) -> bool {
+    if input.r#type != INPUT_KEYBOARD {
+        return false;
+    }
+    // SAFETY: r#type == INPUT_KEYBOARD を確認済みなので Anonymous.ki は
+    //         このユニオンの有効なアクティブフィールドである。
+    let ki = unsafe { input.Anonymous.ki };
+    if ki.dwFlags.contains(KEYEVENTF_UNICODE) {
+        return false;
+    }
+    crate::vk::vk_may_mutate_conv(awase::types::VkCode(ki.wVk.0))
+}
+
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
+///
+/// BUG-34 横展開 Step0-a: このクレートの全 `SendInput` 呼び出しは本関数を
+/// 経由する唯一のチョークポイントであるため、ここで conv-mode ワードを
+/// 変えうる VK の送信を検知して `conv_mutation::bump()` を呼ぶ
+/// （`send_eager_tsf_warmup` 等の名前付きラッパー単位で個別に列挙すると、
+/// `send_ime_mode_key` のようにユーザー設定 VK を送る関数を漏れなく数えられない
+/// ——`vk::vk_may_mutate_conv` の doc 参照）。もう1つのゲート
+/// （`imm::send_ime_control` の `IMC_SETCONVERSIONMODE` 経路）と合わせて
+/// `conv_mutation::bump()` の doc 参照。
 ///
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
 #[must_use]
 pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
+    if inputs.iter().any(input_may_mutate_conv) {
+        crate::conv_mutation::bump();
+    }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
     //         SendInput はスライスの範囲外を読まない。
@@ -176,5 +208,76 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
                 thread_id: 0,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{input_may_mutate_conv, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT_0, INPUT_MOUSE, KEYBDINPUT, MOUSEEVENTF_MOVE, MOUSEINPUT, VIRTUAL_KEY,
+    };
+
+    fn key_input(
+        vk: u16,
+        flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
+    ) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    fn mouse_input() -> INPUT {
+        INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: 0,
+                    dwFlags: MOUSEEVENTF_MOVE,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    /// 通常のキーボード INPUT で conv-mutating な VK（VK_DBE_HIRAGANA）なら true。
+    #[test]
+    fn keyboard_input_with_conv_mutating_vk_is_true() {
+        let input = key_input(0xF2, Default::default()); // VK_DBE_HIRAGANA
+        assert!(input_may_mutate_conv(&input));
+    }
+
+    /// 通常のキーボード INPUT で open-only な VK（VK_IME_ON）なら false。
+    #[test]
+    fn keyboard_input_with_open_only_vk_is_false() {
+        let input = key_input(0x16, Default::default()); // VK_IME_ON
+        assert!(!input_may_mutate_conv(&input));
+    }
+
+    /// `KEYEVENTF_UNICODE` が立っている場合、`wVk` に conv-mutating な値が
+    /// たまたま入っていても対象外（wVk は意味を持たず、常に 0 で送られる想定だが、
+    /// 万一非ゼロでも安全側＝false であることを固定する）。
+    #[test]
+    fn unicode_mode_input_is_false_even_if_wvk_looks_conv_mutating() {
+        let input = key_input(0xF2, KEYEVENTF_UNICODE); // VK_DBE_HIRAGANA だが Unicode モード
+        assert!(!input_may_mutate_conv(&input));
+    }
+
+    /// マウス INPUT（`INPUT_KEYBOARD` ではない）は常に false。
+    #[test]
+    fn mouse_input_is_false() {
+        assert!(!input_may_mutate_conv(&mouse_input()));
     }
 }

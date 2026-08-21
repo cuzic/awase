@@ -708,6 +708,37 @@ ADR-084 の INV-1〜11、ADR-086 の INV-12〜19 を継承し、INV-20 から採
     (c) を評価しないと明示する（§7 round3 M/シナリオ8。曖昧なまま実装すると
     BUG-19 が再発しうる）。
 
+    **前提の訂正（2026-08-21、[ADR-098](098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
+    / BUG-69 の調査で判明）**: 上記「`AppliedImeState` が `Confirmed` に
+    遷移する契機が無い」という前提は**誤り**。`ir_post_focus_change_snapshot`
+    （`ime_refresh.rs`）冒頭の `mirror_applied_open(effective_open())` が、
+    `FocusChanged` が `applied` を `Unknown` にリセットした**直後、同一
+    tick 内**で、実際には何も apply していないのに `applied` を
+    `Confirmed{open: belief}` へ偽装確定させている。この偽装は
+    `apply_force_on_for_imm_broken`（BUG-16 の修正）を TsfNative で恒久的に
+    無効化する副作用も持つ（詳細は ADR-098）。**Phase 3（実配線）に着手
+    する前に、ADR-098 決定1（この偽装を止める修正）を先に適用し、本節の
+    (c) の扱いを修正後の実態に合わせて再検証すること。** 本訂正は上記の
+    「曖昧なまま実装すると BUG-19 が再発しうる」という安全側の判断自体は
+    覆さない——前提が誤っていても (c) を評価しないという結論は変わらないが、
+    その理由づけ（「遷移する契機が無いから」）は成立しないため、Phase 3
+    設計時に別の根拠で再確認する必要がある。
+
+    **再訂正（2026-08-21、ADR-098 決定0/1 実装完了・上記訂正への補足）**:
+    上記訂正は `mirror_applied_open`（F2）だけを「`Confirmed` へ遷移する
+    契機」として記述しているが、これは正確ではない。F2 とは独立に、
+    実際に actuation を試みた経路（`record_ime_apply_result`、旧
+    `mirror_applied_open_with_ts` 経由）も以前から `applied` を
+    `Confirmed` へ遷移させている——ただし `Failed` 時に
+    `Confirmed{open: !open}` という非対称な値を書く既知の癖がある（本 ADR
+    「既知の限界」節、ADR-098「既知の限界・未検証事項」節、両方に記載）。
+    ADR-098 決定1-a の実装（TsfNative では `record_confirmed` を呼ばない）
+    により、F2 由来の偽装は解消されたが、**`record_ime_apply_result` 由来の
+    `Confirmed` 遷移そのものは（F2 とは無関係に）引き続き存在する**——
+    決定1適用後は「実際に attempt した結果として」正しく書かれるように
+    なった、という違いである。「決定1を適用すれば `Confirmed` に遷移する
+    契機が完全に無くなる」という誤読を避けること。
+
 - **INV-25（force-write は ADR-086 §2.1 の定義に従う）**: `conv_mode_policy = force`
   時の open/close 軸 force-write（`consume_force_open_pending`）が要求する
   `WarrantBasis` は `ExplicitUserIntent` / `SafetyValve` / `HeuristicGuess` /
@@ -953,12 +984,27 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     | 4 | `key_pipeline.rs:741` | `apply_ime_open_with_belief(false, None, belief)` | observation-based correction（`EngineSync::DirectInput`、ObservedEisu 検出） | 空（`None`） | — |
     | 5 | `key_pipeline.rs:941` | `apply_skipping_imm` | shadow toggle OFF、ImmCross 失敗フォールバック | 実値 | — |
     | 6 | `mod.rs:733`（`force_on_and_correct_romaji`） | `apply_ime_open_with_view(true, &view, belief)` | force-write（ImmBrokenForceOn / ForcePolicyResend 共用） | 空（`build_ime_control_view(None)`、GJI `shadow_on` スキップを**意図的に**無効化する既存仕様、コード内 N2 コメント参照） | — |
-    | 7 | `mod.rs:890`（`try_force_on_bootstrap`） | `apply_ime_open_with_belief(true, None, belief)` | force-write（Bootstrap） | 空 | — |
+    | 7 | `mod.rs:890`（`try_force_on_bootstrap`） | ~~`apply_ime_open_with_belief(true, None, belief)`~~ → `run_open_chain_async`（2026-08-19、BUG-34 横展開 D、下記注参照） | force-write（Bootstrap） | 空 | — |
     | 8 | `ime_refresh.rs:499`（`ir_post_focus_change_snapshot`） | `apply_ime_open_with_applied(true, None)` | force-write（GJI TsfNative 入場、shadow_on を意図的に無視） | 空 | — |
     | 9 | `ime_refresh.rs:534` | `set_ime_open(false)` | focus change 強制 OFF（IMM32 のみ） | — | — |
     | 10 | `ime_refresh.rs:727` | `set_ime_open(desired)` | drift correction（ImmCross） | — | — |
     | 11 | `ime_refresh.rs:740` | `apply_ime_open_with_belief(desired, None, belief)` | drift correction（非 ImmCross = Blacklist/TsfNative） | 空 | — |
     | — | `platform.rs:728`（trait `apply_ime_open`）/ `src/platform.rs:210` | — | **呼び出し元ゼロ（死んだ入口）** | — | — |
+
+    **訂正（2026-08-21、[ADR-098](098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
+    決定2 実装）**: 上表 #8（`ime_refresh.rs:499` の GJI TsfNative 強制 ON
+    force-write）は、それを発火させる条件 `applied_ime_on &&
+    new_profile_is_tsf_native && !ime_apply_should_defer()` が構造的に
+    常に false（BUG-69 F1、到達不能）だったことが判明し、ADR-098 決定2 で
+    ブロックごと撤去した。`apply_ime_open_with_applied`（内部委譲先、
+    `platform.rs:1305`）も呼び出し元ゼロになったため削除済み。**上表 #8 は
+    もはや存在しない**——実 actuation 入口は現在10経路（#8 を除く）+
+    呼び出し元ゼロの死んだ入口1つ。下記「2026-08-19 訂正」時点での
+    `apply_ime_open_with_belief(` 直接呼び出し3件（#4/#11 +
+    `apply_ime_open_with_applied` 内部委譲）も、内部委譲そのものの消滅で
+    2件（#4/#11 のみ）へさらに減る。`architecture_guard.rs` の
+    `ENTRY_POINTS`（`.apply_ime_open_with_belief(` 期待値）もこれに合わせて
+    3→2 に更新済み。
 
     `apply_ime_open_with_belief(` の直接呼び出しは4件（上表 #4
     `key_pipeline.rs:741` / #7 `mod.rs:890` / #11 `ime_refresh.rs:740` +
@@ -971,6 +1017,25 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     §1.4 item 3 が挙げた drift correction・`EngineSync::DirectInput` は上表 #4/#11
     に対応する。各経路を force-write / observation-based correction のどちらに
     分類した上で warrant 必須化の対象を決める。
+
+    **訂正（2026-08-19、BUG-34 横展開 D）**: 上表 #7（`try_force_on_bootstrap`）は
+    `docs/known-bugs.md` BUG-34（`SendMessageTimeoutW(SMTO_ABORTIFHUNG)` が
+    呼び出し中に相手がハングし始めた場合には効かず、宣言タイムアウトを大幅に
+    超えて `HungAppTimeout`(~5s) までエンジンスレッドをブロックしうる）の横展開
+    調査で、`apply_ime_open_with_belief` → `ImeController::apply`（同期 chain）→
+    `ImmCrossProcessStrategy::apply` → `set_ime_open_cross_process`（150ms 宣言
+    タイムアウトの `SendMessageTimeoutW`）という経路が、ADR-089 §9-21 の訂正
+    どおり Standard プロファイルでも到達しうる同期ブロッキングサイトだったと
+    判明した。`executor.rs` の ImmCross async path（上表 #2）と同じ
+    `run_open_chain_async` へ委譲するよう変更し、`.apply_ime_open_with_belief(`
+    の直接呼び出しは4件→3件（#4/#11 + `apply_ime_open_with_applied` 内部委譲）に
+    減った。`run_open_chain_async(` の呼び出し元は2件→3件（executor.rs /
+    key_pipeline.rs / mod.rs）に増えた。分類は force-write（Bootstrap）のまま
+    変わらない——移行したのは同期/非同期の別であり、warrant の要否判断（A-2 で
+    倒すのは最後、ADR-090 §4.9）には影響しない。回帰テストは
+    `tests/architecture_guard.rs` の `actuation_target_capture_call_sites_are_accounted_for`
+    / `ime_open_actuation_entry_points_are_accounted_for` /
+    `async_imm_cross_actuation_goes_through_the_single_chain_entry` を更新済み。
 15. `is_eligible_for_ime_force_on()`（`state/platform_state.rs:478`、
     `belief.is_japanese_ime() && effective_open()`）の判定を `issue_open_warrant()`
     経由に差し替える（INV-25、P16）。呼び出し元は3箇所
@@ -982,8 +1047,10 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     （INV-28、§7 round3 Codex シナリオ6、Critical。**前提を実装記録 §8.10 で
     訂正済み**、以下 (a)(b) に分割）。
     - **16(a)（本 Phase で実施、挙動変更なし）**: force-write 経路
-      （`force_on_and_correct_romaji` = `mod.rs:733`、GJI TsfNative 入場
-      = `ime_refresh.rs:499`）は `build_ime_control_view(None)` 経由で
+      （`force_on_and_correct_romaji` = `mod.rs:733`。~~GJI TsfNative 入場
+      = `ime_refresh.rs:499`~~ ——2026-08-21、ADR-098 決定2 で当該ブロック
+      ごと撤去済み。到達不能だったため、この訂正で bypass 対象から外れても
+      挙動は変わらない）は `build_ime_control_view(None)` 経由で
       `shadow_on` が常に空（`false`）になり、`GjiDirectStrategy::apply`
       （`ime_controller.rs:110`）の no-op skip を最初から bypass 済みで
       あることを回帰テストとして固定する。

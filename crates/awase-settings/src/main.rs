@@ -238,6 +238,7 @@ fn main() -> eframe::Result<()> {
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
     let journal_path = arg_value(args, "--journal").map(PathBuf::from);
     let diagnostics_path = arg_value(args, "--diagnostics").map(PathBuf::from);
+    let app_log_path = arg_value(args, "--applog").map(PathBuf::from);
     let ime_kind = arg_value(args, "--ime-kind")
         .and_then(|s| s.parse().ok())
         .unwrap_or(awase_windows::bug_report::BugReportImeKind::Unknown);
@@ -245,6 +246,7 @@ fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {
         journal_path,
         ime_kind,
         diagnostics_path,
+        app_log_path,
     }
 }
 
