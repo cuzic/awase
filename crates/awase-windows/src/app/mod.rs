@@ -1,7 +1,7 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 mod bootstrap;
-pub(crate) use bootstrap::detect_conflicting_software;
 pub(crate) use bootstrap::log_path as bug_report_log_path;
+pub(crate) use bootstrap::{detect_conflicting_software, thumb_shift_faces_enabled_for};
 
 use std::path::PathBuf;
 

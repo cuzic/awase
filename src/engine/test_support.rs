@@ -53,5 +53,7 @@ pub(crate) fn make_layout() -> YabLayout {
         left_thumb,
         right_thumb,
         shift: YabFace::new(),
+        left_thumb_shift: YabFace::new(),
+        right_thumb_shift: YabFace::new(),
     }
 }

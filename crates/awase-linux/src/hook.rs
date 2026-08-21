@@ -89,7 +89,8 @@ const fn is_passthrough(keycode: u32) -> bool {
 }
 
 /// evdev キーコードから修飾キー分類を生成する
-const fn classify_modifier(keycode: u32) -> Option<ModifierKey> {
+#[must_use]
+pub const fn classify_modifier(keycode: u32) -> Option<ModifierKey> {
     match keycode {
         42 | 54 => Some(ModifierKey::Shift), // KEY_LEFTSHIFT, KEY_RIGHTSHIFT
         29 | 97 => Some(ModifierKey::Ctrl),  // KEY_LEFTCTRL, KEY_RIGHTCTRL

@@ -894,6 +894,10 @@ fn make_engine_with_space_thumb(ignore_composing_guard: bool, shift_literal: boo
         ConfirmMode::Wait,
         30,
     );
+    // 既定 false（安全側）。Space 親指キーは Shift 修飾キーではないため true でよい
+    // （`test_shift_space_literal_disabled_reaches_thumb_shift_face` 等、複合面へ
+    // 到達する経路のテストが依存する）。
+    engine.set_thumb_shift_faces_enabled(true);
     engine.set_space_thumb_config(
         Some(VK_SPACE),
         TextKeyConfig {
@@ -1027,6 +1031,28 @@ fn test_shift_space_enters_pending_when_literal_disabled() {
     assert_pending(&result);
 }
 
+#[test]
+fn test_shift_space_literal_enabled_blocks_thumb_shift_face() {
+    let mut engine = make_engine_with_space_thumb(true, true);
+    engine.layout.left_thumb_shift.insert(POS_A, lit('空'));
+
+    let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
+    let result = engine.on_event(Ev::down(VK_SPACE).build());
+    assert!(!result.consumed);
+}
+
+#[test]
+fn test_shift_space_literal_disabled_reaches_thumb_shift_face() {
+    let mut engine = make_engine_with_space_thumb(true, false);
+    engine.layout.left_thumb_shift.insert(POS_A, lit('空'));
+
+    let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
+    let result = engine.on_event(Ev::down(VK_SPACE).at(10_000).build());
+    assert_pending(&result);
+    let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
+    assert_single_char(&result, '空');
+}
+
 // ── Enter 親指キーのフォールバック（left_thumb_key/right_thumb_key = VK_RETURN） ──
 
 /// 左親指キーに Enter を割り当て、`enter_thumb_vk`/フラグを明示設定したエンジンを返す。
@@ -1144,6 +1170,16 @@ fn test_shift_enter_enters_pending_when_literal_disabled() {
     let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
     let result = engine.on_event(enter_thumb_down_event(0));
     assert_pending(&result);
+}
+
+#[test]
+fn test_shift_enter_literal_enabled_blocks_thumb_shift_face() {
+    let mut engine = make_engine_with_enter_thumb(true, true);
+    engine.layout.left_thumb_shift.insert(POS_A, lit('改'));
+
+    let _ = engine.on_event(Ev::down(VK_LSHIFT).build());
+    let result = engine.on_event(enter_thumb_down_event(10_000));
+    assert!(!result.consumed);
 }
 
 #[test]
@@ -1447,6 +1483,225 @@ fn test_shift_released_resumes_normal() {
     // Shift が離された後は通常の変換が行われる（保留になる）
     let result = engine.on_event(Ev::down(VK_A).build());
     assert_pending(&result);
+}
+
+// ── 親指小指シフト面 ──
+
+fn make_engine_with_thumb_shift_faces() -> TestHarness {
+    let mut layout = make_layout();
+    layout.shift.insert(POS_A, lit('ウ'));
+    layout.shift.insert(POS_S, lit('シ'));
+    layout.left_thumb_shift.insert(POS_A, lit('左'));
+    layout.right_thumb_shift.insert(POS_A, lit('右'));
+    let mut engine = NicolaFsm::new(
+        layout,
+        VK_NONCONVERT,
+        VK_CONVERT,
+        100,
+        ConfirmMode::Wait,
+        30,
+    );
+    // `thumb_shift_faces_enabled` は安全側で既定 false（Platform 層が起動直後に
+    // 実際の判定結果を設定する設計、nicola_fsm.rs のフィールド doc 参照）。
+    // 実機の Platform 層と同じく、ここで明示的に true を設定する
+    // （このヘルパーの親指キーはどちらも Shift ではないため true でよい）。
+    engine.set_thumb_shift_faces_enabled(true);
+    TestHarness {
+        tracker: input_tracker::InputTracker::new(),
+        engine,
+    }
+}
+
+fn assert_single_char(resp: &Resp, expected: char) {
+    resp.assert_consumed();
+    assert!(
+        resp.actions.len() == 1 && matches!(resp.actions[0], KeyAction::Char(ch) if ch == expected),
+        "expected single char {expected:?}, got {:?}",
+        resp.actions
+    );
+}
+
+#[test]
+fn test_thumb_shift_face_order_shift_then_left_thumb_then_char() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
+    assert_single_char(&result, '左');
+}
+
+#[test]
+fn test_thumb_shift_face_order_left_thumb_then_shift_then_char() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_NONCONVERT).build());
+    engine.on_event(Ev::down(VK_LSHIFT).at(10_000).build());
+    let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
+    assert_single_char(&result, '左');
+}
+
+#[test]
+fn test_thumb_shift_face_right_thumb_and_right_shift() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_RSHIFT).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(10_000).build());
+    let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
+    assert_single_char(&result, '右');
+}
+
+#[test]
+fn test_thumb_shift_face_both_thumbs_prefers_left() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(20_000).build());
+    engine.state = EngineState::Idle;
+    let event = Ev::down(VK_A).at(30_000).build();
+    let phys = engine.tracker.process(&event);
+    let result = engine.engine.on_event(event, &phys);
+    assert_single_char(&result, '左');
+}
+
+#[test]
+fn test_thumb_shift_face_falls_back_to_thumb_face_when_position_undefined() {
+    for thumb_first in [false, true] {
+        let mut engine = make_engine_with_thumb_shift_faces();
+        if thumb_first {
+            engine.on_event(Ev::down(VK_NONCONVERT).build());
+            engine.on_event(Ev::down(VK_LSHIFT).at(10_000).build());
+        } else {
+            engine.on_event(Ev::down(VK_LSHIFT).build());
+            engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+        }
+        let result = engine.on_event(Ev::down(VK_S).at(20_000).build());
+        assert_single_char(&result, 'あ');
+    }
+}
+
+#[test]
+fn test_thumb_shift_face_none_suppresses_without_thumb_fallback() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.layout.left_thumb_shift.insert(POS_S, YabValue::None);
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    let result = engine.on_event(Ev::down(VK_S).at(20_000).build());
+    result.assert_consumed();
+    assert!(matches!(result.actions.as_slice(), [KeyAction::Suppress]));
+}
+
+#[test]
+fn test_thumb_shift_face_only_key_counts_as_layout_key() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.layout.left_thumb_shift.insert(POS_D, lit('独'));
+    assert!(engine.is_layout_key(Some(POS_D)));
+}
+
+#[test]
+fn test_thumb_shift_dynamic_shift_release_uses_thumb_face() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    engine.on_event(Ev::up(VK_LSHIFT).at(20_000).build());
+    let result = engine.on_event(Ev::down(VK_A).at(30_000).build());
+    assert_single_char(&result, 'を');
+}
+
+#[test]
+fn test_thumb_shift_faces_disabled_for_shift_thumb_key() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.set_thumb_shift_faces_enabled(false);
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    let result = engine.on_event(Ev::down(VK_A).at(20_000).build());
+    assert_single_char(&result, 'を');
+}
+
+/// ADR-097 テストケース6: 複合面・Shift面のどちらにも定義が無いキーは、Normal面に
+/// 定義があって `is_layout_key` が true になっていても、Shift 押下中は
+/// `shift_face_reduce` の未定義フォールバックにより PassThrough する
+/// （F1 回帰ガード。`classify_idle_intent` の Shift plane ガードを
+/// `!self.thumb_shift_face_defines(pos)` ではなく誤って `lookup_face(...).is_some()`
+/// 型の条件に戻すと、この経路が ConfirmMode 側へ逸れて通常面の仮名を出力してしまう）。
+#[test]
+fn test_shift_held_key_absent_from_shift_and_compound_face_passes_through() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    // POS_D は make_engine_with_thumb_shift_faces() のどの面にも定義が無い
+    // （tests.rs 上部の VK_D コメント参照）。Normal 面にだけ追加して
+    // is_layout_key(POS_D) を true にする一方、Shift 面・複合面には入れない。
+    engine.layout.normal.insert(POS_D, lit('で'));
+    engine.on_event(Ev::down(VK_LSHIFT).build());
+    engine
+        .on_event(Ev::down(VK_D).at(10_000).build())
+        .assert_pass_through();
+}
+
+#[test]
+fn test_thumb_shift_pending_char_thumb_exits_use_same_face() {
+    let mut by_char2 = make_engine_with_thumb_shift_faces();
+    by_char2.layout.left_thumb_shift.insert(POS_D, lit('左'));
+    by_char2.layout.left_thumb_shift.insert(POS_S, lit('左'));
+    by_char2.on_event(Ev::down(VK_LSHIFT).build());
+    by_char2.on_event(Ev::down(VK_D).at(10_000).build());
+    by_char2.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
+    let by_char2_result = by_char2.on_event(Ev::down(VK_S).at(30_000).build());
+    assert!(
+        by_char2_result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('左'))),
+        "char2 arrival should emit left thumb shift face: {:?}",
+        by_char2_result.actions
+    );
+
+    let mut by_thumb_key_up = make_engine_with_thumb_shift_faces();
+    by_thumb_key_up
+        .layout
+        .left_thumb_shift
+        .insert(POS_D, lit('左'));
+    by_thumb_key_up.on_event(Ev::down(VK_LSHIFT).build());
+    by_thumb_key_up.on_event(Ev::down(VK_D).at(10_000).build());
+    by_thumb_key_up.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
+    let by_thumb_key_up_result = by_thumb_key_up.on_event(Ev::up(VK_NONCONVERT).at(30_000).build());
+    assert!(
+        by_thumb_key_up_result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('左'))),
+        "thumb keyup exit should emit left thumb shift face: {:?}",
+        by_thumb_key_up_result.actions
+    );
+
+    let mut by_timeout = make_engine_with_thumb_shift_faces();
+    by_timeout.layout.left_thumb_shift.insert(POS_D, lit('左'));
+    by_timeout.on_event(Ev::down(VK_LSHIFT).build());
+    by_timeout.on_event(Ev::down(VK_D).at(10_000).build());
+    by_timeout.on_event(Ev::down(VK_NONCONVERT).at(20_000).build());
+    let by_timeout_result = by_timeout.on_timeout(TIMER_PENDING);
+    assert!(
+        by_timeout_result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('左'))),
+        "timeout exit should emit left thumb shift face: {:?}",
+        by_timeout_result.actions
+    );
+}
+
+#[test]
+fn test_pending_char_thumb_flush_keeps_plain_thumb_face_then_shift_face() {
+    let mut engine = make_engine_with_thumb_shift_faces();
+    engine.on_event(Ev::down(VK_A).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(10_000).build());
+    let flushed = engine.on_event(Ev::down(VK_LSHIFT).at(20_000).build());
+    assert!(
+        flushed
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('を'))),
+        "Shift bypass flush must keep plain thumb face: {:?}",
+        flushed.actions
+    );
+    let shifted = engine.on_event(Ev::down(VK_S).at(30_000).build());
+    assert_single_char(&shifted, 'シ');
 }
 
 // ── 3 鍵仲裁（d1/d2 比較）テスト ──

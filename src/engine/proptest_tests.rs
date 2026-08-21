@@ -52,6 +52,8 @@ const VK_POOL: &[VkCode] = &[
     VkCode(0x1C),
     VkCode(0x1D), // Convert, Nonconvert (thumb)
     VkCode(0x10),
+    VkCode(0xA0),
+    VkCode(0xA1),
     VkCode(0x11),
     VkCode(0x12), // Shift, Ctrl, Alt
     VkCode(0x0D),
@@ -78,12 +80,19 @@ fn make_layout() -> YabLayout {
     right_thumb.insert(PhysicalPos::new(2, 0), lit('ゔ'));
     right_thumb.insert(PhysicalPos::new(2, 1), lit('じ'));
 
+    let mut left_thumb_shift = YabFace::new();
+    left_thumb_shift.insert(PhysicalPos::new(2, 0), lit('左'));
+    let mut right_thumb_shift = YabFace::new();
+    right_thumb_shift.insert(PhysicalPos::new(2, 1), lit('右'));
+
     YabLayout {
         name: String::from("proptest"),
         normal,
         left_thumb,
         right_thumb,
         shift: YabFace::new(),
+        left_thumb_shift,
+        right_thumb_shift,
     }
 }
 
@@ -100,7 +109,7 @@ fn empty_special_keys() -> SpecialKeyCombos {
 /// Create an Engine for high-level tests.
 fn make_test_engine() -> Engine {
     let layout = make_layout();
-    let fsm = NicolaFsm::new(
+    let mut fsm = NicolaFsm::new(
         layout,
         VK_NONCONVERT,
         VK_CONVERT,
@@ -108,6 +117,9 @@ fn make_test_engine() -> Engine {
         ConfirmMode::Wait,
         30,
     );
+    // 既定 false（安全側）なので、fuzz 対象に親指小指シフト複合面のコードパスも
+    // 含めるため明示的に有効化する（このヘルパーの親指キーはどちらも Shift ではない）。
+    fsm.set_thumb_shift_faces_enabled(true);
     let mut engine = Engine::new(fsm, empty_special_keys());
     engine.set_prev_active(true);
     engine
@@ -121,16 +133,18 @@ struct TestHarness {
 
 impl TestHarness {
     fn new() -> Self {
+        let mut fsm = NicolaFsm::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        fsm.set_thumb_shift_faces_enabled(true);
         Self {
             tracker: InputTracker::new(),
-            fsm: NicolaFsm::new(
-                make_layout(),
-                VK_NONCONVERT,
-                VK_CONVERT,
-                100,
-                ConfirmMode::Wait,
-                30,
-            ),
+            fsm,
         }
     }
 

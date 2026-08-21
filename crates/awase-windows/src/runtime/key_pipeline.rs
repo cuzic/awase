@@ -97,12 +97,15 @@ impl Runtime {
         self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
 
+        let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::tsf::observer::ime_composition_active_now(),
             &event.modifier_snapshot,
+            left_thumb_down,
+            right_thumb_down,
         );
         // [engine-input] order-bug 調査用: drain と inline の処理順序を可視化する。
         // event.timestamp はユーザー押下時刻(us)、now はエンジン入力到達時刻(us)。
@@ -1211,6 +1214,11 @@ impl Runtime {
     /// もう一度単独タップしたら `kp_restore_kana_from_half_width` でかな入力へ
     /// 復元してトグルを解除する。右Shift単独タップはトグルの「緊急解除」として
     /// 働く（トグル非アクティブ時の右Shiftタップ・チョードは何もしない）。
+    ///
+    /// ADR-097 の親指+小指シフト複合面は、この関数が `kp_stage_execute` より前に
+    /// 非 Shift の KeyDown で `left_shift_tap_candidate` を折る順序にも依存する。
+    /// この順序を変える場合は、Shift+親指+文字が左Shift単独タップとして
+    /// 誤判定されないことを再確認すること。
     fn kp_stage_shift_conv_guard(&mut self, event: &RawKeyEvent) {
         use awase::types::ModifierKey;
 

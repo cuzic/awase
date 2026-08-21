@@ -33,6 +33,16 @@ use super::{
     RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
+/// 親指+小指シフト複合面を有効にできる親指キー構成かを返す。
+///
+/// 親指キー自体が Shift 修飾キーの場合、親指押下だけで Shift レベルが立つため
+/// 複合面は無効化する。
+#[must_use]
+pub(crate) fn thumb_shift_faces_enabled_for(left_vk: VkCode, right_vk: VkCode) -> bool {
+    left_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
+        && right_vk.classify_modifier() != Some(awase::types::ModifierKey::Shift)
+}
+
 /// ログ初期化
 ///
 /// `#![windows_subsystem = "windows"]` でコンソールがないため、
@@ -906,6 +916,10 @@ pub(super) fn run_all() -> Result<()> {
             shift_literal: config.general.enter_thumb_shift_literal,
         },
     );
+    engine.set_thumb_shift_faces_enabled(thumb_shift_faces_enabled_for(
+        left_thumb_vk,
+        right_thumb_vk,
+    ));
 
     if let Some(vk) = config
         .keys
@@ -984,10 +998,30 @@ pub(super) fn run_all() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{select_default_layout, LayoutEntry, StartupDiagnostics};
+    use super::{
+        select_default_layout, thumb_shift_faces_enabled_for, LayoutEntry, StartupDiagnostics,
+    };
     use awase::scanmap::KeyboardModel;
+    use awase::types::VkCode;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn thumb_shift_faces_enabled_for_disables_shift_thumb_keys() {
+        assert!(thumb_shift_faces_enabled_for(VkCode(0x1D), VkCode(0x1C)));
+        assert!(!thumb_shift_faces_enabled_for(
+            crate::vk::VK_LSHIFT,
+            VkCode(0x1C)
+        ));
+        assert!(!thumb_shift_faces_enabled_for(
+            VkCode(0x1D),
+            crate::vk::VK_RSHIFT
+        ));
+        assert!(!thumb_shift_faces_enabled_for(
+            crate::vk::VK_SHIFT,
+            VkCode(0x1C)
+        ));
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
