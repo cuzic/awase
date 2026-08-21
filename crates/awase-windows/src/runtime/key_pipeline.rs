@@ -1966,7 +1966,8 @@ impl Runtime {
                 // （open_chain.rs::fallback_write）と同じ理由で、今回は見送る。
                 if crate::send_health::blocking_allowed(hook::current_tick_ms()) {
                     // SAFETY: メッセージループスレッドから呼ぶ。10ms タイムアウト。
-                    if let Some(conv) = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
+                    if let Some(conv) =
+                        unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
                     {
                         self.platform.output.conv_mode.update_from_conv(conv);
                         self.platform_state.ime.set_prev_conversion_mode(Some(conv));

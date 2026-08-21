@@ -218,7 +218,10 @@ mod tests {
         INPUT_0, INPUT_MOUSE, KEYBDINPUT, MOUSEEVENTF_MOVE, MOUSEINPUT, VIRTUAL_KEY,
     };
 
-    fn key_input(vk: u16, flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS) -> INPUT {
+    fn key_input(
+        vk: u16,
+        flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
+    ) -> INPUT {
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {

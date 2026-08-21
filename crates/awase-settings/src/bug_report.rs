@@ -64,10 +64,16 @@ impl BugReportApp {
         };
         let (app_log, app_log_status) = match args.app_log_path.as_ref() {
             Some(path) => match std::fs::read_to_string(path) {
-                Ok(text) => (Some(text), format!("添付ログ(awase.log): {}", path.display())),
+                Ok(text) => (
+                    Some(text),
+                    format!("添付ログ(awase.log): {}", path.display()),
+                ),
                 Err(e) => (
                     None,
-                    format!("添付ログ(awase.log)を読めませんでした: {} ({e})", path.display()),
+                    format!(
+                        "添付ログ(awase.log)を読めませんでした: {} ({e})",
+                        path.display()
+                    ),
                 ),
             },
             None => (None, "添付ログ(awase.log): なし".to_owned()),
@@ -104,7 +110,10 @@ impl BugReportApp {
     /// 戻り値: いずれかのチェックボックスが変化したか。
     fn draw_attachment_checkboxes(&mut self, ui: &mut egui::Ui) -> bool {
         let attach_log_changed = ui
-            .checkbox(&mut self.attach_log, "ログを添付する（journal + awase.log）")
+            .checkbox(
+                &mut self.attach_log,
+                "ログを添付する（journal + awase.log）",
+            )
             .changed();
         let attach_state_snapshot_changed = ui
             .checkbox(

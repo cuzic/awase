@@ -703,12 +703,9 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             let app_log_path = crate::app::bug_report_log_path();
             let app_log_path = app_log_path.exists().then_some(app_log_path.as_path());
             match dump_result {
-                Ok(path) => launch_bug_report(
-                    &path,
-                    ime_kind,
-                    diagnostics_path.as_deref(),
-                    app_log_path,
-                ),
+                Ok(path) => {
+                    launch_bug_report(&path, ime_kind, diagnostics_path.as_deref(), app_log_path)
+                }
                 Err(e) => {
                     log::error!("[bug-report] journal dump failed: {e}");
                     let _ = with_app(|app| {

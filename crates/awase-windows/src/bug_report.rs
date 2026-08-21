@@ -608,9 +608,7 @@ mod tests {
         assert!(json.contains("\"symptom_category\": \"WrongCharacterOutput\""));
         assert!(json.contains("\"attach_log\": true"));
         assert!(json.contains("\"log_excerpt\": \"[]\""));
-        assert!(json.contains(
-            "\"app_log_excerpt\": \"[2026-08-20T00:00:00Z INFO awase] started\""
-        ));
+        assert!(json.contains("\"app_log_excerpt\": \"[2026-08-20T00:00:00Z INFO awase] started\""));
         assert!(json.contains("\"attach_state_snapshot\": true"));
         assert!(json.contains("\"state_snapshot\": {"));
         assert!(json.contains("\"send_health_last_elapsed_ms\": 12"));

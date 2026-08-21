@@ -66,7 +66,9 @@ static SEND_HEALTH: SendHealth = SendHealth {
 /// エンジンスレッド・ワーカースレッドいずれからも呼ばれうる。全呼び出しについて
 /// 無条件に記録する(計測はブレーカの発行可否に関わらず常に行う)。
 pub(crate) fn record(elapsed_ms: u64, now_ms: u64) {
-    SEND_HEALTH.last_elapsed_ms.store(elapsed_ms, Ordering::Relaxed);
+    SEND_HEALTH
+        .last_elapsed_ms
+        .store(elapsed_ms, Ordering::Relaxed);
     if elapsed_ms >= SLOW_THRESHOLD_MS {
         let n = SEND_HEALTH.consecutive_slow.fetch_add(1, Ordering::Relaxed) + 1;
         if n >= TRIP_AFTER_CONSECUTIVE_SLOW {
