@@ -4094,6 +4094,69 @@ actuation 入口棚卸し表の #7 訂正）。
 report-worker では単に無視される——`validatePayload` が既知フィールドのみを
 picking する実装のため、エラーにはならないが保存もされない）。
 
+**追補4（Site A: `ir_post_focus_change_snapshot` の eisu ガード撤去、2026-08-20）:**
+横展開の最後の1箇所（A）に残っていた同期 `SendMessageTimeoutW`（
+`get_ime_conversion_mode_raw_timeout(10)`、`send_health` ブレーカでのみ
+ガード）を、他の箇所と同じく非同期化できないか3ラウンドの Opus premortem
+レビューで検討したが、いずれも実コードで確認済みの致命的な欠陥に行き着き、
+**「eisu ガード機能そのものを撤去する」判断に至った**:
+
+1. **設計1（warmup 自体を非同期尾部に）**: `send_eager_warmup` を非同期化すると
+   `eager_warmup_sent_ms` が同期的に立たなくなり、`WARMUP_GRACE_MS`/GJI
+   settle-grace が同時に無効化される。フォーカス変更直後の最初のキーで
+   spurious `apply_ime_open(false)` が無抑制で発火する——この repo が
+   繰り返し戦ってきた障害ファミリー（[[project_edge_fake_focus_probe_fix]]、
+   ADR-079 epoch fencing と同型）の再燃。
+2. **設計2（ConvModeMgr を `focus_epoch` でキー化してキャッシュ）**:
+   `focus_epoch` は Site A 到達より厳密に先行して増分される（`ir_stage_focus`
+   → `ir_stage_observe`）ため、Site A で `get_for_epoch(現在epoch)` は
+   **確率1で `None` を返す**。キャッシュへの書き手（idle-conv-check/Site C）は
+   いずれも打鍵駆動で Site A より後にしか発火しないため、「1つ前の epoch の
+   観測」が Site A の実行時点では原理的に存在しない。ガードが恒久的に不発になる。
+3. **設計3（ConvModeMgr を pid+timestamp でキー化、Site A は受動的 lookup のみ）**:
+   epoch キーの構造的欠陥は解消したが、別の3つの欠陥が独立に発生した:
+   - Site A 自身の `update_from_conv` 書き込みを撤去すると、直後の初回
+     idle-conv-check が「前のアプリの conv」と比較することになり
+     `conv_mode_changed` が反転、`EngineSync::ReportOpenInference(
+     NativeToggleShadowOff)` が誤発火する。これは
+     [docs/experiments.md](experiments.md) エントリ03 に実機記録済みの
+     「直接入力中の spurious Engine ON」の再燃条件そのもの。
+   - キャッシュ更新契機（idle-conv-check/Site C）はいずれも打鍵駆動のため、
+     ガードが本来検出すべき「トレイでの無操作な conv 切替」を観測できず、
+     陳腐化したキャッシュが warmup を誤スキップさせる新規の cold-start
+     literal 化（BUG-02/BUG-45 系）を生む。
+   - `ConvModeMgr` は単一スロットのキャッシュのため、TsfNative アプリ同士を
+     行き来しただけでも上書きされ、ガードが実効するのは事実上 WezTerm/
+     Windows Terminal 程度まで縮小する。
+
+   3設計とも共通して、「Site A が知りたいのは『前回このアプリにいたときの
+   conv』であり、その答えは定義上 Site A の実行時点より過去にしか存在せず、
+   かつユーザーの tray 操作はその答えを更新する打鍵を伴わない」という
+   構造的な壁に突き当たった。
+
+**結論・現在の実装:** `ir_post_focus_change_snapshot` の eisu ガード（
+`is_eisu_now`/`eisu_guard_active` の算出と、それに伴う同期 Win32 呼び出し・
+`send_health` ブレーカ分岐）を完全に削除した。`send_eager_warmup` は
+`applied_open` のみをガードとして無条件に呼ぶ。
+
+**既知の制限（新規、意図的に受容）:** ユーザーが tray から明示的に半角英数へ
+切り替えた直後にそのウィンドウへフォーカス復帰すると、この eager warmup が
+`VK_DBE_HIRAGANA` を送信し、一度だけひらがなモードへ戻る。以前は Site A の
+同期読み取りがこれを検出しスキップしていたが、BUG-34 対応のため撤去した。
+再現条件: 任意アプリ + awase engine ON の状態で、IME ツールバー/タスクトレイ
+から半角英数（またはカタカナ等）へ切り替えた直後に Alt+Tab 等でフォーカスが
+外れ、再度そのウィンドウへフォーカスが戻ったタイミング。
+
+**Site A における BUG-34 の解消状況:** この撤去により、Site A は
+`SendMessageTimeoutW` を一切呼ばなくなった——ブレーカによる「上限付け」では
+なく、当該箇所の BUG-34 リスクは完全に除去された。横展開 A〜E のうち E
+（`romaji_pre_write`、task #108）のみ実機ソーク待ちで残存。
+
+**検証状況（追補4）:** `cargo xwin check`/`build --tests`/`clippy --lib`
+（awase-windows）で確認済み。この箇所を直接演習する Windows-gated 以外の
+単体テストは元々存在しない（`ir_post_focus_change_snapshot` は Runtime 全体の
+統合的な状態を要するため）。Windows 実機での検証は未実施。
+
 ---
 
 ## BUG-35: per-VK confirm が世代をまたいだ stale な confirm 根拠を現世代の証拠として
