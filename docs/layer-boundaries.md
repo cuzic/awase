@@ -167,7 +167,7 @@ stale な apply 完了が新しい transition を破壊する race を防ぐ。
 
 **禁則**:
 - generation を確認せず（または引数なしで）`ImeApplySucceeded` を作成する
-- `applied_open = ...` を reduce 外で直接書く（`mirror_applied_open` 経由を除く）
+- `applied_open = ...` を reduce 外で直接書く（`record_optimistic`/`record_confirmed`〈旧 `mirror_applied_open`、ADR-097 決定6-a で分離〉経由を除く）
 
 **検出**:
 ```sh

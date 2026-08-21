@@ -8827,3 +8827,217 @@ drift_correction` の別経路、「鮮度を新情報の代理指標にする�
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
 [tuning-constants](../.claude/rules/tuning-constants.md)。
+
+---
+
+## BUG-69: `ir_post_focus_change_snapshot` が belief を `applied=Confirmed` へ偽装し、TsfNative の force-on / BUG-16 修正を無効化。eager warmup だけが未監査の副作用で偶然穴を塞いでいる
+
+**2026-08-21 追記: 本文中「実装は一切行っていない」等の記述は発見時点（調査のみ）のもの。
+実装は完了済み。詳細は本エントリ末尾の「実装済み（2026-08-21 追記）」節を参照。**
+
+**発見の経緯:** BUG-34 横展開（追補4、eisu ガード撤去）の直後、ユーザーから
+「send_eager_warmup も GJI なら要らないのでは」という疑問が出たのを機に、
+eager warmup・drift correction・TsfNative force-on ブロックの3機構の
+相互作用を Opus premortem レビューで監査した。発見当初は実装を一切行わず、
+本エントリはレビュー結果の記録のみだった（F2 の修正案を別途 premortem
+レビューしてから着手する方針だった）。
+
+**症状（未確認・実機ログなし、コード読解で構築した想定シナリオ）:**
+WezTerm または Windows Terminal（TsfNative プロファイル）+ Google 日本語
+入力（GJI）で、`Win+Ctrl+→` 等の仮想デスクトップ切替（Win キー押下中は
+IME キー注入がスキップされるため、実 GJI が閉じたまま belief だけ ON で
+残留しうる）の後、`Win+Ctrl+←` で当該ウィンドウへ復帰し直後に打鍵すると:
+- 最初の1文字がリテラル ASCII になる（`これで→korede`、BUG-16 と同じ
+  見え方）、または
+- eager warmup の `VK_DBE_HIRAGANA`（scan=0x70、物理かなキー位置）が
+  閉じた IME 文脈に着弾し、kbd106 のかなロックを誤トグルして JIS かな
+  入力に固着する（BUG-08/BUG-55 と同根のハザード）。
+
+**原因（コード読解で確定、実機ログでの再現は未実施）:**
+
+1. **F1: TsfNative force-on ブロックは到達不能。** `ir_post_focus_change_snapshot`
+   は `focus.focus_changed`（= `process_changed`）のときにしか呼ばれず
+   （`ime_refresh.rs:193-195`）、その `on_focus_process_changed` が同じ
+   tick 内で既に `input_barrier = FocusTransition{settle_until: now +
+   focus_settle_ms}` を armed 済み（`ime_model.rs:517-522`、TsfNative は
+   200ms）。Stage1→Stage3 間の実処理はサブミリ秒（`skip_imm_query=true`
+   経路では `ImeDiagnosticSnapshot::capture()` すら `if !skip_imm_query`
+   でスキップされる）。ゆえに `applied_ime_on && new_profile_is_tsf_native
+   && !self.ime_apply_should_defer()` は**常に false**。兄弟ブロック
+   （drift correction 等）と違い `schedule_settle_retry` も無いため、
+   一度も再試行されない。ログ文字列 `"TsfNative IME ON → GJI VK_IME_ON
+   強制"` は `docs/` 配下のどの実機ログにも一度も出現しない。
+2. **F2: `mirror_applied_open` が belief を `applied=Confirmed` へ偽装する。**
+   `ir_post_focus_change_snapshot` 冒頭（`ime_refresh.rs:429-433`）が
+   全プロファイルで無条件に
+   `self.platform_state.ime.mirror_applied_open(ime_on_now, tick_ms)`
+   を呼ぶ。`tick_ms`（`GetTickCount64`）は常に非ゼロなので
+   `mirror_applied_open_with_ts` の規約上これは
+   `AppliedImeState::Confirmed{open: belief}` を**実際には何も apply
+   していないのに**確定させる。これは `focus_tracking.rs:398-402` が
+   TsfNative を hard pre-sync から明示的に除外している理由
+   （「TsfNative は SSOT model: applied=Unknown のまま維持し、最初の
+   キーで SetOpen を発行する」）に真っ向から反する——Stage1 が意図的に
+   `Unknown` のまま残した `applied` を、Stage3 が数百マイクロ秒後に
+   上書きする。
+   - この偽装が `GjiDirectStrategy::apply`（`ime_controller.rs:109-113`）
+     の `if open && view.control.shadow_on { return AlreadyMatched; }`
+     を誤発火させ、F1 の force-on ブロックはまさにこれを打ち消す
+     ためのワークアラウンドとして書かれていた（コメント参照）——
+     つまり F1 は F2 の症状に対する対症療法であり、その対症療法自体が
+     到達不能になっている。
+   - `apply_force_on_for_imm_broken`（BUG-16 の修正）のスパムガード
+     （`runtime/mod.rs:704-710`）が `Confirmed{open:true}` で早期
+     return するため、TsfNative では**事実上恒久的に不発**になる。
+     このガードの正当化コメント「FocusChange が applied=Unknown に
+     リセットするため、フォーカスごとに1回だけ force-apply される」
+     は F2 により成立しない。BUG-16 追補2 が「TsfNative では引き続き
+     発火するはず」と想定していた前提が崩れている。
+   - `apply_force_on_for_imm_broken` が defer 時に積む
+     `schedule_settle_retry`（~250ms後）も無意味——再試行 tick でも
+     `applied` は F2 が書いた偽の `Confirmed{true}` のままなので、
+     再びスパムガードで早期 return する。これは BUG-16 が修正した
+     はずの「settle 明け再試行が『何もしない関数』の再試行だった」と
+     全く同じ失敗パターンが、別経路で再現している。
+3. **F3: 結果として、TsfNative+GJI のフォーカス復帰時に実際に発火する
+   IME actuation は eager warmup（`send_eager_tsf_warmup`）だけになる。**
+   `ir_stage_notify` 内の他の actuation（force-on、
+   `apply_force_on_for_imm_broken`、drift correction）は全て
+   `ime_apply_should_defer()`（focus settle barrier）でゲートされて
+   いるが、eager warmup だけがこのチェックを経由せず単独で通過する。
+   さらに `reschedule_ime_refresh`（`runtime/mod.rs:604-609`）は
+   TsfNative で周期リフレッシュ自体を恒久停止するため（コメント
+   「周期リフレッシュに乗るのが唯一の force-ON 経路になった」）、
+   force-ON には他のトリガーも無い。
+4. **F4: eager warmup 自身が「開く」副作用を持つ、監査されていない
+   force-open 機構になっている。** `send_vk_dbe_hiragana_pair` →
+   `make_tsf_key_input` は `wScan = MapVirtualKeyW(0xF2,
+   MAPVK_VK_TO_VSC)` = 0x70（物理かなキー位置）付きで送信する
+   （scan=0 ではない）。`ime_controller.rs:143-149` のコメントは
+   `VK_DBE_HIRAGANA` が「開く」と「ひらがなに強制する」を1つの副作用に
+   束ねていることを明記しており（BUG-50 デッドロックの直接の前提。
+   MS-IME の ON キーはこれを理由に 2026-08-06 に他キーへ移行済み）、
+   BUG-15 追補7 は「**IME モードキーの注入は実 IME が確実に ON でない
+   限りしてはならない**」と、まさにこの scan 付き `VK_DBE_HIRAGANA`
+   注入の危険性を名指しで警告している（`kp_restore_kana_from_
+   half_width` は `effective_open()==false` のときこの注入を
+   スキップし IMC write のみに留める設計——BUG-34 追補4 で削除した
+   eisu ガード撤去とは無関係に、この安全則自体は他所で現に守られて
+   いる）。しかし `can_warmup()`（`tsf_gate.rs:348-350`）のゲート
+   `ime_on` は `applied_ime_on`——F2 により実質 `effective_open()`
+   の再ラベルに過ぎず、real/observed state を一切参照しない。
+   つまり eager warmup は「belief 上 ON」であることしか確認せずに、
+   このリポジトリが他所で明示的に禁止しているのと同じ危険な注入を
+   行っている。
+
+**波及（未確認、PLAUSIBLE）:** eager warmup が書く NATIVE conv bit は
+`report_conv_open_inference` の `NativeToggleShadowOff` 経路を通じて
+`ConvOpenInference(open=true)` として観測されうる。`check_drift_
+correction` は `trusted.open == desired` で早期 return するため
+（`platform_state.rs:760-762`）、belief=ON・実 GJI=OFF の乖離があっても
+warmup が書いた conv bit が「乖離なし」という偽の証拠を作り、drift
+correction 自身を沈黙させる可能性がある——ただし BUG-68 の実機ログは
+MS-IME（`needs_f2_probe()==false` で warmup 自体が no-op、`warmup_
+strategy.rs:133-135`）であり、GJI × TsfNative でのこの経路は実機での
+確認が無い。
+
+**このリポジトリの既知バグ全体を貫く根本パターンとの一致:** BUG-19
+（misread な conv が warmup で実体化しロックインされる）、BUG-33
+（belief を観測として書き戻す循環）、BUG-48（対称 SetOpen echo が
+ユーザー意図を上書き）、BUG-68（補正の出力が自分の再武装条件を生成）
+と同型の「**belief が evidence として再流入する**」欠陥の6例目。
+`ime-belief-architecture.md` の禁止パターン2（観測の偽装）は observer
+層を対象にしていたが、`mirror_applied_open` は actuation 完了の記録
+という**別の層**で同じ違反を犯している点が新しい。
+
+**現時点での評決（Opus premortem レビュー、実装なし）:**
+
+| 機構 | 評決 |
+|---|---|
+| eager warmup | KEEP、ただし SIMPLIFY（F2/F1 を先に直してからゲート強化。単独でゲートを足すと F3 が露見し即座に regression する） |
+| drift correction | KEEP AS-IS（唯一生きている機構。BUG-68 の cooldown は適切、`Blind::backoff` 未消費と `FocusChanged` が `gave_up_at` を破棄する点は軽微な既知の残課題） |
+| TsfNative force-on ブロック | REMOVE。ただし F2（`mirror_applied_open`）の修正が必須の代替——ブロックだけ消すと F2 は残ったまま force-on の唯一のワークアラウンドが消えるだけになる |
+| enforce-OFF ブロック（同一関数、対象外だったが同じ穴あり） | SIMPLIFY。`ime_apply_should_defer()` チェックが無く、`ime_apply_should_defer` 自身の doc コメントが呼び出し元としてこのブロックを名指ししているにも関わらず未実装 |
+
+**推奨する修正順序:** F2（`mirror_applied_open` を TsfNative で呼ばない
+か `Optimistic` に留める）→ F1（force-on ブロック削除、F2 修正後は
+不要になるはず）→ warmup のゲート強化。この順序を守らないと、
+どの1つを単独で直しても他の2つの死んだ機構が露見して regression する
+（BUG-34 追補4 の3ラウンド premortem と同じ「単独修正が別の未監査の
+穴を露出させる」構造）。
+
+**未実施:** 実装そのもの・実機再現・回帰テスト・修正案自体の premortem
+レビュー。次回、F2 の修正案を単独で設計し、これまでと同様 Opus に
+念入りな premortem レビューをかけてから着手する。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`
+（`ir_post_focus_change_snapshot`、`ir_apply_drift_correction`）、
+`crates/awase-windows/src/runtime/mod.rs`（`apply_force_on_for_imm_broken`、
+`reschedule_ime_refresh`、`ime_apply_should_defer`）、
+`crates/awase-windows/src/output/mod.rs`（`send_eager_tsf_warmup`、
+`tsf_readiness`）、`crates/awase-windows/src/tsf/tsf_gate.rs`
+（`TsfReadiness::can_warmup`）、`crates/awase-windows/src/tsf/send.rs`
+（`send_vk_dbe_hiragana_pair`）、`crates/awase-windows/src/ime_controller.rs`
+（`GjiDirectStrategy::apply`）、`crates/awase-windows/src/runtime/
+focus_tracking.rs`（TsfNative hard pre-sync 除外）。
+
+**関連:** BUG-16（`apply_force_on_for_imm_broken` の settle 明け再試行
+無効化パターンの初出、本バグは同じ失敗が別経路で再現）、BUG-08/BUG-55
+（scan 付き IME モードキー注入が JIS かなロックを誤トグルするハザード
+の原型）、BUG-15 追補7（IME モードキー注入は実 IME 確実 ON 時のみ、
+という安全則の初出）、BUG-19（belief 実体化ロックインの原型）、BUG-33
+（belief を観測として書き戻す循環の原型）、BUG-48（対称 echo が
+ユーザー意図を上書きする同型パターン）、BUG-50（`VK_DBE_HIRAGANA` の
+open+conv 束縛副作用、MS-IME 側は既に移行済み）、BUG-68（自己再武装
+フィードバックループ、conv ビットの open/close 原理的区別不能性）、
+BUG-34 追補4（この調査の発端、eisu ガード撤去）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
+
+**実装済み（2026-08-21 追記）:** 上記「推奨する修正順序」に沿って
+ADR-097（[docs/adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md](adr/097-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)）
+の決定0・1-a・1-b・1-c・2・4・6-a・6-b・6-c を実装した。
+
+- **F2 対策（決定1-a/6-a）**: `mirror_applied_open`/`mirror_applied_open_with_ts`
+  （`ts==0` センチネルで `Optimistic`/`Confirmed` を切り替えていた設計）を撤去し、
+  `record_optimistic(open)`/`record_confirmed(open, at_ms)` に分離
+  （`state/platform_state.rs`）。`ir_post_focus_change_snapshot` は
+  TsfNative では `record_confirmed` を呼ばなくなった（`applied` は
+  `Unknown` のまま維持され、Stage1 の意図を Stage3 が上書きしない）。
+- **F1 対策（決定2）**: 到達不能だった TsfNative force-on ブロックを
+  `ir_post_focus_change_snapshot` から完全削除。ワークアラウンドではなく
+  F2 の根治で不要になった。
+- **F3/BUG-16 スパムガード対策（決定1-c）**: `apply_force_on_for_imm_broken`
+  のスパムガードを、偽装された `Confirmed{open:true}` に依存する早期
+  return から、`force_on_attempt_allowed`（`state/ime_actuation.rs`、
+  新設 `ForceOnRetryState`・`FORCE_ON_RETRY_COOLDOWN_MS=3000ms`）による
+  cooldown ベースの再試行許可判定に置き換え。`FocusChanged` で
+  `force_on_retry` もリセットされる。
+- **F4 対策（決定1-b）**: eager warmup の `ime_on` 入力を、生の belief/
+  `Option<bool>::unwrap_or(false)` ではなく `WarmupImeOn` 型
+  （`src/platform.rs`、3種のプライベートコンストラクタのみ）経由の
+  `resolve_warmup_ime_on`/`warmup_ime_on()`（`applied ?? belief` を
+  1箇所に集約）に統一。`TsfComposition::on_passthrough_key`/
+  `on_reinject_key` のシグネチャも `WarmupImeOn` を受け取るよう変更。
+- **enforce-OFF ブロック（決定4）**: 意図的に `ime_apply_should_defer()`
+  を経由させない設計として doc comment で明文化（追加の barrier は
+  導入しない）。
+- **決定6-b**: `architecture_guard.rs` に
+  `applied_state_recorders_call_sites_are_accounted_for` を新設し、
+  `record_optimistic`/`record_confirmed` の呼び出し箇所数
+  （1箇所・5箇所）を固定してレビュー漏れを機械検知。
+- **決定6-c**: `AppliedImeState::applied_open()` の doc comment を
+  「証拠用アクセサ」として書き換え、実利用箇所（3箇所）と
+  情報用途は `warmup_ime_on()` を使うべきという指針を明記。
+- **検証**: `cargo xwin check/build --tests/clippy --lib -D warnings` は
+  全てクリーン。`cargo test -p awase-windows --lib`（427件）、
+  `architecture_guard`（36件）、`golden_scenarios`（22件）、
+  `drift_correction_replay`（2件）、`intent_store_effective_open`（8件）、
+  `journal_replay`（1件）、`layer_boundary_guard`（8件）、いずれも
+  全件成功。**Windows 実機での検証・ソークは未実施**（クロスコンパイル
+  環境での静的検証のみ）。
+- **未実施のまま残るもの**: 決定3-c（GJI warmup キーの再選定実験、
+  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、`docs/experiments.md` へ先送り）、
+  決定4-b（enforce-OFF を settle-retry 化する代替設計）、および
+  `focus_tracking.rs`/`key_pipeline.rs` に残る軽微な belief-laundering
+  箇所（コメント修正のみで動作は維持、ADR-097 決定5参照）。
