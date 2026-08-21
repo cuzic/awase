@@ -507,6 +507,14 @@ fn test_classify_section() {
         classify_section("ローマ字小指シフト"),
         Some(FaceKind::Shift)
     );
+    assert_eq!(
+        classify_section("ローマ字小指左親指シフト"),
+        Some(FaceKind::LeftThumbShift)
+    );
+    assert_eq!(
+        classify_section("ローマ字小指右親指シフト"),
+        Some(FaceKind::RightThumbShift)
+    );
     assert_eq!(classify_section("unknown"), None);
     assert_eq!(classify_section(""), None);
 }
@@ -634,10 +642,8 @@ fn test_parse_unknown_section_no_data_ok() {
 }
 
 #[test]
-fn test_parse_yamabuki_compat_sections_are_accepted_but_ignored() {
-    // やまぶきRの英数系6面・小指親指複合2面は、rust-nicolaのランタイムでは
-    // まだ参照しない（受理のみ）。データがあってもパースエラーにならないこと、
-    // かつ通常の4面には影響しないことを確認する。
+fn test_parse_yamabuki_thumb_shift_sections_are_loaded() {
+    // やまぶきRのローマ字小指親指複合2面は実フェイスとして取り込む。
     let input = "\
 [ローマ字シフト無し]
 ｋａ,無,無,無,無,無,無,無,無,無,無,無,無
@@ -645,12 +651,41 @@ fn test_parse_yamabuki_compat_sections_are_accepted_but_ignored() {
 無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無
 [ローマ字小指左親指シフト]
-無,無,無,無,無,無,無,無,無,無,無,無,無
+ｚａ,無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無
 [ローマ字小指右親指シフト]
-無,無,無,無,無,無,無,無,無,無,無,無,無
+ｚｉ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let layout = YabLayout::parse(input, KeyboardModel::Jis).unwrap();
+    assert_eq!(
+        layout.left_thumb_shift.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "za".to_string(),
+            kana: None
+        })
+    );
+    assert_eq!(
+        layout.right_thumb_shift.get(&PhysicalPos::new(0, 0)),
+        Some(&YabValue::Romaji {
+            romaji: "zi".to_string(),
+            kana: None
+        })
+    );
+}
+
+#[test]
+fn test_parse_yamabuki_compat_sections_are_accepted_but_ignored() {
+    // やまぶきRの英数系6面は、rust-nicolaのランタイムではまだ参照しない
+    // （受理のみ）。データがあってもパースエラーにならないこと、かつ通常の4面には
+    // 影響しないことを確認する。
+    let input = "\
+[ローマ字シフト無し]
+ｋａ,無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無,無
 無,無,無,無,無,無,無,無,無,無,無
@@ -697,6 +732,8 @@ fn test_parse_yamabuki_compat_sections_are_accepted_but_ignored() {
     assert!(layout.left_thumb.is_empty());
     assert!(layout.right_thumb.is_empty());
     assert!(layout.shift.is_empty());
+    assert!(layout.left_thumb_shift.is_empty());
+    assert!(layout.right_thumb_shift.is_empty());
 }
 
 #[test]
@@ -1092,6 +1129,58 @@ fn test_serialize_round_trip_all_variants() {
 }
 
 #[test]
+fn test_serialize_omits_empty_thumb_shift_faces() {
+    let input = "\
+テスト
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let serialized = YabLayout::parse(input, KeyboardModel::Jis)
+        .unwrap()
+        .serialize(KeyboardModel::Jis);
+    assert!(!serialized.contains("[ローマ字小指左親指シフト]"));
+    assert!(!serialized.contains("[ローマ字小指右親指シフト]"));
+}
+
+#[test]
+fn test_serialize_round_trip_non_empty_thumb_shift_faces() {
+    let input = "\
+テスト
+[ローマ字シフト無し]
+無,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指左親指シフト]
+ｚａ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無
+[ローマ字小指右親指シフト]
+ｚｉ,無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無,無
+無,無,無,無,無,無,無,無,無,無,無";
+
+    let layout1 = YabLayout::parse(input, KeyboardModel::Jis).unwrap();
+    let serialized = layout1.serialize(KeyboardModel::Jis);
+    assert!(serialized.contains("[ローマ字小指左親指シフト]"));
+    assert!(serialized.contains("[ローマ字小指右親指シフト]"));
+    let layout2 = YabLayout::parse(&serialized, KeyboardModel::Jis).unwrap();
+    assert_eq!(
+        layout2.left_thumb_shift.get(&PhysicalPos::new(0, 0)),
+        layout1.left_thumb_shift.get(&PhysicalPos::new(0, 0))
+    );
+    assert_eq!(
+        layout2.right_thumb_shift.get(&PhysicalPos::new(0, 0)),
+        layout1.right_thumb_shift.get(&PhysicalPos::new(0, 0))
+    );
+}
+
+#[test]
 fn test_serialize_round_trip_nicola_file() {
     let path = std::path::Path::new("layout/nicola.yab");
     if !path.exists() {
@@ -1100,6 +1189,8 @@ fn test_serialize_round_trip_nicola_file() {
     let content = std::fs::read_to_string(path).unwrap();
     let model = KeyboardModel::Jis;
     let layout1 = YabLayout::parse(&content, model).unwrap();
+    assert!(layout1.left_thumb_shift.is_empty());
+    assert!(layout1.right_thumb_shift.is_empty());
     let serialized = layout1.serialize(model);
     let layout2 = YabLayout::parse(&serialized, model).unwrap();
 
@@ -1126,6 +1217,16 @@ fn test_serialize_round_trip_nicola_file() {
                 layout1.shift.get(&pos),
                 layout2.shift.get(&pos),
                 "shift mismatch at ({row}, {col})"
+            );
+            assert_eq!(
+                layout1.left_thumb_shift.get(&pos),
+                layout2.left_thumb_shift.get(&pos),
+                "left_thumb_shift mismatch at ({row}, {col})"
+            );
+            assert_eq!(
+                layout1.right_thumb_shift.get(&pos),
+                layout2.right_thumb_shift.get(&pos),
+                "right_thumb_shift mismatch at ({row}, {col})"
             );
         }
     }

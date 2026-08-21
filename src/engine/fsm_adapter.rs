@@ -136,6 +136,11 @@ impl FsmAdapter {
         self.fsm.set_enter_thumb_config(enter_thumb_vk, config);
     }
 
+    /// 親指+小指シフト複合面の有効/無効を設定する。
+    pub(super) const fn set_thumb_shift_faces_enabled(&mut self, enabled: bool) {
+        self.fsm.set_thumb_shift_faces_enabled(enabled);
+    }
+
     /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         self.fsm.take_engine_off_requested()

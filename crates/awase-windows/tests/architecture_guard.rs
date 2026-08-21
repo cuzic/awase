@@ -141,6 +141,56 @@ fn production_code_only(content: &str) -> &str {
     content
 }
 
+/// `build_input_context` 自身が `left_thumb_down`/`right_thumb_down` を
+/// リテラル `None` でハードコードしていないことを固定する。
+///
+/// ADR-097 決定0の欠落そのものの形（`runtime/mod.rs` の構造体リテラルが
+/// `left_thumb_down: None, right_thumb_down: None,` と固定していた）を検出する。
+/// インデント量に依存しないよう、フィールド名 + `: None,` の隣接だけを見る
+/// （2026-08-20 の独立レビューで、旧テストがインデント12スペース決め打ちの
+/// 部分文字列一致だったため、この最も再現させたくない退行そのものを
+/// 素通ししていたと判明。修正）。
+#[test]
+fn build_input_context_does_not_hardcode_thumb_state() {
+    let content = read_crate_file("src/runtime/mod.rs");
+    assert!(
+        !content.contains("left_thumb_down: None,"),
+        "build_input_context must not hardcode left_thumb_down: None"
+    );
+    assert!(
+        !content.contains("right_thumb_down: None,"),
+        "build_input_context must not hardcode right_thumb_down: None"
+    );
+}
+
+/// `build_input_context(...)` の呼び出し元が、引数としてリテラル `None, None`
+/// （親指押下状態を引き継がない）を渡していないことを固定する。
+///
+/// インデント・改行幅に依存しないよう、空白を全て除去してから部分文字列一致を
+/// 見る（2026-08-20 の独立レビューで、旧テストが「`build_input_context(\n`」＋
+/// 「`None,\n            None,`」という改行・12スペースインデント決め打ちの
+/// AND 一致だったため、`message_handlers.rs` のような別インデント幅の呼び出しや、
+/// そもそも同一ファイル内に両方の文字列が別々の理由で存在するだけの偽陽性回避に
+/// 弱く、実際に検出力が乏しいと判明。修正）。
+#[test]
+fn build_input_context_callers_do_not_drop_thumb_down_state() {
+    for rel_path in [
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/message_handlers.rs",
+        "src/runtime/mod.rs",
+    ] {
+        let content = read_crate_file(rel_path);
+        let squashed: String = content.split_whitespace().collect();
+        // rustfmt は7引数の呼び出しを複数行に折り返すため末尾カンマが付く
+        // （`,None,None,)`）が、1行に収まる将来の書き方も考慮して両方見る。
+        assert!(
+            !squashed.contains("build_input_context(")
+                || (!squashed.contains(",None,None,)") && !squashed.contains(",None,None)")),
+            "{rel_path} must not pass literal None, None to build_input_context"
+        );
+    }
+}
+
 fn non_comment_lines(content: &str) -> String {
     content
         .lines()

@@ -21,6 +21,7 @@ use awase::engine::{
     TextKeyConfig,
 };
 use awase::ngram::NgramModel;
+use awase::types::Timestamp;
 use awase::types::{ContextChange, RawKeyEvent, VkCode};
 
 use crate::focus::cache::DetectionSource;
@@ -66,6 +67,8 @@ pub const fn build_input_context(
     is_japanese_ime: bool,
     composing: bool,
     modifiers: &awase::engine::ModifierState,
+    left_thumb_down: Option<Timestamp>,
+    right_thumb_down: Option<Timestamp>,
 ) -> InputContext {
     InputContext {
         ime_on,
@@ -73,8 +76,8 @@ pub const fn build_input_context(
         is_japanese_ime,
         composing,
         modifiers: *modifiers,
-        left_thumb_down: None,
-        right_thumb_down: None,
+        left_thumb_down,
+        right_thumb_down,
     }
 }
 use awase::yab::YabLayout;
@@ -238,12 +241,15 @@ impl Runtime {
         if crate::hook::is_alt_impersonation_active() {
             modifiers.alt = false;
         }
+        let (left_thumb_down, right_thumb_down) = crate::hook::thumb_down_timestamps();
         build_input_context(
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::tsf::observer::ime_composition_active_now(),
             &modifiers,
+            left_thumb_down,
+            right_thumb_down,
         )
     }
 
@@ -1357,6 +1363,10 @@ impl Runtime {
                     shift_literal: config.general.enter_thumb_shift_literal,
                 },
             );
+            self.engine
+                .set_thumb_shift_faces_enabled(crate::app::thumb_shift_faces_enabled_for(
+                    left, right,
+                ));
             log::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,

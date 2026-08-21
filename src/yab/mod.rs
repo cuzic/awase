@@ -244,6 +244,10 @@ pub struct YabLayout {
     pub right_thumb: YabFace,
     /// 小指シフト面
     pub shift: YabFace,
+    /// 小指左親指シフト面
+    pub left_thumb_shift: YabFace,
+    /// 小指右親指シフト面
+    pub right_thumb_shift: YabFace,
 }
 
 /// 全角↔半角変換のキャラクタ拡張。
@@ -477,17 +481,17 @@ fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
 /// セクション名からフェイスの種類を判別する。
 ///
 /// やまぶきR互換のため、rust-nicola がまだランタイムで使わないセクション
-/// （小指シフト中の親指シフト面・英数系6面）も `FaceKind::Ignored` として認識し、
-/// パースエラーにせず読み飛ばす（受理のみ・機能未実装）。
+/// （英数系6面など）も `FaceKind::Ignored` として認識し、パースエラーにせず
+/// 読み飛ばす（受理のみ・機能未実装）。
 fn classify_section(name: &str) -> Option<FaceKind> {
     match name {
         "ローマ字シフト無し" => Some(FaceKind::Normal),
         "ローマ字左親指シフト" => Some(FaceKind::LeftThumb),
         "ローマ字右親指シフト" => Some(FaceKind::RightThumb),
         "ローマ字小指シフト" => Some(FaceKind::Shift),
-        "ローマ字小指左親指シフト"
-        | "ローマ字小指右親指シフト"
-        | "英数シフト無し"
+        "ローマ字小指左親指シフト" => Some(FaceKind::LeftThumbShift),
+        "ローマ字小指右親指シフト" => Some(FaceKind::RightThumbShift),
+        "英数シフト無し"
         | "英数左親指シフト"
         | "英数右親指シフト"
         | "英数小指シフト"
@@ -508,6 +512,8 @@ enum FaceKind {
     LeftThumb,
     RightThumb,
     Shift,
+    LeftThumbShift,
+    RightThumbShift,
     /// やまぶきR互換のため受理するが、rust-nicola のランタイムでは参照しないセクション。
     Ignored,
 }
@@ -629,6 +635,18 @@ impl YabLayout {
             model,
             "Failed to parse shift face",
         )?;
+        let left_thumb_shift = parse_optional_face(
+            &sections,
+            FaceKind::LeftThumbShift,
+            model,
+            "Failed to parse left thumb shift face",
+        )?;
+        let right_thumb_shift = parse_optional_face(
+            &sections,
+            FaceKind::RightThumbShift,
+            model,
+            "Failed to parse right thumb shift face",
+        )?;
 
         Ok(Self {
             name,
@@ -636,6 +654,8 @@ impl YabLayout {
             left_thumb,
             right_thumb,
             shift,
+            left_thumb_shift,
+            right_thumb_shift,
         })
     }
 
@@ -651,19 +671,37 @@ impl YabLayout {
             ("ローマ字右親指シフト", &self.right_thumb),
             ("ローマ字小指シフト", &self.shift),
         ];
+        let optional_sections = [
+            ("ローマ字小指左親指シフト", &self.left_thumb_shift),
+            ("ローマ字小指右親指シフト", &self.right_thumb_shift),
+        ];
 
         let mut out = String::new();
         if !self.name.is_empty() {
             let _ = writeln!(out, "{}", self.name);
         }
 
-        for (i, (name, face)) in sections.iter().enumerate() {
-            if i > 0 {
+        let mut wrote_section = false;
+        for (name, face) in sections {
+            if wrote_section {
                 out.push('\n');
             }
             let _ = writeln!(out, "[{name}]");
             out.push_str(&face.serialize(&row_sizes));
             out.push('\n');
+            wrote_section = true;
+        }
+        for (name, face) in optional_sections {
+            if face.is_empty() {
+                continue;
+            }
+            if wrote_section {
+                out.push('\n');
+            }
+            let _ = writeln!(out, "[{name}]");
+            out.push_str(&face.serialize(&row_sizes));
+            out.push('\n');
+            wrote_section = true;
         }
 
         out
@@ -677,6 +715,8 @@ impl YabLayout {
         self.left_thumb.resolve_kana(&table);
         self.right_thumb.resolve_kana(&table);
         self.shift.resolve_kana(&table);
+        self.left_thumb_shift.resolve_kana(&table);
+        self.right_thumb_shift.resolve_kana(&table);
         self
     }
 }

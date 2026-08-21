@@ -83,6 +83,15 @@ pub enum Face {
     LeftThumb,
     RightThumb,
     Shift,
+    LeftThumbShift,
+    RightThumbShift,
+}
+
+/// 親指キーの左右。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThumbSide {
+    Left,
+    Right,
 }
 
 impl Face {
@@ -90,8 +99,8 @@ impl Face {
     #[must_use]
     pub const fn from_thumb(key_class: KeyClass) -> Self {
         match key_class {
-            KeyClass::LeftThumb => Self::LeftThumb,
-            KeyClass::RightThumb => Self::RightThumb,
+            KeyClass::LeftThumb => Self::resolve(Some(ThumbSide::Left), false),
+            KeyClass::RightThumb => Self::resolve(Some(ThumbSide::Right), false),
             _ => Self::Normal, // fallback
         }
     }
@@ -99,9 +108,35 @@ impl Face {
     #[must_use]
     pub const fn from_thumb_bool(is_left: bool) -> Self {
         if is_left {
-            Self::LeftThumb
+            Self::resolve(Some(ThumbSide::Left), false)
         } else {
-            Self::RightThumb
+            Self::resolve(Some(ThumbSide::Right), false)
+        }
+    }
+
+    /// この面が消費する親指キー（親指面でなければ None）。
+    #[must_use]
+    pub const fn thumb_side(self) -> Option<ThumbSide> {
+        match self {
+            Self::LeftThumb | Self::LeftThumbShift => Some(ThumbSide::Left),
+            Self::RightThumb | Self::RightThumbShift => Some(ThumbSide::Right),
+            Self::Normal | Self::Shift => None,
+        }
+    }
+
+    /// 親指の押下側と小指シフトの押下状態から面を一意に決める。
+    ///
+    /// この関数は面名だけを返す。部分定義レイアウトの後方互換フォールバックは
+    /// `NicolaFsm::resolve_thumb_face` で行う。
+    #[must_use]
+    pub const fn resolve(thumb: Option<ThumbSide>, shift_held: bool) -> Self {
+        match (thumb, shift_held) {
+            (None, false) => Self::Normal,
+            (None, true) => Self::Shift,
+            (Some(ThumbSide::Left), false) => Self::LeftThumb,
+            (Some(ThumbSide::Left), true) => Self::LeftThumbShift,
+            (Some(ThumbSide::Right), false) => Self::RightThumb,
+            (Some(ThumbSide::Right), true) => Self::RightThumbShift,
         }
     }
 }
@@ -422,6 +457,16 @@ impl PendingThumbData {
     pub const fn face(self) -> Face {
         Face::from_thumb_bool(self.is_left)
     }
+
+    /// この親指キーの左右を返す。
+    #[must_use]
+    pub const fn side(self) -> ThumbSide {
+        if self.is_left {
+            ThumbSide::Left
+        } else {
+            ThumbSide::Right
+        }
+    }
 }
 
 /// 無変換/変換キー単独タップ確定時、idle/composing それぞれの2値の行動
@@ -731,6 +776,35 @@ mod tests {
     #[test]
     fn face_from_thumb_bool_false_is_right() {
         assert_eq!(Face::from_thumb_bool(false), Face::RightThumb);
+    }
+
+    #[test]
+    fn face_resolve_maps_thumb_and_shift_levels() {
+        assert_eq!(Face::resolve(None, false), Face::Normal);
+        assert_eq!(Face::resolve(None, true), Face::Shift);
+        assert_eq!(Face::resolve(Some(ThumbSide::Left), false), Face::LeftThumb);
+        assert_eq!(
+            Face::resolve(Some(ThumbSide::Left), true),
+            Face::LeftThumbShift
+        );
+        assert_eq!(
+            Face::resolve(Some(ThumbSide::Right), false),
+            Face::RightThumb
+        );
+        assert_eq!(
+            Face::resolve(Some(ThumbSide::Right), true),
+            Face::RightThumbShift
+        );
+    }
+
+    #[test]
+    fn face_thumb_side_identifies_consumed_thumb() {
+        assert_eq!(Face::Normal.thumb_side(), None);
+        assert_eq!(Face::Shift.thumb_side(), None);
+        assert_eq!(Face::LeftThumb.thumb_side(), Some(ThumbSide::Left));
+        assert_eq!(Face::LeftThumbShift.thumb_side(), Some(ThumbSide::Left));
+        assert_eq!(Face::RightThumb.thumb_side(), Some(ThumbSide::Right));
+        assert_eq!(Face::RightThumbShift.thumb_side(), Some(ThumbSide::Right));
     }
 
     #[test]

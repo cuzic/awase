@@ -256,9 +256,14 @@ jobs:
       # 0 tests になり、実質どこでも走っていなかった。ここ（実 Windows）で初めて
       # 戦略選択のゴールデンを assert する。architecture_guard/golden_scenarios/
       # layer_boundary_guard も Windows ターゲットで再実行し、#[cfg] ドリフトを検知する。
+      # thumb_context_guard も同じ理由で明示列挙が必須（#![cfg(windows)] のため
+      # --lib にも含まれず、テストターゲットを明示列挙しないと push/PR で一度も
+      # 実行されない。ADR-097 決定0＝build_input_context が親指押下状態を
+      # 落とさないことを固定する回帰ガードで、これが実行されないと決定0の退行を
+      # 検出できない。2026-08-20 の独立レビューで発覚、追加）。
       # これらは決定的（環境非依存）なのでブロック化する（continue-on-error なし）。
       - name: Run golden / architecture guard tests (Windows)
-        run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test ime_key_sequence_golden
+        run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test ime_key_sequence_golden --test thumb_context_guard
 
       # E2E の決定的テスト（純 Engine の in-process ロジック + SendMessage/WM_CHAR）は
       # フォアグラウンドフォーカス非依存で、実 HWND 生成に失敗しても early-return で
