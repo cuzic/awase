@@ -9245,10 +9245,15 @@ x86_64-pc-windows-msvc -p awase-windows` グリーン（`composition_fsm.rs`
 `#[cfg(windows)]` のため Linux では実行不可、Windows 実機での
 `cargo test -p awase-windows --lib` 実行は未実施。
 
-**未実施（実機ソーク待ち）:** Windows 実機（Windows Terminal /
-PowerShell、GJI）での長時間ソーク検証。cold-start 系の不具合
-（`giving up`/literal 化）が再発しないこと、`@` 漏れが解消すること、
-BUG-69 の force-on 経路が引き続き独立して機能することを確認すること。
+**Windows 実機での初回確認（2026-08-22 追記、Windows Terminal /
+PowerShell、GJI）:** ユーザーによる通常使用で「`@` の大量出力は改善した」
+ことを確認。ただし使用量が多くないため**完全解消したかは未確定**——
+「かなり改善している」という報告であり、稀な残存漏れの有無は継続観察
+が必要。
+
+**未実施（引き続きソーク待ち）:** 長時間・高頻度タイピングでの完全解消
+確認、cold-start 系の不具合（`giving up`/literal 化）が再発しないこと、
+BUG-69 の force-on 経路が引き続き独立して機能することの確認。
 ADR-100 決定3-c（VK 再選定実験）の一部として実機データを追加する。
 
 **関連ファイル:** `crates/awase-windows/src/tsf/composition_fsm.rs`
