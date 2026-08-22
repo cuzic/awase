@@ -7,7 +7,15 @@
            Manufacturer="cuzic"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
+    <!-- Schedule="afterInstallExecute": 既定値 afterInstallValidate のままだと
+         新バージョンのファイルを配置する前に旧バージョンを完全アンインストール
+         してしまい、ConfigFile/NicolaYab の NeverOverwrite="yes" が保護対象
+         （ファイルではなく HKCU レジストリ値）ごと消えて無力化する
+         （ADR-099 F1、決定0）。afterInstallExecute にすると新バージョンの
+         コンポーネント登録が先に走るため、GUID が不変なコンポーネントは
+         「新製品からも参照される」状態になり、続く旧製品削除処理で消されない。 -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version is already installed."
+                  Schedule="afterInstallExecute" />
     <MediaTemplate EmbedCab="yes" />
 
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/cuzic/awase" />
@@ -47,6 +55,9 @@
         <RegistryValue Root="HKCU" Key="Software\awase" Name="SettingsExe"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
+      <!-- この GUID を変更すると ADR-099 決定0 が意図するアップグレード時の
+           ユーザー設定保護が壊れる。
+           crates/awase-windows/tests/wix_installer_guard.rs（決定8）参照。 -->
       <Component Id="ConfigFile" Guid="57E95F1F-4785-40B7-A4E7-16613080C938" NeverOverwrite="yes">
         <File Source="dist\config.toml" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="ConfigFile"
@@ -56,7 +67,18 @@
 
     <!-- Layout files -->
     <ComponentGroup Id="LayoutFiles" Directory="LayoutDir">
-      <Component Id="NicolaYab" Guid="9690990E-0D11-425B-B60C-AF23D5E87226">
+      <!-- NeverOverwrite="yes": layout/nicola.yab は awase-settings の配列編集
+           タブがその場で上書き保存するユーザーデータ（ADR-099 F3訂正）。
+           Schedule="afterInstallExecute" だけでは通常アップグレード時の
+           InstallFiles による上書きは防げない（防げるのは旧製品削除に
+           よる消失のみ）ため、ConfigFile と同様にここでも必要（ADR-099 決定0
+           round2 MF-1）。
+           以下の GUID を変更すると、この保護（新旧バージョン間で同一
+           コンポーネントとして扱われることによるユーザーデータ保持）が
+           構造的に壊れる。crates/awase-windows/tests/wix_installer_guard.rs
+           （ADR-099 決定8）がこの GUID・NeverOverwrite・Schedule の3点を
+           固定しており、変更する場合はテストごと意図的に更新すること。 -->
+      <Component Id="NicolaYab" Guid="9690990E-0D11-425B-B60C-AF23D5E87226" NeverOverwrite="yes">
         <File Source="dist\layout\nicola.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaYab"
                        Type="string" Value="" KeyPath="yes" />
@@ -64,7 +86,8 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Data files -->
+    <!-- Data files（ユーザーが編集する手段を持たないプログラム資産のため
+         NeverOverwrite は付けない。ADR-099 決定2参照） -->
     <ComponentGroup Id="DataFiles" Directory="DataDir">
       <Component Id="NgramData" Guid="DCF4BA85-03F3-4EC7-BF17-D870682FFF5E">
         <File Source="dist\data\ngram_hiragana.csv.gz" />

@@ -888,11 +888,8 @@ engine_off_solo_triple = "VK_NONCONVERT"
 
     <div class="card">
       <h3>ZIP version (portable)</h3>
-      <ol style="padding-left:1.4em;color:var(--text-secondary)">
-        <li style="margin-bottom:0.4rem">Right-click the tray icon → "Exit" to quit awase</li>
-        <li style="margin-bottom:0.4rem">If you enabled auto-start, disable it from the tray menu or the settings window (this removes the entry from the <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> registry key)</li>
-        <li>Delete the entire extracted folder</li>
-      </ol>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Run <code>uninstall.ps1</code> from the extracted folder in PowerShell. By default it does <em>not</em> delete <code>config.toml</code> or your layout files (<code>layout/</code>) — this matches the common case of quitting and removing awase temporarily before an upgrade. To remove everything, run <code>uninstall.ps1 -Purge</code> instead.</p>
+      <p style="color:var(--text-secondary);font-size:0.85rem"><strong>Note:</strong> you do not need to run <code>uninstall.ps1</code> (or manually delete the folder) before upgrading. Just unzip the new release and run <code>install.ps1</code> again — your existing settings and layout files are preserved.</p>
     </div>
 
   </div>

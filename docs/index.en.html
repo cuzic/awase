@@ -595,6 +595,12 @@ footer p{margin-bottom:0.3rem}
         <li>Run <code>install.ps1</code> from the unzipped folder in PowerShell (registers startup)</li>
         <li>Run <code>awase.exe</code> (it lives in the tray)</li>
       </ol>
+      <p style="color:var(--text-secondary);font-size:0.88rem">
+        <strong>Upgrading:</strong> just unzip the new release and run
+        <code>install.ps1</code> again in the same folder (<code>config.toml</code>
+        and your layout files are preserved by default). There is no need to
+        run <code>uninstall.ps1</code> first.
+      </p>
 
       <h3>Build from source</h3>
       <div class="code-block">cargo build -p awase-windows --release</div>
