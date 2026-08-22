@@ -490,7 +490,7 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
 
 ---
 
-## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・群B/群Cとも実機実験実施、いずれも有望だが不確定）
+## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・**2026-08-22、群Bの結果をもってユーザー判断により本採用（実装済み）**。群Cは対象外・別課題として残存）
 
 **背景**: BUG-69（`docs/known-bugs.md`）/ [ADR-098](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
 決定3 の調査で、eager TSF warmup（`send_eager_tsf_warmup`、
