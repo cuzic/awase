@@ -10,7 +10,7 @@
 //!
 //! 1. **過剰**: `mark_send()` は NICOLA の通常の文字出力（conv を一切変えない）
 //!    でも呼ばれるため、打鍵のたびに fence が誤って落ちる。
-//! 2. **不足**: `send_eager_tsf_warmup` が呼ぶ `send_vk_dbe_hiragana_pair`
+//! 2. **不足**: `send_eager_tsf_warmup` が呼ぶ `send_eager_warmup_vk_pair`
 //!    （`tsf/send.rs`）は `win32::send_input_safe` を直接叩き `mark_send` を
 //!    一切通らないため、fence が本来捕捉すべき「awase 自身の warmup 書き込み」
 //!    を1つも検出できていなかった。

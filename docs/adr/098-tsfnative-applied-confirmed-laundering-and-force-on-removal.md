@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**実装済み（クロスコンパイル検証のみ、Windows 実機未検証）。** Opus の architect ⇔ premortem reviewer 相互討議を3ラウンド実施し（それぞれ独立した Opus インスタンス、実コードを都度検証）、ラウンド3レビュアーの評決は「実装着手可、4巡目不要」。さらに全体俯瞰の architect ⇔ reviewer 討議で決定6(a/b/c) を追加確定した。**決定0・1-a・1-b・1-c・2・4・6-a・6-b・6-c を実装済み**（決定3・5 は元々 no-op/記録専用）。`cargo xwin check/build --tests/clippy --lib -D warnings` は全てクリーン、`cargo test -p awase-windows --lib`（427件）と全 architecture guard / golden / drift-correction-replay / journal-replay 系テスト（計77件）が成功。**Windows 実機での再現・検証・ソークは未実施。** 決定3-c（GJI warmup キー再選定）と決定4-b（enforce-OFF の settle-retry 化）は本 ADR のスコープ外として未着手のまま残る。詳細は `docs/known-bugs.md` BUG-69 の「実装済み（2026-08-21 追記）」節を参照。
+**実装済み（クロスコンパイル検証のみ、Windows 実機未検証）。** Opus の architect ⇔ premortem reviewer 相互討議を3ラウンド実施し（それぞれ独立した Opus インスタンス、実コードを都度検証）、ラウンド3レビュアーの評決は「実装着手可、4巡目不要」。さらに全体俯瞰の architect ⇔ reviewer 討議で決定6(a/b/c) を追加確定した。**決定0・1-a・1-b・1-c・2・4・6-a・6-b・6-c を実装済み**（決定3・5 は元々 no-op/記録専用）。`cargo xwin check/build --tests/clippy --lib -D warnings` は全てクリーン、`cargo test -p awase-windows --lib`（427件）と全 architecture guard / golden / drift-correction-replay / journal-replay 系テスト（計77件）が成功。**Windows 実機での本 ADR 自体の再現・検証・ソークは未実施のまま。** 決定3-c（GJI warmup キー再選定）は本 ADR のスコープ外として先送りしたが、[ADR-100](100-gji-warmup-vk-ime-on-reinit.md) が引き取り2026-08-22に実機検証・採用済み（`docs/known-bugs.md` BUG-69「Windows 実機での初回検証」節も参照）。決定4-b（enforce-OFF の settle-retry 化）は依然未着手のまま残る。詳細は `docs/known-bugs.md` BUG-69 の「実装済み（2026-08-21 追記）」節を参照。
 
 ## コンテキスト
 
@@ -533,6 +533,6 @@ force-on ブロック撤去 + `apply_ime_open_with_applied` 削除 + `architectu
 - 決定1により、Chrome/Edge（`Imm32Unavailable`）の force-ON 不発は直らない（決定5参照）。
 - `record_ime_apply_result` の `Failed → Confirmed{open:!open}` と `on_ime_applied` の非対称は未修正（後続課題）。ADR-087 側「前提の訂正」追補も本非対称を明記する形に併せて訂正した。
 - `FORCE_ON_RETRY_COOLDOWN_MS = 3_000` は実測なしのレート制限ポリシー（`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` と同値を援用）。ソークで安定して収束するなら短縮を検討してよいが、実測を伴わない短縮は行わないこと。
-- 決定3-c（GJI warmup を `VK_IME_ON` に置き換えられるかの実機実験）は未実施。`docs/experiments.md` に起票済み。
+- 決定3-c（GJI warmup を `VK_IME_ON` に置き換えられるかの実機実験）は [ADR-100](100-gji-warmup-vk-ime-on-reinit.md) が引き取り、2026-08-22 に実機検証（群B）を経て採用・実装済み（`docs/known-bugs.md` BUG-50 追補2参照）。
 - 決定1〜2の実装順序を守らないと、単独修正が別の未監査の穴を露出させ regression する構造（BUG-34 追補4の3ラウンド premortem と同型）である。決定1（1-a+1-b+1-cを同一コミット）→決定2の順で進めること（実装ではこの順序で行い、分割コミットはしなかった）。
 - **`sync_ime_kind_from_observation`（`runtime/message_handlers.rs:444`）への波及は未検証。** この関数は `applied.applied_open() == Some(true)` を条件に `gji_on_ime_on(mode)`（GjiFsm 遷移トリガー）を呼ぶ。決定1-a により TsfNative では `applied` がフォーカス入場後 `Unknown` のまま残るため、`WM_IME_KIND_CHANGED`（GJI 検出）がこの関数を real actuation より先に呼んだ場合、この経路単独では即時に GjiFsm を同期しなくなる。ただし ADR-089 §2.4（INV-42）の `ActuationReceipt.settle()` → `GjiSyncSink::sync_gji(GjiFsmSync::OnImeOn)`（`platform.rs:1057`）が実際の actuation 完了時に独立して GjiFsm を同期するため、force-ON（決定1-c）や drift correction が一度でも実行されれば追いつくはずだが、この2経路の相互作用は実機で未検証。GjiFsm が OffCold に残り続けたら BUG-18 型の退行として扱い、`sync_ime_kind_from_observation` 側にも `warmup_ime_on()` 相当の belief フォールバックを追加するか検討すること（ソーク項目#11）。

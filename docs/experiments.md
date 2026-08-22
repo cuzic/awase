@@ -490,7 +490,7 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
 
 ---
 
-## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、事前登録・未実施）
+## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・**2026-08-22、群Bの結果をもってユーザー判断により本採用（実装済み）**。群Cは対象外・別課題として残存）
 
 **背景**: BUG-69（`docs/known-bugs.md`）/ [ADR-098](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
 決定3 の調査で、eager TSF warmup（`send_eager_tsf_warmup`、
@@ -506,20 +506,176 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
 将来的に `VK_IME_ON`（open のみ、conv には触れない）へ置き換えられれば
 BUG-50 系のリスクを構造的に消せるのではないか、という代替案を残した。
 
+**背景の訂正（ADR-100）**: ADR-098 決定3 の原文は eager warmup 撤去の
+被害例として「Chrome の BUG-02 リテラル化」を挙げているが、これは誤りと
+判明した。eager warmup は `InjectionMode::Tsf` のときしか発火せず、
+Chrome/Edge（`AppKind::TsfNative` → `InjectionMode::Vk`）は対象外である
+（`UnicodeLiteralObserverFsm` の実行時学習も `Unicode` モード限定なので
+Chrome が事後的に `Tsf` へ昇格することもない）。実験対象は正確には
+「config `app_overrides.force_tsf` に登録された、または実行時学習で
+`Tsf` へ昇格したアプリ」という可変集合であり、典型的には WezTerm /
+Windows Terminal が該当するが、実験前に `[tsf-eager-warmup]` ログで
+実対象を特定すること（実対象が無ければ本実験は空振りになる）。
+
 **未実施の理由**: `VK_IME_ON` が TSF composition context の cold-start
 （BUG-02 系）を `VK_DBE_HIRAGANA` と同等に解消できるかは実機での検証が
 必要で、ADR-098 のスコープ外として先送りした（decision1〜2 の本体修正を
-優先）。
+優先）。ADR-100 はこの宿題を引き取り、**「`VK_DBE_HIRAGANA` を維持したまま
+`VK_IME_OFF→VK_IME_ON` トグルへ拡張する案」と「give-up 分岐に confirm 後
+retry を追加する案」の2つのユーザー提案を検討したうえで両方却下し**、
+本エントリが元々想定していた縮小版（`VK_IME_ON` の**単発**送信）だけを
+実験として存続させた。却下の詳細は ADR-100 決定1・決定3 を参照。
 
 **このエントリは事前登録**。実機実験に着手する際は以下を測定・記録すること:
 
-| 項目 | 合格基準（案） | 意味 |
-| --- | --- | --- |
-| WezTerm/Windows Terminal で `VK_IME_ON` 送信後の初回入力リテラル化 | 発生しない（`VK_DBE_HIRAGANA` と同等） | cold-start 対策として代替になるか |
-| conv モード（かな/ローマ字）への意図しない影響 | 無し | `VK_DBE_HIRAGANA` が持つ「ひらがなに強制する」副作用が消えることの確認 |
-| BUG-50 系デッドロックの再現有無 | 再現しない | 置き換えの本来の目的（危険な副作用の除去）が達成されているか |
+| 群 | 送信内容 | 項目 | 合格基準（案） | 意味 |
+| --- | --- | --- | --- | --- |
+| A（現行） | `VK_DBE_HIRAGANA` 単発（scan 実値 + `TSF_MARKER`） | 対照 | — | ベースライン |
+| B | `VK_IME_ON` 単発 | 初回入力がリテラル化しないか | A と同等（置換前後で**入力結果の文字列が一致**すること。「conv が変わらない」では不十分——「今まで寄せてくれていたものが寄らなくなる」形の劣化を見逃す） | cold-start 対策として代替になるか |
+| B | 同上 | conv モード（かな/ローマ字）への意図しない影響 | 無し（入力結果の文字列比較で判定） | `VK_DBE_HIRAGANA` が持つ「ひらがなに強制する」副作用が消えることの確認 |
+| B | 同上 | BUG-50 系デッドロック（カタカナロックイン）の再現有無 | 再現しない | 置き換えの本来の目的（危険な副作用の除去）が達成されているか |
+| B | 同上 | `VK_IME_ON` 送信後に `gji_write_bytes` が上昇するか | 上昇する（`send_unicode_cold_warmup_keys` の犠牲キー設計が「単発では上がらない」ことを示唆しているため、まずこれを確認する） | cold-start トリガーとして機能しているかの直接証拠 |
+| C | 何も送らない（eager warmup 無効化） | 初回入力がリテラル化するか | — | ADR-098 決定3 の前提（eager warmup が「唯一生きている実効的な cold-start 対策」）自体の検証。A/B と比較する対照群 |
+| — | — | `MapVirtualKeyW(VK_IME_ON=0x16, MAPVK_VK_TO_VSC)` の戻り値 | 非ゼロなら scan 付き送信、0 なら scan=0 で試す | 送信形態（`wScan`/`dwExtraInfo` マーカー）は独立変数。エントリ09（scan=0 の `VK_DBE_ALPHANUMERIC` 注入がフックにすら届かず反証された事例）を踏まえ、否定的結果が「`VK_IME_ON` が効かない」なのか「scan/marker の組み合わせが悪い」なのかを事後に分離できるよう、どの組み合わせを試したか実験ログに明記すること |
 
-**学び（暫定）**: 「唯一生きている機構だから触らない」という判断（決定3
-KEEP）と、「触るなら安全な代替キーに変えたい」という改善方向は両立する。
-前者は今回の BUG-69 修正のスコープ、後者は実機検証を要する別トピックとして
-分離して記録することで、どちらも見失わずに残せる。
+**既知の否定寄りの示唆（ADR-100 F13）**: 本番コード
+`Output::send_unicode_cold_warmup_keys`（`output/mod.rs:312-344`、Unicode
+long-cold 経路）は既に `VK_IME_ON` 単発を送っているが、その直後に
+`VK_A + VK_BACK` の犠牲キーを追加送信している。doc コメントは「`VK_A` が
+GJI の hiragana composition を起動して `gji_write_bytes` を増やす」と
+書いており、これは「`VK_IME_ON` 単発だけでは composition が起動しない」
+可能性を示唆する（確定ではない——犠牲キーが warm 手段なのか単なる観測
+手段なのかはコードからは決着しない）。案A（`VK_IME_ON` 単発）が不合格
+だった場合の次手として、**案A'（`VK_IME_ON` + 犠牲キー、ADR-048
+SacrificialWarmup と同型）を保持すること**。「`VK_IME_ON` 単発が駄目
+だったから `VK_IME_ON` 系は全部駄目」と一般化しないこと。
+
+**提案1（`VK_DBE_HIRAGANA` → `VK_IME_OFF→VK_IME_ON` トグルへの拡張）の
+却下記録（ADR-100 決定1）**: (a) 置換先の `send_chrome_gji_reinit_and_poll`
+は今日「Unicode long-cold」と「literal give-up」という低頻度イベントでしか
+撃たれておらず、それを確定キー・Ctrl 解放・再注入のたびに撃たれる高頻度
+パス（eager warmup）へ移すのは頻度差が大きすぎる。(b) `VK_DBE_HIRAGANA`
+単発は composition を閉じない冪等操作だが、`VK_IME_OFF→VK_IME_ON` は
+composition を一度閉じる破壊的遷移で未確定 preedit を commit する
+（BUG-36 で確定）。eager warmup の呼び出しサイトには composition の
+直後でありうるものが含まれ、この前提が成り立たない。(c) confirm
+（IMC ポーリング）が読める保証が無い（TSF ネイティブで読めた実機事例は
+1件あるが頻度は未測定）。(d) 目的（`VK_DBE_HIRAGANA` の conv 副作用の
+除去）はより安い手段（本エントリの案A/A'）で達成できる。
+
+**提案2（give-up 分岐への confirm 後 retry 追加）の却下記録と代替策
+（ADR-100 決定3）**: 却下理由は「retry という発想が悪い」からではなく
+「`send_chrome_gji_reinit_and_poll` のポーリングに完了通知の経路が
+存在せず、`confirmed` が立たない環境では実質 300ms のタイマー待ちに
+劣化する」ため。give-up 到達時の文字消失は推測ではなく3件記録済みの
+実害（BUG-16 追補3・BUG-38/39 追補2・BUG-45）であり、却下するだけでは
+代替策が無いまま終わる。そこで**案L（give-up 分岐で捨てた romaji を
+journal へ記録する。送信ゼロ・挙動変更ゼロ）を採用**し、**案J（Unicode
+直接送信への退避）・案K（backspace も打たない）は却下せず保持**した。
+プライバシー方針: 案L は journal（既に `attach_log` チェックボックスの
+opt-in 配下）へ生の romaji を記録する。新しい送信チャネルは開かない。
+
+**学び（暫定）**: 「唯一生きている機構だから触らない」という判断（ADR-098
+決定3 KEEP）と、「触るなら安全な代替キーに変えたい」という改善方向は両立
+する。前者は BUG-69 修正のスコープ、後者は実機検証を要する別トピックと
+して分離して記録することで、どちらも見失わずに残せる。
+
+**追加の学び（ADR-100 起票で得たもの）**: 既存機構の再利用に見える提案
+でも、その機構が今日どの頻度で・どのモードで撃たれているかを先に数える
+こと。「使われていない」と結論する前に、その機構が出すログ文字列の唯一の
+出力元を grep で確かめること——ADR-100 の初稿は `[gji-coro]`/`[h1-warmup]`
+の出力元を確かめずに「Tsf モードでは一度も撃たれていない」と書き、自分が
+同じ ADR 内で引用していた BUG-45 のログと矛盾した。さらに「この経路は
+必ずモード X 限定である」と書く前に、その関数の呼び出し元を grep で
+全数数えること。分岐条件が `injection_mode` 以外の軸（`tsf_gate` 等）に
+載っている呼び出し元が混じっていることがある（ADR-100 は同型の「モード
+分割の言い切り」を3回間違えた）。`AppImeProfile` / `AppKind` /
+`InjectionMode` / `TsfGateState` は4つの独立した軸であり、どれか1つで
+語ると必ずどこかが漏れる（ADR-083 の教訓と同型）。
+
+### 実施記録 #1（2026-08-22、群C、交絡あり・参考記録のみ）
+
+**アプリ**: Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。
+**IME**: GJI、Engine ON、cold=1〜8、`gji_idle_ms` 最大 85687（約85.7秒）。
+**手順**: `send_eager_tsf_warmup` の**冒頭**（3ゲート判定より前）に
+`AWASE_DIAG_DISABLE_EAGER_WARMUP` 環境変数による診断ゲートを追加した診断
+ビルドを、Windows実機（dragonflyg4）で `RUST_LOG=debug` 付き起動し、通常
+入力・長時間放置後の入力を実施。
+
+**結果**: 8回のcold-start全件で per-VK confirm が正常に confirmed へ到達、
+`giving up` は0件。
+
+**結論: 不確定（採用しない）。** ゲートを3ゲート判定の前に置いたため、
+「本来送るはずだった F2 を阻止した」場合と「そもそも既存ゲートで弾かれる
+はずだった」場合が同一ログになる交絡がある。8回のうち何回が実際に
+eager warmup を阻止したケースだったか、事後に分離できない。
+
+### 実施記録 #2（2026-08-22、群C、交絡解消後）
+
+**アプリ**: Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。
+**IME**: GJI、Engine ON。
+**手順**: 診断ゲートを3ゲート判定の**後**（`can_warmup()` 通過後）へ移動
+し、`[diag]` ログが「本来なら送信していたはず」の場合のみ出るよう修正。
+以下3シナリオをそれぞれ最低1回実施:
+
+1. IME を明示的に OFF にした状態で他ウィンドウへ切り替え、Windows
+   Terminal へフォーカスを戻して直後に入力（BUG-69 F3 が指摘する
+   「実IMEがOFFの状態でフォーカスが戻る」場面を狙ったもの）
+2. 63秒放置後の入力
+3. 高速連続打鍵（BUG-45 の再現手順を意識したもの、14秒間に3回連続の
+   cold-start が発生）
+
+**結果**: 3シナリオとも、狙った cold イベントを含め全件が per-VK confirm
+で正常に confirmed へ到達。`giving up`・`SuspectedLiteral` は全セッション
+通じて0件。
+
+**結論: 有望だが不確定。** 交絡は解消されたが、各シナリオ1〜4回に過ぎず
+（本エントリの合格基準表が要求する「各シナリオ5試行以上」に届かない）、
+群A（現行F2）・群B（`VK_IME_ON` 単発）との比較は未実施。さらに Opus
+advisor によるレビューで、BUG-69（ADR-098）F1/F2/F3 が「TsfNative+GJI の
+フォーカス復帰時、実際に機能する actuation は eager warmup だけ」と結論
+していることが指摘された。ADR-100 はこれまでこの結論を一度も参照して
+おらず、eager warmup 撤去を正式決定する前提として BUG-69 F1/F2 の修正が
+先に必要と判断された（詳細は ADR-100 premortem P6）。
+
+**学び（実施記録から）**: **対照群を作るための無効化ゲートは、既存の判定
+ゲートより後に置くこと。** 前に置くと「意図的に止めた」ケースと「元々
+発火しない」ケースが同一ログ行になり、事後に分離できない交絡を生む
+（実施記録#1で実際に発生）。無効化する前に、その機構が「今日・この環境
+で・本当に発火する」ことを同一ログで確認してから止める。エントリ09
+（scan=0 注入がフックにすら届かず反証された事例）と同型の失敗——独立変数
+が実は意図通りに動いていなかった——として記録する。
+
+### 実施記録 #3（2026-08-22、決定4-f + 群B）
+
+**決定4-f（`MapVirtualKeyW` 実機測定）**: standalone PowerShell からの
+P/Invoke と、awase.exe 自身の送信直前（実行時キーボードレイアウト文脈内）
+に追加した診断ログの2通りで測定し、`MapVirtualKeyW(VK_IME_ON=0x16,
+MAPVK_VK_TO_VSC) = 0xF2 (242)`（非ゼロ）で一致。**ただし standalone 測定
+だけでは信頼できないことも判明**——同じ standalone テストで
+`VK_DBE_HIRAGANA (0xF2)` を引くと `0` を返したが、実際の hook ログは
+一貫して `scan=0x70` を示しており矛盾する。`MapVirtualKeyW`（Ex でない版）
+は呼び出しスレッドの実行時キーボードレイアウトに依存するため、standalone
+プロセスと awase.exe 本体とで異なる値を返しうる。**今回は VK_IME_ON に
+ついて両文脈が一致したため事なきを得たが、一般には awase 自身のプロセス
+内で測るべき**という教訓が新たに得られた。結果、群B実験は第1候補
+（`VK_IME_ON`, scan=0xF2 実値, `TSF_MARKER`）で組めることが確定した。
+
+**群B（`VK_IME_ON` 単発、候補1の形態）**: **アプリ** Windows Terminal
+（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。**IME** GJI、Engine ON。
+**手順**: `send_vk_dbe_hiragana_pair` の送信 VK を環境変数で
+`VK_DBE_HIRAGANA`→`VK_IME_ON` に差し替えた診断ビルドで、15.6秒放置後の
+入力・30.3秒放置後の入力を各1回実施。**結果**: 両方とも per-VK confirm
+で正常に confirmed へ到達し、画面表示もユーザー目視で正しいひらがなと
+確認した。この間の `cold=1`〜`13`（4種の cold reason）を通じて
+`giving up`/`SuspectedLiteral` は0件。傍証として、ある送信の約1.9秒後に
+通常の数百倍（584KB）の GJI 書き込みバーストを1件観測したが、因果の
+確定には至っていない。
+
+**結論: 有望だが不確定（群Cと同型の限界）。** 2026年5月に一度試されて
+撤回された `VK_IME_ON` warmup 実験（`48d25f2`→`3d49109`、「TSF
+composition context の初期化をトリガーしない」という実機観測で撤回）
+とは異なる結果になっているが、当時と送信形態（scan の有無）が同一だった
+かは確認できておらず、単純に「5月の結論を覆した」とは言えない。サンプル
+数は決定2 の合格基準（各条件5試行以上、群Aとの同一セッション内比較）に
+遠く届いておらず、群Aとの直接比較は一度も行っていない。

@@ -6124,6 +6124,35 @@ IME を OFF→ON しても（意図的か否かを問わず）conv-mode が変�
 `crates/awase-windows/tests/golden/ime_key_sequences.txt`。関連: `48a667a`
 （OFF 側の同種修正、本追補はこれと ON 側を対称化した）。
 
+**追補2（2026-08-22、GJI eager warmup 側の残り火を解消、ADR-100 決定2）:**
+本追補（2026-08-06）は `MsImeDirectStrategy` の ON キーを `VK_DBE_HIRAGANA` から
+`VK_IME_ON` へ移行して BUG-50 のデッドロック前提を潰したが、`GjiDirectStrategy`
+（IME 開閉制御）とは別に、`Output::send_eager_tsf_warmup`（TSF composition の
+cold-start 事前ウォームアップ、`output/mod.rs`）が独立に `VK_DBE_HIRAGANA`
+（`tsf/send.rs::send_vk_dbe_hiragana_pair`、旧名）を送り続けており、この経路には
+BUG-50 型の副作用（「開く」と「ひらがなに強制する」の束ね）が残っていた
+（[ADR-098](../adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
+F4 が「受容中の既知リスク」として明示的に残していたもの）。
+
+[ADR-100](../adr/100-gji-warmup-vk-ime-on-reinit.md) 決定2 の実機検証（群B、F17・F18）
+で `VK_IME_ON`（scan 実値 + `TSF_MARKER`、既存の送信形態のまま VK のみ差し替え）が
+cold-start 対策として機能することを確認したうえで、`send_vk_dbe_hiragana_pair` を
+`send_eager_warmup_vk_pair` に改名し、送信 VK を `VK_IME_ON` へ変更した
+（`crates/awase-windows/src/tsf/send.rs`・`output/mod.rs`）。これにより eager
+warmup 経路からも BUG-50 型の副作用が構造的に消える。
+
+**テスト**: `cargo clippy -p awase-windows --lib -- -D warnings`・
+`cargo test -p awase-windows --lib`（697件）・`architecture_guard`（38件）・
+`golden_scenarios`（22件）・`ime_key_sequence_golden`（2件）、いずれも
+dragonflyg4 実機ビルドで green（Windows 実機、クロスコンパイルではない）。
+**この変更は `ime_key_sequence_golden.rs` が固定する `characterize_strategy`
+の経路を通らないため、既存 golden では守られない**（ADR-100 決定2 が
+指摘済みの限界。回帰させないためには本追補が (b) の記録として機能する）。
+実機での cold-start 検証は ADR-100 F18（15.6秒・30.3秒放置、計13回の
+cold-start、`giving up`/literal 化0件）を参照。群A（旧 `VK_DBE_HIRAGANA`）
+との同一セッション内の直接比較は未実施のまま採用しており、比較データが
+将来必要になった場合は ADR-100 決定2 の残タスクを参照すること。
+
 ## BUG-51: TsfNative の drift correction が `TIMER_IME_REFRESH` の恒久停止で再起動されず、IME OFF で Engine ON のまま最大8分ドリフトする
 
 **症状:** MS-IME（TsfNative）環境で、実機ログに `[ime-off-rescue] 50ms timer expired →
@@ -9097,10 +9126,36 @@ ADR-098（[docs/adr/098-tsfnative-applied-confirmed-laundering-and-force-on-remo
   `architecture_guard`（36件）、`golden_scenarios`（22件）、
   `drift_correction_replay`（2件）、`intent_store_effective_open`（8件）、
   `journal_replay`（1件）、`layer_boundary_guard`（8件）、いずれも
-  全件成功。**Windows 実機での検証・ソークは未実施**（クロスコンパイル
-  環境での静的検証のみ）。
+  全件成功。
+
+**Windows 実機での初回検証（2026-08-22 追記、dragonflyg4、Windows Terminal
+/ `CASCADIA_HOSTING_WINDOW_CLASS` / GJI）**: `RUST_LOG=debug` で通常ビルドを
+起動し、IME を明示的に OFF にした状態から他ウィンドウへ切り替え → 20〜30秒
+放置 → Windows Terminal へフォーカスを戻し、**物理キーに一切触れず**さらに
+数秒待機、という手順を実施。ログ上で以下を確認した:
+
+1. フォーカス変更直後、`[focus-settle] apply_force_on_for_imm_broken skipped
+   (settling) → 550ms 後に refresh で再試行` が発火（決定1-a/1-c の settle
+   ゲートが機能している証拠）。
+2. 約550ms後、`[apply-ime] GJI direct: send 0x0016 (open=true)` →
+   `[apply-ime] open=true eff=true conf=true → outcome=Applied` →
+   **`force-ON (ImmBrokenForceOn): apply_ime_open(true) → Applied`** が発火。
+   直前の物理 F2 キー押下（`injected=false`）は88秒以上前で、この force-ON
+   とは無関係であることをタイムスタンプで確認済み（同種のイベントが2回
+   連続で観測され、2回目の直前にあった物理キー押下も `no-op:
+   effective_open は既に true → apply-ime 見送り` で実送信をトリガーして
+   いないことを確認した）。
+
+**これは BUG-69 の核心（`apply_force_on_for_imm_broken` が TsfNative で
+恒久的に無効化されていた）が、実際に解消されていることを示す最初の実機
+証拠である。** ただしこれは1セッションでの限定的な確認であり、`docs/
+known-bugs.md`/ADR-098 が要求する「ソーク」（長時間・多様なシナリオでの
+継続検証）はまだ行っていない。
+
 - **未実施のまま残るもの**: 決定3-c（GJI warmup キーの再選定実験、
-  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、`docs/experiments.md` へ先送り）、
-  決定4-b（enforce-OFF を settle-retry 化する代替設計）、および
-  `focus_tracking.rs`/`key_pipeline.rs` に残る軽微な belief-laundering
-  箇所（コメント修正のみで動作は維持、ADR-098 決定5参照）。
+  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、[ADR-100](../adr/100-gji-warmup-vk-ime-on-reinit.md)
+  が引き取り実機データ収集中）、決定4-b（enforce-OFF を settle-retry 化
+  する代替設計）、および `focus_tracking.rs`/`key_pipeline.rs` に残る
+  軽微な belief-laundering 箇所（コメント修正のみで動作は維持、ADR-098
+  決定5参照）。長時間ソーク・他アプリ（Windows Terminal 以外の TsfNative
+  クラス）・実IMEが本当にOFFのまま長時間放置されるケースでの検証も未実施。
