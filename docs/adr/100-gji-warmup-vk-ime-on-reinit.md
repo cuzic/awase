@@ -341,6 +341,19 @@ BUG-33 のソーク結果（2026-07-22、0 件）は依然として事実だが�
 
 **この経験から得た教訓**（`docs/experiments.md` エントリ16へも転記）: **対照群を作るための無効化ゲートは、既存ゲート（判定条件）の後に置くこと。** 前に置くと「意図的に止めた」と「元々発火しない」が同じログ行になり、事後に分離できない交絡を生む。無効化する前に、その機構が「今日・この環境で・本当に発火する」ことを同一ログで確認してから止める。
 
+### F17: 決定4-f を実機測定した——`MapVirtualKeyW(VK_IME_ON=0x16, MAPVK_VK_TO_VSC)` は非ゼロ（0xF2）を返す
+
+2026-08-22、dragonflyg4 で2通りの方法で測定した。
+
+1. **standalone PowerShell から直接 P/Invoke**（awase を介さない）: `MapVirtualKeyW(0x16, MAPVK_VK_TO_VSC) = 0xF2 (242)`。
+2. **`send_ime_mode_key` 内に診断ログを1行追加し、実際の送信直前（awase.exe 自身のスレッド・実行時キーボードレイアウト文脈）で測定**: GJI の IME ON/OFF 切替を複数回発生させ、`[diag-mapvk] MapVirtualKeyW(vk=0x16, MAPVK_VK_TO_VSC) = 0xF2 (242)` を複数回・一貫して観測。`VK_IME_OFF (0x1A)` は `0xF1 (241)`。
+
+両方法で結果が一致した（0xF2）。**ただし方法1だけでは信頼できないことも同時に判明した**——同じ standalone テストで `VK_DBE_HIRAGANA (0xF2)` を引くと `MapVirtualKeyW(0xF2, MAPVK_VK_TO_VSC) = 0` を返したが、これは実際の hook ログが一貫して示す `scan=0x70`（`make_scan_key_input` 経由の自己注入送信、`extra=TSF_MARKER` で確認済み）と矛盾する。`MapVirtualKeyW`（Ex でない版）は呼び出しスレッドの実行時キーボードレイアウトに依存するため、standalone プロセスの文脈と awase.exe 本体の文脈で異なる値を返しうる。**VK_IME_ON については両文脈で一致したため今回は事なきを得たが、一般には standalone 測定だけを信頼してはならない。**
+
+**帰結**: 決定2 の第0ステップ（N5）が要求する分岐が確定した。**第1候補（`VK_IME_ON`, scan=0xF2, `TSF_MARKER`）が成立する。** 群B実験はこの形態で組む。第2候補（scan=0, `IME_KANJI_MARKER`）へフォールバックする必要はない。
+
+**傍証（未検証の偶然の一致、深追いしない）**: `VK_IME_ON` の scan 値 (0xF2) が `VK_DBE_HIRAGANA` 自身の仮想キー値 (0xF2) と数値的に一致している。これが Windows の日本語キーボードレイアウトテーブル内で IME 制御系仮想キーが相互参照されているためか、単なる偶然かは未確認。決定2 の実験結果の解釈に影響する可能性は低いと考えるが、群B が予期しない挙動を示した場合はこの一致を疑ってよい。
+
 ---
 
 ## 決定
@@ -623,7 +636,7 @@ BUG-69（ADR-098）F1/F2/F3 は「TsfNative+GJI のフォーカス復帰時、�
 5. **【F10】BUG-45 の "kaきの" の真の因果。** 追補1 で reinit-commits-preedit 説が「推測」へ格下げされ、以後進展していない。BUG-45 が挙げる次の一手（backspace flush 直後・reinit 直後の画面/バッファ内容の診断ログ、および「か」単独の最小再現）は未実施。**決定3 の案L はこの解析に必要なデータの一部（失われた romaji の値）を供給する。**
 6. **【F4-1、m14 で性格が変わった】conv 軸に profile ゲートが無い非対称。** BUG-55 の経緯から「別方針の設計」であることが分かった（決定6）。残る疑問は「hwnd の取り方で対応する方式が、全 TSF ネイティブクラスで機能するか」——これは項目1 と同じ問いに帰着する。
 7. **【F13】`VK_IME_ON` が GJI の TSF composition context 再初期化を `VK_DBE_HIRAGANA` と同等にトリガーするか**（ADR-098 決定3-c の原問、決定2 測定項目3）。**本 ADR で最終的に答えを出せなかった中心の問い。** ただし完全な未知ではない: `send_unicode_cold_warmup_keys` の設計が「`VK_IME_ON` の後に犠牲キー `VK_A` を足す」形になっていることは、少なくとも「`VK_IME_ON` 単発では `gji_write_bytes` の上昇という観測可能な反応が得られない」ことを示唆する（読み方A）。ただし犠牲キーが warm 手段なのか観測手段なのかはコードからは決着しない（読み方B）。決定4-e / 決定2 測定項目6 が決着させる。
-8. **【F14】`MapVirtualKeyW(VK_IME_ON=0x16, MAPVK_VK_TO_VSC)` の戻り値。** 0 なら scan 付き `VK_IME_ON` は作れない。決定4-f（1行のログで取れる）。
+8. **【F14、F17で解決】`MapVirtualKeyW(VK_IME_ON=0x16, MAPVK_VK_TO_VSC)` の戻り値。** 実機測定済み: `0xF2`（非ゼロ）。第1候補（scan実値）が成立することを確認した。
 9. **【F2、m12】`output/vk_send.rs:531` が本当に到達不能か。** 本 ADR はコードコメント依拠で独立検証していない唯一の項目。決定2 の実験で eager warmup の送信キーを変える場合、この経路も同時に変わるので、到達しうるなら影響を受ける。
 
 ---
