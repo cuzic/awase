@@ -550,7 +550,7 @@ impl Output {
 
     /// IME composition context をコールド状態にマークする。
     ///
-    /// 次の VK / TSF composition 送信時に VK_DBE_HIRAGANA ウォームアップを
+    /// 次の VK / TSF composition 送信時に VK_IME_ON ウォームアップを
     /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
     ///
@@ -580,7 +580,7 @@ impl Output {
     /// - MS-IME → `MsImeStrategy`（常に warm、probe なし）
     /// - GJI → `GjiFsm`（cold probe 機構あり、起動時と同じ）
     ///
-    /// 現在の warmup 戦略が F2 (VK_DBE_HIRAGANA) を自前送信するか（= GJI 戦略か）。
+    /// 現在の warmup 戦略が物理 F2 の代替として VK_IME_ON を自前送信するか（= GJI 戦略か）。
     ///
     /// `PhysicalKeyDisposition::plan` の F2 Suppress 判断に使う。false（MsImeStrategy）
     /// のとき物理 F2 を Suppress すると、代替送信が無いため IME ON にならない（BUG-10）。
@@ -712,11 +712,13 @@ impl Output {
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
         crate::tsf::observer::reset_namechange_seq();
         // カタカナ/英数系 charset への追従 warmup（F1/F0 系）は BUG-19 のロックイン
-        // 事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。常に F2
-        // (VK_DBE_HIRAGANA) のみを送る（ROMAN ビット確保のみで冪等なため反復送信も無害）。
-        match crate::tsf::send::send_vk_dbe_hiragana_pair() {
+        // 事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。常に VK_IME_ON
+        // のみを送る（open 軸のみの冪等キーなため反復送信も無害。2026-08-22、
+        // ADR-100 決定2により VK_DBE_HIRAGANA から変更——後者は「開く」と「ひらがなに
+        // 強制する」を束ねており BUG-50 デッドロックの前提だった）。
+        match crate::tsf::send::send_eager_warmup_vk_pair() {
             Some(ms) => {
-                log::debug!("[tsf-eager-warmup] VK_DBE_HIRAGANA 送信, eager_warmup_sent_ms={ms}ms");
+                log::debug!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
                 self.composition.set_eager_warmup_sent_ms(ms);
             }
             None => {

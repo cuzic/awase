@@ -476,7 +476,7 @@ impl Runtime {
         // 経過 ms）を絶対時刻に換算して突き合わせていたが、`Output::send_keys` が
         // 冒頭・末尾で呼ぶ `mark_send()` は **NICOLA の通常の文字出力（conv を
         // 一切変えない）でも呼ばれる**ため、打鍵のたびにこの fence が誤って
-        // 落ちていた。しかも `send_eager_tsf_warmup` が呼ぶ `send_vk_dbe_hiragana_pair`
+        // 落ちていた。しかも `send_eager_tsf_warmup` が呼ぶ `send_eager_warmup_vk_pair`
         // （本来検出すべき自己出力の代表例）は `mark_send` を一切通らないため、
         // 検出すべきものを1つも捕捉できていなかった（過剰かつ不足の二重の
         // 誤判定）。`conv_mutation_seq`（`win32::send_input_safe` の唯一のゲート、
@@ -1468,7 +1468,7 @@ impl Runtime {
             // 書き込み全般に共通する構造的な制約であり、この箇所固有の先送りではない。
             // Win/Alt が押下中は VK_DBE_HIRAGANA 注入自体をスキップする。
             //
-            // Win: `tsf/send.rs::send_vk_dbe_hiragana_pair` と同じ理由
+            // Win: `tsf/send.rs::send_eager_warmup_vk_pair` と同じ理由
             // （Win を押したまま送ると Win+F2 として届き、Win↑ 時にスタート
             // メニューが開く）。あちらは唯一の判定点 `hook::win_key_held()`
             // を使っており、ここも同じ関数を使うことで判定基準を統一する。

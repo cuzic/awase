@@ -219,7 +219,7 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
 /// 自体は他キーには正常に応答していたため全面停止ではなく、Win キー固有の
 /// 経路でのみ KeyUp が失われたと考えられる）。
 ///
-/// `tsf/send.rs::send_vk_dbe_hiragana_pair` と `ime.rs::send_ime_mode_key`
+/// `tsf/send.rs::send_eager_warmup_vk_pair` と `ime.rs::send_ime_mode_key`
 /// の両方が使う唯一の判定点（旧実装は各所で `is_physical_key_down` の OR を
 /// 個別に重複記述していた）。
 #[must_use]

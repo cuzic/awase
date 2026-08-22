@@ -6124,6 +6124,35 @@ IME を OFF→ON しても（意図的か否かを問わず）conv-mode が変�
 `crates/awase-windows/tests/golden/ime_key_sequences.txt`。関連: `48a667a`
 （OFF 側の同種修正、本追補はこれと ON 側を対称化した）。
 
+**追補2（2026-08-22、GJI eager warmup 側の残り火を解消、ADR-100 決定2）:**
+本追補（2026-08-06）は `MsImeDirectStrategy` の ON キーを `VK_DBE_HIRAGANA` から
+`VK_IME_ON` へ移行して BUG-50 のデッドロック前提を潰したが、`GjiDirectStrategy`
+（IME 開閉制御）とは別に、`Output::send_eager_tsf_warmup`（TSF composition の
+cold-start 事前ウォームアップ、`output/mod.rs`）が独立に `VK_DBE_HIRAGANA`
+（`tsf/send.rs::send_vk_dbe_hiragana_pair`、旧名）を送り続けており、この経路には
+BUG-50 型の副作用（「開く」と「ひらがなに強制する」の束ね）が残っていた
+（[ADR-098](../adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
+F4 が「受容中の既知リスク」として明示的に残していたもの）。
+
+[ADR-100](../adr/100-gji-warmup-vk-ime-on-reinit.md) 決定2 の実機検証（群B、F17・F18）
+で `VK_IME_ON`（scan 実値 + `TSF_MARKER`、既存の送信形態のまま VK のみ差し替え）が
+cold-start 対策として機能することを確認したうえで、`send_vk_dbe_hiragana_pair` を
+`send_eager_warmup_vk_pair` に改名し、送信 VK を `VK_IME_ON` へ変更した
+（`crates/awase-windows/src/tsf/send.rs`・`output/mod.rs`）。これにより eager
+warmup 経路からも BUG-50 型の副作用が構造的に消える。
+
+**テスト**: `cargo clippy -p awase-windows --lib -- -D warnings`・
+`cargo test -p awase-windows --lib`（697件）・`architecture_guard`（38件）・
+`golden_scenarios`（22件）・`ime_key_sequence_golden`（2件）、いずれも
+dragonflyg4 実機ビルドで green（Windows 実機、クロスコンパイルではない）。
+**この変更は `ime_key_sequence_golden.rs` が固定する `characterize_strategy`
+の経路を通らないため、既存 golden では守られない**（ADR-100 決定2 が
+指摘済みの限界。回帰させないためには本追補が (b) の記録として機能する）。
+実機での cold-start 検証は ADR-100 F18（15.6秒・30.3秒放置、計13回の
+cold-start、`giving up`/literal 化0件）を参照。群A（旧 `VK_DBE_HIRAGANA`）
+との同一セッション内の直接比較は未実施のまま採用しており、比較データが
+将来必要になった場合は ADR-100 決定2 の残タスクを参照すること。
+
 ## BUG-51: TsfNative の drift correction が `TIMER_IME_REFRESH` の恒久停止で再起動されず、IME OFF で Engine ON のまま最大8分ドリフトする
 
 **症状:** MS-IME（TsfNative）環境で、実機ログに `[ime-off-rescue] 50ms timer expired →
