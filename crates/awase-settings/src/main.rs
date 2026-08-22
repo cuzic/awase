@@ -257,12 +257,19 @@ fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 /// 各 bool は無関係な由来（keymap キャプチャの修飾キー3つ、配列編集タブの
-/// dirty フラグ1つ）を持つ独立したフラグであり、bitflags 化や enum への統合は
-/// 可読性を下げるだけなので許容する。
+/// dirty フラグ1つ、ADR-099 決定4の確認モーダル開閉フラグ1つ）を持つ独立
+/// したフラグであり、bitflags 化や enum への統合は可読性を下げるだけ
+/// なので許容する。
 #[expect(clippy::struct_excessive_bools)]
 struct SettingsApp {
     config: awase::config::AppConfig,
     config_path: std::path::PathBuf,
+    /// 直近の `AppConfig::load` 結果の分類（ADR-099 決定4）。`Dangerous` の
+    /// 間は `apply()` が無条件保存せず、確認・バックアップを必須にする。
+    config_load_state: awase::config::ConfigLoadState,
+    /// `config_load_state` が `Dangerous` のときに `apply()` が表示する
+    /// 確認モーダルを開いているか。
+    show_dangerous_save_confirm: bool,
     status: String,
     active_tab: Tab,
     available_layouts: Vec<String>,
@@ -317,11 +324,12 @@ impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
         let config_path = find_config_path();
-        let config = match awase::config::AppConfig::load(&config_path) {
-            Ok(cfg) => cfg,
+        let (config, config_load_state) = match awase::config::AppConfig::load(&config_path) {
+            Ok(cfg) => (cfg, awase::config::ConfigLoadState::Loaded),
             Err(e) => {
-                log::warn!("Config load failed: {e}, using defaults");
-                default_config()
+                let state = awase::config::classify_load_error(&e);
+                log::warn!("Config load failed: {e} (classified as {state:?}), using defaults");
+                (default_config(), state)
             }
         };
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
@@ -329,6 +337,8 @@ impl SettingsApp {
         Self {
             config,
             config_path,
+            config_load_state,
+            show_dangerous_save_confirm: false,
             status: String::new(),
             active_tab: Tab::Basic,
             available_layouts,
@@ -370,20 +380,70 @@ impl SettingsApp {
         }
     }
 
-    fn apply(&mut self) {
+    /// `apply()` の実処理。`config_load_state` が `Dangerous`（読み込み失敗で
+    /// 初期値を表示中）のときは呼び出し元（`apply()`）で確認を挟んでから
+    /// これを呼ぶこと（ADR-099 決定4）。
+    fn apply_confirmed(&mut self) {
         let clone = self.config.clone();
         let (_validated, warnings) = clone.validate();
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
+
+        // 保存前バックアップ: config_load_state が Dangerous のとき、既存
+        // ファイルを一度だけ config.toml.bak へ退避する（round1 指摘 M4:
+        // 無条件だと2回目の適用で「壊れた元ファイルのバックアップ」自体を
+        // 上書きしてしまう）。
+        //
+        // コードレビュー指摘 C2: バックアップに失敗しても以前は
+        // `log::warn!` するだけで保存を続行しており、Dangerous を招いた
+        // 原因（PermissionDenied・共有違反など）はバックアップの
+        // 読み取り＝コピーも失敗させやすいため、最もバックアップが必要な
+        // 場面でこそ原本が無防備に上書きされ得た。バックアップ対象の
+        // 既存ファイルがあるのにコピーに失敗した場合は、保存そのものを
+        // 中止しユーザーに見える形でエラーを出す。
+        if matches!(
+            self.config_load_state,
+            awase::config::ConfigLoadState::Dangerous(_)
+        ) {
+            let bak_path = self.config_path.with_extension("toml.bak");
+            if self.config_path.exists() && !bak_path.exists() {
+                if let Err(e) = std::fs::copy(&self.config_path, &bak_path) {
+                    self.status = format!(
+                        "保存失敗: 既存の {} をバックアップできませんでした（{e}）。\
+                         安全のため保存を中止しました。",
+                        self.config_path.display()
+                    );
+                    return;
+                }
+                log::info!("Backed up unreadable config to {}", bak_path.display());
+            }
+        }
+
         match self.config.save(&self.config_path) {
             Ok(()) => {
                 if warnings.is_empty() {
                     self.status = "設定を保存しました".to_string();
                 }
+                self.config_load_state = awase::config::ConfigLoadState::Loaded;
                 send_reload_config_message();
             }
             Err(e) => self.status = format!("保存失敗: {e}"),
+        }
+    }
+
+    /// 「適用」ボタンのハンドラ。`config_load_state` が `Dangerous`
+    /// （読み込み失敗により現在初期値を表示中）なら、無条件保存の代わりに
+    /// 確認モーダルを開く（`show_dangerous_save_confirm`、実処理は
+    /// `apply_confirmed()`）。それ以外は通常通り即保存する。
+    fn apply(&mut self) {
+        if matches!(
+            self.config_load_state,
+            awase::config::ConfigLoadState::Dangerous(_)
+        ) {
+            self.show_dangerous_save_confirm = true;
+        } else {
+            self.apply_confirmed();
         }
     }
 
@@ -392,9 +452,120 @@ impl SettingsApp {
             Ok(cfg) => {
                 self.available_layouts = scan_layout_names(&cfg.general.layouts_dir);
                 self.config = cfg;
+                self.config_load_state = awase::config::ConfigLoadState::Loaded;
                 self.status = "変更を破棄しました".to_string();
             }
-            Err(e) => self.status = format!("読み込み失敗: {e}"),
+            Err(e) => {
+                self.config_load_state = awase::config::classify_load_error(&e);
+                self.status = format!("読み込み失敗: {e}");
+            }
+        }
+    }
+
+    /// 現在編集している config.toml の実パスを常時表示する上部パネル。
+    ///
+    /// awase.exe と awase-settings.exe はそれぞれ独立に config.toml のパスを
+    /// 解決する（find_config_path()、コマンドライン引数 → 実行ファイル隣 →
+    /// ワークスペースルート、の優先順位で決まる）ため、起動方法や配置次第では
+    /// 2つの実行ファイルが異なる config.toml を読み書きしてしまい得る
+    /// （設定画面で保存しても awase.exe に反映されない、という実機バグとして
+    /// 2026-07-19 に確認済み）。この表示により、少なくとも「今どのファイルを
+    /// 編集しているか」を一目で確認・比較できるようにする。
+    ///
+    /// あわせて `config_load_state` が `Dangerous`（読み込み失敗）の間は、
+    /// 現在表示中の内容が実ファイルではなく初期値であることを常時警告する
+    /// （ADR-099 決定4、`update()` の行数を抑えるため別関数に分離）。
+    fn config_path_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("config_path_panel").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("設定ファイル:");
+                let display_path = self
+                    .config_path
+                    .canonicalize()
+                    .unwrap_or_else(|_| self.config_path.clone());
+                ui.monospace(display_path.display().to_string())
+                    .on_hover_text(
+                        "awase.exe が実際に読み込む config.toml と同じパスか確認してください。\n\
+                         起動方法（コマンドライン引数の有無・カレントディレクトリ）によっては\n\
+                         別のファイルを指している場合があります。",
+                    );
+                if ui.small_button("フォルダを開く").clicked()
+                    && let Some(dir) = display_path.parent()
+                {
+                    let _ = std::process::Command::new("explorer")
+                        .arg("/select,")
+                        .arg(&display_path)
+                        .spawn()
+                        .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
+                }
+                // バージョン表示要望（2026-07-29）: これまでインストール済みファイル名
+                // でしかバージョンを確認できなかったため、常時見える位置に出す。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to("ホームページ", HOMEPAGE_URL);
+                    ui.label(format!("awase v{}", env!("CARGO_PKG_VERSION")));
+                });
+            });
+            if let awase::config::ConfigLoadState::Dangerous(reason) = &self.config_load_state {
+                ui.add_space(4.0);
+                let bak_path = self.config_path.with_extension("toml.bak");
+                let bak_note = if bak_path.exists() {
+                    format!("（バックアップ: {}）", bak_path.display())
+                } else {
+                    String::new()
+                };
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 60, 60),
+                    format!(
+                        "⚠ 設定ファイルの読み込みに失敗したため、現在表示中の内容は初期値です。\
+                         このまま「適用」すると既存の設定を失う可能性があります{bak_note}。\
+                         （原因: {reason}）"
+                    ),
+                );
+            }
+            ui.add_space(4.0);
+        });
+    }
+
+    /// `config_load_state` が `Dangerous` の状態で「適用」を押したときの
+    /// 確認モーダル（ADR-099 決定4）。既存コードの `rfd::AsyncFileDialog` は
+    /// UI スレッドから直接ネイティブダイアログを呼ばず `thread::spawn` +
+    /// `pollster::block_on` で迂回する設計になっているため、その方針に
+    /// 合わせてネイティブダイアログ（`rfd::MessageDialog`）は使わず、
+    /// egui 内製の `egui::Window`（最前面固定でモーダル相当）で実装する。
+    fn show_dangerous_save_confirm_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_dangerous_save_confirm {
+            return;
+        }
+        let mut open = true;
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new("確認")
+            .id(egui::Id::new("dangerous_save_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    "設定ファイルの読み込みに失敗したため、現在表示中の内容は初期値です。\n\
+                     このまま保存すると既存の設定を失う可能性があります。続行しますか？",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("続行").clicked() {
+                        confirmed = true;
+                    }
+                    if ui.button("キャンセル").clicked() {
+                        cancelled = true;
+                    }
+                });
+            });
+        if confirmed {
+            self.show_dangerous_save_confirm = false;
+            self.apply_confirmed();
+        } else if cancelled || !open {
+            self.show_dangerous_save_confirm = false;
         }
     }
 
@@ -1979,47 +2150,8 @@ impl eframe::App for SettingsApp {
             ctx.request_repaint();
         }
 
-        // 現在編集している config.toml の実パスを常時表示する。
-        //
-        // awase.exe と awase-settings.exe はそれぞれ独立に config.toml のパスを
-        // 解決する（find_config_path()、コマンドライン引数 → 実行ファイル隣 →
-        // ワークスペースルート、の優先順位で決まる）ため、起動方法や配置次第では
-        // 2つの実行ファイルが異なる config.toml を読み書きしてしまい得る
-        // （設定画面で保存しても awase.exe に反映されない、という実機バグとして
-        // 2026-07-19 に確認済み）。この表示により、少なくとも「今どのファイルを
-        // 編集しているか」を一目で確認・比較できるようにする。
-        egui::TopBottomPanel::top("config_path_panel").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("設定ファイル:");
-                let display_path = self
-                    .config_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| self.config_path.clone());
-                ui.monospace(display_path.display().to_string())
-                    .on_hover_text(
-                        "awase.exe が実際に読み込む config.toml と同じパスか確認してください。\n\
-                         起動方法（コマンドライン引数の有無・カレントディレクトリ）によっては\n\
-                         別のファイルを指している場合があります。",
-                    );
-                if ui.small_button("フォルダを開く").clicked()
-                    && let Some(dir) = display_path.parent()
-                {
-                    let _ = std::process::Command::new("explorer")
-                        .arg("/select,")
-                        .arg(&display_path)
-                        .spawn()
-                        .or_else(|_| std::process::Command::new("explorer").arg(dir).spawn());
-                }
-                // バージョン表示要望（2026-07-29）: これまでインストール済みファイル名
-                // でしかバージョンを確認できなかったため、常時見える位置に出す。
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.hyperlink_to("ホームページ", HOMEPAGE_URL);
-                    ui.label(format!("awase v{}", env!("CARGO_PKG_VERSION")));
-                });
-            });
-            ui.add_space(4.0);
-        });
+        self.config_path_panel(ctx);
+        self.show_dangerous_save_confirm_modal(ctx);
 
         // Side panel for tab selection
         egui::SidePanel::left("tab_panel")
@@ -3145,6 +3277,8 @@ mod layout_tab_repro {
         SettingsApp {
             config,
             config_path: std::path::PathBuf::from("config.toml"),
+            config_load_state: awase::config::ConfigLoadState::Loaded,
+            show_dangerous_save_confirm: false,
             status: String::new(),
             active_tab: Tab::Layout,
             available_layouts: Vec::new(),
@@ -3620,5 +3754,193 @@ mod layout_tab_repro {
             !app.layout_modified,
             "選択セルが無いのに modified フラグが立ってしまった"
         );
+    }
+
+    // ── ADR-099 決定4b/4c: config_load_state の遷移・保存前バックアップ ──
+    // GUI 起動なしのロジック単体テスト。apply()/apply_confirmed() は
+    // send_reload_config_message() を呼ぶが、#[cfg(target_os = "windows")]
+    // ガード済みで Linux では no-op のため直接呼んでよい。
+
+    use awase::config::ConfigLoadState;
+
+    /// round2 指摘 P3: `{:p}` によるスタックアドレス由来の一時パスは
+    /// `--test-threads=1` 実行時に全テストが同一パスを共有しうる。
+    /// テストごとに一意になるよう、プロセス内で単調増加するカウンタを
+    /// 使う。
+    fn unique_test_id() -> usize {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn dangerous_app() -> (SettingsApp, std::path::PathBuf) {
+        let config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        let mut app = test_settings_app(config);
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_dangerous_save_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        app.config_path = config_path.clone();
+        app.config_load_state = ConfigLoadState::Dangerous("broken toml".to_string());
+        (app, config_path)
+    }
+
+    /// `apply()` は `Dangerous` の間、無条件保存せず確認モーダルを開くだけで
+    /// ファイルへは書き込まない（round1 M4: 静かなデフォルト永続化を防ぐ）。
+    #[test]
+    fn apply_does_not_save_immediately_when_dangerous() {
+        let (mut app, config_path) = dangerous_app();
+        let _ = std::fs::remove_file(&config_path);
+
+        app.apply();
+
+        assert!(
+            !config_path.exists(),
+            "Dangerous 状態での apply() は確認前に保存してはならない"
+        );
+        assert!(app.show_dangerous_save_confirm);
+        assert_eq!(
+            app.config_load_state,
+            ConfigLoadState::Dangerous("broken toml".to_string())
+        );
+    }
+
+    /// 確認後（`apply_confirmed()`）に保存すると `config_load_state` が
+    /// `Loaded` へ遷移する（round1 M4: フラグの寿命）。
+    #[test]
+    fn apply_confirmed_transitions_to_loaded_after_successful_save() {
+        let (mut app, config_path) = dangerous_app();
+        let _ = std::fs::remove_file(&config_path);
+
+        app.apply_confirmed();
+        let _ = std::fs::remove_file(&config_path);
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert_eq!(app.config_load_state, ConfigLoadState::Loaded);
+    }
+
+    /// Dangerous 状態での保存前に、既存ファイルが一度だけ `.bak` へ退避される
+    /// こと。2回目の Dangerous な保存では既存の `.bak` を上書きしない
+    /// （round1 M4 / round2 SF-3: 壊れた元ファイルのバックアップを保護する）。
+    #[test]
+    fn apply_confirmed_backs_up_existing_file_only_once() {
+        let (mut app, config_path) = dangerous_app();
+        std::fs::write(&config_path, "original broken content").unwrap();
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+
+        app.apply_confirmed();
+        let bak_after_first = std::fs::read_to_string(&bak_path).unwrap();
+        assert_eq!(bak_after_first, "original broken content");
+
+        // 2回目: config_load_state を再び Dangerous にして保存しても、
+        // 既に存在する .bak は上書きされない。
+        app.config_load_state = ConfigLoadState::Dangerous("still broken".to_string());
+        app.apply_confirmed();
+        let bak_after_second = std::fs::read_to_string(&bak_path).unwrap();
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert_eq!(
+            bak_after_second, "original broken content",
+            ".bak は最初の異常発生時点のものを保持し続けるべき"
+        );
+    }
+
+    /// コードレビュー指摘 C2 の回帰テスト: バックアップへのコピーが失敗した
+    /// 場合、保存を中止し元ファイルを上書きしない（安全側に倒す）。
+    /// `config_path` を読み取り不可（`chmod 0o000`）にすることで
+    /// `fs::copy` の読み取り側を確実に失敗させる。これは実際に C2 が
+    /// 問題にした状況（`Dangerous` を招いた `PermissionDenied` が、
+    /// バックアップ用の読み取りも同様に失敗させる）そのものの再現でも
+    /// ある。root 実行では `chmod 0o000` でも読めてしまうため unix限定
+    /// テストとし、root では意味を持たない前提を明示する。
+    #[cfg(unix)]
+    #[test]
+    fn apply_confirmed_aborts_save_when_backup_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, config_path) = dangerous_app();
+        std::fs::write(&config_path, "original broken content").unwrap();
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+
+        app.apply_confirmed();
+
+        // 検証のため読み取り権限を戻してから内容を確認する。
+        std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let content_after = std::fs::read_to_string(&config_path).unwrap();
+        let bak_exists = bak_path.exists();
+
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert_eq!(
+            content_after, "original broken content",
+            "バックアップに失敗した場合、元ファイルを上書きしてはならない"
+        );
+        assert!(
+            !bak_exists,
+            "失敗したバックアップが中途半端に残ってはならない"
+        );
+        assert!(app.status.contains("保存失敗"));
+        assert_eq!(
+            app.config_load_state,
+            ConfigLoadState::Dangerous("broken toml".to_string()),
+            "バックアップ失敗時は Dangerous のまま維持されるべき"
+        );
+    }
+
+    /// round2 指摘 P4 の回帰テスト: `Loaded`/`NotFound` のときは `.bak` を
+    /// 作らない（バックアップは `Dangerous` 限定）。
+    #[test]
+    fn apply_does_not_create_backup_when_not_dangerous() {
+        let (mut app, config_path) = dangerous_app();
+        std::fs::write(&config_path, "some content").unwrap();
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+        app.config_load_state = ConfigLoadState::Loaded;
+
+        app.apply();
+
+        let bak_exists = bak_path.exists();
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert!(
+            !bak_exists,
+            "Loaded 状態での保存で .bak が作られてはならない"
+        );
+    }
+
+    /// `Loaded` 状態（通常の保存）では、確認モーダルを経由せず即座に保存する。
+    #[test]
+    fn apply_saves_immediately_when_not_dangerous() {
+        let (mut app, config_path) = dangerous_app();
+        let _ = std::fs::remove_file(&config_path);
+        app.config_load_state = ConfigLoadState::Loaded;
+
+        app.apply();
+
+        assert!(config_path.exists(), "Loaded 状態では即座に保存されるべき");
+        assert!(!app.show_dangerous_save_confirm);
+        let _ = std::fs::remove_file(&config_path);
+    }
+
+    /// `cancel()` で再読み込みに成功したら `config_load_state` が `Loaded`
+    /// へ戻る（round2 SF-4）。
+    #[test]
+    fn cancel_transitions_to_loaded_after_successful_reload() {
+        let (mut app, config_path) = dangerous_app();
+        std::fs::write(&config_path, "[general]\n").unwrap();
+
+        app.cancel();
+        let _ = std::fs::remove_file(&config_path);
+
+        assert_eq!(app.config_load_state, ConfigLoadState::Loaded);
     }
 }

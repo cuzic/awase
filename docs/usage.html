@@ -890,11 +890,8 @@ engine_off_solo_triple = "VK_NONCONVERT"
 
     <div class="card">
       <h3>ZIP 版（ポータブル）</h3>
-      <ol style="padding-left:1.4em;color:var(--text-secondary)">
-        <li style="margin-bottom:0.4rem">トレイアイコンを右クリック → 「終了」で awase を終了します</li>
-        <li style="margin-bottom:0.4rem">自動起動を設定している場合はトレイメニューか設定画面で自動起動を無効にします（<code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> レジストリの登録が解除されます）</li>
-        <li>解凍したフォルダごと削除します</li>
-      </ol>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">解凍したフォルダ内の <code>uninstall.ps1</code> を PowerShell で実行します。既定では <code>config.toml</code> と配列ファイル（<code>layout/</code>）は削除されません（アップグレードのため一時的に終了・削除する場合を想定した挙動です）。完全に削除したい場合は <code>uninstall.ps1 -Purge</code> を実行してください。</p>
+      <p style="color:var(--text-secondary);font-size:0.85rem"><strong>注意:</strong> バージョンアップのために <code>uninstall.ps1</code>（や手動でのフォルダ削除）を先に行う必要はありません。新しい ZIP を解凍して <code>install.ps1</code> を再実行するだけで、既存の設定・配列ファイルを保持したままアップグレードできます。</p>
     </div>
 
   </div>

@@ -9269,3 +9269,105 @@ warmup 削除の安全性が F1/F2 の根治と force-on 独立経路の実機�
 （eager warmup キー再選定の親トラック）、
 [experiment-logging](../.claude/rules/experiment-logging.md)、
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。
+
+## BUG-71: バージョンアップ時に `config.toml`/`layout/*.yab` が失われる（MSI の `MajorUpgrade` スケジューリング欠落 + ZIP アンインストーラーの無条件全削除 + `awase-settings` の load 失敗時サイレントフォールバック）
+
+**発見の経緯:** ユーザーから「バージョンアップすると既存の設定が失われる」
+という不具合報告があった。Explore エージェントによる全体調査、直接の
+コード検証、Opus premortem レビュー3ラウンド（round1〜round3）を経て
+原因を特定し、[ADR-099](adr/099-config-preservation-on-upgrade.md) として
+設計・実装した。
+
+**症状:** MSI 版・ZIP 版のいずれでバージョンアップしても、`config.toml`
+（キー設定・レイアウト選択等）と `layout/nicola.yab`（awase-settings の
+「配列編集」タブでカスタマイズした配列）がデフォルト値に戻ってしまう。
+
+**原因（F1〜F5）:**
+
+1. **F1（最重要・MSI 版）: `wix/main.wxs` の `<MajorUpgrade>` に
+   `Schedule` 属性が無く既定値 `afterInstallValidate` が適用され、
+   新バージョンのファイルインストールより**前**に旧バージョンが完全
+   アンインストールされていた。** `ConfigFile` コンポーネントの
+   `NeverOverwrite="yes"` は「既に存在するファイルを上書きしない」制御
+   であり、旧製品アンインストールで一度削除されてしまえば何も保護しない
+   （`NeverOverwrite` の `KeyPath` はファイルではなく `HKCU` レジストリ
+   値であることも保護を無力化する一因）。`Product Id="*"` により毎
+   リリースで必ずこのメジャーアップグレード経路を通るため、MSI で
+   インストールした全ユーザーが影響を受ける。あわせて `layout/nicola.yab`
+   の `NicolaYab` コンポーネントには元々 `NeverOverwrite` 自体が付いて
+   いなかった（`ConfigFile` にのみ付与されていた）ため、`Schedule` を
+   修正しても通常アップグレード時の上書きまでは防げない別経路の穴も
+   あった。
+2. **F2（ZIP 版）: `scripts/uninstall.ps1` が `%LOCALAPPDATA%\awase` を
+   無条件かつ再帰的に削除していた。** ZIP 配布には「アップグレード」
+   専用の手順が用意されておらず、`install.ps1`/`uninstall.ps1` という
+   対の名前から「アップグレード＝アンインストール→インストール」という
+   手順を自己判断で踏むと、`config.toml`/`layout/*.yab`/`data/*` が
+   まとめて消失していた。
+3. **F3（ZIP 版）: `scripts/install.ps1` が `config.toml` は「既存なら
+   上書きしない」のに `layout/*` は無条件 `-Force` 上書きしていた。**
+   `awase-yab-editor` は独立バイナリとしては撤去済みで `awase-settings`
+   の「配列編集」タブに統合されており、GUI でその場の `nicola.yab` を
+   編集・上書き保存する導線が存在するため、影響は手編集ユーザーに
+   限らず GUI 編集を使った全ユーザーに及んでいた。
+4. **F4（最も重大・インストーラーと無関係に発生しうる）: `awase-settings`
+   が `AppConfig::load()` 失敗時に `default_config()` へ静かにフォール
+   バックし（`log::warn!` のみ、GUI 上の可視表示なし）、その状態で
+   「適用」を押すとデフォルト値が `config.toml` へ永続化されていた。**
+   `AppConfig::general`（`src/config.rs`）に `#[serde(default)]` が
+   付いておらず、`[general]` セクションを欠く（あるいは書き込み中の
+   クラッシュ等で壊れた）`config.toml` は即座に parse error になり
+   この経路を誘発しやすかった。`AppConfig::save()` も一時ファイル経由の
+   アトミック書き込みではなく `std::fs::write` の直接上書きだった。
+5. **F5（関連リスク、根治は別 ADR）: `src/paths.rs::resolve_relative_to`
+   の CWD フォールバックにより、`config.toml` が想定外の場所に新規作成
+   されたり、`awase.exe`/`awase-settings.exe` が異なるファイルを読み書き
+   しうる。**2026-07-19 に確認済みの既知の混乱（`crates/awase-settings/
+   src/main.rs` のコメント参照）と同根。
+
+**対応（ADR-099 決定0〜8、実装済み・2026-08-21）:**
+
+- 決定0: `<MajorUpgrade Schedule="afterInstallExecute">` を追加し、
+  `NicolaYab` コンポーネントにも `NeverOverwrite="yes"` を追加（`wix/main.wxs`）。
+- 決定1: `scripts/uninstall.ps1` のデフォルト動作からユーザーデータ削除を
+  除き、完全削除は `-Purge` 明示指定時のみに限定。
+- 決定2: `scripts/install.ps1` の `layout/*` コピーを「既存なら上書き
+  しない」方式に変更（`data/*` はプログラム資産のため従来通り）。
+- 決定3: `AppConfig::save()`（`src/config.rs`）を `File::create` →
+  `write_all` → `sync_all` → `rename` のアトミック書き込みに変更（rename
+  失敗時は50ms間隔で最大5回リトライ）。
+- 決定4: `ConfigLoadState`（`Loaded`/`NotFound`/`Dangerous`）と
+  `classify_load_error`（`src/config.rs`）を新設。`awase-settings` は
+  `Dangerous`（`NotFound` 以外の全ての load 失敗）のときのみ、
+  `config_path_panel` への警告表示・保存前の一度限りの `.bak` バック
+  アップ・保存前の確認モーダル（`egui::Window`）を必須にする。
+- 決定6: `AppConfig::general` に `#[serde(default)]` を追加。
+- 決定7: `src/paths.rs::resolve_relative_to` が CWD フォールバックに
+  到達した場合の `log::warn!` を追加。
+- 決定8: `crates/awase-windows/tests/wix_installer_guard.rs`（新規）で
+  `wix/main.wxs` の `Schedule`/`NeverOverwrite`/GUID を機械的に固定。
+
+**検証**: `cargo test`（root/`awase-windows`/`awase-settings` 合計800件超、
+新規追加は `wix_installer_guard` 3件・`config::tests` 追加10件・
+`awase-settings` 追加7件）、`cargo fmt --check`、`cargo clippy --lib`
+（CI 相当コマンド）は全てクリーン。加えて `cargo xwin check`/`clippy`/
+`build --tests --target x86_64-pc-windows-msvc -p awase-windows -p
+awase-settings`（実際の Windows ターゲットへのクロスコンパイル）も全て
+クリーンに完了（Linux ネイティブビルドでのみ出る無関係な既存
+`dead_code` 警告は Windows ターゲットでは発生しないことも確認済み）。
+
+実装完了後、Opus によるコードレビューで2件の確定バグを検出・修正した:
+`crates/awase-windows/tests/wix_installer_guard.rs` の `Schedule`
+チェックが `wix/main.wxs` 全体を文字列探索していたため、`<MajorUpgrade>`
+直前の説明コメントに書いた同じ文字列と一致してしまい、実際の属性を
+消してもテストが失敗しない状態になっていた（タグ範囲を切り出して
+判定するよう修正）。また `apply_confirmed()` の保存前バックアップは
+コピー失敗時も警告ログのみで保存を続行しており、バックアップが最も
+必要な場面（`PermissionDenied` 等）でこそ原本を無防備に上書きしうる
+余地があった（バックアップ失敗時は保存を中止するよう修正）。
+
+**Windows 実機でのアップグレード検証（MSI メジャーアップグレード・ZIP
+`install.ps1` 再実行のいずれも）は未実施。** 特に MSI 経路は
+`afterInstallExecute` への変更で挙動が変わるため、実機（`msiexec /l*v`
+ログでの確認を含む）での検証が最優先。詳細な手動検証チェックリストは
+ADR-099「テスト方針」節参照。

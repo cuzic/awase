@@ -1,0 +1,111 @@
+//! `wix/main.wxs` の不変条件を固定する grep ベース回帰テスト。
+//!
+//! ADR-099（バージョンアップ時の設定消失を防ぐ）決定0は、MSI メジャー
+//! アップグレード時にユーザーデータ（`config.toml`/`layout/nicola.yab`）が
+//! 保持されることを、`<MajorUpgrade Schedule="afterInstallExecute">` と
+//! 該当コンポーネントの `NeverOverwrite="yes"` + GUID 不変の組み合わせで
+//! 実現している。この不変条件が壊れると、コンパイラは何も教えてくれない
+//! （XML なのでビルドは通り、実害は次のメジャーアップグレード実行時にしか
+//! 顕在化しない）ため、`architecture_guard.rs` に倣ってテキスト走査で
+//! 固定する。壊れたら教えてくれるためのテストであり、意図的に GUID や
+//! `Schedule` を変更する場合はこのファイルの期待値も合わせて更新すること。
+//!
+//! いずれのテストも `content.contains(...)` のような素朴なファイル全体探索は
+//! 使わない。`wix/main.wxs` 自身に「この属性が無いと壊れる」という説明
+//! コメントを書いており、そのコメント文字列が偶然チェック対象のリテラルと
+//! 一致すると、実際のタグから属性を消してもテストが通ってしまう
+//! （コードレビューで実際に発覚：`<MajorUpgrade>` 直前のコメントに
+//! `Schedule="afterInstallExecute"` という文字列がそのまま含まれていた）。
+//! 必ずタグの範囲を切り出してから判定する。
+
+use std::fs;
+use std::path::Path;
+
+fn read_repo_file(rel_path_from_workspace_root: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // crates/awase-windows から見てリポジトリルートは2階層上。
+    let path = Path::new(manifest_dir)
+        .join("../..")
+        .join(rel_path_from_workspace_root);
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+}
+
+fn main_wxs() -> String {
+    read_repo_file("wix/main.wxs")
+}
+
+/// `needle`（例: `"<MajorUpgrade"`）から始まるタグの範囲（開始 `<` から
+/// 対応する `>` まで、自己終了 `/>` を含む）を切り出す。コメント本文に
+/// 同名のリテラルが出現しても、タグ開始マーカーとして `<` を含めて検索
+/// するため誤爆しない（`<!-- ... Component Id="X" ... -->` のような
+/// コメント内テキストは `<Component` にはマッチしない）。
+fn extract_tag<'a>(content: &'a str, needle: &str) -> &'a str {
+    let start = content
+        .find(needle)
+        .unwrap_or_else(|| panic!("wix/main.wxs に {needle} タグが見つからない"));
+    let end = content[start..]
+        .find('>')
+        .map(|i| start + i + 1)
+        .unwrap_or(content.len());
+    &content[start..end]
+}
+
+#[test]
+fn major_upgrade_schedule_is_after_install_execute() {
+    let content = main_wxs();
+    let tag = extract_tag(&content, "<MajorUpgrade");
+    assert!(
+        tag.contains(r#"Schedule="afterInstallExecute""#),
+        "wix/main.wxs の <MajorUpgrade> タグ本体に \
+         Schedule=\"afterInstallExecute\" が見つからない（タグ: {tag:?}）。\
+         既定値 afterInstallValidate に戻ると、新バージョンの \
+         ファイル配置より前に旧バージョンが完全アンインストールされ、\
+         ConfigFile/NicolaYab の NeverOverwrite=\"yes\" が無力化される \
+         （ADR-099 F1・決定0）。意図的な変更なら ADR-099 を更新すること。"
+    );
+}
+
+#[test]
+fn config_file_and_nicola_yab_components_have_never_overwrite() {
+    let content = main_wxs();
+    for component_id in ["ConfigFile", "NicolaYab"] {
+        let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
+        assert!(
+            tag.contains(r#"NeverOverwrite="yes""#),
+            "wix/main.wxs の Component Id=\"{component_id}\" タグ本体に \
+             NeverOverwrite=\"yes\" が見つからない（タグ: {tag:?}、ADR-099 \
+             決定0）。{component_id} はユーザーが編集しうるデータのため、\
+             アップグレード時に上書きされてはならない。"
+        );
+    }
+}
+
+#[test]
+fn known_component_guids_are_unchanged() {
+    let content = main_wxs();
+    // (Component Id, 既知の GUID)。変更する場合は意図的な更新として
+    // このテストごと書き換えること（ADR-099 決定0・決定8参照）。
+    let known_guids = [
+        ("MainExe", "FEE4643D-BD1C-4FBA-A6F0-3422691909C5"),
+        ("SettingsExe", "83280E86-7973-43A3-84E9-A4B51E47751B"),
+        ("ConfigFile", "57E95F1F-4785-40B7-A4E7-16613080C938"),
+        ("NicolaYab", "9690990E-0D11-425B-B60C-AF23D5E87226"),
+        ("NgramData", "DCF4BA85-03F3-4EC7-BF17-D870682FFF5E"),
+    ];
+    for (component_id, expected_guid) in known_guids {
+        // Id と Guid を別々に確認する（round1 レビュー指摘 P1: 属性の
+        // 出現順や改行位置が変わっても、GUID そのものが変わっていない
+        // 限りテストが誤って落ちないようにする）。
+        let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
+        assert!(
+            tag.contains(&format!(r#"Guid="{expected_guid}""#)),
+            "wix/main.wxs の Component Id=\"{component_id}\" の GUID が \
+             既知の値 {expected_guid} と一致しない（タグ: {tag:?}）。GUID を \
+             変更すると Windows Installer はそのコンポーネントを別物と \
+             みなし、ADR-099 決定0 が意図するアップグレード時のユーザー \
+             データ保護（新旧バージョン間でのコンポーネント共有）が構造的に \
+             壊れる。意図的な変更なら ADR-099 を更新した上でこのテストの \
+             期待値も更新すること。"
+        );
+    }
+}

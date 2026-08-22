@@ -517,6 +517,7 @@ pub struct PostBypassRule {
 /// このファイルにはアプリ全体の設定のみを含む。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub general: GeneralConfig,
     #[serde(default)]
     pub keys: KeysConfig,
@@ -527,6 +528,40 @@ pub struct AppConfig {
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
     #[serde(default)]
     pub post_bypass: Vec<PostBypassRule>,
+}
+
+/// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
+/// （ADR-099 決定4）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigLoadState {
+    /// 正常に読み込めた。
+    Loaded,
+    /// ファイルが存在しない（初回起動など、警告不要の正常系）。
+    NotFound,
+    /// `NotFound` 以外の全ての失敗（parse error・`PermissionDenied`・共有
+    /// 違反等）。危険側のデフォルトとして扱い、呼び出し元は警告表示・
+    /// 保存前バックアップ・保存前確認を必須にすること。
+    Dangerous(String),
+}
+
+/// `AppConfig::load` のエラーを `ConfigLoadState` に分類する。
+///
+/// 分類ルールは「`io::ErrorKind::NotFound` と確認できた場合のみ
+/// `NotFound`、それ以外は種別を問わず `Dangerous`」の一つだけ。
+/// `NotFound` 以外の I/O エラー（`PermissionDenied` 等）を誤って
+/// `NotFound` 扱いにすると、危険な失敗が静かにデフォルト値へフォール
+/// バックしてしまう（ADR-099 F4、round2 指摘 MF-2）。
+#[must_use]
+pub fn classify_load_error(e: &anyhow::Error) -> ConfigLoadState {
+    let is_not_found = e
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound);
+    if is_not_found {
+        ConfigLoadState::NotFound
+    } else {
+        ConfigLoadState::Dangerous(e.to_string())
+    }
 }
 
 impl AppConfig {
@@ -545,14 +580,45 @@ impl AppConfig {
 
     /// 設定を TOML 形式でファイルに保存する
     ///
+    /// 一時ファイルへ書き込み・fsync してから `rename` するアトミック書き込み
+    /// （ADR-099 決定3）。書き込み中のクラッシュ・強制終了・ディスクフルで
+    /// `path` が不完全な内容のまま残ることを構造的に防ぐ。Windows の
+    /// `rename` は宛先が他プロセス（AV スキャナ・OneDrive 等）に開かれて
+    /// いると失敗しうるため、短いリトライで緩和する。
+    ///
     /// # Errors
     ///
-    /// シリアライズまたはファイル書き込みに失敗した場合にエラーを返す。
+    /// シリアライズ・一時ファイルへの書き込み・`rename` のいずれかに
+    /// 失敗した場合にエラーを返す。
     pub fn save(&self, path: &Path) -> Result<()> {
+        use std::io::Write as _;
+
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
-        Ok(())
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&tmp_path)
+                .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
+            f.write_all(content.as_bytes())
+                .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
+            f.sync_all()
+                .with_context(|| format!("Failed to fsync {}", tmp_path.display()))?;
+        }
+
+        let mut last_err = std::fs::rename(&tmp_path, path).err();
+        for _ in 0..4 {
+            if last_err.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            last_err = std::fs::rename(&tmp_path, path).err();
+        }
+        last_err.map_or_else(
+            || Ok(()),
+            |e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                Err(e).with_context(|| format!("Failed to rename into {}", path.display()))
+            },
+        )
     }
 }
 
@@ -832,6 +898,77 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.right_thumb_key, "変換");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
+    }
+
+    /// ADR-099 決定6: `[general]` セクション自体を完全に欠く config.toml が
+    /// parse error にならず `GeneralConfig::default()` で埋まることを固定する。
+    /// `test_parse_app_config_defaults` は `[general]` セクションはあるが
+    /// 中身が空のケースであり、セクション自体が無いケースは別（`AppConfig::general`
+    /// に `#[serde(default)]` が無いと後者だけ parse error になる）。
+    #[test]
+    fn test_parse_app_config_missing_general_section_uses_defaults() {
+        let toml_str = "";
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.simultaneous_threshold_ms, 100);
+        assert_eq!(config.general.left_thumb_key, "無変換");
+        assert_eq!(config.general.right_thumb_key, "変換");
+        assert_eq!(config.general.default_layout, "nicola.yab");
+    }
+
+    // ── classify_load_error (ADR-099 決定4a) ──
+
+    #[test]
+    fn classify_load_error_maps_not_found_io_error_to_not_found() {
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_missing_{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let err = AppConfig::load(&path).unwrap_err();
+        assert_eq!(classify_load_error(&err), ConfigLoadState::NotFound);
+    }
+
+    #[test]
+    fn classify_load_error_maps_parse_error_to_dangerous() {
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_broken_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "this is not valid toml [[[").unwrap();
+
+        let err = AppConfig::load(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(classify_load_error(&err), ConfigLoadState::Dangerous(_)),
+            "parse errors must never be classified as NotFound (round2 指摘 MF-2)"
+        );
+    }
+
+    /// `PermissionDenied` のような NotFound 以外の I/O エラーも `Dangerous`
+    /// に倒れること（`ErrorKind::NotFound` 以外を安全側に丸めてはならない）。
+    #[cfg(unix)]
+    #[test]
+    fn classify_load_error_maps_permission_denied_to_dangerous() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_denied_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[general]\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let err = AppConfig::load(&path).unwrap_err();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(classify_load_error(&err), ConfigLoadState::Dangerous(_)),
+            "PermissionDenied must not be misclassified as NotFound"
+        );
     }
 
     /// ADR-092 決定D Step1: engine_on_ime_key/engine_off_ime_key の既定値は
@@ -1379,6 +1516,85 @@ simultaneous_threshold_ms = 123
             "save() must actually serialize the config to the file, got: {content}"
         );
         assert_eq!(reloaded.unwrap().general.simultaneous_threshold_ms, 123);
+    }
+
+    // ── AppConfig::save (ADR-099 決定3): アトミック書き込み（tmp+rename）──
+
+    /// 正常系: `save()` 後、保存先ファイルの inode が保存前と変わっていること
+    /// （直書きではなく rename 経由になっていることの間接証拠）。
+    #[cfg(unix)]
+    #[test]
+    fn save_replaces_file_via_rename_not_in_place_write() {
+        use std::os::unix::fs::MetadataExt;
+
+        let toml_str = "[general]\nsimultaneous_threshold_ms = 1\n";
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_save_atomic_ino_{}.toml",
+            std::process::id()
+        ));
+
+        std::fs::write(&path, "placeholder").unwrap();
+        let ino_before = std::fs::metadata(&path).unwrap().ino();
+
+        config.save(&path).unwrap();
+        let ino_after = std::fs::metadata(&path).unwrap().ino();
+        let _ = std::fs::remove_file(&path);
+
+        assert_ne!(
+            ino_before, ino_after,
+            "save() should replace the file via rename (new inode), not write in place"
+        );
+    }
+
+    /// 異常系: `rename` を意図的に失敗させ、(a) 元ファイルが無傷で残ること、
+    /// (b) 一時ファイルが残らないこと（リトライ尽き後のクリーンアップ）を確認する。
+    /// 宛先パスを既存ディレクトリにすることで `rename` を確実に失敗させる。
+    #[test]
+    fn save_leaves_original_file_and_no_tmp_residue_when_rename_fails() {
+        let toml_str = "[general]\nsimultaneous_threshold_ms = 1\n";
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let dir_as_dest = std::env::temp_dir().join(format!(
+            "awase_test_save_atomic_fail_dir_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir_as_dest);
+        std::fs::create_dir(&dir_as_dest).unwrap();
+
+        let result = config.save(&dir_as_dest);
+        assert!(result.is_err(), "save() into a directory path must fail");
+
+        let tmp_path = dir_as_dest.with_extension(format!("toml.tmp.{}", std::process::id()));
+        assert!(
+            !tmp_path.exists(),
+            "temp file must be cleaned up after retries are exhausted"
+        );
+        assert!(
+            dir_as_dest.is_dir(),
+            "the original destination must be left untouched on failure"
+        );
+        let _ = std::fs::remove_dir_all(&dir_as_dest);
+    }
+
+    /// 事前に同名の `*.toml.tmp.<pid>` が残っていても、`save()` が同じ内容で
+    /// 上書きして正常に完了すること（プロセス ID ベースの命名で衝突しない）。
+    #[test]
+    fn save_succeeds_when_stale_tmp_file_with_same_name_already_exists() {
+        let toml_str = "[general]\nsimultaneous_threshold_ms = 42\n";
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_save_atomic_stale_tmp_{}.toml",
+            std::process::id()
+        ));
+        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
+        std::fs::write(&tmp_path, "stale leftover from a previous crashed run").unwrap();
+
+        config.save(&path).unwrap();
+        let reloaded = AppConfig::load(&path);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&tmp_path);
+
+        assert_eq!(reloaded.unwrap().general.simultaneous_threshold_ms, 42);
     }
 
     // ── validate_thresholds (426): speculative_delay_ms == threshold は境界内 ──
