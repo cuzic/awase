@@ -9159,3 +9159,108 @@ known-bugs.md`/ADR-098 が要求する「ソーク」（長時間・多様なシ
   軽微な belief-laundering 箇所（コメント修正のみで動作は維持、ADR-098
   決定5参照）。長時間ソーク・他アプリ（Windows Terminal 以外の TsfNative
   クラス）・実IMEが本当にOFFのまま長時間放置されるケースでの検証も未実施。
+
+---
+
+## BUG-70: GJI 候補確定タイミングで eager warmup（`ConfirmKeyUp`）が GJI の `EndComposition` と競合し、`@` がリテラルとして漏れる
+
+**症状（実機ログ、2026-08-22、Windows Terminal / PowerShell、GJI、
+`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.InputSite.WindowClass`）:**
+候補文字列を確定する（Enter で確定キーを押す）たびに、確定した文字列の
+直後に `@` が1文字リテラルとして出力される。ユーザー確認により再現は
+「候補確定のタイミングで毎回」。IME の状態自体（`ime_on=true`、
+`input_mode=ObservedRomaji`）は乱れておらず、awase 自身のログにも
+`Char('@')` 等の意図した出力は一切現れない（awase から見れば正常に
+"き"/"う"/"い" 等をTSF経由で送信しているだけであり、`@` はこの送信の
+成否を awase が観測できない領域で漏れている）。
+
+070fe973（本ブランチ、eager warmup の送信 VK を `VK_DBE_HIRAGANA` から
+`VK_IME_ON` へ変更、BUG-50追補2）の適用前は同じ経路でより高頻度に `@`
+が発生していたとユーザーから報告があり、070fe973 後も頻度が下がった
+だけで解消はしていなかった。
+
+**原因（コード確認、実機での確定的な検証はまだ、ユーザー報告との強い
+時間的相関から推定）:**
+
+`Output::send_eager_tsf_warmup`（確定キー・Ctrl 解放・フォーカス変更等
+のたびに TSF cold-start 対策として先回りで warmup VK を送る仕組み）の
+うち、`CompositionFsm::on_event` の `ConfirmKeyUp` 分岐
+（`tsf/composition_fsm.rs`）は、確定キー押下時点で warm だった場合でも
+KeyUp のタイミングで**無条件に** `EmitWarmup { reason:
+WarmupReason::ConfirmKeyUp }` を発行していた。
+
+一方、GJI 自身の候補確定・composition 終了（`EndComposition`、候補
+ウィンドウ HIDE）は Windows のアクセシビリティ通知（`win_event_obs`）
+経由で非同期に届く。実機ログでは毎回、`[composition-fsm] EmitWarmup
+(ConfirmKeyUp)` → 合成 `VK_IME_ON`（scan は `MapVirtualKeyW(VK_IME_ON,
+MAPVK_VK_TO_VSC)` で算出、実機確認値 `0xF2`）注入 が、GJI 側の
+`[gji-fsm] EndComposition (candidate HIDE)` より**先に**発火している
+（後者は非同期通知のため到着が遅れる）。この GJI がまだ確定処理中の
+ウィンドウに warmup キーが着弾すると GJI/TSF がこれを正しく消費できず
+生キーとして Windows Terminal 側に漏れ、この JIS 配列上で warmup VK の
+scan が `@` キーの物理位置に解決されるため、確定直後に `@` が1文字
+リテラル表示される、というのが最も筋の通る説明。
+
+**なぜこの warmup が不要と判断したか:** `ConfirmKeyUp` と対になる
+`ConfirmKeyDown`（warm=true）分岐には既に「warm な GJI/TSF を確定キー
+だけで cold 化する理由は tsf_mode に関係なく無い」という設計原則が
+明記されており（2026-07-11 修正、BUG-24 false positive 対策）、
+`ConfirmKeyUp` 側だけがこれと非対称に「念のため」の予防的 warmup を
+無条件発行していた。正当化コメントも「(open軸のみの冪等キーなので)
+反復送信も無害」という**無害性**のみで、必要性の根拠は示されていない。
+
+cold-start 対策としての安全網は per-VK confirm（BUG-21 追記
+2026-07-18: 1文字ずつ送信→確認、失敗時は backspace のみ）が既に担って
+おり、実機ソーク数日で literal 化ゼロ件を確認済み。BUG-21 はまさに
+同型の「予防的 warmup フルコース」（Chrome 側）が per-VK confirm と
+二重の保険になっていたことを実機ソークで確認し、予防機構自体を物理
+削除した前例であり、本修正は同じ判断を `ConfirmKeyUp` の eager warmup
+に適用したもの。
+
+**BUG-69/ADR-098 との関係（削除の安全性根拠）:** BUG-69 の premortem
+評決は当初「eager warmup は KEEP（F1/F2 を先に直してからゲート強化。
+単独で削ると TsfNative force-on の唯一の生存経路である F3 が露見し
+即座に regression する）」だった。この前提条件（F1/F2 の根治、
+`apply_force_on_for_imm_broken` を `force_on_attempt_allowed` の
+cooldown ベース再試行に置き換え）は ADR-098 で実装済みであり、
+2026-08-22 に Windows Terminal + GJI で「eager warmup とは無関係に
+`force-ON (ImmBrokenForceOn): apply_ime_open(true) → Applied` が
+独立して発火する」ことを実機で確認済み（BUG-69「Windows 実機での初回
+検証」節）。したがって `ConfirmKeyUp` の eager warmup を削除しても、
+TsfNative force-on が eager warmup だけに依存していた状態（F3）は
+既に解消されており、force-on 経路自体は失われない。
+
+**修正:** `CompositionFsm::on_event` の `ConfirmKeyUp` 分岐から
+`EmitWarmup` の発行を削除し、`PendingWarmupOnKeyUp` → `Warm` への
+状態遷移のみ残した（stale な pending を捨てる epoch/confirm_vk 照合
+ロジックは維持）。`WarmupReason::ConfirmKeyUp` variant は使用箇所が
+無くなったため削除。単体テスト
+（`warm_tsf_confirm_keyup_does_not_emit_warmup`、
+`warm_chrome_confirm_keyup_does_not_emit_warmup`）を warmup 非発行を
+検証する内容に更新。
+
+**テスト:** `cargo xwin check/clippy --tests --target
+x86_64-pc-windows-msvc -p awase-windows` グリーン（`composition_fsm.rs`
+の変更で新規の clippy 警告なし）。`composition_fsm` のテストは
+`#[cfg(windows)]` のため Linux では実行不可、Windows 実機での
+`cargo test -p awase-windows --lib` 実行は未実施。
+
+**未実施（実機ソーク待ち）:** Windows 実機（Windows Terminal /
+PowerShell、GJI）での長時間ソーク検証。cold-start 系の不具合
+（`giving up`/literal 化）が再発しないこと、`@` 漏れが解消すること、
+BUG-69 の force-on 経路が引き続き独立して機能することを確認すること。
+ADR-100 決定3-c（VK 再選定実験）の一部として実機データを追加する。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/composition_fsm.rs`
+（`CompositionFsm::on_event` の `ConfirmKeyUp` 分岐、`WarmupReason`）、
+`crates/awase-windows/src/output/mod.rs`（`send_eager_tsf_warmup`）、
+`crates/awase-windows/src/tsf/send.rs`（`send_eager_warmup_vk_pair`）。
+
+**関連:** BUG-21（同型の予防的 warmup フルコース削除の前例、per-VK
+confirm が安全網であることの実機ソーク済み根拠）、BUG-50（`VK_DBE_
+HIRAGANA` の open+conv 束縛副作用）、BUG-69/ADR-098（`ConfirmKeyUp`
+warmup 削除の安全性が F1/F2 の根治と force-on 独立経路の実機確認に
+依存すること）、[ADR-100](../adr/100-gji-warmup-vk-ime-on-reinit.md)
+（eager warmup キー再選定の親トラック）、
+[experiment-logging](../.claude/rules/experiment-logging.md)、
+[fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)。

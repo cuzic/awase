@@ -43,8 +43,6 @@ use awase::types::VkCode;
 pub(crate) enum WarmupReason {
     /// cold 状態の Ctrl↑（GJI recovery 再計測）
     CtrlUp,
-    /// warm+TSF confirm キーの KeyUp（KeyDown で保留した warmup を送信）
-    ConfirmKeyUp,
     /// TSF mode の物理 F2 を consume した代替 warmup
     NativeF2,
     /// cold / 非 TSF confirm キー KeyDown 直後の即時 warmup
@@ -231,6 +229,18 @@ impl TimedStateMachine for CompositionFsm {
             }
 
             // ── ConfirmKeyUp ───────────────────────────────────────────────
+            //
+            // 2026-08-22: 以前はここで保留していた warmup を無条件に送信していたが、
+            // warm な GJI/TSF を確定キーだけで再送する理由はない（ConfirmKeyDown(warm)
+            // 分岐が同じ理由で何もしないのと対称）。実機（Windows Terminal + GJI）で、
+            // この送信が GJI 側の候補確定・EndComposition（非同期の win_event_obs 通知）
+            // と競合し、確定直後に警告なく `@`（warmup VK の scan が JIS 配列で解決する
+            // 位置）がリテラルとして漏れる事象を確認した。cold-start 対策としての
+            // 安全網は per-VK confirm（BUG-21 追記2026-07-18、1文字ずつ送信→確認）が
+            // 既に担っており、この eager warmup は「念のため」の予防措置以上の根拠が
+            // 無かった。KeyUp 到達時点で pending 状態を Warm へ戻す遷移だけは維持する
+            // （epoch/confirm_vk の照合ロジックが stale な pending を捨てる役割を持つ
+            // ため）。
             CompositionEvent::ConfirmKeyUp { vk } => {
                 if let CompositionState::PendingWarmupOnKeyUp {
                     confirm_vk,
@@ -240,9 +250,6 @@ impl TimedStateMachine for CompositionFsm {
                 {
                     if confirm_vk == vk && epoch == self.epoch {
                         self.state = CompositionState::Warm { tsf_mode };
-                        return Response::emit_one(CompositionAction::EmitWarmup {
-                            reason: WarmupReason::ConfirmKeyUp,
-                        });
                     }
                 }
                 Response::consume()
@@ -333,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_tsf_confirm_keydown_defers_warmup_to_keyup() {
+    fn warm_tsf_confirm_keyup_does_not_emit_warmup() {
         let mut fsm = CompositionFsm::new();
         let r = fsm.on_event(warm_tsf_confirm_down(ENTER));
         // KeyDown では warmup を出さず、cold mark + gji reset のみ。
@@ -345,13 +352,13 @@ mod tests {
         );
         assert_eq!(fsm.pending_warmup_vk(), Some(ENTER));
 
+        // 2026-08-22: warm な確定キーは KeyUp でも warmup を送らない（実機で
+        // GJI の EndComposition と競合し `@` がリテラル漏れする事象を確認したため）。
         let r = fsm.on_event(CompositionEvent::ConfirmKeyUp { vk: ENTER });
-        assert_eq!(
-            r.actions,
-            vec![CompositionAction::EmitWarmup {
-                reason: WarmupReason::ConfirmKeyUp
-            }],
-            "KeyUp で保留 warmup を送信する"
+        assert!(
+            r.actions.is_empty(),
+            "warm+TSF の KeyUp は warmup 不要 (actions={:?})",
+            r.actions
         );
         assert!(fsm.state_label().starts_with("Warm"));
     }
@@ -373,11 +380,13 @@ mod tests {
     }
 
     #[test]
-    fn warm_chrome_confirm_keydown_defers_warmup_to_keyup() {
+    fn warm_chrome_confirm_keyup_does_not_emit_warmup() {
         // 2026-07: 以前は tsf_mode=false (Chrome) だと warm でも即 cold mark + warmup
         // していた（a3425bf でフラグ統合した際に WezTerm 専用ルールを is_tsf_mode()
         // ガードなしで引き継いだ副作用）。warm な GJI/TSF を確定キーだけで即時再送する
         // 理由は tsf_mode に関係なく無いため、TSF と同じ KeyUp 遅延に統一した。
+        // 2026-08-22: さらに、KeyUp 到達時点でも warmup 自体を送らないよう変更した
+        // （warm_tsf_confirm_keyup_does_not_emit_warmup と同じ理由）。
         let mut fsm = CompositionFsm::new();
         let r = fsm.on_event(CompositionEvent::ConfirmKeyDown {
             vk: ENTER,
@@ -393,12 +402,10 @@ mod tests {
         assert_eq!(fsm.pending_warmup_vk(), Some(ENTER));
 
         let r = fsm.on_event(CompositionEvent::ConfirmKeyUp { vk: ENTER });
-        assert_eq!(
-            r.actions,
-            vec![CompositionAction::EmitWarmup {
-                reason: WarmupReason::ConfirmKeyUp
-            }],
-            "KeyUp で保留 warmup を送信する"
+        assert!(
+            r.actions.is_empty(),
+            "warm+Chrome の KeyUp は warmup 不要 (actions={:?})",
+            r.actions
         );
         assert!(fsm.state_label().starts_with("Warm"));
     }
