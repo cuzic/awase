@@ -9097,10 +9097,36 @@ ADR-098（[docs/adr/098-tsfnative-applied-confirmed-laundering-and-force-on-remo
   `architecture_guard`（36件）、`golden_scenarios`（22件）、
   `drift_correction_replay`（2件）、`intent_store_effective_open`（8件）、
   `journal_replay`（1件）、`layer_boundary_guard`（8件）、いずれも
-  全件成功。**Windows 実機での検証・ソークは未実施**（クロスコンパイル
-  環境での静的検証のみ）。
+  全件成功。
+
+**Windows 実機での初回検証（2026-08-22 追記、dragonflyg4、Windows Terminal
+/ `CASCADIA_HOSTING_WINDOW_CLASS` / GJI）**: `RUST_LOG=debug` で通常ビルドを
+起動し、IME を明示的に OFF にした状態から他ウィンドウへ切り替え → 20〜30秒
+放置 → Windows Terminal へフォーカスを戻し、**物理キーに一切触れず**さらに
+数秒待機、という手順を実施。ログ上で以下を確認した:
+
+1. フォーカス変更直後、`[focus-settle] apply_force_on_for_imm_broken skipped
+   (settling) → 550ms 後に refresh で再試行` が発火（決定1-a/1-c の settle
+   ゲートが機能している証拠）。
+2. 約550ms後、`[apply-ime] GJI direct: send 0x0016 (open=true)` →
+   `[apply-ime] open=true eff=true conf=true → outcome=Applied` →
+   **`force-ON (ImmBrokenForceOn): apply_ime_open(true) → Applied`** が発火。
+   直前の物理 F2 キー押下（`injected=false`）は88秒以上前で、この force-ON
+   とは無関係であることをタイムスタンプで確認済み（同種のイベントが2回
+   連続で観測され、2回目の直前にあった物理キー押下も `no-op:
+   effective_open は既に true → apply-ime 見送り` で実送信をトリガーして
+   いないことを確認した）。
+
+**これは BUG-69 の核心（`apply_force_on_for_imm_broken` が TsfNative で
+恒久的に無効化されていた）が、実際に解消されていることを示す最初の実機
+証拠である。** ただしこれは1セッションでの限定的な確認であり、`docs/
+known-bugs.md`/ADR-098 が要求する「ソーク」（長時間・多様なシナリオでの
+継続検証）はまだ行っていない。
+
 - **未実施のまま残るもの**: 決定3-c（GJI warmup キーの再選定実験、
-  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、`docs/experiments.md` へ先送り）、
-  決定4-b（enforce-OFF を settle-retry 化する代替設計）、および
-  `focus_tracking.rs`/`key_pipeline.rs` に残る軽微な belief-laundering
-  箇所（コメント修正のみで動作は維持、ADR-098 決定5参照）。
+  `VK_IME_ON` vs `VK_DBE_HIRAGANA`、[ADR-100](../adr/100-gji-warmup-vk-ime-on-reinit.md)
+  が引き取り実機データ収集中）、決定4-b（enforce-OFF を settle-retry 化
+  する代替設計）、および `focus_tracking.rs`/`key_pipeline.rs` に残る
+  軽微な belief-laundering 箇所（コメント修正のみで動作は維持、ADR-098
+  決定5参照）。長時間ソーク・他アプリ（Windows Terminal 以外の TsfNative
+  クラス）・実IMEが本当にOFFのまま長時間放置されるケースでの検証も未実施。
