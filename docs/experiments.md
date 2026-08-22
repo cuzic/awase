@@ -490,7 +490,7 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
 
 ---
 
-## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・事前登録は継続中・実機実験は未実施）
+## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・群Cのみ実機実験2回実施、不確定）
 
 **背景**: BUG-69（`docs/known-bugs.md`）/ [ADR-098](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
 決定3 の調査で、eager TSF warmup（`send_eager_tsf_warmup`、
@@ -592,3 +592,56 @@ opt-in 配下）へ生の romaji を記録する。新しい送信チャネル�
 分割の言い切り」を3回間違えた）。`AppImeProfile` / `AppKind` /
 `InjectionMode` / `TsfGateState` は4つの独立した軸であり、どれか1つで
 語ると必ずどこかが漏れる（ADR-083 の教訓と同型）。
+
+### 実施記録 #1（2026-08-22、群C、交絡あり・参考記録のみ）
+
+**アプリ**: Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。
+**IME**: GJI、Engine ON、cold=1〜8、`gji_idle_ms` 最大 85687（約85.7秒）。
+**手順**: `send_eager_tsf_warmup` の**冒頭**（3ゲート判定より前）に
+`AWASE_DIAG_DISABLE_EAGER_WARMUP` 環境変数による診断ゲートを追加した診断
+ビルドを、Windows実機（dragonflyg4）で `RUST_LOG=debug` 付き起動し、通常
+入力・長時間放置後の入力を実施。
+
+**結果**: 8回のcold-start全件で per-VK confirm が正常に confirmed へ到達、
+`giving up` は0件。
+
+**結論: 不確定（採用しない）。** ゲートを3ゲート判定の前に置いたため、
+「本来送るはずだった F2 を阻止した」場合と「そもそも既存ゲートで弾かれる
+はずだった」場合が同一ログになる交絡がある。8回のうち何回が実際に
+eager warmup を阻止したケースだったか、事後に分離できない。
+
+### 実施記録 #2（2026-08-22、群C、交絡解消後）
+
+**アプリ**: Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。
+**IME**: GJI、Engine ON。
+**手順**: 診断ゲートを3ゲート判定の**後**（`can_warmup()` 通過後）へ移動
+し、`[diag]` ログが「本来なら送信していたはず」の場合のみ出るよう修正。
+以下3シナリオをそれぞれ最低1回実施:
+
+1. IME を明示的に OFF にした状態で他ウィンドウへ切り替え、Windows
+   Terminal へフォーカスを戻して直後に入力（BUG-69 F3 が指摘する
+   「実IMEがOFFの状態でフォーカスが戻る」場面を狙ったもの）
+2. 63秒放置後の入力
+3. 高速連続打鍵（BUG-45 の再現手順を意識したもの、14秒間に3回連続の
+   cold-start が発生）
+
+**結果**: 3シナリオとも、狙った cold イベントを含め全件が per-VK confirm
+で正常に confirmed へ到達。`giving up`・`SuspectedLiteral` は全セッション
+通じて0件。
+
+**結論: 有望だが不確定。** 交絡は解消されたが、各シナリオ1〜4回に過ぎず
+（本エントリの合格基準表が要求する「各シナリオ5試行以上」に届かない）、
+群A（現行F2）・群B（`VK_IME_ON` 単発）との比較は未実施。さらに Opus
+advisor によるレビューで、BUG-69（ADR-098）F1/F2/F3 が「TsfNative+GJI の
+フォーカス復帰時、実際に機能する actuation は eager warmup だけ」と結論
+していることが指摘された。ADR-100 はこれまでこの結論を一度も参照して
+おらず、eager warmup 撤去を正式決定する前提として BUG-69 F1/F2 の修正が
+先に必要と判断された（詳細は ADR-100 premortem P6）。
+
+**学び（実施記録から）**: **対照群を作るための無効化ゲートは、既存の判定
+ゲートより後に置くこと。** 前に置くと「意図的に止めた」ケースと「元々
+発火しない」ケースが同一ログ行になり、事後に分離できない交絡を生む
+（実施記録#1で実際に発生）。無効化する前に、その機構が「今日・この環境
+で・本当に発火する」ことを同一ログで確認してから止める。エントリ09
+（scan=0 注入がフックにすら届かず反証された事例）と同型の失敗——独立変数
+が実は意図通りに動いていなかった——として記録する。
