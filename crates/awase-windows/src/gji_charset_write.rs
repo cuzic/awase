@@ -74,9 +74,9 @@ mod windows_impl {
     /// `awase_gji_config::write_dedicated_fn_key_binding` で新しいバイト列を
     /// 得る（既存バインドが既知の残骸パターンと一致しなければここで失敗し、
     /// 何も書き込まない）。(3) 元のファイルを `.awase-backup` へコピー
-    /// （バックアップ）。(4) 同じディレクトリへ一時ファイルとして書き、
-    /// `rename` で原子的に置換する（書き込み途中でクラッシュしても
-    /// 元のファイルが壊れた状態で残らない）。
+    /// （バックアップ）。(4) [`awase::fs_atomic::write_atomic`]
+    /// （tmp+fsync+rename、失敗時は短くリトライ）で原子的に置換する
+    /// （書き込み途中でクラッシュしても元のファイルが壊れた状態で残らない）。
     ///
     /// **GJI プロセスが起動中の場合、この書き込みは GJI 側が再起動される
     /// までは効果を持たない**（config1.db は GJI が起動時に読み込み、
@@ -96,9 +96,7 @@ mod windows_impl {
             backup_path.display()
         );
 
-        let tmp_path = tmp_path(&path);
-        std::fs::write(&tmp_path, &new_bytes).map_err(|_| ApplyError::WriteFailed)?;
-        std::fs::rename(&tmp_path, &path).map_err(|_| ApplyError::WriteFailed)?;
+        awase::fs_atomic::write_atomic(&path, &new_bytes).map_err(|_| ApplyError::WriteFailed)?;
         log::info!(
             "[gji-charset-write] config1.db へ専用Fnキー変換({vk_key})を書き込みました \
              （GJI プロセスの再起動まで反映されません）"
@@ -124,13 +122,5 @@ mod windows_impl {
         let mut backup = original.as_os_str().to_owned();
         backup.push(".awase-backup");
         std::path::PathBuf::from(backup)
-    }
-
-    /// 原子的置換用の一時ファイルパス。同じディレクトリに置くことで
-    /// `rename` がファイルシステムをまたがず原子的になることを保証する。
-    fn tmp_path(original: &std::path::Path) -> std::path::PathBuf {
-        let mut tmp = original.as_os_str().to_owned();
-        tmp.push(".awase-tmp");
-        std::path::PathBuf::from(tmp)
     }
 }

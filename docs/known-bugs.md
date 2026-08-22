@@ -9335,7 +9335,8 @@ warmup 削除の安全性が F1/F2 の根治と force-on 独立経路の実機�
   しない」方式に変更（`data/*` はプログラム資産のため従来通り）。
 - 決定3: `AppConfig::save()`（`src/config.rs`）を `File::create` →
   `write_all` → `sync_all` → `rename` のアトミック書き込みに変更（rename
-  失敗時は50ms間隔で最大5回リトライ）。
+  失敗時は初回試行の後50ms間隔で最大4回リトライ、初回と合わせて最大5回
+  試行・最大200msブロック）。
 - 決定4: `ConfigLoadState`（`Loaded`/`NotFound`/`Dangerous`）と
   `classify_load_error`（`src/config.rs`）を新設。`awase-settings` は
   `Dangerous`（`NotFound` 以外の全ての load 失敗）のときのみ、
@@ -9371,3 +9372,32 @@ awase-settings`（実際の Windows ターゲットへのクロスコンパイ�
 `afterInstallExecute` への変更で挙動が変わるため、実機（`msiexec /l*v`
 ログでの確認を含む）での検証が最優先。詳細な手動検証チェックリストは
 ADR-099「テスト方針」節参照。
+
+**コードレビュー追加修正（PR #82 マージ前）:**
+
+- `AppConfig::save()` を `crates/awase-settings/src/main.rs::apply_confirmed()`
+  から呼ぶと egui の UI スレッドを rename 失敗時に最大200msブロック
+  していた（`tray.rs` 経由のエンジンスレッド呼び出しは ADR round2 SF-1で
+  既に許容範囲と分析済みだったが、より高頻度に呼ばれる設定 UI 側は
+  未検討だった）。バックアップ＋保存をバックグラウンドスレッドへ委譲し、
+  `poll_pending_save()` で毎フレームノンブロッキングにポーリングする形へ
+  変更（回帰テスト: `apply_confirmed_returns_without_blocking_on_slow_save`）。
+- `cancel()` が `show_dangerous_save_confirm` をリセットしていなかった
+  ため、確認モーダル表示中に背景の「キャンセル」ボタン（モーダルは
+  ブロッキングオーバーレイを持たないため操作可能）を押すと、状態は
+  `Loaded` に正常化するのに古い警告モーダルだけが表示され続けるバグが
+  あった（回帰テスト: `cancel_closes_dangerous_save_confirm_modal`）。
+- `AppConfig::save()` の実体（tmp+fsync+rename+リトライ）を
+  `crate::fs_atomic::write_atomic` へ切り出し、同じ Windows rename ロック
+  問題を抱えていた `crates/awase-windows/src/gji_charset_write.rs` の
+  `config1.db` 書き込みからも共有するようにした。あわせて `path` が
+  シンボリックリンクの場合はリンク先の実体へ書き込み、既存ファイルの
+  パーミッションを新しいファイルへ引き継ぎ（従来は `File::create` が
+  umask 依存のデフォルト権限になり `chmod` 済みのファイルの権限が保存の
+  たびに失われていた）、宛先が読み取り専用の場合はリトライを省略して
+  即座にエラーを返すようにした（回帰テスト:
+  `write_atomic_preserves_existing_permissions`・
+  `write_atomic_follows_symlink_to_target`、`src/fs_atomic.rs`）。
+- リトライ幅の記載が実装と不一致だった（本文中「50ms×5=250ms」は
+  誤りで、実装は最終試行後にスリープしないため実測200msが正しい上限）
+  ため訂正した。

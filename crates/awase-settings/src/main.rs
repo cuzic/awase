@@ -318,6 +318,24 @@ struct SettingsApp {
     layout_pending_open: Option<PathBuf>,
     /// rfd の非同期ファイルダイアログから戻ってきたパス（名前を付けて保存）
     layout_pending_save_as: Option<PathBuf>,
+    /// コードレビュー指摘: `AppConfig::save()`（ADR-099 決定3、fsync+
+    /// rename・失敗時50ms×最大4回リトライ）を `update()` から同期呼び出し
+    /// すると、rename が失敗するケース（AV/OneDrive 等のロック）で最大
+    /// 200ms 設定ウィンドウが再描画不能になる。バックアップ＋保存を
+    /// バックグラウンドスレッドで実行し、この `Receiver` を毎フレーム
+    /// ノンブロッキングでポーリングする。
+    pending_save: Option<std::sync::mpsc::Receiver<PendingSaveResult>>,
+}
+
+/// バックグラウンドスレッドで実行する保存処理の結果。
+enum PendingSaveResult {
+    /// 保存前バックアップ（`config.toml.bak`）の作成に失敗し、安全のため
+    /// 保存そのものを中止した。
+    BackupFailed(String),
+    /// `AppConfig::save()` が失敗した。
+    SaveFailed(String),
+    /// 保存に成功した。`warnings` は `validate()` が返した警告文。
+    Saved { warnings: Vec<String> },
 }
 
 impl SettingsApp {
@@ -377,58 +395,116 @@ impl SettingsApp {
             layout_loaded: false,
             layout_pending_open: None,
             layout_pending_save_as: None,
+            pending_save: None,
         }
     }
 
     /// `apply()` の実処理。`config_load_state` が `Dangerous`（読み込み失敗で
     /// 初期値を表示中）のときは呼び出し元（`apply()`）で確認を挟んでから
     /// これを呼ぶこと（ADR-099 決定4）。
+    /// 保存前バックアップ＋`AppConfig::save()`（ADR-099 決定3、fsync+
+    /// rename・失敗時最大200msリトライ）をバックグラウンドスレッドへ
+    /// 委譲して起動する。呼び出し元スレッド（egui の UI スレッド）は
+    /// 一切ブロックしない。完了は `poll_pending_save()` が毎フレーム
+    /// ノンブロッキングで確認する。
+    ///
+    /// コードレビュー指摘: 以前はこの関数自体が `AppConfig::save()` を
+    /// 同期呼び出ししており、rename が失敗するケース（AV/OneDrive 等の
+    /// ロック）で設定ウィンドウ全体が最大200ms再描画不能になっていた。
+    /// `crates/awase-windows/src/tray.rs::save_auto_start_config`
+    /// （こちらはエンジンスレッド上で動くため ADR-099 round2 SF-1 で
+    /// 別途トレードオフとして許容済み）とは異なり、こちらは最も高頻度に
+    /// 呼ばれる呼び出し元（「適用」ボタン）であり、非同期化の効果が大きい。
     fn apply_confirmed(&mut self) {
-        let clone = self.config.clone();
-        let (_validated, warnings) = clone.validate();
+        if self.pending_save.is_some() {
+            // 前回の保存がまだ完了していなければ多重に起動しない。
+            return;
+        }
+
+        let (_validated, warnings) = self.config.clone().validate();
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
+        let clone = self.config.clone();
 
-        // 保存前バックアップ: config_load_state が Dangerous のとき、既存
-        // ファイルを一度だけ config.toml.bak へ退避する（round1 指摘 M4:
-        // 無条件だと2回目の適用で「壊れた元ファイルのバックアップ」自体を
-        // 上書きしてしまう）。
-        //
-        // コードレビュー指摘 C2: バックアップに失敗しても以前は
-        // `log::warn!` するだけで保存を続行しており、Dangerous を招いた
-        // 原因（PermissionDenied・共有違反など）はバックアップの
-        // 読み取り＝コピーも失敗させやすいため、最もバックアップが必要な
-        // 場面でこそ原本が無防備に上書きされ得た。バックアップ対象の
-        // 既存ファイルがあるのにコピーに失敗した場合は、保存そのものを
-        // 中止しユーザーに見える形でエラーを出す。
-        if matches!(
+        let config_path = self.config_path.clone();
+        let is_dangerous = matches!(
             self.config_load_state,
             awase::config::ConfigLoadState::Dangerous(_)
-        ) {
-            let bak_path = self.config_path.with_extension("toml.bak");
-            if self.config_path.exists() && !bak_path.exists() {
-                if let Err(e) = std::fs::copy(&self.config_path, &bak_path) {
-                    self.status = format!(
-                        "保存失敗: 既存の {} をバックアップできませんでした（{e}）。\
-                         安全のため保存を中止しました。",
-                        self.config_path.display()
-                    );
-                    return;
-                }
-                log::info!("Backed up unreadable config to {}", bak_path.display());
-            }
-        }
+        );
 
-        match self.config.save(&self.config_path) {
-            Ok(()) => {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            // 保存前バックアップ: config_load_state が Dangerous のとき、既存
+            // ファイルを一度だけ config.toml.bak へ退避する（round1 指摘 M4:
+            // 無条件だと2回目の適用で「壊れた元ファイルのバックアップ」自体を
+            // 上書きしてしまう）。
+            //
+            // コードレビュー指摘 C2: バックアップに失敗しても以前は
+            // `log::warn!` するだけで保存を続行しており、Dangerous を招いた
+            // 原因（PermissionDenied・共有違反など）はバックアップの
+            // 読み取り＝コピーも失敗させやすいため、最もバックアップが必要な
+            // 場面でこそ原本が無防備に上書きされ得た。バックアップ対象の
+            // 既存ファイルがあるのにコピーに失敗した場合は、保存そのものを
+            // 中止しユーザーに見える形でエラーを出す。
+            if is_dangerous {
+                let bak_path = config_path.with_extension("toml.bak");
+                if config_path.exists() && !bak_path.exists() {
+                    if let Err(e) = std::fs::copy(&config_path, &bak_path) {
+                        let _ = tx.send(PendingSaveResult::BackupFailed(format!(
+                            "既存の {} をバックアップできませんでした（{e}）。\
+                             安全のため保存を中止しました。",
+                            config_path.display()
+                        )));
+                        return;
+                    }
+                    log::info!("Backed up unreadable config to {}", bak_path.display());
+                }
+            }
+
+            match clone.save(&config_path) {
+                Ok(()) => {
+                    let _ = tx.send(PendingSaveResult::Saved { warnings });
+                }
+                Err(e) => {
+                    let _ = tx.send(PendingSaveResult::SaveFailed(e.to_string()));
+                }
+            }
+        });
+        self.pending_save = Some(rx);
+    }
+
+    /// `apply_confirmed()` がバックグラウンドスレッドへ委譲した保存処理の
+    /// 完了を毎フレームノンブロッキングで確認し、完了していれば
+    /// `status`/`config_load_state` を更新する。
+    fn poll_pending_save(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.pending_save else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(PendingSaveResult::Saved { warnings }) => {
                 if warnings.is_empty() {
                     self.status = "設定を保存しました".to_string();
                 }
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
                 send_reload_config_message();
+                self.pending_save = None;
             }
-            Err(e) => self.status = format!("保存失敗: {e}"),
+            Ok(PendingSaveResult::BackupFailed(msg)) => {
+                self.status = format!("保存失敗: {msg}");
+                self.pending_save = None;
+            }
+            Ok(PendingSaveResult::SaveFailed(e)) => {
+                self.status = format!("保存失敗: {e}");
+                self.pending_save = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // まだ完了していない。ポーリングを継続するため再描画を要求する。
+                ctx.request_repaint();
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_save = None;
+            }
         }
     }
 
@@ -448,6 +524,12 @@ impl SettingsApp {
     }
 
     fn cancel(&mut self) {
+        // コードレビュー指摘: 確認モーダル（`show_dangerous_save_confirm_modal`）は
+        // `egui::Modal` のような背景ブロッキングを持たないため、モーダル表示中でも
+        // 下部パネルの「キャンセル」ボタンが押せてしまう。ここで cancel() が
+        // 呼ばれた場合はモーダルの前提（Dangerous 状態）が解消されるため、
+        // 開いたままのモーダルが状態と矛盾しないよう必ず閉じる。
+        self.show_dangerous_save_confirm = false;
         match awase::config::AppConfig::load(&self.config_path) {
             Ok(cfg) => {
                 self.available_layouts = scan_layout_names(&cfg.general.layouts_dir);
@@ -2123,6 +2205,7 @@ impl SettingsApp {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_pending_save(ctx);
         self.handle_layout_shortcuts(ctx);
 
         // 複数ディスプレイ対応: DPI スケールの異なるモニタへ移動すると、
@@ -3313,6 +3396,7 @@ mod layout_tab_repro {
             layout_loaded: true,
             layout_pending_open: None,
             layout_pending_save_as: None,
+            pending_save: None,
         }
     }
 
@@ -3786,6 +3870,22 @@ mod layout_tab_repro {
         (app, config_path)
     }
 
+    /// `apply_confirmed()` はバックグラウンドスレッドへ保存処理を委譲する
+    /// ため（コードレビュー指摘: UI スレッドを最大200msブロックしていた
+    /// 同期呼び出しを解消）、テストからは完了をポーリングして待つ。
+    fn wait_for_pending_save(app: &mut SettingsApp) {
+        let ctx = eframe::egui::Context::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.pending_save.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pending_save did not complete within 5s"
+            );
+            app.poll_pending_save(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
     /// `apply()` は `Dangerous` の間、無条件保存せず確認モーダルを開くだけで
     /// ファイルへは書き込まない（round1 M4: 静かなデフォルト永続化を防ぐ）。
     #[test]
@@ -3814,6 +3914,7 @@ mod layout_tab_repro {
         let _ = std::fs::remove_file(&config_path);
 
         app.apply_confirmed();
+        wait_for_pending_save(&mut app);
         let _ = std::fs::remove_file(&config_path);
         let bak_path = config_path.with_extension("toml.bak");
         let _ = std::fs::remove_file(&bak_path);
@@ -3832,6 +3933,7 @@ mod layout_tab_repro {
         let _ = std::fs::remove_file(&bak_path);
 
         app.apply_confirmed();
+        wait_for_pending_save(&mut app);
         let bak_after_first = std::fs::read_to_string(&bak_path).unwrap();
         assert_eq!(bak_after_first, "original broken content");
 
@@ -3839,6 +3941,7 @@ mod layout_tab_repro {
         // 既に存在する .bak は上書きされない。
         app.config_load_state = ConfigLoadState::Dangerous("still broken".to_string());
         app.apply_confirmed();
+        wait_for_pending_save(&mut app);
         let bak_after_second = std::fs::read_to_string(&bak_path).unwrap();
 
         let _ = std::fs::remove_file(&config_path);
@@ -3870,6 +3973,9 @@ mod layout_tab_repro {
         let _ = std::fs::remove_file(&bak_path);
 
         app.apply_confirmed();
+        // バックグラウンドスレッドが 0o000 のまま `fs::copy` を試みて
+        // 失敗することを確認したいので、権限を戻すのは完了待ちの後にする。
+        wait_for_pending_save(&mut app);
 
         // 検証のため読み取り権限を戻してから内容を確認する。
         std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -3906,6 +4012,7 @@ mod layout_tab_repro {
         app.config_load_state = ConfigLoadState::Loaded;
 
         app.apply();
+        wait_for_pending_save(&mut app);
 
         let bak_exists = bak_path.exists();
         let _ = std::fs::remove_file(&config_path);
@@ -3917,7 +4024,8 @@ mod layout_tab_repro {
         );
     }
 
-    /// `Loaded` 状態（通常の保存）では、確認モーダルを経由せず即座に保存する。
+    /// `Loaded` 状態（通常の保存）では、確認モーダルを経由せず保存を開始する
+    /// （実際の書き込みはバックグラウンドスレッドで非同期に完了する）。
     #[test]
     fn apply_saves_immediately_when_not_dangerous() {
         let (mut app, config_path) = dangerous_app();
@@ -3925,10 +4033,51 @@ mod layout_tab_repro {
         app.config_load_state = ConfigLoadState::Loaded;
 
         app.apply();
+        wait_for_pending_save(&mut app);
 
-        assert!(config_path.exists(), "Loaded 状態では即座に保存されるべき");
+        assert!(
+            config_path.exists(),
+            "Loaded 状態では保存が完了しているべき"
+        );
         assert!(!app.show_dangerous_save_confirm);
         let _ = std::fs::remove_file(&config_path);
+    }
+
+    /// コードレビュー指摘の回帰テスト: `apply_confirmed()` は保存の完了を
+    /// 待たずに即座に返る（UI スレッドをブロックしない）。宛先を既存
+    /// ディレクトリにして `rename` を確実に失敗させ、内部の50ms×最大4回
+    /// リトライ（最大200ms）が `apply_confirmed()` の呼び出し自体を
+    /// ブロックしていないことを、呼び出しの所要時間で確認する。
+    #[test]
+    fn apply_confirmed_returns_without_blocking_on_slow_save() {
+        let (mut app, _config_path) = dangerous_app();
+        app.config_load_state = ConfigLoadState::Loaded;
+        // 宛先をディレクトリにして rename を確実に失敗させ、内部リトライ
+        // ループ（最大200ms）を必ず踏ませる。
+        let dir_as_dest = std::env::temp_dir().join(format!(
+            "awase_test_apply_confirmed_nonblocking_{}_{}",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::create_dir(&dir_as_dest).unwrap();
+        app.config_path = dir_as_dest.clone();
+
+        let start = std::time::Instant::now();
+        app.apply_confirmed();
+        let elapsed = start.elapsed();
+
+        wait_for_pending_save(&mut app);
+        let _ = std::fs::remove_dir_all(&dir_as_dest);
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "apply_confirmed() should return immediately (spawn only), took {elapsed:?}"
+        );
+        assert!(
+            app.status.contains("保存失敗"),
+            "the background save must still surface its failure once polled: {}",
+            app.status
+        );
     }
 
     /// `cancel()` で再読み込みに成功したら `config_load_state` が `Loaded`
@@ -3942,5 +4091,25 @@ mod layout_tab_repro {
         let _ = std::fs::remove_file(&config_path);
 
         assert_eq!(app.config_load_state, ConfigLoadState::Loaded);
+    }
+
+    /// コードレビュー指摘: 確認モーダル表示中でも背景の「キャンセル」ボタンは
+    /// 操作可能（モーダルは `egui::Modal` のようなブロッキングオーバーレイを
+    /// 持たない）。この経路で `cancel()` が呼ばれた場合、`config_load_state`
+    /// が正常化したのに `show_dangerous_save_confirm` だけが残留し、
+    /// 解消済みの状態に対して古い警告モーダルが表示され続けてはならない。
+    #[test]
+    fn cancel_closes_dangerous_save_confirm_modal() {
+        let (mut app, config_path) = dangerous_app();
+        std::fs::write(&config_path, "[general]\n").unwrap();
+        app.show_dangerous_save_confirm = true;
+
+        app.cancel();
+        let _ = std::fs::remove_file(&config_path);
+
+        assert!(
+            !app.show_dangerous_save_confirm,
+            "cancel() はモーダルの前提(Dangerous)を解消するので、開いたままの確認モーダルも閉じるべき"
+        );
     }
 }

@@ -581,44 +581,22 @@ impl AppConfig {
     /// 設定を TOML 形式でファイルに保存する
     ///
     /// 一時ファイルへ書き込み・fsync してから `rename` するアトミック書き込み
-    /// （ADR-099 決定3）。書き込み中のクラッシュ・強制終了・ディスクフルで
-    /// `path` が不完全な内容のまま残ることを構造的に防ぐ。Windows の
-    /// `rename` は宛先が他プロセス（AV スキャナ・OneDrive 等）に開かれて
-    /// いると失敗しうるため、短いリトライで緩和する。
+    /// （ADR-099 決定3、実体は [`crate::fs_atomic::write_atomic`]）。書き込み中の
+    /// クラッシュ・強制終了・ディスクフルで `path` が不完全な内容のまま残ることを
+    /// 構造的に防ぐ。`path` がシンボリックリンクなら実体側へ書き込み、既存
+    /// ファイルのパーミッションを引き継ぐ。Windows の `rename` は宛先が他
+    /// プロセス（AV スキャナ・OneDrive 等）に開かれていると失敗しうるため、
+    /// 短いリトライ（50ms×最大4回＝最大200msブロック、初回試行と合わせて
+    /// 最大5回試行）で緩和する。宛先が読み取り専用の場合はリトライしても
+    /// 成功しないためリトライを省略し即座にエラーを返す。
     ///
     /// # Errors
     ///
     /// シリアライズ・一時ファイルへの書き込み・`rename` のいずれかに
     /// 失敗した場合にエラーを返す。
     pub fn save(&self, path: &Path) -> Result<()> {
-        use std::io::Write as _;
-
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
-        {
-            let mut f = std::fs::File::create(&tmp_path)
-                .with_context(|| format!("Failed to create {}", tmp_path.display()))?;
-            f.write_all(content.as_bytes())
-                .with_context(|| format!("Failed to write {}", tmp_path.display()))?;
-            f.sync_all()
-                .with_context(|| format!("Failed to fsync {}", tmp_path.display()))?;
-        }
-
-        let mut last_err = std::fs::rename(&tmp_path, path).err();
-        for _ in 0..4 {
-            if last_err.is_none() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            last_err = std::fs::rename(&tmp_path, path).err();
-        }
-        last_err.map_or_else(
-            || Ok(()),
-            |e| {
-                let _ = std::fs::remove_file(&tmp_path);
-                Err(e).with_context(|| format!("Failed to rename into {}", path.display()))
-            },
-        )
+        crate::fs_atomic::write_atomic(path, content.as_bytes())
     }
 }
 
@@ -1519,83 +1497,10 @@ simultaneous_threshold_ms = 123
     }
 
     // ── AppConfig::save (ADR-099 決定3): アトミック書き込み（tmp+rename）──
-
-    /// 正常系: `save()` 後、保存先ファイルの inode が保存前と変わっていること
-    /// （直書きではなく rename 経由になっていることの間接証拠）。
-    #[cfg(unix)]
-    #[test]
-    fn save_replaces_file_via_rename_not_in_place_write() {
-        use std::os::unix::fs::MetadataExt;
-
-        let toml_str = "[general]\nsimultaneous_threshold_ms = 1\n";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "awase_test_save_atomic_ino_{}.toml",
-            std::process::id()
-        ));
-
-        std::fs::write(&path, "placeholder").unwrap();
-        let ino_before = std::fs::metadata(&path).unwrap().ino();
-
-        config.save(&path).unwrap();
-        let ino_after = std::fs::metadata(&path).unwrap().ino();
-        let _ = std::fs::remove_file(&path);
-
-        assert_ne!(
-            ino_before, ino_after,
-            "save() should replace the file via rename (new inode), not write in place"
-        );
-    }
-
-    /// 異常系: `rename` を意図的に失敗させ、(a) 元ファイルが無傷で残ること、
-    /// (b) 一時ファイルが残らないこと（リトライ尽き後のクリーンアップ）を確認する。
-    /// 宛先パスを既存ディレクトリにすることで `rename` を確実に失敗させる。
-    #[test]
-    fn save_leaves_original_file_and_no_tmp_residue_when_rename_fails() {
-        let toml_str = "[general]\nsimultaneous_threshold_ms = 1\n";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let dir_as_dest = std::env::temp_dir().join(format!(
-            "awase_test_save_atomic_fail_dir_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir_as_dest);
-        std::fs::create_dir(&dir_as_dest).unwrap();
-
-        let result = config.save(&dir_as_dest);
-        assert!(result.is_err(), "save() into a directory path must fail");
-
-        let tmp_path = dir_as_dest.with_extension(format!("toml.tmp.{}", std::process::id()));
-        assert!(
-            !tmp_path.exists(),
-            "temp file must be cleaned up after retries are exhausted"
-        );
-        assert!(
-            dir_as_dest.is_dir(),
-            "the original destination must be left untouched on failure"
-        );
-        let _ = std::fs::remove_dir_all(&dir_as_dest);
-    }
-
-    /// 事前に同名の `*.toml.tmp.<pid>` が残っていても、`save()` が同じ内容で
-    /// 上書きして正常に完了すること（プロセス ID ベースの命名で衝突しない）。
-    #[test]
-    fn save_succeeds_when_stale_tmp_file_with_same_name_already_exists() {
-        let toml_str = "[general]\nsimultaneous_threshold_ms = 42\n";
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let path = std::env::temp_dir().join(format!(
-            "awase_test_save_atomic_stale_tmp_{}.toml",
-            std::process::id()
-        ));
-        let tmp_path = path.with_extension(format!("toml.tmp.{}", std::process::id()));
-        std::fs::write(&tmp_path, "stale leftover from a previous crashed run").unwrap();
-
-        config.save(&path).unwrap();
-        let reloaded = AppConfig::load(&path);
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&tmp_path);
-
-        assert_eq!(reloaded.unwrap().general.simultaneous_threshold_ms, 42);
-    }
+    // 詳細な機構（rename経由の置換・リトライ・パーミッション引き継ぎ・
+    // シンボリックリンク追従等）は実体である `crate::fs_atomic::write_atomic`
+    // 側のテストで検証する（`src/fs_atomic.rs`）。ここでは `save()` が
+    // TOML へシリアライズしてから委譲することのみ確認する。
 
     // ── validate_thresholds (426): speculative_delay_ms == threshold は境界内 ──
 
