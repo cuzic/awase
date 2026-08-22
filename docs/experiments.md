@@ -490,7 +490,7 @@ entry write は単独タップと確定した瞬間（`kp_shift_conv_guard_key_u
 
 ---
 
-## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・群Cのみ実機実験2回実施、不確定）
+## エントリ 16: GJI eager warmup キーを `VK_DBE_HIRAGANA` から `VK_IME_ON` へ置き換えられないか（BUG-69/ADR-098 決定3-c、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) が正式に引き取り済み・群B/群Cとも実機実験実施、いずれも有望だが不確定）
 
 **背景**: BUG-69（`docs/known-bugs.md`）/ [ADR-098](adr/098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
 決定3 の調査で、eager TSF warmup（`send_eager_tsf_warmup`、
@@ -645,3 +645,37 @@ advisor によるレビューで、BUG-69（ADR-098）F1/F2/F3 が「TsfNative+G
 で・本当に発火する」ことを同一ログで確認してから止める。エントリ09
 （scan=0 注入がフックにすら届かず反証された事例）と同型の失敗——独立変数
 が実は意図通りに動いていなかった——として記録する。
+
+### 実施記録 #3（2026-08-22、決定4-f + 群B）
+
+**決定4-f（`MapVirtualKeyW` 実機測定）**: standalone PowerShell からの
+P/Invoke と、awase.exe 自身の送信直前（実行時キーボードレイアウト文脈内）
+に追加した診断ログの2通りで測定し、`MapVirtualKeyW(VK_IME_ON=0x16,
+MAPVK_VK_TO_VSC) = 0xF2 (242)`（非ゼロ）で一致。**ただし standalone 測定
+だけでは信頼できないことも判明**——同じ standalone テストで
+`VK_DBE_HIRAGANA (0xF2)` を引くと `0` を返したが、実際の hook ログは
+一貫して `scan=0x70` を示しており矛盾する。`MapVirtualKeyW`（Ex でない版）
+は呼び出しスレッドの実行時キーボードレイアウトに依存するため、standalone
+プロセスと awase.exe 本体とで異なる値を返しうる。**今回は VK_IME_ON に
+ついて両文脈が一致したため事なきを得たが、一般には awase 自身のプロセス
+内で測るべき**という教訓が新たに得られた。結果、群B実験は第1候補
+（`VK_IME_ON`, scan=0xF2 実値, `TSF_MARKER`）で組めることが確定した。
+
+**群B（`VK_IME_ON` 単発、候補1の形態）**: **アプリ** Windows Terminal
+（`CASCADIA_HOSTING_WINDOW_CLASS`、TsfNative）。**IME** GJI、Engine ON。
+**手順**: `send_vk_dbe_hiragana_pair` の送信 VK を環境変数で
+`VK_DBE_HIRAGANA`→`VK_IME_ON` に差し替えた診断ビルドで、15.6秒放置後の
+入力・30.3秒放置後の入力を各1回実施。**結果**: 両方とも per-VK confirm
+で正常に confirmed へ到達し、画面表示もユーザー目視で正しいひらがなと
+確認した。この間の `cold=1`〜`13`（4種の cold reason）を通じて
+`giving up`/`SuspectedLiteral` は0件。傍証として、ある送信の約1.9秒後に
+通常の数百倍（584KB）の GJI 書き込みバーストを1件観測したが、因果の
+確定には至っていない。
+
+**結論: 有望だが不確定（群Cと同型の限界）。** 2026年5月に一度試されて
+撤回された `VK_IME_ON` warmup 実験（`48d25f2`→`3d49109`、「TSF
+composition context の初期化をトリガーしない」という実機観測で撤回）
+とは異なる結果になっているが、当時と送信形態（scan の有無）が同一だった
+かは確認できておらず、単純に「5月の結論を覆した」とは言えない。サンプル
+数は決定2 の合格基準（各条件5試行以上、群Aとの同一セッション内比較）に
+遠く届いておらず、群Aとの直接比較は一度も行っていない。
