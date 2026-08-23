@@ -9401,3 +9401,23 @@ ADR-099「テスト方針」節参照。
 - リトライ幅の記載が実装と不一致だった（本文中「50ms×5=250ms」は
   誤りで、実装は最終試行後にスリープしないため実測200msが正しい上限）
   ため訂正した。
+- **自己レビューで追加発見**: 上記の「既存ファイルのパーミッションを
+  新しいファイルへ引き継ぐ」処理と「宛先が読み取り専用ならリトライを
+  省略」処理が組み合わさると、宛先が読み取り専用の場合に一時ファイル
+  自身もそのパーミッション（読み取り専用）を引き継いでしまい、失敗時の
+  クリーンアップ（`remove_file`）が Windows では読み取り専用ファイルの
+  削除に失敗するため `<path>.tmp.<pid>` が永久に残留しうるバグがあった。
+  `clear_readonly_and_remove`（Windows限定で読み取り専用属性を先に外して
+  から削除）を新設して修正（回帰テスト:
+  `clear_readonly_and_remove_clears_attribute_before_deleting`、Unix上は
+  スモークテスト止まりで Windows 実機検証は未実施）。修正の過程で
+  `Permissions::set_readonly(false)` が Unix では `0o777`
+  （world-writable）にしてしまう既知の落とし穴
+  （`clippy::permissions_set_readonly_false`）に気づき、この処理自体を
+  `#[cfg(windows)]` 限定にした。
+- **自己レビューで追加発見**: `apply_confirmed()` は保存が進行中
+  （`pending_save` が `Some`）の間に再度呼ばれても多重起動はしないが、
+  「適用」ボタン自体は無効化していないため連打すると無言で無視される
+  だけだった。ステータスに「保存中です。少々お待ちください…」を表示する
+  よう改善（回帰テスト:
+  `apply_confirmed_shows_status_when_save_already_in_progress`）。

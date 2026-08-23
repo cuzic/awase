@@ -58,7 +58,7 @@ pub fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if let Some(err) = last_err.as_ref() {
         let is_readonly = std::fs::metadata(&target).is_ok_and(|m| m.permissions().readonly());
         if is_readonly {
-            let _ = std::fs::remove_file(&tmp_path);
+            clear_readonly_and_remove(&tmp_path);
             return Err(anyhow::anyhow!(
                 "{} は読み取り専用のため書き込めません（ファイルの属性を確認してください）: {err}",
                 target.display()
@@ -76,10 +76,38 @@ pub fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     last_err.map_or_else(
         || Ok(()),
         |e| {
-            let _ = std::fs::remove_file(&tmp_path);
+            clear_readonly_and_remove(&tmp_path);
             Err(e).with_context(|| format!("Failed to rename into {}", target.display()))
         },
     )
+}
+
+/// 一時ファイルの後始末。読み取り専用の宛先から権限をコピーした直後の
+/// 一時ファイルは、我々自身がそのパーミッションを引き継がせたことで
+/// 読み取り専用になっている場合がある。Windows の `DeleteFileW` は
+/// `FILE_ATTRIBUTE_READONLY` が立ったファイルの削除を拒否するため、削除前に
+/// 読み取り専用属性を明示的に外す。Unix では `unlink` がファイル自体の
+/// 権限ビットではなくディレクトリの書き込み権限で判定するためこの処理は
+/// 不要であり、かつ `Permissions::set_readonly(false)` は Unix では
+/// パーミッションを `0o777`（world-writable）にしてしまう
+/// （`clippy::permissions_set_readonly_false` が検出する既知の落とし穴）
+/// ため、Windows 限定で行う。
+fn clear_readonly_and_remove(path: &Path) {
+    #[cfg(windows)]
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "cfg(windows)配下限定。この lint が警告するUnixでの0o777化は\
+                   Windowsのset_readonlyには存在しない（FILE_ATTRIBUTE_READONLY\
+                   ビットのみをクリアする、ACLは変更しない）"
+    )]
+    if let Ok(metadata) = std::fs::metadata(path) {
+        let mut perms = metadata.permissions();
+        if perms.readonly() {
+            perms.set_readonly(false);
+            let _ = std::fs::set_permissions(path, perms);
+        }
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(test)]
@@ -221,4 +249,32 @@ mod tests {
     // 宛先ファイルの権限ビットではなくディレクトリの書き込み権限で判定される
     // ため、Linux 上では意図的に再現できない（`cargo xwin build --tests` で
     // コンパイルのみ確認、Windows 実機検証は未実施）。
+
+    /// 回帰テスト（Unix でのスモークテスト）: 既存ファイルのパーミッション
+    /// をコピーする処理（上記 `write_atomic_preserves_existing_permissions`）
+    /// と読み取り専用宛先の即時失敗処理が組み合わさると、宛先が読み取り
+    /// 専用な場合に一時ファイル自身も読み取り専用になってしまい、Windows の
+    /// `DeleteFileW` はそのままでは削除に失敗する。`clear_readonly_and_remove`
+    /// の読み取り専用属性クリア自体は Windows 限定
+    /// （`clippy::permissions_set_readonly_false` が指摘する通り、Unix で
+    /// `set_readonly(false)` を呼ぶと `0o777` になってしまうため）だが、
+    /// Unix では `unlink` がファイル自体の権限ビットを見ないため元々
+    /// 削除できる。ここでは「読み取り専用ファイルに対して呼んでも panic
+    /// せず削除できる」ことのみを確認する（Windows 固有の属性クリア自体は
+    /// `cargo xwin build --tests` でのコンパイル確認止まり、実機未検証）。
+    #[cfg(unix)]
+    #[test]
+    fn clear_readonly_and_remove_clears_attribute_before_deleting() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = unique_test_path("clear-readonly");
+        std::fs::write(&path, b"content").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        clear_readonly_and_remove(&path);
+
+        assert!(
+            !path.exists(),
+            "clear_readonly_and_remove must delete the file even when it starts read-only"
+        );
+    }
 }

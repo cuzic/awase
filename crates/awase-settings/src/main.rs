@@ -418,6 +418,10 @@ impl SettingsApp {
     fn apply_confirmed(&mut self) {
         if self.pending_save.is_some() {
             // 前回の保存がまだ完了していなければ多重に起動しない。
+            // コードレビュー指摘: ボタン自体は無効化していないため、
+            // 連打すると何も起きていないように見えてしまう。ステータスで
+            // 「保存中」を明示し、無反応に見えないようにする。
+            self.status = "保存中です。少々お待ちください…".to_string();
             return;
         }
 
@@ -4078,6 +4082,47 @@ mod layout_tab_repro {
             "the background save must still surface its failure once polled: {}",
             app.status
         );
+    }
+
+    /// コードレビュー指摘の回帰テスト: 保存が進行中（`pending_save` が
+    /// `Some`）の間に `apply_confirmed()` を再度呼んでも、ボタン自体は
+    /// 無効化していないため連打しうる。多重起動はしない（既存仕様）が、
+    /// 単に無言で無視するのではなく「保存中」であることをステータスで
+    /// 示すべき（コードレビュー指摘: 以前は無反応に見えるだけだった）。
+    #[test]
+    fn apply_confirmed_shows_status_when_save_already_in_progress() {
+        let (mut app, _config_path) = dangerous_app();
+        app.config_load_state = ConfigLoadState::Loaded;
+        // 宛先をディレクトリにして保存を必ず失敗させ、内部リトライ
+        // ループ（最大200ms）の間 `pending_save` が `Some` であり続ける
+        // ことを保証する（通常の保存はごく短時間で完了しうるため、
+        // 2回目の apply_confirmed() 呼び出しが確実に「進行中」の状態を
+        // 観測できるよう、意図的に遅延させる）。
+        let dir_as_dest = std::env::temp_dir().join(format!(
+            "awase_test_apply_confirmed_double_click_{}_{}",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::create_dir(&dir_as_dest).unwrap();
+        app.config_path = dir_as_dest.clone();
+
+        app.apply_confirmed();
+        assert!(
+            app.pending_save.is_some(),
+            "save should still be in flight immediately after apply_confirmed()"
+        );
+
+        app.apply_confirmed();
+        // `poll_pending_save()` を呼ぶ前（＝1回目の保存の完了通知で上書き
+        // される前）に、2回目のクリックが残したステータスを確認する。
+        assert!(
+            app.status.contains("保存中"),
+            "re-clicking while a save is in flight should say so, not silently no-op: {}",
+            app.status
+        );
+
+        wait_for_pending_save(&mut app);
+        let _ = std::fs::remove_dir_all(&dir_as_dest);
     }
 
     /// `cancel()` で再読み込みに成功したら `config_load_state` が `Loaded`
