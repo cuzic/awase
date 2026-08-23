@@ -13,7 +13,18 @@ pub const REPORT_HOST: &str = "report.awase.cc";
 // 90 days as a practical review window with a clear deletion expectation.
 pub const RETENTION_HINT: &str = "約90日間保管後に自動削除";
 pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
-pub const LOG_EXCERPT_MAX_BYTES: usize = 256 * 1024;
+/// journal/app_log それぞれの添付上限。
+///
+/// 旧値の 256KiB は journal + app_log の2本をフル添付しただけで
+/// 256*2=512KiB = `MAX_BODY_BYTES` に達し、他のフィールド（内部状態
+/// スナップショット・設定ファイル・配列ファイル・description等）の
+/// ぶんだけ確実に超過する構造だった。実機で「送信のたびに必ず自動切り詰めが
+/// 発生する」と報告され、200KiB×2=400KiBを引いた単純計算では他フィールド
+/// 用に~112KiBのマージンとなるよう引き下げた（`serde_json::to_string_pretty`
+/// のインデント・エスケープ等のオーバーヘッドを含めた実測では、
+/// `full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking`
+/// テストのケースで ~102KiB）。
+pub const LOG_EXCERPT_MAX_BYTES: usize = 200 * 1024;
 pub const SCHEMA_VERSION: u8 = 3;
 /// `services/report-worker/src/index.ts` の `MAX_BODY_BYTES` と同じ値。
 /// サーバ側の 413 応答を待たず、送信前にクライアント側で分かりやすく警告する
@@ -681,12 +692,47 @@ mod tests {
     #[test]
     fn build_payload_json_fitting_shrinks_log_budget_to_stay_under_max_body_bytes() {
         // journal と app_log を両方フルサイズ(LOG_EXCERPT_MAX_BYTES each)で
-        // 添付すると、それだけで MAX_BODY_BYTES を超える構造的な問題（journal
-        // 256KB + app_log 256KB = 512KB = MAX_BODY_BYTES で、他のフィールドの
-        // ぶんだけ確実に超過する）を回帰させないためのテスト。journal は
-        // 小さい要素を大量に並べる（1要素が LOG_EXCERPT_MAX_BYTES を超えると
+        // 添付した場合でも、上限に対して十分小さい max_body_bytes を渡せば
+        // 縮小ロジックが機能することを確認する回帰テスト。journal は小さい
+        // 要素を大量に並べる（1要素が LOG_EXCERPT_MAX_BYTES を超えると
         // truncate_journal_json_tail が丸ごと弾いて空配列になり、意図せず
         // 予算を使い切らないため）。
+        //
+        // MAX_BODY_BYTES をそのまま使わない理由: LOG_EXCERPT_MAX_BYTES は
+        // 200KiB に調整済みで、journal+app_log の2本をフル添付しても
+        // 400KiB(< 512KiB=MAX_BODY_BYTES)に収まり、縮小自体が発生しなく
+        // なった（これは「送信のたびに必ず自動切り詰めが発生する」という
+        // 実機報告を受けた意図的な改善）。縮小ロジック自体の回帰を検知する
+        // ため、テストでは意図的に小さい上限を渡す。
+        let journal_items: Vec<_> = (0..4_000)
+            .map(|i| serde_json::json!({"seq": i, "payload": "x".repeat(80)}))
+            .collect();
+        let journal = serde_json::to_string(&journal_items).unwrap();
+        let app_log = "a".repeat(LOG_EXCERPT_MAX_BYTES);
+        let mut base = input("説明", true, Some(&journal));
+        base.app_log = Some(&app_log);
+        let small_max_body_bytes = 200 * 1024;
+        let (json, used_budget) = build_payload_json_fitting(&base, small_max_body_bytes).unwrap();
+        assert!(
+            json.len() <= small_max_body_bytes,
+            "fittingを試みても指定した上限を超えている: {} > {small_max_body_bytes}",
+            json.len()
+        );
+        assert!(
+            used_budget < LOG_EXCERPT_MAX_BYTES,
+            "予算が縮小されていない: {used_budget}"
+        );
+    }
+
+    #[test]
+    fn full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking() {
+        // LOG_EXCERPT_MAX_BYTES を 256KiB から 200KiB に引き下げた理由そのもの
+        // の回帰テスト。旧値では journal(256KiB) + app_log(256KiB) だけで
+        // MAX_BODY_BYTES(512KiB) に達し、他のフィールドのぶんだけ確実に
+        // 超過して「送信のたびに必ず自動切り詰めが発生する」実機報告が
+        // あった。journal/app_log を両方フルサイズで添付しても、通常サイズの
+        // 他フィールドと合わせて MAX_BODY_BYTES に収まり、追加の予算縮小が
+        // 発生しないことを確認する。
         let journal_items: Vec<_> = (0..4_000)
             .map(|i| serde_json::json!({"seq": i, "payload": "x".repeat(80)}))
             .collect();
@@ -695,15 +741,11 @@ mod tests {
         let mut base = input("説明", true, Some(&journal));
         base.app_log = Some(&app_log);
         let (json, used_budget) = build_payload_json_fitting(&base, MAX_BODY_BYTES).unwrap();
-        assert!(
-            json.len() <= MAX_BODY_BYTES,
-            "fitting後もMAX_BODY_BYTESを超えている: {} > {MAX_BODY_BYTES}",
-            json.len()
+        assert_eq!(
+            used_budget, LOG_EXCERPT_MAX_BYTES,
+            "journal/app_logフル添付だけで通常ケースの縮小が発生した: {used_budget}"
         );
-        assert!(
-            used_budget < LOG_EXCERPT_MAX_BYTES,
-            "予算が縮小されていない: {used_budget}"
-        );
+        assert!(json.len() <= MAX_BODY_BYTES);
     }
 
     #[test]

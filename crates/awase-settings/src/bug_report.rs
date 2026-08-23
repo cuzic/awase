@@ -591,9 +591,15 @@ fn winhttp_send_report(body: &str) -> Result<String, String> {
 
     let bytes = body.as_bytes();
     let body_len = u32::try_from(bytes.len()).map_err(|_| "送信内容が大きすぎます".to_owned())?;
+    // NUL終端を含めない: windows crate の WinHttpSendRequest バインディングは
+    // `Option<&[u16]>` の `slice.len()` をそのまま `dwHeadersLength`（文字数）
+    // として WinHTTP API に渡す（ポインタ渡しではなく明示的な長さ渡し）。
+    // NUL終端(0)を含めて collect すると長さが実際の文字数より1多く報告され、
+    // 余分な NUL 文字がヘッダー文字列の一部として解釈され、実機で
+    // `WinHttpSendRequest: パラメーターが間違っています (0x80070057)` に
+    // なることを確認した。
     let headers: Vec<u16> = "Content-Type: application/json\r\n"
         .encode_utf16()
-        .chain(std::iter::once(0))
         .collect();
 
     unsafe {
