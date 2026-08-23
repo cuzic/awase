@@ -110,6 +110,59 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.15.0] - 2026-08-17</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a key to toggle the IME on/off (<code>keys.ime_toggle</code>)</strong><ul>
+<li>New "IME ON/OFF key" field in the settings window's "Keys" tab. Defaults to the Kanji key</li>
+<li>If MS-IME has Ctrl+Space / Shift+Space bound to IME toggling, it's auto-detected from the registry and used alongside the manual setting</li>
+<li>When GJI (Google Japanese Input) is detected, the IME on/off/toggle keys declared in config1.db are also recognized automatically</li>
+</ul>
+</li>
+<li><strong>Added a setup-assist popup when GJI (Google Japanese Input) is detected</strong><ul>
+<li>If the Muhenkan-key solo-tap setting is "always send" while still relying on GJI's default character-type-switch behavior, a dialog now asks whether to switch to the safer dedicated-Fn-key (F21) scheme</li>
+<li>Agreeing writes the binding into GJI's config file (config1.db); GJI needs to be restarted for it to take effect</li>
+</ul>
+</li>
+<li><strong>Added F13&ndash;F20 as selectable candidates for the thumb-shift on/off toggle hotkey in the shortcut remapping tab</strong><ul>
+<li>For users with programmable keyboards that expose F13&ndash;F20. Previously only F1&ndash;F12 were selectable</li>
+<li>F21&ndash;F24 are reserved internally for the GJI dedicated-Fn-key feature above and are intentionally excluded from the selectable candidates</li>
+</ul>
+</li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Removed the tray's "IME state" submenu (toggling between hiragana / full-width katakana / full-width alphanumeric / half-width alphanumeric / half-width katakana / direct input)</strong><ul>
+<li>Also removed the settings window's "IME conversion-mode policy (observe/force)" setting</li>
+<li>Along with this, removed the internal tracking of the charset axis (kana shape) itself (ADR-094). This has no effect on the alphanumeric-vs-kana judgment that the thumb-shift engine's activation depends on</li>
+<li>The tray's "Reset state" item remains, but "Roman" was dropped from its label and it no longer forces the Roman-mode bit (it only resets Engine ON / Caps OFF / Hiragana)</li>
+</ul>
+</li>
+<li><strong>Reorganized the settings window's "Keys" tab</strong><ul>
+<li>Unified the internal term "Engine" to "Thumb Shift" in the UI (e.g. "Engine control" &rarr; "Thumb Shift ON/OFF")</li>
+<li>Moved "IME ON/OFF key" above "Thumb Shift ON/OFF" in the display order</li>
+<li>Removed the "IME Detection" tab (settings for passively detecting external IME state changes via half-width/full-width keys, etc.) from the GUI. Almost no one changes these defaults; advanced users can still edit <code>[keys.ime_detect]</code> in <code>config.toml</code> directly</li>
+<li>Simplified the Muhenkan/Henkan solo-tap suppression setting from two checkboxes into a single dropdown: "always ignore" (default) / "always send" (no change to the default behavior)</li>
+<li>Extended each tab's hover-hint hit area to cover the actual control (dropdown, button, etc.), not just its label text</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the full-width hyphen "&#65293;" being typed as a long vowel mark "&#12540;"</strong><ul>
+<li>Occurred in apps that receive symbols via the VK/TSF path, such as Chrome/Firefox</li>
+<li>Caused by awase's internal symbol-to-key table mapping both "&#65293;" and "&#12540;" to the same key, since the IME's romaji-to-kana conversion has a special rule that turns the "-" key into the long-vowel mark</li>
+</ul>
+</li>
+<li><strong>Fixed an issue where releasing Alt right after certain operations could switch input to JIS-kana direct input</strong><ul>
+<li>With MS-IME, the "hiragana" key that awase sends internally when releasing the temporary "IME-ON half-width alphanumeric" toggle could, if it coincided with Alt being held, trigger MS-IME's own input-method switch into JIS-kana mode. Fixed by skipping this internal send while Alt or Win is held</li>
+</ul>
+</li>
+<li><strong>Fixed repeated internal IME-OFF processing shortly after turning the IME off with Ctrl+Muhenkan on Windows Terminal + MS-IME</strong><ul>
+<li>Even though the IME was correctly staying off, awase would sometimes misread the conversion-mode value as "the IME reopened" and keep resending the IME-OFF key. Fixed by adding a minimum interval (3 seconds) before allowing a resend</li>
+</ul>
+</li>
+</ul>
 <h2>[1.14.0] - 2026-08-10</h2>
 <h3>Added</h3>
 <ul>
