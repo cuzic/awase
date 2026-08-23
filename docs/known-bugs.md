@@ -9421,3 +9421,47 @@ ADR-099「テスト方針」節参照。
   だけだった。ステータスに「保存中です。少々お待ちください…」を表示する
   よう改善（回帰テスト:
   `apply_confirmed_shows_status_when_save_already_in_progress`）。
+
+## BUG-72: タスクトレイ「不具合を報告」ウィンドウの日本語が文字化け（トーフ表示）する
+
+**症状:** タスクトレイから「不具合を報告」を開くと、見出し・症状カテゴリの
+選択肢・JSON プレビュー中の日本語（IME 製品名・競合ソフト名・配列データ等）
+が読めない状態（文字化け、実際にはグリフ無しの空白/トーフ表示）になる。
+通常の設定画面（awase-settings のメインウィンドウ）は正常に日本語が表示
+される。
+
+**原因:** `crates/awase-settings/src/bug_report.rs::run()` は
+`--bug-report` 起動時に呼ばれる独立した `eframe::run_native` 呼び出しで
+あり、メイン設定画面（`SettingsApp::new()`、`crates/awase-settings/
+src/main.rs`）が呼んでいる CJK フォント読み込み処理 `setup_fonts()`
+（`C:\Windows\Fonts\meiryo.ttc`/`msgothic.ttc`/`YuGothR.ttc` 等を探して
+`Proportional`/`Monospace` フォントファミリへ挿入）を一度も呼んでいな
+かった。この結果、不具合報告ウィンドウは egui 同梱の既定フォント
+（日本語グリフを一切含まない）のままレンダリングされ、日本語文字列が
+すべて欠落グリフ（トーフ）表示になっていた。データ自体（UTF-8 文字列・
+JSON）は正しく、バイト列レベルの文字コード破損ではなくフォント未設定
+によるレンダリング問題だった。
+
+**修正:** `run()` の `run_native` クロージャで `crate::setup_fonts(&cc.
+egui_ctx)` を呼ぶよう追加。回帰テスト
+`bug_report::font_guard_tests::run_native_closure_calls_setup_fonts`
+（`architecture_guard.rs`/`wix_installer_guard.rs` に倣ったソース文字列
+走査によるガード、egui のヘッドレス描画を要さず Linux `cargo test` で
+完結）を新設。**執筆時の自己レビューで判明**: 当初 `closure_body.
+contains("setup_fonts")` という緩い判定にしていたところ、修正の説明
+コメント自体に "setup_fonts" という語が含まれるため、実際の呼び出しを
+削除してもテストが検知不能（wix_installer_guard.rs の C1 と同型の
+落とし穴）になることに気づき、`setup_fonts(&cc.egui_ctx)` という括弧
+付きの呼び出し式で判定するよう修正して確認済み。
+
+**テスト:** `cargo test -p awase-settings` 全26件緑（新規1件含む）、
+`cargo fmt --all -- --check`、`cargo xwin build --target
+x86_64-pc-windows-msvc -p awase-settings`（実 Windows ターゲットへの
+クロスコンパイル）緑。Windows 実機での表示確認は未実施。
+
+**関連ファイル:** `crates/awase-settings/src/bug_report.rs`（`run()`）、
+`crates/awase-settings/src/main.rs`（`setup_fonts()` 定義、
+`SettingsApp::new()`）。
+
+**関連:** [ADR-095](adr/095-tray-bug-report-cloudflare-intake.md)
+（タスクトレイ不具合報告機能の導入元）。
