@@ -5,17 +5,20 @@
            Language="1041"
            Version="$(var.Version)"
            Manufacturer="cuzic"
-           Codepage="UTF-8"
+           Codepage="932"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
-    <!-- Codepage="UTF-8": 既定のコードページ(1252、西欧文字のみ)のままだと、
+    <!-- Codepage="932": 既定のコードページ(1252、西欧文字のみ)のままだと、
          VCRUNTIME140FOUND の LaunchCondition に追加した日本語メッセージが
          light.exe のリンク時に LGHT0311（文字がコードページで表現できない）
          で失敗する。既存の日本語テキストがこれまで XML コメント（データベース
          非格納）のみだったため、この問題は顕在化していなかった。
-         SummaryCodepage は Product/@Codepage とは別に、OLE Summary
-         Information Stream 自体の制約で ANSI コードページしか許可されない
-         （UTF-8=65001 を指定すると CNDL0349 で拒否される）ため、日本語の
-         ANSI コードページである 932 (Shift_JIS) を明示する。 -->
+         Codepage="UTF-8" (65001) では解決しない — MSI データベースの文字列
+         テーブルは可変長エンコーディングを持てず、実測で light.exe が
+         Codepage="UTF-8" 指定を無視してデフォルトの 1252 のまま LGHT0311 を
+         出し続けた。日本語の ANSI/DBCS コードページである 932 (Shift_JIS)
+         を指定する。SummaryCodepage も OLE Summary Information Stream の
+         制約で ANSI コードページのみ許可される（UTF-8=65001 を指定すると
+         CNDL0349 で拒否される）ため、同じ 932 に揃える。 -->
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser"
              SummaryCodepage="932" />
     <!-- Schedule="afterInstallExecute": 既定値 afterInstallValidate のままだと
