@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Semi-automated smoke-test matrix for awase (App x IME x Scenario).
 
