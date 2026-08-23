@@ -23,6 +23,28 @@
     <Property Id="ARPCONTACT" Value="cuzic" />
     <Property Id="ARPCOMMENTS" Value="A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond" />
 
+    <!-- awase.exe / awase-settings.exe は MSVC ターゲットで動的リンクされており、
+         Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (vcruntime140.dll) が
+         別途必要。未インストール環境ではこのチェックが無いと、MSI インストール
+         自体は成功したのに初回起動時に OS の分かりにくいダイアログ
+         （「vcruntime140.dll が見つからないため、このプログラムを開始できません」）
+         で失敗する。インストール時点で検出し、対処方法込みのメッセージで
+         セットアップを中止させる。
+         Message は非 ASCII 文字を含めない（既存の DowngradeErrorMessage も
+         英語）。日本語を含めると MSI データベースの既定コードページ(1252、
+         西欧文字のみ)で light.exe が LGHT0311 を出す。Codepage 属性を
+         932(Shift_JIS)/UTF-8 に変更しても実測で解消しなかった（原因未特定）
+         ため、確実な回避策としてメッセージ自体を英語にする。 -->
+    <Property Id="VCRUNTIME140FOUND">
+      <DirectorySearch Id="System64FolderSearch" Path="[System64Folder]">
+        <FileSearch Id="VcRuntime140Search" Name="vcruntime140.dll" />
+      </DirectorySearch>
+    </Property>
+
+    <Condition Message="awase requires the Microsoft Visual C++ 2015-2022 Redistributable (x64). Download and install it from https://aka.ms/vs/17/release/vc_redist.x64.exe, then run this setup again.">
+      <![CDATA[Installed OR VCRUNTIME140FOUND]]>
+    </Condition>
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="awase">
