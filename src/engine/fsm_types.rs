@@ -329,9 +329,12 @@ pub enum EngineState {
     PendingCharThumb {
         char_key: PendingKey,
         thumb: PendingThumbData,
-        /// char1 が KeyUp で離されたかどうか
-        /// true の場合、char2 到着時に必ず PairWithChar2（char1 単独 + char2+thumb 同時）を選択する
-        char1_released: bool,
+        /// char1 が KeyUp で離された時刻（`None` ならまだ押下中）。
+        /// `Some` の場合、char2 到着時は必ず PairWithChar2（char1 単独 + char2+thumb 同時）
+        /// を選択する。char2 が来ないまま確定する場合は、この時刻と thumb 押下時刻の
+        /// 差（重なり時間）を `TimingJudge::confirms_char_thumb_chord` で見て、
+        /// 重なりが乏しければ同時打鍵ではなく単独打鍵×2として確定する。
+        char1_released_at: Option<Timestamp>,
     },
     /// 投機出力済み: 通常面の文字を出力したが、同時打鍵で差し替えられる可能性がある
     SpeculativeChar(PendingKey),
@@ -377,10 +380,10 @@ impl EngineState {
             Self::PendingCharThumb {
                 char_key,
                 thumb,
-                char1_released,
+                char1_released_at,
             } => format!(
-                "PendingCharThumb(char=0x{:02X},thumb=0x{:02X},left={},released={})",
-                char_key.vk_code.0, thumb.vk_code.0, thumb.is_left, char1_released
+                "PendingCharThumb(char=0x{:02X},thumb=0x{:02X},left={},released_at={:?})",
+                char_key.vk_code.0, thumb.vk_code.0, thumb.is_left, char1_released_at
             ),
             Self::SpeculativeChar(k) => format!("SpeculativeChar(vk=0x{:02X})", k.vk_code.0),
         }
@@ -393,14 +396,14 @@ impl EngineState {
     /// `PendingCharThumb` の内容を取り出す。他の状態ならパニック。
     #[track_caller]
     #[must_use]
-    pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, bool) {
+    pub fn expect_pending_char_thumb(self) -> (PendingKey, PendingThumbData, Option<Timestamp>) {
         if let Self::PendingCharThumb {
             char_key,
             thumb,
-            char1_released,
+            char1_released_at,
         } = self
         {
-            (char_key, thumb, char1_released)
+            (char_key, thumb, char1_released_at)
         } else {
             unreachable!("FSM invariant violation: expected PendingCharThumb, got {self:?}")
         }
@@ -1008,7 +1011,7 @@ mod tests {
         let state = EngineState::PendingCharThumb {
             char_key: make_pending_key(),
             thumb: make_pending_thumb_data(false),
-            char1_released: false,
+            char1_released_at: None,
         };
         assert!(!state.is_idle());
     }

@@ -371,15 +371,18 @@ impl NicolaFsm {
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,
-                char1_released,
+                char1_released_at,
             } => {
                 // ContextChange による異常系 flush では現在の Shift 状態を面解決に
                 // 使わない。フォーカス変更後の modifier snapshot は別ウィンドウの
                 // 状態を指しうるため、通常の親指面で安全側に倒す（ADR-097 決定2 #9）。
+                // 重なり不足判定（confirms_char_thumb_chord）もここでは適用しない
+                // ——異常系 flush は「今ある情報で即座に確定する」経路であり、
+                // 通常の 2 鍵解決（KeyUp/タイムアウト経由）とは別軸のため。
                 let resolved = self.resolve_char_thumb_as_simultaneous(&char_key, thumb.face());
                 self.update_history(resolved.output);
                 let mut actions = resolved.actions;
-                if char1_released {
+                if char1_released_at.is_some() {
                     // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
                     self.append_key_up_for(&mut actions, char_key.scan_code);
                 }
@@ -726,7 +729,7 @@ impl NicolaFsm {
         self.state = EngineState::PendingCharThumb {
             char_key,
             thumb,
-            char1_released: false,
+            char1_released_at: None,
         };
     }
 
@@ -1417,14 +1420,23 @@ impl NicolaFsm {
     ///
     /// char1 が既に離されていれば無条件で false（タイミング比較不要）。
     /// それ以外は `TimingJudge::three_key_pairing` でタイミング + n-gram を総合判定。
+    ///
+    /// **`char_thumb_chord_confirmed`（char2 が来ない2鍵ケース）との意図的な非対称**:
+    /// char2 が実際に到着するこの3鍵ケースでは「char1 が既に離されている」という
+    /// 条件で無条件に char1 を諦める（char2+thumb を優先）が、`char_thumb_chord_confirmed`
+    /// は同じ条件で重なりマージン＋n-gramタイブレークにより同時打鍵へ復帰する余地を残す。
+    /// これは意図的: 3鍵ケースには char2 という直接的な追加証拠（実際の候補文字とその
+    /// タイミング）があるため粗い既定で十分だが、2鍵ケース（char2 が来ないまま
+    /// KeyUp/タイムアウトで確定）にはその追加証拠が無いため、重なり時間という
+    /// 唯一の物理的シグナルをより慎重に扱う。挙動を揃える変更は別途検討する。
     fn compute_prefer_char1(
         &self,
         pending: &PendingKey,
         thumb: &PendingThumbData,
         ev: &ClassifiedEvent,
-        char1_released: bool,
+        char1_released_at: Option<Timestamp>,
     ) -> bool {
-        if char1_released {
+        if char1_released_at.is_some() {
             return false;
         }
         let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
@@ -1469,7 +1481,7 @@ impl NicolaFsm {
     /// タイミング差が小さいとき（どちらとも取れる場合）は n-gram スコアで
     /// より自然な日本語になるほうを選ぶ。
     fn step_pending_char_thumb_3key(&mut self, ev: &ClassifiedEvent) -> ParseAction {
-        let (pending, thumb, char1_released) = self.state.expect_pending_char_thumb();
+        let (pending, thumb, char1_released_at) = self.state.expect_pending_char_thumb();
         let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
         self.go_idle();
 
@@ -1479,7 +1491,7 @@ impl NicolaFsm {
         }
 
         // char2 が来た → 3 鍵仲裁
-        if self.compute_prefer_char1(&pending, &thumb, ev, char1_released) {
+        if self.compute_prefer_char1(&pending, &thumb, ev, char1_released_at) {
             // char1+thumb = 同時打鍵、char2 は再処理
             return self.reduce_char_thumb_and_continue(pending, thumb_face, *ev);
         }
@@ -1556,24 +1568,66 @@ impl NicolaFsm {
         }
     }
 
+    /// char1+thumb を同時打鍵として確定してよいかを判定する（重なり + n-gram タイブレーク）。
+    ///
+    /// `thumb_face` は呼び出し元が既に解決済みのものを渡す（chord 確定時にも必要な
+    /// ため、ここで二重に解決しない）。重なりだけで確定できる場合（大半のケース）は
+    /// `TimingJudge` の構築（`recent_kana` の `Vec` 確保）やかな引きを行わない
+    /// （`timing::overlap_only_verdict` 参照。keystroke-rate のホットパスでの
+    /// 無駄な確保・配列面引きを避けるため）。
+    fn char_thumb_chord_confirmed(
+        &self,
+        pending: &PendingKey,
+        thumb: &PendingThumbData,
+        thumb_face: Option<Face>,
+        char1_released_at: Option<Timestamp>,
+    ) -> bool {
+        if let Some(verdict) =
+            timing::overlap_only_verdict(self.threshold_us, thumb.timestamp, char1_released_at)
+        {
+            return verdict;
+        }
+        let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
+        let solo_kana = self.lookup_kana_at(pending.pos, Face::Normal);
+        self.timing_judge().confirms_char_thumb_chord(
+            thumb.timestamp,
+            char1_released_at,
+            chord_kana,
+            solo_kana,
+        )
+    }
+
     /// PendingCharThumb 状態で char1 または thumb が離された場合の処理
     fn handle_key_up_pending_char_thumb(&mut self, event: &RawKeyEvent) -> Resp {
-        let (pending, thumb, char1_released) = self.state.expect_pending_char_thumb();
+        let (pending, thumb, char1_released_at) = self.state.expect_pending_char_thumb();
 
         // char1 の最初の KeyUp → フラグを立てて待機継続。
         // 後から char2 が来れば「char1 単独 + char2+thumb 同時」と確実に判定できる。
-        if event.vk_code == pending.vk_code && !char1_released {
+        if event.vk_code == pending.vk_code && char1_released_at.is_none() {
             self.state = EngineState::PendingCharThumb {
                 char_key: pending,
                 thumb,
-                char1_released: true,
+                char1_released_at: Some(event.timestamp),
             };
             return self.build_response(SmallVec::new(), true, TimerIntent::Keep);
         }
 
-        // char1+thumb を同時打鍵として確定する
         self.go_idle();
-        let resolved = match self.resolve_thumb_face(thumb.side(), pending.pos) {
+        let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
+        let confirmed_chord =
+            self.char_thumb_chord_confirmed(&pending, &thumb, thumb_face, char1_released_at);
+
+        if !confirmed_chord {
+            // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する
+            return self.resolve_char_and_thumb_as_separate_solos(
+                &pending,
+                &thumb,
+                event.vk_code == thumb.vk_code,
+            );
+        }
+
+        // char1+thumb を同時打鍵として確定する
+        let resolved = match thumb_face {
             Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
             None => self.resolve_pending_char_as_single(&pending),
         };
@@ -1582,9 +1636,9 @@ impl NicolaFsm {
 
         // どの物理キーが離されたかに応じて char1 の KeyUp 追記を判定
         let key_up_scan = if event.vk_code == pending.vk_code {
-            // char1 が再度離された (char1_released=true 済み)
+            // char1 が再度離された (char1_released_at=Some 済み)
             Some(event.scan_code)
-        } else if char1_released {
+        } else if char1_released_at.is_some() {
             // thumb が離された + char1 は既に物理的に離されている
             Some(pending.scan_code)
         } else {
@@ -1593,6 +1647,71 @@ impl NicolaFsm {
         };
         if let Some(scan) = key_up_scan {
             self.append_key_up_for(&mut actions, scan);
+        }
+        self.build_response(actions, true, TimerIntent::CancelAll)
+    }
+
+    /// 重なり不足で同時打鍵を確定しなかった場合、char1・thumb をそれぞれ単独打鍵として
+    /// 確定する（`TimingJudge::confirms_char_thumb_chord` が false を返した場合専用）。
+    ///
+    /// char1 はこのパスに来る時点で必ず既に物理的に離されているため、その KeyUp は
+    /// 常に追記する。thumb 自身は `thumb_released_now` が true（呼び出し元が thumb
+    /// 自身の KeyUp イベントを処理中）の場合のみ即座に KeyUp を追記する——タイムアウト
+    /// 経由（thumb はまだ押下中）ならまだ実 KeyUp が来ていないため、後から届く実際の
+    /// KeyUp イベントに解決を委ねる。
+    ///
+    /// タイムアウト経由（`thumb_released_now=false`）では thumb はまだ物理的に
+    /// 押されたままなので、`left_thumb_consumed`/`right_thumb_consumed` を明示的に
+    /// 更新して「消費済み」にする。これを怠ると、この関数が既に単独打鍵として
+    /// 確定した直後に次のキーが到着した際、`active_thumb_side()` が同じ物理押下を
+    /// 未消費の親指とみなし、既に単独打鍵として出力済みの thumb を次のキーとの
+    /// 同時打鍵の相方として二重に使ってしまう。`consume_thumb()` は「同時打鍵に
+    /// 使われた」前提で `solo_counter` をリセットする副作用を持つため、ここでは
+    /// 使わない（thumb は同時打鍵ではなく単独打鍵として確定するため）。
+    fn resolve_char_and_thumb_as_separate_solos(
+        &mut self,
+        char_key: &PendingKey,
+        thumb: &PendingThumbData,
+        thumb_released_now: bool,
+    ) -> Resp {
+        let char1_resolved = self.resolve_pending_char_as_single(char_key);
+        self.update_history(char1_resolved.output);
+        let mut actions = char1_resolved.actions;
+        self.append_key_up_for(&mut actions, char_key.scan_code);
+
+        match thumb.side() {
+            ThumbSide::Left => self.left_thumb_consumed = self.phys.left_thumb_down,
+            ThumbSide::Right => self.right_thumb_consumed = self.phys.right_thumb_down,
+        }
+
+        // ソロ連打によるエンジン OFF トリガーチェック（timeout_pending_thumb と同一
+        // ロジック）。thumb はここで同時打鍵ではなく単独打鍵として確定するため、
+        // ソロ連打カウンターの対象になる。
+        if self.engine_off_triple_vk.0 != 0 && thumb.vk_code == self.engine_off_triple_vk {
+            let count = self.solo_counter.record(thumb.vk_code, thumb.timestamp);
+            if count >= SOLO_OFF_TRIGGER_COUNT {
+                self.solo_counter.reset();
+                self.engine_off_requested = true;
+                // N 回目は thumb 側の送出のみ suppress する（char1 の出力は維持）
+                return self.build_response(actions, true, TimerIntent::CancelAll);
+            }
+        } else {
+            self.solo_counter.reset();
+        }
+
+        let (thumb_resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
+            thumb.scan_code,
+            thumb.vk_code,
+            thumb.modifier_key,
+            self.phys.composing,
+        );
+        if ime_open_request.is_some() {
+            self.ime_open_requested = ime_open_request;
+        }
+        self.update_history(thumb_resolved.output);
+        actions.extend(thumb_resolved.actions);
+        if thumb_released_now {
+            self.append_key_up_for(&mut actions, thumb.scan_code);
         }
         self.build_response(actions, true, TimerIntent::CancelAll)
     }
@@ -1706,20 +1825,34 @@ impl NicolaFsm {
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
-    /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
+    /// PendingCharThumb タイムアウト：char1+thumb の同時打鍵を確定を試みる。
+    /// 重なり不足（`char_thumb_chord_confirmed` が false）なら
+    /// `resolve_char_and_thumb_as_separate_solos` に委譲し、代わりに char1・thumb を
+    /// それぞれ単独打鍵として確定する。
     fn timeout_pending_char_thumb(
         &mut self,
         char_key: &PendingKey,
-        thumb_side: ThumbSide,
-        char1_released: bool,
+        thumb: &PendingThumbData,
+        char1_released_at: Option<Timestamp>,
     ) -> Resp {
-        let resolved = match self.resolve_thumb_face(thumb_side, char_key.pos) {
+        let thumb_face = self.resolve_thumb_face(thumb.side(), char_key.pos);
+        let confirmed_chord =
+            self.char_thumb_chord_confirmed(char_key, thumb, thumb_face, char1_released_at);
+
+        if !confirmed_chord {
+            // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する。
+            // thumb はまだ押下中（だからこそタイムアウトした）なので、thumb 自身の
+            // KeyUp は後から届く実イベントに委ねる（thumb_released_now=false）。
+            return self.resolve_char_and_thumb_as_separate_solos(char_key, thumb, false);
+        }
+
+        let resolved = match thumb_face {
             Some(face) => self.resolve_char_thumb_as_simultaneous(char_key, face),
             None => self.resolve_pending_char_as_single(char_key),
         };
         self.update_history(resolved.output);
         let mut actions = resolved.actions;
-        if char1_released {
+        if char1_released_at.is_some() {
             // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
             if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
                 if let KeyAction::Key(vk) = entry.action {
@@ -1915,8 +2048,8 @@ impl NicolaFsm {
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,
-                char1_released,
-            } => self.timeout_pending_char_thumb(&char_key, thumb.side(), char1_released),
+                char1_released_at,
+            } => self.timeout_pending_char_thumb(&char_key, &thumb, char1_released_at),
             // 投機出力済み → タイムアウト = 親指キー未到着 → 投機出力は正しかった → Idle へ
             EngineState::SpeculativeChar(_) => Response::consume().with_kill_timer(TIMER_PENDING),
         }
