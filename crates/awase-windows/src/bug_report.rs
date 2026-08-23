@@ -19,8 +19,11 @@ pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
 /// 256*2=512KiB = `MAX_BODY_BYTES` に達し、他のフィールド（内部状態
 /// スナップショット・設定ファイル・配列ファイル・description等）の
 /// ぶんだけ確実に超過する構造だった。実機で「送信のたびに必ず自動切り詰めが
-/// 発生する」と報告され、200KiB×2=400KiBとして他のフィールド用に
-/// ~112KiB のマージンを残すよう引き下げた。
+/// 発生する」と報告され、200KiB×2=400KiBを引いた単純計算では他フィールド
+/// 用に~112KiBのマージンとなるよう引き下げた（`serde_json::to_string_pretty`
+/// のインデント・エスケープ等のオーバーヘッドを含めた実測では、
+/// `full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking`
+/// テストのケースで ~102KiB）。
 pub const LOG_EXCERPT_MAX_BYTES: usize = 200 * 1024;
 pub const SCHEMA_VERSION: u8 = 3;
 /// `services/report-worker/src/index.ts` の `MAX_BODY_BYTES` と同じ値。
