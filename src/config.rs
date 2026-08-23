@@ -517,6 +517,7 @@ pub struct PostBypassRule {
 /// このファイルにはアプリ全体の設定のみを含む。
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppConfig {
+    #[serde(default)]
     pub general: GeneralConfig,
     #[serde(default)]
     pub keys: KeysConfig,
@@ -527,6 +528,40 @@ pub struct AppConfig {
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
     #[serde(default)]
     pub post_bypass: Vec<PostBypassRule>,
+}
+
+/// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
+/// （ADR-099 決定4）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigLoadState {
+    /// 正常に読み込めた。
+    Loaded,
+    /// ファイルが存在しない（初回起動など、警告不要の正常系）。
+    NotFound,
+    /// `NotFound` 以外の全ての失敗（parse error・`PermissionDenied`・共有
+    /// 違反等）。危険側のデフォルトとして扱い、呼び出し元は警告表示・
+    /// 保存前バックアップ・保存前確認を必須にすること。
+    Dangerous(String),
+}
+
+/// `AppConfig::load` のエラーを `ConfigLoadState` に分類する。
+///
+/// 分類ルールは「`io::ErrorKind::NotFound` と確認できた場合のみ
+/// `NotFound`、それ以外は種別を問わず `Dangerous`」の一つだけ。
+/// `NotFound` 以外の I/O エラー（`PermissionDenied` 等）を誤って
+/// `NotFound` 扱いにすると、危険な失敗が静かにデフォルト値へフォール
+/// バックしてしまう（ADR-099 F4、round2 指摘 MF-2）。
+#[must_use]
+pub fn classify_load_error(e: &anyhow::Error) -> ConfigLoadState {
+    let is_not_found = e
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::NotFound);
+    if is_not_found {
+        ConfigLoadState::NotFound
+    } else {
+        ConfigLoadState::Dangerous(e.to_string())
+    }
 }
 
 impl AppConfig {
@@ -545,14 +580,23 @@ impl AppConfig {
 
     /// 設定を TOML 形式でファイルに保存する
     ///
+    /// 一時ファイルへ書き込み・fsync してから `rename` するアトミック書き込み
+    /// （ADR-099 決定3、実体は [`crate::fs_atomic::write_atomic`]）。書き込み中の
+    /// クラッシュ・強制終了・ディスクフルで `path` が不完全な内容のまま残ることを
+    /// 構造的に防ぐ。`path` がシンボリックリンクなら実体側へ書き込み、既存
+    /// ファイルのパーミッションを引き継ぐ。Windows の `rename` は宛先が他
+    /// プロセス（AV スキャナ・OneDrive 等）に開かれていると失敗しうるため、
+    /// 短いリトライ（50ms×最大4回＝最大200msブロック、初回試行と合わせて
+    /// 最大5回試行）で緩和する。宛先が読み取り専用の場合はリトライしても
+    /// 成功しないためリトライを省略し即座にエラーを返す。
+    ///
     /// # Errors
     ///
-    /// シリアライズまたはファイル書き込みに失敗した場合にエラーを返す。
+    /// シリアライズ・一時ファイルへの書き込み・`rename` のいずれかに
+    /// 失敗した場合にエラーを返す。
     pub fn save(&self, path: &Path) -> Result<()> {
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        std::fs::write(path, content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
-        Ok(())
+        crate::fs_atomic::write_atomic(path, content.as_bytes())
     }
 }
 
@@ -832,6 +876,77 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.right_thumb_key, "変換");
         assert_eq!(config.general.default_layout, "nicola.yab");
         assert_eq!(config.general.layouts_dir, "config");
+    }
+
+    /// ADR-099 決定6: `[general]` セクション自体を完全に欠く config.toml が
+    /// parse error にならず `GeneralConfig::default()` で埋まることを固定する。
+    /// `test_parse_app_config_defaults` は `[general]` セクションはあるが
+    /// 中身が空のケースであり、セクション自体が無いケースは別（`AppConfig::general`
+    /// に `#[serde(default)]` が無いと後者だけ parse error になる）。
+    #[test]
+    fn test_parse_app_config_missing_general_section_uses_defaults() {
+        let toml_str = "";
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.general.simultaneous_threshold_ms, 100);
+        assert_eq!(config.general.left_thumb_key, "無変換");
+        assert_eq!(config.general.right_thumb_key, "変換");
+        assert_eq!(config.general.default_layout, "nicola.yab");
+    }
+
+    // ── classify_load_error (ADR-099 決定4a) ──
+
+    #[test]
+    fn classify_load_error_maps_not_found_io_error_to_not_found() {
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_missing_{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let err = AppConfig::load(&path).unwrap_err();
+        assert_eq!(classify_load_error(&err), ConfigLoadState::NotFound);
+    }
+
+    #[test]
+    fn classify_load_error_maps_parse_error_to_dangerous() {
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_broken_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "this is not valid toml [[[").unwrap();
+
+        let err = AppConfig::load(&path).unwrap_err();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(classify_load_error(&err), ConfigLoadState::Dangerous(_)),
+            "parse errors must never be classified as NotFound (round2 指摘 MF-2)"
+        );
+    }
+
+    /// `PermissionDenied` のような NotFound 以外の I/O エラーも `Dangerous`
+    /// に倒れること（`ErrorKind::NotFound` 以外を安全側に丸めてはならない）。
+    #[cfg(unix)]
+    #[test]
+    fn classify_load_error_maps_permission_denied_to_dangerous() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "awase_test_classify_denied_{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[general]\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let err = AppConfig::load(&path).unwrap_err();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert!(
+            matches!(classify_load_error(&err), ConfigLoadState::Dangerous(_)),
+            "PermissionDenied must not be misclassified as NotFound"
+        );
     }
 
     /// ADR-092 決定D Step1: engine_on_ime_key/engine_off_ime_key の既定値は
@@ -1380,6 +1495,12 @@ simultaneous_threshold_ms = 123
         );
         assert_eq!(reloaded.unwrap().general.simultaneous_threshold_ms, 123);
     }
+
+    // ── AppConfig::save (ADR-099 決定3): アトミック書き込み（tmp+rename）──
+    // 詳細な機構（rename経由の置換・リトライ・パーミッション引き継ぎ・
+    // シンボリックリンク追従等）は実体である `crate::fs_atomic::write_atomic`
+    // 側のテストで検証する（`src/fs_atomic.rs`）。ここでは `save()` が
+    // TOML へシリアライズしてから委譲することのみ確認する。
 
     // ── validate_thresholds (426): speculative_delay_ms == threshold は境界内 ──
 

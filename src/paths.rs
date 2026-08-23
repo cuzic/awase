@@ -51,6 +51,16 @@ fn resolve_relative_to(exe: &Path, path: &str) -> PathBuf {
             return candidate;
         }
     }
+    // exe 隣にもワークスペースルート相対にも見つからなかった。カレント
+    // ディレクトリ基準の解決を呼び出し側 std::fs に委ねるが、これは
+    // 「意図しない場所に新規ファイルを作る／別の実行ファイルと異なる
+    // ファイルを読み書きする」典型的な事故（2026-07-19 実機確認、
+    // ADR-099 F5）の入口になるため、事後追跡できるよう警告を出す。
+    log::warn!(
+        "path resolution fell back to CWD-relative for {path:?} \
+         (not found next to exe {} nor under workspace root)",
+        exe.display()
+    );
     PathBuf::from(path)
 }
 

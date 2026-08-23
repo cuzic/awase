@@ -595,6 +595,12 @@ footer p{margin-bottom:0.3rem}
         <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
         <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
       </ol>
+      <p style="color:var(--text-secondary);font-size:0.88rem">
+        <strong>アップグレード時:</strong> 新しい ZIP を解凍し、同じフォルダへ
+        <code>install.ps1</code> を再度実行するだけで構いません（
+        <code>config.toml</code> と配列ファイルは既定で保持されます）。
+        <code>uninstall.ps1</code> を先に実行する必要はありません。
+      </p>
 
       <h3>ソースからビルド</h3>
       <div class="code-block">cargo build -p awase-windows --release</div>
