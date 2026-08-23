@@ -1,4 +1,4 @@
-# awase uninstaller script
+﻿# awase uninstaller script
 #
 # デフォルトではユーザーデータ（config.toml / layout/）を削除しない。
 # 「アンインストール→インストール」をアップグレード手順として踏んでも

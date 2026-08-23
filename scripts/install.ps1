@@ -1,4 +1,4 @@
-# awase installer script for ZIP distribution
+﻿# awase installer script for ZIP distribution
 $ErrorActionPreference = "Stop"
 
 # awase.exe / awase-settings.exe は MSVC ターゲットで動的リンクされており、
