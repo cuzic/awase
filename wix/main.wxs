@@ -11,9 +11,13 @@
          VCRUNTIME140FOUND の LaunchCondition に追加した日本語メッセージが
          light.exe のリンク時に LGHT0311（文字がコードページで表現できない）
          で失敗する。既存の日本語テキストがこれまで XML コメント（データベース
-         非格納）のみだったため、この問題は顕在化していなかった。 -->
+         非格納）のみだったため、この問題は顕在化していなかった。
+         SummaryCodepage は Product/@Codepage とは別に、OLE Summary
+         Information Stream 自体の制約で ANSI コードページしか許可されない
+         （UTF-8=65001 を指定すると CNDL0349 で拒否される）ため、日本語の
+         ANSI コードページである 932 (Shift_JIS) を明示する。 -->
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser"
-             SummaryCodepage="UTF-8" />
+             SummaryCodepage="932" />
     <!-- Schedule="afterInstallExecute": 既定値 afterInstallValidate のままだと
          新バージョンのファイルを配置する前に旧バージョンを完全アンインストール
          してしまい、ConfigFile/NicolaYab の NeverOverwrite="yes" が保護対象
