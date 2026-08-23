@@ -204,8 +204,13 @@ pub enum BugReportPayloadError {
     Serialize(#[from] serde_json::Error),
 }
 
-pub fn build_payload(
+/// `build_payload` と同じだが、journal/app_log 添付の切り詰め上限
+/// （既定は `LOG_EXCERPT_MAX_BYTES`）を呼び出し側で指定できる。
+/// `build_payload_json_fitting` が `MAX_BODY_BYTES` に収まるまで
+/// この上限を段階的に縮小しながら再構築するために使う。
+pub fn build_payload_with_log_budget(
     input: &BugReportInput<'_>,
+    log_excerpt_max_bytes: usize,
 ) -> Result<BugReportPayload, BugReportPayloadError> {
     let description = truncate_chars(input.description.trim(), DESCRIPTION_MAX_CHARS);
     if input.symptom_category == SymptomCategory::Other && description.is_empty() {
@@ -214,14 +219,14 @@ pub fn build_payload(
     let log_excerpt = if input.attach_log {
         input
             .journal_json
-            .map(|log| truncate_journal_json_tail(log, LOG_EXCERPT_MAX_BYTES))
+            .map(|log| truncate_journal_json_tail(log, log_excerpt_max_bytes))
     } else {
         None
     };
     let app_log_excerpt = if input.attach_log {
         input
             .app_log
-            .map(|log| truncate_text_tail(log, LOG_EXCERPT_MAX_BYTES))
+            .map(|log| truncate_text_tail(log, log_excerpt_max_bytes))
     } else {
         None
     };
@@ -264,8 +269,52 @@ pub fn build_payload(
     })
 }
 
+pub fn build_payload(
+    input: &BugReportInput<'_>,
+) -> Result<BugReportPayload, BugReportPayloadError> {
+    build_payload_with_log_budget(input, LOG_EXCERPT_MAX_BYTES)
+}
+
 pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugReportPayloadError> {
     Ok(serde_json::to_string_pretty(&build_payload(input)?)?)
+}
+
+/// `max_body_bytes` に収まるまで journal/app_log の添付を自動的に切り詰める。
+///
+/// `build_payload_json` が生成した JSON が上限を超える場合、切り詰め上限
+/// （既定 `LOG_EXCERPT_MAX_BYTES`）を半分ずつ縮小しながら収まるまで
+/// 再構築する。他の添付（内部状態スナップショット・設定ファイル・配列
+/// ファイル）は縮小の対象にしない — これらは journal/app_log と違って
+/// 個々のユーザー環境で急に肥大化するものではなく、診断上も基本情報として
+/// 全量が必要なため。
+///
+/// 戻り値は `(生成された JSON, 実際に使った log_excerpt 上限バイト数)`。
+/// 予算が 0 になっても収まらない場合はそこで打ち切り、その JSON をそのまま
+/// 返す（呼び出し側の `MAX_BODY_BYTES` チェックがフォールバックとして働く）。
+///
+/// 半減を毎回底(0)まで繰り返すと最大 log2(LOG_EXCERPT_MAX_BYTES) ≈ 18 回
+/// ペイロード全体（最大数百KB）を再シリアライズすることになり、これは
+/// UI スレッドから同期呼び出しされる場合に無視できないコストになる
+/// （journal/app_log 以外のフィールドだけで既に上限超過している場合、
+/// 半減を繰り返しても収まらず 18 回すべて無駄になる）。`MAX_HALVINGS` 回で
+/// 打ち切り、それでも収まらなければ最後に一度だけ budget=0（ログ完全除去）
+/// を試して終える。
+const MAX_HALVINGS: u32 = 8;
+
+pub fn build_payload_json_fitting(
+    input: &BugReportInput<'_>,
+    max_body_bytes: usize,
+) -> Result<(String, usize), BugReportPayloadError> {
+    let mut budget = LOG_EXCERPT_MAX_BYTES;
+    for _ in 0..MAX_HALVINGS {
+        let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, budget)?)?;
+        if json.len() <= max_body_bytes || budget == 0 {
+            return Ok((json, budget));
+        }
+        budget /= 2;
+    }
+    let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, 0)?)?;
+    Ok((json, 0))
 }
 
 #[must_use]
@@ -619,6 +668,53 @@ mod tests {
         assert!(json.contains("\"attach_layout\": true"));
         assert!(json.contains("\"layout_yab\": \"あ\\tい\""));
         assert!(!json.contains("JournalEntry"));
+    }
+
+    #[test]
+    fn build_payload_json_fitting_keeps_full_budget_when_already_within_limit() {
+        let (json, used_budget) =
+            build_payload_json_fitting(&input("説明", true, Some("[]")), MAX_BODY_BYTES).unwrap();
+        assert_eq!(used_budget, LOG_EXCERPT_MAX_BYTES);
+        assert!(json.len() <= MAX_BODY_BYTES);
+    }
+
+    #[test]
+    fn build_payload_json_fitting_shrinks_log_budget_to_stay_under_max_body_bytes() {
+        // journal と app_log を両方フルサイズ(LOG_EXCERPT_MAX_BYTES each)で
+        // 添付すると、それだけで MAX_BODY_BYTES を超える構造的な問題（journal
+        // 256KB + app_log 256KB = 512KB = MAX_BODY_BYTES で、他のフィールドの
+        // ぶんだけ確実に超過する）を回帰させないためのテスト。journal は
+        // 小さい要素を大量に並べる（1要素が LOG_EXCERPT_MAX_BYTES を超えると
+        // truncate_journal_json_tail が丸ごと弾いて空配列になり、意図せず
+        // 予算を使い切らないため）。
+        let journal_items: Vec<_> = (0..4_000)
+            .map(|i| serde_json::json!({"seq": i, "payload": "x".repeat(80)}))
+            .collect();
+        let journal = serde_json::to_string(&journal_items).unwrap();
+        let app_log = "a".repeat(LOG_EXCERPT_MAX_BYTES);
+        let mut base = input("説明", true, Some(&journal));
+        base.app_log = Some(&app_log);
+        let (json, used_budget) = build_payload_json_fitting(&base, MAX_BODY_BYTES).unwrap();
+        assert!(
+            json.len() <= MAX_BODY_BYTES,
+            "fitting後もMAX_BODY_BYTESを超えている: {} > {MAX_BODY_BYTES}",
+            json.len()
+        );
+        assert!(
+            used_budget < LOG_EXCERPT_MAX_BYTES,
+            "予算が縮小されていない: {used_budget}"
+        );
+    }
+
+    #[test]
+    fn build_payload_json_fitting_gives_up_at_zero_budget_without_looping_forever() {
+        // 上限そのものが極端に小さい（ログ以外のフィールドだけで既に超過する）
+        // 異常系でも、budget=0 まで縮小して打ち切ることを確認する
+        // （無限ループしない・panicしないことの回帰）。
+        let (json, used_budget) =
+            build_payload_json_fitting(&input("説明", true, Some("[]")), 1).unwrap();
+        assert_eq!(used_budget, 0);
+        assert!(!json.is_empty());
     }
 
     #[test]

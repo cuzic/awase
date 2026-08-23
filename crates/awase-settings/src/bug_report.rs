@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, MAX_BODY_BYTES,
-    REPORT_HOST, RETENTION_HINT, SymptomCategory, build_payload_json, unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, LOG_EXCERPT_MAX_BYTES,
+    MAX_BODY_BYTES, REPORT_HOST, RETENTION_HINT, SymptomCategory, build_payload_json_fitting,
+    unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -35,6 +36,19 @@ pub(crate) struct BugReportApp {
     reported_at: String,
     preview_json: String,
     last_generated_preview: String,
+    /// journal/awase.log の添付を自動的に切り詰めた場合の通知文。`status`
+    /// （送信中/送信結果/エラー用）とは別フィールドにしている —
+    /// 同じフィールドで扱うと、デバウンスによるプレビュー再生成が
+    /// 送信成功時の report_id や送信失敗時の保存先パスのような、
+    /// まだユーザーが読んでいない重要な情報を上書きしてしまう。
+    log_shrink_notice: Option<String>,
+    /// 説明欄・添付チェックボックスの変更があった時刻。プレビュー再生成
+    /// （JSON 全体を最大 ~500KB 再シリアライズする、決して軽くない処理）を
+    /// キー入力のたびに同期実行すると、egui の即時モード再描画と相まって
+    /// テキスト入力に体感できる遅延が出る（実機報告）。変更を即座には
+    /// 反映せず、最後の変更から `PREVIEW_DEBOUNCE` 経過してから 1 回だけ
+    /// 生成する（デバウンス）。
+    pending_preview_refresh: Option<std::time::Instant>,
     status: String,
     pending: Option<Receiver<SendOutcome>>,
     /// CJK フォント読み込み（`setup_fonts`）を初回フレームで一度だけ行った
@@ -107,6 +121,8 @@ impl BugReportApp {
             reported_at,
             preview_json: String::new(),
             last_generated_preview: String::new(),
+            log_shrink_notice: None,
+            pending_preview_refresh: None,
             status: "症状カテゴリを選択して、送信前の内容を確認してください。".to_owned(),
             pending: None,
             fonts_initialized: false,
@@ -148,15 +164,25 @@ impl BugReportApp {
             || attach_layout_changed
     }
 
+    /// 生成済みのプレビュー JSON を反映する。デバウンス完了時と「プレビュー
+    /// を再生成」ボタンの両方から使う共通処理（片方だけ更新すると、
+    /// 縮小通知の表示漏れや `pending_preview_refresh` の消し忘れのような
+    /// 差異が生まれるため一本化している）。
+    fn apply_generated_preview(&mut self, json: String, shrunk: bool) {
+        self.preview_json.clone_from(&json);
+        self.last_generated_preview = json;
+        self.log_shrink_notice = shrunk.then(|| {
+            "送信内容が上限を超えていたため、添付ログ(journal/awase.log)を自動的に切り詰めました。"
+                .to_owned()
+        });
+    }
+
     fn refresh_preview_if_unedited(&mut self) {
         if self.preview_json != self.last_generated_preview {
             return;
         }
         match self.generated_preview() {
-            Ok(json) => {
-                self.preview_json.clone_from(&json);
-                self.last_generated_preview = json;
-            }
+            Ok((json, shrunk)) => self.apply_generated_preview(json, shrunk),
             Err(e) => {
                 let json = format!("{{\n  \"error\": \"{}\"\n}}", escape_json_string(&e));
                 self.preview_json.clone_from(&json);
@@ -165,32 +191,45 @@ impl BugReportApp {
         }
     }
 
-    fn generated_preview(&self) -> Result<String, String> {
+    /// プレビュー JSON を生成する。`MAX_BODY_BYTES` を超える場合は
+    /// journal/awase.log の添付上限（既定 `LOG_EXCERPT_MAX_BYTES`）を
+    /// 自動的に縮小して収まるまで再構築する（戻り値の bool が縮小の有無）。
+    fn generated_preview(&self) -> Result<(String, bool), String> {
         let symptom_category = self
             .symptom_category
             .ok_or_else(|| "症状カテゴリを選択してください".to_owned())?;
-        build_payload_json(&BugReportInput {
-            app_version: env!("CARGO_PKG_VERSION"),
-            os_version: &self.os_version,
-            ime_kind: self.ime_kind,
-            ime_product_name: self.diagnostics.ime_product_name.as_deref(),
-            keyboard_model: &self.diagnostics.keyboard_model,
-            windows_keyboard_layout: &self.diagnostics.windows_keyboard_layout,
-            competing_software: self.diagnostics.competing_software.clone(),
-            symptom_category,
-            description: &self.description,
-            attach_log: self.attach_log,
-            journal_json: self.journal_json.as_deref(),
-            app_log: self.app_log.as_deref(),
-            state_snapshot: self.diagnostics.state_snapshot.clone(),
-            attach_state_snapshot: self.attach_state_snapshot,
-            config_toml: self.diagnostics.config_toml.as_deref(),
-            attach_config: self.attach_config,
-            layout_yab: self.diagnostics.layout_yab.as_deref(),
-            attach_layout: self.attach_layout,
-            reported_at: &self.reported_at,
-        })
-        .map_err(|e| e.to_string())
+        let (json, used_budget) = build_payload_json_fitting(
+            &BugReportInput {
+                app_version: env!("CARGO_PKG_VERSION"),
+                os_version: &self.os_version,
+                ime_kind: self.ime_kind,
+                ime_product_name: self.diagnostics.ime_product_name.as_deref(),
+                keyboard_model: &self.diagnostics.keyboard_model,
+                windows_keyboard_layout: &self.diagnostics.windows_keyboard_layout,
+                competing_software: self.diagnostics.competing_software.clone(),
+                symptom_category,
+                description: &self.description,
+                attach_log: self.attach_log,
+                journal_json: self.journal_json.as_deref(),
+                app_log: self.app_log.as_deref(),
+                state_snapshot: self.diagnostics.state_snapshot.clone(),
+                attach_state_snapshot: self.attach_state_snapshot,
+                config_toml: self.diagnostics.config_toml.as_deref(),
+                attach_config: self.attach_config,
+                layout_yab: self.diagnostics.layout_yab.as_deref(),
+                attach_layout: self.attach_layout,
+                reported_at: &self.reported_at,
+            },
+            MAX_BODY_BYTES,
+        )
+        .map_err(|e| e.to_string())?;
+        // used_budget < LOG_EXCERPT_MAX_BYTES だけでは「縮小を試みた」ことしか
+        // 分からず、縮小してもなお上限を超えているケース（journal/app_log
+        // 以外のフィールドが支配的）を「自動的に切り詰めました」という
+        // 成功通知として誤って表示してしまう。実際に上限内に収まった場合に
+        // 限り shrunk=true とする。
+        let shrunk = used_budget < LOG_EXCERPT_MAX_BYTES && json.len() <= MAX_BODY_BYTES;
+        Ok((json, shrunk))
     }
 
     fn poll_send_result(&mut self) {
@@ -236,10 +275,17 @@ impl BugReportApp {
             "その他の場合は説明を入力してください。".clone_into(&mut self.status);
             return;
         }
+        // デバウンス中（直近の変更からまだ PREVIEW_DEBOUNCE 経過していない）に
+        // 送信ボタンを押した場合、プレビューが最新の入力内容を反映していない
+        // ことがあるため、送信直前に確定させる。
+        if self.pending_preview_refresh.is_some() {
+            self.refresh_preview_if_unedited();
+            self.pending_preview_refresh = None;
+        }
         let body = self.preview_json.clone();
         if body.len() > MAX_BODY_BYTES {
             self.status = format!(
-                "送信内容が大きすぎます({}KB > {}KB上限)。journal ログや設定ファイルの添付を外してください。",
+                "送信内容が大きすぎます({}KB > {}KB上限)。ログの自動切り詰めを試みても収まりませんでした。プレビューを直接編集するか、設定ファイル・配列ファイルの添付を外してください。",
                 body.len() / 1024,
                 MAX_BODY_BYTES / 1024,
             );
@@ -271,6 +317,117 @@ fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
         .unwrap_or_default()
 }
 
+/// 説明欄・添付チェックボックスの変更後、プレビュー再生成を実際に行うまで
+/// 待つ時間。キー入力のたびに同期実行しない理由は `pending_preview_refresh`
+/// フィールドのコメント参照。
+const PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(300);
+
+impl BugReportApp {
+    /// 送信/プレビュー再生成ボタンとステータス行。`egui::TopBottomPanel::bottom`
+    /// で画面下部に固定表示する（`update` の行数を抑えるための抽出、
+    /// clippy::too_many_lines 対策も兼ねる）。ボタンが通常フローの末尾に
+    /// あると、症状カテゴリ・説明欄・チェックボックス・プレビューを積み上げた
+    /// 縦方向の合計高さがウィンドウの初期サイズを超えたとき、
+    /// `CentralPanel` はスクロールしないためボタンごと可視領域外に押し
+    /// 出されてしまう（ウィンドウを広げるまで送信ボタンの存在に気付けない、
+    /// という実機報告があった）。固定位置に置くことで、ウィンドウサイズに
+    /// 関わらず常に見える。
+    fn draw_bottom_actions(&mut self, ui: &mut egui::Ui, pending: bool) {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let can_send = self.symptom_category.is_some()
+                && (self.symptom_category != Some(SymptomCategory::Other)
+                    || !self.description.trim().is_empty());
+            if ui
+                .add_enabled(!pending && can_send, egui::Button::new("送信"))
+                .clicked()
+            {
+                self.start_send();
+            }
+            if ui.button("プレビューを再生成").clicked() {
+                // デバウンス中の保留があれば、これから同期的に再生成する
+                // ので不要（残しておくと ~300ms 後にもう一度、同じ重い
+                // 再構築が無駄に走る）。
+                self.pending_preview_refresh = None;
+                if let Ok((json, shrunk)) = self.generated_preview() {
+                    self.apply_generated_preview(json, shrunk);
+                }
+            }
+        });
+        ui.label(&self.status);
+        if let Some(notice) = &self.log_shrink_notice {
+            ui.colored_label(egui::Color32::from_rgb(180, 120, 0), notice);
+        }
+        ui.add_space(4.0);
+    }
+
+    /// 見出し・送信先情報・症状カテゴリ・説明欄・添付チェックボックス・
+    /// プレビューエリア。呼び出し側の `ScrollArea` の中に描画される。
+    fn draw_form(&mut self, ui: &mut egui::Ui) {
+        ui.heading("不具合を報告");
+        ui.add_space(6.0);
+        ui.label(format!("送信先: {REPORT_HOST}"));
+        ui.label(format!("エンドポイント: {ENDPOINT_URL}"));
+        ui.label(format!("保存期間: {RETENTION_HINT}"));
+        ui.label("保持期間は ADR-095 の未決定事項の暫定値として、調査に必要な期間と削除の見通しを両立する90日を表示しています。");
+        ui.add_space(8.0);
+
+        ui.label("症状カテゴリ");
+        let previous_category = self.symptom_category;
+        egui::ComboBox::from_id_salt("symptom_category")
+            .selected_text(
+                self.symptom_category
+                    .map_or("選択してください", SymptomCategory::label),
+            )
+            .show_ui(ui, |ui| {
+                for category in SymptomCategory::ALL {
+                    ui.selectable_value(
+                        &mut self.symptom_category,
+                        Some(category),
+                        category.label(),
+                    );
+                }
+            });
+        let category_changed = self.symptom_category != previous_category;
+
+        ui.add_space(8.0);
+        ui.label("説明（任意）");
+        let desc_changed = ui
+            .add(
+                egui::TextEdit::multiline(&mut self.description)
+                    .desired_rows(5)
+                    .lock_focus(true),
+            )
+            .changed();
+
+        let attachments_changed = self.draw_attachment_checkboxes(ui);
+
+        if category_changed || desc_changed || attachments_changed {
+            // 重いプレビュー再生成（ペイロード全体の再シリアライズ、
+            // 最大 ~500KB）を毎フレーム同期実行するとテキスト入力に
+            // 遅延が出るため、ここでは即座に実行せずデバウンスする
+            // （実際の再生成は `update` 末尾で経過時間を見て行う）。
+            self.pending_preview_refresh = Some(std::time::Instant::now());
+        }
+
+        ui.separator();
+        ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）");
+        egui::ScrollArea::vertical()
+            .id_salt("bug_report_preview_scroll")
+            .max_height(320.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.preview_json)
+                        .desired_rows(18)
+                        .desired_width(f32::INFINITY)
+                        .code_editor()
+                        .lock_focus(true),
+                );
+            });
+    }
+}
+
 impl eframe::App for BugReportApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if !self.fonts_initialized {
@@ -287,85 +444,34 @@ impl eframe::App for BugReportApp {
 
         self.poll_send_result();
 
-        let pending = self.pending.is_some();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("不具合を報告");
-            ui.add_space(6.0);
-            ui.label(format!("送信先: {REPORT_HOST}"));
-            ui.label(format!("エンドポイント: {ENDPOINT_URL}"));
-            ui.label(format!("保存期間: {RETENTION_HINT}"));
-            ui.label("保持期間は ADR-095 の未決定事項の暫定値として、調査に必要な期間と削除の見通しを両立する90日を表示しています。");
-            ui.add_space(8.0);
-
-            ui.label("症状カテゴリ");
-            let previous_category = self.symptom_category;
-            egui::ComboBox::from_id_salt("symptom_category")
-                .selected_text(
-                    self.symptom_category
-                        .map_or("選択してください", SymptomCategory::label),
-                )
-                .show_ui(ui, |ui| {
-                    for category in SymptomCategory::ALL {
-                        ui.selectable_value(
-                            &mut self.symptom_category,
-                            Some(category),
-                            category.label(),
-                        );
-                    }
-                });
-            let category_changed = self.symptom_category != previous_category;
-
-            ui.add_space(8.0);
-            ui.label("説明（任意）");
-            let desc_changed = ui
-                .add(
-                    egui::TextEdit::multiline(&mut self.description)
-                        .desired_rows(5)
-                        .lock_focus(true),
-                )
-                .changed();
-
-            let attachments_changed = self.draw_attachment_checkboxes(ui);
-
-            if category_changed || desc_changed || attachments_changed {
+        // このフレームで最新のプレビュー/通知を描画できるよう、デバウンス
+        // 完了判定はパネル描画より前に行う（描画後に行うと、更新結果は
+        // 次の repaint まで画面に反映されない — egui は即時モードGUIで、
+        // 明示的な repaint 要求か新規入力がない限り再描画しないため）。
+        if let Some(since) = self.pending_preview_refresh {
+            let elapsed = since.elapsed();
+            if elapsed >= PREVIEW_DEBOUNCE {
                 self.refresh_preview_if_unedited();
+                self.pending_preview_refresh = None;
+            } else {
+                ctx.request_repaint_after(
+                    PREVIEW_DEBOUNCE
+                        .checked_sub(elapsed)
+                        .unwrap_or(std::time::Duration::ZERO),
+                );
             }
+        }
 
-            ui.separator();
-            ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）");
+        let pending = self.pending.is_some();
+
+        egui::TopBottomPanel::bottom("bug_report_actions")
+            .show(ctx, |ui| self.draw_bottom_actions(ui, pending));
+
+        egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
-                .id_salt("bug_report_preview_scroll")
-                .max_height(320.0)
+                .id_salt("bug_report_main_scroll")
                 .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.preview_json)
-                            .desired_rows(18)
-                            .desired_width(f32::INFINITY)
-                            .code_editor()
-                            .lock_focus(true),
-                    );
-                });
-
-            ui.separator();
-            ui.horizontal(|ui| {
-                let can_send = self.symptom_category.is_some()
-                    && (self.symptom_category != Some(SymptomCategory::Other)
-                        || !self.description.trim().is_empty());
-                if ui
-                    .add_enabled(!pending && can_send, egui::Button::new("送信"))
-                    .clicked()
-                {
-                    self.start_send();
-                }
-                if ui.button("プレビューを再生成").clicked()
-                    && let Ok(json) = self.generated_preview()
-                {
-                    self.preview_json.clone_from(&json);
-                    self.last_generated_preview = json;
-                }
-            });
-            ui.label(&self.status);
+                .show(ui, |ui| self.draw_form(ui));
         });
 
         if pending {
