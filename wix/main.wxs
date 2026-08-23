@@ -23,6 +23,23 @@
     <Property Id="ARPCONTACT" Value="cuzic" />
     <Property Id="ARPCOMMENTS" Value="A simultaneous-keystroke keyboard remapper for NICOLA thumb shift and beyond" />
 
+    <!-- awase.exe / awase-settings.exe は MSVC ターゲットで動的リンクされており、
+         Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (vcruntime140.dll) が
+         別途必要。未インストール環境ではこのチェックが無いと、MSI インストール
+         自体は成功したのに初回起動時に OS の分かりにくいダイアログ
+         （「vcruntime140.dll が見つからないため、このプログラムを開始できません」）
+         で失敗する。インストール時点で検出し、対処方法込みのメッセージで
+         セットアップを中止させる。 -->
+    <Property Id="VCRUNTIME140FOUND">
+      <DirectorySearch Id="System64FolderSearch" Path="[System64Folder]">
+        <FileSearch Id="VcRuntime140Search" Name="vcruntime140.dll" />
+      </DirectorySearch>
+    </Property>
+
+    <Condition Message="awase の実行には Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (x64) が必要です。https://aka.ms/vs/17/release/vc_redist.x64.exe からダウンロードしてインストールした後、このセットアップを再実行してください。">
+      <![CDATA[Installed OR VCRUNTIME140FOUND]]>
+    </Condition>
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="awase">

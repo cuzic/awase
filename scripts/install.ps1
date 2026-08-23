@@ -1,6 +1,32 @@
 # awase installer script for ZIP distribution
 $ErrorActionPreference = "Stop"
 
+# awase.exe / awase-settings.exe は MSVC ターゲットで動的リンクされており、
+# Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (vcruntime140.dll) が
+# 別途必要。このチェックが無いと、ファイルコピー自体は成功したのに初回起動時
+# に OS の分かりにくいダイアログ（「vcruntime140.dll が見つからないため、この
+# プログラムを開始できません」）で失敗する。MSI 版（wix/main.wxs の
+# VCRUNTIME140FOUND LaunchCondition）と同じ対策を ZIP 版でも行う。
+# 32-bit PowerShell から "System32" を素朴に見ると、WOW64 ファイルシステム
+# リダイレクタにより暗黙に SysWOW64（x86 用）へリダイレクトされてしまい、
+# x86 版 vcruntime140.dll だけが入っている環境で誤って「見つかった」判定に
+# なる（配布している awase.exe は x64 専用なのでチェックをすり抜ける）。
+# Sysnative はそのリダイレクトを回避して常にネイティブ 64-bit System32 を
+# 指す仮想パス（64-bit PowerShell では存在しないパス）なので、プロセスの
+# ビット数で参照先を一意に選ぶ。
+$system32Dir = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Join-Path $env:SystemRoot "Sysnative"
+} else {
+    Join-Path $env:SystemRoot "System32"
+}
+if (-not (Test-Path (Join-Path $system32Dir "vcruntime140.dll"))) {
+    Write-Error @"
+awase の実行には Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (x64) が必要です。
+https://aka.ms/vs/17/release/vc_redist.x64.exe からダウンロードしてインストールした後、
+このインストーラーを再実行してください。
+"@
+}
+
 $installDir = "$env:LOCALAPPDATA\awase"
 
 # Create directories
