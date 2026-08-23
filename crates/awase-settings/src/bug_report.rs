@@ -2,9 +2,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 
 use awase_windows::bug_report::{
-    BugReportDiagnostics, BugReportImeKind, BugReportInput, ENDPOINT_URL, LOG_EXCERPT_MAX_BYTES,
-    MAX_BODY_BYTES, REPORT_HOST, RETENTION_HINT, SymptomCategory, build_payload_json_fitting,
-    unix_seconds_to_rfc3339,
+    BugReportDiagnostics, BugReportImeKind, BugReportInput, LOG_EXCERPT_MAX_BYTES, MAX_BODY_BYTES,
+    RETENTION_HINT, SymptomCategory, build_payload_json_fitting, unix_seconds_to_rfc3339,
 };
 use eframe::egui;
 
@@ -361,13 +360,13 @@ impl BugReportApp {
         ui.add_space(4.0);
     }
 
-    /// 見出し・送信先情報・症状カテゴリ・説明欄・添付チェックボックス・
-    /// プレビューエリア。呼び出し側の `ScrollArea` の中に描画される。
+    /// 見出し・症状カテゴリ・説明欄・添付チェックボックス・プレビュー
+    /// エリア。呼び出し側の `ScrollArea` の中に描画される。送信先ホスト名
+    /// / エンドポイントURLは表示しない（ユーザー向けに有用な情報ではなく、
+    /// 内部実装の詳細を不必要に露出するだけのため）。
     fn draw_form(&mut self, ui: &mut egui::Ui) {
         ui.heading("不具合を報告");
         ui.add_space(6.0);
-        ui.label(format!("送信先: {REPORT_HOST}"));
-        ui.label(format!("エンドポイント: {ENDPOINT_URL}"));
         ui.label(format!("保存期間: {RETENTION_HINT}"));
         ui.label("保持期間は ADR-095 の未決定事項の暫定値として、調査に必要な期間と削除の見通しを両立する90日を表示しています。");
         ui.add_space(8.0);
