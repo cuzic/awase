@@ -9465,3 +9465,60 @@ x86_64-pc-windows-msvc -p awase-settings`（実 Windows ターゲットへの
 
 **関連:** [ADR-095](adr/095-tray-bug-report-cloudflare-intake.md)
 （タスクトレイ不具合報告機能の導入元）。
+
+## BUG-73: BUG-72修正の副作用で「不具合を報告」ウィンドウが背面のまま開き「一瞬表示されてすぐ消える」ように見える
+
+**発見の経緯:** BUG-72（不具合報告ウィンドウの文字化け）を修正しリリース後、
+ユーザーから「不具合を報告を押したら、即座にクラッシュしているような
+動作になっている」との報告があった。
+
+**調査（実機、Windows、`clipwire` 経由でリモート確認）:**
+`awase-settings.log` に `[PANIC]` 行は一切無く、Rust パニックではないと
+判明。`Get-Process`/Win32 `GetWindowRect`/`IsWindowVisible` で直接確認した
+ところ、ウィンドウは実際には**正常に生成され、モニタ範囲内に正しく
+配置され、`Responding=True`・`IsWindowVisible=True`** だった。プロセスも
+クラッシュせず生存し続けていた（テスト中に同一ウィンドウが複数、
+バックグラウンドで生存したまま残留していたことを確認）。ユーザーへの
+確認でも「Alt+Tab/タスクバーには一瞬表示された」ことが確認された。
+
+**原因（推定、Windows実機でのAPIレベル計測により高確度）:**
+`awase.exe`（タスクトレイ、バックグラウンドプロセス）が
+`awase-settings.exe --bug-report ...` を子プロセスとして起動する。
+Windows は「ユーザー操作（トレイメニュークリック）に由来する新規
+ウィンドウ」に対して、生成後短時間のうちに前面へ来る権利
+（フォアグラウンド許可）を与えるが、この猶予には時間制限がある。
+BUG-72 の修正で `crate::setup_fonts()`（数MBの CJK `.ttc` フォント
+ファイルの読み込み・パース）を `eframe::run_native` の**ウィンドウ生成
+クロージャ内**で同期的に呼ぶようにしたため、ネイティブウィンドウが
+実際に `ShowWindow` されるまでの間に数百ms の追加遅延が生じ、この
+猶予時間を逃してウィンドウが**背面のまま**開くようになったと考えられる
+（`SettingsApp`側も同じ `setup_fonts()` を呼ぶが、既存の config/layout
+読み込み等で元々の起動シーケンスが違うため同じ影響を受けなかったと
+推測、未確証）。ウィンドウ自体は正常に存在し応答するため、ユーザーには
+「一瞬見えてすぐ消えた（＝クラッシュしたように見える）」という体感に
+なる。
+
+**修正:** `setup_fonts()` の呼び出しを `run_native` のウィンドウ生成
+クロージャから `BugReportApp::update()` の初回フレームへ遅延させた
+（`fonts_initialized: bool` フィールドで一度だけ実行を保証）。ウィンドウ
+生成自体（`eframe::run_native` の呼び出しからネイティブウィンドウが
+`ShowWindow` されるまで）はフォント読み込みを待たず即座に行われるように
+なり、CJK フォントのパースはウィンドウが既に表示された後の最初の
+`update()` 呼び出し内で行われる。
+
+**テスト:** ソース文字列走査による回帰テスト2件を新設
+（`setup_fonts_is_deferred_to_first_update_not_run_native_closure`:
+`run_native` のクロージャが `setup_fonts` を呼ばないこと・`update()` が
+呼ぶことの両方を固定、`new_app_has_fonts_not_yet_initialized`:
+`BugReportApp::new()` 直後は `fonts_initialized=false` であることを固定）。
+`cargo test -p awase-settings` 全27件・`cargo fmt --all -- --check`・
+`cargo xwin build --target x86_64-pc-windows-msvc -p awase-settings`
+（実Windowsターゲット）緑。**Windows実機（dragonflyg4、`clipwire` 経由の
+リモートビルド＋タスクトレイからの実操作）で確認済み（2026-08-23）:
+修正版デプロイ後、トレイの「不具合を報告」から正常にウィンドウが前面へ
+表示され、見出し・症状カテゴリ等の日本語も文字化けせず正常に表示される
+ことをユーザー本人の操作で確認した。**
+
+**関連:** [BUG-72](#bug-72-タスクトレイ不具合を報告ウィンドウの日本語が文字化けトーフ表示する)
+（本バグの直接の原因となった修正）、
+[ADR-095](adr/095-tray-bug-report-cloudflare-intake.md)。

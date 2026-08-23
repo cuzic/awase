@@ -37,6 +37,15 @@ pub(crate) struct BugReportApp {
     last_generated_preview: String,
     status: String,
     pending: Option<Receiver<SendOutcome>>,
+    /// CJK フォント読み込み（`setup_fonts`）を初回フレームで一度だけ行った
+    /// か。`run()` のウィンドウ生成クロージャ内で同期的に読み込むと、
+    /// トレイ（バックグラウンドプロセス）から起動されたウィンドウが前面へ
+    /// 表示される前にフォントパース（数MBのCJK .ttc）で数百ms 遅延し、
+    /// Windows の「新規ウィンドウへのフォアグラウンド許可」の猶予時間を
+    /// 逃して背面のまま開くことがあった（BUG-72 対応時の副作用、
+    /// 実機で「一瞬表示されてすぐ消える」と報告）。ウィンドウ生成自体は
+    /// 即座に行い、フォント読み込みは最初の `update()` へ遅延させる。
+    fonts_initialized: bool,
 }
 
 #[derive(Debug)]
@@ -100,6 +109,7 @@ impl BugReportApp {
             last_generated_preview: String::new(),
             status: "症状カテゴリを選択して、送信前の内容を確認してください。".to_owned(),
             pending: None,
+            fonts_initialized: false,
         };
         app.refresh_preview_if_unedited();
         app
@@ -263,6 +273,18 @@ fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
 
 impl eframe::App for BugReportApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !self.fonts_initialized {
+            // ウィンドウ自体は `run()` が既に生成・表示済み。ここで初めて
+            // CJK フォントを読み込むのは、ウィンドウ生成クロージャの中で
+            // 同期的に読み込むとウィンドウの初回表示が数百ms遅れ、
+            // Windows がトレイ（バックグラウンドプロセス）由来の新規
+            // ウィンドウへ与えるフォアグラウンド表示の猶予を逃してしまう
+            // ため（詳細は `fonts_initialized` フィールドのコメント参照）。
+            crate::setup_fonts(ctx);
+            self.fonts_initialized = true;
+            ctx.request_repaint();
+        }
+
         self.poll_send_result();
 
         let pending = self.pending.is_some();
@@ -361,19 +383,26 @@ pub(crate) fn run(args: &BugReportArgs) -> eframe::Result<()> {
             .with_title("awase 不具合報告"),
         ..Default::default()
     };
+    // `awase-settings` の通常起動（`SettingsApp::new`）は `setup_fonts` で
+    // CJK フォントを読み込むが、`--bug-report` 起動はこの `run_native`
+    // 呼び出しが独立した別ウィンドウであり同じ呼び出しを経由しないため、
+    // 元々は日本語グリフが一切無い egui 既定フォントのままになっていた
+    // （「症状カテゴリ」等のラベルや JSON プレビュー中の日本語がトーフ表示
+    // ＝文字化けに見える、BUG-72）。
+    //
+    // コードレビュー指摘（BUG-72 対応の副作用）: フォント読み込みをこの
+    // ウィンドウ生成クロージャ内で同期的に行うと、CJK .ttc（数MB）の
+    // パースでウィンドウの初回表示が数百ms遅れ、トレイ（バックグラウンド
+    // プロセス）から起動されたウィンドウに Windows が与える「新規ウィンドウ
+    // へのフォアグラウンド許可」の猶予時間を逃し、ウィンドウが背面のまま
+    // 開いて「一瞬表示されてすぐ消えたように見える」実機報告があった
+    // （BUG-73）。フォント読み込みは `BugReportApp::update()` の初回フレーム
+    // へ遅延させ（`fonts_initialized` フィールド参照）、ウィンドウ生成
+    // 自体はここで即座に行う。
     eframe::run_native(
         "awase-bug-report",
         options,
-        Box::new(move |cc| {
-            // `awase-settings` の通常起動（`SettingsApp::new`）は
-            // `setup_fonts` で CJK フォントを読み込むが、`--bug-report`
-            // 起動はこの `run_native` 呼び出しが独立した別ウィンドウであり
-            // 同じ呼び出しを経由しないため、日本語グリフが一切無い egui
-            // 既定フォントのままになっていた（「症状カテゴリ」等のラベルや
-            // JSON プレビュー中の日本語がトーフ表示＝文字化けに見える）。
-            crate::setup_fonts(&cc.egui_ctx);
-            Ok(Box::new(BugReportApp::new(&args)))
-        }),
+        Box::new(move |_cc| Ok(Box::new(BugReportApp::new(&args)))),
     )
 }
 
@@ -561,22 +590,36 @@ fn parse_report_id(response: &str) -> Option<String> {
 
 #[cfg(test)]
 mod font_guard_tests {
-    /// 回帰テスト: `--bug-report` ウィンドウは `SettingsApp::new()` を経由
-    /// しない独立した `eframe::run_native` 呼び出しのため、CJK フォントを
-    /// 読み込む `setup_fonts()` を明示的に呼ばない限り日本語グリフが一切
-    /// 無い egui 既定フォントのままになり、「症状カテゴリ」等のラベルや
-    /// JSON プレビュー中の日本語がトーフ表示（文字化けに見える）になる。
-    /// 通常のユニットテストでは egui のヘッドレス描画を要し検証しづらい
-    /// ため、`architecture_guard.rs`/`wix_installer_guard.rs` に倣い
-    /// ソースファイルの文字列走査で「`run()` の `run_native` クロージャが
-    /// `setup_fonts` を呼んでいるか」を機械的に固定する。
-    #[test]
-    fn run_native_closure_calls_setup_fonts() {
+    use super::BugReportApp;
+
+    fn read_own_source() -> String {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let src =
-            std::fs::read_to_string(std::path::Path::new(manifest_dir).join("src/bug_report.rs"))
-                .expect("failed to read src/bug_report.rs")
-                .replace("\r\n", "\n");
+        std::fs::read_to_string(std::path::Path::new(manifest_dir).join("src/bug_report.rs"))
+            .expect("failed to read src/bug_report.rs")
+            .replace("\r\n", "\n")
+    }
+
+    /// 回帰テスト(BUG-72): `--bug-report` ウィンドウは `SettingsApp::new()`
+    /// を経由しない独立した `eframe::run_native` 呼び出しのため、CJK
+    /// フォントを読み込む `setup_fonts()` を明示的に呼ばない限り日本語
+    /// グリフが一切無い egui 既定フォントのままになり、「症状カテゴリ」等の
+    /// ラベルや JSON プレビュー中の日本語がトーフ表示（文字化けに見える）
+    /// になる。通常のユニットテストでは egui のヘッドレス描画を要し検証
+    /// しづらいため、`architecture_guard.rs`/`wix_installer_guard.rs` に
+    /// 倣いソースファイルの文字列走査で機械的に固定する。
+    ///
+    /// 回帰テスト(BUG-73): `setup_fonts` を `run_native` のウィンドウ生成
+    /// クロージャ内で同期的に呼ぶと、CJK .ttc（数MB）のパースでウィンドウの
+    /// 初回表示が数百ms遅れ、トレイ（バックグラウンドプロセス）から起動
+    /// されたウィンドウに Windows が与える「新規ウィンドウへの
+    /// フォアグラウンド許可」の猶予時間を逃し、ウィンドウが背面のまま開く
+    /// （実機で「一瞬表示されてすぐ消えたように見える」と報告）。BUG-72の
+    /// 修正時にこの副作用を作り込んだため、「`run_native` のクロージャは
+    /// `setup_fonts` を呼ばない（ウィンドウ生成を遅延させない）」ことも
+    /// 同時に固定する。
+    #[test]
+    fn setup_fonts_is_deferred_to_first_update_not_run_native_closure() {
+        let src = read_own_source();
 
         let run_native_pos = src
             .find("eframe::run_native(")
@@ -586,16 +629,38 @@ mod font_guard_tests {
             .map(|i| run_native_pos + i)
             .expect("could not find end of run_native(...) call");
         let closure_body = &src[run_native_pos..closure_end];
-
-        // 単に "setup_fonts" という文字列の有無だけを見ると、実際の呼び出しを
-        // 削除してもこの説明コメント自体（"setup_fonts" という語を含む）に
-        // 一致してテストが検知不能になる（wix_installer_guard.rs の C1 と
-        // 同型の落とし穴）。括弧付きの実際の呼び出し式で判定する。
         assert!(
-            closure_body.contains("setup_fonts(&cc.egui_ctx)"),
-            "bug_report::run()'s run_native closure must call setup_fonts(&cc.egui_ctx) \
-             or Japanese text renders as tofu boxes in the bug-report window; \
-             closure body was:\n{closure_body}"
+            !closure_body.contains("setup_fonts"),
+            "run_native()'s window-creation closure must NOT call setup_fonts synchronously \
+             (BUG-73: delays the window's first show past Windows' foreground-grant window \
+             for background-process-spawned windows); closure body was:\n{closure_body}"
         );
+
+        let update_pos = src
+            .find("impl eframe::App for BugReportApp")
+            .and_then(|p| src[p..].find("fn update(").map(|i| p + i))
+            .expect("BugReportApp must implement eframe::App::update");
+        let update_body = &src[update_pos..(update_pos + 800).min(src.len())];
+        assert!(
+            update_body.contains("setup_fonts(ctx)"),
+            "BugReportApp::update() must call setup_fonts(ctx) on its first frame \
+             (gated by fonts_initialized) or Japanese text renders as tofu boxes; \
+             update() head was:\n{update_body}"
+        );
+    }
+
+    /// 回帰テスト: `fonts_initialized` は `BugReportApp::new()` の時点では
+    /// 常に `false`（フォント読み込みが `update()` の初回フレームへ遅延
+    /// されていることの直接確認）。
+    #[test]
+    fn new_app_has_fonts_not_yet_initialized() {
+        let args = super::BugReportArgs {
+            journal_path: None,
+            ime_kind: awase_windows::bug_report::BugReportImeKind::Unknown,
+            diagnostics_path: None,
+            app_log_path: None,
+        };
+        let app = BugReportApp::new(&args);
+        assert!(!app.fonts_initialized);
     }
 }
