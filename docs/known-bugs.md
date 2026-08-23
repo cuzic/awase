@@ -9513,10 +9513,11 @@ BUG-72 の修正で `crate::setup_fonts()`（数MBの CJK `.ttc` フォント
 `BugReportApp::new()` 直後は `fonts_initialized=false` であることを固定）。
 `cargo test -p awase-settings` 全27件・`cargo fmt --all -- --check`・
 `cargo xwin build --target x86_64-pc-windows-msvc -p awase-settings`
-（実Windowsターゲット）緑。**フォーカス許可猶予時間との競合という原因の
-推定は Windows 実機での間接証拠に基づくものであり、修正後に実機で
-「一瞬表示されてすぐ消える」現象が再発しないことの直接確認はこれから
-行う。**
+（実Windowsターゲット）緑。**Windows実機（dragonflyg4、`clipwire` 経由の
+リモートビルド＋タスクトレイからの実操作）で確認済み（2026-08-23）:
+修正版デプロイ後、トレイの「不具合を報告」から正常にウィンドウが前面へ
+表示され、見出し・症状カテゴリ等の日本語も文字化けせず正常に表示される
+ことをユーザー本人の操作で確認した。**
 
 **関連:** [BUG-72](#bug-72-タスクトレイ不具合を報告ウィンドウの日本語が文字化けトーフ表示する)
 （本バグの直接の原因となった修正）、
