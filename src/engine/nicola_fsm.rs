@@ -1420,6 +1420,15 @@ impl NicolaFsm {
     ///
     /// char1 が既に離されていれば無条件で false（タイミング比較不要）。
     /// それ以外は `TimingJudge::three_key_pairing` でタイミング + n-gram を総合判定。
+    ///
+    /// **`char_thumb_chord_confirmed`（char2 が来ない2鍵ケース）との意図的な非対称**:
+    /// char2 が実際に到着するこの3鍵ケースでは「char1 が既に離されている」という
+    /// 条件で無条件に char1 を諦める（char2+thumb を優先）が、`char_thumb_chord_confirmed`
+    /// は同じ条件で重なりマージン＋n-gramタイブレークにより同時打鍵へ復帰する余地を残す。
+    /// これは意図的: 3鍵ケースには char2 という直接的な追加証拠（実際の候補文字とその
+    /// タイミング）があるため粗い既定で十分だが、2鍵ケース（char2 が来ないまま
+    /// KeyUp/タイムアウトで確定）にはその追加証拠が無いため、重なり時間という
+    /// 唯一の物理的シグナルをより慎重に扱う。挙動を揃える変更は別途検討する。
     fn compute_prefer_char1(
         &self,
         pending: &PendingKey,
@@ -1559,6 +1568,35 @@ impl NicolaFsm {
         }
     }
 
+    /// char1+thumb を同時打鍵として確定してよいかを判定する（重なり + n-gram タイブレーク）。
+    ///
+    /// `thumb_face` は呼び出し元が既に解決済みのものを渡す（chord 確定時にも必要な
+    /// ため、ここで二重に解決しない）。重なりだけで確定できる場合（大半のケース）は
+    /// `TimingJudge` の構築（`recent_kana` の `Vec` 確保）やかな引きを行わない
+    /// （`timing::overlap_only_verdict` 参照。keystroke-rate のホットパスでの
+    /// 無駄な確保・配列面引きを避けるため）。
+    fn char_thumb_chord_confirmed(
+        &self,
+        pending: &PendingKey,
+        thumb: &PendingThumbData,
+        thumb_face: Option<Face>,
+        char1_released_at: Option<Timestamp>,
+    ) -> bool {
+        if let Some(verdict) =
+            timing::overlap_only_verdict(self.threshold_us, thumb.timestamp, char1_released_at)
+        {
+            return verdict;
+        }
+        let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
+        let solo_kana = self.lookup_kana_at(pending.pos, Face::Normal);
+        self.timing_judge().confirms_char_thumb_chord(
+            thumb.timestamp,
+            char1_released_at,
+            chord_kana,
+            solo_kana,
+        )
+    }
+
     /// PendingCharThumb 状態で char1 または thumb が離された場合の処理
     fn handle_key_up_pending_char_thumb(&mut self, event: &RawKeyEvent) -> Resp {
         let (pending, thumb, char1_released_at) = self.state.expect_pending_char_thumb();
@@ -1576,14 +1614,8 @@ impl NicolaFsm {
 
         self.go_idle();
         let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
-        let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
-        let solo_kana = self.lookup_kana_at(pending.pos, Face::Normal);
-        let confirmed_chord = self.timing_judge().confirms_char_thumb_chord(
-            thumb.timestamp,
-            char1_released_at,
-            chord_kana,
-            solo_kana,
-        );
+        let confirmed_chord =
+            self.char_thumb_chord_confirmed(&pending, &thumb, thumb_face, char1_released_at);
 
         if !confirmed_chord {
             // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する
@@ -1772,14 +1804,8 @@ impl NicolaFsm {
         char1_released_at: Option<Timestamp>,
     ) -> Resp {
         let thumb_face = self.resolve_thumb_face(thumb.side(), char_key.pos);
-        let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(char_key.pos, face));
-        let solo_kana = self.lookup_kana_at(char_key.pos, Face::Normal);
-        let confirmed_chord = self.timing_judge().confirms_char_thumb_chord(
-            thumb.timestamp,
-            char1_released_at,
-            chord_kana,
-            solo_kana,
-        );
+        let confirmed_chord =
+            self.char_thumb_chord_confirmed(char_key, thumb, thumb_face, char1_released_at);
 
         if !confirmed_chord {
             // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する。

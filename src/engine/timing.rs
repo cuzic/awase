@@ -103,9 +103,7 @@ impl<'a> TimingJudge<'a> {
         }
 
         // Phase 2: n-gram スコアで判定
-        let score_a = char1_thumb_kana.map_or(f32::NEG_INFINITY, |ch| {
-            model.frequency_score(&self.recent_kana, ch)
-        });
+        let score_a = self.kana_score(model, char1_thumb_kana);
 
         let score_b = match (char1_single_kana, char2_thumb_kana) {
             (Some(c1), Some(c2)) => {
@@ -179,25 +177,25 @@ impl<'a> TimingJudge<'a> {
         chord_kana: Option<char>,
         solo_kana: Option<char>,
     ) -> bool {
-        let Some(released_ts) = char1_released_at else {
-            return true;
-        };
-        let overlap_us = released_ts.saturating_sub(thumb_ts);
-        let min_overlap_us = self.threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
-        if overlap_us >= min_overlap_us {
-            return true;
+        if let Some(verdict) = overlap_only_verdict(self.threshold_us, thumb_ts, char1_released_at)
+        {
+            return verdict;
         }
 
         let Some(model) = self.ngram_model else {
             return false;
         };
-        let chord_score = chord_kana.map_or(f32::NEG_INFINITY, |ch| {
-            model.frequency_score(&self.recent_kana, ch)
-        });
-        let solo_score = solo_kana.map_or(f32::NEG_INFINITY, |ch| {
-            model.frequency_score(&self.recent_kana, ch)
-        });
+        let chord_score = self.kana_score(model, chord_kana);
+        let solo_score = self.kana_score(model, solo_kana);
         chord_score - solo_score > SPECULATIVE_SCORE_THRESHOLD
+    }
+
+    /// `recent_kana` を文脈として `kana` の n-gram 頻度スコアを返す。
+    /// 候補が無い（`None`）場合は最低スコアを返し、スコア比較で確実に負ける。
+    fn kana_score(&self, model: &NgramModel, kana: Option<char>) -> f32 {
+        kana.map_or(f32::NEG_INFINITY, |ch| {
+            model.frequency_score(&self.recent_kana, ch)
+        })
     }
 
     /// n-gram で閾値を動的調整する内部ヘルパー
@@ -209,6 +207,29 @@ impl<'a> TimingJudge<'a> {
             _ => self.threshold_us,
         }
     }
+}
+
+/// `confirms_char_thumb_chord` の重なりだけによる事前判定。
+///
+/// `TimingJudge` の構築（`recent_kana` の `Vec` 確保）や配列面のかな引きより前に
+/// 呼べるよう `threshold_us` だけを受け取る自由関数にしてある——重なりが十分
+/// （またはまだ押下中）なケースが大半のため、呼び出し元はここで確定できた場合に
+/// 限り、その後の `TimingJudge`/かな引きをまるごと省略できる。
+///
+/// `Some(true)`＝重なりで確定（同時打鍵）。`None`＝重なり不足で n-gram
+/// タイブレークが必要（`confirms_char_thumb_chord` 側で処理する）。
+pub(crate) fn overlap_only_verdict(
+    threshold_us: u64,
+    thumb_ts: Timestamp,
+    char1_released_at: Option<Timestamp>,
+) -> Option<bool> {
+    let Some(released_ts) = char1_released_at else {
+        // char1 がまだ押下中 → 重なりが構造的に保証されているため常に確定 true
+        return Some(true);
+    };
+    let overlap_us = released_ts.saturating_sub(thumb_ts);
+    let min_overlap_us = threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
+    (overlap_us >= min_overlap_us).then_some(true)
 }
 
 #[cfg(test)]
