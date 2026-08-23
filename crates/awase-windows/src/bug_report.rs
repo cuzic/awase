@@ -291,18 +291,30 @@ pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugRepor
 /// 戻り値は `(生成された JSON, 実際に使った log_excerpt 上限バイト数)`。
 /// 予算が 0 になっても収まらない場合はそこで打ち切り、その JSON をそのまま
 /// 返す（呼び出し側の `MAX_BODY_BYTES` チェックがフォールバックとして働く）。
+///
+/// 半減を毎回底(0)まで繰り返すと最大 log2(LOG_EXCERPT_MAX_BYTES) ≈ 18 回
+/// ペイロード全体（最大数百KB）を再シリアライズすることになり、これは
+/// UI スレッドから同期呼び出しされる場合に無視できないコストになる
+/// （journal/app_log 以外のフィールドだけで既に上限超過している場合、
+/// 半減を繰り返しても収まらず 18 回すべて無駄になる）。`MAX_HALVINGS` 回で
+/// 打ち切り、それでも収まらなければ最後に一度だけ budget=0（ログ完全除去）
+/// を試して終える。
+const MAX_HALVINGS: u32 = 8;
+
 pub fn build_payload_json_fitting(
     input: &BugReportInput<'_>,
     max_body_bytes: usize,
 ) -> Result<(String, usize), BugReportPayloadError> {
     let mut budget = LOG_EXCERPT_MAX_BYTES;
-    loop {
+    for _ in 0..MAX_HALVINGS {
         let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, budget)?)?;
         if json.len() <= max_body_bytes || budget == 0 {
             return Ok((json, budget));
         }
         budget /= 2;
     }
+    let json = serde_json::to_string_pretty(&build_payload_with_log_budget(input, 0)?)?;
+    Ok((json, 0))
 }
 
 #[must_use]

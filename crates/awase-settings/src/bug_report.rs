@@ -36,6 +36,12 @@ pub(crate) struct BugReportApp {
     reported_at: String,
     preview_json: String,
     last_generated_preview: String,
+    /// journal/awase.log の添付を自動的に切り詰めた場合の通知文。`status`
+    /// （送信中/送信結果/エラー用）とは別フィールドにしている —
+    /// 同じフィールドで扱うと、デバウンスによるプレビュー再生成が
+    /// 送信成功時の report_id や送信失敗時の保存先パスのような、
+    /// まだユーザーが読んでいない重要な情報を上書きしてしまう。
+    log_shrink_notice: Option<String>,
     /// 説明欄・添付チェックボックスの変更があった時刻。プレビュー再生成
     /// （JSON 全体を最大 ~500KB 再シリアライズする、決して軽くない処理）を
     /// キー入力のたびに同期実行すると、egui の即時モード再描画と相まって
@@ -115,6 +121,7 @@ impl BugReportApp {
             reported_at,
             preview_json: String::new(),
             last_generated_preview: String::new(),
+            log_shrink_notice: None,
             pending_preview_refresh: None,
             status: "症状カテゴリを選択して、送信前の内容を確認してください。".to_owned(),
             pending: None,
@@ -157,18 +164,25 @@ impl BugReportApp {
             || attach_layout_changed
     }
 
+    /// 生成済みのプレビュー JSON を反映する。デバウンス完了時と「プレビュー
+    /// を再生成」ボタンの両方から使う共通処理（片方だけ更新すると、
+    /// 縮小通知の表示漏れや `pending_preview_refresh` の消し忘れのような
+    /// 差異が生まれるため一本化している）。
+    fn apply_generated_preview(&mut self, json: String, shrunk: bool) {
+        self.preview_json.clone_from(&json);
+        self.last_generated_preview = json;
+        self.log_shrink_notice = shrunk.then(|| {
+            "送信内容が上限を超えていたため、添付ログ(journal/awase.log)を自動的に切り詰めました。"
+                .to_owned()
+        });
+    }
+
     fn refresh_preview_if_unedited(&mut self) {
         if self.preview_json != self.last_generated_preview {
             return;
         }
         match self.generated_preview() {
-            Ok((json, shrunk)) => {
-                self.preview_json.clone_from(&json);
-                self.last_generated_preview = json;
-                if shrunk {
-                    "送信内容が上限を超えていたため、添付ログ(journal/awase.log)を自動的に切り詰めました。".clone_into(&mut self.status);
-                }
-            }
+            Ok((json, shrunk)) => self.apply_generated_preview(json, shrunk),
             Err(e) => {
                 let json = format!("{{\n  \"error\": \"{}\"\n}}", escape_json_string(&e));
                 self.preview_json.clone_from(&json);
@@ -209,7 +223,13 @@ impl BugReportApp {
             MAX_BODY_BYTES,
         )
         .map_err(|e| e.to_string())?;
-        Ok((json, used_budget < LOG_EXCERPT_MAX_BYTES))
+        // used_budget < LOG_EXCERPT_MAX_BYTES だけでは「縮小を試みた」ことしか
+        // 分からず、縮小してもなお上限を超えているケース（journal/app_log
+        // 以外のフィールドが支配的）を「自動的に切り詰めました」という
+        // 成功通知として誤って表示してしまう。実際に上限内に収まった場合に
+        // 限り shrunk=true とする。
+        let shrunk = used_budget < LOG_EXCERPT_MAX_BYTES && json.len() <= MAX_BODY_BYTES;
+        Ok((json, shrunk))
     }
 
     fn poll_send_result(&mut self) {
@@ -324,14 +344,20 @@ impl BugReportApp {
             {
                 self.start_send();
             }
-            if ui.button("プレビューを再生成").clicked()
-                && let Ok((json, _shrunk)) = self.generated_preview()
-            {
-                self.preview_json.clone_from(&json);
-                self.last_generated_preview = json;
+            if ui.button("プレビューを再生成").clicked() {
+                // デバウンス中の保留があれば、これから同期的に再生成する
+                // ので不要（残しておくと ~300ms 後にもう一度、同じ重い
+                // 再構築が無駄に走る）。
+                self.pending_preview_refresh = None;
+                if let Ok((json, shrunk)) = self.generated_preview() {
+                    self.apply_generated_preview(json, shrunk);
+                }
             }
         });
         ui.label(&self.status);
+        if let Some(notice) = &self.log_shrink_notice {
+            ui.colored_label(egui::Color32::from_rgb(180, 120, 0), notice);
+        }
         ui.add_space(4.0);
     }
 
@@ -418,18 +444,10 @@ impl eframe::App for BugReportApp {
 
         self.poll_send_result();
 
-        let pending = self.pending.is_some();
-
-        egui::TopBottomPanel::bottom("bug_report_actions")
-            .show(ctx, |ui| self.draw_bottom_actions(ui, pending));
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("bug_report_main_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| self.draw_form(ui));
-        });
-
+        // このフレームで最新のプレビュー/通知を描画できるよう、デバウンス
+        // 完了判定はパネル描画より前に行う（描画後に行うと、更新結果は
+        // 次の repaint まで画面に反映されない — egui は即時モードGUIで、
+        // 明示的な repaint 要求か新規入力がない限り再描画しないため）。
         if let Some(since) = self.pending_preview_refresh {
             let elapsed = since.elapsed();
             if elapsed >= PREVIEW_DEBOUNCE {
@@ -443,6 +461,18 @@ impl eframe::App for BugReportApp {
                 );
             }
         }
+
+        let pending = self.pending.is_some();
+
+        egui::TopBottomPanel::bottom("bug_report_actions")
+            .show(ctx, |ui| self.draw_bottom_actions(ui, pending));
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("bug_report_main_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.draw_form(ui));
+        });
 
         if pending {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
