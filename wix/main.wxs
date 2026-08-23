@@ -5,8 +5,15 @@
            Language="1041"
            Version="$(var.Version)"
            Manufacturer="cuzic"
+           Codepage="UTF-8"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
-    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
+    <!-- Codepage="UTF-8": 既定のコードページ(1252、西欧文字のみ)のままだと、
+         VCRUNTIME140FOUND の LaunchCondition に追加した日本語メッセージが
+         light.exe のリンク時に LGHT0311（文字がコードページで表現できない）
+         で失敗する。既存の日本語テキストがこれまで XML コメント（データベース
+         非格納）のみだったため、この問題は顕在化していなかった。 -->
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser"
+             SummaryCodepage="UTF-8" />
     <!-- Schedule="afterInstallExecute": 既定値 afterInstallValidate のままだと
          新バージョンのファイルを配置する前に旧バージョンを完全アンインストール
          してしまい、ConfigFile/NicolaYab の NeverOverwrite="yes" が保護対象
