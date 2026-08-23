@@ -5,22 +5,8 @@
            Language="1041"
            Version="$(var.Version)"
            Manufacturer="cuzic"
-           Codepage="932"
            UpgradeCode="7A8B9C0D-1234-5678-9ABC-DEF012345678">
-    <!-- Codepage="932": 既定のコードページ(1252、西欧文字のみ)のままだと、
-         VCRUNTIME140FOUND の LaunchCondition に追加した日本語メッセージが
-         light.exe のリンク時に LGHT0311（文字がコードページで表現できない）
-         で失敗する。既存の日本語テキストがこれまで XML コメント（データベース
-         非格納）のみだったため、この問題は顕在化していなかった。
-         Codepage="UTF-8" (65001) では解決しない — MSI データベースの文字列
-         テーブルは可変長エンコーディングを持てず、実測で light.exe が
-         Codepage="UTF-8" 指定を無視してデフォルトの 1252 のまま LGHT0311 を
-         出し続けた。日本語の ANSI/DBCS コードページである 932 (Shift_JIS)
-         を指定する。SummaryCodepage も OLE Summary Information Stream の
-         制約で ANSI コードページのみ許可される（UTF-8=65001 を指定すると
-         CNDL0349 で拒否される）ため、同じ 932 に揃える。 -->
-    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser"
-             SummaryCodepage="932" />
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perUser" />
     <!-- Schedule="afterInstallExecute": 既定値 afterInstallValidate のままだと
          新バージョンのファイルを配置する前に旧バージョンを完全アンインストール
          してしまい、ConfigFile/NicolaYab の NeverOverwrite="yes" が保護対象
@@ -43,14 +29,19 @@
          自体は成功したのに初回起動時に OS の分かりにくいダイアログ
          （「vcruntime140.dll が見つからないため、このプログラムを開始できません」）
          で失敗する。インストール時点で検出し、対処方法込みのメッセージで
-         セットアップを中止させる。 -->
+         セットアップを中止させる。
+         Message は非 ASCII 文字を含めない（既存の DowngradeErrorMessage も
+         英語）。日本語を含めると MSI データベースの既定コードページ(1252、
+         西欧文字のみ)で light.exe が LGHT0311 を出す。Codepage 属性を
+         932(Shift_JIS)/UTF-8 に変更しても実測で解消しなかった（原因未特定）
+         ため、確実な回避策としてメッセージ自体を英語にする。 -->
     <Property Id="VCRUNTIME140FOUND">
       <DirectorySearch Id="System64FolderSearch" Path="[System64Folder]">
         <FileSearch Id="VcRuntime140Search" Name="vcruntime140.dll" />
       </DirectorySearch>
     </Property>
 
-    <Condition Message="awase の実行には Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (x64) が必要です。https://aka.ms/vs/17/release/vc_redist.x64.exe からダウンロードしてインストールした後、このセットアップを再実行してください。">
+    <Condition Message="awase requires the Microsoft Visual C++ 2015-2022 Redistributable (x64). Download and install it from https://aka.ms/vs/17/release/vc_redist.x64.exe, then run this setup again.">
       <![CDATA[Installed OR VCRUNTIME140FOUND]]>
     </Condition>
 
