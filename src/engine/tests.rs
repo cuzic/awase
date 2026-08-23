@@ -2712,6 +2712,44 @@ fn test_key_up_pending_char_thumb_resolves_key_with_keyup() {
         .any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D)));
 }
 
+#[test]
+fn test_insufficient_overlap_with_no_thumb_face_still_forwards_thumb_solo() {
+    // char1 の位置に thumb 面の定義が一切無い（resolve_thumb_face が None を返す）
+    // 場合でも、重なり不足で「単独打鍵×2」に倒れたときは thumb 自身のソロ解決
+    // （変換パススルー設定なら実 VK 送出）が行われることを確認する。
+    //
+    // 同時打鍵確定パス（resolve_char_thumb_as_simultaneous）では thumb 面未定義の
+    // 場合 char1 単独のみで thumb は常に無音で消費されるが、これは「同時打鍵と
+    // 判定した上でその出力先が無い」場合の話であり、今回のケース（そもそも
+    // 単独打鍵×2と判定した）とは別の意図的な挙動——thumb は同時打鍵の相方が
+    // 無いのではなく、単独打鍵そのものとして確定するため、その解決結果
+    // （ここでは変換パススルー）を尊重する。
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.layout.normal.insert(POS_D, lit('て'));
+    // D は left_thumb にも right_thumb にも一切定義しない
+
+    engine.on_event(Ev::down(VK_D).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+    // char1 KeyUp: thumb 押下から2ms後 → 重なりほぼ無し
+    engine.on_event(Ev::up(VK_D).at(32_000).build());
+
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('て'))),
+        "char1 should resolve via normal face: {:?}",
+        r.actions
+    );
+    assert!(
+        r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "henkan configured passthrough → solo VK_CONVERT should still be forwarded even though \
+         no thumb-shift face is defined at this position: {:?}",
+        r.actions
+    );
+}
+
 // ── is_layout_key coverage (lines 657-659) ──
 
 #[test]
@@ -2978,6 +3016,45 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout
             .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
         "henkan configured passthrough → solo VK_CONVERT should be forwarded: {:?}",
         r.actions
+    );
+}
+
+#[test]
+fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_prevent_reuse() {
+    // 重なり不足で char1+thumb を単独打鍵×2として確定した後も、thumb はまだ物理的に
+    // 押されたまま（タイムアウト経由なので KeyUp が来ていない）。この状態で次のキーが
+    // 来たとき、既に単独打鍵として出力済みの thumb 押下が再利用されて誤って
+    // 同時打鍵にならないことを確認する（regression: resolve_char_and_thumb_as_separate_solos
+    // が left/right_thumb_consumed を更新し忘れると、次のキーが active_thumb_side() 経由で
+    // 同じ thumb 押下と誤って同時打鍵になってしまう）。
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+    engine.on_event(Ev::up(VK_A).at(32_000).build());
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('う'))));
+
+    // VK_CONVERT はまだ物理的に押されたまま。次のキー(S)が既に単独打鍵として
+    // 消費済みの VK_CONVERT 押下と誤って同時打鍵にならないこと。
+    let r2 = engine.on_event(Ev::down(VK_S).at(140_000).build());
+    let final_actions: Vec<KeyAction> = if r2.actions.is_empty() {
+        engine.on_timeout(TIMER_PENDING).actions
+    } else {
+        r2.actions
+    };
+    assert!(
+        final_actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('し'))),
+        "S should resolve via normal face ('し'), not reuse the already-consumed VK_CONVERT hold: {final_actions:?}"
+    );
+    assert!(
+        !final_actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('じ'))),
+        "S should NOT be shifted by the already-resolved VK_CONVERT press: {final_actions:?}"
     );
 }
 
@@ -4629,6 +4706,45 @@ fn test_engine_off_counter_resets_on_thumb_consume() {
     assert!(
         !engine.take_engine_off_requested(),
         "count=2 after reset → no engine off"
+    );
+}
+
+#[test]
+fn test_engine_off_counts_solo_resolved_via_insufficient_overlap_separate_solos() {
+    // resolve_char_and_thumb_as_separate_solos 経由（重なり不足で単独打鍵×2として
+    // 確定するケース）で thumb が単独打鍵になった場合も、timeout_pending_thumb 経由の
+    // 単独打鍵と同様にソロ連打カウンターへ計上されることを確認する
+    // （タイムアウト経由だと thumb はまだ物理的に押されたままなので、各周回の
+    // 最後に明示的に KeyUp を送って物理状態を正常化してから次の周回へ進む）。
+    let mut engine = make_engine();
+    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+
+    let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
+
+    for i in 0..4u64 {
+        let t = i * gap;
+        engine.on_event(Ev::down(VK_A).at(t).build());
+        engine.on_event(Ev::down(VK_NONCONVERT).at(t + 30_000).build());
+        // char1 KeyUp: thumb 押下から2ms後 → 重なりほぼ無し
+        engine.on_event(Ev::up(VK_A).at(t + 32_000).build());
+        engine.on_timeout(TIMER_PENDING);
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} 回目の単独打鍵×2 → まだ engine off しない",
+            i + 1
+        );
+        // 次周回のために thumb を物理的に離す
+        engine.on_event(Ev::up(VK_NONCONVERT).at(t + 40_000).build());
+    }
+
+    let t = 4 * gap;
+    engine.on_event(Ev::down(VK_A).at(t).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(t + 30_000).build());
+    engine.on_event(Ev::up(VK_A).at(t + 32_000).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(
+        engine.take_engine_off_requested(),
+        "5 回目の単独打鍵×2 → engine off"
     );
 }
 

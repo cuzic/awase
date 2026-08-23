@@ -169,6 +169,13 @@ impl<'a> TimingJudge<'a> {
     /// 可能性が高いため、この場合は n-gram スコアでタイブレークする：同時打鍵想定の
     /// かながある程度上回らない限り単独打鍵と判定する。n-gram モデルが無い場合は
     /// 安全側（単独打鍵）に倒す。
+    ///
+    /// **既知の限界**: `chord_kana`/`solo_kana` は `Option<char>` 一文字でしか
+    /// スコアリングできないため、同時打鍵の出力が拗音（`YabValue::Romaji { kana: None, .. }`）
+    /// 等の非かな出力の場合は `chord_kana=None` となり、スコアが常に `NEG_INFINITY`
+    /// （＝最低点）になって n-gram タイブレークで絶対に勝てない。この場合、重なり
+    /// 不足なら常に単独打鍵×2に倒れる。`three_key_pairing` の `score_a` も同じ
+    /// 制約を持つ既存の設計であり、本関数固有の後退ではない。
     #[must_use]
     pub fn confirms_char_thumb_chord(
         &self,

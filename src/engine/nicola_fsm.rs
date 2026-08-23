@@ -1659,6 +1659,15 @@ impl NicolaFsm {
     /// 自身の KeyUp イベントを処理中）の場合のみ即座に KeyUp を追記する——タイムアウト
     /// 経由（thumb はまだ押下中）ならまだ実 KeyUp が来ていないため、後から届く実際の
     /// KeyUp イベントに解決を委ねる。
+    ///
+    /// タイムアウト経由（`thumb_released_now=false`）では thumb はまだ物理的に
+    /// 押されたままなので、`left_thumb_consumed`/`right_thumb_consumed` を明示的に
+    /// 更新して「消費済み」にする。これを怠ると、この関数が既に単独打鍵として
+    /// 確定した直後に次のキーが到着した際、`active_thumb_side()` が同じ物理押下を
+    /// 未消費の親指とみなし、既に単独打鍵として出力済みの thumb を次のキーとの
+    /// 同時打鍵の相方として二重に使ってしまう。`consume_thumb()` は「同時打鍵に
+    /// 使われた」前提で `solo_counter` をリセットする副作用を持つため、ここでは
+    /// 使わない（thumb は同時打鍵ではなく単独打鍵として確定するため）。
     fn resolve_char_and_thumb_as_separate_solos(
         &mut self,
         char_key: &PendingKey,
@@ -1669,6 +1678,26 @@ impl NicolaFsm {
         self.update_history(char1_resolved.output);
         let mut actions = char1_resolved.actions;
         self.append_key_up_for(&mut actions, char_key.scan_code);
+
+        match thumb.side() {
+            ThumbSide::Left => self.left_thumb_consumed = self.phys.left_thumb_down,
+            ThumbSide::Right => self.right_thumb_consumed = self.phys.right_thumb_down,
+        }
+
+        // ソロ連打によるエンジン OFF トリガーチェック（timeout_pending_thumb と同一
+        // ロジック）。thumb はここで同時打鍵ではなく単独打鍵として確定するため、
+        // ソロ連打カウンターの対象になる。
+        if self.engine_off_triple_vk.0 != 0 && thumb.vk_code == self.engine_off_triple_vk {
+            let count = self.solo_counter.record(thumb.vk_code, thumb.timestamp);
+            if count >= SOLO_OFF_TRIGGER_COUNT {
+                self.solo_counter.reset();
+                self.engine_off_requested = true;
+                // N 回目は thumb 側の送出のみ suppress する（char1 の出力は維持）
+                return self.build_response(actions, true, TimerIntent::CancelAll);
+            }
+        } else {
+            self.solo_counter.reset();
+        }
 
         let (thumb_resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
@@ -1796,7 +1825,10 @@ impl NicolaFsm {
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
-    /// PendingCharThumb タイムアウト：char1+thumb を同時打鍵として確定する
+    /// PendingCharThumb タイムアウト：char1+thumb の同時打鍵を確定を試みる。
+    /// 重なり不足（`char_thumb_chord_confirmed` が false）なら
+    /// `resolve_char_and_thumb_as_separate_solos` に委譲し、代わりに char1・thumb を
+    /// それぞれ単独打鍵として確定する。
     fn timeout_pending_char_thumb(
         &mut self,
         char_key: &PendingKey,
