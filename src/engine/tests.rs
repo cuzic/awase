@@ -1788,8 +1788,9 @@ fn test_three_key_key_up_char_resolves_simultaneous() {
     engine.on_event(Ev::down(VK_A).at(0).build());
     engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
 
-    // char1 離鍵: 待機（何も出力しない）
-    let result = engine.on_event(Ev::up(VK_A).build());
+    // char1 離鍵: 待機（何も出力しない）。thumb 押下(30ms)から十分後（60ms、重なり30ms）
+    // に離すことで、正当な重なりのある同時打鍵であることを明示する。
+    let result = engine.on_event(Ev::up(VK_A).at(60_000).build());
     result.assert_consumed();
     assert!(
         result.actions.is_empty(),
@@ -1797,7 +1798,7 @@ fn test_three_key_key_up_char_resolves_simultaneous() {
     );
 
     // thumb 離鍵: 同時打鍵として確定
-    let result2 = engine.on_event(Ev::up(VK_CONVERT).build());
+    let result2 = engine.on_event(Ev::up(VK_CONVERT).at(90_000).build());
     result2.assert_consumed();
     assert!(result2
         .actions
@@ -2905,6 +2906,79 @@ fn test_key_up_thumb_during_pending_char_thumb() {
     let r = engine.on_event(Ev::up(VK_CONVERT).build());
     r.assert_consumed();
     assert!(r.actions.iter().any(|a| matches!(a, KeyAction::Char('ゔ'))));
+}
+
+// ── 重なり不足による単独打鍵×2解決（変換パススルー設定） ──
+//
+// 変換キーが「パススルー」（henkan_solo_tap_always_suppress=false）に設定されている
+// 場合、char1 が変換押下よりずっと前に離されていて重なりがほぼ無ければ、
+// 同時打鍵ではなく char1 単独 + 変換パススルーの2打として確定するべき
+// （confirms_char_thumb_chord のタイブレーク、n-gram モデル無しは安全側=単独打鍵）。
+
+#[test]
+fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_key_up() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+
+    // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+
+    // char1 KeyUp: thumb 押下から2ms後 → 重なりほぼ無し（待機は継続、まだ出力しない）
+    let r = engine.on_event(Ev::up(VK_A).at(32_000).build());
+    r.assert_consumed();
+    assert!(r.actions.is_empty());
+
+    // thumb KeyUp: 重なり不足(2ms) < 閾値15%(15ms) → n-gram モデル無し → 単独打鍵×2
+    let r = engine.on_event(Ev::up(VK_CONVERT).at(40_000).build());
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('う'))),
+        "char1 should resolve via normal face ('う'), not the chord ('ゔ'): {:?}",
+        r.actions
+    );
+    assert!(
+        !r.actions.iter().any(|a| matches!(a, KeyAction::Char('ゔ'))),
+        "should NOT resolve as char1+thumb chord: {:?}",
+        r.actions
+    );
+    assert!(
+        r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "henkan configured passthrough → solo VK_CONVERT should be forwarded: {:?}",
+        r.actions
+    );
+}
+
+#[test]
+fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout() {
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+
+    // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+
+    // char1 KeyUp: thumb 押下から2ms後 → 重なりほぼ無し。thumb は離されないままタイムアウト。
+    engine.on_event(Ev::up(VK_A).at(32_000).build());
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('う'))),
+        "char1 should resolve via normal face ('う'), not the chord ('ゔ'): {:?}",
+        r.actions
+    );
+    assert!(
+        !r.actions.iter().any(|a| matches!(a, KeyAction::Char('ゔ'))),
+        "should NOT resolve as char1+thumb chord: {:?}",
+        r.actions
+    );
+    assert!(
+        r.actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT)),
+        "henkan configured passthrough → solo VK_CONVERT should be forwarded: {:?}",
+        r.actions
+    );
 }
 
 // ── Romaji KeyUp produces Suppress ──

@@ -11,6 +11,12 @@ use crate::types::Timestamp;
 /// d1 と d2 の差がこれ以上ならタイミングだけで判定する
 const TIMING_MARGIN_PERCENT: u64 = 30;
 
+/// 重なり不足判定のマージン（閾値の15%）
+/// char2 が来ないまま char1+thumb を確定する2鍵ケースで、thumb 押下から
+/// char1 解放までの重なり時間がこれ未満なら「重なり不足」とみなし、
+/// n-gram タイブレークに回す（`confirms_char_thumb_chord` 参照）。
+const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
+
 /// n-gram 予測で投機出力を選択する最小スコア差
 const SPECULATIVE_SCORE_THRESHOLD: f32 = 0.5;
 
@@ -150,6 +156,48 @@ impl<'a> TimingJudge<'a> {
             .unwrap_or(0.0);
 
         normal_score - thumb_score > SPECULATIVE_SCORE_THRESHOLD
+    }
+
+    /// char2 が来ないまま char1+thumb を同時打鍵として確定してよいかを判定する
+    /// （char1 の KeyUp / thumb の KeyUp / タイムアウトで解決する2鍵ケース専用）。
+    ///
+    /// char1 がまだ押下中（`char1_released_at` が `None`）なら、thumb 到着の時点で
+    /// 重なりが構造的に保証されているため常に true。
+    ///
+    /// char1 が既に離されている場合、thumb 押下から char1 解放までの重なり時間
+    /// （= 物理的に両方を押していた時間）が閾値の `MIN_OVERLAP_MARGIN_PERCENT`%
+    /// 未満なら「重なり不足」とみなす。重なりが乏しいのは、通しで打鍵した2打が
+    /// たまたま同時打鍵のタイミング閾値に収まっただけ（＝本来は単独打鍵×2）という
+    /// 可能性が高いため、この場合は n-gram スコアでタイブレークする：同時打鍵想定の
+    /// かながある程度上回らない限り単独打鍵と判定する。n-gram モデルが無い場合は
+    /// 安全側（単独打鍵）に倒す。
+    #[must_use]
+    pub fn confirms_char_thumb_chord(
+        &self,
+        thumb_ts: Timestamp,
+        char1_released_at: Option<Timestamp>,
+        chord_kana: Option<char>,
+        solo_kana: Option<char>,
+    ) -> bool {
+        let Some(released_ts) = char1_released_at else {
+            return true;
+        };
+        let overlap_us = released_ts.saturating_sub(thumb_ts);
+        let min_overlap_us = self.threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
+        if overlap_us >= min_overlap_us {
+            return true;
+        }
+
+        let Some(model) = self.ngram_model else {
+            return false;
+        };
+        let chord_score = chord_kana.map_or(f32::NEG_INFINITY, |ch| {
+            model.frequency_score(&self.recent_kana, ch)
+        });
+        let solo_score = solo_kana.map_or(f32::NEG_INFINITY, |ch| {
+            model.frequency_score(&self.recent_kana, ch)
+        });
+        chord_score - solo_score > SPECULATIVE_SCORE_THRESHOLD
     }
 
     /// n-gram で閾値を動的調整する内部ヘルパー
@@ -636,5 +684,81 @@ mod tests {
         let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
         let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
         assert!(!judge.should_speculate(Some('X'), Some('Y'), None));
+    }
+
+    // ── confirms_char_thumb_chord ──
+
+    #[test]
+    fn confirms_char_thumb_chord_still_held_always_true() {
+        // char1 がまだ押下中（None）→ 重なりが構造的に保証されているため常に true
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.confirms_char_thumb_chord(0, None, None, None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_sufficient_overlap_true_without_model() {
+        // overlap=20_000 >= min_overlap(100_000*15/100=15_000) → n-gram モデルが無くても true
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.confirms_char_thumb_chord(0, Some(20_000), None, None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_exact_margin_boundary_is_sufficient() {
+        // overlap == min_overlap ちょうど（15_000）。`>=` は境界を含むので true。
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(judge.confirms_char_thumb_chord(0, Some(15_000), None, None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_just_below_margin_boundary_is_insufficient() {
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(!judge.confirms_char_thumb_chord(0, Some(14_999), None, None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_insufficient_overlap_no_model_defaults_to_solo() {
+        // 重なり不足かつ n-gram モデルが無い → 安全側（単独打鍵）に倒す
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(!judge.confirms_char_thumb_chord(0, Some(5_000), Some('x'), Some('y')));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_char1_released_before_thumb_saturates_overlap_to_zero() {
+        // char1_released_at(=0) < thumb_ts(=10_000) は本来起き得ないが、
+        // saturating_sub で overlap=0 に丸められ、重なり不足として安全側に倒れる
+        // （パニックしないことの確認）。
+        let judge = TimingJudge::new(100_000, None, vec![]);
+        assert!(!judge.confirms_char_thumb_chord(10_000, Some(0), None, None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_insufficient_overlap_ngram_favors_chord() {
+        // 重なり不足でも、n-gram が同時打鍵想定のかなを強く支持するなら同時打鍵とみなす
+        let model = sample_model();
+        // recent=['あ'], chord_kana='り' (bigram「あり」=1.5), solo_kana=None(NEG_INFINITY)
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(judge.confirms_char_thumb_chord(0, Some(5_000), Some('り'), None));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_insufficient_overlap_ngram_favors_solo() {
+        let model = sample_model();
+        // recent=['あ'], chord_kana=None(NEG_INFINITY), solo_kana='り' (score 1.5)
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(!judge.confirms_char_thumb_chord(0, Some(5_000), None, Some('り')));
+    }
+
+    #[test]
+    fn confirms_char_thumb_chord_insufficient_overlap_ngram_diff_exact_threshold_excludes_equal() {
+        // diff = chord_score - solo_score = 1.0 - 0.5 = 0.5 ちょうど。
+        // `>` は非包含なので単独打鍵と判定する。
+        let toml_str = r#"
+[bigram]
+"あX" = 1.0
+"あY" = 0.5
+"#;
+        let model = NgramModel::from_toml(toml_str, 20_000, 30_000, 120_000).unwrap();
+        let judge = TimingJudge::new(100_000, Some(&model), vec!['あ']);
+        assert!(!judge.confirms_char_thumb_chord(0, Some(5_000), Some('X'), Some('Y')));
     }
 }
