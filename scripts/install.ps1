@@ -20,7 +20,10 @@ $system32Dir = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]
     Join-Path $env:SystemRoot "System32"
 }
 if (-not (Test-Path (Join-Path $system32Dir "vcruntime140.dll"))) {
-    Write-Error @"
+    # $ErrorActionPreference の値に依存せず必ずスクリプトを止めるため throw を使う
+    # （Write-Error は非 terminating error であり、将来この前後に -ErrorAction
+    # Continue や try/catch が入ると黙って無視されうる）。
+    throw @"
 awase の実行には Microsoft Visual C++ 2015-2022 再頒布可能パッケージ (x64) が必要です。
 https://aka.ms/vs/17/release/vc_redist.x64.exe からダウンロードしてインストールした後、
 このインストーラーを再実行してください。

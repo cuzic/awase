@@ -50,6 +50,22 @@ fn extract_tag<'a>(content: &'a str, needle: &str) -> &'a str {
     &content[start..end]
 }
 
+/// `start_needle`（例: `"<Condition Message="`）から `end_needle`（例:
+/// `"</Condition>"`）までの範囲を切り出す。`<Property>`/`<Condition>` の
+/// ように子要素や CDATA 本文を含む複数行要素を、コメント本文の偶然の
+/// 文字列一致から区別して判定するために使う（extract_tag は単一タグの
+/// 開始 `<` から最初の `>` までしか切り出せず、本文を含む要素には使えない）。
+fn extract_element<'a>(content: &'a str, start_needle: &str, end_needle: &str) -> &'a str {
+    let start = content
+        .find(start_needle)
+        .unwrap_or_else(|| panic!("wix/main.wxs に {start_needle} が見つからない"));
+    let end = content[start..].find(end_needle).map_or_else(
+        || panic!("wix/main.wxs に {start_needle} に対応する {end_needle} が見つからない"),
+        |i| start + i + end_needle.len(),
+    );
+    &content[start..end]
+}
+
 #[test]
 fn major_upgrade_schedule_is_after_install_execute() {
     let content = main_wxs();
@@ -108,4 +124,49 @@ fn known_component_guids_are_unchanged() {
              期待値も更新すること。"
         );
     }
+}
+
+// vcruntime140.dll（VC++ 再頒布可能パッケージ）が無い環境で MSI
+// インストール自体を中止させる LaunchCondition の回帰テスト。壊れると、
+// インストールは成功するが初回起動時に OS の分かりにくいダイアログで
+// 失敗するようになる（コンパイラはもちろん教えてくれず、xmllint 等の
+// XML 妥当性チェックも通ってしまう）。
+#[test]
+fn vcruntime_launch_condition_present() {
+    let content = main_wxs();
+
+    let property = extract_element(
+        &content,
+        r#"<Property Id="VCRUNTIME140FOUND">"#,
+        "</Property>",
+    );
+    assert!(
+        property.contains(r#"Path="[System64Folder]""#),
+        "wix/main.wxs の VCRUNTIME140FOUND の DirectorySearch が \
+         System64Folder を参照していない（要素: {property:?}）。\
+         System64Folder は呼び出し元プロセスのビット数に依存せず常に \
+         ネイティブ 64-bit System32 を指す標準プロパティで、これを \
+         使わないと（32bit 版 MSI ランタイムが System32 をそのまま \
+         参照した場合の）WOW64 リダイレクトで誤検出しうる。"
+    );
+    assert!(
+        property.contains(r#"Name="vcruntime140.dll""#),
+        "wix/main.wxs の VCRUNTIME140FOUND の FileSearch が \
+         vcruntime140.dll を探していない（要素: {property:?}）。"
+    );
+
+    let condition = extract_element(&content, "<Condition Message=", "</Condition>");
+    assert!(
+        condition.contains("Visual C++"),
+        "wix/main.wxs の <Condition> に Visual C++ 再頒布可能パッケージが \
+         必要である旨のメッセージが見つからない（要素: {condition:?}）。"
+    );
+    assert!(
+        condition.contains("Installed OR VCRUNTIME140FOUND"),
+        "wix/main.wxs の LaunchCondition が \
+         \"Installed OR VCRUNTIME140FOUND\" を満たしていない \
+         （要素: {condition:?}）。Installed を条件に含めないと、\
+         修復・アップグレード・アンインストール時にもこのチェックが \
+         働いてしまい、既にインストール済みの環境での操作を壊しうる。"
+    );
 }
