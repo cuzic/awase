@@ -364,7 +364,16 @@ pub(crate) fn run(args: &BugReportArgs) -> eframe::Result<()> {
     eframe::run_native(
         "awase-bug-report",
         options,
-        Box::new(move |_cc| Ok(Box::new(BugReportApp::new(&args)))),
+        Box::new(move |cc| {
+            // `awase-settings` の通常起動（`SettingsApp::new`）は
+            // `setup_fonts` で CJK フォントを読み込むが、`--bug-report`
+            // 起動はこの `run_native` 呼び出しが独立した別ウィンドウであり
+            // 同じ呼び出しを経由しないため、日本語グリフが一切無い egui
+            // 既定フォントのままになっていた（「症状カテゴリ」等のラベルや
+            // JSON プレビュー中の日本語がトーフ表示＝文字化けに見える）。
+            crate::setup_fonts(&cc.egui_ctx);
+            Ok(Box::new(BugReportApp::new(&args)))
+        }),
     )
 }
 
@@ -548,4 +557,45 @@ fn parse_report_id(response: &str) -> Option<String> {
         .get("report_id")
         .and_then(serde_json::Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod font_guard_tests {
+    /// 回帰テスト: `--bug-report` ウィンドウは `SettingsApp::new()` を経由
+    /// しない独立した `eframe::run_native` 呼び出しのため、CJK フォントを
+    /// 読み込む `setup_fonts()` を明示的に呼ばない限り日本語グリフが一切
+    /// 無い egui 既定フォントのままになり、「症状カテゴリ」等のラベルや
+    /// JSON プレビュー中の日本語がトーフ表示（文字化けに見える）になる。
+    /// 通常のユニットテストでは egui のヘッドレス描画を要し検証しづらい
+    /// ため、`architecture_guard.rs`/`wix_installer_guard.rs` に倣い
+    /// ソースファイルの文字列走査で「`run()` の `run_native` クロージャが
+    /// `setup_fonts` を呼んでいるか」を機械的に固定する。
+    #[test]
+    fn run_native_closure_calls_setup_fonts() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let src =
+            std::fs::read_to_string(std::path::Path::new(manifest_dir).join("src/bug_report.rs"))
+                .expect("failed to read src/bug_report.rs")
+                .replace("\r\n", "\n");
+
+        let run_native_pos = src
+            .find("eframe::run_native(")
+            .expect("bug_report.rs must call eframe::run_native");
+        let closure_end = src[run_native_pos..]
+            .find("\n    )")
+            .map(|i| run_native_pos + i)
+            .expect("could not find end of run_native(...) call");
+        let closure_body = &src[run_native_pos..closure_end];
+
+        // 単に "setup_fonts" という文字列の有無だけを見ると、実際の呼び出しを
+        // 削除してもこの説明コメント自体（"setup_fonts" という語を含む）に
+        // 一致してテストが検知不能になる（wix_installer_guard.rs の C1 と
+        // 同型の落とし穴）。括弧付きの実際の呼び出し式で判定する。
+        assert!(
+            closure_body.contains("setup_fonts(&cc.egui_ctx)"),
+            "bug_report::run()'s run_native closure must call setup_fonts(&cc.egui_ctx) \
+             or Japanese text renders as tofu boxes in the bug-report window; \
+             closure body was:\n{closure_body}"
+        );
+    }
 }
