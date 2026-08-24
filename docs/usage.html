@@ -512,6 +512,7 @@ footer p{margin-bottom:0.3rem}
         <li><strong>プロセスを再起動</strong> — 入力がおかしくなったときにプロセスを完全再起動します（詳細は<a href="#panic-reset">「緊急操作・リセット」</a>参照）</li>
         <li><strong>自動起動</strong> — ログオン時の自動起動を有効/無効にします（チェックで有効）</li>
         <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
+        <li><strong>不具合を報告...</strong> — 症状・ログ等を添えて開発者に非公開で報告します（詳細は<a href="#bug-report">「不具合報告」</a>参照）</li>
         <li><strong>有効/無効切替</strong> — エンジンの ON/OFF をトグルします（<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd> と同じ操作）</li>
         <li><strong>終了</strong> — awase を終了します</li>
       </ul>
@@ -869,6 +870,34 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">詳細なログが必要な場合はコマンドプロンプトからデバッグモードで起動します。</p>
       <div class="code-block">awase.exe --debug</div>
       <p class="note">または環境変数 <code>RUST_LOG=debug</code> を設定してから起動しても同じです。</p>
+    </div>
+  </div>
+</section>
+
+<!-- 不具合報告 -->
+<section id="bug-report">
+  <div class="container">
+    <h2 class="section-title">不具合報告</h2>
+    <p class="section-lead">トレイアイコンから直接、開発者に不具合を報告できます。</p>
+
+    <div class="card">
+      <h3>報告手順</h3>
+      <ol>
+        <li>トレイアイコンを右クリックして「<strong>不具合を報告...</strong>」を選択</li>
+        <li>症状カテゴリを選択し、必要であれば説明を入力</li>
+        <li>ログ（journal + awase.log）・内部状態スナップショット・設定ファイル（config.toml）・配列ファイル（.yab）の添付を、チェックボックスで個別に外せます（既定はすべて添付）</li>
+        <li>送信前プレビューで実際に送られる内容（JSON）を確認・編集できます。個人情報が含まれていないか気になる場合はここで編集・削除してください</li>
+        <li>「送信」を押すと、開発者専用の非公開受付（<code>report.awase.cc</code>）へ送信されます。GitHub Issue など公開の場所には投稿されません</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>プライバシーについて</h3>
+      <ul>
+        <li>送信内容は非公開のストレージに保存され、約90日間保管後に自動削除されます</li>
+        <li>journal ログには直近の打鍵イベント（仮想キーコード等）がそのまま含まれます。マスキングは行われないため、機微な内容を打鍵していた場合は送信前プレビューで該当箇所を編集・削除してから送信してください</li>
+        <li>送信内容には送信元 IP は含まれません（乱用防止のレート制限にのみ、ハッシュ化した形で一時的に使われます）</li>
+      </ul>
     </div>
   </div>
 </section>

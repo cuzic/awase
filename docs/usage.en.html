@@ -512,6 +512,7 @@ footer p{margin-bottom:0.3rem}
         <li><strong>Restart process</strong> — Fully restarts the process when input misbehaves (see <a href="#panic-reset">"Emergency operations & reset"</a> for details)</li>
         <li><strong>Auto-start</strong> — Enables/disables auto-start at logon (checked = enabled)</li>
         <li><strong>Restart as administrator</strong> — Restarts awase elevated via UAC. This lets it work even with apps that require administrator privileges (some games, for example)</li>
+        <li><strong>Report a bug...</strong> — Sends symptoms and logs to the developer privately (see <a href="#bug-report">"Reporting Bugs"</a> for details)</li>
         <li><strong>Enable/disable toggle</strong> — Toggles the engine ON/OFF (the same operation as <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>)</li>
         <li><strong>Exit</strong> — Quits awase</li>
       </ul>
@@ -867,6 +868,34 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">When you need detailed logs, start in debug mode from a command prompt.</p>
       <div class="code-block">awase.exe --debug</div>
       <p class="note">Alternatively, setting the environment variable <code>RUST_LOG=debug</code> before starting has the same effect.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Bug Report -->
+<section id="bug-report">
+  <div class="container">
+    <h2 class="section-title">Reporting Bugs</h2>
+    <p class="section-lead">You can report a bug to the developer directly from the tray icon.</p>
+
+    <div class="card">
+      <h3>How to report</h3>
+      <ol>
+        <li>Right-click the tray icon and select <strong>"Report a bug..."</strong></li>
+        <li>Choose a symptom category and, if useful, type a description</li>
+        <li>Logs (journal + awase.log), an internal state snapshot, the config file (config.toml), and the layout file (.yab) are each attached by a separate checkbox (all are checked by default; uncheck any you don't want to send)</li>
+        <li>The pre-send preview shows exactly what will be sent (as JSON), and you can edit it. If you're worried it might contain personal information, edit or remove it here before sending</li>
+        <li>Clicking "Send" submits it to a private intake endpoint for the developer (<code>report.awase.cc</code>). It is never posted anywhere public like a GitHub Issue</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h3>About privacy</h3>
+      <ul>
+        <li>Submissions are stored in private storage and automatically deleted after roughly 90 days</li>
+        <li>The journal log includes your recent keystroke events (virtual key codes, etc.) verbatim. Nothing is masked, so if you were typing something sensitive, edit or remove that part in the pre-send preview before sending</li>
+        <li>The submission does not include your source IP address (a hashed form is used only briefly for abuse-prevention rate limiting)</li>
+      </ul>
     </div>
   </div>
 </section>
