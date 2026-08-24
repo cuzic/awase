@@ -110,6 +110,38 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.16.0] - 2026-08-23</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a way to report bugs directly from the tray icon</strong><ul>
+<li>Pick a symptom category, optionally attach a description, a journal/awase.log excerpt, an internal state snapshot, the config file (config.toml), and the layout file (.yab), review and edit the preview, then send it to a private intake form</li>
+<li>The submission has a size cap (512&nbsp;KiB); if exceeded, attached logs are automatically shrunk to fit</li>
+</ul>
+</li>
+<li><strong>Improved simultaneous-keystroke detection accuracy for the thumb keys</strong><ul>
+<li>When the overlap between the previous key and a thumb key is too small, the previous behavior always treated it as a simultaneous chord. Now an n-gram model is used to tie-break between "chord" and "two solo taps" (falling back to the safer solo-tap interpretation when no model is available, to avoid accidentally triggering IME conversion)</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed installation failing with a confusing OS error when the Visual C++ Redistributable (vcruntime140.dll) is missing</strong><ul>
+<li>Both the MSI and ZIP installers now detect the missing runtime at install time and show a message with a download link, aborting the install instead of failing later at first launch</li>
+</ul>
+</li>
+<li><strong>Fixed the config file (config.toml) or layout file (.yab) sometimes being lost during an upgrade</strong><ul>
+<li>The MSI installer's issue was in the component overwrite ordering during a major upgrade; the ZIP installer's overwrite behavior was aligned with the same fix</li>
+</ul>
+</li>
+<li><strong>Fixed the ZIP installer (install.ps1, etc.) failing with a syntax error on Japanese Windows environments</strong><ul>
+<li>Caused by the PowerShell scripts' character encoding (UTF-8 without a BOM), which Windows PowerShell 5.1 was misreading as the system ANSI code page</li>
+</ul>
+</li>
+<li><strong>Fixed a stray "@" being typed right after confirming a candidate in Google Japanese Input (GJI), e.g. in Windows Terminal</strong></li>
+<li><strong>Fixed the IME sometimes failing to correctly turn back on after a focus change, in some environments</strong></li>
+<li><strong>Improved a case where keystrokes would be buffered for several seconds during continuous typing and then flushed all at once, in some environments</strong></li>
+<li><strong>Fixed a warm-up key sent as a TSF cold-start workaround for Google Japanese Input (GJI) occasionally forcing a switch into hiragana mode as a side effect</strong></li>
+</ul>
 <h2>[1.15.0] - 2026-08-17</h2>
 <h3>Added</h3>
 <ul>
