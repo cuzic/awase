@@ -481,13 +481,10 @@ impl eframe::App for BugReportApp {
 
 pub(crate) fn run(args: &BugReportArgs) -> eframe::Result<()> {
     let args = args.clone();
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([720.0, 760.0])
-            .with_min_inner_size([520.0, 420.0])
-            .with_title("awase 不具合報告"),
-        ..Default::default()
-    };
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([720.0, 760.0])
+        .with_min_inner_size([520.0, 420.0])
+        .with_title("awase 不具合報告");
     // `awase-settings` の通常起動（`SettingsApp::new`）は `setup_fonts` で
     // CJK フォントを読み込むが、`--bug-report` 起動はこの `run_native`
     // 呼び出しが独立した別ウィンドウであり同じ呼び出しを経由しないため、
@@ -504,11 +501,9 @@ pub(crate) fn run(args: &BugReportArgs) -> eframe::Result<()> {
     // （BUG-73）。フォント読み込みは `BugReportApp::update()` の初回フレーム
     // へ遅延させ（`fonts_initialized` フィールド参照）、ウィンドウ生成
     // 自体はここで即座に行う。
-    eframe::run_native(
-        "awase-bug-report",
-        options,
-        Box::new(move |_cc| Ok(Box::new(BugReportApp::new(&args)))),
-    )
+    crate::startup_failure::run_with_fallback("awase-bug-report", viewport, move |_cc| {
+        Box::new(BugReportApp::new(&args)) as Box<dyn eframe::App>
+    })
 }
 
 fn current_reported_at() -> String {
@@ -711,40 +706,50 @@ mod font_guard_tests {
     }
 
     /// 回帰テスト(BUG-72): `--bug-report` ウィンドウは `SettingsApp::new()`
-    /// を経由しない独立した `eframe::run_native` 呼び出しのため、CJK
-    /// フォントを読み込む `setup_fonts()` を明示的に呼ばない限り日本語
-    /// グリフが一切無い egui 既定フォントのままになり、「症状カテゴリ」等の
-    /// ラベルや JSON プレビュー中の日本語がトーフ表示（文字化けに見える）
-    /// になる。通常のユニットテストでは egui のヘッドレス描画を要し検証
-    /// しづらいため、`architecture_guard.rs`/`wix_installer_guard.rs` に
-    /// 倣いソースファイルの文字列走査で機械的に固定する。
+    /// を経由しない独立したウィンドウ生成（`startup_failure::run_with_fallback`
+    /// 経由、内部で `eframe::run_native` を呼ぶ）のため、CJK フォントを
+    /// 読み込む `setup_fonts()` を明示的に呼ばない限り日本語グリフが一切無い
+    /// egui 既定フォントのままになり、「症状カテゴリ」等のラベルや JSON
+    /// プレビュー中の日本語がトーフ表示（文字化けに見える）になる。通常の
+    /// ユニットテストでは egui のヘッドレス描画を要し検証しづらいため、
+    /// `architecture_guard.rs`/`wix_installer_guard.rs` に倣いソースファイル
+    /// の文字列走査で機械的に固定する。
     ///
-    /// 回帰テスト(BUG-73): `setup_fonts` を `run_native` のウィンドウ生成
-    /// クロージャ内で同期的に呼ぶと、CJK .ttc（数MB）のパースでウィンドウの
-    /// 初回表示が数百ms遅れ、トレイ（バックグラウンドプロセス）から起動
-    /// されたウィンドウに Windows が与える「新規ウィンドウへの
-    /// フォアグラウンド許可」の猶予時間を逃し、ウィンドウが背面のまま開く
-    /// （実機で「一瞬表示されてすぐ消えたように見える」と報告）。BUG-72の
-    /// 修正時にこの副作用を作り込んだため、「`run_native` のクロージャは
+    /// 回帰テスト(BUG-73): `setup_fonts` をウィンドウ生成クロージャ内で
+    /// 同期的に呼ぶと、CJK .ttc（数MB）のパースでウィンドウの初回表示が
+    /// 数百ms遅れ、トレイ（バックグラウンドプロセス）から起動された
+    /// ウィンドウに Windows が与える「新規ウィンドウへのフォアグラウンド
+    /// 許可」の猶予時間を逃し、ウィンドウが背面のまま開く（実機で
+    /// 「一瞬表示されてすぐ消えたように見える」と報告）。BUG-72の修正時に
+    /// この副作用を作り込んだため、「ウィンドウ生成クロージャは
     /// `setup_fonts` を呼ばない（ウィンドウ生成を遅延させない）」ことも
     /// 同時に固定する。
+    ///
+    /// コードレビュー指摘: 以前は `eframe::run_native(` という文字列を探して
+    /// いたが、その呼び出し自体を `startup_failure::run_with_fallback` へ
+    /// 委譲したことでこのファイルから文字列が消え、このテストが自分自身の
+    /// 検索コード（この doc コメントや `find("eframe::run_native(")` という
+    /// リテラル）にマッチして意図と無関係な範囲を切り出し、閉じ括弧の
+    /// 探索に失敗して panic するようになっていた。実際にウィンドウ生成
+    /// クロージャを渡している `run_with_fallback(` を探すよう修正する。
     #[test]
     fn setup_fonts_is_deferred_to_first_update_not_run_native_closure() {
         let src = read_own_source();
 
         let run_native_pos = src
-            .find("eframe::run_native(")
-            .expect("bug_report.rs must call eframe::run_native");
+            .find("run_with_fallback(")
+            .expect("bug_report.rs must call startup_failure::run_with_fallback");
         let closure_end = src[run_native_pos..]
-            .find("\n    )")
+            .find("\n    })")
             .map(|i| run_native_pos + i)
-            .expect("could not find end of run_native(...) call");
+            .expect("could not find end of run_with_fallback(...) call");
         let closure_body = &src[run_native_pos..closure_end];
         assert!(
             !closure_body.contains("setup_fonts"),
-            "run_native()'s window-creation closure must NOT call setup_fonts synchronously \
-             (BUG-73: delays the window's first show past Windows' foreground-grant window \
-             for background-process-spawned windows); closure body was:\n{closure_body}"
+            "run_with_fallback()'s window-creation closure must NOT call setup_fonts \
+             synchronously (BUG-73: delays the window's first show past Windows' \
+             foreground-grant window for background-process-spawned windows); \
+             closure body was:\n{closure_body}"
         );
 
         let update_pos = src

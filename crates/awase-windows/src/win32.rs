@@ -139,6 +139,33 @@ pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 起動失敗などの致命的なエラーを `MessageBoxW` で表示する。
+///
+/// `main.rs::show_startup_error`（awase.exe 側）と
+/// `awase-settings/src/startup_failure.rs::show_dialog`
+/// （awase-settings.exe 側）の両方が同じ MessageBoxW 定型句
+/// （UTF-16 変換・フラグ組み合わせ）を個別に持っていた（コードレビュー
+/// 指摘）ため、ここに集約する。呼び出し元スレッドをブロックする点は
+/// 呼び出し元が把握していること前提（`MessageBoxW` 自体の制約）。
+pub fn show_error_dialog(title: &str, message: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+
+    let title_wide = to_wide(title);
+    let message_wide = to_wide(message);
+    // SAFETY: title_wide/message_wide は NUL 終端済み UTF-16 で呼び出し中有効。
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(message_wide.as_ptr()),
+            PCWSTR(title_wide.as_ptr()),
+            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND,
+        );
+    }
+}
+
 /// `GetGUIThreadInfo` の結果
 #[derive(Debug, Clone, Copy)]
 pub struct GuiThreadResult {
