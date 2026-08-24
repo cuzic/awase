@@ -218,6 +218,7 @@ impl WindowsPlatform {
             backs: 0,
             escape_composition: false,
             session_marked: false,
+            romaji: None,
         };
         self.note_literal_detect_record(record, now.saturating_sub(pending.sent_at_ms));
     }
@@ -831,6 +832,66 @@ impl WindowsPlatform {
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         self.output.flush_raw_tsf_literal_recovery();
         self.drain_output_post_send_effects();
+    }
+
+    /// `WM_GJI_REINIT_RETRY_COMPLETE` ハンドラから呼ぶ。ADR-101 決定4が要求する
+    /// 順序（`Confirmed` の場合）を、この関数の呼び出し順そのものとして固定する:
+    /// 1. `resend_gji_reinit_retry_romaji`（retry送信）
+    /// 2. `drain_output_post_send_effects`（送信後処理）
+    /// 3. `flush_deferred_vks_after_gji_reinit_completion`（deferred flush）
+    /// 4. `drop(completion.guard)`（関数末尾、`match` の外）
+    ///
+    /// `completion.guard` は成功/timeout/staleいずれの分岐でも関数末尾で1回だけ
+    /// dropする。Win32/`Platform`依存のためLinux上でこの呼び出し順自体をユニット
+    /// テストすることはできない（本関数の実装＝この doc コメントの記述が
+    /// SSOT。順序を変える場合はここも更新すること）。
+    pub(crate) fn complete_gji_reinit_retry(
+        &mut self,
+        token: u32,
+        status: crate::output::GjiReinitPollStatus,
+    ) {
+        let Some(completion) = self.output.take_gji_reinit_completion(token) else {
+            log::warn!("[chrome-reinit-retry] completion ignored: token={token} status={status:?}");
+            return;
+        };
+        let current_focus_gen = self.output.current_ime_mode_focus_gen();
+        let focus_matches = current_focus_gen == completion.focus_gen;
+        log::debug!(
+            "[chrome-reinit-retry] completion: token={} status={:?} cold={} \
+             origin_focus_gen={} current_focus_gen={} retry={}",
+            token,
+            status,
+            completion.cold_seq.value(),
+            completion.focus_gen,
+            current_focus_gen,
+            completion.retry_romaji.is_some(),
+        );
+
+        if status == crate::output::GjiReinitPollStatus::Confirmed && focus_matches {
+            if let Some(romaji) = completion.retry_romaji {
+                self.output
+                    .mark_gji_reinit_retry_attempted(completion.focus_gen, romaji.clone());
+                self.output.resend_gji_reinit_retry_romaji(&romaji);
+                self.drain_output_post_send_effects();
+            }
+            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
+            if flushed > 0 {
+                self.drain_output_post_send_effects();
+            }
+        } else if focus_matches && status == crate::output::GjiReinitPollStatus::Timeout {
+            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
+            if flushed > 0 {
+                self.drain_output_post_send_effects();
+            }
+        } else {
+            let discarded = self
+                .output
+                .discard_pending_deferred_after_stale_gji_reinit();
+            log::warn!(
+                "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
+            );
+        }
+        drop(completion.guard);
     }
 
     /// `output.send_keys()` / `output.flush_raw_tsf_literal_recovery()` の直後に共通で

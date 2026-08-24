@@ -323,6 +323,15 @@ pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessa
 pub const WM_GJI_CHARSET_FN_KEY_ACTIVATED: u32 =
     windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
+/// GJI reinit retry 用 IMC poll の完了通知。
+///
+/// poll future は `with_app` 内で送信を行わず、`wparam=retry token`,
+/// `lparam=GjiReinitPollStatus` としてこのメッセージを投函する。メインメッセージ
+/// ループが `with_app_or_repost_with` で Runtime 境界へ戻してから retry 送信と
+/// post-send effects を実行する。
+#[cfg(windows)]
+pub const WM_GJI_REINIT_RETRY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
+
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 
 /// `RawKeyEvent` の SendInput 再注入ヘルパー。

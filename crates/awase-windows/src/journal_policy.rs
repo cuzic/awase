@@ -247,6 +247,7 @@ mod tests {
             backs: 0,
             escape_composition: false,
             session_marked: false,
+            romaji: None,
         }
     }
 

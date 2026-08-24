@@ -801,10 +801,11 @@ impl Default for DumpTriggerTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     // ── DumpTriggerTracker ────────────────────────────────────────────────
 
-    fn mock_tracker() -> (DumpTriggerTracker, std::sync::Arc<quanta::Mock>) {
+    fn mock_tracker() -> (DumpTriggerTracker, Arc<quanta::Mock>) {
         let (clock, mock) = quanta::Clock::mock();
         (DumpTriggerTracker::with_clock(clock), mock)
     }
@@ -866,7 +867,7 @@ mod tests {
 
     // ── UnifiedJournal ────────────────────────────────────────────────────
 
-    fn mock_journal() -> (UnifiedJournal, std::sync::Arc<quanta::Mock>) {
+    fn mock_journal() -> (UnifiedJournal, Arc<quanta::Mock>) {
         let (clock, mock) = quanta::Clock::mock();
         (UnifiedJournal::new_with_clock(10, clock), mock)
     }

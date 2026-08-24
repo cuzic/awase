@@ -575,6 +575,16 @@ journal へ記録する。送信ゼロ・挙動変更ゼロ）を採用**し、*
 プライバシー方針: 案L は journal（既に `attach_log` チェックボックスの
 opt-in 配下）へ生の romaji を記録する。新しい送信チャネルは開かない。
 
+**2026-08-24追補（ADR-101 / BUG-74）**: BUG-74の実機ログで、give-up後の
+reinitが直後の「う」を自然に成功させたことから、失われた「こ」も通常送信経路へ
+戻すべきだと判断した。ただしADR-100時点の提案2をそのまま復活させず、4ラウンドの
+premortemで、focus世代照合欠落(F6)、`with_app`内送信によるpost-send effects漏れ、
+retry待ち中の `pending_deferred` 追い越し、連続give-upによるguard奪取、
+`SuppressedExistingPoll` の遅延backspaceが既存retry後の文字を消す問題を潰した。
+最終設計は [ADR-101](adr/101-bug74-giveup-retry-with-focus-guard.md) として実装済み。
+retryは `send_romaji_batched` / `send_romaji_as_tsf` の通常経路へ1回だけ戻し、
+Unicode直接送信の新経路は作らない。
+
 **学び（暫定）**: 「唯一生きている機構だから触らない」という判断（ADR-098
 決定3 KEEP）と、「触るなら安全な代替キーに変えたい」という改善方向は両立
 する。前者は BUG-69 修正のスコープ、後者は実機検証を要する別トピックと

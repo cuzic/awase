@@ -9522,3 +9522,213 @@ BUG-72 の修正で `crate::setup_fonts()`（数MBの CJK `.ttc` フォント
 **関連:** [BUG-72](#bug-72-タスクトレイ不具合を報告ウィンドウの日本語が文字化けトーフ表示する)
 （本バグの直接の原因となった修正）、
 [ADR-095](adr/095-tray-bug-report-cloudflare-intake.md)。
+
+---
+
+## BUG-74: `RawTsfLiteralRecovery` の give-up（2連続 raw-tsf-literal）で文字が痕跡なく完全に失われる — BUG-29 が予告していた「次回の同種報告」
+
+**発見の経緯:** ユーザーからの不具合報告機能（ADR-095、report_id
+`01M0RE56S6EQ4MTQGJ2EB2W4N0`）経由。症状カテゴリ「一部の文字が消えた」、
+説明「こういう と期待したのに ういう になってしまった」（app_version
+1.14.0）。
+
+**症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` →
+`Windows.UI.Input.InputSite.WindowClass`、GJI、TsfNative）で、フォーカスが
+Windows Terminal へ移った直後（20秒以上アイドル後の GJI、`app_kind=Uwp`、
+`focus_kind=Undetermined`）に「こういう」と入力したところ、先頭の「こ」が
+**痕跡なく完全に失われ**「ういう」になった。BUG-39（`koっか`）や BUG-36
+（`tみや`）のようなローマ字の literal 漏れ（画面上に見える）とは異なり、
+本件は BS で消したあと何も再送されないため見た目にも何も残らない。
+
+**再現手順（不具合報告の添付 journal/awase.log で確認済み、`RUST_LOG=debug`）:**
+
+```
+send_keys: mode=Tsf actions=[Char('こ')] prev_elapsed=18094ms
+[h1-warmup] cold=37 ... reason=NativeF2Consumed elapsed=0ms → F2/probe待機省略、per-VK confirm へ
+[gji-coro] cold=37 settle 必要 (gji_idle_ms=20157 settled=false) → skip FreshF2, reactive LiteralDetect のみ
+[gji-coro] cold=37 per-VK[0/1] suspected literal (vk=0x4B backs=1 escape=false)
+[raw-tsf-literal] cold=37 raw TSF literal suspected → backspace ×1 + re-送 "ko" scheduled + mark cold
+[raw-tsf-literal] flush escape=false backspace ×1
+[output] re-sending raw TSF literal romaji="ko"
+[h1-warmup] cold=38 ... reason=RawTsfLiteralRecovery elapsed=516ms → F2/probe待機省略、per-VK confirm へ
+[gji-coro] cold=38 per-VK[0/1] suspected literal (vk=0x4B backs=1 escape=false)
+[raw-tsf-literal] cold=38 consecutive raw-tsf-literal (count=2) → giving up, backs=1 cleanup only (no re-send)
+[raw-tsf-literal] flush escape=false backspace ×1
+[chrome-reinit] cold=38 VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始
+[chrome-reinit] cold=38 Hiragana 確認 → ポーリング終了   ← reinit 自体は成功、以降「う」「い」「う」は正常
+```
+
+視覚的な出力の変遷を追うと: 空 →（cold=37 literal）"k" → backspace →
+（cold=38 再送 "ko" の1文字目 "k"）→ backspace → 何も残らず「こ」は消滅。
+後続の「う」は `gji_settled=true`（reinit 直後で GJI I/O が生きている）ため
+unicode 直接送信に切り替わり正常に変換された。
+
+**IME:** Google 日本語入力（GJI）。TsfNative プロファイル（Windows Terminal
+等）。
+
+**原因（確定、コード読解と journal/ログの突き合わせで確認）:** `cold_warmup.rs`
+の `run_start` は 2026-07-18 の設計変更（BUG-24 追補、本ファイル参照）以降、
+`reason` や `gji_idle_ms` に関わらず送信前の F2/probe 待機を一切行わない
+（「予防的待機は per-VK confirm という送信後リカバリと二重の保険」という
+実機ソーク済みの意図的な仕様）。今回のケースでは 20 秒以上アイドルしていた
+本物の cold TSF context に対してこの「待機省略」がそのまま適用され、
+1文字目の送信（cold=37）が genuinely 早すぎて `SuspectedLiteral` になった。
+その回収（backspace + 再送 "ko"、cold=38）も同じ「待機省略」設計のため、
+わずか 516ms 後に再送された1文字目も再び早すぎて `SuspectedLiteral` になり、
+`consecutive_count()==1` で `probe_io.rs` の `RawTsfLiteralRecovery` ハンドラの
+give-up 分岐（`consecutive != 0`）に入る。この分岐は BUG-27 追補2（「常に
+再送」が msedge で無限 backspace ループを起こし撤回済み）以来、**romaji を
+一切再送せず BS のみで後始末する**設計であり、失われた文字を取り戻す経路が
+存在しなかった。BUG-33 で追加された `send_chrome_gji_reinit_and_poll`
+（`VK_IME_OFF→VK_IME_ON`）は GJI を実際に Hiragana へ立て直すため後続文字
+（「う」「い」「う」）には効くが、give-up した「こ」自体を救う仕組みはなかった。
+
+本件は BUG-29「未解決の follow-up」節が明示的に予告していたケースそのもの:
+「`RawTsfLiteralRecovery` の『2回連続失敗で以後無期限に give-up』という設計
+自体は、構造的な保護（cap・エスカレーション）が依然として存在しない…次回
+同種の報告があれば `probe_io.rs` の give-up 分岐自体の見直しを検討する。」
+
+**この「見直し」自体は ADR-100 が既に検討・却下済みだった（訂正の経緯）:**
+実装着手時、まず「give-up 分岐に reinit 完了確認後の retry を追加する」
+（`send_chrome_gji_reinit_and_poll` の IMC ポーリングが Hiragana 復帰を
+確認できたら、失われた romaji を一度だけ再送する）という設計で実装し、
+`cargo xwin check`/`clippy`/`test --no-run` まで通した。しかしコミット前に
+`docs/experiments.md` エントリ16 を確認したところ、**この設計はまさに
+[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) 決定3「提案2」として
+既に検討・却下されていた**ことが判明し、実装を破棄した。却下理由（ADR-100
+決定3、4点）:
+
+1. **完了通知の経路が存在しない**（最も強い理由）: `send_chrome_gji_reinit_and_poll`
+   のポーリングは fire-and-forget で、retry を安全に配線するには focus 世代の
+   照合が要る。この照合機構自体が欠落している（決定5、`send_chrome_gji_reinit_and_poll`
+   だけが `ime_mode_focus_gen` を照合しない）ことが未解決の前提条件として
+   記録されており、これを満たさずに retry を配線すると、reinit のポーリング中
+   （最大 `CHROME_GJI_REINIT_CONFIRM_MS`=300ms）にフォーカスが別ウィンドウへ
+   移った場合、**失われた romaji が別ウィンドウへ誤送信されうる**
+   （premortem P2、BUG-35 と同型の stale confirm 誤帰属）。
+2. 「確認できない」瞬間が黙って「300ms 経過」に劣化しうる — IMC が読めない
+   環境では実質 BUG-27 追補2（msedge で無限 backspace ループを起こし撤回済み）
+   と同種の無条件タイマー retry に近づく。
+3. reinit 自体が短時間の連続 give-up ではレート制限で skip されうる
+   （F11）ため、「reinit 完了確認後」の定義が skip 時に未定義になる。
+4. BUG-45（未解決）はこの経路自体が「actual にどう出力されたか確認する
+   箇所が一つもない」ことを問題の核心としており、retry はその上に送信を
+   もう1段積むことになる。
+
+ADR-100 決定3は却下する代わりに**案L（give-up で失った romaji を journal に
+記録する。送信ゼロ・挙動変更ゼロ）を採用**し、案J（Unicode 直接送信への
+退避）・案K（backspace も打たない）を「却下せず保持」として残していた。
+本バグはこの案L が策定済みでありながら未実装だったことも明らかにした
+（`tsf/literal_facts.rs::LiteralDetectRecord` に romaji フィールドが無かった）。
+
+**修正: ADR-100 決定3 案L を実装した。** 送信・挙動は一切変更せず、
+`LiteralDetectRecord` に `romaji: Option<String>` フィールドを追加し、
+journal から「give-up で何が失われたか」を機械可読に復元できるようにした。
+
+- `tsf/literal_facts.rs::LiteralDetectRecord` に `romaji: Option<String>` を
+  追加（`String::new()` ではなく `Option` にした理由: 空文字列だと「記録し
+  忘れ」と「そもそも romaji を持たない verdict」が区別できなくなるため）。
+- 構築サイト全6箇所（ADR-100 決定3「案L の作業範囲」表のとおり）を更新:
+  `output/probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ（**romaji を持つ
+  唯一の箇所**、初回疑い・give-up 双方で `romaji.clone()` を詰める）・
+  `CompositionConfirmed` ハンドラ・`LiteralDetectNote` ハンドラ・
+  `plan_skipped_record`、`platform.rs::flush_pending_literal_vk_as_aborted`
+  （`probe_io.rs` の外にあるため grep しないと気づきにくい、ADR-100 が
+  明記済み）、`journal_policy.rs` のテストヘルパーは全て `None`。
+- プライバシー方針は ADR-100 決定3 で確定済み（journal は既に `attach_log`
+  チェックボックスの opt-in 配下であり、`consecutive == 0` 側の
+  `log::warn!` が既に同じ romaji を生ログへ出力しているため、新しい送信
+  チャネルは開かない。生の romaji をそのまま記録する）。
+
+**テスト:** `output/probe_io.rs::tests::
+raw_tsf_literal_recovery_tsf_mode_consecutive_gives_up_with_cold_mark`
+（give-up 側）に `record.romaji == Some("ko")` のアサーションを追加。
+`raw_tsf_literal_recovery_sets_literal_and_marks_cold_when_first_time`
+（初回疑い側）も `dispatch_probe_actions` + 明示 `trace` を使う形に変更し、
+`record.romaji == Some("ka")` を検証するアサーションを追加。ADR-100 が
+「Linux で実行可能」と明記していたとおり `fix-requires-evidence.md` の
+(a) 回帰テストで満たせる（`#[cfg(test)]` 内の純粋なユニットテストで
+Win32 API に依存しない）。`cargo xwin check`/`cargo xwin clippy -p
+awase-windows --target x86_64-pc-windows-msvc`（警告ゼロ）、`cargo xwin
+test -p awase-windows --target x86_64-pc-windows-msvc --no-run`
+（lib・`tests/*.rs` 全ファイルのコンパイル・リンク）確認済み。wine 未導入
+のためこのサンドボックスでは `.exe` 実行はできず、実機再検証は未実施。
+
+**2026-08-24 追補: ADR-101 により文字消失そのものの修正を実装した。**
+ADR-100 決定3が却下した「提案2」は、完了通知・focus世代照合・送信後処理・
+順序保証が無い状態での retry だった。ADR-101 はこの前提条件を4ラウンドの
+premortemで詰め直し、以下を実装した。
+
+- Stage1: `send_chrome_gji_reinit_and_poll` に `ime_mode_focus_gen` 照合を追加し、
+  stale な IMC poll 結果で `ImeModeFsm` を更新しないようにした（ADR-100 決定5/F6）。
+- Stage2: give-up 由来の reinit 予約を `PendingGjiReinit { cold_seq, focus_gen, phase }`
+  に構造体化し、`Scheduled`/`Polling` を型で分けた。`Polling` は
+  `OutputActiveGuard` と `poll_token` を所有し、連続give-upで上書きされない。
+- Stage3: poll が `Confirmed` かつfocus世代一致の場合のみ、保存していた romaji を
+  `send_romaji_batched` / `send_romaji_as_tsf` の通常送信経路へ1回だけ戻す。
+  Unicode直接送信の新経路は作らない。retry後は `drain_output_post_send_effects`
+  を必ず実行し、その後に `pending_deferred` を処理する。
+- Round4 premortemで見つかった順序問題への対策として、retry付き `Polling` 中は
+  `flush_stale_deferred_vks_after_recovery` による `pending_deferred` 即時flushを
+  抑止し、`SuppressedExistingPoll` では `RAW_TSF_LITERAL` へ backspace cleanup を
+  残さない。
+
+関連ADR: [ADR-101](adr/101-bug74-giveup-retry-with-focus-guard.md)。
+
+**2026-08-24 追補2: 実コードに対する最終レビューで実装ミス2件を発見・修正した。**
+ADR-101の設計文書（Round4）に対するpremortemはブロッカー0件で収束したが、
+別のセッションが実際のコード diff（設計文書ではなく）を最終レビューしたところ、
+「設計は正しかったが実装が設計から逸脱している」ミスが2件見つかった:
+(1) focus stale判定が`flush_raw_tsf_literal_backspaces()`（実送信）より**後**に
+行われており、フォーカスが変わった後もbackspaceが新ウィンドウへ送られてから
+ようやくstale判定される状態だった、(2) `with_app`再入失敗（`None`）を`Stale`
+扱いにしており、フォーカスが変わっていなくても1tick再入しただけでretryと
+deferred救済の両方が失われる状態だった。両方とも実送信前のfocus世代照合
+（`discard_raw_recovery_if_focus_stale`）と、再入は`Continue`とする純粋関数
+（`gji_reinit_poll_tick_outcome`）で修正し、それぞれの回帰テストを追加した。
+詳細はADR-101「Premortemの経緯 > コードレビューによる実装ミスの訂正」節参照。
+**設計のpremortemだけでなく実装後のコードレビューも必須である**ことの実例。
+
+**未解決の残課題（ADR-100 決定4・ADR-101 を継承）:** ADR-101 は BUG-74 の
+文字消失そのものを修正したが、実機ソークは未実施である。ADR-100 決定4-a（give-up の
+実機発生頻度をアプリ別・`injection_mode` 別に数える）はまだ未実施であり、
+本件が「3件記録済みの実害」（BUG-16 追補3・BUG-38/39 追補2・BUG-45）に続く
+**4件目**の実機データになる。次に同種の報告が来た場合、案L が記録した
+romaji と ADR-101 のretryログを突き合わせ、Timeout/Stale/discard が実害として
+残っていないか判断すること（ADR-100 決定4 参照）。cold=37/cold=38 双方の根本原因である
+「送信前 F2/probe 待機の完全撤去」（2026-07-18、BUG-24 追補）自体も未変更
+のまま。**`SuppressedExistingPoll`（既存retry pollが進行中に別のgive-upが来た
+場合）では、その2件目のgive-upのbackspace cleanup自体を一切送らない設計
+（ADR-101決定5）——新しいliteral残骸が画面に残る可能性はADR-101本文で
+意図的に受容したトレードオフとして明記済みだが、この残課題節への転記が
+漏れていたため追記する（コードレビュー指摘）。また`discard_raw_recovery_
+if_focus_stale`が対象とするのはgive-up+reinit経路のみで、`consecutive==0`
+（初回疑い、reinit未予約）のraw literal cleanupがfocus変更後に別ウィンドウへ
+送られるリスクはこのPR以前から存在し今回も未修正のまま（BUG-74のスコープ外、
+コードレビュー指摘）。**MS-IME側の`start_ms_ime_ready_poll`にも、ADR-101で
+GJI側を修正したのと同型の`with_app`再入バグ(`.unwrap_or(MsImePollStatus::
+Stale)`)が本PR以前から残っている**(BUG-13領域、コードレビュー指摘、未修正・
+未観測)。次にMS-IME側でIMC確認ゲートが理由なく固着する系の症状が報告されたら
+ここから着手すること。
+
+**関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
+（`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`
+（`RawTsfLiteralRecovery`/`CompositionConfirmed`/`LiteralDetectNote` ハンドラ、
+`plan_skipped_record`、`send_chrome_gji_reinit_and_poll`、`gji_reinit_poll_tick_outcome`）、
+`crates/awase-windows/src/output/mod.rs`（`PendingGjiReinit`/`PendingGjiReinitPhase`、
+`schedule_pending_gji_reinit`、`start_pending_gji_reinit_after_raw_cleanup`、
+`discard_raw_recovery_if_focus_stale`、`flush_deferred_vks_after_gji_reinit_completion`）、
+`crates/awase-windows/src/platform.rs`（`flush_pending_literal_vk_as_aborted`、
+`complete_gji_reinit_retry`）、`crates/awase-windows/src/app/mod.rs`・
+`crates/awase-windows/src/runtime/message_handlers.rs`（`WM_GJI_REINIT_RETRY_COMPLETE`
+ハンドラ）、`crates/awase-windows/src/lib.rs`（`WM_GJI_REINIT_RETRY_COMPLETE`定数）、
+`crates/awase-windows/src/journal_policy.rs`（テストヘルパー）。関連: BUG-27（give-up 分岐の「再送なし」設計の由来、
+追補2で「常に再送」を撤回した教訓）、BUG-29（「次回同種の報告があれば
+give-up 分岐自体の見直しを検討する」という本件の予告）、BUG-33
+（`send_chrome_gji_reinit_and_poll` の導入・レート制限）、BUG-36（backspace
+→ reinit の順序修正）、BUG-38（give-up 後の `pending_deferred` flush 漏れ
+修正、本件のログでも「give-up 後に取り残されていた deferred VK を flush」
+が正しく機能していることを確認）、BUG-45（give-up→reinit 経路を実機で
+問題視した先行事例、"kaきの"）、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md)
+決定3（提案2＝retry の却下・案L の採用、本バグが案L の初回実装）、
+[docs/experiments.md](../experiments.md) エントリ16。

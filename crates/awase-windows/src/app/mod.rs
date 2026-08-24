@@ -25,8 +25,8 @@ use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
     WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS,
-    WM_FOCUS_KIND_UPDATE, WM_GJI_CHARSET_FN_KEY_ACTIVATED, WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK,
-    WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_FOCUS_KIND_UPDATE, WM_GJI_CHARSET_FN_KEY_ACTIVATED, WM_GJI_REINIT_RETRY_COMPLETE,
+    WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -382,6 +382,12 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 let wparam = msg.wParam.0;
                 let _ = with_app(|app| {
                     message_handlers::handle_wm_gji_charset_fn_key_activated(app, wparam);
+                });
+            }
+            WM_GJI_REINIT_RETRY_COMPLETE => {
+                let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
+                with_app_or_repost_with(WM_GJI_REINIT_RETRY_COMPLETE, wparam, lparam, |app| {
+                    message_handlers::handle_wm_gji_reinit_retry_complete(app, wparam, lparam);
                 });
             }
             WM_PANIC_RESET => {

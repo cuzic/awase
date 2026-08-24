@@ -46,15 +46,15 @@ mod windows_probe {
         ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+        SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClassNameW,
-        GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
-        PeekMessageW, RegisterClassW, SetForegroundWindow, SetWindowTextW, ShowWindow,
-        TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW,
-        WM_DESTROY, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, PeekMessageW,
+        RegisterClassW, SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WM_DESTROY, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     const WINDOW_CLASS_NAME: &str = "gji_composition_probe_window";
@@ -190,17 +190,6 @@ mod windows_probe {
         .map_err(|e| anyhow::anyhow!("CreateWindowExW (edit) failed: {e}"))?;
 
         Ok((parent, edit))
-    }
-
-    /// 現在フォアグラウンドのウィンドウクラス名を返す(診断用)。
-    fn get_foreground_class_name() -> String {
-        let hwnd = unsafe { GetForegroundWindow() };
-        let mut buf = [0u16; 256];
-        let len = unsafe { GetClassNameW(hwnd, &mut buf) };
-        if len <= 0 {
-            return String::new();
-        }
-        String::from_utf16_lossy(&buf[..usize::try_from(len).unwrap_or(0)])
     }
 
     /// バックグラウンドから起動した場合の `SetForegroundWindow` 制限

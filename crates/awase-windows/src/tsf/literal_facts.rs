@@ -63,6 +63,19 @@ pub struct LiteralDetectRecord {
     pub backs: usize,
     pub escape_composition: bool,
     pub session_marked: bool,
+    /// BUG-74/ADR-100 決定3 案L: `RawTsfLiteralRecovery`（初回疑い・give-up 双方）で
+    /// 送信対象だった romaji。`None` はこの verdict が romaji を持たない（`Composition
+    /// Confirmed`/`LiteralDetectNote`/`PlanSkippedLiteral`/`AbortedNoVerdict`）ことを表す
+    /// — 空文字列との混同（「記録し忘れ」なのか「そもそも romaji を持たない verdict」
+    /// なのか区別できなくなる）を避けるため、`String::new()` ではなく `Option` にする。
+    ///
+    /// give-up（`gave_up=true`）で romaji が失われる（backspace のみ、再送なし）場合
+    /// でも、この記録には**送信予定だった元の romaji**を残す。ADR-100 決定3 が
+    /// 「give-up 分岐に reinit 完了確認後の retry を追加する」提案2 を却下した代わりに
+    /// 採用した対策（完了通知経路が存在しない・focus 世代照合が未整備 (F6) 等、
+    /// 却下理由の詳細は ADR-100 参照）。次に同種の文字消失が報告されたとき、
+    /// journal からどの romaji が失われたかを機械可読に復元できるようにする。
+    pub romaji: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
