@@ -18,12 +18,46 @@ rfd = "0.17.2"
 serde_json = "1"
 toml = "0.8"
 
+[target.'cfg(windows)'.dependencies]
+# "wgpu": Glow(OpenGL)でのウィンドウ生成が失敗した環境向けのフォールバック
+# レンダラー（startup_failure::run_with_fallback 参照）。非 Windows では
+# フォールバック自体を実装していない（run_with_fallback_impl の
+# 非Windows版は eframe::Renderer::Glow 相当の単発呼び出しのまま）ため、
+# ここで Windows ターゲット限定で有効化する。[dependencies] 側で
+# 無条件に有効化すると、両方の feature が有効な場合の eframe 既定
+# renderer が Wgpu 側に変わる仕様があり、非 Windows ビルドの
+# `NativeOptions { ..Default::default() }`（renderer 未指定）が意図せず
+# Wgpu 起動になってしまう。
+eframe = { version = "0.31", features = ["wgpu"] }
+# eframe::Error::Glutin の中身（glutin::error::ErrorKind）を具体的に判別し、
+# 起動失敗ダイアログの文言を実際の原因（opengl32.dll 読み込み失敗等）に
+# 応じて出し分けるための直接依存。バージョンは eframe 0.31.1 が要求する
+# glutin 0.32 系と一致させ、Cargo のバージョン統一により同一の型として
+# 扱えるようにする。
+# コードレビュー指摘: 以前は egui_glow::PainterError も同じ理由で追加して
+# いたが、実際には eframe::Error::OpenGL(e) の e を .to_string() で比較する
+# だけで egui_glow の型を名指しする箇所が無く（Display 経由なので型を
+# import しなくても呼べる）、コンパイルが通る未使用の直接依存になって
+# いたため削除した。
+glutin = { version = "0.32", default-features = false }
+# Glow(OpenGL)初期化に失敗した環境向けフォールバックレンダラー（wgpu、
+# Direct3D 12 / Vulkan 経由）。"dx12" は eframe 自体の "wgpu" feature が
+# 転送しない（eframe は metal/webgpu しか要求しない）ため、Cargo の feature
+# 統一を使ってこちらから明示的に有効化する。Windows には実 GPU ドライバが
+# 無くても常に使えるソフトウェアラスタライザ WARP（`d3d10warp.dll`、Windows
+# 10 以降 OS 標準搭載）が DX12 バックエンドにのみ存在し、Vulkan 単体では
+# 同等の「常に動く」フォールバックが無いため dx12 の明示有効化が必須。
+wgpu = { version = "24", default-features = false, features = ["dx12"] }
+egui-wgpu = "0.31"
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.58"
 features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Networking_WinHttp",
     "Win32_System_Console",
+    "Win32_System_LibraryLoader",
     "Win32_UI_WindowsAndMessaging",
 ]
 

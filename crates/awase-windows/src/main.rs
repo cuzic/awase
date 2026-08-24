@@ -31,24 +31,9 @@ fn main() {
 /// 事故を防ぐため、エラー内容とよくある原因への対処法をダイアログで示す。
 #[cfg(windows)]
 fn show_startup_error(detail: &str) {
-    use windows::core::{w, PCWSTR};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MB_TOPMOST,
-    };
-
     let hint = startup_error_hint(detail);
     let text = format!("awase の起動に失敗しました。\n\n{detail}\n\n{hint}");
-    let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-
-    // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
-    unsafe {
-        let _ = MessageBoxW(
-            None,
-            PCWSTR(text_wide.as_ptr()),
-            w!("awase - 起動エラー"),
-            MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND,
-        );
-    }
+    awase_windows::win32::show_error_dialog("awase - 起動エラー", &text);
 }
 
 /// エラー内容から、よくある原因に対する具体的な対処法を返す。

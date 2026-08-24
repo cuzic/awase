@@ -205,8 +205,10 @@ jobs:
       - name: Build awase.exe
         run: cargo build --release --locked -p awase-windows
 
+      # settings-release: release.yml と同じ理由で専用プロファイルを使う
+      # （[profile.settings-release]、Cargo.toml）。
       - name: Build awase-settings.exe
-        run: cargo build --release --locked -p awase-settings
+        run: cargo build --profile settings-release --locked -p awase-settings
 
       # awase-settings は今まで実 Windows でテストが一度も走っていなかった
       # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
@@ -292,7 +294,7 @@ jobs:
         run: |
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
-          cp target/release/awase-settings.exe dist/
+          cp target/settings-release/awase-settings.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
           cp data/*.csv.gz dist/data/ 2>/dev/null || true
