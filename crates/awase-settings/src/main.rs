@@ -10,6 +10,7 @@ use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 
 mod bug_report;
+mod startup_failure;
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
 #[cfg(target_os = "windows")]
@@ -216,23 +217,18 @@ fn main() -> eframe::Result<()> {
         return bug_report::run(&parse_bug_report_args(&args));
     }
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
-            // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
-            // なしに収まる値（従来の 500 ではプレビュー右端が切れていた）。
-            .with_inner_size([580.0, 650.0])
-            // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
-            // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
-            .with_min_inner_size([420.0, 320.0])
-            .with_title("awase 設定"),
-        ..Default::default()
-    };
-    eframe::run_native(
-        "awase-settings",
-        options,
-        Box::new(|cc| Ok(Box::new(SettingsApp::new(cc)))),
-    )
+    let viewport = egui::ViewportBuilder::default()
+        // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
+        // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
+        // なしに収まる値（従来の 500 ではプレビュー右端が切れていた）。
+        .with_inner_size([580.0, 650.0])
+        // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
+        // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
+        .with_min_inner_size([420.0, 320.0])
+        .with_title("awase 設定");
+    startup_failure::run_with_fallback("awase-settings", viewport, |cc| {
+        Box::new(SettingsApp::new(cc)) as Box<dyn eframe::App>
+    })
 }
 
 fn parse_bug_report_args(args: &[String]) -> bug_report::BugReportArgs {

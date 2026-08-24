@@ -1,6 +1,28 @@
 [workspace]
 members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-gji-config"]
 
+# awase-settings が wgpu(Direct3D 12 / Vulkan) フォールバックを取り込んだこと
+# （crates/awase-settings/src/startup_failure.rs）でリリースバイナリのサイズが
+# 増えたための対策。コードレビュー指摘: 最初 [profile.release] に直接
+# 書いていたが、それだと awase.exe（同時打鍵判定に ms 単位のタイミング精度が
+# 要る低レベルキーボードフック、.claude/rules/tuning-constants.md 参照）の
+# 通常のリリースビルドまで LTO 込みになり、開発中のリリースビルド反復
+# （実測に基づく調整が頻繁に必要）が不必要に遅くなる。専用の名前付き
+# プロファイルに分離し、CI/リリース手順では awase-settings のビルドにのみ
+# `--profile settings-release` を使う（.github/workflows/{ci,release}.yml
+# 参照。既定の "release" プロファイルは変更せず awase.exe 側の反復速度を
+# 保つ）。`opt-level` はここでは変更しない — "s"/"z" のサイズ優先最適化は
+# awase-settings 自体には副作用が薄いとはいえ、`inherits = "release"` の
+# 対称性を崩さないため踏襲しない。`lto`/`codegen-units=1` は実行速度を
+# 犠牲にせず（むしろクレート境界を跨いだインライン化で改善しうる）コード
+# サイズだけを削れるため採用する。`strip` は MSVC ターゲットではデバッグ
+# 情報がそもそも別ファイル(.pdb)に出るため効果は小さいが、無害なので含める。
+[profile.settings-release]
+inherits = "release"
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.metadata.dylint]
 libraries = [
     { path = "lints/no_vk_as_scan" },

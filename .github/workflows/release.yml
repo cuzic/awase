@@ -33,15 +33,19 @@ jobs:
       - name: Build awase.exe
         run: cargo build --release --locked -p awase-windows
 
+      # settings-release: [profile.settings-release]（Cargo.toml、LTO込み）を
+      # 使う。awase-settings は wgpu フォールバックでバイナリサイズが増えた
+      # ため専用プロファイルでサイズを抑える一方、awase.exe 側の通常の
+      # release プロファイルは変えず反復速度を保っている。
       - name: Build awase-settings.exe
-        run: cargo build --release --locked -p awase-settings
+        run: cargo build --profile settings-release --locked -p awase-settings
 
       - name: Prepare distribution
         shell: bash
         run: |
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
-          cp target/release/awase-settings.exe dist/
+          cp target/settings-release/awase-settings.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
           cp data/*.csv.gz dist/data/ 2>/dev/null || true

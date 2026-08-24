@@ -45,6 +45,17 @@
       <![CDATA[Installed OR VCRUNTIME140FOUND]]>
     </Condition>
 
+    <!-- opengl32.dll の存在チェックはインストール時点では行わない。
+         awase-settings.exe（設定画面）は起動時に Glow(OpenGL) が使えなければ
+         wgpu(Direct3D 12 の WARP ソフトウェアラスタライザ)へ自動フォールバック
+         する（crates/awase-settings/src/startup_failure.rs::run_with_fallback）。
+         この経路は opengl32.dll に一切依存しないため、opengl32.dll が無い
+         環境でもアプリ自体は正常に動作しうる。インストール時点で
+         opengl32.dll の有無を条件にブロックすると、その環境でも動くはずの
+         wgpu フォールバックを試す機会そのものを奪ってしまうため、意図的に
+         チェックを設けていない（一度追加したが、wgpu フォールバック実装後に
+         矛盾すると判断し撤去した）。 -->
+
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="INSTALLDIR" Name="awase">
