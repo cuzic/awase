@@ -576,17 +576,24 @@ pub(crate) async fn run_per_vk_confirm(
                 // いた。
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(true, idx);
+                // BUG-75: 先頭 VK（idx==0）の StaleConfirm は候補ウィンドウが実際に
+                // 可視（＝GJI が受理済み）な場合を含み、romaji 全体を再送すると
+                // 既に着弾済みの先頭文字が重複する。着弾済み prefix を除いた
+                // suffix だけを再送する（単一 VK ローマ字・idx>0 は対象外、
+                // `stale_confirm_resend_romaji` の doc 参照）。
+                let resend_romaji =
+                    crate::tsf::literal_facts::stale_confirm_resend_romaji(romaji, idx, last_idx);
                 log::warn!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
                      → backspace は送らず romaji 再送のみ行う (vk=0x{:02X} backs={backs} \
-                     escape={escape_composition})",
+                     escape={escape_composition} resend={resend_romaji:?})",
                     vk.0,
                     cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                     cold_seq,
-                    romaji.to_string(),
+                    resend_romaji,
                     backs,
                     escape_composition,
                     facts,

@@ -92,3 +92,68 @@ pub enum LiteralDetectTraceItem {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LiteralDetectTrace(pub(crate) Vec<LiteralDetectTraceItem>);
+
+/// `StaleConfirm`（per-VK confirm、先頭 VK＝`failed_idx==0`）の回収で再送する
+/// romaji を決める純関数（BUG-75）。
+///
+/// `StaleConfirm` は「confirm 根拠が古い」ことの検出であって「literal である」
+/// 証拠ではない（BUG-33 追補4）。先頭 VK（`failed_idx==0`）の `StaleConfirm` は
+/// `per_vk_recovery_params(true, 0)` が `backs=0, escape_composition=false` を
+/// 返す唯一のケースで、composition を ESC せず romaji 全体を再送していた。しかし
+/// このケースは「候補ウィンドウが既に可視」（`VisibleFencing`）等、GJI が実際に
+/// 受理し先頭 VK が着弾している場合を含み、全体再送は着弾済みの先頭文字を
+/// 重複させる（実機報告 `report_id=01M0S4S6R4C1YJ581YJ9ZGAXXD`、「つかって」→
+/// 「っつかって」）。先頭 VK を除いた suffix だけを再送することで重複を避ける。
+///
+/// **単一 VK のローマ字（`last_idx==0`）は対象外**とし、全体（＝そのまま）を返す。
+/// suffix を取ると必ず空文字列になり、本当に literal 化していた場合（GJI が
+/// 実は受理していなかった場合）に文字が痕跡なく完全に失われる—BUG-74 が
+/// 「痕跡なく完全に失われる」ことを理由に ADR-101 まで作って直した症状と
+/// 同型の退行になるため。
+///
+/// `failed_idx > 0` の `StaleConfirm` は `per_vk_recovery_params` が
+/// `escape_composition=true` を返し、呼び出し元が composition を ESC で破棄
+/// するため、先行 VK は残らない。この場合は変更前と同じ全体再送のままでよい
+/// （ESC 後は「着弾済み prefix」という概念自体が存在しない）。
+#[must_use]
+pub(crate) fn stale_confirm_resend_romaji(
+    romaji: &str,
+    failed_idx: usize,
+    last_idx: usize,
+) -> String {
+    if failed_idx == 0 && last_idx > 0 {
+        romaji.chars().skip(1).collect()
+    } else {
+        romaji.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stale_confirm_resend_romaji;
+
+    // crux: BUG-75 の報告シナリオそのもの。"tu" の先頭 'T' が既に着弾済みで
+    // StaleConfirm になったケースは、suffix "u" だけを再送すべき。
+    #[test]
+    fn stale_confirm_resend_romaji_first_vk_multi_char_returns_suffix() {
+        assert_eq!(stale_confirm_resend_romaji("tu", 0, 1), "u");
+        assert_eq!(stale_confirm_resend_romaji("ka", 0, 1), "a");
+        assert_eq!(stale_confirm_resend_romaji("ltu", 0, 2), "tu");
+    }
+
+    // BUG-74 退行防止: 単一 VK のローマ字は suffix を取ると空文字列になり
+    // 文字が痕跡なく失われるため、対象外として全体（そのまま）を返す。
+    #[test]
+    fn stale_confirm_resend_romaji_single_vk_word_returns_whole_unchanged() {
+        assert_eq!(stale_confirm_resend_romaji("a", 0, 0), "a");
+        assert_eq!(stale_confirm_resend_romaji("n", 0, 0), "n");
+    }
+
+    // failed_idx > 0 は escape_composition=true で composition が ESC される
+    // ため「着弾済み prefix」という概念が無い。変更前と同じ全体再送のまま。
+    #[test]
+    fn stale_confirm_resend_romaji_later_vk_returns_whole_unchanged() {
+        assert_eq!(stale_confirm_resend_romaji("ltu", 1, 2), "ltu");
+        assert_eq!(stale_confirm_resend_romaji("ka", 1, 1), "ka");
+    }
+}
