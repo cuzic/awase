@@ -388,6 +388,7 @@ fn plan_skipped_record(
         backs: 0,
         escape_composition: false,
         session_marked: false,
+        romaji: None,
     }
 }
 
@@ -634,6 +635,12 @@ where
                         backs,
                         escape_composition,
                         session_marked: false,
+                        // BUG-74/ADR-100 決定3 案L: give-up で romaji 自体は再送されず
+                        // 失われるが、journal には「何が失われたか」を残す。push は
+                        // romaji が move される前（consecutive==0 分岐が io.set_raw_literal
+                        // へ move する／give-up 分岐は String::new() を渡し元の romaji を
+                        // 破棄する、いずれも下の if/else より前）に行うため clone が要る。
+                        romaji: Some(romaji.clone()),
                     }));
                 if consecutive == 0 {
                     log::warn!(
@@ -693,6 +700,7 @@ where
                         backs: 0,
                         escape_composition: false,
                         session_marked: mark_literal_session,
+                        romaji: None,
                     }));
                 // BUG-27 追補4: consecutive_count は「連続失敗」の抑止用カウンタ。
                 // 本物の CompositionConfirmed が挟まれば連続ではなくなるため、
@@ -716,6 +724,7 @@ where
                         backs: 0,
                         escape_composition: false,
                         session_marked: false,
+                        romaji: None,
                     }));
             }
         }
@@ -1055,7 +1064,8 @@ mod tests {
             },
             ProbeAction::Done,
         ];
-        let result = dispatch_for_test(&mut machine, actions, &io);
+        let mut trace = LiteralDetectTrace::default();
+        let result = dispatch_probe_actions(&mut machine, actions, &io, &mut trace);
         assert!(result.is_done());
         assert!(io.set_raw_literal_called.get());
         assert!(io.mark_cold_raw_tsf_called.get());
@@ -1069,6 +1079,14 @@ mod tests {
             io.gji_reinit_scheduled_count.get(),
             0,
             "BUG-33: 初回の suspected literal では reinit の予約すら行わない"
+        );
+        assert!(
+            trace.0.iter().any(|item| matches!(
+                item,
+                LiteralDetectTraceItem::Verdict(record)
+                    if record.romaji.as_deref() == Some("ka")
+            )),
+            "BUG-74/ADR-100決定3案L: 初回疑いでも romaji を journal 記録に残すべき: {trace:?}"
         );
     }
 
@@ -1279,6 +1297,16 @@ mod tests {
                         && record.facts.verdict == LiteralVerdict::SuspectedLiteral
             )),
             "give-up 分岐では gave_up=true の Verdict が trace に残るべき: {trace:?}"
+        );
+        assert!(
+            trace.0.iter().any(|item| matches!(
+                item,
+                LiteralDetectTraceItem::Verdict(record)
+                    if record.gave_up && record.romaji.as_deref() == Some("ko")
+            )),
+            "BUG-74/ADR-100決定3案L: give-up で実際には再送されない romaji も、\
+             journal 記録には残すべき（次に同種の文字消失が報告されたとき、何が \
+             失われたかを機械可読に復元できるようにするため）: {trace:?}"
         );
         assert!(
             io.set_raw_literal_called.get(),

@@ -218,6 +218,7 @@ impl WindowsPlatform {
             backs: 0,
             escape_composition: false,
             session_marked: false,
+            romaji: None,
         };
         self.note_literal_detect_record(record, now.saturating_sub(pending.sent_at_ms));
     }
