@@ -834,6 +834,55 @@ impl WindowsPlatform {
         self.drain_output_post_send_effects();
     }
 
+    pub(crate) fn complete_gji_reinit_retry(
+        &mut self,
+        token: u32,
+        status: crate::output::GjiReinitPollStatus,
+    ) {
+        let Some(completion) = self.output.take_gji_reinit_completion(token) else {
+            log::warn!("[chrome-reinit-retry] completion ignored: token={token} status={status:?}");
+            return;
+        };
+        let current_focus_gen = self.output.current_ime_mode_focus_gen();
+        let focus_matches = current_focus_gen == completion.focus_gen;
+        log::debug!(
+            "[chrome-reinit-retry] completion: token={} status={:?} cold={} \
+             origin_focus_gen={} current_focus_gen={} retry={}",
+            token,
+            status,
+            completion.cold_seq.value(),
+            completion.focus_gen,
+            current_focus_gen,
+            completion.retry_romaji.is_some(),
+        );
+
+        if status == crate::output::GjiReinitPollStatus::Confirmed && focus_matches {
+            if let Some(romaji) = completion.retry_romaji {
+                self.output
+                    .mark_gji_reinit_retry_attempted(completion.focus_gen, romaji.clone());
+                self.output.resend_gji_reinit_retry_romaji(&romaji);
+                self.drain_output_post_send_effects();
+            }
+            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
+            if flushed > 0 {
+                self.drain_output_post_send_effects();
+            }
+        } else if focus_matches && status == crate::output::GjiReinitPollStatus::Timeout {
+            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
+            if flushed > 0 {
+                self.drain_output_post_send_effects();
+            }
+        } else {
+            let discarded = self
+                .output
+                .discard_pending_deferred_after_stale_gji_reinit();
+            log::warn!(
+                "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
+            );
+        }
+        drop(completion.guard);
+    }
+
     /// `output.send_keys()` / `output.flush_raw_tsf_literal_recovery()` の直後に共通で
     /// 必要な後処理をまとめる（BUG-28）。
     ///

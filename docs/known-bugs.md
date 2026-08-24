@@ -9654,23 +9654,63 @@ test -p awase-windows --target x86_64-pc-windows-msvc --no-run`
 （lib・`tests/*.rs` 全ファイルのコンパイル・リンク）確認済み。wine 未導入
 のためこのサンドボックスでは `.exe` 実行はできず、実機再検証は未実施。
 
-**未解決の残課題（ADR-100 決定3・4 を継承）:** 本修正は文字消失そのものを
-防がない（journal に記録できるようにしただけ）。ADR-100 決定4-a（give-up の
+**2026-08-24 追補: ADR-101 により文字消失そのものの修正を実装した。**
+ADR-100 決定3が却下した「提案2」は、完了通知・focus世代照合・送信後処理・
+順序保証が無い状態での retry だった。ADR-101 はこの前提条件を4ラウンドの
+premortemで詰め直し、以下を実装した。
+
+- Stage1: `send_chrome_gji_reinit_and_poll` に `ime_mode_focus_gen` 照合を追加し、
+  stale な IMC poll 結果で `ImeModeFsm` を更新しないようにした（ADR-100 決定5/F6）。
+- Stage2: give-up 由来の reinit 予約を `PendingGjiReinit { cold_seq, focus_gen, phase }`
+  に構造体化し、`Scheduled`/`Polling` を型で分けた。`Polling` は
+  `OutputActiveGuard` と `poll_token` を所有し、連続give-upで上書きされない。
+- Stage3: poll が `Confirmed` かつfocus世代一致の場合のみ、保存していた romaji を
+  `send_romaji_batched` / `send_romaji_as_tsf` の通常送信経路へ1回だけ戻す。
+  Unicode直接送信の新経路は作らない。retry後は `drain_output_post_send_effects`
+  を必ず実行し、その後に `pending_deferred` を処理する。
+- Round4 premortemで見つかった順序問題への対策として、retry付き `Polling` 中は
+  `flush_stale_deferred_vks_after_recovery` による `pending_deferred` 即時flushを
+  抑止し、`SuppressedExistingPoll` では `RAW_TSF_LITERAL` へ backspace cleanup を
+  残さない。
+
+関連ADR: [ADR-101](adr/101-bug74-giveup-retry-with-focus-guard.md)。
+
+**2026-08-24 追補2: 実コードに対する最終レビューで実装ミス2件を発見・修正した。**
+ADR-101の設計文書（Round4）に対するpremortemはブロッカー0件で収束したが、
+別のセッションが実際のコード diff（設計文書ではなく）を最終レビューしたところ、
+「設計は正しかったが実装が設計から逸脱している」ミスが2件見つかった:
+(1) focus stale判定が`flush_raw_tsf_literal_backspaces()`（実送信）より**後**に
+行われており、フォーカスが変わった後もbackspaceが新ウィンドウへ送られてから
+ようやくstale判定される状態だった、(2) `with_app`再入失敗（`None`）を`Stale`
+扱いにしており、フォーカスが変わっていなくても1tick再入しただけでretryと
+deferred救済の両方が失われる状態だった。両方とも実送信前のfocus世代照合
+（`discard_raw_recovery_if_focus_stale`）と、再入は`Continue`とする純粋関数
+（`gji_reinit_poll_tick_outcome`）で修正し、それぞれの回帰テストを追加した。
+詳細はADR-101「Premortemの経緯 > コードレビューによる実装ミスの訂正」節参照。
+**設計のpremortemだけでなく実装後のコードレビューも必須である**ことの実例。
+
+**未解決の残課題（ADR-100 決定4・ADR-101 を継承）:** ADR-101 は BUG-74 の
+文字消失そのものを修正したが、実機ソークは未実施である。ADR-100 決定4-a（give-up の
 実機発生頻度をアプリ別・`injection_mode` 別に数える）はまだ未実施であり、
 本件が「3件記録済みの実害」（BUG-16 追補3・BUG-38/39 追補2・BUG-45）に続く
 **4件目**の実機データになる。次に同種の報告が来た場合、案L が記録した
-romaji と本件のようなユーザー報告の突き合わせで、案J（Unicode 直接送信への
-退避）・案K（backspace も打たない）のどちらを優先的に検討すべきかを
-判断すること（ADR-100 決定4 参照）。cold=37/cold=38 双方の根本原因である
+romaji と ADR-101 のretryログを突き合わせ、Timeout/Stale/discard が実害として
+残っていないか判断すること（ADR-100 決定4 参照）。cold=37/cold=38 双方の根本原因である
 「送信前 F2/probe 待機の完全撤去」（2026-07-18、BUG-24 追補）自体も未変更
 のまま。
 
 **関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
 （`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`
 （`RawTsfLiteralRecovery`/`CompositionConfirmed`/`LiteralDetectNote` ハンドラ、
-`plan_skipped_record`）、`crates/awase-windows/src/platform.rs`
-（`flush_pending_literal_vk_as_aborted`）、`crates/awase-windows/src/journal_policy.rs`
-（テストヘルパー）。関連: BUG-27（give-up 分岐の「再送なし」設計の由来、
+`plan_skipped_record`、`send_chrome_gji_reinit_and_poll`、`gji_reinit_poll_tick_outcome`）、
+`crates/awase-windows/src/output/mod.rs`（`PendingGjiReinit`/`PendingGjiReinitPhase`、
+`schedule_pending_gji_reinit`、`start_pending_gji_reinit_after_raw_cleanup`、
+`discard_raw_recovery_if_focus_stale`、`flush_deferred_vks_after_gji_reinit_completion`）、
+`crates/awase-windows/src/platform.rs`（`flush_pending_literal_vk_as_aborted`、
+`complete_gji_reinit_retry`）、`crates/awase-windows/src/app/mod.rs`・
+`crates/awase-windows/src/runtime/message_handlers.rs`（`WM_GJI_REINIT_RETRY_COMPLETE`
+ハンドラ）、`crates/awase-windows/src/lib.rs`（`WM_GJI_REINIT_RETRY_COMPLETE`定数）、
+`crates/awase-windows/src/journal_policy.rs`（テストヘルパー）。関連: BUG-27（give-up 分岐の「再送なし」設計の由来、
 追補2で「常に再送」を撤回した教訓）、BUG-29（「次回同種の報告があれば
 give-up 分岐自体の見直しを検討する」という本件の予告）、BUG-33
 （`send_chrome_gji_reinit_and_poll` の導入・レート制限）、BUG-36（backspace
