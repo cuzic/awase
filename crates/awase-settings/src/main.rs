@@ -1786,8 +1786,21 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         // 面タブ
+        //
+        // LeftThumbShift/RightThumbShift（小指左親指シフト/小指右親指シフト、
+        // ADR-097）はUIタブから一時的に隠す。実機確認で、この面に何も
+        // 割り当てていない状態だと親指+小指+文字キーの同時打鍵でアルファベットが
+        // そのまま出力されてしまうことが分かり、既定でリリースできる完成度に
+        // 達していないと判断した。Face enum・YabLayout フィールド・.yab の
+        // パース/シリアライズ・エンジンの面解決ロジックは維持する
+        // （.yab を直接編集すればこれまで通り機能する。UI から選べなくする
+        // だけ）。ADR-097 の既定配列（やまぶきR互換の割り当て）が確定したら
+        // このフィルタを外す。
         ui.horizontal(|ui| {
-            for (face, label) in &FACES {
+            for (face, label) in FACES
+                .iter()
+                .filter(|(f, _)| !matches!(f, Face::LeftThumbShift | Face::RightThumbShift))
+            {
                 let is_active = self.layout_current_face == *face;
                 let btn_text = if is_active {
                     egui::RichText::new(*label).strong()
