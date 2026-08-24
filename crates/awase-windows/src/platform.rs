@@ -834,6 +834,17 @@ impl WindowsPlatform {
         self.drain_output_post_send_effects();
     }
 
+    /// `WM_GJI_REINIT_RETRY_COMPLETE` ハンドラから呼ぶ。ADR-101 決定4が要求する
+    /// 順序（`Confirmed` の場合）を、この関数の呼び出し順そのものとして固定する:
+    /// 1. `resend_gji_reinit_retry_romaji`（retry送信）
+    /// 2. `drain_output_post_send_effects`（送信後処理）
+    /// 3. `flush_deferred_vks_after_gji_reinit_completion`（deferred flush）
+    /// 4. `drop(completion.guard)`（関数末尾、`match` の外）
+    ///
+    /// `completion.guard` は成功/timeout/staleいずれの分岐でも関数末尾で1回だけ
+    /// dropする。Win32/`Platform`依存のためLinux上でこの呼び出し順自体をユニット
+    /// テストすることはできない（本関数の実装＝この doc コメントの記述が
+    /// SSOT。順序を変える場合はここも更新すること）。
     pub(crate) fn complete_gji_reinit_retry(
         &mut self,
         token: u32,

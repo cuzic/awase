@@ -67,6 +67,15 @@ pub(crate) enum ScheduleGjiReinitResult {
         poll_token: u32,
         age_ms: u64,
     },
+    /// 直前の give-up が予約した reinit がまだ `WM_DRAIN_OUTPUT_QUEUE` で
+    /// 実送信されていない（`Scheduled` のまま、guard もまだ無い）段階で、
+    /// 新しい give-up が来た。コードレビュー指摘: この段階を無条件上書き
+    /// すると、先行 give-up の romaji と `RAW_TSF_LITERAL`（単一グローバル
+    /// スロット）の backspace 数が後勝ちで消え、retry も cleanup も一切
+    /// 行われないまま文字が失われる — ADR-101 が直そうとしている症状その
+    /// ものが再演する。`Polling`（実送信済み・guard保持中）と同様、上書き
+    /// せず新しい give-up 側を抑止する。
+    SuppressedExistingScheduled { existing_cold_seq: Generation },
 }
 
 /// raw literal cleanup 後に pending reinit を開始した結果。
@@ -121,27 +130,21 @@ pub(crate) struct PendingGjiReinitCompletion {
 }
 
 #[derive(Debug)]
-struct PendingGjiReinitRetry {
-    romaji: String,
-    attempted: bool,
-}
-
-impl PendingGjiReinitRetry {
-    fn new(romaji: String) -> Self {
-        Self {
-            romaji,
-            attempted: false,
-        }
-    }
-}
-
-#[derive(Debug)]
 enum PendingGjiReinitPhase {
     Scheduled {
-        retry: Option<PendingGjiReinitRetry>,
+        /// give-up 検出時点で確保した retry 対象 romaji（`None` = give-up 由来
+        /// ではない、または tombstone により retry 権を消費済み）。
+        ///
+        /// コードレビュー指摘(simplify角度): 以前は `PendingGjiReinitRetry {
+        /// romaji, attempted }` という専用構造体で保持していたが、
+        /// `attempted` を観測できる経路が実際には存在しなかった
+        /// （`take_gji_reinit_completion` は `pending_gji_reinit` ごと
+        /// `take()` して消費するため、同じ `retry` に2回アクセスすることが
+        /// 構造的にない）。`Option<String>` へ単純化した。
+        retry: Option<String>,
     },
     Polling {
-        retry: Option<PendingGjiReinitRetry>,
+        retry: Option<String>,
         guard: OutputActiveGuard,
         poll_token: u32,
         started_ms: u64,
@@ -390,41 +393,47 @@ impl Output {
     ) -> ScheduleGjiReinitResult {
         let mut pending = self.pending_gji_reinit.borrow_mut();
         if let Some(existing) = pending.as_ref() {
-            if let PendingGjiReinitPhase::Polling {
-                poll_token,
-                started_ms,
-                ..
-            } = existing.phase
-            {
-                let age_ms = crate::hook::current_tick_ms().saturating_sub(started_ms);
-                log::warn!(
-                    "[chrome-reinit-retry] suppress give-up while poll in flight: \
-                     new_cold={} existing_cold={} token={} age_ms={} consecutive_before={}",
-                    cold_seq.value(),
-                    existing.cold_seq.value(),
+            match existing.phase {
+                PendingGjiReinitPhase::Polling {
                     poll_token,
-                    age_ms,
-                    consecutive_before,
-                );
-                return ScheduleGjiReinitResult::SuppressedExistingPoll {
-                    existing_cold_seq: existing.cold_seq,
-                    poll_token,
-                    age_ms,
-                };
+                    started_ms,
+                    ..
+                } => {
+                    let age_ms = crate::hook::current_tick_ms().saturating_sub(started_ms);
+                    log::warn!(
+                        "[chrome-reinit-retry] suppress give-up while poll in flight: \
+                         new_cold={} existing_cold={} token={} age_ms={} consecutive_before={}",
+                        cold_seq.value(),
+                        existing.cold_seq.value(),
+                        poll_token,
+                        age_ms,
+                        consecutive_before,
+                    );
+                    return ScheduleGjiReinitResult::SuppressedExistingPoll {
+                        existing_cold_seq: existing.cold_seq,
+                        poll_token,
+                        age_ms,
+                    };
+                }
+                PendingGjiReinitPhase::Scheduled { .. } => {
+                    // コードレビュー指摘: ここを無条件上書きすると、まだ実送信前の
+                    // 先行 give-up の romaji と RAW_TSF_LITERAL の backspace 数が
+                    // 後勝ちで失われ、retry も cleanup も一切行われないまま文字が
+                    // 消える（ADR-101 が直そうとしている症状そのものの再演）。
+                    // Polling と同様、上書きせず新しい give-up 側を抑止する。
+                    log::warn!(
+                        "[chrome-reinit-retry] suppress give-up while earlier reinit still \
+                         scheduled (not yet flushed): new_cold={} existing_cold={} \
+                         consecutive_before={}",
+                        cold_seq.value(),
+                        existing.cold_seq.value(),
+                        consecutive_before,
+                    );
+                    return ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                        existing_cold_seq: existing.cold_seq,
+                    };
+                }
             }
-        }
-        if let Some(existing) = pending.as_ref() {
-            log::warn!(
-                "[chrome-reinit-retry] overwrite scheduled reinit: old_cold={} old_retry={} \
-                 new_cold={} new_retry={}",
-                existing.cold_seq.value(),
-                matches!(
-                    existing.phase,
-                    PendingGjiReinitPhase::Scheduled { retry: Some(_) }
-                ),
-                cold_seq.value(),
-                retry_romaji.is_some(),
-            );
         }
         let retry = retry_romaji.and_then(|romaji| {
             let duplicate = self
@@ -442,7 +451,7 @@ impl Output {
                 );
                 None
             } else {
-                Some(PendingGjiReinitRetry::new(romaji))
+                Some(romaji)
             }
         });
         *pending = Some(PendingGjiReinit {
@@ -556,18 +565,14 @@ impl Output {
             });
             return None;
         }
-        let retry_romaji = retry.and_then(|mut retry| {
-            if retry.attempted {
-                None
-            } else {
-                retry.attempted = true;
-                Some(retry.romaji)
-            }
-        });
+        // `pending_slot.take()` でこの `retry` を所有する `pending` ごと
+        // 消費済みなので、そのまま Completion へ渡してよい（同じ retry に
+        // 2回アクセスする経路は無い。以前の `attempted` フラグはこの不変条件
+        // を守るためだけの死んだガードだった）。
         Some(PendingGjiReinitCompletion {
             cold_seq: pending.cold_seq,
             focus_gen: pending.focus_gen,
-            retry_romaji,
+            retry_romaji: retry,
             guard,
         })
     }
@@ -1452,19 +1457,28 @@ impl Output {
             return;
         }
         log::debug!("[raw-tsf-literal] re-sending raw TSF literal romaji={romaji:?}");
-        // Bypass (Chrome) では send_romaji_as_tsf が GJI probe (TransmitTarget::Tsf) を
-        // 起動するが、Chrome は gate=Bypass のため dispatch_probe_actions でスキップされる。
-        // Chrome バッチパス (TransmitTarget::Chrome) を使うことで正しく再送できる。
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
-            self.send_romaji_batched(&romaji);
-        } else {
-            self.send_romaji_as_tsf(&romaji);
-        }
+        self.send_romaji_dispatching_on_gate(&romaji);
     }
 
+    /// give-up 後、reinit の IMC poll が Hiragana 復帰を確認できた場合に限り、
+    /// 保存しておいた romaji を一度だけ通常送信経路へ戻す（ADR-101）。
     pub(crate) fn resend_gji_reinit_retry_romaji(&self, romaji: &str) {
         log::warn!("[chrome-reinit-retry] retry romaji via normal path: {romaji:?}");
-        if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
+        self.send_romaji_dispatching_on_gate(romaji);
+    }
+
+    /// TSF gate の状態に応じて `romaji` を通常送信経路へ振り分ける。
+    ///
+    /// Bypass (Chrome) では `send_romaji_as_tsf` が GJI probe (`TransmitTarget::Tsf`) を
+    /// 起動するが、Chrome は gate=Bypass のため `dispatch_probe_actions` でスキップされる。
+    /// Chrome バッチパス (`TransmitTarget::Chrome`) を使うことで正しく送信できる。
+    /// `flush_raw_tsf_literal_romaji`（consecutive==0 の通常リカバリ）と
+    /// `resend_gji_reinit_retry_romaji`（give-up 後、reinit confirmed 後の retry、
+    /// ADR-101）が共有する — コードレビュー指摘: 以前は同じ分岐が2箇所に
+    /// 手書きで重複していた。
+    fn send_romaji_dispatching_on_gate(&self, romaji: &str) {
+        use probe_io::ProbeIo as _;
+        if self.gate_is_bypass() {
             self.send_romaji_batched(romaji);
         } else {
             self.send_romaji_as_tsf(romaji);
@@ -1575,36 +1589,43 @@ impl Output {
     /// ADR-079 Stage2（未実装）のスコープであり、本 fix は「取り残されたまま
     /// 順序が入れ替わる」実害の解消に限定する。
     fn flush_stale_deferred_vks_after_recovery(&self) {
-        use probe_io::ProbeIo as _;
         if self.has_polling_gji_reinit_retry() {
             log::debug!(
                 "[raw-tsf-literal] stale deferred flush postponed: GJI reinit retry polling"
             );
             return;
         }
-        let Some(vks) = self.warmup_coord.take_pending_deferred_if_probe_idle() else {
-            return;
-        };
-        log::debug!(
-            "[raw-tsf-literal] give-up 後に取り残されていた deferred {} VK(s) を flush",
-            vks.len()
-        );
-        let marker = if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
-            VkMarker::InjectedWithScan
-        } else {
-            VkMarker::Tsf
-        };
-        self.send_deferred_vks(&vks, marker);
+        let len = self.flush_pending_deferred_vks();
+        if len > 0 {
+            log::debug!(
+                "[raw-tsf-literal] give-up 後に取り残されていた deferred {len} VK(s) を flush"
+            );
+        }
     }
 
     pub(crate) fn flush_deferred_vks_after_gji_reinit_completion(&self) -> usize {
+        let len = self.flush_pending_deferred_vks();
+        if len > 0 {
+            log::debug!("[chrome-reinit-retry] completion後に deferred {len} VK(s) を flush");
+        }
+        len
+    }
+
+    /// `warmup_coord.pending_deferred`（probe実行中に届いた後続キーの退避キュー）
+    /// を条件付きで取り出し、TSF gate状態に応じた marker で送信する共通コア。
+    ///
+    /// `flush_stale_deferred_vks_after_recovery`（raw recovery直後、`Polling`中は
+    /// 呼び出し元が事前ガードする）と `flush_deferred_vks_after_gji_reinit_completion`
+    /// （retry completion後）が共有する — コードレビュー指摘: 以前は
+    /// take/marker選択/送信の並びが2箇所に手書きで重複していた。事前ガード・
+    /// ログ文言は呼び出し元ごとに異なるためここには含めない。
+    fn flush_pending_deferred_vks(&self) -> usize {
         use probe_io::ProbeIo as _;
         let Some(vks) = self.warmup_coord.take_pending_deferred_if_probe_idle() else {
             return 0;
         };
         let len = vks.len();
-        log::debug!("[chrome-reinit-retry] completion後に deferred {len} VK(s) を flush");
-        let marker = if self.tsf_gate.state() == crate::tsf::TsfGateState::Bypass {
+        let marker = if self.gate_is_bypass() {
             VkMarker::InjectedWithScan
         } else {
             VkMarker::Tsf
@@ -1726,38 +1747,14 @@ mod tests {
             .should_flush_stale_deferred_after_raw_recovery());
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum CompletionOrderStep {
-        Retry,
-        PostSendEffects,
-        Deferred,
-        GuardDrop,
-    }
-
-    fn confirmed_retry_completion_order() -> Vec<CompletionOrderStep> {
-        vec![
-            CompletionOrderStep::Retry,
-            CompletionOrderStep::PostSendEffects,
-            CompletionOrderStep::Deferred,
-            CompletionOrderStep::GuardDrop,
-        ]
-    }
-
-    #[test]
-    fn completion_confirmed_orders_retry_post_send_effects_deferred_then_guard_drop() {
-        assert_eq!(
-            confirmed_retry_completion_order(),
-            vec![
-                CompletionOrderStep::Retry,
-                CompletionOrderStep::PostSendEffects,
-                CompletionOrderStep::Deferred,
-                CompletionOrderStep::GuardDrop,
-            ],
-            "Platform::complete_gji_reinit_retry は retry送信直後に \
-             drain_output_post_send_effects を走らせ、その後 deferred を処理し、最後に \
-             OutputActiveGuard をdropする順序で実装する"
-        );
-    }
+    // コードレビュー指摘(simplify角度): 以前ここにあった
+    // `completion_confirmed_orders_retry_post_send_effects_deferred_then_guard_drop`
+    // は、ハードコードした `Vec` リテラルが自分自身と等しいことだけを検証する
+    // トートロジーで、`Platform::complete_gji_reinit_retry` を一切実行しない
+    // ため、実装の呼び出し順を変えても壊れなかった（削除済み）。
+    // 呼び出し順の規約は `Platform::complete_gji_reinit_retry` の doc コメント
+    // （SSOT）に移した。この関数はWin32/`Platform`依存のためLinux上でのユニット
+    // テストが非現実的（既存の `tsf`/`platform` 系コードと同じ制約）。
 
     // ── ConvModeAuthority 不変条件テスト ─────────────────────────────────────────
 

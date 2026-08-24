@@ -9697,7 +9697,19 @@ deferred救済の両方が失われる状態だった。両方とも実送信前
 romaji と ADR-101 のretryログを突き合わせ、Timeout/Stale/discard が実害として
 残っていないか判断すること（ADR-100 決定4 参照）。cold=37/cold=38 双方の根本原因である
 「送信前 F2/probe 待機の完全撤去」（2026-07-18、BUG-24 追補）自体も未変更
-のまま。
+のまま。**`SuppressedExistingPoll`（既存retry pollが進行中に別のgive-upが来た
+場合）では、その2件目のgive-upのbackspace cleanup自体を一切送らない設計
+（ADR-101決定5）——新しいliteral残骸が画面に残る可能性はADR-101本文で
+意図的に受容したトレードオフとして明記済みだが、この残課題節への転記が
+漏れていたため追記する（コードレビュー指摘）。また`discard_raw_recovery_
+if_focus_stale`が対象とするのはgive-up+reinit経路のみで、`consecutive==0`
+（初回疑い、reinit未予約）のraw literal cleanupがfocus変更後に別ウィンドウへ
+送られるリスクはこのPR以前から存在し今回も未修正のまま（BUG-74のスコープ外、
+コードレビュー指摘）。**MS-IME側の`start_ms_ime_ready_poll`にも、ADR-101で
+GJI側を修正したのと同型の`with_app`再入バグ(`.unwrap_or(MsImePollStatus::
+Stale)`)が本PR以前から残っている**(BUG-13領域、コードレビュー指摘、未修正・
+未観測)。次にMS-IME側でIMC確認ゲートが理由なく固着する系の症状が報告されたら
+ここから着手すること。
 
 **関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
 （`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`

@@ -285,7 +285,7 @@ impl ProbeIo for Output {
                     );
                 }
                 match gji_reinit_poll_tick_outcome(status) {
-                    GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Confirmed) => {
+                    GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Confirmed) => {
                         final_status = GjiReinitPollStatus::Confirmed;
                         log::debug!(
                             "[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了",
@@ -293,7 +293,7 @@ impl ProbeIo for Output {
                         );
                         break;
                     }
-                    GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Stale) => {
+                    GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Stale) => {
                         final_status = GjiReinitPollStatus::Stale;
                         log::debug!(
                             "[chrome-reinit] cold={cold_seq} stale focus_gen={} → ポーリング終了",
@@ -302,8 +302,7 @@ impl ProbeIo for Output {
                         );
                         break;
                     }
-                    GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Timeout)
-                    | GjiReinitPollTickOutcome::Continue => {}
+                    GjiReinitPollTickOutcome::Continue => {}
                 }
             }
             log::info!(
@@ -349,13 +348,25 @@ fn fmt_conv(conv: Option<u32>) -> String {
     conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
 }
 
+/// `gji_reinit_poll_tick_outcome` が確定させうる終端状態。`GjiReinitPollStatus`
+/// のうち `Timeout` は「まだ確定しない」を表す非終端値なのでここには含まれない
+/// ——コードレビュー指摘(simplify角度): 以前は `Break(GjiReinitPollStatus)` と
+/// 全3variantを許す型だったため、呼び出し側に構造的に到達不能な
+/// `Break(Timeout)` マッチアームが残っていた。型を絞ることでその不能アーム
+/// 自体を消す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GjiReinitPollTerminalStatus {
+    Confirmed,
+    Stale,
+}
+
 /// `send_chrome_gji_reinit_and_poll` の1 tick 分の判定結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GjiReinitPollTickOutcome {
     /// この tick では確定しない。次 tick へ継続する。
     Continue,
-    /// ポーリングを終了し、この状態を最終結果として確定する。
-    Break(GjiReinitPollStatus),
+    /// ポーリングを終了し、この終端状態を最終結果として確定する。
+    Done(GjiReinitPollTerminalStatus),
 }
 
 /// `with_app` クロージャの1 tick 分の観測結果から、ポーリングを継続すべきか
@@ -372,10 +383,10 @@ pub(crate) const fn gji_reinit_poll_tick_outcome(
 ) -> GjiReinitPollTickOutcome {
     match observed {
         Some(GjiReinitPollStatus::Confirmed) => {
-            GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Confirmed)
+            GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Confirmed)
         }
         Some(GjiReinitPollStatus::Stale) => {
-            GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Stale)
+            GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Stale)
         }
         Some(GjiReinitPollStatus::Timeout) | None => GjiReinitPollTickOutcome::Continue,
     }
@@ -816,6 +827,18 @@ where
                                 consecutive,
                             );
                         }
+                        ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                            existing_cold_seq,
+                        } => {
+                            log::warn!(
+                                "[raw-tsf-literal] suppress raw cleanup: earlier reinit still \
+                                 scheduled (not yet flushed): new_cold={} existing_cold={} \
+                                 consecutive_before={}",
+                                cold_seq.value(),
+                                existing_cold_seq.value(),
+                                consecutive,
+                            );
+                        }
                     }
                 }
                 io.mark_cold_raw_tsf();
@@ -909,7 +932,7 @@ mod tests {
     fn gji_reinit_poll_tick_outcome_confirmed_breaks() {
         assert_eq!(
             gji_reinit_poll_tick_outcome(Some(GjiReinitPollStatus::Confirmed)),
-            GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Confirmed)
+            GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Confirmed)
         );
     }
 
@@ -917,7 +940,7 @@ mod tests {
     fn gji_reinit_poll_tick_outcome_stale_breaks() {
         assert_eq!(
             gji_reinit_poll_tick_outcome(Some(GjiReinitPollStatus::Stale)),
-            GjiReinitPollTickOutcome::Break(GjiReinitPollStatus::Stale)
+            GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Stale)
         );
     }
 
@@ -1564,5 +1587,79 @@ mod tests {
             io.mark_cold_raw_tsf_called.get(),
             "suppressedでもgive-up観測自体はcold markとして残す"
         );
+    }
+
+    #[test]
+    fn raw_tsf_literal_recovery_suppressed_existing_scheduled_does_not_set_raw_literal() {
+        // コードレビュー指摘(Angle A #1): 先行 give-up がまだ WM_DRAIN_OUTPUT_QUEUE で
+        // flush されておらず Scheduled のまま（poll未開始・guardなし）のうちに、
+        // 別の give-up が来た場合。schedule_pending_gji_reinit がこれを無条件
+        // 上書きすると、先行 give-up の romaji と RAW_TSF_LITERAL の backspace 数が
+        // 後勝ちで消え、retry も cleanup も行われないまま文字が失われる
+        // （ADR-101 が直そうとしている症状そのものの再演）。Polling と同じく
+        // 抑止すべきで、上書きしてはいけない。
+        let io = FakeProbeIo {
+            consecutive: 1,
+            schedule_result: ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                existing_cold_seq: Generation::INITIAL,
+            },
+            ..Default::default()
+        };
+        let mut machine = make_gji_machine();
+        let actions = vec![
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq: Generation::INITIAL,
+                backs: 2,
+                romaji: "i".to_string(),
+                escape_composition: false,
+                facts: test_facts(LiteralVerdict::SuspectedLiteral),
+            },
+            ProbeAction::Done,
+        ];
+        let mut trace = LiteralDetectTrace::default();
+        let result = dispatch_probe_actions(&mut machine, actions, &io, &mut trace);
+        assert!(result.is_done());
+        assert_eq!(io.gji_reinit_scheduled_count.get(), 1);
+        assert!(
+            !io.set_raw_literal_called.get(),
+            "先行 give-up が Scheduled のまま抑止された場合も、後続 give-up の \
+             backspace cleanupをRAW_TSF_LITERALへ残して先行分を巻き込んではいけない"
+        );
+        assert!(io.mark_cold_raw_tsf_called.get());
+    }
+
+    #[test]
+    fn schedule_pending_gji_reinit_does_not_overwrite_scheduled_phase() {
+        use crate::output::PendingGjiReinitPhase;
+        let o = Output::new();
+        o.ime_mode_focus_gen.set(1);
+        let first = o.schedule_pending_gji_reinit(Generation::INITIAL, 1, Some("ko".to_owned()), 0);
+        assert_eq!(first, ScheduleGjiReinitResult::Scheduled);
+
+        let second = o.schedule_pending_gji_reinit(Generation::new(2), 1, Some("i".to_owned()), 1);
+        assert_eq!(
+            second,
+            ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                existing_cold_seq: Generation::INITIAL,
+            },
+            "Scheduledフェーズのpendingは上書きせず抑止すべき（Angle A #1回帰テスト）"
+        );
+
+        // 先行 give-up("ko")の予約が生き残っていることを確認する。
+        let pending = o.pending_gji_reinit.borrow();
+        let pending = pending
+            .as_ref()
+            .expect("先行 give-up の予約が残っているべき");
+        assert_eq!(pending.cold_seq, Generation::INITIAL);
+        match &pending.phase {
+            PendingGjiReinitPhase::Scheduled { retry } => {
+                assert_eq!(
+                    retry.as_deref(),
+                    Some("ko"),
+                    "先行 give-up の retry romaji が残っているべき"
+                );
+            }
+            other => panic!("Scheduled のままであるべき: {other:?}"),
+        }
     }
 }
