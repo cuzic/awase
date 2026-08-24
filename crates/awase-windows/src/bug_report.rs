@@ -128,6 +128,23 @@ pub struct BugReportStateSnapshot {
     /// `None` なら in-flight なし。長時間 `Some` が続く場合は完了取りこぼし
     /// （旧: 永久ラッチのバグ、レビューで修正済みだが再発検知用に残す）を疑う。
     pub idle_conv_check_in_flight_ms: Option<u64>,
+    /// 「長時間使うと重くなる」報告の切り分け用に追加したプロセスリソース
+    /// スナップショット。単発の報告だけでは判断できないが、複数の報告を
+    /// `process_uptime_secs` でソートして並べれば、稼働時間とともに
+    /// `working_set_bytes`/`handle_count`/`gdi_object_count`/`user_object_count`
+    /// のどれが増加傾向にあるか（メモリリークかハンドル/GDIオブジェクトの
+    /// リークか、あるいはどれも増えていないか）を後から確認できる。
+    /// プロセス起動からの経過秒数（`GetProcessTimes` の creation time 基準）。
+    pub process_uptime_secs: u64,
+    /// ワーキングセットサイズ（`GetProcessMemoryInfo` の `WorkingSetSize`、バイト）。
+    pub working_set_bytes: u64,
+    /// プロセスが保持しているカーネルオブジェクトハンドル数
+    /// （`GetProcessHandleCount`）。
+    pub handle_count: u32,
+    /// プロセスが保持している GDI オブジェクト数（`GetGuiResources(GR_GDIOBJECTS)`）。
+    pub gdi_object_count: u32,
+    /// プロセスが保持している USER オブジェクト数（`GetGuiResources(GR_USEROBJECTS)`）。
+    pub user_object_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -499,6 +516,11 @@ mod tests {
             send_health_consecutive_slow: 0,
             send_health_breaker_tripped: false,
             idle_conv_check_in_flight_ms: None,
+            process_uptime_secs: 3_600,
+            working_set_bytes: 42_000_000,
+            handle_count: 321,
+            gdi_object_count: 45,
+            user_object_count: 67,
         }
     }
 
@@ -674,6 +696,11 @@ mod tests {
         assert!(json.contains("\"send_health_last_elapsed_ms\": 12"));
         assert!(json.contains("\"send_health_breaker_tripped\": false"));
         assert!(json.contains("\"idle_conv_check_in_flight_ms\": null"));
+        assert!(json.contains("\"process_uptime_secs\": 3600"));
+        assert!(json.contains("\"working_set_bytes\": 42000000"));
+        assert!(json.contains("\"handle_count\": 321"));
+        assert!(json.contains("\"gdi_object_count\": 45"));
+        assert!(json.contains("\"user_object_count\": 67"));
         assert!(json.contains("\"attach_config\": true"));
         assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
         assert!(json.contains("\"attach_layout\": true"));

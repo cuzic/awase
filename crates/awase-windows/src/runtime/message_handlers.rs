@@ -766,6 +766,7 @@ fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
 fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReportDiagnostics {
     let (is_japanese, lang_id) = crate::ime::keyboard_layout_info();
     let now_ms = hook::current_tick_ms();
+    let resources = process_resource_snapshot();
     let state_snapshot = crate::bug_report::BugReportStateSnapshot {
         desired_open: app.platform_state.ime.desired_open(),
         effective_open: app.platform_state.ime.effective_open(),
@@ -783,6 +784,11 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
             .gate
             .idle_conv_check_in_flight_since_ms
             .map(|since| now_ms.saturating_sub(since)),
+        process_uptime_secs: resources.process_uptime_secs,
+        working_set_bytes: resources.working_set_bytes,
+        handle_count: resources.handle_count,
+        gdi_object_count: resources.gdi_object_count,
+        user_object_count: resources.user_object_count,
     };
     let (config_toml, layout_yab) =
         crate::app::read_bug_report_attachments(app.platform.tray.current_layout_name());
@@ -794,6 +800,83 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
         state_snapshot: Some(state_snapshot),
         config_toml,
         layout_yab,
+    }
+}
+
+/// 「長時間使うと重くなる」報告の切り分け用プロセスリソーススナップショット
+/// （BugReportStateSnapshot 参照）。
+struct ProcessResourceSnapshot {
+    process_uptime_secs: u64,
+    working_set_bytes: u64,
+    handle_count: u32,
+    gdi_object_count: u32,
+    user_object_count: u32,
+}
+
+fn filetime_to_100ns_units(ft: windows::Win32::Foundation::FILETIME) -> u64 {
+    (u64::from(ft.dwHighDateTime) << 32) | u64::from(ft.dwLowDateTime)
+}
+
+fn process_resource_snapshot() -> ProcessResourceSnapshot {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, GetGuiResources, GetProcessHandleCount, GetProcessTimes, GR_GDIOBJECTS,
+        GR_USEROBJECTS,
+    };
+
+    // SAFETY: すべて自プロセスの疑似ハンドル（`GetCurrentProcess()`、クローズ不要）
+    // に対する読み取り専用の Win32 呼び出し。out 引数はすべてスタック上のロー
+    // カル変数を指し、呼び出し後に読むだけで所有権の受け渡しは発生しない。
+    unsafe {
+        let process = GetCurrentProcess();
+
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let process_uptime_secs = if GetProcessTimes(
+            process,
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+        .is_ok()
+        {
+            let now = filetime_to_100ns_units(GetSystemTimeAsFileTime());
+            let created = filetime_to_100ns_units(creation);
+            now.saturating_sub(created) / 10_000_000
+        } else {
+            0
+        };
+
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let working_set_bytes =
+            if GetProcessMemoryInfo(process, &raw mut counters, counters.cb).is_ok() {
+                counters.WorkingSetSize as u64
+            } else {
+                0
+            };
+
+        let mut handle_count = 0_u32;
+        let handle_count = if GetProcessHandleCount(process, &raw mut handle_count).is_ok() {
+            handle_count
+        } else {
+            0
+        };
+
+        ProcessResourceSnapshot {
+            process_uptime_secs,
+            working_set_bytes,
+            handle_count,
+            gdi_object_count: GetGuiResources(process, GR_GDIOBJECTS),
+            user_object_count: GetGuiResources(process, GR_USEROBJECTS),
+        }
     }
 }
 
