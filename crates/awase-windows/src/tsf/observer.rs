@@ -123,6 +123,27 @@ pub struct TsfObservations {
     /// タイミングのみを記録する。historydb 更新タイミングの観測に使う。
     pub(super) gji_last_write_ms: AtomicU64,
 
+    /// GJI プロセスの累積 `WriteOperationCount`（書き込み"回数"、バイト量ではない）。
+    ///
+    /// `gji_write_bytes`（バイト量、350B 閾値で cold/warm を区別する既存の確認シグナル）
+    /// とは別軸。子音単体（例: "t"）の per-VK confirm は書き込みバイト量が閾値に
+    /// 届かないことがある（BUG-27 追補5）が、書き込み"回数"は量に依存しないため、
+    /// より粒度の細かい確認シグナルになりうる。BUG-75 の対話設計で見つかった、
+    /// `GetProcessIoCounters`（既存の public Win32 API、追加のプローブ機構は不要）が
+    /// 計算していたのに使われていなかったフィールド。**診断専用（journal 記録のみ）
+    /// であり、判定ロジックには一切使わない**——実機データが集まってから、既存の
+    /// write_bytes 閾値の補完材料として採用するかを別途判断する。
+    pub(super) gji_write_ops: AtomicU64,
+
+    /// GJI プロセスの累積 `ReadOperationCount`。[`Self::gji_write_ops`] と同じ理由で
+    /// 診断専用に記録する（大きな `ReadTransferCount` は cold-start の辞書再読込を
+    /// 示唆することが `gji_monitor.rs` の既存ログで分かっている）。
+    pub(super) gji_read_ops: AtomicU64,
+
+    /// GJI プロセスの累積 `OtherOperationCount`（パイプ・セクション経由 IPC 等が
+    /// 計上される）。[`Self::gji_write_ops`] と同じ理由で診断専用に記録する。
+    pub(super) gji_other_ops: AtomicU64,
+
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
@@ -224,6 +245,9 @@ impl TsfObservations {
             gji_last_io_ms: AtomicU64::new(0),
             gji_write_bytes: AtomicU64::new(0),
             gji_last_write_ms: AtomicU64::new(0),
+            gji_write_ops: AtomicU64::new(0),
+            gji_read_ops: AtomicU64::new(0),
+            gji_other_ops: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
             literal_session_confirmed_gen: AtomicU64::new(0),
@@ -376,6 +400,24 @@ pub(crate) fn gji_last_write_ms() -> u64 {
 /// composition 確認シグナルとして使用する（BUG-30 で TSF/Chrome 共通化）。
 pub(crate) fn gji_write_bytes() -> u64 {
     TSF_OBS.gji_write_bytes.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 `WriteOperationCount`（書き込み回数）を返す。0 = 未観測。live 読み取り。
+///
+/// 診断専用（BUG-75）。[`gji_write_bytes`] と違い量に依存しない書き込み"回数"のシグナル。
+pub(crate) fn gji_write_ops() -> u64 {
+    TSF_OBS.gji_write_ops.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 `ReadOperationCount` を返す。0 = 未観測。live 読み取り。診断専用（BUG-75）。
+pub(crate) fn gji_read_ops() -> u64 {
+    TSF_OBS.gji_read_ops.load(Ordering::Relaxed)
+}
+
+/// GJI プロセスの累積 `OtherOperationCount`（パイプ・セクション経由 IPC 等）を返す。
+/// 0 = 未観測。live 読み取り。診断専用（BUG-75）。
+pub(crate) fn gji_other_ops() -> u64 {
+    TSF_OBS.gji_other_ops.load(Ordering::Relaxed)
 }
 
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。

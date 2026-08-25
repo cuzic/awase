@@ -9975,12 +9975,65 @@ backspace を外したが、**再送側の同じ「着弾していない」仮�
 書き込み系ツール（Edit/Write/Bash の push・merge 操作）を渡さない、
 または明示的な承認ゲートを挟むべきという教訓を得た。
 
+### 追補2（2026-08-25）: 診断専用フィールドを journal に追加（挙動変更ゼロ）
+
+上記の方針に従い、`DetectEvidence`（`tsf/literal_facts.rs`）へ以下を追加した。
+**いずれも判定ロジック（`check_now`/`visible_fencing_verdict`/回収処理）からは
+一切参照されない、journal への記録専用フィールド**であり、本追補による
+挙動変更はゼロ。
+
+- `write_ops_delta`/`read_ops_delta`/`other_ops_delta`: `GetProcessIoCounters`
+  （既存の public Win32 API、`gji_monitor.rs` が既に10msごとにサンプリング
+  している）の `WriteOperationCount`/`ReadOperationCount`/`OtherOperationCount`
+  差分。これまで `gji_monitor.rs::GjiIoDelta` が計算していたのに `TSF_OBS` へ
+  伝播しておらず破棄されていたフィールド。`write_delta`（バイト量、350B閾値）
+  と違い書き込み"回数"は量に依存しないため、子音単体の per-VK confirm
+  （write_delta が閾値未達になりうる、BUG-27 追補5）でもより粒度の細かい
+  確認シグナルになりうるかを実機データで検証する。
+- `last_write_ms`/`epoch_send_ms`/`deadline_ms`: grace延長案
+  （`EPOCH_FENCE_GRACE_MS` を実測ベースで延ばす）の判断材料。生の値をそのまま
+  記録することで、特定の派生指標（過去2回失敗した `write_freshness_delta_ms`
+  や `write_arrival_after_verdict_ms` 等）を決め打ちせず、後から必要な指標を
+  計算できるようにした。
+- `grace_hold_ms`: SHOW-only confirm の猶予を実際にどれだけ保持してから
+  verdict が確定したか。`None` = 猶予自体に入らなかった。
+- `literal_session_confirmed`: 同一 `cold_seq`（コンポジションセッション）内で
+  他のモーラが既に confirm 済みだったか。「session内で最初のモーラだけなら
+  ESC 先行が安全」という案（BUG-45 型の推測より安全、awase 自身が既に持つ
+  状態を使うだけで新しい観測を増やさない）の判断材料。BUG-39 の既知の
+  不正確さ（フォーカス変更等をまたいで stale になりうる）をそのまま引き継ぐ。
+
+**意図的に見送った項目**: `GCS_COMPREADSTR` 等の IMM32 composition 直接読み取り
+（Track A の検証用診断ログ）は、次の2点が未解決のため本追補には含めていない。
+①`probe_fsm.rs`/`literal_detect_fsm.rs` に hwnd が存在せず、`TsfEnvSnapshot`
+への追加配線が必要（コルーチン内での live 読みは「読み取りタイミング・
+対象ウィンドウのズレ」を繰り返し起こしてきたリポジトリの教訓に反するため
+避けるべき）。②cross-process な `ImmGetContext`/`ImmGetCompositionStringW`
+を verdict パス（同期）に置くか、既存の async+timeout 様式
+（`get_ime_conversion_mode_raw_timeout_async` 等）に合わせるかが未決着で、
+後者は「await すると回収送出が最大数十ms遅れる」という新たなトレードオフを
+持ち込む。この2点の設計が固まってから別途対応する。
+
+**テスト:** `tsf/probe.rs` に配線テスト2本を追加
+（`evidence_now_reports_io_ops_deltas_independent_of_write_bytes_threshold`・
+`evidence_now_reports_literal_session_confirmed_matching_current_cold_seq`）。
+`tsf/probe.rs` のテストモジュールは `#[cfg(test)] #[cfg(windows)]`
+（`tsf/mod.rs` で `probe` モジュール自体が `#[cfg(windows)]`）のため
+**Linux では実行不可**——`cargo xwin check --tests`/`cargo xwin clippy -- -D
+warnings`（いずれも self-hosted windows-build ジョブと同一コマンド）で
+コンパイルのみ確認済み、実行は次回 Windows 実機セッションに委ねる。
+`cargo test -p awase-windows --lib`（Linux）は本追補の影響を受けない
+431件が引き続き green（`architecture_guard`/`golden_scenarios`/
+`layer_boundary_guard` も同様）。
+
 **関連:** BUG-74（同じ「送信前 F2/probe 待機省略」上流・別の下流分岐）、
 BUG-35（epoch fencing・`consecutive` リセット条件の導入元）、BUG-33 追補3・4
-（`is_stale` で backspace を外した経緯）、BUG-45（belief と actual
-composition の乖離という同型の構造的制約）、ADR-079（epoch fencing）、
+（`is_stale` で backspace を外した経緯）、BUG-27 追補5（write-bytes 閾値が
+子音単体を見落とす既知の限界）、BUG-39（`literal_session_confirmed_gen` の
+世代付けとその既知の不正確さ）、BUG-45（belief と actual composition の
+乖離という同型の構造的制約）、ADR-079（epoch fencing）、
 [ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) 決定3 案L（観測フェーズの
 前例）、[docs/bug-reports-triage.md](../bug-reports-triage.md)、
 [bug-report-fetch skill](../.claude/skills/bug-report-fetch/SKILL.md)。
-本バグの恒久対策は次セッション以降、診断ログの実機データが集まってから
+本バグの恒久対策は次セッション以降、この診断ログの実機データが集まってから
 着手する。
