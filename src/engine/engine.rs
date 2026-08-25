@@ -372,6 +372,19 @@ impl Engine {
         if is_key_down && decision.is_consumed() {
             self.lifecycle.on_key_down_consumed(&event);
         }
+
+        // ソロ連打によるエンジン OFF トリガー（`on_timeout` と同じ扱いをここにも必要）。
+        // `engine_off_solo_repeat` を親指キー以外の VK（既定 VK_INSERT）に割り当てた
+        // 場合、`handle_bypass` は該当キーの KeyDown を同期的に処理する時点で
+        // `engine_off_requested` を立てる。この VK にはタイマーが紐付かないため
+        // `on_timeout` は永久に呼ばれず、drain をそちらだけに頼ると 5 連打しても
+        // 何も起きない（2026-08-26 コードレビュー指摘、report1）。
+        if self.adapter.take_engine_off_requested() {
+            log::info!("Engine OFF triggered by consecutive solo key presses");
+            self.solo_off_notify = true;
+            return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
+        }
+
         decision.prepend_effects(transition_effects);
         self.apply_ime_open_request(&mut decision, ctx);
         decision

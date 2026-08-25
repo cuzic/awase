@@ -4943,6 +4943,44 @@ fn test_engine_off_extra_key_interrupted_by_different_passthrough_key_resets() {
     }
 }
 
+#[test]
+fn test_engine_off_extra_key_counter_resets_on_toggle_enabled() {
+    // `solo_counter`（親指キー用）は `flush_pending` 経由で毎回リセットされるが、
+    // `engine_off_extra_solo_counter`/`engine_off_extra_key_suppressed`
+    // （親指キー以外用）は `toggle_enabled` でリセットされていなかった
+    // （2026-08-26 コードレビュー指摘、report1）。エンジンの無効化→再有効化を
+    // 挟むとカウントが引き継がれず、再開後は改めて5回必要になることを確認する。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let gap = 150_000u64;
+    for i in 0..2u64 {
+        let t = i * gap;
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+    }
+    assert!(!engine.take_engine_off_requested());
+
+    // エンジンを無効化→再度有効化する（`toggle_enabled` を2回通す）。
+    engine.toggle_enabled();
+    engine.toggle_enabled();
+
+    // 再開後、3回タップしても（2+3=5 回目ではなく）まだ発火しないはず
+    // （カウントがリセットされていれば）。SOLO_OFF_TIMEOUT_US (400ms) 超過による
+    // 自然リセットと区別するため、直前のタップから `gap`（150ms、閾値未満）しか
+    // 空けない。
+    for i in 0..3u64 {
+        let t = 2 * gap + i * gap;
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+        assert!(
+            !engine.take_engine_off_requested(),
+            "toggle_enabled でカウントがリセットされていれば {} 回目ではまだ発火しない",
+            i + 1
+        );
+    }
+}
+
 // ── FsmAdapter tests ──
 
 mod fsm_adapter_tests {
@@ -7708,5 +7746,96 @@ mod engine_integration_tests {
              出ないはず, got {:?}",
             effects_of(&d2)
         );
+    }
+
+    #[test]
+    fn engine_on_input_drains_engine_off_extra_trigger_without_timeout() {
+        // `engine_off_solo_repeat` を親指キー以外（既定 VK_INSERT）に割り当てた場合、
+        // `handle_bypass` は KeyDown を同期的に処理する時点で `engine_off_requested`
+        // を立てる。この VK にはタイマーが紐付かないため、drain を `Engine::on_timeout`
+        // だけに頼ると 5 連打しても一切発火しない（2026-08-26 コードレビュー指摘、
+        // report1）。`Engine::on_input`（実運用の唯一のフックエントリ）経由で
+        // 実際にエンジンが無効化されることを確認する。
+        let mut engine = make_test_engine();
+        engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+        let ctx = ime_on_ctx();
+        let gap = 150_000u64;
+
+        for i in 0..4u64 {
+            let t = i * gap;
+            engine.on_input(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build(), &ctx);
+            engine.on_input(
+                Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build(),
+                &ctx,
+            );
+            assert!(
+                engine.is_user_enabled(),
+                "{} 回目まではエンジンは無効化されない",
+                i + 1
+            );
+        }
+
+        let t = 4 * gap;
+        let d_down5 = engine.on_input(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build(), &ctx);
+        assert!(d_down5.is_consumed());
+        assert!(
+            !engine.is_user_enabled(),
+            "on_input 経由でも 5 回目の単独タップでエンジンが無効化されるべき"
+        );
+        assert!(has_effect(&d_down5, |e| matches!(
+            e,
+            Effect::Ui(UiEffect::EngineStateChanged { enabled: false, .. })
+        )));
+    }
+
+    #[test]
+    fn engine_off_extra_key_suppressed_latch_does_not_stick_after_reenable() {
+        // `Engine::on_input` の Phase 0（`KeyLifecycle`）は、KeyDown が Consume
+        // された物理キーの対応する KeyUp を、FSM に一切渡さず自動的に Consume する
+        // （symmetric suppression の最適化）。5 回目の単独タップは Consume される
+        // ため、その KeyUp は `NicolaFsm::on_key_up` の対称クリア処理
+        // （`engine_off_extra_key_suppressed.take()`）に絶対に届かず、ラッチが
+        // `Some(true)` のまま永久に固着し、以降このキーの新規タップが全て
+        // suppress され続ける実害があった（2026-08-26 コードレビュー指摘、
+        // report1）。`NicolaFsm::toggle_enabled` でのリセットにより、KeyUp が
+        // 届かなくてもラッチが正しく解除されることを確認する。
+        let mut engine = make_test_engine();
+        engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+        let ctx = ime_on_ctx();
+        let gap = 150_000u64;
+
+        for i in 0..4u64 {
+            let t = i * gap;
+            engine.on_input(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build(), &ctx);
+            engine.on_input(
+                Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build(),
+                &ctx,
+            );
+        }
+        let t = 4 * gap;
+        engine.on_input(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build(), &ctx);
+        engine.on_input(
+            Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build(),
+            &ctx,
+        );
+        assert!(!engine.is_user_enabled(), "5 回目のタップで無効化済み");
+
+        // ユーザーがホットキー等でエンジンを再度有効化する。
+        engine.set_user_enabled(true);
+        assert!(engine.is_user_enabled());
+
+        // 再有効化後の新規タップ（間隔も空いている）。ラッチが固着していれば
+        // ここが新規タップとして扱われず即 Consume（= 無反応）になってしまう。
+        let t2 = t + 10 * gap;
+        let d_down6 = engine.on_input(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t2).build(), &ctx);
+        assert!(
+            !d_down6.is_consumed(),
+            "再有効化後の新規タップはラッチ固着で suppress されてはいけない"
+        );
+        let d_up6 = engine.on_input(
+            Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t2 + 10_000).build(),
+            &ctx,
+        );
+        assert!(!d_up6.is_consumed());
     }
 }

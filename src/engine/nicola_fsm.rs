@@ -445,6 +445,15 @@ impl NicolaFsm {
         );
         self.enabled = !self.enabled;
         self.output_history.clear();
+        // `solo_counter`（`flush_pending` 内で毎回リセット、:421）とは異なり、
+        // こちらは `flush_pending` 内で汎用リセットしない: `handle_bypass` 自身が
+        // 非 idle 時に `ContextChange::BypassKey` で `flush_pending` を呼ぶため、
+        // 汎用化すると `engine_off_extra_solo_counter` を record 直後に同一呼び出し内で
+        // 消してしまい 1〜4 回目のタップが毎回カウントリセットされる
+        // （2026-08-26 コードレビュー指摘、report1）。enable トグルという単一の
+        // 有意なコンテキスト断絶点でのみリセットする。
+        self.engine_off_extra_solo_counter.reset();
+        self.engine_off_extra_key_suppressed = None;
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
         // ここでのリセットは不要。
         log::info!(
