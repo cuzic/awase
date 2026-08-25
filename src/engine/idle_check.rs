@@ -11,6 +11,13 @@
 /// - `explicit_age_ms`: `explicit_ime_action_age_ms()` の値（`u64::MAX` = 操作なし）
 /// - `typing_idle_ms`: タイピング停止とみなす閾値（`TYPING_IDLE_MS`、通常 500ms）
 /// - `explicit_suppress_ms`: 明示的 IME 操作後の抑制窓（`EXPLICIT_IME_SUPPRESS_MS`、通常 1500ms）
+/// - `is_first_key_after_focus`: フォーカス復帰後の resync 対象キー（`RawKeyEvent::
+///   starts_focus_resync()`）かどうか。true のときガード3（タイピング停止判定）
+///   のみバイパスする（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`: フォーカス復帰直後は
+///   `output_in_flight_ms` が意味を持たないため）。ガード1・2・4は
+///   `is_first_key_after_focus` でも必ず効く——特にガード4（明示的 IME 操作直後の
+///   抑制窓）を緩めると、フォーカス復帰直後にユーザーが意図的に IME 操作した
+///   直後の conv 誤読で belief を押し付ける経路が生まれる。
 #[must_use]
 pub const fn should_run_idle_conv_check(
     is_key_down: bool,
@@ -19,6 +26,7 @@ pub const fn should_run_idle_conv_check(
     explicit_age_ms: u64,
     typing_idle_ms: u64,
     explicit_suppress_ms: u64,
+    is_first_key_after_focus: bool,
 ) -> bool {
     // ガード 1: KeyDown イベントのみ対象
     if !is_key_down {
@@ -29,8 +37,9 @@ pub const fn should_run_idle_conv_check(
         return false;
     }
     // ガード 3: タイピング停止後のみ（in_flight_ms > typing_idle_ms）
-    // u64::MAX（cold start）は typing_idle_ms より大きいため通過する
-    if in_flight_ms <= typing_idle_ms {
+    // u64::MAX（cold start）は typing_idle_ms より大きいため通過する。
+    // フォーカス復帰直後の resync 対象キーのみこのガードをバイパスする。
+    if in_flight_ms <= typing_idle_ms && !is_first_key_after_focus {
         return false;
     }
     // ガード 4: 明示的 IME 操作直後はスキップ
@@ -50,7 +59,15 @@ mod tests {
     const SUPPRESS_MS: u64 = 1500; // EXPLICIT_IME_SUPPRESS_MS
 
     fn run_ok(in_flight: u64, explicit_age: u64) -> bool {
-        should_run_idle_conv_check(true, true, in_flight, explicit_age, IDLE_MS, SUPPRESS_MS)
+        should_run_idle_conv_check(
+            true, true, in_flight, explicit_age, IDLE_MS, SUPPRESS_MS, false,
+        )
+    }
+
+    fn run_ok_first_key(in_flight: u64, explicit_age: u64) -> bool {
+        should_run_idle_conv_check(
+            true, true, in_flight, explicit_age, IDLE_MS, SUPPRESS_MS, true,
+        )
     }
 
     // ── ガード 1: KeyDown のみ ──
@@ -62,7 +79,8 @@ mod tests {
             u64::MAX,
             u64::MAX,
             IDLE_MS,
-            SUPPRESS_MS
+            SUPPRESS_MS,
+            false
         ));
     }
 
@@ -74,7 +92,8 @@ mod tests {
             u64::MAX,
             u64::MAX,
             IDLE_MS,
-            SUPPRESS_MS
+            SUPPRESS_MS,
+            false
         ));
     }
 
@@ -87,7 +106,8 @@ mod tests {
             u64::MAX,
             u64::MAX,
             IDLE_MS,
-            SUPPRESS_MS
+            SUPPRESS_MS,
+            false
         ));
     }
 
@@ -148,7 +168,48 @@ mod tests {
             IDLE_MS,
             u64::MAX,
             IDLE_MS,
-            SUPPRESS_MS
+            SUPPRESS_MS,
+            false
         ));
+    }
+
+    // ── is_first_key_after_focus: ガード3のみバイパス ──
+
+    #[test]
+    fn first_key_after_focus_bypasses_typing_idle_guard() {
+        // in_flight=0（タイピング中相当）でも first key なら通過する
+        assert!(run_ok_first_key(0, u64::MAX));
+        assert!(run_ok_first_key(IDLE_MS, u64::MAX));
+    }
+
+    #[test]
+    fn first_key_after_focus_still_respects_explicit_suppress() {
+        // ガード4（明示的 IME 操作直後の抑制窓）は first key でも必ず効く
+        assert!(!run_ok_first_key(0, 0));
+        assert!(!run_ok_first_key(u64::MAX, SUPPRESS_MS - 1));
+        assert!(run_ok_first_key(0, SUPPRESS_MS));
+    }
+
+    #[test]
+    fn first_key_after_focus_still_requires_key_down() {
+        assert!(!should_run_idle_conv_check(
+            false, true, 0, u64::MAX, IDLE_MS, SUPPRESS_MS, true,
+        ));
+    }
+
+    #[test]
+    fn first_key_after_focus_still_requires_tsf_native() {
+        assert!(!should_run_idle_conv_check(
+            true, false, 0, u64::MAX, IDLE_MS, SUPPRESS_MS, true,
+        ));
+    }
+
+    #[test]
+    fn is_first_key_after_focus_false_preserves_legacy_behavior() {
+        // 既存の全ケースが is_first_key_after_focus=false で従来どおりであること
+        assert!(!run_ok(IDLE_MS, u64::MAX));
+        assert!(run_ok(IDLE_MS + 1, u64::MAX));
+        assert!(run_ok(u64::MAX, u64::MAX));
+        assert!(!run_ok(u64::MAX, 0));
     }
 }

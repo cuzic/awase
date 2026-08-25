@@ -493,6 +493,27 @@ impl Runtime {
                 .focus
                 .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
         }
+
+        // フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）: TsfNative は
+        // ImmCross と違い上記の focus-time probe が無く、周期ポーリングも
+        // `reschedule_ime_refresh` が早期 return するため構造的に走らない
+        // （`runtime/mod.rs::reschedule_ime_refresh` 参照）。復帰後の最初の
+        // resync 対象キー（`RawKeyEvent::starts_focus_resync()`）を defer して
+        // resync を待たせるための armed フラグをここで立てる。タイマーは張らない
+        // （ユーザーがいつ打つか分からないため。有効期限も付けない——
+        // `state/focus_resync_policy.rs` の doc 参照）。
+        let is_tsf_native_for_resync = crate::focus::class_names::is_effectively_tsf_native(
+            self.platform.current_app_profile(),
+            self.platform.focus.class_name(),
+        );
+        if crate::state::focus_resync_policy::should_arm_focus_resync(
+            is_tsf_native_for_resync,
+            self.platform_state.ime.belief.is_japanese_ime(),
+            crate::send_health::blocking_allowed(tick_ms.0),
+            self.platform_state.gate.idle_conv_check_in_flight_since_ms.is_some(),
+        ) {
+            crate::focus_resync::FOCUS_RESYNC.arm(tick_ms.0);
+        }
     }
 
     /// 現在のフォーカス先を検出し、focus_kind / app_kind を更新する。

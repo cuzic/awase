@@ -474,7 +474,22 @@ fn run_message_loop(taskbar_created_msg: u32) {
                         crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
                     }
                 }
-                if crate::OUTPUT_GATE.is_active() {
+                // フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）:
+                // Alt+Tab 等で一瞬フォーカスが離れて復帰した直後、resync
+                // （IME 状態の再確認）完了前に最初のキーが PassThrough で
+                // リテラル出力される事故を防ぐ。`starts_focus_resync()` が true の
+                // 最初のキーだけを defer し、その間に conv 読み取り(resync)を
+                // 起動する。詳細は `focus_resync.rs`・`state/focus_resync_policy.rs`。
+                let defer_for_resync = crate::focus_resync::FOCUS_RESYNC.is_armed()
+                    && event.starts_focus_resync();
+                if crate::OUTPUT_GATE.is_active() || defer_for_resync {
+                    if defer_for_resync {
+                        let generation = crate::focus_resync::FOCUS_RESYNC.consume_and_close();
+                        let _ = with_app(|app| {
+                            app.kp_trigger_focus_resync(&event, generation);
+                            app.schedule_focus_resync_deadline();
+                        });
+                    }
                     crate::INPUT_DEFER.defer_during_output(event);
                 } else {
                     // 競合条件の修正: フックスレッドは OUTPUT_GATE active 中に WM_KEY_FROM_HOOK

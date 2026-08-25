@@ -219,6 +219,38 @@ pub struct RawKeyEvent {
     pub injected: bool,
 }
 
+impl RawKeyEvent {
+    /// フォーカス復帰後の resync を起動する「本命の1打鍵」かどうか。
+    ///
+    /// report `01M0VGJ2M5KQHD1D9V7HAMBHNT`（Alt+Tab 復帰直後の最初のキーが
+    /// resync 完了前に PassThrough でリテラル漏れする）の修正で、この1打鍵を
+    /// resync 完了まで defer するために使う判定。リテラル漏れが起きうるのは
+    /// `Char`/親指キーの `KeyDown` のみなので、それ以外は resync を起動しない:
+    ///
+    /// - `Passthrough`（修飾キー・Fキー・Tab 等のナビゲーション）は対象外
+    ///   （Alt+Tab 連打で Tab 自体が resync を消費し、スイッチャー操作が
+    ///   遅延する事故を防ぐ）。
+    /// - `KeyUp` は対象外（Alt/Ctrl/Shift/Win の解放イベントが resync を
+    ///   消費すると、後続の本命キーが素通りしてしまう）。
+    /// - 修飾キー（Ctrl/Alt/Win）保持中は対象外（ショートカットを遅延させない）。
+    ///   Shift は対象外にしない（Shift+文字は正当な通常入力のため）。
+    /// - 外部注入（`injected`）は対象外。awase 自身の注入はフック層で除外済み
+    ///   のためこれが true なのは他プロセス由来のみで、ユーザーの物理操作では
+    ///   ない（BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読した前例）。
+    #[must_use]
+    pub const fn starts_focus_resync(&self) -> bool {
+        matches!(self.event_type, KeyEventType::KeyDown)
+            && matches!(
+                self.key_classification,
+                KeyClassification::Char | KeyClassification::LeftThumb | KeyClassification::RightThumb
+            )
+            && !self.modifier_snapshot.ctrl
+            && !self.modifier_snapshot.alt
+            && !self.modifier_snapshot.win
+            && !self.injected
+    }
+}
+
 /// 出力アクション
 #[derive(Debug, Clone)]
 pub enum KeyAction {
@@ -272,6 +304,135 @@ mod tests {
     use itertools::Itertools as _;
 
     use super::*;
+
+    // ── RawKeyEvent::starts_focus_resync ──
+
+    fn resync_probe_event(
+        event_type: KeyEventType,
+        key_classification: KeyClassification,
+        modifier_snapshot: ModifierState,
+        injected: bool,
+    ) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code: VkCode(0),
+            scan_code: ScanCode(0),
+            event_type,
+            extra_info: 0,
+            timestamp: 0,
+            key_classification,
+            physical_pos: None,
+            ime_relevance: ImeRelevance::default(),
+            modifier_key: None,
+            modifier_snapshot,
+            injected,
+        }
+    }
+
+    #[test]
+    fn alt_keyup_does_not_start_resync() {
+        let e = resync_probe_event(
+            KeyEventType::KeyUp,
+            KeyClassification::Passthrough,
+            ModifierState { alt: true, ..Default::default() },
+            false,
+        );
+        assert!(!e.starts_focus_resync());
+    }
+
+    #[test]
+    fn ctrl_shift_win_keyup_do_not_start_resync() {
+        for snapshot in [
+            ModifierState { ctrl: true, ..Default::default() },
+            ModifierState { shift: true, ..Default::default() },
+            ModifierState { win: true, ..Default::default() },
+        ] {
+            let e = resync_probe_event(
+                KeyEventType::KeyUp,
+                KeyClassification::Passthrough,
+                snapshot,
+                false,
+            );
+            assert!(!e.starts_focus_resync());
+        }
+    }
+
+    #[test]
+    fn tab_keydown_does_not_start_resync() {
+        // Tab は KeyClassification::Passthrough（ナビゲーション）。
+        // Alt+Tab 連打で Tab 自体が resync を消費しないことの回帰。
+        let e = resync_probe_event(
+            KeyEventType::KeyDown,
+            KeyClassification::Passthrough,
+            ModifierState { alt: true, ..Default::default() },
+            false,
+        );
+        assert!(!e.starts_focus_resync());
+    }
+
+    #[test]
+    fn char_keydown_with_alt_held_does_not_start_resync() {
+        let e = resync_probe_event(
+            KeyEventType::KeyDown,
+            KeyClassification::Char,
+            ModifierState { alt: true, ..Default::default() },
+            false,
+        );
+        assert!(!e.starts_focus_resync());
+    }
+
+    #[test]
+    fn injected_char_keydown_does_not_start_resync() {
+        // BUG-14 の踏み直し防止: 外部注入イベントはユーザーの物理操作ではない。
+        let e = resync_probe_event(
+            KeyEventType::KeyDown,
+            KeyClassification::Char,
+            ModifierState::default(),
+            true,
+        );
+        assert!(!e.starts_focus_resync());
+    }
+
+    #[test]
+    fn char_keyup_does_not_start_resync() {
+        let e = resync_probe_event(
+            KeyEventType::KeyUp,
+            KeyClassification::Char,
+            ModifierState::default(),
+            false,
+        );
+        assert!(!e.starts_focus_resync());
+    }
+
+    #[test]
+    fn plain_char_keydown_starts_resync() {
+        let e = resync_probe_event(
+            KeyEventType::KeyDown,
+            KeyClassification::Char,
+            ModifierState::default(),
+            false,
+        );
+        assert!(e.starts_focus_resync());
+    }
+
+    #[test]
+    fn thumb_keydown_starts_resync() {
+        for kc in [KeyClassification::LeftThumb, KeyClassification::RightThumb] {
+            let e = resync_probe_event(KeyEventType::KeyDown, kc, ModifierState::default(), false);
+            assert!(e.starts_focus_resync());
+        }
+    }
+
+    #[test]
+    fn shift_held_char_keydown_starts_resync() {
+        // Shift+文字は正当な通常入力のため除外条件に入れない。
+        let e = resync_probe_event(
+            KeyEventType::KeyDown,
+            KeyClassification::Char,
+            ModifierState { shift: true, ..Default::default() },
+            false,
+        );
+        assert!(e.starts_focus_resync());
+    }
 
     // ── KeyClassification ──
 

@@ -196,6 +196,25 @@ pub(crate) unsafe fn handle_wm_timer(
                 app.platform_state.ime.journal.absorb(entry);
             }
         }
+        Some(id) if id == crate::TIMER_FOCUS_RESYNC => {
+            // フォーカス復帰後 resync のハード期限（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）。
+            // resync（conv 読み取り）がこの期限より先に gate を閉じていれば
+            // `open_if_current` は世代不一致/既 close で false を返し、ここでは
+            // 何もしない（二重 drain post を防ぐ）。
+            app.platform.timer.kill(crate::TIMER_FOCUS_RESYNC);
+            let generation = crate::focus_resync::FOCUS_RESYNC.current_generation();
+            if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation) {
+                log::debug!(
+                    "[focus-resync] ハード期限 {}ms 到達 → defer 中のキーを drain",
+                    crate::tuning::FOCUS_RESYNC_DEADLINE_MS
+                );
+                if crate::state::focus_resync_policy::should_post_drain(
+                    crate::tsf::probe_bridge::OUTPUT_GATE.is_active(),
+                ) {
+                    crate::tsf::probe_bridge::post_drain_output_queue();
+                }
+            }
+        }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
