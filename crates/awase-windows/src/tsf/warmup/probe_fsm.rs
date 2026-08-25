@@ -576,24 +576,25 @@ pub(crate) async fn run_per_vk_confirm(
                 // いた。
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(true, idx);
-                // BUG-75: 先頭 VK（idx==0）の StaleConfirm は候補ウィンドウが実際に
-                // 可視（＝GJI が受理済み）な場合を含み、romaji 全体を再送すると
-                // 既に着弾済みの先頭文字が重複する。着弾済み prefix を除いた
-                // suffix だけを再送する（単一 VK ローマ字・idx>0 は対象外、
-                // `stale_confirm_resend_romaji` の doc 参照）。
-                let resend_romaji =
-                    crate::tsf::literal_facts::stale_confirm_resend_romaji(romaji, idx, last_idx);
                 log::warn!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
                      → backspace は送らず romaji 再送のみ行う (vk=0x{:02X} backs={backs} \
-                     escape={escape_composition} resend={resend_romaji:?})",
+                     escape={escape_composition})",
                     vk.0,
                     cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
+                // BUG-75: ここでは romaji 全体を渡す（journal には常に元の romaji を
+                // 残す、ADR-100 決定3 案L の不変条件を維持）。着弾済み先頭 VK を
+                // 除いた suffix だけを実際に再送する判断は、dispatcher
+                // （`output/probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ、
+                // `consecutive==0` 分岐）に一元化してある——`facts.verdict`/
+                // `facts.path` が揃った場所でのみ `stale_confirm_resend_romaji`
+                // を適用するため、`SuspectedLiteral`/word-level 経路を誤って
+                // 巻き込まない。
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                     cold_seq,
-                    resend_romaji,
+                    romaji.to_string(),
                     backs,
                     escape_composition,
                     facts,

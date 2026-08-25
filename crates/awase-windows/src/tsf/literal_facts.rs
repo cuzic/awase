@@ -115,6 +115,21 @@ pub struct LiteralDetectTrace(pub(crate) Vec<LiteralDetectTraceItem>);
 /// `escape_composition=true` を返し、呼び出し元が composition を ESC で破棄
 /// するため、先行 VK は残らない。この場合は変更前と同じ全体再送のままでよい
 /// （ESC 後は「着弾済み prefix」という概念自体が存在しない）。
+///
+/// **呼び出し元の責務**: `failed_idx`/`last_idx` は per-VK confirm の
+/// `vk_chars`（`tsf/warmup/probe_fsm.rs::run_per_vk_confirm` が
+/// `romaji.chars().filter_map(ascii_to_vk)` で構築する）のインデックスであり、
+/// `romaji.chars()` そのもののインデックスではない（`ascii_to_vk` が `None` を
+/// 返す文字は `vk_chars` から落ちるため）。この関数は `romaji.chars()` を
+/// **同じ `ascii_to_vk` で filter した列**に対してのみ `skip`/`collect` する
+/// ことで、`vk_chars` のインデックスと常に一致させている（BUG-75 レビュー
+/// 指摘、`ascii_to_vk` が解決できない文字を含む romaji が実際に来ても suffix
+/// がずれない）。加えて、この関数を呼ぶのは `facts.path == DetectPath::PerVk
+/// && facts.verdict == LiteralVerdict::StaleConfirm` のときだけであること
+/// （`output/probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ参照）——
+/// `SuspectedLiteral`（先頭 VK が本当に literal 化した場合、`backs=1` で
+/// 全体再送が正しい）や word-level 経路にこの suffix ロジックを誤って
+/// 適用しないための呼び出し元側のガード。
 #[must_use]
 pub(crate) fn stale_confirm_resend_romaji(
     romaji: &str,
@@ -122,7 +137,11 @@ pub(crate) fn stale_confirm_resend_romaji(
     last_idx: usize,
 ) -> String {
     if failed_idx == 0 && last_idx > 0 {
-        romaji.chars().skip(1).collect()
+        romaji
+            .chars()
+            .filter(|&c| crate::vk::ascii_to_vk(c).is_some())
+            .skip(1)
+            .collect()
     } else {
         romaji.to_string()
     }
@@ -147,6 +166,19 @@ mod tests {
     fn stale_confirm_resend_romaji_single_vk_word_returns_whole_unchanged() {
         assert_eq!(stale_confirm_resend_romaji("a", 0, 0), "a");
         assert_eq!(stale_confirm_resend_romaji("n", 0, 0), "n");
+    }
+
+    // レビュー指摘（M1）: `failed_idx`/`last_idx` は `ascii_to_vk` で filter 済みの
+    // `vk_chars` のインデックスであり、`romaji.chars()` そのもののインデックス
+    // ではない。`ascii_to_vk` が解決できない文字（ここでは 'あ'）が romaji に
+    // 混入していても、filter 済みの列に対して skip するため suffix がずれない
+    // ことを固定する。
+    #[test]
+    fn stale_confirm_resend_romaji_skips_over_unresolvable_chars_consistently_with_vk_chars() {
+        // vk_chars = ['t', 'u']（'あ' は ascii_to_vk が None を返すため落ちる）
+        // → failed_idx=0/last_idx=1 は "t" を指す。suffix は "u" のみ。
+        assert_eq!(stale_confirm_resend_romaji("tあu", 0, 1), "u");
+        assert_eq!(stale_confirm_resend_romaji("あtu", 0, 1), "u");
     }
 
     // failed_idx > 0 は escape_composition=true で composition が ESC される

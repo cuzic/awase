@@ -8931,11 +8931,17 @@ bug68` / レビュー担当 `opus-premortem-bug68`）を経て、以下の実測
 `fix/bug68-blind-typing-gate` で後日実装）。
 
 **実測:** Ctrl+無変換（`ChordEnded{CtrlMuhenkanImeOff}`）による明示 OFF 直後
-から **約63秒・14周・計約70回**の `VK_IME_OFF` 再送を観測した。バースト内
-間隔は実測 **30〜63ms**（`on_ime_apply_complete` → `post_ime_refresh(20ms)`
-の自走。`FeedbackPolicy::Blind::backoff`(400ms) は未使用のまま）、バースト
-間隔は実測 **3.7〜7.2秒**（`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`=3000 が
-効いている）。再武装トリガは全周とも `ObserverReported{source:
+から `VK_IME_OFF` 再送のバーストを観測した。journal に**残存している**のは
+**9周・45回**（elapsed 21110202〜21169911 の連続エピソード、約59.7秒。
+`ImeOpenApplied{reason: DriftCorrection}` で確認）。「約63秒・14周・計約70回」
+という当初の見積りは、`DumpTruncated`（`dropped_actuation: 364`）による
+17032ms/12188ms の欠落窓を平均バースト間隔で補間した推定値であり、後日この
+journal を読み直す場合は9周分のみ残っていることに注意（Opus premortem
+指摘）。バースト内間隔は実測 **30〜63ms**（`on_ime_apply_complete` →
+`post_ime_refresh(20ms)` の自走。`FeedbackPolicy::Blind::backoff`(400ms) は
+未使用のまま）、バースト間隔は実測 **3.7〜7.2秒**（`DRIFT_CORRECTION_
+BLIND_REARM_COOLDOWN_MS`=3000 が効いている、いずれも journal に残る9周から
+直接確認済み）。再武装トリガは全周とも `ObserverReported{source:
 ConvOpenInference, open: true, confidence: Medium}` ＝ give-up の原因になった
 のと同一の (source, value) だった。
 
@@ -9898,28 +9904,49 @@ backspace を外したが、**再送側の同じ「着弾していない」仮�
   巻き戻しでもあるため、本件では採らない（BUG-74 の恒久対策トラック側の
   課題として残す）。
 
-**修正:** `per_vk_recovery_params` 自体は変更せず、その戻り値（`backs`/
-`escape_composition`）が「先頭 VK・StaleConfirm・ESC なし」を示すケース
-（`failed_idx==0 && !escape_composition`、`is_stale=true` のとき常にこの形）
-に限り、`emit_recovery_actions` へ渡す romaji を新設の純関数
-`tsf::literal_facts::stale_confirm_resend_romaji(romaji, failed_idx, last_idx)`
-で決めるようにした。`failed_idx==0 && last_idx>0`（先頭 VK・かつ2文字以上の
-ローマ字）のときだけ先頭文字を除いた suffix を返し、それ以外（単一 VK の
-ローマ字、または `failed_idx>0` で composition が ESC 済み）は変更前と同じ
+**修正:** `per_vk_recovery_params` 自体は変更しない。`tsf/warmup/probe_fsm.rs`
+の `StaleConfirm` 分岐は romaji 全体を `emit_recovery_actions` へ渡したまま
+にし（journal には常に元の romaji を残す、ADR-100 決定3 案L の不変条件を
+維持）、実際にどの romaji を再送するかは dispatcher（`output/probe_io.rs`
+の `RawTsfLiteralRecovery` ハンドラ、`consecutive==0` 分岐、journal record
+の `push` より**後**）に一元化した。`facts.path == DetectPath::PerVk &&
+facts.verdict == LiteralVerdict::StaleConfirm` のときだけ新設の純関数
+`tsf::literal_facts::stale_confirm_resend_romaji(romaji, failed_idx,
+last_idx)` を通し、それ以外（`SuspectedLiteral`・word-level 経路）は
+romaji 全体をそのまま `set_raw_literal` へ渡す（変更前と同一）。この
+verdict/path ガードにより、`backs=1` で全体再送が正しい `SuspectedLiteral`
+（先頭 VK が本当に literal 化した場合）に suffix ロジックを誤って適用する
+ことがない。
+
+`stale_confirm_resend_romaji` は `failed_idx==0 && last_idx>0`（先頭 VK・
+かつ2文字以上のローマ字）のときだけ先頭文字を除いた suffix を返し、それ以外
+（単一 VK のローマ字、または `failed_idx>0` で composition が ESC 済み）は
 romaji 全体を返す。単一 VK のローマ字（例: 「あ」「ん」）を対象外にしたのは、
 suffix を取ると必ず空文字列になり、本当に literal 化していた場合（GJI が
 実は受理していなかった場合）に文字が痕跡なく完全に失われる——**BUG-74 が
 「痕跡なく完全に失われる」ことを理由に ADR-101 まで作って直したのと同型の
-退行**になるため。`per_vk_recovery_params` の呼び出し元・`backs`/
-`escape_composition` の値自体は変更していないため、`consecutive != 0`
-（give-up、`VK_IME_OFF`→`VK_IME_ON` 実送信を伴う `schedule_chrome_gji_reinit`
-経路）には一切触れていない。
+退行**になるため。`failed_idx`/`last_idx` は per-VK confirm の `vk_chars`
+（`romaji.chars().filter_map(ascii_to_vk)` で構築）のインデックスであり
+`romaji.chars()` そのもののインデックスではないため、`stale_confirm_
+resend_romaji` は `romaji.chars()` を同じ `ascii_to_vk` で filter した列に
+対して `skip`/`collect` する（`ascii_to_vk` が解決できない文字が romaji に
+混入していても vk_chars のインデックスとずれない、Opus premortem 2巡目の
+指摘で修正）。
+
+`per_vk_recovery_params` の呼び出し元・`backs`/`escape_composition` の値
+自体は変更していない。`consecutive != 0`（give-up、`VK_IME_OFF`→
+`VK_IME_ON` 実送信を伴う `schedule_chrome_gji_reinit` 経路）の**分岐条件と
+挙動**には一切触れていない——journal の `LiteralDetectRecord.romaji` は
+分岐より前の `push` で記録するため、give-up 側も含め常に**元の romaji**
+（suffix ではない）が残る。
 
 **テスト:** `tsf/literal_facts.rs` に `stale_confirm_resend_romaji` の単体
-テスト3本を追加（`("tu",0,1)→"u"`・`("a",0,0)→"a"`（単一 VK 退行防止）・
-`("ltu",1,2)→"ltu"`（`failed_idx>0` は変更前と同一））。`literal_facts` は
+テスト4本を追加（`("tu",0,1)→"u"`・`("a",0,0)→"a"`（単一 VK 退行防止）・
+`("ltu",1,2)→"ltu"`（`failed_idx>0` は変更前と同一）・`("tあu",0,1)→"u"`
+（`ascii_to_vk` が解決できない文字混入時も vk_chars インデックスとずれない
+ことの回帰テスト））。`literal_facts` は
 ungated モジュール（`tsf/mod.rs` 参照）のため `cargo test -p awase-windows
---lib` で Linux 実行済み（434件 green）。`cargo xwin check --tests`・
+--lib` で Linux 実行済み（435件 green）。`cargo xwin check --tests`・
 `cargo xwin clippy -p awase-windows --target x86_64-pc-windows-msvc -- -D
 warnings`・`cargo fmt --all -- --check` 警告ゼロ。`architecture_guard`
 （38件）・`golden_scenarios`（22件）・`layer_boundary_guard`（8件）・
