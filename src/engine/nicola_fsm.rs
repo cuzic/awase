@@ -124,10 +124,10 @@ pub struct NicolaFsm {
     thumb_shift_faces_enabled: bool,
 
     /// ソロ確定の連続回数を追跡する汎用カウンター（親指キーに割り当てた
-    /// `engine_off_triple_vk` 用、`PendingThumb` 経由でのみ更新される）。
+    /// `engine_off_solo_repeat_vk` 用、`PendingThumb` 経由でのみ更新される）。
     solo_counter: ConsecutiveSoloCounter,
 
-    /// `engine_off_triple_vk` が親指キー（`left_thumb_key`/`right_thumb_key`）
+    /// `engine_off_solo_repeat_vk` が親指キー（`left_thumb_key`/`right_thumb_key`）
     /// と異なる VK の場合専用の連続回数カウンター。`solo_counter` とは
     /// 独立: `handle_bypass`（`BypassReason::Passthrough` 経路）でのみ更新され、
     /// `PendingThumb` の状態遷移には一切関与しない。親指キーに割り当てた
@@ -137,7 +137,7 @@ pub struct NicolaFsm {
     engine_off_extra_solo_counter: ConsecutiveSoloCounter,
 
     /// `engine_off_extra_solo_counter` 用の物理押下トラッカー。`None` =
-    /// `engine_off_triple_vk`（親指キー以外に割り当てた場合）が現在押下されて
+    /// `engine_off_solo_repeat_vk`（親指キー以外に割り当てた場合）が現在押下されて
     /// いない。`Some(suppressed)` = 現在押下中で、その KeyDown を suppress
     /// したか（true）素通ししたか（false）を覚えている。OS のオートリピート
     /// KeyDown を新規タップとして誤カウントしないためのガードと、対応する
@@ -146,7 +146,7 @@ pub struct NicolaFsm {
     engine_off_extra_key_suppressed: Option<bool>,
 
     /// ソロ N 連打でエンジン OFF を発動するキー（VkCode(0) = 機能無効）。
-    engine_off_triple_vk: VkCode,
+    engine_off_solo_repeat_vk: VkCode,
 
     /// ソロ連打でのエンジン OFF 要求フラグ（1ショット）。
     engine_off_requested: bool,
@@ -275,7 +275,7 @@ impl NicolaFsm {
             solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_extra_solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
             engine_off_extra_key_suppressed: None,
-            engine_off_triple_vk: VkCode(0),
+            engine_off_solo_repeat_vk: VkCode(0),
             engine_off_requested: false,
             // 既定値は GeneralConfig::default() と揃える（Space 未割当 / ガード類は
             // 有効）。実際の Space VK は Platform 層が set_space_thumb_config() で
@@ -480,8 +480,8 @@ impl NicolaFsm {
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     /// `VkCode(0)` を渡すと機能を無効にする。
-    pub const fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
-        self.engine_off_triple_vk = vk;
+    pub const fn set_engine_off_solo_repeat_vk(&mut self, vk: VkCode) {
+        self.engine_off_solo_repeat_vk = vk;
     }
 
     /// Space 親指キーのフォールバック挙動を設定する。
@@ -591,7 +591,7 @@ impl NicolaFsm {
         self.thumb_shift_faces_enabled = enabled;
     }
 
-    /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
+    /// ソロ連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         std::mem::take(&mut self.engine_off_requested)
     }
@@ -1568,12 +1568,12 @@ impl NicolaFsm {
             return self.handle_key_up_pending(event);
         }
 
-        // `engine_off_solo_triple` を親指キー以外に割り当てた場合の対称化:
+        // `engine_off_solo_repeat` を親指キー以外に割り当てた場合の対称化:
         // `handle_bypass` が KeyDown 側で suppress/passthrough のどちらと
         // 判定したかをそのまま KeyUp にも適用する（J↓/J↑ 非対称防止、下の
         // OsModifierHeld 対称化と同じ理由）。現在の modifier 状態には依存
         // しない（KeyDown 時点の判定を優先する）。
-        if self.engine_off_triple_vk.0 != 0 && event.vk_code == self.engine_off_triple_vk {
+        if self.engine_off_solo_repeat_vk.0 != 0 && event.vk_code == self.engine_off_solo_repeat_vk {
             if let Some(suppressed) = self.engine_off_extra_key_suppressed.take() {
                 return if suppressed {
                     self.build_response(SmallVec::new(), true, TimerIntent::CancelAll)
@@ -1723,7 +1723,7 @@ impl NicolaFsm {
         // ソロ連打によるエンジン OFF トリガーチェック（timeout_pending_thumb と同一
         // ロジック）。thumb はここで同時打鍵ではなく単独打鍵として確定するため、
         // ソロ連打カウンターの対象になる。
-        if self.engine_off_triple_vk.0 != 0 && thumb.vk_code == self.engine_off_triple_vk {
+        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk {
             let count = self.solo_counter.record(thumb.vk_code, thumb.timestamp);
             if count >= SOLO_OFF_TRIGGER_COUNT {
                 self.solo_counter.reset();
@@ -1833,7 +1833,7 @@ impl NicolaFsm {
         modifier_key: Option<crate::types::ModifierKey>,
     ) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
-        if self.engine_off_triple_vk.0 != 0 && vk_code == self.engine_off_triple_vk {
+        if self.engine_off_solo_repeat_vk.0 != 0 && vk_code == self.engine_off_solo_repeat_vk {
             let count = self.solo_counter.record(vk_code, timestamp);
             if count >= SOLO_OFF_TRIGGER_COUNT {
                 self.solo_counter.reset();
@@ -2008,15 +2008,15 @@ impl NicolaFsm {
         // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
         self.output_history.remove_by_scan(ev.scan_code);
 
-        // ソロ N 連打エンジン OFF（`engine_off_solo_triple` を親指キー以外の
+        // ソロ N 連打エンジン OFF（`engine_off_solo_repeat` を親指キー以外の
         // VK に割り当てた場合、例: VK_INSERT）。親指キーに割り当てた場合は
         // `resolve_char_and_thumb_as_separate_solos`/`timeout_pending_thumb` が
         // `solo_counter` で担当するためここには来ない——親指キーは
         // `KeyClass::LeftThumb`/`RightThumb` に分類され `bypass_reason` が
         // `Passthrough` を返さないため、両カウンターが同時に動くことはない。
         let is_extra_trigger_key = matches!(reason, BypassReason::Passthrough)
-            && self.engine_off_triple_vk.0 != 0
-            && ev.vk_code == self.engine_off_triple_vk;
+            && self.engine_off_solo_repeat_vk.0 != 0
+            && ev.vk_code == self.engine_off_solo_repeat_vk;
         if is_extra_trigger_key {
             if let Some(already_suppressed) = self.engine_off_extra_key_suppressed {
                 // OS のオートリピートによる KeyDown 再送（キーを押しっぱなし）。

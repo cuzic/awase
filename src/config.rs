@@ -423,7 +423,14 @@ pub struct KeysConfig {
     /// もこのソロ連打判定も一切発火しなくなる実例が確認された（`docs/bug-reports-triage.md`
     /// report `01M0VC3B1NG9JCDWMJTNNK6YAK`）。`VK_INSERT` はどの既定キー割当てとも
     /// 重複せず、通常のタイピングで連打されることもない。
-    pub engine_off_solo_triple: Option<String>,
+    ///
+    /// フィールド名は 2026-08-25 に `engine_off_solo_triple` から改称した
+    /// （実際の必要連打回数は 2026-07-08 の追補で 3→5 に変わっていたのに
+    /// 名前だけ "triple" のまま取り残されていたため。ADR-055 追補参照）。
+    /// `config.toml` に旧キー名で保存済みの既存ユーザーとの互換のため
+    /// `serde(alias)` で旧名も引き続き受け付ける。
+    #[serde(alias = "engine_off_solo_triple")]
+    pub engine_off_solo_repeat: Option<String>,
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///
     /// エンジンが有効になったとき、このキーを `SendInput` で送信して
@@ -450,7 +457,7 @@ impl Default for KeysConfig {
             ime_off: vec!["Ctrl+無変換".to_string()],
             ime_toggle: vec!["VK_KANJI".to_string()],
             ime_detect: ImeDetectConfig::default(),
-            engine_off_solo_triple: Some("VK_INSERT".to_string()),
+            engine_off_solo_repeat: Some("VK_INSERT".to_string()),
             engine_on_ime_key: None,
             engine_off_ime_key: None,
         }
@@ -751,11 +758,11 @@ impl AppConfig {
             offending_fields.push("keys.ime_off");
         }
         if keys
-            .engine_off_solo_triple
+            .engine_off_solo_repeat
             .as_deref()
             .is_some_and(mentions_jis_only)
         {
-            offending_fields.push("keys.engine_off_solo_triple");
+            offending_fields.push("keys.engine_off_solo_repeat");
         }
 
         if !offending_fields.is_empty() {
@@ -1054,7 +1061,7 @@ engine_on = ["Ctrl+Shift+VK_F13"]
 engine_off = ["Ctrl+Shift+VK_F14"]
 ime_on = ["Ctrl+VK_F13"]
 ime_off = ["Ctrl+VK_F14"]
-engine_off_solo_triple = "VK_F15"
+engine_off_solo_repeat = "VK_F15"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (_validated, warnings) = config.validate();
@@ -1075,11 +1082,26 @@ engine_on = ["Ctrl+Shift+VK_F13"]
 engine_off = ["Ctrl+Shift+VK_F14"]
 ime_on = ["Ctrl+VK_F13"]
 ime_off = ["Ctrl+VK_F14"]
-engine_off_solo_triple = "VK_F15"
+engine_off_solo_repeat = "VK_F15"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (_validated, warnings) = config.validate();
         assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    }
+
+    #[test]
+    fn test_engine_off_solo_repeat_accepts_legacy_triple_key_name_via_alias() {
+        // 2026-08-25 に engine_off_solo_triple → engine_off_solo_repeat へ改称。
+        // 旧キー名で保存済みの既存 config.toml が壊れないことを確認する。
+        let toml_str = r#"
+[keys]
+engine_off_solo_triple = "VK_NONCONVERT"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.keys.engine_off_solo_repeat.as_deref(),
+            Some("VK_NONCONVERT")
+        );
     }
 
     #[test]

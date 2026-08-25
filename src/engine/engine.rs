@@ -115,8 +115,8 @@ impl Engine {
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     /// `VkCode(0)` を渡すと機能を無効にする。
-    pub const fn set_engine_off_triple_vk(&mut self, vk: VkCode) {
-        self.adapter.set_engine_off_triple_vk(vk);
+    pub const fn set_engine_off_solo_repeat_vk(&mut self, vk: VkCode) {
+        self.adapter.set_engine_off_solo_repeat_vk(vk);
     }
 
     /// Space 親指キーのフォールバック挙動を設定する。

@@ -923,17 +923,17 @@ pub(super) fn run_all() -> Result<()> {
 
     if let Some(vk) = config
         .keys
-        .engine_off_solo_triple
+        .engine_off_solo_repeat
         .as_deref()
         .filter(|s| !s.is_empty())
         .and_then(|s: &str| {
             VkCode::from_name(s).or_else(|| {
-                diag.warn(format!("Unknown key name for engine_off_solo_triple: {s}"));
+                diag.warn(format!("Unknown key name for engine_off_solo_repeat: {s}"));
                 None
             })
         })
     {
-        engine.set_engine_off_triple_vk(vk);
+        engine.set_engine_off_solo_repeat_vk(vk);
     }
 
     let compiled_keymaps = crate::keymap::KeymapTable::new(&config.keymaps);
