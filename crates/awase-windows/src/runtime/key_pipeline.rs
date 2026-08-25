@@ -336,7 +336,7 @@ impl Runtime {
         if self.platform_state.gate.shift_conv_guard_pending
             || self.platform_state.gate.half_width_alnum_toggle_active
         {
-            Self::close_focus_resync_gate_if_current(resync_generation);
+            self.close_focus_resync_gate_if_current(resync_generation);
             return;
         }
         let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
@@ -373,7 +373,7 @@ impl Runtime {
                     crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
                 );
             }
-            Self::close_focus_resync_gate_if_current(resync_generation);
+            self.close_focus_resync_gate_if_current(resync_generation);
             return;
         }
 
@@ -391,19 +391,30 @@ impl Runtime {
         // しなくなる恐れがあった。spawn 時刻を持たせ、
         // `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS` を超えていれば「放棄された」とみなして
         // 新規 spawn を許可することで自己回復させる。
+        // BUG-77 code review 追補: この in-flight フラグは「通常の idle-conv-check」の
+        // 多重 spawn 防止専用であり、resync（`resync_generation.is_some()`）はこれを
+        // 共有しない。resync は `FocusResyncGate` の one-shot 消費（`consume_and_close`
+        // を呼べるのはフォーカス変更ごとに1回だけ）で既に多重 spawn しない構造になって
+        // おり、この spam ガードを必要としない。共有すると、無関係な通常キー
+        // （例: Ctrl+V）が偶然先に in-flight を掴んでいた場合、resync 対象キーの
+        // 読み取りが「in-flight のためスキップ」に落ちて gate が即座に閉じられ、
+        // resync が一度も実際の conv を読まないまま defer 中のキーが stale な belief
+        // で drain されてしまう（BUG-77 の再発）。resync は常に自分専用の読み取りを
+        // spawn し、共有フラグの読み書きを一切行わない。
         let now_ms_for_gate = hook::current_tick_ms();
-        if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
-            let elapsed = now_ms_for_gate.saturating_sub(since);
-            if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
-                log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
-                Self::close_focus_resync_gate_if_current(resync_generation);
-                return;
+        if resync_generation.is_none() {
+            if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
+                let elapsed = now_ms_for_gate.saturating_sub(since);
+                if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
+                    log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
+                    return;
+                }
+                log::warn!(
+                    "[idle-conv-check] 前回の in-flight が {elapsed}ms 未解放 → 放棄されたとみなし再武装"
+                );
             }
-            log::warn!(
-                "[idle-conv-check] 前回の in-flight が {elapsed}ms 未解放 → 放棄されたとみなし再武装"
-            );
+            self.platform_state.gate.idle_conv_check_in_flight_since_ms = Some(now_ms_for_gate);
         }
-        self.platform_state.gate.idle_conv_check_in_flight_since_ms = Some(now_ms_for_gate);
 
         // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch 照合し
         // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型）。
@@ -417,9 +428,11 @@ impl Runtime {
         win32_async::spawn_local(async move {
             let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
             let _ = crate::with_app(|app| {
-                app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
+                if resync_generation.is_none() {
+                    app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
+                }
                 let Some(conv) = conv else {
-                    Self::close_focus_resync_gate_if_current(resync_generation);
+                    app.close_focus_resync_gate_if_current(resync_generation);
                     return;
                 };
                 crate::state::probe_admission::admit_epoch_in_app(
@@ -436,7 +449,7 @@ impl Runtime {
                 );
                 // 成功・棄却いずれの場合も resync 試行は完了している。
                 // gate を閉じて defer 中のキーを drain 可能にする。
-                Self::close_focus_resync_gate_if_current(resync_generation);
+                app.close_focus_resync_gate_if_current(resync_generation);
             });
         });
     }
@@ -447,16 +460,21 @@ impl Runtime {
     /// idle-conv-check 呼び出しは resync gate に一切関与しない）。`FocusResyncGate::
     /// open_if_current` が world-first として `true` を返した場合のみ drain を post
     /// する——ハード期限タイマーと競合しても片方だけが post することを保証する。
-    fn close_focus_resync_gate_if_current(resync_generation: Option<u64>) {
+    /// この呼び出しで閉じられた場合、ハード期限タイマーはもう不要なので明示的に
+    /// kill する（BUG-77 code review 追補: 期限より早く閉じた成功パスのたびに
+    /// 無駄な `WM_TIMER` 発火を残さない）。
+    fn close_focus_resync_gate_if_current(&mut self, resync_generation: Option<u64>) {
         let Some(generation) = resync_generation else {
             return;
         };
-        if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation)
-            && crate::state::focus_resync_policy::should_post_drain(
+        if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation) {
+            self.platform.timer.kill(crate::TIMER_FOCUS_RESYNC);
+            if crate::state::focus_resync_policy::should_post_drain(
                 crate::tsf::probe_bridge::OUTPUT_GATE.is_active(),
             )
-        {
-            crate::tsf::probe_bridge::post_drain_output_queue();
+            {
+                crate::tsf::probe_bridge::post_drain_output_queue();
+            }
         }
     }
 

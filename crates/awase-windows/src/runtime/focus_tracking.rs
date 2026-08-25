@@ -404,10 +404,15 @@ impl Runtime {
         // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。
         // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
         // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
-        if !crate::focus::class_names::is_effectively_tsf_native(
+        //
+        // この後の focus-resync arm 判定（本関数末尾）でも同じ問い合わせが必要なため
+        // ここで一度だけ計算して使い回す（BUG-77 code review 追補: 同一引数での
+        // 重複計算の指摘）。
+        let is_effectively_tsf_native_now = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
-        ) {
+        );
+        if !is_effectively_tsf_native_now {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
                 self.platform_state.ime.record_confirmed(true, tick_ms.0);
@@ -502,12 +507,8 @@ impl Runtime {
         // resync を待たせるための armed フラグをここで立てる。タイマーは張らない
         // （ユーザーがいつ打つか分からないため。有効期限も付けない——
         // `state/focus_resync_policy.rs` の doc 参照）。
-        let is_tsf_native_for_resync = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
         if crate::state::focus_resync_policy::should_arm_focus_resync(
-            is_tsf_native_for_resync,
+            is_effectively_tsf_native_now,
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::send_health::blocking_allowed(tick_ms.0),
             self.platform_state.gate.idle_conv_check_in_flight_since_ms.is_some(),

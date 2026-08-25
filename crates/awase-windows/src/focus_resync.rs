@@ -17,11 +17,21 @@
 //! 遅れて届いた方の結果は破棄する」ことを保証する（BUG-31/BUG-70 系の
 //! 「タイピング中に遅れて belief が書き換わる」事故を防ぐ）。
 //!
-//! disarm（`disarm()`）は以下の契機で呼ぶ（有効期限は付けない——理由は
-//! `state/focus_resync_policy.rs` および `docs/known-bugs.md` の該当 BUG 参照）:
-//! - 次のフォーカス変更（`arm()` が armed を再度 true にするので自然に上書きされる）
-//! - 明示的な IME 操作（変換/無変換/F2 等）
-//! - エンジン無効化
+//! disarm（`disarm()`）は設計上、以下の契機で呼ぶべきものとして用意してある
+//! （有効期限は付けない——理由は `state/focus_resync_policy.rs` および
+//! `docs/known-bugs.md` BUG-77 参照）:
+//! - 次のフォーカス変更（`arm()` が armed を再度 true にするので自然に上書きされる。
+//!   これは実際に配線済み）
+//! - 明示的な IME 操作（変換/無変換/F2 等）— **未配線**
+//! - エンジン無効化 — **未配線**
+//!
+//! 後2者は `docs/known-bugs.md` BUG-77 が明記する既知の限界として意図的に
+//! 未配線のまま残している（正しい統合ポイントの実機検証待ち）。呼ばれなくても
+//! 安全側に働く——ガード4（`EXPLICIT_IME_SUPPRESS_MS`）が同じ状況で resync の
+//! conv 読み取り自体を棄却するため、disarm が無いと「最大
+//! `FOCUS_RESYNC_DEADLINE_MS` だけ無駄に待つ」だけで、誤った belief が
+//! 適用されることはない。**この doc を読んで「明示的 IME 操作で armed が
+//! クリアされている」と仮定した設計を上に積まないこと。**
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

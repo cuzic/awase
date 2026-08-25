@@ -10127,6 +10127,43 @@ premortem 設計レビュー、複数ラウンド）:**
   `Engine activated` まで 44ms、n=1）+ マージン 56ms。レート制限ではなく
   「これ以上ユーザーの入力を止めない」という上限としてのポリシー値。
 
+**追補（PR #107 `/code-review` 指摘、実装直後・実機検証前に修正）:**
+
+初回実装（上記）には CONFIRMED 判定の2つの致命的な穴があった。
+
+1. **チョード判定タイマーが延期されない。** resync 対象キーを `INPUT_DEFER` へ
+   退避しても、`OUTPUT_GATE` と違い `FOCUS_RESYNC` の gate は
+   `runtime/message_handlers.rs` の `TIMER_PENDING`/`TIMER_SPECULATIVE` 延期判定
+   （既存の `OUTPUT_GATE.is_active()` チェック）に含まれていなかった。
+   K+右親指のようなチョードの片方が resync 対象で defer される間、もう片方は
+   通常どおり FSM に feed され続けチョードタイマーを張る。resync 完了/期限
+   （最大 `FOCUS_RESYNC_DEADLINE_MS`）より先にこのタイマーが発火すると、
+   同時打鍵判定が失敗しチョードが2つのリテラル文字に分裂する
+   （`OutputGate` が防いでいるのと全く同じ壊れ方）。修正: 同判定を
+   `crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC
+   .is_gate_active()` に拡張。`deferred_engine_timers` の replay は gate の
+   種類を問わず `handle_wm_drain_output_queue` が必ず行うため、この1箇所の
+   拡張だけで両ゲートに対して正しく機能する。
+2. **共有 in-flight フラグが resync を誤って早期終了させる。** 通常の
+   idle-conv-check と resync トリガーが同じ
+   `idle_conv_check_in_flight_since_ms` を共有していたため、resync 対象キーの
+   直前に無関係な修飾キー付きキー（例: Ctrl+V）が通常経路の conv 読み取りを
+   in-flight にしていた場合、resync 側は「既に in-flight、スキップ」に落ちて
+   実際の conv 読み取りを一度も行わないまま gate を閉じ、defer 中のキーを
+   stale な belief のまま drain してしまう——本 BUG そのものの再発。
+   修正: resync（`resync_generation.is_some()`）はこの共有フラグを一切
+   読み書きしない。`FocusResyncGate` の one-shot 消費（`consume_and_close`
+   はフォーカス変更ごとに1回しか呼ばれない）で既に多重 spawn しない構造の
+   ため、この spam ガードを resync 側は必要としない。
+
+副次的な指摘（優先度低・同時に対応）: `focus_resync.rs` の module doc が
+「明示的 IME 操作・エンジン無効化で disarm される」と実態と異なる主張を
+していた点をコメント修正（下記「既知の限界」参照、disarm は意図的に未配線）。
+`focus_tracking.rs::on_focus_process_changed` 内で `is_effectively_tsf_native`
+が同一引数で2回計算されていた重複を1回に統合。resync が期限前に成功終了した
+場合に `TIMER_FOCUS_RESYNC` を明示的に kill するよう変更（無駄な `WM_TIMER`
+発火の削減）。
+
 **既知の限界（正直に記録）:**
 
 - ガード4（明示的 IME 操作直後の抑制窓、`apply_idle_conv_check` の (c)
