@@ -94,8 +94,8 @@ impl FsmAdapter {
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
-    pub(super) const fn set_engine_off_triple_vk(&mut self, vk: crate::types::VkCode) {
-        self.fsm.set_engine_off_triple_vk(vk);
+    pub(super) const fn set_engine_off_solo_repeat_vk(&mut self, vk: crate::types::VkCode) {
+        self.fsm.set_engine_off_solo_repeat_vk(vk);
     }
 
     /// Space 親指キーのフォールバック挙動を設定する。
@@ -141,7 +141,7 @@ impl FsmAdapter {
         self.fsm.set_thumb_shift_faces_enabled(enabled);
     }
 
-    /// triple 連打によるエンジン OFF 要求を取り出す（1ショット）。
+    /// ソロ連打によるエンジン OFF 要求を取り出す（1ショット）。
     pub(super) fn take_engine_off_requested(&mut self) -> bool {
         self.fsm.take_engine_off_requested()
     }

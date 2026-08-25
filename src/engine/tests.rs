@@ -32,6 +32,11 @@ const VK_D: VkCode = VkCode(0x44);
 const VK_F: VkCode = VkCode(0x46);
 const VK_C: VkCode = VkCode(0x43);
 const VK_V: VkCode = VkCode(0x56);
+/// `engine_off_solo_repeat` の新既定値（2026-08-25、無変換から変更）。
+/// レイアウトにも親指キーにも割り当てないため `classify_test_key` で
+/// 自動的に `KeyClassification::Passthrough` に分類される。
+const VK_INSERT: VkCode = VkCode(0x2D);
+const VK_BACK: VkCode = VkCode(0x08);
 
 // Scan code constants specific to this test file
 const SCAN_D: ScanCode = ScanCode(0x20);
@@ -1969,15 +1974,15 @@ fn test_speculative_char_key_up_different_vk_does_not_confirm() {
     );
 }
 
-// ── engine_off_triple_vk: 対象外の親指キーはカウントしない (line 1324) ──
+// ── engine_off_solo_repeat_vk: 対象外の親指キーはカウントしない (line 1324) ──
 
 #[test]
-fn test_engine_off_triple_vk_ignores_mismatched_thumb_solo_timeouts() {
-    // engine_off_triple_vk.0 != 0 && vk_code == engine_off_triple_vk の `&&` が
+fn test_engine_off_solo_repeat_vk_ignores_mismatched_thumb_solo_timeouts() {
+    // engine_off_solo_repeat_vk.0 != 0 && vk_code == engine_off_solo_repeat_vk の `&&` が
     // `||` に壊れると、設定さえされていれば「無関係な親指キー」の単独タイムアウトでも
     // カウントされてしまい、5回連続で誤って engine off が要求される。
     let mut engine = make_engine();
-    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+    engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
 
     let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 
@@ -2427,6 +2432,7 @@ fn test_toggle_enabled_flushes_pending() {
 
 const VK_KANJI: VkCode = VkCode(0x19); // 半角/全角キー
 const SCAN_KANJI: ScanCode = ScanCode(0x29);
+const SCAN_INSERT: ScanCode = ScanCode(0x52);
 
 #[test]
 fn test_ime_control_key_passes_through_from_idle() {
@@ -4633,15 +4639,15 @@ fn test_alt_released_while_disabled_does_not_stick() {
     r.assert_consumed();
 }
 
-// ── engine_off_triple_vk (consecutive solo muhenkan) tests ──
+// ── engine_off_solo_repeat_vk (consecutive solo muhenkan) tests ──
 
 #[test]
-fn test_engine_off_triple_solo_thumb_triggers() {
+fn test_engine_off_solo_repeat_thumb_triggers() {
     // 無変換を単独タイムアウトで5回連続確定するとエンジン OFF 要求が立つことを確認。
     // 3回だとスリープ復帰時の混乱で焦って連打しただけで誤発火した実機事例
     // (2026-07-08) があり、5回に引き上げた。4回目までは発火しないことも確認する。
     let mut engine = make_engine();
-    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+    engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
 
     let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 
@@ -4668,7 +4674,7 @@ fn test_engine_off_counter_resets_on_thumb_consume() {
     // 同時打鍵として consume された場合、ソロ連打カウンターがリセットされることを確認。
     // (「アップロード」のような連続左親指シフト入力でエンジン OFF が誤発動しないことを保証)
     let mut engine = make_engine();
-    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+    engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
 
     let gap = 150_000u64; // 150ms = within SOLO_OFF_TIMEOUT_US (400ms)
 
@@ -4717,7 +4723,7 @@ fn test_engine_off_counts_solo_resolved_via_insufficient_overlap_separate_solos(
     // （タイムアウト経由だと thumb はまだ物理的に押されたままなので、各周回の
     // 最後に明示的に KeyUp を送って物理状態を正常化してから次の周回へ進む）。
     let mut engine = make_engine();
-    engine.set_engine_off_triple_vk(VK_NONCONVERT);
+    engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
 
     let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 
@@ -4746,6 +4752,195 @@ fn test_engine_off_counts_solo_resolved_via_insufficient_overlap_separate_solos(
         engine.take_engine_off_requested(),
         "5 回目の単独打鍵×2 → engine off"
     );
+}
+
+// ── engine_off_solo_repeat_vk (親指キー以外、例: VK_INSERT) tests ──
+//
+// `engine_off_solo_repeat` を親指キーとは無関係な VK（既定値 VK_INSERT）に
+// 割り当てた場合の `handle_bypass` 経由の判定。上のブロックの `solo_counter`
+// （親指キー専用、`PendingThumb` 経由）とは別の `engine_off_extra_solo_counter`
+// を使う独立した経路。
+
+#[test]
+fn test_engine_off_extra_key_below_threshold_passes_through_normally() {
+    // 1〜4回目のタップは通常どおり素通しされ（VK_INSERT 本来の動作を変えない）、
+    // engine off も要求されないことを確認する。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
+
+    for i in 0..4u64 {
+        let t = i * gap;
+        engine
+            .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build())
+            .assert_pass_through();
+        engine
+            .on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build())
+            .assert_pass_through();
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} 回目の単独タップ → まだ engine off しない",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn test_engine_off_extra_key_triggers_on_fifth_tap_and_keyup_is_symmetric() {
+    // 5回目の KeyDown は suppress（consumed、no actions）され、engine off が
+    // 要求される。対応する KeyUp も同じく consumed になる（J↓/J↑ 非対称防止）。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let gap = 150_000u64;
+
+    for i in 0..4u64 {
+        let t = i * gap;
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+        assert!(!engine.take_engine_off_requested());
+    }
+
+    let t = 4 * gap;
+    engine
+        .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build())
+        .assert_consumed();
+    assert!(
+        engine.take_engine_off_requested(),
+        "5 回目の単独タップ → engine off"
+    );
+    engine
+        .on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build())
+        .assert_consumed();
+}
+
+#[test]
+fn test_engine_off_extra_key_os_auto_repeat_does_not_count() {
+    // OS のオートリピートは KeyUp を挟まずに KeyDown だけが繰り返し届く。
+    // これを新規タップとしてカウントしてしまうと、Insert キーを押しっぱなしに
+    // しただけで意図せず 5 回に達し engine off してしまう
+    // （2026-08-25 敵対的レビューで発見）。KeyUp が来るまでは同一押下とみなし、
+    // 何度 KeyDown が来ても素通し判定を維持してカウントしないことを確認する。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let t0 = 0u64;
+    engine
+        .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t0).build())
+        .assert_pass_through();
+    // オートリピート KeyDown を 10 回、KeyUp を挟まずに送る
+    // （典型的なリピート間隔 30-50ms を想定）。
+    for i in 1..=10u64 {
+        engine
+            .on_event(
+                Ev::down(VK_INSERT)
+                    .scan(SCAN_INSERT)
+                    .at(t0 + i * 40_000)
+                    .build(),
+            )
+            .assert_pass_through();
+        assert!(
+            !engine.take_engine_off_requested(),
+            "オートリピート {i} 回目 → カウントされず engine off しない"
+        );
+    }
+    engine.on_event(
+        Ev::up(VK_INSERT)
+            .scan(SCAN_INSERT)
+            .at(t0 + 11 * 40_000)
+            .build(),
+    );
+    assert!(!engine.take_engine_off_requested());
+}
+
+#[test]
+fn test_engine_off_extra_key_ignores_when_ctrl_held() {
+    // Ctrl+Insert（多くのアプリ/ターミナルで「コピー」に割り当てられる標準
+    // ショートカット）は「ソロ」タップではないためカウント対象外とし、
+    // 通常どおり素通しする。修飾キー付きの押下がストリークを途切れさせる
+    // ことも確認する（2026-08-25 敵対的レビューで発見）。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let gap = 150_000u64;
+    engine.on_event(Ev::down(VK_CTRL).at(0).build());
+
+    for i in 0..5u64 {
+        let t = i * gap;
+        engine
+            .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build())
+            .assert_pass_through();
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+        assert!(
+            !engine.take_engine_off_requested(),
+            "Ctrl+Insert {} 回目 → 修飾キー付きなのでカウントされず engine off しない",
+            i + 1
+        );
+    }
+
+    // Ctrl を離した後、通常のソロタップに切り替えても、上のカウントは
+    // 引き継がれない（リセットされている）ことを 4 回まで確認する。
+    engine.on_event(Ev::up(VK_CTRL).at(5 * gap).build());
+    for i in 0..4u64 {
+        let t = 6 * gap + i * gap;
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+        assert!(
+            !engine.take_engine_off_requested(),
+            "Ctrl 解放後 {} 回目 → まだ engine off しない（カウントは引き継がれない）",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn test_engine_off_extra_key_gap_over_timeout_resets() {
+    // タップ間隔が SOLO_OFF_TIMEOUT_US (400ms) を超えるとストリークがリセット
+    // され、5 回連続にならない限り engine off しないことを確認する。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let over_timeout = 500_000u64; // 500ms > 400ms
+
+    for i in 0..10u64 {
+        let t = i * over_timeout;
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} 回目（毎回タイムアウト超過） → engine off しない",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn test_engine_off_extra_key_interrupted_by_different_passthrough_key_resets() {
+    // 別の Passthrough キー（例: Backspace）が間に挟まるとストリークが
+    // リセットされ、5 回連続にならないことを確認する。
+    let mut engine = make_engine();
+    engine.set_engine_off_solo_repeat_vk(VK_INSERT);
+
+    let gap = 150_000u64;
+
+    for i in 0..4u64 {
+        let base = i * (3 * gap);
+        engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(base).build());
+        engine.on_event(
+            Ev::up(VK_INSERT)
+                .scan(SCAN_INSERT)
+                .at(base + 10_000)
+                .build(),
+        );
+        engine.on_event(Ev::down(VK_BACK).at(base + gap).build());
+        engine.on_event(Ev::up(VK_BACK).at(base + gap + 10_000).build());
+        assert!(
+            !engine.take_engine_off_requested(),
+            "{} 周目（Backspace で毎回中断） → engine off しない",
+            i + 1
+        );
+    }
 }
 
 // ── FsmAdapter tests ──
@@ -6992,7 +7187,7 @@ mod engine_integration_tests {
     #[test]
     fn take_solo_off_notification_true_once_after_solo_off_trigger() {
         let mut engine = make_test_engine();
-        engine.set_engine_off_triple_vk(VK_NONCONVERT);
+        engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
         let gap = 150_000u64;
 
         for i in 0..5u64 {

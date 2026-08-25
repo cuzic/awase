@@ -150,3 +150,121 @@ suppress（`true`）で OS への送出をブロックする。
 上記の実インシデントにより 5 回へ改定した。判断枠組み（2回は少ない／緊急時に
 打ちにくくなり過ぎない範囲）自体は維持しつつ、実際に3回で誤発動した事例が
 出たため上限側に寄せた。
+
+## 追補（2026-08-25）: 既定キーを VK_NONCONVERT → VK_INSERT に変更 + 親指キー以外でも動作可能に
+
+### 背景
+
+タスクトレイの不具合報告機能（ADR-095）経由で、無変換キーを `left_thumb_key`
+（既定でもある）に割り当てたまま、ユーザーが独自に `keys.ime_on`/`ime_off` へ
+同じ無変換キーを追加設定した report（`docs/bug-reports-triage.md` report
+`01M0VC3B1NG9JCDWMJTNNK6YAK`）が見つかった。調査の結果、`Engine::on_input` の
+Phase 1（`check_special_keys` によるホットキー層）が Phase 3（`NicolaFsm` の
+親指キー単独タップ判定）より先に処理され、Phase 1 がマッチすると即 return する
+ため、`keys.ime_on` に無変換を追加した時点で `muhenkan_solo_tap_*` はおろか
+`engine_off_solo_repeat`（当時のキー名は `engine_off_solo_triple`、後述
+「命名修正」参照）のソロ連打判定（当時は親指キー専用だった）も一切
+発火しなくなることが判明した（`src/engine/engine.rs:336-378`, `:869-937`）。
+
+無変換は既定で `left_thumb_key` を兼ねているため、この種の「同じキーに複数の
+役割を重ねて設定してしまう」事故の温床になりやすい。単純に「重複を検知して
+警告する」バリデーションも検討したが、そもそも `engine_off_solo_repeat` の
+既定値が「よく使う親指キーと同じキー」である必然性はなく、無変換以外の
+まず押されない物理キーを既定にする方が構造的に安全と判断した。
+
+### 変更
+
+- **`NicolaFsm::handle_bypass` に独立したソロ連打判定を追加**
+  （`src/engine/nicola_fsm.rs`）。従来は `timeout_pending_thumb`/
+  `resolve_char_and_thumb_as_separate_solos`（いずれも `EngineState::PendingThumb`
+  経由、= 親指キーとして設定した VK でしか到達しない）でのみ `solo_counter` を
+  更新していたため、**`engine_off_solo_repeat` は親指キーと同じ VK でなければ
+  絶対に発火しない**という制約があった（`crates/awase-settings` の
+  旧警告文にも明記されていた）。新設した `engine_off_extra_solo_counter`
+  （`solo_counter` とは独立したカウンター）は `KeyClass::Passthrough` に
+  分類される任意の VK に対して `handle_bypass` 内でカウントする。1〜4回目の
+  押下は通常どおり素通し（そのキー本来の動作を一切変えない）、5回目のみ
+  suppress して `engine_off_requested` を立てる。親指キーに設定した場合は
+  従来どおり `KeyClass::LeftThumb`/`RightThumb` に分類され `Passthrough` には
+  ならないため、2つのカウンターが同時に動くことはない（分類の時点で排他）。
+- **既定値を `"VK_NONCONVERT"` → `"VK_INSERT"` に変更**（`src/config.rs`）。
+  Insert キーは JIS/US どちらの物理キーボードにも存在し、既定の親指キー・
+  ホットキーのいずれとも重複せず、通常のタイピングで連打されることもない。
+- **`crates/awase-settings`**: 設定 UI のドロップダウンに Insert を追加し
+  （`SOLO_REPEAT_EXTRA_OPTIONS`）、「親指キー以外を指定しても発火しない」
+  という（新実装により誤りとなった）警告文を削除した。JIS/US 配列切替時の
+  `engine_off_solo_repeat` は、他のキー設定と同様に既定値（`VK_INSERT`）へ
+  強制的に揃えるよう変更した（後述「後方互換性」参照。当初は「配列非依存
+  だから触らなくてよい」として US 切替時のリセットを撤去したが、これは
+  `VK_NONCONVERT` を明示保存済みの既存ユーザーが US へ切り替えると機能が
+  無反応のまま残る回帰だったため、レビューで指摘を受けて撤回した）。
+
+### 実装後の敵対的レビューで発覚した3つの穴と対応（2026-08-25）
+
+`handle_bypass` への実装直後、3方向の独立した敵対的レビュー（正しさ/状態機械、
+後方互換性、リポジトリ規約整合性）を行った結果、以下が見つかり即座に修正した:
+
+1. **OS のキーリピートで誤発火する**: `ConsecutiveSoloCounter::record` は
+   `(vk, timestamp)` のみを見るため、Insert キーを押しっぱなしにして OS の
+   オートリピート（初回遅延後、数十ms間隔で `WM_KEYDOWN` が連続する）が
+   走るだけで容易に5回に達してしまっていた。修正: `engine_off_extra_key_suppressed:
+   Option<bool>` で「この VK が現在物理的に押下中か」を追跡し、KeyUp を挟まない
+   再送（リピート）は新規タップとしてカウントしない。
+2. **修飾キー付き押下（例: Ctrl+Insert = 多くのアプリの「コピー」）でも
+   カウントされる**: `bypass_reason` は `KeyClass::Passthrough` を最優先で
+   返すため、`OsModifierHeld` 判定より先に本ロジックへ到達し、Ctrl 等が
+   押されていても素通しの通常タップと区別なくカウントされていた。修正:
+   新規押下時に Ctrl/Alt/Shift/Win のいずれかが押されていれば「ソロ」扱い
+   せずカウント対象外・ストリークもリセットするガードを追加。
+3. **5回目の KeyDown を suppress しても、対応する KeyUp は非対称に素通し
+   される**: Passthrough キーは `output_history` に記録されないため、
+   `on_key_up` は常に `handle_key_up_active` の末尾から `pass_through` に
+   落ちていた。修正: 上記 `engine_off_extra_key_suppressed` に KeyDown 側の
+   判定を記録しておき、`on_key_up` で同じキーが離されたときにその判定を
+   再現して symmetric に扱う（`handle_bypass` 冒頭の J↓/J↑ 非対称防止コメントと
+   同じ理由）。
+
+いずれも `src/engine/tests.rs`（`test_engine_off_extra_key_*`、6件）で回帰
+テストを追加済み。
+
+### 後方互換性
+
+既存の `config.toml` に `engine_off_solo_triple` を明示的に保存済みの
+ユーザーには影響しない（`#[serde(alias = "engine_off_solo_triple")]` で
+旧キー名を引き続き受け付ける。後述「命名修正」参照。デフォルト値の変更は
+フィールド未設定時のみ効く）。無変換を親指キーとして使い続けたい
+ユーザーが `engine_off_solo_repeat` を明示的に無変換へ設定する運用も、
+`solo_counter` 経由の従来ロジックがそのまま残っているため引き続き動作する。
+
+### 追補（2026-08-25）: フィールド名を `engine_off_solo_triple` → `engine_off_solo_repeat` に改称
+
+#### 背景
+
+2026-07-08 の追補で必要連打回数を 3→5 に引き上げた際、内部定数
+（`SOLO_TRIPLE_COUNT`→`SOLO_OFF_TRIGGER_COUNT`、`SOLO_TRIPLE_TIMEOUT_US`→
+`SOLO_OFF_TIMEOUT_US`）は改称されたが、公開設定キー `engine_off_solo_triple`
+と、対応する内部識別子（`NicolaFsm::engine_off_triple_vk`、
+`set_engine_off_triple_vk`、`crates/awase-settings` の `solo_triple_combo`/
+`SOLO_TRIPLE_EXTRA_OPTIONS` 等）は "triple" のまま取り残されていた。実際の
+挙動（5回連打）と名前（3連打を意味する "triple"）が食い違ったまま2ヶ月半
+運用されていた。上記の VK_INSERT 対応の実装中にこの不一致を指摘されたため、
+未リリースの同一 PR 内でまとめて是正した。
+
+#### 変更
+
+- 公開設定キー: `[keys] engine_off_solo_triple` → `engine_off_solo_repeat`
+  （`src/config.rs`）。`#[serde(alias = "engine_off_solo_triple")]` を付与し、
+  旧キー名で保存済みの `config.toml` も引き続き読み込める（`src/config.rs`
+  の `test_engine_off_solo_repeat_accepts_legacy_triple_key_name_via_alias`
+  で回帰テスト済み）。
+- 内部識別子: `engine_off_triple_vk`/`set_engine_off_triple_vk` →
+  `engine_off_solo_repeat_vk`/`set_engine_off_solo_repeat_vk`
+  （`src/engine/nicola_fsm.rs`, `src/engine/fsm_adapter.rs`,
+  `src/engine/engine.rs`）。`solo_triple_combo`/`solo_triple_hover`/
+  `SOLO_TRIPLE_EXTRA_OPTIONS` → `solo_repeat_combo`/`solo_repeat_hover`/
+  `SOLO_REPEAT_EXTRA_OPTIONS`（`crates/awase-settings/src/main.rs`）。
+- `SOLO_OFF_TRIGGER_COUNT`/`SOLO_OFF_TIMEOUT_US`（2026-07-08 に既に改称済み）
+  は変更なし。
+
+命名以外の挙動は一切変更していない。UI 上のラベル（「単独5連打で OFF」等）
+はもともと "triple" を使っておらず日本語表示への影響もない。

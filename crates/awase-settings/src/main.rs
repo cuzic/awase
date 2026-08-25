@@ -1116,6 +1116,14 @@ impl SettingsApp {
             // 無意味になる）のを防ぐため、親指キーとホットキー一式を
             // KeysConfig::default()/GeneralConfig::default() と同じ JIS 既定値へ
             // 強制的に戻す。ユーザーが手動で戻す手間を省く。
+            //
+            // `engine_off_solo_repeat` も既定値（VK_INSERT）へ強制的に揃える。
+            // 既定値自体は JIS/US どちらの物理キーボードにも存在し配列非依存だが、
+            // 「触らない」実装では config.toml に旧デフォルトの VK_NONCONVERT を
+            // 明示保存済みの既存ユーザーが US へ切り替えたときにその値が残ってしまい、
+            // US には無変換キーが無いためこの緊急停止機能が無反応のまま気付かれない
+            // 回帰があった（2026-08-25 レビューで発見）。他のキー設定と同様、配列
+            // 切替のたびに既定値へ揃えることでこの穴を塞ぐ。
             if prev_keyboard_model != awase::scanmap::KeyboardModel::Jis
                 && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Jis
             {
@@ -1126,13 +1134,20 @@ impl SettingsApp {
                 self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
                 self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
                 self.config.keys.ime_toggle = vec!["VK_KANJI".to_string()];
-                self.config.keys.engine_off_solo_triple = Some("VK_NONCONVERT".to_string());
+                self.config.keys.engine_off_solo_repeat = Some("VK_INSERT".to_string());
             }
-            // JIS → US への切替時、エンジンON/OFF・IME ON/OFF・単独5連打OFF の既定値
+            // JIS → US への切替時、エンジンON/OFF・IME ON/OFF の既定値
             // （Ctrl+Shift+変換 等）は US に無変換/変換キーが物理的に存在しないため
             // 動作しない。動かない既定値を黙って残すより、未設定にして
             // 「キー設定」タブで明示的に選んでもらう方が誠実（他アプリのショートカット
             // と衝突しない US 向け「正解」の組み合わせを勝手に決め打ちできないため）。
+            //
+            // `engine_off_solo_repeat` だけは他と違い None にせず VK_INSERT へ
+            // 揃える: 既定値の VK_INSERT は US キーボードにも物理的に存在し
+            // そのまま動作するため、他のフィールドのように「動かない既定値」では
+            // ない。無変換/変換を明示指定していた既存ユーザーの値をここで
+            // VK_INSERT へ上書きするのは意図的（US では無変換/変換は動かないため、
+            // 黙って残すより動く既定値へ揃える方が誠実）。
             if prev_keyboard_model != awase::scanmap::KeyboardModel::Us
                 && self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us
             {
@@ -1141,7 +1156,7 @@ impl SettingsApp {
                 self.config.keys.ime_on.clear();
                 self.config.keys.ime_off.clear();
                 self.config.keys.ime_toggle.clear();
-                self.config.keys.engine_off_solo_triple = None;
+                self.config.keys.engine_off_solo_repeat = Some("VK_INSERT".to_string());
             }
         });
         if self.config.general.keyboard_model == awase::scanmap::KeyboardModel::Us {
@@ -1154,11 +1169,11 @@ impl SettingsApp {
                  キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
                  親指シフト ON 時のみ Alt キーを親指キーとして使えます）。\n\
                  \n\
-                 親指シフト ON/OFF・IME ON/OFF・単独5連打OFF のホットキーも未設定に\n\
-                 なっています（無変換/変換前提の既定値は US では動かないため）。\n\
+                 親指シフト ON/OFF・IME ON/OFF のホットキーも未設定になっています\n\
+                 （無変換/変換前提の既定値は US では動かないため）。\n\
                  「キー設定」タブで、動作する物理キーの組み合わせを設定してください。\n\
-                 単独5連打OFF は、親指キーとして設定した物理キー自体を指定してください\n\
-                 （それ以外のキーを指定しても発火しません）。",
+                 単独5連打OFF（既定 Insert キー）は無変換/変換に依存しないため\n\
+                 US でもそのまま動作します。",
             );
         }
         let layout_hover = "使用する配列定義ファイルを選びます。\n選ぶと: 「配列」タブの内容がこのファイルに切り替わります。\nlayout フォルダ内の .yab ファイルが表示されます。";
@@ -1363,14 +1378,14 @@ impl SettingsApp {
             &mut self.new_engine_off,
             "親指シフトを OFF にするキーの組み合わせです。\n複数登録できます。",
         );
-        let solo_triple_hover = "指定キーを単独で素早く5回連続押下すると親指シフトを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
+        let solo_repeat_hover = "指定キーを単独で素早く5回連続押下すると親指シフトを OFF にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
         ui.horizontal(|ui| {
             ui.label("  単独5連打で OFF:")
-                .on_hover_text(solo_triple_hover);
-            solo_triple_combo(
+                .on_hover_text(solo_repeat_hover);
+            solo_repeat_combo(
                 ui,
-                &mut self.config.keys.engine_off_solo_triple,
-                solo_triple_hover,
+                &mut self.config.keys.engine_off_solo_repeat,
+                solo_repeat_hover,
             );
         });
         ui.add_space(8.0);
@@ -2384,25 +2399,33 @@ fn override_list_ui(
     ui.add_space(8.0);
 }
 
-/// `engine_off_solo_triple`（単独5連打でエンジン OFF にするキー）の選択 UI。
-fn solo_triple_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
+/// `engine_off_solo_repeat`（単独5連打でエンジン OFF にするキー）の選択 UI。
+///
+/// `SOLO_REPEAT_EXTRA_OPTIONS`（Insert 等、親指キーではない候補）を
+/// `THUMB_KEY_OPTIONS`（親指キーとして設定した VK と同じものを使う場合）の
+/// 前に並べる——既定値は Insert のため一覧の先頭に来た方が見つけやすい。
+fn solo_repeat_combo(ui: &mut egui::Ui, current: &mut Option<String>, tooltip: &str) {
+    let all_options = SOLO_REPEAT_EXTRA_OPTIONS
+        .iter()
+        .chain(THUMB_KEY_OPTIONS.iter());
     let display = current.as_deref().map_or_else(
         || "（無効）".to_string(),
         |v| {
-            THUMB_KEY_OPTIONS
+            SOLO_REPEAT_EXTRA_OPTIONS
                 .iter()
+                .chain(THUMB_KEY_OPTIONS.iter())
                 .find(|(_, internal)| *internal == v)
                 .map_or_else(|| v.to_string(), |(d, _)| (*d).to_string())
         },
     );
-    egui::ComboBox::from_id_salt("engine_off_solo_triple")
+    egui::ComboBox::from_id_salt("engine_off_solo_repeat")
         .selected_text(display)
         .width(110.0)
         .show_ui(ui, |ui| {
             if ui.selectable_label(current.is_none(), "（無効）").clicked() {
                 *current = None;
             }
-            for (label, internal) in THUMB_KEY_OPTIONS {
+            for (label, internal) in all_options {
                 if ui
                     .selectable_label(current.as_deref() == Some(*internal), *label)
                     .clicked()
@@ -2641,7 +2664,7 @@ fn engine_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: 
 /// Alt (VK_LMENU/VK_RMENU) は本来同じ制約を受けるが、`ALT_IMPERSONATION_OPTIONS`
 /// （左親指/右親指の候補にのみ追加で表示、`thumb_key_combo` 参照）経由でなら
 /// エンジン ON 時限定のなりすまし機構（`hook.rs::resolve_thumb_key`）が
-/// この制約を回避するため使用可能。単独5連打エンジンOFF（`solo_triple_combo`）
+/// この制約を回避するため使用可能。単独5連打エンジンOFF（`solo_repeat_combo`）
 /// 等、`THUMB_KEY_OPTIONS` を共有する他の用途には Alt を出さないよう分離してある。
 const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("Space", "VK_SPACE"),
@@ -2666,10 +2689,22 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
 /// 内部表記 `"Left Alt"`/`"Right Alt"` は VK 名ではなく、`hook.rs::resolve_thumb_key`
 /// が特別に解釈する指示文字列。物理 Left/Right Alt キーをエンジン ON 時に限り
 /// 親指キー（無変換/変換相当）として扱う（`config.rs` の `GeneralConfig::keyboard_model`
-/// doc・`THUMB_KEY_OPTIONS` doc 参照）。`solo_triple_combo` 等、`THUMB_KEY_OPTIONS` を
+/// doc・`THUMB_KEY_OPTIONS` doc 参照）。`solo_repeat_combo` 等、`THUMB_KEY_OPTIONS` を
 /// 共有する他の用途には出さないため、意図的に別の定数に分離してある。
 const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
     &[("Left Alt", "Left Alt"), ("Right Alt", "Right Alt")];
+
+/// `solo_repeat_combo`（単独5連打エンジンOFF）にのみ追加する、親指キーでは
+/// ない候補。`engine_off_solo_repeat` は `NicolaFsm::handle_bypass` が
+/// `KeyClass::Passthrough` 経路で独立にカウントするため、`left_thumb_key`/
+/// `right_thumb_key` と無関係な VK でも動作する（`config.rs` の
+/// `KeysConfig::engine_off_solo_repeat` doc 参照）。既定値の Insert は
+/// JIS/US どちらの物理キーボードにも存在し、通常のタイピングで連打される
+/// ことがなく、他の既定キー割当てとも重複しないため選んだ
+/// （2026-08-25、無変換キーが `left_thumb_key` と `keys.ime_on`/`ime_off` に
+/// 二重に割り当てられていると Phase 1 ホットキー層が先に消費してこの機能が
+/// 無反応になる実例が確認されたため、既定値を無変換から変更した）。
+const SOLO_REPEAT_EXTRA_OPTIONS: &[(&str, &str)] = &[("Insert", "VK_INSERT")];
 
 /// エンジン制御・IME制御・IME検出用のドロップダウンにのみ追加する、IME モード
 /// 切替キー。`VK_DBE_ALPHANUMERIC`（英数）は `VkCode::from_name`（vk.rs）で
@@ -2679,7 +2714,7 @@ const ALT_IMPERSONATION_OPTIONS: &[(&str, &str)] =
 /// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）の既定値
 /// （2026-08-16 ユーザー要望）として選べるようにするため追加。
 ///
-/// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_triple_combo`
+/// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_repeat_combo`
 /// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
 /// IME モード専用キーをそこに混入させると意図しない組み合わせが選択可能に
 /// なってしまう。`ALT_IMPERSONATION_OPTIONS` と同じ
