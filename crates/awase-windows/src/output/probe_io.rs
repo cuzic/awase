@@ -767,33 +767,13 @@ where
                         romaji: Some(romaji.clone()),
                     }));
                 if consecutive == 0 {
-                    // BUG-75: 先頭 VK（per-VK confirm）の `StaleConfirm` は候補
-                    // ウィンドウが実際に可視（＝GJI が受理済み）な場合を含み、
-                    // romaji 全体を再送すると既に着弾済みの先頭文字が重複する
-                    // （journal には常に元の romaji を残す、上の push 参照——
-                    // ADR-100 決定3 案L の不変条件はここでは変えない）。
-                    // `facts.path == PerVk && facts.verdict == StaleConfirm` の
-                    // ときだけ着弾済み prefix を除いた suffix を再送する。
-                    // `SuspectedLiteral`（先頭 VK が本当に literal 化した場合、
-                    // `backs=1` で全体再送が正しい）や word-level 経路は対象外。
-                    let resend_romaji = if facts.path == DetectPath::PerVk
-                        && facts.verdict == LiteralVerdict::StaleConfirm
-                    {
-                        crate::tsf::literal_facts::stale_confirm_resend_romaji(
-                            &romaji,
-                            usize::from(facts.idx),
-                            usize::from(facts.last_idx),
-                        )
-                    } else {
-                        romaji
-                    };
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
-                        → backspace ×{backs} + re-send {resend_romaji:?} scheduled \
+                        → backspace ×{backs} + re-send {romaji:?} scheduled \
                         + mark cold",
                         cold_seq = cold_seq.value(),
                     );
-                    io.set_raw_literal(backs, resend_romaji, escape_composition);
+                    io.set_raw_literal(backs, romaji, escape_composition);
                 } else {
                     log::warn!(
                         "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
