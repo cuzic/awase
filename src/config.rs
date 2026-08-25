@@ -409,9 +409,20 @@ pub struct KeysConfig {
     pub ime_detect: ImeDetectConfig,
     /// ソロ5連打でエンジン OFF するキー（None または空文字列で無効）
     ///
-    /// モディファイア不要のキー名を1つ指定する（"VK_NONCONVERT" 等）。
+    /// モディファイア不要のキー名を1つ指定する（"VK_INSERT" 等）。
     /// Ctrl スタック等でホットキーが効かなくなった場合の緊急回復用。
     /// 必要連打回数は `SOLO_OFF_TRIGGER_COUNT`（`src/engine/nicola_fsm.rs`）。
+    ///
+    /// `left_thumb_key`/`right_thumb_key` と同じ VK にも、それ以外の任意の
+    /// VK にも設定できる（`NicolaFsm::handle_bypass` が `KeyClass::Passthrough`
+    /// 経路で独立にカウントするため、通常のキー動作を変えずに済む）。既定値は
+    /// 2026-08-25 に `VK_NONCONVERT`（無変換）から `VK_INSERT` へ変更した——
+    /// 無変換は既定で `left_thumb_key` でもあるため、ユーザーが独自に
+    /// `keys.ime_on`/`ime_off` へ同じ無変換キーを追加設定すると、そちらが
+    /// Phase 1（ホットキー層）で先に無条件消費してしまい、`muhenkan_solo_tap_*`
+    /// もこのソロ連打判定も一切発火しなくなる実例が確認された（`docs/bug-reports-triage.md`
+    /// report `01M0VC3B1NG9JCDWMJTNNK6YAK`）。`VK_INSERT` はどの既定キー割当てとも
+    /// 重複せず、通常のタイピングで連打されることもない。
     pub engine_off_solo_triple: Option<String>,
     /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
     ///
@@ -439,7 +450,7 @@ impl Default for KeysConfig {
             ime_off: vec!["Ctrl+無変換".to_string()],
             ime_toggle: vec!["VK_KANJI".to_string()],
             ime_detect: ImeDetectConfig::default(),
-            engine_off_solo_triple: Some("VK_NONCONVERT".to_string()),
+            engine_off_solo_triple: Some("VK_INSERT".to_string()),
             engine_on_ime_key: None,
             engine_off_ime_key: None,
         }

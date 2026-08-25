@@ -123,8 +123,27 @@ pub struct NicolaFsm {
     /// 呼び忘れ時にこの誤出力が起こるため、意図的に安全側の `false` を既定にしている。
     thumb_shift_faces_enabled: bool,
 
-    /// ソロ確定の連続回数を追跡する汎用カウンター。
+    /// ソロ確定の連続回数を追跡する汎用カウンター（親指キーに割り当てた
+    /// `engine_off_triple_vk` 用、`PendingThumb` 経由でのみ更新される）。
     solo_counter: ConsecutiveSoloCounter,
+
+    /// `engine_off_triple_vk` が親指キー（`left_thumb_key`/`right_thumb_key`）
+    /// と異なる VK の場合専用の連続回数カウンター。`solo_counter` とは
+    /// 独立: `handle_bypass`（`BypassReason::Passthrough` 経路）でのみ更新され、
+    /// `PendingThumb` の状態遷移には一切関与しない。親指キーに割り当てた
+    /// 場合はこのキーが `KeyClass::Passthrough` に分類されないため、
+    /// 両カウンターが同時に動くことはない（`bypass_reason`/`decide_idle` 等の
+    /// 分類の時点で排他）。
+    engine_off_extra_solo_counter: ConsecutiveSoloCounter,
+
+    /// `engine_off_extra_solo_counter` 用の物理押下トラッカー。`None` =
+    /// `engine_off_triple_vk`（親指キー以外に割り当てた場合）が現在押下されて
+    /// いない。`Some(suppressed)` = 現在押下中で、その KeyDown を suppress
+    /// したか（true）素通ししたか（false）を覚えている。OS のオートリピート
+    /// KeyDown を新規タップとして誤カウントしないためのガードと、対応する
+    /// KeyUp（`on_key_up`）を KeyDown と同じ判定にする（J↓/J↑ 対称化）の
+    /// 両方に使う。
+    engine_off_extra_key_suppressed: Option<bool>,
 
     /// ソロ N 連打でエンジン OFF を発動するキー（VkCode(0) = 機能無効）。
     engine_off_triple_vk: VkCode,
@@ -254,6 +273,8 @@ impl NicolaFsm {
             // doc コメント参照）。
             thumb_shift_faces_enabled: false,
             solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
+            engine_off_extra_solo_counter: ConsecutiveSoloCounter::new(SOLO_OFF_TIMEOUT_US),
+            engine_off_extra_key_suppressed: None,
             engine_off_triple_vk: VkCode(0),
             engine_off_requested: false,
             // 既定値は GeneralConfig::default() と揃える（Space 未割当 / ガード類は
@@ -1547,6 +1568,21 @@ impl NicolaFsm {
             return self.handle_key_up_pending(event);
         }
 
+        // `engine_off_solo_triple` を親指キー以外に割り当てた場合の対称化:
+        // `handle_bypass` が KeyDown 側で suppress/passthrough のどちらと
+        // 判定したかをそのまま KeyUp にも適用する（J↓/J↑ 非対称防止、下の
+        // OsModifierHeld 対称化と同じ理由）。現在の modifier 状態には依存
+        // しない（KeyDown 時点の判定を優先する）。
+        if self.engine_off_triple_vk.0 != 0 && event.vk_code == self.engine_off_triple_vk {
+            if let Some(suppressed) = self.engine_off_extra_key_suppressed.take() {
+                return if suppressed {
+                    self.build_response(SmallVec::new(), true, TimerIntent::CancelAll)
+                } else {
+                    Response::pass_through()
+                };
+            }
+        }
+
         // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
         // output_history に古いエントリが残っていても誤 Suppress しない。
         if self.phys.modifiers.is_os_modifier_held() {
@@ -1971,6 +2007,78 @@ impl NicolaFsm {
         // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
         // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
         self.output_history.remove_by_scan(ev.scan_code);
+
+        // ソロ N 連打エンジン OFF（`engine_off_solo_triple` を親指キー以外の
+        // VK に割り当てた場合、例: VK_INSERT）。親指キーに割り当てた場合は
+        // `resolve_char_and_thumb_as_separate_solos`/`timeout_pending_thumb` が
+        // `solo_counter` で担当するためここには来ない——親指キーは
+        // `KeyClass::LeftThumb`/`RightThumb` に分類され `bypass_reason` が
+        // `Passthrough` を返さないため、両カウンターが同時に動くことはない。
+        let is_extra_trigger_key = matches!(reason, BypassReason::Passthrough)
+            && self.engine_off_triple_vk.0 != 0
+            && ev.vk_code == self.engine_off_triple_vk;
+        if is_extra_trigger_key {
+            if let Some(already_suppressed) = self.engine_off_extra_key_suppressed {
+                // OS のオートリピートによる KeyDown 再送（キーを押しっぱなし）。
+                // 新規タップではないためカウントは増やさず、直近の判定
+                // （suppress/passthrough）をそのまま維持する——押しっぱなしの
+                // 間に勝手にカウントが進んで意図せず5回に達することを防ぐ。
+                if already_suppressed {
+                    return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
+                }
+                // 素通し判定だったリピートは下の通常パスへ落として素通しする。
+            } else {
+                // 新規物理押下。Ctrl/Alt/Shift/Win のいずれかが同時に押されて
+                // いる場合は「ソロ」タップではない（例: Ctrl+Insert はコピーの
+                // OS ショートカット）ため、カウント対象外かつストリークを
+                // リセットする。`bypass_reason` は Passthrough を最優先で返す
+                // ため、通常の OsModifierHeld 判定はここには効かない
+                // （`bypass_reason` 参照）——ここで明示的に見る必要がある。
+                let is_solo = !(self.phys.modifiers.ctrl
+                    || self.phys.modifiers.alt
+                    || self.phys.modifiers.shift
+                    || self.phys.modifiers.win);
+                let suppressed = if is_solo {
+                    let count = self
+                        .engine_off_extra_solo_counter
+                        .record(ev.vk_code, ev.timestamp);
+                    if count >= SOLO_OFF_TRIGGER_COUNT {
+                        self.engine_off_extra_solo_counter.reset();
+                        self.engine_off_requested = true;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    self.engine_off_extra_solo_counter.reset();
+                    false
+                };
+                // KeyUp 側（`on_key_up`）がこの押下と同じ判定を再現できるよう
+                // 記録しておく（J↓/J↑ 非対称防止）。押下が離されたら
+                // `on_key_up` 側で `None` に戻す。
+                self.engine_off_extra_key_suppressed = Some(suppressed);
+                if suppressed {
+                    // N 回目はこのキー自体の送出のみ suppress する（1〜N-1回目は
+                    // ここに来ず、下の通常パスでそのまま素通しされるため通常の
+                    // VK 動作は変わらない）。保留があれば通常どおりフラッシュする。
+                    if self.state.is_idle() {
+                        return self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
+                    }
+                    let flush = self.flush_pending(
+                        ContextChange::BypassKey,
+                        ComposingHint::Trusted(self.phys.composing),
+                    );
+                    let mut resp =
+                        self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
+                    resp.actions = flush.actions;
+                    resp.timers = flush.timers;
+                    return resp;
+                }
+            }
+        } else {
+            self.engine_off_extra_solo_counter.reset();
+        }
+
         if self.state.is_idle() {
             return Response::pass_through();
         }
