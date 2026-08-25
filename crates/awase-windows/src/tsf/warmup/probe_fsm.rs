@@ -584,14 +584,6 @@ pub(crate) async fn run_per_vk_confirm(
                     cold_seq = cold_seq.value(),
                 );
                 crate::ime_diagnostic::log_composition_probe(cold_seq, "epoch-fence-stale");
-                // BUG-75: ここでは romaji 全体を渡す（journal には常に元の romaji を
-                // 残す、ADR-100 決定3 案L の不変条件を維持）。着弾済み先頭 VK を
-                // 除いた suffix だけを実際に再送する判断は、dispatcher
-                // （`output/probe_io.rs` の `RawTsfLiteralRecovery` ハンドラ、
-                // `consecutive==0` 分岐）に一元化してある——`facts.verdict`/
-                // `facts.path` が揃った場所でのみ `stale_confirm_resend_romaji`
-                // を適用するため、`SuspectedLiteral`/word-level 経路を誤って
-                // 巻き込まない。
                 let actions = crate::tsf::warmup::literal_detect_fsm::emit_recovery_actions(
                     cold_seq,
                     romaji.to_string(),

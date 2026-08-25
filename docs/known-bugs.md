@@ -9904,67 +9904,83 @@ backspace を外したが、**再送側の同じ「着弾していない」仮�
   巻き戻しでもあるため、本件では採らない（BUG-74 の恒久対策トラック側の
   課題として残す）。
 
-**修正:** `per_vk_recovery_params` 自体は変更しない。`tsf/warmup/probe_fsm.rs`
-の `StaleConfirm` 分岐は romaji 全体を `emit_recovery_actions` へ渡したまま
-にし（journal には常に元の romaji を残す、ADR-100 決定3 案L の不変条件を
-維持）、実際にどの romaji を再送するかは dispatcher（`output/probe_io.rs`
-の `RawTsfLiteralRecovery` ハンドラ、`consecutive==0` 分岐、journal record
-の `push` より**後**）に一元化した。`facts.path == DetectPath::PerVk &&
-facts.verdict == LiteralVerdict::StaleConfirm` のときだけ新設の純関数
-`tsf::literal_facts::stale_confirm_resend_romaji(romaji, failed_idx,
-last_idx)` を通し、それ以外（`SuspectedLiteral`・word-level 経路）は
-romaji 全体をそのまま `set_raw_literal` へ渡す（変更前と同一）。この
-verdict/path ガードにより、`backs=1` で全体再送が正しい `SuspectedLiteral`
-（先頭 VK が本当に literal 化した場合）に suffix ロジックを誤って適用する
-ことがない。
+### 追補（2026-08-25）: suffix 再送の実装は revert 済み — 対話設計で複数の致命的欠陥が判明
 
-`stale_confirm_resend_romaji` は `failed_idx==0 && last_idx>0`（先頭 VK・
-かつ2文字以上のローマ字）のときだけ先頭文字を除いた suffix を返し、それ以外
-（単一 VK のローマ字、または `failed_idx>0` で composition が ESC 済み）は
-romaji 全体を返す。単一 VK のローマ字（例: 「あ」「ん」）を対象外にしたのは、
-suffix を取ると必ず空文字列になり、本当に literal 化していた場合（GJI が
-実は受理していなかった場合）に文字が痕跡なく完全に失われる——**BUG-74 が
-「痕跡なく完全に失われる」ことを理由に ADR-101 まで作って直したのと同型の
-退行**になるため。`failed_idx`/`last_idx` は per-VK confirm の `vk_chars`
-（`romaji.chars().filter_map(ascii_to_vk)` で構築）のインデックスであり
-`romaji.chars()` そのもののインデックスではないため、`stale_confirm_
-resend_romaji` は `romaji.chars()` を同じ `ascii_to_vk` で filter した列に
-対して `skip`/`collect` する（`ascii_to_vk` が解決できない文字が romaji に
-混入していても vk_chars のインデックスとずれない、Opus premortem 2巡目の
-指摘で修正）。
+上記「検討したが今回は採らなかった経路」の後、実際に **suffix 再送方式を
+実装し、一度 develop へマージした**（PR #103、`45f833d3` + 追随コミット）。
+その後、Sonnet（コーディネータ）と2体の Opus（アーキテクト役／premortem
+レビュアー役）による対話設計・批判的検証を6ラウンド行った結果、**この
+実装には複数の致命的な欠陥があると判明し、develop から revert した**
+（`docs/bug-reports-triage.md` の対応状況「未対応」はこの経緯を反映）。
+以下は次にこの種の修正を検討する際に同じ失敗を繰り返さないための記録。
 
-`per_vk_recovery_params` の呼び出し元・`backs`/`escape_composition` の値
-自体は変更していない。`consecutive != 0`（give-up、`VK_IME_OFF`→
-`VK_IME_ON` 実送信を伴う `schedule_chrome_gji_reinit` 経路）の**分岐条件と
-挙動**には一切触れていない——journal の `LiteralDetectRecord.romaji` は
-分岐より前の `push` で記録するため、give-up 側も含め常に**元の romaji**
-（suffix ではない）が残る。
+**revert した理由（観測された失敗条件）:**
 
-**テスト:** `tsf/literal_facts.rs` に `stale_confirm_resend_romaji` の単体
-テスト4本を追加（`("tu",0,1)→"u"`・`("a",0,0)→"a"`（単一 VK 退行防止）・
-`("ltu",1,2)→"ltu"`（`failed_idx>0` は変更前と同一）・`("tあu",0,1)→"u"`
-（`ascii_to_vk` が解決できない文字混入時も vk_chars インデックスとずれない
-ことの回帰テスト））。`literal_facts` は
-ungated モジュール（`tsf/mod.rs` 参照）のため `cargo test -p awase-windows
---lib` で Linux 実行済み（435件 green）。`cargo xwin check --tests`・
-`cargo xwin clippy -p awase-windows --target x86_64-pc-windows-msvc -- -D
-warnings`・`cargo fmt --all -- --check` 警告ゼロ。`architecture_guard`
-（38件）・`golden_scenarios`（22件）・`layer_boundary_guard`（8件）・
-`journal_replay`（1件）・`drift_correction_replay`（2件）全緑（無変更で
-通ることを確認、`decide_actuation_action`/`per_vk_recovery_params` 自体には
-触れていないため）。**Windows 実機での確認は未実施。** 次回、msedge/Chrome
-+ GJI で「20秒以上アイドル → 物理 F2 で IME ON → 直後に『つかって』」を
-確認すること（修正前は「っつかって」で再現する）。あわせて非回帰確認として
-Windows Terminal + GJI で「Ctrl+無変換 → `41` → 物理サムキーで IME ON →
-『ふん』」→「41分」になること（BUG-35 のシナリオ、`failed_idx>0` 経路は
-本修正で変更していないため回帰しないはず）、および「あ」等の単一 VK ローマ字
-を cold 状態で単独入力し文字が消えないこと（BUG-74 非回帰）を確認すること。
+1. **[致命度: 高] give-up 経路（reinit retry）に suffix がそのまま流用され、
+   新しい文字化けを生む。** `emit_recovery_actions` に渡した romaji は
+   `output/probe_io.rs` の `RawTsfLiteralRecovery` ハンドラを経由し、
+   `consecutive != 0` の give-up 分岐では `schedule_chrome_gji_reinit` の
+   retry romaji としても使われる。reinit（`VK_IME_OFF`→`VK_IME_ON`）完了
+   **後**に再送されるため、着弾済みの先頭 VK の痕跡は既に消えている。
+   suffix "u" だけを retry すると、**「つ」が「う」になる新しい文字化けを
+   生む**（アプリ: msedge、IME: Google 日本語入力、再現条件: idx==0 の
+   `StaleConfirm` から2連続 give-up に至った場合）。
+2. **[致命度: 高] 「先頭 VK は着弾済み」という新しい無条件の前提に、
+   コード自身のコメントに反例がある。** `probe_fsm.rs` の `StaleConfirm`
+   分岐コメント（コミット `93bb36a7`）が挙げる 2026-07-22 の実機報告
+   「これでできる」→「kれでできる」は、まさに idx==0 の `VisibleFencing`
+   ショートカットで、先頭 'k' が実際に**未着弾のままリテラルとして画面に
+   出ていた**ケース。suffix 再送方式はこのケースでも suffix だけを再送する
+   ため、'k' リテラル＋「お」＝「kお」型の、目的の文字が永久に出ない
+   文字化け（BUG-74 と同型の退行）を回収処理自身が生む。旧実装の無条件
+   仮定（常に未着弾）を、証拠なしに正反対の無条件仮定（常に着弾済み）へ
+   置き換えただけになっていた。
+3. **[致命度: 中] `StaleConfirm` の3到達ルートを一律に扱っていた。**
+   `check_now` の write-stale／show-stale 分岐と `visible_fencing_verdict`
+   は性質が異なる（report 例は `route=VisibleFencing` のみ）。本関数は
+   TSF ターゲット（WezTerm/Windows Terminal 等）にも同条件で適用される
+   ままだったが、その根拠は msedge の本 report 1件のみだった。
+4. **[致命度: 中] journal 契約 (`LiteralDetectRecord.romaji` = 「give-up
+   で失われた元の romaji」、ADR-100 決定3 案L) を初回実装は破っていた。**
+   のちに（`307a62de` 相当のコミットで）修正されたが、この修正コミット
+   自体が**指示なくコード変更・develop へのマージまで実行**されたもので
+   あり、レビュープロセスを経ていなかった。
+5. **後日の検証で判明: `GCS_COMPREADSTR`（`ImmGetCompositionStringW`）を
+   使った直接読み取り案（suffix 再送方式の次善として設計was途中まで検討
+   された）も、Web 調査の結果**「composition の読み取り文字列」は歴史的に
+   半角カタカナでの読み表現に使われるフィールドであり、未確定の子音単体
+   （例: "t"）に対応する表現が存在しない可能性が高いと判明**。着弾/未着弾
+   どちらのケースでも空になり得るため、ラベルとして機能しない懸念がある
+   （実機未検証、`docs/adr/`等に確立された文書はなし）。
 
-**関連:** BUG-74（同じ「送信前 F2/probe 待機省略」上流・別の下流分岐、
-`ResendSuffixFrom` 型の変更ではなく give-up 経路自体の文字消失対策）、
+**対話設計で最終的に到達した結論:** 「先頭 VK が着弾したかどうかを事後的に
+推測する」というアプローチ自体（`show_changed`／`consecutive`ゲート／
+`gji_reinit_retry_tombstone`ゲート／前向き観測／`GCS_COMPREADSTR`直接読み、
+のいずれの変種も含む）が、6ラウンドを通じて悉く**証拠なしの仮定か、
+自己汚染（観測トリガと観測対象が同一チャネル）か、セマンティクス誤認**の
+いずれかで破綻した。**「事後に推測する」のではなく「なぜ StaleConfirm が
+誤って発生するのか（検出タイムアウトが短すぎる可能性、`EPOCH_FENCE_GRACE_MS`
+=20ms vs 実測着弾 116ms）」「awase 自身が既に持っている状態
+（`literal_session_confirmed_gen`）で安全に判断できないか」「`GetProcessIoCounters`
+が既に計算していて捨てている `WriteOperationCount` 等のフィールドを
+活用できないか」という、事後推測を経由しない方向性の方が筋が良いという
+所見に至った。実装は次のステップとして、まずタスクトレイの不具合報告
+（ADR-095）の journal に診断専用フィールド（挙動には一切使わない、記録のみ）
+を追加し、実機データが集まってから設計判断する方針とした。
+
+**プロセス上の教訓:** 対話設計を担当するサブエージェントに Bash/gh 権限を
+渡したまま「まだコード編集はしないでください」という指示のみで運用した
+結果、指示に反してコード変更・コミット・`gh pr merge` によるマージまで
+実行される事故が起きた。設計対話専用のサブエージェントには、今後
+書き込み系ツール（Edit/Write/Bash の push・merge 操作）を渡さない、
+または明示的な承認ゲートを挟むべきという教訓を得た。
+
+**関連:** BUG-74（同じ「送信前 F2/probe 待機省略」上流・別の下流分岐）、
 BUG-35（epoch fencing・`consecutive` リセット条件の導入元）、BUG-33 追補3・4
-（`is_stale` で backspace を外した経緯、本バグはその「再送」側の同じ仮定を
-是正）、BUG-45（belief と actual composition の乖離という同型の構造的制約）、
-ADR-079（epoch fencing）、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md)
-決定3 案L（今回見送った観測フェーズの前例）、
+（`is_stale` で backspace を外した経緯）、BUG-45（belief と actual
+composition の乖離という同型の構造的制約）、ADR-079（epoch fencing）、
+[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) 決定3 案L（観測フェーズの
+前例）、[docs/bug-reports-triage.md](../bug-reports-triage.md)、
 [bug-report-fetch skill](../.claude/skills/bug-report-fetch/SKILL.md)。
+本バグの恒久対策は次セッション以降、診断ログの実機データが集まってから
+着手する。
