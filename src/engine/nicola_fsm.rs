@@ -1573,7 +1573,8 @@ impl NicolaFsm {
         // 判定したかをそのまま KeyUp にも適用する（J↓/J↑ 非対称防止、下の
         // OsModifierHeld 対称化と同じ理由）。現在の modifier 状態には依存
         // しない（KeyDown 時点の判定を優先する）。
-        if self.engine_off_solo_repeat_vk.0 != 0 && event.vk_code == self.engine_off_solo_repeat_vk {
+        if self.engine_off_solo_repeat_vk.0 != 0 && event.vk_code == self.engine_off_solo_repeat_vk
+        {
             if let Some(suppressed) = self.engine_off_extra_key_suppressed.take() {
                 return if suppressed {
                     self.build_response(SmallVec::new(), true, TimerIntent::CancelAll)
@@ -1723,7 +1724,8 @@ impl NicolaFsm {
         // ソロ連打によるエンジン OFF トリガーチェック（timeout_pending_thumb と同一
         // ロジック）。thumb はここで同時打鍵ではなく単独打鍵として確定するため、
         // ソロ連打カウンターの対象になる。
-        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk {
+        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk
+        {
             let count = self.solo_counter.record(thumb.vk_code, thumb.timestamp);
             if count >= SOLO_OFF_TRIGGER_COUNT {
                 self.solo_counter.reset();

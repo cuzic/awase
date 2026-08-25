@@ -4776,12 +4776,7 @@ fn test_engine_off_extra_key_below_threshold_passes_through_normally() {
             .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build())
             .assert_pass_through();
         engine
-            .on_event(
-                Ev::up(VK_INSERT)
-                    .scan(SCAN_INSERT)
-                    .at(t + 10_000)
-                    .build(),
-            )
+            .on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build())
             .assert_pass_through();
         assert!(
             !engine.take_engine_off_requested(),
@@ -4803,12 +4798,7 @@ fn test_engine_off_extra_key_triggers_on_fifth_tap_and_keyup_is_symmetric() {
     for i in 0..4u64 {
         let t = i * gap;
         engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
-        engine.on_event(
-            Ev::up(VK_INSERT)
-                .scan(SCAN_INSERT)
-                .at(t + 10_000)
-                .build(),
-        );
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
         assert!(!engine.take_engine_off_requested());
     }
 
@@ -4821,12 +4811,7 @@ fn test_engine_off_extra_key_triggers_on_fifth_tap_and_keyup_is_symmetric() {
         "5 回目の単独タップ → engine off"
     );
     engine
-        .on_event(
-            Ev::up(VK_INSERT)
-                .scan(SCAN_INSERT)
-                .at(t + 10_000)
-                .build(),
-        )
+        .on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build())
         .assert_consumed();
 }
 
@@ -4886,12 +4871,7 @@ fn test_engine_off_extra_key_ignores_when_ctrl_held() {
         engine
             .on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build())
             .assert_pass_through();
-        engine.on_event(
-            Ev::up(VK_INSERT)
-                .scan(SCAN_INSERT)
-                .at(t + 10_000)
-                .build(),
-        );
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
         assert!(
             !engine.take_engine_off_requested(),
             "Ctrl+Insert {} 回目 → 修飾キー付きなのでカウントされず engine off しない",
@@ -4905,12 +4885,7 @@ fn test_engine_off_extra_key_ignores_when_ctrl_held() {
     for i in 0..4u64 {
         let t = 6 * gap + i * gap;
         engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
-        engine.on_event(
-            Ev::up(VK_INSERT)
-                .scan(SCAN_INSERT)
-                .at(t + 10_000)
-                .build(),
-        );
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
         assert!(
             !engine.take_engine_off_requested(),
             "Ctrl 解放後 {} 回目 → まだ engine off しない（カウントは引き継がれない）",
@@ -4931,12 +4906,7 @@ fn test_engine_off_extra_key_gap_over_timeout_resets() {
     for i in 0..10u64 {
         let t = i * over_timeout;
         engine.on_event(Ev::down(VK_INSERT).scan(SCAN_INSERT).at(t).build());
-        engine.on_event(
-            Ev::up(VK_INSERT)
-                .scan(SCAN_INSERT)
-                .at(t + 10_000)
-                .build(),
-        );
+        engine.on_event(Ev::up(VK_INSERT).scan(SCAN_INSERT).at(t + 10_000).build());
         assert!(
             !engine.take_engine_off_requested(),
             "{} 回目（毎回タイムアウト超過） → engine off しない",
