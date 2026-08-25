@@ -295,7 +295,11 @@ impl LiteralDetectCore {
             LiteralVerdict::from(&detection),
             DetectRoute::CheckNow,
             self.target,
-            self.detector.evidence_now(env.gji_candidate_visible_now),
+            self.detector.evidence_now(
+                env.gji_candidate_visible_now,
+                self.deadline_ms,
+                self.cold_seq,
+            ),
         );
 
         match detection {
@@ -367,7 +371,11 @@ impl LiteralDetectCore {
                                 LiteralVerdict::VetoExpired,
                                 DetectRoute::CheckNow,
                                 self.target,
-                                self.detector.evidence_now(env.gji_candidate_visible_now),
+                                self.detector.evidence_now(
+                                    env.gji_candidate_visible_now,
+                                    self.deadline_ms,
+                                    self.cold_seq,
+                                ),
                             ),
                         },
                         ProbeAction::Done,

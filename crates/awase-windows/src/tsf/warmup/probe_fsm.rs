@@ -413,15 +413,19 @@ async fn await_vk_detection(
                 "visible_fencing_verdict は CompositionConfirmed/StaleConfirm のみ返す"
             ),
         }
-        let evidence = sent.detector.evidence_now(env.gji_candidate_visible_now);
+        let evidence =
+            sent.detector
+                .evidence_now(env.gji_candidate_visible_now, sent.deadline_ms, cold_seq);
         return (verdict, DetectRoute::VisibleFencing, evidence);
     }
     loop {
         let poll_input = yield_step(ch.clone(), vec![]).await;
         if let Some(d) = sent.detector.check_now(sent.deadline_ms) {
-            let evidence = sent
-                .detector
-                .evidence_now(poll_input.env.gji_candidate_visible_now);
+            let evidence = sent.detector.evidence_now(
+                poll_input.env.gji_candidate_visible_now,
+                sent.deadline_ms,
+                cold_seq,
+            );
             break (d, DetectRoute::CheckNow, evidence);
         }
         let _ = poll_input;
@@ -717,7 +721,11 @@ async fn tsf_probe_coro_body(
             None,
             0,
             0,
-            detector.evidence_now(poll_input.env.gji_candidate_visible_now),
+            detector.evidence_now(
+                poll_input.env.gji_candidate_visible_now,
+                deadline_ms,
+                cold_seq,
+            ),
         );
 
         let final_actions = match detection {

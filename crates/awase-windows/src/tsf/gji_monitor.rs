@@ -221,6 +221,21 @@ impl GjiMonitor {
     const fn last_write_bytes(&self) -> u64 {
         self.last_write_bytes
     }
+
+    /// 累積 `WriteOperationCount`（書き込み回数）。診断専用（BUG-75）。
+    const fn last_write_ops(&self) -> u64 {
+        self.last_write_ops
+    }
+
+    /// 累積 `ReadOperationCount`。診断専用（BUG-75）。
+    const fn last_read_ops(&self) -> u64 {
+        self.last_read_ops
+    }
+
+    /// 累積 `OtherOperationCount`（パイプ・セクション経由 IPC 等）。診断専用（BUG-75）。
+    const fn last_other_ops(&self) -> u64 {
+        self.last_other_ops
+    }
 }
 
 impl Drop for GjiMonitor {
@@ -512,6 +527,16 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS
                         .gji_write_bytes
                         .store(m.last_write_bytes(), Ordering::Relaxed);
+                    // 診断専用（BUG-75）。判定ロジックからは参照されない。
+                    TSF_OBS
+                        .gji_write_ops
+                        .store(m.last_write_ops(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_read_ops
+                        .store(m.last_read_ops(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_other_ops
+                        .store(m.last_other_ops(), Ordering::Relaxed);
                     if delta.write_ops > 0 {
                         TSF_OBS
                             .gji_last_write_ms

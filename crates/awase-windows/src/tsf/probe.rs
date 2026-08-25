@@ -521,6 +521,11 @@ pub struct LiteralDetector {
     /// まだ `epoch_send_ms` に追いついていない状態を最初に観測した時刻。
     /// `None` = 未観測。ADR-079 fencing の一時的な hold 状態。
     show_stale_hold_since_ms: std::cell::Cell<Option<u64>>,
+    /// 送信前の `WriteOperationCount`/`ReadOperationCount`/`OtherOperationCount` 累積値。
+    /// 診断専用（BUG-75、`DetectEvidence` の同名 delta フィールド参照）。判定には使わない。
+    write_ops_baseline: u64,
+    read_ops_baseline: u64,
+    other_ops_baseline: u64,
 }
 
 /// raw-TSF-literal 検出結果。
@@ -574,6 +579,9 @@ impl LiteralDetector {
             veto_eligible,
             epoch_send_ms: crate::hook::current_tick_ms(),
             show_stale_hold_since_ms: std::cell::Cell::new(None),
+            write_ops_baseline: crate::tsf::observer::gji_write_ops(),
+            read_ops_baseline: crate::tsf::observer::gji_read_ops(),
+            other_ops_baseline: crate::tsf::observer::gji_other_ops(),
         }
     }
 
@@ -599,6 +607,9 @@ impl LiteralDetector {
             veto_eligible,
             epoch_send_ms: crate::hook::current_tick_ms(),
             show_stale_hold_since_ms: std::cell::Cell::new(None),
+            write_ops_baseline: crate::tsf::observer::gji_write_ops(),
+            read_ops_baseline: crate::tsf::observer::gji_read_ops(),
+            other_ops_baseline: crate::tsf::observer::gji_other_ops(),
         }
     }
 
@@ -610,7 +621,16 @@ impl LiteralDetector {
 
     /// 判定確定時点の生の観測値を返す。判定や内部状態の更新は行わない。
     #[must_use]
-    pub(crate) fn evidence_now(&self, candidate_visible: bool) -> DetectEvidence {
+    /// `deadline_ms`/`cold_seq` は判定ロジックには使わず、BUG-75 の対話設計で
+    /// 検討した複数の恒久対策案（grace 延長・write_ops 活用・session 状態ベース
+    /// 判断）の判断材料として journal に記録するためだけに受け取る（診断専用）。
+    pub(crate) fn evidence_now(
+        &self,
+        candidate_visible: bool,
+        deadline_ms: u64,
+        cold_seq: Generation,
+    ) -> DetectEvidence {
+        let now = crate::hook::current_tick_ms();
         let last_write_ms = crate::tsf::observer::gji_last_write_ms();
         let fencing_active = last_write_ms != 0;
         DetectEvidence {
@@ -621,6 +641,23 @@ impl LiteralDetector {
             write_delta: crate::tsf::observer::gji_write_bytes()
                 .saturating_sub(self.write_bytes_baseline),
             evidence_fresh: !fencing_active || last_write_ms >= self.epoch_send_ms,
+            // ── ここから診断専用フィールド（BUG-75）。判定ロジックからは一切
+            // 参照されない。タスクトレイ不具合報告(ADR-095)のjournalに乗せて
+            // 実機データを集めるためだけに存在する。 ──
+            write_ops_delta: crate::tsf::observer::gji_write_ops()
+                .saturating_sub(self.write_ops_baseline),
+            read_ops_delta: crate::tsf::observer::gji_read_ops()
+                .saturating_sub(self.read_ops_baseline),
+            other_ops_delta: crate::tsf::observer::gji_other_ops()
+                .saturating_sub(self.other_ops_baseline),
+            last_write_ms,
+            epoch_send_ms: self.epoch_send_ms,
+            deadline_ms,
+            grace_hold_ms: self
+                .show_stale_hold_since_ms
+                .get()
+                .map(|hold_since| now.saturating_sub(hold_since)),
+            literal_session_confirmed: crate::tsf::observer::literal_session_confirmed(cold_seq),
         }
     }
 
@@ -1159,5 +1196,86 @@ mod tests {
             "gji_last_write_ms 未観測 (0) なら fencing を適用せず即 CompositionConfirmed \
              のはず: {result:?}"
         );
+    }
+
+    // ── BUG-75: 診断専用フィールド（write_ops/read_ops/other_ops delta・
+    // literal_session_confirmed）の配線テスト。判定ロジックには一切影響しない
+    // ため、正しい値が journal に載ることだけを確認する。──────────────────
+
+    /// `write_ops_delta`/`read_ops_delta`/`other_ops_delta` は `write_delta`
+    /// （バイト量、350B 閾値の既存の確認シグナル）とは独立に計算される。
+    /// バイト量が閾値未満（子音単体のケースを模擬）でも、operation count の
+    /// 差分は正しくベースラインからの差として記録されることを確認する。
+    #[test]
+    fn evidence_now_reports_io_ops_deltas_independent_of_write_bytes_threshold() {
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        TSF_OBS.gji_write_bytes.store(1_000, SeqCst);
+        TSF_OBS.gji_write_ops.store(50, SeqCst);
+        TSF_OBS.gji_read_ops.store(20, SeqCst);
+        TSF_OBS.gji_other_ops.store(5, SeqCst);
+
+        let detector = LiteralDetector::new_with_pre_send_baseline(1_000, true);
+
+        // write_bytes は閾値未満のまま（子音単体を模擬）だが、I/O 回数は増える。
+        TSF_OBS.gji_write_bytes.store(1_100, SeqCst); // +100B < 350B 閾値
+        TSF_OBS.gji_write_ops.store(51, SeqCst); // +1 回
+        TSF_OBS.gji_read_ops.store(22, SeqCst); // +2 回
+        TSF_OBS.gji_other_ops.store(5, SeqCst); // 変化なし
+
+        let evidence = detector.evidence_now(
+            false,
+            crate::hook::current_tick_ms() + 10_000,
+            Generation::new(1),
+        );
+        assert_eq!(
+            evidence.write_delta, 100,
+            "バイト量は閾値未満のまま記録されるはず"
+        );
+        assert_eq!(
+            evidence.write_ops_delta, 1,
+            "write_ops delta はバイト閾値と無関係に+1のはず"
+        );
+        assert_eq!(evidence.read_ops_delta, 2);
+        assert_eq!(evidence.other_ops_delta, 0);
+
+        TSF_OBS.gji_write_ops.store(0, SeqCst);
+        TSF_OBS.gji_read_ops.store(0, SeqCst);
+        TSF_OBS.gji_other_ops.store(0, SeqCst);
+    }
+
+    /// `literal_session_confirmed` は `mark_literal_session_confirmed(cold_seq)`
+    /// と一致する `cold_seq` を渡したときだけ true になる（BUG-39 の既存の
+    /// 世代付けをそのまま `evidence_now` の引数経由で使っているだけであることを
+    /// 確認する軽い配線テスト）。
+    #[test]
+    fn evidence_now_reports_literal_session_confirmed_matching_current_cold_seq() {
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::tsf::observer::reset_literal_session_confirmed();
+
+        let detector = LiteralDetector::new(true);
+        let deadline = crate::hook::current_tick_ms() + 10_000;
+
+        let before = detector.evidence_now(false, deadline, Generation::new(301));
+        assert!(!before.literal_session_confirmed, "mark 前は false のはず");
+
+        crate::tsf::observer::mark_literal_session_confirmed(Generation::new(301));
+
+        let same_gen = detector.evidence_now(false, deadline, Generation::new(301));
+        assert!(
+            same_gen.literal_session_confirmed,
+            "同じ cold_seq なら true のはず"
+        );
+
+        let other_gen = detector.evidence_now(false, deadline, Generation::new(302));
+        assert!(
+            !other_gen.literal_session_confirmed,
+            "別の cold_seq なら false のはず（BUG-39 の世代付けと同じ挙動）"
+        );
+
+        crate::tsf::observer::reset_literal_session_confirmed();
     }
 }
