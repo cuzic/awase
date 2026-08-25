@@ -8920,6 +8920,96 @@ drift_correction` の別経路、「鮮度を新情報の代理指標にする�
 [fix-requires-evidence](../.claude/rules/fix-requires-evidence.md)、
 [tuning-constants](../.claude/rules/tuning-constants.md)。
 
+### 追補2（2026-08-24、実機ログで再武装ループの実測値を取得。コード変更は未実施）
+
+タスクトレイ不具合報告 `report_id: 01M0S4S6R4C1YJ581YJ9ZGAXXD`（BUG-75 と同一
+report。BUG-75 の文字化けとは無関係と判明した経緯は後述）の journal を精査し、
+本バグ（give-up 後の再武装が「鮮度」を「新情報」の代理に使う問題）の実機発生を
+確認した。3ラウンドの Opus 設計・premortem 対話（設計担当 `opus-designer-
+bug68` / レビュー担当 `opus-premortem-bug68`）を経て、以下の実測・設計判断が
+出ている。**今回はコード変更を行わず、分析結果のみを記録する**（別ブランチ
+`fix/bug68-blind-typing-gate` で後日実装）。
+
+**実測:** Ctrl+無変換（`ChordEnded{CtrlMuhenkanImeOff}`）による明示 OFF 直後
+から `VK_IME_OFF` 再送のバーストを観測した。journal に**残存している**のは
+**9周・45回**（elapsed 21110202〜21169911 の連続エピソード、約59.7秒。
+`ImeOpenApplied{reason: DriftCorrection}` で確認）。「約63秒・14周・計約70回」
+という当初の見積りは、`DumpTruncated`（`dropped_actuation: 364`）による
+17032ms/12188ms の欠落窓を平均バースト間隔で補間した推定値であり、後日この
+journal を読み直す場合は9周分のみ残っていることに注意（Opus premortem
+指摘）。バースト内間隔は実測 **30〜63ms**（`on_ime_apply_complete` →
+`post_ime_refresh(20ms)` の自走。`FeedbackPolicy::Blind::backoff`(400ms) は
+未使用のまま）、バースト間隔は実測 **3.7〜7.2秒**（`DRIFT_CORRECTION_
+BLIND_REARM_COOLDOWN_MS`=3000 が効いている、いずれも journal に残る9周から
+直接確認済み）。再武装トリガは全周とも `ObserverReported{source:
+ConvOpenInference, open: true, confidence: Medium}` ＝ give-up の原因になった
+のと同一の (source, value) だった。
+
+**当初の誤診断（撤回）:** このバースト（Windows Terminal / TsfNative）を、
+BUG-75 の文字化け（「つかって」→「っつかって」、msedge / Imm32Unavailable）の
+原因だと最初は判断し、`Actuation::last_attempt_at` を追加して burst 内送信
+間隔に `FeedbackPolicy::Blind::backoff`（400ms）を適用する修正（コミット
+`2b80b0a9`、既に revert 済み・未 push）を一度実装した。しかし Opus レビューで
+以下が判明し**却下・破棄**した:
+
+- TsfNative では `reschedule_ime_refresh`（`runtime/mod.rs`）が周期ポーリング
+  を早期 return で止めるため、burst 内送信の自走は `post_ime_refresh` の
+  20ms タイマーだけに依存している。backoff を入れると2回目以降の送信が
+  **打鍵駆動の tick（`kp_apply_conv_engine_sync` の `ReportOpenInference` →
+  `schedule_ime_refresh(20)`）に同期して再開する**ようになり、「composition
+  中の実タイピングと衝突する」という当初の仮説の下では**衝突確率を下げる
+  どころか悪化させる**方向に働く。
+- 報告症状（「っつかって」の先頭1文字混入）は burst の**1発目**
+  （`attempts==0`）1回で説明がつくが、backoff は `attempts==0` を意図的に
+  免除しており、最も疑わしい送信には一切効かない。
+- 実際に journal のタイムスタンプを突き合わせたところ、burst（Windows
+  Terminal、elapsed_ms 21127435-21172071）と BUG-75 の `StaleConfirm`
+  （msedge、elapsed_ms 21285883）は**116秒離れており、別プロセス**だった。
+  **文字化けとの因果は否定された。**
+
+**診断可能性への実害（未対処）:** `ir_apply_drift_correction`
+（`runtime/ime_refresh.rs`）は park 中の全 tick で `ImeActuation{action:
+GiveUp}` を無条件に record する（cooldown 判定より前に record している）。
+今回の report の journal dump は `dropped_actuation: 364, dropped_key_input:
+418` を示しており、**このスパムが無関係な別不具合（BUG-75）の打鍵列を
+journal から追い出し**、BUG-75 の原因特定を journal だけでなく app log の
+突き合わせに頼らざるを得なくした。park 継続中は record しない（`gave_up_at`
+を刻む tick と、実際に再武装/送信する tick のみ記録する）よう修正すべき。
+
+**設計案（次回実装時の起点、premortem 済み）:**
+
+- 再武装条件を「鮮度」ではなく「打鍵の谷」に変える。`gate.
+  last_hook_activity_ms`（**物理キーのみ**、`hook.rs` が self-injected キーを
+  `CallNextHookEx` で早期 return するため自己ラッチしない——`ir_decide_
+  read_strategy` の `is_typing` が `OUTPUT_GATE.last_vk_output_ms` と `max` を
+  取った**合成値**は自己ラッチするので、それとは別に物理キー単独の idle_ms を
+  使うこと）が `TYPING_IDLE_MS`（500ms、新規定数追加なし）未満なら
+  `HoldFor { retry_ms }` を返す純関数 `blind_send_gate(idle_ms, typing_idle_ms)
+  -> { Send, HoldFor { retry_ms } }` を state 層に置く。`decide_actuation_
+  action` のシグネチャは変更しない（`DriftCorrectionFixture`/
+  `tests/journals/drift_correction/bug-43-drift-correction-tight-loop.json`
+  との往復を壊さないため）。
+- `HoldFor` のとき `schedule_ime_refresh(retry_ms)` で明示的にタイマーを張る
+  （打鍵駆動 tick に便乗するのではなく、打鍵が止まる時刻を狙って自前で
+  張る点が、却下した backoff 案との決定的な違い）。
+- **未解決の Must-fix（実装時に対応必須）**: `TIMER_IME_REFRESH` は
+  グローバル単一タイマーで、`runtime/key_pipeline.rs:636`（`kp_apply_conv_
+  engine_sync` の `SetOpen`/`DirectInput` 分岐）・`key_pipeline.rs:976`（IME
+  ON/OFF コンボ処理）が打鍵駆動で kill する可能性があり、`HoldFor` が
+  張ったタイマーが再武装されずに「二度と送らない」へ縮退するリスクがある。
+  タイマー依存を避け、`Actuation` に `hold_until_ms` を持たせて**次に来た
+  任意の tick**で判定する設計（タイマーは「なるべく早く起こす」ヒントに
+  格下げ）のほうが構造的に安全、というのが premortem の結論。
+- longstop（時間経過での強制再武装）案・同一 (source,value) を Hold にする
+  再武装条件変更案はいずれも**却下**: BUG-51 の真因は「tick が来ないこと」
+  自体であり、時間ベースの緩和は TsfNative では原理的に無意味（周期
+  ポーリングが存在しないため「時間が経過した」ことを検知するタイマー自体が
+  同じ問題を抱える）。
+
+**関連:** BUG-75（当初この burst が原因と誤診断したが無関係と判明した文字化け
+本体）、BUG-51（`schedule_ime_refresh(20)` キックの導入経緯）、
+[bug-report-fetch skill](../.claude/skills/bug-report-fetch/SKILL.md)。
+
 ---
 
 ## BUG-69: `ir_post_focus_change_snapshot` が belief を `applied=Confirmed` へ偽装し、TsfNative の force-on / BUG-16 修正を無効化。eager warmup だけが未監査の副作用で偶然穴を塞いでいる
@@ -9732,3 +9822,149 @@ give-up 分岐自体の見直しを検討する」という本件の予告）、
 問題視した先行事例、"kaきの"）、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md)
 決定3（提案2＝retry の却下・案L の採用、本バグが案L の初回実装）、
 [docs/experiments.md](../experiments.md) エントリ16。
+
+---
+
+## BUG-75: `StaleConfirm` 回収が「先頭 VK は着弾していない」と無条件に仮定して romaji 全体を再送するため、着弾済みの子音が二重になり促音が増える
+
+**発見の経緯:** タスクトレイの不具合報告機能（ADR-095）経由、`report_id:
+01M0S4S6R4C1YJ581YJ9ZGAXXD`（2026-08-24、app_version 1.14.0）。症状カテゴリ
+「入力した文字と違う文字が出た」、説明「つかって　　と入力したかったのに
+　っつかって　という入力になった」。
+
+**症状（確定）:** msedge.exe（`Chrome_WidgetWin_1`、profile=`Imm32Unavailable`、
+`LiteralTarget=Chrome` はこの型の分類名であって Google Chrome を指すもの
+ではない）+ Google 日本語入力で、物理 F2 で IME を ON にした直後（21.8秒
+アイドル後の cold）に「つかっても」と入力すると **「っつかっても」** になる。
+
+**再現条件（ログで確定）:** ①直前に物理 IME キーで cold mark
+（`reason=F2NonTsf`, `idle_at_cold=21766ms`）→ 送信前 F2/probe 待機を省略
+（2026-07-18、BUG-24 追補の設計変更）して per-VK confirm 経路へ、②先頭 VK
+（'T'）送信時点で GJI 候補ウィンドウが既に可視（`VisibleFencing` ショート
+カット発火）、③GJI の WriteTransferCount サンプルが判定時刻までに増加しない。
+
+**確定している事実（journal / app log 一次証拠、report 添付ログを
+`docs/experiments.md` 方式で突き合わせ）:**
+
+- この dump 中で唯一の `StaleConfirm`: `route=VisibleFencing, path=PerVk,
+  idx=0/1, vk=0x54('T'), evidence={show_changed:true, candidate_visible:true,
+  write_delta:0, evidence_fresh:false}, backs=0, escape_composition=false,
+  consecutive_before=0`。
+- app log 1025-1036 行: `[gji-obs] candidate SHOW #1195` が送信 **18ms 後**、
+  `[gji-fsm] StartComposition` が **27ms 後**に発火（＝ GJI は受理して合成を
+  開始していた）。`[gji-io] WRITE` の直前サンプルは 26.342、次は **27.306**
+  （送信 +116ms）。判定は 27.247（+57ms）に行われている。**`write_delta:0`
+  は「I/O が無かった」ではなく GJI 側 I/O カウンタのポーリングサンプリング
+  遅延**であり、GJI が実際に受理していなかった証拠ではない。
+- 回収は `[raw-tsf-literal] backspace ×0 + re-send "tu" scheduled`。実際に
+  GJI へ入った列は `t`（着弾済み） + `tu`（再送） + `ka` + `ltu` + `te` +
+  `mo`。GJI のローマ字変換規則で `ttu` → 「っつ」。観測文字列と一致する。
+
+**原因（コード上で確定）:** `tsf/warmup/literal_detect_fsm.rs::
+per_vk_recovery_params(is_stale=true, failed_idx=0)` は `(backs=0,
+escape_composition=false)` を返し、呼び出し元（`tsf/warmup/probe_fsm.rs::
+run_per_vk_confirm`）が **romaji 全体**を再送していた。これは「既に送った
+VK はどこにも着弾していない」という無条件の仮定であり、`StaleConfirm` の
+意味（confirm 根拠の**鮮度**が不明、BUG-33 追補4）とは一致しない。
+`StaleConfirm` に到達する3経路（`check_now` の write 分岐・show 分岐・
+`visible_fencing_verdict` の `VisibleFencing` ショートカット）はいずれも
+**着弾を否定する証拠を持たない**——否定的証拠を持つのは `SuspectedLiteral`
+（deadline 到達・証拠ゼロ）だけである。BUG-33 追補4 は `is_stale` で
+backspace を外したが、**再送側の同じ「着弾していない」仮定は残っていた**。
+
+**推論（一次証拠なし）:** `T` が GJI のローマ字バッファに未確定で保持されて
+いたこと自体は `HIMC=NULL`（`profile=Imm32Unavailable`）により直接読めない。
+上記は出力文字列からの逆算であり、composition 文字列の直接観測はしていない
+（BUG-45 と同じ構造的制約）。
+
+**検討したが今回は採らなかった経路:**
+
+- **SHOW エッジ単独を confirm 根拠として採用する案**（`gji_candidate_show.
+  has_changed(gji_show_baseline)` を `visible_fencing_verdict` に組み込む）。
+  ADR-079 決定1 は「SHOW と write-bytes のどちらが confirm 信号を出したかに
+  関わらず `gji_last_write_ms() >= epoch_send_ms` を満たさない限り自世代の
+  証拠として採用しない」と明記しており、その唯一の根拠事実（実機トレースで
+  SHOW 自体は次世代送信後に発火していたが対応する I/O は前世代のものだった、
+  BUG-35）に真っ向から反する。前世代由来かどうかを判別する
+  `stale_generation_risk`（cold reason が `RawTsfLiteralRecovery` 由来、または
+  連続 `StaleConfirm` 回数 `consecutive > 0`）を検討したが、`consecutive` は
+  `ColdReason::SetOpenTrue`/`ProbeAction::CompositionConfirmed` でリセットされ、
+  かつ**今回の cold=223 自身が `F2NonTsf` かつ `consecutive=0`**——つまり
+  「安全」とされる条件のまま本当に前世代 SHOW が来た場合と区別できない。
+  ADR-079 決定1 の改訂として持ち出すなら、まず送信ゼロ・挙動変更ゼロで
+  「SHOW 単独なら confirm していたはず」を journal に記録するだけの観測
+  フェーズ（[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md) 決定3 案L の
+  前例に倣う）で実測を集めるべきであり、本バグでは行わない。
+- **送信前 F2/probe 待機の復活**（cold=223 は BUG-74 と同一の上流条件——
+  21.8秒アイドル後の genuinely cold な context に「2026-07-18 の送信前待機
+  完全撤去」がそのまま適用されている）。ただし本件では候補ウィンドウ SHOW と
+  `StartComposition` が実際に発火しており GJI 側は ready だった（ready で
+  なかったのは awase の確認センサーの方）ため、待機を復活させても重複送信の
+  メカニズム自体は残る。待機の復活は実機ソークを経て意図的に撤去した設計の
+  巻き戻しでもあるため、本件では採らない（BUG-74 の恒久対策トラック側の
+  課題として残す）。
+
+**修正:** `per_vk_recovery_params` 自体は変更しない。`tsf/warmup/probe_fsm.rs`
+の `StaleConfirm` 分岐は romaji 全体を `emit_recovery_actions` へ渡したまま
+にし（journal には常に元の romaji を残す、ADR-100 決定3 案L の不変条件を
+維持）、実際にどの romaji を再送するかは dispatcher（`output/probe_io.rs`
+の `RawTsfLiteralRecovery` ハンドラ、`consecutive==0` 分岐、journal record
+の `push` より**後**）に一元化した。`facts.path == DetectPath::PerVk &&
+facts.verdict == LiteralVerdict::StaleConfirm` のときだけ新設の純関数
+`tsf::literal_facts::stale_confirm_resend_romaji(romaji, failed_idx,
+last_idx)` を通し、それ以外（`SuspectedLiteral`・word-level 経路）は
+romaji 全体をそのまま `set_raw_literal` へ渡す（変更前と同一）。この
+verdict/path ガードにより、`backs=1` で全体再送が正しい `SuspectedLiteral`
+（先頭 VK が本当に literal 化した場合）に suffix ロジックを誤って適用する
+ことがない。
+
+`stale_confirm_resend_romaji` は `failed_idx==0 && last_idx>0`（先頭 VK・
+かつ2文字以上のローマ字）のときだけ先頭文字を除いた suffix を返し、それ以外
+（単一 VK のローマ字、または `failed_idx>0` で composition が ESC 済み）は
+romaji 全体を返す。単一 VK のローマ字（例: 「あ」「ん」）を対象外にしたのは、
+suffix を取ると必ず空文字列になり、本当に literal 化していた場合（GJI が
+実は受理していなかった場合）に文字が痕跡なく完全に失われる——**BUG-74 が
+「痕跡なく完全に失われる」ことを理由に ADR-101 まで作って直したのと同型の
+退行**になるため。`failed_idx`/`last_idx` は per-VK confirm の `vk_chars`
+（`romaji.chars().filter_map(ascii_to_vk)` で構築）のインデックスであり
+`romaji.chars()` そのもののインデックスではないため、`stale_confirm_
+resend_romaji` は `romaji.chars()` を同じ `ascii_to_vk` で filter した列に
+対して `skip`/`collect` する（`ascii_to_vk` が解決できない文字が romaji に
+混入していても vk_chars のインデックスとずれない、Opus premortem 2巡目の
+指摘で修正）。
+
+`per_vk_recovery_params` の呼び出し元・`backs`/`escape_composition` の値
+自体は変更していない。`consecutive != 0`（give-up、`VK_IME_OFF`→
+`VK_IME_ON` 実送信を伴う `schedule_chrome_gji_reinit` 経路）の**分岐条件と
+挙動**には一切触れていない——journal の `LiteralDetectRecord.romaji` は
+分岐より前の `push` で記録するため、give-up 側も含め常に**元の romaji**
+（suffix ではない）が残る。
+
+**テスト:** `tsf/literal_facts.rs` に `stale_confirm_resend_romaji` の単体
+テスト4本を追加（`("tu",0,1)→"u"`・`("a",0,0)→"a"`（単一 VK 退行防止）・
+`("ltu",1,2)→"ltu"`（`failed_idx>0` は変更前と同一）・`("tあu",0,1)→"u"`
+（`ascii_to_vk` が解決できない文字混入時も vk_chars インデックスとずれない
+ことの回帰テスト））。`literal_facts` は
+ungated モジュール（`tsf/mod.rs` 参照）のため `cargo test -p awase-windows
+--lib` で Linux 実行済み（435件 green）。`cargo xwin check --tests`・
+`cargo xwin clippy -p awase-windows --target x86_64-pc-windows-msvc -- -D
+warnings`・`cargo fmt --all -- --check` 警告ゼロ。`architecture_guard`
+（38件）・`golden_scenarios`（22件）・`layer_boundary_guard`（8件）・
+`journal_replay`（1件）・`drift_correction_replay`（2件）全緑（無変更で
+通ることを確認、`decide_actuation_action`/`per_vk_recovery_params` 自体には
+触れていないため）。**Windows 実機での確認は未実施。** 次回、msedge/Chrome
++ GJI で「20秒以上アイドル → 物理 F2 で IME ON → 直後に『つかって』」を
+確認すること（修正前は「っつかって」で再現する）。あわせて非回帰確認として
+Windows Terminal + GJI で「Ctrl+無変換 → `41` → 物理サムキーで IME ON →
+『ふん』」→「41分」になること（BUG-35 のシナリオ、`failed_idx>0` 経路は
+本修正で変更していないため回帰しないはず）、および「あ」等の単一 VK ローマ字
+を cold 状態で単独入力し文字が消えないこと（BUG-74 非回帰）を確認すること。
+
+**関連:** BUG-74（同じ「送信前 F2/probe 待機省略」上流・別の下流分岐、
+`ResendSuffixFrom` 型の変更ではなく give-up 経路自体の文字消失対策）、
+BUG-35（epoch fencing・`consecutive` リセット条件の導入元）、BUG-33 追補3・4
+（`is_stale` で backspace を外した経緯、本バグはその「再送」側の同じ仮定を
+是正）、BUG-45（belief と actual composition の乖離という同型の構造的制約）、
+ADR-079（epoch fencing）、[ADR-100](adr/100-gji-warmup-vk-ime-on-reinit.md)
+決定3 案L（今回見送った観測フェーズの前例）、
+[bug-report-fetch skill](../.claude/skills/bug-report-fetch/SKILL.md)。
