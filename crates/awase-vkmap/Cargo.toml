@@ -1,0 +1,23 @@
+[package]
+name = "awase-vkmap"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Windows VKコード⇔物理キー位置(JIS配列)のマッピング表。awase-windowsとawaza(別リポジトリ)が共有する"
+publish = false
+
+[lib]
+name = "awase_vkmap"
+path = "src/lib.rs"
+
+[dependencies]
+awase = { path = "../.." }
+
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+doc_markdown = "allow"
