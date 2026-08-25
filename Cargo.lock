@@ -551,12 +551,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-vkmap"
+version = "0.1.0"
+dependencies = [
+ "awase",
+]
+
+[[package]]
 name = "awase-windows"
 version = "1.15.0"
 dependencies = [
  "anyhow",
  "awase",
  "awase-gji-config",
+ "awase-vkmap",
  "env_logger",
  "itertools",
  "log",
