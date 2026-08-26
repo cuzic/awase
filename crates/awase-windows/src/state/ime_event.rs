@@ -389,17 +389,20 @@ pub enum ImeEvent {
     /// 「IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる」判断に使う。
     ImeApplyRequested {
         target: bool,
-        generation: u64,
+        generation: super::ApplyGeneration,
         ctrl_held: bool,
     },
 
     /// OS への適用が成功した (async 完了時、generation 照合必須)
-    ImeApplySucceeded { target: bool, generation: u64 },
+    ImeApplySucceeded {
+        target: bool,
+        generation: super::ApplyGeneration,
+    },
 
     /// OS への適用が失敗した
     ImeApplyFailed {
         target: bool,
-        generation: u64,
+        generation: super::ApplyGeneration,
         error: ApplyError,
     },
 
@@ -480,7 +483,7 @@ impl ImeEvent {
     pub const fn from_apply_outcome(
         target: bool,
         outcome: awase::platform::ImeOpenOutcome,
-        generation: u64,
+        generation: super::ApplyGeneration,
     ) -> Self {
         use awase::platform::ImeOpenOutcome;
         match outcome {

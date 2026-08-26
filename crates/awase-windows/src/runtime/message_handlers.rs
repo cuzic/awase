@@ -584,10 +584,14 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 pub(crate) fn post_async_ime_apply_complete(
     open: bool,
     outcome: ImeOpenOutcome,
-    generation: Option<u64>,
+    generation: Option<crate::state::ApplyGeneration>,
     reason: crate::state::ime_event::OpenApplyReason,
 ) {
-    let generation = generation.unwrap_or(0);
+    // ADR-106 決定1: `ApplyGeneration` は `NonZeroU64` のため `to_wire` の
+    // `0 = None` エンコードは正当な generation 値と絶対に衝突しない
+    // （旧 `generation.unwrap_or(0)` は `next_seq()` 由来の `generation == 0`
+    // が bootstrap 経路で実際に払い出されうる番兵衝突を抱えていた）。
+    let generation = crate::state::ApplyGeneration::to_wire(generation);
     let reason_bit = usize::from(matches!(
         reason,
         crate::state::ime_event::OpenApplyReason::Bootstrap
@@ -628,10 +632,7 @@ fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let open = (wparam & 1) != 0;
     let reason = decode_reason(wparam);
-    let generation = match (wparam >> 2) as u64 {
-        0 => None,
-        generation => Some(generation),
-    };
+    let generation = crate::state::ApplyGeneration::from_wire((wparam >> 2) as u64);
     let outcome = decode_outcome(lparam);
     if outcome == ImeOpenOutcome::Failed {
         log::warn!("apply_ime_open({open}) failed (async)");

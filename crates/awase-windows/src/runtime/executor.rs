@@ -33,7 +33,7 @@ use crate::RawKeyEventExt as _;
 pub(crate) struct ImeApplyCompletion {
     pub open: bool,
     pub outcome: awase::platform::ImeOpenOutcome,
-    pub generation: Option<u64>,
+    pub generation: Option<crate::state::ApplyGeneration>,
     /// ADR-086 §4 INV-18 の provenance。sync path（`execute_one`）は常に
     /// `Decision::SetOpen` エフェクト駆動のため `EngineDecision` 固定。
     pub reason: crate::state::ime_event::OpenApplyReason,
@@ -623,7 +623,7 @@ impl DecisionExecutor {
         platform: &mut WindowsPlatform,
         ime: &ImeStateHub,
         effect: Effect,
-        generation: Option<u64>,
+        generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<ImeApplyCompletion> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
             self.handle_reinject(platform, ime, event);
@@ -707,7 +707,7 @@ impl DecisionExecutor {
         platform: &mut WindowsPlatform,
         ime: &ImeStateHub,
         effect: Effect,
-        generation: Option<u64>,
+        generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
@@ -779,7 +779,7 @@ impl DecisionExecutor {
         platform: &WindowsPlatform,
         ime: &ImeStateHub,
         open: bool,
-        generation: Option<u64>,
+        generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());

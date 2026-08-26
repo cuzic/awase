@@ -42,6 +42,7 @@ use awase_windows::state::ime_event::{
     ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use awase_windows::state::ime_model::ImeModel;
+use awase_windows::state::ApplyGeneration;
 
 // ── テストヘルパー ────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ fn scenario_2_ctrl_muhenkan_does_not_reactivate_on_ctrl_keyup() {
         user_intent(false, UserIntentSource::SyncKey),
         ImeEvent::ImeApplyRequested {
             target: false,
-            generation: 1,
+            generation: ApplyGeneration::new(1).unwrap(),
             ctrl_held: true,
         },
         // chord 中の stale observer (Ctrl KeyUp 由来等)
@@ -161,7 +162,7 @@ fn scenario_3_ctrl_henkan_does_not_deactivate_immediately() {
         user_intent(true, UserIntentSource::SyncKey),
         ImeEvent::ImeApplyRequested {
             target: true,
-            generation: 1,
+            generation: ApplyGeneration::new(1).unwrap(),
             ctrl_held: true,
         },
         observer_reported(false, ObservationSource::ObserverPoll), // stale
@@ -273,20 +274,20 @@ fn scenario_8_stale_async_apply_does_not_corrupt_newer_intent() {
     let model = run_reducer(vec![
         ImeEvent::ImeApplyRequested {
             target: true,
-            generation: 10,
+            generation: ApplyGeneration::new(10).unwrap(),
             ctrl_held: false,
         },
         user_intent(false, UserIntentSource::PhysicalImeKey),
         // 新しい intent で別の apply が発生 (gen=11) して pending を上書きする想定
         ImeEvent::ImeApplyRequested {
             target: false,
-            generation: 11,
+            generation: ApplyGeneration::new(11).unwrap(),
             ctrl_held: false,
         },
         // 古い gen=10 の success が遅れて到着
         ImeEvent::ImeApplySucceeded {
             target: true,
-            generation: 10,
+            generation: ApplyGeneration::new(10).unwrap(),
         },
     ]);
     assert_eq!(model.desired_open(), false, "newer intent (gen=11) が勝つ");
@@ -307,12 +308,12 @@ fn apply_succeeded_with_matching_generation_updates_applied() {
     let model = run_reducer(vec![
         ImeEvent::ImeApplyRequested {
             target: true,
-            generation: 5,
+            generation: ApplyGeneration::new(5).unwrap(),
             ctrl_held: false,
         },
         ImeEvent::ImeApplySucceeded {
             target: true,
-            generation: 5,
+            generation: ApplyGeneration::new(5).unwrap(),
         },
     ]);
     assert_eq!(model.applied.applied_open(), Some(true));

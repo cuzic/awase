@@ -438,7 +438,7 @@ impl Runtime {
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
-        generation: Option<u64>,
+        generation: Option<crate::state::ApplyGeneration>,
         reason: crate::state::ime_event::OpenApplyReason,
     ) {
         use awase::platform::TsfComposition as _;

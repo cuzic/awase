@@ -13,7 +13,7 @@ use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeModel};
 use super::input_barrier::InputBarrier;
 use super::scoped_latch::ScopedOneShot;
-use super::TickMs;
+use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -80,6 +80,10 @@ pub(crate) struct ImeStateHub {
     /// から更新するため `Cell`——`ImeStateHub` は単一 UI スレッドが所有する
     /// （`with_app` パターン）ため `!Sync` でも問題ない。
     intent_override_logged: std::cell::Cell<bool>,
+
+    /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
+    /// から独立しており、診断ログの記録有無と generation の一意性が無関係になる。
+    generation_alloc: super::GenerationAllocator,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -106,6 +110,7 @@ impl ImeStateHub {
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
             intent_override_logged: std::cell::Cell::new(false),
+            generation_alloc: super::GenerationAllocator::new(),
         }
     }
 }
@@ -238,7 +243,7 @@ impl ImeStateHub {
         target: bool,
         ctrl_held: bool,
         focus_transition_was_pending: bool,
-        generation: u64,
+        generation: ApplyGeneration,
         tick_ms: TickMs,
     ) -> bool {
         if self.is_ctrl_ime_chord_active() && !target {
@@ -317,7 +322,7 @@ impl ImeStateHub {
         target: bool,
         ctrl_held: bool,
         focus_transition_was_pending: bool,
-        generation: u64,
+        generation: ApplyGeneration,
         tick_ms: TickMs,
     ) -> bool {
         if self.is_ctrl_ime_chord_active() && !target {
@@ -681,12 +686,14 @@ impl ImeStateHub {
         self.shadow_model.app_policy.default_feedback
     }
 
-    /// 次のイベント generation 番号を払い出す。
+    /// 次の `ApplyGeneration` を払い出す（ADR-106 決定1）。
     ///
-    /// 呼び出し元で `self.platform_state.ime.event_log.next_seq()` を直接書かずに
-    /// このメソッドを使うこと（3 段チェーンの解消）。
-    pub(crate) fn allocate_event_generation(&self) -> u64 {
-        self.event_log.next_seq()
+    /// 専用アロケータ（`&mut self`）を使うため「読むだけで進まない」ことが
+    /// 型で不可能——旧実装（`event_log.next_seq()` を読むだけ）は `&self` の
+    /// ため呼び出し元が別途 `dispatch_event` しないと一意性が壊れる、型で
+    /// 守られない契約に依存していた。
+    pub(crate) fn allocate_event_generation(&mut self) -> ApplyGeneration {
+        self.generation_alloc.allocate()
     }
 
     /// IMM-broken アプリで IME-ON が確認されたとき、`input_mode` を補正すべき値を返す。
@@ -832,7 +839,7 @@ impl ImeStateHub {
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
-        generation: Option<u64>,
+        generation: Option<ApplyGeneration>,
         ts: u64,
     ) -> bool {
         use awase::platform::ImeOpenOutcome;
@@ -1615,9 +1622,13 @@ mod tests {
     #[test]
     fn handle_engine_set_open_filters_when_focus_transition_was_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps
-            .ime
-            .handle_engine_set_open(true, false, true, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_set_open(
+            true,
+            false,
+            true,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(!applied, "focus transition pending 中は適用されない");
         assert!(
             !ps.ime.model().desired_open(),
@@ -1629,9 +1640,13 @@ mod tests {
     #[test]
     fn handle_engine_set_open_applies_when_focus_transition_not_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps
-            .ime
-            .handle_engine_set_open(true, false, false, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_set_open(
+            true,
+            false,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(
             applied,
             "focus transition が pending でなければ通常通り適用される"
@@ -1654,17 +1669,20 @@ mod tests {
         ps.ime.dispatch_event(
             ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 5,
+                generation: ApplyGeneration::new(5).unwrap(),
                 ctrl_held: false,
             },
             TickMs(0),
         );
-        assert_eq!(ps.ime.model().pending_generation(), Some(5));
+        assert_eq!(
+            ps.ime.model().pending_generation(),
+            Some(ApplyGeneration::new(5).unwrap())
+        );
 
         let accepted = ps.ime.record_ime_apply_result(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
-            Some(5),
+            Some(ApplyGeneration::new(5).unwrap()),
             100,
         );
 
@@ -1691,7 +1709,7 @@ mod tests {
         ps.ime.dispatch_event(
             ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 5,
+                generation: ApplyGeneration::new(5).unwrap(),
                 ctrl_held: false,
             },
             TickMs(0),
@@ -1700,14 +1718,14 @@ mod tests {
         let accepted = ps.ime.record_ime_apply_result(
             true,
             awase::platform::ImeOpenOutcome::UnsafeToToggle,
-            Some(4),
+            Some(ApplyGeneration::new(4).unwrap()),
             100,
         );
 
         assert!(!accepted);
         assert_eq!(
             ps.ime.model().pending_generation(),
-            Some(5),
+            Some(ApplyGeneration::new(5).unwrap()),
             "generation 不一致の UnsafeToToggle は stale として無視され、現在の \
              pending を消費しない"
         );
@@ -1719,15 +1737,23 @@ mod tests {
     fn handle_engine_set_open_ctrl_chord_filter_still_works() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         // 1 回目: IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps
-            .ime
-            .handle_engine_set_open(false, true, false, 1, TickMs(0));
+        let first = ps.ime.handle_engine_set_open(
+            false,
+            true,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(first, "chord を開始する最初の要求は適用される");
         assert!(ps.ime.is_ctrl_ime_chord_active());
         // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps
-            .ime
-            .handle_engine_set_open(false, true, false, 2, TickMs(0));
+        let second = ps.ime.handle_engine_set_open(
+            false,
+            true,
+            false,
+            ApplyGeneration::new(2).unwrap(),
+            TickMs(0),
+        );
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
@@ -1788,9 +1814,13 @@ mod tests {
     #[test]
     fn handle_engine_set_open_updates_persistent_explicit_off_ms() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
-        let applied = ps
-            .ime
-            .handle_engine_set_open(false, false, false, 1, TickMs(9_999));
+        let applied = ps.ime.handle_engine_set_open(
+            false,
+            false,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(9_999),
+        );
         assert!(applied);
         assert_eq!(
             ps.ime.persistent_explicit_off_ms(),
@@ -1808,9 +1838,13 @@ mod tests {
     #[test]
     fn handle_engine_activation_sync_filters_when_focus_transition_was_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps
-            .ime
-            .handle_engine_activation_sync(true, false, true, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_activation_sync(
+            true,
+            false,
+            true,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(!applied, "focus transition pending 中は適用されない");
         assert!(
             !ps.ime.model().desired_open(),
@@ -1823,9 +1857,13 @@ mod tests {
     #[test]
     fn handle_engine_activation_sync_applies_when_focus_transition_not_pending() {
         let mut ps = ps_with_shadow(false, None, true);
-        let applied = ps
-            .ime
-            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_activation_sync(
+            true,
+            false,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(
             applied,
             "focus transition が pending でなければ通常通り適用される"
@@ -1836,15 +1874,23 @@ mod tests {
     fn handle_engine_activation_sync_ctrl_chord_filter_still_works() {
         let mut ps = ps_with_shadow(false, None, true);
         // 1 回目: ActivationSync による IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps
-            .ime
-            .handle_engine_activation_sync(false, true, false, 1, TickMs(0));
+        let first = ps.ime.handle_engine_activation_sync(
+            false,
+            true,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(first, "chord を開始する最初の要求は適用される");
         assert!(ps.ime.is_ctrl_ime_chord_active());
         // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps
-            .ime
-            .handle_engine_activation_sync(false, true, false, 2, TickMs(0));
+        let second = ps.ime.handle_engine_activation_sync(
+            false,
+            true,
+            false,
+            ApplyGeneration::new(2).unwrap(),
+            TickMs(0),
+        );
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
@@ -1856,9 +1902,13 @@ mod tests {
     #[test]
     fn handle_engine_activation_sync_never_sets_last_intent_or_desired_open() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
-        let applied = ps
-            .ime
-            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_activation_sync(
+            true,
+            false,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(applied);
         assert_eq!(
             ps.ime.model().last_intent.as_ref().map(|i| i.target),
@@ -1884,9 +1934,13 @@ mod tests {
     fn handle_engine_activation_sync_does_not_record_intent_store_entry() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        let applied = ps
-            .ime
-            .handle_engine_activation_sync(true, false, false, 1, TickMs(0));
+        let applied = ps.ime.handle_engine_activation_sync(
+            true,
+            false,
+            false,
+            ApplyGeneration::new(1).unwrap(),
+            TickMs(0),
+        );
         assert!(applied);
         // IntentStore にエントリが無いことを直接確認する:
         // conv 観測が effective_open() を反転させても、IntentStore 側からの

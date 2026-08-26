@@ -11,6 +11,7 @@
 
 use super::app_ime_policy::AppImePolicy;
 use super::force_guard::{ForceGuardSet, ForceOnReason, ObserveMissMonitor};
+use super::ApplyGeneration;
 use awase::engine::InputModeState;
 
 use super::ime_event::{
@@ -392,7 +393,7 @@ impl ImeModel {
 
     /// `pending` transition の generation を返す。apply 完了 event の照合用。
     #[must_use]
-    pub fn pending_generation(&self) -> Option<u64> {
+    pub fn pending_generation(&self) -> Option<ApplyGeneration> {
         self.pending.as_ref().map(|p| p.generation)
     }
 
@@ -1247,7 +1248,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 1,
+                generation: ApplyGeneration::new(1).unwrap(),
                 ctrl_held: true,
             },
         ));
@@ -1268,7 +1269,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 1,
+                generation: ApplyGeneration::new(1).unwrap(),
                 ctrl_held: false,
             },
         ));
@@ -1285,7 +1286,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 1,
+                generation: ApplyGeneration::new(1).unwrap(),
                 ctrl_held: true,
             },
         ));
@@ -1295,7 +1296,7 @@ mod tests {
             2,
             ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 2,
+                generation: ApplyGeneration::new(2).unwrap(),
                 ctrl_held: true,
             },
         ));
@@ -1312,7 +1313,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         ));
@@ -1321,13 +1322,13 @@ mod tests {
             2,
             ImeEvent::ImeApplySucceeded {
                 target: false,
-                generation: 9,
+                generation: ApplyGeneration::new(9).unwrap(),
             },
         ));
 
         assert_eq!(
             model.pending_generation(),
-            Some(10),
+            Some(ApplyGeneration::new(10).unwrap()),
             "古い generation の完了で current pending を消費しない"
         );
     }
@@ -1339,7 +1340,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         ));
@@ -1348,7 +1349,7 @@ mod tests {
             2,
             ImeEvent::ImeApplySucceeded {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
             },
         ));
 
@@ -1373,7 +1374,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         ));
@@ -1382,14 +1383,14 @@ mod tests {
             2,
             ImeEvent::ImeApplyFailed {
                 target: false,
-                generation: 9,
+                generation: ApplyGeneration::new(9).unwrap(),
                 error: ApplyError::Timeout,
             },
         ));
 
         assert_eq!(
             model.pending_generation(),
-            Some(10),
+            Some(ApplyGeneration::new(10).unwrap()),
             "古い generation の失敗完了で current pending を消費しない"
         );
     }
@@ -1401,7 +1402,7 @@ mod tests {
             1,
             ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         ));
@@ -1410,7 +1411,7 @@ mod tests {
             2,
             ImeEvent::ImeApplyFailed {
                 target: false,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 error: ApplyError::Timeout,
             },
         ));
@@ -1438,11 +1439,14 @@ mod tests {
             },
             event: ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         });
-        assert_eq!(model.pending_generation(), Some(10));
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap())
+        );
 
         // timeout_at は ImeApplyRequested から IME_APPLY_PENDING_TIMEOUT_MS 後
         // （tuning.rs 参照、BUG-34 実測の HungAppTimeout ~5741ms に安全マージンを
@@ -1480,7 +1484,7 @@ mod tests {
             },
             event: ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         });
@@ -1498,7 +1502,7 @@ mod tests {
 
         assert_eq!(
             model.pending_generation(),
-            Some(10),
+            Some(ApplyGeneration::new(10).unwrap()),
             "期限(1秒)内なら無関係なイベントで pending を失わない"
         );
     }
@@ -1518,11 +1522,14 @@ mod tests {
             },
             event: ImeEvent::ImeApplyRequested {
                 target: true,
-                generation: 10,
+                generation: ApplyGeneration::new(10).unwrap(),
                 ctrl_held: false,
             },
         });
-        assert_eq!(model.pending_generation(), Some(10));
+        assert_eq!(
+            model.pending_generation(),
+            Some(ApplyGeneration::new(10).unwrap())
+        );
 
         model.reduce(&ImeEventEnvelope {
             time: EventTime {
@@ -1532,14 +1539,14 @@ mod tests {
             },
             event: ImeEvent::ImeApplyRequested {
                 target: false,
-                generation: 11,
+                generation: ApplyGeneration::new(11).unwrap(),
                 ctrl_held: false,
             },
         });
 
         assert_eq!(
             model.pending_generation(),
-            Some(11),
+            Some(ApplyGeneration::new(11).unwrap()),
             "上書きは拒否しない(警告ログのみ) — 新しい generation が pending になる"
         );
     }
