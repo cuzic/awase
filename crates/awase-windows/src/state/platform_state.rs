@@ -1265,9 +1265,12 @@ impl ImeStateHub {
         );
     }
 
+    /// `value` は [`super::observation_store::FocusProbeOpenStatus::Read`] からしか
+    /// 得られない型（ADR-106 決定2）。belief 由来の `bool`（`effective_open()` 等）を
+    /// 観測として書き込むコードは型検査で落ちる。
     pub(crate) fn write_focus_probe(
         &mut self,
-        value: bool,
+        value: super::observation_store::ObservedOpenValue,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
@@ -1276,7 +1279,8 @@ impl ImeStateHub {
         // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::FocusProbe>::from_probe(&accepted, value, HwndId::NULL).into(),
+                Observed::<evidence::FocusProbe>::from_probe(&accepted, value.get(), HwndId::NULL)
+                    .into(),
             ),
             tick_ms,
         );

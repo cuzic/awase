@@ -10992,3 +10992,82 @@ BUG-78で`mstsc.exe`に導入済み）をGUIから編集できるようにした
 `mstsc.exe`のままで変更していない）。あくまでオプトインの回避策であり、
 根本原因の特定・修正は引き続き未対応。`docs/bug-reports-triage.md` に
 report_id 2件を記録。
+
+---
+
+## BUG-92: BUG-33 追補 — `Imm32Unavailable`/`TsfNative` の shadow フォールバック観測 laundering を型で閉じた（ADR-106 決定2）
+
+**位置づけ:** 新規の実機不具合報告ではなく、BUG-33（「belief 自身を『観測』として
+書き戻す循環」）が確定させた欠陥そのものを、実行時ガードではなく型で構造的に
+除去したリファクタの記録。BUG-33 の「検知側の未解決ギャップ（drift-correction が
+構造的に発火しない件）自体は本修正後も残存する」という記述（当該エントリ末尾）を
+本エントリで解消する。番号は元コミットでは暫定（BUG-81）だったが、develop への
+1回目の rebase 時に BUG-80〜89 が既に別件（ADR-105/102 コードレビュー是正等）で
+採番済みと判明したため BUG-90 に採番し直した。その後、developが並行して進み
+（`fdb3e842`）、別ブランチ発の BUG-88（PowerToys Mouse Without Borders）が
+BUG-90 へ改番されて develop 側に先着したため、2回目の rebase で再度衝突し
+BUG-92（本ブランチでは BUG-81→90→92 の変遷）に採番し直した（
+[main-develop-branch-flow](../.claude/rules/main-develop-branch-flow.md) の
+番号衝突対応）。
+
+**症状（BUG-33 からの再掲）:** TsfNative/Imm32Unavailable プロファイル
+（WezTerm/Chrome/Edge 等）では `apply_focus_probe`
+（`runtime/key_pipeline.rs`）が `shadow_on = effective_open()`（＝現在の belief
+そのもの）を `apply_effective_ime()` 経由で `write_focus_probe()` に渡し、
+`ObservationSource::FocusProbe`（confidence=Low）として観測ストアへ書き込んで
+いた。この観測は定義上 `open == desired` になるため、`check_drift_correction` の
+`if trusted.open == desired { return None; }` に毎回引っかかり、drift correction
+が構造的に一度も発火し得なかった（BUG-33 で確定済み）。
+
+**原因（型で防げなかった理由）:** `sanitize_focus_probe_open_status` は
+`Option<bool>` を返しており、「プロファイルが IMM32 open status を読めない」場合
+（構造的に観測不能）と「プロファイルは読めるが今回は取得できなかった」場合が同じ
+`None` に潰れていた。`apply_effective_ime`/`write_focus_probe` の引数も素の
+`bool` だったため、`effective_open()`（belief）由来の値と実際に IMM32 API から
+読み取った値が同じ型として扱え、実行時の `if`/`else` 分岐を書き間違えると即座に
+laundering が再発しうる状態だった。
+
+**修正 (ADR-106 決定2):** `state/observation_store.rs` に
+`FocusProbeOpenStatus::{Read(ObservedOpenValue), NotObservable(AppImeProfile)}` を
+新設し、`ObservedOpenValue` は `FocusProbeOpenStatus::classify` の `Read` 分岐
+からしか構築できないようにした（フィールド private）。`apply_effective_ime`/
+`write_focus_probe` の引数をこの型に変えたことで、`apply_effective_ime(shadow_on,
+...)`（belief 由来の値を観測として書く旧経路）は型検査でコンパイルエラーになり
+物理的に書けない。`apply_focus_probe` の `NotObservable` アームでは観測の記録を
+一切行わない。
+
+**guard 解除の副作用（撤去と同時に対処）:** 旧 `apply_effective_ime(effective)` は
+`effective == true` のとき `reset_detect_state()`（observe-miss リセット + force
+guard 全解除）を呼んでいた。これは観測記録とは独立した副作用のため、shadow
+フォールバック経路の撤去で黙って失うと `BrokenAppBootstrap` guard 等の解除
+タイミングが失われる。`FocusProbeOpenStatus::NotObservable` アーム内で
+`probe.is_japanese_ime && shadow_on` のときだけ `reset_detect_state()` を独立して
+呼ぶことで、観測の laundering だけを消し guard 解除の挙動は変えていない。
+
+**「唯一の観測源が消える」という懸念について:** 成立しない。BUG-33 が確定させた
+とおり、その観測源は定義上 `desired` と一致する自己参照値であり、
+`check_drift_correction` は撤去前から常に `None`（不一致なし＝補正不要）を返して
+いた。本修正は drift correction の能力を減らさず、減っていた事実を可視化した
+だけである。
+
+**未解決の疑問（実機ソークで確認すること、ADR-106 参照）:** 「3秒 FRESH を超えて
+凍った古い shadow 観測」が消えることで、TsfNative/Imm32Unavailable の
+`effective_open()` 解決結果が変わるケースが実機で発生するか。BUG-33 が残していた
+回復経路（per-VK confirm give-up → `send_chrome_gji_reinit_and_poll`、
+focus-resync + idle-conv-check、`ConvOpenInference` + 明示意図）が引き続き
+機能しているかを実機ソークで確認すること。
+
+**テスト:** `state/observation_store.rs` に `ObservedOpenValue`/
+`FocusProbeOpenStatus` の doctest（`Read` からの構築・`NotObservable` からは
+`compile_fail`）を追加。`runtime/key_pipeline.rs` の
+`focus_probe_open_status_is_not_observable_for_imm32_unavailable`/
+`_for_tsf_native`/`focus_probe_open_status_is_read_for_standard`/
+`_when_probe_returns_none_even_for_standard` で `classify` の全分岐を固定。
+Windows 実機での drift correction 再発火自体の確認は未実施（次回実機ソーク）。
+
+**関連ファイル:** `crates/awase-windows/src/state/observation_store.rs`
+（`FocusProbeOpenStatus`/`ObservedOpenValue` 新設）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`apply_focus_probe`/
+`apply_effective_ime`）、`crates/awase-windows/src/state/platform_state.rs`
+（`write_focus_probe`）。関連: BUG-33（本追補の対象）、
+[ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定2。

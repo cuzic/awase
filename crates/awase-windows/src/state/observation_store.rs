@@ -18,6 +18,95 @@ use super::evidence::{ActuatingPool, AnyObservation, BeliefPool, Observed, OpenE
 use super::ime_actuation::{ConvergedReceipt, Resolution};
 use super::ime_event::{HwndId, ObservationAuthority, ObservationConfidence, ObservationSource};
 use super::probe_admission::FocusEpoch;
+use crate::focus::class_names::AppImeProfile;
+
+// ── FocusProbe open status（ADR-106 決定2） ─────────────────────────────────
+
+/// `FocusProbe`（`read_ime_state_fast`）の open status 判定結果。
+///
+/// 旧 `sanitize_focus_probe_open_status` は `Option<bool>` を返しており、
+/// 「プロファイルが IMM32 open status を読めない」場合と「プロファイルは読める
+/// はずだが今回は取得できなかった」場合の両方が `None` に潰れていた。この enum は
+/// 前者を `NotObservable` として型で区別する（INV-C の具体化: 観測できない状況を
+/// bool へ潰さず運ぶ）。
+#[derive(Debug, Clone, Copy)]
+pub enum FocusProbeOpenStatus {
+    /// IMM32 API から実際に読み取れた値。
+    Read(ObservedOpenValue),
+    /// このプロファイルでは IMM32 の open status を信頼できない
+    /// （`AppImeProfile::can_read_imm32_open_status() == false`、TsfNative /
+    /// Imm32Unavailable）。
+    NotObservable(AppImeProfile),
+}
+
+impl FocusProbeOpenStatus {
+    /// `probe.ime_on`（raw な IMM32 読み取り結果）とプロファイルから判定する。
+    #[must_use]
+    pub const fn classify(probe_ime_on: Option<bool>, profile: AppImeProfile) -> Self {
+        if !profile.can_read_imm32_open_status() {
+            return Self::NotObservable(profile);
+        }
+        match probe_ime_on {
+            Some(on) => Self::Read(ObservedOpenValue(on)),
+            None => Self::NotObservable(profile),
+        }
+    }
+}
+
+/// [`FocusProbeOpenStatus::Read`] からしか得られない値。
+///
+/// フィールドが private のため、crate 内のどこからも `ObservedOpenValue(x)` を
+/// 直接構築できない——`FocusProbeOpenStatus::classify` の `Read` 分岐だけが
+/// 構築できる。`apply_effective_ime`/`write_focus_probe` の引数をこの型にする
+/// ことで、belief 由来の `shadow_on: bool`（`effective_open()`）を観測として
+/// 書き込むコード（旧 `apply_effective_ime(shadow_on, ...)`）はコンパイルエラー
+/// になる（BUG-92: BUG-33 の shadow フォールバック laundering を型で閉じた）。
+///
+/// ```
+/// use awase_windows::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
+/// use awase_windows::focus::class_names::AppImeProfile;
+///
+/// // Standard プロファイル + 実際の読み取り値がある場合のみ `Read` が返る。
+/// let status = FocusProbeOpenStatus::classify(Some(true), AppImeProfile::Standard);
+/// assert!(matches!(status, FocusProbeOpenStatus::Read(_)));
+/// let FocusProbeOpenStatus::Read(value) = status else {
+///     unreachable!()
+/// };
+/// assert!(value.get());
+/// ```
+///
+/// `NotObservable` からは作れない（belief 由来の値を観測として偽装できない）:
+///
+/// ```compile_fail
+/// use awase_windows::state::observation_store::{FocusProbeOpenStatus, ObservedOpenValue};
+/// use awase_windows::focus::class_names::AppImeProfile;
+///
+/// let status = FocusProbeOpenStatus::classify(None, AppImeProfile::TsfNative);
+/// let FocusProbeOpenStatus::NotObservable(_profile) = status else {
+///     unreachable!()
+/// };
+/// // NotObservable アームは `ObservedOpenValue` を一切持たない。
+/// // shadow_on: bool のような belief 由来の値を渡そうとしてもフィールドが
+/// // private なため構築できない。
+/// let shadow_on = true;
+/// let _value = ObservedOpenValue(shadow_on); // error[E0603]: field `0` is private
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedOpenValue(bool);
+
+impl ObservedOpenValue {
+    #[must_use]
+    pub const fn get(self) -> bool {
+        self.0
+    }
+
+    /// `is_japanese_ime` と合成した「実際に effective か」を返す。
+    /// 合成結果も `Read` 由来の値からのみ導出されるため、型としての出自は保たれる。
+    #[must_use]
+    pub const fn effective(self, is_japanese_ime: bool) -> Self {
+        Self(self.0 && is_japanese_ime)
+    }
+}
 
 /// 読み戻しの**問い**（ADR-080 不変条件6 / ADR-089 INV-46 / ADR-090 §2.B）。
 ///

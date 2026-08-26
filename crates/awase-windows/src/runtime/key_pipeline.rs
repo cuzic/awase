@@ -9,6 +9,7 @@
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
+use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use awase::engine::InputModeState;
@@ -1935,22 +1936,6 @@ const fn compute_focus_probe_grace(
     }
 }
 
-impl Runtime {
-    fn apply_effective_ime(
-        &mut self,
-        effective: bool,
-        tick_ms: crate::state::TickMs,
-        accepted: crate::state::probe_admission::AcceptedObservation,
-    ) {
-        if effective {
-            self.platform_state.ime.reset_detect_state();
-        }
-        self.platform_state
-            .ime
-            .write_focus_probe(effective, tick_ms, accepted);
-    }
-}
-
 #[expect(clippy::option_if_let_else)]
 fn build_ime_on_suffix(
     probe_ime_on: Option<bool>,
@@ -1975,14 +1960,23 @@ fn build_ime_on_suffix(
     }
 }
 
-fn sanitize_focus_probe_open_status(
-    probe_ime_on: Option<bool>,
-    current_profile: crate::focus::class_names::AppImeProfile,
-) -> Option<bool> {
-    if current_profile.can_read_imm32_open_status() {
-        probe_ime_on
-    } else {
-        None
+impl Runtime {
+    /// `FocusProbeOpenStatus::Read` から得た値だけを受け取る（ADR-106 決定2）。
+    /// belief 由来の `bool`（`effective_open()` 等）は型が合わず渡せない
+    /// ——`ObservedOpenValue` は `FocusProbeOpenStatus::classify` の `Read` 分岐
+    /// でしか構築できない。
+    fn apply_effective_ime(
+        &mut self,
+        effective: crate::state::observation_store::ObservedOpenValue,
+        tick_ms: crate::state::TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+    ) {
+        if effective.get() {
+            self.platform_state.ime.reset_detect_state();
+        }
+        self.platform_state
+            .ime
+            .write_focus_probe(effective, tick_ms, accepted);
     }
 }
 
@@ -2026,7 +2020,15 @@ impl Runtime {
         }
 
         let current_profile = self.platform.current_app_profile();
-        let probe_ime_on = sanitize_focus_probe_open_status(probe.ime_on, current_profile);
+        // ADR-106 決定2: 観測できない状況（TsfNative/Imm32Unavailable、または probe 自体が
+        // ime_on=None を返した場合）を bool へ潰さず型で運ぶ。`probe_ime_on` はログ表示
+        // 専用の派生値であり、書き込み経路には使わない（下の match が Read/NotObservable
+        // で完全に分岐する）。
+        let status = FocusProbeOpenStatus::classify(probe.ime_on, current_profile);
+        let probe_ime_on: Option<bool> = match status {
+            FocusProbeOpenStatus::Read(v) => Some(v.get()),
+            FocusProbeOpenStatus::NotObservable(_) => None,
+        };
         if probe.ime_on.is_some() && probe_ime_on.is_none() {
             log::debug!(
                 "FocusProbe: profile={current_profile:?} は IMM32 open status 非対応のため \
@@ -2036,24 +2038,34 @@ impl Runtime {
         }
 
         // TsfNative/Imm32Unavailable では open status を信用しない。
-        // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
-        let used_shadow_fallback = probe_ime_on.is_none() && probe.is_japanese_ime;
+        let used_shadow_fallback =
+            matches!(status, FocusProbeOpenStatus::NotObservable(_)) && probe.is_japanese_ime;
 
-        let suppressed_reason: Option<&'static str> = if let Some(on) = probe_ime_on {
-            let effective = on && probe.is_japanese_ime;
-            if !effective && signals.any() {
-                Some(signals.primary_reason())
-            } else {
-                self.apply_effective_ime(effective, now_tick_ms, accepted);
+        let suppressed_reason: Option<&'static str> = match status {
+            FocusProbeOpenStatus::Read(on) => {
+                let effective = on.effective(probe.is_japanese_ime);
+                if !effective.get() && signals.any() {
+                    Some(signals.primary_reason())
+                } else {
+                    self.apply_effective_ime(effective, now_tick_ms, accepted);
+                    None
+                }
+            }
+            FocusProbeOpenStatus::NotObservable(_profile) => {
+                // TsfNative/Imm32Unavailable: IMM32 非対応のため観測できない。
+                // ADR-106 決定2（BUG-92）: 旧実装はここで shadow の apply 値
+                // （belief 由来）を代替観測として focus_probe スロットに書き込んで
+                // いたが、これは「API を叩いていない値を観測として記録する」
+                // laundering であり、この観測は定義上 desired と一致するため
+                // drift correction が構造的に一度も発火しなくなっていた
+                // （BUG-33 で確定済み）。観測の記録自体は撤去し、guard 解除の
+                // 副作用（旧 `apply_effective_ime(shadow_on)` が `shadow_on==true`
+                // のとき呼んでいた `reset_detect_state`）だけを独立して維持する。
+                if probe.is_japanese_ime && shadow_on {
+                    self.platform_state.ime.reset_detect_state();
+                }
                 None
             }
-        } else {
-            // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
-            // shadow の apply 値を代替観測として focus_probe スロットに記録する。
-            if probe.is_japanese_ime {
-                self.apply_effective_ime(shadow_on, now_tick_ms, accepted);
-            }
-            None
         };
 
         // TsfNative フォーカス復帰時: conv mode を読んで ConvModeMgr（warmup 用）と
@@ -2302,26 +2314,37 @@ mod tests {
     use crate::focus::class_names::AppImeProfile;
 
     #[test]
-    fn focus_probe_open_status_is_ignored_for_imm32_unavailable() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Imm32Unavailable),
-            None
-        );
+    fn focus_probe_open_status_is_not_observable_for_imm32_unavailable() {
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(Some(false), AppImeProfile::Imm32Unavailable),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::Imm32Unavailable)
+        ));
     }
 
     #[test]
-    fn focus_probe_open_status_is_ignored_for_tsf_native() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::TsfNative),
-            None
-        );
+    fn focus_probe_open_status_is_not_observable_for_tsf_native() {
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(Some(false), AppImeProfile::TsfNative),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::TsfNative)
+        ));
     }
 
     #[test]
-    fn focus_probe_open_status_is_kept_for_standard() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Standard),
-            Some(false)
-        );
+    fn focus_probe_open_status_is_read_for_standard() {
+        let status = FocusProbeOpenStatus::classify(Some(false), AppImeProfile::Standard);
+        let FocusProbeOpenStatus::Read(value) = status else {
+            panic!("expected Read, got {status:?}");
+        };
+        assert!(!value.get());
+    }
+
+    #[test]
+    fn focus_probe_open_status_is_not_observable_when_probe_returns_none_even_for_standard() {
+        // Standard は can_read_imm32_open_status()==true だが、probe 自体が
+        // ime_on=None を返す（未フォーカス等）場合は NotObservable になる。
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::Standard)
+        ));
     }
 }
