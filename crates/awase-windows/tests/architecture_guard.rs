@@ -2349,7 +2349,12 @@ fn app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win() {
     let body = extract_fn_body(&content, "fn clear_hook_latches_for_app_disable");
 
     for must_contain in [
-        "VK_CONTROL", "VK_LCONTROL", "VK_RCONTROL", "VK_SHIFT", "VK_LSHIFT", "VK_RSHIFT",
+        "VK_CONTROL",
+        "VK_LCONTROL",
+        "VK_RCONTROL",
+        "VK_SHIFT",
+        "VK_LSHIFT",
+        "VK_RSHIFT",
     ] {
         assert!(
             body.contains(must_contain),
@@ -2358,9 +2363,7 @@ fn app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win() {
         );
     }
 
-    for must_not_contain in [
-        "VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN",
-    ] {
+    for must_not_contain in ["VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN"] {
         assert!(
             !body.contains(must_not_contain),
             "clear_hook_latches_for_app_disable は {must_not_contain} に触れては \

@@ -380,9 +380,7 @@ pub(crate) fn clear_hook_latches_for_app_disable(
                 slot.store(0, Ordering::Relaxed);
             }
         }
-        log::info!(
-            "[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）"
-        );
+        log::info!("[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）");
     }
     log::info!("[app-disable] {edge:?}: hook latches をクリア");
 }

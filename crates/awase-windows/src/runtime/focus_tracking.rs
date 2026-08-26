@@ -310,9 +310,7 @@ impl Runtime {
             self.invalidate_engine_context(ContextChange::FocusChanged);
         }
 
-        log::info!(
-            "[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}"
-        );
+        log::info!("[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}");
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
