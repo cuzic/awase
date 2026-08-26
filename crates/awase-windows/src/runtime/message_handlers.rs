@@ -114,48 +114,8 @@ pub(crate) fn deliver_key_event(
     // スキップして直接 passthrough する（1 キー分のみ）。
     // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-    if app.platform_state.gate.post_bypass.is_armed() {
-        let now = crate::win32::foreground_scope();
-        match app.platform_state.gate.post_bypass.peek(now) {
-            ScopeCheck::NotArmed => {}
-            ScopeCheck::Expired => {
-                log::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
-            }
-            ScopeCheck::Live(arm) => {
-                log::debug!(
-                    "[post-bypass] live: armed_focus_epoch={} current_focus_epoch={} \
-                     (診断専用、判定には使わない)",
-                    arm.armed_focus_epoch,
-                    app.platform_state.focus.focus_epoch,
-                );
-                let should_reinject = match classify_post_bypass_key(
-                    is_key_down,
-                    event.modifier_snapshot.ctrl,
-                    event.vk_code.classify_modifier().is_some(),
-                    event.vk_code.is_passthrough(),
-                ) {
-                    PostBypassKey::KeepArmed => false,
-                    PostBypassKey::ConsumesPrefixSilently => {
-                        app.platform_state.gate.post_bypass.disarm();
-                        false
-                    }
-                    PostBypassKey::ConsumeAndPassthrough => {
-                        app.platform_state.gate.post_bypass.disarm();
-                        log::debug!(
-                            "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
-                            event.vk_code
-                        );
-                        true
-                    }
-                    PostBypassKey::PassthroughKeepArmed => true,
-                };
-                if should_reinject {
-                    app.executor.enqueue_reinject(event);
-                    post_to_main_thread(WM_EXECUTE_EFFECTS);
-                    return KeyDelivery::Reinjected;
-                }
-            }
-        }
+    if let Some(delivery) = consume_post_bypass(app, event, is_key_down) {
+        return delivery;
     }
 
     let result = app.process_key_event(event);
@@ -182,36 +142,100 @@ pub(crate) fn deliver_key_event(
             }
             // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
             // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
-            let proc = app.platform.focus.process_name();
-            let cls = app.platform.focus.class_name();
-            if app
-                .post_bypass_rules
-                .iter()
-                .any(|r| r.matches(event.vk_code, proc, cls))
-            {
-                let scope = crate::win32::foreground_scope();
-                if scope.is_valid() {
-                    app.platform_state.gate.post_bypass.arm(
-                        scope,
-                        crate::state::platform_state::PostBypassArm {
-                            armed_focus_epoch: app.platform_state.focus.focus_epoch,
-                        },
-                    );
-                    log::debug!(
-                        "[ctrl-bypass] post_bypass armed (proc={proc:?} class={cls:?} scope={scope:?})"
-                    );
-                } else {
-                    log::debug!(
-                        "[ctrl-bypass] post_bypass not armed: foreground scope unavailable"
-                    );
-                }
-            }
+            arm_post_bypass_if_matches(app, event.vk_code);
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
         KeyDelivery::Reinjected
     } else {
         KeyDelivery::Consumed
+    }
+}
+
+/// Post-bypass latch（ADR-103 決定3）の消費判定。`Some` を返した場合、
+/// 呼び出し元はその `KeyDelivery` を即座に return すること（`process_key_event`
+/// へ進んではならない）。`deliver_key_event` 本体から分離することで
+/// cognitive complexity を抑える。
+fn consume_post_bypass(
+    app: &mut Runtime,
+    event: awase::types::RawKeyEvent,
+    is_key_down: bool,
+) -> Option<KeyDelivery> {
+    if !app.platform_state.gate.post_bypass.is_armed() {
+        return None;
+    }
+    let now = crate::win32::foreground_scope();
+    match app.platform_state.gate.post_bypass.peek(now) {
+        ScopeCheck::NotArmed => None,
+        ScopeCheck::Expired => {
+            log::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
+            None
+        }
+        ScopeCheck::Live(arm) => {
+            log::debug!(
+                "[post-bypass] live: armed_focus_epoch={} current_focus_epoch={} \
+                 (診断専用、判定には使わない)",
+                arm.armed_focus_epoch,
+                app.platform_state.focus.focus_epoch,
+            );
+            let should_reinject = match classify_post_bypass_key(
+                is_key_down,
+                event.modifier_snapshot.ctrl,
+                event.vk_code.classify_modifier().is_some(),
+                event.vk_code.is_passthrough(),
+            ) {
+                PostBypassKey::KeepArmed => false,
+                PostBypassKey::ConsumesPrefixSilently => {
+                    app.platform_state.gate.post_bypass.disarm();
+                    false
+                }
+                PostBypassKey::ConsumeAndPassthrough => {
+                    app.platform_state.gate.post_bypass.disarm();
+                    log::debug!(
+                        "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
+                        event.vk_code
+                    );
+                    true
+                }
+                PostBypassKey::PassthroughKeepArmed => true,
+            };
+            if should_reinject {
+                app.executor.enqueue_reinject(event);
+                post_to_main_thread(WM_EXECUTE_EFFECTS);
+                Some(KeyDelivery::Reinjected)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Ctrl+bypass 直後、`[[post_bypass]]` ルールに一致すれば post-bypass latch を
+/// 武装する（ADR-103 決定3）。`deliver_key_event` 本体から分離することで
+/// cognitive complexity を抑える。
+fn arm_post_bypass_if_matches(app: &mut Runtime, vk: VkCode) {
+    let proc = app.platform.focus.process_name();
+    let cls = app.platform.focus.class_name();
+    if !app
+        .post_bypass_rules
+        .iter()
+        .any(|r| r.matches(vk, proc, cls))
+    {
+        return;
+    }
+    let scope = crate::win32::foreground_scope();
+    if scope.is_valid() {
+        app.platform_state.gate.post_bypass.arm(
+            scope,
+            crate::state::platform_state::PostBypassArm {
+                armed_focus_epoch: app.platform_state.focus.focus_epoch,
+            },
+        );
+        log::debug!(
+            "[ctrl-bypass] post_bypass armed (proc={proc:?} class={cls:?} scope={scope:?})"
+        );
+    } else {
+        log::debug!("[ctrl-bypass] post_bypass not armed: foreground scope unavailable");
     }
 }
 
