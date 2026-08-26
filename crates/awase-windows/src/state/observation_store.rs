@@ -497,6 +497,10 @@ impl ObservationStore {
     /// 追従させることで、`derive_any()` の `is_identity_ok` が stale な hwnd と
     /// 比較し続けて以後の観測を恒久的に拒否する退行を防ぐ。
     pub fn update_focus_hwnd(&mut self, new_hwnd: HwndId) {
+        log::debug!(
+            "[focus-hwnd-track] update_focus_hwnd: current_focus_hwnd {:?} -> {new_hwnd:?}",
+            self.current_focus_hwnd
+        );
         self.current_focus_hwnd = new_hwnd;
     }
 
