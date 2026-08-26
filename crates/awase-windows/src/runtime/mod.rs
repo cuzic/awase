@@ -1430,7 +1430,7 @@ impl Runtime {
         // 無効化状態を再評価する（BUG-78 対策の一部）。
         if self.platform.focus.is_focused() {
             let pid = self.platform.focus.pid();
-            self.apply_app_disable_transition(pid);
+            self.apply_app_disable_transition(pid, false);
         }
         if let (Some((left, left_alt_impersonates)), Some((right, right_alt_impersonates))) = (
             crate::hook::resolve_thumb_key(&config.general.left_thumb_key),

@@ -435,11 +435,23 @@ pub(crate) fn post_async_ime_apply_complete(
         crate::state::ime_event::OpenApplyReason::Bootstrap
     ));
     let wparam = ((generation as usize) << 2) | (reason_bit << 1) | usize::from(open);
-    crate::win32::post_to_main_thread_with(
+    // エンジンスレッド上（win32-async の spawn_local タスク完了）から呼ばれるため
+    // ログ出力してよい。post が失敗すると ImmCross の非同期 SetOpen 完了通知が
+    // 握りつぶされ、pending generation の IME open belief が未解決のまま残る
+    // （BUG-09 と同系統の belief/実状態乖離）。再試行機構は持たないため、
+    // 発生したことをログに残すだけに留める（Opus敵対的レビュー指摘、2026-08-26。
+    // 残存リスクとして docs/known-bugs.md にも記録済み）。
+    if !crate::win32::post_to_main_thread_with(
         crate::WM_ASYNC_IME_APPLY_COMPLETE,
         wparam,
         encode_outcome(outcome),
-    );
+    ) {
+        log::warn!(
+            "[async-ime-apply] WM_ASYNC_IME_APPLY_COMPLETE の post に失敗しました \
+             (open={open} generation={generation} reason={reason:?}) — \
+             このIME適用完了通知は失われ、pending generation が未解決のまま残ります"
+        );
+    }
 }
 
 /// [`post_async_ime_apply_complete`] の reason bit の逆変換。
@@ -1047,11 +1059,19 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         }
         events
     });
+    // `with_app` が理由を問わず `None` を返した場合（二重WM_DRAIN_OUTPUT_QUEUEの
+    // 再入だけでなく、Runtime が他所で借用中のケースも含む）は、必ず
+    // `DRAIN_RERUN_PENDING` を立てて次回の回収に委ねる。旧実装は `take_all()` を
+    // `with_app` の外で無条件に呼んでいたためこの再入シェイプで drain を失うことは
+    // 無かった——Opus敵対的レビューで再入時にリトライが保証されない経路として
+    // 指摘され是正（2026-08-26）。
     let Some(queue) = queue else {
+        DRAIN_RERUN_PENDING.store(true, Ordering::Release);
         finish_drain();
         return;
     };
     if !drained {
+        DRAIN_RERUN_PENDING.store(true, Ordering::Release);
         finish_drain();
         return;
     }
@@ -1059,7 +1079,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
         let mut any_reinject = false;
-        let _ = with_app(|app| {
+        let processed = with_app(|app| {
             for queued_event in &queue {
                 log::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
@@ -1079,11 +1099,16 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                 }
             }
         });
-        // drain 中に PassThrough → reinject へ昇格させた key がある場合、
-        // executor キューを実際に流すために `WM_EXECUTE_EFFECTS` を要求する。
-        // on_key_event_impl 単独経路では has_pending が false の場合に通知が
-        // 飛ばないため、明示的に post する。
-        if any_reinject {
+        if processed.is_none() {
+            // Runtime を掴めず queue を処理できなかった。取り出し済みのイベントを
+            // 失わないよう INPUT_DEFER へ戻し、次回の drain 起動でやり直す。
+            crate::INPUT_DEFER.replay_later(queue);
+            DRAIN_RERUN_PENDING.store(true, Ordering::Release);
+        } else if any_reinject {
+            // drain 中に PassThrough → reinject へ昇格させた key がある場合、
+            // executor キューを実際に流すために `WM_EXECUTE_EFFECTS` を要求する。
+            // on_key_event_impl 単独経路では has_pending が false の場合に通知が
+            // 飛ばないため、明示的に post する。
             post_to_main_thread(WM_EXECUTE_EFFECTS);
         }
     }

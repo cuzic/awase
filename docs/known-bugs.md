@@ -10555,3 +10555,58 @@ IME cache初期化に先行しない可能性があった。
 ネストしたモーダルポンプ中に取り出されると、外側の `run_message_loop` の手書きdispatchに
 戻らず消失しうる。`tsf/probe_bridge.rs::post_drain_output_queue` に残っていた
 `PostMessageW(None, WM_DRAIN_OUTPUT_QUEUE, ..)` は `win32::post_to_main_thread` 経由へ修正済み。
+
+---
+
+## BUG-83: /code-review(Opus敵対的レビュー)によるADR-105/102実装の追加是正5件
+
+developへのマージ前に `/code-review` スキル（Opus敵対的レビュー）をADR-105/102実装
+（BUG-80/81/82参照）へ実行し、以下5件の指摘を受けて是正した（2026-08-26）。
+
+1. **`establish_initial_focus_scope` のarchitecture_guardが非推移的だった。**
+   `advance_focus_tracking` が無条件に呼ぶ `apply_app_disable_transition`
+   （disable_apps機能、developへ先にマージ済み）は、Enterエッジで
+   `invalidate_engine_context` 経由の実engine decision実行に到達しうる。起動時に
+   フォーカス中のアプリがconfigのdisable_appsに含まれる場合、これがbootstrap時点
+   （initialize_ime_cache()より前、一度もIME観測が行われていない時点）で発火し、
+   BUG-81が「構造的に保証される」としていた不変条件を破りうる可能性があった。
+   **修正:** `advance_focus_tracking`/`apply_app_disable_transition` に
+   `is_bootstrap: bool` を通し、bootstrap時は `invalidate_engine_context` の呼び出し
+   をスキップする（`app_disabled`フラグ更新・フックラッチクリアはbeliefを書かない
+   ため通常どおり実行）。`architecture_guard::app_disable_invalidate_engine_context_is_skipped_during_bootstrap`
+   でこの分岐を固定。
+2. **フックコールバックから `log::warn!` に到達しうる経路があった。**
+   `hook_channel::request_engine_wake()`（フックコールバックから同期呼び出し）が
+   `win32::post_to_main_thread` を呼んでおり、`PostMessageW` 失敗時に
+   フックコールバックのスタック上で `log::warn!` が実行されていた。
+   **修正:** ログ無し版 `win32::post_to_main_thread_quiet` を新設し
+   `request_engine_wake` はそちらを使う。失敗はアトミックフラグ
+   （`WAKE_POST_FAILED`）に記録するだけにし、実際のログ出力はエンジンスレッド側の
+   `recover_stuck_wake_if_needed`（フックウォッチドッグ）が行う。
+3. **`handle_wm_drain_output_queue` の再入で、二重WM_DRAIN_OUTPUT_QUEUE以外の理由で
+   `with_app` が `None` を返すと `DRAIN_RERUN_PENDING` が立たずリトライが失われる
+   経路があった。** 特に取り出し済みの `queue`（`INPUT_DEFER` から既に取り出し済み）
+   を処理する2番目の `with_app` が失敗すると、そのキューが再取得不能なまま消えていた。
+   **修正:** 両方の `with_app` 失敗経路で `DRAIN_RERUN_PENDING` を立てるようにし、
+   取り出し済みキューの処理失敗時は `INPUT_DEFER.replay_later(queue)` で差し戻す。
+4. **`TaskbarCreated` メッセージが統一ディスパッチテーブル（`dispatch_engine_message`）
+   に配線されておらず、`run_message_loop` 本体だけの手書き特別扱いのままだった。**
+   トレイメニュー表示中（ネストしたモーダルポンプ中）にExplorerが再起動すると、
+   そのメッセージがネストポンプのDispatchMessageWに渡っても処理されず、トレイ
+   アイコンが復元されない可能性があった。
+   **修正:** 動的メッセージIDを `TASKBAR_CREATED_MSG`（static）に保持し、
+   `dispatch_engine_message` の match guardで処理するよう配線。`run_message_loop`
+   側の手書き特別扱いは撤去（二重化を避けるため）。
+5. **`post_async_ime_apply_complete` が `post_to_main_thread_with` の新しいbool戻り値
+   を無視していた。** 失敗するとImmCrossの非同期SetOpen完了通知
+   （`WM_ASYNC_IME_APPLY_COMPLETE`）が握りつぶされ、pending generationのIME open
+   beliefが未解決のまま残る（BUG-09と同系統）。
+   **修正:** 戻り値を確認し失敗時は `log::warn!`（呼び出し元はengine スレッド上の
+   非同期タスク完了処理でありログ出力可）。**再試行機構は実装していない**——
+   発生頻度が実機で有意であれば別途起票して再試行を設計すること（残存リスク）。
+
+**テスト:** `hook_channel`/`architecture_guard`/`engine_window` の既存テストに加え、
+`architecture_guard::app_disable_invalidate_engine_context_is_skipped_during_bootstrap`
+を新設。`cargo test -p awase-windows`（499件）・`cargo fmt --all -- --check`・
+`cargo xwin check`/`clippy --all-targets -- -D warnings`（x86_64-pc-windows-msvc）
+全green。Windows実機での起動・動作確認は未実施。

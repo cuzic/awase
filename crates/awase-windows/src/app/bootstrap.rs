@@ -29,9 +29,9 @@ use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
 use super::{
     build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated, load_config,
-    parse_key_combos, resolve_relative, run_message_loop, HotKeyGuard, RapidPressTracker,
-    StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE,
-    RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
+    parse_key_combos, resolve_relative, run_message_loop, set_taskbar_created_msg, HotKeyGuard,
+    RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
+    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 fn show_no_layouts_dialog(layouts_dir: &Path) {
@@ -1008,8 +1008,9 @@ pub(super) fn run_all() -> Result<()> {
             "TaskbarCreated"
         ))
     };
+    set_taskbar_created_msg(taskbar_created_msg);
 
-    run_message_loop(taskbar_created_msg);
+    run_message_loop();
     cleanup();
     drop(hook_guard);
 

@@ -38,6 +38,21 @@ const HOTKEY_ID_TOGGLE: i32 = 1;
 static DUMP_TRIGGER: crate::SingleThreadCell<crate::journal::DumpTriggerTracker> =
     crate::SingleThreadCell::new();
 
+/// `RegisterWindowMessageW(TaskbarCreated)` で得た動的メッセージ ID。
+///
+/// 起動時に一度だけ `set_taskbar_created_msg` で設定する。`dispatch_engine_message`
+/// が唯一の消費者であり、`run_message_loop` からの通常呼び出しと `engine_wnd_proc`
+/// 経由のネストしたモーダルポンプ呼び出しの両方から同じ判定を通す（ADR-105が
+/// 保証する「ネストポンプ中も配送される」の恩恵を Explorer 再起動時のトレイアイコン
+/// 復元にも及ぼすため。Opus敵対的レビュー指摘、2026-08-26。旧実装は
+/// `run_message_loop` 本体だけの手書き特別扱いで、ネストしたモーダルポンプ中の
+/// `TaskbarCreated` を取りこぼしていた）。
+static TASKBAR_CREATED_MSG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub(crate) fn set_taskbar_created_msg(msg: u32) {
+    TASKBAR_CREATED_MSG.store(msg, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// 手動フォーカスオーバーライドホットキー ID (Ctrl+Shift+F11)
 const HOTKEY_ID_FOCUS_OVERRIDE: i32 = 2;
 
@@ -438,6 +453,11 @@ pub(crate) fn dispatch_engine_message(
                 }
             }
         }
+        msg if msg != 0
+            && msg == TASKBAR_CREATED_MSG.load(std::sync::atomic::Ordering::Relaxed) =>
+        {
+            let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
+        }
         _ => return false,
     }
     true
@@ -486,7 +506,7 @@ fn handle_hook_key_event(event: awase::types::RawKeyEvent) {
     }
 }
 
-fn run_message_loop(taskbar_created_msg: u32) {
+fn run_message_loop() {
     // gji-io-monitor が TID 設定前に発行した初回 WM_IME_KIND_CHANGED は届かない
     // 可能性があるため、ループ開始時点の検出済み IME 種別で一度 pull 同期する
     // （BUG-09 の保険）。未検出（起動直後）なら MicrosoftIme 安全デフォルトになり、
@@ -505,10 +525,10 @@ fn run_message_loop(taskbar_created_msg: u32) {
             break;
         }
 
-        if msg.message == taskbar_created_msg && taskbar_created_msg != 0 {
-            let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
-            continue;
-        }
+        // `TaskbarCreated` を含む全ての内部メッセージは `dispatch_engine_message`
+        // （唯一の集約テーブル、`TASKBAR_CREATED_MSG` 経由）が処理する。ここで
+        // 特別扱いしないことで、ネストしたモーダルポンプ経由の `engine_wnd_proc`
+        // からも同じ判定を通す。
         if dispatch_engine_message(msg.hwnd, msg.message, msg.wParam, msg.lParam) {
             continue;
         }

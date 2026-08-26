@@ -2497,6 +2497,10 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "advance_focus_tracking",
             extract_fn_body(&content, "fn advance_focus_tracking"),
         ),
+        (
+            "apply_app_disable_transition",
+            extract_fn_body(&content, "fn apply_app_disable_transition"),
+        ),
     ];
     for forbidden in [
         "dispatch_event(",
@@ -2512,4 +2516,42 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             );
         }
     }
+}
+
+/// `apply_app_disable_transition` の `invalidate_engine_context`（engine decision の
+/// 実行を伴う唯一の副作用）は、bootstrap経路（`establish_initial_focus_scope`、まだ
+/// 一度もIMEを観測していない）では呼ばれてはならない。engine生成直後はflushすべき
+/// pendingが存在しないため意味を持たない一方、ADR-102決定3-bの「最初のIME観測より
+/// 前にbeliefを書き換えない」という構造的保証を、"今は何も起きないはず"という前提
+/// ではなく経路自体の遮断で満たすため（Opus敵対的レビュー指摘、2026-08-26）。
+///
+/// `establish_initial_focus_scope_does_not_write_ime_belief` は関数本体の直接テキスト
+/// しか見ないため、`apply_app_disable_transition`が呼ぶ`invalidate_engine_context`
+/// （それ自体は`dispatch_event`等の禁止リストに載らない）までは検知できない。
+/// このテストはその1段先の呼び出しチェーンを明示的に固定する。
+#[test]
+fn app_disable_invalidate_engine_context_is_skipped_during_bootstrap() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+
+    let apply_body = extract_fn_body(&content, "fn apply_app_disable_transition");
+    assert!(
+        apply_body.contains("invalidate_engine_context") && apply_body.contains("!is_bootstrap"),
+        "apply_app_disable_transition の invalidate_engine_context 呼び出しは \
+         `is_bootstrap` でガードされていること（bootstrap時に engine decision を \
+         実行させないため）"
+    );
+
+    let bootstrap_body = extract_fn_body(&content, "fn establish_initial_focus_scope");
+    assert!(
+        bootstrap_body.contains("advance_focus_tracking(&classified, true)"),
+        "establish_initial_focus_scope は advance_focus_tracking を \
+         is_bootstrap=true で呼ぶこと"
+    );
+
+    let probe_result_body = extract_fn_body(&content, "fn apply_focus_probe_result");
+    assert!(
+        probe_result_body.contains("advance_focus_tracking(&classified, false)"),
+        "apply_focus_probe_result（定常経路）は advance_focus_tracking を \
+         is_bootstrap=false で呼ぶこと"
+    );
 }

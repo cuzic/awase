@@ -90,18 +90,34 @@ impl Default for HookKeyRing {
 
 pub static HOOK_KEYS: HookKeyRing = HookKeyRing::new();
 pub static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
+/// フックコールバック上ではログを出せないため、`request_engine_wake` の post 失敗を
+/// ここに記録するだけにする。実際のログ出力はエンジンスレッド側のウォッチドッグ
+/// （`recover_stuck_wake_if_needed`）が行う。両関数とも `#[cfg(windows)]` 限定なので
+/// このstatic自体も同様にゲートする（Linux単体ビルドでの dead_code 警告を避ける）。
+#[cfg(windows)]
+static WAKE_POST_FAILED: AtomicBool = AtomicBool::new(false);
 
+/// `WH_KEYBOARD_LL` フックコールバックから同期的に呼ぶ。
+///
+/// ロック取得・アロケーション・ブロッキング呼び出し・ログ出力を一切行わない
+/// （`post_to_main_thread_quiet` を使い、失敗してもログは出さずフラグだけ立てる）。
 #[cfg(windows)]
 pub fn request_engine_wake() {
     if !WAKE_PENDING.swap(true, Ordering::AcqRel)
-        && !crate::win32::post_to_main_thread(crate::WM_KEY_FROM_HOOK)
+        && !crate::win32::post_to_main_thread_quiet(crate::WM_KEY_FROM_HOOK)
     {
         WAKE_PENDING.store(false, Ordering::Release);
+        WAKE_POST_FAILED.store(true, Ordering::Release);
     }
 }
 
+/// エンジンスレッド側のウォッチドッグから呼ぶ。フック側で記録された post 失敗を
+/// ここでログに残し、`WAKE_PENDING` が固着していれば回収する。
 #[cfg(windows)]
 pub fn recover_stuck_wake_if_needed() {
+    if WAKE_POST_FAILED.swap(false, Ordering::AcqRel) {
+        log::warn!("[hook-ring] request_engine_wake の PostMessageW が失敗した形跡があります");
+    }
     if HOOK_KEYS.has_pending() && WAKE_PENDING.swap(false, Ordering::AcqRel) {
         log::warn!("[hook-ring] WAKE_PENDING recovered by hook watchdog");
         request_engine_wake();

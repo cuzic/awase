@@ -81,7 +81,7 @@ impl Runtime {
         let Some(classified) = self.classify_focus_probe(probe) else {
             return false;
         };
-        let (process_changed, prev_pid) = self.advance_focus_tracking(&classified);
+        let (process_changed, prev_pid) = self.advance_focus_tracking(&classified, false);
         let next = self.focus_identity_snapshot();
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
         // injection_mode を push — advance_focus_tracking() で last_focus_info が更新された後に
@@ -111,7 +111,14 @@ impl Runtime {
         let Some(classified) = self.classify_focus_probe(probe) else {
             return;
         };
-        let _ = self.advance_focus_tracking(&classified);
+        // `is_bootstrap=true`: これが最初のフォーカス確立であり、まだ一度も IME を
+        // 観測していない。`apply_app_disable_transition` の `invalidate_engine_context`
+        // 呼び出し（Enter エッジのみ）は engine の pending 状態を安全にflushする決定実行
+        // であり、bootstrap時点では engine に何もpendingが無いため意味を持たない一方、
+        // ADR-102 決定3-b が「最初のIME観測より前にbeliefを書き換えない」ことを
+        // 構造的に保証しようとしている以上、この経路自体をbootstrapでは通さない
+        // （`apply_app_disable_transition` 側で `is_bootstrap` を見てskipする）。
+        let _ = self.advance_focus_tracking(&classified, true);
         let next = self.focus_identity_snapshot();
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
 
@@ -214,7 +221,15 @@ impl Runtime {
     /// last_focus_info を更新し、(process_changed, prev_pid) を返す。
     ///
     /// process_changed な場合は事前に `hwnd_ime_cache.save()` を呼び出す。
-    fn advance_focus_tracking(&mut self, classified: &ClassifiedFocus) -> (bool, Option<u32>) {
+    ///
+    /// `is_bootstrap`: `establish_initial_focus_scope`（起動時、まだ一度も IME を
+    /// 観測していない）からの呼び出しかどうか。`apply_app_disable_transition` へ
+    /// そのまま伝播する。
+    fn advance_focus_tracking(
+        &mut self,
+        classified: &ClassifiedFocus,
+        is_bootstrap: bool,
+    ) -> (bool, Option<u32>) {
         let last_pid = if self.platform.focus.is_focused() {
             Some(self.platform.focus.pid())
         } else {
@@ -268,7 +283,7 @@ impl Runtime {
             classified.hwnd.0 as usize,
         );
 
-        self.apply_app_disable_transition(classified.process_id);
+        self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 
         self.platform_state.ime.set_prev_conversion_mode(None);
 
@@ -286,7 +301,17 @@ impl Runtime {
     /// 呼ぶ想定。`process_changed` を流用せず自前でエッジ判定する — `process_changed`
     /// は初回フォーカス（`last_pid == None`）で `false` になるため、無効化対象アプリが
     /// フォーカスを持ったまま awase が起動したケースを取りこぼす。
-    pub(super) fn apply_app_disable_transition(&mut self, process_id: u32) {
+    ///
+    /// `is_bootstrap`（`establish_initial_focus_scope` からの呼び出し、まだ一度も IME
+    /// を観測していない）の場合は `invalidate_engine_context` を呼ばない。この呼び出しは
+    /// 「engine に pending だったチョードを安全にflushする」ための decision 実行だが、
+    /// bootstrap時点では engine 生成直後で pending は存在しえず意味を持たない。ADR-102
+    /// 決定3-b が「最初のIME観測より前にbeliefを書き換えない」ことを構造的に保証しよう
+    /// としている以上、"今は何も起きないはず" という前提に頼らず、経路自体を通さない
+    /// （Opus敵対的レビューで、この経路がbelief書き込みに繋がりうる非推移的な穴として
+    /// 指摘され是正、2026-08-26）。`app_disabled` フラグ・フックラッチのクリアは
+    /// belief を一切書かないため bootstrap でも通常どおり行う。
+    pub(super) fn apply_app_disable_transition(&mut self, process_id: u32, is_bootstrap: bool) {
         use crate::state::app_suppression::{edge, SuppressionEdge};
         use awase::types::ContextChange;
 
@@ -301,7 +326,7 @@ impl Runtime {
         crate::hook::set_focus_app_disabled(is_disabled);
         crate::hook::clear_hook_latches_for_app_disable(transition);
 
-        if matches!(transition, SuppressionEdge::Enter) {
+        if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
             // 確定させる。放置すると、Enter 後はフックが生キーを素通しするため
             // TIMER_PENDING を解決すべき後続キーイベントが engine に届かなくなり、

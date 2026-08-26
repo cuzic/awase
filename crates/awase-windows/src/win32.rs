@@ -60,9 +60,27 @@ pub fn post_to_main_thread(msg: u32) -> bool {
 ///
 /// 戻り値は「エンジン HWND 宛の post が成功したか」。`engine_hwnd()` が未作成の間の
 /// NULL-hwnd フォールバックは、呼び出しスレッド自身への thread message になりうるため
-/// `false` を返す。
+/// `false` を返す。失敗時は `log::warn!` を出す。**`WH_KEYBOARD_LL` フックコールバック
+/// のスタックから同期的に呼んではならない**（ロック取得を伴うログ出力を持ち込むため）。
+/// フック経由の合図には [`post_to_main_thread_quiet`] を使うこと。
 #[allow(clippy::must_use_candidate)]
 pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) -> bool {
+    post_to_main_thread_inner(msg, wparam, lparam, true)
+}
+
+/// [`post_to_main_thread_with`] のログ無し版。
+///
+/// `WH_KEYBOARD_LL` フックコールバックのスタックから同期的に呼ばれる
+/// `hook_channel::request_engine_wake` 専用（ADR-102 決定2 / Opus敵対的レビュー指摘、
+/// 2026-08-26）。フックコールバック上でロック取得を伴うログ出力を追加しないという
+/// 制約を守るため、失敗しても `log::warn!` を呼ばない。失敗の可視化は呼び出し元
+/// （`hook_channel`）がアトミックフラグで持ち回り、エンジンスレッド側のウォッチドッグ
+/// がそのフラグを見てログを出す。
+pub(crate) fn post_to_main_thread_quiet(msg: u32) -> bool {
+    post_to_main_thread_inner(msg, 0, 0, false)
+}
+
+fn post_to_main_thread_inner(msg: u32, wparam: usize, lparam: isize, log_on_failure: bool) -> bool {
     let msg = if msg == windows::Win32::UI::WindowsAndMessaging::WM_QUIT {
         crate::WM_ENGINE_QUIT_REQUEST
     } else {
@@ -87,7 +105,9 @@ pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) -> bool 
             windows::Win32::Foundation::LPARAM(lparam),
         )
     } {
-        log::warn!("[post-main] PostMessageW(engine_hwnd) failed msg=0x{msg:X}: {err}");
+        if log_on_failure {
+            log::warn!("[post-main] PostMessageW(engine_hwnd) failed msg=0x{msg:X}: {err}");
+        }
         return false;
     }
     true
