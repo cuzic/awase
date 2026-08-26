@@ -2508,11 +2508,19 @@ fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
 #[test]
 fn establish_initial_focus_scope_advances_focus_epoch_once() {
     let content = read_crate_file("src/runtime/focus_tracking.rs");
+    // establish_initial_focus_scope は共通ヘルパー enter_focus_scope 経由で
+    // focus_epoch を進める（コードレビュー指摘9で on_focus_process_changed と共通化）。
     let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
     assert_eq!(
-        body.matches("focus_epoch.wrapping_add(1)").count(),
+        count_real_calls(body, "self.enter_focus_scope("),
         1,
-        "establish_initial_focus_scope must advance focus_epoch exactly once"
+        "establish_initial_focus_scope must call enter_focus_scope exactly once"
+    );
+    let helper_body = extract_fn_body(&content, "fn enter_focus_scope");
+    assert_eq!(
+        helper_body.matches("focus_epoch.wrapping_add(1)").count(),
+        1,
+        "enter_focus_scope must advance focus_epoch exactly once"
     );
 }
 
@@ -2535,6 +2543,14 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         (
             "apply_app_disable_transition",
             extract_fn_body(&content, "fn apply_app_disable_transition"),
+        ),
+        // establish_initial_focus_scope が呼ぶ共通ヘルパー（コードレビュー指摘9で
+        // on_focus_process_changed と共通化）。ここに処理が移った分、上の直接
+        // テキスト検査から漏れないよう対象関数リストへ明示的に加える
+        // （検査範囲を広げ忘れるとテストは緑のまま防御が消えるため）。
+        (
+            "enter_focus_scope",
+            extract_fn_body(&content, "fn enter_focus_scope"),
         ),
     ];
     for forbidden in [
