@@ -10274,3 +10274,107 @@ BUG-70（タイピング中に遅れて belief が書き換わる事故、世代
 対象）、BUG-34（`get_ime_conversion_mode_raw_timeout` が数秒ブロックしうる
 既知の限界）、BUG-68（IMM32 NATIVE ビットは開閉状態と無関係という
 構造的制約）、[docs/bug-reports-triage.md](../bug-reports-triage.md)。
+
+## BUG-78: リモートデスクトップ接続後にローカル側 Ctrl が押しっぱなしになる（Excel/iTunes で入力が壊れる）
+
+**症状（ユーザー報告、2026-08-25）:** 2台の PC でそれぞれ awase を起動し、
+一方から他方へリモートデスクトップ（`mstsc.exe`）接続すると、**接続元
+（ローカル）側**の awase で Ctrl キーが押しっぱなし状態になる。以後、
+Excel での文字入力・カーソル移動（Ctrl+矢印で単語/端まで飛ぶ等）や
+iTunes の曲名編集がおかしくなる。リモートデスクトップを終了してから Ctrl
+キーを押すと直る。awase のプロセス再起動でも改善する（ユーザーは当初
+「メモリリークっぽい」と表現したが、実体は Ctrl の押下状態が内部で
+スタックしていることによる誤動作と考えられる）。リモート側で awase が
+動いている分には問題なく、ローカル側で動いている場合に発生する。
+
+**推定原因:** `PHYSICAL_KEY_STATE`（`crates/awase-windows/src/hook.rs`、
+ハードウェア由来イベントのみで更新する物理キー押下状態）は、Win/Alt には
+`WIN_KEY_HELD_STALE_MS`（2000ms）による stale 判定（`win_key_held()`/
+`alt_key_held()`、BUG-48/BUG-62 対策）があるが、**Ctrl/Shift には同種の
+防御が無かった**。mstsc.exe がフォーカス中にキーボードを横取りする、
+または全画面時に自前の低レベルフックでキーボードをキャプチャすることで
+ローカルの awase フックへ Ctrl の KeyUp が届かず、`PHYSICAL_KEY_STATE` が
+「押下中」のまま stuck する — BUG-48（Win キー）/BUG-62（Alt キー）と
+同一メカニズムの Ctrl 版。
+
+**却下した対策（設計段階の premortem・ユーザー判断で不採用、再検討時の
+参考に残す）:**
+
+1. **Ctrl への無条件 stale 判定**（Win/Alt と同型の
+   `ctrl_key_held()`）: 却下。ユーザー指摘のとおり、Ctrl は Ctrl+ホイール
+   でのズーム操作等、実際のユーザー操作として長時間押し続けることが
+   ありえるため、時間経過だけで「離された」とみなすのは危険。
+2. **`GetAsyncKeyState` を AND 条件にした条件付き heal**（stale かつ
+   `GetAsyncKeyState` でも非押下なら heal）: 誤作動しない設計だとしても、
+   全アプリ・常時 Ctrl/Shift の押下状態に介入する機構を入力の最も
+   基礎的な部分に実機ログなしで新設するのは割に合わないと判断し不採用。
+3. **フォーカス遷移のたびに `reset_physical_key_state()`（全 256 VK を
+   無条件リセット）を呼ぶ案**: 却下。Alt+Tab で無効アプリへ出入りする
+   瞬間は Alt が物理押下中であることが多く、これを force-false すると
+   `alt_key_held()` が偽り、BUG-62 の「Alt+かな で JIS かな直接入力へ
+   不可逆に切り替わる」保護が外れてしまう（Windows にこの入力方式を
+   外部から戻す公式 API が存在しないため復旧不能、BUG-61 参照）。
+
+**採用した対策:** ユーザー要望（「リモートデスクトップや、指定した
+アプリでは awase を無効にしたい」）と合わせ、次の2機能を実装した。
+
+- **`config.app_overrides.disable_apps: Vec<String>`**
+  （`src/config.rs`、既定値 `["mstsc.exe"]`）: フォーカス中このプロセス名
+  にマッチしたら awase を丸ごと無効化する。既存の `force_bypass`
+  （process+class の組で `FocusKind::NonText` にし `SendInput` で
+  再注入）と異なり、①class 指定不要でプロセス丸ごと除外でき、
+  ②`hook_callback`（`crates/awase-windows/src/hook.rs`）内で
+  `PHYSICAL_KEY_STATE` 更新ブロックの直後・`VK_KANA` swallow ブロックより
+  前で `CallNextHookEx` により生キーイベントをそのまま OS に通す（早期
+  return の位置が核心 — 更新ブロックより前に置くと無効アプリ突入直前の
+  KeyUp が記録されずスタックを新規に生む）。再注入経由ではなく生イベントが
+  届くため、`LLKHF_INJECTED` を無視する DirectInput/Raw Input 系ゲームにも
+  通用する。IME 制御（`runtime/ime_refresh.rs::ir_execute`）も無効化中は
+  完全停止する（ユーザー判断により、BUG-61/62 の Alt+かな 保護も無効化中は
+  例外なく止める）。
+- **無効アプリ離脱（Leave エッジ）でのみ Ctrl/Shift の `PHYSICAL_KEY_STATE`
+  6 スロット（`VK_CONTROL`/`VK_LCONTROL`/`VK_RCONTROL`/`VK_SHIFT`/
+  `VK_LSHIFT`/`VK_RSHIFT`）を force-false する**
+  （`hook.rs::clear_hook_latches_for_app_disable`）。常時動く機構ではなく
+  `disable_apps` からの離脱エッジでのみ発火するため、通常のタイピング中は
+  一切動かない（却下案1と異なり、Ctrl の正当な長押しに介入しない）。
+  **Alt/Win には一切触れない**（却下案3の問題を避ける——Ctrl/Shift は
+  Alt+Tab 中に押されていることが稀なうえ、誤ってクリアしても次の物理
+  KeyDown/KeyUp で自己修復する安全側の誤りだが、Alt/Win は危険側）。
+  フォーカス追跡はキーボードフックと別系統（メインスレッドの
+  WinEvent/ポーリング）で動くため、mstsc が全画面でフックにイベントが
+  届かない場合でもこの離脱時リセットは発火する。
+
+**既知の限界（正直に記録）:**
+
+- `disable_apps` に登録したアプリでしか Leave エッジの Ctrl/Shift 解除は
+  効かない。Teams 画面共有・VMware・UAC ダイアログ等での同種スタックは
+  対象外——実害報告が出た時点で対象アプリを追加するか、より広い機構を
+  実機ログ付きで再検討する。
+- mstsc が全画面時に自前の低レベルフックでキーボードを丸ごとキャプチャし、
+  awase のフック自体にイベントが一切届かないケースでは、`disable_apps` の
+  早期 return（フック内の分岐）は実行されない。この場合でも上記の
+  Leave エッジ処理（フォーカス追跡起点、フックとは別系統）が Ctrl/Shift の
+  スタックを解消する経路として機能する見込みだが、実機での確証は
+  取れていない。
+- 無効アプリ滞在中は BUG-61/62 の Alt+かな 保護も止まる（ユーザー了承
+  済み・例外なし）。滞在中に Alt+かな を押すと JIS かな直接入力へ
+  不可逆に切り替わりうる。
+- 排他フルスクリーンのゲームでは `EVENT_OBJECT_FOCUS` が飛ばず、
+  無効化に入れない/出られない可能性がある（未検証）。
+
+**テスト:** `crates/awase-windows/src/state/app_suppression.rs`
+（`matches_disabled_app`/`edge` の純粋関数、7件）、`src/config.rs`
+（`disable_apps` の TOML パース・既定値・空リスト明示・空エントリ警告、
+4件）、`crates/awase-windows/tests/architecture_guard.rs`
+（`disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana`
+＝早期 return の位置をピン留め、
+`app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win`
+＝Leave エッジが Alt/Win に触れないことをピン留め）。すべて Linux で
+`cargo test -p awase-windows` / `cargo test` 実行可。実機検証は次回
+Windows 実機セッションに委ねる（2台の PC 間で RDP 接続→切断後の Ctrl
+状態、mstsc.exe 無効化の動作、Alt+Tab 直後の BUG-62 非回帰を確認する）。
+
+**関連:** BUG-48（Win キー KeyUp 消失によるスタック、`is_held_fresh`の
+初出）、BUG-61/BUG-62（Alt+かな による JIS かな直接入力への不可逆切替、
+今回無効化中は例外なく保護を止める判断の対象）。

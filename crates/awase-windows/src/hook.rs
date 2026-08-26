@@ -318,7 +318,7 @@ pub fn reset_physical_key_state() {
     log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
-/// `disable_apps` へ出入りする際にフックローカルなラッチを後始末する。
+/// `disable_apps` へ出入りする際にフックローカルなラッチを後始末する（BUG-78 対策）。
 ///
 /// `reset_physical_key_state()`（全 256 VK を無条件クリア）とは意図的に別系統にする。
 /// フォーカス遷移は高頻度に起きるため、無条件の全クリアを持ち込むと Alt+Tab で
@@ -327,16 +327,26 @@ pub fn reset_physical_key_state() {
 /// 切り替わる」保護を無効化中でなくても壊しかねない（設計段階の premortem で
 /// 指摘され、この分離に至った）。
 ///
-/// Enter/Leave 共通で、Alt なりすまし・チョード関連の一時ラッチのみを force-false
-/// する。`ALT_L/R_WAS_DOWN`・`ALT_L/R_IMPERSONATING`・`CTRL_CONSUMED_SINCE_DOWN`・
-/// 親指キー押下タイムスタンプが対象。**`PHYSICAL_KEY_STATE`（Alt/Ctrl/Shift/Win を
-/// 含む）本体には一切触れない。**
-/// 無効アプリに入った瞬間に pending だったチョードは呼び出し元
-/// （`runtime/focus_tracking.rs`）が engine 側の flush で別途処理する。
+/// - Enter/Leave 共通: Alt なりすまし・チョード関連の一時ラッチのみを force-false
+///   する。`ALT_L/R_WAS_DOWN`・`ALT_L/R_IMPERSONATING`・`CTRL_CONSUMED_SINCE_DOWN`・
+///   親指キー押下タイムスタンプが対象。**`PHYSICAL_KEY_STATE`（Alt/Win を含む）
+///   本体には一切触れない。**
+///   無効アプリに入った瞬間に pending だったチョードは呼び出し元
+///   （`runtime/focus_tracking.rs`）が engine 側の flush で別途処理する。
+/// - Leave のみ追加: `PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS` のうち
+///   Ctrl/Shift の 6 スロット（`VK_CONTROL`/`VK_LCONTROL`/`VK_RCONTROL`/
+///   `VK_SHIFT`/`VK_LSHIFT`/`VK_RSHIFT`）だけを force-false する。無効化対象
+///   アプリ（既定で mstsc.exe）滞在中は KeyUp がフックに届かず Ctrl/Shift が
+///   スタックする既知問題（`docs/known-bugs.md` BUG-78）への対策。
+///   **Alt/Win は対象外**（Alt+Tab の最悪ケースを避けるため）。Ctrl/Shift は
+///   Alt+Tab 中に押されていることが稀なうえ、誤ってクリアしても次の物理
+///   KeyDown/KeyUp で自己修復する安全側の誤りである（stuck-true は BUG-48 型の
+///   恒久障害を生む危険側だが、stuck-false はそうならない）。
 pub(crate) fn clear_hook_latches_for_app_disable(
     edge: crate::state::app_suppression::SuppressionEdge,
 ) {
     use crate::state::app_suppression::SuppressionEdge;
+    use crate::vk::{VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_RCONTROL, VK_RSHIFT, VK_SHIFT};
 
     if matches!(edge, SuppressionEdge::None) {
         return;
@@ -350,6 +360,26 @@ pub(crate) fn clear_hook_latches_for_app_disable(
     LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
     RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
 
+    if matches!(edge, SuppressionEdge::Leave) {
+        for vk in [
+            VK_CONTROL,
+            VK_LCONTROL,
+            VK_RCONTROL,
+            VK_SHIFT,
+            VK_LSHIFT,
+            VK_RSHIFT,
+        ] {
+            if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
+                slot.store(false, Ordering::Relaxed);
+            }
+            if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
+                slot.store(0, Ordering::Relaxed);
+            }
+        }
+        log::info!(
+            "[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）"
+        );
+    }
     log::info!("[app-disable] {edge:?}: hook latches をクリア");
 }
 

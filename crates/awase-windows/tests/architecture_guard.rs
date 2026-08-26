@@ -2311,16 +2311,28 @@ fn disable_apps_early_return_is_positioned_after_physical_key_state_update_and_b
     );
 }
 
-/// `clear_hook_latches_for_app_disable` は Alt/Win の `PHYSICAL_KEY_STATE` に
-/// 一切触れないこと。
+/// `clear_hook_latches_for_app_disable` の Leave 分岐は `PHYSICAL_KEY_STATE` の
+/// うち Ctrl/Shift の 6 スロットだけを force-false し、**Alt/Win には一切触れない**こと。
 ///
 /// 設計上の理由: Alt+Tab で無効アプリへ出入りする瞬間は Alt が物理押下中であることが
 /// 多く、ここで Alt/Win の `PHYSICAL_KEY_STATE` を force-false すると `alt_key_held()` が
 /// 偽って BUG-62（Alt+かな で JIS かな直接入力へ不可逆に切り替わる）の保護が外れる。
+/// Ctrl/Shift はこのリスクが小さい（Alt+Tab 中に押されていることが稀で、誤ってクリア
+/// しても次の物理 KeyDown/KeyUp で自己修復する安全側の誤り）ため対象にする。
 #[test]
-fn app_disable_latch_clear_never_touches_alt_or_win_physical_key_state() {
+fn app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win() {
     let content = read_crate_file("src/hook.rs");
     let body = extract_fn_body(&content, "fn clear_hook_latches_for_app_disable");
+
+    for must_contain in [
+        "VK_CONTROL", "VK_LCONTROL", "VK_RCONTROL", "VK_SHIFT", "VK_LSHIFT", "VK_RSHIFT",
+    ] {
+        assert!(
+            body.contains(must_contain),
+            "clear_hook_latches_for_app_disable は {must_contain} をクリア対象に \
+             含むこと（BUG-78 対策）。"
+        );
+    }
 
     for must_not_contain in [
         "VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN",
