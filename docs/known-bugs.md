@@ -10765,3 +10765,79 @@ bookkeeping ではなく「検出窓そのものが実行される前に握り�
 `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install 前に足す形が候補だが、
 「Probing中に2連続で来た2文字目を defer すると出力順序がどうなるべきか」の
 設計判断が要るため、本項目では見送り別途起票のみ行う。
+
+## BUG-88: PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、原因未確定）
+
+**症状（タスクトレイ不具合報告 2件、2026-08-26、同一ユーザーから19分差で連投）:**
+
+- `01M0Z2H9STD17HG66RQ9ERZJ0R`（12:56:48 UTC、app 1.16.1、GJI）: 「境界線の
+  ないマウス」でリモートPCを操作中、**ローカル側**で awase が動作していると
+  「英数」「かな」キーが効かず入力文字種を切り替えられない。
+- `01M0Z3JXVCEN2CDEBECM11PRNQ`（13:15:09 UTC、app 1.16.1、GJI）: 追加報告。
+  ローカル側の awase を止め**リモート側のみ**起動しても同じく「英数」キーが
+  効かない。「awase を起動していなければ問題ない」との記述あり。
+
+**journal で確認できた事実（推測を含まない）:**
+
+- report1（ローカル側、journal 328件）: フォーカスは 3207ms〜10600ms の間
+  `powertoys.mousewithoutbordershelper.exe`（pid 6676、class
+  `WindowsForms10.Window.8.app.0.2042806_r3_ad1`、`profile: Standard`
+  ＝ ImmCross 相当、`app_kind: Win32`）の中継ウィンドウにあった。**この間
+  ユーザーは実際に親指シフト日本語入力を行っている**（`Consume` 22件、
+  `PendingThumb(vk=0x1C,left=false)` を含む同時打鍵合成ログあり）— つまり
+  この中継ウィンドウは実際の入力対象として機能している。「かな」キー
+  （`VK_DBE_HIRAGANA`, scan 0x70）は 6536ms に押下され `ImeOpenApplied
+  {open:true, Applied}` まで到達＝正常に効いている。「英数」キー
+  （`VK_DBE_ALPHANUMERIC`, scan 0x3A）は 35046ms に押下されているが、
+  対応する IME actuation ログが journal に存在しない。
+- report2（リモート側、journal 831件）: DBE モードキーの到達時刻
+  （8658ms・308189ms・308524ms・308686ms、すべて `injected: true`）における
+  フォーカスは `explorer.exe`/`sakura.exe` であり、MWB の中継ウィンドウでは
+  ない。MWB がフォーカスを保持していた 7 区間の内側には `KeyInput` が
+  1件も存在しない。
+
+**コード上の事実（`crates/awase-windows/src/runtime/transport.rs`）:**
+`PhysicalKeyDisposition::plan`（157-159行目）は、`AppImeProfile::
+can_use_imm32_cross_process()` を満たすプロファイル（`Standard`、いわゆる
+ImmCross）では KANJI 関連 VK（`VK_DBE_ALPHANUMERIC` を含む）を **Down/Up
+問わず無条件で Suppress** する（BUG-52 対策、意図的な既存動作）。一方
+`VK_DBE_HIRAGANA`（かな）だけは 145-151行目の専用分岐で、TSF mode かつ
+`f2_warmup_owned` の場合のみ Suppress、それ以外は常に Allow。この非対称性
+は「かなは効くが英数は効かない」という report1 の症状と整合する**仮説**
+だが、旧 journal には engine の意味論的判断（`decision`: PassThrough/
+Consume）しか記録されておらず、`transport::plan` の最終配送判断（Allow/
+Suppress）自体は確認できなかったため、上記はあくまで仮説であり確定して
+いない。
+
+**却下した対策（設計→Opus敵対的レビューでNO-GO、2026-08-26）:** 当初
+「`powertoys.mousewithoutbordershelper.exe` を `app_overrides.disable_apps`
+（BUG-78の `mstsc.exe` と同じ丸ごと無効化機構）の既定リストに追加する」案
+を設計したが、以下の理由で NO-GO と判定し **`src/config.rs`/
+`config.sample.toml` は変更していない**:
+
+1. report1 の中継ウィンドウでは実際に親指シフト入力が機能しており
+   （上記参照）、`disable_apps` で丸ごと無効化すると動いているワーク
+   フローを壊す（生の QWERTY が MWB 経由でリモートへ転送されてしまう）。
+2. report2 では DBE キー到達時に MWB がフォーカスを持っておらず、
+   `disable_apps` は発火しない＝効果がゼロ。
+
+**実施したこと（挙動は変更していない、診断ログの追加のみ）:**
+journal に transport 層の最終配送判断を記録する `JournalEntry::
+KeyInput::physical: PhysicalDispositionSummary`（`Allow` /
+`Suppress { reason }`、`reason` は `"tsf-f2"`/`"imm-cross"`/`"imm32-off"`）
+を追加した（`runtime/transport.rs::PhysicalKeyDisposition::
+suppress_reason`、`journal.rs::PhysicalDispositionSummary`）。既存の
+`decision` フィールド（engine の意味論的判断）とは独立した軸で、次に同じ
+症状が再送された際に「英数キーが ImmCross Suppress で本当に消えているか」
+を journal から直接確認できるようにする。回帰テスト4件を
+`runtime/transport.rs` の `plan_tests` に追加し、ImmCross プロファイル下の
+`VK_DBE_ALPHANUMERIC` 無条件 Suppress と journal 用 reason ラベルを固定した。
+
+**状態:** 未対応（原因未確定、2026-08-26）。診断ログ追加のみ developへマージ
+予定。次にユーザーが同症状を報告した際、新しい `physical` フィールドを
+含む journal で上記仮説の確認・反証を行うこと。有力な対策候補（未実装・
+未検証、次の担当者向けメモ）: MWB の中継ウィンドウを `ImmCross`
+プロファイルの分類対象から外す（この分類は本来 LINE/Qt 等「子 hwnd の IMC
+を読める」genuine ImmCross アプリ向けであり、透過中継専用ウィンドウへの
+適用が分類の誤用である可能性がある）。`docs/bug-reports-triage.md` に
+report_id 2件を記録。

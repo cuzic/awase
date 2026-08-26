@@ -18,6 +18,33 @@ pub(crate) enum PhysicalKeyDisposition {
     Suppress,
 }
 
+impl PhysicalKeyDisposition {
+    /// `Suppress` の場合のみ理由ラベルを返す（`kp_stage_execute` の debug log と
+    /// journal 記録（`JournalEntry::KeyInput::physical`）で共用し、2箇所が
+    /// 別々に判定ロジックを持って乖離することを防ぐ）。
+    ///
+    /// BUG-88 調査用: journal の `KeyInput.decision` は engine の意味論的判断
+    /// （PassThrough/Consume）であり、この配送判断（実際に OS へ届いたか）とは
+    /// 独立している。この関数を journal に記録することで両者を突き合わせられる
+    /// ようにする（`docs/known-bugs.md` BUG-88 参照）。
+    pub(crate) fn suppress_reason(
+        self,
+        event: &RawKeyEvent,
+        profile: AppImeProfile,
+    ) -> Option<&'static str> {
+        if self != Self::Suppress {
+            return None;
+        }
+        Some(if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
+            "tsf-f2"
+        } else if profile.can_use_imm32_cross_process() {
+            "imm-cross"
+        } else {
+            "imm32-off"
+        })
+    }
+}
+
 /// passthrough キーの Down/Up 対称性と output guard defer を管理するキュー。
 ///
 /// `check_output_guard_defer` で defer した KeyDown の VK を `deferred_vks` に記録し、
@@ -646,5 +673,106 @@ mod plan_tests {
                 );
             }
         }
+    }
+
+    // ── suppress_reason: journal 記録用ラベル（BUG-88 調査） ──
+    //
+    // PowerToys Mouse Without Borders 使用中に「英数」キーが効かない不具合報告
+    // (docs/known-bugs.md BUG-88) の調査で、ImmCross プロファイル下では
+    // VK_DBE_ALPHANUMERIC (英数) が Down/Up とも無条件 Suppress される一方、
+    // VK_DBE_HIRAGANA (かな) は専用分岐で TSF mode 以外 Allow されることが
+    // 判明した（「かなは効くが英数は効かない」という報告症状と一致）。
+    // この非対称性を journal から確認できるようにする `suppress_reason` を
+    // ここで固定する。
+
+    #[test]
+    fn suppress_reason_is_none_when_allowed() {
+        let ev = f2_event(KeyEventType::KeyDown);
+        let disposition = PhysicalKeyDisposition::plan(
+            &ev,
+            AppImeProfile::TsfNative,
+            false,
+            false, // 非 TSF mode → Allow
+            true,
+            ANY_IME_KIND,
+            DbeModeKeyPolicy::Suppress,
+        );
+        assert_eq!(disposition, PhysicalKeyDisposition::Allow);
+        assert_eq!(disposition.suppress_reason(&ev, AppImeProfile::TsfNative), None);
+    }
+
+    #[test]
+    fn suppress_reason_is_tsf_f2_for_hiragana_in_tsf_mode() {
+        let ev = f2_event(KeyEventType::KeyDown);
+        let disposition = PhysicalKeyDisposition::plan(
+            &ev,
+            AppImeProfile::TsfNative,
+            false,
+            true,
+            true,
+            ANY_IME_KIND,
+            DbeModeKeyPolicy::Suppress,
+        );
+        assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
+        assert_eq!(
+            disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
+            Some("tsf-f2")
+        );
+    }
+
+    #[test]
+    fn suppress_reason_is_imm_cross_for_alphanumeric_under_immcross_profile() {
+        // BUG-88 の核心: ImmCross プロファイル（PowerToys Mouse Without Borders の
+        // 中継ウィンドウが分類されていた profile）では VK_DBE_ALPHANUMERIC (英数)
+        // は shadow_toggled の値に関わらず常に Suppress され、journal 上は
+        // "imm-cross" として記録される。
+        for shadow_toggled in [false, true] {
+            let ev = dbe_mode_event(
+                crate::vk::VK_DBE_ALPHANUMERIC,
+                ShadowImeAction::TurnOff,
+                KeyEventType::KeyDown,
+            );
+            let disposition = PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::Standard,
+                shadow_toggled,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                DbeModeKeyPolicy::Suppress,
+            );
+            assert_eq!(
+                disposition,
+                PhysicalKeyDisposition::Suppress,
+                "shadow_toggled={shadow_toggled} でも ImmCross は英数キーを Suppress する"
+            );
+            assert_eq!(
+                disposition.suppress_reason(&ev, AppImeProfile::Standard),
+                Some("imm-cross")
+            );
+        }
+    }
+
+    #[test]
+    fn suppress_reason_is_imm32_off_for_owned_actuation_dbe_mode_key() {
+        let ev = dbe_mode_event(
+            crate::vk::VK_DBE_ALPHANUMERIC,
+            ShadowImeAction::TurnOff,
+            KeyEventType::KeyDown,
+        );
+        let disposition = PhysicalKeyDisposition::plan(
+            &ev,
+            AppImeProfile::TsfNative,
+            false,
+            false,
+            false,
+            ActiveImeKind::GoogleJapaneseInput,
+            DbeModeKeyPolicy::Suppress,
+        );
+        assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
+        assert_eq!(
+            disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
+            Some("imm32-off")
+        );
     }
 }

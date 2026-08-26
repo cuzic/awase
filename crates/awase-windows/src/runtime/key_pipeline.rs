@@ -205,6 +205,23 @@ impl Runtime {
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
         let state_after = self.engine.debug_state_label();
+        // 配送判断(physical)を journal 用に算出する。kp_stage_execute が同じ入力から
+        // 独立に再計算する値と意味上は同一だが、KeyInput の record はそちらより前に
+        // 起きるため呼び出しを共有できない（BUG-88 調査: decision だけでは実際に
+        // OS へ届いたかが journal から分からなかった。詳細は
+        // `PhysicalKeyDisposition::suppress_reason` のコメント参照）。
+        let profile_for_journal = self.platform.current_app_profile();
+        let physical_for_journal = crate::runtime::PhysicalKeyDisposition::plan(
+            &event,
+            profile_for_journal,
+            shadow_toggled,
+            self.platform.is_tsf_mode(),
+            self.platform.output.f2_warmup_owned(),
+            crate::tsf::observer::tsf_obs().active_ime_kind(),
+            self.dbe_mode_key_policy,
+        );
+        let physical_reason_for_journal =
+            physical_for_journal.suppress_reason(&event, profile_for_journal);
         self.platform_state
             .ime
             .journal
@@ -213,6 +230,10 @@ impl Runtime {
                 state_before,
                 state_after,
                 decision: crate::journal::DecisionKind::from_decision(&decision),
+                physical: crate::journal::PhysicalDispositionSummary::new(
+                    physical_for_journal,
+                    physical_reason_for_journal,
+                ),
             });
 
         self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
@@ -1816,14 +1837,7 @@ impl Runtime {
             active_ime_kind,
             self.dbe_mode_key_policy,
         );
-        if physical == crate::runtime::PhysicalKeyDisposition::Suppress {
-            let reason = if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
-                "tsf-f2"
-            } else if profile.can_use_imm32_cross_process() {
-                "imm-cross"
-            } else {
-                "imm32-off"
-            };
+        if let Some(reason) = physical.suppress_reason(event, profile) {
             log::debug!(
                 "[{reason}] key suppress vk={:#04x} {:?} (physical disposition)",
                 event.vk_code,

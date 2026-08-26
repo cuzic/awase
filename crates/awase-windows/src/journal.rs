@@ -102,6 +102,41 @@ impl DecisionKind {
     }
 }
 
+/// `runtime::transport::PhysicalKeyDisposition`（`pub(crate)`）の journal 記録用
+/// サマリ。`DecisionKind` と同じブリッジパターン: `JournalEntry` は `pub` だが
+/// 元の型は crate 内部専用のため、公開できる形に変換して持つ。
+///
+/// `decision`（`DecisionKind`、engine の意味論的判断）とは独立した配送判断。
+/// BUG-88（PowerToys Mouse Without Borders 使用中に「英数」キーが効かない
+/// 不具合）の調査で、`decision` だけでは ImmCross プロファイル下の
+/// VK_DBE_ALPHANUMERIC 無条件 Suppress が journal から見えないことが判明した
+/// ため追加した。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind")]
+pub enum PhysicalDispositionSummary {
+    /// 元の物理キーイベントをそのまま OS に通した
+    Allow,
+    /// 元の物理キーイベントを消費した（OS に届けない）。
+    /// `reason`: "tsf-f2" / "imm-cross" / "imm32-off"
+    /// （`PhysicalKeyDisposition::suppress_reason` 参照）。
+    Suppress { reason: &'static str },
+}
+
+impl PhysicalDispositionSummary {
+    #[must_use]
+    pub(crate) fn new(
+        disposition: crate::runtime::PhysicalKeyDisposition,
+        reason: Option<&'static str>,
+    ) -> Self {
+        match disposition {
+            crate::runtime::PhysicalKeyDisposition::Allow => Self::Allow,
+            crate::runtime::PhysicalKeyDisposition::Suppress => Self::Suppress {
+                reason: reason.unwrap_or("unknown"),
+            },
+        }
+    }
+}
+
 /// ジャーナルに記録するイベントの種別
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -112,6 +147,7 @@ pub enum JournalEntry {
         state_before: String,
         state_after: String,
         decision: DecisionKind,
+        physical: PhysicalDispositionSummary,
     },
     /// エンジンのタイマー処理（on_timeout）
     TimerFired {
@@ -902,6 +938,7 @@ mod tests {
             state_before: "engine-before".to_owned(),
             state_after: "engine-after".to_owned(),
             decision: DecisionKind::PassThrough,
+            physical: PhysicalDispositionSummary::Allow,
         }
     }
 
