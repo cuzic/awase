@@ -1686,6 +1686,14 @@ mod tests {
     ];
 
     /// 2 ソースの全組み合わせ（値 × confidence × epoch × 鮮度）でストアを作る。
+    ///
+    /// hwnd は意図的に `HwndId::NULL` 固定（`obs()` ヘルパの既定値）——
+    /// このマトリクスが比較するオラクル `legacy_derive_open_filtered`（本ファイル
+    /// L1593 付近）は `store.current_focus_epoch` のみを参照し hwnd を知らない
+    /// ため、hwnd 軸をここに足しても `derive_any`/`derive_actuating` との比較が
+    /// 恒等的に一致し続け、退行を検知できない。ADR-106 の hwnd フェンスは
+    /// 別テスト `identity_gate_matrix_covers_epoch_and_hwnd_independently` が
+    /// 担当する。
     fn pinned_matrix() -> Vec<(String, ObservationStore, Instant)> {
         let now = Instant::now();
         let mut out = Vec::new();
@@ -1800,5 +1808,57 @@ mod tests {
             "2 ソースの合意なので corroboration 相当（PerSourceObservations::iter() \
              の宣言順で ObserverPoll が先）"
         );
+    }
+
+    /// ADR-106 決定3: epoch と hwnd がそれぞれ独立に derive を除外できることを
+    /// 固定する。`pinned_matrix`（hwnd を `HwndId::NULL` 固定）ではこの軸が
+    /// 検知できないため、専用のマトリクスとして分離した（PR 109 コードレビュー
+    /// 指摘2）。
+    #[test]
+    fn identity_gate_matrix_covers_epoch_and_hwnd_independently() {
+        use super::super::ime_event::ObservationAuthority;
+        let now = Instant::now();
+        for source in RECORDABLE_SOURCES {
+            for obs_epoch in [0_u64, 1] {
+                for store_epoch in [0_u64, 1] {
+                    for obs_hwnd in [HwndId(1), HwndId(2)] {
+                        for store_hwnd in [HwndId(1), HwndId(2)] {
+                            let mut s = ObservationStore {
+                                current_focus_epoch: store_epoch,
+                                current_focus_hwnd: store_hwnd,
+                                ..Default::default()
+                            };
+                            let mut o = obs(true, source, now);
+                            o.confidence = ObservationConfidence::High;
+                            o.focus_epoch = obs_epoch;
+                            o.hwnd = obs_hwnd;
+                            rec(&mut s, o);
+
+                            let fenced = matches!(
+                                source,
+                                ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe
+                            );
+                            let admitted =
+                                !fenced || (obs_epoch == store_epoch && obs_hwnd == store_hwnd);
+
+                            let label = format!(
+                                "source={source:?} obs_epoch={obs_epoch} store_epoch={store_epoch} \
+                                 obs_hwnd={obs_hwnd:?} store_hwnd={store_hwnd:?}"
+                            );
+                            assert_eq!(
+                                s.derive_any(now).is_some(),
+                                admitted,
+                                "derive_any: {label}"
+                            );
+                            assert_eq!(
+                                s.derive_actuating(now).is_some(),
+                                admitted && source.authority() == ObservationAuthority::Actuating,
+                                "derive_actuating: {label}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
