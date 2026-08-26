@@ -79,11 +79,17 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
-pub(crate) fn deliver_key_event(
-    app: &mut Runtime,
-    event: awase::types::RawKeyEvent,
-    origin: KeyOrigin,
-) -> KeyDelivery {
+/// バッチ境界で1回だけ走るべき resync 処理（指摘5）。
+///
+/// `crate::runtime::engine_window::take_needs_engine_resync()` はモーダルポンプの
+/// 出入りごとに一度立つバッチ単位のフラグであり、本来バッチ（=1回の
+/// `WM_KEY_FROM_HOOK`、または1回の drain で処理する複数キー）につき1回だけ
+/// 消費すればよい。以前は `deliver_key_event` 冒頭（per-event）で呼んでいたため、
+/// drain で複数キーをまとめて処理する際に2件目以降でも重複して素通りチェックが
+/// 走っていた（実害は無いが無駄な `take_needs_engine_resync()` 呼び出し）。
+/// 呼び出し元（`handle_wm_key_from_hook`・`handle_wm_drain_output_queue`）が
+/// バッチ境界で1回だけ呼ぶこと。
+pub(crate) fn begin_key_batch(app: &mut Runtime) {
     if crate::runtime::engine_window::take_needs_engine_resync() {
         let ctx = app.build_ctx();
         let decision = app
@@ -91,7 +97,13 @@ pub(crate) fn deliver_key_event(
             .on_command(awase::engine::EngineCommand::FocusChanged, &ctx);
         app.execute_decision_suppressed(decision);
     }
+}
 
+pub(crate) fn deliver_key_event(
+    app: &mut Runtime,
+    event: awase::types::RawKeyEvent,
+    origin: KeyOrigin,
+) -> KeyDelivery {
     if matches!(origin, KeyOrigin::Hook(_)) {
         app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
     }
@@ -251,6 +263,7 @@ fn arm_post_bypass_if_matches(app: &mut Runtime, vk: VkCode) {
 
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
+    begin_key_batch(app);
     let _ = deliver_key_event(
         app,
         event,
@@ -1128,6 +1141,8 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     let queue = with_app(|app| {
         let mut events = crate::INPUT_DEFER.take_all();
         drained = true;
+        // このバッチ（drain 対象の全イベント）につき1回だけ resync する（指摘5）。
+        begin_key_batch(app);
         for ev in &mut events {
             app.enrich_ime_relevance(ev);
             log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
