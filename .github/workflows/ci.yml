@@ -95,6 +95,12 @@ jobs:
       # windows-cross-check ジョブのログで確認: Windows SDK のダウンロードも
       # windows crate のコンパイルも発生せず、3 クレート 5.63 秒で Finished）。
       - run: cargo xwin build --tests --target x86_64-pc-windows-msvc -p awase-windows
+      # awase-settings.exe の build.rs は awase-windows と同じ awase-build-support
+      # (BUG-79: asInvoker マニフェスト埋め込み、mt.exe 非依存の TARGET 偽装回避策)
+      # を使うが、上の awase-windows 限定のコマンドではこの経路が一度も cargo-xwin
+      # 環境下で検証されない。eframe/wgpu 込みで初回 ~4.5分かかるが Swatinem
+      # キャッシュで以降は短縮される見込み。
+      - run: cargo xwin build --tests --target x86_64-pc-windows-msvc -p awase-settings
 
   clippy:
     runs-on: ubuntu-latest

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-gji-config", "crates/awase-vkmap"]
+members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-build-support"]
 
 # awase-settings が wgpu(Direct3D 12 / Vulkan) フォールバックを取り込んだこと
 # （crates/awase-settings/src/startup_failure.rs）でリリースバイナリのサイズが

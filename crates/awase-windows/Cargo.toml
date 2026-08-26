@@ -11,8 +11,16 @@ path = "src/lib.rs"
 name = "awase"
 path = "src/main.rs"
 
+# [target.'cfg(windows)'.build-dependencies] にはしない: build.rs::main は
+# `awase_build_support::embed_awase_manifest` をソース上は無条件に参照し
+# （呼ぶかどうかだけを `CARGO_CFG_WINDOWS` でランタイム分岐している）、
+# `--target` 省略時（`cargo check --lib`/`cargo clippy --lib`。CI の
+# test/clippy ジョブが該当）は target が暗黙にホスト(Linux)になり
+# `cfg(windows)` が偽になる。scoped にするとその状態で
+# awase_build_support が依存グラフから外れ、無条件参照が解決できず
+# `E0433` でビルドが壊れることを実際に再現・確認済み（2026-08-26）。
 [build-dependencies]
-embed-manifest = "1.5"
+awase-build-support = { path = "../awase-build-support" }
 
 [dependencies]
 awase = { path = "../.." }

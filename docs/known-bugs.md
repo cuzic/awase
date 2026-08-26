@@ -10467,3 +10467,37 @@ x86_64-pc-windows-msvc -p awase-windows`（CI `windows-cross-check` ジョブ
 
 **関連:** なし（新規の不具合ファミリー。今後インストーラ/exe起動周りの
 問題が出た場合はここを参照）。
+
+**追補（2026-08-26、コードレビュー指摘の反映）:** マージ後にレビューで
+以下4点の指摘を受け、うち3点を反映した。
+
+1. `embed_awase_manifest`（TARGET偽装によるmt.exe非依存化ロジック）が
+   `awase-windows`/`awase-settings` の `build.rs` 2箇所に完全重複していた
+   →`crates/awase-build-support`（新設の内部専用crate）に一本化し、両
+   `build.rs` はこれを呼ぶだけにした。
+2. `embed-manifest` のバージョン指定がキャレット `"1.5"` で、将来の
+   マイナーアップデートで内部のTARGET判定方式が変わっても検知できず
+   BUG-79が静かに再発しうる懸念 →`awase-build-support/Cargo.toml`で
+   `=1.5.0` に厳密固定し、`crates/awase-build-support/src/lib.rs` に
+   `asInvoker` が実際にマニフェストXMLへ出力されることを検証する
+   unit test（`manifest_requests_as_invoker_execution_level`）を追加。
+3. CI `windows-cross-check`（cargo-xwin、mt.exe非搭載環境）が
+   `awase-windows` しかクロスビルドしておらず、`awase-settings` 側の
+   同じワークアラウンドが一度もこの環境で検証されていなかった
+   →`.github/workflows/ci.yml` に `-p awase-settings` のクロスビルド
+   ステップを追加（実測: eframe/wgpu込みで初回 ~4.5分、キャッシュ後は
+   短縮見込み）。
+4. `embed-manifest`（現 `awase-build-support`）が `[build-dependencies]`
+   に無条件で入っており、他の Windows 専用依存の慣習
+   （`[target.'cfg(windows)'.dependencies]`）と不一致で非Windowsビルドの
+   コンパイル時間が無駄という指摘 →**調査の結果、適用を見送った**。
+   `build.rs::main` は `awase_build_support::embed_awase_manifest` を
+   ソース上無条件に参照しており（呼ぶかどうかだけを
+   `CARGO_CFG_WINDOWS` でランタイム分岐）、`--target` 省略時（`cargo
+   check --lib`/`cargo clippy --lib` = CI の test/clippy ジョブ）は
+   target が暗黙にホスト(Linux)になるため、scoped にすると
+   `awase_build_support` が依存グラフから外れて `E0433`
+   でビルドが壊れることを実際に再現・確認した。この指摘は「無害な
+   コンパイル時間の無駄」だったが、対応しようとすると別のCIジョブを
+   壊す方が実害が大きいため、Cargo.tomlにその理由をコメントで残し
+   現状維持とした。

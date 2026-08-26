@@ -497,6 +497,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-build-support"
+version = "0.1.0"
+dependencies = [
+ "embed-manifest",
+]
+
+[[package]]
 name = "awase-gji-config"
 version = "0.1.0"
 dependencies = [
@@ -536,10 +543,10 @@ name = "awase-settings"
 version = "1.16.1"
 dependencies = [
  "awase",
+ "awase-build-support",
  "awase-windows",
  "eframe",
  "egui-wgpu",
- "embed-manifest",
  "env_logger",
  "glutin",
  "log",
@@ -564,9 +571,9 @@ version = "1.16.1"
 dependencies = [
  "anyhow",
  "awase",
+ "awase-build-support",
  "awase-gji-config",
  "awase-vkmap",
- "embed-manifest",
  "env_logger",
  "itertools",
  "log",

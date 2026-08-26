@@ -1,0 +1,21 @@
+[package]
+name = "awase-build-support"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "awase_build_support"
+path = "src/lib.rs"
+
+[dependencies]
+# 正確に固定する: TARGET を偽装して埋め込み方式を切り替える回避策
+# (embed_awase_manifest 参照) は embed-manifest の非公開実装詳細
+# (parse_target の "-msvc"/"-gnu" サフィックス判定) に依存している。
+# キャレット指定だと将来のマイナーアップデートでこの判定方法が変わった
+# 場合に検知できず、リンクは通るがマニフェストが実際には効いていない
+# （BUG-79 の再発）という状態を CI が見逃しうる。上げる際は本クレートの
+# テスト（asInvoker が含まれることの検証）が通ることを確認してから。
+embed-manifest = "=1.5.0"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }

@@ -8,7 +8,7 @@ name = "awase-settings"
 path = "src/main.rs"
 
 [build-dependencies]
-embed-manifest = "1.5"
+awase-build-support = { path = "../awase-build-support" }
 
 [dependencies]
 awase = { path = "../.." }
