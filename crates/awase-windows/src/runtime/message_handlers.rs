@@ -1160,10 +1160,8 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
-    let mut drained = false;
     let queue = with_app(|app| {
         let mut events = crate::INPUT_DEFER.take_all();
-        drained = true;
         // このバッチ（drain 対象の全イベント）につき1回だけ resync する（指摘5）。
         begin_key_batch(app);
         for ev in &mut events {
@@ -1183,11 +1181,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         finish_drain();
         return;
     };
-    if !drained {
-        DRAIN_RERUN_PENDING.store(true, Ordering::Release);
-        finish_drain();
-        return;
-    }
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
