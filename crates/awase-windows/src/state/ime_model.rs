@@ -660,6 +660,11 @@ impl ImeModel {
                 // ユーザーの明示操作 → 観測と同等の信頼度で即時反映する。
                 self.input_mode = mode;
             }
+            ImeEvent::FocusHwndUpdated { hwnd } => {
+                // 同一プロセス内の hwnd 変化のみ。epoch・観測プール・intent 等は
+                // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
+                self.observations.update_focus_hwnd(hwnd);
+            }
         }
     }
 }

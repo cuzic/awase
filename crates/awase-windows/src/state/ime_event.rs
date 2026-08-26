@@ -426,6 +426,19 @@ pub enum ImeEvent {
         focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
 
+    /// 同一プロセス内でフォーカス hwnd だけが変わった（ADR-106 決定3）。
+    ///
+    /// `FocusChanged`（プロセス変更、epoch インクリメント + 観測プールクリア）とは
+    /// 別のイベント。`focus_epoch` はプロセス変更でのみ進むため、`AppKind`
+    /// (`TsfNative`⇔`Uwp` 等) 往復のような同一プロセス内のウィンドウ切り替えは
+    /// `FocusChanged` を経由しない。この場合でも `ImmLikeTicket::admit()` が照合する
+    /// 生の hwnd（`platform.focus.current.hwnd`）は毎 tick 追従するため、reducer 側の
+    /// `ObservationStore::current_focus_hwnd` もこのイベントで追従させないと、
+    /// `derive_any()` の `is_identity_ok` が古い hwnd と比較し続け、以後の
+    /// `ImmCrossProbe`/`FocusProbe` 観測を次のプロセス変更まで恒久的に拒否する
+    /// （code review 2026-08-26 で発見された退行）。
+    FocusHwndUpdated { hwnd: HwndId },
+
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
     // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。

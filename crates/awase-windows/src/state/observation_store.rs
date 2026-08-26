@@ -390,11 +390,19 @@ pub struct ObservationStore {
     /// `derive_any()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
     /// これにより、stale な高信頼観測が意思決定に使われることを防ぐ。
     pub current_focus_epoch: FocusEpoch,
-    /// 現在のフォーカス hwnd（ADR-106 決定3）。`FocusChanged` イベントで更新される。
+    /// 現在のフォーカス hwnd（ADR-106 決定3）。
     ///
     /// `current_focus_epoch` はプロセス変更でのみ進むため、同一プロセス内で
     /// ウィンドウだけが変わるケースを検知できない。`derive_any()` はこの値も
     /// 併せて照合することで、そのケースの stale な観測を除外する。
+    ///
+    /// 書き込み口は2つある: プロセス変更時は `clear_on_focus_change()`（観測
+    /// プールごとクリアし epoch も進める）、同一プロセス内でのウィンドウ変化は
+    /// `update_focus_hwnd()`（この値だけを更新し epoch・観測プールには触れない）。
+    /// 後者が無いと、`admit()`（`platform.focus.current.hwnd` を毎 tick 参照）は
+    /// 新しい hwnd を正しく受理するのに、`derive_any()` の `is_identity_ok` は
+    /// 古い hwnd のまま比較し続け、次にプロセスが変わるまで観測を恒久的に
+    /// 拒否し続けるという退行になる（code review 2026-08-26 で発見）。
     pub current_focus_hwnd: HwndId,
 }
 
@@ -478,6 +486,17 @@ impl ObservationStore {
         self.per_source.clear_all();
         self.drift = None;
         self.current_focus_epoch = new_epoch;
+        self.current_focus_hwnd = new_hwnd;
+    }
+
+    /// 同一プロセス内でフォーカス hwnd だけが変わった場合の更新口（ADR-106 決定3）。
+    ///
+    /// `clear_on_focus_change()` と異なり、epoch・観測プール・drift には触れない
+    /// ——プロセスは変わっていないため、それらのセマンティクスを保つ。この値だけを
+    /// `platform.focus.current.hwnd`（admission 側が毎 tick 参照する生の hwnd）に
+    /// 追従させることで、`derive_any()` の `is_identity_ok` が stale な hwnd と
+    /// 比較し続けて以後の観測を恒久的に拒否する退行を防ぐ。
+    pub fn update_focus_hwnd(&mut self, new_hwnd: HwndId) {
         self.current_focus_hwnd = new_hwnd;
     }
 
@@ -1377,7 +1396,7 @@ mod tests {
     }
 
     /// `clear_on_focus_change` が hwnd も更新することを固定する
-    /// （ADR-106 決定3: `current_focus_hwnd` の唯一の書き込み口）。
+    /// （ADR-106 決定3: プロセス変更時の書き込み口）。
     #[test]
     fn clear_on_focus_change_updates_current_focus_hwnd() {
         let mut s = ObservationStore::default();
@@ -1385,6 +1404,60 @@ mod tests {
         s.clear_on_focus_change(5, HwndId(99));
         assert_eq!(s.current_focus_epoch, 5);
         assert_eq!(s.current_focus_hwnd, HwndId(99));
+    }
+
+    /// `update_focus_hwnd` が epoch・観測プールに触れず hwnd だけを更新することを固定する
+    /// （ADR-106 決定3: 同一プロセス内でのウィンドウ変化用の書き込み口）。
+    #[test]
+    fn update_focus_hwnd_updates_hwnd_only() {
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(5, HwndId(1));
+        let mut high = obs(true, ObservationSource::ObserverPoll, Instant::now());
+        high.confidence = ObservationConfidence::High;
+        rec(&mut s, high);
+        s.update_focus_hwnd(HwndId(2));
+        assert_eq!(s.current_focus_epoch, 5, "epoch は変わらない");
+        assert_eq!(s.current_focus_hwnd, HwndId(2));
+        assert!(
+            s.observation(ObservationSource::ObserverPoll).is_some(),
+            "観測プールはクリアされない"
+        );
+    }
+
+    /// code review 2026-08-26 で発見された退行の再現テスト:
+    /// 同一プロセス内で hwnd だけが変わったとき、`update_focus_hwnd()` を
+    /// 呼ばずに `current_focus_hwnd` を古いまま放置すると、新しい hwnd で
+    /// 記録された高信頼観測が `is_identity_ok` に恒久的に拒否される。
+    /// `update_focus_hwnd()` を呼べばこれが解消することを固定する。
+    #[test]
+    fn update_focus_hwnd_unblocks_derive_any_after_intra_process_window_change() {
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(5, HwndId(1)); // プロセス変更（epoch=5, hwnd=1）
+        let now = Instant::now();
+
+        // 同一プロセス内でウィンドウが hwnd=2 へ変わり、新しいウィンドウの
+        // 高信頼観測が届いた（epoch はプロセス変更でのみ進むため 5 のまま）。
+        let mut fresh_high = obs(true, ObservationSource::FocusProbe, now);
+        fresh_high.confidence = ObservationConfidence::High;
+        fresh_high.focus_epoch = 5;
+        fresh_high.hwnd = HwndId(2);
+        rec(&mut s, fresh_high);
+
+        // update_focus_hwnd() を呼ばない場合: current_focus_hwnd が古い hwnd=1
+        // のままのため、正当な新しい観測が拒否され続ける（退行の再現）。
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            None,
+            "update_focus_hwnd() を呼ぶ前は hwnd 不一致で新しい観測が拒否される"
+        );
+
+        // update_focus_hwnd() で current_focus_hwnd を追従させると受理される。
+        s.update_focus_hwnd(HwndId(2));
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            Some(true),
+            "update_focus_hwnd() 後は hwnd が一致し観測が採用される"
+        );
     }
 
     #[test]

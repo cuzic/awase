@@ -269,6 +269,7 @@ impl Runtime {
             None
         };
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
+        let prev_hwnd = crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
 
         if process_changed {
             let ime_on = self.platform_state.ime.effective_open();
@@ -315,6 +316,20 @@ impl Runtime {
             classified.class_name.clone(),
             classified.hwnd.0 as usize,
         );
+
+        // 同一プロセス内で hwnd だけが変わった場合、ObservationStore 側の
+        // current_focus_hwnd をここで追従させる。プロセス変更（process_changed）は
+        // 後続の on_focus_process_changed が FocusChanged（epoch インクリメント +
+        // 観測プールクリア）で hwnd も一緒に更新するため、ここでは扱わない
+        // （ADR-106 決定3、code review 2026-08-26 で発見された退行の修正）。
+        let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        if !process_changed && new_hwnd != prev_hwnd {
+            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+            self.platform_state.ime.dispatch_event(
+                crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
+                tick_ms,
+            );
+        }
 
         self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 

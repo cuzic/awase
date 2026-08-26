@@ -1135,6 +1135,24 @@ hwnd 照合を追加した——`AppKind` 往復の2つの window が異なる h
 多く/少なく棄却される）を起こさないか、次回この往復パターンが実機ログで
 観測された際に確認すること。
 
+**ADR-106 決定3 の退行修正（2026-08-26 追記、code review・未検証）:** 上記の hwnd
+照合追加自体に、機能回帰が1件あった。`ObservationStore::current_focus_hwnd`
+（`derive_any()` の照合対象）は `FocusChanged`（プロセス変更時のみ発火）経由の
+`clear_on_focus_change()` でしか更新されていなかった一方、`ImmLikeTicket::admit()`
+が照合する「生の hwnd」（`Runtime::focus_hwnd()` → `platform.focus.current.hwnd`）は
+`advance_focus_tracking()` 経由で毎 focus tick 更新されていた。このため、本バグと
+まさに同じシナリオ（同一プロセス内で `AppKind` 往復や通常のウィンドウ切り替えが起き、
+PID は変わらない）で `admit()` は新しい hwnd を正しく受理するのに `derive_any()` は
+古い hwnd と比較し続け、以後の `ImmCrossProbe`/`FocusProbe` 観測を次のプロセス変更
+まで恒久的に拒否する退行になっていた。修正: 同一プロセス内の hwnd 変化を
+`ImeEvent::FocusHwndUpdated` として dispatch し、`ObservationStore::update_focus_hwnd()`
+（epoch・観測プールには触れない）で `current_focus_hwnd` を追従させる
+（`crates/awase-windows/src/runtime/focus_tracking.rs::advance_focus_tracking`、
+`crates/awase-windows/src/state/observation_store.rs`）。state 層の回帰テスト
+（`update_focus_hwnd_unblocks_derive_any_after_intra_process_window_change` 等）は
+追加済み・Linux で green。`runtime/` の実配線（`advance_focus_tracking` からの
+dispatch）は Windows 実機依存のため未検証。
+
 ---
 
 ## BUG-19: 一発だけのカタカナ conv 誤読を warmup が鵜呑みにし、GJI が実際にカタカナへ固定される（修正済み）
