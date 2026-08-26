@@ -166,6 +166,7 @@ impl Runtime {
                         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
                             self.platform_state.focus.focus_epoch,
+                            self.focus_hwnd(),
                         );
                         self.platform_state
                             .ime
@@ -368,6 +369,7 @@ impl Runtime {
         }
         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
             self.platform_state.focus.focus_epoch,
+            self.focus_hwnd(),
         );
         self.platform_state
             .ime

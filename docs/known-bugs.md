@@ -1120,6 +1120,21 @@ no-op になる（gji_fsm.rs:558-565）ため副作用はない。
 **関連バグ:** BUG-16（focus 遷移の belief×実状態乖離）, BUG-17
 （CLSID フリップによる `GjiFsm` 再構築、直前修正・別経路）
 
+**ADR-106 決定3 との関係（2026-08-26 追記、未検証）:** 本バグの `AppKind`
+往復（`TsfNative`⇔`Uwp`、`Windows.UI.Input.InputSite.WindowClass`⇔
+`Chrome_WidgetWin_1`）は同一プロセス内での発生であり、`focus_epoch`
+（`on_focus_process_changed` の `process_changed` 判定＝PID 変化でのみ進む）
+が動かない可能性がある区間である。ADR-106 決定3は
+`ObservationStore::derive_any()` の `ImmCrossProbe`/`FocusProbe` フィルタに
+hwnd 照合を追加した——`AppKind` 往復の2つの window が異なる hwnd を持つ場合、
+`focus_epoch` が変わらなくても hwnd 不一致で古い window の観測が棄却される
+ようになる。これが本バグの症状（`belief` と `GjiFsm` の不一致期間）と
+直接の因果関係を持つかは未確認。本バグ自体は `gji_on_ime_on` 呼び出し追加で
+別経路から修正済みのため新たな実害があるわけではないが、`derive_any()` の
+挙動変化が `AppKind` 往復シナリオで意図しない副作用（stale 観測が想定より
+多く/少なく棄却される）を起こさないか、次回この往復パターンが実機ログで
+観測された際に確認すること。
+
 ---
 
 ## BUG-19: 一発だけのカタカナ conv 誤読を warmup が鵜呑みにし、GJI が実際にカタカナへ固定される（修正済み）

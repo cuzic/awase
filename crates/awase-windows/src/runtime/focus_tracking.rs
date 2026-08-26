@@ -561,6 +561,7 @@ impl Runtime {
         {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
                 focus_epoch: self.platform_state.focus.focus_epoch,
+                hwnd: self.focus_hwnd(),
             };
             win32_async::spawn_local(async move {
                 let snap = crate::ime::read_ime_state_full_async().await;

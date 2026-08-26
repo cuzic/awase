@@ -390,6 +390,12 @@ pub struct ObservationStore {
     /// `derive_any()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
     /// これにより、stale な高信頼観測が意思決定に使われることを防ぐ。
     pub current_focus_epoch: FocusEpoch,
+    /// 現在のフォーカス hwnd（ADR-106 決定3）。`FocusChanged` イベントで更新される。
+    ///
+    /// `current_focus_epoch` はプロセス変更でのみ進むため、同一プロセス内で
+    /// ウィンドウだけが変わるケースを検知できない。`derive_any()` はこの値も
+    /// 併せて照合することで、そのケースの stale な観測を除外する。
+    pub current_focus_hwnd: HwndId,
 }
 
 impl ObservationStore {
@@ -465,12 +471,14 @@ impl ObservationStore {
 
     /// 全ソースを clear する (フォーカス変更時用)。drift も clear。
     ///
-    /// `new_epoch` には `FocusStore::focus_epoch` のインクリメント後の値を渡す。
-    /// これ以降 `derive_any()` は古い epoch の ImmCrossProbe / FocusProbe を無視する。
-    pub fn clear_on_focus_change(&mut self, new_epoch: FocusEpoch) {
+    /// `new_epoch` には `FocusStore::focus_epoch` のインクリメント後の値を、
+    /// `new_hwnd` には新しいフォーカス先の hwnd を渡す（ADR-106 決定3）。
+    /// これ以降 `derive_any()` は古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する。
+    pub fn clear_on_focus_change(&mut self, new_epoch: FocusEpoch, new_hwnd: HwndId) {
         self.per_source.clear_all();
         self.drift = None;
         self.current_focus_epoch = new_epoch;
+        self.current_focus_hwnd = new_hwnd;
     }
 
     /// desired と observed の乖離を更新する。
@@ -657,13 +665,16 @@ impl ObservationStore {
     ) -> Option<DeriveOutcome> {
         const FRESH: Duration = Duration::from_secs(3);
         let current_epoch = self.current_focus_epoch;
+        let current_hwnd = self.current_focus_hwnd;
 
         let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
 
-        // epoch 照合が必要なソース（async/first-key トリガーのスナップショット probe）
-        let is_epoch_ok = |o: &ImeObservation| match o.source {
+        // フォーカス同一性照合が必要なソース（async/first-key トリガーのスナップショット
+        // probe）。epoch はプロセス変更でのみ進むため、同一プロセス内でウィンドウだけが
+        // 変わるケースは epoch 単独では検知できず、hwnd も併せて照合する（ADR-106 決定3）。
+        let is_identity_ok = |o: &ImeObservation| match o.source {
             ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
-                o.focus_epoch == current_epoch
+                o.focus_epoch == current_epoch && o.hwnd == current_hwnd
             }
             _ => true,
         };
@@ -675,7 +686,7 @@ impl ObservationStore {
             .filter(|o| {
                 accept(o.source)
                     && is_fresh(o)
-                    && is_epoch_ok(o)
+                    && is_identity_ok(o)
                     && o.confidence == ObservationConfidence::High
             })
             .max_by_key(|o| o.at);
@@ -697,7 +708,7 @@ impl ObservationStore {
         for obs in self.per_source.iter() {
             if !accept(obs.source)
                 || !is_fresh(obs)
-                || !is_epoch_ok(obs)
+                || !is_identity_ok(obs)
                 || obs.confidence < ObservationConfidence::Medium
             {
                 continue;
@@ -866,7 +877,7 @@ mod tests {
         let now = Instant::now();
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));
         assert!(s.per_source.observer_poll.is_some());
-        s.clear_on_focus_change(1);
+        s.clear_on_focus_change(1, HwndId::NULL);
         assert!(s.per_source.observer_poll.is_none());
     }
 
@@ -888,7 +899,7 @@ mod tests {
             Some(true),
             "Medium confidence 単独で derive_any() に反映される (通常の観測ソースと同待遇)"
         );
-        s.clear_on_focus_change(1);
+        s.clear_on_focus_change(1, HwndId::NULL);
         assert!(
             s.per_source.conv_open_inference.is_none(),
             "clear_all() で ConvOpenInference もクリアされる"
@@ -1322,6 +1333,58 @@ mod tests {
             None,
             "旧 epoch の ImmCrossProbe(High) は現在の epoch と一致しないため除外される"
         );
+    }
+
+    /// ADR-106 決定3: `focus_epoch` はプロセス変更でのみ進むため、同一プロセス内で
+    /// ウィンドウ（hwnd）だけが変わったケースは epoch 単独では検知できない。
+    /// hwnd 照合が実際に効いていることを固定する。
+    #[test]
+    fn derive_any_high_confidence_stale_hwnd_excluded_even_with_matching_epoch() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let mut stale_high = obs(true, ObservationSource::ImmCrossProbe, now);
+        stale_high.confidence = ObservationConfidence::High;
+        stale_high.focus_epoch = 0;
+        stale_high.hwnd = HwndId(1);
+        rec(&mut s, stale_high);
+        s.current_focus_epoch = 0; // epoch は同じ（プロセスは変わっていない）
+        s.current_focus_hwnd = HwndId(2); // だがウィンドウだけが変わった
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            None,
+            "epoch が一致していても hwnd が異なる ImmCrossProbe(High) は除外される"
+        );
+    }
+
+    /// 対照: epoch も hwnd も一致していれば通常どおり採用される
+    /// （hwnd フィルタが誤って全数除外に倒れていないことの固定）。
+    #[test]
+    fn derive_any_high_confidence_matching_epoch_and_hwnd_accepted() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let mut high = obs(true, ObservationSource::FocusProbe, now);
+        high.confidence = ObservationConfidence::High;
+        high.focus_epoch = 3;
+        high.hwnd = HwndId(42);
+        rec(&mut s, high);
+        s.current_focus_epoch = 3;
+        s.current_focus_hwnd = HwndId(42);
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            Some(true),
+            "epoch/hwnd が一致する FocusProbe(High) は採用される"
+        );
+    }
+
+    /// `clear_on_focus_change` が hwnd も更新することを固定する
+    /// （ADR-106 決定3: `current_focus_hwnd` の唯一の書き込み口）。
+    #[test]
+    fn clear_on_focus_change_updates_current_focus_hwnd() {
+        let mut s = ObservationStore::default();
+        assert_eq!(s.current_focus_hwnd, HwndId::NULL);
+        s.clear_on_focus_change(5, HwndId(99));
+        assert_eq!(s.current_focus_epoch, 5);
+        assert_eq!(s.current_focus_hwnd, HwndId(99));
     }
 
     #[test]

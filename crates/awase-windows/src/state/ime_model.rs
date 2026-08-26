@@ -532,9 +532,10 @@ impl ImeModel {
                 // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
                 // (旧アプリの観測値が新アプリで有効と勘違いされないため)
                 self.last_intent = None;
-                // 新しい epoch を store に伝える。derive_any() はこれ以降、
-                // 古い epoch の ImmCrossProbe / FocusProbe を無視する。
-                self.observations.clear_on_focus_change(focus_epoch);
+                // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
+                // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
+                // （ADR-106 決定3）。
+                self.observations.clear_on_focus_change(focus_epoch, to);
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
                 // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で

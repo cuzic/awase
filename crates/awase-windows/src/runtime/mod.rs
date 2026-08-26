@@ -294,6 +294,13 @@ impl Runtime {
         self.platform_state.focus.focus_epoch
     }
 
+    /// 現在のフォーカス hwnd（`probe_admission::ImmLikeTicket::admit` の照合用、
+    /// ADR-106 決定3）。
+    #[must_use]
+    pub(crate) fn focus_hwnd(&self) -> crate::state::ime_event::HwndId {
+        crate::state::ime_event::HwndId(self.platform.focus.current.hwnd)
+    }
+
     // ── 実 actuation の起案（ADR-090 §2.A A-1、INV-47）────────────────────
 
     /// 実 actuation 入口が 1 件の指示を起案する（shadow モード）。
@@ -1071,6 +1078,7 @@ impl Runtime {
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
             self.platform_state.focus.focus_epoch,
+            self.focus_hwnd(),
         );
         self.platform_state
             .ime

@@ -958,11 +958,13 @@ impl ImeStateHub {
         if let Some(hwnd) = self.shadow_model.current_focus() {
             self.intent_store.remove(hwnd);
         }
-        // panic reset はフォーカスエポックを変えない（同じフォーカスコンテキスト内のリセット）。
+        // panic reset はフォーカスエポック/hwnd を変えない（同じフォーカスコンテキスト
+        // 内のリセット）。
         let cur_epoch = self.shadow_model.observations.current_focus_epoch;
+        let cur_hwnd = self.shadow_model.observations.current_focus_hwnd;
         self.shadow_model
             .observations
-            .clear_on_focus_change(cur_epoch);
+            .clear_on_focus_change(cur_epoch, cur_hwnd);
     }
 
     /// `ImeUpdate` を belief / shadow_model に反映する。
@@ -1277,9 +1279,14 @@ impl ImeStateHub {
         // confidence は `Observed<FocusProbe>` 側で Low 固定
         // （top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる
         // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
+        //
+        // hwnd は `accepted.hwnd`（ticket が spawn 時に捕まえ、admission で現在値と
+        // 照合済みの top-level hwnd）を使う（ADR-106 決定3）。以前は `HwndId::NULL`
+        // 固定だったため、`ObservationStore::derive_filtered` が hwnd も照合する
+        // ようになると全ての FocusProbe 観測が常に棄却されてしまっていた。
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::FocusProbe>::from_probe(&accepted, value.get(), HwndId::NULL)
+                Observed::<evidence::FocusProbe>::from_probe(&accepted, value.get(), accepted.hwnd)
                     .into(),
             ),
             tick_ms,
@@ -1290,7 +1297,10 @@ impl ImeStateHub {
     ///
     /// `read_ime_state_full_async` が child hwnd の IMM32 状態を読んだ後に呼ぶ。
     /// High confidence のため `derive_any()` で即採用される。
-    /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`（epoch 照合済み）。
+    /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`
+    /// （epoch/hwnd 照合済み、ADR-106 決定3）。hwnd は `accepted.hwnd`（top-level）を
+    /// 使う——`write_focus_probe` と同じ理由（`HwndId::NULL` 固定だと
+    /// `derive_filtered` の hwnd 照合で常に棄却されてしまう）。
     pub(crate) fn write_imm_cross_probe(
         &mut self,
         value: bool,
@@ -1302,7 +1312,7 @@ impl ImeStateHub {
                 Observed::<evidence::ImmCrossProbe>::from_cross_probe(
                     &accepted,
                     value,
-                    HwndId::NULL,
+                    accepted.hwnd,
                 )
                 .into(),
             ),

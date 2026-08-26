@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn observed_carries_evidence_source_and_confidence() {
-        let accepted = AcceptedObservation::for_sync(7);
+        let accepted = AcceptedObservation::for_sync(7, HwndId(1));
         let any: AnyObservation =
             Observed::<FocusProbe>::from_probe(&accepted, true, HwndId(1)).into();
         assert_eq!(any.source(), ObservationSource::FocusProbe);

@@ -21,7 +21,7 @@ use super::TickMs;
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
 /// event log でクロススレッド伝搬される可能性があるため、ここでは値だけ保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize)]
 pub struct HwndId(pub usize);
 
 impl HwndId {
