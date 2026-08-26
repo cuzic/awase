@@ -624,8 +624,8 @@ impl Runtime {
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
         // ADR-106 決定4: 観測は spawn 時点の focus_epoch/hwnd を運び、現在の値と
         // 異なれば（フォーカスが変わっていれば）棄却される（monotonic guard）。
-        let current_epoch = self.platform_state.focus.focus_epoch;
-        let current_hwnd = crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
+        let current_epoch = self.focus_epoch();
+        let current_hwnd = self.focus_hwnd();
         let conv_mode_changed = self.platform.output.conv_mode.observe(
             crate::state::conv_mode::ConvObservation {
                 mode: awase::engine::ConvMode::from_u32(conv),
@@ -1973,12 +1973,23 @@ impl Runtime {
         tick_ms: crate::state::TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
-        if effective.get() {
-            self.platform_state.ime.reset_detect_state();
-        }
+        self.release_detect_state_guard_if(effective.get());
         self.platform_state
             .ime
             .write_focus_probe(effective, tick_ms, accepted);
+    }
+
+    /// FocusProbe 系の guard 解除（`reset_detect_state`）を条件付きで呼ぶ共通ヘルパー。
+    ///
+    /// `apply_effective_ime`（Read 分岐）と `apply_focus_probe` の NotObservable 分岐
+    /// （ADR-106 決定2、BUG-81）はどちらも「effective open とみなせるなら guard を
+    /// 解除する」という同じパターンを持つが、条件式自体は異なる
+    /// （前者は観測値 `effective.get()`、後者は観測できないため shadow 値
+    /// `probe.is_japanese_ime && shadow_on`）ため、呼び出し側で条件を評価してから渡す。
+    fn release_detect_state_guard_if(&mut self, should_reset: bool) {
+        if should_reset {
+            self.platform_state.ime.reset_detect_state();
+        }
     }
 }
 
@@ -2063,9 +2074,7 @@ impl Runtime {
                 // （BUG-33 で確定済み）。観測の記録自体は撤去し、guard 解除の
                 // 副作用（旧 `apply_effective_ime(shadow_on)` が `shadow_on==true`
                 // のとき呼んでいた `reset_detect_state`）だけを独立して維持する。
-                if probe.is_japanese_ime && shadow_on {
-                    self.platform_state.ime.reset_detect_state();
-                }
+                self.release_detect_state_guard_if(probe.is_japanese_ime && shadow_on);
                 None
             }
         };
@@ -2299,8 +2308,8 @@ impl Runtime {
                 "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
             ),
             None if used_shadow_fallback => log::debug!(
-                "FocusProbe: TsfNative/Imm32Unavailable — shadow 値 {shadow_on} を代替観測として記録 \
-                 [probe_age={probe_age_ms}ms]"
+                "FocusProbe: TsfNative/Imm32Unavailable — 観測不能のため記録は行わず、shadow 値 \
+                 {shadow_on} を guard 解除判定にのみ使用 [probe_age={probe_age_ms}ms]"
             ),
             None if probe.ime_on.is_none() => log::warn!(
                 "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} \
