@@ -685,7 +685,9 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
     // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize)] = &[
         // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
-        // 結果適用点。TsfNative/Imm32Unavailable の shadow 代替観測もここに集約される。
+        // 結果適用点。TsfNative/Imm32Unavailable は ADR-106 決定2 により観測不能として
+        // 扱われ、この経路では write_focus_probe を呼ばない（shadow 値は guard 解除
+        // 判定にのみ使う。代替観測としての記録は laundering として撤去済み、BUG-81）。
         ("runtime/key_pipeline.rs", 1),
     ];
 
