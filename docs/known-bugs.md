@@ -10733,7 +10733,7 @@ INV-C）で `params` を再構築する。`current_probe_params()` も `unwrap_o
 
 ---
 
-## BUG-86: `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install が直前の段の検出窓を無警告で破棄しうる（ADR-103の対象外、事前存在）
+## BUG-87: `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install が直前の段の検出窓を無警告で破棄しうる（ADR-103の対象外、事前存在）
 
 **症状:** `output/vk_send.rs` の `install_pending_tsf` 呼び出し4箇所のうち3箇所
 （`send_romaji_batched`・`send_romaji_as_tsf` の cold-start 分岐・

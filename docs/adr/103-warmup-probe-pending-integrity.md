@@ -679,7 +679,7 @@ let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {
 - 通知トーストが前景を奪った状態でのフック到達順序（3-e が「latch は生き残る」と主張する前提）。
 - 決定5-a の `DiscardPending` は当面「明示化とカウント」までで、破棄自体は維持する。実機で `CompositionReset` 由来の破棄件数が有意なら、`FocusChange` 時に限って romaji を再送すべきかを別 ADR で検討する。
 - **実装後の Opus コードレビューで見つかった、本 ADR のスコープ外の指摘**（実装コミット後・2026-08-26）:
-  - `send_romaji_as_tsf_warm`（`output/vk_send.rs`）の `LiteralDetectFsm` install が、他3箇所の `install_pending_tsf` 呼び出しと異なり `defer_if_probe_in_flight` 相当のガードを持たず、飛行中の検出窓を無警告で上書きしうる。ADR-103 の diff はこの関数に触れておらず事前から存在するコードのため本 ADR では直さない。`docs/known-bugs.md` **BUG-86** として起票済み。
+  - `send_romaji_as_tsf_warm`（`output/vk_send.rs`）の `LiteralDetectFsm` install が、他3箇所の `install_pending_tsf` 呼び出しと異なり `defer_if_probe_in_flight` 相当のガードを持たず、飛行中の検出窓を無警告で上書きしうる。ADR-103 の diff はこの関数に触れておらず事前から存在するコードのため本 ADR では直さない。`docs/known-bugs.md` **BUG-87** として起票済み。
   - `note_stage_injection`/`note_stage_recovery` は `ProbeIo` トレイトのメンバーではなく `Output` の本番実装内の直接呼び出しであるため、`FakeProbeIo` を使う dispatcher レベルのテストではこの配線自体（呼び出し忘れ）を検証できない（`architecture_guard` の grep 件数保証はあるが、grep はコンパイル時型検査ではない）。トレイトメンバー化も選択肢だが、`ProbeIo` の呼び出し規約全体を変える大きめの変更になるため本 ADR では見送る。
   - `ScopedOneShot` を post-bypass 以外の同型ワンショットフラグ（`ms_ime_gate_give_up` 等5件）へ展開すべきという指摘は、3-a で述べたとおり意図的なスコープ限定であり指摘としては採用しない（BUG-36/49/58/74 が積み重なった領域を同じ PR で触るリスクが実利を上回るため）。
 
