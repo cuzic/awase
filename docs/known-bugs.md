@@ -1135,7 +1135,7 @@ hwnd 照合を追加した——`AppKind` 往復の2つの window が異なる h
 多く/少なく棄却される）を起こさないか、次回この往復パターンが実機ログで
 観測された際に確認すること。
 
-**ADR-106 決定3 の退行修正（2026-08-26 追記、code review・未検証）:** 上記の hwnd
+**ADR-106 決定3 の退行修正（2026-08-26 追記、code review・2026-08-26 実機検証済み）:** 上記の hwnd
 照合追加自体に、機能回帰が1件あった。`ObservationStore::current_focus_hwnd`
 （`derive_any()` の照合対象）は `FocusChanged`（プロセス変更時のみ発火）経由の
 `clear_on_focus_change()` でしか更新されていなかった一方、`ImmLikeTicket::admit()`
@@ -1150,8 +1150,21 @@ PID は変わらない）で `admit()` は新しい hwnd を正しく受理す�
 （`crates/awase-windows/src/runtime/focus_tracking.rs::advance_focus_tracking`、
 `crates/awase-windows/src/state/observation_store.rs`）。state 層の回帰テスト
 （`update_focus_hwnd_unblocks_derive_any_after_intra_process_window_change` 等）は
-追加済み・Linux で green。`runtime/` の実配線（`advance_focus_tracking` からの
-dispatch）は Windows 実機依存のため未検証。
+追加済み・Linux で green。
+
+**実機検証（dragonflyg4、2026-08-26）:** 検証には Windows Terminal（TsfNative、決定2により
+観測不能プロファイルのため FocusProbe/ImmCrossProbe 自体を記録せず不適）・現行メモ帳
+（Windows 11 で IMM32 ベースでなくなっているため不適）のどちらも使えず、`crates/
+awase-windows/examples/two_imm32_windows_probe.rs`（同一プロセス内に素の `EDIT`
+コントロール持ちウィンドウを2つ作る使い捨て検証アプリ）を新設して使用した。Alt+Tab
+による切替は**スイッチャー UI が別プロセスとして一瞬フォーカスを持つため
+`process_changed=true` として記録されてしまい、本バグの再現条件（同一プロセス内・
+PID 不変）を満たさなかった**——同種の検証を今後行う場合はこの点に注意し、マウス
+クリックによる直接切替を使うこと。クリック切替では `process_changed=false` のまま
+`FocusHwndUpdated` が2ウィンドウ間で6回以上正しく dispatch・追従し、その間
+`derive_any()` の hwnd 不一致除外は一度も発生しなかった（一時追加した診断ログ
+`[focus-hwnd-track]`／`[identity-gate]` で確認）。`runtime/` の実配線を含め修正効果を
+実機で確認済み。
 
 ---
 
