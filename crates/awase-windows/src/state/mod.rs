@@ -44,6 +44,10 @@ pub mod app_ime_policy;
 // hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
 #[cfg_attr(not(windows), allow(dead_code))]
+pub mod app_suppression;
+// hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
+// 「純粋判定を Linux でテストできるようにする」移設パターン。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod win_key_guard;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。

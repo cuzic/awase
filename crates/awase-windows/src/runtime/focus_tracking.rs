@@ -242,12 +242,51 @@ impl Runtime {
             classified.hwnd.0 as usize,
         );
 
+        self.apply_app_disable_transition(classified.process_id);
+
         self.platform_state.ime.set_prev_conversion_mode(None);
 
         (
             process_changed,
             if process_changed { last_pid } else { None },
         )
+    }
+
+    /// `config.app_overrides.disable_apps` への出入りを検出し、フックへ伝達する
+    /// （BUG-78: リモートデスクトップ接続中にローカル側の awase が Ctrl キーの
+    /// 押しっぱなし状態を起こす問題への対策）。
+    ///
+    /// `advance_focus_tracking` の `update_focus_info` 直後、フォーカス変更のたびに
+    /// 呼ぶ想定。`process_changed` を流用せず自前でエッジ判定する — `process_changed`
+    /// は初回フォーカス（`last_pid == None`）で `false` になるため、無効化対象アプリが
+    /// フォーカスを持ったまま awase が起動したケースを取りこぼす。
+    pub(super) fn apply_app_disable_transition(&mut self, process_id: u32) {
+        use crate::state::app_suppression::{edge, SuppressionEdge};
+        use awase::types::ContextChange;
+
+        let was_disabled = self.platform_state.focus.app_disabled;
+        let is_disabled = self.platform.focus.is_app_disabled();
+        let transition = edge(was_disabled, is_disabled);
+        if matches!(transition, SuppressionEdge::None) {
+            return;
+        }
+
+        self.platform_state.focus.app_disabled = is_disabled;
+        crate::hook::set_focus_app_disabled(is_disabled);
+        crate::hook::clear_hook_latches_for_app_disable(transition);
+
+        if matches!(transition, SuppressionEdge::Enter) {
+            // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
+            // 確定させる。放置すると、Enter 後はフックが生キーを素通しするため
+            // TIMER_PENDING を解決すべき後続キーイベントが engine に届かなくなり、
+            // タイマー満了時に無効化先アプリへ謎の文字が飛ぶ（`toggle_app_override`
+            // の NonText 降格時と同じ対処、enabled フラグ自体は変更しない）。
+            self.invalidate_engine_context(ContextChange::FocusChanged);
+        }
+
+        log::info!(
+            "[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}"
+        );
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。

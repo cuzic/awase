@@ -66,6 +66,17 @@ impl Runtime {
             IoMode::Prefetched { focus, ime } => (Some(focus), Some(ime)),
         };
         let focus = self.ir_stage_focus(focus_probe);
+
+        // `disable_apps`（既定 mstsc.exe）にマッチするアプリへフォーカス中は、
+        // ここで IME リフレッシュを打ち切る（BUG-78 対策、ユーザー判断により
+        // 例外なく無効化する）。observe/notify/drift correction/warmup/probe が
+        // 全停止し、無効化先アプリへ VK_KANJI 等の IME 制御キーが送られなくなる。
+        // `ir_stage_focus` は必ず先に呼ぶ — フォーカス検出自体を止めると、
+        // 無効アプリからの離脱を検知できなくなる。
+        if self.platform_state.focus.app_disabled {
+            return;
+        }
+
         let strategy = self.ir_stage_strategy(&focus);
         self.ir_stage_observe(&focus, &strategy, ime_snap);
         self.ir_stage_notify();

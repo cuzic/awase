@@ -490,7 +490,7 @@ pub struct KeymapRule {
 /// - `force_bypass`: 常に非テキストとしてバイパスする組
 /// - `force_vk`: ローマ字出力を VK キーストローク Batched モードで送る組（Chrome/Edge/Electron 等）
 /// - `force_tsf`: ローマ字出力を VK キーストローク Sequential モードで送る組（WezTerm 等 TSF 直結アプリ）
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppOverrides {
     #[serde(default)]
     pub force_text: Vec<AppOverrideEntry>,
@@ -500,6 +500,32 @@ pub struct AppOverrides {
     pub force_vk: Vec<AppOverrideEntry>,
     #[serde(default)]
     pub force_tsf: Vec<AppOverrideEntry>,
+    /// フォーカス中このプロセス名（大文字小文字無視、`.exe` 有無どちらでも一致）
+    /// にマッチしたら awase を丸ごと無効化する（force_bypass と異なり class 指定不要、
+    /// フックレベルで生キーをそのまま OS に通す）。
+    ///
+    /// 既定値に `mstsc.exe` を含む: リモートデスクトップ接続中にローカル側の
+    /// awase が Ctrl キーの押しっぱなし状態を起こす既知の問題への対策
+    /// （`docs/known-bugs.md` BUG-78）。空にすれば無効化できる。
+    #[serde(default = "default_disable_apps")]
+    pub disable_apps: Vec<String>,
+}
+
+impl Default for AppOverrides {
+    fn default() -> Self {
+        Self {
+            force_text: Vec::new(),
+            force_bypass: Vec::new(),
+            force_vk: Vec::new(),
+            force_tsf: Vec::new(),
+            disable_apps: default_disable_apps(),
+        }
+    }
+}
+
+/// `AppOverrides::disable_apps` の既定値。
+fn default_disable_apps() -> Vec<String> {
+    vec!["mstsc.exe".to_string()]
 }
 
 /// Ctrl+key バイパス直後に次キーを NICOLA スキップするルール
@@ -802,6 +828,17 @@ impl AppConfig {
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
         Self::check_override_list(&overrides.force_vk, "force_vk", w);
         Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
+        Self::check_disable_apps_list(&overrides.disable_apps, w);
+    }
+
+    /// `disable_apps` の空文字列エントリを警告する。
+    ///
+    /// 空文字列は `app_suppression::matches_disabled_app` が常に不一致として扱う
+    /// ため実害はないが、設定ミスの手がかりとして警告だけ出す。
+    fn check_disable_apps_list(list: &[String], w: &mut Vec<String>) {
+        if list.iter().any(String::is_empty) {
+            w.push("app_overrides.disable_apps に空のエントリがあります".to_string());
+        }
     }
 
     fn check_override_list(list: &[AppOverrideEntry], list_name: &str, w: &mut Vec<String>) {
@@ -1151,6 +1188,62 @@ engine_off_solo_triple = "VK_NONCONVERT"
         assert!(config.app_overrides.force_text.is_empty());
         assert!(config.app_overrides.force_bypass.is_empty());
         assert!(config.app_overrides.force_vk.is_empty());
+    }
+
+    #[test]
+    fn test_disable_apps_defaults_to_mstsc() {
+        // [app_overrides] を含め設定ファイルに一切キーが無い場合でも、
+        // BUG-78 対策として mstsc.exe が既定で無効化リストに入る。
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.app_overrides.disable_apps, vec!["mstsc.exe"]);
+    }
+
+    #[test]
+    fn test_disable_apps_can_be_explicitly_emptied() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+disable_apps = []
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.app_overrides.disable_apps.is_empty());
+    }
+
+    #[test]
+    fn test_disable_apps_custom_list_parse() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+disable_apps = ["mstsc.exe", "SomeGame.exe"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.app_overrides.disable_apps,
+            vec!["mstsc.exe", "SomeGame.exe"]
+        );
+    }
+
+    #[test]
+    fn test_disable_apps_empty_entry_warns() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+disable_apps = ["mstsc.exe", ""]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("app_overrides.disable_apps")),
+            "expected a warning about disable_apps, got: {warnings:?}"
+        );
     }
 
     #[test]

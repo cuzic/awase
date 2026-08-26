@@ -117,6 +117,18 @@ impl ForceOverrides {
         None
     }
 
+    /// `disable_apps` にマッチするプロセス名か（class 不問）。
+    ///
+    /// `force_bypass` と異なりウィンドウクラス名を問わない — mstsc.exe のように
+    /// 複数のウィンドウクラスを取りうるアプリを丸ごと無効化するための入り口。
+    #[must_use]
+    pub(crate) fn is_app_disabled(&self, process_name: &str) -> bool {
+        crate::state::app_suppression::matches_disabled_app(
+            &self.inner.disable_apps,
+            process_name,
+        )
+    }
+
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
     ///
     /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。

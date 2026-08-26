@@ -318,6 +318,41 @@ pub fn reset_physical_key_state() {
     log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
+/// `disable_apps` へ出入りする際にフックローカルなラッチを後始末する。
+///
+/// `reset_physical_key_state()`（全 256 VK を無条件クリア）とは意図的に別系統にする。
+/// フォーカス遷移は高頻度に起きるため、無条件の全クリアを持ち込むと Alt+Tab で
+/// 無効アプリへ出入りする瞬間（Alt が物理押下中であることが多い）に
+/// `alt_key_held()` を偽らせ、BUG-62 の「Alt+かな で JIS かな直接入力へ不可逆に
+/// 切り替わる」保護を無効化中でなくても壊しかねない（設計段階の premortem で
+/// 指摘され、この分離に至った）。
+///
+/// Enter/Leave 共通で、Alt なりすまし・チョード関連の一時ラッチのみを force-false
+/// する。`ALT_L/R_WAS_DOWN`・`ALT_L/R_IMPERSONATING`・`CTRL_CONSUMED_SINCE_DOWN`・
+/// 親指キー押下タイムスタンプが対象。**`PHYSICAL_KEY_STATE`（Alt/Ctrl/Shift/Win を
+/// 含む）本体には一切触れない。**
+/// 無効アプリに入った瞬間に pending だったチョードは呼び出し元
+/// （`runtime/focus_tracking.rs`）が engine 側の flush で別途処理する。
+pub(crate) fn clear_hook_latches_for_app_disable(
+    edge: crate::state::app_suppression::SuppressionEdge,
+) {
+    use crate::state::app_suppression::SuppressionEdge;
+
+    if matches!(edge, SuppressionEdge::None) {
+        return;
+    }
+
+    ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
+    ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
+    ALT_L_IMPERSONATING.store(false, Ordering::Relaxed);
+    ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
+    CTRL_CONSUMED_SINCE_DOWN.store(false, Ordering::Relaxed);
+    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+
+    log::info!("[app-disable] {edge:?}: hook latches をクリア");
+}
+
 /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
 ///
 /// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume された」
@@ -347,6 +382,18 @@ static CACHED_RIGHT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(fals
 /// エンジンの実効有効状態（`UiEffect::EngineStateChanged` の `enabled` と同じ値）の
 /// キャッシュ。Alt なりすましの発動条件に使う（`hook_callback` 参照）。
 static CACHED_ENGINE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// `config.app_overrides.disable_apps` にマッチするアプリへ現在フォーカス中かの
+/// キャッシュ。メインスレッドのフォーカス追跡（`runtime/focus_tracking.rs`）が
+/// `set_focus_app_disabled()` で書き込み、フックスレッドが `hook_callback` 冒頭で
+/// 読む（`CACHED_ENGINE_ENABLED` と同型の受け渡しパターン）。
+///
+/// マッチしている間、`hook_callback` は生のキーイベントを一切消費せず
+/// `CallNextHookEx` でそのまま OS に通す（awase を丸ごとバイパスする）。
+/// 既存の `force_bypass`（`FocusKind::NonText` → `SendInput` で再注入）と異なり
+/// `LLKHF_INJECTED` の付かない生イベントが届くため、injected input を無視する
+/// ゲーム（DirectInput/Raw Input 系）にも通用する。
+static FOCUS_APP_DISABLED: AtomicBool = AtomicBool::new(false);
 
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` のキャッシュ（BUG-62 追補5）。
 /// 既定値は `true`（安全側）で、config 読み込み前に発火しても常に swallow する。
@@ -425,6 +472,18 @@ pub fn set_alt_impersonation_enabled(left: bool, right: bool) {
 /// Alt なりすましの発動条件（エンジン ON 時のみ発動）に使う。
 pub fn set_engine_enabled(enabled: bool) {
     CACHED_ENGINE_ENABLED.store(enabled, Ordering::Release);
+}
+
+/// 現在フォーカス中のアプリが `disable_apps` にマッチしているかを設定する
+/// （`runtime/focus_tracking.rs` のフォーカス変更処理から呼ぶ）。
+pub fn set_focus_app_disabled(disabled: bool) {
+    FOCUS_APP_DISABLED.store(disabled, Ordering::Release);
+}
+
+/// 現在フォーカス中のアプリで awase が無効化されているか。
+#[must_use]
+pub fn is_focus_app_disabled() -> bool {
+    FOCUS_APP_DISABLED.load(Ordering::Acquire)
 }
 
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
@@ -726,6 +785,19 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             slot.store(new_value, Ordering::Relaxed);
         }
     }
+
+    // `disable_apps`（既定 mstsc.exe）にマッチするアプリへフォーカス中は、
+    // ここで生キーイベントをそのまま OS に通す（awase を丸ごとバイパスする、
+    // BUG-78 対策）。`PHYSICAL_KEY_STATE` の更新（上のブロック）より後に置く —
+    // 前に置くと無効アプリに入る直前から押していたキーの KeyUp が記録されず、
+    // 今回対策したいスタックをこの分岐自体が新規に生んでしまう。
+    // VK_KANA/Alt なりすまし等の以降の変換系ロジックより前に置くことで、
+    // それらの介入（BUG-08/BUG-61/BUG-62 対策含む）も無効化中は一切効かなくする
+    // （ユーザー判断により例外なく無効化する）。
+    if FOCUS_APP_DISABLED.load(Ordering::Relaxed) {
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
+
     // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
     // 入力に反転して NICOLA の romaji VK 出力が壊滅する（2026-07-06 実機: down→up
     // 135µs〜1ms の合成 VK_KANA ペアが 2 回到達し Windows Terminal が JISかな化。

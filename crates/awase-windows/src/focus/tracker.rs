@@ -164,6 +164,12 @@ impl FocusTracker {
         self.overrides.check_app_override(pid, class_name)
     }
 
+    /// 現在フォーカス中のプロセスが `disable_apps` にマッチしているか
+    /// （BUG-78 対策、`runtime/focus_tracking.rs` から呼ぶ）。
+    pub(crate) fn is_app_disabled(&self) -> bool {
+        self.overrides.is_app_disabled(&self.current.process_name)
+    }
+
     pub(crate) fn cache_insert(
         &mut self,
         pid: u32,

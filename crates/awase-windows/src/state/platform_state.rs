@@ -1382,6 +1382,10 @@ pub(crate) struct FocusStore {
     /// probe の spawn 時にキャプチャし、完了時に照合することで「spawn 後にフォーカスが
     /// 変わったか」を時間ベースの競合なしに正確に判定できる（→ probe_admission モジュール）。
     pub focus_epoch: u64,
+    /// 現在フォーカス中のプロセスが `config.app_overrides.disable_apps`
+    /// にマッチし、awase が丸ごと無効化されているか（BUG-78 対策）。
+    /// `runtime/focus_tracking.rs` がフォーカス変更のたびに更新する。
+    pub app_disabled: bool,
 }
 
 impl FocusStore {
@@ -1394,6 +1398,7 @@ impl FocusStore {
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             focus_epoch: 0,
+            app_disabled: false,
         }
     }
 }

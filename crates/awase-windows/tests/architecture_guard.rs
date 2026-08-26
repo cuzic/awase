@@ -2263,3 +2263,74 @@ fn sync_romaji_write_goes_through_a_captured_target() {
         );
     }
 }
+
+// ── BUG-78: disable_apps（アプリ単位の awase 無効化 + Ctrl/Shift スタック復旧） ──
+
+/// `disable_apps` の早期 return（`hook_callback` 内、`FOCUS_APP_DISABLED` を見る分岐）は
+/// ちょうど 1 箇所だけ存在し、`PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS` 更新ブロック
+/// より**後**、`VK_KANA` swallow ブロックより**前**に置かれていること。
+///
+/// 設計上の理由（`.claude/plans` の premortem 参照）: 更新ブロックより前に早期 return する
+/// と、無効アプリに入る直前から押していたキーの KeyUp が記録されず、対策したい
+/// Ctrl スタック自体をこの分岐が新規に生む。VK_KANA/Alt なりすまし等の変換系ロジックより
+/// 前に置くことで、無効化中はそれらの介入も一切効かなくする（ユーザー判断により例外なし）。
+#[test]
+fn disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana() {
+    let content = read_crate_file("src/hook.rs");
+    let production = production_code_only(&content);
+
+    let early_return_needle = "FOCUS_APP_DISABLED.load(Ordering::Relaxed)";
+    let count = production.matches(early_return_needle).count();
+    assert_eq!(
+        count, 1,
+        "src/hook.rs 内で `{early_return_needle}` の出現数が想定(1)と異なります \
+         (実際: {count})。disable_apps の早期 return は hook_callback 内の1箇所に \
+         限定すること。"
+    );
+
+    let update_block_pos = production
+        .find("if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {")
+        .expect("PHYSICAL_KEY_STATE update block not found in src/hook.rs");
+    let early_return_pos = production
+        .find(early_return_needle)
+        .expect("early return needle not found (checked above)");
+    let vk_kana_pos = production
+        .find("if vk == crate::vk::VK_KANA {")
+        .expect("VK_KANA swallow block not found in src/hook.rs");
+
+    assert!(
+        update_block_pos < early_return_pos,
+        "disable_apps の早期 return は PHYSICAL_KEY_STATE 更新ブロックより後に \
+         置くこと（前に置くと無効アプリ突入直前の KeyUp が記録されず、対策したい \
+         Ctrl スタックをこの分岐自体が新規に生む）。"
+    );
+    assert!(
+        early_return_pos < vk_kana_pos,
+        "disable_apps の早期 return は VK_KANA swallow ブロックより前に置くこと \
+         （無効化中は変換系ロジックの介入を一切効かなくする設計）。"
+    );
+}
+
+/// `clear_hook_latches_for_app_disable` は Alt/Win の `PHYSICAL_KEY_STATE` に
+/// 一切触れないこと。
+///
+/// 設計上の理由: Alt+Tab で無効アプリへ出入りする瞬間は Alt が物理押下中であることが
+/// 多く、ここで Alt/Win の `PHYSICAL_KEY_STATE` を force-false すると `alt_key_held()` が
+/// 偽って BUG-62（Alt+かな で JIS かな直接入力へ不可逆に切り替わる）の保護が外れる。
+#[test]
+fn app_disable_latch_clear_never_touches_alt_or_win_physical_key_state() {
+    let content = read_crate_file("src/hook.rs");
+    let body = extract_fn_body(&content, "fn clear_hook_latches_for_app_disable");
+
+    for must_not_contain in [
+        "VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN",
+    ] {
+        assert!(
+            !body.contains(must_not_contain),
+            "clear_hook_latches_for_app_disable は {must_not_contain} に触れては \
+             いけない（Alt+Tab 離脱時に alt_key_held()/win_key_held() を偽らせ、\
+             BUG-62 の Alt+かな 保護を壊すリスクがあるため、設計段階の premortem で \
+             除外が決まった）。"
+        );
+    }
+}

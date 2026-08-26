@@ -286,6 +286,8 @@ struct SettingsApp {
     capturing: Option<CaptureTarget>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
     new_override_bufs: [(String, String); 4],
+    // disable_apps add-buffer（プロセス名のみ、class 不要）
+    new_disable_app: String,
     // post_bypass add-buffers
     new_pb_key: String,
     new_pb_process: String,
@@ -369,6 +371,7 @@ impl SettingsApp {
             new_keymap_to_main: String::new(),
             capturing: None,
             new_override_bufs: Default::default(),
+            new_disable_app: String::new(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
             new_pb_class: String::new(),
@@ -1590,6 +1593,24 @@ impl SettingsApp {
 
     #[expect(clippy::too_many_lines)]
     fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
+        ui.heading("アプリを無効化");
+        ui.label(
+            "指定したアプリにフォーカスがある間、awase を丸ごと無効化します（force_bypass より強く、\n\
+             フックレベルで生キーがそのままアプリへ届きます。DirectInput 等を使うゲームにも通用します）。\n\
+             プロセス名のみで指定し、クラス名は不要です。大文字小文字・.exe の有無は区別しません。\n\
+             無効化中は IME 制御（ON/OFF 自動切替・warmup 等）も完全に停止します。",
+        );
+        ui.add_space(4.0);
+        process_list_ui(
+            ui,
+            "disable_apps",
+            "awase を無効化するアプリ (disable_apps)",
+            "フォーカス中このプロセスでは、awase のキー変換・IME 制御を一切行いません。\n既定でリモートデスクトップ接続（mstsc.exe）が登録されています\n（接続元での Ctrl キー押しっぱなし不具合対策）。",
+            &mut self.config.app_overrides.disable_apps,
+            &mut self.new_disable_app,
+        );
+
+        ui.separator();
         ui.heading("アプリ別オーバーライド");
         ui.label(
             "特定アプリでの awase の挙動を上書きします。\n\
@@ -2394,6 +2415,60 @@ fn override_list_ui(
                 process: std::mem::take(&mut buf.0),
                 class: std::mem::take(&mut buf.1),
             });
+        }
+    });
+    ui.add_space(8.0);
+}
+
+/// `disable_apps`（プロセス名のみでアプリ全体を無効化するリスト）編集 UI。
+///
+/// `override_list_ui` はプロセス名+クラス名の2フィールド固定で密結合なため、
+/// プロセス名のみの入力欄を別関数として新設した（トレイト/クロージャ導入は
+/// 40行の関数には過剰）。
+fn process_list_ui(
+    ui: &mut egui::Ui,
+    id: &str,
+    label: &str,
+    tooltip: &str,
+    entries: &mut Vec<String>,
+    buf: &mut String,
+) {
+    ui.label(label).on_hover_text(tooltip);
+    let mut rm = None;
+    for (i, e) in entries.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("    {e}"));
+            if ui
+                .small_button("x")
+                .on_hover_text("押すと: この行を削除します。")
+                .clicked()
+            {
+                rm = Some(i);
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+    }
+    if let Some(i) = rm {
+        entries.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(buf)
+                .desired_width(200.0)
+                .hint_text("プロセス名 (例: mstsc.exe)")
+                .id(egui::Id::new(format!("{id}_proc"))),
+        )
+        .on_hover_text(
+            "対象プロセスの実行ファイル名です。大文字小文字は区別せず、.exe の有無どちらでも一致します。",
+        );
+        if ui
+            .button("+追加")
+            .on_hover_text("押すと: 入力したプロセス名を一覧に追加します。")
+            .clicked()
+            && !buf.is_empty()
+        {
+            entries.push(std::mem::take(buf));
         }
     });
     ui.add_space(8.0);
@@ -3426,6 +3501,7 @@ mod layout_tab_repro {
             new_keymap_to_main: String::new(),
             capturing: None,
             new_override_bufs: <[(String, String); 4]>::default(),
+            new_disable_app: String::new(),
             new_pb_key: String::new(),
             new_pb_process: String::new(),
             new_pb_class: String::new(),
