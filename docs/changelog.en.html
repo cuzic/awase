@@ -110,6 +110,29 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.16.1] - 2026-08-25</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the first character sometimes being typed literally right after a focus change (e.g. returning from Alt+Tab)</strong><ul>
+<li>In Windows Terminal with MS-IME (TSF) and similar setups, the first keystroke after a focus change could be sent before the IME state had resynced, producing wrong output such as "rの" instead of "という"</li>
+<li>The first keystroke after a focus change is now held until resync completes</li>
+</ul>
+</li>
+<li><strong>Fixed the solo-repeat engine-off hotkey (`engine_off_solo_repeat`, an emergency escape for a stuck Ctrl key) sometimes not working</strong><ul>
+<li>Its default key was the muhenkan key, so setups that also assigned muhenkan to a thumb key or the IME on/off key made the hotkey completely unresponsive. The default key was changed to Insert, and it now works independently of the thumb-key assignment</li>
+<li>Also fixed two cases where the hotkey could fail to fire after five taps, or become permanently unresponsive after firing once</li>
+<li>The config key was renamed from `engine_off_solo_triple` to `engine_off_solo_repeat` (the old name is still accepted in existing config files)</li>
+</ul>
+</li>
+<li><strong>Fixed a case in Google Japanese Input (GJI) where the first character typed right after a TSF cold start could be lost without a trace</strong><ul>
+<li>Happened right after resuming typing following 20+ seconds of inactivity. When a character is lost, it is now safely resent after confirming the focus generation hasn't changed</li>
+</ul>
+</li>
+<li><strong>Fixed the settings window (awase-settings) silently failing to start on environments without a graphics driver</strong><ul>
+<li>It now automatically falls back to software rendering on startup failure, and shows a dialog with the cause and a fix when that also fails</li>
+</ul>
+</li>
+</ul>
 <h2>[1.16.0] - 2026-08-23</h2>
 <h3>Added</h3>
 <ul>
