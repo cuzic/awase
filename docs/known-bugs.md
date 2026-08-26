@@ -10638,3 +10638,95 @@ modifier/passthrough の順序依存と `prefix + ←` の `ConsumesPrefixSilent
 その後 `develop` へのリベースで BUG-83 が `/code-review` によるADR-105/102是正
 （直上のエントリ）に既に使われていたと判明したため、本項は BUG-84 に再度採番し直した
 （並行ブランチでの番号衝突、[.claude 運用メモ](../.claude/rules/main-develop-branch-flow.md) 参照）。
+
+---
+
+## BUG-85: `dispatch_probe_actions` の早期returnがdeferred VKフラッシュとGjiFsm通知の両方を飛ばし、`pending_gji_warmup` が段をまたいで残る
+
+**症状:** `output/probe_io.rs::dispatch_probe_actions` は、`gate_is_bypass()` /
+`chars.is_empty()` / per-VK gate / `UpgradeToTsf` / コルーチン内部中断
+（`vk_sent` 未設定・`SuspectedLiteral`・`StaleConfirm` → `ProbeAction::Done`）の
+8つの経路で早期に抜けるが、そのうち `flush_deferred_and_mark_warmup` を通る
+経路（Tsf/Chrome batch 送信後・per-VK `is_last`）以外は deferred VK キューを
+解放せず `GjiFsm` へも完了/中断を通知しない。結果として:
+
+1. probe 中に届いた後続打鍵（deferred VK）が滞留し、次の probe が張られたときに
+   順序が反転して注入される（BUG-27「とうろく」→「と」が消え「うろ」が「ろう」に
+   反転する症状と同型）。
+2. `GjiFsm` は `OnCold { probe: Authorized }` のまま固着し、`is_warm()` が false
+   のままなので以後毎打鍵 `prepend_f2_warmup=true` になる。
+3. さらに、旧 `TsfWarmupCoordinator::pending_gji_warmup: Cell<bool>` は
+   `cancel_probe()` でも `install_pending_tsf` の上書きでもクリアされず**段を
+   またいで残っていた**。段 A が warmup 完了フラグを立てた直後に `CancelProbe`
+   で machine が破棄されても bool は true のままで、段 B の最初の tick が
+   `Done` に落ちると、1文字も注入していない段 B の probe_id で
+   `WarmupComplete` が出て `OnWarm` になりうる（未起票のまま温存されていた）。
+4. `DispatchResult::LearnedTsf`（Unicode 経由で TSF へ昇格した場合）は
+   `gji_end_probe_guard()` と `take_probe_id()` を呼んでおらず、`OUTPUT_GATE`
+   ガードと `current_gji_probe_id` が次の `StartProbe` まで残留していた。
+
+**再現手順:** Chrome/msedge 等で TSF composition context が使えない窓
+（`gate_is_bypass()==true`）へフォーカスした状態で日本語入力を続ける、または
+per-VK confirm 中に literal 化を検出させて中断経路（`vk_sent` 未設定等）を
+繰り返し踏む。実機ログで `OnCold(Authorized)` の状態ラベルが張り付いたまま
+`StartProbe` が再発行されないことを確認する。
+
+**関連 ADR:** ADR-103 決定4。`dispatch_probe_actions` 本体をラベル付きブロック
+（`'stage: { ... break 'stage <理由> ... }`）にし、`DispatchResult` を
+`Continue`/`Ended(StageEnd)` の2アームへ統合。段が終わる出口は
+`break 'stage <StageEndReason>` でしか書けない形にして「呼び忘れられる出口」を
+型で消した。段末の後始末（deferred 解放・`GjiFsm` 通知・`OUTPUT_GATE`/`TsfGate`
+ガード解放）は `Output::finish_probe_stage`（`step_probe` の `Ended` アーム、
+machine が実際に drop される唯一の点）に一本化。「実際に注入したか」は
+`impl ProbeIo for Output` の注入メソッド自身が `note_stage_injection` で記録し
+（段ごとに `begin_stage()` で張り直るため段をまたがない）、記録が無ければ
+`GjiEvent::WarmupAborted` を出す（既定が安全側＝warm を主張しない）。
+
+**テスト:** `probe_io` の `FakeProbeIo` によるモックテスト（`gate_is_bypass()`
+経由の8系列すべてで `DispatchResult::Ended` が返り `reason` が期待どおりである
+こと、per-VK 列の `idx > 0` では gate が Bypass でも段が終わらず送り切られる
+こと）。`TsfWarmupCoordinator` の `begin_stage`/`note_stage_injection`/
+`take_stage_record` の段またぎ回帰テスト。`gji_fsm` の `WarmupAborted` 受信後の
+状態遷移テスト。`architecture_guard` に `dispatch_probe_actions` 本体の
+`return DispatchResult` 0件ガードを追加。
+
+**状態:** 対応済み（2026-08-26）。BUG-27 の未解決 follow-up のうち dispatcher
+側・コルーチン内部中断側（`:560` 合流点経由）は本対応で閉じた。coro 側の
+per-VK ループが `is_last` より前で `SuspectedLiteral` を検出して抜ける経路は
+`flush_raw_tsf_literal_recovery` 側の回収に委ねる形は変えていない
+（`raw_recovery_owns_deferred()` が true の間、段末は deferred に触れない）。
+
+---
+
+## BUG-86: `EndComposition` が `ColdKind`/`ProbeParams` を固定値で再構築し、Medium/Long probe の `forces_prepend_f2` が黙って失われる
+
+**症状:** `tsf/gji_fsm.rs::EndComposition` は `ComposingWarmup::AwaitingProbe` から
+`OnCold` へ戻す際、`ColdKind::Short` と `ProbeParams { forces_prepend_f2: false,
+is_long_cold: false }` を固定値で捏造していた。元の probe が `Medium`/`Long`
+想定（`forces_prepend_f2: true` で認可済み）だった場合、composition が終了した
+という事実だけを理由に `forces_prepend_f2` が黙って false へ書き換わる。
+`TsfWarmupCoordinator::current_probe_params()` も `unwrap_or_default()` で
+同じ値（ビット単位で捏造値と同一）へ潰しており、grep guard だけでは検出できない
+経路だった。
+
+**再現手順:** GJI 変換候補を Medium/Long cold 判定になる程度 idle が経過した
+状態で開始し、composition 完了直後に別の cold-start が必要な入力を行う。
+`forces_prepend_f2` が本来 true であるべき状況で false になり、warmup 用の
+F2 prepend が省略されて cold-start 特有のリテラル漏れが再発しうる。
+
+**関連 ADR:** ADR-103 決定5。`ComposingWarmup::AwaitingProbe`/`AbortedCold` に
+`kind: ColdKind` を持ち込み、`EndComposition` は運ばれた `kind` から
+`ColdKind::probe_params()`（`ProbeParams` を `ColdKind` の純関数として一元化、
+INV-C）で `params` を再構築する。`current_probe_params()` も `unwrap_or_default()`
+を撤去し `Option<ProbeParams>` のまま返す（唯一の読み手 `send_romaji_as_tsf` が
+`Authorized probe が無い` ことをログに残したうえで明示的にフォールバックする）。
+あわせて `ImeOff`/`FocusChange`/`handle_composition_reset`（3アーム）が pending を
+無警告で破棄していた箇所に `GjiAction::DiscardPending { count, reason }` を追加。
+
+**テスト:** `gji_fsm` の状態遷移テスト（`AwaitingProbe(kind=Medium)` →
+`EndComposition` → `OnCold` の `kind`/`params.forces_prepend_f2=true` が保存
+されること、`OnComposing(AwaitingProbe, pending>0)` での `ImeOff`/`FocusChange`/
+`CompositionReset` が `DiscardPending{count>0}` を emit すること）。
+`ProbeParams` リテラル構築点の grep guard（`ColdKind::probe_params` の中だけ）。
+
+**状態:** 対応済み（2026-08-26）。

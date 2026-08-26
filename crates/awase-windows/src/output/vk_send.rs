@@ -301,7 +301,13 @@ impl Output {
                 .run_start(session_expired, elapsed);
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
-            let probe_params = self.gji_current_probe_params();
+            let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {
+                log::warn!(
+                    "[tsf-send] cold パスだが GjiFsm に Authorized probe が無い（state={})",
+                    self.gji_state_label()
+                );
+                crate::tsf::gji_fsm::ColdKind::Short.probe_params()
+            });
             let coro = Box::new(crate::tsf::warmup::gji_warmup_coro::GjiWarmupCoro::new(
                 romaji,
                 cold_seq,

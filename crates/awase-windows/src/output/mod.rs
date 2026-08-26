@@ -815,8 +815,8 @@ impl Output {
     /// `send_romaji_as_tsf` が `GjiWarmupCoro::new` を生成する際に参照する。
     /// GjiFsm の `Authorized` 状態から `ProbeParams` を読み出す。
     ///
-    /// `Authorized` でない場合は `ProbeParams::default()` を返す。
-    pub(crate) fn gji_current_probe_params(&self) -> crate::tsf::gji_fsm::ProbeParams {
+    /// `Authorized` でない場合は `None` を返す。
+    pub(crate) fn gji_current_probe_params(&self) -> Option<crate::tsf::gji_fsm::ProbeParams> {
         self.warmup_coord.current_probe_params()
     }
 
@@ -848,11 +848,6 @@ impl Output {
     ) -> Vec<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>
     {
         self.warmup_coord.drain_key_responses()
-    }
-
-    /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn gji_take_warmup_pending(&self) -> bool {
-        self.warmup_coord.take_warmup_pending()
     }
 
     /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
@@ -1274,30 +1269,6 @@ impl Output {
         let dispatch =
             probe_io::dispatch_probe_actions(machine.as_mut(), actions, self, &mut literal_detect);
         match dispatch {
-            probe_io::DispatchResult::Done => {
-                self.on_tsf_probe_ready();
-                self.gji_end_probe_guard();
-                let gji_response = self
-                    .gji_take_warmup_pending()
-                    .then(|| self.warmup_coord.take_probe_id())
-                    .flatten()
-                    .map(|probe_id| {
-                        self.gji_on_event(crate::tsf::gji_fsm::GjiEvent::WarmupComplete {
-                            probe_id,
-                        })
-                    });
-                let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
-                StepProbeResult {
-                    timer_cmd: TimerCommand::Kill {
-                        id: crate::TIMER_TSF_PROBE,
-                    },
-                    gji_response,
-                    needs_gji_composition_reset,
-                    learned_tsf: false,
-                    completed_cold_seq: Some(cold_seq),
-                    literal_detect,
-                }
-            }
             probe_io::DispatchResult::Continue => {
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
                 self.warmup_coord.restore_pending_tsf(machine);
@@ -1313,22 +1284,79 @@ impl Output {
                     literal_detect,
                 }
             }
-            probe_io::DispatchResult::LearnedTsf => {
-                // UnicodeLiteralObserverFsm が GJI write なしと判断した。
-                // advance_tsf_probe がフォーカス中クラスを Tsf に昇格する。
+            probe_io::DispatchResult::Ended(end) => {
+                // `machine` はここで drop される（restore しない）＝段の終わり。
+                let learned_tsf = end.reason == crate::tsf::gji_fsm::StageEndReason::UpgradedToTsf;
+                drop(machine);
                 let needs_gji_composition_reset = self.warmup_coord.take_composition_reset();
+                let gji_response = self.finish_probe_stage(end);
                 StepProbeResult {
                     timer_cmd: TimerCommand::Kill {
                         id: crate::TIMER_TSF_PROBE,
                     },
-                    gji_response: None,
+                    gji_response,
                     needs_gji_composition_reset,
-                    learned_tsf: true,
+                    learned_tsf,
                     completed_cold_seq: Some(cold_seq),
                     literal_detect,
                 }
             }
         }
+    }
+
+    /// deferred VK の解放権が raw literal 回収 / GJI reinit retry 側にあるか（INV-F）。
+    ///
+    /// `flush_raw_tsf_literal_recovery` は末尾で必ず
+    /// `flush_stale_deferred_vks_after_recovery` を通り、`WM_DRAIN_OUTPUT_QUEUE`
+    /// ハンドラから無条件に呼ばれる。BUG-38 の順序（backspace / romaji 再送 /
+    /// reinit がすべて実送信されたあとでなければ deferred を出してはいけない）は
+    /// この経路が守る。段末（`finish_probe_stage`）はこの間 deferred に触れない。
+    fn raw_recovery_owns_deferred(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        crate::RAW_TSF_LITERAL.backs.load(Relaxed) != 0
+            || !crate::RAW_TSF_LITERAL
+                .romaji
+                .lock()
+                .expect("RAW_TSF_LITERAL.romaji mutex poisoned")
+                .is_empty()
+            || self.pending_gji_reinit.borrow().is_some()
+    }
+
+    /// probe 段が終わったときに必ず1回だけ通る後始末（ADR-103 決定4-e）。
+    ///
+    /// 呼び出し元は `step_probe` の `Ended` アームただ1つ（machine が drop される
+    /// 唯一の点）。`cancel_probe` は別途、段を畳んで捨てる形で同じ資源を後始末する。
+    fn finish_probe_stage(
+        &mut self,
+        end: probe_io::StageEnd,
+    ) -> Option<timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer>>
+    {
+        // (a) deferred VK の解放。所有権が raw literal 回収側にある間は触らない（INV-F）。
+        if self.raw_recovery_owns_deferred() {
+            log::debug!(
+                "[stage-end] {:?}: deferred の解放は raw recovery 側に委ねる",
+                end.reason
+            );
+        } else {
+            let n = self.flush_pending_deferred_vks();
+            if n > 0 {
+                log::debug!("[stage-end] {:?}: deferred {n} VK(s) を flush", end.reason);
+            }
+        }
+        // (c) TsfGate / OUTPUT_GATE ガード。deferred を送り切ってからゲートを開ける。
+        self.on_tsf_probe_ready();
+        self.gji_end_probe_guard();
+        // (b) GjiFsm への通知。
+        let rec = self.warmup_coord.take_stage_record();
+        let probe_id = self.warmup_coord.take_probe_id()?;
+        Some(self.gji_on_event(if rec.injected && !rec.recovered {
+            crate::tsf::gji_fsm::GjiEvent::WarmupComplete { probe_id }
+        } else {
+            crate::tsf::gji_fsm::GjiEvent::WarmupAborted {
+                probe_id,
+                reason: end.reason,
+            }
+        }))
     }
 
     /// probe を `warmup_coord` にインストールする。既存 probe があれば上書きして warn を出す。
@@ -1366,6 +1394,19 @@ impl Output {
         self.warmup_coord.clear_pending_tsf();
         self.gji_end_probe_guard();
         let _ = self.warmup_coord.take_probe_id();
+        let _ = self.warmup_coord.take_stage_record();
+        // ADR-103 決定4-f: cancel_probe が発火するのは ImeOff / FocusChange /
+        // handle_composition_reset の3経路だけで、これは GjiFsm の pending
+        // （同じ打鍵の romaji 影）を破棄する経路と完全に同じ集合である。片方だけ
+        // 残すと shadow と実体がずれ、残った VK は「誰にも所有されないまま、
+        // はるか後の無関係な回収でまとめて送られる」——BUG-27 の順序反転になる。
+        let discarded = self.warmup_coord.take_pending_deferred();
+        if !discarded.is_empty() {
+            log::warn!(
+                "[stage-cancel] deferred {n} VK(s) を破棄（宛先窓が変わった / エンジン停止）",
+                n = discarded.len()
+            );
+        }
     }
 
     /// `warmup_coord` の composition reset フラグを取り出す。

@@ -21,6 +21,14 @@ use crate::tsf::warmup::warmup_strategy::ImeWarmupStrategy;
 
 type GjiResponse = timed_fsm::Response<GjiAction, GjiTimer>;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StageRecord {
+    /// この段で1文字以上を実際に注入したか。
+    pub injected: bool,
+    /// この段が raw literal 回収を出したか。
+    pub recovered: bool,
+}
+
 /// GJI ウォームアップ / TSF プローブ状態の集約。
 ///
 /// フィールドは `Output`（親モジュール `output` とその子モジュール）から直接借用できるよう
@@ -34,8 +42,8 @@ pub(crate) struct TsfWarmupCoordinator {
     pub(super) current_gji_probe_id: Cell<Option<ProbeId>>,
     /// GJI probe 中に OUTPUT_GATE を活性化するガード。
     gji_probe_guard: RefCell<Option<OutputActiveGuard>>,
-    /// `dispatch_probe_actions` → `GjiFsm::WarmupComplete` の橋渡しフラグ。
-    pending_gji_warmup: Cell<bool>,
+    /// 現在の probe 段における注入/回収事実。
+    stage: Cell<StageRecord>,
     /// `ProbeIo::mark_cold_raw_tsf` → `GjiFsm::CompositionReset` の橋渡しフラグ。
     pub(super) pending_gji_composition_reset: Cell<bool>,
     /// `send_romaji_as_tsf` / `send_romaji_batched` の `GjiFsm::KeyInput` Response バッファ。
@@ -55,7 +63,7 @@ impl TsfWarmupCoordinator {
             pending_tsf: RefCell::new(None),
             current_gji_probe_id: Cell::new(None),
             gji_probe_guard: RefCell::new(None),
-            pending_gji_warmup: Cell::new(false),
+            stage: Cell::new(StageRecord::default()),
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
             pending_deferred: RefCell::new(Vec::new()),
@@ -116,12 +124,9 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().gji_current_composition_epoch()
     }
 
-    /// `Authorized` 状態の `ProbeParams` を返す。それ以外なら `default()`。
-    pub(crate) fn current_probe_params(&self) -> ProbeParams {
-        self.tsf_warmup
-            .borrow()
-            .current_probe_params()
-            .unwrap_or_default()
+    /// `Authorized` 状態の `ProbeParams` を返す。それ以外なら `None`。
+    pub(crate) fn current_probe_params(&self) -> Option<ProbeParams> {
+        self.tsf_warmup.borrow().current_probe_params()
     }
 
     // ── probe_id ──────────────────────────────────────────────────────────
@@ -153,16 +158,26 @@ impl TsfWarmupCoordinator {
         *self.gji_probe_guard.borrow_mut() = None;
     }
 
-    // ── warmup result 橋渡し ───────────────────────────────────────────────
+    // ── stage record ─────────────────────────────────────────────────────
 
-    /// `pending_gji_warmup` をセットする（`ProbeIo::store_gji_warmup_result` 用）。
-    pub(crate) fn mark_warmup_pending(&self) {
-        self.pending_gji_warmup.set(true);
+    pub(crate) fn begin_stage(&self) {
+        self.stage.set(StageRecord::default());
     }
 
-    /// `pending_gji_warmup` を取り出す（1回限り）。
-    pub(crate) fn take_warmup_pending(&self) -> bool {
-        self.pending_gji_warmup.take()
+    pub(crate) fn note_stage_injection(&self) {
+        let mut stage = self.stage.get();
+        stage.injected = true;
+        self.stage.set(stage);
+    }
+
+    pub(crate) fn note_stage_recovery(&self) {
+        let mut stage = self.stage.get();
+        stage.recovered = true;
+        self.stage.set(stage);
+    }
+
+    pub(crate) fn take_stage_record(&self) -> StageRecord {
+        self.stage.take()
     }
 
     // ── composition reset 橋渡し ───────────────────────────────────────────
@@ -193,6 +208,7 @@ impl TsfWarmupCoordinator {
 
     /// probe を `pending_tsf` にセットする。既存 probe があれば上書きして warn を出す。
     pub(crate) fn install_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
+        self.begin_stage();
         let mut slot = self.pending_tsf.borrow_mut();
         // BUG-27 調査用: 上書きされる旧 machine の cold_seq も出す
         // （新 cold_seq だけでは「誰が誰を上書きしたか」が分からなかった）。
@@ -439,6 +455,62 @@ mod tests {
         assert!(
             !coord.has_pending_deferred(),
             "flush 後はキューが空になる（二重送信防止）"
+        );
+    }
+
+    // ── stage record（ADR-103 決定4-d、BUG-85 回帰）───────────────────────
+
+    #[test]
+    fn stage_record_lifecycle_resets_after_take() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.begin_stage();
+        coord.note_stage_injection();
+        let rec = coord.take_stage_record();
+        assert!(rec.injected);
+        assert!(!rec.recovered);
+        assert_eq!(
+            coord.take_stage_record(),
+            StageRecord::default(),
+            "take_stage_record は1回限り。2回目は既定値を返す"
+        );
+    }
+
+    #[test]
+    fn stage_record_records_recovery_independently_of_injection() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.begin_stage();
+        coord.note_stage_injection();
+        coord.note_stage_recovery();
+        let rec = coord.take_stage_record();
+        assert!(rec.injected);
+        assert!(
+            rec.recovered,
+            "recovered は injected と独立に立つ（INV-D: 回収を出した段は warm を主張しない）"
+        );
+    }
+
+    /// BUG-85 回帰: 段 A が `note_stage_injection` した直後、`take_stage_record`
+    /// を挟まずに `install_pending_tsf` が段 B として上書きしても、段 B の記録は
+    /// `injected=false` から始まる（`pending_gji_warmup: Cell<bool>` は
+    /// `cancel_probe`/上書きでクリアされず段をまたいで残っていた）。
+    #[test]
+    fn install_pending_tsf_overwrite_does_not_carry_injected_flag_across_stages() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 })); // 段 A 開始
+        coord.note_stage_injection();
+        assert!(
+            coord.take_stage_record().injected,
+            "前提: 段 A は注入済みとして記録される"
+        );
+
+        // 段 A の take_stage_record を呼ばないまま（= cancel_probe を介さない
+        // 経路を模す）、新しい probe が同じスロットへ上書きインストールされる。
+        coord.note_stage_injection(); // うっかり段 A の記録に積んでしまった想定
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 })); // 段 B 開始
+        let rec = coord.take_stage_record();
+        assert!(
+            !rec.injected,
+            "段 B の記録が段 A の injected=true を引き継いではならない（BUG-85）"
         );
     }
 }

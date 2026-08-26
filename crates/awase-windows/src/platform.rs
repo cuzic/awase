@@ -553,6 +553,12 @@ impl WindowsPlatform {
                 }
                 // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
                 GjiAction::SendInput { .. } | GjiAction::SendInputDirect(..) => {}
+                // ADR-103 決定5-a: pending（romaji の shadow）を破棄したことを明示的な
+                // 行為として記録する。副作用は無い（実データの破棄は GjiFsm 内部の
+                // 状態上書きで既に完了しており、ここはログ・診断専用）。
+                GjiAction::DiscardPending { count, reason } => {
+                    log::debug!("[gji-fsm] DiscardPending count={count} reason={reason:?}");
+                }
             }
         }
     }

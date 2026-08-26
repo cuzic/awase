@@ -2555,3 +2555,88 @@ fn app_disable_invalidate_engine_context_is_skipped_during_bootstrap() {
          is_bootstrap=false で呼ぶこと"
     );
 }
+
+// ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────
+
+/// `dispatch_probe_actions` の本体から `return DispatchResult` を1件残らず消す
+/// （ADR-103 決定4-b）。段が終わる出口は `break 'stage <StageEndReason>` という
+/// 形でしか書けないようにし、「呼び忘れられる出口」を型検査で強制する。この guard
+/// は grep による第二の防衛線であり、将来 `return DispatchResult` を書く新しい
+/// 早期脱出が追加されたことを機械的に検知する。
+#[test]
+fn dispatch_probe_actions_has_no_early_return() {
+    let path = "src/output/probe_io.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn dispatch_probe_actions");
+    let count = body.matches("return DispatchResult").count();
+    assert_eq!(
+        count, 0,
+        "{path} の dispatch_probe_actions 本体に `return DispatchResult` が \
+         {count} 件見つかりました。段の終わりは `break 'stage <理由>` でのみ表現し、\
+         早期 return を書かないでください（ADR-103 決定4-b）。"
+    );
+}
+
+/// `note_stage_recovery` を呼ぶのは `mark_cold_raw_tsf` の本番実装ただ1箇所
+/// （ADR-103 決定4-d）。`mark_cold_raw_tsf` は `RawTsfLiteralRecovery` アームの
+/// 全分岐で無条件に呼ばれるため、「composition を cold にマークした段は warm を
+/// 主張できない」という規則が呼び忘れようのない形で成立する。dispatcher 側に
+/// 同じ呼び出しを書くと、忘れたときに危険側（warm 誤申告）へ倒れるため書かない。
+#[test]
+fn note_stage_recovery_is_called_only_from_mark_cold_raw_tsf() {
+    let path = "src/output/probe_io.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production
+        .matches(".warmup_coord.note_stage_recovery()")
+        .count();
+    assert_eq!(
+        count, 1,
+        "{path} 内で `note_stage_recovery` の呼び出し箇所数が想定(1 = \
+         mark_cold_raw_tsf のみ)と異なります(実際: {count})。"
+    );
+}
+
+/// `note_stage_injection` を呼ぶのは `impl ProbeIo for Output` の注入メソッド4つ
+/// （`transmit_tsf`/`transmit_chrome`/`send_single_tsf_vk`/`send_single_chrome_vk`）
+/// だけ（ADR-103 決定4-d）。dispatcher からは1行も呼ばない——「実際に注入したか」
+/// は注入した関数自身が記録することで、呼び忘れを構造的に防ぐ。
+#[test]
+fn note_stage_injection_is_called_only_from_the_four_injection_methods() {
+    let path = "src/output/probe_io.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production
+        .matches(".warmup_coord.note_stage_injection()")
+        .count();
+    assert_eq!(
+        count, 4,
+        "{path} 内で `note_stage_injection` の呼び出し箇所数が想定(4 = \
+         transmit_tsf/transmit_chrome/send_single_tsf_vk/send_single_chrome_vk)と \
+         異なります(実際: {count})。dispatch_probe_actions からは呼ばないこと。"
+    );
+}
+
+// ── ADR-103 決定5: ProbeParams は ColdKind の純関数（INV-C）────────────────
+
+/// `ProbeParams { .. }` のリテラル構築は `ColdKind::probe_params` の中だけ
+/// （ADR-103 決定5-b、INV-C）。`EndComposition` 等が固定値で再構築する退行を防ぐ。
+#[test]
+fn probe_params_construction_is_limited_to_cold_kind_probe_params() {
+    let path = "src/tsf/gji_fsm.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    // "ProbeParams {" は構造体定義(`struct ProbeParams {`)と関数シグネチャの
+    // 戻り値直後の開き波括弧(`-> ProbeParams {`)にも偶然一致するため両方除く。
+    let false_positives = production.matches("struct ProbeParams {").count()
+        + production.matches("-> ProbeParams {").count();
+    let total = production.matches("ProbeParams {").count();
+    let construction_count = total - false_positives;
+    assert_eq!(
+        construction_count, 1,
+        "{path} 内で `ProbeParams {{ .. }}` のリテラル構築箇所数が想定(1 = \
+         ColdKind::probe_params の中だけ)と異なります(実際: {construction_count})。\
+         ProbeParams は ColdKind の純関数として一元化されている(INV-C)。"
+    );
+}
