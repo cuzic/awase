@@ -52,6 +52,13 @@ fn finish_drain() {
 pub(crate) enum KeyOrigin {
     Hook(PumpContext),
     DeferredReplay,
+    /// `TIMER_IME_OFF_RESCUE` 満了時の再処理（追加発見E）。
+    ///
+    /// 50ms 救済窓が保留していたキーを、救済窓 defer を再度かけずに
+    /// (`kp_run_inner` の `skip_rescue_defer=true` 相当) 即時処理する。
+    /// `deliver_key_event` はこの origin のとき `Runtime::process_key_event` の
+    /// 代わりに `Runtime::replay_ime_off_rescue_event` を呼ぶ。
+    ImeOffRescueReplay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +142,13 @@ pub(crate) fn deliver_key_event(
         return delivery;
     }
 
-    let result = app.process_key_event(event);
+    // ImeOffRescueReplay（追加発見E）: 救済窓 defer を再度かけない専用経路
+    // （`kp_run_inner` の `skip_rescue_defer=true` 相当）を通す。
+    let result = if matches!(origin, KeyOrigin::ImeOffRescueReplay) {
+        app.replay_ime_off_rescue_event(event)
+    } else {
+        app.process_key_event(event)
+    };
     if matches!(result, CallbackResult::PassThrough) {
         // GJI 候補ウィンドウが表示中に Ctrl+key がパススルーされる際、
         // GJI が Ctrl+key を IME ショートカットとして横取りしないよう composition を
@@ -341,9 +354,11 @@ pub(crate) unsafe fn handle_wm_timer(
                     "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
-                let result = app.replay_ime_off_rescue_event(pending_event);
-                if matches!(result, CallbackResult::PassThrough) {
-                    app.executor.enqueue_reinject(pending_event);
+                // deliver_key_event（単一入口）経由に統合する（追加発見E）。
+                // 以前は Runtime::replay_ime_off_rescue_event を直接呼んでおり、
+                // NonText focus パススルー・post-bypass latch 消費等を素通りしていた。
+                let delivery = deliver_key_event(app, pending_event, KeyOrigin::ImeOffRescueReplay);
+                if matches!(delivery, KeyDelivery::Reinjected) {
                     post_to_main_thread(WM_EXECUTE_EFFECTS);
                 }
             }

@@ -2441,7 +2441,9 @@ fn enqueue_reinject_call_sites_are_accounted_for() {
         vec![
             ("src/runtime/executor.rs".to_string(), 2),
             ("src/runtime/key_pipeline.rs".to_string(), 1),
-            ("src/runtime/message_handlers.rs".to_string(), 5),
+            // TIMER_IME_OFF_RESCUE の再処理が deliver_key_event 経由に統合された分、
+            // message_handlers.rs 側の直接呼び出しが1件減った(5→4、追加発見E)。
+            ("src/runtime/message_handlers.rs".to_string(), 4),
         ],
         "enqueue_reinject call sites are limited to deliver_key_event plus the documented pending-replay exceptions"
     );
