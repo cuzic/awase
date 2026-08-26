@@ -10180,6 +10180,17 @@ premortem 設計レビュー、複数ラウンド）:**
 - 同一プロセス内のウィンドウ移動（`focus_tracking.rs:197` の
   `process_changed` は pid 変化時のみ発火）では本修正も発火しない。
   BUG-18 と地続きの別課題として記録する。
+- **resync 専用の conv 読み取りと、通常の idle-conv-check の conv 読み取りは
+  並行して走りうる（完了順は保証されない）。** resync（`resync_generation.is_
+  some()`）は共有 in-flight フラグ（`idle_conv_check_in_flight_since_ms`）を
+  意図的にバイパスするため（上記「追補」参照）、フォーカス復帰後 arm された
+  状態で resync 対象外のキー（例: Ctrl+V）が先に通常経路の conv 読み取りを
+  in-flight にしていた場合、続く resync 対象キーは別途もう1本
+  `get_ime_conversion_mode_raw_timeout_async` を spawn する。2本が並行して
+  ブロックしうる（BUG-34）ことに加え、後から spawn した方が先に完了する
+  保証は無く、`(c) conv_mutation_seq` 再検証は spawn↔apply 間の自己出力しか
+  見ないためこの順序逆転を検出できない。将来ここを触る人は「共有フラグが
+  あるから直列」と誤読しないこと。
 
 **テスト:** `src/types.rs`（`starts_focus_resync` 9件）・
 `src/engine/idle_check.rs`（`is_first_key_after_focus` 5件 + 既存の

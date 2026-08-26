@@ -303,7 +303,7 @@ impl Runtime {
     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
-        self.kp_stage_idle_conv_check_inner(event, false, None);
+        let _ = self.kp_stage_idle_conv_check_inner(event, false, None);
     }
 
     /// フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）のトリガー用。
@@ -318,16 +318,26 @@ impl Runtime {
     /// conv 読み取り完了時、この世代がまだ現行（＝ハード期限タイマーがまだ
     /// 先に閉じていない）ことを確認してから belief を適用し、gate を閉じて
     /// drain を post する。世代が古ければ（期限が先に発火済み）結果を破棄する。
-    pub(crate) fn kp_trigger_focus_resync(&mut self, event: &RawKeyEvent, generation: u64) {
-        self.kp_stage_idle_conv_check_inner(event, true, Some(generation));
+    ///
+    /// 戻り値: 呼び出し元（`app/mod.rs`）はこの `true` のときだけハード期限
+    /// タイマーを武装すること。ガード（shift ガード／`should_run_idle_conv_check`
+    /// 不通過）で同期的に弾かれた場合は既に gate が閉じているため `false` を返す
+    /// ——期限タイマーを張っても無害（`open_if_current` が世代不一致で無視する）だが、
+    /// 「成功パスでは無駄な `WM_TIMER` を残さない」という設計意図と矛盾するため、
+    /// 呼び出し元が武装をスキップできるようにする（BUG-77 code review 追補2巡目）。
+    pub(crate) fn kp_trigger_focus_resync(&mut self, event: &RawKeyEvent, generation: u64) -> bool {
+        self.kp_stage_idle_conv_check_inner(event, true, Some(generation))
     }
 
+    /// 戻り値: 非同期 conv 読み取りを spawn した（＝resync の場合、gate がまだ
+    /// active で呼び出し元がハード期限タイマーを武装すべき）なら `true`。
+    /// いずれかのガードで同期的に return した場合は `false`。
     fn kp_stage_idle_conv_check_inner(
         &mut self,
         event: &RawKeyEvent,
         is_first_key_after_focus: bool,
         resync_generation: Option<u64>,
-    ) {
+    ) -> bool {
         // Shift conv 安全網のブリップ中、または左Shift単独タップによる半角英数
         // 持続トグル中（`kp_stage_shift_conv_guard`）は凍結する。conv=0x00000000 は
         // awase 自身が意図的に設定した状態であり、ObservedEisu → DirectInput
@@ -337,7 +347,7 @@ impl Runtime {
             || self.platform_state.gate.half_width_alnum_toggle_active
         {
             self.close_focus_resync_gate_if_current(resync_generation);
-            return;
+            return false;
         }
         let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
         let now_tick_at_spawn = crate::state::TickMs(hook::current_tick_ms());
@@ -374,7 +384,7 @@ impl Runtime {
                 );
             }
             self.close_focus_resync_gate_if_current(resync_generation);
-            return;
+            return false;
         }
 
         // BUG-34（docs/known-bugs.md）: get_ime_conversion_mode_raw_timeout は
@@ -407,7 +417,7 @@ impl Runtime {
                 let elapsed = now_ms_for_gate.saturating_sub(since);
                 if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
                     log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
-                    return;
+                    return false;
                 }
                 log::warn!(
                     "[idle-conv-check] 前回の in-flight が {elapsed}ms 未解放 → 放棄されたとみなし再武装"
@@ -431,10 +441,19 @@ impl Runtime {
                 if resync_generation.is_none() {
                     app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
                 }
-                let Some(conv) = conv else {
-                    app.close_focus_resync_gate_if_current(resync_generation);
+                // BUG-77 code review 追補(2巡目): 世代照合は belief 適用の**前**に行う。
+                // 以前は apply_idle_conv_check を呼んだ後に世代照合していたため、
+                // ハード期限が先に発火した後（BUG-34 で conv 読みが数秒ブロックした
+                // ケース）に遅れて届いた結果がそのまま belief に書き込まれてしまい、
+                // タイピング中に突然 force-ON が飛ぶ BUG-31/BUG-70 系の事故を生んでいた。
+                // `close_focus_resync_gate_if_current` は「resync_generation が None
+                // （通常呼び出し、gate に無関係）なら常に true」「Some(gen) なら
+                // gate を閉じられた（＝自分の世代がまだ現行だった）ときだけ true」を
+                // 返すので、false の場合は conv の有無を問わず belief 適用ごと破棄する。
+                if !app.close_focus_resync_gate_if_current(resync_generation) {
                     return;
-                };
+                }
+                let Some(conv) = conv else { return };
                 crate::state::probe_admission::admit_epoch_in_app(
                     app,
                     ticket,
@@ -447,35 +466,37 @@ impl Runtime {
                         );
                     },
                 );
-                // 成功・棄却いずれの場合も resync 試行は完了している。
-                // gate を閉じて defer 中のキーを drain 可能にする。
-                app.close_focus_resync_gate_if_current(resync_generation);
             });
         });
+        true
     }
 
     /// resync 対象キーの conv チェックが完了・スキップ・棄却されたとき呼ぶ。
     ///
-    /// `resync_generation` が `Some(gen)` のときのみ実際に gate を閉じる（通常の
-    /// idle-conv-check 呼び出しは resync gate に一切関与しない）。`FocusResyncGate::
-    /// open_if_current` が world-first として `true` を返した場合のみ drain を post
-    /// する——ハード期限タイマーと競合しても片方だけが post することを保証する。
-    /// この呼び出しで閉じられた場合、ハード期限タイマーはもう不要なので明示的に
-    /// kill する（BUG-77 code review 追補: 期限より早く閉じた成功パスのたびに
-    /// 無駄な `WM_TIMER` 発火を残さない）。
-    fn close_focus_resync_gate_if_current(&mut self, resync_generation: Option<u64>) {
+    /// `resync_generation` が `None`（通常の idle-conv-check 呼び出し）なら resync
+    /// gate に一切関与せず常に `true` を返す。`Some(gen)` のときは
+    /// `FocusResyncGate::open_if_current` で世代照合する——world-first として
+    /// gate を閉じられた（＝自分の世代がまだ現行だった）場合のみ `true` を返し、
+    /// ハード期限タイマーを kill してから drain を post する
+    /// （`should_post_drain` で `OUTPUT_GATE` に委譲するかどうかも判定する）。
+    ///
+    /// **呼び出し元は戻り値が `false` のとき、conv 結果があっても belief 適用
+    /// （`apply_idle_conv_check`）を行ってはならない**（BUG-77 code review 追補
+    /// 2巡目: 世代が古い＝ハード期限が先に発火済みの結果は破棄する契約）。
+    fn close_focus_resync_gate_if_current(&mut self, resync_generation: Option<u64>) -> bool {
         let Some(generation) = resync_generation else {
-            return;
+            return true;
         };
-        if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation) {
+        let opened = crate::focus_resync::FOCUS_RESYNC.open_if_current(generation);
+        if opened {
             self.platform.timer.kill(crate::TIMER_FOCUS_RESYNC);
             if crate::state::focus_resync_policy::should_post_drain(
                 crate::tsf::probe_bridge::OUTPUT_GATE.is_active(),
-            )
-            {
+            ) {
                 crate::tsf::probe_bridge::post_drain_output_queue();
             }
         }
+        opened
     }
 
     /// `get_ime_conversion_mode_raw_timeout_async` の結果を self に適用する

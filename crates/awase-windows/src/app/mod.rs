@@ -486,8 +486,14 @@ fn run_message_loop(taskbar_created_msg: u32) {
                     if defer_for_resync {
                         let generation = crate::focus_resync::FOCUS_RESYNC.consume_and_close();
                         let _ = with_app(|app| {
-                            app.kp_trigger_focus_resync(&event, generation);
-                            app.schedule_focus_resync_deadline();
+                            // gate がガードで同期的に閉じられた場合（BUG-77 code
+                            // review 追補2巡目）はハード期限タイマーを武装しない
+                            // ——既に閉じた gate に対して張っても `open_if_current`
+                            // が世代不一致で無視するため無害だが、無駄な
+                            // `WM_TIMER` を残さない。
+                            if app.kp_trigger_focus_resync(&event, generation) {
+                                app.schedule_focus_resync_deadline();
+                            }
                         });
                     }
                     crate::INPUT_DEFER.defer_during_output(event);
