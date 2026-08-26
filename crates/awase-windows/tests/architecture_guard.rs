@@ -1,4 +1,3 @@
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! アーキテクチャ境界の grep ベース回帰テスト。
 //!
 //! `.claude/rules/ime-belief-architecture.md` が定める
@@ -477,7 +476,7 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 ///
 /// 現在の designated 使用箇所（すべて Low confidence で `desired_open` を書き換えない）:
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
-/// (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
+///   (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
 /// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている
 /// （confidence は `Observed<HeuristicDefault>` 側で Low 固定、ADR-089 §2.2）。
