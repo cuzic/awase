@@ -99,6 +99,13 @@ pub(crate) fn begin_key_batch(app: &mut Runtime) {
     }
 }
 
+/// フックスレッドから転送された物理キーイベントを処理する。
+///
+/// `WM_EXECUTE_EFFECTS` の post は行わない（指摘8）。`KeyDelivery::Reinjected`
+/// を返すだけにとどめ、post は呼び出し元（`handle_wm_key_from_hook`・
+/// `handle_wm_drain_output_queue`）の責務にする。以前は複数の早期return分岐が
+/// 個別に post していたため、1バッチ内で複数キーが Reinjected になると
+/// `WM_EXECUTE_EFFECTS` が N 回投函されていた。
 pub(crate) fn deliver_key_event(
     app: &mut Runtime,
     event: awase::types::RawKeyEvent,
@@ -110,14 +117,12 @@ pub(crate) fn deliver_key_event(
 
     if matches!(origin, KeyOrigin::Hook(PumpContext::Nested)) {
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         return KeyDelivery::Reinjected;
     }
 
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
     if app.platform_state.focus.focus_kind == FocusKind::NonText {
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         return KeyDelivery::Reinjected;
     }
 
@@ -167,7 +172,6 @@ pub(crate) fn deliver_key_event(
             arm_post_bypass_if_matches(app, event.vk_code);
         }
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         KeyDelivery::Reinjected
     } else {
         KeyDelivery::Consumed
@@ -177,7 +181,8 @@ pub(crate) fn deliver_key_event(
 /// Post-bypass latch（ADR-103 決定3）の消費判定。`Some` を返した場合、
 /// 呼び出し元はその `KeyDelivery` を即座に return すること（`process_key_event`
 /// へ進んではならない）。`deliver_key_event` 本体から分離することで
-/// cognitive complexity を抑える。
+/// cognitive complexity を抑える。`WM_EXECUTE_EFFECTS` の post はここでは
+/// 行わない（指摘8、`deliver_key_event` の doc 参照）。
 fn consume_post_bypass(
     app: &mut Runtime,
     event: awase::types::RawKeyEvent,
@@ -223,7 +228,6 @@ fn consume_post_bypass(
             };
             if should_reinject {
                 app.executor.enqueue_reinject(event);
-                post_to_main_thread(WM_EXECUTE_EFFECTS);
                 Some(KeyDelivery::Reinjected)
             } else {
                 None
@@ -264,11 +268,15 @@ fn arm_post_bypass_if_matches(app: &mut Runtime, vk: VkCode) {
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
     begin_key_batch(app);
-    let _ = deliver_key_event(
+    let delivery = deliver_key_event(
         app,
         event,
         KeyOrigin::Hook(crate::runtime::engine_window::current_pump_context()),
     );
+    // WM_EXECUTE_EFFECTS の post は呼び出し元の責務（指摘8、deliver_key_event の doc 参照）。
+    if matches!(delivery, KeyDelivery::Reinjected) {
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+    }
     recover_pending_drain_request();
 }
 

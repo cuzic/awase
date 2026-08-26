@@ -2447,6 +2447,41 @@ fn enqueue_reinject_call_sites_are_accounted_for() {
     );
 }
 
+/// `WM_EXECUTE_EFFECTS` の post を `message_handlers.rs` 内の箇所数で固定する
+/// （コードレビュー指摘8）。
+///
+/// 以前は `deliver_key_event` の各 `Reinjected` 早期return分岐（Nested pump・
+/// NonText・consume_post_bypass・process_key_event PassThrough の4箇所）が
+/// それぞれ個別に post していたため、drain で複数キーをまとめて処理する際に
+/// `WM_EXECUTE_EFFECTS` が N 回投函されうる構造だった。`deliver_key_event`
+/// （と `consume_post_bypass`）は post を一切行わず `KeyDelivery` を返すだけに
+/// し、post は呼び出し元の責務にした（`deliver_key_event` の doc 参照）。
+///
+/// 現在の3箇所:
+/// - `handle_wm_key_from_hook`: `deliver_key_event` の戻り値が `Reinjected` なら1回
+/// - `handle_wm_timer` (TIMER_IME_OFF_RESCUE): `replay_ime_off_rescue_event` の
+///   戻り値が `PassThrough` なら1回
+/// - `handle_wm_drain_output_queue`: ループ後 `any_reinject` なら1回（バッチにつき1回）
+///
+/// 新しい早期return分岐を追加する場合、個別に post せず既存の3箇所のいずれかへ
+/// 集約すること。集約できない正当な理由があるならこのテストの期待値を更新すること。
+#[test]
+fn wm_execute_effects_post_sites_are_limited_to_batch_boundaries() {
+    let path = "src/runtime/message_handlers.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = count_real_calls(production, "post_to_main_thread(WM_EXECUTE_EFFECTS)");
+    assert_eq!(
+        count, 3,
+        "{path} 内の `post_to_main_thread(WM_EXECUTE_EFFECTS)` 呼び出し箇所数が \
+         想定(3)と異なります(実際: {count})。\n\
+         想定: handle_wm_key_from_hook / handle_wm_timer(TIMER_IME_OFF_RESCUE) / \
+         handle_wm_drain_output_queue の3箇所のみ。\n\
+         deliver_key_event・consume_post_bypass は post を行わず KeyDelivery を \
+         返すだけにすること（バッチ内で post が N 回重複するのを防ぐため）。"
+    );
+}
+
 #[test]
 fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
     let content = read_crate_file("src/app/bootstrap.rs");
