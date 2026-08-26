@@ -101,7 +101,9 @@ pub mod input_barrier;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod injection_mode;
 pub mod observation_store;
+pub(crate) mod post_bypass;
 pub mod probe_admission;
+pub(crate) mod scoped_latch;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────

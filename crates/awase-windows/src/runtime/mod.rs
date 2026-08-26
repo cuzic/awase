@@ -140,7 +140,7 @@ impl LayoutEntry {
 /// `[[post_bypass]]` 設定のコンパイル済みエントリ。
 ///
 /// Ctrl+`vk` が PassThrough になった直後、`process`/`class` が一致していれば
-/// `platform_state.post_bypass_passthrough` フラグをセットする。
+/// `platform_state.gate.post_bypass` latch をセットする。
 #[derive(Debug, Clone)]
 pub(crate) struct PostBypassEntry {
     pub(crate) vk: VkCode,

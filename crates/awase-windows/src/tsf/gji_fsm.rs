@@ -60,10 +60,18 @@ pub(crate) struct ProbeId(pub(crate) u32);
 ///
 /// `GjiWarmupCoro::new` に渡すパラメータをまとめる。
 /// `ColdKind` から `transition_to_cold` / `on_event(KeyInput NotStarted)` で生成する。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ProbeParams {
     pub forces_prepend_f2: bool,
     pub is_long_cold: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StageEndReason {
+    ProbeDone,
+    GateBypass,
+    NoResolvableVk,
+    UpgradedToTsf,
 }
 
 // ── PendingInput ─────────────────────────────────────────────────────────────
@@ -125,6 +133,14 @@ impl ColdKind {
             Self::Short
         }
     }
+
+    /// ProbeParams は ColdKind の純関数である。
+    pub(crate) const fn probe_params(self) -> ProbeParams {
+        ProbeParams {
+            forces_prepend_f2: self.forces_prepend_f2(),
+            is_long_cold: self.is_long(),
+        }
+    }
 }
 
 /// `OnCold` 内の probe 進行状態。
@@ -160,8 +176,11 @@ pub(crate) enum ComposingWarmup {
     /// OnCold(Authorized) から StartComposition に来た場合（probe 飛行中）
     AwaitingProbe {
         probe_id: ProbeId,
+        kind: ColdKind,
         pending: Vec<PendingInput>,
     },
+    /// probe の段が warm を主張できる形で終わらなかった。
+    AbortedCold { kind: ColdKind },
 }
 
 /// GJI FSM の状態。
@@ -209,6 +228,11 @@ pub(crate) enum GjiEvent {
     KeyInput(PendingInput),
     /// warmup probe 完了
     WarmupComplete { probe_id: ProbeId },
+    /// warmup probe の段は終わったが warm として扱える注入事実が無かった。
+    WarmupAborted {
+        probe_id: ProbeId,
+        reason: StageEndReason,
+    },
     /// `WM_IME_STARTCOMPOSITION`
     StartComposition,
     /// `WM_IME_ENDCOMPOSITION`（epoch チェック付き）
@@ -243,6 +267,20 @@ pub(crate) enum GjiAction {
     SendInput { pending: Vec<PendingInput> },
     #[allow(dead_code)]
     SendInputDirect(PendingInput),
+    /// `pending` は romaji の shadow であり RawKeyEvent ではないため、破棄時は
+    /// INPUT_DEFER へ戻さず件数と理由だけを明示する。
+    DiscardPending {
+        count: usize,
+        reason: PendingDiscardReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingDiscardReason {
+    ImeOff,
+    FocusChange,
+    CompositionReset,
+    WarmupAborted,
 }
 
 /// GJI FSM のタイマー識別子（timed-fsm の `TimerId`）。
@@ -309,16 +347,35 @@ impl GjiFsm {
 
     /// `OnCold(Authorized)` または `OnComposing(AwaitingProbe)` なら probe_id を返す。
     fn running_probe_id(&self) -> Option<ProbeId> {
+        self.probe_and_pending().0
+    }
+
+    /// probe_id と pending 件数を同じ match から返す。
+    fn probe_and_pending(&self) -> (Option<ProbeId>, usize) {
         match &self.state {
             GjiState::OnCold {
                 probe: ProbeStatus::Authorized { probe_id, .. },
+                pending,
                 ..
             }
             | GjiState::OnComposing {
-                warmup: ComposingWarmup::AwaitingProbe { probe_id, .. },
+                warmup:
+                    ComposingWarmup::AwaitingProbe {
+                        probe_id, pending, ..
+                    },
                 ..
-            } => Some(*probe_id),
-            _ => None,
+            } => (Some(*probe_id), pending.len()),
+            _ => (None, 0),
+        }
+    }
+
+    fn discard_pending_action(
+        count: usize,
+        reason: PendingDiscardReason,
+        actions: &mut Vec<GjiAction>,
+    ) {
+        if count > 0 {
+            actions.push(GjiAction::DiscardPending { count, reason });
         }
     }
 
@@ -360,10 +417,7 @@ impl GjiFsm {
         old_probe: Option<ProbeId>,
     ) -> Response<GjiAction, GjiTimer> {
         let probe_id = self.alloc_probe_id();
-        let params = ProbeParams {
-            forces_prepend_f2: kind.forces_prepend_f2(),
-            is_long_cold: kind.is_long(),
-        };
+        let params = kind.probe_params();
         self.state = GjiState::OnCold {
             kind,
             probe: ProbeStatus::Authorized { probe_id, params },
@@ -388,10 +442,7 @@ impl GjiFsm {
     ) -> Response<GjiAction, GjiTimer> {
         let (probe_status, start_action) = if kind.is_proactive() {
             let probe_id = self.alloc_probe_id();
-            let params = ProbeParams {
-                forces_prepend_f2: kind.forces_prepend_f2(),
-                is_long_cold: kind.is_long(),
-            };
+            let params = kind.probe_params();
             (
                 ProbeStatus::Authorized { probe_id, params },
                 Some(GjiAction::StartProbe { probe_id, params }),
@@ -441,12 +492,17 @@ impl GjiFsm {
     fn transition_cold_probe_to_composing(
         &mut self,
         probe_id: ProbeId,
+        kind: ColdKind,
         pending: Vec<PendingInput>,
     ) -> Response<GjiAction, GjiTimer> {
         let epoch = self.bump_epoch();
         self.state = GjiState::OnComposing {
             epoch,
-            warmup: ComposingWarmup::AwaitingProbe { probe_id, pending },
+            warmup: ComposingWarmup::AwaitingProbe {
+                probe_id,
+                kind,
+                pending,
+            },
         };
         Response::consume().with_kill_timer(GjiTimer::LongIdle)
     }
@@ -472,7 +528,7 @@ impl GjiFsm {
             GjiState::OnCold { .. } => {
                 // 既存 probe をキャンセルして NotStarted で再開（pending も破棄）。
                 // kind は固定値ではなく実測 idle から再分類する。
-                let old = self.running_probe_id();
+                let (old, pending_count) = self.probe_and_pending();
                 let kind = ColdKind::classify(gji_idle_ms);
                 self.state = GjiState::OnCold {
                     kind,
@@ -480,6 +536,11 @@ impl GjiFsm {
                     pending: vec![],
                 };
                 let mut actions = Vec::new();
+                Self::discard_pending_action(
+                    pending_count,
+                    PendingDiscardReason::CompositionReset,
+                    &mut actions,
+                );
                 if let Some(id) = old {
                     actions.push(GjiAction::CancelProbe { probe_id: id });
                 }
@@ -487,6 +548,7 @@ impl GjiFsm {
             }
 
             GjiState::OnWarm { .. } | GjiState::OnComposing { .. } => {
+                let (_, pending_count) = self.probe_and_pending();
                 let kind = ColdKind::classify(gji_idle_ms);
                 if matches!(kind, ColdKind::Short) {
                     // GJI は実測 idle 上まだ genuinely warm。composition キャンセル
@@ -497,7 +559,13 @@ impl GjiFsm {
                         "[gji-fsm] CompositionReset: gji_idle={gji_idle_ms}ms (Short) → \
                          genuinely warm のため OnCold に倒さず OnWarm を維持"
                     );
-                    self.transition_to_warm(vec![])
+                    let mut actions = Vec::new();
+                    Self::discard_pending_action(
+                        pending_count,
+                        PendingDiscardReason::CompositionReset,
+                        &mut actions,
+                    );
+                    self.transition_to_warm(actions)
                 } else {
                     log::debug!(
                         "[gji-fsm] CompositionReset: gji_idle={gji_idle_ms}ms → {kind:?}、\
@@ -508,7 +576,13 @@ impl GjiFsm {
                         probe: ProbeStatus::NotStarted,
                         pending: vec![],
                     };
-                    Response::consume().with_kill_timer(GjiTimer::LongIdle)
+                    let mut actions = Vec::new();
+                    Self::discard_pending_action(
+                        pending_count,
+                        PendingDiscardReason::CompositionReset,
+                        &mut actions,
+                    );
+                    Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
                 }
             }
         }
@@ -555,11 +629,7 @@ impl TimedStateMachine for GjiFsm {
 
             // ── ImeOff ─────────────────────────────────────────────────────
             GjiEvent::ImeOff => {
-                let old_probe = self.running_probe_id();
-                let pending_count = match &self.state {
-                    GjiState::OnCold { pending, .. } => pending.len(),
-                    _ => 0,
-                };
+                let (old_probe, pending_count) = self.probe_and_pending();
                 if matches!(&self.state, GjiState::OffCold) {
                     return Response::consume();
                 }
@@ -569,6 +639,11 @@ impl TimedStateMachine for GjiFsm {
                     );
                 }
                 let mut actions = Vec::new();
+                Self::discard_pending_action(
+                    pending_count,
+                    PendingDiscardReason::ImeOff,
+                    &mut actions,
+                );
                 if let Some(id) = old_probe {
                     actions.push(GjiAction::CancelProbe { probe_id: id });
                 }
@@ -582,11 +657,7 @@ impl TimedStateMachine for GjiFsm {
                 gji_idle_ms,
             } => {
                 self.injection_mode = injection_mode;
-                let old_probe = self.running_probe_id();
-                let pending_count = match &self.state {
-                    GjiState::OnCold { pending, .. } => pending.len(),
-                    _ => 0,
-                };
+                let (old_probe, pending_count) = self.probe_and_pending();
                 let engine_on = !matches!(self.state, GjiState::OffCold);
 
                 if !engine_on {
@@ -604,9 +675,21 @@ impl TimedStateMachine for GjiFsm {
                 // そのまま NotStarted に落とすと warmup が止まる。
                 // old_probe が Some = Authorized probe が動いていたので proactive に継続する。
                 if old_probe.is_some() {
-                    self.transition_to_cold_proactive(kind, vec![], old_probe)
+                    let mut response = self.transition_to_cold_proactive(kind, vec![], old_probe);
+                    Self::discard_pending_action(
+                        pending_count,
+                        PendingDiscardReason::FocusChange,
+                        &mut response.actions,
+                    );
+                    response
                 } else {
-                    self.transition_to_cold(kind, vec![], old_probe)
+                    let mut response = self.transition_to_cold(kind, vec![], old_probe);
+                    Self::discard_pending_action(
+                        pending_count,
+                        PendingDiscardReason::FocusChange,
+                        &mut response.actions,
+                    );
+                    response
                 }
             }
 
@@ -639,10 +722,7 @@ impl TimedStateMachine for GjiFsm {
                             ProbeStatus::NotStarted => {
                                 // Medium/Long の最初の KeyInput で probe を開始する
                                 let probe_id = maybe_new_probe_id.unwrap();
-                                let params = ProbeParams {
-                                    forces_prepend_f2: kind.forces_prepend_f2(),
-                                    is_long_cold: kind.is_long(),
-                                };
+                                let params = kind.probe_params();
                                 *probe = ProbeStatus::Authorized { probe_id, params };
                                 pending.push(input);
                                 Response::emit(vec![GjiAction::StartProbe { probe_id, params }])
@@ -705,6 +785,58 @@ impl TimedStateMachine for GjiFsm {
                 }
             }
 
+            // ── WarmupAborted ─────────────────────────────────────────────
+            GjiEvent::WarmupAborted { probe_id, reason } => {
+                let current_id = self.running_probe_id();
+                if current_id != Some(probe_id) {
+                    log::debug!(
+                        "[gji-fsm] WarmupAborted {probe_id:?}: stale (current={current_id:?}), ignored"
+                    );
+                    return Response::consume();
+                }
+                let mut actions = Vec::new();
+                match &mut self.state {
+                    GjiState::OnCold {
+                        kind,
+                        probe,
+                        pending,
+                    } => {
+                        let pending_count = pending.len();
+                        Self::discard_pending_action(
+                            pending_count,
+                            PendingDiscardReason::WarmupAborted,
+                            &mut actions,
+                        );
+                        log::debug!(
+                            "[gji-fsm] WarmupAborted {probe_id:?} ({reason:?}) → OnCold({kind:?}, NotStarted)"
+                        );
+                        *probe = ProbeStatus::NotStarted;
+                        pending.clear();
+                        Response::emit(actions).with_kill_timer(GjiTimer::LongIdle)
+                    }
+                    GjiState::OnComposing {
+                        warmup: ComposingWarmup::AwaitingProbe { kind, pending, .. },
+                        ..
+                    } => {
+                        let kind = *kind;
+                        let pending_count = pending.len();
+                        Self::discard_pending_action(
+                            pending_count,
+                            PendingDiscardReason::WarmupAborted,
+                            &mut actions,
+                        );
+                        log::debug!(
+                            "[gji-fsm] WarmupAborted {probe_id:?} ({reason:?}) while composing → AbortedCold({kind:?})"
+                        );
+                        if let GjiState::OnComposing { warmup, .. } = &mut self.state {
+                            *warmup = ComposingWarmup::AbortedCold { kind };
+                        }
+                        Response::emit(actions)
+                    }
+                    _ => Response::consume(),
+                }
+            }
+
             // ── StartComposition ───────────────────────────────────────────
             GjiEvent::StartComposition => match &self.state {
                 GjiState::OnWarm { .. } => {
@@ -724,14 +856,16 @@ impl TimedStateMachine for GjiFsm {
                         GjiState::OnCold {
                             probe: ProbeStatus::Authorized { probe_id, .. },
                             pending,
+                            kind,
                             ..
                         } => {
                             let probe_id = *probe_id;
+                            let kind = *kind;
                             let pending = std::mem::take(pending);
                             log::debug!(
                                 "[gji-fsm] StartComposition while cold (probe running) → AwaitingProbe"
                             );
-                            self.transition_cold_probe_to_composing(probe_id, pending)
+                            self.transition_cold_probe_to_composing(probe_id, kind, pending)
                         }
                         GjiState::OnCold {
                             probe: ProbeStatus::NotStarted,
@@ -767,15 +901,16 @@ impl TimedStateMachine for GjiFsm {
                     }
                     match warmup {
                         ComposingWarmup::AlreadyWarm => self.transition_to_warm(vec![]),
-                        ComposingWarmup::AwaitingProbe { probe_id, pending } => {
+                        ComposingWarmup::AwaitingProbe {
+                            probe_id,
+                            kind,
+                            pending,
+                        } => {
                             // probe はまだ飛行中。OnCold(Authorized) に戻して WarmupComplete を待つ。
                             let probe_id = *probe_id;
+                            let kind = *kind;
                             let pending = std::mem::take(pending);
-                            let kind = ColdKind::Short; // composition が一旦終わったのでリセット
-                            let params = ProbeParams {
-                                forces_prepend_f2: false,
-                                is_long_cold: false,
-                            };
+                            let params = kind.probe_params();
                             log::debug!(
                                 "[gji-fsm] EndComposition while AwaitingProbe → OnCold(Authorized) (probe continues)"
                             );
@@ -783,6 +918,18 @@ impl TimedStateMachine for GjiFsm {
                                 kind,
                                 probe: ProbeStatus::Authorized { probe_id, params },
                                 pending,
+                            };
+                            Response::consume()
+                        }
+                        ComposingWarmup::AbortedCold { kind } => {
+                            let kind = *kind;
+                            log::debug!(
+                                "[gji-fsm] EndComposition while AbortedCold → OnCold({kind:?}, NotStarted)"
+                            );
+                            self.state = GjiState::OnCold {
+                                kind,
+                                probe: ProbeStatus::NotStarted,
+                                pending: vec![],
                             };
                             Response::consume()
                         }
@@ -890,6 +1037,10 @@ fn state_label(state: &GjiState) -> &'static str {
             warmup: ComposingWarmup::AwaitingProbe { .. },
             ..
         } => "OnComposing(AwaitingProbe)",
+        GjiState::OnComposing {
+            warmup: ComposingWarmup::AbortedCold { .. },
+            ..
+        } => "OnComposing(AbortedCold)",
     }
 }
 
@@ -1672,7 +1823,10 @@ mod tests {
         // OnComposing(AwaitingProbe) に遷移しているはず
         match fsm.state() {
             GjiState::OnComposing {
-                warmup: ComposingWarmup::AwaitingProbe { probe_id, pending },
+                warmup:
+                    ComposingWarmup::AwaitingProbe {
+                        probe_id, pending, ..
+                    },
                 ..
             } => {
                 assert_eq!(*probe_id, probe_id_before, "probe_id が引き継がれていない");
@@ -1871,5 +2025,396 @@ mod tests {
             !matches!(fsm.state(), GjiState::OnWarm { .. }),
             "must NOT transition to OnWarm while composing"
         );
+    }
+
+    // ── ADR-103 決定4-f/g・決定5: WarmupAborted / DiscardPending / kind 運搬 ──
+
+    /// medium cold の probe 中に composition が終わっても、`kind`/`params` が
+    /// 固定値へ捏造されず保存される（決定5-b の核心回帰テスト）。
+    #[test]
+    fn end_composition_from_awaiting_probe_preserves_medium_kind_and_params() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        fsm.on_event(focus_change_with_idle(8_000)); // → OnCold(Medium, NotStarted)
+        let start = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        assert!(
+            matches!(
+                start.actions.first(),
+                Some(GjiAction::StartProbe {
+                    params: ProbeParams {
+                        forces_prepend_f2: true,
+                        ..
+                    },
+                    ..
+                })
+            ),
+            "Medium cold の最初の KeyInput は forces_prepend_f2=true で probe を認可するはず"
+        );
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnComposing {
+                warmup: ComposingWarmup::AwaitingProbe {
+                    kind: ColdKind::Medium,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let epoch = match fsm.state() {
+            GjiState::OnComposing { epoch, .. } => *epoch,
+            _ => panic!("expected OnComposing"),
+        };
+        fsm.on_event(GjiEvent::EndComposition { epoch });
+
+        match fsm.state() {
+            GjiState::OnCold {
+                kind: ColdKind::Medium,
+                probe: ProbeStatus::Authorized { params, .. },
+                ..
+            } => {
+                assert!(
+                    params.forces_prepend_f2,
+                    "EndComposition は kind=Medium を運び、forces_prepend_f2 を \
+                     false へ捏造してはならない"
+                );
+            }
+            other => panic!(
+                "expected OnCold(Medium, Authorized) after EndComposition, got {}",
+                state_label(other)
+            ),
+        }
+    }
+
+    /// `WarmupAborted` は `OnCold(Authorized)` を `NotStarted` へ戻し、`kind` を保存し、
+    /// `OnWarm` には絶対に遷移しない（決定4-g）。
+    #[test]
+    fn warmup_aborted_on_cold_resets_to_not_started_and_preserves_kind() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on()); // → OnCold(Short, Authorized)
+        let probe_id = match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                ..
+            } => *probe_id,
+            _ => panic!("expected OnCold(Authorized)"),
+        };
+        let r = fsm.on_event(GjiEvent::WarmupAborted {
+            probe_id,
+            reason: StageEndReason::GateBypass,
+        });
+        assert!(
+            !matches!(fsm.state(), GjiState::OnWarm { .. }),
+            "WarmupAborted must never transition to OnWarm"
+        );
+        match fsm.state() {
+            GjiState::OnCold {
+                kind: ColdKind::Short,
+                probe: ProbeStatus::NotStarted,
+                pending,
+            } => assert!(pending.is_empty()),
+            other => panic!(
+                "expected OnCold(Short, NotStarted), got {}",
+                state_label(other)
+            ),
+        }
+        assert!(
+            !r.actions
+                .iter()
+                .any(|a| matches!(a, GjiAction::DiscardPending { count, .. } if *count > 0)),
+            "pending が空なら DiscardPending は emit されないはず"
+        );
+    }
+
+    /// pending が溜まっている状態で `WarmupAborted` を受けると `DiscardPending` を emit する。
+    #[test]
+    fn warmup_aborted_with_pending_emits_discard_pending() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let probe_id = match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                ..
+            } => *probe_id,
+            _ => panic!("expected OnCold(Authorized)"),
+        };
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let r = fsm.on_event(GjiEvent::WarmupAborted {
+            probe_id,
+            reason: StageEndReason::ProbeDone,
+        });
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::WarmupAborted,
+                }
+            )),
+            "pending>0 の WarmupAborted は DiscardPending{{count:1}} を emit するはず: {:?}",
+            r.actions
+        );
+    }
+
+    /// stale な probe_id で届いた `WarmupAborted` は無視される（`running_probe_id()` 照合）。
+    #[test]
+    fn warmup_aborted_with_stale_probe_id_is_ignored() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let stale_probe_id = match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                ..
+            } => *probe_id,
+            _ => panic!("expected OnCold(Authorized)"),
+        };
+        // 新しい probe へ差し替える（FocusChange → 新 probe_id）。
+        fsm.on_event(focus_change());
+        let r = fsm.on_event(GjiEvent::WarmupAborted {
+            probe_id: stale_probe_id,
+            reason: StageEndReason::ProbeDone,
+        });
+        r.assert_consumed();
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    probe: ProbeStatus::Authorized { .. },
+                    ..
+                }
+            ),
+            "stale WarmupAborted は現在の probe を破壊してはならない"
+        );
+    }
+
+    /// composition 中に `WarmupAborted` を受けると `AbortedCold` へ移り、`EndComposition` が
+    /// `kind` から `OnCold(NotStarted)` を再構築する（決定4-g・決定5-bと同じ規則）。
+    #[test]
+    fn warmup_aborted_while_composing_then_end_composition_rebuilds_on_cold() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on()); // OnCold(Short, Authorized)
+        let probe_id = match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                ..
+            } => *probe_id,
+            _ => panic!("expected OnCold(Authorized)"),
+        };
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        fsm.on_event(GjiEvent::StartComposition); // → AwaitingProbe{kind:Short, pending:[ka]}
+
+        let r = fsm.on_event(GjiEvent::WarmupAborted {
+            probe_id,
+            reason: StageEndReason::GateBypass,
+        });
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnComposing {
+                    warmup: ComposingWarmup::AbortedCold {
+                        kind: ColdKind::Short
+                    },
+                    ..
+                }
+            ),
+            "expected OnComposing(AbortedCold) after WarmupAborted while composing"
+        );
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::WarmupAborted,
+                }
+            )),
+            "AwaitingProbe の pending は WarmupAborted で DiscardPending として捨てるはず: {:?}",
+            r.actions
+        );
+
+        let epoch = match fsm.state() {
+            GjiState::OnComposing { epoch, .. } => *epoch,
+            _ => panic!("expected OnComposing"),
+        };
+        fsm.on_event(GjiEvent::EndComposition { epoch });
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    kind: ColdKind::Short,
+                    probe: ProbeStatus::NotStarted,
+                    ..
+                }
+            ),
+            "EndComposition while AbortedCold must rebuild OnCold(kind, NotStarted)"
+        );
+    }
+
+    /// `ImeOff`/`FocusChange`/`CompositionReset` はいずれも pending>0 のとき
+    /// `DiscardPending` を emit する（決定5-a、破棄点の完全な一覧）。
+    #[test]
+    fn ime_off_focus_change_and_composition_reset_emit_discard_pending_for_pending() {
+        // ImeOff
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let r = fsm.on_event(GjiEvent::ImeOff);
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::ImeOff,
+                }
+            )),
+            "ImeOff with pending>0 must emit DiscardPending: {:?}",
+            r.actions
+        );
+
+        // FocusChange
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let r = fsm.on_event(focus_change());
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::FocusChange,
+                }
+            )),
+            "FocusChange with pending>0 must emit DiscardPending: {:?}",
+            r.actions
+        );
+
+        // CompositionReset while OnComposing(AwaitingProbe, Short) → transition_to_warm 経路
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        fsm.on_event(GjiEvent::StartComposition);
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 0 });
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::CompositionReset,
+                }
+            )),
+            "CompositionReset while AwaitingProbe(pending>0, Short) must emit DiscardPending: {:?}",
+            r.actions
+        );
+    }
+
+    /// `handle_composition_reset` の残り2アーム（`OnCold` 直受け、
+    /// `OnComposing` かつ Medium/Long → `OnCold`）も `DiscardPending` を emit することを
+    /// 固定する（コードレビュー指摘: 3アームのうち Short アームしかテストされていなかった）。
+    #[test]
+    fn composition_reset_on_cold_and_medium_long_arms_emit_discard_pending() {
+        // OnCold 直受け（handle_composition_reset の GjiState::OnCold アーム）。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        assert!(
+            matches!(fsm.state(), GjiState::OnCold { .. }),
+            "StartComposition していないので OnCold のはず: {:?}",
+            fsm.state()
+        );
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 0 });
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::CompositionReset,
+                }
+            )),
+            "CompositionReset while OnCold(pending>0) must emit DiscardPending: {:?}",
+            r.actions
+        );
+
+        // OnComposing かつ Medium/Long → OnCold へ倒れる分岐。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(
+            matches!(fsm.state(), GjiState::OnComposing { .. }),
+            "expected OnComposing: {:?}",
+            fsm.state()
+        );
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 8_000 });
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    kind: ColdKind::Medium,
+                    ..
+                }
+            ),
+            "gji_idle_ms=8000 は Medium と分類され OnCold へ倒れるはず: {:?}",
+            fsm.state()
+        );
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::CompositionReset,
+                }
+            )),
+            "CompositionReset while AwaitingProbe(pending>0, Medium/Long) must emit DiscardPending: {:?}",
+            r.actions
+        );
+    }
+
+    /// 結合ケース: `WarmupAborted` の後、次の `KeyInput` が `kind.probe_params()` で
+    /// 新しい probe を再認可する（決定5-b の実害はこの経路でしか露出しない）。
+    #[test]
+    fn key_input_after_warmup_aborted_reauthorizes_probe_with_preserved_params() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        fsm.on_event(focus_change_with_idle(8_000)); // → OnCold(Medium, NotStarted)
+        let start = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let probe_id = match start.actions.first() {
+            Some(GjiAction::StartProbe { probe_id, .. }) => *probe_id,
+            other => panic!("expected StartProbe, got {other:?}"),
+        };
+
+        fsm.on_event(GjiEvent::WarmupAborted {
+            probe_id,
+            reason: StageEndReason::ProbeDone,
+        });
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold {
+                kind: ColdKind::Medium,
+                probe: ProbeStatus::NotStarted,
+                ..
+            }
+        ));
+
+        let r = fsm.on_event(GjiEvent::KeyInput(PendingInput::new("na")));
+        match r.actions.first() {
+            Some(GjiAction::StartProbe {
+                probe_id: new_id,
+                params,
+            }) => {
+                assert_ne!(
+                    *new_id, probe_id,
+                    "再認可では新しい probe_id を割り当てるはず"
+                );
+                assert!(
+                    params.forces_prepend_f2,
+                    "kind=Medium が保存されているので再認可時も forces_prepend_f2=true のはず"
+                );
+            }
+            other => panic!("expected StartProbe after re-authorization, got {other:?}"),
+        }
     }
 }
