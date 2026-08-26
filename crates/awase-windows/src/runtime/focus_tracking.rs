@@ -324,9 +324,6 @@ impl Runtime {
         // （ADR-106 決定3、code review 2026-08-26 で発見された退行の修正）。
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
         let will_dispatch_focus_hwnd_updated = !process_changed && new_hwnd != prev_hwnd;
-        log::debug!(
-            "[focus-hwnd-track] process_changed={process_changed} new_hwnd={new_hwnd:?} dispatched={will_dispatch_focus_hwnd_updated}"
-        );
         if will_dispatch_focus_hwnd_updated {
             let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
             self.platform_state.ime.dispatch_event(
