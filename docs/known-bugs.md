@@ -5096,9 +5096,39 @@ flush 時に backspace×1 → reinit(VK_IME_OFF→VK_IME_ON) 実行、IMC poll �
 
 **関連ファイル:** `crates/awase-windows/src/tsf/warmup/probe_fsm.rs`（`run_per_vk_confirm`）、`crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs`（`per_vk_recovery_params`、`is_partial_literal`）、`crates/awase-windows/src/output/probe_io.rs`（`ProbeAction::RawTsfLiteralRecovery` ディスパッチャ、BUG-36 コメント）、`crates/awase-windows/src/tsf/warmup/cold_warmup.rs`（`h1-warmup`）。関連: BUG-24（per-VK confirm 導入元）、BUG-33 追補3・4（`GjiFsm` の belief/actual 乖離の同型事例）、BUG-36（reinit が preedit を commit するレース）、BUG-38/BUG-39/BUG-40（cold-start × literal-detect の他の失敗モード）、`.claude/rules/ime-belief-architecture.md`（`GjiFsm` 2026-07-23 追記）。
 
----
+### 追補2（2026-08-25、当時の再現手順は現行コードでは通らないことを確認。原因の構造自体は未検証のまま残存）
 
-## BUG-46: `PhysicalKeyDisposition::plan` が TsfNative の物理 KANJI 系キーを無条件 Allow するため、GJI/MS-IME 環境で awase 自身の apply-ime actuation と二重に actuate する
+上記「再現手順」の入口（物理 `0xF0`(VK_DBE_ALPHANUMERIC) up / `0xF2`(VK_DBE_HIRAGANA)
+down が生のまま GJI に届き、awase の shadow model 判定と二重に効く）は、報告日
+（2026-07-29）より後に入った2件の修正で塞がれていることをコード確認した:
+
+- **BUG-46**（`076b8709`、2026-08-01）: TsfNative（Windows Terminal 等）+GJI でも
+  `GjiDirectStrategy` が actuation を担うようになり、`ime_actuation_owned` 判定が
+  TsfNative にも及ぶようになった。
+- **BUG-52**（`bdf4a139`/`9a02ce6b`、2026-08-05）: `VK_DBE_*`（0xF0 含む）の
+  KeyDown を `shadow_toggled` に関係なく無条件 Suppress するよう拡大。
+
+現行の `PhysicalKeyDisposition::plan`（`runtime/transport.rs`）では、TsfNative+GJI
+で物理 `0xF0`/`0xF2` の KeyDown は OS へ渡らず Suppress され、代わりに awase
+自身が `SendInput(VK_IME_OFF/ON)` で actuate する。BUG-45 のログにある「物理
+F0 up / F2 down が生のまま GJI に届く」という入口は、**今は文字通りには再現
+できない**（2026-08-25、ユーザー指摘により確認）。
+
+**ただし、これは BUG-45 の根本原因が解消されたことを意味しない。** 本バグが
+指摘する構造的な穴——`ColdReason::SetOpenTrue` はどの経路で
+`ImeEffect::SetOpen(true)` が適用されても発火し、`FreshF2` 待機を常にスキップ
+して `per-VK confirm` へ入る（`DIAG_DISABLE_PROACTIVE_TSF_WARMUP` は現在も
+常時 true、`tsf/warmup/gji_warmup_coro.rs`）ため実 TSF composition 状態を
+確認する手段がないまま推測で backspace する——は、トリガー元が
+awase 自身の `SendInput(VK_IME_ON)` に変わっても構造上そのまま残っている。
+`per_vk_recovery_params` の固定 `backs` 値・`RawTsfLiteralRecovery` の
+未確定 preedit commit リスク（BUG-36）もコード上変更なし。
+
+**未対応（更新）:** 上記「未対応（残存）」の内容自体は今も有効。追加すべき
+検証は、現行コードでの新しい再現手順の確立（例: 既定のホットキー
+`Ctrl+変換` で TsfNative+GJI の IME を長時間 idle 後に ON にし、直後に
+入力する）。旧ログの入口が塞がれたことを「解決」と誤認して未解決4件
+（BUG-25/45/60/75）から外さないこと。 `PhysicalKeyDisposition::plan` が TsfNative の物理 KANJI 系キーを無条件 Allow するため、GJI/MS-IME 環境で awase 自身の apply-ime actuation と二重に actuate する
 
 **症状:** Windows Terminal（GJI、hwnd class `CASCADIA_HOSTING_WINDOW_CLASS` →
 `Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::TsfNative`）で、物理の
@@ -7582,7 +7612,22 @@ GJI 側のみ有効）。
 [ADR-085](adr/085-conv-mode-force-policy.md)（`conv_mode_policy = force`
 本体）、BUG-60（LINE「い」化・JIS かな化の未確定な症状、本件と同時期の報告）。
 
-## BUG-60: `conv_mode_policy = force` 運用中に LINE で全打鍵が「い」になる／IME が JIS かなになる（原因未確定）
+## BUG-60: `conv_mode_policy = force` 運用中に LINE で全打鍵が「い」になる／IME が JIS かなになる（**クローズ**: 前提機構が ADR-094 で撤去済みのため再現不能）
+
+**クローズ（2026-08-25）:** 本バグが発生した前提機構である `conv_mode_policy`
+（force/observe）自体が、2026-08-17 のコミット `10f238b5`（ADR-094「charset軸の
+追跡撤去と conv_mode_policy(force) の全撤去」）でユーザー要望によりコードから
+完全撤去された。ADR-086 Phase 2/3 の force-write 機構（`force_pending`/
+`consume_force_pending_and_actuate`、`force_open_pending`/
+`consume_force_open_pending`）も巻き添えで全撤去されている
+（`src/config.rs:14` のコメントに撤去の記録あり）。
+
+原因（force-write が「い」化・JIS かな化を起こす経路）は最後まで未確定の
+ままだったが、それを引き起こしうる force-write 機構自体がもう存在しないため、
+**同じ経路での再現はあり得ない**。以下の「原因未確定」の調査内容は
+force-write 機構が存在した当時の記録として残す。仮に LINE で同様の症状が
+再発した場合は、本バグとは無関係の新規原因として扱うこと（BUG-08 の外部注入
+`VK_KANA` による JIS かな化など、既知の別パターンをまず疑う）。
 
 **症状（2026-08-08 実機報告、ユーザー口頭）:**
 
