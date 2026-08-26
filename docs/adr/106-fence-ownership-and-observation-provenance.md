@@ -2,11 +2,11 @@
 
 ## ステータス
 
-**提案（未実装、2026-08-26）。** [ADR-104](104-observation-freshness-and-hardening.md) に対し
+**決定1〜4 実装済み・決定3は実機（dragonflyg4）で回帰修正を確認済み（2026-08-26）。** [ADR-104](104-observation-freshness-and-hardening.md) に対し
 Opus 2体による独立レビュー（ラウンド1）→相互攻撃（ラウンド2）の敵対的レビューを実施した結果、
 ADR-104 の決定6-a・6-c・7 は「9件が2つの失敗形に収束する」という自己申告に反し、
 実際には**根本原因に到達していない症状パッチ**と判定された。本ADRはその根本原因に対応する
-代替設計を定め、ADR-104 の該当決定を置き換える。
+代替設計を定め、ADR-104 の該当決定を置き換える。決定1〜4はSonnetにより`feat/adr106-fence-ownership`ブランチ（`develop`分岐）で実装され、Opusによる`/code-review`で検出された8件の指摘（うち1件は決定3の目的そのものを損なう機能回帰）をすべて修正済み。決定3の修正効果は実機ソークで確認済み（後述「実装記録」節）。決定5は着手条件（統合対象サイトが2箇所に絞られること）未達のため未着手。
 
 ADR-104 の他決定の扱い:
 
@@ -402,13 +402,56 @@ ADR-101 の `ime_mode_focus_gen`、ADR-103 の `PendingGjiReinit.focus_gen`、�
 
 - 決定2により「3秒 FRESH を超えて凍った古い shadow 観測」が消えることで、TsfNative/
   Imm32Unavailable の `effective_open()` 解決結果が変わるケースが実機で発生するか。
-- 決定3の「同一プロセス内 hwnd 変更で観測失効」が BUG-18（AppKind Uwp 往復）の挙動と
-  干渉しないか。
+- **（解決・2026-08-26実機確認済み）** 決定3の「同一プロセス内 hwnd 変更で観測失効」問題:
+  `current_focus_hwnd` が `FocusChanged`（プロセス変更）でしか更新されず、同一プロセス内の
+  ウィンドウ切替では `derive_any()` の `is_identity_ok` が新 hwnd の観測を恒久的に拒否し
+  続ける、という回帰が `/code-review`（Opus）で検出され（詳細は下記「実装記録」節）、
+  `ImeEvent::FocusHwndUpdated` の新設で修正した。この修正効果を dragonflyg4 実機で
+  検証済み（後述）。BUG-18（AppKind Uwp 往復）との干渉は本ADRのスコープの hwnd 単体切替
+  では確認できたが、UWP の InputSite 往復固有の挙動までは検証していないため、BUG-18 側の
+  再発有無は別途確認が必要。
 - ADR-104 決定7 の非同期化を実施する場合、決定4後も残る `conv_mutation_seq`・in-flight
   再評価のみで十分か、実機ログでの再検証が必要。
 - （決定5の統合範囲は2026-08-26のバグ考古学で確定済み。将来 ADR-086 の `ActuationTarget`
   を `Lease<P>` パターンで再実装する場合でも、admission 側とストレージ・API を共有しない
   ことを実装レビューで確認すること。）
+
+## 実装記録（2026-08-26）
+
+`feat/adr106-fence-ownership`（`develop` 分岐、Sonnet実装）で決定1〜4を実装。決定ごとに
+1コミット。Linux側 `cargo test -p awase-windows --lib`（470件）・`cargo xwin check/clippy
+--target x86_64-pc-windows-msvc -p awase-windows --tests` は全green（ベース時点で無関係
+ファイルに既存する pedantic clippy 指摘との差分なしを確認）。
+
+**Opus `/code-review`（8件検出、うち1件が機能回帰）**: `state/observation_store.rs` の
+`current_focus_hwnd` が `clear_on_focus_change`（プロセス変更時のみ発火）でしか更新されず、
+admission 側の生 hwnd（`platform.focus.current.hwnd`）は毎 focus tick 更新される非対称の
+結果、**同一プロセス内でウィンドウが切り替わると新 hwnd の観測が次のプロセス変更まで恒久的に
+拒否される**——決定3が解決するはずだった問題を別形で再生産する回帰だった。残り7件は
+ログ文言の陳腐化・診断カウンタの未活用・軽微な重複ロジック等。全件修正: `ImeEvent::
+FocusHwndUpdated { hwnd }` を新設し（プロセス変更を伴わない同一プロセス内 hwnd 変化専用、
+epoch・観測プール・intent には非干渉）、`Runtime::advance_focus_tracking` から
+`process_changed==false` かつ hwnd 変化時にのみ dispatch、`ObservationStore::
+update_focus_hwnd()` を専用の書き込み口として新設。
+
+**実機検証（dragonflyg4）**: 検証には TSF ネイティブアプリ（Windows Terminal）も現行の
+メモ帳も使えなかった——前者は決定2により観測不能プロファイルとして FocusProbe/
+ImmCrossProbe の実観測自体を記録せず、後者は Windows 11 で IMM32 ベースでなくなっている
+ため。そこで `crates/awase-windows/examples/two_imm32_windows_probe.rs`
+（`gji_composition_probe.rs` を参考にした使い捨て検証アプリ、同一プロセス内にプレーンな
+`EDIT` コントロール持ちウィンドウを2つ作る）を新設し、これを対象に検証した。
+
+最初 Alt+Tab で2ウィンドウを切り替えたところ `process_changed=true` として記録され、
+決定3の対象シナリオ（プロセス変更を伴わない切替）を再現できていなかった——Alt+Tab の
+スイッチャー UI 自体が別プロセスとして一瞬フォーカスを持つため、と判明（ユーザー指摘で
+気付いた別の疑い、EDIT コントロールと親ウィンドウの hwnd 不一致、は今回のログでは
+obs_hwnd が親ウィンドウの hwnd と一致していたため否定された）。マウスクリックでの直接
+切替に切り替えたところ、`process_changed=false` のまま `new_hwnd` が2ウィンドウ間を
+6回以上往復し、そのたびに `FocusHwndUpdated` が dispatch され `update_focus_hwnd` が
+ラグなく追従することを、一時追加した `[focus-hwnd-track]` 診断ログ（`focus_tracking.rs`・
+`observation_store.rs`、恒久的に残す判断）で確認した。この間 `[identity-gate]`（決定3の
+hwnd 不一致除外ログ）は**一度も発火しなかった**——切替直前の最後の発火は切替開始より前の
+タイムスタンプで、修正後は同一プロセス内切替中の誤除外が解消されたことを直接確認できた。
 
 ## 設計の経緯
 
