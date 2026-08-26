@@ -404,10 +404,15 @@ impl Runtime {
         // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。
         // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
         // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
-        if !crate::focus::class_names::is_effectively_tsf_native(
+        //
+        // この後の focus-resync arm 判定（本関数末尾）でも同じ問い合わせが必要なため
+        // ここで一度だけ計算して使い回す（BUG-77 code review 追補: 同一引数での
+        // 重複計算の指摘）。
+        let is_effectively_tsf_native_now = crate::focus::class_names::is_effectively_tsf_native(
             self.platform.current_app_profile(),
             self.platform.focus.class_name(),
-        ) {
+        );
+        if !is_effectively_tsf_native_now {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
                 self.platform_state.ime.record_confirmed(true, tick_ms.0);
@@ -492,6 +497,26 @@ impl Runtime {
             self.platform
                 .focus
                 .try_send_uia(crate::focus::uia::SendableHwnd(classified.hwnd));
+        }
+
+        // フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）: TsfNative は
+        // ImmCross と違い上記の focus-time probe が無く、周期ポーリングも
+        // `reschedule_ime_refresh` が早期 return するため構造的に走らない
+        // （`runtime/mod.rs::reschedule_ime_refresh` 参照）。復帰後の最初の
+        // resync 対象キー（`RawKeyEvent::starts_focus_resync()`）を defer して
+        // resync を待たせるための armed フラグをここで立てる。タイマーは張らない
+        // （ユーザーがいつ打つか分からないため。有効期限も付けない——
+        // `state/focus_resync_policy.rs` の doc 参照）。
+        if crate::state::focus_resync_policy::should_arm_focus_resync(
+            is_effectively_tsf_native_now,
+            self.platform_state.ime.belief.is_japanese_ime(),
+            crate::send_health::blocking_allowed(tick_ms.0),
+            self.platform_state
+                .gate
+                .idle_conv_check_in_flight_since_ms
+                .is_some(),
+        ) {
+            crate::focus_resync::FOCUS_RESYNC.arm(tick_ms.0);
         }
     }
 

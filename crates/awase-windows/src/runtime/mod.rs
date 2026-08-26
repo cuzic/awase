@@ -557,6 +557,17 @@ impl Runtime {
         );
     }
 
+    /// フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）のハード期限
+    /// タイマーをスケジュールする。resync 完了（`kp_trigger_focus_resync`）が
+    /// この期限より先に `FocusResyncGate` を閉じれば、このタイマーが発火しても
+    /// `open_if_current` が世代不一致/既 close で `false` を返すため無害。
+    pub(crate) fn schedule_focus_resync_deadline(&mut self) {
+        self.platform.timer.set(
+            crate::TIMER_FOCUS_RESYNC,
+            std::time::Duration::from_millis(crate::tuning::FOCUS_RESYNC_DEADLINE_MS),
+        );
+    }
+
     /// settle 期間中に IME apply/decision をスキップしたとき、settle 明けに refresh で
     /// 一度だけ再試行する「確立済みパターン」（`executor::strip_ime_set_open_if_settling`
     /// doc 参照）を一元化する。

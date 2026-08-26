@@ -10037,3 +10037,195 @@ BUG-35（epoch fencing・`consecutive` リセット条件の導入元）、BUG-3
 [bug-report-fetch skill](../.claude/skills/bug-report-fetch/SKILL.md)。
 本バグの恒久対策は次セッション以降、この診断ログの実機データが集まってから
 着手する。
+
+---
+
+## BUG-77: TsfNative でフォーカス復帰直後の最初のキーが resync 完了前に PassThrough でリテラル出力される（Alt+Tab 復帰直後の「rの」化）
+
+**症状:** タスクトレイ「不具合を報告」経由のレポート（report_id
+`01M0VGJ2M5KQHD1D9V7HAMBHNT`, app_version 1.15.0, 2026-08-25）。Windows
+Terminal + MS-IME（TsfNative プロファイル）で日本語入力中、Alt+Tab で一瞬
+別ウィンドウ（Alt+Tab スイッチャー自体、`explorer.exe` ホストの
+`Windows.UI.Input.InputSite.WindowClass`）へフォーカスが移り、解放して
+Windows Terminal へ復帰した直後、最初のキー入力が生 ASCII のまま出力される
+（「この」と打つつもりが「rの」になった）。
+
+**原因（journal seq 相関で確定、`docs/bug-reports-triage.md` 参照）:**
+
+Alt+Tab 解放でフォーカスが戻ると、`HwndCache: restore` が離脱時点の
+`ime_on=false` を正しく復元する（この復元自体はキャッシュの stale ではなく
+正確な値）。しかし TsfNative は次の3点により、フォーカス復帰後に IME 状態を
+能動的に再確認する経路が**構造的に存在しない**:
+
+1. `kp_stage_focus_probe`／focus-conv-check はキー入力駆動
+   （`consume_focus_barrier()` が「フォーカス変更後の最初のキー」で
+   one-shot 消費される）。
+2. `on_focus_process_changed` は `schedule_ime_refresh` を一度も呼ばない。
+3. `reschedule_ime_refresh`（`runtime/mod.rs`）は TsfNative で早期 return する
+   （非 TsfNative の 500ms ポーリング連鎖は TsfNative では設計として停止）。
+
+結果、フォーカス復帰後の**最初のキー入力自身**が `apply_idle_conv_check`
+（idle-conv-check）を誘発する唯一のトリガーになる。report の実測（journal
+seq 16432〜16436）: 物理キー down（`decision: PassThrough`、この時点で
+belief はまだ IME=OFF）から 9ms 後に `ConvClassifyCall` が conv を観測、
+44ms 後にようやく `ImeOpenApplied(reason: ImmBrokenForceOn)` で belief が
+訂正される。しかしこの訂正は**そのキー自身が引き起こした結果**であり、
+そのキーの `decision`（PassThrough）はとうに確定した後に来る——原理的に
+resync がユーザーの最初の打鍵に負けるレース。
+
+**検討した2案・採用した理由（Opus 2体 architect/premortem_reviewer の
+premortem 設計レビュー、複数ラウンド）:**
+
+- **①フォーカス復帰時に conv を読み open 軸を能動的に推論する案**: NO-GO。
+  `ImeEvent::FocusChanged` がユーザーの明示意図（`last_intent`）を必ず
+  クリアするため、`check_drift_correction` の
+  `ObservationSource::ConvOpenInference && explicit_intent.is_none()` ガード
+  が働き続け、conv 由来の誤った ON 推論を取り消す経路が存在しない
+  （BUG-19 の再発条件と同型）。加えて IMM32 の NATIVE ビットは開閉状態と
+  無関係な持続的な変換モード設定であり（BUG-68 参照）、「NATIVE=1 は IME が
+  開いていることを含意する」という前提自体がこのリポジトリの既存 doc と
+  矛盾していた。
+- **②フォーカス復帰後の最初のキーを resync 完了まで defer する案**
+  （**採用**）: 新しい推論を一切増やさず、既存の安全な経路
+  （`apply_idle_conv_check` の4ガード+3再検証）の実行順序を変えるだけ。
+  「PassThrough キーを defer して後で正しく OS へ届ける」経路
+  （`INPUT_DEFER` → drain → `enqueue_reinject`）は既存の本番経路
+  （`OUTPUT_GATE` 用に既に使われている）であり、新規実装ではなかった。
+
+**修正:**
+
+- `RawKeyEvent::starts_focus_resync()`（`src/types.rs`、純粋関数）: フォーカス
+  復帰後の resync を起動してよい「本命の1打鍵」かどうかを判定する。
+  `Char`/親指キーの `KeyDown` のみ対象。`Passthrough`（修飾キー・Fキー・
+  Tab 等のナビゲーション、KeyUp、修飾キー保持中、外部注入）は対象外——
+  Alt+Tab 連打で Tab 自体が resync を消費してスイッチャー操作を遅延させる
+  事故や、外部注入イベントをユーザー意図に昇格させる BUG-14 型の事故を防ぐ。
+- `should_run_idle_conv_check`（`src/engine/idle_check.rs`）に
+  `is_first_key_after_focus: bool` を追加。true のときガード3
+  （タイピング停止判定）のみバイパスする。ガード1・2・4（特にガード4
+  ＝明示的 IME 操作直後の抑制窓）は first key でも必ず効く。
+- `focus_resync.rs`（新規）: `FocusResyncGate`（armed/gate_active/generation
+  の3状態）。`arm()` はフォーカス変更時、`consume_and_close()` は resync
+  対象キー到着時、`open_if_current(generation)` は resync 完了時**または**
+  ハード期限到達時に呼ぶ——世代照合 + `compare_exchange` により、両者が
+  競合しても最初に到達した方だけが `true` を得る（二重 drain post の防止、
+  かつ期限が先行した場合は遅れて届いた resync 結果を破棄する——
+  BUG-31/BUG-70 系の「タイピング中に遅れて belief が書き換わる」事故を防ぐ）。
+  有効期限は付けない（マウスでのフォーカス切替でも `on_focus_process_changed`
+  は通るため、armed が長時間残るのはバグではなく「beliefが最も stale なほど
+  resync の価値が高い」設計どおりの動作）。
+- `app/mod.rs`（`WM_KEY_FROM_HOOK` ハンドラ）: `FOCUS_RESYNC.is_armed() &&
+  event.starts_focus_resync()` の場合、`OUTPUT_GATE.is_active()` と同じ分岐で
+  `INPUT_DEFER` へ退避しつつ `kp_trigger_focus_resync` を呼び resync を起動、
+  `FOCUS_RESYNC_DEADLINE_MS`（100ms）のハード期限タイマーを張る。
+- gate を閉じる際は `OUTPUT_GATE` が active なら drain を post しない
+  （`OutputActiveGuard::drop` に委譲、「最後に閉じたゲートが drain する」）。
+  これを守らないと resync 完了と awase 自身の出力（force-ON 等）が交錯した
+  際に `OUTPUT_GATE` active 中に defer 済みキーが replay され、
+  BUG-02/BUG-70 系のリテラル漏れ経路を新たに開いてしまう。
+- `tuning.rs::FOCUS_RESYNC_DEADLINE_MS = 100`: report の実測（キー down から
+  `Engine activated` まで 44ms、n=1）+ マージン 56ms。レート制限ではなく
+  「これ以上ユーザーの入力を止めない」という上限としてのポリシー値。
+
+**追補（PR #107 `/code-review` 指摘、実装直後・実機検証前に修正）:**
+
+初回実装（上記）には CONFIRMED 判定の2つの致命的な穴があった。
+
+1. **チョード判定タイマーが延期されない。** resync 対象キーを `INPUT_DEFER` へ
+   退避しても、`OUTPUT_GATE` と違い `FOCUS_RESYNC` の gate は
+   `runtime/message_handlers.rs` の `TIMER_PENDING`/`TIMER_SPECULATIVE` 延期判定
+   （既存の `OUTPUT_GATE.is_active()` チェック）に含まれていなかった。
+   K+右親指のようなチョードの片方が resync 対象で defer される間、もう片方は
+   通常どおり FSM に feed され続けチョードタイマーを張る。resync 完了/期限
+   （最大 `FOCUS_RESYNC_DEADLINE_MS`）より先にこのタイマーが発火すると、
+   同時打鍵判定が失敗しチョードが2つのリテラル文字に分裂する
+   （`OutputGate` が防いでいるのと全く同じ壊れ方）。修正: 同判定を
+   `crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC
+   .is_gate_active()` に拡張。`deferred_engine_timers` の replay は gate の
+   種類を問わず `handle_wm_drain_output_queue` が必ず行うため、この1箇所の
+   拡張だけで両ゲートに対して正しく機能する。
+2. **共有 in-flight フラグが resync を誤って早期終了させる。** 通常の
+   idle-conv-check と resync トリガーが同じ
+   `idle_conv_check_in_flight_since_ms` を共有していたため、resync 対象キーの
+   直前に無関係な修飾キー付きキー（例: Ctrl+V）が通常経路の conv 読み取りを
+   in-flight にしていた場合、resync 側は「既に in-flight、スキップ」に落ちて
+   実際の conv 読み取りを一度も行わないまま gate を閉じ、defer 中のキーを
+   stale な belief のまま drain してしまう——本 BUG そのものの再発。
+   修正: resync（`resync_generation.is_some()`）はこの共有フラグを一切
+   読み書きしない。`FocusResyncGate` の one-shot 消費（`consume_and_close`
+   はフォーカス変更ごとに1回しか呼ばれない）で既に多重 spawn しない構造の
+   ため、この spam ガードを resync 側は必要としない。
+
+副次的な指摘（優先度低・同時に対応）: `focus_resync.rs` の module doc が
+「明示的 IME 操作・エンジン無効化で disarm される」と実態と異なる主張を
+していた点をコメント修正（下記「既知の限界」参照、disarm は意図的に未配線）。
+`focus_tracking.rs::on_focus_process_changed` 内で `is_effectively_tsf_native`
+が同一引数で2回計算されていた重複を1回に統合。resync が期限前に成功終了した
+場合に `TIMER_FOCUS_RESYNC` を明示的に kill するよう変更（無駄な `WM_TIMER`
+発火の削減）。
+
+**既知の限界（正直に記録）:**
+
+- ガード4（明示的 IME 操作直後の抑制窓、`apply_idle_conv_check` の (c)
+  `conv_mutation_seq` ビット一致再検証）が resync 時の conv 読み取りを棄却
+  した場合、belief は訂正されないまま defer 中のキーが replay される。
+  その場合症状は残る（遅延するだけで直らない）。
+- `FocusResyncGate` の明示的な disarm（次のフォーカス変更以外の契機——明示的
+  IME 操作・エンジン無効化）は配線していない。設計上は disarm すべき契機
+  だが、正しい統合ポイント（`note_explicit_ime_action` の呼び出し元3箇所は
+  いずれも力み過ぎ／内部自己書き込みで、ユーザーの生の変換/無変換/F2 操作を
+  指す箇所と一致するか実機ログでの確認が要る）を実機検証なしに確定できな
+  かったため保留した。影響は軽微（ガード4が同じ状況で conv 読み取り自体を
+  棄却するため、disarm が無いと「100ms 無駄に待つだけ」で済む）。
+- 同一プロセス内のウィンドウ移動（`focus_tracking.rs:197` の
+  `process_changed` は pid 変化時のみ発火）では本修正も発火しない。
+  BUG-18 と地続きの別課題として記録する。
+- **resync 専用の conv 読み取りと、通常の idle-conv-check の conv 読み取りは
+  並行して走りうる（完了順は保証されない）。** resync（`resync_generation.is_
+  some()`）は共有 in-flight フラグ（`idle_conv_check_in_flight_since_ms`）を
+  意図的にバイパスするため（上記「追補」参照）、フォーカス復帰後 arm された
+  状態で resync 対象外のキー（例: Ctrl+V）が先に通常経路の conv 読み取りを
+  in-flight にしていた場合、続く resync 対象キーは別途もう1本
+  `get_ime_conversion_mode_raw_timeout_async` を spawn する。2本が並行して
+  ブロックしうる（BUG-34）ことに加え、後から spawn した方が先に完了する
+  保証は無く、`(c) conv_mutation_seq` 再検証は spawn↔apply 間の自己出力しか
+  見ないためこの順序逆転を検出できない。将来ここを触る人は「共有フラグが
+  あるから直列」と誤読しないこと。
+
+**テスト:** `src/types.rs`（`starts_focus_resync` 9件）・
+`src/engine/idle_check.rs`（`is_first_key_after_focus` 5件 + 既存の
+legacy-behavior 固定1件）・`crates/awase-windows/src/state/
+focus_resync_policy.rs`（新規、16通り全数 + 境界値 + `should_post_drain`
+の6件）・`crates/awase-windows/src/focus_resync.rs`（新規、`FocusResyncGate`
+の状態遷移7件、特に期限先行後の stale generation 破棄・同一世代の二重
+close 拒否）。すべて Linux で `cargo test -p awase-windows` / `cargo test`
+実行可（純粋関数・`AtomicBool`/`AtomicU64` のみで Win32 API を呼ばない）。
+`cargo xwin check --target x86_64-pc-windows-msvc -p awase-windows` /
+`cargo xwin clippy --target x86_64-pc-windows-msvc -p awase-windows -- -D
+warnings`（`--tests` 含む）で実際の配線（`app/mod.rs`・
+`runtime/key_pipeline.rs`・`runtime/focus_tracking.rs`・
+`runtime/message_handlers.rs`）のコンパイル・lint を確認済み。実機実行は
+次回 Windows 実機セッションに委ねる。`architecture_guard`（38件）・
+`golden_scenarios`（22件）・`layer_boundary_guard`（8件）を含む
+`cargo test -p awase-windows` 全体が回帰なし green（新規12件を含め計443件、
+`awase` 側は816件）。
+
+**実機検証（次回セッション）:** (1) 主症状の再現確認、(2)
+`[output-drain] replay` が Alt KeyUp では出ず最初の文字キーで出ること、
+(3) Alt+Tab 連打でスイッチャー操作感が変わらないこと、(4) arm→drain の
+実 ms を計測し `FOCUS_RESYNC_DEADLINE_MS` の実測根拠を n=1 から引き上げる
+こと、(5) 復帰直後 500ms 以内の再打鍵でも症状が出ないこと（ガード3
+バイパスの効果）、(6) Chrome/LINE（非 TsfNative）で defer が発生しない
+こと、(7) 復帰直後の親指シフト同時打鍵が正しく判定されること。
+
+**関連:** BUG-14（外部注入イベントをユーザー意図に昇格させてはならない
+教訓、`injected` フィールドの由来）、BUG-16（フォーカス遷移 settle スキップ
+に再試行がなく belief ON×実 IME OFF が放置される、同系統だが別経路——
+BUG-16 は「実行した force-ON が settle でスキップされ再試行されない」、
+本件は「resync の唯一のトリガーがレースに負けるユーザー自身の打鍵」）、
+BUG-18（AppKind 往復・OffCold 残留）、BUG-19（明示 IME OFF 直後の conv
+誤読による勝手な ON 押し付け、①案が再発させかけたパターン）、BUG-31/
+BUG-70（タイピング中に遅れて belief が書き換わる事故、世代照合で防止した
+対象）、BUG-34（`get_ime_conversion_mode_raw_timeout` が数秒ブロックしうる
+既知の限界）、BUG-68（IMM32 NATIVE ビットは開閉状態と無関係という
+構造的制約）、[docs/bug-reports-triage.md](../bug-reports-triage.md)。

@@ -454,3 +454,19 @@ pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
 /// `IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`（`state/platform_state.rs`、8000ms）と
 /// 同じ根拠・同じ値を採用する。
 pub const IME_APPLY_PENDING_TIMEOUT_MS: u64 = 8_000;
+
+/// フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）のハード期限 (ms)。
+///
+/// # 値の根拠
+///
+/// report `01M0VGJ2M5KQHD1D9V7HAMBHNT` の実測（Windows Terminal + MS-IME、
+/// journal seq 16432〜16436）: Alt+Tab 復帰後の物理キー down から
+/// `ConvClassifyCall` 完了まで 9ms、`ImeOpenApplied`（`Engine activated`）まで
+/// 44ms。resync チェーン全体が実測 44ms。**n=1 の観測**であり、この値は
+/// タイピング中のレート制限ではなく「これ以上ユーザーの入力を止めない」という
+/// 上限としてのポリシー値である。実測 44ms + マージン 56ms = 100ms とした。
+///
+/// この定数を変更する場合は、必ず実機ソークで arm→drain の実測分布を取り、
+/// その分布に基づいて調整すること（`.claude/rules/tuning-constants.md`）。
+/// 「効かないので増やした」は禁止——分布の p99 等の実測根拠を残すこと。
+pub const FOCUS_RESYNC_DEADLINE_MS: u64 = 100;

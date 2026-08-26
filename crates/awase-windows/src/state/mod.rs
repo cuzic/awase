@@ -90,6 +90,7 @@ pub mod intent_store;
 pub mod open_warrant;
 #[cfg(windows)]
 pub(crate) use ime_model::AppliedImeState;
+pub mod focus_resync_policy;
 pub mod input_barrier;
 // output/types.rs から移設（InjectionHint 依存の From 実装のみ output/ に残す）。
 // 唯一の ungated 呼び出し元は tsf::gji_fsm。

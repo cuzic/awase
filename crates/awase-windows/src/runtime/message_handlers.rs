@@ -196,6 +196,25 @@ pub(crate) unsafe fn handle_wm_timer(
                 app.platform_state.ime.journal.absorb(entry);
             }
         }
+        Some(id) if id == crate::TIMER_FOCUS_RESYNC => {
+            // フォーカス復帰後 resync のハード期限（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）。
+            // resync（conv 読み取り）がこの期限より先に gate を閉じていれば
+            // `open_if_current` は世代不一致/既 close で false を返し、ここでは
+            // 何もしない（二重 drain post を防ぐ）。
+            app.platform.timer.kill(crate::TIMER_FOCUS_RESYNC);
+            let generation = crate::focus_resync::FOCUS_RESYNC.current_generation();
+            if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation) {
+                log::debug!(
+                    "[focus-resync] ハード期限 {}ms 到達 → defer 中のキーを drain",
+                    crate::tuning::FOCUS_RESYNC_DEADLINE_MS
+                );
+                if crate::state::focus_resync_policy::should_post_drain(
+                    crate::tsf::probe_bridge::OUTPUT_GATE.is_active(),
+                ) {
+                    crate::tsf::probe_bridge::post_drain_output_queue();
+                }
+            }
+        }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
@@ -218,9 +237,20 @@ pub(crate) unsafe fn handle_wm_timer(
             // drain は必ず再アームタイマーより先に実行される。drain で chord パートナーが
             // 処理されれば engine が Kill(timer_id) を出すため、replay 時に is_active=false と
             // なりスキップされる。
-            if crate::OUTPUT_GATE.is_active() {
+            //
+            // BUG-77 code review 追補: `FOCUS_RESYNC` の gate も同じ形の危険を持つ。
+            // resync 対象キーが `INPUT_DEFER` へ退避されている間、チョードの相方
+            // （親指キー等）は通常どおり FSM に feed され続けるため、この延期を
+            // OUTPUT_GATE だけに限定すると、resync 完了/期限（最大
+            // `FOCUS_RESYNC_DEADLINE_MS`）前に相方の TIMER_PENDING/TIMER_SPECULATIVE
+            // が発火し、同時打鍵判定が失敗してチョードが2つのリテラル文字に分裂しうる
+            // （`OutputGate` と全く同じ壊れ方）。`deferred_engine_timers` の replay は
+            // `handle_wm_drain_output_queue` が gate の種類を問わず必ず行うため、
+            // ここで gate 判定を拡張するだけで両ゲートに対して正しく機能する。
+            if crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC.is_gate_active()
+            {
                 log::debug!(
-                    "[engine-timer] OUTPUT_GATE active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
+                    "[engine-timer] OUTPUT_GATE/FOCUS_RESYNC gate active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );
                 app.ime_coordinator
                     .deferred_engine_timers

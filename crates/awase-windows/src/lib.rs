@@ -23,6 +23,7 @@
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod bug_report;
 pub mod focus;
+pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod gji_charset_popup;
 pub mod gji_charset_write;
@@ -266,6 +267,8 @@ pub const TIMER_TSF_GATE: usize = 106;
 pub const TIMER_IME_OFF_RESCUE: usize = 107;
 /// GjiFsm の LongIdle タイムアウトタイマー ID
 pub const TIMER_GJI_LONG_IDLE: usize = 108;
+/// フォーカス復帰後 resync のハード期限タイマー ID（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）
+pub const TIMER_FOCUS_RESYNC: usize = 109;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 
