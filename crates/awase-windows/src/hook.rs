@@ -830,6 +830,22 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
 
+    // HOOK_KEYS の overflow ラッチが立っている間（エンジンスレッドが resync
+    // するまで）は、以降の分類・なりすまし処理を一切行わず OS へ直接パス
+    // スルーする。バッファ再生とパススルーが1打鍵ごとに交互混在する
+    // 順序崩れを防ぐため（指摘2-3）。
+    //
+    // 例外: Alt なりすまし発動中（`is_alt_impersonation_active`）は
+    // `CallNextHookEx` に本物の `KBDLLHOOKSTRUCT`（本物の Alt）が渡ってしまい、
+    // Alt 単独タップとしてシステムメニューが起動しうる（下の overflow 分岐と
+    // 同じ理由）。この場合のみ従来どおり飲み込む。
+    if crate::hook_channel::HOOK_KEYS.is_overflow_latched() {
+        if is_alt_impersonation_active() {
+            return LRESULT(1);
+        }
+        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+    }
+
     // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
     // 入力に反転して NICOLA の romaji VK 出力が壊滅する（2026-07-06 実機: down→up
     // 135µs〜1ms の合成 VK_KANA ペアが 2 回到達し Windows Terminal が JISかな化。
@@ -1026,9 +1042,22 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         is_injected,
     );
 
-    let _ = crate::hook_channel::HOOK_KEYS.produce(event);
+    let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);
     crate::hook_channel::request_engine_wake();
-    LRESULT(1) // 常に消費（engine thread が PassThrough 判定して reinject する）
+    match produce_result {
+        // 通常時: 常に消費（engine thread が PassThrough 判定して reinject する）。
+        crate::hook_channel::ProduceResult::Accepted => LRESULT(1),
+        // overflow時（指摘2-1）: リングに積めなかったキーを黙って消し去るより、
+        // OS へそのままパススルーする方が実害が小さい。ただし Alt なりすまし中は
+        // 上の overflow ラッチ分岐と同じ理由で飲み込む（dropped 計上のみ）。
+        crate::hook_channel::ProduceResult::Overflow => {
+            if is_alt_impersonation_active() {
+                LRESULT(1)
+            } else {
+                CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
+            }
+        }
+    }
 }
 
 /// 起動時点からの経過マイクロ秒を返す（`Instant` を内部的に使用）。診断用に公開。

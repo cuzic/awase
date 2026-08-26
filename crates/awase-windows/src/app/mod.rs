@@ -429,6 +429,12 @@ pub(crate) fn dispatch_engine_message(
             }
             let mut events = Vec::new();
             crate::hook_channel::HOOK_KEYS.consume_all(&mut |event| events.push(event));
+            // overflow ラッチ（指摘2-3）の解除点: dropped を観測しリングを
+            // consume し終えた直後。以後のフックコールバックはこの WM 到達
+            // まで OS へパススルー固定していた分の resync が保証済みになる。
+            if dropped > 0 {
+                crate::hook_channel::HOOK_KEYS.clear_overflow_latch();
+            }
             for event in events {
                 handle_hook_key_event(event);
             }

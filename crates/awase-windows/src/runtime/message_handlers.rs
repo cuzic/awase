@@ -1281,6 +1281,14 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             stats.epoch_mismatch
         );
     }
+    // HOOK_KEYS の最大占有数（指摘2-4）: overflow の頻度を実測できるようにする。
+    let max_occupancy = crate::hook_channel::HOOK_KEYS.take_max_occupancy();
+    if max_occupancy > 0 {
+        log::info!(
+            "[hook-ring] max occupancy since last dump: {max_occupancy}/{}",
+            crate::hook_channel::CAP
+        );
+    }
     for entry in app.platform.drain_journal_entries() {
         app.platform_state.ime.journal.absorb(entry);
     }

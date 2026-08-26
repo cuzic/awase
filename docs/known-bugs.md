@@ -10760,8 +10760,50 @@ ADR-103 の決定4（`begin_stage`/`StageRecord`）は「段の記録」の book
 bookkeeping ではなく「検出窓そのものが実行される前に握り潰される」という
 別軸の実害であり、ADR-103では直っていない。
 
-**状態:** 未対応（発見のみ、2026-08-26）。ADR-103のスコープ外。修正するなら
+**状態:** 未対応(発見のみ、2026-08-26)。ADR-103のスコープ外。修正するなら
 他3箇所と同様 `defer_if_probe_in_flight`/`has_pending_tsf()` 相当のガードを
 `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install 前に足す形が候補だが、
 「Probing中に2連続で来た2文字目を defer すると出力順序がどうなるべきか」の
 設計判断が要るため、本項目では見送り別途起票のみ行う。
+
+---
+
+## BUG-88: `HOOK_KEYS` リング overflow時にキーが無警告で消える（配送経路、ADR-102/105コードレビュー指摘2）
+
+**症状:** `hook_callback`（`hook.rs`）は `HOOK_KEYS.produce()`（`hook_channel.rs`
+の SPSC リング、旧 CAP=256）の戻り値を `let _ = ...` で捨てており、リング満杯時
+（overflow）に到着したキーイベントはエンジンスレッドへ一切届かず、OS へも
+パススルーされず、単に消える。`dropped` カウンタで統計上は追える（BUG-80/81/82
+是正時に導入済み）が、消えたキー自体は取り戻せなかった。
+
+**再現条件（演繹、実機未検証）:** 何らかの理由でエンジンスレッドが長時間
+メッセージポンプを止める（モーダルダイアログのネストしたポンプ・重い同期
+Win32呼び出し・デバッガブレーク等）間に、ユーザーが CAP を超える打鍵を続ける
+と発生しうる。
+
+**対応（2026-08-26、本コミット）:**
+1. overflow時は `CallNextHookEx` で OS へパススルーする（黙って消すより実害が
+   小さい）。ただし **Alt なりすまし発動中**（`is_alt_impersonation_active()`）は
+   `CallNextHookEx` が本物の `KBDLLHOOKSTRUCT`（本物の Alt）を渡してしまうため
+   パススルーできない — Alt 単独タップとしてシステムメニュー（`SC_KEYMENU`）が
+   起動する、BUG-62 系と同型の副作用。この場合のみ従来どおり飲み込む
+   （`dropped` 計上のみ）。
+2. `HookKeyRing` の CAP を 256→1024 に引き上げ（`RawKeyEvent` は Copy な POD の
+   ため static 領域の増加のみ、タイミング定数ではないため実測義務対象外）。
+3. overflow ラッチ（`HookKeyRing::overflow_latched`）を追加。一度 overflow す
+   ると、`WM_KEY_FROM_HOOK` ハンドラが `dropped>0` を観測しリングを consume
+   し終える（`clear_overflow_latch()`）まで、以後の全打鍵をパススルー固定する
+   （バッファ再生とパススルーが1打鍵ごとに交互混在する順序崩れを防ぐ）。
+4. `HookKeyRing::max_occupancy`（`AtomicU32`, `fetch_max` で更新）を追加し、
+   `WM_DUMP_JOURNAL`（Alt+変換→Alt+無変換 ×2）で `[hook-ring] max occupancy`
+   としてログ出力する。overflow の頻度・余裕度を実機で測定できるようにする。
+
+**テスト:** `hook_channel.rs` に `overflow_latches_until_explicitly_cleared`・
+`max_occupancy_tracks_high_water_mark_and_resets_on_take`・
+`concurrent_producer_consumer_preserves_order_with_no_silent_loss`（2スレッド
+実負荷、N=5000≫CAP、受信件数+dropped==N と順序保存を検証）を追加。Alt なり
+すまし中の swallow 分岐は `hook.rs` が Windows専用のため実機/xwin確認のみ
+（自動テスト対象外）。
+
+**状態:** 対応済み（2026-08-26）。実機での overflow 再現確認は未実施
+（発生条件が「エンジンスレッドの長時間ポンプ停止」で日常的な再現手順が無いため）。
