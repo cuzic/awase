@@ -53,21 +53,20 @@ impl ForegroundScope {
 
 #[must_use]
 pub fn foreground_scope() -> ForegroundScope {
-    // SAFETY: GetForegroundWindow / GetWindowThreadProcessId はどのスレッドからも安全に
-    //         呼べる非ブロッキング API。前景窓なし・pid 0 は INVALID として扱う。
-    unsafe {
-        let Some(hwnd) = GetForegroundWindow().non_null() else {
-            return ForegroundScope::INVALID;
-        };
-        let mut pid = 0u32;
-        let _thread_id = GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
-        if pid == 0 {
-            ForegroundScope::INVALID
-        } else {
-            ForegroundScope {
-                pid,
-                hwnd: hwnd.0 as isize,
-            }
+    // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる非ブロッキング API。
+    //         pid の抽出は crate::focus::classify::get_window_process_id に委ねる
+    //         （GetWindowThreadProcessId の呼び出し規約を1箇所に集約する）。
+    //         前景窓なし・pid 0 は INVALID として扱う。
+    let Some(hwnd) = unsafe { GetForegroundWindow() }.non_null() else {
+        return ForegroundScope::INVALID;
+    };
+    let pid = crate::focus::classify::get_window_process_id(hwnd);
+    if pid == 0 {
+        ForegroundScope::INVALID
+    } else {
+        ForegroundScope {
+            pid,
+            hwnd: hwnd.0 as isize,
         }
     }
 }

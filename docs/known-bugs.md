@@ -10730,3 +10730,38 @@ INV-C）で `params` を再構築する。`current_probe_params()` も `unwrap_o
 `ProbeParams` リテラル構築点の grep guard（`ColdKind::probe_params` の中だけ）。
 
 **状態:** 対応済み（2026-08-26）。
+
+---
+
+## BUG-86: `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install が直前の段の検出窓を無警告で破棄しうる（ADR-103の対象外、事前存在）
+
+**症状:** `output/vk_send.rs` の `install_pending_tsf` 呼び出し4箇所のうち3箇所
+（`send_romaji_batched`・`send_romaji_as_tsf` の cold-start 分岐・
+`ms_ime_gate_defer`）は `defer_if_probe_in_flight`（≒ `has_pending_tsf()`）で
+飛行中の probe/coro を確認してから install するが、`send_romaji_as_tsf_warm`
+内の `LiteralDetectFsm` install（`tsf_gate.state()==Probing && gji_is_active_ime()
+&& !probe_long_idle && !is_tsf_mode()` のとき）だけこのガードが無い。
+
+**再現手順（未検証、演繹）:** GJI 戦略・genuinely warm な状態で
+`RAW_TSF_LITERAL_DETECT_MS`（300ms）以内に2連続で打鍵し、両方が上記条件
+（Probing かつ GJI active かつ long-idle でないかつ非 TSF mode）を満たすと、
+2文字目の `install_pending_tsf` が1文字目の `LiteralDetectFsm`（検出窓が
+閉じる前）を `tsf_warmup_coord.rs` の `install_pending_tsf` 内の無条件
+`*slot = Some(machine)`（`log::warn!` のみ）で静かに上書きする。1文字目が
+実際に raw literal として漏れていた場合、その backspace + 再送によるリカバリ
+（`LiteralDetectFsm` 自身の tick）が発火しない。
+
+**発見経緯:** [ADR-103](adr/103-warmup-probe-pending-integrity.md)（決定4:
+probe 段の唯一の出口）実装後の Opus 敵対的コードレビューで発見。ADR-103の
+diff（`git diff f370b0ca..HEAD -- crates/awase-windows/src/output/vk_send.rs`）
+はこの関数に触れておらず、ADR-103 導入の回帰ではなく事前から存在するコード。
+ADR-103 の決定4（`begin_stage`/`StageRecord`）は「段の記録」の bookkeeping
+は上書き時も正しく張り直る（回帰テストあり）が、ここで問題になっているのは
+bookkeeping ではなく「検出窓そのものが実行される前に握り潰される」という
+別軸の実害であり、ADR-103では直っていない。
+
+**状態:** 未対応（発見のみ、2026-08-26）。ADR-103のスコープ外。修正するなら
+他3箇所と同様 `defer_if_probe_in_flight`/`has_pending_tsf()` 相当のガードを
+`send_romaji_as_tsf_warm` の `LiteralDetectFsm` install 前に足す形が候補だが、
+「Probing中に2連続で来た2文字目を defer すると出力順序がどうなるべきか」の
+設計判断が要るため、本項目では見送り別途起票のみ行う。

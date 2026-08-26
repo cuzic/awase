@@ -2304,7 +2304,69 @@ mod tests {
                     reason: PendingDiscardReason::CompositionReset,
                 }
             )),
-            "CompositionReset while AwaitingProbe(pending>0) must emit DiscardPending: {:?}",
+            "CompositionReset while AwaitingProbe(pending>0, Short) must emit DiscardPending: {:?}",
+            r.actions
+        );
+    }
+
+    /// `handle_composition_reset` の残り2アーム（`OnCold` 直受け、
+    /// `OnComposing` かつ Medium/Long → `OnCold`）も `DiscardPending` を emit することを
+    /// 固定する（コードレビュー指摘: 3アームのうち Short アームしかテストされていなかった）。
+    #[test]
+    fn composition_reset_on_cold_and_medium_long_arms_emit_discard_pending() {
+        // OnCold 直受け（handle_composition_reset の GjiState::OnCold アーム）。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        assert!(
+            matches!(fsm.state(), GjiState::OnCold { .. }),
+            "StartComposition していないので OnCold のはず: {:?}",
+            fsm.state()
+        );
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 0 });
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::CompositionReset,
+                }
+            )),
+            "CompositionReset while OnCold(pending>0) must emit DiscardPending: {:?}",
+            r.actions
+        );
+
+        // OnComposing かつ Medium/Long → OnCold へ倒れる分岐。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(
+            matches!(fsm.state(), GjiState::OnComposing { .. }),
+            "expected OnComposing: {:?}",
+            fsm.state()
+        );
+        let r = fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 8_000 });
+        assert!(
+            matches!(
+                fsm.state(),
+                GjiState::OnCold {
+                    kind: ColdKind::Medium,
+                    ..
+                }
+            ),
+            "gji_idle_ms=8000 は Medium と分類され OnCold へ倒れるはず: {:?}",
+            fsm.state()
+        );
+        assert!(
+            r.actions.iter().any(|a| matches!(
+                a,
+                GjiAction::DiscardPending {
+                    count: 1,
+                    reason: PendingDiscardReason::CompositionReset,
+                }
+            )),
+            "CompositionReset while AwaitingProbe(pending>0, Medium/Long) must emit DiscardPending: {:?}",
             r.actions
         );
     }

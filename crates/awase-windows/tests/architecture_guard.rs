@@ -2640,3 +2640,38 @@ fn probe_params_construction_is_limited_to_cold_kind_probe_params() {
          ProbeParams は ColdKind の純関数として一元化されている(INV-C)。"
     );
 }
+
+/// `GjiAction::DiscardPending { .. }` のリテラル構築は `discard_pending_action`
+/// の中だけ（ADR-103 決定5-a）。他の箇所で直接構築すると、`count`/`reason` の
+/// 対応関係（破棄点の完全な一覧、5-a）を経由せずに任意の値で emit できてしまい、
+/// 「破棄を明示的な行為にする」という決定の前提が崩れる。
+#[test]
+fn discard_pending_construction_is_limited_to_discard_pending_action() {
+    let path = "src/tsf/gji_fsm.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production.matches("GjiAction::DiscardPending {").count();
+    assert_eq!(
+        count, 1,
+        "{path} 内で `GjiAction::DiscardPending {{ .. }}` のリテラル構築箇所数が \
+         想定(1 = discard_pending_action の中だけ)と異なります(実際: {count})。"
+    );
+}
+
+/// `raw_recovery_owns_deferred` を呼ぶのは `finish_probe_stage` ただ1箇所
+/// （ADR-103 決定4-e、INV-F）。所有権照会がここ以外に散ると、段末の deferred
+/// 解放判断が複数箇所で食い違いうる。
+#[test]
+fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
+    let path = "src/output/mod.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let count = production
+        .matches("self.raw_recovery_owns_deferred()")
+        .count();
+    assert_eq!(
+        count, 1,
+        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(1 = \
+         finish_probe_stage のみ)と異なります(実際: {count})。"
+    );
+}

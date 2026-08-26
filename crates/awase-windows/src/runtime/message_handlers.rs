@@ -121,7 +121,13 @@ pub(crate) fn deliver_key_event(
             ScopeCheck::Expired => {
                 log::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
             }
-            ScopeCheck::Live(_arm) => {
+            ScopeCheck::Live(arm) => {
+                log::debug!(
+                    "[post-bypass] live: armed_focus_epoch={} current_focus_epoch={} \
+                     (診断専用、判定には使わない)",
+                    arm.armed_focus_epoch,
+                    app.platform_state.focus.focus_epoch,
+                );
                 let should_reinject = match classify_post_bypass_key(
                     is_key_down,
                     event.modifier_snapshot.ctrl,
