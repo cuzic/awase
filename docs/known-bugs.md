@@ -10555,7 +10555,6 @@ IME cache初期化に先行しない可能性があった。
 ネストしたモーダルポンプ中に取り出されると、外側の `run_message_loop` の手書きdispatchに
 戻らず消失しうる。`tsf/probe_bridge.rs::post_drain_output_queue` に残っていた
 `PostMessageW(None, WM_DRAIN_OUTPUT_QUEUE, ..)` は `win32::post_to_main_thread` 経由へ修正済み。
-
 ---
 
 ## BUG-83: /code-review(Opus敵対的レビュー)によるADR-105/102実装の追加是正5件
@@ -10610,3 +10609,32 @@ developへのマージ前に `/code-review` スキル（Opus敵対的レビュ�
 を新設。`cargo test -p awase-windows`（499件）・`cargo fmt --all -- --check`・
 `cargo xwin check`/`clippy --all-targets -- -D warnings`（x86_64-pc-windows-msvc）
 全green。Windows実機での起動・動作確認は未実施。
+
+---
+
+## BUG-84: Ctrl+prefix後のpost-bypass latchが別の前景窓の最初の1キーへ誤適用される
+
+**症状:** `[[post_bypass]]` に一致する Ctrl+key（例: tmux prefix の Ctrl+J）が
+PassThrough された直後、従来の `post_bypass_passthrough: bool` は「次の1キー」
+という時間的条件だけで生き続けていた。Ctrl+J 後に別アプリへ移ると、無関係な
+別プロセス/別ウィンドウの最初の1キーまで NICOLA をスキップして素通しされうる。
+また `prefix + ←` のような passthrough コマンドキーでは latch が落ちず、同一
+プロセス内に残留して次の文字キーへ誤適用されていた。
+
+**再現手順:** `[[post_bypass]]` に Windows Terminal / tmux の prefix を登録し、
+Ctrl+J を押した直後に別アプリへフォーカスを移して文字キーを押す。UWP では
+`ApplicationFrameHost.exe` が複数アプリの前景トップレベル窓を同一 pid で
+所有しうるため、pid だけのスコープでも別アプリ間の誤適用が残る。
+
+**関連 ADR:** ADR-103 決定3。`ScopedOneShot<ForegroundScope, PostBypassArm>` を導入し、
+武装時/評価時とも `GetForegroundWindow()` + `GetWindowThreadProcessId()` で採った
+`ForegroundScope { pid, hwnd }` が一致する場合だけ latch を有効にする。`focus_epoch` は
+通知トースト等の一瞬の前景奪取でも進むためスコープには使わない。
+
+**状態:** 対応済み（2026-08-26）。`classify_post_bypass_key` の全数テストで
+modifier/passthrough の順序依存と `prefix + ←` の `ConsumesPrefixSilently` を固定。
+なお ADR-103 本文は当初 BUG-80 を指定していたが、`fix/adr105-102-hwnd-delivery` 派生の
+実装ブランチでは BUG-80/81/82 が別件で使用済みだったため BUG-83 に採番し直し、
+その後 `develop` へのリベースで BUG-83 が `/code-review` によるADR-105/102是正
+（直上のエントリ）に既に使われていたと判明したため、本項は BUG-84 に再度採番し直した
+（並行ブランチでの番号衝突、[.claude 運用メモ](../.claude/rules/main-develop-branch-flow.md) 参照）。

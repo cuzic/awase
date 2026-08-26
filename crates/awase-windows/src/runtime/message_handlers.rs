@@ -18,6 +18,8 @@ use crate::focus::FocusKind;
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::runtime::engine_window::PumpContext;
+use crate::state::post_bypass::{classify_post_bypass_key, PostBypassKey};
+use crate::state::scoped_latch::ScopeCheck;
 use crate::tray;
 use crate::vk::VkCodeExt;
 use crate::win32::post_to_main_thread;
@@ -112,21 +114,42 @@ pub(crate) fn deliver_key_event(
     // スキップして直接 passthrough する（1 キー分のみ）。
     // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
-    if app.platform_state.gate.post_bypass_passthrough
-        && !event.modifier_snapshot.ctrl
-        && !event.vk_code.is_passthrough()
-    {
-        if is_key_down {
-            // KeyDown でフラグを消費（対応する KeyUp も後続で通常通り PassThrough になる）
-            app.platform_state.gate.post_bypass_passthrough = false;
-            log::debug!(
-                "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
-                event.vk_code
-            );
+    if app.platform_state.gate.post_bypass.is_armed() {
+        let now = crate::win32::foreground_scope();
+        match app.platform_state.gate.post_bypass.peek(now) {
+            ScopeCheck::NotArmed => {}
+            ScopeCheck::Expired => {
+                log::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
+            }
+            ScopeCheck::Live(_arm) => {
+                let should_reinject = match classify_post_bypass_key(
+                    is_key_down,
+                    event.modifier_snapshot.ctrl,
+                    event.vk_code.classify_modifier().is_some(),
+                    event.vk_code.is_passthrough(),
+                ) {
+                    PostBypassKey::KeepArmed => false,
+                    PostBypassKey::ConsumesPrefixSilently => {
+                        app.platform_state.gate.post_bypass.disarm();
+                        false
+                    }
+                    PostBypassKey::ConsumeAndPassthrough => {
+                        app.platform_state.gate.post_bypass.disarm();
+                        log::debug!(
+                            "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
+                            event.vk_code
+                        );
+                        true
+                    }
+                    PostBypassKey::PassthroughKeepArmed => true,
+                };
+                if should_reinject {
+                    app.executor.enqueue_reinject(event);
+                    post_to_main_thread(WM_EXECUTE_EFFECTS);
+                    return KeyDelivery::Reinjected;
+                }
+            }
         }
-        app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
-        return KeyDelivery::Reinjected;
     }
 
     let result = app.process_key_event(event);
@@ -160,10 +183,22 @@ pub(crate) fn deliver_key_event(
                 .iter()
                 .any(|r| r.matches(event.vk_code, proc, cls))
             {
-                app.platform_state.gate.post_bypass_passthrough = true;
-                log::debug!(
-                    "[ctrl-bypass] post_bypass_passthrough=true (proc={proc:?} class={cls:?})"
-                );
+                let scope = crate::win32::foreground_scope();
+                if scope.is_valid() {
+                    app.platform_state.gate.post_bypass.arm(
+                        scope,
+                        crate::state::platform_state::PostBypassArm {
+                            armed_focus_epoch: app.platform_state.focus.focus_epoch,
+                        },
+                    );
+                    log::debug!(
+                        "[ctrl-bypass] post_bypass armed (proc={proc:?} class={cls:?} scope={scope:?})"
+                    );
+                } else {
+                    log::debug!(
+                        "[ctrl-bypass] post_bypass not armed: foreground scope unavailable"
+                    );
+                }
             }
         }
         app.executor.enqueue_reinject(event);

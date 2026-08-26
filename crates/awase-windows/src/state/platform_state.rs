@@ -12,6 +12,7 @@ use super::ime_event::{
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeModel};
 use super::input_barrier::InputBarrier;
+use super::scoped_latch::ScopedOneShot;
 use super::TickMs;
 use crate::journal::{JournalEntry, UnifiedJournal};
 
@@ -1419,13 +1420,13 @@ impl Default for FocusStore {
 #[derive(Debug)]
 pub(crate) struct GateStore {
     pub last_hook_activity_ms: u64,
-    /// Ctrl+key bypass 直後フラグ。
+    /// Ctrl+key bypass 直後 latch。
     ///
     /// Ctrl+非修飾キーが PassThrough として素通りした後、次の非修飾 non-Ctrl キー 1 つを
-    /// NICOLA エンジンをスキップして直接 passthrough させる。
+    /// 同じ前景スコープ内でだけ NICOLA エンジンをスキップして直接 passthrough させる。
     /// tmux prefix (Ctrl+J) → コマンドキー (n/p) のように、
     /// prefix 直後のコマンドキーが NICOLA に横取りされる問題を防ぐ。
-    pub post_bypass_passthrough: bool,
+    pub post_bypass: ScopedOneShot<crate::win32::ForegroundScope, PostBypassArm>,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
     /// 今回の左Shift downが単独タップ候補か（`kp_stage_shift_conv_guard`）。
@@ -1468,6 +1469,12 @@ pub(crate) struct GateStore {
     pub idle_conv_check_in_flight_since_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PostBypassArm {
+    /// ログ・診断専用。判定には使わない。
+    pub armed_focus_epoch: u64,
+}
+
 /// [`GateStore::idle_conv_check_in_flight_since_ms`] の自己回復しきい値。
 ///
 /// BUG-34 の実測（WezTerm, ~5741ms、docs/known-bugs.md）が示す
@@ -1480,7 +1487,7 @@ impl GateStore {
     pub(crate) fn new() -> Self {
         Self {
             last_hook_activity_ms: 0,
-            post_bypass_passthrough: false,
+            post_bypass: ScopedOneShot::new(),
             sync_key_gate: SyncKeyGate::new(),
             left_shift_tap_candidate: false,
             shift_conv_guard_pending: false,

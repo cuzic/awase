@@ -33,6 +33,45 @@ impl HwndExt for HWND {
     }
 }
 
+/// post-bypass latch のスコープ。武装時と評価時で必ず同じ関数で採る。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForegroundScope {
+    pub pid: u32,
+    /// `GetForegroundWindow()` の生値（`HWND` は `Send` でないため isize で持つ）。
+    pub hwnd: isize,
+}
+
+impl ForegroundScope {
+    /// 取得失敗（前景窓なし・pid 0）。実在のスコープとは決して等しくならない。
+    pub const INVALID: Self = Self { pid: 0, hwnd: 0 };
+
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.pid != 0 && self.hwnd != 0
+    }
+}
+
+#[must_use]
+pub fn foreground_scope() -> ForegroundScope {
+    // SAFETY: GetForegroundWindow / GetWindowThreadProcessId はどのスレッドからも安全に
+    //         呼べる非ブロッキング API。前景窓なし・pid 0 は INVALID として扱う。
+    unsafe {
+        let Some(hwnd) = GetForegroundWindow().non_null() else {
+            return ForegroundScope::INVALID;
+        };
+        let mut pid = 0u32;
+        let _thread_id = GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        if pid == 0 {
+            ForegroundScope::INVALID
+        } else {
+            ForegroundScope {
+                pid,
+                hwnd: hwnd.0 as isize,
+            }
+        }
+    }
+}
+
 /// エンジン専用 HWND 宛にカスタムメッセージを POST する。
 ///
 /// ADR-105 以降、この集約点はスレッド ID ではなく
