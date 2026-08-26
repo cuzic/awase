@@ -693,7 +693,21 @@ impl ObservationStore {
         // 変わるケースは epoch 単独では検知できず、hwnd も併せて照合する（ADR-106 決定3）。
         let is_identity_ok = |o: &ImeObservation| match o.source {
             ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
-                o.focus_epoch == current_epoch && o.hwnd == current_hwnd
+                let epoch_ok = o.focus_epoch == current_epoch;
+                let hwnd_ok = o.hwnd == current_hwnd;
+                if epoch_ok && !hwnd_ok {
+                    // ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で
+                    // 除外されるケース（同一プロセス内でのウィンドウ切替）を、
+                    // epoch 不一致による除外と区別して実機ログで確認できるようにする。
+                    log::debug!(
+                        "[identity-gate] hwnd不一致で除外: source={:?} obs_hwnd={:?} current_hwnd={:?} confidence={:?}",
+                        o.source,
+                        o.hwnd,
+                        current_hwnd,
+                        o.confidence
+                    );
+                }
+                epoch_ok && hwnd_ok
             }
             _ => true,
         };
