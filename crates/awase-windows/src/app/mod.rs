@@ -480,8 +480,8 @@ fn run_message_loop(taskbar_created_msg: u32) {
                 // リテラル出力される事故を防ぐ。`starts_focus_resync()` が true の
                 // 最初のキーだけを defer し、その間に conv 読み取り(resync)を
                 // 起動する。詳細は `focus_resync.rs`・`state/focus_resync_policy.rs`。
-                let defer_for_resync = crate::focus_resync::FOCUS_RESYNC.is_armed()
-                    && event.starts_focus_resync();
+                let defer_for_resync =
+                    crate::focus_resync::FOCUS_RESYNC.is_armed() && event.starts_focus_resync();
                 if crate::OUTPUT_GATE.is_active() || defer_for_resync {
                     if defer_for_resync {
                         let generation = crate::focus_resync::FOCUS_RESYNC.consume_and_close();

@@ -153,7 +153,10 @@ mod tests {
         g.arm(1_000);
         assert!(g.is_armed());
         let gen1 = g.consume_and_close();
-        assert!(!g.is_armed(), "consume した後は armed=false（2回目の消費が起きない）");
+        assert!(
+            !g.is_armed(),
+            "consume した後は armed=false（2回目の消費が起きない）"
+        );
         assert!(g.is_gate_active());
         assert_eq!(g.current_generation(), gen1);
     }

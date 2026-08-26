@@ -247,7 +247,8 @@ pub(crate) unsafe fn handle_wm_timer(
             // （`OutputGate` と全く同じ壊れ方）。`deferred_engine_timers` の replay は
             // `handle_wm_drain_output_queue` が gate の種類を問わず必ず行うため、
             // ここで gate 判定を拡張するだけで両ゲートに対して正しく機能する。
-            if crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC.is_gate_active() {
+            if crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC.is_gate_active()
+            {
                 log::debug!(
                     "[engine-timer] OUTPUT_GATE/FOCUS_RESYNC gate active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );

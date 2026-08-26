@@ -242,7 +242,9 @@ impl RawKeyEvent {
         matches!(self.event_type, KeyEventType::KeyDown)
             && matches!(
                 self.key_classification,
-                KeyClassification::Char | KeyClassification::LeftThumb | KeyClassification::RightThumb
+                KeyClassification::Char
+                    | KeyClassification::LeftThumb
+                    | KeyClassification::RightThumb
             )
             && !self.modifier_snapshot.ctrl
             && !self.modifier_snapshot.alt
@@ -333,7 +335,10 @@ mod tests {
         let e = resync_probe_event(
             KeyEventType::KeyUp,
             KeyClassification::Passthrough,
-            ModifierState { alt: true, ..Default::default() },
+            ModifierState {
+                alt: true,
+                ..Default::default()
+            },
             false,
         );
         assert!(!e.starts_focus_resync());
@@ -342,9 +347,18 @@ mod tests {
     #[test]
     fn ctrl_shift_win_keyup_do_not_start_resync() {
         for snapshot in [
-            ModifierState { ctrl: true, ..Default::default() },
-            ModifierState { shift: true, ..Default::default() },
-            ModifierState { win: true, ..Default::default() },
+            ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ModifierState {
+                shift: true,
+                ..Default::default()
+            },
+            ModifierState {
+                win: true,
+                ..Default::default()
+            },
         ] {
             let e = resync_probe_event(
                 KeyEventType::KeyUp,
@@ -363,7 +377,10 @@ mod tests {
         let e = resync_probe_event(
             KeyEventType::KeyDown,
             KeyClassification::Passthrough,
-            ModifierState { alt: true, ..Default::default() },
+            ModifierState {
+                alt: true,
+                ..Default::default()
+            },
             false,
         );
         assert!(!e.starts_focus_resync());
@@ -374,7 +391,10 @@ mod tests {
         let e = resync_probe_event(
             KeyEventType::KeyDown,
             KeyClassification::Char,
-            ModifierState { alt: true, ..Default::default() },
+            ModifierState {
+                alt: true,
+                ..Default::default()
+            },
             false,
         );
         assert!(!e.starts_focus_resync());
@@ -428,7 +448,10 @@ mod tests {
         let e = resync_probe_event(
             KeyEventType::KeyDown,
             KeyClassification::Char,
-            ModifierState { shift: true, ..Default::default() },
+            ModifierState {
+                shift: true,
+                ..Default::default()
+            },
             false,
         );
         assert!(e.starts_focus_resync());

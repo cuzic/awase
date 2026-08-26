@@ -60,13 +60,25 @@ mod tests {
 
     fn run_ok(in_flight: u64, explicit_age: u64) -> bool {
         should_run_idle_conv_check(
-            true, true, in_flight, explicit_age, IDLE_MS, SUPPRESS_MS, false,
+            true,
+            true,
+            in_flight,
+            explicit_age,
+            IDLE_MS,
+            SUPPRESS_MS,
+            false,
         )
     }
 
     fn run_ok_first_key(in_flight: u64, explicit_age: u64) -> bool {
         should_run_idle_conv_check(
-            true, true, in_flight, explicit_age, IDLE_MS, SUPPRESS_MS, true,
+            true,
+            true,
+            in_flight,
+            explicit_age,
+            IDLE_MS,
+            SUPPRESS_MS,
+            true,
         )
     }
 
@@ -193,14 +205,26 @@ mod tests {
     #[test]
     fn first_key_after_focus_still_requires_key_down() {
         assert!(!should_run_idle_conv_check(
-            false, true, 0, u64::MAX, IDLE_MS, SUPPRESS_MS, true,
+            false,
+            true,
+            0,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS,
+            true,
         ));
     }
 
     #[test]
     fn first_key_after_focus_still_requires_tsf_native() {
         assert!(!should_run_idle_conv_check(
-            true, false, 0, u64::MAX, IDLE_MS, SUPPRESS_MS, true,
+            true,
+            false,
+            0,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS,
+            true,
         ));
     }
 

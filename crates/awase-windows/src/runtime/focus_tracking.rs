@@ -511,7 +511,10 @@ impl Runtime {
             is_effectively_tsf_native_now,
             self.platform_state.ime.belief.is_japanese_ime(),
             crate::send_health::blocking_allowed(tick_ms.0),
-            self.platform_state.gate.idle_conv_check_in_flight_since_ms.is_some(),
+            self.platform_state
+                .gate
+                .idle_conv_check_in_flight_since_ms
+                .is_some(),
         ) {
             crate::focus_resync::FOCUS_RESYNC.arm(tick_ms.0);
         }

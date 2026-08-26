@@ -416,7 +416,9 @@ impl Runtime {
             if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
                 let elapsed = now_ms_for_gate.saturating_sub(since);
                 if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
-                    log::debug!("[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ");
+                    log::debug!(
+                        "[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ"
+                    );
                     return false;
                 }
                 log::warn!(
