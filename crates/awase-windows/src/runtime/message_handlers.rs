@@ -1364,10 +1364,11 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // プローブ棄却統計をダンプ直前にログ出力してリセット
     let stats = crate::state::probe_admission::drain_stats();
-    if stats.epoch_mismatch > 0 {
+    if stats.epoch_mismatch > 0 || stats.hwnd_mismatch > 0 {
         log::info!(
-            "[probe-admission] rejected since last dump: epoch_mismatch={}",
-            stats.epoch_mismatch
+            "[probe-admission] rejected since last dump: epoch_mismatch={} hwnd_mismatch={}",
+            stats.epoch_mismatch,
+            stats.hwnd_mismatch
         );
     }
     // HOOK_KEYS の最大占有数（指摘2-4）: overflow の頻度を実測できるようにする。
