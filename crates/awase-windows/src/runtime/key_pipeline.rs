@@ -452,6 +452,12 @@ impl Runtime {
         let ticket = crate::state::probe_admission::ImmLikeTicket {
             focus_epoch: self.platform_state.focus.focus_epoch,
         };
+        // ADR-106 決定4: `ConvModeMgr::observe()` の monotonic guard 用に spawn 時点の
+        // hwnd も捕まえる。`ImmLikeTicket` は epoch のみを追跡するため、同一プロセス内
+        // でウィンドウだけが変わるケース（`focus_epoch` はプロセス変更でのみ進む）は
+        // ここでしか検知できない。
+        let conv_check_hwnd_at_spawn =
+            crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
         // BUG-34 横展開 Step0-a: 自己出力の再検証を conv_mutation_seq のビット一致に
         // 一本化する（旧 output_in_flight_ms ベースの last_send 比較は
         // apply_idle_conv_check 側で撤去、下記 doc 参照）。
@@ -479,11 +485,13 @@ impl Runtime {
                     app,
                     ticket,
                     "[idle-conv-check] epoch rejected (focus changed since read spawn)",
-                    |app, _accepted| {
+                    |app, accepted| {
                         app.apply_idle_conv_check(
                             conv,
                             conv_mutation_seq_at_spawn,
                             explicit_action_ms_at_spawn,
+                            accepted.focus_epoch,
+                            conv_check_hwnd_at_spawn,
                         );
                     },
                 );
@@ -536,6 +544,8 @@ impl Runtime {
         conv: u32,
         conv_mutation_seq_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
+        spawn_focus_epoch: crate::state::probe_admission::FocusEpoch,
+        spawn_hwnd: crate::state::ime_event::HwndId,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
         if self.platform_state.gate.shift_conv_guard_pending
@@ -609,7 +619,21 @@ impl Runtime {
 
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv);
+        // ADR-106 決定4: 観測は spawn 時点の focus_epoch/hwnd を運び、現在の値と
+        // 異なれば（フォーカスが変わっていれば）棄却される（monotonic guard）。
+        let current_epoch = self.platform_state.focus.focus_epoch;
+        let current_hwnd = crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
+        let conv_mode_changed = self.platform.output.conv_mode.observe(
+            crate::state::conv_mode::ConvObservation {
+                mode: awase::engine::ConvMode::from_u32(conv),
+                read_at: now_tick,
+                focus_epoch: spawn_focus_epoch,
+                hwnd: spawn_hwnd,
+                source: crate::state::conv_mode::ConvReadSource::IdleCheck,
+            },
+            current_epoch,
+            current_hwnd,
+        );
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
@@ -623,7 +647,7 @@ impl Runtime {
         // AssumedRomaji { ImmBridgeBroken } に回復する。
         //
         // `conv`（この tick で読んだ生値）ではなく `ConvModeMgr::get()`（直前の
-        // `update_from_conv` 済みのデバウンス確定値）を渡す。BUG-19: `conv` を直接
+        // `observe()` 済みのデバウンス確定値）を渡す。BUG-19: `conv` を直接
         // 渡すと、`GetForegroundWindow` 基準の読み取りが候補ウィンドウ等から一発だけ
         // 誤ったカタカナ conv を拾った際、warmup 側（ConvModeMgr 消費）は保護されても
         // こちら（belief 更新・engine 同期）は無防備なままになる。
@@ -2069,7 +2093,23 @@ impl Runtime {
                     if let Some(conv) =
                         unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
                     {
-                        self.platform.output.conv_mode.update_from_conv(conv);
+                        // ADR-106 決定4: この読み取りは完全に同期（await 点無し）
+                        // なので、観測の focus_epoch/hwnd は「現在」と常に一致する
+                        // ——将来 focus-conv-check を非同期化する際も、observe() の
+                        // monotonic guard がそのまま効くようにするための前提工事。
+                        let current_hwnd =
+                            crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
+                        self.platform.output.conv_mode.observe(
+                            crate::state::conv_mode::ConvObservation {
+                                mode: awase::engine::ConvMode::from_u32(conv),
+                                read_at: now_tick_ms,
+                                focus_epoch: accepted.focus_epoch,
+                                hwnd: current_hwnd,
+                                source: crate::state::conv_mode::ConvReadSource::FocusCheck,
+                            },
+                            accepted.focus_epoch,
+                            current_hwnd,
+                        );
                         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                         log::debug!(
                             "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
