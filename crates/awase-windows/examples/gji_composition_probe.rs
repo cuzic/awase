@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! GJI charset 軸 (`CompositionMode*`) の F15-F19 バインド挙動を実機で検証する
 //! 最小 IMM32 プローブ。ADR-091 (charset 軸の `CharsetSlot` 設計) の前提検証用、
 //! 使い捨てツール。

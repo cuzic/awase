@@ -613,15 +613,18 @@ pub fn handle_tray_message(
         // メニュー表示前にウィンドウをフォアグラウンドにする（メニューが閉じるために必要）
         let _ = SetForegroundWindow(hwnd);
 
-        let _ = TrackPopupMenu(
-            hmenu,
-            TPM_LEFTALIGN | TPM_BOTTOMALIGN,
-            point.x,
-            point.y,
-            Some(0),
-            hwnd,
-            None,
-        );
+        {
+            let _modal_guard = crate::runtime::engine_window::ModalPumpGuard::enter();
+            let _ = TrackPopupMenu(
+                hmenu,
+                TPM_LEFTALIGN | TPM_BOTTOMALIGN,
+                point.x,
+                point.y,
+                Some(0),
+                hwnd,
+                None,
+            );
+        }
 
         let _ = DestroyMenu(hmenu);
     }

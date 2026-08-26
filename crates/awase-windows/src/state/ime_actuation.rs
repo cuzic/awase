@@ -495,14 +495,14 @@ mod tests {
     #[test]
     fn rearm_cooldown_allows_exactly_at_boundary() {
         let gave_up_at = std::time::Instant::now();
-        let now = gave_up_at + std::time::Duration::from_millis(3_000);
+        let now = gave_up_at + std::time::Duration::from_secs(3);
         assert!(blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
     }
 
     #[test]
     fn rearm_cooldown_allows_well_after_boundary() {
         let gave_up_at = std::time::Instant::now();
-        let now = gave_up_at + std::time::Duration::from_secs(60);
+        let now = gave_up_at + std::time::Duration::from_secs(4);
         assert!(blind_rearm_cooldown_elapsed(gave_up_at, now, 3_000));
     }
 

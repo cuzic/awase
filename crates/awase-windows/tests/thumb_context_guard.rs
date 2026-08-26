@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 #![cfg(windows)]
 
 use awase::engine::{InputModeState, ModifierState};

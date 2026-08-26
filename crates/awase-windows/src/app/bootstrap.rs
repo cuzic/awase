@@ -22,6 +22,7 @@ use crate::ime;
 use crate::output::Output;
 use crate::platform;
 use crate::runtime::executor;
+use crate::runtime::NonEmptyLayouts;
 use crate::tray;
 use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
@@ -32,6 +33,18 @@ use super::{
     StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE,
     RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
+
+fn show_no_layouts_dialog(layouts_dir: &Path) {
+    let message = format!(
+        "レイアウトファイルが見つかりません。\n\n\
+         layouts_dir: {}\n\
+         config.toml: [general] layouts_dir\n\n\
+         layouts_dir に .yab ファイルを配置してから awase を再起動してください。",
+        layouts_dir.display()
+    );
+    crate::win32::show_error_dialog("awase - レイアウトが見つかりません", &message);
+    super::launch_settings();
+}
 
 /// 親指+小指シフト複合面を有効にできる親指キー構成かを返す。
 ///
@@ -155,10 +168,18 @@ pub(super) fn init_engine_validated(
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     let layouts = LayoutEntry::scan_all(&layouts_dir, diag, config.general.keyboard_model)?;
-    let layout_names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
+    let Some(layouts) = NonEmptyLayouts::new(layouts) else {
+        show_no_layouts_dialog(&layouts_dir);
+        return Err(anyhow::anyhow!(
+            "no .yab layouts found in {}",
+            layouts_dir.display()
+        ));
+    };
+    let layout_names = layouts.names();
     log::info!("Available layouts: {layout_names:?}");
 
-    let (layout, initial_layout_name) = select_default_layout(&layouts, config);
+    let (layout, initial_layout_name) = select_default_layout(layouts.as_slice(), config)
+        .context("default layout selection failed")?;
     log::info!(
         "Layout loaded: {} normal keys, {} left thumb keys, {} right thumb keys",
         layout.normal.len(),
@@ -177,7 +198,7 @@ pub(super) fn init_engine_validated(
 
     Ok((
         engine,
-        layouts,
+        layouts.into_vec(),
         layout_names,
         initial_layout_name,
         left_thumb_vk,
@@ -188,10 +209,13 @@ pub(super) fn init_engine_validated(
 }
 
 /// デフォルトレイアウトを選択し、YabLayout とレイアウト名を返す
-fn select_default_layout(layouts: &[LayoutEntry], config: &ValidatedConfig) -> (YabLayout, String) {
+fn select_default_layout(
+    layouts: &[LayoutEntry],
+    config: &ValidatedConfig,
+) -> Option<(YabLayout, String)> {
     let index = LayoutEntry::resolve_index(layouts, &config.general.default_layout);
-    let entry = &layouts[index];
-    (entry.layout.clone(), entry.name.clone())
+    let entry = layouts.get(index)?;
+    Some((entry.layout.clone(), entry.name.clone()))
 }
 
 /// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
@@ -605,12 +629,12 @@ unsafe extern "system" fn win_event_proc(
 /// Ctrl+C ハンドラを登録（Win32 SetConsoleCtrlHandler）
 pub(super) fn install_ctrl_handler() -> Result<()> {
     unsafe extern "system" fn handler(_ctrl_type: u32) -> windows::core::BOOL {
-        use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-        crate::request_quit();
-        let tid = crate::main_thread_id();
-        if tid != 0 {
-            let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
+        use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+        if crate::runtime::engine_window::engine_hwnd().is_none() {
+            std::process::exit(0);
         }
+        crate::request_quit();
+        crate::win32::post_to_main_thread(WM_QUIT);
         windows::core::BOOL(1)
     }
 
@@ -732,18 +756,12 @@ pub(super) fn run_all() -> Result<()> {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
             log::info!("--exit-after タイムアウト ({secs}s) → 終了");
-            use windows::Win32::Foundation::{LPARAM, WPARAM};
-            use windows::Win32::UI::WindowsAndMessaging::{PostThreadMessageW, WM_QUIT};
-            crate::request_quit();
-            let tid = crate::main_thread_id();
-            if tid != 0 {
-                // SAFETY: tid は起動時に格納した有効なスレッド ID。
-                unsafe {
-                    let _ = PostThreadMessageW(tid, WM_QUIT, WPARAM(0), LPARAM(0));
-                }
-            } else {
+            use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+            if crate::runtime::engine_window::engine_hwnd().is_none() {
                 std::process::exit(0);
             }
+            crate::request_quit();
+            crate::win32::post_to_main_thread(WM_QUIT);
         });
     }
 
@@ -953,6 +971,7 @@ pub(super) fn run_all() -> Result<()> {
     );
 
     init_ngram_validated(&config, &mut diag);
+    let _engine_window_guard = crate::runtime::engine_window::create_engine_window()?;
     let (hook_guard, _toggle_hotkey_guard, _app_override_hotkey_guard) =
         install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
@@ -979,6 +998,7 @@ pub(super) fn run_all() -> Result<()> {
     let _wts_guard = register_session_notification()
         .map_err(|e| log::warn!("{e}"))
         .ok();
+    let _ = with_app(Runtime::establish_initial_focus_scope);
     initialize_ime_cache();
 
     // Explorer 再起動時にトレイアイコンを復元するため TaskbarCreated メッセージを登録
@@ -1083,7 +1103,9 @@ mod tests {
         .unwrap();
         let (validated, _warnings) = config.validate();
 
-        let (_layout, selected_name) = select_default_layout(&layouts, &validated);
+        let selected = select_default_layout(&layouts, &validated);
+        assert!(selected.is_some());
+        let selected_name = selected.map_or_else(String::new, |(_, name)| name);
         assert_eq!(
             selected_name, "my_nicola",
             "default_layout must select the file the user actually chose, \

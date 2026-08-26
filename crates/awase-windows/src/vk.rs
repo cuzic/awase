@@ -179,6 +179,7 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
 /// **実際に送信する VK の値**で判定する必要がある——`win32::send_input_safe`
 /// がこの関数を唯一のゲートとして経由する設計はこのため。
 #[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) const fn vk_may_mutate_conv(vk_code: VkCode) -> bool {
     matches!(
         vk_code.0,

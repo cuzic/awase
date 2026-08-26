@@ -1659,7 +1659,9 @@ mod tests {
                     "先行 give-up の retry romaji が残っているべき"
                 );
             }
-            other => panic!("Scheduled のままであるべき: {other:?}"),
+            other @ PendingGjiReinitPhase::Polling { .. } => {
+                panic!("Scheduled のままであるべき: {other:?}");
+            }
         }
     }
 }

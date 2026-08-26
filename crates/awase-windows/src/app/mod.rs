@@ -7,26 +7,26 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::HWND;
-use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::UnregisterHotKey;
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, GetMessageW, MSG, WM_APP, WM_COMMAND, WM_HOTKEY, WM_INPUTLANGCHANGE,
-    WM_POWERBROADCAST, WM_TIMER,
+    DispatchMessageW, GetMessageW, TranslateMessage, MSG, WM_APP, WM_COMMAND, WM_HOTKEY,
+    WM_INPUTLANGCHANGE, WM_POWERBROADCAST, WM_TIMER,
 };
 
 use awase::config::{AppConfig, ImeDetectConfig, ParsedKeyCombo, ValidatedConfig};
 use awase::engine::SpecialKeyCombos;
 use awase::ngram::NgramModel;
-use awase::types::{RawKeyEvent, VkCode};
+use awase::types::VkCode;
 
 use crate::ime;
 use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
-    WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_EXECUTE_EFFECTS,
-    WM_FOCUS_KIND_UPDATE, WM_GJI_CHARSET_FN_KEY_ACTIVATED, WM_GJI_REINIT_RETRY_COMPLETE,
-    WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
+    WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_GJI_CHARSET_FN_KEY_ACTIVATED,
+    WM_GJI_REINIT_RETRY_COMPLETE, WM_IME_KIND_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -324,11 +324,169 @@ pub(crate) fn check_keyboard_layout_on_change() {
 // ── メッセージループ ──
 
 #[expect(clippy::too_many_lines)]
-fn run_message_loop(taskbar_created_msg: u32) {
-    // フックスレッドへエンジンスレッド TID を公開（WM_KEY_FROM_HOOK の送信先）
-    // SAFETY: GetCurrentThreadId は常に成功し副作用もない。
-    crate::set_engine_thread_id(unsafe { GetCurrentThreadId() });
+pub(crate) fn dispatch_engine_message(
+    hwnd: HWND,
+    message: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> bool {
+    match message {
+        WM_TIMER => {
+            let msg = MSG {
+                hwnd,
+                message,
+                wParam: wparam,
+                lParam: lparam,
+                ..Default::default()
+            };
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_timer(app, wparam.0, &msg);
+            });
+        }
+        WM_EXECUTE_EFFECTS => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
+        }
+        WM_ASYNC_IME_APPLY_COMPLETE => {
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_ASYNC_IME_APPLY_COMPLETE, wparam, lparam, |app| {
+                message_handlers::handle_wm_async_ime_apply_complete(app, wparam, lparam);
+            });
+        }
+        WM_GJI_CHARSET_FN_KEY_ACTIVATED => {
+            let _ = with_app(|app| {
+                message_handlers::handle_wm_gji_charset_fn_key_activated(app, wparam.0);
+            });
+        }
+        WM_GJI_REINIT_RETRY_COMPLETE => {
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_GJI_REINIT_RETRY_COMPLETE, wparam, lparam, |app| {
+                message_handlers::handle_wm_gji_reinit_retry_complete(app, wparam, lparam);
+            });
+        }
+        WM_PANIC_RESET => {
+            with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
+                message_handlers::handle_wm_panic_reset(app);
+            });
+        }
+        WM_DUPLICATE_INSTANCE => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
+        }
+        WM_IME_KIND_CHANGED => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_ime_kind_changed(app) });
+        }
+        WM_POWERBROADCAST => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_powerbroadcast(app, wparam.0);
+            });
+        }
+        WM_WTSSESSION_CHANGE => {
+            let session_event = wparam.0 as u32;
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wts_session_change(app, session_event);
+            });
+        }
+        WM_INPUTLANGCHANGE => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
+        }
+        WM_FOCUS_KIND_UPDATE => {
+            let (wparam, lparam) = (wparam.0, lparam.0);
+            with_app_or_repost_with(WM_FOCUS_KIND_UPDATE, wparam, lparam, |app| unsafe {
+                message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
+            });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_TOGGLE as usize => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_hotkey_focus_override(app);
+            });
+        }
+        WM_DUMP_JOURNAL => {
+            let _ = with_app(message_handlers::handle_wm_dump_journal);
+        }
+        WM_KEY_FROM_HOOK => {
+            crate::hook_channel::WAKE_PENDING.store(false, std::sync::atomic::Ordering::Release);
+            let dropped = crate::hook_channel::HOOK_KEYS.take_dropped();
+            if dropped > 0 {
+                crate::runtime::engine_window::mark_needs_engine_resync();
+                log::warn!("[hook-ring] dropped {dropped} key event(s)");
+            }
+            let mut events = Vec::new();
+            crate::hook_channel::HOOK_KEYS.consume_all(&mut |event| events.push(event));
+            for event in events {
+                handle_hook_key_event(event);
+            }
+        }
+        WM_APP => unsafe {
+            message_handlers::handle_wm_app_tray(hwnd, lparam);
+        },
+        WM_RELOAD_CONFIG => {
+            message_handlers::handle_wm_reload_config();
+        }
+        WM_COMMAND => unsafe {
+            message_handlers::handle_wm_command(wparam);
+        },
+        WM_DRAIN_OUTPUT_QUEUE => unsafe {
+            message_handlers::handle_wm_drain_output_queue();
+        },
+        WM_ENGINE_QUIT_REQUEST => {
+            crate::request_quit();
+            if !crate::runtime::engine_window::is_in_modal_pump() {
+                unsafe {
+                    windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0);
+                }
+            }
+        }
+        _ => return false,
+    }
+    true
+}
 
+fn handle_hook_key_event(event: awase::types::RawKeyEvent) {
+    if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
+        let mods = event.modifier_snapshot;
+        if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(
+            event.vk_code,
+            mods.ctrl,
+            mods.shift,
+            mods.alt,
+        ) {
+            crate::panic_detect::record_ime_keydown(is_on, crate::hook::current_tick_ms());
+        }
+        let fired = DUMP_TRIGGER.try_with_mut(|t| t.push(event.vk_code.0, mods.alt));
+        if fired == Some(true) {
+            crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
+        }
+    }
+    let defer_for_resync =
+        crate::focus_resync::FOCUS_RESYNC.is_armed() && event.starts_focus_resync();
+    if crate::OUTPUT_GATE.is_active() || defer_for_resync {
+        if defer_for_resync {
+            let generation = crate::focus_resync::FOCUS_RESYNC.consume_and_close();
+            let _ = with_app(|app| {
+                if app.kp_trigger_focus_resync(&event, generation) {
+                    app.schedule_focus_resync_deadline();
+                }
+            });
+        }
+        crate::INPUT_DEFER.defer_during_output(event);
+        return;
+    }
+
+    let has_pending_drain = crate::INPUT_DEFER
+        .pending_len_nonblocking()
+        .is_none_or(|n| n > 0);
+    if has_pending_drain {
+        crate::INPUT_DEFER.replay_later(std::iter::once(event));
+        return;
+    }
+    if with_app(|app| message_handlers::handle_wm_key_from_hook(app, event)).is_none() {
+        crate::INPUT_DEFER.replay_later(std::iter::once(event));
+    }
+}
+
+fn run_message_loop(taskbar_created_msg: u32) {
     // gji-io-monitor が TID 設定前に発行した初回 WM_IME_KIND_CHANGED は届かない
     // 可能性があるため、ループ開始時点の検出済み IME 種別で一度 pull 同期する
     // （BUG-09 の保険）。未検出（起動直後）なら MicrosoftIme 安全デフォルトになり、
@@ -347,207 +505,16 @@ fn run_message_loop(taskbar_created_msg: u32) {
             break;
         }
 
-        match msg.message {
-            WM_TIMER => {
-                // SAFETY: WM_TIMER はメインスレッドのメッセージループからのみ呼ばれる。
-                //         wParam のタイマー ID はアプリケーション定義の定数で一意。
-                let _ = with_app(|app| unsafe {
-                    message_handlers::handle_wm_timer(app, msg.wParam.0, &msg);
-                });
-            }
-            WM_EXECUTE_EFFECTS => {
-                // SAFETY: WM_EXECUTE_EFFECTS はメインスレッドのメッセージループからのみ配送される。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_execute_effects(app) });
-            }
-            WM_ASYNC_IME_APPLY_COMPLETE => {
-                // ImmCross async apply の完了。sync path の sync_outcomes と対称に
-                // on_ime_apply_complete（単一入口）へ合流させる。
-                // wparam/lparam はポスト元 post_async_ime_apply_complete がパックした (open, outcome)。
-                //
-                // BUG-34 横展開 Step0-b: `let _ = with_app(...)` は再入時（RUNTIME が
-                // 既に borrow 中）に完了を黙って捨てる（lib.rs:208 の warn ログのみ）。
-                // 同期ブロッキングサイト（例: open_chain.rs の fallback_write）が
-                // RUNTIME borrow を握ったまま数秒ブロックする間にこの完了が届くと、
-                // このメッセージは二度と再送されないため apply の完了が永久に失われる。
-                // with_app_or_repost_with で再入時に同一メッセージを自スレッドへ
-                // 再 post させ、次のメッセージループ周回で確実に処理させる。
-                let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                with_app_or_repost_with(WM_ASYNC_IME_APPLY_COMPLETE, wparam, lparam, |app| {
-                    message_handlers::handle_wm_async_ime_apply_complete(app, wparam, lparam);
-                });
-            }
-            WM_GJI_CHARSET_FN_KEY_ACTIVATED => {
-                // gji_charset_popup がバックグラウンドスレッドから投函
-                // （SingleThreadCell への直接アクセスを避けるため、lib.rs のdoc参照）。
-                let wparam = msg.wParam.0;
-                let _ = with_app(|app| {
-                    message_handlers::handle_wm_gji_charset_fn_key_activated(app, wparam);
-                });
-            }
-            WM_GJI_REINIT_RETRY_COMPLETE => {
-                let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                with_app_or_repost_with(WM_GJI_REINIT_RETRY_COMPLETE, wparam, lparam, |app| {
-                    message_handlers::handle_wm_gji_reinit_retry_complete(app, wparam, lparam);
-                });
-            }
-            WM_PANIC_RESET => {
-                // 再入中に消えないよう repost する（blocking op 完了後に再実行）
-                // SAFETY: WM_PANIC_RESET はメインスレッドのメッセージループからのみ配送される。
-                with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
-                    message_handlers::handle_wm_panic_reset(app);
-                });
-            }
-            WM_DUPLICATE_INSTANCE => {
-                // SAFETY: WM_DUPLICATE_INSTANCE はメインスレッドのメッセージループからのみ配送される。
-                let _ =
-                    with_app(|app| unsafe { message_handlers::handle_wm_duplicate_instance(app) });
-            }
-            WM_IME_KIND_CHANGED => {
-                // SAFETY: WM_IME_KIND_CHANGED はメインスレッドのメッセージループからのみ配送される。
-                let _ =
-                    with_app(|app| unsafe { message_handlers::handle_wm_ime_kind_changed(app) });
-            }
-            WM_POWERBROADCAST => {
-                let pbt = msg.wParam.0;
-                // SAFETY: WM_POWERBROADCAST はメインスレッドのメッセージループからのみ配送される。
-                //         pbt は OS が設定する PBT_* 定数で安全。
-                let _ =
-                    with_app(|app| unsafe { message_handlers::handle_wm_powerbroadcast(app, pbt) });
-            }
-            WM_WTSSESSION_CHANGE => {
-                let session_event = msg.wParam.0 as u32;
-                // SAFETY: WM_WTSSESSION_CHANGE はメインスレッドのメッセージループからのみ配送される。
-                //         hwnd は WTSRegisterSessionNotification で登録した有効なウィンドウハンドル。
-                let _ = with_app(|app| unsafe {
-                    message_handlers::handle_wts_session_change(app, session_event);
-                });
-            }
-            WM_INPUTLANGCHANGE => {
-                // SAFETY: WM_INPUTLANGCHANGE はメインスレッドのメッセージループからのみ配送される。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_inputlangchange(app) });
-            }
-            WM_FOCUS_KIND_UPDATE => {
-                let (wparam, lparam) = (msg.wParam.0, msg.lParam.0);
-                // SAFETY: WM_FOCUS_KIND_UPDATE はメインスレッドのメッセージループからのみ配送される。
-                //         wparam/lparam の値はポスト元が正しく設定した FocusKind エンコード値。
-                with_app_or_repost_with(WM_FOCUS_KIND_UPDATE, wparam, lparam, |app| unsafe {
-                    message_handlers::handle_wm_focus_kind_update(app, wparam, lparam);
-                });
-            }
-            WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_TOGGLE as usize => {
-                // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
-                //         wParam は RegisterHotKey で登録した HOTKEY_ID_TOGGLE と一致している。
-                let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_toggle(app) });
-            }
-            WM_HOTKEY if msg.wParam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
-                // SAFETY: WM_HOTKEY はメインスレッドのメッセージループからのみ配送される。
-                //         wParam は RegisterHotKey で登録した HOTKEY_ID_FOCUS_OVERRIDE と一致している。
-                let _ = with_app(|app| unsafe {
-                    message_handlers::handle_wm_hotkey_focus_override(app);
-                });
-            }
-            WM_DUMP_JOURNAL => {
-                let _ = with_app(message_handlers::handle_wm_dump_journal);
-            }
-            WM_KEY_FROM_HOOK => {
-                // フックスレッドから転送された物理キーイベント
-                // SAFETY: lParam は Box::into_raw(Box::new(RawKeyEvent)) のポインタ。
-                //         RawKeyEvent は Copy なので値をコピーして Box をドロップする。
-                let event = unsafe { *Box::from_raw(msg.lParam.0 as *mut RawKeyEvent) };
-                // パニックリセット検出: IME OFF→ON→OFF の交互シーケンスのみ発動
-                if matches!(event.event_type, awase::types::KeyEventType::KeyDown) {
-                    let mods = event.modifier_snapshot;
-                    if let Some(is_on) = crate::panic_detect::get_panic_trigger_direction(
-                        event.vk_code,
-                        mods.ctrl,
-                        mods.shift,
-                        mods.alt,
-                    ) {
-                        crate::panic_detect::record_ime_keydown(
-                            is_on,
-                            crate::hook::current_tick_ms(),
-                        );
-                    }
-                    // ジャーナルダンプトリガー: Alt+変換→Alt+無変換 を 2 回連続
-                    let fired = DUMP_TRIGGER.try_with_mut(|t| t.push(event.vk_code.0, mods.alt));
-                    if fired == Some(true) {
-                        crate::win32::post_to_main_thread(WM_DUMP_JOURNAL);
-                    }
-                }
-                // フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）:
-                // Alt+Tab 等で一瞬フォーカスが離れて復帰した直後、resync
-                // （IME 状態の再確認）完了前に最初のキーが PassThrough で
-                // リテラル出力される事故を防ぐ。`starts_focus_resync()` が true の
-                // 最初のキーだけを defer し、その間に conv 読み取り(resync)を
-                // 起動する。詳細は `focus_resync.rs`・`state/focus_resync_policy.rs`。
-                let defer_for_resync =
-                    crate::focus_resync::FOCUS_RESYNC.is_armed() && event.starts_focus_resync();
-                if crate::OUTPUT_GATE.is_active() || defer_for_resync {
-                    if defer_for_resync {
-                        let generation = crate::focus_resync::FOCUS_RESYNC.consume_and_close();
-                        let _ = with_app(|app| {
-                            // gate がガードで同期的に閉じられた場合（BUG-77 code
-                            // review 追補2巡目）はハード期限タイマーを武装しない
-                            // ——既に閉じた gate に対して張っても `open_if_current`
-                            // が世代不一致で無視するため無害だが、無駄な
-                            // `WM_TIMER` を残さない。
-                            if app.kp_trigger_focus_resync(&event, generation) {
-                                app.schedule_focus_resync_deadline();
-                            }
-                        });
-                    }
-                    crate::INPUT_DEFER.defer_during_output(event);
-                } else {
-                    // 競合条件の修正: フックスレッドは OUTPUT_GATE active 中に WM_KEY_FROM_HOOK
-                    // を POST する。メインスレッドが処理する頃には OUTPUT_GATE が false になっているが、
-                    // WM_DRAIN_OUTPUT_QUEUE よりも WM_KEY_FROM_HOOK が先にキューに入っている場合、
-                    // drain が Ctrl↑ を executor に追加する前に K↑/A↓ が直接 executor.queue に
-                    // 入ってしまい、reinject 順序が Ctrl↑ < K↑/A↓ となって Ctrl+key 誤発火する。
-                    // INPUT_DEFER に pending があれば drain と同じ順序で処理させるため defer する。
-                    let has_pending_drain = crate::INPUT_DEFER
-                        .pending_len_nonblocking()
-                        .is_none_or(|n| n > 0);
-                    if has_pending_drain {
-                        crate::INPUT_DEFER.replay_later(std::iter::once(event));
-                    } else {
-                        let result =
-                            with_app(|app| message_handlers::handle_wm_key_from_hook(app, event));
-                        debug_assert!(result.is_some(), "with_app re-entry in WM_KEY_FROM_HOOK");
-                    }
-                }
-            }
-            WM_APP => {
-                // SAFETY: WM_APP はシステムトレイ通知用に定義したメッセージ。
-                //         msg.hwnd は有効なトレイ通知ウィンドウのハンドル。
-                unsafe {
-                    message_handlers::handle_wm_app_tray(msg.hwnd, msg.lParam);
-                }
-            }
-            WM_RELOAD_CONFIG => {
-                message_handlers::handle_wm_reload_config();
-            }
-            WM_COMMAND => {
-                // SAFETY: WM_COMMAND はメインスレッドのメッセージループからのみ配送される。
-                //         wParam はトレイメニューの定義済みコマンド ID。
-                unsafe {
-                    message_handlers::handle_wm_command(msg.wParam);
-                }
-            }
-            WM_DRAIN_OUTPUT_QUEUE => {
-                // SAFETY: WM_DRAIN_OUTPUT_QUEUE はメインスレッドのメッセージループからのみ配送される。
-                //         OUTPUT_GATE が非アクティブになったタイミングで post される。
-                unsafe {
-                    message_handlers::handle_wm_drain_output_queue();
-                }
-            }
-            m if m == taskbar_created_msg && taskbar_created_msg != 0 => {
-                // SAFETY: TaskbarCreated はシェルが再起動した際にブロードキャストされる登録済みメッセージ。
-                let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
-            }
-            _ => unsafe {
-                // SAFETY: msg was filled by GetMessageW and is valid for the calling thread.
-                DispatchMessageW(&raw const msg);
-            },
+        if msg.message == taskbar_created_msg && taskbar_created_msg != 0 {
+            let _ = with_app(|app| unsafe { message_handlers::handle_taskbar_created(app) });
+            continue;
+        }
+        if dispatch_engine_message(msg.hwnd, msg.message, msg.wParam, msg.lParam) {
+            continue;
+        }
+        unsafe {
+            let _ = TranslateMessage(&raw const msg);
+            DispatchMessageW(&raw const msg);
         }
     }
 }

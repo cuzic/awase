@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! BUG-51 追補 v3 の中核（`IntentStore` による `effective_open()` 上書き）の
 //! **Linux で実行できる**回帰テスト。
 //!

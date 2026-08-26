@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! Golden Scenario テスト
 //!
 //! 過去のバグ修正で対処した既知シナリオを event sequence として固定し、

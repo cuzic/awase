@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! P2-1: IME キー戦略のキャラクタライゼーション（ゴールデン）テスト。
 //!
 //! # 目的

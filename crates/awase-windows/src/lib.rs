@@ -27,6 +27,7 @@ pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod gji_charset_popup;
 pub mod gji_charset_write;
+pub mod hook_channel;
 pub mod journal_policy;
 pub mod msime_key_assignment;
 pub mod scanmap;
@@ -116,17 +117,6 @@ pub fn main_thread_id() -> u32 {
 #[cfg(windows)]
 pub(crate) fn set_main_thread_id(tid: u32) {
     MAIN_THREAD_ID.store(tid, Ordering::SeqCst);
-}
-
-#[cfg(windows)]
-static ENGINE_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-#[cfg(windows)]
-pub(crate) fn engine_thread_id() -> u32 {
-    ENGINE_THREAD_ID.load(Ordering::Relaxed)
-}
-#[cfg(windows)]
-pub(crate) fn set_engine_thread_id(tid: u32) {
-    ENGINE_THREAD_ID.store(tid, Ordering::Relaxed);
 }
 
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -334,6 +324,8 @@ pub const WM_GJI_CHARSET_FN_KEY_ACTIVATED: u32 =
 /// post-send effects を実行する。
 #[cfg(windows)]
 pub const WM_GJI_REINIT_RETRY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
+#[cfg(windows)]
+pub(crate) const WM_ENGINE_QUIT_REQUEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

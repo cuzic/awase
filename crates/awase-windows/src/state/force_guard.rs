@@ -262,7 +262,10 @@ mod tests {
             generation: 1,
         };
         assert!(guard.is_expired(now + Duration::from_millis(1)));
-        assert!(!guard.is_expired(now - Duration::from_millis(1)));
+        assert!(!guard.is_expired(
+            now.checked_sub(Duration::from_millis(1))
+                .expect("test instant can be backdated")
+        ));
     }
 
     /// `record_miss` の `consecutive_miss_count == 0` ガードが反転すると、

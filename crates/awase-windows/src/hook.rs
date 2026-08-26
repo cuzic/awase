@@ -315,6 +315,10 @@ pub fn reset_physical_key_state() {
     }
     LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
     RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    ALT_L_IMPERSONATING.store(false, Ordering::Relaxed);
+    ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
+    ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
+    ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
     log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
@@ -1024,23 +1028,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         is_injected,
     );
 
-    let engine_tid = crate::engine_thread_id();
-    if engine_tid != 0 {
-        let ptr = Box::into_raw(Box::new(event));
-        // SAFETY: engine_tid は run_message_loop 先頭で設定された有効なスレッド TID。
-        if PostThreadMessageW(
-            engine_tid,
-            crate::WM_KEY_FROM_HOOK,
-            WPARAM(0),
-            LPARAM(ptr as isize),
-        )
-        .is_err()
-        {
-            // PostThreadMessageW 失敗（キュー満杯等）: メモリリークを防ぐため即座に回収
-            let _ = Box::from_raw(ptr);
-            log::warn!("[hook] PostThreadMessageW failed vk={vk:#04X}");
-        }
-    }
+    let _ = crate::hook_channel::HOOK_KEYS.produce(event);
+    crate::hook_channel::request_engine_wake();
     LRESULT(1) // 常に消費（engine thread が PassThrough 判定して reinject する）
 }
 

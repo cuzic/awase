@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! ADR-082「第一歩」2./3.: BUG-43（drift correction 無限再送）の journal リプレイ回帰。
 //!
 //! `docs/known-bugs.md` BUG-43 の実機ログ（675ms の間に `apply_ime_open(false)` を

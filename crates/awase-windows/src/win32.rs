@@ -9,7 +9,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, GUITHREADINFO,
+    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, PostMessageW, GUITHREADINFO,
 };
 
 /// タイムアウト付きで任意の処理をワーカースレッドで実行する。
@@ -33,9 +33,12 @@ impl HwndExt for HWND {
     }
 }
 
-/// メインスレッド（エンジンスレッド）のメッセージキューにカスタムメッセージを POST する。
+/// エンジン専用 HWND 宛にカスタムメッセージを POST する。
 ///
-/// `PostThreadMessageW(engine_thread_id(), ..)` のラッパー。
+/// ADR-105 以降、この集約点はスレッド ID ではなく
+/// `engine_window::engine_hwnd()` の HWND を宛先にする。HWND 宛メッセージは
+/// トレイメニュー等のネストしたモーダルポンプ中でも通常の window message として
+/// dispatch されるため、旧 `PostThreadMessageW` 経路の恒久消失を避けられる。
 ///
 /// 旧実装は `PostMessageW(None, ..)` を使っていたが、hwnd=NULL の `PostMessageW` は
 /// 「**呼び出しスレッド自身**への `PostThreadMessage`」と等価（Microsoft docs）であり、
@@ -43,50 +46,51 @@ impl HwndExt for HWND {
 /// 処理されず消失していた。これにより `WM_IME_KIND_CHANGED` が main に一度も届かず、
 /// MS-IME 環境でも warmup 戦略がデフォルトの GjiFsm のまま走り続けた
 /// （docs/known-bugs.md BUG-09）。`WM_FOCUS_KIND_UPDATE`（UIA worker 発）も同罪だった。
-pub fn post_to_main_thread(msg: u32) {
-    post_to_main_thread_with(msg, 0, 0);
+///
+/// `engine_hwnd()` がまだ `None` の起動最初期だけは互換フォールバックとして
+/// `PostMessageW(None, ..)` を使う。この分岐は BUG-09 と同型の罠を持つため、
+/// ワーカースレッドから確実に届ける用途では成功扱いにしない。呼び出し元が復旧手段を
+/// 持つ場合は戻り値 `false` を見て再試行可能な状態へ戻すこと。
+#[allow(clippy::must_use_candidate)]
+pub fn post_to_main_thread(msg: u32) -> bool {
+    post_to_main_thread_with(msg, 0, 0)
 }
 
-/// メインスレッドのメッセージキューにパラメータ付きでカスタムメッセージを POST する。
+/// エンジン専用 HWND 宛にパラメータ付きでカスタムメッセージを POST する。
 ///
-/// スレッド安全: どのスレッドから呼んでも main（エンジン）スレッドに届く。
-pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) {
-    let tid = crate::engine_thread_id();
-    if tid == 0 {
-        // メッセージループ開始前（run_message_loop が TID を設定する前）。
-        // main スレッド自身からの呼び出しなら自スレッドキューへの投函で正しく届く
-        // （キューは PostMessageW 自身が生成し、ループ開始後に取り出される）。
-        // 注意: **ワーカースレッド（gji-io-monitor 等）からこの窓で呼ぶと、投函先が
-        // 呼び出し元スレッドのキューになりメッセージは静かに消失する**（monitor は
-        // メッセージポンプを持たない）。gji-monitor の初回 WM_IME_KIND_CHANGED が
-        // まさにこのレースを踏むため、run_message_loop 先頭の
-        // `sync_ime_kind_from_observation("startup pull sync")` が保険として
-        // 同じ副作用を pull 実行する（BUG-09、2026-07-06 実機で消失を確認）。
-        // SAFETY: msg はプロセス定義のカスタムメッセージ ID。
+/// 戻り値は「エンジン HWND 宛の post が成功したか」。`engine_hwnd()` が未作成の間の
+/// NULL-hwnd フォールバックは、呼び出しスレッド自身への thread message になりうるため
+/// `false` を返す。
+#[allow(clippy::must_use_candidate)]
+pub fn post_to_main_thread_with(msg: u32, wparam: usize, lparam: isize) -> bool {
+    let msg = if msg == windows::Win32::UI::WindowsAndMessaging::WM_QUIT {
+        crate::WM_ENGINE_QUIT_REQUEST
+    } else {
+        msg
+    };
+    let Some(hwnd) = crate::runtime::engine_window::engine_hwnd() else {
         let _ = unsafe {
-            windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+            PostMessageW(
                 None,
                 msg,
                 windows::Win32::Foundation::WPARAM(wparam),
                 windows::Win32::Foundation::LPARAM(lparam),
             )
         };
-        return;
-    }
-    // SAFETY: tid は run_message_loop 先頭で設定された有効なスレッド ID。
-    //         msg はプロセス定義のカスタムメッセージ ID。
-    if unsafe {
-        windows::Win32::UI::WindowsAndMessaging::PostThreadMessageW(
-            tid,
+        return false;
+    };
+    if let Err(err) = unsafe {
+        PostMessageW(
+            Some(hwnd),
             msg,
             windows::Win32::Foundation::WPARAM(wparam),
             windows::Win32::Foundation::LPARAM(lparam),
         )
+    } {
+        log::warn!("[post-main] PostMessageW(engine_hwnd) failed msg=0x{msg:X}: {err}");
+        return false;
     }
-    .is_err()
-    {
-        log::warn!("[post-main] PostThreadMessageW failed msg=0x{msg:X}");
-    }
+    true
 }
 
 /// `send_input_safe` に渡された `INPUT` が conv-mode ワードを変えうる VK の
@@ -242,13 +246,11 @@ pub unsafe fn get_gui_thread_info_with_timeout(timeout: Duration) -> GuiThreadRe
 mod tests {
     use super::{input_may_mutate_conv, INPUT, INPUT_KEYBOARD, KEYEVENTF_UNICODE};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        INPUT_0, INPUT_MOUSE, KEYBDINPUT, MOUSEEVENTF_MOVE, MOUSEINPUT, VIRTUAL_KEY,
+        INPUT_0, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, MOUSEEVENTF_MOVE, MOUSEINPUT,
+        VIRTUAL_KEY,
     };
 
-    fn key_input(
-        vk: u16,
-        flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
-    ) -> INPUT {
+    fn key_input(vk: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
         INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
@@ -282,14 +284,14 @@ mod tests {
     /// 通常のキーボード INPUT で conv-mutating な VK（VK_DBE_HIRAGANA）なら true。
     #[test]
     fn keyboard_input_with_conv_mutating_vk_is_true() {
-        let input = key_input(0xF2, Default::default()); // VK_DBE_HIRAGANA
+        let input = key_input(0xF2, KEYBD_EVENT_FLAGS::default()); // VK_DBE_HIRAGANA
         assert!(input_may_mutate_conv(&input));
     }
 
     /// 通常のキーボード INPUT で open-only な VK（VK_IME_ON）なら false。
     #[test]
     fn keyboard_input_with_open_only_vk_is_false() {
-        let input = key_input(0x16, Default::default()); // VK_IME_ON
+        let input = key_input(0x16, KEYBD_EVENT_FLAGS::default()); // VK_IME_ON
         assert!(!input_may_mutate_conv(&input));
     }
 

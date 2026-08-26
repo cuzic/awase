@@ -1,4 +1,6 @@
 mod conv_actuation;
+#[cfg(windows)]
+pub(crate) mod engine_window;
 pub(crate) mod executor;
 mod focus_tracker;
 mod focus_tracking;
@@ -92,6 +94,26 @@ use executor::DecisionExecutor;
 pub struct LayoutEntry {
     pub name: String,
     pub layout: YabLayout,
+}
+
+pub(crate) struct NonEmptyLayouts(Vec<LayoutEntry>);
+
+impl NonEmptyLayouts {
+    pub(crate) fn new(layouts: Vec<LayoutEntry>) -> Option<Self> {
+        (!layouts.is_empty()).then_some(Self(layouts))
+    }
+
+    pub(crate) fn names(&self) -> Vec<String> {
+        self.0.iter().map(|e| e.name.clone()).collect()
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<LayoutEntry> {
+        self.0
+    }
+
+    pub(crate) fn as_slice(&self) -> &[LayoutEntry] {
+        &self.0
+    }
 }
 
 impl LayoutEntry {
@@ -942,17 +964,17 @@ impl Runtime {
     /// 内容が変わっていないのに設定リロードのたびにタイピング中のキーを
     /// 確定させてしまうことを避ける。
     pub(crate) fn reload_layouts(&mut self, layouts: Vec<LayoutEntry>, default_layout: &str) {
-        if layouts.is_empty() {
+        let Some(layouts) = NonEmptyLayouts::new(layouts) else {
             log::warn!("reload_layouts: no layouts found, keeping current layout");
             return;
-        }
+        };
 
-        let names: Vec<String> = layouts.iter().map(|e| e.name.clone()).collect();
-        let index = LayoutEntry::resolve_index(&layouts, default_layout);
-        let target_name = layouts[index].name.clone();
+        let names = layouts.names();
+        let index = LayoutEntry::resolve_index(layouts.as_slice(), default_layout);
+        let target_name = layouts.as_slice()[index].name.clone();
         let unchanged = self.platform.tray.current_layout_name() == target_name;
 
-        self.layouts = layouts;
+        self.layouts = layouts.into_vec();
         self.platform.tray.set_layout_names(names);
 
         if unchanged {

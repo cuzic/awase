@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! アーキテクチャ境界の grep ベース回帰テスト。
 //!
 //! `.claude/rules/ime-belief-architecture.md` が定める
@@ -200,6 +201,29 @@ fn non_comment_lines(content: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn count_post_message_none_calls(content: &str) -> usize {
+    let mut count = 0;
+    let mut rest = content;
+    while let Some(idx) = rest.find("PostMessageW") {
+        rest = &rest[idx + "PostMessageW".len()..];
+        let after_ws = rest.trim_start();
+        let Some(after_paren) = after_ws.strip_prefix('(') else {
+            continue;
+        };
+        let first_arg = after_paren.trim_start();
+        if first_arg.starts_with("None")
+            && first_arg["None".len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == ',' || c.is_whitespace())
+        {
+            count += 1;
+        }
+        rest = after_paren;
+    }
+    count
 }
 
 /// `production_code_only` が CRLF チェックアウトでも `#[cfg(test)] mod tests` を
@@ -2344,5 +2368,145 @@ fn app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win() {
              BUG-62 の Alt+かな 保護を壊すリスクがあるため、設計段階の premortem で \
              除外が決まった）。"
         );
+    }
+}
+
+#[test]
+fn engine_thread_posts_go_through_win32_chokepoint() {
+    let mut post_thread_sites = Vec::new();
+    let mut post_none_sites = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let uncommented = non_comment_lines(production);
+        let post_thread = uncommented.matches("PostThreadMessageW(").count();
+        if post_thread > 0 {
+            post_thread_sites.push((path.clone(), post_thread));
+        }
+        let post_none = count_post_message_none_calls(&uncommented);
+        if post_none > 0 {
+            post_none_sites.push((path, post_none));
+        }
+    }
+    post_thread_sites.sort();
+    post_none_sites.sort();
+    assert_eq!(
+        post_thread_sites,
+        vec![("src/hook.rs".to_string(), 1)],
+        "PostThreadMessageW direct calls are limited to hook-thread WM_QUIT"
+    );
+    assert_eq!(
+        post_none_sites,
+        vec![("src/win32.rs".to_string(), 1)],
+        "PostMessageW(None, ..) is only allowed inside win32::post_to_main_thread_with fallback"
+    );
+}
+
+#[test]
+fn key_events_reach_engine_only_via_deliver_key_event() {
+    let mut sites = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "process_key_event(");
+        if count > 0 {
+            sites.push((path, count));
+        }
+    }
+    sites.sort();
+    assert_eq!(
+        sites,
+        vec![("src/runtime/message_handlers.rs".to_string(), 1)],
+        "Runtime::process_key_event must be called only by deliver_key_event"
+    );
+}
+
+#[test]
+fn enqueue_reinject_call_sites_are_accounted_for() {
+    let mut sites = Vec::new();
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "enqueue_reinject(");
+        if count > 0 {
+            sites.push((path, count));
+        }
+    }
+    sites.sort();
+    assert_eq!(
+        sites,
+        vec![
+            ("src/runtime/executor.rs".to_string(), 2),
+            ("src/runtime/key_pipeline.rs".to_string(), 1),
+            ("src/runtime/message_handlers.rs".to_string(), 5),
+        ],
+        "enqueue_reinject call sites are limited to deliver_key_event plus the documented pending-replay exceptions"
+    );
+}
+
+#[test]
+fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
+    let content = read_crate_file("src/app/bootstrap.rs");
+    let run_all = extract_fn_body(&content, "fn run_all");
+    let focus_idx = run_all
+        .find("Runtime::establish_initial_focus_scope")
+        .expect("run_all must establish initial focus scope");
+    let ime_idx = run_all
+        .find("initialize_ime_cache()")
+        .expect("run_all must initialize IME cache");
+    assert!(
+        focus_idx < ime_idx,
+        "startup must establish initial focus scope before initialize_ime_cache"
+    );
+    assert_eq!(
+        run_all
+            .matches("Runtime::establish_initial_focus_scope")
+            .count(),
+        1,
+        "startup must establish the initial focus scope exactly once"
+    );
+}
+
+#[test]
+fn establish_initial_focus_scope_advances_focus_epoch_once() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
+    assert_eq!(
+        body.matches("focus_epoch.wrapping_add(1)").count(),
+        1,
+        "establish_initial_focus_scope must advance focus_epoch exactly once"
+    );
+}
+
+#[test]
+fn establish_initial_focus_scope_does_not_write_ime_belief() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let bodies = [
+        (
+            "establish_initial_focus_scope",
+            extract_fn_body(&content, "fn establish_initial_focus_scope"),
+        ),
+        (
+            "classify_focus_probe",
+            extract_fn_body(&content, "fn classify_focus_probe"),
+        ),
+        (
+            "advance_focus_tracking",
+            extract_fn_body(&content, "fn advance_focus_tracking"),
+        ),
+    ];
+    for forbidden in [
+        "dispatch_event(",
+        "apply_hwnd_cache_restore(",
+        "record_confirmed(",
+        "reset_stale_ime_on_for_imm_broken(",
+        "EngineCommand::FocusChanged",
+    ] {
+        for (name, body) in bodies {
+            assert!(
+                !body.contains(forbidden),
+                "establish_initial_focus_scope indirect path `{name}` must not write IME belief via `{forbidden}`"
+            );
+        }
     }
 }

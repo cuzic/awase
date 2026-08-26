@@ -301,6 +301,7 @@ impl ImeKindDebounce {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod ime_kind_debounce_tests {
     use super::{ActiveImeKind, ImeKindDebounce};
 

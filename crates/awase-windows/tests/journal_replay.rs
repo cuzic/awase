@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! P1: ジャーナル・リプレイ回帰基盤。
 //!
 //! # 目的

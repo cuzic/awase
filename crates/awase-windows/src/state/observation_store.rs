@@ -1186,7 +1186,9 @@ mod tests {
     #[test]
     fn derive_any_stale_observation_ignored() {
         let mut s = ObservationStore::default();
-        let past = Instant::now() - Duration::from_secs(10);
+        let past = Instant::now()
+            .checked_sub(Duration::from_secs(10))
+            .expect("test instant can be backdated");
         // 10 秒前の Medium obs は FRESH(3s) を超えているため無視される
         let mut old = obs(false, ObservationSource::ObserverPoll, past);
         old.confidence = ObservationConfidence::Medium;
@@ -1257,7 +1259,8 @@ mod tests {
         let old = obs(
             true,
             ObservationSource::ObserverPoll,
-            now - Duration::from_secs(1),
+            now.checked_sub(Duration::from_secs(1))
+                .expect("test instant can be backdated"),
         );
         rec(&mut s, old);
         rec(&mut s, obs(true, ObservationSource::Gji, now));

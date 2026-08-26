@@ -1373,6 +1373,7 @@ mod tests {
     /// (7000ms)・`LONG_IDLE_MS` (10000ms) の閾値をまたぐ代表値で連続的に検証し、
     /// 閾値の境界1msずれ（off-by-one）が紛れ込んでいないことを固定化する。
     #[test]
+    #[allow(clippy::items_after_statements)]
     fn composition_reset_and_native_f2_consumed_match_cold_kind_classify_across_boundary() {
         let boundary_values = [
             0,

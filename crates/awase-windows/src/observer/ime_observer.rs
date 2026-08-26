@@ -258,6 +258,7 @@ pub unsafe fn poll_and_classify_ime(
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use crate::ime::ImeSnapshot;
@@ -290,7 +291,7 @@ mod tests {
             None,
         );
         assert!(update.observer_poll.is_some());
-        assert_eq!(update.observer_poll.unwrap().value, true);
+        assert!(update.observer_poll.unwrap().value);
     }
 
     /// ケース 2: 日本語 IME + IME OFF → observer_poll に Some(false)
@@ -310,7 +311,7 @@ mod tests {
             None,
         );
         assert!(update.observer_poll.is_some());
-        assert_eq!(update.observer_poll.unwrap().value, false);
+        assert!(!update.observer_poll.unwrap().value);
     }
 
     /// ケース 3: 非日本語 IME → observer_poll に Some(false)（non-Japanese → IME 不活性）
@@ -331,7 +332,7 @@ mod tests {
         );
         // known_not_japanese → (Some(false), false, true, true)
         assert!(update.observer_poll.is_some());
-        assert_eq!(update.observer_poll.unwrap().value, false);
+        assert!(!update.observer_poll.unwrap().value);
         assert!(!update.increment_miss_count);
         assert!(update.clear_force_on_broken_app_bootstrap);
         assert!(update.clear_force_on_panic_reset);

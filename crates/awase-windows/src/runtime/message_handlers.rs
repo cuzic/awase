@@ -9,13 +9,15 @@
 //! `tray::tray_wnd_proc` からも呼ばれる（詳細は `tray_wnd_proc` の doc 参照）。
 
 use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, PostQuitMessage, GUITHREADINFO};
+use windows::Win32::UI::WindowsAndMessaging::{GetGUIThreadInfo, GUITHREADINFO};
 
 use crate::focus::FocusKind;
 use crate::hook;
 use crate::hook::CallbackResult;
+use crate::runtime::engine_window::PumpContext;
 use crate::tray;
 use crate::vk::VkCodeExt;
 use crate::win32::post_to_main_thread;
@@ -25,6 +27,36 @@ use crate::{
 };
 use awase::platform::ImeOpenOutcome;
 use awase::types::{ContextChange, VkCode};
+
+static DRAIN_PENDING: AtomicBool = AtomicBool::new(false);
+static DRAIN_RERUN_PENDING: AtomicBool = AtomicBool::new(false);
+
+fn recover_pending_drain_request() {
+    if DRAIN_PENDING.load(Ordering::Acquire) {
+        return;
+    }
+    if DRAIN_RERUN_PENDING.swap(false, Ordering::AcqRel) {
+        log::debug!("[drain] recovering deferred drain request");
+        post_to_main_thread(crate::tsf::probe_bridge::WM_DRAIN_OUTPUT_QUEUE);
+    }
+}
+
+fn finish_drain() {
+    DRAIN_PENDING.store(false, Ordering::Release);
+    recover_pending_drain_request();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyOrigin {
+    Hook(PumpContext),
+    DeferredReplay,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyDelivery {
+    Consumed,
+    Reinjected,
+}
 
 use crate::app::{
     check_keyboard_layout_on_change, launch_bug_report, launch_settings, reload_config,
@@ -45,16 +77,34 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
-/// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
-pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
-    // ウォッチドッグ・IME ポーリング用アクティビティタイムスタンプ更新（物理キーのみ）
-    app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
+pub(crate) fn deliver_key_event(
+    app: &mut Runtime,
+    event: awase::types::RawKeyEvent,
+    origin: KeyOrigin,
+) -> KeyDelivery {
+    if crate::runtime::engine_window::take_needs_engine_resync() {
+        let ctx = app.build_ctx();
+        let decision = app
+            .engine
+            .on_command(awase::engine::EngineCommand::FocusChanged, &ctx);
+        app.execute_decision_suppressed(decision);
+    }
+
+    if matches!(origin, KeyOrigin::Hook(_)) {
+        app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
+    }
+
+    if matches!(origin, KeyOrigin::Hook(PumpContext::Nested)) {
+        app.executor.enqueue_reinject(event);
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+        return KeyDelivery::Reinjected;
+    }
 
     // NonText フォーカス（タスクバー等）はすべて OS にパススルー
     if app.platform_state.focus.focus_kind == FocusKind::NonText {
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
-        return;
+        return KeyDelivery::Reinjected;
     }
 
     // ── Post-bypass passthrough（Ctrl+J 等 tmux prefix 直後のコマンドキー）──
@@ -76,7 +126,7 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
-        return;
+        return KeyDelivery::Reinjected;
     }
 
     let result = app.process_key_event(event);
@@ -118,7 +168,20 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         }
         app.executor.enqueue_reinject(event);
         post_to_main_thread(WM_EXECUTE_EFFECTS);
+        KeyDelivery::Reinjected
+    } else {
+        KeyDelivery::Consumed
     }
+}
+
+/// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
+pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
+    let _ = deliver_key_event(
+        app,
+        event,
+        KeyOrigin::Hook(crate::runtime::engine_window::current_pump_context()),
+    );
+    recover_pending_drain_request();
 }
 
 /// WM_TIMER ハンドラ
@@ -224,6 +287,8 @@ pub(crate) unsafe fn handle_wm_timer(
             } else {
                 log::trace!("Hook watchdog: last activity {stale_ms}ms ago");
             }
+            crate::hook_channel::recover_stuck_wake_if_needed();
+            recover_pending_drain_request();
         }
         Some(timer_id) => {
             log::debug!("WM_TIMER fired: logical_id={timer_id}");
@@ -294,6 +359,7 @@ pub(crate) unsafe fn handle_wm_timer(
             DispatchMessageW(&raw const *msg);
         }
     }
+    recover_pending_drain_request();
 }
 
 /// WM_EXECUTE_EFFECTS ハンドラ
@@ -304,6 +370,7 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     app.dispatch_outcomes(outcomes);
     // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
     app.drain_runtime_requests();
+    recover_pending_drain_request();
 }
 
 // ── 非同期 IME apply 完了の WM ルーティング ──────────────────────────────────
@@ -706,7 +773,11 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         Some(tray::TrayCommand::Toggle) => {
             let _ = with_app(Runtime::toggle_engine);
         }
-        Some(tray::TrayCommand::Exit) => PostQuitMessage(0),
+        Some(tray::TrayCommand::Exit) => {
+            use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
+            crate::request_quit();
+            post_to_main_thread(WM_QUIT);
+        }
         Some(tray::TrayCommand::SelectLayout(index)) => {
             let _ = with_app(|app| app.switch_layout(index));
         }
@@ -943,6 +1014,10 @@ fn write_bug_report_diagnostics(
 
 /// WM_DRAIN_OUTPUT_QUEUE ハンドラ
 pub(crate) unsafe fn handle_wm_drain_output_queue() {
+    if DRAIN_PENDING.swap(true, Ordering::AcqRel) {
+        DRAIN_RERUN_PENDING.store(true, Ordering::Release);
+        return;
+    }
     // [drain-start] order-bug 調査用: OUTPUT_GATE 解除から drain 開始までのギャップを観測する。
     // この間に届く inline キーが drain 待ちキーを追い越して [engine-input] に流れていないか
     // タイムスタンプで突き合わせるための起点ログ。
@@ -962,16 +1037,24 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
-    let queue = {
+    let mut drained = false;
+    let queue = with_app(|app| {
         let mut events = crate::INPUT_DEFER.take_all();
-        let _ = with_app(|app| {
-            for ev in &mut events {
-                app.enrich_ime_relevance(ev);
-                log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
-            }
-        });
+        drained = true;
+        for ev in &mut events {
+            app.enrich_ime_relevance(ev);
+            log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
+        }
         events
+    });
+    let Some(queue) = queue else {
+        finish_drain();
+        return;
     };
+    if !drained {
+        finish_drain();
+        return;
+    }
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
@@ -986,13 +1069,12 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                     now_us,
                     now_us.saturating_sub(queued_event.timestamp) / 1000,
                 );
-                let result = app.process_key_event(*queued_event);
-                if matches!(result, CallbackResult::PassThrough) {
+                let delivery = deliver_key_event(app, *queued_event, KeyOrigin::DeferredReplay);
+                if matches!(delivery, KeyDelivery::Reinjected) {
                     log::debug!(
                         "[output-drain] PassThrough → enqueue ReinjectKey vk=0x{:02X} {:?} (drain has no hook→OS path)",
                         queued_event.vk_code, queued_event.event_type,
                     );
-                    app.executor.enqueue_reinject(*queued_event);
                     any_reinject = true;
                 }
             }
@@ -1043,6 +1125,54 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     let _ = with_app(|app| {
         app.drain_runtime_requests();
     });
+    finish_drain();
+}
+
+#[cfg(test)]
+pub(crate) mod drain_pending_test_api {
+    use super::{recover_pending_drain_request, DRAIN_PENDING, DRAIN_RERUN_PENDING};
+    use std::sync::atomic::Ordering;
+
+    pub(crate) fn reset() {
+        DRAIN_PENDING.store(false, Ordering::Release);
+        DRAIN_RERUN_PENDING.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn simulate_reentrant_drain_request() {
+        DRAIN_PENDING.store(true, Ordering::Release);
+        if DRAIN_PENDING.swap(true, Ordering::AcqRel) {
+            DRAIN_RERUN_PENDING.store(true, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn finish_active_without_recovery() {
+        DRAIN_PENDING.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn recover() {
+        recover_pending_drain_request();
+    }
+
+    pub(crate) fn rerun_pending() -> bool {
+        DRAIN_RERUN_PENDING.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn drain_pending_reentrant_request_is_recovered_by_next_handler() {
+        super::drain_pending_test_api::reset();
+
+        super::drain_pending_test_api::simulate_reentrant_drain_request();
+        assert!(super::drain_pending_test_api::rerun_pending());
+
+        super::drain_pending_test_api::finish_active_without_recovery();
+        super::drain_pending_test_api::recover();
+        assert!(!super::drain_pending_test_api::rerun_pending());
+
+        super::drain_pending_test_api::reset();
+    }
 }
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）

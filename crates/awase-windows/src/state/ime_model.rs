@@ -765,7 +765,7 @@ mod tests {
             },
         ));
         assert!(!model.desired_open);
-        assert_eq!(model.last_intent.as_ref().unwrap().target, false);
+        assert!(!model.last_intent.as_ref().unwrap().target);
     }
 
     #[test]
@@ -801,15 +801,14 @@ mod tests {
             )),
         ));
         assert!(model.desired_open, "observer は desired を壊さない");
-        assert_eq!(
-            model
+        assert!(
+            !model
                 .observations
                 .per_source
                 .observer_poll
                 .as_ref()
                 .unwrap()
-                .open,
-            false
+                .open
         );
     }
 
@@ -851,7 +850,7 @@ mod tests {
             model.last_intent.is_some(),
             "conv 由来の open 推論は last_intent (ユーザー明示意図) を消さない"
         );
-        assert_eq!(
+        assert!(
             model
                 .observations
                 .per_source
@@ -859,7 +858,6 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .open,
-            true,
             "ConvOpenInference は ConvBitsInference と異なり正式な open 観測として記録される"
         );
         assert!(

@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! `docs/layer-boundaries.md` のレイヤー境界ルールのうち、これまで検出手段が
 //! 手動 grep のみだった 9 件 (A-2 / B-1 / B-2 / C-4 / C-5 / C-6 / D-1 / D-2 / E-1) を
 //! ソースファイルのテキスト走査で自動化した回帰テスト。

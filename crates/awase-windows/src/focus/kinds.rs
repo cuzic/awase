@@ -138,7 +138,7 @@ mod tests {
     fn test_bypass_state_copy_clone() {
         let state = FocusKind::NonText;
         let copied = state; // Copy
-        let cloned = state.clone(); // Clone
+        let cloned = state; // Clone
         assert_eq!(copied, FocusKind::NonText);
         assert_eq!(cloned, FocusKind::NonText);
     }

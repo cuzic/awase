@@ -145,13 +145,5 @@ pub const WM_DRAIN_OUTPUT_QUEUE: u32 = 0x8000 + 18;
 
 /// OUTPUT_GATE.active 解除後に呼ぶ。キューに溜まったキーを再配送するメッセージを投げる。
 pub(crate) fn post_drain_output_queue() {
-    use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
-    let _ = unsafe {
-        PostMessageW(
-            None,
-            WM_DRAIN_OUTPUT_QUEUE,
-            windows::Win32::Foundation::WPARAM(0),
-            windows::Win32::Foundation::LPARAM(0),
-        )
-    };
+    crate::win32::post_to_main_thread(WM_DRAIN_OUTPUT_QUEUE);
 }

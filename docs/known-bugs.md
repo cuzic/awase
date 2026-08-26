@@ -10501,3 +10501,57 @@ x86_64-pc-windows-msvc -p awase-windows`（CI `windows-cross-check` ジョブ
    コンパイル時間の無駄」だったが、対応しようとすると別のCIジョブを
    壊す方が実害が大きいため、Cargo.tomlにその理由をコメントで残し
    現状維持とした。
+---
+
+## BUG-80: 起動時・モーダルポンプ中のフックキー配送で打鍵が消える/順序が壊れる可能性
+
+**症状:** エンジンスレッドが通常の `run_message_loop` 外でネストしたモーダルポンプ
+（トレイメニュー等）を回している間、フック由来キーの配送・処理順序が崩れる可能性が
+あった。ADR-105適用前は `PostThreadMessageW` のスレッドメッセージがネストポンプで
+取り出されても通常の手書きmatchディスパッチを通らず、打鍵が恒久的に失われうる。
+
+**修正:** ADR-105/102実装でエンジンスレッド専用HWND宛 `PostMessageW` に統一し、
+`engine_wnd_proc -> dispatch_engine_message` を唯一の配送入口にした。さらに
+`deliver_key_event` を単一入口化し、`INPUT_DEFER` drain経由もNonText/post-bypass/
+PassThrough再注入の同じ判断を通す。フックコールバックの `Box::new` は
+`HookKeyRing`（SPSC、CAP=256、満杯時は最新破棄+dropped加算）へ置換した。
+
+**テスト:** `hook_channel` の順序/オーバーフロー純粋テスト、`architecture_guard` の
+`process_key_event` 単一入口ガード、Win32投稿チョークポイントガード。
+
+---
+
+## BUG-81: bootstrap直後の初回フォーカスだけ定常のprocess_changed判定を通らない
+
+**症状:** 起動後最初のフォーカスは `last_pid` が未設定のため、定常経路の
+`process_changed` 判定ではプロセス変更として扱われず、フォーカススコープの初期化が
+IME cache初期化に先行しない可能性があった。
+
+**修正:** `Runtime::establish_initial_focus_scope` を追加し、bootstrapで
+`initialize_ime_cache()` より前に1回だけ呼ぶ。ここでは belief には触れず、現在の
+フォーカス情報、focus_epoch、output通知、active keymaps、injection mode だけを確立する。
+
+**テスト:** `architecture_guard::establish_initial_focus_scope_does_not_write_ime_belief`。
+
+---
+
+## BUG-82: トレイメニュー表示中のCtrl+C/--exit-afterでアプリが終了しない可能性
+
+**症状:** Ctrl+Cハンドラと `--exit-after` がエンジンスレッドへ直接 `WM_QUIT` を
+`PostThreadMessageW` していた。トレイメニュー等のネストしたモーダルポンプ中に届くと、
+外側の `run_message_loop` ではなく内側ポンプだけが終了し、アプリ終了要求が失われる
+可能性があった。
+
+**修正:** 両経路を `request_quit()` + `win32::post_to_main_thread(WM_QUIT)` に統一。
+`post_to_main_thread` は `WM_QUIT` を内部quit-requestメッセージへ変換し、メインポンプ中は
+即 `PostQuitMessage`、`ModalPumpGuard` 中はDropまで送出を遅延する。
+
+**テスト:** `architecture_guard::engine_thread_posts_go_through_win32_chokepoint` と
+`engine_window` のモーダル入退場resyncテスト。
+
+**残存リスク（2026-08-26追記）:** `timer.rs::SetTimer(None, 0, ms, None)` と
+`app/bootstrap.rs::RegisterHotKey(None, ..)` は、今も呼び出しスレッドのキューへ
+`WM_TIMER` / `WM_HOTKEY` を届ける NULL-hwnd thread message 源である。トレイメニュー等の
+ネストしたモーダルポンプ中に取り出されると、外側の `run_message_loop` の手書きdispatchに
+戻らず消失しうる。`tsf/probe_bridge.rs::post_drain_output_queue` に残っていた
+`PostMessageW(None, WM_DRAIN_OUTPUT_QUEUE, ..)` は `win32::post_to_main_thread` 経由へ修正済み。

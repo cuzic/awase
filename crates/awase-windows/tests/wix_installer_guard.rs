@@ -1,3 +1,4 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! `wix/main.wxs` の不変条件を固定する grep ベース回帰テスト。
 //!
 //! ADR-099（バージョンアップ時の設定消失を防ぐ）決定0は、MSI メジャー

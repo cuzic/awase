@@ -104,6 +104,32 @@ impl Runtime {
         process_changed
     }
 
+    pub(crate) fn establish_initial_focus_scope(&mut self) {
+        let prev = self.focus_identity_snapshot();
+        let prev_started_ms = self.platform_state.focus.last_focus_transition_ms;
+        let probe = unsafe { crate::focus::probe::read_focus_snapshot() };
+        let Some(classified) = self.classify_focus_probe(probe) else {
+            return;
+        };
+        let _ = self.advance_focus_tracking(&classified);
+        let next = self.focus_identity_snapshot();
+        self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
+
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.focus.last_focus_change_ms = tick_ms.0;
+        self.platform_state.focus.focus_epoch =
+            self.platform_state.focus.focus_epoch.wrapping_add(1);
+        self.platform.notify_focus_changed();
+
+        let process_name = self.platform.focus.process_name().to_owned();
+        self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+
+        let hint = self.platform.injection_hint();
+        let new_mode =
+            crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
+        self.platform.update_injection_mode(new_mode);
+    }
+
     /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
     ///
     /// injection_mode の更新は `apply_focus_probe_result` が `advance_focus_tracking` 後に行う。

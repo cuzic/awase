@@ -1957,9 +1957,10 @@ mod tests {
         // 避けるため drift.started_at を直接バックデートして閾値超過を模す。
         ps.ime.shadow_model.observations.drift = Some(ImeDrift {
             started_at: std::time::Instant::now()
-                - std::time::Duration::from_millis(
+                .checked_sub(std::time::Duration::from_millis(
                     crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
-                ),
+                ))
+                .expect("test instant can be backdated"),
         });
         let now = std::time::Instant::now();
         let explicit_intent = ps.ime.explicit_intent();
@@ -1994,9 +1995,10 @@ mod tests {
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let stale_at = std::time::Instant::now()
-            - std::time::Duration::from_millis(
+            .checked_sub(std::time::Duration::from_millis(
                 crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200,
-            );
+            ))
+            .expect("test instant can be backdated");
         ps.ime
             .shadow_model
             .observations
