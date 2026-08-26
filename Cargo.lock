@@ -539,6 +539,7 @@ dependencies = [
  "awase-windows",
  "eframe",
  "egui-wgpu",
+ "embed-manifest",
  "env_logger",
  "glutin",
  "log",
@@ -565,6 +566,7 @@ dependencies = [
  "awase",
  "awase-gji-config",
  "awase-vkmap",
+ "embed-manifest",
  "env_logger",
  "itertools",
  "log",
@@ -1218,6 +1220,12 @@ checksum = "9e4cadcff7a5353ba72b7fea76bf2122b5ebdbc68e8155aa56dfdea90083fe1b"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "embed-manifest"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94cdc65b1cf9e871453ce2f86f5aaec24ff2eaa36a1fa3e02e441dddc3613b99"
 
 [[package]]
 name = "endi"

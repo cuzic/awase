@@ -11,6 +11,8 @@ path = "src/lib.rs"
 name = "awase"
 path = "src/main.rs"
 
+[build-dependencies]
+embed-manifest = "1.5"
 
 [dependencies]
 awase = { path = "../.." }

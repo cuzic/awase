@@ -10378,3 +10378,92 @@ Windows 実機セッションに委ねる（2台の PC 間で RDP 接続→切�
 **関連:** BUG-48（Win キー KeyUp 消失によるスタック、`is_held_fresh`の
 初出）、BUG-61/BUG-62（Alt+かな による JIS かな直接入力への不可逆切替、
 今回無効化中は例外なく保護を止める判断の対象）。
+
+---
+
+## BUG-79: awase.exe / awase-settings.exe にアプリケーションマニフェストが無いため、Windows のプログラム互換性アシスタント(PCA)が「管理者として実行」フラグを誤って立て、自動起動が無言で失敗する
+
+**症状（ユーザー報告、2026-08-26）:** 2件の独立した報告。
+
+1. 川西さま宛メール: インストール時に「このプログラムには互換性の問題が
+   あります」という警告（PCA のダイアログ文言）が出る。無視してインストール
+   続行。互換性タブの「互換モードで実行する」チェックを外し、タスク
+   スケジューラ登録も削除したが自動起動は直らなかった。アンインストール→
+   再インストールでも同じ警告が再発。その後 Windows の「互換性の
+   トラブルシューティング」を実行すると互換モードが「Windows 8」になり
+   （元々はチェック無し）、以後 UAC 画面を経ずに起動するようになった。
+   自動起動は結局直らず、タスクトレイに常駐させて手動起動する運用で
+   妥協。
+2. 望月正敏さま: 「スタートアップ」フォルダへのショートカット設置、
+   タスクスケジューラでの管理者権限ログオン起動設定、両方とも自動起動が
+   効かなかった。手動起動は毎回 UAC 画面を経由すれば可能。
+
+**推定原因:** `awase.exe`/`awase-settings.exe` には Windows アプリケーション
+マニフェスト（`requestedExecutionLevel`）もバージョンリソースも一切
+埋め込まれていなかった（`crates/awase-windows`/`crates/awase-settings` に
+`build.rs`・`.manifest`・winres 等が存在しなかった）。マニフェストの無い
+exe は Windows の「プログラム互換性アシスタント(PCA)」のヒューリスティック
+対象になり、起動時に何らかの問題（アクセス拒否等）を検知すると
+`HKCU\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`
+にそのexeパスをキーとして `RUNASADMIN` フラグを自動で立てることがある
+（互換性タブの「管理者としてこのプログラムを実行する」チェックボックスは
+このレジストリ設定の GUI）。一度このフラグが付くと、手動ダブルクリックは
+UAC 同意画面を経て起動できるが、ログオン時の非対話的な自動起動
+（スタートアップフォルダのショートカット、Runキー、管理者権限を持たない
+アカウントでのタスクスケジューラ）は同意画面を出す相手がいないため
+サイレントに起動失敗する。これが両報告に共通する「自動起動だけが効かず、
+手動はUAC経由なら起動できる」という症状と一致する。なお実行ファイルは
+`x86_64-pc-windows-msvc`（64bit）でビルドされているため、32bit専用の
+「UACインストーラ検出ヒューリスティック」（ファイル名/バージョン情報に
+install/setup/update等の単語を含む32bit exeを自動昇格対象にする別の
+仕組み）自体は該当しない。
+
+**採用した対策:** `embed-manifest` crate（純Rust実装、外部ツール不要）を
+`crates/awase-windows`・`crates/awase-settings` の `[build-dependencies]`
+に追加し、両クレートに `build.rs` を新設して `requestedExecutionLevel:
+asInvoker` を含むマニフェストを埋め込んだ（`Awase.Awase`/`Awase.Settings`
+という assemblyIdentity）。これにより PCA のヒューリスティック自体が
+発動しなくなる（マニフェストで実行レベルを明示したexeはPCAの対象外）。
+副次効果として、DPI awareness (permonitorv2)・active code page (UTF-8)・
+long path awareness も同時に有効化される。
+
+**ハマった点（クロスビルド）:** `embed_manifest::embed_manifest()` は
+`-msvc` ターゲットでは `/MANIFEST:EMBED` + `/MANIFESTINPUT:...` という
+リンカフラグを発行し、`lld-link` はこれを解決するのに `mt.exe`
+（Windows SDK付属のManifest Tool）を必要とする。CI の `windows-cross-check`
+ジョブ（Linux + cargo-xwin）は `mt.exe` を持たないため、素直に
+`embed_manifest()` を呼ぶと `lld-link: error: unable to find mt.exe in
+PATH` でリンクが失敗し CI を壊す（実際に再現・確認済み）。回避策として、
+`embed_manifest()` 呼び出し中だけ環境変数 `TARGET` を `-msvc`→`-gnu` に
+偽装し、外部ツール不要な `-gnu` 用のコード経路（純Rustで `.rsrc` COFF
+オブジェクトを直接生成しリンクする）を強制的に使わせている
+（`build.rs::embed_awase_manifest`）。生成される COFF オブジェクトは
+ABI 依存の内容を持たないデータリソースのみのため、`-msvc` ターゲットの
+バイナリにリンクしても問題ない。この偽装により `windows-latest`
+実機ビルド・`cargo xwin build --tests --target x86_64-pc-windows-msvc -p
+awase-windows`（CI と同一コマンド）の両方で実際にリンクが成功することを
+確認済み。
+
+**既知の限界（正直に記録）:**
+- PCA が RUNASADMIN フラグを立てるメカニズムの詳細（何が「互換性の問題」
+  として検知されたか）は Windows 内部のヒューリスティックであり、
+  マニフェスト埋め込みで「今後は発動しなくなる」ことは一般的な推奨事項
+  として妥当だが、**既に `RUNASADMIN` フラグが立ってしまった環境**では
+  このフラグ自体は残り続ける（新しいインストール先パスなら影響しないが、
+  同一パスへの上書きインストールでは残る可能性がある）。該当ユーザーには
+  互換性タブの「管理者としてこのプログラムを実行する」チェックを手動で
+  外してもらう案内が別途必要。
+- 実機（Windows）でのマニフェスト埋め込み後の動作確認（PCA警告が出なく
+  なること、自動起動が実際に成功すること）は未実施。次回 Windows 実機
+  セッションでの検証が必要。
+
+**テスト:** ビルド成果物の検証のため、`cargo xwin build --tests --target
+x86_64-pc-windows-msvc -p awase-windows`（CI `windows-cross-check` ジョブ
+と同一コマンド）でのリンク成功、および `cargo nextest run --workspace
+--lib`（1381件）・`architecture_guard`/`golden_scenarios`/
+`layer_boundary_guard`（70件）の全PASSを確認済み。マニフェスト埋め込み
+自体の unit test は無い（`build.rs` の出力はリンカへの副作用のため、
+リンク成功そのものが検証になる）。
+
+**関連:** なし（新規の不具合ファミリー。今後インストーラ/exe起動周りの
+問題が出た場合はここを参照）。
