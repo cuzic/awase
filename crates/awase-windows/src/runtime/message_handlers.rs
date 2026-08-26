@@ -125,7 +125,17 @@ pub(crate) fn deliver_key_event(
         // 先にキャンセルする。例: IME ON + め入力中 → Ctrl+J → tmux prefix。
         // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
         // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
-        if is_key_down && event.modifier_snapshot.ctrl && !event.vk_code.is_passthrough() {
+        //
+        // origin を KeyOrigin::Hook(PumpContext::Main) に限定する（指摘4、低コスト案）。
+        // 旧 drain 経路（DeferredReplay）はこのロジックを一切通っておらず、この
+        // 限定はその挙動と厳密に一致するため退行リスクがゼロ。世代照合による
+        // DeferredReplay 対応の完全版は見送り、docs/known-bugs.md に起票のみ行う
+        // （gate 中に Ctrl+J 等が来ても composition キャンセルが効かない既知の隙間）。
+        if matches!(origin, KeyOrigin::Hook(PumpContext::Main))
+            && is_key_down
+            && event.modifier_snapshot.ctrl
+            && !event.vk_code.is_passthrough()
+        {
             let candidate_visible = app.platform.is_composition_warm_in_tsf();
             log::debug!(
                 "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",

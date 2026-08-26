@@ -10807,3 +10807,29 @@ Win32呼び出し・デバッガブレーク等）間に、ユーザーが CAP �
 
 **状態:** 対応済み（2026-08-26）。実機での overflow 再現確認は未実施
 （発生条件が「エンジンスレッドの長時間ポンプ停止」で日常的な再現手順が無いため）。
+
+---
+
+## BUG-89: gate中にdeferされたCtrl+key（tmux prefix等）ではGJI composition キャンセルが効かない（ADR-102/105コードレビュー指摘4、未対応）
+
+**症状:** `deliver_key_event`（`message_handlers.rs`）の GJI composition キャンセル
+ブロック（Ctrl+非修飾キーの PassThrough 時に `cancel_ime_composition()` を呼ぶ、
+tmux prefix 等の Ctrl+key ショートカット用）は `KeyOrigin::Hook(PumpContext::Main)`
+にのみ限定した（2026-08-26、コードレビュー指摘4への対応）。`OUTPUT_GATE`/
+`FOCUS_RESYNC` gate 中に `INPUT_DEFER` へ退避され、後で `KeyOrigin::DeferredReplay`
+として `handle_wm_drain_output_queue` から再生される Ctrl+key（例: gate 中に押した
+tmux prefix Ctrl+J）は、このキャンセル処理を通らない。
+
+**実害:** GJI 候補ウィンドウが表示中に gate 明けで drain された Ctrl+key が GJI に
+IME ショートカットとして横取りされる可能性がある（通常の Hook(Main) 経路と異なり
+composition が事前にキャンセルされないため）。
+
+**対応しなかった理由:** 世代照合（`KeyOrigin::DeferredReplay { focus_epoch }` を
+追加し、gate 開始時点の focus_epoch と drain 時点を比較して安全なら適用する）の
+完全版は設計・実装コストに対して発生頻度（gate は数十〜数百ms の短時間ウィンドウ、
+かつその間に Ctrl+key を押す頻度は低い）が見合わないと判断し、低コスト案（origin
+限定）のみ採用した。今回の変更は旧 drain 経路（この処理が実装される前の状態）と
+挙動が一致するため、退行ではなく「以前からあった隙間を新規に塞がなかった」だけ。
+
+**状態:** 未対応（意図的見送り、2026-08-26）。再発・実害報告があれば
+`KeyOrigin::DeferredReplay { focus_epoch: u64 }` 化を検討する。
