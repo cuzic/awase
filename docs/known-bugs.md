@@ -3086,6 +3086,34 @@ Opusは他にS-3(到達不能分岐2箇所)・S-5(ADR-084への例外追記漏�
 指摘したが、正しさに影響しない/実機データが必要なため今回は見送り、Task 9の
 チェックリストに反映済み。
 
+**追補8（2026-08-27、PR #111を正しく対象にした`/code-review`で発見した追加バグを修正）:**
+
+追補7の直後、初回の`/code-review`実行がメインworktreeの無関係な旧ブランチ
+（`docs/adr-102-review-findings-design`）を誤って対象にしていたことが判明し、
+PR番号を明示指定して再実行した。8体のfinderがPR #111
+（`feat/bug25-gji-half-alnum-entry` → `develop`）を正しく検証し、特に以下の
+2件は追補7の修正が新たに埋め込んでいた重大バグだった。
+
+1. `send_ime_mode_key_with_shift_release_prefix`（`ime.rs`）が`SendInput`の
+   送信数不一致時もログ警告のみで無条件に`true`を返しており、
+   `Output::send_gji_half_width_alnum_toggle`の「戻り値`false`ならbeliefを
+   進めてはならない（INV-D）」という契約を実質満たしていなかった。実際の
+   送信数と一致した場合のみ`true`を返すよう修正。
+2. 追補7のB-3修正（GJI exit送信失敗時にラッチを戻しbelief補正をスキップ
+   する早期return）が、`kp_restore_kana_from_half_width`の他3系統の呼び出し元
+   （`ir_notify_focus_changed`・`kp_stage_shadow_ime_toggle`×2・
+   `kp_stage_post_decision`、いずれも`prepend_synthetic_shift_up=false`）の
+   belief補正も無条件にスキップしてしまい、engineが`NotRomajiInput`のまま
+   固着する新規バグになっていた。`prepend_synthetic_shift_up`で呼び出し元を
+   区別し、`kp_shift_conv_guard_key_up`起点（ユーザーが今まさに同じアプリで
+   再試行できる文脈）のときだけラッチを戻してreturnし、他3系統は送信失敗
+   でもbelief補正を続行するよう修正した。
+
+このほかsynthetic Shift↑の3重送信・到達不能分岐・match arm統合・
+composing判定の重複計算・Win/Alt判定点の重複記述・未使用フィールド
+（`last_half_width_entry_ms`）を修正した。詳細はPR #111のコミット
+`45f532cf`を参照。
+
 ---
 
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
