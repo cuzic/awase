@@ -793,15 +793,31 @@ impl AppConfig {
                     .eq_ignore_ascii_case(canonical_thumb_key_name(thumb_key))
         }
 
+        // `field == "keys.ime_on"` だけ文面を分ける理由: `suppress_ime_combos`
+        // は `engine_active &&` を前提とするため、IME が OFF（engine 非活性）の
+        // 間はこのガードが一切効かず、`keys.ime_on` の bare 親指キーは従来どおり
+        // 発火する。`keys.ime_on` の主目的（IME OFF から ON にする）はまさに
+        // この状態なので、「使われません」は不正確で、正しく動く主用途を
+        // ユーザーが誤って壊しかねない（/code-review 指摘）。一方
+        // `keys.ime_off`/`keys.ime_toggle` は engine 活性中（＝IME が ON で
+        // チョードが成立しうる間）に使うのが主目的であり、その間は本当に
+        // 発火しないため、既存の文面のままで正確。
         fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
             if combos
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
+                let detail = if field == "keys.ime_on" {
+                    "IME が ON（同時打鍵が成立しうる間）はチョード判定を優先するため、\
+                     このコンボは発火しません。ただし IME が OFF の間の単独タップでは \
+                     引き続き IME ON として機能します。"
+                } else {
+                    "IME が ON の間は同時打鍵判定を優先するため、このキーは IME ON/OFF \
+                     コンボには使われません。"
+                };
                 w.push(format!(
                     "{field} に親指キー（{thumb_key}）が修飾キーなしで設定されています。\
-                     IME が ON の間は同時打鍵判定を優先するため、このキーは IME ON/OFF \
-                     コンボには使われません。"
+                     {detail}"
                 ));
             }
         }
