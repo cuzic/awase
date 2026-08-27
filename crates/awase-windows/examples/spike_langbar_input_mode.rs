@@ -37,13 +37,30 @@
 //!   ひらがな⇔英数の切替(BUG-33/57 等の conv-mode belief 不整合の根本原因
 //!   になっている領域)を push で捉えられる可能性がある。
 //!
+//! ## 実機での訂正(重要): `ITfLangBarItemMgr`/`ITfSource` は独立
+//! `CoCreateInstance` では取得できない
+//!
+//! 当初 `CoCreateInstance(CLSID_TF_LangBarItemMgr, ...)` /
+//! `CoCreateInstance(CLSID_TF_InputProcessorProfiles, ...).cast::<ITfSource>()`
+//! で直接取得を試みたが、実機で前者は OS 標準の汎用4項目(言語/修正/
+//! キーボード/ヘルプ)しか見えず GJI 固有の項目に届かず、後者は
+//! `AdviseSink` が `CONNECT_E_CANNOTCONNECT`(0x80040202)で失敗した。
+//! Microsoft Learn の該当ページ(`ITfInputProcessorProfileActivationSink`
+//! Remarks、`ITfLangBarItemMgr` Remarks)を確認したところ、**どちらも
+//! 「`ITfThreadMgr::QueryInterface` で取得すること」と明記**されていた
+//! ——独立した `CoCreateInstance` は誤り。本スパイクは
+//! `CoCreateInstance(CLSID_TF_ThreadMgr, ...)` → `ITfThreadMgr::Activate()`
+//! → `.cast::<ITfLangBarItemMgr>()` / `.cast::<ITfSource>()` の順に修正した
+//! (`with_thread_mgr`)。
+//!
 //! なお `ITfCompartmentEventSink`(GUID_COMPARTMENT_KEYBOARD_INPUTMODE_
-//! CONVERSION 等)は、対象アプリ自身の `ITfThreadMgr`/`ITfDocumentMgr` に
-//! 紐づくスコープのため、無関係な外部プロセスから `CoCreateInstance` で
-//! 直接その compartment を掴む経路が存在しない(自分自身の空の
-//! ThreadMgr が返るだけ)。本スパイクでは意図的に対象外にしている——
-//! 上記2つ(langbar/profile)がどちらも cross-process で機能することが
-//! 実機で先に確認できてから、compartment 側の再検討価値を判断する。
+//! CONVERSION 等)も同じ `ITfThreadMgr`(の `ITfCompartmentMgr`/グローバル
+//! compartment)経由で成立する可能性が、この訂正によって再浮上している。
+//! ただし対象は「無関係な外部プロセスの `ITfThreadMgr` を自分で `Activate`
+//! した場合に、他プロセスの実際の compartment 値まで見えるか」という
+//! 別の未検証の疑問(langbar/profile が広域ブロードキャストである保証は
+//! あるが、per-document compartment が同様に共有されるかは別問題)のため、
+//! 本スパイクでは上記2つの実機確認結果が出るまで着手しない。
 //!
 //! # 実行方法(必ず実機)
 //!
@@ -79,11 +96,10 @@ mod langbar_probe {
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
     use windows::Win32::UI::TextServices::{
-        CLSID_TF_InputProcessorProfiles, CLSID_TF_LangBarItemMgr,
-        ITfInputProcessorProfileActivationSink, ITfInputProcessorProfileActivationSink_Impl,
-        ITfInputProcessorProfiles, ITfLangBarItem, ITfLangBarItemButton, ITfLangBarItemMgr,
-        ITfLangBarItemSink, ITfLangBarItemSink_Impl, ITfMenu, ITfMenu_Impl, ITfSource,
-        GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
+        CLSID_TF_ThreadMgr, ITfInputProcessorProfileActivationSink,
+        ITfInputProcessorProfileActivationSink_Impl, ITfLangBarItem, ITfLangBarItemButton,
+        ITfLangBarItemMgr, ITfLangBarItemSink, ITfLangBarItemSink_Impl, ITfMenu, ITfMenu_Impl,
+        ITfSource, ITfThreadMgr, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -135,11 +151,40 @@ mod langbar_probe {
         None
     }
 
-    fn with_com<F: FnOnce() -> anyhow::Result<()>>(f: F) -> anyhow::Result<()> {
+    /// COM 初期化 → `ITfThreadMgr` 生成・`Activate()` → `f` 実行 →
+    /// `Deactivate()`/`CoUninitialize()` の一連の面倒を見る。
+    ///
+    /// `ITfLangBarItemMgr`/`ITfSource`(profile activation sink 用)は
+    /// Microsoft Learn によれば独立した `CoCreateInstance` ではなく
+    /// **`ITfThreadMgr::QueryInterface`** で取得することが公式に指定されて
+    /// いる。当初これを無視して独立 `CoCreateInstance` を試み、実機で
+    /// (1) `ITfLangBarItemMgr` は OS 標準の汎用4項目しか見えず GJI 固有
+    /// 項目に届かない、(2) `ITfSource::AdviseSink` が
+    /// `CONNECT_E_CANNOTCONNECT` で失敗、の2件の実機失敗を確認した後に
+    /// この訂正へ至った(モジュール doc 参照)。
+    fn with_thread_mgr<F: FnOnce(&ITfThreadMgr) -> anyhow::Result<()>>(f: F) -> anyhow::Result<()> {
         // SAFETY: プロセス起動直後、他に COM 呼び出しが走っていない状態での
         // 単発初期化。
         unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.ok()?;
-        let result = f();
+
+        let result = (|| -> anyhow::Result<()> {
+            // SAFETY: 標準的な in-proc/local COM オブジェクト生成。
+            let thread_mgr: ITfThreadMgr =
+                unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_ALL) }?;
+            // SAFETY: thread_mgr は上で生成した有効な COM 参照。Activate は
+            // ITfLangBarItemMgr/ITfSource 経由の以降の呼び出し全てに必要。
+            let client_id = unsafe { thread_mgr.Activate() }?;
+            println!("ITfThreadMgr::Activate: OK (client_id={client_id})");
+
+            let inner_result = f(&thread_mgr);
+
+            // SAFETY: thread_mgr は有効な COM 参照。Activate の成功に対して
+            // 1回だけ呼ぶ(エラーでも後片付けとして必ず試みる)。
+            let _ = unsafe { thread_mgr.Deactivate() };
+
+            inner_result
+        })();
+
         // SAFETY: 直前の CoInitializeEx 成功に対して1回だけ呼ぶ。
         unsafe { CoUninitialize() };
         result
@@ -229,11 +274,9 @@ mod langbar_probe {
     }
 
     pub(crate) fn run(select_uid: Option<u32>) -> anyhow::Result<()> {
-        with_com(|| {
-            // SAFETY: 標準的な in-proc COM オブジェクト生成。
-            let mgr: ITfLangBarItemMgr =
-                unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_ALL) }?;
-            println!("ITfLangBarItemMgr: OK");
+        with_thread_mgr(|thread_mgr| {
+            let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
+            println!("ITfLangBarItemMgr(via ITfThreadMgr::cast): OK");
 
             if let Some((name, button)) = find_button(&mgr) {
                 println!("GetItem: OK ({name})");
@@ -307,11 +350,9 @@ mod langbar_probe {
     }
 
     pub(crate) fn watch_profile(seconds: u32) -> anyhow::Result<()> {
-        with_com(|| {
-            // SAFETY: 標準的な in-proc COM オブジェクト生成。
-            let profiles: ITfInputProcessorProfiles =
-                unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_ALL) }?;
-            let source: ITfSource = profiles.cast()?;
+        with_thread_mgr(|thread_mgr| {
+            let source: ITfSource = thread_mgr.cast()?;
+            println!("ITfSource(via ITfThreadMgr::cast): OK");
             let sink: ITfInputProcessorProfileActivationSink = ProfileActivationLogger.into();
             // SAFETY: source は上で取得した有効な COM 参照。IID は静的定数。
             let cookie = unsafe {
@@ -355,10 +396,9 @@ mod langbar_probe {
     }
 
     pub(crate) fn watch_langbar(seconds: u32) -> anyhow::Result<()> {
-        with_com(|| {
-            // SAFETY: 標準的な in-proc COM オブジェクト生成。
-            let mgr: ITfLangBarItemMgr =
-                unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_ALL) }?;
+        with_thread_mgr(|thread_mgr| {
+            let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
+            println!("ITfLangBarItemMgr(via ITfThreadMgr::cast): OK");
             let Some((name, button)) = find_button(&mgr) else {
                 anyhow::bail!("候補 GUID どちらも GetItem 失敗(dump モードで先に確認すること)");
             };
