@@ -62,12 +62,27 @@
 //! あるが、per-document compartment が同様に共有されるかは別問題)のため、
 //! 本スパイクでは上記2つの実機確認結果が出るまで着手しない。
 //!
+//! ## アクチュエーション側その2(`--postmsg`、第5の経路)
+//!
+//! `--select` 経路(`ITfLangBarItemButton::OnMenuSelect`)は実機で
+//! `Ok(())` を返すが実際にはモードが切り替わらないことを2回確認した
+//! (edit session 完了待ちのメッセージポンプ追加後も同様)。`--postmsg` は
+//! 全く別の経路として、`SendInput` を一切使わず対象ウィンドウの
+//! メッセージキューへ `PostMessageW` で直接 `WM_KEYDOWN`/`WM_KEYUP`
+//! (`VK_DBE_ALPHANUMERIC`)を投げる。過去の `SendInput` 失敗
+//! (`docs/known-bugs.md` BUG-25 追補1・3)は awase 自身の低レベルフックに
+//! すら届かなかった——`SendInput` の低レベル注入層そのものに問題がある
+//! 可能性があるため、それを完全に迂回するこの経路は独立した実験になる。
+//!
 //! # 実行方法(必ず実機)
 //!
 //! ```powershell
-//! # 1. アクチュエーション: まずダンプのみ、次に --select=<uid>
+//! # 1. アクチュエーション(OnMenuSelect 経路): まずダンプのみ、次に --select=<uid>
 //! cargo run -p awase-windows --example spike_langbar_input_mode --release
 //! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --select=4
+//!
+//! # 1b. アクチュエーション(PostMessage 経路、第5の経路)
+//! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --postmsg
 //!
 //! # 2. 観測: それぞれ既定30秒間 advise した状態で待機する。実行中に
 //! #    物理的に IME 切替 / GJI モード切替を行い、コンソールに [profile-
@@ -90,6 +105,7 @@ mod langbar_probe {
     use std::time::{Duration, Instant};
 
     use windows::core::{implement, Interface, GUID, PCWSTR};
+    use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::HBITMAP;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
@@ -102,7 +118,8 @@ mod langbar_probe {
         ITfSource, ITfThreadMgr, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+        DispatchMessageW, GetForegroundWindow, GetGUIThreadInfo, PeekMessageW, PostMessageW,
+        TranslateMessage, GUITHREADINFO, MSG, PM_REMOVE, WM_KEYDOWN, WM_KEYUP,
     };
 
     /// GJI ビルドの「クラシック言語バー」入力モードボタン GUID(ポップアップ
@@ -135,6 +152,42 @@ mod langbar_probe {
                 GUID_LBI_INPUTMODE,
             ),
         ]
+    }
+
+    /// フォーカス中のウィンドウを `GetGUIThreadInfo` で探し、取れなければ
+    /// `GetForegroundWindow` にフォールバックする(`win32.rs::
+    /// get_gui_thread_info_with_timeout` と同じ優先順位、タイムアウト処理は
+    /// 省略した簡易版)。
+    fn find_target_hwnd() -> Option<HWND> {
+        let mut info = GUITHREADINFO {
+            cbSize: u32::try_from(size_of::<GUITHREADINFO>())
+                .expect("GUITHREADINFO size is a small constant that always fits in u32"),
+            ..Default::default()
+        };
+        // SAFETY: info は cbSize を正しく設定したスタック上の有効な構造体。
+        let hwnd = unsafe {
+            if GetGUIThreadInfo(0, &raw mut info).is_ok() {
+                if !info.hwndFocus.is_invalid() {
+                    Some(info.hwndFocus)
+                } else if !info.hwndActive.is_invalid() {
+                    Some(info.hwndActive)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if hwnd.is_some() {
+            return hwnd;
+        }
+        // SAFETY: GetForegroundWindow はどのスレッドからも安全に呼べる。
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.is_invalid() {
+            None
+        } else {
+            Some(fg)
+        }
     }
 
     /// `mgr` から候補 GUID を順に試し、最初に見つかった
@@ -436,6 +489,63 @@ mod langbar_probe {
             Ok(())
         })
     }
+
+    // ---------------------------------------------------------------
+    // アクチュエーション側その2(第5の経路): PostMessage による
+    // WM_KEYDOWN/WM_KEYUP 直接注入(SendInput を経由しない)
+    // ---------------------------------------------------------------
+
+    /// `VK_DBE_ALPHANUMERIC`(英数)の VK コード。`SendInput` 経由の注入は
+    /// BUG-25 追補1・3(`docs/known-bugs.md`)で scan=0x3A/scan=0 の両方とも
+    /// **awase 自身の `WH_KEYBOARD_LL` フックにすら届かない**ことが実機で
+    /// 確認済み(OS/ドライバ層で握り潰されている疑い)。本関数は `SendInput`
+    /// を一切使わず、対象ウィンドウのメッセージキューへ `PostMessageW` で
+    /// 直接 `WM_KEYDOWN`/`WM_KEYUP` を投げる——低レベルフックチェーンを
+    /// 完全に迂回する第5の経路。GJI の TSF キールーティングがこの経路を
+    /// 実際の物理キー入力として処理する保証はなく未検証。
+    const VK_DBE_ALPHANUMERIC: usize = 0xF0;
+
+    pub(crate) fn post_dbe_alphanumeric() -> anyhow::Result<()> {
+        let Some(hwnd) = find_target_hwnd() else {
+            anyhow::bail!("フォーカス中のウィンドウが見つかりません");
+        };
+        println!("target hwnd={hwnd:?}");
+
+        // lParam: bit0-15=repeat count(1), bit16-23=scan code(0=非衝突値、
+        // BUG-25 追補2の判断を踏襲), bit30=previous key state,
+        // bit31=transition state(KEYUP のみ1)。
+        let lparam_down = 1usize;
+        let lparam_up = 1usize | (1 << 30) | (1 << 31);
+
+        // SAFETY: hwnd は find_target_hwnd() が返した有効なウィンドウハンドル。
+        // PostMessageW は対象スレッドのメッセージキューに投げるだけで
+        // 同期呼び出しではないため、対象スレッドの応答性に依存しない。
+        let down = unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_KEYDOWN,
+                windows::Win32::Foundation::WPARAM(VK_DBE_ALPHANUMERIC),
+                windows::Win32::Foundation::LPARAM(isize::try_from(lparam_down)?),
+            )
+        };
+        println!("PostMessageW(WM_KEYDOWN) -> {down:?}");
+        std::thread::sleep(Duration::from_millis(30));
+        // SAFETY: 上と同じ hwnd に対する対の KEYUP。
+        let up = unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_KEYUP,
+                windows::Win32::Foundation::WPARAM(VK_DBE_ALPHANUMERIC),
+                windows::Win32::Foundation::LPARAM(isize::try_from(lparam_up)?),
+            )
+        };
+        println!("PostMessageW(WM_KEYUP) -> {up:?}");
+        println!(
+            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(戻り値は\
+             キューに積めたかどうかのみを示し、GJI が実際に処理したかは示さない)。"
+        );
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -457,6 +567,9 @@ fn main() -> anyhow::Result<()> {
     }
     if let Some(secs) = watch_arg("--watch-langbar") {
         return langbar_probe::watch_langbar(secs);
+    }
+    if args.iter().any(|a| a == "--postmsg") {
+        return langbar_probe::post_dbe_alphanumeric();
     }
 
     let select_uid = args
