@@ -10801,12 +10801,49 @@ Win32呼び出し・デバッガブレーク等）間に、ユーザーが CAP �
 **テスト:** `hook_channel.rs` に `overflow_latches_until_explicitly_cleared`・
 `max_occupancy_tracks_high_water_mark_and_resets_on_take`・
 `concurrent_producer_consumer_preserves_order_with_no_silent_loss`（2スレッド
-実負荷、N=5000≫CAP、受信件数+dropped==N と順序保存を検証）を追加。Alt なり
-すまし中の swallow 分岐は `hook.rs` が Windows専用のため実機/xwin確認のみ
+実負荷、N=5000≫CAP、受信件数+dropped==N と順序保存を検証）・
+`overflow_sets_dropped_and_latch_together`・`overflow_can_relatch_after_clear`
+（追補1、恒久固着レースの回帰）を追加。Alt なりすまし中の swallow 分岐・
+ガード順序（追補2）は `hook.rs` が Windows専用のため実機/xwin確認のみ
 （自動テスト対象外）。
 
 **状態:** 対応済み（2026-08-26）。実機での overflow 再現確認は未実施
 （発生条件が「エンジンスレッドの長時間ポンプ停止」で日常的な再現手順が無いため）。
+
+**追補1（2026-08-26、コードレビュー指摘1: 恒久固着レース）:** 上記3.の
+`overflow_latched` は `dropped`（`AtomicU32`）とは別の `AtomicBool` で、
+`produce()` の `dropped.fetch_add(1)` と `overflow_latched.store(true)` が
+別々の非アトミック操作だった。フックスレッドがこの2つを実行する間に、
+`WM_KEY_FROM_HOOK` ハンドラの `take_dropped()`→`clear_overflow_latch()` が
+割り込むと、「`overflow_latched=true` だが `dropped` は既に0に消費済み」
+という状態が生じ、以後どの `WM_KEY_FROM_HOOK` も `dropped>0` を観測できず
+`clear_overflow_latch()` が二度と呼ばれない＝**overflow ラッチが恒久固着し、
+以後の全打鍵が永久にパススルー固定される**（エンジンが機能停止する）バグが
+あった。`dropped` カウント（下位32bit）とラッチ（bit32）を単一の
+`AtomicU64`（`overflow_state`）に統合し、`produce()` 側は `fetch_update` で
+増分とラッチ起立を、消費側は `take_dropped_and_clear_latch()`（`swap`）で
+読み取りとラッチ解除を、それぞれ単一の不可分な操作にして修正した。
+
+**追補2（2026-08-26、コードレビュー指摘2: 破損防止ガードのバイパス）:**
+上記1.の overflow ラッチ早期return（`hook.rs`）が、VK_KANA/VK_DBE_ROMAN/
+VK_DBE_NOROMAN の飲み込みガード（BUG-08/61/62 対策、「一度切り替わると
+かなロック/入力方式が復旧不能」と確定済み）**より手前**にあった。overflow
+ラッチが立っている間はこれらのキーも無条件で OS へ素通りしてしまい、
+ガードが未然に防いでいたはずのかな固定・入力方式の復旧不能な切り替わりが
+overflow中に限り起こりえた。ラッチ判定を上記ガード群より後ろへ移動し、
+overflow中でもこれらのキーは従来どおり飲み込むよう修正した。
+
+**追補3（2026-08-26、コードレビュー指摘6: 既知の順序制約、未解決）:**
+overflow 回復中、素通りキー（同期・未変換の `CallNextHookEx` 経由、フック
+コールバックから即座に OS へ渡る）と、リング内に残っていたバッファ再生分の
+変換済み出力（非同期・`WM_EXECUTE_EFFECTS` 経由でエンジンスレッドの処理を
+経てから遅延して OS へ渡る）との**到達順序は保証されない**。overflow 発生
+直後の短いウィンドウで、パススルーされたキーの方が先に OS に届き、その後
+バッファ再生分の出力が届く、という順序逆転が理論上起こりうる（文字化けの
+可能性）。overflow 自体が稀（発生条件は「エンジンスレッドの長時間ポンプ
+停止」）かつ一時的なため、完全な solve（例: パススルー分もバッファへ一元化
+してから単一経路で吐き出す等の再設計）は見送り、既知の制約として記録する
+に留める。再発・実害報告があれば再設計を検討する。
 
 ---
 
