@@ -2865,6 +2865,276 @@ runtime/key_pipeline.rs`(`kp_shift_conv_guard_key_down`、次回実装対象)。
 
 ---
 
+**追補5（実機確認・2026-08-27、[ADR-107](adr/107-bug25-gji-half-width-alnum-entry.md)
+決定0 の2×2切り分け計測 + awase debug ログ調査）: 追補4 の真因記述を ADR-107 が
+訂正した内容を実機で裏付け、加えて新たな構造的欠陥（`SendInput` の KeyUp が
+awase 自身のフックに構造的に届かない）を発見した。**
+
+**背景:** ADR-107 は追補4 の「`dbe_mode_key_policy=Suppress` が真因」という
+記述が、awase 自身のマーカ付き注入（追補1・3 の `TSF_MARKER` 付き注入）には
+当てはまらないと `hook.rs::is_self_injected` のソース照合から指摘した
+（マーカ付き自己注入は `transport::plan` より前で `CallNextHookEx` に落ちる
+ため、構造的に Suppress され得ない）。この訂正を実機で検証するため、
+決定0 が指定する2×2計測（`--sendinput-marker=<none|ime_kanji>` ×
+`--sendinput-shift-held` を spike に追加、`RUST_LOG=debug` で awase を再起動
+してログを突き合わせた。
+
+**M1〜M3 の実機結果:**
+
+| # | marker | awase | shift-held | 結果 |
+|---|---|---|---|---|
+| M1 | `none` | 停止 | 無し | **成功**（追補4 経路6 の再確認） |
+| M2 | `none` | 起動 | 無し | **失敗**（ひらがなのまま。追補4 経路5 の再現、`dbe_mode_key_policy=Suppress` による） |
+| M3 | `ime_kanji` | 起動 | 無し | **成功**。2回連続の再試行でも正しくトグルした（ひらがな→英数→ひらがな） |
+
+M3 の成功は ADR-107 決定2（`IME_KANJI_MARKER` を使えば transport バイパス
+無しで足りる）を実機で裏付けた。M4（Shift 押下中）は下記の別発見のため
+未実施のまま保留。
+
+**新発見: `SendInput` の KeyUp がフックに構造的に届かない。** `RUST_LOG=debug`
+の awase ログを `[hook] IME-mode vk=0xF0` で grep したところ、M3 で2回送った
+マーカ付き（`extra=0x4B45594A`）注入はいずれも **KeyDown だけがログに現れ、
+対応する KeyUp が一度もログに現れなかった**:
+
+```
+[hook] IME-mode vk=0xF0 down self_injected=true injected=true scan=0x0 extra=0x4B45594A   ← 私たちの DOWN
+（対応する up が一切現れない）
+```
+
+DOWN と UP を同一 `SendInput` バッチで送る場合（`up_delay_ms=0`）と、別々の
+`SendInput` 呼び出しに分割し実時間 50ms を空ける場合（`--sendinput-up-delay-ms=50`、
+本追補のために spike へ追加）の両方で同じ結果になった——**タイミング/バッチ化は
+原因ではない。** `SendInput` 自体は毎回 `sent=1/1`（または `2/2`）を報告して
+おり、Windows 側では受理されている。ログに `vk=0xF0 up self_injected=false
+injected=false scan=0x70 extra=0x0` という行が数秒〜十数秒後に現れることは
+あったが、これは `self_injected=false`（外部由来）かつ `scan=0x70` の**無関係な
+別の物理キーイベント**であり、私たちの注入とは無関係と判断した（`imm32-off`
+の Suppress ログが直後に付随することからも、BUG-52 対策が正しく効いている
+実物理 DBE キーだと分かる）。
+
+**原因（推定、未確定）:** `VK_DBE_ALPHANUMERIC` は `wScan=0` を指定しても実
+物理キーに対応しないため、Windows の内部キー状態追跡（キーが「押されている」
+かどうかの管理）がこの VK に対して機能しておらず、対応する KeyUp イベントが
+低レベルフックチェーンへ配送される前に握り潰されている可能性が高い。
+
+**実害の評価:** モード切替（トグル）自体は毎回成功しており、KeyUp 欠落が
+トグルの成否には影響していないと見られる。ただし副作用として2点を観測した:
+
+1. **1文字目だけ全角英数になるレース**: M3 成功直後に続けて打鍵すると、
+   最初の1文字だけ全角英数（`FULL_ASCII`）になり、2文字目以降は正しく
+   半角英数（`HALF_ASCII`）になった。`VK_DBE_ALPHANUMERIC` のトグルは
+   `HIRAGANA`⇔`HALF_ASCII` のみを行うはずで `FULL_ASCII` を生成しない
+   （`session/session.cc::Session::ToggleAlphanumericMode`）ため、KeyUp
+   欠落による GJI 側のキー状態不整合が関与している可能性がある。
+   `--sendinput-up-delay-ms=50` で明示的に間隔を空けた再試行ではこの
+   レースは再現しなかった（1文字目から一貫して半角英数）——これ自体は
+   タイミング改善で緩和できる可能性を示唆するが、サンプル数が少なく
+   確定的な結論ではない。
+2. **連続注入時の不安定化**: M3 を3回連続で実行したところ、3回目で
+   「一瞬全角英数になった後 IME オフ・直接入力になる」という、単純な
+   トグルでは説明できない挙動が発生した。ログの `[shadow-toggle]`/
+   `[idle-conv-check]` 系の記録から、awase 自身の drift correction /
+   idle-conv-check（GJI の実際の conv モード変化を監視し補正動作を打つ
+   既存機構）が、短時間の連続トグルに反応して介入した可能性が高いと
+   推定している（ログの完全な相関分析までは未実施）。復旧は物理
+   `Ctrl+変換`/`Ctrl+Shift+変換` では効かず、GJI のタスクトレイアイコンを
+   直接操作して初めて復旧できた。
+
+**ADR-107 への影響:** 決定2（`IME_KANJI_MARKER` + synthetic Shift↑ 前置）は
+実機で有効性を確認できたが、**KeyUp 欠落という新しい制約**を設計に反映する
+必要がある。具体的には:
+
+- entry 直後、GJI 側のモード切替が実際に完了するまでの短い猶予
+  （settle 待ち）を置いてから最初の文字を送る設計が要る可能性がある
+  （既存の warmup/cold-start パターンと同種の対策）。
+- 短時間に連続してトグルを送らない（awase 自身の drift correction との
+  相互作用を避ける）よう、entry 呼び出し自体に最小間隔のガードを検討する
+  余地がある。
+- KeyUp 欠落の根本原因（Windows 側の内部状態追跡）を回避する代替手段
+  （例: `KEYEVENTF_SCANCODE` を併用する、非衝突な scan 値を敢えて使う等）
+  は BUG-15 追補7/BUG-25 追補1 の CapsLock 衝突の教訓と矛盾しない範囲で
+  今後検討する余地がある。
+
+**未解決の疑問（追加）:**
+
+- KeyUp が本当に「届いていない」のか、それとも「届いているがログの
+  `ImeKeyKind::from_vk` 判定を素通りする別 VK に化けている」のかは未確定
+  （`[hook] IME-mode` ログは `ime_key_kind.is_some()` の場合のみ発火するため、
+  未知の VK への変換があれば見えない）。
+- 「1文字目だけ全角英数」のレースが `--sendinput-up-delay-ms` で緩和される
+  かは、サンプル数を増やした再現実験が必要。
+- 連続注入時の不安定化が本当に drift correction / idle-conv-check由来かは、
+  ログの完全なタイムライン相関（`[shadow-toggle]`/`[warrant-shadow]`/
+  `[idle-conv-check]` 各行のシーケンス）を突き合わせるまで確定しない。
+- M4（Shift 押下中）は当初この発見のため後回しにしたが、同日中に実施済み
+  （下記追記参照）。原因B は確定した。
+
+**追記（同日、Composition 中 + awase 起動中での M3 再検証、2件とも成功）:**
+決定5 は「6経路すべてで Composition 中の実効性が否定的/不確定」という前提
+（追補4 時点）で書かれていたが、その6経路はいずれも後に効かないと判明した
+経路（`PostMessageW`、マーカなし `SendInput`）だった。M3（`ime_kanji` マーカ、
+awase 起動中）で**初めて**「正しい注入方式」のまま Composition 中に発火させて
+2回試したところ、**両方とも非破壊・成功**した（既存のプリエディットが壊れず、
+続けて打った文字が半角英数になった。今回は「1文字目だけ全角英数」レースも
+再現しなかった）。KeyUp 欠落（本追補の主題）自体は Composition 中でも同じ
+パターン（DOWN のみログに出現）で再現しており、Precomposition との違いは
+無かった。
+
+サンプル数はまだ少なく（各条件2回のみ）決定的ではないが、**決定5（Composition
+中は発火せずラッチもしない）を緩められる可能性を示す最初の肯定的データ**
+として記録する。ADR-107 決定5 の「6経路すべてで確認できていない」という
+根拠は、少なくとも M3 に関しては古い記述になっている。
+
+**追記（同日、M4 実施——決定0 の2×2計測が完成）: `ime_kanji`/起動/Shift 押下中
+は失敗し、ADR-107 原因B を実機で確定させた。** Precomposition・ひらがな状態
+から、`VK_LSHIFT` を押下したまま `VK_DBE_ALPHANUMERIC` をマーカ付きで送った
+ところ、**ひらがなのまま変化しなかった**（M3 と同一条件で Shift だけを
+押下中にした差分）。
+
+ログを確認したところ、**M1〜M3 では毎回確実に記録されていた
+`[hook] IME-mode vk=0xF0 down self_injected=true ... extra=0x4B45594A` が、
+M4 では一度も記録されなかった。** `ImeKeyKind::from_vk(0xF0)` は
+`Some(Alphanumeric)` を返しこの debug ログは self_injected 判定より前で
+無条件に発火するため、ログに出ないことは「イベントが awase 自身の
+低レベルフックにすら到達していない」ことを意味する。すなわち原因B は
+当初の仮説（「GJI が `Shift+Eisu` を未定義の組み合わせとして無視する」）
+より根深く、**Shift が同時に押下されていると、`VK_DBE_ALPHANUMERIC` の
+KeyDown イベント自体が OS レベルで(awase を含む)いかなるフックにも
+配送されない**らしいことが実機で確認できた（正確な OS 側メカニズムは
+未確認。「未解決の疑問」参照）。なお、注入した `VK_LSHIFT` 自体は
+`ImeKeyKind::from_vk` の対象外のため `[hook] IME-mode` ログには元々
+現れず、また自己注入は `[engine-input]` パイプラインも経由しないため、
+Shift 注入そのものの成否はこのログからは確認できなかった。
+
+この結果は ADR-107 決定2 の synthetic Shift↑ 前置を「望ましい」から
+**「無いと entry が構造的に不成立になる必須要件」**へ格上げする、決定0 の
+最終的な結論である。M4 の失敗後、物理 `Ctrl+変換`/`Ctrl+Shift+変換` は
+やはり効かず、GJI のタスクトレイアイコン直接操作でのみ復旧した点は
+追補4/5 で繰り返し観測しているパターンと一致する。
+
+**テスト:** 自動テスト不可（実機の awase/GJI/Windows Terminal 挙動に依存）。
+spike に `--sendinput-marker`/`--sendinput-shift-held`/`--sendinput-up-delay-ms`
+を追加し再利用可能な形で残置。`RUST_LOG=debug` での awase 再起動手順
+（`target/debug/awase.log`）は次回の実機検証でも同じ形で使えるよう記録した。
+
+**関連ファイル(追補5):** `crates/awase-windows/examples/
+spike_langbar_input_mode.rs`(`--sendinput-marker`/`--sendinput-shift-held`/
+`--sendinput-up-delay-ms` 追加)、`docs/adr/107-bug25-gji-half-width-alnum-entry.md`
+（決定0 の実機結果を受けた更新対象）。
+
+**追補6（実装着手・2026-08-27、ADR-107 Task 1〜8）: GJI entry 本実装を
+オプトインで追加し、実機検証チェックリストを未完了として残す。**
+
+ADR-107 Task 1〜8として、`half_width_alnum_toggle` kill switch
+（既定 `ms_ime_only`、GJIは `all` 明示時のみ）、`IME_KANJI_MARKER` 付き
+`VK_DBE_ALPHANUMERIC` scan=0 + synthetic Shift↑ 前置のGJI entry、scan付き
+`VK_DBE_HIRAGANA` のGJI exit、`mem::replace` による二重exit送信防止を実装する。
+MS-IME既存経路の scan付きF2注入 + 160ms間隔4回のIMC write/verify-retryは
+排他分岐として維持する。
+
+Task 0のsettle値再測定と連続発火クールダウンの実測は未完了のため、本追補では
+settle待ち・クールダウン定数を実装しない。BUG-25のクローズ判断は、下記Task 9
+相当のWindows実機検証とソーク完了後に行う。
+
+**実機検証チェックリスト（未実施、Task 9）:**
+
+- `[hook] IME-mode vk=0xF0 ... self_injected=` 行の出現有無。
+- CapsLock 状態が変化していないこと。
+- 実際に打鍵した文字が半角英数になること（IMC read-back を成功判定に使わない）。
+- トグルON→フォーカス変更→戻る、を往復しても英数状態が持ち越されないこと。
+- フォーカス変更先のアプリでexitが実行された際、切替先アプリのIMEが英数のままに
+  なっていないこと。
+- トグルON→右Shift緊急解除、とトグルON→2回目左Shiftタップ、の両方でかなに戻ること。
+- Exit（`VK_DBE_HIRAGANA`, 0xF2）がscan付きで正しく実効すること。
+- `VK_DBE_HIRAGANA` のkeymap束縛がComposition/Precomposition両方で
+  `InputModeHiragana` として働くこと。
+- Task 0（settle値の再測定）を経て `half_width_alnum_toggle = "all"` を明示設定した
+  状態でソーク運用を開始すること。
+- トグルON中に言語バー等でIME製品自体を切り替えた場合、exitが実際にentryした
+  側のIMEへ正しく復元キーを送ること（追補8参照、entry/exit間のIME製品切替は
+  現状 exit 時の再取得 `active_ime_kind` に依存しており構造的修正は未着手）。
+
+**追補7（2026-08-27、Opus敵対的コードレビューで発見した3件のBLOCKERを修正）:**
+
+追補6のコミット後、Codex実装の完成物に対して独立のOpus敵対的レビューを実施し、
+以下3件の実装バグを発見・修正した（いずれもマージ前、コミット追加で対応済み）。
+
+1. **composition ガードがMS-IME entryにも誤って掛かっていた。** `kp_shift_conv_guard_key_up`
+   の`composing`変数を`plan_half_width_alnum_action`へ渡す際、GJI/MS-IMEを区別せず
+   渡していたため、既定`ms_ime_only`のまま使っている全ユーザーの経路で「変換中に
+   左Shift単独タップしても半角英数トグルへ入れない」という新規の回帰が生じていた
+   （MS-IME entryは元々compositionを一切見ていない）。`uses_imc_conv_write`の間は
+   常に`composing=false`を渡すよう修正。
+2. **synthetic Shift↑が汎用`VK_SHIFT`＋LShift scan固定で、右Shift緊急解除の
+   逃げ道が構造的に不発になりうる問題。** `MapVirtualKeyW(VK_SHIFT)`は左Shiftの
+   scan(0x2A)しか返さないため、右Shift単独タップで緊急解除した場合、OS内部の
+   `VK_RSHIFT`状態が更新されずShift押下中と誤認され続け、決定0 M4が実機で確定
+   させた「Shift押下中はDBEキーのKeyDown自体がフックに配送されない」条件を踏む
+   おそれがあった。`VK_LSHIFT`/`VK_RSHIFT`両方のsynthetic Shift↑を送るよう修正
+   （KeyUpの重複は無害、既存の復元経路と同じ根拠）。実機での最終確認はTask 9に
+   追加する。
+3. **GJI exitのSendInputが見送られた（Win/Alt押下中 or effective_open=false）
+   場合に、ラッチだけ消えてbeliefがAssumedRomajiへ進んでしまう問題。** MS-IME側は
+   IMC writeの640msリトライという保険があるためこの穴が無いが、GJI側は
+   `send_gji_half_width_alnum_toggle`が唯一の書き込み試行であり、失敗時に
+   そのまま進めると「実GJIは半角英数のまま・engineはpass-throughを抜けて
+   生ローマ字を送る」という追補3と同型の実害が再発しうる。送信失敗時は
+   belief更新をスキップし`half_width_alnum_toggle_active`を`true`に戻して
+   次の操作で再試行できるよう修正。合わせて`prepend_synthetic_shift_up`が
+   exit側で常に`true`にハードコードされ、フォーカス変更由来の復元
+   （物理Shiftが押されていないケース）でも余計なShift↑を切替先アプリへ
+   注入していた問題も、呼び出し元の引数をそのまま伝播するよう修正した。
+
+Opusは他にS-3(到達不能分岐2箇所)・S-5(ADR-084への例外追記漏れ)等のSHOULD-FIXも
+指摘したが、正しさに影響しない/実機データが必要なため今回は見送り、Task 9の
+チェックリストに反映済み。
+
+**追補8（2026-08-27、PR #111を正しく対象にした`/code-review`で発見した追加バグを修正）:**
+
+追補7の直後、初回の`/code-review`実行がメインworktreeの無関係な旧ブランチ
+（`docs/adr-102-review-findings-design`）を誤って対象にしていたことが判明し、
+PR番号を明示指定して再実行した。8体のfinderがPR #111
+（`feat/bug25-gji-half-alnum-entry` → `develop`）を正しく検証し、特に以下の
+2件は追補7の修正が新たに埋め込んでいた重大バグだった。
+
+1. `send_ime_mode_key_with_shift_release_prefix`（`ime.rs`）が`SendInput`の
+   送信数不一致時もログ警告のみで無条件に`true`を返しており、
+   `Output::send_gji_half_width_alnum_toggle`の「戻り値`false`ならbeliefを
+   進めてはならない（INV-D）」という契約を実質満たしていなかった。実際の
+   送信数と一致した場合のみ`true`を返すよう修正。
+2. 追補7のB-3修正（GJI exit送信失敗時にラッチを戻しbelief補正をスキップ
+   する早期return）が、`kp_restore_kana_from_half_width`の他3系統の呼び出し元
+   （`ir_notify_focus_changed`・`kp_stage_shadow_ime_toggle`×2・
+   `kp_stage_post_decision`、いずれも`prepend_synthetic_shift_up=false`）の
+   belief補正も無条件にスキップしてしまい、engineが`NotRomajiInput`のまま
+   固着する新規バグになっていた。`prepend_synthetic_shift_up`で呼び出し元を
+   区別し、`kp_shift_conv_guard_key_up`起点（ユーザーが今まさに同じアプリで
+   再試行できる文脈）のときだけラッチを戻してreturnし、他3系統は送信失敗
+   でもbelief補正を続行するよう修正した。
+
+このほかsynthetic Shift↑の3重送信・到達不能分岐・match arm統合・
+composing判定の重複計算・Win/Alt判定点の重複記述・未使用フィールド
+（`last_half_width_entry_ms`）を修正した。詳細はPR #111のコミット
+`45f532cf`を参照。
+
+**未対応の既知の限界（Task 9の実機検証に追加、コード修正は見送り）:**
+同じ`/code-review`実行でもう1件、narrow edge caseが指摘された。
+`kp_restore_kana_from_half_width`は exit 時に`active_ime_kind`を
+その場で再取得する（entry時点でどちらのIMEだったかを記憶していない）。
+half_width_alnum_toggleがactiveな間にユーザーが言語バー等でIME製品自体を
+（GJI→MS-IME、またはその逆に）切り替えた場合、exitは「切替後の」IME種別の
+分岐を通ってしまい、実際にentryした側のIMEには対応する復元キーが
+一切送られないままbeliefだけAssumedRomajiへ進む——追補3と同型の実害が
+再発しうる。この経路（entry/exit間のIME製品切替）自体は本PR以前から
+存在する設計（旧実装もexit時のactive_ime_kindをその場で読んでいた）で
+あり、GJI entryが無かった頃は「skip」だけで実害が小さかったものが、
+GJI entryの追加でより顕在化した形。頻度は低い（IME製品切替は
+Win+Space/言語バー操作が必要で左Shift単独タップの延長では起きない）と
+判断し、entry時点のIME種別をGateStoreに記憶して exit 時に照合する構造的
+修正は今回見送り、Task 9の実機検証チェックリストに追加する。
+
+---
+
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
 
 **症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.

@@ -721,6 +721,81 @@ fn scenario_15_half_width_alnum_toggle_keeps_ime_open_while_engine_goes_inactive
     );
 }
 
+#[test]
+fn scenario_15_gji_half_width_alnum_toggle_keeps_ime_open() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+    use awase_windows::state::TickMs;
+
+    let model = run_reducer(vec![
+        focus_changed(ImePolicyProfile::TsfNative),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(10),
+        },
+    ]);
+
+    assert!(
+        model.effective_open(),
+        "GJI entry/exit でも IME open は維持する"
+    );
+    assert!(
+        model.input_mode().is_romaji_capable(),
+        "GJI exit 後は romaji-capable に戻る"
+    );
+}
+
+#[test]
+fn scenario_15_duplicate_restore_does_not_toggle_belief_back_to_eisu() {
+    use awase::engine::{AssumedReason, InputModeState};
+    use awase_windows::state::ime_event::{InputModeApplyResult, InputModeApplyStrategy};
+    use awase_windows::state::TickMs;
+
+    let model = run_reducer(vec![
+        focus_changed(ImePolicyProfile::TsfNative),
+        user_intent(true, UserIntentSource::PhysicalImeKey),
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::ObservedEisu,
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(0),
+        },
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(10),
+        },
+        ImeEvent::InputModeApplied {
+            mode: InputModeState::AssumedRomaji {
+                reason: AssumedReason::UserHalfWidthAlnumToggleOff,
+            },
+            strategy: InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+            result: InputModeApplyResult::Applied,
+            at: TickMs(20),
+        },
+    ]);
+
+    assert!(model.effective_open(), "二重復元でも IME open は維持する");
+    assert!(
+        model.input_mode().is_romaji_capable(),
+        "復元イベントが二度来ても belief は英数へ戻らない"
+    );
+}
+
 // ── シナリオ 16: EngineActivationSync がユーザーの明示 OFF 意図を汚染しない ──
 
 // 2026-08-04 実発生: 「IME OFF のはずが数百ms〜数秒後に Engine が勝手に ON へ戻る」。

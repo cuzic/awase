@@ -25,6 +25,18 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 
 ---
 
+## エントリ 17: BUG-25 GJI 半角英数 entry の本実装（ADR-107 Task 1〜8）
+
+**背景**: BUG-25 の GJI entry は scan付きF0、IMC write、scan=0 F0 の3案を
+いずれも撤回済み。ADR-107 決定0の2×2実機計測で `IME_KANJI_MARKER` +
+synthetic Shift↑ 前置が成立条件だと確認できたため、本実装に着手する。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-08-27 | `IME_KANJI_MARKER`付き `VK_DBE_ALPHANUMERIC` scan=0 に synthetic Shift↑ を前置すれば、awase起動中のGJIでも左Shift単独タップでIME-ON半角英数へ入れる。GJI経路は `half_width_alnum_toggle=all` の明示設定に限定し、MS-IME既存経路はIMC write/verify-retryを維持する | Windows Terminal × Google 日本語入力（Task 9で実機検証予定） | ADR-107 Task 1〜8: 純粋action判定、kill switch、Shift↑前置SendInput helper、GJI用Output API、entry/exit配線、golden/architecture確認、記録更新 | 未実施（Windows実機検証はTask 9としてスコープ外） | 保留（実装後ソーク待ち） | TBD |
+
+---
+
 ## エントリ 01: TsfNative + GJI の「IME OFF に何のキーを送るか」— 5 日間で 6 回反転
 
 **背景**: Windows Terminal 等の TSF ネイティブアプリで GJI（Google 日本語入力）を

@@ -272,6 +272,25 @@ pub fn alt_key_held() -> bool {
     )
 }
 
+/// 合成 IME モードキー（`VK_DBE_*`/`VK_KANJI` 等）を注入してよいかの
+/// Win/Alt ガード。`false` の場合、呼び出し元は注入をスキップすべき。
+///
+/// Win: Win 押下中に送ると Win+VK として届き、Win↑ 時にスタートメニューが
+/// 開く（`tsf/send.rs::send_eager_warmup_vk_pair` と同じ判定点）。
+///
+/// Alt: Alt 押下中に合成 `VK_DBE_HIRAGANA` 等を送ると MS-IME の
+/// 「Alt+かな」ローマ字⇔JISかな直接入力切替ショートカット（BUG-61/62）と
+/// 同様に解釈され、実際に JIS かな直接入力へ切り替わることを実機診断で
+/// 確認済み（2026-08-17）。この危険はGJI/MS-IMEを問わず同じOSレベルの
+/// ショートカット解釈に起因するため、IME種別を問わず適用する
+/// （`kp_restore_kana_from_half_width`のMS-IME分岐と
+/// `Output::send_gji_half_width_alnum_toggle`のGJI分岐、両方がこの
+/// 判定点を共有する）。
+#[must_use]
+pub fn ime_mode_key_injection_blocked_by_modifier() -> bool {
+    win_key_held() || alt_key_held()
+}
+
 /// Alt が押下中に、Alt が「何も修飾しなかった」ように見える形でキーを丸ごと
 /// swallow するときに呼ぶ（BUG-62 追補2・3）。
 ///

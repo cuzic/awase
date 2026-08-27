@@ -396,6 +396,100 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     true
 }
 
+/// IME モード切り替えキーを、必要なら synthetic Shift↑ を前置して送信する。
+///
+/// BUG-25 GJI 半角英数 entry/exit 用。`prepend_synthetic_shift_up` が真のときは
+/// OS/IME 視点に残っている Shift 押下を同一 `SendInput` バッチ内で先に解除する。
+/// `VK_DBE_ALPHANUMERIC` は CapsLock scan 衝突を避けるため scan=0 で送り、
+/// `VK_DBE_HIRAGANA` は既存の MS-IME 復元経路と同じ scan 付きで送る。
+///
+/// 戻り値: 実際に注入した場合 `true`。Win キー押下中でスキップした場合 `false`。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
+    vk: awase::types::VkCode,
+    prepend_synthetic_shift_up: bool,
+) -> bool {
+    use crate::tsf::output::{make_key_input_ex, make_scan_key_input, IME_KANJI_MARKER};
+    use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_RSHIFT};
+
+    if crate::hook::win_key_held() {
+        log::debug!(
+            "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+VK_IME triggers Start Menu on Win↑)"
+        );
+        return false;
+    }
+
+    let held = HeldModifiers::read();
+    // prepend_synthetic_shift_up の場合、下で LSHIFT/RSHIFT の synthetic Shift
+    // up を明示的に2つ送るため、push_release 側の shift 解放は不要（force
+    // false: alt と同じ理由で二重の Shift up イベントを避ける）。
+    let held_skip_alt = HeldModifiers {
+        alt: false,
+        shift: held.shift && !prepend_synthetic_shift_up,
+        ..held
+    };
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
+    if prepend_synthetic_shift_up {
+        // 呼び出し元は「どちら側の物理 Shift が押されたか」を運ばない
+        // （左Shift単独タップ＝entry、左/右いずれかの緊急解除＝exit、いずれも
+        // ここには vk_code が届かない）。汎用 VK_SHIFT(0x10) 単体で release を
+        // 送ると `MapVirtualKeyW` は左Shift の scan(0x2A) しか返さず、Windows の
+        // 内部キー状態は VK_LSHIFT のみ更新され VK_RSHIFT 側は更新されない
+        // （awase 自身のフックが実キー up を CallNextHookEx 前に消費/遅延させて
+        // いるため、OS 側の状態は synthetic 側でしか更新できない）。右Shift
+        // 起点の緊急解除で OS/GJI から見た Shift が押下中のまま残ると、決定0
+        // M4 が実機で確定させた「Shift 押下中は DBE キーの KeyDown 自体が
+        // フックに配送されない」条件を踏み、脱出経路そのものが不発になる。
+        // 左右両方の synthetic Shift up を送る（KeyUp の重複は無害、既存の
+        // 復元経路と同じ根拠）。
+        inputs.push(make_scan_key_input(VK_LSHIFT, true, IME_KANJI_MARKER));
+        inputs.push(make_scan_key_input(VK_RSHIFT, true, IME_KANJI_MARKER));
+    }
+    held_skip_alt.push_release(&mut inputs);
+    if vk == VK_DBE_HIRAGANA {
+        inputs.push(make_scan_key_input(vk, false, IME_KANJI_MARKER));
+        inputs.push(make_scan_key_input(vk, true, IME_KANJI_MARKER));
+    } else {
+        inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
+    }
+    // SAFETY: push_restore は Win32 SendInput を呼ぶ。
+    let still = unsafe { held_skip_alt.push_restore(&mut inputs) };
+
+    log::debug!(
+        "[ime-mode] SendInput vk=0x{vk:02X} prepend_shift_up={prepend_synthetic_shift_up} \
+         phys(ctrl={} shift={} alt={}, alt常にrelease対象外) \
+         release(ctrl={} shift={}) restore(ctrl={} shift={}) total={} events",
+        held.ctrl,
+        held.shift,
+        held.alt,
+        held_skip_alt.ctrl,
+        held_skip_alt.shift,
+        still.ctrl,
+        still.shift,
+        inputs.len()
+    );
+    let sent = crate::win32::send_input_safe(&inputs);
+    let all_sent = sent as usize == inputs.len();
+    if !all_sent {
+        // 呼び出し元（Output::send_gji_half_width_alnum_toggle）の戻り値契約
+        // 「false なら belief を進めてはならない」を満たすため、送信数が
+        // 一致しない場合は false を返す。SendInput はバッチ中どこで止まっても
+        // それ以降のイベントを送らない（Win32仕様）ため、途中の modifier
+        // release/restore だけ届き本体の VK が届かない部分成功もここで
+        // 検知できる。
+        log::warn!(
+            "[ime-mode] SendInput(vk=0x{vk:02X}, prepend_shift_up={prepend_synthetic_shift_up}) \
+             sent {sent}/{} events",
+            inputs.len()
+        );
+    }
+    all_sent
+}
+
 /// 現在フォーカスされているウィンドウの IME 変換モード生値を返す（診断ログ専用）。
 ///
 /// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010

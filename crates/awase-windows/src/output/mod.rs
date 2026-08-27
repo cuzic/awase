@@ -1,4 +1,5 @@
 use crate::state::event_origin::Generation;
+use crate::state::half_width_alnum::HalfWidthAlnumAction;
 use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::vk::ascii_to_vk;
 use awase::types::{KeyAction, VkCode};
@@ -1047,6 +1048,61 @@ impl Output {
                      更新しない (BUG-32)"
                 );
             }
+        }
+    }
+
+    /// BUG-25 GJI 用の「IME-ON 半角英数」entry/exit トグルを送信する。
+    ///
+    /// 呼び出し元が `effective_open()` を評価して `ime_open` に渡す。Output は
+    /// `ImeModel` への参照を持たないため、ここで belief を自前評価しない。
+    /// `prepend_synthetic_shift_up` は呼び出し元にそのまま委譲する（entry は
+    /// 常に物理左Shiftタップ起点なので true 固定、exit は
+    /// `kp_restore_kana_from_half_width` の引数をそのまま伝播する）。
+    /// Task 0 未完了のため settle 待ち・連続発火クールダウンはまだ実装しない。
+    /// 戻り値 `false`（未送信）の場合、呼び出し元は belief を進めてはならない
+    /// （INV-D）。exit 側は呼び出し元でラッチを戻す必要がある点に注意。
+    #[allow(unsafe_code)]
+    // SendInput ヘルパー呼び出しに必要。ゲート判定はこの関数内で完結する。
+    #[must_use]
+    pub fn send_gji_half_width_alnum_toggle(
+        &self,
+        action: HalfWidthAlnumAction,
+        ime_open: bool,
+        prepend_synthetic_shift_up: bool,
+    ) -> bool {
+        let vk = match action {
+            HalfWidthAlnumAction::None => return false,
+            HalfWidthAlnumAction::Enter => crate::vk::VK_DBE_ALPHANUMERIC,
+            HalfWidthAlnumAction::Exit => crate::vk::VK_DBE_HIRAGANA,
+        };
+        if crate::hook::ime_mode_key_injection_blocked_by_modifier() {
+            log::info!(
+                "[shift-conv-guard] GJI 半角英数トグル {action:?} をスキップ \
+                 (Win/Alt 押下中)"
+            );
+            return false;
+        }
+        if !ime_open {
+            log::info!(
+                "[shift-conv-guard] GJI 半角英数トグル {action:?} をスキップ \
+                 (effective_open=false)"
+            );
+            return false;
+        }
+        if matches!(action, HalfWidthAlnumAction::Enter) {
+            let composition_active = crate::tsf::observer::ime_composition_active_now();
+            let candidate_visible = crate::tsf::observer::gji_candidate_visible_now();
+            if composition_active || candidate_visible {
+                log::info!(
+                    "[shift-conv-guard] GJI 半角英数 entry をスキップ \
+                     (composition_active={composition_active} candidate_visible={candidate_visible})"
+                );
+                return false;
+            }
+        }
+        // SAFETY: `send_ime_mode_key_with_shift_release_prefix` は SendInput のみを行う。
+        unsafe {
+            crate::ime::send_ime_mode_key_with_shift_release_prefix(vk, prepend_synthetic_shift_up)
         }
     }
 
