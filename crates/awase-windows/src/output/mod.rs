@@ -1090,15 +1090,18 @@ impl Output {
             return false;
         }
         if matches!(action, HalfWidthAlnumAction::Enter) {
-            let composition_active = crate::tsf::observer::ime_composition_active_now();
-            let candidate_visible = crate::tsf::observer::gji_candidate_visible_now();
-            if composition_active || candidate_visible {
-                log::info!(
-                    "[shift-conv-guard] GJI 半角英数 entry をスキップ \
-                     (composition_active={composition_active} candidate_visible={candidate_visible})"
-                );
-                return false;
-            }
+            // ADR-107 決定5は当初「Composition/候補表示中は発火せずラッチも
+            // しない」だったが、決定2の正しい注入方式（IME_KANJI_MARKER付き
+            // SendInput）で実機検証した結果（known-bugs.md BUG-25追補5・
+            // ユーザー確認2026-08-27）非破壊・成功が再現したため、決定5を
+            // 緩和しComposition中も発火させる。preedit破壊の兆候が実機で
+            // 出た場合はここにガードを復活させること。
+            log::debug!(
+                "[shift-conv-guard] GJI 半角英数 entry \
+                 (composition_active={} candidate_visible={})",
+                crate::tsf::observer::ime_composition_active_now(),
+                crate::tsf::observer::gji_candidate_visible_now()
+            );
         }
         // SAFETY: `send_ime_mode_key_with_shift_release_prefix` は SendInput のみを行う。
         unsafe {

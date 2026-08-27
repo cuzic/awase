@@ -10,7 +10,9 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
 use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
-use crate::state::half_width_alnum::{plan_half_width_alnum_action, HalfWidthAlnumAction};
+use crate::state::half_width_alnum::{
+    plan_half_width_alnum_action, HalfWidthAlnumAction, ShiftKeyUpKind,
+};
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
@@ -1456,30 +1458,34 @@ impl Runtime {
             && self.platform_state.ime.belief.is_japanese_ime()
             && self.engine.is_user_enabled();
 
-        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
-            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        // `kp_stage_shift_conv_guard` はこの関数を Shift（左右いずれか）の
+        // KeyUp でのみ呼ぶため、`event.vk_code` は VK_LSHIFT か VK_RSHIFT の
+        // いずれか。`left_shift_tap_candidate` は左Shift押下中に他の物理キー
+        // が一切来なかった場合のみ立ったまま残る（他キーで折れる）ため、
+        // 「左Shiftだが折れていた」＝チョードと「左Shiftで折れていない」＝
+        // 単独タップを区別できる。
+        let was_left_shift_tap_candidate =
+            std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
         self.platform_state.gate.left_shift_tap_candidate = false;
+        let shift_up_kind = if event.vk_code == crate::vk::VK_LSHIFT {
+            if was_left_shift_tap_candidate {
+                ShiftKeyUpKind::LeftTap
+            } else {
+                ShiftKeyUpKind::LeftChord
+            }
+        } else {
+            ShiftKeyUpKind::Right
+        };
 
-        // 決定5の composition ガードは GJI entry 専用（決定7 項目4）。MS-IME
-        // entry は元々 composition を一切見ていなかった（IMC write は non-invasive
-        // な conv セットのため composition 中でも安全、既存の6呼び出し元と同じ
-        // 前提）ので、`uses_imc_conv_write` の間は常に `false` を渡し既存挙動を
-        // 変えない。GJI 側の composition 判定自体は `Output::
-        // send_gji_half_width_alnum_toggle` 内でも独立に行う（決定5、Task 5）ため
-        // ここでの計算は「MS-IME entry を誤ってブロックしない」ためだけの安全側の
-        // 事前フィルタであり、二重判定になっても実害はない。
-        // `build_ctx().composing` は `tsf::observer::ime_composition_active_now()` を
-        // そのまま代入したものに過ぎない（runtime/mod.rs::build_ctx 参照）。
-        // Shift KeyUp のたびに GetKeyState 等を含む InputContext 全体を組み立てる
-        // のは無駄なため、必要な1フィールドだけ直接呼ぶ。
-        let composing = !uses_imc_conv_write
-            && (crate::tsf::observer::ime_composition_active_now()
-                || crate::tsf::observer::gji_candidate_visible_now());
+        // ADR-107 決定5は当初 Composition 中の GJI entry をブロックしていたが、
+        // 実機検証（known-bugs.md BUG-25追補5・ユーザー確認2026-08-27）で
+        // preedit 非破壊・成功が再現したため緩和した。MS-IME entry は元々
+        // composition を一切見ていない（IMC write は non-invasive な conv
+        // セットのため composition 中でも安全）。
         match plan_half_width_alnum_action(
-            is_left_shift_tap,
+            shift_up_kind,
             self.platform_state.gate.half_width_alnum_toggle_active,
             toggle_entry_supported,
-            composing,
         ) {
             // Enter を「MS-IME/GJI どちらのトグルへ移行するか」で2つの独立した
             // match arm に分けず、単一の Enter arm 内の if/else にしているのは

@@ -3134,6 +3134,99 @@ Win+Space/言語バー操作が必要で左Shift単独タップの延長では�
 判断し、entry時点のIME種別をGateStoreに記憶して exit 時に照合する構造的
 修正は今回見送り、Task 9の実機検証チェックリストに追加する。
 
+**追補9（実機報告・2026-08-27）: 半角英数トグル中の左Shiftチョード
+（Shift+文字での大文字入力）が、Shiftを離した瞬間にトグルを解除してしまう。
+GJIで新規発見されたが、MS-IME側も含む既存（BUG-25本体、2026-07-11実装）の
+設計だった。**
+
+**症状:** `half_width_alnum_toggle = "all"`（GJI）でトグルON後、Shiftを
+押したまま別のキー（例: K, A）を打鍵し、Shiftを離すと、その瞬間に
+「半角英数トグルOFF」処理（`kp_restore_kana_from_half_width`）が発火して
+しまう。ユーザーの期待は「もう一度左Shiftを単独タップするまでトグルが
+継続すること」「Shiftを押しながらの打鍵は大文字になること」で、現状は
+1回のShift+文字チョードでトグルが解除されてしまい期待と異なる。
+
+実機ログ（Windows Terminal、GJI）で確認:
+
+```
+[engine-input] vk=0xA0 KeyDown mods(s=true)   ← LShift押下
+[engine-input] vk=0x4B KeyDown mods(s=true)   ← Shift押しながらK
+[engine-input] vk=0x4B KeyUp   mods(s=true)
+[engine-input] vk=0x41 KeyDown mods(s=true)   ← Shift押しながらA
+[engine-input] vk=0x41 KeyUp   mods(s=true)
+[engine-input] vk=0xA0 KeyUp   mods(s=false)  ← LShift解放
+[ime-mode] SendInput vk=0xF2 ...              ← ここで即座にexitが発火
+[shift-conv-guard] （復元） → Engine activated
+```
+
+**原因:** `plan_half_width_alnum_action`（`state/half_width_alnum.rs`）は
+`toggle_active == true` の場合、Shift KeyUpが「2回目の単独タップ」「右Shift
+緊急解除」「左Shiftチョード（他キーを介した解放）」のいずれであるかを
+区別せず、常に `Exit` を返す設計だった。これはADR-107の実装時点で意図的に
+維持した既存挙動（BUG-25本体、2026-07-11のMS-IME限定実装から変更なし）
+であり、GJI entryが新たに実装されて初めて実用上顕在化した——MS-IME側は
+これまでこのワークフロー（トグル中にShift+文字で大文字を打つ）がユーザー
+から報告されたことがなかった。
+
+**対応:** `plan_half_width_alnum_action` の入力を `is_left_shift_tap: bool`
+から `ShiftKeyUpKind { LeftTap, LeftChord, Right }` に変更し、
+`toggle_active == true` のときの分岐を以下に変更した:
+
+- `LeftTap`（2回目の左Shift単独タップ）→ `Exit`（従来どおり）
+- `Right`（右Shift、タップ・チョード問わず）→ `Exit`（従来どおり、緊急解除）
+- `LeftChord`（左Shiftを押しながら他キーを打った後の解放）→ `None`
+  （exitしない、トグルは持続する）
+
+`kp_shift_conv_guard_key_up` 側は、`event.vk_code` と既存の
+`left_shift_tap_candidate` フラグ（左Shift押下中に他の物理キーが来ると
+折れる）を組み合わせて `ShiftKeyUpKind` を判定するよう変更した。
+
+**影響範囲:** GJI・MS-IMEの両方（`plan_half_width_alnum_action` は両方の
+entry経路が共有する）。MS-IME側もこれまで同じ「チョードでexit」挙動
+だったため、本修正でMS-IME側の挙動も変わる（意図的な改善、pre-existing
+gapの修正）。
+
+**テスト:** `state/half_width_alnum.rs` の
+`active_toggle_second_tap_and_right_shift_exit_but_left_chord_persists`
+と `unsupported_entry_blocks_enter_but_never_blocks_tap_or_right_shift_exit`
+に `LeftChord` が exit しないケースを追加。
+
+**実機確認（2026-08-27、ユーザー）:** 修正版をデプロイし再検証、「よくなりました」
+と報告あり——チョード中もトグルが持続し、期待どおりの挙動になったことを確認。
+
+---
+
+**追補10（実機報告・2026-08-27、決定5撤回）: Composition中もShift単独タップで
+半角英数entryが発火するよう緩和した。**
+
+追補9の修正確認と同じセッションで、ユーザーから「compositionのときにシフト
+単独打鍵でも半角英数になってほしいんだけどならないです」との要望を受けた。
+ADR-107決定5は「Composition/候補ウィンドウ表示中はentryを発火させずラッチも
+しない」という当初の保守的な設計で、根拠は「サンプル数が少なく安定性を
+確認しきれていない」（追補5、2回のみの成功実績）だった。
+
+**対応:** ユーザーの実利用フローでの複数回の成功報告を、ADRが緩和条件として
+求めていた「複数回再試行での安定性確認」の充足とみなし、decision5の
+composition/候補ウィンドウブロックを撤去した。
+
+- `Output::send_gji_half_width_alnum_toggle`: entry時のcomposition_active/
+  candidate_visible判定を、ブロック（`return false`）からログのみ
+  （`log::debug!`）に変更。
+- `plan_half_width_alnum_action`（`state/half_width_alnum.rs`）:
+  `composing: bool` パラメータを削除（entry判定から completely除去）。
+- `kp_shift_conv_guard_key_up`（`key_pipeline.rs`）: composing計算・
+  受け渡しを削除。
+
+**影響範囲:** GJIのみ（MS-IME entryは元々compositionを見ていない）。
+
+**リスク:** KeyUp欠落（追補5）との相互作用によるcomposition中特有の不安定化は
+理論上否定されていない。preedit破壊やモード誤認識の実機報告があれば、
+`Output::send_gji_half_width_alnum_toggle`にガードを復活させること。
+
+**テスト:** 自動テスト不可（実機のGJI/TSF composition挙動に依存）。
+`state/half_width_alnum.rs`のテストから`composing`ケースを削除
+（機能自体が撤去されたため）。
+
 ---
 
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
