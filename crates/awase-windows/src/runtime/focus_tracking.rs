@@ -326,24 +326,12 @@ impl Runtime {
             classified.hwnd.0 as usize,
         );
 
-        // 同一プロセス内で hwnd だけが変わった場合、ObservationStore 側の
-        // current_fence.hwnd をここで追従させる。プロセス変更（process_changed）は
-        // 後続の on_focus_process_changed が FocusChanged（epoch インクリメント +
-        // 観測プールクリア）で hwnd も一緒に更新するため、ここでは扱わない
-        // （ADR-106 決定3、code review 2026-08-26 で発見された退行の修正）。
-        //
         // `update_focus_info` 直後のため `self.focus_hwnd()` は `classified.hwnd` と
         // 構築上必ず一致する（同じ値を2通りの式で書く重複を無くす、PR 109
-        // コードレビュー指摘6）。
+        // コードレビュー指摘6）。hwnd 追従の詳細は
+        // `notify_focus_hwnd_updated_if_needed` のドキュメントを参照。
         let new_hwnd = self.focus_hwnd();
-        let will_dispatch_focus_hwnd_updated = !process_changed && new_hwnd != prev_hwnd;
-        if will_dispatch_focus_hwnd_updated {
-            let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-            self.platform_state.ime.dispatch_event(
-                crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
-                tick_ms,
-            );
-        }
+        self.notify_focus_hwnd_updated_if_needed(is_bootstrap, process_changed, prev_hwnd, new_hwnd);
 
         self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 
@@ -353,6 +341,43 @@ impl Runtime {
             process_changed,
             if process_changed { last_pid } else { None },
         )
+    }
+
+    /// 同一プロセス内で hwnd だけが変わった場合、`ObservationStore` 側の
+    /// `current_fence.hwnd` を追従させる（ADR-106 決定3、code review 2026-08-26
+    /// で発見された退行の修正）。プロセス変更（`process_changed`）は後続の
+    /// `on_focus_process_changed` が `FocusChanged`（epoch インクリメント +
+    /// 観測プールクリア）で hwnd も一緒に更新するため、ここでは扱わない。
+    ///
+    /// **bootstrap では dispatch しない。** `ObservationStore` 側の fence は
+    /// `FocusChanged`（`clear_on_focus_change`）でしか初期化されず、bootstrap
+    /// （`establish_initial_focus_scope`）はそれを呼ばない。bootstrap時点で
+    /// ここから `dispatch_event` すると、まだ一度も IME を観測していない状態で
+    /// belief 層へ書き込むことになり、`establish_initial_focus_scope` の不変条件
+    /// （IME belief 不書き込み）を破る。この関数を `advance_focus_tracking` の
+    /// 本体から切り出しているのは、`dispatch_event(` を直接テキストとして含む
+    /// 関数が `establish_initial_focus_scope_does_not_write_ime_belief`
+    /// （`architecture_guard.rs`）の対象リストに直接含まれるため——本体に
+    /// `dispatch_event(` を残したまま `is_bootstrap` で実行時にガードしても、
+    /// あのテストは静的テキスト検査のため機械的に落ちる。この関数の
+    /// `!is_bootstrap` ガードは
+    /// `focus_hwnd_updated_dispatch_is_skipped_during_bootstrap`
+    /// （`architecture_guard.rs`）で固定する。
+    fn notify_focus_hwnd_updated_if_needed(
+        &mut self,
+        is_bootstrap: bool,
+        process_changed: bool,
+        prev_hwnd: crate::state::ime_event::HwndId,
+        new_hwnd: crate::state::ime_event::HwndId,
+    ) {
+        if is_bootstrap || process_changed || new_hwnd == prev_hwnd {
+            return;
+        }
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::FocusHwndUpdated { hwnd: new_hwnd },
+            tick_ms,
+        );
     }
 
     /// `config.app_overrides.disable_apps` への出入りを検出し、フックへ伝達する

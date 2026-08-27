@@ -2683,6 +2683,32 @@ fn app_disable_invalidate_engine_context_is_skipped_during_bootstrap() {
     );
 }
 
+/// `establish_initial_focus_scope_does_not_write_ime_belief` は関数本体の直接テキスト
+/// しか見ないため、`advance_focus_tracking` が呼ぶ
+/// `notify_focus_hwnd_updated_if_needed`（それ自体は `dispatch_event` 等の禁止
+/// リストに載らない）までは検知できない。このテストはその1段先の呼び出しチェーン
+/// を明示的に固定する（ADR-106 決定3、PR 109 コードレビュー是正）。
+#[test]
+fn focus_hwnd_updated_dispatch_is_skipped_during_bootstrap() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+
+    let advance_body = extract_fn_body(&content, "fn advance_focus_tracking");
+    assert!(
+        advance_body.contains("notify_focus_hwnd_updated_if_needed"),
+        "advance_focus_tracking は notify_focus_hwnd_updated_if_needed 経由で \
+         FocusHwndUpdated を dispatch すること"
+    );
+
+    let notify_body = extract_fn_body(&content, "fn notify_focus_hwnd_updated_if_needed");
+    assert!(
+        notify_body.contains("dispatch_event(") && notify_body.contains("if is_bootstrap"),
+        "notify_focus_hwnd_updated_if_needed の dispatch_event 呼び出しは \
+         `is_bootstrap` でガードされていること（bootstrap時は ObservationStore の \
+         fence がまだ FocusChanged で初期化されておらず、belief 層へ書き込むと \
+         establish_initial_focus_scope の不変条件を破るため）"
+    );
+}
+
 // ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────
 
 /// `dispatch_probe_actions` の本体から `return DispatchResult` を1件残らず消す
