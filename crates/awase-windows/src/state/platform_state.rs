@@ -1448,6 +1448,12 @@ pub(crate) struct GateStore {
     /// 非注入物理KeyDownが来たらfalseに倒す（チョード判定）。左Shift KeyUp時に
     /// これがtrueのままなら「本物の単独タップ」として半角英数トグルの対象にする。
     pub left_shift_tap_candidate: bool,
+    /// 今回の右Shift downが単独タップ候補か（`kp_stage_shift_conv_guard`）。
+    /// `left_shift_tap_candidate` と対称の判定（右Shift版）。BUG-25追補9で
+    /// 左Shiftチョード（Shift+文字で大文字を打つ）の途中解放がトグルを
+    /// 誤って解除しないよう修正した際、右Shift側にも同じ区別が必要になった
+    /// （右Shift単独タップ＝緊急解除、右Shiftチョード＝トグル持続）。
+    pub right_shift_tap_candidate: bool,
     /// 今回のShift downに対応する復元処理が必要か（`kp_stage_shift_conv_guard`）。
     ///
     /// Shift KeyDownで awase が conv=0x00000000（IME-ON 半角英数）へ切り替えたとき
@@ -1503,6 +1509,7 @@ impl GateStore {
             post_bypass: ScopedOneShot::new(),
             sync_key_gate: SyncKeyGate::new(),
             left_shift_tap_candidate: false,
+            right_shift_tap_candidate: false,
             shift_conv_guard_pending: false,
             half_width_alnum_toggle_active: false,
             idle_conv_check_in_flight_since_ms: None,

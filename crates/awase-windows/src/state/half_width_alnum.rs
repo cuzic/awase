@@ -13,19 +13,25 @@ pub enum ShiftKeyUpKind {
     LeftTap,
     /// 左Shift、押下中に他の物理キーが挟まった（例: Shift+K のチョード）。
     LeftChord,
-    /// 右Shift（タップ・チョードを問わない、常に緊急解除として扱う）。
-    Right,
+    /// 右Shift、他の物理キーを一切介さない単独タップ（緊急解除）。
+    RightTap,
+    /// 右Shift、押下中に他の物理キーが挟まった（例: Shift+K のチョード）。
+    RightChord,
 }
 
 /// 半角英数持続トグルの entry/exit を純粋に計画する。
 ///
 /// `toggle_active` が真のとき:
-/// - 左Shiftの**単独タップ**（`LeftTap`）→ 2回目タップとして exit（トグルOFF）。
-/// - **右Shift**（`Right`）→ タップ・チョードを問わず常に exit（緊急解除）。
-/// - 左Shiftの**チョード**（`LeftChord`、例: Shift+K で大文字を打つ）→ **exit しない**。
-///   半角英数トグルは「押しながらの他キー入力」を大文字化するための一時的な
-///   Shift 修飾として使えるべきで、Shift を離しただけでトグルが解除されては
-///   ユーザーが意図せず持続モードから抜けてしまう（実機で報告された不具合）。
+/// - 左右いずれかの**単独タップ**（`LeftTap`/`RightTap`）→ exit。左Shiftは
+///   2回目タップとしてのトグルOFF、右Shiftは「緊急解除」——意味付けは違うが
+///   どちらも exit する点は同じ。
+/// - 左右いずれかの**チョード**（`LeftChord`/`RightChord`、例: Shift+K で
+///   大文字を打つ）→ **exit しない**。半角英数トグルは「押しながらの他キー
+///   入力」を大文字化するための一時的な Shift 修飾として使えるべきで、
+///   Shift を離しただけでトグルが解除されてはユーザーが意図せず持続モード
+///   から抜けてしまう（実機で報告された不具合。当初は左Shiftのみ対称に
+///   修正していたが、右Shiftチョードで同じ不具合が再現することが分かり
+///   左右対称に修正した）。
 ///
 /// `toggle_active` の判定は `entry_supported` より**常に優先する**——
 /// `entry_supported` は「新たに entry してよいか」だけを制御する条件であり、
@@ -34,7 +40,7 @@ pub enum ShiftKeyUpKind {
 /// false に転じても、緊急解除で必ずかなへ戻れることを保証する）。
 ///
 /// composition 中の entry ブロック（ADR-107 決定5の当初案）は撤去した
-/// （known-bugs.md BUG-25追補5・追補9: 実機検証で preedit 非破壊・成功が
+/// （known-bugs.md BUG-25追補5・追補10: 実機検証で preedit 非破壊・成功が
 /// 再現し、ユーザーからもComposition中の発火を求める報告があったため）。
 /// composition/候補ウィンドウ表示の状態はこの純粋関数の関知するところでは
 /// なくなった。
@@ -45,7 +51,10 @@ pub const fn plan_half_width_alnum_action(
     entry_supported: bool,
 ) -> HalfWidthAlnumAction {
     if toggle_active {
-        if matches!(shift_up, ShiftKeyUpKind::LeftChord) {
+        if matches!(
+            shift_up,
+            ShiftKeyUpKind::LeftChord | ShiftKeyUpKind::RightChord
+        ) {
             return HalfWidthAlnumAction::None;
         }
         return HalfWidthAlnumAction::Exit;
@@ -67,37 +76,45 @@ mod tests {
             HalfWidthAlnumAction::Enter
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::Right, false, true),
+            plan(ShiftKeyUpKind::RightTap, false, true),
             HalfWidthAlnumAction::None
         );
         assert_eq!(
             plan(ShiftKeyUpKind::LeftChord, false, true),
             HalfWidthAlnumAction::None
         );
-    }
-
-    #[test]
-    fn active_toggle_second_tap_and_right_shift_exit_but_left_chord_persists() {
-        // 2回目の左Shiftタップ・右Shiftは exit。
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, true, true),
-            HalfWidthAlnumAction::Exit
-        );
-        assert_eq!(
-            plan(ShiftKeyUpKind::Right, true, true),
-            HalfWidthAlnumAction::Exit
-        );
-        // 左Shiftチョード（Shift+文字キーで大文字を打つ用途）は exit しない
-        // — トグル中に Shift を離しただけで持続モードから抜けてしまう
-        // 不具合の修正（実機報告）。
-        assert_eq!(
-            plan(ShiftKeyUpKind::LeftChord, true, true),
+            plan(ShiftKeyUpKind::RightChord, false, true),
             HalfWidthAlnumAction::None
         );
     }
 
     #[test]
-    fn unsupported_entry_blocks_enter_but_never_blocks_tap_or_right_shift_exit() {
+    fn active_toggle_taps_exit_but_chords_persist_symmetrically() {
+        // 2回目の左Shiftタップ・右Shift単独タップ（緊急解除）は exit。
+        assert_eq!(
+            plan(ShiftKeyUpKind::LeftTap, true, true),
+            HalfWidthAlnumAction::Exit
+        );
+        assert_eq!(
+            plan(ShiftKeyUpKind::RightTap, true, true),
+            HalfWidthAlnumAction::Exit
+        );
+        // 左右どちらのチョード（Shift+文字キーで大文字を打つ用途）も
+        // exit しない — トグル中に Shift を離しただけで持続モードから
+        // 抜けてしまう不具合の修正（実機報告、左右対称）。
+        assert_eq!(
+            plan(ShiftKeyUpKind::LeftChord, true, true),
+            HalfWidthAlnumAction::None
+        );
+        assert_eq!(
+            plan(ShiftKeyUpKind::RightChord, true, true),
+            HalfWidthAlnumAction::None
+        );
+    }
+
+    #[test]
+    fn unsupported_entry_blocks_enter_but_never_blocks_tap_exit() {
         // entry_supported=false は新規 entry を止めるだけで、既に active な
         // トグルからの脱出（緊急解除）はブロックしない — entry 後に IME種別
         // 変化・kill switch・belief 変化等で entry_supported が false に
@@ -111,13 +128,17 @@ mod tests {
             HalfWidthAlnumAction::Exit
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::Right, true, false),
+            plan(ShiftKeyUpKind::RightTap, true, false),
             HalfWidthAlnumAction::Exit
         );
-        // LeftChord は entry_supported の値に関わらず常に None（exitしない
+        // チョードは entry_supported の値に関わらず常に None（exitしない
         // という結論自体は entry 可否の設定と無関係）。
         assert_eq!(
             plan(ShiftKeyUpKind::LeftChord, true, false),
+            HalfWidthAlnumAction::None
+        );
+        assert_eq!(
+            plan(ShiftKeyUpKind::RightChord, true, false),
             HalfWidthAlnumAction::None
         );
     }

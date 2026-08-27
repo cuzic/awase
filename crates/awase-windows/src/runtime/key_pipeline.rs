@@ -1350,8 +1350,10 @@ impl Runtime {
     /// この確定した瞬間（`kp_shift_conv_guard_key_up`）に初めて行う** —
     /// 旧実装のように Shift down 時点で判別未確定のまま先書き込みはしない。
     /// もう一度単独タップしたら `kp_restore_kana_from_half_width` でかな入力へ
-    /// 復元してトグルを解除する。右Shift単独タップはトグルの「緊急解除」として
-    /// 働く（トグル非アクティブ時の右Shiftタップ・チョードは何もしない）。
+    /// 復元してトグルを解除する。右Shift**単独タップ**はトグルの「緊急解除」
+    /// として働く（トグル非アクティブ時の右Shiftタップ・チョードは何もしない）。
+    /// 左右いずれの**チョード**（Shiftを押しながら他キーを打ち、その後Shiftを
+    /// 離す＝大文字入力の用途）もトグルを解除しない（BUG-25追補9・追補11）。
     ///
     /// ADR-097 の親指+小指シフト複合面は、この関数が `kp_stage_execute` より前に
     /// 非 Shift の KeyDown で `left_shift_tap_candidate` を折る順序にも依存する。
@@ -1360,16 +1362,19 @@ impl Runtime {
     fn kp_stage_shift_conv_guard(&mut self, event: &RawKeyEvent) {
         use awase::types::ModifierKey;
 
-        // Shift 以外の物理キー（VK_LSHIFT 自身を除く）の KeyDown で単独タップ候補を
-        // 折る。VK_RSHIFT も対象（LShift down → RShift down → LShift up を誤って
-        // 単独タップ扱いしないため、2026-07-11 codex レビュー指摘）。自己注入は対象外
-        // （BUG-14 と同じ理由: 他プロセスの SendInput をユーザーの物理操作として
-        // 扱わない）。
-        if matches!(event.event_type, KeyEventType::KeyDown)
-            && !event.injected
-            && event.vk_code != crate::vk::VK_LSHIFT
-        {
-            self.platform_state.gate.left_shift_tap_candidate = false;
+        // Shift 以外の物理キー（左右それぞれ自身を除く）の KeyDown で単独タップ
+        // 候補を折る。左右のShiftは互いに相手の候補も折る対象（LShift down →
+        // RShift down → LShift up を誤って単独タップ扱いしないため、
+        // 2026-07-11 codex レビュー指摘。右Shift側もBUG-25追補11で対称に
+        // 追加）。自己注入は対象外（BUG-14 と同じ理由: 他プロセスの
+        // SendInput をユーザーの物理操作として扱わない）。
+        if matches!(event.event_type, KeyEventType::KeyDown) && !event.injected {
+            if event.vk_code != crate::vk::VK_LSHIFT {
+                self.platform_state.gate.left_shift_tap_candidate = false;
+            }
+            if event.vk_code != crate::vk::VK_RSHIFT {
+                self.platform_state.gate.right_shift_tap_candidate = false;
+            }
         }
 
         if event.modifier_key != Some(ModifierKey::Shift) || event.injected {
@@ -1383,13 +1388,16 @@ impl Runtime {
     }
 
     fn kp_shift_conv_guard_key_down(&mut self, event: &RawKeyEvent) {
-        // 左Shift・他modifier無し → タップ候補開始。
-        if event.vk_code == crate::vk::VK_LSHIFT
-            && !event.modifier_snapshot.ctrl
+        // 左右Shift・他modifier無し → タップ候補開始（対称）。
+        if !event.modifier_snapshot.ctrl
             && !event.modifier_snapshot.alt
             && !event.modifier_snapshot.win
         {
-            self.platform_state.gate.left_shift_tap_candidate = true;
+            if event.vk_code == crate::vk::VK_LSHIFT {
+                self.platform_state.gate.left_shift_tap_candidate = true;
+            } else if event.vk_code == crate::vk::VK_RSHIFT {
+                self.platform_state.gate.right_shift_tap_candidate = true;
+            }
         }
 
         // Ctrl/Alt/Win チョード（ショートカット）では判定自体を発動しない。
@@ -1460,21 +1468,25 @@ impl Runtime {
 
         // `kp_stage_shift_conv_guard` はこの関数を Shift（左右いずれか）の
         // KeyUp でのみ呼ぶため、`event.vk_code` は VK_LSHIFT か VK_RSHIFT の
-        // いずれか。`left_shift_tap_candidate` は左Shift押下中に他の物理キー
-        // が一切来なかった場合のみ立ったまま残る（他キーで折れる）ため、
-        // 「左Shiftだが折れていた」＝チョードと「左Shiftで折れていない」＝
-        // 単独タップを区別できる。
+        // いずれか。`left_shift_tap_candidate`/`right_shift_tap_candidate` は
+        // 対応する Shift 押下中に他の物理キーが一切来なかった場合のみ立った
+        // まま残る（他キーで折れる）ため、「押下していたが折れていた」＝
+        // チョードと「折れていない」＝単独タップを左右対称に区別できる
+        // （BUG-25追補11: 右Shiftチョードが常にExit扱いだった非対称を修正）。
         let was_left_shift_tap_candidate =
             std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
-        self.platform_state.gate.left_shift_tap_candidate = false;
+        let was_right_shift_tap_candidate =
+            std::mem::take(&mut self.platform_state.gate.right_shift_tap_candidate);
         let shift_up_kind = if event.vk_code == crate::vk::VK_LSHIFT {
             if was_left_shift_tap_candidate {
                 ShiftKeyUpKind::LeftTap
             } else {
                 ShiftKeyUpKind::LeftChord
             }
+        } else if was_right_shift_tap_candidate {
+            ShiftKeyUpKind::RightTap
         } else {
-            ShiftKeyUpKind::Right
+            ShiftKeyUpKind::RightChord
         };
 
         // ADR-107 決定5は当初 Composition 中の GJI entry をブロックしていたが、
