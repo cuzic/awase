@@ -10,7 +10,9 @@ use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
 use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
-use crate::state::half_width_alnum::{plan_half_width_alnum_action, HalfWidthAlnumAction};
+use crate::state::half_width_alnum::{
+    plan_half_width_alnum_action, HalfWidthAlnumAction, ShiftKeyUpKind,
+};
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
@@ -1456,9 +1458,24 @@ impl Runtime {
             && self.platform_state.ime.belief.is_japanese_ime()
             && self.engine.is_user_enabled();
 
-        let is_left_shift_tap = event.vk_code == crate::vk::VK_LSHIFT
-            && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
+        // `kp_stage_shift_conv_guard` はこの関数を Shift（左右いずれか）の
+        // KeyUp でのみ呼ぶため、`event.vk_code` は VK_LSHIFT か VK_RSHIFT の
+        // いずれか。`left_shift_tap_candidate` は左Shift押下中に他の物理キー
+        // が一切来なかった場合のみ立ったまま残る（他キーで折れる）ため、
+        // 「左Shiftだが折れていた」＝チョードと「左Shiftで折れていない」＝
+        // 単独タップを区別できる。
+        let was_left_shift_tap_candidate =
+            std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
         self.platform_state.gate.left_shift_tap_candidate = false;
+        let shift_up_kind = if event.vk_code == crate::vk::VK_LSHIFT {
+            if was_left_shift_tap_candidate {
+                ShiftKeyUpKind::LeftTap
+            } else {
+                ShiftKeyUpKind::LeftChord
+            }
+        } else {
+            ShiftKeyUpKind::Right
+        };
 
         // 決定5の composition ガードは GJI entry 専用（決定7 項目4）。MS-IME
         // entry は元々 composition を一切見ていなかった（IMC write は non-invasive
@@ -1476,7 +1493,7 @@ impl Runtime {
             && (crate::tsf::observer::ime_composition_active_now()
                 || crate::tsf::observer::gji_candidate_visible_now());
         match plan_half_width_alnum_action(
-            is_left_shift_tap,
+            shift_up_kind,
             self.platform_state.gate.half_width_alnum_toggle_active,
             toggle_entry_supported,
             composing,
