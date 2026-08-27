@@ -110,7 +110,9 @@ mod langbar_probe {
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     };
-    use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, HKL, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    };
     use windows::Win32::UI::TextServices::{
         CLSID_TF_ThreadMgr, ITfInputProcessorProfileActivationSink,
         ITfInputProcessorProfileActivationSink_Impl, ITfLangBarItem, ITfLangBarItemButton,
@@ -664,6 +666,50 @@ mod langbar_probe {
         Ok(())
     }
 
+    /// `SendInput` で `VK_DBE_ALPHANUMERIC` の DOWN→UP を送る(第6の経路)。
+    /// `docs/known-bugs.md` BUG-25 追補1・3の失敗確認は awase 自身が起動中
+    /// (awase の `WH_KEYBOARD_LL` フックに届くか)を見ていた。今回は awase を
+    /// 完全停止した状態で、GJI/Windows Terminal 側に本当に届くかを
+    /// 独立に検証する。scan=0(BUG-25 追補2 の非衝突値の判断を踏襲)。
+    // main() の他の分岐と戻り値型を揃えるため anyhow::Result を返すが、
+    // このスパイクの範囲では失敗経路が無い。
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn send_input_dbe_alphanumeric() -> anyhow::Result<()> {
+        let make_input =
+            |flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(
+                            u16::try_from(VK_DBE_ALPHANUMERIC)
+                                .expect("VK_DBE_ALPHANUMERIC は u16 範囲"),
+                        ),
+                        wScan: 0,
+                        dwFlags: flags,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            };
+        let inputs = [
+            make_input(windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0)),
+            make_input(KEYEVENTF_KEYUP),
+        ];
+        // SAFETY: inputs はこのスコープでのみ生存する有効な配列。
+        let sent = unsafe {
+            SendInput(
+                &inputs,
+                i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+            )
+        };
+        println!("SendInput -> sent={sent}/2 events");
+        println!(
+            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください。\
+             このコマンドはトグル。"
+        );
+        Ok(())
+    }
+
     /// 冪等な「半角英数へセット」: `VK_DBE_HIRAGANA`(冪等・常にひらがなへ)
     /// → `VK_DBE_ALPHANUMERIC`(トグル)の2段階。開始状態に関わらず必ず
     /// ひらがな経由で英数へ着地するため、全体としては開始状態非依存の
@@ -717,6 +763,9 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--enum-ancestors") {
         return langbar_probe::enum_ancestors();
+    }
+    if args.iter().any(|a| a == "--sendinput") {
+        return langbar_probe::send_input_dbe_alphanumeric();
     }
     if let Some(hwnd) = args
         .iter()
