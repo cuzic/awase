@@ -3051,6 +3051,41 @@ settle待ち・クールダウン定数を実装しない。BUG-25のクロー�
 - Task 0（settle値の再測定）を経て `half_width_alnum_toggle = "all"` を明示設定した
   状態でソーク運用を開始すること。
 
+**追補7（2026-08-27、Opus敵対的コードレビューで発見した3件のBLOCKERを修正）:**
+
+追補6のコミット後、Codex実装の完成物に対して独立のOpus敵対的レビューを実施し、
+以下3件の実装バグを発見・修正した（いずれもマージ前、コミット追加で対応済み）。
+
+1. **composition ガードがMS-IME entryにも誤って掛かっていた。** `kp_shift_conv_guard_key_up`
+   の`composing`変数を`plan_half_width_alnum_action`へ渡す際、GJI/MS-IMEを区別せず
+   渡していたため、既定`ms_ime_only`のまま使っている全ユーザーの経路で「変換中に
+   左Shift単独タップしても半角英数トグルへ入れない」という新規の回帰が生じていた
+   （MS-IME entryは元々compositionを一切見ていない）。`uses_imc_conv_write`の間は
+   常に`composing=false`を渡すよう修正。
+2. **synthetic Shift↑が汎用`VK_SHIFT`＋LShift scan固定で、右Shift緊急解除の
+   逃げ道が構造的に不発になりうる問題。** `MapVirtualKeyW(VK_SHIFT)`は左Shiftの
+   scan(0x2A)しか返さないため、右Shift単独タップで緊急解除した場合、OS内部の
+   `VK_RSHIFT`状態が更新されずShift押下中と誤認され続け、決定0 M4が実機で確定
+   させた「Shift押下中はDBEキーのKeyDown自体がフックに配送されない」条件を踏む
+   おそれがあった。`VK_LSHIFT`/`VK_RSHIFT`両方のsynthetic Shift↑を送るよう修正
+   （KeyUpの重複は無害、既存の復元経路と同じ根拠）。実機での最終確認はTask 9に
+   追加する。
+3. **GJI exitのSendInputが見送られた（Win/Alt押下中 or effective_open=false）
+   場合に、ラッチだけ消えてbeliefがAssumedRomajiへ進んでしまう問題。** MS-IME側は
+   IMC writeの640msリトライという保険があるためこの穴が無いが、GJI側は
+   `send_gji_half_width_alnum_toggle`が唯一の書き込み試行であり、失敗時に
+   そのまま進めると「実GJIは半角英数のまま・engineはpass-throughを抜けて
+   生ローマ字を送る」という追補3と同型の実害が再発しうる。送信失敗時は
+   belief更新をスキップし`half_width_alnum_toggle_active`を`true`に戻して
+   次の操作で再試行できるよう修正。合わせて`prepend_synthetic_shift_up`が
+   exit側で常に`true`にハードコードされ、フォーカス変更由来の復元
+   （物理Shiftが押されていないケース）でも余計なShift↑を切替先アプリへ
+   注入していた問題も、呼び出し元の引数をそのまま伝播するよう修正した。
+
+Opusは他にS-3(到達不能分岐2箇所)・S-5(ADR-084への例外追記漏れ)等のSHOULD-FIXも
+指摘したが、正しさに影響しない/実機データが必要なため今回は見送り、Task 9の
+チェックリストに反映済み。
+
 ---
 
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
