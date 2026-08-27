@@ -544,6 +544,27 @@ pub fn is_alt_impersonation_active() -> bool {
     ALT_L_IMPERSONATING.load(Ordering::Relaxed) || ALT_R_IMPERSONATING.load(Ordering::Relaxed)
 }
 
+/// overflow ラッチ中（HOOK_KEYS の resync 待ち）にキーを OS へ渡す/飲み込む
+/// かの判定を1箇所に集約する（コードレビュー指摘5）。以前は overflow ラッチの
+/// 早期return分岐と `ProduceResult::Overflow` の match アームにほぼ同一の
+/// ロジックが重複していた。
+///
+/// Alt なりすまし発動中は `CallNextHookEx` に本物の `KBDLLHOOKSTRUCT`（本物の
+/// Alt）が渡ってしまい、Alt 単独タップとしてシステムメニューが起動しうる
+/// ため、この場合のみ飲み込む（`LRESULT(1)`）。それ以外は OS へパススルーする。
+fn passthrough_or_swallow_for_impersonation(
+    hook_handle: HHOOK,
+    ncode: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if is_alt_impersonation_active() {
+        LRESULT(1)
+    } else {
+        unsafe { CallNextHookEx(Some(hook_handle), ncode, wparam, lparam) }
+    }
+}
+
 /// 現在時刻を `GetTickCount64` ミリ秒で返す。
 #[must_use]
 pub fn current_tick_ms() -> u64 {
@@ -830,22 +851,6 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
 
-    // HOOK_KEYS の overflow ラッチが立っている間（エンジンスレッドが resync
-    // するまで）は、以降の分類・なりすまし処理を一切行わず OS へ直接パス
-    // スルーする。バッファ再生とパススルーが1打鍵ごとに交互混在する
-    // 順序崩れを防ぐため（指摘2-3）。
-    //
-    // 例外: Alt なりすまし発動中（`is_alt_impersonation_active`）は
-    // `CallNextHookEx` に本物の `KBDLLHOOKSTRUCT`（本物の Alt）が渡ってしまい、
-    // Alt 単独タップとしてシステムメニューが起動しうる（下の overflow 分岐と
-    // 同じ理由）。この場合のみ従来どおり飲み込む。
-    if crate::hook_channel::HOOK_KEYS.is_overflow_latched() {
-        if is_alt_impersonation_active() {
-            return LRESULT(1);
-        }
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
-    }
-
     // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
     // 入力に反転して NICOLA の romaji VK 出力が壊滅する（2026-07-06 実機: down→up
     // 135µs〜1ms の合成 VK_KANA ペアが 2 回到達し Windows Terminal が JISかな化。
@@ -951,6 +956,21 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         return LRESULT(1);
     }
 
+    // HOOK_KEYS の overflow ラッチが立っている間（エンジンスレッドが resync
+    // するまで）は、以降の分類・なりすまし処理を一切行わず OS へ直接パス
+    // スルーする。バッファ再生とパススルーが1打鍵ごとに交互混在する
+    // 順序崩れを防ぐため（指摘2-3）。
+    //
+    // 上の VK_KANA / VK_DBE_ROMAN / VK_DBE_NOROMAN swallow ガード（BUG-08/61/62
+    // 対策、「一度切り替わると復旧不能」と確定済み）より**後**に置く（コード
+    // レビュー指摘2）。以前はこのラッチ判定が上記ガードより手前にあったため、
+    // overflow ラッチ中はこれらのキーが無条件で OS へ素通りし、ガードが防いで
+    // いたはずの復旧不能な破損が起こりえた。overflow は稀にしか起きない上
+    // 一時的な状態なので、破損防止ガードを常に優先する。
+    if crate::hook_channel::HOOK_KEYS.is_overflow_latched() {
+        return passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam);
+    }
+
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
     let config = cached_hook_config();
 
@@ -1051,11 +1071,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // OS へそのままパススルーする方が実害が小さい。ただし Alt なりすまし中は
         // 上の overflow ラッチ分岐と同じ理由で飲み込む（dropped 計上のみ）。
         crate::hook_channel::ProduceResult::Overflow => {
-            if is_alt_impersonation_active() {
-                LRESULT(1)
-            } else {
-                CallNextHookEx(Some(hook_handle), ncode, wparam, lparam)
-            }
+            passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam)
         }
     }
 }
