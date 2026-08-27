@@ -12,7 +12,9 @@
 //! - Engine は InputContext のスナップショットだけで判断する（先読みしない）
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode};
+use crate::types::{
+    ContextChange, KeyClassification, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode,
+};
 
 use super::decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
@@ -726,15 +728,66 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
+        let engine_active = self.compute_active(ctx);
+        // engine 活性中の「修飾なし親指キー単独押下」は IME 系コンボ全体から
+        // 除外し、Phase 3 の同時打鍵判定へ渡す。engine_on/engine_off は
+        // 緊急復帰経路を塞がないよう対象外のままにする。
+        let suppress_ime_combos = engine_active && Self::is_bare_thumb(event, ctx.modifiers);
+
         self.special_keys
             .match_event(
                 event,
                 ctx.modifiers,
                 self.adapter.is_enabled(),
-                self.compute_active(ctx),
+                engine_active,
+                suppress_ime_combos,
             )
-            .or_else(|| self.match_ime_on_off_auto(ctx, event))
-            .or_else(|| self.match_ime_toggle_auto(ctx, event))
+            .or_else(|| {
+                (!suppress_ime_combos)
+                    .then(|| self.match_ime_on_off_auto(ctx, event))
+                    .flatten()
+            })
+            .or_else(|| {
+                (!suppress_ime_combos)
+                    .then(|| self.match_ime_toggle_auto(ctx, event))
+                    .flatten()
+            })
+    }
+
+    /// 修飾キーを伴わない親指キーの**物理**単独押下か。Phase 1/Phase 1.5 の
+    /// 判定が食い違わないよう、親指キーの bare 判定はここに集約する。
+    ///
+    /// `event.injected` は false 扱いにする（BUG-14 と同じ原則、
+    /// `match_ime_on_off_auto` の doc 参照）。手動設定の `ime_on`/`ime_off`/
+    /// `ime_toggle` はユーザーがマクロツール等から意図的に注入する運用を
+    /// 妨げてはならないため、注入イベントをこのガードで抑制対象にしない。
+    ///
+    /// 既知の限界（`/code-review` 指摘）: `event.key_classification` は
+    /// `general.left_thumb_key`/`right_thumb_key` に設定した**任意の** VK に
+    /// 対して `LeftThumb`/`RightThumb` を返す（`hook.rs::classify_key`）。
+    /// 一方 `resolve_pending_thumb_as_single`（`nicola_fsm.rs`）が
+    /// `delegate_to_open_axis`/`dedicated_fn_key` 等の特別扱いをするのは
+    /// `muhenkan_vk`/`henkan_vk` が `Some` のとき、すなわち
+    /// `bootstrap.rs`/`runtime/mod.rs` が `VK_NONCONVERT`/`VK_CONVERT`
+    /// **限定**でフィルタして設定した場合のみ。無変換/変換以外を
+    /// `left_thumb_key`/`right_thumb_key` に設定したユーザーが同じキーを
+    /// `keys.ime_on`/`ime_off`/`ime_toggle` にも設定していると、engine
+    /// 活性中の単独タップは（チョードと衝突しなくなる代わりに）
+    /// `resolve_pending_thumb_as_single` の既定分岐（Suppress/Passthrough）
+    /// に落ち、そのコンボは発火しない。`validate_thumb_key_in_ime_combos`
+    /// （`config.rs`）の警告はこの一般ケースもカバーするが、この経路自体の
+    /// 単体テストは無変換/変換限定（`classify_test_key` が他 VK を
+    /// Thumb に分類しないため）。将来この2つの「親指キー判定」を
+    /// 単一の情報源に統合するのが望ましい。
+    #[must_use]
+    pub(crate) const fn is_bare_thumb(event: &RawKeyEvent, m: ModifierState) -> bool {
+        !event.injected
+            && matches!(
+                event.key_classification,
+                KeyClassification::LeftThumb | KeyClassification::RightThumb
+            )
+            && !m.is_os_modifier_held()
+            && !m.shift
     }
 
     /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
@@ -897,6 +950,7 @@ impl SpecialKeyCombos {
         modifiers: ModifierState,
         engine_enabled: bool,
         engine_active: bool,
+        suppress_ime_combos: bool,
     ) -> Option<SpecialKeyMatch> {
         // エンジン ON コンボキー。
         //
@@ -948,7 +1002,7 @@ impl SpecialKeyCombos {
         // `keys.ime_detect.toggle`既定値「漢字」と衝突していた実例で発覚）。
         // 既定値では衝突しないよう調整済みだが、ユーザーが手動で同じキーを
         // 両方に設定した場合も構造的に壊れないよう、ここで一括ガードする。
-        if event.ime_relevance.sync_direction.is_none() {
+        if event.ime_relevance.sync_direction.is_none() && !suppress_ime_combos {
             if self
                 .ime_on
                 .iter()
