@@ -52,8 +52,7 @@ mod windows_probe {
 
     extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if msg == WM_DESTROY {
-            let remaining =
-                ALIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
+            let remaining = ALIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) - 1;
             if remaining <= 0 {
                 // SAFETY: メッセージループを持つスレッドから呼ぶ限り常に安全。
                 unsafe { PostQuitMessage(0) };
@@ -153,9 +152,8 @@ mod windows_probe {
         // ウィンドウクラス名を使って呼ぶ。重ならない位置(A=左上, B=Aの右隣)に置く。
         let (hwnd_a, _edit_a) =
             unsafe { create_probe_window(&class_name_wide, hinstance, "IMM32 Probe A", 100, 100) }?;
-        let (hwnd_b, _edit_b) = unsafe {
-            create_probe_window(&class_name_wide, hinstance, "IMM32 Probe B", 620, 100)
-        }?;
+        let (hwnd_b, _edit_b) =
+            unsafe { create_probe_window(&class_name_wide, hinstance, "IMM32 Probe B", 620, 100) }?;
 
         println!("IMM32 Probe A: hwnd={hwnd_a:?} title=\"IMM32 Probe A\"");
         println!("IMM32 Probe B: hwnd={hwnd_b:?} title=\"IMM32 Probe B\"");

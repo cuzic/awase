@@ -331,7 +331,12 @@ impl Runtime {
         // コードレビュー指摘6）。hwnd 追従の詳細は
         // `notify_focus_hwnd_updated_if_needed` のドキュメントを参照。
         let new_hwnd = self.focus_hwnd();
-        self.notify_focus_hwnd_updated_if_needed(is_bootstrap, process_changed, prev_hwnd, new_hwnd);
+        self.notify_focus_hwnd_updated_if_needed(
+            is_bootstrap,
+            process_changed,
+            prev_hwnd,
+            new_hwnd,
+        );
 
         self.apply_app_disable_transition(classified.process_id, is_bootstrap);
 
