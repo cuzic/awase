@@ -1,4 +1,3 @@
-#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! アーキテクチャ境界の grep ベース回帰テスト。
 //!
 //! `.claude/rules/ime-belief-architecture.md` が定める
@@ -477,7 +476,7 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 ///
 /// 現在の designated 使用箇所（すべて Low confidence で `desired_open` を書き換えない）:
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
-/// (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
+///   (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
 /// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている
 /// （confidence は `Observed<HeuristicDefault>` 側で Low 固定、ADR-089 §2.2）。
@@ -2441,9 +2440,119 @@ fn enqueue_reinject_call_sites_are_accounted_for() {
         vec![
             ("src/runtime/executor.rs".to_string(), 2),
             ("src/runtime/key_pipeline.rs".to_string(), 1),
-            ("src/runtime/message_handlers.rs".to_string(), 5),
+            // TIMER_IME_OFF_RESCUE の再処理が deliver_key_event 経由に統合された分、
+            // message_handlers.rs 側の直接呼び出しが1件減った(5→4、追加発見E)。
+            ("src/runtime/message_handlers.rs".to_string(), 4),
         ],
         "enqueue_reinject call sites are limited to deliver_key_event plus the documented pending-replay exceptions"
+    );
+}
+
+/// `WM_EXECUTE_EFFECTS` の post を `message_handlers.rs` 内の箇所数で固定する
+/// （コードレビュー指摘8、指摘10）。
+///
+/// 以前は `deliver_key_event` の各 `Reinjected` 早期return分岐（Nested pump・
+/// NonText・consume_post_bypass・process_key_event PassThrough の4箇所）が
+/// それぞれ個別に post していたため、drain で複数キーをまとめて処理する際に
+/// `WM_EXECUTE_EFFECTS` が N 回投函されうる構造だった。`deliver_key_event`
+/// （と `consume_post_bypass`）は post を一切行わず `KeyDelivery` を返すだけに
+/// し、post は呼び出し元の責務にした（`deliver_key_event` の doc 参照）。
+///
+/// 呼び出し元側は2種類のパターンに集約されている:
+/// - `post_effects_if_reinjected(delivery)` ヘルパー（指摘10で
+///   `handle_wm_key_from_hook` と `handle_wm_timer`(TIMER_IME_OFF_RESCUE) の
+///   重複3行パターンを共通化）: `deliver_key_event` の戻り値
+///   （`handle_wm_timer` 側は `KeyOrigin::ImeOffRescueReplay` として通した
+///   戻り値、以前の `replay_ime_off_rescue_event` 直接呼び出し+`PassThrough`
+///   判定から統合済み）が `Reinjected` なら1回。
+/// - `handle_wm_drain_output_queue`: ループ後 `any_reinject` なら1回
+///   （バッチ内の複数キーをまとめて1回だけ判定するため、ヘルパーとは
+///   別パターンのまま）。
+///
+/// 新しい早期return分岐を追加する場合、個別に post せず
+/// `post_effects_if_reinjected` か `handle_wm_drain_output_queue` の
+/// いずれかへ集約すること。集約できない正当な理由があるならこのテストの
+/// 期待値を更新すること。
+#[test]
+fn wm_execute_effects_post_sites_are_limited_to_batch_boundaries() {
+    let path = "src/runtime/message_handlers.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let raw_post_count = count_real_calls(production, "post_to_main_thread(WM_EXECUTE_EFFECTS)");
+    assert_eq!(
+        raw_post_count, 2,
+        "{path} 内の `post_to_main_thread(WM_EXECUTE_EFFECTS)` 呼び出し箇所数が \
+         想定(2)と異なります(実際: {raw_post_count})。\n\
+         想定: post_effects_if_reinjected ヘルパー内で1回 / \
+         handle_wm_drain_output_queue で1回の計2箇所のみ。\n\
+         deliver_key_event・consume_post_bypass は post を行わず KeyDelivery を \
+         返すだけにすること（バッチ内で post が N 回重複するのを防ぐため）。"
+    );
+    let helper_call_count = count_real_calls(production, "post_effects_if_reinjected(");
+    assert_eq!(
+        helper_call_count, 2,
+        "{path} 内の `post_effects_if_reinjected(` 呼び出し箇所数が想定(2)と \
+         異なります(実際: {helper_call_count})。\n\
+         想定: handle_wm_key_from_hook / handle_wm_timer(TIMER_IME_OFF_RESCUE) の \
+         2箇所のみ。新しい呼び出し元を追加する場合、個別に \
+         post_to_main_thread(WM_EXECUTE_EFFECTS) せずこのヘルパーへ集約すること。"
+    );
+}
+
+/// コードレビュー指摘3の回帰テスト: `deliver_key_event` の `FocusKind::NonText`
+/// 早期returnが `KeyOrigin::ImeOffRescueReplay` を対象外にしていること。
+///
+/// `TIMER_IME_OFF_RESCUE` が `deliver_key_event` 経由に統合された結果
+/// （追加発見E）、50ms 救済窓満了時に focus_kind が（フォーカス遷移中等で
+/// 一時的・誤って）`NonText` と分類されていると、この早期returnがユーザーの
+/// 明示的な IME OFF ジェスチャーをリトライなしで黙って無効化してしまう
+/// 回帰があった。early-return の条件式が origin を除外していることを
+/// ソース走査で固定する。
+#[test]
+fn deliver_key_event_nontext_early_return_excludes_ime_off_rescue_replay() {
+    let content = read_crate_file("src/runtime/message_handlers.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "pub(crate) fn deliver_key_event(");
+    let nontext_idx = body
+        .find("FocusKind::NonText")
+        .expect("deliver_key_event must check FocusKind::NonText");
+    let block_start = body[nontext_idx..]
+        .find('{')
+        .map(|i| nontext_idx + i)
+        .expect("NonText check must be followed by a block");
+    let condition = &body[nontext_idx..block_start];
+    assert!(
+        condition.contains("KeyOrigin::ImeOffRescueReplay"),
+        "deliver_key_event の FocusKind::NonText 早期returnは \
+         KeyOrigin::ImeOffRescueReplay を対象外にすること（コードレビュー指摘3、\
+         さもなくば IME OFF 救済リプレイが focus_kind の一時的誤判定で \
+         黙って無効化されうる）。\n条件式: {condition:?}"
+    );
+}
+
+/// コードレビュー指摘4の回帰テスト: `TIMER_IME_OFF_RESCUE` 分岐が
+/// `deliver_key_event` を呼ぶ前に `begin_key_batch(app)` を呼んでいること。
+///
+/// `begin_key_batch` の doc が定める「バッチ境界で1回だけ resync する」契約の
+/// 呼び出し元（`handle_wm_key_from_hook`・`handle_wm_drain_output_queue`）に、
+/// この TIMER 分岐が含まれていなかった回帰。
+#[test]
+fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
+    let content = read_crate_file("src/runtime/message_handlers.rs");
+    let production = production_code_only(&content);
+    let timer_body = extract_fn_body(production, "pub(crate) unsafe fn handle_wm_timer(");
+    let branch_start = timer_body
+        .find("crate::TIMER_IME_OFF_RESCUE")
+        .expect("handle_wm_timer must handle TIMER_IME_OFF_RESCUE");
+    let deliver_idx = timer_body[branch_start..]
+        .find("deliver_key_event(app, pending_event, KeyOrigin::ImeOffRescueReplay)")
+        .map(|i| branch_start + i)
+        .expect("TIMER_IME_OFF_RESCUE branch must call deliver_key_event with ImeOffRescueReplay");
+    let begin_idx = timer_body[branch_start..deliver_idx].find("begin_key_batch(app)");
+    assert!(
+        begin_idx.is_some(),
+        "TIMER_IME_OFF_RESCUE 分岐は deliver_key_event 呼び出し前に \
+         begin_key_batch(app) を呼ぶこと（コードレビュー指摘4）。"
     );
 }
 
@@ -2473,11 +2582,19 @@ fn bootstrap_initial_focus_scope_precedes_ime_cache_initialization() {
 #[test]
 fn establish_initial_focus_scope_advances_focus_epoch_once() {
     let content = read_crate_file("src/runtime/focus_tracking.rs");
+    // establish_initial_focus_scope は共通ヘルパー enter_focus_scope 経由で
+    // focus_epoch を進める（コードレビュー指摘9で on_focus_process_changed と共通化）。
     let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
     assert_eq!(
-        body.matches("focus_epoch.wrapping_add(1)").count(),
+        count_real_calls(body, "self.enter_focus_scope("),
         1,
-        "establish_initial_focus_scope must advance focus_epoch exactly once"
+        "establish_initial_focus_scope must call enter_focus_scope exactly once"
+    );
+    let helper_body = extract_fn_body(&content, "fn enter_focus_scope");
+    assert_eq!(
+        helper_body.matches("focus_epoch.wrapping_add(1)").count(),
+        1,
+        "enter_focus_scope must advance focus_epoch exactly once"
     );
 }
 
@@ -2500,6 +2617,14 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         (
             "apply_app_disable_transition",
             extract_fn_body(&content, "fn apply_app_disable_transition"),
+        ),
+        // establish_initial_focus_scope が呼ぶ共通ヘルパー（コードレビュー指摘9で
+        // on_focus_process_changed と共通化）。ここに処理が移った分、上の直接
+        // テキスト検査から漏れないよう対象関数リストへ明示的に加える
+        // （検査範囲を広げ忘れるとテストは緑のまま防御が消えるため）。
+        (
+            "enter_focus_scope",
+            extract_fn_body(&content, "fn enter_focus_scope"),
         ),
     ];
     for forbidden in [

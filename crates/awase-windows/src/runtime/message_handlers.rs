@@ -52,6 +52,13 @@ fn finish_drain() {
 pub(crate) enum KeyOrigin {
     Hook(PumpContext),
     DeferredReplay,
+    /// `TIMER_IME_OFF_RESCUE` 満了時の再処理（追加発見E）。
+    ///
+    /// 50ms 救済窓が保留していたキーを、救済窓 defer を再度かけずに
+    /// (`kp_run_inner` の `skip_rescue_defer=true` 相当) 即時処理する。
+    /// `deliver_key_event` はこの origin のとき `Runtime::process_key_event` の
+    /// 代わりに `Runtime::replay_ime_off_rescue_event` を呼ぶ。
+    ImeOffRescueReplay,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,11 +86,17 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
-pub(crate) fn deliver_key_event(
-    app: &mut Runtime,
-    event: awase::types::RawKeyEvent,
-    origin: KeyOrigin,
-) -> KeyDelivery {
+/// バッチ境界で1回だけ走るべき resync 処理（指摘5）。
+///
+/// `crate::runtime::engine_window::take_needs_engine_resync()` はモーダルポンプの
+/// 出入りごとに一度立つバッチ単位のフラグであり、本来バッチ（=1回の
+/// `WM_KEY_FROM_HOOK`、または1回の drain で処理する複数キー）につき1回だけ
+/// 消費すればよい。以前は `deliver_key_event` 冒頭（per-event）で呼んでいたため、
+/// drain で複数キーをまとめて処理する際に2件目以降でも重複して素通りチェックが
+/// 走っていた（実害は無いが無駄な `take_needs_engine_resync()` 呼び出し）。
+/// 呼び出し元（`handle_wm_key_from_hook`・`handle_wm_timer`(`TIMER_IME_OFF_RESCUE`)・
+/// `handle_wm_drain_output_queue`）がバッチ境界で1回だけ呼ぶこと。
+pub(crate) fn begin_key_batch(app: &mut Runtime) {
     if crate::runtime::engine_window::take_needs_engine_resync() {
         let ctx = app.build_ctx();
         let decision = app
@@ -91,21 +104,52 @@ pub(crate) fn deliver_key_event(
             .on_command(awase::engine::EngineCommand::FocusChanged, &ctx);
         app.execute_decision_suppressed(decision);
     }
+}
 
+/// `deliver_key_event` の戻り値が `Reinjected` なら `WM_EXECUTE_EFFECTS` を要求
+/// する（コードレビュー指摘10）。`handle_wm_key_from_hook` と
+/// `handle_wm_timer`(`TIMER_IME_OFF_RESCUE`) で重複していた3行パターンを共通化
+/// した。`handle_wm_drain_output_queue` はバッチ内の複数キーをまとめて
+/// `any_reinject` フラグで判定するため対象外（別パターンのまま）。
+fn post_effects_if_reinjected(delivery: KeyDelivery) {
+    if matches!(delivery, KeyDelivery::Reinjected) {
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
+    }
+}
+
+/// フックスレッドから転送された物理キーイベントを処理する。
+///
+/// `WM_EXECUTE_EFFECTS` の post は行わない（指摘8）。`KeyDelivery::Reinjected`
+/// を返すだけにとどめ、post は呼び出し元（`handle_wm_key_from_hook`・
+/// `handle_wm_drain_output_queue`）の責務にする。以前は複数の早期return分岐が
+/// 個別に post していたため、1バッチ内で複数キーが Reinjected になると
+/// `WM_EXECUTE_EFFECTS` が N 回投函されていた。
+pub(crate) fn deliver_key_event(
+    app: &mut Runtime,
+    event: awase::types::RawKeyEvent,
+    origin: KeyOrigin,
+) -> KeyDelivery {
     if matches!(origin, KeyOrigin::Hook(_)) {
         app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
     }
 
     if matches!(origin, KeyOrigin::Hook(PumpContext::Nested)) {
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         return KeyDelivery::Reinjected;
     }
 
-    // NonText フォーカス（タスクバー等）はすべて OS にパススルー
-    if app.platform_state.focus.focus_kind == FocusKind::NonText {
+    // NonText フォーカス（タスクバー等）はすべて OS にパススルー。
+    //
+    // ImeOffRescueReplay（コードレビュー指摘3）はこの早期returnの対象外にする。
+    // 50ms 救済窓が保留していたキーはユーザーの明示的な IME OFF ジェスチャーで
+    // あり、発火時点で focus_kind が（フォーカス遷移中等で一時的・誤って）
+    // NonText と分類されていても、黙ってパススルーへ変換しリトライ無しで
+    // 無効化してはならない。`replay_ime_off_rescue_event`/`kp_run_inner` へ
+    // 確実に到達させる。
+    if app.platform_state.focus.focus_kind == FocusKind::NonText
+        && !matches!(origin, KeyOrigin::ImeOffRescueReplay)
+    {
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         return KeyDelivery::Reinjected;
     }
 
@@ -113,49 +157,89 @@ pub(crate) fn deliver_key_event(
     // Ctrl+key bypass の直後に non-Ctrl 非修飾キーが来た場合、NICOLA エンジンを
     // スキップして直接 passthrough する（1 キー分のみ）。
     // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
+    //
+    // ImeOffRescueReplay はこのガードの対象外にしない（コードレビュー指摘3を
+    // 踏まえ個別判断）。post-bypass は「直前に Ctrl+key bypass があった」場合
+    // にのみ武装され、かつユーザー設定の `[[post_bypass]]` ルールが vk/proc/class
+    // で一致した時だけ消費する狭いスコープの latch であり、IME OFF 救済窓の
+    // 対象キー（無変換/変換系）と衝突する可能性は低い。NonText のように
+    // 「フォーカス分類の誤判定で常時パススルーになる」広いガードとは性質が
+    // 異なるため、ここは従来どおり適用する。
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
     if let Some(delivery) = consume_post_bypass(app, event, is_key_down) {
         return delivery;
     }
 
-    let result = app.process_key_event(event);
+    // ImeOffRescueReplay（追加発見E）: 救済窓 defer を再度かけない専用経路
+    // （`kp_run_inner` の `skip_rescue_defer=true` 相当）を通す。
+    let result = if matches!(origin, KeyOrigin::ImeOffRescueReplay) {
+        app.replay_ime_off_rescue_event(event)
+    } else {
+        app.process_key_event(event)
+    };
     if matches!(result, CallbackResult::PassThrough) {
         // GJI 候補ウィンドウが表示中に Ctrl+key がパススルーされる際、
         // GJI が Ctrl+key を IME ショートカットとして横取りしないよう composition を
-        // 先にキャンセルする。例: IME ON + め入力中 → Ctrl+J → tmux prefix。
-        // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
-        // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
-        if is_key_down && event.modifier_snapshot.ctrl && !event.vk_code.is_passthrough() {
-            let candidate_visible = app.platform.is_composition_warm_in_tsf();
-            log::debug!(
-                "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
-                event.vk_code
-            );
-            if candidate_visible {
-                // SAFETY: メインスレッドから呼ぶ。
-                unsafe { super::cancel_ime_composition() };
-                app.platform.on_ctrl_bypass_composition_cancel();
-                log::debug!(
-                    "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
-                    event.vk_code
-                );
-            }
-            // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
-            // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
-            arm_post_bypass_if_matches(app, event.vk_code);
-        }
+        // 先にキャンセルする（詳細は cancel_composition_and_arm_post_bypass_on_ctrl の doc）。
+        cancel_composition_and_arm_post_bypass_on_ctrl(app, origin, event, is_key_down);
         app.executor.enqueue_reinject(event);
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
         KeyDelivery::Reinjected
     } else {
         KeyDelivery::Consumed
     }
 }
 
+/// `CallbackResult::PassThrough` 確定時、Ctrl+非修飾キーによる bypass の直前に
+/// GJI 候補ウィンドウの composition をキャンセルし、`[[post_bypass]]` ルールに
+/// 一致すれば post-bypass latch を武装する。例: IME ON + め入力中 → Ctrl+J →
+/// tmux prefix。Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
+/// 修飾キーのみの押下時に composition を誤ってキャンセルしない。
+///
+/// origin を `KeyOrigin::Hook(PumpContext::Main)` に限定する（指摘4、低コスト案）。
+/// 旧 drain 経路（DeferredReplay）はこのロジックを一切通っておらず、この限定は
+/// その挙動と厳密に一致するため退行リスクがゼロ。世代照合による DeferredReplay
+/// 対応の完全版は見送り、docs/known-bugs.md に起票のみ行う（gate 中に Ctrl+J 等が
+/// 来ても composition キャンセルが効かない既知の隙間）。
+///
+/// `deliver_key_event` 本体から分離することで cognitive complexity を抑える
+/// （振る舞いは変更なし）。
+fn cancel_composition_and_arm_post_bypass_on_ctrl(
+    app: &mut Runtime,
+    origin: KeyOrigin,
+    event: awase::types::RawKeyEvent,
+    is_key_down: bool,
+) {
+    if !(matches!(origin, KeyOrigin::Hook(PumpContext::Main))
+        && is_key_down
+        && event.modifier_snapshot.ctrl
+        && !event.vk_code.is_passthrough())
+    {
+        return;
+    }
+    let candidate_visible = app.platform.is_composition_warm_in_tsf();
+    log::debug!(
+        "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
+        event.vk_code
+    );
+    if candidate_visible {
+        // SAFETY: メインスレッドから呼ぶ。
+        unsafe { super::cancel_ime_composition() };
+        app.platform.on_ctrl_bypass_composition_cancel();
+        log::debug!(
+            "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
+            event.vk_code
+        );
+    }
+    // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
+    // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
+    arm_post_bypass_if_matches(app, event.vk_code);
+}
+
 /// Post-bypass latch（ADR-103 決定3）の消費判定。`Some` を返した場合、
 /// 呼び出し元はその `KeyDelivery` を即座に return すること（`process_key_event`
 /// へ進んではならない）。`deliver_key_event` 本体から分離することで
-/// cognitive complexity を抑える。
+/// cognitive complexity を抑える。`WM_EXECUTE_EFFECTS` の post はここでは
+/// 行わない（指摘8、`deliver_key_event` の doc 参照）。
 fn consume_post_bypass(
     app: &mut Runtime,
     event: awase::types::RawKeyEvent,
@@ -201,7 +285,6 @@ fn consume_post_bypass(
             };
             if should_reinject {
                 app.executor.enqueue_reinject(event);
-                post_to_main_thread(WM_EXECUTE_EFFECTS);
                 Some(KeyDelivery::Reinjected)
             } else {
                 None
@@ -241,11 +324,14 @@ fn arm_post_bypass_if_matches(app: &mut Runtime, vk: VkCode) {
 
 /// WM_KEY_FROM_HOOK ハンドラ — フックスレッドから転送された物理キーイベントを処理する
 pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::RawKeyEvent) {
-    let _ = deliver_key_event(
+    begin_key_batch(app);
+    let delivery = deliver_key_event(
         app,
         event,
         KeyOrigin::Hook(crate::runtime::engine_window::current_pump_context()),
     );
+    // WM_EXECUTE_EFFECTS の post は呼び出し元の責務（指摘8、deliver_key_event の doc 参照）。
+    post_effects_if_reinjected(delivery);
     recover_pending_drain_request();
 }
 
@@ -310,11 +396,18 @@ pub(crate) unsafe fn handle_wm_timer(
                     "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
-                let result = app.replay_ime_off_rescue_event(pending_event);
-                if matches!(result, CallbackResult::PassThrough) {
-                    app.executor.enqueue_reinject(pending_event);
-                    post_to_main_thread(WM_EXECUTE_EFFECTS);
-                }
+                // deliver_key_event（単一入口）経由に統合する（追加発見E）。
+                // 以前は Runtime::replay_ime_off_rescue_event を直接呼んでおり、
+                // NonText focus パススルー・post-bypass latch 消費等を素通りしていた。
+                //
+                // begin_key_batch(app) をここでも呼ぶ（コードレビュー指摘4）。
+                // 「バッチ境界で1回だけ resync チェックする」契約
+                // （begin_key_batch の doc 参照）の対象に、この TIMER 分岐も
+                // handle_wm_key_from_hook・handle_wm_drain_output_queue と並ぶ
+                // 3箇所目として含める。
+                begin_key_batch(app);
+                let delivery = deliver_key_event(app, pending_event, KeyOrigin::ImeOffRescueReplay);
+                post_effects_if_reinjected(delivery);
             }
         }
         Some(id) if id == TIMER_GJI_LONG_IDLE => {
@@ -1114,10 +1207,10 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     });
 
     // classify 済みイベントを取り出し、enrich_ime_relevance（sync key 判定）のみ with_app 内で補完する。
-    let mut drained = false;
     let queue = with_app(|app| {
         let mut events = crate::INPUT_DEFER.take_all();
-        drained = true;
+        // このバッチ（drain 対象の全イベント）につき1回だけ resync する（指摘5）。
+        begin_key_batch(app);
         for ev in &mut events {
             app.enrich_ime_relevance(ev);
             log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
@@ -1135,11 +1228,6 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         finish_drain();
         return;
     };
-    if !drained {
-        DRAIN_RERUN_PENDING.store(true, Ordering::Release);
-        finish_drain();
-        return;
-    }
 
     if !queue.is_empty() {
         let now_us = hook::now_timestamp_us();
@@ -1279,6 +1367,14 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         log::info!(
             "[probe-admission] rejected since last dump: epoch_mismatch={}",
             stats.epoch_mismatch
+        );
+    }
+    // HOOK_KEYS の最大占有数（指摘2-4）: overflow の頻度を実測できるようにする。
+    let max_occupancy = crate::hook_channel::HOOK_KEYS.take_max_occupancy();
+    if max_occupancy > 0 {
+        log::info!(
+            "[hook-ring] max occupancy since last dump: {max_occupancy}/{}",
+            crate::hook_channel::CAP
         );
     }
     for entry in app.platform.drain_journal_entries() {

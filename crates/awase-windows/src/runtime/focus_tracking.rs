@@ -122,19 +122,52 @@ impl Runtime {
         let next = self.focus_identity_snapshot();
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
 
+        self.enter_focus_scope(&classified);
+
+        // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
+        // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
+        let hint = self.platform.injection_hint();
+        let new_mode =
+            crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
+        self.platform.update_injection_mode(new_mode);
+    }
+
+    /// フォーカス確定処理の共通シーケンス（`last_focus_change_ms`/`focus_epoch`
+    /// 更新 + `notify_focus_changed()` + `active_keymaps` フィルタ）を1箇所に
+    /// まとめる（コードレビュー指摘9）。
+    ///
+    /// `establish_initial_focus_scope`（bootstrap、まだ一度も IME を観測していない）
+    /// と `on_focus_process_changed`（定常経路）が、この処理列を独立に手動コピー
+    /// していた。
+    ///
+    /// **`injection_mode` の再計算はここに含めない**（各呼び出し元に残す）。
+    /// 2箇所で呼び出し順序が異なる（`establish_initial_focus_scope` はこの直後、
+    /// `on_focus_process_changed` は IME belief dispatch・cache restore の後）ため、
+    /// 統合すると挙動が変わるリスクがある。
+    ///
+    /// 戻り値の `TickMs` は、呼び出し元がこの後の処理（`dispatch_event` 等）で
+    /// 同じ時刻を使い回すために返す。
+    fn enter_focus_scope(&mut self, classified: &ClassifiedFocus) -> crate::state::TickMs {
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         self.platform_state.focus.last_focus_change_ms = tick_ms.0;
+        // フォーカスエポックをインクリメント。このフォーカスで spawn された probe が
+        // 次のフォーカス変更後に完了しても、epoch 不一致で棄却される。
         self.platform_state.focus.focus_epoch =
             self.platform_state.focus.focus_epoch.wrapping_add(1);
         self.platform.notify_focus_changed();
 
         let process_name = self.platform.focus.process_name().to_owned();
         self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
-
-        let hint = self.platform.injection_hint();
-        let new_mode =
-            crate::output::types::InjectionMode::from((hint, self.platform_state.focus.app_kind));
-        self.platform.update_injection_mode(new_mode);
+        log::debug!(
+            "[keymap] active rules updated: {} rule(s) for process={:?} \
+             (hwnd={:?} kind={:?} focus_epoch={})",
+            self.platform_state.keymap.active_keymaps.len(),
+            process_name,
+            classified.hwnd,
+            classified.kind,
+            self.platform_state.focus.focus_epoch,
+        );
+        tick_ms
     }
 
     /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
@@ -361,13 +394,7 @@ impl Runtime {
         // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
         // effective_open が誤って true になり VK_KANJI を誤送信する（shadow desync 偽陽性）。
         crate::tsf::observer::reset_candidate_was_seen();
-        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        self.platform_state.focus.last_focus_change_ms = tick_ms.0;
-        // フォーカスエポックをインクリメント。このフォーカスで spawn された probe が
-        // 次のフォーカス変更後に完了しても、epoch 不一致で棄却される。
-        self.platform_state.focus.focus_epoch =
-            self.platform_state.focus.focus_epoch.wrapping_add(1);
-        self.platform.notify_focus_changed();
+        let tick_ms = self.enter_focus_scope(classified);
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
         // persistent_explicit_off_ms() を使う: FocusChanged が last_intent を
@@ -375,7 +402,6 @@ impl Runtime {
         // 2 回目以降の guard が機能し続けるよう ImeStateHub 側で永続保持している。
         let pre_focus_explicit_off_ms = self.platform_state.ime.persistent_explicit_off_ms();
         let ime_profile = crate::state::ime_event::ImePolicyProfile::from(new_profile);
-        let process_name = self.platform.focus.process_name().to_owned();
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::FocusChanged {
                 from: (prev.hwnd != 0).then_some(crate::state::ime_event::HwndId(prev.hwnd)),
@@ -385,16 +411,6 @@ impl Runtime {
             },
             tick_ms,
         );
-
-        {
-            self.platform_state.keymap.active_keymaps =
-                self.all_keymaps.filter_active(&process_name);
-            log::debug!(
-                "[keymap] active rules updated: {} rule(s) for process={:?}",
-                self.platform_state.keymap.active_keymaps.len(),
-                process_name
-            );
-        }
 
         {
             let cache_hit = self.platform.focus.restore_ime_state();

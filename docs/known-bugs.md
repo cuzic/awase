@@ -10760,8 +10760,113 @@ ADR-103 の決定4（`begin_stage`/`StageRecord`）は「段の記録」の book
 bookkeeping ではなく「検出窓そのものが実行される前に握り潰される」という
 別軸の実害であり、ADR-103では直っていない。
 
-**状態:** 未対応（発見のみ、2026-08-26）。ADR-103のスコープ外。修正するなら
+**状態:** 未対応(発見のみ、2026-08-26)。ADR-103のスコープ外。修正するなら
 他3箇所と同様 `defer_if_probe_in_flight`/`has_pending_tsf()` 相当のガードを
 `send_romaji_as_tsf_warm` の `LiteralDetectFsm` install 前に足す形が候補だが、
 「Probing中に2連続で来た2文字目を defer すると出力順序がどうなるべきか」の
 設計判断が要るため、本項目では見送り別途起票のみ行う。
+
+---
+
+## BUG-88: `HOOK_KEYS` リング overflow時にキーが無警告で消える（配送経路、ADR-102/105コードレビュー指摘2）
+
+**症状:** `hook_callback`（`hook.rs`）は `HOOK_KEYS.produce()`（`hook_channel.rs`
+の SPSC リング、旧 CAP=256）の戻り値を `let _ = ...` で捨てており、リング満杯時
+（overflow）に到着したキーイベントはエンジンスレッドへ一切届かず、OS へも
+パススルーされず、単に消える。`dropped` カウンタで統計上は追える（BUG-80/81/82
+是正時に導入済み）が、消えたキー自体は取り戻せなかった。
+
+**再現条件（演繹、実機未検証）:** 何らかの理由でエンジンスレッドが長時間
+メッセージポンプを止める（モーダルダイアログのネストしたポンプ・重い同期
+Win32呼び出し・デバッガブレーク等）間に、ユーザーが CAP を超える打鍵を続ける
+と発生しうる。
+
+**対応（2026-08-26、本コミット）:**
+1. overflow時は `CallNextHookEx` で OS へパススルーする（黙って消すより実害が
+   小さい）。ただし **Alt なりすまし発動中**（`is_alt_impersonation_active()`）は
+   `CallNextHookEx` が本物の `KBDLLHOOKSTRUCT`（本物の Alt）を渡してしまうため
+   パススルーできない — Alt 単独タップとしてシステムメニュー（`SC_KEYMENU`）が
+   起動する、BUG-62 系と同型の副作用。この場合のみ従来どおり飲み込む
+   （`dropped` 計上のみ）。
+2. `HookKeyRing` の CAP を 256→1024 に引き上げ（`RawKeyEvent` は Copy な POD の
+   ため static 領域の増加のみ、タイミング定数ではないため実測義務対象外）。
+3. overflow ラッチ（`HookKeyRing::overflow_latched`）を追加。一度 overflow す
+   ると、`WM_KEY_FROM_HOOK` ハンドラが `dropped>0` を観測しリングを consume
+   し終える（`clear_overflow_latch()`）まで、以後の全打鍵をパススルー固定する
+   （バッファ再生とパススルーが1打鍵ごとに交互混在する順序崩れを防ぐ）。
+4. `HookKeyRing::max_occupancy`（`AtomicU32`, `fetch_max` で更新）を追加し、
+   `WM_DUMP_JOURNAL`（Alt+変換→Alt+無変換 ×2）で `[hook-ring] max occupancy`
+   としてログ出力する。overflow の頻度・余裕度を実機で測定できるようにする。
+
+**テスト:** `hook_channel.rs` に `overflow_latches_until_explicitly_cleared`・
+`max_occupancy_tracks_high_water_mark_and_resets_on_take`・
+`concurrent_producer_consumer_preserves_order_with_no_silent_loss`（2スレッド
+実負荷、N=5000≫CAP、受信件数+dropped==N と順序保存を検証）・
+`overflow_sets_dropped_and_latch_together`・`overflow_can_relatch_after_clear`
+（追補1、恒久固着レースの回帰）を追加。Alt なりすまし中の swallow 分岐・
+ガード順序（追補2）は `hook.rs` が Windows専用のため実機/xwin確認のみ
+（自動テスト対象外）。
+
+**状態:** 対応済み（2026-08-26）。実機での overflow 再現確認は未実施
+（発生条件が「エンジンスレッドの長時間ポンプ停止」で日常的な再現手順が無いため）。
+
+**追補1（2026-08-26、コードレビュー指摘1: 恒久固着レース）:** 上記3.の
+`overflow_latched` は `dropped`（`AtomicU32`）とは別の `AtomicBool` で、
+`produce()` の `dropped.fetch_add(1)` と `overflow_latched.store(true)` が
+別々の非アトミック操作だった。フックスレッドがこの2つを実行する間に、
+`WM_KEY_FROM_HOOK` ハンドラの `take_dropped()`→`clear_overflow_latch()` が
+割り込むと、「`overflow_latched=true` だが `dropped` は既に0に消費済み」
+という状態が生じ、以後どの `WM_KEY_FROM_HOOK` も `dropped>0` を観測できず
+`clear_overflow_latch()` が二度と呼ばれない＝**overflow ラッチが恒久固着し、
+以後の全打鍵が永久にパススルー固定される**（エンジンが機能停止する）バグが
+あった。`dropped` カウント（下位32bit）とラッチ（bit32）を単一の
+`AtomicU64`（`overflow_state`）に統合し、`produce()` 側は `fetch_update` で
+増分とラッチ起立を、消費側は `take_dropped_and_clear_latch()`（`swap`）で
+読み取りとラッチ解除を、それぞれ単一の不可分な操作にして修正した。
+
+**追補2（2026-08-26、コードレビュー指摘2: 破損防止ガードのバイパス）:**
+上記1.の overflow ラッチ早期return（`hook.rs`）が、VK_KANA/VK_DBE_ROMAN/
+VK_DBE_NOROMAN の飲み込みガード（BUG-08/61/62 対策、「一度切り替わると
+かなロック/入力方式が復旧不能」と確定済み）**より手前**にあった。overflow
+ラッチが立っている間はこれらのキーも無条件で OS へ素通りしてしまい、
+ガードが未然に防いでいたはずのかな固定・入力方式の復旧不能な切り替わりが
+overflow中に限り起こりえた。ラッチ判定を上記ガード群より後ろへ移動し、
+overflow中でもこれらのキーは従来どおり飲み込むよう修正した。
+
+**追補3（2026-08-26、コードレビュー指摘6: 既知の順序制約、未解決）:**
+overflow 回復中、素通りキー（同期・未変換の `CallNextHookEx` 経由、フック
+コールバックから即座に OS へ渡る）と、リング内に残っていたバッファ再生分の
+変換済み出力（非同期・`WM_EXECUTE_EFFECTS` 経由でエンジンスレッドの処理を
+経てから遅延して OS へ渡る）との**到達順序は保証されない**。overflow 発生
+直後の短いウィンドウで、パススルーされたキーの方が先に OS に届き、その後
+バッファ再生分の出力が届く、という順序逆転が理論上起こりうる（文字化けの
+可能性）。overflow 自体が稀（発生条件は「エンジンスレッドの長時間ポンプ
+停止」）かつ一時的なため、完全な solve（例: パススルー分もバッファへ一元化
+してから単一経路で吐き出す等の再設計）は見送り、既知の制約として記録する
+に留める。再発・実害報告があれば再設計を検討する。
+
+---
+
+## BUG-89: gate中にdeferされたCtrl+key（tmux prefix等）ではGJI composition キャンセルが効かない（ADR-102/105コードレビュー指摘4、未対応）
+
+**症状:** `deliver_key_event`（`message_handlers.rs`）の GJI composition キャンセル
+ブロック（Ctrl+非修飾キーの PassThrough 時に `cancel_ime_composition()` を呼ぶ、
+tmux prefix 等の Ctrl+key ショートカット用）は `KeyOrigin::Hook(PumpContext::Main)`
+にのみ限定した（2026-08-26、コードレビュー指摘4への対応）。`OUTPUT_GATE`/
+`FOCUS_RESYNC` gate 中に `INPUT_DEFER` へ退避され、後で `KeyOrigin::DeferredReplay`
+として `handle_wm_drain_output_queue` から再生される Ctrl+key（例: gate 中に押した
+tmux prefix Ctrl+J）は、このキャンセル処理を通らない。
+
+**実害:** GJI 候補ウィンドウが表示中に gate 明けで drain された Ctrl+key が GJI に
+IME ショートカットとして横取りされる可能性がある（通常の Hook(Main) 経路と異なり
+composition が事前にキャンセルされないため）。
+
+**対応しなかった理由:** 世代照合（`KeyOrigin::DeferredReplay { focus_epoch }` を
+追加し、gate 開始時点の focus_epoch と drain 時点を比較して安全なら適用する）の
+完全版は設計・実装コストに対して発生頻度（gate は数十〜数百ms の短時間ウィンドウ、
+かつその間に Ctrl+key を押す頻度は低い）が見合わないと判断し、低コスト案（origin
+限定）のみ採用した。今回の変更は旧 drain 経路（この処理が実装される前の状態）と
+挙動が一致するため、退行ではなく「以前からあった隙間を新規に塞がなかった」だけ。
+
+**状態:** 未対応（意図的見送り、2026-08-26）。再発・実害報告があれば
+`KeyOrigin::DeferredReplay { focus_epoch: u64 }` 化を検討する。
