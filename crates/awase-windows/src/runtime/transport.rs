@@ -23,10 +23,10 @@ impl PhysicalKeyDisposition {
     /// journal 記録（`JournalEntry::KeyInput::physical`）で共用し、2箇所が
     /// 別々に判定ロジックを持って乖離することを防ぐ）。
     ///
-    /// BUG-88 調査用: journal の `KeyInput.decision` は engine の意味論的判断
+    /// BUG-90 調査用: journal の `KeyInput.decision` は engine の意味論的判断
     /// （PassThrough/Consume）であり、この配送判断（実際に OS へ届いたか）とは
     /// 独立している。この関数を journal に記録することで両者を突き合わせられる
-    /// ようにする（`docs/known-bugs.md` BUG-88 参照）。
+    /// ようにする（`docs/known-bugs.md` BUG-90 参照）。
     pub(crate) fn suppress_reason(
         self,
         event: &RawKeyEvent,
@@ -675,10 +675,10 @@ mod plan_tests {
         }
     }
 
-    // ── suppress_reason: journal 記録用ラベル（BUG-88 調査） ──
+    // ── suppress_reason: journal 記録用ラベル（BUG-90 調査） ──
     //
     // PowerToys Mouse Without Borders 使用中に「英数」キーが効かない不具合報告
-    // (docs/known-bugs.md BUG-88) の調査で、ImmCross プロファイル下では
+    // (docs/known-bugs.md BUG-90) の調査で、ImmCross プロファイル下では
     // VK_DBE_ALPHANUMERIC (英数) が Down/Up とも無条件 Suppress される一方、
     // VK_DBE_HIRAGANA (かな) は専用分岐で TSF mode 以外 Allow されることが
     // 判明した（「かなは効くが英数は効かない」という報告症状と一致）。
@@ -725,7 +725,7 @@ mod plan_tests {
 
     #[test]
     fn suppress_reason_is_imm_cross_for_alphanumeric_under_immcross_profile() {
-        // BUG-88 調査で確認した事実の一つ: ImmCross プロファイル（`Standard`）
+        // BUG-90 調査で確認した事実の一つ: ImmCross プロファイル（`Standard`）
         // では VK_DBE_ALPHANUMERIC (英数) は shadow_toggled にも event_type
         // (Down/Up) にも関わらず常に Suppress され、journal 上は "imm-cross"
         // として記録される。ただし report2 の実データ（explorer.exe/sakura.exe、
@@ -733,7 +733,7 @@ mod plan_tests {
         // `suppress_reason_is_imm32_off_for_owned_actuation_dbe_mode_key`）で
         // 説明される。GJI 稼働時は profile を問わず英数キーが Suppress される
         // ことが症状の実体であり、ImmCross はその一経路に過ぎない
-        // （docs/known-bugs.md BUG-88 参照）。
+        // （docs/known-bugs.md BUG-90 参照）。
         for shadow_toggled in [false, true] {
             for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
                 let ev = dbe_mode_event(

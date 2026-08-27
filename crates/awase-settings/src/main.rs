@@ -28,7 +28,7 @@ enum Tab {
     DisableApps,
     // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
     // disable_apps 部分のみ `DisableApps` タブへ切り出し済み（2026-08-26、
-    // BUG-88）。残る force_text/force_bypass/force_vk/force_tsf は
+    // BUG-90）。残る force_text/force_bypass/force_vk/force_tsf は
     // プロセス名+クラス名の両方が必要な、より高度な上書き設定のため
     // 引き続き非表示（config.toml の直接編集に委ねる）。
     #[allow(dead_code)]
@@ -1599,7 +1599,7 @@ impl SettingsApp {
     /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
     /// 設定のため、`tab_app_rules`（force_text/force_bypass/force_vk/force_tsf、
     /// プロセス名+クラス名の両方が必要でGUI化を見送っている）とは切り離して
-    /// 常時表示する（2026-08-26、BUG-88: PowerToys Mouse Without Borders 使用中
+    /// 常時表示する（2026-08-26、BUG-90: PowerToys Mouse Without Borders 使用中
     /// に物理「英数」キーが効かない不具合の回避策としてユーザーが自分で
     /// `disable_apps` に中継ウィンドウのプロセス名を追加できるようにする）。
     fn tab_disable_apps(&mut self, ui: &mut egui::Ui) {
@@ -2307,7 +2307,7 @@ impl eframe::App for SettingsApp {
                 // force_vk/force_tsf、プロセス名+クラス名の両方が必要）のため
                 // GUI 化を見送り、config.toml の直接編集に委ねている。
                 // tab_app_rules の実装自体は残してある。disable_apps 部分だけは
-                // プロセス名のみで完結する単純な設定のため、2026-08-26（BUG-88）
+                // プロセス名のみで完結する単純な設定のため、2026-08-26（BUG-90）
                 // に「アプリ無効化」タブとして切り出して表示するようにした。
                 //
                 // 「配列編集」(Layout) は 2026-07-06 に「配列プレビューの実装が
@@ -3617,7 +3617,7 @@ mod layout_tab_repro {
     /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/`tab_app_rules`/
     /// `tab_advanced` がパニックしないことを固定する（2026-08-15、ホバー
     /// ヒント拡充で全タブに手を入れたため追加。`tab_disable_apps` は
-    /// 2026-08-26 BUG-88 で `tab_app_rules` から切り出した際に追加。
+    /// 2026-08-26 BUG-90 で `tab_app_rules` から切り出した際に追加。
     /// `full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
     /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/

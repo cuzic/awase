@@ -206,7 +206,7 @@ impl Runtime {
         }
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
-        // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-88 調査: 以前は
+        // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-90 調査: 以前は
         // journal 記録用に独立して再計算しており、理論上わずかな乖離窓が
         // あった。詳細は `PhysicalKeyDisposition::suppress_reason` のコメント
         // 参照。decision だけでは実際に OS へ届いたかが journal から
@@ -1804,7 +1804,7 @@ impl Runtime {
     ///
     /// `profile`/`physical`（物理 IME キーを OS に届けるかの配送判断、Decision とは
     /// 独立）は呼び出し元（`kp_run_inner`）が KeyInput journal 記録と共有するため
-    /// 既に確定済みの値を受け取る（BUG-88 調査: 以前はここで独立に再計算しており
+    /// 既に確定済みの値を受け取る（BUG-90 調査: 以前はここで独立に再計算しており
     /// journal 記録値との理論上の乖離窓があった）。判断ロジック自体は
     /// `PhysicalKeyDisposition::plan` のドキュメントコメント参照:
     /// - Imm32Unavailable (Chrome/Edge) / TsfNative (WezTerm/Windows Terminal) で GJI/MS-IME

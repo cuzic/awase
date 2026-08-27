@@ -107,7 +107,7 @@ impl DecisionKind {
 /// 元の型は crate 内部専用のため、公開できる形に変換して持つ。
 ///
 /// `decision`（`DecisionKind`、engine の意味論的判断）とは独立した配送判断。
-/// BUG-88（PowerToys Mouse Without Borders 使用中に「英数」キーが効かない
+/// BUG-90（PowerToys Mouse Without Borders 使用中に「英数」キーが効かない
 /// 不具合）の調査で、`decision` だけでは `VK_DBE_ALPHANUMERIC` 等の DBE
 /// モードキーが `PhysicalKeyDisposition::plan` によって Suppress されたか
 /// （ImmCross プロファイルの無条件 Suppress、または GJI/MS-IME 稼働時の
