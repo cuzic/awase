@@ -422,13 +422,17 @@ pub(crate) fn dispatch_engine_message(
         }
         WM_KEY_FROM_HOOK => {
             crate::hook_channel::WAKE_PENDING.store(false, std::sync::atomic::Ordering::Release);
-            let dropped = crate::hook_channel::HOOK_KEYS.take_dropped();
+            let mut events = Vec::new();
+            crate::hook_channel::HOOK_KEYS.consume_all(&mut |event| events.push(event));
+            // dropped の読み取りと overflow ラッチ（指摘2-3）の解除を単一の
+            // アトミック操作で行う（コードレビュー指摘1）。ring を consume し
+            // 終えた直後に呼ぶことで、以後のフックコールバックはこの WM 到達
+            // まで OS へパススルー固定していた分の resync が保証済みになる。
+            let dropped = crate::hook_channel::HOOK_KEYS.take_dropped_and_clear_latch();
             if dropped > 0 {
                 crate::runtime::engine_window::mark_needs_engine_resync();
                 log::warn!("[hook-ring] dropped {dropped} key event(s)");
             }
-            let mut events = Vec::new();
-            crate::hook_channel::HOOK_KEYS.consume_all(&mut |event| events.push(event));
             for event in events {
                 handle_hook_key_event(event);
             }
