@@ -423,7 +423,14 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
     }
 
     let held = HeldModifiers::read();
-    let held_skip_alt = HeldModifiers { alt: false, ..held };
+    // prepend_synthetic_shift_up の場合、下で LSHIFT/RSHIFT の synthetic Shift
+    // up を明示的に2つ送るため、push_release 側の shift 解放は不要（force
+    // false: alt と同じ理由で二重の Shift up イベントを避ける）。
+    let held_skip_alt = HeldModifiers {
+        alt: false,
+        shift: held.shift && !prepend_synthetic_shift_up,
+        ..held
+    };
     let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
     if prepend_synthetic_shift_up {
         // 呼び出し元は「どちら側の物理 Shift が押されたか」を運ばない
@@ -464,14 +471,21 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
         inputs.len()
     );
     let sent = crate::win32::send_input_safe(&inputs);
-    if sent as usize != inputs.len() {
+    let all_sent = sent as usize == inputs.len();
+    if !all_sent {
+        // 呼び出し元（Output::send_gji_half_width_alnum_toggle）の戻り値契約
+        // 「false なら belief を進めてはならない」を満たすため、送信数が
+        // 一致しない場合は false を返す。SendInput はバッチ中どこで止まっても
+        // それ以降のイベントを送らない（Win32仕様）ため、途中の modifier
+        // release/restore だけ届き本体の VK が届かない部分成功もここで
+        // 検知できる。
         log::warn!(
             "[ime-mode] SendInput(vk=0x{vk:02X}, prepend_shift_up={prepend_synthetic_shift_up}) \
              sent {sent}/{} events",
             inputs.len()
         );
     }
-    true
+    all_sent
 }
 
 /// 現在フォーカスされているウィンドウの IME 変換モード生値を返す（診断ログ専用）。

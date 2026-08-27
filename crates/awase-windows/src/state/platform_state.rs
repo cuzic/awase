@@ -1465,9 +1465,6 @@ pub(crate) struct GateStore {
     /// idle-conv-check / ime_refresh の OS poll を凍結する（`shift_conv_guard_pending`
     /// と同じ理由: conv=0x0000は awase自身の意図的な状態のため）。
     pub half_width_alnum_toggle_active: bool,
-    /// BUG-25 GJI entry の連続発火クールダウン候補。Task 0 と同種の実測が
-    /// 未完了のため、本実装では値だけ確保し判定には使わない。
-    pub last_half_width_entry_ms: Option<u64>,
     /// `kp_stage_idle_conv_check` の conv 読み取り（offload 済み、`SendMessageTimeoutW`
     /// ベース）が in-flight かどうか。spawn 時の `hook::current_tick_ms()` を持つ
     /// （BUG-34 横展開レビュー指摘: 単なる bool だと、完了時に `with_app` が
@@ -1508,7 +1505,6 @@ impl GateStore {
             left_shift_tap_candidate: false,
             shift_conv_guard_pending: false,
             half_width_alnum_toggle_active: false,
-            last_half_width_entry_ms: None,
             idle_conv_check_in_flight_since_ms: None,
         }
     }

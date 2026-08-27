@@ -1468,93 +1468,107 @@ impl Runtime {
         // send_gji_half_width_alnum_toggle` 内でも独立に行う（決定5、Task 5）ため
         // ここでの計算は「MS-IME entry を誤ってブロックしない」ためだけの安全側の
         // 事前フィルタであり、二重判定になっても実害はない。
+        // `build_ctx().composing` は `tsf::observer::ime_composition_active_now()` を
+        // そのまま代入したものに過ぎない（runtime/mod.rs::build_ctx 参照）。
+        // Shift KeyUp のたびに GetKeyState 等を含む InputContext 全体を組み立てる
+        // のは無駄なため、必要な1フィールドだけ直接呼ぶ。
         let composing = !uses_imc_conv_write
-            && (self.build_ctx().composing || crate::tsf::observer::gji_candidate_visible_now());
+            && (crate::tsf::observer::ime_composition_active_now()
+                || crate::tsf::observer::gji_candidate_visible_now());
         match plan_half_width_alnum_action(
             is_left_shift_tap,
             self.platform_state.gate.half_width_alnum_toggle_active,
             toggle_entry_supported,
             composing,
         ) {
-            HalfWidthAlnumAction::Enter if uses_imc_conv_write => {
-                // 本物の単独タップ、1回目 → 半角英数トグルへ移行。conv=0x0000 の
-                // 実書き込みはここで初めて行う（2026-08-09、known-bugs.md BUG-15
-                // 追補9: チョード安全網の先書き込み撤去に伴い、持続トグルの entry
-                // write もここへ一本化した。旧実装は Shift down 時点で判別未確定の
-                // まま先書きしていた）。
-                self.platform_state.gate.half_width_alnum_toggle_active = true;
-                log::info!(
+            // Enter を「MS-IME/GJI どちらのトグルへ移行するか」で2つの独立した
+            // match arm に分けず、単一の Enter arm 内の if/else にしているのは
+            // 意図的（Opus敵対的コードレビュー2巡目で指摘）: ガード付きの
+            // `Enter if uses_imc_conv_write` と無条件の `Enter` を別の arm に
+            // すると、両方とも変異体名が同一 `Enter` のため、将来 arm を追加/
+            // 並べ替えた際にコンパイラの網羅性検査が効かずガード条件だけが
+            // 唯一の分岐点になり見落とされやすい。if/else なら1つの arm の
+            // 中に両方の分岐が並び、見落としの余地が小さい。
+            HalfWidthAlnumAction::Enter => {
+                if uses_imc_conv_write {
+                    // 本物の単独タップ、1回目 → 半角英数トグルへ移行。conv=0x0000 の
+                    // 実書き込みはここで初めて行う（2026-08-09、known-bugs.md BUG-15
+                    // 追補9: チョード安全網の先書き込み撤去に伴い、持続トグルの entry
+                    // write もここへ一本化した。旧実装は Shift down 時点で判別未確定の
+                    // まま先書きしていた）。
+                    self.platform_state.gate.half_width_alnum_toggle_active = true;
+                    log::info!(
                 "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 書き込み)"
             );
-                let now_tick = crate::state::TickMs(hook::current_tick_ms());
-                self.platform_state.ime.note_explicit_ime_action(now_tick);
-                // ADR-084 P1/INV-1/INV-2: 書き込みと belief 無効化を
-                // `Runtime::actuate_conv_mode` に集約（`runtime/conv_actuation.rs`）。
-                let _ = self.actuate_conv_mode(
-                    crate::state::ConvModeTarget::HalfWidthAlnum,
-                    crate::state::ConvMutationReason::ShiftSoloTapCounter,
-                    now_tick,
-                );
-                // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
-                // `Output::ms_ime_gate_defer`）の期限を、トグルON中は
-                // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ延長する（詳細は
-                // 旧 entry 実装のコメントを参照、known-bugs.md BUG-15 追補9）。
-                self.platform.output.confirm_gate_deadline_override_ms.set(
-                    hook::current_tick_ms() + crate::tuning::SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS,
-                );
-                self.platform.output.bump_shift_conv_guard_gen();
-                // 診断用: 送信直後に conv を読み取ってログに残す。
-                win32_async::spawn_local(async {
-                    win32_async::sleep_ms(150).await;
-                    let conv = win32_async::offload(|| unsafe {
-                        crate::ime::get_ime_conversion_mode_raw_timeout(50)
-                    })
-                    .await;
-                    match conv {
-                        Some(c) => {
-                            let native = c & crate::imm::IME_CMODE_NATIVE != 0;
-                            log::info!(
-                                "[shift-conv-guard] entry verify (150ms後): conv=0x{c:08X} \
+                    let now_tick = crate::state::TickMs(hook::current_tick_ms());
+                    self.platform_state.ime.note_explicit_ime_action(now_tick);
+                    // ADR-084 P1/INV-1/INV-2: 書き込みと belief 無効化を
+                    // `Runtime::actuate_conv_mode` に集約（`runtime/conv_actuation.rs`）。
+                    let _ = self.actuate_conv_mode(
+                        crate::state::ConvModeTarget::HalfWidthAlnum,
+                        crate::state::ConvMutationReason::ShiftSoloTapCounter,
+                        now_tick,
+                    );
+                    // ADR-084（BUG-49 追補2）: confirm-then-transmit ゲート（BUG-13、
+                    // `Output::ms_ime_gate_defer`）の期限を、トグルON中は
+                    // `SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS` 分だけ延長する（詳細は
+                    // 旧 entry 実装のコメントを参照、known-bugs.md BUG-15 追補9）。
+                    self.platform.output.confirm_gate_deadline_override_ms.set(
+                        hook::current_tick_ms()
+                            + crate::tuning::SHIFT_CONV_GUARD_ENTRY_SUSPEND_CAP_MS,
+                    );
+                    self.platform.output.bump_shift_conv_guard_gen();
+                    // 診断用: 送信直後に conv を読み取ってログに残す。
+                    win32_async::spawn_local(async {
+                        win32_async::sleep_ms(150).await;
+                        let conv = win32_async::offload(|| unsafe {
+                            crate::ime::get_ime_conversion_mode_raw_timeout(50)
+                        })
+                        .await;
+                        match conv {
+                            Some(c) => {
+                                let native = c & crate::imm::IME_CMODE_NATIVE != 0;
+                                log::info!(
+                                    "[shift-conv-guard] entry verify (150ms後): conv=0x{c:08X} \
                              NATIVE={native} ({})",
-                                if native {
-                                    "未だひらがな側 → 半角英数化は未反映"
-                                } else {
-                                    "英数モードに変化した"
-                                }
-                            );
-                        }
-                        None => {
-                            log::info!(
+                                    if native {
+                                        "未だひらがな側 → 半角英数化は未反映"
+                                    } else {
+                                        "英数モードに変化した"
+                                    }
+                                );
+                            }
+                            None => {
+                                log::info!(
                             "[shift-conv-guard] entry verify (150ms後): conv 読み取り失敗 (None)"
                         );
+                            }
                         }
-                    }
-                });
-                self.apply_input_mode_correction(
-                    InputModeState::ObservedEisu,
-                    crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
-                    now_tick,
-                );
-            }
-            HalfWidthAlnumAction::Enter => {
-                let now_tick = crate::state::TickMs(hook::current_tick_ms());
-                if self.platform.output.send_gji_half_width_alnum_toggle(
-                    HalfWidthAlnumAction::Enter,
-                    self.platform_state.ime.effective_open(),
-                    true,
-                ) {
-                    self.platform_state.gate.half_width_alnum_toggle_active = true;
-                    self.platform_state.gate.last_half_width_entry_ms = Some(now_tick.0);
-                    log::info!(
-                        "[shift-conv-guard] 左Shift単独タップ → GJI 半角英数トグルON \
-                         (VK_DBE_ALPHANUMERIC)"
-                    );
-                    self.platform_state.ime.note_explicit_ime_action(now_tick);
+                    });
                     self.apply_input_mode_correction(
                         InputModeState::ObservedEisu,
                         crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
                         now_tick,
                     );
+                } else {
+                    let now_tick = crate::state::TickMs(hook::current_tick_ms());
+                    if self.platform.output.send_gji_half_width_alnum_toggle(
+                        HalfWidthAlnumAction::Enter,
+                        self.platform_state.ime.effective_open(),
+                        true,
+                    ) {
+                        self.platform_state.gate.half_width_alnum_toggle_active = true;
+                        log::info!(
+                            "[shift-conv-guard] 左Shift単独タップ → GJI 半角英数トグルON \
+                         (VK_DBE_ALPHANUMERIC)"
+                        );
+                        self.platform_state.ime.note_explicit_ime_action(now_tick);
+                        self.apply_input_mode_correction(
+                        InputModeState::ObservedEisu,
+                        crate::state::ime_event::InputModeApplyStrategy::UserHalfWidthAlnumToggle,
+                        now_tick,
+                    );
+                    }
                 }
             }
             HalfWidthAlnumAction::Exit => {
@@ -1581,6 +1595,58 @@ impl Runtime {
         // チョード（Shift+文字キー）でトグル非アクティブ: conv には一切
         // 触れていないため何もしない（2026-08-09、known-bugs.md BUG-15
         // 追補9でチョード安全網を撤去）。
+    }
+
+    /// GJI の exit SendInput を送り、呼び出し元が belief 補正
+    /// （`apply_input_mode_correction(AssumedRomaji)`）を続けてよいかを返す。
+    ///
+    /// `false`（＝呼び出し元は即 return すべき）を返すのは
+    /// `prepend_synthetic_shift_up == true`（＝ `kp_shift_conv_guard_key_up` 起点、
+    /// ユーザーが今まさに同じアプリで左Shift2回目タップ/右Shift緊急解除を
+    /// 行っている）かつ SendInput が見送られた場合のみ。GJI には MS-IME 分岐の
+    /// ような IMC write の保険（640ms リトライループ）が無いため、この場合に
+    /// belief だけ AssumedRomaji へ進めると、実 GJI は半角英数のままなのに
+    /// engine が pass-through を抜けて生ローマ字を送る——追補3と同型の実害に
+    /// なる。ラッチを true に戻し、次のタップ/緊急解除で再試行できるようにする。
+    ///
+    /// それ以外（`prepend_synthetic_shift_up == false`、＝フォーカス変更・
+    /// shadow toggle・post-decision の3系統からの呼び出し）は SendInput が
+    /// 見送られても常に `true` を返す。これらは「ユーザーが今まさに再試行できる
+    /// 文脈」ではなく、呼び出し元自身の belief 補正をこの関数への委譲に
+    /// 置き換えている（例: `ir_notify_focus_changed` はフォーカス変更時に必ず
+    /// belief を解決する前提、`kp_stage_shadow_ime_toggle`/
+    /// `kp_stage_post_decision` は独自の `new_mode` 補正を破棄してこの関数に
+    /// 委ねている）。ここで `false` を返すとそれら3系統すべてで belief 補正が
+    /// 永久に走らず、engine が `NotRomajiInput` のまま固着する（Opus敵対的
+    /// コードレビュー2巡目で発見）。ラッチも false のまま（`mem::replace` で
+    /// 既に消費済み）にする——古いアプリの半角英数状態を新しい文脈に持ち越して
+    /// 再試行させても意味がない。
+    fn kp_send_gji_restore_exit(&mut self, prepend_synthetic_shift_up: bool) -> bool {
+        let sent = self.platform.output.send_gji_half_width_alnum_toggle(
+            HalfWidthAlnumAction::Exit,
+            self.platform_state.ime.effective_open(),
+            prepend_synthetic_shift_up,
+        );
+        if sent {
+            return true;
+        }
+        if prepend_synthetic_shift_up {
+            self.platform_state.gate.half_width_alnum_toggle_active = true;
+            log::warn!(
+                "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
+                 (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
+                 可能性が高いため belief を据え置き、ラッチを true に戻して再試行に備える"
+            );
+            false
+        } else {
+            log::warn!(
+                "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
+                 (Win/Alt押下中 or effective_open=false、呼び出し元はフォーカス変更/\
+                 shadow toggle/post-decision)。実GJIは半角英数のままの可能性が \
+                 あるが、呼び出し元の文脈上belief補正は必須のため続行する"
+            );
+            true
+        }
     }
 
     /// 「IME-ON 半角英数」からかな入力への復元（トグルOFF・安全網の復元の共通処理）。
@@ -1617,8 +1683,11 @@ impl Runtime {
         // 送る。`was_toggle_active` が false の再入では OS 書き込みを行わず、
         // GJI の非冪等トグル二重送信を防ぐ（INV-B）。
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
-        if was_toggle_active && active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme
-        {
+        if !was_toggle_active {
+            log::debug!(
+                "[shift-conv-guard] 半角英数トグル復元 write をスキップ (already inactive)"
+            );
+        } else if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
             // IMC の conv write だけでは新 MS-IME (TSF-native) の実モードが英数から戻らない
             // （2026-07-07 実機: [shift-release] の IMC write/read は 0x19/NATIVE を返すのに
             // 実モードは半角英数のままで、ユーザーが物理かなキーを押すと復帰した。
@@ -1669,7 +1738,11 @@ impl Runtime {
             // スキップした場合、直後の IMC write リトライ（保険、上記コメント
             // 参照）だけが残るため実モードの復元は保証されないが、これは
             // Win ガード導入時から許容されている既存のトレードオフと同じ。
-            let blocking_modifier_held = hook::win_key_held() || hook::alt_key_held();
+            // BUG-25/ADR-107: この判定は `Output::send_gji_half_width_alnum_toggle`
+            // のGJI側ガードと同一のハザード（Win+VKでスタートメニュー、
+            // Alt+かなでJISかな直接入力切替）に基づく。判定点は
+            // `hook::ime_mode_key_injection_blocked_by_modifier()` に共有した。
+            let blocking_modifier_held = hook::ime_mode_key_injection_blocked_by_modifier();
             if self.platform_state.ime.effective_open() && !blocking_modifier_held {
                 let mut f2_inputs = Vec::with_capacity(3);
                 if prepend_synthetic_shift_up {
@@ -1848,39 +1921,19 @@ impl Runtime {
                         .clear_confirm_gate_override(owner_gen);
                 });
             });
-        } else if was_toggle_active
-            && active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        {
-            let sent = self.platform.output.send_gji_half_width_alnum_toggle(
-                HalfWidthAlnumAction::Exit,
-                self.platform_state.ime.effective_open(),
-                prepend_synthetic_shift_up,
+        } else {
+            // `ActiveImeKind` は GoogleJapaneseInput/MicrosoftIme の2値のみ
+            // （tsf/observer.rs）。この else は「MicrosoftIme ではない」＝GJI を
+            // 意味する（was_toggle_active は上の `if !was_toggle_active` で
+            // 既に除外済み）。3値目が将来追加された場合は debug ビルドで検知する。
+            debug_assert_eq!(
+                active_ime_kind,
+                crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput,
+                "ActiveImeKind に想定外のバリアントが追加された可能性がある"
             );
-            if !sent {
-                // GJI には MS-IME 分岐のような IMC write の保険（640ms リトライ
-                // ループ）が無い。SendInput が見送られた（Win/Alt 押下中 or
-                // effective_open=false）のに belief だけ AssumedRomaji へ進めると、
-                // 実 GJI は半角英数のままなのに engine が pass-through を抜けて
-                // 生ローマ字を送る — 追補3が起こした「かな入力が壊れる」実害の
-                // 再来になる。belief は据え置き、ラッチも戻して次のタップ/緊急
-                // 解除で再試行できるようにする。
-                self.platform_state.gate.half_width_alnum_toggle_active = true;
-                log::warn!(
-                    "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
-                     (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
-                     可能性が高いため belief を据え置き、ラッチを true に戻して再試行に備える"
-                );
+            if !self.kp_send_gji_restore_exit(prepend_synthetic_shift_up) {
                 return;
             }
-        } else if was_toggle_active {
-            log::debug!(
-                "[shift-conv-guard] 半角英数トグル復元 write をスキップ \
-                 (unsupported active_ime_kind={active_ime_kind:?})"
-            );
-        } else {
-            log::debug!(
-                "[shift-conv-guard] 半角英数トグル復元 write をスキップ (already inactive)"
-            );
         }
 
         self.apply_input_mode_correction(

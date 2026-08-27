@@ -1075,7 +1075,7 @@ impl Output {
             HalfWidthAlnumAction::Enter => crate::vk::VK_DBE_ALPHANUMERIC,
             HalfWidthAlnumAction::Exit => crate::vk::VK_DBE_HIRAGANA,
         };
-        if crate::hook::win_key_held() || crate::hook::alt_key_held() {
+        if crate::hook::ime_mode_key_injection_blocked_by_modifier() {
             log::info!(
                 "[shift-conv-guard] GJI 半角英数トグル {action:?} をスキップ \
                  (Win/Alt 押下中)"
