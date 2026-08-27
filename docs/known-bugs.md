@@ -3050,6 +3050,9 @@ settle待ち・クールダウン定数を実装しない。BUG-25のクロー�
   `InputModeHiragana` として働くこと。
 - Task 0（settle値の再測定）を経て `half_width_alnum_toggle = "all"` を明示設定した
   状態でソーク運用を開始すること。
+- トグルON中に言語バー等でIME製品自体を切り替えた場合、exitが実際にentryした
+  側のIMEへ正しく復元キーを送ること（追補8参照、entry/exit間のIME製品切替は
+  現状 exit 時の再取得 `active_ime_kind` に依存しており構造的修正は未着手）。
 
 **追補7（2026-08-27、Opus敵対的コードレビューで発見した3件のBLOCKERを修正）:**
 
@@ -3113,6 +3116,22 @@ PR番号を明示指定して再実行した。8体のfinderがPR #111
 composing判定の重複計算・Win/Alt判定点の重複記述・未使用フィールド
 （`last_half_width_entry_ms`）を修正した。詳細はPR #111のコミット
 `45f532cf`を参照。
+
+**未対応の既知の限界（Task 9の実機検証に追加、コード修正は見送り）:**
+同じ`/code-review`実行でもう1件、narrow edge caseが指摘された。
+`kp_restore_kana_from_half_width`は exit 時に`active_ime_kind`を
+その場で再取得する（entry時点でどちらのIMEだったかを記憶していない）。
+half_width_alnum_toggleがactiveな間にユーザーが言語バー等でIME製品自体を
+（GJI→MS-IME、またはその逆に）切り替えた場合、exitは「切替後の」IME種別の
+分岐を通ってしまい、実際にentryした側のIMEには対応する復元キーが
+一切送られないままbeliefだけAssumedRomajiへ進む——追補3と同型の実害が
+再発しうる。この経路（entry/exit間のIME製品切替）自体は本PR以前から
+存在する設計（旧実装もexit時のactive_ime_kindをその場で読んでいた）で
+あり、GJI entryが無かった頃は「skip」だけで実害が小さかったものが、
+GJI entryの追加でより顕在化した形。頻度は低い（IME製品切替は
+Win+Space/言語バー操作が必要で左Shift単独タップの延長では起きない）と
+判断し、entry時点のIME種別をGateStoreに記憶して exit 時に照合する構造的
+修正は今回見送り、Task 9の実機検証チェックリストに追加する。
 
 ---
 

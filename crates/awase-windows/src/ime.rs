@@ -461,13 +461,15 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
 
     log::debug!(
         "[ime-mode] SendInput vk=0x{vk:02X} prepend_shift_up={prepend_synthetic_shift_up} \
-         release(ctrl={} shift={} alt=false(skipped)) \
-         restore(ctrl={} shift={} alt=false(skipped)) phys_alt={} total={} events",
+         phys(ctrl={} shift={} alt={}, alt常にrelease対象外) \
+         release(ctrl={} shift={}) restore(ctrl={} shift={}) total={} events",
         held.ctrl,
         held.shift,
+        held.alt,
+        held_skip_alt.ctrl,
+        held_skip_alt.shift,
         still.ctrl,
         still.shift,
-        held.alt,
         inputs.len()
     );
     let sent = crate::win32::send_input_safe(&inputs);
