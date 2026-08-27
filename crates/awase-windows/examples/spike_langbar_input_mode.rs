@@ -74,6 +74,26 @@
 //! すら届かなかった——`SendInput` の低レベル注入層そのものに問題がある
 //! 可能性があるため、それを完全に迂回するこの経路は独立した実験になる。
 //!
+//! ## ADR-107 決定0: marker × awase起動 × Shift の2×2切り分け計測
+//!
+//! `docs/adr/107-bug25-gji-half-width-alnum-entry.md` 決定0 が指定する実機計測。
+//! `--sendinput-marker=<none|injected|tsf|ime_kanji>`(必須)と
+//! `--sendinput-shift-held`(任意、DBE キー注入の前後に Shift↓/↑ を挟む——
+//! entry 発火時点で OS/実 IME から見た Shift がまだ押下中である状況を模擬する)
+//! を組み合わせて実行する。
+//!
+//! | # | marker | awase | shift-held | 目的 |
+//! |---|---|---|---|---|
+//! | M1 | `none` | 停止 | 無し | 追補4 経路6 の再確認(基準線) |
+//! | M2 | `none` | 起動 | 無し | 追補4 経路5 の再確認(原因A: transport Suppress) |
+//! | M3 | `ime_kanji` | 起動 | 無し | 成功なら ADR-107 決定2 のみで足りる |
+//! | M4 | `ime_kanji` | 起動 | 有り | 失敗なら「原因B: 修飾キー文脈」が確定 |
+//!
+//! 各セルで awase 側の `[hook] IME-mode vk=0xF0 ... self_injected=... extra=0x...`
+//! ログの有無と、実際に打鍵した文字が半角英数になるかを記録する
+//! (IMC 等の読み返しは信用しない、BUG-25 追補2の教訓)。結果は
+//! `docs/known-bugs.md` BUG-25 追補5 に記録する。
+//!
 //! # 実行方法(必ず実機)
 //!
 //! ```powershell
@@ -83,6 +103,11 @@
 //!
 //! # 1b. アクチュエーション(PostMessage 経路、第5の経路)
 //! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --postmsg
+//!
+//! # 1c. ADR-107 決定0 の2×2計測(M1〜M4、上表参照)
+//! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --sendinput-marker=none
+//! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --sendinput-marker=ime_kanji
+//! cargo run -p awase-windows --example spike_langbar_input_mode --release -- --sendinput-marker=ime_kanji --sendinput-shift-held
 //!
 //! # 2. 観測: それぞれ既定30秒間 advise した状態で待機する。実行中に
 //! #    物理的に IME 切替 / GJI モード切替を行い、コンソールに [profile-
@@ -666,34 +691,98 @@ mod langbar_probe {
         Ok(())
     }
 
-    /// `SendInput` で `VK_DBE_ALPHANUMERIC` の DOWN→UP を送る(第6の経路)。
-    /// `docs/known-bugs.md` BUG-25 追補1・3の失敗確認は awase 自身が起動中
-    /// (awase の `WH_KEYBOARD_LL` フックに届くか)を見ていた。今回は awase を
-    /// 完全停止した状態で、GJI/Windows Terminal 側に本当に届くかを
-    /// 独立に検証する。scan=0(BUG-25 追補2 の非衝突値の判断を踏襲)。
+    /// `crates/awase-windows/src/tsf/output.rs` のマーカ定数と同じ値
+    /// (このスパイクは awase 本体クレートにリンクしない独立バイナリのため
+    /// 値を直接複製する——`hook.rs::is_self_injected` が識別に使う値と
+    /// 完全一致していることが重要)。
+    const INJECTED_MARKER: usize = 0x4B45_594D;
+    const TSF_MARKER: usize = 0x4B45_5946;
+    const IME_KANJI_MARKER: usize = 0x4B45_594A;
+
+    /// `--sendinput-marker=<none|injected|tsf|ime_kanji>` の解析結果。
+    pub(crate) fn parse_marker(s: &str) -> Option<usize> {
+        match s {
+            "none" => Some(0),
+            "injected" => Some(INJECTED_MARKER),
+            "tsf" => Some(TSF_MARKER),
+            "ime_kanji" => Some(IME_KANJI_MARKER),
+            _ => None,
+        }
+    }
+
+    fn make_keybd_input(
+        vk: usize,
+        flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS,
+        marker: usize,
+    ) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(
+                        u16::try_from(vk).expect("VK は u16 範囲"),
+                    ),
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: marker,
+                },
+            },
+        }
+    }
+
+    /// `VK_LSHIFT`(左Shift)。ADR-107 決定0 の M4(Shift 押下中)を再現するため、
+    /// `awase::runtime::key_pipeline::kp_shift_conv_guard_key_up` が実際に
+    /// 追跡する物理キーと同じものを使う。
+    const VK_LSHIFT: usize = 0xA0;
+
+    /// `docs/adr/107-bug25-gji-half-width-alnum-entry.md` 決定0 の2×2切り分け
+    /// 計測本体。`marker`(`none`/`injected`/`tsf`/`ime_kanji`)と `shift_held`
+    /// (true なら DBE キー注入の前に Shift↓ を送り、注入後に Shift↑ で復元する
+    /// ——ADR が「entry 発火時点で OS/実 IME から見た Shift はまだ押下中」と
+    /// 推測した状況を模擬する)の組み合わせで `VK_DBE_ALPHANUMERIC` を送る。
+    ///
+    /// `docs/known-bugs.md` BUG-25 追補1・3 の失敗確認は awase 自身が起動中
+    /// (awase の `WH_KEYBOARD_LL` フックに届くか)を見ていた。ADR-107 は
+    /// `hook.rs::is_self_injected` がマーカ付き自己注入を `transport::plan`
+    /// より前に `CallNextHookEx` で弾くため、追補4 の
+    /// `dbe_mode_key_policy=Suppress` 説では追補1・3 を説明できないと指摘し、
+    /// 代わりに Shift 文脈の欠落を疑っている——本関数はその2つの仮説を
+    /// 実機で切り分けるためのもの。
     // main() の他の分岐と戻り値型を揃えるため anyhow::Result を返すが、
     // このスパイクの範囲では失敗経路が無い。
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn send_input_dbe_alphanumeric() -> anyhow::Result<()> {
-        let make_input =
-            |flags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS| INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY(
-                            u16::try_from(VK_DBE_ALPHANUMERIC)
-                                .expect("VK_DBE_ALPHANUMERIC は u16 範囲"),
-                        ),
-                        wScan: 0,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
+    pub(crate) fn send_input_dbe_alphanumeric_matrix(
+        marker: usize,
+        marker_name: &str,
+        shift_held: bool,
+    ) -> anyhow::Result<()> {
+        println!("marker={marker_name}(0x{marker:X}) shift_held={shift_held}");
+
+        if shift_held {
+            let down = [make_keybd_input(
+                VK_LSHIFT,
+                windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+                marker,
+            )];
+            // SAFETY: down はこのスコープでのみ生存する有効な配列。
+            let sent = unsafe {
+                SendInput(
+                    &down,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+                )
             };
+            println!("  [Shift DOWN] SendInput -> sent={sent}/1");
+            std::thread::sleep(Duration::from_millis(30));
+        }
+
         let inputs = [
-            make_input(windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0)),
-            make_input(KEYEVENTF_KEYUP),
+            make_keybd_input(
+                VK_DBE_ALPHANUMERIC,
+                windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+                marker,
+            ),
+            make_keybd_input(VK_DBE_ALPHANUMERIC, KEYEVENTF_KEYUP, marker),
         ];
         // SAFETY: inputs はこのスコープでのみ生存する有効な配列。
         let sent = unsafe {
@@ -702,10 +791,25 @@ mod langbar_probe {
                 i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
             )
         };
-        println!("SendInput -> sent={sent}/2 events");
+        println!("  [Eisu DOWN+UP] SendInput -> sent={sent}/2");
+
+        if shift_held {
+            std::thread::sleep(Duration::from_millis(30));
+            let up = [make_keybd_input(VK_LSHIFT, KEYEVENTF_KEYUP, marker)];
+            // SAFETY: up はこのスコープでのみ生存する有効な配列。
+            let sent = unsafe {
+                SendInput(
+                    &up,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+                )
+            };
+            println!("  [Shift UP] SendInput -> sent={sent}/1(スタック回避のため復元)");
+        }
+
         println!(
-            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください。\
-             このコマンドはトグル。"
+            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください。このコマンドはトグル。\
+             `[hook] IME-mode vk=0xF0 ... self_injected=... extra=0x{marker:X}` \
+             ログの有無も awase 側 debug ログで確認すること(未解決の疑問1)。"
         );
         Ok(())
     }
@@ -765,7 +869,19 @@ fn main() -> anyhow::Result<()> {
         return langbar_probe::enum_ancestors();
     }
     if args.iter().any(|a| a == "--sendinput") {
-        return langbar_probe::send_input_dbe_alphanumeric();
+        return langbar_probe::send_input_dbe_alphanumeric_matrix(0, "none", false);
+    }
+    if let Some(marker_str) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--sendinput-marker=").map(str::to_owned))
+    {
+        let Some(marker) = langbar_probe::parse_marker(&marker_str) else {
+            anyhow::bail!(
+                "--sendinput-marker は none|injected|tsf|ime_kanji のいずれか(指定: {marker_str})"
+            );
+        };
+        let shift_held = args.iter().any(|a| a == "--sendinput-shift-held");
+        return langbar_probe::send_input_dbe_alphanumeric_matrix(marker, &marker_str, shift_held);
     }
     if let Some(hwnd) = args
         .iter()
