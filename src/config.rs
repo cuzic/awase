@@ -58,6 +58,22 @@ pub enum DbeModeKeyPolicy {
     Passthrough,
 }
 
+/// 左Shift単独タップによる「IME-ON 半角英数」持続トグルをどの IME で許可するか。
+///
+/// 既定値 `MsImeOnly` は従来動作そのもの。GJI 経路は BUG-25 の実機ソークが
+/// 完了するまで `all` の明示設定を要求する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HalfWidthAlnumTogglePolicy {
+    /// MS-IME / GJI ともに機能全体を止める。
+    Off,
+    /// 従来どおり MS-IME のみ許可する。
+    #[default]
+    MsImeOnly,
+    /// MS-IME と Google 日本語入力の両方で許可する。
+    All,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmMode {
@@ -264,6 +280,12 @@ pub struct GeneralConfig {
     /// `SBCSCHAR`/`DBCSCHAR`）を無条件抑制のままにするか、パススルーを
     /// 許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
     pub dbe_mode_key_policy: DbeModeKeyPolicy,
+    /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
+    ///
+    /// config.toml 専用の隠し設定。既定 `ms_ime_only` は従来動作を維持し、
+    /// `off` は MS-IME 側も含めて機能全体を止める。GJI 向け entry は
+    /// `all` を明示した場合のみ有効化される。
+    pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
     ///
@@ -343,6 +365,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_always_suppress: true,
             muhenkan_solo_tap_dedicated_fn_key: None,
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
+            half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,

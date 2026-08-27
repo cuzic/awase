@@ -197,6 +197,10 @@ pub struct Runtime {
     /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
     /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
     dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
+    /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
+    /// 既定 `MsImeOnly` で従来動作を維持し、GJI 経路は `All` の明示設定時だけ
+    /// `kp_shift_conv_guard_key_up` から発火する。
+    half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy,
     /// `config.general.muhenkan_solo_tap_dedicated_fn_key` がユーザーにより
     /// 明示設定されているか（`Some`）。`true` の間は
     /// `state::gji_charset_autodetect`（ADR-091 §D3.1項目1）が専用Fnキー
@@ -1172,6 +1176,7 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
+            half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_active: false,
             muhenkan_solo_tap_is_passthrough: false,
@@ -1193,6 +1198,15 @@ impl Runtime {
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_dbe_mode_key_policy(&mut self, policy: awase::config::DbeModeKeyPolicy) {
         self.dbe_mode_key_policy = policy;
+    }
+
+    /// `config.general.half_width_alnum_toggle` を反映する。起動時と reload 時の
+    /// 両方から呼び、BUG-25 GJI entry の kill switch を即時に効かせる。
+    pub(crate) fn set_half_width_alnum_toggle_policy(
+        &mut self,
+        policy: awase::config::HalfWidthAlnumTogglePolicy,
+    ) {
+        self.half_width_alnum_toggle_policy = policy;
     }
 
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
@@ -1430,6 +1444,7 @@ impl Runtime {
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
+        self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
