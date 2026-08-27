@@ -89,14 +89,12 @@ impl HookKeyRing {
             // だと、この2つの間にエンジンスレッドの take_dropped_and_clear_latch
             // が割り込み「latch=true だが dropped=0（既に消費済み）」という
             // 状態が生じ、以後誰も clear を呼ばずラッチが恒久固着しえた。
-            let _ = self.overflow_state.fetch_update(
-                Ordering::AcqRel,
-                Ordering::Acquire,
-                |old| {
+            let _ = self
+                .overflow_state
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
                     let count = (old & OVERFLOW_COUNT_MASK).wrapping_add(1) & OVERFLOW_COUNT_MASK;
                     Some(count | OVERFLOW_LATCH_BIT)
-                },
-            );
+                });
             return ProduceResult::Overflow;
         }
         unsafe {
@@ -397,9 +395,8 @@ mod tests {
         }
         producer.join().expect("producer thread panicked");
 
-        let dropped =
-            u16::try_from(ring.take_dropped_and_clear_latch())
-                .expect("dropped fits in u16 for this total");
+        let dropped = u16::try_from(ring.take_dropped_and_clear_latch())
+            .expect("dropped fits in u16 for this total");
         assert_eq!(
             got.len() as u16 + dropped,
             total,

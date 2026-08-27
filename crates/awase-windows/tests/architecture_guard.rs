@@ -2478,8 +2478,7 @@ fn wm_execute_effects_post_sites_are_limited_to_batch_boundaries() {
     let path = "src/runtime/message_handlers.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-    let raw_post_count =
-        count_real_calls(production, "post_to_main_thread(WM_EXECUTE_EFFECTS)");
+    let raw_post_count = count_real_calls(production, "post_to_main_thread(WM_EXECUTE_EFFECTS)");
     assert_eq!(
         raw_post_count, 2,
         "{path} 内の `post_to_main_thread(WM_EXECUTE_EFFECTS)` 呼び出し箇所数が \
@@ -2548,9 +2547,7 @@ fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
     let deliver_idx = timer_body[branch_start..]
         .find("deliver_key_event(app, pending_event, KeyOrigin::ImeOffRescueReplay)")
         .map(|i| branch_start + i)
-        .expect(
-            "TIMER_IME_OFF_RESCUE branch must call deliver_key_event with ImeOffRescueReplay",
-        );
+        .expect("TIMER_IME_OFF_RESCUE branch must call deliver_key_event with ImeOffRescueReplay");
     let begin_idx = timer_body[branch_start..deliver_idx].find("begin_key_batch(app)");
     assert!(
         begin_idx.is_some(),
