@@ -1026,7 +1026,7 @@ enum CapturedKey {
 impl SettingsApp {
     #[expect(clippy::too_many_lines)]
     fn tab_basic(&mut self, ui: &mut egui::Ui) {
-        ui.heading("基本設定");
+        ui.heading("全般設定");
         ui.add_space(4.0);
 
         let threshold_hover = "同時打鍵と判定する時間の幅です。この値を大きくするほど判定が甘く\n(親指シフトが入りやすく)なりますが、遅延が増えます。\n100ms が NICOLA 規格の標準値です。";
@@ -1820,7 +1820,7 @@ impl SettingsApp {
             ui.separator();
             ui.label(keyboard_model_label(self.config.general.keyboard_model))
                 .on_hover_text(
-                    "配列のキーボード配列（JIS/US）は「基本設定」タブの設定に従います。",
+                    "配列のキーボード配列（JIS/US）は「全般設定」タブの設定に従います。",
                 );
             if !self.layout_status.is_empty() {
                 ui.separator();
@@ -2169,7 +2169,7 @@ impl SettingsApp {
     }
 
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
-        ui.heading("詳細設定");
+        ui.heading("上級者向け設定");
         ui.add_space(4.0);
         ui.checkbox(
             &mut self.config.general.swallow_alt_kana_input_method_switch,
@@ -2203,7 +2203,7 @@ impl SettingsApp {
         );
         if !ngram_enabled {
             ui.label(
-                "n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（基本設定タブ）",
+                "n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（全般設定タブ）",
             );
         }
         ui.add_enabled_ui(ngram_enabled, |ui| {
@@ -2315,14 +2315,14 @@ impl eframe::App for SettingsApp {
                 // パス解決バグ修正を経て再表示した。その後、独立バイナリだった
                 // awase-yab-editor を統合し、プレビューではなく実際に編集できる
                 // タブにした（バイナリを分ける価値は無いという判断）。
-                // タブ順序は使用頻度順（2026-08-26 見直し）: 基本設定・キー設定・
-                // 配列編集・詳細設定を先に置き、日常的に触らない「アプリ無効化」
+                // タブ順序は使用頻度順（2026-08-26 見直し）: 全般設定・キー設定・
+                // 配列編集・上級者向け設定を先に置き、日常的に触らない「アプリ無効化」
                 // 「ショートカット」を末尾にまとめる。
                 for (tab, label) in [
-                    (Tab::Basic, "基本設定"),
+                    (Tab::Basic, "全般設定"),
                     (Tab::Keys, "キー設定"),
                     (Tab::Layout, "配列編集"),
-                    (Tab::Advanced, "詳細設定"),
+                    (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
                 ] {
@@ -3585,7 +3585,9 @@ mod layout_tab_repro {
     }
 
     /// `tab_keys`（無変換/変換の条件付き indent ブロックと「awase → IME
-    /// ON/OFFキー」を含む、折りたたみ「上級者向け設定」は2026-08-15に撤去済み）
+    /// ON/OFFキー」を含む、折りたたみ「上級者向け設定」小見出しは2026-08-15に
+    /// 撤去済み——2026-08-26に`Tab::Advanced`タブへ付けた同名ラベルとは無関係の、
+    /// `tab_keys`内の別機能）
     /// がパニックしないことを固定する
     /// （`full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。無変換/変換を親指キーへ割り当て、`tab_keys` 内の条件付き
