@@ -685,7 +685,9 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
     // (相対パス, 期待マッチ数)。ここに列挙されないファイルは 0 でなければならない。
     let expected: &[(&str, usize)] = &[
         // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
-        // 結果適用点。TsfNative/Imm32Unavailable の shadow 代替観測もここに集約される。
+        // 結果適用点。TsfNative/Imm32Unavailable は ADR-106 決定2 により観測不能として
+        // 扱われ、この経路では write_focus_probe を呼ばない（shadow 値は guard 解除
+        // 判定にのみ使う。代替観測としての記録は laundering として撤去済み、BUG-92）。
         ("runtime/key_pipeline.rs", 1),
     ];
 
@@ -2678,6 +2680,32 @@ fn app_disable_invalidate_engine_context_is_skipped_during_bootstrap() {
         probe_result_body.contains("advance_focus_tracking(&classified, false)"),
         "apply_focus_probe_result（定常経路）は advance_focus_tracking を \
          is_bootstrap=false で呼ぶこと"
+    );
+}
+
+/// `establish_initial_focus_scope_does_not_write_ime_belief` は関数本体の直接テキスト
+/// しか見ないため、`advance_focus_tracking` が呼ぶ
+/// `notify_focus_hwnd_updated_if_needed`（それ自体は `dispatch_event` 等の禁止
+/// リストに載らない）までは検知できない。このテストはその1段先の呼び出しチェーン
+/// を明示的に固定する（ADR-106 決定3、PR 109 コードレビュー是正）。
+#[test]
+fn focus_hwnd_updated_dispatch_is_skipped_during_bootstrap() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+
+    let advance_body = extract_fn_body(&content, "fn advance_focus_tracking");
+    assert!(
+        advance_body.contains("notify_focus_hwnd_updated_if_needed"),
+        "advance_focus_tracking は notify_focus_hwnd_updated_if_needed 経由で \
+         FocusHwndUpdated を dispatch すること"
+    );
+
+    let notify_body = extract_fn_body(&content, "fn notify_focus_hwnd_updated_if_needed");
+    assert!(
+        notify_body.contains("dispatch_event(") && notify_body.contains("if is_bootstrap"),
+        "notify_focus_hwnd_updated_if_needed の dispatch_event 呼び出しは \
+         `is_bootstrap` でガードされていること（bootstrap時は ObservationStore の \
+         fence がまだ FocusChanged で初期化されておらず、belief 層へ書き込むと \
+         establish_initial_focus_scope の不変条件を破るため）"
     );
 }
 

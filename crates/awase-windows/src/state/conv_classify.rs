@@ -78,7 +78,7 @@ pub struct ConvTransition {
 ///
 /// # 引数
 /// - `cm`: 現在確定している `ConvMode`。呼び出し元は `ConvModeMgr::get()`
-///   （= `ConvModeMgr::update_from_conv` 済みの値）を渡すこと。`ImmGetConversionStatus`
+///   （= `ConvModeMgr::observe()` 済みの値）を渡すこと。`ImmGetConversionStatus`
 ///   の生値を直接 `ConvMode::from_u32` してここに渡してはならない — `ConvModeMgr` は
 ///   非カタカナ→カタカナ遷移を2回連続観測するまで確定させないデバウンスを持つ（BUG-19）。
 ///   この関数が生値を直接受け取ると、`ConvModeMgr` 側（warmup のキー選択）だけが保護され、
@@ -86,7 +86,7 @@ pub struct ConvTransition {
 /// - `current`: 現在の `input_mode` belief。
 /// - `is_cold`: `output_in_flight_ms() == u64::MAX`（ROMAN ビット未確定期間）。
 /// - `effective_open`: 現在の engine open 状態 (`effective_open()`)。
-/// - `conv_mode_changed`: `ConvModeMgr::update_from_conv` が変化を検出したか。
+/// - `conv_mode_changed`: `ConvModeMgr::observe()` が変化を検出したか。
 /// - `is_roman_reliable`: ROMAN ビット (0x10) が信頼できるか。TsfNative の idle 経路では
 ///   常に `false`。
 #[must_use]

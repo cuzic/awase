@@ -8,6 +8,12 @@
 //! `should_reset_katakana_on_ime_on_combo`（BUG-50）は 2026-08-17、ADR-094 で
 //! charset 軸の追跡自体を撤去したのに伴い削除した。詳細は ADR-094 参照。
 
+#[cfg(test)]
+use super::ime_event::HwndId;
+#[cfg(test)]
+use super::probe_admission::FocusEpoch;
+use super::probe_admission::FocusFence;
+use super::TickMs;
 use awase::engine::ConvMode;
 
 // ─── 変換モード所有権 ────────────────────────────────────────────────────────────
@@ -118,51 +124,126 @@ pub(crate) enum ConvActuationOutcome {
     Actuated,
 }
 
+// ─── 観測 (ADR-106 決定4) ────────────────────────────────────────────────────
+
+/// `ConvModeMgr::observe` に渡す conv 観測 1 件。
+///
+/// `read_at`（時間軸）・`fence`（空間軸、epoch+hwnd）を観測自身に持たせることで、
+/// `ConvModeMgr::observe` が「届いた順序」ではなく「観測された時点」を基準に
+/// 採否を判定できるようにする。旧 `update_from_conv(u32)` は値だけを受け取り、
+/// idle-conv-check と focus-conv-check という 2 つの独立した非同期/同期経路が
+/// 同じ `Cell` へ書き込んでいたため、`ConvModeMgr` 自身には「後から完了した方が
+/// 常に勝つ」という暗黙の前提しかなかった（BUG-34 追補が見送った decision7
+/// 「focus-conv-check の非同期 offload」を安全に行うための前提工事）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConvObservation {
+    pub(crate) mode: ConvMode,
+    pub(crate) read_at: TickMs,
+    pub(crate) fence: FocusFence,
+    pub(crate) source: ConvReadSource,
+}
+
+/// [`ConvObservation`] の発生源。ログ・診断用（採否判定には使わない）。
+///
+/// `FocusCheck` の唯一の構築元は `#[cfg(windows)]` の `key_pipeline.rs` のため、
+/// 非 Windows では未使用になる（`state/mod.rs` の ungated モジュール群と同じ局所抑制）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) enum ConvReadSource {
+    /// `kp_stage_idle_conv_check_inner`（タイピング停止後、または focus-resync トリガー）。
+    IdleCheck,
+    /// `apply_focus_probe` 内の TsfNative フォーカス復帰同期読み取り。
+    FocusCheck,
+}
+
+// `fence` は保持しない: monotonic guard は呼び出し時点の
+// `current`（呼び出し元が持つ生きた FocusFence）と観測自身の
+// フィールドだけで判定でき、直近採用済み観測の fence を別途覚えておく
+// 必要が無い。
+#[derive(Debug, Clone, Copy)]
+struct ConvModeRecord {
+    mode: ConvMode,
+    read_at: TickMs,
+}
+
 // ─── 管理コンポーネント ────────────────────────────────────────────────────────
 
 /// IME 変換モードを一元管理するコンポーネント。
 ///
-/// `kp_stage_idle_conv_check` が `update_from_conv` でモードを更新し、
+/// `kp_stage_idle_conv_check`/`apply_focus_probe` が `observe` でモードを更新し、
 /// warmup コードが `get` でモードを参照して先頭 VK と ImmSetConversionStatus 目標値を決定する。
 #[derive(Debug)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) struct ConvModeMgr {
-    mode: std::cell::Cell<Option<ConvMode>>,
+    last: std::cell::Cell<Option<ConvModeRecord>>,
 }
 
 impl Default for ConvModeMgr {
     fn default() -> Self {
         Self {
-            mode: std::cell::Cell::new(None),
+            last: std::cell::Cell::new(None),
         }
     }
 }
 
 #[cfg_attr(not(windows), allow(dead_code, unused_variables))]
 impl ConvModeMgr {
-    /// `ImmGetConversionStatus` の raw conv 値からモードを更新する。
+    /// 新しい観測を取り込む（ADR-106 決定4）。
     ///
-    /// 変化があった場合のみ `info` ログを出力し `true` を返す。
-    pub(crate) fn update_from_conv(&self, conv: u32) -> bool {
-        let new = ConvMode::from_u32(conv);
-        let old = self.mode.get();
+    /// `current` は呼び出し時点の実際のフォーカス同一性——観測が捕まえた
+    /// `obs.fence` と一致しない場合、フォーカスが変わった
+    /// 後に届いた stale な読み取りとして棄却する。さらに `read_at` が既に採用済み
+    /// の観測より古い場合も、到着順序に関わらず棄却する（monotonic guard）。
+    ///
+    /// 採用の上でモードが変化した場合のみ `true` を返す（呼び出し元は info ログを出す）。
+    pub(crate) fn observe(&self, obs: ConvObservation, current: FocusFence) -> bool {
+        if obs.fence != current {
+            log::debug!(
+                "[conv-mode] stale focus context の観測を棄却: obs.epoch={} current.epoch={} \
+                 obs.hwnd={:?} current.hwnd={:?} source={:?}",
+                obs.fence.epoch,
+                current.epoch,
+                obs.fence.hwnd,
+                current.hwnd,
+                obs.source,
+            );
+            return false;
+        }
+        if let Some(last) = self.last.get() {
+            if obs.read_at < last.read_at {
+                log::debug!(
+                    "[conv-mode] stale read_at の観測を棄却: obs={:?} last={:?} source={:?}",
+                    obs.read_at,
+                    last.read_at,
+                    obs.source,
+                );
+                return false;
+            }
+        }
+
+        let old = self.last.get().map(|r| r.mode);
+        let new = obs.mode;
+        self.last.set(Some(ConvModeRecord {
+            mode: new,
+            read_at: obs.read_at,
+        }));
 
         if old == Some(new) {
             return false;
         }
 
         log::info!(
-            "[conv-mode] {} → {} (conv=0x{conv:08X})",
+            "[conv-mode] {} → {} (source={:?})",
             old.map_or_else(|| "None".to_string(), |m| m.to_string()),
             new,
+            obs.source,
         );
-        self.mode.set(Some(new));
         true
     }
 
-    /// 現在のモードを返す。`None` = まだ `update_from_conv` が呼ばれていない。
+    /// 現在のモードを返す。`None` = まだ `observe` が一度も採用されていない。
     pub(crate) fn get(&self) -> Option<ConvMode> {
-        self.mode.get()
+        self.last.get().map(|r| r.mode)
     }
 }
 
@@ -173,14 +254,126 @@ mod tests {
     // 実機ログで観測された値。CONV_HIRAGANA: NATIVE|FULLSHAPE|ROMAN。
     const CONV_HIRAGANA: u32 = 0x0019;
 
+    // 実機ログで観測された別の値。CONV_ROMAN: NATIVE|FULLSHAPE|ROMAN と異なる組み合わせ。
+    const CONV_ROMAN_OFF: u32 = 0x0001;
+
+    const EPOCH: FocusEpoch = 7;
+    const HWND: HwndId = HwndId(0x1234);
+    const FENCE: FocusFence = FocusFence {
+        epoch: EPOCH,
+        hwnd: HWND,
+    };
+
+    fn obs(mode_conv: u32, read_at_ms: u64, fence: FocusFence) -> ConvObservation {
+        ConvObservation {
+            mode: ConvMode::from_u32(mode_conv),
+            read_at: TickMs(read_at_ms),
+            fence,
+            source: ConvReadSource::IdleCheck,
+        }
+    }
+
     #[test]
-    fn update_from_conv_reports_change_and_get_reflects_it() {
+    fn observe_reports_change_and_get_reflects_it() {
         let mgr = ConvModeMgr::default();
         assert_eq!(mgr.get(), None);
-        assert!(mgr.update_from_conv(CONV_HIRAGANA));
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
         assert_eq!(mgr.get(), Some(ConvMode::from_u32(CONV_HIRAGANA)));
         // 同じ値の再観測は変化なし扱い。
-        assert!(!mgr.update_from_conv(CONV_HIRAGANA));
+        assert!(!mgr.observe(obs(CONV_HIRAGANA, 200, FENCE), FENCE));
+    }
+
+    // ── ADR-106 決定4: monotonic guard 全数テスト ──────────────────────────
+    //
+    // 軸: read_at（古い/新しい）× focus_epoch（一致/不一致）× hwnd（一致/不一致）。
+    // 「棄却」= self.last が変化しない（get() が棄却前の値のまま）。
+
+    #[test]
+    fn observe_accepts_newer_read_at_matching_epoch_and_hwnd() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
+        assert!(mgr.observe(obs(CONV_ROMAN_OFF, 200, FENCE), FENCE));
+        assert_eq!(mgr.get(), Some(ConvMode::from_u32(CONV_ROMAN_OFF)));
+    }
+
+    #[test]
+    fn observe_rejects_older_read_at_even_with_matching_epoch_and_hwnd() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 200, FENCE), FENCE));
+        // read_at がより古い観測は、後から届いても棄却する
+        // （idle-conv-check と focus-conv-check が非同期に完了する順序に依存しない）。
+        assert!(!mgr.observe(obs(CONV_ROMAN_OFF, 100, FENCE), FENCE));
+        assert_eq!(
+            mgr.get(),
+            Some(ConvMode::from_u32(CONV_HIRAGANA)),
+            "古い read_at の観測は last を上書きしない"
+        );
+    }
+
+    #[test]
+    fn observe_rejects_mismatched_focus_epoch_even_with_newer_read_at() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
+        let other_fence = FocusFence {
+            epoch: EPOCH + 1,
+            hwnd: HWND,
+        };
+        assert!(!mgr.observe(obs(CONV_ROMAN_OFF, 200, FENCE), other_fence));
+        assert_eq!(
+            mgr.get(),
+            Some(ConvMode::from_u32(CONV_HIRAGANA)),
+            "観測の focus_epoch が現在と異なるなら read_at が新しくても棄却する"
+        );
+    }
+
+    #[test]
+    fn observe_rejects_mismatched_hwnd_even_with_newer_read_at() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
+        let other_fence = FocusFence {
+            epoch: EPOCH,
+            hwnd: HwndId(HWND.0 + 1),
+        };
+        assert!(!mgr.observe(obs(CONV_ROMAN_OFF, 200, FENCE), other_fence));
+        assert_eq!(
+            mgr.get(),
+            Some(ConvMode::from_u32(CONV_HIRAGANA)),
+            "観測の hwnd が現在と異なるなら read_at が新しくても棄却する"
+        );
+    }
+
+    #[test]
+    fn observe_rejects_mismatched_epoch_and_hwnd_and_older_read_at_simultaneously() {
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 200, FENCE), FENCE));
+        let other_fence = FocusFence {
+            epoch: EPOCH + 1,
+            hwnd: HwndId(HWND.0 + 1),
+        };
+        assert!(!mgr.observe(obs(CONV_ROMAN_OFF, 100, FENCE), other_fence));
+        assert_eq!(mgr.get(), Some(ConvMode::from_u32(CONV_HIRAGANA)));
+    }
+
+    #[test]
+    fn observe_accepts_equal_read_at_with_matching_epoch_and_hwnd() {
+        // read_at が「厳密に古い」ときのみ棄却する（`<` であり `<=` ではない）。
+        // 同一 tick 内の2回目の観測（同じ read_at）は許可する。
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
+        assert!(mgr.observe(obs(CONV_ROMAN_OFF, 100, FENCE), FENCE));
+        assert_eq!(mgr.get(), Some(ConvMode::from_u32(CONV_ROMAN_OFF)));
+    }
+
+    #[test]
+    fn observe_records_read_at_focus_and_hwnd_even_when_mode_unchanged() {
+        // モードが変化しなくても last の read_at/focus_epoch/hwnd 自体は更新される
+        // （次回 stale 判定の基準点が進む）ことを固定する。
+        let mgr = ConvModeMgr::default();
+        assert!(mgr.observe(obs(CONV_HIRAGANA, 100, FENCE), FENCE));
+        assert!(!mgr.observe(obs(CONV_HIRAGANA, 200, FENCE), FENCE));
+        // read_at=100 に戻る観測は、last が既に 200 まで進んでいるため棄却される。
+        assert!(!mgr.observe(obs(CONV_ROMAN_OFF, 150, FENCE), FENCE));
+        assert_eq!(mgr.get(), Some(ConvMode::from_u32(CONV_HIRAGANA)));
     }
 
     // ── ADR-084 P1 conv-mode actuator ─────────────────────────────────────────

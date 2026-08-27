@@ -1120,6 +1120,52 @@ no-op になる（gji_fsm.rs:558-565）ため副作用はない。
 **関連バグ:** BUG-16（focus 遷移の belief×実状態乖離）, BUG-17
 （CLSID フリップによる `GjiFsm` 再構築、直前修正・別経路）
 
+**ADR-106 決定3 との関係（2026-08-26 追記、未検証）:** 本バグの `AppKind`
+往復（`TsfNative`⇔`Uwp`、`Windows.UI.Input.InputSite.WindowClass`⇔
+`Chrome_WidgetWin_1`）は同一プロセス内での発生であり、`focus_epoch`
+（`on_focus_process_changed` の `process_changed` 判定＝PID 変化でのみ進む）
+が動かない可能性がある区間である。ADR-106 決定3は
+`ObservationStore::derive_any()` の `ImmCrossProbe`/`FocusProbe` フィルタに
+hwnd 照合を追加した——`AppKind` 往復の2つの window が異なる hwnd を持つ場合、
+`focus_epoch` が変わらなくても hwnd 不一致で古い window の観測が棄却される
+ようになる。これが本バグの症状（`belief` と `GjiFsm` の不一致期間）と
+直接の因果関係を持つかは未確認。本バグ自体は `gji_on_ime_on` 呼び出し追加で
+別経路から修正済みのため新たな実害があるわけではないが、`derive_any()` の
+挙動変化が `AppKind` 往復シナリオで意図しない副作用（stale 観測が想定より
+多く/少なく棄却される）を起こさないか、次回この往復パターンが実機ログで
+観測された際に確認すること。
+
+**ADR-106 決定3 の退行修正（2026-08-26 追記、code review・2026-08-26 実機検証済み）:** 上記の hwnd
+照合追加自体に、機能回帰が1件あった。`ObservationStore::current_focus_hwnd`
+（`derive_any()` の照合対象）は `FocusChanged`（プロセス変更時のみ発火）経由の
+`clear_on_focus_change()` でしか更新されていなかった一方、`ImmLikeTicket::admit()`
+が照合する「生の hwnd」（`Runtime::focus_hwnd()` → `platform.focus.current.hwnd`）は
+`advance_focus_tracking()` 経由で毎 focus tick 更新されていた。このため、本バグと
+まさに同じシナリオ（同一プロセス内で `AppKind` 往復や通常のウィンドウ切り替えが起き、
+PID は変わらない）で `admit()` は新しい hwnd を正しく受理するのに `derive_any()` は
+古い hwnd と比較し続け、以後の `ImmCrossProbe`/`FocusProbe` 観測を次のプロセス変更
+まで恒久的に拒否する退行になっていた。修正: 同一プロセス内の hwnd 変化を
+`ImeEvent::FocusHwndUpdated` として dispatch し、`ObservationStore::update_focus_hwnd()`
+（epoch・観測プールには触れない）で `current_focus_hwnd` を追従させる
+（`crates/awase-windows/src/runtime/focus_tracking.rs::advance_focus_tracking`、
+`crates/awase-windows/src/state/observation_store.rs`）。state 層の回帰テスト
+（`update_focus_hwnd_unblocks_derive_any_after_intra_process_window_change` 等）は
+追加済み・Linux で green。
+
+**実機検証（dragonflyg4、2026-08-26）:** 検証には Windows Terminal（TsfNative、決定2により
+観測不能プロファイルのため FocusProbe/ImmCrossProbe 自体を記録せず不適）・現行メモ帳
+（Windows 11 で IMM32 ベースでなくなっているため不適）のどちらも使えず、`crates/
+awase-windows/examples/two_imm32_windows_probe.rs`（同一プロセス内に素の `EDIT`
+コントロール持ちウィンドウを2つ作る使い捨て検証アプリ）を新設して使用した。Alt+Tab
+による切替は**スイッチャー UI が別プロセスとして一瞬フォーカスを持つため
+`process_changed=true` として記録されてしまい、本バグの再現条件（同一プロセス内・
+PID 不変）を満たさなかった**——同種の検証を今後行う場合はこの点に注意し、マウス
+クリックによる直接切替を使うこと。クリック切替では `process_changed=false` のまま
+`FocusHwndUpdated` が2ウィンドウ間で6回以上正しく dispatch・追従し、その間
+`derive_any()` の hwnd 不一致除外は一度も発生しなかった（一時追加した診断ログ
+`[focus-hwnd-track]`／`[identity-gate]` で確認）。`runtime/` の実配線を含め修正効果を
+実機で確認済み。
+
 ---
 
 ## BUG-19: 一発だけのカタカナ conv 誤読を warmup が鵜呑みにし、GJI が実際にカタカナへ固定される（修正済み）
@@ -10992,3 +11038,155 @@ BUG-78で`mstsc.exe`に導入済み）をGUIから編集できるようにした
 `mstsc.exe`のままで変更していない）。あくまでオプトインの回避策であり、
 根本原因の特定・修正は引き続き未対応。`docs/bug-reports-triage.md` に
 report_id 2件を記録。
+
+---
+
+## BUG-92: BUG-33 追補 — `Imm32Unavailable`/`TsfNative` の shadow フォールバック観測 laundering を型で閉じた（ADR-106 決定2）
+
+**位置づけ:** 新規の実機不具合報告ではなく、BUG-33（「belief 自身を『観測』として
+書き戻す循環」）が確定させた欠陥そのものを、実行時ガードではなく型で構造的に
+除去したリファクタの記録。BUG-33 の「検知側の未解決ギャップ（drift-correction が
+構造的に発火しない件）自体は本修正後も残存する」という記述（当該エントリ末尾）を
+本エントリで解消する。番号は元コミットでは暫定（BUG-81）だったが、develop への
+1回目の rebase 時に BUG-80〜89 が既に別件（ADR-105/102 コードレビュー是正等）で
+採番済みと判明したため BUG-90 に採番し直した。その後、developが並行して進み
+（`fdb3e842`）、別ブランチ発の BUG-88（PowerToys Mouse Without Borders）が
+BUG-90 へ改番されて develop 側に先着したため、2回目の rebase で再度衝突し
+BUG-92（本ブランチでは BUG-81→90→92 の変遷）に採番し直した（
+[main-develop-branch-flow](../.claude/rules/main-develop-branch-flow.md) の
+番号衝突対応）。
+
+**症状（BUG-33 からの再掲）:** TsfNative/Imm32Unavailable プロファイル
+（WezTerm/Chrome/Edge 等）では `apply_focus_probe`
+（`runtime/key_pipeline.rs`）が `shadow_on = effective_open()`（＝現在の belief
+そのもの）を `apply_effective_ime()` 経由で `write_focus_probe()` に渡し、
+`ObservationSource::FocusProbe`（confidence=Low）として観測ストアへ書き込んで
+いた。この観測は定義上 `open == desired` になるため、`check_drift_correction` の
+`if trusted.open == desired { return None; }` に毎回引っかかり、drift correction
+が構造的に一度も発火し得なかった（BUG-33 で確定済み）。
+
+**原因（型で防げなかった理由）:** `sanitize_focus_probe_open_status` は
+`Option<bool>` を返しており、「プロファイルが IMM32 open status を読めない」場合
+（構造的に観測不能）と「プロファイルは読めるが今回は取得できなかった」場合が同じ
+`None` に潰れていた。`apply_effective_ime`/`write_focus_probe` の引数も素の
+`bool` だったため、`effective_open()`（belief）由来の値と実際に IMM32 API から
+読み取った値が同じ型として扱え、実行時の `if`/`else` 分岐を書き間違えると即座に
+laundering が再発しうる状態だった。
+
+**修正 (ADR-106 決定2):** `state/observation_store.rs` に
+`FocusProbeOpenStatus::{Read(ObservedOpenValue), NotObservable(AppImeProfile)}` を
+新設し、`ObservedOpenValue` は `FocusProbeOpenStatus::classify` の `Read` 分岐
+からしか構築できないようにした（フィールド private）。`apply_effective_ime`/
+`write_focus_probe` の引数をこの型に変えたことで、`apply_effective_ime(shadow_on,
+...)`（belief 由来の値を観測として書く旧経路）は型検査でコンパイルエラーになり
+物理的に書けない。`apply_focus_probe` の `NotObservable` アームでは観測の記録を
+一切行わない。
+
+**guard 解除の副作用（撤去と同時に対処）:** 旧 `apply_effective_ime(effective)` は
+`effective == true` のとき `reset_detect_state()`（observe-miss リセット + force
+guard 全解除）を呼んでいた。これは観測記録とは独立した副作用のため、shadow
+フォールバック経路の撤去で黙って失うと `BrokenAppBootstrap` guard 等の解除
+タイミングが失われる。`FocusProbeOpenStatus::NotObservable` アーム内で
+`probe.is_japanese_ime && shadow_on` のときだけ `reset_detect_state()` を独立して
+呼ぶことで、観測の laundering だけを消し guard 解除の挙動は変えていない。
+
+**「唯一の観測源が消える」という懸念について:** 成立しない。BUG-33 が確定させた
+とおり、その観測源は定義上 `desired` と一致する自己参照値であり、
+`check_drift_correction` は撤去前から常に `None`（不一致なし＝補正不要）を返して
+いた。本修正は drift correction の能力を減らさず、減っていた事実を可視化した
+だけである。
+
+**未解決の疑問（実機ソークで確認すること、ADR-106 参照）:** 「3秒 FRESH を超えて
+凍った古い shadow 観測」が消えることで、TsfNative/Imm32Unavailable の
+`effective_open()` 解決結果が変わるケースが実機で発生するか。BUG-33 が残していた
+回復経路（per-VK confirm give-up → `send_chrome_gji_reinit_and_poll`、
+focus-resync + idle-conv-check、`ConvOpenInference` + 明示意図）が引き続き
+機能しているかを実機ソークで確認すること。
+
+**テスト:** `state/observation_store.rs` に `ObservedOpenValue`/
+`FocusProbeOpenStatus` の doctest（`Read` からの構築・`NotObservable` からは
+`compile_fail`）を追加。`runtime/key_pipeline.rs` の
+`focus_probe_open_status_is_not_observable_for_imm32_unavailable`/
+`_for_tsf_native`/`focus_probe_open_status_is_read_for_standard`/
+`_when_probe_returns_none_even_for_standard` で `classify` の全分岐を固定。
+Windows 実機での drift correction 再発火自体の確認は未実施（次回実機ソーク）。
+
+**関連ファイル:** `crates/awase-windows/src/state/observation_store.rs`
+（`FocusProbeOpenStatus`/`ObservedOpenValue` 新設）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`（`apply_focus_probe`/
+`apply_effective_ime`）、`crates/awase-windows/src/state/platform_state.rs`
+（`write_focus_probe`）。関連: BUG-33（本追補の対象）、
+[ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定2。
+
+## BUG-91: ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測が hwnd 不一致で棄却され鮮度が低下する（Step1: 計測のみ実装）
+
+**位置づけ:** 実機不具合報告ではなく、PR 109 コードレビュー指摘1（Opus による設計 +
+敵対的レビュー）が発見した理論上のリスクに対する計測導入の記録。番号は当初
+[experiment-logging](../.claude/rules/experiment-logging.md) と同じ理由（並行
+ブランチとの衝突可能性）で BUG-88（`git show develop:docs/known-bugs.md` で
+BUG-87 まで使用済みと確認した時点での次番号）として暫定採番していたが、develop
+への rebase 時に BUG-88 が別件（HOOK_KEYS リング overflow、ADR-102/105
+コードレビュー指摘2）に既に使われていたと判明したため BUG-91 に採番し直した
+（[main-develop-branch-flow](../.claude/rules/main-develop-branch-flow.md) の
+番号衝突対応、本ブランチでは BUG-81→BUG-90→BUG-92 の変遷と合わせて2件目）。
+
+**症状（理論上のリスク、実機未確認）:** `ImmLikeTicket::admit()`
+（`state/probe_admission.rs`）と `ObservationStore::derive_filtered` の
+`is_identity_ok`（`state/observation_store.rs`）は、`FocusFence{epoch, hwnd}`
+の `hwnd` に `GetGUIThreadInfo().hwndFocus`（フォーカス中コントロール）を使う。
+ネイティブ Win32 のマルチフィールドダイアログ（複数の `EDIT`/`COMBOBOX` 等を
+持つ単一 top-level ウィンドウ）で Tab キーによりフィールド間フォーカスが移動
+すると、`process_changed=false`・`FocusEpoch` 不変のまま `hwndFocus` だけが
+毎回変わる。進行中（spawn 済みで未完了）の `FocusProbe`/`ImmCrossProbe` の
+非同期タスクや `ConvModeMgr::observe()` の monotonic guard は、この hwnd
+変化を「フォーカスが変わった」として棄却する——実際には同一 top-level
+ウィンドウ内の移動であり、IME 状態の連続性は保たれているはずのケース。
+
+**現状の対応（Step1、本コミットの内容）:** 判定ロジック（`is_identity_ok`/
+`admit()`/`FocusFence`）は一切変更していない——上記が実害かどうかは実機
+ソークで実測してから判断する。まず計測のみ導入した:
+
+- `focus/current.rs::CurrentFocus` に `root_hwnd: usize`
+  （`GetAncestor(hwnd, GA_ROOT)`、非 Windows では `hwnd` と同値）を追加。
+  `hwnd` はフォーカス中コントロール、`root_hwnd` が真の top-level ウィンドウ。
+- `state/probe_admission.rs::RejectionStats` を3軸に分割:
+  `epoch_mismatch` / `hwnd_mismatch_same_root` / `hwnd_mismatch_cross_root`。
+  `admit_epoch_in_app`（`root_hwnd` にアクセスできる呼び出し元）が
+  `FocusHwndChanged` 棄却時に spawn 時 hwnd の `root_hwnd_of()` と現在の
+  `root_hwnd` を突き合わせて分類する。
+- `[ImmCrossProbe]`/`[FocusProbe]`/`[idle-conv-check]` 系の `reject_log` に
+  `(same_root=...)` を付記。
+- `runtime/message_handlers.rs::handle_wm_dump_journal`
+  （`WM_DUMP_JOURNAL`、Alt+変換→Alt+無変換 ×2 でトリガー）が3軸の
+  `RejectionStats` をダンプするよう追従。
+
+**計測方法（実機ソーク時の確認手順）:** ネイティブ Win32 マルチフィールド
+ダイアログ（例: メモ帳の「検索と置換」、任意の設定ダイアログ）でフィールド間を
+Tab 移動しながら typing し、`WM_DUMP_JOURNAL`（Alt+変換→Alt+無変換 ×2）で
+`[probe-admission] rejected since last dump: ... hwnd_mismatch_same_root=N
+hwnd_mismatch_cross_root=M` をダンプする。`hwnd_mismatch_same_root > 0` が
+実測できれば、この理論上のリスクが実際に発生していることの証拠になる。
+
+**計測の交絡に関する注記（重要）:** 追跡している hwnd の取得元は
+`focus/probe.rs` → `win32.rs::get_gui_thread_info_with_timeout`（~L209-212）で
+`hwndFocus` →（null なら）`hwndActive` →（`GetGUIThreadInfo` 自体が失敗/
+タイムアウトなら）`GetForegroundWindow()` と**状況により切り替わる**。この
+切替だけでも `hwnd_mismatch_same_root` が加算されうる（`hwndActive` と
+`hwndFocus` が同一 top-level 内の異なる子ウィンドウを指すことがあるため）。
+実機ログを見る際は「Tab 移動の証拠」と単純に読まず、この取得元切替との交絡が
+ないか（`GetGUIThreadInfo` のタイムアウト・失敗ログの有無）を確認すること。
+
+**状態:** Step1（計測のみ）実装済み・developへの反映待ち。Step2（`root_hwnd`
+一致時に判定ロジックへ反映する）は、この開発環境が Linux サンドボックスであり
+Windows 実機ソークができないため、**実機で `hwnd_mismatch_same_root > 0` を
+確認してから着手する**。UWP アプリでの `GA_ROOT` プロセス越えリスク（BUG-18
+近縁）も Step2 着手時に実機確認が必須。
+
+**関連ファイル:** `crates/awase-windows/src/focus/current.rs`（`root_hwnd`）、
+`crates/awase-windows/src/focus/classify.rs`（`root_hwnd_of`）、
+`crates/awase-windows/src/state/probe_admission.rs`（`RejectionStats`/
+`record_hwnd_mismatch`/`admit_epoch_in_app`）、
+`crates/awase-windows/src/runtime/message_handlers.rs`
+（`handle_wm_dump_journal`）。関連: BUG-18（AppKind Uwp 往復での文字欠落、
+`GA_ROOT` のプロセス越えリスクが近縁）、
+[ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定3。

@@ -16,6 +16,7 @@
 //! → applied_open は None (T3 は無視)
 //! ```
 
+use super::ApplyGeneration;
 use std::time::Instant;
 
 /// OS への apply transaction。
@@ -24,7 +25,7 @@ pub struct ImeTransition {
     /// 適用したい IME 開閉状態
     pub target: bool,
     /// 世代 ID (apply 要求ごとに increment、stale 照合に使う)
-    pub generation: u64,
+    pub generation: ApplyGeneration,
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,
 }
@@ -47,7 +48,7 @@ mod tests {
         let t0 = Instant::now();
         let trans = ImeTransition {
             target: true,
-            generation: 10,
+            generation: ApplyGeneration::new(10).unwrap(),
             timeout_at: t0 + Duration::from_millis(100),
         };
         assert!(!trans.is_timed_out(t0));

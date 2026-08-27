@@ -584,10 +584,14 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 pub(crate) fn post_async_ime_apply_complete(
     open: bool,
     outcome: ImeOpenOutcome,
-    generation: Option<u64>,
+    generation: Option<crate::state::ApplyGeneration>,
     reason: crate::state::ime_event::OpenApplyReason,
 ) {
-    let generation = generation.unwrap_or(0);
+    // ADR-106 決定1: `ApplyGeneration` は `NonZeroU64` のため `to_wire` の
+    // `0 = None` エンコードは正当な generation 値と絶対に衝突しない
+    // （旧 `generation.unwrap_or(0)` は `next_seq()` 由来の `generation == 0`
+    // が bootstrap 経路で実際に払い出されうる番兵衝突を抱えていた）。
+    let generation = crate::state::ApplyGeneration::to_wire(generation);
     let reason_bit = usize::from(matches!(
         reason,
         crate::state::ime_event::OpenApplyReason::Bootstrap
@@ -628,10 +632,7 @@ fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let open = (wparam & 1) != 0;
     let reason = decode_reason(wparam);
-    let generation = match (wparam >> 2) as u64 {
-        0 => None,
-        generation => Some(generation),
-    };
+    let generation = crate::state::ApplyGeneration::from_wire((wparam >> 2) as u64);
     let outcome = decode_outcome(lparam);
     if outcome == ImeOpenOutcome::Failed {
         log::warn!("apply_ime_open({open}) failed (async)");
@@ -1363,10 +1364,16 @@ pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
 pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // プローブ棄却統計をダンプ直前にログ出力してリセット
     let stats = crate::state::probe_admission::drain_stats();
-    if stats.epoch_mismatch > 0 {
+    if stats.epoch_mismatch > 0
+        || stats.hwnd_mismatch_same_root > 0
+        || stats.hwnd_mismatch_cross_root > 0
+    {
         log::info!(
-            "[probe-admission] rejected since last dump: epoch_mismatch={}",
-            stats.epoch_mismatch
+            "[probe-admission] rejected since last dump: epoch_mismatch={} \
+             hwnd_mismatch_same_root={} hwnd_mismatch_cross_root={}",
+            stats.epoch_mismatch,
+            stats.hwnd_mismatch_same_root,
+            stats.hwnd_mismatch_cross_root
         );
     }
     // HOOK_KEYS の最大占有数（指摘2-4）: overflow の頻度を実測できるようにする。

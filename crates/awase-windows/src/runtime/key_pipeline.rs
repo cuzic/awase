@@ -9,6 +9,8 @@
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
+use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
+use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
 use awase::engine::InputModeState;
@@ -276,9 +278,10 @@ impl Runtime {
         // フォーカス変更後にキャッシュリストア済みの desired を反映する
         // effective_open() を使う。
         let shadow_on = self.platform_state.ime.effective_open();
-        // spawn 時にチケットをキャプチャ。apply_focus_probe 完了時に epoch 照合し stale な観測を棄却する。
+        // spawn 時にチケットをキャプチャ。apply_focus_probe 完了時に epoch/hwnd を照合し
+        // stale な観測を棄却する（ADR-106 決定3）。
         let ticket = crate::state::probe_admission::ImmLikeTicket {
-            focus_epoch: self.platform_state.focus.focus_epoch,
+            fence: self.focus_fence(),
         };
 
         win32_async::spawn_local(async move {
@@ -447,10 +450,15 @@ impl Runtime {
             self.platform_state.gate.idle_conv_check_in_flight_since_ms = Some(now_ms_for_gate);
         }
 
-        // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch 照合し
-        // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型）。
+        // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch/hwnd を照合し
+        // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型、
+        // ADR-106 決定3）。`accepted.fence`（decision3）を decision4 の
+        // `ConvModeMgr::observe()` monotonic guard にもそのまま使う——`ImmLikeTicket` は
+        // 元々 epoch のみを追跡していたため、同一プロセス内でウィンドウだけが変わる
+        // ケース（`focus_epoch` はプロセス変更でのみ進む）を捕まえるために ImmLikeTicket
+        // 自体に hwnd を持たせた。
         let ticket = crate::state::probe_admission::ImmLikeTicket {
-            focus_epoch: self.platform_state.focus.focus_epoch,
+            fence: self.focus_fence(),
         };
         // BUG-34 横展開 Step0-a: 自己出力の再検証を conv_mutation_seq のビット一致に
         // 一本化する（旧 output_in_flight_ms ベースの last_send 比較は
@@ -479,11 +487,12 @@ impl Runtime {
                     app,
                     ticket,
                     "[idle-conv-check] epoch rejected (focus changed since read spawn)",
-                    |app, _accepted| {
+                    |app, accepted| {
                         app.apply_idle_conv_check(
                             conv,
                             conv_mutation_seq_at_spawn,
                             explicit_action_ms_at_spawn,
+                            accepted.fence,
                         );
                     },
                 );
@@ -536,6 +545,7 @@ impl Runtime {
         conv: u32,
         conv_mutation_seq_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
+        spawn_fence: crate::state::probe_admission::FocusFence,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
         if self.platform_state.gate.shift_conv_guard_pending
@@ -609,7 +619,17 @@ impl Runtime {
 
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        let conv_mode_changed = self.platform.output.conv_mode.update_from_conv(conv);
+        // ADR-106 決定4: 観測は spawn 時点の fence（epoch/hwnd）を運び、現在の値と
+        // 異なれば（フォーカスが変わっていれば）棄却される（monotonic guard）。
+        let conv_mode_changed = self.platform.output.conv_mode.observe(
+            crate::state::conv_mode::ConvObservation {
+                mode: awase::engine::ConvMode::from_u32(conv),
+                read_at: now_tick,
+                fence: spawn_fence,
+                source: crate::state::conv_mode::ConvReadSource::IdleCheck,
+            },
+            self.focus_fence(),
+        );
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
@@ -623,7 +643,7 @@ impl Runtime {
         // AssumedRomaji { ImmBridgeBroken } に回復する。
         //
         // `conv`（この tick で読んだ生値）ではなく `ConvModeMgr::get()`（直前の
-        // `update_from_conv` 済みのデバウンス確定値）を渡す。BUG-19: `conv` を直接
+        // `observe()` 済みのデバウンス確定値）を渡す。BUG-19: `conv` を直接
         // 渡すと、`GetForegroundWindow` 基準の読み取りが候補ウィンドウ等から一発だけ
         // 誤ったカタカナ conv を拾った際、warmup 側（ConvModeMgr 消費）は保護されても
         // こちら（belief 更新・engine 同期）は無防備なままになる。
@@ -1911,22 +1931,6 @@ const fn compute_focus_probe_grace(
     }
 }
 
-impl Runtime {
-    fn apply_effective_ime(
-        &mut self,
-        effective: bool,
-        tick_ms: crate::state::TickMs,
-        accepted: crate::state::probe_admission::AcceptedObservation,
-    ) {
-        if effective {
-            self.platform_state.ime.reset_detect_state();
-        }
-        self.platform_state
-            .ime
-            .write_focus_probe(effective, tick_ms, accepted);
-    }
-}
-
 #[expect(clippy::option_if_let_else)]
 fn build_ime_on_suffix(
     probe_ime_on: Option<bool>,
@@ -1951,14 +1955,19 @@ fn build_ime_on_suffix(
     }
 }
 
-fn sanitize_focus_probe_open_status(
-    probe_ime_on: Option<bool>,
-    current_profile: crate::focus::class_names::AppImeProfile,
-) -> Option<bool> {
-    if current_profile.can_read_imm32_open_status() {
-        probe_ime_on
-    } else {
-        None
+impl Runtime {
+    /// FocusProbe 系の guard 解除（`reset_detect_state`）を条件付きで呼ぶ共通ヘルパー。
+    ///
+    /// `plan_focus_probe` の `Record`/`NotObservable` アーム（ADR-106 決定2、BUG-92）
+    /// はどちらも「effective open とみなせるなら guard を解除する」という同じ
+    /// パターンを持つが、条件式自体は異なる（前者は観測値 `effective.get()`、
+    /// 後者は観測できないため shadow 値 `probe.is_japanese_ime && shadow_on`）
+    /// ため、呼び出し側（`plan_focus_probe`）で条件を評価してから `release_guard`
+    /// として渡す（PR 109 コードレビュー指摘3）。
+    fn release_detect_state_guard_if(&mut self, should_reset: bool) {
+        if should_reset {
+            self.platform_state.ime.reset_detect_state();
+        }
     }
 }
 
@@ -2002,7 +2011,15 @@ impl Runtime {
         }
 
         let current_profile = self.platform.current_app_profile();
-        let probe_ime_on = sanitize_focus_probe_open_status(probe.ime_on, current_profile);
+        // ADR-106 決定2: 観測できない状況（TsfNative/Imm32Unavailable、または probe 自体が
+        // ime_on=None を返した場合）を bool へ潰さず型で運ぶ。`probe_ime_on` はログ表示
+        // 専用の派生値であり、書き込み経路には使わない（下の match が Read/NotObservable
+        // で完全に分岐する）。
+        let status = FocusProbeOpenStatus::classify(probe.ime_on, current_profile);
+        let probe_ime_on: Option<bool> = match status {
+            FocusProbeOpenStatus::Read(v) => Some(v.get()),
+            FocusProbeOpenStatus::NotObservable(_) => None,
+        };
         if probe.ime_on.is_some() && probe_ime_on.is_none() {
             log::debug!(
                 "FocusProbe: profile={current_profile:?} は IMM32 open status 非対応のため \
@@ -2012,24 +2029,41 @@ impl Runtime {
         }
 
         // TsfNative/Imm32Unavailable では open status を信用しない。
-        // この場合は shadow の apply 値を代替観測として記録し drift 追跡を維持する。
-        let used_shadow_fallback = probe_ime_on.is_none() && probe.is_japanese_ime;
+        let used_shadow_fallback =
+            matches!(status, FocusProbeOpenStatus::NotObservable(_)) && probe.is_japanese_ime;
 
-        let suppressed_reason: Option<&'static str> = if let Some(on) = probe_ime_on {
-            let effective = on && probe.is_japanese_ime;
-            if !effective && signals.any() {
-                Some(signals.primary_reason())
-            } else {
-                self.apply_effective_ime(effective, now_tick_ms, accepted);
+        // PR 109 コードレビュー指摘3: 決定ロジックは `state::focus_probe_plan::
+        // plan_focus_probe`（挙動不変抽出、Linux で全数テスト済み）へ切り出した。
+        // ここは決定結果（`FocusProbeEffect`）を見て実際に書き込むだけの薄い
+        // インタプリタ。NotObservable アームの背景（ADR-106 決定2、BUG-92:
+        // shadow fallback の observation laundering を型で閉じた話）は
+        // `plan_focus_probe`/`focus_probe_plan.rs` 側のドキュメントを参照。
+        let suppressed_reason: Option<&'static str> = match plan_focus_probe(
+            status,
+            probe.is_japanese_ime,
+            signals.any(),
+            signals.primary_reason(),
+            shadow_on,
+        ) {
+            FocusProbeEffect::Record {
+                effective,
+                release_guard,
+            } => {
+                self.release_detect_state_guard_if(release_guard);
+                self.platform_state
+                    .ime
+                    .write_focus_probe(effective, now_tick_ms, accepted);
                 None
             }
-        } else {
-            // TsfNative/Imm32Unavailable: IMM32 非対応のため probe は常に None を返す。
-            // shadow の apply 値を代替観測として focus_probe スロットに記録する。
-            if probe.is_japanese_ime {
-                self.apply_effective_ime(shadow_on, now_tick_ms, accepted);
+            FocusProbeEffect::Suppressed { reason } => Some(reason),
+            FocusProbeEffect::NotObservable { release_guard } => {
+                // TsfNative/Imm32Unavailable: IMM32 非対応のため観測できない
+                // （ADR-106 決定2、BUG-92: shadow fallback の observation
+                // laundering を型で閉じた話。決定ロジック自体は
+                // `state::focus_probe_plan::plan_focus_probe` 側を参照）。
+                self.release_detect_state_guard_if(release_guard);
+                None
             }
-            None
         };
 
         // TsfNative フォーカス復帰時: conv mode を読んで ConvModeMgr（warmup 用）と
@@ -2069,7 +2103,20 @@ impl Runtime {
                     if let Some(conv) =
                         unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
                     {
-                        self.platform.output.conv_mode.update_from_conv(conv);
+                        // ADR-106 決定4: この読み取りは完全に同期（await 点無し）なので、
+                        // 観測の fence（= FocusProbe admission 済みの accepted.fence、
+                        // ADR-106 決定3）は「現在」と常に一致する——将来
+                        // focus-conv-check を非同期化する際も、observe() の
+                        // monotonic guard がそのまま効くようにするための前提工事。
+                        self.platform.output.conv_mode.observe(
+                            crate::state::conv_mode::ConvObservation {
+                                mode: awase::engine::ConvMode::from_u32(conv),
+                                read_at: now_tick_ms,
+                                fence: accepted.fence,
+                                source: crate::state::conv_mode::ConvReadSource::FocusCheck,
+                            },
+                            accepted.fence,
+                        );
                         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                         log::debug!(
                             "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
@@ -2084,21 +2131,22 @@ impl Runtime {
             }
         }
 
-        // ImmCross アプリ（Qt/LINE 等）: FocusProbe は top-level hwnd の IMC を読むが、
+        // ImmCross アプリ（Qt/LINE 等）: FocusProbe は hwndFocus（真の top-level
+        // ウィンドウとは限らない、BUG-91 参照）の IMC を読むが、
         // GJI 使用時は child hwnd と IME 状態が異なる場合がある（Qt の IME コンテキスト分割）。
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
         // これにより FocusProbe (Low) が誤って false を返しても derive_any() で正しく上書きされる。
         //
-        // エポック照合: FocusProbe の admit() 済み epoch を引き継ぐ。
-        // apply_focus_probe の呼び出し前に epoch チェックを通過しているため
-        // accepted.focus_epoch は現在の epoch と等しいことが保証済み。
+        // エポック/hwnd 照合: FocusProbe の admit() 済み値を引き継ぐ（ADR-106 決定3）。
+        // apply_focus_probe の呼び出し前に admission を通過しているため
+        // accepted.fence は現在の値と等しいことが保証済み。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime
         {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
-                focus_epoch: accepted.focus_epoch,
+                fence: accepted.fence,
             };
             win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
@@ -2244,8 +2292,8 @@ impl Runtime {
                 "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
             ),
             None if used_shadow_fallback => log::debug!(
-                "FocusProbe: TsfNative/Imm32Unavailable — shadow 値 {shadow_on} を代替観測として記録 \
-                 [probe_age={probe_age_ms}ms]"
+                "FocusProbe: TsfNative/Imm32Unavailable — 観測不能のため記録は行わず、shadow 値 \
+                 {shadow_on} を guard 解除判定にのみ使用 [probe_age={probe_age_ms}ms]"
             ),
             None if probe.ime_on.is_none() => log::warn!(
                 "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} \
@@ -2257,31 +2305,45 @@ impl Runtime {
 }
 
 #[cfg(test)]
+// `FocusProbeOpenStatus::classify` の分岐固定のみ。`classify` 後の副作用（何を
+// 記録し、いつ guard を解除するか）は `state::focus_probe_plan::plan_focus_probe`
+// 側が担当し、そちらの7テストで固定している（PR 109 コードレビュー指摘3）。
 mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
 
     #[test]
-    fn focus_probe_open_status_is_ignored_for_imm32_unavailable() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Imm32Unavailable),
-            None
-        );
+    fn focus_probe_open_status_is_not_observable_for_imm32_unavailable() {
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(Some(false), AppImeProfile::Imm32Unavailable),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::Imm32Unavailable)
+        ));
     }
 
     #[test]
-    fn focus_probe_open_status_is_ignored_for_tsf_native() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::TsfNative),
-            None
-        );
+    fn focus_probe_open_status_is_not_observable_for_tsf_native() {
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(Some(false), AppImeProfile::TsfNative),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::TsfNative)
+        ));
     }
 
     #[test]
-    fn focus_probe_open_status_is_kept_for_standard() {
-        assert_eq!(
-            sanitize_focus_probe_open_status(Some(false), AppImeProfile::Standard),
-            Some(false)
-        );
+    fn focus_probe_open_status_is_read_for_standard() {
+        let status = FocusProbeOpenStatus::classify(Some(false), AppImeProfile::Standard);
+        let FocusProbeOpenStatus::Read(value) = status else {
+            panic!("expected Read, got {status:?}");
+        };
+        assert!(!value.get());
+    }
+
+    #[test]
+    fn focus_probe_open_status_is_not_observable_when_probe_returns_none_even_for_standard() {
+        // Standard は can_read_imm32_open_status()==true だが、probe 自体が
+        // ime_on=None を返す（未フォーカス等）場合は NotObservable になる。
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::Standard)
+        ));
     }
 }

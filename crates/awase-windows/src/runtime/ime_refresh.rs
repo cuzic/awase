@@ -165,7 +165,7 @@ impl Runtime {
                     if let Some(v) = obs.observer_poll_value {
                         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
                         let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
-                            self.platform_state.focus.focus_epoch,
+                            self.focus_fence(),
                         );
                         self.platform_state
                             .ime
@@ -366,9 +366,8 @@ impl Runtime {
         {
             observer_out.new_input_mode = None;
         }
-        let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
-            self.platform_state.focus.focus_epoch,
-        );
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
         self.platform_state
             .ime
             .apply_ime_update(&observer_out, tick_ms, accepted);

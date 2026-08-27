@@ -21,7 +21,7 @@ use super::TickMs;
 ///
 /// 実際の `HWND` は raw pointer を含むため Send/Sync ではない。
 /// event log でクロススレッド伝搬される可能性があるため、ここでは値だけ保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize)]
 pub struct HwndId(pub usize);
 
 impl HwndId {
@@ -136,7 +136,8 @@ pub enum ObservationSource {
     ///
     /// Qt/LINE 等の ImmCross アプリで、フォーカス直後に `GetGUIThreadInfo.hwndFocus`
     /// （子 hwnd）の IMM32 状態を `read_ime_state_full_async` で読む高信頼ソース。
-    /// `FocusProbe` が top-level hwnd の IMC を読む（Low）のと対になる。
+    /// `FocusProbe` が（同じく `hwndFocus`、真の top-level ウィンドウとは限らない
+    /// ——BUG-91 参照）IMC を読む（Low）のと対になる。
     ImmCrossProbe,
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///
@@ -389,17 +390,20 @@ pub enum ImeEvent {
     /// 「IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる」判断に使う。
     ImeApplyRequested {
         target: bool,
-        generation: u64,
+        generation: super::ApplyGeneration,
         ctrl_held: bool,
     },
 
     /// OS への適用が成功した (async 完了時、generation 照合必須)
-    ImeApplySucceeded { target: bool, generation: u64 },
+    ImeApplySucceeded {
+        target: bool,
+        generation: super::ApplyGeneration,
+    },
 
     /// OS への適用が失敗した
     ImeApplyFailed {
         target: bool,
-        generation: u64,
+        generation: super::ApplyGeneration,
         error: ApplyError,
     },
 
@@ -419,9 +423,24 @@ pub enum ImeEvent {
         to: HwndId,
         profile: ImePolicyProfile,
         /// インクリメント後のフォーカスエポック。
-        /// reducer が `ObservationStore::current_focus_epoch` を更新するために使う。
+        /// reducer が `ObservationStore::current_fence`（`clear_on_focus_change`
+        /// 経由）を更新するために使う。
         focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
+
+    /// 同一プロセス内でフォーカス hwnd だけが変わった（ADR-106 決定3）。
+    ///
+    /// `FocusChanged`（プロセス変更、epoch インクリメント + 観測プールクリア）とは
+    /// 別のイベント。`focus_epoch` はプロセス変更でのみ進むため、`AppKind`
+    /// (`TsfNative`⇔`Uwp` 等) 往復のような同一プロセス内のウィンドウ切り替えは
+    /// `FocusChanged` を経由しない。この場合でも `ImmLikeTicket::admit()` が照合する
+    /// 生の hwnd（`platform.focus.current.hwnd`）は毎 tick 追従するため、reducer 側の
+    /// `ObservationStore::current_fence`（`update_focus_window` 経由）もこのイベントで
+    /// 追従させないと、
+    /// `derive_any()` の `is_identity_ok` が古い hwnd と比較し続け、以後の
+    /// `ImmCrossProbe`/`FocusProbe` 観測を次のプロセス変更まで恒久的に拒否する
+    /// （code review 2026-08-26 で発見された退行）。
+    FocusHwndUpdated { hwnd: HwndId },
 
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
@@ -480,7 +499,7 @@ impl ImeEvent {
     pub const fn from_apply_outcome(
         target: bool,
         outcome: awase::platform::ImeOpenOutcome,
-        generation: u64,
+        generation: super::ApplyGeneration,
     ) -> Self {
         use awase::platform::ImeOpenOutcome;
         match outcome {

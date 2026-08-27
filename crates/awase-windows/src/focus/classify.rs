@@ -189,6 +189,22 @@ pub fn get_window_process_id(hwnd: HWND) -> u32 {
     pid
 }
 
+/// `hwnd` の top-level 祖先ウィンドウの hwnd を返す（`GetAncestor(hwnd, GA_ROOT)`）。
+///
+/// PR 109 コードレビュー指摘1 Step1: `CurrentFocus::hwnd` はフォーカス中コントロール
+/// （`hwndFocus` 等）であり、必ずしも top-level ウィンドウとは限らない。この値は
+/// 計測専用（`docs/known-bugs.md` 参照）であり、ADR-106 決定3 の判定ロジックには
+/// 使わない。
+#[must_use]
+pub fn root_hwnd_of(hwnd: usize) -> usize {
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
+
+    // SAFETY: hwnd は呼出元から渡された値。GetAncestor は無効な hwnd でも
+    //         安全に NULL を返す Win32 API。
+    let root = unsafe { GetAncestor(HWND(hwnd as *mut _), GA_ROOT) };
+    root.0 as usize
+}
+
 /// プロセス ID から実行ファイル名を取得する
 #[must_use]
 pub fn get_process_name(process_id: u32) -> String {

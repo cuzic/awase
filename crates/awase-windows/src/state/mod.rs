@@ -40,6 +40,13 @@ pub(crate) use conv_mode::{ConvActuationOutcome, ConvModeTarget, ConvMutationRea
 // テストが実行されるまで発見されなかったことの再発防止として、hook.rs から移設。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod alt_impersonation;
+// ADR-106 決定1: `ApplyGeneration` 専用アロケータ。`ImeEventLog.next_seq` から
+// 独立させ、fence 用の識別子が別目的の数を借用する問題（原因A）を解消する。
+// ungated（Linux で `allocate()` の単調増加・折り返し・wire エンコード往復を
+// 全数テストするため）。`ImeEvent`/`ImeTransition`（ungated）が `ApplyGeneration`
+// を保持するため非 Windows でも使用される。
+pub mod generation;
+pub use generation::{ApplyGeneration, GenerationAllocator};
 pub mod app_ime_policy;
 // hook.rs (#[cfg(windows)]) の唯一の呼び出し元。alt_impersonation と同じ
 // 「純粋判定を Linux でテストできるようにする」移設パターン。
@@ -104,6 +111,13 @@ pub mod observation_store;
 pub(crate) mod post_bypass;
 pub mod probe_admission;
 pub(crate) mod scoped_latch;
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
+// runtime/key_pipeline.rs の apply_focus_probe は #[cfg(windows)] のため非 Windows
+// では未使用になる。PR 109 コードレビュー指摘3: apply_focus_probe/apply_effective_ime
+// に埋め込まれていた match status {...} の決定ロジックを純粋関数として抽出し、
+// Linux で全数テストできるようにした。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod focus_probe_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────

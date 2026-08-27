@@ -196,7 +196,7 @@ pub struct Output {
     pub(crate) injection_mode: InjectionMode,
     /// IME 変換モード管理コンポーネント。
     ///
-    /// `kp_stage_idle_conv_check` が `update_from_conv` で更新し、
+    /// `kp_stage_idle_conv_check` が `observe()` で更新し、
     /// `cold_warmup` と `transmit_tsf` が warmup VK と `ImmSetConversionStatus` 目標値の選択に使う。
     pub(crate) conv_mode: crate::state::ConvModeMgr,
     /// IME 入力モード belief（Off / Hiragana / Katakana / Unknown）。
