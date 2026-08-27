@@ -783,38 +783,23 @@ impl AppConfig {
                     .eq_ignore_ascii_case(canonical_thumb_key_name(thumb_key))
         }
 
-        fn warn_for_field(
-            field: &str,
-            combos: &[String],
-            thumb_key: &str,
-            thumb_label: &str,
-            w: &mut Vec<String>,
-        ) {
+        fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
             if combos
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
                 w.push(format!(
-                    "{field} に親指キー（{thumb_label}）が修飾キーなしで設定されています。\
+                    "{field} に親指キー（{thumb_key}）が修飾キーなしで設定されています。\
                      IME が ON の間は同時打鍵判定を優先するため、このキーは IME ON/OFF \
                      コンボには使われません。"
                 ));
             }
         }
 
-        for (thumb_key, thumb_label) in [
-            (&g.left_thumb_key, g.left_thumb_key.as_str()),
-            (&g.right_thumb_key, g.right_thumb_key.as_str()),
-        ] {
-            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, thumb_label, w);
-            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, thumb_label, w);
-            warn_for_field(
-                "keys.ime_toggle",
-                &keys.ime_toggle,
-                thumb_key,
-                thumb_label,
-                w,
-            );
+        for thumb_key in [g.left_thumb_key.as_str(), g.right_thumb_key.as_str()] {
+            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, w);
+            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, w);
+            warn_for_field("keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
         }
     }
 

@@ -5720,6 +5720,10 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
+            // VK_CONVERT はここでは使わない: classify_test_key で RightThumb に
+            // 分類され、engine活性中はbare-thumbガード(is_bare_thumb)で抑制される。
+            // Passthrough分類のVK_F21を使い、このテスト本来の目的(特殊キーコンボの
+            // ディスパッチ)を保つ。
             vk: VK_F21,
         };
         let special = SpecialKeyCombos {
@@ -5829,6 +5833,10 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
+            // VK_CONVERT はここでは使わない: classify_test_key で RightThumb に
+            // 分類され、engine活性中はbare-thumbガード(is_bare_thumb)で抑制される。
+            // Passthrough分類のVK_F21を使い、このテスト本来の目的(特殊キーコンボの
+            // ディスパッチ)を保つ。
             vk: VK_F21,
         };
         let special = SpecialKeyCombos {
@@ -5973,6 +5981,96 @@ mod engine_integration_tests {
             e,
             Effect::Ime(ImeEffect::SetOpen { open: true, .. })
         )));
+    }
+
+    /// 【bare-thumbガード回帰テスト、旧P-9】`match_event`内だけにガードを
+    /// 置くと`.or_else()`で連結される自動検出リスト（`ime_on_auto`）を
+    /// 素通りしてしまう。`match_special_keys`レベルで一括適用した
+    /// `is_bare_thumb`ガードが、手動リストだけでなく自動検出リストにも
+    /// 効いていることを固定する。engine活性中は無変換+Aがチョードとして
+    /// 解決され、`ime_on_auto`にVK_NONCONVERTが入っていても`SetOpen`は
+    /// 出ない。
+    #[test]
+    fn bare_thumb_ime_on_auto_combo_is_suppressed_while_engine_active() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_on_auto_keys(vec![combo]);
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+
+        assert!(d1.is_consumed());
+        assert!(d2.is_consumed());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            )),
+            "bare 無変換+A should be handled as a left-thumb chord even with ime_on_auto set, got {:?}",
+            effects_of(&d2)
+        );
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "auto ime_on list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
+    }
+
+    /// 上記の`ime_off_auto`版。engine活性中はチョード判定を優先し、
+    /// `ime_off_auto`にbare親指キーが入っていても`SetOpen`は出ない。
+    #[test]
+    fn bare_thumb_ime_off_auto_combo_is_suppressed_while_engine_active() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_off_auto_keys(vec![combo]);
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "auto ime_off list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
+    }
+
+    /// 上記の`ime_toggle_auto`版。
+    #[test]
+    fn bare_thumb_ime_toggle_auto_combo_is_suppressed_while_engine_active() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let mut engine = make_engine_with_special(empty_special_keys());
+        engine.set_ime_toggle_auto_keys(vec![combo]);
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "auto ime_toggle list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
     }
 
     /// 手動設定（`keys.ime_off`）が空でも、自動検出リスト（`ime_off_auto`）が
@@ -6545,6 +6643,10 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
+            // VK_CONVERT はここでは使わない: classify_test_key で RightThumb に
+            // 分類され、engine活性中はbare-thumbガード(is_bare_thumb)で抑制される。
+            // Passthrough分類のVK_F21を使い、このテスト本来の目的(特殊キーコンボの
+            // ディスパッチ)を保つ。
             vk: VK_F21,
         };
         let special = SpecialKeyCombos {
@@ -7459,6 +7561,10 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
+            // VK_CONVERT はここでは使わない: classify_test_key で RightThumb に
+            // 分類され、engine活性中はbare-thumbガード(is_bare_thumb)で抑制される。
+            // Passthrough分類のVK_F21を使い、このテスト本来の目的(特殊キーコンボの
+            // ディスパッチ)を保つ。
             vk: VK_F21,
         };
         let special = SpecialKeyCombos {
