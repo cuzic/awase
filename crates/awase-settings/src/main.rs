@@ -25,7 +25,12 @@ enum Tab {
     Basic,
     Keys,
     Keymap,
+    DisableApps,
     // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
+    // disable_apps 部分のみ `DisableApps` タブへ切り出し済み（2026-08-26、
+    // BUG-88）。残る force_text/force_bypass/force_vk/force_tsf は
+    // プロセス名+クラス名の両方が必要な、より高度な上書き設定のため
+    // 引き続き非表示（config.toml の直接編集に委ねる）。
     #[allow(dead_code)]
     AppRules,
     Layout,
@@ -1591,8 +1596,13 @@ impl SettingsApp {
         }
     }
 
-    #[expect(clippy::too_many_lines)]
-    fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
+    /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
+    /// 設定のため、`tab_app_rules`（force_text/force_bypass/force_vk/force_tsf、
+    /// プロセス名+クラス名の両方が必要でGUI化を見送っている）とは切り離して
+    /// 常時表示する（2026-08-26、BUG-88: PowerToys Mouse Without Borders 使用中
+    /// に物理「英数」キーが効かない不具合の回避策としてユーザーが自分で
+    /// `disable_apps` に中継ウィンドウのプロセス名を追加できるようにする）。
+    fn tab_disable_apps(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリを無効化");
         ui.label(
             "指定したアプリにフォーカスがある間、awase を丸ごと無効化します（force_bypass より強く、\n\
@@ -1609,8 +1619,10 @@ impl SettingsApp {
             &mut self.config.app_overrides.disable_apps,
             &mut self.new_disable_app,
         );
+    }
 
-        ui.separator();
+    #[expect(clippy::too_many_lines)]
+    fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリ別オーバーライド");
         ui.label(
             "特定アプリでの awase の挙動を上書きします。\n\
@@ -2291,21 +2303,28 @@ impl eframe::App for SettingsApp {
             .default_width(100.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                // 「アプリ別」(AppRules) は高度な機能のため GUI 化を見送り、
-                // config.toml の直接編集（app_overrides / post_bypass）に委ねている。
-                // tab_app_rules の実装自体は残してある。
+                // 「アプリ別」(AppRules) は高度な機能（force_text/force_bypass/
+                // force_vk/force_tsf、プロセス名+クラス名の両方が必要）のため
+                // GUI 化を見送り、config.toml の直接編集に委ねている。
+                // tab_app_rules の実装自体は残してある。disable_apps 部分だけは
+                // プロセス名のみで完結する単純な設定のため、2026-08-26（BUG-88）
+                // に「アプリ無効化」タブとして切り出して表示するようにした。
                 //
                 // 「配列編集」(Layout) は 2026-07-06 に「配列プレビューの実装が
                 // まだ固まっていない」として一旦非表示にしていたが、layouts_dir の
                 // パス解決バグ修正を経て再表示した。その後、独立バイナリだった
                 // awase-yab-editor を統合し、プレビューではなく実際に編集できる
                 // タブにした（バイナリを分ける価値は無いという判断）。
+                // タブ順序は使用頻度順（2026-08-26 見直し）: 基本設定・キー設定・
+                // 配列編集・詳細設定を先に置き、日常的に触らない「アプリ無効化」
+                // 「ショートカット」を末尾にまとめる。
                 for (tab, label) in [
                     (Tab::Basic, "基本設定"),
                     (Tab::Keys, "キー設定"),
-                    (Tab::Keymap, "ショートカット"),
                     (Tab::Layout, "配列編集"),
                     (Tab::Advanced, "詳細設定"),
+                    (Tab::DisableApps, "アプリ無効化"),
+                    (Tab::Keymap, "ショートカット"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
                         self.active_tab = tab;
@@ -2349,6 +2368,7 @@ impl eframe::App for SettingsApp {
                     Tab::Basic => self.tab_basic(ui),
                     Tab::Keys => self.tab_keys(ui),
                     Tab::Keymap => self.tab_keymap(ui),
+                    Tab::DisableApps => self.tab_disable_apps(ui),
                     Tab::AppRules => self.tab_app_rules(ui),
                     Tab::Layout => self.tab_layout(ui),
                     Tab::Advanced => self.tab_advanced(ui),
@@ -3592,9 +3612,11 @@ mod layout_tab_repro {
         });
     }
 
-    /// `tab_basic`/`tab_keymap`/`tab_app_rules`/`tab_advanced` がパニックしない
-    /// ことを固定する（2026-08-15、ホバーヒント拡充で全タブに手を入れたため
-    /// 追加。`full_tab_layout_render_with_real_config_does_not_panic` と同じ
+    /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/`tab_app_rules`/
+    /// `tab_advanced` がパニックしないことを固定する（2026-08-15、ホバー
+    /// ヒント拡充で全タブに手を入れたため追加。`tab_disable_apps` は
+    /// 2026-08-26 BUG-88 で `tab_app_rules` から切り出した際に追加。
+    /// `full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
     /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/
     /// `main_key_combo_optional` を含む行）も描画させる。
@@ -3629,6 +3651,11 @@ mod layout_tab_repro {
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
             eframe::egui::CentralPanel::default().show(ctx, |ui| {
                 app.tab_keymap(ui);
+            });
+        });
+        let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+            eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                app.tab_disable_apps(ui);
             });
         });
         let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {

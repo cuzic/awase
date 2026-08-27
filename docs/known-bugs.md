@@ -10870,4 +10870,18 @@ Imm32Unavailable/TsfNative（imm32-off）・F2 専用分岐（tsf-f2）・Allow 
 には全く効かないため候補から外した）。ユーザーに `dbe_mode_key_policy =
 "passthrough"` を試してもらい、BUG-52 のリスク（実 IME がネイティブ効果を
 能動的に適用してしまう）を許容できるか含めて次回セッションで検証すること。
-`docs/bug-reports-triage.md` に report_id 2件を記録。
+
+**ユーザー向け回避策（実装済み、根本原因の修正ではない）:** 設定画面
+（awase-settings）に「アプリ無効化」タブを新設し、`app_overrides.
+disable_apps`（フォーカス中のプロセスで awase を丸ごと無効化する既存機構、
+BUG-78で`mstsc.exe`に導入済み）をGUIから編集できるようにした
+（`tab_disable_apps`、`Tab::DisableApps`）。ユーザーが
+`powertoys.mousewithoutbordershelper.exe` を自分の判断で追加すれば、
+その中継ウィンドウにフォーカスがある間は awase が完全にパススルーになり
+「英数/かなキーが効かない」症状を回避できる。ただし report1 で確認した
+通りこの中継ウィンドウでは親指シフト入力も同時に無効化されるため
+（その入力がMWB経由でリモート側へ正しく届いていたかは実際には未検証、
+上記の仮説参照）、**既定では追加しない**（`default_disable_apps()`は
+`mstsc.exe`のままで変更していない）。あくまでオプトインの回避策であり、
+根本原因の特定・修正は引き続き未対応。`docs/bug-reports-triage.md` に
+report_id 2件を記録。
