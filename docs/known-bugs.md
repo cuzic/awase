@@ -11681,7 +11681,6 @@ Windows 実機ソークができないため、**実機で `hwnd_mismatch_same_r
 （`handle_wm_dump_journal`）。関連: BUG-18（AppKind Uwp 往復での文字欠落、
 `GA_ROOT` のプロセス越えリスクが近縁）、
 [ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定3。
-
 ---
 
 ## BUG-93: MS-IME の無変換単独タップ delegate が変換中 composition を破棄する
@@ -11717,3 +11716,38 @@ raw `VK_NONCONVERT` も送出されないことを固定した。
 
 **修正履歴:**
 - 本修正コミット: `delegate_to_open_axis` の composing ガード追加と T-10 追加。
+
+---
+
+## BUG-94: 親指キーを無変換/変換に選び直すと設定画面のドロップダウンが消える
+
+**症状:** awase-settings のキー設定タブで、左親指/右親指キーのドロップダウンから
+「無変換」または「変換」を選び直すと、その下に表示されるはずの「無変換キー
+単独タップ」「変換キー単独タップ」の設定（常に送出する/常に無視する 等の
+ドロップダウン）が表示されなくなる。GitHub issue #99、タスクトレイの不具合報告
+機能経由の report `01M10SA5K7J4HZ3C5R1BF6K2QK`（2026-08-27T04:54:04Z、
+app_version 1.16.1）で報告された。実際のキー入力動作（親指シフト判定・IME制御）
+は壊れておらず、設定画面の表示条件のみが影響を受ける。
+
+**原因:** `crates/awase-settings/src/main.rs` 内で、`left_thumb_key`/
+`right_thumb_key` の内部表現が2種類混在していた。
+
+- `src/config.rs` のデフォルト値は漢字表記 `"無変換"`/`"変換"` そのもの。
+- 一方、GUI のドロップダウン（`THUMB_KEY_OPTIONS`、`main.rs`）で選択すると、
+  その内部表記 `"VK_NONCONVERT"`/`"VK_CONVERT"` が書き込まれる。
+- しかし「無変換キー単独タップ」「変換キー単独タップ」ブロックの表示条件
+  （`main.rs`）は `left_thumb_key == "無変換"` / `== "変換"` という**漢字表記との
+  リテラル比較のみ**で、`"VK_NONCONVERT"`/`"VK_CONVERT"` を考慮していなかった。
+
+初期状態（デフォルト値 `"無変換"`）ではブロックが表示されるが、ユーザーが
+ドロップダウンで値を選択し直す（同じ「無変換」を選び直した場合を含む）と
+`"VK_NONCONVERT"` に書き換わり、以後は条件が一致せずブロックが消える。
+
+**修正:** 表示条件を判定する `is_muhenkan_thumb_key`/`is_henkan_thumb_key`
+ヘルパーを新設し、漢字表記・VK表記の両方を受理するようにした。回帰テスト
+（`thumb_key_display_condition_tests`）を追加。`.claude/rules/fix-requires-evidence.md`
+の再発ファミリー表（warmup/focus/belief/conv/キー選択/force-write）には
+該当しない（IME制御には影響しないGUI表示ロジックのみのバグのため）。
+
+**関連ファイル:** `crates/awase-settings/src/main.rs`
+（`is_muhenkan_thumb_key`/`is_henkan_thumb_key`、`THUMB_KEY_OPTIONS`）。

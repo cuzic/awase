@@ -8,6 +8,7 @@ use awase::kana_table::KanaTable;
 use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
+use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
 mod startup_failure;
@@ -1295,8 +1296,8 @@ impl SettingsApp {
                 );
             });
         }
-        if self.config.general.left_thumb_key == "無変換"
-            || self.config.general.right_thumb_key == "無変換"
+        if is_muhenkan_thumb_key(&self.config.general.left_thumb_key)
+            || is_muhenkan_thumb_key(&self.config.general.right_thumb_key)
         {
             ui.indent("muhenkan_thumb_options", |ui| {
                 solo_tap_suppress_combo(
@@ -1319,8 +1320,8 @@ impl SettingsApp {
         // `gji_charset_popup.rs`）が主経路として機能し続けるため、通常の
         // 利用に支障はない。無変換キー単独タップのすぐ下に変換キー単独
         // タップが並ぶよう、この節を撤去した分だけ表示順も詰まる。
-        if self.config.general.left_thumb_key == "変換"
-            || self.config.general.right_thumb_key == "変換"
+        if is_henkan_thumb_key(&self.config.general.left_thumb_key)
+            || is_henkan_thumb_key(&self.config.general.right_thumb_key)
         {
             ui.indent("henkan_thumb_options", |ui| {
                 solo_tap_suppress_combo(
@@ -2811,6 +2812,29 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
     ("F20", "VK_F20"),
 ];
 
+/// `left_thumb_key`/`right_thumb_key` が無変換キーを指しているか。
+///
+/// `THUMB_KEY_OPTIONS` のドロップダウンで選択すると内部表記 `"VK_NONCONVERT"`
+/// が書き込まれるが、`config.rs` のデフォルト値は漢字表記 `"無変換"` のまま
+/// （表記が統一されていない）。無変換キー単独タップ設定の表示条件が漢字表記
+/// だけを見ていたため、ドロップダウンで選び直すと表示が消える不具合があった
+/// （GitHub issue #99、report `01M10SA5K7J4HZ3C5R1BF6K2QK`）。
+///
+/// 独自の別名リストを持たず、実際のキー入力解決に使われる
+/// `VkCodeExt::from_name`（`vk.rs`、`"VK_MUHENKAN"`/`"Nonconvert"` 等の
+/// 別名も含む）に解決させて比較する。文字列比較の一覧を二重管理すると、
+/// vk.rs 側に別名が追加されたときに表示条件だけ追従し忘れて同じ不具合が
+/// 再発するため（/code-review 指摘）。
+fn is_muhenkan_thumb_key(key: &str) -> bool {
+    VkCode::from_name(key) == Some(awase_windows::vk::VK_NONCONVERT)
+}
+
+/// `left_thumb_key`/`right_thumb_key` が変換キーを指しているか。
+/// [`is_muhenkan_thumb_key`] の変換キー版。
+fn is_henkan_thumb_key(key: &str) -> bool {
+    VkCode::from_name(key) == Some(awase_windows::vk::VK_CONVERT)
+}
+
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
 ///
 /// 内部表記 `"Left Alt"`/`"Right Alt"` は VK 名ではなく、`hook.rs::resolve_thumb_key`
@@ -2885,6 +2909,32 @@ mod ime_mode_key_options_tests {
                 "{internal} が THUMB_KEY_OPTIONS に漏れている"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod thumb_key_display_condition_tests {
+    use super::{is_henkan_thumb_key, is_muhenkan_thumb_key};
+
+    /// `config.rs` の初期デフォルト値（漢字表記）でも、`THUMB_KEY_OPTIONS`
+    /// ドロップダウン選択後の内部表記でも、無変換キー単独タップ設定の
+    /// 表示条件が一致すること（GitHub issue #99、report
+    /// `01M10SA5K7J4HZ3C5R1BF6K2QK` の回帰防止）。
+    #[test]
+    fn is_muhenkan_thumb_key_matches_both_representations() {
+        assert!(is_muhenkan_thumb_key("無変換"));
+        assert!(is_muhenkan_thumb_key("VK_NONCONVERT"));
+        assert!(!is_muhenkan_thumb_key("変換"));
+        assert!(!is_muhenkan_thumb_key("VK_CONVERT"));
+    }
+
+    /// 変換キー版。上記と対称。
+    #[test]
+    fn is_henkan_thumb_key_matches_both_representations() {
+        assert!(is_henkan_thumb_key("変換"));
+        assert!(is_henkan_thumb_key("VK_CONVERT"));
+        assert!(!is_henkan_thumb_key("無変換"));
+        assert!(!is_henkan_thumb_key("VK_NONCONVERT"));
     }
 }
 
