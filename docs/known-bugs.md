@@ -2865,6 +2865,122 @@ runtime/key_pipeline.rs`(`kp_shift_conv_guard_key_down`、次回実装対象)。
 
 ---
 
+**追補5（実機確認・2026-08-27、[ADR-107](adr/107-bug25-gji-half-width-alnum-entry.md)
+決定0 の2×2切り分け計測 + awase debug ログ調査）: 追補4 の真因記述を ADR-107 が
+訂正した内容を実機で裏付け、加えて新たな構造的欠陥（`SendInput` の KeyUp が
+awase 自身のフックに構造的に届かない）を発見した。**
+
+**背景:** ADR-107 は追補4 の「`dbe_mode_key_policy=Suppress` が真因」という
+記述が、awase 自身のマーカ付き注入（追補1・3 の `TSF_MARKER` 付き注入）には
+当てはまらないと `hook.rs::is_self_injected` のソース照合から指摘した
+（マーカ付き自己注入は `transport::plan` より前で `CallNextHookEx` に落ちる
+ため、構造的に Suppress され得ない）。この訂正を実機で検証するため、
+決定0 が指定する2×2計測（`--sendinput-marker=<none|ime_kanji>` ×
+`--sendinput-shift-held` を spike に追加、`RUST_LOG=debug` で awase を再起動
+してログを突き合わせた。
+
+**M1〜M3 の実機結果:**
+
+| # | marker | awase | shift-held | 結果 |
+|---|---|---|---|---|
+| M1 | `none` | 停止 | 無し | **成功**（追補4 経路6 の再確認） |
+| M2 | `none` | 起動 | 無し | **失敗**（ひらがなのまま。追補4 経路5 の再現、`dbe_mode_key_policy=Suppress` による） |
+| M3 | `ime_kanji` | 起動 | 無し | **成功**。2回連続の再試行でも正しくトグルした（ひらがな→英数→ひらがな） |
+
+M3 の成功は ADR-107 決定2（`IME_KANJI_MARKER` を使えば transport バイパス
+無しで足りる）を実機で裏付けた。M4（Shift 押下中）は下記の別発見のため
+未実施のまま保留。
+
+**新発見: `SendInput` の KeyUp がフックに構造的に届かない。** `RUST_LOG=debug`
+の awase ログを `[hook] IME-mode vk=0xF0` で grep したところ、M3 で2回送った
+マーカ付き（`extra=0x4B45594A`）注入はいずれも **KeyDown だけがログに現れ、
+対応する KeyUp が一度もログに現れなかった**:
+
+```
+[hook] IME-mode vk=0xF0 down self_injected=true injected=true scan=0x0 extra=0x4B45594A   ← 私たちの DOWN
+（対応する up が一切現れない）
+```
+
+DOWN と UP を同一 `SendInput` バッチで送る場合（`up_delay_ms=0`）と、別々の
+`SendInput` 呼び出しに分割し実時間 50ms を空ける場合（`--sendinput-up-delay-ms=50`、
+本追補のために spike へ追加）の両方で同じ結果になった——**タイミング/バッチ化は
+原因ではない。** `SendInput` 自体は毎回 `sent=1/1`（または `2/2`）を報告して
+おり、Windows 側では受理されている。ログに `vk=0xF0 up self_injected=false
+injected=false scan=0x70 extra=0x0` という行が数秒〜十数秒後に現れることは
+あったが、これは `self_injected=false`（外部由来）かつ `scan=0x70` の**無関係な
+別の物理キーイベント**であり、私たちの注入とは無関係と判断した（`imm32-off`
+の Suppress ログが直後に付随することからも、BUG-52 対策が正しく効いている
+実物理 DBE キーだと分かる）。
+
+**原因（推定、未確定）:** `VK_DBE_ALPHANUMERIC` は `wScan=0` を指定しても実
+物理キーに対応しないため、Windows の内部キー状態追跡（キーが「押されている」
+かどうかの管理）がこの VK に対して機能しておらず、対応する KeyUp イベントが
+低レベルフックチェーンへ配送される前に握り潰されている可能性が高い。
+
+**実害の評価:** モード切替（トグル）自体は毎回成功しており、KeyUp 欠落が
+トグルの成否には影響していないと見られる。ただし副作用として2点を観測した:
+
+1. **1文字目だけ全角英数になるレース**: M3 成功直後に続けて打鍵すると、
+   最初の1文字だけ全角英数（`FULL_ASCII`）になり、2文字目以降は正しく
+   半角英数（`HALF_ASCII`）になった。`VK_DBE_ALPHANUMERIC` のトグルは
+   `HIRAGANA`⇔`HALF_ASCII` のみを行うはずで `FULL_ASCII` を生成しない
+   （`session/session.cc::Session::ToggleAlphanumericMode`）ため、KeyUp
+   欠落による GJI 側のキー状態不整合が関与している可能性がある。
+   `--sendinput-up-delay-ms=50` で明示的に間隔を空けた再試行ではこの
+   レースは再現しなかった（1文字目から一貫して半角英数）——これ自体は
+   タイミング改善で緩和できる可能性を示唆するが、サンプル数が少なく
+   確定的な結論ではない。
+2. **連続注入時の不安定化**: M3 を3回連続で実行したところ、3回目で
+   「一瞬全角英数になった後 IME オフ・直接入力になる」という、単純な
+   トグルでは説明できない挙動が発生した。ログの `[shadow-toggle]`/
+   `[idle-conv-check]` 系の記録から、awase 自身の drift correction /
+   idle-conv-check（GJI の実際の conv モード変化を監視し補正動作を打つ
+   既存機構）が、短時間の連続トグルに反応して介入した可能性が高いと
+   推定している（ログの完全な相関分析までは未実施）。復旧は物理
+   `Ctrl+変換`/`Ctrl+Shift+変換` では効かず、GJI のタスクトレイアイコンを
+   直接操作して初めて復旧できた。
+
+**ADR-107 への影響:** 決定2（`IME_KANJI_MARKER` + synthetic Shift↑ 前置）は
+実機で有効性を確認できたが、**KeyUp 欠落という新しい制約**を設計に反映する
+必要がある。具体的には:
+
+- entry 直後、GJI 側のモード切替が実際に完了するまでの短い猶予
+  （settle 待ち）を置いてから最初の文字を送る設計が要る可能性がある
+  （既存の warmup/cold-start パターンと同種の対策）。
+- 短時間に連続してトグルを送らない（awase 自身の drift correction との
+  相互作用を避ける）よう、entry 呼び出し自体に最小間隔のガードを検討する
+  余地がある。
+- KeyUp 欠落の根本原因（Windows 側の内部状態追跡）を回避する代替手段
+  （例: `KEYEVENTF_SCANCODE` を併用する、非衝突な scan 値を敢えて使う等）
+  は BUG-15 追補7/BUG-25 追補1 の CapsLock 衝突の教訓と矛盾しない範囲で
+  今後検討する余地がある。
+
+**未解決の疑問（追加）:**
+
+- KeyUp が本当に「届いていない」のか、それとも「届いているがログの
+  `ImeKeyKind::from_vk` 判定を素通りする別 VK に化けている」のかは未確定
+  （`[hook] IME-mode` ログは `ime_key_kind.is_some()` の場合のみ発火するため、
+  未知の VK への変換があれば見えない）。
+- 「1文字目だけ全角英数」のレースが `--sendinput-up-delay-ms` で緩和される
+  かは、サンプル数を増やした再現実験が必要。
+- 連続注入時の不安定化が本当に drift correction / idle-conv-check由来かは、
+  ログの完全なタイムライン相関（`[shadow-toggle]`/`[warrant-shadow]`/
+  `[idle-conv-check]` 各行のシーケンス）を突き合わせるまで確定しない。
+- M4（Shift 押下中）は上記の発見のため今回未実施。ADR-107 原因B
+  （修飾キー文脈の欠落）の実機検証は依然として保留。
+
+**テスト:** 自動テスト不可（実機の awase/GJI/Windows Terminal 挙動に依存）。
+spike に `--sendinput-marker`/`--sendinput-shift-held`/`--sendinput-up-delay-ms`
+を追加し再利用可能な形で残置。`RUST_LOG=debug` での awase 再起動手順
+（`target/debug/awase.log`）は次回の実機検証でも同じ形で使えるよう記録した。
+
+**関連ファイル(追補5):** `crates/awase-windows/examples/
+spike_langbar_input_mode.rs`(`--sendinput-marker`/`--sendinput-shift-held`/
+`--sendinput-up-delay-ms` 追加)、`docs/adr/107-bug25-gji-half-width-alnum-entry.md`
+（決定0 の実機結果を受けた更新対象）。
+
+---
+
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
 
 **症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.
