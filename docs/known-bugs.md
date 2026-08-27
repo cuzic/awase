@@ -10919,7 +10919,7 @@ composition が事前にキャンセルされないため）。
 
 ---
 
-## BUG-90: PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、原因未確定）
+## BUG-90: PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、**クローズ**: disable_apps 登録で回避可能、既知の制約として記録）
 
 **症状（タスクトレイ不具合報告 2件、2026-08-26、同一ユーザーから19分差で連投）:**
 
@@ -11011,18 +11011,16 @@ suppress_reason`、`journal.rs::PhysicalDispositionSummary`）。既存の
 Imm32Unavailable/TsfNative（imm32-off）・F2 専用分岐（tsf-f2）・Allow の
 各 reason ラベルを固定した。
 
-**状態:** 未対応（原因未確定、2026-08-26）。診断ログ追加のみ developへマージ
-予定。次にユーザーが同症状を報告した際、新しい `physical` フィールドを
-含む journal で上記仮説の確認・反証を行うこと。有力な対策候補（未実装・
-未検証、次の担当者向けメモ）: **`dbe_mode_key_policy = "passthrough"`**
-（既存のユーザー向け隠し設定、ADR-091 §D3.6）に切り替えると
-`is_dbe_mode_key_down` の追加 Suppress 条件自体が無効化され、report2 の
-`imm32-off` 経路には効く可能性が高い（ImmCross の無条件 Suppress は
-`dbe_mode_key_policy` と無関係のため report1 の中継ウィンドウには効かない
-点に注意。「MWB をImmCross分類から外す」という対策は上記の通り report2
-には全く効かないため候補から外した）。ユーザーに `dbe_mode_key_policy =
-"passthrough"` を試してもらい、BUG-52 のリスク（実 IME がネイティブ効果を
-能動的に適用してしまう）を許容できるか含めて次回セッションで検証すること。
+**状態:** **クローズ（2026-08-26）。** 根本原因（GJI 稼働中は DBE モードキーが
+profile を問わず Suppress される設計、および MWB 自体が VK 再構成方式で DBE
+キーを正しく中継できていない可能性）は未確定のままだが、下記の
+「アプリ無効化」タブへの `powertoys.mousewithoutbordershelper.exe` 登録で
+症状を回避できることをユーザーが採用し、これで十分と判断したためクローズする。
+既知の制約（disable_apps 登録中はその中継ウィンドウで親指シフト入力自体も
+無効化される、上記「ユーザー向け回避策」参照）として本エントリに記録する。
+`dbe_mode_key_policy = "passthrough"` への切替検証は根本原因追及の選択肢として
+残すが、回避策で運用できているため優先度は下げる。再発・別症状の報告があれば
+再度原因未確定として扱う。
 
 **ユーザー向け回避策（実装済み、根本原因の修正ではない）:** 設定画面
 （awase-settings）に「アプリ無効化」タブを新設し、`app_overrides.
