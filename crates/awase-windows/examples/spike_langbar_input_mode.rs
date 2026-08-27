@@ -79,7 +79,7 @@ mod langbar_probe {
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
     use windows::Win32::UI::TextServices::{
-        CLSID_TF_InputProcessorProfiles, CLSID_TF_LangBarMgr,
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_LangBarItemMgr,
         ITfInputProcessorProfileActivationSink, ITfInputProcessorProfileActivationSink_Impl,
         ITfInputProcessorProfiles, ITfLangBarItem, ITfLangBarItemButton, ITfLangBarItemMgr,
         ITfLangBarItemSink, ITfLangBarItemSink_Impl, ITfMenu, ITfMenu_Impl, ITfSource,
@@ -197,7 +197,7 @@ mod langbar_probe {
         with_com(|| {
             // SAFETY: 標準的な in-proc COM オブジェクト生成。
             let mgr: ITfLangBarItemMgr =
-                unsafe { CoCreateInstance(&CLSID_TF_LangBarMgr, None, CLSCTX_INPROC_SERVER) }?;
+                unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_INPROC_SERVER) }?;
             println!("ITfLangBarItemMgr: OK");
 
             // SAFETY: mgr は上で生成した有効な COM 参照。
@@ -325,7 +325,7 @@ mod langbar_probe {
         with_com(|| {
             // SAFETY: 標準的な in-proc COM オブジェクト生成。
             let mgr: ITfLangBarItemMgr =
-                unsafe { CoCreateInstance(&CLSID_TF_LangBarMgr, None, CLSCTX_INPROC_SERVER) }?;
+                unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_INPROC_SERVER) }?;
             // SAFETY: mgr は上で生成した有効な COM 参照。
             let item = unsafe { mgr.GetItem(&GJI_INPUT_MODE_BUTTON) }?;
             let button: ITfLangBarItemButton = item.cast()?;
