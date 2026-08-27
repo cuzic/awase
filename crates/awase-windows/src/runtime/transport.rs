@@ -698,7 +698,10 @@ mod plan_tests {
             DbeModeKeyPolicy::Suppress,
         );
         assert_eq!(disposition, PhysicalKeyDisposition::Allow);
-        assert_eq!(disposition.suppress_reason(&ev, AppImeProfile::TsfNative), None);
+        assert_eq!(
+            disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
+            None
+        );
     }
 
     #[test]
@@ -722,34 +725,42 @@ mod plan_tests {
 
     #[test]
     fn suppress_reason_is_imm_cross_for_alphanumeric_under_immcross_profile() {
-        // BUG-88 の核心: ImmCross プロファイル（PowerToys Mouse Without Borders の
-        // 中継ウィンドウが分類されていた profile）では VK_DBE_ALPHANUMERIC (英数)
-        // は shadow_toggled の値に関わらず常に Suppress され、journal 上は
-        // "imm-cross" として記録される。
+        // BUG-88 調査で確認した事実の一つ: ImmCross プロファイル（`Standard`）
+        // では VK_DBE_ALPHANUMERIC (英数) は shadow_toggled にも event_type
+        // (Down/Up) にも関わらず常に Suppress され、journal 上は "imm-cross"
+        // として記録される。ただし report2 の実データ（explorer.exe/sakura.exe、
+        // いずれも非ImmCrossプロファイル）は「imm32-off」経路（下の
+        // `suppress_reason_is_imm32_off_for_owned_actuation_dbe_mode_key`）で
+        // 説明される。GJI 稼働時は profile を問わず英数キーが Suppress される
+        // ことが症状の実体であり、ImmCross はその一経路に過ぎない
+        // （docs/known-bugs.md BUG-88 参照）。
         for shadow_toggled in [false, true] {
-            let ev = dbe_mode_event(
-                crate::vk::VK_DBE_ALPHANUMERIC,
-                ShadowImeAction::TurnOff,
-                KeyEventType::KeyDown,
-            );
-            let disposition = PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::Standard,
-                shadow_toggled,
-                false,
-                false,
-                ActiveImeKind::GoogleJapaneseInput,
-                DbeModeKeyPolicy::Suppress,
-            );
-            assert_eq!(
-                disposition,
-                PhysicalKeyDisposition::Suppress,
-                "shadow_toggled={shadow_toggled} でも ImmCross は英数キーを Suppress する"
-            );
-            assert_eq!(
-                disposition.suppress_reason(&ev, AppImeProfile::Standard),
-                Some("imm-cross")
-            );
+            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                let ev = dbe_mode_event(
+                    crate::vk::VK_DBE_ALPHANUMERIC,
+                    ShadowImeAction::TurnOff,
+                    event_type,
+                );
+                let disposition = PhysicalKeyDisposition::plan(
+                    &ev,
+                    AppImeProfile::Standard,
+                    shadow_toggled,
+                    false,
+                    false,
+                    ActiveImeKind::GoogleJapaneseInput,
+                    DbeModeKeyPolicy::Suppress,
+                );
+                assert_eq!(
+                    disposition,
+                    PhysicalKeyDisposition::Suppress,
+                    "shadow_toggled={shadow_toggled} event_type={event_type:?} でも \
+                     ImmCross は英数キーを Suppress する"
+                );
+                assert_eq!(
+                    disposition.suppress_reason(&ev, AppImeProfile::Standard),
+                    Some("imm-cross")
+                );
+            }
         }
     }
 

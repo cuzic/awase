@@ -108,9 +108,11 @@ impl DecisionKind {
 ///
 /// `decision`（`DecisionKind`、engine の意味論的判断）とは独立した配送判断。
 /// BUG-88（PowerToys Mouse Without Borders 使用中に「英数」キーが効かない
-/// 不具合）の調査で、`decision` だけでは ImmCross プロファイル下の
-/// VK_DBE_ALPHANUMERIC 無条件 Suppress が journal から見えないことが判明した
-/// ため追加した。
+/// 不具合）の調査で、`decision` だけでは `VK_DBE_ALPHANUMERIC` 等の DBE
+/// モードキーが `PhysicalKeyDisposition::plan` によって Suppress されたか
+/// （ImmCross プロファイルの無条件 Suppress、または GJI/MS-IME 稼働時の
+/// `is_dbe_mode_key_down` 条件による Suppress）が journal から見えないこと
+/// が判明したため追加した。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum PhysicalDispositionSummary {
@@ -123,17 +125,12 @@ pub enum PhysicalDispositionSummary {
 }
 
 impl PhysicalDispositionSummary {
+    /// `PhysicalKeyDisposition::suppress_reason` の戻り値をそのまま受け取る。
+    /// `Some(reason)` なら `Suppress`、`None` なら `Allow`（disposition と reason は
+    /// 定義上 1:1 に決まるため、disposition 自体を別引数で渡す必要はない）。
     #[must_use]
-    pub(crate) fn new(
-        disposition: crate::runtime::PhysicalKeyDisposition,
-        reason: Option<&'static str>,
-    ) -> Self {
-        match disposition {
-            crate::runtime::PhysicalKeyDisposition::Allow => Self::Allow,
-            crate::runtime::PhysicalKeyDisposition::Suppress => Self::Suppress {
-                reason: reason.unwrap_or("unknown"),
-            },
-        }
+    pub(crate) fn new(reason: Option<&'static str>) -> Self {
+        reason.map_or(Self::Allow, |reason| Self::Suppress { reason })
     }
 }
 

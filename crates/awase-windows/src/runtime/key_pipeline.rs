@@ -205,23 +205,22 @@ impl Runtime {
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
         let state_after = self.engine.debug_state_label();
-        // 配送判断(physical)を journal 用に算出する。kp_stage_execute が同じ入力から
-        // 独立に再計算する値と意味上は同一だが、KeyInput の record はそちらより前に
-        // 起きるため呼び出しを共有できない（BUG-88 調査: decision だけでは実際に
-        // OS へ届いたかが journal から分からなかった。詳細は
-        // `PhysicalKeyDisposition::suppress_reason` のコメント参照）。
-        let profile_for_journal = self.platform.current_app_profile();
-        let physical_for_journal = crate::runtime::PhysicalKeyDisposition::plan(
+        // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
+        // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-88 調査: 以前は
+        // journal 記録用に独立して再計算しており、理論上わずかな乖離窓が
+        // あった。詳細は `PhysicalKeyDisposition::suppress_reason` のコメント
+        // 参照。decision だけでは実際に OS へ届いたかが journal から
+        // 分からなかった点が調査のきっかけ）。
+        let profile = self.platform.current_app_profile();
+        let physical = crate::runtime::PhysicalKeyDisposition::plan(
             &event,
-            profile_for_journal,
+            profile,
             shadow_toggled,
             self.platform.is_tsf_mode(),
             self.platform.output.f2_warmup_owned(),
             crate::tsf::observer::tsf_obs().active_ime_kind(),
             self.dbe_mode_key_policy,
         );
-        let physical_reason_for_journal =
-            physical_for_journal.suppress_reason(&event, profile_for_journal);
         self.platform_state
             .ime
             .journal
@@ -231,8 +230,7 @@ impl Runtime {
                 state_after,
                 decision: crate::journal::DecisionKind::from_decision(&decision),
                 physical: crate::journal::PhysicalDispositionSummary::new(
-                    physical_for_journal,
-                    physical_reason_for_journal,
+                    physical.suppress_reason(&event, profile),
                 ),
             });
 
@@ -249,7 +247,7 @@ impl Runtime {
                 .on_ctrl_key_up(event.vk_code, tick_ms);
         }
 
-        let callback = self.kp_stage_execute(decision, &event, shadow_toggled);
+        let callback = self.kp_stage_execute(decision, &event, profile, physical);
         for entry in self.platform.drain_journal_entries() {
             self.platform_state.ime.journal.absorb(entry);
         }
@@ -1803,40 +1801,24 @@ impl Runtime {
     }
 
     /// Effects の実行（フックからキューに委譲）
+    ///
+    /// `profile`/`physical`（物理 IME キーを OS に届けるかの配送判断、Decision とは
+    /// 独立）は呼び出し元（`kp_run_inner`）が KeyInput journal 記録と共有するため
+    /// 既に確定済みの値を受け取る（BUG-88 調査: 以前はここで独立に再計算しており
+    /// journal 記録値との理論上の乖離窓があった）。判断ロジック自体は
+    /// `PhysicalKeyDisposition::plan` のドキュメントコメント参照:
+    /// - Imm32Unavailable (Chrome/Edge) / TsfNative (WezTerm/Windows Terminal) で GJI/MS-IME
+    ///   が actuate する場合: KeyDown は shadow_toggle 発火時のみ、KeyUp は常に Suppress。
+    ///   awase 自身が apply-ime で VK_IME_ON/OFF 等を SendInput 済みなので物理キーを
+    ///   届けると二重制御になる（TsfNative + GJI の実例: BUG-46）。
+    /// - ImmCross (LINE/Qt): Down/Up 共に Suppress。set_ime_open_cross_process で IME 制御済み。
     fn kp_stage_execute(
         &mut self,
         decision: awase::engine::Decision,
         event: &RawKeyEvent,
-        shadow_toggled: bool,
+        profile: crate::focus::class_names::AppImeProfile,
+        physical: crate::runtime::PhysicalKeyDisposition,
     ) -> CallbackResult {
-        // 物理 IME キー（VK_KANJI / VK_F3 / VK_F4 等）を OS に届けるかは Decision（意味論）
-        // とは独立した「配送機構」の判断であり、Decision を書き換えずに
-        // PhysicalKeyDisposition で表現する。
-        // - Imm32Unavailable (Chrome/Edge) / TsfNative (WezTerm/Windows Terminal) で GJI/MS-IME
-        //   が actuate する場合: KeyDown は shadow_toggle 発火時のみ、KeyUp は常に Suppress。
-        //   awase 自身が apply-ime で VK_IME_ON/OFF 等を SendInput 済みなので物理キーを
-        //   届けると二重制御になる（TsfNative + GJI の実例: BUG-46。awase の SendInput 後に
-        //   遅延 reinject された物理 0xF4 が最後に GJI へ着弾し、ひらがな変換を上書きしていた）。
-        // - ImmCross (LINE/Qt): Down/Up 共に Suppress。set_ime_open_cross_process で IME 制御済み。
-        //   物理キー / IMM 注入の KeyUp をアプリに渡すと内部 IME ハンドラが spurious VK_F3/F4 を
-        //   生成し shadow_toggle が反転する（IME ON Engine-OFF バグの根本原因）。
-        let profile = self.platform.current_app_profile();
-        let is_tsf_mode = self.platform.is_tsf_mode();
-        // F2 (VK_DBE_HIRAGANA) を Suppress してよいのは、warmup 戦略が F2 を自前送信
-        // （GJI: needs_f2_probe=true）して物理キーの代替になる場合のみ。MsImeStrategy は
-        // F2 warmup を送らないため、Suppress すると物理ひらがなキーが食い逃げされて
-        // IME ON にならない（BUG-10）。
-        let f2_warmup_owned = self.platform.output.f2_warmup_owned();
-        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
-        let physical = crate::runtime::PhysicalKeyDisposition::plan(
-            event,
-            profile,
-            shadow_toggled,
-            is_tsf_mode,
-            f2_warmup_owned,
-            active_ime_kind,
-            self.dbe_mode_key_policy,
-        );
         if let Some(reason) = physical.suppress_reason(event, profile) {
             log::debug!(
                 "[{reason}] key suppress vk={:#04x} {:?} (physical disposition)",
