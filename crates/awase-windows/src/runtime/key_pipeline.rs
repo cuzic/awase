@@ -1477,26 +1477,15 @@ impl Runtime {
             ShiftKeyUpKind::Right
         };
 
-        // 決定5の composition ガードは GJI entry 専用（決定7 項目4）。MS-IME
-        // entry は元々 composition を一切見ていなかった（IMC write は non-invasive
-        // な conv セットのため composition 中でも安全、既存の6呼び出し元と同じ
-        // 前提）ので、`uses_imc_conv_write` の間は常に `false` を渡し既存挙動を
-        // 変えない。GJI 側の composition 判定自体は `Output::
-        // send_gji_half_width_alnum_toggle` 内でも独立に行う（決定5、Task 5）ため
-        // ここでの計算は「MS-IME entry を誤ってブロックしない」ためだけの安全側の
-        // 事前フィルタであり、二重判定になっても実害はない。
-        // `build_ctx().composing` は `tsf::observer::ime_composition_active_now()` を
-        // そのまま代入したものに過ぎない（runtime/mod.rs::build_ctx 参照）。
-        // Shift KeyUp のたびに GetKeyState 等を含む InputContext 全体を組み立てる
-        // のは無駄なため、必要な1フィールドだけ直接呼ぶ。
-        let composing = !uses_imc_conv_write
-            && (crate::tsf::observer::ime_composition_active_now()
-                || crate::tsf::observer::gji_candidate_visible_now());
+        // ADR-107 決定5は当初 Composition 中の GJI entry をブロックしていたが、
+        // 実機検証（known-bugs.md BUG-25追補5・ユーザー確認2026-08-27）で
+        // preedit 非破壊・成功が再現したため緩和した。MS-IME entry は元々
+        // composition を一切見ていない（IMC write は non-invasive な conv
+        // セットのため composition 中でも安全）。
         match plan_half_width_alnum_action(
             shift_up_kind,
             self.platform_state.gate.half_width_alnum_toggle_active,
             toggle_entry_supported,
-            composing,
         ) {
             // Enter を「MS-IME/GJI どちらのトグルへ移行するか」で2つの独立した
             // match arm に分けず、単一の Enter arm 内の if/else にしているのは

@@ -3191,10 +3191,41 @@ gapの修正）。
 と `unsupported_entry_blocks_enter_but_never_blocks_tap_or_right_shift_exit`
 に `LeftChord` が exit しないケースを追加。
 
-**未確認:** チョード中（Shift+K, Shift+A 等）に実際に大文字（`KA`）が
-GJI側で正しく出力されるか（pass-through経由でOS/GJIへ届く物理Shift+文字が
-そのままGJIの半角英数コンポーザで大文字化されるはずだが、実機での視覚的
-確認はまだ）。実機再検証時に確認する。
+**実機確認（2026-08-27、ユーザー）:** 修正版をデプロイし再検証、「よくなりました」
+と報告あり——チョード中もトグルが持続し、期待どおりの挙動になったことを確認。
+
+---
+
+**追補10（実機報告・2026-08-27、決定5撤回）: Composition中もShift単独タップで
+半角英数entryが発火するよう緩和した。**
+
+追補9の修正確認と同じセッションで、ユーザーから「compositionのときにシフト
+単独打鍵でも半角英数になってほしいんだけどならないです」との要望を受けた。
+ADR-107決定5は「Composition/候補ウィンドウ表示中はentryを発火させずラッチも
+しない」という当初の保守的な設計で、根拠は「サンプル数が少なく安定性を
+確認しきれていない」（追補5、2回のみの成功実績）だった。
+
+**対応:** ユーザーの実利用フローでの複数回の成功報告を、ADRが緩和条件として
+求めていた「複数回再試行での安定性確認」の充足とみなし、decision5の
+composition/候補ウィンドウブロックを撤去した。
+
+- `Output::send_gji_half_width_alnum_toggle`: entry時のcomposition_active/
+  candidate_visible判定を、ブロック（`return false`）からログのみ
+  （`log::debug!`）に変更。
+- `plan_half_width_alnum_action`（`state/half_width_alnum.rs`）:
+  `composing: bool` パラメータを削除（entry判定から completely除去）。
+- `kp_shift_conv_guard_key_up`（`key_pipeline.rs`）: composing計算・
+  受け渡しを削除。
+
+**影響範囲:** GJIのみ（MS-IME entryは元々compositionを見ていない）。
+
+**リスク:** KeyUp欠落（追補5）との相互作用によるcomposition中特有の不安定化は
+理論上否定されていない。preedit破壊やモード誤認識の実機報告があれば、
+`Output::send_gji_half_width_alnum_toggle`にガードを復活させること。
+
+**テスト:** 自動テスト不可（実機のGJI/TSF composition挙動に依存）。
+`state/half_width_alnum.rs`のテストから`composing`ケースを削除
+（機能自体が撤去されたため）。
 
 ---
 

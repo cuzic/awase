@@ -27,19 +27,22 @@ pub enum ShiftKeyUpKind {
 ///   Shift 修飾として使えるべきで、Shift を離しただけでトグルが解除されては
 ///   ユーザーが意図せず持続モードから抜けてしまう（実機で報告された不具合）。
 ///
-/// composition 中は exit を妨げない（非対称例外）。
-///
 /// `toggle_active` の判定は `entry_supported` より**常に優先する**——
 /// `entry_supported` は「新たに entry してよいか」だけを制御する条件であり、
 /// 既に active な状態からの脱出をブロックしてはならない（entry 後に
 /// IME 種別・belief・kill switch などが変化して `entry_supported` が
 /// false に転じても、緊急解除で必ずかなへ戻れることを保証する）。
+///
+/// composition 中の entry ブロック（ADR-107 決定5の当初案）は撤去した
+/// （known-bugs.md BUG-25追補5・追補9: 実機検証で preedit 非破壊・成功が
+/// 再現し、ユーザーからもComposition中の発火を求める報告があったため）。
+/// composition/候補ウィンドウ表示の状態はこの純粋関数の関知するところでは
+/// なくなった。
 #[must_use]
 pub const fn plan_half_width_alnum_action(
     shift_up: ShiftKeyUpKind,
     toggle_active: bool,
     entry_supported: bool,
-    composing: bool,
 ) -> HalfWidthAlnumAction {
     if toggle_active {
         if matches!(shift_up, ShiftKeyUpKind::LeftChord) {
@@ -47,7 +50,7 @@ pub const fn plan_half_width_alnum_action(
         }
         return HalfWidthAlnumAction::Exit;
     }
-    if entry_supported && matches!(shift_up, ShiftKeyUpKind::LeftTap) && !composing {
+    if entry_supported && matches!(shift_up, ShiftKeyUpKind::LeftTap) {
         return HalfWidthAlnumAction::Enter;
     }
     HalfWidthAlnumAction::None
@@ -60,28 +63,16 @@ mod tests {
     #[test]
     fn entry_only_on_inactive_left_shift_tap() {
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, false, true, false),
+            plan(ShiftKeyUpKind::LeftTap, false, true),
             HalfWidthAlnumAction::Enter
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::Right, false, true, false),
+            plan(ShiftKeyUpKind::Right, false, true),
             HalfWidthAlnumAction::None
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftChord, false, true, false),
+            plan(ShiftKeyUpKind::LeftChord, false, true),
             HalfWidthAlnumAction::None
-        );
-    }
-
-    #[test]
-    fn composing_blocks_entry_but_not_exit() {
-        assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, false, true, true),
-            HalfWidthAlnumAction::None
-        );
-        assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, true, true, true),
-            HalfWidthAlnumAction::Exit
         );
     }
 
@@ -89,24 +80,18 @@ mod tests {
     fn active_toggle_second_tap_and_right_shift_exit_but_left_chord_persists() {
         // 2回目の左Shiftタップ・右Shiftは exit。
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, true, true, false),
+            plan(ShiftKeyUpKind::LeftTap, true, true),
             HalfWidthAlnumAction::Exit
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::Right, true, true, false),
+            plan(ShiftKeyUpKind::Right, true, true),
             HalfWidthAlnumAction::Exit
         );
         // 左Shiftチョード（Shift+文字キーで大文字を打つ用途）は exit しない
         // — トグル中に Shift を離しただけで持続モードから抜けてしまう
         // 不具合の修正（実機報告）。
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftChord, true, true, false),
-            HalfWidthAlnumAction::None
-        );
-        // composition 中でも同様（決定5の exit 側非対称例外は Exit にのみ働く。
-        // LeftChord は元々 exit しないので composition の有無は無関係）。
-        assert_eq!(
-            plan(ShiftKeyUpKind::LeftChord, true, true, true),
+            plan(ShiftKeyUpKind::LeftChord, true, true),
             HalfWidthAlnumAction::None
         );
     }
@@ -118,21 +103,21 @@ mod tests {
         // 変化・kill switch・belief 変化等で entry_supported が false に
         // 転じても、ユーザーは必ずかなへ戻れる。
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, false, false, false),
+            plan(ShiftKeyUpKind::LeftTap, false, false),
             HalfWidthAlnumAction::None
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftTap, true, false, false),
+            plan(ShiftKeyUpKind::LeftTap, true, false),
             HalfWidthAlnumAction::Exit
         );
         assert_eq!(
-            plan(ShiftKeyUpKind::Right, true, false, true),
+            plan(ShiftKeyUpKind::Right, true, false),
             HalfWidthAlnumAction::Exit
         );
         // LeftChord は entry_supported の値に関わらず常に None（exitしない
         // という結論自体は entry 可否の設定と無関係）。
         assert_eq!(
-            plan(ShiftKeyUpKind::LeftChord, true, false, false),
+            plan(ShiftKeyUpKind::LeftChord, true, false),
             HalfWidthAlnumAction::None
         );
     }
