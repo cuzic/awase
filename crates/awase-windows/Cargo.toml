@@ -44,6 +44,12 @@ path = "../win32-async"
 path = "../win32-worker"
 version = "0.1.0"
 
+[target.'cfg(windows)'.dev-dependencies]
+# `#[implement(...)]` マクロ展開が `::windows_core::...` を直接参照するため、
+# `windows::core` の再エクスポート越しではなく実クレートとして必要
+# (`examples/spike_langbar_input_mode.rs` 専用、本体コードは未使用)。
+windows-core = "0.62"
+
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
 features = [
