@@ -2768,6 +2768,103 @@ pass-through にすると、生ローマ字キーが GJI 自身の未切替の�
 
 ---
 
+**追補4（実機確認・2026-08-27、mozc(google/mozc)ソース調査+6経路の実機検証）:
+GJI entry は `SendInput` 経由で実現可能。追補3 の「SendInput は scan の値を
+問わず再試行しないこと」という教訓を部分的に訂正する——scan ではなく、
+**awase 自身の `transport::PhysicalKeyDisposition::plan`（`dbe_mode_key_policy
+=Suppress` 既定ポリシー）が犯人だった。**
+
+**背景:** ユーザーから「mozc の GitHub ソースを読んで、半角英数にする冪等
+キーがないか調べてほしい」との依頼を受け、`google/mozc` の以下を調査した:
+
+- `src/win32/tip/tip_lang_bar.cc`/`tip_lang_bar_callback.h`/
+  `tip_text_service.cc`: 言語バーの入力モードボタン
+  （GJI ビルドの GUID `{D8C8D5EB-8213-47CE-95B7-BA3F67757F94}`、
+  `kTipLangBarItem_Button`）の `ITfLangBarItemButton::OnMenuSelect` が
+  `TipEditSession::SwitchInputModeAsync` を経由して
+  `SessionCommand::SWITCH_COMPOSITION_MODE` を送る経路を発見。
+- `src/session/keymap.h`: `PrecompositionState::Commands::
+  COMPOSITION_MODE_HALF_ALPHANUMERIC` という、`TOGGLE_ALPHANUMERIC_MODE`
+  とは別の**真に冪等な**(SET であり toggle ではない)コマンドが存在するが、
+  出荷版キーマップ(`ms-ime.tsv` 等)ではこのコマンドにデフォルトで
+  どのキーも割り当てられていない(config1.db のカスタムキーマップ編集が
+  必要——これは
+  [[project_ime_key_danger_classification_and_roadmap_2026_08_11]] で
+  「復活させない」と判断済みのため対象外とした)。
+- `src/session/session.cc`: `Session::CompositionModeHalfASCII` /
+  `Session::ToggleAlphanumericMode` の実装を確認。前者は
+  `SwitchInputMode`(`if (composer->GetInputMode() != mode) SetInputMode(mode)`)
+  で真に冪等、後者(`Eisu` キーの実体)は `composer->ToggleInputMode()` で
+  無条件トグル。
+- `src/composer/composer.cc`: `Composer::SetInputMode` は
+  `composition_.SetInputMode(...)` と `is_new_input_ = true` を設定するのみで、
+  **既存の未確定文字列(preedit)を書き換えない**——Composition 中に送っても
+  非破壊であることをソースで確認(実機でも3回とも非破壊を確認)。
+
+**実機で試した6経路の結果(対象: Windows Terminal、`Windows.UI.Input.
+InputSite.WindowClass`、TsfNative プロファイル):**
+
+| # | 経路 | Precomposition | Composition | 備考 |
+|---|---|---|---|---|
+| 1 | `ITfLangBarItemButton::OnMenuSelect`(クラシック言語バー GUID) | `Ok(())`だが実効なし | 未検証 | 2回実施、3秒 edit session 待機を挟んでも不変 |
+| 2 | 同上(`GUID_LBI_INPUTMODE`、Win8+タスクバー版) | `Ok(())`だが実効なし | 未検証 | 原因不明のまま棚上げ |
+| 3 | `PostMessageW`(`WM_KEYDOWN`/`UP`, scan=0)、leaf hwnd | **成功**(トグル確認) | 非破壊・実効なし | leaf=`Windows.UI.Input.InputSite.WindowClass` |
+| 4 | 同上、`DesktopWindowContentBridge`(親hwnd)宛て | 未検証 | 非破壊・実効なし | hwnd を変えても結果不変(同一プロセス/スレッドのため) |
+| 5 | `SendInput`(scan=0)、**awase 起動中** | 未検証 | 非破壊・実効なし | 追補1・3 と同一条件を再現 |
+| 6 | `SendInput`(scan=0)、**awase 停止中** | 未検証 | **成功**(半角英数に確定) | 本追補の核心。awase 再起動→再試行で再現(失敗)し、A/Bで確定 |
+
+**真因の特定:** 経路5と6の差は「awase が起動しているか」だけであり、
+これは今セッション前半の BUG-90 調査で読んだ
+`transport::PhysicalKeyDisposition::plan` のロジックと完全に符合する:
+GJI が active な場合、`Imm32Unavailable`/`TsfNative` プロファイルでは
+`dbe_mode_key_policy=Suppress`(既定値)のとき DBE モードキーの KeyDown は
+**物理由来か注入由来かを問わず常に Suppress される**(BUG-52 対策の
+`is_dbe_mode_key_down` 条件)。つまり awase 自身の低レベルフックが、
+今回 `SendInput` で送った `VK_DBE_ALPHANUMERIC` を「外部からの生の DBE
+キー」として検出し、実 IME(GJI)へ到達する前に握り潰していた。追補1・3の
+「SendInput が awase 自身のフックにすら届かない」という当時の記述は事実
+としては正しかったが、その原因の解釈(OS/ドライバ層での構造的な握り潰し)
+は誤りだった可能性が高い——実際には awase 自身の transport 層の意図的な
+安全機構(Suppress ポリシー)が働いていた。
+
+**実装への示唆(未実装、次回セッション向け):**
+
+1. **アクチュエーション経路は `SendInput`(scan=0、`VK_DBE_ALPHANUMERIC`)を
+   使う。** `PostMessageW` は Composition 中に効かないため不採用、
+   `OnMenuSelect` は原因不明のまま3回失敗しているため不採用。
+2. **`transport::PhysicalKeyDisposition::plan` の DBE Suppress ポリシーが、
+   awase 自身が意図的に発行する GJI entry 用の `SendInput` まで巻き込んで
+   しまわないよう、除外経路が必要。** 既存の自己注入フィルタ(`hook.rs`、
+   他の awase 発行 SendInput イベントを識別する仕組み)と同種の扱いを、
+   この新規注入にも適用する設計が要る。
+3. **トグルであり冪等ではない**ため、発火は awase 自身の belief(左Shift
+   単独タップの遷移検出、`half_width_alnum_toggle_active` の false→true
+   遷移)でガードし、1回だけ送る設計にする(mozc 側の冪等コマンドを
+   使う設計は今回すべて失敗したため)。
+4. **Composition 中でも安全に送れる**(preedit を破壊しない)ことをソース
+   ・実機の両方で確認済みだが、UX 上は「候補ウィンドウ表示中は発火させない」
+   等のガードを設ける方が無難(不意に今後の入力モードだけが変わる違和感を
+   避けるため。既存の `gji_candidate_visible` 相当の観測が使える)。
+5. 観測側の副産物として、`ITfInputProcessorProfileActivationSink`
+   (`--watch-profile`)/`ITfLangBarItemSink`(`--watch-langbar`)による
+   push 通知購読の実装・cross-process 到達性は本追補では未検証のまま
+   (アクチュエーション経路の確定を優先したため)。次に着手する価値はある。
+
+**テスト:** 自動テスト不可(実機の GJI/TSF/Windows Terminal 挙動に依存)。
+使い捨ての実機検証用 example(`crates/awase-windows/examples/
+spike_langbar_input_mode.rs`)を診断ツールとして残置(`--select`/
+`--select-inputmode`/`--postmsg`/`--postmsg-idempotent`/`--postmsg-hwnd`/
+`--sendinput`/`--watch-profile`/`--watch-langbar`/`--enum-ancestors` の
+各モード)。次回 entry 実装時の実機再検証に再利用できる。
+
+**関連ファイル(追補4):**
+`crates/awase-windows/examples/spike_langbar_input_mode.rs`(新規、診断
+ツール)、`crates/awase-windows/src/runtime/transport.rs`
+(`PhysicalKeyDisposition::plan`、真因)、`crates/awase-windows/src/
+runtime/key_pipeline.rs`(`kp_shift_conv_guard_key_down`、次回実装対象)。
+
+---
+
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
 
 **症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.
