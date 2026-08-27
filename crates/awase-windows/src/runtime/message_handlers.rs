@@ -94,8 +94,8 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
 /// 消費すればよい。以前は `deliver_key_event` 冒頭（per-event）で呼んでいたため、
 /// drain で複数キーをまとめて処理する際に2件目以降でも重複して素通りチェックが
 /// 走っていた（実害は無いが無駄な `take_needs_engine_resync()` 呼び出し）。
-/// 呼び出し元（`handle_wm_key_from_hook`・`handle_wm_drain_output_queue`）が
-/// バッチ境界で1回だけ呼ぶこと。
+/// 呼び出し元（`handle_wm_key_from_hook`・`handle_wm_timer`(`TIMER_IME_OFF_RESCUE`)・
+/// `handle_wm_drain_output_queue`）がバッチ境界で1回だけ呼ぶこと。
 pub(crate) fn begin_key_batch(app: &mut Runtime) {
     if crate::runtime::engine_window::take_needs_engine_resync() {
         let ctx = app.build_ctx();
@@ -103,6 +103,17 @@ pub(crate) fn begin_key_batch(app: &mut Runtime) {
             .engine
             .on_command(awase::engine::EngineCommand::FocusChanged, &ctx);
         app.execute_decision_suppressed(decision);
+    }
+}
+
+/// `deliver_key_event` の戻り値が `Reinjected` なら `WM_EXECUTE_EFFECTS` を要求
+/// する（コードレビュー指摘10）。`handle_wm_key_from_hook` と
+/// `handle_wm_timer`(`TIMER_IME_OFF_RESCUE`) で重複していた3行パターンを共通化
+/// した。`handle_wm_drain_output_queue` はバッチ内の複数キーをまとめて
+/// `any_reinject` フラグで判定するため対象外（別パターンのまま）。
+fn post_effects_if_reinjected(delivery: KeyDelivery) {
+    if matches!(delivery, KeyDelivery::Reinjected) {
+        post_to_main_thread(WM_EXECUTE_EFFECTS);
     }
 }
 
@@ -127,8 +138,17 @@ pub(crate) fn deliver_key_event(
         return KeyDelivery::Reinjected;
     }
 
-    // NonText フォーカス（タスクバー等）はすべて OS にパススルー
-    if app.platform_state.focus.focus_kind == FocusKind::NonText {
+    // NonText フォーカス（タスクバー等）はすべて OS にパススルー。
+    //
+    // ImeOffRescueReplay（コードレビュー指摘3）はこの早期returnの対象外にする。
+    // 50ms 救済窓が保留していたキーはユーザーの明示的な IME OFF ジェスチャーで
+    // あり、発火時点で focus_kind が（フォーカス遷移中等で一時的・誤って）
+    // NonText と分類されていても、黙ってパススルーへ変換しリトライ無しで
+    // 無効化してはならない。`replay_ime_off_rescue_event`/`kp_run_inner` へ
+    // 確実に到達させる。
+    if app.platform_state.focus.focus_kind == FocusKind::NonText
+        && !matches!(origin, KeyOrigin::ImeOffRescueReplay)
+    {
         app.executor.enqueue_reinject(event);
         return KeyDelivery::Reinjected;
     }
@@ -137,6 +157,14 @@ pub(crate) fn deliver_key_event(
     // Ctrl+key bypass の直後に non-Ctrl 非修飾キーが来た場合、NICOLA エンジンを
     // スキップして直接 passthrough する（1 キー分のみ）。
     // 例: Ctrl+J (tmux prefix) → n (next-window) で NICOLA が n を横取りするのを防ぐ。
+    //
+    // ImeOffRescueReplay はこのガードの対象外にしない（コードレビュー指摘3を
+    // 踏まえ個別判断）。post-bypass は「直前に Ctrl+key bypass があった」場合
+    // にのみ武装され、かつユーザー設定の `[[post_bypass]]` ルールが vk/proc/class
+    // で一致した時だけ消費する狭いスコープの latch であり、IME OFF 救済窓の
+    // 対象キー（無変換/変換系）と衝突する可能性は低い。NonText のように
+    // 「フォーカス分類の誤判定で常時パススルーになる」広いガードとは性質が
+    // 異なるため、ここは従来どおり適用する。
     let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
     if let Some(delivery) = consume_post_bypass(app, event, is_key_down) {
         return delivery;
@@ -287,9 +315,7 @@ pub(crate) fn handle_wm_key_from_hook(app: &mut Runtime, event: awase::types::Ra
         KeyOrigin::Hook(crate::runtime::engine_window::current_pump_context()),
     );
     // WM_EXECUTE_EFFECTS の post は呼び出し元の責務（指摘8、deliver_key_event の doc 参照）。
-    if matches!(delivery, KeyDelivery::Reinjected) {
-        post_to_main_thread(WM_EXECUTE_EFFECTS);
-    }
+    post_effects_if_reinjected(delivery);
     recover_pending_drain_request();
 }
 
@@ -357,10 +383,15 @@ pub(crate) unsafe fn handle_wm_timer(
                 // deliver_key_event（単一入口）経由に統合する（追加発見E）。
                 // 以前は Runtime::replay_ime_off_rescue_event を直接呼んでおり、
                 // NonText focus パススルー・post-bypass latch 消費等を素通りしていた。
+                //
+                // begin_key_batch(app) をここでも呼ぶ（コードレビュー指摘4）。
+                // 「バッチ境界で1回だけ resync チェックする」契約
+                // （begin_key_batch の doc 参照）の対象に、この TIMER 分岐も
+                // handle_wm_key_from_hook・handle_wm_drain_output_queue と並ぶ
+                // 3箇所目として含める。
+                begin_key_batch(app);
                 let delivery = deliver_key_event(app, pending_event, KeyOrigin::ImeOffRescueReplay);
-                if matches!(delivery, KeyDelivery::Reinjected) {
-                    post_to_main_thread(WM_EXECUTE_EFFECTS);
-                }
+                post_effects_if_reinjected(delivery);
             }
         }
         Some(id) if id == TIMER_GJI_LONG_IDLE => {
