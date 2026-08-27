@@ -396,6 +396,71 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     true
 }
 
+/// IME モード切り替えキーを、必要なら synthetic Shift↑ を前置して送信する。
+///
+/// BUG-25 GJI 半角英数 entry/exit 用。`prepend_synthetic_shift_up` が真のときは
+/// OS/IME 視点に残っている Shift 押下を同一 `SendInput` バッチ内で先に解除する。
+/// `VK_DBE_ALPHANUMERIC` は CapsLock scan 衝突を避けるため scan=0 で送り、
+/// `VK_DBE_HIRAGANA` は既存の MS-IME 復元経路と同じ scan 付きで送る。
+///
+/// 戻り値: 実際に注入した場合 `true`。Win キー押下中でスキップした場合 `false`。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
+pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
+    vk: awase::types::VkCode,
+    prepend_synthetic_shift_up: bool,
+) -> bool {
+    use crate::tsf::output::{make_key_input_ex, make_scan_key_input, IME_KANJI_MARKER};
+    use crate::vk::{VK_DBE_HIRAGANA, VK_SHIFT};
+
+    if crate::hook::win_key_held() {
+        log::debug!(
+            "[ime-mode] skipped vk=0x{vk:02X} (Win key held — Win+VK_IME triggers Start Menu on Win↑)"
+        );
+        return false;
+    }
+
+    let held = HeldModifiers::read();
+    let held_skip_alt = HeldModifiers { alt: false, ..held };
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(7);
+    if prepend_synthetic_shift_up {
+        inputs.push(make_scan_key_input(VK_SHIFT, true, IME_KANJI_MARKER));
+    }
+    held_skip_alt.push_release(&mut inputs);
+    if vk == VK_DBE_HIRAGANA {
+        inputs.push(make_scan_key_input(vk, false, IME_KANJI_MARKER));
+        inputs.push(make_scan_key_input(vk, true, IME_KANJI_MARKER));
+    } else {
+        inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
+        inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
+    }
+    // SAFETY: push_restore は Win32 SendInput を呼ぶ。
+    let still = unsafe { held_skip_alt.push_restore(&mut inputs) };
+
+    log::debug!(
+        "[ime-mode] SendInput vk=0x{vk:02X} prepend_shift_up={prepend_synthetic_shift_up} \
+         release(ctrl={} shift={} alt=false(skipped)) \
+         restore(ctrl={} shift={} alt=false(skipped)) phys_alt={} total={} events",
+        held.ctrl,
+        held.shift,
+        still.ctrl,
+        still.shift,
+        held.alt,
+        inputs.len()
+    );
+    let sent = crate::win32::send_input_safe(&inputs);
+    if sent as usize != inputs.len() {
+        log::warn!(
+            "[ime-mode] SendInput(vk=0x{vk:02X}, prepend_shift_up={prepend_synthetic_shift_up}) \
+             sent {sent}/{} events",
+            inputs.len()
+        );
+    }
+    true
+}
+
 /// 現在フォーカスされているウィンドウの IME 変換モード生値を返す（診断ログ専用）。
 ///
 /// ビット定義: NATIVE=0x0001 KATAKANA=0x0002 FULLSHAPE=0x0008 ROMAN=0x0010
