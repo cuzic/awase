@@ -6021,6 +6021,42 @@ mod engine_integration_tests {
         )));
     }
 
+    /// bare-thumbガード(`is_bare_thumb`)は`engine_active &&`という条件付きで
+    /// しか`suppress_ime_combos`をtrueにしない。engine非活性(IME OFF)中は
+    /// 同時打鍵判定を保護する必要がそもそも無い(NICOLA処理自体が動いていない
+    /// ため)ので、`keys.ime_on`に設定した無変換キー単独タップは本ガード導入
+    /// 前後で変わらずIME ONを発火する。「無変換単独タップでIME ONにしつつ
+    /// チョードは壊さない」という要望が、新設定を追加せず既存の`keys.ime_on`
+    /// だけで満たせることを示す回帰テスト。
+    #[test]
+    fn bare_thumb_ime_on_combo_still_fires_while_engine_inactive() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(d.is_consumed());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+            )),
+            "expected SetOpen(true) while engine inactive, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// 【bare-thumbガード回帰テスト、旧P-9】`match_event`内だけにガードを
     /// 置くと`.or_else()`で連結される自動検出リスト（`ime_on_auto`）を
     /// 素通りしてしまう。`match_special_keys`レベルで一括適用した
