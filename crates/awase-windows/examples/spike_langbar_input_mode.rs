@@ -756,8 +756,11 @@ mod langbar_probe {
         marker: usize,
         marker_name: &str,
         shift_held: bool,
+        up_delay_ms: u64,
     ) -> anyhow::Result<()> {
-        println!("marker={marker_name}(0x{marker:X}) shift_held={shift_held}");
+        println!(
+            "marker={marker_name}(0x{marker:X}) shift_held={shift_held} up_delay_ms={up_delay_ms}"
+        );
 
         if shift_held {
             let down = [make_keybd_input(
@@ -776,22 +779,60 @@ mod langbar_probe {
             std::thread::sleep(Duration::from_millis(30));
         }
 
-        let inputs = [
-            make_keybd_input(
+        // `up_delay_ms == 0` のときは従来どおり DOWN+UP を同一 SendInput
+        // バッチで送る(ADR-107 決定0 M1〜M4 との後方互換)。`> 0` のときは
+        // DOWN と UP を**別々の `SendInput` 呼び出し**に分割し、実時間の
+        // 間隔を空ける——「同一バッチ内で DOWN 直後に UP を送ると、OS が
+        // wScan=0(物理キーに対応しない)の UP を『押下中として認識して
+        // いない』として握り潰しているのではないか」という仮説の検証用
+        // (実機で KeyUp 側の `[hook] IME-mode` ログが一度も出現しなかった
+        // ことを受けた追加検証)。
+        if up_delay_ms == 0 {
+            let inputs = [
+                make_keybd_input(
+                    VK_DBE_ALPHANUMERIC,
+                    windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
+                    marker,
+                ),
+                make_keybd_input(VK_DBE_ALPHANUMERIC, KEYEVENTF_KEYUP, marker),
+            ];
+            // SAFETY: inputs はこのスコープでのみ生存する有効な配列。
+            let sent = unsafe {
+                SendInput(
+                    &inputs,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+                )
+            };
+            println!("  [Eisu DOWN+UP(同一バッチ)] SendInput -> sent={sent}/2");
+        } else {
+            let down = [make_keybd_input(
                 VK_DBE_ALPHANUMERIC,
                 windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0),
                 marker,
-            ),
-            make_keybd_input(VK_DBE_ALPHANUMERIC, KEYEVENTF_KEYUP, marker),
-        ];
-        // SAFETY: inputs はこのスコープでのみ生存する有効な配列。
-        let sent = unsafe {
-            SendInput(
-                &inputs,
-                i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
-            )
-        };
-        println!("  [Eisu DOWN+UP] SendInput -> sent={sent}/2");
+            )];
+            // SAFETY: down はこのスコープでのみ生存する有効な配列。
+            let sent = unsafe {
+                SendInput(
+                    &down,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+                )
+            };
+            println!("  [Eisu DOWN(単独)] SendInput -> sent={sent}/1");
+            std::thread::sleep(Duration::from_millis(up_delay_ms));
+            let up = [make_keybd_input(
+                VK_DBE_ALPHANUMERIC,
+                KEYEVENTF_KEYUP,
+                marker,
+            )];
+            // SAFETY: up はこのスコープでのみ生存する有効な配列。
+            let sent = unsafe {
+                SendInput(
+                    &up,
+                    i32::try_from(size_of::<INPUT>()).expect("INPUT サイズは常に i32 範囲"),
+                )
+            };
+            println!("  [Eisu UP(単独、{up_delay_ms}ms 後)] SendInput -> sent={sent}/1");
+        }
 
         if shift_held {
             std::thread::sleep(Duration::from_millis(30));
@@ -869,7 +910,7 @@ fn main() -> anyhow::Result<()> {
         return langbar_probe::enum_ancestors();
     }
     if args.iter().any(|a| a == "--sendinput") {
-        return langbar_probe::send_input_dbe_alphanumeric_matrix(0, "none", false);
+        return langbar_probe::send_input_dbe_alphanumeric_matrix(0, "none", false, 0);
     }
     if let Some(marker_str) = args
         .iter()
@@ -881,7 +922,20 @@ fn main() -> anyhow::Result<()> {
             );
         };
         let shift_held = args.iter().any(|a| a == "--sendinput-shift-held");
-        return langbar_probe::send_input_dbe_alphanumeric_matrix(marker, &marker_str, shift_held);
+        let up_delay_ms = args
+            .iter()
+            .find_map(|a| {
+                a.strip_prefix("--sendinput-up-delay-ms=")
+                    .map(str::to_owned)
+            })
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        return langbar_probe::send_input_dbe_alphanumeric_matrix(
+            marker,
+            &marker_str,
+            shift_held,
+            up_delay_ms,
+        );
     }
     if let Some(hwnd) = args
         .iter()
