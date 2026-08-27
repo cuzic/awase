@@ -300,6 +300,17 @@ mod langbar_probe {
                     // SAFETY: button は上で取得した有効な COM 参照。
                     let r = unsafe { button.OnMenuSelect(uid) };
                     println!("OnMenuSelect({uid}) -> {r:?}");
+                    // `SwitchInputModeAsync`(mozc 側)は edit session 経由の非同期
+                    // 実行のため、OnMenuSelect の戻り値が返った時点ではまだ実際の
+                    // モード切替が完了していない可能性がある。プロセスをすぐ終了
+                    // (CoUninitialize)すると、対象アプリ側の edit session が完了
+                    // する前に呼び出し元 COM アパートメントが消え、非同期処理が
+                    // 中断される懸念があるため、数秒間メッセージポンプを回してから
+                    // 終了する。
+                    println!(
+                        "edit session の非同期完了を待つため3秒間メッセージポンプを回します..."
+                    );
+                    pump_messages_for(Duration::from_secs(3));
                     println!(
                         "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(読み返しは信用しない)。"
                     );
