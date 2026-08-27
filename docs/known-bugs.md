@@ -3229,6 +3229,38 @@ composition/候補ウィンドウブロックを撤去した。
 
 ---
 
+**追補11（`/code-review` PR #112指摘・2026-08-27）: 追補9の左Shiftチョード
+修正が右Shiftには適用されておらず、右Shiftチョードで同じ不具合が再現する
+非対称を修正。**
+
+PR #112（追補9・追補10の実装）マージ直後に`/code-review pr #112`を実行した
+ところ、`ShiftKeyUpKind::Right`が単独タップ・チョードを区別せず常に`Exit`を
+返す設計のままだったという指摘を受けた。右Shiftを押しながら別のキーを
+打鍵（大文字入力）してShiftを離すと、追補9で左Shiftについて修正したのと
+全く同じ症状（トグルが意図せず解除される）が右Shiftでも再現する。
+
+**原因:** 左Shiftには`GateStore::left_shift_tap_candidate`という「押下中に
+他の物理キーが来なかったか」を追跡するフラグがあったが、右Shift用の
+対応するフラグが存在しなかった。そのため`ShiftKeyUpKind`は右Shiftを
+一律`Right`（常にExit）としか表現できていなかった。
+
+**対応:** `GateStore`に`right_shift_tap_candidate`を新設し、
+`kp_shift_conv_guard_key_down`/`kp_stage_shift_conv_guard`の候補判定・
+候補破棄ロジックを左右対称に拡張した。`ShiftKeyUpKind`を
+`{LeftTap, LeftChord, RightTap, RightChord}`の4値に変更し、
+`plan_half_width_alnum_action`の`toggle_active`時の分岐を
+「`LeftChord`/`RightChord`はexitしない、それ以外（`LeftTap`/`RightTap`）は
+exitする」に統一した。右Shift**単独タップ**（緊急解除の意図）は従来どおり
+exitする——チョードのみが持続対象になる。
+
+合わせて、レビューが指摘した`mem::take`直後の冗長な`= false`代入
+（`left_shift_tap_candidate`）も削除した。
+
+**テスト:** `state/half_width_alnum.rs`のテストを4値対応に更新
+（`active_toggle_taps_exit_but_chords_persist_symmetrically`等）。
+
+---
+
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
 
 **症状:** Windows Terminal（`CASCADIA_HOSTING_WINDOW_CLASS` → `Windows.UI.Input.
