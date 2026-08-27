@@ -118,9 +118,9 @@ mod langbar_probe {
         ITfSource, ITfThreadMgr, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW,
-        GetWindowThreadProcessId, PeekMessageW, PostMessageW, TranslateMessage, GUITHREADINFO, MSG,
-        PM_REMOVE, WM_KEYDOWN, WM_KEYUP,
+        DispatchMessageW, GetAncestor, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
+        GetParent, GetWindowTextW, GetWindowThreadProcessId, PeekMessageW, PostMessageW,
+        TranslateMessage, GA_ROOT, GUITHREADINFO, MSG, PM_REMOVE, WM_KEYDOWN, WM_KEYUP,
     };
 
     /// GJI ビルドの「クラシック言語バー」入力モードボタン GUID(ポップアップ
@@ -612,6 +612,58 @@ mod langbar_probe {
         Ok(())
     }
 
+    /// フォーカス中のウィンドウから `GetParent`/`GetAncestor(GA_ROOT)` で
+    /// 祖先チェーンを辿り、それぞれの hwnd/クラス名/タイトルを列挙する。
+    /// `Windows.UI.Input.InputSite.WindowClass`(XAML Islands の入力プロキシ)
+    /// のような葉ウィンドウ以外に、真のキーボード処理を担う祖先ウィンドウが
+    /// 存在するかを目視確認するための診断。
+    pub(crate) fn enum_ancestors() -> anyhow::Result<()> {
+        let Some(leaf) = find_target_hwnd() else {
+            anyhow::bail!("フォーカス中のウィンドウが見つかりません");
+        };
+        println!("leaf (GetGUIThreadInfo): {}", describe_hwnd(leaf));
+
+        let mut current = leaf;
+        let mut depth = 0;
+        loop {
+            depth += 1;
+            if depth > 10 {
+                println!("(10階層を超えたため打ち切り)");
+                break;
+            }
+            // SAFETY: current は有効なウィンドウハンドル。
+            let parent = unsafe { GetParent(current) }.unwrap_or_default();
+            if parent.is_invalid() || parent.0 == current.0 {
+                break;
+            }
+            println!("  parent[{depth}]: {}", describe_hwnd(parent));
+            current = parent;
+        }
+
+        // SAFETY: leaf は有効なウィンドウハンドル。
+        let root = unsafe { GetAncestor(leaf, GA_ROOT) };
+        if !root.is_invalid() {
+            println!("root (GA_ROOT): {}", describe_hwnd(root));
+        }
+        println!(
+            "→ 上記のうち `--postmsg-hwnd=0x{{hex}}` で狙い撃ちして試したい hwnd を選んでください。"
+        );
+        Ok(())
+    }
+
+    /// 明示指定した `hwnd` へ `VK_DBE_ALPHANUMERIC` を送る(`enum_ancestors`
+    /// で見つけた候補を1つずつ試すため)。
+    pub(crate) fn post_dbe_alphanumeric_to(hwnd_raw: usize) -> anyhow::Result<()> {
+        let hwnd = HWND(hwnd_raw as *mut core::ffi::c_void);
+        println!("target(明示指定): {}", describe_hwnd(hwnd));
+        post_vk(hwnd, VK_DBE_ALPHANUMERIC, "eisu")?;
+        println!(
+            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください。\
+             このコマンドはトグル。"
+        );
+        Ok(())
+    }
+
     /// 冪等な「半角英数へセット」: `VK_DBE_HIRAGANA`(冪等・常にひらがなへ)
     /// → `VK_DBE_ALPHANUMERIC`(トグル)の2段階。開始状態に関わらず必ず
     /// ひらがな経由で英数へ着地するため、全体としては開始状態非依存の
@@ -662,6 +714,16 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--postmsg-idempotent") {
         return langbar_probe::post_idempotent_half_alphanumeric();
+    }
+    if args.iter().any(|a| a == "--enum-ancestors") {
+        return langbar_probe::enum_ancestors();
+    }
+    if let Some(hwnd) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--postmsg-hwnd=0x").map(str::to_owned))
+        .and_then(|s| usize::from_str_radix(&s, 16).ok())
+    {
+        return langbar_probe::post_dbe_alphanumeric_to(hwnd);
     }
     if let Some(uid) = args
         .iter()
