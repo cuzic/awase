@@ -687,7 +687,7 @@ fn focus_probe_observation_is_limited_to_real_probe_path() {
         // apply_effective_ime — first-key FocusProbe（read_ime_state_fast 実行済み）の
         // 結果適用点。TsfNative/Imm32Unavailable は ADR-106 決定2 により観測不能として
         // 扱われ、この経路では write_focus_probe を呼ばない（shadow 値は guard 解除
-        // 判定にのみ使う。代替観測としての記録は laundering として撤去済み、BUG-81）。
+        // 判定にのみ使う。代替観測としての記録は laundering として撤去済み、BUG-92）。
         ("runtime/key_pipeline.rs", 1),
     ];
 

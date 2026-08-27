@@ -217,7 +217,10 @@ pub enum FocusProbeOpenStatus {
 
 **証拠義務**: `state/observation_store.rs` は ungated。`FocusProbeOpenStatus::NotObservable`
 から `Observed<FocusProbe>` が構築できないことを型レベルで（コンパイルが通らないことを
-確認するテストとして）固定する。`docs/known-bugs.md` に暫定 **BUG-81** として、BUG-33 の
+確認するテストとして）固定する。`docs/known-bugs.md` に **BUG-92**（実装当初は暫定で
+BUG-81 としていたが、develop への1回目のrebase時にBUG-80〜89が別件で採番済みと判明し
+BUG-90に採番し直し、その後developが並行して進みBUG-90も別件〈PowerToys Mouse Without
+Borders〉に先着していたため2回目のrebaseでBUG-92に再度採番し直した）として、BUG-33の
 追補（「shadow フォールバックの循環を型で閉じた」）を起票する。
 
 **コスト/リスク**: 中/中。`effective_open()` の解決順は変わらないが、「3秒 FRESH を超えて

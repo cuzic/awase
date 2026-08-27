@@ -9,6 +9,7 @@
 use crate::hook;
 use crate::hook::CallbackResult;
 use crate::state::evidence::IntentWitness;
+use crate::state::focus_probe_plan::{plan_focus_probe, FocusProbeEffect};
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
@@ -1955,29 +1956,14 @@ fn build_ime_on_suffix(
 }
 
 impl Runtime {
-    /// `FocusProbeOpenStatus::Read` から得た値だけを受け取る（ADR-106 決定2）。
-    /// belief 由来の `bool`（`effective_open()` 等）は型が合わず渡せない
-    /// ——`ObservedOpenValue` は `FocusProbeOpenStatus::classify` の `Read` 分岐
-    /// でしか構築できない。
-    fn apply_effective_ime(
-        &mut self,
-        effective: crate::state::observation_store::ObservedOpenValue,
-        tick_ms: crate::state::TickMs,
-        accepted: crate::state::probe_admission::AcceptedObservation,
-    ) {
-        self.release_detect_state_guard_if(effective.get());
-        self.platform_state
-            .ime
-            .write_focus_probe(effective, tick_ms, accepted);
-    }
-
     /// FocusProbe 系の guard 解除（`reset_detect_state`）を条件付きで呼ぶ共通ヘルパー。
     ///
-    /// `apply_effective_ime`（Read 分岐）と `apply_focus_probe` の NotObservable 分岐
-    /// （ADR-106 決定2、BUG-81）はどちらも「effective open とみなせるなら guard を
-    /// 解除する」という同じパターンを持つが、条件式自体は異なる
-    /// （前者は観測値 `effective.get()`、後者は観測できないため shadow 値
-    /// `probe.is_japanese_ime && shadow_on`）ため、呼び出し側で条件を評価してから渡す。
+    /// `plan_focus_probe` の `Record`/`NotObservable` アーム（ADR-106 決定2、BUG-92）
+    /// はどちらも「effective open とみなせるなら guard を解除する」という同じ
+    /// パターンを持つが、条件式自体は異なる（前者は観測値 `effective.get()`、
+    /// 後者は観測できないため shadow 値 `probe.is_japanese_ime && shadow_on`）
+    /// ため、呼び出し側（`plan_focus_probe`）で条件を評価してから `release_guard`
+    /// として渡す（PR 109 コードレビュー指摘3）。
     fn release_detect_state_guard_if(&mut self, should_reset: bool) {
         if should_reset {
             self.platform_state.ime.reset_detect_state();
@@ -2046,27 +2032,36 @@ impl Runtime {
         let used_shadow_fallback =
             matches!(status, FocusProbeOpenStatus::NotObservable(_)) && probe.is_japanese_ime;
 
-        let suppressed_reason: Option<&'static str> = match status {
-            FocusProbeOpenStatus::Read(on) => {
-                let effective = on.effective(probe.is_japanese_ime);
-                if !effective.get() && signals.any() {
-                    Some(signals.primary_reason())
-                } else {
-                    self.apply_effective_ime(effective, now_tick_ms, accepted);
-                    None
-                }
+        // PR 109 コードレビュー指摘3: 決定ロジックは `state::focus_probe_plan::
+        // plan_focus_probe`（挙動不変抽出、Linux で全数テスト済み）へ切り出した。
+        // ここは決定結果（`FocusProbeEffect`）を見て実際に書き込むだけの薄い
+        // インタプリタ。NotObservable アームの背景（ADR-106 決定2、BUG-92:
+        // shadow fallback の observation laundering を型で閉じた話）は
+        // `plan_focus_probe`/`focus_probe_plan.rs` 側のドキュメントを参照。
+        let suppressed_reason: Option<&'static str> = match plan_focus_probe(
+            status,
+            probe.is_japanese_ime,
+            signals.any(),
+            signals.primary_reason(),
+            shadow_on,
+        ) {
+            FocusProbeEffect::Record {
+                effective,
+                release_guard,
+            } => {
+                self.release_detect_state_guard_if(release_guard);
+                self.platform_state
+                    .ime
+                    .write_focus_probe(effective, now_tick_ms, accepted);
+                None
             }
-            FocusProbeOpenStatus::NotObservable(_profile) => {
-                // TsfNative/Imm32Unavailable: IMM32 非対応のため観測できない。
-                // ADR-106 決定2（BUG-92）: 旧実装はここで shadow の apply 値
-                // （belief 由来）を代替観測として focus_probe スロットに書き込んで
-                // いたが、これは「API を叩いていない値を観測として記録する」
-                // laundering であり、この観測は定義上 desired と一致するため
-                // drift correction が構造的に一度も発火しなくなっていた
-                // （BUG-33 で確定済み）。観測の記録自体は撤去し、guard 解除の
-                // 副作用（旧 `apply_effective_ime(shadow_on)` が `shadow_on==true`
-                // のとき呼んでいた `reset_detect_state`）だけを独立して維持する。
-                self.release_detect_state_guard_if(probe.is_japanese_ime && shadow_on);
+            FocusProbeEffect::Suppressed { reason } => Some(reason),
+            FocusProbeEffect::NotObservable { release_guard } => {
+                // TsfNative/Imm32Unavailable: IMM32 非対応のため観測できない
+                // （ADR-106 決定2、BUG-92: shadow fallback の observation
+                // laundering を型で閉じた話。決定ロジック自体は
+                // `state::focus_probe_plan::plan_focus_probe` 側を参照）。
+                self.release_detect_state_guard_if(release_guard);
                 None
             }
         };
@@ -2310,6 +2305,9 @@ impl Runtime {
 }
 
 #[cfg(test)]
+// `FocusProbeOpenStatus::classify` の分岐固定のみ。`classify` 後の副作用（何を
+// 記録し、いつ guard を解除するか）は `state::focus_probe_plan::plan_focus_probe`
+// 側が担当し、そちらの7テストで固定している（PR 109 コードレビュー指摘3）。
 mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;

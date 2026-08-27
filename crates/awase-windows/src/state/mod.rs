@@ -111,6 +111,13 @@ pub mod observation_store;
 pub(crate) mod post_bypass;
 pub mod probe_admission;
 pub(crate) mod scoped_latch;
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
+// runtime/key_pipeline.rs の apply_focus_probe は #[cfg(windows)] のため非 Windows
+// では未使用になる。PR 109 コードレビュー指摘3: apply_focus_probe/apply_effective_ime
+// に埋め込まれていた match status {...} の決定ロジックを純粋関数として抽出し、
+// Linux で全数テストできるようにした。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod focus_probe_plan;
 pub mod transition;
 
 // ── Windows 専用サブモジュール ───────────────────────────────────────────────────
