@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-07-09
+> 最終更新: 2026-08-27
 
 ---
 
@@ -11681,3 +11681,39 @@ Windows 実機ソークができないため、**実機で `hwnd_mismatch_same_r
 （`handle_wm_dump_journal`）。関連: BUG-18（AppKind Uwp 往復での文字欠落、
 `GA_ROOT` のプロセス越えリスクが近縁）、
 [ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定3。
+
+---
+
+## BUG-93: MS-IME の無変換単独タップ delegate が変換中 composition を破棄する
+
+**症状:** MS-IME レジストリで `KeyAssignmentMuhenkan=1`（awase 側では
+`muhenkan_delegate_to_open_axis=TurnOff` 相当）にしているユーザーが、変換中に
+無変換を単独タップすると、進行中の composition 文字列が復旧不能に破棄される。
+
+**原因:** `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single` の
+`delegate_to_open_axis` 分岐が `composing` 判定より手前で無条件に
+`ime_open_requested=TurnOff` を返していた。通常の無変換/変換単独タップは
+`ModeKeyConfig.composing`（既定 `Suppress`）により変換中の副作用を抑えるが、
+delegate 分岐だけがこの fail-closed 経路を飛び越えていた。
+
+**修正:** `delegate_to_open_axis` は `composing=false` のときだけ発火するようにし、
+`composing=true` では下流の `ModeKeyConfig.composing` へフォールバックさせた。
+`composing` が誤って true になった場合の被害は「何もしない」に留まる一方、
+誤って false で `TurnOff`/`Toggle(→OFF)` を送ると composition を破棄するため、
+変換中は fail-closed を優先する。
+
+**テスト:** `src/engine/tests.rs` の T-10
+`delegate_to_open_axis_suppressed_while_composing` で、engine 活性 +
+`delegate=TurnOff` + `composing=true` の無変換単独タップ確定時に
+`Effect::Ime(SetOpen)` が出ず、既定 `ModeKeyConfig.composing=Suppress` により
+raw `VK_NONCONVERT` も送出されないことを固定した。
+
+**番号衝突チェック:** `git log --all --oneline -- docs/known-bugs.md`、
+`git branch -a`、`git worktree list`、および全 refs の `docs/known-bugs.md`
+に対する `BUG-[0-9]+` 走査で、作業時点の最大番号が BUG-92 であることを確認し、
+本件を BUG-93 として採番した。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`, `src/engine/tests.rs`。
+
+**修正履歴:**
+- 本修正コミット: `delegate_to_open_axis` の composing ガード追加と T-10 追加。

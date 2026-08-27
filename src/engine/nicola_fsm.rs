@@ -1380,13 +1380,18 @@ impl NicolaFsm {
             );
         }
         if let Some(open_axis_action) = delegate_to_open_axis {
-            return (
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                },
-                Some(open_axis_action),
-            );
+            // composing 中は fail-closed に倒す。誤って true でも suppress に落ちるだけだが、
+            // 誤って false で TurnOff/Toggle(→OFF) すると composition を復旧不能に破棄する。
+            if !composing {
+                return (
+                    ResolvedAction {
+                        actions: SmallVec::new(),
+                        output: OutputUpdate::None,
+                    },
+                    Some(open_axis_action),
+                );
+            }
+            // fallthrough: ModeKeyConfig.composing（既定 Suppress）へ委ねる。
         }
         if let Some(mode_key_config) = mode_key_config {
             let action = SoloTapAction::from(mode_key_config.for_composing(composing));

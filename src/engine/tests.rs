@@ -5259,6 +5259,13 @@ mod engine_integration_tests {
         }
     }
 
+    fn ime_on_composing_ctx() -> InputContext {
+        InputContext {
+            composing: true,
+            ..ime_on_ctx()
+        }
+    }
+
     fn ime_off_ctx() -> InputContext {
         InputContext {
             ime_on: false,
@@ -6209,6 +6216,45 @@ mod engine_integration_tests {
                     if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
             )),
             "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// T-10: engine 活性中でも composing=true なら `DelegateToOpenAxis` は発火せず、
+    /// `ModeKeyConfig.composing`（既定 Suppress）へ落ちる。MS-IME の
+    /// `KeyAssignmentMuhenkan=1` 相当で、変換中の無変換単独タップが
+    /// `SetOpen(false)` に化けて composition を破棄しないことを固定する。
+    #[test]
+    fn delegate_to_open_axis_suppressed_while_composing() {
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+
+        let d = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(100).build(),
+            &ime_on_composing_ctx(),
+        );
+        assert!(
+            d.is_consumed(),
+            "solo tap should be pending, not passthrough"
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "IME effect must not fire before solo tap is confirmed"
+        );
+
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_composing_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "composing=true must not request IME open-axis action, got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "ModeKeyConfig.composing default Suppress must not send raw VK_NONCONVERT, got {:?}",
             effects_of(&d)
         );
     }
