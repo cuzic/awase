@@ -2185,6 +2185,8 @@ impl SettingsApp {
              JIS かな直接入力を意図的に使いたい場合（= awase の Engine を OFF に\n\
              して使う場合など）のみ OFF にしてください。",
         );
+        ui.add_space(4.0);
+        half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
         ui.add_space(8.0);
         let slider_with_tip = |ui: &mut egui::Ui,
                                label: &str,
@@ -2595,6 +2597,36 @@ impl SoloTapSuppressMode {
                  {default_hijack_risk}"
             ),
         }
+    }
+}
+
+/// 「左Shift単独タップで半角英数トグルを有効にする」チェックボックス。
+/// `Off`/`All`の二択として操作する（`MsImeOnly`はGUIからは選べない中間値、
+/// チェックボックスに触れなければ既存の`MsImeOnly`設定は変更されない）。
+fn half_width_alnum_toggle_checkbox(
+    ui: &mut egui::Ui,
+    policy: &mut awase::config::HalfWidthAlnumTogglePolicy,
+) {
+    let mut enabled = *policy == awase::config::HalfWidthAlnumTogglePolicy::All;
+    if ui
+        .checkbox(
+            &mut enabled,
+            "左Shift単独タップで半角英数トグルを有効にする",
+        )
+        .on_hover_text(
+            "ONにすると: 左Shiftキーを他のキーを介さずに単独でタップすると、\n\
+             IMEをONにしたまま半角英数入力に切り替わります（もう一度タップ、\n\
+             または右Shiftタップで解除）。MS-IME・Google 日本語入力の\n\
+             両方で有効になります（実機ソーク中の機能、BUG-25 参照）。\n\
+             OFFにすると: この機能全体を無効化します。",
+        )
+        .changed()
+    {
+        *policy = if enabled {
+            awase::config::HalfWidthAlnumTogglePolicy::All
+        } else {
+            awase::config::HalfWidthAlnumTogglePolicy::Off
+        };
     }
 }
 

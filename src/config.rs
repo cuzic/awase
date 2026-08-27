@@ -60,8 +60,9 @@ pub enum DbeModeKeyPolicy {
 
 /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルをどの IME で許可するか。
 ///
-/// 既定値 `MsImeOnly` は従来動作そのもの。GJI 経路は BUG-25 の実機ソークが
-/// 完了するまで `all` の明示設定を要求する。
+/// 既定値 `MsImeOnly` は従来動作そのもの。設定GUIからは `Off`/`All` の
+/// 二択チェックボックスとして操作する（`MsImeOnly` はGUIからは選べない、
+/// config.toml に残っている場合のみ有効な中間値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HalfWidthAlnumTogglePolicy {
@@ -282,9 +283,11 @@ pub struct GeneralConfig {
     pub dbe_mode_key_policy: DbeModeKeyPolicy,
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
     ///
-    /// config.toml 専用の隠し設定。既定 `ms_ime_only` は従来動作を維持し、
-    /// `off` は MS-IME 側も含めて機能全体を止める。GJI 向け entry は
-    /// `all` を明示した場合のみ有効化される。
+    /// 既定 `ms_ime_only` は従来動作を維持する。設定GUI（上級者向け設定）
+    /// からは `off`/`all` の二択チェックボックスとして操作できる（実機ソーク
+    /// 完了、2026-08-27）——`ms_ime_only` はGUIからは選べない中間値で、
+    /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
+    /// （チェックボックスを一切操作しなければ値は変わらない）。
     pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
