@@ -140,7 +140,8 @@ declare_evidence! {
     HeuristicDefault => BeliefPool, HeuristicDefault, Low;
     /// per-HWND IME キャッシュからの復元。
     HwndCache => BeliefPool, HwndCache, Medium;
-    /// フォーカス変更直後の同期プローブ（top-level hwnd の IMC）。
+    /// フォーカス変更直後の同期プローブ（`hwndFocus` の IMC。BUG-88 参照:
+    /// 真の top-level ウィンドウとは限らない）。
     FocusProbe => BeliefPool, FocusProbe, Low;
 }
 

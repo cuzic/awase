@@ -42,17 +42,27 @@ use super::ime_event::HwndId;
 
 /// 棄却統計（グローバルアトミック）。
 static REJECTED_EPOCH_MISMATCH: AtomicU64 = AtomicU64::new(0);
-/// hwnd 不一致による棄却統計（ADR-106 決定3）。epoch は一致するが同一プロセス内で
-/// ウィンドウが変わっていた場合に増分する。
-static REJECTED_HWND_MISMATCH: AtomicU64 = AtomicU64::new(0);
+/// hwnd 不一致による棄却統計のうち、spawn 時と現在で top-level 祖先ウィンドウ
+/// （`root_hwnd`、`GetAncestor(hwnd, GA_ROOT)`）が同じだったケース（PR 109
+/// コードレビュー指摘1 Step1: ネイティブ Win32 マルチフィールドダイアログでの
+/// フィールド間 Tab 移動等、同一 top-level ウィンドウ内でのコントロール間
+/// フォーカス移動が疑われる。BUG-88 参照）。
+static REJECTED_HWND_MISMATCH_SAME_ROOT: AtomicU64 = AtomicU64::new(0);
+/// hwnd 不一致による棄却統計のうち、spawn 時と現在で `root_hwnd` が異なった
+/// ケース（真に別の top-level ウィンドウへの切替）。
+static REJECTED_HWND_MISMATCH_CROSS_ROOT: AtomicU64 = AtomicU64::new(0);
 
 /// 棄却統計のスナップショット。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RejectionStats {
     /// FocusEpoch 不一致による棄却数（累積）
     pub epoch_mismatch: u64,
-    /// hwnd 不一致による棄却数（累積、epoch は一致していたケースのみ）
-    pub hwnd_mismatch: u64,
+    /// hwnd 不一致による棄却数のうち `root_hwnd` が同じだったケース（累積、
+    /// epoch は一致していたケースのみ。BUG-88 参照）。
+    pub hwnd_mismatch_same_root: u64,
+    /// hwnd 不一致による棄却数のうち `root_hwnd` も異なったケース（累積、
+    /// epoch は一致していたケースのみ）。
+    pub hwnd_mismatch_cross_root: u64,
 }
 
 /// 棄却カウンタを読み取り、ゼロにリセットする（診断ダンプ用）。
@@ -60,7 +70,23 @@ pub struct RejectionStats {
 pub fn drain_stats() -> RejectionStats {
     RejectionStats {
         epoch_mismatch: REJECTED_EPOCH_MISMATCH.swap(0, Ordering::Relaxed),
-        hwnd_mismatch: REJECTED_HWND_MISMATCH.swap(0, Ordering::Relaxed),
+        hwnd_mismatch_same_root: REJECTED_HWND_MISMATCH_SAME_ROOT.swap(0, Ordering::Relaxed),
+        hwnd_mismatch_cross_root: REJECTED_HWND_MISMATCH_CROSS_ROOT.swap(0, Ordering::Relaxed),
+    }
+}
+
+/// hwnd 不一致棄却を `root_hwnd` の一致/不一致で分類してカウンタへ積む。
+///
+/// `ImmLikeTicket::admit()` 自身は `root_hwnd` を持たない（判定ロジックには
+/// 使わない設計、`FocusFence` は epoch/hwnd のみ）ため、`root_hwnd` に
+/// アクセスできる呼び出し元（`admit_epoch_in_app`、Windows 専用）がここを呼ぶ
+/// （PR 109 コードレビュー指摘1 Step1、計測のみで判定ロジックは変えない）。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn record_hwnd_mismatch(same_root: bool) {
+    if same_root {
+        REJECTED_HWND_MISMATCH_SAME_ROOT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        REJECTED_HWND_MISMATCH_CROSS_ROOT.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -229,8 +255,11 @@ impl ImmLikeTicket {
     /// `current` は `with_app` 内で実際のフォーカス文脈から取得した「現在」の
     /// フェンスを渡す。epoch を先に照合し（プロセス変更を検知）、一致していれば
     /// 続けて hwnd を照合する（同一プロセス内のウィンドウ変更を検知、ADR-106
-    /// 決定3）。棄却時は [`drain_stats`] で集計できるアトミックカウンタを
-    /// インクリメントする。
+    /// 決定3）。epoch 不一致は [`drain_stats`] で集計できるアトミックカウンタを
+    /// ここで直接インクリメントする。hwnd 不一致は `root_hwnd`（`admit()` 自身は
+    /// 持たない）による same_root/cross_root 分類が必要なため、呼び出し元
+    /// （`admit_epoch_in_app`、PR 109 コードレビュー指摘1 Step1）で計測する
+    /// ——この関数自体の Accept/Reject 判定ロジックは変更していない。
     #[must_use]
     pub fn admit(self, current: FocusFence) -> Admission {
         if current.epoch != self.fence.epoch {
@@ -241,7 +270,6 @@ impl ImmLikeTicket {
             });
         }
         if current.hwnd != self.fence.hwnd {
-            REJECTED_HWND_MISMATCH.fetch_add(1, Ordering::Relaxed);
             return Admission::Reject(RejectReason::FocusHwndChanged {
                 epoch: current.epoch,
                 at_spawn: self.fence.hwnd,
@@ -265,7 +293,9 @@ impl ImmLikeTicket {
 /// そのまま `log::debug!` に渡して `None` を返す。
 ///
 /// `reject_log` は呼び出し元ごとに異なる（タグ名・文言）ログ本文をそのまま渡す
-/// （ログ文言自体は既存の観測結果であり、このリファクタで変更しない）。
+/// （ログ文言自体は既存の観測結果であり、このリファクタで変更しない）。hwnd 不一致
+/// 棄却の場合のみ、`same_root`（PR 109 コードレビュー指摘1 Step1、計測専用、
+/// BUG-88）を追記する。
 ///
 /// `crate::runtime::Runtime` は `#[cfg(windows)]`（`state/` は全プラットフォーム共通）
 /// のため、この関数自体も Windows 専用にする（`conv_classify`/`eisu_recovery` と同じ
@@ -278,11 +308,23 @@ pub(crate) fn admit_epoch_in_app<R>(
     f: impl FnOnce(&mut crate::runtime::Runtime, AcceptedObservation) -> R,
 ) -> Option<R> {
     let current = app.focus_fence();
-    let Admission::Accept(accepted) = ticket.admit(current) else {
-        log::debug!("{reject_log}");
-        return None;
-    };
-    Some(f(app, accepted))
+    match ticket.admit(current) {
+        Admission::Accept(accepted) => Some(f(app, accepted)),
+        Admission::Reject(RejectReason::FocusHwndChanged { at_spawn, .. }) => {
+            // root_hwnd は計測専用（BUG-88）。判定ロジック（上の admit()）は
+            // 一切変更しておらず、ここは棄却が確定した後の分類のみ。
+            let spawn_root = crate::focus::classify::root_hwnd_of(at_spawn.0);
+            let current_root = app.platform.focus.current.root_hwnd;
+            let same_root = spawn_root == current_root;
+            record_hwnd_mismatch(same_root);
+            log::debug!("{reject_log} (same_root={same_root})");
+            None
+        }
+        Admission::Reject(_) => {
+            log::debug!("{reject_log}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]

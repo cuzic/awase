@@ -1270,11 +1270,13 @@ impl ImeStateHub {
         accepted: crate::state::probe_admission::AcceptedObservation,
     ) {
         // confidence は `Observed<FocusProbe>` 側で Low 固定
-        // （top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる
-        // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
+        // （`hwndFocus`——フォーカス中コントロールであり、真の top-level ウィンドウ
+        // ではない（PR 109 コードレビュー指摘1 Step1、BUG-88）——の IMC を読むため
+        // Qt/GJI 等では child hwnd と異なる場合がある。High confidence の
+        // ImmCrossProbe が後から上書きする）。
         //
         // hwnd は `from_probe` 内部で `accepted.hwnd()`（ticket が spawn 時に捕まえ、
-        // admission で現在値と照合済みの top-level hwnd）を使う（ADR-106 決定3）。
+        // admission で現在値と照合済みの `hwndFocus`）を使う（ADR-106 決定3）。
         // 以前は `HwndId::NULL` 固定だったため、`ObservationStore::derive_filtered`
         // が hwnd も照合するようになると全ての FocusProbe 観測が常に棄却されて
         // しまっていた。
@@ -1292,9 +1294,10 @@ impl ImeStateHub {
     /// High confidence のため `derive_any()` で即採用される。
     /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`
     /// （epoch/hwnd 照合済み、ADR-106 決定3）。hwnd は `from_cross_probe` 内部で
-    /// `accepted.hwnd()`（top-level）を使う——`write_focus_probe` と同じ理由
-    /// （`HwndId::NULL` 固定だと `derive_filtered` の hwnd 照合で常に棄却されて
-    /// しまう）。
+    /// `accepted.hwnd()`（`hwndFocus`。真の top-level ウィンドウではない——
+    /// PR 109 コードレビュー指摘1 Step1、BUG-88）を使う——`write_focus_probe` と
+    /// 同じ理由（`HwndId::NULL` 固定だと `derive_filtered` の hwnd 照合で常に
+    /// 棄却されてしまう）。
     pub(crate) fn write_imm_cross_probe(
         &mut self,
         value: bool,

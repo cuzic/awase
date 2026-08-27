@@ -2136,7 +2136,8 @@ impl Runtime {
             }
         }
 
-        // ImmCross アプリ（Qt/LINE 等）: FocusProbe は top-level hwnd の IMC を読むが、
+        // ImmCross アプリ（Qt/LINE 等）: FocusProbe は hwndFocus（真の top-level
+        // ウィンドウとは限らない、BUG-88 参照）の IMC を読むが、
         // GJI 使用時は child hwnd と IME 状態が異なる場合がある（Qt の IME コンテキスト分割）。
         // read_ime_state_full_async で child hwnd を正確に読み、High confidence 観測として記録する。
         // これにより FocusProbe (Low) が誤って false を返しても derive_any() で正しく上書きされる。

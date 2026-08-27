@@ -136,7 +136,8 @@ pub enum ObservationSource {
     ///
     /// Qt/LINE 等の ImmCross アプリで、フォーカス直後に `GetGUIThreadInfo.hwndFocus`
     /// （子 hwnd）の IMM32 状態を `read_ime_state_full_async` で読む高信頼ソース。
-    /// `FocusProbe` が top-level hwnd の IMC を読む（Low）のと対になる。
+    /// `FocusProbe` が（同じく `hwndFocus`、真の top-level ウィンドウとは限らない
+    /// ——BUG-88 参照）IMC を読む（Low）のと対になる。
     ImmCrossProbe,
     /// 観測が一切ない状態（cache miss 等）での安全デフォルトの推測。
     ///

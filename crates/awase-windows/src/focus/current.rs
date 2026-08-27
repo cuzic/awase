@@ -10,6 +10,17 @@ use crate::focus::{AppKind, FocusKind};
 #[derive(Debug)]
 pub struct CurrentFocus {
     pub hwnd: usize,
+    /// `hwnd` の top-level 祖先ウィンドウ（`GetAncestor(hwnd, GA_ROOT)`）。
+    ///
+    /// 追跡している `hwnd` はフォーカス中コントロール（`hwndFocus` 等）であり、
+    /// 必ずしも top-level ウィンドウとは限らない（ネイティブ Win32 マルチ
+    /// フィールドダイアログでの Tab 移動等、同一 top-level ウィンドウ内でコントロール
+    /// 間フォーカスが移動するケース）。`root_hwnd` はこの区別を計測するための値
+    /// であり、ADR-106 決定3 の判定ロジック（`FocusFence`/`is_identity_ok`/`admit()`）
+    /// には使わない——観測側 (`ImeObservation`) は `root_hwnd` を持たないため、
+    /// 混ぜると構造体比較が恒常的に不一致になる（PR 109 コードレビュー指摘1
+    /// Step1、known-bugs.md 参照）。
+    pub root_hwnd: usize,
     pub pid: u32,
     pub class_name: String,
     /// フォーカス中アプリの IME 制御プロファイル（`class_name` から導出してキャッシュ）。
@@ -23,6 +34,7 @@ impl CurrentFocus {
     pub const fn unfocused() -> Self {
         Self {
             hwnd: 0,
+            root_hwnd: 0,
             pid: 0,
             class_name: String::new(),
             app_profile: AppImeProfile::Standard,
@@ -37,11 +49,13 @@ impl CurrentFocus {
         #[cfg(windows)]
         {
             self.process_name = super::classify::get_process_name(pid).to_lowercase();
+            self.root_hwnd = super::classify::root_hwnd_of(hwnd);
         }
         #[cfg(not(windows))]
         {
             let _ = pid;
             self.process_name.clear();
+            self.root_hwnd = hwnd;
         }
         self.app_profile = AppImeProfile::from_class_name(&class_name);
         self.pid = pid;

@@ -11117,3 +11117,73 @@ Windows 実機での drift correction 再発火自体の確認は未実施（次
 `apply_effective_ime`）、`crates/awase-windows/src/state/platform_state.rs`
 （`write_focus_probe`）。関連: BUG-33（本追補の対象）、
 [ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定2。
+
+## BUG-88: ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測が hwnd 不一致で棄却され鮮度が低下する（Step1: 計測のみ実装）
+
+**位置づけ:** 実機不具合報告ではなく、PR 109 コードレビュー指摘1（Opus による設計 +
+敵対的レビュー）が発見した理論上のリスクに対する計測導入の記録。番号は
+[experiment-logging](../.claude/rules/experiment-logging.md) と同じ理由（並行
+ブランチとの衝突可能性）で developへのマージ時に既存の BUG 番号と衝突していないか
+再確認すること（2026-08-26 時点で `git show develop:docs/known-bugs.md` を確認し
+BUG-87 まで使用済みと確認したうえで採番）。
+
+**症状（理論上のリスク、実機未確認）:** `ImmLikeTicket::admit()`
+（`state/probe_admission.rs`）と `ObservationStore::derive_filtered` の
+`is_identity_ok`（`state/observation_store.rs`）は、`FocusFence{epoch, hwnd}`
+の `hwnd` に `GetGUIThreadInfo().hwndFocus`（フォーカス中コントロール）を使う。
+ネイティブ Win32 のマルチフィールドダイアログ（複数の `EDIT`/`COMBOBOX` 等を
+持つ単一 top-level ウィンドウ）で Tab キーによりフィールド間フォーカスが移動
+すると、`process_changed=false`・`FocusEpoch` 不変のまま `hwndFocus` だけが
+毎回変わる。進行中（spawn 済みで未完了）の `FocusProbe`/`ImmCrossProbe` の
+非同期タスクや `ConvModeMgr::observe()` の monotonic guard は、この hwnd
+変化を「フォーカスが変わった」として棄却する——実際には同一 top-level
+ウィンドウ内の移動であり、IME 状態の連続性は保たれているはずのケース。
+
+**現状の対応（Step1、本コミットの内容）:** 判定ロジック（`is_identity_ok`/
+`admit()`/`FocusFence`）は一切変更していない——上記が実害かどうかは実機
+ソークで実測してから判断する。まず計測のみ導入した:
+
+- `focus/current.rs::CurrentFocus` に `root_hwnd: usize`
+  （`GetAncestor(hwnd, GA_ROOT)`、非 Windows では `hwnd` と同値）を追加。
+  `hwnd` はフォーカス中コントロール、`root_hwnd` が真の top-level ウィンドウ。
+- `state/probe_admission.rs::RejectionStats` を3軸に分割:
+  `epoch_mismatch` / `hwnd_mismatch_same_root` / `hwnd_mismatch_cross_root`。
+  `admit_epoch_in_app`（`root_hwnd` にアクセスできる呼び出し元）が
+  `FocusHwndChanged` 棄却時に spawn 時 hwnd の `root_hwnd_of()` と現在の
+  `root_hwnd` を突き合わせて分類する。
+- `[ImmCrossProbe]`/`[FocusProbe]`/`[idle-conv-check]` 系の `reject_log` に
+  `(same_root=...)` を付記。
+- `runtime/message_handlers.rs::handle_wm_dump_journal`
+  （`WM_DUMP_JOURNAL`、Alt+変換→Alt+無変換 ×2 でトリガー）が3軸の
+  `RejectionStats` をダンプするよう追従。
+
+**計測方法（実機ソーク時の確認手順）:** ネイティブ Win32 マルチフィールド
+ダイアログ（例: メモ帳の「検索と置換」、任意の設定ダイアログ）でフィールド間を
+Tab 移動しながら typing し、`WM_DUMP_JOURNAL`（Alt+変換→Alt+無変換 ×2）で
+`[probe-admission] rejected since last dump: ... hwnd_mismatch_same_root=N
+hwnd_mismatch_cross_root=M` をダンプする。`hwnd_mismatch_same_root > 0` が
+実測できれば、この理論上のリスクが実際に発生していることの証拠になる。
+
+**計測の交絡に関する注記（重要）:** 追跡している hwnd の取得元は
+`focus/probe.rs` → `win32.rs::get_gui_thread_info_with_timeout`（~L209-212）で
+`hwndFocus` →（null なら）`hwndActive` →（`GetGUIThreadInfo` 自体が失敗/
+タイムアウトなら）`GetForegroundWindow()` と**状況により切り替わる**。この
+切替だけでも `hwnd_mismatch_same_root` が加算されうる（`hwndActive` と
+`hwndFocus` が同一 top-level 内の異なる子ウィンドウを指すことがあるため）。
+実機ログを見る際は「Tab 移動の証拠」と単純に読まず、この取得元切替との交絡が
+ないか（`GetGUIThreadInfo` のタイムアウト・失敗ログの有無）を確認すること。
+
+**状態:** Step1（計測のみ）実装済み・developへの反映待ち。Step2（`root_hwnd`
+一致時に判定ロジックへ反映する）は、この開発環境が Linux サンドボックスであり
+Windows 実機ソークができないため、**実機で `hwnd_mismatch_same_root > 0` を
+確認してから着手する**。UWP アプリでの `GA_ROOT` プロセス越えリスク（BUG-18
+近縁）も Step2 着手時に実機確認が必須。
+
+**関連ファイル:** `crates/awase-windows/src/focus/current.rs`（`root_hwnd`）、
+`crates/awase-windows/src/focus/classify.rs`（`root_hwnd_of`）、
+`crates/awase-windows/src/state/probe_admission.rs`（`RejectionStats`/
+`record_hwnd_mismatch`/`admit_epoch_in_app`）、
+`crates/awase-windows/src/runtime/message_handlers.rs`
+（`handle_wm_dump_journal`）。関連: BUG-18（AppKind Uwp 往復での文字欠落、
+`GA_ROOT` のプロセス越えリスクが近縁）、
+[ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定3。
