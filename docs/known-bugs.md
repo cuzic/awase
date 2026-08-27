@@ -2966,8 +2966,8 @@ injected=false scan=0x70 extra=0x0` という行が数秒〜十数秒後に現�
 - 連続注入時の不安定化が本当に drift correction / idle-conv-check由来かは、
   ログの完全なタイムライン相関（`[shadow-toggle]`/`[warrant-shadow]`/
   `[idle-conv-check]` 各行のシーケンス）を突き合わせるまで確定しない。
-- M4（Shift 押下中）は上記の発見のため今回未実施。ADR-107 原因B
-  （修飾キー文脈の欠落）の実機検証は依然として保留。
+- M4（Shift 押下中）は当初この発見のため後回しにしたが、同日中に実施済み
+  （下記追記参照）。原因B は確定した。
 
 **追記（同日、Composition 中 + awase 起動中での M3 再検証、2件とも成功）:**
 決定5 は「6経路すべてで Composition 中の実効性が否定的/不確定」という前提
@@ -2984,6 +2984,33 @@ awase 起動中）で**初めて**「正しい注入方式」のまま Compositi
 中は発火せずラッチもしない）を緩められる可能性を示す最初の肯定的データ**
 として記録する。ADR-107 決定5 の「6経路すべてで確認できていない」という
 根拠は、少なくとも M3 に関しては古い記述になっている。
+
+**追記（同日、M4 実施——決定0 の2×2計測が完成）: `ime_kanji`/起動/Shift 押下中
+は失敗し、ADR-107 原因B を実機で確定させた。** Precomposition・ひらがな状態
+から、`VK_LSHIFT` を押下したまま `VK_DBE_ALPHANUMERIC` をマーカ付きで送った
+ところ、**ひらがなのまま変化しなかった**（M3 と同一条件で Shift だけを
+押下中にした差分）。
+
+ログを確認したところ、**M1〜M3 では毎回確実に記録されていた
+`[hook] IME-mode vk=0xF0 down self_injected=true ... extra=0x4B45594A` が、
+M4 では一度も記録されなかった。** `ImeKeyKind::from_vk(0xF0)` は
+`Some(Alphanumeric)` を返しこの debug ログは self_injected 判定より前で
+無条件に発火するため、ログに出ないことは「イベントが awase 自身の
+低レベルフックにすら到達していない」ことを意味する。すなわち原因B は
+当初の仮説（「GJI が `Shift+Eisu` を未定義の組み合わせとして無視する」）
+より根深く、**Shift が同時に押下されていると、`VK_DBE_ALPHANUMERIC` の
+KeyDown イベント自体が OS レベルで(awase を含む)いかなるフックにも
+配送されない**らしいことが実機で確認できた（正確な OS 側メカニズムは
+未確認。「未解決の疑問」参照）。なお、注入した `VK_LSHIFT` 自体は
+`ImeKeyKind::from_vk` の対象外のため `[hook] IME-mode` ログには元々
+現れず、また自己注入は `[engine-input]` パイプラインも経由しないため、
+Shift 注入そのものの成否はこのログからは確認できなかった。
+
+この結果は ADR-107 決定2 の synthetic Shift↑ 前置を「望ましい」から
+**「無いと entry が構造的に不成立になる必須要件」**へ格上げする、決定0 の
+最終的な結論である。M4 の失敗後、物理 `Ctrl+変換`/`Ctrl+Shift+変換` は
+やはり効かず、GJI のタスクトレイアイコン直接操作でのみ復旧した点は
+追補4/5 で繰り返し観測しているパターンと一致する。
 
 **テスト:** 自動テスト不可（実機の awase/GJI/Windows Terminal 挙動に依存）。
 spike に `--sendinput-marker`/`--sendinput-shift-held`/`--sendinput-up-delay-ms`
