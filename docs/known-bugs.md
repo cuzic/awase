@@ -3022,6 +3022,35 @@ spike_langbar_input_mode.rs`(`--sendinput-marker`/`--sendinput-shift-held`/
 `--sendinput-up-delay-ms` 追加)、`docs/adr/107-bug25-gji-half-width-alnum-entry.md`
 （決定0 の実機結果を受けた更新対象）。
 
+**追補6（実装着手・2026-08-27、ADR-107 Task 1〜8）: GJI entry 本実装を
+オプトインで追加し、実機検証チェックリストを未完了として残す。**
+
+ADR-107 Task 1〜8として、`half_width_alnum_toggle` kill switch
+（既定 `ms_ime_only`、GJIは `all` 明示時のみ）、`IME_KANJI_MARKER` 付き
+`VK_DBE_ALPHANUMERIC` scan=0 + synthetic Shift↑ 前置のGJI entry、scan付き
+`VK_DBE_HIRAGANA` のGJI exit、`mem::replace` による二重exit送信防止を実装する。
+MS-IME既存経路の scan付きF2注入 + 160ms間隔4回のIMC write/verify-retryは
+排他分岐として維持する。
+
+Task 0のsettle値再測定と連続発火クールダウンの実測は未完了のため、本追補では
+settle待ち・クールダウン定数を実装しない。BUG-25のクローズ判断は、下記Task 9
+相当のWindows実機検証とソーク完了後に行う。
+
+**実機検証チェックリスト（未実施、Task 9）:**
+
+- `[hook] IME-mode vk=0xF0 ... self_injected=` 行の出現有無。
+- CapsLock 状態が変化していないこと。
+- 実際に打鍵した文字が半角英数になること（IMC read-back を成功判定に使わない）。
+- トグルON→フォーカス変更→戻る、を往復しても英数状態が持ち越されないこと。
+- フォーカス変更先のアプリでexitが実行された際、切替先アプリのIMEが英数のままに
+  なっていないこと。
+- トグルON→右Shift緊急解除、とトグルON→2回目左Shiftタップ、の両方でかなに戻ること。
+- Exit（`VK_DBE_HIRAGANA`, 0xF2）がscan付きで正しく実効すること。
+- `VK_DBE_HIRAGANA` のkeymap束縛がComposition/Precomposition両方で
+  `InputModeHiragana` として働くこと。
+- Task 0（settle値の再測定）を経て `half_width_alnum_toggle = "all"` を明示設定した
+  状態でソーク運用を開始すること。
+
 ---
 
 ## BUG-26: FocusChanged 直後 conv が既に NATIVE の場合、idle-conv-check の steady-state 分岐が engine 復帰を永久に見送る
