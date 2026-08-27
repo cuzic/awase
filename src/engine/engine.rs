@@ -12,7 +12,9 @@
 //! - Engine は InputContext のスナップショットだけで判断する（先読みしない）
 
 use crate::config::ParsedKeyCombo;
-use crate::types::{ContextChange, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode};
+use crate::types::{
+    ContextChange, KeyClassification, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode,
+};
 
 use super::decision::{
     ActivationState, Decision, Effect, EffectVec, EngineCommand, ImeEffect, InactiveReason,
@@ -726,15 +728,42 @@ impl Engine {
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
+        let engine_active = self.compute_active(ctx);
+        // engine 活性中の「修飾なし親指キー単独押下」は IME 系コンボ全体から
+        // 除外し、Phase 3 の同時打鍵判定へ渡す。engine_on/engine_off は
+        // 緊急復帰経路を塞がないよう対象外のままにする。
+        let suppress_ime_combos = engine_active && Self::is_bare_thumb(event, ctx.modifiers);
+
         self.special_keys
             .match_event(
                 event,
                 ctx.modifiers,
                 self.adapter.is_enabled(),
-                self.compute_active(ctx),
+                engine_active,
+                suppress_ime_combos,
             )
-            .or_else(|| self.match_ime_on_off_auto(ctx, event))
-            .or_else(|| self.match_ime_toggle_auto(ctx, event))
+            .or_else(|| {
+                (!suppress_ime_combos)
+                    .then(|| self.match_ime_on_off_auto(ctx, event))
+                    .flatten()
+            })
+            .or_else(|| {
+                (!suppress_ime_combos)
+                    .then(|| self.match_ime_toggle_auto(ctx, event))
+                    .flatten()
+            })
+    }
+
+    /// 修飾キーを伴わない親指キー押下か。Phase 1/Phase 1.5 の判定が
+    /// 食い違わないよう、親指キーの bare 判定はここに集約する。
+    pub(crate) const fn is_bare_thumb(event: &RawKeyEvent, m: ModifierState) -> bool {
+        matches!(
+            event.key_classification,
+            KeyClassification::LeftThumb | KeyClassification::RightThumb
+        ) && !m.ctrl
+            && !m.shift
+            && !m.alt
+            && !m.win
     }
 
     /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
@@ -897,6 +926,7 @@ impl SpecialKeyCombos {
         modifiers: ModifierState,
         engine_enabled: bool,
         engine_active: bool,
+        suppress_ime_combos: bool,
     ) -> Option<SpecialKeyMatch> {
         // エンジン ON コンボキー。
         //
@@ -948,7 +978,7 @@ impl SpecialKeyCombos {
         // `keys.ime_detect.toggle`既定値「漢字」と衝突していた実例で発覚）。
         // 既定値では衝突しないよう調整済みだが、ユーザーが手動で同じキーを
         // 両方に設定した場合も構造的に壊れないよう、ここで一括ガードする。
-        if event.ime_relevance.sync_direction.is_none() {
+        if event.ime_relevance.sync_direction.is_none() && !suppress_ime_combos {
             if self
                 .ime_on
                 .iter()

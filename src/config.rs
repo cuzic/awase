@@ -767,6 +767,57 @@ impl AppConfig {
         }
     }
 
+    fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
+        fn canonical_thumb_key_name(s: &str) -> &str {
+            match s.trim() {
+                "無変換" | "VK_NONCONVERT" => "VK_NONCONVERT",
+                "変換" | "VK_CONVERT" => "VK_CONVERT",
+                other => other,
+            }
+        }
+
+        fn is_bare_same_key(combo: &str, thumb_key: &str) -> bool {
+            let combo = combo.trim();
+            !combo.contains('+')
+                && canonical_thumb_key_name(combo)
+                    .eq_ignore_ascii_case(canonical_thumb_key_name(thumb_key))
+        }
+
+        fn warn_for_field(
+            field: &str,
+            combos: &[String],
+            thumb_key: &str,
+            thumb_label: &str,
+            w: &mut Vec<String>,
+        ) {
+            if combos
+                .iter()
+                .any(|combo| is_bare_same_key(combo, thumb_key))
+            {
+                w.push(format!(
+                    "{field} に親指キー（{thumb_label}）が修飾キーなしで設定されています。\
+                     IME が ON の間は同時打鍵判定を優先するため、このキーは IME ON/OFF \
+                     コンボには使われません。"
+                ));
+            }
+        }
+
+        for (thumb_key, thumb_label) in [
+            (&g.left_thumb_key, g.left_thumb_key.as_str()),
+            (&g.right_thumb_key, g.right_thumb_key.as_str()),
+        ] {
+            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, thumb_label, w);
+            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, thumb_label, w);
+            warn_for_field(
+                "keys.ime_toggle",
+                &keys.ime_toggle,
+                thumb_key,
+                thumb_label,
+                w,
+            );
+        }
+    }
+
     /// `keyboard_model = "us"` のとき、無変換/変換キー前提のデフォルト値が
     /// 残っていないか確認する。US キーボードにはこれらの物理キーが存在しない。
     fn validate_keyboard_model(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
@@ -887,6 +938,7 @@ impl AppConfig {
         Self::validate_layouts(&mut general, &mut warnings);
         Self::validate_thumb_keys(&general, &mut warnings);
         Self::validate_dedicated_fn_key(&general, &mut warnings);
+        Self::validate_thumb_key_in_ime_combos(&general, &self.keys, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
@@ -1512,6 +1564,33 @@ default_layout = "nicola.yab"
             AppConfig::validate_dedicated_fn_key(&general, &mut warnings);
             assert_eq!(warnings.len(), 1, "{vk} は安全範囲外として警告されるべき");
         }
+    }
+
+    /// T-16: IME コンボに bare 親指キーを設定した場合だけ警告する。
+    /// Ctrl+無変換のような修飾付きコンボは従来どおり許容する。
+    #[test]
+    fn test_validate_warns_for_bare_thumb_key_in_ime_combo_only() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+
+[keys]
+ime_on = ["VK_NONCONVERT"]
+ime_off = ["Ctrl+VK_NONCONVERT"]
+ime_toggle = []
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("keys.ime_on") && w.contains("親指キー")),
+            "bare thumb key in keys.ime_on should warn, got: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("keys.ime_off")),
+            "Ctrl+無変換 must not warn, got: {warnings:?}"
+        );
     }
 
     // parse_key_combo テストは awase-windows に移動済み

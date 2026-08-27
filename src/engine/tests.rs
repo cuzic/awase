@@ -5720,7 +5720,7 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
-            vk: VK_CONVERT,
+            vk: VK_F21,
         };
         let special = SpecialKeyCombos {
             engine_on: vec![],
@@ -5731,11 +5731,95 @@ mod engine_integration_tests {
         };
         let mut engine = make_engine_with_special(special);
 
-        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
         assert!(d.is_consumed());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+    }
+
+    /// T-1: engine 活性中の bare 親指キーは `keys.ime_on` より Phase 3 の
+    /// 同時打鍵判定を優先する。無変換+A がチョード成立し、冗長な
+    /// `SetOpen(true)` は出ない。
+    #[test]
+    fn bare_thumb_ime_on_combo_is_suppressed_while_engine_active_and_chord_wins() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
+
+        assert!(d1.is_consumed());
+        assert!(d2.is_consumed());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            )),
+            "bare 無変換+A should be handled as a left-thumb chord, got {:?}",
+            effects_of(&d2)
+        );
+        assert!(
+            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "bare thumb chord path must not emit SetOpen, d1={:?} d2={:?}",
+            effects_of(&d1),
+            effects_of(&d2)
+        );
+    }
+
+    /// T-2: bare 親指キーだけを抑制する。Ctrl+無変換は従来どおり
+    /// `keys.ime_off` にマッチする。
+    #[test]
+    fn ctrl_thumb_ime_off_combo_still_matches_while_engine_active() {
+        let bare_ime_on = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let ctrl_ime_off = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![bare_ime_on],
+            ime_off: vec![ctrl_ime_off],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ctx);
+
+        assert!(d.is_consumed());
+        assert!(has_effect(&d, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
     }
 
@@ -5745,7 +5829,7 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
-            vk: VK_CONVERT,
+            vk: VK_F21,
         };
         let special = SpecialKeyCombos {
             engine_on: vec![],
@@ -5756,7 +5840,7 @@ mod engine_integration_tests {
         };
         let mut engine = make_engine_with_special(special);
 
-        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
         assert!(d.is_consumed());
         assert!(has_effect(&d, |e| matches!(
             e,
@@ -6461,7 +6545,7 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
-            vk: VK_CONVERT,
+            vk: VK_F21,
         };
         let special = SpecialKeyCombos {
             engine_on: vec![],
@@ -6472,7 +6556,7 @@ mod engine_integration_tests {
         };
         let mut engine = make_engine_with_special(special);
 
-        let d1 = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
+        let d1 = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
         let setopen_count_1 = count_set_open_effects(&d1);
         assert_eq!(
             setopen_count_1, 1,
@@ -7375,7 +7459,7 @@ mod engine_integration_tests {
             ctrl: false,
             shift: false,
             alt: false,
-            vk: VK_CONVERT,
+            vk: VK_F21,
         };
         let special = SpecialKeyCombos {
             engine_on: vec![],
@@ -7386,7 +7470,7 @@ mod engine_integration_tests {
         };
         let engine = make_engine_with_special(special);
 
-        assert!(engine.matches_ime_off(&ime_on_ctx(), &Ev::down(VK_CONVERT).at(0).build()));
+        assert!(engine.matches_ime_off(&ime_on_ctx(), &Ev::down(VK_F21).at(0).build()));
         assert!(!engine.matches_ime_off(&ime_on_ctx(), &Ev::down(VK_A).at(0).build()));
     }
 
