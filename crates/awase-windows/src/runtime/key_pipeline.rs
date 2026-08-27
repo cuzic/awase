@@ -1460,8 +1460,16 @@ impl Runtime {
             && std::mem::take(&mut self.platform_state.gate.left_shift_tap_candidate);
         self.platform_state.gate.left_shift_tap_candidate = false;
 
-        let composing =
-            self.build_ctx().composing || crate::tsf::observer::gji_candidate_visible_now();
+        // 決定5の composition ガードは GJI entry 専用（決定7 項目4）。MS-IME
+        // entry は元々 composition を一切見ていなかった（IMC write は non-invasive
+        // な conv セットのため composition 中でも安全、既存の6呼び出し元と同じ
+        // 前提）ので、`uses_imc_conv_write` の間は常に `false` を渡し既存挙動を
+        // 変えない。GJI 側の composition 判定自体は `Output::
+        // send_gji_half_width_alnum_toggle` 内でも独立に行う（決定5、Task 5）ため
+        // ここでの計算は「MS-IME entry を誤ってブロックしない」ためだけの安全側の
+        // 事前フィルタであり、二重判定になっても実害はない。
+        let composing = !uses_imc_conv_write
+            && (self.build_ctx().composing || crate::tsf::observer::gji_candidate_visible_now());
         match plan_half_width_alnum_action(
             is_left_shift_tap,
             self.platform_state.gate.half_width_alnum_toggle_active,
@@ -1533,6 +1541,7 @@ impl Runtime {
                 if self.platform.output.send_gji_half_width_alnum_toggle(
                     HalfWidthAlnumAction::Enter,
                     self.platform_state.ime.effective_open(),
+                    true,
                 ) {
                     self.platform_state.gate.half_width_alnum_toggle_active = true;
                     self.platform_state.gate.last_half_width_entry_ms = Some(now_tick.0);
@@ -1842,10 +1851,27 @@ impl Runtime {
         } else if was_toggle_active
             && active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
         {
-            let _ = self.platform.output.send_gji_half_width_alnum_toggle(
+            let sent = self.platform.output.send_gji_half_width_alnum_toggle(
                 HalfWidthAlnumAction::Exit,
                 self.platform_state.ime.effective_open(),
+                prepend_synthetic_shift_up,
             );
+            if !sent {
+                // GJI には MS-IME 分岐のような IMC write の保険（640ms リトライ
+                // ループ）が無い。SendInput が見送られた（Win/Alt 押下中 or
+                // effective_open=false）のに belief だけ AssumedRomaji へ進めると、
+                // 実 GJI は半角英数のままなのに engine が pass-through を抜けて
+                // 生ローマ字を送る — 追補3が起こした「かな入力が壊れる」実害の
+                // 再来になる。belief は据え置き、ラッチも戻して次のタップ/緊急
+                // 解除で再試行できるようにする。
+                self.platform_state.gate.half_width_alnum_toggle_active = true;
+                log::warn!(
+                    "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
+                     (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
+                     可能性が高いため belief を据え置き、ラッチを true に戻して再試行に備える"
+                );
+                return;
+            }
         } else if was_toggle_active {
             log::debug!(
                 "[shift-conv-guard] 半角英数トグル復元 write をスキップ \

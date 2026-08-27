@@ -413,7 +413,7 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
     prepend_synthetic_shift_up: bool,
 ) -> bool {
     use crate::tsf::output::{make_key_input_ex, make_scan_key_input, IME_KANJI_MARKER};
-    use crate::vk::{VK_DBE_HIRAGANA, VK_SHIFT};
+    use crate::vk::{VK_DBE_HIRAGANA, VK_LSHIFT, VK_RSHIFT};
 
     if crate::hook::win_key_held() {
         log::debug!(
@@ -424,9 +424,22 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
 
     let held = HeldModifiers::read();
     let held_skip_alt = HeldModifiers { alt: false, ..held };
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(7);
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(8);
     if prepend_synthetic_shift_up {
-        inputs.push(make_scan_key_input(VK_SHIFT, true, IME_KANJI_MARKER));
+        // 呼び出し元は「どちら側の物理 Shift が押されたか」を運ばない
+        // （左Shift単独タップ＝entry、左/右いずれかの緊急解除＝exit、いずれも
+        // ここには vk_code が届かない）。汎用 VK_SHIFT(0x10) 単体で release を
+        // 送ると `MapVirtualKeyW` は左Shift の scan(0x2A) しか返さず、Windows の
+        // 内部キー状態は VK_LSHIFT のみ更新され VK_RSHIFT 側は更新されない
+        // （awase 自身のフックが実キー up を CallNextHookEx 前に消費/遅延させて
+        // いるため、OS 側の状態は synthetic 側でしか更新できない）。右Shift
+        // 起点の緊急解除で OS/GJI から見た Shift が押下中のまま残ると、決定0
+        // M4 が実機で確定させた「Shift 押下中は DBE キーの KeyDown 自体が
+        // フックに配送されない」条件を踏み、脱出経路そのものが不発になる。
+        // 左右両方の synthetic Shift up を送る（KeyUp の重複は無害、既存の
+        // 復元経路と同じ根拠）。
+        inputs.push(make_scan_key_input(VK_LSHIFT, true, IME_KANJI_MARKER));
+        inputs.push(make_scan_key_input(VK_RSHIFT, true, IME_KANJI_MARKER));
     }
     held_skip_alt.push_release(&mut inputs);
     if vk == VK_DBE_HIRAGANA {

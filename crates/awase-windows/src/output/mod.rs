@@ -1055,7 +1055,12 @@ impl Output {
     ///
     /// 呼び出し元が `effective_open()` を評価して `ime_open` に渡す。Output は
     /// `ImeModel` への参照を持たないため、ここで belief を自前評価しない。
+    /// `prepend_synthetic_shift_up` は呼び出し元にそのまま委譲する（entry は
+    /// 常に物理左Shiftタップ起点なので true 固定、exit は
+    /// `kp_restore_kana_from_half_width` の引数をそのまま伝播する）。
     /// Task 0 未完了のため settle 待ち・連続発火クールダウンはまだ実装しない。
+    /// 戻り値 `false`（未送信）の場合、呼び出し元は belief を進めてはならない
+    /// （INV-D）。exit 側は呼び出し元でラッチを戻す必要がある点に注意。
     #[allow(unsafe_code)]
     // SendInput ヘルパー呼び出しに必要。ゲート判定はこの関数内で完結する。
     #[must_use]
@@ -1063,6 +1068,7 @@ impl Output {
         &self,
         action: HalfWidthAlnumAction,
         ime_open: bool,
+        prepend_synthetic_shift_up: bool,
     ) -> bool {
         let vk = match action {
             HalfWidthAlnumAction::None => return false,
@@ -1095,7 +1101,9 @@ impl Output {
             }
         }
         // SAFETY: `send_ime_mode_key_with_shift_release_prefix` は SendInput のみを行う。
-        unsafe { crate::ime::send_ime_mode_key_with_shift_release_prefix(vk, true) }
+        unsafe {
+            crate::ime::send_ime_mode_key_with_shift_release_prefix(vk, prepend_synthetic_shift_up)
+        }
     }
 
     /// `send_keys` 完了時刻を記録する内部ヘルパー。
