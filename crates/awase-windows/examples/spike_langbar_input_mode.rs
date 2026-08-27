@@ -118,8 +118,9 @@ mod langbar_probe {
         ITfSource, ITfThreadMgr, GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DispatchMessageW, GetForegroundWindow, GetGUIThreadInfo, PeekMessageW, PostMessageW,
-        TranslateMessage, GUITHREADINFO, MSG, PM_REMOVE, WM_KEYDOWN, WM_KEYUP,
+        DispatchMessageW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW,
+        GetWindowThreadProcessId, PeekMessageW, PostMessageW, TranslateMessage, GUITHREADINFO, MSG,
+        PM_REMOVE, WM_KEYDOWN, WM_KEYUP,
     };
 
     /// GJI ビルドの「クラシック言語バー」入力モードボタン GUID(ポップアップ
@@ -188,6 +189,29 @@ mod langbar_probe {
         } else {
             Some(fg)
         }
+    }
+
+    /// `hwnd` のウィンドウタイトル・クラス名・所属プロセス PID を1行で返す。
+    /// `--postmsg` 等が実際に狙っているウィンドウが期待通りか目視確認する
+    /// ための診断用(対象取り違えは無言の失敗として現れるため)。
+    fn describe_hwnd(hwnd: HWND) -> String {
+        let mut title_buf = [0u16; 256];
+        // SAFETY: title_buf はこのスコープでのみ生存する固定長バッファ。
+        let title_len =
+            usize::try_from(unsafe { GetWindowTextW(hwnd, &mut title_buf) }.max(0)).unwrap_or(0);
+        let title = String::from_utf16_lossy(&title_buf[..title_len]);
+
+        let mut class_buf = [0u16; 256];
+        // SAFETY: class_buf はこのスコープでのみ生存する固定長バッファ。
+        let class_len =
+            usize::try_from(unsafe { GetClassNameW(hwnd, &mut class_buf) }.max(0)).unwrap_or(0);
+        let class = String::from_utf16_lossy(&class_buf[..class_len]);
+
+        let mut pid = 0u32;
+        // SAFETY: hwnd は呼び出し元が取得した有効なウィンドウハンドル。
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+
+        format!("hwnd={hwnd:?} pid={pid} class={class:?} title={title:?}")
     }
 
     /// `mgr` から候補 GUID を順に試し、最初に見つかった
@@ -578,7 +602,7 @@ mod langbar_probe {
         let Some(hwnd) = find_target_hwnd() else {
             anyhow::bail!("フォーカス中のウィンドウが見つかりません");
         };
-        println!("target hwnd={hwnd:?}");
+        println!("target: {}", describe_hwnd(hwnd));
         post_vk(hwnd, VK_DBE_ALPHANUMERIC, "eisu")?;
         println!(
             "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(戻り値は\
@@ -597,7 +621,7 @@ mod langbar_probe {
         let Some(hwnd) = find_target_hwnd() else {
             anyhow::bail!("フォーカス中のウィンドウが見つかりません");
         };
-        println!("target hwnd={hwnd:?}");
+        println!("target: {}", describe_hwnd(hwnd));
         post_vk(hwnd, VK_DBE_HIRAGANA, "step1-hiragana(冪等)")?;
         std::thread::sleep(Duration::from_millis(100));
         post_vk(
