@@ -2513,7 +2513,7 @@ fn wm_execute_effects_post_sites_are_limited_to_batch_boundaries() {
 fn deliver_key_event_nontext_early_return_excludes_ime_off_rescue_replay() {
     let content = read_crate_file("src/runtime/message_handlers.rs");
     let production = production_code_only(&content);
-    let body = extract_fn_body(&production, "pub(crate) fn deliver_key_event(");
+    let body = extract_fn_body(production, "pub(crate) fn deliver_key_event(");
     let nontext_idx = body
         .find("FocusKind::NonText")
         .expect("deliver_key_event must check FocusKind::NonText");
@@ -2541,7 +2541,7 @@ fn deliver_key_event_nontext_early_return_excludes_ime_off_rescue_replay() {
 fn timer_ime_off_rescue_calls_begin_key_batch_before_deliver_key_event() {
     let content = read_crate_file("src/runtime/message_handlers.rs");
     let production = production_code_only(&content);
-    let timer_body = extract_fn_body(&production, "pub(crate) unsafe fn handle_wm_timer(");
+    let timer_body = extract_fn_body(production, "pub(crate) unsafe fn handle_wm_timer(");
     let branch_start = timer_body
         .find("crate::TIMER_IME_OFF_RESCUE")
         .expect("handle_wm_timer must handle TIMER_IME_OFF_RESCUE");
