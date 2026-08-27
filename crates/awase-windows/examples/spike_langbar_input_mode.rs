@@ -193,7 +193,16 @@ mod langbar_probe {
     /// `mgr` から候補 GUID を順に試し、最初に見つかった
     /// `(名前, ITfLangBarItemButton)` を返す。
     fn find_button(mgr: &ITfLangBarItemMgr) -> Option<(&'static str, ITfLangBarItemButton)> {
-        for (name, guid) in candidate_buttons() {
+        find_button_from(mgr, &candidate_buttons())
+    }
+
+    /// `find_button` の候補リストを外から指定できる版。特定の GUID だけを
+    /// 狙い撃ちしてテストしたい場合に使う(`--select-inputmode` 等)。
+    fn find_button_from(
+        mgr: &ITfLangBarItemMgr,
+        candidates: &[(&'static str, GUID)],
+    ) -> Option<(&'static str, ITfLangBarItemButton)> {
+        for &(name, guid) in candidates {
             // SAFETY: mgr は呼び出し元が生成した有効な COM 参照。
             if let Ok(item) = unsafe { mgr.GetItem(&raw const guid) } {
                 if let Ok(button) = item.cast::<ITfLangBarItemButton>() {
@@ -327,11 +336,27 @@ mod langbar_probe {
     }
 
     pub(crate) fn run(select_uid: Option<u32>) -> anyhow::Result<()> {
+        run_with_candidates(select_uid, &candidate_buttons())
+    }
+
+    /// `GUID_LBI_INPUTMODE`(Win8+ タスクバー入力モードアイコン)だけを
+    /// 狙い撃ちする版。クラシック言語バーボタン(`kTipLangBarItem_Button`)
+    /// 側で `OnMenuSelect` が2回とも実効を持たなかったため、現代の
+    /// Windows で実際に使われている方の実装を切り分けて試す。
+    pub(crate) fn run_inputmode_only(select_uid: Option<u32>) -> anyhow::Result<()> {
+        let inputmode_only: [(&'static str, GUID); 1] = [candidate_buttons()[1]];
+        run_with_candidates(select_uid, &inputmode_only)
+    }
+
+    fn run_with_candidates(
+        select_uid: Option<u32>,
+        candidates: &[(&'static str, GUID)],
+    ) -> anyhow::Result<()> {
         with_thread_mgr(|thread_mgr| {
             let mgr: ITfLangBarItemMgr = thread_mgr.cast()?;
             println!("ITfLangBarItemMgr(via ITfThreadMgr::cast): OK");
 
-            if let Some((name, button)) = find_button(&mgr) {
+            if let Some((name, button)) = find_button_from(&mgr, candidates) {
                 println!("GetItem: OK ({name})");
                 let menu: ITfMenu = MenuRecorder.into();
                 // SAFETY: button/menu は共に有効な COM 参照。InitMenu 自体は
@@ -613,6 +638,13 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--postmsg-idempotent") {
         return langbar_probe::post_idempotent_half_alphanumeric();
+    }
+    if let Some(uid) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--select-inputmode=").map(str::to_owned))
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        return langbar_probe::run_inputmode_only(Some(uid));
     }
 
     let select_uid = args
