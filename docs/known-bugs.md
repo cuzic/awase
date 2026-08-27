@@ -11128,7 +11128,7 @@ BUG-87 まで使用済みと確認した時点での次番号）として暫定�
 への rebase 時に BUG-88 が別件（HOOK_KEYS リング overflow、ADR-102/105
 コードレビュー指摘2）に既に使われていたと判明したため BUG-91 に採番し直した
 （[main-develop-branch-flow](../.claude/rules/main-develop-branch-flow.md) の
-番号衝突対応、本ブランチでは BUG-81→BUG-90 と合わせて2件目）。
+番号衝突対応、本ブランチでは BUG-81→BUG-90→BUG-92 の変遷と合わせて2件目）。
 
 **症状（理論上のリスク、実機未確認）:** `ImmLikeTicket::admit()`
 （`state/probe_admission.rs`）と `ObservationStore::derive_filtered` の
