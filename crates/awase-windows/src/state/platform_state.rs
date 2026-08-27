@@ -1271,7 +1271,7 @@ impl ImeStateHub {
     ) {
         // confidence は `Observed<FocusProbe>` 側で Low 固定
         // （`hwndFocus`——フォーカス中コントロールであり、真の top-level ウィンドウ
-        // ではない（PR 109 コードレビュー指摘1 Step1、BUG-88）——の IMC を読むため
+        // ではない（PR 109 コードレビュー指摘1 Step1、BUG-91）——の IMC を読むため
         // Qt/GJI 等では child hwnd と異なる場合がある。High confidence の
         // ImmCrossProbe が後から上書きする）。
         //
@@ -1295,7 +1295,7 @@ impl ImeStateHub {
     /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`
     /// （epoch/hwnd 照合済み、ADR-106 決定3）。hwnd は `from_cross_probe` 内部で
     /// `accepted.hwnd()`（`hwndFocus`。真の top-level ウィンドウではない——
-    /// PR 109 コードレビュー指摘1 Step1、BUG-88）を使う——`write_focus_probe` と
+    /// PR 109 コードレビュー指摘1 Step1、BUG-91）を使う——`write_focus_probe` と
     /// 同じ理由（`HwndId::NULL` 固定だと `derive_filtered` の hwnd 照合で常に
     /// 棄却されてしまう）。
     pub(crate) fn write_imm_cross_probe(

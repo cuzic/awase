@@ -46,7 +46,7 @@ static REJECTED_EPOCH_MISMATCH: AtomicU64 = AtomicU64::new(0);
 /// （`root_hwnd`、`GetAncestor(hwnd, GA_ROOT)`）が同じだったケース（PR 109
 /// コードレビュー指摘1 Step1: ネイティブ Win32 マルチフィールドダイアログでの
 /// フィールド間 Tab 移動等、同一 top-level ウィンドウ内でのコントロール間
-/// フォーカス移動が疑われる。BUG-88 参照）。
+/// フォーカス移動が疑われる。BUG-91 参照）。
 static REJECTED_HWND_MISMATCH_SAME_ROOT: AtomicU64 = AtomicU64::new(0);
 /// hwnd 不一致による棄却統計のうち、spawn 時と現在で `root_hwnd` が異なった
 /// ケース（真に別の top-level ウィンドウへの切替）。
@@ -58,7 +58,7 @@ pub struct RejectionStats {
     /// FocusEpoch 不一致による棄却数（累積）
     pub epoch_mismatch: u64,
     /// hwnd 不一致による棄却数のうち `root_hwnd` が同じだったケース（累積、
-    /// epoch は一致していたケースのみ。BUG-88 参照）。
+    /// epoch は一致していたケースのみ。BUG-91 参照）。
     pub hwnd_mismatch_same_root: u64,
     /// hwnd 不一致による棄却数のうち `root_hwnd` も異なったケース（累積、
     /// epoch は一致していたケースのみ）。
@@ -295,7 +295,7 @@ impl ImmLikeTicket {
 /// `reject_log` は呼び出し元ごとに異なる（タグ名・文言）ログ本文をそのまま渡す
 /// （ログ文言自体は既存の観測結果であり、このリファクタで変更しない）。hwnd 不一致
 /// 棄却の場合のみ、`same_root`（PR 109 コードレビュー指摘1 Step1、計測専用、
-/// BUG-88）を追記する。
+/// BUG-91）を追記する。
 ///
 /// `crate::runtime::Runtime` は `#[cfg(windows)]`（`state/` は全プラットフォーム共通）
 /// のため、この関数自体も Windows 専用にする（`conv_classify`/`eisu_recovery` と同じ
@@ -311,7 +311,7 @@ pub(crate) fn admit_epoch_in_app<R>(
     match ticket.admit(current) {
         Admission::Accept(accepted) => Some(f(app, accepted)),
         Admission::Reject(RejectReason::FocusHwndChanged { at_spawn, .. }) => {
-            // root_hwnd は計測専用（BUG-88）。判定ロジック（上の admit()）は
+            // root_hwnd は計測専用（BUG-91）。判定ロジック（上の admit()）は
             // 一切変更しておらず、ここは棄却が確定した後の分類のみ。
             let spawn_root = crate::focus::classify::root_hwnd_of(at_spawn.0);
             let current_root = app.platform.focus.current.root_hwnd;

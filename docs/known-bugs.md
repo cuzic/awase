@@ -11118,14 +11118,17 @@ Windows 実機での drift correction 再発火自体の確認は未実施（次
 （`write_focus_probe`）。関連: BUG-33（本追補の対象）、
 [ADR-106](adr/106-fence-ownership-and-observation-provenance.md) 決定2。
 
-## BUG-88: ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測が hwnd 不一致で棄却され鮮度が低下する（Step1: 計測のみ実装）
+## BUG-91: ネイティブ Win32 マルチフィールドダイアログでのフィールド間 Tab 直後、進行中の FocusProbe/ImmCrossProbe/idle-conv-check の観測が hwnd 不一致で棄却され鮮度が低下する（Step1: 計測のみ実装）
 
 **位置づけ:** 実機不具合報告ではなく、PR 109 コードレビュー指摘1（Opus による設計 +
-敵対的レビュー）が発見した理論上のリスクに対する計測導入の記録。番号は
+敵対的レビュー）が発見した理論上のリスクに対する計測導入の記録。番号は当初
 [experiment-logging](../.claude/rules/experiment-logging.md) と同じ理由（並行
-ブランチとの衝突可能性）で developへのマージ時に既存の BUG 番号と衝突していないか
-再確認すること（2026-08-26 時点で `git show develop:docs/known-bugs.md` を確認し
-BUG-87 まで使用済みと確認したうえで採番）。
+ブランチとの衝突可能性）で BUG-88（`git show develop:docs/known-bugs.md` で
+BUG-87 まで使用済みと確認した時点での次番号）として暫定採番していたが、develop
+への rebase 時に BUG-88 が別件（HOOK_KEYS リング overflow、ADR-102/105
+コードレビュー指摘2）に既に使われていたと判明したため BUG-91 に採番し直した
+（[main-develop-branch-flow](../.claude/rules/main-develop-branch-flow.md) の
+番号衝突対応、本ブランチでは BUG-81→BUG-90 と合わせて2件目）。
 
 **症状（理論上のリスク、実機未確認）:** `ImmLikeTicket::admit()`
 （`state/probe_admission.rs`）と `ObservationStore::derive_filtered` の
