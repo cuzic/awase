@@ -8,6 +8,7 @@ use awase::kana_table::KanaTable;
 use awase::scanmap::PhysicalPos;
 use awase::types::{SpecialKey, VkCode};
 use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
+use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
 mod startup_failure;
@@ -2817,15 +2818,21 @@ const THUMB_KEY_OPTIONS: &[(&str, &str)] = &[
 /// が書き込まれるが、`config.rs` のデフォルト値は漢字表記 `"無変換"` のまま
 /// （表記が統一されていない）。無変換キー単独タップ設定の表示条件が漢字表記
 /// だけを見ていたため、ドロップダウンで選び直すと表示が消える不具合があった
-/// （GitHub issue #99、report `01M10SA5K7J4HZ3C5R1BF6K2QK`）。両表記を見る。
+/// （GitHub issue #99、report `01M10SA5K7J4HZ3C5R1BF6K2QK`）。
+///
+/// 独自の別名リストを持たず、実際のキー入力解決に使われる
+/// `VkCodeExt::from_name`（`vk.rs`、`"VK_MUHENKAN"`/`"Nonconvert"` 等の
+/// 別名も含む）に解決させて比較する。文字列比較の一覧を二重管理すると、
+/// vk.rs 側に別名が追加されたときに表示条件だけ追従し忘れて同じ不具合が
+/// 再発するため（/code-review 指摘）。
 fn is_muhenkan_thumb_key(key: &str) -> bool {
-    key == "無変換" || key == "VK_NONCONVERT"
+    VkCode::from_name(key) == Some(awase_windows::vk::VK_NONCONVERT)
 }
 
 /// `left_thumb_key`/`right_thumb_key` が変換キーを指しているか。
 /// [`is_muhenkan_thumb_key`] の変換キー版。
 fn is_henkan_thumb_key(key: &str) -> bool {
-    key == "変換" || key == "VK_CONVERT"
+    VkCode::from_name(key) == Some(awase_windows::vk::VK_CONVERT)
 }
 
 /// 左親指/右親指キーの候補にのみ追加する、Alt なりすまし用エントリ。
