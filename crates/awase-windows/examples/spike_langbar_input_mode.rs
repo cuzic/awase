@@ -495,54 +495,94 @@ mod langbar_probe {
     // WM_KEYDOWN/WM_KEYUP 直接注入(SendInput を経由しない)
     // ---------------------------------------------------------------
 
-    /// `VK_DBE_ALPHANUMERIC`(英数)の VK コード。`SendInput` 経由の注入は
-    /// BUG-25 追補1・3(`docs/known-bugs.md`)で scan=0x3A/scan=0 の両方とも
+    /// `VK_DBE_ALPHANUMERIC`(英数、`Session::ToggleAlphanumericMode` に
+    /// バインドされたトグルコマンド)。`SendInput` 経由の注入は BUG-25
+    /// 追補1・3(`docs/known-bugs.md`)で scan=0x3A/scan=0 の両方とも
     /// **awase 自身の `WH_KEYBOARD_LL` フックにすら届かない**ことが実機で
     /// 確認済み(OS/ドライバ層で握り潰されている疑い)。本関数は `SendInput`
     /// を一切使わず、対象ウィンドウのメッセージキューへ `PostMessageW` で
     /// 直接 `WM_KEYDOWN`/`WM_KEYUP` を投げる——低レベルフックチェーンを
-    /// 完全に迂回する第5の経路。GJI の TSF キールーティングがこの経路を
-    /// 実際の物理キー入力として処理する保証はなく未検証。
+    /// 完全に迂回する第5の経路。**実機確認済み(2026-08-27): 実際に半角英数へ
+    /// 切り替わることを確認したが、トグルであることも確認した**(2回目実行で
+    /// ひらがなに戻った)。
     const VK_DBE_ALPHANUMERIC: usize = 0xF0;
 
-    pub(crate) fn post_dbe_alphanumeric() -> anyhow::Result<()> {
-        let Some(hwnd) = find_target_hwnd() else {
-            anyhow::bail!("フォーカス中のウィンドウが見つかりません");
-        };
-        println!("target hwnd={hwnd:?}");
+    /// `VK_DBE_HIRAGANA`(かな)。mozc の `session/keymap.h::
+    /// PrecompositionState::Commands::COMPOSITION_MODE_HIRAGANA` にバインド
+    /// された**冪等な**(トグルではない、常にひらがなへセットする)コマンド。
+    /// `docs/known-bugs.md` の既存知見(BUG-15 等)でも scan=0x70 での
+    /// `SendInput` 到達性は確認済み。
+    const VK_DBE_HIRAGANA: usize = 0xF2;
 
-        // lParam: bit0-15=repeat count(1), bit16-23=scan code(0=非衝突値、
-        // BUG-25 追補2の判断を踏襲), bit30=previous key state,
-        // bit31=transition state(KEYUP のみ1)。
+    /// `PostMessageW` で `vk` の DOWN→UP を対象ウィンドウへ送る。
+    /// lParam: bit0-15=repeat count(1), bit16-23=scan code(0=非衝突値、
+    /// BUG-25 追補2の判断を踏襲), bit30=previous key state,
+    /// bit31=transition state(KEYUP のみ1)。
+    fn post_vk(hwnd: HWND, vk: usize, label: &str) -> anyhow::Result<()> {
         let lparam_down = 1usize;
         let lparam_up = 1usize | (1 << 30) | (1 << 31);
 
-        // SAFETY: hwnd は find_target_hwnd() が返した有効なウィンドウハンドル。
-        // PostMessageW は対象スレッドのメッセージキューに投げるだけで
-        // 同期呼び出しではないため、対象スレッドの応答性に依存しない。
+        // SAFETY: hwnd は呼び出し元が find_target_hwnd() 等で取得した有効な
+        // ウィンドウハンドル。PostMessageW は対象スレッドのメッセージキューに
+        // 投げるだけで同期呼び出しではないため、対象スレッドの応答性に
+        // 依存しない。
         let down = unsafe {
             PostMessageW(
                 Some(hwnd),
                 WM_KEYDOWN,
-                windows::Win32::Foundation::WPARAM(VK_DBE_ALPHANUMERIC),
+                windows::Win32::Foundation::WPARAM(vk),
                 windows::Win32::Foundation::LPARAM(isize::try_from(lparam_down)?),
             )
         };
-        println!("PostMessageW(WM_KEYDOWN) -> {down:?}");
+        println!("[{label}] PostMessageW(WM_KEYDOWN, vk=0x{vk:X}) -> {down:?}");
         std::thread::sleep(Duration::from_millis(30));
         // SAFETY: 上と同じ hwnd に対する対の KEYUP。
         let up = unsafe {
             PostMessageW(
                 Some(hwnd),
                 WM_KEYUP,
-                windows::Win32::Foundation::WPARAM(VK_DBE_ALPHANUMERIC),
+                windows::Win32::Foundation::WPARAM(vk),
                 windows::Win32::Foundation::LPARAM(isize::try_from(lparam_up)?),
             )
         };
-        println!("PostMessageW(WM_KEYUP) -> {up:?}");
+        println!("[{label}] PostMessageW(WM_KEYUP, vk=0x{vk:X}) -> {up:?}");
+        Ok(())
+    }
+
+    pub(crate) fn post_dbe_alphanumeric() -> anyhow::Result<()> {
+        let Some(hwnd) = find_target_hwnd() else {
+            anyhow::bail!("フォーカス中のウィンドウが見つかりません");
+        };
+        println!("target hwnd={hwnd:?}");
+        post_vk(hwnd, VK_DBE_ALPHANUMERIC, "eisu")?;
         println!(
             "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(戻り値は\
-             キューに積めたかどうかのみを示し、GJI が実際に処理したかは示さない)。"
+             キューに積めたかどうかのみを示し、GJI が実際に処理したかは示さない)。\
+             このコマンドはトグルのため、既に半角英数の状態で実行するとひらがなに戻る。"
+        );
+        Ok(())
+    }
+
+    /// 冪等な「半角英数へセット」: `VK_DBE_HIRAGANA`(冪等・常にひらがなへ)
+    /// → `VK_DBE_ALPHANUMERIC`(トグル)の2段階。開始状態に関わらず必ず
+    /// ひらがな経由で英数へ着地するため、全体としては開始状態非依存の
+    /// 冪等操作になる。`config1.db` の書き込みは一切不要
+    /// ([[feedback: config1.db書込は復活させない判断済み]] を尊重)。
+    pub(crate) fn post_idempotent_half_alphanumeric() -> anyhow::Result<()> {
+        let Some(hwnd) = find_target_hwnd() else {
+            anyhow::bail!("フォーカス中のウィンドウが見つかりません");
+        };
+        println!("target hwnd={hwnd:?}");
+        post_vk(hwnd, VK_DBE_HIRAGANA, "step1-hiragana(冪等)")?;
+        std::thread::sleep(Duration::from_millis(100));
+        post_vk(
+            hwnd,
+            VK_DBE_ALPHANUMERIC,
+            "step2-eisu(トグル、直前でひらがな確定済み)",
+        )?;
+        println!(
+            "→ 半角英数にしたい入力欄で実際に打鍵して確認してください。\
+             開始状態(ひらがな/英数どちらでも)によらず半角英数に着地するはず。"
         );
         Ok(())
     }
@@ -570,6 +610,9 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--postmsg") {
         return langbar_probe::post_dbe_alphanumeric();
+    }
+    if args.iter().any(|a| a == "--postmsg-idempotent") {
+        return langbar_probe::post_idempotent_half_alphanumeric();
     }
 
     let select_uid = args
