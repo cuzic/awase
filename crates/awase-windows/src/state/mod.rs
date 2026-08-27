@@ -59,6 +59,8 @@ pub(crate) mod win_key_guard;
 // ADR-082「第一歩」: EventOrigin/Generation/EventSource の最小実装。既存コードへの
 // 配線はまだ無い（モジュール冒頭のスコープ節参照）。
 pub mod event_origin;
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod half_width_alnum;
 pub mod ime_actuation;
 // ADR-089 §2.3/§2.6: Actuation の型状態チェーンと再試行 episode。ungated（走査
 // 規則を Linux で全数テストするため）。実 write は Windows 側の
