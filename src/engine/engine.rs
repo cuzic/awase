@@ -754,16 +754,22 @@ impl Engine {
             })
     }
 
-    /// 修飾キーを伴わない親指キー押下か。Phase 1/Phase 1.5 の判定が
-    /// 食い違わないよう、親指キーの bare 判定はここに集約する。
+    /// 修飾キーを伴わない親指キーの**物理**単独押下か。Phase 1/Phase 1.5 の
+    /// 判定が食い違わないよう、親指キーの bare 判定はここに集約する。
+    ///
+    /// `event.injected` は false 扱いにする（BUG-14 と同じ原則、
+    /// `match_ime_on_off_auto` の doc 参照）。手動設定の `ime_on`/`ime_off`/
+    /// `ime_toggle` はユーザーがマクロツール等から意図的に注入する運用を
+    /// 妨げてはならないため、注入イベントをこのガードで抑制対象にしない。
+    #[must_use]
     pub(crate) const fn is_bare_thumb(event: &RawKeyEvent, m: ModifierState) -> bool {
-        matches!(
-            event.key_classification,
-            KeyClassification::LeftThumb | KeyClassification::RightThumb
-        ) && !m.ctrl
+        !event.injected
+            && matches!(
+                event.key_classification,
+                KeyClassification::LeftThumb | KeyClassification::RightThumb
+            )
+            && !m.is_os_modifier_held()
             && !m.shift
-            && !m.alt
-            && !m.win
     }
 
     /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092

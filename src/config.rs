@@ -767,13 +767,23 @@ impl AppConfig {
         }
     }
 
+    /// 無変換/変換キーの表記ゆれ（漢字表記 or VK_*識別子）のペア。
+    /// `validate_thumb_key_in_ime_combos`（同一キーかどうかの正規化比較）と
+    /// `validate_keyboard_model`（JIS専用キーの残存検出）の両方で参照する
+    /// 単一の情報源。将来3つ目の別名表記を追加する場合はここに足すだけで
+    /// 両方の検証に反映される。
+    const THUMB_KEY_ALIASES: &[(&str, &str)] =
+        &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
+
     fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
         fn canonical_thumb_key_name(s: &str) -> &str {
-            match s.trim() {
-                "無変換" | "VK_NONCONVERT" => "VK_NONCONVERT",
-                "変換" | "VK_CONVERT" => "VK_CONVERT",
-                other => other,
+            let s = s.trim();
+            for (kanji, vk) in AppConfig::THUMB_KEY_ALIASES {
+                if s == *kanji || s.eq_ignore_ascii_case(vk) {
+                    return vk;
+                }
             }
+            s
         }
 
         fn is_bare_same_key(combo: &str, thumb_key: &str) -> bool {
@@ -806,8 +816,6 @@ impl AppConfig {
     /// `keyboard_model = "us"` のとき、無変換/変換キー前提のデフォルト値が
     /// 残っていないか確認する。US キーボードにはこれらの物理キーが存在しない。
     fn validate_keyboard_model(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
-        const JIS_ONLY_NEEDLES: &[&str] = &["無変換", "変換", "VK_NONCONVERT", "VK_CONVERT"];
-
         if g.keyboard_model != KeyboardModel::Us {
             return;
         }
@@ -821,7 +829,11 @@ impl AppConfig {
             );
         }
 
-        let mentions_jis_only = |s: &str| JIS_ONLY_NEEDLES.iter().any(|n| s.contains(n));
+        let mentions_jis_only = |s: &str| {
+            Self::THUMB_KEY_ALIASES
+                .iter()
+                .any(|(kanji, vk)| s.contains(kanji) || s.contains(vk))
+        };
 
         let mut offending_fields: Vec<&str> = Vec::new();
         if mentions_jis_only(&g.left_thumb_key) {

@@ -5827,6 +5827,44 @@ mod engine_integration_tests {
         )));
     }
 
+    /// 【/code-review 指摘の回帰テスト】`event.injected`な合成イベントは
+    /// bare-thumbガードの対象外。手動設定の`keys.ime_off`はユーザーが
+    /// マクロツール等から意図的に注入する運用を妨げてはならない
+    /// （`match_ime_on_off_auto`のdoc、BUG-14と同じ原則）。engine活性中に
+    /// 無変換の`injected=true`なKeyDownが来ても、`is_bare_thumb`が
+    /// falseを返しPhase 1の`keys.ime_off`が従来どおりマッチすること。
+    #[test]
+    fn injected_bare_thumb_ime_off_combo_still_matches_while_engine_active() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        let d = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(100).injected(true).build(),
+            &ime_on_ctx(),
+        );
+
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "injected bare thumb key must still match manual keys.ime_off, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     #[test]
     fn special_key_ime_off_combo() {
         let combo = ParsedKeyCombo {
