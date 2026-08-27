@@ -288,17 +288,33 @@ impl Runtime {
         )
     }
 
-    /// 現在のフォーカスエポック（`probe_admission::ImmLikeTicket::admit` の照合用）。
+    /// 現在のフォーカス同一性（epoch + hwnd、`probe_admission::ImmLikeTicket::admit`
+    /// の照合用、ADR-106 決定3）。両軸を同時に必要とする呼び出し元はこちらを使う。
     #[must_use]
-    pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
-        self.platform_state.focus.focus_epoch
+    pub(crate) fn focus_fence(&self) -> crate::state::probe_admission::FocusFence {
+        crate::state::probe_admission::FocusFence {
+            epoch: self.platform_state.focus.focus_epoch,
+            hwnd: crate::state::ime_event::HwndId(self.platform.focus.current.hwnd),
+        }
     }
 
-    /// 現在のフォーカス hwnd（`probe_admission::ImmLikeTicket::admit` の照合用、
-    /// ADR-106 決定3）。
+    /// 現在のフォーカスエポック。`focus_fence().epoch` の薄いラッパー
+    /// ——epoch と hwnd のペアリング/鮮度が意味を持たない（片方だけで十分な）
+    /// 呼び出し元向け。PR 109 コードレビュー軽微3の指摘により、現時点で
+    /// epoch 単独の呼び出し元は無いが API として意図的に残す
+    /// （`focus_hwnd()` と対称、Task3-c 参照）。
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn focus_epoch(&self) -> crate::state::probe_admission::FocusEpoch {
+        self.focus_fence().epoch
+    }
+
+    /// 現在のフォーカス hwnd。`focus_fence().hwnd` の薄いラッパー
+    /// ——epoch と hwnd のペアリング/鮮度が意味を持たない（片方だけで十分な）
+    /// 呼び出し元向け。
     #[must_use]
     pub(crate) fn focus_hwnd(&self) -> crate::state::ime_event::HwndId {
-        crate::state::ime_event::HwndId(self.platform.focus.current.hwnd)
+        self.focus_fence().hwnd
     }
 
     // ── 実 actuation の起案（ADR-090 §2.A A-1、INV-47）────────────────────
@@ -1076,10 +1092,8 @@ impl Runtime {
             )
         };
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-        let accepted = crate::state::probe_admission::AcceptedObservation::for_sync(
-            self.platform_state.focus.focus_epoch,
-            self.focus_hwnd(),
-        );
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
         self.platform_state
             .ime
             .apply_ime_update(&observer_out, tick_ms, accepted);

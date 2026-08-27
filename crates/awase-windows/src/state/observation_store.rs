@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use super::evidence::{ActuatingPool, AnyObservation, BeliefPool, Observed, OpenEvidence};
 use super::ime_actuation::{ConvergedReceipt, Resolution};
 use super::ime_event::{HwndId, ObservationAuthority, ObservationConfidence, ObservationSource};
-use super::probe_admission::FocusEpoch;
+use super::probe_admission::{FocusEpoch, FocusFence};
 use crate::focus::class_names::AppImeProfile;
 
 // ── FocusProbe open status（ADR-106 決定2） ─────────────────────────────────
@@ -189,6 +189,11 @@ pub enum ReadBackQuery {
 ///     focus_epoch: 0,
 /// };
 /// ```
+///
+/// `focus_epoch`/`hwnd` は `FocusFence` へ統合していない（ADR-106 決定3の型統合
+/// スコープ外、PR 109 コードレビュー指摘4）——`record_any` が単一の `observed` から
+/// 両方を同時に埋めるため片側だけ古くなるバグクラスが構造的に発生せず、統合すると
+/// journal 直列化形式(ADR-082)に触れ replay 前後比較が必要になり過剰なため。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ImeObservation {
@@ -385,25 +390,25 @@ pub struct ObservationStore {
     pub(crate) per_source: PerSourceObservations,
     /// desired との乖離追跡
     pub drift: Option<ImeDrift>,
-    /// 現在のフォーカスエポック。`FocusChanged` イベントで更新される。
+    /// 現在のフォーカス同一性（epoch + hwnd、ADR-106 決定3）。
     ///
-    /// `derive_any()` が `ImmCrossProbe` / `FocusProbe` 観測を epoch フィルタする際に参照する。
-    /// これにより、stale な高信頼観測が意思決定に使われることを防ぐ。
-    pub current_focus_epoch: FocusEpoch,
-    /// 現在のフォーカス hwnd（ADR-106 決定3）。
+    /// `derive_any()` が `ImmCrossProbe` / `FocusProbe` 観測をこの値と照合して
+    /// フィルタする。これにより、stale な高信頼観測が意思決定に使われることを
+    /// 防ぐ。epoch はプロセス変更でのみ進むため、同一プロセス内でウィンドウだけが
+    /// 変わるケースは epoch 単独では検知できず、hwnd も併せて照合する必要がある。
     ///
-    /// `current_focus_epoch` はプロセス変更でのみ進むため、同一プロセス内で
-    /// ウィンドウだけが変わるケースを検知できない。`derive_any()` はこの値も
-    /// 併せて照合することで、そのケースの stale な観測を除外する。
-    ///
-    /// 書き込み口は2つある: プロセス変更時は `clear_on_focus_change()`（観測
-    /// プールごとクリアし epoch も進める）、同一プロセス内でのウィンドウ変化は
-    /// `update_focus_hwnd()`（この値だけを更新し epoch・観測プールには触れない）。
-    /// 後者が無いと、`admit()`（`platform.focus.current.hwnd` を毎 tick 参照）は
-    /// 新しい hwnd を正しく受理するのに、`derive_any()` の `is_identity_ok` は
-    /// 古い hwnd のまま比較し続け、次にプロセスが変わるまで観測を恒久的に
-    /// 拒否し続けるという退行になる（code review 2026-08-26 で発見）。
-    pub current_focus_hwnd: HwndId,
+    /// **private**: 書き込み口は `clear_on_focus_change()`（プロセス変更時、観測
+    /// プールごとクリアし両軸を丸ごと差し替え）と `update_focus_window()`（同一
+    /// プロセス内でのウィンドウ変化、hwnd のみ更新）の2つに限定する。かつて
+    /// epoch/hwnd を別々の `pub` フィールドとして持ち回っていたときは、
+    /// `update_focus_hwnd()` を呼び忘れると `admit()`（`platform.focus.current.hwnd`
+    /// を毎 tick 参照）は新しい hwnd を正しく受理するのに `derive_any()` の
+    /// `is_identity_ok` は古い hwnd のまま比較し続け、次にプロセスが変わるまで
+    /// 観測を恒久的に拒否し続けるという退行が起きた（code review 2026-08-26 で
+    /// 発見）。両軸を1つの `FocusFence` に統合し書き込み口を絞ることで、この
+    /// クラスの片側だけ更新し忘れる退行を構造的に防ぐ（PR 109 コードレビュー
+    /// 指摘4）。
+    current_fence: FocusFence,
 }
 
 impl ObservationStore {
@@ -477,16 +482,21 @@ impl ObservationStore {
         self.per_source.get(source)
     }
 
+    /// 現在のフォーカス同一性（epoch + hwnd）を返す（ADR-106 決定3）。
+    #[must_use]
+    pub const fn current_fence(&self) -> FocusFence {
+        self.current_fence
+    }
+
     /// 全ソースを clear する (フォーカス変更時用)。drift も clear。
     ///
-    /// `new_epoch` には `FocusStore::focus_epoch` のインクリメント後の値を、
-    /// `new_hwnd` には新しいフォーカス先の hwnd を渡す（ADR-106 決定3）。
-    /// これ以降 `derive_any()` は古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する。
-    pub fn clear_on_focus_change(&mut self, new_epoch: FocusEpoch, new_hwnd: HwndId) {
+    /// `new_fence` には `FocusStore::focus_epoch` のインクリメント後の値と、
+    /// 新しいフォーカス先の hwnd の両方を渡す（ADR-106 決定3）。これ以降
+    /// `derive_any()` は古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する。
+    pub fn clear_on_focus_change(&mut self, new_fence: FocusFence) {
         self.per_source.clear_all();
         self.drift = None;
-        self.current_focus_epoch = new_epoch;
-        self.current_focus_hwnd = new_hwnd;
+        self.current_fence = new_fence;
     }
 
     /// 同一プロセス内でフォーカス hwnd だけが変わった場合の更新口（ADR-106 決定3）。
@@ -496,12 +506,12 @@ impl ObservationStore {
     /// `platform.focus.current.hwnd`（admission 側が毎 tick 参照する生の hwnd）に
     /// 追従させることで、`derive_any()` の `is_identity_ok` が stale な hwnd と
     /// 比較し続けて以後の観測を恒久的に拒否する退行を防ぐ。
-    pub fn update_focus_hwnd(&mut self, new_hwnd: HwndId) {
+    pub fn update_focus_window(&mut self, new_hwnd: HwndId) {
         log::debug!(
-            "[focus-hwnd-track] update_focus_hwnd: current_focus_hwnd {:?} -> {new_hwnd:?}",
-            self.current_focus_hwnd
+            "[focus-hwnd-track] update_focus_window: current_fence.hwnd {:?} -> {new_hwnd:?}",
+            self.current_fence.hwnd
         );
-        self.current_focus_hwnd = new_hwnd;
+        self.current_fence.hwnd = new_hwnd;
     }
 
     /// desired と observed の乖離を更新する。
@@ -656,7 +666,7 @@ impl ObservationStore {
     /// ## Epoch フィルタ（ImmCrossProbe / FocusProbe のみ）
     ///
     /// これらの probe は async または first-key トリガーのため、フォーカス変更後に
-    /// 古いウィンドウの観測が混入するリスクがある。`current_focus_epoch` と照合し、
+    /// 古いウィンドウの観測が混入するリスクがある。`current_fence().epoch` と照合し、
     /// epoch が異なる観測を排除する。
     /// GJI / ObserverPoll / TSF はイベント駆動または周期同期のため epoch フィルタ対象外。
     #[must_use]
@@ -687,18 +697,27 @@ impl ObservationStore {
         accept: impl Fn(ObservationSource) -> bool,
     ) -> Option<DeriveOutcome> {
         const FRESH: Duration = Duration::from_secs(3);
-        let current_epoch = self.current_focus_epoch;
-        let current_hwnd = self.current_focus_hwnd;
+        let current_fence = self.current_fence;
 
         let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
 
         // フォーカス同一性照合が必要なソース（async/first-key トリガーのスナップショット
         // probe）。epoch はプロセス変更でのみ進むため、同一プロセス内でウィンドウだけが
         // 変わるケースは epoch 単独では検知できず、hwnd も併せて照合する（ADR-106 決定3）。
+        //
+        // `ImeObservation` は `focus_epoch`/`hwnd` を個別フィールドのまま持つ
+        // （`AnyObservation` と共有する journal 直列化形式(ADR-082)に触れる範囲が
+        // 広くなるため、ここでは統合しない——`record_any` が単一の `observed` から
+        // 両方を同時に埋めるため、片側だけ古くなるバグクラスは構造的に発生しない）。
+        // 比較の瞬間だけ `FocusFence` に組み立てて `current_fence` と照合する。
         let is_identity_ok = |o: &ImeObservation| match o.source {
             ObservationSource::ImmCrossProbe | ObservationSource::FocusProbe => {
-                let epoch_ok = o.focus_epoch == current_epoch;
-                let hwnd_ok = o.hwnd == current_hwnd;
+                let obs_fence = FocusFence {
+                    epoch: o.focus_epoch,
+                    hwnd: o.hwnd,
+                };
+                let epoch_ok = obs_fence.epoch == current_fence.epoch;
+                let hwnd_ok = obs_fence.hwnd == current_fence.hwnd;
                 if epoch_ok && !hwnd_ok {
                     // ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で
                     // 除外されるケース（同一プロセス内でのウィンドウ切替）を、
@@ -706,12 +725,12 @@ impl ObservationStore {
                     log::debug!(
                         "[identity-gate] hwnd不一致で除外: source={:?} obs_hwnd={:?} current_hwnd={:?} confidence={:?}",
                         o.source,
-                        o.hwnd,
-                        current_hwnd,
+                        obs_fence.hwnd,
+                        current_fence.hwnd,
                         o.confidence
                     );
                 }
-                epoch_ok && hwnd_ok
+                obs_fence == current_fence
             }
             _ => true,
         };
@@ -914,7 +933,10 @@ mod tests {
         let now = Instant::now();
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));
         assert!(s.per_source.observer_poll.is_some());
-        s.clear_on_focus_change(1, HwndId::NULL);
+        s.clear_on_focus_change(FocusFence {
+            epoch: 1,
+            hwnd: HwndId::NULL,
+        });
         assert!(s.per_source.observer_poll.is_none());
     }
 
@@ -936,7 +958,10 @@ mod tests {
             Some(true),
             "Medium confidence 単独で derive_any() に反映される (通常の観測ソースと同待遇)"
         );
-        s.clear_on_focus_change(1, HwndId::NULL);
+        s.clear_on_focus_change(FocusFence {
+            epoch: 1,
+            hwnd: HwndId::NULL,
+        });
         assert!(
             s.per_source.conv_open_inference.is_none(),
             "clear_all() で ConvOpenInference もクリアされる"
@@ -1364,7 +1389,7 @@ mod tests {
         stale_high.confidence = ObservationConfidence::High;
         stale_high.focus_epoch = 0;
         rec(&mut s, stale_high);
-        s.current_focus_epoch = 1; // フォーカスが変わって epoch が進んだ
+        s.current_fence.epoch = 1; // フォーカスが変わって epoch が進んだ
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             None,
@@ -1384,8 +1409,8 @@ mod tests {
         stale_high.focus_epoch = 0;
         stale_high.hwnd = HwndId(1);
         rec(&mut s, stale_high);
-        s.current_focus_epoch = 0; // epoch は同じ（プロセスは変わっていない）
-        s.current_focus_hwnd = HwndId(2); // だがウィンドウだけが変わった
+        s.current_fence.epoch = 0; // epoch は同じ（プロセスは変わっていない）
+        s.current_fence.hwnd = HwndId(2); // だがウィンドウだけが変わった
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             None,
@@ -1404,8 +1429,8 @@ mod tests {
         high.focus_epoch = 3;
         high.hwnd = HwndId(42);
         rec(&mut s, high);
-        s.current_focus_epoch = 3;
-        s.current_focus_hwnd = HwndId(42);
+        s.current_fence.epoch = 3;
+        s.current_fence.hwnd = HwndId(42);
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             Some(true),
@@ -1418,39 +1443,85 @@ mod tests {
     #[test]
     fn clear_on_focus_change_updates_current_focus_hwnd() {
         let mut s = ObservationStore::default();
-        assert_eq!(s.current_focus_hwnd, HwndId::NULL);
-        s.clear_on_focus_change(5, HwndId(99));
-        assert_eq!(s.current_focus_epoch, 5);
-        assert_eq!(s.current_focus_hwnd, HwndId(99));
+        assert_eq!(s.current_fence().hwnd, HwndId::NULL);
+        s.clear_on_focus_change(FocusFence {
+            epoch: 5,
+            hwnd: HwndId(99),
+        });
+        assert_eq!(s.current_fence().epoch, 5);
+        assert_eq!(s.current_fence().hwnd, HwndId(99));
     }
 
-    /// `update_focus_hwnd` が epoch・観測プールに触れず hwnd だけを更新することを固定する
+    /// `clear_on_focus_change` が epoch・hwnd の両軸を1つの値として原子的に
+    /// 差し替えることを固定する（PR 109 コードレビュー指摘4: `FocusFence`
+    /// 統合の目的そのもの）。
+    #[test]
+    fn clear_on_focus_change_replaces_both_axes_atomically() {
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(FocusFence {
+            epoch: 1,
+            hwnd: HwndId(1),
+        });
+        let new_fence = FocusFence {
+            epoch: 2,
+            hwnd: HwndId(2),
+        };
+        s.clear_on_focus_change(new_fence);
+        assert_eq!(s.current_fence(), new_fence);
+    }
+
+    /// `update_focus_window` が epoch・観測プールに触れず hwnd だけを更新することを固定する
     /// （ADR-106 決定3: 同一プロセス内でのウィンドウ変化用の書き込み口）。
     #[test]
     fn update_focus_hwnd_updates_hwnd_only() {
         let mut s = ObservationStore::default();
-        s.clear_on_focus_change(5, HwndId(1));
+        s.clear_on_focus_change(FocusFence {
+            epoch: 5,
+            hwnd: HwndId(1),
+        });
         let mut high = obs(true, ObservationSource::ObserverPoll, Instant::now());
         high.confidence = ObservationConfidence::High;
         rec(&mut s, high);
-        s.update_focus_hwnd(HwndId(2));
-        assert_eq!(s.current_focus_epoch, 5, "epoch は変わらない");
-        assert_eq!(s.current_focus_hwnd, HwndId(2));
+        s.update_focus_window(HwndId(2));
+        assert_eq!(s.current_fence().epoch, 5, "epoch は変わらない");
+        assert_eq!(s.current_fence().hwnd, HwndId(2));
         assert!(
             s.observation(ObservationSource::ObserverPoll).is_some(),
             "観測プールはクリアされない"
         );
     }
 
+    /// `update_focus_window` が epoch を保つことを固定する
+    /// （PR 109 コードレビュー指摘4: `clear_on_focus_change` との対称テスト）。
+    #[test]
+    fn update_focus_window_preserves_epoch() {
+        let mut s = ObservationStore::default();
+        s.clear_on_focus_change(FocusFence {
+            epoch: 7,
+            hwnd: HwndId(1),
+        });
+        s.update_focus_window(HwndId(2));
+        assert_eq!(
+            s.current_fence(),
+            FocusFence {
+                epoch: 7,
+                hwnd: HwndId(2),
+            }
+        );
+    }
+
     /// code review 2026-08-26 で発見された退行の再現テスト:
-    /// 同一プロセス内で hwnd だけが変わったとき、`update_focus_hwnd()` を
-    /// 呼ばずに `current_focus_hwnd` を古いまま放置すると、新しい hwnd で
+    /// 同一プロセス内で hwnd だけが変わったとき、`update_focus_window()` を
+    /// 呼ばずに `current_fence.hwnd` を古いまま放置すると、新しい hwnd で
     /// 記録された高信頼観測が `is_identity_ok` に恒久的に拒否される。
-    /// `update_focus_hwnd()` を呼べばこれが解消することを固定する。
+    /// `update_focus_window()` を呼べばこれが解消することを固定する。
     #[test]
     fn update_focus_hwnd_unblocks_derive_any_after_intra_process_window_change() {
         let mut s = ObservationStore::default();
-        s.clear_on_focus_change(5, HwndId(1)); // プロセス変更（epoch=5, hwnd=1）
+        s.clear_on_focus_change(FocusFence {
+            epoch: 5,
+            hwnd: HwndId(1),
+        }); // プロセス変更（epoch=5, hwnd=1）
         let now = Instant::now();
 
         // 同一プロセス内でウィンドウが hwnd=2 へ変わり、新しいウィンドウの
@@ -1461,20 +1532,20 @@ mod tests {
         fresh_high.hwnd = HwndId(2);
         rec(&mut s, fresh_high);
 
-        // update_focus_hwnd() を呼ばない場合: current_focus_hwnd が古い hwnd=1
+        // update_focus_window() を呼ばない場合: current_fence.hwnd が古い hwnd=1
         // のままのため、正当な新しい観測が拒否され続ける（退行の再現）。
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             None,
-            "update_focus_hwnd() を呼ぶ前は hwnd 不一致で新しい観測が拒否される"
+            "update_focus_window() を呼ぶ前は hwnd 不一致で新しい観測が拒否される"
         );
 
-        // update_focus_hwnd() で current_focus_hwnd を追従させると受理される。
-        s.update_focus_hwnd(HwndId(2));
+        // update_focus_window() で current_fence.hwnd を追従させると受理される。
+        s.update_focus_window(HwndId(2));
         assert_eq!(
             s.derive_any(now).map(|o| o.value()),
             Some(true),
-            "update_focus_hwnd() 後は hwnd が一致し観測が採用される"
+            "update_focus_window() 後は hwnd が一致し観測が採用される"
         );
     }
 
@@ -1599,7 +1670,7 @@ mod tests {
         accept: impl Fn(ObservationSource) -> bool,
     ) -> Option<DeriveOutcome> {
         const FRESH: Duration = Duration::from_secs(3);
-        let current_epoch = store.current_focus_epoch;
+        let current_epoch = store.current_fence().epoch;
 
         let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
 
@@ -1689,7 +1760,7 @@ mod tests {
     ///
     /// hwnd は意図的に `HwndId::NULL` 固定（`obs()` ヘルパの既定値）——
     /// このマトリクスが比較するオラクル `legacy_derive_open_filtered`（本ファイル
-    /// L1593 付近）は `store.current_focus_epoch` のみを参照し hwnd を知らない
+    /// L1593 付近）は `store.current_fence().epoch` のみを参照し hwnd を知らない
     /// ため、hwnd 軸をここに足しても `derive_any`/`derive_actuating` との比較が
     /// 恒等的に一致し続け、退行を検知できない。ADR-106 の hwnd フェンスは
     /// 別テスト `identity_gate_matrix_covers_epoch_and_hwnd_independently` が
@@ -1706,7 +1777,10 @@ mod tests {
                                 for store_epoch in [0_u64, 1] {
                                     for stale_b in [false, true] {
                                         let mut s = ObservationStore {
-                                            current_focus_epoch: store_epoch,
+                                            current_fence: FocusFence {
+                                                epoch: store_epoch,
+                                                ..Default::default()
+                                            },
                                             ..Default::default()
                                         };
                                         let mut oa = obs(open_a, a, now);
@@ -1777,7 +1851,7 @@ mod tests {
             o.confidence = ObservationConfidence::High;
             o.focus_epoch = 0;
             rec(&mut s, o);
-            s.current_focus_epoch = 1;
+            s.current_fence.epoch = 1;
             assert_eq!(
                 s.derive_any(now),
                 None,
@@ -1824,8 +1898,10 @@ mod tests {
                     for obs_hwnd in [HwndId(1), HwndId(2)] {
                         for store_hwnd in [HwndId(1), HwndId(2)] {
                             let mut s = ObservationStore {
-                                current_focus_epoch: store_epoch,
-                                current_focus_hwnd: store_hwnd,
+                                current_fence: FocusFence {
+                                    epoch: store_epoch,
+                                    hwnd: store_hwnd,
+                                },
                                 ..Default::default()
                             };
                             let mut o = obs(true, source, now);

@@ -70,6 +70,24 @@ pub fn drain_stats() -> RejectionStats {
 /// `wrapping_add(1)` でインクリメントされる。
 pub type FocusEpoch = u64;
 
+/// フォーカスの同一性を表す「epoch + hwnd」のペア（ADR-106 決定3）。
+///
+/// `epoch` はプロセス変更でのみ進むため、同一プロセス内でウィンドウだけが
+/// 変わるケースを検知できない。`hwnd` を併せて持つことで、`ImmLikeTicket::admit`
+/// や `ObservationStore::is_identity_ok` が両軸を1つの値として原子的に照合・
+/// 更新できるようにする（従来は epoch と hwnd を別々のフィールド/引数として
+/// 持ち回っており、更新口が2つに分かれて片方だけ古くなる退行が起きた）。
+///
+/// **命名注意**: `focus/current.rs` の `FocusIdentity`（journal 用スナップショット:
+/// hwnd/pid/class_name/process_name/app_profile/app_kind/focus_kind）とは別物。
+/// ADR-106 本文が提案する `FocusIdentity` という名前は既にこの別の型が使っているため
+/// 採用せず、`FocusFence` とした。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FocusFence {
+    pub epoch: FocusEpoch,
+    pub hwnd: HwndId,
+}
+
 /// ImmLike プローブ（`ImmCrossProbe` / `FocusProbe`）が spawn 時にキャプチャするチケット。
 ///
 /// 非同期完了後に [`ImmLikeTicket::admit`] を呼び、epoch/hwnd のいずれかが変わって
@@ -81,16 +99,14 @@ pub type FocusEpoch = u64;
 /// ```ignore
 /// // spawn 直前にチケットを作成
 /// let ticket = ImmLikeTicket {
-///     focus_epoch: self.platform_state.focus.focus_epoch,
-///     hwnd: HwndId(self.platform.focus.current.hwnd),
+///     fence: self.focus_fence(),
 /// };
 /// win32_async::spawn_local(async move {
 ///     let snap = read_ime_state_full_async().await;
 ///     if let Some(open) = snap.ime_on {
 ///         let _ = with_app(|app| {
-///             let current_epoch = app.platform_state.focus.focus_epoch;
-///             let current_hwnd = HwndId(app.platform.focus.current.hwnd);
-///             if let Admission::Reject(r) = ticket.admit(current_epoch, current_hwnd) {
+///             let current = app.focus_fence();
+///             if let Admission::Reject(r) = ticket.admit(current) {
 ///                 log::debug!("[ImmCrossProbe] rejected: {r}");
 ///                 return;
 ///             }
@@ -101,10 +117,8 @@ pub type FocusEpoch = u64;
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ImmLikeTicket {
-    /// spawn 時のフォーカスエポック
-    pub focus_epoch: FocusEpoch,
-    /// spawn 時のフォーカス hwnd
-    pub hwnd: HwndId,
+    /// spawn 時のフォーカス同一性（epoch + hwnd）
+    pub fence: FocusFence,
 }
 
 /// 受理済み観測のトークン。プライベートコンストラクタにより admission を通過した証明になる。
@@ -113,7 +127,7 @@ pub struct ImmLikeTicket {
 /// "admission を通らない write" を防止する。
 ///
 /// - 非同期 probe: `ImmLikeTicket::admit()` → `Admission::Accept(AcceptedObservation)`
-/// - 同期 probe: `AcceptedObservation::for_sync(epoch, hwnd)` で直接構築
+/// - 同期 probe: `AcceptedObservation::for_sync(fence)` で直接構築
 ///   （シングルスレッドのため常に有効）
 // `#[non_exhaustive]` は他クレートからの構造体リテラル構築のみを禁止するが、この
 // `_private` フィールドは同一クレート内の他モジュールからの構築も禁止する意図的な
@@ -122,19 +136,29 @@ pub struct ImmLikeTicket {
 #[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Clone, Copy)]
 pub struct AcceptedObservation {
-    /// 受理時のフォーカスエポック（診断・derive_any フィルタ用）
-    pub focus_epoch: FocusEpoch,
-    /// 受理時のフォーカス hwnd（診断・derive_any フィルタ用、ADR-106 決定3）
-    pub hwnd: HwndId,
+    /// 受理時のフォーカス同一性（診断・derive_any フィルタ用）
+    pub fence: FocusFence,
     /// プライベートフィールドにより外部から直接構築不可。
     _private: (),
 }
 
 impl AcceptedObservation {
+    /// 受理時のフォーカスエポック（診断・derive_any フィルタ用）。
+    #[must_use]
+    pub const fn epoch(&self) -> FocusEpoch {
+        self.fence.epoch
+    }
+
+    /// 受理時のフォーカス hwnd（診断・derive_any フィルタ用、ADR-106 決定3）。
+    #[must_use]
+    pub const fn hwnd(&self) -> HwndId {
+        self.fence.hwnd
+    }
+
     /// 同期プローブ専用コンストラクタ。
     ///
     /// シングルスレッド実行のため、spawn 〜 complete 間にフォーカスが変わることは
-    /// ない（epoch/hwnd mismatch 不可）。epoch/hwnd は観測の来歴記録・derive_any
+    /// ない（epoch/hwnd mismatch 不可）。fence は観測の来歴記録・derive_any
     /// フィルタ用。
     ///
     /// 呼び出し元は `runtime` 層の 3 箇所のみ（ADR-089 §1.3(b)・§6 Phase A item 4
@@ -145,10 +169,9 @@ impl AcceptedObservation {
     /// 未使用になる（`state/mod.rs` の ungated モジュール群と同じ局所抑制）。
     #[cfg_attr(not(windows), allow(dead_code))]
     #[must_use]
-    pub(crate) fn for_sync(focus_epoch: FocusEpoch, hwnd: HwndId) -> Self {
+    pub(crate) fn for_sync(fence: FocusFence) -> Self {
         Self {
-            focus_epoch,
-            hwnd,
+            fence,
             _private: (),
         }
     }
@@ -203,31 +226,30 @@ impl std::fmt::Display for RejectReason {
 impl ImmLikeTicket {
     /// 完了時の受理判定。
     ///
-    /// `current_epoch`/`current_hwnd` は `with_app` 内で実際のフォーカス文脈から
-    /// 取得した「現在」の値を渡す。epoch を先に照合し（プロセス変更を検知）、
-    /// 一致していれば続けて hwnd を照合する（同一プロセス内のウィンドウ変更を
-    /// 検知、ADR-106 決定3）。棄却時は [`drain_stats`] で集計できるアトミック
-    /// カウンタをインクリメントする。
+    /// `current` は `with_app` 内で実際のフォーカス文脈から取得した「現在」の
+    /// フェンスを渡す。epoch を先に照合し（プロセス変更を検知）、一致していれば
+    /// 続けて hwnd を照合する（同一プロセス内のウィンドウ変更を検知、ADR-106
+    /// 決定3）。棄却時は [`drain_stats`] で集計できるアトミックカウンタを
+    /// インクリメントする。
     #[must_use]
-    pub fn admit(self, current_epoch: FocusEpoch, current_hwnd: HwndId) -> Admission {
-        if current_epoch != self.focus_epoch {
+    pub fn admit(self, current: FocusFence) -> Admission {
+        if current.epoch != self.fence.epoch {
             REJECTED_EPOCH_MISMATCH.fetch_add(1, Ordering::Relaxed);
             return Admission::Reject(RejectReason::FocusEpochChanged {
-                at_spawn: self.focus_epoch,
-                current: current_epoch,
+                at_spawn: self.fence.epoch,
+                current: current.epoch,
             });
         }
-        if current_hwnd != self.hwnd {
+        if current.hwnd != self.fence.hwnd {
             REJECTED_HWND_MISMATCH.fetch_add(1, Ordering::Relaxed);
             return Admission::Reject(RejectReason::FocusHwndChanged {
-                epoch: current_epoch,
-                at_spawn: self.hwnd,
-                current: current_hwnd,
+                epoch: current.epoch,
+                at_spawn: self.fence.hwnd,
+                current: current.hwnd,
             });
         }
         Admission::Accept(AcceptedObservation {
-            focus_epoch: current_epoch,
-            hwnd: current_hwnd,
+            fence: current,
             _private: (),
         })
     }
@@ -255,9 +277,8 @@ pub(crate) fn admit_epoch_in_app<R>(
     reject_log: &str,
     f: impl FnOnce(&mut crate::runtime::Runtime, AcceptedObservation) -> R,
 ) -> Option<R> {
-    let current_epoch = app.focus_epoch();
-    let current_hwnd = app.focus_hwnd();
-    let Admission::Accept(accepted) = ticket.admit(current_epoch, current_hwnd) else {
+    let current = app.focus_fence();
+    let Admission::Accept(accepted) = ticket.admit(current) else {
         log::debug!("{reject_log}");
         return None;
     };
@@ -271,27 +292,40 @@ mod tests {
     const HWND: HwndId = HwndId(0x1234);
     const OTHER_HWND: HwndId = HwndId(0x5678);
 
-    /// `admit()` は `current_epoch != self.focus_epoch` で棄却する。この比較演算子
+    /// `admit()` は `current.epoch != self.fence.epoch` で棄却する。この比較演算子
     /// (`!=`→`==`) が反転すると、epoch が一致するときに棄却・不一致のときに受理という
-    /// 完全に逆の判定になり、`current_epoch != self.focus_epoch` の目的（フォーカス変更後
+    /// 完全に逆の判定になり、`current.epoch != self.fence.epoch` の目的（フォーカス変更後
     /// の stale な probe を弾いて Engine OFF カスケードを防ぐ）が壊れる。この関数には
     /// これまでテストが1件も無かった。
     #[test]
     fn admit_accepts_when_epoch_and_hwnd_match() {
         let ticket = ImmLikeTicket {
-            focus_epoch: 5,
-            hwnd: HWND,
+            fence: FocusFence {
+                epoch: 5,
+                hwnd: HWND,
+            },
         };
-        assert!(matches!(ticket.admit(5, HWND), Admission::Accept(_)));
+        assert!(matches!(
+            ticket.admit(FocusFence {
+                epoch: 5,
+                hwnd: HWND
+            }),
+            Admission::Accept(_)
+        ));
     }
 
     #[test]
     fn admit_rejects_when_epoch_differs() {
         let ticket = ImmLikeTicket {
-            focus_epoch: 5,
-            hwnd: HWND,
+            fence: FocusFence {
+                epoch: 5,
+                hwnd: HWND,
+            },
         };
-        match ticket.admit(6, HWND) {
+        match ticket.admit(FocusFence {
+            epoch: 6,
+            hwnd: HWND,
+        }) {
             Admission::Reject(RejectReason::FocusEpochChanged { at_spawn, current }) => {
                 assert_eq!(at_spawn, 5);
                 assert_eq!(current, 6);
@@ -306,10 +340,15 @@ mod tests {
     #[test]
     fn admit_rejects_when_hwnd_differs_even_with_matching_epoch() {
         let ticket = ImmLikeTicket {
-            focus_epoch: 5,
-            hwnd: HWND,
+            fence: FocusFence {
+                epoch: 5,
+                hwnd: HWND,
+            },
         };
-        match ticket.admit(5, OTHER_HWND) {
+        match ticket.admit(FocusFence {
+            epoch: 5,
+            hwnd: OTHER_HWND,
+        }) {
             Admission::Reject(RejectReason::FocusHwndChanged {
                 epoch,
                 at_spawn,
@@ -328,11 +367,16 @@ mod tests {
     #[test]
     fn admit_reports_epoch_mismatch_when_both_epoch_and_hwnd_differ() {
         let ticket = ImmLikeTicket {
-            focus_epoch: 5,
-            hwnd: HWND,
+            fence: FocusFence {
+                epoch: 5,
+                hwnd: HWND,
+            },
         };
         assert!(matches!(
-            ticket.admit(6, OTHER_HWND),
+            ticket.admit(FocusFence {
+                epoch: 6,
+                hwnd: OTHER_HWND,
+            }),
             Admission::Reject(RejectReason::FocusEpochChanged { .. })
         ));
     }

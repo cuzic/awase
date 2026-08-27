@@ -280,8 +280,7 @@ impl Runtime {
         // spawn 時にチケットをキャプチャ。apply_focus_probe 完了時に epoch/hwnd を照合し
         // stale な観測を棄却する（ADR-106 決定3）。
         let ticket = crate::state::probe_admission::ImmLikeTicket {
-            focus_epoch: self.platform_state.focus.focus_epoch,
-            hwnd: self.focus_hwnd(),
+            fence: self.focus_fence(),
         };
 
         win32_async::spawn_local(async move {
@@ -452,14 +451,13 @@ impl Runtime {
 
         // spawn 時にチケットをキャプチャ。apply_idle_conv_check 完了時に epoch/hwnd を照合し
         // フォーカスが変わっていれば stale な観測を棄却する（kp_stage_focus_probe と同型、
-        // ADR-106 決定3）。`accepted.hwnd`（decision3 で追加）を decision4 の
+        // ADR-106 決定3）。`accepted.fence`（decision3）を decision4 の
         // `ConvModeMgr::observe()` monotonic guard にもそのまま使う——`ImmLikeTicket` は
         // 元々 epoch のみを追跡していたため、同一プロセス内でウィンドウだけが変わる
         // ケース（`focus_epoch` はプロセス変更でのみ進む）を捕まえるために ImmLikeTicket
         // 自体に hwnd を持たせた。
         let ticket = crate::state::probe_admission::ImmLikeTicket {
-            focus_epoch: self.platform_state.focus.focus_epoch,
-            hwnd: self.focus_hwnd(),
+            fence: self.focus_fence(),
         };
         // BUG-34 横展開 Step0-a: 自己出力の再検証を conv_mutation_seq のビット一致に
         // 一本化する（旧 output_in_flight_ms ベースの last_send 比較は
@@ -493,8 +491,7 @@ impl Runtime {
                             conv,
                             conv_mutation_seq_at_spawn,
                             explicit_action_ms_at_spawn,
-                            accepted.focus_epoch,
-                            accepted.hwnd,
+                            accepted.fence,
                         );
                     },
                 );
@@ -547,8 +544,7 @@ impl Runtime {
         conv: u32,
         conv_mutation_seq_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
-        spawn_focus_epoch: crate::state::probe_admission::FocusEpoch,
-        spawn_hwnd: crate::state::ime_event::HwndId,
+        spawn_fence: crate::state::probe_admission::FocusFence,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
         if self.platform_state.gate.shift_conv_guard_pending
@@ -622,20 +618,16 @@ impl Runtime {
 
         // 変換モードを更新: idle-conv-check が conv を読んだタイミングで ConvModeMgr に通知する。
         // warmup の先頭 VK 選択と ImmSetConversionStatus の目標値決定に使われる。
-        // ADR-106 決定4: 観測は spawn 時点の focus_epoch/hwnd を運び、現在の値と
+        // ADR-106 決定4: 観測は spawn 時点の fence（epoch/hwnd）を運び、現在の値と
         // 異なれば（フォーカスが変わっていれば）棄却される（monotonic guard）。
-        let current_epoch = self.focus_epoch();
-        let current_hwnd = self.focus_hwnd();
         let conv_mode_changed = self.platform.output.conv_mode.observe(
             crate::state::conv_mode::ConvObservation {
                 mode: awase::engine::ConvMode::from_u32(conv),
                 read_at: now_tick,
-                focus_epoch: spawn_focus_epoch,
-                hwnd: spawn_hwnd,
+                fence: spawn_fence,
                 source: crate::state::conv_mode::ConvReadSource::IdleCheck,
             },
-            current_epoch,
-            current_hwnd,
+            self.focus_fence(),
         );
 
         // prev_conversion_mode を更新し、次回 input_mode_from_conversion が使えるようにする
@@ -2117,21 +2109,18 @@ impl Runtime {
                         unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(10) }
                     {
                         // ADR-106 決定4: この読み取りは完全に同期（await 点無し）なので、
-                        // 観測の focus_epoch/hwnd（= FocusProbe admission 済みの
-                        // accepted.focus_epoch/accepted.hwnd、ADR-106 決定3）は「現在」と
-                        // 常に一致する——将来 focus-conv-check を非同期化する際も、
-                        // observe() の monotonic guard がそのまま効くようにするための
-                        // 前提工事。
+                        // 観測の fence（= FocusProbe admission 済みの accepted.fence、
+                        // ADR-106 決定3）は「現在」と常に一致する——将来
+                        // focus-conv-check を非同期化する際も、observe() の
+                        // monotonic guard がそのまま効くようにするための前提工事。
                         self.platform.output.conv_mode.observe(
                             crate::state::conv_mode::ConvObservation {
                                 mode: awase::engine::ConvMode::from_u32(conv),
                                 read_at: now_tick_ms,
-                                focus_epoch: accepted.focus_epoch,
-                                hwnd: accepted.hwnd,
+                                fence: accepted.fence,
                                 source: crate::state::conv_mode::ConvReadSource::FocusCheck,
                             },
-                            accepted.focus_epoch,
-                            accepted.hwnd,
+                            accepted.fence,
                         );
                         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
                         log::debug!(
@@ -2154,15 +2143,14 @@ impl Runtime {
         //
         // エポック/hwnd 照合: FocusProbe の admit() 済み値を引き継ぐ（ADR-106 決定3）。
         // apply_focus_probe の呼び出し前に admission を通過しているため
-        // accepted.focus_epoch/accepted.hwnd は現在の値と等しいことが保証済み。
+        // accepted.fence は現在の値と等しいことが保証済み。
         if matches!(
             self.platform.current_app_profile(),
             crate::focus::classify::AppImeProfile::Standard,
         ) && probe.is_japanese_ime
         {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
-                focus_epoch: accepted.focus_epoch,
-                hwnd: accepted.hwnd,
+                fence: accepted.fence,
             };
             win32_async::spawn_local(async move {
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。

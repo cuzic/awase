@@ -269,7 +269,16 @@ impl Runtime {
             None
         };
         let process_changed = last_pid.is_some_and(|last| last != classified.process_id);
-        let prev_hwnd = crate::state::ime_event::HwndId(self.platform.focus.current.hwnd);
+        // `focus_hwnd()` は `self.platform.focus.current.hwnd` を都度読む薄いラッパー
+        // （`Runtime::focus_fence().hwnd`、ADR-106 決定3）。`prev_hwnd`/`new_hwnd` を
+        // 同一の生成元（このメソッド）から取ることで、`update_focus_info` 呼び出しの
+        // 前後で同じ式を2通りに書く重複を無くす（PR 109 コードレビュー指摘6）。
+        // この時点ではまだ epoch は進んでいない（`on_focus_process_changed` は
+        // 後続の `apply_focus_probe_result` 内で呼ばれる）ため、両軸を同時に運ぶ
+        // `focus_fence()`（フル）ではなく hwnd 単独の `focus_hwnd()` を使う——ここで
+        // フルフェンスを使うと「epoch が古いフェンス」を意図的に組み立てる最初の
+        // 前例になってしまう。
+        let prev_hwnd = self.focus_hwnd();
 
         if process_changed {
             let ime_on = self.platform_state.ime.effective_open();
@@ -318,11 +327,15 @@ impl Runtime {
         );
 
         // 同一プロセス内で hwnd だけが変わった場合、ObservationStore 側の
-        // current_focus_hwnd をここで追従させる。プロセス変更（process_changed）は
+        // current_fence.hwnd をここで追従させる。プロセス変更（process_changed）は
         // 後続の on_focus_process_changed が FocusChanged（epoch インクリメント +
         // 観測プールクリア）で hwnd も一緒に更新するため、ここでは扱わない
         // （ADR-106 決定3、code review 2026-08-26 で発見された退行の修正）。
-        let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        //
+        // `update_focus_info` 直後のため `self.focus_hwnd()` は `classified.hwnd` と
+        // 構築上必ず一致する（同じ値を2通りの式で書く重複を無くす、PR 109
+        // コードレビュー指摘6）。
+        let new_hwnd = self.focus_hwnd();
         let will_dispatch_focus_hwnd_updated = !process_changed && new_hwnd != prev_hwnd;
         if will_dispatch_focus_hwnd_updated {
             let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
@@ -576,8 +589,7 @@ impl Runtime {
         ) && self.platform_state.ime.belief.is_japanese_ime()
         {
             let ticket = crate::state::probe_admission::ImmLikeTicket {
-                focus_epoch: self.platform_state.focus.focus_epoch,
-                hwnd: self.focus_hwnd(),
+                fence: self.focus_fence(),
             };
             win32_async::spawn_local(async move {
                 let snap = crate::ime::read_ime_state_full_async().await;

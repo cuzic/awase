@@ -459,6 +459,40 @@ hwnd 不一致除外ログ）は**一度も発火しなかった**——切替�
 するのに対し、後者は `advance_focus_tracking` から ~20ms 周期で無条件発火するため、
 実質的に情報過多でログを埋めるだけだった。
 
+**決定3の型統合完了（PR 109 コードレビュー指摘4フォローアップ）**: 上記実装記録の時点
+では `focus_epoch`/`hwnd` を別々のフィールド・引数として持ち回ったままだった
+（`ImmLikeTicket{focus_epoch, hwnd}` / `AcceptedObservation{focus_epoch, hwnd}` /
+`ObservationStore{current_focus_epoch, current_focus_hwnd}` 等）。これを1つの値
+`FocusFence{epoch, hwnd}` に統合し、`ObservationStore` 側の書き込み口を
+`clear_on_focus_change(FocusFence)`（両軸を原子的に差し替え）と
+`update_focus_window(HwndId)`（hwnd のみ）の2つに絞った。
+
+- **`FocusIdentity` ではなく `FocusFence` と命名した理由**: `focus/current.rs` に
+  journal 用スナップショット（hwnd/pid/class_name/process_name/app_profile/
+  app_kind/focus_kind）を保持する別の `FocusIdentity` 型が既に存在するため、本文が
+  当初提案していた名前は使えなかった。「epoch と hwnd の両方が一致して初めて観測を
+  通す」という役割（ADR-086 の `ActuationTarget{hwnd, focus_gen}` と同型のフェンス）
+  を素直に表す `FocusFence` を採用した。
+- **`ImmLikeTicket`/`AcceptedObservation`/`ConvObservation`/`ConvModeMgr::observe` を
+  `FocusFence` 単位に置換**し、`Runtime::focus_fence()` を主 API とした。ただし
+  `focus_epoch()`/`focus_hwnd()` は `focus_fence().epoch`/`.hwnd` を返す薄い
+  ラッパーとして削除せず残した——epoch と hwnd のペアリング・鮮度が意味を持たない
+  片方だけで十分な呼び出し元（`runtime/focus_tracking.rs` の
+  `advance_focus_tracking` が `prev_hwnd`/`new_hwnd` を同一生成元から取るために
+  `focus_hwnd()` を使う、旧 PR 109 コードレビュー指摘6）向け。
+- **`ImeObservation`/`AnyObservation` の `focus_epoch`+`hwnd` は統合しなかった**。
+  `record_any` が単一の `observed` から両フィールドを同時に埋めるため、片側だけ
+  古くなるバグクラスがそもそも構造的に発生しない。加えて `AnyObservation` は
+  journal 直列化形式（ADR-082）に触れるため、統合すると replay 前後比較が必要に
+  なり過剰と判断した。`ObservationStore::derive_filtered` の `is_identity_ok` は
+  比較の瞬間だけ `FocusFence{epoch: o.focus_epoch, hwnd: o.hwnd}` を組み立てて
+  `current_fence()` と照合する。
+- **例外**: `Observed::<E>::from_probe`/`from_cross_probe`/`from_poll`
+  （`state/evidence.rs`）は、旧シグネチャでは呼び出し元が `hwnd` を別引数として
+  渡していた（`accepted.hwnd` を渡すのが実質必須だったが型では強制されておらず、
+  `FocusFence` 統合が閉じたかった「片側だけずれる」構造をここだけ温存していた）。
+  この3関数は `hwnd` 引数を削除し、内部で `accepted.hwnd()` を使うよう変更した。
+
 ## 設計の経緯
 
 ADR-104 に対し Opus 2体（r1a・r1b）でラウンド1（独立レビュー）→ラウンド2（相互攻撃・

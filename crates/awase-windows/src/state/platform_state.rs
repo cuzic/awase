@@ -960,11 +960,10 @@ impl ImeStateHub {
         }
         // panic reset はフォーカスエポック/hwnd を変えない（同じフォーカスコンテキスト
         // 内のリセット）。
-        let cur_epoch = self.shadow_model.observations.current_focus_epoch;
-        let cur_hwnd = self.shadow_model.observations.current_focus_hwnd;
+        let cur_fence = self.shadow_model.observations.current_fence();
         self.shadow_model
             .observations
-            .clear_on_focus_change(cur_epoch, cur_hwnd);
+            .clear_on_focus_change(cur_fence);
     }
 
     /// `ImeUpdate` を belief / shadow_model に反映する。
@@ -985,12 +984,7 @@ impl ImeStateHub {
         if let Some(obs) = update.observer_poll {
             self.dispatch_event(
                 ImeEvent::ObserverReported(
-                    Observed::<evidence::ObserverPoll>::from_poll(
-                        &accepted,
-                        obs.value,
-                        HwndId::NULL,
-                    )
-                    .into(),
+                    Observed::<evidence::ObserverPoll>::from_poll(&accepted, obs.value).into(),
                 ),
                 tick_ms,
             );
@@ -1140,7 +1134,7 @@ impl ImeStateHub {
              observation として記録 (no explicit intent, Japanese layout, IME state \
              uncontrollable in Imm32Unavailable)"
         );
-        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
+        let focus_epoch = self.shadow_model.observations.current_fence().epoch;
         self.dispatch_event(
             ImeEvent::ObserverReported(
                 Observed::<evidence::HeuristicDefault>::at_startup(
@@ -1173,8 +1167,7 @@ impl ImeStateHub {
     ) {
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::ObserverPoll>::from_poll(&accepted, value, HwndId::NULL)
-                    .into(),
+                Observed::<evidence::ObserverPoll>::from_poll(&accepted, value).into(),
             ),
             tick_ms,
         );
@@ -1280,14 +1273,14 @@ impl ImeStateHub {
         // （top-level hwnd の IMC を読むため Qt/GJI 等では child hwnd と異なる
         // 場合がある。High confidence の ImmCrossProbe が後から上書きする）。
         //
-        // hwnd は `accepted.hwnd`（ticket が spawn 時に捕まえ、admission で現在値と
-        // 照合済みの top-level hwnd）を使う（ADR-106 決定3）。以前は `HwndId::NULL`
-        // 固定だったため、`ObservationStore::derive_filtered` が hwnd も照合する
-        // ようになると全ての FocusProbe 観測が常に棄却されてしまっていた。
+        // hwnd は `from_probe` 内部で `accepted.hwnd()`（ticket が spawn 時に捕まえ、
+        // admission で現在値と照合済みの top-level hwnd）を使う（ADR-106 決定3）。
+        // 以前は `HwndId::NULL` 固定だったため、`ObservationStore::derive_filtered`
+        // が hwnd も照合するようになると全ての FocusProbe 観測が常に棄却されて
+        // しまっていた。
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::FocusProbe>::from_probe(&accepted, value.get(), accepted.hwnd)
-                    .into(),
+                Observed::<evidence::FocusProbe>::from_probe(&accepted, value.get()).into(),
             ),
             tick_ms,
         );
@@ -1298,9 +1291,10 @@ impl ImeStateHub {
     /// `read_ime_state_full_async` が child hwnd の IMM32 状態を読んだ後に呼ぶ。
     /// High confidence のため `derive_any()` で即採用される。
     /// `accepted` は `ImmLikeTicket::admit()` が返した `AcceptedObservation`
-    /// （epoch/hwnd 照合済み、ADR-106 決定3）。hwnd は `accepted.hwnd`（top-level）を
-    /// 使う——`write_focus_probe` と同じ理由（`HwndId::NULL` 固定だと
-    /// `derive_filtered` の hwnd 照合で常に棄却されてしまう）。
+    /// （epoch/hwnd 照合済み、ADR-106 決定3）。hwnd は `from_cross_probe` 内部で
+    /// `accepted.hwnd()`（top-level）を使う——`write_focus_probe` と同じ理由
+    /// （`HwndId::NULL` 固定だと `derive_filtered` の hwnd 照合で常に棄却されて
+    /// しまう）。
     pub(crate) fn write_imm_cross_probe(
         &mut self,
         value: bool,
@@ -1309,12 +1303,7 @@ impl ImeStateHub {
     ) {
         self.dispatch_event(
             ImeEvent::ObserverReported(
-                Observed::<evidence::ImmCrossProbe>::from_cross_probe(
-                    &accepted,
-                    value,
-                    accepted.hwnd,
-                )
-                .into(),
+                Observed::<evidence::ImmCrossProbe>::from_cross_probe(&accepted, value).into(),
             ),
             tick_ms,
         );
@@ -1344,7 +1333,7 @@ impl ImeStateHub {
         tick_ms: TickMs,
     ) {
         log::debug!("[conv-open-inference] reason={reason:?} open={open}");
-        let focus_epoch = self.shadow_model.observations.current_focus_epoch;
+        let focus_epoch = self.shadow_model.observations.current_fence().epoch;
         self.dispatch_event(
             ImeEvent::ObserverReported(
                 Observed::<evidence::ConvOpenInference>::from_conv(

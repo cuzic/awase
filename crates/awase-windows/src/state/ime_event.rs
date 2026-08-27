@@ -422,7 +422,8 @@ pub enum ImeEvent {
         to: HwndId,
         profile: ImePolicyProfile,
         /// インクリメント後のフォーカスエポック。
-        /// reducer が `ObservationStore::current_focus_epoch` を更新するために使う。
+        /// reducer が `ObservationStore::current_fence`（`clear_on_focus_change`
+        /// 経由）を更新するために使う。
         focus_epoch: crate::state::probe_admission::FocusEpoch,
     },
 
@@ -433,7 +434,8 @@ pub enum ImeEvent {
     /// (`TsfNative`⇔`Uwp` 等) 往復のような同一プロセス内のウィンドウ切り替えは
     /// `FocusChanged` を経由しない。この場合でも `ImmLikeTicket::admit()` が照合する
     /// 生の hwnd（`platform.focus.current.hwnd`）は毎 tick 追従するため、reducer 側の
-    /// `ObservationStore::current_focus_hwnd` もこのイベントで追従させないと、
+    /// `ObservationStore::current_fence`（`update_focus_window` 経由）もこのイベントで
+    /// 追従させないと、
     /// `derive_any()` の `is_identity_ok` が古い hwnd と比較し続け、以後の
     /// `ImmCrossProbe`/`FocusProbe` 観測を次のプロセス変更まで恒久的に拒否する
     /// （code review 2026-08-26 で発見された退行）。

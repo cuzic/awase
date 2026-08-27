@@ -29,6 +29,8 @@ use super::conv_classify::ConvSyncReason;
 use super::ime_event::{
     HwndId, ImePolicyProfile, ObservationAuthority, ObservationConfidence, ObservationSource,
 };
+#[cfg(test)]
+use super::probe_admission::FocusFence;
 use super::probe_admission::{AcceptedObservation, FocusEpoch};
 
 mod sealed {
@@ -192,29 +194,32 @@ impl<E: OpenEvidence> Observed<E> {
 impl Observed<FocusProbe> {
     /// probe 経路でしか作れない。`AcceptedObservation` は
     /// `state/probe_admission.rs` でしか構築できない。
+    ///
+    /// `hwnd` 引数は取らず `accepted.hwnd()` を使う（PR 109 コードレビュー
+    /// 指摘4の軽微6: 呼び出し元が別途渡す hwnd と `accepted` の hwnd が
+    /// epoch とは別の経路でずれうる、`FocusFence` 統合が閉じたい構造その
+    /// ものだったため）。
     #[must_use]
-    pub const fn from_probe(accepted: &AcceptedObservation, open: bool, hwnd: HwndId) -> Self {
-        Self::new(open, hwnd, accepted.focus_epoch)
+    pub const fn from_probe(accepted: &AcceptedObservation, open: bool) -> Self {
+        Self::new(open, accepted.hwnd(), accepted.epoch())
     }
 }
 
 impl Observed<ImmCrossProbe> {
     /// `ImmLikeTicket::admit()` を通った非同期 probe 専用。
+    /// `hwnd` は `accepted.hwnd()` を使う（[`Observed::<FocusProbe>::from_probe`] 参照）。
     #[must_use]
-    pub const fn from_cross_probe(
-        accepted: &AcceptedObservation,
-        open: bool,
-        hwnd: HwndId,
-    ) -> Self {
-        Self::new(open, hwnd, accepted.focus_epoch)
+    pub const fn from_cross_probe(accepted: &AcceptedObservation, open: bool) -> Self {
+        Self::new(open, accepted.hwnd(), accepted.epoch())
     }
 }
 
 impl Observed<ObserverPoll> {
     /// 周期ポーリングの結果専用。
+    /// `hwnd` は `accepted.hwnd()` を使う（[`Observed::<FocusProbe>::from_probe`] 参照）。
     #[must_use]
-    pub const fn from_poll(accepted: &AcceptedObservation, open: bool, hwnd: HwndId) -> Self {
-        Self::new(open, hwnd, accepted.focus_epoch)
+    pub const fn from_poll(accepted: &AcceptedObservation, open: bool) -> Self {
+        Self::new(open, accepted.hwnd(), accepted.epoch())
     }
 }
 
@@ -453,9 +458,11 @@ mod tests {
 
     #[test]
     fn observed_carries_evidence_source_and_confidence() {
-        let accepted = AcceptedObservation::for_sync(7, HwndId(1));
-        let any: AnyObservation =
-            Observed::<FocusProbe>::from_probe(&accepted, true, HwndId(1)).into();
+        let accepted = AcceptedObservation::for_sync(FocusFence {
+            epoch: 7,
+            hwnd: HwndId(1),
+        });
+        let any: AnyObservation = Observed::<FocusProbe>::from_probe(&accepted, true).into();
         assert_eq!(any.source(), ObservationSource::FocusProbe);
         assert_eq!(any.confidence(), ObservationConfidence::Low);
         assert_eq!(any.focus_epoch(), 7);
@@ -463,7 +470,7 @@ mod tests {
         assert_eq!(any.hwnd(), HwndId(1));
 
         let any: AnyObservation =
-            Observed::<ImmCrossProbe>::from_cross_probe(&accepted, false, HwndId::NULL).into();
+            Observed::<ImmCrossProbe>::from_cross_probe(&accepted, false).into();
         assert_eq!(any.confidence(), ObservationConfidence::High);
         assert!(!any.open());
     }

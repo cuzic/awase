@@ -20,6 +20,7 @@ use super::ime_event::{
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{DeriveOutcome, ObservationStore};
+use super::probe_admission::FocusFence;
 use super::transition::ImeTransition;
 use std::time::Instant;
 
@@ -535,7 +536,10 @@ impl ImeModel {
                 // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
                 // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
                 // （ADR-106 決定3）。
-                self.observations.clear_on_focus_change(focus_epoch, to);
+                self.observations.clear_on_focus_change(FocusFence {
+                    epoch: focus_epoch,
+                    hwnd: to,
+                });
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
                 // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
@@ -663,7 +667,7 @@ impl ImeModel {
             ImeEvent::FocusHwndUpdated { hwnd } => {
                 // 同一プロセス内の hwnd 変化のみ。epoch・観測プール・intent 等は
                 // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
-                self.observations.update_focus_hwnd(hwnd);
+                self.observations.update_focus_window(hwnd);
             }
         }
     }
