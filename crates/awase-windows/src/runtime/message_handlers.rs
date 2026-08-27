@@ -180,43 +180,59 @@ pub(crate) fn deliver_key_event(
     if matches!(result, CallbackResult::PassThrough) {
         // GJI 候補ウィンドウが表示中に Ctrl+key がパススルーされる際、
         // GJI が Ctrl+key を IME ショートカットとして横取りしないよう composition を
-        // 先にキャンセルする。例: IME ON + め入力中 → Ctrl+J → tmux prefix。
-        // Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
-        // 修飾キーのみの押下時に composition を誤ってキャンセルしない。
-        //
-        // origin を KeyOrigin::Hook(PumpContext::Main) に限定する（指摘4、低コスト案）。
-        // 旧 drain 経路（DeferredReplay）はこのロジックを一切通っておらず、この
-        // 限定はその挙動と厳密に一致するため退行リスクがゼロ。世代照合による
-        // DeferredReplay 対応の完全版は見送り、docs/known-bugs.md に起票のみ行う
-        // （gate 中に Ctrl+J 等が来ても composition キャンセルが効かない既知の隙間）。
-        if matches!(origin, KeyOrigin::Hook(PumpContext::Main))
-            && is_key_down
-            && event.modifier_snapshot.ctrl
-            && !event.vk_code.is_passthrough()
-        {
-            let candidate_visible = app.platform.is_composition_warm_in_tsf();
-            log::debug!(
-                "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
-                event.vk_code
-            );
-            if candidate_visible {
-                // SAFETY: メインスレッドから呼ぶ。
-                unsafe { super::cancel_ime_composition() };
-                app.platform.on_ctrl_bypass_composition_cancel();
-                log::debug!(
-                    "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
-                    event.vk_code
-                );
-            }
-            // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
-            // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
-            arm_post_bypass_if_matches(app, event.vk_code);
-        }
+        // 先にキャンセルする（詳細は cancel_composition_and_arm_post_bypass_on_ctrl の doc）。
+        cancel_composition_and_arm_post_bypass_on_ctrl(app, origin, event, is_key_down);
         app.executor.enqueue_reinject(event);
         KeyDelivery::Reinjected
     } else {
         KeyDelivery::Consumed
     }
+}
+
+/// `CallbackResult::PassThrough` 確定時、Ctrl+非修飾キーによる bypass の直前に
+/// GJI 候補ウィンドウの composition をキャンセルし、`[[post_bypass]]` ルールに
+/// 一致すれば post-bypass latch を武装する。例: IME ON + め入力中 → Ctrl+J →
+/// tmux prefix。Ctrl↓ではなく実際の Ctrl+非修飾キー↓ 時点でキャンセルすることで、
+/// 修飾キーのみの押下時に composition を誤ってキャンセルしない。
+///
+/// origin を `KeyOrigin::Hook(PumpContext::Main)` に限定する（指摘4、低コスト案）。
+/// 旧 drain 経路（DeferredReplay）はこのロジックを一切通っておらず、この限定は
+/// その挙動と厳密に一致するため退行リスクがゼロ。世代照合による DeferredReplay
+/// 対応の完全版は見送り、docs/known-bugs.md に起票のみ行う（gate 中に Ctrl+J 等が
+/// 来ても composition キャンセルが効かない既知の隙間）。
+///
+/// `deliver_key_event` 本体から分離することで cognitive complexity を抑える
+/// （振る舞いは変更なし）。
+fn cancel_composition_and_arm_post_bypass_on_ctrl(
+    app: &mut Runtime,
+    origin: KeyOrigin,
+    event: awase::types::RawKeyEvent,
+    is_key_down: bool,
+) {
+    if !(matches!(origin, KeyOrigin::Hook(PumpContext::Main))
+        && is_key_down
+        && event.modifier_snapshot.ctrl
+        && !event.vk_code.is_passthrough())
+    {
+        return;
+    }
+    let candidate_visible = app.platform.is_composition_warm_in_tsf();
+    log::debug!(
+        "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
+        event.vk_code
+    );
+    if candidate_visible {
+        // SAFETY: メインスレッドから呼ぶ。
+        unsafe { super::cancel_ime_composition() };
+        app.platform.on_ctrl_bypass_composition_cancel();
+        log::debug!(
+            "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
+            event.vk_code
+        );
+    }
+    // [[post_bypass]] ルールに一致する場合、次の非修飾キーを NICOLA スキップ。
+    // tmux では prefix (Ctrl+J) 後に standalone n/p 等のコマンドキーを入力するため。
+    arm_post_bypass_if_matches(app, event.vk_code);
 }
 
 /// Post-bypass latch（ADR-103 決定3）の消費判定。`Some` を返した場合、
