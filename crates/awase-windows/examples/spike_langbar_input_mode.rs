@@ -31,7 +31,8 @@
 //!   のはずなので、過度な期待をしないこと)。
 //! - `--watch-langbar`: `ITfLangBarItemSink` を
 //!   `ITfLangBarItemMgr::AdviseItemSink` 経由で GJI の入力モードボタン
-//!   (`GJI_INPUT_MODE_BUTTON`)に対して購読する。言語バーのボタン表示自体が
+//!   (`candidate_buttons()` の候補 GUID を順に試す)に対して購読する。
+//!   言語バーのボタン表示自体が
 //!   実際の composition mode のミラーであるため、こちらが本命——
 //!   ひらがな⇔英数の切替(BUG-33/57 等の conv-mode belief 不整合の根本原因
 //!   になっている領域)を push で捉えられる可能性がある。
@@ -74,8 +75,7 @@ mod langbar_probe {
     use windows::core::{implement, Interface, GUID, PCWSTR};
     use windows::Win32::Graphics::Gdi::HBITMAP;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL,
-        COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::HKL;
     use windows::Win32::UI::TextServices::{
@@ -83,13 +83,14 @@ mod langbar_probe {
         ITfInputProcessorProfileActivationSink, ITfInputProcessorProfileActivationSink_Impl,
         ITfInputProcessorProfiles, ITfLangBarItem, ITfLangBarItemButton, ITfLangBarItemMgr,
         ITfLangBarItemSink, ITfLangBarItemSink_Impl, ITfMenu, ITfMenu_Impl, ITfSource,
-        TF_LANGBARITEMINFO,
+        GUID_LBI_INPUTMODE, TF_LANGBARITEMINFO,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
     };
 
-    /// GJI ビルドの入力モードボタン GUID。
+    /// GJI ビルドの「クラシック言語バー」入力モードボタン GUID(ポップアップ
+    /// メニュー式、`InitMenu`/`ITfMenu` 経由でテキストが取れる)。
     /// `google/mozc` `src/win32/tip/tip_lang_bar.cc::kTipLangBarItem_Button`
     /// の `#ifdef GOOGLE_JAPANESE_INPUT_BUILD` 分岐値(2026-08 時点 master)。
     /// `{D8C8D5EB-8213-47CE-95B7-BA3F67757F94}`
@@ -99,6 +100,40 @@ mod langbar_probe {
         0x47ce,
         [0x95, 0xb7, 0xba, 0x3f, 0x67, 0x75, 0x7f, 0x94],
     );
+
+    /// 候補 GUID を優先順位付きで並べたもの。1つ目はクラシック言語バー
+    /// ボタン(`kTipLangBarItem_Button`, メニュー式)、2つ目は Windows 8+
+    /// の標準タスクバー入力モードアイコン(`GUID_LBI_INPUTMODE`, 全 TIP
+    /// 共通の標準 GUID)。後者は mozc 側で `is_menu=false` として登録される
+    /// ため `InitMenu` は no-op になるが、`OnMenuSelect` 自体は
+    /// `IsMenuButton()` を見ずに動くため `--select` は両方で機能しうる
+    /// (mozc ソース `TipLangBarToggleButton::OnMenuSelect` で確認済み)。
+    fn candidate_buttons() -> [(&'static str, GUID); 2] {
+        [
+            (
+                "kTipLangBarItem_Button(GJI固有・クラシック言語バー)",
+                GJI_INPUT_MODE_BUTTON,
+            ),
+            (
+                "GUID_LBI_INPUTMODE(標準・Win8+タスクバー入力モードアイコン)",
+                GUID_LBI_INPUTMODE,
+            ),
+        ]
+    }
+
+    /// `mgr` から候補 GUID を順に試し、最初に見つかった
+    /// `(名前, ITfLangBarItemButton)` を返す。
+    fn find_button(mgr: &ITfLangBarItemMgr) -> Option<(&'static str, ITfLangBarItemButton)> {
+        for (name, guid) in candidate_buttons() {
+            // SAFETY: mgr は呼び出し元が生成した有効な COM 参照。
+            if let Ok(item) = unsafe { mgr.GetItem(&raw const guid) } {
+                if let Ok(button) = item.cast::<ITfLangBarItemButton>() {
+                    return Some((name, button));
+                }
+            }
+        }
+        None
+    }
 
     fn with_com<F: FnOnce() -> anyhow::Result<()>>(f: F) -> anyhow::Result<()> {
         // SAFETY: プロセス起動直後、他に COM 呼び出しが走っていない状態での
@@ -200,40 +235,39 @@ mod langbar_probe {
                 unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_ALL) }?;
             println!("ITfLangBarItemMgr: OK");
 
-            // SAFETY: mgr は上で生成した有効な COM 参照。
-            match unsafe { mgr.GetItem(&GJI_INPUT_MODE_BUTTON) } {
-                Ok(item) => {
-                    println!("GetItem(GJI_INPUT_MODE_BUTTON): OK");
-                    let button: ITfLangBarItemButton = item.cast()?;
-                    let menu: ITfMenu = MenuRecorder.into();
-                    // SAFETY: button/menu は共に有効な COM 参照。InitMenu 自体は
-                    // メニュー項目を列挙するだけで実モードには触れない(副作用が
-                    // ないことは mozc ソース `TipLangBarButton::InitMenu`/
-                    // `TipLangBarToggleButton::InitMenu` で確認済み)。
-                    unsafe { button.InitMenu(&menu) }?;
-                    println!("InitMenu: OK (上記 [menu] 行の uid/text 対応を確認すること)");
+            if let Some((name, button)) = find_button(&mgr) {
+                println!("GetItem: OK ({name})");
+                let menu: ITfMenu = MenuRecorder.into();
+                // SAFETY: button/menu は共に有効な COM 参照。InitMenu 自体は
+                // メニュー項目を列挙するだけで実モードには触れない(副作用が
+                // ないことは mozc ソース `TipLangBarButton::InitMenu`/
+                // `TipLangBarToggleButton::InitMenu` で確認済み)。
+                // GUID_LBI_INPUTMODE 側は is_menu=false のため no-op になり
+                // [menu] 行が1つも出ない可能性がある(それ自体は異常ではない)。
+                match unsafe { button.InitMenu(&menu) } {
+                    Ok(()) => println!(
+                        "InitMenu: OK (上記 [menu] 行の uid/text 対応を確認すること。\
+                         0行ならこのボタンは is_menu=false の可能性が高い)"
+                    ),
+                    Err(e) => println!("InitMenu failed: {e:?}(is_menu=false なら想定内)"),
+                }
 
-                    match select_uid {
-                        Some(uid) => {
-                            println!("--select={uid} 指定あり。OnMenuSelect({uid}) を実行します。");
-                            // SAFETY: button は上で取得した有効な COM 参照。
-                            let r = unsafe { button.OnMenuSelect(uid) };
-                            println!("OnMenuSelect({uid}) -> {r:?}");
-                            println!(
-                                "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(読み返しは信用しない)。"
-                            );
-                        }
-                        None => {
-                            println!(
-                                "--select=<uid> 未指定のためダンプのみで終了します。半角英数の uid を確認したら再実行してください。"
-                            );
-                        }
-                    }
+                if let Some(uid) = select_uid {
+                    println!("--select={uid} 指定あり。OnMenuSelect({uid}) を実行します。");
+                    // SAFETY: button は上で取得した有効な COM 参照。
+                    let r = unsafe { button.OnMenuSelect(uid) };
+                    println!("OnMenuSelect({uid}) -> {r:?}");
+                    println!(
+                        "→ 半角英数にしたい入力欄で実際に打鍵して確認してください(読み返しは信用しない)。"
+                    );
+                } else {
+                    println!(
+                        "--select=<uid> 未指定のためダンプのみで終了します。半角英数の uid を確認したら再実行してください。"
+                    );
                 }
-                Err(e) => {
-                    println!("GetItem(GJI_INPUT_MODE_BUTTON) failed: {e:?}");
-                    dump_all_items(&mgr)?;
-                }
+            } else {
+                println!("候補 GUID どちらも GetItem 失敗");
+                dump_all_items(&mgr)?;
             }
 
             Ok(())
@@ -275,9 +309,8 @@ mod langbar_probe {
     pub(crate) fn watch_profile(seconds: u32) -> anyhow::Result<()> {
         with_com(|| {
             // SAFETY: 標準的な in-proc COM オブジェクト生成。
-            let profiles: ITfInputProcessorProfiles = unsafe {
-                CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_ALL)
-            }?;
+            let profiles: ITfInputProcessorProfiles =
+                unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_ALL) }?;
             let source: ITfSource = profiles.cast()?;
             let sink: ITfInputProcessorProfileActivationSink = ProfileActivationLogger.into();
             // SAFETY: source は上で取得した有効な COM 参照。IID は静的定数。
@@ -326,14 +359,20 @@ mod langbar_probe {
             // SAFETY: 標準的な in-proc COM オブジェクト生成。
             let mgr: ITfLangBarItemMgr =
                 unsafe { CoCreateInstance(&CLSID_TF_LangBarItemMgr, None, CLSCTX_ALL) }?;
-            // SAFETY: mgr は上で生成した有効な COM 参照。
-            let item = unsafe { mgr.GetItem(&GJI_INPUT_MODE_BUTTON) }?;
-            let button: ITfLangBarItemButton = item.cast()?;
+            let Some((name, button)) = find_button(&mgr) else {
+                anyhow::bail!("候補 GUID どちらも GetItem 失敗(dump モードで先に確認すること)");
+            };
+            println!("GetItem: OK ({name})");
+            let guid = candidate_buttons()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, g)| g)
+                .expect("find_button が返した name は candidate_buttons 由来");
             let sink: ITfLangBarItemSink = LangBarUpdateLogger { item: button }.into();
             let mut cookie = 0u32;
             // SAFETY: mgr は有効な COM 参照。cookie はこのスコープの
             // ローカル変数。
-            unsafe { mgr.AdviseItemSink(&sink, &raw mut cookie, &GJI_INPUT_MODE_BUTTON) }?;
+            unsafe { mgr.AdviseItemSink(&sink, &raw mut cookie, &raw const guid) }?;
             println!("AdviseItemSink(ITfLangBarItemSink): cookie={cookie}");
             println!(
                 "{seconds}秒間待機します。この間に GJI の入力モードを \
