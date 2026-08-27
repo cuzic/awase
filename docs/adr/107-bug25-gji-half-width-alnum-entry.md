@@ -666,7 +666,8 @@ pub enum HalfWidthAlnumTogglePolicy {
 挙動——いずれも実機依存。`docs/known-bugs.md` **BUG-25 追補5** に次を記録する。
 
 - 決定0 の 2×2 結果表。
-- 実機検証チェックリスト（追補2 が定めた3点を踏襲・拡張）:
+- 実機検証チェックリスト（追補2 が定めた3点を踏襲・拡張。実行可能な手順書は
+  [bug25-gji-entry-verification-checklist.md](../bug25-gji-entry-verification-checklist.md)）:
   1. `[hook] IME-mode vk=0xF0 ... self_injected=` 行の出現有無。
   2. CapsLock 状態が変化していないこと。
   3. **実際に打鍵した文字**が半角英数になること（IMC の read-back を成功判定に使わない）。

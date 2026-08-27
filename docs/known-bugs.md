@@ -3036,7 +3036,8 @@ Task 0のsettle値再測定と連続発火クールダウンの実測は未完�
 settle待ち・クールダウン定数を実装しない。BUG-25のクローズ判断は、下記Task 9
 相当のWindows実機検証とソーク完了後に行う。
 
-**実機検証チェックリスト（未実施、Task 9）:**
+**実機検証チェックリスト（未実施、Task 9）:** 実行可能な手順に展開したものが
+[bug25-gji-entry-verification-checklist.md](bug25-gji-entry-verification-checklist.md)。
 
 - `[hook] IME-mode vk=0xF0 ... self_injected=` 行の出現有無。
 - CapsLock 状態が変化していないこと。
