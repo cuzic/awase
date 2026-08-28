@@ -1201,6 +1201,50 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
     }
 }
 
+/// ADR-108 証拠義務(a-2): `ImeModel.applied` はまだ `pub` のため、reducer 外からの
+/// 直接代入をテキスト走査で固定する。`record_confirmed`/`record_optimistic` の既知の
+/// 例外と、`ImeModel::reduce` 内の正規書き込み以外が増えた場合は、`applied` を
+/// private 化してアクセサへ寄せる本筋の修正を検討すること。
+#[test]
+fn applied_direct_assignments_are_accounted_for() {
+    const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
+        ("src/state/ime_model.rs", 5),
+        ("src/state/platform_state.rs", 2),
+    ];
+    const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
+
+    for path in list_src_files() {
+        let content = read_crate_file(&path);
+        let production = non_comment_lines(production_code_only(&content));
+        let assignment_count = production.matches(".applied = ").count();
+        let literal_count = production.matches("applied: AppliedImeState::").count()
+            + production
+                .matches("applied: crate::state::AppliedImeState::")
+                .count();
+        let expected_assignments = DIRECT_ASSIGNMENTS
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map_or(0, |(_, n)| *n);
+        let expected_literals = STRUCT_LITERAL_FIELDS
+            .iter()
+            .find(|(p, _)| *p == path)
+            .map_or(0, |(_, n)| *n);
+
+        assert_eq!(
+            assignment_count, expected_assignments,
+            "{path} の `.applied = ` 直接代入数が想定({expected_assignments})と異なります\
+             (実際: {assignment_count})。ADR-108 決定3の `applied` 書き込み点集約を\
+             破っていないか確認してください。"
+        );
+        assert_eq!(
+            literal_count, expected_literals,
+            "{path} の `applied: AppliedImeState::...` 構造体リテラル数が想定\
+             ({expected_literals})と異なります(実際: {literal_count})。`ImeModel` を\
+             reducer 外で直接構築していないか確認してください。"
+        );
+    }
+}
+
 /// ADR-098 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
 /// （BUG-69）が `force_on_attempt_allowed`/`note_force_on_attempt` を経由し続けている
 /// ことを固定する。0 になるとループ封鎖そのものが外れる（実装記録「実装順序・

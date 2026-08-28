@@ -1,0 +1,39 @@
+[
+  {
+    "name": "focus_changed_then_old_success_keeps_applied_unknown",
+    "note": "ADR-108 決定1。旧フォーカスプロセスで送った generation 付き apply の成功完了が FocusChanged 後に届いても、新フォーカスの applied=Unknown を破らないことを固定する。",
+    "events": [
+      {
+        "at_ms": 0,
+        "event": {
+          "ImeApplyRequested": {
+            "target": true,
+            "generation": 10,
+            "ctrl_held": false
+          }
+        }
+      },
+      {
+        "at_ms": 1,
+        "event": {
+          "FocusChanged": {
+            "to": 100,
+            "focus_epoch": 1,
+            "profile": "ImmCross"
+          }
+        }
+      },
+      {
+        "at_ms": 2,
+        "event": {
+          "ImeApplySucceeded": {
+            "target": true,
+            "generation": 10
+          }
+        }
+      }
+    ],
+    "expected_applied": "Unknown",
+    "expected_pending_generation": null
+  }
+]
