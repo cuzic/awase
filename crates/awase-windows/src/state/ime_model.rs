@@ -15,14 +15,41 @@ use super::ApplyGeneration;
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult, ObservationConfidence,
-    ObservationSource, UserIntentSource,
+    ApplyError, ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
+    ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{DeriveOutcome, ObservationStore};
 use super::probe_admission::FocusFence;
 use super::transition::ImeTransition;
 use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImeApplyAcceptance {
+    /// 追跡中の apply の完了。composition/warmup 副作用を駆動してよい。
+    Accepted,
+    /// 上書きされた古い apply の完了。`applied` は reducer 側で更新されうるが、
+    /// composition/warmup 副作用は駆動しない。
+    ///
+    /// 現在の唯一の消費点では [`Stale`](Self::Stale) と同じく副作用を駆動しない。
+    /// 区別を残している理由は、debug 診断で「古いが同一 target として belief に
+    /// 反映できた完了」と「完全に捨てた完了」を分けるため。
+    Superseded,
+    /// 宛先ウィンドウが変わった、または現在の transition に属さない完了。
+    ///
+    /// 現在の唯一の消費点では [`Superseded`](Self::Superseded) と同じく副作用を
+    /// 駆動しない。診断ログで捨てた理由を残すために別 variant としている。
+    Stale,
+    /// `UnsafeToToggle`。送っていないので完了として扱わない。
+    NotSent,
+}
+
+impl ImeApplyAcceptance {
+    #[allow(dead_code)]
+    pub(crate) const fn drives_composition_side_effects(self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
 
 // ── resolve_open_at 診断API（ADR-087 §5 Phase 0a item2/3） ──────────────────────
 
@@ -195,6 +222,26 @@ pub struct ImeModel {
     /// 旧 `ImeEffect::SetOpen` (Layer 3) + 楽観的 latch を統合。
     pub pending: Option<ImeTransition>,
 
+    /// 現フォーカス epoch で、ADR-108 決定2の緩和経路に入れてよい最小 generation。
+    ///
+    /// `FocusChanged` 時点で既に払い出し済みだった generation は旧フォーカス由来の
+    /// 完了であり、新しい epoch の `pending` と target が偶然一致しても `applied`
+    /// を汚染してはいけない。そこで FocusChanged 時点の `last_seen_generation` の
+    /// 直後を watermark として保持し、generation 不一致成功を `Optimistic` に緩和
+    /// する経路だけこの下限を照合する。
+    ///
+    /// `pending` ではなく `last_seen_generation` から導出する理由: `pending` は
+    /// タイムアウトや厳密一致完了で `FocusChanged` より前に `None` へ戻ることがある
+    /// （例: gen10 が timeout で purge された直後に `FocusChanged` が来るケース）。
+    /// このとき `pending` だけを見ると watermark が更新されず、後から届く gen10 の
+    /// 遅延完了が新 epoch の緩和経路をすり抜けてしまう。
+    focus_generation_watermark: ApplyGeneration,
+
+    /// これまでに `reduce()` が観測した最大の `ApplyGeneration`（`ImeApplyRequested`
+    /// 経由）。`focus_generation_watermark` の算出専用で、`pending` の生死に
+    /// 依存しない。generation はディスパッチ順に単調増加するため上書きで十分。
+    last_seen_generation: Option<ApplyGeneration>,
+
     /// 最後に actuator が成功させた IME 開閉状態の確信度 (Step 7)。
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
@@ -238,6 +285,8 @@ impl ImeModel {
             force_guards: ForceGuardSet::default(),
             observe_miss_monitor: ObserveMissMonitor::default(),
             pending: None,
+            focus_generation_watermark: ApplyGeneration::MIN,
+            last_seen_generation: None,
             applied: AppliedImeState::Unknown,
             force_on_retry: crate::state::ime_actuation::ForceOnRetryState::default(),
             current_focus: None,
@@ -398,6 +447,56 @@ impl ImeModel {
         self.pending.as_ref().map(|p| p.generation)
     }
 
+    fn completion_can_update_applied(
+        &self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) -> ImeApplyAcceptance {
+        use awase::platform::ImeOpenOutcome;
+
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            return ImeApplyAcceptance::NotSent;
+        }
+
+        let Some(pending) = self.pending.as_ref() else {
+            return ImeApplyAcceptance::Stale;
+        };
+        let current_epoch = self.observations.current_fence().epoch;
+        if pending.generation == generation {
+            if pending.focus_epoch == current_epoch {
+                ImeApplyAcceptance::Accepted
+            } else {
+                ImeApplyAcceptance::Stale
+            }
+        } else if matches!(
+            outcome,
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched
+        ) && generation >= self.focus_generation_watermark
+            && pending.focus_epoch == current_epoch
+            && pending.target == open
+            && self.applied.applied_open() != Some(open)
+        {
+            ImeApplyAcceptance::Superseded
+        } else {
+            ImeApplyAcceptance::Stale
+        }
+    }
+
+    /// generation 付き IME apply 完了の受理判定。
+    ///
+    /// `reduce()` と `ImeStateHub::record_ime_apply_result()` が同じ判定を読むための
+    /// SSOT。ここでの「受理」は `applied` 更新と composition/warmup 副作用の可否を
+    /// 指し、pending 解除の generation 厳密一致とは別の問いとして扱う。
+    pub(crate) fn classify_apply_completion(
+        &self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) -> ImeApplyAcceptance {
+        self.completion_can_update_applied(open, outcome, generation)
+    }
+
     /// 現在の `input_barrier` が持つ chord kind を返す。
     #[must_use]
     pub fn active_chord_kind(&self) -> Option<ChordKind> {
@@ -438,22 +537,6 @@ impl ImeModel {
     /// Observer は `observations` に記録するだけで desired を壊さない。
     #[expect(clippy::cognitive_complexity)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
-        // BUG-34 横展開 D-prep: pending transition の期限切れを毎 dispatch で
-        // 遅延パージする。`ImeTransition.timeout_at` は Step 7 導入時から存在したが
-        // 呼び出し元がゼロで、実際には一度も評価されていなかった。パージが無いと、
-        // 完了イベント（generation 照合）が届かないまま pending が残留した場合
-        // （典型例: `ImeOpenOutcome::UnsafeToToggle` を早期 return で捨てていた旧経路）
-        // 以後の別 generation の完了が全て stale 判定され続ける固着になる。
-        if let Some(pending) = &self.pending {
-            if pending.is_timed_out(envelope.time.monotonic) {
-                log::debug!(
-                    "[ime-model] pending transition timed out (generation={}, target={}) — purge",
-                    pending.generation,
-                    pending.target
-                );
-                self.pending = None;
-            }
-        }
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 let target = !self.desired_open;
@@ -542,6 +625,15 @@ impl ImeModel {
                 });
                 log::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
+                // `pending` ではなく `last_seen_generation` から算出する
+                // （struct doc 参照）。`pending` が既に None でも、これまで
+                // 見た最大 generation の直後を watermark として前進させる。
+                if let Some(next_focus_generation) = self
+                    .last_seen_generation
+                    .and_then(ApplyGeneration::checked_next)
+                {
+                    self.focus_generation_watermark = next_focus_generation;
+                }
                 // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
                 // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
                 // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
@@ -571,31 +663,34 @@ impl ImeModel {
                 generation,
                 ctrl_held,
             } => {
-                // BUG-34 横展開 D-prep: 進行中の未期限切れ pending を無条件で
-                // 上書きしない。上書きすると、進行中の別 apply（例: 打鍵駆動の
-                // apply）の完了が届いたときに generation 不一致で stale 判定され、
-                // その apply の結果が黙って捨てられる（`applied_open` が古いまま
-                // 固定され drift correction が再送を繰り返す事故につながる）。
-                // 【現時点では拒否ではなく警告ログのみ】正当な高頻度連続要求
-                // （例: force-on の即時リトライ）を誤って落とさないため、実機で
-                // 実際の発生頻度を確認してから拒否に倒すかどうかを判断する。
+                // ADR-108 決定2/5: pending の上書き自体は許容する。上書きされた
+                // apply の成功完了は、同一 focus epoch かつ現在の pending.target と
+                // 同じ値なら `Optimistic` として `applied` へ反映できる。composition
+                // / warmup 副作用は `ImeApplyAcceptance::Accepted`（generation 厳密一致
+                // + 同一 epoch）のみが駆動する。
                 if let Some(existing) = &self.pending {
                     if !existing.is_timed_out(envelope.time.monotonic) {
                         log::warn!(
                             "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
                              が進行中の pending(generation={}, target={}) を上書きする — \
-                             その apply の完了が今後 stale 判定される可能性がある",
-                            existing.generation,
-                            existing.target
+                             上書きされた apply の完了は target と focus epoch が一致すれば \
+                             applied に反映され、一致しなければ破棄される",
+                            existing.generation, existing.target
                         );
                     }
                 }
-                // Step 7: pending transition を立てる。
-                // 実際の timeout / actuator 詳細は呼び出し元 (Phase 3 cleanup) が
-                // 個別 dispatch で渡す想定。Step 7 では最低限の placeholder。
+                // watermark 算出専用トラッカー。generation はディスパッチ順に
+                // 単調増加するため、pending の生死に関わらずここで更新しておく
+                // （FocusChanged 時点で pending が既に None でも watermark を
+                // 正しく前進させるため）。
+                self.last_seen_generation = Some(generation);
+                // Step 7 / ADR-108 決定1: pending transition を立てる。
+                // `ObservationStore::current_fence().epoch` でスタンプし、完了時にも同じ
+                // カウンタで照合する。`FocusStore` 側の epoch とは混ぜないこと。
                 self.pending = Some(ImeTransition {
                     target,
                     generation,
+                    focus_epoch: self.observations.current_fence().epoch,
                     timeout_at: envelope.time.monotonic
                         + std::time::Duration::from_millis(
                             crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS,
@@ -618,21 +713,56 @@ impl ImeModel {
                 }
             }
             ImeEvent::ImeApplySucceeded { target, generation } => {
-                // Step 7: **必須** generation 照合で stale apply を排除。
-                // pending の generation と一致しなければ無視する。
-                if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
-                    self.applied = AppliedImeState::Confirmed {
-                        open: target,
-                        at_ms: envelope.time.tick_ms,
-                    };
-                    self.pending = None;
+                let acceptance = self.classify_apply_completion(
+                    target,
+                    awase::platform::ImeOpenOutcome::Applied,
+                    generation,
+                );
+                if self
+                    .pending
+                    .take_if(|pending| pending.generation == generation)
+                    .is_some()
+                {
+                    if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                        self.applied = AppliedImeState::Confirmed {
+                            open: target,
+                            at_ms: envelope.time.tick_ms,
+                        };
+                    }
+                } else if matches!(acceptance, ImeApplyAcceptance::Superseded) {
+                    // ADR-108 決定2: 上書きされた apply の成功完了。値は今
+                    // in-flight な apply の行き先と同じなので安全だが、現在の
+                    // pending 自身の確認ではないため `Confirmed` にはしない。
+                    self.applied = AppliedImeState::Optimistic(target);
                 }
-                // 一致しない場合は何もしない (stale → 無視)
             }
-            ImeEvent::ImeApplyFailed { generation, .. } => {
-                // 同じく generation 照合
-                if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
-                    self.pending = None;
+            ImeEvent::ImeApplyFailed {
+                target,
+                generation,
+                error,
+            } => {
+                let outcome = match error {
+                    ApplyError::Timeout | ApplyError::CrossProcessFailed | ApplyError::Other => {
+                        awase::platform::ImeOpenOutcome::Failed
+                    }
+                    ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                };
+                let acceptance = self.classify_apply_completion(target, outcome, generation);
+                if self
+                    .pending
+                    .take_if(|pending| pending.generation == generation)
+                    .is_some()
+                {
+                    // ADR-108 決定3: `record_ime_apply_result` からの移設。`Failed` は
+                    // 既存挙動維持として `!target` を書くが、`UnsafeToToggle` は
+                    // 送っていないため実状態不明であり `applied` を書かない。この
+                    // 非対称の除去は独立した挙動変更なので別ADRで扱う。
+                    if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                        self.applied = AppliedImeState::Confirmed {
+                            open: !target,
+                            at_ms: envelope.time.tick_ms,
+                        };
+                    }
                 }
             }
             ImeEvent::DriftDetected { desired, .. } => {
@@ -670,6 +800,19 @@ impl ImeModel {
                 self.observations.update_focus_window(hwnd);
             }
         }
+        // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
+        // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
+        // あって、待っていた当の完了を弾くためのフィルタではない。
+        if let Some(pending) = &self.pending {
+            if pending.is_timed_out(envelope.time.monotonic) {
+                log::debug!(
+                    "[ime-model] pending transition timed out (generation={}, target={}) — purge",
+                    pending.generation,
+                    pending.target
+                );
+                self.pending = None;
+            }
+        }
     }
 }
 
@@ -690,6 +833,22 @@ mod tests {
                 seq,
                 monotonic: Instant::now(),
                 tick_ms: 0,
+            },
+            event,
+        }
+    }
+
+    fn envelope_at(
+        seq: u64,
+        monotonic: Instant,
+        tick_ms: u64,
+        event: ImeEvent,
+    ) -> ImeEventEnvelope {
+        ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic,
+                tick_ms,
             },
             event,
         }
@@ -1344,6 +1503,338 @@ mod tests {
     }
 
     #[test]
+    fn superseded_same_target_success_updates_applied_optimistic_without_consuming_pending() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Optimistic(true));
+        assert_eq!(
+            model.pending_generation(),
+            Some(gen11),
+            "上書きされた apply の完了は current pending を解除しない"
+        );
+    }
+
+    #[test]
+    fn superseded_reverse_target_success_does_not_update_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplyRequested {
+                target: false,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert_eq!(model.pending_generation(), Some(gen11));
+    }
+
+    #[test]
+    fn focus_crossing_success_clears_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 7,
+        };
+
+        model.reduce(&focus_changed_event(2));
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "旧 focus epoch の完了は FocusChanged 後の Unknown を破れない"
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn old_epoch_superseded_success_cannot_pollute_new_focus_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&focus_changed_event(2));
+        model.reduce(&envelope(
+            3,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+        model.reduce(&envelope(
+            4,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "旧 focus epoch で払い出された generation は緩和経路でも applied を書けない"
+        );
+        assert_eq!(model.pending_generation(), Some(gen11));
+
+        model.reduce(&envelope(
+            5,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen11,
+                error: ApplyError::UnsafeToToggle,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "UnsafeToToggle 後も旧完了由来の Optimistic が残らない"
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
+    /// `focus_generation_watermark` は `pending` の生死ではなく
+    /// `last_seen_generation` から算出されることを固定する。`pending` がタイムアウト
+    /// 経由で既に `None` の状態で `FocusChanged` が来ても、後から届く旧 generation の
+    /// 完了は新 epoch の緩和経路をすり抜けない。
+    #[test]
+    fn watermark_advances_on_focus_change_even_when_pending_already_purged() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        // pending をタイムアウト経由で先に None にする（FocusChanged より前）。
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        let t1 = t0 + std::time::Duration::from_millis(timeout_ms + 1);
+        model.reduce(&envelope_at(
+            2,
+            t1,
+            timeout_ms + 1,
+            ImeEvent::ChordEnded {
+                kind: ChordKind::CtrlMuhenkanImeOff,
+            },
+        ));
+        assert!(
+            model.pending_generation().is_none(),
+            "前提: FocusChanged より前に pending がタイムアウトで purge 済みであること"
+        );
+
+        // この時点で pending は None なので、旧実装ではここで watermark が
+        // 更新されなかった。
+        model.reduce(&focus_changed_event(3));
+
+        model.reduce(&envelope(
+            4,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        // gen10 の超遅延完了が、新 epoch の pending(gen11, target:true) と
+        // target が一致するために緩和経路を通り抜けようとする。
+        model.reduce(&envelope(
+            5,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "pending 消滅後の FocusChanged でも watermark は前進しており、\
+             旧 epoch の超遅延完了は新 epoch の緩和経路を通り抜けない"
+        );
+        assert_eq!(model.pending_generation(), Some(gen11));
+    }
+
+    #[test]
+    fn mismatched_failed_outcomes_do_not_write_applied_or_consume_pending() {
+        for error in [ApplyError::CrossProcessFailed, ApplyError::UnsafeToToggle] {
+            let mut model = ImeModel::new();
+            let gen10 = ApplyGeneration::new(10).unwrap();
+            let gen11 = ApplyGeneration::new(11).unwrap();
+            model.reduce(&envelope(
+                1,
+                ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation: gen11,
+                    ctrl_held: false,
+                },
+            ));
+
+            model.reduce(&envelope(
+                2,
+                ImeEvent::ImeApplyFailed {
+                    target: true,
+                    generation: gen10,
+                    error,
+                },
+            ));
+
+            assert_eq!(model.applied, AppliedImeState::Unknown, "{error:?}");
+            assert_eq!(model.pending_generation(), Some(gen11), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn mismatched_success_does_not_downgrade_existing_confirmed_same_value() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        let gen11 = ApplyGeneration::new(11).unwrap();
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 77,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen11,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 77
+            },
+            "Confirmed の時刻を失う Optimistic 降格をしない"
+        );
+    }
+
+    #[test]
+    fn mismatched_success_can_enter_optimistic_from_unknown_and_opposite_confirmed() {
+        for initial in [
+            AppliedImeState::Unknown,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 77,
+            },
+        ] {
+            let mut model = ImeModel::new();
+            let gen10 = ApplyGeneration::new(10).unwrap();
+            let gen11 = ApplyGeneration::new(11).unwrap();
+            model.applied = initial;
+            model.reduce(&envelope(
+                1,
+                ImeEvent::ImeApplyRequested {
+                    target: true,
+                    generation: gen11,
+                    ctrl_held: false,
+                },
+            ));
+
+            model.reduce(&envelope(
+                2,
+                ImeEvent::ImeApplySucceeded {
+                    target: true,
+                    generation: gen10,
+                },
+            ));
+
+            assert_eq!(
+                model.applied,
+                AppliedImeState::Optimistic(true),
+                "{initial:?}"
+            );
+            assert_eq!(model.pending_generation(), Some(gen11), "{initial:?}");
+        }
+    }
+
+    #[test]
     fn matching_ime_apply_success_consumes_pending() {
         let mut model = ImeModel::new();
         model.reduce(&envelope(
@@ -1432,6 +1923,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn matching_ime_apply_failure_records_inverse_confirmed() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::CrossProcessFailed,
+            },
+        ));
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 1234
+            }
+        );
+        assert!(model.pending_generation().is_none());
+    }
+
     // ── BUG-34 横展開 D-prep: pending purge / UnsafeToToggle 解放 ──────────────
 
     /// `ImeTransition.timeout_at` は元々存在したが呼び出し元がゼロで、期限切れの
@@ -1478,6 +2003,48 @@ mod tests {
             model.pending_generation().is_none(),
             "期限を過ぎたら、無関係な後続イベントの処理時に pending が自然にパージされる"
         );
+    }
+
+    #[test]
+    fn timed_out_matching_completion_still_updates_applied_before_purge() {
+        let mut model = ImeModel::new();
+        let t0 = Instant::now();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 1,
+                monotonic: t0,
+                tick_ms: 0,
+            },
+            event: ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        });
+
+        let timeout_ms = crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS;
+        model.reduce(&ImeEventEnvelope {
+            time: EventTime {
+                seq: 2,
+                monotonic: t0 + std::time::Duration::from_millis(timeout_ms + 1),
+                tick_ms: timeout_ms + 1,
+            },
+            event: ImeEvent::ImeApplySucceeded {
+                target: true,
+                generation: gen10,
+            },
+        });
+
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: timeout_ms + 1
+            },
+            "期限切れ pending でも待っていた当の完了なら applied を更新する"
+        );
+        assert!(model.pending_generation().is_none());
     }
 
     /// 期限内であれば無関係なイベントが来ても pending はパージされないことを確認する
