@@ -17,6 +17,7 @@
 //! ```
 
 use super::ApplyGeneration;
+use crate::state::probe_admission::FocusEpoch;
 use std::time::Instant;
 
 /// OS への apply transaction。
@@ -26,6 +27,13 @@ pub struct ImeTransition {
     pub target: bool,
     /// 世代 ID (apply 要求ごとに increment、stale 照合に使う)
     pub generation: ApplyGeneration,
+    /// この apply が送られたフォーカスプロセス epoch。
+    ///
+    /// `ObservationStore::current_fence().epoch` と同じ値を使う。`FocusStore` 側の
+    /// epoch とは bootstrap 直後にずれることがあるため混ぜないこと。非同期 probe の
+    /// `ImmLikeTicket` と同型に、フォーカスプロセスを跨いだ完了が `applied` を
+    /// 書くのを防ぐ。
+    pub focus_epoch: FocusEpoch,
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,
 }
@@ -49,6 +57,7 @@ mod tests {
         let trans = ImeTransition {
             target: true,
             generation: ApplyGeneration::new(10).unwrap(),
+            focus_epoch: 0,
             timeout_at: t0 + Duration::from_millis(100),
         };
         assert!(!trans.is_timed_out(t0));

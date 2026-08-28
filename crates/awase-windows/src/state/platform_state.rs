@@ -16,6 +16,25 @@ use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImeApplyAcceptance {
+    /// 追跡中の apply の完了。composition/warmup 副作用を駆動してよい。
+    Accepted,
+    /// 上書きされた古い apply の完了。`applied` は reducer 側で更新されうるが、
+    /// composition/warmup 副作用は駆動しない。
+    Superseded,
+    /// 宛先ウィンドウが変わった、または現在の transition に属さない完了。
+    Stale,
+    /// `UnsafeToToggle`。送っていないので完了として扱わない。
+    NotSent,
+}
+
+impl ImeApplyAcceptance {
+    pub(crate) const fn drives_composition_side_effects(self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
 // ────────────────────────────────────────────────────────────────────────────
@@ -210,6 +229,40 @@ impl ImeStateHub {
             if p.target == value {
                 self.shadow_model.pending = None;
             }
+        }
+    }
+
+    fn classify_apply_completion(
+        &self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) -> ImeApplyAcceptance {
+        use awase::platform::ImeOpenOutcome;
+
+        if outcome == ImeOpenOutcome::UnsafeToToggle {
+            return ImeApplyAcceptance::NotSent;
+        }
+
+        let Some(pending) = self.shadow_model.pending.as_ref() else {
+            return ImeApplyAcceptance::Stale;
+        };
+        let current_epoch = self.shadow_model.observations.current_fence().epoch;
+        if pending.generation == generation {
+            if pending.focus_epoch == current_epoch {
+                ImeApplyAcceptance::Accepted
+            } else {
+                ImeApplyAcceptance::Stale
+            }
+        } else if matches!(
+            outcome,
+            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched
+        ) && pending.focus_epoch == current_epoch
+            && pending.target == open
+        {
+            ImeApplyAcceptance::Superseded
+        } else {
+            ImeApplyAcceptance::Stale
         }
     }
 
@@ -828,66 +881,53 @@ impl ImeStateHub {
         Some((desired, trusted.open, dur.as_millis() as u64))
     }
 
-    /// IME apply 完了を記録する（C: mirror + D: generation 照合 dispatch）。
+    /// IME apply 完了を記録する（D: generation 照合 dispatch）。
     ///
-    /// `generation` がある場合は pending transition と一致する完了だけを受理する。
-    /// 古い async 完了をここで弾くことで、GJI/Composition 側にも stale な
-    /// `SetOpen(false)` 完了を伝播させない。
+    /// ADR-108: generation 付き完了の `applied` 書き込みは `ImeModel::reduce()` に
+    /// 集約する。戻り値は composition/warmup 副作用を駆動してよいかの判定であり、
+    /// `applied` 更新の可否とは分離する。
     ///
-    /// 戻り値は、この完了を現在の IME apply として受理したかどうか。
+    /// generation を持たない既存5経路は現状維持。target 一致で pending を解放し、
+    /// `record_confirmed` で `applied` を書く。
     pub(crate) fn record_ime_apply_result(
         &mut self,
         open: bool,
         outcome: awase::platform::ImeOpenOutcome,
         generation: Option<ApplyGeneration>,
         ts: u64,
-    ) -> bool {
+    ) -> ImeApplyAcceptance {
         use awase::platform::ImeOpenOutcome;
-        if let Some(generation) = generation {
-            let pending = self.shadow_model.pending_generation();
-            if pending != Some(generation) {
-                log::debug!(
-                    "[ime-apply] stale completion ignored: target={open} outcome={outcome:?} \
-                     generation={generation} pending={pending:?}"
-                );
-                return false;
-            }
-        }
 
-        // BUG-34 横展開 D-prep: UnsafeToToggle は「送っていない」であって
-        // 「完了していない」ではない。以前は呼び出し元（on_ime_apply_complete）が
-        // ここに来る前に早期 return しており、generation 付きの pending が
-        // 一度も clear されず、以後の別 generation の完了が全て stale 判定され
-        // 続ける固着を生んでいた。ここで from_apply_outcome の既存の
-        // UnsafeToToggle → ImeApplyFailed マッピング（元々定義済みだったが
-        // 呼び出し元の早期 return により到達不能だった）を使って pending だけを
-        // 解放し、applied のミラーリングは行わない（何が実際の IME 状態かは
-        // 依然不明なため）。
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
-            if let Some(generation) = generation {
-                let event = ImeEvent::from_apply_outcome(open, outcome, generation);
-                self.dispatch_event(event, TickMs(ts));
+        let Some(generation) = generation else {
+            if outcome == ImeOpenOutcome::UnsafeToToggle {
+                return ImeApplyAcceptance::NotSent;
             }
-            return false;
-        }
 
-        let effective = match outcome {
-            ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
-            | ImeOpenOutcome::AlreadyMatched => open,
-            ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle => unreachable!("上で早期 return 済み"),
+            let effective = match outcome {
+                ImeOpenOutcome::Applied
+                | ImeOpenOutcome::FallbackSent
+                | ImeOpenOutcome::AlreadyMatched => open,
+                ImeOpenOutcome::Failed => !open,
+                ImeOpenOutcome::UnsafeToToggle => unreachable!("上で早期 return 済み"),
+            };
+            // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
+            // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
+            // 常に `record_confirmed`（ADR-098 決定6-a）。
+            self.record_confirmed(effective, ts);
+            return ImeApplyAcceptance::Accepted;
         };
-        // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
-        // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
-        // 常に `record_confirmed`（ADR-098 決定6-a）。
-        self.record_confirmed(effective, ts);
 
-        if let Some(generation) = generation {
-            let event = ImeEvent::from_apply_outcome(open, outcome, generation);
-            self.dispatch_event(event, TickMs(ts));
+        let acceptance = self.classify_apply_completion(open, outcome, generation);
+        if matches!(acceptance, ImeApplyAcceptance::Stale) {
+            log::debug!(
+                "[ime-apply] stale completion ignored for side effects: target={open} \
+                 outcome={outcome:?} generation={generation} pending={:?}",
+                self.shadow_model.pending_generation()
+            );
         }
-        true
+        let event = ImeEvent::from_apply_outcome(open, outcome, generation);
+        self.dispatch_event(event, TickMs(ts));
+        acceptance
     }
 }
 
@@ -1699,8 +1739,9 @@ mod tests {
             100,
         );
 
-        assert!(
-            !accepted,
+        assert_eq!(
+            accepted,
+            ImeApplyAcceptance::NotSent,
             "UnsafeToToggle は composition 更新(on_ime_applied)を誘発しない"
         );
         assert!(
@@ -1735,7 +1776,7 @@ mod tests {
             100,
         );
 
-        assert!(!accepted);
+        assert_eq!(accepted, ImeApplyAcceptance::NotSent);
         assert_eq!(
             ps.ime.model().pending_generation(),
             Some(ApplyGeneration::new(5).unwrap()),
