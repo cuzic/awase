@@ -1,6 +1,6 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -10,6 +10,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::output::INJECTED_MARKER;
+use crate::RawKeyEventExt as _;
 
 /// Alt 物理押下中または WM_SYSKEYDOWN コンテキスト（メニューモード）を示すフラグ
 const LLKHF_ALTDOWN: u32 = 0x20;
@@ -467,6 +468,178 @@ static ALT_R_IMPERSONATING: AtomicBool = AtomicBool::new(false);
 static ALT_L_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static ALT_R_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
+// ── key_remap（ADR-110） ──
+
+/// `key_remap` の hold-state。vk（0-255）でインデックスし、値は現在 latch
+/// されている reinject 先 vk（0 = 非リマップ）。`decide_simple_remap`
+/// （`state::key_remap`）が判定ロジック本体、ここは状態の置き場のみ。
+static LATCHED_TARGET: [AtomicU16; crate::state::key_remap::LATCH_TABLE_SIZE] =
+    [const { AtomicU16::new(0) }; crate::state::key_remap::LATCH_TABLE_SIZE];
+
+/// `key_remap` テーブルのダブルバッファ（ADR-110 決定8）。各面
+/// `MAX_KEY_REMAPS` スロット、1スロット = `(from<<16)|to` の `u32`。
+/// `set_key_remaps` が不使用面へ書き込んでから `CACHED_KEY_REMAPS_ACTIVE_PAGE`
+/// を切り替えることで、テーブル全体の入れ替えが reader から見て単一の原子的
+/// 操作になる（新旧混在のテーブルを読む瞬間が存在しない）。
+static CACHED_KEY_REMAPS: [[AtomicU32; crate::state::key_remap::MAX_KEY_REMAPS]; 2] = [
+    [const { AtomicU32::new(0) }; crate::state::key_remap::MAX_KEY_REMAPS],
+    [const { AtomicU32::new(0) }; crate::state::key_remap::MAX_KEY_REMAPS],
+];
+static CACHED_KEY_REMAPS_ACTIVE_PAGE: AtomicUsize = AtomicUsize::new(0);
+
+/// `key_remap` テーブルを設定する（config 読み込み後に呼ぶ）。
+pub fn set_key_remaps(table: &[(VkCode, VkCode)]) {
+    let active = CACHED_KEY_REMAPS_ACTIVE_PAGE.load(Ordering::Acquire);
+    let write_page = 1 - active;
+    for (i, slot) in CACHED_KEY_REMAPS[write_page].iter().enumerate() {
+        let packed = table
+            .get(i)
+            .map_or(0, |&(from, to)| (u32::from(from.0) << 16) | u32::from(to.0));
+        slot.store(packed, Ordering::Relaxed);
+    }
+    CACHED_KEY_REMAPS_ACTIVE_PAGE.store(write_page, Ordering::Release);
+}
+
+/// 現在有効な `key_remap` テーブルを読む（決定8のダブルバッファ、Acquire で
+/// 面インデックスを読んでからその面のスロットを読む）。
+fn cached_key_remaps() -> [(VkCode, VkCode); crate::state::key_remap::MAX_KEY_REMAPS] {
+    let active = CACHED_KEY_REMAPS_ACTIVE_PAGE.load(Ordering::Acquire);
+    let mut table = [(VkCode(0), VkCode(0)); crate::state::key_remap::MAX_KEY_REMAPS];
+    for (slot, entry) in CACHED_KEY_REMAPS[active].iter().zip(table.iter_mut()) {
+        let packed = slot.load(Ordering::Relaxed);
+        *entry = (VkCode((packed >> 16) as u16), VkCode(packed as u16));
+    }
+    table
+}
+
+/// `cached_key_remaps()` を `(from, to)` の有効エントリのみのスライス相当として
+/// 使うためのヘルパー。空きスロット（`from.0 == 0`）は含めない。
+fn active_key_remap_pairs() -> Vec<(VkCode, VkCode)> {
+    cached_key_remaps()
+        .into_iter()
+        .filter(|&(from, _)| from.0 != 0)
+        .collect()
+}
+
+/// `key_remap` のリマップ適用（グローバル状態の読み書きを伴う副作用あり）。
+/// 判定ロジック本体は `decide_simple_remap`（純粋関数）に委譲する
+/// （ADR-110 決定1・決定2）。Alt なりすましの直後、Ctrl 消費追跡ブロックより
+/// 前に呼ぶこと（`tests/architecture_guard.rs` で順序を固定している）。
+#[must_use]
+fn apply_key_remap(vk: VkCode, is_keydown: bool) -> VkCode {
+    let table = cached_key_remaps();
+    let configured_target = table
+        .iter()
+        .find(|(from, _)| from.0 != 0 && *from == vk)
+        .map_or(0, |(_, to)| to.0);
+    let Some(latch_slot) = LATCHED_TARGET.get(vk.0 as usize) else {
+        return vk;
+    };
+    let latched = latch_slot.load(Ordering::Acquire);
+    let (new_vk, next_latch) =
+        crate::state::key_remap::decide_simple_remap(vk, is_keydown, latched, configured_target);
+    latch_slot.store(next_latch, Ordering::Release);
+    new_vk
+}
+
+/// `FOCUS_APP_DISABLED`/overflow ラッチの早期リターン直前で呼ぶ
+/// （ADR-110 決定2 r3追記、Opus レビュー R3 対応）。
+///
+/// このvkが現在 `key_remap` でリマップ中（latch != 0）かつ KeyUp なら、
+/// latch 済みの target の KeyUp を先に注入してから latch をクリアする。
+/// KeyDown では何もしない（awase が制御を失っている間は新規リマップを
+/// 開始しない——disable_apps/overflow の「丸ごとバイパスする」設計思想と
+/// 整合させる）。
+///
+/// これにより、CapsLock 等を押しっぱなしのまま `disable_apps` 対象アプリへ
+/// フォーカスが移り、そこで指を離しても、離した瞬間に注入済み target の
+/// up が先に送られてから素の物理キー up が OS へ通る（stuck modifier 防止）。
+fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
+    use crate::vk::VkCodeExt;
+
+    if is_keydown {
+        return;
+    }
+    let Some(latch_slot) = LATCHED_TARGET.get(vk.0 as usize) else {
+        return;
+    };
+    let latched = latch_slot.swap(0, Ordering::AcqRel);
+    if latched == 0 {
+        return;
+    }
+    let event = RawKeyEvent {
+        vk_code: VkCode(latched),
+        scan_code: ScanCode(0),
+        event_type: KeyEventType::KeyUp,
+        extra_info: INJECTED_MARKER,
+        timestamp: now_timestamp(),
+        key_classification: KeyClassification::Passthrough,
+        physical_pos: None,
+        ime_relevance: classify_ime_relevance(VkCode(latched)),
+        modifier_key: VkCode(latched).classify_modifier(),
+        modifier_snapshot: awase::engine::ModifierState::default(),
+        injected: false,
+    };
+    // SAFETY: `reinject` は `SendInput` を呼ぶだけで、メインスレッド外
+    // （このフックスレッド）から呼んでも安全（`win32::send_input_safe` は
+    // スレッドセーフ）。
+    unsafe {
+        event.reinject();
+    }
+    log::info!(
+        "[key_remap] disable_apps/overflow ラッチ中に latch 済み target 0x{:02X} \
+         の KeyUp を注入（stuck modifier 防止、元vk=0x{:02X}）",
+        latched,
+        vk.0,
+    );
+}
+
+/// `key_remaps` に `to`=Ctrl系のエントリがある場合、その `from` の物理押下も
+/// 合わせて「Ctrl が実効的に held されているか」に含める（ADR-110 決定5）。
+/// `is_alt_impersonation_active()` の Ctrl 版に相当する公開ラッパー。
+///
+/// `InputContext::modifiers`/`RawKeyEvent::modifier_snapshot` を構築する全ての
+/// 箇所（`hook.rs` 自身・`runtime/mod.rs::build_ctx`・
+/// `runtime/message_handlers.rs` のタイマーハンドラ）で、この値が `true` の間は
+/// `modifiers.ctrl` を強制的に `true` にすること（`is_alt_impersonation_active`
+/// の doc と対になる Ctrl 版の規約）。
+#[must_use]
+pub fn key_remap_ctrl_effectively_held() -> bool {
+    crate::state::key_remap::effective_ctrl_physically_held(
+        &active_key_remap_pairs(),
+        is_physical_key_down,
+    )
+}
+
+/// `from=VK_CAPITAL` を含む `key_remap` ルールが有効な場合に限り、CapsLock の
+/// OS ロック状態が ON なら OFF へ正規化する（ADR-110 決定3）。
+///
+/// 呼び出しどころ: (1) config 読み込み/リロードで `set_key_remaps` を呼んだ直後、
+/// (2) `disable_apps`/overflow ラッチが解除され awase が制御を取り戻した直後
+/// （`runtime/mod.rs::apply_app_disable_transition`）。ルールが無い場合は
+/// 無条件呼び出しでも無害（内部でゲートする）。
+///
+/// # Safety
+/// `ime::is_caps_lock_on`/`ime::toggle_caps_lock` は Win32 API を呼ぶため
+/// メインスレッドから呼ぶこと。
+pub unsafe fn normalize_caps_lock_if_needed() {
+    let has_caps_lock_rule = cached_key_remaps()
+        .iter()
+        .any(|&(from, _)| from == crate::vk::VK_CAPITAL);
+    if !has_caps_lock_rule {
+        return;
+    }
+    // SAFETY: 呼び出し元の契約（メインスレッド）を引き継ぐ。
+    unsafe {
+        if crate::ime::is_caps_lock_on() {
+            crate::ime::toggle_caps_lock();
+            log::info!(
+                "[key_remap] from=VK_CAPITAL ルール有効時に CapsLock ロック状態を正規化（OFF）"
+            );
+        }
+    }
+}
+
 fn cached_hook_config() -> HookConfig {
     let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
     let keyboard_model = if CACHED_KEYBOARD_MODEL_IS_US.load(Ordering::Acquire) {
@@ -867,6 +1040,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // それらの介入（BUG-08/BUG-61/BUG-62 対策含む）も無効化中は一切効かなくする
     // （ユーザー判断により例外なく無効化する）。
     if FOCUS_APP_DISABLED.load(Ordering::Relaxed) {
+        // ADR-110 決定2 r3追記: このキーが key_remap でリマップ中のまま無効化
+        // アプリへ入った場合、latch 済み target の KeyUp を先に注入してから
+        // 素の物理キーイベントを通す（stuck modifier 防止）。
+        cleanup_latched_remap_before_bypass(vk, is_keydown);
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
 
@@ -987,11 +1164,18 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // いたはずの復旧不能な破損が起こりえた。overflow は稀にしか起きない上
     // 一時的な状態なので、破損防止ガードを常に優先する。
     if crate::hook_channel::HOOK_KEYS.is_overflow_latched() {
+        // ADR-110 決定2 r3追記: 上の FOCUS_APP_DISABLED 分岐と同じ理由。
+        cleanup_latched_remap_before_bypass(vk, is_keydown);
         return passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam);
     }
 
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
     let config = cached_hook_config();
+
+    // ADR-110 決定5: Alt なりすまし・key_remap どちらの書き換えより前の vk。
+    // Ctrl 消費追跡の reset 条件（`is_ctrl_variant_either`）が、書き換え後の
+    // vk だけでは検出できない「物理キー自身が Ctrl 系だった」ケースを見るために使う。
+    let original_vk = vk;
 
     // Alt なりすまし: Ctrl 消費追跡・classify_key より前に vk を書き換える。
     // これにより後続の全パイプライン（is_os_modifier_held の bypass 判定含む）が
@@ -1023,6 +1207,19 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     vk = rewritten_vk;
 
+    // ADR-110 決定1: key_remap は Alt なりすましの直後・Ctrl 消費追跡より前に
+    // 適用する（`tests/architecture_guard.rs` で順序を固定）。エンジンの
+    // 有効/無効に関わらず常時適用する。
+    let key_remapped_vk = apply_key_remap(vk, is_keydown);
+    if key_remapped_vk != vk {
+        log::debug!(
+            "[key_remap] remapping: vk 0x{:02X} -> 0x{:02X}",
+            vk.0,
+            key_remapped_vk.0
+        );
+    }
+    vk = key_remapped_vk;
+
     if !is_injected {
         let update_thumb = |slot: &AtomicU64| {
             if is_keydown {
@@ -1043,12 +1240,24 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
 
     // Ctrl consumption tracking
-    if crate::vk::is_ctrl_variant(vk) {
+    //
+    // ADR-110 決定5: reset 条件は書き換え前(original_vk)・書き換え後(vk)の
+    // どちらか一方でも Ctrl 系なら発火する（`is_ctrl_variant_either`）。
+    // `original_vk` を見ない（書き換え後の vk だけを見る）と、
+    // `from`=Ctrl系→非Ctrl の物理キー自身の押下を「Ctrl 押下中に別キーが
+    // 押された」と誤検出し、set 分岐へ落ちて consumed=true を誤って
+    // 立ててしまう（Opus レビュー r2ラウンド F3）。
+    if crate::state::key_remap::is_ctrl_variant_either(original_vk, vk) {
         // Ctrl↓/Ctrl↑ どちらでも consumption をリセット（次の Ctrl 押下から再計測）
         CTRL_CONSUMED_SINCE_DOWN.store(false, Ordering::Relaxed);
     } else if is_keydown {
-        let ctrl_held = is_physical_key_down(crate::vk::VK_LCONTROL)
-            || is_physical_key_down(crate::vk::VK_RCONTROL);
+        // key_remap で `to`=Ctrl系にリマップされているキーの物理押下も
+        // 「Ctrl が held されている」に含める（`from`=非Ctrl→Ctrl系での
+        // 救済窓の機能不全対策、同じレビュー）。
+        let ctrl_held = crate::state::key_remap::effective_ctrl_physically_held(
+            &active_key_remap_pairs(),
+            is_physical_key_down,
+        );
         if ctrl_held {
             // 親指キー自身は "Ctrl consumed" に含めない。
             // Ctrl+無変換 を直接押したとき(他キーなし) rescue が誤発動しないようにするため。
@@ -1069,6 +1278,17 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // 実機バグの修正、2026-07-19）。
     if is_alt_impersonation_active() {
         modifier_snapshot.alt = false;
+    }
+    // ADR-110 決定5 r3追記（Opus レビュー R6 対応）: key_remap で `to`=Ctrl系に
+    // 現在リマップ中のキーが物理押下されている間は modifier_snapshot.ctrl を
+    // 強制的に true にする。Alt なりすましの上記補正の鏡像
+    // （`key_remap_ctrl_effectively_held` の doc 参照）。この補正が無いと、
+    // reinject が非同期（engine スレッド経由）であるため、reinject が実際に
+    // OS へ届く前に次のキーの hook_callback が走った場合
+    // `read_os_modifiers()`（GetAsyncKeyState ベース）がまだ Ctrl を観測して
+    // おらず、「CapsLock→Ctrl remap 直後の最初の Ctrl+C 等が化ける」。
+    if key_remap_ctrl_effectively_held() {
+        modifier_snapshot.ctrl = true;
     }
     let event = build_raw_key_event(
         vk,

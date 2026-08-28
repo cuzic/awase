@@ -1755,9 +1755,16 @@ pub unsafe fn is_caps_lock_on() -> bool {
 
 /// Caps Lock の状態をトグルする。
 ///
+/// `dwExtraInfo` に `INJECTED_MARKER` を付ける（ADR-110 決定3、Opus レビュー
+/// R4 対応）: 付けないと `hook.rs::is_self_injected` がこの注入を自己注入と
+/// 認識できず、`key_remap` の `from=VK_CAPITAL` ルールがある場合にこの注入
+/// 自体が別の VK に書き換えられてしまい、CapsLock が OFF にならないまま
+/// spurious なキーだけが飛ぶ自己矛盾になる。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 pub unsafe fn toggle_caps_lock() {
+    use crate::output::INJECTED_MARKER;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
@@ -1769,7 +1776,7 @@ pub unsafe fn toggle_caps_lock() {
                 wScan: 0,
                 dwFlags: KEYBD_EVENT_FLAGS(0),
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: INJECTED_MARKER,
             },
         },
     };
@@ -1781,7 +1788,7 @@ pub unsafe fn toggle_caps_lock() {
                 wScan: 0,
                 dwFlags: KEYEVENTF_KEYUP,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: INJECTED_MARKER,
             },
         },
     };

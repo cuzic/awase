@@ -135,8 +135,10 @@ impl Runtime {
         // phys_ctrl は PHYSICAL_KEY_STATE (SendInput 非影響) での Ctrl 押下状態。
         // gas_ctrl と乖離する場合、synthetic KeyUp が SendInput されて
         // GetAsyncKeyState が汚染されている可能性がある。
-        let phys_ctrl = hook::is_physical_key_down(crate::vk::VK_LCONTROL)
-            || hook::is_physical_key_down(crate::vk::VK_RCONTROL);
+        // ADR-110 決定5: key_remap で to=Ctrl系にリマップ中のキーの物理押下も
+        // 含める（`hook::key_remap_ctrl_effectively_held` と同じ判定、
+        // でなければ CapsLock→Ctrl remap 下で本来無害な食い違いを毎打鍵警告してしまう）。
+        let phys_ctrl = hook::key_remap_ctrl_effectively_held();
         log::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \

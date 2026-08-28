@@ -11963,3 +11963,45 @@ actuation 完了ハンドラへ持ち込み、`with_app` 内で照合して早�
 **関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`,
 `crates/awase-windows/src/state/platform_state.rs`,
 `crates/awase-windows/src/state/probe_admission.rs`。関連: ADR-108 決定6。
+
+## BUG-99: `[[keymap]]` ショートカット再割当てが実際のキー処理から一度も呼ばれておらず動作しない
+
+**症状:** `config.toml` の `[[keymap]]` セクション（`KeymapRule`、プロセス別
+コンボインターセプト機能）は、設定ファイルのパース・`awase-settings` の
+専用エディタ UI（`keymap_new_grid` 周辺）・`KeymapTable::new` によるコンパイル・
+`runtime/focus_tracking.rs` によるフォーカス変更ごとの `filter_active()` 更新まで
+一通り完成しているが、その結果を実際のキー処理で参照する箇所がコードベースに
+一つも存在しない。`KeymapTable::find_match`（`crates/awase-windows/src/keymap.rs`）
+は定義されているだけで、どこからも呼ばれていない。ユーザーが `[[keymap]]` を
+設定しても、意図したキー変換・インターセプトは一切発生しない（無言で無効）。
+
+**再現条件:** `config.toml` に任意の `[[keymap]]` ルール（例: `from = "Ctrl+I"`,
+`to = "F7"`）を設定して awase を起動し、該当アプリで該当キーを押す。何も起きない
+（元のキーがそのまま通る）。
+
+**発見の経緯:** ADR-110（物理キー単純リマップ `key_remap` 機能）の設計時、
+「既存の `[[keymap]]` を拡張して使えないか」を検討する過程で、
+`grep -rn find_match` が定義箇所以外にヒットしないことから判明した
+（2026-08-28）。`git log --oneline -- crates/awase-windows/src/keymap.rs` を見ると
+`569ee530`（`compile_keymaps`/`filter_active_keymaps`/`find_keymap_match` という
+自由関数群を `struct KeymapTable` に集約するリファクタ）が最新の実質変更で、
+この時点で呼び出し元が失われた可能性がある（未調査）。
+
+**状態:** 未修正。ADR-110 は `[[keymap]]` を直さず、別の独立した `key_remap`
+機構（`state/key_remap.rs`）を新設する方針を採った（コンボ×アプリ文脈の
+インターセプトと、修飾キー役割の恒久的入れ替えは要求される hold-state 対称性が
+異なるため）。設定 GUI の「キーマップ」セクションには、ADR-110 決定7/10 に基づき
+「⚠ 現在この機能は動作しません」ラベルを追加する。
+
+**follow-up方針:** `find_keymap_match` 相当の呼び出しを、フックコールバックまたは
+`runtime/key_pipeline.rs` のいずれかの適切な地点（`active_keymaps` を保持する
+`platform_state.rs::KeymapStore` が既にフォーカス文脈で絞り込み済みのため、
+メインスレッド側のキー処理経路が候補）に配線する。`[[keymap]]` はコンボ
+（Ctrl/Shift/Alt 修飾状態込み）を扱うため、単純な vk 一致ではなく
+`ModifierState` を含めた一致判定が必要（`KeymapTable::find_match` の既存
+シグネチャ参照）。
+
+**関連ファイル:** `crates/awase-windows/src/keymap.rs`,
+`crates/awase-windows/src/state/platform_state.rs`,
+`crates/awase-windows/src/runtime/focus_tracking.rs`,
+`crates/awase-settings/src/main.rs`。関連: ADR-110。

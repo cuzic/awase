@@ -434,6 +434,18 @@ pub(super) fn initialize_app(
     hook::set_keyboard_model(config.general.keyboard_model);
     hook::set_alt_impersonation_enabled(left_alt_impersonates, right_alt_impersonates);
     hook::set_swallow_alt_kana_mode_switch(config.general.swallow_alt_kana_input_method_switch);
+    // ADR-110 決定4/9: key_remap テーブルをコンパイルしてフックスレッドへ渡す。
+    hook::set_key_remaps(&crate::state::key_remap::compile_key_remaps(
+        &config.key_remap,
+        left_thumb_vk,
+        right_thumb_vk,
+        &crate::state::key_remap::modifier_free_hotkey_vks(&config.keys),
+    ));
+    // ADR-110 決定3 項目1: 起動時、from=VK_CAPITAL ルールが有効ならCapsLockを正規化する。
+    // SAFETY: initialize_app はメインスレッドから（起動シーケンス内で）呼ばれる。
+    unsafe {
+        hook::normalize_caps_lock_if_needed();
+    }
 
     let engine_on_ime_vk = config
         .keys

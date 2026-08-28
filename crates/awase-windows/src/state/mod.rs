@@ -40,6 +40,10 @@ pub(crate) use conv_mode::{ConvActuationOutcome, ConvModeTarget, ConvMutationRea
 // テストが実行されるまで発見されなかったことの再発防止として、hook.rs から移設。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod alt_impersonation;
+// key_remap（ADR-110）も alt_impersonation と同じ ungated パターン。唯一の
+// 呼び出し元 hook.rs は #[cfg(windows)] のため非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod key_remap;
 // ADR-106 決定1: `ApplyGeneration` 専用アロケータ。`ImeEventLog.next_seq` から
 // 独立させ、fence 用の識別子が別目的の数を借用する問題（原因A）を解消する。
 // ungated（Linux で `allocate()` の単調増加・折り返し・wire エンコード往復を

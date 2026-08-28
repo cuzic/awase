@@ -487,6 +487,10 @@ pub(crate) unsafe fn handle_wm_timer(
             if hook::is_alt_impersonation_active() {
                 modifiers.alt = false;
             }
+            // ADR-110 決定5 r3追記（`Runtime::build_ctx` の同様の補正参照）。
+            if hook::key_remap_ctrl_effectively_held() {
+                modifiers.ctrl = true;
+            }
             let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
             let ctx = super::build_input_context(
                 app.platform_state.ime.effective_open(),
