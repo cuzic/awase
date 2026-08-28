@@ -58,25 +58,24 @@ pub const fn decide_simple_remap(
     (vk, next_latch)
 }
 
-/// `key_remaps` の中から `to` が Ctrl 系（`VK_CONTROL`/`VK_LCONTROL`/
-/// `VK_RCONTROL`）であるエントリの `from` が物理的に held されているかを
-/// 合わせて見る、Ctrl 物理押下判定（ADR-110 決定5）。
+/// `LATCHED_TARGET` のスナップショットの中に、Ctrl 系（`VK_CONTROL`/
+/// `VK_LCONTROL`/`VK_RCONTROL`）へ latch 中（非0）のスロットが1つでもあるか
+/// （ADR-110 決定5、Opus round3レビュー S4対応）。
 ///
-/// `key_remap` で Ctrl⇔他キーの入れ替えを行うと、素の
-/// `is_physical_key_down(VK_LCONTROL/RCONTROL)` だけでは「リマップ元の
-/// キーで Ctrl として振る舞っている」ことを検出できない
-/// （`from=VK_CAPITAL to=VK_LCONTROL` で物理 Ctrl は一切押されていないため）。
+/// r3 までは `key_remaps`（現在のルールテーブル）と `is_physical_key_down` を
+/// 直接見る設計だったが、これは決定2 の latch と食い違う: CapsLock(→LCtrl) を
+/// 押しっぱなしのまま config reload でルールを削除すると、OS 側は latch により
+/// 正しく LCtrl が押されたままなのに、テーブルベースの判定は新テーブルを見て
+/// false を返してしまう（決定2 が閉じた「stale target」の穴をこのヘルパーが
+/// 開け直す）。「このキーが今 Ctrl として振る舞っているか」の唯一の真実は
+/// `decide_simple_remap` が書き込む latch そのものなので、テーブルではなく
+/// latch を見る。
 #[must_use]
-pub fn effective_ctrl_physically_held(
-    key_remaps: &[(VkCode, VkCode)],
-    is_physical_key_down: impl Fn(VkCode) -> bool,
-) -> bool {
-    use crate::vk::{is_ctrl_variant, VK_LCONTROL, VK_RCONTROL};
-    is_physical_key_down(VK_LCONTROL)
-        || is_physical_key_down(VK_RCONTROL)
-        || key_remaps
-            .iter()
-            .any(|&(from, to)| is_ctrl_variant(to) && is_physical_key_down(from))
+pub fn any_latched_ctrl(latched: &[u16]) -> bool {
+    use crate::vk::is_ctrl_variant;
+    latched
+        .iter()
+        .any(|&target| target != 0 && is_ctrl_variant(VkCode(target)))
 }
 
 /// Ctrl 消費追跡（`CTRL_CONSUMED_SINCE_DOWN`）の reset 条件（ADR-110 決定5）。
@@ -242,8 +241,7 @@ pub fn modifier_free_hotkey_vks(keys: &awase::config::KeysConfig) -> Vec<VkCode>
 #[cfg(test)]
 mod tests {
     use super::{
-        compile_key_remaps, decide_simple_remap, effective_ctrl_physically_held,
-        is_ctrl_variant_either,
+        any_latched_ctrl, compile_key_remaps, decide_simple_remap, is_ctrl_variant_either,
     };
     use crate::vk::{VK_CAPITAL, VK_LCONTROL, VK_NONCONVERT, VK_RCONTROL};
     use awase::config::KeyRemapRule;
@@ -321,30 +319,30 @@ mod tests {
         }
     }
 
-    // ── effective_ctrl_physically_held ──
+    // ── any_latched_ctrl ──
 
     #[test]
-    fn effective_ctrl_held_true_when_real_ctrl_physically_down() {
-        let table: [(VkCode, VkCode); 0] = [];
-        assert!(effective_ctrl_physically_held(&table, |vk| vk == VK_LCONTROL));
+    fn any_latched_ctrl_true_when_a_slot_is_latched_to_ctrl() {
+        assert!(any_latched_ctrl(&[0, VK_LCONTROL.0, 0]));
     }
 
     #[test]
-    fn effective_ctrl_held_true_when_remapped_source_is_physically_down() {
-        let table = [(VK_CAPITAL, VK_LCONTROL)];
-        assert!(effective_ctrl_physically_held(&table, |vk| vk == VK_CAPITAL));
+    fn any_latched_ctrl_false_when_no_slot_is_latched() {
+        assert!(!any_latched_ctrl(&[0, 0, 0]));
     }
 
     #[test]
-    fn effective_ctrl_held_false_when_neither_real_nor_remapped_ctrl_is_down() {
-        let table = [(VK_CAPITAL, VK_LCONTROL)];
-        assert!(!effective_ctrl_physically_held(&table, |_| false));
+    fn any_latched_ctrl_ignores_non_ctrl_latches() {
+        assert!(!any_latched_ctrl(&[VK_NONCONVERT.0, 0]));
     }
 
     #[test]
-    fn effective_ctrl_held_ignores_non_ctrl_targets() {
-        let table = [(VK_CAPITAL, VK_NONCONVERT)];
-        assert!(!effective_ctrl_physically_held(&table, |vk| vk == VK_CAPITAL));
+    fn any_latched_ctrl_survives_config_reload_that_removed_the_rule() {
+        // ADR-110 決定2の趣旨そのもの: config reload でルールがテーブルから
+        // 消えても、latch は物理キーが離されるまで残るべき。ここでは latch
+        // スナップショットだけを渡すので、テーブルの状態とは無関係に検出できる
+        // ことを確認する（Opus round3レビュー S4 の再発防止テスト）。
+        assert!(any_latched_ctrl(&[VK_RCONTROL.0]));
     }
 
     // ── is_ctrl_variant_either ──

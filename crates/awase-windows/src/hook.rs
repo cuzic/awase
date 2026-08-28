@@ -339,6 +339,11 @@ pub fn reset_physical_key_state() {
     ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
     ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
     ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
+    // ADR-110 決定2 追補（Opus round3レビュー S1）: key_remap の latch も同じ
+    // 「セッションロック中に KeyUp が失われうる」リスクに晒されている。放置すると
+    // 注入済み target が stuck するだけでなく、latch が非0のままだと該当物理キーの
+    // 以後の新規押下が auto-repeat 扱いになり続ける（config reload でも復旧しない）。
+    release_all_latched_remap_targets();
     log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
@@ -401,6 +406,13 @@ pub(crate) fn clear_hook_latches_for_app_disable(
             }
         }
         log::info!("[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）");
+        // ADR-110 決定2 追補（Opus round3レビュー S1）: disable_apps 滞在中は
+        // hook_callback 冒頭の FOCUS_APP_DISABLED 早期return で毎イベント
+        // `cleanup_latched_remap_before_bypass` を呼んでいるが、それは「このvkの
+        // KeyUp が実際に届いた場合」のみ効く。滞在中ずっと押しっぱなしのまま
+        // Leave する場合や KeyUp 自体が失われた場合に備え、Leave 時点で全latchを
+        // 無条件掃除する（Ctrl/Shift の PHYSICAL_KEY_STATE 強制クリアと同じ理由）。
+        release_all_latched_remap_targets();
     }
     log::info!("[app-disable] {edge:?}: hook latches をクリア");
 }
@@ -555,8 +567,6 @@ fn apply_key_remap(vk: VkCode, is_keydown: bool) -> VkCode {
 /// 書き換えることが構造的に無いからである。決定4の Alt/Win 除外を緩める場合は
 /// この前提が崩れないか要再検証。
 fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
-    use crate::vk::VkCodeExt;
-
     if is_keydown {
         return;
     }
@@ -567,16 +577,61 @@ fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
     if latched == 0 {
         return;
     }
+    inject_synthetic_key_up(VkCode(latched));
+    log::info!(
+        "[key_remap] disable_apps/overflow ラッチ中に latch 済み target 0x{:02X} \
+         の KeyUp を注入（stuck modifier 防止、元vk=0x{:02X}）",
+        latched,
+        vk.0,
+    );
+}
+
+/// `LATCHED_TARGET` の全 256 スロットを走査し、latch 済み（非0）のものを
+/// 全て「target の KeyUp を注入してからクリア」する（ADR-110 決定2 追補、
+/// Opus round3 レビュー S1 対応）。
+///
+/// `cleanup_latched_remap_before_bypass` はイベント駆動（このイベントの vk
+/// についてのみ判定）だが、こちらは「物理キーの KeyUp が丸ごと失われた
+/// 可能性がある」タイミング（セッションロック解除・disable_apps からの
+/// 離脱）向けに、latch テーブル全体を無条件で掃除する。
+///
+/// `reset_physical_key_state()` と `clear_hook_latches_for_app_disable()`
+/// （どちらも既存の「KeyUp 消失で他のラッチが恒久固着する」対策の同型パターン
+/// を持つ）から呼ぶ。呼ばずに放置すると、latch が非0のまま残り
+/// `is_fresh_press = is_keydown && latched_target == 0` の判定により、
+/// 該当物理キーの以後の新規押下が全て auto-repeat 扱いになり、config reload
+/// でルールを削除しても stale target の reinject が続く（r2 の bool 設計より
+/// 悪化する退行）。
+fn release_all_latched_remap_targets() {
+    for (vk_raw, latch_slot) in LATCHED_TARGET.iter().enumerate() {
+        let latched = latch_slot.swap(0, Ordering::AcqRel);
+        if latched == 0 {
+            continue;
+        }
+        inject_synthetic_key_up(VkCode(latched));
+        log::info!(
+            "[key_remap] リセット経路で latch 済み target 0x{latched:02X} の KeyUp を注入\
+             （stuck modifier 防止、元vk=0x{vk_raw:02X}）",
+        );
+    }
+}
+
+/// `key_remap` のリマップ先 `vk` に対する合成 KeyUp を注入する
+/// （`cleanup_latched_remap_before_bypass`/`release_all_latched_remap_targets`
+/// 共通の下請け）。
+fn inject_synthetic_key_up(vk: VkCode) {
+    use crate::vk::VkCodeExt;
+
     let event = RawKeyEvent {
-        vk_code: VkCode(latched),
+        vk_code: vk,
         scan_code: ScanCode(0),
         event_type: KeyEventType::KeyUp,
         extra_info: INJECTED_MARKER,
         timestamp: now_timestamp(),
         key_classification: KeyClassification::Passthrough,
         physical_pos: None,
-        ime_relevance: classify_ime_relevance(VkCode(latched)),
-        modifier_key: VkCode(latched).classify_modifier(),
+        ime_relevance: classify_ime_relevance(vk),
+        modifier_key: vk.classify_modifier(),
         modifier_snapshot: awase::engine::ModifierState::default(),
         injected: false,
     };
@@ -586,12 +641,6 @@ fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
     unsafe {
         event.reinject();
     }
-    log::info!(
-        "[key_remap] disable_apps/overflow ラッチ中に latch 済み target 0x{:02X} \
-         の KeyUp を注入（stuck modifier 防止、元vk=0x{:02X}）",
-        latched,
-        vk.0,
-    );
 }
 
 /// `key_remaps` に `to`=Ctrl系のエントリがある場合、その `from` の物理押下も
@@ -605,10 +654,19 @@ fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
 /// の doc と対になる Ctrl 版の規約）。
 #[must_use]
 pub fn key_remap_ctrl_effectively_held() -> bool {
-    crate::state::key_remap::effective_ctrl_physically_held(
-        &cached_key_remaps(),
-        is_physical_key_down,
-    )
+    // Opus round3レビュー S4: r3までは `cached_key_remaps()`（現在のルール
+    // テーブル）を見ていたが、これは決定2の latch と食い違う（config reload で
+    // ルールが消えても、latch は物理キーが離されるまで残るため）。テーブル
+    // ではなく latch そのものを見る。
+    use crate::vk::{VK_LCONTROL, VK_RCONTROL};
+    if is_physical_key_down(VK_LCONTROL) || is_physical_key_down(VK_RCONTROL) {
+        return true;
+    }
+    let mut latched = [0u16; crate::state::key_remap::LATCH_TABLE_SIZE];
+    for (slot, out) in LATCHED_TARGET.iter().zip(latched.iter_mut()) {
+        *out = slot.load(Ordering::Acquire);
+    }
+    crate::state::key_remap::any_latched_ctrl(&latched)
 }
 
 /// `from=VK_CAPITAL` を含む `key_remap` ルールが有効な場合に限り、CapsLock の
@@ -1089,6 +1147,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             if is_keydown && alt_held {
                 inject_alt_menu_mask();
             }
+            // ADR-110 決定2 追補（Opus round3レビュー S3）: この分岐は KeyUp を
+            // OS へ一切通さず swallow するため、vk（VK_KANA）が key_remap で
+            // 過去に latch 済みだった場合、通常の apply_key_remap 呼び出し（この
+            // 分岐より後）に到達せず latch が非0のまま stuck する。
+            cleanup_latched_remap_before_bypass(vk, is_keydown);
             return LRESULT(1);
         }
         if alt_held {
@@ -1102,6 +1165,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             if is_keydown {
                 inject_alt_menu_mask();
             }
+            // ADR-110 決定2 追補（Opus round3レビュー S3）: 同上。
+            cleanup_latched_remap_before_bypass(vk, is_keydown);
             return LRESULT(1);
         }
         log::info!(
@@ -1207,6 +1272,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     vk = rewritten_vk;
 
+    // ADR-110 決定2 追補（Opus round3レビュー S2）: `apply_key_remap` 呼び出し
+    // 前の vk を保持しておく。`ProduceResult::Overflow` アームで「このイベント
+    // 自体が key_remap によるリマップ結果だったか」を判定するために使う
+    // （`apply_key_remap` はこの時点で既に latch を更新/クリア済みのため、
+    // Overflow アームの時点では LATCHED_TARGET を再度読んでも判定できない）。
+    let vk_before_key_remap = vk;
+
     // ADR-110 決定1: key_remap は Alt なりすましの直後・Ctrl 消費追跡より前に
     // 適用する（`tests/architecture_guard.rs` で順序を固定）。エンジンの
     // 有効/無効に関わらず常時適用する。
@@ -1254,11 +1326,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // key_remap で `to`=Ctrl系にリマップされているキーの物理押下も
         // 「Ctrl が held されている」に含める（`from`=非Ctrl→Ctrl系での
         // 救済窓の機能不全対策、同じレビュー）。
-        let ctrl_held = crate::state::key_remap::effective_ctrl_physically_held(
-            &cached_key_remaps(),
-            is_physical_key_down,
-        );
-        if ctrl_held {
+        if key_remap_ctrl_effectively_held() {
             // 親指キー自身は "Ctrl consumed" に含めない。
             // Ctrl+無変換 を直接押したとき(他キーなし) rescue が誤発動しないようにするため。
             if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
@@ -1310,6 +1378,23 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // OS へそのままパススルーする方が実害が小さい。ただし Alt なりすまし中は
         // 上の overflow ラッチ分岐と同じ理由で飲み込む（dropped 計上のみ）。
         crate::hook_channel::ProduceResult::Overflow => {
+            // ADR-110 決定2 追補（Opus round3レビュー S2）: このアームは
+            // `CallNextHookEx` に生の `lparam`（書き換え前の物理キー、例:
+            // CapsLock）をそのまま渡す。この event が key_remap によるリマップ
+            // 結果の KeyUp だった場合（`vk` が `apply_key_remap` 呼び出し前と
+            // 異なる = latch は既に `apply_key_remap` 内でクリア済み）、
+            // 書き換え後 vk（例: LCtrl）の KeyUp は誰にも送られず stuck
+            // modifier になる。ここで明示的に注入してから通常のパススルーへ
+            // 進む。
+            if !is_keydown && vk != vk_before_key_remap {
+                inject_synthetic_key_up(vk);
+                log::info!(
+                    "[key_remap] overflow時にリマップ後 target 0x{:02X} の KeyUp を注入\
+                     （stuck modifier 防止、元vk=0x{:02X}）",
+                    vk.0,
+                    vk_before_key_remap.0,
+                );
+            }
             passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam)
         }
     }
