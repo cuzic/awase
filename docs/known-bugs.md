@@ -11815,6 +11815,41 @@ Phase 1/Phase 3 とも素通しするため、原因は awase 側の分岐ロジ
 GJI 側の composition 状態（変換候補が実際に立っていたか）や、NICOLA
 入力がGJIの変換バッファをどう扱っているかにある可能性が高い。
 
+**2026-08-28 追加調査（ユーザー仮説「'変換キー=右親指キー'という前提が
+コードに埋め込まれているのでは」の検証）**: `VK_CONVERT`/`VK_NONCONVERT`
+に触れる全箇所（`crates/awase-windows/src/hook.rs::classify_key`、
+`vk.rs::ImeKeyKind::from_vk`（0x1C/0x1Dは意図的に対象外）、
+`engine.rs::SpecialKeyCombos::match_event`、
+`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`、
+`app/bootstrap.rs`の`henkan_vk`/`muhenkan_vk`導出）を洗い出したが、
+いずれも `left_thumb_key`/`right_thumb_key` の実際の設定値との比較を
+経由しており、「変換キーは常に親指キー」という無条件のハードコードは
+発見できなかった。`right_thumb_key = "VK_SPACE"` の設定下では、VK_CONVERT
+は `KeyClassification::Passthrough`（`hook.rs`、対応する物理スキャン
+コードが `scanmap.rs` の JIS/US テーブルに無いため）として素通しされ、
+`ImeRelevance.is_ime_control`等も全て偽になるため抑制されない。
+
+代わりに、**出力（romaji確定→IME送信）側の "eager path" が GJI の
+composition を迂回する既知の仕様**が、症状の代替説明として有力。
+`crates/awase-windows/src/tsf/warmup/probe_fsm.rs:131`
+`decide_transmit_plan()` のコメントに「unicode は GJI composition を
+バイパスし "nお" race が起きる」と明記されている通り、一定条件
+（`nc_confirmed=true` かつ非TSFモード等）では確定ひらがなを
+`output/vk_send.rs` 経由で Unicode として直接 `SendInput` する
+（`used_eager_path=true`）。この経路では GJI 側に「変換候補として
+保持中の未確定文字列」が存在せず確定済みテキストとして着地するため、
+直後に生の VK_CONVERT を押しても変換対象が無く何も起きない——awase の
+VK_CONVERT処理自体にバグが無くても症状が説明できる。関連する既存知見:
+[[feedback_unicode_injection_bypasses_gji_composition]]（Claude memory、
+「Unicode注入はGJI確認を迂回する」）。
+
+**次の切り分け手順**: 実機ログで該当打鍵時の `[tsf-transmit] ...
+eager=true/false`（`vk_send.rs:41-52`）を確認し、症状発生時に
+`eager=true` になっているかを見るのが最短。もし確認できれば、これは
+awase側の実装バグではなく、flicker回避のための既存トレードオフ設計の
+副作用として記録し、GUI/ドキュメントで「eager path使用時は変換キー
+単独タップでの変換候補操作ができない」ことを明示する対応を検討する。
+
 **テスト:** `cargo test --lib -p awase` 846件green（症状2向けの新規7件含む）。
 `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
 -p awase-settings` で Windows 向けコンパイル確認済み。
