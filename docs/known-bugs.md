@@ -11754,7 +11754,7 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 
 ---
 
-## BUG-95: IME apply pending 上書き後の旧成功完了が stale 扱いされ applied が固着する
+## BUG-97: IME apply pending 上書き後の旧成功完了が stale 扱いされ applied が固着する
 
 **症状:** 同一 target への IME apply が短時間に連続し、後続要求が `pending` を
 上書きしたあとで先行要求の成功完了が届くと、generation 不一致で完了が捨てられ、
@@ -11781,9 +11781,10 @@ gen10 送信後に `FocusChanged` が入り、その後 gen10 の成功完了が
 `tests/journal_replay.rs` に `tests/journals/ime_apply/adr108-focus-crossing-success.json`
 のリプレイを追加した。
 
-**修正履歴:** 本作業ツリーで実装済み。2026-08-28 の実行環境では `.git` が読み取り専用
-（`index.lock: Read-only file system`）のためコミットを作成できず、実装コミットhashは
-未記録。コミット可能な環境で作成後、この行にhashを追記すること。
+**修正履歴:** 本作業ツリーで実装済み。実装コミット
+`ea8a0fae26802c9777fcdadfc87471156349694c`、証拠義務テストコミット
+`e00621cdaf214d087c3d89169d7aefa5a434bde1`、本エントリ記録コミット
+`207e9af49f10325c2d0c1cde61835a7e9f193932`。
 
 **関連ファイル:** `crates/awase-windows/src/state/transition.rs`,
 `crates/awase-windows/src/state/ime_model.rs`,
@@ -11793,7 +11794,7 @@ gen10 送信後に `FocusChanged` が入り、その後 gen10 の成功完了が
 
 ---
 
-## BUG-96: generation なし非同期 shadow toggle OFF 完了は focus epoch ゲートを通らない
+## BUG-98: generation なし非同期 shadow toggle OFF 完了は focus epoch ゲートを通らない
 
 **症状:** `runtime/key_pipeline.rs` の shadow toggle OFF の ImmCross 非同期分岐は、
 `run_open_chain_async(...).await` 後に `on_ime_apply_complete(false, outcome, None, ...)`
@@ -11817,8 +11818,10 @@ actuation 完了ハンドラへ持ち込み、`with_app` 内で照合して早�
 
 **状態:** 既知の残存ギャップ。ADR-108 決定6として意図的に未修正。
 
-**修正履歴:** 未修正。本作業ツリーで BUG-95 側の generation 付き経路だけを修正済み。
-2026-08-28 の実行環境では `.git` が読み取り専用のためコミットhashは未記録。
+**修正履歴:** 未修正。本作業ツリーで BUG-97 側の generation 付き経路だけを修正済み。
+実装コミット `ea8a0fae26802c9777fcdadfc87471156349694c`、証拠義務テストコミット
+`e00621cdaf214d087c3d89169d7aefa5a434bde1`、本エントリ記録コミット
+`207e9af49f10325c2d0c1cde61835a7e9f193932`。
 
 **関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`,
 `crates/awase-windows/src/state/platform_state.rs`,

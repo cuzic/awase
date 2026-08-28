@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**提案（未実装、2026-08-28、r5）。** 初版（r1）の決定1（`last_confirmed_generation` による
+**採用・実装済み（2026-08-28、r6、Windows実機ソーク未実施）。** 初版（r1）の決定1（`last_confirmed_generation` による
 単調性チェックへの緩和）と決定2（`clear_pending_if_matches` の generation 一致化）は、
 Opus によるアドバーサリアルレビューで **Critical 3 件**（うち 1 件は「ADR が前提としていた
 コードの事実が誤っていた」）を指摘され、実コード確認で **3 件とも成立することを確認した**
@@ -38,6 +38,13 @@ r4 の再レビューでは**新規 Critical はゼロ**であり、残った指
 母集合を 5 → 7 に訂正し（S3）、決定2 が閉じない範囲（`pending` 解除後に届く旧完了、S1）と
 書いた `Optimistic` の寿命（S2）を明示、bootstrap の epoch 説明を実コードに合わせて
 訂正した（S6）。決定 1〜6 の内容は r4 から変わっていない。
+
+PR #119 の Opus インラインレビューで、r5 実装後の緩和経路に C2 の抜け穴が残ることが
+判明したため、r6 では ADR-106 決定1の `ApplyGeneration` 一意性を補助的に使い、
+FocusChanged 時点で既に払い出し済みだった generation を弾く watermark を決定2へ追加した。
+決定0〜6の基本構造は実装済みだが、実機ソーク項目（Chrome/Windows Terminal+GJIでの
+eager warmup欠落確認、`UnsafeToToggle` 後の force-ON 抑止確認、`pending` 上書き頻度計測）は
+未実施である。
 
 発端は `/code-review`（medium effort、8 観点並列 Finder + 手動検証）による `develop`
 過去 1 週間差分のレビューで、Angle A（correctness line-by-line）と Angle Altitude
@@ -197,17 +204,24 @@ r1 の決定2 は「`clear_pending_if_matches` は generation 一致チェック
 target 一致である。r1 の決定2（generation 一致化）を入れると pending N は 8000ms 固着する。
 **r1 が「実害はない」と切り捨てた経路が、実は現行の正常動作を支えていた。**
 
-### `generation` はグローバル一意ではない
+### `generation` は ADR-106 以後グローバル一意であるが、主判定には使わない
 
-r1 は「`generation` は apply 種別を跨いで単調増加することが既に保証されている」と書いたが、
-`allocate_event_generation`（`platform_state.rs:688-690`）は `event_log.next_seq()` を
-**返すだけで increment しない**。カウンタを進めるのは `ImeEventLog::record()`
-（`state/ime_event_log.rs:46`）だけである。`handle_engine_set_open` は chord フィルタ／
-focus-settle フィルタで**何も dispatch せずに `false` を返す**早期 return を 2 つ持つ
-（`platform_state.rs:244-277`）ため、その場合は次の allocate が同じ値を返す。
-また `ImeApplyRequested` の `generation` は生の `u64` であり、`state/event_origin.rs:60` の
-`Generation` 型とも別物である。**generation の大小比較を belief 判定の根拠にしてはならない**
-（r1 の決定1 はまさにそれをしていた）。
+r1 は「`generation` は apply 種別を跨いで単調増加することが既に保証されている」と書いた。
+この記述は当時の実装確認としては誤りだった。旧 `allocate_event_generation` は
+`event_log.next_seq()` を返すだけで increment しないため、dispatch しない早期 return を
+挟むと同じ値を再利用しうる構造だった。
+
+ただしこの前提は ADR-106 決定1（PR #109、マージ済み）の
+`GenerationAllocator` 導入で解消済みである。現在の `allocate_event_generation()` は
+`&mut self` の専用アロケータから `ApplyGeneration` を払い出し、読み取りだけで同じ値を
+再利用する経路は型として存在しない。
+
+それでも r1 の `last_confirmed_generation` 方式は採用しない。理由は一意性ではなく、
+`applied` が履歴ではなく「現在の OS 状態」として読まれるためである。より新しい逆 target の
+apply が in-flight なら、古い成功完了は generation の大小に関係なく現在値として誤りになりうる。
+r6 の watermark はこの単調性を「FocusChanged 前に払い出された generation を緩和経路から
+除外する」補助境界としてだけ使い、主たる受理条件（epoch 一致・target 一致・applied 未一致）は
+変えない。
 
 ## 決定
 
@@ -225,10 +239,11 @@ focus-settle フィルタで**何も dispatch せずに `false` を返す**早�
 順序）で構造的に保証する。r2 はここを暗黙の前提にしていたため (b) と (c) が食い違う窓を
 作っていた。
 
-**新しい状態を一切増やさない。** r1 は `last_confirmed_generation`（グローバル単調
-カウンタ）を、r2/r3 は `superseded: Option<ImeTransition>`（退避スロット）を追加していたが、
-r4 はどちらも持たない。追加するのは既存 `ImeTransition` へのフィールド 1 本
-（`focus_epoch`、決定1）だけである。
+**主判定用の履歴スロットは増やさない。** r1 は `last_confirmed_generation` を、r2/r3 は
+`superseded: Option<ImeTransition>`（退避スロット）を追加していたが、r4 以降はどちらも
+持たない。追加するのは既存 `ImeTransition` への `focus_epoch`（決定1）と、r6 で追加した
+FocusChanged 時点の generation watermark だけである。watermark は緩和経路の安全弁であり、
+上書きされた transition の target や epoch を記憶する退避スロットではない。
 
 この単純化は、r3 のレビューで判明した次の事実に基づく: **上書きされた apply の完了を
 受理してよいかは、その完了の generation とは無関係に決まる。** 決めているのは
@@ -237,15 +252,15 @@ r4 はどちらも持たない。追加するのは既存 `ImeTransition` への
 判定できる。したがって「上書きされた transition を覚えておく」という機構そのものが不要
 だった（詳細は決定2、経緯は「r3 レビュー指摘との対応」R1 を参照）。
 
-`generation` の**等値**比較は厳密一致経路（(a)(c)）でのみ使う。大小比較はどこでも
-使わない——r1 の `last_confirmed_generation` は「generation は一意ではない」と両立しない。
+`generation` の**等値**比較は厳密一致経路（(a)(c)）で使う。大小比較は緩和経路の
+watermark 下限でのみ補助的に使い、`applied` の主たる受理条件にはしない。
 
 ### 決定1: `ImeTransition` に `focus_epoch` を持たせ、フォーカスを跨いだ完了は `applied` を書けなくする
 
 `state/transition.rs` の `ImeTransition` に `focus_epoch: crate::state::probe_admission::FocusEpoch`
 を追加する。`reduce()` の `ImeApplyRequested` アームで、
-**既に `ImeModel` が保持している** `self.observations.current_focus_epoch`
-（`state/observation_store.rs:303`、`FocusChanged` アームの `clear_on_focus_change` で更新）
+**既に `ImeModel` が保持している** `self.observations.current_fence().epoch`
+（`state/observation_store.rs`、`FocusChanged` アームの `clear_on_focus_change` で更新）
 をスタンプする。**新しい event フィールドも新しいカウンタも増えない。**
 
 ```rust
@@ -255,7 +270,7 @@ self.pending = Some(ImeTransition {
     timeout_at: envelope.time.monotonic
         + Duration::from_millis(crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS),
     // 決定1: この apply が「どのフォーカスプロセスに対して」送られたかを刻む。
-    focus_epoch: self.observations.current_focus_epoch,
+    focus_epoch: self.observations.current_fence().epoch,
 });
 ```
 
@@ -276,19 +291,21 @@ self.pending = Some(ImeTransition {
 | 値 | 更新される場所 |
 | --- | --- |
 | `platform_state.focus.focus_epoch` | `on_focus_process_changed`（`focus_tracking.rs:368`）**と** `establish_initial_focus_scope`（`:127`）。`ImmLikeTicket` が使うのはこちら |
-| `observations.current_focus_epoch` | `ImeEvent::FocusChanged` の reducer 経由のみ（dispatch 元は `focus_tracking.rs:380-388` の 1 箇所） |
+| `observations.current_fence().epoch` | `ImeEvent::FocusChanged` の reducer 経由のみ。`clear_on_focus_change(FocusFence { epoch: focus_epoch, hwnd: to })` で `FocusChanged` ペイロードの値をそのまま書く |
 
 `on_focus_process_changed` の呼び出し元は `apply_focus_probe_result`（`:98`）の
 1 箇所だけで、`establish_initial_focus_scope` は `advance_focus_tracking` を直接呼ぶ
 （`:121`）ため**この経路を通らない**。つまり bootstrap は `focus.focus_epoch` を
-`:127` で進めるが `FocusChanged` を dispatch しないので、`observations.current_focus_epoch`
-は据え置かれ、2 値は最初の実フォーカス変更まで 1 ずれる（そこで再同期する）。決定1 は**スタンプも照合も `observations.current_focus_epoch` という同一の
+`:127` で進めるが `FocusChanged` を dispatch しないので、`observations.current_fence().epoch`
+は据え置かれ、2 値は最初の実フォーカス変更まで 1 ずれる。以後は各 `FocusChanged` が
+`focus_epoch` をペイロードで運び、reducer が `FocusStore` 側の値を `FocusFence` に
+書き込むため、そのイベントごとに同期する。決定1 は**スタンプも照合も `observations.current_fence().epoch` という同一の
 カウンタで行う**ので、この差は決定の正しさに影響しない。ただし実装時に
 `ImmLikeTicket` との相互参照 doc を書く際、**2 つを混ぜて使わない**こと
-（`focus.focus_epoch` でスタンプして `current_focus_epoch` で照合する、またはその逆は、
+（`focus.focus_epoch` でスタンプして `current_fence().epoch` で照合する、またはその逆は、
 bootstrap 直後に恒久的な不一致を作る）。
 
-完了が `applied` を書けるのは `transition.focus_epoch == self.observations.current_focus_epoch`
+完了が `applied` を書けるのは `transition.focus_epoch == self.observations.current_fence().epoch`
 のときだけとする。これは既存の `probe_admission::ImmLikeTicket`
 （`state/probe_admission.rs:82`、非同期 probe が spawn 時の epoch を捕まえ、完了時に
 `admit(current_epoch)` で照合して棄却する）と**同型の考え方を、observation 軸から
@@ -306,14 +323,22 @@ actuation 軸へ横展開する**ものである。`ImmLikeTicket` は「仮想�
 ### 決定2: generation が一致しない成功完了でも、「今の pending と同じ target・同じ epoch」なら `applied` を `Optimistic` で更新する
 
 **`ImeApplyRequested` アームは r3 から変わって、`pending` の上書きを従来どおり
-「捨てる」だけに戻す**（`superseded` への退避はしない）。新規フィールドはゼロ。
+「捨てる」だけに戻す**（`superseded` への退避はしない）。
 
 `ImeApplySucceeded` が **`pending` の generation と一致しなかった**とき、
-以下の **3 条件すべて**を満たす場合に限り `applied` を更新する:
+以下の **4 条件すべて**を満たす場合に限り `applied` を更新する:
 
-1. 現在 `pending` が存在し、`pending.focus_epoch == observations.current_focus_epoch`（決定1）
-2. `pending.target` が、この完了が運ぶ要求 `target` と等しい
-3. `self.applied.applied_open() != Some(target)`（**既に同じ値なら何もしない**）
+1. 現在 `pending` が存在し、`pending.focus_epoch == observations.current_fence().epoch`（決定1）
+2. `completion.generation >= focus_generation_watermark`。watermark は `FocusChanged` 時点で
+   `last_seen_generation`（`ImeApplyRequested` のたびに更新する、`pending` の生死に依存しない
+   トラッカー）から算出した直後の値であり、旧フォーカスで払い出された完了を緩和経路から弾く。
+   `pending` からではなく `last_seen_generation` から算出するのは、`pending` がタイムアウトで
+   `FocusChanged` より前に `None` へ戻っているケース（gen10 が purge された直後に
+   `FocusChanged` が来る等）でも watermark を正しく前進させるため——`pending` から算出すると
+   このケースで watermark が更新されず、後から届く gen10 の超遅延完了が新 epoch の緩和経路を
+   すり抜けてしまう
+3. `pending.target` が、この完了が運ぶ要求 `target` と等しい
+4. `self.applied.applied_open() != Some(target)`（**既に同じ値なら何もしない**）
 
 書き込む値は `AppliedImeState::Optimistic(target)` とする（`Confirmed` ではない）。
 
@@ -437,7 +462,7 @@ pub(crate) fn record_ime_apply_result(
     };
 
     // (c) 副作用ゲート: 厳密一致 かつ 同一 epoch かつ 実際に送った場合のみ。緩和しない。
-    let acceptance = self.classify_apply_completion(generation, outcome);
+    let acceptance = self.shadow_model.classify_apply_completion(open, outcome, generation);
     // (a)(b) は reduce() が担当する。generation 不一致でも dispatch する——
     // 決定2 の緩和受理と pending 解除はどちらも reducer の中にあるため。
     self.dispatch_event(ImeEvent::from_apply_outcome(open, outcome, generation), TickMs(ts));
@@ -483,19 +508,13 @@ epoch ゲートを掛ける。`UnsafeToToggle` は `ApplyError` で判別して 
 
 ```rust
 ImeEvent::ImeApplySucceeded { target, generation } => {
-    let epoch = self.observations.current_focus_epoch;
-    if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
+    let acceptance = self.classify_apply_completion(target, ImeOpenOutcome::Applied, generation);
+    if self.pending.take_if(|p| p.generation == generation).is_some() {
         // 厳密一致: 追跡中の apply 自身の確認。pending を解除し Confirmed を書く。
-        let p = self.pending.take().expect("checked above");
-        if p.focus_epoch == epoch {            // 決定1
+        if matches!(acceptance, ImeApplyAcceptance::Accepted) {
             self.applied = AppliedImeState::Confirmed { open: target, at_ms: envelope.time.tick_ms };
         }
-    } else if self
-        .pending
-        .as_ref()
-        .is_some_and(|p| p.focus_epoch == epoch && p.target == target)  // 決定2 条件1・2
-        && self.applied.applied_open() != Some(target)                  // 決定2 条件3
-    {
+    } else if matches!(acceptance, ImeApplyAcceptance::Superseded) {
         // 上書きされた apply の完了。値は今 in-flight な apply の行き先と同じなので
         // 安全だが、in-flight 自身の確認ではないので Optimistic に留める。
         // pending には触らない（解除は厳密一致だけの仕事）。
@@ -504,12 +523,15 @@ ImeEvent::ImeApplySucceeded { target, generation } => {
     // どの条件にも当たらない = Stale。何もしない（現状維持）。
 }
 ImeEvent::ImeApplyFailed { target, generation, error } => {
-    let epoch = self.observations.current_focus_epoch;
-    if self.pending.as_ref().map(|p| p.generation) == Some(generation) {
-        let p = self.pending.take().expect("checked above");
+    let outcome = match error {
+        ApplyError::UnsafeToToggle => ImeOpenOutcome::UnsafeToToggle,
+        _ => ImeOpenOutcome::Failed,
+    };
+    let acceptance = self.classify_apply_completion(target, outcome, generation);
+    if self.pending.take_if(|p| p.generation == generation).is_some() {
         // platform_state.rs:877 からの移設。UnsafeToToggle は「送っていない」ので
         // 実状態が不明 → 書かない（現状維持）。Failed は effective=!target を書く。
-        if p.focus_epoch == epoch && error != ApplyError::UnsafeToToggle {
+        if matches!(acceptance, ImeApplyAcceptance::Accepted) {
             self.applied = AppliedImeState::Confirmed { open: !target, at_ms: envelope.time.tick_ms };
         }
     }
@@ -627,7 +649,7 @@ actuation 完了へ適用するか、この経路にも generation を払い出�
 | **M1** `applied` の消費箇所の列挙が不完全（3 箇所ではなく 5 箇所） | コンテキストの表を 5 箇所に修正。`force_on_attempt_allowed` と `resolve_warmup_ime_on` を追加し、それぞれが決定1/決定2 の条件3 で守られることを本文に書いた |
 | **M2** `applied` は「履歴」ではなく「現在の OS 状態」として読まれており、r1 の価値づけが誤り | 指摘を全面的に採用し、r1 の表(b)の理屈を削除。**決定2 の条件2**（`pending.target` との一致）が指摘の対案(i)そのもの |
 | **M3** `last_confirmed_generation` は非-generation writer 5 箇所を見ないため古い完了が新しいミラーを上書きしうる | `last_confirmed_generation` **ごと廃止**したため消滅。決定1 の epoch ゲートが、指摘の失敗シナリオ（フォーカス変更後の `ir_post_focus_change_snapshot` を古い完了が上書き）を直接閉じる |
-| **M4** generation はグローバル一意ではない（`allocate_event_generation` は increment しない） | 指摘は正しい。実コードで確認し、r1 の「単調増加が保証されている」を誤りとして本文に明記。**大小比較を使う設計をやめ、等値比較のみ**にした（等値が安全な理由も明記） |
+| **M4** generation はグローバル一意ではない（`allocate_event_generation` は increment しない） | r1 当時の実装確認としては正しいが、ADR-106 決定1の `GenerationAllocator` 導入で現在は解消済み。r1 の `last_confirmed_generation` を採らない理由は一意性ではなく、`applied` が現在値として読まれるため逆 target の古い完了を単調性だけでは弾けない点に訂正した。r6 の watermark はこの一意性を補助的な下限としてだけ使う |
 | **M5** `architecture_guard.rs` の呼び出し箇所数ピン留めが壊れ、新 API がガードの穴になる | 新しい recorder API を**作らない**設計にしたため、`.record_confirmed(`=5 / `.record_optimistic(`=1 は変わらない。代わりに `applied` の書き込みが `ime_model.rs` に集約されることを利用し、**新しいピン留めテスト**（`ime_model.rs` 内の `self.applied = ` 出現数）を証拠義務に必須項目として入れた |
 | **m1** `applied` の writer が 2 つになりゲート条件が非対称 | **決定3** で generation 付き完了の `applied` 書き込みを `reduce()` に一本化。二重書き込みは新設ではなく既存であり、本 ADR で解消する |
 | **m2** 案A 却下理由の「8000ms 近くブロック」は誇張 | 却下理由を書き直した。8000ms は BUG-34 の `SendMessageTimeoutW` ハング実測 5741ms に由来する**最悪ケース上限**（`tuning.rs:439-457`）であって典型待ち時間ではない、と明記した上で、別の（実測に依存しない）根拠で却下している |
@@ -656,7 +678,7 @@ actuation 完了へ適用するか、この経路にも generation を払い出�
 | --- | --- |
 | **R1**（Critical）`ImeApplyFailed` の pending 一致分岐が無条件に `superseded = None` し、ADR 自身の主目的シナリオ（gen11 が `UnsafeToToggle` → gen10 の完了が捨てられる）を打ち消す | 指摘は正しい。**ただし提案された 1 行削除では当のシナリオは直らない**——`ImeApplyFailed` が `pending` を解除した後は、受理条件が比較すべき `pending.target` 自体が存在しないため、`superseded` を残しても gen10 の完了は受理されない。正しく直すには解放条件を outcome 別に場合分け（成功と真の失敗では解放、`UnsafeToToggle` では保持）する必要がある。これは同じスロットの解放規則に対する 3 度目の訂正であり、**`superseded` を廃止する**方を選んだ（決定2）。廃止後は解放規則が存在しないので R1 は構造的に発生しない |
 | **R2**（Major）決定2 が受理条件からタイムアウトを外した根拠（「パージ済みならスロットが空」）が、決定4 のパージ後置化で無効化されている | 指摘は正しい（r3 は自分が同じ ADR 内で変えた順序の帰結を、削除の根拠に使っていた）。**`superseded` の廃止で論点ごと消滅**した——r4 の緩和経路が見るのは現在の `pending` だけであり、期限切れの `pending` に対しては決定4 が「自分自身の完了で解決される最後の一回」を与えるという、pending 側と**同一の**意味論が働く |
-| **R3**（Minor）`focus_tracking.rs:127`（bootstrap）は `focus.focus_epoch` を進めるが `FocusChanged` を dispatch しないため、2 つの `focus_epoch` がずれる | 採用。決定1 に**表を追加**し、`platform_state.focus.focus_epoch`（`ImmLikeTicket` 側）と `observations.current_focus_epoch`（決定1 側）が別の値であること、bootstrap 直後に不一致になり次の `FocusChanged` で再同期すること、**2 つを混ぜて使うと恒久的な不一致を作る**ことを明記した。決定1 はスタンプも照合も後者だけを使うので正しさは保たれる |
+| **R3**（Minor）`focus_tracking.rs:127`（bootstrap）は `focus.focus_epoch` を進めるが `FocusChanged` を dispatch しないため、2 つの `focus_epoch` がずれる | 採用。決定1 に**表を追加**し、`platform_state.focus.focus_epoch`（`ImmLikeTicket` 側）と `observations.current_fence().epoch`（決定1 側）が bootstrap 直後だけ別の値になること、各 `FocusChanged` で `FocusFence` へ同じ epoch が書かれ再同期すること、**2 つを混ぜて使うと bootstrap 直後に不一致を作る**ことを明記した。決定1 はスタンプも照合も後者だけを使うので正しさは保たれる |
 | **R4**（Minor）N4 の反証は collision には正しいが mis-attribution チャネルを見ていない。安全性を担保しているのは条件2 だと明記すべき | 採用。**r4 では緩和経路が generation を一切見ない**のでチャネル自体が消えた。その上で決定2 末尾に「安全性を担保しているのは条件 1〜3 であって generation の一意性ではない」を明記し、将来条件2 を緩める変更への歯止めとして doc 化を義務づけた |
 | **R5**（Minor）決定4 の「解放が 1 イベント分遅れる」は不正確。証拠義務の項番の並び順も乱れている | 採用。「差分は `reduce()` 1 回の内部で match の前か後かだけで、`reduce()` の外から見た `pending` の可視状態は変わらない（`executor.rs` の `pending_generation()` に影響しない）」に書き換えた。項番は (a-4) を削除（generation 一意性テストが不要になったため）して (a-1)〜(a-3) の連番に整理した |
 
@@ -691,10 +713,11 @@ actuation 完了へ適用するか、この経路にも generation を払い出�
   「どの世代の完了か」を覚えておく必要が無いことが分かったため（決定2）。
   複数 generation の同時追跡は、本 ADR が解く問題に対して二重に過剰である。
 - **案C（r1 の決定1）: `last_confirmed_generation` による単調性チェックへの緩和**。
-  却下理由: (1) generation が一意でないため大小比較が成立しない（M4）、(2) `applied` を
-  「現在の OS 状態」として読む消費側と矛盾する（M2）、(3) フォーカス軸を区別できない
-  （C2）、(4) 副作用ゲート (c) まで巻き添えで緩む（C1）、(5) 非-generation writer を
-  見ないため新しい情報を古い情報で上書きしうる（M3）。5 点とも実コードで確認した。
+  却下理由: ADR-106 後は generation 一意性そのものは成立しているが、`applied` を
+  「現在の OS 状態」として読む消費側と矛盾する（M2）。より新しい逆 target が in-flight
+  なら、古い成功完了は単調性だけでは安全な現在値にならない。加えてフォーカス軸を区別
+  できない（C2）、副作用ゲート (c) まで巻き添えで緩む（C1）、非-generation writer を
+  見ないため新しい情報を古い情報で上書きしうる（M3）。
 - **案D: `FocusChanged` で `pending` を `None` にする**（決定1 の代わり）。
   却下理由: 一見単純だが、`pending = None` は `executor.rs` の
   `ime.model().pending_generation()` が `None` を返すことを意味し、フォーカス変更後の
@@ -703,11 +726,13 @@ actuation 完了へ適用するか、この経路にも generation を払い出�
   epoch スタンプなら `pending` を生かしたまま「解除はできるが belief は書けない」という
   必要な区別だけを表現できる。
 - **案E: `generation` を `state/event_origin.rs::Generation` 型／真に一意なカウンタにする**。
-  却下理由: M4 は正しい指摘だが、本 ADR の決定はいずれも**等値比較しか使わない**（かつ
-  r4 では緩和経路が generation を見ない）ため一意性を必要としない。型の統一自体は望ましいが、belief 修正と同じコミットに混ぜると
-  実機ソークの原因切り分けができなくなる。別 ADR / 別コミットに切り出す。
+  状態: 真に一意なカウンタ化は ADR-106 決定1の `GenerationAllocator` として既に実施済み。
+  型統一（`event_origin.rs::Generation` との統合）は未実施だが、本 ADR の主判定には不要。
+  r6 の watermark は一意性を FocusChanged 前後の境界として補助利用する。
 
-## 未解決の疑問（実装時に確認すること）
+## 未解決の疑問（実機ソークで確認すること）
+
+以下は決定0〜6のコード実装後も未実施のまま残る実機確認項目である。
 
 - **決定1 が副作用も止めることの実機影響。** フォーカス変更後に旧ウィンドウ宛ての完了が
   届いても `on_ime_applied` が走らなくなる。設計上は問題ないはず（新ウィンドウ側では
