@@ -10,30 +10,11 @@ use super::ime_event::{
     InputModeApplyStrategy, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::ime_event_log::ImeEventLog;
-use super::ime_model::{AppliedImeState, ImeModel};
+use super::ime_model::{AppliedImeState, ImeApplyAcceptance, ImeModel};
 use super::input_barrier::InputBarrier;
 use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImeApplyAcceptance {
-    /// 追跡中の apply の完了。composition/warmup 副作用を駆動してよい。
-    Accepted,
-    /// 上書きされた古い apply の完了。`applied` は reducer 側で更新されうるが、
-    /// composition/warmup 副作用は駆動しない。
-    Superseded,
-    /// 宛先ウィンドウが変わった、または現在の transition に属さない完了。
-    Stale,
-    /// `UnsafeToToggle`。送っていないので完了として扱わない。
-    NotSent,
-}
-
-impl ImeApplyAcceptance {
-    pub(crate) const fn drives_composition_side_effects(self) -> bool {
-        matches!(self, Self::Accepted)
-    }
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // ImeStateHub
@@ -229,40 +210,6 @@ impl ImeStateHub {
             if p.target == value {
                 self.shadow_model.pending = None;
             }
-        }
-    }
-
-    fn classify_apply_completion(
-        &self,
-        open: bool,
-        outcome: awase::platform::ImeOpenOutcome,
-        generation: ApplyGeneration,
-    ) -> ImeApplyAcceptance {
-        use awase::platform::ImeOpenOutcome;
-
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
-            return ImeApplyAcceptance::NotSent;
-        }
-
-        let Some(pending) = self.shadow_model.pending.as_ref() else {
-            return ImeApplyAcceptance::Stale;
-        };
-        let current_epoch = self.shadow_model.observations.current_fence().epoch;
-        if pending.generation == generation {
-            if pending.focus_epoch == current_epoch {
-                ImeApplyAcceptance::Accepted
-            } else {
-                ImeApplyAcceptance::Stale
-            }
-        } else if matches!(
-            outcome,
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched
-        ) && pending.focus_epoch == current_epoch
-            && pending.target == open
-        {
-            ImeApplyAcceptance::Superseded
-        } else {
-            ImeApplyAcceptance::Stale
         }
     }
 
@@ -917,7 +864,9 @@ impl ImeStateHub {
             return ImeApplyAcceptance::Accepted;
         };
 
-        let acceptance = self.classify_apply_completion(open, outcome, generation);
+        let acceptance = self
+            .shadow_model
+            .classify_apply_completion(open, outcome, generation);
         if matches!(acceptance, ImeApplyAcceptance::Stale) {
             log::debug!(
                 "[ime-apply] stale completion ignored for side effects: target={open} \

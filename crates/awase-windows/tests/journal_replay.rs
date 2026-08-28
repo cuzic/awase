@@ -196,32 +196,47 @@ fn parse_ime_policy_profile(value: &str) -> ImePolicyProfile {
 
 #[test]
 fn replay_ime_apply_focus_epoch_fixtures() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/journals/ime_apply/adr108-focus-crossing-success.json");
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("フィクスチャ読み込み失敗 {}: {e}", path.display()));
-    let fixtures: Vec<ImeEventReplayFixture> = serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("フィクスチャのJSONパース失敗 {}: {e}", path.display()));
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/journals/ime_apply");
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{} が読めない: {e}", dir.display()))
+        .map(|entry| entry.expect("dir entry read failed").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    paths.sort();
 
-    for fixture in fixtures {
-        let mut model = ImeModel::new();
-        let base = std::time::Instant::now();
-        for (i, step) in fixture.events.into_iter().enumerate() {
-            apply_ime_replay_event(&mut model, i as u64 + 1, base, step);
+    assert!(
+        !paths.is_empty(),
+        "tests/journals/ime_apply/ にフィクスチャが1件もない"
+    );
+
+    for path in paths {
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("フィクスチャ読み込み失敗 {}: {e}", path.display()));
+        let fixtures: Vec<ImeEventReplayFixture> = serde_json::from_str(&content)
+            .unwrap_or_else(|e| panic!("フィクスチャのJSONパース失敗 {}: {e}", path.display()));
+
+        for fixture in fixtures {
+            let mut model = ImeModel::new();
+            let base = std::time::Instant::now();
+            for (i, step) in fixture.events.into_iter().enumerate() {
+                apply_ime_replay_event(&mut model, i as u64 + 1, base, step);
+            }
+            assert_eq!(
+                model.applied_state(),
+                fixture.expected_applied.to_state(),
+                "{}: {} ({})",
+                fixture.name,
+                fixture.note,
+                path.display()
+            );
+            assert_eq!(
+                model.pending_generation().map(ApplyGeneration::get),
+                fixture.expected_pending_generation,
+                "{}: {} ({})",
+                fixture.name,
+                fixture.note,
+                path.display()
+            );
         }
-        assert_eq!(
-            model.applied_state(),
-            fixture.expected_applied.to_state(),
-            "{}: {}",
-            fixture.name,
-            fixture.note
-        );
-        assert_eq!(
-            model.pending_generation().map(ApplyGeneration::get),
-            fixture.expected_pending_generation,
-            "{}: {}",
-            fixture.name,
-            fixture.note
-        );
     }
 }

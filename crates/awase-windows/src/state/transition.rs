@@ -30,9 +30,13 @@ pub struct ImeTransition {
     /// この apply が送られたフォーカスプロセス epoch。
     ///
     /// `ObservationStore::current_fence().epoch` と同じ値を使う。`FocusStore` 側の
-    /// epoch とは bootstrap 直後にずれることがあるため混ぜないこと。非同期 probe の
-    /// `ImmLikeTicket` と同型に、フォーカスプロセスを跨いだ完了が `applied` を
-    /// 書くのを防ぐ。
+    /// epoch とは bootstrap 直後にずれることがあるため混ぜないこと。
+    ///
+    /// actuation の `applied` 汚染防止では epoch 単独で十分。`applied = Unknown`
+    /// へのリセットは `ImeEvent::FocusChanged` アームだけで起き、同じアームが
+    /// `current_fence().epoch` を張り替えるため、完了側はその epoch と一致するかだけを
+    /// 見ればフォーカスプロセス跨ぎを弾ける。`FocusHwndUpdated` のような hwnd だけの
+    /// 変更は `applied` に触れないので、ここで守るべき不変条件を新しく作らない。
     pub focus_epoch: FocusEpoch,
     /// この transition のタイムアウト時刻
     pub timeout_at: Instant,

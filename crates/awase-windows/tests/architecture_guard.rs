@@ -1205,6 +1205,11 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
 /// 直接代入をテキスト走査で固定する。`record_confirmed`/`record_optimistic` の既知の
 /// 例外と、`ImeModel::reduce` 内の正規書き込み以外が増えた場合は、`applied` を
 /// private 化してアクセサへ寄せる本筋の修正を検討すること。
+///
+/// このガードは暫定的な文字列検査であり、`ImeModel { applied: some_state, .. }` の
+/// ような変数・関数呼び出しを使う構造体リテラル、`.applied  =` のような空白違い、
+/// `&mut` 経由の別名書き込みは検出できない。通り抜ける書き方が存在するため、
+/// 本筋は ADR-108 に書いた `applied` の private 化と専用アクセサ化である。
 #[test]
 fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
