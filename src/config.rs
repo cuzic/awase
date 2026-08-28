@@ -510,6 +510,27 @@ pub struct KeymapRule {
     pub to: Option<String>,
 }
 
+/// 物理キー1つを別の物理キーとして常時扱う単純リマップルール（`key_remap`）。
+///
+/// `[[keymap]]`（[`KeymapRule`]）とは別物: `keymap` はキーコンボ（例: "Ctrl+I"）を
+/// アプリ限定でインターセプトする「ショートカット再割当て」機能。こちらは
+/// 修飾キーとしての役割そのものを恒久的に入れ替える（例: 英数キーを Left Ctrl
+/// として使う、CapsLock を無効化して別のキーにする）ための、アプリ文脈を持たない
+/// より低レベルで単純な機構。エンジンの有効/無効に関わらず常時適用される
+/// （秀Caps・PowerToys 等の一般的なキーリマップツールと同じ「常時そのキーとして
+/// 振る舞う」設計）。
+///
+/// `from`/`to` は `VkCode::from_name` が解決できる VK 名（例: "VK_CAPITAL"、
+/// "VK_DBE_ALPHANUMERIC"、"VK_LCONTROL"）を指定する。解決できない名前・
+/// `from == to`・`from` の重複・上限件数超過のエントリは、起動時に警告ログを
+/// 出したうえで無視される（`crates/awase-windows/src/state/key_remap.rs`
+/// `compile_key_remaps` 参照）。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KeyRemapRule {
+    pub from: String,
+    pub to: String,
+}
+
 /// アプリ別の永続オーバーライド設定
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
@@ -598,6 +619,9 @@ pub struct AppConfig {
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
     #[serde(default)]
     pub post_bypass: Vec<PostBypassRule>,
+    /// 物理キーの単純リマップルール一覧（`KeyRemapRule` doc 参照）
+    #[serde(default)]
+    pub key_remap: Vec<KeyRemapRule>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -683,6 +707,8 @@ pub struct ValidatedConfig {
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
     pub post_bypass: Vec<PostBypassRule>,
+    /// 物理キーの単純リマップルール一覧
+    pub key_remap: Vec<KeyRemapRule>,
 }
 
 impl AppConfig {
@@ -970,6 +996,7 @@ impl AppConfig {
                 app_overrides,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
+                key_remap: self.key_remap,
             },
             warnings,
         )

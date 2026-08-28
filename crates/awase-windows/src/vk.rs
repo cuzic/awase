@@ -21,6 +21,7 @@ pub const VK_RETURN: VkCode = VkCode(0x0D);
 pub const VK_SHIFT: VkCode = VkCode(0x10);
 pub const VK_CONTROL: VkCode = VkCode(0x11);
 pub const VK_MENU: VkCode = VkCode(0x12);
+pub const VK_CAPITAL: VkCode = VkCode(0x14);
 pub const VK_KANA: VkCode = VkCode(0x15);
 pub const VK_IME_ON: VkCode = VkCode(0x16);
 pub const VK_JUNJA: VkCode = VkCode(0x17);
@@ -307,6 +308,29 @@ pub const fn is_ctrl_variant(vk: VkCode) -> bool {
     matches!(vk.0, 0x11 | 0xA2 | 0xA3)
 }
 
+/// この VK を `SendInput`/`keybd_event` で再注入する際、`KEYEVENTF_EXTENDEDKEY`
+/// を立てるべきか（ADR-110 決定6）。
+///
+/// Windows は右 Ctrl/右 Alt・矢印キー・Home/End/PageUp/PageDown/Insert/Delete・
+/// Win キー・NumLock 等を「拡張キー」として扱い、この情報が無いと受信側アプリが
+/// 左修飾キーやテンキーとして誤解釈しうる。テンキーの Enter（VK は通常の
+/// `VK_RETURN` と同一で拡張フラグのみが区別点）はスキャンコード情報が無いと
+/// 判別できないため対象外（`key_remap`/Alt なりすましのいずれの `to` にも
+/// 現状 Enter を割り当てる想定がないため実害は無い）。
+#[must_use]
+pub const fn is_extended_key(vk: VkCode) -> bool {
+    matches!(
+        vk.0,
+        0xA3 | 0xA5 // VK_RCONTROL, VK_RMENU
+        | 0x21
+            ..=0x28 // PRIOR/NEXT/END/HOME/LEFT/UP/RIGHT/DOWN
+        | 0x2D | 0x2E // INSERT, DELETE
+        | 0x5B | 0x5C | 0x5D // LWIN, RWIN, APPS
+        | 0x90 // NUMLOCK
+        | 0x6F // DIVIDE
+    )
+}
+
 /// composition を確定／キャンセルするキー（Space / Enter / Escape）かどうかを判定する。
 ///
 /// これらの KeyDown は IME composition を消費し終わらせるため、TSF
@@ -453,12 +477,15 @@ impl VkCodeExt for VkCode {
             "VK_SHIFT" => Some(Self(0x10)),
             "VK_CONTROL" => Some(Self(0x11)),
             "VK_MENU" => Some(Self(0x12)),
+            "VK_CAPITAL" => Some(Self(0x14)),
             "VK_LSHIFT" => Some(Self(0xA0)),
             "VK_RSHIFT" => Some(Self(0xA1)),
             "VK_LCONTROL" => Some(Self(0xA2)),
             "VK_RCONTROL" => Some(Self(0xA3)),
             "VK_LMENU" => Some(Self(0xA4)),
             "VK_RMENU" => Some(Self(0xA5)),
+            "VK_LWIN" => Some(Self(0x5B)),
+            "VK_RWIN" => Some(Self(0x5C)),
             "VK_F1" => Some(Self(0x70)),
             "VK_F2" => Some(Self(0x71)),
             "VK_F3" => Some(Self(0x72)),
