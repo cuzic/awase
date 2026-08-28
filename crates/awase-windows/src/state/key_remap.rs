@@ -115,12 +115,6 @@ pub fn compile_key_remaps(
     right_thumb_vk: VkCode,
     single_vk_hotkeys: &[VkCode],
 ) -> Vec<(VkCode, VkCode)> {
-    use crate::vk::VkCodeExt;
-
-    fn is_forbidden_modifier(vk: VkCode) -> bool {
-        matches!(vk.0, 0x12 | 0xA4 | 0xA5 | 0x5B | 0x5C) // Alt系・Win系
-    }
-
     let mut table: Vec<(VkCode, VkCode)> = Vec::new();
     for rule in rules {
         if table.len() >= MAX_KEY_REMAPS {
@@ -131,30 +125,9 @@ pub fn compile_key_remaps(
             );
             continue;
         }
-        let Some(from) = VkCode::from_name(&rule.from) else {
-            log::warn!("[key_remap] 'from' のパース失敗: {:?}", rule.from);
+        let Some((from, to)) = resolve_and_validate_rule(rule) else {
             continue;
         };
-        let Some(to) = VkCode::from_name(&rule.to) else {
-            log::warn!("[key_remap] 'to' のパース失敗: {:?}", rule.to);
-            continue;
-        };
-        if from == to {
-            log::warn!(
-                "[key_remap] from == to（'{}'）は無意味なので無視します",
-                rule.from
-            );
-            continue;
-        }
-        if is_forbidden_modifier(from) || is_forbidden_modifier(to) {
-            log::warn!(
-                "[key_remap] '{}' → '{}': Alt/Win 系キーは from/to に使用できません \
-                 （ADR-110 決定4、held 判定との整合性が壊れるため）",
-                rule.from,
-                rule.to
-            );
-            continue;
-        }
         if table
             .iter()
             .any(|&(existing_from, _)| existing_from == from)
@@ -165,22 +138,74 @@ pub fn compile_key_remaps(
             );
             continue;
         }
-        if from == left_thumb_vk || from == right_thumb_vk {
-            log::warn!(
-                "[key_remap] '{}' は現在の親指キー設定と衝突しています。NICOLA の \
-                 同時打鍵チョードが機能しなくなります",
-                rule.from
-            );
-        }
-        if single_vk_hotkeys.contains(&from) {
-            log::warn!(
-                "[key_remap] '{}' は修飾キーなしのホットキーと衝突しています",
-                rule.from
-            );
-        }
+        warn_on_collision(
+            &rule.from,
+            from,
+            left_thumb_vk,
+            right_thumb_vk,
+            single_vk_hotkeys,
+        );
         table.push((from, to));
     }
     table
+}
+
+/// Alt 系（`VK_MENU`/`VK_LMENU`/`VK_RMENU`）または Win 系（`VK_LWIN`/`VK_RWIN`）か。
+const fn is_forbidden_modifier(vk: VkCode) -> bool {
+    matches!(vk.0, 0x12 | 0xA4 | 0xA5 | 0x5B | 0x5C)
+}
+
+/// `rule` の名前解決・`from == to`・Alt/Win 系禁止を検証し、問題があれば
+/// `log::warn!` して `None` を返す（`compile_key_remaps` の1ルール分の
+/// バリデーションを切り出したもの、認知的複雑度を下げるため分離）。
+fn resolve_and_validate_rule(rule: &awase::config::KeyRemapRule) -> Option<(VkCode, VkCode)> {
+    use crate::vk::VkCodeExt;
+
+    let Some(from) = VkCode::from_name(&rule.from) else {
+        log::warn!("[key_remap] 'from' のパース失敗: {:?}", rule.from);
+        return None;
+    };
+    let Some(to) = VkCode::from_name(&rule.to) else {
+        log::warn!("[key_remap] 'to' のパース失敗: {:?}", rule.to);
+        return None;
+    };
+    if from == to {
+        log::warn!(
+            "[key_remap] from == to（'{}'）は無意味なので無視します",
+            rule.from
+        );
+        return None;
+    }
+    if is_forbidden_modifier(from) || is_forbidden_modifier(to) {
+        log::warn!(
+            "[key_remap] '{}' → '{}': Alt/Win 系キーは from/to に使用できません \
+             （ADR-110 決定4、held 判定との整合性が壊れるため）",
+            rule.from,
+            rule.to
+        );
+        return None;
+    }
+    Some((from, to))
+}
+
+/// `from` が親指キー・修飾キーなしホットキーと衝突していれば警告する（決定9）。
+/// skip はしない——警告のみ。
+fn warn_on_collision(
+    from_name: &str,
+    from: VkCode,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    single_vk_hotkeys: &[VkCode],
+) {
+    if from == left_thumb_vk || from == right_thumb_vk {
+        log::warn!(
+            "[key_remap] '{from_name}' は現在の親指キー設定と衝突しています。NICOLA の \
+             同時打鍵チョードが機能しなくなります"
+        );
+    }
+    if single_vk_hotkeys.contains(&from) {
+        log::warn!("[key_remap] '{from_name}' は修飾キーなしのホットキーと衝突しています");
+    }
 }
 
 /// `KeysConfig` のホットキーのうち、修飾キーなし（bare な単一 VK）で設定されて
