@@ -11850,6 +11850,35 @@ awase側の実装バグではなく、flicker回避のための既存トレー�
 副作用として記録し、GUI/ドキュメントで「eager path使用時は変換キー
 単独タップでの変換候補操作ができない」ことを明示する対応を検討する。
 
+**2026-08-28 さらに追加調査: report添付ログを再確認したが症状1の再現は
+写っていなかった**。report `01M13EACMQ7D2VETW75N0BTZ9C` の
+`app_log_excerpt`（200KiB切り詰め済み）を精査したところ、2つの時間帯が
+混在していた: (a) `2026-08-28T01:41〜01:48Z` — 実際のローマ字入力
+（`[key-output] KeyInput(batched): romaji=...`）が152件記録されているが、
+**MS-IME + Chrome** の文脈（`target=Chrome`, `ime=MsIme`）で、report本文
+が指すGJI/UWPアプリの状況とは別物。(b) `2026-08-28T05:27:49〜05:28:03Z`
+— report送信直前の約14秒間（起動→GJI検出→専用Fnキー(F21)ポップアップ
+対応→トレイの「不具合を報告」を即座に開く、という流れ）で、**この区間
+には`[key-output]`（実際の打鍵）が1件も記録されていない**
+（`grep "05:2[78]"` で `[key-output]` 0件を確認）。
+
+**副次的に判明した事実**: 直前に見つかった
+`[gji-charset-write]`/`[gji-charset-popup]`（config1.db への専用Fnキー
+(F21)書き込み）は、コード調査の結果**症状1と無関係と確定**。書き込み対象は
+F21×`SwitchKanaType`（ひらがな/カタカナ/半角カナ切替）のみで、GJI内部の
+「変換」機能（VK_CONVERTの割当）には一切触れない
+（`crates/awase-gji-config/src/write.rs:88-101`）。トリガ条件は
+`muhenkan_solo_tap_always_suppress=false`（ユーザーがこの report で明示的に
+そう設定していたことと整合）かつユーザーがポップアップで「はい」を選んだ
+場合のみで、無変換キー側（症状2）の別機能であり、変換キー（症状1）とは
+無関係（詳細citation: `crates/awase-windows/src/gji_charset_write.rs:71-105`,
+`gji_charset_popup.rs:39-132`, `crates/awase-gji-config/src/lib.rs:102-140`）。
+
+**結論**: 症状1の真因はこのreportのログからは確認も反証もできない
+——単純に再現の瞬間が記録範囲外。次に同種の報告が来た場合は、まず
+`[key-output]`/`[tsf-transmit]` の有無を確認し、実際の打鍵が記録範囲に
+含まれているかを最優先で見ること。
+
 **テスト:** `cargo test --lib -p awase` 846件green（症状2向けの新規7件含む）。
 `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
 -p awase-settings` で Windows 向けコンパイル確認済み。
