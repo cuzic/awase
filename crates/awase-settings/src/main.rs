@@ -815,12 +815,13 @@ impl SettingsApp {
 
     fn layout_write_to_path(&mut self, path: &Path) {
         let text = self.layout.serialize(self.config.general.keyboard_model);
-        let lint_warnings = awase::yab::lint(&text);
         match std::fs::write(path, &text) {
             Ok(()) => {
                 self.layout_file_path = Some(path.to_path_buf());
                 self.layout_file_path_buf = path.display().to_string();
                 self.layout_modified = false;
+                // 書き込み成功後にのみ lint する（失敗時に計算を無駄にしない）。
+                let lint_warnings = awase::yab::lint(&text);
                 self.layout_status = append_lint_warnings(
                     format!("{} に保存しました", path.display()),
                     &lint_warnings,
@@ -3459,10 +3460,11 @@ fn load_yab_layout(
     model: awase::scanmap::KeyboardModel,
 ) -> Result<(YabLayout, Vec<String>), String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let lint_warnings = awase::yab::lint(&content);
     let layout = YabLayout::parse(&content, model)
         .map(YabLayout::resolve_kana)
         .map_err(|e| format!("パース失敗: {e}"))?;
+    // パース成功後にのみ lint する（失敗時に計算を無駄にしない）。
+    let lint_warnings = awase::yab::lint(&content);
     Ok((layout, lint_warnings))
 }
 

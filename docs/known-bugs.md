@@ -11815,7 +11815,7 @@ Phase 1/Phase 3 とも素通しするため、原因は awase 側の分岐ロジ
 GJI 側の composition 状態（変換候補が実際に立っていたか）や、NICOLA
 入力がGJIの変換バッファをどう扱っているかにある可能性が高い。
 
-**テスト:** `cargo test --lib -p awase` 848件green（症状2向けの新規5件含む）。
+**テスト:** `cargo test --lib -p awase` 846件green（症状2向けの新規7件含む）。
 `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
 -p awase-settings` で Windows 向けコンパイル確認済み。
 

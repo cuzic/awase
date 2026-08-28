@@ -183,6 +183,25 @@ fn lint_returns_empty_for_default_bundled_layout_row() {
     assert_eq!(lint(input), Vec::<String>::new());
 }
 
+/// `/code-review` 指摘: レイアウト名行（セクション見出しより前、最初の
+/// 非コメント行）はデータ行ではないため、クォート文字を含んでいても
+/// タイプミス扱いしてはならない。`YabLayout::serialize` はこの名前行を
+/// そのまま先頭行として再出力するため、保存直後の再lintでも誤検知しない
+/// ことを固定する。
+#[test]
+fn lint_does_not_flag_layout_name_line_containing_quote() {
+    let input =
+        "Tom's Layout\n[ローマ字シフト無し]\n無,無,無,無\n無,無,無,無\n無,無,無,無\n無,無,無,無\n";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
+/// レイアウト名行の直前・直後にコメント行があっても同様に誤検知しない。
+#[test]
+fn lint_does_not_flag_layout_name_line_with_surrounding_comments() {
+    let input = "; comment\nBob's \"Special\" Layout\n; another comment\n[ローマ字シフト無し]\n無,無,無,無\n";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
 #[test]
 fn parse_value_fullwidth_romaji() {
     assert_eq!(

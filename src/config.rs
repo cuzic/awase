@@ -781,8 +781,7 @@ impl AppConfig {
     /// 無変換/変換の表記ゆれ（漢字表記・エイリアス・`VK_*`識別子）を
     /// `THUMB_KEY_ALIASES` に基づいて正規化する。一致しなければ入力をそのまま返す
     /// （`THUMB_KEY_ALIASES` に無い任意のキー名の可能性があるため）。
-    /// `validate_thumb_key_in_ime_combos`・`validate_solo_tap_reachability` の
-    /// 両方で使う単一の情報源。
+    /// `validate_thumb_key_in_ime_combos` が使う単一の情報源。
     fn canonical_thumb_key_name(s: &str) -> &str {
         let s = s.trim();
         for (kanji, vk) in Self::THUMB_KEY_ALIASES {
