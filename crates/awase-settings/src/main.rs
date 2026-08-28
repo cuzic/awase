@@ -3037,14 +3037,13 @@ const KEY_REMAP_FORBIDDEN_VKS: [&str; 5] =
 
 fn key_remap_row_warning(rules: &[awase::config::KeyRemapRule], index: usize) -> Option<String> {
     let rule = &rules[index];
-    if VkCode::from_name(&rule.from).is_none() {
+    let Some(from_vk) = VkCode::from_name(&rule.from) else {
         return Some(format!("'{}' を解決できません", rule.from));
-    }
+    };
     let Some(to_vk) = VkCode::from_name(&rule.to) else {
         return Some(format!("'{}' を解決できません", rule.to));
     };
-    let from_vk = VkCode::from_name(&rule.from);
-    if from_vk == Some(to_vk) {
+    if from_vk == to_vk {
         return Some("from と to が同じです（無意味）".to_string());
     }
     if KEY_REMAP_FORBIDDEN_VKS.contains(&rule.from.as_str())
@@ -3052,7 +3051,13 @@ fn key_remap_row_warning(rules: &[awase::config::KeyRemapRule], index: usize) ->
     {
         return Some("Alt/Win 系キーは使用できません".to_string());
     }
-    if rules[..index].iter().any(|r| r.from == rule.from) {
+    // 解決済み VkCode で比較する（`compile_key_remaps` と同じ基準）。生文字列
+    // 比較だと "無変換" と "VK_NONCONVERT" のような別名表記違いの重複を
+    // 見逃す（同じ VkCode に解決されるにも関わらず異なる文字列のため）。
+    if rules[..index]
+        .iter()
+        .any(|r| VkCode::from_name(&r.from) == Some(from_vk))
+    {
         return Some(format!("'{}' は重複しています（先頭が優先）", rule.from));
     }
     None

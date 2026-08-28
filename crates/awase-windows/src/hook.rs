@@ -512,15 +512,6 @@ fn cached_key_remaps() -> [(VkCode, VkCode); crate::state::key_remap::MAX_KEY_RE
     table
 }
 
-/// `cached_key_remaps()` を `(from, to)` の有効エントリのみのスライス相当として
-/// 使うためのヘルパー。空きスロット（`from.0 == 0`）は含めない。
-fn active_key_remap_pairs() -> Vec<(VkCode, VkCode)> {
-    cached_key_remaps()
-        .into_iter()
-        .filter(|&(from, _)| from.0 != 0)
-        .collect()
-}
-
 /// `key_remap` のリマップ適用（グローバル状態の読み書きを伴う副作用あり）。
 /// 判定ロジック本体は `decide_simple_remap`（純粋関数）に委譲する
 /// （ADR-110 決定1・決定2）。Alt なりすましの直後、Ctrl 消費追跡ブロックより
@@ -554,6 +545,15 @@ fn apply_key_remap(vk: VkCode, is_keydown: bool) -> VkCode {
 /// これにより、CapsLock 等を押しっぱなしのまま `disable_apps` 対象アプリへ
 /// フォーカスが移り、そこで指を離しても、離した瞬間に注入済み target の
 /// up が先に送られてから素の物理キー up が OS へ通る（stuck modifier 防止）。
+///
+/// この関数はここで受け取る `vk` が「`apply_key_remap` が `LATCHED_TARGET` の
+/// 読み書きに使った vk と同一である」ことに依存する。この呼び出し位置
+/// （`apply_alt_impersonation`/`apply_key_remap` より前）では `vk` は書き換え
+/// 前の生値だが、それでも一致するのは、決定4が key_remap の `from`/`to` から
+/// Alt/Win 系 VK（`apply_alt_impersonation` が書き換えうる唯一の対象）を
+/// 禁止しているため、`apply_alt_impersonation` が key_remap 対象キーの vk を
+/// 書き換えることが構造的に無いからである。決定4の Alt/Win 除外を緩める場合は
+/// この前提が崩れないか要再検証。
 fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
     use crate::vk::VkCodeExt;
 
@@ -606,7 +606,7 @@ fn cleanup_latched_remap_before_bypass(vk: VkCode, is_keydown: bool) {
 #[must_use]
 pub fn key_remap_ctrl_effectively_held() -> bool {
     crate::state::key_remap::effective_ctrl_physically_held(
-        &active_key_remap_pairs(),
+        &cached_key_remaps(),
         is_physical_key_down,
     )
 }
@@ -1255,7 +1255,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // 「Ctrl が held されている」に含める（`from`=非Ctrl→Ctrl系での
         // 救済窓の機能不全対策、同じレビュー）。
         let ctrl_held = crate::state::key_remap::effective_ctrl_physically_held(
-            &active_key_remap_pairs(),
+            &cached_key_remaps(),
             is_physical_key_down,
         );
         if ctrl_held {
