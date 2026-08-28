@@ -133,6 +133,56 @@ fn parse_value_single_quoted_literal() {
     assert_eq!(YabValue::parse("'ー'"), YabValue::Literal("ー".to_string()));
 }
 
+// ── lint_raw_cell / lint（report 01M13EACMQ7D2VETW75N0BTZ9C）──
+
+/// 実際のバグ報告に現れた誤字（`ｂ'ｕ`、正しくは `ｂｕ`）を検出する。
+#[test]
+fn lint_raw_cell_flags_unpaired_quote_mid_token() {
+    let msg = YabValue::lint_raw_cell("ｂ'ｕ");
+    assert!(msg.is_some(), "対になっていないクォートを検出すべき");
+    assert!(msg.unwrap().contains("ｂ'ｕ"));
+    // parse 自体は落とさず、これまで通りリテラルとして受理する。
+    assert_eq!(
+        YabValue::parse("ｂ'ｕ"),
+        YabValue::Literal("ｂ'ｕ".to_string())
+    );
+}
+
+#[test]
+fn lint_raw_cell_does_not_flag_properly_paired_quote() {
+    assert_eq!(YabValue::lint_raw_cell("'ぶ'"), None);
+    assert_eq!(YabValue::lint_raw_cell("'it\\'s'"), None);
+    assert_eq!(YabValue::lint_raw_cell("\"say \\\"hi\\\"\""), None);
+}
+
+#[test]
+fn lint_raw_cell_does_not_flag_normal_cells() {
+    for cell in ["無", "", "  ", "ｂｕ", "後", "V1D", "機1", "ｔａ"] {
+        assert_eq!(
+            YabValue::lint_raw_cell(cell),
+            None,
+            "cell {cell:?} should not be flagged"
+        );
+    }
+}
+
+#[test]
+fn lint_scans_whole_layout_text_and_reports_line_numbers() {
+    let input =
+        "[ローマ字シフト無し]\n無,ｂｉ,ｚｕ,ｂ'ｕ,ｂｅ\n; comment\n無,ｈｉ,ｓｕ,ｆｕ,ｈｅ\n";
+    let warnings = lint(input);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(warnings[0].starts_with("2行目:"), "got: {warnings:?}");
+    assert!(warnings[0].contains("ｂ'ｕ"));
+}
+
+#[test]
+fn lint_returns_empty_for_default_bundled_layout_row() {
+    // layout/nicola.yab の右親指シフト面より（正しい `ｂｕ`）
+    let input = "無,ｂｉ,ｚｕ,ｂｕ,ｂｅ,ｎｕ,ｙｕ,ｍｕ,ｗａ,ｌｏ,無";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
 #[test]
 fn parse_value_fullwidth_romaji() {
     assert_eq!(

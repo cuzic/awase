@@ -778,22 +778,27 @@ impl AppConfig {
     const THUMB_KEY_ALIASES: &[(&str, &str)] =
         &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
 
-    fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
-        fn canonical_thumb_key_name(s: &str) -> &str {
-            let s = s.trim();
-            for (kanji, vk) in AppConfig::THUMB_KEY_ALIASES {
-                if s == *kanji || s.eq_ignore_ascii_case(vk) {
-                    return vk;
-                }
+    /// 無変換/変換の表記ゆれ（漢字表記・エイリアス・`VK_*`識別子）を
+    /// `THUMB_KEY_ALIASES` に基づいて正規化する。一致しなければ入力をそのまま返す
+    /// （`THUMB_KEY_ALIASES` に無い任意のキー名の可能性があるため）。
+    /// `validate_thumb_key_in_ime_combos`・`validate_solo_tap_reachability` の
+    /// 両方で使う単一の情報源。
+    fn canonical_thumb_key_name(s: &str) -> &str {
+        let s = s.trim();
+        for (kanji, vk) in Self::THUMB_KEY_ALIASES {
+            if s == *kanji || s.eq_ignore_ascii_case(vk) {
+                return vk;
             }
-            s
         }
+        s
+    }
 
+    fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
         fn is_bare_same_key(combo: &str, thumb_key: &str) -> bool {
             let combo = combo.trim();
             !combo.contains('+')
-                && canonical_thumb_key_name(combo)
-                    .eq_ignore_ascii_case(canonical_thumb_key_name(thumb_key))
+                && AppConfig::canonical_thumb_key_name(combo)
+                    .eq_ignore_ascii_case(AppConfig::canonical_thumb_key_name(thumb_key))
         }
 
         // `field == "keys.ime_on"` だけ文面を分ける理由: `suppress_ime_combos`
@@ -829,6 +834,54 @@ impl AppConfig {
             warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, w);
             warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, w);
             warn_for_field("keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
+        }
+    }
+
+    /// `henkan_solo_tap_*`（`left_thumb_key`/`right_thumb_key` が変換キーの場合のみ）・
+    /// `muhenkan_solo_tap_*`（同、無変換キーの場合のみ）は、対応する VK が実際に
+    /// 左右いずれかの親指キーに割り当てられている場合にのみ効果を持つ
+    /// （`NicolaFsm::henkan_vk`/`muhenkan_vk`、`src/engine/nicola_fsm.rs`）。
+    /// `keyboard_model = "jis"` は既定でどちらも割り当て済み（`left_thumb_key`
+    /// 既定 "無変換"・`right_thumb_key` 既定 "変換"）だが、親指キーを明示的に
+    /// 別のキー（例: VK_SPACE）へ変更すると、これらの設定は値に関わらず無条件で
+    /// 無効化される。設定ミスに気づきにくいため警告する（report
+    /// `01M13EACMQ7D2VETW75N0BTZ9C`: 変換キー単独タップでの漢字変換が
+    /// 「設定してあるのに」反応しないと報告。原因は `right_thumb_key = "VK_SPACE"`
+    /// で変換キーがどちらの親指キーにも割り当てられていなかったこと）。
+    /// `keyboard_model = "us"` はこれらのキー自体が存在せず `validate_keyboard_model`
+    /// が別途 JIS 専用キー残存を検出するため、ここでは対象外とする。
+    fn validate_solo_tap_reachability(g: &GeneralConfig, w: &mut Vec<String>) {
+        if g.keyboard_model != KeyboardModel::Jis {
+            return;
+        }
+
+        let is_bound = |target: &str| {
+            [g.left_thumb_key.as_str(), g.right_thumb_key.as_str()]
+                .iter()
+                .any(|k| Self::canonical_thumb_key_name(k).eq_ignore_ascii_case(target))
+        };
+
+        if !is_bound("VK_CONVERT") {
+            w.push(format!(
+                "変換(VK_CONVERT)キーが左右どちらの親指キーにも割り当てられていません\
+                 （左親指キー: \"{}\"、右親指キー: \"{}\"）。\
+                 henkan_solo_tap_ignore_composing_guard/henkan_solo_tap_always_suppress \
+                 の設定は変換キーが親指キーに割り当てられている場合のみ有効です。\
+                 変換キー単独タップでの動作（漢字変換など）を期待する場合は、\
+                 左右いずれかの親指キーを「変換」に設定してください。",
+                g.left_thumb_key, g.right_thumb_key
+            ));
+        }
+        if !is_bound("VK_NONCONVERT") {
+            w.push(format!(
+                "無変換(VK_NONCONVERT)キーが左右どちらの親指キーにも割り当てられていません\
+                 （左親指キー: \"{}\"、右親指キー: \"{}\"）。\
+                 muhenkan_solo_tap_ignore_composing_guard/muhenkan_solo_tap_always_suppress \
+                 の設定は無変換キーが親指キーに割り当てられている場合のみ有効です。\
+                 無変換キー単独タップでの動作（確定など）を期待する場合は、\
+                 左右いずれかの親指キーを「無変換」に設定してください。",
+                g.left_thumb_key, g.right_thumb_key
+            ));
         }
     }
 
@@ -955,6 +1008,7 @@ impl AppConfig {
         Self::validate_thumb_keys(&general, &mut warnings);
         Self::validate_dedicated_fn_key(&general, &mut warnings);
         Self::validate_thumb_key_in_ime_combos(&general, &self.keys, &mut warnings);
+        Self::validate_solo_tap_reachability(&general, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
@@ -1610,6 +1664,85 @@ ime_toggle = []
     }
 
     // parse_key_combo テストは awase-windows に移動済み
+
+    // ── henkan/muhenkan_solo_tap_* 到達可能性テスト（report 01M13EACMQ7D2VETW75N0BTZ9C）──
+
+    #[test]
+    fn test_validate_jis_default_thumb_keys_no_solo_tap_reachability_warning() {
+        let toml_str = r#"
+[general]
+keyboard_model = "jis"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("henkan_solo_tap")),
+            "既定の親指キー配置は変換/無変換とも到達可能なため警告不要, got: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("muhenkan_solo_tap")),
+            "既定の親指キー配置は変換/無変換とも到達可能なため警告不要, got: {warnings:?}"
+        );
+    }
+
+    /// report 01M13EACMQ7D2VETW75N0BTZ9C の再現設定: `right_thumb_key = "VK_SPACE"`
+    /// にすると変換キーがどちらの親指キーにも割り当てられなくなり、
+    /// `henkan_solo_tap_*` が無条件に無効化される。
+    #[test]
+    fn test_validate_warns_when_henkan_unreachable() {
+        let toml_str = r#"
+[general]
+keyboard_model = "jis"
+left_thumb_key = "無変換"
+right_thumb_key = "VK_SPACE"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings.iter().any(|w| w.contains("henkan_solo_tap")),
+            "変換キー未割当なら henkan_solo_tap_* が無効である旨を警告すべき, got: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("無変換(VK_NONCONVERT)")),
+            "無変換キーは left_thumb_key に残っているため muhenkan 側は警告不要, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_warns_when_muhenkan_unreachable() {
+        let toml_str = r#"
+[general]
+keyboard_model = "jis"
+left_thumb_key = "VK_SPACE"
+right_thumb_key = "変換"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings.iter().any(|w| w.contains("muhenkan_solo_tap")),
+            "無変換キー未割当なら muhenkan_solo_tap_* が無効である旨を警告すべき, got: {warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|w| w.contains("変換(VK_CONVERT)")),
+            "変換キーは right_thumb_key に残っているため henkan 側は警告不要, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_solo_tap_reachability_skipped_for_us_keyboard() {
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+left_thumb_key = "VK_SPACE"
+right_thumb_key = "VK_RETURN"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("solo_tap")),
+            "US キーボードは変換/無変換キー自体が無いため到達可能性チェックは対象外, got: {warnings:?}"
+        );
+    }
 
     // ── engine_on/off_keys デフォルトテスト ──
 

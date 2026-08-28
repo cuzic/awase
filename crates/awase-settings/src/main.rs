@@ -815,12 +815,16 @@ impl SettingsApp {
 
     fn layout_write_to_path(&mut self, path: &Path) {
         let text = self.layout.serialize(self.config.general.keyboard_model);
+        let lint_warnings = awase::yab::lint(&text);
         match std::fs::write(path, &text) {
             Ok(()) => {
                 self.layout_file_path = Some(path.to_path_buf());
                 self.layout_file_path_buf = path.display().to_string();
                 self.layout_modified = false;
-                self.layout_status = format!("{} に保存しました", path.display());
+                self.layout_status = append_lint_warnings(
+                    format!("{} に保存しました", path.display()),
+                    &lint_warnings,
+                );
             }
             Err(e) => self.layout_status = format!("保存失敗: {e}"),
         }
@@ -858,13 +862,16 @@ impl SettingsApp {
 
     fn layout_load_from_path(&mut self, path: &Path) {
         match load_yab_layout(path, self.config.general.keyboard_model) {
-            Ok(ly) => {
+            Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_file_path_buf = path.display().to_string();
                 self.layout_file_path = Some(path.to_path_buf());
                 self.layout_modified = false;
                 self.layout_selected_pos = None;
-                self.layout_status = format!("{} を読み込みました", path.display());
+                self.layout_status = append_lint_warnings(
+                    format!("{} を読み込みました", path.display()),
+                    &lint_warnings,
+                );
             }
             Err(e) => self.layout_status = format!("読み込み失敗: {e}"),
         }
@@ -881,11 +888,14 @@ impl SettingsApp {
             return;
         };
         match load_yab_layout(&path, self.config.general.keyboard_model) {
-            Ok(ly) => {
+            Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_modified = false;
                 self.layout_selected_pos = None;
-                self.layout_status = format!("{} を再読み込みしました", path.display());
+                self.layout_status = append_lint_warnings(
+                    format!("{} を再読み込みしました", path.display()),
+                    &lint_warnings,
+                );
             }
             Err(e) => self.layout_status = format!("再読み込み失敗: {e}"),
         }
@@ -3439,11 +3449,30 @@ fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
     format!("({}, {})  {}", pos.row, pos.col, value_description(value))
 }
 
-fn load_yab_layout(path: &Path, model: awase::scanmap::KeyboardModel) -> Result<YabLayout, String> {
+/// `.yab` ファイルを読み込みパースする。パースには影響しない軽量チェック
+/// （`awase::yab::lint`）の結果も併せて返す——タイプミス（例: クォートの
+/// 片方だけ書き忘れ）はパース自体には失敗せず無警告でリテラルとして
+/// 受理されてしまうため（report `01M13EACMQ7D2VETW75N0BTZ9C`）、読み込み時に
+/// ステータス表示で気づけるようにする。
+fn load_yab_layout(
+    path: &Path,
+    model: awase::scanmap::KeyboardModel,
+) -> Result<(YabLayout, Vec<String>), String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    YabLayout::parse(&content, model)
+    let lint_warnings = awase::yab::lint(&content);
+    let layout = YabLayout::parse(&content, model)
         .map(YabLayout::resolve_kana)
-        .map_err(|e| format!("パース失敗: {e}"))
+        .map_err(|e| format!("パース失敗: {e}"))?;
+    Ok((layout, lint_warnings))
+}
+
+/// `load_yab_layout` の警告を読み込み/保存メッセージに付記する。
+fn append_lint_warnings(status: String, lint_warnings: &[String]) -> String {
+    if lint_warnings.is_empty() {
+        status
+    } else {
+        format!("{status}（警告: {}）", lint_warnings.join("; "))
+    }
 }
 
 fn empty_yab_layout() -> YabLayout {
@@ -3581,6 +3610,7 @@ mod layout_tab_repro {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
         let layout = load_yab_layout(&layout_path, config.general.keyboard_model)
+            .map(|(ly, _lint_warnings)| ly)
             .unwrap_or_else(|_| empty_yab_layout());
         SettingsApp {
             config,

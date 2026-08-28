@@ -111,6 +111,48 @@ impl YabValue {
         Self::Literal(trimmed.to_string())
     }
 
+    /// セルの生テキストを検査し、`parse` がどんな文字列でも受理してしまう
+    /// リテラルのフォールバック経路（`111`行目）に落ちるのに、クォート文字
+    /// （`'`/`"`）が対になっていない場合は警告文言を返す。`parse` 自体は
+    /// 失敗させない設計を変えない——タイプミスに気づく手段が他に無いための
+    /// 追加チェックであり、パース結果には影響しない。
+    ///
+    /// 実例: `ｂｕ`（正、ローマ字 "bu" → ぶ）のつもりで `ｂ'ｕ`（誤字、
+    /// クォートが片方だけ）と書くと、`parse` はこれを丸ごとリテラル文字列と
+    /// して無警告で受理し、そのキーを押すと「ｂ'ｕ」がそのまま出力される
+    /// （report `01M13EACMQ7D2VETW75N0BTZ9C`: 「ぶ」を入力しても `b` になると
+    /// 報告。実際にはデフォルト同梱の `layout/nicola.yab` は正しく `ｂｕ` で、
+    /// ユーザーが独自編集したレイアウトファイルの誤字だった）。
+    #[must_use]
+    pub fn lint_raw_cell(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed == "無" {
+            return None;
+        }
+        if SPECIAL_KEYWORDS.iter().any(|(k, _)| *k == trimmed) {
+            return None;
+        }
+        if parse_direct_vk(trimmed).is_some() || parse_function_key(trimmed).is_some() {
+            return None;
+        }
+        if strip_paired_quote(trimmed).is_some() {
+            // 両端が同じクォート文字で対になっている正規のケース。
+            return None;
+        }
+        if trimmed.is_all_fullwidth_ascii() {
+            return None;
+        }
+        if trimmed.contains('\'') || trimmed.contains('"') {
+            return Some(format!(
+                "\"{trimmed}\" はクォート文字を含みますが対になっていません。\
+                 文字列全体をリテラル出力したい場合は両端を同じ引用符で \
+                 囲んでください（例: 'ぶ'）。誤って混入したクォートであれば \
+                 削除してください。"
+            ));
+        }
+        None
+    }
+
     /// `YabValue` を .yab テキスト形式に変換する。
     #[must_use]
     pub fn serialize(&self) -> String {
@@ -136,6 +178,33 @@ impl YabValue {
             Self::None => "無".to_string(),
         }
     }
+}
+
+/// .yab ファイルの生テキストを行単位で走査し、`YabValue::lint_raw_cell` が
+/// 疑わしいと判定したセルがあれば行番号付きの警告文言を返す。
+///
+/// パースの成否とは独立に動作する（`YabLayout::parse` が構造的に成功する
+/// 内容でも警告しうる）——セクション名・行数・列数の妥当性は見ず、単に
+/// コメント行・セクション見出し行を除く各行をカンマ区切りしてセル単位で
+/// `lint_raw_cell` に渡すだけの軽量チェック。
+#[must_use]
+pub fn lint(input: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (line_num, raw_line) in input.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty()
+            || line.starts_with(';')
+            || (line.starts_with('[') && line.ends_with(']'))
+        {
+            continue;
+        }
+        for cell in line.split(',') {
+            if let Some(msg) = YabValue::lint_raw_cell(cell) {
+                warnings.push(format!("{}行目: {msg}", line_num + 1));
+            }
+        }
+    }
+    warnings
 }
 
 impl YabFace {

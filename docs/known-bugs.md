@@ -11751,3 +11751,59 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 
 **関連ファイル:** `crates/awase-settings/src/main.rs`
 （`is_muhenkan_thumb_key`/`is_henkan_thumb_key`、`THUMB_KEY_OPTIONS`）。
+
+---
+
+## BUG-95: 変換キー単独タップ設定が親指キー未割当で無条件に無効化される／`.yab`のクォート崩れリテラルが無警告で受理される（設定・レイアウト検証不足）
+
+**症状:** タスクトレイの不具合報告機能経由の report `01M13EACMQ7D2VETW75N0BTZ9C`
+（2026-08-28T05:28:03Z、app_version 1.16.1、GJI、JISキーボード）で以下2件が
+報告された。
+
+1. 変換キー（親指右キー）を単独タップしても漢字変換が起きない（「変換する
+   ように設定してある」との申告あり）。
+2. ユーザーが独自編集した `layout_yab` で「ぶ」キーを押すと `b` になる。
+
+（同一報告にあった無変換キー単独タップ確定の不具合は別原因で、report
+`01M10VJWF7R8TNZAM08THVZDT7` と同じ `is_bare_thumb`/`suppress_ime_combos`
+（PR #114、未リリース）で既に修正済み。詳細は `docs/bug-reports-triage.md` の
+`01M13EACMQ7D2VETW75N0BTZ9C` の行を参照。）
+
+**原因:**
+
+1. config.toml で `right_thumb_key = "VK_SPACE"` に変更されていた。
+   `henkan_solo_tap_ignore_composing_guard`/`henkan_solo_tap_always_suppress`
+   は `NicolaFsm::henkan_vk`（`src/engine/nicola_fsm.rs`）経由で、左右いずれか
+   の親指キーが実際に変換（`VK_CONVERT`）に割り当てられている場合のみ効果を
+   持つが、この対応関係は暗黙的で config.toml にも GUI にも警告が無かった
+   （無変換側の `muhenkan_solo_tap_*` も同型の対応関係を持つ）。
+2. `layout_yab` の右親指シフト面 V 位置に `ｂ'ｕ` という誤字（正しくは
+   `ｂｕ`）があった。`YabValue::parse`（`src/yab/mod.rs`）はクォート文字が
+   対になっていない任意の文字列を、無警告でそのまま `Literal` として受理して
+   しまう（検証機構が存在しなかった）。デフォルト同梱の `layout/nicola.yab`
+   は正しく `ｂｕ` であり、ユーザー独自編集時の誤字と確認済み。
+
+**修正:**
+
+1. `src/config.rs` に `AppConfig::validate_solo_tap_reachability` を新設。
+   `keyboard_model = "jis"` のとき、変換（`VK_CONVERT`）/無変換
+   （`VK_NONCONVERT`）がどちらの親指キーにも割り当てられていなければ、対応
+   する `henkan_solo_tap_*`/`muhenkan_solo_tap_*` 設定が無効である旨を警告
+   する。awase-settings 側の既存の設定保存時警告表示（`apply_confirmed()`）
+   にそのまま乗るため追加の UI 配線は不要。回帰テスト4件追加。
+2. `src/yab/mod.rs` に `YabValue::lint_raw_cell`/`yab::lint` を新設。クォート
+   文字を含むのに対になっていないセルを検出し、行番号付きの警告文言を返す
+   （パース自体は従来通り失敗させない）。`crates/awase-settings/src/main.rs`
+   のレイアウト読み込み（`load_yab_layout`）・保存（`layout_write_to_path`）
+   双方でこの警告を `layout_status` に付記するようにした。回帰テスト5件追加。
+
+**テスト:** `cargo test --lib -p awase` 848件green（新規9件含む）。
+`cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
+-p awase-settings` で Windows 向けコンパイル確認済み。
+
+**番号衝突チェック:** 全 refs（`git branch -a`・`git worktree list`・全リモート
+ブランチ）の `docs/known-bugs.md` を `BUG-[0-9]+` で走査し、作業時点の最大番号
+が BUG-94（`origin/develop`）であることを確認し、本件を BUG-95 として採番した。
+
+**関連ファイル:** `src/config.rs`, `src/yab/mod.rs`,
+`crates/awase-settings/src/main.rs`。
