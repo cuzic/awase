@@ -22,10 +22,13 @@ use std::num::NonZeroU64;
 ///
 /// `serde::Serialize` は `ImeEvent`（journal 書き出し用）が要求する。書き出し
 /// 専用のため `Deserialize` は導出しない（`ime_event.rs` と同じ方針）。
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash, serde::Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, serde::Serialize)]
 pub struct ApplyGeneration(NonZeroU64);
 
 impl ApplyGeneration {
+    /// 最小の有効 generation 値。
+    pub const MIN: Self = Self(NonZeroU64::MIN);
+
     /// テスト・診断用に生の `u64` から構築する。`0` は `None` を返す。
     #[must_use]
     pub const fn new(value: u64) -> Option<Self> {
@@ -39,6 +42,16 @@ impl ApplyGeneration {
     #[must_use]
     pub const fn get(self) -> u64 {
         self.0.get()
+    }
+
+    /// この generation の直後を返す。`u64::MAX` の場合だけ `None`。
+    ///
+    /// focus generation watermark は「FocusChanged 前に払い出された値を
+    /// 緩和経路から除外する」ための補助境界なので、実運用で到達しない
+    /// `u64::MAX` 折り返しは安全側（境界を更新しない）で扱う。
+    #[must_use]
+    pub fn checked_next(self) -> Option<Self> {
+        self.get().checked_add(1).and_then(Self::new)
     }
 
     /// `Option<ApplyGeneration>` を `u64` へ無損失エンコードする（`None` → `0`）。

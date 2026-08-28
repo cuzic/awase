@@ -498,7 +498,7 @@ impl Runtime {
         // ため、ここでは早期 return せず必ず通す。
 
         // C+D: ImeModel write-back + generation 照合 dispatch
-        let accepted = self.platform_state.ime.record_ime_apply_result(
+        let acceptance = self.platform_state.ime.record_ime_apply_result(
             open,
             outcome,
             generation,
@@ -506,7 +506,7 @@ impl Runtime {
         );
 
         // B: composition warm/cold 更新。stale apply 完了は GJI/Composition に伝播させない。
-        if accepted {
+        if acceptance.drives_composition_side_effects() {
             self.platform.on_ime_applied(open, outcome);
         }
     }
