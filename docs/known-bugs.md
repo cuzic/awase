@@ -11754,7 +11754,7 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 
 ---
 
-## BUG-95: 変換キー単独タップ設定が親指キー未割当で無条件に無効化される／`.yab`のクォート崩れリテラルが無警告で受理される（設定・レイアウト検証不足）
+## BUG-95: `.yab`のクォート崩れリテラルが無警告で受理される（レイアウト検証不足）
 
 **症状:** タスクトレイの不具合報告機能経由の report `01M13EACMQ7D2VETW75N0BTZ9C`
 （2026-08-28T05:28:03Z、app_version 1.16.1、GJI、JISキーボード）で以下2件が
@@ -11769,35 +11769,53 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 （PR #114、未リリース）で既に修正済み。詳細は `docs/bug-reports-triage.md` の
 `01M13EACMQ7D2VETW75N0BTZ9C` の行を参照。）
 
-**原因:**
+**このBUGエントリで扱うのは症状2（`.yab`誤字）のみ。** 症状1については
+下記「症状1について: 撤回した仮説」を参照——真因は未確定のまま。
 
-1. config.toml で `right_thumb_key = "VK_SPACE"` に変更されていた。
-   `henkan_solo_tap_ignore_composing_guard`/`henkan_solo_tap_always_suppress`
-   は `NicolaFsm::henkan_vk`（`src/engine/nicola_fsm.rs`）経由で、左右いずれか
-   の親指キーが実際に変換（`VK_CONVERT`）に割り当てられている場合のみ効果を
-   持つが、この対応関係は暗黙的で config.toml にも GUI にも警告が無かった
-   （無変換側の `muhenkan_solo_tap_*` も同型の対応関係を持つ）。
-2. `layout_yab` の右親指シフト面 V 位置に `ｂ'ｕ` という誤字（正しくは
-   `ｂｕ`）があった。`YabValue::parse`（`src/yab/mod.rs`）はクォート文字が
-   対になっていない任意の文字列を、無警告でそのまま `Literal` として受理して
-   しまう（検証機構が存在しなかった）。デフォルト同梱の `layout/nicola.yab`
-   は正しく `ｂｕ` であり、ユーザー独自編集時の誤字と確認済み。
+**原因（症状2）:** `layout_yab` の右親指シフト面 V 位置に `ｂ'ｕ` という誤字
+（正しくは `ｂｕ`）があった。`YabValue::parse`（`src/yab/mod.rs`）はクォート
+文字が対になっていない任意の文字列を、無警告でそのまま `Literal` として受理
+してしまう（検証機構が存在しなかった）。デフォルト同梱の `layout/nicola.yab`
+は正しく `ｂｕ` であり、ユーザー独自編集時の誤字と確認済み。
 
-**修正:**
+**修正（症状2）:** `src/yab/mod.rs` に `YabValue::lint_raw_cell`/`yab::lint`
+を新設。クォート文字を含むのに対になっていないセルを検出し、行番号付きの
+警告文言を返す（パース自体は従来通り失敗させない）。
+`crates/awase-settings/src/main.rs` のレイアウト読み込み（`load_yab_layout`）・
+保存（`layout_write_to_path`）双方でこの警告を `layout_status` に付記する
+ようにした。回帰テスト5件追加。
 
-1. `src/config.rs` に `AppConfig::validate_solo_tap_reachability` を新設。
-   `keyboard_model = "jis"` のとき、変換（`VK_CONVERT`）/無変換
-   （`VK_NONCONVERT`）がどちらの親指キーにも割り当てられていなければ、対応
-   する `henkan_solo_tap_*`/`muhenkan_solo_tap_*` 設定が無効である旨を警告
-   する。awase-settings 側の既存の設定保存時警告表示（`apply_confirmed()`）
-   にそのまま乗るため追加の UI 配線は不要。回帰テスト4件追加。
-2. `src/yab/mod.rs` に `YabValue::lint_raw_cell`/`yab::lint` を新設。クォート
-   文字を含むのに対になっていないセルを検出し、行番号付きの警告文言を返す
-   （パース自体は従来通り失敗させない）。`crates/awase-settings/src/main.rs`
-   のレイアウト読み込み（`load_yab_layout`）・保存（`layout_write_to_path`）
-   双方でこの警告を `layout_status` に付記するようにした。回帰テスト5件追加。
+**症状1について: 撤回した仮説（2026-08-28、コードレビューで指摘・訂正）**
 
-**テスト:** `cargo test --lib -p awase` 848件green（新規9件含む）。
+初版では「`right_thumb_key = "VK_SPACE"` により変換（`VK_CONVERT`）がどちらの
+親指キーにも未割当のため、`henkan_solo_tap_ignore_composing_guard`/
+`henkan_solo_tap_always_suppress`（`NicolaFsm::henkan_vk` 経由、
+`src/engine/nicola_fsm.rs`）が無条件で無効化されている」ことを原因と断定し、
+`AppConfig::validate_solo_tap_reachability` という警告バリデータを追加してい
+たが、以下の理由でこの仮説・実装ともに**撤回した**（コミット履歴に残る、
+`src/config.rs` からは削除済み）。
+
+- `right_thumb_key = "VK_SPACE"` は人間工学上の理由で選ぶユーザーが珍しくない
+  正当な設定であり、「間違っている」という前提で警告を出すのは筋が悪い
+  （ユーザー指摘）。
+- awase-settings の GUI は右/左親指キーが変換・無変換以外のとき「変換キー
+  単独タップ」設定セクション自体を非表示にする（`is_henkan_thumb_key`、
+  BUG-94 の修正箇所）。つまりこの報告者は `right_thumb_key = "VK_SPACE"` の
+  状態でそのGUIセクションを操作できず、「変換するように設定してあります」
+  という発言が `henkan_solo_tap_*` を指しているとは考えにくい。
+- report のjournalは起動直後の約7.8秒（FocusTransition/GjiFsmTransition中心、
+  60件）のみで、実際の変換キー押下に対応する `KeyInput`/`ConvClassifyCall`
+  等のイベントが一切含まれておらず、当初の仮説を実データで検証できていな
+  かった。
+
+症状1の真因は依然未確定。次に調査する場合は、まず新しい journal
+（実際に変換キーを押した瞬間を含むもの）の取得を優先すること。awase が
+`VK_CONVERT` を親指キー・`keys.*` コンボのどちらにも割り当てていない場合、
+Phase 1/Phase 3 とも素通しするため、原因は awase 側の分岐ロジックよりも
+GJI 側の composition 状態（変換候補が実際に立っていたか）や、NICOLA
+入力がGJIの変換バッファをどう扱っているかにある可能性が高い。
+
+**テスト:** `cargo test --lib -p awase` 848件green（症状2向けの新規5件含む）。
 `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
 -p awase-settings` で Windows 向けコンパイル確認済み。
 
@@ -11805,5 +11823,4 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 ブランチ）の `docs/known-bugs.md` を `BUG-[0-9]+` で走査し、作業時点の最大番号
 が BUG-94（`origin/develop`）であることを確認し、本件を BUG-95 として採番した。
 
-**関連ファイル:** `src/config.rs`, `src/yab/mod.rs`,
-`crates/awase-settings/src/main.rs`。
+**関連ファイル:** `src/yab/mod.rs`, `crates/awase-settings/src/main.rs`。
