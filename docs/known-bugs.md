@@ -11751,3 +11751,75 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 
 **関連ファイル:** `crates/awase-settings/src/main.rs`
 （`is_muhenkan_thumb_key`/`is_henkan_thumb_key`、`THUMB_KEY_OPTIONS`）。
+
+---
+
+## BUG-95: IME apply pending 上書き後の旧成功完了が stale 扱いされ applied が固着する
+
+**症状:** 同一 target への IME apply が短時間に連続し、後続要求が `pending` を
+上書きしたあとで先行要求の成功完了が届くと、generation 不一致で完了が捨てられ、
+`applied` が古い値のまま残る。後続要求自身の完了が `UnsafeToToggle` 等で届かない
+経路に入ると、`desired_open` との乖離が解消されず drift correction が再送を繰り返す。
+また、フォーカス変更後に旧フォーカスプロセス由来の generation 付き完了が届くと、
+新フォーカスで `Unknown` に戻した `applied` を旧値で破り、TsfNative の force-ON を
+恒久的に封鎖しうる。
+
+**再現条件:** ウィンドウAで generation 付き `ImeApplyRequested(target=true, gen=10)` を
+送信し、完了前に同一 target の `gen=11` が `pending` を上書きする。その後 gen10 の
+`ImeApplySucceeded(target=true)` が遅延到着する。フォーカス跨ぎの派生ケースでは、
+gen10 送信後に `FocusChanged` が入り、その後 gen10 の成功完了が届く。
+
+**修正:** ADR-108 に従い、`ImeTransition` に `focus_epoch` を追加し、generation 付き
+完了の `applied` 書き込みを `ImeModel::reduce()` に集約した。厳密一致かつ同一 epoch の
+完了だけを `Confirmed` とし、generation 不一致でも現在の `pending.target` と同じ target
+かつ同一 epoch の成功完了は `Optimistic` として反映する。composition/warmup 副作用は
+`ImeApplyAcceptance::Accepted` のみが駆動する。
+
+**テスト:** `state::ime_model::tests` の ADR-108 追加ケースで、同一target上書き成功完了、
+逆target棄却、フォーカス跨ぎ棄却、失敗系不一致、Confirmed降格防止、緩和経路の2入口、
+タイムアウト境界越え完了、失敗厳密一致の `Confirmed{open: !target}` 移設を固定した。
+`tests/journal_replay.rs` に `tests/journals/ime_apply/adr108-focus-crossing-success.json`
+のリプレイを追加した。
+
+**修正履歴:** 本作業ツリーで実装済み。2026-08-28 の実行環境では `.git` が読み取り専用
+（`index.lock: Read-only file system`）のためコミットを作成できず、実装コミットhashは
+未記録。コミット可能な環境で作成後、この行にhashを追記すること。
+
+**関連ファイル:** `crates/awase-windows/src/state/transition.rs`,
+`crates/awase-windows/src/state/ime_model.rs`,
+`crates/awase-windows/src/state/platform_state.rs`,
+`crates/awase-windows/src/runtime/mod.rs`,
+`crates/awase-windows/src/output/ime_apply_planner.rs`。関連: ADR-108。
+
+---
+
+## BUG-96: generation なし非同期 shadow toggle OFF 完了は focus epoch ゲートを通らない
+
+**症状:** `runtime/key_pipeline.rs` の shadow toggle OFF の ImmCross 非同期分岐は、
+`run_open_chain_async(...).await` 後に `on_ime_apply_complete(false, outcome, None, ...)`
+を呼ぶ。待機中に Alt+Tab 等でフォーカスプロセスが変わると、旧ウィンドウ宛ての完了が
+新ウィンドウの文脈で到着するが、`generation=None` のため ADR-108 の epoch ゲートを
+通らず、`applied = Confirmed{open:false}` と composition cold-mark を新ウィンドウへ
+書き込む可能性が残る。
+
+**再現条件:** ImmCross 経路で shadow toggle OFF を発火し、非同期 apply 完了前に
+Alt+Tab で別プロセスへフォーカスを移す。その後、旧ウィンドウ宛ての
+`generation=None` 完了が到着する。
+
+**ADR-108で対象外にした理由:** generation なし経路は target 一致による
+`clear_pending_if_matches` が pending 解放の正常経路になっている。ここへ単純に
+epoch ゲートを追加すると、棄却された完了が pending を解放しないという意味論変更を
+同時に持ち込むため、ADR-108 決定0の「pending解除は現状維持」の範囲を越える。
+
+**follow-up方針:** `probe_admission::admit_epoch_in_app` と同型に、spawn 時の epoch を
+actuation 完了ハンドラへ持ち込み、`with_app` 内で照合して早期 return する。もしくは
+この経路にも `ApplyGeneration` を払い出し、generation 付き経路へ合流させる。
+
+**状態:** 既知の残存ギャップ。ADR-108 決定6として意図的に未修正。
+
+**修正履歴:** 未修正。本作業ツリーで BUG-95 側の generation 付き経路だけを修正済み。
+2026-08-28 の実行環境では `.git` が読み取り専用のためコミットhashは未記録。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`,
+`crates/awase-windows/src/state/platform_state.rs`,
+`crates/awase-windows/src/state/probe_admission.rs`。関連: ADR-108 決定6。
