@@ -778,22 +778,26 @@ impl AppConfig {
     const THUMB_KEY_ALIASES: &[(&str, &str)] =
         &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
 
-    fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
-        fn canonical_thumb_key_name(s: &str) -> &str {
-            let s = s.trim();
-            for (kanji, vk) in AppConfig::THUMB_KEY_ALIASES {
-                if s == *kanji || s.eq_ignore_ascii_case(vk) {
-                    return vk;
-                }
+    /// 無変換/変換の表記ゆれ（漢字表記・エイリアス・`VK_*`識別子）を
+    /// `THUMB_KEY_ALIASES` に基づいて正規化する。一致しなければ入力をそのまま返す
+    /// （`THUMB_KEY_ALIASES` に無い任意のキー名の可能性があるため）。
+    /// `validate_thumb_key_in_ime_combos` が使う単一の情報源。
+    fn canonical_thumb_key_name(s: &str) -> &str {
+        let s = s.trim();
+        for (kanji, vk) in Self::THUMB_KEY_ALIASES {
+            if s == *kanji || s.eq_ignore_ascii_case(vk) {
+                return vk;
             }
-            s
         }
+        s
+    }
 
+    fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
         fn is_bare_same_key(combo: &str, thumb_key: &str) -> bool {
             let combo = combo.trim();
             !combo.contains('+')
-                && canonical_thumb_key_name(combo)
-                    .eq_ignore_ascii_case(canonical_thumb_key_name(thumb_key))
+                && AppConfig::canonical_thumb_key_name(combo)
+                    .eq_ignore_ascii_case(AppConfig::canonical_thumb_key_name(thumb_key))
         }
 
         // `field == "keys.ime_on"` だけ文面を分ける理由: `suppress_ime_combos`

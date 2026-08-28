@@ -111,6 +111,44 @@ impl YabValue {
         Self::Literal(trimmed.to_string())
     }
 
+    /// セルの生テキストを検査し、`parse` がどんな文字列でも受理してしまう
+    /// リテラルのフォールバック経路（`111`行目）に落ちるのに、クォート文字
+    /// （`'`/`"`）が対になっていない場合は警告文言を返す。`parse` 自体は
+    /// 失敗させない設計を変えない——タイプミスに気づく手段が他に無いための
+    /// 追加チェックであり、パース結果には影響しない。
+    ///
+    /// 実例: `ｂｕ`（正、ローマ字 "bu" → ぶ）のつもりで `ｂ'ｕ`（誤字、
+    /// クォートが片方だけ）と書くと、`parse` はこれを丸ごとリテラル文字列と
+    /// して無警告で受理し、そのキーを押すと「ｂ'ｕ」がそのまま出力される
+    /// （report `01M13EACMQ7D2VETW75N0BTZ9C`: 「ぶ」を入力しても `b` になると
+    /// 報告。実際にはデフォルト同梱の `layout/nicola.yab` は正しく `ｂｕ` で、
+    /// ユーザーが独自編集したレイアウトファイルの誤字だった）。
+    ///
+    /// `parse` 自身の結果を見て判定する（分岐の優先順位を再実装しない）:
+    /// フォールバック経路は入力をそのまま `Literal(trimmed)` として返すのが
+    /// 唯一の性質のため、`parse(trimmed) == Literal(trimmed)` かどうかだけで
+    /// 「どのフォールバックだったか」を再現できる。他の全分岐（`None`/
+    /// `Special`/`Vk`/`Romaji`/`KeySequence`、および正しく対になったクォート
+    /// の unescape 済み `Literal`）はこの等式を満たさない。
+    #[must_use]
+    pub fn lint_raw_cell(raw: &str) -> Option<String> {
+        let trimmed = raw.trim();
+        let fell_through_to_literal_fallback =
+            matches!(Self::parse(trimmed), Self::Literal(s) if s == trimmed);
+        if !fell_through_to_literal_fallback {
+            return None;
+        }
+        if trimmed.contains('\'') || trimmed.contains('"') {
+            return Some(format!(
+                "\"{trimmed}\" はクォート文字を含みますが対になっていません。\
+                 文字列全体をリテラル出力したい場合は両端を同じ引用符で \
+                 囲んでください（例: 'ぶ'）。誤って混入したクォートであれば \
+                 削除してください。"
+            ));
+        }
+        None
+    }
+
     /// `YabValue` を .yab テキスト形式に変換する。
     #[must_use]
     pub fn serialize(&self) -> String {
@@ -136,6 +174,60 @@ impl YabValue {
             Self::None => "無".to_string(),
         }
     }
+}
+
+/// .yab ファイルの生テキストを行単位で走査し、`YabValue::lint_raw_cell` が
+/// 疑わしいと判定したセルがあれば行番号付きの警告文言を返す。
+///
+/// パースの成否とは独立に動作する（`YabLayout::parse` が構造的に成功する
+/// 内容でも警告しうる）。どの行が「セクション内のデータ行」かは
+/// `process_yab_line`（`YabLayout::parse` が使う実際の行分類ロジック）を
+/// そのまま再利用して判定する——コメント行・レイアウト名行・セクション
+/// 見出し行の判定を独自に再実装すると、文法が変わったときに一方だけ
+/// 更新し忘れて乖離するおそれがあるため（実例:
+/// 初版はレイアウト名行を「クォート未対応セクション見出しより前の行」として
+/// 独自スキップしようとし、`'`/`"` を含むレイアウト名（例:
+/// `Bob's Layout`）を誤ってタイプミス扱いしていた。`process_yab_line` を
+/// 直接使う本実装ではレイアウト名行はそもそも `current_lines` に積まれない
+/// ため、この誤検知は構造的に起こらない）。
+#[must_use]
+pub fn lint(input: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut name = String::new();
+    let mut sections: YabSections = FxHashMap::default();
+    let mut current_section: Option<FaceKind> = None;
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for (line_num, raw_line) in input.lines().enumerate() {
+        let lines_before = current_lines.len();
+        // 構造的に不正な行（`process_yab_line` が `Err` を返す）は lint の対象
+        // 外として読み飛ばす。lint はパースの成否から独立に動作する設計
+        // （上記doc参照）であり、構造検証そのものは `YabLayout::parse` の責務。
+        if process_yab_line(
+            line_num,
+            raw_line.trim(),
+            &mut name,
+            &mut current_section,
+            &mut current_lines,
+            &mut sections,
+        )
+        .is_err()
+        {
+            continue;
+        }
+        // `current_lines` が伸びていれば、この行はセクション内のデータ行として
+        // 採用された（コメント・空行・レイアウト名行・セクション見出し行は
+        // `process_yab_line` 内で `current_lines` に積まれず伸びない）。
+        if current_lines.len() == lines_before + 1 {
+            for cell in current_lines[lines_before].split(',') {
+                if let Some(msg) = YabValue::lint_raw_cell(cell) {
+                    warnings.push(format!("{}行目: {msg}", line_num + 1));
+                }
+            }
+        }
+    }
+
+    warnings
 }
 
 impl YabFace {

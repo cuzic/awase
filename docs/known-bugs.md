@@ -11754,6 +11754,143 @@ app_version 1.16.1）で報告された。実際のキー入力動作（親指�
 
 ---
 
+## BUG-95: `.yab`のクォート崩れリテラルが無警告で受理される（レイアウト検証不足）
+
+**症状:** タスクトレイの不具合報告機能経由の report `01M13EACMQ7D2VETW75N0BTZ9C`
+（2026-08-28T05:28:03Z、app_version 1.16.1、GJI、JISキーボード）で以下2件が
+報告された。
+
+1. 変換キー（親指右キー）を単独タップしても漢字変換が起きない（「変換する
+   ように設定してある」との申告あり）。
+2. ユーザーが独自編集した `layout_yab` で「ぶ」キーを押すと `b` になる。
+
+（同一報告にあった無変換キー単独タップ確定の不具合は別原因で、report
+`01M10VJWF7R8TNZAM08THVZDT7` と同じ `is_bare_thumb`/`suppress_ime_combos`
+（PR #114、未リリース）で既に修正済み。詳細は `docs/bug-reports-triage.md` の
+`01M13EACMQ7D2VETW75N0BTZ9C` の行を参照。）
+
+**このBUGエントリで扱うのは症状2（`.yab`誤字）のみ。** 症状1については
+下記「症状1について: 撤回した仮説」を参照——真因は未確定のまま。
+
+**原因（症状2）:** `layout_yab` の右親指シフト面 V 位置に `ｂ'ｕ` という誤字
+（正しくは `ｂｕ`）があった。`YabValue::parse`（`src/yab/mod.rs`）はクォート
+文字が対になっていない任意の文字列を、無警告でそのまま `Literal` として受理
+してしまう（検証機構が存在しなかった）。デフォルト同梱の `layout/nicola.yab`
+は正しく `ｂｕ` であり、ユーザー独自編集時の誤字と確認済み。
+
+**修正（症状2）:** `src/yab/mod.rs` に `YabValue::lint_raw_cell`/`yab::lint`
+を新設。クォート文字を含むのに対になっていないセルを検出し、行番号付きの
+警告文言を返す（パース自体は従来通り失敗させない）。
+`crates/awase-settings/src/main.rs` のレイアウト読み込み（`load_yab_layout`）・
+保存（`layout_write_to_path`）双方でこの警告を `layout_status` に付記する
+ようにした。回帰テスト5件追加。
+
+**症状1について: 撤回した仮説（2026-08-28、コードレビューで指摘・訂正）**
+
+初版では「`right_thumb_key = "VK_SPACE"` により変換（`VK_CONVERT`）がどちらの
+親指キーにも未割当のため、`henkan_solo_tap_ignore_composing_guard`/
+`henkan_solo_tap_always_suppress`（`NicolaFsm::henkan_vk` 経由、
+`src/engine/nicola_fsm.rs`）が無条件で無効化されている」ことを原因と断定し、
+`AppConfig::validate_solo_tap_reachability` という警告バリデータを追加してい
+たが、以下の理由でこの仮説・実装ともに**撤回した**（コミット履歴に残る、
+`src/config.rs` からは削除済み）。
+
+- `right_thumb_key = "VK_SPACE"` は人間工学上の理由で選ぶユーザーが珍しくない
+  正当な設定であり、「間違っている」という前提で警告を出すのは筋が悪い
+  （ユーザー指摘）。
+- awase-settings の GUI は右/左親指キーが変換・無変換以外のとき「変換キー
+  単独タップ」設定セクション自体を非表示にする（`is_henkan_thumb_key`、
+  BUG-94 の修正箇所）。つまりこの報告者は `right_thumb_key = "VK_SPACE"` の
+  状態でそのGUIセクションを操作できず、「変換するように設定してあります」
+  という発言が `henkan_solo_tap_*` を指しているとは考えにくい。
+- report のjournalは起動直後の約7.8秒（FocusTransition/GjiFsmTransition中心、
+  60件）のみで、実際の変換キー押下に対応する `KeyInput`/`ConvClassifyCall`
+  等のイベントが一切含まれておらず、当初の仮説を実データで検証できていな
+  かった。
+
+症状1の真因は依然未確定。次に調査する場合は、まず新しい journal
+（実際に変換キーを押した瞬間を含むもの）の取得を優先すること。awase が
+`VK_CONVERT` を親指キー・`keys.*` コンボのどちらにも割り当てていない場合、
+Phase 1/Phase 3 とも素通しするため、原因は awase 側の分岐ロジックよりも
+GJI 側の composition 状態（変換候補が実際に立っていたか）や、NICOLA
+入力がGJIの変換バッファをどう扱っているかにある可能性が高い。
+
+**2026-08-28 追加調査（ユーザー仮説「'変換キー=右親指キー'という前提が
+コードに埋め込まれているのでは」の検証）**: `VK_CONVERT`/`VK_NONCONVERT`
+に触れる全箇所（`crates/awase-windows/src/hook.rs::classify_key`、
+`vk.rs::ImeKeyKind::from_vk`（0x1C/0x1Dは意図的に対象外）、
+`engine.rs::SpecialKeyCombos::match_event`、
+`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`、
+`app/bootstrap.rs`の`henkan_vk`/`muhenkan_vk`導出）を洗い出したが、
+いずれも `left_thumb_key`/`right_thumb_key` の実際の設定値との比較を
+経由しており、「変換キーは常に親指キー」という無条件のハードコードは
+発見できなかった。`right_thumb_key = "VK_SPACE"` の設定下では、VK_CONVERT
+は `KeyClassification::Passthrough`（`hook.rs`、対応する物理スキャン
+コードが `scanmap.rs` の JIS/US テーブルに無いため）として素通しされ、
+`ImeRelevance.is_ime_control`等も全て偽になるため抑制されない。
+
+代わりに、**出力（romaji確定→IME送信）側の "eager path" が GJI の
+composition を迂回する既知の仕様**が、症状の代替説明として有力。
+`crates/awase-windows/src/tsf/warmup/probe_fsm.rs:131`
+`decide_transmit_plan()` のコメントに「unicode は GJI composition を
+バイパスし "nお" race が起きる」と明記されている通り、一定条件
+（`nc_confirmed=true` かつ非TSFモード等）では確定ひらがなを
+`output/vk_send.rs` 経由で Unicode として直接 `SendInput` する
+（`used_eager_path=true`）。この経路では GJI 側に「変換候補として
+保持中の未確定文字列」が存在せず確定済みテキストとして着地するため、
+直後に生の VK_CONVERT を押しても変換対象が無く何も起きない——awase の
+VK_CONVERT処理自体にバグが無くても症状が説明できる。関連する既存知見:
+[[feedback_unicode_injection_bypasses_gji_composition]]（Claude memory、
+「Unicode注入はGJI確認を迂回する」）。
+
+**次の切り分け手順**: 実機ログで該当打鍵時の `[tsf-transmit] ...
+eager=true/false`（`vk_send.rs:41-52`）を確認し、症状発生時に
+`eager=true` になっているかを見るのが最短。もし確認できれば、これは
+awase側の実装バグではなく、flicker回避のための既存トレードオフ設計の
+副作用として記録し、GUI/ドキュメントで「eager path使用時は変換キー
+単独タップでの変換候補操作ができない」ことを明示する対応を検討する。
+
+**2026-08-28 さらに追加調査: report添付ログを再確認したが症状1の再現は
+写っていなかった**。report `01M13EACMQ7D2VETW75N0BTZ9C` の
+`app_log_excerpt`（200KiB切り詰め済み）を精査したところ、2つの時間帯が
+混在していた: (a) `2026-08-28T01:41〜01:48Z` — 実際のローマ字入力
+（`[key-output] KeyInput(batched): romaji=...`）が152件記録されているが、
+**MS-IME + Chrome** の文脈（`target=Chrome`, `ime=MsIme`）で、report本文
+が指すGJI/UWPアプリの状況とは別物。(b) `2026-08-28T05:27:49〜05:28:03Z`
+— report送信直前の約14秒間（起動→GJI検出→専用Fnキー(F21)ポップアップ
+対応→トレイの「不具合を報告」を即座に開く、という流れ）で、**この区間
+には`[key-output]`（実際の打鍵）が1件も記録されていない**
+（`grep "05:2[78]"` で `[key-output]` 0件を確認）。
+
+**副次的に判明した事実**: 直前に見つかった
+`[gji-charset-write]`/`[gji-charset-popup]`（config1.db への専用Fnキー
+(F21)書き込み）は、コード調査の結果**症状1と無関係と確定**。書き込み対象は
+F21×`SwitchKanaType`（ひらがな/カタカナ/半角カナ切替）のみで、GJI内部の
+「変換」機能（VK_CONVERTの割当）には一切触れない
+（`crates/awase-gji-config/src/write.rs:88-101`）。トリガ条件は
+`muhenkan_solo_tap_always_suppress=false`（ユーザーがこの report で明示的に
+そう設定していたことと整合）かつユーザーがポップアップで「はい」を選んだ
+場合のみで、無変換キー側（症状2）の別機能であり、変換キー（症状1）とは
+無関係（詳細citation: `crates/awase-windows/src/gji_charset_write.rs:71-105`,
+`gji_charset_popup.rs:39-132`, `crates/awase-gji-config/src/lib.rs:102-140`）。
+
+**結論**: 症状1の真因はこのreportのログからは確認も反証もできない
+——単純に再現の瞬間が記録範囲外。次に同種の報告が来た場合は、まず
+`[key-output]`/`[tsf-transmit]` の有無を確認し、実際の打鍵が記録範囲に
+含まれているかを最優先で見ること。
+
+**テスト:** `cargo test --lib -p awase` 846件green（症状2向けの新規7件含む）。
+`cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows
+-p awase-settings` で Windows 向けコンパイル確認済み。
+
+**番号衝突チェック:** 全 refs（`git branch -a`・`git worktree list`・全リモート
+ブランチ）の `docs/known-bugs.md` を `BUG-[0-9]+` で走査し、作業時点の最大番号
+が BUG-94（`origin/develop`）であることを確認し、本件を BUG-95 として採番した。
+
+**関連ファイル:** `src/yab/mod.rs`, `crates/awase-settings/src/main.rs`。
+
+---
+
 ## BUG-97: IME apply pending 上書き後の旧成功完了が stale 扱いされ applied が固着する
 
 **症状:** 同一 target への IME apply が短時間に連続し、後続要求が `pending` を

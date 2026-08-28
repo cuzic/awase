@@ -133,6 +133,75 @@ fn parse_value_single_quoted_literal() {
     assert_eq!(YabValue::parse("'ー'"), YabValue::Literal("ー".to_string()));
 }
 
+// ── lint_raw_cell / lint（report 01M13EACMQ7D2VETW75N0BTZ9C）──
+
+/// 実際のバグ報告に現れた誤字（`ｂ'ｕ`、正しくは `ｂｕ`）を検出する。
+#[test]
+fn lint_raw_cell_flags_unpaired_quote_mid_token() {
+    let msg = YabValue::lint_raw_cell("ｂ'ｕ");
+    assert!(msg.is_some(), "対になっていないクォートを検出すべき");
+    assert!(msg.unwrap().contains("ｂ'ｕ"));
+    // parse 自体は落とさず、これまで通りリテラルとして受理する。
+    assert_eq!(
+        YabValue::parse("ｂ'ｕ"),
+        YabValue::Literal("ｂ'ｕ".to_string())
+    );
+}
+
+#[test]
+fn lint_raw_cell_does_not_flag_properly_paired_quote() {
+    assert_eq!(YabValue::lint_raw_cell("'ぶ'"), None);
+    assert_eq!(YabValue::lint_raw_cell("'it\\'s'"), None);
+    assert_eq!(YabValue::lint_raw_cell("\"say \\\"hi\\\"\""), None);
+}
+
+#[test]
+fn lint_raw_cell_does_not_flag_normal_cells() {
+    for cell in ["無", "", "  ", "ｂｕ", "後", "V1D", "機1", "ｔａ"] {
+        assert_eq!(
+            YabValue::lint_raw_cell(cell),
+            None,
+            "cell {cell:?} should not be flagged"
+        );
+    }
+}
+
+#[test]
+fn lint_scans_whole_layout_text_and_reports_line_numbers() {
+    let input =
+        "[ローマ字シフト無し]\n無,ｂｉ,ｚｕ,ｂ'ｕ,ｂｅ\n; comment\n無,ｈｉ,ｓｕ,ｆｕ,ｈｅ\n";
+    let warnings = lint(input);
+    assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+    assert!(warnings[0].starts_with("2行目:"), "got: {warnings:?}");
+    assert!(warnings[0].contains("ｂ'ｕ"));
+}
+
+#[test]
+fn lint_returns_empty_for_default_bundled_layout_row() {
+    // layout/nicola.yab の右親指シフト面より（正しい `ｂｕ`）
+    let input = "無,ｂｉ,ｚｕ,ｂｕ,ｂｅ,ｎｕ,ｙｕ,ｍｕ,ｗａ,ｌｏ,無";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
+/// `/code-review` 指摘: レイアウト名行（セクション見出しより前、最初の
+/// 非コメント行）はデータ行ではないため、クォート文字を含んでいても
+/// タイプミス扱いしてはならない。`YabLayout::serialize` はこの名前行を
+/// そのまま先頭行として再出力するため、保存直後の再lintでも誤検知しない
+/// ことを固定する。
+#[test]
+fn lint_does_not_flag_layout_name_line_containing_quote() {
+    let input =
+        "Tom's Layout\n[ローマ字シフト無し]\n無,無,無,無\n無,無,無,無\n無,無,無,無\n無,無,無,無\n";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
+/// レイアウト名行の直前・直後にコメント行があっても同様に誤検知しない。
+#[test]
+fn lint_does_not_flag_layout_name_line_with_surrounding_comments() {
+    let input = "; comment\nBob's \"Special\" Layout\n; another comment\n[ローマ字シフト無し]\n無,無,無,無\n";
+    assert_eq!(lint(input), Vec::<String>::new());
+}
+
 #[test]
 fn parse_value_fullwidth_romaji() {
     assert_eq!(
