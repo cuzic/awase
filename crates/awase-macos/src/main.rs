@@ -180,6 +180,11 @@ mod app {
     use awase_macos::output::{Output, INJECT_MARKER};
     use awase_macos::tray::SystemTray;
 
+    /// kVK_JIS_Eisu（英数）— macOS 標準の IME OFF キー
+    const KEYCODE_EISU: u16 = 0x66;
+    /// kVK_JIS_Kana（かな）— macOS 標準の IME ON キー
+    const KEYCODE_KANA: u16 = 0x68;
+
     /// 起動時点からの経過マイクロ秒を返す
     fn now_timestamp() -> Timestamp {
         use std::sync::OnceLock;
@@ -286,6 +291,19 @@ mod app {
             }
         }
 
+        /// 英数/かな キーが OS に届く時点で IME 状態の期待値を立てる。
+        ///
+        /// 入力ソース切替は非同期のため、TIS 観測が追いつく前の打鍵が
+        /// 旧状態で判定される（英字モード→かな→即 k で k が素通りする）
+        /// のを防ぐ。
+        fn expect_ime_from_key(&self, keycode: u16) {
+            match keycode {
+                KEYCODE_EISU => self.ime.expect_ime_on(false),
+                KEYCODE_KANA => self.ime.expect_ime_on(true),
+                _ => {}
+            }
+        }
+
         /// FlagsChanged イベントから修飾キーの押下/解放を求める。
         fn flags_changed_event_type(
             keycode: u16,
@@ -310,15 +328,19 @@ mod app {
 
     impl LoopHandler for App {
         fn on_cg_event(&mut self, etype: CGEventType, event: &CGEvent) -> TapAction {
-            // 自分自身の注入イベントは Engine に通さず素通しする
-            if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == INJECT_MARKER
-            {
-                return TapAction::Pass;
-            }
-
             let keycode =
                 u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
                     .unwrap_or(u16::MAX);
+
+            // 自分自身の注入イベントは Engine に通さず素通しする
+            // （親指キー単独打鍵の再注入もここを通って OS の IME 切替に届く）
+            if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == INJECT_MARKER
+            {
+                if matches!(etype, CGEventType::KeyDown) {
+                    self.expect_ime_from_key(keycode);
+                }
+                return TapAction::Pass;
+            }
 
             let event_type = match etype {
                 CGEventType::KeyDown => KeyEventType::KeyDown,
@@ -376,7 +398,14 @@ mod app {
 
             let ctx = self.make_ctx();
             let decision = self.engine.on_input(raw, &ctx);
-            self.apply_decision(decision)
+            let action = self.apply_decision(decision);
+
+            // 物理の英数/かな キーが素通しで OS に届く場合（Engine 非活性時や
+            // 親指キー以外に設定されている場合）も IME 切替の期待を立てる
+            if action == TapAction::Pass && is_down {
+                self.expect_ime_from_key(keycode);
+            }
+            action
         }
 
         fn on_timer_fired(&mut self, id: usize) {

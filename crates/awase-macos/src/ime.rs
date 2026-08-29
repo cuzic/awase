@@ -101,14 +101,26 @@ mod imp {
         }
     }
 
+    /// IME 切替キー送出後、TIS 観測が追いつくまで期待値を優先する猶予時間。
+    ///
+    /// 入力ソースの切替は非同期で数十〜数百 ms かかるため、英数/かな 直後の
+    /// 打鍵は観測ベースだと旧状態で判定されて素通り/誤変換する
+    /// （英字モード→かな→即 k で「き」でなく k が出る問題）。
+    const EXPECTATION_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
     /// macOS IME 検出。
     ///
-    /// 最後に観測した日本語 IME（かなモード）の入力ソース ID を記憶し、
-    /// `set_ime_on` での復元先として使う。単一 thread（main の
-    /// CFRunLoop）でのみ使う前提で `RefCell` を持つ。
+    /// - 最後に観測した日本語 IME（かなモード）の入力ソース ID を記憶し、
+    ///   `set_ime_on` での復元先として使う。
+    /// - IME 切替キーの直後は「まもなく切り替わる」期待値を観測より優先する
+    ///   （`expect_ime_on` / `EXPECTATION_GRACE`）。
+    ///
+    /// 単一 thread（main の CFRunLoop）でのみ使う前提で `RefCell` を持つ。
     #[derive(Debug)]
     pub struct ImeDetector {
         last_japanese_id: std::cell::RefCell<Option<String>>,
+        /// IME 切替キー送出後の期待状態（観測が追いつくか猶予超過で解除）
+        pending: std::cell::RefCell<Option<(bool, std::time::Instant)>>,
     }
 
     impl ImeDetector {
@@ -117,11 +129,17 @@ mod imp {
             log::info!("IME detector: TISCopyCurrentKeyboardInputSource");
             let detector = Self {
                 last_japanese_id: std::cell::RefCell::new(None),
+                pending: std::cell::RefCell::new(None),
             };
             // 起動時点の入力ソースを観測しておく（最初の打鍵前に
             // set_ime_on(true) が呼ばれても復元先が分かるように）
             let _ = detector.is_ime_on();
             detector
+        }
+
+        /// IME 切替キー（英数/かな）が OS に届いた直後に呼び、期待状態を立てる。
+        pub fn expect_ime_on(&self, open: bool) {
+            *self.pending.borrow_mut() = Some((open, std::time::Instant::now()));
         }
 
         /// 現在の IME 状態を問い合わせる
@@ -130,6 +148,22 @@ mod imp {
         /// - None: 検出不可
         #[must_use]
         pub fn is_ime_on(&self) -> Option<bool> {
+            let observed = self.observe_ime_on();
+
+            // 期待値の適用: 観測が一致したら解除、猶予内の不一致は期待値優先
+            let mut pending = self.pending.borrow_mut();
+            if let Some((expected, at)) = *pending {
+                if observed == Some(expected) || at.elapsed() > EXPECTATION_GRACE {
+                    *pending = None;
+                } else {
+                    return Some(expected);
+                }
+            }
+            observed
+        }
+
+        /// TIS 観測のみで IME 状態を判定する（期待値を適用しない）。
+        fn observe_ime_on(&self) -> Option<bool> {
             let id = current_input_source_id()?;
             if is_japanese_kana_mode(&id) {
                 // ユーザーが実際に使っている日本語 IME を記憶する
@@ -168,6 +202,8 @@ mod imp {
         ///
         /// 対象の入力ソースが見つからない/選択に失敗した場合は false。
         pub fn set_ime_on(&self, open: bool) -> bool {
+            // TISSelectInputSource も反映まで observation lag があるため期待を立てる
+            self.expect_ime_on(open);
             let last = self.last_japanese_id.borrow().clone();
             if open {
                 if let Some(ref id) = last {
@@ -233,6 +269,8 @@ impl ImeDetector {
     pub fn set_ime_on(&self, _open: bool) -> bool {
         false
     }
+
+    pub fn expect_ime_on(&self, _open: bool) {}
 }
 
 #[cfg(not(target_os = "macos"))]
