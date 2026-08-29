@@ -11,23 +11,29 @@ use awase_macos::vk::key_name_to_keycode;
 
 /// リソース（config.toml / layout）を解決する。
 ///
-/// `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペースルート）に加え、
-/// .app バンドル配置（`Contents/MacOS/awase` → `Contents/Resources/`）を試す。
-/// どこにも無ければカレントディレクトリ基準の相対パスをそのまま返す。
+/// .app バンドル内から実行されている場合は署名対象の `Contents/Resources` に
+/// 固定し、カレントディレクトリへはフォールバックしない — Accessibility 権限を
+/// 持つプロセスが、起動ディレクトリに置かれた署名対象外の config/layout を
+/// 読み込むのを防ぐため（2026-08-29 セキュリティレビュー指摘1）。
+///
+/// バンドル外（`cargo run` / 手動配置）は従来どおり
+/// `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペースルート → CWD）。
 fn resolve_resource(path: &str) -> PathBuf {
-    let resolved = awase::paths::resolve_relative_to_exe(path);
-    if resolved.exists() {
-        return resolved;
+    let raw = Path::new(path);
+    if raw.is_absolute() {
+        return raw.to_path_buf();
     }
-    if let Some(candidate) = std::env::current_exe()
-        .ok()
-        .and_then(|exe| Some(exe.parent()?.join("../Resources").join(path)))
-    {
-        if candidate.exists() {
-            return candidate;
+    if let Ok(exe) = std::env::current_exe() {
+        let in_bundle = exe
+            .to_str()
+            .is_some_and(|p| p.contains(".app/Contents/MacOS/"));
+        if in_bundle {
+            if let Some(dir) = exe.parent() {
+                return dir.join("../Resources").join(path);
+            }
         }
     }
-    resolved
+    awase::paths::resolve_relative_to_exe(path)
 }
 
 fn main() -> Result<()> {
