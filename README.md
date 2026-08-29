@@ -39,6 +39,31 @@ awase は低レベルキーボードフックで物理キー入力を横取り�
 
 ---
 
+## macOS 対応（実験的）
+
+`crates/awase-macos` に macOS 実装があります。CGEventTap でキーイベントを捕捉し、
+NICOLA 同時打鍵判定（コアエンジンは Windows 版と共通）の結果をローマ字
+キーストロークとして IME に送出します。ATOK で動作確認済み（Google 日本語入力・
+日本語IM も入力ソース ID ベースで対応）。親指キーの既定は 英数（左）/ かな（右）、
+メニューバー常駐で ON/OFF を切り替えられます。
+
+```sh
+./packaging/macos/make-app.sh     # dist/Awase.app をビルド
+./packaging/macos/install-app.sh  # /Applications へインストール
+```
+
+初回起動時にアクセシビリティ権限の許可が必要です。ビルド・権限・ログイン時
+自動起動（LaunchAgent）の詳細は [packaging/macos/README.md](packaging/macos/README.md)
+を参照してください。
+
+既知の制限:
+
+- 確定モードは `wait`（既定）と `speculative` を検証済み
+- セキュア入力欄（パスワード等）は OS 仕様によりフックできません
+- 設定 UI・n-gram 適応閾値などは未対応（config.toml を直接編集）
+
+---
+
 ## クイックスタート
 
 ### 1. ビルド

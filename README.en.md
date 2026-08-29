@@ -39,6 +39,32 @@ For details on the technical design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
+## macOS Support (Experimental)
+
+A macOS implementation lives in `crates/awase-macos`. It captures key events
+with a CGEventTap and feeds the NICOLA simultaneous-press decisions (the core
+engine is shared with the Windows build) to the IME as romaji keystrokes.
+Verified with ATOK; Google Japanese Input and the Apple Japanese IM are
+supported via input-source-id detection. Thumb keys default to 英数 (left) /
+かな (right), and a menu bar icon toggles the engine.
+
+```sh
+./packaging/macos/make-app.sh     # build dist/Awase.app
+./packaging/macos/install-app.sh  # install to /Applications
+```
+
+The first launch prompts for Accessibility permission. See
+[packaging/macos/README.md](packaging/macos/README.md) for build, permission,
+and start-at-login (LaunchAgent) details.
+
+Known limitations:
+
+- Confirm modes `wait` (default) and `speculative` are verified
+- Secure input fields (password boxes) bypass the event tap by OS design
+- No settings UI or n-gram adaptive thresholds yet (edit config.toml directly)
+
+---
+
 ## Quick Start
 
 ### 1. Build
