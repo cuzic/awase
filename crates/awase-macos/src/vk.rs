@@ -3,7 +3,43 @@
 //! macOS 固有の仮想キーコード (CGKeyCode) を扱う。
 //! Carbon HIToolbox/Events.h の kVK_* 定数に対応する。
 
+use awase::config::ParsedKeyCombo;
 use awase::types::VkCode;
+
+/// "Ctrl+Shift+変換" 形式のキーコンボ文字列をパースする。
+///
+/// awase-windows の `vk::parse_key_combo` と同じ文法（修飾キーは
+/// Ctrl/Control/Shift/Alt、最後の要素がキー名）。キー名は
+/// `key_name_to_keycode` で macOS keycode に解決する。
+#[must_use]
+pub fn parse_key_combo(s: &str) -> Option<ParsedKeyCombo> {
+    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let mut ctrl = false;
+    let mut shift = false;
+    let mut alt = false;
+    for &part in &parts[..parts.len() - 1] {
+        match part {
+            "Ctrl" | "Control" => ctrl = true,
+            "Shift" => shift = true,
+            "Alt" => alt = true,
+            _ => return None,
+        }
+    }
+
+    let key_name = *parts.last()?;
+    let vk = key_name_to_keycode(key_name)?;
+
+    Some(ParsedKeyCombo {
+        ctrl,
+        shift,
+        alt,
+        vk,
+    })
+}
 
 /// プラットフォーム非依存のキー名を macOS キーコード (CGKeyCode) に変換する。
 ///

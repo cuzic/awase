@@ -98,14 +98,29 @@ fn main() -> Result<()> {
         awase_macos::hook::classify_modifier(left_thumb.0) != Some(ModifierKey::Shift)
             && awase_macos::hook::classify_modifier(right_thumb.0) != Some(ModifierKey::Shift),
     );
+    // [keys] のコンボ設定を macOS keycode に解決して Engine に渡す
+    let parse_combos = |keys: &[String], label: &str| {
+        let parsed: Vec<_> = keys
+            .iter()
+            .filter_map(|s| {
+                let combo = awase_macos::vk::parse_key_combo(s);
+                if combo.is_none() {
+                    log::warn!("keys.{label}: cannot parse combo \"{s}\" on macOS, ignoring");
+                }
+                combo
+            })
+            .collect();
+        log::info!("keys.{label}: {keys:?} ({} parsed)", parsed.len());
+        parsed
+    };
     let engine = Engine::new(
         fsm,
         SpecialKeyCombos {
-            engine_on: vec![],
-            engine_off: vec![],
-            ime_on: vec![],
-            ime_off: vec![],
-            ime_toggle: vec![],
+            engine_on: parse_combos(&config.keys.engine_on, "engine_on"),
+            engine_off: parse_combos(&config.keys.engine_off, "engine_off"),
+            ime_on: parse_combos(&config.keys.ime_on, "ime_on"),
+            ime_off: parse_combos(&config.keys.ime_off, "ime_off"),
+            ime_toggle: parse_combos(&config.keys.ime_toggle, "ime_toggle"),
         },
     );
 
@@ -152,7 +167,7 @@ mod app {
 
     use awase::engine::{
         Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext, InputEffect,
-        InputModeState, ModifierState, TimerEffect, UiEffect,
+        InputModeState, ModifierState, SetOpenOrigin, TimerEffect, UiEffect,
     };
     use awase::types::{
         KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, Timestamp, VkCode,
@@ -230,13 +245,26 @@ mod app {
                         self.timers.set(*id, *duration);
                     }
                     Effect::Timer(TimerEffect::Kill(id)) => self.timers.kill(*id),
-                    Effect::Ime(ImeEffect::SetOpen { open, .. }) => {
-                        if self.ime.set_ime_on(*open) {
-                            log::debug!("IME set_open({open}) via TISSelectInputSource");
-                        } else {
-                            log::warn!("IME set_open({open}) failed: no matching input source");
+                    Effect::Ime(ImeEffect::SetOpen { open, origin }) => match origin {
+                        // 明示的なユーザー操作（ime_on/off/toggle コンボ等）のみ実行する
+                        SetOpenOrigin::ExplicitUserAction => {
+                            if self.ime.set_ime_on(*open) {
+                                log::debug!("IME set_open({open}) via TISSelectInputSource");
+                            } else {
+                                log::warn!(
+                                    "IME set_open({open}) failed: no matching input source"
+                                );
+                            }
                         }
-                    }
+                        // ActivationSync は activation 遷移の echo（SetOpenOrigin の doc
+                        // 参照）。macOS では ctx.ime_on が毎イベント TIS 観測で得た
+                        // 実状態そのものなので、echo を TISSelectInputSource で実行する
+                        // と OS/IME 自身の切替と競合する（ATOK が OS 標準 IME に
+                        // 化ける等）。観測駆動の macOS では無視するのが正しい。
+                        SetOpenOrigin::ActivationSync => {
+                            log::trace!("IME set_open({open}) echo (ActivationSync) ignored");
+                        }
+                    },
                     Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) => {
                         self.tray.set_enabled(*enabled);
                     }
