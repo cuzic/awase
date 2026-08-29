@@ -1,11 +1,18 @@
 # awase on macOS — packaging and autostart
 
-## Build the app bundle
+## Build and install the app bundle
 
 ```sh
 ./packaging/macos/make-app.sh
-cp -R dist/Awase.app /Applications/
+./packaging/macos/install-app.sh
 ```
+
+Do not `cp -R` over an existing `/Applications/Awase.app`: cp merges old and
+new bundle contents, which breaks the code signature, and the stale TCC entry
+makes the Accessibility toggle in System Settings a no-op. The install script
+quits the running instance, replaces the bundle wholesale, and runs
+`tccutil reset Accessibility com.github.cuzic.awase` so the next launch
+prompts for a fresh grant.
 
 The bundle embeds `config.toml` and `layout/` under `Contents/Resources/`
 (the binary also finds them next to the executable or in the current
@@ -20,10 +27,11 @@ directory, in that order of precedence — see `resolve_resource` in
 4. Relaunch the app. An 「あ」 icon appears in the menu bar.
 
 **Note on rebuilds:** the default ad-hoc signature changes on every rebuild,
-so macOS silently drops the Accessibility grant — remove Awase from the list
-and re-add it after installing a new build. For a stable identity, create a
-self-signed code-signing certificate (Keychain Access > Certificate Assistant,
-type "Code Signing", e.g. named `awase-codesign`) and build with:
+so macOS silently drops the Accessibility grant — reinstall with
+`install-app.sh` (which resets the stale TCC entry) and grant again. For a
+stable identity that survives rebuilds, create a self-signed code-signing
+certificate (Keychain Access > Certificate Assistant, type "Code Signing",
+e.g. named `awase-codesign`) and build with:
 
 ```sh
 CODESIGN_IDENTITY=awase-codesign ./packaging/macos/make-app.sh
