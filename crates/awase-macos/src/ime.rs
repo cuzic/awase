@@ -102,14 +102,26 @@ mod imp {
     }
 
     /// macOS IME 検出。
+    ///
+    /// 最後に観測した日本語 IME（かなモード）の入力ソース ID を記憶し、
+    /// `set_ime_on` での復元先として使う。単一 thread（main の
+    /// CFRunLoop）でのみ使う前提で `RefCell` を持つ。
     #[derive(Debug)]
-    pub struct ImeDetector;
+    pub struct ImeDetector {
+        last_japanese_id: std::cell::RefCell<Option<String>>,
+    }
 
     impl ImeDetector {
         #[must_use]
         pub fn new() -> Self {
             log::info!("IME detector: TISCopyCurrentKeyboardInputSource");
-            Self
+            let detector = Self {
+                last_japanese_id: std::cell::RefCell::new(None),
+            };
+            // 起動時点の入力ソースを観測しておく（最初の打鍵前に
+            // set_ime_on(true) が呼ばれても復元先が分かるように）
+            let _ = detector.is_ime_on();
+            detector
         }
 
         /// 現在の IME 状態を問い合わせる
@@ -119,6 +131,16 @@ mod imp {
         #[must_use]
         pub fn is_ime_on(&self) -> Option<bool> {
             let id = current_input_source_id()?;
+            if is_japanese_kana_mode(&id) {
+                // ユーザーが実際に使っている日本語 IME を記憶する
+                // （ATOK / Google 日本語入力 / 日本語IM の区別を保つため。
+                // 述語ベースの選択だとリスト先頭の OS 標準 IME に化ける）
+                let mut last = self.last_japanese_id.borrow_mut();
+                if last.as_deref() != Some(&id) {
+                    log::debug!("IME observed: {id}");
+                    *last = Some(id.clone());
+                }
+            }
             if id.contains("inputmethod") && id.contains("Japanese") {
                 // "…Japanese" / "…Japanese.Katakana" は ON、
                 // "…Roman" / "…FullWidthRoman"（英字モード）は OFF
@@ -139,14 +161,37 @@ mod imp {
 
         /// IME の ON/OFF を強制する（`ImeEffect::SetOpen` の実装）。
         ///
-        /// - ON: 日本語 IME のひらがなモードを選択
-        /// - OFF: 日本語 IM の英字モード、無ければ keylayout（ABC 等）を選択
+        /// - ON: 最後に使っていた日本語 IME のかなモードを復元。未観測なら
+        ///   述語マッチにフォールバック
+        /// - OFF: 同じ IM ファミリの英字モード（`….Roman` / `…Eiji`）を優先し、
+        ///   無ければ任意の日本語 IM 英字モード → keylayout（ABC 等）
         ///
         /// 対象の入力ソースが見つからない/選択に失敗した場合は false。
         pub fn set_ime_on(&self, open: bool) -> bool {
+            let last = self.last_japanese_id.borrow().clone();
             if open {
+                if let Some(ref id) = last {
+                    if select_input_source_matching(|c| c == id) {
+                        return true;
+                    }
+                    log::warn!("IME restore failed for {id}, falling back to predicate match");
+                }
                 select_input_source_matching(is_japanese_kana_mode)
             } else {
+                // 同じ IM ファミリ（ID の末尾セグメントを除いた prefix）の
+                // 英字モードを優先する。例:
+                //   com.justsystems.inputmethod.atok34.Japanese → …atok34.Roman
+                //   com.google.inputmethod.Japanese.base       → ….Japanese.Roman
+                if let Some(prefix) = last.as_deref().and_then(|id| id.rsplit_once('.')) {
+                    let prefix = prefix.0;
+                    if select_input_source_matching(|c| {
+                        c.starts_with(prefix)
+                            && (c.contains("Roman") || c.contains("Eiji"))
+                            && !c.contains("FullWidth")
+                    }) {
+                        return true;
+                    }
+                }
                 select_input_source_matching(is_japanese_roman_mode)
                     || select_input_source_matching(|id| id.contains("keylayout"))
             }
