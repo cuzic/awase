@@ -201,6 +201,12 @@ mod app {
     /// kVK_JIS_Kana（かな）— macOS 標準の IME ON キー
     const KEYCODE_KANA: u16 = 0x68;
 
+    /// IME 切替待ちの出力フラッシュ用タイマー ID。
+    /// Engine の TimerEffect ID（小さい連番）と衝突しない値を使う。
+    const FLUSH_TIMER_ID: usize = usize::MAX;
+    /// フラッシュ再確認の間隔
+    const FLUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+
     /// 起動時点からの経過マイクロ秒を返す
     fn now_timestamp() -> Timestamp {
         use std::sync::OnceLock;
@@ -222,6 +228,13 @@ mod app {
         modifiers: ModifierState,
         left_thumb_down: Option<Timestamp>,
         right_thumb_down: Option<Timestamp>,
+        /// IME 切替が観測確認されるまで保留する出力アクション。
+        ///
+        /// 期待値ブリッジで Engine は切替直後の打鍵も変換するが、注入した
+        /// ローマ字キーストローク自体が入力ソース切替の完了とレースすると
+        /// 旧ソース（ABC 等）で解釈されてリテラル "wo" などになる。切替確認
+        /// まで溜めて `FLUSH_TIMER_ID` のタイマーでフラッシュする。
+        deferred_keys: Vec<awase::types::KeyAction>,
     }
 
     impl App {
@@ -235,7 +248,18 @@ mod app {
                 modifiers: ModifierState::default(),
                 left_thumb_down: None,
                 right_thumb_down: None,
+                deferred_keys: Vec::new(),
             }
+        }
+
+        /// IME 切替待ちが解消していれば保留出力をフラッシュする。
+        fn maybe_flush_deferred(&mut self) {
+            if self.deferred_keys.is_empty() || self.ime.is_switch_pending() {
+                return;
+            }
+            let keys = std::mem::take(&mut self.deferred_keys);
+            log::debug!("Flushing {} deferred key action(s) after IME switch", keys.len());
+            self.output.send_keys(&keys);
         }
 
         fn make_ctx(&self) -> InputContext {
@@ -257,7 +281,14 @@ mod app {
             for effect in effects {
                 match effect {
                     Effect::Input(InputEffect::SendKeys(actions)) => {
-                        self.output.send_keys(actions);
+                        // IME 切替中は旧入力ソースで解釈されてしまうため保留する
+                        // （既に保留がある場合も順序維持のため追記する）
+                        if self.ime.is_switch_pending() || !self.deferred_keys.is_empty() {
+                            self.deferred_keys.extend(actions.iter().cloned());
+                            self.timers.set(FLUSH_TIMER_ID, FLUSH_RETRY);
+                        } else {
+                            self.output.send_keys(actions);
+                        }
                     }
                     Effect::Input(InputEffect::ReinjectKey(ev)) => {
                         self.output.reinject(ev.vk_code, ev.event_type);
@@ -344,6 +375,9 @@ mod app {
 
     impl LoopHandler for App {
         fn on_cg_event(&mut self, etype: CGEventType, event: &CGEvent) -> TapAction {
+            // 切替待ちの保留出力があれば、後続イベント処理の前に順序を保って流す
+            self.maybe_flush_deferred();
+
             let keycode =
                 u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
                     .unwrap_or(u16::MAX);
@@ -433,6 +467,16 @@ mod app {
 
         fn on_timer_fired(&mut self, id: usize) {
             self.timers.fired(id);
+            if id == FLUSH_TIMER_ID {
+                if self.ime.is_switch_pending() {
+                    // まだ切替中: 再確認をスケジュール（期待の猶予超過で
+                    // is_switch_pending が false になるため無限には続かない）
+                    self.timers.set(FLUSH_TIMER_ID, FLUSH_RETRY);
+                } else {
+                    self.maybe_flush_deferred();
+                }
+                return;
+            }
             let ctx = self.make_ctx();
             let decision = self.engine.on_timeout(id, &ctx);
             // タイムアウトには「現在のイベント」が無いため Pass/Consume は無意味
@@ -451,6 +495,7 @@ mod app {
         }
 
         fn on_poll(&mut self) {
+            self.maybe_flush_deferred();
             // activation 遷移の検知はキーイベント経由でしか起きないため、
             // IME 切替後に打鍵が無いとトレイ表示が古いまま残る。RefreshState で
             // 遷移チェックだけを走らせ、UiEffect でトレイを追随させる。

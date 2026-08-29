@@ -158,6 +158,17 @@ mod imp {
             *self.pending.borrow_mut() = Some((open, std::time::Instant::now()));
         }
 
+        /// IME 切替がまだ観測で確認できていない（切替中）かどうか。
+        ///
+        /// この間に注入したキーストロークは旧入力ソースで解釈されて
+        /// リテラルの "wo" 等になるため、呼び出し側は送出を遅延させる。
+        #[must_use]
+        pub fn is_switch_pending(&self) -> bool {
+            // 観測を取り込んで pending の解除判定を進めてから判定する
+            let _ = self.is_ime_on();
+            self.pending.borrow().is_some()
+        }
+
         /// 現在の IME 状態を問い合わせる
         /// - Some(true): IME ON (ひらがな・カタカナモード等)
         /// - Some(false): IME OFF (英数モード・IME なしレイアウト)
@@ -370,6 +381,11 @@ impl ImeDetector {
     }
 
     pub fn expect_ime_on(&self, _open: bool) {}
+
+    #[must_use]
+    pub fn is_switch_pending(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
