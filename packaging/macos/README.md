@@ -19,9 +19,15 @@ directory, in that order of precedence — see `resolve_resource` in
 3. If the event tap still fails, also enable Awase under **Input Monitoring**.
 4. Relaunch the app. An 「あ」 icon appears in the menu bar.
 
-Because the bundle is ad-hoc signed with a fixed bundle id
-(`com.github.cuzic.awase`), the grant survives rebuilds on the same machine.
-Re-granting is only needed when the signature identity changes.
+**Note on rebuilds:** the default ad-hoc signature changes on every rebuild,
+so macOS silently drops the Accessibility grant — remove Awase from the list
+and re-add it after installing a new build. For a stable identity, create a
+self-signed code-signing certificate (Keychain Access > Certificate Assistant,
+type "Code Signing", e.g. named `awase-codesign`) and build with:
+
+```sh
+CODESIGN_IDENTITY=awase-codesign ./packaging/macos/make-app.sh
+```
 
 ## Start at login
 

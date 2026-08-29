@@ -25,8 +25,11 @@ else
 fi
 cp -R layout "$APP/Contents/Resources/layout"
 
-# Ad-hoc signature keeps the TCC grant stable across rebuilds on this machine.
-codesign --force --sign - "$APP"
+# Sign the bundle. Ad-hoc ("-") works but its identity changes on every
+# rebuild, so macOS drops the Accessibility grant each time. For a stable
+# grant, create a self-signed code-signing certificate in Keychain Access
+# and pass it via CODESIGN_IDENTITY.
+codesign --force --sign "${CODESIGN_IDENTITY:--}" "$APP"
 
 echo "Built $APP"
 echo "Install: cp -R $APP /Applications/"
