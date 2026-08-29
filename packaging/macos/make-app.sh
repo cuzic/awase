@@ -32,4 +32,4 @@ cp -R layout "$APP/Contents/Resources/layout"
 codesign --force --sign "${CODESIGN_IDENTITY:--}" "$APP"
 
 echo "Built $APP"
-echo "Install: cp -R $APP /Applications/"
+echo "Install: ./packaging/macos/install-app.sh"
