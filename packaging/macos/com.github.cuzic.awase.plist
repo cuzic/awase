@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  LaunchAgent template for starting awase at login.
+  Install to ~/Library/LaunchAgents/com.github.cuzic.awase.plist
+  (see packaging/macos/README.md). Adding Awase.app to
+  System Settings > General > Login Items works as well; use only one of the two.
+-->
+<dict>
+	<key>Label</key>
+	<string>com.github.cuzic.awase</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Awase.app/Contents/MacOS/awase</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Restart on crash, but stay stopped when quit from the menu (exit 0) -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/tmp/awase.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/awase.log</string>
+</dict>
+</plist>
