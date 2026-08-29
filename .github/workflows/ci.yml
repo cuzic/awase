@@ -344,6 +344,37 @@ jobs:
           name: awase-windows-x64-msi
           path: awase-0.1.0-x64.msi
 
+  # macOS 版（crates/awase-macos）。CGEventTap/TIS/AppKit を使うコードは
+  # cfg(target_os = "macos") でゲートされており、Linux/Windows ジョブでは
+  # スタブしかコンパイルされないため、実 macOS でのビルド・clippy・テストを
+  # ここで担保する。実キーボード・IME が無い CI ではユニットテストのみ
+  # （入力ソース ID 分類・キーコンボパース等の純粋関数）。
+  macos-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Clippy (awase-macos)
+        run: cargo clippy -p awase-macos --all-targets -- -D warnings
+
+      - name: Build awase (macOS)
+        run: cargo build --release --locked -p awase-macos
+
+      - name: Run awase-macos tests
+        run: cargo test -p awase-macos
+
+      # コアエンジンのテストを macOS 上でも一度回す（プラットフォーム非依存の
+      # はずだが、実際に macOS で緑であることの担保）
+      - name: Run core library tests (macOS)
+        run: cargo test -p awase --lib
+
+      - name: Build Awase.app bundle
+        run: ./packaging/macos/make-app.sh
+
   # 手動起動専用（push/pull_request では動かない）。設定は .cargo/mutants.toml、
   # 対象は `awase` パッケージ（プラットフォーム非依存の中核ロジック）のみ。
   # フル実行は数十分かかるため、通常の push/PR ゲートには含めない。
