@@ -15,15 +15,33 @@ mod imp {
     // TIS (Text Input Sources) API の呼び出しに必要
     #![allow(unsafe_code)]
 
+    use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex, CFArrayRef};
     use core_foundation::base::{CFRelease, TCFType};
+    use core_foundation::dictionary::CFDictionaryRef;
     use core_foundation::string::{CFString, CFStringRef};
     use std::ffi::c_void;
+    use std::ptr;
 
     #[link(name = "Carbon", kind = "framework")]
     extern "C" {
         fn TISCopyCurrentKeyboardInputSource() -> *mut c_void;
         fn TISGetInputSourceProperty(source: *mut c_void, key: CFStringRef) -> *mut c_void;
+        fn TISCreateInputSourceList(
+            properties: CFDictionaryRef,
+            include_all_installed: bool,
+        ) -> CFArrayRef;
+        fn TISSelectInputSource(source: *mut c_void) -> i32;
         static kTISPropertyInputSourceID: CFStringRef;
+    }
+
+    /// input source ポインタから InputSourceID を取り出す（Get ルール）。
+    unsafe fn input_source_id(source: *mut c_void) -> Option<String> {
+        let id_ref = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+        if id_ref.is_null() {
+            None
+        } else {
+            Some(CFString::wrap_under_get_rule(id_ref.cast()).to_string())
+        }
     }
 
     /// 現在の入力ソース ID を取得する。
@@ -33,16 +51,53 @@ mod imp {
             if source.is_null() {
                 return None;
             }
-            let id_ref = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
-            let id = if id_ref.is_null() {
-                None
-            } else {
-                // Get ルール: プロパティは input source が所有する
-                Some(CFString::wrap_under_get_rule(id_ref.cast()).to_string())
-            };
+            let id = input_source_id(source);
             // Copy ルール: input source は呼び出し側が解放する
             CFRelease(source.cast_const());
             id
+        }
+    }
+
+    /// ID がひらがな系の日本語 IME モードかどうか（ON 側の選択対象）。
+    fn is_japanese_kana_mode(id: &str) -> bool {
+        id.contains("inputmethod")
+            && id.contains("Japanese")
+            && !id.contains("Roman")
+            && !id.contains("Katakana")
+    }
+
+    /// ID が英数側の選択対象かどうか。
+    ///
+    /// 日本語 IM の英字モード（`…Roman`）を優先し、無ければ ABC 等の
+    /// keylayout へフォールバックする（2 段階で呼び分ける）。
+    fn is_japanese_roman_mode(id: &str) -> bool {
+        id.contains("inputmethod") && id.contains("Japanese") && id.contains("Roman")
+            && !id.contains("FullWidth")
+    }
+
+    /// 有効な入力ソースから述語に合う最初のものを選択する。
+    fn select_input_source_matching(pred: impl Fn(&str) -> bool) -> bool {
+        unsafe {
+            let list = TISCreateInputSourceList(ptr::null(), false);
+            if list.is_null() {
+                return false;
+            }
+            let mut selected = false;
+            let count = CFArrayGetCount(list.cast());
+            for i in 0..count {
+                let source = CFArrayGetValueAtIndex(list.cast(), i).cast_mut();
+                if source.is_null() {
+                    continue;
+                }
+                if input_source_id(source).is_some_and(|id| pred(&id)) {
+                    selected = TISSelectInputSource(source) == 0;
+                    if selected {
+                        break;
+                    }
+                }
+            }
+            CFRelease(list.cast());
+            selected
         }
     }
 
@@ -81,6 +136,21 @@ mod imp {
             current_input_source_id()
                 .is_none_or(|id| id.contains("Japanese") || id.contains("Kotoeri"))
         }
+
+        /// IME の ON/OFF を強制する（`ImeEffect::SetOpen` の実装）。
+        ///
+        /// - ON: 日本語 IME のひらがなモードを選択
+        /// - OFF: 日本語 IM の英字モード、無ければ keylayout（ABC 等）を選択
+        ///
+        /// 対象の入力ソースが見つからない/選択に失敗した場合は false。
+        pub fn set_ime_on(&self, open: bool) -> bool {
+            if open {
+                select_input_source_matching(is_japanese_kana_mode)
+            } else {
+                select_input_source_matching(is_japanese_roman_mode)
+                    || select_input_source_matching(|id| id.contains("keylayout"))
+            }
+        }
     }
 
     impl Default for ImeDetector {
@@ -113,6 +183,10 @@ impl ImeDetector {
     #[must_use]
     pub fn is_japanese_layout(&self) -> bool {
         true
+    }
+
+    pub fn set_ime_on(&self, _open: bool) -> bool {
+        false
     }
 }
 

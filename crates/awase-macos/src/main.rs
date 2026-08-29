@@ -151,8 +151,8 @@ mod app {
     use std::time::Instant;
 
     use awase::engine::{
-        Decision, Effect, Engine, EngineCommand, InputContext, InputEffect, InputModeState,
-        ModifierState, TimerEffect, UiEffect,
+        Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext, InputEffect,
+        InputModeState, ModifierState, TimerEffect, UiEffect,
     };
     use awase::types::{
         KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, Timestamp, VkCode,
@@ -230,7 +230,13 @@ mod app {
                         self.timers.set(*id, *duration);
                     }
                     Effect::Timer(TimerEffect::Kill(id)) => self.timers.kill(*id),
-                    Effect::Ime(e) => log::debug!("IME effect not implemented on macOS: {e:?}"),
+                    Effect::Ime(ImeEffect::SetOpen { open, .. }) => {
+                        if self.ime.set_ime_on(*open) {
+                            log::debug!("IME set_open({open}) via TISSelectInputSource");
+                        } else {
+                            log::warn!("IME set_open({open}) failed: no matching input source");
+                        }
+                    }
                     Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) => {
                         self.tray.set_enabled(*enabled);
                     }
