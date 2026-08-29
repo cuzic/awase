@@ -9,6 +9,27 @@ use awase::yab::YabLayout;
 
 use awase_macos::vk::key_name_to_keycode;
 
+/// 実行ファイルが .app バンドル内（`…/<名前>.app/Contents/MacOS/<exe>`）に
+/// あれば `Contents/Resources` を返す。
+///
+/// 文字列部分一致ではなく親ディレクトリ構造で判定する（`Awase.APP` のような
+/// 大文字表記や非 UTF-8 パスで判定を迂回されないように、大小文字非依存・
+/// OsStr ベースで確認する — 2026-08-29 セキュリティレビュー第3回指摘2）。
+fn bundle_resources_dir(exe: &Path) -> Option<PathBuf> {
+    fn is_named(dir: &Path, name: &str) -> bool {
+        dir.file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(name))
+    }
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let app = contents.parent()?;
+    let app_ext_ok = Path::new(app.file_name()?)
+        .extension()
+        .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case("app"));
+    (is_named(macos_dir, "MacOS") && is_named(contents, "Contents") && app_ext_ok)
+        .then(|| contents.join("Resources"))
+}
+
 /// リソース（config.toml / layout）を解決する。
 ///
 /// .app バンドル内から実行されている場合は署名対象の `Contents/Resources` に
@@ -16,24 +37,52 @@ use awase_macos::vk::key_name_to_keycode;
 /// 持つプロセスが、起動ディレクトリに置かれた署名対象外の config/layout を
 /// 読み込むのを防ぐため（2026-08-29 セキュリティレビュー指摘1）。
 ///
-/// バンドル外（`cargo run` / 手動配置）は従来どおり
-/// `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペースルート → CWD）。
+/// バンドル外は `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペース
+/// ルート → CWD）。ただしリリースビルドでは CWD への最終フォールバックを
+/// 無効化し fail closed とする（開発ビルドの `cargo run` 相当のみ CWD を許す）。
 fn resolve_resource(path: &str) -> PathBuf {
     let raw = Path::new(path);
     if raw.is_absolute() {
         return raw.to_path_buf();
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let in_bundle = exe
-            .to_str()
-            .is_some_and(|p| p.contains(".app/Contents/MacOS/"));
-        if in_bundle {
-            if let Some(dir) = exe.parent() {
-                return dir.join("../Resources").join(path);
-            }
+    let exe = std::env::current_exe().ok();
+    if let Some(resources) = exe.as_deref().and_then(bundle_resources_dir) {
+        return resources.join(path);
+    }
+    let resolved = awase::paths::resolve_relative_to_exe(path);
+    #[cfg(not(debug_assertions))]
+    if resolved == raw {
+        // resolve_relative_to_exe が CWD 相対の素のパスへフォールバックした。
+        // リリースビルドでは exe 隣接（存在しなければ呼び出し側が既定値を使う）
+        // に固定し、起動ディレクトリのファイルを拾わない。
+        if let Some(dir) = exe.as_deref().and_then(Path::parent) {
+            return dir.join(path);
         }
     }
-    awase::paths::resolve_relative_to_exe(path)
+    resolved
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    #[test]
+    fn bundle_detection_is_structural_and_case_insensitive() {
+        let dir = |p: &str| bundle_resources_dir(Path::new(p));
+        assert_eq!(
+            dir("/Applications/Awase.app/Contents/MacOS/awase"),
+            Some(PathBuf::from("/Applications/Awase.app/Contents/Resources")),
+        );
+        // 大文字表記でも迂回できない
+        assert_eq!(
+            dir("/tmp/Awase.APP/CONTENTS/MACOS/awase"),
+            Some(PathBuf::from("/tmp/Awase.APP/CONTENTS/Resources")),
+        );
+        // バンドル構造でなければ None
+        assert_eq!(dir("/usr/local/bin/awase"), None);
+        assert_eq!(dir("/tmp/Awase.app/MacOS/awase"), None);
+        assert_eq!(dir("/tmp/NotBundle/Contents/MacOS/awase"), None);
+    }
 }
 
 fn main() -> Result<()> {
@@ -206,6 +255,15 @@ mod app {
     const FLUSH_TIMER_ID: usize = usize::MAX;
     /// フラッシュ再確認の間隔
     const FLUSH_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
+    /// 保留キューの上限（DoS 耐性。通常の切替待ち 500ms で溜まるのは数打鍵）
+    const DEFER_CAP: usize = 128;
+
+    /// 前面アプリの PID を返す（保留出力の誤送出防止用）。
+    fn frontmost_pid() -> Option<i32> {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let app = workspace.frontmostApplication()?;
+        Some(app.processIdentifier())
+    }
 
     /// 起動時点からの経過マイクロ秒を返す
     fn now_timestamp() -> Timestamp {
@@ -235,6 +293,11 @@ mod app {
         /// 旧ソース（ABC 等）で解釈されてリテラル "wo" などになる。切替確認
         /// まで溜めて `FLUSH_TIMER_ID` のタイマーでフラッシュする。
         deferred_keys: Vec<awase::types::KeyAction>,
+        /// 最初に保留した時点の前面アプリ PID。フラッシュ時に前面アプリが
+        /// 変わっていたら破棄する — 保留中に Cmd+Tab 等でフォーカスが移ると、
+        /// 入力文字や Backspace が別アプリへ送出されてしまうため
+        /// （2026-08-29 セキュリティレビュー第3回指摘1）。
+        deferred_focus_pid: Option<i32>,
     }
 
     impl App {
@@ -249,15 +312,28 @@ mod app {
                 left_thumb_down: None,
                 right_thumb_down: None,
                 deferred_keys: Vec::new(),
+                deferred_focus_pid: None,
             }
         }
 
         /// IME 切替待ちが解消していれば保留出力をフラッシュする。
+        ///
+        /// 保留開始時と前面アプリが変わっていたら送出せず破棄する
+        /// （別アプリへの入力漏えい・誤操作防止）。
         fn maybe_flush_deferred(&mut self) {
             if self.deferred_keys.is_empty() || self.ime.is_switch_pending() {
                 return;
             }
             let keys = std::mem::take(&mut self.deferred_keys);
+            let expected_pid = self.deferred_focus_pid.take();
+            if expected_pid.is_some() && frontmost_pid() != expected_pid {
+                log::warn!(
+                    "Discarding {} deferred key action(s): frontmost app changed during \
+                     IME switch",
+                    keys.len()
+                );
+                return;
+            }
             log::debug!("Flushing {} deferred key action(s) after IME switch", keys.len());
             self.output.send_keys(&keys);
         }
@@ -284,7 +360,17 @@ mod app {
                         // IME 切替中は旧入力ソースで解釈されてしまうため保留する
                         // （既に保留がある場合も順序維持のため追記する）
                         if self.ime.is_switch_pending() || !self.deferred_keys.is_empty() {
-                            self.deferred_keys.extend(actions.iter().cloned());
+                            if self.deferred_keys.is_empty() {
+                                self.deferred_focus_pid = frontmost_pid();
+                            }
+                            if self.deferred_keys.len() + actions.len() > DEFER_CAP {
+                                log::warn!(
+                                    "Deferred key queue over {DEFER_CAP} actions, \
+                                     dropping new output"
+                                );
+                            } else {
+                                self.deferred_keys.extend(actions.iter().cloned());
+                            }
                             self.timers.set(FLUSH_TIMER_ID, FLUSH_RETRY);
                         } else {
                             self.output.send_keys(actions);

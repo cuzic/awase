@@ -85,6 +85,17 @@ mod imp {
         id.rsplit_once('.').map(|(prefix, _)| prefix)
     }
 
+    /// 候補 ID が同じ IM ファミリに属するか（セグメント境界厳密）。
+    ///
+    /// 素の `starts_with` だと `…Japanese` に `…JapaneseEvil.…` のような
+    /// 兄弟 ID まで一致してしまう（2026-08-29 セキュリティレビュー第3回指摘3）。
+    fn in_family(candidate: &str, prefix: &str) -> bool {
+        candidate == prefix
+            || candidate
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('.'))
+    }
+
     /// 有効な入力ソースから述語に合う最初のものを選択する。
     fn select_input_source_matching(pred: impl Fn(&str) -> bool) -> bool {
         unsafe {
@@ -267,7 +278,7 @@ mod imp {
                 }
                 if let Some(ref prefix) = prefix {
                     if select_input_source_matching(|c| {
-                        c.starts_with(prefix.as_str()) && is_japanese_kana_mode(c)
+                        in_family(c, prefix) && is_japanese_kana_mode(c)
                     }) {
                         return true;
                     }
@@ -281,7 +292,7 @@ mod imp {
                 if let Some(ref prefix) = prefix {
                     // 例: …atok34.Japanese → …atok34.Roman / …atok34.…Eiji
                     if select_input_source_matching(|c| {
-                        c.starts_with(prefix.as_str())
+                        in_family(c, prefix)
                             && (c.contains("Roman") || c.contains("Eiji"))
                             && !c.contains("FullWidth")
                     }) {
@@ -335,6 +346,15 @@ mod imp {
         fn japanese_im_covers_atok_roman_mode_without_japanese_substring() {
             assert!(is_japanese_im("com.justsystems.inputmethod.atok34.Roman"));
             assert!(!is_japanese_im("com.apple.keylayout.ABC"));
+        }
+
+        #[test]
+        fn in_family_requires_segment_boundary() {
+            let prefix = "com.google.inputmethod.Japanese";
+            assert!(in_family("com.google.inputmethod.Japanese", prefix));
+            assert!(in_family("com.google.inputmethod.Japanese.Roman", prefix));
+            // 兄弟 ID（prefix + 追加文字）はセグメント境界で拒否する
+            assert!(!in_family("com.google.inputmethod.JapaneseEvil.base", prefix));
         }
 
         #[test]
