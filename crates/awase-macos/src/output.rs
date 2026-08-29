@@ -153,6 +153,15 @@ mod imp {
         }
     }
 
+    /// IME のキーストローク変換がリテラルと**別の文字**になる全角記号。
+    ///
+    /// 例: "/" は ・、"[" "]" は 「 」 に変換される（ATOK/MS-IME 既定）。
+    /// これらは非変換中なら Unicode 直接注入で正確に出し、変換中
+    /// （直接注入が IME に飲まれる）のみキーストロークにフォールバックする。
+    const fn ime_renders_differently(ch: char) -> bool {
+        matches!(ch, '／' | '［' | '］')
+    }
+
     /// 全角 ASCII（U+FF01〜U+FF5E）を対応する半角文字に変換する。
     ///
     /// .yab の数字段・親指シフト面・小指シフト面のリテラル（１２…、
@@ -297,7 +306,7 @@ mod imp {
             }
             let keystroke = fullwidth_to_ascii(ch).filter(|c| ascii_to_keycode(*c).is_some());
             if let Some(ascii) = keystroke {
-                if ch != '／' || self.composing_hint {
+                if !ime_renders_differently(ch) || self.composing_hint {
                     self.send_ascii_sequence(&ascii.to_string(), "Char");
                     return;
                 }
