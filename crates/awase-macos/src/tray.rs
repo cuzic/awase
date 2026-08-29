@@ -6,23 +6,17 @@
 
 #[cfg(target_os = "macos")]
 mod imp {
-    // AppKit (NSStatusBar/NSMenu) の ObjC メッセージ送信に必要
+    // define_class! が生成する ObjC メソッドと sel! に必要
     #![allow(unsafe_code)]
-    // objc 0.2 のマクロが cfg(feature = "cargo-clippy") を展開するための抑制
-    #![allow(unexpected_cfgs)]
-    // cocoa クレートは全体が deprecated（objc2-app-kit への移行推奨）。
-    // upstream 選定の依存のため v1 はこのまま使い、objc2 移行は別途行う。
-    #![allow(deprecated)]
 
-    use cocoa::appkit::{
-        NSButton, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{define_class, sel, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{
+        NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem,
+        NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
     };
-    use cocoa::base::{id, nil, NO};
-    use cocoa::foundation::NSString;
-    use objc::declare::ClassDecl;
-    use objc::runtime::{Class, Object, Sel};
-    use objc::{class, msg_send, sel, sel_impl};
-    use std::sync::Once;
+    use objc2_foundation::{ns_string, NSObject, NSString};
 
     use crate::event_loop::{dispatch_menu_action, MenuAction};
 
@@ -31,42 +25,37 @@ mod imp {
     /// メニューバーに表示するタイトル（エンジン OFF）
     const TITLE_DISABLED: &str = "A";
 
-    extern "C" fn on_toggle_engine(_this: &Object, _cmd: Sel, _sender: id) {
-        dispatch_menu_action(MenuAction::ToggleEngine);
-    }
+    define_class!(
+        /// メニュー action の受け口。
+        #[unsafe(super(NSObject))]
+        #[thread_kind = MainThreadOnly]
+        #[name = "AwaseTrayTarget"]
+        struct TrayTarget;
 
-    /// メニュー action の受け口となる ObjC クラスを一度だけ登録する。
-    fn target_class() -> &'static Class {
-        static REGISTER: Once = Once::new();
-        REGISTER.call_once(|| {
-            let mut decl = ClassDecl::new("AwaseTrayTarget", class!(NSObject))
-                .expect("AwaseTrayTarget class already registered");
-            unsafe {
-                decl.add_method(
-                    sel!(toggleEngine:),
-                    on_toggle_engine as extern "C" fn(&Object, Sel, id),
-                );
+        impl TrayTarget {
+            #[unsafe(method(toggleEngine:))]
+            fn toggle_engine(&self, _sender: Option<&AnyObject>) {
+                dispatch_menu_action(MenuAction::ToggleEngine);
             }
-            decl.register();
-        });
-        Class::get("AwaseTrayTarget").expect("AwaseTrayTarget must be registered")
-    }
+        }
+    );
 
-    /// retain 済みの NSString を作り、クロージャ適用後に release する。
-    unsafe fn with_ns_string<R>(s: &str, f: impl FnOnce(id) -> R) -> R {
-        let ns: id = NSString::alloc(nil).init_str(s);
-        let result = f(ns);
-        let _: () = msg_send![ns, release];
-        result
+    impl TrayTarget {
+        fn new(mtm: MainThreadMarker) -> Retained<Self> {
+            // ivar なしの NSObject サブクラスなので既定の init で十分
+            unsafe { objc2::msg_send![Self::alloc(mtm), init] }
+        }
     }
 
     /// macOS メニューバー常駐アイコン。
     ///
     /// メイン thread（CFRunLoop/NSApplication と同じ）でのみ生成・操作すること。
     pub struct SystemTray {
-        status_item: id,
-        toggle_item: id,
-        layout_item: id,
+        status_item: Retained<NSStatusItem>,
+        toggle_item: Retained<NSMenuItem>,
+        layout_item: Retained<NSMenuItem>,
+        /// NSMenuItem.target は弱参照のため、所有権を保持して生存させる
+        _target: Retained<TrayTarget>,
         enabled: bool,
     }
 
@@ -79,86 +68,92 @@ mod imp {
     }
 
     impl SystemTray {
+        /// メニューバーアイコンを作成する。
+        ///
+        /// # Panics
+        ///
+        /// メイン thread 以外から呼ばれた場合。
         #[must_use]
         pub fn new() -> Self {
-            unsafe {
-                let status_bar = NSStatusBar::systemStatusBar(nil);
-                let status_item: id = status_bar.statusItemWithLength_(NSVariableStatusItemLength);
-                let _: () = msg_send![status_item, retain];
+            let mtm = MainThreadMarker::new()
+                .expect("SystemTray must be created on the main thread");
 
-                let menu: id = NSMenu::new(nil);
-                let target: id = msg_send![target_class(), new];
+            let status_bar = NSStatusBar::systemStatusBar();
+            let status_item = status_bar.statusItemWithLength(NSVariableStatusItemLength);
 
-                // エンジン ON/OFF トグル（チェックマークで状態表示）
-                let toggle_item: id = with_ns_string("NICOLA 入力", |title| {
-                    with_ns_string("", |key| {
-                        NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
-                            title,
-                            sel!(toggleEngine:),
-                            key,
-                        )
-                    })
-                });
-                let _: () = msg_send![toggle_item, setTarget: target];
-                menu.addItem_(toggle_item);
+            let menu = NSMenu::new(mtm);
+            let target = TrayTarget::new(mtm);
 
-                // 使用中レイアウト名（表示のみ）
-                let layout_item: id = with_ns_string("配列: -", |title| {
-                    with_ns_string("", |key| {
-                        NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
-                            title,
-                            sel!(toggleEngine:),
-                            key,
-                        )
-                    })
-                });
-                let _: () = msg_send![layout_item, setEnabled: NO];
-                menu.addItem_(layout_item);
+            // エンジン ON/OFF トグル（チェックマークで状態表示）
+            let toggle_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("NICOLA 入力"),
+                    Some(sel!(toggleEngine:)),
+                    ns_string!(""),
+                )
+            };
+            unsafe { toggle_item.setTarget(Some(&target)) };
+            menu.addItem(&toggle_item);
 
-                menu.addItem_(NSMenuItem::separatorItem(nil));
+            // 使用中レイアウト名（表示のみ）
+            let layout_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("配列: -"),
+                    None,
+                    ns_string!(""),
+                )
+            };
+            layout_item.setEnabled(false);
+            menu.addItem(&layout_item);
 
-                // 終了（NSApplication terminate:）
-                let quit_item: id = with_ns_string("awase を終了", |title| {
-                    with_ns_string("q", |key| {
-                        NSMenuItem::alloc(nil).initWithTitle_action_keyEquivalent_(
-                            title,
-                            sel!(terminate:),
-                            key,
-                        )
-                    })
-                });
-                let nsapp = cocoa::appkit::NSApp();
-                let _: () = msg_send![quit_item, setTarget: nsapp];
-                menu.addItem_(quit_item);
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
 
-                status_item.setMenu_(menu);
+            // 終了（NSApplication terminate:）
+            let quit_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("awase を終了"),
+                    Some(sel!(terminate:)),
+                    ns_string!("q"),
+                )
+            };
+            let app = NSApplication::sharedApplication(mtm);
+            unsafe { quit_item.setTarget(Some(&app)) };
+            menu.addItem(&quit_item);
 
-                let mut tray = Self {
-                    status_item,
-                    toggle_item,
-                    layout_item,
-                    enabled: true,
-                };
-                tray.sync_ui();
-                tray
-            }
+            status_item.setMenu(Some(&menu));
+
+            let tray = Self {
+                status_item,
+                toggle_item,
+                layout_item,
+                _target: target,
+                enabled: true,
+            };
+            tray.sync_ui();
+            tray
         }
 
         /// メニューバーのタイトルとトグルのチェック状態を現在の状態に合わせる。
-        fn sync_ui(&mut self) {
+        fn sync_ui(&self) {
             let title = if self.enabled {
                 TITLE_ENABLED
             } else {
                 TITLE_DISABLED
             };
-            unsafe {
-                let button: id = self.status_item.button();
-                if button != nil {
-                    with_ns_string(title, |t| NSButton::setTitle_(button, t));
-                }
-                // NSControlStateValueOn = 1 / Off = 0
-                let _: () = msg_send![self.toggle_item, setState: i64::from(self.enabled)];
+            // 生成時に MainThreadOnly を確認済み（new() 参照）
+            let mtm = MainThreadMarker::new()
+                .expect("SystemTray must be used on the main thread");
+            if let Some(button) = self.status_item.button(mtm) {
+                button.setTitle(&NSString::from_str(title));
             }
+            self.toggle_item.setState(if self.enabled {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
         }
 
         pub fn set_enabled(&mut self, enabled: bool) {
@@ -174,11 +169,8 @@ mod imp {
         }
 
         pub fn set_layout_name(&self, name: &str) {
-            unsafe {
-                with_ns_string(&format!("配列: {name}"), |t| {
-                    let _: () = msg_send![self.layout_item, setTitle: t];
-                });
-            }
+            self.layout_item
+                .setTitle(&NSString::from_str(&format!("配列: {name}")));
         }
     }
 

@@ -9,9 +9,6 @@
 mod imp {
     // CoreFoundation/CoreGraphics の C API 呼び出しに必要
     #![allow(unsafe_code)]
-    // cocoa クレートは全体が deprecated（objc2-app-kit への移行推奨）。
-    // upstream 選定の依存のため v1 はこのまま使い、objc2 移行は別途行う。
-    #![allow(deprecated)]
 
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -73,15 +70,18 @@ mod imp {
 
     /// NSApplication を Accessory（Dock 非表示・メニューバー操作可）で初期化する。
     ///
-    /// メニューバーアイコン（`SystemTray`）を作る前に呼ぶこと。
+    /// メニューバーアイコン（`SystemTray`）を作る前に、メイン thread で呼ぶこと。
+    ///
+    /// # Panics
+    ///
+    /// メイン thread 以外から呼ばれた場合。
     pub fn init_nsapp() {
-        use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
-        unsafe {
-            let app = NSApp();
-            app.setActivationPolicy_(
-                NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
-            );
-        }
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+
+        let mtm = MainThreadMarker::new().expect("init_nsapp must run on the main thread");
+        let app = NSApplication::sharedApplication(mtm);
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     }
 
     thread_local! {
@@ -235,9 +235,12 @@ mod imp {
             // NSApplication のイベントループが必要なので CFRunLoop::run_current では
             // なくこちらを使う。
             log::info!("Event tap installed, entering NSApplication run loop");
-            unsafe {
-                use cocoa::appkit::{NSApp, NSApplication};
-                NSApp().run();
+            {
+                use objc2::MainThreadMarker;
+                use objc2_app_kit::NSApplication;
+                let mtm = MainThreadMarker::new()
+                    .ok_or_else(|| anyhow!("EventLoop::run must run on the main thread"))?;
+                NSApplication::sharedApplication(mtm).run();
             }
             Ok(())
         }
