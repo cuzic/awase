@@ -218,6 +218,11 @@ mod imp {
                     CGEventType::KeyDown,
                     CGEventType::KeyUp,
                     CGEventType::FlagsChanged,
+                    // クリックは IME の未確定文字列を確定させるため、
+                    // composing ヒントのクリア判定に使う（ダウンのみ・素通し）
+                    CGEventType::LeftMouseDown,
+                    CGEventType::RightMouseDown,
+                    CGEventType::OtherMouseDown,
                 ],
                 |_proxy, etype, event| {
                     Self::tap_callback(etype, event);

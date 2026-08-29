@@ -464,6 +464,18 @@ mod app {
             // 切替待ちの保留出力があれば、後続イベント処理の前に順序を保って流す
             self.maybe_flush_deferred();
 
+            // クリックは IME の未確定文字列を確定させる（composing ヒントの
+            // 主要なクリア漏れだった。Enter を打たない確定スタイルへの対応）
+            if matches!(
+                etype,
+                CGEventType::LeftMouseDown
+                    | CGEventType::RightMouseDown
+                    | CGEventType::OtherMouseDown
+            ) {
+                self.output.note_composition_break();
+                return TapAction::Pass;
+            }
+
             let keycode =
                 u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
                     .unwrap_or(u16::MAX);
