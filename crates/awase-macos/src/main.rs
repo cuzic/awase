@@ -132,7 +132,7 @@ fn main() -> Result<()> {
 
     let layout_rel = Path::new(&config.general.layouts_dir).join(&config.general.default_layout);
     let layout_path = resolve_resource(&layout_rel.to_string_lossy());
-    let layout = if layout_path.exists() {
+    let mut layout = if layout_path.exists() {
         let content = std::fs::read_to_string(&layout_path)?;
         YabLayout::parse(&content, keyboard_model)?.resolve_kana()
     } else {
@@ -142,6 +142,18 @@ fn main() -> Result<()> {
         );
         YabLayout::parse("", keyboard_model)?
     };
+
+    // NICOLA 規格では最下段 / 位置の単打は ・ だが、共有 .yab は Windows 版の
+    // 既存出力（Unicode モードで ／）を変えないよう ／ のまま維持されている。
+    // macOS はローマ字キーストローク出力の都合で単打面のみ ・ に置き換える
+    // （"/" キーストロークを IME が ・ に変換する。親指シフト面の ／ は
+    // 直接注入で正確に出すため、面ごとに文字を分ける必要がある —
+    // output.rs の ime_renders_differently 参照）
+    for value in layout.normal.values_mut() {
+        if matches!(value, awase::yab::YabValue::Literal(s) if s == "／") {
+            *value = awase::yab::YabValue::Literal("・".to_string());
+        }
+    }
 
     // 6. Build Engine (NicolaFsm + InputTracker + empty ImeSyncKeys/SpecialKeyCombos)
     let mut fsm = NicolaFsm::new(
