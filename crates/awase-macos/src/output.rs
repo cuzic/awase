@@ -99,6 +99,19 @@ pub const fn ascii_to_keycode(ch: char) -> Option<(u16, bool)> {
         ';' => Some((0x29, false)), // kVK_ANSI_Semicolon (JIS: ;)
         ':' => Some((0x27, false)), // kVK_ANSI_Quote (JIS: :)
         '_' => Some((0x5D, true)),  // Shift+ろ (kVK_JIS_Underscore)
+        '"' => Some((0x13, true)),  // Shift+2 (JIS)
+        '#' => Some((0x14, true)),  // Shift+3
+        '$' => Some((0x15, true)),  // Shift+4
+        '%' => Some((0x17, true)),  // Shift+5
+        '&' => Some((0x16, true)),  // Shift+6
+        '\'' => Some((0x1A, true)), // Shift+7 (JIS)
+        '=' => Some((0x1B, true)),  // Shift+- (JIS)
+        '+' => Some((0x29, true)),  // Shift+; (JIS)
+        '*' => Some((0x27, true)),  // Shift+: (JIS)
+        '<' => Some((0x2B, true)),  // Shift+,
+        '>' => Some((0x2F, true)),  // Shift+.
+        '|' => Some((0x5E, true)),  // Shift+¥ (JIS)
+        '\\' => Some((0x5E, false)), // kVK_JIS_Yen（JIS では ¥、IME 経由で ￥/＼）
         _ => None,
     }
 }
@@ -111,7 +124,7 @@ pub const INJECT_MARKER: i64 = 0x0A0A_5E00;
 #[cfg(target_os = "macos")]
 mod imp {
     use awase::kana_table::KanaTable;
-    use awase::types::{KeyAction, KeyEventType, VkCode};
+    use awase::types::{KeyAction, KeyEventType, SpecialKey, VkCode};
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, EventField};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use log::warn;
@@ -121,55 +134,58 @@ mod imp {
     /// kVK_Shift（Romaji/KeySequence の大文字送出用）
     const KEYCODE_SHIFT: u16 = 0x38;
 
+    /// かな記号（CJK 記号ブロック）→ IME が同等文字に変換するキーストローク。
+    ///
+    /// `KanaTable` はかな文字のみを収録するため、.yab の Literal 由来で
+    /// `Char` に載ってくる記号類はここで補う。'・' は IME の記号変換（/→・）に
+    /// 任せる。'／'（全角 ASCII 側）は意図的にキーストローク化しない — "/" だと
+    /// IME 設定次第で ・ に化けるため、正確な ／ が必要な親指シフト面（親指+2）は
+    /// 直接注入で出す（変換中のみ composing フォールバックで "/" になる）。
+    const fn kana_symbol_to_ascii(ch: char) -> Option<&'static str> {
+        match ch {
+            'ー' => Some("-"),
+            '、' => Some(","),
+            '。' => Some("."),
+            '・' => Some("/"),
+            '「' => Some("["),
+            '」' => Some("]"),
+            _ => None,
+        }
+    }
+
+    /// 全角 ASCII（U+FF01〜U+FF5E）を対応する半角文字に変換する。
+    ///
+    /// .yab の数字段・親指シフト面・小指シフト面のリテラル（１２…、
+    /// Ａ-Ｚ、？（）等）をキーストロークで IME に渡すための写像。全角/半角の
+    /// 最終形は IME の英字・記号設定に委ねる（Windows VK モードと同じ方針）。
+    const fn fullwidth_to_ascii(ch: char) -> Option<char> {
+        let code = ch as u32;
+        if 0xFF01 <= code && code <= 0xFF5E {
+            char::from_u32(code - 0xFEE0)
+        } else {
+            None
+        }
+    }
+
     /// CGEventPost によるキー出力。
     ///
     /// 注入イベントはすべて `INJECT_MARKER` 付きで `HID` タップ位置に post する。
     /// HID 位置に注入することで IME を含む通常の入力パイプラインを通る
     /// （ローマ字キーストロークを IME に変換させるために必要）。
-    /// かな記号 → IME ローマ字入力で同じ文字に変換されるキーストローク。
-    /// `KanaTable` はかな文字のみを収録するため、.yab の Literal 由来で
-    /// `Char` に載ってくる記号類はここで補う。
-    const fn kana_symbol_to_ascii(ch: char) -> Option<&'static str> {
-        match ch {
-            'ー' | '－' => Some("-"),
-            '、' | '，' => Some(","),
-            '。' | '．' => Some("."),
-            // '・' は IME の記号変換（/→・）に任せる。'／' は意図的に含めない —
-            // キーストローク "/" だと IME 設定次第で ・ に化けるため、正確な ／ が
-            // 必要な親指シフト面（親指+2）は Unicode 直接注入で出す
-            '・' => Some("/"),
-            '「' | '［' => Some("["),
-            '」' | '］' => Some("]"),
-            // .yab の数字段・親指シフト面のリテラル（全角）。
-            // キーストロークで IME に渡し、全角/半角や ／→・ などの
-            // 記号変換は IME の設定に委ねる（Windows VK モードと同じ方針）
-            '？' => Some("?"),
-            '！' => Some("!"),
-            '～' => Some("~"),
-            '（' => Some("("),
-            '）' => Some(")"),
-            '｛' => Some("{"),
-            '｝' => Some("}"),
-            '０' => Some("0"),
-            '１' => Some("1"),
-            '２' => Some("2"),
-            '３' => Some("3"),
-            '４' => Some("4"),
-            '５' => Some("5"),
-            '６' => Some("6"),
-            '７' => Some("7"),
-            '８' => Some("8"),
-            '９' => Some("9"),
-            _ => None,
-        }
-    }
-
     pub struct Output {
         source: CGEventSource,
         /// `Char(かな)` をローマ字キーストロークへ逆引きするためのテーブル
         /// （Windows 版 VK モードの `send_char_as_vk` と同じ方針。macOS では
         /// Unicode 直接注入だと IME が未確定文字列を持たず漢字変換不能になる）。
         kana: KanaTable,
+        /// 「IME が変換中（未確定文字列あり）らしい」ヒューリスティック。
+        ///
+        /// macOS には composition 状態を外から観測する公開 API がないため、
+        /// 自分がローマ字キーストロークを注入したら true、確定・取消キー
+        /// （Enter/Escape/Tab）の通過や IME OFF の観測で false にする。
+        /// 変換中の Unicode 直接注入は IME に飲まれて消えるため、その間だけ
+        /// キーストロークにフォールバックする判定に使う。
+        composing_hint: bool,
     }
 
     impl std::fmt::Debug for Output {
@@ -190,7 +206,13 @@ mod imp {
             Ok(Self {
                 source,
                 kana: KanaTable::build(),
+                composing_hint: false,
             })
+        }
+
+        /// 確定・取消相当の操作を観測したときに App 側から呼ばれる。
+        pub const fn note_composition_break(&mut self) {
+            self.composing_hint = false;
         }
 
         /// 単一のキーイベントを post する。
@@ -233,7 +255,10 @@ mod imp {
         }
 
         /// ASCII 文字列をキーストロークとして送出する（IME に変換させる用途）。
-        fn send_ascii_sequence(&self, s: &str, kind: &str) {
+        ///
+        /// IME に食わせるキーストロークは composition を開始しうるため
+        /// `composing_hint` を立てる。
+        fn send_ascii_sequence(&mut self, s: &str, kind: &str) {
             for ch in s.chars() {
                 if let Some((keycode, needs_shift)) = ascii_to_keycode(ch) {
                     if needs_shift {
@@ -247,6 +272,37 @@ mod imp {
                     warn!("{kind} char '{ch}' has no macOS keycode mapping, skipping");
                 }
             }
+            self.composing_hint = true;
+        }
+
+        /// `Char` アクション 1 文字を最適な経路で送出する。
+        ///
+        /// 1. かな → ローマ字キーストローク（IME が変換）
+        /// 2. かな記号（。、ー「」・）→ 対応キーストローク
+        /// 3. 全角 ASCII → 半角キーストローク（全角/半角は IME 設定に従う）。
+        ///    ただし '／' は除外 — "/" は IME 設定で ・ に化けるため、正確な
+        ///    ／ が必要（親指+2）。変換中でなければ直接注入で出す
+        /// 4. 変換中（composing_hint）は直接注入が IME に飲まれるため、
+        ///    キーストローク表現があればそちらへフォールバック
+        /// 5. それ以外は Unicode 直接注入
+        fn send_char(&mut self, ch: char) {
+            if let Some(romaji) = self.kana.romaji_for_kana(ch) {
+                let romaji = romaji.to_owned();
+                self.send_ascii_sequence(&romaji, "Char");
+                return;
+            }
+            if let Some(ascii) = kana_symbol_to_ascii(ch) {
+                self.send_ascii_sequence(ascii, "Char");
+                return;
+            }
+            let keystroke = fullwidth_to_ascii(ch).filter(|c| ascii_to_keycode(*c).is_some());
+            if let Some(ascii) = keystroke {
+                if ch != '／' || self.composing_hint {
+                    self.send_ascii_sequence(&ascii.to_string(), "Char");
+                    return;
+                }
+            }
+            self.post_char(ch);
         }
 
         /// `KeyAction` のリストを順に post する。
@@ -255,22 +311,14 @@ mod imp {
                 match action {
                     KeyAction::SpecialKey(sk) => {
                         self.post_press_release(special_key_to_keycode(*sk), false);
+                        // Enter/Escape は composition を確定・破棄する
+                        if matches!(sk, SpecialKey::Enter | SpecialKey::Escape) {
+                            self.composing_hint = false;
+                        }
                     }
                     KeyAction::Key(vk) => self.post_key(vk.0, true, false),
                     KeyAction::KeyUp(vk) => self.post_key(vk.0, false, false),
-                    KeyAction::Char(ch) => {
-                        // IME に変換させるため、かなはローマ字キーストロークへ
-                        // 逆引きして送出する。逆引き不能な文字のみ Unicode 直接注入
-                        // へフォールバック（IME 変換対象にはならない）。
-                        if let Some(romaji) = self.kana.romaji_for_kana(*ch) {
-                            let romaji = romaji.to_owned();
-                            self.send_ascii_sequence(&romaji, "Char");
-                        } else if let Some(ascii) = kana_symbol_to_ascii(*ch) {
-                            self.send_ascii_sequence(ascii, "Char");
-                        } else {
-                            self.post_char(*ch);
-                        }
-                    }
+                    KeyAction::Char(ch) => self.send_char(*ch),
                     KeyAction::Romaji(s) => self.send_ascii_sequence(s, "Romaji"),
                     KeyAction::KeySequence(s) => self.send_ascii_sequence(s, "KeySequence"),
                     KeyAction::Suppress => {}
@@ -315,6 +363,8 @@ impl Output {
     pub fn reinject(&mut self, vk: awase::types::VkCode, event_type: awase::types::KeyEventType) {
         log::trace!("macOS output stub: reinject 0x{:02X} {event_type:?}", vk.0);
     }
+
+    pub fn note_composition_break(&mut self) {}
 }
 
 #[cfg(test)]

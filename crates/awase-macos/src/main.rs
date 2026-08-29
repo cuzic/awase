@@ -413,6 +413,13 @@ mod app {
             }
 
             let ctx = self.make_ctx();
+
+            // 確定/取消キー（Enter・keypad Enter・Escape・Tab）の通過と IME OFF は
+            // composition の切れ目とみなす（Output::composing_hint の doc 参照）
+            if (is_down && matches!(keycode, 0x24 | 0x4C | 0x35 | 0x30)) || !ctx.ime_on {
+                self.output.note_composition_break();
+            }
+
             let decision = self.engine.on_input(raw, &ctx);
             let action = self.apply_decision(decision);
 
