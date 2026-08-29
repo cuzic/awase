@@ -126,3 +126,29 @@ pub fn key_name_to_keycode(name: &str) -> Option<VkCode> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_key_combo_resolves_modifiers_and_key() {
+        let combo = parse_key_combo("Ctrl+Shift+変換").unwrap();
+        assert!(combo.ctrl && combo.shift && !combo.alt);
+        assert_eq!(combo.vk, VkCode(0x68)); // kVK_JIS_Kana
+    }
+
+    #[test]
+    fn parse_key_combo_accepts_bare_key() {
+        let combo = parse_key_combo("無変換").unwrap();
+        assert!(!combo.ctrl && !combo.shift && !combo.alt);
+        assert_eq!(combo.vk, VkCode(0x66)); // kVK_JIS_Eisu
+    }
+
+    #[test]
+    fn parse_key_combo_rejects_unknown_parts() {
+        assert!(parse_key_combo("Meta+A").is_none()); // unsupported modifier
+        assert!(parse_key_combo("Ctrl+NoSuchKey").is_none());
+        assert!(parse_key_combo("").is_none());
+    }
+}
