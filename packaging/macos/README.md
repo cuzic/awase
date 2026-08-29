@@ -59,6 +59,14 @@ Pick **one** of the following:
 
   Unload with `launchctl unload ~/Library/LaunchAgents/com.github.cuzic.awase.plist`.
 
+## Confirm modes
+
+`wait` (default) and `speculative` are verified on macOS with ATOK —
+speculative's Backspace-and-replace works against the IME preedit. The
+difference is hard to perceive (wait's worst-case delay is the
+simultaneity threshold, ~100 ms); pick with `confirm_mode` in config.toml.
+`two_phase` and the adaptive modes are untested on macOS.
+
 ## Notes
 
 - Quit from the menu bar icon (awase を終了) or `launchctl unload`.
