@@ -78,15 +78,32 @@ pub fn classify_ime_relevance(_keycode: u16) -> ImeRelevance {
 }
 
 /// アクセシビリティ権限チェック
+///
+/// 未許可の場合は OS 標準の許可ダイアログを表示する
+/// （`kAXTrustedCheckOptionPrompt = true`）。
 #[cfg(target_os = "macos")]
+#[allow(unsafe_code)] // AX API の FFI 呼び出しに必要
+#[must_use]
 pub fn check_accessibility_permission() -> bool {
-    // AXIsProcessTrusted() を呼ぶ
-    // 未許可なら AXIsProcessTrustedWithOptions() でダイアログ表示
-    todo!("macOS accessibility permission check")
+    use core_foundation::base::TCFType;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::dictionary::{CFDictionary, CFDictionaryRef};
+    use core_foundation::string::{CFString, CFStringRef};
+
+    #[link(name = "ApplicationServices", kind = "framework")]
+    extern "C" {
+        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+        static kAXTrustedCheckOptionPrompt: CFStringRef;
+    }
+
+    let prompt_key = unsafe { CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt) };
+    let options = CFDictionary::from_CFType_pairs(&[(prompt_key, CFBoolean::true_value())]);
+    unsafe { AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef()) }
 }
 
 /// アクセシビリティ権限チェック（非 macOS スタブ）
 #[cfg(not(target_os = "macos"))]
+#[must_use]
 pub fn check_accessibility_permission() -> bool {
     log::warn!("Accessibility permission check is macOS only");
     false

@@ -10,17 +10,15 @@ use awase::types::VkCode;
 /// 設定ファイル (.toml) のキー名解決に使用する。
 /// macOS に直接対応しないキー（"Kanji", "ImeOn", "ImeOff" 等）は `None` を返す。
 #[must_use]
-#[expect(clippy::too_many_lines)]
 pub fn key_name_to_keycode(name: &str) -> Option<VkCode> {
     match name {
         // ── 日本語入力制御キー ──
         // macOS では英数/かなキーが IME 切替を担う
-        "Nonconvert" | "VK_NONCONVERT" | "VK_MUHENKAN" => Some(VkCode(0x66)), // kVK_JIS_Eisu (英数)
-        "Convert" | "VK_CONVERT" => Some(VkCode(0x68)),                       // kVK_JIS_Kana (かな)
-        "Kanji" | "VK_KANJI" => None,    // macOS に直接対応なし
-        "ImeOn" | "VK_IME_ON" => None,   // macOS では かな キーで代替
-        "ImeOff" | "VK_IME_OFF" => None, // macOS では 英数 キーで代替
-        "Kana" | "VK_KANA" => Some(VkCode(0x68)), // kVK_JIS_Kana
+        // kVK_JIS_Eisu (英数): デフォルト設定の「無変換」を含む Windows 系名称も受ける
+        "Nonconvert" | "VK_NONCONVERT" | "VK_MUHENKAN" | "無変換" | "英数" => Some(VkCode(0x66)),
+        // kVK_JIS_Kana (かな)
+        "Convert" | "VK_CONVERT" | "Kana" | "VK_KANA" | "変換" | "かな" => Some(VkCode(0x68)),
+        // "Kanji"/"ImeOn"/"ImeOff" は macOS に直接対応なし → 末尾のワイルドカードで None
 
         // ── 文字キー (A-Z) ──
         "A" | "VK_A" => Some(VkCode(0x00)), // kVK_ANSI_A

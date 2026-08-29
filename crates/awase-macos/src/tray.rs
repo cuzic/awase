@@ -9,6 +9,7 @@ pub struct SystemTray {
 }
 
 impl SystemTray {
+    #[must_use]
     pub fn new() -> Self {
         log::info!("Menu bar icon: stub (NSStatusBar not yet implemented)");
         Self { enabled: true }
