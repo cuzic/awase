@@ -131,11 +131,17 @@ fn main() -> Result<()> {
     );
 
     // 7. Run platform event loop
-    run_event_loop(engine, &config.general.default_layout)
+    let poll_interval =
+        std::time::Duration::from_millis(u64::from(config.general.ime_poll_interval_ms.max(100)));
+    run_event_loop(engine, &config.general.default_layout, poll_interval)
 }
 
 #[cfg(target_os = "macos")]
-fn run_event_loop(engine: Engine, layout_name: &str) -> Result<()> {
+fn run_event_loop(
+    engine: Engine,
+    layout_name: &str,
+    poll_interval: std::time::Duration,
+) -> Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -158,11 +164,15 @@ fn run_event_loop(engine: Engine, layout_name: &str) -> Result<()> {
 
     log::info!("awase-macos running (menu bar icon: あ). Quit from the menu or Ctrl+C.");
     let mut event_loop = awase_macos::event_loop::EventLoop::new();
-    event_loop.run(app)
+    event_loop.run(app, poll_interval)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run_event_loop(_engine: Engine, _layout_name: &str) -> Result<()> {
+fn run_event_loop(
+    _engine: Engine,
+    _layout_name: &str,
+    _poll_interval: std::time::Duration,
+) -> Result<()> {
     log::warn!("awase-macos event loop is only available on macOS");
     Ok(())
 }
@@ -431,6 +441,15 @@ mod app {
                     let _ = self.apply_decision(decision);
                 }
             }
+        }
+
+        fn on_poll(&mut self) {
+            // activation 遷移の検知はキーイベント経由でしか起きないため、
+            // IME 切替後に打鍵が無いとトレイ表示が古いまま残る。RefreshState で
+            // 遷移チェックだけを走らせ、UiEffect でトレイを追随させる。
+            let ctx = self.make_ctx();
+            let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
+            let _ = self.apply_decision(decision);
         }
     }
 }

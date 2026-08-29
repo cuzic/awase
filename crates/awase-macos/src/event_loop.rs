@@ -56,6 +56,12 @@ mod imp {
         fn on_timer_fired(&mut self, id: usize);
         /// メニューバー操作（`dispatch_menu_action` 経由）。
         fn on_menu_action(&mut self, action: MenuAction);
+        /// 定期ポーリング（`EventLoop::run` の `poll_interval`）。
+        ///
+        /// activation 遷移はキーイベント処理の中でしか検知されないため、
+        /// IME 切替後に打鍵が無いとトレイ表示が古いまま残る。イベント駆動を
+        /// 補完する安全ネット（Windows 版の ime_poll_interval_ms と同じ役割）。
+        fn on_poll(&mut self);
     }
 
     /// メニュー action（ObjC コールバック）を現在のハンドラへ配送する。
@@ -124,6 +130,13 @@ mod imp {
         }
     }
 
+    extern "C" fn poll_timer_trampoline(_timer: CFRunLoopTimerRef, _info: *mut c_void) {
+        let handler = HANDLER.with(|h| h.borrow().clone());
+        if let Some(handler) = handler {
+            handler.borrow_mut().on_poll();
+        }
+    }
+
     impl Timers {
         #[must_use]
         pub fn new() -> Self {
@@ -185,11 +198,16 @@ mod imp {
         ///
         /// この呼び出しはブロックする。tap の作成にはアクセシビリティ
         /// （入力監視）権限が必要で、権限がない場合はエラーを返す。
+        /// `poll_interval` ごとに `LoopHandler::on_poll` を呼ぶ。
         ///
         /// # Errors
         ///
         /// CGEventTap の作成または run loop source の作成に失敗した場合。
-        pub fn run(&mut self, handler: Rc<RefCell<dyn LoopHandler>>) -> Result<()> {
+        pub fn run(
+            &mut self,
+            handler: Rc<RefCell<dyn LoopHandler>>,
+            poll_interval: Duration,
+        ) -> Result<()> {
             HANDLER.with(|h| *h.borrow_mut() = Some(handler));
 
             let tap = CGEventTap::new(
@@ -229,6 +247,21 @@ mod imp {
                 run_loop.add_source(&source, kCFRunLoopCommonModes);
             }
             tap.enable();
+
+            // 定期ポーリングタイマー（リピート）。runloop が retain するが、
+            // 生存を明示するためローカルにも保持する。
+            let interval = poll_interval.as_secs_f64();
+            let poll_timer = CFRunLoopTimer::new(
+                CFDate::now().abs_time() + interval,
+                interval,
+                0,
+                0,
+                poll_timer_trampoline,
+                std::ptr::null_mut(),
+            );
+            unsafe {
+                run_loop.add_timer(&poll_timer, kCFRunLoopCommonModes);
+            }
 
             // [NSApp run] はメイン CFRunLoop を回すため、上で登録した tap source と
             // CFRunLoopTimer はそのまま発火する。メニューバーのメニュー追跡には
