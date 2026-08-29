@@ -29,16 +29,23 @@ type "Code Signing", e.g. named `awase-codesign`) and build with:
 CODESIGN_IDENTITY=awase-codesign ./packaging/macos/make-app.sh
 ```
 
+For distributing binaries to others, sign with a Developer ID Application
+certificate, enable the Hardened Runtime, and notarize — an app holding
+Accessibility access should have a verifiable publisher (see
+[TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements/)).
+
 ## Start at login
 
 Pick **one** of the following:
 
 - **Login Items** (simplest): System Settings > General > Login Items >
   add `Awase.app`.
-- **LaunchAgent** (restarts on crash, logs to `/tmp/awase.log`):
+- **LaunchAgent** (restarts on crash, logs to `~/Library/Logs/Awase/`):
 
   ```sh
-  cp packaging/macos/com.github.cuzic.awase.plist ~/Library/LaunchAgents/
+  mkdir -p ~/Library/Logs/Awase && chmod 700 ~/Library/Logs/Awase
+  sed "s|USERNAME|$USER|g" packaging/macos/com.github.cuzic.awase.plist \
+    > ~/Library/LaunchAgents/com.github.cuzic.awase.plist
   launchctl load ~/Library/LaunchAgents/com.github.cuzic.awase.plist
   ```
 

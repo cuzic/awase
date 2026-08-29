@@ -3,9 +3,14 @@
 <plist version="1.0">
 <!--
   LaunchAgent template for starting awase at login.
-  Install to ~/Library/LaunchAgents/com.github.cuzic.awase.plist
-  (see packaging/macos/README.md). Adding Awase.app to
-  System Settings > General > Login Items works as well; use only one of the two.
+  Replace USERNAME with your account name (the README install command does
+  this with sed) and install to ~/Library/LaunchAgents/.
+  Adding Awase.app to System Settings > General > Login Items works as well;
+  use only one of the two.
+
+  Logs go to a per-user directory instead of the shared /tmp: a fixed name in
+  a world-writable directory could be pre-created or symlinked by another
+  local user (log exposure / symlink append).
 -->
 <dict>
 	<key>Label</key>
@@ -23,8 +28,8 @@
 		<false/>
 	</dict>
 	<key>StandardOutPath</key>
-	<string>/tmp/awase.log</string>
+	<string>/Users/USERNAME/Library/Logs/Awase/awase.log</string>
 	<key>StandardErrorPath</key>
-	<string>/tmp/awase.log</string>
+	<string>/Users/USERNAME/Library/Logs/Awase/awase.log</string>
 </dict>
 </plist>
