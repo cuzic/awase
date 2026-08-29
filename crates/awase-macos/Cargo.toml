@@ -22,6 +22,7 @@ toml = "0.8"
 core-graphics = "0.24"
 core-foundation = "0.10"
 cocoa = "0.26"
+objc = "0.2"
 
 [lints.rust]
 unsafe_code = "warn"

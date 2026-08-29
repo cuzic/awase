@@ -9,6 +9,9 @@
 mod imp {
     // CoreFoundation/CoreGraphics の C API 呼び出しに必要
     #![allow(unsafe_code)]
+    // cocoa クレートは全体が deprecated（objc2-app-kit への移行推奨）。
+    // upstream 選定の依存のため v1 はこのまま使い、objc2 移行は別途行う。
+    #![allow(deprecated)]
 
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -37,6 +40,13 @@ mod imp {
         Consume,
     }
 
+    /// メニューバーから届く操作。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MenuAction {
+        /// NICOLA エンジンの有効/無効を切り替える
+        ToggleEngine,
+    }
+
     /// イベントループから駆動されるハンドラ。
     ///
     /// tap コールバックとタイマーコールバックの両方から `RefCell` 経由で
@@ -47,6 +57,31 @@ mod imp {
         fn on_cg_event(&mut self, etype: CGEventType, event: &CGEvent) -> TapAction;
         /// `Timers::set` で設定したワンショットタイマーの発火。
         fn on_timer_fired(&mut self, id: usize);
+        /// メニューバー操作（`dispatch_menu_action` 経由）。
+        fn on_menu_action(&mut self, action: MenuAction);
+    }
+
+    /// メニュー action（ObjC コールバック）を現在のハンドラへ配送する。
+    ///
+    /// tray のターゲットクラスから呼ばれる。ハンドラ未登録なら無視する。
+    pub fn dispatch_menu_action(action: MenuAction) {
+        let handler = HANDLER.with(|h| h.borrow().clone());
+        if let Some(handler) = handler {
+            handler.borrow_mut().on_menu_action(action);
+        }
+    }
+
+    /// NSApplication を Accessory（Dock 非表示・メニューバー操作可）で初期化する。
+    ///
+    /// メニューバーアイコン（`SystemTray`）を作る前に呼ぶこと。
+    pub fn init_nsapp() {
+        use cocoa::appkit::{NSApp, NSApplication, NSApplicationActivationPolicy};
+        unsafe {
+            let app = NSApp();
+            app.setActivationPolicy_(
+                NSApplicationActivationPolicy::NSApplicationActivationPolicyAccessory,
+            );
+        }
     }
 
     thread_local! {
@@ -195,8 +230,15 @@ mod imp {
             }
             tap.enable();
 
-            log::info!("Event tap installed, entering CFRunLoop");
-            CFRunLoop::run_current();
+            // [NSApp run] はメイン CFRunLoop を回すため、上で登録した tap source と
+            // CFRunLoopTimer はそのまま発火する。メニューバーのメニュー追跡には
+            // NSApplication のイベントループが必要なので CFRunLoop::run_current では
+            // なくこちらを使う。
+            log::info!("Event tap installed, entering NSApplication run loop");
+            unsafe {
+                use cocoa::appkit::{NSApp, NSApplication};
+                NSApp().run();
+            }
             Ok(())
         }
 
@@ -229,7 +271,9 @@ mod imp {
 }
 
 #[cfg(target_os = "macos")]
-pub use imp::{EventLoop, LoopHandler, TapAction, Timers};
+pub use imp::{
+    dispatch_menu_action, init_nsapp, EventLoop, LoopHandler, MenuAction, TapAction, Timers,
+};
 
 /// 非 macOS ビルド用スタブ（ワークスペース全体のクロスチェック用）。
 #[cfg(not(target_os = "macos"))]

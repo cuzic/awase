@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use awase::config::AppConfig;
 use awase::engine::{Engine, NicolaFsm, SpecialKeyCombos};
@@ -9,6 +9,27 @@ use awase::yab::YabLayout;
 
 use awase_macos::vk::key_name_to_keycode;
 
+/// リソース（config.toml / layout）を解決する。
+///
+/// `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペースルート）に加え、
+/// .app バンドル配置（`Contents/MacOS/awase` → `Contents/Resources/`）を試す。
+/// どこにも無ければカレントディレクトリ基準の相対パスをそのまま返す。
+fn resolve_resource(path: &str) -> PathBuf {
+    let resolved = awase::paths::resolve_relative_to_exe(path);
+    if resolved.exists() {
+        return resolved;
+    }
+    if let Some(candidate) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("../Resources").join(path)))
+    {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    resolved
+}
+
 fn main() -> Result<()> {
     // 1. Initialize logging
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -16,9 +37,10 @@ fn main() -> Result<()> {
     log::info!("awase-macos starting");
 
     // 2. Load config
-    let config_path = Path::new("config.toml");
+    let config_path = resolve_resource("config.toml");
     let config = if config_path.exists() {
-        AppConfig::load(config_path)?
+        log::info!("Loading config from: {}", config_path.display());
+        AppConfig::load(&config_path)?
     } else {
         log::warn!("config.toml not found, using defaults");
         let toml_str = "[general]";
@@ -46,7 +68,8 @@ fn main() -> Result<()> {
     // .yab は JIS 物理位置ベースのため Jis 固定（keyboard_model 設定は 2026-07-06 撤去）
     let keyboard_model = KeyboardModel::Jis;
 
-    let layout_path = Path::new(&config.general.layouts_dir).join(&config.general.default_layout);
+    let layout_rel = Path::new(&config.general.layouts_dir).join(&config.general.default_layout);
+    let layout_path = resolve_resource(&layout_rel.to_string_lossy());
     let layout = if layout_path.exists() {
         let content = std::fs::read_to_string(&layout_path)?;
         YabLayout::parse(&content, keyboard_model)?.resolve_kana()
@@ -87,11 +110,11 @@ fn main() -> Result<()> {
     );
 
     // 7. Run platform event loop
-    run_event_loop(engine)
+    run_event_loop(engine, &config.general.default_layout)
 }
 
 #[cfg(target_os = "macos")]
-fn run_event_loop(engine: Engine) -> Result<()> {
+fn run_event_loop(engine: Engine, layout_name: &str) -> Result<()> {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -104,15 +127,21 @@ fn run_event_loop(engine: Engine) -> Result<()> {
     }
 
     let output = awase_macos::output::Output::new()?;
-    let app = Rc::new(RefCell::new(app::App::new(engine, output)));
 
-    log::info!("awase-macos running. Press Ctrl+C to exit.");
+    // メニューバー常駐（NSApplication 初期化後に作ること）
+    awase_macos::event_loop::init_nsapp();
+    let tray = awase_macos::tray::SystemTray::new();
+    tray.set_layout_name(layout_name);
+
+    let app = Rc::new(RefCell::new(app::App::new(engine, output, tray)));
+
+    log::info!("awase-macos running (menu bar icon: あ). Quit from the menu or Ctrl+C.");
     let mut event_loop = awase_macos::event_loop::EventLoop::new();
     event_loop.run(app)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn run_event_loop(_engine: Engine) -> Result<()> {
+fn run_event_loop(_engine: Engine, _layout_name: &str) -> Result<()> {
     log::warn!("awase-macos event loop is only available on macOS");
     Ok(())
 }
@@ -122,18 +151,19 @@ mod app {
     use std::time::Instant;
 
     use awase::engine::{
-        Decision, Effect, Engine, InputContext, InputEffect, InputModeState, ModifierState,
-        TimerEffect,
+        Decision, Effect, Engine, EngineCommand, InputContext, InputEffect, InputModeState,
+        ModifierState, TimerEffect, UiEffect,
     };
     use awase::types::{
         KeyClassification, KeyEventType, ModifierKey, RawKeyEvent, ScanCode, Timestamp, VkCode,
     };
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, EventField};
 
-    use awase_macos::event_loop::{LoopHandler, TapAction, Timers};
+    use awase_macos::event_loop::{LoopHandler, MenuAction, TapAction, Timers};
     use awase_macos::hook;
     use awase_macos::ime::ImeDetector;
     use awase_macos::output::{Output, INJECT_MARKER};
+    use awase_macos::tray::SystemTray;
 
     /// 起動時点からの経過マイクロ秒を返す
     fn now_timestamp() -> Timestamp {
@@ -152,18 +182,20 @@ mod app {
         output: Output,
         timers: Timers,
         ime: ImeDetector,
+        tray: SystemTray,
         modifiers: ModifierState,
         left_thumb_down: Option<Timestamp>,
         right_thumb_down: Option<Timestamp>,
     }
 
     impl App {
-        pub fn new(engine: Engine, output: Output) -> Self {
+        pub fn new(engine: Engine, output: Output, tray: SystemTray) -> Self {
             Self {
                 engine,
                 output,
                 timers: Timers::new(),
                 ime: ImeDetector::new(),
+                tray,
                 modifiers: ModifierState::default(),
                 left_thumb_down: None,
                 right_thumb_down: None,
@@ -199,7 +231,9 @@ mod app {
                     }
                     Effect::Timer(TimerEffect::Kill(id)) => self.timers.kill(*id),
                     Effect::Ime(e) => log::debug!("IME effect not implemented on macOS: {e:?}"),
-                    Effect::Ui(e) => log::info!("UI effect: {e:?}"),
+                    Effect::Ui(UiEffect::EngineStateChanged { enabled, .. }) => {
+                        self.tray.set_enabled(*enabled);
+                    }
                 }
             }
         }
@@ -317,6 +351,17 @@ mod app {
             let decision = self.engine.on_timeout(id, &ctx);
             // タイムアウトには「現在のイベント」が無いため Pass/Consume は無意味
             let _ = self.apply_decision(decision);
+        }
+
+        fn on_menu_action(&mut self, action: MenuAction) {
+            match action {
+                MenuAction::ToggleEngine => {
+                    let ctx = self.make_ctx();
+                    let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
+                    // メニュー操作にも「現在のイベント」は無い
+                    let _ = self.apply_decision(decision);
+                }
+            }
         }
     }
 }
