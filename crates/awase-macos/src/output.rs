@@ -84,6 +84,21 @@ pub const fn ascii_to_keycode(ch: char) -> Option<(u16, bool)> {
         '.' => Some((0x2F, false)),
         ',' => Some((0x2B, false)),
         '/' => Some((0x2C, false)),
+        // ── 記号（JIS 配列の物理位置。scanmap と同じく Jis 固定前提） ──
+        '[' => Some((0x1E, false)), // kVK_ANSI_RightBracket (JIS: [)
+        ']' => Some((0x2A, false)), // kVK_ANSI_Backslash (JIS: ])
+        '{' => Some((0x1E, true)),
+        '}' => Some((0x2A, true)),
+        '(' => Some((0x1C, true)), // Shift+8
+        ')' => Some((0x19, true)), // Shift+9
+        '?' => Some((0x2C, true)), // Shift+/
+        '!' => Some((0x12, true)), // Shift+1
+        '^' => Some((0x18, false)), // kVK_ANSI_Equal (JIS: ^)
+        '~' => Some((0x18, true)),  // Shift+^
+        '@' => Some((0x21, false)), // kVK_ANSI_LeftBracket (JIS: @)
+        ';' => Some((0x29, false)), // kVK_ANSI_Semicolon (JIS: ;)
+        ':' => Some((0x27, false)), // kVK_ANSI_Quote (JIS: :)
+        '_' => Some((0x5D, true)),  // Shift+ろ (kVK_JIS_Underscore)
         _ => None,
     }
 }
@@ -116,12 +131,32 @@ mod imp {
     /// `Char` に載ってくる記号類はここで補う。
     const fn kana_symbol_to_ascii(ch: char) -> Option<&'static str> {
         match ch {
-            'ー' => Some("-"),
-            '、' => Some(","),
-            '。' => Some("."),
-            '・' => Some("/"),
-            '「' => Some("["),
-            '」' => Some("]"),
+            'ー' | '－' => Some("-"),
+            '、' | '，' => Some(","),
+            '。' | '．' => Some("."),
+            '・' | '／' => Some("/"),
+            '「' | '［' => Some("["),
+            '」' | '］' => Some("]"),
+            // .yab の数字段・親指シフト面のリテラル（全角）。
+            // キーストロークで IME に渡し、全角/半角や ／→・ などの
+            // 記号変換は IME の設定に委ねる（Windows VK モードと同じ方針）
+            '？' => Some("?"),
+            '！' => Some("!"),
+            '～' => Some("~"),
+            '（' => Some("("),
+            '）' => Some(")"),
+            '｛' => Some("{"),
+            '｝' => Some("}"),
+            '０' => Some("0"),
+            '１' => Some("1"),
+            '２' => Some("2"),
+            '３' => Some("3"),
+            '４' => Some("4"),
+            '５' => Some("5"),
+            '６' => Some("6"),
+            '７' => Some("7"),
+            '８' => Some("8"),
+            '９' => Some("9"),
             _ => None,
         }
     }
@@ -276,5 +311,26 @@ impl Output {
 
     pub fn reinject(&mut self, vk: awase::types::VkCode, event_type: awase::types::KeyEventType) {
         log::trace!("macOS output stub: reinject 0x{:02X} {event_type:?}", vk.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ascii_to_keycode_covers_yab_literal_symbols() {
+        // 親指シフト面の数字段リテラル（？／～「」［］（）｛｝）が全て
+        // キーストロークに落とせること（JIS 配列前提）
+        for ch in ['?', '/', '~', '[', ']', '(', ')', '{', '}'] {
+            assert!(ascii_to_keycode(ch).is_some(), "missing keycode for {ch:?}");
+        }
+    }
+
+    #[test]
+    fn ascii_to_keycode_jis_bracket_positions() {
+        assert_eq!(ascii_to_keycode('['), Some((0x1E, false))); // JIS: [
+        assert_eq!(ascii_to_keycode(']'), Some((0x2A, false))); // JIS: ]
+        assert_eq!(ascii_to_keycode('?'), Some((0x2C, true))); // Shift+/
     }
 }
