@@ -37,9 +37,13 @@ fn bundle_resources_dir(exe: &Path) -> Option<PathBuf> {
 /// 持つプロセスが、起動ディレクトリに置かれた署名対象外の config/layout を
 /// 読み込むのを防ぐため（2026-08-29 セキュリティレビュー指摘1）。
 ///
-/// バンドル外は `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペース
-/// ルート → CWD）。ただしリリースビルドでは CWD への最終フォールバックを
-/// 無効化し fail closed とする（開発ビルドの `cargo run` 相当のみ CWD を許す）。
+/// バンドル外の解決はビルド種別で分ける（同レビュー第4回指摘2）:
+/// - 開発ビルド: `paths::resolve_relative_to_exe`（exe 隣接 → ワークスペース
+///   ルート → CWD）。`cargo run` の利便性を優先
+/// - リリースビルド: exe 隣接のみ（fail closed）。共通解決器はパス中の任意の
+///   `target` ディレクトリをワークスペースとみなすため、偽の `target/release/`
+///   配下に置かれたバイナリに外部設定を読ませられる。`current_exe()` 取得
+///   不能時も CWD には落とさず、存在しないパスを返して既定値動作にする
 fn resolve_resource(path: &str) -> PathBuf {
     let raw = Path::new(path);
     if raw.is_absolute() {
@@ -49,17 +53,20 @@ fn resolve_resource(path: &str) -> PathBuf {
     if let Some(resources) = exe.as_deref().and_then(bundle_resources_dir) {
         return resources.join(path);
     }
-    let resolved = awase::paths::resolve_relative_to_exe(path);
-    #[cfg(not(debug_assertions))]
-    if resolved == raw {
-        // resolve_relative_to_exe が CWD 相対の素のパスへフォールバックした。
-        // リリースビルドでは exe 隣接（存在しなければ呼び出し側が既定値を使う）
-        // に固定し、起動ディレクトリのファイルを拾わない。
-        if let Some(dir) = exe.as_deref().and_then(Path::parent) {
-            return dir.join(path);
-        }
+    #[cfg(debug_assertions)]
+    {
+        awase::paths::resolve_relative_to_exe(path)
     }
-    resolved
+    #[cfg(not(debug_assertions))]
+    {
+        exe.as_deref().and_then(Path::parent).map_or_else(
+            // /var/empty は root 所有の空ディレクトリ（macOS 標準）。
+            // 「確実に存在しない相対リソース」の錨として使い、呼び出し側の
+            // 既定値（デフォルト設定・空レイアウト警告）へ倒す
+            || Path::new("/var/empty").join(path),
+            |dir| dir.join(path),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -318,24 +325,41 @@ mod app {
 
         /// IME 切替待ちが解消していれば保留出力をフラッシュする。
         ///
-        /// 保留開始時と前面アプリが変わっていたら送出せず破棄する
-        /// （別アプリへの入力漏えい・誤操作防止）。
+        /// 保留開始時・送出時の両方で前面アプリ PID が取得でき、かつ一致した
+        /// 場合のみ送出する（fail closed — どちらかが取得不能でも破棄。
+        /// 2026-08-29 セキュリティレビュー第4回指摘1）。
         fn maybe_flush_deferred(&mut self) {
             if self.deferred_keys.is_empty() || self.ime.is_switch_pending() {
                 return;
             }
             let keys = std::mem::take(&mut self.deferred_keys);
             let expected_pid = self.deferred_focus_pid.take();
-            if expected_pid.is_some() && frontmost_pid() != expected_pid {
+            let same_focus = matches!(
+                (expected_pid, frontmost_pid()),
+                (Some(expected), Some(current)) if expected == current
+            );
+            if !same_focus {
                 log::warn!(
-                    "Discarding {} deferred key action(s): frontmost app changed during \
-                     IME switch",
+                    "Discarding {} deferred key action(s): frontmost app changed or \
+                     unknown during IME switch",
                     keys.len()
                 );
                 return;
             }
             log::debug!("Flushing {} deferred key action(s) after IME switch", keys.len());
             self.output.send_keys(&keys);
+        }
+
+        /// 保留出力を破棄する（クリック等でフォーカス・キャレットが動いた場合）。
+        fn discard_deferred(&mut self, reason: &str) {
+            if !self.deferred_keys.is_empty() {
+                log::warn!(
+                    "Discarding {} deferred key action(s): {reason}",
+                    self.deferred_keys.len()
+                );
+                self.deferred_keys.clear();
+            }
+            self.deferred_focus_pid = None;
         }
 
         fn make_ctx(&self) -> InputContext {
@@ -465,7 +489,8 @@ mod app {
             self.maybe_flush_deferred();
 
             // クリックは IME の未確定文字列を確定させる（composing ヒントの
-            // 主要なクリア漏れだった。Enter を打たない確定スタイルへの対応）
+            // 主要なクリア漏れだった。Enter を打たない確定スタイルへの対応）。
+            // 同一アプリ内でもキャレットが動いた可能性があるため保留出力も破棄する
             if matches!(
                 etype,
                 CGEventType::LeftMouseDown
@@ -473,6 +498,7 @@ mod app {
                     | CGEventType::OtherMouseDown
             ) {
                 self.output.note_composition_break();
+                self.discard_deferred("mouse click during IME switch");
                 return TapAction::Pass;
             }
 
