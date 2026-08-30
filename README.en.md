@@ -177,6 +177,8 @@ u, si,te,ke,se, ha,to,ki, i, nn, 後, 逃
 
 The standard NICOLA layouts are bundled as `layout/nicola.yab` (JIS layout) and `layout/nicola_us.yab` (US layout). Because a US keyboard physically lacks the Muhenkan/Henkan keys, the settings screen lets you impersonate thumb keys onto the left/right Alt keys, or assign the Space key as a thumb key.
 
+`layout/nicola.yab` outputs the symbols actually printed on a standard JIS keyboard's keytops (＠／［／］／：／￥／＾) at the physical key positions the official NICOLA spec leaves undefined. If you prefer the older behavior of software-assigning those same positions to Backspace/Escape (the default through v1.16.1), point `default_layout` at `layout/nicola_bsesc.yab` instead.
+
 `layout/nicola_f.yab` is also bundled for genuine Fujitsu thumb-shift keyboards (e.g. FKB7628-801). Its physical key layout and scan codes are identical to a JIS keyboard, so `keyboard_model` should stay `"jis"` — just set `default_layout` to `"nicola_f.yab"`.
 
 ---

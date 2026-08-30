@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 変更
+
+- **既定のNICOLA配列（`layout/nicola.yab`）を、標準JISキーボードのキートップ印字通りに記号（＠／［／］／：／￥／＾）を出力する版へ変更**
+  - NICOLA本家仕様が未定義のまま余っている物理キー位置に、これまではソフトウェア側でBackspace/Escapeを代用割り当てしていた。この動作を維持したい場合は `default_layout` を `nicola_bsesc.yab`（旧nicola.yabをリネーム）に変更する
+  - KB232キーボードのユーザーから「記号がキートップ通り出ない」という不具合報告（report `01M15R86FJW24278GGD3ETS9QX`）を機に、紅皿・DvorakJ等の他実装の慣行を参考に変更した
+
 ### 追加
 
 - **設定画面に「アプリ無効化」タブを追加し、`disable_apps`（指定アプリで awase を丸ごと無効化する設定）をGUIから編集できるようにした**

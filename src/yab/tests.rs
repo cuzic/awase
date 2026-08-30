@@ -899,6 +899,93 @@ fn test_load_nicola_yab_file() {
 }
 
 #[test]
+fn test_nicola_yab_file_outputs_keytop_symbols_at_jis_extra_positions() {
+    // 2026-08-30: 標準JISキーボードのキートップ印字通りの記号を出す既定版に
+    // 切り替えた（report 01M15R86FJW24278GGD3ETS9QX、docs/bug-reports-triage.md
+    // 参照）。旧来のBackspace/Escapeソフトウェア代用版は layout/nicola_bsesc.yab
+    // へ退避済み（test_load_nicola_bsesc_yab_file 参照）。
+    let path = std::path::Path::new("layout/nicola.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
+
+    let literal = |s: &str| Some(YabValue::Literal(s.to_string()));
+
+    // 数字段（row0）12-13列目 = physical ^ / ¥ キー。全面共通。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(face.get(&PhysicalPos::new(0, 11)).cloned(), literal("＾"));
+        assert_eq!(face.get(&PhysicalPos::new(0, 12)).cloned(), literal("￥"));
+    }
+
+    // Q段（row1）11列目 = physical @ キー。シフト無し面は本家仕様の「、」を維持し、
+    // 親指シフト面のみ未定義スロットに「＠」を割り当てる。
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("、")
+    );
+    assert_eq!(
+        layout.left_thumb.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("＠")
+    );
+    assert_eq!(
+        layout.right_thumb.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("＠")
+    );
+
+    // Q段（row1）12列目 = physical [ キー。全面共通。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(face.get(&PhysicalPos::new(1, 11)).cloned(), literal("［"));
+    }
+
+    // A段（row2）11-12列目 = physical : / ] キー。全面共通で、旧 Backspace/Escape
+    // 代用（後/逃）を置き換えている。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(face.get(&PhysicalPos::new(2, 10)).cloned(), literal("："));
+        assert_eq!(face.get(&PhysicalPos::new(2, 11)).cloned(), literal("］"));
+    }
+}
+
+#[test]
+fn test_load_nicola_bsesc_yab_file() {
+    // 2026-08-30 に layout/nicola.yab からリネームされた、Backspace/Escape
+    // ソフトウェア代用版（旧既定）。かな配置は layout/nicola.yab と同一のはず。
+    let path = std::path::Path::new("layout/nicola_bsesc.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
+
+    assert!(!layout.normal.is_empty());
+    assert!(!layout.left_thumb.is_empty());
+    assert!(!layout.right_thumb.is_empty());
+    assert!(!layout.shift.is_empty());
+
+    let a_pos = PhysicalPos::new(2, 0);
+    assert_eq!(
+        layout.normal.get(&a_pos),
+        Some(&YabValue::Romaji {
+            romaji: "u".into(),
+            kana: None
+        })
+    );
+
+    // A段（row2）11-12列目 = Backspace/Escapeソフトウェア代用（全面共通）。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(
+            face.get(&PhysicalPos::new(2, 10)),
+            Some(&YabValue::Special(SpecialKey::Backspace))
+        );
+        assert_eq!(
+            face.get(&PhysicalPos::new(2, 11)),
+            Some(&YabValue::Special(SpecialKey::Escape))
+        );
+    }
+}
+
+#[test]
 fn test_load_nicola_us_yab_file() {
     let path = std::path::Path::new("layout/nicola_us.yab");
     if !path.exists() {
