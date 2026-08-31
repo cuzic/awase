@@ -874,6 +874,16 @@ pub(super) fn run_all() -> Result<()> {
         build_panic_trigger_combos(&ime_control_on_keys, &ime_control_off_keys);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 
+    crate::keymap::warn_on_engine_hotkey_collision(
+        &config.keymaps,
+        &engine_on_keys,
+        &engine_off_keys,
+        &ime_control_on_keys,
+        &ime_control_off_keys,
+        &ime_control_toggle_keys,
+        config.general.engine_toggle_hotkey.as_deref(),
+    );
+
     let mut engine = Engine::new(
         fsm,
         SpecialKeyCombos {

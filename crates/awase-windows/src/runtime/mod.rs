@@ -1222,6 +1222,12 @@ impl Runtime {
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_is_manual = is_manual;
         self.muhenkan_dedicated_fn_key_active = vk.is_some();
+        if let Some(vk) = vk {
+            self.platform_state
+                .keymap
+                .active_keymaps
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（手動設定）");
+        }
     }
 
     /// `state::gji_charset_autodetect` が GJI 検出/離脱時に専用Fnキー変換モードを
@@ -1233,6 +1239,12 @@ impl Runtime {
         }
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_active = vk.is_some();
+        if let Some(vk) = vk {
+            self.platform_state
+                .keymap
+                .active_keymaps
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（自動検出）");
+        }
     }
 
     /// `state::gji_charset_autodetect` が手動設定かどうかを判定するための読み取り専用アクセサ。

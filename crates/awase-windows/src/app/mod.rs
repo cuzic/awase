@@ -636,6 +636,15 @@ pub(crate) fn reload_config() {
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
     key_diag.report();
 
+    crate::keymap::warn_on_engine_hotkey_collision(
+        &config.keymaps,
+        &engine_on,
+        &engine_off,
+        &ime_on,
+        &ime_off,
+        &ime_toggle,
+        config.general.engine_toggle_hotkey.as_deref(),
+    );
     let special_keys = SpecialKeyCombos {
         engine_on,
         engine_off,

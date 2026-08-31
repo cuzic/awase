@@ -176,6 +176,99 @@ impl KeymapTable {
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// `vk` を主キーまたは `to` ターゲットとして使うアクティブなルールがあれば
+    /// 警告する（ADR-114「未解決の疑問」5、`muhenkan_solo_tap_dedicated_fn_key`
+    /// のような実行時にしか確定しない vk との衝突用）。**警告のみで動作は
+    /// 変えない**。戻り値は衝突の有無（テスト用）。
+    pub(crate) fn warn_if_vk_conflicts(&self, vk: VkCode, context: &str) -> bool {
+        let conflicts = self
+            .0
+            .iter()
+            .any(|rule| rule.combo.vk == vk || rule.send_vk == Some(vk));
+        if conflicts {
+            log::warn!(
+                "[keymap] アクティブな [[keymap]] ルールが {context}（vk=0x{:02X}）と \
+                 同じキーを使っています。両方のロジックが同じ物理キーに反応します \
+                 （ADR-114）",
+                vk.0
+            );
+        }
+        conflicts
+    }
+}
+
+/// `[[keymap]]` ルールがエンジン制御系ホットキーと同じキーコンボを奪っていないか
+/// 警告する（ADR-114「未解決の疑問」4）。**警告のみで動作は変えない**——
+/// ユーザー設定を勝手に無効化しない。
+///
+/// 決定2 の順序により `[[keymap]]` が先に消費すると、同じコンボの
+/// `engine_on`/`engine_off`/`ime_on`/`ime_off`/`ime_toggle`/
+/// `engine_toggle_hotkey` は黙って発火しなくなる（`engine_toggle_hotkey` は
+/// `RegisterHotKey` によるグローバルホットキーだが、awase 自身の
+/// `WH_KEYBOARD_LL` フックが全打鍵を無条件で一旦 swallow し PassThrough
+/// 判定時のみ reinject する構造上、`[[keymap]]` が consume すれば OS 側に
+/// キー自体が届かず `WM_HOTKEY` も発火しない）。
+///
+/// `sync_ime_toggle_auto_detect`（MS-IME レジストリ由来の自動追加分）は
+/// 対象外（スコープ外、実行時の任意タイミングで追加されるため呼び出し元を
+/// 増やしすぎない判断）。
+pub(crate) fn warn_on_engine_hotkey_collision(
+    keymaps: &[KeymapRule],
+    engine_on: &[ParsedKeyCombo],
+    engine_off: &[ParsedKeyCombo],
+    ime_on: &[ParsedKeyCombo],
+    ime_off: &[ParsedKeyCombo],
+    ime_toggle: &[ParsedKeyCombo],
+    engine_toggle_hotkey: Option<&str>,
+) {
+    // `ParsedKeyCombo` は `PartialEq` を derive 済みなので `==` で比較できる。
+    //
+    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの
+    // MOD_CONTROL 等を使う）のためここでは使えない（この関数は Linux でも
+    // ビルド・テストできるよう ungated にしている）。`parse_key_combo` は
+    // 最後のトークンに `VK_` 接頭辞が必要だが `engine_toggle_hotkey` は
+    // "Ctrl+Shift+F12" のように接頭辞なしで書く（`parse_hotkey` と同じ
+    // 慣習）ため、ここで補って `parse_key_combo` に委譲する。
+    let hotkey_combo = engine_toggle_hotkey.and_then(|s| {
+        let prefixed = s.rfind('+').map_or_else(
+            || format!("VK_{s}"),
+            |idx| format!("{}+VK_{}", &s[..idx], &s[idx + 1..]),
+        );
+        crate::vk::parse_key_combo(&prefixed)
+    });
+
+    for rule in keymaps {
+        let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
+            continue;
+        };
+        for (label, combos) in [
+            ("engine_on", engine_on),
+            ("engine_off", engine_off),
+            ("ime_on", ime_on),
+            ("ime_off", ime_off),
+            ("ime_toggle", ime_toggle),
+        ] {
+            if combos.contains(&combo) {
+                log::warn!(
+                    "[keymap] 'from' = {:?} は keys.{label} と同じキーコンボです。\
+                     [[keymap]] が先に消費するため {label} が発火しなくなります \
+                     （ADR-114）",
+                    rule.from
+                );
+            }
+        }
+        if let Some(hotkey) = &hotkey_combo {
+            if *hotkey == combo {
+                log::warn!(
+                    "[keymap] 'from' = {:?} は general.engine_toggle_hotkey と \
+                     同じキーコンボです。[[keymap]] が先に消費するため \
+                     engine_toggle_hotkey が発火しなくなります（ADR-114）",
+                    rule.from
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -298,6 +391,58 @@ mod tests {
             table.len(),
             1,
             "禁止対象に該当しない通常ルールは skip されない"
+        );
+    }
+
+    #[test]
+    fn warn_if_vk_conflicts_detects_primary_and_target_vk() {
+        let table = new_table(&[rule(None, "Ctrl+VK_I", Some("F7"))]);
+        let vk_i = VkCode::from_name("VK_I").expect("VK_I resolves");
+        let vk_f7 = VkCode::from_name("VK_F7").expect("VK_F7 resolves");
+        let vk_unrelated = VkCode::from_name("VK_Z").expect("VK_Z resolves");
+
+        assert!(table.warn_if_vk_conflicts(vk_i, "test"), "主キーとの衝突");
+        assert!(
+            table.warn_if_vk_conflicts(vk_f7, "test"),
+            "toターゲットとの衝突"
+        );
+        assert!(
+            !table.warn_if_vk_conflicts(vk_unrelated, "test"),
+            "無関係な vk は衝突しない"
+        );
+    }
+
+    #[test]
+    fn warn_on_engine_hotkey_collision_does_not_panic_on_collision() {
+        let combo_ctrl_i = ParsedKeyCombo {
+            vk: VkCode::from_name("VK_I").expect("VK_I resolves"),
+            ctrl: true,
+            shift: false,
+            alt: false,
+        };
+        // engine_on と同じコンボの [[keymap]] ルール。警告が出るだけでパニックしない
+        // ことを確認する（ログ内容の検証はこのリポジトリの既存慣習に無いため行わない）。
+        warn_on_engine_hotkey_collision(
+            &[rule(None, "Ctrl+VK_I", Some("F7"))],
+            &[combo_ctrl_i],
+            &[],
+            &[],
+            &[],
+            &[],
+            Some("Ctrl+Shift+VK_F12"),
+        );
+    }
+
+    #[test]
+    fn warn_on_engine_hotkey_collision_does_not_panic_without_collision() {
+        warn_on_engine_hotkey_collision(
+            &[rule(None, "Ctrl+VK_I", Some("F7"))],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
         );
     }
 }
