@@ -12025,3 +12025,58 @@ x86_64-pc-windows-msvc` によるコンパイル確認、および CI `windows-b
 
 **関連ファイル:** `crates/awase-windows/src/hook.rs`,
 `crates/awase-windows/src/state/key_remap.rs`。関連: ADR-110, BUG-48, BUG-78。
+
+---
+
+## BUG-101: `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混入のリグレッション、設計確定・未実装）
+
+**症状:** `Engine::on_input`（`src/engine/engine.rs:357-362`、実運用で唯一のキーイベント
+入口）の Phase 0 が、`KeyLifecycle::on_key_up`（`key_lifecycle.rs:56-63`）を使って
+「対応する KeyDown が Consume 済みの KeyUp」を無条件に `Decision::consumed()` として
+即 return する。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1582`）には一切到達しない。
+以下3件の実害を確認済み:
+
+1. **`min_overlap_margin_percent` が実運用で常に無効。** `char1_released_at`
+   （`handle_key_up_pending_char_thumb`、`nicola_fsm.rs:1679-1730`）は恒久的に
+   `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:254-267`）は
+   常に「重なり構造的保証あり」の `Some(true)` を返す。char1 を離してから
+   親指キーを押した（＝物理的に重なっていない）2打が、常に同時打鍵として
+   誤確定される。2026-08-23 の PR #85 で導入した重なり不足判定機能は、
+   導入初日から一度も実機で効いていない。
+2. **`KeyAction::Key(vk)` を出力する全キーで、対応する `KeyUp(vk)` が実運用で
+   一度も送出されていない（stuck key）。** `handle_key_up_active`
+   （`nicola_fsm.rs:1812-1830`）だけが `KeyUp(vk)` を再送する経路だが到達不能。
+   `KeyAction::Key(vk)` は `.yab` の明示的な VK 指定行だけでなく、
+   `resolve_pending_char_as_single`（`nicola_fsm.rs:1272`、配列定義外キーの
+   フォールバック）や無変換/変換/Space/Enter の solo-tap passthrough 経路
+   （`:1404`/`:1443` 付近）からも常に出るため、エンジン ON 中に非かな文字
+   （レイアウト定義外のキー等）を打鍵すると、OS 側はそのVKが押されっぱなし
+   だと認識し続ける。未検証の疑いではなく、コード上確定した欠陥。
+3. **`OutputHistory.entries`（`output_history.rs:24-26`）が上限のない `Vec` で、
+   `remove_by_scan` が実運用で呼ばれないため単調増加し続ける。** メモリリークで
+   あると同時に、修正時の設計上の罠でもある——`remove_by_scan`（KeyUp整合性用）
+   と `recent_kana()`（n-gram文脈用）が同じ `Vec` を参照しているため、Phase 0を
+   素朴に直すと全打鍵で n-gram タイブレークの入力が変わってしまう。
+
+**原因:** `handle_key_up_pending_char_thumb` の初出（`b9d0ed56`、2026-03-28）の
+方が、`KeyLifecycle` Phase 0 の混入（`94c73a15`/`1b4c08bb`、2026-03-31）より
+早い。Phase 0 混入時点で既存の KeyUp 処理群（`handle_key_up_pending_char_thumb`/
+`handle_key_up_pending`/`handle_key_up_active`/`SpeculativeChar` 分岐）が
+まとめて到達不能になった。ADR-020 は「OS に渡さない」しか決めておらず、
+「FSM にも渡さない」は未記載——意図しない副作用であり、意図的な設計ではない。
+
+**発見の経緯:** `feat/confirm-mode-simplify` ブランチで `min_overlap_margin_percent`
+の配線テストを `Engine::on_input` 経由（実運用相当）で書いたところ、bare な
+`NicolaFsm` 直呼びテストとは異なる結果になったことから発覚。既存の重なり判定
+テスト群（`test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_key_up`
+等）が全て bare `NicolaFsm` レベル（`Engine`/`KeyLifecycle` を経由しない）で
+書かれていたため、これまで検出されていなかった。
+
+**状態:** 設計確定・未実装（[ADR-112](adr/112-keyup-lifecycle-fsm-delivery.md)、
+Opus 2体によるpremortem 2ラウンドで収束）。4コミット構成（`OutputHistory` の
+責務分割 → `min_overlap_margin_percent` 既定値を一時的に0へ → Phase 0 の
+再設計本体 → 実機ソーク後に実測付きで既定値を戻す）で修正する。
+
+**関連ファイル:** `src/engine/engine.rs`, `src/engine/key_lifecycle.rs`,
+`src/engine/nicola_fsm.rs`, `src/engine/output_history.rs`,
+`src/engine/timing.rs`。関連: ADR-020, ADR-112。
