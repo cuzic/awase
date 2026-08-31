@@ -18,6 +18,12 @@ impl NicolaFsm {
     pub(crate) fn dispatch_confirm_mode(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         match self.confirm_mode {
             ConfirmMode::Wait => self.idle_wait(ev),
+            // `AppConfig::validate_thresholds`（config.rs）がconfirm_mode=
+            // "speculative"を必ずTwoPhase+delay=0へ正規化するため、この分岐は
+            // 本番経路（bootstrap等、validate()を通ったconfigからNicolaFsmを
+            // 構築する全経路）には到達しない。直接NicolaFsm::newを呼ぶ
+            // テスト・後方互換の型としてのみ生存している（/code-review指摘、
+            // PR #127、6回目）。
             ConfirmMode::Speculative => self.idle_speculative(ev),
             ConfirmMode::TwoPhase => self.idle_two_phase_or_speculative(ev),
             ConfirmMode::AdaptiveTiming => {
