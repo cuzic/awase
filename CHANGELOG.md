@@ -22,6 +22,8 @@ All notable changes to this project will be documented in this file.
   - 廃止予定の `confirm_mode = "speculative"` を設定している場合、`two_phase`（`speculative_delay_ms=0`、動作は従来と同一）へ自動的に読み替えられるようになった
 - **JISキーボードの「英数」キーとWindowsのCapsLockキーを入れ替えるプリセットを設定画面から適用できるようにした**
   - Windows標準のScancode Map機構（レジストリ経由）を使い、設定画面から有効化・無効化できる（要管理者権限、反映にはWindowsの再起動が必要）
+- **`[[keymap]]`（特定アプリでのみショートカットキーを再割り当てする設定）を実際に効くようにした**
+  - 設定画面での編集・config.tomlへの保存自体は以前から動いていたが、実際のキー処理経路には一切配線されておらず、設定しても効果が無い死んだ機能だった。設定した通りに動作するよう配線した
 
 ### 修正
 
