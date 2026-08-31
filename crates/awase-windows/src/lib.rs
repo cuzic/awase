@@ -345,26 +345,13 @@ impl RawKeyEventExt for RawKeyEvent {
     #[allow(unsafe_code)]
     unsafe fn reinject(&self) {
         use crate::output::INJECTED_MARKER;
-        use crate::vk::is_extended_key;
         use awase::types::KeyEventType;
         use windows::Win32::UI::Input::KeyboardAndMouse::{
-            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY,
-            KEYEVENTF_KEYUP, VIRTUAL_KEY,
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+            VIRTUAL_KEY,
         };
 
         let is_keyup = matches!(self.event_type, KeyEventType::KeyUp);
-
-        // ADR-110 決定6: 右Ctrl/右Alt・矢印・Home/End 等の拡張キーは
-        // KEYEVENTF_EXTENDEDKEY を立てないと左修飾キー/テンキーと誤解釈されうる
-        // （Alt なりすまし・key_remap 双方の reinject 経路が共有する）。
-        let mut flags = if is_keyup {
-            KEYEVENTF_KEYUP
-        } else {
-            KEYBD_EVENT_FLAGS(0)
-        };
-        if is_extended_key(self.vk_code) {
-            flags |= KEYEVENTF_EXTENDEDKEY;
-        }
 
         let input = INPUT {
             r#type: INPUT_KEYBOARD,
@@ -372,7 +359,11 @@ impl RawKeyEventExt for RawKeyEvent {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(self.vk_code.0),
                     wScan: 0,
-                    dwFlags: flags,
+                    dwFlags: if is_keyup {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
                     time: 0,
                     dwExtraInfo: INJECTED_MARKER,
                 },

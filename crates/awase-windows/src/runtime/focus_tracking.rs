@@ -418,17 +418,6 @@ impl Runtime {
         crate::hook::set_focus_app_disabled(is_disabled);
         crate::hook::clear_hook_latches_for_app_disable(transition);
 
-        // ADR-110 決定3 項目2: disable_apps/overflow ラッチが解除され awase が
-        // 制御を取り戻した直後、`from=VK_CAPITAL` ルールが有効な場合に限り
-        // CapsLock ロック状態を正規化する（無条件ではなく内部でゲートされる、
-        // Opus レビュー R8 対応）。
-        if matches!(transition, SuppressionEdge::Leave) {
-            // SAFETY: focus_tracking はメインスレッドから呼ばれる。
-            unsafe {
-                crate::hook::normalize_caps_lock_if_needed();
-            }
-        }
-
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
             // 確定させる。放置すると、Enter 後はフックが生キーを素通しするため
