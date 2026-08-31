@@ -2,15 +2,17 @@
 
 ## ステータス
 
-**設計確定（2026-08-31、Opus 2体による敵対的レビュー r1→r4 で収束。未実装）。**
-r1 で新規 Critical 3件（ADR-110 の撤回済みという事実誤認、latch と自動リピートの
-兼用が BUG-100 を再現する設計、latch が消えない5経路の見落とし）、r2 で改訂により
-生じた新規 Critical 1件（repeat 判定に `is_physical_key_down` を使うと配線後も
-`[[keymap]]` が一切動かなくなる設計ミス）と Major 3件（決定4 内の自己矛盾、Alt
-修飾の禁止漏れ、`release_all()` の KeyUp 注入が決定3 と矛盾）を検出・修正。
-r3 で Down/Up 非対称という残存論点が見つかり r4 で解消、収束。実装（
-`crates/awase-windows/src/runtime/message_handlers.rs`・`keymap.rs`・`ime.rs`・
-`focus_tracking.rs` 等）は未着手。
+**採用・実装済み（2026-08-31）。** 設計は Opus 2体による敵対的レビュー r1→r4 で
+収束（r1 で新規 Critical 3件、r2 で新規 Critical 1件・Major 3件を検出・修正、
+r3→r4 で Down/Up 非対称を解消）。実装タスク分解（`114-implementation-tasks.md`）も
+別途 r1→r3 のレビューで収束させ、T1a〜T11 を実装した
+（`crates/awase-windows/src/keymap.rs`・`runtime/message_handlers.rs`・
+`runtime/mod.rs`・`runtime/focus_tracking.rs`・`output/held_modifiers.rs`（新設）・
+`state/keymap_latch.rs`（新設）・`hook.rs`・`vk.rs`・`ime.rs`・`app/mod.rs`・
+`app/bootstrap.rs`・`crates/awase-settings/src/main.rs`・`src/config.rs`）。
+`cargo xwin check`/`clippy -D warnings`/`fmt`/`machete` 全 green、
+`architecture_guard`（61件）・`golden_scenarios`（24件）・`layer_boundary_guard`
+（8件）・lib 全ユニットテスト（867件）green。Windows 実機ソークは未実施。
 
 ## コンテキスト
 
