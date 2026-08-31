@@ -48,7 +48,16 @@ fn main() -> Result<()> {
     let layout_path = Path::new(&config.general.layouts_dir).join(&config.general.default_layout);
     let layout = if layout_path.exists() {
         let content = std::fs::read_to_string(&layout_path)?;
-        YabLayout::parse(&content, keyboard_model)?.resolve_kana()
+        let layout = YabLayout::parse(&content, keyboard_model)?.resolve_kana();
+        let (layout, keystroke_warnings) = awase::yab::resolve_keystroke_syntax(
+            layout,
+            &config.keystroke_macro,
+            config.general.keystroke_sequence,
+        );
+        for w in &keystroke_warnings {
+            log::warn!("Layout ({}): {w}", layout_path.display());
+        }
+        layout
     } else {
         log::warn!(
             "Layout file not found: {}, using empty layout",

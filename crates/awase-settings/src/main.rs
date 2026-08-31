@@ -999,12 +999,7 @@ impl SettingsApp {
     }
 
     fn layout_load_from_path(&mut self, path: &Path) {
-        match load_yab_layout(
-            path,
-            self.config.general.keyboard_model,
-            &self.config.keystroke_macro,
-            self.config.general.keystroke_sequence,
-        ) {
+        match load_yab_layout(path, self.config.general.keyboard_model) {
             Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_file_path_buf = path.display().to_string();
@@ -1030,12 +1025,7 @@ impl SettingsApp {
             self.layout_status = "ファイルパスが未設定です".to_string();
             return;
         };
-        match load_yab_layout(
-            &path,
-            self.config.general.keyboard_model,
-            &self.config.keystroke_macro,
-            self.config.general.keystroke_sequence,
-        ) {
+        match load_yab_layout(&path, self.config.general.keyboard_model) {
             Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_modified = false;
@@ -3689,21 +3679,25 @@ fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
 fn load_yab_layout(
     path: &Path,
     model: awase::scanmap::KeyboardModel,
-    keystroke_macros: &[awase::config::KeystrokeMacro],
-    keystroke_sequence_policy: awase::config::KeystrokeSequencePolicy,
 ) -> Result<(YabLayout, Vec<String>), String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // NOTE: ここは意図的に `resolve_keystroke_syntax` を通さない。この関数が返す
+    // `YabLayout` は GUI 編集の作業コピーであると同時に `layout_write_to_path` が
+    // そのまま `serialize()` して .yab へ書き戻す対象そのもの。一度 resolve すると
+    // `CtrlChord`/`InlineSequence`/`MacroRef` が `Literal`/`Sequence` に置き換わり、
+    // 元のセル生テキストが失われた状態で保存されてしまう（`Sequence` は
+    // `serialize()` が `無` を返す設計のため、キルスイッチ on で保存すると打鍵列
+    // セルが丸ごと消える。off でも `raw` の一部だけが残る形で壊れる）。実装直後の
+    // Opus実装後レビューでこの resolve 呼び出しを一度追加したところ、まさにこの
+    // 破壊的な保存回帰が3系統のレビュー観点から独立に指摘されたため差し戻した
+    // （経緯は `docs/known-bugs.md` FEATURE-115 参照）。GUI プレビューがキルスイッチ
+    // off 時の実際の送信内容と食い違う点（新構文セルがそのまま表示される）は
+    // 非破壊的な既知の制約として残す。
     let layout = YabLayout::parse(&content, model)
         .map(YabLayout::resolve_kana)
         .map_err(|e| format!("パース失敗: {e}"))?;
-    // 実エンジン（`LayoutEntry::scan_all`、bootstrap.rs）と同じ解決を GUI プレビューに
-    // も通す。省くとキルスイッチ Off でも GUI が新構文セルをそのまま表示し、実際に
-    // 送信される Literal と食い違う（Opus実装後レビュー M2 で発見）。
-    let (layout, keystroke_warnings) =
-        awase::yab::resolve_keystroke_syntax(layout, keystroke_macros, keystroke_sequence_policy);
     // パース成功後にのみ lint する（失敗時に計算を無駄にしない）。
-    let mut lint_warnings = awase::yab::lint(&content);
-    lint_warnings.extend(keystroke_warnings);
+    let lint_warnings = awase::yab::lint(&content);
     Ok((layout, lint_warnings))
 }
 
@@ -3994,14 +3988,9 @@ mod layout_tab_repro {
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
-        let layout = load_yab_layout(
-            &layout_path,
-            config.general.keyboard_model,
-            &config.keystroke_macro,
-            config.general.keystroke_sequence,
-        )
-        .map(|(ly, _lint_warnings)| ly)
-        .unwrap_or_else(|_| empty_yab_layout());
+        let layout = load_yab_layout(&layout_path, config.general.keyboard_model)
+            .map(|(ly, _lint_warnings)| ly)
+            .unwrap_or_else(|_| empty_yab_layout());
         SettingsApp {
             config,
             config_path: std::path::PathBuf::from("config.toml"),
