@@ -754,19 +754,24 @@ impl AppConfig {
             ));
             g.speculative_delay_ms = 30;
         }
-        if g.timing_margin_percent > 100 {
+        Self::validate_percent_field("timing_margin_percent", &mut g.timing_margin_percent, 30, w);
+        Self::validate_percent_field(
+            "min_overlap_margin_percent",
+            &mut g.min_overlap_margin_percent,
+            0,
+            w,
+        );
+    }
+
+    /// `0..=100` の範囲外なら警告を積んで `default` にリセットする
+    /// （/code-review指摘、PR #127: `timing_margin_percent`/
+    /// `min_overlap_margin_percent` で同一形の検証がコピペされていた）。
+    fn validate_percent_field(name: &str, value: &mut u32, default: u32, w: &mut Vec<String>) {
+        if *value > 100 {
             w.push(format!(
-                "timing_margin_percent ({}) は 0-100 の範囲外です。30 にリセットします",
-                g.timing_margin_percent
+                "{name} ({value}) は 0-100 の範囲外です。{default} にリセットします"
             ));
-            g.timing_margin_percent = 30;
-        }
-        if g.min_overlap_margin_percent > 100 {
-            w.push(format!(
-                "min_overlap_margin_percent ({}) は 0-100 の範囲外です。0 にリセットします",
-                g.min_overlap_margin_percent
-            ));
-            g.min_overlap_margin_percent = 0;
+            *value = default;
         }
     }
 
