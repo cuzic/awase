@@ -477,6 +477,13 @@ impl SettingsApp {
         // 保存されずに警告だけが「適用」を押すたび永遠に再表示され続けていた。
         // validated側をself.configにも反映し、保存対象にする。
         self.config = awase::config::AppConfig::from(validated);
+        // /code-review指摘（PR #133）: self.config はここで既に正規化済みの
+        // 新しい値に置き換わっている。診断リストの再計算をバックグラウンド
+        // 保存の結果（Saved分岐）だけに任せると、保存が BackupFailed/
+        // SaveFailed で失敗した場合に self.config は変わっているのに
+        // 診断リストだけ古いままになる。保存の成否によらず、config が
+        // 変わった時点で再計算する。
+        self.recompute_diagnostics();
         let clone = self.config.clone();
 
         let config_path = self.config_path.clone();
@@ -539,6 +546,10 @@ impl SettingsApp {
                     self.status = "設定を保存しました".to_string();
                 }
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
+                // apply_confirmed() は保存開始前にも recompute_diagnostics()
+                // を呼ぶが、その時点で config_load_state がまだ Dangerous
+                // だった場合はガードに掛かり何もしない。Dangerous から
+                // 復帰する保存が成功したこの分岐でも改めて呼び直す必要がある。
                 self.recompute_diagnostics();
                 send_reload_config_message();
                 self.pending_save = None;
