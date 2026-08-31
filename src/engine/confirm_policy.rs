@@ -95,12 +95,19 @@ impl NicolaFsm {
         // Character key → immediately output normal face, enter SpeculativeChar
         let face = Face::Normal;
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
-            self.enter_speculative_char(PendingKey::from_event(ev));
-            // Output immediately + set timer for the threshold window
-            ParseAction::Reduce {
-                actions: smallvec![action.clone()],
-                record: OutputUpdate::record(ev.scan_code, &action, kana),
-                timer: TimerIntent::Pending,
+            if self.enter_speculative_char(PendingKey::from_event(ev), &action) {
+                // Output immediately + set timer for the threshold window
+                ParseAction::Reduce {
+                    actions: smallvec![action.clone()],
+                    record: OutputUpdate::record(ev.scan_code, &action, kana),
+                    timer: TimerIntent::Pending,
+                }
+            } else {
+                // Sequence（ADR-115 決定7）: 投機を諦め、Wait モードと
+                // 同じ既存の退避先（`idle_wait`）へ落とす。生の物理キーを
+                // OS へ渡す `PassThrough` を使うと打鍵列の代わりに素の
+                // 文字が出てしまうため使わない。
+                self.idle_wait(ev)
             }
         } else {
             ParseAction::PassThrough {
