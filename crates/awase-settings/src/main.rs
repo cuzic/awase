@@ -301,7 +301,8 @@ struct SettingsApp {
     new_keymap_app: String,
     new_keymap_from_ctrl: bool,
     new_keymap_from_shift: bool,
-    new_keymap_from_alt: bool,
+    // Alt は GUI から選べない（ADR-114 決定5 — バックエンドが 'from' の Alt
+    // 修飾を禁止・skip するため）。
     new_keymap_from_main: String,
     new_keymap_to_main: String,
     // Keymap capture mode (None = not capturing)
@@ -394,7 +395,6 @@ impl SettingsApp {
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,
-            new_keymap_from_alt: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
@@ -1019,10 +1019,14 @@ impl SettingsApp {
                 shift,
                 alt,
             } => {
+                // Alt はキャプチャで押されていても [[keymap]] の from には反映しない
+                // （ADR-114 決定5 — バックエンドが 'from' の Alt 修飾を禁止・skip する
+                // ため、GUI 側でも作れないようにして対称性を保つ）。
+                let _ = alt;
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
                         if let Some(rule) = self.config.keymaps.get_mut(i) {
-                            rule.from = format_combo(ctrl, shift, alt, &internal);
+                            rule.from = format_combo(ctrl, shift, false, &internal);
                         }
                     }
                     CaptureTarget::ExistingTo(i) => {
@@ -1033,7 +1037,6 @@ impl SettingsApp {
                     CaptureTarget::NewFrom => {
                         self.new_keymap_from_ctrl = ctrl;
                         self.new_keymap_from_shift = shift;
-                        self.new_keymap_from_alt = alt;
                         self.new_keymap_from_main = internal;
                     }
                     CaptureTarget::NewTo => {
@@ -1495,11 +1498,15 @@ impl SettingsApp {
                     }
 
                     // from: modifiers + main key + capture button
-                    let (mut ctrl, mut shift, mut alt, mut main) = parse_combo_str(&rule.from);
+                    // Alt 修飾は GUI から選べない（ADR-114 決定5 — バックエンドが
+                    // 'from' の Alt 修飾を禁止・skip するため、対称性を保つ）。
+                    // 既存 config.toml に Alt 付きルールが手書きされていた場合、
+                    // その alt 値はここでは変更されず素通しされる（バックエンドが
+                    // 別途警告して skip する）。
+                    let (mut ctrl, mut shift, alt, mut main) = parse_combo_str(&rule.from);
                     let mut changed = false;
                     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
                     changed |= ui.checkbox(&mut shift, "Shift").changed();
-                    changed |= ui.checkbox(&mut alt, "Alt").changed();
                     if main_key_combo(
                         ui,
                         &format!("from_main_{i}"),
@@ -1563,12 +1570,12 @@ impl SettingsApp {
                 .on_hover_text("対象プロセス名（例: vim.exe）。空欄で全アプリ対象。");
                 ui.end_row();
 
-                let from_hover = "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。";
+                let from_hover =
+                    "変換元のキーです。左の Ctrl/Shift と組み合わせて判定します（Alt 修飾は使用できません）。";
                 ui.label("  from:").on_hover_text(from_hover);
                 ui.horizontal_wrapped(|ui| {
                     ui.checkbox(&mut self.new_keymap_from_ctrl, "Ctrl");
                     ui.checkbox(&mut self.new_keymap_from_shift, "Shift");
-                    ui.checkbox(&mut self.new_keymap_from_alt, "Alt");
                     main_key_combo(
                         ui,
                         "new_from_main",
@@ -1607,7 +1614,7 @@ impl SettingsApp {
             let from = format_combo(
                 self.new_keymap_from_ctrl,
                 self.new_keymap_from_shift,
-                self.new_keymap_from_alt,
+                false, // Alt は使用できない（ADR-114 決定5）
                 &self.new_keymap_from_main,
             );
             self.config.keymaps.push(awase::config::KeymapRule {
@@ -1626,7 +1633,6 @@ impl SettingsApp {
             self.new_keymap_app.clear();
             self.new_keymap_from_ctrl = false;
             self.new_keymap_from_shift = false;
-            self.new_keymap_from_alt = false;
             self.new_keymap_from_main.clear();
             self.new_keymap_to_main.clear();
         }
@@ -3747,7 +3753,6 @@ mod layout_tab_repro {
             new_keymap_app: String::new(),
             new_keymap_from_ctrl: false,
             new_keymap_from_shift: false,
-            new_keymap_from_alt: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
             capturing: None,
