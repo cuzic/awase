@@ -559,6 +559,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_timing_slow_gap_zero_delay_dispatches_to_speculative_not_pending() {
+        // /code-review指摘（PR #127、7回目）: dispatch_confirm_modeの
+        // AdaptiveTiming分岐もidle_two_phase_or_speculativeを経由するように
+        // なったが、AdaptiveTiming×delay=0の組み合わせを検証するテストが
+        // 一つも無かった（既存のadaptive_timing_*テストは全てmake_fsm経由
+        // でdelay_ms=30固定）。TwoPhase単体と同様、AdaptiveTimingでも
+        // delay=0ならidle_speculativeへ直接ディスパッチされることを固定する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::AdaptiveTiming, 0);
+        fsm.last_key_gap_us = Some(200_000); // 200 ms > 80 ms threshold → not continuous
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "AdaptiveTiming(delay=0) with slow gap should behave like Speculative \
+             (immediate Reduce), got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "AdaptiveTiming(delay=0) with slow gap should enter SpeculativeChar \
+             directly, not PendingChar"
+        );
+    }
+
+    #[test]
     fn adaptive_timing_exactly_at_threshold_is_two_phase() {
         use super::super::nicola_fsm::CONTINUOUS_KEYSTROKE_THRESHOLD_US;
         // gap == threshold is NOT < threshold → not continuous → TwoPhase path
