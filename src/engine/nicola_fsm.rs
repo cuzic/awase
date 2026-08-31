@@ -82,6 +82,16 @@ pub struct NicolaFsm {
     /// n-gram モデル（None なら固定閾値にフォールバック）
     pub(crate) ngram_model: Option<NgramModel>,
 
+    /// 3キー仲裁のタイミングマージン（%）。`timing::TIMING_MARGIN_PERCENT`
+    /// （既定30）を初期値とし、`set_timing_margins` で上書きできる
+    /// （`GeneralConfig::timing_margin_percent` 参照）。
+    pub(crate) timing_margin_percent: u64,
+
+    /// 重なり不足判定のマージン（%）。`timing::MIN_OVERLAP_MARGIN_PERCENT`
+    /// （既定15）を初期値とし、`set_timing_margins` で上書きできる
+    /// （`GeneralConfig::min_overlap_margin_percent` 参照）。
+    pub(crate) min_overlap_margin_percent: u64,
+
     /// 確定モード
     pub(crate) confirm_mode: ConfirmMode,
 
@@ -260,6 +270,8 @@ impl NicolaFsm {
             threshold_us: u64::from(threshold_ms) * 1000,
             enabled: true,
             ngram_model: None,
+            timing_margin_percent: timing::TIMING_MARGIN_PERCENT,
+            min_overlap_margin_percent: timing::MIN_OVERLAP_MARGIN_PERCENT,
             confirm_mode,
             speculative_delay_us: u64::from(speculative_delay_ms) * 1000,
             last_key_timestamp: None,
@@ -629,6 +641,18 @@ impl NicolaFsm {
             self.ngram_model.as_ref(),
             self.output_history.recent_kana(timing::NGRAM_CONTEXT_SIZE),
         )
+        .with_margins(self.timing_margin_percent, self.min_overlap_margin_percent)
+    }
+
+    /// 3キー仲裁・重なり判定のタイミングマージンを更新する
+    /// （`GeneralConfig::timing_margin_percent`/`min_overlap_margin_percent`）。
+    pub fn set_timing_margins(
+        &mut self,
+        timing_margin_percent: u32,
+        min_overlap_margin_percent: u32,
+    ) {
+        self.timing_margin_percent = u64::from(timing_margin_percent);
+        self.min_overlap_margin_percent = u64::from(min_overlap_margin_percent);
     }
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
@@ -1633,9 +1657,12 @@ impl NicolaFsm {
         thumb_face: Option<Face>,
         char1_released_at: Option<Timestamp>,
     ) -> bool {
-        if let Some(verdict) =
-            timing::overlap_only_verdict(self.threshold_us, thumb.timestamp, char1_released_at)
-        {
+        if let Some(verdict) = timing::overlap_only_verdict(
+            self.threshold_us,
+            thumb.timestamp,
+            char1_released_at,
+            self.min_overlap_margin_percent,
+        ) {
             return verdict;
         }
         let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));

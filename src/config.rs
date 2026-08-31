@@ -115,6 +115,14 @@ pub struct GeneralConfig {
     pub ngram_min_threshold_ms: u32,
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
     pub ngram_max_threshold_ms: u32,
+    /// 3キー仲裁のタイミングマージン（%、デフォルト30）。char1→thumb→char2の
+    /// 3キーが来た場合、d1(thumb-char1)とd2(char2-thumb)の差がこの割合を
+    /// 超えればタイミングだけで確定し、n-gramタイブレークを行わない。
+    pub timing_margin_percent: u32,
+    /// 重なり不足判定のマージン（%、デフォルト15）。thumb押下からchar1解放までの
+    /// 物理的な重なり時間が閾値のこの割合未満なら「重なり不足」とみなし、
+    /// n-gramタイブレークに回す（無ければ単独打鍵扱い）。
+    pub min_overlap_margin_percent: u32,
     /// 確定モード（デフォルト: wait）
     pub confirm_mode: ConfirmMode,
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming と
@@ -354,6 +362,8 @@ impl Default for GeneralConfig {
             ngram_adjustment_range_ms: 20,
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
+            timing_margin_percent: 30,
+            min_overlap_margin_percent: 15,
             confirm_mode: ConfirmMode::Wait,
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
@@ -726,6 +736,20 @@ impl AppConfig {
                 g.speculative_delay_ms, g.simultaneous_threshold_ms
             ));
             g.speculative_delay_ms = 30;
+        }
+        if g.timing_margin_percent > 100 {
+            w.push(format!(
+                "timing_margin_percent ({}) は 0-100 の範囲外です。30 にリセットします",
+                g.timing_margin_percent
+            ));
+            g.timing_margin_percent = 30;
+        }
+        if g.min_overlap_margin_percent > 100 {
+            w.push(format!(
+                "min_overlap_margin_percent ({}) は 0-100 の範囲外です。15 にリセットします",
+                g.min_overlap_margin_percent
+            ));
+            g.min_overlap_margin_percent = 15;
         }
     }
 

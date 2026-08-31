@@ -314,6 +314,10 @@ pub enum EngineCommand {
         threshold_ms: u32,
         confirm_mode: crate::config::ConfirmMode,
         speculative_delay_ms: u32,
+        /// 3キー仲裁のタイミングマージン（%、`GeneralConfig::timing_margin_percent`）
+        timing_margin_percent: u32,
+        /// 重なり不足判定のマージン（%、`GeneralConfig::min_overlap_margin_percent`）
+        min_overlap_margin_percent: u32,
     },
     /// n-gram モデルを設定する
     SetNgramModel(crate::ngram::NgramModel),

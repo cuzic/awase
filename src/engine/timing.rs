@@ -7,15 +7,18 @@
 use crate::ngram::NgramModel;
 use crate::types::Timestamp;
 
-/// 3キー仲裁のタイミングマージン（閾値の30%）
-/// d1 と d2 の差がこれ以上ならタイミングだけで判定する
-const TIMING_MARGIN_PERCENT: u64 = 30;
+/// 3キー仲裁のタイミングマージン（閾値の30%）の既定値。
+/// d1 と d2 の差がこれ以上ならタイミングだけで判定する。
+/// `GeneralConfig::timing_margin_percent` でユーザーが上書きできる
+/// （`TimingJudge::with_margins` 参照）。この定数は `NicolaFsm::new` の初期値。
+pub(crate) const TIMING_MARGIN_PERCENT: u64 = 30;
 
-/// 重なり不足判定のマージン（閾値の15%）
+/// 重なり不足判定のマージン（閾値の15%）の既定値。
 /// char2 が来ないまま char1+thumb を確定する2鍵ケースで、thumb 押下から
 /// char1 解放までの重なり時間がこれ未満なら「重なり不足」とみなし、
 /// n-gram タイブレークに回す（`confirms_char_thumb_chord` 参照）。
-const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
+/// `GeneralConfig::min_overlap_margin_percent` でユーザーが上書きできる。
+pub(crate) const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
 
 /// n-gram 予測で投機出力を選択する最小スコア差
 const SPECULATIVE_SCORE_THRESHOLD: f32 = 0.5;
@@ -36,6 +39,8 @@ pub struct TimingJudge<'a> {
     threshold_us: u64,
     ngram_model: Option<&'a NgramModel>,
     recent_kana: Vec<char>,
+    timing_margin_percent: u64,
+    min_overlap_margin_percent: u64,
 }
 
 impl<'a> TimingJudge<'a> {
@@ -49,7 +54,24 @@ impl<'a> TimingJudge<'a> {
             threshold_us,
             ngram_model,
             recent_kana,
+            timing_margin_percent: TIMING_MARGIN_PERCENT,
+            min_overlap_margin_percent: MIN_OVERLAP_MARGIN_PERCENT,
         }
+    }
+
+    /// `timing_margin_percent`/`min_overlap_margin_percent` を既定値から
+    /// 上書きする（`GeneralConfig` のユーザー設定値を反映する用途、
+    /// `NicolaFsm::timing_judge` 参照）。`new` 単体の呼び出し元（timing.rs の
+    /// 単体テスト等）は既定値のまま使えるよう、`new` 本体には手を入れていない。
+    #[must_use]
+    pub const fn with_margins(
+        mut self,
+        timing_margin_percent: u64,
+        min_overlap_margin_percent: u64,
+    ) -> Self {
+        self.timing_margin_percent = timing_margin_percent;
+        self.min_overlap_margin_percent = min_overlap_margin_percent;
+        self
     }
 
     /// 2キー判定: pending_ts と new_ts の間隔が閾値内か。
@@ -94,7 +116,7 @@ impl<'a> TimingJudge<'a> {
         };
 
         // Phase 1: タイミング差が大きければタイミングだけで決定
-        let margin = self.threshold_us * TIMING_MARGIN_PERCENT / 100;
+        let margin = self.threshold_us * self.timing_margin_percent / 100;
         if d1 + margin < d2 {
             return ThreeKeyResult::PairWithChar1;
         }
@@ -184,8 +206,12 @@ impl<'a> TimingJudge<'a> {
         chord_kana: Option<char>,
         solo_kana: Option<char>,
     ) -> bool {
-        if let Some(verdict) = overlap_only_verdict(self.threshold_us, thumb_ts, char1_released_at)
-        {
+        if let Some(verdict) = overlap_only_verdict(
+            self.threshold_us,
+            thumb_ts,
+            char1_released_at,
+            self.min_overlap_margin_percent,
+        ) {
             return verdict;
         }
 
@@ -229,13 +255,14 @@ pub(crate) fn overlap_only_verdict(
     threshold_us: u64,
     thumb_ts: Timestamp,
     char1_released_at: Option<Timestamp>,
+    min_overlap_margin_percent: u64,
 ) -> Option<bool> {
     let Some(released_ts) = char1_released_at else {
         // char1 がまだ押下中 → 重なりが構造的に保証されているため常に確定 true
         return Some(true);
     };
     let overlap_us = released_ts.saturating_sub(thumb_ts);
-    let min_overlap_us = threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
+    let min_overlap_us = threshold_us * min_overlap_margin_percent / 100;
     (overlap_us >= min_overlap_us).then_some(true)
 }
 

@@ -5543,6 +5543,8 @@ mod engine_integration_tests {
                 threshold_ms: 200,
                 confirm_mode: ConfirmMode::Speculative,
                 speculative_delay_ms: 50,
+                timing_margin_percent: 30,
+                min_overlap_margin_percent: 15,
             },
             &ime_on_ctx(),
         );
@@ -7921,6 +7923,8 @@ mod engine_integration_tests {
                 threshold_ms: 10,
                 confirm_mode: ConfirmMode::Wait,
                 speculative_delay_ms: 30,
+                timing_margin_percent: 30,
+                min_overlap_margin_percent: 15,
             },
             &ime_on_ctx(),
         );
@@ -7951,6 +7955,8 @@ mod engine_integration_tests {
                 threshold_ms: 100,
                 confirm_mode: ConfirmMode::Speculative,
                 speculative_delay_ms: 40,
+                timing_margin_percent: 30,
+                min_overlap_margin_percent: 15,
             },
             &ime_on_ctx(),
         );
@@ -7984,6 +7990,8 @@ mod engine_integration_tests {
                 threshold_ms: 100,
                 confirm_mode: ConfirmMode::TwoPhase,
                 speculative_delay_ms: 40,
+                timing_margin_percent: 30,
+                min_overlap_margin_percent: 15,
             },
             &ime_on_ctx(),
         );

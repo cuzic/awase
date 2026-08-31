@@ -93,6 +93,16 @@ impl FsmAdapter {
         self.fsm.set_ngram_model(model);
     }
 
+    /// 3キー仲裁・重なり判定のタイミングマージンを更新する。
+    pub(super) fn set_timing_margins(
+        &mut self,
+        timing_margin_percent: u32,
+        min_overlap_margin_percent: u32,
+    ) {
+        self.fsm
+            .set_timing_margins(timing_margin_percent, min_overlap_margin_percent);
+    }
+
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
     pub(super) const fn set_engine_off_solo_repeat_vk(&mut self, vk: crate::types::VkCode) {
         self.fsm.set_engine_off_solo_repeat_vk(vk);

@@ -951,6 +951,10 @@ pub(super) fn run_all() -> Result<()> {
         left_thumb_vk,
         right_thumb_vk,
     ));
+    engine.set_timing_margins(
+        config.general.timing_margin_percent,
+        config.general.min_overlap_margin_percent,
+    );
 
     if let Some(vk) = config
         .keys

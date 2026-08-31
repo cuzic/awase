@@ -41,15 +41,17 @@ layouts_dir = "config"
 # デフォルトの .yab レイアウトファイル名
 default_layout = "nicola.yab"
 
-# 確定モード
-#   wait             - タイムアウトまで出力を保留（最も正確）
+# 確定モード（上級者向け、設定画面には表示されません — wait が既定かつ推奨）。
+# ほとんどの環境では wait が最も安定します。他のモードは待機モードでは
+# レスポンスが遅く感じる特殊なケース向けの裏設定として残しています。
+#   wait             - タイムアウトまで出力を保留（最も正確、デフォルト・推奨）
 #   speculative      - 即座に出力、同時打鍵時に BS で差し替え（最も高速）
 #   two_phase        - 短い待機→投機出力→差し替え（バランス型）
 #   adaptive_timing  - 連続打鍵中は待機、途切れたら投機
 #   ngram_predictive - n-gram 予測で投機/待機を動的切替
 confirm_mode = "wait"
 
-# 投機出力までの待機時間（ミリ秒、two_phase/adaptive_timing で使用）
+# 投機出力までの待機時間（ミリ秒、two_phase/adaptive_timing で使用。上級者向け）
 speculative_delay_ms = 30
 
 # ローマ字出力の送信方式
@@ -88,6 +90,16 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 # n-gram 適応閾値の下限/上限（ミリ秒）
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
+
+# 3キー仲裁のタイミングマージン（%）。char1→thumb→char2 の3キーが来た場合、
+# d1(thumb-char1)とd2(char2-thumb)の差がこの割合を超えればタイミングだけで
+# 確定し、n-gramタイブレークを行わない（上級者向け）。
+# timing_margin_percent = 30
+
+# 重なり不足判定のマージン（%）。thumb押下からchar1解放までの物理的な重なり
+# 時間が閾値のこの割合未満なら「重なり不足」とみなし、n-gramタイブレークに
+# 回す（上級者向け）。
+# min_overlap_margin_percent = 15
 
 # ── IME 同期設定 ──
 # Shadow IME 状態を追跡するためのキー設定。
