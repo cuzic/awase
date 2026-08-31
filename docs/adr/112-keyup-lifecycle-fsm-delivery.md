@@ -2,8 +2,8 @@
 
 ## ステータス
 
-**設計確定（2026-08-31、Opus 2体によるpremortem 2ラウンドで収束）。未実装。**
-`docs/known-bugs.md` BUG-101 に対応する修正設計。実装は本ADRの決定0〜2を4コミットに分けて行う。決定3（`min_overlap_margin_percent` の実運用値への引き戻し）は実機ソーク後に別ADR/別コミットで扱う、本ADRのスコープ外。
+**決定0〜2 実装済み（2026-08-31、Opus 2体によるpremortem 2ラウンドで収束した設計どおり）。Windows実機ソーク未実施。**
+`docs/known-bugs.md` BUG-101 に対応する修正。決定0（`OutputHistory`責務分離）・決定1（`min_overlap_margin_percent`既定値を一時的に0へ）・決定2（Phase 0再設計本体）を個別コミットで実装した。決定3（`min_overlap_margin_percent` の実運用値への引き戻し）は実機ソーク後に別ADR/別コミットで扱う、本ADRのスコープ外。
 
 ## コンテキスト
 
