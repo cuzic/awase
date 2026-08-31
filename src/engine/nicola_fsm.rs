@@ -461,12 +461,12 @@ impl NicolaFsm {
     /// 無効化時は保留キーをフラッシュする。
     /// 戻り値の `Resp` を `dispatch()` で処理すること（タイマー停止 + 保留キー確定）。
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
-        let flush_resp = self.flush_pending(
+        let mut flush_resp = self.flush_pending(
             ContextChange::EngineDisabled,
             ComposingHint::Trusted(self.phys.composing),
         );
         self.enabled = !self.enabled;
-        self.output_history.clear();
+        self.clear_output_history_appending_releases(&mut flush_resp);
         // `solo_counter`（`flush_pending` 内で毎回リセット、:421）とは異なり、
         // こちらは `flush_pending` 内で汎用リセットしない: `handle_bypass` 自身が
         // 非 idle 時に `ContextChange::BypassKey` で `flush_pending` を呼ぶため、
@@ -663,13 +663,26 @@ impl NicolaFsm {
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
-        let flush_resp = self.flush_pending(
+        let mut flush_resp = self.flush_pending(
             ContextChange::LayoutSwapped,
             ComposingHint::Trusted(self.phys.composing),
         );
         self.layout = layout;
-        self.output_history.clear();
+        self.clear_output_history_appending_releases(&mut flush_resp);
         flush_resp
+    }
+
+    /// `output_history` を丸ごとクリアする際、`pending_releases` に残っていた
+    /// `KeyAction::Key(vk)` エントリの `KeyUp(vk)` を `resp.actions` に追記して
+    /// から破棄する（`toggle_enabled`/`swap_layout` 共通、ADR-112コードレビュー
+    /// 指摘）。素朴に `output_history.clear()` するだけだと、注入済みVKに
+    /// 対応するKeyUpが二度と送られず、エンジン無効化/配列切替のタイミングで
+    /// キーを押しっぱなしにしていた場合にOS側で押されっぱなしになる
+    /// （stuck keyの再発）。
+    fn clear_output_history_appending_releases(&mut self, resp: &mut Resp) {
+        let keyups = self.output_history.drain_pending_releases_as_keyups();
+        resp.actions.extend(keyups);
+        self.output_history.clear();
     }
 }
 
@@ -1628,30 +1641,26 @@ impl NicolaFsm {
         }
 
         // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
-        // Char/Romaji 型のエントリの中身には反応しない（誤 Suppress しない、
-        // 元々のガードの意図）が、掃除は必ず行う（ADR-112コードレビュー指摘、
-        // 掃除しないと pending_releases のエントリが永久に残り stuck key が
-        // 再発し、かつ同じ scan_code が後で再度 push されると2件重複して
-        // remove_by_scan（先頭一致）と find_action_by_scan（末尾一致）の
-        // 非対称性により誤って古い方を解放してしまう）。
         //
-        // ただし `KeyAction::Key(vk)` 型（OS へ生 VK を注入済み）だけは例外
-        // ——「中身に反応しない」を貫くと、注入済みの VK に対応する KeyUp が
-        // 二度と送られず OS 側で押されっぱなしになる（release_only が本来
-        // 発行する KeyUp(vk) と同じもの。/code-review 指摘）。Char/Romaji は
-        // Unicode 注入で完結済みで OS 側に押されっぱなしの VK が無いため、
-        // この例外は Key(vk) にのみ適用する。
+        // 旧実装は「output_history の中身に反応しない（誤 Suppress 防止）」
+        // ためこの分岐で無条件 pass_through していたが、掃除もしないため
+        // pending_releases のエントリが永久に残り stuck key が再発する上に
+        // （/code-review 指摘）、Key(vk) 型エントリの KeyUp(vk) も送られず
+        // OS 側で押されっぱなしになる、Char/Romaji 型は誤って生 KeyUp を
+        // OS へ漏らす、という3つの問題を抱えていた。
+        //
+        // 「誤 Suppress 防止」が守っていたのは、当時 output_history が単一の
+        // 無制限 Vec で KeyUp 整合性用途と n-gram 文脈用途を兼ねており、
+        // 別キーの残骸に誤って反応しうる状況だった（ADR-112決定0参照）。
+        // 決定0で pending_releases を分離した現在、この分岐に来る時点の
+        // scan_code は「この物理キー自身が直前に Consume されて記録した
+        // エントリ」以外にはあり得ない（bypass 側の KeyDown は
+        // handle_bypass が自分の scan_code のエントリを先に掃除するため）。
+        // よって通常の release_only と全く同じロジックで安全に解放できる
+        // ——`state` を経由しない chord 判定なしの掃除、という
+        // release_only の性質はここでも保たれている。
         if self.phys.modifiers.is_os_modifier_held() {
-            if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
-                if let KeyAction::Key(vk) = entry.action {
-                    return self.build_response(
-                        smallvec![KeyAction::KeyUp(vk)],
-                        true,
-                        TimerIntent::CancelAll,
-                    );
-                }
-            }
-            return Response::pass_through();
+            return self.release_only(event);
         }
 
         // output_history から対応する注入済みキーを探してリリース

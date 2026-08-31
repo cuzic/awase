@@ -107,11 +107,14 @@ impl OutputHistory {
             // pending_releases に残っているはず。無い場合は、他の経路
             // （OS修飾キー保持中のKeyUp・フォーカス変更等）が先にそのエントリを
             // 解放済みだったことを意味し、想定していた不変条件が崩れている
-            // （ADR-112コードレビュー指摘）。実害はfallbackのpushで抑えつつ、
-            // 検知できるよう記録する。
-            log::warn!(
+            // （ADR-112コードレビュー指摘。全経路を追跡した限りこの分岐は
+            // 現状到達不能——SpeculativeChar中はstateがself.stateを経由する
+            // 通常dispatchを通るためrelease_only等の非活性系クリーンアップとは
+            // 排他）。実害はfallbackのpushで抑えつつ、到達したら確実に
+            // 気づけるよう error レベルで記録する。
+            log::error!(
                 "retract_and_record: no existing pending_releases entry for scan_code={:?}, \
-                 falling back to push (invariant violation?)",
+                 falling back to push — invariant violation, this branch was believed unreachable",
                 entry.scan_code
             );
             self.pending_releases.push(entry.clone());

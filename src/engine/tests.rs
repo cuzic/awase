@@ -2663,12 +2663,13 @@ fn test_key_up_active_suppress_action() {
 
 #[test]
 fn test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry() {
-    // is_os_modifier_held() ガード（Ctrl/Alt/Win保持中はoutput_historyの
-    // 中身に反応せずpass_throughする）自体の挙動は変えない。しかし掃除も
-    // しないと、Consume済みキーのKeyUpがこのガードに来た場合にentryが
-    // 永久に残り（stuck keyの再発）、かつ同じscan_codeが後で再度pushされると
-    // 2件重複し、remove_by_scan（先頭一致）とfind_action_by_scan（末尾一致）の
-    // 非対称性により誤って古い方を解放してしまう。
+    // is_os_modifier_held() ガードは以前「output_historyの中身に反応せず
+    // pass_throughする」という独自ロジックだったが、/code-review指摘を経て
+    // release_onlyへ完全委譲するよう単純化した（決定0でpending_releasesを
+    // n-gram文脈と分離した後は、この分岐に来る時点のscan_codeエントリが
+    // 「この物理キー自身のもの」以外にあり得ず、release_onlyと同じ安全性で
+    // 掃除できるため）。Aの出力はChar/Romaji型なので、通常のKeyUpと同じく
+    // Suppressが返る。
     let mut engine = make_engine();
 
     engine.on_event(Ev::down(VK_A).at(0).build());
@@ -2684,7 +2685,11 @@ fn test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry() {
         ..Default::default()
     });
     let r = engine.on_event(Ev::up(VK_A).at(50_000).build());
-    r.assert_pass_through(); // ガード自体の挙動は変わらない
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Suppress)),
+        "Char/RomajiエントリはSuppressとして解放されるはず（release_only委譲）: {:?}",
+        r.actions
+    );
 
     assert!(
         engine.output_history.find_action_by_scan(SCAN_A).is_none(),

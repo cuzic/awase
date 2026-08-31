@@ -123,6 +123,15 @@ if !self.compute_active(ctx) {
 
 kill switchは置かない——各コミットは独立してrevert可能であり、env varより`git revert`の方が確実。
 
+## 実装後のコードレビューで見つかった残存課題（本ADRのスコープ外、フォローアップ）
+
+PR #126の`/code-review`3ラウンドで、決定2実装後に以下の課題が新たに見つかった。いずれも対応済み（`toggle_enabled`/`swap_layout`のstuck key修正、`handle_focus_changed`/`check_active_transition`の`pending_releases`同期掃除、OS修飾キー保持中ガードの`release_only`委譲統一）だが、以下2点は本ADRのスコープを超えるため未対応のまま残す:
+
+1. **`KeyAction::SpecialKey(sk)`はKeyUp解放の対象外のまま。** `release_only`/`drain_pending_releases_as_keyups`は`KeyAction::Key(vk)`だけを特別扱いしてKeyUpを発行するが、`SpecialKey(sk)`も`crates/awase-windows/src/output/mod.rs`の`special_key_to_vk(sk)`経由で生VKをdown-only注入している点は同じで、理論上は同じstuck keyリスクを持つ。ただし`SpecialKey`→VKの変換はプラットフォーム層専用（ADR-019、core はVKコードを持たない）のため、coreの`output_history`だけでは解放できない。修正には`KeyAction::SpecialKeyUp(SpecialKey)`のような新バリアントを追加し、プラットフォーム層で`special_key_to_vk`経由の解放を実装する必要があり、型定義変更・全match箇所の更新を伴う別スコープの変更になる。`release_only`自体がADR-112以前からこの制約を持っていたため、新規リグレッションではない。
+2. **フォーカス変更時の`release_all_pending_output`が、char1がまだ物理的に保持されたまま`PendingCharThumb`が確定した直後のエントリも即座に解放しうる。** `flush_pending`のPendingCharThumbアームは`char1_released_at.is_none()`（char1がまだ押されたまま）の場合、意図的にKeyUpを追記せず「実際のKeyUpが来るまで保持」を期待する。直後に呼ばれる`release_all_pending_output`はこの区別をせず無条件に解放するため、意図した「hold」が「tap」に変わりうる。さらにフォーカス変更に反応して発行されるKeyUpのため、OSへ届く時点で新しいウィンドウにフォーカスが移っている可能性があり、誤ったウィンドウへ注入されるリスクがある。これは本ADR/PRO-CON合意の中核方針（「permanently stuck keyより早すぎる解放を優先する」）の具体的な現れであり、新しい判断ではないが、この特定のサブケース（誤ウィンドウ注入）は議論時に明示的に検討されていなかったため記録する。
+
+いずれも実機での発生頻度は低いと見積もっているが、実機ソーク（決定3）の観察対象に含めること。
+
 ## Premortemの経緯
 
 設計は2ラウンドのadversarial premortem（Opus 2体、PRO/CON）を経て収束した。
