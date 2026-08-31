@@ -260,15 +260,44 @@ impl Engine {
                     .adapter
                     .flush_to_effects(reason, ComposingHint::Unknown);
                 effects.extend(flush);
-                // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
-                // Engine inactive 時に到着しても consumed されないようにする。
-                let _ = self.lifecycle.flush_pending_key_ups();
-                // output_history の pending_releases も同期して掃除する
-                // （ADR-112コードレビュー指摘）。上の flush_pending_key_ups が
+                // output_history の pending_releases を同期して掃除する
+                // （ADR-112コードレビュー指摘）。下の flush_pending_key_ups が
                 // active_keys だけを drain して pending_releases を放置すると、
                 // 対応する KeyUp がその後 UpDuty::None として素通りするように
                 // なり、二度と掃除されないまま stuck key が再発する。
-                effects.extend(self.adapter.release_all_pending_output());
+                // 先に呼ぶ理由は handle_focus_changed と同じ: これで解放された
+                // VK の集合を、下の flush_pending_key_ups の再注入から除外し、
+                // 同じ VK に対する KeyUp の二重注入を防ぐため。
+                let released_output_effects = self.adapter.release_all_pending_output();
+                let released_vks: std::collections::HashSet<VkCode> = released_output_effects
+                    .iter()
+                    .filter_map(|e| match e {
+                        Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter_map(|a| match a {
+                        KeyAction::KeyUp(vk) => Some(*vk),
+                        _ => None,
+                    })
+                    .collect();
+                // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
+                // Engine inactive 時に到着しても consumed されないようにする。
+                // Phase 1（特殊キー等）でのみ consume され output_history に
+                // エントリを残さないキーは release_all_pending_output ではカバー
+                // されないため、flush_pending_key_ups の戻り値を明示的に
+                // ReinjectKey として再注入する（handle_focus_changed 指摘の
+                // 横展開、/code-review 指摘）。これを捨てていると、そのキーの
+                // 実物理 KeyUp が後で来たとき take_key_up_duty は既に空になった
+                // active_keys から UpDuty::None を返し、Engine が非活性であれば
+                // 生の KeyUp がそのまま OS へ通ってしまう。
+                let pending_key_ups = self.lifecycle.flush_pending_key_ups();
+                for evt in pending_key_ups {
+                    if !released_vks.contains(&evt.vk_code) {
+                        effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
+                    }
+                }
+                effects.extend(released_output_effects);
             }
             log::info!(
                 "Engine {} (ime={}, romaji={}, japanese={}, user={}, reason={:?})",

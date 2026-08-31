@@ -7389,6 +7389,71 @@ mod engine_integration_tests {
         );
     }
 
+    #[test]
+    fn active_to_inactive_transition_reinjects_keyup_for_phase1_consumed_key_lifecycle_duty() {
+        // /code-review指摘（PR #126、5回目）: check_active_transition の
+        // active→inactive分岐は KeyLifecycle::flush_pending_key_ups の戻り値を
+        // `let _ = ...` で握りつぶしていた。Phase 1（特殊キー、
+        // `match_special_keys`）でのみ consume され output_history に一切
+        // 触れないキー（IMEトグルコンボ等）は release_all_pending_output では
+        // 救えないため、handle_focus_changed と同じく flush_pending_key_ups の
+        // 戻り値を明示的に ReinjectKey として再注入しないと、そのキーの実物理
+        // KeyUp が後で来ても誰も面倒を見ず素通りしてしまう（stuck key）。
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        // IME ON コンボを、IME が既に ON の状態で押す（実機でも起きる冗長操作）。
+        // `ime_set_open_effects` の pseudo_ctx（ime_on=true）は現在の
+        // prev_activation（Active）と一致するため `transition_activation` は
+        // no-op——つまりこの Phase 1 消費は prev_activation を一切動かさない。
+        // それでも Decision は consumed なので KeyLifecycle には VK_SPACE の
+        // Consume 義務が登録される。
+        let ctrl_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let down = engine.on_input(Ev::down(VK_SPACE).at(0).build(), &ctrl_ctx);
+        assert!(
+            down.is_consumed(),
+            "special key combo should be consumed by Phase 1"
+        );
+        assert!(
+            engine.compute_active(&ime_on_ctx()),
+            "sanity: engine should still be active before the later transition"
+        );
+
+        // ここまでで output_history には一切触れていない（Phase 1 の Decision は
+        // SendKeys を含まない）。KeyLifecycle には VK_SPACE の Consume 義務だけが
+        // 登録されている。VK_SPACE を離す前に、別要因（RefreshState）で
+        // コンテキストが inactive へ遷移する（FocusChanged を経由しない
+        // check_active_transition 単独の遷移経路）。
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::ReinjectKey(evt)) if evt.vk_code == VK_SPACE
+            )),
+            "active→inactive遷移で Phase 1 consumed キーの KeyUp 義務は\
+             ReinjectKey として再注入されるべき（stuck key修正）: {:?}",
+            effects_of(&d)
+        );
+    }
+
     // 2026-08-04: 「IME OFF・Engine ON」再発対策（`SetOpenOrigin` 導入）の回帰テスト。
     //
     // `EngineCommand::RefreshState`（Platform 層が `ctx.ime_on` を再評価するたびに叩く
