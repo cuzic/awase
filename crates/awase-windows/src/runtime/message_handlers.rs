@@ -194,24 +194,8 @@ pub(crate) fn deliver_key_event(
     // 既存の不変条件を破ることになる副作用の監査コストを避けるための
     // 意図的な v1 判断。
     if is_key_down {
-        if let Some(matched) = app
-            .platform_state
-            .keymap
-            .active_keymaps
-            .find_match(event.vk_code, event.modifier_snapshot)
-        {
-            app.platform_state.keymap.keymap_latch.latch(event.vk_code);
-            if let Some(target_vk) = matched {
-                // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
-                unsafe {
-                    crate::output::held_modifiers::send_keymap_target(
-                        event.modifier_snapshot.ctrl,
-                        event.modifier_snapshot.shift,
-                        target_vk,
-                    );
-                }
-            }
-            return KeyDelivery::Consumed;
+        if let Some(delivery) = consume_keymap_match(app, event) {
+            return delivery;
         }
     }
 
@@ -248,6 +232,46 @@ pub(crate) fn deliver_key_event(
     } else {
         KeyDelivery::Consumed
     }
+}
+
+/// `[[keymap]]` の KeyDown 新規照合（ADR-114 決定2 ステップ2）。マッチしなければ
+/// `None` を返し、呼び出し元は通常の早期return分岐（`[[post_bypass]]` 等）へ
+/// 進む。マッチすれば必ず `Some(KeyDelivery::Consumed)` を返す。
+///
+/// `deliver_key_event` 本体から分離することで cognitive complexity を抑える
+/// （振る舞いは変更なし、`cancel_composition_and_arm_post_bypass_on_ctrl` と
+/// 同じ理由）。
+fn consume_keymap_match(
+    app: &mut Runtime,
+    event: awase::types::RawKeyEvent,
+) -> Option<KeyDelivery> {
+    let matched = app
+        .platform_state
+        .keymap
+        .active_keymaps
+        .find_match(event.vk_code, event.modifier_snapshot)?;
+    app.platform_state.keymap.keymap_latch.latch(event.vk_code);
+    if let Some(target_vk) = matched {
+        // GJI 候補ウィンドウ表示中（IME composition warm）に target_vk を
+        // そのまま SendInput すると、IME が先にそれを自身のショートカットとして
+        // 横取りしてしまう（`cancel_composition_and_arm_post_bypass_on_ctrl` が
+        // Ctrl+key パススルー時に同じ問題へ対処しているのと同型の問題、ADR-114
+        // 実装レビューで発見）。送信前に composition をキャンセルする。
+        if app.platform.is_composition_warm_in_tsf() {
+            // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
+            unsafe { super::cancel_ime_composition() };
+            app.platform.on_ctrl_bypass_composition_cancel();
+        }
+        // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
+        unsafe {
+            crate::output::held_modifiers::send_keymap_target(
+                event.modifier_snapshot.ctrl,
+                event.modifier_snapshot.shift,
+                target_vk,
+            );
+        }
+    }
+    Some(KeyDelivery::Consumed)
 }
 
 /// `CallbackResult::PassThrough` 確定時、Ctrl+非修飾キーによる bypass の直前に

@@ -3046,18 +3046,34 @@ fn deliver_key_event_keymap_latch_check_precedes_nested_and_nontext_early_return
     // `keymap_latch` を検索キーにする（`.is_latched(...)` は cargo fmt で
     // メソッドチェーンが複数行に折り返されうるため、改行を跨がない単一
     // identifier で検索する）。
+    let activity_idx = body
+        .find("last_hook_activity_ms")
+        .expect("deliver_key_event must update last_hook_activity_ms");
     let latch_idx = body
         .find("keymap_latch")
         .expect("deliver_key_event must check keymap_latch");
+    assert!(
+        activity_idx < latch_idx,
+        "keymap_latch のチェックは last_hook_activity_ms の更新より後に \
+         置くこと（ADR-114 実装レビュー MA-A）。latch チェックを \
+         last_hook_activity_ms 更新より前に置くと、latch 中のキー（＝実際に \
+         ユーザーが打鍵中）が hook activity として記録されず、\
+         runtime/ime_refresh.rs の keyboard idle 判定（GJI/Chrome long-idle \
+         分岐の起点）が誤って idle に倒れる。"
+    );
     let nested_idx = body
         .find("KeyOrigin::Hook(PumpContext::Nested)")
         .expect("deliver_key_event must check KeyOrigin::Hook(PumpContext::Nested)");
     let nontext_idx = body
         .find("FocusKind::NonText")
         .expect("deliver_key_event must check FocusKind::NonText");
+    // `find_match`/`active_keymaps` の呼び出し自体は cognitive complexity 対策で
+    // `consume_keymap_match` ヘルパーへ切り出されている（`cancel_composition_
+    // and_arm_post_bypass_on_ctrl` と同じパターン）。`deliver_key_event` の本体
+    // には呼び出し箇所（`consume_keymap_match(app, event)`）だけが残る。
     let find_match_idx = body
-        .find("active_keymaps")
-        .expect("deliver_key_event must call active_keymaps.find_match");
+        .find("consume_keymap_match(app, event)")
+        .expect("deliver_key_event must call consume_keymap_match");
     let post_bypass_idx = body
         .find("consume_post_bypass(app, event, is_key_down)")
         .expect("deliver_key_event must call consume_post_bypass");

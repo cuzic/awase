@@ -135,16 +135,23 @@ impl KeymapTable {
     /// プロセス名の比較は完全一致（大文字小文字無視 + 末尾 `.exe` の有無不問）。
     /// 前方一致はしない（`"code"` が `"codeblocks.exe"` に誤爆する類の事故を防ぐ、
     /// `state::app_suppression::matches_disabled_app` と同じ理由・同じ正規化関数）。
+    ///
+    /// `process_name` が空文字列の場合は `app = None` のルールにしか一致しない
+    /// （`app_suppression::matches_disabled_app` と同じ理由——`get_process_name`
+    /// がフォーカス取得失敗時に空文字列を返すケースがあり、`app = ""` という
+    /// TOML 上の空文字列ルールと偶然一致してしまう事故を防ぐガード）。
     #[must_use]
     pub fn filter_active(&self, process_name: &str) -> Self {
         let normalized = crate::state::app_suppression::normalize_process_name(process_name);
         Self(
             self.0
                 .iter()
-                .filter(|r| {
-                    r.app.as_deref().is_none_or(|a| {
+                .filter(|r| match r.app.as_deref() {
+                    None => true,
+                    Some(_) if normalized.is_empty() => false,
+                    Some(a) => {
                         crate::state::app_suppression::normalize_process_name(a) == normalized
-                    })
+                    }
                 })
                 .cloned()
                 .collect(),
@@ -327,6 +334,17 @@ mod tests {
         // 大文字小文字無視・.exe の有無を問わず完全一致するケースは拾う。
         assert_eq!(table.filter_active("Code.exe").len(), 1);
         assert_eq!(table.filter_active("code").len(), 1);
+    }
+
+    #[test]
+    fn filter_active_empty_process_name_does_not_match_empty_app_rule() {
+        // `app = ""`（TOML の空文字列）というルールが、get_process_name 失敗時の
+        // 空文字列 process_name と偶然一致して全アプリに適用されてしまう事故を防ぐ。
+        let table = new_table(&[rule(Some(""), "Ctrl+VK_I", Some("F7"))]);
+        assert!(table.filter_active("").is_empty());
+        // app = None のルールは空文字列 process_name でも引き続きマッチする。
+        let table_none_app = new_table(&[rule(None, "Ctrl+VK_I", Some("F7"))]);
+        assert_eq!(table_none_app.filter_active("").len(), 1);
     }
 
     #[test]

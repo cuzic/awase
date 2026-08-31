@@ -82,9 +82,13 @@ T1a の後に実施する（同じファイルの変更が重ならないよう�
   明示する」という ADR-114 決定3の方針を守る（デフォルト全解放のヘルパーは作らない）。
 - `[[keymap]]` からの呼び出し用に、同じ `output/held_modifiers.rs` へ
   `pub(crate) fn send_keymap_target(release_ctrl: bool, release_shift: bool,
-  target_vk: VkCode)` を追加する（`HeldModifiers::read()` → 指定された分だけ
+  target_vk: VkCode)` を追加する（引数から直接 `HeldModifiers { ctrl:
+  release_ctrl, shift: release_shift, alt: false }` を構築——`HeldModifiers::
+  read()` は呼ばない、呼び出し元が渡す値を信頼する設計——→ 指定された分だけ
   `push_release` → `target_vk` の Down/Up ペアを同一 `SendInput` バッチで送信
-  （`INJECTED_MARKER` 付き）→ `push_restore` を内包する）。`release_ctrl`/
+  （`INJECTED_MARKER` 付き）→ `push_restore` を内包する。`push_restore` 側は
+  `is_physical_key_down` で物理状態を再確認してから復元するため、`read()` を
+  経由しなくても安全）。`release_ctrl`/
   `release_shift` の由来は T4 参照——`find_match` がマッチした時点で
   `combo.ctrl == mods.ctrl`・`combo.shift == mods.shift` が成立しているため、
   マッチした `from` の combo を別途取得しなくても `event.modifier_snapshot`
