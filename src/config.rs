@@ -81,7 +81,15 @@ pub enum ConfirmMode {
     /// 待機モード: タイムアウトまで出力を保留
     #[default]
     Wait,
-    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え
+    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え。
+    ///
+    /// **廃止済み・本番では到達不能。** `AppConfig::validate()`
+    /// （`validate_thresholds`）がロード時に必ず `TwoPhase` +
+    /// `speculative_delay_ms=0` へ正規化する（両者は完全に等価、
+    /// `NicolaFsm::dispatch_confirm_mode` 参照）。このバリアント自体は
+    /// 既存 `config.toml` との `Deserialize` 互換のためだけに残しており、
+    /// 実際に構築される `NicolaFsm` がこの値を保持することはない
+    /// （テストでの直接構築を除く）。
     Speculative,
     /// 二段タイマー: 短い待機→投機出力→差し替え
     TwoPhase,
@@ -754,11 +762,22 @@ impl AppConfig {
             ));
             g.speculative_delay_ms = 30;
         }
-        Self::validate_percent_field("timing_margin_percent", &mut g.timing_margin_percent, 30, w);
+        // リセット先は GeneralConfig::default() の値そのものを参照する
+        // （/code-review指摘、PR #127、8回目: ここにハードコードした
+        // リテラルとdefault()の値が別々に管理されると、決定3で
+        // min_overlap_margin_percentの既定値を引き締める際に片方だけ
+        // 更新し忘れ、範囲外値が古い既定へリセットされ続ける事故になる）。
+        let defaults = GeneralConfig::default();
+        Self::validate_percent_field(
+            "timing_margin_percent",
+            &mut g.timing_margin_percent,
+            defaults.timing_margin_percent,
+            w,
+        );
         Self::validate_percent_field(
             "min_overlap_margin_percent",
             &mut g.min_overlap_margin_percent,
-            0,
+            defaults.min_overlap_margin_percent,
             w,
         );
     }
