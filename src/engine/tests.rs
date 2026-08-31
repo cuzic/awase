@@ -7743,6 +7743,20 @@ mod engine_integration_tests {
              解放されるべき（stuck key修正）: {:?}",
             effects_of(&d)
         );
+        // /code-review指摘（PR #126、4回目）: release_all_pending_outputが
+        // KeyUp(VK_D)を発行するのに加え、KeyLifecycle::flush_pending_key_ups
+        // 由来のReinjectKey(VK_D)も独立して発行されると、同じVKに対する
+        // KeyUpがOSへ二重に注入される。release_all_pending_outputが解放した
+        // VKはReinjectKeyから除外されるべき。
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::ReinjectKey(evt)) if evt.vk_code == VK_D
+            )),
+            "release_all_pending_outputで解放済みのVKはReinjectKeyで二重注入\
+             されるべきではない: {:?}",
+            effects_of(&d)
+        );
     }
 
     // ── on_input: lifecycle 登録条件 (line 264) ──

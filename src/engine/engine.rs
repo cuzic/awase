@@ -13,7 +13,7 @@
 
 use crate::config::ParsedKeyCombo;
 use crate::types::{
-    ContextChange, KeyClassification, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode,
+    ContextChange, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ShadowImeAction, VkCode,
 };
 
 use super::decision::{
@@ -606,20 +606,46 @@ impl Engine {
             .flush_to_effects(ContextChange::FocusChanged, ComposingHint::Unknown);
         effects.extend(flush_effects);
 
-        // Consume 済みで KeyUp が来ていないキーの KeyUp を再注入して
-        // OS 側のキーボード状態と整合させる。
-        let pending_key_ups = self.lifecycle.flush_pending_key_ups();
-        for evt in pending_key_ups {
-            effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
-        }
-        // output_history の pending_releases も同期して掃除する（ADR-112
+        // output_history の pending_releases を同期して掃除する（ADR-112
         // コードレビュー指摘）。フォーカス変更は実効状態（active/inactive）の
         // 遷移を伴わないことがあり（例: 両方とも日本語IMEのウィンドウ間の
         // 切替）、その場合 check_active_transition 内の同種の掃除は発火しない。
-        // 上の flush_pending_key_ups は実効状態を問わず無条件に発火するため、
+        // 下の flush_pending_key_ups は実効状態を問わず無条件に発火するため、
         // ここでも同期して呼ぶ必要がある（下の check_active_transition が
         // 追加で掃除を試みても、この時点で空になっているため無害）。
-        effects.extend(self.adapter.release_all_pending_output());
+        //
+        // 先に呼ぶ理由: これで解放された VK の集合を、次の
+        // flush_pending_key_ups の再注入から除外するため（/code-review
+        // 指摘）。KeyAction::Key(vk) 型のエントリはここで KeyUp(vk) が
+        // 発行されるが、その scan_code は多くの場合 KeyLifecycle が
+        // 追跡している「元の物理キーの vk」と一致する
+        // （resolve_pending_char_as_single のフォールバック等）ため、
+        // 両方を無条件に発行すると同じ VK に対して独立した KeyUp が
+        // OS へ二重に注入される。
+        let released_output_effects = self.adapter.release_all_pending_output();
+        let released_vks: std::collections::HashSet<VkCode> = released_output_effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|a| match a {
+                KeyAction::KeyUp(vk) => Some(*vk),
+                _ => None,
+            })
+            .collect();
+
+        // Consume 済みで KeyUp が来ていないキーの KeyUp を再注入して
+        // OS 側のキーボード状態と整合させる。上で release_all_pending_output
+        // が既に KeyUp(vk) を発行した VK は、二重注入を避けるため除外する。
+        let pending_key_ups = self.lifecycle.flush_pending_key_ups();
+        for evt in pending_key_ups {
+            if !released_vks.contains(&evt.vk_code) {
+                effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
+            }
+        }
+        effects.extend(released_output_effects);
 
         // 実効状態の遷移を検知
         let transition_effects = self.check_active_transition(ctx);
