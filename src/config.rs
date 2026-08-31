@@ -945,7 +945,7 @@ impl AppConfig {
 
         let jis_only_default = matches!(
             g.default_layout.trim_end_matches(".yab"),
-            "nicola" | "nicola_keytop" | "nicola_f"
+            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232"
         );
         if jis_only_default {
             w.push(format!(
@@ -1289,6 +1289,30 @@ keyboard_model = "us"
         let toml_str = r#"
 [general]
 keyboard_model = "us"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_repeat = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("nicola_us.yab")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_nicola_kb232_default_layout_warns() {
+        // /code-review指摘（PR #132）: nicola_kb232.yab追加時にJIS専用一覧への
+        // 追記が漏れていた。nicola_f.yabと同様、keyboard_model="us"では
+        // 列数超過でパースに失敗するため警告対象。
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+default_layout = "nicola_kb232.yab"
 left_thumb_key = "VK_F16"
 right_thumb_key = "VK_F17"
 

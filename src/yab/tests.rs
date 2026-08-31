@@ -1137,6 +1137,122 @@ fn test_load_nicola_f_yab_file() {
     }
 }
 
+#[test]
+fn test_load_nicola_kb232_yab_file() {
+    // report 01M15R86FJW24278GGD3ETS9QX（富士通純正キーボード「FMV-KB232」、
+    // docs/bug-reports-triage.md参照）で提供された、実機動作確認済みの配列。
+    let path = std::path::Path::new("layout/nicola_kb232.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
+
+    // BUG-95のクォート崩れ検出(yab::lint)に引っかからないこと。
+    assert!(
+        lint(&content).is_empty(),
+        "nicola_kb232.yab should not trigger yab::lint warnings"
+    );
+
+    assert!(!layout.normal.is_empty());
+    assert!(!layout.left_thumb.is_empty());
+    assert!(!layout.right_thumb.is_empty());
+    assert!(!layout.shift.is_empty());
+
+    // nicola_f.yab と同じくローマ字ではなく仮名を直接リテラルで持つ形式。
+    let a_pos = PhysicalPos::new(2, 0);
+    assert_eq!(
+        layout.normal.get(&a_pos),
+        Some(&YabValue::Literal("う".to_string()))
+    );
+
+    let literal = |s: &str| Some(YabValue::Literal(s.to_string()));
+
+    // KB232固有の記号配置。nicola_keytop.yab/nicola_f.yabのどちらとも一致しない
+    // （NICOLA本家仕様で定義済みの「、」の位置自体がQ段11列目からA段11列目へ
+    // 動いている等、単純な「余っているスロットへの記号追加」ではない）。
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 12)).cloned(),
+        literal("￥")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 11)),
+        Some(&YabValue::None)
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("＠")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 11)).cloned(),
+        literal("［")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(2, 10)).cloned(),
+        literal("、")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(2, 11)).cloned(),
+        literal("］")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(3, 10)).cloned(),
+        literal("￥")
+    );
+
+    // かな44キー配置は layout/nicola.yab と完全一致するはず（表記形式
+    // （リテラル vs ローマ字）が違うだけで物理位置ごとの意味は同じ）。
+    // /code-review指摘（PR #132）: 以前は normal 面の一部位置だけを手書き
+    // 列挙しており、left_thumb/right_thumb 面（濁音・半濁音等の残り約18キー）
+    // が未検証だった。nicola.yab で Romaji として定義されている全位置を
+    // 3面とも走査することで、44キー全体を機械的に網羅する。
+    let nicola = YabLayout::parse(
+        &std::fs::read_to_string("layout/nicola.yab").unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+    let kana_table = KanaTable::build();
+    let mut checked = 0;
+    for (face_name, nicola_face, kb232_face) in [
+        ("normal", &nicola.normal, &layout.normal),
+        ("left_thumb", &nicola.left_thumb, &layout.left_thumb),
+        ("right_thumb", &nicola.right_thumb, &layout.right_thumb),
+    ] {
+        for row in 0..4u8 {
+            for col in 0..13u8 {
+                let pos = PhysicalPos::new(row, col);
+                let Some(YabValue::Romaji { romaji, .. }) = nicola_face.get(&pos) else {
+                    continue; // かな以外(記号/無/Special)は本テストの対象外
+                };
+                let expected_kana = kana_table
+                    .kana_for_romaji(romaji)
+                    .unwrap_or_else(|| panic!("no kana mapping for romaji {romaji:?}"));
+                match kb232_face.get(&pos) {
+                    Some(YabValue::Literal(lit)) => {
+                        assert_eq!(
+                            lit.chars().next(),
+                            Some(expected_kana),
+                            "{face_name} face kana mismatch at ({row},{col})"
+                        );
+                        checked += 1;
+                    }
+                    other => panic!(
+                        "{face_name} face: unexpected value at ({row},{col}) in \
+                         nicola_kb232.yab: {other:?}"
+                    ),
+                }
+            }
+        }
+    }
+    // NICOLA本家の物理44キーは面ごとに異なる仮名を割り当てるため、
+    // normal/left_thumb/right_thumb の合計は44より多くなる（実測81）。
+    // ここでは「ループが実際に仮名セルを走査した」ことのサニティチェックのみ行う。
+    assert_eq!(
+        checked, 81,
+        "kana cell count changed — verify nicola.yab wasn't edited unexpectedly"
+    );
+}
+
 // ── to_fullwidth_str テスト ──
 
 #[test]

@@ -186,11 +186,12 @@ fn nicola_keytop_yab_component_is_bundled_with_never_overwrite() {
 /// その場編集されうるデータのため NeverOverwrite を付けている
 /// （`config_file_and_nicola_yab_components_have_never_overwrite` 参照）。
 #[test]
-fn nicola_us_and_nicola_f_yab_are_bundled_in_msi() {
+fn nicola_us_f_kb232_yab_are_bundled_in_msi() {
     let content = main_wxs();
     for (component_id, file) in [
         ("NicolaUsYab", r"dist\layout\nicola_us.yab"),
         ("NicolaFYab", r"dist\layout\nicola_f.yab"),
+        ("NicolaKb232Yab", r"dist\layout\nicola_kb232.yab"),
     ] {
         assert!(
             content.contains(&format!(r#"<Component Id="{component_id}""#)),

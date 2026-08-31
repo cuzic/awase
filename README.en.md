@@ -59,7 +59,8 @@ config.toml          ← configuration file
 layout/
   nicola.yab         ← NICOLA layout (Backspace/Escape substitute variant)
   nicola_keytop.yab  ← NICOLA layout (keytop-symbol variant, default for new installs)
-  nicola_f.yab       ← for genuine Fujitsu thumb-shift keyboards
+  nicola_f.yab       ← for genuine Fujitsu thumb-shift keyboards (e.g. FKB7628-801)
+  nicola_kb232.yab   ← for genuine Fujitsu thumb-shift keyboards (FMV-KB232)
   nicola_us.yab      ← US layout
 data/
   ngram_hiragana.csv.gz  ← n-gram corpus (optional)
@@ -186,6 +187,8 @@ The standard NICOLA layouts are bundled in two JIS variants. Both share the iden
 For a US layout, use `layout/nicola_us.yab`. Because a US keyboard physically lacks the Muhenkan/Henkan keys, the settings screen lets you impersonate thumb keys onto the left/right Alt keys, or assign the Space key as a thumb key.
 
 `layout/nicola_f.yab` is also bundled for genuine Fujitsu thumb-shift keyboards (e.g. FKB7628-801). Its physical key layout and scan codes are identical to a JIS keyboard, so `keyboard_model` should stay `"jis"` — just set `default_layout` to `"nicola_f.yab"`.
+
+The genuine Fujitsu thumb-shift keyboard "FMV-KB232" has a different symbol layout than `nicola_f.yab`, so a dedicated `layout/nicola_kb232.yab` is bundled as well. Set `default_layout` to `"nicola_kb232.yab"` (`keyboard_model` stays `"jis"`). This layout comes from a single user's real hardware, so other units or model variants may not match exactly.
 
 ---
 

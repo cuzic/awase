@@ -59,7 +59,8 @@ config.toml          ← 設定ファイル
 layout/
   nicola.yab         ← NICOLA 配列（Backspace/Escape 代用版）
   nicola_keytop.yab  ← NICOLA 配列（記号キートップ通り出力版、新規インストールの既定）
-  nicola_f.yab       ← 富士通純正親指シフトキーボード向け
+  nicola_f.yab       ← 富士通純正親指シフトキーボード(FKB7628-801等)向け
+  nicola_kb232.yab   ← 富士通純正親指シフトキーボード(FMV-KB232)向け
   nicola_us.yab      ← US 配列
 data/
   ngram_hiragana.csv.gz  ← n-gram コーパス（任意）
@@ -184,6 +185,8 @@ NICOLA 標準配列は JIS 配列として2種類同梱しています。両方�
 US 配列では `layout/nicola_us.yab` を使用します。無変換/変換キーが物理的に無いため、設定画面で左右 Alt キーを親指キーとしてなりすまさせる、または Space キーを親指キーに割り当てることができます。
 
 富士通純正親指シフトキーボード（FKB7628-801 等）向けに `layout/nicola_f.yab` も同梱しています。物理キー配列・スキャンコードは JIS キーボードと共通のため `keyboard_model` は `"jis"` のままで構いません。`default_layout` を `"nicola_f.yab"` に変更してください。
+
+富士通純正親指シフトキーボード「FMV-KB232」は `nicola_f.yab` とも記号配置が異なるため、専用の `layout/nicola_kb232.yab` を用意しています。`default_layout` を `"nicola_kb232.yab"` に変更してください（`keyboard_model` は `"jis"` のまま）。ユーザー1名の実機環境から提供された配列のため、他の個体・型番違いで記号配置が一致しない可能性があります。
 
 ---
 

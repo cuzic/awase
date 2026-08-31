@@ -149,6 +149,14 @@
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaFYab"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
+      <!-- layout/nicola_kb232.yab（富士通純正キーボード「FMV-KB232」向け、
+           report 01M15R86FJW24278GGD3ETS9QX）。NicolaUsYab/NicolaFYabと同じ
+           理由でNeverOverwrite="yes"。 -->
+      <Component Id="NicolaKb232Yab" Guid="1E99EC47-D079-4BBB-83E3-781EE85357A6" NeverOverwrite="yes">
+        <File Source="dist\layout\nicola_kb232.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKb232Yab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <!-- Data files（ユーザーが編集する手段を持たないプログラム資産のため
