@@ -167,13 +167,11 @@ impl Runtime {
             self.platform_state.focus.focus_epoch.wrapping_add(1);
         self.platform.notify_focus_changed();
 
-        let process_name = self.platform.focus.process_name().to_owned();
-        self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+        self.recompute_active_keymaps();
         log::debug!(
-            "[keymap] active rules updated: {} rule(s) for process={:?} \
+            "[keymap] active rules updated on focus change: {} rule(s) \
              (hwnd={:?} kind={:?} focus_epoch={})",
             self.platform_state.keymap.active_keymaps.len(),
-            process_name,
             classified.hwnd,
             classified.kind,
             self.platform_state.focus.focus_epoch,

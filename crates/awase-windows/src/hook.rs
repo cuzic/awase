@@ -485,6 +485,21 @@ fn cached_hook_config() -> HookConfig {
     }
 }
 
+/// 現在キャッシュされている左右親指キーの VK コードを返す。
+///
+/// `cached_hook_config()` の `CACHED_THUMB_VKS` 復元ロジックの公開版
+/// （ADR-114 T1b/T7）。`[[keymap]]` の禁止 VK チェック（`KeymapTable::new`）が
+/// `resolve_thumb_key(...)` の if-let スコープに依存せず親指 vk を取得できる
+/// ようにするために追加した——`resolve_thumb_key` が失敗した設定
+/// （"Invalid thumb key names" 警告）では新しい親指 vk が確定しないが、
+/// この関数は前回成功した値（bootstrap または直近の成功した reload）を
+/// 引き続き返すため、reload 経路がブロックされない。
+#[must_use]
+pub fn thumb_vk_codes() -> (VkCode, VkCode) {
+    let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    (VkCode((packed >> 16) as u16), VkCode(packed as u16))
+}
+
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
 pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
     CACHED_THUMB_VKS.store(

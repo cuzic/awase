@@ -1555,10 +1555,36 @@ impl Runtime {
                 config.general.right_thumb_key,
             );
         }
+        // [[keymap]] の再構築（ADR-114 決定8）。`resolve_thumb_key` の if-let
+        // ブロックの**外・後**に置くこと——ブロック内に置くと上の `else`
+        // （"Invalid thumb key names"）に落ちたときに親指 vk が確定せず
+        // reload が丸ごとスキップされる。`hook::thumb_vk_codes()` は
+        // if-let の成否に関わらず現在キャッシュされている値（bootstrap
+        // または直近の成功した reload の値）を返すため、ここで安全に使える。
+        let (left_thumb_vk, right_thumb_vk) = crate::hook::thumb_vk_codes();
+        self.all_keymaps =
+            crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
+        self.recompute_active_keymaps();
         log::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
             config.general.speculative_delay_ms,
+        );
+    }
+
+    /// `active_keymaps` を `all_keymaps` から再計算する（ADR-114 決定8）。
+    ///
+    /// フォーカス変更時（`focus_tracking.rs::enter_focus_scope`）と
+    /// `reload_config` 経路（`apply_config_update`）の両方から呼ぶ、
+    /// 唯一の書き込み点。書き込み点を2つに増やさない（`enter_focus_scope`
+    /// が過去に同種の重複を統合した経緯と同じ理由）。
+    fn recompute_active_keymaps(&mut self) {
+        let process_name = self.platform.focus.process_name().to_owned();
+        self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+        log::debug!(
+            "[keymap] active rules recomputed: {} rule(s) for process={:?}",
+            self.platform_state.keymap.active_keymaps.len(),
+            process_name,
         );
     }
 
