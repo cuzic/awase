@@ -3025,3 +3025,64 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
          finish_probe_stage のみ)と異なります(実際: {count})。"
     );
 }
+
+/// `deliver_key_event` 内の早期return順序を固定する（ADR-114 決定2 r4収束版）。
+///
+/// 「latch チェック（KeyUp 解放 + KeyDown repeat 抑制）→ `PumpContext::Nested`
+/// 早期return → `FocusKind::NonText` パススルー → `[[keymap]]` KeyDown 新規照合
+/// （`active_keymaps.find_match`）→ `[[post_bypass]]` 消費」の順序がソース上の
+/// 出現順そのものであることを固定する。この順序を崩すと、latch が残った vk の
+/// KeyDown/KeyUp が Nested/NonText 早期returnで素通りしてしまう構造的リーク
+/// （BUG-100 の経路1・2 と同型）が復活する。`deliver_key_event` 自体は
+/// Windows 依存（`FocusKind`/`SendInput`）が強く実行時テストが難しいため、
+/// ソーステキスト走査で順序を固定する（`architecture_guard.rs` の他のテストと
+/// 同じ手法）。
+#[test]
+fn deliver_key_event_keymap_latch_check_precedes_nested_and_nontext_early_returns() {
+    let content = read_crate_file("src/runtime/message_handlers.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "pub(crate) fn deliver_key_event(");
+
+    // `keymap_latch` を検索キーにする（`.is_latched(...)` は cargo fmt で
+    // メソッドチェーンが複数行に折り返されうるため、改行を跨がない単一
+    // identifier で検索する）。
+    let latch_idx = body
+        .find("keymap_latch")
+        .expect("deliver_key_event must check keymap_latch");
+    let nested_idx = body
+        .find("KeyOrigin::Hook(PumpContext::Nested)")
+        .expect("deliver_key_event must check KeyOrigin::Hook(PumpContext::Nested)");
+    let nontext_idx = body
+        .find("FocusKind::NonText")
+        .expect("deliver_key_event must check FocusKind::NonText");
+    let find_match_idx = body
+        .find("active_keymaps")
+        .expect("deliver_key_event must call active_keymaps.find_match");
+    let post_bypass_idx = body
+        .find("consume_post_bypass(app, event, is_key_down)")
+        .expect("deliver_key_event must call consume_post_bypass");
+
+    assert!(
+        latch_idx < nested_idx,
+        "keymap_latch のチェックは PumpContext::Nested 早期returnより前に \
+         置くこと（ADR-114 決定2）。さもないと latch 中の vk が Nested \
+         早期returnで素通りし latch が解放されない。"
+    );
+    assert!(
+        latch_idx < nontext_idx,
+        "keymap_latch のチェックは FocusKind::NonText 早期returnより前に \
+         置くこと（ADR-114 決定2）。さもないと latch 中の vk が NonText \
+         早期returnで素通りし latch が解放されない。"
+    );
+    assert!(
+        nontext_idx < find_match_idx,
+        "[[keymap]] の新規照合（find_match）は FocusKind::NonText 早期returnの \
+         後に置くこと（ADR-114 決定2、v1 スコープでは NonText では効かない \
+         既知の限界）。"
+    );
+    assert!(
+        find_match_idx < post_bypass_idx,
+        "[[keymap]] の新規照合は [[post_bypass]] 消費より前に置くこと \
+         （ADR-114 決定2、[[keymap]] が NICOLA エンジンに一切見せないため）。"
+    );
+}
