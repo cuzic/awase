@@ -82,6 +82,14 @@ fn main() -> Result<()> {
             && awase_linux::hook::classify_modifier(u32::from(right_thumb.0))
                 != Some(ModifierKey::Shift),
     );
+    // /code-review指摘（PR #127、3回目）: timing_margin_percent/
+    // min_overlap_margin_percentをconfig.tomlで設定可能にしたが、Windows側
+    // （crates/awase-windows/src/app/bootstrap.rs）のset_timing_margins呼び出し
+    // に対応する配線がこのstubには無く、値を設定しても無反応だった。
+    fsm.set_timing_margins(
+        config.general.timing_margin_percent,
+        config.general.min_overlap_margin_percent,
+    );
     let mut engine = Engine::new(
         fsm,
         SpecialKeyCombos {
