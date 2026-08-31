@@ -3086,3 +3086,78 @@ fn deliver_key_event_keymap_latch_check_precedes_nested_and_nontext_early_return
          （ADR-114 決定2、[[keymap]] が NICOLA エンジンに一切見せないため）。"
     );
 }
+
+// ── PR #127: プラットフォームエントリポイントの配線漏れ ──────────────
+
+/// `NicolaFsm::new` はコンストラクタ引数を持つが、`timing_margin_percent`/
+/// `min_overlap_margin_percent`（`GeneralConfig` 由来のユーザー設定値）は
+/// コンストラクタ直後の `apply_general_config` 呼び出しで別途反映する設計に
+/// なっている（`src/engine/nicola_fsm.rs` のフィールド doc 参照）。コンパイラは
+/// この呼び出し漏れを検知できない——`NicolaFsm::new` はコンストラクタ既定値
+/// だけで黙って動き続ける。
+///
+/// PR #127（`feat/confirm-mode-simplify`）のコードレビューで、この呼び出しが
+/// `awase-linux`/`awase-macos` の両方で実際に漏れていたことが発覚した
+/// （config.toml で値を設定してもFSMに一切反映されず無反応だった）。3プラット
+/// フォームそれぞれに個別の `set_timing_margins` 呼び出しをコピペしていたのが
+/// 原因の一つだったため、`NicolaFsm::apply_general_config`/
+/// `Engine::apply_general_config` へ一本化した（同コードレビュー7回目）。
+/// 同種の見落としを新しいプラットフォームエントリポイントが追加された際にも
+/// 機械的に検知する第二の防衛線として、このガードテストを維持する。
+///
+/// `apply_general_config` の呼び出しが `NicolaFsm::new` より**後**（テキスト
+/// 上のオフセットが大きい）にあることまで確認する（同7回目指摘: 単純な
+/// 部分文字列の有無だけだと、無関係な別インスタンスへの呼び出しやコメント中の
+/// 言及でも素通りしてしまう）。
+///
+/// 相対パスは `crates/awase-windows`（このクレートの `CARGO_MANIFEST_DIR`）
+/// 基準。`awase-linux`/`awase-macos` は兄弟クレートのため `../` で辿る。
+#[test]
+fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() {
+    const PLATFORM_ENTRY_POINTS: &[&str] = &[
+        "src/app/bootstrap.rs",
+        "../awase-linux/src/main.rs",
+        "../awase-macos/src/main.rs",
+    ];
+    for path in PLATFORM_ENTRY_POINTS {
+        let content = read_crate_file(path);
+        // /code-review指摘（PR #127、8回目）: 単純な部分文字列一致だと、
+        // NicolaFsm::new より後にあるコメント（例: 削除済みの呼び出しに
+        // 言及するTODOや過去のレビュー指摘コメント）が偶然
+        // `.apply_general_config(` を含むだけで素通りしてしまう。
+        // 他のガードテストと同じく `//` 行コメントを除いた本文だけを見る。
+        let production = non_comment_lines(production_code_only(&content));
+        let Some(construct_pos) = production.find("NicolaFsm::new(") else {
+            continue;
+        };
+        let wires_margins_after = production
+            .find(".apply_general_config(")
+            .is_some_and(|pos| pos > construct_pos);
+        assert!(
+            wires_margins_after,
+            "{path} は NicolaFsm::new(...) を呼んでいるが、その後に \
+             apply_general_config(...) を呼んでいない（見つからない、または \
+             construct より前にしかない）。GeneralConfig の \
+             timing_margin_percent/min_overlap_margin_percent（config.toml 由来の \
+             ユーザー設定値）がこのプラットフォームでは無反応になる \
+             （PR #127 コードレビュー: awase-linux/awase-macos の両方で\
+             実際に起きた見落とし）。"
+        );
+        // /code-review指摘（PR #127、9回目）: 上の位置チェックは「最初の
+        // NicolaFsm::new より後にapply_general_configが1回でもあるか」
+        // しか見ておらず、同一ファイルに将来2つ目の独立した構築箇所（例:
+        // 診断用の別経路）が追加され、そちらだけ配線を忘れても検知できない。
+        // 構築回数と配線回数が一致することも合わせて確認する（完全な
+        // 「どの構築がどの配線に対応するか」までは検証しないが、本ファイルの
+        // 他のガードテストと同じ粒度のヒューリスティックとしては十分）。
+        let construct_count = production.matches("NicolaFsm::new(").count();
+        let wire_count = production.matches(".apply_general_config(").count();
+        assert_eq!(
+            construct_count, wire_count,
+            "{path}: NicolaFsm::new(...) の出現回数({construct_count})と \
+             apply_general_config(...) の出現回数({wire_count})が一致しません。\
+             同一ファイル内に複数の構築箇所がある場合、そのうちどれかが \
+             apply_general_config を呼び忘れている可能性があります。"
+        );
+    }
+}

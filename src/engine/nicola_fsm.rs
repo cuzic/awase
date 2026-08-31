@@ -3,7 +3,7 @@
 use smallvec::{smallvec, SmallVec};
 use timed_fsm::{Response, ShiftReduceParser};
 
-use crate::config::ConfirmMode;
+use crate::config::{ConfirmMode, GeneralConfig};
 use crate::engine::input_tracker::PhysicalKeyState;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
@@ -91,17 +91,33 @@ pub struct NicolaFsm {
     /// 同時打鍵の判定閾値（マイクロ秒）
     pub(crate) threshold_us: u64,
 
-    /// 重なり不足判定のマージン（%）。既定は `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`
-    /// （ADR-112決定1）。テストで `set_min_overlap_margin_percent_for_test` を
-    /// 使うと、このモジュールの単体テストが検証する `MIN_OVERLAP_MARGIN_PERCENT`
-    /// （15%）相当のアルゴリズム挙動を NicolaFsm 統合レベルでも検証できる。
-    pub(crate) min_overlap_margin_percent: u64,
-
     /// エンジンの有効/無効
     pub(crate) enabled: bool,
 
     /// n-gram モデル（None なら固定閾値にフォールバック）
     pub(crate) ngram_model: Option<NgramModel>,
+
+    /// 3キー仲裁のタイミングマージン（%）。`timing::TIMING_MARGIN_PERCENT`
+    /// （既定30）を初期値とし、`set_timing_margins` で上書きできる
+    /// （`GeneralConfig::timing_margin_percent` 参照）。ADR-112 決定1のような
+    /// 安全上の制約は無く、`bootstrap` が起動直後に必ず一度 `set_timing_margins`
+    /// を呼ぶため、実質的な既定値は `GeneralConfig::timing_margin_percent`
+    /// （config.rs、既定30）が決める。
+    pub(crate) timing_margin_percent: u64,
+
+    /// 重なり不足判定のマージン（%）。構築直後の初期値は
+    /// `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（0、ADR-112決定1）だが、
+    /// `bootstrap` が起動直後に必ず一度 `set_timing_margins` を呼ぶため、
+    /// 実運用での既定値は実質的に `GeneralConfig::min_overlap_margin_percent`
+    /// （config.rs）が決める。**この設定項目のユーザー向け既定値も 0 のまま
+    /// にしてある**（決定1の「実機ソークで確認するまで重なり不足判定を
+    /// 無効化する」という安全側の意図を、設定可能にした後も壊さないため）。
+    /// 実機ソーク後、実測付きで別コミット/別ADRとして両方の既定値を
+    /// 引き締める（決定3、本ADRのスコープ外）。テストで
+    /// `set_min_overlap_margin_percent_for_test` を使うと、このモジュールの
+    /// 単体テストが検証する `MIN_OVERLAP_MARGIN_PERCENT`（15%）相当の
+    /// アルゴリズム挙動を NicolaFsm 統合レベルでも検証できる。
+    pub(crate) min_overlap_margin_percent: u64,
 
     /// 確定モード
     pub(crate) confirm_mode: ConfirmMode,
@@ -279,9 +295,10 @@ impl NicolaFsm {
             layout,
             state: EngineState::Idle,
             threshold_us: u64::from(threshold_ms) * 1000,
-            min_overlap_margin_percent: RUNTIME_MIN_OVERLAP_MARGIN_PERCENT,
             enabled: true,
             ngram_model: None,
+            timing_margin_percent: timing::TIMING_MARGIN_PERCENT,
+            min_overlap_margin_percent: RUNTIME_MIN_OVERLAP_MARGIN_PERCENT,
             confirm_mode,
             speculative_delay_us: u64::from(speculative_delay_ms) * 1000,
             last_key_timestamp: None,
@@ -651,10 +668,40 @@ impl NicolaFsm {
             self.ngram_model.as_ref(),
             self.output_history.recent_kana(timing::NGRAM_CONTEXT_SIZE),
         )
-        .with_min_overlap_margin_percent(self.min_overlap_margin_percent)
+        .with_margins(self.timing_margin_percent, self.min_overlap_margin_percent)
     }
 
-    /// テスト用: 重なり不足判定のマージンを上書きする。
+    /// 3キー仲裁・重なり判定のタイミングマージンを更新する
+    /// （`GeneralConfig::timing_margin_percent`/`min_overlap_margin_percent`）。
+    /// `bootstrap` が起動直後に必ず一度呼ぶため、これが実運用での実質的な
+    /// 既定値決定点になる（`min_overlap_margin_percent` フィールドの doc 参照）。
+    pub fn set_timing_margins(
+        &mut self,
+        timing_margin_percent: u32,
+        min_overlap_margin_percent: u32,
+    ) {
+        self.timing_margin_percent = u64::from(timing_margin_percent);
+        self.min_overlap_margin_percent = u64::from(min_overlap_margin_percent);
+    }
+
+    /// `GeneralConfig` の調整可能フィールドを一括反映する。
+    ///
+    /// プラットフォームエントリポイント（`bootstrap.rs`/`awase-linux`/
+    /// `awase-macos`）がそれぞれ個別に `set_timing_margins` 呼び出しを
+    /// コピペしていたが、この重複自体が `awase-linux`/`awase-macos` での
+    /// 呼び忘れの原因になった（/code-review指摘、PR #127、7回目）。
+    /// 将来 `GeneralConfig` に他のFSM調整項目が増えたら、ここに追加すれば
+    /// 全プラットフォームへ自動的に反映される。
+    pub fn apply_general_config(&mut self, config: &GeneralConfig) {
+        self.set_timing_margins(
+            config.timing_margin_percent,
+            config.min_overlap_margin_percent,
+        );
+    }
+
+    /// テスト用: 重なり不足判定のマージンだけを上書きする
+    /// （`timing_margin_percent` には触れない、bare `NicolaFsm` レベルの
+    /// 既存テスト群が構築直後の値に依存しているため）。
     /// 本番既定は `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（ADR-112決定1）。
     #[cfg(test)]
     pub(crate) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {

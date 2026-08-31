@@ -81,7 +81,15 @@ pub enum ConfirmMode {
     /// 待機モード: タイムアウトまで出力を保留
     #[default]
     Wait,
-    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え
+    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え。
+    ///
+    /// **廃止済み・本番では到達不能。** `AppConfig::validate()`
+    /// （`validate_thresholds`）がロード時に必ず `TwoPhase` +
+    /// `speculative_delay_ms=0` へ正規化する（両者は完全に等価、
+    /// `NicolaFsm::dispatch_confirm_mode` 参照）。このバリアント自体は
+    /// 既存 `config.toml` との `Deserialize` 互換のためだけに残しており、
+    /// 実際に構築される `NicolaFsm` がこの値を保持することはない
+    /// （テストでの直接構築を除く）。
     Speculative,
     /// 二段タイマー: 短い待機→投機出力→差し替え
     TwoPhase,
@@ -115,6 +123,19 @@ pub struct GeneralConfig {
     pub ngram_min_threshold_ms: u32,
     /// n-gram 適応閾値の上限（ミリ秒、デフォルト 120ms）
     pub ngram_max_threshold_ms: u32,
+    /// 3キー仲裁のタイミングマージン（%、デフォルト30）。char1→thumb→char2の
+    /// 3キーが来た場合、d1(thumb-char1)とd2(char2-thumb)の差がこの割合を
+    /// 超えればタイミングだけで確定し、n-gramタイブレークを行わない。
+    pub timing_margin_percent: u32,
+    /// 重なり不足判定のマージン（%、デフォルト0）。thumb押下からchar1解放までの
+    /// 物理的な重なり時間が閾値のこの割合未満なら「重なり不足」とみなし、
+    /// n-gramタイブレークに回す（無ければ単独打鍵扱い）。既定値0は
+    /// ADR-112決定1（`docs/adr/112-keyup-lifecycle-fsm-delivery.md`）に合わせて
+    /// 意図的に「常に重なり十分」＝この判定を実質無効化した値。KeyUpがFSMへ
+    /// 実際に届くようになった影響を実機ソークで確認するまでの安全側の初期値
+    /// であり、実測付きで引き締めるまで新規インストールの既定を15へ戻さない
+    /// こと（決定3）。上級者設定から手動で上げることはできる。
+    pub min_overlap_margin_percent: u32,
     /// 確定モード（デフォルト: wait）
     pub confirm_mode: ConfirmMode,
     /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming と
@@ -354,6 +375,8 @@ impl Default for GeneralConfig {
             ngram_adjustment_range_ms: 20,
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
+            timing_margin_percent: 30,
+            min_overlap_margin_percent: 0,
             confirm_mode: ConfirmMode::Wait,
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
@@ -592,7 +615,7 @@ pub struct PostBypassRule {
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
 /// このファイルにはアプリ全体の設定のみを含む。
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -692,8 +715,46 @@ pub struct ValidatedConfig {
     pub post_bypass: Vec<PostBypassRule>,
 }
 
+impl From<ValidatedConfig> for AppConfig {
+    /// 検証済み設定を保存・再表示可能な `AppConfig` へ戻す。
+    ///
+    /// `validate()` が行った正規化（例: `confirm_mode = "speculative"` →
+    /// `two_phase` + `speculative_delay_ms=0`）を、保存先やUIの表示に
+    /// 反映したい呼び出し元向け（/code-review指摘: `awase-settings` の
+    /// `apply_confirmed()` が以前は警告文の生成にしか `validate()` の
+    /// 戻り値を使わず、保存対象は未検証の生設定のままだった）。
+    fn from(v: ValidatedConfig) -> Self {
+        Self {
+            general: v.general,
+            keys: v.keys,
+            app_overrides: v.app_overrides,
+            keymaps: v.keymaps,
+            post_bypass: v.post_bypass,
+        }
+    }
+}
+
 impl AppConfig {
     fn validate_thresholds(g: &mut GeneralConfig, w: &mut Vec<String>) {
+        // confirm_mode = "speculative" は廃止（TwoPhase の speculative_delay_ms=0 と
+        // 完全に等価なため独立バリアントとして残す理由がない）。既存 config.toml との
+        // 互換のため ConfirmMode::Speculative 自体は型として残すが、ここで必ず
+        // TwoPhase + delay=0 に正規化し、以降 FSM が Speculative を受け取ることはない。
+        // 「完全に等価」が成り立つのは、NicolaFsm::dispatch_confirm_mode
+        // （engine/confirm_policy.rs）がTwoPhase(delay=0)をidle_speculative
+        // へ直接ディスパッチするため（/code-review指摘、PR #127: idle_two_phase
+        // 経由だとWindowsのSetTimerがUSER_TIMER_MINIMUM未満に短縮されないため
+        // 0ms待機が実質10ms前後の待機になり、その間に届く後続キーの状態が
+        // 変わってしまい「等価」が崩れていた）。
+        if g.confirm_mode == ConfirmMode::Speculative {
+            w.push(
+                "confirm_mode \"speculative\" は廃止されました。\
+                 two_phase (speculative_delay_ms=0) として扱います。"
+                    .to_string(),
+            );
+            g.confirm_mode = ConfirmMode::TwoPhase;
+            g.speculative_delay_ms = 0;
+        }
         if g.simultaneous_threshold_ms < 10 || g.simultaneous_threshold_ms > 500 {
             w.push(format!(
                 "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
@@ -707,6 +768,36 @@ impl AppConfig {
                 g.speculative_delay_ms, g.simultaneous_threshold_ms
             ));
             g.speculative_delay_ms = 30;
+        }
+        // リセット先は GeneralConfig::default() の値そのものを参照する
+        // （/code-review指摘、PR #127、8回目: ここにハードコードした
+        // リテラルとdefault()の値が別々に管理されると、決定3で
+        // min_overlap_margin_percentの既定値を引き締める際に片方だけ
+        // 更新し忘れ、範囲外値が古い既定へリセットされ続ける事故になる）。
+        let defaults = GeneralConfig::default();
+        Self::validate_percent_field(
+            "timing_margin_percent",
+            &mut g.timing_margin_percent,
+            defaults.timing_margin_percent,
+            w,
+        );
+        Self::validate_percent_field(
+            "min_overlap_margin_percent",
+            &mut g.min_overlap_margin_percent,
+            defaults.min_overlap_margin_percent,
+            w,
+        );
+    }
+
+    /// `0..=100` の範囲外なら警告を積んで `default` にリセットする
+    /// （/code-review指摘、PR #127: `timing_margin_percent`/
+    /// `min_overlap_margin_percent` で同一形の検証がコピペされていた）。
+    fn validate_percent_field(name: &str, value: &mut u32, default: u32, w: &mut Vec<String>) {
+        if *value > 100 {
+            w.push(format!(
+                "{name} ({value}) は 0-100 の範囲外です。{default} にリセットします"
+            ));
+            *value = default;
         }
     }
 
@@ -1451,6 +1542,32 @@ speculative_delay_ms = 80
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.speculative_delay_ms, 30);
         assert!(warnings.iter().any(|w| w.contains("speculative_delay_ms")));
+    }
+
+    #[test]
+    fn test_validate_confirm_mode_speculative_is_normalized_to_two_phase_zero_delay() {
+        let toml_str = r#"
+[general]
+confirm_mode = "speculative"
+speculative_delay_ms = 30
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.confirm_mode, ConfirmMode::TwoPhase);
+        assert_eq!(validated.general.speculative_delay_ms, 0);
+        assert!(warnings.iter().any(|w| w.contains("speculative")));
+    }
+
+    #[test]
+    fn test_validate_confirm_mode_wait_is_untouched() {
+        let toml_str = r#"
+[general]
+confirm_mode = "wait"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.confirm_mode, ConfirmMode::Wait);
+        assert!(warnings.is_empty());
     }
 
     #[test]

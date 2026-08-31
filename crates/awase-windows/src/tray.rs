@@ -807,27 +807,77 @@ pub(crate) fn handle_autostart_toggle() {
     };
 
     if success {
-        save_auto_start_config(new_value);
-        let _ = crate::with_app(|app| {
-            app.show_tray_balloon("awase", msg);
-        });
+        // /code-review指摘（PR #127、5回目）: save_auto_start_configが
+        // Vec<String>を返す実装だと「警告0件で成功」と「読み込み/保存自体が
+        // 失敗」がどちらも空Vecになり区別できず、実際には保存に失敗していても
+        // 成功バルーンが出てしまっていた。Option<Vec<String>>にし、
+        // Noneを保存失敗として明示的に扱う。
+        match save_auto_start_config(new_value) {
+            Some(warnings) if warnings.is_empty() => {
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon("awase", msg);
+                });
+            }
+            Some(warnings) => {
+                // /code-review指摘（PR #127、3回目）: save_auto_start_config
+                // がvalidate()を経由するようになったことで、config.toml内の
+                // 他の項目（例: 廃止済みconfirm_mode="speculative"、範囲外の
+                // simultaneous_threshold_ms等）がauto_start切替のついでに
+                // 無言でリセットされうる。以前はlog::warn!だけで、トレイ経由
+                // の操作にはコンソールが無くユーザーには実質見えなかった。
+                // 既存のバルーン通知機構を使い、警告をユーザーへ可視化する。
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — 設定を修正しました",
+                        &format!("{msg}\n{}", warnings.join("\n")),
+                    );
+                });
+            }
+            None => {
+                let _ = crate::with_app(|app| {
+                    app.show_tray_balloon(
+                        "awase — 保存に失敗しました",
+                        "自動起動の設定は変更されましたが、config.tomlへの保存に\
+                         失敗しました。ログを確認してください。",
+                    );
+                });
+            }
+        }
     }
 }
 
-/// config.toml の `auto_start` 値を書き換えて保存する。
-fn save_auto_start_config(value: &str) {
+/// config.toml の `auto_start` 値を書き換えて保存する。`Some(warnings)`
+/// なら保存に成功（`warnings`は検証で正規化・警告が発生した項目、無ければ
+/// 空）、`None`なら読み込み/保存自体が失敗（呼び出し元は成功バルーンを
+/// 出してはならない）。
+fn save_auto_start_config(value: &str) -> Option<Vec<String>> {
     let Ok(config_path) = crate::app::find_config_path() else {
         log::warn!("Could not find config path to save auto_start");
-        return;
+        return None;
     };
     match awase::config::AppConfig::load(&config_path) {
         Ok(mut config) => {
             config.general.auto_start = value.to_string();
+            // /code-review指摘（PR #127）: validate()を経由せず生のconfigを
+            // そのまま保存すると、confirm_mode="speculative"のような廃止済み
+            // 設定値が正規化されないまま再保存され、トレイのauto_start切替
+            // だけを経由するユーザーはこの移行が永久に完了しない。他の保存経路
+            // （設定画面のapply_confirmed）と同様、保存前に必ずvalidate()を通す。
+            let (validated, warnings) = config.validate();
+            for w in &warnings {
+                log::warn!("Config validation warning while saving auto_start: {w}");
+            }
+            let config = awase::config::AppConfig::from(validated);
             if let Err(e) = config.save(&config_path) {
                 log::error!("Failed to save auto_start config: {e}");
+                return None;
             }
+            Some(warnings)
         }
-        Err(e) => log::error!("Failed to load config for saving auto_start: {e}"),
+        Err(e) => {
+            log::error!("Failed to load config for saving auto_start: {e}");
+            None
+        }
     }
 }
 

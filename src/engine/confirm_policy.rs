@@ -18,8 +18,14 @@ impl NicolaFsm {
     pub(crate) fn dispatch_confirm_mode(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         match self.confirm_mode {
             ConfirmMode::Wait => self.idle_wait(ev),
+            // `AppConfig::validate_thresholds`（config.rs）がconfirm_mode=
+            // "speculative"を必ずTwoPhase+delay=0へ正規化するため、この分岐は
+            // 本番経路（bootstrap等、validate()を通ったconfigからNicolaFsmを
+            // 構築する全経路）には到達しない。直接NicolaFsm::newを呼ぶ
+            // テスト・後方互換の型としてのみ生存している（/code-review指摘、
+            // PR #127、6回目）。
             ConfirmMode::Speculative => self.idle_speculative(ev),
-            ConfirmMode::TwoPhase => self.idle_two_phase(ev),
+            ConfirmMode::TwoPhase => self.idle_two_phase_or_speculative(ev),
             ConfirmMode::AdaptiveTiming => {
                 let is_continuous = self
                     .last_key_gap_us
@@ -27,10 +33,40 @@ impl NicolaFsm {
                 if is_continuous {
                     self.idle_wait(ev)
                 } else {
-                    self.idle_two_phase(ev)
+                    self.idle_two_phase_or_speculative(ev)
                 }
             }
             ConfirmMode::NgramPredictive => self.idle_ngram(ev),
+        }
+    }
+
+    /// `idle_two_phase` へディスパッチする全箇所（`dispatch_confirm_mode` の
+    /// `TwoPhase`/`AdaptiveTiming` 分岐、`idle_ngram` の n-gram モデル未読込
+    /// フォールバック）が共通で使うヘルパー。
+    ///
+    /// `speculative_delay_us == 0` のときは `idle_two_phase` を経由せず
+    /// `idle_speculative` へ直接ディスパッチする（/code-review指摘、
+    /// PR #127）。`idle_two_phase` は `SpeculativeWait` タイマー
+    /// （delay_us分）を張ってから投機出力するのに対し、`idle_speculative`
+    /// は同一の呼び出し内で即座に出力して `SpeculativeChar` へ遷移する。
+    /// 「delay=0なら待たずに直接遷移する」というこの判定自体はプラット
+    /// フォーム非依存（ADR-019）で、どのOSでも意味のある最適化——
+    /// タイマーの往復1回分、後続キーが `PendingChar` のまま処理される窓を
+    /// 単純に無くすだけ。ただしこれを**必須**にした実測上の動機はWindows
+    /// 固有: WindowsのSetTimerはUSER_TIMER_MINIMUM（10ms）未満に短縮
+    /// されないため、delay_us=0を指定してもその間に届いた後続キーが
+    /// `SpeculativeChar` ではなく `PendingChar` 状態で処理されてしまい、
+    /// `confirm_mode="speculative"` 廃止時のTwoPhase(delay=0)正規化
+    /// （`config.rs::validate_thresholds`）が主張する「完全に等価」が崩れて
+    /// いた（他OSのタイマー実装がdelay=0を真に即時扱いするなら、この分岐は
+    /// そちらでは理論上の最適化に留まり必須ではないが、無害かつ一貫した
+    /// 挙動になる）。この判定を複数箇所に個別実装すると、将来どれか一箇所
+    /// だけ更新し忘れるリスクがあるため一本化した。
+    fn idle_two_phase_or_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        if self.speculative_delay_us == 0 {
+            self.idle_speculative(ev)
+        } else {
+            self.idle_two_phase(ev)
         }
     }
 
@@ -110,8 +146,11 @@ impl NicolaFsm {
         }
 
         // If no n-gram model, fall back to TwoPhase
+        // （/code-review指摘、PR #127: delay=0のときはidle_speculativeと
+        // 等価にするidle_two_phase_or_speculativeを使う。dispatch_confirm_mode
+        // 参照）
         if self.ngram_model.is_none() {
-            return self.idle_two_phase(ev);
+            return self.idle_two_phase_or_speculative(ev);
         }
 
         // Get candidate kana for each face
@@ -396,6 +435,87 @@ mod tests {
         );
     }
 
+    // ── dispatch_confirm_mode: TwoPhase(delay=0) ≡ Speculative ────────
+    // /code-review指摘（PR #127）: confirm_mode="speculative"の廃止時、
+    // config.rs::validate_thresholds は TwoPhase + speculative_delay_ms=0
+    // へ正規化するが、その正規化後の値をNicolaFsmが実際にidle_speculativeと
+    // 同じ振る舞いで処理することは(このディスパッチ分岐を追加するまで)
+    // 未検証だった。idle_two_phase経由だとSpeculativeWaitタイマー
+    // (Windows実機ではUSER_TIMER_MINIMUM=10ms未満に短縮されない)を挟むため、
+    // その間に届いた後続キーがPendingChar状態で処理されてしまい、
+    // 完全な等価にならない。dispatch_confirm_mode がdelay=0のとき
+    // idle_speculativeへ直接ディスパッチするようになったことを固定する。
+
+    fn make_fsm_with_delay(mode: ConfirmMode, speculative_delay_ms: u32) -> NicolaFsm {
+        NicolaFsm::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            mode,
+            speculative_delay_ms,
+        )
+    }
+
+    #[test]
+    fn two_phase_zero_delay_dispatches_to_speculative_not_pending() {
+        let mut fsm = make_fsm_with_delay(ConfirmMode::TwoPhase, 0);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "TwoPhase(delay=0) は idle_speculative と同じく即時Reduceになるべき、\
+             got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "TwoPhase(delay=0) は idle_two_phase 経由のPendingCharではなく\
+             SpeculativeCharへ直接遷移するべき"
+        );
+    }
+
+    #[test]
+    fn two_phase_nonzero_delay_still_uses_pending_char_path() {
+        // delay=0 専用の分岐が、通常のTwoPhase（delay>0）を巻き込んで
+        // いないことを確認する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::TwoPhase, 30);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Shift { timer } if timer_is_speculative_wait(&timer)),
+            "TwoPhase(delay>0) は従来通りSpeculativeWaitタイマー付きShiftのはず、\
+             got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "TwoPhase(delay>0) は従来通りPendingCharへ遷移するべき"
+        );
+    }
+
+    #[test]
+    fn two_phase_zero_delay_matches_speculative_reduce_action() {
+        // 正規化の主張（TwoPhase(delay=0) と Speculative は等価）そのものを、
+        // 同一入力に対する dispatch_confirm_mode の出力比較で直接固定する。
+        let mut fsm_speculative = make_fsm_with_delay(ConfirmMode::Speculative, 0);
+        let mut fsm_two_phase_zero = make_fsm_with_delay(ConfirmMode::TwoPhase, 0);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+
+        let action_speculative = fsm_speculative.dispatch_confirm_mode(&ev);
+        let action_two_phase_zero = fsm_two_phase_zero.dispatch_confirm_mode(&ev);
+
+        assert_eq!(
+            format!("{action_speculative:?}"),
+            format!("{action_two_phase_zero:?}"),
+            "Speculative と TwoPhase(delay=0) は同一入力に対して同一の\
+             ParseAction を返すべき（正規化の等価性主張そのものの回帰テスト）"
+        );
+        assert_eq!(
+            std::mem::discriminant(&fsm_speculative.state),
+            std::mem::discriminant(&fsm_two_phase_zero.state),
+            "Speculative と TwoPhase(delay=0) は同一の遷移先状態を持つべき"
+        );
+    }
+
     // ── dispatch_confirm_mode: AdaptiveTiming ────────────────────────
 
     #[test]
@@ -439,6 +559,30 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_timing_slow_gap_zero_delay_dispatches_to_speculative_not_pending() {
+        // /code-review指摘（PR #127、7回目）: dispatch_confirm_modeの
+        // AdaptiveTiming分岐もidle_two_phase_or_speculativeを経由するように
+        // なったが、AdaptiveTiming×delay=0の組み合わせを検証するテストが
+        // 一つも無かった（既存のadaptive_timing_*テストは全てmake_fsm経由
+        // でdelay_ms=30固定）。TwoPhase単体と同様、AdaptiveTimingでも
+        // delay=0ならidle_speculativeへ直接ディスパッチされることを固定する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::AdaptiveTiming, 0);
+        fsm.last_key_gap_us = Some(200_000); // 200 ms > 80 ms threshold → not continuous
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "AdaptiveTiming(delay=0) with slow gap should behave like Speculative \
+             (immediate Reduce), got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "AdaptiveTiming(delay=0) with slow gap should enter SpeculativeChar \
+             directly, not PendingChar"
+        );
+    }
+
+    #[test]
     fn adaptive_timing_exactly_at_threshold_is_two_phase() {
         use super::super::nicola_fsm::CONTINUOUS_KEYSTROKE_THRESHOLD_US;
         // gap == threshold is NOT < threshold → not continuous → TwoPhase path
@@ -477,6 +621,29 @@ mod tests {
         assert!(
             matches!(action, ParseAction::Shift { timer } if timer_is_speculative_wait(&timer)),
             "NgramPredictive without model should fall back to TwoPhase, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn ngram_predictive_no_model_zero_delay_falls_back_to_speculative_not_two_phase() {
+        // /code-review指摘（PR #127、2回目）: idle_ngramのno-modelフォール
+        // バックはidle_two_phaseを直接呼んでおり、dispatch_confirm_modeの
+        // TwoPhase/AdaptiveTiming分岐にだけ追加したdelay=0バイパスが
+        // 効いていなかった。idle_two_phase_or_speculativeへの一本化で
+        // このパスも救われることを固定する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::NgramPredictive, 0);
+        assert!(fsm.ngram_model.is_none());
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "NgramPredictive without model, delay=0 は idle_speculative と\
+             同じく即時Reduceになるべき、got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "NgramPredictive without model, delay=0 は SpeculativeChar へ\
+             直接遷移するべき"
         );
     }
 
