@@ -1628,19 +1628,29 @@ impl NicolaFsm {
         }
 
         // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
-        // output_history のエントリの中身には反応しない（誤 Suppress しない）が、
-        // 掃除だけは行う（ADR-112コードレビュー指摘）。この分岐に来る時点で
-        // event.vk_code は state 上のどの保留にも一致していない（上の
-        // is_pending_key/PendingCharThumb/SpeculativeChar 判定を素通りしている）
-        // ため、ここでの remove_by_scan は「chord判定を再開せず解放索引だけ
-        // 掃除する」という release_only と同じ安全性を保ったまま、掃除だけ
-        // 行える。掃除しないと、Consume 済みキーの KeyUp がここに来た場合に
-        // pending_releases のエントリが永久に残り（stuck key の再発）、かつ
-        // 同じ scan_code が後で再度 push されると2件重複し、
+        // Char/Romaji 型のエントリの中身には反応しない（誤 Suppress しない、
+        // 元々のガードの意図）が、掃除は必ず行う（ADR-112コードレビュー指摘、
+        // 掃除しないと pending_releases のエントリが永久に残り stuck key が
+        // 再発し、かつ同じ scan_code が後で再度 push されると2件重複して
         // remove_by_scan（先頭一致）と find_action_by_scan（末尾一致）の
-        // 非対称性により誤って古い方のエントリを解放してしまう。
+        // 非対称性により誤って古い方を解放してしまう）。
+        //
+        // ただし `KeyAction::Key(vk)` 型（OS へ生 VK を注入済み）だけは例外
+        // ——「中身に反応しない」を貫くと、注入済みの VK に対応する KeyUp が
+        // 二度と送られず OS 側で押されっぱなしになる（release_only が本来
+        // 発行する KeyUp(vk) と同じもの。/code-review 指摘）。Char/Romaji は
+        // Unicode 注入で完結済みで OS 側に押されっぱなしの VK が無いため、
+        // この例外は Key(vk) にのみ適用する。
         if self.phys.modifiers.is_os_modifier_held() {
-            self.output_history.remove_by_scan(event.scan_code);
+            if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
+                if let KeyAction::Key(vk) = entry.action {
+                    return self.build_response(
+                        smallvec![KeyAction::KeyUp(vk)],
+                        true,
+                        TimerIntent::CancelAll,
+                    );
+                }
+            }
             return Response::pass_through();
         }
 
@@ -1876,6 +1886,19 @@ impl NicolaFsm {
             };
         }
         Response::pass_through()
+    }
+
+    /// コンテキスト喪失（フォーカス変更・非活性化）時に `output_history` の
+    /// `pending_releases` を全て強制解放する。`KeyAction::Key(vk)` 型の
+    /// エントリに対応する `KeyUp(vk)` アクションを返す（それ以外は黙って除去）。
+    ///
+    /// `Engine`（`check_active_transition`/`handle_focus_changed`）が
+    /// `KeyLifecycle::flush_pending_key_ups` と同期して呼ぶこと（ADR-112
+    /// コードレビュー指摘）——`active_keys` だけを drain して `pending_releases`
+    /// を放置すると、対応する KeyUp がその後 `UpDuty::None` として素通りする
+    /// ようになり、二度と掃除されないまま stuck key が再発する。
+    pub(crate) fn release_all_pending_output(&mut self) -> Vec<KeyAction> {
+        self.output_history.drain_pending_releases_as_keyups()
     }
 }
 

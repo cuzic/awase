@@ -103,6 +103,17 @@ impl OutputHistory {
         {
             self.pending_releases[pos] = entry.clone();
         } else {
+            // 投機出力の訂正である以上、同じ scan_code の元エントリが
+            // pending_releases に残っているはず。無い場合は、他の経路
+            // （OS修飾キー保持中のKeyUp・フォーカス変更等）が先にそのエントリを
+            // 解放済みだったことを意味し、想定していた不変条件が崩れている
+            // （ADR-112コードレビュー指摘）。実害はfallbackのpushで抑えつつ、
+            // 検知できるよう記録する。
+            log::warn!(
+                "retract_and_record: no existing pending_releases entry for scan_code={:?}, \
+                 falling back to push (invariant violation?)",
+                entry.scan_code
+            );
             self.pending_releases.push(entry.clone());
         }
         self.push_committed(entry);
@@ -158,6 +169,27 @@ impl OutputHistory {
     pub fn clear(&mut self) {
         self.pending_releases.clear();
         self.committed.clear();
+    }
+
+    /// `pending_releases` を全て強制解放し、`KeyAction::Key(vk)` 型のエントリは
+    /// 対応する `KeyAction::KeyUp(vk)` を返す（`committed` には触れない）。
+    ///
+    /// フォーカス変更・非活性化などコンテキストを丸ごと喪失する場面専用
+    /// （ADR-112コードレビュー指摘）。`KeyLifecycle::flush_pending_key_ups`が
+    /// `active_keys`（KeyUp到着時にConsume義務があるVKの一覧）を丸ごとdrainする
+    /// のに同期して呼ぶこと——さもないと`pending_releases`だけが取り残され、
+    /// 対応するKeyUpがConsume義務なし（`UpDuty::None`）として素通りするように
+    /// なった後は二度と掃除されない（stuck keyの再発）。
+    /// `Char`/`Romaji`型のエントリはUnicode注入で完結済みでOS側に押されっぱなしの
+    /// VKが無いため、対応するアクションを返さず黙って除去する。
+    pub fn drain_pending_releases_as_keyups(&mut self) -> Vec<KeyAction> {
+        self.pending_releases
+            .drain(..)
+            .filter_map(|entry| match entry.action {
+                KeyAction::Key(vk) => Some(KeyAction::KeyUp(vk)),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -269,6 +301,36 @@ mod tests {
         assert!(h.is_empty());
         assert_eq!(h.len(), 0);
         assert!(h.find_action_by_scan(ScanCode(30)).is_none());
+    }
+
+    #[test]
+    fn test_drain_pending_releases_as_keyups_emits_keyup_for_key_action_only() {
+        let mut h = OutputHistory::new();
+        h.push(make_entry(ScanCode(30), "ka", Some('か'))); // Romaji
+        h.push(OutputEntry {
+            scan_code: ScanCode(40),
+            romaji: String::new(),
+            kana: None,
+            action: KeyAction::Key(VkCode(0x70)),
+        });
+        h.push(OutputEntry {
+            scan_code: ScanCode(50),
+            romaji: String::new(),
+            kana: None,
+            action: KeyAction::Suppress,
+        });
+
+        let keyups = h.drain_pending_releases_as_keyups();
+        assert_eq!(keyups.len(), 1);
+        assert!(matches!(keyups[0], KeyAction::KeyUp(vk) if vk == VkCode(0x70)));
+
+        // pending_releases は空になる（find_action_by_scan は何も見つけない）
+        assert!(h.find_action_by_scan(ScanCode(30)).is_none());
+        assert!(h.find_action_by_scan(ScanCode(40)).is_none());
+        assert!(h.find_action_by_scan(ScanCode(50)).is_none());
+
+        // committed（n-gram文脈）には影響しない
+        assert_eq!(h.recent_kana(1), vec!['か']);
     }
 
     #[test]

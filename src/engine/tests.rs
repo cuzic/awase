@@ -7656,6 +7656,90 @@ mod engine_integration_tests {
         );
     }
 
+    #[test]
+    fn key_up_with_os_modifier_held_still_emits_keyup_for_injected_vk() {
+        // /code-review指摘（PR #126）: is_os_modifier_held()ガードが
+        // KeyAction::Key(vk)型エントリの中身にも反応しないままだと、OSへ
+        // 注入済みのVKに対応するKeyUpが二度と送られず、Ctrl保持中にキーを
+        // 離すと押されっぱなしになる（ADR-112が修正したはずのstuck keyの
+        // 再発）。Char/Romajiと違い、Key(vk)は「中身に反応しない」の例外と
+        // すべきで、Engine::on_input経由（force_consumeを通る本番相当の
+        // 経路）で実際にKeyUp(vk)が出ることを確認する。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ')); // Dをレイアウトキー化(normal面は未定義)
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Dを押しっぱなしのままCtrlを押し、その状態でDを離す。
+        let ctrl_held_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::up(VK_D).at(50_000).build(), &ctrl_held_ctx);
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "Ctrl保持中でもKey(vk)出力の対応するKeyUp(vk)は送出されるべき(stuck key修正): {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn focus_changed_releases_pending_output_history_entry_for_still_held_key() {
+        // /code-review指摘（PR #126）: KeyLifecycle::flush_pending_key_ups が
+        // active_keys をdrainしてConsume義務の追跡を消しても、output_historyの
+        // pending_releasesを同期して掃除しないと、対応する実KeyUpがその後
+        // UpDuty::Noneとして素通りするようになり、二度と掃除されない
+        // （stuck keyの再発）。フォーカス変更（EngineCommand::FocusChanged）で
+        // このタイミングでもpending_releasesが正しく解放されることを確認する。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ')); // Dをレイアウトキー化(normal面は未定義)
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        // Dを押しっぱなしのまま、KeyAction::Key(VK_D)へフォールバック解決させる。
+        engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Dを離す前にフォーカスが変わる。
+        let d = engine.on_command(EngineCommand::FocusChanged, &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "フォーカス変更時にpending_releasesのKey(vk)エントリはKeyUp(vk)として\
+             解放されるべき（stuck key修正）: {:?}",
+            effects_of(&d)
+        );
+    }
+
     // ── on_input: lifecycle 登録条件 (line 264) ──
 
     #[test]

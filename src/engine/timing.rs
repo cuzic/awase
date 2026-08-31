@@ -15,6 +15,13 @@ const TIMING_MARGIN_PERCENT: u64 = 30;
 /// char2 が来ないまま char1+thumb を確定する2鍵ケースで、thumb 押下から
 /// char1 解放までの重なり時間がこれ未満なら「重なり不足」とみなし、
 /// n-gram タイブレークに回す（`confirms_char_thumb_chord` 参照）。
+///
+/// **この定数を変更しても本番挙動（`NicolaFsm`）は変わらない。** 本番経路は
+/// `nicola_fsm.rs::RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（別定数、現在0%固定、
+/// ADR-112決定1）を使う。この定数は本モジュールの単体テストが検証する
+/// アルゴリズムの基準値としてのみ使われる（`TimingJudge::new` の既定値、
+/// `with_min_overlap_margin_percent` で明示的に上書きしない限り有効）。
+/// 実用値への引き戻し（決定3）をこの定数だけ変えて済ませないこと。
 const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
 
 /// n-gram 予測で投機出力を選択する最小スコア差

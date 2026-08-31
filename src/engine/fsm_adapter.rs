@@ -52,6 +52,20 @@ impl FsmAdapter {
         Self::response_to_decision(resp)
     }
 
+    /// コンテキスト喪失（フォーカス変更・非活性化）時に `output_history` の
+    /// 解放索引を全て強制解放し、`KeyAction::Key(vk)` 型のエントリに対応する
+    /// `KeyUp(vk)` を `Effect` として返す（`NicolaFsm::release_all_pending_output`
+    /// 参照、ADR-112コードレビュー指摘）。`KeyLifecycle::flush_pending_key_ups`
+    /// と同期して呼ぶこと。
+    pub(super) fn release_all_pending_output(&mut self) -> EffectVec {
+        let actions = self.fsm.release_all_pending_output();
+        let mut effects = EffectVec::new();
+        if !actions.is_empty() {
+            effects.push(Effect::Input(InputEffect::SendKeys(actions)));
+        }
+        effects
+    }
+
     /// 保留中のキーをフラッシュし、Decision を返す。
     pub(super) fn flush(&mut self, reason: ContextChange, composing: ComposingHint) -> Decision {
         let resp = self.fsm.flush_pending(reason, composing);
