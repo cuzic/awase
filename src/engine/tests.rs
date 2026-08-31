@@ -7487,14 +7487,16 @@ mod engine_integration_tests {
         );
     }
 
-    // ── on_input: KeyUp dedup 短絡 (line 238) ──
+    // ── on_input: 保留中文字キーの KeyUp が FSM 経由で即時解決される (ADR-112決定2) ──
 
     #[test]
-    fn key_up_for_consumed_pending_char_short_circuits_without_resolving() {
-        // `if !is_key_down && self.lifecycle.on_key_up(...)` (line 238) の `!` が
-        // 消えると、この短絡がもう機能せず、保留中の文字キーの KeyUp が
-        // （本来は素通しの dedup のはずが）FSM 経由で再度解決され、
-        // 想定外に文字が出力されてしまう。
+    fn key_up_for_pending_char_resolves_immediately_via_fsm() {
+        // ADR-112決定2以前は、Engine::on_input の Phase 0 が「Consume済み
+        // KeyDownに対応するKeyUp」を無条件にFSMへ一切渡さず即consumeするだけ
+        // だった（BUG-101）ため、保留中の文字キー自身のKeyUpはタイムアウト
+        // (100ms)まで解決されなかった。決定2適用後は、KeyUpがFSMへ届き
+        // handle_key_up_pendingが即座にPendingCharを単独打鍵として解決する
+        // （タイムアウトを待たずに'う'が出力される）。
         let mut engine = make_test_engine();
         let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
         assert!(d1.is_consumed());
@@ -7502,10 +7504,122 @@ mod engine_integration_tests {
         let d2 = engine.on_input(Ev::up(VK_A).at(50).build(), &ime_on_ctx());
         assert!(d2.is_consumed());
         assert!(
-            effects_of(&d2).is_empty(),
-            "KeyUp for an already-consumed pending key must be a bare dedup consume \
-             with no effects, got {:?}",
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('う')))
+            )),
+            "PendingCharが自身のKeyUpで即時単独確定されるはず、got {:?}",
             effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn key_up_for_unmapped_layout_key_emits_synthetic_keyup_after_timeout() {
+        // ADR-112 BUG-101発見事項2: resolve_pending_char_as_singleがNormal面
+        // 未定義キーでKeyAction::Key(vk)へフォールバックする経路
+        // (nicola_fsm.rs:1272)の出力に対応するKeyUp(vk)は、release_only
+        // （旧handle_key_up_active）だけが送出する。Phase 0がこれを阻んで
+        // いたため、実運用で一度もKeyUpが送出されていなかった(stuck key)。
+        // D をレイアウトキー化（left_thumb面にのみ定義、normal面は未定義のまま）。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ'));
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        let d1 = engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        let d2 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D))
+            )),
+            "normal面未定義キーはKey(vk)へフォールバックするはず: {:?}",
+            effects_of(&d2)
+        );
+
+        let d3 = engine.on_input(Ev::up(VK_D).at(200_000).build(), &ime_on_ctx());
+        assert!(d3.is_consumed());
+        assert!(
+            has_effect(&d3, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "Key(vk)出力の対応するKeyUp(vk)がOSへ送出されるはず(stuck key修正): {:?}",
+            effects_of(&d3)
+        );
+    }
+
+    #[test]
+    fn key_up_after_context_goes_inactive_is_still_consumed_via_release_only() {
+        // ADR-112決定2、CON指摘4: force_consumeだけでなくPhase 2の非活性
+        // 早期returnでもrelease_onlyを呼ぶことで、「Consume義務のあるKeyUp
+        // は、コンテキスト非活性化(IME OFF等)を挟んでも必ずConsumeされ、
+        // OSへ漏れない」という不変条件を確認する。
+        let mut engine = make_test_engine();
+        let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        // コンテキストが非活性化(IME OFF)した後にKeyUpが届く。
+        let d2 = engine.on_input(Ev::up(VK_A).at(50_000).build(), &ime_off_ctx());
+        assert!(
+            d2.is_consumed(),
+            "Consume義務のあるKeyUpは非活性化を挟んでもOSへ漏れてはならない: {:?}",
+            d2
+        );
+    }
+
+    #[test]
+    fn engine_level_char1_key_up_makes_overlap_verdict_reachable() {
+        // ADR-112 BUG-101発見事項1、決定1/2の組み合わせ確認: Engine::on_input
+        // 経由でchar1のKeyUpが実際にNicolaFsmへ届き、char1_released_atが
+        // 埋まることを確認する（本ADR発見のきっかけになった具体的な
+        // 再現シナリオ）。本番既定(RUNTIME_MIN_OVERLAP_MARGIN_PERCENT=0%)
+        // では重なり不足でも常にchord確定になるため、min_overlap_margin_
+        // percentを明示的に上書きしてアルゴリズムの15%境界を検証する
+        // （NicolaFsmには`feat/confirm-mode-simplify`ブランチのような
+        // config配線が無いため、ここではNicolaFsm経由の直接呼び出しで
+        // margin値を差し込む。Engine自体はテスト用APIを持たない）。
+        let mut engine = make_test_engine();
+        engine.set_min_overlap_margin_percent_for_test(15);
+
+        engine.on_input(Ev::down(VK_S).at(0).build(), &ime_on_ctx());
+        engine.on_input(Ev::down(VK_NONCONVERT).at(30_000).build(), &ime_on_ctx());
+        // char1(S) KeyUp: thumb押下から2ms後 → 重なりほぼ無し（決定2以前は
+        // このKeyUpがFSMへ一切届かず、char1_released_atは常にNoneだった）。
+        engine.on_input(Ev::up(VK_S).at(32_000).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('し')))
+            )),
+            "char1のKeyUpがFSMへ届きchar1_released_atが埋まっていれば、重なり不足で\
+             単独打鍵('し')に倒れるはず: {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('あ')))
+            )),
+            "char1_released_atが届いていなければchord('あ')に誤確定してしまう(BUG-101): {:?}",
+            effects_of(&d)
         );
     }
 

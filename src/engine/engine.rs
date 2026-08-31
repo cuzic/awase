@@ -23,7 +23,7 @@ use super::decision::{
 use super::fsm_adapter::FsmAdapter;
 use super::fsm_types::{ComposingHint, ModeKeyConfig, ModifierState, TextKeyConfig};
 use super::input_tracker::PhysicalKeyState;
-use super::key_lifecycle::KeyLifecycle;
+use super::key_lifecycle::{KeyLifecycle, UpDuty};
 use super::nicola_fsm::NicolaFsm;
 
 /// 特殊キーコンボのマッチ結果
@@ -338,17 +338,50 @@ impl Engine {
     /// キーイベントの統合エントリポイント。
     ///
     /// 処理フロー:
-    /// 1. KeyUp 自動追跡
+    /// 1. KeyUp の Consume 義務を予約（`UpDuty`、まだ Decision は確定しない）
     /// 2. 特殊キー（エンジン ON/OFF + IME 制御）
     /// 3. 実効状態チェック + 遷移検知
     /// 4. NicolaFsm 処理
+    /// 5. 唯一の出口で、義務があれば `force_consume` により Consume へ格上げ
+    ///
+    /// ADR-112 決定2: 旧実装は Phase 1（KeyUp 自動追跡）が「Consume 済み
+    /// KeyDown に対応する KeyUp」を早期 return で即 `Decision::consumed()` に
+    /// し、`NicolaFsm::on_key_up` 配下の KeyUp 処理（`handle_key_up_pending_
+    /// char_thumb` の重なり判定含む）が実運用で一切呼ばれないという構造的
+    /// リグレッション（BUG-101）を生んでいた。本実装は「OS へ漏らさない」
+    /// という義務の予約と、「イベントを FSM に渡すかどうか」を分離し、
+    /// イベントは義務の有無によらず常に FSM まで届ける。義務があれば、
+    /// この関数の唯一の出口で機械的に Consume へ格上げする（Effects は
+    /// 落とさない）。
     pub fn on_input(&mut self, event: RawKeyEvent, ctx: &InputContext) -> Decision {
-        // Phase 0: KeyUp 自動追跡
         let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
-        if !is_key_down && self.lifecycle.on_key_up(event.vk_code) {
-            return Decision::consumed();
-        }
+        let up_duty = if is_key_down {
+            UpDuty::None
+        } else {
+            self.lifecycle.take_key_up_duty(event.vk_code)
+        };
 
+        let mut decision = self.on_input_body(event, ctx, is_key_down, up_duty);
+        if up_duty == UpDuty::Consume {
+            decision.force_consume();
+        }
+        decision
+    }
+
+    /// `on_input` の本体（Phase 1〜4）。`up_duty` は Phase 2 の非活性早期 return
+    /// でのみ参照する——非活性中に Consume 義務のある KeyUp が来た場合、
+    /// chord 判定（`state`）を一切再開せず、`release_only` で `output_history`
+    /// の解放索引の掃除と対応する `KeyUp` の発行だけを行う
+    /// （`flush(ContextChange::ImeOff)` と同じ「コンテキストを失ったら
+    /// 同時打鍵判定を再開しない」方針）。それ以外の経路は旧実装の
+    /// Phase 1〜3 と同一。
+    fn on_input_body(
+        &mut self,
+        event: RawKeyEvent,
+        ctx: &InputContext,
+        is_key_down: bool,
+        up_duty: UpDuty,
+    ) -> Decision {
         // Phase 1: Special keys (engine toggle + IME control)
         if is_key_down {
             if let Some(decision) = self.check_special_keys(ctx, &event) {
@@ -362,6 +395,11 @@ impl Engine {
         // Phase 2: Active state check + transition detection
         let transition_effects = self.check_active_transition(ctx);
         if !self.compute_active(ctx) {
+            if up_duty == UpDuty::Consume {
+                let mut decision = self.adapter.release_only(&event);
+                decision.prepend_effects(transition_effects);
+                return decision;
+            }
             if transition_effects.is_empty() {
                 return Decision::pass_through();
             }
@@ -872,6 +910,12 @@ impl Engine {
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
         self.match_special_keys(ctx, event)
+    }
+
+    /// テスト用: 重なり不足判定のマージンを上書きする（ADR-112決定1参照）。
+    #[cfg(test)]
+    pub(super) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {
+        self.adapter.set_min_overlap_margin_percent_for_test(pct);
     }
 
     /// `user_enabled` を無条件で true にし、IME recovery を伴う activate 処理を行う。

@@ -190,6 +190,21 @@ impl Decision {
         matches!(self, Self::Consume { .. })
     }
 
+    /// `PassThrough`/`PassThroughWith` を `Consume`/`ConsumeWith` へ格上げする。
+    /// 既に `Consume` なら no-op。Effects は絶対に落とさない（ADR-112 決定2）。
+    ///
+    /// `KeyLifecycle` が「対応する KeyDown を Consume した」と記録している KeyUp に
+    /// 対して、`Engine::on_input` の唯一の出口でこれを呼ぶことで、FSM 自身が
+    /// （意図的にせよ設計漏れにせよ）`PassThrough` を返した場合でも、KeyDown を
+    /// OS へ渡していない以上 KeyUp も OS へ渡してはならないという不変条件を
+    /// 機械的に保証する。
+    pub fn force_consume(&mut self) {
+        if matches!(self, Self::PassThrough | Self::PassThroughWith { .. }) {
+            let effects = std::mem::take(self.effects_mut());
+            *self = Self::Consume { effects };
+        }
+    }
+
     /// effects に追加する。PassThrough なら PassThroughWith に昇格。
     pub fn push_effect(&mut self, effect: Effect) {
         self.effects_mut().push(effect);
@@ -389,6 +404,38 @@ mod tests {
     #[test]
     fn is_consumed_false_for_pass_through_with() {
         assert!(!Decision::pass_through_with(smallvec![]).is_consumed());
+    }
+
+    // ── force_consume (ADR-112 決定2) ──
+
+    #[test]
+    fn force_consume_on_pass_through_becomes_consume_with_empty_effects() {
+        let mut d = Decision::pass_through();
+        d.force_consume();
+        match d {
+            Decision::Consume { effects } => assert!(effects.is_empty()),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn force_consume_on_pass_through_with_becomes_consume_preserving_effects() {
+        let mut d = Decision::pass_through_with(smallvec![test_effect(), test_effect()]);
+        d.force_consume();
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 2),
+            other => panic!("expected Consume, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn force_consume_on_consume_is_noop() {
+        let mut d = Decision::consumed_with(smallvec![test_effect()]);
+        d.force_consume();
+        match d {
+            Decision::Consume { effects } => assert_eq!(effects.len(), 1),
+            other => panic!("expected Consume, got {:?}", other),
+        }
     }
 
     // ── push_effect ──

@@ -1602,7 +1602,7 @@ impl NicolaFsm {
             if event.vk_code == pending.vk_code {
                 self.go_idle();
                 // output_history から対応するキーの KeyUp を処理
-                return self.handle_key_up_active(event);
+                return self.release_only(event);
             }
         }
 
@@ -1634,7 +1634,7 @@ impl NicolaFsm {
         }
 
         // output_history から対応する注入済みキーを探してリリース
-        self.handle_key_up_active(event)
+        self.release_only(event)
     }
 
     /// 保留中キーの vk_code と一致するか判定する
@@ -1840,8 +1840,14 @@ impl NicolaFsm {
         self.build_response(result, true, TimerIntent::CancelAll)
     }
 
-    /// output_history から対応する注入済みキーを探してリリースする
-    fn handle_key_up_active(&mut self, event: &RawKeyEvent) -> Resp {
+    /// output_history から対応する注入済みキーを探してリリースする。
+    ///
+    /// `self.state`（chord判定の途中状態）には一切触れない純粋な後始末——
+    /// `release_only` としてエンジン非活性時（`Engine::on_input` Phase 2、
+    /// ADR-112決定2）からも直接呼ばれる。「コンテキストを失ったら同時打鍵
+    /// 判定を再開しない」という方針上、非活性時は`state`を経由する通常の
+    /// `on_key_up`ディスパッチを一切通さず、この関数だけを呼ぶ。
+    pub(crate) fn release_only(&mut self, event: &RawKeyEvent) -> Resp {
         if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
             return match entry.action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）

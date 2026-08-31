@@ -44,6 +44,14 @@ impl FsmAdapter {
         Self::response_to_decision(resp)
     }
 
+    /// エンジン非活性時専用: chord 判定（`state`）には一切触れず、
+    /// `output_history` の解放索引だけを掃除して対応する `KeyUp` を発行する
+    /// （ADR-112決定2、`NicolaFsm::release_only` 参照）。
+    pub(super) fn release_only(&mut self, event: &RawKeyEvent) -> Decision {
+        let resp = self.fsm.release_only(event);
+        Self::response_to_decision(resp)
+    }
+
     /// 保留中のキーをフラッシュし、Decision を返す。
     pub(super) fn flush(&mut self, reason: ContextChange, composing: ComposingHint) -> Decision {
         let resp = self.fsm.flush_pending(reason, composing);
@@ -81,6 +89,12 @@ impl FsmAdapter {
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
     pub(super) fn set_threshold_ms(&mut self, ms: u32) {
         self.fsm.set_threshold_ms(ms);
+    }
+
+    /// テスト用: 重なり不足判定のマージンを上書きする（ADR-112決定1参照）。
+    #[cfg(test)]
+    pub(super) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {
+        self.fsm.set_min_overlap_margin_percent_for_test(pct);
     }
 
     /// 確定モードと投機出力の待機時間を更新する。
