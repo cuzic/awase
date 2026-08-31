@@ -127,7 +127,10 @@ impl Output {
                     log::trace!("macOS output: CtrlChord(Ctrl+0x{:02X}) [stub, no-op]", vk.0);
                 }
                 KeyAction::Sequence(items) => {
-                    log::trace!("macOS output: Sequence({} items) [stub, no-op]", items.len());
+                    log::trace!(
+                        "macOS output: Sequence({} items) [stub, no-op]",
+                        items.len()
+                    );
                 }
             }
         }

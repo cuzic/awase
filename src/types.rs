@@ -277,7 +277,7 @@ pub enum KeyAction {
     /// 打鍵列（ADR-115 決定4）。1回の `send_keys` 呼び出しの中で即座に全要素を
     /// 実行する同期バッチモデル——待機（`Wait`）を含むステップは表現しない
     /// （ADR-115 決定11、将来別概念として設計する）。
-    Sequence(Vec<KeyAction>),
+    Sequence(Vec<Self>),
 }
 
 impl KeyAction {

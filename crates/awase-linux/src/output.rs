@@ -162,7 +162,10 @@ impl UinputOutput {
                     );
                 }
                 KeyAction::Sequence(items) => {
-                    warn!("Sequence({} items) output is not yet supported on Linux", items.len());
+                    warn!(
+                        "Sequence({} items) output is not yet supported on Linux",
+                        items.len()
+                    );
                 }
             }
         }

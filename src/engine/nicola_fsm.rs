@@ -894,7 +894,11 @@ impl NicolaFsm {
     /// 既に引いた `action` を受け取ることで二重 `lookup_face` を避ける
     /// ——呼び出し元の `face` 変数と本関数がハードコードする面がズレる
     /// 余地も消える。
-    pub(crate) fn enter_speculative_char(&mut self, key: PendingKey, action: &KeyAction) -> bool {
+    pub(crate) const fn enter_speculative_char(
+        &mut self,
+        key: PendingKey,
+        action: &KeyAction,
+    ) -> bool {
         if matches!(action, KeyAction::Sequence(_)) {
             return false;
         }
@@ -2487,7 +2491,10 @@ mod tests {
         };
         let sequence_action = KeyAction::Sequence(vec![KeyAction::Char('あ')]);
         let accepted = fsm.enter_speculative_char(key, &sequence_action);
-        assert!(!accepted, "Sequence must be rejected by the speculative guard");
+        assert!(
+            !accepted,
+            "Sequence must be rejected by the speculative guard"
+        );
         assert!(
             !matches!(fsm.state, EngineState::SpeculativeChar(_)),
             "state must not transition to SpeculativeChar when guard rejects"

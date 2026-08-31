@@ -58,10 +58,11 @@ pub enum DbeModeKeyPolicy {
     Passthrough,
 }
 
-/// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を
-/// 有効化するか（ADR-115 決定8）。既定 `Off`。`.yab` パーサ自体は常に
-/// 新構文を認識するが、`Off` のとき解決パス（`resolve_keystroke_syntax`）
-/// が `CtrlChord`/`InlineSequence`/`MacroRef` を保持している元のセル
+/// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
+///
+/// ADR-115 決定8。既定 `Off`。`.yab` パーサ自体は常に新構文を認識するが、
+/// `Off` のとき解決パス（`resolve_keystroke_syntax`）が
+/// `CtrlChord`/`InlineSequence`/`MacroRef` を保持している元のセル
 /// 生テキストから `Literal` へ差し替え、今日と同じ挙動に復元する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -2038,7 +2039,10 @@ right_thumb_key = "VK_KANA"
     #[test]
     fn test_keystroke_sequence_defaults_to_off() {
         let config = AppConfig::default();
-        assert_eq!(config.general.keystroke_sequence, KeystrokeSequencePolicy::Off);
+        assert_eq!(
+            config.general.keystroke_sequence,
+            KeystrokeSequencePolicy::Off
+        );
     }
 
     #[test]
@@ -2052,7 +2056,10 @@ name = "bracket_paren"
 steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.general.keystroke_sequence, KeystrokeSequencePolicy::On);
+        assert_eq!(
+            config.general.keystroke_sequence,
+            KeystrokeSequencePolicy::On
+        );
         assert_eq!(config.keystroke_macro.len(), 1);
         assert_eq!(config.keystroke_macro[0].name, "bracket_paren");
         assert_eq!(
@@ -2079,10 +2086,16 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         let serialized = toml::to_string_pretty(&config).unwrap();
         let round_tripped: AppConfig = toml::from_str(&serialized).unwrap();
 
-        assert_eq!(round_tripped.general.keystroke_sequence, KeystrokeSequencePolicy::On);
+        assert_eq!(
+            round_tripped.general.keystroke_sequence,
+            KeystrokeSequencePolicy::On
+        );
         assert_eq!(round_tripped.keystroke_macro.len(), 1);
         assert_eq!(round_tripped.keystroke_macro[0].name, "bracket_paren");
-        assert_eq!(round_tripped.keystroke_macro[0].steps, config.keystroke_macro[0].steps);
+        assert_eq!(
+            round_tripped.keystroke_macro[0].steps,
+            config.keystroke_macro[0].steps
+        );
     }
 
     #[test]

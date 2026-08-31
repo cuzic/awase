@@ -36,13 +36,13 @@ pub enum YabValue {
     CtrlChord { vk: VkCode, raw: String },
     /// セル内 `+` 区切りによる打鍵列（ADR-115 決定2a、非ネスト）。
     /// `raw` は元のセルテキスト全体（トリム済み）。
-    InlineSequence { items: Vec<YabValue>, raw: String },
+    InlineSequence { items: Vec<Self>, raw: String },
     /// 名前付き打鍵列マクロへの参照（ADR-115 決定2b、`@name`）。
     MacroRef(String),
     /// 打鍵列（ADR-115 決定4）。**不変条件: 内側の要素に `Sequence` は現れない**
     /// （`resolve_keystroke_syntax` が `resolve_macro_steps()` の結果を常に
     /// `extend`（平坦化）で積み、`Sequence` で包んで埋め込むことをしないため）。
-    Sequence(Vec<YabValue>),
+    Sequence(Vec<Self>),
     /// 割り当てなし（パススルー）
     None,
 }
@@ -110,7 +110,10 @@ impl YabValue {
         // 形なので先に判定する。`CV4D` は `strip_prefix('V')` に一致しない
         // （先頭が `C`）ため、どちらを先にしても衝突しない。
         if let Some(vk) = parse_ctrl_vk(trimmed) {
-            return Self::CtrlChord { vk, raw: trimmed.to_string() };
+            return Self::CtrlChord {
+                vk,
+                raw: trimmed.to_string(),
+            };
         }
 
         // @マクロ名（ADR-115 決定2b）。
@@ -567,7 +570,9 @@ fn parse_ctrl_vk(s: &str) -> Option<VkCode> {
 /// `.all()` が vacuously true を返すため明示的に弾く必要がある
 /// （`parse_direct_vk`/`parse_function_key` の空文字列ガードと同じ配慮）。
 fn is_valid_macro_name(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
 }
 
 /// セル生テキストを、クォート外の `+`（半角、U+002B。全角 `＋` U+FF0B とは
@@ -622,15 +627,16 @@ fn cell_segments(trimmed: &str) -> Option<Vec<&str>> {
 /// ここを呼ぶ（`YabValue::parse` を直接呼ばない）。`YabValue::parse` 自体は
 /// 既存呼び出し元（本番2箇所＋`tests.rs`）に影響を与えないため無改修。
 /// 再帰は発生しない——`YabValue::parse` は `+` 分割を一切行わないため。
+#[must_use]
 pub fn parse_cell(raw: &str) -> YabValue {
     let trimmed = raw.trim();
-    match cell_segments(trimmed) {
-        None => YabValue::parse(trimmed),
-        Some(segments) => YabValue::InlineSequence {
+    cell_segments(trimmed).map_or_else(
+        || YabValue::parse(trimmed),
+        |segments| YabValue::InlineSequence {
             items: segments.iter().map(|s| YabValue::parse(s)).collect(),
             raw: trimmed.to_string(),
         },
-    }
+    )
 }
 
 /// `V`+16進数（半角）の仮想キーコード直接指定をパースする（やまぶきR互換）。
@@ -1006,9 +1012,9 @@ fn resolve_macro_steps(steps: &[String], warnings: &mut Vec<String>) -> Vec<YabV
         .iter()
         .filter_map(|s| match YabValue::parse(s) {
             v @ (YabValue::Literal(_)
-                | YabValue::KeySequence(_)
-                | YabValue::Special(_)
-                | YabValue::CtrlChord { .. }) => Some(v),
+            | YabValue::KeySequence(_)
+            | YabValue::Special(_)
+            | YabValue::CtrlChord { .. }) => Some(v),
             YabValue::Romaji { .. } => {
                 warnings.push(format!(
                     "マクロのステップにローマ字は書けません: {s:?}。\
@@ -1017,7 +1023,9 @@ fn resolve_macro_steps(steps: &[String], warnings: &mut Vec<String>) -> Vec<YabV
                 None
             }
             other => {
-                warnings.push(format!("マクロステップとして使えない値です: {s:?} ({other:?})"));
+                warnings.push(format!(
+                    "マクロステップとして使えない値です: {s:?} ({other:?})"
+                ));
                 None
             }
         })
@@ -1054,17 +1062,21 @@ fn resolve_inline_sequence_item(
         // 網羅 match を満たすため防御的に同じ扱いにする（レビュー指摘
         // m3）。Sequence も同様に到達しない（YabValue::parse は
         // Sequence を返さない、レビュー指摘 Minor2）。
-        YabValue::Vk(_) | YabValue::None | YabValue::InlineSequence { .. } | YabValue::Sequence(_) => {
+        YabValue::Vk(_)
+        | YabValue::None
+        | YabValue::InlineSequence { .. }
+        | YabValue::Sequence(_) => {
             warnings.push(format!("打鍵列の要素として使えない値です: {item:?}"));
         }
     }
 }
 
-/// `.yab` レイアウト中の新構文（`CtrlChord`/`InlineSequence`/`MacroRef`）を、
-/// キルスイッチとマクロ定義に基づいて確定させる（決定3）。呼び出しは
-/// `LayoutEntry::scan_all` 内・`awase-settings` のプレビュー生成時の
-/// 各1箇所のみ。`YabValue::parse`/`parse_cell` のシグネチャは変えない
-/// ——config を必要とするのはこの新しい解決パスのみ。
+/// `.yab` レイアウト中の新構文をキルスイッチとマクロ定義に基づいて確定させる。
+///
+/// 対象は `CtrlChord`/`InlineSequence`/`MacroRef`（ADR-115 決定3）。呼び出しは
+/// `LayoutEntry::scan_all` 内・`awase-settings` のプレビュー生成時の各1箇所のみ。
+/// `YabValue::parse`/`parse_cell` のシグネチャは変えない——config を必要と
+/// するのはこの新しい解決パスのみ。
 #[must_use]
 pub fn resolve_keystroke_syntax(
     mut layout: YabLayout,
@@ -1127,12 +1139,11 @@ fn resolve_keystroke_syntax_value(
             *value = collapse_resolved(resolved);
         }
         (crate::config::KeystrokeSequencePolicy::On, YabValue::MacroRef(name)) => {
-            *value = match macros.iter().find(|m| m.name == name) {
-                Some(m) => collapse_resolved(resolve_macro_steps(&m.steps, warnings)),
-                None => {
-                    warnings.push(format!("マクロ @{name} が見つかりません"));
-                    YabValue::None
-                }
+            *value = if let Some(m) = macros.iter().find(|m| m.name == name) {
+                collapse_resolved(resolve_macro_steps(&m.steps, warnings))
+            } else {
+                warnings.push(format!("マクロ @{name} が見つかりません"));
+                YabValue::None
             };
         }
         // 新構文以外はそのまま。

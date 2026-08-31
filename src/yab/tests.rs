@@ -1782,7 +1782,10 @@ fn yab_face_resolve_kana_populates_kana_field_for_romaji_values() {
 fn parse_ctrl_vk_recognizes_cv_prefix() {
     assert_eq!(
         YabValue::parse("CV4D"),
-        YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() }
+        YabValue::CtrlChord {
+            vk: VkCode(0x4D),
+            raw: "CV4D".to_string()
+        }
     );
 }
 
@@ -1795,7 +1798,10 @@ fn parse_ctrl_vk_distinct_from_plain_vk() {
 #[test]
 fn parse_ctrl_vk_rejects_non_hex() {
     // 認識できない場合は既存のフォールバックへ（Literal → 先頭1文字）。
-    assert_eq!(YabValue::parse("CVXY"), YabValue::Literal("CVXY".to_string()));
+    assert_eq!(
+        YabValue::parse("CVXY"),
+        YabValue::Literal("CVXY".to_string())
+    );
 }
 
 #[test]
@@ -1874,10 +1880,16 @@ fn parse_cell_builds_inline_sequence_for_kuten_confirm() {
     match v {
         YabValue::InlineSequence { items, raw } => {
             assert_eq!(raw, "'．'+CV4D");
-            assert_eq!(items, vec![
-                YabValue::Literal("．".to_string()),
-                YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
-            ]);
+            assert_eq!(
+                items,
+                vec![
+                    YabValue::Literal("．".to_string()),
+                    YabValue::CtrlChord {
+                        vk: VkCode(0x4D),
+                        raw: "CV4D".to_string()
+                    },
+                ]
+            );
         }
         other => panic!("expected InlineSequence, got {other:?}"),
     }
@@ -1893,9 +1905,15 @@ fn parse_cell_builds_inline_sequence_for_bracket_pair() {
                 items,
                 vec![
                     YabValue::Literal("『".to_string()),
-                    YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+                    YabValue::CtrlChord {
+                        vk: VkCode(0x4D),
+                        raw: "CV4D".to_string()
+                    },
                     YabValue::Literal("』".to_string()),
-                    YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+                    YabValue::CtrlChord {
+                        vk: VkCode(0x4D),
+                        raw: "CV4D".to_string()
+                    },
                     YabValue::Special(SpecialKey::Left),
                 ]
             );
@@ -1925,13 +1943,20 @@ fn parse_cell_allows_macro_ref_segment() {
 fn serialize_ctrl_chord_and_inline_sequence_round_trip_via_raw() {
     for raw in ["CV4D", "CV0D", "'．'+CV4D", "'『'+CV4D+'』'+CV4D+左"] {
         let parsed = parse_cell(raw);
-        assert_eq!(parsed.serialize(), raw, "raw round-trip must be byte-exact for {raw:?}");
+        assert_eq!(
+            parsed.serialize(),
+            raw,
+            "raw round-trip must be byte-exact for {raw:?}"
+        );
     }
 }
 
 #[test]
 fn serialize_macro_ref_reconstructs_at_name() {
-    assert_eq!(YabValue::MacroRef("bracket_paren".to_string()).serialize(), "@bracket_paren");
+    assert_eq!(
+        YabValue::MacroRef("bracket_paren".to_string()).serialize(),
+        "@bracket_paren"
+    );
 }
 
 #[test]
@@ -1947,7 +1972,10 @@ fn lint_raw_cell_regression_unaffected_by_new_syntax() {
 fn lint_detects_typo_inside_plus_joined_segment() {
     // `+` 区切りのどのセグメントに誤字があっても検出される。
     let warnings = lint("[ローマ字シフト無し]\nｂ'ｕ+CV4D,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n");
-    assert!(!warnings.is_empty(), "typo inside a + segment must still be detected");
+    assert!(
+        !warnings.is_empty(),
+        "typo inside a + segment must still be detected"
+    );
 }
 
 #[test]
@@ -1993,26 +2021,26 @@ fn layout_with(pos: PhysicalPos, value: YabValue) -> YabLayout {
 fn resolve_off_ctrl_chord_reverts_to_today_literal() {
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("CV41"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::Off,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::Off);
     assert!(warnings.is_empty());
-    assert_eq!(resolved.normal.get(&pos), Some(&YabValue::Literal("CV41".to_string())));
+    assert_eq!(
+        resolved.normal.get(&pos),
+        Some(&YabValue::Literal("CV41".to_string()))
+    );
 }
 
 #[test]
 fn resolve_off_inline_sequence_reverts_to_today_parse_result() {
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("'．'+CV4D"));
-    let (resolved, _warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::Off,
-    );
+    let (resolved, _warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::Off);
     // 今日の YabValue::parse("'．'+CV4D") と完全に一致すること。
-    assert_eq!(resolved.normal.get(&pos), Some(&YabValue::parse("'．'+CV4D")));
+    assert_eq!(
+        resolved.normal.get(&pos),
+        Some(&YabValue::parse("'．'+CV4D"))
+    );
 }
 
 #[test]
@@ -2022,11 +2050,8 @@ fn resolve_off_inline_sequence_matches_today_quote_stripping_edge_case() {
     let pos = PhysicalPos::new(0, 0);
     let raw = "'（'+'）'";
     let layout = layout_with(pos, parse_cell(raw));
-    let (resolved, _warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::Off,
-    );
+    let (resolved, _warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::Off);
     assert_eq!(resolved.normal.get(&pos), Some(&YabValue::parse(raw)));
 }
 
@@ -2040,22 +2065,25 @@ fn resolve_off_macro_ref_reverts_to_at_name_literal() {
         crate::config::KeystrokeSequencePolicy::Off,
     );
     assert!(warnings.is_empty());
-    assert_eq!(resolved.normal.get(&pos), Some(&YabValue::Literal("@confirm".to_string())));
+    assert_eq!(
+        resolved.normal.get(&pos),
+        Some(&YabValue::Literal("@confirm".to_string()))
+    );
 }
 
 #[test]
 fn resolve_on_ctrl_chord_stays_ctrl_chord() {
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("CV4D"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::On,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::On);
     assert!(warnings.is_empty());
     assert_eq!(
         resolved.normal.get(&pos),
-        Some(&YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() })
+        Some(&YabValue::CtrlChord {
+            vk: VkCode(0x4D),
+            raw: "CV4D".to_string()
+        })
     );
 }
 
@@ -2063,17 +2091,17 @@ fn resolve_on_ctrl_chord_stays_ctrl_chord() {
 fn resolve_on_inline_sequence_becomes_flat_sequence() {
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("'．'+CV4D"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::On,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::On);
     assert!(warnings.is_empty());
     assert_eq!(
         resolved.normal.get(&pos),
         Some(&YabValue::Sequence(vec![
             YabValue::Literal("．".to_string()),
-            YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+            YabValue::CtrlChord {
+                vk: VkCode(0x4D),
+                raw: "CV4D".to_string()
+            },
         ]))
     );
 }
@@ -2084,15 +2112,15 @@ fn resolve_on_rejects_vk_inside_inline_sequence_with_warning() {
     // 経由でも stuck key を招くため必ず拒否される。
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("'あ'+V1D"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::On,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::On);
     assert!(!warnings.is_empty(), "Vk element must produce a warning");
     // Vk が拒否されて Literal("あ") だけが残る → 1要素なので Sequence で
     // 包まずそのまま返る。
-    assert_eq!(resolved.normal.get(&pos), Some(&YabValue::Literal("あ".to_string())));
+    assert_eq!(
+        resolved.normal.get(&pos),
+        Some(&YabValue::Literal("あ".to_string()))
+    );
 }
 
 #[test]
@@ -2111,7 +2139,10 @@ fn resolve_on_macro_ref_inside_inline_sequence_flattens_without_nesting() {
         Some(YabValue::Sequence(items)) => {
             assert_eq!(items.len(), 2, "must be flat, not nested: {items:?}");
             for it in items {
-                assert!(!matches!(it, YabValue::Sequence(_)), "found nested Sequence: {it:?}");
+                assert!(
+                    !matches!(it, YabValue::Sequence(_)),
+                    "found nested Sequence: {it:?}"
+                );
             }
         }
         other => panic!("expected flat Sequence, got {other:?}"),
@@ -2122,11 +2153,8 @@ fn resolve_on_macro_ref_inside_inline_sequence_flattens_without_nesting() {
 fn resolve_on_undefined_macro_ref_becomes_none_with_warning() {
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("@typo"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::On,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::On);
     assert!(warnings.iter().any(|w| w.contains("@typo")));
     assert_eq!(resolved.normal.get(&pos), Some(&YabValue::None));
 }
@@ -2136,11 +2164,8 @@ fn resolve_on_all_elements_rejected_collapses_to_none() {
     // V1D+V1C は全要素が Vk で拒否される → Sequence(vec![]) ではなく None。
     let pos = PhysicalPos::new(0, 0);
     let layout = layout_with(pos, parse_cell("V1D+V1C"));
-    let (resolved, warnings) = resolve_keystroke_syntax(
-        layout,
-        &[],
-        crate::config::KeystrokeSequencePolicy::On,
-    );
+    let (resolved, warnings) =
+        resolve_keystroke_syntax(layout, &[], crate::config::KeystrokeSequencePolicy::On);
     assert_eq!(warnings.len(), 2);
     assert_eq!(resolved.normal.get(&pos), Some(&YabValue::None));
 }
@@ -2166,10 +2191,15 @@ fn resolve_on_macro_rejects_romaji_step_with_alternative_hint() {
         &[km("confirm", &["ｋａ", "CV4D"])],
         crate::config::KeystrokeSequencePolicy::On,
     );
-    assert!(warnings.iter().any(|w| w.contains("+") && w.contains("ローマ字")));
+    assert!(warnings
+        .iter()
+        .any(|w| w.contains("+") && w.contains("ローマ字")));
     // "ｋａ" が拒否されて "CV4D" だけが残る → 1要素なのでそのまま返る。
     assert_eq!(
         resolved.normal.get(&pos),
-        Some(&YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() })
+        Some(&YabValue::CtrlChord {
+            vk: VkCode(0x4D),
+            raw: "CV4D".to_string()
+        })
     );
 }

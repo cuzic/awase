@@ -3633,10 +3633,12 @@ const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
         Some(YabValue::KeySequence(_)) => egui::Color32::from_rgb(200, 235, 255),
         Some(YabValue::Vk(_)) => egui::Color32::from_rgb(255, 225, 200),
         // ADR-115: 打鍵列系は薄紫で統一し、既存カラーパレットと区別する。
-        Some(YabValue::CtrlChord { .. } | YabValue::InlineSequence { .. } | YabValue::MacroRef(_)) => {
-            egui::Color32::from_rgb(230, 210, 255)
+        Some(
+            YabValue::CtrlChord { .. } | YabValue::InlineSequence { .. } | YabValue::MacroRef(_),
+        ) => egui::Color32::from_rgb(230, 210, 255),
+        Some(YabValue::Sequence(_) | YabValue::None) | None => {
+            egui::Color32::from_rgb(220, 220, 220)
         }
-        Some(YabValue::Sequence(_) | YabValue::None) | None => egui::Color32::from_rgb(220, 220, 220),
     }
 }
 
