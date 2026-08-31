@@ -939,6 +939,7 @@ pub(super) fn run_all() -> Result<()> {
         left_thumb_vk,
         right_thumb_vk,
     ));
+    engine.apply_general_config(&config.general);
 
     if let Some(vk) = config
         .keys

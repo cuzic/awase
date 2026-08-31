@@ -454,10 +454,22 @@ impl SettingsApp {
             return;
         }
 
-        let (_validated, warnings) = self.config.clone().validate();
+        // /code-review指摘（PR #127、2回目）: self.configはこの直後に
+        // AppConfig::from(validated)で上書きされるため、事前の
+        // `self.config.clone()`はvalidate()に渡した瞬間に捨てられる
+        // 無駄なdeep clone（keymaps/app_overridesのVecまで含む）だった。
+        // mem::takeで元の値をmoveし、cloneを避ける。
+        let (validated, warnings) = std::mem::take(&mut self.config).validate();
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
+        // /code-review指摘: 以前はvalidate()の戻り値（confirm_mode="speculative"
+        // → two_phase正規化等を含む）を警告文の生成にしか使わず、保存対象は
+        // 未検証のself.configのcloneだった。設定画面がconfirm_modeを一切
+        // 表示しなくなった今、この正規化はユーザーが手で直す手段が無いため、
+        // 保存されずに警告だけが「適用」を押すたび永遠に再表示され続けていた。
+        // validated側をself.configにも反映し、保存対象にする。
+        self.config = awase::config::AppConfig::from(validated);
         let clone = self.config.clone();
 
         let config_path = self.config_path.clone();
@@ -1073,46 +1085,6 @@ impl SettingsApp {
                     .suffix(" ms"),
             )
             .on_hover_text(threshold_hover);
-        });
-        let confirm_mode_hover =
-            "文字の確定方法を選びます。\nモードごとに速度と正確さのバランスが異なります。";
-        ui.horizontal(|ui| {
-            ui.label("確定モード:").on_hover_text(confirm_mode_hover);
-            egui::ComboBox::from_id_salt("confirm_mode")
-                .selected_text(confirm_mode_label(self.config.general.confirm_mode))
-                .show_ui(ui, |ui| {
-                    use awase::config::ConfirmMode;
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Wait, "待機 (wait)")
-                        .on_hover_text("選ぶと: タイムアウトまで出力を保留します。\n最も正確ですが、入力に少し遅延を感じます。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::Speculative, "先行確定 (speculative)")
-                        .on_hover_text("選ぶと: 即座に出力し、親指シフトと判定されたら差し替えます。\n高速ですが、まれに画面がちらつきます。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::TwoPhase, "二段タイマー (two_phase)")
-                        .on_hover_text("選ぶと: 短い待機の後に投機出力します。\nwait と speculative の中間的な動作です。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::AdaptiveTiming, "適応タイミング (adaptive_timing)")
-                        .on_hover_text("選ぶと: 連続入力中は待機、途切れたら投機出力します。\nタイピング速度に自動適応します。");
-                    ui.selectable_value(&mut self.config.general.confirm_mode, ConfirmMode::NgramPredictive, "n-gram 予測 (ngram_predictive)")
-                        .on_hover_text("選ぶと: 統計データで次の文字を予測し、判定を最適化します。\nn-gram ファイル未指定時は二段タイマーとして動作します。");
-                })
-                .response
-                .on_hover_text(confirm_mode_hover);
-        });
-        ui.label(confirm_mode_tooltip(self.config.general.confirm_mode));
-        let spec_enabled = matches!(
-            self.config.general.confirm_mode,
-            awase::config::ConfirmMode::TwoPhase
-                | awase::config::ConfirmMode::AdaptiveTiming
-                | awase::config::ConfirmMode::NgramPredictive
-        );
-        ui.add_enabled_ui(spec_enabled, |ui| {
-            let spec_delay_hover = "投機出力までの待機時間です。この値が短いほど応答が速くなりますが、\n誤判定が増えます。TwoPhase/AdaptiveTiming と、NgramPredictive の\nフォールバック動作で使用されます。";
-            ui.horizontal(|ui| {
-                ui.label("投機出力待機:").on_hover_text(spec_delay_hover);
-                ui.add(
-                    egui::Slider::new(&mut self.config.general.speculative_delay_ms, 0..=100)
-                        .suffix(" ms"),
-                )
-                .on_hover_text(spec_delay_hover);
-            });
         });
         ui.label("出力方式: アプリごとに最適な注入方式を自動選択します（設定不要）")
             .on_hover_text(
@@ -2297,9 +2269,51 @@ impl SettingsApp {
         }
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_advanced(&mut self, ui: &mut egui::Ui) {
         ui.heading("上級者向け設定");
         ui.add_space(4.0);
+
+        // confirm_mode / speculative_delay_ms は設定画面から完全に非表示にした
+        // （2026-08-30、ユーザー判断: 「wait 単一表示というか設定UIから見えなく
+        // したらいい」）。ConfirmMode のバリアント・`dispatch_confirm_mode` の
+        // 分岐ロジックは残してあり、`config.toml` に `confirm_mode = "two_phase"`
+        // 等と手書きすれば引き続き使える純粋な toml 裏設定になった。
+
+        let slider_with_tip = |ui: &mut egui::Ui,
+                               label: &str,
+                               tip: &str,
+                               suffix: &str,
+                               val: &mut u32,
+                               range: std::ops::RangeInclusive<u32>| {
+            ui.horizontal(|ui| {
+                ui.label(label).on_hover_text(tip);
+                ui.add(egui::Slider::new(val, range).suffix(suffix))
+                    .on_hover_text(tip);
+            });
+        };
+        slider_with_tip(
+            ui,
+            "3キー分岐マージン:",
+            "char1→親指→char2 と3キーが来た場合の仲裁マージンです。\n\
+             2つの間隔の差がこの割合を超えるとタイミングだけで決定し、\n\
+             それ以外は n-gram で判定します（下の n-gram 設定を参照）。",
+            " %",
+            &mut self.config.general.timing_margin_percent,
+            0..=100,
+        );
+        slider_with_tip(
+            ui,
+            "重なり不足マージン:",
+            "文字キー+親指キーの物理的な重なり時間がこの割合未満だと\n\
+             「重なり不足」とみなし、n-gram でタイブレークします\n\
+             （n-gram が無効なら単独打鍵扱いになります）。",
+            " %",
+            &mut self.config.general.min_overlap_margin_percent,
+            0..=100,
+        );
+        ui.add_space(8.0);
+
         ui.checkbox(
             &mut self.config.general.swallow_alt_kana_input_method_switch,
             "Alt+かな による IME 入力方式切替（ローマ字⇔JIS かな）を無効化する",
@@ -2317,62 +2331,54 @@ impl SettingsApp {
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
         ui.add_space(8.0);
-        let slider_with_tip = |ui: &mut egui::Ui,
-                               label: &str,
-                               tip: &str,
-                               val: &mut u32,
-                               range: std::ops::RangeInclusive<u32>| {
-            ui.horizontal(|ui| {
-                ui.label(label).on_hover_text(tip);
-                ui.add(egui::Slider::new(val, range).suffix(" ms"))
-                    .on_hover_text(tip);
-            });
-        };
-        let ngram_enabled = matches!(
-            self.config.general.confirm_mode,
-            awase::config::ConfirmMode::NgramPredictive
-        );
-        if !ngram_enabled {
-            ui.label(
-                "n-gram 設定は確定モードが「n-gram 予測」のときのみ使用されます（全般設定タブ）",
-            );
-        }
-        ui.add_enabled_ui(ngram_enabled, |ui| {
-        let ngram_file_hover = "n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\nngram_predictive モードで使用されます。";
+        // n-gram はタイブレーク（3キー分岐・重なり不足判定・2キーしきい値の
+        // 動的調整）に confirm_mode を問わず常に使われる（ngram_file が
+        // ロードできていれば）。かつては「confirm_mode が n-gram 予測の
+        // ときだけ使う」という誤った前提でグレーアウトしていたが、
+        // 実際にはタイブレーク経路は wait を含む全モードで有効なため
+        // 2026-08-30 に外した。
+        let ngram_file_hover = "n-gram 統計データファイルのパスです。\n.csv.gz または .toml 形式に対応しています。\n同時打鍵のタイブレーク（3キー分岐・重なり不足判定）に\nconfirm_mode を問わず常に使われます。";
         ui.horizontal(|ui| {
             ui.label("n-gram ファイル:").on_hover_text(ngram_file_hover);
             let mut buf = self.config.general.ngram_file.clone().unwrap_or_default();
-            if ui.text_edit_singleline(&mut buf).on_hover_text(ngram_file_hover).changed() {
+            if ui
+                .text_edit_singleline(&mut buf)
+                .on_hover_text(ngram_file_hover)
+                .changed()
+            {
                 self.config.general.ngram_file = if buf.is_empty() { None } else { Some(buf) };
             }
         });
         slider_with_tip(
             ui,
             "n-gram 調整幅:",
-            "n-gram 予測による閾値調整の幅です。\n大きいほど予測の影響が強くなります。",
+            "n-gram による同時打鍵しきい値調整の幅です。\n大きいほど予測の影響が強くなります。",
+            " ms",
             &mut self.config.general.ngram_adjustment_range_ms,
             0..=100,
         );
         slider_with_tip(
             ui,
             "n-gram 最小閾値:",
-            "n-gram 予測で調整される閾値の下限です。\nこれより短い閾値にはなりません。",
+            "n-gram で調整される同時打鍵しきい値の下限です。\nこれより短い閾値にはなりません。",
+            " ms",
             &mut self.config.general.ngram_min_threshold_ms,
             10..=200,
         );
         slider_with_tip(
             ui,
             "n-gram 最大閾値:",
-            "n-gram 予測で調整される閾値の上限です。\nこれより長い閾値にはなりません。",
+            "n-gram で調整される同時打鍵しきい値の上限です。\nこれより長い閾値にはなりません。",
+            " ms",
             &mut self.config.general.ngram_max_threshold_ms,
             50..=500,
         );
-        });
         ui.add_space(8.0);
         slider_with_tip(
             ui,
             "フォーカスデバウンス:",
             "フォーカス切り替え時のデバウンス時間です。\nAlt+Tab などでフォーカスが連続変更される際の誤検知を防ぎます。",
+            " ms",
             &mut self.config.general.focus_debounce_ms,
             0..=200,
         );
@@ -2380,6 +2386,7 @@ impl SettingsApp {
             ui,
             "IME ポーリング間隔:",
             "IME 状態のポーリング間隔です。\nマウスで言語バーを操作した場合などの検出用です。\n小さいほどレスポンスが良くなりますが、CPU 負荷が増えます。",
+            " ms",
             &mut self.config.general.ime_poll_interval_ms,
             100..=5000,
         );
@@ -3183,32 +3190,6 @@ const fn keyboard_model_label(model: awase::scanmap::KeyboardModel) -> &'static 
     match model {
         KeyboardModel::Jis => "JIS (日本語109キー)",
         KeyboardModel::Us => "US (ANSI 104キー)",
-    }
-}
-
-const fn confirm_mode_label(mode: awase::config::ConfirmMode) -> &'static str {
-    use awase::config::ConfirmMode;
-    match mode {
-        ConfirmMode::Wait => "待機 (wait)",
-        ConfirmMode::Speculative => "先行確定 (speculative)",
-        ConfirmMode::TwoPhase => "二段タイマー (two_phase)",
-        ConfirmMode::AdaptiveTiming => "適応タイミング (adaptive_timing)",
-        ConfirmMode::NgramPredictive => "n-gram 予測 (ngram_predictive)",
-    }
-}
-
-const fn confirm_mode_tooltip(mode: awase::config::ConfirmMode) -> &'static str {
-    use awase::config::ConfirmMode;
-    match mode {
-        ConfirmMode::Wait => "  タイムアウトまで出力を保留。最も正確だが遅延あり。",
-        ConfirmMode::Speculative => "  即座に出力し、同時打鍵時に差し替え。高速だが一瞬ちらつく。",
-        ConfirmMode::TwoPhase => "  短い待機後に投機出力。wait と speculative の中間。",
-        ConfirmMode::AdaptiveTiming => {
-            "  連続打鍵中は wait、途切れたら投機。タイピング速度に適応。"
-        }
-        ConfirmMode::NgramPredictive => {
-            "  n-gram 統計で投機/待機を動的判断。モデル未指定時は二段タイマー動作。"
-        }
     }
 }
 
@@ -4336,6 +4317,65 @@ mod layout_tab_repro {
         assert_eq!(
             bak_after_second, "original broken content",
             ".bak は最初の異常発生時点のものを保持し続けるべき"
+        );
+    }
+
+    /// /code-review指摘（PR #127）: apply_confirmed()はvalidate()の戻り値
+    /// （confirm_mode="speculative"→two_phase正規化を含む）を警告文の表示
+    /// にしか使わず、保存対象は未検証のself.configのcloneのままだった。
+    /// 設定画面がconfirm_modeを一切表示しなくなったため、この正規化を
+    /// ユーザーが手で直す手段が無く、警告が「適用」を押すたび永遠に
+    /// 再表示され続けるバグになっていた。正規化後の値がファイルへ保存され、
+    /// かつ self.config にも反映されることを確認する。
+    #[test]
+    fn apply_confirmed_persists_normalized_confirm_mode_not_raw_config() {
+        let config: awase::config::AppConfig = toml::from_str(
+            r#"
+[general]
+confirm_mode = "speculative"
+speculative_delay_ms = 30
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.general.confirm_mode,
+            awase::config::ConfirmMode::Speculative,
+            "sanity: toml側の記述が期待通りspeculativeとしてパースされているか"
+        );
+        let mut app = test_settings_app(config);
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_normalize_persist_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        app.config_path = config_path.clone();
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let saved = std::fs::read_to_string(&config_path).unwrap();
+        let _ = std::fs::remove_file(&config_path);
+
+        assert!(
+            saved.contains(r#"confirm_mode = "two_phase""#),
+            "保存されたファイルはconfirm_mode正規化後(two_phase)であるべき: {saved}"
+        );
+        assert!(
+            !saved.contains(r#"confirm_mode = "speculative""#),
+            "保存されたファイルに廃止済みのconfirm_mode=\"speculative\"が\
+             残ってはいけない: {saved}"
+        );
+        assert_eq!(
+            app.config.general.confirm_mode,
+            awase::config::ConfirmMode::TwoPhase,
+            "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
+             永遠に再表示されるのを防ぐため）"
+        );
+        assert_eq!(
+            app.status.contains("speculative"),
+            true,
+            "1回目のApplyでは廃止警告が表示されるべき: {}",
+            app.status
         );
     }
 

@@ -1437,6 +1437,8 @@ impl Runtime {
                 threshold_ms: config.general.simultaneous_threshold_ms,
                 confirm_mode: config.general.confirm_mode,
                 speculative_delay_ms: config.general.speculative_delay_ms,
+                timing_margin_percent: config.general.timing_margin_percent,
+                min_overlap_margin_percent: config.general.min_overlap_margin_percent,
             },
             &ctx,
         );

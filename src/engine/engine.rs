@@ -195,6 +195,28 @@ impl Engine {
         self.adapter.set_thumb_shift_faces_enabled(enabled);
     }
 
+    /// 3キー仲裁・重なり判定のタイミングマージンを設定する
+    /// （`GeneralConfig::timing_margin_percent`/`min_overlap_margin_percent`）。
+    /// 起動時（`bootstrap.rs`）から呼ぶ。reload 時は `UpdateFsmParams` 経由。
+    pub fn set_timing_margins(
+        &mut self,
+        timing_margin_percent: u32,
+        min_overlap_margin_percent: u32,
+    ) {
+        self.adapter
+            .set_timing_margins(timing_margin_percent, min_overlap_margin_percent);
+    }
+
+    /// `GeneralConfig` の調整可能フィールドを一括反映する
+    /// （`NicolaFsm::apply_general_config` 参照、/code-review指摘、
+    /// PR #127、7回目）。起動時（`bootstrap.rs`）から呼ぶ。
+    pub fn apply_general_config(&mut self, config: &crate::config::GeneralConfig) {
+        self.set_timing_margins(
+            config.timing_margin_percent,
+            config.min_overlap_margin_percent,
+        );
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
@@ -601,10 +623,14 @@ impl Engine {
                 threshold_ms,
                 confirm_mode,
                 speculative_delay_ms,
+                timing_margin_percent,
+                min_overlap_margin_percent,
             } => {
                 self.adapter.set_threshold_ms(threshold_ms);
                 self.adapter
                     .set_confirm_mode(confirm_mode, speculative_delay_ms);
+                self.adapter
+                    .set_timing_margins(timing_margin_percent, min_overlap_margin_percent);
                 Decision::pass_through()
             }
             EngineCommand::SetNgramModel(model) => {
