@@ -352,6 +352,10 @@ struct SettingsApp {
     scancode_map_status: Option<scancode_map_admin::ScancodeMapStatus>,
     /// 直近の有効化/無効化操作の結果メッセージ（GUI表示用）。
     scancode_map_last_message: Option<String>,
+    /// 起動時設定診断（ADR-116）: `config.validate()` 警告 + `layouts_dir`
+    /// 内の全 `.yab` の読込失敗/`yab::lint()` 警告。`recompute_diagnostics()`
+    /// で計算し、`config_path_panel` に表示する。空なら表示しない。
+    startup_diagnostics: Vec<String>,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -379,7 +383,7 @@ impl SettingsApp {
         };
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
 
-        Self {
+        let mut app = Self {
             config,
             config_path,
             config_load_state,
@@ -425,7 +429,10 @@ impl SettingsApp {
             pending_save: None,
             scancode_map_status: None,
             scancode_map_last_message: None,
-        }
+            startup_diagnostics: Vec::new(),
+        };
+        app.recompute_diagnostics();
+        app
     }
 
     /// `apply()` の実処理。`config_load_state` が `Dangerous`（読み込み失敗で
@@ -532,6 +539,7 @@ impl SettingsApp {
                     self.status = "設定を保存しました".to_string();
                 }
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
+                self.recompute_diagnostics();
                 send_reload_config_message();
                 self.pending_save = None;
             }
@@ -587,6 +595,51 @@ impl SettingsApp {
                 self.status = format!("読み込み失敗: {e}");
             }
         }
+        self.recompute_diagnostics();
+    }
+
+    /// 起動時設定診断（ADR-116）を再計算する。`config.validate()` の警告と、
+    /// `layouts_dir` 内の全 `.yab` の読込失敗/`yab::lint()` 警告を集める。
+    ///
+    /// `config_load_state` が `Dangerous`（`config.toml` の読込自体に失敗し
+    /// `default_config()` を表示中）のときは何もしない——その既定設定を
+    /// 診断しても無意味な結果が、本当に重要な「読込失敗」という赤字警告
+    /// （`config_path_panel`）の隣に並ぶだけになる。
+    ///
+    /// `config.validate()` は `self.config.clone()` に対して呼び、
+    /// `self.config` 自体は変更しない（`apply_confirmed` の `mem::take` +
+    /// 書き戻しパターンはここでは使わない）。書き戻すと `validate_layouts`
+    /// の正規化（`..` を含むパスを `"layout"` に書き換える）が確定して
+    /// しまい、ユーザーがまだ「適用」を押していないのに画面表示上の
+    /// `layouts_dir` が黙って変わる（`recompute_diagnostics` は保存や
+    /// キャンセルとは無関係な複数箇所から呼ばれるため、この副作用は
+    /// 許容できない）。
+    fn recompute_diagnostics(&mut self) {
+        if matches!(
+            self.config_load_state,
+            awase::config::ConfigLoadState::Dangerous(_)
+        ) {
+            self.startup_diagnostics.clear();
+            return;
+        }
+
+        let layouts_dir = resolve_layouts_dir(&self.config.general.layouts_dir);
+        let mut diagnostics = scan_yab_files_for_diagnostics(&layouts_dir);
+
+        // ここは apply_confirmed の mem::take + 書き戻しパターンを**あえて
+        // 使わない**（Opus敵対的レビュー指摘、r3→r4）。書き戻すと
+        // `validate_layouts` の正規化（".." 含みパスを "layout" へ書き換え）
+        // が `self.config` に確定してしまい、ユーザーがまだ「適用」を押して
+        // いないのに画面表示上の `layouts_dir` が黙って変わる（例:
+        // 設定画面を開いただけで "../foo" が "layout" に見える）。
+        // `apply_confirmed` は正規化を保存対象にする必要があるため書き戻しが
+        // 正しいが、ここは警告文を覗くだけなので clone で十分——
+        // `AppConfig` は小さく、この関数はユーザー操作のたび（毎フレームでは
+        // ない）にしか呼ばれない。
+        let (_, warnings) = self.config.clone().validate();
+        diagnostics.extend(warnings);
+
+        self.startup_diagnostics = diagnostics;
     }
 
     /// 現在編集している config.toml の実パスを常時表示する上部パネル。
@@ -649,6 +702,26 @@ impl SettingsApp {
                          （原因: {reason}）"
                     ),
                 );
+            }
+            if !self.startup_diagnostics.is_empty() {
+                ui.add_space(4.0);
+                egui::CollapsingHeader::new(format!(
+                    "⚠ 設定の診断結果（{}件）",
+                    self.startup_diagnostics.len()
+                ))
+                .default_open(false)
+                .show(ui, |ui| {
+                    // /code-review指摘: 警告件数が多いと TopBottomPanel が
+                    // 際限なく伸びて中央の設定UIを押し出しかねないため、
+                    // 高さを固定してスクロール可能にする。
+                    egui::ScrollArea::vertical()
+                        .max_height(150.0)
+                        .show(ui, |ui| {
+                            for msg in &self.startup_diagnostics {
+                                ui.label(msg);
+                            }
+                        });
+                });
             }
             ui.add_space(4.0);
         });
@@ -862,6 +935,10 @@ impl SettingsApp {
                     format!("{} に保存しました", path.display()),
                     &lint_warnings,
                 );
+                // ADR-116: 配列編集タブでの保存直後に上部パネルの診断リストが
+                // 古いまま（クォート崩れを直したのに警告が残る等）にならない
+                // よう再計算する。
+                self.recompute_diagnostics();
             }
             Err(e) => self.layout_status = format!("保存失敗: {e}"),
         }
@@ -1223,6 +1300,7 @@ impl SettingsApp {
                 .clicked()
             {
                 self.available_layouts = scan_layout_names(&self.config.general.layouts_dir);
+                self.recompute_diagnostics();
             }
         });
     }
@@ -3623,6 +3701,150 @@ fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
 }
 
+/// `dir` 内の全 `.yab` を読込失敗（UTF-8デコード失敗含む）と
+/// `yab::lint()` 警告について診断する（ADR-116 決定3）。
+///
+/// `awase-windows` 側の `LayoutEntry::scan_all` と同じ「read + lint のみ、
+/// `YabLayout::parse` は呼ばない」原則を踏む。パースまで行うと、同梱の
+/// JIS用レイアウトが `keyboard_model = "us"` 環境で列数上限超過により
+/// 恒久的に警告される（US配列ユーザーには対処しようがない誤警告になる）。
+/// `scan_layout_names`（ファイル名一覧のみ返す既存関数）を拡張せず専用の
+/// 小さいループにしているのは、共有を狙って抽象化すると
+/// `LayoutEntry::scan_all` とほぼ同じロジックの再発明になるため
+/// （ADR-116 r1のレビューで指摘された過剰設計と同型）。
+fn scan_yab_files_for_diagnostics(dir: &std::path::Path) -> Vec<String> {
+    let mut diagnostics = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            // /code-review指摘: 以前は無言で空リストを返していた。
+            // `layouts_dir` の打ち間違いは最も起きやすい設定ミスの1つで、
+            // awase.exe 側（LayoutEntry::scan_all）は同じ状況で
+            // 「レイアウトディレクトリが見つかりません」と警告している
+            // （bootstrap.rs:710-716）のに、直しに行く設定画面だけが沈黙する
+            // のはADR-116の出発点だったBUG-104と同型の無言フォールバック。
+            diagnostics.push(format!(
+                "レイアウトディレクトリが見つかりません: {}: {e}",
+                dir.display()
+            ));
+            return diagnostics;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|ext| ext != "yab") {
+            continue;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                // 1セルごとに1件積むと、崩れたファイル1つで診断リストが
+                // 数十行に膨れ上がる（1ファイルにつき1件へ集約、
+                // scan_all 側の同種修正と対称）。
+                let lint_warnings = awase::yab::lint(&content);
+                if !lint_warnings.is_empty() {
+                    diagnostics.push(format!("{}: {}", path.display(), lint_warnings.join(" / ")));
+                }
+            }
+            Err(e) => {
+                diagnostics.push(format!("レイアウト読込失敗: {}: {e}", path.display()));
+            }
+        }
+    }
+    // /code-review指摘: read_dir の返す順はファイルシステム依存で
+    // 実行のたび変わりうる。scan_layout_names（同じ layouts_dir を走査する
+    // 既存関数）も名前でソートしているため、これに揃える。
+    diagnostics.sort();
+    diagnostics
+}
+
+#[cfg(test)]
+mod scan_yab_files_for_diagnostics_tests {
+    use super::scan_yab_files_for_diagnostics;
+
+    fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "awase_test_scan_yab_diag_{label}_{}_{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn missing_directory_reports_a_warning_not_silence() {
+        // /code-review指摘: 以前は read_dir 失敗時に無言で空 Vec を返しており、
+        // layouts_dir の打ち間違いという最も起きやすい設定ミスに対して
+        // 設定画面だけが沈黙していた。
+        let dir = std::env::temp_dir().join("awase_test_scan_yab_diag_does_not_exist_ever");
+        let _ = std::fs::remove_dir_all(&dir);
+        let diagnostics = scan_yab_files_for_diagnostics(&dir);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("レイアウトディレクトリが見つかりません"));
+    }
+
+    #[test]
+    fn empty_directory_reports_nothing() {
+        let dir = unique_temp_dir("empty");
+        assert!(scan_yab_files_for_diagnostics(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_file_reports_one_warning() {
+        // 非UTF-8バイト列 = read_to_string が失敗するケース（BUG-104の
+        // トリガーそのもの）。
+        let dir = unique_temp_dir("unreadable");
+        std::fs::write(dir.join("broken.yab"), [0xFF, 0xFE, 0x00, 0x81]).unwrap();
+        let diagnostics = scan_yab_files_for_diagnostics(&dir);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("レイアウト読込失敗"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quote_corrupted_cells_collapse_into_one_entry_per_file() {
+        // BUG-95のクォート崩れ再現。複数セルが崩れていても診断リストの
+        // 1エントリに集約されること（/code-review指摘: 1セルごとに1件だと
+        // 崩れたファイル1つで診断リストが数十行に膨れ上がる）。
+        let dir = unique_temp_dir("lint");
+        std::fs::write(
+            dir.join("broken.yab"),
+            "[ローマ字シフト無し]\n'あ,'い,ｕ,ｅ,ｏ\n",
+        )
+        .unwrap();
+        let diagnostics = scan_yab_files_for_diagnostics(&dir);
+        assert_eq!(
+            diagnostics.len(),
+            1,
+            "expected one aggregated entry: {diagnostics:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clean_file_reports_nothing() {
+        let dir = unique_temp_dir("clean");
+        std::fs::write(
+            dir.join("ok.yab"),
+            "[ローマ字シフト無し]\nｋａ,ｔａ,ｋｏ,ｓａ,ｒａ\n",
+        )
+        .unwrap();
+        assert!(scan_yab_files_for_diagnostics(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_yab_files_are_ignored() {
+        let dir = unique_temp_dir("ignore");
+        std::fs::write(dir.join("readme.txt"), "not a layout").unwrap();
+        assert!(scan_yab_files_for_diagnostics(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
 fn scan_layout_names(layouts_dir: &str) -> Vec<String> {
     let dir = resolve_layouts_dir(layouts_dir);
     let mut names = Vec::new();
@@ -3760,6 +3982,7 @@ mod layout_tab_repro {
             pending_save: None,
             scancode_map_status: None,
             scancode_map_last_message: None,
+            startup_diagnostics: Vec::new(),
         }
     }
 
