@@ -723,6 +723,19 @@ pub struct ValidatedConfig {
 
 impl AppConfig {
     fn validate_thresholds(g: &mut GeneralConfig, w: &mut Vec<String>) {
+        // confirm_mode = "speculative" は廃止（TwoPhase の speculative_delay_ms=0 と
+        // 完全に等価なため独立バリアントとして残す理由がない）。既存 config.toml との
+        // 互換のため ConfirmMode::Speculative 自体は型として残すが、ここで必ず
+        // TwoPhase + delay=0 に正規化し、以降 FSM が Speculative を受け取ることはない。
+        if g.confirm_mode == ConfirmMode::Speculative {
+            w.push(
+                "confirm_mode \"speculative\" は廃止されました。\
+                 two_phase (speculative_delay_ms=0) として扱います。"
+                    .to_string(),
+            );
+            g.confirm_mode = ConfirmMode::TwoPhase;
+            g.speculative_delay_ms = 0;
+        }
         if g.simultaneous_threshold_ms < 10 || g.simultaneous_threshold_ms > 500 {
             w.push(format!(
                 "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
@@ -1491,6 +1504,32 @@ speculative_delay_ms = 80
         let (validated, warnings) = config.validate();
         assert_eq!(validated.general.speculative_delay_ms, 30);
         assert!(warnings.iter().any(|w| w.contains("speculative_delay_ms")));
+    }
+
+    #[test]
+    fn test_validate_confirm_mode_speculative_is_normalized_to_two_phase_zero_delay() {
+        let toml_str = r#"
+[general]
+confirm_mode = "speculative"
+speculative_delay_ms = 30
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.confirm_mode, ConfirmMode::TwoPhase);
+        assert_eq!(validated.general.speculative_delay_ms, 0);
+        assert!(warnings.iter().any(|w| w.contains("speculative")));
+    }
+
+    #[test]
+    fn test_validate_confirm_mode_wait_is_untouched() {
+        let toml_str = r#"
+[general]
+confirm_mode = "wait"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (validated, warnings) = config.validate();
+        assert_eq!(validated.general.confirm_mode, ConfirmMode::Wait);
+        assert!(warnings.is_empty());
     }
 
     #[test]

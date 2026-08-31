@@ -45,10 +45,11 @@ default_layout = "nicola.yab"
 # ほとんどの環境では wait が最も安定します。他のモードは待機モードでは
 # レスポンスが遅く感じる特殊なケース向けの裏設定として残しています。
 #   wait             - タイムアウトまで出力を保留（最も正確、デフォルト・推奨）
-#   speculative      - 即座に出力、同時打鍵時に BS で差し替え（最も高速）
-#   two_phase        - 短い待機→投機出力→差し替え（バランス型）
+#   two_phase        - 短い待機（speculative_delay_ms）の後に投機出力→差し替え
 #   adaptive_timing  - 連続打鍵中は待機、途切れたら投機
 #   ngram_predictive - n-gram 予測で投機/待機を動的切替
+# ("speculative" は廃止。two_phase で speculative_delay_ms = 0 とすれば同じ動作。
+#  既存の confirm_mode = "speculative" は起動時に自動的に two_phase(0ms) へ読み替えられる)
 confirm_mode = "wait"
 
 # 投機出力までの待機時間（ミリ秒、two_phase/adaptive_timing で使用。上級者向け）
