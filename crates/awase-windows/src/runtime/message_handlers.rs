@@ -133,6 +133,34 @@ pub(crate) fn deliver_key_event(
         app.platform_state.gate.last_hook_activity_ms = hook::current_tick_ms();
     }
 
+    let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
+
+    // ── `[[keymap]]` latch チェック（ADR-114 決定2 ステップ1、最優先）──
+    // `Nested`/`NonText` の早期returnより前、`origin`/`focus_kind` を問わず
+    // 必ず実行する。片方だけを先に動かすと、latch が残った状態でこの vk の
+    // KeyDown/KeyUp のどちらか一方だけが先に素通りしてしまう Down/Up 非対称
+    // （OS 側で「押しっぱなし」に見えるイベント）が生じるため、KeyUp 回収と
+    // KeyDown の自動リピート抑制の両方をここに置く。
+    if app
+        .platform_state
+        .keymap
+        .keymap_latch
+        .is_latched(event.vk_code)
+    {
+        if is_key_down {
+            // 自動リピート抑制: find_match を呼ばず黙って consume する
+            // （target_vk は再送しない）。HOOK_KEYS overflow で latch が
+            // stale に残っていた場合でも、この分岐に例外を設けない
+            // （latch 漏れ対策、T5 参照）。
+            return KeyDelivery::Consumed;
+        }
+        app.platform_state
+            .keymap
+            .keymap_latch
+            .release(event.vk_code);
+        return KeyDelivery::Consumed;
+    }
+
     if matches!(origin, KeyOrigin::Hook(PumpContext::Nested)) {
         app.executor.enqueue_reinject(event);
         return KeyDelivery::Reinjected;
@@ -153,6 +181,40 @@ pub(crate) fn deliver_key_event(
         return KeyDelivery::Reinjected;
     }
 
+    // ── `[[keymap]]` KeyDown 新規照合（ADR-114 決定2 ステップ2）──
+    // NonText パススルーの後・`[[post_bypass]]` 消費の前。ステップ1 で
+    // latch 済みと判定された vk はここに到達しない（既に consume 済み）ため、
+    // ここで扱うのは「まだ latch されていない vk の新規 KeyDown」のみ。
+    // NICOLA エンジンには一切見せない（`Ctrl+I` の `I` が同時打鍵判定に
+    // 巻き込まれるのを防ぐ）ため `[[post_bypass]]` より先に評価する。
+    //
+    // 既知の限界（v1 スコープ）: `FocusKind::NonText` では一切効かない
+    // （このチェックが NonText 早期returnの後にあるため）。`[[keymap]]` の
+    // 送信（SendInput）が「NonText では awase は一切手を出さない」という
+    // 既存の不変条件を破ることになる副作用の監査コストを避けるための
+    // 意図的な v1 判断。
+    if is_key_down {
+        if let Some(matched) = app
+            .platform_state
+            .keymap
+            .active_keymaps
+            .find_match(event.vk_code, event.modifier_snapshot)
+        {
+            app.platform_state.keymap.keymap_latch.latch(event.vk_code);
+            if let Some(target_vk) = matched {
+                // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
+                unsafe {
+                    crate::output::held_modifiers::send_keymap_target(
+                        event.modifier_snapshot.ctrl,
+                        event.modifier_snapshot.shift,
+                        target_vk,
+                    );
+                }
+            }
+            return KeyDelivery::Consumed;
+        }
+    }
+
     // ── Post-bypass passthrough（Ctrl+J 等 tmux prefix 直後のコマンドキー）──
     // Ctrl+key bypass の直後に non-Ctrl 非修飾キーが来た場合、NICOLA エンジンを
     // スキップして直接 passthrough する（1 キー分のみ）。
@@ -165,7 +227,6 @@ pub(crate) fn deliver_key_event(
     // 対象キー（無変換/変換系）と衝突する可能性は低い。NonText のように
     // 「フォーカス分類の誤判定で常時パススルーになる」広いガードとは性質が
     // 異なるため、ここは従来どおり適用する。
-    let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
     if let Some(delivery) = consume_post_bypass(app, event, is_key_down) {
         return delivery;
     }
