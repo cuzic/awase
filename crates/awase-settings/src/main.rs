@@ -11,6 +11,7 @@ use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
+mod scancode_map_admin;
 mod startup_failure;
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
@@ -223,6 +224,21 @@ fn main() -> eframe::Result<()> {
         return bug_report::run(&parse_bug_report_args(&args));
     }
 
+    // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
+    // レジストリ操作のみ行い、終了コードで結果を返す（`--bug-report`と
+    // 同型のヘッドレス分岐パターン）。
+    if let Some(mode) = arg_value(&args, "--scancode-map") {
+        let enable = match mode {
+            "on" => true,
+            "off" => false,
+            _ => {
+                log::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
+                std::process::exit(1);
+            }
+        };
+        std::process::exit(scancode_map_admin::run_elevated_worker(enable));
+    }
+
     let viewport = egui::ViewportBuilder::default()
         // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
         // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
@@ -329,6 +345,12 @@ struct SettingsApp {
     /// バックグラウンドスレッドで実行し、この `Receiver` を毎フレーム
     /// ノンブロッキングでポーリングする。
     pending_save: Option<std::sync::mpsc::Receiver<PendingSaveResult>>,
+    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111）の現在の Scancode Map
+    /// 状態キャッシュ。`None` はまだ一度も読んでいないことを示す（タブを
+    /// 開いた時と操作直後にのみ読み直す、毎フレーム `RegGetValueW` しない）。
+    scancode_map_status: Option<scancode_map_admin::ScancodeMapStatus>,
+    /// 直近の有効化/無効化操作の結果メッセージ（GUI表示用）。
+    scancode_map_last_message: Option<String>,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -401,6 +423,8 @@ impl SettingsApp {
             layout_pending_open: None,
             layout_pending_save_as: None,
             pending_save: None,
+            scancode_map_status: None,
+            scancode_map_last_message: None,
         }
     }
 
@@ -1606,6 +1630,99 @@ impl SettingsApp {
             self.new_keymap_from_main.clear();
             self.new_keymap_to_main.clear();
         }
+
+        ui.add_space(16.0);
+        self.scancode_map_section(ui);
+    }
+
+    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111決定7）。Scancode Map
+    /// （レジストリ、要昇格・要再起動）方式のみを提供する——ADR-110の
+    /// フックベース`key_remap`機構はJIS英数キー位置で日本語IMEと衝突する
+    /// 構造的リスクが判明したため撤回済み（`docs/adr/111-...md`参照）。
+    fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Caps(英数)⇔Ctrl 入れ替え");
+        ui.label(
+            "CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を入れ替えます。\n\
+             Windows のレジストリ（Scancode Map）を書き換えるため、管理者権限の\n\
+             確認が1回表示されます。変更の反映には再起動が必要です（サインアウトでは\n\
+             反映されないことがあります）。\n\
+             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続の\n\
+             セッション内では動作しません。",
+        );
+        ui.add_space(4.0);
+
+        if self.scancode_map_status.is_none() {
+            self.scancode_map_status = Some(scancode_map_admin::read_status());
+        }
+
+        match &self.scancode_map_status {
+            Some(scancode_map_admin::ScancodeMapStatus::Active { extra_entries }) => {
+                if *extra_entries == 0 {
+                    ui.colored_label(egui::Color32::from_rgb(0, 140, 0), "✓ 有効");
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0, 140, 0),
+                        format!("✓ 有効（他に awase と無関係な設定が {extra_entries} 件あります）"),
+                    );
+                }
+            }
+            Some(scancode_map_admin::ScancodeMapStatus::Inactive { extra_entries }) => {
+                if *extra_entries == 0 {
+                    ui.label("未設定");
+                } else {
+                    ui.label(format!(
+                        "未設定（awase と無関係な Scancode Map 設定が {extra_entries} 件あります）"
+                    ));
+                }
+            }
+            Some(scancode_map_admin::ScancodeMapStatus::ReadError(e)) => {
+                ui.colored_label(egui::Color32::RED, format!("読み取りエラー: {e}"));
+            }
+            None => unreachable!("直前に read_status() で埋めている"),
+        }
+
+        ui.horizontal(|ui| {
+            let is_active = matches!(
+                self.scancode_map_status,
+                Some(scancode_map_admin::ScancodeMapStatus::Active { .. })
+            );
+            if ui.button("有効にする").clicked() && !is_active {
+                self.apply_scancode_map_change(true);
+            }
+            if ui.button("無効にする").clicked() && is_active {
+                self.apply_scancode_map_change(false);
+            }
+        });
+
+        if let Some(msg) = &self.scancode_map_last_message {
+            ui.label(msg);
+        }
+    }
+
+    /// 有効化/無効化ボタン押下時の処理。自己昇格フロー
+    /// （`scancode_map_admin::request_elevated_change`）を起動して完了を
+    /// 待ち、結果に応じてメッセージを表示し、状態キャッシュを読み直す
+    /// （ADR-111決定4・決定7）。
+    fn apply_scancode_map_change(&mut self, enable: bool) {
+        use scancode_map_admin::ElevationOutcome;
+        let outcome = scancode_map_admin::request_elevated_change(enable);
+        self.scancode_map_last_message = Some(match outcome {
+            ElevationOutcome::Success => {
+                if enable {
+                    "有効にしました。反映するには再起動してください。".to_string()
+                } else {
+                    "無効にしました。反映するには再起動してください。".to_string()
+                }
+            }
+            ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
+            ElevationOutcome::Cancelled => {
+                "キャンセルされました（管理者権限が必要です）。".to_string()
+            }
+            ElevationOutcome::LaunchError(e) => format!("起動できませんでした: {e}"),
+        });
+        // 決定7: 操作直後にのみ再読み込みする（毎フレーム読まない）。
+        self.scancode_map_status = Some(scancode_map_admin::read_status());
     }
 
     /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
@@ -3655,6 +3772,8 @@ mod layout_tab_repro {
             layout_pending_open: None,
             layout_pending_save_as: None,
             pending_save: None,
+            scancode_map_status: None,
+            scancode_map_last_message: None,
         }
     }
 
