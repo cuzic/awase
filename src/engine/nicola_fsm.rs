@@ -3,7 +3,7 @@
 use smallvec::{smallvec, SmallVec};
 use timed_fsm::{Response, ShiftReduceParser};
 
-use crate::config::ConfirmMode;
+use crate::config::{ConfirmMode, GeneralConfig};
 use crate::engine::input_tracker::PhysicalKeyState;
 use crate::engine::output_history::{OutputEntry, OutputHistory};
 use crate::ngram::NgramModel;
@@ -682,6 +682,21 @@ impl NicolaFsm {
     ) {
         self.timing_margin_percent = u64::from(timing_margin_percent);
         self.min_overlap_margin_percent = u64::from(min_overlap_margin_percent);
+    }
+
+    /// `GeneralConfig` の調整可能フィールドを一括反映する。
+    ///
+    /// プラットフォームエントリポイント（`bootstrap.rs`/`awase-linux`/
+    /// `awase-macos`）がそれぞれ個別に `set_timing_margins` 呼び出しを
+    /// コピペしていたが、この重複自体が `awase-linux`/`awase-macos` での
+    /// 呼び忘れの原因になった（/code-review指摘、PR #127、7回目）。
+    /// 将来 `GeneralConfig` に他のFSM調整項目が増えたら、ここに追加すれば
+    /// 全プラットフォームへ自動的に反映される。
+    pub fn apply_general_config(&mut self, config: &GeneralConfig) {
+        self.set_timing_margins(
+            config.timing_margin_percent,
+            config.min_overlap_margin_percent,
+        );
     }
 
     /// テスト用: 重なり不足判定のマージンだけを上書きする

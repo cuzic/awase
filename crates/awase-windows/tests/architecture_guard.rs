@@ -3030,21 +3030,29 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
 
 /// `NicolaFsm::new` はコンストラクタ引数を持つが、`timing_margin_percent`/
 /// `min_overlap_margin_percent`（`GeneralConfig` 由来のユーザー設定値）は
-/// コンストラクタ直後の `set_timing_margins` 呼び出しで別途反映する設計に
+/// コンストラクタ直後の `apply_general_config` 呼び出しで別途反映する設計に
 /// なっている（`src/engine/nicola_fsm.rs` のフィールド doc 参照）。コンパイラは
 /// この呼び出し漏れを検知できない——`NicolaFsm::new` はコンストラクタ既定値
 /// だけで黙って動き続ける。
 ///
 /// PR #127（`feat/confirm-mode-simplify`）のコードレビューで、この呼び出しが
 /// `awase-linux`/`awase-macos` の両方で実際に漏れていたことが発覚した
-/// （config.toml で値を設定してもFSMに一切反映されず無反応だった）。
+/// （config.toml で値を設定してもFSMに一切反映されず無反応だった）。3プラット
+/// フォームそれぞれに個別の `set_timing_margins` 呼び出しをコピペしていたのが
+/// 原因の一つだったため、`NicolaFsm::apply_general_config`/
+/// `Engine::apply_general_config` へ一本化した（同コードレビュー7回目）。
 /// 同種の見落としを新しいプラットフォームエントリポイントが追加された際にも
-/// 機械的に検知する第二の防衛線として、このガードテストを追加する。
+/// 機械的に検知する第二の防衛線として、このガードテストを維持する。
+///
+/// `apply_general_config` の呼び出しが `NicolaFsm::new` より**後**（テキスト
+/// 上のオフセットが大きい）にあることまで確認する（同7回目指摘: 単純な
+/// 部分文字列の有無だけだと、無関係な別インスタンスへの呼び出しやコメント中の
+/// 言及でも素通りしてしまう）。
 ///
 /// 相対パスは `crates/awase-windows`（このクレートの `CARGO_MANIFEST_DIR`）
 /// 基準。`awase-linux`/`awase-macos` は兄弟クレートのため `../` で辿る。
 #[test]
-fn every_platform_entry_point_calls_set_timing_margins_after_nicola_fsm_new() {
+fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() {
     const PLATFORM_ENTRY_POINTS: &[&str] = &[
         "src/app/bootstrap.rs",
         "../awase-linux/src/main.rs",
@@ -3052,12 +3060,17 @@ fn every_platform_entry_point_calls_set_timing_margins_after_nicola_fsm_new() {
     ];
     for path in PLATFORM_ENTRY_POINTS {
         let content = read_crate_file(path);
-        let constructs_fsm = content.contains("NicolaFsm::new(");
-        let wires_margins = content.contains(".set_timing_margins(");
+        let Some(construct_pos) = content.find("NicolaFsm::new(") else {
+            continue;
+        };
+        let wires_margins_after = content
+            .find(".apply_general_config(")
+            .is_some_and(|pos| pos > construct_pos);
         assert!(
-            !constructs_fsm || wires_margins,
+            wires_margins_after,
             "{path} は NicolaFsm::new(...) を呼んでいるが、その後に \
-             set_timing_margins(...) を一度も呼んでいない。GeneralConfig の \
+             apply_general_config(...) を呼んでいない（見つからない、または \
+             construct より前にしかない）。GeneralConfig の \
              timing_margin_percent/min_overlap_margin_percent（config.toml 由来の \
              ユーザー設定値）がこのプラットフォームでは無反応になる \
              （PR #127 コードレビュー: awase-linux/awase-macos の両方で\

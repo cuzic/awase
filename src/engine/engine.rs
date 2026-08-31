@@ -207,6 +207,16 @@ impl Engine {
             .set_timing_margins(timing_margin_percent, min_overlap_margin_percent);
     }
 
+    /// `GeneralConfig` の調整可能フィールドを一括反映する
+    /// （`NicolaFsm::apply_general_config` 参照、/code-review指摘、
+    /// PR #127、7回目）。起動時（`bootstrap.rs`）から呼ぶ。
+    pub fn apply_general_config(&mut self, config: &crate::config::GeneralConfig) {
+        self.set_timing_margins(
+            config.timing_margin_percent,
+            config.min_overlap_margin_percent,
+        );
+    }
+
     /// InputContext から実効状態を `ActivationState` で返す。
     ///
     /// 判定順: user_enabled → is_japanese_ime → ime_on → is_romaji
