@@ -955,7 +955,8 @@ pub(super) fn run_all() -> Result<()> {
         engine.set_engine_off_solo_repeat_vk(vk);
     }
 
-    let compiled_keymaps = crate::keymap::KeymapTable::new(&config.keymaps);
+    let compiled_keymaps =
+        crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
     initialize_app(
         engine,
         system_tray,
