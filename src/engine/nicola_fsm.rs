@@ -1250,8 +1250,7 @@ impl NicolaFsm {
                 self.output_history.push(entry);
             }
             OutputUpdate::RetractAndRecord(entry) => {
-                self.output_history.retract_last();
-                self.output_history.push(entry);
+                self.output_history.retract_and_record(entry);
             }
             OutputUpdate::None => {}
         }
