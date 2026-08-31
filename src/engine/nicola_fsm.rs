@@ -1628,8 +1628,19 @@ impl NicolaFsm {
         }
 
         // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
-        // output_history に古いエントリが残っていても誤 Suppress しない。
+        // output_history のエントリの中身には反応しない（誤 Suppress しない）が、
+        // 掃除だけは行う（ADR-112コードレビュー指摘）。この分岐に来る時点で
+        // event.vk_code は state 上のどの保留にも一致していない（上の
+        // is_pending_key/PendingCharThumb/SpeculativeChar 判定を素通りしている）
+        // ため、ここでの remove_by_scan は「chord判定を再開せず解放索引だけ
+        // 掃除する」という release_only と同じ安全性を保ったまま、掃除だけ
+        // 行える。掃除しないと、Consume 済みキーの KeyUp がここに来た場合に
+        // pending_releases のエントリが永久に残り（stuck key の再発）、かつ
+        // 同じ scan_code が後で再度 push されると2件重複し、
+        // remove_by_scan（先頭一致）と find_action_by_scan（末尾一致）の
+        // 非対称性により誤って古い方のエントリを解放してしまう。
         if self.phys.modifiers.is_os_modifier_held() {
+            self.output_history.remove_by_scan(event.scan_code);
             return Response::pass_through();
         }
 

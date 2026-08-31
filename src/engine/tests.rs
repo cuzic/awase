@@ -2659,6 +2659,39 @@ fn test_key_up_active_suppress_action() {
     r.assert_pass_through();
 }
 
+// ── OS修飾キー保持中のKeyUpでもpending_releasesを掃除する (ADR-112コードレビュー指摘) ──
+
+#[test]
+fn test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry() {
+    // is_os_modifier_held() ガード（Ctrl/Alt/Win保持中はoutput_historyの
+    // 中身に反応せずpass_throughする）自体の挙動は変えない。しかし掃除も
+    // しないと、Consume済みキーのKeyUpがこのガードに来た場合にentryが
+    // 永久に残り（stuck keyの再発）、かつ同じscan_codeが後で再度pushされると
+    // 2件重複し、remove_by_scan（先頭一致）とfind_action_by_scan（末尾一致）の
+    // 非対称性により誤って古い方を解放してしまう。
+    let mut engine = make_engine();
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(
+        engine.output_history.find_action_by_scan(SCAN_A).is_some(),
+        "Aの出力がoutput_historyへ記録されているはず"
+    );
+
+    // Ctrl保持中にA KeyUpが届く: is_os_modifier_held()ガードに入る。
+    engine.tracker.set_modifiers(ModifierState {
+        ctrl: true,
+        ..Default::default()
+    });
+    let r = engine.on_event(Ev::up(VK_A).at(50_000).build());
+    r.assert_pass_through(); // ガード自体の挙動は変わらない
+
+    assert!(
+        engine.output_history.find_action_by_scan(SCAN_A).is_none(),
+        "OS修飾キー保持中のKeyUpでもpending_releasesのエントリは掃除されるべき"
+    );
+}
+
 // ── KeyUp during PendingCharThumb resolving Key action (line 580) ──
 
 #[test]
