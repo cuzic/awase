@@ -2659,6 +2659,44 @@ fn test_key_up_active_suppress_action() {
     r.assert_pass_through();
 }
 
+// ── OS修飾キー保持中のKeyUpでもpending_releasesを掃除する (ADR-112コードレビュー指摘) ──
+
+#[test]
+fn test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry() {
+    // is_os_modifier_held() ガードは以前「output_historyの中身に反応せず
+    // pass_throughする」という独自ロジックだったが、/code-review指摘を経て
+    // release_onlyへ完全委譲するよう単純化した（決定0でpending_releasesを
+    // n-gram文脈と分離した後は、この分岐に来る時点のscan_codeエントリが
+    // 「この物理キー自身のもの」以外にあり得ず、release_onlyと同じ安全性で
+    // 掃除できるため）。Aの出力はChar/Romaji型なので、通常のKeyUpと同じく
+    // Suppressが返る。
+    let mut engine = make_engine();
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_timeout(TIMER_PENDING);
+    assert!(
+        engine.output_history.find_action_by_scan(SCAN_A).is_some(),
+        "Aの出力がoutput_historyへ記録されているはず"
+    );
+
+    // Ctrl保持中にA KeyUpが届く: is_os_modifier_held()ガードに入る。
+    engine.tracker.set_modifiers(ModifierState {
+        ctrl: true,
+        ..Default::default()
+    });
+    let r = engine.on_event(Ev::up(VK_A).at(50_000).build());
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Suppress)),
+        "Char/RomajiエントリはSuppressとして解放されるはず（release_only委譲）: {:?}",
+        r.actions
+    );
+
+    assert!(
+        engine.output_history.find_action_by_scan(SCAN_A).is_none(),
+        "OS修飾キー保持中のKeyUpでもpending_releasesのエントリは掃除されるべき"
+    );
+}
+
 // ── KeyUp during PendingCharThumb resolving Key action (line 580) ──
 
 #[test]
@@ -2731,6 +2769,10 @@ fn test_insufficient_overlap_with_no_thumb_face_still_forwards_thumb_solo() {
     // 無いのではなく、単独打鍵そのものとして確定するため、その解決結果
     // （ここでは変換パススルー）を尊重する。
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
     engine.layout.normal.insert(POS_D, lit('て'));
     // D は left_thumb にも right_thumb にも一切定義しない
 
@@ -2962,6 +3004,10 @@ fn test_key_up_thumb_during_pending_char_thumb() {
 #[test]
 fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_key_up() {
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
     engine.on_event(Ev::down(VK_A).at(0).build());
@@ -2997,6 +3043,7 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_k
 #[test]
 fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout() {
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
     engine.on_event(Ev::down(VK_A).at(0).build());
@@ -3026,6 +3073,30 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout
 }
 
 #[test]
+fn test_default_min_overlap_margin_percent_treats_insufficient_overlap_as_chord() {
+    // ADR-112決定1: min_overlap_margin_percentの本番既定値は一時的に0%
+    // (RUNTIME_MIN_OVERLAP_MARGIN_PERCENT)。set_min_overlap_margin_percent_for_test
+    // を呼ばない限り、上のテスト群と全く同じ物理的重なり(2ms、閾値の2%)でも
+    // 「重なり十分」として同時打鍵確定に倒れる——これは決定2(Phase 0修正で
+    // char1_released_atが実際に埋まるようになる)着地直後の実運用を、決定3
+    // (実測付きで引き締める)まで意図的に「経路修正前と同じ見た目の挙動」に
+    // 保つための値であり、バグではない。この値を変える場合は本テストと
+    // ADR-112決定1/3を必ず更新すること。
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+    engine.on_event(Ev::up(VK_A).at(32_000).build());
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('ゔ'))),
+        "既定(0%)では重なり不足でもchord確定になるはず: {:?}",
+        r.actions
+    );
+}
+
+#[test]
 fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_prevent_reuse() {
     // 重なり不足で char1+thumb を単独打鍵×2として確定した後も、thumb はまだ物理的に
     // 押されたまま（タイムアウト経由なので KeyUp が来ていない）。この状態で次のキーが
@@ -3034,6 +3105,7 @@ fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_preven
     // が left/right_thumb_consumed を更新し忘れると、次のキーが active_thumb_side() 経由で
     // 同じ thumb 押下と誤って同時打鍵になってしまう）。
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     engine.on_event(Ev::down(VK_A).at(0).build());
     engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
@@ -4724,6 +4796,10 @@ fn test_engine_off_counts_solo_resolved_via_insufficient_overlap_separate_solos(
     // 最後に明示的に KeyUp を送って物理状態を正常化してから次の周回へ進む）。
     let mut engine = make_engine();
     engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 
@@ -7313,6 +7389,71 @@ mod engine_integration_tests {
         );
     }
 
+    #[test]
+    fn active_to_inactive_transition_reinjects_keyup_for_phase1_consumed_key_lifecycle_duty() {
+        // /code-review指摘（PR #126、5回目）: check_active_transition の
+        // active→inactive分岐は KeyLifecycle::flush_pending_key_ups の戻り値を
+        // `let _ = ...` で握りつぶしていた。Phase 1（特殊キー、
+        // `match_special_keys`）でのみ consume され output_history に一切
+        // 触れないキー（IMEトグルコンボ等）は release_all_pending_output では
+        // 救えないため、handle_focus_changed と同じく flush_pending_key_ups の
+        // 戻り値を明示的に ReinjectKey として再注入しないと、そのキーの実物理
+        // KeyUp が後で来ても誰も面倒を見ず素通りしてしまう（stuck key）。
+        let combo = ParsedKeyCombo {
+            ctrl: true,
+            shift: false,
+            alt: false,
+            vk: VK_SPACE,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+
+        // IME ON コンボを、IME が既に ON の状態で押す（実機でも起きる冗長操作）。
+        // `ime_set_open_effects` の pseudo_ctx（ime_on=true）は現在の
+        // prev_activation（Active）と一致するため `transition_activation` は
+        // no-op——つまりこの Phase 1 消費は prev_activation を一切動かさない。
+        // それでも Decision は consumed なので KeyLifecycle には VK_SPACE の
+        // Consume 義務が登録される。
+        let ctrl_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let down = engine.on_input(Ev::down(VK_SPACE).at(0).build(), &ctrl_ctx);
+        assert!(
+            down.is_consumed(),
+            "special key combo should be consumed by Phase 1"
+        );
+        assert!(
+            engine.compute_active(&ime_on_ctx()),
+            "sanity: engine should still be active before the later transition"
+        );
+
+        // ここまでで output_history には一切触れていない（Phase 1 の Decision は
+        // SendKeys を含まない）。KeyLifecycle には VK_SPACE の Consume 義務だけが
+        // 登録されている。VK_SPACE を離す前に、別要因（RefreshState）で
+        // コンテキストが inactive へ遷移する（FocusChanged を経由しない
+        // check_active_transition 単独の遷移経路）。
+        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::ReinjectKey(evt)) if evt.vk_code == VK_SPACE
+            )),
+            "active→inactive遷移で Phase 1 consumed キーの KeyUp 義務は\
+             ReinjectKey として再注入されるべき（stuck key修正）: {:?}",
+            effects_of(&d)
+        );
+    }
+
     // 2026-08-04: 「IME OFF・Engine ON」再発対策（`SetOpenOrigin` 導入）の回帰テスト。
     //
     // `EngineCommand::RefreshState`（Platform 層が `ctx.ime_on` を再評価するたびに叩く
@@ -7449,14 +7590,16 @@ mod engine_integration_tests {
         );
     }
 
-    // ── on_input: KeyUp dedup 短絡 (line 238) ──
+    // ── on_input: 保留中文字キーの KeyUp が FSM 経由で即時解決される (ADR-112決定2) ──
 
     #[test]
-    fn key_up_for_consumed_pending_char_short_circuits_without_resolving() {
-        // `if !is_key_down && self.lifecycle.on_key_up(...)` (line 238) の `!` が
-        // 消えると、この短絡がもう機能せず、保留中の文字キーの KeyUp が
-        // （本来は素通しの dedup のはずが）FSM 経由で再度解決され、
-        // 想定外に文字が出力されてしまう。
+    fn key_up_for_pending_char_resolves_immediately_via_fsm() {
+        // ADR-112決定2以前は、Engine::on_input の Phase 0 が「Consume済み
+        // KeyDownに対応するKeyUp」を無条件にFSMへ一切渡さず即consumeするだけ
+        // だった（BUG-101）ため、保留中の文字キー自身のKeyUpはタイムアウト
+        // (100ms)まで解決されなかった。決定2適用後は、KeyUpがFSMへ届き
+        // handle_key_up_pendingが即座にPendingCharを単独打鍵として解決する
+        // （タイムアウトを待たずに'う'が出力される）。
         let mut engine = make_test_engine();
         let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
         assert!(d1.is_consumed());
@@ -7464,10 +7607,259 @@ mod engine_integration_tests {
         let d2 = engine.on_input(Ev::up(VK_A).at(50).build(), &ime_on_ctx());
         assert!(d2.is_consumed());
         assert!(
-            effects_of(&d2).is_empty(),
-            "KeyUp for an already-consumed pending key must be a bare dedup consume \
-             with no effects, got {:?}",
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('う')))
+            )),
+            "PendingCharが自身のKeyUpで即時単独確定されるはず、got {:?}",
             effects_of(&d2)
+        );
+    }
+
+    #[test]
+    fn key_up_for_unmapped_layout_key_emits_synthetic_keyup_after_timeout() {
+        // ADR-112 BUG-101発見事項2: resolve_pending_char_as_singleがNormal面
+        // 未定義キーでKeyAction::Key(vk)へフォールバックする経路
+        // (nicola_fsm.rs:1272)の出力に対応するKeyUp(vk)は、release_only
+        // （旧handle_key_up_active）だけが送出する。Phase 0がこれを阻んで
+        // いたため、実運用で一度もKeyUpが送出されていなかった(stuck key)。
+        // D をレイアウトキー化（left_thumb面にのみ定義、normal面は未定義のまま）。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ'));
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        let d1 = engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        let d2 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            has_effect(&d2, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_D))
+            )),
+            "normal面未定義キーはKey(vk)へフォールバックするはず: {:?}",
+            effects_of(&d2)
+        );
+
+        let d3 = engine.on_input(Ev::up(VK_D).at(200_000).build(), &ime_on_ctx());
+        assert!(d3.is_consumed());
+        assert!(
+            has_effect(&d3, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "Key(vk)出力の対応するKeyUp(vk)がOSへ送出されるはず(stuck key修正): {:?}",
+            effects_of(&d3)
+        );
+    }
+
+    #[test]
+    fn key_up_after_context_goes_inactive_is_still_consumed_via_release_only() {
+        // ADR-112決定2、CON指摘4: force_consumeだけでなくPhase 2の非活性
+        // 早期returnでもrelease_onlyを呼ぶことで、「Consume義務のあるKeyUp
+        // は、コンテキスト非活性化(IME OFF等)を挟んでも必ずConsumeされ、
+        // OSへ漏れない」という不変条件を確認する。
+        let mut engine = make_test_engine();
+        let d1 = engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        assert!(d1.is_consumed());
+
+        // コンテキストが非活性化(IME OFF)した後にKeyUpが届く。
+        let d2 = engine.on_input(Ev::up(VK_A).at(50_000).build(), &ime_off_ctx());
+        assert!(
+            d2.is_consumed(),
+            "Consume義務のあるKeyUpは非活性化を挟んでもOSへ漏れてはならない: {:?}",
+            d2
+        );
+    }
+
+    #[test]
+    fn engine_level_char1_key_up_makes_overlap_verdict_reachable() {
+        // ADR-112 BUG-101発見事項1、決定1/2の組み合わせ確認: Engine::on_input
+        // 経由でchar1のKeyUpが実際にNicolaFsmへ届き、char1_released_atが
+        // 埋まることを確認する（本ADR発見のきっかけになった具体的な
+        // 再現シナリオ）。本番既定(RUNTIME_MIN_OVERLAP_MARGIN_PERCENT=0%)
+        // では重なり不足でも常にchord確定になるため、min_overlap_margin_
+        // percentを明示的に上書きしてアルゴリズムの15%境界を検証する
+        // （NicolaFsmには`feat/confirm-mode-simplify`ブランチのような
+        // config配線が無いため、ここではNicolaFsm経由の直接呼び出しで
+        // margin値を差し込む。Engine自体はテスト用APIを持たない）。
+        let mut engine = make_test_engine();
+        engine.set_min_overlap_margin_percent_for_test(15);
+
+        engine.on_input(Ev::down(VK_S).at(0).build(), &ime_on_ctx());
+        engine.on_input(Ev::down(VK_NONCONVERT).at(30_000).build(), &ime_on_ctx());
+        // char1(S) KeyUp: thumb押下から2ms後 → 重なりほぼ無し（決定2以前は
+        // このKeyUpがFSMへ一切届かず、char1_released_atは常にNoneだった）。
+        engine.on_input(Ev::up(VK_S).at(32_000).build(), &ime_on_ctx());
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('し')))
+            )),
+            "char1のKeyUpがFSMへ届きchar1_released_atが埋まっていれば、重なり不足で\
+             単独打鍵('し')に倒れるはず: {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('あ')))
+            )),
+            "char1_released_atが届いていなければchord('あ')に誤確定してしまう(BUG-101): {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn key_up_with_os_modifier_held_still_emits_keyup_for_injected_vk() {
+        // /code-review指摘（PR #126）: is_os_modifier_held()ガードが
+        // KeyAction::Key(vk)型エントリの中身にも反応しないままだと、OSへ
+        // 注入済みのVKに対応するKeyUpが二度と送られず、Ctrl保持中にキーを
+        // 離すと押されっぱなしになる（ADR-112が修正したはずのstuck keyの
+        // 再発）。Char/Romajiと違い、Key(vk)は「中身に反応しない」の例外と
+        // すべきで、Engine::on_input経由（force_consumeを通る本番相当の
+        // 経路）で実際にKeyUp(vk)が出ることを確認する。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ')); // Dをレイアウトキー化(normal面は未定義)
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Dを押しっぱなしのままCtrlを押し、その状態でDを離す。
+        let ctrl_held_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::up(VK_D).at(50_000).build(), &ctrl_held_ctx);
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "Ctrl保持中でもKey(vk)出力の対応するKeyUp(vk)は送出されるべき(stuck key修正): {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn key_up_with_os_modifier_held_still_suppresses_char_entry_via_engine() {
+        // /code-review指摘（teammate検証、PR #126）:
+        // test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry
+        // （このファイル冒頭付近、make_engine()=TestHarnessのbare-FSMテスト）は
+        // Engine::on_inputを一切経由せずis_os_modifier_held()→release_only委譲の
+        // Char/Romajiケースを検証していた。ADR-112の「テスト方針」（bare
+        // NicolaFsm直呼びの新規テストはEngine::on_input経由で書く）に反する
+        // カバレッジの穴であり、is_os_modifier_held()ガードのKey(vk)ケースは
+        // key_up_with_os_modifier_held_still_emits_keyup_for_injected_vk が
+        // Engine::on_input経由で検証済みだが、Char/RomajiケースにはEngine
+        // レベルの対応する回帰テストが無かった。本テストで埋める。
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Aを離す前にCtrlを押し、その状態でAを離す: is_os_modifier_held()
+        // ガード→release_only委譲に入る。Aの出力はChar型（'う'）なので
+        // 通常のKeyUpと同じくSuppressとして解放されるべき。
+        let ctrl_held_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::up(VK_A).at(50_000).build(), &ctrl_held_ctx);
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Suppress))
+            )),
+            "Ctrl保持中でもChar/Romajiエントリはrelease_only委譲でSuppressとして\
+             解放されるはず（本番相当のEngine::on_input経由）: {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
+    fn focus_changed_releases_pending_output_history_entry_for_still_held_key() {
+        // /code-review指摘（PR #126）: KeyLifecycle::flush_pending_key_ups が
+        // active_keys をdrainしてConsume義務の追跡を消しても、output_historyの
+        // pending_releasesを同期して掃除しないと、対応する実KeyUpがその後
+        // UpDuty::Noneとして素通りするようになり、二度と掃除されない
+        // （stuck keyの再発）。フォーカス変更（EngineCommand::FocusChanged）で
+        // このタイミングでもpending_releasesが正しく解放されることを確認する。
+        let mut layout = make_layout();
+        layout.left_thumb.insert(POS_D, lit('よ')); // Dをレイアウトキー化(normal面は未定義)
+        let fsm = NicolaFsm::new(
+            layout,
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            ConfirmMode::Wait,
+            30,
+        );
+        let mut engine = Engine::new(fsm, empty_special_keys());
+        engine.set_prev_active(true);
+
+        // Dを押しっぱなしのまま、KeyAction::Key(VK_D)へフォールバック解決させる。
+        engine.on_input(Ev::down(VK_D).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Dを離す前にフォーカスが変わる。
+        let d = engine.on_command(EngineCommand::FocusChanged, &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::KeyUp(x) if *x == VK_D))
+            )),
+            "フォーカス変更時にpending_releasesのKey(vk)エントリはKeyUp(vk)として\
+             解放されるべき（stuck key修正）: {:?}",
+            effects_of(&d)
+        );
+        // /code-review指摘（PR #126、4回目）: release_all_pending_outputが
+        // KeyUp(VK_D)を発行するのに加え、KeyLifecycle::flush_pending_key_ups
+        // 由来のReinjectKey(VK_D)も独立して発行されると、同じVKに対する
+        // KeyUpがOSへ二重に注入される。release_all_pending_outputが解放した
+        // VKはReinjectKeyから除外されるべき。
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::ReinjectKey(evt)) if evt.vk_code == VK_D
+            )),
+            "release_all_pending_outputで解放済みのVKはReinjectKeyで二重注入\
+             されるべきではない: {:?}",
+            effects_of(&d)
         );
     }
 

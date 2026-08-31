@@ -15,6 +15,13 @@ const TIMING_MARGIN_PERCENT: u64 = 30;
 /// char2 が来ないまま char1+thumb を確定する2鍵ケースで、thumb 押下から
 /// char1 解放までの重なり時間がこれ未満なら「重なり不足」とみなし、
 /// n-gram タイブレークに回す（`confirms_char_thumb_chord` 参照）。
+///
+/// **この定数を変更しても本番挙動（`NicolaFsm`）は変わらない。** 本番経路は
+/// `nicola_fsm.rs::RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（別定数、現在0%固定、
+/// ADR-112決定1）を使う。この定数は本モジュールの単体テストが検証する
+/// アルゴリズムの基準値としてのみ使われる（`TimingJudge::new` の既定値、
+/// `with_min_overlap_margin_percent` で明示的に上書きしない限り有効）。
+/// 実用値への引き戻し（決定3）をこの定数だけ変えて済ませないこと。
 const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
 
 /// n-gram 予測で投機出力を選択する最小スコア差
@@ -36,6 +43,7 @@ pub struct TimingJudge<'a> {
     threshold_us: u64,
     ngram_model: Option<&'a NgramModel>,
     recent_kana: Vec<char>,
+    min_overlap_margin_percent: u64,
 }
 
 impl<'a> TimingJudge<'a> {
@@ -49,7 +57,25 @@ impl<'a> TimingJudge<'a> {
             threshold_us,
             ngram_model,
             recent_kana,
+            min_overlap_margin_percent: MIN_OVERLAP_MARGIN_PERCENT,
         }
+    }
+
+    /// `min_overlap_margin_percent` を既定値（`MIN_OVERLAP_MARGIN_PERCENT`、
+    /// このモジュールの単体テストが検証するアルゴリズム上の値）から上書きする。
+    ///
+    /// ADR-112 決定1: `NicolaFsm` の本番経路は、`char1_released_at` が実際に
+    /// 埋まるようになる（決定2、Phase 0 修正）効果を実機ソークで確認するまで、
+    /// `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（0%＝常に重なり十分）を使う。
+    /// このモジュール自身の単体テストは `with_min_overlap_margin_percent` を
+    /// 使わず、`new` の既定値のままアルゴリズムとしての15%境界を検証し続ける。
+    #[must_use]
+    pub const fn with_min_overlap_margin_percent(
+        mut self,
+        min_overlap_margin_percent: u64,
+    ) -> Self {
+        self.min_overlap_margin_percent = min_overlap_margin_percent;
+        self
     }
 
     /// 2キー判定: pending_ts と new_ts の間隔が閾値内か。
@@ -184,8 +210,12 @@ impl<'a> TimingJudge<'a> {
         chord_kana: Option<char>,
         solo_kana: Option<char>,
     ) -> bool {
-        if let Some(verdict) = overlap_only_verdict(self.threshold_us, thumb_ts, char1_released_at)
-        {
+        if let Some(verdict) = overlap_only_verdict(
+            self.threshold_us,
+            thumb_ts,
+            char1_released_at,
+            self.min_overlap_margin_percent,
+        ) {
             return verdict;
         }
 
@@ -229,13 +259,14 @@ pub(crate) fn overlap_only_verdict(
     threshold_us: u64,
     thumb_ts: Timestamp,
     char1_released_at: Option<Timestamp>,
+    min_overlap_margin_percent: u64,
 ) -> Option<bool> {
     let Some(released_ts) = char1_released_at else {
         // char1 がまだ押下中 → 重なりが構造的に保証されているため常に確定 true
         return Some(true);
     };
     let overlap_us = released_ts.saturating_sub(thumb_ts);
-    let min_overlap_us = threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
+    let min_overlap_us = threshold_us * min_overlap_margin_percent / 100;
     (overlap_us >= min_overlap_us).then_some(true)
 }
 
