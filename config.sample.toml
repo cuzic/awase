@@ -39,7 +39,7 @@ right_thumb_key = "VK_CONVERT"       # 変換キー
 layouts_dir = "config"
 
 # デフォルトの .yab レイアウトファイル名
-default_layout = "nicola.yab"
+default_layout = "nicola_keytop.yab"
 
 # 確定モード
 #   wait             - タイムアウトまで出力を保留（最も正確）

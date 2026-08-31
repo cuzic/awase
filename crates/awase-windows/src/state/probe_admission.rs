@@ -108,7 +108,11 @@ pub type FocusEpoch = u64;
 /// hwnd/pid/class_name/process_name/app_profile/app_kind/focus_kind）とは別物。
 /// ADR-106 本文が提案する `FocusIdentity` という名前は既にこの別の型が使っているため
 /// 採用せず、`FocusFence` とした。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// `serde::Serialize` は `ImeEvent::InitialFocusFenceEstablished`（journal へ
+/// 直列化される値、ADR-082 決定1）が両軸を1つの値として運ぶために必要
+/// （BUG-102）。書き出し専用のため `Deserialize` は導出しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct FocusFence {
     pub epoch: FocusEpoch,
     pub hwnd: HwndId,

@@ -843,13 +843,17 @@ impl AppConfig {
             return;
         }
 
-        if g.default_layout.trim_end_matches(".yab") == "nicola" {
-            w.push(
-                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"nicola.yab\" \
+        let jis_only_default = matches!(
+            g.default_layout.trim_end_matches(".yab"),
+            "nicola" | "nicola_keytop" | "nicola_f"
+        );
+        if jis_only_default {
+            w.push(format!(
+                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"{}\" \
                  のままです。JIS 版は列数が US の上限を超えるためパースに失敗します。\
-                 \"nicola_us.yab\" を指定してください。"
-                    .to_string(),
-            );
+                 \"nicola_us.yab\" を指定してください。",
+                g.default_layout
+            ));
         }
 
         let mentions_jis_only = |s: &str| {
@@ -1268,7 +1272,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
             return;
         }
         let config = AppConfig::load(path).unwrap();
-        assert_eq!(config.general.default_layout, "nicola.yab");
+        assert_eq!(config.general.default_layout, "nicola_keytop.yab");
         assert_eq!(config.general.layouts_dir, "layout");
     }
 

@@ -2,7 +2,7 @@
 simultaneous_threshold_ms = 100
 engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
-default_layout = "nicola.yab"
+default_layout = "nicola_keytop.yab"
 
 # confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30

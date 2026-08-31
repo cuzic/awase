@@ -12085,3 +12085,176 @@ Opus 2体によるpremortem 2ラウンドで収束した設計どおり）。`Ou
 **関連ファイル:** `src/engine/engine.rs`, `src/engine/key_lifecycle.rs`,
 `src/engine/nicola_fsm.rs`, `src/engine/output_history.rs`,
 `src/engine/timing.rs`。関連: ADR-020, ADR-112。
+
+---
+
+## BUG-102: 起動直後にフォーカスしていたアプリの `ImmCrossProbe`（High）観測が導出から外れ、Medium の定期ポーリングに負ける（bootstrap フェンス desync）
+
+**症状:** IMM32 系アプリ（`AppImeProfile::Standard`、メモ帳等の Win32 アプリや
+Qt/LINE のような ImmCross アプリ）にフォーカスがある状態で awase を起動すると、
+そのウィンドウでの `ImmCrossProbe`（child hwnd の非同期読み取り、High confidence /
+`ActuatingPool`）観測が `ObservationStore::derive_any()` /
+`derive_actuating()` の導出対象から外れ続ける。ユーザーが**一度別プロセスの
+ウィンドウへ切り替えて戻る**（= `on_focus_process_changed` が `FocusChanged` を
+dispatch する）まで直らない。同一プロセス内でウィンドウだけ切り替えても
+（`FocusHwndUpdated` 経路）epoch が揃わないため直らない。
+
+実害は 2 経路。**「観測が1件も belief に反映されない」わけではない**（初版の
+記述は誤り。2026-08-31 の敵対的レビューで訂正）:
+
+1. **`ImeModel::resolve_open_at`（→ `effective_open()`）**: 解決順が
+   `explicit_intent` → `derive_any` → `most_recent_trusted`（**フェンス照合なし**）
+   → `desired_open` なので、`ImmCrossProbe` 以外に fresh な観測が無ければ
+   `most_recent_trusted` が同じ `ImmCrossProbe` を拾い直し、**値としては正しい
+   まま**（症状が出ない）。一方 `ObserverPoll`（Medium、`is_identity_ok` の
+   対象外なのでフェンスに関係なく通る）等が併存すると、`derive_any` がその
+   Medium 単独合意を返し、**本来 High 単独で即採用されるはずの `ImmCrossProbe`
+   を上書きする**。実 IME 状態と食い違ったまま最初の入力が行われうる
+   （belief=ON × 実 IME=OFF ならリテラル、逆なら意図しない変換）。
+2. **`state/open_warrant.rs::issue_open_warrant` Step 3（`derive_actuating`）**:
+   こちらには `most_recent_trusted` フォールバックが無い。`ImmCrossProbe` が
+   外れると、warrant の根拠が `DirectRead(ImmCrossProbe)` から Medium の
+   `SingleIndirect` へ落ちるか、Actuating 観測が他に無ければ Step 3 自体が
+   飛ばされ Step 4a/4b の `HeuristicGuess`（あるいは warrant 不発行）まで
+   劣化する。**競合する Medium 観測が無くても劣化するのはこちら**。
+
+**`FocusProbe` は影響を受けない:** `is_identity_ok` は `FocusProbe` も照合対象に
+するが、`FocusProbe` は `Low` / `BeliefPool`（`state/evidence.rs`）であり、
+`derive_filtered` の High 分岐（`confidence == High`）にも Medium 分岐
+（`confidence >= Medium`）にも元から載らない。したがってフェンスが一致しても
+しなくても導出の結論は変わらない（belief へは `most_recent_trusted` 経由でのみ
+効き、そこにフェンス照合は無い）。初版の症状記述はここを取り違えていた。
+
+**再現条件:** 起動時点で `Standard` プロファイルのアプリがフォーカスされている
+こと。belief の値がずれるのは、さらに fresh な Medium 観測（`ObserverPoll` /
+`Gji` / `Tsf` / `HwndCache` / `ConvOpenInference`）が `ImmCrossProbe` と食い違う
+値で併存する場合。
+
+**この desync は無音である（発見が遅れた理由）:** 棄却は
+`ObservationStore::derive_filtered` の `is_identity_ok` で起きるが、そこで
+`log::debug!` が出るのは「epoch は一致するのに hwnd だけ不一致」のケースだけで、
+本件は epoch も不一致（0 vs 1）のため**ログが1行も出ない**。
+`probe_admission::drain_stats()` の棄却カウンタも増えない ——あちらは probe の
+admission（spawn 時の live フェンス vs 完了時の live フェンス）を数えており、
+本件では両方 `{1, 実 hwnd}` で正常に受理されるため。つまり「観測は受理されたのに
+導出に載らない」という、既存のどの計装にも現れない形で消える。さらに
+`resolve_open_at` が `most_recent_trusted` へフォールバックすると**値としては
+正しくなってしまう**ため、`effective_open()` を眺めても異常に見えない
+（`OpenResolution::decided_by` を見て初めて `DeriveHigh(ImmCrossProbe)` では
+なく `MostRecentTrusted(ImmCrossProbe)` / `DeriveMedium { ObserverPoll }` に
+なっていることが分かるが、この値はログにも journal にも出ていない）。
+
+**原因:** フォーカス同一性フェンス（`FocusFence { epoch, hwnd }`、ADR-106 決定3）の
+**live 側と観測ストア側が bootstrap でだけ食い違う**。
+
+1. `establish_initial_focus_scope`（ADR-102 決定3-b、起動時に1度だけ呼ばれる）は
+   `advance_focus_tracking` → `update_focus_info` で
+   `platform.focus.current.hwnd` に実 hwnd を入れ、続く `enter_focus_scope` で
+   `FocusStore::focus_epoch` を 0→1 に進める。したがって
+   `Runtime::focus_fence()`（= probe チケットのスタンプ元、live 側）は
+   `{epoch: 1, hwnd: 実 hwnd}` になる。
+2. 一方 `ImeModel::observations`（`ObservationStore`）の `current_fence` は
+   `clear_on_focus_change()`（`ImeEvent::FocusChanged` 経由）と
+   `update_focus_window()`（`ImeEvent::FocusHwndUpdated` 経由）でしか動かない。
+   bootstrap は前者を呼ばず（belief を書いてしまうため意図的に避けている）、
+   後者も `notify_focus_hwnd_updated_if_needed` が `is_bootstrap` で明示的に
+   skip する。結果 `FocusFence::default()`＝`{epoch: 0, hwnd: HwndId::NULL}` の
+   まま残る。
+3. `ObservationStore::derive_filtered` の `is_identity_ok` は `FocusProbe` /
+   `ImmCrossProbe` 観測についてのみ「観測のフェンス == `current_fence`」を要求する。
+   live 側でスタンプされた観測（`{1, 実 hwnd}`）は既定値（`{0, NULL}`）と一致
+   しないため、High confidence であっても stale として除外され続ける
+   （実際に結論が変わるのは `ImmCrossProbe` だけ。上の「`FocusProbe` は影響を
+   受けない」参照）。
+4. 復旧経路が `FocusChanged`（プロセス変更）しかないのは、`FocusHwndUpdated` が
+   hwnd しか更新せず epoch=0 のまま残るため。
+
+**なぜ「起動時だけ」なのか:** epoch/hwnd の同期は、定常経路では
+`on_focus_process_changed` が `enter_focus_scope`（epoch++）の直後に
+`ImeEvent::FocusChanged { focus_epoch }` を dispatch することで必ずペアになって
+いる。bootstrap は「belief を書かない」ために `FocusChanged` を dispatch しない
+設計（ADR-102 決定3-b）だが、その際に**belief ではない fence の同期まで一緒に
+落ちていた**。
+
+**修正:** fence の同期だけを行う専用イベント
+`ImeEvent::InitialFocusFenceEstablished { fence: FocusFence }` を新設し、
+`establish_initial_focus_scope` が `enter_focus_scope` の直後に
+`sync_initial_focus_fence()` から1度だけ dispatch する。reducer のアームは
+`ObservationStore::establish_initial_fence(fence)`（`current_fence` 1 フィールドの
+差し替え。観測プール・drift・belief には触れない）だけを呼ぶ。
+
+この同期は ADR-102 決定3-b の「最初の IME 観測より前に belief を書き換えない」に
+抵触しない ——運ぶ値は「どの窓のどの epoch を見ているか」という**観測の新鮮さを
+判定するための識別子**であり、IME が ON か OFF かの推測を一切含まないため。
+`clear_on_focus_change()` を流用せず新しい入口にしたのは、bootstrap がフォーカスの
+「変更」ではなく最初のスコープ確立であり、捨てるべき旧窓の観測が存在しない
+（この時点でプールは空。`app/bootstrap.rs::run_all` はこの呼び出しより前に
+メッセージループをポンプしない）ことを型ではなく入口名で表すため。
+
+**テスト:**
+- `state::ime_model::tests::bootstrap_fence_desync_lets_medium_poll_override_high_probe`
+  — **実害そのもの**（上の実害 1）を `resolve_open_at` の粒度で固定。
+  `ImmCrossProbe(true, High, live fence)` と `ObserverPoll(false, Medium)` を
+  併存させ、同期前は `DeriveMedium { ObserverPoll }` で `false`、同期後は
+  `DeriveHigh(ImmCrossProbe)` で `true` になることを固定する。
+- `state::observation_store::tests::establish_initial_fence_unblocks_the_first_probe_after_bootstrap`
+  — ストア単体での退行再現。既定値フェンスのままだと live 側フェンスでスタンプ
+  された High 観測が `derive_any()` から外れること、`establish_initial_fence()`
+  後に受理されることを固定（`derive_any` 粒度なので、belief 値としての症状の
+  有無は上のテストが担当）。
+- `state::observation_store::tests::establish_initial_fence_does_not_clear_the_pool_or_drift`
+  — `clear_on_focus_change` との差（プール・drift を消さない）を固定。
+- `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
+  — reducer アームが `current_fence` 以外を一切書き換えないことを、モデル全体の
+  `Debug` 表現の一致で機械的に固定（フィールド追加時の assert 書き漏れ対策）。
+  フィクスチャ（`fully_populated_model`）は **`ImeModel` の全フィールドを既定値
+  から動かす** ——既定値のままのフィールドへ既定値を書き戻す巻き添えは
+  `Debug` 比較では原理的に検出できないため。
+- `tests/architecture_guard.rs::establish_initial_focus_scope_syncs_the_observation_fence`
+  — bootstrap が同期をちょうど1回、`enter_focus_scope` と
+  `advance_focus_tracking` の**両方の後**に呼ぶこと。
+- `tests/architecture_guard.rs::initial_focus_fence_event_only_touches_the_fence`
+  — `InitialFocusFenceEstablished` と `.establish_initial_fence(` の出現箇所を、
+  固定ファイルへの grep ではなく **`src/` 全ファイル走査**で固定する。
+- `tests/architecture_guard.rs::establish_initial_focus_scope_does_not_write_ime_belief`
+  — `sync_initial_focus_fence` を対象関数リストへ追加し、その `dispatch_event`
+  がちょうど1件・`InitialFocusFenceEstablished` であることを固定。
+
+**検証状況:** 実機 Windows 環境が無いため、起動→IMM32 アプリでの観測受理は
+**未検証**。根拠はコードリーディング（フェンスの生成元 `Runtime::focus_fence()`、
+スタンプ点 `AcceptedObservation`、照合点 `is_identity_ok` の3点突合）と上記
+ユニットテストのみ。実機（`RUST_LOG=debug`）での確認手順:
+
+1. **同期が起きたこと**: 起動直後に
+   `[focus-fence] bootstrap initial fence: FocusFence { epoch: 1, hwnd: ... }` と
+   `[focus-fence] establish_initial_fence: FocusFence { epoch: 0, hwnd: HwndId(0) }
+   -> FocusFence { epoch: 1, hwnd: ... }` が1回ずつ出て、hwnd が
+   `[keymap] active rules updated: ... (hwnd=...)` の値と一致すること。
+2. **実害が消えたこと**: `effective_open()` が観測に追従しているかを見るのは
+   **偽陽性になる**（修正前でも `most_recent_trusted` フォールバックで同じ値に
+   なるため、実害 1 のケース A では修正前後で区別がつかない）。
+   `ObserverPoll` と食い違う状況を作って確認すること —— IMM32 アプリを
+   フォーカスした状態で awase を起動し、起動直後（`ObserverPoll` の 500ms
+   周期と `ImmCrossProbe` が両方 fresh な窓）に IME を外部操作で切り替えて
+   最初の1文字を入力し、`ImmCrossProbe` が読んだ側の状態で入力されること。
+
+**修正履歴:** `fix/bootstrap-focus-fence-desync` ブランチ（本エントリ記録と同一
+コミット。自己参照になるため本文にハッシュは書かない —— `git log --grep BUG-102`
+で引ける）。**混入元は `f370b0ca`**（`feat(hook): route engine-thread
+notifications via HWND, close key-delivery gaps (ADR-105/102)`、2026-08-26）で
+`establish_initial_focus_scope` を新設した瞬間。それ以前は bootstrap で
+`focus_epoch` を進める処理自体が無く、両側とも 0 で一致していた。epoch 軸の
+フィルタ（`a0e4ec78`）はそれより前から存在したので、**epoch 軸の不一致だけで
+既に決定的に成立していた**。hwnd 軸の追加（ADR-106 決定3、`05e2e720`）は
+不一致の軸を 1 本増やしただけで、確実性を上げたわけではない（初版の記述は
+この点を取り違えていた）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/focus_tracking.rs`,
+`crates/awase-windows/src/state/observation_store.rs`,
+`crates/awase-windows/src/state/ime_model.rs`,
+`crates/awase-windows/src/state/ime_event.rs`,
+`crates/awase-windows/src/state/probe_admission.rs`,
+`crates/awase-windows/src/state/transition.rs`。実害の受け手（本修正では未変更）:
+`crates/awase-windows/src/state/open_warrant.rs`（Step 3 = `derive_actuating`）,
+`crates/awase-windows/src/state/evidence.rs`（`FocusProbe` = Low の根拠）。
+関連: ADR-102 決定3-b（2026-08-31 追補）, ADR-106 決定3・§冒頭（同追補）, BUG-91。

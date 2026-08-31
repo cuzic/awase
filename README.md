@@ -57,7 +57,10 @@ cargo build --release --target x86_64-pc-windows-msvc
 awase.exe
 config.toml          ← 設定ファイル
 layout/
-  nicola.yab         ← NICOLA 配列（同梱）
+  nicola.yab         ← NICOLA 配列（Backspace/Escape 代用版）
+  nicola_keytop.yab  ← NICOLA 配列（記号キートップ通り出力版、新規インストールの既定）
+  nicola_f.yab       ← 富士通純正親指シフトキーボード向け
+  nicola_us.yab      ← US 配列
 data/
   ngram_hiragana.csv.gz  ← n-gram コーパス（任意）
 ```
@@ -98,7 +101,7 @@ simultaneous_threshold_ms = 100   # 同時打鍵判定の閾値（ms）。NICOLA
 left_thumb_key  = "無変換"
 right_thumb_key = "変換"
 layouts_dir     = "layout"
-default_layout  = "nicola.yab"
+default_layout  = "nicola_keytop.yab"
 ```
 
 フルサンプルは同梱の `config.toml` を参照してください。
@@ -173,9 +176,12 @@ u, si,te,ke,se, ha,to,ki, i, nn, 後, 逃
 ...
 ```
 
-NICOLA 標準配列は `layout/nicola.yab`（JIS 配列）と `layout/nicola_us.yab`（US 配列）として同梱しています。US 配列では無変換/変換キーが物理的に無いため、設定画面で左右 Alt キーを親指キーとしてなりすまさせる、または Space キーを親指キーに割り当てることができます。
+NICOLA 標準配列は JIS 配列として2種類同梱しています。両方ともかな44キー配置は NICOLA 本家仕様と同一で、本家仕様が未定義のまま余っている物理キー位置（数字段12-13列目・Q段11-12列目・A段〈ホームロー〉11-12列目）の扱いだけが異なります。
 
-`layout/nicola.yab` は、NICOLA 本家仕様が未定義のまま余っている物理キー位置に、標準 JIS キーボードのキートップに実際に印字されている記号（＠／［／］／：／￥／＾）を出力します。これらの位置をソフトウェアで Backspace/Escape に代用する従来方式（v1.16.1 以前の既定）を使いたい場合は `layout/nicola_bsesc.yab` を `default_layout` に指定してください。
+- `layout/nicola_keytop.yab`（**新規インストールの既定**）: 標準 JIS キーボードのキートップに実際に印字されている記号（＠／［／］／：／￥／＾）を出力します。ただし ＠ は物理 @ キーが NICOLA 本家仕様で「、」（読点）に割り当てられているため、無変換/変換キーを併用した親指シフト時のみ ＠ が出ます（単独タップは引き続き「、」）。
+- `layout/nicola.yab`（v1.16.1 以前の既定）: 同じ物理キー位置をソフトウェアで Backspace/Escape に代用します。既存インストールをアップグレードしても `layout/nicola.yab` の中身は変わりません（ユーザーが配列編集タブで直接編集している可能性があるファイルを無言で上書きしない設計のため）。新しい記号キートップ通り出力に乗り換えたい場合は、`default_layout` を `"nicola_keytop.yab"` に手動で変更してください。
+
+US 配列では `layout/nicola_us.yab` を使用します。無変換/変換キーが物理的に無いため、設定画面で左右 Alt キーを親指キーとしてなりすまさせる、または Space キーを親指キーに割り当てることができます。
 
 富士通純正親指シフトキーボード（FKB7628-801 等）向けに `layout/nicola_f.yab` も同梱しています。物理キー配列・スキャンコードは JIS キーボードと共通のため `keyboard_model` は `"jis"` のままで構いません。`default_layout` を `"nicola_f.yab"` に変更してください。
 

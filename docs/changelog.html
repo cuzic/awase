@@ -110,11 +110,12 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h3>変更</h3>
+<h3>追加</h3>
 <ul>
-<li><strong>既定のNICOLA配列（<code>layout/nicola.yab</code>）を、標準JISキーボードのキートップ印字通りに記号（＠／［／］／：／￥／＾）を出力する版へ変更</strong><ul>
-<li>NICOLA本家仕様が未定義のまま余っている物理キー位置に、これまではソフトウェア側でBackspace/Escapeを代用割り当てしていた。この動作を維持したい場合は <code>default_layout</code> を <code>nicola_bsesc.yab</code>（旧nicola.yabをリネーム）に変更する</li>
-<li>KB232キーボードのユーザーから「記号がキートップ通り出ない」という不具合報告（report <code>01M15R86FJW24278GGD3ETS9QX</code>）を機に、紅皿・DvorakJ等の他実装の慣行を参考に変更した</li>
+<li><strong>標準JISキーボードのキートップ印字通りに記号（＠／［／］／：／￥／＾）を出力するNICOLA配列 <code>layout/nicola_keytop.yab</code> を追加し、新規インストールの既定にした</strong>（＠のみ例外で、物理@キーはNICOLA本家仕様で「、」に割り当て済みのため親指シフト併用時のみ＠が出る）<ul>
+<li>NICOLA本家仕様が未定義のまま余っている物理キー位置に、従来の既定 <code>layout/nicola.yab</code> はソフトウェア側でBackspace/Escapeを代用割り当てしていた。KB232（富士通FMV-KB232）キーボードのユーザーから「記号がキートップ通り出ない」という不具合報告（report <code>01M15R86FJW24278GGD3ETS9QX</code>）を機に、紅皿・DvorakJ等の他実装の慣行を参考に新配列を追加した</li>
+<li><strong>既存インストールをアップグレードしても <code>layout/nicola.yab</code> の中身・<code>default_layout</code> の設定値は変わらない</strong>（配列編集タブでユーザーが直接編集している可能性があるファイルを無言で上書きしない設計のため）。乗り換えたい場合は <code>default_layout</code> を <code>&quot;nicola_keytop.yab&quot;</code> に手動で変更すること</li>
+<li>富士通純正親指シフトキーボード向け <code>layout/nicola_f.yab</code> にも、同じキートップ通りの記号（数字段の＾／￥、Q段の［）を追加した（後退/取消専用キーが占めるA段11-12列目は従来通り無のまま）。この機種では「ん」の右隣の専用キー以外は通常のJIS記号キーのため、README.mdの案内通り <code>nicola_f.yab</code> に切り替えても記号が欠落しないようにした</li>
 </ul>
 </li>
 </ul>

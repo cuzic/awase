@@ -799,6 +799,17 @@ impl ImeModel {
                 // FocusChanged 側の責務のためここでは触らない（ADR-106 決定3）。
                 self.observations.update_focus_window(hwnd);
             }
+            ImeEvent::InitialFocusFenceEstablished { fence } => {
+                // BUG-102: 観測の新鮮さを判定するための識別子（epoch + hwnd）だけを
+                // bootstrap で確立した live 側の値へ合わせる。IME が ON か OFF かの
+                // 推測は一切含まないため、ADR-102 決定3-b の「最初の IME 観測より前に
+                // belief を書き換えない」に抵触しない——このアームは `desired_open` /
+                // `input_mode` / `applied` / `app_policy` / `last_intent` /
+                // `force_guards` / `input_barrier` / `current_focus` のいずれにも
+                // 触れないこと（`initial_focus_fence_event_only_touches_the_fence`
+                // が固定する）。
+                self.observations.establish_initial_fence(fence);
+            }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
         // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
@@ -861,6 +872,200 @@ mod tests {
     // awase-windows` では一切ビルドされず、mutants の実行対象にならない。
     // ここ(`state/ime_model.rs` 自身の `#[cfg(test)]`)はプラットフォーム非依存で
     // Linux でも実行されるため、バリアント別の直接テストをここに置く。
+
+    /// `initial_focus_fence_established_touches_only_the_fence` 用のフィクスチャ。
+    ///
+    /// **`ImeModel` の全フィールドを既定値から動かす**ことがこのヘルパーの唯一の
+    /// 仕事である。当該テストは「モデル全体の `Debug` 表現が変わらないこと」で
+    /// 巻き添え書き込みを検出するため、既定値のままのフィールドへ既定値を書き戻す
+    /// 巻き添え（例: `input_barrier = None` / `pending = None` / `app_policy =
+    /// AppImePolicy::standard()`）は、そのフィールドが既定値だと**原理的に検出
+    /// できない**。フィールドを追加したらここにも非既定値を足すこと。
+    fn fully_populated_model(now: Instant) -> ImeModel {
+        let mut model = ImeModel::new();
+        model.desired_open = false; // 既定 true
+        model.input_mode = InputModeState::ObservedEisu; // 既定 ObservedRomaji
+        model.last_intent = Some(RecordedIntent {
+            target: false,
+            source: UserIntentSource::SyncKey,
+            at_ms: 11,
+        });
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 22,
+        };
+        model.current_focus = Some(HwndId(0x1111));
+        model.force_guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 3,
+        });
+        // 以下は 2026-08-31 の敵対的レビュー指摘 2-b で追加した分。`ime_event.rs` の
+        // doc が名指ししている `force_on_retry`/`input_barrier`/`app_policy` が
+        // フィクスチャに無く、それらへの巻き添え書き戻しを検出できていなかった。
+        model.app_policy.focus_settle_ms = 4242;
+        model.app_policy.owns_physical_kanji = !model.app_policy.owns_physical_kanji;
+        model.input_barrier = Some(InputBarrier::CtrlImeChord {
+            target: false,
+            kind: ChordKind::CtrlMuhenkanImeOff,
+            started_seq: 9,
+            started_at: now,
+        });
+        model.observe_miss_monitor.record_miss(now);
+        model.pending = Some(ImeTransition {
+            target: true,
+            generation: ApplyGeneration::new(7).expect("nonzero"),
+            focus_epoch: 1,
+            // ADR-108 決定4 のパージは `reduce()` の match **後**に無条件で走る。
+            // bootstrap では `pending` は必ず `None` なので実害は無いが、この
+            // フィクスチャでは意図せずパージされないよう十分先の期限を置く。
+            timeout_at: now + std::time::Duration::from_hours(1),
+        });
+        model.force_on_retry.note_attempt(1234);
+        model.focus_generation_watermark = ApplyGeneration::new(5).expect("nonzero");
+        model.last_seen_generation = ApplyGeneration::new(4);
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ObserverPoll,
+                HwndId(0x2222),
+                ObservationConfidence::Medium,
+                0,
+            ),
+            now,
+        );
+        model.observations.update_drift(false, true, now);
+        model
+    }
+
+    /// BUG-102 / ADR-102 決定3-b: `InitialFocusFenceEstablished` は
+    /// `ObservationStore::current_fence` **以外の一切のフィールドに触れない**。
+    ///
+    /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、
+    /// belief を1ビットでも動かすとこの不変条件が壊れる。`FocusChanged` が触る
+    /// `app_policy`/`last_intent`/`applied`/`force_guards`/`force_on_retry`/
+    /// `input_barrier`/`current_focus`/観測プールが巻き添えで初期化されていないか、
+    /// モデル全体の `Debug` 表現で機械的に確認する（個別 assert の書き漏れで
+    /// 将来フィールドが増えたときに見逃すのを防ぐ）。
+    #[test]
+    fn initial_focus_fence_established_touches_only_the_fence() {
+        let now = Instant::now();
+        let fence = FocusFence {
+            epoch: 1,
+            hwnd: HwndId(0xABCD),
+        };
+
+        // (1) 既定値フェンスから dispatch すると、fence だけが live 側の値になる。
+        let mut model = fully_populated_model(now);
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialFocusFenceEstablished { fence },
+        ));
+        assert_eq!(
+            model.observations.current_fence(),
+            fence,
+            "fence は live 側（bootstrap で確立した epoch + hwnd）に同期される"
+        );
+
+        // (2) 「fence が既にその値になっているモデル」へ同じイベントを流すと、
+        // モデル全体の `Debug` 表現が1文字も変わらない = fence 以外を書いていない。
+        //
+        // dispatch 後に fence を既定値へ戻して比較する形にはしない——
+        // `establish_initial_fence` の debug_assert（fence 未確立のうちに1度だけ）
+        // に引っかかるうえ、「戻す」操作自体がテストの検査対象を汚すため。
+        let mut model = fully_populated_model(now);
+        model.observations.establish_initial_fence(fence);
+        let before = format!("{model:?}");
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialFocusFenceEstablished { fence },
+        ));
+        assert_eq!(
+            format!("{model:?}"),
+            before,
+            "InitialFocusFenceEstablished は current_fence 以外を書き換えてはならない \
+             (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
+        );
+    }
+
+    /// BUG-102 の**実害そのもの**を `resolve_open_at` の粒度で固定する。
+    ///
+    /// `observation_store` 側の退行テストは `derive_any()` が `None` になることまで
+    /// しか見ないが、`resolve_open_at` は `derive_any` → `most_recent_trusted`
+    /// （**フェンス照合なし**）→ `desired_open` の順で解決するため、
+    /// ImmCrossProbe しか観測が無ければ `most_recent_trusted` が同じ観測を拾い直し、
+    /// belief の**値としては症状が出ない**。
+    ///
+    /// 本当に守るべき退行は、`ObserverPoll`（Medium、フェンス照合の対象外）が
+    /// 併存するケース: `derive_any` が Medium 単独合意を返し、**本来 High 単独で
+    /// 即採用されるはずの `ImmCrossProbe` を上書きする**。fence 同期後は
+    /// `DeriveHigh(ImmCrossProbe)` に戻る。
+    #[test]
+    fn bootstrap_fence_desync_lets_medium_poll_override_high_probe() {
+        let now = Instant::now();
+        let bootstrap_fence = FocusFence {
+            epoch: 1, // enter_focus_scope が 0 -> 1 に進めた
+            hwnd: HwndId(0xABCD),
+        };
+        let mut model = ImeModel::new();
+        // 明示意図が無い状態（= 観測で決まる状態）にする。
+        model.last_intent = None;
+
+        // live 側フェンスでスタンプされた High 観測（真の IME 状態 = ON）。
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ImmCrossProbe,
+                bootstrap_fence.hwnd,
+                ObservationConfidence::High,
+                bootstrap_fence.epoch,
+            ),
+            now,
+        );
+        // 食い違う Medium 観測（`is_identity_ok` の対象外なのでフェンスに関係なく通る）。
+        model.observations.record_replayed(
+            AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::ObserverPoll,
+                bootstrap_fence.hwnd,
+                ObservationConfidence::Medium,
+                bootstrap_fence.epoch,
+            ),
+            now,
+        );
+
+        // 同期前（退行の再現）: High が identity gate で外れ、Medium が勝つ。
+        let before = model.resolve_open_at(now);
+        assert!(
+            !before.value,
+            "fence desync 時は Medium の ObserverPoll(false) が採用されてしまう"
+        );
+        assert_eq!(
+            before.decided_by.base,
+            BaseDecision::DeriveMedium {
+                first: ObservationSource::ObserverPoll,
+                second: None,
+            },
+            "根拠も Medium 単独合意に落ちる"
+        );
+
+        // 同期後: High 単独即採用に戻る。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialFocusFenceEstablished {
+                fence: bootstrap_fence,
+            },
+        ));
+        let after = model.resolve_open_at(now);
+        assert!(
+            after.value,
+            "fence 同期後は High の ImmCrossProbe(true) が勝つ"
+        );
+        assert_eq!(
+            after.decided_by.base,
+            BaseDecision::DeriveHigh(ObservationSource::ImmCrossProbe),
+        );
+    }
 
     #[test]
     fn applied_ime_state_to_pair_and_related_getters() {
