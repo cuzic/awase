@@ -210,7 +210,13 @@ pub(super) fn init_engine_validated(
         ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let layouts = LayoutEntry::scan_all(&layouts_dir, diag, config.general.keyboard_model)?;
+    let layouts = LayoutEntry::scan_all(
+        &layouts_dir,
+        diag,
+        config.general.keyboard_model,
+        &config.keystroke_macro,
+        config.general.keystroke_sequence,
+    )?;
     let Some(layouts) = NonEmptyLayouts::new(layouts) else {
         show_no_layouts_dialog(&layouts_dir);
         return Err(anyhow::anyhow!(
@@ -704,6 +710,8 @@ impl LayoutEntry {
         layouts_dir: &Path,
         diag: &mut StartupDiagnostics,
         model: awase::scanmap::KeyboardModel,
+        keystroke_macros: &[awase::config::KeystrokeMacro],
+        keystroke_sequence_policy: awase::config::KeystrokeSequencePolicy,
     ) -> Result<Vec<Self>> {
         let mut layouts = Vec::new();
 
@@ -756,6 +764,17 @@ impl LayoutEntry {
                         match YabLayout::parse(&content, model) {
                             Ok(yab) => {
                                 let yab = yab.resolve_kana();
+                                // ADR-115決定3: resolve_kana() の直後、打鍵列の
+                                // 新構文（CtrlChord/InlineSequence/MacroRef）を
+                                // キルスイッチとマクロ定義に基づいて確定させる。
+                                let (yab, warnings) = awase::yab::resolve_keystroke_syntax(
+                                    yab,
+                                    keystroke_macros,
+                                    keystroke_sequence_policy,
+                                );
+                                for w in warnings {
+                                    diag.warn(format!("{stem}: {w}"));
+                                }
                                 log::info!("Discovered layout: {stem} ({})", path.display());
                                 layouts.push(Self {
                                     name: stem,
@@ -1172,7 +1191,14 @@ mod tests {
         fs::write(dir.join("my_nicola.yab"), COMMENT_ONLY_HEADER_YAB).unwrap();
 
         let mut diag = StartupDiagnostics::new();
-        let layouts = LayoutEntry::scan_all(&dir, &mut diag, KeyboardModel::Jis).unwrap();
+        let layouts = LayoutEntry::scan_all(
+            &dir,
+            &mut diag,
+            KeyboardModel::Jis,
+            &[],
+            awase::config::KeystrokeSequencePolicy::Off,
+        )
+        .unwrap();
         assert_eq!(layouts.len(), 2);
 
         let config: awase::config::AppConfig = toml::from_str(
