@@ -1202,59 +1202,55 @@ fn test_load_nicola_kb232_yab_file() {
 
     // かな44キー配置は layout/nicola.yab と完全一致するはず（表記形式
     // （リテラル vs ローマ字）が違うだけで物理位置ごとの意味は同じ）。
+    // /code-review指摘（PR #132）: 以前は normal 面の一部位置だけを手書き
+    // 列挙しており、left_thumb/right_thumb 面（濁音・半濁音等の残り約18キー）
+    // が未検証だった。nicola.yab で Romaji として定義されている全位置を
+    // 3面とも走査することで、44キー全体を機械的に網羅する。
     let nicola = YabLayout::parse(
         &std::fs::read_to_string("layout/nicola.yab").unwrap(),
         KeyboardModel::Jis,
     )
     .unwrap();
-    let kana_positions: &[(u8, u8)] = &[
-        (1, 1),
-        (1, 2),
-        (1, 3),
-        (1, 4),
-        (1, 5),
-        (1, 6),
-        (1, 7),
-        (1, 8),
-        (2, 0),
-        (2, 1),
-        (2, 2),
-        (2, 3),
-        (2, 4),
-        (2, 5),
-        (2, 6),
-        (2, 7),
-        (2, 8),
-        (2, 9),
-        (3, 1),
-        (3, 2),
-        (3, 3),
-        (3, 4),
-        (3, 5),
-        (3, 6),
-        (3, 7),
-        (3, 8),
-    ];
     let kana_table = KanaTable::build();
-    for &(row, col) in kana_positions {
-        let pos = PhysicalPos::new(row, col);
-        let expected_kana = match nicola.normal.get(&pos) {
-            Some(YabValue::Romaji { romaji, .. }) => kana_table
-                .kana_for_romaji(romaji)
-                .unwrap_or_else(|| panic!("no kana mapping for romaji {romaji:?}")),
-            other => panic!("unexpected value at ({row},{col}) in nicola.yab: {other:?}"),
-        };
-        match layout.normal.get(&pos) {
-            Some(YabValue::Literal(lit)) => {
-                assert_eq!(
-                    lit.chars().next(),
-                    Some(expected_kana),
-                    "kana mismatch at ({row},{col})"
-                );
+    let mut checked = 0;
+    for (face_name, nicola_face, kb232_face) in [
+        ("normal", &nicola.normal, &layout.normal),
+        ("left_thumb", &nicola.left_thumb, &layout.left_thumb),
+        ("right_thumb", &nicola.right_thumb, &layout.right_thumb),
+    ] {
+        for row in 0..4u8 {
+            for col in 0..13u8 {
+                let pos = PhysicalPos::new(row, col);
+                let Some(YabValue::Romaji { romaji, .. }) = nicola_face.get(&pos) else {
+                    continue; // かな以外(記号/無/Special)は本テストの対象外
+                };
+                let expected_kana = kana_table
+                    .kana_for_romaji(romaji)
+                    .unwrap_or_else(|| panic!("no kana mapping for romaji {romaji:?}"));
+                match kb232_face.get(&pos) {
+                    Some(YabValue::Literal(lit)) => {
+                        assert_eq!(
+                            lit.chars().next(),
+                            Some(expected_kana),
+                            "{face_name} face kana mismatch at ({row},{col})"
+                        );
+                        checked += 1;
+                    }
+                    other => panic!(
+                        "{face_name} face: unexpected value at ({row},{col}) in \
+                         nicola_kb232.yab: {other:?}"
+                    ),
+                }
             }
-            other => panic!("unexpected value at ({row},{col}) in nicola_kb232.yab: {other:?}"),
         }
     }
+    // NICOLA本家の物理44キーは面ごとに異なる仮名を割り当てるため、
+    // normal/left_thumb/right_thumb の合計は44より多くなる（実測81）。
+    // ここでは「ループが実際に仮名セルを走査した」ことのサニティチェックのみ行う。
+    assert_eq!(
+        checked, 81,
+        "kana cell count changed — verify nicola.yab wasn't edited unexpectedly"
+    );
 }
 
 // ── to_fullwidth_str テスト ──
