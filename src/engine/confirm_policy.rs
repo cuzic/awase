@@ -19,31 +19,41 @@ impl NicolaFsm {
         match self.confirm_mode {
             ConfirmMode::Wait => self.idle_wait(ev),
             ConfirmMode::Speculative => self.idle_speculative(ev),
-            // speculative_delay_us == 0 のTwoPhaseは、idle_two_phaseの
-            // 「短い待機タイマー(SpeculativeWait)を張ってから投機出力する」
-            // という迂回を経由すると、実際にはidle_speculativeと完全には
-            // 等価にならない（/code-review指摘、PR #127）。Windowsの
-            // SetTimerは0msを指定してもUSER_TIMER_MINIMUM(10ms)未満には
-            // 短縮されず、その間に到着した後続キーがSpeculativeCharではなく
-            // PendingCharの状態で処理されてしまう。confirm_mode="speculative"
-            // 廃止時のTwoPhase(delay=0)正規化（config.rs::validate_thresholds）
-            // が「完全に等価」であるためには、delay=0のときはidle_speculative
-            // へ直接ディスパッチする必要がある。
-            ConfirmMode::TwoPhase if self.speculative_delay_us == 0 => self.idle_speculative(ev),
-            ConfirmMode::TwoPhase => self.idle_two_phase(ev),
+            ConfirmMode::TwoPhase => self.idle_two_phase_or_speculative(ev),
             ConfirmMode::AdaptiveTiming => {
                 let is_continuous = self
                     .last_key_gap_us
                     .is_some_and(|gap| gap < CONTINUOUS_KEYSTROKE_THRESHOLD_US);
                 if is_continuous {
                     self.idle_wait(ev)
-                } else if self.speculative_delay_us == 0 {
-                    self.idle_speculative(ev)
                 } else {
-                    self.idle_two_phase(ev)
+                    self.idle_two_phase_or_speculative(ev)
                 }
             }
             ConfirmMode::NgramPredictive => self.idle_ngram(ev),
+        }
+    }
+
+    /// `idle_two_phase` へディスパッチする全箇所（`dispatch_confirm_mode` の
+    /// `TwoPhase`/`AdaptiveTiming` 分岐、`idle_ngram` の n-gram モデル未読込
+    /// フォールバック）が共通で使うヘルパー。
+    ///
+    /// `speculative_delay_us == 0` のときは `idle_two_phase` を経由せず
+    /// `idle_speculative` へ直接ディスパッチする（/code-review指摘、
+    /// PR #127）。`idle_two_phase` は `SpeculativeWait` タイマー
+    /// （delay_us分）を張ってから投機出力するのに対し、`idle_speculative`
+    /// は同一の呼び出し内で即座に出力して `SpeculativeChar` へ遷移する。
+    /// delay_us=0でも、WindowsのSetTimerはUSER_TIMER_MINIMUM（10ms）未満に
+    /// 短縮されないため、その間に届いた後続キーが `SpeculativeChar` ではなく
+    /// `PendingChar` 状態で処理されてしまい、`confirm_mode="speculative"`
+    /// 廃止時のTwoPhase(delay=0)正規化（`config.rs::validate_thresholds`）が
+    /// 主張する「完全に等価」が崩れる。この判定を複数箇所に個別実装すると、
+    /// 将来どれか一箇所だけ更新し忘れるリスクがあるため一本化した。
+    fn idle_two_phase_or_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
+        if self.speculative_delay_us == 0 {
+            self.idle_speculative(ev)
+        } else {
+            self.idle_two_phase(ev)
         }
     }
 
@@ -123,8 +133,11 @@ impl NicolaFsm {
         }
 
         // If no n-gram model, fall back to TwoPhase
+        // （/code-review指摘、PR #127: delay=0のときはidle_speculativeと
+        // 等価にするidle_two_phase_or_speculativeを使う。dispatch_confirm_mode
+        // 参照）
         if self.ngram_model.is_none() {
-            return self.idle_two_phase(ev);
+            return self.idle_two_phase_or_speculative(ev);
         }
 
         // Get candidate kana for each face
@@ -571,6 +584,29 @@ mod tests {
         assert!(
             matches!(action, ParseAction::Shift { timer } if timer_is_speculative_wait(&timer)),
             "NgramPredictive without model should fall back to TwoPhase, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn ngram_predictive_no_model_zero_delay_falls_back_to_speculative_not_two_phase() {
+        // /code-review指摘（PR #127、2回目）: idle_ngramのno-modelフォール
+        // バックはidle_two_phaseを直接呼んでおり、dispatch_confirm_modeの
+        // TwoPhase/AdaptiveTiming分岐にだけ追加したdelay=0バイパスが
+        // 効いていなかった。idle_two_phase_or_speculativeへの一本化で
+        // このパスも救われることを固定する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::NgramPredictive, 0);
+        assert!(fsm.ngram_model.is_none());
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "NgramPredictive without model, delay=0 は idle_speculative と\
+             同じく即時Reduceになるべき、got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "NgramPredictive without model, delay=0 は SpeculativeChar へ\
+             直接遷移するべき"
         );
     }
 
