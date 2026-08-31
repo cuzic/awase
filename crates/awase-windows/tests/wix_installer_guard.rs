@@ -85,7 +85,13 @@ fn major_upgrade_schedule_is_after_install_execute() {
 #[test]
 fn config_file_and_nicola_yab_components_have_never_overwrite() {
     let content = main_wxs();
-    for component_id in ["ConfigFile", "NicolaYab", "NicolaUsYab", "NicolaFYab"] {
+    for component_id in [
+        "ConfigFile",
+        "NicolaYab",
+        "NicolaKeytopYab",
+        "NicolaUsYab",
+        "NicolaFYab",
+    ] {
         let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
         assert!(
             tag.contains(r#"NeverOverwrite="yes""#),
@@ -140,7 +146,14 @@ fn known_component_guids_are_unchanged() {
 /// `select_default_layout_matches_by_file_name_not_internal_name_line` が
 /// 名指しする既知の失敗モードと同型）。
 #[test]
-fn nicola_keytop_yab_component_is_bundled_without_never_overwrite() {
+fn nicola_keytop_yab_component_is_bundled_with_never_overwrite() {
+    // 2026-08-31 Opusレビュー3巡目で訂正: NeverOverwrite はコンポーネントの
+    // KeyPath（レジストリ値）が既に存在する場合の上書きだけを抑止し、
+    // KeyPath が無い真の新規インストールには影響しない。「付けると新規
+    // インストールにも改善が届かなくなる」という当初の判断はMSIの
+    // セマンティクスとして誤りだった。nicola_keytop.yab は新規インストール
+    // の既定＝最も多くのユーザーが配列編集タブで実際に触るファイルであり、
+    // NicolaYab/NicolaUsYab/NicolaFYab と同じ理由で保護が必要。
     let content = main_wxs();
     let tag = extract_tag(&content, r#"<Component Id="NicolaKeytopYab""#);
     assert!(
@@ -150,11 +163,11 @@ fn nicola_keytop_yab_component_is_bundled_without_never_overwrite() {
          期待値も更新すること。"
     );
     assert!(
-        !tag.contains("NeverOverwrite"),
-        "NicolaKeytopYab はユーザー編集対象ではなく新規インストール時の雛形\
-         のため NeverOverwrite を付けない（ADR-099 決定2の DataFiles と同じ \
-         扱い）。付けると、旧バージョンの雛形のまま固定され、既定配列の \
-         改善が新規インストールにも届かなくなる。"
+        tag.contains(r#"NeverOverwrite="yes""#),
+        "wix/main.wxs の Component Id=\"NicolaKeytopYab\" タグ本体に \
+         NeverOverwrite=\"yes\" が見つからない（タグ: {tag:?}）。新規\
+         インストールの既定配列であり、配列編集タブでその場編集される\
+         ユーザーデータのため、アップグレード時に上書きされてはならない。"
     );
     assert!(
         content.contains(r#"<File Source="dist\layout\nicola_keytop.yab" />"#),
