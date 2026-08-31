@@ -454,10 +454,17 @@ impl SettingsApp {
             return;
         }
 
-        let (_validated, warnings) = self.config.clone().validate();
+        let (validated, warnings) = self.config.clone().validate();
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
+        // /code-review指摘: 以前はvalidate()の戻り値（confirm_mode="speculative"
+        // → two_phase正規化等を含む）を警告文の生成にしか使わず、保存対象は
+        // 未検証のself.configのcloneだった。設定画面がconfirm_modeを一切
+        // 表示しなくなった今、この正規化はユーザーが手で直す手段が無いため、
+        // 保存されずに警告だけが「適用」を押すたび永遠に再表示され続けていた。
+        // validated側をself.configにも反映し、保存対象にする。
+        self.config = awase::config::AppConfig::from(validated);
         let clone = self.config.clone();
 
         let config_path = self.config_path.clone();
@@ -4305,6 +4312,64 @@ mod layout_tab_repro {
         assert_eq!(
             bak_after_second, "original broken content",
             ".bak は最初の異常発生時点のものを保持し続けるべき"
+        );
+    }
+
+    /// /code-review指摘（PR #127）: apply_confirmed()はvalidate()の戻り値
+    /// （confirm_mode="speculative"→two_phase正規化を含む）を警告文の表示
+    /// にしか使わず、保存対象は未検証のself.configのcloneのままだった。
+    /// 設定画面がconfirm_modeを一切表示しなくなったため、この正規化を
+    /// ユーザーが手で直す手段が無く、警告が「適用」を押すたび永遠に
+    /// 再表示され続けるバグになっていた。正規化後の値がファイルへ保存され、
+    /// かつ self.config にも反映されることを確認する。
+    #[test]
+    fn apply_confirmed_persists_normalized_confirm_mode_not_raw_config() {
+        let config: awase::config::AppConfig = toml::from_str(
+            r#"
+[general]
+confirm_mode = "speculative"
+speculative_delay_ms = 30
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.general.confirm_mode,
+            awase::config::ConfirmMode::Speculative,
+            "sanity: toml側の記述が期待通りspeculativeとしてパースされているか"
+        );
+        let mut app = test_settings_app(config);
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_normalize_persist_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        app.config_path = config_path.clone();
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let saved = std::fs::read_to_string(&config_path).unwrap();
+        let _ = std::fs::remove_file(&config_path);
+
+        assert!(
+            saved.contains(r#"confirm_mode = "two_phase""#),
+            "保存されたファイルはconfirm_mode正規化後(two_phase)であるべき: {saved}"
+        );
+        assert!(
+            !saved.contains("speculative"),
+            "保存されたファイルに廃止済みのspeculativeが残ってはいけない: {saved}"
+        );
+        assert_eq!(
+            app.config.general.confirm_mode,
+            awase::config::ConfirmMode::TwoPhase,
+            "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
+             永遠に再表示されるのを防ぐため）"
+        );
+        assert_eq!(
+            app.status.contains("speculative"),
+            true,
+            "1回目のApplyでは廃止警告が表示されるべき: {}",
+            app.status
         );
     }
 

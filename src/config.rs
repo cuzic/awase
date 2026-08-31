@@ -700,12 +700,37 @@ pub struct ValidatedConfig {
     pub post_bypass: Vec<PostBypassRule>,
 }
 
+impl From<ValidatedConfig> for AppConfig {
+    /// 検証済み設定を保存・再表示可能な `AppConfig` へ戻す。
+    ///
+    /// `validate()` が行った正規化（例: `confirm_mode = "speculative"` →
+    /// `two_phase` + `speculative_delay_ms=0`）を、保存先やUIの表示に
+    /// 反映したい呼び出し元向け（/code-review指摘: `awase-settings` の
+    /// `apply_confirmed()` が以前は警告文の生成にしか `validate()` の
+    /// 戻り値を使わず、保存対象は未検証の生設定のままだった）。
+    fn from(v: ValidatedConfig) -> Self {
+        Self {
+            general: v.general,
+            keys: v.keys,
+            app_overrides: v.app_overrides,
+            keymaps: v.keymaps,
+            post_bypass: v.post_bypass,
+        }
+    }
+}
+
 impl AppConfig {
     fn validate_thresholds(g: &mut GeneralConfig, w: &mut Vec<String>) {
         // confirm_mode = "speculative" は廃止（TwoPhase の speculative_delay_ms=0 と
         // 完全に等価なため独立バリアントとして残す理由がない）。既存 config.toml との
         // 互換のため ConfirmMode::Speculative 自体は型として残すが、ここで必ず
         // TwoPhase + delay=0 に正規化し、以降 FSM が Speculative を受け取ることはない。
+        // 「完全に等価」が成り立つのは、NicolaFsm::dispatch_confirm_mode
+        // （engine/confirm_policy.rs）がTwoPhase(delay=0)をidle_speculative
+        // へ直接ディスパッチするため（/code-review指摘、PR #127: idle_two_phase
+        // 経由だとWindowsのSetTimerがUSER_TIMER_MINIMUM未満に短縮されないため
+        // 0ms待機が実質10ms前後の待機になり、その間に届く後続キーの状態が
+        // 変わってしまい「等価」が崩れていた）。
         if g.confirm_mode == ConfirmMode::Speculative {
             w.push(
                 "confirm_mode \"speculative\" は廃止されました。\
