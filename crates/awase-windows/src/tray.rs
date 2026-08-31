@@ -823,6 +823,16 @@ fn save_auto_start_config(value: &str) {
     match awase::config::AppConfig::load(&config_path) {
         Ok(mut config) => {
             config.general.auto_start = value.to_string();
+            // /code-review指摘（PR #127）: validate()を経由せず生のconfigを
+            // そのまま保存すると、confirm_mode="speculative"のような廃止済み
+            // 設定値が正規化されないまま再保存され、トレイのauto_start切替
+            // だけを経由するユーザーはこの移行が永久に完了しない。他の保存経路
+            // （設定画面のapply_confirmed）と同様、保存前に必ずvalidate()を通す。
+            let (validated, warnings) = config.validate();
+            for w in &warnings {
+                log::warn!("Config validation warning while saving auto_start: {w}");
+            }
+            let config = awase::config::AppConfig::from(validated);
             if let Err(e) = config.save(&config_path) {
                 log::error!("Failed to save auto_start config: {e}");
             }
