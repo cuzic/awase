@@ -3060,10 +3060,16 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
     ];
     for path in PLATFORM_ENTRY_POINTS {
         let content = read_crate_file(path);
-        let Some(construct_pos) = content.find("NicolaFsm::new(") else {
+        // /code-review指摘（PR #127、8回目）: 単純な部分文字列一致だと、
+        // NicolaFsm::new より後にあるコメント（例: 削除済みの呼び出しに
+        // 言及するTODOや過去のレビュー指摘コメント）が偶然
+        // `.apply_general_config(` を含むだけで素通りしてしまう。
+        // 他のガードテストと同じく `//` 行コメントを除いた本文だけを見る。
+        let production = non_comment_lines(production_code_only(&content));
+        let Some(construct_pos) = production.find("NicolaFsm::new(") else {
             continue;
         };
-        let wires_margins_after = content
+        let wires_margins_after = production
             .find(".apply_general_config(")
             .is_some_and(|pos| pos > construct_pos);
         assert!(
