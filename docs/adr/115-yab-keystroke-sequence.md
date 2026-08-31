@@ -1123,29 +1123,41 @@ src/engine/nicola_fsm.rs` で機械的に列挙できる（`decide()` の2箇所
 
    - `append_key_up_for`（`nicola_fsm.rs:819-823`）: `Some(KeyAction::Key(vk))` 以外
      （`Sequence`/`CtrlChord` 含む）は何もしない、を**明示的コメント付きで**維持。
-   - `release_only`（`nicola_fsm.rs:1880-1894`）: 現状の危険な既定
-     `_ => Response::pass_through()`（`Char`/`Romaji` は明示的に `Suppress` される
-     のに未知 variant は物理 KeyUp が OS へ素通しされる非対称、r1 レビュー C4 が
-     指摘）を撤去し、**網羅 match** に書き換える（レビュー指摘 Major4——
-     r2 の `Response::consume_no_actions()` は実在しない API であり、単純な
-     `Response::consume()` への置換は既存アームが持つ `TimerIntent::CancelAll`
-     を落として保留中タイマーを残す事故を招くため、既存アームへの合流という
-     形にする）:
+   - `release_only`（`nicola_fsm.rs:1880-1894`）: `_ => Response::
+     pass_through()` というワイルドカードを撤去し、**意味を変えずに**
+     網羅 match へ書き換える。**実装時の訂正（r6 稿からの変更）**:
+     r6 は「`Char`/`Romaji` は明示的に `Suppress` されるのに未知 variant
+     は物理 KeyUp が OS へ素通しされる非対称は既存のバグであり、`Sequence`
+     等も `Suppress`+`CancelAll` 側にまとめて同じコミットで修正する」と
+     書いていたが、これは誤りだった——既存テスト
+     `test_key_up_active_suppress_action`（`engine/tests.rs`）が
+     `KeyAction::Suppress` 型のエントリに対して `pass_through` を明示的に
+     期待しており、この「非対称」は既存の意図的な設計だった（`Char`/
+     `Romaji`/`Key` の3種だけが「片方だけ送って解放を期待する」形を取り、
+     それ以外（`SpecialKey`/`KeySequence`/`Suppress`、および本ADRで
+     追加する `Sequence`/`CtrlChord`）は今日から一貫して pass_through が
+     正しい——`Sequence`/`CtrlChord` も「解放対象を持たない」という点で
+     `SpecialKey`/`KeySequence`/`Suppress` と同じ性質であり、この既存の
+     分類にそのまま合流させるべきだった）。正しい書き換えは:
 
      ```rust
-     KeyAction::Char(_) | KeyAction::Romaji(_)
-     | KeyAction::Sequence(_) | KeyAction::CtrlChord(_)
-     | KeyAction::SpecialKey(_) | KeyAction::KeySequence(_) | KeyAction::Suppress =>
+     KeyAction::Char(_) | KeyAction::Romaji(_) =>
          self.build_response(smallvec![KeyAction::Suppress], true, TimerIntent::CancelAll),
      KeyAction::Key(vk) =>
          self.build_response(smallvec![KeyAction::KeyUp(vk)], true, TimerIntent::CancelAll),
-     KeyAction::KeyUp(_) => Response::pass_through(),
+     KeyAction::SpecialKey(_) | KeyAction::KeySequence(_) | KeyAction::Suppress
+     | KeyAction::Sequence(_) | KeyAction::CtrlChord(_) | KeyAction::KeyUp(_) =>
+         Response::pass_through(),
      ```
 
-     **これは打鍵列とは独立に存在した既存のバグであり、本 ADR の実装と同じ
-     コミットで修正する。** 網羅 match にすることで、将来 `KeyAction` に
-     variant が増えた際にコンパイラが更新漏れを検出するようになる（r1/r2
-     レビューが繰り返し指摘した「網羅性で守られない箇所」を1つ塞ぐ）。
+     （r2 の `Response::consume_no_actions()` が実在しない API だった点、
+     `Response::consume()` への単純置換が `TimerIntent::CancelAll` を
+     落として保留中タイマーを残す事故を招く点は r4〜r6 の指摘どおり
+     正しく、この点は変わらない。変わったのは「どの variant をどちらの
+     枝に振るか」という分類のみ。）網羅 match にすることで、将来
+     `KeyAction` に variant が増えた際にコンパイラが更新漏れを検出する
+     ようになる（意味的な挙動は変えない——ワイルドカード `_` を明示列挙
+     に置き換えただけ）。
    - `drain_pending_releases_as_keyups`（`output_history.rs:196-204`）: 現状の
      `_ => None`（黙って捨てる）のままでよい——`Sequence`/`CtrlChord` は解放すべき
      片割れを持たないため、これは正しい既定（コメントで理由を明記する）。

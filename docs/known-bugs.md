@@ -12403,3 +12403,42 @@ Windows 実機での確認は未実施。
 `crates/awase-windows/src/runtime/mod.rs`（`LayoutEntry::resolve_index`）、
 `crates/awase-windows/src/app/mod.rs`（`reload_config`）。関連: BUG-95（同じ
 report、上記「BUG-95 との関係」参照）。
+
+---
+
+## FEATURE-115: 打鍵列機能（ADR-115）実装状況・既知の限界
+
+新機能のため「不具合」ではなく実装状況・既知の限界の記録（ADR-115決定9(c)の
+証拠義務）。関連: [ADR-115](adr/115-yab-keystroke-sequence.md)、
+[GitHub Issue #118](https://github.com/cuzic/awase/issues/118)。
+
+**実装状況（2026-08-31時点）**: core（`awase`クレート、Linux上でテスト可能）は
+実装完了。`CtrlChord`（`C`+`V`+hex）・セル内`+`区切り（`InlineSequence`）・
+名前付きマクロ（`KeystrokeMacro`）・`resolve_keystroke_syntax`・
+`flatten_actions`統一・`release_only`網羅match化・投機出力ガード（決定7）・
+`LayoutEntry::scan_all`への配線まで完了。既定`keystroke_sequence = "off"`の
+ためマージ後もデフォルト挙動は無変化。
+
+**未実施**:
+- Windows実機ソーク（`CtrlChord`がMS-IME/GJI双方で実際に確定を引き起こすか、
+  TSF-nativeアプリでの順序・タイミング、押下中の物理修飾キーとの衝突）
+- `awase-macos`/`awase-linux`の`send_keys`は`CtrlChord`/`Sequence`をログ
+  出力のみのスタブとして実装（決定10、実送信は本ADRのスコープ外）
+
+**既知の限界（決定として受け入れ済み、バグではない）**:
+- GUIでの新構文authoringは非対象。`awase-settings`のテキスト欄で
+  `CtrlChord`/`InlineSequence`/`MacroRef`セルを編集すると、保存時に
+  打鍵列としての意味を失う（決定9(a)）。未編集セルの無損失往復は保証される。
+- セル内`+`区切りで`Romaji`要素を含む列（例: `ｋａ+CV4D`）は、単体`ｋａ`
+  セルと違いn-gram文脈・同時打鍵のkana依存閾値調整から外れる
+  （`lookup_face`のkana抽出が`Sequence`に対して常に`None`を返すため、
+  決定7）。実害は次のキーのタイブレーク精度が僅かに落ちる程度。
+- `KeyAction::romaji()`（`src/types.rs`）の非網羅性は対応しない方針を
+  確定（決定6、`OutputEntry.romaji`はproductionコードで一度も読まれない
+  dead codeのため実害なし。将来的には[ADR-045](adr/045-dead-field-detection-policy.md)
+  の対象として整理しうる）。
+
+**関連する既存の再発ファミリーとの接点**: `OutputHistory`のKeyUp整合性索引
+（BUG-101/ADR-112）と同じ危険領域に触れるため、打鍵列のマクロステップ/
+セル内`+`区切り双方から生の`KeyAction::Key`/`KeyUp`を構造的に排除している
+（決定6・決定2c、r5レビューCritical C1の回帰テスト`resolve_on_rejects_vk_inside_inline_sequence_with_warning`で固定）。
