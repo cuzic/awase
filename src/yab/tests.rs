@@ -1137,6 +1137,126 @@ fn test_load_nicola_f_yab_file() {
     }
 }
 
+#[test]
+fn test_load_nicola_kb232_yab_file() {
+    // report 01M15R86FJW24278GGD3ETS9QX（富士通純正キーボード「FMV-KB232」、
+    // docs/bug-reports-triage.md参照）で提供された、実機動作確認済みの配列。
+    let path = std::path::Path::new("layout/nicola_kb232.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
+
+    // BUG-95のクォート崩れ検出(yab::lint)に引っかからないこと。
+    assert!(
+        lint(&content).is_empty(),
+        "nicola_kb232.yab should not trigger yab::lint warnings"
+    );
+
+    assert!(!layout.normal.is_empty());
+    assert!(!layout.left_thumb.is_empty());
+    assert!(!layout.right_thumb.is_empty());
+    assert!(!layout.shift.is_empty());
+
+    // nicola_f.yab と同じくローマ字ではなく仮名を直接リテラルで持つ形式。
+    let a_pos = PhysicalPos::new(2, 0);
+    assert_eq!(
+        layout.normal.get(&a_pos),
+        Some(&YabValue::Literal("う".to_string()))
+    );
+
+    let literal = |s: &str| Some(YabValue::Literal(s.to_string()));
+
+    // KB232固有の記号配置。nicola_keytop.yab/nicola_f.yabのどちらとも一致しない
+    // （NICOLA本家仕様で定義済みの「、」の位置自体がQ段11列目からA段11列目へ
+    // 動いている等、単純な「余っているスロットへの記号追加」ではない）。
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 12)).cloned(),
+        literal("￥")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(0, 11)),
+        Some(&YabValue::None)
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("＠")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(1, 11)).cloned(),
+        literal("［")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(2, 10)).cloned(),
+        literal("、")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(2, 11)).cloned(),
+        literal("］")
+    );
+    assert_eq!(
+        layout.normal.get(&PhysicalPos::new(3, 10)).cloned(),
+        literal("￥")
+    );
+
+    // かな44キー配置は layout/nicola.yab と完全一致するはず（表記形式
+    // （リテラル vs ローマ字）が違うだけで物理位置ごとの意味は同じ）。
+    let nicola = YabLayout::parse(
+        &std::fs::read_to_string("layout/nicola.yab").unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+    let kana_positions: &[(u8, u8)] = &[
+        (1, 1),
+        (1, 2),
+        (1, 3),
+        (1, 4),
+        (1, 5),
+        (1, 6),
+        (1, 7),
+        (1, 8),
+        (2, 0),
+        (2, 1),
+        (2, 2),
+        (2, 3),
+        (2, 4),
+        (2, 5),
+        (2, 6),
+        (2, 7),
+        (2, 8),
+        (2, 9),
+        (3, 1),
+        (3, 2),
+        (3, 3),
+        (3, 4),
+        (3, 5),
+        (3, 6),
+        (3, 7),
+        (3, 8),
+    ];
+    let kana_table = KanaTable::build();
+    for &(row, col) in kana_positions {
+        let pos = PhysicalPos::new(row, col);
+        let expected_kana = match nicola.normal.get(&pos) {
+            Some(YabValue::Romaji { romaji, .. }) => kana_table
+                .kana_for_romaji(romaji)
+                .unwrap_or_else(|| panic!("no kana mapping for romaji {romaji:?}")),
+            other => panic!("unexpected value at ({row},{col}) in nicola.yab: {other:?}"),
+        };
+        match layout.normal.get(&pos) {
+            Some(YabValue::Literal(lit)) => {
+                assert_eq!(
+                    lit.chars().next(),
+                    Some(expected_kana),
+                    "kana mismatch at ({row},{col})"
+                );
+            }
+            other => panic!("unexpected value at ({row},{col}) in nicola_kb232.yab: {other:?}"),
+        }
+    }
+}
+
 // ── to_fullwidth_str テスト ──
 
 #[test]
