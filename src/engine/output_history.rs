@@ -40,7 +40,13 @@ pub struct OutputHistory {
     /// KeyUp 整合性用の解放待ちインデックス。`push` で追加し、対応する物理キーの
     /// KeyUp が届いたときに `remove_by_scan`/`find_action_by_scan` で参照・除去する。
     /// 「今押されている物理キー」の数のオーダーでしか増えないため上限を設けない。
-    pending_releases: Vec<OutputEntry>,
+    ///
+    /// `romaji`/`kana` は KeyUp 整合性側では一切参照されない（n-gram 文脈は
+    /// `committed` 側の責務）ため、ADR-112 の設計どおり軽量な
+    /// `(ScanCode, KeyAction)` のみを持つ（`OutputEntry` 丸ごとではない、
+    /// /code-review 指摘: 全キーストロークで不要な `String` clone を
+    /// 避けるため）。
+    pending_releases: Vec<(ScanCode, KeyAction)>,
     /// n-gram 文脈・Speculative retraction 専用の確定出力ログ。`remove_by_scan` では
     /// 一切変更されない。`COMMITTED_CAPACITY` を超えたら古い方から捨てる。
     committed: VecDeque<OutputEntry>,
@@ -57,7 +63,8 @@ impl OutputHistory {
 
     /// 出力を記録する（`pending_releases`/`committed` の両方に追加）
     pub fn push(&mut self, entry: OutputEntry) {
-        self.pending_releases.push(entry.clone());
+        self.pending_releases
+            .push((entry.scan_code, entry.action.clone()));
         self.push_committed(entry);
     }
 
@@ -99,9 +106,9 @@ impl OutputHistory {
         if let Some(pos) = self
             .pending_releases
             .iter()
-            .position(|e| e.scan_code == entry.scan_code)
+            .position(|(scan_code, _)| *scan_code == entry.scan_code)
         {
-            self.pending_releases[pos] = entry.clone();
+            self.pending_releases[pos] = (entry.scan_code, entry.action.clone());
         } else {
             // 投機出力の訂正である以上、同じ scan_code の元エントリが
             // pending_releases に残っているはず。無い場合は、他の経路
@@ -117,7 +124,8 @@ impl OutputHistory {
                  falling back to push — invariant violation, this branch was believed unreachable",
                 entry.scan_code
             );
-            self.pending_releases.push(entry.clone());
+            self.pending_releases
+                .push((entry.scan_code, entry.action.clone()));
         }
         self.push_committed(entry);
         retracted
@@ -138,16 +146,16 @@ impl OutputHistory {
         self.pending_releases
             .iter()
             .rev()
-            .find(|e| e.scan_code == scan_code)
-            .map(|e| &e.action)
+            .find(|(sc, _)| *sc == scan_code)
+            .map(|(_, action)| action)
     }
 
-    /// scan_code に対応するエントリを除去して返す（KeyUp 用、`pending_releases` を操作）
-    pub fn remove_by_scan(&mut self, scan_code: ScanCode) -> Option<OutputEntry> {
+    /// scan_code に対応するアクションを除去して返す（KeyUp 用、`pending_releases` を操作）
+    pub fn remove_by_scan(&mut self, scan_code: ScanCode) -> Option<KeyAction> {
         self.pending_releases
             .iter()
-            .position(|e| e.scan_code == scan_code)
-            .map(|pos| self.pending_releases.remove(pos))
+            .position(|(sc, _)| *sc == scan_code)
+            .map(|pos| self.pending_releases.remove(pos).1)
     }
 
     /// GUI プレビュー用: 出力テキスト（`committed` を参照）
@@ -174,6 +182,15 @@ impl OutputHistory {
         self.committed.clear();
     }
 
+    /// `committed`（n-gram 文脈用）のみを空にする。`pending_releases` は
+    /// 呼び出し側が `drain_pending_releases_as_keyups()` 等で個別に処理済み
+    /// であることを前提とする（`clear()` と違い、既に空の
+    /// `pending_releases` を再度 clear する曖昧さを避けるため用意した、
+    /// /code-review 指摘）。
+    pub fn clear_committed(&mut self) {
+        self.committed.clear();
+    }
+
     /// `pending_releases` を全て強制解放し、`KeyAction::Key(vk)` 型のエントリは
     /// 対応する `KeyAction::KeyUp(vk)` を返す（`committed` には触れない）。
     ///
@@ -188,7 +205,7 @@ impl OutputHistory {
     pub fn drain_pending_releases_as_keyups(&mut self) -> Vec<KeyAction> {
         self.pending_releases
             .drain(..)
-            .filter_map(|entry| match entry.action {
+            .filter_map(|(_, action)| match action {
                 KeyAction::Key(vk) => Some(KeyAction::KeyUp(vk)),
                 _ => None,
             })
@@ -267,7 +284,7 @@ mod tests {
         h.push(make_entry(ScanCode(32), "ku", Some('く')));
 
         let removed = h.remove_by_scan(ScanCode(31)).unwrap();
-        assert_eq!(removed.romaji, "ki");
+        assert!(matches!(removed, KeyAction::Romaji(r) if r == "ki"));
 
         // Remaining entries should be scan_code 30 and 32
         assert!(h.find_action_by_scan(ScanCode(30)).is_some());
@@ -442,7 +459,7 @@ mod tests {
         let action = h.find_action_by_scan(ScanCode(30)).unwrap();
         assert!(matches!(action, KeyAction::Romaji(r) if r == "vu"));
         let removed = h.remove_by_scan(ScanCode(30)).unwrap();
-        assert_eq!(removed.romaji, "vu");
+        assert!(matches!(removed, KeyAction::Romaji(r) if r == "vu"));
         assert!(
             h.remove_by_scan(ScanCode(30)).is_none(),
             "should not have a stale duplicate entry left over"

@@ -814,10 +814,8 @@ impl NicolaFsm {
     ///
     /// Char/Romaji は Down+Up 一括送信済みのため、Key(vk) のみが追記対象。
     fn append_key_up_for(&mut self, actions: &mut SmallVec<[KeyAction; 2]>, scan_code: ScanCode) {
-        if let Some(entry) = self.output_history.remove_by_scan(scan_code) {
-            if let KeyAction::Key(vk) = entry.action {
-                actions.push(KeyAction::KeyUp(vk));
-            }
+        if let Some(KeyAction::Key(vk)) = self.output_history.remove_by_scan(scan_code) {
+            actions.push(KeyAction::KeyUp(vk));
         }
     }
 
@@ -1878,8 +1876,8 @@ impl NicolaFsm {
     /// 判定を再開しない」という方針上、非活性時は`state`を経由する通常の
     /// `on_key_up`ディスパッチを一切通さず、この関数だけを呼ぶ。
     pub(crate) fn release_only(&mut self, event: &RawKeyEvent) -> Resp {
-        if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
-            return match entry.action {
+        if let Some(action) = self.output_history.remove_by_scan(event.scan_code) {
+            return match action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
                 KeyAction::Char(_) | KeyAction::Romaji(_) => self.build_response(
                     smallvec![KeyAction::Suppress],
@@ -1987,10 +1985,9 @@ impl NicolaFsm {
         let mut actions = resolved.actions;
         if char1_released_at.is_some() {
             // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
-            if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
-                if let KeyAction::Key(vk) = entry.action {
-                    actions.push(KeyAction::KeyUp(vk));
-                }
+            if let Some(KeyAction::Key(vk)) = self.output_history.remove_by_scan(char_key.scan_code)
+            {
+                actions.push(KeyAction::KeyUp(vk));
             }
         }
         self.build_response(actions, true, TimerIntent::CancelAll)
