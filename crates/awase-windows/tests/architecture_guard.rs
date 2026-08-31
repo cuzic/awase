@@ -3082,5 +3082,21 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
              （PR #127 コードレビュー: awase-linux/awase-macos の両方で\
              実際に起きた見落とし）。"
         );
+        // /code-review指摘（PR #127、9回目）: 上の位置チェックは「最初の
+        // NicolaFsm::new より後にapply_general_configが1回でもあるか」
+        // しか見ておらず、同一ファイルに将来2つ目の独立した構築箇所（例:
+        // 診断用の別経路）が追加され、そちらだけ配線を忘れても検知できない。
+        // 構築回数と配線回数が一致することも合わせて確認する（完全な
+        // 「どの構築がどの配線に対応するか」までは検証しないが、本ファイルの
+        // 他のガードテストと同じ粒度のヒューリスティックとしては十分）。
+        let construct_count = production.matches("NicolaFsm::new(").count();
+        let wire_count = production.matches(".apply_general_config(").count();
+        assert_eq!(
+            construct_count, wire_count,
+            "{path}: NicolaFsm::new(...) の出現回数({construct_count})と \
+             apply_general_config(...) の出現回数({wire_count})が一致しません。\
+             同一ファイル内に複数の構築箇所がある場合、そのうちどれかが \
+             apply_general_config を呼び忘れている可能性があります。"
+        );
     }
 }
