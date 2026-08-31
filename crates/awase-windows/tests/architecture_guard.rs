@@ -3025,3 +3025,43 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
          finish_probe_stage のみ)と異なります(実際: {count})。"
     );
 }
+
+// ── PR #127: プラットフォームエントリポイントの配線漏れ ──────────────
+
+/// `NicolaFsm::new` はコンストラクタ引数を持つが、`timing_margin_percent`/
+/// `min_overlap_margin_percent`（`GeneralConfig` 由来のユーザー設定値）は
+/// コンストラクタ直後の `set_timing_margins` 呼び出しで別途反映する設計に
+/// なっている（`src/engine/nicola_fsm.rs` のフィールド doc 参照）。コンパイラは
+/// この呼び出し漏れを検知できない——`NicolaFsm::new` はコンストラクタ既定値
+/// だけで黙って動き続ける。
+///
+/// PR #127（`feat/confirm-mode-simplify`）のコードレビューで、この呼び出しが
+/// `awase-linux`/`awase-macos` の両方で実際に漏れていたことが発覚した
+/// （config.toml で値を設定してもFSMに一切反映されず無反応だった）。
+/// 同種の見落としを新しいプラットフォームエントリポイントが追加された際にも
+/// 機械的に検知する第二の防衛線として、このガードテストを追加する。
+///
+/// 相対パスは `crates/awase-windows`（このクレートの `CARGO_MANIFEST_DIR`）
+/// 基準。`awase-linux`/`awase-macos` は兄弟クレートのため `../` で辿る。
+#[test]
+fn every_platform_entry_point_calls_set_timing_margins_after_nicola_fsm_new() {
+    const PLATFORM_ENTRY_POINTS: &[&str] = &[
+        "src/app/bootstrap.rs",
+        "../awase-linux/src/main.rs",
+        "../awase-macos/src/main.rs",
+    ];
+    for path in PLATFORM_ENTRY_POINTS {
+        let content = read_crate_file(path);
+        let constructs_fsm = content.contains("NicolaFsm::new(");
+        let wires_margins = content.contains(".set_timing_margins(");
+        assert!(
+            !constructs_fsm || wires_margins,
+            "{path} は NicolaFsm::new(...) を呼んでいるが、その後に \
+             set_timing_margins(...) を一度も呼んでいない。GeneralConfig の \
+             timing_margin_percent/min_overlap_margin_percent（config.toml 由来の \
+             ユーザー設定値）がこのプラットフォームでは無反応になる \
+             （PR #127 コードレビュー: awase-linux/awase-macos の両方で\
+             実際に起きた見落とし）。"
+        );
+    }
+}
