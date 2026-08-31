@@ -1775,3 +1775,193 @@ fn yab_face_resolve_kana_populates_kana_field_for_romaji_values() {
         other => panic!("expected Romaji, got {other:?}"),
     }
 }
+
+// ── ADR-115: 打鍵列機能 ──
+
+#[test]
+fn parse_ctrl_vk_recognizes_cv_prefix() {
+    assert_eq!(
+        YabValue::parse("CV4D"),
+        YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() }
+    );
+}
+
+#[test]
+fn parse_ctrl_vk_distinct_from_plain_vk() {
+    // "V4D"（Ctrl無し）は既存の Vk 経路のまま。
+    assert_eq!(YabValue::parse("V4D"), YabValue::Vk(VkCode(0x4D)));
+}
+
+#[test]
+fn parse_ctrl_vk_rejects_non_hex() {
+    // 認識できない場合は既存のフォールバックへ（Literal → 先頭1文字）。
+    assert_eq!(YabValue::parse("CVXY"), YabValue::Literal("CVXY".to_string()));
+}
+
+#[test]
+fn macro_ref_recognizes_at_prefix() {
+    assert_eq!(
+        YabValue::parse("@bracket_paren"),
+        YabValue::MacroRef("bracket_paren".to_string())
+    );
+}
+
+#[test]
+fn macro_ref_allows_japanese_name() {
+    assert_eq!(
+        YabValue::parse("@括弧ペア"),
+        YabValue::MacroRef("括弧ペア".to_string())
+    );
+}
+
+#[test]
+fn macro_ref_empty_name_falls_back_to_literal() {
+    // "@" 単独は今日と同じ Literal フォールバック（レビュー指摘 M4）。
+    assert_eq!(YabValue::parse("@"), YabValue::Literal("@".to_string()));
+}
+
+#[test]
+fn split_unquoted_plus_splits_outside_quotes() {
+    assert_eq!(split_unquoted_plus("'．'+CV4D"), vec!["'．'", "CV4D"]);
+}
+
+#[test]
+fn split_unquoted_plus_ignores_plus_inside_quotes() {
+    assert_eq!(split_unquoted_plus("'a+b'"), vec!["'a+b'"]);
+}
+
+#[test]
+fn split_unquoted_plus_handles_escaped_quotes_in_layout_examples() {
+    // 実レイアウトの [小指拡張親指シフト1] に実在する3形。
+    assert_eq!(split_unquoted_plus(r#""\"""#), vec![r#""\"""#]);
+    assert_eq!(split_unquoted_plus(r#""\'""#), vec![r#""\'""#]);
+    assert_eq!(split_unquoted_plus(r"'\\'"), vec![r"'\\'"]);
+}
+
+#[test]
+fn cell_segments_none_when_no_plus() {
+    assert_eq!(cell_segments("'．'"), None);
+    assert_eq!(cell_segments("CV4D"), None);
+}
+
+#[test]
+fn cell_segments_none_for_degenerate_empty_segments() {
+    // 先頭/末尾/連続する `+` は分割しない（レビュー指摘 Major1/M2）。
+    assert_eq!(cell_segments("+CV4D"), None);
+    assert_eq!(cell_segments("'あ'+"), None);
+    assert_eq!(cell_segments("a++b"), None);
+}
+
+#[test]
+fn parse_cell_single_segment_matches_plain_parse() {
+    // + を含まないセルは今日と完全に同じ結果を返す。
+    for raw in ["'あ'", "ｋａ", "CV4D", "無", "後"] {
+        assert_eq!(parse_cell(raw), YabValue::parse(raw));
+    }
+}
+
+#[test]
+fn parse_cell_degenerate_plus_matches_plain_parse() {
+    // 空セグメントを生む "+" 単独等は分割せず今日と同じ結果。
+    for raw in ["+", "'あ'+", "+CV4D", "a++b"] {
+        assert_eq!(parse_cell(raw), YabValue::parse(raw));
+    }
+}
+
+#[test]
+fn parse_cell_builds_inline_sequence_for_kuten_confirm() {
+    let v = parse_cell("'．'+CV4D");
+    match v {
+        YabValue::InlineSequence { items, raw } => {
+            assert_eq!(raw, "'．'+CV4D");
+            assert_eq!(items, vec![
+                YabValue::Literal("．".to_string()),
+                YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+            ]);
+        }
+        other => panic!("expected InlineSequence, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_cell_builds_inline_sequence_for_bracket_pair() {
+    // Issue #118 の実例（5要素）。
+    let v = parse_cell("'『'+CV4D+'』'+CV4D+左");
+    match v {
+        YabValue::InlineSequence { items, .. } => {
+            assert_eq!(
+                items,
+                vec![
+                    YabValue::Literal("『".to_string()),
+                    YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+                    YabValue::Literal("』".to_string()),
+                    YabValue::CtrlChord { vk: VkCode(0x4D), raw: "CV4D".to_string() },
+                    YabValue::Special(SpecialKey::Left),
+                ]
+            );
+        }
+        other => panic!("expected InlineSequence, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_cell_allows_macro_ref_segment() {
+    let v = parse_cell("'。'+@confirm");
+    match v {
+        YabValue::InlineSequence { items, .. } => {
+            assert_eq!(
+                items,
+                vec![
+                    YabValue::Literal("。".to_string()),
+                    YabValue::MacroRef("confirm".to_string()),
+                ]
+            );
+        }
+        other => panic!("expected InlineSequence, got {other:?}"),
+    }
+}
+
+#[test]
+fn serialize_ctrl_chord_and_inline_sequence_round_trip_via_raw() {
+    for raw in ["CV4D", "CV0D", "'．'+CV4D", "'『'+CV4D+'』'+CV4D+左"] {
+        let parsed = parse_cell(raw);
+        assert_eq!(parsed.serialize(), raw, "raw round-trip must be byte-exact for {raw:?}");
+    }
+}
+
+#[test]
+fn serialize_macro_ref_reconstructs_at_name() {
+    assert_eq!(YabValue::MacroRef("bracket_paren".to_string()).serialize(), "@bracket_paren");
+}
+
+#[test]
+fn lint_raw_cell_regression_unaffected_by_new_syntax() {
+    // 既存のクォート不整合誤字検出（report 01M13EACMQ7D2VETW75N0BTZ9C）が
+    // 新構文追加後も変化しないこと。
+    assert!(YabValue::lint_raw_cell("ｂ'ｕ").is_some());
+    assert!(YabValue::lint_raw_cell("ｂｕ").is_none());
+    assert!(YabValue::lint_raw_cell("CV4D").is_none());
+}
+
+#[test]
+fn lint_detects_typo_inside_plus_joined_segment() {
+    // `+` 区切りのどのセグメントに誤字があっても検出される。
+    let warnings = lint("[ローマ字シフト無し]\nｂ'ｕ+CV4D,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n無,無,無,無,無,無,無,無,無,無,無,無,無\n");
+    assert!(!warnings.is_empty(), "typo inside a + segment must still be detected");
+}
+
+#[test]
+fn resolve_kana_descends_into_inline_sequence() {
+    let table = KanaTable::build();
+    let mut face = YabFace::new();
+    let pos = PhysicalPos::new(0, 0);
+    face.insert(pos, parse_cell("ｋａ+CV4D"));
+    face.resolve_kana(&table);
+    match face.get(&pos) {
+        Some(YabValue::InlineSequence { items, .. }) => match &items[0] {
+            YabValue::Romaji { kana, .. } => assert_eq!(*kana, Some('か')),
+            other => panic!("expected Romaji, got {other:?}"),
+        },
+        other => panic!("expected InlineSequence, got {other:?}"),
+    }
+}

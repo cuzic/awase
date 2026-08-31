@@ -106,6 +106,20 @@ impl YabValue {
             return Self::Special(*sk);
         }
 
+        // CV4D 等（ADR-115 決定1）。`parse_direct_vk`（`V`+hex）より具体的な
+        // 形なので先に判定する。`CV4D` は `strip_prefix('V')` に一致しない
+        // （先頭が `C`）ため、どちらを先にしても衝突しない。
+        if let Some(vk) = parse_ctrl_vk(trimmed) {
+            return Self::CtrlChord { vk, raw: trimmed.to_string() };
+        }
+
+        // @マクロ名（ADR-115 決定2b）。
+        if let Some(name) = trimmed.strip_prefix('@') {
+            if is_valid_macro_name(name) {
+                return Self::MacroRef(name.to_string());
+            }
+        }
+
         if let Some(vk) = parse_direct_vk(trimmed) {
             return Self::Vk(vk);
         }
@@ -246,8 +260,23 @@ pub fn lint(input: &str) -> Vec<String> {
         // `process_yab_line` 内で `current_lines` に積まれず伸びない）。
         if current_lines.len() == lines_before + 1 {
             for cell in current_lines[lines_before].split(',') {
-                if let Some(msg) = YabValue::lint_raw_cell(cell) {
-                    warnings.push(format!("{}行目: {msg}", line_num + 1));
+                // `parse_cell` の分割規則（`cell_segments`）に揃える
+                // （ADR-115 決定2a）——lint の検査単位を実際のパース結果と
+                // 一致させる。`lint_raw_cell` 自体は不変（セグメント単位
+                // でそのまま再利用できる）。
+                match cell_segments(cell.trim()) {
+                    None => {
+                        if let Some(msg) = YabValue::lint_raw_cell(cell) {
+                            warnings.push(format!("{}行目: {msg}", line_num + 1));
+                        }
+                    }
+                    Some(segments) => {
+                        for seg in segments {
+                            if let Some(msg) = YabValue::lint_raw_cell(seg) {
+                                warnings.push(format!("{}行目: {msg}", line_num + 1));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -332,12 +361,29 @@ impl YabFace {
     /// 全 `YabValue::Romaji` の `kana` フィールドをテーブルから解決する。
     pub fn resolve_kana(&mut self, table: &KanaTable) {
         for value in self.values_mut() {
-            if let YabValue::Romaji {
-                ref romaji,
-                ref mut kana,
-            } = value
-            {
-                *kana = table.kana_for_romaji(romaji);
+            match value {
+                YabValue::Romaji {
+                    ref romaji,
+                    ref mut kana,
+                } => {
+                    *kana = table.kana_for_romaji(romaji);
+                }
+                // InlineSequence の要素も解決する（ADR-115 決定2c）。
+                // 決定4 の非ネスト不変条件により1階層で完結する。`Sequence`
+                // は resolve_kana より後（resolve_keystroke_syntax内）に
+                // 作られるため対象外でよい。
+                YabValue::InlineSequence { ref mut items, .. } => {
+                    for it in items.iter_mut() {
+                        if let YabValue::Romaji {
+                            ref romaji,
+                            ref mut kana,
+                        } = it
+                        {
+                            *kana = table.kana_for_romaji(romaji);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -506,6 +552,87 @@ fn unescape_literal(inner: &str, quote: char) -> String {
     out
 }
 
+/// `C`+`V`+16進数（半角）の Ctrl 修飾VK直接指定をパースする（ADR-115 決定1）。
+/// 例: `CV4D` → Ctrl+VK(0x4D) = Ctrl+M。受理範囲は `parse_direct_vk` と同じ
+/// 性質——`CV` に続く16進数なら何でも受理する。
+fn parse_ctrl_vk(s: &str) -> Option<VkCode> {
+    let hex = s.strip_prefix("CV")?;
+    if hex.is_empty() || !hex.is_ascii() {
+        return None;
+    }
+    u16::from_str_radix(hex, 16).ok().map(VkCode)
+}
+
+/// マクロ名として有効かどうかを判定する（ADR-115 決定2b）。空文字列は
+/// `.all()` が vacuously true を返すため明示的に弾く必要がある
+/// （`parse_direct_vk`/`parse_function_key` の空文字列ガードと同じ配慮）。
+fn is_valid_macro_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-'))
+}
+
+/// セル生テキストを、クォート外の `+`（半角、U+002B。全角 `＋` U+FF0B とは
+/// 別物）で分割する（ADR-115 決定2a）。クォート（`'`/`"`）の対応関係だけを
+/// 追跡し、トークンの意味は一切判定しない——各セグメントの解釈は既存
+/// `YabValue::parse` に完全に委譲する。クォート**内**のバックスラッシュの
+/// みをエスケープとして扱う（`unescape_literal` がクォート内でしか
+/// エスケープを解決しないのと同じ前提）。
+fn split_unquoted_plus(raw: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, ch) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, ch) {
+            (None, '\'' | '"') => quote = Some(ch),
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), '\\') => escaped = true,
+            (None, '+') => {
+                segments.push(&raw[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    segments.push(&raw[start..]);
+    segments
+}
+
+/// セルを分割すべきか判定し、分割するならセグメント列を返す。
+/// `parse_cell` と `lint` の両方がこれを呼ぶ——分割規則を1箇所に集約する
+/// （ADR-115 決定2a）。
+fn cell_segments(trimmed: &str) -> Option<Vec<&str>> {
+    let segments = split_unquoted_plus(trimmed);
+    // 空セグメントが1つでもあれば分割しない（先頭/末尾/連続する `+`）。
+    // `YabValue::parse("")` は `YabValue::None` を返すが、`None` は
+    // 「明示的な無出力」という特別な意味を持つ値（`resolve_thumb_face` の
+    // chord フォールバック遮断に使われる）なので、分割の副作用として
+    // 紛れ込ませてはならない。
+    if segments.len() < 2 || segments.iter().any(|s| s.trim().is_empty()) {
+        None
+    } else {
+        Some(segments)
+    }
+}
+
+/// `.yab` セルの解釈における唯一の入口（ADR-115 決定2a）。`parse_face` は
+/// ここを呼ぶ（`YabValue::parse` を直接呼ばない）。`YabValue::parse` 自体は
+/// 既存呼び出し元（本番2箇所＋`tests.rs`）に影響を与えないため無改修。
+/// 再帰は発生しない——`YabValue::parse` は `+` 分割を一切行わないため。
+pub fn parse_cell(raw: &str) -> YabValue {
+    let trimmed = raw.trim();
+    match cell_segments(trimmed) {
+        None => YabValue::parse(trimmed),
+        Some(segments) => YabValue::InlineSequence {
+            items: segments.iter().map(|s| YabValue::parse(s)).collect(),
+            raw: trimmed.to_string(),
+        },
+    }
+}
+
 /// `V`+16進数（半角）の仮想キーコード直接指定をパースする（やまぶきR互換）。
 fn parse_direct_vk(s: &str) -> Option<VkCode> {
     let hex = s.strip_prefix('V')?;
@@ -582,7 +709,7 @@ fn parse_face(lines: &[String], model: KeyboardModel) -> Result<YabFace> {
         }
 
         for (col, val) in values.iter().enumerate() {
-            let yab_val = YabValue::parse(val);
+            let yab_val = parse_cell(val);
             let row_u8 = u8::try_from(row).expect("row index always fits in u8");
             let col_u8 = u8::try_from(col).expect("col index always fits in u8");
             let pos = PhysicalPos::new(row_u8, col_u8);
