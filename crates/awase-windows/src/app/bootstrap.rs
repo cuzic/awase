@@ -55,18 +55,21 @@ fn show_no_layouts_dialog(layouts_dir: &Path) {
 /// としか通知していなかったため、独自レイアウトが UTF-8 でない等の理由で
 /// 読込に失敗し、無言でバンドル版へ差し替わっていることにユーザーが気づけない
 /// 実例（report `01M13EACMQ7D2VETW75N0BTZ9C`、`docs/known-bugs.md` BUG-104）が
-/// あった。起動時（`init_engine_validated`）・設定リロード時（`reload_config`）の
-/// 両方から呼ぶ。設定画面の自動起動（`launch_settings`）は起動時のみ呼び出し元が
-/// 行う — `reload_config` 側で毎回行うと、原因が直っていない間リロードのたびに
-/// 新しい設定画面プロセスが際限なく spawn されてしまう（`launch_settings_with_args`
-/// に多重起動防止が無いため）。
+/// あった。**起動時（`init_engine_validated`）専用**——`reload_config`
+/// からは呼ばない。`show_error_dialog` は `MessageBoxW` で呼び出しスレッドを
+/// ブロックするため、起動前（メッセージループ開始前）は安全だが、
+/// `reload_config` はキーボードフックと async executor が生きている
+/// メッセージループスレッド上で直接実行されるため、そこでモーダルを出すと
+/// ダイアログが閉じるまで入力処理が滞留するリスクがある（/code-review 指摘、
+/// PR #131）。設定リロード時の通知は既存の `StartupDiagnostics` 経由の
+/// トレイバルーンのみで妥協する。
 pub(super) fn warn_layout_fallback(
     layouts_dir: &Path,
     default_layout: &str,
     resolved_name: &str,
 ) -> bool {
-    let configured_name = default_layout.trim_end_matches(".yab");
-    if configured_name == resolved_name {
+    let configured_name = crate::runtime::strip_yab_extension(default_layout);
+    if configured_name.eq_ignore_ascii_case(resolved_name) {
         return false;
     }
     let reason = if layouts_dir.join(default_layout).exists() {
