@@ -222,6 +222,48 @@ impl Engine {
         self.compute_state(ctx).is_active()
     }
 
+    /// `output_history` の `pending_releases` を解放し、`KeyLifecycle` に残る
+    /// Consume 義務も同期して解放して `effects` に追記する（ADR-112コードレビュー
+    /// 指摘）。コンテキストを丸ごと喪失する場面（`check_active_transition` の
+    /// active→inactive分岐・`handle_focus_changed`）で共通して必要になる処理を
+    /// 一本化した（/code-review 指摘: 元は両呼び出し元に同一ロジックが
+    /// コピペされており、将来の修正が片方だけに適用され再発するリスクが
+    /// あった）。
+    ///
+    /// 呼び出し順序が重要: `release_all_pending_output`（`output_history` 側）を
+    /// 先に呼び、それが発行した `KeyUp(vk)` の VK 集合を、`flush_pending_key_ups`
+    /// （`KeyLifecycle` 側）の再注入から除外する。これをしないと、`output_history`
+    /// に記録済みの同じ物理キーに対して独立した KeyUp が二重に注入される
+    /// （/code-review 指摘）。
+    fn release_pending_and_reinject(&mut self, effects: &mut EffectVec) {
+        let released_output_effects = self.adapter.release_all_pending_output();
+        let released_vks: std::collections::HashSet<VkCode> = released_output_effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|a| match a {
+                KeyAction::KeyUp(vk) => Some(*vk),
+                _ => None,
+            })
+            .collect();
+        // Phase 1（特殊キー等）でのみ consume され output_history にエントリを
+        // 残さないキーは release_all_pending_output ではカバーされないため、
+        // flush_pending_key_ups の戻り値を明示的に ReinjectKey として再注入する。
+        // これを捨てていると、そのキーの実物理 KeyUp が後で来たとき
+        // take_key_up_duty は既に空になった active_keys から UpDuty::None を
+        // 返し、Engine が非活性であれば生の KeyUp がそのまま OS へ通ってしまう。
+        let pending_key_ups = self.lifecycle.flush_pending_key_ups();
+        for evt in pending_key_ups {
+            if !released_vks.contains(&evt.vk_code) {
+                effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
+            }
+        }
+        effects.extend(released_output_effects);
+    }
+
     /// 実効状態の遷移を検知し、必要な Effect（flush, UI 通知）を返す。
     fn check_active_transition(&mut self, ctx: &InputContext) -> EffectVec {
         let new_state = self.compute_state(ctx);
@@ -260,44 +302,7 @@ impl Engine {
                     .adapter
                     .flush_to_effects(reason, ComposingHint::Unknown);
                 effects.extend(flush);
-                // output_history の pending_releases を同期して掃除する
-                // （ADR-112コードレビュー指摘）。下の flush_pending_key_ups が
-                // active_keys だけを drain して pending_releases を放置すると、
-                // 対応する KeyUp がその後 UpDuty::None として素通りするように
-                // なり、二度と掃除されないまま stuck key が再発する。
-                // 先に呼ぶ理由は handle_focus_changed と同じ: これで解放された
-                // VK の集合を、下の flush_pending_key_ups の再注入から除外し、
-                // 同じ VK に対する KeyUp の二重注入を防ぐため。
-                let released_output_effects = self.adapter.release_all_pending_output();
-                let released_vks: std::collections::HashSet<VkCode> = released_output_effects
-                    .iter()
-                    .filter_map(|e| match e {
-                        Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
-                        _ => None,
-                    })
-                    .flatten()
-                    .filter_map(|a| match a {
-                        KeyAction::KeyUp(vk) => Some(*vk),
-                        _ => None,
-                    })
-                    .collect();
-                // lifecycle をクリア: Engine が consumed した KeyDown の対応 KeyUp が
-                // Engine inactive 時に到着しても consumed されないようにする。
-                // Phase 1（特殊キー等）でのみ consume され output_history に
-                // エントリを残さないキーは release_all_pending_output ではカバー
-                // されないため、flush_pending_key_ups の戻り値を明示的に
-                // ReinjectKey として再注入する（handle_focus_changed 指摘の
-                // 横展開、/code-review 指摘）。これを捨てていると、そのキーの
-                // 実物理 KeyUp が後で来たとき take_key_up_duty は既に空になった
-                // active_keys から UpDuty::None を返し、Engine が非活性であれば
-                // 生の KeyUp がそのまま OS へ通ってしまう。
-                let pending_key_ups = self.lifecycle.flush_pending_key_ups();
-                for evt in pending_key_ups {
-                    if !released_vks.contains(&evt.vk_code) {
-                        effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
-                    }
-                }
-                effects.extend(released_output_effects);
+                self.release_pending_and_reinject(&mut effects);
             }
             log::info!(
                 "Engine {} (ime={}, romaji={}, japanese={}, user={}, reason={:?})",
@@ -639,42 +644,10 @@ impl Engine {
         // コードレビュー指摘）。フォーカス変更は実効状態（active/inactive）の
         // 遷移を伴わないことがあり（例: 両方とも日本語IMEのウィンドウ間の
         // 切替）、その場合 check_active_transition 内の同種の掃除は発火しない。
-        // 下の flush_pending_key_ups は実効状態を問わず無条件に発火するため、
+        // release_pending_and_reinject は実効状態を問わず無条件に発火するため、
         // ここでも同期して呼ぶ必要がある（下の check_active_transition が
         // 追加で掃除を試みても、この時点で空になっているため無害）。
-        //
-        // 先に呼ぶ理由: これで解放された VK の集合を、次の
-        // flush_pending_key_ups の再注入から除外するため（/code-review
-        // 指摘）。KeyAction::Key(vk) 型のエントリはここで KeyUp(vk) が
-        // 発行されるが、その scan_code は多くの場合 KeyLifecycle が
-        // 追跡している「元の物理キーの vk」と一致する
-        // （resolve_pending_char_as_single のフォールバック等）ため、
-        // 両方を無条件に発行すると同じ VK に対して独立した KeyUp が
-        // OS へ二重に注入される。
-        let released_output_effects = self.adapter.release_all_pending_output();
-        let released_vks: std::collections::HashSet<VkCode> = released_output_effects
-            .iter()
-            .filter_map(|e| match e {
-                Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
-                _ => None,
-            })
-            .flatten()
-            .filter_map(|a| match a {
-                KeyAction::KeyUp(vk) => Some(*vk),
-                _ => None,
-            })
-            .collect();
-
-        // Consume 済みで KeyUp が来ていないキーの KeyUp を再注入して
-        // OS 側のキーボード状態と整合させる。上で release_all_pending_output
-        // が既に KeyUp(vk) を発行した VK は、二重注入を避けるため除外する。
-        let pending_key_ups = self.lifecycle.flush_pending_key_ups();
-        for evt in pending_key_ups {
-            if !released_vks.contains(&evt.vk_code) {
-                effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
-            }
-        }
-        effects.extend(released_output_effects);
+        self.release_pending_and_reinject(&mut effects);
 
         // 実効状態の遷移を検知
         let transition_effects = self.check_active_transition(ctx);
