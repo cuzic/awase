@@ -966,5 +966,179 @@ impl YabLayout {
     }
 }
 
+// ── ADR-115: 打鍵列機能の解決パス ──
+//
+// `resolve_keystroke_syntax`/`resolve_macro_steps` は `src/yab/` 側に置く
+// （`crate::config::{KeystrokeMacro, KeystrokeSequencePolicy}` を import
+// する一方向依存。`src/config.rs` は `crate::yab` を一切参照していないため
+// 循環にはならない。`YabLayout`/`YabValue` の内部構造を最も詳しく知って
+// いる `yab` 側に置く方が自然、実装タスクレビュー指摘 M3）。
+
+/// 決定2c/決定3 で共有する「要素数から最終的な形を決める」規則。
+///   0要素 → `YabValue::None`（明示的な無出力の既存表現に合わせる。
+///     `MacroRef` 未定義時と挙動が揃う）。
+///   1要素 → `Sequence` で包まず、その要素をそのまま返す（`Vk` だけが
+///     拒否されて `Literal` だけが残るケースが、単体セルと完全に
+///     同じ挙動——kana 先読みを含む——になる）。
+///   2要素以上 → `YabValue::Sequence(resolved)`。
+fn collapse_resolved(resolved: Vec<YabValue>) -> YabValue {
+    match resolved.len() {
+        0 => YabValue::None,
+        1 => resolved.into_iter().next().expect("checked len == 1"),
+        _ => YabValue::Sequence(resolved),
+    }
+}
+
+/// `KeystrokeMacro.steps`（`Vec<String>`、決定2b）を `YabValue` の列へ
+/// 変換する。`InlineSequence` 解決（決定2c）と `MacroRef` 単体解決の
+/// 両方から呼ばれる共通ヘルパー——許可リストの判定をここ1箇所に集約する。
+///
+/// 許可するのは `Literal`/`KeySequence`/`Special`/`CtrlChord` の4種のみ。
+/// `Romaji` はここでは常に拒否する——マクロ展開（`resolve_keystroke_syntax`）
+/// は `resolve_kana`（`.yab` 読み込み直後に1回だけ走る）より後に実行される
+/// ため、マクロ由来の `Romaji` は `kana` が永久に `None` のまま残り、
+/// `KeyAction::Romaji`（VK バッチ送信）に落ちて単体セルと注入経路が
+/// 変わってしまう。`Vk`（決定6、`OutputHistory` の KeyUp 整合性索引と
+/// 衝突する）・`None`・`InlineSequence`/`MacroRef`（決定4の非ネスト
+/// 不変条件をマクロ経由で破らせない）も同様に拒否する。
+fn resolve_macro_steps(steps: &[String], warnings: &mut Vec<String>) -> Vec<YabValue> {
+    steps
+        .iter()
+        .filter_map(|s| match YabValue::parse(s) {
+            v @ (YabValue::Literal(_)
+                | YabValue::KeySequence(_)
+                | YabValue::Special(_)
+                | YabValue::CtrlChord { .. }) => Some(v),
+            YabValue::Romaji { .. } => {
+                warnings.push(format!(
+                    "マクロのステップにローマ字は書けません: {s:?}。\
+                     セル内 `+` 区切り（例: `ｋａ+CV4D`）を使ってください。"
+                ));
+                None
+            }
+            other => {
+                warnings.push(format!("マクロステップとして使えない値です: {s:?} ({other:?})"));
+                None
+            }
+        })
+        .collect()
+}
+
+/// `InlineSequence.items`（決定2a）の1要素を、決定2c の許可リストに
+/// 従って `resolved` へ積む。`MacroRef` 要素はマクロの steps を
+/// `resolve_macro_steps` で解決した結果を「平坦に」`extend` する
+/// （`Sequence` で包まない——決定4 の非ネスト不変条件を守るため）。
+fn resolve_inline_sequence_item(
+    item: YabValue,
+    macros: &[crate::config::KeystrokeMacro],
+    resolved: &mut Vec<YabValue>,
+    warnings: &mut Vec<String>,
+) {
+    match item {
+        YabValue::Literal(_)
+        | YabValue::KeySequence(_)
+        | YabValue::Special(_)
+        | YabValue::CtrlChord { .. }
+        | YabValue::Romaji { .. } => resolved.push(item),
+        YabValue::MacroRef(name) => match macros.iter().find(|m| m.name == name) {
+            Some(m) => resolved.extend(resolve_macro_steps(&m.steps, warnings)),
+            // このステップだけを無かったことにする（単体 MacroRef セルの
+            // 「セル全体が YabValue::None になる」動作、決定3、とは
+            // 非対称——`InlineSequence` の一要素が未定義マクロを指す
+            // だけで列全体を捨てるのは過剰と判断した。どちらも寛容
+            // フォールバック方針の表れ、レビュー指摘 m3）。
+            None => warnings.push(format!("マクロ @{name} が見つかりません")),
+        },
+        // Vk/None は決定6 と同じ理由で禁止。InlineSequence（ネスト）は
+        // parse_cell が単一階層しか作らないため構造的に到達しないが、
+        // 網羅 match を満たすため防御的に同じ扱いにする（レビュー指摘
+        // m3）。Sequence も同様に到達しない（YabValue::parse は
+        // Sequence を返さない、レビュー指摘 Minor2）。
+        YabValue::Vk(_) | YabValue::None | YabValue::InlineSequence { .. } | YabValue::Sequence(_) => {
+            warnings.push(format!("打鍵列の要素として使えない値です: {item:?}"));
+        }
+    }
+}
+
+/// `.yab` レイアウト中の新構文（`CtrlChord`/`InlineSequence`/`MacroRef`）を、
+/// キルスイッチとマクロ定義に基づいて確定させる（決定3）。呼び出しは
+/// `LayoutEntry::scan_all` 内・`awase-settings` のプレビュー生成時の
+/// 各1箇所のみ。`YabValue::parse`/`parse_cell` のシグネチャは変えない
+/// ——config を必要とするのはこの新しい解決パスのみ。
+#[must_use]
+pub fn resolve_keystroke_syntax(
+    mut layout: YabLayout,
+    macros: &[crate::config::KeystrokeMacro],
+    policy: crate::config::KeystrokeSequencePolicy,
+) -> (YabLayout, Vec<String>) {
+    let mut warnings = Vec::new();
+    for face in [
+        &mut layout.normal,
+        &mut layout.left_thumb,
+        &mut layout.right_thumb,
+        &mut layout.shift,
+        &mut layout.left_thumb_shift,
+        &mut layout.right_thumb_shift,
+    ] {
+        for value in face.values_mut() {
+            resolve_keystroke_syntax_value(value, macros, policy, &mut warnings);
+        }
+    }
+    (layout, warnings)
+}
+
+fn resolve_keystroke_syntax_value(
+    value: &mut YabValue,
+    macros: &[crate::config::KeystrokeMacro],
+    policy: crate::config::KeystrokeSequencePolicy,
+    warnings: &mut Vec<String>,
+) {
+    match (policy, std::mem::replace(value, YabValue::None)) {
+        // Off: CtrlChord は raw（"CV4D" のような単一トークン）をそのまま
+        // Literal に包む。CtrlChord の raw は `+` を含まない単一トークン
+        // なので、これで今日の挙動（CV4D → 最終フォールバック Literal →
+        // 先頭1文字）を厳密に再現できる。
+        (crate::config::KeystrokeSequencePolicy::Off, YabValue::CtrlChord { raw, .. }) => {
+            *value = YabValue::Literal(raw);
+        }
+        // Off: InlineSequence は raw に対して素の YabValue::parse を
+        // 再実行する（Literal に包まない）。raw は定義上必ず `+` を含む
+        // （cell_segments が空セグメントを弾くため退化しない）ので、
+        // YabValue::parse は6分岐のどれにも `+` 由来の特別扱いをせず、
+        // 今日と全く同じ経路（strip_paired_quote によるクォート剥がしを
+        // 含む）をたどる。`Literal(raw)` に包むと、raw 全体が同じクォート
+        // 文字で始まり終わる場合（例: `'（'+'）'`）に今日のクォート剥がし
+        // 結果と食い違う（実装タスクレビュー指摘 M2）。
+        (crate::config::KeystrokeSequencePolicy::Off, YabValue::InlineSequence { raw, .. }) => {
+            *value = YabValue::parse(&raw);
+        }
+        (crate::config::KeystrokeSequencePolicy::Off, YabValue::MacroRef(name)) => {
+            *value = YabValue::Literal(format!("@{name}"));
+        }
+        // On: CtrlChord はそのまま。
+        (crate::config::KeystrokeSequencePolicy::On, v @ YabValue::CtrlChord { .. }) => {
+            *value = v;
+        }
+        (crate::config::KeystrokeSequencePolicy::On, YabValue::InlineSequence { items, .. }) => {
+            let mut resolved = Vec::with_capacity(items.len());
+            for item in items {
+                resolve_inline_sequence_item(item, macros, &mut resolved, warnings);
+            }
+            *value = collapse_resolved(resolved);
+        }
+        (crate::config::KeystrokeSequencePolicy::On, YabValue::MacroRef(name)) => {
+            *value = match macros.iter().find(|m| m.name == name) {
+                Some(m) => collapse_resolved(resolve_macro_steps(&m.steps, warnings)),
+                None => {
+                    warnings.push(format!("マクロ @{name} が見つかりません"));
+                    YabValue::None
+                }
+            };
+        }
+        // 新構文以外はそのまま。
+        (_, other) => *value = other,
+    }
+}
+
 #[cfg(test)]
 mod tests;
