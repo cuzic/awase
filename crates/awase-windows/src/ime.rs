@@ -12,6 +12,7 @@ use crate::imm::{
     IMC_GETCONVERSIONMODE, IMC_GETOPENSTATUS, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS,
     IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CMODE_ROMAN,
 };
+use crate::output::held_modifiers::HeldModifiers;
 use crate::win32::HwndExt as _;
 
 // ─── Cross-process IME 設定 ───────────────────────────────────
@@ -95,86 +96,6 @@ pub unsafe fn set_ime_open_for_target(hwnd: HWND, open: bool) -> bool {
     success
 }
 
-/// 修飾キー（Ctrl / Shift / Alt）の押下状態スナップショット。
-///
-/// `SendInput` で修飾なしキーを届ける際の解放・復元シーケンス構築に使う。
-/// 3つの IME キー送信関数（VK_KANJI / VK_IME_ON / VK_IME_OFF）が同じパターンを共有する。
-#[derive(Clone, Copy)]
-struct HeldModifiers {
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-}
-
-impl HeldModifiers {
-    /// 物理キー状態 (`PHYSICAL_KEY_STATE`) で修飾キーの押下状態を読み取る。
-    ///
-    /// `GetAsyncKeyState` は直前に注入した synthetic KeyUp の影響を受けて汚染される場合があるため、
-    /// SendInput 非影響の物理キー状態で読み取ることで CTRL MISMATCH を防ぐ。
-    fn read() -> Self {
-        use crate::vk::{VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT};
-        Self {
-            ctrl: crate::hook::is_physical_key_down(VK_LCONTROL)
-                || crate::hook::is_physical_key_down(VK_RCONTROL),
-            shift: crate::hook::is_physical_key_down(VK_LSHIFT)
-                || crate::hook::is_physical_key_down(VK_RSHIFT),
-            alt: crate::hook::is_physical_key_down(VK_LMENU)
-                || crate::hook::is_physical_key_down(VK_RMENU),
-        }
-    }
-
-    /// 押下中の修飾キーを解放する `INPUT` イベントを追加する。
-    fn push_release(self, inputs: &mut Vec<INPUT>) {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::{VK_CONTROL, VK_MENU, VK_SHIFT};
-        if self.ctrl {
-            inputs.push(make_key_input_ex(VK_CONTROL, true, IME_KANJI_MARKER));
-        }
-        if self.shift {
-            inputs.push(make_key_input_ex(VK_SHIFT, true, IME_KANJI_MARKER));
-        }
-        if self.alt {
-            inputs.push(make_key_input_ex(VK_MENU, true, IME_KANJI_MARKER));
-        }
-    }
-
-    /// 物理的にまだ押下中の修飾キーを復元する `INPUT` イベントを追加し、復元した状態を返す。
-    ///
-    /// # Safety
-    /// Win32 API を呼び出す。
-    unsafe fn push_restore(self, inputs: &mut Vec<INPUT>) -> Self {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-        use crate::vk::{
-            VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_MENU, VK_RMENU, VK_RSHIFT, VK_SHIFT,
-        };
-        // GetAsyncKeyState は直前に注入した synthetic Ctrl↑ の影響を受けるため、
-        // SendInput 非影響の物理キー状態 (PHYSICAL_KEY_STATE) で判定する。
-        // これにより Ctrl+W 等のショートカットを押したまま IME キーが注入された場合でも
-        // Ctrl が正しく復元され、Chrome へ Ctrl+W が届く。
-        let still = Self {
-            ctrl: self.ctrl
-                && (crate::hook::is_physical_key_down(VK_LCONTROL)
-                    || crate::hook::is_physical_key_down(crate::vk::VK_RCONTROL)),
-            shift: self.shift
-                && (crate::hook::is_physical_key_down(VK_LSHIFT)
-                    || crate::hook::is_physical_key_down(VK_RSHIFT)),
-            alt: self.alt
-                && (crate::hook::is_physical_key_down(VK_LMENU)
-                    || crate::hook::is_physical_key_down(VK_RMENU)),
-        };
-        if still.ctrl {
-            inputs.push(make_key_input_ex(VK_CONTROL, false, IME_KANJI_MARKER));
-        }
-        if still.shift {
-            inputs.push(make_key_input_ex(VK_SHIFT, false, IME_KANJI_MARKER));
-        }
-        if still.alt {
-            inputs.push(make_key_input_ex(VK_MENU, false, IME_KANJI_MARKER));
-        }
-        still
-    }
-}
-
 /// IMM32 クロスプロセス制御が使えないアプリ（Chrome/Edge 等）向け IME トグル実装。
 ///
 /// `WM_IME_CONTROL` が効かない `Imm32Unavailable` アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
@@ -239,12 +160,12 @@ pub unsafe fn post_kanji_toggle_to_focused() {
     );
 
     let mut inputs = Vec::with_capacity(8);
-    held.push_release(&mut inputs);
+    held.push_release(&mut inputs, IME_KANJI_MARKER);
     inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER));
 
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let still = unsafe { held.push_restore(&mut inputs) };
+    let still = unsafe { held.push_restore(&mut inputs, IME_KANJI_MARKER) };
 
     log::debug!(
         "[ime-fallback] SendInput VK_KANJI toggle: \
@@ -369,11 +290,11 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     // ALT を解放すると ALT+TAB スイッチャーが確定してしまうため、ALT は解放しない。
     let held_skip_alt = HeldModifiers { alt: false, ..held };
     let mut inputs: Vec<INPUT> = Vec::with_capacity(6);
-    held_skip_alt.push_release(&mut inputs);
+    held_skip_alt.push_release(&mut inputs, IME_KANJI_MARKER);
     inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
     inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
     // SAFETY: push_restore は Win32 SendInput を呼ぶ。
-    let still = unsafe { held_skip_alt.push_restore(&mut inputs) };
+    let still = unsafe { held_skip_alt.push_restore(&mut inputs, IME_KANJI_MARKER) };
 
     log::debug!(
         "[ime-mode] SendInput vk=0x{vk:02X} \
@@ -448,7 +369,7 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
         inputs.push(make_scan_key_input(VK_LSHIFT, true, IME_KANJI_MARKER));
         inputs.push(make_scan_key_input(VK_RSHIFT, true, IME_KANJI_MARKER));
     }
-    held_skip_alt.push_release(&mut inputs);
+    held_skip_alt.push_release(&mut inputs, IME_KANJI_MARKER);
     if vk == VK_DBE_HIRAGANA {
         inputs.push(make_scan_key_input(vk, false, IME_KANJI_MARKER));
         inputs.push(make_scan_key_input(vk, true, IME_KANJI_MARKER));
@@ -457,7 +378,7 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
         inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
     }
     // SAFETY: push_restore は Win32 SendInput を呼ぶ。
-    let still = unsafe { held_skip_alt.push_restore(&mut inputs) };
+    let still = unsafe { held_skip_alt.push_restore(&mut inputs, IME_KANJI_MARKER) };
 
     log::debug!(
         "[ime-mode] SendInput vk=0x{vk:02X} prepend_shift_up={prepend_synthetic_shift_up} \

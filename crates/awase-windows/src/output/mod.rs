@@ -14,6 +14,7 @@ pub(crate) use sender::OutputSession;
 pub(crate) use types::InjectionMode;
 
 pub(crate) mod conv_actuation;
+pub(crate) mod held_modifiers;
 pub(crate) mod ime_apply_planner;
 mod key_injector;
 pub(crate) mod probe_io;
