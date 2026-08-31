@@ -120,6 +120,15 @@ impl Output {
                 KeyAction::KeySequence(s) => {
                     log::trace!("macOS output: KeySequence(\"{s}\")");
                 }
+                // ADR-115: macOS実装は現状スタブのため no-op ログのみ。
+                // 実送信の実装は本ADRのスコープ外（決定10、コンパイル通過
+                // が目的）。
+                KeyAction::CtrlChord(vk) => {
+                    log::trace!("macOS output: CtrlChord(Ctrl+0x{:02X}) [stub, no-op]", vk.0);
+                }
+                KeyAction::Sequence(items) => {
+                    log::trace!("macOS output: Sequence({} items) [stub, no-op]", items.len());
+                }
             }
         }
     }

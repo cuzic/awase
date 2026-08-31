@@ -29,6 +29,20 @@ pub enum YabValue {
     Special(SpecialKey),
     /// 仮想キーコード直接指定（やまぶき互換: `V`+16進数、または `機`+数値のファンクションキー指定）
     Vk(VkCode),
+    /// Ctrl+VK の単一チョード送信（ADR-115 決定1、`C`+`V`+16進数、例: `CV4D` = Ctrl+M）。
+    /// `raw` は元のセルテキスト（トリム済み）——キルスイッチ Off 時の復元に使う
+    /// （ADR-115 決定3。`serialize()` は `parse()` の厳密な逆写像ではないため、
+    /// 逆写像を作る代わりに生テキストをそのまま持たせる）。
+    CtrlChord { vk: VkCode, raw: String },
+    /// セル内 `+` 区切りによる打鍵列（ADR-115 決定2a、非ネスト）。
+    /// `raw` は元のセルテキスト全体（トリム済み）。
+    InlineSequence { items: Vec<YabValue>, raw: String },
+    /// 名前付き打鍵列マクロへの参照（ADR-115 決定2b、`@name`）。
+    MacroRef(String),
+    /// 打鍵列（ADR-115 決定4）。**不変条件: 内側の要素に `Sequence` は現れない**
+    /// （`resolve_keystroke_syntax` が `resolve_macro_steps()` の結果を常に
+    /// `extend`（平坦化）で積み、`Sequence` で包んで埋め込むことをしないため）。
+    Sequence(Vec<YabValue>),
     /// 割り当てなし（パススルー）
     None,
 }
@@ -171,6 +185,18 @@ impl YabValue {
             Self::Special(SpecialKey::PageUp) => "前".to_string(),
             Self::Special(SpecialKey::PageDown) => "次".to_string(),
             Self::Vk(vk) => format!("V{:X}", vk.0),
+            // raw をそのまま返す（format! で逆写像を再構成しない——CV0D の
+            // ゼロ詰め落ち、クォート種別の非保持、空白の正規化等、serialize()
+            // は parse() の厳密な逆写像ではないため。ADR-115 決定9(a)）。
+            Self::CtrlChord { raw, .. } | Self::InlineSequence { raw, .. } => raw.clone(),
+            Self::MacroRef(name) => format!("@{name}"),
+            Self::Sequence(_) => {
+                log::error!(
+                    "[yab] 解決済み Sequence を .yab へ serialize しようとした\
+                     （プレビュー専用コピーのはず）"
+                );
+                "無".to_string()
+            }
             Self::None => "無".to_string(),
         }
     }

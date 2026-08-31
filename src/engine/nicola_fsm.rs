@@ -67,6 +67,18 @@ impl From<&YabValue> for KeyAction {
             YabValue::KeySequence(s) => Self::KeySequence(s.clone()),
             YabValue::Special(sk) => Self::SpecialKey(*sk),
             YabValue::Vk(vk) => Self::Key(*vk),
+            YabValue::CtrlChord { vk, .. } => Self::CtrlChord(*vk),
+            YabValue::Sequence(items) => Self::Sequence(items.iter().map(Self::from).collect()),
+            // resolve_keystroke_syntax（ADR-115 決定3）の呼び出し漏れがあると
+            // ここへ到達しうる。unreachable!() は使わず安全側に倒す
+            // （ADR-104「型で保証されない unreachable! の除去」に整合）。
+            YabValue::InlineSequence { .. } | YabValue::MacroRef(_) => {
+                log::error!(
+                    "[yab] 未解決の新構文がエンジンに到達した \
+                     — resolve_keystroke_syntax の呼び出し漏れ: {value:?}"
+                );
+                Self::Suppress
+            }
             YabValue::None => Self::Suppress,
         }
     }

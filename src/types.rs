@@ -270,6 +270,14 @@ pub enum KeyAction {
     Romaji(String),
     /// キーシーケンスとして出力（IME がキーストロークを変換する）
     KeySequence(String),
+    /// Ctrl+VK の単一チョード送信（ADR-115 決定1）。1回の `SendInput` バッチで
+    /// press/release が自己完結するため、`OutputHistory` の KeyUp 整合性索引
+    /// の対象にはならない（`Key`/`KeyUp` と違い解放すべき片割れを持たない）。
+    CtrlChord(VkCode),
+    /// 打鍵列（ADR-115 決定4）。1回の `send_keys` 呼び出しの中で即座に全要素を
+    /// 実行する同期バッチモデル——待機（`Wait`）を含むステップは表現しない
+    /// （ADR-115 決定11、将来別概念として設計する）。
+    Sequence(Vec<KeyAction>),
 }
 
 impl KeyAction {

@@ -112,6 +112,32 @@ impl KeyInjector {
         let _ = crate::win32::send_input_safe(&[input]);
     }
 
+    /// Ctrl+VK の1チョードを、Ctrl↓/VK↓/VK↑/Ctrl↑ の4イベントとして
+    /// 1回の `SendInput` にバッチして送る（ADR-115 決定1）。
+    ///
+    /// 単一バッチにする理由: `send_key` を4回呼ぶ素朴な実装は4回の独立した
+    /// `SendInput` になり、その間に実ハードウェア入力が OS の入力キューへ
+    /// 割り込みうる（割り込んだキーは「Ctrl 押下中」として対象アプリに届く）。
+    /// 自己注入マーカーにより物理修飾キー状態は汚染されない（`make_key_input`
+    /// は常に `INJECTED_MARKER` を付与し、`hook.rs::is_self_injected` が
+    /// これを検出して `CallNextHookEx` で素通しするため、注入した Ctrl は
+    /// エンジンの `phys.modifiers.ctrl` を汚染せず `OsModifierHeld` バイパス
+    /// を誘発しない）。
+    ///
+    /// 押下中の物理修飾キー（Shift/Alt）との衝突は既知の限界として扱う
+    /// （ADR-115 決定1）——打鍵列セルは通常、修飾キーを押しながら打つ位置
+    /// には置かれない、という運用上の前提に留める。
+    #[expect(clippy::unused_self)]
+    pub(super) fn send_ctrl_chord(&self, vk: VkCode) {
+        let inputs = [
+            make_key_input(crate::vk::VK_CONTROL, false),
+            make_key_input(vk, false),
+            make_key_input(vk, true),
+            make_key_input(crate::vk::VK_CONTROL, true),
+        ];
+        let _ = crate::win32::send_input_safe(&inputs);
+    }
+
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
     ///
     /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
