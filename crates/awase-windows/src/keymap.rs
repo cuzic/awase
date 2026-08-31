@@ -38,11 +38,26 @@ fn forbidden_target_vk_reason(
     None
 }
 
-/// `from` の主キー（`combo.vk`）として Shift を指定できるか（ADR-114 決定5）。
-/// 修飾子側の Shift（`combo.shift`）は対象外——別途 combo.alt と同様のチェックを行う。
-/// `forbidden_target_vk_reason` と同じ理由で `classify_modifier` に委譲する。
-fn is_forbidden_shift_primary_key(vk: VkCode) -> bool {
-    matches!(crate::vk::classify_modifier(vk), Some(ModifierKey::Shift))
+/// `from` の主キー（`combo.vk`）として Ctrl/Shift を指定できるか（ADR-114 決定5）。
+/// 修飾子側の Ctrl/Shift（`combo.ctrl`/`combo.shift`）は対象外——別途 combo.alt と
+/// 同様のチェックを行う。`forbidden_target_vk_reason` と同じ理由で
+/// `classify_modifier` に委譲する。
+///
+/// Ctrl も Shift と同様に禁止する（実装レビューで発見、MA-3）:
+/// `vk.rs::is_non_shift_modifier` の doc が「Ctrl/Alt/Win は KeyDown/KeyUp
+/// ペアの保証により Ctrl スタックを防止するため、Engine をバイパスして常に
+/// OS に直接渡す」と明記している不変条件を、`[[keymap]]` のステップ2は
+/// `process_key_event` より手前で consume するため素通りできてしまう。
+/// `from = "Ctrl+VK_LCONTROL"` を許すと、LCtrl↓ が latch され OS に届かず、
+/// `send_keymap_target` の `push_restore` が `is_physical_key_down` で
+/// 物理 LCtrl が押下中と判定して Ctrl↓ を復元送信したあと、実際の物理 LCtrl
+/// KeyUp は latch に consume され reinject されない——OS 側で Ctrl が
+/// 永久に押されたままになる（BUG-78 と同じ stuck Ctrl family）。
+fn is_forbidden_ctrl_or_shift_primary_key(vk: VkCode) -> bool {
+    matches!(
+        crate::vk::classify_modifier(vk),
+        Some(ModifierKey::Ctrl | ModifierKey::Shift)
+    )
 }
 
 /// `[[keymap]]` ルールの実行時表現
@@ -85,9 +100,9 @@ impl KeymapTable {
                 );
                 continue;
             }
-            if is_forbidden_shift_primary_key(combo.vk) {
+            if is_forbidden_ctrl_or_shift_primary_key(combo.vk) {
                 log::warn!(
-                    "[keymap] 'from' の主キーに Shift は指定できません（ADR-114 決定5）: {:?}",
+                    "[keymap] 'from' の主キーに Ctrl/Shift は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
                 );
                 continue;
@@ -185,16 +200,30 @@ impl KeymapTable {
     }
 
     /// `vk` を主キーまたは `to` ターゲットとして使うアクティブなルールがあれば
-    /// 警告する（ADR-114「未解決の疑問」5、`muhenkan_solo_tap_dedicated_fn_key`
+    /// `level` で警告する（ADR-114「未解決の疑問」5、`muhenkan_solo_tap_dedicated_fn_key`
     /// のような実行時にしか確定しない vk との衝突用）。**警告のみで動作は
     /// 変えない**。戻り値は衝突の有無（テスト用）。
-    pub(crate) fn warn_if_vk_conflicts(&self, vk: VkCode, context: &str) -> bool {
+    ///
+    /// `level` を呼び出し元に選ばせる理由（実装レビュー指摘 m-4）:
+    /// `recompute_active_keymaps()` はフォーカス変更のたびに呼ばれるため、
+    /// 衝突が存在する環境では `Level::Warn` 固定だと全フォーカス変更で
+    /// `log::warn!` が出続け、`app.log`（不具合報告に添付される）が
+    /// スパムで埋もれる。setter（`set_muhenkan_dedicated_fn_key_*`、vk が
+    /// 実際に変化した瞬間のみ呼ばれる）は `Warn`、`recompute_active_keymaps()`
+    /// は `Debug` を渡す。
+    pub(crate) fn warn_if_vk_conflicts(
+        &self,
+        vk: VkCode,
+        context: &str,
+        level: log::Level,
+    ) -> bool {
         let conflicts = self
             .0
             .iter()
             .any(|rule| rule.combo.vk == vk || rule.send_vk == Some(vk));
         if conflicts {
-            log::warn!(
+            log::log!(
+                level,
                 "[keymap] アクティブな [[keymap]] ルールが {context}（vk=0x{:02X}）と \
                  同じキーを使っています。両方のロジックが同じ物理キーに反応します \
                  （ADR-114）",
@@ -363,6 +392,20 @@ mod tests {
     }
 
     #[test]
+    fn new_skips_ctrl_as_primary_key_in_from() {
+        // MA-3: Ctrl+VK_LCONTROL のような from を許すと、LCtrl の物理 KeyDown が
+        // consume され latch されたまま OS に届かず、send_keymap_target の
+        // push_restore が物理押下を見て Ctrl↓ を復元送信したあと、実際の
+        // 物理 KeyUp は latch に食われて reinject されない stuck Ctrl になる
+        // （BUG-78 と同じ family）。
+        let table = new_table(&[rule(None, "Ctrl+VK_LCONTROL", Some("F7"))]);
+        assert!(
+            table.is_empty(),
+            "Ctrl 単体主キーの from ルールは skip されるべき（stuck Ctrl 防止）"
+        );
+    }
+
+    #[test]
     fn new_skips_ime_control_target_vk() {
         // VK_KANJI (半角/全角) は ImeKeyKind::from_vk が Some を返す IME 制御系 VK。
         let table = new_table(&[rule(None, "Ctrl+VK_KANJI", None)]);
@@ -419,13 +462,16 @@ mod tests {
         let vk_f7 = VkCode::from_name("VK_F7").expect("VK_F7 resolves");
         let vk_unrelated = VkCode::from_name("VK_Z").expect("VK_Z resolves");
 
-        assert!(table.warn_if_vk_conflicts(vk_i, "test"), "主キーとの衝突");
         assert!(
-            table.warn_if_vk_conflicts(vk_f7, "test"),
+            table.warn_if_vk_conflicts(vk_i, "test", log::Level::Debug),
+            "主キーとの衝突"
+        );
+        assert!(
+            table.warn_if_vk_conflicts(vk_f7, "test", log::Level::Debug),
             "toターゲットとの衝突"
         );
         assert!(
-            !table.warn_if_vk_conflicts(vk_unrelated, "test"),
+            !table.warn_if_vk_conflicts(vk_unrelated, "test", log::Level::Debug),
             "無関係な vk は衝突しない"
         );
     }

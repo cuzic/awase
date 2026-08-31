@@ -129,6 +129,13 @@ T1a の後に実施する（同じファイルの変更が重ならないよう�
 
 ADR-114 決定2 の最終形（r4 収束版）に従う。
 
+**実装完了後の追記（実装レビュー m-6）**: 以下のステップ2 は当初
+`deliver_key_event` の本体に直接書いたが、`cancel_composition_and_arm_post_
+bypass_on_ctrl` と同様 cognitive complexity 抑制のため `consume_keymap_match`
+ヘルパーへ切り出した（振る舞いは変更なし）。composition キャンセル処理も
+`cancel_composition`（`ColdReason` を引数に取る共有関数）へ切り出している。
+最終形は ADR 本文の「影響範囲」節を参照。
+
 - **ステップ1（`deliver_key_event` 冒頭、ただし現状の先頭2行
   `if matches!(origin, KeyOrigin::Hook(_)) { app.platform_state.gate.
   last_hook_activity_ms = hook::current_tick_ms(); }`（`message_handlers.rs:132-134`）

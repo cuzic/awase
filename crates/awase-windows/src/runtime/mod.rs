@@ -208,14 +208,15 @@ pub struct Runtime {
     /// 有効化・離脱時の自動解除いずれも行わない）。`apply_config_update`/
     /// 起動時に反映される。
     muhenkan_dedicated_fn_key_is_manual: bool,
-    /// 専用Fnキー変換モードが現在有効か（`set_muhenkan_dedicated_fn_key_config`/
-    /// `set_muhenkan_dedicated_fn_key_auto` に渡された最新の値が `Some` か）。
-    /// `gji_charset_popup` が「既に有効なら設定支援ポップアップを出さない」
-    /// 判定に使う。
-    muhenkan_dedicated_fn_key_active: bool,
-    /// `muhenkan_dedicated_fn_key_active` が保持する vk 自体（`bool` だけでは
-    /// `recompute_active_keymaps` から `[[keymap]]` との衝突チェックに使う vk を
-    /// 参照できないため、ADR-114「未解決の疑問」5 対応で追加）。
+    /// 専用Fnキー変換モードが現在有効なら、その vk（`set_muhenkan_dedicated_fn_key_config`/
+    /// `set_muhenkan_dedicated_fn_key_auto` に渡された最新の値）。`gji_charset_popup`
+    /// が「既に有効なら設定支援ポップアップを出さない」判定（`is_some()`）に使う。
+    /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックにも使う
+    /// （ADR-114「未解決の疑問」5 対応）。
+    ///
+    /// 以前は「有効かどうか」の `bool` フィールドと vk 自体の `Option<VkCode>`
+    /// フィールドを別々に持っていたが、両者は常に同値（`is_some()`）だったため
+    /// 統合した（ADR-045 dead-field 検出方針、実装レビュー指摘 m-3）。
     muhenkan_dedicated_fn_key_vk: Option<VkCode>,
     /// `!config.general.muhenkan_solo_tap_always_suppress`（無変換単独タップが
     /// 素のパススルー設定になっているか）。GJI向け設定支援ポップアップ
@@ -1182,7 +1183,6 @@ impl Runtime {
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_is_manual: false,
-            muhenkan_dedicated_fn_key_active: false,
             muhenkan_dedicated_fn_key_vk: None,
             muhenkan_solo_tap_is_passthrough: false,
             space_is_thumb_key: false,
@@ -1226,13 +1226,16 @@ impl Runtime {
     ) {
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_is_manual = is_manual;
-        self.muhenkan_dedicated_fn_key_active = vk.is_some();
         self.muhenkan_dedicated_fn_key_vk = vk;
         if let Some(vk) = vk {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（手動設定）");
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key（手動設定）",
+                    log::Level::Warn,
+                );
         }
     }
 
@@ -1244,13 +1247,16 @@ impl Runtime {
             return;
         }
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
-        self.muhenkan_dedicated_fn_key_active = vk.is_some();
         self.muhenkan_dedicated_fn_key_vk = vk;
         if let Some(vk) = vk {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（自動検出）");
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key（自動検出）",
+                    log::Level::Warn,
+                );
         }
     }
 
@@ -1299,7 +1305,7 @@ impl Runtime {
     /// 出さない」判定に使う読み取り専用アクセサ。
     #[must_use]
     pub(crate) const fn muhenkan_dedicated_fn_key_active(&self) -> bool {
-        self.muhenkan_dedicated_fn_key_active
+        self.muhenkan_dedicated_fn_key_vk.is_some()
     }
 
     /// `config.general.muhenkan_solo_tap_always_suppress` の反転値を反映する。
@@ -1616,7 +1622,7 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key");
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Debug);
         }
     }
 

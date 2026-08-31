@@ -121,7 +121,8 @@ pub(crate) unsafe fn send_keymap_target(
         shift: release_shift,
         alt: false,
     };
-    let mut inputs: Vec<INPUT> = Vec::with_capacity(4);
+    // 最大6要素: release(ctrl+shift 最大2) + target_vk down/up(2) + restore(最大2)。
+    let mut inputs: Vec<INPUT> = Vec::with_capacity(6);
     held.push_release(&mut inputs, INJECTED_MARKER);
     inputs.push(make_key_input_ex(target_vk, false, INJECTED_MARKER));
     inputs.push(make_key_input_ex(target_vk, true, INJECTED_MARKER));

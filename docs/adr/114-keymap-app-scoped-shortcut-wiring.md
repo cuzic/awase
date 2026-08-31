@@ -239,6 +239,26 @@ Down/Up 非対称（OS 側で「押しっぱなし」に見えるイベント）
   そもそも生じない**（下記の理由参照）。
 - `None`（消費のみ）の場合は何も送信しない。
 
+**`target_vk` 送信前に IME composition をキャンセルする（実装レビューで追加、
+MA-1/MA-2）。** GJI/MS-IME を問わず composition（未確定文字列・候補ウィンドウ）が
+表示中に `target_vk` を SendInput すると、IME がそれを先に自身のショートカット
+として横取りしてしまう（`cancel_composition_and_arm_post_bypass_on_ctrl` が
+Ctrl+key パススルー時に対処しているのと同型の問題）。判定は
+`tsf::observer::ime_composition_active_now()`（GJI/MS-IME 共通の一般シグナル、
+`build_input_context` 等の既存呼び出し元と同じ）と `is_composition_warm_in_tsf()`
+（GJI 専用、検出タイミングの違いをカバーするため OR で見る）のいずれかが true の
+場合、`cancel_ime_composition()`（`CPS_CANCEL`）で未確定文字列を破棄してから
+`target_vk` を送信する。
+
+**この破棄は decision5 が Ctrl/Shift 以外の修飾子を必須にしていないため、
+無修飾の `[[keymap]]` ルール（例: `from = "VK_F1"`）にも及ぶ**——
+`cancel_composition_and_arm_post_bypass_on_ctrl` の既存動作が
+`event.modifier_snapshot.ctrl` を条件にしていた（Ctrl+key に限定）のとは異なり、
+`[[keymap]]` はマッチしたキーが修飾子を伴わなくても composition を破棄しうる。
+これは意図的な仕様として受け入れる：ユーザーが `[[keymap]]` ルールとして明示的に
+設定したキーが押された以上、それは「IME 候補選択ではなくアプリショートカットの
+意図」と解釈し、未確定文字列より `[[keymap]]` の送信を優先する。
+
 `HeldModifiers` は現在 `ime.rs` 内の private struct で、VK_KANJI/VK_IME_ON/VK_IME_OFF
 の3箇所から呼ばれてはいるが、**呼び出しごとに Alt の扱いが異なり、同じ前提を共有して
 いない**（実コード確認）:
@@ -416,11 +436,18 @@ held 判定・専用処理を持つキー全般」**とする。判明してい�
   詳述する通り、Alt 修飾を許すと「修飾キー残留（Alt+target_vk が届く）」と
   「Alt+Tab スイッチャー誤爆／`SC_KEYMENU` 誤起動」のどちらかを踏む。設定 GUI の
   `new_keymap_from_alt` チェックボックスも削除する
-- **Shift を `from` の主キー（修飾子側ではなく被修飾キー）に指定するケース**
-  （例: `from = "LShift"`）。左Shift単独タップの半角英数トグル
-  （`ime.rs` の `prepend_synthetic_shift_up` 経路、決定3参照）と
-  `PHYSICAL_KEY_STATE` 追跡を壊す。Ctrl/Shift を `from` の**修飾子側**として使うのは
-  許可する（`to` の単独ターゲットとしては禁止対象に含めない — ADR-037 の
+- **Ctrl/Shift を `from` の主キー（修飾子側ではなく被修飾キー）に指定するケース**
+  （例: `from = "LShift"`、`from = "Ctrl+VK_LCONTROL"`）。Shift は左Shift単独
+  タップの半角英数トグル（`ime.rs` の `prepend_synthetic_shift_up` 経路、決定3
+  参照）と `PHYSICAL_KEY_STATE` 追跡を壊す。**Ctrl は `vk.rs::is_non_shift_modifier`
+  の doc が明記する「Ctrl/Alt/Win は KeyDown/KeyUp ペアの保証により Ctrl スタック
+  （stuck Ctrl）を防止するため常に OS に直接渡す」不変条件を、`[[keymap]]` の
+  ステップ2（`process_key_event` より手前で consume）が素通りしてしまう
+  ——`from = "Ctrl+VK_LCONTROL"` を許すと LCtrl の物理 KeyDown が latch され
+  OS に届かず、対応する物理 KeyUp も latch に食われて reinject されないため
+  OS 側で Ctrl が永久に押されたままになる（BUG-78 と同じ stuck Ctrl family、
+  ADR-114 実装レビュー MA-3 で発見）**。Ctrl/Shift を `from` の**修飾子側**として
+  使うのは許可する（`to` の単独ターゲットとしては禁止対象に含めない — ADR-037 の
   `HeldModifiers` は Ctrl/Shift/Alt の3つしか扱わないため、`to` に Ctrl/Shift 単体を
   指定するケースは実用上意味がない。積極的に禁止はしないが実装時のレビュー対象）
 - **`muhenkan_solo_tap_dedicated_fn_key`（GJI 専用 Fn キー、config 手動指定または
@@ -524,6 +551,14 @@ latch の設計そのものによって最初から回避している。
 - `crates/awase-windows/src/runtime/message_handlers.rs`: `deliver_key_event` の
   冒頭に KeyUp latch 解放チェックを追加（決定2 ステップ1）、`NonText` パススルーの
   後・`[[post_bypass]]` 消費の前に `[[keymap]]` KeyDown 照合を追加（決定2 ステップ2）。
+  ステップ2 本体は cognitive complexity 抑制のため `consume_keymap_match` ヘルパーへ
+  切り出した（`cancel_composition_and_arm_post_bypass_on_ctrl` と同じ理由）。
+  `architecture_guard.rs` の順序固定テスト（下記）が `consume_keymap_match(app,
+  event)` という関数名自体を検索キーにしているため、リネームする場合はテストと
+  同時に更新すること。composition キャンセル（IME ショートカット横取り防止、
+  実装レビュー MA-1/MA-2）は `cancel_composition`（`ColdReason` を引数に取る、
+  `cancel_composition_and_arm_post_bypass_on_ctrl` と共用、実装レビュー m-2）に
+  切り出した。
 - `crates/awase-windows/src/runtime/mod.rs` / `Runtime`: latch テーブルのフィールド追加、
   `reload_config` 経路での `all_keymaps` 再構築（決定8）。
 - `crates/awase-windows/src/runtime/focus_tracking.rs:472` 付近（`hook::
