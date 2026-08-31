@@ -682,7 +682,10 @@ impl NicolaFsm {
     fn clear_output_history_appending_releases(&mut self, resp: &mut Resp) {
         let keyups = self.output_history.drain_pending_releases_as_keyups();
         resp.actions.extend(keyups);
-        self.output_history.clear();
+        // drain_pending_releases_as_keyups が pending_releases を既に空にして
+        // いるため、ここでは committed のみを clear する（clear() の二重
+        // clear だと曖昧に見える、/code-review 指摘）。
+        self.output_history.clear_committed();
     }
 }
 
@@ -1654,14 +1657,12 @@ impl NicolaFsm {
         // scan_code は「この物理キー自身が直前に Consume されて記録した
         // エントリ」以外にはあり得ない（bypass 側の KeyDown は
         // handle_bypass が自分の scan_code のエントリを先に掃除するため）。
-        // よって通常の release_only と全く同じロジックで安全に解放できる
-        // ——`state` を経由しない chord 判定なしの掃除、という
-        // release_only の性質はここでも保たれている。
-        if self.phys.modifiers.is_os_modifier_held() {
-            return self.release_only(event);
-        }
-
-        // output_history から対応する注入済みキーを探してリリース
+        // よって OS modifier 保持の有無を問わず、通常の release_only と
+        // 全く同じロジックで安全に解放できる——`state` を経由しない chord
+        // 判定なしの掃除、という release_only の性質はここでも保たれている
+        // （OS modifier 有無で分岐する必要が無くなったため、if 文は撤去した。
+        // /code-review 指摘: 分岐両辺が同一の release_only(event) を返す
+        // だけの死んだ条件分岐になっていた）。
         self.release_only(event)
     }
 
