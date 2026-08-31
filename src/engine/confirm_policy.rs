@@ -372,6 +372,30 @@ mod tests {
     }
 
     #[test]
+    fn speculative_char_key_with_sequence_action_falls_back_to_wait() {
+        // ADR-115 決定7: enter_speculative_char が Sequence を拒否した場合、
+        // idle_speculative は PassThrough ではなく idle_wait と同じ
+        // Shift+Pending へ落とし、PendingChar 状態で通常の待機経路に
+        // 合流させる（Opus実装後レビュー M3: この分岐に既存テストが無かった）。
+        let mut fsm = make_fsm(ConfirmMode::Speculative);
+        fsm.layout.normal.insert(
+            POS_S,
+            crate::yab::YabValue::Sequence(vec![lit('あ'), lit('い')]),
+        );
+        let ev = char_ev(VK_S, SCAN_S, Some(POS_S));
+        let action = fsm.idle_speculative(&ev);
+        assert!(
+            matches!(action, ParseAction::Shift { timer } if timer_is_pending(&timer)),
+            "Sequence cell should fall back to Wait (Shift+Pending), got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "Sequence cell should enter PendingChar, not SpeculativeChar, got {:?}",
+            fsm.state
+        );
+    }
+
+    #[test]
     fn speculative_left_thumb_key_delegates_to_wait() {
         let mut fsm = make_fsm(ConfirmMode::Speculative);
         let ev = left_thumb_ev();

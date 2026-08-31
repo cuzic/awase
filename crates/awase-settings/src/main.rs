@@ -999,7 +999,12 @@ impl SettingsApp {
     }
 
     fn layout_load_from_path(&mut self, path: &Path) {
-        match load_yab_layout(path, self.config.general.keyboard_model) {
+        match load_yab_layout(
+            path,
+            self.config.general.keyboard_model,
+            &self.config.keystroke_macro,
+            self.config.general.keystroke_sequence,
+        ) {
             Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_file_path_buf = path.display().to_string();
@@ -1025,7 +1030,12 @@ impl SettingsApp {
             self.layout_status = "ファイルパスが未設定です".to_string();
             return;
         };
-        match load_yab_layout(&path, self.config.general.keyboard_model) {
+        match load_yab_layout(
+            &path,
+            self.config.general.keyboard_model,
+            &self.config.keystroke_macro,
+            self.config.general.keystroke_sequence,
+        ) {
             Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_modified = false;
@@ -3679,13 +3689,21 @@ fn cell_tooltip(value: Option<&YabValue>, pos: PhysicalPos) -> String {
 fn load_yab_layout(
     path: &Path,
     model: awase::scanmap::KeyboardModel,
+    keystroke_macros: &[awase::config::KeystrokeMacro],
+    keystroke_sequence_policy: awase::config::KeystrokeSequencePolicy,
 ) -> Result<(YabLayout, Vec<String>), String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let layout = YabLayout::parse(&content, model)
         .map(YabLayout::resolve_kana)
         .map_err(|e| format!("パース失敗: {e}"))?;
+    // 実エンジン（`LayoutEntry::scan_all`、bootstrap.rs）と同じ解決を GUI プレビューに
+    // も通す。省くとキルスイッチ Off でも GUI が新構文セルをそのまま表示し、実際に
+    // 送信される Literal と食い違う（Opus実装後レビュー M2 で発見）。
+    let (layout, keystroke_warnings) =
+        awase::yab::resolve_keystroke_syntax(layout, keystroke_macros, keystroke_sequence_policy);
     // パース成功後にのみ lint する（失敗時に計算を無駄にしない）。
-    let lint_warnings = awase::yab::lint(&content);
+    let mut lint_warnings = awase::yab::lint(&content);
+    lint_warnings.extend(keystroke_warnings);
     Ok((layout, lint_warnings))
 }
 
@@ -3976,9 +3994,14 @@ mod layout_tab_repro {
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
-        let layout = load_yab_layout(&layout_path, config.general.keyboard_model)
-            .map(|(ly, _lint_warnings)| ly)
-            .unwrap_or_else(|_| empty_yab_layout());
+        let layout = load_yab_layout(
+            &layout_path,
+            config.general.keyboard_model,
+            &config.keystroke_macro,
+            config.general.keystroke_sequence,
+        )
+        .map(|(ly, _lint_warnings)| ly)
+        .unwrap_or_else(|_| empty_yab_layout());
         SettingsApp {
             config,
             config_path: std::path::PathBuf::from("config.toml"),

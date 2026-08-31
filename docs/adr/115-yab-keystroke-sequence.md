@@ -1358,8 +1358,7 @@ pub enum KeystrokeSequencePolicy {
 **`.yab` パーサ自体（決定1・決定2 の `CV`/`+`/`@` 認識）はポリシーを見ない**
 ——常に新 variant を認識する（`YabValue::parse` はコンテキストフリーの
 純粋関数のまま）。ポリシーがゲートするのは決定3 の**解決パス
-（`resolve_keystroke_syntax`）のみ**: `Off` のとき、`CtrlChord`/
-`InlineSequence` は保持している `raw`（決定1・決定2）から、`MacroRef` は
+（`resolve_keystroke_syntax`）のみ**: `Off` のとき、`MacroRef` は
 `format!("@{name}")` から `YabValue::Literal` に差し替えられ、**元の
 セル生テキストと厳密に一致する状態に復元される**（`serialize()` は経由
 しない——レビュー指摘 M5、r4 の決定3・決定9(a) は既に `raw` 直接参照に
@@ -1369,6 +1368,23 @@ serialize())` という表現が残っていた。挙動としては結果が一
 経由のコードを書く事故を避けるため、決定3 と同じ表現に揃える）。
 例: `CV41` は `CtrlChord{vk:VK(0x41), raw:"CV41"}` → `Literal("CV41")` →
 今日どおり `Char('C')`。
+
+**実装時に判明した非対称性（決定6 の `release_only` 誤り訂正と同時に
+発覚、本文を訂正）**: `CtrlChord`/`InlineSequence` は Off 復元の実装が
+互いに異なる。`CtrlChord` は上記どおり `raw` を `Literal(raw)` として
+そのまま返す（`raw` はクォート外 `+` を含まないため `YabValue::parse`
+に通しても `CtrlChord` を再生成する余地が構造的に無く、`Literal` 固定で
+問題ない）。一方 `InlineSequence` は `raw` を `Literal(raw)` へ固定
+せず、**`YabValue::parse(&raw)` で再パースする**——`'（'+'）'` のような
+セルは `InlineSequence` 化する前は「クォート内の `（` と `）` を1文字
+ずつ持つ2要素の `Sequence`」ではなく、パーサが `+` の外側でクォートを
+剥がした `Literal("（）")` に解決されるため、これを `Literal(raw)`
+（＝ `raw` 文字列そのものである `"'（'+'）'"` を1文字も剥がさず出力）に
+置き換えると `Off` 復元が元のパース結果と一致しなくなる（`src/yab/
+tests.rs` の `resolve_off_...` 系テストで固定済み）。`raw` はクォート外
+`+` を必ず含むため `YabValue::parse(&raw)` が `InlineSequence`/
+`CtrlChord`/`MacroRef` を再生成することは無い（`parse_ctrl_vk`/
+`is_valid_macro_name` がいずれも `+` で失敗するため）。
 
 **既存 `YabValue::parse` を素通しにする**（config を一切スレッドしない）ことで、
 決定8 が抱えていた「純粋関数へのポリシー波及」問題（レビュー指摘 M5/Minor13）が

@@ -2552,4 +2552,54 @@ mod tests {
             assert!(!r.consumed, "pass_through must not consume the event");
         }
     }
+
+    #[test]
+    fn on_timeout_speculative_with_sequence_cell_keeps_pending_char_and_rearms_timer() {
+        // 決定7: TwoPhase の Phase1→Phase2 タイムアウト時、対象セルが
+        // Sequence だと enter_speculative_char が拒否するため、Phase2への
+        // 遷移（SpeculativeChar化 + 即時出力）を諦め、PendingChar を維持した
+        // まま残り時間で TIMER_PENDING を張り直す（actions無し・consumed=false）。
+        // これにより確定は既存の timeout_pending_char 経路に一本化され、
+        // 満了前に親指キーが来れば chord 判定の受付窓が縮まらない
+        // （Opus実装後レビュー M3: この分岐に既存テストが無かった）。
+        let mut fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        fsm.layout.normal.insert(
+            pos,
+            YabValue::Sequence(vec![YabValue::Literal("あ".to_string())]),
+        );
+        let pending = PendingKey {
+            pos: Some(pos),
+            scan_code: ScanCode(1),
+            vk_code: VkCode(0x41),
+            timestamp: 0,
+        };
+        fsm.state = EngineState::PendingChar(pending);
+
+        let resp = fsm.on_timeout_speculative();
+
+        assert!(resp.actions.is_empty(), "must not emit any actions");
+        assert!(!resp.consumed, "must not mark the timeout as consumed");
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "state must remain PendingChar, not transition to SpeculativeChar, got {:?}",
+            fsm.state
+        );
+        let expected_remaining_us = fsm.threshold_us.saturating_sub(fsm.speculative_delay_us);
+        let expects_rearmed_pending_timer = resp.timers.iter().any(|cmd| {
+            matches!(
+                cmd,
+                timed_fsm::TimerCommand::Set {
+                    id,
+                    duration,
+                } if *id == TIMER_PENDING
+                    && *duration == std::time::Duration::from_micros(expected_remaining_us)
+            )
+        });
+        assert!(
+            expects_rearmed_pending_timer,
+            "must rearm TIMER_PENDING with remaining_us={expected_remaining_us}, got {:?}",
+            resp.timers
+        );
+    }
 }

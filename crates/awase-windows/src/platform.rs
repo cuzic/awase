@@ -998,8 +998,18 @@ impl PlatformRuntime for WindowsPlatform {
         // Unicode モードでは send_romaji_as_unicode() が GjiFsm::KeyInput を発行しないため
         // GjiFsm が StartProbe を emit することがない。そのため dispatch_gji_response() を
         // 経由せず、ここで直接 FSM をインストールする。
+        //
+        // defer は Char/Romaji のみが対象（`send_unicode_char` 経由）。CtrlChord/Key/
+        // KeyUp/SpecialKey は injector を直接叩き defer をバイパスするため、これらが
+        // 混在するバッチ（ADR-115 打鍵列、例: `'（'+CV4D+'）'+CV4D+左`）で defer を有効化
+        // すると「Char は後回し、それ以外は即時」で実行順序が入れ替わる
+        // （Opus実装後レビュー M1 で発見）。混在時は defer 自体を諦めて元の送信順を守る。
+        let all_defer_safe = actions
+            .iter()
+            .all(|a| matches!(a, KeyAction::Char(_) | KeyAction::Romaji(_)));
         let needs_unicode_cold_warmup = self.output.injection_mode
             == crate::output::InjectionMode::Unicode
+            && all_defer_safe
             && self.output.gji_is_next_key_long_cold();
         if needs_unicode_cold_warmup {
             self.output.set_unicode_cold_defer(true);

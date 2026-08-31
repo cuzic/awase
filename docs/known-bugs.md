@@ -12425,6 +12425,26 @@ report、上記「BUG-95 との関係」参照）。
 - `awase-macos`/`awase-linux`の`send_keys`は`CtrlChord`/`Sequence`をログ
   出力のみのスタブとして実装（決定10、実送信は本ADRのスコープ外）
 
+**実装後Opusレビューで発見・修正済み（2026-08-31）**:
+- **M1**: `crates/awase-windows/src/platform.rs`の`send_keys`が
+  Unicode injection mode + GJI long-cold時に`unicode_cold_defer`で
+  `Char`のみ遅延バッファへ積み、`CtrlChord`/`Key`/`SpecialKey`は
+  即時送信していたため、`'（'+CV4D+'）'+CV4D+左`のような混在バッチで
+  実行順序が入れ替わる欠陥があった。修正: バッチ内が`Char`/`Romaji`
+  のみの場合に限り defer を有効化するよう`needs_unicode_cold_warmup`
+  の条件を追加（`all_defer_safe`）。
+- **M2**: `awase-settings`（GUIプレビュー、`load_yab_layout`）が
+  `resolve_keystroke_syntax`を呼んでおらず、キルスイッチ`off`でも
+  GUIが`Ctrl+4D`/`@name`等の新構文表示のまま（実エンジンは`Literal`に
+  復元済み）というプレビューと実挙動の食い違いがあった。3箇所の
+  呼び出し元に`&config.keystroke_macro`/`config.general.keystroke_sequence`
+  を配線して解消。
+- **M3**: 決定7の投機ガード拒否経路2箇所（`confirm_policy.rs::idle_speculative`、
+  `nicola_fsm.rs::on_timeout_speculative`）と決定5の`flatten_actions`の
+  end-to-end確認（`Sequence`セルが実際に複数`KeyAction`として出力される
+  こと）にテストが無かった。3件追加（`src/engine/confirm_policy.rs`・
+  `src/engine/nicola_fsm.rs`・`src/engine/tests.rs`）。
+
 **既知の限界（決定として受け入れ済み、バグではない）**:
 - GUIでの新構文authoringは非対象。`awase-settings`のテキスト欄で
   `CtrlChord`/`InlineSequence`/`MacroRef`セルを編集すると、保存時に
@@ -12437,6 +12457,16 @@ report、上記「BUG-95 との関係」参照）。
   確定（決定6、`OutputEntry.romaji`はproductionコードで一度も読まれない
   dead codeのため実害なし。将来的には[ADR-045](adr/045-dead-field-detection-policy.md)
   の対象として整理しうる）。
+- 通常面が`CtrlChord`単体セルの場合、投機出力ガード（決定7）は`Sequence`
+  のみ拒否するため投機出力される。閾値内に親指キーが来ると
+  `retract_and_replace`がBACKSPACE 1発で取り消そうとするが、IME確定は
+  BSで戻らないため確定済み文字を1つ余分に消す（既存の`Special(Enter)`
+  セルと同型のリスクで退行ではないが、`CtrlChord`にも当てはまることを
+  実装後レビューで確認）。
+- `KeystrokeMacro.steps`の各要素は`parse_cell`ではなく`YabValue::parse`
+  を通るため、ステップ文字列に`+`を書くと無警告で`Literal`（先頭1文字
+  のみ）になる。マクロステップ内で打鍵列合成をしたい場合は`@`で別マクロ
+  を参照する形にする必要がある（現状は無警告、将来的に警告追加を検討）。
 
 **関連する既存の再発ファミリーとの接点**: `OutputHistory`のKeyUp整合性索引
 （BUG-101/ADR-112）と同じ危険領域に触れるため、打鍵列のマクロステップ/
