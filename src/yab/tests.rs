@@ -1034,6 +1034,7 @@ fn test_nicola_yab_and_nicola_keytop_yab_share_identical_kana_positions() {
                 ("normal", &nicola.normal, &keytop.normal),
                 ("left_thumb", &nicola.left_thumb, &keytop.left_thumb),
                 ("right_thumb", &nicola.right_thumb, &keytop.right_thumb),
+                ("shift", &nicola.shift, &keytop.shift),
             ] {
                 // Q段11列目（物理@キー）は親指シフト面のみ意図的に異なる
                 // （、→＠、シフト無し面は本家仕様の、を両ファイルとも維持）。

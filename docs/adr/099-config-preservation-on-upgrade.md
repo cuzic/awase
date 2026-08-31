@@ -316,8 +316,8 @@ if (Test-Path "data\*") {
 を追加し、新規インストールの`default_layout`のみそちらを指す）へ設計変更
 した。既存ユーザーへは`default_layout`の手動変更を案内する運用とし、
 ハッシュ比較等の自動判別機構は今回も見送った（想定通りの対応で十分だった
-ため、[[feedback_dont_provision_ahead_without_consumer_logic]]の教訓通り
-先回りの機構化はしない）。
+ため、消費ロジックの無い予備機構を先回りで作らないという方針を今回も
+維持した）。
 
 ### 決定3: `AppConfig::save()` を Windows の実書き込み失敗も考慮した
 アトミック書き込みにする
