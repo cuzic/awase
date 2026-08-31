@@ -19,6 +19,17 @@ impl NicolaFsm {
         match self.confirm_mode {
             ConfirmMode::Wait => self.idle_wait(ev),
             ConfirmMode::Speculative => self.idle_speculative(ev),
+            // speculative_delay_us == 0 のTwoPhaseは、idle_two_phaseの
+            // 「短い待機タイマー(SpeculativeWait)を張ってから投機出力する」
+            // という迂回を経由すると、実際にはidle_speculativeと完全には
+            // 等価にならない（/code-review指摘、PR #127）。Windowsの
+            // SetTimerは0msを指定してもUSER_TIMER_MINIMUM(10ms)未満には
+            // 短縮されず、その間に到着した後続キーがSpeculativeCharではなく
+            // PendingCharの状態で処理されてしまう。confirm_mode="speculative"
+            // 廃止時のTwoPhase(delay=0)正規化（config.rs::validate_thresholds）
+            // が「完全に等価」であるためには、delay=0のときはidle_speculative
+            // へ直接ディスパッチする必要がある。
+            ConfirmMode::TwoPhase if self.speculative_delay_us == 0 => self.idle_speculative(ev),
             ConfirmMode::TwoPhase => self.idle_two_phase(ev),
             ConfirmMode::AdaptiveTiming => {
                 let is_continuous = self
@@ -26,6 +37,8 @@ impl NicolaFsm {
                     .is_some_and(|gap| gap < CONTINUOUS_KEYSTROKE_THRESHOLD_US);
                 if is_continuous {
                     self.idle_wait(ev)
+                } else if self.speculative_delay_us == 0 {
+                    self.idle_speculative(ev)
                 } else {
                     self.idle_two_phase(ev)
                 }
@@ -393,6 +406,87 @@ mod tests {
         assert!(
             matches!(action, ParseAction::Shift { timer } if timer_is_pending(&timer)),
             "TwoPhase + right-thumb should fall back to Wait, got {action:?}"
+        );
+    }
+
+    // ── dispatch_confirm_mode: TwoPhase(delay=0) ≡ Speculative ────────
+    // /code-review指摘（PR #127）: confirm_mode="speculative"の廃止時、
+    // config.rs::validate_thresholds は TwoPhase + speculative_delay_ms=0
+    // へ正規化するが、その正規化後の値をNicolaFsmが実際にidle_speculativeと
+    // 同じ振る舞いで処理することは(このディスパッチ分岐を追加するまで)
+    // 未検証だった。idle_two_phase経由だとSpeculativeWaitタイマー
+    // (Windows実機ではUSER_TIMER_MINIMUM=10ms未満に短縮されない)を挟むため、
+    // その間に届いた後続キーがPendingChar状態で処理されてしまい、
+    // 完全な等価にならない。dispatch_confirm_mode がdelay=0のとき
+    // idle_speculativeへ直接ディスパッチするようになったことを固定する。
+
+    fn make_fsm_with_delay(mode: ConfirmMode, speculative_delay_ms: u32) -> NicolaFsm {
+        NicolaFsm::new(
+            make_layout(),
+            VK_NONCONVERT,
+            VK_CONVERT,
+            100,
+            mode,
+            speculative_delay_ms,
+        )
+    }
+
+    #[test]
+    fn two_phase_zero_delay_dispatches_to_speculative_not_pending() {
+        let mut fsm = make_fsm_with_delay(ConfirmMode::TwoPhase, 0);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Reduce { .. }),
+            "TwoPhase(delay=0) は idle_speculative と同じく即時Reduceになるべき、\
+             got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "TwoPhase(delay=0) は idle_two_phase 経由のPendingCharではなく\
+             SpeculativeCharへ直接遷移するべき"
+        );
+    }
+
+    #[test]
+    fn two_phase_nonzero_delay_still_uses_pending_char_path() {
+        // delay=0 専用の分岐が、通常のTwoPhase（delay>0）を巻き込んで
+        // いないことを確認する。
+        let mut fsm = make_fsm_with_delay(ConfirmMode::TwoPhase, 30);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+        let action = fsm.dispatch_confirm_mode(&ev);
+        assert!(
+            matches!(action, ParseAction::Shift { timer } if timer_is_speculative_wait(&timer)),
+            "TwoPhase(delay>0) は従来通りSpeculativeWaitタイマー付きShiftのはず、\
+             got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "TwoPhase(delay>0) は従来通りPendingCharへ遷移するべき"
+        );
+    }
+
+    #[test]
+    fn two_phase_zero_delay_matches_speculative_reduce_action() {
+        // 正規化の主張（TwoPhase(delay=0) と Speculative は等価）そのものを、
+        // 同一入力に対する dispatch_confirm_mode の出力比較で直接固定する。
+        let mut fsm_speculative = make_fsm_with_delay(ConfirmMode::Speculative, 0);
+        let mut fsm_two_phase_zero = make_fsm_with_delay(ConfirmMode::TwoPhase, 0);
+        let ev = char_ev(VK_A, SCAN_A, Some(POS_A));
+
+        let action_speculative = fsm_speculative.dispatch_confirm_mode(&ev);
+        let action_two_phase_zero = fsm_two_phase_zero.dispatch_confirm_mode(&ev);
+
+        assert_eq!(
+            format!("{action_speculative:?}"),
+            format!("{action_two_phase_zero:?}"),
+            "Speculative と TwoPhase(delay=0) は同一入力に対して同一の\
+             ParseAction を返すべき（正規化の等価性主張そのものの回帰テスト）"
+        );
+        assert_eq!(
+            std::mem::discriminant(&fsm_speculative.state),
+            std::mem::discriminant(&fsm_two_phase_zero.state),
+            "Speculative と TwoPhase(delay=0) は同一の遷移先状態を持つべき"
         );
     }
 
