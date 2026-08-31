@@ -398,8 +398,10 @@ pub struct ObservationStore {
     /// 変わるケースは epoch 単独では検知できず、hwnd も併せて照合する必要がある。
     ///
     /// **private**: 書き込み口は `clear_on_focus_change()`（プロセス変更時、観測
-    /// プールごとクリアし両軸を丸ごと差し替え）と `update_focus_window()`（同一
-    /// プロセス内でのウィンドウ変化、hwnd のみ更新）の2つに限定する。かつて
+    /// プールごとクリアし両軸を丸ごと差し替え）、`update_focus_window()`（同一
+    /// プロセス内でのウィンドウ変化、hwnd のみ更新）、`establish_initial_fence()`
+    /// （起動時の初回フォーカススコープ確立、プールを触らず両軸を差し替え。
+    /// BUG-102）の3つに限定する。かつて
     /// epoch/hwnd を別々の `pub` フィールドとして持ち回っていたときは、
     /// `update_focus_hwnd()` を呼び忘れると `admit()`（`platform.focus.current.hwnd`
     /// を毎 tick 参照）は新しい hwnd を正しく受理するのに `derive_any()` の
@@ -497,6 +499,49 @@ impl ObservationStore {
         self.per_source.clear_all();
         self.drift = None;
         self.current_fence = new_fence;
+    }
+
+    /// 起動時（bootstrap）に確立した最初のフォーカススコープへ fence を合わせる
+    /// 3つ目の書き込み口（BUG-102）。`ImeEvent::InitialFocusFenceEstablished` の
+    /// reducer からのみ呼ぶ。
+    ///
+    /// `clear_on_focus_change()` との違い: **観測プールと drift をクリアしない**。
+    /// bootstrap はフォーカスの「変更」ではなく、既にフォーカスされているウィンドウに
+    /// 名前（epoch + hwnd）を付ける操作であり、捨てるべき「旧窓の観測」が存在しない
+    /// （`app/bootstrap.rs::run_all` はこの呼び出しより前にメッセージループを
+    /// ポンプしないため、この時点でプールは空である）。
+    ///
+    /// `update_focus_window()` との違い: **epoch も含めて差し替える**。bootstrap では
+    /// `enter_focus_scope` が `FocusStore::focus_epoch` を 0→1 に進めているため、
+    /// hwnd だけ合わせても epoch が食い違ったままになり `is_identity_ok` が
+    /// `ImmCrossProbe`（High）を導出から外し続ける。
+    ///
+    /// # 前提と、その担保のしかた
+    ///
+    /// - **「initial」であること**（`current_fence` がまだ既定値）は下の
+    ///   `debug_assert!` が実行時に固定する。同じ値での再確立（no-op）だけは
+    ///   許容し、**別の値への差し替えは拒否する** ——それは fence の張り替えで
+    ///   あって初回確立ではなく、`clear_on_focus_change()`（観測プールごと
+    ///   差し替える）の仕事だから。
+    /// - **プールが空であること**は `debug_assert!` にしない。ここでプールが
+    ///   空であることは呼び出し元（bootstrap）の性質であって本メソッドの契約では
+    ///   なく、assert にすると「プールを消さない」という本メソッドの設計意図
+    ///   （`establish_initial_fence_does_not_clear_the_pool_or_drift` が固定）を
+    ///   到達不能な分岐にしてしまう。上の fence assert が「bootstrap 以外から
+    ///   呼ばれた」場合を既に捕まえるため、重ねる価値も小さい。
+    pub fn establish_initial_fence(&mut self, fence: FocusFence) {
+        debug_assert!(
+            self.current_fence == FocusFence::default() || self.current_fence == fence,
+            "establish_initial_fence は fence 未確立（既定値）のうちに1度だけ呼ぶこと。\
+             既に動いている fence の張り替えは clear_on_focus_change の役割\
+             （現在: {:?} / 要求: {fence:?}、BUG-102）",
+            self.current_fence
+        );
+        log::debug!(
+            "[focus-fence] establish_initial_fence: {:?} -> {fence:?}",
+            self.current_fence
+        );
+        self.current_fence = fence;
     }
 
     /// 同一プロセス内でフォーカス hwnd だけが変わった場合の更新口（ADR-106 決定3）。
@@ -1547,6 +1592,86 @@ mod tests {
             Some(true),
             "update_focus_window() 後は hwnd が一致し観測が採用される"
         );
+    }
+
+    /// BUG-102 の再現＋修正確認: 起動直後（bootstrap）に
+    /// `establish_initial_focus_scope` が live 側フェンスを
+    /// `{epoch: 1, hwnd: 実 hwnd}` に進めるのに対し、`ObservationStore` 側は
+    /// `FocusFence::default()`（`{epoch: 0, hwnd: NULL}`）のまま残っていた。
+    /// この状態では、起動時にフォーカスされていたアプリで発生する
+    /// `ImmCrossProbe` 観測（live 側フェンスでスタンプされる）が
+    /// `is_identity_ok` に恒久的に拒否される（別プロセスへ切り替えて戻り
+    /// `FocusChanged` が来るまで直らない）。
+    ///
+    /// `is_identity_ok` は `FocusProbe` も照合対象にするが、`FocusProbe` は
+    /// `Low`（`state/evidence.rs`）で `derive_filtered` の High 分岐にも
+    /// Medium 分岐にも元から載らないため、フェンスの一致・不一致で結論が
+    /// 変わらない。ここで固定するのは `ImmCrossProbe`（High）1 ソースである。
+    ///
+    /// なお `derive_any()` が `None` を返しても `ImeModel::resolve_open_at` は
+    /// `most_recent_trusted()`（フェンス照合なし）にフォールバックするため、
+    /// **belief の値として症状が出るのは競合する fresh な Medium 観測がある場合
+    /// だけ**である。そちらは
+    /// `state::ime_model::tests::bootstrap_fence_desync_lets_medium_poll_override_high_probe`
+    /// が固定する。
+    #[test]
+    fn establish_initial_fence_unblocks_the_first_probe_after_bootstrap() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        let bootstrap_fence = FocusFence {
+            epoch: 1, // enter_focus_scope が 0 -> 1 に進めた
+            hwnd: HwndId(0xABCD),
+        };
+
+        // 起動時にフォーカスされていたアプリの高信頼観測（live 側フェンスでスタンプ）。
+        let mut high = obs(true, ObservationSource::ImmCrossProbe, now);
+        high.confidence = ObservationConfidence::High;
+        high.focus_epoch = bootstrap_fence.epoch;
+        high.hwnd = bootstrap_fence.hwnd;
+        rec(&mut s, high);
+
+        // 同期しない場合（退行の再現）: current_fence が既定値のままで棄却される。
+        assert_eq!(
+            s.current_fence(),
+            FocusFence::default(),
+            "bootstrap 前の current_fence は既定値（epoch=0, hwnd=NULL）"
+        );
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            None,
+            "fence を同期しないと、起動直後のアプリの観測が epoch/hwnd 不一致で棄却される"
+        );
+
+        // 同期すると受理される。
+        s.establish_initial_fence(bootstrap_fence);
+        assert_eq!(s.current_fence(), bootstrap_fence);
+        assert_eq!(
+            s.derive_any(now).map(|o| o.value()),
+            Some(true),
+            "establish_initial_fence 後は live 側と一致し観測が採用される"
+        );
+    }
+
+    /// `establish_initial_fence` は fence 以外に触れない（観測プール・drift を
+    /// クリアしない）ことを固定する。`clear_on_focus_change` との差はここにある。
+    #[test]
+    fn establish_initial_fence_does_not_clear_the_pool_or_drift() {
+        let mut s = ObservationStore::default();
+        let now = Instant::now();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, now));
+        s.update_drift(false, true, now);
+        assert!(s.drift.is_some());
+
+        s.establish_initial_fence(FocusFence {
+            epoch: 1,
+            hwnd: HwndId(7),
+        });
+
+        assert!(
+            s.observation(ObservationSource::ObserverPoll).is_some(),
+            "観測プールはクリアされない（bootstrap は「旧窓」を持たないため）"
+        );
+        assert!(s.drift.is_some(), "drift もクリアされない");
     }
 
     #[test]

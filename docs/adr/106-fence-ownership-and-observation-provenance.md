@@ -58,6 +58,19 @@ generation 照合が常に不一致になる」と round-2 premortem の指摘�
 ADR-104 決定6-c が「正当な generation 値 `0` と衝突する」と書いた懸念は、経路の名指し
 （ImmCross ではなく Bootstrap force-on）こそ不正確だったが、主張の実質は正しかった。
 
+> **追補（2026-08-31、BUG-102）**: 上の「起動シーケンスは `FocusChanged` を dispatch
+> しないため `ImeEvent` が1件も record されない」という前提は、**現在は成り立たない**。
+> BUG-102 の修正で `establish_initial_focus_scope` が
+> `ImeEvent::InitialFocusFenceEstablished`（fence 同期専用、belief を書かない）を
+> 1件 dispatch するようになり、`ImeEventLog.next_seq()` は
+> `try_force_on_bootstrap()` の時点で既に `1` 以上になっている。したがって
+> `generation = 0` の払い出しはこの経路では起きなくなった。
+> **ただし決定の根拠は変わらない** ——`next_seq` を `generation` に流用する構造上の
+> 病（自分の都合で進む／初期値 `0` が二義的／割り当てと消費が型で結ばれていない）は
+> そのまま残っており、`generation = 0` が偶然到達不能になったことは修正ではない。
+> 本追補は「この経路の具体例はもう再現しない」という事実の記録であって、決定の
+> 撤回ではない。
+
 同種の借用は `focus_epoch`（「プロセスが変わった回数」を「フォーカス対象の同一性」判定に
 流用）にも存在する。借用した識別子は共通して3つの病を発症する:
 
