@@ -7772,6 +7772,45 @@ mod engine_integration_tests {
     }
 
     #[test]
+    fn key_up_with_os_modifier_held_still_suppresses_char_entry_via_engine() {
+        // /code-review指摘（teammate検証、PR #126）:
+        // test_key_up_with_os_modifier_held_still_cleans_up_pending_release_entry
+        // （このファイル冒頭付近、make_engine()=TestHarnessのbare-FSMテスト）は
+        // Engine::on_inputを一切経由せずis_os_modifier_held()→release_only委譲の
+        // Char/Romajiケースを検証していた。ADR-112の「テスト方針」（bare
+        // NicolaFsm直呼びの新規テストはEngine::on_input経由で書く）に反する
+        // カバレッジの穴であり、is_os_modifier_held()ガードのKey(vk)ケースは
+        // key_up_with_os_modifier_held_still_emits_keyup_for_injected_vk が
+        // Engine::on_input経由で検証済みだが、Char/RomajiケースにはEngine
+        // レベルの対応する回帰テストが無かった。本テストで埋める。
+        let mut engine = make_test_engine();
+        engine.on_input(Ev::down(VK_A).at(0).build(), &ime_on_ctx());
+        engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+
+        // Aを離す前にCtrlを押し、その状態でAを離す: is_os_modifier_held()
+        // ガード→release_only委譲に入る。Aの出力はChar型（'う'）なので
+        // 通常のKeyUpと同じくSuppressとして解放されるべき。
+        let ctrl_held_ctx = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::up(VK_A).at(50_000).build(), &ctrl_held_ctx);
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Suppress))
+            )),
+            "Ctrl保持中でもChar/Romajiエントリはrelease_only委譲でSuppressとして\
+             解放されるはず（本番相当のEngine::on_input経由）: {:?}",
+            effects_of(&d)
+        );
+    }
+
+    #[test]
     fn focus_changed_releases_pending_output_history_entry_for_still_held_key() {
         // /code-review指摘（PR #126）: KeyLifecycle::flush_pending_key_ups が
         // active_keys をdrainしてConsume義務の追跡を消しても、output_historyの
