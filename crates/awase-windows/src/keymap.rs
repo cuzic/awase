@@ -56,16 +56,20 @@ impl KeymapTable {
 
     /// 現在のプロセスに適用されるルールをフィルタして新しい `KeymapTable` を返す。
     /// `app = None` のルールは全アプリに適用。
+    ///
+    /// プロセス名の比較は完全一致（大文字小文字無視 + 末尾 `.exe` の有無不問）。
+    /// 前方一致はしない（`"code"` が `"codeblocks.exe"` に誤爆する類の事故を防ぐ、
+    /// `state::app_suppression::matches_disabled_app` と同じ理由・同じ正規化関数）。
     #[must_use]
     pub fn filter_active(&self, process_name: &str) -> Self {
-        let lower = process_name.to_lowercase();
+        let normalized = crate::state::app_suppression::normalize_process_name(process_name);
         Self(
             self.0
                 .iter()
                 .filter(|r| {
-                    r.app
-                        .as_deref()
-                        .is_none_or(|a| lower.starts_with(a) || lower == a)
+                    r.app.as_deref().is_none_or(|a| {
+                        crate::state::app_suppression::normalize_process_name(a) == normalized
+                    })
                 })
                 .cloned()
                 .collect(),
@@ -83,6 +87,7 @@ impl KeymapTable {
                     && r.combo.ctrl == mods.ctrl
                     && r.combo.shift == mods.shift
                     && r.combo.alt == mods.alt
+                    && !mods.win
             })
             .map(|r| r.send_vk)
     }
@@ -95,5 +100,54 @@ impl KeymapTable {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(app: Option<&str>, from: &str, to: Option<&str>) -> KeymapRule {
+        KeymapRule {
+            app: app.map(str::to_string),
+            from: from.to_string(),
+            to: to.map(str::to_string),
+        }
+    }
+
+    fn mods(ctrl: bool, shift: bool, alt: bool, win: bool) -> ModifierState {
+        ModifierState {
+            ctrl,
+            shift,
+            alt,
+            win,
+        }
+    }
+
+    #[test]
+    fn find_match_rejects_win_modifier() {
+        let table = KeymapTable::new(&[rule(None, "Ctrl+VK_I", Some("F7"))]);
+        let vk_i = VkCode::from_name("VK_I").expect("VK_I resolves");
+
+        assert!(table
+            .find_match(vk_i, mods(true, false, false, false))
+            .is_some());
+        assert!(
+            table
+                .find_match(vk_i, mods(true, false, false, true))
+                .is_none(),
+            "Win+Ctrl+I must not match a Ctrl+I rule"
+        );
+    }
+
+    #[test]
+    fn filter_active_uses_exact_match_not_prefix() {
+        let table = KeymapTable::new(&[rule(Some("code"), "Ctrl+VK_I", Some("F7"))]);
+
+        // 前方一致なら "codeblocks.exe" も誤って拾ってしまう。完全一致では拾わない。
+        assert!(table.filter_active("codeblocks.exe").is_empty());
+        // 大文字小文字無視・.exe の有無を問わず完全一致するケースは拾う。
+        assert_eq!(table.filter_active("Code.exe").len(), 1);
+        assert_eq!(table.filter_active("code").len(), 1);
     }
 }
