@@ -43,12 +43,19 @@ impl NicolaFsm {
     /// PR #127）。`idle_two_phase` は `SpeculativeWait` タイマー
     /// （delay_us分）を張ってから投機出力するのに対し、`idle_speculative`
     /// は同一の呼び出し内で即座に出力して `SpeculativeChar` へ遷移する。
-    /// delay_us=0でも、WindowsのSetTimerはUSER_TIMER_MINIMUM（10ms）未満に
-    /// 短縮されないため、その間に届いた後続キーが `SpeculativeChar` ではなく
-    /// `PendingChar` 状態で処理されてしまい、`confirm_mode="speculative"`
-    /// 廃止時のTwoPhase(delay=0)正規化（`config.rs::validate_thresholds`）が
-    /// 主張する「完全に等価」が崩れる。この判定を複数箇所に個別実装すると、
-    /// 将来どれか一箇所だけ更新し忘れるリスクがあるため一本化した。
+    /// 「delay=0なら待たずに直接遷移する」というこの判定自体はプラット
+    /// フォーム非依存（ADR-019）で、どのOSでも意味のある最適化——
+    /// タイマーの往復1回分、後続キーが `PendingChar` のまま処理される窓を
+    /// 単純に無くすだけ。ただしこれを**必須**にした実測上の動機はWindows
+    /// 固有: WindowsのSetTimerはUSER_TIMER_MINIMUM（10ms）未満に短縮
+    /// されないため、delay_us=0を指定してもその間に届いた後続キーが
+    /// `SpeculativeChar` ではなく `PendingChar` 状態で処理されてしまい、
+    /// `confirm_mode="speculative"` 廃止時のTwoPhase(delay=0)正規化
+    /// （`config.rs::validate_thresholds`）が主張する「完全に等価」が崩れて
+    /// いた（他OSのタイマー実装がdelay=0を真に即時扱いするなら、この分岐は
+    /// そちらでは理論上の最適化に留まり必須ではないが、無害かつ一貫した
+    /// 挙動になる）。この判定を複数箇所に個別実装すると、将来どれか一箇所
+    /// だけ更新し忘れるリスクがあるため一本化した。
     fn idle_two_phase_or_speculative(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         if self.speculative_delay_us == 0 {
             self.idle_speculative(ev)
