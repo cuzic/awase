@@ -4356,8 +4356,9 @@ speculative_delay_ms = 30
             "保存されたファイルはconfirm_mode正規化後(two_phase)であるべき: {saved}"
         );
         assert!(
-            !saved.contains("speculative"),
-            "保存されたファイルに廃止済みのspeculativeが残ってはいけない: {saved}"
+            !saved.contains(r#"confirm_mode = "speculative""#),
+            "保存されたファイルに廃止済みのconfirm_mode=\"speculative\"が\
+             残ってはいけない: {saved}"
         );
         assert_eq!(
             app.config.general.confirm_mode,
