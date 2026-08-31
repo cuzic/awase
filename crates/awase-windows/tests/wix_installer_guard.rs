@@ -127,6 +127,39 @@ fn known_component_guids_are_unchanged() {
     }
 }
 
+/// 2026-08-31追加: `layout/nicola_keytop.yab`（新規インストールの既定）が
+/// MSI に同梱されていることを固定する。Opusレビューで、旧 `layout/nicola.yab`
+/// の内容変更（記号キートップ通り出力版への切り替え）を試みた際に、この
+/// コンポーネント追加を忘れると `dist\layout\nicola_keytop.yab` が
+/// インストーラに含まれず、`default_layout` をそちらに変更しても
+/// ファイルが存在せず無言でフォールバックする実害が指摘された
+/// （`crates/awase-windows/src/app/bootstrap.rs` の
+/// `select_default_layout_matches_by_file_name_not_internal_name_line` が
+/// 名指しする既知の失敗モードと同型）。
+#[test]
+fn nicola_keytop_yab_component_is_bundled_without_never_overwrite() {
+    let content = main_wxs();
+    let tag = extract_tag(&content, r#"<Component Id="NicolaKeytopYab""#);
+    assert!(
+        tag.contains(r#"Guid="5B75B3B2-A53D-493E-BB62-81AE2B17D8ED""#),
+        "wix/main.wxs の Component Id=\"NicolaKeytopYab\" の GUID が \
+         既知の値と一致しない（タグ: {tag:?}）。意図的な変更ならこのテストの \
+         期待値も更新すること。"
+    );
+    assert!(
+        !tag.contains("NeverOverwrite"),
+        "NicolaKeytopYab はユーザー編集対象ではなく新規インストール時の雛形\
+         のため NeverOverwrite を付けない（ADR-099 決定2の DataFiles と同じ \
+         扱い）。付けると、旧バージョンの雛形のまま固定され、既定配列の \
+         改善が新規インストールにも届かなくなる。"
+    );
+    assert!(
+        content.contains(r#"<File Source="dist\layout\nicola_keytop.yab" />"#),
+        "wix/main.wxs の LayoutFiles ComponentGroup に \
+         dist\\layout\\nicola_keytop.yab の <File> が見つからない。"
+    );
+}
+
 // vcruntime140.dll（VC++ 再頒布可能パッケージ）が無い環境で MSI
 // インストール自体を中止させる LaunchCondition の回帰テスト。壊れると、
 // インストールは成功するが初回起動時に OS の分かりにくいダイアログで

@@ -695,6 +695,14 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
         ('・', 0xBF, false), // / (VK_OEM_2)
         ('「', 0xDB, false), // [ (VK_OEM_4)
         ('」', 0xDD, false), // ] (VK_OEM_6)
+        // '［'（全角角括弧）・'￥'（全角円マーク）は意図的に未登録。
+        // VK_OEM_4/VK_OEM_6（0xDB/0xDD）をそのまま送るとIMEが「「」/「」」
+        // （和字括弧）へ変換してしまい、全角の［／］にはならない（'－'の
+        // コメント参照、同じくIME側の変換規則により送信VKと出力文字が
+        // 一致しない例外）。symbol_to_vk に無い文字は resolve_char が
+        // Unicode 直接注入にフォールバックするため、そちらで正しく
+        // ［／］／￥ を出す（layout/nicola_keytop.yab・layout/nicola_f.yab
+        // で既にこの経路を使用、2026-08-31 Opusレビューで経路を確認済み）。
         // 長音・記号
         ('ー', 0xBD, false), // - (VK_OEM_MINUS)
         ('～', 0xDE, true),  // Shift+^ (VK_OEM_7, JIS)

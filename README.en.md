@@ -57,7 +57,10 @@ Arrange the files as follows.
 awase.exe
 config.toml          ← configuration file
 layout/
-  nicola.yab         ← NICOLA layout (bundled)
+  nicola.yab         ← NICOLA layout (Backspace/Escape substitute variant)
+  nicola_keytop.yab  ← NICOLA layout (keytop-symbol variant, default for new installs)
+  nicola_f.yab       ← for genuine Fujitsu thumb-shift keyboards
+  nicola_us.yab      ← US layout
 data/
   ngram_hiragana.csv.gz  ← n-gram corpus (optional)
 ```
@@ -98,7 +101,7 @@ simultaneous_threshold_ms = 100   # 同時打鍵判定の閾値（ms）。NICOLA
 left_thumb_key  = "無変換"
 right_thumb_key = "変換"
 layouts_dir     = "layout"
-default_layout  = "nicola.yab"
+default_layout  = "nicola_keytop.yab"
 ```
 
 For a full sample, see the bundled `config.toml`.
@@ -175,9 +178,12 @@ u, si,te,ke,se, ha,to,ki, i, nn, 後, 逃
 ...
 ```
 
-The standard NICOLA layouts are bundled as `layout/nicola.yab` (JIS layout) and `layout/nicola_us.yab` (US layout). Because a US keyboard physically lacks the Muhenkan/Henkan keys, the settings screen lets you impersonate thumb keys onto the left/right Alt keys, or assign the Space key as a thumb key.
+The standard NICOLA layouts are bundled in two JIS variants. Both share the identical 44-key kana layout from the official NICOLA spec; they differ only in what they do with the physical key positions the spec leaves undefined (digit row columns 12-13, QWERTY row columns 11-12, home row columns 11-12).
 
-`layout/nicola.yab` outputs the symbols actually printed on a standard JIS keyboard's keytops (＠／［／］／：／￥／＾) at the physical key positions the official NICOLA spec leaves undefined. If you prefer the older behavior of software-assigning those same positions to Backspace/Escape (the default through v1.16.1), point `default_layout` at `layout/nicola_bsesc.yab` instead.
+- `layout/nicola_keytop.yab` (**default for new installs**): outputs the symbols actually printed on a standard JIS keyboard's keytops (＠／［／］／：／￥／＾) at those positions. The ＠ is an exception: the physical @ key is assigned to "、" (Japanese comma) by the official NICOLA spec, so a bare tap still outputs "、" — ＠ only appears while holding a thumb-shift key at that position.
+- `layout/nicola.yab` (the default through v1.16.1): software-assigns those same positions to Backspace/Escape instead. Upgrading an existing install does not change the contents of `layout/nicola.yab` — the installer never silently overwrites a file you may have edited by hand in the Layout Editor tab. To switch to the keytop-symbol behavior, manually change `default_layout` to `"nicola_keytop.yab"`.
+
+For a US layout, use `layout/nicola_us.yab`. Because a US keyboard physically lacks the Muhenkan/Henkan keys, the settings screen lets you impersonate thumb keys onto the left/right Alt keys, or assign the Space key as a thumb key.
 
 `layout/nicola_f.yab` is also bundled for genuine Fujitsu thumb-shift keyboards (e.g. FKB7628-801). Its physical key layout and scan codes are identical to a JIS keyboard, so `keyboard_model` should stay `"jis"` — just set `default_layout` to `"nicola_f.yab"`.
 

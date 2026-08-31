@@ -117,6 +117,15 @@
                        Type="string" Value="" KeyPath="yes" />
         <RemoveFolder Id="RemoveLayoutDir" Directory="LayoutDir" On="uninstall" />
       </Component>
+      <!-- layout/nicola_keytop.yab（2026-08-31追加、新規インストールの既定）は
+           NicolaYab とは別物: ユーザーがその場で編集保存する対象ではなく、
+           新規インストール時に一度だけ配置される雛形のため NeverOverwrite は
+           付けない（ADR-099 決定2の DataFiles と同じ扱い）。 -->
+      <Component Id="NicolaKeytopYab" Guid="5B75B3B2-A53D-493E-BB62-81AE2B17D8ED">
+        <File Source="dist\layout\nicola_keytop.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKeytopYab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <!-- Data files（ユーザーが編集する手段を持たないプログラム資産のため

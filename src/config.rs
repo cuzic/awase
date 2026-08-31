@@ -349,7 +349,7 @@ impl Default for GeneralConfig {
             right_thumb_key: "変換".to_string(),
             engine_toggle_hotkey: None,
             layouts_dir: "config".to_string(),
-            default_layout: "nicola.yab".to_string(),
+            default_layout: "nicola_keytop.yab".to_string(),
             ngram_file: Some("data/ngram_hiragana.csv.gz".to_string()),
             ngram_adjustment_range_ms: 20,
             ngram_min_threshold_ms: 30,
@@ -843,13 +843,17 @@ impl AppConfig {
             return;
         }
 
-        if g.default_layout.trim_end_matches(".yab") == "nicola" {
-            w.push(
-                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"nicola.yab\" \
+        let jis_only_default = matches!(
+            g.default_layout.trim_end_matches(".yab"),
+            "nicola" | "nicola_keytop"
+        );
+        if jis_only_default {
+            w.push(format!(
+                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"{}\" \
                  のままです。JIS 版は列数が US の上限を超えるためパースに失敗します。\
-                 \"nicola_us.yab\" を指定してください。"
-                    .to_string(),
-            );
+                 \"nicola_us.yab\" を指定してください。",
+                g.default_layout
+            ));
         }
 
         let mentions_jis_only = |s: &str| {
@@ -1024,7 +1028,7 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.simultaneous_threshold_ms, 100);
         assert_eq!(config.general.left_thumb_key, "無変換");
         assert_eq!(config.general.right_thumb_key, "変換");
-        assert_eq!(config.general.default_layout, "nicola.yab");
+        assert_eq!(config.general.default_layout, "nicola_keytop.yab");
         assert_eq!(config.general.layouts_dir, "config");
     }
 
@@ -1040,7 +1044,7 @@ default_layout = "nicola.yab"
         assert_eq!(config.general.simultaneous_threshold_ms, 100);
         assert_eq!(config.general.left_thumb_key, "無変換");
         assert_eq!(config.general.right_thumb_key, "変換");
-        assert_eq!(config.general.default_layout, "nicola.yab");
+        assert_eq!(config.general.default_layout, "nicola_keytop.yab");
     }
 
     // ── classify_load_error (ADR-099 決定4a) ──
@@ -1268,7 +1272,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
             return;
         }
         let config = AppConfig::load(path).unwrap();
-        assert_eq!(config.general.default_layout, "nicola.yab");
+        assert_eq!(config.general.default_layout, "nicola_keytop.yab");
         assert_eq!(config.general.layouts_dir, "layout");
     }
 
