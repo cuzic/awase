@@ -600,7 +600,7 @@ pub struct PostBypassRule {
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
 /// このファイルにはアプリ全体の設定のみを含む。
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub general: GeneralConfig,

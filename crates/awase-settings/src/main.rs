@@ -454,7 +454,12 @@ impl SettingsApp {
             return;
         }
 
-        let (validated, warnings) = self.config.clone().validate();
+        // /code-review指摘（PR #127、2回目）: self.configはこの直後に
+        // AppConfig::from(validated)で上書きされるため、事前の
+        // `self.config.clone()`はvalidate()に渡した瞬間に捨てられる
+        // 無駄なdeep clone（keymaps/app_overridesのVecまで含む）だった。
+        // mem::takeで元の値をmoveし、cloneを避ける。
+        let (validated, warnings) = std::mem::take(&mut self.config).validate();
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
