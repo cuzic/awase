@@ -36,6 +36,7 @@ pub struct TimingJudge<'a> {
     threshold_us: u64,
     ngram_model: Option<&'a NgramModel>,
     recent_kana: Vec<char>,
+    min_overlap_margin_percent: u64,
 }
 
 impl<'a> TimingJudge<'a> {
@@ -49,7 +50,25 @@ impl<'a> TimingJudge<'a> {
             threshold_us,
             ngram_model,
             recent_kana,
+            min_overlap_margin_percent: MIN_OVERLAP_MARGIN_PERCENT,
         }
+    }
+
+    /// `min_overlap_margin_percent` を既定値（`MIN_OVERLAP_MARGIN_PERCENT`、
+    /// このモジュールの単体テストが検証するアルゴリズム上の値）から上書きする。
+    ///
+    /// ADR-112 決定1: `NicolaFsm` の本番経路は、`char1_released_at` が実際に
+    /// 埋まるようになる（決定2、Phase 0 修正）効果を実機ソークで確認するまで、
+    /// `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（0%＝常に重なり十分）を使う。
+    /// このモジュール自身の単体テストは `with_min_overlap_margin_percent` を
+    /// 使わず、`new` の既定値のままアルゴリズムとしての15%境界を検証し続ける。
+    #[must_use]
+    pub const fn with_min_overlap_margin_percent(
+        mut self,
+        min_overlap_margin_percent: u64,
+    ) -> Self {
+        self.min_overlap_margin_percent = min_overlap_margin_percent;
+        self
     }
 
     /// 2キー判定: pending_ts と new_ts の間隔が閾値内か。
@@ -184,8 +203,12 @@ impl<'a> TimingJudge<'a> {
         chord_kana: Option<char>,
         solo_kana: Option<char>,
     ) -> bool {
-        if let Some(verdict) = overlap_only_verdict(self.threshold_us, thumb_ts, char1_released_at)
-        {
+        if let Some(verdict) = overlap_only_verdict(
+            self.threshold_us,
+            thumb_ts,
+            char1_released_at,
+            self.min_overlap_margin_percent,
+        ) {
             return verdict;
         }
 
@@ -229,13 +252,14 @@ pub(crate) fn overlap_only_verdict(
     threshold_us: u64,
     thumb_ts: Timestamp,
     char1_released_at: Option<Timestamp>,
+    min_overlap_margin_percent: u64,
 ) -> Option<bool> {
     let Some(released_ts) = char1_released_at else {
         // char1 がまだ押下中 → 重なりが構造的に保証されているため常に確定 true
         return Some(true);
     };
     let overlap_us = released_ts.saturating_sub(thumb_ts);
-    let min_overlap_us = threshold_us * MIN_OVERLAP_MARGIN_PERCENT / 100;
+    let min_overlap_us = threshold_us * min_overlap_margin_percent / 100;
     (overlap_us >= min_overlap_us).then_some(true)
 }
 

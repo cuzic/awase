@@ -2731,6 +2731,10 @@ fn test_insufficient_overlap_with_no_thumb_face_still_forwards_thumb_solo() {
     // 無いのではなく、単独打鍵そのものとして確定するため、その解決結果
     // （ここでは変換パススルー）を尊重する。
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
     engine.layout.normal.insert(POS_D, lit('て'));
     // D は left_thumb にも right_thumb にも一切定義しない
 
@@ -2962,6 +2966,10 @@ fn test_key_up_thumb_during_pending_char_thumb() {
 #[test]
 fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_key_up() {
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
     engine.on_event(Ev::down(VK_A).at(0).build());
@@ -2997,6 +3005,7 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_k
 #[test]
 fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout() {
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     // char1(A) → thumb(右親指=VK_CONVERT, t=30ms) → PendingCharThumb
     engine.on_event(Ev::down(VK_A).at(0).build());
@@ -3026,6 +3035,30 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout
 }
 
 #[test]
+fn test_default_min_overlap_margin_percent_treats_insufficient_overlap_as_chord() {
+    // ADR-112決定1: min_overlap_margin_percentの本番既定値は一時的に0%
+    // (RUNTIME_MIN_OVERLAP_MARGIN_PERCENT)。set_min_overlap_margin_percent_for_test
+    // を呼ばない限り、上のテスト群と全く同じ物理的重なり(2ms、閾値の2%)でも
+    // 「重なり十分」として同時打鍵確定に倒れる——これは決定2(Phase 0修正で
+    // char1_released_atが実際に埋まるようになる)着地直後の実運用を、決定3
+    // (実測付きで引き締める)まで意図的に「経路修正前と同じ見た目の挙動」に
+    // 保つための値であり、バグではない。この値を変える場合は本テストと
+    // ADR-112決定1/3を必ず更新すること。
+    let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
+    engine.on_event(Ev::up(VK_A).at(32_000).build());
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('ゔ'))),
+        "既定(0%)では重なり不足でもchord確定になるはず: {:?}",
+        r.actions
+    );
+}
+
+#[test]
 fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_prevent_reuse() {
     // 重なり不足で char1+thumb を単独打鍵×2として確定した後も、thumb はまだ物理的に
     // 押されたまま（タイムアウト経由なので KeyUp が来ていない）。この状態で次のキーが
@@ -3034,6 +3067,7 @@ fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_preven
     // が left/right_thumb_consumed を更新し忘れると、次のキーが active_thumb_side() 経由で
     // 同じ thumb 押下と誤って同時打鍵になってしまう）。
     let mut engine = make_engine_with_thumb_key_solo_tap_config_ex(false, true, false, false);
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     engine.on_event(Ev::down(VK_A).at(0).build());
     engine.on_event(Ev::down(VK_CONVERT).at(30_000).build());
@@ -4724,6 +4758,10 @@ fn test_engine_off_counts_solo_resolved_via_insufficient_overlap_separate_solos(
     // 最後に明示的に KeyUp を送って物理状態を正常化してから次の周回へ進む）。
     let mut engine = make_engine();
     engine.set_engine_off_solo_repeat_vk(VK_NONCONVERT);
+    // ADR-112決定1: 本番既定は0%(常に重なり十分)だが、このテストは
+    // 「重なり不足→単独打鍵×2」というアルゴリズム自体を検証するため
+    // MIN_OVERLAP_MARGIN_PERCENT相当(15%)を明示的に指定する。
+    engine.set_min_overlap_margin_percent_for_test(15);
 
     let gap = 150_000u64; // 150ms < SOLO_OFF_TIMEOUT_US (400ms)
 

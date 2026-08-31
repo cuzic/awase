@@ -36,6 +36,21 @@ const SOLO_OFF_TIMEOUT_US: u64 = 400_000;
 /// 5 回に引き上げて誤発火しにくくする。
 const SOLO_OFF_TRIGGER_COUNT: u32 = 5;
 
+/// `char_thumb_chord_confirmed`（重なり不足判定）の本番既定マージン（ADR-112 決定1）。
+///
+/// `Engine::on_input` の Phase 0 が KeyUp を FSM に一切届けていなかった
+/// リグレッション（BUG-101）の修正（ADR-112 決定2）により、`char1_released_at`
+/// が初めて実際に埋まるようになる。決定2適用前は `char1_released_at` が
+/// 恒久的に `None` で `overlap_only_verdict` が常に `Some(true)`（＝重なり
+/// 十分＝同時打鍵確定）を返していたため、この 0%（＝常に重なり十分と同じ
+/// 効果）は「経路修正だけを先に land し、判定内容そのものは変えない」という
+/// 意図の値である。`timing.rs` の単体テストが検証する
+/// `MIN_OVERLAP_MARGIN_PERCENT`（15%）とは独立——あちらはアルゴリズム自体の
+/// 正しさを、こちらは「決定2 land 直後の実運用でどう振る舞わせるか」を表す。
+/// 実機ソーク後、実測付きで別コミット/別ADRとして引き締める
+/// （`docs/adr/112-keyup-lifecycle-fsm-delivery.md` 決定3、本ADRのスコープ外）。
+const RUNTIME_MIN_OVERLAP_MARGIN_PERCENT: u64 = 0;
+
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
 
@@ -75,6 +90,12 @@ pub struct NicolaFsm {
 
     /// 同時打鍵の判定閾値（マイクロ秒）
     pub(crate) threshold_us: u64,
+
+    /// 重なり不足判定のマージン（%）。既定は `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`
+    /// （ADR-112決定1）。テストで `set_min_overlap_margin_percent_for_test` を
+    /// 使うと、このモジュールの単体テストが検証する `MIN_OVERLAP_MARGIN_PERCENT`
+    /// （15%）相当のアルゴリズム挙動を NicolaFsm 統合レベルでも検証できる。
+    pub(crate) min_overlap_margin_percent: u64,
 
     /// エンジンの有効/無効
     pub(crate) enabled: bool,
@@ -258,6 +279,7 @@ impl NicolaFsm {
             layout,
             state: EngineState::Idle,
             threshold_us: u64::from(threshold_ms) * 1000,
+            min_overlap_margin_percent: RUNTIME_MIN_OVERLAP_MARGIN_PERCENT,
             enabled: true,
             ngram_model: None,
             confirm_mode,
@@ -629,6 +651,14 @@ impl NicolaFsm {
             self.ngram_model.as_ref(),
             self.output_history.recent_kana(timing::NGRAM_CONTEXT_SIZE),
         )
+        .with_min_overlap_margin_percent(self.min_overlap_margin_percent)
+    }
+
+    /// テスト用: 重なり不足判定のマージンを上書きする。
+    /// 本番既定は `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（ADR-112決定1）。
+    #[cfg(test)]
+    pub(crate) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {
+        self.min_overlap_margin_percent = pct;
     }
 
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
@@ -1632,9 +1662,12 @@ impl NicolaFsm {
         thumb_face: Option<Face>,
         char1_released_at: Option<Timestamp>,
     ) -> bool {
-        if let Some(verdict) =
-            timing::overlap_only_verdict(self.threshold_us, thumb.timestamp, char1_released_at)
-        {
+        if let Some(verdict) = timing::overlap_only_verdict(
+            self.threshold_us,
+            thumb.timestamp,
+            char1_released_at,
+            self.min_overlap_margin_percent,
+        ) {
             return verdict;
         }
         let chord_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
