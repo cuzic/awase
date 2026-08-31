@@ -31,20 +31,28 @@ config.toml の全設定項目を GUI で編集できる設定画面。eframe (e
 |------|--------|------------|------|
 | キーボードモデル | ドロップダウン (JIS / US) | `general.keyboard_model` | |
 | 同時打鍵閾値 | スライダー + 数値表示 (10-500ms) | `general.simultaneous_threshold_ms` | デフォルト: 100ms |
-| 確定モード | ドロップダウン | `general.confirm_mode` | 各モードの説明をツールチップ |
-| 投機出力待機 | スライダー (0-100ms) | `general.speculative_delay_ms` | TwoPhase/AdaptiveTiming 時のみ有効 |
 | 出力モード | ドロップダウン (Unicode / PerKey / Batched) | `general.output_mode` | |
 | フックモード | ラジオボタン (Filter / Relay) | `general.hook_mode` | ツールチップで違いを説明 |
 | 自動起動 | チェックボックス | `general.auto_start` | チェック ON → "enabled", OFF → "disabled" |
 | レイアウト | ドロップダウン | `general.default_layout` | layouts_dir 内の .yab を列挙 |
 
-### 確定モードの説明（ツールチップ）
+> **2026-08-30 撤去**: 確定モード（`general.confirm_mode`）・投機出力待機
+> （`general.speculative_delay_ms`）はこのタブから撤去した。ほとんどの
+> ユーザーは既定の `wait` のまま使っており、選択肢を見せる複雑さの割に
+> 恩恵が薄いと判断したため（PR #127）。n-gram によるタイブレーク（3キー
+> 分岐・重なり不足判定）は `confirm_mode` の値に関わらず常に有効。
+> `confirm_mode = "speculative"` は廃止済みで、`validate()` が
+> `two_phase` + `speculative_delay_ms=0` へ自動正規化する。変更したい
+> 場合は `config.toml` を直接編集する（下表「確定モードの選択肢」参照、
+> GUIには残さない）。
+
+### 確定モードの選択肢（`config.toml` 手動設定、GUI項目ではない）
 
 | モード | 説明 |
 |--------|------|
-| wait | タイムアウトまで出力を保留。最も正確だが遅延あり |
-| speculative | 即座に出力し、同時打鍵時に差し替え。高速だが一瞬ちらつく |
-| two_phase | 短い待機 → 投機出力。wait と speculative の中間 |
+| wait（既定） | タイムアウトまで出力を保留。最も正確だが遅延あり |
+| speculative（廃止予定） | `two_phase`(`speculative_delay_ms=0`)と完全に等価。設定時は自動的にそちらへ正規化される |
+| two_phase | 短い待機 → 投機出力。wait と即時出力の中間 |
 | adaptive_timing | 連続打鍵中は wait、途切れたら投機。タイピング速度に適応 |
 | ngram_predictive | n-gram 統計で投機/待機を動的判断。最も賢い |
 
@@ -193,6 +201,8 @@ IME の状態変化を検出するキーの設定。上級者向け。
 | n-gram 調整幅 | スライダー (0-100ms) | `general.ngram_adjustment_range_ms` | |
 | n-gram 最小閾値 | スライダー (10-200ms) | `general.ngram_min_threshold_ms` | |
 | n-gram 最大閾値 | スライダー (50-500ms) | `general.ngram_max_threshold_ms` | |
+| 3キー分岐マージン | スライダー (0-100%) | `general.timing_margin_percent` | デフォルト: 30%（PR #127で追加） |
+| 重なり不足判定マージン | スライダー (0-100%) | `general.min_overlap_margin_percent` | デフォルト: 0%（ADR-112決定1、実機ソーク後に引き締め予定。PR #127で追加） |
 | フォーカスデバウンス | スライダー (0-200ms) | `general.focus_debounce_ms` | |
 | IME ポーリング間隔 | スライダー (100-5000ms) | `general.ime_poll_interval_ms` | |
 | レイアウトディレクトリ | フォルダパス入力 + [参照] | `general.layouts_dir` | |
