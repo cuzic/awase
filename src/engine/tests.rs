@@ -5360,6 +5360,29 @@ mod engine_integration_tests {
         engine
     }
 
+    /// `EngineCommand::UpdateFsmParams` テスト既定のマージン値
+    /// （複数テストで `timing_margin_percent: 30, min_overlap_margin_percent: 15`
+    /// がコピペされていたのを一本化、/code-review指摘 PR #127 6回目）。
+    const TEST_TIMING_MARGIN_PERCENT: u32 = 30;
+    const TEST_MIN_OVERLAP_MARGIN_PERCENT: u32 = 15;
+
+    /// `EngineCommand::UpdateFsmParams` を構築する。`timing_margin_percent`/
+    /// `min_overlap_margin_percent` はテスト既定値で固定し、それ以外の
+    /// テストごとに変化する引数だけを受け取る。
+    fn update_fsm_params(
+        threshold_ms: u32,
+        confirm_mode: ConfirmMode,
+        speculative_delay_ms: u32,
+    ) -> EngineCommand {
+        EngineCommand::UpdateFsmParams {
+            threshold_ms,
+            confirm_mode,
+            speculative_delay_ms,
+            timing_margin_percent: TEST_TIMING_MARGIN_PERCENT,
+            min_overlap_margin_percent: TEST_MIN_OVERLAP_MARGIN_PERCENT,
+        }
+    }
+
     fn ime_on_ctx() -> InputContext {
         InputContext {
             ime_on: true,
@@ -5657,13 +5680,7 @@ mod engine_integration_tests {
     fn on_command_update_fsm_params() {
         let mut engine = make_test_engine();
         let d = engine.on_command(
-            EngineCommand::UpdateFsmParams {
-                threshold_ms: 200,
-                confirm_mode: ConfirmMode::Speculative,
-                speculative_delay_ms: 50,
-                timing_margin_percent: 30,
-                min_overlap_margin_percent: 15,
-            },
+            update_fsm_params(200, ConfirmMode::Speculative, 50),
             &ime_on_ctx(),
         );
         assert!(!d.is_consumed());
@@ -8352,16 +8369,7 @@ mod engine_integration_tests {
         // ギャップが simultaneous でなくなることで、指定した値が実際に反映されている
         // ことを確認する。
         let mut engine = make_test_engine();
-        engine.on_command(
-            EngineCommand::UpdateFsmParams {
-                threshold_ms: 10,
-                confirm_mode: ConfirmMode::Wait,
-                speculative_delay_ms: 30,
-                timing_margin_percent: 30,
-                min_overlap_margin_percent: 15,
-            },
-            &ime_on_ctx(),
-        );
+        engine.on_command(update_fsm_params(10, ConfirmMode::Wait, 30), &ime_on_ctx());
 
         let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
         assert!(d1.is_consumed());
@@ -8385,13 +8393,7 @@ mod engine_integration_tests {
         // 既定の Wait のままになり、文字キー押下時に即座出力（投機）されなくなる。
         let mut engine = make_test_engine();
         engine.on_command(
-            EngineCommand::UpdateFsmParams {
-                threshold_ms: 100,
-                confirm_mode: ConfirmMode::Speculative,
-                speculative_delay_ms: 40,
-                timing_margin_percent: 30,
-                min_overlap_margin_percent: 15,
-            },
+            update_fsm_params(100, ConfirmMode::Speculative, 40),
             &ime_on_ctx(),
         );
 
@@ -8420,13 +8422,7 @@ mod engine_integration_tests {
         // remaining_us = 100_000 - 40_000 = 60_000 (60ms) を直接検証する。
         let mut engine = make_test_engine();
         engine.on_command(
-            EngineCommand::UpdateFsmParams {
-                threshold_ms: 100,
-                confirm_mode: ConfirmMode::TwoPhase,
-                speculative_delay_ms: 40,
-                timing_margin_percent: 30,
-                min_overlap_margin_percent: 15,
-            },
+            update_fsm_params(100, ConfirmMode::TwoPhase, 40),
             &ime_on_ctx(),
         );
 
