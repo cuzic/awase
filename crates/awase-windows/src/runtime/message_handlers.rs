@@ -890,6 +890,10 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
             // true になる（2026-07-09 実機で確認）。アンロック時点では物理キーはどれも
             // 離されていると仮定してよいため、無条件でリセットする。
             hook::reset_physical_key_state();
+            // [[keymap]] latch も同じ理由で解放する（ADR-114 決定4「latch
+            // 漏れ対策」経路5）。ロック中に失われた KeyUp が latch を stuck
+            // させたままになるのを防ぐ。
+            app.platform_state.keymap.keymap_latch.release_all();
             app.platform.timer.kill(TIMER_IME_REFRESH);
             app.platform
                 .timer

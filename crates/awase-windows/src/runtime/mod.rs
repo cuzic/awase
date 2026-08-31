@@ -1631,6 +1631,9 @@ impl Runtime {
         // awase 内部の物理キー shadow は解放されないままだったため、明示的にリセットする。
         send_all_modifier_key_ups();
         crate::hook::reset_physical_key_state();
+        // [[keymap]] latch も同じ理由で解放する（ADR-114 決定4「latch
+        // 漏れ対策」経路5）。
+        self.platform_state.keymap.keymap_latch.release_all();
 
         // 4. PlatformState を全面リセット
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた
