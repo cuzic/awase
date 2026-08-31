@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  # 2026-08-31: `push: tags` イベントがGitHub側で配信されず(新規タグ名でも
+  # 再現、他イベント種別は正常)release.ymlが起動しない事態が発生したため、
+  # 手動起動での代替経路を追加した。`--ref` にはタグ自体を指定できる
+  # （その場合 tag 入力を省略すれば github.ref_name から自動で拾える）。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'リリースタグ(例: v1.17.0)。push:tagsが未発火の場合の代替起動用。--ref にタグを指定した場合は省略可'
+        required: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,8 +33,16 @@ jobs:
       - name: Extract version from tag
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          # workflow_dispatch の `tag` 入力を優先し、無ければ通常のタグpush
+          # 起動時と同じく GITHUB_REF_NAME（--ref にタグを指定していればこちらも
+          # 正しく解決される）を使う。
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="$GITHUB_REF_NAME"
+          fi
+          VERSION="${TAG#v}"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
 
       # --locked: Cargo.lock(コミット済み、audit/machete CIが検査した実体)と
       # 異なる依存解決でビルドしてしまうと、CI での監査結果が実際の配布物の
@@ -80,11 +97,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             awase-${{ env.VERSION }}-x64.zip
             awase-${{ env.VERSION }}-x64.msi
           generate_release_notes: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
 
       - name: Update Scoop manifest
         shell: pwsh
