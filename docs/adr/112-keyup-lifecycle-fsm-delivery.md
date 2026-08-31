@@ -2,8 +2,8 @@
 
 ## ステータス
 
-**決定0〜2 実装済み（2026-08-31、Opus 2体によるpremortem 2ラウンドで収束した設計どおり）。Windows実機ソーク未実施。**
-`docs/known-bugs.md` BUG-101 に対応する修正。決定0（`OutputHistory`責務分離）・決定1（`min_overlap_margin_percent`既定値を一時的に0へ）・決定2（Phase 0再設計本体）を個別コミットで実装した。決定3（`min_overlap_margin_percent` の実運用値への引き戻し）は実機ソーク後に別ADR/別コミットで扱う、本ADRのスコープ外。
+**クローズ（2026-08-31）。決定0〜2実装済み・developマージ済み・Windows実機ソーク完了、不具合報告なし。決定3（`min_overlap_margin_percent`の引き締め）は実測データが無いため見送り、既定値0を恒久設定として確定する。**
+`docs/known-bugs.md` BUG-101 に対応する修正。決定0（`OutputHistory`責務分離）・決定1（`min_overlap_margin_percent`既定値を一時的に0へ）・決定2（Phase 0再設計本体）を個別コミットで実装した。数日の実機ソークで「文字が消える」「余計なKeyUpが出る」等の不具合報告は無かった。決定3が要求する実測データ（重なり時間msの分布等）は取得していないため、`tuning-constants.md`の実測義務（「効かないので増やした」形の変更を禁止）に従い、根拠のない値の引き上げは行わない。既定値0（重なり不足判定を実質無効化した状態）はこのまま**恒久的な既定値**として確定する。将来、実測データが得られた時点で改めて別ADR/別コミットとして引き締めを検討する（本ADRの決定3セクションは着手条件の記録として残す）。
 
 ## コンテキスト
 
@@ -102,9 +102,9 @@ if !self.compute_active(ctx) {
 
 この設計により、「FSMがConsumeしたKeyDownに対応するKeyUpは、OSへは絶対に漏らさない」という元々の不変条件を、関数の唯一の出口で機械的に保証しつつ、KeyUpが実際にFSMへ届くようになる。
 
-### 決定3（本ADRのスコープ外・将来の別ADR）: 実測付きで`min_overlap_margin_percent`を実用値へ戻す
+### 決定3（見送り・2026-08-31クローズ時点で未着手のまま確定）: 実測付きで`min_overlap_margin_percent`を実用値へ戻す
 
-決定2適用後、develop上で数日の実機ソーク（「文字が消える」「余計なKeyUpが出る」の観測）を行い、実測付きで既定値を引き締める。`tuning-constants.md` の実測義務に従う。
+決定2適用後、develop上で数日の実機ソーク（「文字が消える」「余計なKeyUpが出る」の観測）を行った。**不具合報告は無かった**が、重なり時間の実測データ（ms分布等）は取得しておらず、`tuning-constants.md` の実測義務を満たせないため、決定3自体は見送り、既定値0を恒久設定として確定した。将来この判定を有効化したくなった場合は、まず実測データの収集から始めること（「ソークで問題が出なかったから」だけを根拠に値を引き上げない）。
 
 ## テスト方針（`fix-requires-evidence.md` 対応）
 
@@ -119,7 +119,7 @@ if !self.compute_active(ctx) {
 0. `OutputHistory` を `pending_releases`/`committed` に分割（挙動不変・上限導入）
 1. `min_overlap_margin_percent` の既定値 → 0（挙動不変）
 2. Phase 0分解 + `UpDuty`二値 + `force_consume` + `release_only` + テスト一式
-3. （別ADR/別コミット）実機ソーク後、実測付きでmarginを実用値へ
+3. （見送り・2026-08-31クローズ）実機ソークで不具合報告は無かったが実測データが無いため既定値0を恒久化、引き締めは別ADRの将来課題として残す
 
 kill switchは置かない——各コミットは独立してrevert可能であり、env varより`git revert`の方が確実。
 
@@ -133,7 +133,7 @@ PR #126の`/code-review`7ラウンドで、決定2実装後に以下の課題が
 4. **`OutputHistory.pending_releases`のキーである`ScanCode`が`LLKHF_EXTENDED`拡張フラグを含まない生の`kb.scanCode`のため、拡張/非拡張で同じ下位バイトを共有する物理的に異なるキー（例: メインキーボードの`/`とテンキーの`/`は共に`0x35`）が衝突しうる。** `remove_by_scan`は先頭一致、`find_action_by_scan`は末尾一致と非対称なため、両方のキーを同時に押した状態で片方の実KeyUpが来ると、誤ってもう片方のエントリを解放してしまう可能性がある。これは本PRが生んだ欠陥ではなく`hook.rs`の`ScanCode(kb.scanCode)`（`LLKHF_EXTENDED`未反映）というADR-112以前からの設計に起因するが、`remove_by_scan`自体は決定2以前は実運用で到達不能な死んだコードだったため、本PRで初めて実害化しうる経路になった。修正には`ScanCode`の値自体に拡張フラグを畳み込む変更が必要で、`hook.rs`/`scanmap.rs`/関連テスト全体に及ぶ別スコープの変更になる。
 5. **`release_pending_and_reinject`（旧`check_active_transition`単体）が、まだ物理的に保持されているキーに対して合成KeyUpを即座に発行した後、そのキーの実物理KeyUpが後で来ると生のまま重複してOSへ届きうる。** `flush_pending_key_ups`は`active_keys`を無条件に丸ごとdrainするため、対象は「そのコンテキスト変更を引き起こしたキー」に限らない。合成KeyUpを送った時点で`active_keys`が空になるので、後で届く実物理KeyUpは`take_key_up_duty`が`UpDuty::None`を返し`force_consume`されず、Engineが非活性であれば生のままOSへ通る（＝合成KeyUp＋実KeyUpの二重配信）。ただしこれは`flush_pending_key_ups`+再注入という設計自体がADR-112以前から`handle_focus_changed`に持っていた挙動そのもので（`git show <merge-base>:src/engine/engine.rs`のhandle_focus_changedで確認済み、無条件`flush_pending_key_ups`+`ReinjectKey`)、本ADRが`check_active_transition`にも同じパターンを適用したことで新たに顕在化した箇所が増えただけであり、新規のリグレッションではない。対応するKeyDownを送っていない状態でのKeyUpはOS/多くのアプリにとって「押されていないキーを離す」無害なno-opであり（`docs/known-bugs.md`にもこの種の「余分なKeyUp」自体が実害化した記録はない）、permanently stuck keyという確定した実害と比べてはるかに軽微であるため、本ADRの中核方針（早すぎる解放を優先する）の範囲内として許容する。
 
-いずれも実機での発生頻度は低いと見積もっているが、実機ソーク（決定3）の観察対象に含めること。
+いずれも実機での発生頻度は低いと見積もっていたとおり、数日の実機ソークでも報告は無かった（2026-08-31確認）。
 
 ## Premortemの経緯
 

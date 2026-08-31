@@ -12028,7 +12028,7 @@ x86_64-pc-windows-msvc` によるコンパイル確認、および CI `windows-b
 
 ---
 
-## BUG-101: `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混入のリグレッション、決定0〜2実装済み・Windows実機ソーク未実施）
+## BUG-101: `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混入のリグレッション、決定0〜2実装済み・実機ソーク完了・クローズ）
 
 **症状:** `Engine::on_input`（`src/engine/engine.rs:345-349`、実運用のキーイベント入口
 ——`key_pipeline.rs`と`runtime/mod.rs::process_deferred_keys`の2箇所から呼ばれる）の
@@ -12073,14 +12073,17 @@ Phase 0 が、`KeyLifecycle::on_key_up`（`key_lifecycle.rs:56-63`）を使っ�
 等）が全て bare `NicolaFsm` レベル（`Engine`/`KeyLifecycle` を経由しない）で
 書かれていたため、これまで検出されていなかった。
 
-**状態:** 決定0〜2実装済み（[ADR-112](adr/112-keyup-lifecycle-fsm-delivery.md)、
+**状態:** クローズ（2026-08-31）。決定0〜2実装済み（[ADR-112](adr/112-keyup-lifecycle-fsm-delivery.md)、
 Opus 2体によるpremortem 2ラウンドで収束した設計どおり）。`OutputHistory` の
 責務分割 → `min_overlap_margin_percent` 既定値を一時的に0へ → Phase 0 の
 再設計本体、の3コミットで修正した（`KeyLifecycle::on_key_up`を`take_key_up_duty`
 に置き換え、`Decision::force_consume`で唯一の出口からConsume義務を保証、
 非活性時は`release_only`でchord判定を再開せず解放索引だけ掃除）。
-`min_overlap_margin_percent`は本番既定0%のまま（決定3、実機ソーク後に実測付きで
-引き締める、本ADRのスコープ外）。Windows実機ソークは未実施。
+develop上で数日のWindows実機ソークを実施し、「文字が消える」「余計なKeyUpが
+出る」等の不具合報告は無かった。決定3（`min_overlap_margin_percent`を実測付きで
+引き締める）は、引き締めに必要な実測データ（重なり時間msの分布等）が無いため
+見送り、既定0%を**恒久的な既定値として確定**した（`tuning-constants.md`の
+実測義務に従い、根拠のない引き上げは行わない）。
 
 **関連ファイル:** `src/engine/engine.rs`, `src/engine/key_lifecycle.rs`,
 `src/engine/nicola_fsm.rs`, `src/engine/output_history.rs`,
