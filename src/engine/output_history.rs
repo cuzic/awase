@@ -44,8 +44,14 @@ pub struct OutputHistory {
     /// `romaji`/`kana` は KeyUp 整合性側では一切参照されない（n-gram 文脈は
     /// `committed` 側の責務）ため、ADR-112 の設計どおり軽量な
     /// `(ScanCode, KeyAction)` のみを持つ（`OutputEntry` 丸ごとではない、
-    /// /code-review 指摘: 全キーストロークで不要な `String` clone を
-    /// 避けるため）。
+    /// /code-review 指摘）。これにより `OutputEntry.romaji: String` 分の
+    /// clone は毎キーストローク確実に避けられるが、`action` が
+    /// `KeyAction::Romaji(String)`/`KeySequence(String)` の場合は
+    /// `action.clone()` 自体が依然 `String` を clone する（/code-review
+    /// 指摘: 旧・単一 `Vec<OutputEntry>` 設計は `entry` を move するだけで
+    /// push 時 clone が皆無だったため、厳密には旧設計比でこの経路に
+    /// 新しい clone が1回増えている。`romaji: String` 分の重複 clone を
+    /// 消したことのほうが実利は大きい）。
     pending_releases: Vec<(ScanCode, KeyAction)>,
     /// n-gram 文脈・Speculative retraction 専用の確定出力ログ。`remove_by_scan` では
     /// 一切変更されない。`COMMITTED_CAPACITY` を超えたら古い方から捨てる。
@@ -100,33 +106,18 @@ impl OutputHistory {
     /// KeyUp が来たときに参照すべき内容も訂正後のものであるべきなので、
     /// 単純な `push`（追記）だと古いエントリが `pending_releases` に残り続け、
     /// `remove_by_scan` が先に見つけてしまう（`.position()` は先頭から検索）
-    /// リスクがある。
+    /// リスクがある。`remove_by_scan` は該当エントリが無くても無害な no-op
+    /// （`None` を返すだけ）なので、素朴に「既存分を消してから新しい内容を
+    /// push」するだけでよい（/code-review 指摘: 手書きの
+    /// 探索+置換/フォールバックpushはremove_by_scanの探索方向と食い違いうる
+    /// 二重実装だった。通常は元エントリが存在するはずだが、他の経路が先に
+    /// 解放済みだった場合でも、ここで単に無かったことにして新しい内容を
+    /// pushするだけで不変条件は保たれる）。
     pub fn retract_and_record(&mut self, entry: OutputEntry) -> Option<OutputEntry> {
         let retracted = self.retract_last();
-        if let Some(pos) = self
-            .pending_releases
-            .iter()
-            .position(|(scan_code, _)| *scan_code == entry.scan_code)
-        {
-            self.pending_releases[pos] = (entry.scan_code, entry.action.clone());
-        } else {
-            // 投機出力の訂正である以上、同じ scan_code の元エントリが
-            // pending_releases に残っているはず。無い場合は、他の経路
-            // （OS修飾キー保持中のKeyUp・フォーカス変更等）が先にそのエントリを
-            // 解放済みだったことを意味し、想定していた不変条件が崩れている
-            // （ADR-112コードレビュー指摘。全経路を追跡した限りこの分岐は
-            // 現状到達不能——SpeculativeChar中はstateがself.stateを経由する
-            // 通常dispatchを通るためrelease_only等の非活性系クリーンアップとは
-            // 排他）。実害はfallbackのpushで抑えつつ、到達したら確実に
-            // 気づけるよう error レベルで記録する。
-            log::error!(
-                "retract_and_record: no existing pending_releases entry for scan_code={:?}, \
-                 falling back to push — invariant violation, this branch was believed unreachable",
-                entry.scan_code
-            );
-            self.pending_releases
-                .push((entry.scan_code, entry.action.clone()));
-        }
+        self.remove_by_scan(entry.scan_code);
+        self.pending_releases
+            .push((entry.scan_code, entry.action.clone()));
         self.push_committed(entry);
         retracted
     }

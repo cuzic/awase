@@ -237,7 +237,11 @@ impl Engine {
     /// （/code-review 指摘）。
     fn release_pending_and_reinject(&mut self, effects: &mut EffectVec) {
         let released_output_effects = self.adapter.release_all_pending_output();
-        let released_vks: std::collections::HashSet<VkCode> = released_output_effects
+        // release_all_pending_output は高々1件の SendKeys effect しか積まない
+        // ため、この集合は実質「今押されている物理キー」の数のオーダー
+        // （通常0〜数件）に収まる。HashSet ではなく Vec + 線形探索で十分
+        // （/code-review 指摘）。
+        let released_vks: Vec<VkCode> = released_output_effects
             .iter()
             .filter_map(|e| match e {
                 Effect::Input(InputEffect::SendKeys(actions)) => Some(actions.iter()),
