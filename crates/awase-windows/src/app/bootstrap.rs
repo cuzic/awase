@@ -740,19 +740,33 @@ impl LayoutEntry {
                     continue;
                 };
                 match std::fs::read_to_string(&path) {
-                    Ok(content) => match YabLayout::parse(&content, model) {
-                        Ok(yab) => {
-                            let yab = yab.resolve_kana();
-                            log::info!("Discovered layout: {stem} ({})", path.display());
-                            layouts.push(Self {
-                                name: stem,
-                                layout: yab,
-                            });
+                    Ok(content) => {
+                        // ADR-116 決定1: パース成否と独立に lint する（`yab::lint`
+                        // はパースを前提にしない設計。パース成功時のみに限定すると
+                        // keyboard_model の列数上限（US=12列等）でパース自体が
+                        // 失敗する環境で lint 結果が出なくなる非対称が生まれる）。
+                        // /code-review指摘: 1セルごとに diag.warn すると、崩れた
+                        // ファイル1つで数十件のクォート崩れがあった場合トレイ
+                        // バルーンの「N件の警告があります」の N が跳ね上がり
+                        // 信号として役に立たなくなる。1ファイルにつき1件へ集約する。
+                        let lint_warnings = awase::yab::lint(&content);
+                        if !lint_warnings.is_empty() {
+                            diag.warn(format!("{}: {}", path.display(), lint_warnings.join(" / ")));
                         }
-                        Err(e) => {
-                            diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
+                        match YabLayout::parse(&content, model) {
+                            Ok(yab) => {
+                                let yab = yab.resolve_kana();
+                                log::info!("Discovered layout: {stem} ({})", path.display());
+                                layouts.push(Self {
+                                    name: stem,
+                                    layout: yab,
+                                });
+                            }
+                            Err(e) => {
+                                diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
+                            }
                         }
-                    },
+                    }
                     Err(e) => {
                         diag.warn(format!("レイアウト読込失敗: {}: {e}", path.display()));
                     }

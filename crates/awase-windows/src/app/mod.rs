@@ -612,29 +612,33 @@ pub(crate) fn reload_config() {
         }
     };
 
+    // ADR-116 決定2: 以前はここで3つの独立した StartupDiagnostics
+    // （ngram用・keys用・layout用）を作り、それぞれ report() していたため、
+    // 設定リロード1回でトレイバルーンが最大3回出ていた。1つに統合し、
+    // report() は関数末尾で1回だけ呼ぶ。あわせて config.validate() の
+    // 警告がこれまで log::warn! だけでユーザーに一切届いていなかった
+    // 非対称（起動時は diag.warn 経由でトレイバルーンに出る）も解消する。
+    let mut diag = StartupDiagnostics::new();
+
     let (config, config_warnings) = raw_config.validate();
-    for w in &config_warnings {
-        log::warn!("config: {w}");
+    for w in config_warnings {
+        diag.warn(w);
     }
 
-    let mut reload_diag = StartupDiagnostics::new();
-    init_ngram_validated(&config, &mut reload_diag);
-    reload_diag.report();
+    init_ngram_validated(&config, &mut diag);
 
-    let mut key_diag = StartupDiagnostics::new();
-    let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut key_diag);
-    let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut key_diag);
-    let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut key_diag);
-    let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut key_diag);
+    let engine_on = parse_key_combos(&config.keys.engine_on, "Engine ON keys", &mut diag);
+    let engine_off = parse_key_combos(&config.keys.engine_off, "Engine OFF keys", &mut diag);
+    let ime_on = parse_key_combos(&config.keys.ime_on, "IME control ON keys", &mut diag);
+    let ime_off = parse_key_combos(&config.keys.ime_off, "IME control OFF keys", &mut diag);
     let ime_toggle = parse_key_combos(
         &config.keys.ime_toggle,
         "IME control Toggle keys",
-        &mut key_diag,
+        &mut diag,
     );
-    let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut key_diag);
+    let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
     let panic_trigger_combos = build_panic_trigger_combos(&ime_on, &ime_off);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
-    key_diag.report();
 
     crate::keymap::warn_on_engine_hotkey_collision(
         &config.keymaps,
@@ -672,18 +676,13 @@ pub(crate) fn reload_config() {
     });
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    let mut layout_diag = StartupDiagnostics::new();
-    match crate::LayoutEntry::scan_all(
-        &layouts_dir,
-        &mut layout_diag,
-        config.general.keyboard_model,
-    ) {
+    match crate::LayoutEntry::scan_all(&layouts_dir, &mut diag, config.general.keyboard_model) {
         Ok(layouts) => {
-            layout_diag.report();
             let _ = with_app(|app| app.reload_layouts(layouts, &config.general.default_layout));
         }
         Err(e) => log::warn!("Failed to rescan layouts on config reload: {e}"),
     }
 
+    diag.report();
     log::info!("Config reloaded successfully");
 }
