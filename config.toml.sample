@@ -47,7 +47,7 @@ right_thumb_key = "Convert"
 
 # 配列定義ファイル
 layouts_dir = "layout"
-default_layout = "nicola.yab"   # US 配列では "nicola_us.yab" を指定
+default_layout = "nicola_keytop.yab"   # US 配列では "nicola_us.yab" を指定
 
 # 確定モード
 #   wait             - タイムアウトまで出力を保留

@@ -267,12 +267,6 @@ impl Runtime {
         if crate::hook::is_alt_impersonation_active() {
             modifiers.alt = false;
         }
-        // ADR-110 決定5 r3追記: key_remap で to=Ctrl系に現在リマップ中の
-        // キーが物理押下されている間は modifiers.ctrl を強制的に true にする
-        // （上記 Alt なりすまし補正の鏡像、`hook::key_remap_ctrl_effectively_held` の doc 参照）。
-        if crate::hook::key_remap_ctrl_effectively_held() {
-            modifiers.ctrl = true;
-        }
         let (left_thumb_down, right_thumb_down) = crate::hook::thumb_down_timestamps();
         build_input_context(
             self.platform_state.ime.effective_open(),
@@ -1429,7 +1423,6 @@ impl Runtime {
     ///
     /// FSM パラメータ・出力モード・同期キー・特殊キーコンボ・
     /// アプリオーバーライドをアトミックに適用する。
-    #[allow(unsafe_code)] // normalize_caps_lock_if_needed() が Win32 API を呼ぶ
     pub(crate) fn apply_config_update(
         &mut self,
         config: &ValidatedConfig,
@@ -1483,19 +1476,6 @@ impl Runtime {
             crate::hook::resolve_thumb_key(&config.general.right_thumb_key),
         ) {
             crate::hook::set_thumb_vk_codes(left, right);
-            // ADR-110 決定4/9/3項目1: key_remap テーブルの再コンパイル・反映
-            // （設定リロード時のホットリロード）。thumb key VK が確定した
-            // 直後に置くことで、決定9の衝突警告が最新の thumb key を見る。
-            crate::hook::set_key_remaps(&crate::state::key_remap::compile_key_remaps(
-                &config.key_remap,
-                left,
-                right,
-                &crate::state::key_remap::modifier_free_hotkey_vks(&config.keys),
-            ));
-            // SAFETY: apply_config_update はメインスレッドから呼ばれる。
-            unsafe {
-                crate::hook::normalize_caps_lock_if_needed();
-            }
             crate::hook::set_alt_impersonation_enabled(
                 left_alt_impersonates,
                 right_alt_impersonates,

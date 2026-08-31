@@ -36,6 +36,21 @@ const SOLO_OFF_TIMEOUT_US: u64 = 400_000;
 /// 5 回に引き上げて誤発火しにくくする。
 const SOLO_OFF_TRIGGER_COUNT: u32 = 5;
 
+/// `char_thumb_chord_confirmed`（重なり不足判定）の本番既定マージン（ADR-112 決定1）。
+///
+/// `Engine::on_input` の Phase 0 が KeyUp を FSM に一切届けていなかった
+/// リグレッション（BUG-101）の修正（ADR-112 決定2）により、`char1_released_at`
+/// が初めて実際に埋まるようになる。決定2適用前は `char1_released_at` が
+/// 恒久的に `None` で `overlap_only_verdict` が常に `Some(true)`（＝重なり
+/// 十分＝同時打鍵確定）を返していたため、この 0%（＝常に重なり十分と同じ
+/// 効果）は「経路修正だけを先に land し、判定内容そのものは変えない」という
+/// 意図の値である。`timing.rs` の単体テストが検証する
+/// `MIN_OVERLAP_MARGIN_PERCENT`（15%）とは独立——あちらはアルゴリズム自体の
+/// 正しさを、こちらは「決定2 land 直後の実運用でどう振る舞わせるか」を表す。
+/// 実機ソーク後、実測付きで別コミット/別ADRとして引き締める
+/// （`docs/adr/112-keyup-lifecycle-fsm-delivery.md` 決定3、本ADRのスコープ外）。
+const RUNTIME_MIN_OVERLAP_MARGIN_PERCENT: u64 = 0;
+
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
 
@@ -84,12 +99,24 @@ pub struct NicolaFsm {
 
     /// 3キー仲裁のタイミングマージン（%）。`timing::TIMING_MARGIN_PERCENT`
     /// （既定30）を初期値とし、`set_timing_margins` で上書きできる
-    /// （`GeneralConfig::timing_margin_percent` 参照）。
+    /// （`GeneralConfig::timing_margin_percent` 参照）。ADR-112 決定1のような
+    /// 安全上の制約は無く、`bootstrap` が起動直後に必ず一度 `set_timing_margins`
+    /// を呼ぶため、実質的な既定値は `GeneralConfig::timing_margin_percent`
+    /// （config.rs、既定30）が決める。
     pub(crate) timing_margin_percent: u64,
 
-    /// 重なり不足判定のマージン（%）。`timing::MIN_OVERLAP_MARGIN_PERCENT`
-    /// （既定15）を初期値とし、`set_timing_margins` で上書きできる
-    /// （`GeneralConfig::min_overlap_margin_percent` 参照）。
+    /// 重なり不足判定のマージン（%）。構築直後の初期値は
+    /// `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（0、ADR-112決定1）だが、
+    /// `bootstrap` が起動直後に必ず一度 `set_timing_margins` を呼ぶため、
+    /// 実運用での既定値は実質的に `GeneralConfig::min_overlap_margin_percent`
+    /// （config.rs）が決める。**この設定項目のユーザー向け既定値も 0 のまま
+    /// にしてある**（決定1の「実機ソークで確認するまで重なり不足判定を
+    /// 無効化する」という安全側の意図を、設定可能にした後も壊さないため）。
+    /// 実機ソーク後、実測付きで別コミット/別ADRとして両方の既定値を
+    /// 引き締める（決定3、本ADRのスコープ外）。テストで
+    /// `set_min_overlap_margin_percent_for_test` を使うと、このモジュールの
+    /// 単体テストが検証する `MIN_OVERLAP_MARGIN_PERCENT`（15%）相当の
+    /// アルゴリズム挙動を NicolaFsm 統合レベルでも検証できる。
     pub(crate) min_overlap_margin_percent: u64,
 
     /// 確定モード
@@ -271,7 +298,7 @@ impl NicolaFsm {
             enabled: true,
             ngram_model: None,
             timing_margin_percent: timing::TIMING_MARGIN_PERCENT,
-            min_overlap_margin_percent: timing::MIN_OVERLAP_MARGIN_PERCENT,
+            min_overlap_margin_percent: RUNTIME_MIN_OVERLAP_MARGIN_PERCENT,
             confirm_mode,
             speculative_delay_us: u64::from(speculative_delay_ms) * 1000,
             last_key_timestamp: None,
@@ -451,12 +478,12 @@ impl NicolaFsm {
     /// 無効化時は保留キーをフラッシュする。
     /// 戻り値の `Resp` を `dispatch()` で処理すること（タイマー停止 + 保留キー確定）。
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
-        let flush_resp = self.flush_pending(
+        let mut flush_resp = self.flush_pending(
             ContextChange::EngineDisabled,
             ComposingHint::Trusted(self.phys.composing),
         );
         self.enabled = !self.enabled;
-        self.output_history.clear();
+        self.clear_output_history_appending_releases(&mut flush_resp);
         // `solo_counter`（`flush_pending` 内で毎回リセット、:421）とは異なり、
         // こちらは `flush_pending` 内で汎用リセットしない: `handle_bypass` 自身が
         // 非 idle 時に `ContextChange::BypassKey` で `flush_pending` を呼ぶため、
@@ -646,6 +673,8 @@ impl NicolaFsm {
 
     /// 3キー仲裁・重なり判定のタイミングマージンを更新する
     /// （`GeneralConfig::timing_margin_percent`/`min_overlap_margin_percent`）。
+    /// `bootstrap` が起動直後に必ず一度呼ぶため、これが実運用での実質的な
+    /// 既定値決定点になる（`min_overlap_margin_percent` フィールドの doc 参照）。
     pub fn set_timing_margins(
         &mut self,
         timing_margin_percent: u32,
@@ -655,15 +684,40 @@ impl NicolaFsm {
         self.min_overlap_margin_percent = u64::from(min_overlap_margin_percent);
     }
 
+    /// テスト用: 重なり不足判定のマージンだけを上書きする
+    /// （`timing_margin_percent` には触れない、bare `NicolaFsm` レベルの
+    /// 既存テスト群が構築直後の値に依存しているため）。
+    /// 本番既定は `RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`（ADR-112決定1）。
+    #[cfg(test)]
+    pub(crate) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {
+        self.min_overlap_margin_percent = pct;
+    }
+
     /// 配列を動的に差し替える。保留中のキーがあれば安全にフラッシュする。
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
-        let flush_resp = self.flush_pending(
+        let mut flush_resp = self.flush_pending(
             ContextChange::LayoutSwapped,
             ComposingHint::Trusted(self.phys.composing),
         );
         self.layout = layout;
-        self.output_history.clear();
+        self.clear_output_history_appending_releases(&mut flush_resp);
         flush_resp
+    }
+
+    /// `output_history` を丸ごとクリアする際、`pending_releases` に残っていた
+    /// `KeyAction::Key(vk)` エントリの `KeyUp(vk)` を `resp.actions` に追記して
+    /// から破棄する（`toggle_enabled`/`swap_layout` 共通、ADR-112コードレビュー
+    /// 指摘）。素朴に `output_history.clear()` するだけだと、注入済みVKに
+    /// 対応するKeyUpが二度と送られず、エンジン無効化/配列切替のタイミングで
+    /// キーを押しっぱなしにしていた場合にOS側で押されっぱなしになる
+    /// （stuck keyの再発）。
+    fn clear_output_history_appending_releases(&mut self, resp: &mut Resp) {
+        let keyups = self.output_history.drain_pending_releases_as_keyups();
+        resp.actions.extend(keyups);
+        // drain_pending_releases_as_keyups が pending_releases を既に空にして
+        // いるため、ここでは committed のみを clear する（clear() の二重
+        // clear だと曖昧に見える、/code-review 指摘）。
+        self.output_history.clear_committed();
     }
 }
 
@@ -795,10 +849,8 @@ impl NicolaFsm {
     ///
     /// Char/Romaji は Down+Up 一括送信済みのため、Key(vk) のみが追記対象。
     fn append_key_up_for(&mut self, actions: &mut SmallVec<[KeyAction; 2]>, scan_code: ScanCode) {
-        if let Some(entry) = self.output_history.remove_by_scan(scan_code) {
-            if let KeyAction::Key(vk) = entry.action {
-                actions.push(KeyAction::KeyUp(vk));
-            }
+        if let Some(KeyAction::Key(vk)) = self.output_history.remove_by_scan(scan_code) {
+            actions.push(KeyAction::KeyUp(vk));
         }
     }
 
@@ -1274,8 +1326,7 @@ impl NicolaFsm {
                 self.output_history.push(entry);
             }
             OutputUpdate::RetractAndRecord(entry) => {
-                self.output_history.retract_last();
-                self.output_history.push(entry);
+                self.output_history.retract_and_record(entry);
             }
             OutputUpdate::None => {}
         }
@@ -1597,7 +1648,7 @@ impl NicolaFsm {
             if event.vk_code == pending.vk_code {
                 self.go_idle();
                 // output_history から対応するキーの KeyUp を処理
-                return self.handle_key_up_active(event);
+                return self.release_only(event);
             }
         }
 
@@ -1623,13 +1674,28 @@ impl NicolaFsm {
         }
 
         // OS modifier (Ctrl/Alt/Win) 保持中: on_key_down と対称にバイパス。
-        // output_history に古いエントリが残っていても誤 Suppress しない。
-        if self.phys.modifiers.is_os_modifier_held() {
-            return Response::pass_through();
-        }
-
-        // output_history から対応する注入済みキーを探してリリース
-        self.handle_key_up_active(event)
+        //
+        // 旧実装は「output_history の中身に反応しない（誤 Suppress 防止）」
+        // ためこの分岐で無条件 pass_through していたが、掃除もしないため
+        // pending_releases のエントリが永久に残り stuck key が再発する上に
+        // （/code-review 指摘）、Key(vk) 型エントリの KeyUp(vk) も送られず
+        // OS 側で押されっぱなしになる、Char/Romaji 型は誤って生 KeyUp を
+        // OS へ漏らす、という3つの問題を抱えていた。
+        //
+        // 「誤 Suppress 防止」が守っていたのは、当時 output_history が単一の
+        // 無制限 Vec で KeyUp 整合性用途と n-gram 文脈用途を兼ねており、
+        // 別キーの残骸に誤って反応しうる状況だった（ADR-112決定0参照）。
+        // 決定0で pending_releases を分離した現在、この分岐に来る時点の
+        // scan_code は「この物理キー自身が直前に Consume されて記録した
+        // エントリ」以外にはあり得ない（bypass 側の KeyDown は
+        // handle_bypass が自分の scan_code のエントリを先に掃除するため）。
+        // よって OS modifier 保持の有無を問わず、通常の release_only と
+        // 全く同じロジックで安全に解放できる——`state` を経由しない chord
+        // 判定なしの掃除、という release_only の性質はここでも保たれている
+        // （OS modifier 有無で分岐する必要が無くなったため、if 文は撤去した。
+        // /code-review 指摘: 分岐両辺が同一の release_only(event) を返す
+        // だけの死んだ条件分岐になっていた）。
+        self.release_only(event)
     }
 
     /// 保留中キーの vk_code と一致するか判定する
@@ -1835,10 +1901,16 @@ impl NicolaFsm {
         self.build_response(result, true, TimerIntent::CancelAll)
     }
 
-    /// output_history から対応する注入済みキーを探してリリースする
-    fn handle_key_up_active(&mut self, event: &RawKeyEvent) -> Resp {
-        if let Some(entry) = self.output_history.remove_by_scan(event.scan_code) {
-            return match entry.action {
+    /// output_history から対応する注入済みキーを探してリリースする。
+    ///
+    /// `self.state`（chord判定の途中状態）には一切触れない純粋な後始末——
+    /// `release_only` としてエンジン非活性時（`Engine::on_input` Phase 2、
+    /// ADR-112決定2）からも直接呼ばれる。「コンテキストを失ったら同時打鍵
+    /// 判定を再開しない」という方針上、非活性時は`state`を経由する通常の
+    /// `on_key_up`ディスパッチを一切通さず、この関数だけを呼ぶ。
+    pub(crate) fn release_only(&mut self, event: &RawKeyEvent) -> Resp {
+        if let Some(action) = self.output_history.remove_by_scan(event.scan_code) {
+            return match action {
                 // Unicode 文字やローマ字列の場合、KeyUp は不要（押下時に入力完了）
                 KeyAction::Char(_) | KeyAction::Romaji(_) => self.build_response(
                     smallvec![KeyAction::Suppress],
@@ -1854,6 +1926,19 @@ impl NicolaFsm {
             };
         }
         Response::pass_through()
+    }
+
+    /// コンテキスト喪失（フォーカス変更・非活性化）時に `output_history` の
+    /// `pending_releases` を全て強制解放する。`KeyAction::Key(vk)` 型の
+    /// エントリに対応する `KeyUp(vk)` アクションを返す（それ以外は黙って除去）。
+    ///
+    /// `Engine`（`check_active_transition`/`handle_focus_changed`）が
+    /// `KeyLifecycle::flush_pending_key_ups` と同期して呼ぶこと（ADR-112
+    /// コードレビュー指摘）——`active_keys` だけを drain して `pending_releases`
+    /// を放置すると、対応する KeyUp がその後 `UpDuty::None` として素通りする
+    /// ようになり、二度と掃除されないまま stuck key が再発する。
+    pub(crate) fn release_all_pending_output(&mut self) -> Vec<KeyAction> {
+        self.output_history.drain_pending_releases_as_keyups()
     }
 }
 
@@ -1933,10 +2018,9 @@ impl NicolaFsm {
         let mut actions = resolved.actions;
         if char1_released_at.is_some() {
             // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
-            if let Some(entry) = self.output_history.remove_by_scan(char_key.scan_code) {
-                if let KeyAction::Key(vk) = entry.action {
-                    actions.push(KeyAction::KeyUp(vk));
-                }
+            if let Some(KeyAction::Key(vk)) = self.output_history.remove_by_scan(char_key.scan_code)
+            {
+                actions.push(KeyAction::KeyUp(vk));
             }
         }
         self.build_response(actions, true, TimerIntent::CancelAll)

@@ -2651,6 +2651,9 @@ fn establish_initial_focus_scope_advances_focus_epoch_once() {
 
 #[test]
 fn establish_initial_focus_scope_does_not_write_ime_belief() {
+    // (関数名, 禁止語) の組で例外を明示する。件数と中身は下の専用 assert が縛る。
+    const EXEMPT: &[(&str, &str)] = &[("sync_initial_focus_fence", "dispatch_event(")];
+
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let bodies = [
         (
@@ -2677,6 +2680,14 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "enter_focus_scope",
             extract_fn_body(&content, "fn enter_focus_scope"),
         ),
+        // BUG-102 で追加した fence 同期ヘルパー。`dispatch_event(` を1件だけ
+        // 持つため下の EXEMPT で除外するが、**残りの禁止語は他と同じく効かせる**
+        // ——対象リストへ載せないと、この関数に belief 書き込みを足しても
+        // どのテストも落ちない（2026-08-31 敵対的レビュー指摘3-a）。
+        (
+            "sync_initial_focus_fence",
+            extract_fn_body(&content, "fn sync_initial_focus_fence"),
+        ),
     ];
     for forbidden in [
         "dispatch_event(",
@@ -2686,12 +2697,31 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         "EngineCommand::FocusChanged",
     ] {
         for (name, body) in bodies {
+            if EXEMPT.contains(&(name, forbidden)) {
+                continue;
+            }
             assert!(
                 !body.contains(forbidden),
                 "establish_initial_focus_scope indirect path `{name}` must not write IME belief via `{forbidden}`"
             );
         }
     }
+
+    // 例外を認めた `sync_initial_focus_fence` の `dispatch_event` は、fence 同期
+    // イベントちょうど1件でなければならない（BUG-102）。件数を縛らないと、
+    // 2つ目の dispatch（`FocusChanged` 等）をここに足しても既存テストが全て
+    // 緑のまま通ってしまう。
+    let sync_body = extract_fn_body(&content, "fn sync_initial_focus_fence");
+    assert_eq!(
+        count_real_calls(sync_body, "dispatch_event("),
+        1,
+        "sync_initial_focus_fence の dispatch_event はちょうど1件（fence 同期のみ）"
+    );
+    assert!(
+        non_comment_lines(sync_body).contains("ImeEvent::InitialFocusFenceEstablished"),
+        "sync_initial_focus_fence の唯一の dispatch は \
+         ImeEvent::InitialFocusFenceEstablished であること"
+    );
 }
 
 /// `apply_app_disable_transition` の `invalidate_engine_context`（engine decision の
@@ -2756,6 +2786,124 @@ fn focus_hwnd_updated_dispatch_is_skipped_during_bootstrap() {
          fence がまだ FocusChanged で初期化されておらず、belief 層へ書き込むと \
          establish_initial_focus_scope の不変条件を破るため）"
     );
+}
+
+/// BUG-102: bootstrap の `establish_initial_focus_scope` は、live 側フェンス
+/// （`Runtime::focus_fence()` = `enter_focus_scope` 後の epoch + `update_focus_info`
+/// 後の hwnd）を `ObservationStore::current_fence` へ同期しなければならない。
+///
+/// 同期が無いと、起動時にフォーカスされていたアプリで発生する `ImmCrossProbe`
+/// 観測（High / `ActuatingPool`）が `derive_filtered` の `is_identity_ok` で
+/// stale 扱いされ、ユーザーが別プロセスへ切り替えて戻る（= `FocusChanged`）まで
+/// 恒久的に導出から外れ続ける。
+///
+/// 呼び出し順序も固定する。`sync_initial_focus_fence` が読む `focus_fence()` の
+/// 2 軸は別々の場所で確定するため、**両方の後**でなければならない:
+/// epoch は `enter_focus_scope`、hwnd は `advance_focus_tracking`
+/// （→ `update_focus_info`）。どちらか一方でも前に置くと、確定前の古い値を
+/// fence として焼き付ける。
+#[test]
+fn establish_initial_focus_scope_syncs_the_observation_fence() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let body = extract_fn_body(&content, "fn establish_initial_focus_scope");
+    assert_eq!(
+        count_real_calls(body, "self.sync_initial_focus_fence("),
+        1,
+        "establish_initial_focus_scope は sync_initial_focus_fence をちょうど1回呼ぶこと \
+         (BUG-102: ObservationStore 側の fence が既定値のまま残ると、起動直後の \
+         アプリの高信頼観測が次のプロセス変更まで導出から外れ続ける)"
+    );
+    // 順序判定もコメントを落としたテキストに対して行う（doc コメント中の関数名
+    // 言及が `find` に先に当たると偽陽性/偽陰性になるため、件数カウント側の
+    // `count_real_calls` と揃える）。
+    let body_code = non_comment_lines(body);
+    let idx = |needle: &str| {
+        body_code
+            .find(needle)
+            .unwrap_or_else(|| panic!("establish_initial_focus_scope must call `{needle}`"))
+    };
+    let advance_idx = idx("self.advance_focus_tracking(");
+    let enter_idx = idx("self.enter_focus_scope(");
+    let sync_idx = idx("self.sync_initial_focus_fence(");
+    assert!(
+        enter_idx < sync_idx,
+        "sync_initial_focus_fence は enter_focus_scope の後に呼ぶこと \
+         (先に呼ぶと epoch インクリメント前の古い fence を焼き付ける)"
+    );
+    assert!(
+        advance_idx < sync_idx,
+        "sync_initial_focus_fence は advance_focus_tracking の後に呼ぶこと \
+         (先に呼ぶと update_focus_info 前の hwnd=NULL を fence に焼き付ける)"
+    );
+}
+
+/// BUG-102: `ImeEvent::InitialFocusFenceEstablished` は bootstrap 専用であり、
+/// dispatch 元は `sync_initial_focus_fence` の1箇所だけ。reducer 側のアームは
+/// `ObservationStore::establish_initial_fence()`（fence 1フィールドの差し替え）
+/// しか行わない。
+///
+/// このイベントは「まだ一度も IME を観測していない時点で dispatch される」という、
+/// 他のどのイベントも持たない性質を持つ（ADR-102 決定3-b）。belief を書く処理が
+/// このアームや新しい呼び出し元に紛れ込むと、その不変条件が静かに壊れる。
+/// アーム本体が belief に触れないことは
+/// `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
+/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+#[test]
+fn initial_focus_fence_event_only_touches_the_fence() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    // (needle, [(相対パス, 期待マッチ数)])。列挙されないファイルは 0 でなければ
+    // ならない。**どちらの needle も固定ファイルへの grep ではなく全ファイル走査に
+    // 乗せる** ——固定リストへの grep は「新しいファイルに呼び出しが追加された」
+    // パターンを検知できない（本ファイル冒頭 `list_src_files` の doc 参照）。
+    let checks: &[(&str, &[(&str, usize)])] = &[
+        (
+            "InitialFocusFenceEstablished",
+            &[
+                // sync_initial_focus_fence（bootstrap 専用の唯一の dispatch 元）。
+                ("runtime/focus_tracking.rs", 1),
+                // reducer のアーム。
+                ("state/ime_model.rs", 1),
+                // variant 定義そのもの。
+                ("state/ime_event.rs", 1),
+            ],
+        ),
+        (
+            // reducer のアームが fence の差し替え以外をしていないこと（呼び先の限定）。
+            // 先頭のドットにより `pub fn establish_initial_fence(`（定義）は数えない。
+            ".establish_initial_fence(",
+            &[("state/ime_model.rs", 1)],
+        ),
+    ];
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        // doc コメントでこのイベント名に言及しているファイル（`probe_admission.rs` の
+        // `FocusFence` 説明等）を数えないよう、コメント行を落としてから数える。
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            let expected_count = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, expected_count,
+                "src/{rel} 内の `{needle}` の出現数が想定\
+                 ({expected_count})と異なります(実際: {count})。\n\
+                 このイベントは bootstrap（最初の IME 観測より前）でのみ dispatch される\
+                 専用イベントです。新しい呼び出し元を足す前に、それが本当に「起動時の\
+                 初回フォーカススコープ確立」なのかを確認してください（ADR-102 決定3-b）。"
+            );
+        }
+    }
 }
 
 // ── ADR-103 決定4: probe 段の唯一の出口 ────────────────────────────────────
@@ -2875,68 +3023,5 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
         count, 1,
         "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(1 = \
          finish_probe_stage のみ)と異なります(実際: {count})。"
-    );
-}
-
-/// ADR-110 決定1: `key_remap` の vk 書き換え（`apply_key_remap` 呼び出し）は
-/// `hook_callback` 内で `apply_alt_impersonation` の呼び出しより**後**、
-/// Ctrl 消費追跡ブロック（`CTRL_CONSUMED_SINCE_DOWN` への `store` 呼び出し）
-/// より**前**でなければならない。Alt なりすましとの相互作用（決定4の Alt/Win
-/// 系禁止の前提）や Ctrl 消費追跡の書き換え後 vk 依存（決定5）が、この順序に
-/// 暗黙に依存している。
-#[test]
-fn key_remap_is_applied_after_alt_impersonation_and_before_ctrl_consumption_tracking() {
-    let path = "src/hook.rs";
-    let content = read_crate_file(path);
-
-    let alt_impersonation_pos = content
-        .find("apply_alt_impersonation(vk, is_keydown, alt_extended, config)")
-        .expect("apply_alt_impersonation 呼び出しが見つかりません");
-    let key_remap_pos = content
-        .find("let key_remapped_vk = apply_key_remap(vk, is_keydown)")
-        .expect("apply_key_remap 呼び出しが見つかりません");
-    // `CTRL_CONSUMED_SINCE_DOWN.store(false, ..)` は `clear_hook_latches_for_app_disable`
-    // にも別途存在するため、`hook_callback` 内の Ctrl 消費追跡ブロック直前の
-    // コメントで一意に特定する。
-    let ctrl_consumption_pos = content
-        .find("// Ctrl consumption tracking")
-        .expect("Ctrl 消費追跡ブロックの目印コメントが見つかりません");
-
-    assert!(
-        alt_impersonation_pos < key_remap_pos,
-        "{path}: apply_key_remap は apply_alt_impersonation より後で呼ばれる必要があります \
-         (ADR-110 決定1)。"
-    );
-    assert!(
-        key_remap_pos < ctrl_consumption_pos,
-        "{path}: apply_key_remap は Ctrl 消費追跡ブロックより前で呼ばれる必要があります \
-         (ADR-110 決定1・決定5の前提)。"
-    );
-}
-
-/// ADR-110 決定5: Ctrl 消費追跡の reset 条件が参照する `original_vk`
-/// （Alt なりすまし・key_remap どちらの書き換えより前の vk）は、両方の
-/// 書き換え呼び出しより**前**に捕捉されていなければならない。この順序が
-/// 崩れると `is_ctrl_variant_either(original_vk, vk)` が常に書き換え後の値
-/// だけを見ることになり、決定5が解消したはずの誤検出が再発する。
-#[test]
-fn original_vk_is_captured_before_any_key_rewrite() {
-    let path = "src/hook.rs";
-    let content = read_crate_file(path);
-
-    let original_vk_pos = content
-        .find("let original_vk = vk;")
-        .expect("original_vk の捕捉が見つかりません");
-    let alt_impersonation_pos = content
-        .find("apply_alt_impersonation(vk, is_keydown, alt_extended, config)")
-        .expect("apply_alt_impersonation 呼び出しが見つかりません");
-    let key_remap_pos = content
-        .find("let key_remapped_vk = apply_key_remap(vk, is_keydown)")
-        .expect("apply_key_remap 呼び出しが見つかりません");
-
-    assert!(
-        original_vk_pos < alt_impersonation_pos && original_vk_pos < key_remap_pos,
-        "{path}: original_vk は Alt なりすまし・key_remap どちらの書き換えより \
-         前で捕捉されている必要があります(ADR-110 決定5)。"
     );
 }

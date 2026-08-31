@@ -44,6 +44,28 @@ impl FsmAdapter {
         Self::response_to_decision(resp)
     }
 
+    /// エンジン非活性時専用: chord 判定（`state`）には一切触れず、
+    /// `output_history` の解放索引だけを掃除して対応する `KeyUp` を発行する
+    /// （ADR-112決定2、`NicolaFsm::release_only` 参照）。
+    pub(super) fn release_only(&mut self, event: &RawKeyEvent) -> Decision {
+        let resp = self.fsm.release_only(event);
+        Self::response_to_decision(resp)
+    }
+
+    /// コンテキスト喪失（フォーカス変更・非活性化）時に `output_history` の
+    /// 解放索引を全て強制解放し、`KeyAction::Key(vk)` 型のエントリに対応する
+    /// `KeyUp(vk)` を `Effect` として返す（`NicolaFsm::release_all_pending_output`
+    /// 参照、ADR-112コードレビュー指摘）。`KeyLifecycle::flush_pending_key_ups`
+    /// と同期して呼ぶこと。
+    pub(super) fn release_all_pending_output(&mut self) -> EffectVec {
+        let actions = self.fsm.release_all_pending_output();
+        let mut effects = EffectVec::new();
+        if !actions.is_empty() {
+            effects.push(Effect::Input(InputEffect::SendKeys(actions)));
+        }
+        effects
+    }
+
     /// 保留中のキーをフラッシュし、Decision を返す。
     pub(super) fn flush(&mut self, reason: ContextChange, composing: ComposingHint) -> Decision {
         let resp = self.fsm.flush_pending(reason, composing);
@@ -81,6 +103,12 @@ impl FsmAdapter {
     /// 同時打鍵判定の閾値を更新する（ミリ秒指定）。
     pub(super) fn set_threshold_ms(&mut self, ms: u32) {
         self.fsm.set_threshold_ms(ms);
+    }
+
+    /// テスト用: 重なり不足判定のマージンを上書きする（ADR-112決定1参照）。
+    #[cfg(test)]
+    pub(super) fn set_min_overlap_margin_percent_for_test(&mut self, pct: u64) {
+        self.fsm.set_min_overlap_margin_percent_for_test(pct);
     }
 
     /// 確定モードと投機出力の待機時間を更新する。

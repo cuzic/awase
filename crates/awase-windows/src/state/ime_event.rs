@@ -442,6 +442,51 @@ pub enum ImeEvent {
     /// （code review 2026-08-26 で発見された退行）。
     FocusHwndUpdated { hwnd: HwndId },
 
+    /// 起動直後（bootstrap）に確立した最初のフォーカススコープの同一性を
+    /// `ObservationStore::current_fence` へ同期する（BUG-102、ADR-102 決定3-b ×
+    /// ADR-106 決定3）。`establish_initial_focus_scope` からのみ dispatch される。
+    ///
+    /// **belief を一切書かない。** 運ぶのは「今どの窓のどの epoch を見ているか」と
+    /// いう識別子だけで、IME が ON か OFF かの推測は含まない。reducer 側も
+    /// `ObservationStore::establish_initial_fence()`（fence 1 フィールドの差し替え）
+    /// しか行わず、`FocusChanged` が触る `app_policy` / `last_intent` / `applied` /
+    /// `force_guards` / `force_on_retry` / `input_barrier` / `current_focus` / 観測
+    /// プールのいずれにも触れない。ADR-102 決定3-b の「最初の IME 観測より前に
+    /// belief を書き換えない」を守ったまま fence だけを揃えるための専用イベント。
+    ///
+    /// **これが無いと何が壊れるか（BUG-102）**: `establish_initial_focus_scope` は
+    /// `enter_focus_scope` で `FocusStore::focus_epoch` を 0→1 に進め、
+    /// `update_focus_info` で `platform.focus.current.hwnd` に実 hwnd を入れる。
+    /// つまり live 側フェンス（`Runtime::focus_fence()`）は `{epoch: 1, hwnd: 実 hwnd}`
+    /// になる。一方 `ObservationStore::current_fence` は `FocusChanged` /
+    /// `FocusHwndUpdated` でしか動かず、bootstrap ではどちらも dispatch しないため
+    /// `FocusFence::default()`（`{epoch: 0, hwnd: HwndId::NULL}`）のまま残る。
+    /// 結果、起動時にフォーカスされていたアプリの `ImmCrossProbe` 観測（live 側
+    /// フェンスでスタンプされる）が `ObservationStore::derive_filtered` の
+    /// `is_identity_ok` で stale 扱いされ、**別プロセスへ切り替えて戻る
+    /// （= `FocusChanged`）まで恒久的に導出から外れ続ける**。
+    ///
+    /// 影響を受けるのは `ImmCrossProbe`（High / `ActuatingPool`）1 ソースだけである
+    /// ——`is_identity_ok` は `FocusProbe` も照合対象にするが、`FocusProbe` は
+    /// `Low`（`state/evidence.rs`）であり `derive_filtered` の High 分岐
+    /// （`== High`）にも Medium 分岐（`>= Medium`）にも元から載らないため、
+    /// フェンスの一致・不一致で結論が変わらない。実害は 2 経路:
+    ///
+    /// - `ImeModel::resolve_open_at`: 解決順が `derive_any` →
+    ///   `most_recent_trusted`（**フェンス照合なし**）→ `desired_open` なので、
+    ///   ImmCrossProbe 以外に fresh な観測が無ければ `most_recent_trusted` が同じ
+    ///   ImmCrossProbe を拾い直し、値としては同じになる（症状なし）。一方
+    ///   `ObserverPoll` 等の fresh な Medium が併存すると `derive_any` がその
+    ///   Medium 単独合意を返し、**本来なら即採用されるはずの High を上書きする**。
+    /// - `state/open_warrant.rs::issue_open_warrant` Step 3（`derive_actuating`）:
+    ///   こちらには `most_recent_trusted` フォールバックが無い。ImmCrossProbe が
+    ///   外れると、根拠が `DirectRead` から Medium の `SingleIndirect` へ落ちるか、
+    ///   Actuating 観測が他に無ければ Step 3 自体が飛ばされ Step 4a/4b の
+    ///   `HeuristicGuess`（あるいは warrant 不発行）まで劣化する。
+    InitialFocusFenceEstablished {
+        fence: crate::state::probe_admission::FocusFence,
+    },
+
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
     // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。

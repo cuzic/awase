@@ -217,6 +217,31 @@ initialize_ime_cache();     // ここで初めて実観測 → belief が立つ
 
 **確認事項**: `establish_initial_focus_scope` が `focus_epoch` をインクリメントした直後の `initialize_ime_cache()`（`IoMode::Sync` の同期経路）は非同期probeをspawnしないため、世代の不整合は起きない。
 
+**追補（2026-08-31、BUG-102）**: 上の擬似コードは「belief には一切触れず」と
+書いているが、実装は `establish_initial_focus_scope` から `ImeEvent` を**1件だけ**
+dispatch する（`sync_initial_focus_fence` →
+`ImeEvent::InitialFocusFenceEstablished { fence }`）。これは決定3-bに抵触しない。
+
+決定3-bの不変条件は「**最初の IME 観測より前に belief（IME が ON か OFF かの
+推測）を書き換えない**」であって、「`ImeEvent` を1件も流さない」ではない。この
+イベントが運ぶ `FocusFence { epoch, hwnd }` は「今どの窓のどの epoch を見て
+いるか」という**観測の新鮮さ判定用の識別子**であり、ON/OFF の推測を含まない。
+reducer のアームも `ObservationStore::establish_initial_fence()`（`current_fence`
+1フィールドの差し替え）しか呼ばず、`FocusChanged` が触る `app_policy` /
+`last_intent` / `applied` / `force_guards` / `force_on_retry` / `input_barrier` /
+`current_focus` / 観測プールのいずれにも触れない
+（`state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
+がモデル全体の `Debug` 一致で機械的に固定）。
+
+**なぜ必要になったか**: 擬似コードが列挙している `focus_epoch += 1` により live
+側フェンス（`Runtime::focus_fence()`）は `{epoch: 1, hwnd: 実 hwnd}` になるのに、
+`ObservationStore::current_fence` は `FocusChanged` / `FocusHwndUpdated` でしか
+動かないため既定値 `{0, NULL}` のまま残っていた。ADR-106 決定3の
+`is_identity_ok` が `ImmCrossProbe` にフェンス一致を要求するため、起動時に
+フォーカスされていたアプリの High 観測が導出から外れ続けた。「belief を書かない」
+ために `FocusChanged` を落とした結果、**belief ではない fence の同期まで一緒に
+落ちていた**というのが本件の構図である。詳細は `docs/known-bugs.md` BUG-102。
+
 **証拠義務**: focus遷移ファミリー。`docs/known-bugs.md` に暫定 **BUG-81** を起票し、「bootstrapの初回フォーカスは専用入口を持ち、定常経路の`process_changed`判定には特殊ケースが存在しない」という設計方針を記録する。テストは `establish_initial_focus_scope` の本体に belief 書き込みパターンが一切出現しないことを固定する `architecture_guard`（`uia_async_focus_kind_handler_does_not_write_belief` と同型）1本と、起動シーケンスのcharacterizationテスト（`establish_initial_focus_scope`→`initialize_ime_cache`の順で呼ばれ、`focus_epoch`が1つだけ進むこと）。
 
 ---

@@ -39,7 +39,7 @@ right_thumb_key = "VK_CONVERT"       # 変換キー
 layouts_dir = "config"
 
 # デフォルトの .yab レイアウトファイル名
-default_layout = "nicola.yab"
+default_layout = "nicola_keytop.yab"
 
 # 確定モード（上級者向け、設定画面には表示されません — wait が既定かつ推奨）。
 # ほとんどの環境では wait が最も安定します。他のモードは待機モードでは
@@ -99,8 +99,9 @@ ime_off_keys = ["Ctrl+VK_NONCONVERT"]
 
 # 重なり不足判定のマージン（%）。thumb押下からchar1解放までの物理的な重なり
 # 時間が閾値のこの割合未満なら「重なり不足」とみなし、n-gramタイブレークに
-# 回す（上級者向け）。
-# min_overlap_margin_percent = 15
+# 回す（上級者向け）。既定は0（この判定を実質無効化、ADR-112決定1・実機
+# ソーク後に引き締め予定）。
+# min_overlap_margin_percent = 0
 
 # ── IME 同期設定 ──
 # Shadow IME 状態を追跡するためのキー設定。

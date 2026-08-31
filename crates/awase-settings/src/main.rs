@@ -11,6 +11,7 @@ use awase::yab::{FullwidthStrExt as _, YabFace, YabLayout, YabValue};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
+mod scancode_map_admin;
 mod startup_failure;
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
@@ -223,6 +224,21 @@ fn main() -> eframe::Result<()> {
         return bug_report::run(&parse_bug_report_args(&args));
     }
 
+    // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
+    // レジストリ操作のみ行い、終了コードで結果を返す（`--bug-report`と
+    // 同型のヘッドレス分岐パターン）。
+    if let Some(mode) = arg_value(&args, "--scancode-map") {
+        let enable = match mode {
+            "on" => true,
+            "off" => false,
+            _ => {
+                log::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
+                std::process::exit(1);
+            }
+        };
+        std::process::exit(scancode_map_admin::run_elevated_worker(enable));
+    }
+
     let viewport = egui::ViewportBuilder::default()
         // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
         // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
@@ -288,9 +304,6 @@ struct SettingsApp {
     new_keymap_from_alt: bool,
     new_keymap_from_main: String,
     new_keymap_to_main: String,
-    // key_remap rule add-buffers（ADR-110）
-    new_key_remap_from: String,
-    new_key_remap_to: String,
     // Keymap capture mode (None = not capturing)
     capturing: Option<CaptureTarget>,
     // アプリ別タブ add-buffers: (process, class) × force_text/force_bypass/force_vk/force_tsf
@@ -332,6 +345,12 @@ struct SettingsApp {
     /// バックグラウンドスレッドで実行し、この `Receiver` を毎フレーム
     /// ノンブロッキングでポーリングする。
     pending_save: Option<std::sync::mpsc::Receiver<PendingSaveResult>>,
+    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111）の現在の Scancode Map
+    /// 状態キャッシュ。`None` はまだ一度も読んでいないことを示す（タブを
+    /// 開いた時と操作直後にのみ読み直す、毎フレーム `RegGetValueW` しない）。
+    scancode_map_status: Option<scancode_map_admin::ScancodeMapStatus>,
+    /// 直近の有効化/無効化操作の結果メッセージ（GUI表示用）。
+    scancode_map_last_message: Option<String>,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -378,8 +397,6 @@ impl SettingsApp {
             new_keymap_from_alt: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
-            new_key_remap_from: String::new(),
-            new_key_remap_to: String::new(),
             capturing: None,
             new_override_bufs: Default::default(),
             new_disable_app: String::new(),
@@ -406,6 +423,8 @@ impl SettingsApp {
             layout_pending_open: None,
             layout_pending_save_as: None,
             pending_save: None,
+            scancode_map_status: None,
+            scancode_map_last_message: None,
         }
     }
 
@@ -1394,13 +1413,6 @@ impl SettingsApp {
     #[expect(clippy::too_many_lines)]
     fn tab_keymap(&mut self, ui: &mut egui::Ui) {
         ui.heading("ショートカット再割当");
-        // ADR-110 決定7/10（R7対応）: [[keymap]] は実際のキー処理から一度も
-        // 呼ばれておらず動作しない（docs/known-bugs.md BUG-99）。
-        // docs/known-bugs.md はユーザーには届かないため、GUI 上にも明示する。
-        ui.colored_label(
-            egui::Color32::from_rgb(200, 120, 0),
-            "⚠ 現在この機能は動作しません（キー処理から呼ばれていません、BUG-99）",
-        );
         ui.label(
             "アプリ別にキー入力を別キーへ置き換えます。\n\
              例: Ctrl+I を F7 に再割当（vim 系で Tab と区別したい場合等）。\n\
@@ -1580,94 +1592,97 @@ impl SettingsApp {
         }
 
         ui.add_space(16.0);
-        egui::CollapsingHeader::new("物理キー単純リマップ（key_remap）")
-            .default_open(true)
-            .show(ui, |ui| self.tab_key_remap(ui));
+        self.scancode_map_section(ui);
     }
 
-    /// `key_remap`（ADR-110）の設定セクション。`tab_keymap` の
-    /// `CollapsingHeader` から呼ばれる（決定7: 新規タブは作らず、視覚的に
-    /// 分離した既存タブ内セクションとして提供する）。
-    fn tab_key_remap(&mut self, ui: &mut egui::Ui) {
+    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111決定7）。Scancode Map
+    /// （レジストリ、要昇格・要再起動）方式のみを提供する——ADR-110の
+    /// フックベース`key_remap`機構はJIS英数キー位置で日本語IMEと衝突する
+    /// 構造的リスクが判明したため撤回済み（`docs/adr/111-...md`参照）。
+    fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Caps(英数)⇔Ctrl 入れ替え");
         ui.label(
-            "物理キー1つを別の物理キーとして常時扱います（例: CapsLock を Ctrl として \
-             使う）。エンジンの有効/無効に関わらず常時適用されます。\n\
-             ※ Alt/Win 系キーは from/to に指定できません（内部の held 判定と整合しないため）。",
+            "CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を入れ替えます。\n\
+             Windows のレジストリ（Scancode Map）を書き換えるため、管理者権限の\n\
+             確認が1回表示されます。変更の反映には再起動が必要です（サインアウトでは\n\
+             反映されないことがあります）。\n\
+             この設定はこのPCの全ユーザーに影響します。リモートデスクトップ接続の\n\
+             セッション内では動作しません。",
         );
-        ui.add_space(8.0);
+        ui.add_space(4.0);
 
-        ui.label("登録済みルール");
-        if self.config.key_remap.is_empty() {
-            ui.label("  （ルールはまだ登録されていません）");
-        } else {
-            let mut rm = None;
-            let warnings: Vec<Option<String>> = (0..self.config.key_remap.len())
-                .map(|i| key_remap_row_warning(&self.config.key_remap, i))
-                .collect();
-            for (i, rule) in self.config.key_remap.iter_mut().enumerate() {
-                ui.horizontal_wrapped(|ui| {
-                    key_remap_key_combo(
-                        ui,
-                        &format!("key_remap_from_{i}"),
-                        &mut rule.from,
-                        "リマップ元の物理キーです。",
-                    );
-                    ui.label("→");
-                    key_remap_key_combo(
-                        ui,
-                        &format!("key_remap_to_{i}"),
-                        &mut rule.to,
-                        "リマップ先のキーです。",
-                    );
-                    if let Some(reason) = &warnings[i] {
-                        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), "⚠")
-                            .on_hover_text(reason);
-                    }
-                    if ui
-                        .small_button("x")
-                        .on_hover_text("押すと: このルールを削除します。")
-                        .clicked()
-                    {
-                        rm = Some(i);
-                    }
-                });
-            }
-            if let Some(i) = rm {
-                self.config.key_remap.remove(i);
-            }
+        if self.scancode_map_status.is_none() {
+            self.scancode_map_status = Some(scancode_map_admin::read_status());
         }
-        ui.add_space(12.0);
 
-        ui.label("新規追加");
-        ui.horizontal_wrapped(|ui| {
-            key_remap_key_combo(
-                ui,
-                "new_key_remap_from",
-                &mut self.new_key_remap_from,
-                "リマップ元の物理キーです。",
+        match &self.scancode_map_status {
+            Some(scancode_map_admin::ScancodeMapStatus::Active { extra_entries }) => {
+                if *extra_entries == 0 {
+                    ui.colored_label(egui::Color32::from_rgb(0, 140, 0), "✓ 有効");
+                } else {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0, 140, 0),
+                        format!("✓ 有効（他に awase と無関係な設定が {extra_entries} 件あります）"),
+                    );
+                }
+            }
+            Some(scancode_map_admin::ScancodeMapStatus::Inactive { extra_entries }) => {
+                if *extra_entries == 0 {
+                    ui.label("未設定");
+                } else {
+                    ui.label(format!(
+                        "未設定（awase と無関係な Scancode Map 設定が {extra_entries} 件あります）"
+                    ));
+                }
+            }
+            Some(scancode_map_admin::ScancodeMapStatus::ReadError(e)) => {
+                ui.colored_label(egui::Color32::RED, format!("読み取りエラー: {e}"));
+            }
+            None => unreachable!("直前に read_status() で埋めている"),
+        }
+
+        ui.horizontal(|ui| {
+            let is_active = matches!(
+                self.scancode_map_status,
+                Some(scancode_map_admin::ScancodeMapStatus::Active { .. })
             );
-            ui.label("→");
-            key_remap_key_combo(
-                ui,
-                "new_key_remap_to",
-                &mut self.new_key_remap_to,
-                "リマップ先のキーです。",
-            );
-            if ui
-                .button("+追加")
-                .on_hover_text("押すと: 上で選んだルールを一覧に追加します。")
-                .clicked()
-                && !self.new_key_remap_from.is_empty()
-                && !self.new_key_remap_to.is_empty()
-            {
-                self.config.key_remap.push(awase::config::KeyRemapRule {
-                    from: self.new_key_remap_from.clone(),
-                    to: self.new_key_remap_to.clone(),
-                });
-                self.new_key_remap_from.clear();
-                self.new_key_remap_to.clear();
+            if ui.button("有効にする").clicked() && !is_active {
+                self.apply_scancode_map_change(true);
+            }
+            if ui.button("無効にする").clicked() && is_active {
+                self.apply_scancode_map_change(false);
             }
         });
+
+        if let Some(msg) = &self.scancode_map_last_message {
+            ui.label(msg);
+        }
+    }
+
+    /// 有効化/無効化ボタン押下時の処理。自己昇格フロー
+    /// （`scancode_map_admin::request_elevated_change`）を起動して完了を
+    /// 待ち、結果に応じてメッセージを表示し、状態キャッシュを読み直す
+    /// （ADR-111決定4・決定7）。
+    fn apply_scancode_map_change(&mut self, enable: bool) {
+        use scancode_map_admin::ElevationOutcome;
+        let outcome = scancode_map_admin::request_elevated_change(enable);
+        self.scancode_map_last_message = Some(match outcome {
+            ElevationOutcome::Success => {
+                if enable {
+                    "有効にしました。反映するには再起動してください。".to_string()
+                } else {
+                    "無効にしました。反映するには再起動してください。".to_string()
+                }
+            }
+            ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
+            ElevationOutcome::Cancelled => {
+                "キャンセルされました（管理者権限が必要です）。".to_string()
+            }
+            ElevationOutcome::LaunchError(e) => format!("起動できませんでした: {e}"),
+        });
+        // 決定7: 操作直後にのみ再読み込みする（毎フレーム読まない）。
+        self.scancode_map_status = Some(scancode_map_admin::read_status());
     }
 
     /// 「アプリ無効化」タブ（`disable_apps`）。プロセス名のみで完結する単純な
@@ -2981,113 +2996,6 @@ const SOLO_REPEAT_EXTRA_OPTIONS: &[(&str, &str)] = &[("Insert", "VK_INSERT")];
 const IME_MODE_KEY_OPTIONS: &[(&str, &str)] =
     &[("英数", "VK_DBE_ALPHANUMERIC"), ("漢字", "VK_KANJI")];
 
-/// `key_remap`（ADR-110、物理キー単純リマップ）専用の候補リスト。
-///
-/// `KEYMAP_MAIN_KEYS`（`[[keymap]]` の main key ドロップダウン用）には
-/// 修飾キー・CapsLock が1つも含まれていない（コンボ UI 側で Ctrl/Shift/Alt を
-/// チェックボックスとして別扱いするため）。`key_remap` の主対象はまさに
-/// これらの修飾キー・CapsLock なので、専用リストとして分離する（決定7）。
-///
-/// `THUMB_KEY_OPTIONS` はそのまま含める——このリスト自体には `"Left Alt"`/
-/// `"Right Alt"` センチネル文字列は含まれない（それらは別の
-/// `ALT_IMPERSONATION_OPTIONS` にのみ存在し、`thumb_key_combo` が `.chain()`
-/// で明示的に混ぜている）。Alt/Win 系 VK は決定4で `from`/`to` 双方禁止のため、
-/// このリストにも一切含めない。
-const KEY_REMAP_KEYS: &[(&str, &str)] = &[
-    ("CapsLock", "VK_CAPITAL"),
-    ("Left Ctrl", "VK_LCONTROL"),
-    ("Right Ctrl", "VK_RCONTROL"),
-    ("Left Shift", "VK_LSHIFT"),
-    ("Right Shift", "VK_RSHIFT"),
-    ("Space", "VK_SPACE"),
-    ("Enter", "VK_RETURN"),
-    ("変換", "VK_CONVERT"),
-    ("無変換", "VK_NONCONVERT"),
-    ("かな", "VK_KANA"),
-    ("カタカナ", "VK_DBE_KATAKANA"),
-    ("ひらがな", "VK_DBE_HIRAGANA"),
-    ("英数", "VK_DBE_ALPHANUMERIC"),
-    ("漢字", "VK_KANJI"),
-    ("F13", "VK_F13"),
-    ("F14", "VK_F14"),
-    ("F15", "VK_F15"),
-    ("F16", "VK_F16"),
-    ("F17", "VK_F17"),
-    ("F18", "VK_F18"),
-    ("F19", "VK_F19"),
-    ("F20", "VK_F20"),
-];
-
-/// `rules[index]` の GUI 表示用の警告理由（無ければ `None`）。
-///
-/// `awase_windows::state::key_remap::compile_key_remaps` の主要な skip 条件
-/// （名前解決失敗・`from == to`・重複・Alt/Win 系禁止）を GUI 表示用に軽量に
-/// 再実装したもの。`compile_key_remaps` 自身は `log::warn!` するだけで
-/// per-rule の理由文字列を返す設計になっていない（起動時ログ用途のため）ため、
-/// GUI ではこの別実装で表示する（多少の重複を許容する、決定7）。親指キー/
-/// ホットキー衝突警告（決定9）は config 全体の文脈が必要なため GUI 側では
-/// 省略し、起動時ログのみで通知する。
-const KEY_REMAP_FORBIDDEN_VKS: [&str; 5] =
-    ["VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN"];
-
-fn key_remap_row_warning(rules: &[awase::config::KeyRemapRule], index: usize) -> Option<String> {
-    let rule = &rules[index];
-    let Some(from_vk) = VkCode::from_name(&rule.from) else {
-        return Some(format!("'{}' を解決できません", rule.from));
-    };
-    let Some(to_vk) = VkCode::from_name(&rule.to) else {
-        return Some(format!("'{}' を解決できません", rule.to));
-    };
-    if from_vk == to_vk {
-        return Some("from と to が同じです（無意味）".to_string());
-    }
-    if KEY_REMAP_FORBIDDEN_VKS.contains(&rule.from.as_str())
-        || KEY_REMAP_FORBIDDEN_VKS.contains(&rule.to.as_str())
-    {
-        return Some("Alt/Win 系キーは使用できません".to_string());
-    }
-    // 解決済み VkCode で比較する（`compile_key_remaps` と同じ基準）。生文字列
-    // 比較だと "無変換" と "VK_NONCONVERT" のような別名表記違いの重複を
-    // 見逃す（同じ VkCode に解決されるにも関わらず異なる文字列のため）。
-    if rules[..index]
-        .iter()
-        .any(|r| VkCode::from_name(&r.from) == Some(from_vk))
-    {
-        return Some(format!("'{}' は重複しています（先頭が優先）", rule.from));
-    }
-    None
-}
-
-/// `key_remap` の `from`/`to` 選択ドロップダウン。`thumb_key_combo` と同型
-/// （キャプチャボタンなし、`KEY_REMAP_KEYS` からの選択のみ）。変更時は true を返す。
-fn key_remap_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
-    let mut changed = false;
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(if current.is_empty() {
-            "（未選択）"
-        } else {
-            KEY_REMAP_KEYS
-                .iter()
-                .find(|(_, v)| *v == current.as_str())
-                .map_or(current.as_str(), |(d, _)| *d)
-        })
-        .width(110.0)
-        .show_ui(ui, |ui| {
-            for (label, internal) in KEY_REMAP_KEYS {
-                if ui
-                    .selectable_label(current.as_str() == *internal, *label)
-                    .clicked()
-                {
-                    *current = (*internal).to_string();
-                    changed = true;
-                }
-            }
-        })
-        .response
-        .on_hover_text(tooltip);
-    changed
-}
-
 #[cfg(test)]
 mod ime_mode_key_options_tests {
     use super::{IME_MODE_KEY_OPTIONS, THUMB_KEY_OPTIONS};
@@ -3124,67 +3032,6 @@ mod ime_mode_key_options_tests {
                 "{internal} が THUMB_KEY_OPTIONS に漏れている"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod key_remap_tests {
-    use super::{KEY_REMAP_KEYS, key_remap_row_warning};
-    use awase::config::KeyRemapRule;
-
-    fn rule(from: &str, to: &str) -> KeyRemapRule {
-        KeyRemapRule {
-            from: from.to_string(),
-            to: to.to_string(),
-        }
-    }
-
-    /// ADR-110 決定7 の設定例（`VK_CAPITAL`/`VK_LCONTROL`）が GUI から選べる
-    /// （`KEYMAP_MAIN_KEYS` には無いことが r1 のバグだったため、専用リストで
-    /// カバーされていることを固定する）。
-    #[test]
-    fn key_remap_keys_contains_caps_lock_and_left_ctrl() {
-        assert!(KEY_REMAP_KEYS.iter().any(|(_, v)| *v == "VK_CAPITAL"));
-        assert!(KEY_REMAP_KEYS.iter().any(|(_, v)| *v == "VK_LCONTROL"));
-    }
-
-    /// Alt/Win 系 VK は決定4で禁止のため候補に出さない（R5対応）。
-    #[test]
-    fn key_remap_keys_excludes_alt_and_win_variants() {
-        for forbidden in ["VK_MENU", "VK_LMENU", "VK_RMENU", "VK_LWIN", "VK_RWIN"] {
-            assert!(
-                !KEY_REMAP_KEYS.iter().any(|(_, v)| *v == forbidden),
-                "{forbidden} が KEY_REMAP_KEYS に含まれている"
-            );
-        }
-    }
-
-    #[test]
-    fn valid_rule_has_no_warning() {
-        let rules = [rule("VK_CAPITAL", "VK_LCONTROL")];
-        assert!(key_remap_row_warning(&rules, 0).is_none());
-    }
-
-    #[test]
-    fn from_equal_to_warns() {
-        let rules = [rule("VK_CAPITAL", "VK_CAPITAL")];
-        assert!(key_remap_row_warning(&rules, 0).is_some());
-    }
-
-    #[test]
-    fn alt_variant_warns() {
-        let rules = [rule("VK_LMENU", "VK_CAPITAL")];
-        assert!(key_remap_row_warning(&rules, 0).is_some());
-    }
-
-    #[test]
-    fn duplicate_from_warns_second_entry_only() {
-        let rules = [
-            rule("VK_CAPITAL", "VK_LCONTROL"),
-            rule("VK_CAPITAL", "VK_RCONTROL"),
-        ];
-        assert!(key_remap_row_warning(&rules, 0).is_none());
-        assert!(key_remap_row_warning(&rules, 1).is_some());
     }
 }
 
@@ -3872,8 +3719,6 @@ mod layout_tab_repro {
             new_keymap_from_alt: false,
             new_keymap_from_main: String::new(),
             new_keymap_to_main: String::new(),
-            new_key_remap_from: String::new(),
-            new_key_remap_to: String::new(),
             capturing: None,
             new_override_bufs: <[(String, String); 4]>::default(),
             new_disable_app: String::new(),
@@ -3896,6 +3741,8 @@ mod layout_tab_repro {
             layout_pending_open: None,
             layout_pending_save_as: None,
             pending_save: None,
+            scancode_map_status: None,
+            scancode_map_last_message: None,
         }
     }
 

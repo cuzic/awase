@@ -117,6 +117,38 @@
                        Type="string" Value="" KeyPath="yes" />
         <RemoveFolder Id="RemoveLayoutDir" Directory="LayoutDir" On="uninstall" />
       </Component>
+      <!-- layout/nicola_keytop.yab（2026-08-31追加、新規インストールの既定）は
+           NicolaYab と同じ理由で NeverOverwrite="yes" にする: 配列編集タブで
+           その場編集されうるデータであり、かつ新規インストールの既定という
+           位置づけ上、最も多くのユーザーが実際に使うファイルになる。
+           NeverOverwrite はコンポーネントの KeyPath（レジストリ値）が既に
+           存在する場合の上書きだけを抑止し、KeyPath が存在しない真の新規
+           インストールには影響しない（2026-08-31 Opusレビュー指摘・訂正:
+           「NeverOverwriteを付けると新規インストールにも改善が届かなくなる」
+           という当初のコメントはMSIのセマンティクスとして誤りだった）。 -->
+      <Component Id="NicolaKeytopYab" Guid="5B75B3B2-A53D-493E-BB62-81AE2B17D8ED" NeverOverwrite="yes">
+        <File Source="dist\layout\nicola_keytop.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKeytopYab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
+      <!-- layout/nicola_us.yab・layout/nicola_f.yab（2026-08-31追加、Opus
+           レビュー指摘: README.md/README.en.mdがdefault_layoutの切り替え先
+           として案内しているのに、MSIには元々どちらも同梱されておらず、
+           案内通りに変更すると存在しないファイルへ無言でフォールバック
+           していた）。NicolaYab と同じくユーザーが配列編集タブでその場編集
+           しうるデータのため NeverOverwrite="yes" にする（DataFiles とは
+           異なり、これらは default_layout の切り替え先として README が
+           明示的に案内するファイルであり、GUI 編集の対象になりうる）。 -->
+      <Component Id="NicolaUsYab" Guid="48AA34CA-3723-4B7D-B624-6E0E9C29032C" NeverOverwrite="yes">
+        <File Source="dist\layout\nicola_us.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaUsYab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
+      <Component Id="NicolaFYab" Guid="523F3EB9-8E27-4312-A6D1-822D1BF7785F" NeverOverwrite="yes">
+        <File Source="dist\layout\nicola_f.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaFYab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <!-- Data files（ユーザーが編集する手段を持たないプログラム資産のため

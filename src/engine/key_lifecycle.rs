@@ -9,6 +9,25 @@
 
 use crate::types::{RawKeyEvent, VkCode};
 
+/// KeyUp が到着したときに Engine が負う義務（ADR-112 決定2）。
+///
+/// 旧実装（`on_key_up` が bool を返し、Consume 済みなら `Engine::on_input` が
+/// FSM を呼ばずに即 `Decision::consumed()` を返していた）は、「OS へ漏らさない」
+/// という義務の判定と、「FSM にイベントを渡すかどうか」を同じ早期 return に
+/// 混同していたため、`NicolaFsm::on_key_up` 配下の KeyUp 処理が実運用で
+/// 一切呼ばれないという構造的リグレッション（BUG-101）を生んでいた。
+///
+/// `UpDuty` は前者（義務の有無）だけを表す。イベントは義務の有無によらず
+/// 常に FSM まで届き、`Engine::on_input` の唯一の出口で `Consume` 義務が
+/// あれば `Decision::force_consume()` により最終的に必ず Consume へ格上げする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UpDuty {
+    /// 対応する KeyDown が無い、または PassThrough だった。義務なし。
+    None,
+    /// 対応する KeyDown が Consume 済み。KeyUp も最終的に必ず Consume へ格上げする。
+    Consume,
+}
+
 /// Consume 済みで KeyUp 待ちのキー
 #[derive(Debug, Clone, Copy)]
 struct ActiveKey {
@@ -50,15 +69,18 @@ impl KeyLifecycle {
         }
     }
 
-    /// KeyUp が到着した場合に呼ぶ。
-    /// 対応する KeyDown が Consume 済みなら `true` を返す（KeyUp も Consume すべき）。
-    /// 対応する KeyDown が PassThrough だったなら `false` を返す（KeyUp も PassThrough すべき）。
-    pub fn on_key_up(&mut self, vk_code: VkCode) -> bool {
+    /// KeyUp が到着した場合に呼ぶ。対応する KeyDown が Consume 済みなら
+    /// `active_keys` から除去して `UpDuty::Consume` を返す（KeyUp は最終的に
+    /// 必ず Consume すべき）。対応が無ければ `UpDuty::None`（PassThrough すべき）。
+    ///
+    /// 除去はするが、イベント自体を FSM に渡すかどうかはこのメソッドの
+    /// 呼び出し元（`Engine::on_input`）が決める（ADR-112 決定2、`UpDuty` のdoc参照）。
+    pub(super) fn take_key_up_duty(&mut self, vk_code: VkCode) -> UpDuty {
         if let Some(pos) = self.active_keys.iter().position(|k| k.vk_code == vk_code) {
             self.active_keys.remove(pos);
-            true // Consume 済みの KeyDown に対応 → KeyUp も Consume
+            UpDuty::Consume
         } else {
-            false // PassThrough だった → KeyUp も PassThrough
+            UpDuty::None
         }
     }
 
@@ -113,14 +135,14 @@ mod tests {
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
 
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert_eq!(lc.take_key_up_duty(VkCode(0x41)), UpDuty::Consume);
         assert_eq!(lc.active_count(), 0);
     }
 
     #[test]
     fn non_consumed_key_up_passes_through() {
         let mut lc = KeyLifecycle::new();
-        assert!(!lc.on_key_up(VkCode(0x41)));
+        assert_eq!(lc.take_key_up_duty(VkCode(0x41)), UpDuty::None);
     }
 
     #[test]
@@ -159,11 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn on_key_up_for_never_consumed_returns_false() {
+    fn on_key_up_for_never_consumed_returns_none() {
         let mut lc = KeyLifecycle::new();
         // Consume key 0x41 but ask about 0x42
         lc.on_key_down_consumed(&make_event(VkCode(0x41), KeyEventType::KeyDown));
-        assert!(!lc.on_key_up(VkCode(0x42)));
+        assert_eq!(lc.take_key_up_duty(VkCode(0x42)), UpDuty::None);
         // 0x41 still active
         assert_eq!(lc.active_count(), 1);
     }
@@ -191,13 +213,13 @@ mod tests {
         // First cycle: consume then key_up
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert_eq!(lc.take_key_up_duty(VkCode(0x41)), UpDuty::Consume);
         assert_eq!(lc.active_count(), 0);
 
         // Second cycle: consume same key again
         lc.on_key_down_consumed(&event);
         assert_eq!(lc.active_count(), 1);
-        assert!(lc.on_key_up(VkCode(0x41)));
+        assert_eq!(lc.take_key_up_duty(VkCode(0x41)), UpDuty::Consume);
         assert_eq!(lc.active_count(), 0);
     }
 }

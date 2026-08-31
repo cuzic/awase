@@ -119,9 +119,14 @@ pub struct GeneralConfig {
     /// 3キーが来た場合、d1(thumb-char1)とd2(char2-thumb)の差がこの割合を
     /// 超えればタイミングだけで確定し、n-gramタイブレークを行わない。
     pub timing_margin_percent: u32,
-    /// 重なり不足判定のマージン（%、デフォルト15）。thumb押下からchar1解放までの
+    /// 重なり不足判定のマージン（%、デフォルト0）。thumb押下からchar1解放までの
     /// 物理的な重なり時間が閾値のこの割合未満なら「重なり不足」とみなし、
-    /// n-gramタイブレークに回す（無ければ単独打鍵扱い）。
+    /// n-gramタイブレークに回す（無ければ単独打鍵扱い）。既定値0は
+    /// ADR-112決定1（`docs/adr/112-keyup-lifecycle-fsm-delivery.md`）に合わせて
+    /// 意図的に「常に重なり十分」＝この判定を実質無効化した値。KeyUpがFSMへ
+    /// 実際に届くようになった影響を実機ソークで確認するまでの安全側の初期値
+    /// であり、実測付きで引き締めるまで新規インストールの既定を15へ戻さない
+    /// こと（決定3）。上級者設定から手動で上げることはできる。
     pub min_overlap_margin_percent: u32,
     /// 確定モード（デフォルト: wait）
     pub confirm_mode: ConfirmMode,
@@ -363,7 +368,7 @@ impl Default for GeneralConfig {
             ngram_min_threshold_ms: 30,
             ngram_max_threshold_ms: 120,
             timing_margin_percent: 30,
-            min_overlap_margin_percent: 15,
+            min_overlap_margin_percent: 0,
             confirm_mode: ConfirmMode::Wait,
             speculative_delay_ms: 30,
             focus_debounce_ms: 50,
@@ -520,27 +525,6 @@ pub struct KeymapRule {
     pub to: Option<String>,
 }
 
-/// 物理キー1つを別の物理キーとして常時扱う単純リマップルール（`key_remap`）。
-///
-/// `[[keymap]]`（[`KeymapRule`]）とは別物: `keymap` はキーコンボ（例: "Ctrl+I"）を
-/// アプリ限定でインターセプトする「ショートカット再割当て」機能。こちらは
-/// 修飾キーとしての役割そのものを恒久的に入れ替える（例: 英数キーを Left Ctrl
-/// として使う、CapsLock を無効化して別のキーにする）ための、アプリ文脈を持たない
-/// より低レベルで単純な機構。エンジンの有効/無効に関わらず常時適用される
-/// （秀Caps・PowerToys 等の一般的なキーリマップツールと同じ「常時そのキーとして
-/// 振る舞う」設計）。
-///
-/// `from`/`to` は `VkCode::from_name` が解決できる VK 名（例: "VK_CAPITAL"、
-/// "VK_DBE_ALPHANUMERIC"、"VK_LCONTROL"）を指定する。解決できない名前・
-/// `from == to`・`from` の重複・上限件数超過のエントリは、起動時に警告ログを
-/// 出したうえで無視される（`crates/awase-windows/src/state/key_remap.rs`
-/// `compile_key_remaps` 参照）。
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct KeyRemapRule {
-    pub from: String,
-    pub to: String,
-}
-
 /// アプリ別の永続オーバーライド設定
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
@@ -629,9 +613,6 @@ pub struct AppConfig {
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
     #[serde(default)]
     pub post_bypass: Vec<PostBypassRule>,
-    /// 物理キーの単純リマップルール一覧（`KeyRemapRule` doc 参照）
-    #[serde(default)]
-    pub key_remap: Vec<KeyRemapRule>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -717,8 +698,6 @@ pub struct ValidatedConfig {
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
     pub post_bypass: Vec<PostBypassRule>,
-    /// 物理キーの単純リマップルール一覧
-    pub key_remap: Vec<KeyRemapRule>,
 }
 
 impl AppConfig {
@@ -759,10 +738,10 @@ impl AppConfig {
         }
         if g.min_overlap_margin_percent > 100 {
             w.push(format!(
-                "min_overlap_margin_percent ({}) は 0-100 の範囲外です。15 にリセットします",
+                "min_overlap_margin_percent ({}) は 0-100 の範囲外です。0 にリセットします",
                 g.min_overlap_margin_percent
             ));
-            g.min_overlap_margin_percent = 15;
+            g.min_overlap_margin_percent = 0;
         }
     }
 
@@ -906,13 +885,17 @@ impl AppConfig {
             return;
         }
 
-        if g.default_layout.trim_end_matches(".yab") == "nicola" {
-            w.push(
-                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"nicola.yab\" \
+        let jis_only_default = matches!(
+            g.default_layout.trim_end_matches(".yab"),
+            "nicola" | "nicola_keytop" | "nicola_f"
+        );
+        if jis_only_default {
+            w.push(format!(
+                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"{}\" \
                  のままです。JIS 版は列数が US の上限を超えるためパースに失敗します。\
-                 \"nicola_us.yab\" を指定してください。"
-                    .to_string(),
-            );
+                 \"nicola_us.yab\" を指定してください。",
+                g.default_layout
+            ));
         }
 
         let mentions_jis_only = |s: &str| {
@@ -1033,7 +1016,6 @@ impl AppConfig {
                 app_overrides,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
-                key_remap: self.key_remap,
             },
             warnings,
         )
@@ -1332,7 +1314,7 @@ engine_off_solo_triple = "VK_NONCONVERT"
             return;
         }
         let config = AppConfig::load(path).unwrap();
-        assert_eq!(config.general.default_layout, "nicola.yab");
+        assert_eq!(config.general.default_layout, "nicola_keytop.yab");
         assert_eq!(config.general.layouts_dir, "layout");
     }
 

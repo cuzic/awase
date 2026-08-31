@@ -899,12 +899,15 @@ fn test_load_nicola_yab_file() {
 }
 
 #[test]
-fn test_nicola_yab_file_outputs_keytop_symbols_at_jis_extra_positions() {
-    // 2026-08-30: 標準JISキーボードのキートップ印字通りの記号を出す既定版に
-    // 切り替えた（report 01M15R86FJW24278GGD3ETS9QX、docs/bug-reports-triage.md
-    // 参照）。旧来のBackspace/Escapeソフトウェア代用版は layout/nicola_bsesc.yab
-    // へ退避済み（test_load_nicola_bsesc_yab_file 参照）。
-    let path = std::path::Path::new("layout/nicola.yab");
+fn test_nicola_keytop_yab_file_outputs_keytop_symbols_at_jis_extra_positions() {
+    // 2026-08-31: report 01M15R86FJW24278GGD3ETS9QX（docs/bug-reports-triage.md
+    // 参照）を機に、標準JISキーボードのキートップ印字通りの記号を出す版を
+    // layout/nicola_keytop.yab として追加した（新規インストールの既定）。
+    // layout/nicola.yab（Backspace/Escapeソフトウェア代用版）は既存ユーザーの
+    // 設定・ファイルを無言で変えないよう内容を変更していない
+    // （NeverOverwrite/Copy-IfAbsentで保護されるため、既定を変えても
+    // アップグレードでは配布されない。Opusレビュー指摘）。
+    let path = std::path::Path::new("layout/nicola_keytop.yab");
     if !path.exists() {
         return; // Skip in CI
     }
@@ -948,31 +951,17 @@ fn test_nicola_yab_file_outputs_keytop_symbols_at_jis_extra_positions() {
 }
 
 #[test]
-fn test_load_nicola_bsesc_yab_file() {
-    // 2026-08-30 に layout/nicola.yab からリネームされた、Backspace/Escape
-    // ソフトウェア代用版（旧既定）。かな配置は layout/nicola.yab と同一のはず。
-    let path = std::path::Path::new("layout/nicola_bsesc.yab");
+fn test_nicola_yab_still_uses_bs_esc_placeholders() {
+    // layout/nicola.yab は既存ユーザーへ無言で挙動を変えないため、
+    // Backspace/Escapeソフトウェア代用（後/逃）のまま維持している
+    // （layout/nicola_keytop.yab が新規インストールの既定）。
+    let path = std::path::Path::new("layout/nicola.yab");
     if !path.exists() {
         return; // Skip in CI
     }
     let content = std::fs::read_to_string(path).unwrap();
     let layout = YabLayout::parse(&content, KeyboardModel::Jis).unwrap();
 
-    assert!(!layout.normal.is_empty());
-    assert!(!layout.left_thumb.is_empty());
-    assert!(!layout.right_thumb.is_empty());
-    assert!(!layout.shift.is_empty());
-
-    let a_pos = PhysicalPos::new(2, 0);
-    assert_eq!(
-        layout.normal.get(&a_pos),
-        Some(&YabValue::Romaji {
-            romaji: "u".into(),
-            kana: None
-        })
-    );
-
-    // A段（row2）11-12列目 = Backspace/Escapeソフトウェア代用（全面共通）。
     for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
         assert_eq!(
             face.get(&PhysicalPos::new(2, 10)),
@@ -982,6 +971,83 @@ fn test_load_nicola_bsesc_yab_file() {
             face.get(&PhysicalPos::new(2, 11)),
             Some(&YabValue::Special(SpecialKey::Escape))
         );
+    }
+}
+
+#[test]
+fn test_nicola_keytop_yab_does_not_reintroduce_bs_esc_placeholders() {
+    // layout/nicola_keytop.yab に「後」「逃」（Backspace/Escapeソフトウェア
+    // 代用）が将来の編集で再混入していないことを機械的に縛る。
+    let path = std::path::Path::new("layout/nicola_keytop.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let content = std::fs::read_to_string(path).unwrap();
+    assert!(
+        !content.contains('後'),
+        "nicola_keytop.yab should not contain the Backspace placeholder (後)"
+    );
+    assert!(
+        !content.contains('逃'),
+        "nicola_keytop.yab should not contain the Escape placeholder (逃)"
+    );
+}
+
+#[test]
+fn test_nicola_yab_and_nicola_keytop_yab_share_identical_kana_positions() {
+    // layout/nicola.yab と layout/nicola_keytop.yab はNICOLA本家仕様のかな
+    // 44キー配置を共有しているはず。記号の余りスロット（数字段12-13列目、
+    // Q段11-12列目、A段11-12列目）以外で内容が乖離していないことを機械的に
+    // 縛る（4ファイル体系での手作業コピーずれを検出するため、Opusレビュー指摘）。
+    let nicola_path = std::path::Path::new("layout/nicola.yab");
+    let keytop_path = std::path::Path::new("layout/nicola_keytop.yab");
+    if !nicola_path.exists() || !keytop_path.exists() {
+        return; // Skip in CI
+    }
+    let nicola = YabLayout::parse(
+        &std::fs::read_to_string(nicola_path).unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+    let keytop = YabLayout::parse(
+        &std::fs::read_to_string(keytop_path).unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+
+    // 記号スロットとして意図的に内容が異なる位置（row, col）。
+    let exceptions: &[(u8, u8)] = &[
+        (0, 11),
+        (0, 12), // 数字段: ＾／￥ vs 無／無
+        (1, 11), // Q段12列目: ［ vs 無
+        (2, 10),
+        (2, 11), // A段: ：／］ vs 後／逃
+    ];
+
+    for row in 0..4u8 {
+        for col in 0..13u8 {
+            if exceptions.contains(&(row, col)) {
+                continue;
+            }
+            let pos = PhysicalPos::new(row, col);
+            for (face_name, nicola_face, keytop_face) in [
+                ("normal", &nicola.normal, &keytop.normal),
+                ("left_thumb", &nicola.left_thumb, &keytop.left_thumb),
+                ("right_thumb", &nicola.right_thumb, &keytop.right_thumb),
+                ("shift", &nicola.shift, &keytop.shift),
+            ] {
+                // Q段11列目（物理@キー）は親指シフト面のみ意図的に異なる
+                // （、→＠、シフト無し面は本家仕様の、を両ファイルとも維持）。
+                if row == 1 && col == 10 && face_name != "normal" {
+                    continue;
+                }
+                assert_eq!(
+                    nicola_face.get(&pos),
+                    keytop_face.get(&pos),
+                    "{face_name} face differs at ({row}, {col})"
+                );
+            }
+        }
     }
 }
 
@@ -1042,20 +1108,33 @@ fn test_load_nicola_f_yab_file() {
         Some(&YabValue::Literal("を".to_string()))
     );
 
-    // 未対応の特殊キーワード「濁」「半」は 無（None）に置き換え済み。
-    let unsupported_special_pos = PhysicalPos::new(1, 11);
+    let literal = |s: &str| Some(YabValue::Literal(s.to_string()));
+
+    // 2026-08-31追記: 数字段12-13列目・Q段11-12列目は、この機種でも通常の
+    // JIS記号キーが存在するため layout/nicola_keytop.yab と同じ記号を持つ
+    // （Opusレビュー指摘、README.mdがこの機種向けに本ファイルを勧めているのに
+    // 記号が欠落していた不具合の修正）。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(face.get(&PhysicalPos::new(0, 11)).cloned(), literal("＾"));
+        assert_eq!(face.get(&PhysicalPos::new(0, 12)).cloned(), literal("￥"));
+        assert_eq!(face.get(&PhysicalPos::new(1, 11)).cloned(), literal("［"));
+    }
     assert_eq!(
-        layout.normal.get(&unsupported_special_pos),
-        Some(&YabValue::None)
+        layout.normal.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("、")
     );
     assert_eq!(
-        layout.left_thumb.get(&unsupported_special_pos),
-        Some(&YabValue::None)
+        layout.left_thumb.get(&PhysicalPos::new(1, 10)).cloned(),
+        literal("＠")
     );
-    assert_eq!(
-        layout.right_thumb.get(&unsupported_special_pos),
-        Some(&YabValue::None)
-    );
+
+    // A段（row2）11-12列目は、この機種の「後退」「取消」専用キーが物理的に
+    // Backspace/Escapeのスキャンコードを出すため、ソフトウェア側では
+    // 到達不能＝無のまま（ファイル冒頭コメント参照）。
+    for face in [&layout.normal, &layout.left_thumb, &layout.right_thumb] {
+        assert_eq!(face.get(&PhysicalPos::new(2, 10)), Some(&YabValue::None));
+        assert_eq!(face.get(&PhysicalPos::new(2, 11)), Some(&YabValue::None));
+    }
 }
 
 // ── to_fullwidth_str テスト ──

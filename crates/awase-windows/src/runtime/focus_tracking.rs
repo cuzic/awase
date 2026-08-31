@@ -122,7 +122,18 @@ impl Runtime {
         let next = self.focus_identity_snapshot();
         self.record_focus_transition_if_changed(&prev, &next, prev_started_ms);
 
-        self.enter_focus_scope(&classified);
+        let tick_ms = self.enter_focus_scope(&classified);
+        // BUG-102: `enter_focus_scope` の直後（epoch インクリメント済み・
+        // `update_focus_info` 済み）に、live 側フェンスを `ObservationStore` 側へ
+        // 同期する。この 1 行が無いと、起動時にフォーカスされていたアプリの
+        // `ImmCrossProbe`（High）観測が次のプロセス変更まで `derive_*` から
+        // 外れ続ける。
+        //
+        // 上の early return（`classify_focus_probe` が `None`、= probe タイム
+        // アウトや pid 取得失敗）を通った場合はここまで来ないため同期も走らないが、
+        // その場合は `enter_focus_scope` も走っておらず live 側 epoch も 0 のまま
+        // なので、両側は既定値で一致したままになる（BUG-102 の desync は起きない）。
+        self.sync_initial_focus_fence(tick_ms);
 
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
@@ -168,6 +179,44 @@ impl Runtime {
             self.platform_state.focus.focus_epoch,
         );
         tick_ms
+    }
+
+    /// bootstrap で確立した最初のフォーカススコープの同一性（epoch + hwnd）を
+    /// `ObservationStore::current_fence` へ同期する（BUG-102）。
+    ///
+    /// **必ず `enter_focus_scope`（epoch インクリメント）と `advance_focus_tracking`
+    /// （`update_focus_info` による hwnd 更新）の後に呼ぶこと** ——
+    /// `focus_fence()` が live 側の確定値を返している必要がある。
+    ///
+    /// `notify_focus_hwnd_updated_if_needed` と同じ理由で独立した関数として切り出して
+    /// いる: `dispatch_event(` を直接テキストとして含む関数は
+    /// `establish_initial_focus_scope_does_not_write_ime_belief`
+    /// （`architecture_guard.rs`）の対象リストに直接載っているため、
+    /// `establish_initial_focus_scope` の本体に置くと静的テキスト検査で機械的に落ちる。
+    ///
+    /// **このイベントが belief を書かないこと**（ADR-102 決定3-b の不変条件）は、
+    /// 運ぶ値が「観測の新鮮さを判定するための識別子」だけであることと、reducer 側の
+    /// アームが `ObservationStore::establish_initial_fence()` しか呼ばないことの
+    /// 2点で担保する。後者は `initial_focus_fence_event_only_touches_the_fence`
+    /// （`architecture_guard.rs`）と
+    /// `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
+    /// が固定する。
+    ///
+    /// **bootstrap で1度しか呼ばれない**（唯一の呼び出し元
+    /// `establish_initial_focus_scope` 自体が `app/bootstrap.rs::run_all` から
+    /// 1度だけ呼ばれる）ことは、静的には
+    /// `initial_focus_fence_event_only_touches_the_fence` が、実行時には
+    /// `ObservationStore::establish_initial_fence()` 側の `debug_assert!` が
+    /// 固定する。2度目以降の呼び出しは「initial」ではなく、観測プールを持った
+    /// まま fence だけ差し替える危険な操作になる（その用途は
+    /// `clear_on_focus_change()` が担当する）。
+    fn sync_initial_focus_fence(&mut self, tick_ms: crate::state::TickMs) {
+        let fence = self.focus_fence();
+        log::debug!("[focus-fence] bootstrap initial fence: {fence:?}");
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InitialFocusFenceEstablished { fence },
+            tick_ms,
+        );
     }
 
     /// プローブ結果を検証・分類し、platform_state (app_kind / focus_kind) を更新する。
@@ -354,12 +403,16 @@ impl Runtime {
     /// `on_focus_process_changed` が `FocusChanged`（epoch インクリメント +
     /// 観測プールクリア）で hwnd も一緒に更新するため、ここでは扱わない。
     ///
-    /// **bootstrap では dispatch しない。** `ObservationStore` 側の fence は
-    /// `FocusChanged`（`clear_on_focus_change`）でしか初期化されず、bootstrap
-    /// （`establish_initial_focus_scope`）はそれを呼ばない。bootstrap時点で
-    /// ここから `dispatch_event` すると、まだ一度も IME を観測していない状態で
-    /// belief 層へ書き込むことになり、`establish_initial_focus_scope` の不変条件
-    /// （IME belief 不書き込み）を破る。この関数を `advance_focus_tracking` の
+    /// **bootstrap では dispatch しない。** bootstrap 時点では
+    /// `platform.focus.current.hwnd` がまだ 0 のため「hwnd だけが変わった」判定が
+    /// 必ず成立してしまうが、初回フォーカスは同一プロセス内のウィンドウ移動では
+    /// なく「最初のスコープ確立」であり、扱うべきは hwnd 片側ではなく epoch を
+    /// 含む両軸である（bootstrap では `enter_focus_scope` が epoch も 0→1 に
+    /// 進める）。この同期は `establish_initial_focus_scope` が
+    /// `sync_initial_focus_fence`（`ImeEvent::InitialFocusFenceEstablished`）で
+    /// 行う——ここから hwnd だけ先に dispatch すると、epoch が食い違ったままの
+    /// 中途半端な fence を1度作ることになる（BUG-102）。この関数を
+    /// `advance_focus_tracking` の
     /// 本体から切り出しているのは、`dispatch_event(` を直接テキストとして含む
     /// 関数が `establish_initial_focus_scope_does_not_write_ime_belief`
     /// （`architecture_guard.rs`）の対象リストに直接含まれるため——本体に
@@ -417,17 +470,6 @@ impl Runtime {
         self.platform_state.focus.app_disabled = is_disabled;
         crate::hook::set_focus_app_disabled(is_disabled);
         crate::hook::clear_hook_latches_for_app_disable(transition);
-
-        // ADR-110 決定3 項目2: disable_apps/overflow ラッチが解除され awase が
-        // 制御を取り戻した直後、`from=VK_CAPITAL` ルールが有効な場合に限り
-        // CapsLock ロック状態を正規化する（無条件ではなく内部でゲートされる、
-        // Opus レビュー R8 対応）。
-        if matches!(transition, SuppressionEdge::Leave) {
-            // SAFETY: focus_tracking はメインスレッドから呼ばれる。
-            unsafe {
-                crate::hook::normalize_caps_lock_if_needed();
-            }
-        }
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず

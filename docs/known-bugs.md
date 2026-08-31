@@ -11963,52 +11963,17 @@ actuation 完了ハンドラへ持ち込み、`with_app` 内で照合して早�
 **関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`,
 `crates/awase-windows/src/state/platform_state.rs`,
 `crates/awase-windows/src/state/probe_admission.rs`。関連: ADR-108 決定6。
-
-## BUG-99: `[[keymap]]` ショートカット再割当てが実際のキー処理から一度も呼ばれておらず動作しない
-
-**症状:** `config.toml` の `[[keymap]]` セクション（`KeymapRule`、プロセス別
-コンボインターセプト機能）は、設定ファイルのパース・`awase-settings` の
-専用エディタ UI（`keymap_new_grid` 周辺）・`KeymapTable::new` によるコンパイル・
-`runtime/focus_tracking.rs` によるフォーカス変更ごとの `filter_active()` 更新まで
-一通り完成しているが、その結果を実際のキー処理で参照する箇所がコードベースに
-一つも存在しない。`KeymapTable::find_match`（`crates/awase-windows/src/keymap.rs`）
-は定義されているだけで、どこからも呼ばれていない。ユーザーが `[[keymap]]` を
-設定しても、意図したキー変換・インターセプトは一切発生しない（無言で無効）。
-
-**再現条件:** `config.toml` に任意の `[[keymap]]` ルール（例: `from = "Ctrl+I"`,
-`to = "F7"`）を設定して awase を起動し、該当アプリで該当キーを押す。何も起きない
-（元のキーがそのまま通る）。
-
-**発見の経緯:** ADR-110（物理キー単純リマップ `key_remap` 機能）の設計時、
-「既存の `[[keymap]]` を拡張して使えないか」を検討する過程で、
-`grep -rn find_match` が定義箇所以外にヒットしないことから判明した
-（2026-08-28）。`git log --oneline -- crates/awase-windows/src/keymap.rs` を見ると
-`569ee530`（`compile_keymaps`/`filter_active_keymaps`/`find_keymap_match` という
-自由関数群を `struct KeymapTable` に集約するリファクタ）が最新の実質変更で、
-この時点で呼び出し元が失われた可能性がある（未調査）。
-
-**状態:** 未修正。ADR-110 は `[[keymap]]` を直さず、別の独立した `key_remap`
-機構（`state/key_remap.rs`）を新設する方針を採った（コンボ×アプリ文脈の
-インターセプトと、修飾キー役割の恒久的入れ替えは要求される hold-state 対称性が
-異なるため）。設定 GUI の「キーマップ」セクションには、ADR-110 決定7/10 に基づき
-「⚠ 現在この機能は動作しません」ラベルを追加する。
-
-**follow-up方針:** `find_keymap_match` 相当の呼び出しを、フックコールバックまたは
-`runtime/key_pipeline.rs` のいずれかの適切な地点（`active_keymaps` を保持する
-`platform_state.rs::KeymapStore` が既にフォーカス文脈で絞り込み済みのため、
-メインスレッド側のキー処理経路が候補）に配線する。`[[keymap]]` はコンボ
-（Ctrl/Shift/Alt 修飾状態込み）を扱うため、単純な vk 一致ではなく
-`ModifierState` を含めた一致判定が必要（`KeymapTable::find_match` の既存
-シグネチャ参照）。
-
-**関連ファイル:** `crates/awase-windows/src/keymap.rs`,
-`crates/awase-windows/src/state/platform_state.rs`,
 `crates/awase-windows/src/runtime/focus_tracking.rs`,
 `crates/awase-settings/src/main.rs`。関連: ADR-110。
 
 ---
 
 ## BUG-100: `key_remap` の latch (`LATCHED_TARGET`) が KeyUp 消失や一部の swallow 経路で stuck する
+
+**追記（2026-08-30）:** `key_remap` 機能自体（ADR-110）が ADR-111 r4 決定により
+バックエンドごと撤回されたため、本エントリが指す `hook.rs`/`state/key_remap.rs`
+のコードはもう存在しない。以下は記録として保持する（次に同種のホットキー
+latch 機構を作る際の参考資料）。
 
 **症状:** ADR-110 `key_remap` の hold-state（`LATCHED_TARGET`、vk でインデックスし
 現在 latch 中の reinject 先 vk を保持する）が、以下の3経路でクリアされずに残り、
@@ -12060,3 +12025,236 @@ x86_64-pc-windows-msvc` によるコンパイル確認、および CI `windows-b
 
 **関連ファイル:** `crates/awase-windows/src/hook.rs`,
 `crates/awase-windows/src/state/key_remap.rs`。関連: ADR-110, BUG-48, BUG-78。
+
+---
+
+## BUG-101: `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混入のリグレッション、決定0〜2実装済み・Windows実機ソーク未実施）
+
+**症状:** `Engine::on_input`（`src/engine/engine.rs:345-349`、実運用のキーイベント入口
+——`key_pipeline.rs`と`runtime/mod.rs::process_deferred_keys`の2箇所から呼ばれる）の
+Phase 0 が、`KeyLifecycle::on_key_up`（`key_lifecycle.rs:56-63`）を使って
+「対応する KeyDown が Consume 済みの KeyUp」を無条件に `Decision::consumed()` として
+即 return する。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1558`）には一切到達しない。
+以下3件の実害を確認済み:
+
+1. **`min_overlap_margin_percent` が実運用で常に無効。** `char1_released_at`
+   （`handle_key_up_pending_char_thumb`、`nicola_fsm.rs:1679-1730`）は恒久的に
+   `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:228-239`）は
+   常に「重なり構造的保証あり」の `Some(true)` を返す。char1 を離してから
+   親指キーを押した（＝物理的に重なっていない）2打が、常に同時打鍵として
+   誤確定される。2026-08-23 の PR #85 で導入した重なり不足判定機能は、
+   導入初日から一度も実機で効いていない。
+2. **`KeyAction::Key(vk)` を出力する全キーで、対応する `KeyUp(vk)` が実運用で
+   一度も送出されていない（stuck key）。** `handle_key_up_active`
+   （`nicola_fsm.rs:1812-1830`）だけが `KeyUp(vk)` を再送する経路だが到達不能。
+   `KeyAction::Key(vk)` は `.yab` の明示的な VK 指定行だけでなく、
+   `resolve_pending_char_as_single`（`nicola_fsm.rs:1272`、配列定義外キーの
+   フォールバック）や無変換/変換/Space/Enter の solo-tap passthrough 経路
+   （`:1404`/`:1443` 付近）からも常に出るため、エンジン ON 中に非かな文字
+   （レイアウト定義外のキー等）を打鍵すると、OS 側はそのVKが押されっぱなし
+   だと認識し続ける。未検証の疑いではなく、コード上確定した欠陥。
+3. **`OutputHistory.entries`（`output_history.rs:24-26`）が上限のない `Vec` で、
+   `remove_by_scan` が実運用で呼ばれないため単調増加し続ける。** メモリリークで
+   あると同時に、修正時の設計上の罠でもある——`remove_by_scan`（KeyUp整合性用）
+   と `recent_kana()`（n-gram文脈用）が同じ `Vec` を参照しているため、Phase 0を
+   素朴に直すと全打鍵で n-gram タイブレークの入力が変わってしまう。
+
+**原因:** `handle_key_up_pending_char_thumb` の初出（`b9d0ed56`、2026-03-28）の
+方が、`KeyLifecycle` Phase 0 の混入（`94c73a15`/`1b4c08bb`、2026-03-31）より
+早い。Phase 0 混入時点で既存の KeyUp 処理群（`handle_key_up_pending_char_thumb`/
+`handle_key_up_pending`/`handle_key_up_active`/`SpeculativeChar` 分岐）が
+まとめて到達不能になった。ADR-020 は「OS に渡さない」しか決めておらず、
+「FSM にも渡さない」は未記載——意図しない副作用であり、意図的な設計ではない。
+
+**発見の経緯:** `feat/confirm-mode-simplify` ブランチで `min_overlap_margin_percent`
+の配線テストを `Engine::on_input` 経由（実運用相当）で書いたところ、bare な
+`NicolaFsm` 直呼びテストとは異なる結果になったことから発覚。既存の重なり判定
+テスト群（`test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_thumb_key_up`
+等）が全て bare `NicolaFsm` レベル（`Engine`/`KeyLifecycle` を経由しない）で
+書かれていたため、これまで検出されていなかった。
+
+**状態:** 決定0〜2実装済み（[ADR-112](adr/112-keyup-lifecycle-fsm-delivery.md)、
+Opus 2体によるpremortem 2ラウンドで収束した設計どおり）。`OutputHistory` の
+責務分割 → `min_overlap_margin_percent` 既定値を一時的に0へ → Phase 0 の
+再設計本体、の3コミットで修正した（`KeyLifecycle::on_key_up`を`take_key_up_duty`
+に置き換え、`Decision::force_consume`で唯一の出口からConsume義務を保証、
+非活性時は`release_only`でchord判定を再開せず解放索引だけ掃除）。
+`min_overlap_margin_percent`は本番既定0%のまま（決定3、実機ソーク後に実測付きで
+引き締める、本ADRのスコープ外）。Windows実機ソークは未実施。
+
+**関連ファイル:** `src/engine/engine.rs`, `src/engine/key_lifecycle.rs`,
+`src/engine/nicola_fsm.rs`, `src/engine/output_history.rs`,
+`src/engine/timing.rs`。関連: ADR-020, ADR-112。
+
+---
+
+## BUG-102: 起動直後にフォーカスしていたアプリの `ImmCrossProbe`（High）観測が導出から外れ、Medium の定期ポーリングに負ける（bootstrap フェンス desync）
+
+**症状:** IMM32 系アプリ（`AppImeProfile::Standard`、メモ帳等の Win32 アプリや
+Qt/LINE のような ImmCross アプリ）にフォーカスがある状態で awase を起動すると、
+そのウィンドウでの `ImmCrossProbe`（child hwnd の非同期読み取り、High confidence /
+`ActuatingPool`）観測が `ObservationStore::derive_any()` /
+`derive_actuating()` の導出対象から外れ続ける。ユーザーが**一度別プロセスの
+ウィンドウへ切り替えて戻る**（= `on_focus_process_changed` が `FocusChanged` を
+dispatch する）まで直らない。同一プロセス内でウィンドウだけ切り替えても
+（`FocusHwndUpdated` 経路）epoch が揃わないため直らない。
+
+実害は 2 経路。**「観測が1件も belief に反映されない」わけではない**（初版の
+記述は誤り。2026-08-31 の敵対的レビューで訂正）:
+
+1. **`ImeModel::resolve_open_at`（→ `effective_open()`）**: 解決順が
+   `explicit_intent` → `derive_any` → `most_recent_trusted`（**フェンス照合なし**）
+   → `desired_open` なので、`ImmCrossProbe` 以外に fresh な観測が無ければ
+   `most_recent_trusted` が同じ `ImmCrossProbe` を拾い直し、**値としては正しい
+   まま**（症状が出ない）。一方 `ObserverPoll`（Medium、`is_identity_ok` の
+   対象外なのでフェンスに関係なく通る）等が併存すると、`derive_any` がその
+   Medium 単独合意を返し、**本来 High 単独で即採用されるはずの `ImmCrossProbe`
+   を上書きする**。実 IME 状態と食い違ったまま最初の入力が行われうる
+   （belief=ON × 実 IME=OFF ならリテラル、逆なら意図しない変換）。
+2. **`state/open_warrant.rs::issue_open_warrant` Step 3（`derive_actuating`）**:
+   こちらには `most_recent_trusted` フォールバックが無い。`ImmCrossProbe` が
+   外れると、warrant の根拠が `DirectRead(ImmCrossProbe)` から Medium の
+   `SingleIndirect` へ落ちるか、Actuating 観測が他に無ければ Step 3 自体が
+   飛ばされ Step 4a/4b の `HeuristicGuess`（あるいは warrant 不発行）まで
+   劣化する。**競合する Medium 観測が無くても劣化するのはこちら**。
+
+**`FocusProbe` は影響を受けない:** `is_identity_ok` は `FocusProbe` も照合対象に
+するが、`FocusProbe` は `Low` / `BeliefPool`（`state/evidence.rs`）であり、
+`derive_filtered` の High 分岐（`confidence == High`）にも Medium 分岐
+（`confidence >= Medium`）にも元から載らない。したがってフェンスが一致しても
+しなくても導出の結論は変わらない（belief へは `most_recent_trusted` 経由でのみ
+効き、そこにフェンス照合は無い）。初版の症状記述はここを取り違えていた。
+
+**再現条件:** 起動時点で `Standard` プロファイルのアプリがフォーカスされている
+こと。belief の値がずれるのは、さらに fresh な Medium 観測（`ObserverPoll` /
+`Gji` / `Tsf` / `HwndCache` / `ConvOpenInference`）が `ImmCrossProbe` と食い違う
+値で併存する場合。
+
+**この desync は無音である（発見が遅れた理由）:** 棄却は
+`ObservationStore::derive_filtered` の `is_identity_ok` で起きるが、そこで
+`log::debug!` が出るのは「epoch は一致するのに hwnd だけ不一致」のケースだけで、
+本件は epoch も不一致（0 vs 1）のため**ログが1行も出ない**。
+`probe_admission::drain_stats()` の棄却カウンタも増えない ——あちらは probe の
+admission（spawn 時の live フェンス vs 完了時の live フェンス）を数えており、
+本件では両方 `{1, 実 hwnd}` で正常に受理されるため。つまり「観測は受理されたのに
+導出に載らない」という、既存のどの計装にも現れない形で消える。さらに
+`resolve_open_at` が `most_recent_trusted` へフォールバックすると**値としては
+正しくなってしまう**ため、`effective_open()` を眺めても異常に見えない
+（`OpenResolution::decided_by` を見て初めて `DeriveHigh(ImmCrossProbe)` では
+なく `MostRecentTrusted(ImmCrossProbe)` / `DeriveMedium { ObserverPoll }` に
+なっていることが分かるが、この値はログにも journal にも出ていない）。
+
+**原因:** フォーカス同一性フェンス（`FocusFence { epoch, hwnd }`、ADR-106 決定3）の
+**live 側と観測ストア側が bootstrap でだけ食い違う**。
+
+1. `establish_initial_focus_scope`（ADR-102 決定3-b、起動時に1度だけ呼ばれる）は
+   `advance_focus_tracking` → `update_focus_info` で
+   `platform.focus.current.hwnd` に実 hwnd を入れ、続く `enter_focus_scope` で
+   `FocusStore::focus_epoch` を 0→1 に進める。したがって
+   `Runtime::focus_fence()`（= probe チケットのスタンプ元、live 側）は
+   `{epoch: 1, hwnd: 実 hwnd}` になる。
+2. 一方 `ImeModel::observations`（`ObservationStore`）の `current_fence` は
+   `clear_on_focus_change()`（`ImeEvent::FocusChanged` 経由）と
+   `update_focus_window()`（`ImeEvent::FocusHwndUpdated` 経由）でしか動かない。
+   bootstrap は前者を呼ばず（belief を書いてしまうため意図的に避けている）、
+   後者も `notify_focus_hwnd_updated_if_needed` が `is_bootstrap` で明示的に
+   skip する。結果 `FocusFence::default()`＝`{epoch: 0, hwnd: HwndId::NULL}` の
+   まま残る。
+3. `ObservationStore::derive_filtered` の `is_identity_ok` は `FocusProbe` /
+   `ImmCrossProbe` 観測についてのみ「観測のフェンス == `current_fence`」を要求する。
+   live 側でスタンプされた観測（`{1, 実 hwnd}`）は既定値（`{0, NULL}`）と一致
+   しないため、High confidence であっても stale として除外され続ける
+   （実際に結論が変わるのは `ImmCrossProbe` だけ。上の「`FocusProbe` は影響を
+   受けない」参照）。
+4. 復旧経路が `FocusChanged`（プロセス変更）しかないのは、`FocusHwndUpdated` が
+   hwnd しか更新せず epoch=0 のまま残るため。
+
+**なぜ「起動時だけ」なのか:** epoch/hwnd の同期は、定常経路では
+`on_focus_process_changed` が `enter_focus_scope`（epoch++）の直後に
+`ImeEvent::FocusChanged { focus_epoch }` を dispatch することで必ずペアになって
+いる。bootstrap は「belief を書かない」ために `FocusChanged` を dispatch しない
+設計（ADR-102 決定3-b）だが、その際に**belief ではない fence の同期まで一緒に
+落ちていた**。
+
+**修正:** fence の同期だけを行う専用イベント
+`ImeEvent::InitialFocusFenceEstablished { fence: FocusFence }` を新設し、
+`establish_initial_focus_scope` が `enter_focus_scope` の直後に
+`sync_initial_focus_fence()` から1度だけ dispatch する。reducer のアームは
+`ObservationStore::establish_initial_fence(fence)`（`current_fence` 1 フィールドの
+差し替え。観測プール・drift・belief には触れない）だけを呼ぶ。
+
+この同期は ADR-102 決定3-b の「最初の IME 観測より前に belief を書き換えない」に
+抵触しない ——運ぶ値は「どの窓のどの epoch を見ているか」という**観測の新鮮さを
+判定するための識別子**であり、IME が ON か OFF かの推測を一切含まないため。
+`clear_on_focus_change()` を流用せず新しい入口にしたのは、bootstrap がフォーカスの
+「変更」ではなく最初のスコープ確立であり、捨てるべき旧窓の観測が存在しない
+（この時点でプールは空。`app/bootstrap.rs::run_all` はこの呼び出しより前に
+メッセージループをポンプしない）ことを型ではなく入口名で表すため。
+
+**テスト:**
+- `state::ime_model::tests::bootstrap_fence_desync_lets_medium_poll_override_high_probe`
+  — **実害そのもの**（上の実害 1）を `resolve_open_at` の粒度で固定。
+  `ImmCrossProbe(true, High, live fence)` と `ObserverPoll(false, Medium)` を
+  併存させ、同期前は `DeriveMedium { ObserverPoll }` で `false`、同期後は
+  `DeriveHigh(ImmCrossProbe)` で `true` になることを固定する。
+- `state::observation_store::tests::establish_initial_fence_unblocks_the_first_probe_after_bootstrap`
+  — ストア単体での退行再現。既定値フェンスのままだと live 側フェンスでスタンプ
+  された High 観測が `derive_any()` から外れること、`establish_initial_fence()`
+  後に受理されることを固定（`derive_any` 粒度なので、belief 値としての症状の
+  有無は上のテストが担当）。
+- `state::observation_store::tests::establish_initial_fence_does_not_clear_the_pool_or_drift`
+  — `clear_on_focus_change` との差（プール・drift を消さない）を固定。
+- `state::ime_model::tests::initial_focus_fence_established_touches_only_the_fence`
+  — reducer アームが `current_fence` 以外を一切書き換えないことを、モデル全体の
+  `Debug` 表現の一致で機械的に固定（フィールド追加時の assert 書き漏れ対策）。
+  フィクスチャ（`fully_populated_model`）は **`ImeModel` の全フィールドを既定値
+  から動かす** ——既定値のままのフィールドへ既定値を書き戻す巻き添えは
+  `Debug` 比較では原理的に検出できないため。
+- `tests/architecture_guard.rs::establish_initial_focus_scope_syncs_the_observation_fence`
+  — bootstrap が同期をちょうど1回、`enter_focus_scope` と
+  `advance_focus_tracking` の**両方の後**に呼ぶこと。
+- `tests/architecture_guard.rs::initial_focus_fence_event_only_touches_the_fence`
+  — `InitialFocusFenceEstablished` と `.establish_initial_fence(` の出現箇所を、
+  固定ファイルへの grep ではなく **`src/` 全ファイル走査**で固定する。
+- `tests/architecture_guard.rs::establish_initial_focus_scope_does_not_write_ime_belief`
+  — `sync_initial_focus_fence` を対象関数リストへ追加し、その `dispatch_event`
+  がちょうど1件・`InitialFocusFenceEstablished` であることを固定。
+
+**検証状況:** 実機 Windows 環境が無いため、起動→IMM32 アプリでの観測受理は
+**未検証**。根拠はコードリーディング（フェンスの生成元 `Runtime::focus_fence()`、
+スタンプ点 `AcceptedObservation`、照合点 `is_identity_ok` の3点突合）と上記
+ユニットテストのみ。実機（`RUST_LOG=debug`）での確認手順:
+
+1. **同期が起きたこと**: 起動直後に
+   `[focus-fence] bootstrap initial fence: FocusFence { epoch: 1, hwnd: ... }` と
+   `[focus-fence] establish_initial_fence: FocusFence { epoch: 0, hwnd: HwndId(0) }
+   -> FocusFence { epoch: 1, hwnd: ... }` が1回ずつ出て、hwnd が
+   `[keymap] active rules updated: ... (hwnd=...)` の値と一致すること。
+2. **実害が消えたこと**: `effective_open()` が観測に追従しているかを見るのは
+   **偽陽性になる**（修正前でも `most_recent_trusted` フォールバックで同じ値に
+   なるため、実害 1 のケース A では修正前後で区別がつかない）。
+   `ObserverPoll` と食い違う状況を作って確認すること —— IMM32 アプリを
+   フォーカスした状態で awase を起動し、起動直後（`ObserverPoll` の 500ms
+   周期と `ImmCrossProbe` が両方 fresh な窓）に IME を外部操作で切り替えて
+   最初の1文字を入力し、`ImmCrossProbe` が読んだ側の状態で入力されること。
+
+**修正履歴:** `fix/bootstrap-focus-fence-desync` ブランチ（本エントリ記録と同一
+コミット。自己参照になるため本文にハッシュは書かない —— `git log --grep BUG-102`
+で引ける）。**混入元は `f370b0ca`**（`feat(hook): route engine-thread
+notifications via HWND, close key-delivery gaps (ADR-105/102)`、2026-08-26）で
+`establish_initial_focus_scope` を新設した瞬間。それ以前は bootstrap で
+`focus_epoch` を進める処理自体が無く、両側とも 0 で一致していた。epoch 軸の
+フィルタ（`a0e4ec78`）はそれより前から存在したので、**epoch 軸の不一致だけで
+既に決定的に成立していた**。hwnd 軸の追加（ADR-106 決定3、`05e2e720`）は
+不一致の軸を 1 本増やしただけで、確実性を上げたわけではない（初版の記述は
+この点を取り違えていた）。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/focus_tracking.rs`,
+`crates/awase-windows/src/state/observation_store.rs`,
+`crates/awase-windows/src/state/ime_model.rs`,
+`crates/awase-windows/src/state/ime_event.rs`,
+`crates/awase-windows/src/state/probe_admission.rs`,
+`crates/awase-windows/src/state/transition.rs`。実害の受け手（本修正では未変更）:
+`crates/awase-windows/src/state/open_warrant.rs`（Step 3 = `derive_actuating`）,
+`crates/awase-windows/src/state/evidence.rs`（`FocusProbe` = Low の根拠）。
+関連: ADR-102 決定3-b（2026-08-31 追補）, ADR-106 決定3・§冒頭（同追補）, BUG-91。

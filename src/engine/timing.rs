@@ -17,7 +17,15 @@ pub(crate) const TIMING_MARGIN_PERCENT: u64 = 30;
 /// char2 が来ないまま char1+thumb を確定する2鍵ケースで、thumb 押下から
 /// char1 解放までの重なり時間がこれ未満なら「重なり不足」とみなし、
 /// n-gram タイブレークに回す（`confirms_char_thumb_chord` 参照）。
-/// `GeneralConfig::min_overlap_margin_percent` でユーザーが上書きできる。
+///
+/// **この定数自体を変更しても本番挙動（`NicolaFsm`）は変わらない。**
+/// `NicolaFsm::timing_judge` は必ず `with_margins` で上書きするため、この
+/// 定数は `TimingJudge::new` 単体呼び出し（本モジュール自身の単体テスト）
+/// でのみ有効なアルゴリズム基準値。本番経路の実質的な既定値は
+/// `GeneralConfig::min_overlap_margin_percent`（config.rs、現在0%固定、
+/// ADR-112決定1）が決める——`nicola_fsm.rs::RUNTIME_MIN_OVERLAP_MARGIN_PERCENT`
+/// はさらにその手前の構築直後の初期値に過ぎない。実用値への引き戻し
+/// （決定3）をこの定数だけ変えて済ませないこと。
 pub(crate) const MIN_OVERLAP_MARGIN_PERCENT: u64 = 15;
 
 /// n-gram 予測で投機出力を選択する最小スコア差
@@ -63,6 +71,13 @@ impl<'a> TimingJudge<'a> {
     /// 上書きする（`GeneralConfig` のユーザー設定値を反映する用途、
     /// `NicolaFsm::timing_judge` 参照）。`new` 単体の呼び出し元（timing.rs の
     /// 単体テスト等）は既定値のまま使えるよう、`new` 本体には手を入れていない。
+    ///
+    /// ADR-112 決定1: `min_overlap_margin_percent` は `NicolaFsm` 側
+    /// （`GeneralConfig::min_overlap_margin_percent`）の既定値が0のままである限り、
+    /// `char1_released_at` が実際に埋まるようになった（決定2、Phase 0 修正）後も
+    /// 重なり不足判定は実質的に無効（常に重なり十分）のまま。実機ソーク後、
+    /// 実測付きで別コミット/別ADRとして引き締める（決定3、本モジュールの
+    /// スコープ外）。
     #[must_use]
     pub const fn with_margins(
         mut self,
