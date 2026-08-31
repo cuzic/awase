@@ -3025,6 +3025,48 @@ fn test_pending_char_thumb_insufficient_overlap_resolves_as_two_solos_on_timeout
     );
 }
 
+// ── min_overlap_margin_percent の配線（NicolaFsm::set_timing_margins →
+// TimingJudge::with_margins → overlap_only_verdict）を検証する。2026-08-30
+// コードレビュー指摘: timing_margin_percent と min_overlap_margin_percent が
+// 常に同じ既定値(30/15)でしかテストされておらず、5層の配線経路
+// （config.rs → EngineCommand::UpdateFsmParams → Engine → FsmAdapter →
+// NicolaFsm）のどこかで2引数が入れ替わっても既存スイートでは検出できな
+// かった（対になる timing_margin_percent 側のテストは
+// engine_integration_tests::update_fsm_params_timing_margin_percent_
+// actually_gates_three_key_arbitration にある）。ここでは意図的に両者へ
+// 離れた値(90/10)を与え、char1_released_at 後の重なり判定が正しい方
+// （min_overlap_margin_percent=10）を使っていることを確認する。
+
+#[test]
+fn set_timing_margins_min_overlap_margin_percent_actually_gates_chord_confirmation() {
+    let mut engine = make_engine();
+    engine.set_timing_margins(90, 10);
+
+    // char1(S) → thumb(左, t=30ms) → PendingCharThumb
+    engine.on_event(Ev::down(VK_S).at(0).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(30_000).build());
+
+    // char1 KeyUp: thumb 押下から20ms後 → 重なり=20ms。
+    // min_overlap_margin_percent=10 なら最小重なり=threshold(100ms)*10%=10ms、
+    // 20ms >= 10ms → 同時打鍵確定('あ')のはず。
+    // もし timing_margin_percent(=90)がここに紛れ込んでいたら最小重なり=90ms、
+    // 20ms < 90ms → 重なり不足 → n-gram 未設定なので単独打鍵×2('し')に倒れる。
+    engine.on_event(Ev::up(VK_S).at(50_000).build());
+    let r = engine.on_timeout(TIMER_PENDING);
+    r.assert_consumed();
+    assert!(
+        r.actions.iter().any(|a| matches!(a, KeyAction::Char('あ'))),
+        "min_overlap_margin_percent=10 なら20msの重なりで同時打鍵確定('あ')のはず: {:?}",
+        r.actions
+    );
+    assert!(
+        !r.actions.iter().any(|a| matches!(a, KeyAction::Char('し'))),
+        "timing_margin_percent(90)が誤って重なり判定に使われていないか \
+         ('し'が出ていたら値が入れ替わっている): {:?}",
+        r.actions
+    );
+}
+
 #[test]
 fn test_pending_char_thumb_insufficient_overlap_timeout_consumes_thumb_to_prevent_reuse() {
     // 重なり不足で char1+thumb を単独打鍵×2として確定した後も、thumb はまだ物理的に
@@ -8063,6 +8105,73 @@ mod engine_integration_tests {
             "ngram model が反映されていれば 50ms gap は simultaneous にならず 'あ' は \
              出ないはず, got {:?}",
             effects_of(&d2)
+        );
+    }
+
+    // ── EngineCommand::UpdateFsmParams の timing_margin_percent /
+    // min_overlap_margin_percent 配線（config.rs → Engine → FsmAdapter →
+    // NicolaFsm → TimingJudge の5層）を検証する。2026-08-30 コードレビュー指摘:
+    // 両パラメータが常に同じ既定値(30/15)でしかテストされておらず、途中の
+    // どこかで2引数が入れ替わっても（型がどちらもu32/u64で揃うためコンパイルは
+    // 通る）既存スイートでは検出できなかった。min_overlap_margin_percent 側の
+    // 対になるテスト（`set_timing_margins_min_overlap_margin_percent_actually_
+    // gates_chord_confirmation`）はこのモジュールの外、`make_engine()`（bare
+    // NicolaFsm、Engine の KeyLifecycle を経由しない）を使う既存の重なり判定
+    // テスト群のそばに置いてある。理由: char1 の KeyUp を `Engine::on_input`
+    // 経由で送ると、`KeyLifecycle::on_key_up`（`on_input_key_up_after_consumed_
+    // down_is_auto_consumed` が固定する既存仕様、engine.rs:360）が「Consume
+    // 済み KeyDown には対応する KeyUp を常に Consume する」ため、この特定の
+    // シナリオでは char1 の KeyUp イベントが `NicolaFsm::on_key_up` まで届かず
+    // `char1_released_at` が更新されない。この重なり判定ロジック自体は既存の
+    // 全テストが bare NicolaFsm レベルで書かれており、その慣習に合わせた。
+
+    #[test]
+    fn update_fsm_params_timing_margin_percent_actually_gates_three_key_arbitration() {
+        // char1(S, t=0) → thumb(左, t=10ms) → char2(A, t=100ms): d1=10ms, d2=90ms。
+        // n-gram モデルは "しを"=2.0 のみを持つため、タイミングだけで決まらない
+        // (= マージンが広い)場合は n-gram が char2+thumb('を')を選ぶ。
+        // timing_margin_percent=95 なら d1+95ms=105ms は d2=90ms 未満にならず
+        // フェーズ1で決着しない → フェーズ2の n-gram が 'を' を選ぶ。
+        // もし min_overlap_margin_percent(=1)がこのフィールドに紛れ込んだ場合、
+        // margin=1ms → d1+1ms=11ms < d2=90ms でフェーズ1がタイミングだけで
+        // char1+thumb('あ')に決めてしまい、結果が変わる。
+        let mut engine = make_test_engine();
+        let ctx = ime_on_ctx();
+        engine.on_command(EngineCommand::SetNgramModel(make_ngram_model()), &ctx);
+        engine.on_command(
+            EngineCommand::UpdateFsmParams {
+                threshold_ms: 100,
+                confirm_mode: ConfirmMode::Wait,
+                speculative_delay_ms: 30,
+                timing_margin_percent: 95,
+                min_overlap_margin_percent: 1,
+            },
+            &ctx,
+        );
+
+        engine.on_input(Ev::down(VK_S).at(0).build(), &ctx);
+        engine.on_input(Ev::down(VK_NONCONVERT).at(10_000).build(), &ctx);
+        let d = engine.on_input(Ev::down(VK_A).at(100_000).build(), &ctx);
+
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            )),
+            "timing_margin_percent=95 なら3キー仲裁がフェーズ2(n-gram)へ進み \
+             char2+thumb('を')を選ぶはず、got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            !has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('あ')))
+            )),
+            "min_overlap_margin_percent(1) が誤って3キー仲裁のマージンに \
+             使われていないか('あ' が出ていたら値が入れ替わっている), got {:?}",
+            effects_of(&d)
         );
     }
 

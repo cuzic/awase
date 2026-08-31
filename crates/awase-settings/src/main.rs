@@ -2253,33 +2253,35 @@ impl SettingsApp {
         // 分岐ロジックは残してあり、`config.toml` に `confirm_mode = "two_phase"`
         // 等と手書きすれば引き続き使える純粋な toml 裏設定になった。
 
-        let percent_with_tip =
-            |ui: &mut egui::Ui,
-             label: &str,
-             tip: &str,
-             val: &mut u32,
-             range: std::ops::RangeInclusive<u32>| {
-                ui.horizontal(|ui| {
-                    ui.label(label).on_hover_text(tip);
-                    ui.add(egui::Slider::new(val, range).suffix(" %"))
-                        .on_hover_text(tip);
-                });
-            };
-        percent_with_tip(
+        let slider_with_tip = |ui: &mut egui::Ui,
+                               label: &str,
+                               tip: &str,
+                               suffix: &str,
+                               val: &mut u32,
+                               range: std::ops::RangeInclusive<u32>| {
+            ui.horizontal(|ui| {
+                ui.label(label).on_hover_text(tip);
+                ui.add(egui::Slider::new(val, range).suffix(suffix))
+                    .on_hover_text(tip);
+            });
+        };
+        slider_with_tip(
             ui,
             "3キー分岐マージン:",
             "char1→親指→char2 と3キーが来た場合の仲裁マージンです。\n\
              2つの間隔の差がこの割合を超えるとタイミングだけで決定し、\n\
              それ以外は n-gram で判定します（下の n-gram 設定を参照）。",
+            " %",
             &mut self.config.general.timing_margin_percent,
             0..=100,
         );
-        percent_with_tip(
+        slider_with_tip(
             ui,
             "重なり不足マージン:",
             "文字キー+親指キーの物理的な重なり時間がこの割合未満だと\n\
              「重なり不足」とみなし、n-gram でタイブレークします\n\
              （n-gram が無効なら単独打鍵扱いになります）。",
+            " %",
             &mut self.config.general.min_overlap_margin_percent,
             0..=100,
         );
@@ -2302,17 +2304,6 @@ impl SettingsApp {
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
         ui.add_space(8.0);
-        let slider_with_tip = |ui: &mut egui::Ui,
-                               label: &str,
-                               tip: &str,
-                               val: &mut u32,
-                               range: std::ops::RangeInclusive<u32>| {
-            ui.horizontal(|ui| {
-                ui.label(label).on_hover_text(tip);
-                ui.add(egui::Slider::new(val, range).suffix(" ms"))
-                    .on_hover_text(tip);
-            });
-        };
         // n-gram はタイブレーク（3キー分岐・重なり不足判定・2キーしきい値の
         // 動的調整）に confirm_mode を問わず常に使われる（ngram_file が
         // ロードできていれば）。かつては「confirm_mode が n-gram 予測の
@@ -2335,6 +2326,7 @@ impl SettingsApp {
             ui,
             "n-gram 調整幅:",
             "n-gram による同時打鍵しきい値調整の幅です。\n大きいほど予測の影響が強くなります。",
+            " ms",
             &mut self.config.general.ngram_adjustment_range_ms,
             0..=100,
         );
@@ -2342,6 +2334,7 @@ impl SettingsApp {
             ui,
             "n-gram 最小閾値:",
             "n-gram で調整される同時打鍵しきい値の下限です。\nこれより短い閾値にはなりません。",
+            " ms",
             &mut self.config.general.ngram_min_threshold_ms,
             10..=200,
         );
@@ -2349,6 +2342,7 @@ impl SettingsApp {
             ui,
             "n-gram 最大閾値:",
             "n-gram で調整される同時打鍵しきい値の上限です。\nこれより長い閾値にはなりません。",
+            " ms",
             &mut self.config.general.ngram_max_threshold_ms,
             50..=500,
         );
@@ -2357,6 +2351,7 @@ impl SettingsApp {
             ui,
             "フォーカスデバウンス:",
             "フォーカス切り替え時のデバウンス時間です。\nAlt+Tab などでフォーカスが連続変更される際の誤検知を防ぎます。",
+            " ms",
             &mut self.config.general.focus_debounce_ms,
             0..=200,
         );
@@ -2364,6 +2359,7 @@ impl SettingsApp {
             ui,
             "IME ポーリング間隔:",
             "IME 状態のポーリング間隔です。\nマウスで言語バーを操作した場合などの検出用です。\n小さいほどレスポンスが良くなりますが、CPU 負荷が増えます。",
+            " ms",
             &mut self.config.general.ime_poll_interval_ms,
             100..=5000,
         );
