@@ -127,13 +127,46 @@ impl LayoutEntry {
     /// 一致する内部名を持つファイルが存在しない場合、常に先頭レイアウトへ
     /// 無言でフォールバックしていた）。起動時（`bootstrap::select_default_layout`）・
     /// 設定リロード時（`Runtime::reload_layouts`）の両方から同じロジックを使う。
+    ///
+    /// `default_layout` に一致するファイルが見つからない場合（存在しない、または
+    /// 読込/パースに失敗して `layouts` に含まれていない）、`nicola_keytop` が
+    /// あればそちらへフォールバックする（新規インストールの既定と同じ、
+    /// BUG-104）。無ければソート順先頭（`0`）にフォールバックする。呼び出し元
+    /// (`bootstrap::warn_layout_fallback`) がこのフォールバック発生をユーザーへ
+    /// モーダルで通知する。
+    ///
+    /// 比較は大文字小文字を無視する（Windows のファイルシステムが大文字小文字を
+    /// 区別しないため。`default_layout = "nicola.YAB"` のような設定でも
+    /// `nicola.yab` ファイルに正しく一致させる。/code-review 指摘: PR #131
+    /// の `warn_layout_fallback` 追加で、この不一致が「読込失敗」の誤警告として
+    /// 可視化されてしまう問題が見つかった）。
     #[must_use]
     pub fn resolve_index(layouts: &[Self], default_layout: &str) -> usize {
-        let default_name = default_layout.trim_end_matches(".yab");
+        let default_name = strip_yab_extension(default_layout);
         layouts
             .iter()
-            .position(|e| e.name == default_name)
+            .position(|e| e.name.eq_ignore_ascii_case(default_name))
+            .or_else(|| layouts.iter().position(|e| e.name == "nicola_keytop"))
             .unwrap_or(0)
+    }
+}
+
+/// `.yab` 拡張子を大文字小文字を無視して取り除く。
+/// `LayoutEntry::resolve_index` と `bootstrap::warn_layout_fallback`
+/// （どちらも `default_layout` の設定名とファイル名(拡張子抜き)を比較する）が
+/// 同じロジックを共有するための唯一の実装。
+#[must_use]
+pub fn strip_yab_extension(name: &str) -> &str {
+    // `to_ascii_lowercase()` で判定してから元の文字列を長さでスライスする。
+    // 判定が true ということは末尾4バイトが確実に ASCII（'.'+y/a/b の3文字）
+    // であることを意味するため、`name.len() - 4` は常に char boundary になる
+    // （マルチバイト文字を含む名前(例: "NICOLA＋確定.yab")でも安全。
+    // 逆に `name[name.len()-4..]` を先にスライスして判定する実装は、
+    // ".yab" で終わらない非ASCII文字列に対して境界外パニックの危険がある）。
+    if name.len() >= 4 && name.to_ascii_lowercase().ends_with(".yab") {
+        &name[..name.len() - 4]
+    } else {
+        name
     }
 }
 
@@ -1850,7 +1883,43 @@ mod layout_entry_tests {
     }
 
     #[test]
-    fn resolve_index_falls_back_to_first_entry_when_no_name_matches() {
+    fn resolve_index_prefers_nicola_keytop_when_default_layout_not_found() {
+        // BUG-104: 独自レイアウトの読込失敗(存在しない/UTF-8でない等)時、
+        // ソート順先頭ではなく nicola_keytop があればそちらへ寄せる。
+        let layouts = [entry("nicola"), entry("nicola_keytop"), entry("nicola_us")];
+        assert_eq!(
+            LayoutEntry::resolve_index(&layouts, "NICOLA＋確定.yab"),
+            1,
+            "should fall back to nicola_keytop, not sort-order-first nicola"
+        );
+    }
+
+    #[test]
+    fn resolve_index_matches_case_insensitive_extension_and_stem() {
+        // /code-review 指摘（PR #131）: default_layout の拡張子/ステムの
+        // 大文字小文字がファイル名と食い違っても、実際に読み込めているファイル
+        // を「読込失敗」と誤警告してはいけない（Windows のファイルシステムは
+        // 大文字小文字を区別しないため）。
+        let layouts = [entry("nicola"), entry("my_nicola")];
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "nicola.YAB"), 0);
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "NICOLA.yab"), 0);
+        assert_eq!(LayoutEntry::resolve_index(&layouts, "My_Nicola.YaB"), 1);
+    }
+
+    #[test]
+    fn strip_yab_extension_is_safe_for_non_ascii_names_without_yab_suffix() {
+        // 境界外パニック回避の回帰テスト: ".yab" で終わらないマルチバイト
+        // 文字列に対して byte-index の char boundary パニックを起こさないこと。
+        assert_eq!(super::strip_yab_extension("設定.toml"), "設定.toml");
+        assert_eq!(super::strip_yab_extension("あ"), "あ");
+        assert_eq!(
+            super::strip_yab_extension("NICOLA＋確定.yab"),
+            "NICOLA＋確定"
+        );
+    }
+
+    #[test]
+    fn resolve_index_falls_back_to_first_entry_when_no_name_matches_and_no_keytop() {
         let layouts = [entry("nicola"), entry("my_nicola")];
         assert_eq!(
             LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"),

@@ -46,6 +46,49 @@ fn show_no_layouts_dialog(layouts_dir: &Path) {
     super::launch_settings();
 }
 
+/// `default_layout` に指定したファイルが実際には読み込まれず、別のレイアウトへ
+/// フォールバックしていた場合にモーダルダイアログでユーザーへ知らせる（BUG-104）。
+/// フォールバックが実際に起きていれば `true` を返す（呼び出し元が設定画面を
+/// 開くかどうかの判断に使う）。
+///
+/// これまでは `StartupDiagnostics` 経由のトレイバルーン「N件の警告があります」
+/// としか通知していなかったため、独自レイアウトが UTF-8 でない等の理由で
+/// 読込に失敗し、無言でバンドル版へ差し替わっていることにユーザーが気づけない
+/// 実例（report `01M13EACMQ7D2VETW75N0BTZ9C`、`docs/known-bugs.md` BUG-104）が
+/// あった。**起動時（`init_engine_validated`）専用**——`reload_config`
+/// からは呼ばない。`show_error_dialog` は `MessageBoxW` で呼び出しスレッドを
+/// ブロックするため、起動前（メッセージループ開始前）は安全だが、
+/// `reload_config` はキーボードフックと async executor が生きている
+/// メッセージループスレッド上で直接実行されるため、そこでモーダルを出すと
+/// ダイアログが閉じるまで入力処理が滞留するリスクがある（/code-review 指摘、
+/// PR #131）。設定リロード時の通知は既存の `StartupDiagnostics` 経由の
+/// トレイバルーンのみで妥協する。
+pub(super) fn warn_layout_fallback(
+    layouts_dir: &Path,
+    default_layout: &str,
+    resolved_name: &str,
+) -> bool {
+    let configured_name = crate::runtime::strip_yab_extension(default_layout);
+    if configured_name.eq_ignore_ascii_case(resolved_name) {
+        return false;
+    }
+    let reason = if layouts_dir.join(default_layout).exists() {
+        "読み込みに失敗しました（ファイルの内容にエラーがあるか、文字コードが UTF-8 \
+         になっていない可能性があります）"
+    } else {
+        "見つかりませんでした"
+    };
+    let message = format!(
+        "設定されたレイアウト「{default_layout}」を{reason}。\n\n\
+         代わりに「{resolved_name}.yab」を使用しています。独自にカスタマイズした\
+         内容は反映されていません。\n\n\
+         詳細は awase.log を確認するか、これから開く設定画面で配列を選び直して\
+         ください。"
+    );
+    crate::win32::show_error_dialog("awase - レイアウトの読み込みに失敗しました", &message);
+    true
+}
+
 /// 親指+小指シフト複合面を有効にできる親指キー構成かを返す。
 ///
 /// 親指キー自体が Shift 修飾キーの場合、親指押下だけで Shift レベルが立つため
@@ -180,6 +223,13 @@ pub(super) fn init_engine_validated(
 
     let (layout, initial_layout_name) = select_default_layout(layouts.as_slice(), config)
         .context("default layout selection failed")?;
+    if warn_layout_fallback(
+        &layouts_dir,
+        &config.general.default_layout,
+        &initial_layout_name,
+    ) {
+        super::launch_settings();
+    }
     log::info!(
         "Layout loaded: {} normal keys, {} left thumb keys, {} right thumb keys",
         layout.normal.len(),

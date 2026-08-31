@@ -11887,6 +11887,22 @@ F21×`SwitchKanaType`（ひらがな/カタカナ/半角カナ切替）のみで
 ブランチ）の `docs/known-bugs.md` を `BUG-[0-9]+` で走査し、作業時点の最大番号
 が BUG-94（`origin/develop`）であることを確認し、本件を BUG-95 として採番した。
 
+**追記（BUG-104 調査で判明、要 re-verify）:** 症状2（「ぶ」→「b」）の原因を
+上記「`ｂ'ｕ` 誤字が `Literal` として無警告受理された」と説明しているが、
+BUG-104 の調査で、この report の app_log に
+
+```
+startup: レイアウト読込失敗: ...\layout\NICOLA＋確定.yab: stream did not contain valid UTF-8
+```
+
+という起動ログが2回（`01:46:32`・`05:27:49`）記録されていることが判明した。
+この `NICOLA＋確定.yab` こそが `ｂ'ｕ` 誤字を含む当該ファイルであり、UTF-8
+デコードの時点で読込自体に失敗していた——つまり実際に有効化されていたのは
+ソート順先頭のバンドル版 `nicola.yab`（`ｂｕ`→「ぶ」の対応は正しい）だった
+可能性が高い。本エントリの調査時点ではこの起動ログが参照されておらず、
+「ユーザー独自編集ファイルが実行時に読み込まれた」という前提が誤りだった
+疑いが強い。症状2の真因は**未確定に戻す**必要がある。詳細は BUG-104 参照。
+
 **関連ファイル:** `src/yab/mod.rs`, `crates/awase-settings/src/main.rs`。
 
 ---
@@ -12300,3 +12316,90 @@ notifications via HWND, close key-delivery gaps (ADR-105/102)`、2026-08-26）�
 （`reload_config`）。関連: ADR-114（`[[keymap]]` 側の同種ギャップの解消）,
 ADR-037（`[[post_bypass]]`/`[[keymap]]` 共通の「アプリ+キースコープの横取り」
 形状）。
+
+---
+
+## BUG-104: 独自 `.yab` レイアウトが UTF-8 でないと起動時に無言でバンドル版へ差し替わる
+
+**症状:** タスクトレイの不具合報告機能経由の report `01M13EACMQ7D2VETW75N0BTZ9C`
+（2026-08-28T05:28:03Z、app_version 1.16.1、GJI）で報告された4件のうち、**BUG-95
+（`.yab`のクォート崩れリテラルが無警告で受理される）とは別の、独立した原因**。
+ユーザーが独自にカスタムした `NICOLA＋確定.yab`（句読点セルに `CV4D` サフィックス
+を試験的に追加したもの）を `default_layout` に指定していたが、awase.log には
+
+```
+startup: レイアウト読込失敗: ...\layout\NICOLA＋確定.yab: stream did not contain valid UTF-8
+Available layouts: ["nicola", "nicola_f", "nicola_us"]
+```
+
+とあり、`NICOLA＋確定.yab` はファイル読込の時点（UTF-8 デコード）で失敗し
+`Available layouts` からも除外され、実際に有効化されたのはソート順で先頭の
+バンドル版 `nicola.yab` だった。ユーザーへの通知はトレイバルーン「1件の警告が
+あります」の一文のみで、どのファイルが何の理由で無視されたかは awase.log を
+開かないと分からない。report の `description` にはこの読込失敗への言及が一切
+なく、ユーザーは自分の独自レイアウト（句読点 `CV4D` 含め）が丸ごと無視され
+バンドル版が使われていることに気づいていない様子だった。
+
+**BUG-95 との関係（重要、要注意）:** BUG-95 は同じ report の症状「『ぶ』が
+入力できず『b』になる」を、添付 `layout_yab`（右親指シフト面 V 位置の誤字
+`ｂ'ｕ`）が実行時に読み込まれ `Literal` としてそのまま解釈された結果と説明して
+いる。しかし本 BUG-104 の調査で判明した通り、**その同じファイルは UTF-8
+デコードの時点で読込自体に失敗しており、実際に有効化されていたのはバンドル版
+`nicola.yab`（`ｂｕ`→「ぶ」の対応は正しい）だった可能性が高い**。両者は
+report 添付の `app_log_excerpt` から得られる事実であり矛盾する。BUG-95 の
+調査時点ではこの起動ログ（`stream did not contain valid UTF-8`）が参照されて
+いなかった模様（BUG-95 エントリに言及がない）。「ぶ」欠落症状の真因は
+**未確定に戻す必要がある**——BUG-95 の `ｂ'ｕ` 誤字説と本 BUG-104 のフォール
+バック説のどちらか、あるいは両方が起きた可能性（例: フォールバック発生前の
+古いバージョンで再現していた、等）を次回セッションで re-verify すること。
+（report 添付の journal は起動直後14秒分・60件のみで実際の打鍵記録
+`KeyInput` が1件も無く、いずれの説も打鍵ログでは検証できていない。）
+
+**原因:**
+
+- `LayoutEntry::scan_all`（`crates/awase-windows/src/app/bootstrap.rs`）は
+  `.yab` の読込/パースに失敗したファイルを診断ログに残すのみで
+  `layouts` に加えない。
+- `LayoutEntry::resolve_index`（`crates/awase-windows/src/runtime/mod.rs`）は
+  `default_layout` と同名のエントリが見つからない場合、**修正前は**
+  ソート順先頭のレイアウトへ無言でフォールバックしていた。
+- 通知はトレイバルーン「N件の警告があります」のみで、内容（どのファイルが・
+  なぜ）は awase.log にしか残らなかった。
+
+**修正:**
+
+- `LayoutEntry::resolve_index` のフォールバック先を、ソート順先頭ではなく
+  `nicola_keytop`（存在すれば。新規インストールの既定と同じ、`layout/
+  nicola_keytop.yab`）優先に変更。無ければ従来どおりソート順先頭。
+- `bootstrap::warn_layout_fallback` を新設し、実際に選ばれたレイアウトが
+  `config.general.default_layout` と一致しない場合（＝フォールバックが
+  発生した場合）、モーダルダイアログ（`crate::win32::show_error_dialog`）で
+  「設定されたレイアウト『X』を{読み込みに失敗しました/見つかりませんでした}。
+  代わりに『Y』を使用しています」と明示する。起動時（`init_engine_validated`）
+  はこのダイアログの直後に `launch_settings()` で設定画面を自動起動する
+  （`show_no_layouts_dialog` と同じパターン）。設定リロード時
+  （`reload_config`）は同じダイアログを出すが設定画面の自動起動はしない
+  （原因が直らない限りリロードのたびに新しい設定画面プロセスが際限なく
+  spawn されるのを避けるため。`launch_settings_with_args` に多重起動防止が
+  無い）。
+  - 起動を中断する案（異常終了）も検討したが、awase はスタートアップ登録
+    されうる常駐ソフトであるため、原因未修正のまま自動起動されるたびに
+    サイレントに落ち続け、NICOLA 入力が長期間使えないことに気づかれない
+    リスクがあるとして不採用（ユーザー判断）。フォールバックで動作は継続
+    させ、モーダル＋設定画面の自動起動で気づかせる方針を採用した。
+
+**テスト:** `crates/awase-windows/src/runtime/mod.rs` の
+`layout_entry_tests::resolve_index_prefers_nicola_keytop_when_default_layout_not_found`
+で新しいフォールバック優先順位を固定。`cargo check --target
+x86_64-pc-windows-msvc -p awase -p awase-windows`・
+`cargo clippy --target x86_64-pc-windows-msvc -p awase-windows -- -A
+clippy::cargo`・`cargo test -p awase-windows --test architecture_guard --test
+layer_boundary_guard`（Linux host、62+8件green）確認済み。`warn_layout_fallback`
+自体（`MessageBoxW` を呼ぶ）は Windows 専用のため Linux では実行不可、
+Windows 実機での確認は未実施。
+
+**関連ファイル:** `crates/awase-windows/src/app/bootstrap.rs`
+（`warn_layout_fallback`, `init_engine_validated`）、
+`crates/awase-windows/src/runtime/mod.rs`（`LayoutEntry::resolve_index`）、
+`crates/awase-windows/src/app/mod.rs`（`reload_config`）。関連: BUG-95（同じ
+report、上記「BUG-95 との関係」参照）。
