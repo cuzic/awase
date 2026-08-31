@@ -167,13 +167,11 @@ impl Runtime {
             self.platform_state.focus.focus_epoch.wrapping_add(1);
         self.platform.notify_focus_changed();
 
-        let process_name = self.platform.focus.process_name().to_owned();
-        self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+        self.recompute_active_keymaps();
         log::debug!(
-            "[keymap] active rules updated: {} rule(s) for process={:?} \
+            "[keymap] active rules updated on focus change: {} rule(s) \
              (hwnd={:?} kind={:?} focus_epoch={})",
             self.platform_state.keymap.active_keymaps.len(),
-            process_name,
             classified.hwnd,
             classified.kind,
             self.platform_state.focus.focus_epoch,
@@ -470,6 +468,11 @@ impl Runtime {
         self.platform_state.focus.app_disabled = is_disabled;
         crate::hook::set_focus_app_disabled(is_disabled);
         crate::hook::clear_hook_latches_for_app_disable(transition);
+        // [[keymap]] latch もフック側と同じタイミングで解放する（ADR-114 決定4
+        // 「latch 漏れ対策」経路3）。FOCUS_APP_DISABLED 遷移中はフックが
+        // deliver_key_event に一切イベントを渡さないため、latch が残っていても
+        // 対応する KeyUp が永遠に届かない。
+        self.platform_state.keymap.keymap_latch.release_all();
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず

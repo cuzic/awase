@@ -468,21 +468,40 @@ static ALT_L_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static ALT_R_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 fn cached_hook_config() -> HookConfig {
-    let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    let (left_thumb_vk, right_thumb_vk) = thumb_vk_codes();
     let keyboard_model = if CACHED_KEYBOARD_MODEL_IS_US.load(Ordering::Acquire) {
         awase::scanmap::KeyboardModel::Us
     } else {
         awase::scanmap::KeyboardModel::Jis
     };
     HookConfig {
-        left_thumb_vk: VkCode((packed >> 16) as u16),
-        right_thumb_vk: VkCode(packed as u16),
+        left_thumb_vk,
+        right_thumb_vk,
         keyboard_model,
         left_alt_impersonates_thumb_key: CACHED_LEFT_ALT_IMPERSONATION_ENABLED
             .load(Ordering::Acquire),
         right_alt_impersonates_thumb_key: CACHED_RIGHT_ALT_IMPERSONATION_ENABLED
             .load(Ordering::Acquire),
     }
+}
+
+/// 現在キャッシュされている左右親指キーの VK コードを返す。
+///
+/// `cached_hook_config()` もこの関数を経由する（`CACHED_THUMB_VKS` の
+/// bit-unpack ロジックを1箇所に集約——ADR-114 実装レビュー指摘: 独立した
+/// 2つの unpack サイトがあると、pack 形式を変える際に片方だけ更新漏れが
+/// 起きても検知できない）。
+///
+/// `[[keymap]]` の禁止 VK チェック（`KeymapTable::new`）が
+/// `resolve_thumb_key(...)` の if-let スコープに依存せず親指 vk を取得できる
+/// ようにするために ADR-114 T1b/T7 で公開した——`resolve_thumb_key` が失敗した
+/// 設定（"Invalid thumb key names" 警告）では新しい親指 vk が確定しないが、
+/// この関数は前回成功した値（bootstrap または直近の成功した reload）を
+/// 引き続き返すため、reload 経路がブロックされない。
+#[must_use]
+pub fn thumb_vk_codes() -> (VkCode, VkCode) {
+    let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    (VkCode((packed >> 16) as u16), VkCode(packed as u16))
 }
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）

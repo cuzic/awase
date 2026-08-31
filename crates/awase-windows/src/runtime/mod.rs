@@ -213,6 +213,10 @@ pub struct Runtime {
     /// `gji_charset_popup` が「既に有効なら設定支援ポップアップを出さない」
     /// 判定に使う。
     muhenkan_dedicated_fn_key_active: bool,
+    /// `muhenkan_dedicated_fn_key_active` が保持する vk 自体（`bool` だけでは
+    /// `recompute_active_keymaps` から `[[keymap]]` との衝突チェックに使う vk を
+    /// 参照できないため、ADR-114「未解決の疑問」5 対応で追加）。
+    muhenkan_dedicated_fn_key_vk: Option<VkCode>,
     /// `!config.general.muhenkan_solo_tap_always_suppress`（無変換単独タップが
     /// 素のパススルー設定になっているか）。GJI向け設定支援ポップアップ
     /// （ADR-091 §D3.2「設定未完了時のポップアップ」、`gji_charset_popup`）が
@@ -1179,6 +1183,7 @@ impl Runtime {
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_active: false,
+            muhenkan_dedicated_fn_key_vk: None,
             muhenkan_solo_tap_is_passthrough: false,
             space_is_thumb_key: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
@@ -1222,6 +1227,13 @@ impl Runtime {
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_is_manual = is_manual;
         self.muhenkan_dedicated_fn_key_active = vk.is_some();
+        self.muhenkan_dedicated_fn_key_vk = vk;
+        if let Some(vk) = vk {
+            self.platform_state
+                .keymap
+                .active_keymaps
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（手動設定）");
+        }
     }
 
     /// `state::gji_charset_autodetect` が GJI 検出/離脱時に専用Fnキー変換モードを
@@ -1233,6 +1245,13 @@ impl Runtime {
         }
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_active = vk.is_some();
+        self.muhenkan_dedicated_fn_key_vk = vk;
+        if let Some(vk) = vk {
+            self.platform_state
+                .keymap
+                .active_keymaps
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key（自動検出）");
+        }
     }
 
     /// `state::gji_charset_autodetect` が手動設定かどうかを判定するための読み取り専用アクセサ。
@@ -1557,11 +1576,48 @@ impl Runtime {
                 config.general.right_thumb_key,
             );
         }
+        // [[keymap]] の再構築（ADR-114 決定8）。`resolve_thumb_key` の if-let
+        // ブロックの**外・後**に置くこと——ブロック内に置くと上の `else`
+        // （"Invalid thumb key names"）に落ちたときに親指 vk が確定せず
+        // reload が丸ごとスキップされる。`hook::thumb_vk_codes()` は
+        // if-let の成否に関わらず現在キャッシュされている値（bootstrap
+        // または直近の成功した reload の値）を返すため、ここで安全に使える。
+        let (left_thumb_vk, right_thumb_vk) = crate::hook::thumb_vk_codes();
+        self.all_keymaps =
+            crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
+        self.recompute_active_keymaps();
         log::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
             config.general.speculative_delay_ms,
         );
+    }
+
+    /// `active_keymaps` を `all_keymaps` から再計算する（ADR-114 決定8）。
+    ///
+    /// フォーカス変更時（`focus_tracking.rs::enter_focus_scope`）と
+    /// `reload_config` 経路（`apply_config_update`）の両方から呼ぶ、
+    /// 唯一の書き込み点。書き込み点を2つに増やさない（`enter_focus_scope`
+    /// が過去に同種の重複を統合した経緯と同じ理由）。
+    fn recompute_active_keymaps(&mut self) {
+        let process_name = self.platform.focus.process_name().to_owned();
+        self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
+        log::debug!(
+            "[keymap] active rules recomputed: {} rule(s) for process={:?}",
+            self.platform_state.keymap.active_keymaps.len(),
+            process_name,
+        );
+        // 専用Fnキー（実行時に確定する vk）との衝突も、フォーカス変更・reload の
+        // たびに再チェックする（`warn_if_vk_conflicts` の呼び出しを両 setter
+        // だけに限ると、setter 呼び出し時点の active_keymaps でしか判定できず、
+        // フォーカス変更や reload で新しく衝突するルールが有効になった場合を
+        // 見逃す、ADR-114 実装レビュー指摘）。
+        if let Some(vk) = self.muhenkan_dedicated_fn_key_vk {
+            self.platform_state
+                .keymap
+                .active_keymaps
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key");
+        }
     }
 
     /// n-gram モデルをエンジンに適用する。
@@ -1633,6 +1689,9 @@ impl Runtime {
         // awase 内部の物理キー shadow は解放されないままだったため、明示的にリセットする。
         send_all_modifier_key_ups();
         crate::hook::reset_physical_key_state();
+        // [[keymap]] latch も同じ理由で解放する（ADR-114 決定4「latch
+        // 漏れ対策」経路5）。
+        self.platform_state.keymap.keymap_latch.release_all();
 
         // 4. PlatformState を全面リセット
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた

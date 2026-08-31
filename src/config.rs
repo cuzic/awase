@@ -521,12 +521,19 @@ pub struct AppOverrideEntry {
 }
 
 /// `[[keymap]]` ショートカットインターセプトルール
+///
+/// `from`/`to` に指定できない vk がある（ADR-114 決定5、`KeymapTable::new` が
+/// `log::warn!` して該当ルールを skip する）: 親指キー・IME 制御系 VK・Alt 系
+/// VK（`from` の修飾子としての Alt を含む）・Win 系 VK・`VK_CAPITAL`・
+/// Shift を `from` の主キーにすること。
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct KeymapRule {
-    /// プロセス名（省略=全アプリ、大文字小文字無視）
+    /// プロセス名（省略=全アプリ）。大文字小文字を無視し、末尾の `.exe` の
+    /// 有無どちらでも一致する完全一致（前方一致はしない）。
     #[serde(default)]
     pub app: Option<String>,
-    /// インターセプトするキーコンボ（例: "Ctrl+I"）
+    /// インターセプトするキーコンボ（例: "Ctrl+VK_I"）。主キーは `VK_` 接頭辞
+    /// 付きの名前が必要（`crate::vk::VkCodeExt::from_name` が解決できる形式）。
     pub from: String,
     /// 再注入するキー（例: "F7"）、省略=消費のみ
     #[serde(default)]

@@ -12258,3 +12258,42 @@ notifications via HWND, close key-delivery gaps (ADR-105/102)`、2026-08-26）�
 `crates/awase-windows/src/state/open_warrant.rs`（Step 3 = `derive_actuating`）,
 `crates/awase-windows/src/state/evidence.rs`（`FocusProbe` = Low の根拠）。
 関連: ADR-102 決定3-b（2026-08-31 追補）, ADR-106 決定3・§冒頭（同追補）, BUG-91。
+
+---
+
+## BUG-103: `[[post_bypass]]` は `reload_config()` で反映されない（設定変更に再起動が必要）
+
+**症状:** `config.toml` の `[[post_bypass]]` セクションを変更して設定を保存
+（reload）しても、変更が反映されない。awase を再起動して初めて新しい
+`[[post_bypass]]` ルールが有効になる。
+
+**原因:** `Runtime::post_bypass_rules`（コンパイル済み `[[post_bypass]]`
+ルール一覧）は `bootstrap.rs` でのみ構築され、`apply_config_update`
+（`runtime/mod.rs`、`reload_config()` から呼ばれる）は一切この値に触れない。
+`[[keymap]]` も ADR-114 実装前は同じギャップを抱えていたが、ADR-114 決定8
+（`Runtime::all_keymaps`/`recompute_active_keymaps()`）で解消済み。
+`[[post_bypass]]` 側は本 ADR のスコープ外として意図的に対象外にした
+（[[keymap]] のギャップ解消が優先度が高いと判断したため）。
+
+**再現手順:**
+1. `[[post_bypass]]` ルールが未設定の状態で awase を起動する。
+2. 設定画面（またはトレイの「設定リロード」）から `config.toml` に
+   `[[post_bypass]]` セクションを追加して保存・reload する。
+3. 対象のキーコンボを押しても、ルールが有効になっていない
+   （追加前と同じ挙動のまま）。
+4. awase を再起動すると、追加したルールが有効になる。
+
+**修正方針（未実装）:** `apply_config_update` に `[[post_bypass]]` のコンパイル
+（`bootstrap.rs` の `post_bypass_rules` 構築ロジックと同等）を追加し、
+`Runtime::post_bypass_rules` を差し替える。`[[keymap]]` の
+`recompute_active_keymaps()` と同様、書き込み点が複数に増えないよう
+1箇所に集約すること。
+
+**状態:** 未修正。`[[keymap]]` 側（ADR-114）の実装と同時に発見・記録した。
+
+**関連ファイル:** `crates/awase-windows/src/app/bootstrap.rs`（`post_bypass_rules`
+構築）, `crates/awase-windows/src/runtime/mod.rs`（`apply_config_update`,
+`post_bypass_rules` フィールド）, `crates/awase-windows/src/app/mod.rs`
+（`reload_config`）。関連: ADR-114（`[[keymap]]` 側の同種ギャップの解消）,
+ADR-037（`[[post_bypass]]`/`[[keymap]]` 共通の「アプリ+キースコープの横取り」
+形状）。

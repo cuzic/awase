@@ -21,6 +21,10 @@ pub const VK_RETURN: VkCode = VkCode(0x0D);
 pub const VK_SHIFT: VkCode = VkCode(0x10);
 pub const VK_CONTROL: VkCode = VkCode(0x11);
 pub const VK_MENU: VkCode = VkCode(0x12);
+/// VK_CAPITAL (0x14) — CapsLock。JIS キーボードでは Shift+英数 と物理的に
+/// 同一スキャンコード（ADR-111 参照）。`[[keymap]]` の `from`/`to` 禁止対象
+/// （ADR-114 決定5）で名前付き定数として参照するため追加。
+pub const VK_CAPITAL: VkCode = VkCode(0x14);
 pub const VK_KANA: VkCode = VkCode(0x15);
 pub const VK_IME_ON: VkCode = VkCode(0x16);
 pub const VK_JUNJA: VkCode = VkCode(0x17);
@@ -453,6 +457,7 @@ impl VkCodeExt for VkCode {
             "VK_SHIFT" => Some(Self(0x10)),
             "VK_CONTROL" => Some(Self(0x11)),
             "VK_MENU" => Some(Self(0x12)),
+            "VK_CAPITAL" => Some(Self(0x14)),
             "VK_LSHIFT" => Some(Self(0xA0)),
             "VK_RSHIFT" => Some(Self(0xA1)),
             "VK_LCONTROL" => Some(Self(0xA2)),

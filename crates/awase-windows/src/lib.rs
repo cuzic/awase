@@ -56,7 +56,12 @@ pub(crate) mod imm;
 pub mod input_defer;
 #[cfg(windows)]
 pub mod journal;
-#[cfg(windows)]
+// `KeymapTable`/`find_match`/`filter_active` は純粋な値比較のみで Windows API に
+// 依存しないため ungated（ADR-114、Linux で `cargo test -p awase-windows --lib`
+// から全数テストできるようにする。唯一の呼び出し元 `runtime/message_handlers.rs`
+// は `#[cfg(windows)]` のため非 Windows では未使用になる、他の純粋関数モジュール
+// と同じ局所抑制パターン）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub mod keymap;
 #[cfg(windows)]
 pub mod observer;
