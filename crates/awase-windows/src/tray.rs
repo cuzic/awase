@@ -807,18 +807,34 @@ pub(crate) fn handle_autostart_toggle() {
     };
 
     if success {
-        save_auto_start_config(new_value);
+        let warnings = save_auto_start_config(new_value);
         let _ = crate::with_app(|app| {
-            app.show_tray_balloon("awase", msg);
+            if warnings.is_empty() {
+                app.show_tray_balloon("awase", msg);
+            } else {
+                // /code-review指摘（PR #127、3回目）: save_auto_start_config
+                // がvalidate()を経由するようになったことで、config.toml内の
+                // 他の項目（例: 廃止済みconfirm_mode="speculative"、範囲外の
+                // simultaneous_threshold_ms等）がauto_start切替のついでに
+                // 無言でリセットされうる。以前はlog::warn!だけで、トレイ経由
+                // の操作にはコンソールが無くユーザーには実質見えなかった。
+                // 既存のバルーン通知機構を使い、警告をユーザーへ可視化する。
+                app.show_tray_balloon(
+                    "awase — 設定を修正しました",
+                    &format!("{msg}\n{}", warnings.join("\n")),
+                );
+            }
         });
     }
 }
 
-/// config.toml の `auto_start` 値を書き換えて保存する。
-fn save_auto_start_config(value: &str) {
+/// config.toml の `auto_start` 値を書き換えて保存する。検証で正規化・警告が
+/// 発生した項目があれば、その警告文一覧を返す（呼び出し元がバルーン通知で
+/// ユーザーへ可視化するため）。
+fn save_auto_start_config(value: &str) -> Vec<String> {
     let Ok(config_path) = crate::app::find_config_path() else {
         log::warn!("Could not find config path to save auto_start");
-        return;
+        return Vec::new();
     };
     match awase::config::AppConfig::load(&config_path) {
         Ok(mut config) => {
@@ -835,9 +851,14 @@ fn save_auto_start_config(value: &str) {
             let config = awase::config::AppConfig::from(validated);
             if let Err(e) = config.save(&config_path) {
                 log::error!("Failed to save auto_start config: {e}");
+                return Vec::new();
             }
+            warnings
         }
-        Err(e) => log::error!("Failed to load config for saving auto_start: {e}"),
+        Err(e) => {
+            log::error!("Failed to load config for saving auto_start: {e}");
+            Vec::new()
+        }
     }
 }
 
