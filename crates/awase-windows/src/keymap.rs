@@ -3,13 +3,19 @@
 use crate::vk::{ImeKeyKind, VkCodeExt};
 use awase::config::{KeymapRule, ParsedKeyCombo};
 use awase::engine::fsm_types::ModifierState;
-use awase::types::VkCode;
+use awase::types::{ModifierKey, VkCode};
 
 /// `from`/`to` に指定できない vk か、指定できないなら理由を返す（ADR-114 決定5）。
 ///
 /// 一般原則: awase の他のロジックが静的な VK 一覧ではなく `PHYSICAL_KEY_STATE`
 /// ベース（または実行時に決まる）held 判定・専用処理を持つキー全般を禁止する。
 /// `left_thumb_vk`/`right_thumb_vk` は実行時値（config 由来）のため引数で受け取る。
+///
+/// Alt/Win 系 VK の判定は `crate::vk::classify_modifier`（左右バリアントを
+/// 全て吸収する唯一の分類関数）に委譲する——独自の VK 列挙を持つと、将来
+/// `classify_modifier` 側に新しい別名 VK が追加されてもここには伝播せず、
+/// ADR-114 決定5 が塞ごうとしている「PHYSICAL_KEY_STATE ベースの held 判定
+/// キーとの二重管理」の穴が再び開く（実装レビュー指摘）。
 fn forbidden_target_vk_reason(
     vk: VkCode,
     left_thumb_vk: VkCode,
@@ -21,14 +27,10 @@ fn forbidden_target_vk_reason(
     if ImeKeyKind::from_vk(vk).is_some() {
         return Some("IME 制御系 VK");
     }
-    if matches!(
-        vk,
-        crate::vk::VK_MENU | crate::vk::VK_LMENU | crate::vk::VK_RMENU
-    ) {
-        return Some("Alt 系 VK");
-    }
-    if matches!(vk, crate::vk::VK_LWIN | crate::vk::VK_RWIN) {
-        return Some("Win 系 VK");
+    match crate::vk::classify_modifier(vk) {
+        Some(ModifierKey::Alt) => return Some("Alt 系 VK"),
+        Some(ModifierKey::Meta) => return Some("Win 系 VK"),
+        Some(ModifierKey::Ctrl | ModifierKey::Shift) | None => {}
     }
     if vk == crate::vk::VK_CAPITAL {
         return Some("VK_CAPITAL（ADR-111 Scancode Map プリセットと二重介入しうる）");
@@ -38,11 +40,9 @@ fn forbidden_target_vk_reason(
 
 /// `from` の主キー（`combo.vk`）として Shift を指定できるか（ADR-114 決定5）。
 /// 修飾子側の Shift（`combo.shift`）は対象外——別途 combo.alt と同様のチェックを行う。
+/// `forbidden_target_vk_reason` と同じ理由で `classify_modifier` に委譲する。
 fn is_forbidden_shift_primary_key(vk: VkCode) -> bool {
-    matches!(
-        vk,
-        crate::vk::VK_SHIFT | crate::vk::VK_LSHIFT | crate::vk::VK_RSHIFT
-    )
+    matches!(crate::vk::classify_modifier(vk), Some(ModifierKey::Shift))
 }
 
 /// `[[keymap]]` ルールの実行時表現

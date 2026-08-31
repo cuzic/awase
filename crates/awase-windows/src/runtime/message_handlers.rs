@@ -257,11 +257,7 @@ fn consume_keymap_match(
         // 横取りしてしまう（`cancel_composition_and_arm_post_bypass_on_ctrl` が
         // Ctrl+key パススルー時に同じ問題へ対処しているのと同型の問題、ADR-114
         // 実装レビューで発見）。送信前に composition をキャンセルする。
-        if app.platform.is_composition_warm_in_tsf() {
-            // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
-            unsafe { super::cancel_ime_composition() };
-            app.platform.on_ctrl_bypass_composition_cancel();
-        }
+        cancel_composition_if_warm(app);
         // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
         unsafe {
             crate::output::held_modifiers::send_keymap_target(
@@ -272,6 +268,22 @@ fn consume_keymap_match(
         }
     }
     Some(KeyDelivery::Consumed)
+}
+
+/// GJI 候補ウィンドウ表示中（IME composition warm）なら composition を
+/// キャンセルする。この後に別の VK（`[[keymap]]` の `target_vk`、または
+/// Ctrl+key パススルーで OS へ届く元の vk）を送ると、IME がそれを自身の
+/// ショートカットとして横取りしてしまう問題への対処を1箇所に集約する
+/// （`consume_keymap_match`/`cancel_composition_and_arm_post_bypass_on_ctrl`
+/// の両方から呼ぶ、ADR-114 実装レビュー指摘）。戻り値はキャンセルしたかどうか。
+fn cancel_composition_if_warm(app: &mut Runtime) -> bool {
+    let candidate_visible = app.platform.is_composition_warm_in_tsf();
+    if candidate_visible {
+        // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
+        unsafe { super::cancel_ime_composition() };
+        app.platform.on_ctrl_bypass_composition_cancel();
+    }
+    candidate_visible
 }
 
 /// `CallbackResult::PassThrough` 確定時、Ctrl+非修飾キーによる bypass の直前に
@@ -306,10 +318,7 @@ fn cancel_composition_and_arm_post_bypass_on_ctrl(
         "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
         event.vk_code
     );
-    if candidate_visible {
-        // SAFETY: メインスレッドから呼ぶ。
-        unsafe { super::cancel_ime_composition() };
-        app.platform.on_ctrl_bypass_composition_cancel();
+    if cancel_composition_if_warm(app) {
         log::debug!(
             "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
             event.vk_code

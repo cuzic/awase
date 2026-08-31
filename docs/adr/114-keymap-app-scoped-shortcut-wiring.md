@@ -578,6 +578,42 @@ deliver_key_event`（`enqueue_reinject` 呼び出し箇所を「`deliver_key_eve
    時点で1回しか走らないため、`config1.db` からの自動検出タイミング（起動後）と
    ズレる可能性がある。`active_keymaps` の再フィルタ時（フォーカス変更・
    reload_config 時）に都度チェックするのが妥当か、実装時に確定する。
+   **実装時に解決**: `KeymapTable::new` のシグネチャに `left_thumb_vk`/
+   `right_thumb_vk` を追加（T1b）。dedicated fn key の禁止チェックは
+   `Runtime::recompute_active_keymaps()`（フォーカス変更・reload 時に加え、
+   `muhenkan_dedicated_fn_key_vk` フィールドを新設して2つの setter からも
+   呼ぶことで、setter 呼び出し時点だけでなく「後から新しく衝突するルールが
+   有効になった」場合も検出できるようにした）。
+6. **実装レビューで判明した既知の限界（本 ADR のスコープでは対処しない）**:
+   - `active_keymaps` はフォーカス変更検知後 `focus_debounce_ms`（既定 50ms、
+     ADR-007）を挟んだ非同期チェーンの末尾（`enter_focus_scope`）でしか
+     更新されない。この窓の間に届いたキーは直前のフォーカス先の
+     `active_keymaps` に対して照合される。これは `[[keymap]]` 固有の問題では
+     なく、`active_keymaps`/`[[post_bypass]]`/`disable_apps` を含む全ての
+     アプリスコープ機能が同じ focus-tracking パイプラインを共有すること由来の
+     既存の特性であり、本 ADR で新規に導入したものではない（ADR-114 実装
+     レビュー指摘、Angle C）。
+   - `KeymapLatch` は vk 単位でアプリスコープを持たない。物理キーを押したまま
+     フォーカスを切り替え、切替先で別の `[[keymap]]` ルールに一致する修飾キーを
+     追加で押す、という非常に稀な操作をすると、直前のフォーカス先から持ち
+     越された押下が切替先のルールにマッチしてしまいうる（実装レビュー
+     指摘、Angle A）。物理的に「このタイミングでの押下は直前のフォーカス先
+     から持ち越されたものである」という情報を vk + 修飾キー状態だけからは
+     区別できないという、キーリマップ全般に共通する構造的な限界であり、
+     latch にフォーカス scope（`focus_epoch` 等）を持たせる拡張は将来の
+     ニーズが確認されてから検討する。
+   - 決定5/6 の衝突警告（`warn_on_engine_hotkey_collision`/
+     `warn_if_vk_conflicts`）は `log::warn!` のみで、`StartupDiagnostics`
+     （トレイバルーン通知・設定画面のステータス表示、`app/mod.rs`）を経由
+     しない。同じファイル内の他の「設定値がおかしい/危険」警告
+     （不明なキー名、サムキー/IME コンボの衝突等）はすべて
+     `StartupDiagnostics` を経由してユーザーに見える形で表示されるため、
+     この2つの警告だけが非対称にログのみになっている（実装レビュー指摘、
+     Angle altitude）。`keymap.rs` は `app/mod.rs` の private な
+     `StartupDiagnostics` に依存できないため、警告メッセージを
+     `Vec<String>` として返す形に変更し呼び出し元（`bootstrap.rs`・
+     `app/mod.rs::reload_config`）で `diag.warn(..)` へ転送する改修が必要。
+     本 ADR のスコープでは見送り、視認性改善として別 PR で対応する。
 
 ## 関連 ADR
 
