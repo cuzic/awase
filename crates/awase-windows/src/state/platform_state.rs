@@ -1523,6 +1523,8 @@ impl Default for GateStore {
 pub(crate) struct KeymapStore {
     /// 現在のフォーカスアプリに適用されるキーマップルール
     pub active_keymaps: crate::keymap::KeymapTable,
+    /// `[[keymap]]` の KeyUp 回収・自動リピート抑制用 latch（ADR-114 決定4）
+    pub keymap_latch: crate::state::keymap_latch::KeymapLatch,
 }
 
 // ────────────────────────────────────────────────────────────────────────────

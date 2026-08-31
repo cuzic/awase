@@ -110,6 +110,11 @@ pub mod input_barrier;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod injection_mode;
 pub mod observation_store;
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。唯一の呼び出し元
+// runtime/message_handlers.rs::deliver_key_event は #[cfg(windows)] のため
+// 非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod keymap_latch;
 pub(crate) mod post_bypass;
 pub mod probe_admission;
 pub(crate) mod scoped_latch;
