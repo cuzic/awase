@@ -296,12 +296,16 @@ impl WindowsPlatform {
         crate::tsf::observer::gji_candidate_visible_now()
     }
 
-    /// Ctrl+key パススルー時の composition キャンセル内部状態更新。
+    /// composition キャンセル後の内部状態更新（Ctrl+key パススルー・
+    /// `[[keymap]]` の `target_vk` 送信、いずれも IME ショートカット横取り
+    /// 防止のためのキャンセル）。
     ///
     /// IMM32 の `cancel_ime_composition()` を呼んだ直後に続けて呼ぶこと。
-    pub(crate) fn on_ctrl_bypass_composition_cancel(&mut self) {
-        self.output
-            .mark_composition_cold(crate::output::ColdReason::CtrlKeyBypass);
+    /// `reason` は journal・診断用に呼び出し元の文脈を正しく記録するため
+    /// 呼び出し元が指定する（実装レビュー m-2、`CtrlKeyBypass` 固定だと
+    /// `[[keymap]]` 起因のキャンセルも「Ctrl bypass が原因」と誤誘導する）。
+    pub(crate) fn on_composition_cancel(&mut self, reason: crate::output::ColdReason) {
+        self.output.mark_composition_cold(reason);
         self.gji_on_composition_reset();
     }
 

@@ -252,12 +252,29 @@ fn consume_keymap_match(
         .find_match(event.vk_code, event.modifier_snapshot)?;
     app.platform_state.keymap.keymap_latch.latch(event.vk_code);
     if let Some(target_vk) = matched {
-        // GJI 候補ウィンドウ表示中（IME composition warm）に target_vk を
+        // IME composition（GJI/MS-IME 問わず）が表示中に target_vk を
         // そのまま SendInput すると、IME が先にそれを自身のショートカットとして
         // 横取りしてしまう（`cancel_composition_and_arm_post_bypass_on_ctrl` が
         // Ctrl+key パススルー時に同じ問題へ対処しているのと同型の問題、ADR-114
         // 実装レビューで発見）。送信前に composition をキャンセルする。
-        cancel_composition_if_warm(app);
+        //
+        // `[[keymap]]` の `from` は修飾子必須ではない（decision5 は Ctrl/Shift を
+        // 主キーとしてのみ禁止し、修飾子として使うことは許可している）ため、
+        // composition 中に無修飾キー1つでも `[[keymap]]` にマッチしうる——
+        // このキャンセルは未確定文字列を破棄する（`cancel_ime_composition` が
+        // 送る `CPS_CANCEL` の効果）。決定3で明記済み（ADR-114 実装レビュー
+        // MA-2、意図的な仕様として受け入れる）。
+        //
+        // `is_composition_warm_in_tsf()`（GJI 専用の `gji_candidate_visible`）
+        // だけでは MS-IME の composition を検出できない（ADR-114 実装レビュー
+        // MA-1）ため、IME 非依存の `ime_composition_active_now()`
+        // （`build_input_context` 等が使う既存の唯一の一般シグナル）を主に使い、
+        // GJI 固有の検出タイミングの違いをカバーするため両方を OR で見る。
+        if crate::tsf::observer::ime_composition_active_now()
+            || app.platform.is_composition_warm_in_tsf()
+        {
+            cancel_composition(app, crate::output::ColdReason::KeymapTarget);
+        }
         // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
         unsafe {
             crate::output::held_modifiers::send_keymap_target(
@@ -270,20 +287,17 @@ fn consume_keymap_match(
     Some(KeyDelivery::Consumed)
 }
 
-/// GJI 候補ウィンドウ表示中（IME composition warm）なら composition を
-/// キャンセルする。この後に別の VK（`[[keymap]]` の `target_vk`、または
-/// Ctrl+key パススルーで OS へ届く元の vk）を送ると、IME がそれを自身の
-/// ショートカットとして横取りしてしまう問題への対処を1箇所に集約する
-/// （`consume_keymap_match`/`cancel_composition_and_arm_post_bypass_on_ctrl`
-/// の両方から呼ぶ、ADR-114 実装レビュー指摘）。戻り値はキャンセルしたかどうか。
-fn cancel_composition_if_warm(app: &mut Runtime) -> bool {
-    let candidate_visible = app.platform.is_composition_warm_in_tsf();
-    if candidate_visible {
-        // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
-        unsafe { super::cancel_ime_composition() };
-        app.platform.on_ctrl_bypass_composition_cancel();
-    }
-    candidate_visible
+/// IME composition をキャンセルする（`cancel_ime_composition` の呼び出し +
+/// 内部状態更新をセットで行う唯一の場所）。呼び出し元が「キャンセルすべきか」を
+/// 判定し、必要な場合にのみ呼ぶこと（`consume_keymap_match`/
+/// `cancel_composition_and_arm_post_bypass_on_ctrl` の両方から呼ぶ、ADR-114
+/// 実装レビュー指摘）。`reason` は journal・診断用（実装レビュー m-2、呼び出し元の
+/// 文脈を正しく記録する——`[[keymap]]` 起因のキャンセルを `CtrlKeyBypass` として
+/// 記録すると cold-start の連鎖を追う際に誤誘導する）。
+fn cancel_composition(app: &mut Runtime, reason: crate::output::ColdReason) {
+    // SAFETY: メインスレッド（エンジンスレッド）から呼ばれる。
+    unsafe { super::cancel_ime_composition() };
+    app.platform.on_composition_cancel(reason);
 }
 
 /// `CallbackResult::PassThrough` 確定時、Ctrl+非修飾キーによる bypass の直前に
@@ -313,12 +327,16 @@ fn cancel_composition_and_arm_post_bypass_on_ctrl(
     {
         return;
     }
+    // m-1（ADR-114 実装レビュー）: `is_composition_warm_in_tsf()` を1回だけ
+    // 読み、ログと分岐判定の両方に同じ値を使う（`Ordering::Relaxed` の
+    // atomic 読み取りのため、2回呼ぶと値が食い違いログと実際の動作が矛盾しうる）。
     let candidate_visible = app.platform.is_composition_warm_in_tsf();
     log::debug!(
         "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
         event.vk_code
     );
-    if cancel_composition_if_warm(app) {
+    if candidate_visible {
+        cancel_composition(app, crate::output::ColdReason::CtrlKeyBypass);
         log::debug!(
             "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
             event.vk_code

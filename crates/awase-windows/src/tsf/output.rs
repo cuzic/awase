@@ -54,6 +54,11 @@ pub enum ColdReason {
     RawTsfLiteralRecovery,
     /// Ctrl+key パススルー時の composition キャンセル（IME ショートカット横取り防止）
     CtrlKeyBypass,
+    /// `[[keymap]]` の `target_vk` 送信前の composition キャンセル（IME
+    /// ショートカット横取り防止、ADR-114 決定3・実装レビュー m-2）。
+    /// `CtrlKeyBypass` と目的は同じだが、journal・診断で cold-start の連鎖を
+    /// 追う際に「Ctrl bypass が原因」と誤誘導しないよう区別する。
+    KeymapTarget,
 }
 
 impl ColdReason {
