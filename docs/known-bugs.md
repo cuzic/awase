@@ -12030,15 +12030,16 @@ x86_64-pc-windows-msvc` によるコンパイル確認、および CI `windows-b
 
 ## BUG-101: `Engine::on_input` の Phase 0 が Consume 済み KeyDown に対応する KeyUp を FSM に一切届けていない（2026-03-31 混入のリグレッション、決定0〜2実装済み・Windows実機ソーク未実施）
 
-**症状:** `Engine::on_input`（`src/engine/engine.rs:357-362`、実運用で唯一のキーイベント
-入口）の Phase 0 が、`KeyLifecycle::on_key_up`（`key_lifecycle.rs:56-63`）を使って
+**症状:** `Engine::on_input`（`src/engine/engine.rs:345-349`、実運用のキーイベント入口
+——`key_pipeline.rs`と`runtime/mod.rs::process_deferred_keys`の2箇所から呼ばれる）の
+Phase 0 が、`KeyLifecycle::on_key_up`（`key_lifecycle.rs:56-63`）を使って
 「対応する KeyDown が Consume 済みの KeyUp」を無条件に `Decision::consumed()` として
-即 return する。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1582`）には一切到達しない。
+即 return する。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1558`）には一切到達しない。
 以下3件の実害を確認済み:
 
 1. **`min_overlap_margin_percent` が実運用で常に無効。** `char1_released_at`
    （`handle_key_up_pending_char_thumb`、`nicola_fsm.rs:1679-1730`）は恒久的に
-   `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:254-267`）は
+   `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:228-239`）は
    常に「重なり構造的保証あり」の `Some(true)` を返す。char1 を離してから
    親指キーを押した（＝物理的に重なっていない）2打が、常に同時打鍵として
    誤確定される。2026-08-23 の PR #85 で導入した重なり不足判定機能は、

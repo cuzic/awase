@@ -11,7 +11,7 @@
 
 ### 根本原因
 
-`Engine::on_input`（`src/engine/engine.rs:357-362`、実運用で唯一のキーイベント入口——`crates/awase-windows/src/runtime/key_pipeline.rs:192` の1箇所のみから呼ばれることを裏取り済み）の「Phase 0」:
+`Engine::on_input`（`src/engine/engine.rs:345-349`、実運用のキーイベント入口——`crates/awase-windows/src/runtime/key_pipeline.rs:190` と `crates/awase-windows/src/runtime/mod.rs`（`process_deferred_keys`、IME トグル後の deferred key 再送用）の2箇所から呼ばれることを裏取り済み。両方とも同一の `on_input`/Phase 0〜3 ロジックを通るため、本ADRの修正はどちらの呼び出し元にも同等に適用される）の「Phase 0」:
 
 ```rust
 let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
@@ -20,7 +20,7 @@ if !is_key_down && self.lifecycle.on_key_up(event.vk_code) {
 }
 ```
 
-`KeyLifecycle::on_key_up`（`src/engine/key_lifecycle.rs:56-63`）は、対応するKeyDownが `Decision::is_consumed()==true` だった場合、そのKeyUpを**無条件に** `Decision::consumed()` として即returnする。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1582`、`FsmAdapter::on_event` 経由）には一切到達しない。
+`KeyLifecycle::on_key_up`（`src/engine/key_lifecycle.rs:56-63`）は、対応するKeyDownが `Decision::is_consumed()==true` だった場合、そのKeyUpを**無条件に** `Decision::consumed()` として即returnする。`NicolaFsm::on_key_up`（`nicola_fsm.rs:1558`、`FsmAdapter::on_event` 経由）には一切到達しない。
 
 この仕組み自体の目的（ADR-020: 「OSへKeyDownを渡さなかった(Consume)なら、対応するKeyUpも必ずOSへ渡さない(Consume)」という対称性の保証）は正しい要求だが、現在の実装は**「OSに渡さない」と「FSMに渡さない」を同じ早期returnで一緒くたにしている**。
 
@@ -37,7 +37,7 @@ KeyUpベースの解決ロジックが先（3/28）、Phase 0が後（3/31）。
 
 ### 確定した実害（3件、`docs/known-bugs.md` BUG-101に集約して起票）
 
-1. **`min_overlap_margin_percent` が実運用で常に無効。** `char1_released_at` は実運用では恒久的に `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:254-267`）は常に「char1がまだ押下中」扱いの `Some(true)` を返す。char1を離してから親指キーを押した（＝物理的に重なっていない）2打が、常に同時打鍵として誤確定される。
+1. **`min_overlap_margin_percent` が実運用で常に無効。** `char1_released_at` は実運用では恒久的に `None` のままなので、`timing::overlap_only_verdict`（`timing.rs:228-239`）は常に「char1がまだ押下中」扱いの `Some(true)` を返す。char1を離してから親指キーを押した（＝物理的に重なっていない）2打が、常に同時打鍵として誤確定される。
 2. **`KeyAction::Key(vk)` を出力する全キーで、対応する `KeyUp(vk)` が実運用で一度も送出されていない（stuck key）。** `handle_key_up_active`（`nicola_fsm.rs:1812-1830`）だけが `KeyUp(vk)` を再送する経路だが到達不能。`KeyAction::Key(vk)` は `.yab` の明示的なVK指定行だけでなく、`resolve_pending_char_as_single`（`nicola_fsm.rs:1272`、配列定義外キーのフォールバック）や無変換/変換/Space/Enterのsolo-tap passthrough経路（`:1404`/`:1443`付近）からも常に出るため、**エンジンON中に非かな文字（レイアウト定義外のキー等）を打鍵した場合、OS側はそのVKが押されっぱなしだと認識し続ける。** 未検証の疑いではなく、コード上確定した欠陥として扱う。
 3. **`OutputHistory.entries`（`output_history.rs:24-26`）が上限のない `Vec` で、`remove_by_scan` が実運用で呼ばれないため単調増加し続ける。** メモリリークであると同時に、修正時の設計上の罠でもある——`remove_by_scan`（KeyUp整合性用）と `recent_kana()`（n-gram文脈用）が同じ `Vec` を参照しているため、Phase 0を素朴に直すと「KeyUpのたびにn-gram文脈から確定済みのかなが消える」という**全打鍵でn-gramタイブレークの入力が変わる**副作用を引き起こす（決定0で先に分離する理由）。
 
@@ -62,7 +62,7 @@ KeyUpベースの解決ロジックが先（3/28）、Phase 0が後（3/31）。
 
 ### 決定1: `min_overlap_margin_percent` の既定値を一時的に0へ（挙動不変、Step 1で単独land）
 
-`overlap_only_verdict`（`timing.rs:254-267`）は `overlap_us >= threshold_us * min_overlap_margin_percent / 100` で同時打鍵確定を判定する。**「実質常に同時打鍵成立」に相当する保守的な値は15ではなく0**（`overlap_us` は常に非負なので `min_overlap_us=0` なら常に成立）。現在の既定値は15（`timing.rs:18`、`feat/confirm-mode-simplify` ブランチでは `GeneralConfig::min_overlap_margin_percent` としてユーザー設定可能・既定値15）。
+`overlap_only_verdict`（`timing.rs:228-239`）は `overlap_us >= threshold_us * min_overlap_margin_percent / 100` で同時打鍵確定を判定する。**「実質常に同時打鍵成立」に相当する保守的な値は15ではなく0**（`overlap_us` は常に非負なので `min_overlap_us=0` なら常に成立）。現在の既定値は15（`timing.rs:18`、`feat/confirm-mode-simplify` ブランチでは `GeneralConfig::min_overlap_margin_percent` としてユーザー設定可能・既定値15）。
 
 `min_overlap_margin_percent` を先に0へ落として単独landする。決定2でKeyUpがFSMに届くようになっても、この値が0である限り重なり不足判定は実質的に無効のままであり、「経路修正」と「判定の有効化」が分離される。**この「挙動不変」は、現状 `char1_released_at` が常に `None` であることに構造的に依存している——決定2適用後の世界でこの前提は崩れるため、決定3（15へ戻す）は必ず決定2の後、独立した実機ソーク・実測を経てから行う。**
 
@@ -125,10 +125,11 @@ kill switchは置かない——各コミットは独立してrevert可能であ
 
 ## 実装後のコードレビューで見つかった残存課題（本ADRのスコープ外、フォローアップ）
 
-PR #126の`/code-review`3ラウンドで、決定2実装後に以下の課題が新たに見つかった。いずれも対応済み（`toggle_enabled`/`swap_layout`のstuck key修正、`handle_focus_changed`/`check_active_transition`の`pending_releases`同期掃除、OS修飾キー保持中ガードの`release_only`委譲統一）だが、以下2点は本ADRのスコープを超えるため未対応のまま残す:
+PR #126の`/code-review`5ラウンドで、決定2実装後に以下の課題が新たに見つかった。いずれも対応済み（`toggle_enabled`/`swap_layout`のstuck key修正、`handle_focus_changed`/`check_active_transition`の`pending_releases`同期掃除、OS修飾キー保持中ガードの`release_only`委譲統一、`handle_focus_changed`でのKeyUp二重注入防止、`check_active_transition`が`flush_pending_key_ups`の戻り値を捨てていた同型バグの修正、`pending_releases`を`OutputEntry`丸ごとではなく`(ScanCode, KeyAction)`に軽量化、OS修飾キー保持中ガードの死んだ条件分岐の削除、`clear_output_history_appending_releases`の二重clearの解消）だが、以下2点は本ADRのスコープを超えるため未対応のまま残す:
 
 1. **`KeyAction::SpecialKey(sk)`はKeyUp解放の対象外のまま。** `release_only`/`drain_pending_releases_as_keyups`は`KeyAction::Key(vk)`だけを特別扱いしてKeyUpを発行するが、`SpecialKey(sk)`も`crates/awase-windows/src/output/mod.rs`の`special_key_to_vk(sk)`経由で生VKをdown-only注入している点は同じで、理論上は同じstuck keyリスクを持つ。ただし`SpecialKey`→VKの変換はプラットフォーム層専用（ADR-019、core はVKコードを持たない）のため、coreの`output_history`だけでは解放できない。修正には`KeyAction::SpecialKeyUp(SpecialKey)`のような新バリアントを追加し、プラットフォーム層で`special_key_to_vk`経由の解放を実装する必要があり、型定義変更・全match箇所の更新を伴う別スコープの変更になる。`release_only`自体がADR-112以前からこの制約を持っていたため、新規リグレッションではない。
 2. **フォーカス変更時の`release_all_pending_output`が、char1がまだ物理的に保持されたまま`PendingCharThumb`が確定した直後のエントリも即座に解放しうる。** `flush_pending`のPendingCharThumbアームは`char1_released_at.is_none()`（char1がまだ押されたまま）の場合、意図的にKeyUpを追記せず「実際のKeyUpが来るまで保持」を期待する。直後に呼ばれる`release_all_pending_output`はこの区別をせず無条件に解放するため、意図した「hold」が「tap」に変わりうる。さらにフォーカス変更に反応して発行されるKeyUpのため、OSへ届く時点で新しいウィンドウにフォーカスが移っている可能性があり、誤ったウィンドウへ注入されるリスクがある。これは本ADR/PRO-CON合意の中核方針（「permanently stuck keyより早すぎる解放を優先する」）の具体的な現れであり、新しい判断ではないが、この特定のサブケース（誤ウィンドウ注入）は議論時に明示的に検討されていなかったため記録する。
+3. **`OutputHistory::retract_and_record`は`pending_releases`に対する「scan_codeキーでのupsert」を`Vec`の線形探索+置換で手書きしている。** `ScanCode`は`Hash`/`Eq`実装済みなので`HashMap<ScanCode, KeyAction>`にすれば`remove_by_scan`/`find_action_by_scan`/`retract_and_record`は`.remove()`/`.get()`/`.insert()`に単純化でき、「到達不能と考えているfallback push分岐」自体も消える。ただし`pending_releases`は「今押されている物理キー」の数のオーダー（実運用でせいぜい数件）でしか要素数が増えないため、線形探索のコスト自体は無視できる規模であり、`push`が挿入順を保持する（`find_action_by_scan`の`.rev()`探索が「同一scan_codeの複数エントリがあれば最後にpushされたもの」を優先する仕様に依存）点も`HashMap`化では素直に表現し直す必要がある。現状の実装は正しく動作しており、可読性向上のためのリファクタであって欠陥修正ではないため、本ADRのスコープでは見送る。
 
 いずれも実機での発生頻度は低いと見積もっているが、実機ソーク（決定3）の観察対象に含めること。
 
