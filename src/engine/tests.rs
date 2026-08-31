@@ -344,6 +344,35 @@ fn test_pattern3_char_timeout() {
 }
 
 #[test]
+fn test_sequence_cell_confirms_as_multiple_flattened_actions() {
+    // ADR-115 決定5: `YabValue::Sequence` セルが単発キーとして確定された
+    // とき、`flatten_actions` により出口（この場合は timeout_pending_char
+    // からの build_response）で複数の KeyAction へ平坦化されて出力される
+    // ことを Engine 経由（NicolaFsm 単体呼び出しではなく on_event/on_timeout
+    // 経由）で確認する（Opus実装後レビュー M3: 決定5の中核 end-to-end
+    // テストが無かった）。
+    let mut engine = make_engine();
+    engine
+        .layout
+        .normal
+        .insert(POS_A, YabValue::Sequence(vec![lit('う'), lit('い')]));
+
+    let result = engine.on_event(Ev::down(VK_A).build());
+    assert_pending(&result);
+
+    let result = engine.on_timeout(TIMER_PENDING);
+    result.assert_consumed();
+    assert_eq!(
+        result.actions.len(),
+        2,
+        "Sequence cell must flatten into 2 separate actions, got {:?}",
+        result.actions
+    );
+    assert!(matches!(result.actions[0], KeyAction::Char('う')));
+    assert!(matches!(result.actions[1], KeyAction::Char('い')));
+}
+
+#[test]
 fn test_pattern4_char_sequence() {
     let mut engine = make_engine();
     let t0 = 0;

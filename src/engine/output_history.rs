@@ -193,6 +193,10 @@ impl OutputHistory {
     /// なった後は二度と掃除されない（stuck keyの再発）。
     /// `Char`/`Romaji`型のエントリはUnicode注入で完結済みでOS側に押されっぱなしの
     /// VKが無いため、対応するアクションを返さず黙って除去する。
+    /// `Sequence`/`CtrlChord`（ADR-115）も同様——`CtrlChord`は1回の
+    /// `SendInput`呼び出し内でpress/releaseが自己完結し、`Sequence`は
+    /// マクロステップ/InlineSequence要素の許可リストで生の`Key`/`KeyUp`
+    /// を禁止しているため、解放すべき片割れを持たない。
     pub fn drain_pending_releases_as_keyups(&mut self) -> Vec<KeyAction> {
         self.pending_releases
             .drain(..)

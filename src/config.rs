@@ -58,6 +58,20 @@ pub enum DbeModeKeyPolicy {
     Passthrough,
 }
 
+/// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
+///
+/// ADR-115 決定8。既定 `Off`。`.yab` パーサ自体は常に新構文を認識するが、
+/// `Off` のとき解決パス（`resolve_keystroke_syntax`）が
+/// `CtrlChord`/`InlineSequence`/`MacroRef` を保持している元のセル
+/// 生テキストから `Literal` へ差し替え、今日と同じ挙動に復元する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KeystrokeSequencePolicy {
+    #[default]
+    Off,
+    On,
+}
+
 /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルをどの IME で許可するか。
 ///
 /// 既定値 `MsImeOnly` は従来動作そのもの。設定GUIからは `Off`/`All` の
@@ -312,6 +326,10 @@ pub struct GeneralConfig {
     /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
     /// （チェックボックスを一切操作しなければ値は変わらない）。
     pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
+    /// 打鍵列機能（ADR-115）の有効化。既定 `Off`（隠し設定、config.toml
+    /// 手動編集のみで有効化できるオプトイン。実機ソークが積み上がるまで
+    /// 設定 GUI には出さない）。
+    pub keystroke_sequence: KeystrokeSequencePolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
     ///
@@ -394,6 +412,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_dedicated_fn_key: None,
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
+            keystroke_sequence: KeystrokeSequencePolicy::Off,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
@@ -542,6 +561,26 @@ pub struct KeymapRule {
     pub to: Option<String>,
 }
 
+/// `[[keystroke_macro]]` 名前付き打鍵列マクロ（ADR-115 決定2b）。
+///
+/// 複数キーで再利用する列、または将来ステップ種別が増える列を定義する。
+/// 単発・局所的な列（句読点確定等）は `.yab` セル内 `+` 区切り
+/// （`InlineSequence`）で書く——両者は排他ではなく、`+` 区切りの1セグメント
+/// として `@name` を書くこともできる。
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct KeystrokeMacro {
+    /// マクロ名（`.yab` セルから `@name` で参照する）
+    pub name: String,
+    /// 順序付きの出力ステップ列。非ネスト（`@` 参照はマクロ内で禁止）。
+    /// 各要素は `.yab` の1トークンと**全く同じ文字列表記**
+    /// （`"'（'"`/`"CV4D"`/`"左"` 等）。空リスト、または全要素が許可リスト
+    /// （`Literal`/`KeySequence`/`Special`/`CtrlChord`）で拒否された場合は
+    /// バリデーションエラーにせず、そのマクロは `YabValue::None`
+    /// （明示的な無出力）に解決される。
+    #[serde(default)]
+    pub steps: Vec<String>,
+}
+
 /// アプリ別の永続オーバーライド設定
 ///
 /// - `force_text`: 常にテキスト入力として扱う (process, class) の組
@@ -630,6 +669,9 @@ pub struct AppConfig {
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
     #[serde(default)]
     pub post_bypass: Vec<PostBypassRule>,
+    /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
+    #[serde(default)]
+    pub keystroke_macro: Vec<KeystrokeMacro>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -715,6 +757,10 @@ pub struct ValidatedConfig {
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
     pub post_bypass: Vec<PostBypassRule>,
+    /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。`AppConfig` から単純に
+    /// 転送するのみで検証は行わない（`steps` の中身の妥当性は
+    /// `resolve_keystroke_syntax` が読み込み時に判定し警告する、決定3）。
+    pub keystroke_macro: Vec<KeystrokeMacro>,
 }
 
 impl From<ValidatedConfig> for AppConfig {
@@ -732,6 +778,7 @@ impl From<ValidatedConfig> for AppConfig {
             app_overrides: v.app_overrides,
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
+            keystroke_macro: v.keystroke_macro,
         }
     }
 }
@@ -1074,6 +1121,7 @@ impl AppConfig {
                 app_overrides,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
+                keystroke_macro: self.keystroke_macro,
             },
             warnings,
         )
@@ -1984,5 +2032,89 @@ right_thumb_key = "VK_KANA"
             !warnings.iter().any(|w| w.contains("ロック型")),
             "default thumb keys must not warn, got: {warnings:?}"
         );
+    }
+
+    // ── ADR-115: 打鍵列機能 ──
+
+    #[test]
+    fn test_keystroke_sequence_defaults_to_off() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.general.keystroke_sequence,
+            KeystrokeSequencePolicy::Off
+        );
+    }
+
+    #[test]
+    fn test_parse_keystroke_macro() {
+        let toml_str = r#"
+[general]
+keystroke_sequence = "on"
+
+[[keystroke_macro]]
+name = "bracket_paren"
+steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.general.keystroke_sequence,
+            KeystrokeSequencePolicy::On
+        );
+        assert_eq!(config.keystroke_macro.len(), 1);
+        assert_eq!(config.keystroke_macro[0].name, "bracket_paren");
+        assert_eq!(
+            config.keystroke_macro[0].steps,
+            vec!["'（'", "CV4D", "'）'", "CV4D", "左"]
+        );
+    }
+
+    #[test]
+    fn test_keystroke_macro_survives_save_load_round_trip() {
+        let mut config = AppConfig::default();
+        config.general.keystroke_sequence = KeystrokeSequencePolicy::On;
+        config.keystroke_macro.push(KeystrokeMacro {
+            name: "bracket_paren".to_string(),
+            steps: vec![
+                "'（'".to_string(),
+                "CV4D".to_string(),
+                "'）'".to_string(),
+                "CV4D".to_string(),
+                "左".to_string(),
+            ],
+        });
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let round_tripped: AppConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(
+            round_tripped.general.keystroke_sequence,
+            KeystrokeSequencePolicy::On
+        );
+        assert_eq!(round_tripped.keystroke_macro.len(), 1);
+        assert_eq!(round_tripped.keystroke_macro[0].name, "bracket_paren");
+        assert_eq!(
+            round_tripped.keystroke_macro[0].steps,
+            config.keystroke_macro[0].steps
+        );
+    }
+
+    #[test]
+    fn test_validated_config_preserves_keystroke_macro() {
+        // ValidatedConfig と AppConfig は別構造体で validate() が手で
+        // 詰め替えているため、keystroke_macro が伝播することを回帰で
+        // 固定する（実装タスクレビュー指摘 C1）。
+        let mut config = AppConfig::default();
+        config.keystroke_macro.push(KeystrokeMacro {
+            name: "confirm".to_string(),
+            steps: vec!["CV4D".to_string()],
+        });
+
+        let (validated, _warnings) = config.validate();
+        assert_eq!(validated.keystroke_macro.len(), 1);
+        assert_eq!(validated.keystroke_macro[0].name, "confirm");
+
+        let round_tripped: AppConfig = validated.into();
+        assert_eq!(round_tripped.keystroke_macro.len(), 1);
+        assert_eq!(round_tripped.keystroke_macro[0].name, "confirm");
     }
 }

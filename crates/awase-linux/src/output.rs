@@ -152,6 +152,21 @@ impl UinputOutput {
                     }
                 }
                 KeyAction::Suppress => {}
+                // ADR-115: Linux実装は現状スタブのため no-op ログのみ。
+                // 実送信の実装は本ADRのスコープ外（決定10、コンパイル通過
+                // が目的）。
+                KeyAction::CtrlChord(vk) => {
+                    warn!(
+                        "CtrlChord(Ctrl+0x{:02X}) output is not yet supported on Linux",
+                        vk.0
+                    );
+                }
+                KeyAction::Sequence(items) => {
+                    warn!(
+                        "Sequence({} items) output is not yet supported on Linux",
+                        items.len()
+                    );
+                }
             }
         }
     }

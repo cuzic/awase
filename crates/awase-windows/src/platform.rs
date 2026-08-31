@@ -998,8 +998,40 @@ impl PlatformRuntime for WindowsPlatform {
         // Unicode モードでは send_romaji_as_unicode() が GjiFsm::KeyInput を発行しないため
         // GjiFsm が StartProbe を emit することがない。そのため dispatch_gji_response() を
         // 経由せず、ここで直接 FSM をインストールする。
+        //
+        // defer は Char/Romaji のみが対象（`send_unicode_char` 経由）。CtrlChord/Key/
+        // KeyUp/SpecialKey は injector を直接叩き defer をバイパスし、送信ループ内で
+        // 即座に実行される。defer された Char/Romaji はループ完了後（send_keys 呼び出し
+        // 全体が終わった後）にまとめて flush されるため、バッチ内で「Char/Romaji の後に
+        // 非defer対象が続く」形（例: ADR-115 打鍵列 `'（'+CV4D+'）'+CV4D+左` の
+        // Char→CtrlChord→Char→CtrlChord→Special）だと、後続の非defer対象がまだ
+        // バッファに残っている Char より先に実行され、実行順序が入れ替わる
+        // （Opus実装後レビュー M1 で発見）。
+        //
+        // 逆に「非defer対象が先、Char/Romaji が後」の形（例: retract_and_replace が
+        // 出す `[Backspace, Char]`、ADR-115 以前から存在する）は安全——Backspace は
+        // 即座に実行され、Char は後で flush されても元の順序どおり
+        // Backspace→Char のまま変わらない。この安全な既存パターンまで一律で defer を
+        // 諦めると、GJI long-cold 時の warmup 保護（BUG-02 系文字化けの再発防止）が
+        // ADR-115 と無関係な既存経路にまで及んでしまう
+        // （初回のM1修正が過剰に広かった、との実装後レビュー2件目で発見・訂正）。
+        // 「Char/Romaji の後に非defer対象が続かない」ことだけを判定する。
+        //
+        // 走査自体は Unicode モードのときだけ行う（`&&` の短絡評価で非Unicodeモードでは
+        // スキップする、効率面の実装後レビュー指摘）。
         let needs_unicode_cold_warmup = self.output.injection_mode
             == crate::output::InjectionMode::Unicode
+            && {
+                let mut seen_deferrable = false;
+                actions.iter().all(|a| {
+                    if matches!(a, KeyAction::Char(_) | KeyAction::Romaji(_)) {
+                        seen_deferrable = true;
+                        true
+                    } else {
+                        !seen_deferrable
+                    }
+                })
+            }
             && self.output.gji_is_next_key_long_cold();
         if needs_unicode_cold_warmup {
             self.output.set_unicode_cold_defer(true);

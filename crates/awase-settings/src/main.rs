@@ -833,7 +833,20 @@ impl SettingsApp {
                 self.layout_edit_kind = ValueKind::Vk;
                 self.layout_edit_value = format!("{:X}", vk.0);
             }
-            Some(YabValue::None) | None => {
+            // ADR-115: 打鍵列(CtrlChord/InlineSequence/MacroRef)のGUI編集は
+            // 非対象。生テキストをLiteralとして表示するに留める——保存すると
+            // 打鍵列としての意味を失う既知の限界（決定9(a)）。Sequenceは
+            // resolve_keystroke_syntax後のプレビュー専用コピーにしか
+            // 現れないためNone扱いでよい。
+            Some(
+                v @ (YabValue::CtrlChord { .. }
+                | YabValue::InlineSequence { .. }
+                | YabValue::MacroRef(_)),
+            ) => {
+                self.layout_edit_kind = ValueKind::Literal;
+                self.layout_edit_value = v.serialize();
+            }
+            Some(YabValue::Sequence(_) | YabValue::None) | None => {
                 self.layout_edit_kind = ValueKind::None;
                 self.layout_edit_value.clear();
             }
@@ -3602,7 +3615,13 @@ fn cell_display(value: Option<&YabValue>) -> String {
         Some(YabValue::Special(SpecialKey::PageUp)) => "PgUp".to_string(),
         Some(YabValue::Special(SpecialKey::PageDown)) => "PgDn".to_string(),
         Some(YabValue::Vk(vk)) => format!("V{:X}", vk.0),
-        Some(YabValue::None) | None => "\u{2014}".to_string(), // —
+        // ADR-115決定9(a): CtrlChordはVK、MacroRef/InlineSequenceはrawを
+        // そのまま表示する。Sequenceは(resolve_keystroke_syntax後の
+        // プレビュー専用コピーにしか現れないため)Noneと同じ表示にする。
+        Some(YabValue::CtrlChord { vk, .. }) => format!("Ctrl+{:X}", vk.0),
+        Some(YabValue::MacroRef(name)) => format!("@{name}"),
+        Some(YabValue::InlineSequence { raw, .. }) => raw.clone(),
+        Some(YabValue::Sequence(_) | YabValue::None) | None => "\u{2014}".to_string(), // —
     }
 }
 
@@ -3613,7 +3632,13 @@ const fn cell_color(value: Option<&YabValue>) -> egui::Color32 {
         Some(YabValue::Special(_)) => egui::Color32::from_rgb(210, 255, 220),
         Some(YabValue::KeySequence(_)) => egui::Color32::from_rgb(200, 235, 255),
         Some(YabValue::Vk(_)) => egui::Color32::from_rgb(255, 225, 200),
-        Some(YabValue::None) | None => egui::Color32::from_rgb(220, 220, 220),
+        // ADR-115: 打鍵列系は薄紫で統一し、既存カラーパレットと区別する。
+        Some(
+            YabValue::CtrlChord { .. } | YabValue::InlineSequence { .. } | YabValue::MacroRef(_),
+        ) => egui::Color32::from_rgb(230, 210, 255),
+        Some(YabValue::Sequence(_) | YabValue::None) | None => {
+            egui::Color32::from_rgb(220, 220, 220)
+        }
     }
 }
 
@@ -3635,7 +3660,10 @@ fn value_description(value: Option<&YabValue>) -> String {
         Some(YabValue::KeySequence(s)) => format!("キーシーケンス: {s}"),
         Some(YabValue::Special(sk)) => format!("特殊キー: {sk:?}"),
         Some(YabValue::Vk(vk)) => format!("仮想キーコード: 0x{:X}", vk.0),
-        Some(YabValue::None) | None => "割り当てなし".to_string(),
+        Some(YabValue::CtrlChord { vk, .. }) => format!("Ctrl+VK: 0x{:X}", vk.0),
+        Some(YabValue::InlineSequence { raw, .. }) => format!("打鍵列: {raw}"),
+        Some(YabValue::MacroRef(name)) => format!("打鍵列マクロ参照: @{name}"),
+        Some(YabValue::Sequence(_) | YabValue::None) | None => "割り当てなし".to_string(),
     }
 }
 
@@ -3653,6 +3681,18 @@ fn load_yab_layout(
     model: awase::scanmap::KeyboardModel,
 ) -> Result<(YabLayout, Vec<String>), String> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // NOTE: ここは意図的に `resolve_keystroke_syntax` を通さない。この関数が返す
+    // `YabLayout` は GUI 編集の作業コピーであると同時に `layout_write_to_path` が
+    // そのまま `serialize()` して .yab へ書き戻す対象そのもの。一度 resolve すると
+    // `CtrlChord`/`InlineSequence`/`MacroRef` が `Literal`/`Sequence` に置き換わり、
+    // 元のセル生テキストが失われた状態で保存されてしまう（`Sequence` は
+    // `serialize()` が `無` を返す設計のため、キルスイッチ on で保存すると打鍵列
+    // セルが丸ごと消える。off でも `raw` の一部だけが残る形で壊れる）。実装直後の
+    // Opus実装後レビューでこの resolve 呼び出しを一度追加したところ、まさにこの
+    // 破壊的な保存回帰が3系統のレビュー観点から独立に指摘されたため差し戻した
+    // （経緯は `docs/known-bugs.md` FEATURE-115 参照）。GUI プレビューがキルスイッチ
+    // off 時の実際の送信内容と食い違う点（新構文セルがそのまま表示される）は
+    // 非破壊的な既知の制約として残す。
     let layout = YabLayout::parse(&content, model)
         .map(YabLayout::resolve_kana)
         .map_err(|e| format!("パース失敗: {e}"))?;

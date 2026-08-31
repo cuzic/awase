@@ -95,12 +95,19 @@ impl NicolaFsm {
         // Character key → immediately output normal face, enter SpeculativeChar
         let face = Face::Normal;
         if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
-            self.enter_speculative_char(PendingKey::from_event(ev));
-            // Output immediately + set timer for the threshold window
-            ParseAction::Reduce {
-                actions: smallvec![action.clone()],
-                record: OutputUpdate::record(ev.scan_code, &action, kana),
-                timer: TimerIntent::Pending,
+            if self.enter_speculative_char(PendingKey::from_event(ev), &action) {
+                // Output immediately + set timer for the threshold window
+                ParseAction::Reduce {
+                    actions: smallvec![action.clone()],
+                    record: OutputUpdate::record(ev.scan_code, &action, kana),
+                    timer: TimerIntent::Pending,
+                }
+            } else {
+                // Sequence（ADR-115 決定7）: 投機を諦め、Wait モードと
+                // 同じ既存の退避先（`idle_wait`）へ落とす。生の物理キーを
+                // OS へ渡す `PassThrough` を使うと打鍵列の代わりに素の
+                // 文字が出てしまうため使わない。
+                self.idle_wait(ev)
             }
         } else {
             ParseAction::PassThrough {
@@ -361,6 +368,30 @@ mod tests {
         assert!(
             matches!(action, ParseAction::PassThrough { .. }),
             "Speculative + None pos should PassThrough, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn speculative_char_key_with_sequence_action_falls_back_to_wait() {
+        // ADR-115 決定7: enter_speculative_char が Sequence を拒否した場合、
+        // idle_speculative は PassThrough ではなく idle_wait と同じ
+        // Shift+Pending へ落とし、PendingChar 状態で通常の待機経路に
+        // 合流させる（Opus実装後レビュー M3: この分岐に既存テストが無かった）。
+        let mut fsm = make_fsm(ConfirmMode::Speculative);
+        fsm.layout.normal.insert(
+            POS_S,
+            crate::yab::YabValue::Sequence(vec![lit('あ'), lit('い')]),
+        );
+        let ev = char_ev(VK_S, SCAN_S, Some(POS_S));
+        let action = fsm.idle_speculative(&ev);
+        assert!(
+            matches!(action, ParseAction::Shift { timer } if timer_is_pending(&timer)),
+            "Sequence cell should fall back to Wait (Shift+Pending), got {action:?}"
+        );
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "Sequence cell should enter PendingChar, not SpeculativeChar, got {:?}",
+            fsm.state
         );
     }
 

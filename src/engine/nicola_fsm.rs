@@ -54,6 +54,22 @@ const RUNTIME_MIN_OVERLAP_MARGIN_PERCENT: u64 = 0;
 /// `Response` の型エイリアス
 type Resp = Response<KeyAction, usize>;
 
+/// `SmallVec` 中の各 `KeyAction` を、`Sequence` なら中身を展開し、それ以外
+/// はそのまま1要素として並べた `Vec` に変換する（ADR-115 決定5）。
+/// `Sequence` を非ネストにする不変条件（決定4）により、この展開は1階層で
+/// 完結する。`.into_vec()` を直接呼ぶ箇所を作らないこと——この関数が
+/// 唯一の変換点（実際に打鍵列が「開く」のはここだけに閉じる）。
+fn flatten_actions(actions: SmallVec<[KeyAction; 2]>) -> Vec<KeyAction> {
+    let mut out = Vec::with_capacity(actions.len());
+    for action in actions {
+        match action {
+            KeyAction::Sequence(items) => out.extend(items),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 impl From<&YabValue> for KeyAction {
     fn from(value: &YabValue) -> Self {
         match value {
@@ -67,6 +83,18 @@ impl From<&YabValue> for KeyAction {
             YabValue::KeySequence(s) => Self::KeySequence(s.clone()),
             YabValue::Special(sk) => Self::SpecialKey(*sk),
             YabValue::Vk(vk) => Self::Key(*vk),
+            YabValue::CtrlChord { vk, .. } => Self::CtrlChord(*vk),
+            YabValue::Sequence(items) => Self::Sequence(items.iter().map(Self::from).collect()),
+            // resolve_keystroke_syntax（ADR-115 決定3）の呼び出し漏れがあると
+            // ここへ到達しうる。unreachable!() は使わず安全側に倒す
+            // （ADR-104「型で保証されない unreachable! の除去」に整合）。
+            YabValue::InlineSequence { .. } | YabValue::MacroRef(_) => {
+                log::error!(
+                    "[yab] 未解決の新構文がエンジンに到達した \
+                     — resolve_keystroke_syntax の呼び出し漏れ: {value:?}"
+                );
+                Self::Suppress
+            }
             YabValue::None => Self::Suppress,
         }
     }
@@ -402,7 +430,7 @@ impl NicolaFsm {
                 // 保留中の文字キーを通常面で単独確定
                 let resolved = self.resolve_pending_char_as_single(&pending);
                 self.update_history(resolved.output);
-                Response::emit(resolved.actions.into_vec())
+                Response::emit(flatten_actions(resolved.actions))
             }
             EngineState::PendingThumb(thumb) => {
                 // 保留中の親指キーを単独確定。composing を信頼できない場合は
@@ -426,7 +454,7 @@ impl NicolaFsm {
                     self.ime_open_requested = ime_open_request;
                 }
                 self.update_history(resolved.output);
-                Response::emit(resolved.actions.into_vec())
+                Response::emit(flatten_actions(resolved.actions))
             }
             EngineState::PendingCharThumb {
                 char_key,
@@ -446,7 +474,7 @@ impl NicolaFsm {
                     // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
                     self.append_key_up_for(&mut actions, char_key.scan_code);
                 }
-                Response::emit(actions.into_vec())
+                Response::emit(flatten_actions(actions))
             }
             EngineState::SpeculativeChar(_) => {
                 // 既に投機出力済み → 出力は正しかったとみなす。何も追加しない。
@@ -856,8 +884,26 @@ impl NicolaFsm {
         };
     }
 
-    pub(crate) const fn enter_speculative_char(&mut self, key: PendingKey) {
+    /// 投機出力の開始を試みる（ADR-115 決定7）。`Sequence`（複数出力・
+    /// 複数 composition unit）は `retract_bs_count` が前提とする
+    /// 「BACKSPACE 1発で取り消せる」性質を持たないため拒否する。
+    /// 呼び出し元は戻り値 `false` を「投機せず、`PendingChar` のまま
+    /// Wait モード相当の確定を待つ」として扱うこと（`go_idle()`+
+    /// `pass_through()` は使わない——打鍵列の消失・生VK漏洩を招く）。
+    ///
+    /// 既に引いた `action` を受け取ることで二重 `lookup_face` を避ける
+    /// ——呼び出し元の `face` 変数と本関数がハードコードする面がズレる
+    /// 余地も消える。
+    pub(crate) const fn enter_speculative_char(
+        &mut self,
+        key: PendingKey,
+        action: &KeyAction,
+    ) -> bool {
+        if matches!(action, KeyAction::Sequence(_)) {
+            return false;
+        }
         self.state = EngineState::SpeculativeChar(key);
+        true
     }
 
     /// output_history から `scan_code` のエントリを取り出し、Key(vk) なら KeyUp(vk) を `actions` に追記する。
@@ -881,7 +927,7 @@ impl NicolaFsm {
         } else if actions.is_empty() {
             Response::pass_through()
         } else {
-            Response::emit(actions.into_vec())
+            Response::emit(flatten_actions(actions))
         };
         response.timers = self.timer_cmds(timer);
         response
@@ -909,7 +955,7 @@ impl ShiftReduceParser for NicolaFsm {
                 record,
                 timer,
             } => TieredParseAction::Reduce {
-                actions: actions.into_vec(),
+                actions: flatten_actions(actions),
                 record,
                 timers: self.timer_cmds(timer),
             },
@@ -918,7 +964,7 @@ impl ShiftReduceParser for NicolaFsm {
                 record,
                 remaining,
             } => TieredParseAction::ReduceAndContinue {
-                actions: actions.into_vec(),
+                actions: flatten_actions(actions),
                 record,
                 remaining,
             },
@@ -1937,7 +1983,24 @@ impl NicolaFsm {
                     true,
                     TimerIntent::CancelAll,
                 ),
-                _ => Response::pass_through(),
+                // それ以外（SpecialKey/KeySequence/Suppress/KeyUp、および
+                // ADR-115 で追加した Sequence/CtrlChord）は今日と同じく
+                // pass_through——`Char`/`Romaji`/`Key` 以外はいずれも
+                // 「解放すべき片割れを持たない」という点で既存の
+                // `SpecialKey`/`KeySequence`/`Suppress` と同じ扱いが
+                // 一貫している（`Sequence` は許可リストで生 `Key` を
+                // 禁止済み、`CtrlChord` は1回の `SendInput` で
+                // 自己完結、ともに解放対象が無い）。網羅 match にする
+                // ことで、将来 `KeyAction` に variant が増えた際に
+                // コンパイラが対応漏れを検出する（意味的な挙動は変え
+                // ない——ワイルドカード `_` を明示列挙に置き換えた
+                // だけ）。
+                KeyAction::SpecialKey(_)
+                | KeyAction::KeySequence(_)
+                | KeyAction::Suppress
+                | KeyAction::Sequence(_)
+                | KeyAction::CtrlChord(_)
+                | KeyAction::KeyUp(_) => Response::pass_through(),
             };
         }
         Response::pass_through()
@@ -2056,15 +2119,35 @@ impl NicolaFsm {
                 // Output normal face speculatively
                 let face = Face::Normal;
                 if let Some((action, kana)) = self.lookup_face(pending.pos, self.get_face(face)) {
-                    self.enter_speculative_char(pending);
-                    // Emit the speculative output + set TIMER_PENDING for remaining time
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
-                    self.update_history(OutputUpdate::record(pending.scan_code, &action, kana));
-                    self.build_response(
-                        smallvec![action],
-                        true,
-                        TimerIntent::Phase2Transition { remaining_us },
-                    )
+                    if self.enter_speculative_char(pending, &action) {
+                        // Emit the speculative output + set TIMER_PENDING for remaining time
+                        self.update_history(OutputUpdate::record(pending.scan_code, &action, kana));
+                        self.build_response(
+                            smallvec![action],
+                            true,
+                            TimerIntent::Phase2Transition { remaining_us },
+                        )
+                    } else {
+                        // Sequence（決定7）: 投機を諦め、PendingChar を維持
+                        // したまま actions 無しで残り時間ぶんタイマーを
+                        // 張り直す。`state` は変更していない（`match
+                        // self.state` はコピーで読んだだけ）ので
+                        // `PendingChar` のまま残る。TIMER_PENDING が
+                        // 本来の満了時刻に達すれば既存の on_timeout →
+                        // timeout_pending_char が確定を行う——確定ロジック
+                        // をここで手書き複製する必要が無い（Wait モードと
+                        // 確定経路が構造的に1本に揃う）。満了前に親指
+                        // キーが来れば PendingChar のままなので
+                        // step_pending_char_thumb が chord 判定を行う
+                        // （r4 の「その場で確定出力」= CancelAll が
+                        // 招いていた受付窓の縮小を回避する）。
+                        self.build_response(
+                            SmallVec::new(),
+                            false,
+                            TimerIntent::Phase2Transition { remaining_us },
+                        )
+                    }
                 } else {
                     self.go_idle();
                     Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
@@ -2392,5 +2475,131 @@ mod tests {
         let fsm = make_test_fsm();
         let pos = PhysicalPos::new(3, 3);
         assert_eq!(fsm.lookup_kana_at(Some(pos), Face::Normal), None);
+    }
+
+    // ── ADR-115: 打鍵列機能 ──
+
+    #[test]
+    fn enter_speculative_char_rejects_sequence_without_changing_state() {
+        let mut fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        let key = PendingKey {
+            pos: Some(pos),
+            scan_code: ScanCode(1),
+            vk_code: VkCode(0x41),
+            timestamp: 0,
+        };
+        let sequence_action = KeyAction::Sequence(vec![KeyAction::Char('あ')]);
+        let accepted = fsm.enter_speculative_char(key, &sequence_action);
+        assert!(
+            !accepted,
+            "Sequence must be rejected by the speculative guard"
+        );
+        assert!(
+            !matches!(fsm.state, EngineState::SpeculativeChar(_)),
+            "state must not transition to SpeculativeChar when guard rejects"
+        );
+    }
+
+    #[test]
+    fn enter_speculative_char_accepts_non_sequence_action() {
+        let mut fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        let key = PendingKey {
+            pos: Some(pos),
+            scan_code: ScanCode(1),
+            vk_code: VkCode(0x41),
+            timestamp: 0,
+        };
+        let accepted = fsm.enter_speculative_char(key, &KeyAction::Char('あ'));
+        assert!(accepted);
+        assert!(matches!(fsm.state, EngineState::SpeculativeChar(_)));
+    }
+
+    #[test]
+    fn release_only_treats_ctrl_chord_and_sequence_as_pass_through_like_special_key() {
+        // 決定6: Sequence/CtrlChord は Char/Romaji/Key と違い解放すべき
+        // 片割れを持たないため、既存の SpecialKey/KeySequence/Suppress と
+        // 同じ pass_through 扱いになる（意味的な挙動は変えない、網羅
+        // match化のみ）。
+        for action in [
+            KeyAction::Sequence(vec![KeyAction::Char('あ')]),
+            KeyAction::CtrlChord(VkCode(0x4D)),
+        ] {
+            let mut fsm = make_test_fsm();
+            let scan = ScanCode(1);
+            fsm.output_history.push(OutputEntry {
+                scan_code: scan,
+                romaji: String::new(),
+                kana: None,
+                action,
+            });
+            let ev = RawKeyEvent {
+                vk_code: VkCode(0x41),
+                scan_code: scan,
+                event_type: KeyEventType::KeyUp,
+                extra_info: 0,
+                timestamp: 0,
+                key_classification: crate::types::KeyClassification::Char,
+                physical_pos: None,
+                ime_relevance: crate::types::ImeRelevance::default(),
+                modifier_key: None,
+                modifier_snapshot: crate::types::ModifierState::default(),
+                injected: false,
+            };
+            let r = fsm.release_only(&ev);
+            assert!(r.actions.is_empty(), "pass_through must not emit actions");
+            assert!(!r.consumed, "pass_through must not consume the event");
+        }
+    }
+
+    #[test]
+    fn on_timeout_speculative_with_sequence_cell_keeps_pending_char_and_rearms_timer() {
+        // 決定7: TwoPhase の Phase1→Phase2 タイムアウト時、対象セルが
+        // Sequence だと enter_speculative_char が拒否するため、Phase2への
+        // 遷移（SpeculativeChar化 + 即時出力）を諦め、PendingChar を維持した
+        // まま残り時間で TIMER_PENDING を張り直す（actions無し・consumed=false）。
+        // これにより確定は既存の timeout_pending_char 経路に一本化され、
+        // 満了前に親指キーが来れば chord 判定の受付窓が縮まらない
+        // （Opus実装後レビュー M3: この分岐に既存テストが無かった）。
+        let mut fsm = make_test_fsm();
+        let pos = PhysicalPos::new(0, 0);
+        fsm.layout.normal.insert(
+            pos,
+            YabValue::Sequence(vec![YabValue::Literal("あ".to_string())]),
+        );
+        let pending = PendingKey {
+            pos: Some(pos),
+            scan_code: ScanCode(1),
+            vk_code: VkCode(0x41),
+            timestamp: 0,
+        };
+        fsm.state = EngineState::PendingChar(pending);
+
+        let resp = fsm.on_timeout_speculative();
+
+        assert!(resp.actions.is_empty(), "must not emit any actions");
+        assert!(!resp.consumed, "must not mark the timeout as consumed");
+        assert!(
+            matches!(fsm.state, EngineState::PendingChar(_)),
+            "state must remain PendingChar, not transition to SpeculativeChar, got {:?}",
+            fsm.state
+        );
+        let expected_remaining_us = fsm.threshold_us.saturating_sub(fsm.speculative_delay_us);
+        let expects_rearmed_pending_timer = resp.timers.iter().any(|cmd| {
+            matches!(
+                cmd,
+                timed_fsm::TimerCommand::Set {
+                    id,
+                    duration,
+                } if *id == TIMER_PENDING
+                    && *duration == std::time::Duration::from_micros(expected_remaining_us)
+            )
+        });
+        assert!(
+            expects_rearmed_pending_timer,
+            "must rearm TIMER_PENDING with remaining_us={expected_remaining_us}, got {:?}",
+            resp.timers
+        );
     }
 }

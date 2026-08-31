@@ -1215,6 +1215,36 @@ impl Output {
                     log::debug!("  → KeySequence(\"{s}\") via {}", sender.mode_label());
                     sender.send_key_sequence(s);
                 }
+                KeyAction::CtrlChord(vk) => {
+                    log::debug!("  → CtrlChord(Ctrl+{vk:#06X})");
+                    self.injector.send_ctrl_chord(*vk);
+                }
+                KeyAction::Sequence(items) => {
+                    // flatten_actions（ADR-115 決定5）により、ここへ到達する
+                    // 前に Sequence は decide()/build_response()/flush_pending
+                    // の出口で全て平坦化されているはずだが、防御的に
+                    // 同じループ内でその場展開する（再帰呼び出しにすると
+                    // OutputSession/mark_send を二重に開いてしまうため、
+                    // 新しい send_keys() 呼び出しは行わない）。
+                    log::error!(
+                        "[output] 未平坦化の Sequence が send_keys に到達した \
+                         — flatten_actions の呼び出し漏れ: {items:?}"
+                    );
+                    for it in items {
+                        match it {
+                            KeyAction::SpecialKey(sk) => {
+                                self.injector.send_key(special_key_to_vk(*sk), false);
+                            }
+                            KeyAction::Char(ch) => sender.send_char(*ch),
+                            KeyAction::KeySequence(s) => sender.send_key_sequence(s),
+                            KeyAction::CtrlChord(vk) => self.injector.send_ctrl_chord(*vk),
+                            KeyAction::Suppress | KeyAction::Sequence(_) => {}
+                            KeyAction::Key(vk) => self.injector.send_key(*vk, false),
+                            KeyAction::KeyUp(vk) => self.injector.send_key(*vk, true),
+                            KeyAction::Romaji(s) => sender.send_romaji(s),
+                        }
+                    }
+                }
             }
         }
 
