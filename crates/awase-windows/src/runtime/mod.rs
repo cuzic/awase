@@ -127,12 +127,20 @@ impl LayoutEntry {
     /// 一致する内部名を持つファイルが存在しない場合、常に先頭レイアウトへ
     /// 無言でフォールバックしていた）。起動時（`bootstrap::select_default_layout`）・
     /// 設定リロード時（`Runtime::reload_layouts`）の両方から同じロジックを使う。
+    ///
+    /// `default_layout` に一致するファイルが見つからない場合（存在しない、または
+    /// 読込/パースに失敗して `layouts` に含まれていない）、`nicola_keytop` が
+    /// あればそちらへフォールバックする（新規インストールの既定と同じ、
+    /// BUG-104）。無ければソート順先頭（`0`）にフォールバックする。呼び出し元
+    /// (`bootstrap::warn_layout_fallback`) がこのフォールバック発生をユーザーへ
+    /// モーダルで通知する。
     #[must_use]
     pub fn resolve_index(layouts: &[Self], default_layout: &str) -> usize {
         let default_name = default_layout.trim_end_matches(".yab");
         layouts
             .iter()
             .position(|e| e.name == default_name)
+            .or_else(|| layouts.iter().position(|e| e.name == "nicola_keytop"))
             .unwrap_or(0)
     }
 }
@@ -1850,7 +1858,19 @@ mod layout_entry_tests {
     }
 
     #[test]
-    fn resolve_index_falls_back_to_first_entry_when_no_name_matches() {
+    fn resolve_index_prefers_nicola_keytop_when_default_layout_not_found() {
+        // BUG-104: 独自レイアウトの読込失敗(存在しない/UTF-8でない等)時、
+        // ソート順先頭ではなく nicola_keytop があればそちらへ寄せる。
+        let layouts = [entry("nicola"), entry("nicola_keytop"), entry("nicola_us")];
+        assert_eq!(
+            LayoutEntry::resolve_index(&layouts, "NICOLA＋確定.yab"),
+            1,
+            "should fall back to nicola_keytop, not sort-order-first nicola"
+        );
+    }
+
+    #[test]
+    fn resolve_index_falls_back_to_first_entry_when_no_name_matches_and_no_keytop() {
         let layouts = [entry("nicola"), entry("my_nicola")];
         assert_eq!(
             LayoutEntry::resolve_index(&layouts, "does_not_exist.yab"),

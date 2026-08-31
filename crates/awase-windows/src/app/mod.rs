@@ -680,6 +680,14 @@ pub(crate) fn reload_config() {
     ) {
         Ok(layouts) => {
             layout_diag.report();
+            let index = crate::LayoutEntry::resolve_index(&layouts, &config.general.default_layout);
+            if let Some(resolved) = layouts.get(index) {
+                bootstrap::warn_layout_fallback(
+                    &layouts_dir,
+                    &config.general.default_layout,
+                    &resolved.name,
+                );
+            }
             let _ = with_app(|app| app.reload_layouts(layouts, &config.general.default_layout));
         }
         Err(e) => log::warn!("Failed to rescan layouts on config reload: {e}"),
