@@ -30,6 +30,7 @@ pub mod gji_charset_write;
 pub mod hook_channel;
 pub mod journal_policy;
 pub mod msime_key_assignment;
+pub mod scancode_map;
 pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
