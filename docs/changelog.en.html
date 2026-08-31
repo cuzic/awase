@@ -110,6 +110,45 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.17.0] - 2026-08-31</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a NICOLA layout, `layout/nicola_keytop.yab`, that outputs the symbols actually printed on a standard JIS keyboard's keytops (@, [, ], :, &yen;, ^), and made it the default for new installs</strong> (with one exception: @ is assigned to "&#12289;" (Japanese comma) by the official NICOLA spec, so it only outputs @ while a thumb-shift key is held)<ul>
+<li>The previous default, `layout/nicola.yab`, used Backspace/Escape as software substitutes at the physical key positions the official NICOLA spec leaves undefined. Prompted by a bug report from a KB232 (Fujitsu FMV-KB232) keyboard user ("symbols don't match the keytops", report `01M15R86FJW24278GGD3ETS9QX`), the new layout follows the convention used by other implementations such as Benizara and DvorakJ</li>
+<li><strong>Upgrading an existing install does not change the contents of `layout/nicola.yab` or the `default_layout` setting</strong> (by design, so a file you may have hand-edited in the Layout Editor tab is never silently overwritten). To switch, manually set `default_layout` to `"nicola_keytop.yab"`</li>
+<li>The same keytop symbols (^ and &yen; on the digit row, [ on the Q row) were also added to `layout/nicola_f.yab` for genuine Fujitsu thumb-shift keyboards (the two positions on the home row occupied by the dedicated backspace/cancel keys remain unassigned as before). On this keyboard, every position besides the dedicated key next to "&#12435;" is a standard JIS symbol key, so switching to `nicola_f.yab` per the README no longer drops any symbols</li>
+</ul>
+</li>
+<li><strong>Added a "Disabled Apps" tab to the settings window, so `disable_apps` (apps where awase is disabled entirely) can be edited from the GUI</strong><ul>
+<li>Previously required editing config.toml directly. Useful as a workaround for a bug where the physical "Eisu" key stops working while using PowerToys' "Mouse Without Borders"; you can now add the affected apps to the list yourself</li>
+<li>"App-specific overrides" (a more advanced override requiring a process name + class name) remain hidden from the GUI</li>
+</ul>
+</li>
+<li><strong>Reorganized the settings window's tab names and order</strong>: "Basic Settings" &rarr; "General Settings", "Detailed Settings" &rarr; "Advanced Settings". Reordered the tabs by frequency of use (General Settings, Key Settings, Layout Editor, Advanced Settings, Disabled Apps, Shortcuts)</li>
+<li><strong>Added settings-window sliders (Advanced Settings) for the simultaneous-keystroke three-key arbitration margin and the overlap-shortfall margin</strong><ul>
+<li>Added `timing_margin_percent` (the threshold above which timing alone decides which key a three-key sequence pairs with, default 30%) and `min_overlap_margin_percent` (the threshold below which the overlap between the previous key and a thumb key is considered too small, default 0%) as sliders</li>
+<li>Also removed the confirm mode (`confirm_mode`) and speculative-output delay (`speculative_delay_ms`) settings from the settings window. Most users leave these at the default `wait`, and exposing the other modes added complexity for little benefit. Change them by editing `config.toml` directly if needed</li>
+<li>If `confirm_mode = "speculative"` (now deprecated) is set, it is now automatically read as `two_phase` (with `speculative_delay_ms=0`, which behaves identically)</li>
+</ul>
+</li>
+<li><strong>Added a settings-window preset to swap the JIS keyboard's "Eisu" (alphanumeric) key with Windows' CapsLock key</strong><ul>
+<li>Uses Windows' standard Scancode Map mechanism (via the registry); can be enabled/disabled from the settings window (requires administrator privileges, and a Windows restart to take effect)</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed simultaneous-keystroke detection effectively never taking KeyUp (key-release) events into account</strong><ul>
+<li>A long-standing regression introduced in March 2026, with two real-world consequences</li>
+<li>The overlap-shortfall check (which should treat a chord as two solo taps when the previous key and a thumb key barely overlap) had never actually worked since it was introduced</li>
+<li>For some keys that send a raw key code as-is (e.g. a physical key with no layout mapping), releasing the key could leave the OS believing it was still held down</li>
+</ul>
+</li>
+<li><strong>Fixed the IME state sometimes getting out of sync right after startup when a Win32 app such as Notepad already had focus, causing the first input to convert incorrectly</strong><ul>
+<li>Caused by a gap in the startup focus-sync logic; the mismatch previously persisted until focus moved to another app and back</li>
+</ul>
+</li>
+</ul>
 <h2>[1.16.1] - 2026-08-25</h2>
 <h3>Fixed</h3>
 <ul>
