@@ -139,21 +139,42 @@ impl BugReportApp {
                 &mut self.attach_log,
                 "ログを添付する（journal + awase.log）",
             )
+            .on_hover_text(attachment_hover_text(
+                "直近のキー入力イベント記録(journal)と実行ログ(awase.log)を\n送信内容に含めます。どのキーがいつどう処理されたかが分かり、\n原因調査に最も役立ちます。",
+                "これらのログは送信しません。",
+            ))
             .changed();
         let attach_state_snapshot_changed = ui
             .checkbox(
                 &mut self.attach_state_snapshot,
                 "内部状態スナップショットを添付する",
             )
+            .on_hover_text(attachment_hover_text(
+                // BugReportStateSnapshot (awase-windows::bug_report) が実際に
+                // 持つフィールドに合わせた説明。OSの「変換モード」自体は含まれない
+                // — input_mode はローマ字/かな/英数の内部判定状態であり別物
+                // （/code-review opus 指摘: 事実と異なる説明はユーザーが症状を
+                // 文章で書かずに済ませてしまう分、報告の質を下げる）。
+                "報告時点のIME ON/OFF・入力モード（ローマ字/かな/英数の内部判定）、\nフォーカス中のアプリ種別、メモリ使用量などawase内部の状態を\n送信内容に含めます。",
+                "内部状態は送信しません。",
+            ))
             .changed();
         let attach_config_changed = ui
             .checkbox(
                 &mut self.attach_config,
                 "設定ファイル(config.toml)を添付する",
             )
+            .on_hover_text(attachment_hover_text(
+                "現在の設定ファイル(config.toml)を送信内容に含めます。\nキー割り当てや無効化アプリなどの設定内容が、症状の再現に役立ちます。",
+                "設定ファイルは送信しません。",
+            ))
             .changed();
         let attach_layout_changed = ui
             .checkbox(&mut self.attach_layout, "配列ファイル(.yab)を添付する")
+            .on_hover_text(attachment_hover_text(
+                "使用中の配列ファイル(.yab)を送信内容に含めます。\nカスタム配列を使っている場合、変換ミスの再現に必要です。",
+                "配列ファイルは送信しません。",
+            ))
             .changed();
         ui.label(&self.journal_status);
         ui.label(&self.app_log_status);
@@ -196,7 +217,7 @@ impl BugReportApp {
     fn generated_preview(&self) -> Result<(String, bool), String> {
         let symptom_category = self
             .symptom_category
-            .ok_or_else(|| "症状カテゴリを選択してください".to_owned())?;
+            .ok_or_else(|| "症状カテゴリを選択してください。".to_owned())?;
         let (json, used_budget) = build_payload_json_fitting(
             &BugReportInput {
                 app_version: env!("CARGO_PKG_VERSION"),
@@ -262,16 +283,40 @@ impl BugReportApp {
         }
     }
 
+    /// 送信条件を満たしていない理由（`None` なら送信可能）。このUI側では
+    /// ボタンの活性化判定（`can_send`）と送信直前のバリデーション
+    /// （`start_send`）が同じ2条件をそれぞれ手書きで再実装しており、
+    /// どちらか1箇所だけ条件を変えるとドリフトしうる状態だったため、
+    /// 判定をここへ一本化する（無効化理由のツールチップは本メソッド追加と
+    /// 同時に新設した3つ目の呼び出し元であり、独立した重複ではなかった。
+    /// /code-review opus 指摘: 旧版のこのコメントは3箇所とも一本化前から
+    /// 手書きで存在していたかのように書かれており不正確だった）。
+    ///
+    /// 「その他」に説明必須というルール自体は、送信payloadを組み立てる
+    /// `awase_windows::bug_report::build_payload_with_log_budget` 側にも
+    /// 独立した検証（`BugReportPayloadError::DescriptionRequiredForOther`）
+    /// が存在する。これはUI側の事前チェックとは別に、ライブラリ関数が
+    /// 自身の入力契約を守るための意図的な多重防御であり、本メソッドが
+    /// 一本化しているのは「UI側」のみ（/code-review opus 指摘:
+    /// このdocが一本化の範囲を誇張していた）。
+    fn missing_send_requirement(&self) -> Option<&'static str> {
+        if self.symptom_category.is_none() {
+            return Some("症状カテゴリを選択してください。");
+        }
+        if self.symptom_category == Some(SymptomCategory::Other)
+            && self.description.trim().is_empty()
+        {
+            return Some("「その他」を選んだ場合は説明欄への入力が必要です。");
+        }
+        None
+    }
+
     fn start_send(&mut self) {
         if self.pending.is_some() {
             return;
         }
-        let Some(symptom_category) = self.symptom_category else {
-            "症状カテゴリを選択してください。".clone_into(&mut self.status);
-            return;
-        };
-        if symptom_category == SymptomCategory::Other && self.description.trim().is_empty() {
-            "その他の場合は説明を入力してください。".clone_into(&mut self.status);
+        if let Some(reason) = self.missing_send_requirement() {
+            reason.clone_into(&mut self.status);
             return;
         }
         // デバウンス中（直近の変更からまだ PREVIEW_DEBOUNCE 経過していない）に
@@ -316,6 +361,14 @@ fn load_diagnostics(path: Option<&PathBuf>) -> BugReportDiagnostics {
         .unwrap_or_default()
 }
 
+/// 添付チェックボックスの「ONにすると/OFFにすると」ツールチップの定型部分を
+/// 1箇所にまとめる。`main.rs` の `SoloTapSuppressMode::hover_text`（内容は
+/// バリアントごとに異なるが、同様に引数を差し込んだ `String` を都度
+/// `format!` で組み立てる）と同じ方式に合わせている。
+fn attachment_hover_text(on_effect: &str, off_effect: &str) -> String {
+    format!("ONにすると: {on_effect}\nOFFにすると: {off_effect}")
+}
+
 /// 説明欄・添付チェックボックスの変更後、プレビュー再生成を実際に行うまで
 /// 待つ時間。キー入力のたびに同期実行しない理由は `pending_preview_refresh`
 /// フィールドのコメント参照。
@@ -334,16 +387,45 @@ impl BugReportApp {
     fn draw_bottom_actions(&mut self, ui: &mut egui::Ui, pending: bool) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let can_send = self.symptom_category.is_some()
-                && (self.symptom_category != Some(SymptomCategory::Other)
-                    || !self.description.trim().is_empty());
-            if ui
+            let missing_requirement = self.missing_send_requirement();
+            let can_send = missing_requirement.is_none();
+            let send_response = ui
                 .add_enabled(!pending && can_send, egui::Button::new("送信"))
-                .clicked()
-            {
+                .on_hover_text("押すと: 送信前プレビューの内容をそのまま awase 開発チームへ送信します。");
+            // 無効化理由の文字列(format!)は、実際にボタンが無効な時だけ
+            // 組み立てる（毎フレーム無条件に確保していたのを、活性化状態と
+            // 同じ条件でガードして避ける。/code-review opus 指摘）。「送信中」
+            // と「未入力」で理由が異なるのは、両方を並べると、例えば「その他」
+            // を選択済みなのに「症状カテゴリを選択してください」という満たして
+            // いる条件の否定文言まで一緒に見え、既に入力済みの項目をユーザーに
+            // 再度疑わせるため（/code-review opus 指摘）。
+            let send_response = if pending || !can_send {
+                let reason = if pending {
+                    "送信中です。完了までお待ちください。".to_owned()
+                } else {
+                    // ボタンが無効化されるのは pending か missing_requirement が
+                    // Some の場合だけなので、この else 節に来る時点で
+                    // missing_requirement は必ず Some だが、万一の不整合でも
+                    // panic せず無難な文言に倒れるようフォールバックを残す。
+                    format!(
+                        "灰色の間は送信できません: {}",
+                        missing_requirement.unwrap_or("入力内容を確認してください。")
+                    )
+                };
+                send_response.on_disabled_hover_text(reason)
+            } else {
+                send_response
+            };
+            if send_response.clicked() {
                 self.start_send();
             }
-            if ui.button("プレビューを再生成").clicked() {
+            if ui
+                .button("プレビューを再生成")
+                .on_hover_text(
+                    "押すと: 症状カテゴリ・説明・添付設定を反映して、送信前プレビューを\n最新の内容に作り直します。プレビューを直接編集した内容は上書きされます。",
+                )
+                .clicked()
+            {
                 // デバウンス中の保留があれば、これから同期的に再生成する
                 // ので不要（残しておくと ~300ms 後にもう一度、同じ重い
                 // 再構築が無駄に走る）。
@@ -371,7 +453,9 @@ impl BugReportApp {
         ui.label("保持期間は ADR-095 の未決定事項の暫定値として、調査に必要な期間と削除の見通しを両立する90日を表示しています。");
         ui.add_space(8.0);
 
-        ui.label("症状カテゴリ");
+        let symptom_category_hover = "選ぶと: 起きた症状に最も近いカテゴリを記録します。\n該当するものが無い場合は「その他」を選び、説明欄に詳細を記入してください。";
+        ui.label("症状カテゴリ")
+            .on_hover_text(symptom_category_hover);
         let previous_category = self.symptom_category;
         egui::ComboBox::from_id_salt("symptom_category")
             .selected_text(
@@ -386,11 +470,19 @@ impl BugReportApp {
                         category.label(),
                     );
                 }
-            });
+            })
+            .response
+            .on_hover_text(symptom_category_hover);
         let category_changed = self.symptom_category != previous_category;
 
         ui.add_space(8.0);
-        ui.label("説明（任意）");
+        // ツールチップは見出しラベル側にのみ付ける。編集中のテキスト入力欄
+        // 本体に付けると、内容を読んでいる／書いている最中にマウスが
+        // 静止しただけでツールチップが本文の上に被さって隠してしまう
+        // （/code-review opus 指摘）。
+        ui.label("説明（任意）").on_hover_text(
+            "起きたこと・再現手順を自由に記入できます。\n症状カテゴリで「その他」を選んだ場合は入力が必須です。",
+        );
         let desc_changed = ui
             .add(
                 egui::TextEdit::multiline(&mut self.description)
@@ -410,7 +502,12 @@ impl BugReportApp {
         }
 
         ui.separator();
-        ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）");
+        // ツールチップを見出しラベル側にのみ付ける理由は上の「説明（任意）」
+        // と同じ（編集中の本体に付けると内容の上に被さって隠れる）。
+        ui.label("送信前プレビュー（この内容を編集してから送信できます。折りたたまれず全文をスクロールして確認できます）")
+            .on_hover_text(
+                "送信直前の実際のJSONです。ここを直接編集すると、その内容がそのまま\n送信されます。個人情報などが含まれていないか確認・修正できます。",
+            );
         egui::ScrollArea::vertical()
             .id_salt("bug_report_preview_scroll")
             .max_height(320.0)
