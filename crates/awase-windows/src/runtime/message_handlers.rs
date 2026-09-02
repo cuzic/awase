@@ -86,6 +86,11 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
+/// OS かな入力ロック警告状態をトレイ表示へ反映する。
+pub(crate) fn handle_wm_kana_lock_warning(app: &mut Runtime, warned: bool) {
+    app.platform.tray.set_kana_lock_warned(warned);
+}
+
 /// バッチ境界で1回だけ走るべき resync 処理（指摘5）。
 ///
 /// `crate::runtime::engine_window::take_needs_engine_resync()` はモーダルポンプの

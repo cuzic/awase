@@ -34,7 +34,17 @@ Pure 層は `src/engine/kana_input_warn.rs`。`Unknown` は streak だけを切�
 `warned` は変えない。Observe 層は `crates/awase-windows/src/observer/kana_lock.rs`
 で、`crate::vk::VK_KANA` を使って `GetKeyState` を読む。Apply 層は
 `Runtime` に `KanaLockHysteresis` を保持し、`runtime/key_pipeline.rs` の
-romaji VK/TSF 送信前に1打鍵1サンプルで観測する。
+romaji VK/TSF 送信前にフック経由の打鍵1回につき1サンプルで観測する。
+
+検知は romaji VK/TSF 送信の直前にだけサンプリングするため、Teams 側で
+かな入力ロックへ反転した直後の最初の `KANA_LOCK_WARN_STREAK` (=3) 打鍵は、
+警告閾値に達する前に JIS かなとして化けてから警告が出る。これは偽陰性側の
+遅延特性として受け入れる。
+
+相方の親指キーが来ずタイムアウトで確定する単独打鍵など、タイマー経由で
+`Executor::execute_from_loop` から送信される効果は現状サンプリング対象外。
+フック経由の通常打鍵だけで十分なサンプルを取れる想定だが、「1打鍵1サンプル」
+という表現は実態として「フック経由の打鍵1回につき1サンプル」を意味する。
 
 `Warn` 時はトレイの警告メニュー項目と警告ツールチップを表示し、フォアグラウンド
 クラス名つきで `log::warn!` を残す。`ClearWarned` 時はメニュー項目を消し、

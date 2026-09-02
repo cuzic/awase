@@ -15,7 +15,10 @@ use crate::state::half_width_alnum::{
 };
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
-use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
+use crate::{
+    Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CLEAR,
+    WM_KANA_LOCK_WARNING_WARN,
+};
 use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
@@ -2048,11 +2051,11 @@ impl Runtime {
                     "[kana-lock] OS かな入力ロックを検知しました \
                      (reading={reading:?} streak={after:?} fg_class={fg_class})"
                 );
-                self.platform.tray.set_kana_lock_warned(true);
+                post_to_main_thread(WM_KANA_LOCK_WARNING_WARN);
             }
             WarnAction::ClearWarned => {
                 log::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
-                self.platform.tray.set_kana_lock_warned(false);
+                post_to_main_thread(WM_KANA_LOCK_WARNING_CLEAR);
             }
         }
     }
@@ -2074,7 +2077,7 @@ fn decision_contains_romaji_send(decision: &awase::engine::Decision) -> bool {
 
 fn actions_contain_romaji(actions: &[KeyAction]) -> bool {
     actions.iter().any(|action| match action {
-        KeyAction::Romaji(_) => true,
+        KeyAction::Char(_) | KeyAction::KeySequence(_) | KeyAction::Romaji(_) => true,
         KeyAction::Sequence(items) => actions_contain_romaji(items),
         _ => false,
     })
@@ -2523,6 +2526,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
+    use awase::engine::Decision;
 
     #[test]
     fn focus_probe_open_status_is_not_observable_for_imm32_unavailable() {
@@ -2557,5 +2561,49 @@ mod tests {
             FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),
             FocusProbeOpenStatus::NotObservable(AppImeProfile::Standard)
         ));
+    }
+
+    fn send_keys_decision(actions: Vec<KeyAction>) -> Decision {
+        Decision::consumed_with(
+            [Effect::Input(InputEffect::SendKeys(actions))]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_for_char_romaji_and_key_sequence() {
+        for action in [
+            KeyAction::Char('な'),
+            KeyAction::Romaji(String::from("na")),
+            KeyAction::KeySequence(String::from("1")),
+        ] {
+            assert!(decision_contains_romaji_send(&send_keys_decision(vec![
+                action
+            ])));
+        }
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_recurses_into_sequence() {
+        let decision = send_keys_decision(vec![KeyAction::Sequence(vec![KeyAction::Char('な')])]);
+        assert!(decision_contains_romaji_send(&decision));
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_ignores_non_romaji_vk_actions() {
+        use awase::types::{SpecialKey, VkCode};
+
+        for action in [
+            KeyAction::SpecialKey(SpecialKey::Enter),
+            KeyAction::Key(VkCode(0x41)),
+            KeyAction::KeyUp(VkCode(0x41)),
+            KeyAction::CtrlChord(VkCode(0x41)),
+            KeyAction::Suppress,
+        ] {
+            assert!(!decision_contains_romaji_send(&send_keys_decision(vec![
+                action
+            ])));
+        }
     }
 }

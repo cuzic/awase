@@ -7,6 +7,7 @@ use awase::engine::kana_input_warn::KanaLockReading;
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッド（Runtime のメッセージループスレッド）から呼ぶこと。
+#[must_use]
 pub unsafe fn read_kana_lock() -> KanaLockReading {
     let state = unsafe {
         windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(i32::from(crate::vk::VK_KANA.0))
@@ -22,6 +23,7 @@ pub unsafe fn read_kana_lock() -> KanaLockReading {
 ///
 /// # Safety
 /// Win32 UI API を呼び出す。メインスレッドから呼ぶこと。
+#[must_use]
 pub unsafe fn foreground_class_name() -> String {
     use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
 
@@ -35,5 +37,5 @@ pub unsafe fn foreground_class_name() -> String {
     if len <= 0 {
         return String::from("<unknown>");
     }
-    String::from_utf16_lossy(&buf[..len as usize])
+    String::from_utf16_lossy(&buf[..len.cast_unsigned() as usize])
 }

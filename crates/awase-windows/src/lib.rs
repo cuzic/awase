@@ -332,6 +332,12 @@ pub const WM_GJI_CHARSET_FN_KEY_ACTIVATED: u32 =
 pub const WM_GJI_REINIT_RETRY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
 #[cfg(windows)]
 pub(crate) const WM_ENGINE_QUIT_REQUEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
+/// OS かな入力ロック警告をトレイに表示する。
+#[cfg(windows)]
+pub const WM_KANA_LOCK_WARNING_WARN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 26;
+/// OS かな入力ロック警告をトレイから消す。
+#[cfg(windows)]
+pub const WM_KANA_LOCK_WARNING_CLEAR: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 27;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 
