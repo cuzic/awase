@@ -48,12 +48,27 @@ pub struct RetroEvalStats {
 
     // 項目2b: Phase2到達かつchar2のNormal面かながSome+ひらがな だった回数
     pub char2_normal_hiragana_count: u64,
-    // 項目2c: Phase2決定直後の連続2打鍵(k=1の窓)に親指KeyDownが1つも無かった回数
+    // 項目2c: Phase2決定直後の連続2打鍵(k=1の窓)に親指KeyDownが1つも無かった回数。
+    // 分母は phase2_reached ではなく、以下の3カウンタの和にすること
+    // （nice-to-have所見N2対応——打鍵を止めた場合は過小に、Passthroughキー
+    // 混入では過大に、2方向のバイアスが同時にかかるため、`phase2_reached`
+    // をそのまま分母にすると原因を事後に分離できない）。
     pub no_thumb_followup_count: u64,
+    // 項目2c分母: 窓の途中で親指KeyDownが来て破棄された回数。
+    pub thumb_watch_window_thumb_arrived_count: u64,
+    // 項目2c分母: 窓が未消化のまま次のPhase2決定に上書きされて破棄された回数。
+    pub thumb_watch_window_abandoned_count: u64,
 
     // 項目4: Phase2決定「自身の出力」をスキップした後の、後続1かな確定までの
-    // 経過msヒストグラム（分母は phase2_reached）
+    // 経過msヒストグラム（分母は phase2_reached）。update_history_imprecise
+    // 経由（タイムアウト/flush等、正確な発生時刻が無い経路）で完了した計測は
+    // 記録しない（所見B2対応）。
     pub followup_elapsed_ms_histogram: [u64; 7],
+    // 項目4 (nice-to-have所見N1対応): 後続1かな確定を待っている間に次の
+    // Phase2決定が来て上書きされ、計測が完了しないまま失われた回数。
+    // `followup_elapsed_ms_histogram.sum()` と `phase2_reached` の差の一部を
+    // 説明する（差の残りは B2 の imprecise 経路による意図的な欠測分）。
+    pub followup_overwritten_count: u64,
 
     // 項目7: 3群 x (分母スカラー + 訂正発生時の経過msヒストグラム)
     // 分母はphase2_reached/phase1_reachedを再利用せず独立カウンタにする

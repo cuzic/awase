@@ -1928,6 +1928,13 @@ fn test_retro_eval_stats_phase1_counters() {
     assert_eq!(stats.no_ngram_count, 0);
     assert_eq!(stats.phase1_decisions_total, 1);
     assert_eq!(stats.phase2_decisions_total, 0);
+    // 所見S5の回帰ガード: Phase1決定「自身の出力」がBaselineへ混入しない
+    // （以前はPhase2決定にしか自前出力の除外が効かず、対照群にPhase1の
+    // 曖昧決定が混入していた）。
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "Phase1決定自身の出力はBaseline計上から除外されるはず（所見S5の回帰ガード）"
+    );
 }
 
 #[test]
@@ -2003,6 +2010,12 @@ fn test_retro_eval_stats_phase2_score_buckets_and_char2_hiragana() {
         stats.char2_normal_hiragana_count, 1,
         "char2(S)の通常面'し'はひらがな"
     );
+    // 所見S1/S2の回帰ガード: PairWithChar2の決定自身の出力2回（う、じ）が
+    // いずれもBaseline計上から除外されているはず。
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "決定自身の出力2回はどちらもBaseline計上から除外されるはず"
+    );
 }
 
 #[test]
@@ -2038,6 +2051,9 @@ fn test_retro_eval_stats_followup_thumb_window_and_correction_survives_baseline(
     );
 
     // 項目4: 決定自身の出力2回分をスキップし終えた後、初めての「後続かな確定」。
+    // ただしこれはタイムアウト経由（`update_history_imprecise`）なので、
+    // 所見B2対応により経過ms計測は記録されない（不正確な `now` で
+    // elapsed≈0msに丸め込まれるのを防ぐため、意図的に欠測として扱う）。
     // 同時に項目7: このBaseline決定（last_baseline_at）は Phase2 決定の
     // last_phase2_at を上書きしない（別スロットのため）。
     let result = engine.on_timeout(TIMER_PENDING);
@@ -2046,8 +2062,8 @@ fn test_retro_eval_stats_followup_thumb_window_and_correction_survives_baseline(
     let stats = engine.retro_eval_stats();
     assert_eq!(
         stats.followup_elapsed_ms_histogram.iter().sum::<u64>(),
-        1,
-        "後続1かな確定が1回計測されるはず"
+        0,
+        "タイムアウト経由(imprecise)の完了は所見B2対応により記録されないはず"
     );
     assert_eq!(stats.baseline_decisions_total, 1);
 
@@ -2063,16 +2079,103 @@ fn test_retro_eval_stats_followup_thumb_window_and_correction_survives_baseline(
     result.assert_pass_through();
 
     let stats = engine.retro_eval_stats();
+    // elapsed = 350_000 - 110_000 = 240ms → bucket 3 (200<=x<400)（所見N4対応、
+    // sumだけでなくバケット位置まで固定してoff-by-oneを検出可能にする）。
     assert_eq!(
-        stats.phase2_correction_histogram.iter().sum::<u64>(),
-        1,
-        "Phase2決定への訂正帰属が、間に挟まったBaseline決定で消えていないはず"
+        stats.phase2_correction_histogram,
+        [0, 0, 0, 1, 0, 0, 0],
+        "Phase2決定への訂正帰属が、間に挟まったBaseline決定で消えていないはず: {:?}",
+        stats.phase2_correction_histogram
     );
-    assert_eq!(stats.baseline_correction_histogram.iter().sum::<u64>(), 1);
+    // elapsed = 350_000 - 200_000 = 150ms → bucket 2 (100<=x<200)。
+    assert_eq!(
+        stats.baseline_correction_histogram,
+        [0, 0, 1, 0, 0, 0, 0],
+        "{:?}",
+        stats.baseline_correction_histogram
+    );
     assert_eq!(
         stats.phase1_correction_histogram.iter().sum::<u64>(),
         0,
         "Phase1決定は一度も発生していない"
+    );
+    // 所見S3の回帰ガード: record_user_correction は計上したスロットを
+    // クリアするため、直後にもう一度BACKSPACEを押しても同じ決定へ
+    // 二重計上されない（BS連打で1回の訂正が複数回計上されるバグの修正）。
+    engine.on_event(Ev::up(VK_BACK).at(351_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(352_000).build());
+    result.assert_pass_through();
+    let stats2 = engine.retro_eval_stats();
+    assert_eq!(
+        stats2.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "直近のPhase2決定は既にクリア済みなので、2回目のBACKSPACEでは加算されないはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_pair_with_char1_followup_completes_precisely_via_next_keydown() {
+    // 所見S7対応: PairWithChar1(skip=1)分岐を通し、後続1かな確定が実際の
+    // KeyDown経由（on_reduce、正確なタイムスタンプ）で完了することを確認する
+    // （既存テストは全てPairWithChar2分岐のみを通しており、B2/S1/S2の欠陥は
+    // すべてこちら側/サブ分岐に潜んでいた）。所見N4対応でバケットインデックス
+    // まで固定する（sumだけでは境界off-by-oneを検出できないため）。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    // Phase2決定（PairWithChar1、skip=1）: t=110_000
+    // (test_three_key_char1_released_close_timing_ngram_phase2_prefers_char1 と
+    // 同じ左親指シナリオ: d1=60_000/d2=50_000で接近しPhase2、
+    // score_a=2.0(bigram "しを")がscore_b=0.0を上回りchar1優先)
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(60_000).build());
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(
+        result.actions.len(),
+        1,
+        "PairWithChar1は決定自身の出力1回のみのはず: got {:?}",
+        result.actions
+    );
+    assert!(matches!(result.actions[0], KeyAction::Char('を')));
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.phase2_reached, 1);
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "決定自身の出力(を)はBaseline計上から除外されるはず"
+    );
+
+    // char2(S)は再処理されPendingCharになる。250ms後に別の文字キーが実際に
+    // KeyDownすることで、Sが正確なタイムスタンプ(on_reduce経由)で単独確定し、
+    // 後続1かな確定の計測が完了する。
+    let result = engine.on_event(Ev::down(VK_A).at(360_000).build());
+    result.assert_consumed();
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('し'))),
+        "保留中のS('し')が単独確定して再処理されるはず: got {:?}",
+        result.actions
+    );
+
+    let stats = engine.retro_eval_stats();
+    // elapsed = 360_000us - 110_000us = 250ms。
+    // ELAPSED_MS_BUCKETS=[50,100,200,400,800,1600,MAX] → 250 は bucket 3 (200<=x<400)。
+    assert_eq!(
+        stats.followup_elapsed_ms_histogram,
+        [0, 0, 0, 1, 0, 0, 0],
+        "250msはbucket 3に入るはず: {:?}",
+        stats.followup_elapsed_ms_histogram
+    );
+    assert_eq!(
+        stats.baseline_decisions_total, 1,
+        "後続の単独確定(し)自体はBaseline計上されるはず(own_decision_outputは既に消化済み)"
     );
 }
 
@@ -2096,11 +2199,135 @@ fn test_retro_eval_stats_thumb_arrival_discards_window_without_counting() {
 
     // 決定直後、最初のKeyDownが親指（NONCONVERT）。
     engine.on_event(Ev::down(VK_NONCONVERT).at(150_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.no_thumb_followup_count, 0,
+        "親指キーが窓内に来たら破棄するだけで、no_thumb_followup_countは増えない"
+    );
+    // 所見N2対応: 項目2cの正しい分母カウンタが増える
+    // （no_thumb_followup_count自体は分母ではない）。
+    assert_eq!(stats.thumb_watch_window_thumb_arrived_count, 1);
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_with_ctrl_modifier_is_not_counted_as_correction() {
+    // 所見B1対応の回帰ガード: `Ctrl+BS`（単語削除、日本語入力中の一般的な
+    // 操作）は訂正操作として計上してはならない。`bypass_reason` は
+    // `KeyClass::Passthrough` を修飾キーの有無より優先して返すため
+    // （VK_BACKはscanmap.rsに物理位置が無く常にPassthrough）、
+    // `BypassReason::OsModifierHeld` では判定できず、`handle_bypass`側で
+    // 明示的にmodifier状態を見て除外する必要がある。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    // Phase2決定を1つ作っておく（PairWithChar2、score_a=-2.0<score_b=0.0）。
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // Ctrl+BS（単語削除）。
+    engine.on_event(Ev::down(VK_CTRL).at(200_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(210_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "Ctrl+BSは単語削除であり訂正操作として計上してはならない"
+    );
+    assert_eq!(stats.baseline_correction_histogram.iter().sum::<u64>(), 0);
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_auto_repeat_counted_once() {
+    // 所見S4対応の回帰ガード: OSオートリピートによる物理BACKSPACEの連続
+    // KeyDown再送（KeyUpを挟まない）は、押下1回につき1回だけ計上される。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // KeyUpを挟まずに3回連続KeyDown（オートリピートを模擬）。
+    engine.on_event(Ev::down(VK_BACK).at(200_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(230_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(260_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "オートリピートによる再送は新規タップとして二重計上してはならない"
+    );
+
+    // KeyUpで解放後、新規タップは改めて1回計上される。
+    engine.on_event(Ev::up(VK_BACK).at(270_000).build());
+    // 新しいPhase2決定を作ってから2回目の物理タップを送る。
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(300_000).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(360_000).build());
+    engine.on_event(Ev::down(VK_S).at(410_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(500_000).build());
+    let stats2 = engine.retro_eval_stats();
+    assert_eq!(
+        stats2.phase2_correction_histogram.iter().sum::<u64>(),
+        2,
+        "KeyUpを挟んだ新規タップは改めて1回計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_passthrough_key_does_not_close_thumb_watch_window() {
+    // 所見S6対応の回帰ガード: Shift等のPassthroughキーは項目2cの観測窓を
+    // 1打鍵として消費してはならない（Charキーだけが対象）。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 決定後、Shiftキー（Passthrough）が2回来ても窓は閉じない。
+    engine.on_event(Ev::down(VK_SHIFT).at(150_000).build());
+    engine.on_event(Ev::down(VK_SHIFT).at(160_000).build());
     assert_eq!(
         engine.retro_eval_stats().no_thumb_followup_count,
         0,
-        "親指キーが窓内に来たら破棄するだけで、no_thumb_followup_countは増えない"
+        "Passthroughキーは観測窓を消費してはならない"
     );
+
+    // Charキーが1回来ても、まだ窓は閉じない（remaining 2->1）。
+    engine.on_event(Ev::down(VK_A).at(170_000).build());
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 0);
+    // Charキーがもう1回来て、窓を使い切る（remaining 1->0）。
+    engine.on_event(Ev::down(VK_S).at(180_000).build());
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 1);
 }
 
 #[test]

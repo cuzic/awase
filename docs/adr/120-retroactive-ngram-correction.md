@@ -108,6 +108,19 @@ issue #140 の (a) は PR #141（squash `1045a05e`）でマージ済み。BUG-10
 | 4 | 曖昧決定から後続 1/2 かな確定までの経過 ms 分布と打鍵数 |
 | 7 | **精度プロキシ（対照群つき）**: 決定から N ms 以内のユーザー訂正操作の頻度を、Phase 2 決定群 / Phase 1 決定群 / 曖昧でない打鍵群 で比較 |
 
+**実装スコープ注記（2026-09-02、実装レビューで追記）**: 項目2は
+「score_a/score_bの生値と差の分布」までは実装せず、`NEG_INFINITY`/`0.0`/
+有限の3値分類（各独立6カウンタ）のみを実装している。項目4も「後続1/2かな
+確定までの経過msと打鍵数」ではなく「後続1かな確定までの経過ms」のみ。
+いずれも判断点1のゲート(i)(ii)(iii)自体は3値分類・1かな計測だけで判定できる
+ため実装不足はblockerではないが、決定2の `θ_amb`（曖昧判定閾値）・k
+（何かな後に再評価するか）を実データから導出するには、この Phase 0a の
+データだけでは不足する。ゲート通過後、決定2〜8の設計に着手する前に
+`score_diff_histogram`/`followup2_elapsed_ms_histogram` 相当を追加した
+Phase 0b の追加ソークが必要になる見込みであることをここに明記しておく
+（「測ると書いてあるが測れていない」まま soak に入って後から気づく事態を
+防ぐため）。
+
 **項目 2b/2c が「新設計ゼロ」を壊さない理由**:
 2b は `lookup_kana_at(char2.pos, Face::Normal)` という既存テーブルへの 1 行 lookup、
 2c は既存のイベント列に対する親指 KeyDown の有無の計数であり、
@@ -222,7 +235,19 @@ k=1 の窓（連続 2 打鍵）が親指なしである確率は概ね 0.55² �
        pub score_b_finite_count: u64,
        pub char2_normal_hiragana_count: u64,        // 項目2b
        pub no_thumb_followup_count: u64,             // 項目2c
+       /// 項目2cの正しい分母は `phase2_reached` ではなく
+       /// `no_thumb_followup_count + thumb_watch_window_thumb_arrived_count +
+       /// thumb_watch_window_abandoned_count` の和（実装レビューで追記:
+       /// 打鍵を止めた場合の過小評価とPassthroughキー混入の過大評価が
+       /// 同時にかかりうるため、`phase2_reached` を分母にすると原因を
+       /// 事後に分離できない）。
+       pub thumb_watch_window_thumb_arrived_count: u64,
+       pub thumb_watch_window_abandoned_count: u64,
        pub followup_elapsed_ms_histogram: [u64; 7],  // 項目4（バケット定義は上記）
+       /// 後続1かな確定を待つ間に次のPhase2決定へ上書きされ、計測未完了の
+       /// まま失われた回数（実装レビューで追記、ヒストグラム総和が
+       /// `phase2_decisions_total` を下回る理由の一部を説明する）。
+       pub followup_overwritten_count: u64,
        /// 項目7: Phase2決定後の経過msバケットごとのユーザー訂正操作回数（分子）。
        /// 分母（その群で何回決定が起きたか）は1個の数なのでスカラー。
        /// 訂正率(N) = prefix_sum(ヒストグラム, Nまで) / 分母 で、
