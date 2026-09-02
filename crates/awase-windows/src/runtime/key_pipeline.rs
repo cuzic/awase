@@ -2077,7 +2077,15 @@ fn decision_contains_romaji_send(decision: &awase::engine::Decision) -> bool {
 
 fn actions_contain_romaji(actions: &[KeyAction]) -> bool {
     actions.iter().any(|action| match action {
-        KeyAction::Char(_) | KeyAction::KeySequence(_) | KeyAction::Romaji(_) => true,
+        // Char/KeySequence/Romajiに加えKeyも対象にする: `.yab`配列定義外のキーは
+        // nicola_fsm::resolve_pending_char_as_single が Key(vk_code) にフォール
+        // バックし、これも send_keys 経由で生VK押下として送信される(output/mod.rs)。
+        // ROMANビットが落ちていれば同じくJISかな解釈の対象になるため、KeyUp/
+        // CtrlChord/SpecialKey/Suppress とは違いサンプリング対象に含める。
+        KeyAction::Char(_)
+        | KeyAction::KeySequence(_)
+        | KeyAction::Romaji(_)
+        | KeyAction::Key(_) => true,
         KeyAction::Sequence(items) => actions_contain_romaji(items),
         _ => false,
     })
@@ -2573,10 +2581,16 @@ mod tests {
 
     #[test]
     fn decision_contains_romaji_send_for_char_romaji_and_key_sequence() {
+        use awase::types::VkCode;
+
         for action in [
             KeyAction::Char('な'),
             KeyAction::Romaji(String::from("na")),
             KeyAction::KeySequence(String::from("1")),
+            // .yab配列定義外のキーはnicola_fsm::resolve_pending_char_as_singleが
+            // Key(vk_code)にフォールバックし、これも生VK押下として送信される
+            // (JISかな解釈の対象になりうる)。
+            KeyAction::Key(VkCode(0x41)),
         ] {
             assert!(decision_contains_romaji_send(&send_keys_decision(vec![
                 action
@@ -2596,7 +2610,6 @@ mod tests {
 
         for action in [
             KeyAction::SpecialKey(SpecialKey::Enter),
-            KeyAction::Key(VkCode(0x41)),
             KeyAction::KeyUp(VkCode(0x41)),
             KeyAction::CtrlChord(VkCode(0x41)),
             KeyAction::Suppress,

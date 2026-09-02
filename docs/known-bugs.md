@@ -12523,7 +12523,7 @@ report、上記「BUG-95 との関係」参照）。
 
 ---
 
-## BUG-105: Teams(WebView2/MS-IME) で送信 romaji VK が JIS かな配列として解釈される
+## BUG-106: Teams(WebView2/MS-IME) で送信 romaji VK が JIS かな配列として解釈される
 
 **症状（issue #137、Microsoft Teams / `TeamsWebView` / WebView2 上の MS-IME）:**
 awase が正しく送信した romaji VK 列が、IME 側で「ローマ字入力」ではなく

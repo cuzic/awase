@@ -100,10 +100,15 @@ mod probe {
         String::from_utf16_lossy(&buf[..len.cast_unsigned() as usize])
     }
 
-    /// 直前値との比較用に static へ保持する（このスパイクはシングルスレッド・
-    /// シングルウィンドウ前提なので排他不要）。
-    static mut PREV_KANA_BIT: Option<bool> = None;
-    static mut PREV_CAPS_BIT: Option<bool> = None;
+    // 直前値との比較用。`static mut` を経由した共有参照は edition 2024 で
+    // 既定拒否になる `static_mut_refs` の典型パターンなので、`Cell` を
+    // thread_local に包んで参照を取らずに get/set する形にする（このスパイクは
+    // シングルスレッド・シングルウィンドウ前提だが、健全性のコストを払う理由は
+    // 無い）。
+    thread_local! {
+        static PREV_KANA_BIT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+        static PREV_CAPS_BIT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
 
     fn poll_and_log_on_change() {
         // SAFETY: GetKeyState はどのスレッドからも安全に呼べる（引数は仮想
@@ -116,32 +121,32 @@ mod probe {
         let caps_raw = unsafe { GetKeyState(VK_CAPITAL) };
         let caps_bit = (caps_raw & 1) != 0;
 
-        // SAFETY: このプロセス内で唯一のメッセージループスレッドからのみ
-        // 触るため単一アクセス。
-        unsafe {
-            if PREV_KANA_BIT != Some(kana_bit) {
-                let prev = PREV_KANA_BIT.map_or("?", |b| if b { "on" } else { "off" });
-                println!(
-                    "{} KANA raw=0x{:04X} bit={} (prev={}) fg_class={}",
-                    now(),
-                    kana_raw.cast_unsigned(),
-                    if kana_bit { "on" } else { "off" },
-                    prev,
-                    foreground_class_name()
-                );
-                PREV_KANA_BIT = Some(kana_bit);
-            }
-            if PREV_CAPS_BIT != Some(caps_bit) {
-                let prev = PREV_CAPS_BIT.map_or("?", |b| if b { "on" } else { "off" });
-                println!(
-                    "{} CAPS raw=0x{:04X} bit={} (prev={}) [比較対象・プローブ健全性の裏取り]",
-                    now(),
-                    caps_raw.cast_unsigned(),
-                    if caps_bit { "on" } else { "off" },
-                    prev
-                );
-                PREV_CAPS_BIT = Some(caps_bit);
-            }
+        if PREV_KANA_BIT.get() != Some(kana_bit) {
+            let prev = PREV_KANA_BIT
+                .get()
+                .map_or("?", |b| if b { "on" } else { "off" });
+            println!(
+                "{} KANA raw=0x{:04X} bit={} (prev={}) fg_class={}",
+                now(),
+                kana_raw.cast_unsigned(),
+                if kana_bit { "on" } else { "off" },
+                prev,
+                foreground_class_name()
+            );
+            PREV_KANA_BIT.set(Some(kana_bit));
+        }
+        if PREV_CAPS_BIT.get() != Some(caps_bit) {
+            let prev = PREV_CAPS_BIT
+                .get()
+                .map_or("?", |b| if b { "on" } else { "off" });
+            println!(
+                "{} CAPS raw=0x{:04X} bit={} (prev={}) [比較対象・プローブ健全性の裏取り]",
+                now(),
+                caps_raw.cast_unsigned(),
+                if caps_bit { "on" } else { "off" },
+                prev
+            );
+            PREV_CAPS_BIT.set(Some(caps_bit));
         }
     }
 
