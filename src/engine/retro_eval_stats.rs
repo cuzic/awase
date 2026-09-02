@@ -86,6 +86,14 @@ pub struct RetroEvalStats {
     pub phase1_decisions_total: u64,
     pub phase1_correction_histogram: [u64; 7],
     pub baseline_decisions_total: u64,
+    /// 既知のアーティファクト（nice-to-have所見NN4、修正見送り——発生条件
+    /// （保留キーがある状態でのBS＋1600ms以内の再タップ）の頻度が低く、
+    /// かつ対照群(Baseline)の訂正率を過大にする方向＝ゲート(ii)を誤って
+    /// 棄却する方向の安全側バイアスであるため）: 保留キーがある状態で
+    /// BACKSPACEを押すと、`handle_bypass`末尾の`flush_pending`がその出力を
+    /// 新しいBaseline決定として計上する。BACKSPACEを1600ms以内に連打すると、
+    /// 2発目がこの「1発目自身が誘発したBaseline決定」を訂正として拾い、
+    /// このヒストグラムに計上されうる。
     pub baseline_correction_histogram: [u64; 7],
 
     // 項目7(c): Escape出力回数（訂正カウントとは別、離脱と区別するため）
