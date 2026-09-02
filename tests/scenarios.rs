@@ -114,6 +114,7 @@ fn vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
         0x46 => Some(PhysicalPos::new(2, 3)), // F
         0x43 => Some(PhysicalPos::new(3, 2)), // C
         0x56 => Some(PhysicalPos::new(3, 3)), // V
+        0x4C => Some(PhysicalPos::new(2, 8)), // L
         _ => None,
     }
 }
@@ -133,6 +134,12 @@ fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
         modifier_snapshot: Default::default(),
         injected: false,
     }
+}
+
+fn key_up(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
+    let mut ev = key_down(vk, ts);
+    ev.event_type = KeyEventType::KeyUp;
+    ev
 }
 
 const VK_NONCONVERT: VkCode = VkCode(0x1D);
@@ -324,5 +331,46 @@ fn scenario_right_thumb_shift() {
     assert!(
         output.contains("zi"),
         "Expected right thumb + S = 'zi', got {output:?}"
+    );
+}
+
+#[test]
+fn scenario_3key_char1_released_tight_overlap_prefers_chord() {
+    // Regression test for issue #140 / BUG-105 (report 01M1GDQVBET5DBX3MY4BRGQFW1,
+    // "しょうにん" -> "しいゔにん"), driven through Engine::on_input (not bare
+    // NicolaFsm) so ADR-112's KeyUp routing (Phase 0/UpDuty) is exercised too,
+    // and using layout/nicola.yab (the real production layout, not the
+    // synthetic test layout) so the exact reported VK/kana mapping is covered.
+    //
+    // L (VK 0x4C) + right thumb = small "yo" (romaji "lyo"). char1(L) is
+    // released well before char2(A) arrives (matches the reported physical
+    // key timeline: L down, RightThumb down 11.7ms later, L up, A down
+    // 100.8ms after RightThumb went down while RightThumb is still held).
+    // Before the fix, compute_prefer_char1() unconditionally discarded
+    // char1+thumb once char1_released_at was Some, producing L-solo "i" +
+    // A+RightThumb "vu" instead ("しいゔ" instead of "しょう").
+    let mut engine = make_nicola_engine();
+    let mut output = String::new();
+    let t: Timestamp = 0;
+
+    let r = engine.on_input(key_down(VkCode(0x4C), t), &ctx()); // L down
+    output.push_str(&collect_output(&r));
+
+    let r = engine.on_input(key_down(VK_CONVERT, t + 11_700), &ctx()); // right thumb down, d1=11.7ms
+    output.push_str(&collect_output(&r));
+
+    let r = engine.on_input(key_up(VkCode(0x4C), t + 106_550), &ctx()); // L up (char1 released)
+    output.push_str(&collect_output(&r));
+
+    let r = engine.on_input(key_down(VkCode(0x41), t + 112_474), &ctx()); // A down, d2=100.8ms
+    output.push_str(&collect_output(&r));
+
+    let r = engine.on_timeout(TIMER_PENDING, &ctx()); // A resolves standalone
+    output.push_str(&collect_output(&r));
+
+    assert_eq!(
+        output, "lyou",
+        "tight d1 (char1->thumb) must win over d2 (thumb->char2) even though \
+         char1 was already released; buggy pre-fix output was \"ivu\""
     );
 }

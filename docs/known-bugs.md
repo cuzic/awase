@@ -12520,3 +12520,134 @@ report、上記「BUG-95 との関係」参照）。
 （BUG-101/ADR-112）と同じ危険領域に触れるため、打鍵列のマクロステップ/
 セル内`+`区切り双方から生の`KeyAction::Key`/`KeyUp`を構造的に排除している
 （決定6・決定2c、r5レビューCritical C1の回帰テスト`resolve_on_rejects_vk_inside_inline_sequence_with_warning`で固定）。
+
+---
+
+## BUG-105: NICOLA 3鍵仲裁が char1 解放済みなら無条件で char2 側を優先し、タイトな重なりでも無視する
+
+**症状:** GJI環境で「しょうにん」と入力したかったが「しいゔにん」になった。
+`layout/nicola_keytop.yab`（かな44キー配置は`layout/nicola.yab`と同一）で、
+L(無シフト)+右親指シフト="ょ"(romaji "lyo")のはずが、L単独="い"+A(無シフト)
++右親指シフト="ゔ"という誤出力になった。タスクトレイの不具合報告機能
+（[ADR-095](adr/095-tray-bug-report-cloudflare-intake.md)）経由の
+report `01M1GDQVBET5DBX3MY4BRGQFW1`（2026-09-02T06:42:31Z、app_version 1.17.0）
+で報告され、GitHub issue #140として起票された。
+
+**原因:** `src/engine/nicola_fsm.rs::compute_prefer_char1()`（3鍵仲裁:
+char1→thumb→char2 の並びで thumb をどちらとペアリングするか決める純粋関数）に
+
+```rust
+if char1_released_at.is_some() {
+    return false;
+}
+```
+
+という早期returnがあり、char1 が char2 到着より前に物理的に離されていれば、
+`TimingJudge::three_key_pairing()`（d1/d2タイミング比較 + bigram/trigram
+n-gramタイブレーク）を一切呼ばず無条件で char2 側を優先していた。
+
+report の実測: L down → RightThumb down（d1=11.7ms、極めてタイトな重なり）→
+L up（char1解放）→ A down（d2=100.8ms、RightThumbはまだ押下中）。d1 が
+極めて短く同時打鍵の意図が明白であるにも関わらず、char1 が char2 到着前に
+離されていたというだけで早期returnが発火し、`three_key_pairing`のd1/d2
+タイミング比較（`d1+margin(30ms) < d2` → 41.7ms < 100.8ms でchar1優先に
+なるはずだった）が一度も実行されなかった。app.log の実ログ
+
+```
+[engine-input] vk=0x4C KeyUp   ts=142691057291us state=PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=None)
+[engine-input] vk=0x41 KeyDown ts=142691063215us state=PendingCharThumb(char=0x4C,thumb=0x1C,left=false,released_at=Some(142691057291))
+Timer killed: logical=1, os_id=14781
+send_keys: mode=Tsf actions=[Char('い'), Char('ゔ')]
+```
+
+が、`Engine::on_input()`が物理KeyDownを`PendingCharThumb`状態のまま処理し
+（タイムアウト経由ではない）、`step_pending_char_thumb_3key`のchar2優先分岐
+（char1単独出力+char2+thumb出力を1バッチでemitするパターン）を実際に踏んだ
+ことを直接裏付けている。
+
+この早期returnはPR #85 (`b1e7474e`)で「3鍵ケースにはchar2という直接証拠が
+あるため粗い既定で十分、`char_thumb_chord_confirmed`(2鍵ケース)とは意図的に
+非対称」として導入されたが、[ADR-112](adr/112-keyup-lifecycle-fsm-delivery.md)
+のBUG-101/決定2 land（2026-08-31）以前は`char1_released_at`がKeyUp配送の
+リグレッションで恒久的に`None`だったため、**この早期return自体が実運用で
+一度も検証されないまま存在していた**。report `01M1GDQVBET5DBX3MY4BRGQFW1`
+（2026-09-02）は、ADR-112 land後にこの経路が実際に踏まれ誤りと判明した
+最初の実例である。
+
+また、本番既定`min_overlap_margin_percent = 0`（ADR-112決定1、決定3で恒久
+固定確定済み）の下では、2鍵ケースの`char_thumb_chord_confirmed`→
+`overlap_only_verdict`も`char1_released_at`の値に関わらず常に`Some(true)`
+を即returnしn-gramタイブレークには到達しない。つまり修正前の時点で
+`char1_released_at`がペアリングの結論を左右する箇所はこの早期return
+1箇所だけであり、「2鍵ケースが持つ慎重さを3鍵ケースが失う」という理解は
+誤りだった。
+
+**修正:** 早期returnを削除し、`char1_released_at`の有無に関わらず常に
+`three_key_pairing()`で判定するようにした。`compute_prefer_char1`の
+シグネチャから`char1_released_at`引数を削除。
+
+副次的に、`char1_released_at.is_some()`のときchar1の物理KeyUp（既に
+`handle_key_up_pending_char_thumb`でConsume済みでOSに届かない）を補完する
+`append_key_up_for`呼び出しが、3鍵仲裁の全4分岐（thumb到着/char1優先/
+char2優先(面定義あり)/char2優先(面定義なし)）に無かったことも判明したため
+（早期return削除により到達頻度が「稀」から「高速打鍵の常態」に上がるため
+放置できない）、`commit_char1_output`という共有ヘルパーを新設し4分岐全てに
+適用した。`ParseAction`の`record`フィールド経由の遅延適用
+（`ShiftReduceParser::parse`が`decide()`の戻り値から`on_reduce`越しに
+適用する通常経路）では`append_key_up_for`が依存する
+`output_history.remove_by_scan`が対象エントリをまだ見つけられないため、
+`commit_char1_output`内で`update_history`を即座に呼んでから
+`append_key_up_for`を呼ぶ順序にし、呼び出し元は`record: OutputUpdate::None`
+を返す設計にした（実装レビューで発覚した罠、順序を逆にすると補完が
+no-opになるかspurious KeyUpを積む）。
+
+**棄却した代案**: 「char1との物理的重なりが不足するときだけchar2を優先する」
+という代案（2鍵ケースの`overlap_only_verdict`相当を3鍵にも適用）も検討したが、
+`min_overlap_margin_percent = 0`が恒久固定のため現状は「常に重なり十分」に
+退化しblanket削除と完全に同一の挙動になる（no-op）。有効化には3鍵専用の
+重なりマージンの実測データが要り、
+[tuning-constants](../.claude/rules/tuning-constants.md)の実測義務に抵触する。
+
+**既知の限界（残る誤判定クラス）**: `three_key_pairing`は
+`char1_ts`/`thumb_ts`/`char2_ts`という3つのkeydownタイムスタンプのみを見る
+純粋関数で、release時刻の概念を構造的に持たない。したがって「char1との
+重なりは乏しいがd1(down-to-down)はたまたま短い」ケース（例:
+char1↓0ms→thumb↓12ms→char1↑20ms（重なり8ms）→char2↓62ms）を原理的に
+区別できず、誤ってchar1+thumbを優先しうる。将来この限界が実機で顕在化した
+場合、安易に「char1解放済みならchar2優先」を再導入しないこと——それは
+今回撤回した早期returnの再発であり、
+[experiment-logging](../.claude/rules/experiment-logging.md)エントリ01
+（IME OFFキー選択が5日で6回反転した事例）と同じ轍を踏む。
+
+**残課題（スコープ外、未対応）**: char2優先分岐（`nicola_fsm.rs`の
+`step_pending_char_thumb_3key`、char2+thumbが面定義を持つケース）は、
+2鍵の`step_pending_thumb_char`が持つ`is_simultaneous`チェックを持たず、
+thumbとchar2の生の経過時間が`simultaneous_threshold_ms`を超えていても
+無条件でchar2+thumbを同時打鍵として確定する。今回のreportはPhase 1の
+タイミング比較だけで解決するため（char2到着はd2=100.8msで実際に閾値
+100msをわずかに超えていた）このガード欠如が直接の原因ではなかったが、
+n-gramのPhase 2がchar2側を選ぶ場合には同種の問題が残りうる。修正候補は
+`TimingJudge::is_simultaneous`（既存、n-gramによる閾値動的調整込み）を
+char2+thumb確定前に一度通すことで、新しいチューニング定数は不要と見込む。
+
+**残課題2（潜在的到達性、未検証だが理論上到達可能）**: `commit_char1_output`
+のKeyUp補完が必要になる条件は、`is_layout_key`（レイアウトのいずれかの面
+——Normal/LeftThumb/RightThumb/Shift/LeftThumbShift/RightThumbShift——に
+定義があればlayout key扱い）の判定上、char1のNormal面が未定義で
+LeftThumb面にのみ定義があるキーを、RightThumbと組んだ場合に成立する
+（`resolve_pending_char_as_single`がNormal面未定義で`KeyAction::Key(vk)`
+にフォールバックする）。既存テスト
+`key_up_with_os_modifier_held_still_emits_keyup_for_injected_vk`
+（`src/engine/tests.rs`）が同型のレイアウト構成（Normal面未定義キー）を
+既に作っており、理論上の話ではなく到達可能な構成であることが確認できる。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`
+（`compute_prefer_char1`/`commit_char1_output`/`reduce_char_thumb_and_continue`/
+`step_pending_char_thumb_3key`）、`src/engine/timing.rs`
+（`three_key_pairing`、変更なし・既存ロジックが実際に動くようになった）、
+`src/engine/tests.rs`・`tests/scenarios.rs`（回帰テスト）。
+
+**修正履歴:**
+- 本修正コミット。GitHub issue #140。Opus敵対的レビュー（3ラウンド）で収束。
+  回帰テスト3件追加（`src/engine/tests.rs`にPhase1/Phase2各1件、
+  `tests/scenarios.rs`に`Engine::on_input`経由・実レイアウト使用1件）。

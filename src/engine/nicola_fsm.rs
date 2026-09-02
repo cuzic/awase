@@ -1589,27 +1589,70 @@ impl NicolaFsm {
 
     /// 3 鍵仲裁で char1+thumb を優先するかを判定する（純粋関数）。
     ///
-    /// char1 が既に離されていれば無条件で false（タイミング比較不要）。
-    /// それ以外は `TimingJudge::three_key_pairing` でタイミング + n-gram を総合判定。
+    /// `TimingJudge::three_key_pairing`（d1/d2 タイミング比較 + bigram/trigram
+    /// n-gram タイブレーク）で判定する。char1 の release 有無は見ない。
     ///
-    /// **`char_thumb_chord_confirmed`（char2 が来ない2鍵ケース）との意図的な非対称**:
-    /// char2 が実際に到着するこの3鍵ケースでは「char1 が既に離されている」という
-    /// 条件で無条件に char1 を諦める（char2+thumb を優先）が、`char_thumb_chord_confirmed`
-    /// は同じ条件で重なりマージン＋n-gramタイブレークにより同時打鍵へ復帰する余地を残す。
-    /// これは意図的: 3鍵ケースには char2 という直接的な追加証拠（実際の候補文字とその
-    /// タイミング）があるため粗い既定で十分だが、2鍵ケース（char2 が来ないまま
-    /// KeyUp/タイムアウトで確定）にはその追加証拠が無いため、重なり時間という
-    /// 唯一の物理的シグナルをより慎重に扱う。挙動を揃える変更は別途検討する。
+    /// **旧実装との違い（issue #140 / BUG-105）**: 以前はここに
+    /// `if char1_released_at.is_some() { return false; }` という早期return が
+    /// あり、char1 が既に離されていれば `three_key_pairing` を一切呼ばず無条件で
+    /// char2 側を優先していた（PR #85, `b1e7474e`。「char2 到着が char1 を諦める
+    /// 直接証拠になる」という理由付けで、`char_thumb_chord_confirmed`（2鍵ケース）
+    /// が重なりマージン＋n-gramタイブレークで復帰の余地を残すのとは意図的に
+    /// 非対称にしていた）。
+    ///
+    /// この早期returnは、report `01M1GDQVBET5DBX3MY4BRGQFW1`（2026-09-02、
+    /// 「しょうにん」と入力したかったが「しいゔにん」になった）で誤りと判明し
+    /// 撤回した。実測: d1(char1→thumb)=11.7ms、d2(thumb→char2)=100.8ms、
+    /// overlap(char1とthumbの物理的重なり)=94.85ms。d1 が極めて短く同時打鍵の
+    /// 意図が明白であるにも関わらず、char1 がchar2到着前に離されていたという
+    /// だけで無条件に char2 側（'ゔ'）が採用され「い」+「ゔ」という誤出力に
+    /// なっていた。app.log の `[engine-input] vk=0x41 KeyDown ...
+    /// state=PendingCharThumb(...,released_at=Some(...))` → `send_keys:
+    /// actions=[Char('い'), Char('ゔ')]` という実ログが、この early return 経由
+    /// の3鍵パス（`on_input`、タイムアウト経由ではない）が実際に踏まれたことを
+    /// 直接裏付けている。
+    ///
+    /// なお、PR #85 のこの判断が実運用で検証されたことは一度も無かった
+    /// （`docs/adr/112-keyup-lifecycle-fsm-delivery.md` BUG-101/決定2 land
+    /// （2026-08-31）以前は `char1_released_at` が KeyUp配送のリグレッションで
+    /// 恒久的に `None` だったため、この早期return自体が実運用で到達不能
+    /// だった）。したがって今回の変更は「実データで検証済みだった設計判断を
+    /// 覆す」のではなく「一度も検証されないまま眠っていた分岐を、実データで
+    /// 初めて検証した」結果である。
+    ///
+    /// **`char_thumb_chord_confirmed`（2鍵ケース）とはもともと非対称ではない**:
+    /// 本番既定 `min_overlap_margin_percent = 0`（ADR-112決定1、決定3で恒久固定
+    /// 確定済み）の下では、2鍵ケースの `overlap_only_verdict` も
+    /// `char1_released_at` の値に関わらず常に `Some(true)` を即returnし
+    /// n-gramタイブレークには到達しない。つまり修正前の時点で
+    /// `char1_released_at` がペアリングの結論を左右する箇所はこの早期return
+    /// 1箇所だけであり、削除はむしろ KeyUp/タイムアウト/flush の他3経路との
+    /// 挙動整合を回復する変更である。
+    ///
+    /// **棄却した代案（overlap ベースの早期return）**: 「char1 との物理的重なり
+    /// （`thumb.timestamp`〜`char1_released_at`）が不足するときだけ char2 を
+    /// 優先する」という代案（2鍵ケースの `overlap_only_verdict` 相当を3鍵にも
+    /// 適用）も検討したが、`min_overlap_margin_percent = 0` が恒久固定のため
+    /// 現状は「常に重なり十分」に退化し blanket 削除と完全に同一の挙動になる
+    /// （no-op）。有効化には3鍵専用の重なりマージンの実測データが要り、
+    /// `.claude/rules/tuning-constants.md` の実測義務に抵触する。
+    ///
+    /// **既知の限界（残る誤判定クラス）**: `three_key_pairing` は
+    /// `char1_ts`/`thumb_ts`/`char2_ts` という3つの keydown タイムスタンプのみを
+    /// 見る純粋関数で、release時刻の概念を構造的に持たない。したがって
+    /// 「char1 との重なりは乏しいが d1(down-to-down) はたまたま短い」ケース
+    /// （例: char1↓0ms→thumb↓12ms→char1↑20ms（重なり8ms）→char2↓62ms）を
+    /// 原理的に区別できず、誤って char1+thumb を優先しうる。上記の理由により
+    /// 今回はこれを許容する。将来この限界が実機で顕在化した場合、安易に
+    /// 「char1解放済みなら char2 優先」を再導入しないこと——それは今回撤回した
+    /// 早期returnの再発であり、`docs/experiments.md` エントリ01
+    /// （IME OFFキー選択が5日で6回反転した事例）と同じ轍を踏む。
     fn compute_prefer_char1(
         &self,
         pending: &PendingKey,
         thumb: &PendingThumbData,
         ev: &ClassifiedEvent,
-        char1_released_at: Option<Timestamp>,
     ) -> bool {
-        if char1_released_at.is_some() {
-            return false;
-        }
         let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
         let judge = self.timing_judge();
         let char1_thumb_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
@@ -1627,18 +1670,61 @@ impl NicolaFsm {
         ) == timing::ThreeKeyResult::PairWithChar1
     }
 
+    /// char1側の解決結果を確定させる: history へ即座に反映し、char1 が既に
+    /// 物理的に離されている場合は失われた KeyUp を補う。
+    ///
+    /// **なぜ必要か（issue #140 / BUG-105）**: char1 の物理 KeyUp は
+    /// `handle_key_up_pending_char_thumb` で既に Consume 済みで OS に届かない
+    /// （`char1_released_at` をSomeにするためだけの内部フラグ立て）。char1側の
+    /// 出力が `KeyAction::Key(vk)`（レイアウトの一部の面にしか定義が無い
+    /// キー、`is_layout_key`参照）の場合、対応する `KeyUp` を明示的に積まないと
+    /// OS 側で押しっぱなし扱い（stuck key）になる。`flush_pending`・
+    /// `handle_key_up_pending_char_thumb`・`timeout_pending_char_thumb` の
+    /// 3経路は元々この補完を行っていたが、3鍵仲裁の全分岐（本関数の
+    /// 呼び出し元）には無かった穴で、早期return削除により到達頻度が
+    /// 「稀」から「高速打鍵の常態」へ上がるため揃えて塞ぐ。
+    ///
+    /// **呼び出し側で `update_history` を重複させないこと**: この関数は
+    /// `resolved.output` を即座に `update_history` へ渡して確定させる
+    /// （`ParseAction::Reduce`/`ReduceAndContinue` の `record` フィールド経由で
+    /// `ShiftReduceParser::parse` が `decide()` の戻り値から `on_reduce` 越しに
+    /// 遅延適用する通常の経路は使わない——`append_key_up_for` が依存する
+    /// `output_history.remove_by_scan` は、対象エントリが `update_history` 済み
+    /// でなければ何も見つけられないため、`record` 経由の遅延適用のままでは
+    /// この関数内で KeyUp を積めない）。呼び出し元は戻り値の `record` に
+    /// 必ず `OutputUpdate::None` を使うこと。
+    fn commit_char1_output(
+        &mut self,
+        resolved: ResolvedAction,
+        char1_scan: ScanCode,
+        char1_released_at: Option<Timestamp>,
+    ) -> SmallVec<[KeyAction; 2]> {
+        self.update_history(resolved.output);
+        let mut actions = resolved.actions;
+        if char1_released_at.is_some() {
+            self.append_key_up_for(&mut actions, char1_scan);
+        }
+        actions
+    }
+
     /// char1+thumb を同時打鍵として確定し、`remaining` を再処理する `ReduceAndContinue` を返す。
     fn reduce_char_thumb_and_continue(
         &mut self,
         pending: PendingKey,
         thumb_face: Option<Face>,
         remaining: ClassifiedEvent,
+        char1_released_at: Option<Timestamp>,
     ) -> ParseAction {
         let resolved = match thumb_face {
             Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
             None => self.resolve_pending_char_as_single(&pending),
         };
-        resolved.into_reduce_and_continue(remaining)
+        let actions = self.commit_char1_output(resolved, pending.scan_code, char1_released_at);
+        ParseAction::ReduceAndContinue {
+            actions,
+            record: OutputUpdate::None,
+            remaining,
+        }
     }
 
     /// `PendingCharThumb` 状態で新しいキーが到着した場合の 3 鍵仲裁処理
@@ -1658,34 +1744,47 @@ impl NicolaFsm {
 
         // 新しい親指キーが来た → char1+thumb を同時打鍵として確定し、新しい親指を再処理
         if ev.key_class.is_thumb() {
-            return self.reduce_char_thumb_and_continue(pending, thumb_face, *ev);
+            return self.reduce_char_thumb_and_continue(
+                pending,
+                thumb_face,
+                *ev,
+                char1_released_at,
+            );
         }
 
         // char2 が来た → 3 鍵仲裁
-        if self.compute_prefer_char1(&pending, &thumb, ev, char1_released_at) {
+        if self.compute_prefer_char1(&pending, &thumb, ev) {
             // char1+thumb = 同時打鍵、char2 は再処理
-            return self.reduce_char_thumb_and_continue(pending, thumb_face, *ev);
+            return self.reduce_char_thumb_and_continue(
+                pending,
+                thumb_face,
+                *ev,
+                char1_released_at,
+            );
         }
 
         // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
         let char1_resolved = self.resolve_pending_char_as_single(&pending);
+        let mut actions =
+            self.commit_char1_output(char1_resolved, pending.scan_code, char1_released_at);
         let char2_thumb_face = self.resolve_thumb_face(thumb.side(), ev.pos);
         if let Some(face) = char2_thumb_face {
             if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
-                // char1 の履歴を先に更新してから char2+thumb を確定
-                self.update_history(char1_resolved.output);
                 self.consume_thumb(face);
-                let mut all_actions = char1_resolved.actions;
-                all_actions.push(action.clone());
+                actions.push(action.clone());
                 return ParseAction::Reduce {
-                    actions: all_actions,
+                    actions,
                     record: OutputUpdate::record(ev.scan_code, &action, kana),
                     timer: TimerIntent::CancelAll,
                 };
             }
         }
         // 親指面に char2 の定義がない → char1 単独確定、char2 を再処理
-        char1_resolved.into_reduce_and_continue(*ev)
+        ParseAction::ReduceAndContinue {
+            actions,
+            record: OutputUpdate::None,
+            remaining: *ev,
+        }
     }
 }
 
