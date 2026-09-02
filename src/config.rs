@@ -606,6 +606,12 @@ pub struct AppOverrides {
     /// （`docs/known-bugs.md` BUG-78）。空にすれば無効化できる。
     #[serde(default = "default_disable_apps")]
     pub disable_apps: Vec<String>,
+    /// 入力中継ツールのプロセス名（大文字小文字無視、`.exe` 有無どちらでも一致）。
+    ///
+    /// マッチしたフォーカス先では awase は IME actuation を所有せず、文字変換自体は
+    /// 通常どおり継続する。
+    #[serde(default = "default_input_relay_apps")]
+    pub input_relay_apps: Vec<String>,
 }
 
 impl Default for AppOverrides {
@@ -616,6 +622,7 @@ impl Default for AppOverrides {
             force_vk: Vec::new(),
             force_tsf: Vec::new(),
             disable_apps: default_disable_apps(),
+            input_relay_apps: default_input_relay_apps(),
         }
     }
 }
@@ -623,6 +630,11 @@ impl Default for AppOverrides {
 /// `AppOverrides::disable_apps` の既定値。
 fn default_disable_apps() -> Vec<String> {
     vec!["mstsc.exe".to_string()]
+}
+
+/// `AppOverrides::input_relay_apps` の既定値。
+const fn default_input_relay_apps() -> Vec<String> {
+    Vec::new()
 }
 
 /// Ctrl+key バイパス直後に次キーを NICOLA スキップするルール
@@ -1074,6 +1086,7 @@ impl AppConfig {
         Self::check_override_list(&overrides.force_vk, "force_vk", w);
         Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
         Self::check_disable_apps_list(&overrides.disable_apps, w);
+        Self::check_input_relay_apps_list(&overrides.input_relay_apps, w);
     }
 
     /// `disable_apps` の空文字列エントリを警告する。
@@ -1083,6 +1096,13 @@ impl AppConfig {
     fn check_disable_apps_list(list: &[String], w: &mut Vec<String>) {
         if list.iter().any(String::is_empty) {
             w.push("app_overrides.disable_apps に空のエントリがあります".to_string());
+        }
+    }
+
+    /// `input_relay_apps` の空文字列エントリを警告する。
+    fn check_input_relay_apps_list(list: &[String], w: &mut Vec<String>) {
+        if list.iter().any(String::is_empty) {
+            w.push("app_overrides.input_relay_apps に空のエントリがあります".to_string());
         }
     }
 
@@ -1496,6 +1516,63 @@ disable_apps = ["mstsc.exe", "SomeGame.exe"]
         assert_eq!(
             config.app_overrides.disable_apps,
             vec!["mstsc.exe", "SomeGame.exe"]
+        );
+    }
+
+    #[test]
+    fn test_input_relay_apps_defaults_to_empty() {
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.app_overrides.input_relay_apps.is_empty());
+    }
+
+    #[test]
+    fn test_input_relay_apps_can_be_added_explicitly() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+input_relay_apps = ["powertoys.mousewithoutbordershelper.exe"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.app_overrides.input_relay_apps,
+            vec!["powertoys.mousewithoutbordershelper.exe"]
+        );
+    }
+
+    #[test]
+    fn test_input_relay_apps_custom_list_parse() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+input_relay_apps = ["relay.exe", "SomeRelayHelper.exe"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.app_overrides.input_relay_apps,
+            vec!["relay.exe", "SomeRelayHelper.exe"]
+        );
+    }
+
+    #[test]
+    fn test_input_relay_apps_empty_entry_warns() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+input_relay_apps = ["relay.exe", ""]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("app_overrides.input_relay_apps")),
+            "expected a warning about input_relay_apps, got: {warnings:?}"
         );
     }
 

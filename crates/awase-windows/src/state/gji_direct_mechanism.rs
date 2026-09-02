@@ -201,7 +201,7 @@ impl Drop for ActuationReceipt {
 /// 純粋関数。**同期義務の導出式はここ 1 箇所である**（INV-42）。
 ///
 /// `WindowsPlatform::on_ime_applied`（`platform.rs`）の実装をそのまま反映する:
-/// `outcome == UnsafeToToggle` の場合のみ同期しない（送信していないため）。**それ以外は
+/// `outcome == UnsafeToToggle` / `NotOwned` の場合のみ同期しない（送信していないため）。**それ以外は
 /// `open` の値だけを見て無条件に同期する** — どの戦略（ImmCross / GjiDirect /
 /// MsImeDirect / KanjiToggle）で actuate したか、ひいてはどの `ImeProfileDriver` を
 /// 経由したかは一切問わない。
@@ -224,7 +224,10 @@ impl Drop for ActuationReceipt {
 /// 推測値でゲートして落とすリスクのほうが一方的に大きい（原則 P20）。
 #[must_use]
 pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option<GjiFsmSync> {
-    if outcome == ImeOpenOutcome::UnsafeToToggle {
+    if matches!(
+        outcome,
+        ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+    ) {
         return None;
     }
     Some(GjiFsmSync::for_open(open))
@@ -234,12 +237,13 @@ pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option
 mod tests {
     use super::*;
 
-    const ALL_OUTCOMES: [ImeOpenOutcome; 5] = [
+    const ALL_OUTCOMES: [ImeOpenOutcome; 6] = [
         ImeOpenOutcome::Applied,
         ImeOpenOutcome::FallbackSent,
         ImeOpenOutcome::AlreadyMatched,
         ImeOpenOutcome::Failed,
         ImeOpenOutcome::UnsafeToToggle,
+        ImeOpenOutcome::NotOwned,
     ];
 
     /// 同期呼び出しを記録するフェイク sink。
@@ -262,6 +266,14 @@ mod tests {
         );
         assert_eq!(
             legacy_gji_sync_obligation(false, ImeOpenOutcome::UnsafeToToggle),
+            None
+        );
+        assert_eq!(
+            legacy_gji_sync_obligation(true, ImeOpenOutcome::NotOwned),
+            None
+        );
+        assert_eq!(
+            legacy_gji_sync_obligation(false, ImeOpenOutcome::NotOwned),
             None
         );
         for outcome in [

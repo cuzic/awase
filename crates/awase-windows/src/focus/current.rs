@@ -43,8 +43,8 @@ impl CurrentFocus {
     }
 
     /// フォーカス情報をアトミックに更新する。
-    /// `app_profile` は `class_name` から導出してキャッシュする。
-    pub fn update(&mut self, pid: u32, class_name: String, hwnd: usize) {
+    /// `app_profile` は `class_name` と `process_name` から導出してキャッシュする。
+    pub fn update(&mut self, pid: u32, class_name: String, hwnd: usize, relay_apps: &[String]) {
         self.hwnd = hwnd;
         #[cfg(windows)]
         {
@@ -57,7 +57,8 @@ impl CurrentFocus {
             self.process_name.clear();
             self.root_hwnd = hwnd;
         }
-        self.app_profile = AppImeProfile::from_class_name(&class_name);
+        self.app_profile =
+            AppImeProfile::from_class_and_process(&class_name, &self.process_name, relay_apps);
         self.pid = pid;
         self.class_name = class_name;
     }

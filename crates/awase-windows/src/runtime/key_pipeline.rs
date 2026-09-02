@@ -2552,6 +2552,14 @@ mod tests {
     }
 
     #[test]
+    fn focus_probe_open_status_is_not_observable_for_input_relay() {
+        assert!(matches!(
+            FocusProbeOpenStatus::classify(Some(true), AppImeProfile::InputRelay),
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::InputRelay)
+        ));
+    }
+
+    #[test]
     fn focus_probe_open_status_is_read_for_standard() {
         let status = FocusProbeOpenStatus::classify(Some(false), AppImeProfile::Standard);
         let FocusProbeOpenStatus::Read(value) = status else {

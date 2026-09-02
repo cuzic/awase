@@ -73,7 +73,13 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
 /// `profile == AppImeProfile::TsfNative` ではなく必ずこの関数を使うこと。
 #[must_use]
 pub fn is_effectively_tsf_native(profile: AppImeProfile, class_name: &str) -> bool {
-    profile == AppImeProfile::TsfNative || is_tsf_native_window(class_name)
+    match profile {
+        AppImeProfile::Standard | AppImeProfile::Imm32Unavailable => {
+            is_tsf_native_window(class_name)
+        }
+        AppImeProfile::InputRelay => false,
+        AppImeProfile::TsfNative => true,
+    }
 }
 
 /// このプロファイルで、awase が実 OS IME ON/OFF 状態を確実に問い合わせられないか。
@@ -84,7 +90,16 @@ pub fn is_effectively_tsf_native(profile: AppImeProfile, class_name: &str) -> bo
 /// （BUG-33/BUG-37 参照）。
 #[must_use]
 pub fn cannot_verify_real_ime_state(profile: AppImeProfile, class_name: &str) -> bool {
-    profile == AppImeProfile::Imm32Unavailable || is_effectively_tsf_native(profile, class_name)
+    match profile {
+        AppImeProfile::Standard => is_effectively_tsf_native(profile, class_name),
+        // InputRelay は is_effectively_tsf_native 経由ではなく独立したアームで
+        // true にする（issue #136 / BUG-90 決定4）——is_effectively_tsf_native
+        // 側を true にすると、その6箇所の本番 consumer（TSF warmup/composition
+        // 再初期化ロジック等）が中継ウィンドウにも誤って走ってしまう。
+        AppImeProfile::Imm32Unavailable | AppImeProfile::TsfNative | AppImeProfile::InputRelay => {
+            true
+        }
+    }
 }
 
 /// BUG-37: 同一プロセス内フォーカス移動（Ctrl+T 新規タブ等）のような、belief を
@@ -126,6 +141,10 @@ pub enum AppImeProfile {
     Imm32Unavailable,
     /// TSF ネイティブ（例: WezTerm/Windows Terminal）。`VK_DBE_HIRAGANA` + TSF probe が必要。
     TsfNative,
+    /// 入力中継ツール（`app_overrides.input_relay_apps` にプロセス名で登録）。
+    /// IME actuation を所有せず、物理モードキーも suppress せず、
+    /// この窓由来の open 観測も belief に取り込まない。
+    InputRelay,
 }
 
 impl AppImeProfile {
@@ -149,13 +168,56 @@ impl AppImeProfile {
         }
     }
 
+    /// クラス名 + プロセス名からプロファイルを決定する（`input_relay_apps`
+    /// マッチを最優先）。
+    #[must_use]
+    pub fn from_class_and_process(
+        class_name: &str,
+        process_name: &str,
+        relay_apps: &[String],
+    ) -> Self {
+        // `matches_disabled_app` は名前どおり `disable_apps` 用の関数だが、
+        // 判定ロジック（大小無視・`.exe` 有無吸収）自体は `disable_apps` に
+        // 固有ではないため、`input_relay_apps` 側でも再利用する（issue #136 /
+        // BUG-90 決定4）。「無効化」ではなく「IME 制御の非所有」という意味は
+        // `InputRelay` variant のドキュメントで表現し、この関数名は変更しない
+        // （新しい照合ロジックを増やさないことを優先）。
+        if crate::state::app_suppression::matches_disabled_app(relay_apps, process_name) {
+            return Self::InputRelay;
+        }
+        Self::from_class_name(class_name)
+    }
+
+    /// `relay_apps` が空なら `process_name` の解決自体を省略する
+    /// （`get_process_name` は Win32 プロセスハンドルを開くため高コスト。
+    /// `ime.rs::read_ime_state_fast` と `runtime/mod.rs::on_window_focus_event`
+    /// にあった同一の分岐ロジックの重複を解消（`/code-review` 指摘）。
+    /// `process_name` を遅延クロージャで受けるのは、2箇所の呼び出し元で
+    /// pid の取得済み状況が異なる（片方は既に pid 取得済み、片方は hwnd から
+    /// 遅延取得）ため、呼び出し元に取得方法の選択を残すため。
+    #[must_use]
+    pub fn resolve(
+        class_name: &str,
+        relay_apps: &[String],
+        process_name: impl FnOnce() -> String,
+    ) -> Self {
+        if relay_apps.is_empty() {
+            Self::from_class_name(class_name)
+        } else {
+            Self::from_class_and_process(class_name, &process_name(), relay_apps)
+        }
+    }
+
     /// IMM32 クロスプロセス制御（`ImmSetOpenStatus` / `WM_IME_CONTROL`）が使えるか。
     ///
     /// `false` のとき `WindowsPlatform::set_ime_open` や `ImmCrossProcessStrategy`
     /// は IMM32 クロスプロセス呼び出しをスキップする。
     #[must_use]
     pub const fn can_use_imm32_cross_process(&self) -> bool {
-        matches!(self, Self::Standard)
+        match self {
+            Self::Standard => true,
+            Self::Imm32Unavailable | Self::TsfNative | Self::InputRelay => false,
+        }
     }
 
     /// VK_KANJI トグルキーで IME を制御するプロファイルか。
@@ -165,7 +227,10 @@ impl AppImeProfile {
     /// このフラグは主に `send_engine_state_ime_key` での mode-key 送信スキップ判定に使用する。
     #[must_use]
     pub const fn uses_kanji_toggle(&self) -> bool {
-        matches!(self, Self::Imm32Unavailable)
+        match self {
+            Self::Imm32Unavailable => true,
+            Self::Standard | Self::TsfNative | Self::InputRelay => false,
+        }
     }
 
     /// 物理 IME キー（VK_KANJI / 半角/全角 等）を OS に届けてよいか。
@@ -175,7 +240,10 @@ impl AppImeProfile {
     /// `KeyEventPipeline::stage_execute` は `Decision::Consume` に変換する。
     #[must_use]
     pub const fn should_pass_physical_key(&self) -> bool {
-        !matches!(self, Self::Imm32Unavailable)
+        match self {
+            Self::Standard | Self::TsfNative | Self::InputRelay => true,
+            Self::Imm32Unavailable => false,
+        }
     }
 
     /// IMM32 で IME open 状態（`IMC_GETOPENSTATUS`）をクロスプロセス取得できるか。
@@ -184,7 +252,10 @@ impl AppImeProfile {
     /// `Imm32Unavailable` / `TsfNative` ともに IMM32 の状態値は信頼できない。
     #[must_use]
     pub const fn can_read_imm32_open_status(&self) -> bool {
-        matches!(self, Self::Standard)
+        match self {
+            Self::Standard => true,
+            Self::Imm32Unavailable | Self::TsfNative | Self::InputRelay => false,
+        }
     }
 }
 
@@ -196,7 +267,23 @@ impl AppImeProfile {
 impl From<AppImeProfile> for crate::state::ime_event::ImePolicyProfile {
     fn from(profile: AppImeProfile) -> Self {
         match profile {
-            AppImeProfile::Standard => Self::ImmCross,
+            // InputRelay は Standard と同じ ImmCross に写す（issue #136 / BUG-90
+            // 決定4）。actuation の合流点3箇所（ime_controller.rs::
+            // ImeController::apply / runtime/open_chain.rs::
+            // run_open_chain_async / runtime/open_chain.rs::fallback_write）
+            // の gate が先に効いて ImeOpenOutcome::NotOwned を返すため、
+            // caps() が持つこの写像先の chain は実行時には使われない
+            // （Plain/Unknown と同じ「到達しない安全既定」パターン）。
+            //
+            // 注: 当初は runtime/executor.rs::dispatch_ime_set_open の1点だけで
+            // 足りると判断したが、runtime/key_pipeline.rs の shadow-toggle 経路
+            // （物理 IME キー押下 → IME OFF/ON、issue #136 の当該操作そのもの）
+            // がそこを通らずバイパスし、物理キーの Allow 素通しと awase 自身の
+            // actuate が同時に起きる二重 actuation（BUG-46型）を招いた
+            // （コードレビューで発見・修正、docs/known-bugs.md BUG-90 追補・
+            // ADR-119 参照）。gate をこの3箇所より減らす変更を検討する前に、
+            // 必ずそちらを読むこと。
+            AppImeProfile::Standard | AppImeProfile::InputRelay => Self::ImmCross,
             AppImeProfile::Imm32Unavailable => Self::Imm32Unavailable,
             AppImeProfile::TsfNative => Self::TsfNative,
         }
@@ -362,6 +449,7 @@ mod tests {
             (AppImeProfile::Standard, true, false, true, true),
             (AppImeProfile::Imm32Unavailable, false, true, false, false),
             (AppImeProfile::TsfNative, false, false, true, false),
+            (AppImeProfile::InputRelay, false, false, true, false),
         ];
         for (profile, cross_process, kanji_toggle, pass_physical, read_open_status) in table {
             assert_eq!(
@@ -403,6 +491,27 @@ mod tests {
             ImePolicyProfile::from(AppImeProfile::TsfNative),
             ImePolicyProfile::TsfNative
         );
+        assert_eq!(
+            ImePolicyProfile::from(AppImeProfile::InputRelay),
+            ImePolicyProfile::ImmCross
+        );
+    }
+
+    #[test]
+    fn input_relay_predicates_are_explicit() {
+        let profile = AppImeProfile::InputRelay;
+        assert!(!profile.can_use_imm32_cross_process());
+        assert!(!profile.uses_kanji_toggle());
+        assert!(profile.should_pass_physical_key());
+        assert!(!profile.can_read_imm32_open_status());
+        assert!(!is_effectively_tsf_native(
+            profile,
+            "Windows.UI.Input.InputSite.WindowClass"
+        ));
+        assert!(cannot_verify_real_ime_state(profile, "Notepad"));
+        assert!(should_reprime_on_lightweight_focus_sync(
+            profile, "Notepad", true
+        ));
     }
 
     #[test]
@@ -454,16 +563,27 @@ mod tests {
     /// - `cannot_verify`: unavailable か、実質 TSF ネイティブかのいずれか。
     /// - 4つの getter は `profile` のみで決まる真理値表（`app_ime_profile_getters_truth_table`
     ///   と同じ表だが、独立に書き起こす）。
-    fn oracle_for(is_unavailable: bool, is_tsf_native_class: bool) -> OracleResult {
-        let profile = if is_unavailable {
+    fn oracle_for(
+        is_unavailable: bool,
+        is_tsf_native_class: bool,
+        is_input_relay: bool,
+    ) -> OracleResult {
+        let profile = if is_input_relay {
+            AppImeProfile::InputRelay
+        } else if is_unavailable {
             AppImeProfile::Imm32Unavailable
         } else if is_tsf_native_class {
             AppImeProfile::TsfNative
         } else {
             AppImeProfile::Standard
         };
-        let effectively_tsf_native = is_tsf_native_class;
-        let cannot_verify = is_unavailable || effectively_tsf_native;
+        let effectively_tsf_native = !is_input_relay && is_tsf_native_class;
+        let cannot_verify = is_input_relay || is_unavailable || effectively_tsf_native;
+        // TsfNative と InputRelay はこの4述語の期待値がたまたま一致するが、
+        // このオラクルは profile ごとの行を明示的に書き下す真理値表として
+        // 意図的に保つ（clippy::match_same_arms の統合提案には従わない —
+        // 統合すると「どの profile がどの行か」が読みにくくなる）。
+        #[allow(clippy::match_same_arms)]
         let (
             can_use_imm32_cross_process,
             uses_kanji_toggle,
@@ -473,6 +593,7 @@ mod tests {
             AppImeProfile::Standard => (true, false, true, true),
             AppImeProfile::Imm32Unavailable => (false, true, false, false),
             AppImeProfile::TsfNative => (false, false, true, false),
+            AppImeProfile::InputRelay => (false, false, true, false),
         };
         OracleResult {
             profile,
@@ -496,8 +617,8 @@ mod tests {
         can_read_imm32_open_status: bool,
     }
 
-    fn actual_for(class_name: &str) -> OracleResult {
-        let profile = AppImeProfile::from_class_name(class_name);
+    fn actual_for(class_name: &str, process_name: &str, relay_apps: &[String]) -> OracleResult {
+        let profile = AppImeProfile::from_class_and_process(class_name, process_name, relay_apps);
         OracleResult {
             profile,
             effectively_tsf_native: is_effectively_tsf_native(profile, class_name),
@@ -516,15 +637,31 @@ mod tests {
     /// - どちらも非該当: `Notepad`
     #[test]
     fn exhaustive_cluster_matches_independent_oracle() {
-        let buckets: [(&str, bool, bool); 4] = [
-            ("CASCADIA_HOSTING_WINDOW_CLASS", true, true),
-            ("Chrome_WidgetWin_1", true, false),
-            ("org.wezfurlong.wezterm", false, true),
-            ("Notepad", false, false),
+        let relay_apps = vec!["relay.exe".to_string()];
+        let buckets: [(&str, &str, bool, bool, bool); 5] = [
+            (
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "app.exe",
+                true,
+                true,
+                false,
+            ),
+            ("Chrome_WidgetWin_1", "app.exe", true, false, false),
+            ("org.wezfurlong.wezterm", "app.exe", false, true, false),
+            ("Notepad", "app.exe", false, false, false),
+            (
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "relay.exe",
+                true,
+                true,
+                true,
+            ),
         ];
 
         let mut mismatches = Vec::new();
-        for (class_name, is_unavailable, is_tsf_native_class) in buckets {
+        for (class_name, process_name, is_unavailable, is_tsf_native_class, is_input_relay) in
+            buckets
+        {
             // バケット分類そのものが実装の集合と一致しているかも確認する
             // （でなければ以降の突き合わせが無意味になる）。
             assert_eq!(
@@ -538,8 +675,8 @@ mod tests {
                 "{class_name}: is_tsf_native_window 該当の想定違い"
             );
 
-            let expected = oracle_for(is_unavailable, is_tsf_native_class);
-            let actual = actual_for(class_name);
+            let expected = oracle_for(is_unavailable, is_tsf_native_class, is_input_relay);
+            let actual = actual_for(class_name, process_name, &relay_apps);
             if actual != expected {
                 mismatches.push(format!(
                     "{class_name}: actual={actual:?} expected(oracle)={expected:?}"
@@ -568,6 +705,41 @@ mod tests {
             mismatches.len(),
             mismatches.join("\n")
         );
+    }
+
+    #[test]
+    fn from_class_and_process_prioritizes_input_relay_over_class_profile() {
+        let relay_apps = vec!["powertoys.mousewithoutbordershelper.exe".to_string()];
+        assert_eq!(
+            AppImeProfile::from_class_and_process(
+                "Chrome_WidgetWin_1",
+                "PowerToys.MouseWithoutBordersHelper.exe",
+                &relay_apps,
+            ),
+            AppImeProfile::InputRelay
+        );
+    }
+
+    #[test]
+    fn from_class_and_process_matches_from_class_name_when_relay_unmatched() {
+        let relay_apps = vec!["relay.exe".to_string()];
+        for class_name in [
+            "CASCADIA_HOSTING_WINDOW_CLASS",
+            "Chrome_WidgetWin_1",
+            "org.wezfurlong.wezterm",
+            "Notepad",
+        ] {
+            assert_eq!(
+                AppImeProfile::from_class_and_process(class_name, "app.exe", &relay_apps),
+                AppImeProfile::from_class_name(class_name),
+                "{class_name}"
+            );
+            assert_eq!(
+                AppImeProfile::from_class_and_process(class_name, "app.exe", &[]),
+                AppImeProfile::from_class_name(class_name),
+                "{class_name} empty relay list"
+            );
+        }
     }
 
     /// `IMM32_UNAVAILABLE_CLASSES` の全メンバーが優先順位1（unavailable最優先）通りに

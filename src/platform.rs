@@ -166,6 +166,10 @@ pub enum ImeOpenOutcome {
     /// shadow が stale な状態でトグルすると意図と逆方向に反転する恐れがある。
     /// このケースでは apply は行われていないため applied_snapshot / state は更新しない。
     UnsafeToToggle,
+    /// このフォーカス先は awase が IME actuation を所有しないため、
+    /// 機構を一切試行しなかった（issue #136 / BUG-90、`AppImeProfile::InputRelay`）。
+    /// `UnsafeToToggle` と同じく「送っていない」ので applied / belief を書かない。
+    NotOwned,
 }
 
 /// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-098 決定1-b、BUG-69）。

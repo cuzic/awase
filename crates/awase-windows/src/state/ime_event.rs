@@ -252,6 +252,8 @@ pub enum ApplyError {
     CrossProcessFailed,
     /// トグル操作が unsafe（shadow 信頼度不足・focus 直後等）で送信しなかった
     UnsafeToToggle,
+    /// フォーカス先が入力中継ツールで、awase が IME actuation を所有しないため送らなかった
+    NotOwned,
     /// その他
     Other,
 }
@@ -560,6 +562,11 @@ impl ImeEvent {
                 target,
                 generation,
                 error: ApplyError::UnsafeToToggle,
+            },
+            ImeOpenOutcome::NotOwned => Self::ImeApplyFailed {
+                target,
+                generation,
+                error: ApplyError::NotOwned,
             },
         }
     }

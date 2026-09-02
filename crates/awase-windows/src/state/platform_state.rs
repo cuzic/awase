@@ -846,7 +846,10 @@ impl ImeStateHub {
         use awase::platform::ImeOpenOutcome;
 
         let Some(generation) = generation else {
-            if outcome == ImeOpenOutcome::UnsafeToToggle {
+            if matches!(
+                outcome,
+                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+            ) {
                 return ImeApplyAcceptance::NotSent;
             }
 
@@ -855,7 +858,9 @@ impl ImeStateHub {
                 | ImeOpenOutcome::FallbackSent
                 | ImeOpenOutcome::AlreadyMatched => open,
                 ImeOpenOutcome::Failed => !open,
-                ImeOpenOutcome::UnsafeToToggle => unreachable!("上で早期 return 済み"),
+                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => {
+                    unreachable!("上で早期 return 済み")
+                }
             };
             // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
             // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
@@ -1703,6 +1708,33 @@ mod tests {
         assert!(
             ps.ime.model().applied.applied_open().is_none(),
             "何を実際に適用したか不明なため applied はミラーリングしない"
+        );
+    }
+
+    #[test]
+    fn not_owned_releases_pending_without_mirroring_applied() {
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: ApplyGeneration::new(5).unwrap(),
+                ctrl_held: false,
+            },
+            TickMs(0),
+        );
+
+        let accepted = ps.ime.record_ime_apply_result(
+            true,
+            awase::platform::ImeOpenOutcome::NotOwned,
+            Some(ApplyGeneration::new(5).unwrap()),
+            100,
+        );
+
+        assert_eq!(accepted, ImeApplyAcceptance::NotSent);
+        assert!(ps.ime.model().pending_generation().is_none());
+        assert!(
+            ps.ime.model().applied.applied_open().is_none(),
+            "InputRelay では送っていないため applied はミラーリングしない"
         );
     }
 

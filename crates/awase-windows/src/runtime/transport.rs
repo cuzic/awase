@@ -168,6 +168,23 @@ impl PhysicalKeyDisposition {
         active_ime_kind: ActiveImeKind,
         dbe_mode_key_policy: DbeModeKeyPolicy,
     ) -> Self {
+        // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
+        // （issue #136 / BUG-90 決定4）。**F2分岐より先に判定する**
+        // （/code-review指摘で発見・修正）: F2分岐のSuppressは「awase自身の
+        // warmup F2送信との衝突防止」が目的だが、`is_tsf_mode`/
+        // `f2_warmup_owned`はグローバルな状態でありAppImeProfileとは独立に
+        // 決まるため、理論上InputRelay windowにフォーカス中でも両方が
+        // 真になりうる（MWB自身の中継ウィンドウがTSFネイティブ判定される
+        // ことは通常無いが、将来別の中継ツールで起こりうる一般的な穴）。
+        // InputRelay windowではawaseがそもそもこの窓向けのactuationを
+        // 行わない（condition (a)）ため、F2分岐が守ろうとしている「awase
+        // 自身のwarmup F2との衝突」という保護対象自体が存在しない。ここを
+        // F2分岐より前に置くことで、この組み合わせでも物理かなキーが
+        // Suppressされない（condition (b)）ことを構造的に保証する。
+        if profile == AppImeProfile::InputRelay {
+            return Self::Allow;
+        }
+
         // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
             return if is_tsf_mode && f2_warmup_owned {
@@ -175,6 +192,33 @@ impl PhysicalKeyDisposition {
             } else {
                 Self::Allow
             };
+        }
+
+        // BUG-136 (issue #136): 他プロセスの SendInput (LLKHF_INJECTED) 由来のイベントは、
+        // key_pipeline.rs::kp_stage_shadow_ime_toggle (BUG-14) が shadow_toggled への
+        // 昇格を既に禁止しているため、awase 自身が actuate することはない。
+        // 「解釈しない入力は消費しない」— awase が actuate しないのに物理キーだけ
+        // Suppress すると、OS 側にも awase 側にも誰も IME を切り替えない
+        // 「二重の空振り」になる（PowerToys Mouse Without Borders 等の正規リレー
+        // ツールでリモート側の英数/かなキーが完全に無反応になる、ADR-119 参照）。
+        //
+        // この early return は下の ImmCross アーム（`profile.can_use_imm32_
+        // cross_process()` → 無条件 Suppress）よりも先に来るため、ImmCross
+        // アプリでも injected イベントは貫通する。ImmCross の無条件 Suppress は
+        // 「spurious 連鎖の構造的遮断」（`feedback_immcross_owns_kanji`
+        // の設計原則 — ImmCross アプリには物理 IME キーを見せない）という別種の
+        // 保護だが、injected イベントは shadow_toggled を発火させないため awase
+        // 自身が actuate することはなく、spurious 連鎖の前提（awase の自
+        // actuation と物理キー通過の競合）がそもそも成立しない。したがって
+        // ここを貫通させても `feedback_immcross_owns_kanji` が防ごうとした
+        // リスクは再現しない（ADR-119 決定1参照）。
+        if event.injected {
+            debug_assert!(
+                !shadow_toggled,
+                "injected イベントで shadow_toggled が立つのは設計違反 \
+                 (BUG-14 ガード kp_stage_shadow_ime_toggle が必ず false にする)"
+            );
+            return Self::Allow;
         }
 
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
@@ -296,6 +340,11 @@ mod plan_tests {
             vk_code: crate::vk::VK_DBE_HIRAGANA,
             ..kanji_event(event_type, None)
         }
+    }
+
+    fn injected(mut event: RawKeyEvent) -> RawKeyEvent {
+        event.injected = true;
+        event
     }
 
     // F2/非KANJI テストでは ime_actuation_owned 判定に到達しないため、
@@ -542,6 +591,148 @@ mod plan_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn injected_dbe_mode_keydown_is_allowed_when_shadow_not_toggled() {
+        let ev = injected(dbe_mode_event(
+            crate::vk::VK_DBE_ALPHANUMERIC,
+            ShadowImeAction::TurnOff,
+            KeyEventType::KeyDown,
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Allow
+        );
+    }
+
+    #[test]
+    fn physical_dbe_mode_keydown_stays_suppressed() {
+        let ev = dbe_mode_event(
+            crate::vk::VK_DBE_ALPHANUMERIC,
+            ShadowImeAction::TurnOff,
+            KeyEventType::KeyDown,
+        );
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    #[test]
+    fn injected_kanji_keyup_is_allowed() {
+        let ev = injected(kanji_event(
+            KeyEventType::KeyUp,
+            Some(ShadowImeAction::TurnOn),
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Allow
+        );
+    }
+
+    #[test]
+    fn injected_f2_stays_suppressed_when_tsf_warmup_owns_f2() {
+        let ev = injected(f2_event(KeyEventType::KeyDown));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                true,
+                true,
+                ANY_IME_KIND,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    #[test]
+    fn injected_kanji_under_immcross_profile_is_allowed() {
+        let ev = injected(kanji_event(
+            KeyEventType::KeyDown,
+            Some(ShadowImeAction::TurnOn),
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::Standard,
+                false,
+                false,
+                false,
+                ActiveImeKind::MicrosoftIme,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Allow
+        );
+    }
+
+    #[test]
+    fn input_relay_kanji_down_and_up_are_allowed() {
+        for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+            let ev = kanji_event(event_type, Some(ShadowImeAction::TurnOn));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(
+                    &ev,
+                    AppImeProfile::InputRelay,
+                    true,
+                    false,
+                    false,
+                    ActiveImeKind::GoogleJapaneseInput,
+                    DbeModeKeyPolicy::Suppress,
+                ),
+                PhysicalKeyDisposition::Allow,
+                "{event_type:?}"
+            );
+        }
+    }
+
+    /// /code-review指摘: F2(VK_DBE_HIRAGANA)分岐は`is_tsf_mode`/`f2_warmup_owned`という
+    /// AppImeProfileとは独立なグローバル状態で判定するため、理論上InputRelay window
+    /// にフォーカス中でも両方が真になりうる。InputRelayの判定をF2分岐より前に置く
+    /// ことで、この組み合わせでも物理かなキーがSuppressされない(condition (b))ことを
+    /// 固定する（この2条件が偶然両方trueでもAllowになることが本テストの主眼）。
+    #[test]
+    fn input_relay_f2_is_allowed_even_when_tsf_warmup_flags_are_true() {
+        let ev = f2_event(KeyEventType::KeyDown);
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::InputRelay,
+                false,
+                true, // is_tsf_mode
+                true, // f2_warmup_owned
+                ActiveImeKind::GoogleJapaneseInput,
+                DbeModeKeyPolicy::Suppress,
+            ),
+            PhysicalKeyDisposition::Allow,
+            "InputRelay では is_tsf_mode/f2_warmup_owned が真でも F2 を Suppress してはならない"
+        );
     }
 
     /// ADR-091 §D3.6: `dbe_mode_key_policy = Passthrough`（隠し設定、上級者向け）

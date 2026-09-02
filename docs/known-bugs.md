@@ -11412,7 +11412,7 @@ composition が事前にキャンセルされないため）。
 
 ---
 
-## BUG-90: PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、**クローズ**: disable_apps 登録で回避可能、既知の制約として記録）
+## BUG-90: PowerToys「マウスなしでコンピューターを制御」(Mouse Without Borders) 使用中に物理「英数」キーが効かない（「かな」は効く、**追補で根本原因を特定・修正**、ADR-119参照）
 
 **症状（タスクトレイ不具合報告 2件、2026-08-26、同一ユーザーから19分差で連投）:**
 
@@ -11529,6 +11529,92 @@ BUG-78で`mstsc.exe`に導入済み）をGUIから編集できるようにした
 `mstsc.exe`のままで変更していない）。あくまでオプトインの回避策であり、
 根本原因の特定・修正は引き続き未対応。`docs/bug-reports-triage.md` に
 report_id 2件を記録。
+
+---
+
+### 追補（2026-09、GitHub Issue #136、根本原因を特定・修正、ADR-119）
+
+GitHub Issue #136「境界線のないマウス経由でIME ON/OFFが効かない」として同一ユーザーから
+再度報告された。これがBUG-90と同一インシデントかどうかを確認するため、Cloudflare R2から
+上記report_id 2件の実journal/ログを再取得して精査した結果、**当初の仮説（「ImmCross
+宛先違い」で`set_ime_open_cross_process`が間違ったウィンドウを叩く）は不正確だった**と
+判明した。実際には**独立した2つのバグの合成**であり、両方とも根本原因を特定し修正した。
+
+**リモート側（report2）**: `PhysicalKeyDisposition::plan`（`runtime/transport.rs`）の
+`VK_DBE_*` Suppress判定が`event.injected`を一切見ておらず、2026-07-06のBUG-14修正が
+明言した不変条件「OSへの配送は維持し、実IME追従は観測経路に委ねる」を、2026-08-05の
+BUG-52対応が後から破っていた（リグレッション）。R2のjournalで
+`VK_DBE_ALPHANUMERIC injected=true scan=0x3A`が複数回到達していることを直接確認した。
+
+**ローカル側（report1）**: 実ログの決定的な1行:
+```
+[shadow-toggle] intent 昇格: vk=0xF0 scan=0x3A action=TurnOff kind=PhysicalImeKey injected=false false→false
+```
+`current`（トグル前のeffective_open()）と`new_val`（TurnOff後の目標値）が共に`false`——
+awaseの信念は既に一致しており、apply-ime自体が一切呼ばれない（no-op）。直前10秒の
+ログには`observed=false≠desired=true`のdrift correctionがGeneration 0〜5まで繰り返されて
+おり、MWB中継ウィンドウのIME観測自体が実在の意味を持たない（中継ウィンドウは実際の
+テキスト入力面ではないため）ノイズであり、これがbeliefを汚染していたことが確定した。
+
+**独立した2回目の実データ確認（`docs/bug-reports-triage.md`、report_id
+`01M1EFYKJZRMACMP0S8QJRA6T1`(リモート側)/`01M1EG3JYGPQ3RZD24GFP429B4`(ローカル側)、
+2026-09-01、別セッションによる並行トリアージ）**: リモート側report2の
+`KeyInput.injected`は**102件中102件が`true`**（MWBは配送する全キー入力を例外なく
+SendInputとして注入している）。`[shadow-toggle] injected IMEキー vk=0xF0/0xF2
+はユーザー意図に昇格させない (BUG-14)`ログが多数出力されていることを直接確認、
+リモート側の根本原因（決定1が対象とするS2/BUG-14ガード経路）を独立に裏付けた。
+ローカル側report（**この時点でユーザーは既にBUG-90の回避策
+[`app_overrides.disable_apps`にMWB中継プロセスを登録]を適用済み**）では、
+中継プロセスへフォーカスがある5区間(計約6分)でKeyInputが0件(正しく無効化)、
+それ以外(sakura.exe操作時)の英数/かなキーは`injected=false`かつ`PhysicalImeKey`
+として正常成功しており、**ローカル側単体では症状が再現しなくなっている**ことを確認
+——disable_apps回避策適用中のユーザーには決定1のみで#136の体感症状が解消される
+見込みが高いことを示唆する（決定4はdisable_apps未適用のユーザー、および
+disable_apps適用中も失われる「中継ウィンドウでの親指シフト入力」を回復するために
+引き続き必要）。
+
+**修正（決定1+決定4、詳細は[ADR-119](adr/119-injected-and-relay-key-consumption-invariant.md)
+参照）:**
+- 決定1: `transport.rs::plan`にinjectedイベントをAllowにする分岐を追加（F2分岐は対象外）
+- 決定4: `AppImeProfile::InputRelay`を新設し、`app_overrides.input_relay_apps`
+  （既定は空配列・オプトイン、プロセス名で識別）にマッチしたウィンドウでは
+  IME actuationを所有せず、物理モードキーもsuppressせず、このウィンドウ由来の
+  open観測もbeliefに取り込まない。親指シフトの文字変換自体はこれまでどおり動作する
+  （**disable_appsとの違い**: disable_appsはawaseを丸ごと無効化するため文字変換も
+  止まるが、`input_relay_apps`はIME制御の非所有のみで文字変換は継続する。BUG-90調査
+  当時にdisable_apps既定追加がNO-GO判定された2つの理由——(1)動いているワークフローを
+  壊す(2)report2ではdisable_appsが発火せず効果ゼロ——はどちらも`input_relay_apps`
+  には該当しない）
+
+**実装過程で発見・修正した自己回帰**: 決定4のIME actuation非所有（condition (a)）を
+`runtime/executor.rs::dispatch_ime_set_open`の1点だけでgateする初期実装は、実際の
+actuation呼び出し経路が他に4つ（`runtime/key_pipeline.rs`のshadow-toggle経路2つ、
+`runtime/mod.rs`のforce-ON/bootstrap経路2つ）あることを見落としており、`key_pipeline.rs`
+の物理IMEキー押下経路（issue #136で報告された操作そのもの）がこのgateをバイパスして
+BUG-46型の二重actuation（物理キーのAllow素通しとawase自身のactuateが同時に発生）という
+新規リグレッションを生んでいた。実装完了後のOpus敵対的コードレビューでこの欠陥を発見し、
+gateを実際の合流点3箇所（`ImeController::apply`/`run_open_chain_async`/`fallback_write`）
+に置き直して修正した。
+
+**既知の限界（2件）:**
+1. かな(0xF2) × リモート側TsfNative × `f2_warmup_owned=true`の組み合わせでは、
+   決定1がF2分岐を意図的に対象外としているため`VK_DBE_HIRAGANA`が依然Suppressされる
+   （F2のSuppressは「awase自身のwarmup F2とのダブルF2防止」という別種の保護であり、
+   バーター原則の対象外）。R2の実データにこの組み合わせのケースが含まれておらず、
+   実害の有無自体が未確認。
+2. `state/ime_model.rs::resolve_open_at`の`BaseDecision::DesiredFallback`枝——
+   中継ウィンドウ滞在中に書かれた`desired_open`は`FocusChanged`による`last_intent`
+   クリアで通常は戻り先の観測に上書きされるが、戻り先に観測が一件も無い場合に限り
+   表面化しうる。決定4固有の欠陥ではなく既存の枝の性質。
+
+**未検証（実機、Windows実機必須のためこのLinuxサンドボックスでは未実施）:**
+- フックチェーン順序（リンク(a)）: `hook.rs`によりawaseのLLフックは常に`LRESULT(1)`を
+  返すため、決定1/決定4の`Allow`は「engineスレッドがSendInputでreinjectする」ことを
+  意味し、MWBのフックがawaseより前段か後段かで実際に中継されるかが変わりうる。
+- MWBの実際のプロセス名（複数プロセス構成のため`powertoys.mousewithoutbordershelper.exe`
+  が常に正しいか未確認、`input_relay_apps`の既定値を空配列にした理由）。
+
+これらが未検証のため、issue #136には報告者への実機検証依頼として回答する。
 
 ---
 

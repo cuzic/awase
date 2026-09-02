@@ -6,6 +6,41 @@
 //! `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
 
 use awase::config::{AppOverrideEntry, AppOverrides};
+use std::sync::{OnceLock, RwLock};
+
+/// `app_overrides.input_relay_apps`（issue #136 / BUG-90 決定4）の
+/// `ime.rs::read_ime_state_fast` 専用スナップショット。
+///
+/// **新しい呼び出し元を足さないこと。** `Runtime`/`FocusTracker` に到達できる
+/// 呼び出し元は `FocusTracker::input_relay_apps()`（正規ルート、ロック不要）を
+/// 使う（`runtime/mod.rs::on_window_focus_event` 参照）。このプロセスグローバル
+/// が存在するのは `read_ime_state_fast` が `self` を持たない `pub unsafe fn`
+/// であるという1点のためだけ。
+///
+/// `RwLock` を使う理由: このリポジトリは単一スレッド・メッセージループ駆動で
+/// ロック不要が原則（CLAUDE.md「Concurrency model」）だが、
+/// `read_ime_state_fast` は `read_ime_state_fast_async` 経由で
+/// `offload_unsafe`（ワーカースレッド）からも直接（`open_chain.rs`、
+/// メインスレッドの `spawn_local` 内）からも呼ばれる。config リロード時の
+/// 書き込み（`ForceOverrides::new`）はメインスレッドから、読み取りは両方の
+/// スレッドから起こりうるため、`RwLock` はこの1箇所に限り正当。
+static INPUT_RELAY_APPS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
+
+fn input_relay_apps_cell() -> &'static RwLock<Vec<String>> {
+    INPUT_RELAY_APPS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// `RwLock` が poison していても中身は捨てない（`/code-review` 指摘: 以前は
+/// `unwrap_or_default()` で空配列にフォールバックしていたが、これだと poison
+/// 後は `input_relay_apps` 設定が永続的に無視される＝ issue #136 の再発防止が
+/// 静かに無効化される。`clone_from` は単純な `Vec<String>` 代入で複合的な
+/// 不変条件を持たないため、poison 直前の中身をそのまま使い続けて安全）。
+pub(crate) fn input_relay_apps_snapshot() -> Vec<String> {
+    input_relay_apps_cell()
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
 
 // ── IMM capability cache ──
 
@@ -85,8 +120,20 @@ pub struct ForceOverrides {
 }
 
 impl ForceOverrides {
+    /// **副作用**: `input_relay_apps` をプロセスグローバル
+    /// （`INPUT_RELAY_APPS`）へ複製する（`ime.rs::read_ime_state_fast` が
+    /// `self` を持たないため、issue #136 / BUG-90 決定4）。設定リロードで
+    /// 複数回呼ばれた場合は最後の呼び出しが勝つ。
     #[must_use]
-    pub const fn new(overrides: AppOverrides) -> Self {
+    pub fn new(overrides: AppOverrides) -> Self {
+        // poison していても書き込み自体は諦めない（`input_relay_apps_snapshot`
+        // の doc コメント参照。`if let Ok` で握り潰すと config リロード後も
+        // 古い/空の値が読まれ続けるリグレッションになる）。
+        let mut apps = input_relay_apps_cell()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        apps.clone_from(&overrides.input_relay_apps);
+        drop(apps);
         Self { inner: overrides }
     }
 
@@ -124,6 +171,11 @@ impl ForceOverrides {
     #[must_use]
     pub(crate) fn is_app_disabled(&self, process_name: &str) -> bool {
         crate::state::app_suppression::matches_disabled_app(&self.inner.disable_apps, process_name)
+    }
+
+    #[must_use]
+    pub(crate) fn input_relay_apps(&self) -> &[String] {
+        &self.inner.input_relay_apps
     }
 
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。

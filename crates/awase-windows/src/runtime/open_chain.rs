@@ -143,6 +143,21 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
+    // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
+    // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
+    // 一切参照しないため、`run_open_chain_async` 冒頭の gate が `with_app` の
+    // 再入失敗で fail-open した場合、この関数まで到達すると以前は無条件で
+    // ImmCross write を実行していた。ここで fresh な view を取り直して
+    // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
+    // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
+    let is_input_relay = crate::with_app(|app| {
+        app.shadow_ime_control_view().focus.profile
+            == crate::focus::class_names::AppImeProfile::InputRelay
+    })
+    .unwrap_or(false);
+    if is_input_relay {
+        return ImeOpenOutcome::NotOwned;
+    }
     // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
     // 報告環境（Standard プロファイル×MS-IME）の主経路。`.await` に入る前の
     // live 読み取りであることが必須——完了後（`on_ime_apply_complete`）まで待つと
@@ -282,6 +297,14 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
+        // issue #136 / BUG-90 決定4: view はこの関数が完了時点で作り直す
+        // （モジュール doc 参照）ため、起案時点では InputRelay でなかった
+        // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。
+        // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
+        // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
+        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+            return ImeOpenOutcome::NotOwned;
+        }
         if crate::ime_controller::mechanism_is_applicable(mechanism, &view) {
             crate::ime_controller::apply_mechanism(mechanism, open, &view)
         } else {
@@ -308,6 +331,28 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
 // のみ呼ばれるため実害はない（`ActuationTarget::verify_still_current` と同じ制約）。
 #[allow(clippy::future_not_send)]
 pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp) -> ImeOpenOutcome {
+    // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
+    // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_
+    // applicable`）でこの経路に入らないよう InputRelay は排除されるのが通常
+    // だが、ここでも念のため fresh な view で確認する（呼び出し元判断と
+    // await 開始の間で focus が変わる race への防御）。`fallback_write` も
+    // 同様の再検出を行う（そちらは各機構ごとに view を作り直すため独立に必要）。
+    // `with_app` が `None`（再入時）なら fail-open（gate 無効化）を選ぶ
+    // （`fail-closed` にして `with_app` 再入を `NotOwned` 化すると、InputRelay
+    // と無関係な通常フォーカスでの再入時にも actuation 自体が止まってしまい、
+    // こちらの副作用の方が大きい）。この場合でも `imm_cross_write` /
+    // `fallback_write` がそれぞれ独立に fresh な view で再検出するため
+    // （/code-review指摘で発見・追加、修正前は `AsyncChainWriter::
+    // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
+    // profile を素通りしていた）、最終的に write が実行されることはない。
+    let is_input_relay = crate::with_app(|app| {
+        app.shadow_ime_control_view().focus.profile
+            == crate::focus::class_names::AppImeProfile::InputRelay
+    })
+    .unwrap_or(false);
+    if is_input_relay {
+        return ImeOpenOutcome::NotOwned;
+    }
     // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
     // 発行済み。**shadow モード**なので授権が下りていなくても書き込みは
     // 止めない（止めるのは A-2）。

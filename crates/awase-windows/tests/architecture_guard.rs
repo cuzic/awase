@@ -3177,3 +3177,70 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
         );
     }
 }
+
+// ── issue #136 / BUG-90 決定4: AppImeProfile::InputRelay の配線を固定 ─────────
+
+/// `AppImeProfile::InputRelay`（PowerToys Mouse Without Borders 等の入力中継
+/// ツール向け、issue #136 / BUG-90 決定4）の本番コード中の出現数をファイルごとに
+/// 固定する。
+///
+/// この variant は「唯一の構築箇所」を強制する PanicReset 型の規約ではなく、
+/// 「消費箇所（述語・分岐）が今後の変更で静かに減らないこと」を守るための
+/// スナップショットガード（`.claude/rules/ime-belief-architecture.md` の
+/// 判断基準(c)）。件数が変わった場合、それが意図した変更（新しい消費箇所の追加等）
+/// なら定数を更新すればよい。意図せず減っていた場合は、`can_use_imm32_cross_process`
+/// / `uses_kanji_toggle` / `should_pass_physical_key` / `can_read_imm32_open_status`
+/// の4述語、`is_effectively_tsf_native` / `cannot_verify_real_ime_state` /
+/// `should_reprime_on_lightweight_focus_sync` の3自由関数、`From<AppImeProfile>
+/// for ImePolicyProfile`、`from_class_and_process` のいずれかで `InputRelay` の
+/// 分岐が欠落していないか確認すること（欠落すると condition (b)/(c) が
+/// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
+/// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の
+/// ときしか test module を切り落とせない。`runtime/transport.rs` は
+/// `mod plan_tests` という別名を使っているため、共有ヘルパーのままだと
+/// テストコード中の `InputRelay` 出現（回帰テストの引数等）まで「本番コード」
+/// として誤カウントする（レビュー指摘）。ここでは `#[cfg(test)]` の直後に
+/// 続く `mod <任意の識別子> {` を汎用的に検出して切り落とす、より厳密な版を
+/// 本テスト専用に使う。
+fn strip_any_test_module(content: &str) -> &str {
+    const MARKER: &str = "#[cfg(test)]";
+    let mut from = 0;
+    while let Some(rel) = content[from..].find(MARKER) {
+        let idx = from + rel;
+        let rest = content[idx + MARKER.len()..].trim_start();
+        if rest.starts_with("mod ") {
+            return &content[..idx];
+        }
+        from = idx + MARKER.len();
+    }
+    content
+}
+
+#[test]
+fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
+    let expectations: &[(&str, usize)] = &[
+        ("src/focus/class_names.rs", 12),
+        ("src/runtime/transport.rs", 4),
+        ("src/runtime/executor.rs", 1),
+        // `executor.rs` の gate は早期 exit の最適化（重複するが無害）。
+        // condition (a) を実際に担保しているのはこちらの2ファイル
+        // （`ImeController::apply` / `run_open_chain_async` /
+        // `fallback_write` の3箇所、コードレビューで gate 取りこぼしが
+        // 見つかった経緯は ADR-119 参照）。ここが欠けると、今回踏んだのと
+        // 同じクラスの退行（gate の一部消失）を検知できない。
+        ("src/ime_controller.rs", 2),
+        ("src/runtime/open_chain.rs", 7),
+    ];
+    for (path, expected) in expectations {
+        let content = read_crate_file(path);
+        let production = strip_any_test_module(&content);
+        let count = production.matches("InputRelay").count();
+        assert_eq!(
+            count, *expected,
+            "{path} 内で `AppImeProfile::InputRelay`（`InputRelay` を含む識別子）の \
+             本番コードでの出現数が想定({expected})と異なります(実際: {count})。\
+             issue #136 / BUG-90 決定4の配線箇所が増減していないか確認すること。\
+             意図した変更ならこのテストの期待値を更新すること。"
+        );
+    }
+}
