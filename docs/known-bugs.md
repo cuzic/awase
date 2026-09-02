@@ -12580,6 +12580,4 @@ TsfNative 専用かつ ROMAN ビットを信頼しない設計で、Teams の反
 （対処方法）」を出し、ツールチップを「awase - かな入力になっています」へ変更する。
 belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行わない。
 
-**修正履歴:** 未コミット（本セッションの sandbox では `.git/worktrees/.../index.lock`
-作成が read-only file system で失敗）。通常の git 権限でコミット後、この行に
-実装コミットハッシュを追記すること。
+**修正履歴:** `40a2d091`（2026-09-02、`feat/issue-137-teams-kana-lock-detection`）。
