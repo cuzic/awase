@@ -30,11 +30,16 @@ fn input_relay_apps_cell() -> &'static RwLock<Vec<String>> {
     INPUT_RELAY_APPS.get_or_init(|| RwLock::new(Vec::new()))
 }
 
+/// `RwLock` が poison していても中身は捨てない（`/code-review` 指摘: 以前は
+/// `unwrap_or_default()` で空配列にフォールバックしていたが、これだと poison
+/// 後は `input_relay_apps` 設定が永続的に無視される＝ issue #136 の再発防止が
+/// 静かに無効化される。`clone_from` は単純な `Vec<String>` 代入で複合的な
+/// 不変条件を持たないため、poison 直前の中身をそのまま使い続けて安全）。
 pub(crate) fn input_relay_apps_snapshot() -> Vec<String> {
     input_relay_apps_cell()
         .read()
-        .map(|apps| apps.clone())
-        .unwrap_or_default()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 // ── IMM capability cache ──
@@ -121,9 +126,14 @@ impl ForceOverrides {
     /// 複数回呼ばれた場合は最後の呼び出しが勝つ。
     #[must_use]
     pub fn new(overrides: AppOverrides) -> Self {
-        if let Ok(mut apps) = input_relay_apps_cell().write() {
-            apps.clone_from(&overrides.input_relay_apps);
-        }
+        // poison していても書き込み自体は諦めない（`input_relay_apps_snapshot`
+        // の doc コメント参照。`if let Ok` で握り潰すと config リロード後も
+        // 古い/空の値が読まれ続けるリグレッションになる）。
+        let mut apps = input_relay_apps_cell()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        apps.clone_from(&overrides.input_relay_apps);
+        drop(apps);
         Self { inner: overrides }
     }
 

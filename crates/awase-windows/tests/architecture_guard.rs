@@ -3220,7 +3220,7 @@ fn strip_any_test_module(content: &str) -> &str {
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
         ("src/focus/class_names.rs", 12),
-        ("src/runtime/transport.rs", 2),
+        ("src/runtime/transport.rs", 4),
         ("src/runtime/executor.rs", 1),
         // `executor.rs` の gate は早期 exit の最適化（重複するが無害）。
         // condition (a) を実際に担保しているのはこちらの2ファイル

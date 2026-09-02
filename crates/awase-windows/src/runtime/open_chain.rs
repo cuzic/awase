@@ -143,6 +143,21 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
+    // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
+    // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
+    // 一切参照しないため、`run_open_chain_async` 冒頭の gate が `with_app` の
+    // 再入失敗で fail-open した場合、この関数まで到達すると以前は無条件で
+    // ImmCross write を実行していた。ここで fresh な view を取り直して
+    // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
+    // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
+    let is_input_relay = crate::with_app(|app| {
+        app.shadow_ime_control_view().focus.profile
+            == crate::focus::class_names::AppImeProfile::InputRelay
+    })
+    .unwrap_or(false);
+    if is_input_relay {
+        return ImeOpenOutcome::NotOwned;
+    }
     // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
     // 報告環境（Standard プロファイル×MS-IME）の主経路。`.await` に入る前の
     // live 読み取りであることが必須——完了後（`on_ime_apply_complete`）まで待つと
@@ -322,13 +337,14 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     // だが、ここでも念のため fresh な view で確認する（呼び出し元判断と
     // await 開始の間で focus が変わる race への防御）。`fallback_write` も
     // 同様の再検出を行う（そちらは各機構ごとに view を作り直すため独立に必要）。
-    // `with_app` が `None`（再入時）なら fail-open（gate 無効化）を選ぶ。
-    // この場合でも `ImmCross` の write 自体は素通りしうるが、続く
-    // `is_applicable(ImmCross)` が `can_use_imm32_cross_process(InputRelay)
-    // == false` で弾き、フォールバック機構は `fallback_write` が独立に
-    // 再チェックする（`fail-closed` にして `with_app` 再入を `NotOwned` 化
-    // すると、InputRelay と無関係な通常フォーカスでの再入時にも actuation
-    // 自体が止まってしまい、こちらの副作用の方が大きい）。
+    // `with_app` が `None`（再入時）なら fail-open（gate 無効化）を選ぶ
+    // （`fail-closed` にして `with_app` 再入を `NotOwned` 化すると、InputRelay
+    // と無関係な通常フォーカスでの再入時にも actuation 自体が止まってしまい、
+    // こちらの副作用の方が大きい）。この場合でも `imm_cross_write` /
+    // `fallback_write` がそれぞれ独立に fresh な view で再検出するため
+    // （/code-review指摘で発見・追加、修正前は `AsyncChainWriter::
+    // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
+    // profile を素通りしていた）、最終的に write が実行されることはない。
     let is_input_relay = crate::with_app(|app| {
         app.shadow_ime_control_view().focus.profile
             == crate::focus::class_names::AppImeProfile::InputRelay

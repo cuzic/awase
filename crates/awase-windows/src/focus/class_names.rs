@@ -188,6 +188,26 @@ impl AppImeProfile {
         Self::from_class_name(class_name)
     }
 
+    /// `relay_apps` が空なら `process_name` の解決自体を省略する
+    /// （`get_process_name` は Win32 プロセスハンドルを開くため高コスト。
+    /// `ime.rs::read_ime_state_fast` と `runtime/mod.rs::on_window_focus_event`
+    /// にあった同一の分岐ロジックの重複を解消（`/code-review` 指摘）。
+    /// `process_name` を遅延クロージャで受けるのは、2箇所の呼び出し元で
+    /// pid の取得済み状況が異なる（片方は既に pid 取得済み、片方は hwnd から
+    /// 遅延取得）ため、呼び出し元に取得方法の選択を残すため。
+    #[must_use]
+    pub fn resolve(
+        class_name: &str,
+        relay_apps: &[String],
+        process_name: impl FnOnce() -> String,
+    ) -> Self {
+        if relay_apps.is_empty() {
+            Self::from_class_name(class_name)
+        } else {
+            Self::from_class_and_process(class_name, &process_name(), relay_apps)
+        }
+    }
+
     /// IMM32 クロスプロセス制御（`ImmSetOpenStatus` / `WM_IME_CONTROL`）が使えるか。
     ///
     /// `false` のとき `WindowsPlatform::set_ime_open` や `ImmCrossProcessStrategy`

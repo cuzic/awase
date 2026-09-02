@@ -1417,19 +1417,15 @@ impl Runtime {
                 // issue #136 / BUG-90 決定4: `self.platform.focus`（`FocusTracker`）
                 // から正規ルートで取得する（プロセスグローバルは
                 // `ime.rs::read_ime_state_fast`（`self` を持たない）専用）。
-                // 既定値は空配列（オプトイン）のため、空なら `get_process_name`
-                // （Win32 ハンドルを開くコストがかかる）を呼ばずに済ませる。
+                // `AppImeProfile::resolve` が relay_apps 空の場合に
+                // `get_process_name`（Win32 ハンドルを開くコストがかかる）の
+                // 呼び出し自体を省略する（`ime.rs::read_ime_state_fast` と
+                // 共通化、`/code-review` 指摘）。
                 let relay_apps = self.platform.focus.input_relay_apps();
-                let profile = if relay_apps.is_empty() {
-                    crate::focus::classify::AppImeProfile::from_class_name(&class_name)
-                } else {
-                    let process_name = crate::focus::classify::get_process_name(pid);
-                    crate::focus::classify::AppImeProfile::from_class_and_process(
-                        &class_name,
-                        &process_name,
-                        relay_apps,
-                    )
-                };
+                let profile =
+                    crate::focus::classify::AppImeProfile::resolve(&class_name, relay_apps, || {
+                        crate::focus::classify::get_process_name(pid)
+                    });
                 if crate::focus::class_names::should_reprime_on_lightweight_focus_sync(
                     profile,
                     &class_name,
