@@ -245,9 +245,14 @@ k=1 の窓（連続 2 打鍵）が親指なしである確率は概ね 0.55² �
        pub thumb_watch_window_abandoned_count: u64,
        pub followup_elapsed_ms_histogram: [u64; 7],  // 項目4（バケット定義は上記）
        /// 後続1かな確定を待つ間に次のPhase2決定へ上書きされ、計測未完了の
-       /// まま失われた回数（実装レビューで追記、ヒストグラム総和が
-       /// `phase2_decisions_total` を下回る理由の一部を説明する）。
+       /// まま失われた回数（実装レビューで追記）。
        pub followup_overwritten_count: u64,
+       /// タイムアウト/flush等の不正確なnow経由で後続1かな確定は起きたが、
+       /// 記録を意図的に見送った回数（実装レビューで追記）。以下の残差が
+       /// ゼロになる: `phase2_reached == followup_elapsed_ms_histogram.sum()
+       /// + followup_overwritten_count + followup_dropped_imprecise_count
+       /// + (計測未完了で残っている分)`。
+       pub followup_dropped_imprecise_count: u64,
        /// 項目7: Phase2決定後の経過msバケットごとのユーザー訂正操作回数（分子）。
        /// 分母（その群で何回決定が起きたか）は1個の数なのでスカラー。
        /// 訂正率(N) = prefix_sum(ヒストグラム, Nまで) / 分母 で、

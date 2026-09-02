@@ -2247,6 +2247,97 @@ fn test_retro_eval_stats_backspace_with_ctrl_modifier_is_not_counted_as_correcti
 }
 
 #[test]
+fn test_retro_eval_stats_backspace_self_heals_after_missed_keyup() {
+    // 所見NB1の回帰ガード: 物理BACKSPACEのKeyUpが取りこぼされても
+    // （例: エンジン非活性化でon_key_upに到達しない）、他キーのKeyDownが
+    // `backspace_down` を自己修復的にクリアするため、次のBACKSPACE押下は
+    // 新規タップとして正しく計上される（`true` のまま永久固着しない）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // BACKSPACE押下（1回目）。KeyUpは意図的に送らない（取りこぼしを模擬——
+    // 実機ではエンジン非活性化中にKeyUpがEngine::on_inputのPhase2で
+    // pass_throughとして捨てられ、on_key_upに一切到達しないケースに相当）。
+    engine.on_event(Ev::down(VK_BACK).at(200_000).build());
+    assert_eq!(
+        engine
+            .retro_eval_stats()
+            .phase2_correction_histogram
+            .iter()
+            .sum::<u64>(),
+        1
+    );
+
+    // 他キーのKeyDownが backspace_down を自己修復的にクリアする。同時に
+    // 次のPhase2決定の1鍵目にもなる。
+    engine.on_event(Ev::down(VK_A).at(210_000).build());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_CONVERT).at(270_000).build());
+    engine.on_event(Ev::down(VK_S).at(320_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 2);
+
+    // KeyUp取りこぼし後でも、新規タップとして正しく計上される
+    // （`backspace_down` が固着していれば、ここは加算されないはず）。
+    engine.on_event(Ev::down(VK_BACK).at(400_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        2,
+        "KeyUp取りこぼし後も、他キーのKeyDownによる自己修復で新規タップとして計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_auto_repeat_does_not_credit_self_inflicted_baseline() {
+    // 所見NN1対応: 既存の `..._backspace_auto_repeat_counted_once` は
+    // S3のスロットクリアだけでgreenになってしまい、S4のオートリピート
+    // ガード自体を隔離できていなかった（`backspace_down` を丸ごと削除
+    // してもそちらのテストは通る）。BACKSPACE押下時に保留中の文字キーが
+    // あると、`handle_bypass` 内の `flush_pending` がその出力を新しい
+    // Baseline決定として計上する——このBS自身が作り出したBaseline決定に、
+    // オートリピートの2発目が誤って計上されないことを確認する。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+
+    // 保留中の文字キーを作っておく。
+    engine.on_event(Ev::down(VK_A).at(0).build());
+
+    // 1回目のBACKSPACE: 保留中のAがflush_pending経由でBaseline決定として
+    // 計上される。
+    engine.on_event(Ev::down(VK_BACK).at(50_000).build());
+    assert_eq!(
+        engine.retro_eval_stats().baseline_decisions_total,
+        1,
+        "保留中のAがBaseline決定として計上されるはず"
+    );
+
+    // KeyUpを挟まず2回目のBACKSPACE（オートリピートを模擬）。
+    engine.on_event(Ev::down(VK_BACK).at(80_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.baseline_correction_histogram.iter().sum::<u64>(),
+        0,
+        "オートリピートの2発目が、自分自身が作ったBaseline決定に誤って計上されてはならない"
+    );
+}
+
+#[test]
 fn test_retro_eval_stats_backspace_auto_repeat_counted_once() {
     // 所見S4対応の回帰ガード: OSオートリピートによる物理BACKSPACEの連続
     // KeyDown再送（KeyUpを挟まない）は、押下1回につき1回だけ計上される。

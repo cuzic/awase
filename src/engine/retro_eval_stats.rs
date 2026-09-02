@@ -66,9 +66,16 @@ pub struct RetroEvalStats {
     pub followup_elapsed_ms_histogram: [u64; 7],
     // 項目4 (nice-to-have所見N1対応): 後続1かな確定を待っている間に次の
     // Phase2決定が来て上書きされ、計測が完了しないまま失われた回数。
-    // `followup_elapsed_ms_histogram.sum()` と `phase2_reached` の差の一部を
-    // 説明する（差の残りは B2 の imprecise 経路による意図的な欠測分）。
     pub followup_overwritten_count: u64,
+    // 項目4 (nice-to-have所見NN2対応): update_history_imprecise 経由
+    // （タイムアウト/flush等、正確な発生時刻が無い経路）で「後続1かな確定」
+    // 自体は起きたが、所見B2対応によりヒストグラムへの記録を意図的に
+    // 見送った回数。以下の残差がゼロになることを保証する:
+    // `phase2_reached == followup_elapsed_ms_histogram.sum()
+    //                  + followup_overwritten_count
+    //                  + followup_dropped_imprecise_count
+    //                  + (計測未完了で残っている分)`
+    pub followup_dropped_imprecise_count: u64,
 
     // 項目7: 3群 x (分母スカラー + 訂正発生時の経過msヒストグラム)
     // 分母はphase2_reached/phase1_reachedを再利用せず独立カウンタにする

@@ -642,6 +642,11 @@ impl NicolaFsm {
         // 有意なコンテキスト断絶点でのみリセットする。
         self.engine_off_extra_solo_counter.reset();
         self.engine_off_extra_key_suppressed = None;
+        // ADR-120 決定0a 項目7(a) (所見NB1対応、最低ラインの保険): 主たる
+        // 復帰経路は `on_key_down` の自己修復（他キーのKeyDownでクリア）だが、
+        // エンジン無効化という単一の有意なコンテキスト断絶点でも念のため
+        // クリアしておく。
+        self.backspace_down = false;
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
         // ここでのリセットは不要。
         log::info!(
@@ -1177,6 +1182,29 @@ impl NicolaFsm {
 
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
         self.update_timing(event);
+
+        // ADR-120 決定0a 項目7(a) (所見NB1対応): 物理BACKSPACE以外のKeyDownが
+        // 来たら `backspace_down` を自己修復的にクリアする。エンジンが
+        // 非活性化（IME OFF・非日本語IMEアプリへのフォーカス移動等）した
+        // 際、物理BACKSPACEのKeyUpが `Engine::on_input` Phase 2 で
+        // `Decision::pass_through()` として捨てられ `on_key_up` に一切
+        // 到達しないことがあり、`on_key_up` 側のクリアだけに頼ると
+        // `backspace_down` が `true` のまま永久に固着し、以後の項目7(a)集計が
+        // 無言で全滅する（2026-08-26 の `engine_off_extra_key` ラッチ固着と
+        // 同型のバグ）。OSオートリピートは「最後に押されたキー」だけを
+        // 再送するため、他キーのKeyDownはBACKSPACEが既に離されたことの
+        // 十分な証拠になり、新しいタイミング定数も不要
+        // （`.claude/rules/tuning-constants.md` に抵触しない）。
+        //
+        // **`flush_pending` の汎用リセットには入れないこと**: `handle_bypass`
+        // はBACKSPACE自身の処理中に（保留キーがあれば）`flush_pending` を
+        // 呼ぶため、セットした同じ呼び出し内でクリアされてしまい
+        // オートリピート抑止が丸ごと無効化される（`toggle_enabled` の
+        // `:636-642` が記録する2026-08-26 report1と同型の罠）。
+        if !self.backspace_vk.is_some_and(|vk| event.vk_code == vk) {
+            self.backspace_down = false;
+        }
+
         self.observe_thumb_watch_window(event);
 
         // Bypass check: modifiers, IME control, OS shortcuts.
@@ -1641,6 +1669,9 @@ impl NicolaFsm {
                     } else {
                         // 所見B2: 不正確な now では記録しない。計測は破棄する
                         // （欠測として扱う——誤って elapsed≈0 に丸め込まない）。
+                        // 所見NN2: 欠測の発生自体は数えておく（残差ゼロで
+                        // phase2_reached と突き合わせられるようにする）。
+                        self.retro_eval_stats.followup_dropped_imprecise_count += 1;
                     }
                     // own_decision_output は None のまま（既に take 済み）
                 } else {
@@ -2175,8 +2206,7 @@ impl NicolaFsm {
             char1_released_at,
             ev.timestamp,
         );
-        if let Some((action, kana)) = char2_face_lookup {
-            let face = char2_thumb_face.expect("char2_face_lookup implies char2_thumb_face");
+        if let (Some(face), Some((action, kana))) = (char2_thumb_face, char2_face_lookup) {
             self.consume_thumb(face);
             actions.push(action.clone());
             return ParseAction::Reduce {
