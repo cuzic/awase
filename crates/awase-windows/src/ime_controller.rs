@@ -503,6 +503,15 @@ impl ImeController {
     /// 機構が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の
     /// `SendMessageTimeout` タイムアウト）、次の適用可能な機構へフォールスルーする。
     pub(crate) fn apply(order: ActuationOrder, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        // issue #136 / BUG-90 決定4: この窓は awase が IME actuation を所有しない
+        // （InputRelay）。ここが同期経路（`runtime/key_pipeline.rs`/`runtime/mod.rs`
+        // の apply_ime_open_with_view 経由も含む）の唯一の合流点であり、
+        // `runtime/executor.rs::dispatch_ime_set_open` の早期 gate をバイパスする
+        // 経路（`key_pipeline.rs:1065`/`mod.rs:897` 等）を含めてここで確実に止める。
+        // ADR-118 参照（gate をここ1点に集約できなかった経緯）。
+        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+            return ImeOpenOutcome::NotOwned;
+        }
         // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
         // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
         // 書き込みは止めず `Authorization::LegacyUnwarranted { would_have_blocked }`
@@ -687,6 +696,59 @@ mod tests {
             control: ControlLog { shadow_on: false },
             belief_input_mode: awase::engine::InputModeState::Unknown,
         }
+    }
+
+    /// issue #136 / BUG-90 決定4: `ImeController::apply`（同期経路の唯一の
+    /// 合流点）が `InputRelay` を確実に `NotOwned` で止めることを固定する。
+    ///
+    /// この経路は `runtime/key_pipeline.rs`（物理 IME キー押下 → shadow toggle
+    /// → IME OFF/ON、issue #136 で報告された操作そのもの）と `runtime/mod.rs`
+    /// の force-ON 経路がどちらも通る唯一の合流点であり、ここが InputRelay を
+    /// 見落とすと、物理キーが `transport.rs::plan` で `Allow`（素通し）される
+    /// のと同時に awase 自身も actuate してしまう二重 actuation（BUG-46型）が
+    /// 発生する（コードレビューで発見、修正済み）。
+    #[test]
+    fn apply_returns_not_owned_for_input_relay_without_attempting_any_mechanism() {
+        use crate::state::actuation_chain::ActuationOrder;
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::event_origin::{EventOrigin, EventSource, Generation};
+        use crate::state::force_guard::ForceGuardSet;
+        use crate::state::ime_event::{HwndId, ImePolicyProfile};
+        use crate::state::intent_store::IntentStore;
+        use crate::state::observation_store::ObservationStore;
+        use crate::state::open_warrant::WarrantContext;
+        use std::time::Instant;
+
+        let intent_store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let guards = ForceGuardSet::default();
+        // ImmCross を要求しても実際には使われない（gate が先に効くため）。
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
+        let ctx = WarrantContext {
+            intent_store: &intent_store,
+            obs: &obs,
+            guards: &guards,
+            policy: &policy,
+            desired_open: false,
+            is_japanese_ime: true,
+            now: Instant::now(),
+            now_ms: crate::state::TickMs(0),
+        };
+        let origin = EventOrigin::new(EventSource::Physical, Generation::new(1));
+        let order = ActuationOrder::issue(false, HwndId(0x1234), &ctx, origin);
+
+        let view = view_for(
+            AppImeProfile::InputRelay,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        let outcome = ImeController::apply(order, &view);
+
+        assert_eq!(
+            outcome,
+            ImeOpenOutcome::NotOwned,
+            "InputRelay では ImeController::apply がどの機構も試行せず \
+             NotOwned を即返さなければならない（issue #136 / BUG-90 決定4）"
+        );
     }
 
     /// **Phase C の挙動不変性の核**（ADR-089 §7「新設するもの — 全数テスト」）。

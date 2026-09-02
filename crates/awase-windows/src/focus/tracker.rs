@@ -77,6 +77,16 @@ impl FocusTracker {
         self.current.app_profile
     }
 
+    /// `app_overrides.input_relay_apps`（issue #136 / BUG-90 決定4）。
+    ///
+    /// 正規ルート。`focus/classifier.rs` のプロセスグローバル
+    /// `input_relay_apps_snapshot()` は `self` を持たない `pub unsafe fn`
+    /// （`ime.rs::read_ime_state_fast`）専用であり、`FocusTracker` に到達
+    /// できる呼び出し元はこちらを使うこと。
+    pub(crate) fn input_relay_apps(&self) -> &[String] {
+        self.overrides.input_relay_apps()
+    }
+
     pub(crate) fn injection_hint(&self) -> InjectionHint {
         if !self.current.is_focused() {
             return InjectionHint::Default;
@@ -111,7 +121,8 @@ impl FocusTracker {
     /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出したうえで、
     /// 実測学習（`ImmCapabilityStore`）による降格を適用する。
     pub(crate) fn update(&mut self, pid: u32, class_name: String, hwnd: usize) {
-        self.current.update(pid, class_name, hwnd);
+        self.current
+            .update(pid, class_name, hwnd, self.overrides.input_relay_apps());
         let learned = self.imm_learning.get(&self.current.class_name);
         let overridden = Self::apply_learned_imm_capability(self.current.app_profile, learned);
         if overridden != self.current.app_profile {

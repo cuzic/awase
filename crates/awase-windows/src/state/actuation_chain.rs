@@ -706,12 +706,13 @@ mod tests {
     use crate::state::ime_event::ObservationSource;
     use crate::state::open_warrant::WarrantBasis;
 
-    const ALL_OUTCOMES: [ImeOpenOutcome; 5] = [
+    const ALL_OUTCOMES: [ImeOpenOutcome; 6] = [
         ImeOpenOutcome::Applied,
         ImeOpenOutcome::FallbackSent,
         ImeOpenOutcome::AlreadyMatched,
         ImeOpenOutcome::Failed,
         ImeOpenOutcome::UnsafeToToggle,
+        ImeOpenOutcome::NotOwned,
     ];
 
     fn warrant(target: bool) -> OpenWarrant {

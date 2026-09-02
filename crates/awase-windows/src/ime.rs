@@ -916,7 +916,24 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
 
     // クラス名を一度取得して both チェックで使い回す。
     let class_name = crate::focus::classify::get_class_name_string(hwnd);
-    let profile = crate::focus::classify::AppImeProfile::from_class_name(&class_name);
+    // issue #136 / BUG-90 決定4: `input_relay_apps` の既定値は空配列（オプトイン）
+    // のため、大多数のユーザーは相手にしないリストが空。`get_process_name`
+    // （プロセスの Win32 ハンドルを開くコストがかかる）を毎回無条件に呼ぶと
+    // `read_ime_state_fast`（名前どおり高頻度のホットパス）に無駄なレイテンシが
+    // 乗るので、relay_apps が空なら process_name を引かずに `from_class_name`
+    // へフォールスルーする。
+    let relay_apps = crate::focus::classifier::input_relay_apps_snapshot();
+    let profile = if relay_apps.is_empty() {
+        crate::focus::classify::AppImeProfile::from_class_name(&class_name)
+    } else {
+        let pid = crate::focus::classify::get_window_process_id(hwnd);
+        let process_name = crate::focus::classify::get_process_name(pid);
+        crate::focus::classify::AppImeProfile::from_class_and_process(
+            &class_name,
+            &process_name,
+            &relay_apps,
+        )
+    };
 
     // IMM/TSF いずれの経路でも IMC_GETOPENSTATUS が信頼できないアプリは
     // ime_on=None を返して shadow 状態に委ねる。

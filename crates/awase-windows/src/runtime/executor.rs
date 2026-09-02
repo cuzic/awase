@@ -784,6 +784,9 @@ impl DecisionExecutor {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
+        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+            return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
+        }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
@@ -955,7 +958,10 @@ impl DecisionExecutor {
     /// 完了時の intra-batch 更新は不要（`on_ime_apply_complete` が SSOT を更新する）。
     fn update_intra_batch_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
+        if matches!(
+            outcome,
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+        ) {
             return;
         }
         let effective = match outcome {
@@ -963,7 +969,7 @@ impl DecisionExecutor {
             | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
         };
         self.applied_snapshot = crate::state::AppliedImeState::Confirmed {
             open: effective,

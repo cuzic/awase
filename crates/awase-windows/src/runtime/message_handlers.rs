@@ -661,6 +661,7 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
         ImeOpenOutcome::AlreadyMatched => 2,
         ImeOpenOutcome::Failed => 3,
         ImeOpenOutcome::UnsafeToToggle => 4,
+        ImeOpenOutcome::NotOwned => 5,
     }
 }
 
@@ -672,6 +673,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
         2 => ImeOpenOutcome::AlreadyMatched,
         3 => ImeOpenOutcome::Failed,
         4 => ImeOpenOutcome::UnsafeToToggle,
+        5 => ImeOpenOutcome::NotOwned,
         other => {
             log::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
             ImeOpenOutcome::UnsafeToToggle

@@ -893,6 +893,23 @@ mod tests {
         }
     }
 
+    /// issue #136 / BUG-90 決定4: `AppImeProfile::InputRelay`（PowerToys Mouse
+    /// Without Borders 等の入力中継ツール）は `can_read_imm32_open_status() ==
+    /// false` なので、IMM32 open status を実際に読み取れた場合でも
+    /// `NotObservable` になり `ObservedOpenValue` は構築されない。この窓由来の
+    /// open 観測は belief に一切取り込まれない（条件(c)、タスク3で
+    /// `can_read_imm32_open_status(InputRelay) = false` を固定済み。ここでは
+    /// `FocusProbeOpenStatus::classify` がその述語を正しく consume することを
+    /// 固定する）。
+    #[test]
+    fn input_relay_profile_makes_open_status_not_observable_even_with_a_real_reading() {
+        let status = FocusProbeOpenStatus::classify(Some(true), AppImeProfile::InputRelay);
+        assert!(matches!(
+            status,
+            FocusProbeOpenStatus::NotObservable(AppImeProfile::InputRelay)
+        ));
+    }
+
     #[test]
     fn per_source_get_and_set() {
         let mut p = PerSourceObservations::default();

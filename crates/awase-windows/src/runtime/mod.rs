@@ -843,7 +843,11 @@ impl Runtime {
         // 変更まで再試行できなくなる。この場合 `applied` も更新されないため
         // （`record_ime_apply_result` が pending 解放だけして早期 return する）、
         // 次の 20ms リフレッシュがそのまま再試行する（既存の自己回復を保存）。
-        if outcome != awase::platform::ImeOpenOutcome::UnsafeToToggle {
+        if !matches!(
+            outcome,
+            awase::platform::ImeOpenOutcome::UnsafeToToggle
+                | awase::platform::ImeOpenOutcome::NotOwned
+        ) {
             self.platform_state.ime.note_force_on_attempt(now_ms);
         }
     }
@@ -1410,7 +1414,22 @@ impl Runtime {
                 // cold mark 自体は次に実際に入力するまで何も送信しない遅延フラグなので、
                 // Chrome の連続フォーカスイベントで何度呼ばれても実害はない
                 // （詳細は docs/known-bugs.md BUG-37）。
-                let profile = crate::focus::classify::AppImeProfile::from_class_name(&class_name);
+                // issue #136 / BUG-90 決定4: `self.platform.focus`（`FocusTracker`）
+                // から正規ルートで取得する（プロセスグローバルは
+                // `ime.rs::read_ime_state_fast`（`self` を持たない）専用）。
+                // 既定値は空配列（オプトイン）のため、空なら `get_process_name`
+                // （Win32 ハンドルを開くコストがかかる）を呼ばずに済ませる。
+                let relay_apps = self.platform.focus.input_relay_apps();
+                let profile = if relay_apps.is_empty() {
+                    crate::focus::classify::AppImeProfile::from_class_name(&class_name)
+                } else {
+                    let process_name = crate::focus::classify::get_process_name(pid);
+                    crate::focus::classify::AppImeProfile::from_class_and_process(
+                        &class_name,
+                        &process_name,
+                        relay_apps,
+                    )
+                };
                 if crate::focus::class_names::should_reprime_on_lightweight_focus_sync(
                     profile,
                     &class_name,

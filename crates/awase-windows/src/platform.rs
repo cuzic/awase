@@ -1203,7 +1203,10 @@ impl TsfComposition for WindowsPlatform {
         // （ADR-089 §2.4 細目3）。
         let mut receipt = crate::state::gji_direct_mechanism::ActuationReceipt::new(open, outcome);
         // UnsafeToToggle: 送信しなかったので何もしない（executor 側で早期リターン済みだが念のため）
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
+        if matches!(
+            outcome,
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+        ) {
             // 同期義務は無い（`legacy_gji_sync_obligation` が `None`）が、
             // settle 済みにしないと `Drop` の `debug_assert` が発火する。
             receipt.settle(self);
@@ -1214,7 +1217,7 @@ impl TsfComposition for WindowsPlatform {
             | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
         };
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。

@@ -455,7 +455,10 @@ impl ImeModel {
     ) -> ImeApplyAcceptance {
         use awase::platform::ImeOpenOutcome;
 
-        if outcome == ImeOpenOutcome::UnsafeToToggle {
+        if matches!(
+            outcome,
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+        ) {
             return ImeApplyAcceptance::NotSent;
         }
 
@@ -746,6 +749,7 @@ impl ImeModel {
                         awase::platform::ImeOpenOutcome::Failed
                     }
                     ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                    ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
                 };
                 let acceptance = self.classify_apply_completion(target, outcome, generation);
                 if self
@@ -1349,6 +1353,24 @@ mod tests {
         let res = model.resolve_open_at(now);
         assert!(res.value);
         assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+    }
+
+    #[test]
+    fn resolve_open_at_desired_fallback_carries_relay_desired_value_without_observations() {
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        model.reduce(&focus_changed_event(2));
+
+        let res = model.resolve_open_at(Instant::now());
+        assert!(!res.value);
+        assert_eq!(res.decided_by.base, BaseDecision::DesiredFallback);
+        assert_eq!(res.decided_by.guard_override, None);
     }
 
     #[test]
@@ -2160,6 +2182,61 @@ mod tests {
             }
         );
         assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn matching_not_owned_failure_consumes_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::NotOwned,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert!(model.pending_generation().is_none());
+    }
+
+    #[test]
+    fn repeated_input_relay_focus_roundtrips_do_not_leave_pending() {
+        let mut model = ImeModel::new();
+        for i in 1..=50 {
+            let generation = ApplyGeneration::new(i).unwrap();
+            model.reduce(&focus_changed_event(i * 3));
+            model.reduce(&envelope(
+                i * 3 + 1,
+                ImeEvent::ImeApplyRequested {
+                    target: i % 2 == 0,
+                    generation,
+                    ctrl_held: false,
+                },
+            ));
+            model.reduce(&envelope(
+                i * 3 + 2,
+                ImeEvent::ImeApplyFailed {
+                    target: i % 2 == 0,
+                    generation,
+                    error: ApplyError::NotOwned,
+                },
+            ));
+            assert_eq!(model.pending_generation(), None, "roundtrip {i}");
+        }
+        assert_eq!(model.pending_generation(), None);
     }
 
     // ── BUG-34 横展開 D-prep: pending purge / UnsafeToToggle 解放 ──────────────

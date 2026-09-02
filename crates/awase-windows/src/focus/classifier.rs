@@ -6,6 +6,36 @@
 //! `runtime` は `pub use crate::focus::classifier::*` で後方互換性を維持する。
 
 use awase::config::{AppOverrideEntry, AppOverrides};
+use std::sync::{OnceLock, RwLock};
+
+/// `app_overrides.input_relay_apps`（issue #136 / BUG-90 決定4）の
+/// `ime.rs::read_ime_state_fast` 専用スナップショット。
+///
+/// **新しい呼び出し元を足さないこと。** `Runtime`/`FocusTracker` に到達できる
+/// 呼び出し元は `FocusTracker::input_relay_apps()`（正規ルート、ロック不要）を
+/// 使う（`runtime/mod.rs::on_window_focus_event` 参照）。このプロセスグローバル
+/// が存在するのは `read_ime_state_fast` が `self` を持たない `pub unsafe fn`
+/// であるという1点のためだけ。
+///
+/// `RwLock` を使う理由: このリポジトリは単一スレッド・メッセージループ駆動で
+/// ロック不要が原則（CLAUDE.md「Concurrency model」）だが、
+/// `read_ime_state_fast` は `read_ime_state_fast_async` 経由で
+/// `offload_unsafe`（ワーカースレッド）からも直接（`open_chain.rs`、
+/// メインスレッドの `spawn_local` 内）からも呼ばれる。config リロード時の
+/// 書き込み（`ForceOverrides::new`）はメインスレッドから、読み取りは両方の
+/// スレッドから起こりうるため、`RwLock` はこの1箇所に限り正当。
+static INPUT_RELAY_APPS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
+
+fn input_relay_apps_cell() -> &'static RwLock<Vec<String>> {
+    INPUT_RELAY_APPS.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+pub(crate) fn input_relay_apps_snapshot() -> Vec<String> {
+    input_relay_apps_cell()
+        .read()
+        .map(|apps| apps.clone())
+        .unwrap_or_default()
+}
 
 // ── IMM capability cache ──
 
@@ -85,8 +115,15 @@ pub struct ForceOverrides {
 }
 
 impl ForceOverrides {
+    /// **副作用**: `input_relay_apps` をプロセスグローバル
+    /// （`INPUT_RELAY_APPS`）へ複製する（`ime.rs::read_ime_state_fast` が
+    /// `self` を持たないため、issue #136 / BUG-90 決定4）。設定リロードで
+    /// 複数回呼ばれた場合は最後の呼び出しが勝つ。
     #[must_use]
-    pub const fn new(overrides: AppOverrides) -> Self {
+    pub fn new(overrides: AppOverrides) -> Self {
+        if let Ok(mut apps) = input_relay_apps_cell().write() {
+            apps.clone_from(&overrides.input_relay_apps);
+        }
         Self { inner: overrides }
     }
 
@@ -124,6 +161,11 @@ impl ForceOverrides {
     #[must_use]
     pub(crate) fn is_app_disabled(&self, process_name: &str) -> bool {
         crate::state::app_suppression::matches_disabled_app(&self.inner.disable_apps, process_name)
+    }
+
+    #[must_use]
+    pub(crate) fn input_relay_apps(&self) -> &[String] {
+        &self.inner.input_relay_apps
     }
 
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
