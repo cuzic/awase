@@ -18,6 +18,7 @@ pub mod key_lifecycle;
 pub mod mode_state;
 mod nicola_fsm;
 pub mod output_history;
+pub mod retro_eval_stats;
 pub mod timing;
 
 // Public re-exports
@@ -38,6 +39,7 @@ pub use kana_input_warn::{KanaLockHysteresis, KanaLockReading, KanaLockStreak, W
 pub use key_lifecycle::KeyLifecycle;
 pub use mode_state::{AssumedReason, InputModeState};
 pub use nicola_fsm::NicolaFsm;
+pub use retro_eval_stats::{RetroEvalStats, ELAPSED_MS_BUCKETS, STALE_ATTRIBUTION_MS};
 pub use timing::{ThreeKeyResult, TimingJudge};
 
 #[cfg(test)]

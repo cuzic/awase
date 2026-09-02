@@ -1208,6 +1208,10 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
     };
     let (config_toml, layout_yab) =
         crate::app::read_bug_report_attachments(app.platform.tray.current_layout_name());
+    // ADR-120 決定0a-report: 打鍵内容を含まない累積カウンタのみを写す。
+    let retro_eval_stats = Some(crate::bug_report::BugReportRetroEvalStats::from(
+        app.engine.retro_eval_stats(),
+    ));
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1216,6 +1220,7 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
         state_snapshot: Some(state_snapshot),
         config_toml,
         layout_yab,
+        retro_eval_stats,
     }
 }
 

@@ -993,6 +993,10 @@ pub(super) fn run_all() -> Result<()> {
         },
     );
 
+    // ADR-120 決定0a 項目7(a): 物理 BACKSPACE の VK を Engine/NicolaFsm に伝える
+    // （観測専用、実際の変換結果には一切影響しない）。
+    engine.set_backspace_vk(Some(crate::vk::VK_BACK));
+
     // 同様に、left/right のいずれかが無変換/変換に割り当てられている場合、
     // その VK を伝える（config.rs の muhenkan/henkan_solo_tap_ignore_composing_guard
     // doc 参照）。

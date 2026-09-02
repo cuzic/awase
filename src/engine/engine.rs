@@ -135,6 +135,20 @@ impl Engine {
         self.adapter.set_space_thumb_config(space_thumb_vk, config);
     }
 
+    /// ADR-120 決定0a 項目7(a)専用: 物理 BACKSPACE の VK コードを設定する
+    /// （Platform 層が判定して渡す。未呼び出しなら項目7(a)の集計は行わない）。
+    pub const fn set_backspace_vk(&mut self, vk: Option<VkCode>) {
+        self.adapter.set_backspace_vk(vk);
+    }
+
+    /// ADR-120 決定0a: 3キー仲裁の判定過程・訂正発生を観測する累積カウンタを返す。
+    /// 起動からの累積値であり、実際の変換結果には一切影響しない
+    /// （`crates/awase-windows/src/bug_report.rs` からの読み取り用途）。
+    #[must_use]
+    pub const fn retro_eval_stats(&self) -> &crate::engine::retro_eval_stats::RetroEvalStats {
+        self.adapter.retro_eval_stats()
+    }
+
     /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
     ///
     /// `muhenkan_vk`/`henkan_vk` は `left_thumb_key`/`right_thumb_key` がそれぞれ

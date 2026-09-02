@@ -18,6 +18,7 @@ pub(crate) struct BugReportArgs {
 }
 
 #[derive(Debug)]
+#[allow(clippy::struct_excessive_bools)] // 添付チェックボックスは独立トグルとして意図的にbool
 pub(crate) struct BugReportApp {
     symptom_category: Option<SymptomCategory>,
     description: String,
@@ -25,6 +26,7 @@ pub(crate) struct BugReportApp {
     attach_state_snapshot: bool,
     attach_config: bool,
     attach_layout: bool,
+    attach_retro_eval_stats: bool,
     journal_json: Option<String>,
     journal_status: String,
     app_log: Option<String>,
@@ -110,6 +112,7 @@ impl BugReportApp {
             attach_state_snapshot: true,
             attach_config: true,
             attach_layout: true,
+            attach_retro_eval_stats: true,
             journal_json,
             journal_status,
             app_log,
@@ -176,12 +179,27 @@ impl BugReportApp {
                 "配列ファイルは送信しません。",
             ))
             .changed();
+        let attach_retro_eval_stats_changed = ui
+            .checkbox(
+                &mut self.attach_retro_eval_stats,
+                "変換判定の統計情報を添付する",
+            )
+            .on_hover_text(attachment_hover_text(
+                // ADR-120 決定0a-report。打鍵内容は含まず、3鍵同時打鍵の判定回数
+                // などの累積カウンタのみを送る（/code-review opus 指摘の規範
+                // 「事実と異なる説明はユーザーが症状を文章で書かずに済ませて
+                // しまう分、報告の質を下げる」に倣い、正確に書く）。
+                "打鍵内容は含めず、3鍵同時打鍵の判定回数・訂正操作の発生回数などの\n累積カウンタのみを送信内容に含めます。かな1文字も含みません。",
+                "この統計情報は送信しません。",
+            ))
+            .changed();
         ui.label(&self.journal_status);
         ui.label(&self.app_log_status);
         attach_log_changed
             || attach_state_snapshot_changed
             || attach_config_changed
             || attach_layout_changed
+            || attach_retro_eval_stats_changed
     }
 
     /// 生成済みのプレビュー JSON を反映する。デバウンス完了時と「プレビュー
@@ -238,6 +256,8 @@ impl BugReportApp {
                 attach_config: self.attach_config,
                 layout_yab: self.diagnostics.layout_yab.as_deref(),
                 attach_layout: self.attach_layout,
+                attach_retro_eval_stats: self.attach_retro_eval_stats,
+                retro_eval_stats: self.diagnostics.retro_eval_stats,
                 reported_at: &self.reported_at,
             },
             MAX_BODY_BYTES,

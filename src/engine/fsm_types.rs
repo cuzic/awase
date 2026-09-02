@@ -306,6 +306,22 @@ impl OutputUpdate {
             action: action.clone(),
         })
     }
+
+    /// ADR-120 決定0a: `Record`/`RetractAndRecord` いずれでも、内包する
+    /// `OutputEntry` への参照を返す（`None` なら `Self::None`）。
+    #[must_use]
+    pub const fn entry_ref(&self) -> Option<&crate::engine::output_history::OutputEntry> {
+        match self {
+            Self::Record(entry) | Self::RetractAndRecord(entry) => Some(entry),
+            Self::None => None,
+        }
+    }
+
+    /// ADR-120 決定0a 項目7: 投機出力の差し替え（`RetractAndRecord`）かどうか。
+    #[must_use]
+    pub const fn is_retract_and_record(&self) -> bool {
+        matches!(self, Self::RetractAndRecord(_))
+    }
 }
 
 /// on_key_down の前段でエンジン処理をバイパスする理由

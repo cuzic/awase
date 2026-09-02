@@ -201,27 +201,43 @@ k=1 の窓（連続 2 打鍵）が親指なしである確率は概ね 0.55² �
    /// 桁スケールの粗いバケット境界（ms）。粒度を細かくしないこと——
    /// 個人の打鍵ダイナミクス（バイオメトリクス的特徴）に近づけないため、
    /// 分布形状が分かる最小限の解像度に留める。
-   const ELAPSED_MS_BUCKETS: [u64; 7] = [50, 100, 200, 400, 800, 1600, u64::MAX];
+   pub const ELAPSED_MS_BUCKETS: [u64; 7] = [50, 100, 200, 400, 800, 1600, u64::MAX];
 
-   #[derive(Debug, Clone, Copy, Default)]
+   #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
    pub struct RetroEvalStats {
        pub three_key_total: u64,
        pub phase2_reached: u64,
-       pub score_neg_infinity_count: u64,
-       pub score_both_zero_count: u64,
-       pub score_finite_count: u64,
+       pub phase1_reached: u64,
+       pub no_ngram_count: u64,
+       /// score_a/score_b は独立な値なので別々に3値分類する（実装レビューで
+       /// 訂正: 初稿は `score_neg_infinity_count`/`score_both_zero_count`/
+       /// `score_finite_count` という単一集計案だったが、`(score_a, score_b)`
+       /// の組み合わせによっては「どちらのカテゴリか」を一意に決められない
+       /// ケースがあり誤りだった）。
+       pub score_a_neg_infinity_count: u64,
+       pub score_a_zero_count: u64,
+       pub score_a_finite_count: u64,
+       pub score_b_neg_infinity_count: u64,
+       pub score_b_zero_count: u64,
+       pub score_b_finite_count: u64,
        pub char2_normal_hiragana_count: u64,        // 項目2b
        pub no_thumb_followup_count: u64,             // 項目2c
        pub followup_elapsed_ms_histogram: [u64; 7],  // 項目4（バケット定義は上記）
-       /// 項目7: Phase2決定後の経過msバケットごとのユーザー訂正操作回数。
-       /// 対照群(Phase1決定後/非曖昧打鍵後)も同じバケット定義で持つことで、
+       /// 項目7: Phase2決定後の経過msバケットごとのユーザー訂正操作回数（分子）。
+       /// 分母（その群で何回決定が起きたか）は1個の数なのでスカラー。
+       /// 訂正率(N) = prefix_sum(ヒストグラム, Nまで) / 分母 で、
        /// N をゲート判定時に任意に選べる（バケット境界=候補Nの上限）。
-       pub user_correction_after_phase2: [u64; 7],
-       pub phase2_baseline: [u64; 7],
-       pub user_correction_after_phase1: [u64; 7],   // 対照群1
-       pub phase1_baseline: [u64; 7],
-       pub user_correction_baseline: [u64; 7],       // 対照群2（曖昧でない打鍵後）
-       pub non_ambiguous_baseline: [u64; 7],
+       /// 対照群(Phase1決定後/非曖昧打鍵後)も同じ形で持つ。
+       /// （2026-09-02実装レビューで訂正: 初稿は分母も`[u64;7]`だったが、
+       /// 分母をバケット分けする対象は無いため誤りだった）
+       pub phase2_decisions_total: u64,
+       pub phase2_correction_histogram: [u64; 7],
+       pub phase1_decisions_total: u64,              // 対照群1・分母
+       pub phase1_correction_histogram: [u64; 7],
+       pub baseline_decisions_total: u64,             // 対照群2（曖昧でない打鍵後）・分母
+       pub baseline_correction_histogram: [u64; 7],
+       /// 項目7(c): Escape出力回数（訂正カウントとは別、離脱と区別するため）
+       pub escape_output_count: u64,
    }
    ```
 

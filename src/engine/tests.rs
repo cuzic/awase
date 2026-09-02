@@ -1899,6 +1899,228 @@ fn test_three_key_char1_released_close_timing_ngram_phase2_prefers_char1() {
     );
 }
 
+// ── ADR-120 決定0a: RetroEvalStats 集計のユニットテスト ──
+//
+// これらは実際の変換結果（IME へ送る打鍵列）には一切影響しない、集計専用
+// カウンタの正しさだけを検証する。`make_layout()`（A=う/し, 左親指A=を/S=あ,
+// 右親指A=ゔ/S=じ）+ `make_ngram_model()`（bigram "しを"=2.0, "しゔ"=-2.0）を
+// 使い、既存の3鍵ngramテスト（`test_three_key_char1_released_*`）と同じ
+// フィクスチャを再利用する。
+
+#[test]
+fn test_retro_eval_stats_phase1_counters() {
+    // Phase 1（タイミングのみで決定、n-gram未到達）のケースで
+    // three_key_total/phase1_reached/phase1_decisions_totalが正しく
+    // 加算され、phase2_reached/no_ngram_countは増えないことを確認する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(11_700).build());
+    engine.on_event(Ev::up(VK_A).at(106_550).build());
+    let result = engine.on_event(Ev::down(VK_S).at(112_474).build());
+    result.assert_consumed();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.three_key_total, 1);
+    assert_eq!(stats.phase1_reached, 1);
+    assert_eq!(stats.phase2_reached, 0);
+    assert_eq!(stats.no_ngram_count, 0);
+    assert_eq!(stats.phase1_decisions_total, 1);
+    assert_eq!(stats.phase2_decisions_total, 0);
+}
+
+#[test]
+fn test_retro_eval_stats_no_ngram_counter() {
+    // ngram_model を設定しない（None）場合は DecisionPhase::NoNgram に
+    // 分類され、no_ngram_countのみが増える。
+    let mut engine = make_engine();
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(11_700).build());
+    engine.on_event(Ev::up(VK_A).at(106_550).build());
+    let result = engine.on_event(Ev::down(VK_S).at(112_474).build());
+    result.assert_consumed();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.three_key_total, 1);
+    assert_eq!(stats.no_ngram_count, 1);
+    assert_eq!(stats.phase1_reached, 0);
+    assert_eq!(stats.phase2_reached, 0);
+}
+
+#[test]
+fn test_retro_eval_stats_phase2_score_buckets_and_char2_hiragana() {
+    // Phase 2 (d1/d2 が接近) かつ右親指を使うケース: score_a は bigram
+    // "しゔ"=-2.0 (finite, 負値でも finite バケットに入ることを確認)、
+    // score_b は未定義の "しうじ" で 0.0 (zero バケット) になる
+    // -- これは issue #140 / BUG-105 の実際の誤変換パターン
+    // (score_a<score_b で char2 側=右親指 が誤って優先される) と同型。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    // 右親指（CONVERT）: d1 = 60ms
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    // d1=60_000, d2=110_000-60_000=50_000, margin(30%*100ms)=30_000 -> Phase 2
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    result.assert_consumed();
+    assert_eq!(
+        result.actions.len(),
+        2,
+        "char1単独+char2+thumbが同一ターンで2出力されるはず: got {:?}",
+        result.actions
+    );
+    assert!(
+        matches!(result.actions[0], KeyAction::Char('う')),
+        "score_a(-2.0) < score_b(0.0) で char2 側優先のはず: got {:?}",
+        result.actions
+    );
+    assert!(matches!(result.actions[1], KeyAction::Char('じ')));
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.phase2_reached, 1);
+    assert_eq!(stats.phase2_decisions_total, 1);
+    assert_eq!(
+        stats.score_a_finite_count, 1,
+        "score_a=-2.0 は finite のはず"
+    );
+    assert_eq!(stats.score_a_neg_infinity_count, 0);
+    assert_eq!(stats.score_a_zero_count, 0);
+    assert_eq!(
+        stats.score_b_zero_count, 1,
+        "score_b=0.0(未定義trigram)のはず"
+    );
+    assert_eq!(stats.score_b_finite_count, 0);
+    assert_eq!(stats.score_b_neg_infinity_count, 0);
+    assert_eq!(
+        stats.char2_normal_hiragana_count, 1,
+        "char2(S)の通常面'し'はひらがな"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_followup_thumb_window_and_correction_survives_baseline() {
+    // ADR-120 決定0a 項目2c/4/7 の統合テスト。項目7については
+    // Opusレビュー blocker 所見2（単一スロット上書きで Phase2 の訂正
+    // シグナルが直後の Baseline 決定に上書きされて消える）の回帰ガードを
+    // 兼ねる: Phase2決定(t=110_000) の後に Baseline決定(t=200_000) を挟んでも、
+    // その後の訂正操作(t=350_000)が両方に正しく計上されることを確認する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    // Phase2決定（PairWithChar2、skip=2）: t=110_000
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(result.actions.len(), 2); // 決定自身の出力(う, じ)
+
+    // 項目2c: 決定直後の1打鍵目（非親指）。窓 remaining 2->1。
+    let result = engine.on_event(Ev::down(VK_A).at(200_000).build());
+    assert_pending(&result); // PendingChar、まだ出力なし
+    assert_eq!(
+        engine.retro_eval_stats().no_thumb_followup_count,
+        0,
+        "窓はまだ残っている"
+    );
+
+    // 項目4: 決定自身の出力2回分をスキップし終えた後、初めての「後続かな確定」。
+    // 同時に項目7: このBaseline決定（last_baseline_at）は Phase2 決定の
+    // last_phase2_at を上書きしない（別スロットのため）。
+    let result = engine.on_timeout(TIMER_PENDING);
+    result.assert_consumed();
+    assert!(matches!(result.actions[0], KeyAction::Char('う')));
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.followup_elapsed_ms_histogram.iter().sum::<u64>(),
+        1,
+        "後続1かな確定が1回計測されるはず"
+    );
+    assert_eq!(stats.baseline_decisions_total, 1);
+
+    // 項目2c: 決定後2打鍵目（非親指）。窓 remaining 1->0、窓を使い切る。
+    let result = engine.on_event(Ev::down(VK_S).at(300_000).build());
+    assert_pending(&result);
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 1);
+
+    // 項目7(a): 物理BACKSPACE（訂正操作）。Phase2決定(t=110_000)からの経過msと
+    // Baseline決定(t=200_000)からの経過msの両方に計上される
+    // （間に挟まったBaseline決定がPhase2の帰属を破壊していないことの確認）。
+    let result = engine.on_event(Ev::down(VK_BACK).at(350_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "Phase2決定への訂正帰属が、間に挟まったBaseline決定で消えていないはず"
+    );
+    assert_eq!(stats.baseline_correction_histogram.iter().sum::<u64>(), 1);
+    assert_eq!(
+        stats.phase1_correction_histogram.iter().sum::<u64>(),
+        0,
+        "Phase1決定は一度も発生していない"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_thumb_arrival_discards_window_without_counting() {
+    // 項目2c: 決定直後の観測窓内に親指キーが来た場合は窓を破棄し、
+    // no_thumb_followup_count を増やさない。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 決定直後、最初のKeyDownが親指（NONCONVERT）。
+    engine.on_event(Ev::down(VK_NONCONVERT).at(150_000).build());
+    assert_eq!(
+        engine.retro_eval_stats().no_thumb_followup_count,
+        0,
+        "親指キーが窓内に来たら破棄するだけで、no_thumb_followup_countは増えない"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_escape_output_counted_separately_from_baseline() {
+    // 項目7(c): 配列セル由来のEscape出力はescape_output_countに計上され、
+    // Baseline決定（訂正の分母）としては計上されない。
+    use crate::types::SpecialKey;
+    let mut engine = make_engine();
+    engine.update_history(
+        OutputUpdate::record(SCAN_A, &KeyAction::SpecialKey(SpecialKey::Escape), None),
+        0,
+    );
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.escape_output_count, 1);
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "Escape出力自体はBaseline決定として計上しない"
+    );
+}
+
 #[test]
 fn test_three_key_timeout_resolves_as_simultaneous() {
     // char1(t=0) → thumb(t=30ms) → タイムアウト（char2 来ない）
@@ -4799,12 +5021,15 @@ fn test_update_history_record() {
     let mut engine = make_engine();
     assert!(engine.output_history.is_empty());
 
-    engine.update_history(OutputUpdate::Record(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "ka".to_string(),
-        kana: Some('か'),
-        action: KeyAction::Romaji("ka".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::Record(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "ka".to_string(),
+            kana: Some('か'),
+            action: KeyAction::Romaji("ka".to_string()),
+        }),
+        0,
+    );
     assert_eq!(engine.output_history.len(), 1);
     assert_eq!(engine.output_history.recent_kana(1), vec!['か']);
 }
@@ -4814,21 +5039,27 @@ fn test_update_history_retract_and_record() {
     let mut engine = make_engine();
 
     // First, record an entry
-    engine.update_history(OutputUpdate::Record(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "u".to_string(),
-        kana: Some('う'),
-        action: KeyAction::Romaji("u".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::Record(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "u".to_string(),
+            kana: Some('う'),
+            action: KeyAction::Romaji("u".to_string()),
+        }),
+        0,
+    );
     assert_eq!(engine.output_history.len(), 1);
 
     // Now retract and record a new entry
-    engine.update_history(OutputUpdate::RetractAndRecord(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "vu".to_string(),
-        kana: Some('ゔ'),
-        action: KeyAction::Romaji("vu".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::RetractAndRecord(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "vu".to_string(),
+            kana: Some('ゔ'),
+            action: KeyAction::Romaji("vu".to_string()),
+        }),
+        1000,
+    );
     assert_eq!(
         engine.output_history.len(),
         1,
