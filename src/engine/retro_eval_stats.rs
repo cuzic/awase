@@ -10,9 +10,18 @@
 /// 最小限の解像度に留める（ADR-120決定0a-report参照）。
 pub const ELAPSED_MS_BUCKETS: [u64; 7] = [50, 100, 200, 400, 800, 1600, u64::MAX];
 
-/// 「直近の決定」を訂正の原因として妥当とみなす最大経過ms。これを超えて
-/// stale になった決定は、以後の訂正の分子には計上しない（デノミネータには
-/// 決定時点で既に計上済み）。バケット最大値と同じにする。
+/// 「直近の決定」を訂正の原因として妥当とみなす最大経過ms。
+///
+/// この値**未満**のみを計上する（`elapsed < STALE_ATTRIBUTION_MS`）。これを
+/// 超えて stale になった決定は、以後の訂正の分子には計上しない（デノミネータ
+/// には決定時点で既に計上済み）。`ELAPSED_MS_BUCKETS` の最終有限境界と同じ値
+/// にすることで、「stale 判定で弾かれる範囲」と「bucket 6（`u64::MAX`側）に
+/// 入る範囲」を一致させ、`*_correction_histogram` の bucket 6 が構造的に
+/// 常に0になる（`/code-review` 指摘: 以前は `elapsed <= STALE_ATTRIBUTION_MS`
+/// だったため `elapsed == 1600` の1点だけが bucket 6 に紛れ込みうる状態で、
+/// 「1.6秒超の訂正は稀」と誤読されるリスクがあった）。
+/// `followup_elapsed_ms_histogram`（項目4、stale判定なし）の bucket 6 は
+/// これとは違い正真正銘の open-ended tail であることに注意。
 pub const STALE_ATTRIBUTION_MS: u64 = 1600;
 
 /// ひらがな範囲（U+3041-U+309F）かどうか。ADR-120 決定0a 項目2b専用の粗い判定

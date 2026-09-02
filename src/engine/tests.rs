@@ -2247,6 +2247,137 @@ fn test_retro_eval_stats_backspace_with_ctrl_modifier_is_not_counted_as_correcti
 }
 
 #[test]
+fn test_retro_eval_stats_backspace_with_shift_modifier_is_counted_as_correction() {
+    // `/code-review` 指摘の回帰ガード: `Shift+BS` は `Ctrl+BS`/`Alt+BS`
+    // （単語削除）とは異なり、Windowsのテキスト入力では通常の1文字削除と
+    // 同義なので除外してはならない（除外すると Shift 保持中の訂正だけが
+    // 系統的に取りこぼされる）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    engine.on_event(Ev::down(VK_SHIFT).at(150_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(160_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "Shift+BSは通常の1文字削除であり訂正操作として計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_injected_backspace_not_counted_as_correction() {
+    // `/code-review` 指摘の回帰ガード: 外部ツール・マクロ・IME内部補正機構
+    // 等が `SendInput` 等で合成した（`injected=true`）BACKSPACEはユーザーの
+    // 実訂正操作ではないため除外する（BUG-14/ADR-119 の `event.injected`
+    // 除外原則、`engine.rs::is_bare_thumb` 参照）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    let result = engine.on_event(Ev::down(VK_BACK).injected(true).at(200_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "合成(injected)されたBACKSPACEは訂正操作として計上してはならない"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_focus_change_resets_last_decision_attribution() {
+    // `/code-review` 指摘の回帰ガード: フォーカス変更（コンテキスト喪失）を
+    // またいで `last_decision`（項目7の帰属状態）を持ち越してはならない。
+    // 別アプリで打たれた訂正操作が、直前アプリのPhase2決定に誤帰属する
+    // （STALE_ATTRIBUTION_MSの1600ms窓には時間的な上限があるだけで、
+    // コンテキストの区別が無いため）ことを防ぐ。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // フォーカス変更（コンテキスト喪失）。
+    engine.flush_pending(ContextChange::FocusChanged, ComposingHint::Unknown);
+
+    // 190ms後（STALE_ATTRIBUTION_MSの1600ms窓内）、別コンテキストでの
+    // BACKSPACE。リセットされていなければ誤って計上されてしまうタイミング。
+    let result = engine.on_event(Ev::down(VK_BACK).at(300_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "フォーカス変更後はlast_decisionがリセットされ、別コンテキストの操作は誤帰属しないはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_genuine_double_tap_of_same_key_closes_window() {
+    // `/code-review` 指摘の回帰ガード: 同じ物理キーを間を置かず
+    // （KeyUpを挟んで）2回連続で「本当に」タップした場合は、単純なVK等値
+    // 比較だけのオートリピート判定だと1回のオートリピートと誤認され、
+    // 窓が正しく閉じない。KeyUpで押下状態をクリアすることで区別する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 同じキー(A)を、KeyUpを挟んで2回連続で本当にタップする。
+    engine.on_event(Ev::down(VK_A).at(150_000).build());
+    engine.on_event(Ev::up(VK_A).at(155_000).build());
+    engine.on_event(Ev::down(VK_A).at(160_000).build());
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.no_thumb_followup_count, 1,
+        "KeyUpを挟んだ2回の本当のタップは窓を正しく消費し終えるはず（オートリピートと誤認しない）"
+    );
+}
+
+#[test]
 fn test_retro_eval_stats_backspace_self_heals_after_missed_keyup() {
     // 所見NB1の回帰ガード: 物理BACKSPACEのKeyUpが取りこぼされても
     // （例: エンジン非活性化でon_key_upに到達しない）、他キーのKeyDownが

@@ -211,31 +211,65 @@ pub struct BugReportRetroEvalStats {
 
 impl From<&awase::engine::RetroEvalStats> for BugReportRetroEvalStats {
     fn from(stats: &awase::engine::RetroEvalStats) -> Self {
+        // `RetroEvalStats` を `..` を使わずフィールド名で丸ごと分解する
+        // （`/code-review` 指摘対応）: `..` を使った部分アクセスや
+        // `stats.field` の個別参照だと、将来 `RetroEvalStats` に新しい
+        // フィールドを追加してもこの変換をコンパイラが強制してくれない
+        // （送信元に未使用フィールドがあってもエラーにならない）ため、
+        // 新カウンタが bug report に反映されないまま気づかれずに
+        // 出荷されるリスクがある。分解パターンを網羅的にすることで、
+        // フィールド追加時に必ずここがコンパイルエラーになるようにする。
+        let awase::engine::RetroEvalStats {
+            three_key_total,
+            phase2_reached,
+            phase1_reached,
+            no_ngram_count,
+            score_a_neg_infinity_count,
+            score_a_zero_count,
+            score_a_finite_count,
+            score_b_neg_infinity_count,
+            score_b_zero_count,
+            score_b_finite_count,
+            char2_normal_hiragana_count,
+            no_thumb_followup_count,
+            thumb_watch_window_thumb_arrived_count,
+            thumb_watch_window_abandoned_count,
+            followup_elapsed_ms_histogram,
+            followup_overwritten_count,
+            followup_dropped_imprecise_count,
+            phase2_decisions_total,
+            phase2_correction_histogram,
+            phase1_decisions_total,
+            phase1_correction_histogram,
+            baseline_decisions_total,
+            baseline_correction_histogram,
+            escape_output_count,
+        } = *stats;
         Self {
-            three_key_total: stats.three_key_total,
-            phase2_reached: stats.phase2_reached,
-            phase1_reached: stats.phase1_reached,
-            no_ngram_count: stats.no_ngram_count,
-            score_a_neg_infinity_count: stats.score_a_neg_infinity_count,
-            score_a_zero_count: stats.score_a_zero_count,
-            score_a_finite_count: stats.score_a_finite_count,
-            score_b_neg_infinity_count: stats.score_b_neg_infinity_count,
-            score_b_zero_count: stats.score_b_zero_count,
-            score_b_finite_count: stats.score_b_finite_count,
-            char2_normal_hiragana_count: stats.char2_normal_hiragana_count,
-            no_thumb_followup_count: stats.no_thumb_followup_count,
-            thumb_watch_window_thumb_arrived_count: stats.thumb_watch_window_thumb_arrived_count,
-            thumb_watch_window_abandoned_count: stats.thumb_watch_window_abandoned_count,
-            followup_elapsed_ms_histogram: stats.followup_elapsed_ms_histogram,
-            followup_overwritten_count: stats.followup_overwritten_count,
-            followup_dropped_imprecise_count: stats.followup_dropped_imprecise_count,
-            phase2_decisions_total: stats.phase2_decisions_total,
-            phase2_correction_histogram: stats.phase2_correction_histogram,
-            phase1_decisions_total: stats.phase1_decisions_total,
-            phase1_correction_histogram: stats.phase1_correction_histogram,
-            baseline_decisions_total: stats.baseline_decisions_total,
-            baseline_correction_histogram: stats.baseline_correction_histogram,
-            escape_output_count: stats.escape_output_count,
+            three_key_total,
+            phase2_reached,
+            phase1_reached,
+            no_ngram_count,
+            score_a_neg_infinity_count,
+            score_a_zero_count,
+            score_a_finite_count,
+            score_b_neg_infinity_count,
+            score_b_zero_count,
+            score_b_finite_count,
+            char2_normal_hiragana_count,
+            no_thumb_followup_count,
+            thumb_watch_window_thumb_arrived_count,
+            thumb_watch_window_abandoned_count,
+            followup_elapsed_ms_histogram,
+            followup_overwritten_count,
+            followup_dropped_imprecise_count,
+            phase2_decisions_total,
+            phase2_correction_histogram,
+            phase1_decisions_total,
+            phase1_correction_histogram,
+            baseline_decisions_total,
+            baseline_correction_histogram,
+            escape_output_count,
         }
     }
 }

@@ -384,6 +384,13 @@ pub struct NicolaFsm {
 struct ThumbWatchWindow {
     remaining: u8,
     last_vk: Option<VkCode>,
+    /// `last_vk` が現在も押下中かどうか（`/code-review` 指摘対応）。単純な
+    /// `last_vk == event.vk_code` の等値比較だけでは、同じ物理キーを
+    /// 間を置かず2回連続で「本当に」タップした場合（オートリピートでは
+    /// なく別々のKeyDown+KeyUpペア2回）も誤って1回のオートリピートと
+    /// みなし窓が閉じない。KeyUpで明示的にクリアすることで、押下中の
+    /// 再送か新規タップかを正確に区別する。
+    last_vk_down: bool,
 }
 
 /// ADR-120 決定0a 項目7: カテゴリ別の「直近の決定」タイムスタンプ。
@@ -607,6 +614,22 @@ impl NicolaFsm {
         self.last_key_timestamp = None;
         self.last_key_gap_us = None;
         self.solo_counter.reset();
+
+        // ADR-120 決定0a (`/code-review` 指摘): `own_decision_output`/
+        // `thumb_watch_window`/`last_decision` はコンテキスト喪失
+        // （フォーカス変更・IME OFF・言語切替・レイアウト差替え・エンジン
+        // 無効化）を跨いで持ち越してはならない——別アプリ/別コンテキストで
+        // 打たれた次の実キー入力を、直前アプリのPhase2決定の「後続かな」
+        // として誤帰属してしまう（時間による上限が無く、境界も無い汚染）。
+        // `ContextChange::BypassKey`（`handle_bypass` 自身が非idle時に呼ぶ
+        // 通常のflush）はコンテキスト喪失ではない——ここで汎用リセットすると
+        // `engine_off_extra_key_suppressed`（`:636-642`）と同じ罠になり、
+        // 決定直後の普通の打鍵継続で追跡状態が即座に消えてしまう。
+        if !matches!(reason, ContextChange::BypassKey) {
+            self.own_decision_output = None;
+            self.thumb_watch_window = None;
+            self.last_decision = None;
+        }
 
         if !was_idle {
             log::info!(
@@ -1164,14 +1187,17 @@ impl NicolaFsm {
             self.thumb_watch_window = Some(window);
             return;
         }
-        if window.last_vk == Some(event.vk_code) {
-            // OS のオートリピートによる同一キーの KeyDown 再送。新規タップでは
-            // ないためカウントを進めず、窓の残数もそのまま維持する
-            // （`handle_bypass` の `engine_off_extra_key_suppressed` と同型）。
+        if window.last_vk == Some(event.vk_code) && window.last_vk_down {
+            // OS のオートリピートによる同一キーの KeyDown 再送
+            // （まだ物理的に押下中、`on_key_up` でクリアされていない）。
+            // 新規タップではないためカウントを進めず、窓の残数もそのまま
+            // 維持する（`handle_bypass` の `engine_off_extra_key_suppressed`
+            // と同型）。
             self.thumb_watch_window = Some(window);
             return;
         }
         window.last_vk = Some(event.vk_code);
+        window.last_vk_down = true;
         if window.remaining <= 1 {
             self.retro_eval_stats.no_thumb_followup_count += 1;
         } else {
@@ -1212,7 +1238,7 @@ impl NicolaFsm {
         // even when flush actions are emitted.
         let ev = self.phys.classified;
         if let Some(reason) = self.bypass_reason(&ev) {
-            return self.handle_bypass(&ev, reason);
+            return self.handle_bypass(&ev, reason, event.injected);
         }
 
         self.parse(ev)
@@ -1635,19 +1661,27 @@ impl NicolaFsm {
             return;
         };
 
-        // 項目7(b)(c): 配列セル由来のBackspace/Escape出力
-        match &entry.action {
-            KeyAction::SpecialKey(SpecialKey::Backspace) => self.record_user_correction(now),
-            KeyAction::SpecialKey(SpecialKey::Escape) => {
-                self.retro_eval_stats.escape_output_count += 1;
-            }
-            _ => {}
-        }
-
         // 項目7除外条件の判定は own_decision_output を変異させる前に行う
         // （このentry自身が「3鍵仲裁の決定自身の出力」の途中かどうかは、
         // 今回の消費より前の状態で決まる）。
         let is_own_decision_output = self.own_decision_output.is_some_and(|s| s.remaining > 0);
+
+        // 項目7(b)(c): 配列セル由来のBackspace/Escape出力。
+        // **`/code-review` 指摘**: 3キー仲裁決定「自身の出力」が
+        // `SpecialKey::Backspace`/`Escape` に解決される .yab 配列も存在しうる
+        // （例: 決定自体がBackspaceを送出する配列セル）。この場合の出力は
+        // ユーザーの訂正操作ではなく決定そのものの結果なので、
+        // `is_own_decision_output` の間は計上しない
+        // （elapsed≈0msの見せかけの自己訂正がbucket 0に混入するのを防ぐ）。
+        if !is_own_decision_output {
+            match &entry.action {
+                KeyAction::SpecialKey(SpecialKey::Backspace) => self.record_user_correction(now),
+                KeyAction::SpecialKey(SpecialKey::Escape) => {
+                    self.retro_eval_stats.escape_output_count += 1;
+                }
+                _ => {}
+            }
+        }
 
         // 項目4/7: own_decision_output の消費。出力の種類を問わず1出力ごとに
         // 1減算する（所見S2対応——以前はChar/Romaji以外の出力ではデクリメント
@@ -1734,21 +1768,21 @@ impl NicolaFsm {
         };
         if let Some(t) = last.phase2_at.take() {
             let elapsed = now.saturating_sub(t) / 1000;
-            if elapsed <= retro_eval_stats::STALE_ATTRIBUTION_MS {
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
                 let bucket = retro_eval_stats::bucket_index(elapsed);
                 self.retro_eval_stats.phase2_correction_histogram[bucket] += 1;
             }
         }
         if let Some(t) = last.phase1_at.take() {
             let elapsed = now.saturating_sub(t) / 1000;
-            if elapsed <= retro_eval_stats::STALE_ATTRIBUTION_MS {
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
                 let bucket = retro_eval_stats::bucket_index(elapsed);
                 self.retro_eval_stats.phase1_correction_histogram[bucket] += 1;
             }
         }
         if let Some(t) = last.baseline_at.take() {
             let elapsed = now.saturating_sub(t) / 1000;
-            if elapsed <= retro_eval_stats::STALE_ATTRIBUTION_MS {
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
                 let bucket = retro_eval_stats::bucket_index(elapsed);
                 self.retro_eval_stats.baseline_correction_histogram[bucket] += 1;
             }
@@ -2185,6 +2219,7 @@ impl NicolaFsm {
             self.thumb_watch_window = Some(ThumbWatchWindow {
                 remaining: 2,
                 last_vk: None,
+                last_vk_down: false,
             });
         }
 
@@ -2234,6 +2269,17 @@ impl NicolaFsm {
         // 抑止ガードの対称KeyUp側）。
         if self.backspace_vk.is_some_and(|vk| event.vk_code == vk) {
             self.backspace_down = false;
+        }
+
+        // ADR-120 決定0a 項目2c (`/code-review` 指摘対応): 観測窓が
+        // 追跡中のキーが離されたら `last_vk_down` をクリアする
+        // （`observe_thumb_watch_window` のオートリピート判定の対称KeyUp
+        // 側。同じ物理キーを間を置かず2回連続で本当にタップした場合を、
+        // 誤ってオートリピートとみなさないようにするため）。
+        if let Some(window) = self.thumb_watch_window.as_mut() {
+            if window.last_vk == Some(event.vk_code) {
+                window.last_vk_down = false;
+            }
         }
 
         // PendingCharThumb 状態での KeyUp 処理
@@ -2789,39 +2835,51 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
+    fn handle_bypass(
+        &mut self,
+        ev: &ClassifiedEvent,
+        reason: BypassReason,
+        injected: bool,
+    ) -> Resp {
         // バイパスされたキーの output_history エントリを削除する。
         // OsModifierHeld で J↓ がバイパスされた後、modifier が J↑ より先にリリースされると
         // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
         // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
         self.output_history.remove_by_scan(ev.scan_code);
 
-        // ADR-120 決定0a 項目7(a): 物理BACKSPACE単独（修飾キーなし）を
+        // ADR-120 決定0a 項目7(a): 物理BACKSPACE単独を
         // ユーザー訂正操作として計上する。`Ctrl+BS`/`Alt+BS`（単語削除等の
         // 別操作）は対照群比較を歪めるため除外する（should-fix所見7）。
+        // `Shift+BS` は除外しない——Windows のテキスト入力では
+        // `Shift+Backspace` は通常の1文字削除と同義であり（`Ctrl`/`Alt`の
+        // ような別操作ではない）、除外すると Shift 保持中の訂正だけが
+        // 系統的に取りこぼされる（`/code-review` 指摘）。
         //
         // **所見B1対応**: `bypass_reason`（下記参照）は `KeyClass::Passthrough`
         // を修飾キーの有無より優先して返すため、`BypassReason::OsModifierHeld`
         // では絶対に来ない——VK_BACK は `scanmap.rs` に物理位置が無く常に
         // `Passthrough` に分類されるので、`Ctrl+BS`/`Alt+BS` も
         // `BypassReason::Passthrough` のままここに到達する。したがって
-        // `reason == Passthrough` だけでは除外できず、この下の `is_solo`
-        // と同じ修飾キー判定を明示的に行う必要がある（Opusレビュー指摘、
-        // 「`OsModifierHeld` なので除外される」という以前のコメントは誤り
-        // だった）。
+        // `reason == Passthrough` だけでは除外できず、この下の `is_word_delete`
+        // で明示的に判定する必要がある（Opusレビュー指摘、「`OsModifierHeld`
+        // なので除外される」という以前のコメントは誤りだった）。
         //
         // **所見S4対応**: OS オートリピート（押しっぱなし）による KeyDown
         // 再送を新規タップとして二重計上しないよう、`backspace_down` で
         // 押下状態を追跡する（`engine_off_extra_key_suppressed` と同型の
         // ガード、KeyUp 側は `on_key_up` でクリアする）。
-        if matches!(reason, BypassReason::Passthrough) {
+        //
+        // **`/code-review` 指摘（injected除外）**: 外部ツール・マクロ・IME
+        // 自身の内部補正機構等が `SendInput` 等で合成した BACKSPACE は
+        // ユーザーの実訂正操作ではないため除外する（BUG-14/ADR-119 の
+        // `event.injected` 除外原則、`engine.rs::is_bare_thumb` 参照）。
+        if matches!(reason, BypassReason::Passthrough) && !injected {
             if let Some(vk) = self.backspace_vk {
                 if ev.vk_code == vk {
-                    let is_solo = !(self.phys.modifiers.ctrl
+                    let is_word_delete = self.phys.modifiers.ctrl
                         || self.phys.modifiers.alt
-                        || self.phys.modifiers.shift
-                        || self.phys.modifiers.win);
-                    if is_solo && !self.backspace_down {
+                        || self.phys.modifiers.win;
+                    if !is_word_delete && !self.backspace_down {
                         self.record_user_correction(ev.timestamp);
                     }
                     self.backspace_down = true;
@@ -3196,6 +3254,105 @@ mod tests {
             expects_rearmed_pending_timer,
             "must rearm TIMER_PENDING with remaining_us={expected_remaining_us}, got {:?}",
             resp.timers
+        );
+    }
+
+    // ── ADR-120 決定0a: `/code-review` 指摘の回帰テスト ──
+    // `own_decision_output`/`OwnDecisionOutput` は private フィールドなので、
+    // このファイル内の（同一モジュールの）テストからのみ直接操作できる。
+
+    #[test]
+    fn retro_eval_stats_own_decision_backspace_output_not_counted_as_correction() {
+        // 所見4対応の回帰テスト: 3キー仲裁決定「自身の出力」が
+        // .yab配列によって SpecialKey::Backspace に解決される場合、
+        // ユーザーの実訂正操作ではないため訂正カウンタへ計上してはならない。
+        let mut fsm = make_test_fsm();
+        fsm.own_decision_output = Some(OwnDecisionOutput {
+            remaining: 1,
+            measure_since: None,
+        });
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        fsm.update_history(
+            OutputUpdate::record(
+                ScanCode(0),
+                &KeyAction::SpecialKey(SpecialKey::Backspace),
+                None,
+            ),
+            1_000,
+        );
+        let stats = fsm.retro_eval_stats();
+        assert_eq!(
+            stats.phase2_correction_histogram.iter().sum::<u64>(),
+            0,
+            "決定自身の出力であるBackspaceは訂正操作として計上してはならない"
+        );
+        assert_eq!(
+            stats.baseline_decisions_total, 0,
+            "決定自身の出力なのでBaselineにも計上されないはず"
+        );
+    }
+
+    #[test]
+    fn retro_eval_stats_genuine_backspace_correction_still_counted_after_own_output_consumed() {
+        // 上のテストと対で確認する: own_decision_output が消化済み（決定自身の
+        // 出力ではない）状態で来たBackspaceは、通常どおり訂正として計上される。
+        let mut fsm = make_test_fsm();
+        fsm.own_decision_output = None;
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        fsm.update_history(
+            OutputUpdate::record(
+                ScanCode(0),
+                &KeyAction::SpecialKey(SpecialKey::Backspace),
+                None,
+            ),
+            1_000,
+        );
+        let stats = fsm.retro_eval_stats();
+        assert_eq!(stats.phase2_correction_histogram.iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn retro_eval_stats_stale_attribution_boundary_excludes_exact_ms() {
+        // 所見3対応の回帰テスト: STALE_ATTRIBUTION_MS ちょうど(1600ms)は
+        // 除外され(elapsed < STALE_ATTRIBUTION_MSに変更)、1599msは計上される。
+        // 修正前は `elapsed <= STALE_ATTRIBUTION_MS` だったため、1600msの
+        // 一点だけが bucket 6 に紛れ込みうる不整合な状態だった。
+        let mut fsm = make_test_fsm();
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        // ちょうど1600ms（境界値そのもの）→ 除外される。
+        fsm.record_user_correction(1_600_000);
+        assert_eq!(
+            fsm.retro_eval_stats()
+                .phase2_correction_histogram
+                .iter()
+                .sum::<u64>(),
+            0,
+            "elapsed==STALE_ATTRIBUTION_MSちょうどは除外されるはず"
+        );
+
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        // 1599ms（境界未満）→ 計上される、bucket 5(800<=x<1600)。
+        fsm.record_user_correction(1_599_000);
+        assert_eq!(
+            fsm.retro_eval_stats().phase2_correction_histogram,
+            [0, 0, 0, 0, 0, 1, 0],
+            "elapsed=1599msはbucket 5に計上されるはず"
         );
     }
 }
