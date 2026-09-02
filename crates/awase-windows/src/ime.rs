@@ -1665,13 +1665,23 @@ pub struct CompositionSnapshot {
     pub sentence_mode: Option<u32>,
 }
 
+/// トグルキー（CapsLock/かなロック等）の現在のロック状態を読む共通ヘルパー。
+/// `GetKeyState(vk) & 1` はトグルキーの標準的な読み取りパターン
+/// （`observer/kana_lock.rs::read_kana_lock` と共有）。
+///
+/// # Safety
+/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
+pub(crate) unsafe fn is_toggle_key_on(vk: i32) -> bool {
+    windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(vk) & 1 != 0
+}
+
 /// Caps Lock のロック状態（トグル表示灯）を読む。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn is_caps_lock_on() -> bool {
-    windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0
+    unsafe { is_toggle_key_on(0x14) }
 }
 
 /// Caps Lock の状態をトグルする。

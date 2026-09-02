@@ -86,6 +86,15 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
+/// OS かな入力ロック警告のトレイ表示を、投函時点の値ではなくディスパッチ時点の
+/// `KanaLockHysteresis::warned()` へ同期する。再入で複数回 repost されても
+/// 常に最新の値へ収束する（冪等）。
+pub(crate) fn handle_wm_kana_lock_warning_changed(app: &mut Runtime) {
+    app.platform
+        .tray
+        .set_kana_lock_warned(app.kana_lock_hysteresis.warned());
+}
+
 /// バッチ境界で1回だけ走るべき resync 処理（指摘5）。
 ///
 /// `crate::runtime::engine_window::take_needs_engine_resync()` はモーダルポンプの
@@ -1020,19 +1029,22 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         lparam.0
     );
-    let (layout_names, current_layout_name): (Vec<String>, String) = with_app_ref(|app| {
-        (
-            app.layouts.iter().map(|e| e.name.clone()).collect(),
-            app.platform.tray.current_layout_name().to_string(),
-        )
-    })
-    .unwrap_or_default();
+    let (layout_names, current_layout_name, kana_lock_warned): (Vec<String>, String, bool) =
+        with_app_ref(|app| {
+            (
+                app.layouts.iter().map(|e| e.name.clone()).collect(),
+                app.platform.tray.current_layout_name().to_string(),
+                app.platform.tray.kana_lock_warned(),
+            )
+        })
+        .unwrap_or_default();
     tray::handle_tray_message(
         hwnd,
         lparam,
         &layout_names,
         &current_layout_name,
         crate::is_elevated(),
+        kana_lock_warned,
     );
 }
 
@@ -1125,8 +1137,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             crate::ime::toggle_caps_lock();
         }
         Some(tray::TrayCommand::ResetState) => {
-            let caps_lock_on =
-                windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+            let caps_lock_on = crate::ime::is_caps_lock_on();
             if caps_lock_on {
                 crate::ime::toggle_caps_lock();
             }
@@ -1146,6 +1157,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             // なっていても、この操作で必ず Engine ON まで復帰させる。
             let _ = with_app(Runtime::force_engine_on);
         }
+        Some(tray::TrayCommand::KanaLockHelp) => tray::show_kana_lock_help_dialog(),
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }

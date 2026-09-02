@@ -19,8 +19,8 @@ pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;
 use awase::engine::{
-    Engine, EngineCommand, InputContext, InputModeState, ModeKeyConfig, SpecialKeyCombos,
-    TextKeyConfig,
+    Engine, EngineCommand, InputContext, InputModeState, KanaLockHysteresis, ModeKeyConfig,
+    SpecialKeyCombos, TextKeyConfig,
 };
 use awase::ngram::NgramModel;
 use awase::types::Timestamp;
@@ -269,6 +269,8 @@ pub struct Runtime {
     space_is_thumb_key: bool,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
+    /// OS かな入力ロック検知の通知ヒステリシス。
+    kana_lock_hysteresis: KanaLockHysteresis,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -572,9 +574,24 @@ impl Runtime {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
+        // 「無効化された瞬間」を捉えるスナップショットは on_command より前で
+        // 取る必要がある — on_command 自体が NicolaFsm::toggle_enabled で
+        // is_user_enabled を同期的に書き換えるため、execute_decision の中で
+        // 読むと既に更新後の値になってしまい判定が常に false になる
+        // （issue #137 3周目のレビューで指摘・修正）。
+        let was_user_enabled = self.engine.is_user_enabled();
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.execute_decision(decision);
+        if was_user_enabled && !self.engine.is_user_enabled() {
+            // エンジンが無効化されている間は romaji VK を送信しないため
+            // kp_stage_kana_lock_warn のサンプリング自体が止まる。無効化前の
+            // 警告状態がトレイに固着し続け、実際のON/OFF状態が確認できなく
+            // なるのを避けるため、ここでヒステリシスとトレイ表示の両方を
+            // 一律リセットする。
+            self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.platform.tray.set_kana_lock_warned(false);
+        }
     }
 
     /// エンジンを無条件で ON にする（トグルではなく強制）。
@@ -1220,6 +1237,7 @@ impl Runtime {
             muhenkan_solo_tap_is_passthrough: false,
             space_is_thumb_key: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
+            kana_lock_hysteresis: KanaLockHysteresis::new(),
         }
     }
 

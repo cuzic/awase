@@ -15,10 +15,10 @@ use crate::state::half_width_alnum::{
 };
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
-use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
-use awase::engine::InputModeState;
+use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CHANGED};
+use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
-use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
+use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -2000,6 +2000,8 @@ impl Runtime {
             self.platform.composition_native_f2_down(warmup_ime_on);
         }
 
+        self.kp_stage_kana_lock_warn(&decision);
+
         let result = self.executor.execute_from_hook(
             &mut self.platform,
             &self.platform_state.ime,
@@ -2016,6 +2018,83 @@ impl Runtime {
         }
 
         result.callback
+    }
+
+    /// VK/TSF の romaji 送信直前に OS のかな入力ロックを読む。
+    fn kp_stage_kana_lock_warn(&mut self, decision: &awase::engine::Decision) {
+        // 生VK出力に影響する injection_mode は「Unicode 以外」という否定形
+        // イディオムで表現する（`output/mod.rs` 等の既存箇所と同じ）。肯定形の
+        // 許可リストだと、将来 Vk/Tsf 以外の生VK出力を伴う InjectionMode が
+        // 増えたときにこのゲートだけ黙って除外されうる。
+        if self.platform.output.injection_mode == crate::output::InjectionMode::Unicode
+            || !decision_contains_romaji_send(decision)
+        {
+            return;
+        }
+
+        let before = self.kana_lock_hysteresis.streak();
+        // SAFETY: key pipeline は Runtime のメッセージループスレッド上で実行される。
+        let reading = unsafe { crate::observer::kana_lock::read_kana_lock() };
+        let action = self.kana_lock_hysteresis.observe(reading);
+        let after = self.kana_lock_hysteresis.streak();
+        if streak_side(before) != streak_side(after) {
+            log::debug!("[kana-lock] streak transition: {before:?} -> {after:?}");
+        }
+
+        match action {
+            WarnAction::None => {}
+            WarnAction::Warn => {
+                // SAFETY: 診断ログ用の読み取りのみ。メッセージループスレッド上で呼ぶ。
+                let fg_class = unsafe { crate::observer::kana_lock::foreground_class_name() };
+                log::warn!(
+                    "[kana-lock] OS かな入力ロックを検知しました \
+                     (reading={reading:?} streak={after:?} fg_class={fg_class})"
+                );
+                post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
+            }
+            WarnAction::ClearWarned => {
+                log::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
+                post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
+            }
+        }
+    }
+}
+
+fn decision_contains_romaji_send(decision: &awase::engine::Decision) -> bool {
+    let effects = match decision {
+        awase::engine::Decision::PassThrough => return false,
+        awase::engine::Decision::PassThroughWith { effects }
+        | awase::engine::Decision::Consume { effects } => effects,
+    };
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::Input(InputEffect::SendKeys(actions)) if actions_contain_romaji(actions)
+        )
+    })
+}
+
+fn actions_contain_romaji(actions: &[KeyAction]) -> bool {
+    actions.iter().any(|action| match action {
+        // Char/KeySequence/Romajiに加えKeyも対象にする: `.yab`配列定義外のキーは
+        // nicola_fsm::resolve_pending_char_as_single が Key(vk_code) にフォール
+        // バックし、これも send_keys 経由で生VK押下として送信される(output/mod.rs)。
+        // ROMANビットが落ちていれば同じくJISかな解釈の対象になるため、KeyUp/
+        // CtrlChord/SpecialKey/Suppress とは違いサンプリング対象に含める。
+        KeyAction::Char(_)
+        | KeyAction::KeySequence(_)
+        | KeyAction::Romaji(_)
+        | KeyAction::Key(_) => true,
+        KeyAction::Sequence(items) => actions_contain_romaji(items),
+        _ => false,
+    })
+}
+
+const fn streak_side(streak: KanaLockStreak) -> Option<bool> {
+    match streak {
+        KanaLockStreak::None => None,
+        KanaLockStreak::Off(_) => Some(false),
+        KanaLockStreak::On(_) => Some(true),
     }
 }
 
@@ -2454,6 +2533,7 @@ impl Runtime {
 mod tests {
     use super::*;
     use crate::focus::class_names::AppImeProfile;
+    use awase::engine::Decision;
 
     #[test]
     fn focus_probe_open_status_is_not_observable_for_imm32_unavailable() {
@@ -2488,5 +2568,54 @@ mod tests {
             FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),
             FocusProbeOpenStatus::NotObservable(AppImeProfile::Standard)
         ));
+    }
+
+    fn send_keys_decision(actions: Vec<KeyAction>) -> Decision {
+        Decision::consumed_with(
+            [Effect::Input(InputEffect::SendKeys(actions))]
+                .into_iter()
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_for_char_romaji_and_key_sequence() {
+        use awase::types::VkCode;
+
+        for action in [
+            KeyAction::Char('な'),
+            KeyAction::Romaji(String::from("na")),
+            KeyAction::KeySequence(String::from("1")),
+            // .yab配列定義外のキーはnicola_fsm::resolve_pending_char_as_singleが
+            // Key(vk_code)にフォールバックし、これも生VK押下として送信される
+            // (JISかな解釈の対象になりうる)。
+            KeyAction::Key(VkCode(0x41)),
+        ] {
+            assert!(decision_contains_romaji_send(&send_keys_decision(vec![
+                action
+            ])));
+        }
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_recurses_into_sequence() {
+        let decision = send_keys_decision(vec![KeyAction::Sequence(vec![KeyAction::Char('な')])]);
+        assert!(decision_contains_romaji_send(&decision));
+    }
+
+    #[test]
+    fn decision_contains_romaji_send_ignores_non_romaji_vk_actions() {
+        use awase::types::{SpecialKey, VkCode};
+
+        for action in [
+            KeyAction::SpecialKey(SpecialKey::Enter),
+            KeyAction::KeyUp(VkCode(0x41)),
+            KeyAction::CtrlChord(VkCode(0x41)),
+            KeyAction::Suppress,
+        ] {
+            assert!(!decision_contains_romaji_send(&send_keys_decision(vec![
+                action
+            ])));
+        }
     }
 }

@@ -1,5 +1,5 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
-use awase::engine::{EngineCommand, InputModeState};
+use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 
 use super::Runtime;
 use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
@@ -111,6 +111,15 @@ impl Runtime {
         // Phase 2: プロセス変更時は Engine に FocusChanged（flush あり）
         if focus_changed {
             self.ir_notify_focus_changed(skip_imm_query);
+            // かな入力ロック検知は romaji VK 送信直前にのみサンプリングするため
+            // （runtime/key_pipeline.rs::kp_stage_kana_lock_warn）、フォーカスが
+            // 別アプリへ移ると新たな観測が発生しなくなる。フォーカス変更のたびに
+            // ヒステリシスとトレイ表示をリセットし、切り替え先アプリで新たに
+            // 検知し直せるようにする（issue #137 4周目のレビューで指摘: リセット
+            // 手段が engine 無効化時のみで、フォーカス変更後に警告が固着したまま
+            // 二度と晴れないケースがあった）。
+            self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.platform.tray.set_kana_lock_warned(false);
         }
 
         FocusInfo {
