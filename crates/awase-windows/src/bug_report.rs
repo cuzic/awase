@@ -171,7 +171,107 @@ pub struct BugReportPayload {
     /// には無い send_health/degrade 系の警告等を拾うための別系統の添付
     /// （BUG-34 横展開）。`attach_log` チェックボックスで両方まとめて制御する。
     pub app_log_excerpt: Option<String>,
+    /// ADR-120 決定0a-report: 3キー仲裁の判定過程・訂正発生の観測カウンタ。
+    /// 打鍵内容・かな1文字も含まない、起動からの累積カウンタのみ。
+    pub attach_retro_eval_stats: bool,
+    pub retro_eval_stats: Option<BugReportRetroEvalStats>,
     pub reported_at: String,
+}
+
+/// ADR-120 決定0a-report: 3キー仲裁の判定過程・訂正発生を観測する累積カウンタ
+/// （`awase::engine::RetroEvalStats` 相当）を bug report ペイロードへ写す型。
+/// 打鍵内容・かな1文字も含まない、起動からの累積カウンタのみで構成する。
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportRetroEvalStats {
+    pub three_key_total: u64,
+    pub phase2_reached: u64,
+    pub phase1_reached: u64,
+    pub no_ngram_count: u64,
+    pub score_a_neg_infinity_count: u64,
+    pub score_a_zero_count: u64,
+    pub score_a_finite_count: u64,
+    pub score_b_neg_infinity_count: u64,
+    pub score_b_zero_count: u64,
+    pub score_b_finite_count: u64,
+    pub char2_normal_hiragana_count: u64,
+    pub no_thumb_followup_count: u64,
+    pub thumb_watch_window_thumb_arrived_count: u64,
+    pub thumb_watch_window_abandoned_count: u64,
+    pub followup_elapsed_ms_histogram: [u64; 7],
+    pub followup_overwritten_count: u64,
+    pub followup_dropped_imprecise_count: u64,
+    pub phase2_decisions_total: u64,
+    pub phase2_correction_histogram: [u64; 7],
+    pub phase1_decisions_total: u64,
+    pub phase1_correction_histogram: [u64; 7],
+    pub baseline_decisions_total: u64,
+    pub baseline_correction_histogram: [u64; 7],
+    pub escape_output_count: u64,
+}
+
+impl From<&awase::engine::RetroEvalStats> for BugReportRetroEvalStats {
+    fn from(stats: &awase::engine::RetroEvalStats) -> Self {
+        // `RetroEvalStats` を `..` を使わずフィールド名で丸ごと分解する
+        // （`/code-review` 指摘対応）: `..` を使った部分アクセスや
+        // `stats.field` の個別参照だと、将来 `RetroEvalStats` に新しい
+        // フィールドを追加してもこの変換をコンパイラが強制してくれない
+        // （送信元に未使用フィールドがあってもエラーにならない）ため、
+        // 新カウンタが bug report に反映されないまま気づかれずに
+        // 出荷されるリスクがある。分解パターンを網羅的にすることで、
+        // フィールド追加時に必ずここがコンパイルエラーになるようにする。
+        let awase::engine::RetroEvalStats {
+            three_key_total,
+            phase2_reached,
+            phase1_reached,
+            no_ngram_count,
+            score_a_neg_infinity_count,
+            score_a_zero_count,
+            score_a_finite_count,
+            score_b_neg_infinity_count,
+            score_b_zero_count,
+            score_b_finite_count,
+            char2_normal_hiragana_count,
+            no_thumb_followup_count,
+            thumb_watch_window_thumb_arrived_count,
+            thumb_watch_window_abandoned_count,
+            followup_elapsed_ms_histogram,
+            followup_overwritten_count,
+            followup_dropped_imprecise_count,
+            phase2_decisions_total,
+            phase2_correction_histogram,
+            phase1_decisions_total,
+            phase1_correction_histogram,
+            baseline_decisions_total,
+            baseline_correction_histogram,
+            escape_output_count,
+        } = *stats;
+        Self {
+            three_key_total,
+            phase2_reached,
+            phase1_reached,
+            no_ngram_count,
+            score_a_neg_infinity_count,
+            score_a_zero_count,
+            score_a_finite_count,
+            score_b_neg_infinity_count,
+            score_b_zero_count,
+            score_b_finite_count,
+            char2_normal_hiragana_count,
+            no_thumb_followup_count,
+            thumb_watch_window_thumb_arrived_count,
+            thumb_watch_window_abandoned_count,
+            followup_elapsed_ms_histogram,
+            followup_overwritten_count,
+            followup_dropped_imprecise_count,
+            phase2_decisions_total,
+            phase2_correction_histogram,
+            phase1_decisions_total,
+            phase1_correction_histogram,
+            baseline_decisions_total,
+            baseline_correction_histogram,
+            escape_output_count,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,6 +283,13 @@ pub struct BugReportDiagnostics {
     pub state_snapshot: Option<BugReportStateSnapshot>,
     pub config_toml: Option<String>,
     pub layout_yab: Option<String>,
+    /// ADR-120 決定0a-report。`SCHEMA_VERSION` は上げていないため、旧クライアント
+    /// が生成した診断JSONにはこのフィールドが存在しない。`#[serde(default)]`
+    /// を外すと、その旧データを読み込んだ際に `state_snapshot` 等
+    /// **既存の診断情報も含めて全部**が `load_diagnostics` の `.ok()` で静かに
+    /// 消える（`crates/awase-settings/src/bug_report.rs` 参照）ため必須。
+    #[serde(default)]
+    pub retro_eval_stats: Option<BugReportRetroEvalStats>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -195,6 +302,7 @@ impl Default for BugReportDiagnostics {
             state_snapshot: None,
             config_toml: None,
             layout_yab: None,
+            retro_eval_stats: None,
         }
     }
 }
@@ -221,6 +329,11 @@ pub struct BugReportInput<'a> {
     pub attach_config: bool,
     pub layout_yab: Option<&'a str>,
     pub attach_layout: bool,
+    /// ADR-120 決定0a-report。呼び出し側（`crates/awase-windows/src/runtime/message_handlers.rs`
+    /// の `current_bug_report_diagnostics`）が `Engine::retro_eval_stats()` から
+    /// 変換して渡す。
+    pub attach_retro_eval_stats: bool,
+    pub retro_eval_stats: Option<BugReportRetroEvalStats>,
     pub reported_at: &'a str,
 }
 
@@ -273,6 +386,11 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
+    let retro_eval_stats = if input.attach_retro_eval_stats {
+        input.retro_eval_stats
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -293,6 +411,8 @@ pub fn build_payload_with_log_budget(
         attach_log: input.attach_log,
         log_excerpt,
         app_log_excerpt,
+        attach_retro_eval_stats: input.attach_retro_eval_stats,
+        retro_eval_stats,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -499,6 +619,11 @@ mod tests {
             attach_config: true,
             layout_yab: Some("あ\tい"),
             attach_layout: true,
+            attach_retro_eval_stats: true,
+            retro_eval_stats: Some(BugReportRetroEvalStats {
+                three_key_total: 42,
+                ..BugReportRetroEvalStats::default()
+            }),
             reported_at: "2026-08-19T12:34:56Z",
         }
     }
@@ -568,10 +693,19 @@ mod tests {
         );
         assert!(payload.attach_layout);
         assert_eq!(payload.layout_yab.as_deref(), Some("あ\tい"));
+        assert!(payload.attach_retro_eval_stats);
+        assert_eq!(
+            payload.retro_eval_stats,
+            Some(BugReportRetroEvalStats {
+                three_key_total: 42,
+                ..BugReportRetroEvalStats::default()
+            })
+        );
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
         input.attach_layout = false;
+        input.attach_retro_eval_stats = false;
         let detached = build_payload(&input).unwrap();
         assert!(!detached.attach_state_snapshot);
         assert_eq!(detached.state_snapshot, None);
@@ -579,6 +713,8 @@ mod tests {
         assert_eq!(detached.config_toml, None);
         assert!(!detached.attach_layout);
         assert_eq!(detached.layout_yab, None);
+        assert!(!detached.attach_retro_eval_stats);
+        assert_eq!(detached.retro_eval_stats, None);
     }
 
     #[test]
@@ -705,6 +841,9 @@ mod tests {
         assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
         assert!(json.contains("\"attach_layout\": true"));
         assert!(json.contains("\"layout_yab\": \"あ\\tい\""));
+        assert!(json.contains("\"attach_retro_eval_stats\": true"));
+        assert!(json.contains("\"retro_eval_stats\": {"));
+        assert!(json.contains("\"three_key_total\": 42"));
         assert!(!json.contains("JournalEntry"));
     }
 

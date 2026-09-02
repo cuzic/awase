@@ -19,7 +19,8 @@ use super::fsm_types::{
     ModeKeyConfig, OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction,
     SoloTapAction, TextKeyConfig, ThumbSide, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
-use super::timing;
+use super::retro_eval_stats::{self, RetroEvalStats};
+use super::timing::{self, DecisionPhase};
 
 /// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
 pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
@@ -59,6 +60,33 @@ type Resp = Response<KeyAction, usize>;
 /// `Sequence` を非ネストにする不変条件（決定4）により、この展開は1階層で
 /// 完結する。`.into_vec()` を直接呼ぶ箇所を作らないこと——この関数が
 /// 唯一の変換点（実際に打鍵列が「開く」のはここだけに閉じる）。
+/// ADR-120 決定0a 項目2: Phase2 の `score_a`/`score_b` それぞれを
+/// `NEG_INFINITY`/ゼロ/有限 の3値に独立して分類し、対応するカウンタを+1する。
+/// `score_a`/`score_b` は互いに独立な値なので、同じ3値分類でも別々に数える
+/// （どちらか一方だけ `NEG_INFINITY` のケースを区別できるようにするため）。
+fn record_score_bucket(stats: &mut RetroEvalStats, is_score_a: bool, score: Option<f32>) {
+    let Some(score) = score else {
+        return;
+    };
+    if score == f32::NEG_INFINITY {
+        if is_score_a {
+            stats.score_a_neg_infinity_count += 1;
+        } else {
+            stats.score_b_neg_infinity_count += 1;
+        }
+    } else if score == 0.0 {
+        if is_score_a {
+            stats.score_a_zero_count += 1;
+        } else {
+            stats.score_b_zero_count += 1;
+        }
+    } else if is_score_a {
+        stats.score_a_finite_count += 1;
+    } else {
+        stats.score_b_finite_count += 1;
+    }
+}
+
 fn flatten_actions(actions: SmallVec<[KeyAction; 2]>) -> Vec<KeyAction> {
     let mut out = Vec::with_capacity(actions.len());
     for action in actions {
@@ -306,6 +334,91 @@ pub struct NicolaFsm {
     /// 既定にすると、変換候補ウィンドウ表示中に Enter 単独タップが丸ごと抑制され、
     /// 変換確定そのものができなくなってしまう。
     text_key_enter: TextKeyConfig,
+
+    /// ADR-120 決定0a: 3キー仲裁の判定過程・その後の訂正発生を観測する累積カウンタ。
+    /// 実際の変換結果には一切影響しない（読み取り専用の観測用フィールド）。
+    retro_eval_stats: RetroEvalStats,
+
+    /// ADR-120 決定0a 項目7: 「直近の決定」をカテゴリ別に独立して保持する。
+    /// 単一スロットにすると、同一ターン内の2回目の `update_history` 等で
+    /// Phase2 の訂正シグナルが即座に Baseline へ上書きされ、訂正ヒストグラムが
+    /// bucket 0 に集中してしまう（Opusレビュー blocker 所見2）。
+    last_decision: Option<LastDecision>,
+
+    /// ADR-120 決定0a 項目4/7 (should-fix所見S1/S2/S5対応で統合): 3キー仲裁
+    /// 決定（Phase1/Phase2/NoNgramいずれでも）「自身の出力」をあと何回
+    /// スキップすればBaseline計上から除外を終えてよいか。出力の種類を
+    /// 問わずデクリメントする（Char/Romaji以外の出力ではスキップが進まず
+    /// 次の実打鍵の出力を誤って飲み込んでいたバグの修正、所見S2）。
+    /// `measure_since`はPhase2決定のときだけSomeで、項目4「後続1かな確定」
+    /// までの経過ms計測の起点になる（Phase1/NoNgramではBaseline除外のみ
+    /// 行い時間計測はしない、所見S5）。
+    own_decision_output: Option<OwnDecisionOutput>,
+
+    /// ADR-120 決定0a 項目2c: Phase2決定直後、残り何打鍵(KeyDown)を「親指の
+    /// 有無」観測窓として見るか。2から開始し、通常のCharキーKeyDownで
+    /// デクリメント、親指KeyDownが来たら即座に破棄
+    /// （`no_thumb_followup_count` を増やさない）、0に達したら
+    /// `no_thumb_followup_count` を+1。`own_decision_output` とは独立した
+    /// 状態にする（同じ pending_decision を共用しない）。
+    thumb_watch_window: Option<ThumbWatchWindow>,
+
+    /// ADR-120 決定0a 項目7(a)専用: 物理 BACKSPACE の VK コード。Platform 層が
+    /// 判定して渡す（`space_thumb_vk` 等と同様、実際の VK 番号は Platform 層の
+    /// 責務）。`None`（既定）なら項目7(a)の集計は行わない
+    /// （`crates/awase-linux`/`crates/awase-macos` はまだ配線しない）。
+    backspace_vk: Option<VkCode>,
+
+    /// ADR-120 決定0a 項目7(a) (should-fix所見S4対応): 物理 BACKSPACE が
+    /// 現在押下中かどうか。OS オートリピートによる KeyDown 再送を新規タップ
+    /// として二重計上しないためのガード（`engine_off_extra_key_suppressed`
+    /// と同型、`handle_bypass`/`on_key_up` 参照）。
+    backspace_down: bool,
+}
+
+/// ADR-120 決定0a 項目2c の観測窓状態。`last_vk` は直前にこの窓を消費した
+/// キーで、OS のオートリピート（同一キーの連続 KeyDown 再送）が「新規タップ」
+/// として二重にカウントされるのを防ぐガードに使う（`engine_off_extra_key_suppressed`
+/// と同型のリピート抑止、`handle_bypass` 参照）。
+#[derive(Debug, Clone, Copy)]
+struct ThumbWatchWindow {
+    remaining: u8,
+    last_vk: Option<VkCode>,
+    /// `last_vk` が現在も押下中かどうか（`/code-review` 指摘対応）。単純な
+    /// `last_vk == event.vk_code` の等値比較だけでは、同じ物理キーを
+    /// 間を置かず2回連続で「本当に」タップした場合（オートリピートでは
+    /// なく別々のKeyDown+KeyUpペア2回）も誤って1回のオートリピートと
+    /// みなし窓が閉じない。KeyUpで明示的にクリアすることで、押下中の
+    /// 再送か新規タップかを正確に区別する。
+    last_vk_down: bool,
+}
+
+/// ADR-120 決定0a 項目7: カテゴリ別の「直近の決定」タイムスタンプ。
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_field_names)] // 3フィールドとも「いつ」を表す `_at` が最も明確
+struct LastDecision {
+    phase2_at: Option<Timestamp>,
+    phase1_at: Option<Timestamp>,
+    baseline_at: Option<Timestamp>,
+}
+
+/// ADR-120 決定0a 項目7 の決定カテゴリ（`mark_decision` 引数）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DecisionKind {
+    Phase2,
+    Phase1,
+    Baseline,
+}
+
+/// ADR-120 決定0a 項目4/7: 3キー仲裁決定「自身の出力」を追跡する統一状態
+/// （should-fix所見S1/S2/S5対応）。`remaining`は出力の種類を問わず
+/// 1出力ごとに1減算する。`remaining`が0になった後、`measure_since`が
+/// `Some`なら次の「かな」出力（Char/Romaji）で項目4の経過msヒストグラムへ
+/// 記録する。
+#[derive(Debug, Clone, Copy)]
+struct OwnDecisionOutput {
+    remaining: u8,
+    measure_since: Option<Timestamp>,
 }
 
 // ── 公開 API ──
@@ -372,6 +485,12 @@ impl NicolaFsm {
                 ignore_composing_guard: true,
                 shift_literal: true,
             },
+            retro_eval_stats: RetroEvalStats::default(),
+            last_decision: None,
+            own_decision_output: None,
+            thumb_watch_window: None,
+            backspace_vk: None,
+            backspace_down: false,
         }
     }
 
@@ -429,7 +548,10 @@ impl NicolaFsm {
             EngineState::PendingChar(pending) => {
                 // 保留中の文字キーを通常面で単独確定
                 let resolved = self.resolve_pending_char_as_single(&pending);
-                self.update_history(resolved.output);
+                self.update_history_imprecise(
+                    resolved.output,
+                    self.last_key_timestamp.unwrap_or(0),
+                );
                 Response::emit(flatten_actions(resolved.actions))
             }
             EngineState::PendingThumb(thumb) => {
@@ -453,7 +575,10 @@ impl NicolaFsm {
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
                 }
-                self.update_history(resolved.output);
+                self.update_history_imprecise(
+                    resolved.output,
+                    self.last_key_timestamp.unwrap_or(0),
+                );
                 Response::emit(flatten_actions(resolved.actions))
             }
             EngineState::PendingCharThumb {
@@ -468,7 +593,10 @@ impl NicolaFsm {
                 // ——異常系 flush は「今ある情報で即座に確定する」経路であり、
                 // 通常の 2 鍵解決（KeyUp/タイムアウト経由）とは別軸のため。
                 let resolved = self.resolve_char_thumb_as_simultaneous(&char_key, thumb.face());
-                self.update_history(resolved.output);
+                self.update_history_imprecise(
+                    resolved.output,
+                    self.last_key_timestamp.unwrap_or(0),
+                );
                 let mut actions = resolved.actions;
                 if char1_released_at.is_some() {
                     // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
@@ -486,6 +614,22 @@ impl NicolaFsm {
         self.last_key_timestamp = None;
         self.last_key_gap_us = None;
         self.solo_counter.reset();
+
+        // ADR-120 決定0a (`/code-review` 指摘): `own_decision_output`/
+        // `thumb_watch_window`/`last_decision` はコンテキスト喪失
+        // （フォーカス変更・IME OFF・言語切替・レイアウト差替え・エンジン
+        // 無効化）を跨いで持ち越してはならない——別アプリ/別コンテキストで
+        // 打たれた次の実キー入力を、直前アプリのPhase2決定の「後続かな」
+        // として誤帰属してしまう（時間による上限が無く、境界も無い汚染）。
+        // `ContextChange::BypassKey`（`handle_bypass` 自身が非idle時に呼ぶ
+        // 通常のflush）はコンテキスト喪失ではない——ここで汎用リセットすると
+        // `engine_off_extra_key_suppressed`（`:636-642`）と同じ罠になり、
+        // 決定直後の普通の打鍵継続で追跡状態が即座に消えてしまう。
+        if !matches!(reason, ContextChange::BypassKey) {
+            self.own_decision_output = None;
+            self.thumb_watch_window = None;
+            self.last_decision = None;
+        }
 
         if !was_idle {
             log::info!(
@@ -521,6 +665,11 @@ impl NicolaFsm {
         // 有意なコンテキスト断絶点でのみリセットする。
         self.engine_off_extra_solo_counter.reset();
         self.engine_off_extra_key_suppressed = None;
+        // ADR-120 決定0a 項目7(a) (所見NB1対応、最低ラインの保険): 主たる
+        // 復帰経路は `on_key_down` の自己修復（他キーのKeyDownでクリア）だが、
+        // エンジン無効化という単一の有意なコンテキスト断絶点でも念のため
+        // クリアしておく。
+        self.backspace_down = false;
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
         // ここでのリセットは不要。
         log::info!(
@@ -533,6 +682,21 @@ impl NicolaFsm {
     #[must_use]
     pub const fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// ADR-120 決定0a: 3キー仲裁の判定過程・訂正発生を観測する累積カウンタを返す。
+    /// 起動からの累積値であり、実際の変換結果には一切影響しない。
+    #[must_use]
+    pub const fn retro_eval_stats(&self) -> &RetroEvalStats {
+        &self.retro_eval_stats
+    }
+
+    /// ADR-120 決定0a 項目7(a)専用: 物理 BACKSPACE の VK コードを設定する
+    /// （Platform 層が `crate::vk::VK_BACK` 等との等値比較で判定して渡す）。
+    /// 未呼び出し（既定 `None`）の場合、項目7(a)の集計は行わない
+    /// （項目7(b)/7(c)の配列セル由来 Backspace/Escape 計上には影響しない）。
+    pub const fn set_backspace_vk(&mut self, vk: Option<VkCode>) {
+        self.backspace_vk = vk;
     }
 
     /// 診断用: 現在の FSM 状態を短い文字列で返す。
@@ -975,7 +1139,13 @@ impl ShiftReduceParser for NicolaFsm {
     }
 
     fn on_reduce(&mut self, record: OutputUpdate) {
-        self.update_history(record);
+        // `ShiftReduceParser::on_reduce` はトレイトのシグネチャ上イベント固有の
+        // タイムスタンプを受け取れない。`on_key_down` 冒頭の `update_timing` が
+        // `last_key_timestamp` を現在処理中のイベントの値へ同期的に更新して
+        // いるため、`parse()` 経由でこの `on_reduce` に至る通常経路では現在の
+        // イベントのタイムスタンプと一致する（ADR-120 決定0a の集計専用の
+        // 精度要件であり、厳密な取りこぼしが実害を持つ他の用途とは異なる）。
+        self.update_history(record, self.last_key_timestamp.unwrap_or(0));
     }
 }
 
@@ -994,15 +1164,81 @@ impl NicolaFsm {
         self.phys.modifiers.shift && !ev.key_class.is_thumb()
     }
 
+    /// ADR-120 決定0a 項目2c: Phase2決定直後の「親指の有無」観測窓を消費する。
+    /// 実際の変換結果には一切影響しない。
+    fn observe_thumb_watch_window(&mut self, event: &RawKeyEvent) {
+        let Some(mut window) = self.thumb_watch_window.take() else {
+            return;
+        };
+        let ev = self.phys.classified;
+        if ev.key_class.is_thumb() {
+            // 親指が来た → 窓不成立、破棄（no_thumb_followup_count は増やさない）
+            self.retro_eval_stats.thumb_watch_window_thumb_arrived_count += 1;
+            return;
+        }
+        // 所見S6: 窓が数えるのは「後続の打鍵」であって「親指以外の何か」では
+        // ない。`KeyClass::Passthrough`（Shift/Ctrl/矢印/BACKSPACE等の修飾・
+        // ナビゲーションキー）を1打鍵として消費すると、実質1文字しか
+        // 打っていないのに窓が閉じてしまい `no_thumb_followup_count` を
+        // 過大評価する（ADR-120の判断点1ゲート(iii)がこの値で機構全体の
+        // 可否を左右するため、過大評価は「作らなくてよい機構を誤って作る」
+        // 方向に倒れる）。`Char` キーだけを消費対象にする。
+        if ev.key_class != KeyClass::Char {
+            self.thumb_watch_window = Some(window);
+            return;
+        }
+        if window.last_vk == Some(event.vk_code) && window.last_vk_down {
+            // OS のオートリピートによる同一キーの KeyDown 再送
+            // （まだ物理的に押下中、`on_key_up` でクリアされていない）。
+            // 新規タップではないためカウントを進めず、窓の残数もそのまま
+            // 維持する（`handle_bypass` の `engine_off_extra_key_suppressed`
+            // と同型）。
+            self.thumb_watch_window = Some(window);
+            return;
+        }
+        window.last_vk = Some(event.vk_code);
+        window.last_vk_down = true;
+        if window.remaining <= 1 {
+            self.retro_eval_stats.no_thumb_followup_count += 1;
+        } else {
+            window.remaining -= 1;
+            self.thumb_watch_window = Some(window);
+        }
+    }
+
     fn on_key_down(&mut self, event: &RawKeyEvent) -> Resp {
         self.update_timing(event);
+
+        // ADR-120 決定0a 項目7(a) (所見NB1対応): 物理BACKSPACE以外のKeyDownが
+        // 来たら `backspace_down` を自己修復的にクリアする。エンジンが
+        // 非活性化（IME OFF・非日本語IMEアプリへのフォーカス移動等）した
+        // 際、物理BACKSPACEのKeyUpが `Engine::on_input` Phase 2 で
+        // `Decision::pass_through()` として捨てられ `on_key_up` に一切
+        // 到達しないことがあり、`on_key_up` 側のクリアだけに頼ると
+        // `backspace_down` が `true` のまま永久に固着し、以後の項目7(a)集計が
+        // 無言で全滅する（2026-08-26 の `engine_off_extra_key` ラッチ固着と
+        // 同型のバグ）。OSオートリピートは「最後に押されたキー」だけを
+        // 再送するため、他キーのKeyDownはBACKSPACEが既に離されたことの
+        // 十分な証拠になり、新しいタイミング定数も不要
+        // （`.claude/rules/tuning-constants.md` に抵触しない）。
+        //
+        // **`flush_pending` の汎用リセットには入れないこと**: `handle_bypass`
+        // はBACKSPACE自身の処理中に（保留キーがあれば）`flush_pending` を
+        // 呼ぶため、セットした同じ呼び出し内でクリアされてしまい
+        // オートリピート抑止が丸ごと無効化される（`toggle_enabled` の
+        // `:636-642` が記録する2026-08-26 report1と同型の罠）。
+        if !self.backspace_vk.is_some_and(|vk| event.vk_code == vk) {
+            self.backspace_down = false;
+        }
+
+        self.observe_thumb_watch_window(event);
 
         // Bypass check: modifiers, IME control, OS shortcuts.
         // Handled before the parser loop because bypass needs consumed=false
         // even when flush actions are emitted.
         let ev = self.phys.classified;
         if let Some(reason) = self.bypass_reason(&ev) {
-            return self.handle_bypass(&ev, reason);
+            return self.handle_bypass(&ev, reason, event.injected);
         }
 
         self.parse(ev)
@@ -1380,8 +1616,31 @@ impl NicolaFsm {
         resolved.into_reduce_and_continue(*ev)
     }
 
-    /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー
-    pub(crate) fn update_history(&mut self, output: OutputUpdate) {
+    /// OutputUpdate に基づいて出力履歴を更新する共通ヘルパー。
+    ///
+    /// `now` は ADR-120 決定0a の集計（項目4・項目7）専用のタイムスタンプで、
+    /// `self.last_key_timestamp` の使い回しではなく呼び出し元が握っている
+    /// イベント固有の値を渡すこと（過小評価バイアスを避けるため）。
+    pub(crate) fn update_history(&mut self, output: OutputUpdate, now: Timestamp) {
+        self.record_retro_eval_stats(&output, now, true);
+        self.apply_output_history(output);
+    }
+
+    /// `update_history` と同じだが、`now` がタイムアウト/flush等の経路由来で
+    /// 実際のイベント発生時刻ではない（`self.last_key_timestamp` の使い回し）
+    /// 場合に使う（should-fix所見B2対応）。項目4「後続1かな確定」の経過ms
+    /// 計測は、この不正確な `now` では誤って過小評価される
+    /// （PairWithChar1分岐で char2 がタイムアウト経由で単独確定した場合に
+    /// elapsed が常に0msになっていたバグ）ため記録せず破棄する。
+    /// `mark_decision`/`record_user_correction`（項目7）は許容できる精度の
+    /// 低下として引き続き記録する——これらは分オーダーの `STALE_ATTRIBUTION_MS`
+    /// 窓判定であり、項目4ほど小さい時間スケールの精度を要求しないため。
+    fn update_history_imprecise(&mut self, output: OutputUpdate, now: Timestamp) {
+        self.record_retro_eval_stats(&output, now, false);
+        self.apply_output_history(output);
+    }
+
+    fn apply_output_history(&mut self, output: OutputUpdate) {
         match output {
             OutputUpdate::Record(entry) => {
                 self.output_history.push(entry);
@@ -1390,6 +1649,143 @@ impl NicolaFsm {
                 self.output_history.retract_and_record(entry);
             }
             OutputUpdate::None => {}
+        }
+    }
+
+    /// ADR-120 決定0a 項目4・7・7(b)・7(c): `output` が実際の履歴に反映される
+    /// 前に、集計専用カウンタを更新する。実際の変換結果には一切影響しない。
+    /// `precise` が `false` の場合、項目4の経過ms計測は記録しない
+    /// （`update_history_imprecise` 参照、所見B2対応）。
+    fn record_retro_eval_stats(&mut self, output: &OutputUpdate, now: Timestamp, precise: bool) {
+        let Some(entry) = output.entry_ref() else {
+            return;
+        };
+
+        // 項目7除外条件の判定は own_decision_output を変異させる前に行う
+        // （このentry自身が「3鍵仲裁の決定自身の出力」の途中かどうかは、
+        // 今回の消費より前の状態で決まる）。
+        let is_own_decision_output = self.own_decision_output.is_some_and(|s| s.remaining > 0);
+
+        // 項目7(b)(c): 配列セル由来のBackspace/Escape出力。
+        // **`/code-review` 指摘**: 3キー仲裁決定「自身の出力」が
+        // `SpecialKey::Backspace`/`Escape` に解決される .yab 配列も存在しうる
+        // （例: 決定自体がBackspaceを送出する配列セル）。この場合の出力は
+        // ユーザーの訂正操作ではなく決定そのものの結果なので、
+        // `is_own_decision_output` の間は計上しない
+        // （elapsed≈0msの見せかけの自己訂正がbucket 0に混入するのを防ぐ）。
+        if !is_own_decision_output {
+            match &entry.action {
+                KeyAction::SpecialKey(SpecialKey::Backspace) => self.record_user_correction(now),
+                KeyAction::SpecialKey(SpecialKey::Escape) => {
+                    self.retro_eval_stats.escape_output_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        // 項目4/7: own_decision_output の消費。出力の種類を問わず1出力ごとに
+        // 1減算する（所見S2対応——以前はChar/Romaji以外の出力ではデクリメント
+        // しておらず、`Key(vk)`/`Suppress`等の自前出力があるとスキップが
+        // 残ったまま次の実打鍵の出力を誤って飲み込んでいた）。
+        let is_kana_output = matches!(entry.action, KeyAction::Char(_) | KeyAction::Romaji(_));
+        if let Some(mut own) = self.own_decision_output.take() {
+            if own.remaining > 0 {
+                own.remaining -= 1;
+                self.own_decision_output = Some(own);
+            } else if let Some(since) = own.measure_since {
+                if is_kana_output {
+                    // remaining==0まで消費済み、かつ今回が最初の「かな」出力
+                    // = これが「後続1かな確定」（Phase2決定のみ measure_since が Some）。
+                    if precise {
+                        let elapsed_ms = now.saturating_sub(since) / 1000;
+                        let bucket = retro_eval_stats::bucket_index(elapsed_ms);
+                        self.retro_eval_stats.followup_elapsed_ms_histogram[bucket] += 1;
+                    } else {
+                        // 所見B2: 不正確な now では記録しない。計測は破棄する
+                        // （欠測として扱う——誤って elapsed≈0 に丸め込まない）。
+                        // 所見NN2: 欠測の発生自体は数えておく（残差ゼロで
+                        // phase2_reached と突き合わせられるようにする）。
+                        self.retro_eval_stats.followup_dropped_imprecise_count += 1;
+                    }
+                    // own_decision_output は None のまま（既に take 済み）
+                } else {
+                    // まだ「かな」ではない非対象出力（Suppress等）。計測継続。
+                    self.own_decision_output = Some(own);
+                }
+            }
+            // remaining==0 かつ measure_since==None（Phase1/NoNgram決定）:
+            // 何もしない。own_decision_output は None のまま
+            // （Baseline除外の役目は済んだので以後は通常の判定に戻る）。
+        }
+
+        // 項目7: このentryが「非曖昧な確定」に該当する場合のみBaselineへ計上。
+        // 除外条件:
+        //   - RetractAndRecord の新エントリ（投機出力の差し替え）
+        //   - 3キー仲裁決定（Phase1/Phase2/NoNgramいずれも）「自身の出力」の
+        //     最中（own_decision_output が remaining>=1 で保持されている間、
+        //     所見S5対応——以前はPhase2決定にしか効かず、Phase1決定の自前
+        //     出力がBaselineへ混入していた）
+        //   - 上のmatchで既に計上した Backspace/Escape そのもの
+        let is_backspace_or_escape = matches!(
+            entry.action,
+            KeyAction::SpecialKey(SpecialKey::Backspace | SpecialKey::Escape)
+        );
+        if !output.is_retract_and_record() && !is_own_decision_output && !is_backspace_or_escape {
+            self.mark_decision(DecisionKind::Baseline, now);
+        }
+    }
+
+    /// ADR-120 決定0a 項目7: カテゴリ別「直近の決定」タイムスタンプを更新し、
+    /// 対応する分母カウンタを+1する。
+    fn mark_decision(&mut self, kind: DecisionKind, now: Timestamp) {
+        let last = self.last_decision.get_or_insert_with(Default::default);
+        match kind {
+            DecisionKind::Phase2 => {
+                last.phase2_at = Some(now);
+                self.retro_eval_stats.phase2_decisions_total += 1;
+            }
+            DecisionKind::Phase1 => {
+                last.phase1_at = Some(now);
+                self.retro_eval_stats.phase1_decisions_total += 1;
+            }
+            DecisionKind::Baseline => {
+                last.baseline_at = Some(now);
+                self.retro_eval_stats.baseline_decisions_total += 1;
+            }
+        }
+    }
+
+    /// ADR-120 決定0a 項目7(a)(b): ユーザー訂正操作（物理BACKSPACE or 配列セル
+    /// 由来のBackspace出力）が発生した際、カテゴリ別に独立してstale判定した
+    /// うえで訂正ヒストグラムへ計上する。1回の訂正が複数カテゴリに計上される
+    /// ことを許容する（直近Phase1決定と直近Phase2決定の両方が窓内、など）。
+    /// 計上したカテゴリは即座にクリアする（所見S3対応——クリアしないと
+    /// BACKSPACE連打・長押しのたびに同じ決定へ何度も計上され、訂正の
+    /// 「発生有無」ではなく「消した文字数」を数える集計になってしまう）。
+    fn record_user_correction(&mut self, now: Timestamp) {
+        let Some(last) = self.last_decision.as_mut() else {
+            return;
+        };
+        if let Some(t) = last.phase2_at.take() {
+            let elapsed = now.saturating_sub(t) / 1000;
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
+                let bucket = retro_eval_stats::bucket_index(elapsed);
+                self.retro_eval_stats.phase2_correction_histogram[bucket] += 1;
+            }
+        }
+        if let Some(t) = last.phase1_at.take() {
+            let elapsed = now.saturating_sub(t) / 1000;
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
+                let bucket = retro_eval_stats::bucket_index(elapsed);
+                self.retro_eval_stats.phase1_correction_histogram[bucket] += 1;
+            }
+        }
+        if let Some(t) = last.baseline_at.take() {
+            let elapsed = now.saturating_sub(t) / 1000;
+            if elapsed < retro_eval_stats::STALE_ATTRIBUTION_MS {
+                let bucket = retro_eval_stats::bucket_index(elapsed);
+                self.retro_eval_stats.baseline_correction_histogram[bucket] += 1;
+            }
         }
     }
 
@@ -1648,11 +2044,12 @@ impl NicolaFsm {
     /// 早期returnの再発であり、`docs/experiments.md` エントリ01
     /// （IME OFFキー選択が5日で6回反転した事例）と同じ轍を踏む。
     fn compute_prefer_char1(
-        &self,
+        &mut self,
         pending: &PendingKey,
         thumb: &PendingThumbData,
         ev: &ClassifiedEvent,
-    ) -> bool {
+    ) -> (bool, DecisionPhase) {
+        self.retro_eval_stats.three_key_total += 1;
         let thumb_face = self.resolve_thumb_face(thumb.side(), pending.pos);
         let judge = self.timing_judge();
         let char1_thumb_kana = thumb_face.and_then(|face| self.lookup_kana_at(pending.pos, face));
@@ -1660,14 +2057,32 @@ impl NicolaFsm {
         let char2_thumb_kana = self
             .resolve_thumb_face(thumb.side(), ev.pos)
             .and_then(|face| self.lookup_kana_at(ev.pos, face));
-        judge.three_key_pairing(
+        let (result, trace) = judge.three_key_pairing_traced(
             pending.timestamp,
             thumb.timestamp,
             ev.timestamp,
             char1_thumb_kana,
             char1_single_kana,
             char2_thumb_kana,
-        ) == timing::ThreeKeyResult::PairWithChar1
+        );
+        match trace.phase {
+            DecisionPhase::NoNgram => self.retro_eval_stats.no_ngram_count += 1,
+            DecisionPhase::Phase1 => {
+                self.retro_eval_stats.phase1_reached += 1;
+                self.mark_decision(DecisionKind::Phase1, ev.timestamp);
+            }
+            DecisionPhase::Phase2 => {
+                self.retro_eval_stats.phase2_reached += 1;
+                record_score_bucket(&mut self.retro_eval_stats, true, trace.score_a);
+                record_score_bucket(&mut self.retro_eval_stats, false, trace.score_b);
+                let char2_single_kana = self.lookup_kana_at(ev.pos, Face::Normal);
+                if char2_single_kana.is_some_and(retro_eval_stats::is_hiragana) {
+                    self.retro_eval_stats.char2_normal_hiragana_count += 1;
+                }
+                self.mark_decision(DecisionKind::Phase2, ev.timestamp);
+            }
+        }
+        (result == timing::ThreeKeyResult::PairWithChar1, trace.phase)
     }
 
     /// char1側の解決結果を確定させる: history へ即座に反映し、char1 が既に
@@ -1698,8 +2113,9 @@ impl NicolaFsm {
         resolved: ResolvedAction,
         char1_scan: ScanCode,
         char1_released_at: Option<Timestamp>,
+        now: Timestamp,
     ) -> SmallVec<[KeyAction; 2]> {
-        self.update_history(resolved.output);
+        self.update_history(resolved.output, now);
         let mut actions = resolved.actions;
         if char1_released_at.is_some() {
             self.append_key_up_for(&mut actions, char1_scan);
@@ -1719,7 +2135,12 @@ impl NicolaFsm {
             Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
             None => self.resolve_pending_char_as_single(&pending),
         };
-        let actions = self.commit_char1_output(resolved, pending.scan_code, char1_released_at);
+        let actions = self.commit_char1_output(
+            resolved,
+            pending.scan_code,
+            char1_released_at,
+            remaining.timestamp,
+        );
         ParseAction::ReduceAndContinue {
             actions,
             record: OutputUpdate::None,
@@ -1753,7 +2174,56 @@ impl NicolaFsm {
         }
 
         // char2 が来た → 3 鍵仲裁
-        if self.compute_prefer_char1(&pending, &thumb, ev) {
+        let (prefer_char1, decision_phase) = self.compute_prefer_char1(&pending, &thumb, ev);
+
+        // ADR-120 決定0a 項目7 (should-fix所見S1/S5対応): char2+thumb面が
+        // 実際に定義されているかをここで先読みし、このターンで実際に何回
+        // update_history が呼ばれるか（＝このターンの3鍵仲裁自身の出力を
+        // 何回スキップすればBaseline計上から除外できるか）を確定してから
+        // 状態を仕込む。以前は PairWithChar2 なら無条件に2回としていたが、
+        // 親指面に char2 の定義が無いフォールバック分岐では実際には
+        // char1単独の1回しか出力されず、スキップ数が1つ余って次の実打鍵の
+        // 出力を誤って飲み込んでいた（所見S1）。
+        //
+        // 決定フェーズを問わず（Phase1/Phase2/NoNgramいずれでも、所見S5対応）
+        // 「このターンの3鍵仲裁自身の出力」をBaseline計上から除外する。
+        // 項目4の経過ms計測（`measure_since`）は Phase2 のときだけ有効にする。
+        let char2_thumb_face = self.resolve_thumb_face(thumb.side(), ev.pos);
+        let char2_face_lookup =
+            char2_thumb_face.and_then(|face| self.lookup_face(ev.pos, self.get_face(face)));
+        let own_output_count = if prefer_char1 || char2_face_lookup.is_none() {
+            1
+        } else {
+            2
+        };
+        // nice-to-have所見N1対応: 前の決定の「後続1かな確定」計測が完了しない
+        // まま、この新しい決定に上書きされて失われる場合を数える
+        // （remaining==0まで消費済み=自前出力は終わっていた、かつ
+        // measure_since=Some=Phase2で計測継続中だった場合のみ「失われた」）。
+        if self
+            .own_decision_output
+            .is_some_and(|s| s.remaining == 0 && s.measure_since.is_some())
+        {
+            self.retro_eval_stats.followup_overwritten_count += 1;
+        }
+        self.own_decision_output = Some(OwnDecisionOutput {
+            remaining: own_output_count,
+            measure_since: (decision_phase == DecisionPhase::Phase2).then_some(ev.timestamp),
+        });
+        if decision_phase == DecisionPhase::Phase2 {
+            // nice-to-have所見N2対応: 前の窓が未消化のまま上書きされる場合を数える
+            // （項目2cの正しい分母 = no_thumb + thumb_arrived + abandoned）。
+            if self.thumb_watch_window.is_some() {
+                self.retro_eval_stats.thumb_watch_window_abandoned_count += 1;
+            }
+            self.thumb_watch_window = Some(ThumbWatchWindow {
+                remaining: 2,
+                last_vk: None,
+                last_vk_down: false,
+            });
+        }
+
+        if prefer_char1 {
             // char1+thumb = 同時打鍵、char2 は再処理
             return self.reduce_char_thumb_and_continue(
                 pending,
@@ -1765,19 +2235,20 @@ impl NicolaFsm {
 
         // char1 = 単独、char2+thumb = 同時打鍵（または char2 単独）
         let char1_resolved = self.resolve_pending_char_as_single(&pending);
-        let mut actions =
-            self.commit_char1_output(char1_resolved, pending.scan_code, char1_released_at);
-        let char2_thumb_face = self.resolve_thumb_face(thumb.side(), ev.pos);
-        if let Some(face) = char2_thumb_face {
-            if let Some((action, kana)) = self.lookup_face(ev.pos, self.get_face(face)) {
-                self.consume_thumb(face);
-                actions.push(action.clone());
-                return ParseAction::Reduce {
-                    actions,
-                    record: OutputUpdate::record(ev.scan_code, &action, kana),
-                    timer: TimerIntent::CancelAll,
-                };
-            }
+        let mut actions = self.commit_char1_output(
+            char1_resolved,
+            pending.scan_code,
+            char1_released_at,
+            ev.timestamp,
+        );
+        if let (Some(face), Some((action, kana))) = (char2_thumb_face, char2_face_lookup) {
+            self.consume_thumb(face);
+            actions.push(action.clone());
+            return ParseAction::Reduce {
+                actions,
+                record: OutputUpdate::record(ev.scan_code, &action, kana),
+                timer: TimerIntent::CancelAll,
+            };
         }
         // 親指面に char2 の定義がない → char1 単独確定、char2 を再処理
         ParseAction::ReduceAndContinue {
@@ -1792,6 +2263,24 @@ impl NicolaFsm {
 impl NicolaFsm {
     fn on_key_up(&mut self, event: &RawKeyEvent) -> Resp {
         // phys.classified は on_key_down 側で使用済み
+
+        // ADR-120 決定0a 項目7(a) (should-fix所見S4対応): 物理BACKSPACEが
+        // 離されたら押下状態をクリアする（`handle_bypass` のオートリピート
+        // 抑止ガードの対称KeyUp側）。
+        if self.backspace_vk.is_some_and(|vk| event.vk_code == vk) {
+            self.backspace_down = false;
+        }
+
+        // ADR-120 決定0a 項目2c (`/code-review` 指摘対応): 観測窓が
+        // 追跡中のキーが離されたら `last_vk_down` をクリアする
+        // （`observe_thumb_watch_window` のオートリピート判定の対称KeyUp
+        // 側。同じ物理キーを間を置かず2回連続で本当にタップした場合を、
+        // 誤ってオートリピートとみなさないようにするため）。
+        if let Some(window) = self.thumb_watch_window.as_mut() {
+            if window.last_vk == Some(event.vk_code) {
+                window.last_vk_down = false;
+            }
+        }
 
         // PendingCharThumb 状態での KeyUp 処理
         if let EngineState::PendingCharThumb {
@@ -1927,6 +2416,8 @@ impl NicolaFsm {
                 &pending,
                 &thumb,
                 event.vk_code == thumb.vk_code,
+                event.timestamp,
+                true,
             );
         }
 
@@ -1935,7 +2426,7 @@ impl NicolaFsm {
             Some(face) => self.resolve_char_thumb_as_simultaneous(&pending, face),
             None => self.resolve_pending_char_as_single(&pending),
         };
-        self.update_history(resolved.output);
+        self.update_history(resolved.output, event.timestamp);
         let mut actions = resolved.actions;
 
         // どの物理キーが離されたかに応じて char1 の KeyUp 追記を判定
@@ -1977,9 +2468,15 @@ impl NicolaFsm {
         char_key: &PendingKey,
         thumb: &PendingThumbData,
         thumb_released_now: bool,
+        now: Timestamp,
+        precise: bool,
     ) -> Resp {
         let char1_resolved = self.resolve_pending_char_as_single(char_key);
-        self.update_history(char1_resolved.output);
+        if precise {
+            self.update_history(char1_resolved.output, now);
+        } else {
+            self.update_history_imprecise(char1_resolved.output, now);
+        }
         let mut actions = char1_resolved.actions;
         self.append_key_up_for(&mut actions, char_key.scan_code);
 
@@ -2013,7 +2510,11 @@ impl NicolaFsm {
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
         }
-        self.update_history(thumb_resolved.output);
+        if precise {
+            self.update_history(thumb_resolved.output, now);
+        } else {
+            self.update_history_imprecise(thumb_resolved.output, now);
+        }
         actions.extend(thumb_resolved.actions);
         if thumb_released_now {
             self.append_key_up_for(&mut actions, thumb.scan_code);
@@ -2054,7 +2555,7 @@ impl NicolaFsm {
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
         }
-        self.update_history(resolved.output);
+        self.update_history(resolved.output, event.timestamp);
         let mut result = resolved.actions;
         self.append_key_up_for(&mut result, event.scan_code);
         // Unicode 文字 (Char) は Down+Up 一括送信済みなので KeyUp 追加不要
@@ -2124,7 +2625,7 @@ impl NicolaFsm {
     /// PendingChar タイムアウト：文字キーを単独打鍵として確定する
     fn timeout_pending_char(&mut self, pending: &PendingKey) -> Resp {
         let resolved = self.resolve_pending_char_as_single(pending);
-        self.update_history(resolved.output);
+        self.update_history_imprecise(resolved.output, self.last_key_timestamp.unwrap_or(0));
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
@@ -2162,7 +2663,7 @@ impl NicolaFsm {
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
         }
-        self.update_history(resolved.output);
+        self.update_history_imprecise(resolved.output, self.last_key_timestamp.unwrap_or(0));
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
@@ -2184,14 +2685,20 @@ impl NicolaFsm {
             // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する。
             // thumb はまだ押下中（だからこそタイムアウトした）なので、thumb 自身の
             // KeyUp は後から届く実イベントに委ねる（thumb_released_now=false）。
-            return self.resolve_char_and_thumb_as_separate_solos(char_key, thumb, false);
+            return self.resolve_char_and_thumb_as_separate_solos(
+                char_key,
+                thumb,
+                false,
+                self.last_key_timestamp.unwrap_or(0),
+                false,
+            );
         }
 
         let resolved = match thumb_face {
             Some(face) => self.resolve_char_thumb_as_simultaneous(char_key, face),
             None => self.resolve_pending_char_as_single(char_key),
         };
-        self.update_history(resolved.output);
+        self.update_history_imprecise(resolved.output, self.last_key_timestamp.unwrap_or(0));
         let mut actions = resolved.actions;
         if char1_released_at.is_some() {
             // char1 は既に物理的に離されている → Key 出力があれば KeyUp も追加
@@ -2221,7 +2728,10 @@ impl NicolaFsm {
                     let remaining_us = self.threshold_us.saturating_sub(self.speculative_delay_us);
                     if self.enter_speculative_char(pending, &action) {
                         // Emit the speculative output + set TIMER_PENDING for remaining time
-                        self.update_history(OutputUpdate::record(pending.scan_code, &action, kana));
+                        self.update_history_imprecise(
+                            OutputUpdate::record(pending.scan_code, &action, kana),
+                            self.last_key_timestamp.unwrap_or(0),
+                        );
                         self.build_response(
                             smallvec![action],
                             true,
@@ -2325,12 +2835,57 @@ impl NicolaFsm {
     ///
     /// 全てのバイパス理由で同一の処理: 保留があればフラッシュ、元のキーは OS にパススルー。
     /// consumed=false を維持するため ParseAction ループの外で直接 Resp を返す。
-    fn handle_bypass(&mut self, ev: &ClassifiedEvent, reason: BypassReason) -> Resp {
+    fn handle_bypass(
+        &mut self,
+        ev: &ClassifiedEvent,
+        reason: BypassReason,
+        injected: bool,
+    ) -> Resp {
         // バイパスされたキーの output_history エントリを削除する。
         // OsModifierHeld で J↓ がバイパスされた後、modifier が J↑ より先にリリースされると
         // on_key_up の is_os_modifier_held() チェックが通らず、output_history に前回の
         // NICOLA 組み合わせのエントリが残っていると J↑ が誤って Suppress される。
         self.output_history.remove_by_scan(ev.scan_code);
+
+        // ADR-120 決定0a 項目7(a): 物理BACKSPACE単独を
+        // ユーザー訂正操作として計上する。`Ctrl+BS`/`Alt+BS`（単語削除等の
+        // 別操作）は対照群比較を歪めるため除外する（should-fix所見7）。
+        // `Shift+BS` は除外しない——Windows のテキスト入力では
+        // `Shift+Backspace` は通常の1文字削除と同義であり（`Ctrl`/`Alt`の
+        // ような別操作ではない）、除外すると Shift 保持中の訂正だけが
+        // 系統的に取りこぼされる（`/code-review` 指摘）。
+        //
+        // **所見B1対応**: `bypass_reason`（下記参照）は `KeyClass::Passthrough`
+        // を修飾キーの有無より優先して返すため、`BypassReason::OsModifierHeld`
+        // では絶対に来ない——VK_BACK は `scanmap.rs` に物理位置が無く常に
+        // `Passthrough` に分類されるので、`Ctrl+BS`/`Alt+BS` も
+        // `BypassReason::Passthrough` のままここに到達する。したがって
+        // `reason == Passthrough` だけでは除外できず、この下の `is_word_delete`
+        // で明示的に判定する必要がある（Opusレビュー指摘、「`OsModifierHeld`
+        // なので除外される」という以前のコメントは誤りだった）。
+        //
+        // **所見S4対応**: OS オートリピート（押しっぱなし）による KeyDown
+        // 再送を新規タップとして二重計上しないよう、`backspace_down` で
+        // 押下状態を追跡する（`engine_off_extra_key_suppressed` と同型の
+        // ガード、KeyUp 側は `on_key_up` でクリアする）。
+        //
+        // **`/code-review` 指摘（injected除外）**: 外部ツール・マクロ・IME
+        // 自身の内部補正機構等が `SendInput` 等で合成した BACKSPACE は
+        // ユーザーの実訂正操作ではないため除外する（BUG-14/ADR-119 の
+        // `event.injected` 除外原則、`engine.rs::is_bare_thumb` 参照）。
+        if matches!(reason, BypassReason::Passthrough) && !injected {
+            if let Some(vk) = self.backspace_vk {
+                if ev.vk_code == vk {
+                    let is_word_delete = self.phys.modifiers.ctrl
+                        || self.phys.modifiers.alt
+                        || self.phys.modifiers.win;
+                    if !is_word_delete && !self.backspace_down {
+                        self.record_user_correction(ev.timestamp);
+                    }
+                    self.backspace_down = true;
+                }
+            }
+        }
 
         // ソロ N 連打エンジン OFF（`engine_off_solo_repeat` を親指キー以外の
         // VK に割り当てた場合、例: VK_INSERT）。親指キーに割り当てた場合は
@@ -2699,6 +3254,105 @@ mod tests {
             expects_rearmed_pending_timer,
             "must rearm TIMER_PENDING with remaining_us={expected_remaining_us}, got {:?}",
             resp.timers
+        );
+    }
+
+    // ── ADR-120 決定0a: `/code-review` 指摘の回帰テスト ──
+    // `own_decision_output`/`OwnDecisionOutput` は private フィールドなので、
+    // このファイル内の（同一モジュールの）テストからのみ直接操作できる。
+
+    #[test]
+    fn retro_eval_stats_own_decision_backspace_output_not_counted_as_correction() {
+        // 所見4対応の回帰テスト: 3キー仲裁決定「自身の出力」が
+        // .yab配列によって SpecialKey::Backspace に解決される場合、
+        // ユーザーの実訂正操作ではないため訂正カウンタへ計上してはならない。
+        let mut fsm = make_test_fsm();
+        fsm.own_decision_output = Some(OwnDecisionOutput {
+            remaining: 1,
+            measure_since: None,
+        });
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        fsm.update_history(
+            OutputUpdate::record(
+                ScanCode(0),
+                &KeyAction::SpecialKey(SpecialKey::Backspace),
+                None,
+            ),
+            1_000,
+        );
+        let stats = fsm.retro_eval_stats();
+        assert_eq!(
+            stats.phase2_correction_histogram.iter().sum::<u64>(),
+            0,
+            "決定自身の出力であるBackspaceは訂正操作として計上してはならない"
+        );
+        assert_eq!(
+            stats.baseline_decisions_total, 0,
+            "決定自身の出力なのでBaselineにも計上されないはず"
+        );
+    }
+
+    #[test]
+    fn retro_eval_stats_genuine_backspace_correction_still_counted_after_own_output_consumed() {
+        // 上のテストと対で確認する: own_decision_output が消化済み（決定自身の
+        // 出力ではない）状態で来たBackspaceは、通常どおり訂正として計上される。
+        let mut fsm = make_test_fsm();
+        fsm.own_decision_output = None;
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        fsm.update_history(
+            OutputUpdate::record(
+                ScanCode(0),
+                &KeyAction::SpecialKey(SpecialKey::Backspace),
+                None,
+            ),
+            1_000,
+        );
+        let stats = fsm.retro_eval_stats();
+        assert_eq!(stats.phase2_correction_histogram.iter().sum::<u64>(), 1);
+    }
+
+    #[test]
+    fn retro_eval_stats_stale_attribution_boundary_excludes_exact_ms() {
+        // 所見3対応の回帰テスト: STALE_ATTRIBUTION_MS ちょうど(1600ms)は
+        // 除外され(elapsed < STALE_ATTRIBUTION_MSに変更)、1599msは計上される。
+        // 修正前は `elapsed <= STALE_ATTRIBUTION_MS` だったため、1600msの
+        // 一点だけが bucket 6 に紛れ込みうる不整合な状態だった。
+        let mut fsm = make_test_fsm();
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        // ちょうど1600ms（境界値そのもの）→ 除外される。
+        fsm.record_user_correction(1_600_000);
+        assert_eq!(
+            fsm.retro_eval_stats()
+                .phase2_correction_histogram
+                .iter()
+                .sum::<u64>(),
+            0,
+            "elapsed==STALE_ATTRIBUTION_MSちょうどは除外されるはず"
+        );
+
+        fsm.last_decision = Some(LastDecision {
+            phase2_at: Some(0),
+            phase1_at: None,
+            baseline_at: None,
+        });
+        // 1599ms（境界未満）→ 計上される、bucket 5(800<=x<1600)。
+        fsm.record_user_correction(1_599_000);
+        assert_eq!(
+            fsm.retro_eval_stats().phase2_correction_histogram,
+            [0, 0, 0, 0, 0, 1, 0],
+            "elapsed=1599msはbucket 5に計上されるはず"
         );
     }
 }

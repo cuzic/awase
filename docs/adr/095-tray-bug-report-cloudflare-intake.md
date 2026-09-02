@@ -372,6 +372,14 @@ journal ログと同じ設計（**マスキングしない生データ、既定 
   ではなく実行時の現在値を使うことで、「設定を保存せずレイアウトだけ
   切り替えた状態で発生したバグ」も正しく再現できるようにする。
 
+- **`retro_eval_stats`**（`attach_retro_eval_stats: bool`、ADR-120 決定0a-report、
+  2026-09-02追記）: NICOLA 3キー仲裁の判定過程・訂正発生を観測する累積カウンタ
+  （`BugReportRetroEvalStats`、`Engine::retro_eval_stats()` 由来）。打鍵内容・
+  かな1文字も含まない。`schema_version` は据え置き、フィールド自体が無い
+  旧クライアントの報告も引き続き受理する（`services/report-worker` の
+  `optionalBoolean`/`optionalNullableRecord`）。他の `attach_*` と同様、既定は
+  ON で送信前プレビューから個別に外せる。
+
 **プライバシー注記**: `layouts_dir`/`default_layout` にユーザーが絶対
 パスを入力していた場合、Windows のユーザー名が含まれる可能性がある。
 決定4の journal ログ同様マスキングはせず、送信前プレビューでの手動編集

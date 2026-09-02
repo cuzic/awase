@@ -145,6 +145,16 @@ impl FsmAdapter {
         self.fsm.set_space_thumb_config(space_thumb_vk, config);
     }
 
+    /// ADR-120 決定0a 項目7(a)専用: 物理 BACKSPACE の VK コードを設定する。
+    pub(super) const fn set_backspace_vk(&mut self, vk: Option<crate::types::VkCode>) {
+        self.fsm.set_backspace_vk(vk);
+    }
+
+    /// ADR-120 決定0a: 3キー仲裁の判定過程・訂正発生を観測する累積カウンタを返す。
+    pub(super) const fn retro_eval_stats(&self) -> &super::retro_eval_stats::RetroEvalStats {
+        self.fsm.retro_eval_stats()
+    }
+
     /// 無変換/変換キー単独タップの composing 中ガードの扱いを設定する。
     pub(super) const fn set_thumb_key_solo_tap_config(
         &mut self,

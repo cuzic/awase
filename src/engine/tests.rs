@@ -1899,6 +1899,677 @@ fn test_three_key_char1_released_close_timing_ngram_phase2_prefers_char1() {
     );
 }
 
+// ── ADR-120 決定0a: RetroEvalStats 集計のユニットテスト ──
+//
+// これらは実際の変換結果（IME へ送る打鍵列）には一切影響しない、集計専用
+// カウンタの正しさだけを検証する。`make_layout()`（A=う/し, 左親指A=を/S=あ,
+// 右親指A=ゔ/S=じ）+ `make_ngram_model()`（bigram "しを"=2.0, "しゔ"=-2.0）を
+// 使い、既存の3鍵ngramテスト（`test_three_key_char1_released_*`）と同じ
+// フィクスチャを再利用する。
+
+#[test]
+fn test_retro_eval_stats_phase1_counters() {
+    // Phase 1（タイミングのみで決定、n-gram未到達）のケースで
+    // three_key_total/phase1_reached/phase1_decisions_totalが正しく
+    // 加算され、phase2_reached/no_ngram_countは増えないことを確認する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(11_700).build());
+    engine.on_event(Ev::up(VK_A).at(106_550).build());
+    let result = engine.on_event(Ev::down(VK_S).at(112_474).build());
+    result.assert_consumed();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.three_key_total, 1);
+    assert_eq!(stats.phase1_reached, 1);
+    assert_eq!(stats.phase2_reached, 0);
+    assert_eq!(stats.no_ngram_count, 0);
+    assert_eq!(stats.phase1_decisions_total, 1);
+    assert_eq!(stats.phase2_decisions_total, 0);
+    // 所見S5の回帰ガード: Phase1決定「自身の出力」がBaselineへ混入しない
+    // （以前はPhase2決定にしか自前出力の除外が効かず、対照群にPhase1の
+    // 曖昧決定が混入していた）。
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "Phase1決定自身の出力はBaseline計上から除外されるはず（所見S5の回帰ガード）"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_no_ngram_counter() {
+    // ngram_model を設定しない（None）場合は DecisionPhase::NoNgram に
+    // 分類され、no_ngram_countのみが増える。
+    let mut engine = make_engine();
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(11_700).build());
+    engine.on_event(Ev::up(VK_A).at(106_550).build());
+    let result = engine.on_event(Ev::down(VK_S).at(112_474).build());
+    result.assert_consumed();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.three_key_total, 1);
+    assert_eq!(stats.no_ngram_count, 1);
+    assert_eq!(stats.phase1_reached, 0);
+    assert_eq!(stats.phase2_reached, 0);
+}
+
+#[test]
+fn test_retro_eval_stats_phase2_score_buckets_and_char2_hiragana() {
+    // Phase 2 (d1/d2 が接近) かつ右親指を使うケース: score_a は bigram
+    // "しゔ"=-2.0 (finite, 負値でも finite バケットに入ることを確認)、
+    // score_b は未定義の "しうじ" で 0.0 (zero バケット) になる
+    // -- これは issue #140 / BUG-105 の実際の誤変換パターン
+    // (score_a<score_b で char2 側=右親指 が誤って優先される) と同型。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    // 右親指（CONVERT）: d1 = 60ms
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    // d1=60_000, d2=110_000-60_000=50_000, margin(30%*100ms)=30_000 -> Phase 2
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    result.assert_consumed();
+    assert_eq!(
+        result.actions.len(),
+        2,
+        "char1単独+char2+thumbが同一ターンで2出力されるはず: got {:?}",
+        result.actions
+    );
+    assert!(
+        matches!(result.actions[0], KeyAction::Char('う')),
+        "score_a(-2.0) < score_b(0.0) で char2 側優先のはず: got {:?}",
+        result.actions
+    );
+    assert!(matches!(result.actions[1], KeyAction::Char('じ')));
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.phase2_reached, 1);
+    assert_eq!(stats.phase2_decisions_total, 1);
+    assert_eq!(
+        stats.score_a_finite_count, 1,
+        "score_a=-2.0 は finite のはず"
+    );
+    assert_eq!(stats.score_a_neg_infinity_count, 0);
+    assert_eq!(stats.score_a_zero_count, 0);
+    assert_eq!(
+        stats.score_b_zero_count, 1,
+        "score_b=0.0(未定義trigram)のはず"
+    );
+    assert_eq!(stats.score_b_finite_count, 0);
+    assert_eq!(stats.score_b_neg_infinity_count, 0);
+    assert_eq!(
+        stats.char2_normal_hiragana_count, 1,
+        "char2(S)の通常面'し'はひらがな"
+    );
+    // 所見S1/S2の回帰ガード: PairWithChar2の決定自身の出力2回（う、じ）が
+    // いずれもBaseline計上から除外されているはず。
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "決定自身の出力2回はどちらもBaseline計上から除外されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_followup_thumb_window_and_correction_survives_baseline() {
+    // ADR-120 決定0a 項目2c/4/7 の統合テスト。項目7については
+    // Opusレビュー blocker 所見2（単一スロット上書きで Phase2 の訂正
+    // シグナルが直後の Baseline 決定に上書きされて消える）の回帰ガードを
+    // 兼ねる: Phase2決定(t=110_000) の後に Baseline決定(t=200_000) を挟んでも、
+    // その後の訂正操作(t=350_000)が両方に正しく計上されることを確認する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    // Phase2決定（PairWithChar2、skip=2）: t=110_000
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(result.actions.len(), 2); // 決定自身の出力(う, じ)
+
+    // 項目2c: 決定直後の1打鍵目（非親指）。窓 remaining 2->1。
+    let result = engine.on_event(Ev::down(VK_A).at(200_000).build());
+    assert_pending(&result); // PendingChar、まだ出力なし
+    assert_eq!(
+        engine.retro_eval_stats().no_thumb_followup_count,
+        0,
+        "窓はまだ残っている"
+    );
+
+    // 項目4: 決定自身の出力2回分をスキップし終えた後、初めての「後続かな確定」。
+    // ただしこれはタイムアウト経由（`update_history_imprecise`）なので、
+    // 所見B2対応により経過ms計測は記録されない（不正確な `now` で
+    // elapsed≈0msに丸め込まれるのを防ぐため、意図的に欠測として扱う）。
+    // 同時に項目7: このBaseline決定（last_baseline_at）は Phase2 決定の
+    // last_phase2_at を上書きしない（別スロットのため）。
+    let result = engine.on_timeout(TIMER_PENDING);
+    result.assert_consumed();
+    assert!(matches!(result.actions[0], KeyAction::Char('う')));
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.followup_elapsed_ms_histogram.iter().sum::<u64>(),
+        0,
+        "タイムアウト経由(imprecise)の完了は所見B2対応により記録されないはず"
+    );
+    assert_eq!(stats.baseline_decisions_total, 1);
+
+    // 項目2c: 決定後2打鍵目（非親指）。窓 remaining 1->0、窓を使い切る。
+    let result = engine.on_event(Ev::down(VK_S).at(300_000).build());
+    assert_pending(&result);
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 1);
+
+    // 項目7(a): 物理BACKSPACE（訂正操作）。Phase2決定(t=110_000)からの経過msと
+    // Baseline決定(t=200_000)からの経過msの両方に計上される
+    // （間に挟まったBaseline決定がPhase2の帰属を破壊していないことの確認）。
+    let result = engine.on_event(Ev::down(VK_BACK).at(350_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    // elapsed = 350_000 - 110_000 = 240ms → bucket 3 (200<=x<400)（所見N4対応、
+    // sumだけでなくバケット位置まで固定してoff-by-oneを検出可能にする）。
+    assert_eq!(
+        stats.phase2_correction_histogram,
+        [0, 0, 0, 1, 0, 0, 0],
+        "Phase2決定への訂正帰属が、間に挟まったBaseline決定で消えていないはず: {:?}",
+        stats.phase2_correction_histogram
+    );
+    // elapsed = 350_000 - 200_000 = 150ms → bucket 2 (100<=x<200)。
+    assert_eq!(
+        stats.baseline_correction_histogram,
+        [0, 0, 1, 0, 0, 0, 0],
+        "{:?}",
+        stats.baseline_correction_histogram
+    );
+    assert_eq!(
+        stats.phase1_correction_histogram.iter().sum::<u64>(),
+        0,
+        "Phase1決定は一度も発生していない"
+    );
+    // 所見S3の回帰ガード: record_user_correction は計上したスロットを
+    // クリアするため、直後にもう一度BACKSPACEを押しても同じ決定へ
+    // 二重計上されない（BS連打で1回の訂正が複数回計上されるバグの修正）。
+    engine.on_event(Ev::up(VK_BACK).at(351_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(352_000).build());
+    result.assert_pass_through();
+    let stats2 = engine.retro_eval_stats();
+    assert_eq!(
+        stats2.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "直近のPhase2決定は既にクリア済みなので、2回目のBACKSPACEでは加算されないはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_pair_with_char1_followup_completes_precisely_via_next_keydown() {
+    // 所見S7対応: PairWithChar1(skip=1)分岐を通し、後続1かな確定が実際の
+    // KeyDown経由（on_reduce、正確なタイムスタンプ）で完了することを確認する
+    // （既存テストは全てPairWithChar2分岐のみを通しており、B2/S1/S2の欠陥は
+    // すべてこちら側/サブ分岐に潜んでいた）。所見N4対応でバケットインデックス
+    // まで固定する（sumだけでは境界off-by-oneを検出できないため）。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    // Phase2決定（PairWithChar1、skip=1）: t=110_000
+    // (test_three_key_char1_released_close_timing_ngram_phase2_prefers_char1 と
+    // 同じ左親指シナリオ: d1=60_000/d2=50_000で接近しPhase2、
+    // score_a=2.0(bigram "しを")がscore_b=0.0を上回りchar1優先)
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_NONCONVERT).at(60_000).build());
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(
+        result.actions.len(),
+        1,
+        "PairWithChar1は決定自身の出力1回のみのはず: got {:?}",
+        result.actions
+    );
+    assert!(matches!(result.actions[0], KeyAction::Char('を')));
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.phase2_reached, 1);
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "決定自身の出力(を)はBaseline計上から除外されるはず"
+    );
+
+    // char2(S)は再処理されPendingCharになる。250ms後に別の文字キーが実際に
+    // KeyDownすることで、Sが正確なタイムスタンプ(on_reduce経由)で単独確定し、
+    // 後続1かな確定の計測が完了する。
+    let result = engine.on_event(Ev::down(VK_A).at(360_000).build());
+    result.assert_consumed();
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, KeyAction::Char('し'))),
+        "保留中のS('し')が単独確定して再処理されるはず: got {:?}",
+        result.actions
+    );
+
+    let stats = engine.retro_eval_stats();
+    // elapsed = 360_000us - 110_000us = 250ms。
+    // ELAPSED_MS_BUCKETS=[50,100,200,400,800,1600,MAX] → 250 は bucket 3 (200<=x<400)。
+    assert_eq!(
+        stats.followup_elapsed_ms_histogram,
+        [0, 0, 0, 1, 0, 0, 0],
+        "250msはbucket 3に入るはず: {:?}",
+        stats.followup_elapsed_ms_histogram
+    );
+    assert_eq!(
+        stats.baseline_decisions_total, 1,
+        "後続の単独確定(し)自体はBaseline計上されるはず(own_decision_outputは既に消化済み)"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_thumb_arrival_discards_window_without_counting() {
+    // 項目2c: 決定直後の観測窓内に親指キーが来た場合は窓を破棄し、
+    // no_thumb_followup_count を増やさない。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 決定直後、最初のKeyDownが親指（NONCONVERT）。
+    engine.on_event(Ev::down(VK_NONCONVERT).at(150_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.no_thumb_followup_count, 0,
+        "親指キーが窓内に来たら破棄するだけで、no_thumb_followup_countは増えない"
+    );
+    // 所見N2対応: 項目2cの正しい分母カウンタが増える
+    // （no_thumb_followup_count自体は分母ではない）。
+    assert_eq!(stats.thumb_watch_window_thumb_arrived_count, 1);
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_with_ctrl_modifier_is_not_counted_as_correction() {
+    // 所見B1対応の回帰ガード: `Ctrl+BS`（単語削除、日本語入力中の一般的な
+    // 操作）は訂正操作として計上してはならない。`bypass_reason` は
+    // `KeyClass::Passthrough` を修飾キーの有無より優先して返すため
+    // （VK_BACKはscanmap.rsに物理位置が無く常にPassthrough）、
+    // `BypassReason::OsModifierHeld` では判定できず、`handle_bypass`側で
+    // 明示的にmodifier状態を見て除外する必要がある。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    // Phase2決定を1つ作っておく（PairWithChar2、score_a=-2.0<score_b=0.0）。
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // Ctrl+BS（単語削除）。
+    engine.on_event(Ev::down(VK_CTRL).at(200_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(210_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "Ctrl+BSは単語削除であり訂正操作として計上してはならない"
+    );
+    assert_eq!(stats.baseline_correction_histogram.iter().sum::<u64>(), 0);
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_with_shift_modifier_is_counted_as_correction() {
+    // `/code-review` 指摘の回帰ガード: `Shift+BS` は `Ctrl+BS`/`Alt+BS`
+    // （単語削除）とは異なり、Windowsのテキスト入力では通常の1文字削除と
+    // 同義なので除外してはならない（除外すると Shift 保持中の訂正だけが
+    // 系統的に取りこぼされる）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    engine.on_event(Ev::down(VK_SHIFT).at(150_000).build());
+    let result = engine.on_event(Ev::down(VK_BACK).at(160_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "Shift+BSは通常の1文字削除であり訂正操作として計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_injected_backspace_not_counted_as_correction() {
+    // `/code-review` 指摘の回帰ガード: 外部ツール・マクロ・IME内部補正機構
+    // 等が `SendInput` 等で合成した（`injected=true`）BACKSPACEはユーザーの
+    // 実訂正操作ではないため除外する（BUG-14/ADR-119 の `event.injected`
+    // 除外原則、`engine.rs::is_bare_thumb` 参照）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    let result = engine.on_event(Ev::down(VK_BACK).injected(true).at(200_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "合成(injected)されたBACKSPACEは訂正操作として計上してはならない"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_focus_change_resets_last_decision_attribution() {
+    // `/code-review` 指摘の回帰ガード: フォーカス変更（コンテキスト喪失）を
+    // またいで `last_decision`（項目7の帰属状態）を持ち越してはならない。
+    // 別アプリで打たれた訂正操作が、直前アプリのPhase2決定に誤帰属する
+    // （STALE_ATTRIBUTION_MSの1600ms窓には時間的な上限があるだけで、
+    // コンテキストの区別が無いため）ことを防ぐ。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // フォーカス変更（コンテキスト喪失）。
+    engine.flush_pending(ContextChange::FocusChanged, ComposingHint::Unknown);
+
+    // 190ms後（STALE_ATTRIBUTION_MSの1600ms窓内）、別コンテキストでの
+    // BACKSPACE。リセットされていなければ誤って計上されてしまうタイミング。
+    let result = engine.on_event(Ev::down(VK_BACK).at(300_000).build());
+    result.assert_pass_through();
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        0,
+        "フォーカス変更後はlast_decisionがリセットされ、別コンテキストの操作は誤帰属しないはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_genuine_double_tap_of_same_key_closes_window() {
+    // `/code-review` 指摘の回帰ガード: 同じ物理キーを間を置かず
+    // （KeyUpを挟んで）2回連続で「本当に」タップした場合は、単純なVK等値
+    // 比較だけのオートリピート判定だと1回のオートリピートと誤認され、
+    // 窓が正しく閉じない。KeyUpで押下状態をクリアすることで区別する。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 同じキー(A)を、KeyUpを挟んで2回連続で本当にタップする。
+    engine.on_event(Ev::down(VK_A).at(150_000).build());
+    engine.on_event(Ev::up(VK_A).at(155_000).build());
+    engine.on_event(Ev::down(VK_A).at(160_000).build());
+
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.no_thumb_followup_count, 1,
+        "KeyUpを挟んだ2回の本当のタップは窓を正しく消費し終えるはず（オートリピートと誤認しない）"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_self_heals_after_missed_keyup() {
+    // 所見NB1の回帰ガード: 物理BACKSPACEのKeyUpが取りこぼされても
+    // （例: エンジン非活性化でon_key_upに到達しない）、他キーのKeyDownが
+    // `backspace_down` を自己修復的にクリアするため、次のBACKSPACE押下は
+    // 新規タップとして正しく計上される（`true` のまま永久固着しない）。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // BACKSPACE押下（1回目）。KeyUpは意図的に送らない（取りこぼしを模擬——
+    // 実機ではエンジン非活性化中にKeyUpがEngine::on_inputのPhase2で
+    // pass_throughとして捨てられ、on_key_upに一切到達しないケースに相当）。
+    engine.on_event(Ev::down(VK_BACK).at(200_000).build());
+    assert_eq!(
+        engine
+            .retro_eval_stats()
+            .phase2_correction_histogram
+            .iter()
+            .sum::<u64>(),
+        1
+    );
+
+    // 他キーのKeyDownが backspace_down を自己修復的にクリアする。同時に
+    // 次のPhase2決定の1鍵目にもなる。
+    engine.on_event(Ev::down(VK_A).at(210_000).build());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_CONVERT).at(270_000).build());
+    engine.on_event(Ev::down(VK_S).at(320_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 2);
+
+    // KeyUp取りこぼし後でも、新規タップとして正しく計上される
+    // （`backspace_down` が固着していれば、ここは加算されないはず）。
+    engine.on_event(Ev::down(VK_BACK).at(400_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        2,
+        "KeyUp取りこぼし後も、他キーのKeyDownによる自己修復で新規タップとして計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_auto_repeat_does_not_credit_self_inflicted_baseline() {
+    // 所見NN1対応: 既存の `..._backspace_auto_repeat_counted_once` は
+    // S3のスロットクリアだけでgreenになってしまい、S4のオートリピート
+    // ガード自体を隔離できていなかった（`backspace_down` を丸ごと削除
+    // してもそちらのテストは通る）。BACKSPACE押下時に保留中の文字キーが
+    // あると、`handle_bypass` 内の `flush_pending` がその出力を新しい
+    // Baseline決定として計上する——このBS自身が作り出したBaseline決定に、
+    // オートリピートの2発目が誤って計上されないことを確認する。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+
+    // 保留中の文字キーを作っておく。
+    engine.on_event(Ev::down(VK_A).at(0).build());
+
+    // 1回目のBACKSPACE: 保留中のAがflush_pending経由でBaseline決定として
+    // 計上される。
+    engine.on_event(Ev::down(VK_BACK).at(50_000).build());
+    assert_eq!(
+        engine.retro_eval_stats().baseline_decisions_total,
+        1,
+        "保留中のAがBaseline決定として計上されるはず"
+    );
+
+    // KeyUpを挟まず2回目のBACKSPACE（オートリピートを模擬）。
+    engine.on_event(Ev::down(VK_BACK).at(80_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.baseline_correction_histogram.iter().sum::<u64>(),
+        0,
+        "オートリピートの2発目が、自分自身が作ったBaseline決定に誤って計上されてはならない"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_backspace_auto_repeat_counted_once() {
+    // 所見S4対応の回帰ガード: OSオートリピートによる物理BACKSPACEの連続
+    // KeyDown再送（KeyUpを挟まない）は、押下1回につき1回だけ計上される。
+    let mut engine = make_engine();
+    engine.set_backspace_vk(Some(VK_BACK));
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // KeyUpを挟まずに3回連続KeyDown（オートリピートを模擬）。
+    engine.on_event(Ev::down(VK_BACK).at(200_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(230_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(260_000).build());
+    let stats = engine.retro_eval_stats();
+    assert_eq!(
+        stats.phase2_correction_histogram.iter().sum::<u64>(),
+        1,
+        "オートリピートによる再送は新規タップとして二重計上してはならない"
+    );
+
+    // KeyUpで解放後、新規タップは改めて1回計上される。
+    engine.on_event(Ev::up(VK_BACK).at(270_000).build());
+    // 新しいPhase2決定を作ってから2回目の物理タップを送る。
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(300_000).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(360_000).build());
+    engine.on_event(Ev::down(VK_S).at(410_000).build());
+    engine.on_event(Ev::down(VK_BACK).at(500_000).build());
+    let stats2 = engine.retro_eval_stats();
+    assert_eq!(
+        stats2.phase2_correction_histogram.iter().sum::<u64>(),
+        2,
+        "KeyUpを挟んだ新規タップは改めて1回計上されるはず"
+    );
+}
+
+#[test]
+fn test_retro_eval_stats_passthrough_key_does_not_close_thumb_watch_window() {
+    // 所見S6対応の回帰ガード: Shift等のPassthroughキーは項目2cの観測窓を
+    // 1打鍵として消費してはならない（Charキーだけが対象）。
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+    engine.on_event(Ev::down(VK_A).at(0).build());
+    engine.on_event(Ev::down(VK_CONVERT).at(60_000).build());
+    engine.on_event(Ev::down(VK_S).at(110_000).build());
+    assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
+
+    // 決定後、Shiftキー（Passthrough）が2回来ても窓は閉じない。
+    engine.on_event(Ev::down(VK_SHIFT).at(150_000).build());
+    engine.on_event(Ev::down(VK_SHIFT).at(160_000).build());
+    assert_eq!(
+        engine.retro_eval_stats().no_thumb_followup_count,
+        0,
+        "Passthroughキーは観測窓を消費してはならない"
+    );
+
+    // Charキーが1回来ても、まだ窓は閉じない（remaining 2->1）。
+    engine.on_event(Ev::down(VK_A).at(170_000).build());
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 0);
+    // Charキーがもう1回来て、窓を使い切る（remaining 1->0）。
+    engine.on_event(Ev::down(VK_S).at(180_000).build());
+    assert_eq!(engine.retro_eval_stats().no_thumb_followup_count, 1);
+}
+
+#[test]
+fn test_retro_eval_stats_escape_output_counted_separately_from_baseline() {
+    // 項目7(c): 配列セル由来のEscape出力はescape_output_countに計上され、
+    // Baseline決定（訂正の分母）としては計上されない。
+    use crate::types::SpecialKey;
+    let mut engine = make_engine();
+    engine.update_history(
+        OutputUpdate::record(SCAN_A, &KeyAction::SpecialKey(SpecialKey::Escape), None),
+        0,
+    );
+    let stats = engine.retro_eval_stats();
+    assert_eq!(stats.escape_output_count, 1);
+    assert_eq!(
+        stats.baseline_decisions_total, 0,
+        "Escape出力自体はBaseline決定として計上しない"
+    );
+}
+
 #[test]
 fn test_three_key_timeout_resolves_as_simultaneous() {
     // char1(t=0) → thumb(t=30ms) → タイムアウト（char2 来ない）
@@ -4799,12 +5470,15 @@ fn test_update_history_record() {
     let mut engine = make_engine();
     assert!(engine.output_history.is_empty());
 
-    engine.update_history(OutputUpdate::Record(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "ka".to_string(),
-        kana: Some('か'),
-        action: KeyAction::Romaji("ka".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::Record(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "ka".to_string(),
+            kana: Some('か'),
+            action: KeyAction::Romaji("ka".to_string()),
+        }),
+        0,
+    );
     assert_eq!(engine.output_history.len(), 1);
     assert_eq!(engine.output_history.recent_kana(1), vec!['か']);
 }
@@ -4814,21 +5488,27 @@ fn test_update_history_retract_and_record() {
     let mut engine = make_engine();
 
     // First, record an entry
-    engine.update_history(OutputUpdate::Record(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "u".to_string(),
-        kana: Some('う'),
-        action: KeyAction::Romaji("u".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::Record(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "u".to_string(),
+            kana: Some('う'),
+            action: KeyAction::Romaji("u".to_string()),
+        }),
+        0,
+    );
     assert_eq!(engine.output_history.len(), 1);
 
     // Now retract and record a new entry
-    engine.update_history(OutputUpdate::RetractAndRecord(OutputEntry {
-        scan_code: SCAN_A,
-        romaji: "vu".to_string(),
-        kana: Some('ゔ'),
-        action: KeyAction::Romaji("vu".to_string()),
-    }));
+    engine.update_history(
+        OutputUpdate::RetractAndRecord(OutputEntry {
+            scan_code: SCAN_A,
+            romaji: "vu".to_string(),
+            kana: Some('ゔ'),
+            action: KeyAction::Romaji("vu".to_string()),
+        }),
+        1000,
+    );
     assert_eq!(
         engine.output_history.len(),
         1,

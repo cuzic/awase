@@ -41,6 +41,26 @@ pub enum ThreeKeyResult {
     PairWithChar2,
 }
 
+/// ADR-120 決定0a: `three_key_pairing` がどの段階で決定に至ったか。
+/// 集計専用（`RetroEvalStats`）で、判定式そのものには一切影響しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecisionPhase {
+    NoNgram,
+    Phase1,
+    Phase2,
+}
+
+/// ADR-120 決定0a: `three_key_pairing_traced` が判定過程を集計向けに
+/// 持ち帰るための付帯情報。判定結果（`ThreeKeyResult`）には影響しない。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ThreeKeyTrace {
+    pub phase: DecisionPhase,
+    /// Phase2 のときだけ `Some`。
+    pub score_a: Option<f32>,
+    /// Phase2 のときだけ `Some`。
+    pub score_b: Option<f32>,
+}
+
 /// 同時打鍵のタイミング判定器
 #[derive(Debug)]
 pub struct TimingJudge<'a> {
@@ -119,24 +139,70 @@ impl<'a> TimingJudge<'a> {
         char1_single_kana: Option<char>,
         char2_thumb_kana: Option<char>,
     ) -> ThreeKeyResult {
+        self.three_key_pairing_traced(
+            char1_ts,
+            thumb_ts,
+            char2_ts,
+            char1_thumb_kana,
+            char1_single_kana,
+            char2_thumb_kana,
+        )
+        .0
+    }
+
+    /// `three_key_pairing` と同一の判定式を実行しつつ、ADR-120 決定0a の
+    /// 集計（`RetroEvalStats`）向けに判定過程（`ThreeKeyTrace`）を併せて返す。
+    /// 公開 API である `three_key_pairing` の型・挙動を変えないための内部専用
+    /// バリアント — 判定式は1文字も変えていない。
+    pub(crate) fn three_key_pairing_traced(
+        &self,
+        char1_ts: Timestamp,
+        thumb_ts: Timestamp,
+        char2_ts: Timestamp,
+        char1_thumb_kana: Option<char>,
+        char1_single_kana: Option<char>,
+        char2_thumb_kana: Option<char>,
+    ) -> (ThreeKeyResult, ThreeKeyTrace) {
         let d1 = thumb_ts.saturating_sub(char1_ts);
         let d2 = char2_ts.saturating_sub(thumb_ts);
 
         let Some(model) = self.ngram_model else {
-            return if d1 < d2 {
+            let result = if d1 < d2 {
                 ThreeKeyResult::PairWithChar1
             } else {
                 ThreeKeyResult::PairWithChar2
             };
+            return (
+                result,
+                ThreeKeyTrace {
+                    phase: DecisionPhase::NoNgram,
+                    score_a: None,
+                    score_b: None,
+                },
+            );
         };
 
         // Phase 1: タイミング差が大きければタイミングだけで決定
         let margin = self.threshold_us * self.timing_margin_percent / 100;
         if d1 + margin < d2 {
-            return ThreeKeyResult::PairWithChar1;
+            return (
+                ThreeKeyResult::PairWithChar1,
+                ThreeKeyTrace {
+                    phase: DecisionPhase::Phase1,
+                    score_a: None,
+                    score_b: None,
+                },
+            );
         }
         if d2 + margin < d1 {
-            return ThreeKeyResult::PairWithChar2;
+            return (
+                ThreeKeyResult::PairWithChar2,
+                ThreeKeyTrace {
+                    phase: DecisionPhase::Phase1,
+                    score_a: None,
+                    score_b: None,
+                },
+            );
         }
 
         // Phase 2: n-gram スコアで判定
@@ -156,8 +222,14 @@ impl<'a> TimingJudge<'a> {
             "3-key arbitration: d1={d1}µs d2={d2}µs score_a={score_a:.3} score_b={score_b:.3}"
         );
 
+        let trace = ThreeKeyTrace {
+            phase: DecisionPhase::Phase2,
+            score_a: Some(score_a),
+            score_b: Some(score_b),
+        };
+
         // スコアが高いほうを選択。同点ならタイミング
-        if (score_a - score_b).abs() > f32::EPSILON {
+        let result = if (score_a - score_b).abs() > f32::EPSILON {
             if score_a > score_b {
                 ThreeKeyResult::PairWithChar1
             } else {
@@ -167,7 +239,8 @@ impl<'a> TimingJudge<'a> {
             ThreeKeyResult::PairWithChar1
         } else {
             ThreeKeyResult::PairWithChar2
-        }
+        };
+        (result, trace)
     }
 
     /// 投機出力判定: 通常面のスコアが親指面より十分高ければ投機出力する。

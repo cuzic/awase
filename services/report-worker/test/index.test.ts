@@ -27,6 +27,8 @@ const validPayload = {
   config_toml: null,
   attach_layout: false,
   layout_yab: null,
+  attach_retro_eval_stats: false,
+  retro_eval_stats: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -268,6 +270,82 @@ describe("payload validation", () => {
         nested: {
           app_kind: "Editor"
         }
+      }
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  // ADR-120 決定0a-report: SCHEMA_VERSION は上げていないため、この変更より前の
+  // クライアント（retro_eval_stats 関連フィールドを一切送らない v3相当の
+  // ペイロード）が引き続き200で受理されることを固定する（この変更の核心）。
+  it("accepts payloads without retro_eval_stats fields (pre-ADR-120 clients) and normalizes to false/null", () => {
+    const {
+      attach_retro_eval_stats: _attachRetroEvalStats,
+      retro_eval_stats: _retroEvalStats,
+      ...payload
+    } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      attach_retro_eval_stats: false,
+      retro_eval_stats: null
+    });
+  });
+
+  it("accepts an explicit null retro_eval_stats", () => {
+    const payload = {
+      ...validPayload,
+      attach_retro_eval_stats: false,
+      retro_eval_stats: null
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  it("rejects a non-boolean attach_retro_eval_stats", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_retro_eval_stats: "yes"
+      })),
+      400,
+      "attach_retro_eval_stats_invalid"
+    );
+  });
+
+  it("rejects a non-object, non-null retro_eval_stats", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_retro_eval_stats: true,
+        retro_eval_stats: 42
+      })),
+      400,
+      "retro_eval_stats_invalid"
+    );
+  });
+
+  it("rejects retro_eval_stats unless explicitly attached", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_retro_eval_stats: false,
+        retro_eval_stats: { three_key_total: 10 }
+      })),
+      400,
+      "retro_eval_stats_requires_attach_retro_eval_stats"
+    );
+  });
+
+  it("accepts an explicitly attached retro_eval_stats object", () => {
+    const payload = {
+      ...validPayload,
+      attach_retro_eval_stats: true,
+      retro_eval_stats: {
+        three_key_total: 10,
+        phase2_reached: 3,
+        followup_elapsed_ms_histogram: [1, 2, 3, 4, 5, 6, 7]
       }
     };
 

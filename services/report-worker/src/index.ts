@@ -44,6 +44,11 @@ export interface BugReportPayload {
   config_toml: string | null;
   attach_layout: boolean;
   layout_yab: string | null;
+  /** ADR-120 決定0a-report。schema_version は上げていないため、フィールド自体が
+   * 存在しない旧クライアントの報告も受理する（app_log_excerpt と同じ理由、
+   * optionalBoolean/optionalNullableRecord で読む）。 */
+  attach_retro_eval_stats: boolean;
+  retro_eval_stats: Record<string, unknown> | null;
   reported_at: string;
 }
 
@@ -208,6 +213,10 @@ export function validatePayload(value: unknown): BugReportPayload {
   const configToml = requiredNullableString(value, "config_toml");
   const attachLayout = requiredBoolean(value, "attach_layout");
   const layoutYab = requiredNullableString(value, "layout_yab");
+  // ADR-120 決定0a-report: app_log_excerpt と同じ理由で、フィールド自体が
+  // 存在しない旧クライアントの報告も拒否しない（schema_version は不変）。
+  const attachRetroEvalStats = optionalBoolean(value, "attach_retro_eval_stats");
+  const retroEvalStats = optionalNullableRecord(value, "retro_eval_stats");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -227,6 +236,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   }
   if (!attachLayout && layoutYab !== null) {
     throw new HttpError(400, "layout_yab_requires_attach_layout");
+  }
+  if (!attachRetroEvalStats && retroEvalStats !== null) {
+    throw new HttpError(400, "retro_eval_stats_requires_attach_retro_eval_stats");
   }
 
   return {
@@ -249,6 +261,8 @@ export function validatePayload(value: unknown): BugReportPayload {
     config_toml: configToml,
     attach_layout: attachLayout,
     layout_yab: layoutYab,
+    attach_retro_eval_stats: attachRetroEvalStats,
+    retro_eval_stats: retroEvalStats,
     reported_at: reportedAt
   };
 }
@@ -380,6 +394,41 @@ function requiredNullableRecord(
     return fieldValue;
   }
   throw new HttpError(400, `${field}_required`);
+}
+
+/**
+ * `requiredBoolean` と異なり、フィールド自体が存在しない（`undefined`）場合は
+ * `false` として受理する。ADR-120 決定0a-report で導入 —
+ * `optionalNullableString` と同じ理由（旧クライアントの報告を拒否しない）。
+ */
+function optionalBoolean(value: Record<string, unknown>, field: string): boolean {
+  const fieldValue = value[field];
+  if (fieldValue === undefined) {
+    return false;
+  }
+  if (typeof fieldValue === "boolean") {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_invalid`);
+}
+
+/**
+ * `requiredNullableRecord` と異なり、フィールド自体が存在しない（`undefined`）
+ * 場合は `null` として受理する。ADR-120 決定0a-report で導入 —
+ * `optionalNullableString` と同じ理由（旧クライアントの報告を拒否しない）。
+ */
+function optionalNullableRecord(
+  value: Record<string, unknown>,
+  field: string
+): Record<string, unknown> | null {
+  const fieldValue = value[field];
+  if (fieldValue === undefined || fieldValue === null) {
+    return null;
+  }
+  if (isRecord(fieldValue)) {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_invalid`);
 }
 
 function requiredStringArray(value: Record<string, unknown>, field: string): string[] {
