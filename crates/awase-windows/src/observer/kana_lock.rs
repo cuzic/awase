@@ -25,17 +25,16 @@ pub unsafe fn read_kana_lock() -> KanaLockReading {
 /// Win32 UI API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn foreground_class_name() -> String {
-    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow};
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() {
         return String::from("<none>");
     }
-
-    let mut buf = [0u16; 256];
-    let len = unsafe { GetClassNameW(hwnd, &mut buf) };
-    if len <= 0 {
-        return String::from("<unknown>");
+    let name = crate::focus::classify::get_class_name_string(hwnd);
+    if name.is_empty() {
+        String::from("<unknown>")
+    } else {
+        name
     }
-    String::from_utf16_lossy(&buf[..len.cast_unsigned() as usize])
 }

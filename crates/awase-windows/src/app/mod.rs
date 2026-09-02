@@ -379,12 +379,12 @@ pub(crate) fn dispatch_engine_message(
             });
         }
         WM_KANA_LOCK_WARNING_WARN => {
-            let _ = with_app(|app| {
+            with_app_or_repost(WM_KANA_LOCK_WARNING_WARN, |app| {
                 message_handlers::handle_wm_kana_lock_warning(app, true);
             });
         }
         WM_KANA_LOCK_WARNING_CLEAR => {
-            let _ = with_app(|app| {
+            with_app_or_repost(WM_KANA_LOCK_WARNING_CLEAR, |app| {
                 message_handlers::handle_wm_kana_lock_warning(app, false);
             });
         }
