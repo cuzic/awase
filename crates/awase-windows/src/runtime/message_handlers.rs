@@ -1020,19 +1020,22 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         lparam.0
     );
-    let (layout_names, current_layout_name): (Vec<String>, String) = with_app_ref(|app| {
-        (
-            app.layouts.iter().map(|e| e.name.clone()).collect(),
-            app.platform.tray.current_layout_name().to_string(),
-        )
-    })
-    .unwrap_or_default();
+    let (layout_names, current_layout_name, kana_lock_warned): (Vec<String>, String, bool) =
+        with_app_ref(|app| {
+            (
+                app.layouts.iter().map(|e| e.name.clone()).collect(),
+                app.platform.tray.current_layout_name().to_string(),
+                app.platform.tray.kana_lock_warned(),
+            )
+        })
+        .unwrap_or_default();
     tray::handle_tray_message(
         hwnd,
         lparam,
         &layout_names,
         &current_layout_name,
         crate::is_elevated(),
+        kana_lock_warned,
     );
 }
 
@@ -1146,6 +1149,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             // なっていても、この操作で必ず Engine ON まで復帰させる。
             let _ = with_app(Runtime::force_engine_on);
         }
+        Some(tray::TrayCommand::KanaLockHelp) => tray::show_kana_lock_help_dialog(),
         Some(tray::TrayCommand::ClearImmCache) | None => {}
     }
 }

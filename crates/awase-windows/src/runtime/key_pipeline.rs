@@ -16,9 +16,9 @@ use crate::state::half_width_alnum::{
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS};
-use awase::engine::InputModeState;
+use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
-use awase::types::{KeyEventType, RawKeyEvent, ShadowImeAction};
+use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -2000,6 +2000,8 @@ impl Runtime {
             self.platform.composition_native_f2_down(warmup_ime_on);
         }
 
+        self.kp_stage_kana_lock_warn(&decision);
+
         let result = self.executor.execute_from_hook(
             &mut self.platform,
             &self.platform_state.ime,
@@ -2016,6 +2018,73 @@ impl Runtime {
         }
 
         result.callback
+    }
+
+    /// VK/TSF の romaji 送信直前に OS のかな入力ロックを読む。
+    fn kp_stage_kana_lock_warn(&mut self, decision: &awase::engine::Decision) {
+        if !matches!(
+            self.platform.output.injection_mode,
+            crate::output::InjectionMode::Vk | crate::output::InjectionMode::Tsf
+        ) || !decision_contains_romaji_send(decision)
+        {
+            return;
+        }
+
+        let before = self.kana_lock_hysteresis.streak();
+        // SAFETY: key pipeline は Runtime のメッセージループスレッド上で実行される。
+        let reading = unsafe { crate::observer::kana_lock::read_kana_lock() };
+        let action = self.kana_lock_hysteresis.observe(reading);
+        let after = self.kana_lock_hysteresis.streak();
+        if streak_side(before) != streak_side(after) {
+            log::debug!("[kana-lock] streak transition: {before:?} -> {after:?}");
+        }
+
+        match action {
+            WarnAction::None => {}
+            WarnAction::Warn => {
+                // SAFETY: 診断ログ用の読み取りのみ。メッセージループスレッド上で呼ぶ。
+                let fg_class = unsafe { crate::observer::kana_lock::foreground_class_name() };
+                log::warn!(
+                    "[kana-lock] OS かな入力ロックを検知しました \
+                     (reading={reading:?} streak={after:?} fg_class={fg_class})"
+                );
+                self.platform.tray.set_kana_lock_warned(true);
+            }
+            WarnAction::ClearWarned => {
+                log::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
+                self.platform.tray.set_kana_lock_warned(false);
+            }
+        }
+    }
+}
+
+fn decision_contains_romaji_send(decision: &awase::engine::Decision) -> bool {
+    let effects = match decision {
+        awase::engine::Decision::PassThrough => return false,
+        awase::engine::Decision::PassThroughWith { effects }
+        | awase::engine::Decision::Consume { effects } => effects,
+    };
+    effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::Input(InputEffect::SendKeys(actions)) if actions_contain_romaji(actions)
+        )
+    })
+}
+
+fn actions_contain_romaji(actions: &[KeyAction]) -> bool {
+    actions.iter().any(|action| match action {
+        KeyAction::Romaji(_) => true,
+        KeyAction::Sequence(items) => actions_contain_romaji(items),
+        _ => false,
+    })
+}
+
+const fn streak_side(streak: KanaLockStreak) -> Option<bool> {
+    match streak {
+        KanaLockStreak::None => None,
+        KanaLockStreak::Off(_) => Some(false),
+        KanaLockStreak::On(_) => Some(true),
     }
 }
 

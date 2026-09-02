@@ -51,9 +51,9 @@ mod probe {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer,
-        PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, MSG, WM_DESTROY, WM_TIMER,
-        WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage,
+        RegisterClassW, SetTimer, TranslateMessage, MSG, WM_DESTROY, WM_TIMER, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW,
     };
 
     /// `crates/awase-windows/src/vk.rs` の `VK_KANA` と同じ値。この使い捨て

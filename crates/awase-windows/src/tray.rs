@@ -67,6 +67,7 @@ const IDM_CAPSLOCK: u16 = 200;
 // 不採用とし、Ctrl+Alt+R / Ctrl+Alt+K の直接ホットキー（フォーカス文脈が
 // 確実に正しい）へ切り替えた。詳細は docs/known-bugs.md BUG-61 参照。
 const IDM_RESET_STATE: u16 = 209;
+const IDM_KANA_LOCK_HELP: u16 = 210;
 
 /// トレイメニューから選択されたコマンド
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +85,7 @@ pub enum TrayCommand {
     SelectLayout(usize),
     CapsLock,
     ResetState,
+    KanaLockHelp,
 }
 
 /// 文字列メニュー項目を追加するヘルパー。
@@ -143,6 +145,10 @@ pub struct SystemTray {
     current_layout_name: String,
     /// 管理者権限で実行中かどうか
     elevated: bool,
+    /// エンジン有効状態（ツールチップ復元用）
+    enabled: bool,
+    /// OS かな入力ロック警告中かどうか
+    kana_lock_warned: bool,
 }
 
 impl std::fmt::Debug for SystemTray {
@@ -211,7 +217,7 @@ impl SystemTray {
             };
 
             // ツールチップ設定
-            set_tooltip(&mut nid, enabled, "", elevated);
+            set_tooltip(&mut nid, enabled, "", elevated, false);
 
             // トレイアイコンを追加
             // シェル未起動時（ログオン直後等）は失敗しても OK。
@@ -228,17 +234,21 @@ impl SystemTray {
                 layout_names: Vec::new(),
                 current_layout_name: String::new(),
                 elevated,
+                enabled,
+                kana_lock_warned: false,
             })
         }
     }
 
     /// トレイアイコンのツールチップとアイコンを更新する
     pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
         set_tooltip(
             &mut self.nid,
             enabled,
             &self.current_layout_name,
             self.elevated,
+            self.kana_lock_warned,
         );
         if let Some(icon) = create_keyboard_icon(enabled) {
             // 古いアイコンを破棄してから差し替え
@@ -274,9 +284,10 @@ impl SystemTray {
         self.current_layout_name = name.to_string();
         set_tooltip(
             &mut self.nid,
-            true,
+            self.enabled,
             &self.current_layout_name,
             self.elevated,
+            self.kana_lock_warned,
         );
         // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
         //         `self.hwnd` は生存中の有効なトレイウィンドウハンドル。
@@ -289,6 +300,31 @@ impl SystemTray {
     #[must_use]
     pub const fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    /// OS かな入力ロック警告状態をトレイ表示へ反映する。
+    pub fn set_kana_lock_warned(&mut self, warned: bool) {
+        if self.kana_lock_warned == warned {
+            return;
+        }
+        self.kana_lock_warned = warned;
+        set_tooltip(
+            &mut self.nid,
+            self.enabled,
+            &self.current_layout_name,
+            self.elevated,
+            self.kana_lock_warned,
+        );
+        // SAFETY: `self.nid` は `new()` で正しく初期化された有効な `NOTIFYICONDATAW`。
+        //         `self.hwnd` は生存中の有効なトレイウィンドウハンドル。
+        unsafe {
+            let _ = Shell_NotifyIconW(NIM_MODIFY, &raw const self.nid);
+        }
+    }
+
+    #[must_use]
+    pub const fn kana_lock_warned(&self) -> bool {
+        self.kana_lock_warned
     }
 
     /// Explorer 再起動時にトレイアイコンを再登録する
@@ -488,9 +524,17 @@ fn create_keyboard_icon(enabled: bool) -> Option<windows::Win32::UI::WindowsAndM
 }
 
 /// ツールチップ文字列を `NOTIFYICONDATAW` に設定する
-fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elevated: bool) {
+fn set_tooltip(
+    nid: &mut NOTIFYICONDATAW,
+    enabled: bool,
+    layout_name: &str,
+    elevated: bool,
+    kana_lock_warned: bool,
+) {
     let admin_suffix = if elevated { " (管理者)" } else { "" };
-    let tip = if layout_name.is_empty() {
+    let tip = if kana_lock_warned {
+        format!("awase - かな入力になっています{admin_suffix}")
+    } else if layout_name.is_empty() {
         if enabled {
             format!("NICOLA: ON{admin_suffix}")
         } else {
@@ -504,6 +548,7 @@ fn set_tooltip(nid: &mut NOTIFYICONDATAW, enabled: bool, layout_name: &str, elev
 
     let tip_wide = crate::win32::to_wide(&tip);
     let len = tip_wide.len().min(nid.szTip.len());
+    nid.szTip.fill(0);
     nid.szTip[..len].copy_from_slice(&tip_wide[..len]);
 }
 
@@ -517,6 +562,7 @@ pub fn handle_tray_message(
     layout_names: &[String],
     current_layout_name: &str,
     elevated: bool,
+    kana_lock_warned: bool,
 ) {
     #[expect(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
@@ -565,6 +611,15 @@ pub fn handle_tray_message(
             let _ = AppendMenuW(hmenu, flags, id, PCWSTR(text.as_ptr()));
         }
         if !layout_names.is_empty() {
+            append_menu_sep(hmenu);
+        }
+
+        if kana_lock_warned {
+            append_menu_item(
+                hmenu,
+                IDM_KANA_LOCK_HELP,
+                "⚠ かな入力になっています（対処方法）",
+            );
             append_menu_sep(hmenu);
         }
 
@@ -646,11 +701,55 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_BUG_REPORT => Some(TrayCommand::BugReport),
         IDM_CAPSLOCK => Some(TrayCommand::CapsLock),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
+        IDM_KANA_LOCK_HELP => Some(TrayCommand::KanaLockHelp),
         c if (IDM_LAYOUT_BASE..IDM_CAPSLOCK).contains(&c) => {
             Some(TrayCommand::SelectLayout(usize::from(c - IDM_LAYOUT_BASE)))
         }
         _ => None,
     }
+}
+
+/// かな入力ロックの解除案内ダイアログを表示する。
+pub fn show_kana_lock_help_dialog() {
+    std::thread::spawn(|| {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+        };
+
+        let text = "\
+IMEが「かな入力」モードになっています。
+この状態では、awaseが送るローマ字キーがJISかな配列として
+解釈され、意図しない文字（例:「な」「とに」）が入力されます。
+
+awaseからこのモードを元に戻すことはできません
+（Windowsにプログラムから変更する手段が提供されていないため）。
+お手数ですが、次のいずれかの操作でローマ字入力に戻してください。
+
+【Microsoft IME】
+ ・タスクバーの「あ」/「A」を右クリック →
+   「ローマ字入力/かな入力」→「ローマ字入力」
+
+【Google 日本語入力】
+ ・タスクバーのアイコンを右クリック →「プロパティ」→
+   「一般」タブ →「入力方式」を「ローマ字入力」に
+
+いますぐWindowsのIME設定画面を開きますか？";
+        let text_wide = crate::win32::to_wide(text);
+
+        // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
+        let result = unsafe {
+            MessageBoxW(
+                None,
+                PCWSTR(text_wide.as_ptr()),
+                w!("awase - かな入力モードの検知"),
+                MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
+            )
+        };
+        if result == IDYES {
+            crate::msime_key_assignment::open_ime_settings();
+        }
+    });
 }
 
 /// 現在のプロセスが管理者権限で実行中かどうかを判定する。

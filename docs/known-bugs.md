@@ -12520,3 +12520,66 @@ report、上記「BUG-95 との関係」参照）。
 （BUG-101/ADR-112）と同じ危険領域に触れるため、打鍵列のマクロステップ/
 セル内`+`区切り双方から生の`KeyAction::Key`/`KeyUp`を構造的に排除している
 （決定6・決定2c、r5レビューCritical C1の回帰テスト`resolve_on_rejects_vk_inside_inline_sequence_with_warning`で固定）。
+
+---
+
+## BUG-105: Teams(WebView2/MS-IME) で送信 romaji VK が JIS かな配列として解釈される
+
+**症状（issue #137、Microsoft Teams / `TeamsWebView` / WebView2 上の MS-IME）:**
+awase が正しく送信した romaji VK 列が、IME 側で「ローマ字入力」ではなく
+「かな入力」として解釈され、無関係な文字になる。代表例は A キー相当が
+「な」、S キー相当を含む列が「とに」のように表示されるケース。
+
+**判定シグネチャ:** 再発時はログを開く前に、送信 VK 列を JIS かな配列表で
+デコードして表示結果と突き合わせる。完全一致するなら、awase の送信ミスではなく
+IME 側の入力方式反転を第一容疑にする。
+
+| 送信VK | JISかな解釈 | 観測例 |
+| --- | --- | --- |
+| U | な | 「な」 |
+| S | と | 「とに」の先頭 |
+| I | に | 「とに」の末尾 |
+
+**BUG-08 との関係:** ROMAN 喪失により romaji VK が JIS かな化する点では同型。
+ただし BUG-08 は foreign-injected `VK_KANA` まで原因を特定済みだったのに対し、
+本件は Teams/WebView2/MS-IME のどこで入力方式が反転したか未特定。
+
+**自動復旧不可:** BUG-61/BUG-62 追補4で、`ImmSetConversionStatus` による
+ROMAN ビット書き込み、`VK_DBE_ROMAN` の `SendInput` 注入、言語バー COM 操作の
+いずれも実機で無反応と確認済み。Microsoft Q&A の同種回答でも、Win32 には
+「ローマ字入力 / かな入力」の入力方式そのものを外部プロセスから切り替える
+公式 API が無い、という整理になっている。したがって awase は復旧を書き込まず、
+ユーザーへの案内だけを行う。
+
+**今回追加した実機検証:** `crates/awase-windows/examples/spike_kana_lock_probe.rs`
+で、Teams focus 中に言語バーから MS-IME を「かな入力」へ切り替えると
+`GetKeyState(VK_KANA)&1` が `off -> on` に追従し、「ローマ字入力」へ戻すと
+`on -> off` に追従することを確認した。
+
+```text
+KANA bit=on (prev=off) fg_class=TeamsWebView
+KANA bit=off (prev=on) fg_class=TeamsWebView
+```
+
+**Teams で conv 読み取り経路が存在しない根拠:** `TeamsWebView` は
+`crates/awase-windows/src/focus/class_names.rs:24` で
+`IMM32_UNAVAILABLE_CLASSES` に含まれる。`is_tsf_native_window` は同ファイル
+`:51-59`、`is_effectively_tsf_native` は `:75-77` だが、`from_class_name` は
+`IMM32_UNAVAILABLE_CLASSES` を優先するため Teams は `Imm32Unavailable` 扱いになる。
+さらに `runtime/key_pipeline.rs:643-646` のとおり `kp_stage_idle_conv_check` は
+TsfNative 専用かつ ROMAN ビットを信頼しない設計で、Teams の反転検知には使えない。
+
+**`swallow_alt_kana_input_method_switch` との関係:** swallow の有無は復旧可否と
+無関係。既定 ON は Alt+かな による「かなに落ちる」方向の予防であり、OFF にしても
+復旧手段にはならず、むしろ入力方式反転のリスクを増やすだけ。
+
+**対応:** `src/engine/kana_input_warn.rs` に OS 非依存のヒステリシス
+（On 3連続で警告、Off 2連続で解除）を追加し、`observer/kana_lock.rs` が
+`GetKeyState(VK_KANA)&1` を読み、VK/TSF の romaji 送信直前に1打鍵1サンプルで
+観測する。警告時は既存トレイ右クリックメニューに「かな入力になっています
+（対処方法）」を出し、ツールチップを「awase - かな入力になっています」へ変更する。
+belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行わない。
+
+**修正履歴:** 未コミット（本セッションの sandbox では `.git/worktrees/.../index.lock`
+作成が read-only file system で失敗）。通常の git 権限でコミット後、この行に
+実装コミットハッシュを追記すること。

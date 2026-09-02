@@ -154,7 +154,7 @@ mod windows_impl {
     /// 切替 or 再起動）で再チェックされる。
     /// ダイアログは別スレッドに出す — メインスレッドの `MessageBoxW` はモーダル
     /// メッセージループでフックのスレッドメッセージ処理を止めてしまうため。
-    pub fn check_and_warn() {
+    pub(crate) fn check_and_warn() {
         let assignment = read_from_registry();
         log::info!("[msime-keyassign] {assignment:?}");
         let Some(warning) = assignment.conflict_warning() else {
@@ -213,7 +213,7 @@ mod windows_impl {
     /// （`IsKeyAssignmentEnabled`）が無効なら両方 `false`（MS-IME 自身も
     /// この割当てを無視するため）。
     #[must_use]
-    pub fn read_toggle_assignment_from_registry() -> super::MsImeToggleAssignment {
+    pub(crate) fn read_toggle_assignment_from_registry() -> super::MsImeToggleAssignment {
         use windows::core::w;
         if read_dword(w!("IsKeyAssignmentEnabled")) != Some(1) {
             return super::MsImeToggleAssignment::default();
@@ -227,7 +227,7 @@ mod windows_impl {
     /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
     /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
     #[must_use]
-    pub fn read_delegate_to_open_axis_assignment_from_registry(
+    pub(crate) fn read_delegate_to_open_axis_assignment_from_registry(
     ) -> super::MsImeDelegateToOpenAxisAssignment {
         use awase::types::ShadowImeAction;
         use windows::core::w;
@@ -284,7 +284,7 @@ mod windows_impl {
     }
 
     /// `ms-settings:regionlanguage-jpnime`（Microsoft IME 設定ページ）を開く。
-    fn open_ime_settings() {
+    pub(crate) fn open_ime_settings() {
         use windows::core::{w, PCWSTR};
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -310,8 +310,8 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{
-    check_and_warn, read_delegate_to_open_axis_assignment_from_registry,
+pub(crate) use windows_impl::{
+    check_and_warn, open_ime_settings, read_delegate_to_open_axis_assignment_from_registry,
     read_toggle_assignment_from_registry,
 };
 
