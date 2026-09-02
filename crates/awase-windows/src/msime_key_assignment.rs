@@ -154,7 +154,7 @@ mod windows_impl {
     /// 切替 or 再起動）で再チェックされる。
     /// ダイアログは別スレッドに出す — メインスレッドの `MessageBoxW` はモーダル
     /// メッセージループでフックのスレッドメッセージ処理を止めてしまうため。
-    pub fn check_and_warn() {
+    pub(crate) fn check_and_warn() {
         let assignment = read_from_registry();
         log::info!("[msime-keyassign] {assignment:?}");
         let Some(warning) = assignment.conflict_warning() else {
@@ -168,7 +168,14 @@ mod windows_impl {
             return; // 同じ内容で警告済み
         }
         log::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
-        std::thread::spawn(move || show_conflict_dialog(&warning));
+        let text = format!(
+            "{warning}\n\n\
+             いますぐ Windows の設定画面を開いて解除しますか？\n\n\
+             開いたら「キーとタッチのカスタマイズ」で\n\
+             「キーの割り当て」をオフにするか、\n\
+             無変換/変換キーの割り当てを既定（かな切替 / 再変換）に戻してください。"
+        );
+        spawn_yes_open_ime_settings_dialog("awase - MS-IME キー割り当ての競合", text);
     }
 
     const MSIME_SUBKEY: windows::core::PCWSTR =
@@ -213,7 +220,7 @@ mod windows_impl {
     /// （`IsKeyAssignmentEnabled`）が無効なら両方 `false`（MS-IME 自身も
     /// この割当てを無視するため）。
     #[must_use]
-    pub fn read_toggle_assignment_from_registry() -> super::MsImeToggleAssignment {
+    pub(crate) fn read_toggle_assignment_from_registry() -> super::MsImeToggleAssignment {
         use windows::core::w;
         if read_dword(w!("IsKeyAssignmentEnabled")) != Some(1) {
             return super::MsImeToggleAssignment::default();
@@ -227,7 +234,7 @@ mod windows_impl {
     /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
     /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
     #[must_use]
-    pub fn read_delegate_to_open_axis_assignment_from_registry(
+    pub(crate) fn read_delegate_to_open_axis_assignment_from_registry(
     ) -> super::MsImeDelegateToOpenAxisAssignment {
         use awase::types::ShadowImeAction;
         use windows::core::w;
@@ -247,44 +254,43 @@ mod windows_impl {
         super::MsImeDelegateToOpenAxisAssignment { muhenkan, henkan }
     }
 
-    /// 競合警告のポップアップを表示し、Yes なら MS-IME 設定画面を開く。
+    /// 別スレッドで Yes/No の警告ダイアログを表示し、Yes なら MS-IME 設定画面を
+    /// 開く。`check_and_warn`（キー割り当て競合）と `tray::show_kana_lock_help_dialog`
+    /// （かな入力ロック検知、issue #137）が共有する——どちらも「別スレッドで
+    /// MessageBoxW→IDYESでopen_ime_settings」という同一構造だったのを統合した。
     ///
-    /// `MessageBoxW` はユーザー応答まで呼び出し元をブロックするが、
-    /// フック導入前なので入力への影響はない。
-    fn show_conflict_dialog(warning: &str) {
-        use windows::core::{w, PCWSTR};
-        use windows::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
-        };
+    /// `MessageBoxW` はユーザー応答まで呼び出しスレッドをブロックするが、
+    /// 別スレッドなのでメインのメッセージループ/フック処理は止めない。
+    pub(crate) fn spawn_yes_open_ime_settings_dialog(title: &'static str, text: String) {
+        std::thread::spawn(move || {
+            use windows::core::PCWSTR;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+            };
 
-        let text = format!(
-            "{warning}\n\n\
-             いますぐ Windows の設定画面を開いて解除しますか？\n\n\
-             開いたら「キーとタッチのカスタマイズ」で\n\
-             「キーの割り当て」をオフにするか、\n\
-             無変換/変換キーの割り当てを既定（かな切替 / 再変換）に戻してください。"
-        );
-        let text_wide = crate::win32::to_wide(&text);
+            let title_wide = crate::win32::to_wide(title);
+            let text_wide = crate::win32::to_wide(&text);
 
-        // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
-        let result = unsafe {
-            MessageBoxW(
-                None,
-                PCWSTR(text_wide.as_ptr()),
-                w!("awase - MS-IME キー割り当ての競合"),
-                // MB_TOPMOST | MB_SETFOREGROUND: バックグラウンドスレッドの owner なし
-                // MessageBox はフォアグラウンドロックで現在のウィンドウの裏に出る
-                // （タスクバー点滅のみで気づけない）ため、最前面に強制する。
-                MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
-            )
-        };
-        if result == IDYES {
-            open_ime_settings();
-        }
+            // SAFETY: title_wide/text_wide は NUL 終端済み UTF-16 で呼び出し中有効。
+            let result = unsafe {
+                MessageBoxW(
+                    None,
+                    PCWSTR(text_wide.as_ptr()),
+                    PCWSTR(title_wide.as_ptr()),
+                    // MB_TOPMOST | MB_SETFOREGROUND: バックグラウンドスレッドの owner
+                    // なし MessageBox はフォアグラウンドロックで現在のウィンドウの裏に
+                    // 出る（タスクバー点滅のみで気づけない）ため、最前面に強制する。
+                    MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
+                )
+            };
+            if result == IDYES {
+                open_ime_settings();
+            }
+        });
     }
 
     /// `ms-settings:regionlanguage-jpnime`（Microsoft IME 設定ページ）を開く。
-    fn open_ime_settings() {
+    pub(crate) fn open_ime_settings() {
         use windows::core::{w, PCWSTR};
         use windows::Win32::UI::Shell::ShellExecuteW;
         use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
@@ -310,9 +316,9 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{
+pub(crate) use windows_impl::{
     check_and_warn, read_delegate_to_open_axis_assignment_from_registry,
-    read_toggle_assignment_from_registry,
+    read_toggle_assignment_from_registry, spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]

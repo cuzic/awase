@@ -281,7 +281,7 @@ impl From<AppImeProfile> for crate::state::ime_event::ImePolicyProfile {
             // がそこを通らずバイパスし、物理キーの Allow 素通しと awase 自身の
             // actuate が同時に起きる二重 actuation（BUG-46型）を招いた
             // （コードレビューで発見・修正、docs/known-bugs.md BUG-90 追補・
-            // ADR-118 参照）。gate をこの3箇所より減らす変更を検討する前に、
+            // ADR-119 参照）。gate をこの3箇所より減らす変更を検討する前に、
             // 必ずそちらを読むこと。
             AppImeProfile::Standard | AppImeProfile::InputRelay => Self::ImmCross,
             AppImeProfile::Imm32Unavailable => Self::Imm32Unavailable,

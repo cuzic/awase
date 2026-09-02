@@ -200,7 +200,7 @@ impl PhysicalKeyDisposition {
         // 「解釈しない入力は消費しない」— awase が actuate しないのに物理キーだけ
         // Suppress すると、OS 側にも awase 側にも誰も IME を切り替えない
         // 「二重の空振り」になる（PowerToys Mouse Without Borders 等の正規リレー
-        // ツールでリモート側の英数/かなキーが完全に無反応になる、ADR-118 参照）。
+        // ツールでリモート側の英数/かなキーが完全に無反応になる、ADR-119 参照）。
         //
         // この early return は下の ImmCross アーム（`profile.can_use_imm32_
         // cross_process()` → 無条件 Suppress）よりも先に来るため、ImmCross
@@ -211,7 +211,7 @@ impl PhysicalKeyDisposition {
         // 自身が actuate することはなく、spurious 連鎖の前提（awase の自
         // actuation と物理キー通過の競合）がそもそも成立しない。したがって
         // ここを貫通させても `feedback_immcross_owns_kanji` が防ごうとした
-        // リスクは再現しない（ADR-118 決定1参照）。
+        // リスクは再現しない（ADR-119 決定1参照）。
         if event.injected {
             debug_assert!(
                 !shadow_toggled,

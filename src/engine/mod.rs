@@ -13,6 +13,7 @@ mod fsm_adapter;
 pub mod fsm_types;
 pub mod idle_check;
 pub mod input_tracker;
+pub mod kana_input_warn;
 pub mod key_lifecycle;
 pub mod mode_state;
 mod nicola_fsm;
@@ -33,6 +34,7 @@ pub use fsm_types::{
     TextKeyConfig, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 pub use idle_check::should_run_idle_conv_check;
+pub use kana_input_warn::{KanaLockHysteresis, KanaLockReading, KanaLockStreak, WarnAction};
 pub use key_lifecycle::KeyLifecycle;
 pub use mode_state::{AssumedReason, InputModeState};
 pub use nicola_fsm::NicolaFsm;

@@ -3226,7 +3226,7 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
         // condition (a) を実際に担保しているのはこちらの2ファイル
         // （`ImeController::apply` / `run_open_chain_async` /
         // `fallback_write` の3箇所、コードレビューで gate 取りこぼしが
-        // 見つかった経緯は ADR-118 参照）。ここが欠けると、今回踏んだのと
+        // 見つかった経緯は ADR-119 参照）。ここが欠けると、今回踏んだのと
         // 同じクラスの退行（gate の一部消失）を検知できない。
         ("src/ime_controller.rs", 2),
         ("src/runtime/open_chain.rs", 7),

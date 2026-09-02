@@ -508,7 +508,7 @@ impl ImeController {
         // の apply_ime_open_with_view 経由も含む）の唯一の合流点であり、
         // `runtime/executor.rs::dispatch_ime_set_open` の早期 gate をバイパスする
         // 経路（`key_pipeline.rs:1065`/`mod.rs:897` 等）を含めてここで確実に止める。
-        // ADR-118 参照（gate をここ1点に集約できなかった経緯）。
+        // ADR-119 参照（gate をここ1点に集約できなかった経緯）。
         if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
             return ImeOpenOutcome::NotOwned;
         }
