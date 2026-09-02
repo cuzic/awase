@@ -765,6 +765,24 @@ force_tsf = [
 # IME を直接 OFF にするキー（既定: ["IMEオフ"]）
 # off = ["VK_DBE_SBCSCHAR"]</div>
     </div>
+
+    <div class="card">
+      <h3>句読点確定などの複数アクション（打鍵列機能）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">1つのキーで「文字を出力してから確定操作を送る」など、複数の動作をまとめて実行できる機能です（やまぶきの <code>CV4D</code> 相当）。既定では無効（Off）です。GUI にはまだトグルがなく、<code>config.toml</code> の直接編集でのみ有効化できます。</p>
+      <div class="code-block">[general]
+# 打鍵列機能を有効化する
+#   "off" - 無効（デフォルト。既存の .yab をそのまま解釈）
+#   "on"  - 有効（.yab セル内の + 区切り・CV4D・@マクロ参照を解釈）
+keystroke_sequence = "on"</div>
+      <p class="note" style="margin-top:0.7rem">有効化すると、<code>.yab</code> の1セル内で <code>+</code> 区切りにより複数の動作を並べられます。<code>CV4D</code> は Ctrl+M（変換候補の確定によく使われるキー）を表す記法です。</p>
+      <div class="code-block">[ローマ字シフト無し]
+'．'+CV4D,ka,ta,...</div>
+      <p class="note">上の例は「。を出力してから Ctrl+M で確定する」という動作を1セルで定義しています。同じ動作を複数キーで使い回したい場合は、<code>[[keystroke_macro]]</code> で名前を付けて <code>@名前</code> で参照できます。</p>
+      <div class="code-block">[[keystroke_macro]]
+name = "kakko"
+steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]</div>
+      <p class="note">既存の <code>.yab</code> ファイルは有効化しても壊れません（<code>+</code> を含まないセルは今まで通り解釈されます）。ただし、やまぶき形式で無区切り（例: <code>．CV4D</code>）と書かれたセルは、<code>+</code> を挿入した形（<code>．+CV4D</code>）に書き換える必要があります。</p>
+    </div>
   </div>
 </section>
 
