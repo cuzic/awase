@@ -110,6 +110,41 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.18.0] - 2026-09-02</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added a "keystroke sequence" feature to `.yab` (run multiple actions from a single key, equivalent to Yamabuki's `CV4D`)</strong><ul>
+<li>Disabled by default. Setting `keystroke_sequence = "on"` in `config.toml` lets a single `.yab` cell chain multiple actions with a `+` separator (e.g. outputting a character and then confirming it with Ctrl+M in one key). Named macros defined with `[[keystroke_macro]]` can be reused across keys via `@name`</li>
+<li>There is no GUI toggle yet; it can only be enabled by editing `config.toml` directly. Existing `.yab` files keep working unchanged when the feature is enabled</li>
+</ul>
+</li>
+<li><strong>Added a layout for the genuine Fujitsu thumb-shift keyboard "FMV-KB232", `layout/nicola_kb232.yab`</strong><ul>
+<li>This keyboard turned out to have a symbol arrangement that matches none of the bundled layouts. Adopted the layout as provided by the reporter, verified on their own hardware</li>
+</ul>
+</li>
+<li><strong>Added startup diagnostics for config and layout files</strong><ul>
+<li>Lint warnings for malformed `.yab` quoting and `config.toml` validation warnings &mdash; some of which previously only appeared in the log &mdash; are now surfaced together in a tray balloon notification at startup</li>
+<li>Also added a collapsible diagnostics list to the settings window so these can be re-checked at any time</li>
+</ul>
+</li>
+<li><strong>Added detection and notification for a stuck kana-lock state in Teams (WebView2/MS-IME)</strong><ul>
+<li>Reads the OS kana-lock state directly and, when it diverges from what awase expects while you keep typing, shows a tray notification with guidance. Automatic recovery is not possible, so only guidance is provided</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the physical "Eisu"/"Kana" keys sometimes not working while using PowerToys' "Mouse Without Borders"</strong><ul>
+<li>Caused by two independent bugs. Fixed a regression that was dropping injected key events it should have passed through, and added an opt-in setting (`app_overrides.input_relay_apps`, empty by default) that stops awase from taking IME-control ownership of MWB's relay window. Thumb-shift character conversion itself keeps working as before</li>
+</ul>
+</li>
+<li><strong>Fixed the NICOLA three-key simultaneous-keystroke arbitration skipping its timing check entirely when the next key arrived with an extremely tight overlap right after the previous key was released, producing an incorrect conversion</strong> (e.g. typing "&#12375;&#12423;&#12358;&#12395;&#12435;" could come out as "&#12375;&#12356;&#12500;&#12435;")</li>
+<li><strong>Fixed a custom `.yab` file that fails to load as UTF-8 silently falling back to the bundled layout, with no indication of which file was ignored</strong><ul>
+<li>A dialog now explains the cause and the substitute layout whenever this fallback occurs, and opens the settings window automatically</li>
+</ul>
+</li>
+<li><strong>Added hover tooltips to every field in the tray's bug-report window</strong></li>
+</ul>
 <h2>[1.17.0] - 2026-08-31</h2>
 <h3>Added</h3>
 <ul>
