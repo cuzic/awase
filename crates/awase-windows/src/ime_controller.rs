@@ -70,14 +70,28 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         key_sequence_policy::imm_cross_applicable(view.focus.profile)
     }
 
-    fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // ROMAN ビットの事前補完（MS-IME + ImmCross でかなモードのまま IME ON すると
         // JIS かな入力になる問題への対処）は、ADR-089 §6 Phase C item 12 で
         // `apply_mechanism` の ROMAN 補完ステップへ移した（ADR-086 INV-14 の是正）。
         // 発火条件は `needs_romaji_pre_write` が SSOT。
+        //
+        // ADR-117（issue #138 切り分け）: この経路は Standard プロファイル×MS-IME の
+        // 完全同期呼び出し（`try_force_on_bootstrap` 等）のみ到達し、報告環境の
+        // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
+        // 別途担う。`composition_active`/`ime_show_seq`/`ime_change_seq` の解釈上の
+        // 注意は `TsfObservations::ime_composition_active` の doc コメント参照。
+        log::info!(
+            "[apply-ime] ImmCross sync: open={open} composition_active={} show_seq={} \
+             change_seq={} (issue #138診断)",
+            view.observed.composition_active,
+            view.observed.ime_show_seq,
+            view.observed.ime_change_seq,
+        );
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
             ImeOpenOutcome::Applied
         } else {
+            log::info!("[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed");
             ImeOpenOutcome::Failed
         }
     }
@@ -161,7 +175,10 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
         )
     }
 
-    fn apply(&self, open: bool, _view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        // ADR-117（issue #138 切り分け）: `composition_active`/`ime_show_seq`/
+        // `ime_change_seq` の解釈上の注意は `TsfObservations::ime_composition_active`
+        // の doc コメント参照（MS-IME での信頼性は未検証）。
         if open {
             // VK_IME_ON は conv-mode（ひらがな/カタカナ、全角/半角）に一切触れない
             // 真の開閉キーのため、旧 VK_DBE_HIRAGANA 版にあった「現在カタカナなら
@@ -176,7 +193,13 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             //
             // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON、MS-IME 冪等 ON キー）。
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
-            log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (IME ON)");
+            log::info!(
+                "[apply-ime] MS-IME direct: send {vk:#06X} (IME ON) composition_active={} \
+                 show_seq={} change_seq={} (issue #138診断)",
+                view.observed.composition_active,
+                view.observed.ime_show_seq,
+                view.observed.ime_change_seq,
+            );
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             if !unsafe { crate::ime::send_ime_mode_key(vk) } {
                 // Win キー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
@@ -184,6 +207,10 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
                 // 「適用済み」no-op になり belief ON × 実 IME OFF が固定される
                 // （2026-07-07 実機: ロック解除 → Win+Ctrl+→ 直後の「korede」化。
                 // BUG-16 追補）。未適用として返し、次の refresh/force-ON に再送させる。
+                log::info!(
+                    "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
+                     → UnsafeToToggle"
+                );
                 return ImeOpenOutcome::UnsafeToToggle;
             }
         } else {
@@ -191,9 +218,19 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
             // 既に DirectInput の場合は no-op のため conv チェック不要。
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close);
-            log::debug!("[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等)");
+            log::info!(
+                "[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等) \
+                 composition_active={} show_seq={} change_seq={} (issue #138診断)",
+                view.observed.composition_active,
+                view.observed.ime_show_seq,
+                view.observed.ime_change_seq,
+            );
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             if !unsafe { crate::ime::send_ime_mode_key(vk) } {
+                log::info!(
+                    "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
+                     → UnsafeToToggle"
+                );
                 return ImeOpenOutcome::UnsafeToToggle;
             }
         }
@@ -221,10 +258,23 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        log::debug!(
-            "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} → desired={open}: SendInput VK_KANJI",
-            view.control.shadow_on, view.observed.candidate_visible, view.observed.candidate_was_seen,
+        // ADR-117（issue #138 切り分け）: Standard×MS-IME で ImmCross が Failed を
+        // 返した場合に `runtime/open_chain.rs::fallback_write` が実際に到達させる
+        // 唯一の機構。composition_active/ime_show_seq/ime_change_seq の解釈上の
+        // 注意（MS-IME での信頼性未検証）に加え、`fallback_write` が view を
+        // 作り直すため、この値は直前の ImmCross 試行にとっては送信「後」の値
+        // でもある点に注意（`fallback_write` の doc コメント参照）。
+        log::info!(
+            "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} \
+             composition_active={} show_seq={} change_seq={} → desired={open}: \
+             SendInput VK_KANJI (issue #138診断)",
+            view.control.shadow_on,
+            view.observed.candidate_visible,
+            view.observed.candidate_was_seen,
             view.focus.profile,
+            view.observed.composition_active,
+            view.observed.ime_show_seq,
+            view.observed.ime_change_seq,
         );
         unsafe { crate::ime::post_kanji_toggle_to_focused() };
         ImeOpenOutcome::FallbackSent
