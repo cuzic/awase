@@ -110,6 +110,41 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.18.0] - 2026-09-02</h2>
+<h3>追加</h3>
+<ul>
+<li><strong><code>.yab</code> に「打鍵列機能」（1つのキーに複数の動作をまとめて実行する機能、やまぶきの <code>CV4D</code> 相当）を追加した</strong><ul>
+<li>既定では無効。<code>config.toml</code> に <code>keystroke_sequence = &quot;on&quot;</code> を設定すると、<code>.yab</code> の1セル内で <code>+</code> 区切りにより複数の動作（文字出力と Ctrl+M による確定を1キーにまとめる、など）を並べられるようになる。<code>[[keystroke_macro]]</code> で名前を付けたマクロを <code>@名前</code> で複数キーから使い回すこともできる</li>
+<li>GUIにはまだトグルが無く、<code>config.toml</code> の直接編集でのみ有効化できる。既存の <code>.yab</code> は有効化しても壊れない</li>
+</ul>
+</li>
+<li><strong>富士通純正キーボード「FMV-KB232」向けレイアウト <code>layout/nicola_kb232.yab</code> を追加した</strong><ul>
+<li>記号配置が同梱の他レイアウトのどれとも一致しない、この機種固有の配列だったため、報告者から提供された実機動作確認済みの配列をそのまま採用した</li>
+</ul>
+</li>
+<li><strong>起動時に設定ファイル・配列ファイルの問題を診断し警告する機能を追加した</strong><ul>
+<li><code>.yab</code> のクォート崩れ等のlint警告や <code>config.toml</code> のバリデーション警告など、これまでログにしか出ていなかったものも含めて起動時にトレイバルーンへまとめて通知するようにした</li>
+<li>設定画面にも折りたたみ式の診断リストを追加し、いつでも再確認できるようにした</li>
+</ul>
+</li>
+<li><strong>Teams（WebView2/MS-IME）でのかな入力ロック状態を検知し、通知する機能を追加した</strong><ul>
+<li>OSのかなロック状態を直接読み取り、awaseの想定とずれたまま入力し続けている場合にトレイ通知と対処方法を案内する。自動復旧はできないため案内のみ行う</li>
+</ul>
+</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>PowerToys「マウスなしでコンピューターを制御」（Mouse Without Borders）使用中に物理「英数」「かな」キーが効かないことがある不具合を修正</strong><ul>
+<li>独立した2つの原因が重なっていた。注入されたキー入力を誤って握りつぶしていたリグレッションを修正し、MWBの中継ウィンドウにIME制御の所有権を持たせないオプトイン設定（<code>app_overrides.input_relay_apps</code>、既定は空）を追加した。親指シフトの文字変換自体はこれまで通り動作する</li>
+</ul>
+</li>
+<li><strong>NICOLA配列の3キー同時打鍵判定で、前のキーを離した直後に極めてタイトな重なりで次のキーが来た場合にタイミング判定が一切行われず、誤った変換になる不具合を修正</strong>（例:「しょうにん」の入力中に「しいゔにん」と出力される）</li>
+<li><strong>独自にカスタムした <code>.yab</code> ファイルがUTF-8として読み込めない場合、どのファイルが無視されたか分からないまま無言でバンドル版レイアウトに差し替わっていた問題を修正</strong><ul>
+<li>差し替えが発生した場合はダイアログで原因と代替レイアウトを明示し、設定画面を自動起動するようにした</li>
+</ul>
+</li>
+<li><strong>タスクトレイの不具合報告ウィンドウの各項目にホバー時の説明（ツールチップ）を追加</strong></li>
+</ul>
 <h2>[1.17.0] - 2026-08-31</h2>
 <h3>追加</h3>
 <ul>
