@@ -763,25 +763,6 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     app.on_ime_apply_complete(open, outcome, generation, reason);
 }
 
-/// WM_GJI_CHARSET_FN_KEY_ACTIVATED ハンドラ。
-///
-/// `gji_charset_popup` がバックグラウンドスレッドで `config1.db` への書き込みに
-/// 成功した直後に `post_to_main_thread_with` で投函する（`wparam` に
-/// 有効化する `VkCode` の生値を積む）。メインスレッドに戻ってから
-/// `with_app` 経由で反映することで、`SingleThreadCell`（`RUNTIME`）への
-/// クロススレッドアクセスを避ける。
-pub(crate) fn handle_wm_gji_charset_fn_key_activated(app: &mut Runtime, wparam: usize) {
-    let Ok(raw) = u16::try_from(wparam) else {
-        log::warn!(
-            "[gji-charset-popup] WM_GJI_CHARSET_FN_KEY_ACTIVATED: wparam が VkCode 範囲外: {wparam}"
-        );
-        return;
-    };
-    let vk = VkCode(raw);
-    log::info!("[gji-charset-popup] config1.db 書き込み成功をメインスレッドで反映: {vk:?}");
-    app.set_muhenkan_dedicated_fn_key_auto(Some(vk));
-}
-
 /// WM_GJI_REINIT_RETRY_COMPLETE ハンドラ。
 pub(crate) fn handle_wm_gji_reinit_retry_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let Ok(token) = u32::try_from(wparam) else {
@@ -859,12 +840,11 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         }
     }
 
-    // GJI 検出時、config1.db から専用Fnキー変換モード（ADR-091 §D3.2）と
-    // IME ON/OFF/トグルキー（ADR-092 決定D Step4c）を自動判定する。MS-IME
-    // 割当てチェックと対称に、この「IME 種別に依存する副作用の単一の
-    // 合流点」に置き、同じ理由で detected を見る（未検出時の
-    // active_ime_kind() が安全デフォルトとして MicrosoftIme を返す実装
-    // 詳細に暗黙に依存せず、明示的にゲートする）。
+    // GJI 検出時、config1.db から IME ON/OFF/トグルキー（ADR-092 決定D
+    // Step4c）を自動判定する。MS-IME 割当てチェックと対称に、この「IME
+    // 種別に依存する副作用の単一の合流点」に置き、同じ理由で detected を
+    // 見る（未検出時の active_ime_kind() が安全デフォルトとして
+    // MicrosoftIme を返す実装詳細に暗黙に依存せず、明示的にゲートする）。
     //
     // **MS-IME 側（次のブロック）より先に呼ぶこと（Opus コードレビュー
     // 指摘、意図的な順序）**: `ime_toggle_auto` は GJI/MS-IME 両方の
@@ -877,6 +857,12 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で3リストとも解除→直後に
     // MS-IME側が`ime_toggle_auto`を新しい値で上書き」という正しい順序に
     // なる。
+    //
+    // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
+    // config1.db書き込みは、実験的機能のまま撤去し忘れて出荷されていた
+    // ため2026-09-02に全撤去した（未実装の再検討はADR-091追補参照）。
+    // `muhenkan_solo_tap_dedicated_fn_key` の手動設定（config.toml）による
+    // 内部配線は残っている。
     crate::gji_charset_autodetect::sync_gji_charset_autodetect(
         app,
         detected
@@ -885,14 +871,6 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
                 crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
             ),
     );
-    if detected
-        && matches!(
-            kind,
-            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        )
-    {
-        crate::gji_charset_popup::maybe_show_setup_popup(app);
-    }
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
     // 競合し belief 乖離を起こす）をチェックして解除を案内する

@@ -1425,13 +1425,17 @@ impl SettingsApp {
         }
         // 2026-08-17 ユーザー判断: GJI 専用Fnキー変換（ADR-091 §D3.2）の
         // 手動設定 UI（専用Fnキードロップダウン・config1.dbへの書き込み
-        // ボタン）は一旦、設定画面から撤去した（実装自体は撤去していない、
-        // `muhenkan_solo_tap_dedicated_fn_key` は config.toml で引き続き
-        // 設定可能）。GJI検出時のconfig1.db自動判定・awase.exe起動時の
-        // ポップアップ同意フロー（`gji_charset_autodetect.rs`/
-        // `gji_charset_popup.rs`）が主経路として機能し続けるため、通常の
-        // 利用に支障はない。無変換キー単独タップのすぐ下に変換キー単独
-        // タップが並ぶよう、この節を撤去した分だけ表示順も詰まる。
+        // ボタン）は設定画面から撤去した。2026-09-02、実験的機能のまま
+        // 撤去し忘れて出荷されていたGJI検出時のconfig1.db自動判定・
+        // 起動時ポップアップ同意フロー（`gji_charset_autodetect.rs`の
+        // 専用Fnキー部分・`gji_charset_popup.rs`/`gji_charset_write.rs`）も
+        // 全撤去した（実機でGJIのキー設定が実際にはカスタムなのに
+        // 「カスタム以外」と誤診断されるなど、ユーザーの混乱を招いていた）。
+        // `muhenkan_solo_tap_dedicated_fn_key`（config.toml による手動設定）
+        // の内部配線は残っており、上級者は引き続き手動で有効化できるが、
+        // 現状これを設定画面から有効化する経路は無い。無変換キー単独タップ
+        // のすぐ下に変換キー単独タップが並ぶよう、この節を撤去した分だけ
+        // 表示順も詰まる。
         if is_henkan_thumb_key(&self.config.general.left_thumb_key)
             || is_henkan_thumb_key(&self.config.general.right_thumb_key)
         {

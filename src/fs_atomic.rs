@@ -1,8 +1,7 @@
 //! 一時ファイル＋`rename` によるアトミックなファイル書き込み。
 //!
-//! `AppConfig::save`（[`crate::config`]）と GJI `config1.db` への書き込み
-//! （`awase-windows::gji_charset_write`）の両方が「途中で失敗しても元の
-//! ファイルを壊さない」という同じ要件を持つため、この共通処理として集約する。
+//! `AppConfig::save`（[`crate::config`]）が「途中で失敗しても元の
+//! ファイルを壊さない」という要件を持つため、この共通処理として集約する。
 
 use anyhow::{Context, Result};
 use std::io::Write as _;

@@ -573,17 +573,9 @@ pub(super) fn initialize_app(
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-        app.set_muhenkan_dedicated_fn_key_config(
-            crate::runtime::resolve_dedicated_fn_key(manual_fn_key),
-            manual_fn_key.is_some(),
-        );
-        app.set_muhenkan_solo_tap_is_passthrough(
-            ModeKeyConfig::from_legacy_bools(
-                config.general.muhenkan_solo_tap_ignore_composing_guard,
-                config.general.muhenkan_solo_tap_always_suppress,
-            )
-            .is_passthrough(),
-        );
+        app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
+            manual_fn_key,
+        ));
         app.set_space_is_thumb_key(
             config.general.left_thumb_key == "VK_SPACE"
                 || config.general.right_thumb_key == "VK_SPACE",

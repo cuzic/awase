@@ -566,15 +566,9 @@ impl ModeKeyConfig {
 
     /// 非 composing（idle）時に単独タップが素通し（`GuardAction::Passthrough`）か。
     ///
-    /// `gji_charset_popup.rs` の設定支援ポップアップ（無変換単独タップが
-    /// 「素のパススルー」設定のまま=GJI 既定のかな切替に横取りされうる状態か）
-    /// の判定に使う、`!always_suppress` の新表現（ADR-092 実装時の Opus
-    /// コードレビュー指摘: 同じ事実を legacy bool から独立に導出していた
-    /// `Runtime::muhenkan_solo_tap_is_passthrough` を、この単一の判定へ
-    /// 一本化した）。専用Fnキー（`DedicatedFnKey`）が有効かどうかはこの
-    /// メソッドの関知するところではない——呼び出し元が別途チェックする
-    /// （`gji_charset_popup.rs::maybe_show_setup_popup` は
-    /// `muhenkan_dedicated_fn_key_active()` を本メソッドより先に見ている）。
+    /// `!always_suppress` の表現。専用Fnキー（`DedicatedFnKey`）が有効かどうかは
+    /// このメソッドの関知するところではない——`DedicatedFnKey`は`ModeKeyConfig`を
+    /// 経由せず独立に優先される（下記 doc 参照）。
     #[must_use]
     pub const fn is_passthrough(self) -> bool {
         matches!(self.idle, GuardAction::Passthrough)
@@ -690,8 +684,7 @@ mod tests {
     }
 
     /// `is_passthrough()` は idle が `Passthrough` の場合のみ true
-    /// （`gji_charset_popup.rs` が「無変換単独タップが素のパススルー設定の
-    /// まま」を判定するのに使う、旧`!always_suppress`の新表現）。
+    /// （`!always_suppress`の表現）。
     #[test]
     fn mode_key_config_is_passthrough_matches_idle_state() {
         assert!(!ModeKeyConfig::from_legacy_bools(false, true).is_passthrough()); // always_suppress

@@ -234,29 +234,11 @@ pub struct Runtime {
     /// 既定 `MsImeOnly` で従来動作を維持し、GJI 経路は `All` の明示設定時だけ
     /// `kp_shift_conv_guard_key_up` から発火する。
     half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy,
-    /// `config.general.muhenkan_solo_tap_dedicated_fn_key` がユーザーにより
-    /// 明示設定されているか（`Some`）。`true` の間は
-    /// `state::gji_charset_autodetect`（ADR-091 §D3.1項目1）が専用Fnキー
-    /// 変換モードに一切介入しない（手動設定が常に優先、GJI 検出時の自動
-    /// 有効化・離脱時の自動解除いずれも行わない）。`apply_config_update`/
-    /// 起動時に反映される。
-    muhenkan_dedicated_fn_key_is_manual: bool,
-    /// 専用Fnキー変換モードが現在有効なら、その vk（`set_muhenkan_dedicated_fn_key_config`/
-    /// `set_muhenkan_dedicated_fn_key_auto` に渡された最新の値）。`gji_charset_popup`
-    /// が「既に有効なら設定支援ポップアップを出さない」判定（`is_some()`）に使う。
-    /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックにも使う
+    /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
+    /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
+    /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
     /// （ADR-114「未解決の疑問」5 対応）。
-    ///
-    /// 以前は「有効かどうか」の `bool` フィールドと vk 自体の `Option<VkCode>`
-    /// フィールドを別々に持っていたが、両者は常に同値（`is_some()`）だったため
-    /// 統合した（ADR-045 dead-field 検出方針、実装レビュー指摘 m-3）。
     muhenkan_dedicated_fn_key_vk: Option<VkCode>,
-    /// `!config.general.muhenkan_solo_tap_always_suppress`（無変換単独タップが
-    /// 素のパススルー設定になっているか）。GJI向け設定支援ポップアップ
-    /// （ADR-091 §D3.2「設定未完了時のポップアップ」、`gji_charset_popup`）が
-    /// 「ポップアップを出すべきか」の判定に使う。`apply_config_update`/
-    /// 起動時に反映される。
-    muhenkan_solo_tap_is_passthrough: bool,
     /// `config.general.left_thumb_key`/`right_thumb_key` のいずれかが
     /// `"VK_SPACE"` か。`true` の場合、MS-IME レジストリ自動検出の
     /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
@@ -1236,9 +1218,7 @@ impl Runtime {
             active_actuation: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
-            muhenkan_dedicated_fn_key_is_manual: false,
             muhenkan_dedicated_fn_key_vk: None,
-            muhenkan_solo_tap_is_passthrough: false,
             space_is_thumb_key: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1269,56 +1249,18 @@ impl Runtime {
         self.half_width_alnum_toggle_policy = policy;
     }
 
-    /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
-    /// を反映する。`is_manual` は `config.general.muhenkan_solo_tap_dedicated_fn_key`
-    /// が `Some` かどうか（`state::gji_charset_autodetect` が介入してよいかの
-    /// ゲート）。起動時（`bootstrap.rs`）と `apply_config_update`（reload 時）の
-    /// 両方から呼ぶ。
-    pub(crate) fn set_muhenkan_dedicated_fn_key_config(
-        &mut self,
-        vk: Option<VkCode>,
-        is_manual: bool,
-    ) {
-        self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
-        self.muhenkan_dedicated_fn_key_is_manual = is_manual;
-        self.muhenkan_dedicated_fn_key_vk = vk;
-        if let Some(vk) = vk {
-            self.platform_state
-                .keymap
-                .active_keymaps
-                .warn_if_vk_conflicts(
-                    vk,
-                    "muhenkan_solo_tap_dedicated_fn_key（手動設定）",
-                    log::Level::Warn,
-                );
-        }
-    }
-
-    /// `state::gji_charset_autodetect` が GJI 検出/離脱時に専用Fnキー変換モードを
-    /// 自動的に有効化/解除するための入口。手動設定（`muhenkan_dedicated_fn_key_is_manual`）
-    /// が有効な間は何もしない（手動設定が常に優先）。
-    pub(crate) fn set_muhenkan_dedicated_fn_key_auto(&mut self, vk: Option<VkCode>) {
-        if self.muhenkan_dedicated_fn_key_is_manual {
-            return;
-        }
+    /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
+    /// §D3.2、config.toml による手動設定のみ）を反映する。起動時
+    /// （`bootstrap.rs`）と `apply_config_update`（reload 時）の両方から呼ぶ。
+    pub(crate) fn set_muhenkan_dedicated_fn_key_config(&mut self, vk: Option<VkCode>) {
         self.engine.set_muhenkan_solo_tap_dedicated_fn_key(vk);
         self.muhenkan_dedicated_fn_key_vk = vk;
         if let Some(vk) = vk {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(
-                    vk,
-                    "muhenkan_solo_tap_dedicated_fn_key（自動検出）",
-                    log::Level::Warn,
-                );
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Warn);
         }
-    }
-
-    /// `state::gji_charset_autodetect` が手動設定かどうかを判定するための読み取り専用アクセサ。
-    #[must_use]
-    pub(crate) const fn muhenkan_dedicated_fn_key_is_manual(&self) -> bool {
-        self.muhenkan_dedicated_fn_key_is_manual
     }
 
     /// `gji_charset_autodetect` が config1.db から自動検出した IME ON/OFF/
@@ -1354,27 +1296,6 @@ impl Runtime {
         self.engine.set_ime_on_auto_keys(Vec::new());
         self.engine.set_ime_off_auto_keys(Vec::new());
         self.engine.set_ime_toggle_auto_keys(Vec::new());
-    }
-
-    /// `gji_charset_popup` が「専用Fnキー変換が既に有効なら設定支援ポップアップを
-    /// 出さない」判定に使う読み取り専用アクセサ。
-    #[must_use]
-    pub(crate) const fn muhenkan_dedicated_fn_key_active(&self) -> bool {
-        self.muhenkan_dedicated_fn_key_vk.is_some()
-    }
-
-    /// `config.general.muhenkan_solo_tap_always_suppress` の反転値を反映する。
-    /// 起動時（`bootstrap.rs`）と `apply_config_update`（reload 時）の両方から呼ぶ。
-    pub(crate) fn set_muhenkan_solo_tap_is_passthrough(&mut self, is_passthrough: bool) {
-        self.muhenkan_solo_tap_is_passthrough = is_passthrough;
-    }
-
-    /// `gji_charset_popup`（ADR-091 §D3.2「設定未完了時のポップアップ」）が
-    /// 「無変換単独タップが素のパススルー設定になっているか」を判定するための
-    /// 読み取り専用アクセサ。
-    #[must_use]
-    pub(crate) const fn muhenkan_solo_tap_is_passthrough(&self) -> bool {
-        self.muhenkan_solo_tap_is_passthrough
     }
 
     /// `config.general.left_thumb_key`/`right_thumb_key` 由来のキャッシュを
@@ -1600,24 +1521,7 @@ impl Runtime {
                 ),
             );
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-            if manual_fn_key.is_some() || self.muhenkan_dedicated_fn_key_is_manual() {
-                // 手動設定が今回あるか、直前まで手動設定だった（＝今回外れた）場合
-                // のみ反映する。手動設定が既に無い（自動判定/ポップアップに委ねて
-                // いる）場合はここで触らない — 無関係な設定リロードのたびに
-                // 自動判定/ポップアップが有効化した専用Fnキーを None で
-                // 上書きしてしまう回帰を防ぐ（Opus レビュー指摘）。
-                self.set_muhenkan_dedicated_fn_key_config(
-                    resolve_dedicated_fn_key(manual_fn_key),
-                    manual_fn_key.is_some(),
-                );
-            }
-            self.set_muhenkan_solo_tap_is_passthrough(
-                ModeKeyConfig::from_legacy_bools(
-                    config.general.muhenkan_solo_tap_ignore_composing_guard,
-                    config.general.muhenkan_solo_tap_always_suppress,
-                )
-                .is_passthrough(),
-            );
+            self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
             self.set_space_is_thumb_key(
                 config.general.left_thumb_key == "VK_SPACE"
                     || config.general.right_thumb_key == "VK_SPACE",
