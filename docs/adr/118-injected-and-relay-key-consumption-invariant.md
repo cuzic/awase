@@ -137,7 +137,7 @@ input_relay_apps`（プロセス名リスト、既定は空配列、既存の`ma
   経路（issue #136で報告された「物理IMEキー押下→IME OFF/ON」操作そのもの）がこのgateを
   バイパスしていたことが判明した。バイパス時は物理キーが`transport.rs::plan`で`Allow`
   （素通し）されるのと同時にawase自身も actuate してしまい、BUG-46型の二重actuationという
-  新規リグレッションを生んでいた。** 修正として、gateを実際の合流点3箇所に置き直した:
+  新規リグレッションを生んでいた。** 修正として、gateを実際の合流点4箇所に置き直した:
   1. `ime_controller.rs::ImeController::apply`の先頭（同期経路の唯一の合流点。
      `apply_ime_open_with_view`経由の全呼び出し元と、`key_pipeline.rs`が直接呼ぶ経路の
      両方を覆う）
@@ -147,14 +147,23 @@ input_relay_apps`（プロセス名リスト、既定は空配列、既存の`ma
   3. `runtime/open_chain.rs::fallback_write`（非同期chainのImmCross失敗後フォールバック。
      各機構ごとにviewを作り直す設計のため、await中にフォーカスがInputRelayへ移った場合を
      ここで再検出する）
+  4. `runtime/open_chain.rs::imm_cross_write`（`/code-review`指摘で追加。
+     `AsyncChainWriter::is_applicable(ImmCross)`は`self.imm.is_some()`しか見ておらず
+     profileを一切参照しないため、2の`run_open_chain_async`冒頭gateが`with_app`再入
+     失敗でfail-openした場合、修正前はこの関数まで無条件でImmCross writeが到達して
+     いた。3の`fallback_write`と同じfresh view再検出をImmCrossにも及ぼす）
 
   `runtime/executor.rs::dispatch_ime_set_open`の既存gateは早期exitの最適化として残す
-  （上記3箇所と重複するが無害）。いずれも`ImmCrossProcessStrategy`/`GjiDirectStrategy`/
+  （上記4箇所と重複するが無害）。いずれも`ImmCrossProcessStrategy`/`GjiDirectStrategy`/
   `MsImeDirectStrategy`のいずれも試行しない。
 - **(b) 物理IMEモードキーをsuppressしない**: `transport.rs::plan`に決定1と同型の分岐を
   追加。当初「condition (b)の担保」として想定していた`AppImeProfile::should_pass_physical_
   key`述語は、コードレビューで**本番呼び出し元ゼロのデッドコード**（BUG-46修正で`plan`から
   外されて以来、誰も呼んでいない）と判明したため、実装は`plan`への直接分岐に置いた。
+  **この分岐は当初F2 (VK_DBE_HIRAGANA) 分岐より後ろに置かれており、`/code-review`で
+  「`is_tsf_mode`/`f2_warmup_owned`がどちらも真の状態でInputRelay windowにフォーカス
+  すると、F2分岐が先に評価されて物理かなキーがSuppressされうる」という理論上の抜け穴が
+  指摘された。InputRelayチェックを`plan`の最上部（F2分岐より前）へ移動して修正。**
 - **(c) この窓由来のopen観測をbeliefに取り込まない**: `AppImeProfile::can_read_imm32_open_
   status(InputRelay) = false`にするだけで、`state/observation_store.rs::FocusProbeOpenStatus
   ::classify`が自動的に`NotObservable`を返す（`ObservedOpenValue`はフィールドprivateで
@@ -171,7 +180,7 @@ input_relay_apps`（プロセス名リスト、既定は空配列、既存の`ma
 
 `ImePolicyProfile`（`state/ime_event.rs`、`caps()`の引数型）には**variantを追加しない**。
 `From<AppImeProfile> for ImePolicyProfile`は`InputRelay => Self::ImmCross`に写す（`Plain`/
-`Unknown`と同じ「到達しない安全既定」パターン。actuationの合流点3箇所（上記）のgateが
+`Unknown`と同じ「到達しない安全既定」パターン。actuationの合流点4箇所（上記）のgateが
 先に効くため、この写像先のchainは実行時に使われない）。これにより`caps()`・
 `ime_profile_driver.rs`・`ALL_DRIVERS`/`ALL_PROFILES`は無変更で済んだ。
 
@@ -267,7 +276,9 @@ Windows CIでのみ実行、それ以外はLinuxで`cargo test -p awase-windows`
 - `crates/awase-windows/src/runtime/transport.rs::plan_tests` — injected×DBE系KeyDown/
   KeyUp→Allow、非injected→従来通りSuppress、injected×F2はTsfNative+f2_warmup_owned下で
   Suppressのまま（決定1がF2分岐に影響しない回帰ガード）、ImmCrossアーム貫通の明示的固定、
-  InputRelay×KANJI系→Allow
+  InputRelay×KANJI系→Allow、`input_relay_f2_is_allowed_even_when_tsf_warmup_flags_are_
+  true`（`/code-review`で発見されたF2分岐順序バグの直接の回帰テスト。`is_tsf_mode`/
+  `f2_warmup_owned`を両方trueにしてもInputRelayなら`Allow`のまま）
 - `crates/awase-windows/src/focus/class_names.rs` — 述語4つ+自由関数3つの`InputRelay`
   期待値固定、`from_class_and_process`の優先順、既存の`app_ime_profile_getters_truth_
   table`/`exhaustive_cluster_matches_independent_oracle`の拡張
@@ -288,6 +299,19 @@ Windows CIでのみ実行、それ以外はLinuxで`cargo test -p awase-windows`
   レビューで発覚したため、本テスト専用に汎用的な`strip_any_test_module`を実装）
 - `src/config.rs` — `input_relay_apps`の既定値（空配列）・追加・カスタムリスト・空文字列
   警告
+
+`/code-review`で追加指摘された下記2点は専用の回帰テストを付けていない（挙動そのものの
+分岐は既存テストが間接的に踏むが、poison/dedup自体は再現困難なため、ここに文書化する）:
+
+- `crates/awase-windows/src/focus/classifier.rs` —
+  `INPUT_RELAY_APPS`（`RwLock<Vec<String>>`）の読み書きが`PoisonError`時に空配列へ
+  静かにフォールバックしていた（`input_relay_apps_snapshot`）/書き込みを諦めていた
+  （`ForceOverrides::new`）のを、`PoisonError::into_inner()`で中身を保持する方向に
+  変更。`Vec<String>`への単純な`clone_from`はpanic時も複合的な不変条件を持たないため、
+  poison直前の中身をそのまま使い続けて安全という判断。
+- `crates/awase-windows/src/focus/class_names.rs::AppImeProfile::resolve` —
+  `ime.rs::read_ime_state_fast`と`runtime/mod.rs::on_window_focus_event`にあった
+  「relay_apps空ならprocess_name解決を省略する」という同一分岐（重複コード）を統合。
 - `crates/awase-windows/src/focus/classifier.rs` — `INPUT_RELAY_APPS`プロセスグローバル
   の唯一の正当な利用者を`ime.rs::read_ime_state_fast`（`self`を持たない`pub unsafe fn`）
   に絞り、`runtime/mod.rs::on_window_focus_event`は正規ルート
