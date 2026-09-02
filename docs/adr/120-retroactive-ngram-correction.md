@@ -166,6 +166,102 @@ k=1 の窓（連続 2 打鍵）が親指なしである確率は概ね 0.55² �
 **反転率はゲートに使わない**（正解データが無く、決定8 の交絡と限界4 の力学的乖離があるため）。
 反転率は Phase 0b の診断値として記録する。
 
+### 決定0a-report: Phase 0a の集計を不具合報告（ADR-095）に含める
+
+**なぜ必要か**: 決定0a は「何を数えるか」だけを定め、**数えた結果をどう取り出すか**を
+決めていなかった（Phase 0a 単独では判断点1 のデータが開発者の手元に届く経路が無い）。
+このリポジトリには既に、タスクトレイの「不具合を報告」機能
+（[ADR-095](095-tray-bug-report-cloudflare-intake.md)）というユーザー環境からの
+情報回収経路がある。判断点1 のソークをこの経路に相乗りさせる。
+
+**実装（Phase 0a に含めて同時に行う。Phase 0a を「計装のみ」で終わらせず、
+配信経路まで含めて初めて実測データが得られる）**:
+
+1. **core**: `NicolaFsm` に決定0a の項目 1/2/2b/2c/4/7 を集計する
+   `RetroEvalStats`（`src/engine/retro_eval_stats.rs` 新設）フィールドを持たせる。
+   起動からの累積カウンタで、`three_key_pairing` を呼ぶ箇所（`compute_prefer_char1`）・
+   `step_pending_char_thumb_3key`・ユーザー訂正操作（項目7、決定0a が定義する
+   物理 BACKSPACE と配列セル由来 `SpecialKey(Backspace)` の両方）の観測点で加算する。
+   スコア関数・適格判定は実装しない（決定0a の「新設計ゼロ」原則を維持）。
+   `pub const fn retro_eval_stats(&self) -> &RetroEvalStats` で読み取り専用公開する
+   （`Engine` にも同名の薄い委譲メソッドを足す、`src/engine/engine.rs`）。
+
+   ```rust
+   #[derive(Debug, Clone, Copy, Default)]
+   pub struct RetroEvalStats {
+       pub three_key_total: u64,
+       pub phase2_reached: u64,
+       pub score_neg_infinity_count: u64,
+       pub score_both_zero_count: u64,
+       pub score_finite_count: u64,
+       pub char2_normal_hiragana_count: u64,   // 項目2b
+       pub no_thumb_followup_count: u64,       // 項目2c
+       pub followup_elapsed_ms_sum: u64,       // 項目4（平均は sum/count）
+       pub followup_elapsed_ms_count: u64,
+       pub user_correction_after_phase2: u64,  // 項目7・分子
+       pub phase2_baseline: u64,               // 項目7・分母
+       pub user_correction_after_phase1: u64,  // 項目7・対照群1
+       pub phase1_baseline: u64,
+       pub user_correction_baseline: u64,      // 項目7・対照群2（曖昧でない打鍵後）
+       pub non_ambiguous_baseline: u64,
+   }
+   ```
+
+   起動からの累積値のみで、ローリングウィンドウやタイムスタンプ付き系列は持たない
+   （「単純カウンタ集計で足りる」という決定0a の原則をそのまま踏襲。複数の不具合報告を
+   `process_uptime_secs`（`BugReportStateSnapshot` に既存）と突き合わせれば、
+   セッション間の差分から任意の期間の増分を後から復元できる）。
+
+2. **platform**（`crates/awase-windows/src/bug_report.rs`）: `BugReportStateSnapshot` と
+   並ぶ形で `BugReportRetroEvalStats`（フィールドは `RetroEvalStats` と同型、
+   `Serialize`/`Deserialize` を持つ独立型として定義——`BugReportPayload` は内部型を
+   直接 `Serialize` しない、という ADR-095 決定3/B-5 の allowlist 原則を踏襲する）を追加する。
+   `BugReportPayload`/`BugReportDiagnostics`/`BugReportInput` に
+   `attach_retro_eval_stats: bool` と `retro_eval_stats: Option<BugReportRetroEvalStats>`
+   を追加し、`build_payload_with_log_budget`（`bug_report.rs:239`）で
+   他の `attach_*` フィールドと同じ if 分岐を辿らせる。
+
+   `current_bug_report_diagnostics`（`runtime/message_handlers.rs:1182`）で
+   `app.engine.retro_eval_stats()` を読み、`BugReportStateSnapshot` の構築と同じ場所で
+   `BugReportRetroEvalStats` へ変換する（新規の COM/TSF 呼び出しは発生しない
+   ——決定8 の原則と同じ「既存のインメモリ状態の読み取りのみ」）。
+
+   **既定は ON**（他の `attach_state_snapshot`/`attach_config`/`attach_layout` と同様、
+   決定4/決定9 のパターンを踏襲）。項目1/2/2b/2c/4/7 はいずれも累積カウンタであり
+   打鍵内容・タイムスタンプ系列・個人を特定しうる情報を含まないため、
+   `journal`/`app_log`（生打鍵列を含む、マスキングなし）と同じ慎重さは要らない。
+   ただし ADR-095 決定4 の「送信前プレビューで全文表示・個別に外せる」という
+   必須要件は他の添付と同様に適用する。
+
+3. **schema_version を 4 に上げる**（現行は `SCHEMA_VERSION = 3`、
+   `crates/awase-windows/src/bug_report.rs:28`）。ADR-095 の先例（決定7・決定8 が
+   schema_version 2 で新規必須フィールドを追加した際と同じ扱い）に倣い、
+   v3→v4 の移行期間・後方互換は設けない（`services/report-worker/` と
+   タスクトレイ側を同時に更新し同期デプロイする、ADR-095 決定7 末尾の記述と同一方針）。
+
+**この決定が決定0a 自体を変えないこと**: `RetroEvalStats` はカウンタの**保持**を
+core に追加するだけで、新しいスコア関数・適格判定・訂正出力を一切追加しない。
+決定0a が「実運用の挙動は無変化」と宣言している範囲（IME に送る打鍵内容）は
+影響を受けない。変わるのは「不具合報告 JSON に整数7〜8個ぶんのフィールドが増える」
+ことだけである。
+
+**`retro_ngram_correction`（決定7）とは独立に、常時集計する**: 項目 1/2/2b/2c/4/7 は
+既に無条件で起きている 3 鍵仲裁・ユーザー打鍵の観測にすぎず、新しい判定・出力を
+一切伴わない。したがって `retro_ngram_correction = "off"`（既定）でも
+`RetroEvalStats` は加算し続ける——判断点1 のデータを集めるためにユーザーへ
+config 変更を求めるのは Phase 0a の趣旨（既定のまま自然に実測が貯まる）に反する。
+`retro_ngram_correction` が実際にゲートするのは決定2/決定8（Phase 0b 以降、
+新しいスコア関数と適格判定を伴う）のみである。カウンタ自体は個人を特定しうる
+内容を含まない集計値なので、この無条件収集は決定4/決定9 が要求する
+「送信前プレビューで確認できる」枠内で許容する（収集は常時・送信は
+`attach_retro_eval_stats` トグルとプレビューでユーザーが制御する、という
+既存の journal/state_snapshot と同じ二段構え）。
+
+**棄却した代案**: 専用のログファイル・デバッグコマンド（`awase.exe --dump-retro-stats`
+等）を新設する案。既存の不具合報告経路（ADR-095）は複数ユーザーからの複数セッション分の
+スナップショットを`report_id`ごとに`process_uptime_secs`と一緒に既に集められる仕組みが
+あり、専用の新規回収経路を作るコストに見合わない。
+
 ### 決定2: 適格条件
 
 以下**すべて**を満たす場合のみ訂正窓を開き、訂正を実行する。1 つでも欠ければ
@@ -545,8 +641,8 @@ k=1(2) の新スコアによる再評価。`flip(k=0)` は**スコア関数を�
 
 | Phase | 内容 | 進む条件 |
 |---|---|---|
-| **0a** | 決定0a（カウンタのみ、新設計ゼロ、既定 `off` で実運用は無変化）。項目 2b/2c を含む | **本 ADR で承認済み** |
-| 0a ソーク | 実環境で数日〜数週 | — |
+| **0a** | 決定0a（カウンタのみ、新設計ゼロ、実運用は無変化）。項目 2b/2c を含む。決定0a-report（不具合報告=ADR-095への統合、schema_version 4）を同時に実装しなければ判断点1 のデータが手元に届かない | **本 ADR で承認済み** |
+| 0a ソーク | 実環境で数日〜数週。ユーザーからの不具合報告（`attach_retro_eval_stats`、既定ON）経由でデータを回収する | — |
 | **判断点1** | (i) 母数ゲート、(ii) 対照群付きユーザー訂正相関ゲート、(iii) E1+E2+E7+E9 の適格率上界ゲート | 通らなければ**棄却クローズ** |
 | **0b** | 決定2（E1〜E9）+ 決定8 の再評価器を実装し shadow 記録（訂正はしない） | 判断点1 通過 |
 | **判断点2** | 適格率ゲート、`3b − 3a` が実質ゼロでないこと | 通らなければ**棄却クローズ** |
@@ -715,11 +811,27 @@ Phase 0a 項目 2b の追加で対応。
 awase-linux は `execute_effects` が `InputEffect` を直接 match しているため 1 arm 追加が
 必要・限界5 の乖離は「有界」だが「無害」ではない、の 3 点を反映して収束。
 
+**決定0a-report（2026-09-02 追記）**: 「Phase 0a のカウンタをどう取り出すか」が
+未規定だったとユーザー指摘を受け追記した。既存の不具合報告機構（ADR-095）の実装
+（`crates/awase-windows/src/bug_report.rs`・`runtime/message_handlers.rs`）を実際に
+読んで型・関数名を確認したうえで書いたが、**この決定は上記4ラウンドの Opus 敵対的
+premortem を経ていない**。特に「カウンタは `retro_ngram_correction` の設定値に
+関わらず常時集計する」という設計判断（既定 `off` でも収集自体は動く）は、
+このリポジトリの一貫した「既定 `off` で実運用は無変化」という約束と字面上
+緊張関係にありうるため、Phase 0a 実装時に改めて検証すること。
+
 ## 参照
 
 - GitHub issue #140、`docs/known-bugs.md` BUG-105、PR #141（squash `1045a05e`）
 - `docs/adr/112-keyup-lifecycle-fsm-delivery.md`、`docs/adr/019-platform-independence.md`、
   `docs/layer-boundaries.md`
+- `docs/adr/095-tray-bug-report-cloudflare-intake.md`（決定0a-report の統合先。
+  決定3/B-5 の allowlist 原則、決定4/決定9 の attach トグル+送信前プレビュー原則、
+  決定7・決定8 の schema_version 更新の先例）、
+  `crates/awase-windows/src/bug_report.rs:28,111,151,203`（`SCHEMA_VERSION`、
+  `BugReportStateSnapshot`、`BugReportPayload`、`BugReportInput`）、
+  `crates/awase-windows/src/runtime/message_handlers.rs:1182`
+  （`current_bug_report_diagnostics`、既存フィールドの構築パターン）
 - `docs/adr/115-yab-keystroke-sequence.md`（`Sequence`/`CtrlChord`。
   `docs/known-bugs.md:12498-12504` の「BS が確定済み文字を 1 つ余分に消す」記録もここ）
 - 実装の根拠となる位置:
