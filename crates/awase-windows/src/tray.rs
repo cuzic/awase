@@ -711,13 +711,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
 
 /// かな入力ロックの解除案内ダイアログを表示する。
 pub fn show_kana_lock_help_dialog() {
-    std::thread::spawn(|| {
-        use windows::core::{w, PCWSTR};
-        use windows::Win32::UI::WindowsAndMessaging::{
-            MessageBoxW, IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
-        };
-
-        let text = "\
+    let text = "\
 IMEが「かな入力」モードになっています。
 この状態では、awaseが送るローマ字キーがJISかな配列として
 解釈され、意図しない文字（例:「な」「とに」）が入力されます。
@@ -734,22 +728,14 @@ awaseからこのモードを元に戻すことはできません
  ・タスクバーのアイコンを右クリック →「プロパティ」→
    「一般」タブ →「入力方式」を「ローマ字入力」に
 
-いますぐWindowsのIME設定画面を開きますか？";
-        let text_wide = crate::win32::to_wide(text);
-
-        // SAFETY: text_wide は NUL 終端済み UTF-16 で呼び出し中有効。タイトルは静的リテラル。
-        let result = unsafe {
-            MessageBoxW(
-                None,
-                PCWSTR(text_wide.as_ptr()),
-                w!("awase - かな入力モードの検知"),
-                MB_YESNO | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND,
-            )
-        };
-        if result == IDYES {
-            crate::msime_key_assignment::open_ime_settings();
-        }
-    });
+いますぐWindowsのIME設定画面を開きますか？"
+        .to_string();
+    // check_and_warn（MS-IMEキー割り当て競合）と同一構造のダイアログなので
+    // 共有ヘルパーに委譲する（msime_key_assignment.rs参照）。
+    crate::msime_key_assignment::spawn_yes_open_ime_settings_dialog(
+        "awase - かな入力モードの検知",
+        text,
+    );
 }
 
 /// 現在のプロセスが管理者権限で実行中かどうかを判定する。

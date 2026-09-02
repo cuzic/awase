@@ -86,9 +86,13 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     }
 }
 
-/// OS かな入力ロック警告状態をトレイ表示へ反映する。
-pub(crate) fn handle_wm_kana_lock_warning(app: &mut Runtime, warned: bool) {
-    app.platform.tray.set_kana_lock_warned(warned);
+/// OS かな入力ロック警告のトレイ表示を、投函時点の値ではなくディスパッチ時点の
+/// `KanaLockHysteresis::warned()` へ同期する。再入で複数回 repost されても
+/// 常に最新の値へ収束する（冪等）。
+pub(crate) fn handle_wm_kana_lock_warning_changed(app: &mut Runtime) {
+    app.platform
+        .tray
+        .set_kana_lock_warned(app.kana_lock_hysteresis.warned());
 }
 
 /// バッチ境界で1回だけ走るべき resync 処理（指摘5）。

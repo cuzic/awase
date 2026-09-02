@@ -332,12 +332,16 @@ pub const WM_GJI_CHARSET_FN_KEY_ACTIVATED: u32 =
 pub const WM_GJI_REINIT_RETRY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
 #[cfg(windows)]
 pub(crate) const WM_ENGINE_QUIT_REQUEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
-/// OS かな入力ロック警告をトレイに表示する。
+/// OS かな入力ロック警告のトレイ表示を更新する契機。
+///
+/// wparam/lparam に真偽値を積んで運ばない — 投函時点の値を運ぶと、
+/// `with_app_or_repost` による再入時の repost で WARN/CLEAR の処理順序が
+/// 入れ替わった場合にトレイ表示が実状態と食い違ったまま固着しうる
+/// （issue #137 実装レビューで指摘）。dispatch 時に毎回ライブの `warned()` を
+/// 読み直す設計にすることで、何度再入・repost されても最終的に正しい値へ
+/// 収束する（冪等）。
 #[cfg(windows)]
-pub const WM_KANA_LOCK_WARNING_WARN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 26;
-/// OS かな入力ロック警告をトレイから消す。
-#[cfg(windows)]
-pub const WM_KANA_LOCK_WARNING_CLEAR: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 27;
+pub const WM_KANA_LOCK_WARNING_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 26;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

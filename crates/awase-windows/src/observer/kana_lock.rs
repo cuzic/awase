@@ -9,10 +9,10 @@ use awase::engine::kana_input_warn::KanaLockReading;
 /// Win32 API を呼び出す。メインスレッド（Runtime のメッセージループスレッド）から呼ぶこと。
 #[must_use]
 pub unsafe fn read_kana_lock() -> KanaLockReading {
-    let state = unsafe {
-        windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(i32::from(crate::vk::VK_KANA.0))
-    };
-    if state & 1 != 0 {
+    // ime.rs::is_caps_lock_on と同じ GetKeyState(vk)&1 パターンを共有ヘルパー
+    // 経由で使う（コード重複の解消）。
+    let on = unsafe { crate::ime::is_toggle_key_on(i32::from(crate::vk::VK_KANA.0)) };
+    if on {
         KanaLockReading::On
     } else {
         KanaLockReading::Off

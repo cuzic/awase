@@ -15,10 +15,7 @@ use crate::state::half_width_alnum::{
 };
 use crate::state::observation_store::FocusProbeOpenStatus;
 use crate::win32::post_to_main_thread;
-use crate::{
-    Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CLEAR,
-    WM_KANA_LOCK_WARNING_WARN,
-};
+use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CHANGED};
 use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
@@ -2025,10 +2022,12 @@ impl Runtime {
 
     /// VK/TSF の romaji 送信直前に OS のかな入力ロックを読む。
     fn kp_stage_kana_lock_warn(&mut self, decision: &awase::engine::Decision) {
-        if !matches!(
-            self.platform.output.injection_mode,
-            crate::output::InjectionMode::Vk | crate::output::InjectionMode::Tsf
-        ) || !decision_contains_romaji_send(decision)
+        // 生VK出力に影響する injection_mode は「Unicode 以外」という否定形
+        // イディオムで表現する（`output/mod.rs` 等の既存箇所と同じ）。肯定形の
+        // 許可リストだと、将来 Vk/Tsf 以外の生VK出力を伴う InjectionMode が
+        // 増えたときにこのゲートだけ黙って除外されうる。
+        if self.platform.output.injection_mode == crate::output::InjectionMode::Unicode
+            || !decision_contains_romaji_send(decision)
         {
             return;
         }
@@ -2051,11 +2050,11 @@ impl Runtime {
                     "[kana-lock] OS かな入力ロックを検知しました \
                      (reading={reading:?} streak={after:?} fg_class={fg_class})"
                 );
-                post_to_main_thread(WM_KANA_LOCK_WARNING_WARN);
+                post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
             }
             WarnAction::ClearWarned => {
                 log::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
-                post_to_main_thread(WM_KANA_LOCK_WARNING_CLEAR);
+                post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
             }
         }
     }
