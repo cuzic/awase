@@ -55,6 +55,14 @@ impl ChangeCounter {
     pub(super) fn reset(&self) {
         self.0.store(0, Ordering::Relaxed);
     }
+
+    /// 現在値をそのまま読み取る。診断ログ用（ADR-117、issue #138 切り分け）。
+    ///
+    /// `baseline()`/`has_changed()` の変化検出とは別に、「一度でも発火したか」
+    /// （0 かどうか）を単独で確認したい呼び出し元向け。
+    pub(super) fn value(&self) -> u32 {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// [`ChangeCounter`] のベースライン値。
@@ -277,6 +285,35 @@ impl TsfObservations {
     #[must_use]
     pub fn gji_candidate_visible(&self) -> bool {
         self.gji_candidate_visible.load(Ordering::Relaxed)
+    }
+
+    /// 現在（GJI/MS-IME 問わず）IME composition window が可視かどうかを読み取る（Relaxed）。
+    ///
+    /// `EVENT_OBJECT_IME_SHOW`/`HIDE` により更新される（`win_event_obs.rs`）。
+    /// ADR-117（issue #138 切り分け）: MS-IME 環境での信頼性は未検証——PID/フォーカスで
+    /// フィルタしておらずフォーカス変更でもリセットされない上、MS-IME の TSF インライン
+    /// 未確定文字列は IME ウィンドウを生成しないことが多く、一度も発火せず常時 `false`
+    /// の可能性がある。`false` を「composition 無し」の証明として読まないこと
+    /// （`ime_show_seq`/`ime_change_seq` と併読し、一度も発火していないのか
+    /// 発火後に閉じたのかを区別すること）。
+    #[must_use]
+    pub fn ime_composition_active(&self) -> bool {
+        self.ime_composition_active.load(Ordering::Relaxed)
+    }
+
+    /// `EVENT_OBJECT_IME_SHOW` の発火回数（診断ログ用、ADR-117）。
+    ///
+    /// 0 なら「一度も発火していない」。`ime_composition_active() == false` と
+    /// 組み合わせて「発火自体が無い」か「発火後 HIDE で閉じた」かを区別する。
+    #[must_use]
+    pub fn ime_show_seq(&self) -> u32 {
+        self.ime_show_seq.value()
+    }
+
+    /// `EVENT_OBJECT_IME_CHANGE` の発火回数（診断ログ用、ADR-117）。
+    #[must_use]
+    pub fn ime_change_seq(&self) -> u32 {
+        self.ime_change_seq.value()
     }
 
     /// 現在使用中の IME 種別を返す。
