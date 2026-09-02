@@ -143,6 +143,22 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
+    // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
+    // 報告環境（Standard プロファイル×MS-IME）の主経路。`.await` に入る前の
+    // live 読み取りであることが必須——完了後（`on_ime_apply_complete`）まで待つと
+    // `EVENT_OBJECT_IME_HIDE` によるリセットが既に反映されている可能性があり、
+    // 「送信時点で composition が有効だったか」を判別できなくなる。
+    // `composition_active`/`ime_show_seq`/`ime_change_seq` の解釈上の注意
+    // （MS-IME での信頼性未検証）は `TsfObservations::ime_composition_active` の
+    // doc コメント参照。
+    let obs = crate::tsf::observer::tsf_obs();
+    log::info!(
+        "[apply-ime] ImmCross async: open={open} composition_active={} show_seq={} \
+         change_seq={} (issue #138診断)",
+        obs.ime_composition_active(),
+        obs.ime_show_seq(),
+        obs.ime_change_seq(),
+    );
     let raw = match op {
         ImmCrossOp::Targeted {
             target,
@@ -187,7 +203,10 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             // 止まる（ADR-089 §2.3）。E（post_ime_refresh）だけは
             // UnsafeToToggle でも走るため Aborted(GenStale) の取りこぼしは
             // 20ms 後の refresh で拾われる。
-            log::debug!("[apply-ime] ImmCross open Aborted({reason:?}) → UnsafeToToggle");
+            // ADR-117: 「送ったが検証失敗で中止した（1バイトも書いていない）」を
+            // `info!` で可視化する（送信直前ログだけが info に残ると、実ユーザー
+            // 報告で「送ったのに文字が消えた」と誤読されるため）。
+            log::info!("[apply-ime] ImmCross open Aborted({reason:?}) → UnsafeToToggle");
             ImeOpenOutcome::UnsafeToToggle
         }
         ActuationOutcome::Failed => {
@@ -195,13 +214,14 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             //         spawn_local はメインスレッドのメッセージループで実行される。
             let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
             if actual == Some(open) {
-                log::debug!(
+                // ADR-117: 同上、「送信自体が失敗した」を info! で可視化する。
+                log::info!(
                     "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
                      already matches desired={open}, skip fallback"
                 );
                 ImeOpenOutcome::AlreadyMatched
             } else {
-                log::debug!(
+                log::info!(
                     "[apply-ime] ImmCross failed (async, actual ime_on={actual:?}), \
                      falling through to next mechanism"
                 );
@@ -248,16 +268,36 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// 捨てられることはなく、次のメッセージループ周回で確実に再処理される。
 /// 「初回のブロックそのもの」は残るが、「ブロック中に他の完了が永久に
 /// 失われる」という round-2 の指摘した最悪の帰結は防げている。
+///
+/// # ADR-117（issue #138 切り分け）: この関数が作り直す view の composition 値は
+/// 「送信後」の値でありうる
+///
+/// ここで `shadow_ime_control_view()` が構築する view の `composition_active`/
+/// `ime_show_seq`/`ime_change_seq` は、Standard×MS-IME で ImmCross が `Failed` を
+/// 返した直後（＝`imm_cross_write` の `.await` が完了した後）の live 値である。
+/// これから送る `KanjiToggleStrategy` にとっては「送信前」の値だが、**直前の
+/// ImmCross 試行にとっては「送信後」（tear-down 済みかもしれない）の値でもある**。
+/// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
+/// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         if crate::ime_controller::mechanism_is_applicable(mechanism, &view) {
             crate::ime_controller::apply_mechanism(mechanism, open, &view)
         } else {
+            // ADR-117: ImmCross Failed → フォールスルーしたが結局どの機構にも
+            // 到達できなかった無音ケースを可視化する。
+            log::info!(
+                "[apply-ime] fallback_write: mechanism={mechanism:?} not applicable → Failed"
+            );
             ImeOpenOutcome::Failed
         }
     })
-    .unwrap_or(ImeOpenOutcome::Failed)
+    .unwrap_or_else(|| {
+        // ADR-117: `with_app` が `None`（RUNTIME 未初期化/再入等）を返した無音ケース。
+        log::info!("[apply-ime] fallback_write: with_app returned None → Failed");
+        ImeOpenOutcome::Failed
+    })
 }
 
 /// ImmCross を先頭に含む機構チェーンを非同期に走査する。

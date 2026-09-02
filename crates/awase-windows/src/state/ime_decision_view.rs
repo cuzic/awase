@@ -55,6 +55,14 @@ pub(crate) struct ObservedState {
     /// 現在使用中の IME 種別（`gji_monitor_ok` から派生）。
     /// warmup strategy 切り替え（`WM_IME_KIND_CHANGED`）に使用する。
     pub active_ime_kind: crate::tsf::observer::ActiveImeKind,
+    /// （GJI/MS-IME 問わず）IME composition window が可視かどうか（ADR-117、issue #138 診断用）。
+    /// MS-IME での信頼性は未検証——`crate::tsf::observer::TsfObservations::ime_composition_active`
+    /// の doc コメント参照。
+    pub composition_active: bool,
+    /// `EVENT_OBJECT_IME_SHOW` の発火回数（ADR-117、診断用）。
+    pub ime_show_seq: u32,
+    /// `EVENT_OBJECT_IME_CHANGE` の発火回数（ADR-117、診断用）。
+    pub ime_change_seq: u32,
 }
 
 impl Default for ObservedState {
@@ -65,6 +73,9 @@ impl Default for ObservedState {
             gji_monitor_ok: false,
             candidate_was_seen: false,
             active_ime_kind: crate::tsf::observer::ActiveImeKind::MicrosoftIme,
+            composition_active: false,
+            ime_show_seq: 0,
+            ime_change_seq: 0,
         }
     }
 }
@@ -84,6 +95,9 @@ impl ObservedState {
             gji_monitor_ok: snapshot.gji_monitor_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
             active_ime_kind: snapshot.active_ime_kind(),
+            composition_active: snapshot.ime_composition_active(),
+            ime_show_seq: snapshot.ime_show_seq(),
+            ime_change_seq: snapshot.ime_change_seq(),
         }
     }
 }
