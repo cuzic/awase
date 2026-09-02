@@ -1795,6 +1795,111 @@ fn test_three_key_d1_greater_equal_d2() {
 }
 
 #[test]
+fn test_three_key_char1_released_tight_d1_still_prefers_char1() {
+    // Regression test for issue #140 / BUG-105 (report 01M1GDQVBET5DBX3MY4BRGQFW1,
+    // "しょうにん" -> "しいゔにん"). char1 is released well before char2 arrives,
+    // but d1 (char1->thumb) is far tighter than d2 (thumb->char2): Phase 1
+    // timing alone must still prefer char1+thumb. The old compute_prefer_char1()
+    // unconditionally punished any char1_released_at.is_some() by discarding
+    // char1+thumb regardless of timing -- this is exactly that case, with the
+    // reported timestamps (d1=11.7ms, d2=100.8ms).
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+
+    let result = engine.on_event(Ev::down(VK_A).at(0).build());
+    assert_pending(&result);
+
+    let result = engine.on_event(Ev::down(VK_CONVERT).at(11_700).build());
+    assert_pending(&result); // PendingCharThumb, d1 = 11.7ms
+
+    // char1 (A) released well before char2 arrives.
+    let result = engine.on_event(Ev::up(VK_A).at(106_550).build());
+    result.assert_consumed();
+    assert!(
+        result.actions.is_empty(),
+        "char1 KeyUp alone should not resolve yet"
+    );
+
+    // char2 arrives 100.8ms after thumb went down (d2), vs d1=11.7ms.
+    let result = engine.on_event(Ev::down(VK_S).at(112_474).build());
+    result.assert_consumed();
+    assert_eq!(
+        result.actions.len(),
+        1,
+        "char1+thumb should resolve as a single chord, char2 reprocessed separately: got {:?}",
+        result.actions
+    );
+    assert!(
+        matches!(result.actions[0], KeyAction::Char('ゔ')),
+        "tight d1 must win via Phase 1 timing even though char1 was already released: got {:?}",
+        result.actions
+    );
+
+    // char2 (S) was reprocessed as a fresh solo char; confirm via timeout.
+    let result = engine.on_timeout(TIMER_PENDING);
+    result.assert_consumed();
+    assert_eq!(result.actions.len(), 1);
+    assert!(matches!(result.actions[0], KeyAction::Char('し')));
+}
+
+#[test]
+fn test_three_key_char1_released_close_timing_ngram_phase2_prefers_char1() {
+    // When d1/d2 are close (within the 30% timing margin), Phase 2 n-gram
+    // scoring decides -- the bigram/trigram tiebreak requested in issue #140.
+    // Verifies compute_prefer_char1() actually reaches three_key_pairing()'s
+    // Phase 2 and picks the higher-scoring candidate, even though char1 was
+    // already released before char2 arrived (the early return removed by this
+    // fix used to skip Phase 2 entirely in this situation).
+    //
+    // d1(60ms) is deliberately made GREATER than d2(50ms) so the raw timing
+    // tiebreak (`d1 < d2`, timing.rs:166-170, used when the n-gram score diff
+    // is ~0) would pick char2 ('あ'). Only Phase 2's n-gram score actually
+    // running -- and preferring the higher-scoring char1 candidate -- can
+    // produce char1 ('を') here, so this pins Phase 2 rather than merely
+    // agreeing with it by coincidence.
+    let mut engine = make_engine();
+    engine.set_ngram_model(make_ngram_model());
+    engine.output_history.push(OutputEntry {
+        scan_code: SCAN_S,
+        romaji: String::new(),
+        kana: Some('し'),
+        action: KeyAction::Char('し'),
+    });
+
+    let result = engine.on_event(Ev::down(VK_A).at(0).build());
+    assert_pending(&result);
+
+    let result = engine.on_event(Ev::down(VK_NONCONVERT).at(60_000).build());
+    assert_pending(&result); // PendingCharThumb, d1 = 60ms
+
+    let result = engine.on_event(Ev::up(VK_A).at(80_000).build());
+    result.assert_consumed();
+    assert!(
+        result.actions.is_empty(),
+        "char1 release should not emit immediately"
+    );
+
+    // d1=60_000, d2=110_000-60_000=50_000, gap=10_000 <= margin(30_000) -> Phase 2.
+    // Raw d1<d2 tiebreak would say false (char2), but bigram "しを"=2.0
+    // (char1+thumb candidate 'を') beats the unscored "うあ" (char2+thumb
+    // candidate 'あ'; no matching n-gram entry -> neutral 0.0), so Phase 2
+    // overrides the raw tiebreak and picks char1.
+    let result = engine.on_event(Ev::down(VK_S).at(110_000).build());
+    result.assert_consumed();
+    assert_eq!(
+        result.actions.len(),
+        1,
+        "char1+thumb should resolve as a single chord: got {:?}",
+        result.actions
+    );
+    assert!(
+        matches!(result.actions[0], KeyAction::Char('を')),
+        "n-gram Phase 2 should prefer char1+thumb ('を') even though char1 released first: got {:?}",
+        result.actions
+    );
+}
+
+#[test]
 fn test_three_key_timeout_resolves_as_simultaneous() {
     // char1(t=0) → thumb(t=30ms) → タイムアウト（char2 来ない）
     // → char1+thumb を同時打鍵として確定
