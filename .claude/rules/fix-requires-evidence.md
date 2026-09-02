@@ -22,6 +22,7 @@
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs` |
 | force-write / actuation ターゲット（ADR-084/086） | `platform.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
+| IME actuation 合流点（新しい gate/precondition を足す場所、ADR-118） | `ime_controller.rs::apply`（同期経路唯一の合流点）, `runtime/open_chain.rs::run_open_chain_async`/`fallback_write`/`imm_cross_write`（非同期経路。3関数**すべて**が独立に再検出する設計、1箇所だけでは足りない）, `runtime/executor.rs::dispatch_ime_set_open`（早期exit最適化、上記と重複するが単独では不十分） |
 
 ## テストの置き場所（このリポジトリの既存資産）
 
@@ -49,6 +50,17 @@ warmup・focus・belief・conv・キー選択の 5 領域は、実機の組み�
 - Chrome cold-start のリテラル化（`b101153` / `79134f5` / `3c275a7` …）は known-bugs.md
   の BUG-02 に修正履歴が積まれており、次の担当者が「probe 起点のズレが真因で、値を
   上げるのは対症」という過去の知見にすぐ辿り着ける。
+- issue #136 / ADR-118（2026-09-02）: `AppImeProfile::InputRelay` に「actuation を
+  所有しない」gate を追加した際、最初に見つけた `runtime/executor.rs::
+  dispatch_ime_set_open` の1箇所にしか置かなかった。しかし実際の actuation 呼び出し
+  経路は5つあり、うち `runtime/key_pipeline.rs` のshadow-toggle経路（issue #136が
+  報告した「物理IMEキー押下」操作そのもの）がこの gate を素通りしていた。物理キーは
+  `transport.rs::plan` で `Allow`（決定4条件b）される一方でawase自身も actuate して
+  しまう、BUG-46型の新規二重actuationを**このPR自身が作っていた**。実装完了後の
+  opus敵対的コードレビューで発覚・修正。「新しい gate を1箇所に置いて満足しない、
+  実際の呼び出し経路をすべて洗い出す」という、このルールが対象とする「reincidence
+  family」＝「1箇所直しただけでは再発する領域」の典型例。上表の「IME actuation
+  合流点」行はこの経緯で追加した。
 
 「fix コミット単体」は、それが**何を再発させないためのものか**を残さない。テストは
 機械可読な再発防止、known-bugs.md は人間可読な再発防止であり、どちらか一方は必ず要る。
