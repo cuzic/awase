@@ -1137,8 +1137,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             crate::ime::toggle_caps_lock();
         }
         Some(tray::TrayCommand::ResetState) => {
-            let caps_lock_on =
-                windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x14) & 1 != 0;
+            let caps_lock_on = crate::ime::is_caps_lock_on();
             if caps_lock_on {
                 crate::ime::toggle_caps_lock();
             }

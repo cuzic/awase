@@ -471,19 +471,9 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let was_user_enabled = self.engine.is_user_enabled();
         let (callback, sync_outcomes, stripped_set_open) =
             self.executor
                 .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
-        if was_user_enabled && !self.engine.is_user_enabled() {
-            // エンジンが無効化されている間は romaji VK を送信しないため
-            // kp_stage_kana_lock_warn のサンプリング自体が止まる。無効化前の
-            // 警告状態がトレイに固着し続け、実際のON/OFF状態が確認できなく
-            // なるのを避けるため、ここでヒステリシスとトレイ表示の両方を
-            // 一律リセットする（issue #137実装レビューで指摘）。
-            self.kana_lock_hysteresis = KanaLockHysteresis::new();
-            self.platform.tray.set_kana_lock_warned(false);
-        }
         self.dispatch_outcomes(sync_outcomes);
         if stripped_set_open.is_some() {
             // settle 中に握りつぶした SetOpen は自然には再発行されない
@@ -584,9 +574,24 @@ impl Runtime {
 
     /// エンジンの有効/無効を切り替え、Decision を実行する
     pub fn toggle_engine(&mut self) {
+        // 「無効化された瞬間」を捉えるスナップショットは on_command より前で
+        // 取る必要がある — on_command 自体が NicolaFsm::toggle_enabled で
+        // is_user_enabled を同期的に書き換えるため、execute_decision の中で
+        // 読むと既に更新後の値になってしまい判定が常に false になる
+        // （issue #137 3周目のレビューで指摘・修正）。
+        let was_user_enabled = self.engine.is_user_enabled();
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::ToggleEngine, &ctx);
         self.execute_decision(decision);
+        if was_user_enabled && !self.engine.is_user_enabled() {
+            // エンジンが無効化されている間は romaji VK を送信しないため
+            // kp_stage_kana_lock_warn のサンプリング自体が止まる。無効化前の
+            // 警告状態がトレイに固着し続け、実際のON/OFF状態が確認できなく
+            // なるのを避けるため、ここでヒステリシスとトレイ表示の両方を
+            // 一律リセットする。
+            self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.platform.tray.set_kana_lock_warned(false);
+        }
     }
 
     /// エンジンを無条件で ON にする（トグルではなく強制）。
