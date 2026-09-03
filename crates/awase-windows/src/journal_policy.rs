@@ -77,6 +77,27 @@ pub const fn deferred_recovery_flush_is_notable(f: DeferredRecoveryFlushFacts) -
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderViolation {
+    pub index: usize,
+    pub previous: u64,
+    pub current: u64,
+}
+
+#[must_use]
+pub fn order_violation(tokens: &[u64]) -> Option<OrderViolation> {
+    tokens.windows(2).enumerate().find_map(|(index, pair)| {
+        let previous = pair[0];
+        let current = pair[1];
+        (current <= previous).then_some(OrderViolation {
+            index: index + 1,
+            previous,
+            current,
+        })
+    })
+}
+
+
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
     (LaneKind::Timing, 35),
     (LaneKind::State, 30),
@@ -334,5 +355,46 @@ mod tests {
         let mut recovering = literal_record(LiteralVerdict::SessionSkip);
         recovering.consecutive_before = 1;
         assert!(literal_detect_is_notable(&recovering));
+    }
+
+    #[test]
+    fn order_violation_accepts_empty_singleton_and_increasing_sequences() {
+        for tokens in [vec![], vec![1], vec![1, 2, 3, 4]] {
+            assert_eq!(order_violation(&tokens), None);
+        }
+    }
+
+    #[test]
+    fn order_violation_detects_non_increasing_sequences() {
+        let cases = [
+            (
+                vec![1, 2, 4, 3],
+                OrderViolation {
+                    index: 3,
+                    previous: 4,
+                    current: 3,
+                },
+            ),
+            (
+                vec![1, 3, 2],
+                OrderViolation {
+                    index: 2,
+                    previous: 3,
+                    current: 2,
+                },
+            ),
+            (
+                vec![1, 2, 2],
+                OrderViolation {
+                    index: 2,
+                    previous: 2,
+                    current: 2,
+                },
+            ),
+        ];
+
+        for (tokens, expected) in cases {
+            assert_eq!(order_violation(&tokens), Some(expected));
+        }
     }
 }
