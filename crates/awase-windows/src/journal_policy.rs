@@ -61,6 +61,22 @@ pub fn literal_detect_is_notable(record: &crate::tsf::literal_facts::LiteralDete
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredRecoveryFlushFacts {
+    Flushed { vk_count: usize },
+    DiscardedStale,
+    SkippedWhilePolling,
+}
+
+#[must_use]
+pub const fn deferred_recovery_flush_is_notable(f: DeferredRecoveryFlushFacts) -> bool {
+    match f {
+        DeferredRecoveryFlushFacts::Flushed { vk_count } => vk_count > 0,
+        DeferredRecoveryFlushFacts::DiscardedStale
+        | DeferredRecoveryFlushFacts::SkippedWhilePolling => true,
+    }
+}
+
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
     (LaneKind::Timing, 35),
     (LaneKind::State, 30),
@@ -222,6 +238,27 @@ mod tests {
             is_first_tick: true,
             ..ProbeTickFacts::default()
         }));
+    }
+
+    #[test]
+    fn deferred_recovery_flush_is_notable_for_informative_outcomes() {
+        use DeferredRecoveryFlushFacts::{DiscardedStale, Flushed, SkippedWhilePolling};
+
+        let cases = [
+            (Flushed { vk_count: 0 }, false),
+            (Flushed { vk_count: 1 }, true),
+            (Flushed { vk_count: 3 }, true),
+            (DiscardedStale, true),
+            (SkippedWhilePolling, true),
+        ];
+
+        for (facts, expected) in cases {
+            assert_eq!(
+                deferred_recovery_flush_is_notable(facts),
+                expected,
+                "{facts:?}"
+            );
+        }
     }
 
     fn literal_record(
