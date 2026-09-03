@@ -544,6 +544,12 @@ impl SettingsApp {
             && loaded_model != self.config.general.keyboard_model
         {
             self.status = "配列編集に未保存の変更がありますが、読み込み時と異なるキーボード配列に変更されているため保存できません。キーボード配列を元に戻して適用するか、配列編集タブで変更を破棄してキーボード配列に合った配列を開き直してください。（この変更は下部のバナーが示す未保存の配列編集と同じものです）".to_string();
+            // /code-review指摘: この時点で`self.config`は既に検証済みの新しい
+            // 値に上書き済み（540行目）——中止するのはディスクへの書き込みで
+            // あって`self.config`のロールバックではない。診断リストを
+            // 再計算しないと、変更後の`self.config`と食い違う古い診断が
+            // 画面上部に残り続ける。
+            self.recompute_diagnostics();
             return;
         }
 
@@ -558,6 +564,9 @@ impl SettingsApp {
                     "現在の既定の配列ファイル（{}）が、これから適用するキーボード配列で読み込めないため保存できません。default_layoutをそのキーボード配列に合ったファイルに変更するか、キーボード配列を元に戻してください（{e}）。",
                     self.config.general.default_layout
                 );
+                // /code-review指摘: 上のガード(A)と同様、`self.config`は
+                // 既に新しい値なので中止前に診断を再計算する。
+                self.recompute_diagnostics();
                 return;
             }
             self.pending_status_notes.push(format!(
@@ -588,6 +597,9 @@ impl SettingsApp {
                 }
                 if let Err(e) = self.layout_write_to_path(&path, true, false) {
                     self.status = e;
+                    // /code-review指摘: 上の2ガードと同様、中止前に
+                    // `self.config`変更後の診断を再計算する。
+                    self.recompute_diagnostics();
                     return;
                 }
                 saved_layout_name = path
@@ -724,6 +736,16 @@ impl SettingsApp {
     /// 確認モーダルを開く（`show_dangerous_save_confirm`、実処理は
     /// `apply_confirmed()`）。それ以外は通常通り即保存する。
     fn apply(&mut self) {
+        // /code-review指摘: グローバルCtrl+Sハンドラや「適用」ボタンの
+        // 有効/無効化には確認モーダル表示中の抑止を入れたが、`apply()`
+        // 自体には無かった。3択キャンセル確認・配列破棄確認が開いている間に
+        // 何らかの経路で`apply()`が呼ばれると、その確認が尋ねている変更を
+        // そのまま保存してしまう（確認モーダルを実質無視できる）。呼び出し元
+        // ごとに同じ条件を重複させるのではなく、ここで一元的に拒否する。
+        if self.show_cancel_layout_confirm || self.pending_layout_discard.is_some() {
+            self.status = "他の確認が表示されています。先にそちらへ答えてください。".to_string();
+            return;
+        }
         if matches!(
             self.config_load_state,
             awase::config::ConfigLoadState::Dangerous(_)
@@ -737,6 +759,15 @@ impl SettingsApp {
     fn cancel(&mut self) {
         if self.pending_save.is_some() {
             self.status = "保存中です。少々お待ちください…".to_string();
+            return;
+        }
+        // /code-review指摘: 配列破棄確認モーダル（`pending_layout_discard`、
+        // ツールバー「開く」「再読み込み」「パス欄Enter」経由）が既に表示中に
+        // ここへ到達すると、この直後の`layout_modified`分岐で
+        // `show_cancel_layout_confirm`まで立ってしまい、非ブロッキングな
+        // `egui::Window`が2つ同時に描画される（round2 R2-8と同型）。
+        if self.pending_layout_discard.is_some() {
+            self.status = "他の確認が表示されています。先にそちらへ答えてください。".to_string();
             return;
         }
         // コードレビュー指摘: 確認モーダル（`show_dangerous_save_confirm_modal`）は
@@ -772,6 +803,19 @@ impl SettingsApp {
     fn cancel_config_and_layout(&mut self) {
         self.cancel_config_only();
         let Some(path) = self.layout_file_path.clone() else {
+            // /code-review指摘: `layout_file_path`が`None`のまま
+            // `layout_modified`が真になることは通常の操作では起きない
+            // （`layout_modified`を立てる経路はすべて`layout_selected_pos`を
+            // 前提とし、それには`ensure_layout_loaded`——F8によりパスを
+            // 必ず確定させる——を経由する必要があるため）。ただし万一
+            // 到達した場合、`cancel_config_only()`が直前に上書きした
+            // 「変更を破棄しました」は配列側が実際には破棄されていないのに
+            // 成功したと誤解させる。`layout_modified`は真のまま残すのが
+            // 正確なので、ここでは状態を変えず、誤解を招くメッセージだけ
+            // 訂正する。
+            self.status =
+                "設定は破棄しましたが、配列編集の保存先が未設定のため配列側は元に戻せませんでした"
+                    .to_string();
             return;
         };
         match load_yab_layout(&path, self.config.general.keyboard_model) {
@@ -1515,6 +1559,19 @@ impl SettingsApp {
     }
 
     fn confirm_layout_discard_or_defer(&mut self, action: LayoutDiscardAction) -> bool {
+        if self.show_cancel_layout_confirm {
+            // /code-review指摘: この関数は「開く」「再読み込み」「パス欄Enter」
+            // （ツールバー）とCtrl+O/F5（`handle_layout_shortcuts`、こちらは
+            // 呼び出し前に別途ガード済み）の両方から呼ばれる。下部「キャンセル」
+            // が開いた3択確認モーダル(`show_cancel_layout_confirm`)が表示中に
+            // ここへ到達すると、ここで`pending_layout_discard`まで立ってしまい
+            // 非ブロッキングな`egui::Window`が2つ同時に描画される
+            // （round2 R2-8と同型）。個々の呼び出し元にガードを重複させるのではなく、
+            // ここで一元的に拒否する。
+            self.layout_status =
+                "他の確認が表示されています。先にそちらへ答えてください。".to_string();
+            return false;
+        }
         if self.layout_modified {
             self.pending_layout_discard = Some(action);
             self.layout_status =
@@ -3067,6 +3124,9 @@ impl SettingsApp {
 // ── eframe::App ──
 
 impl eframe::App for SettingsApp {
+    // ADR-126で確認モーダルの排他制御を追加した分だけ意図的に閾値を超えている
+    // （フレーム冒頭の処理順序が本ADRの核心のため、無理に関数分割しない）。
+    #[expect(clippy::too_many_lines)]
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // ADR-126 D6: ウィンドウを閉じる操作には config/layout どちらの
         // 未保存確認も入れない。キャンセルボタンの復元操作だけを確認対象にする。
@@ -3168,8 +3228,20 @@ impl eframe::App for SettingsApp {
             }
             ui.horizontal(|ui| {
                 let save_in_progress = self.pending_save.is_some();
+                // /code-review指摘: グローバルCtrl+S（`update()`冒頭）には
+                // 確認モーダル表示中の抑止を入れたが、この「適用」ボタン自体は
+                // `save_in_progress`しか見ていなかった。3択キャンセル確認や
+                // 配列破棄確認が開いている間にクリックすると、その確認が
+                // 尋ねている変更をそのまま`apply_confirmed()`で保存してしまう
+                // （確認モーダルを実質無視できてしまう）。同じ条件で無効化する。
+                let confirm_modal_open = self.show_dangerous_save_confirm
+                    || self.show_cancel_layout_confirm
+                    || self.pending_layout_discard.is_some();
                 if ui
-                    .add_enabled(!save_in_progress, egui::Button::new("適用"))
+                    .add_enabled(
+                        !save_in_progress && !confirm_modal_open,
+                        egui::Button::new("適用"),
+                    )
                     .on_hover_text("押すと: 変更を保存して awase に再読み込みを通知します（配列編集の変更も保存されます）。")
                     .clicked()
                 {
@@ -4570,9 +4642,9 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, NewComboBuf, PhysicalPos, SPECIAL_KEYS,
-        SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
-        resolve_layouts_dir,
+        CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
+        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path,
+        load_yab_layout, resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -5406,6 +5478,82 @@ mod layout_tab_repro {
         assert!(is_empty_cell(
             app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 0))
         ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // /code-review指摘（round2 R2-8と同型）: 3択キャンセル確認モーダルが
+    // 開いている間に、配列破棄確認（「開く」「再読み込み」「パス欄Enter」
+    // 経由）を新たに開こうとすると、2つの非ブロッキング`egui::Window`が
+    // 同時に描画されてしまう。`confirm_layout_discard_or_defer`側で
+    // 一元的に拒否することを検証する。
+    #[test]
+    fn discard_confirm_is_refused_while_cancel_confirm_is_open() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+
+        app.cancel();
+        assert!(app.show_cancel_layout_confirm);
+
+        let allowed = app.confirm_layout_discard_or_defer(LayoutDiscardAction::Reload);
+        assert!(!allowed);
+        assert!(
+            app.pending_layout_discard.is_none(),
+            "3択確認が開いている間は配列破棄確認を新たに開いてはならない"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // /code-review指摘: 3択キャンセル確認モーダルが開いている間に「適用」が
+    // 実行されると、確認が尋ねている変更（未保存の配列編集）をそのまま
+    // 保存してしまい、確認モーダル自体を無意味にする。`apply()`が
+    // それを拒否することを検証する。
+    #[test]
+    fn apply_is_refused_while_cancel_confirm_is_open() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+        let before = std::fs::read_to_string(app.layout_file_path.clone().unwrap()).unwrap();
+
+        app.cancel();
+        assert!(app.show_cancel_layout_confirm);
+
+        app.apply();
+
+        assert!(app.pending_save.is_none(), "確認表示中は保存を開始しない");
+        assert!(app.layout_modified, "未保存の編集はそのまま残る");
+        assert_eq!(
+            std::fs::read_to_string(app.layout_file_path.clone().unwrap()).unwrap(),
+            before
+        );
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // 逆方向: 配列破棄確認が開いている間に下部「キャンセル」を押しても、
+    // 3択確認モーダルを重ねて開いてはならない。
+    #[test]
+    fn cancel_is_refused_while_discard_confirm_is_open() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+
+        let allowed = app.confirm_layout_discard_or_defer(LayoutDiscardAction::Reload);
+        assert!(!allowed);
+        assert!(app.pending_layout_discard.is_some());
+
+        app.cancel();
+        assert!(
+            !app.show_cancel_layout_confirm,
+            "配列破棄確認が開いている間は3択確認を新たに開いてはならない"
+        );
+        assert!(app.pending_layout_discard.is_some(), "既存の確認は残る");
         let _ = std::fs::remove_dir_all(dir);
     }
 
