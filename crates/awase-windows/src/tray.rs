@@ -51,6 +51,7 @@ const IDM_AUTOSTART: u16 = 54;
 const IDM_RESTART: u16 = 56;
 const IDM_ABOUT: u16 = 57;
 const IDM_BUG_REPORT: u16 = 58;
+const IDM_UPDATE: u16 = 59;
 const IDM_TOGGLE: u16 = 1001;
 const IDM_EXIT: u16 = 1002;
 
@@ -81,6 +82,7 @@ pub enum TrayCommand {
     Restart,
     About,
     BugReport,
+    OpenUpdatePage,
     /// 配列選択（インデックスは `IDM_LAYOUT_BASE` からのオフセット）
     SelectLayout(usize),
     CapsLock,
@@ -563,6 +565,7 @@ pub fn handle_tray_message(
     current_layout_name: &str,
     elevated: bool,
     kana_lock_warned: bool,
+    update_check_enabled: bool,
 ) {
     #[expect(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
@@ -586,6 +589,20 @@ pub fn handle_tray_message(
     }
     .focused_hwnd;
     MENU_TARGET_HWND.store(captured.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
+
+    // 更新確認が無効なら update_check.json を読みもしない（右クリックのたびに無駄な
+    // ファイルI/O + JSONパースが走るのを避ける。display() はどのみち enabled=false を
+    // 見た瞬間に state を無視して Disabled を返すだけなので、読む意味が無い）。
+    let should_spawn_update_check;
+    let update_display = if update_check_enabled {
+        let update_state = awase::update_state::load(&awase::update_state::default_path());
+        let now = awase::update_state::now_unix();
+        should_spawn_update_check = awase::update_state::should_attempt(&update_state, now);
+        awase::update_state::display(&update_state, true, env!("CARGO_PKG_VERSION"), now)
+    } else {
+        should_spawn_update_check = false;
+        awase::update_state::Display::Disabled
+    };
 
     // SAFETY: `hwnd` はシステムトレイ作成時に `CreateWindowExW` で得た有効なウィンドウハンドル。
     //         `GetCursorPos`・`CreatePopupMenu`・`AppendMenuW`・`TrackPopupMenu`・`DestroyMenu` は
@@ -661,6 +678,13 @@ pub fn handle_tray_message(
 
         append_menu_sep(hmenu);
         append_menu_item(hmenu, IDM_ABOUT, "awase について");
+        if let awase::update_state::Display::Available { version, .. } = update_display {
+            append_menu_item(
+                hmenu,
+                IDM_UPDATE,
+                &format!("新しいバージョン {version} があります..."),
+            );
+        }
         append_menu_item(hmenu, IDM_BUG_REPORT, "不具合を報告...");
         append_menu_item(hmenu, IDM_TOGGLE, "有効/無効切替");
         append_menu_item(hmenu, IDM_EXIT, "終了");
@@ -683,6 +707,14 @@ pub fn handle_tray_message(
 
         let _ = DestroyMenu(hmenu);
     }
+
+    // メニュー表示・選択が終わった後にspawnする。結果は今回のメニューには
+    // 反映されない（ユーザー決定どおり、次回以降の右クリックに反映される）ので
+    // 前倒しして得るものが無い一方、CreateProcessW の同期コストをメニュー表示の
+    // 待ち時間から外せる（AVのオンアクセススキャンが重い環境で効く）。
+    if should_spawn_update_check {
+        crate::app::launch_settings_with_args(["--check-update".to_owned()]);
+    }
 }
 
 /// `WM_COMMAND` の `WPARAM` からトレイコマンドを解釈する。
@@ -699,6 +731,7 @@ pub fn handle_tray_command(wparam: WPARAM) -> Option<TrayCommand> {
         IDM_RESTART => Some(TrayCommand::Restart),
         IDM_ABOUT => Some(TrayCommand::About),
         IDM_BUG_REPORT => Some(TrayCommand::BugReport),
+        IDM_UPDATE => Some(TrayCommand::OpenUpdatePage),
         IDM_CAPSLOCK => Some(TrayCommand::CapsLock),
         IDM_RESET_STATE => Some(TrayCommand::ResetState),
         IDM_KANA_LOCK_HELP => Some(TrayCommand::KanaLockHelp),
@@ -817,19 +850,57 @@ const HOMEPAGE_URL: &str = "https://awase.cc";
 
 /// バージョン情報ダイアログを表示する。
 ///
-/// 「はい」を選ぶとホームページ（`HOMEPAGE_URL`）を既定のブラウザで開く。
+/// 「はい」を選ぶとホームページまたは更新版のリリースページを既定のブラウザで開く。
 /// ユーザー要望（2026-07-29: 「about awase」の追加とホームページへのリンク）に
 /// 対応するもので、インストール済みファイル名からしかバージョンを確認できな
 /// かった状態を解消する。
-pub fn show_about_dialog() {
+pub fn show_about_dialog(enabled: bool) {
     use windows::core::{w, PCWSTR};
     use windows::Win32::UI::WindowsAndMessaging::{
         MessageBoxW, IDYES, MB_ICONINFORMATION, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
     };
 
+    let state = awase::update_state::load(&awase::update_state::default_path());
+    let now = awase::update_state::now_unix();
+    let display = awase::update_state::display(&state, enabled, env!("CARGO_PKG_VERSION"), now);
+    let (update_text, yes_url) = match display {
+        awase::update_state::Display::Disabled => (
+            "更新の自動確認は無効になっています".to_owned(),
+            HOMEPAGE_URL.to_owned(),
+        ),
+        awase::update_state::Display::NeverSucceeded { last_attempt_ago } => {
+            let text = last_attempt_ago.map_or_else(
+                || "まだ最新版を確認できていません".to_owned(),
+                |ago| {
+                    format!(
+                        "まだ最新版を確認できていません（最後の試行: {}前）",
+                        approx_duration(ago)
+                    )
+                },
+            );
+            (text, HOMEPAGE_URL.to_owned())
+        }
+        awase::update_state::Display::NoUpdate { last_success_ago } => (
+            format!(
+                "更新は見つかりませんでした（最終確認: {}前）",
+                approx_duration(last_success_ago)
+            ),
+            HOMEPAGE_URL.to_owned(),
+        ),
+        awase::update_state::Display::Available {
+            version,
+            last_success_ago,
+        } => (
+            format!(
+                "新しいバージョン {version} があります（最終確認: {}前）",
+                approx_duration(last_success_ago)
+            ),
+            awase::version::release_url(&version),
+        ),
+    };
     let text = format!(
-        "awase バージョン {}\n\n{HOMEPAGE_URL}\n\n\
-         ホームページをブラウザで開きますか？",
+        "awase バージョン {}\n\n{update_text}\n\n{HOMEPAGE_URL}\n\n\
+         関連ページをブラウザで開きますか？",
         env!("CARGO_PKG_VERSION"),
     );
     let text_wide = crate::win32::to_wide(&text);
@@ -844,16 +915,21 @@ pub fn show_about_dialog() {
         )
     };
     if result == IDYES {
-        open_homepage();
+        open_url(&yes_url);
     }
 }
 
 /// `HOMEPAGE_URL` を既定のブラウザで開く。
 fn open_homepage() {
+    open_url(HOMEPAGE_URL);
+}
+
+/// URLを既定のブラウザで開く。
+fn open_url(url: &str) {
     use windows::core::{w, PCWSTR};
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    let url_wide = crate::win32::to_wide(HOMEPAGE_URL);
+    let url_wide = crate::win32::to_wide(url);
     // SAFETY: url_wide は NUL 終端済み UTF-16 で呼び出し中有効。他はすべて静的リテラル。
     let result = unsafe {
         ShellExecuteW(
@@ -867,10 +943,35 @@ fn open_homepage() {
     };
     // ShellExecuteW returns HINSTANCE > 32 on success
     if result.0 as isize > 32 {
-        log::info!("Opened homepage: {HOMEPAGE_URL}");
+        log::info!("Opened URL: {url}");
     } else {
-        log::warn!("Failed to open homepage (result={result:?})");
+        log::warn!("Failed to open URL {url} (result={result:?})");
     }
+}
+
+pub fn open_update_page() {
+    let state = awase::update_state::load(&awase::update_state::default_path());
+    match state
+        .last_seen_latest
+        .as_deref()
+        .and_then(awase::version::parse)
+    {
+        Some(version) => open_url(&awase::version::release_url(&version)),
+        None => open_homepage(),
+    }
+}
+
+fn approx_duration(seconds: u64) -> String {
+    if seconds < 60 {
+        return "約1分".to_owned();
+    }
+    if seconds < 60 * 60 {
+        return format!("約{}分", seconds / 60);
+    }
+    if seconds < 24 * 60 * 60 {
+        return format!("約{}時間", seconds / (60 * 60));
+    }
+    format!("約{}日", seconds / (24 * 60 * 60))
 }
 
 /// 自動起動のトグル処理。
