@@ -880,7 +880,9 @@ impl WindowsPlatform {
     /// 1. `resend_gji_reinit_retry_romaji`（retry送信）
     /// 2. `drain_output_post_send_effects`（送信後処理）
     /// 3. `flush_deferred_vks_after_gji_reinit_completion`（deferred flush）
-    /// 4. `drop(completion.guard)`（関数末尾、`match` の外）
+    /// 4. `push_journal_entry(GjiReinitRetryCompleted)`（ADR-123: 診断ログ、
+    ///    flush/discard 件数の確定後・guard drop 前に記録する）
+    /// 5. `drop(completion.guard)`（関数末尾、`match` の外）
     ///
     /// `completion.guard` は成功/timeout/staleいずれの分岐でも関数末尾で1回だけ
     /// dropする。Win32/`Platform`依存のためLinux上でこの呼び出し順自体をユニット
@@ -935,8 +937,8 @@ impl WindowsPlatform {
                 .output
                 .discard_pending_deferred_after_stale_gji_reinit();
             log::warn!(
-                    "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
-                );
+                "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
+            );
             (0, discarded)
         };
         // ADR-123: reinit retry の完了を journal（構造化・容量優先度あり）に
