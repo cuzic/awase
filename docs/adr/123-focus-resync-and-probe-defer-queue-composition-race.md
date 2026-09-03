@@ -2,16 +2,70 @@
 
 ## ステータス
 
-**round 1・round 2（Opus 2体、architect/premortem）完了。round 2 終了時点では
-「decision を選ぶ段階に到達していない」という結論だったが、architect が
-round 2 の最後に提示した2点の検証項目（app.log の reinit 発火有無 / deferred
-flush と「ば」probe 完了の前後関係）を、`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`
-の `app_log_excerpt`（`log::` 生ログ、journal では追えなかった層）を直接読む
-ことで両方とも確定させた。これにより根本原因は「推測」から「確定」へ格上げ
-され、decision も具体化した。ユーザー指示の2ラウンド後の追加確認として本版
-（round 2.5）を記録する。**
+**実装着手（2026-09-03）。** round 1・round 2（Opus 2体、architect/premortem）で
+根本原因を確定させた後、「実装着手の条件」としていた確証データ
+（`TsfProbeStarted.pending_deferred_len > 0` の実発生）が
+report_id `01M1KEGZ081YHJ1T2NC765SYYH`（2026-09-03）で得られた。この報告を
+受けて decision を Opus 敵対的レビュー3ラウンドで詳細化し、実装計画を確定した
+（下記「2026-09-03 実装着手（round 3）」節）。
 
 [GitHub issue #148](https://github.com/cuzic/awase/issues/148) として追跡。
+
+### 2026-09-03 実装着手（round 3）: 確証データと decision の詳細化
+
+不具合報告機能（ADR-095）経由、report_id `01M1KEGZ081YHJ1T2NC765SYYH`。
+Windows Terminal + GJI(Google日本語入力) + TsfNativeで「github pages には
+しないで」と入力したが「github pages sにはないで」となった（`docs/known-bugs.md`
+BUG-74「2026-09-03 追補3」に詳細、当初`SuppressedExistingPoll`（ADR-101決定5）
+由来と誤診断していたが、`KeyInput.timestamp_us`ベースで再検証した結果、本ADR
+と同一の「`pending_deferred`追い越し」機序と確定した——訂正の経緯もBUG-74
+追補3参照）。
+
+journalで`TsfProbeStarted`の`pending_deferred_len`を確認したところ、
+cold_seq=27時点で2、cold_seq=28時点で4（いずれも非ゼロ）——「実装状況」節が
+待っていた確証データが得られた。
+
+Opus敵対的レビュー3ラウンドで、当初案（`defer_if_probe_in_flight`の条件を
+単純に3-way ORへ拡張するだけ）から以下の欠陥を発見・修正し、下記「決定
+（確定・詳細化版）」へ収束した:
+
+1. **retry/回収再送の吸い込み**: gateを`send_romaji_as_tsf`/`send_romaji_batched`
+   の入口に置くと、`send_romaji_dispatching_on_gate`経由で呼ばれる
+   `flush_raw_tsf_literal_romaji`（raw recovery回収再送）と
+   `resend_gji_reinit_retry_romaji`（決定3のADR-101 retry）まで
+   `!pending_deferred.is_empty()`項に吸い込まれ、ADR-101決定3の「retryは
+   通常送信経路に戻してprobeに守らせる」という設計目的を破壊する
+   （今回の事案では`len=4`のため確実に発火する）。→ gate免除の専用入口が必要。
+2. **defer直後の無防備な生VK送出**: `send_keys`は末尾で必ず`OutputSession`を
+   dropしdrainをpostする（`output/mod.rs:1291`）。probe/reinitどちらも
+   in-flightでない（`!pending_deferred.is_empty()`項**のみ**が理由）状態で
+   新規モーラを単純にdeferすると、同一メッセージループのdrainが
+   `flush_stale_deferred_vks_after_recovery`経由でそのまま生VKとして即座に
+   送出し、本来probeに守られるはずだったモーラが無防備な生VK送信に格下げ
+   される。→ この場合はdeferではなく「先にキューをflushしてから新規モーラを
+   通常送信する」（drain-before-send）にする。
+3. **discard経路がユーザー生入力を新たに巻き込む**: gateを強めるほど
+   `pending_deferred`に長く滞留するVKが増える。既存の
+   `discard_raw_recovery_if_focus_stale`等はfocus不一致時に`pending_deferred`を
+   丸ごと破棄する設計で、これは元々「awase自身が再送しようとしていたromaji」
+   を対象にしていたが、gate拡張後は「ユーザーが実際に打鍵したがまだ送信
+   されていない入力」も同じキューに乗る。→ `DeferredVk`に由来
+   （`UserInput`/`RecoveryResend`）を持たせ、enqueue側の型シグネチャで
+   `origin`を必須にする。
+4. **上限超過時の退避行動**: 「最も古いエントリから強制flush」はprobeの
+   per-VK confirmの最中に生VKを割り込ませることになり、BUG-38/本ADRが
+   潰したinterleavingを再現する危険がある。→ 強制flushではなく「deferを
+   諦めて新規モーラを通常送信する（＝今日の挙動へdegrade）＋`log::error!`」
+   にする。
+
+**関連する事実（記録漏れの補足）**: drainハンドラは`flush_raw_tsf_literal_recovery`
+を先に呼び、その後でINPUT_DEFERをreplayする（`runtime/message_handlers.rs`）。
+replay経路（`KeyOrigin::DeferredReplay`）はOUTPUT_GATEを再チェックしないため、
+`Polling`中のguardは後続入力を守らない。また
+`flush_deferred_vks_after_gji_reinit_completion`はretry再送自身が先に新しい
+probeを立てる構造のため、実際には常に0件になる（決定4「retry→post-send effects
+→deferred flush→guard drop」の記述と実態が食い違う——[ADR-101](101-bug74-giveup-retry-with-focus-guard.md)
+決定4に訂正注記が必要）。
 
 ## 確定した根本原因（app.log 生ログのタイムスタンプ順再構成、`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`）
 
@@ -167,35 +221,88 @@ decision を実装する。
 `crates/awase-windows/src/output/tsf_warmup_coord.rs`,
 `crates/awase-windows/src/platform.rs`。
 
-## 決定（未実装、次回再発確認後に着手）
+## 決定（確定・詳細化版、2026-09-03 round3）
 
-**`defer_if_probe_in_flight`（および同種の gating 判定）の条件を
+`defer_if_probe_in_flight`（および同種の gating 判定）の条件を
 `has_pending_tsf() || raw_recovery_owns_deferred() || !pending_deferred.is_empty()`
-に拡張し、`pending_deferred` に未flushの VK が残っている間は新しいモーラも
-同じキューに追記する（独立した新規 probe を開始させない）。** これにより
-「ば」のようなモーラが `pending_deferred` を追い越すこと自体を構造的に
-防ぐ。
+に拡張する、という基本方針自体は当初案から変えていない。round3 の Opus
+敵対的レビュー3ラウンドで発見された4つの欠陥（上記「2026-09-03 実装着手」節）
+を踏まえ、以下の5変更として実装する。**依存関係上、実装順序は
+D→E→B→(A+C) を厳守すること**（B は A より前に型で縛る必要があり、C は A と
+不可分——理由は各項目参照）。
 
-- **長所**: 症状の直接原因（追い越し）をピンポイントで塞ぐ。`pending_deferred`
-  の flush 順序自体（BUG-38 が保証した部分）は変更不要。選択肢D（round 2 で
-  却下）のような probe 連鎖の抑制や、選択肢A（モーラ境界の導入）のような
-  `SendInput` 分割も不要——`pending_deferred` に積む条件を直すだけなので、
-  round 2 で懸念された「単一 SendInput のメッセージポンプ保護喪失」
-  （BUG-02 系 race 再燃リスク）を新設しない。
-- **短所/リスク**: gating を強めることで、`pending_deferred` が長時間
-  flush されないケース（reinit retry が何らかの理由で長引く等）では、
-  後続モーラの入力が今まで以上に長く待たされる可能性がある。実測が必要
-  （`tuning-constants.md` 規約対象ではないが、レイテンシ影響は要確認）。
-  また、この変更が `pending_deferred` の生存期間そのものを延ばすわけではない
-  ため、`discard_raw_recovery_if_focus_stale`（focus 変化時の全破棄）が
-  **他のインシデントで**発火した場合の挙動（本件では発火しなかったが、
-  経路自体は実在する）への影響は別途確認が必要。
-- **選択肢E（順序トークンによる検出）との関係**: 本 decision は「追い越しを
-  未然に防ぐ」予防策であり、E が提案した「検出してログに残す」観測策とは
-  補完関係にある。E の最小版（`pending_deferred` に順序情報を持たせ、
-  flush 時に破れがあれば `log::error!` する）は、本 decision の実装後も
-  「万一 gating の見落としがあった場合の安全網」として価値があるため、
-  **軽量な形で併設することを推奨**する。
+### 変更D（診断・挙動不変、最初に出す）
+
+`JournalEntry::DeferredRecoveryFlush` が `vk_count:0` の無情報エントリを
+大量に記録している（実測: 294件中293件）。`vk_count>0` または非`Flushed`の
+ときだけ記録するようにする。挙動は変えない。以降の変更A/Cの効果測定基盤にする。
+
+### 変更E（診断・挙動不変、Dの直後）
+
+`pending_deferred` に単調増加の順序トークンを持たせ、flush 時に「投入順と
+flush 順が食い違った」ケースを `log::error!` で検出する（選択肢Eの最小版）。
+本decision実装後も「万一gatingに見落としがあった場合の安全網」として
+軽量に併設する。
+
+### 変更B（型強制、AとCより前）
+
+`DeferredVk` に由来（`origin: DeferredOrigin::UserInput | RecoveryResend`）を
+追加する。**型強制は enqueue 側**（`defer_vks_if_in_flight`／新 gate の引数）
+に置き、`origin` を必須引数にする——これにより「B抜きのA」（origin なしで
+gate を通す実装）がコンパイル不能になる（discard 側に必須化しても enqueue
+経路を縛れないため誤り、round3で訂正済み）。この時点では `origin` は
+記録のみで挙動を変えない。
+
+### 変更A+C（同一PR、分割不可）
+
+同一PRにまとめる理由: Cの計数上限がないと、A単独でgateを強めた際に
+`pending_deferred`の滞留量が青天井になり、下記「上限超過時」の安全弁が
+機能しないため（round3指摘）。
+
+- **gate条件の3-way OR拡張**: `defer_if_probe_in_flight`
+  (`output/mod.rs:1311`) と `tsf_warmup_coord.rs:296-299` の
+  `defer_vks_if_in_flight` 内部の早期return、**両方**を同時に緩める
+  （片方だけだと無言でno-opになる、round3指摘）。
+- **配線箇所**: `send_romaji_as_tsf`/`send_romaji_batched` の入口
+  （`assess_warmth()` による warm/cold 分岐**より前**）にgate判定を置く。
+  現状 `defer_if_probe_in_flight` は `prepend_f2_warmup` 分岐と
+  `ms_ime_gate_defer` からしか呼ばれず、warm判定されたモーラは
+  `send_romaji_as_tsf_warm`(`vk_send.rs:403`)へ直行してgateを一切通らない
+  ——この穴を塞ぐ。`vk_send.rs:369`の`ms_ime_gate_defer`は
+  `needs_f2_probe()==false`で早期returnするためGJI専用の`pending_gji_reinit`
+  条件を足しても実質デッドコード、触らない。
+- **gate免除入口**: `send_romaji_dispatching_on_gate`(`output/mod.rs:1648`)
+  経由で呼ばれる `flush_raw_tsf_literal_romaji`（raw recovery回収再送）と
+  `resend_gji_reinit_retry_romaji`（ADR-101決定3のretry）は、3-way OR gate
+  の対象から恒久的に除外する専用の送信入口を新設し、そちらを呼ぶ（下記
+  欠陥1の対策。`origin`分離とは別軸、gateに入るか自体を制御する）。
+- **drain-before-send**: `has_pending_tsf()`/`raw_recovery_owns_deferred()`
+  がどちらもfalseで`pending_deferred`が非空**なだけ**の場合、新しいモーラを
+  追加でキューに積むのではなく、先に`pending_deferred`を（既存のflush経路で）
+  flushしてから、新しいモーラを通常どおり（probe保護付きで）transmitする。
+  flushは`assess_warmth()`より**前**に固定すること（後に置くとwarm/cold判定が
+  flush前の状態で下され、直後のprobeが汚染された`last_send_ms`/write_delta
+  を自分の証拠として読みうる、round3指摘）。（下記欠陥2の対策）
+- **件数上限**: `pending_deferred`の所有者である`TsfWarmupCoordinator`が
+  件数上限を保持する。**上限超過時は「最も古いエントリから強制flush」では
+  なく「deferを中止し新規モーラを通常送信する（＝今日の挙動へdegrade）＋
+  `log::error!`」**にする（強制flushはprobeのper-VK confirm中に生VKを
+  割り込ませることになりBUG-38/本ADRが潰したinterleavingを再現する危険が
+  あるため、round3で強制flush案を却下）。時間(ms)上限は別途計装してから
+  実測に基づき別PRで導入する（`tuning-constants.md`の実測義務対象、
+  件数上限は`_MS`定数ではないため対象外）。（下記欠陥4の対策）
+
+上記4欠陥（吸い込み/無防備送出/discard巻き込み/上限超過時の危険な退避）の
+詳細は「2026-09-03 実装着手（round 3）」節を参照。
+
+- **選択肢D/A（round 2 で却下）との関係は不変**: probe連鎖の抑制や
+  `SendInput`分割は不要——`pending_deferred`に積む条件と送信タイミングを
+  直すだけなので、round 2 で懸念された「単一 SendInput のメッセージポンプ
+  保護喪失」（BUG-02 系 race 再燃リスク）を新設しない。
+- **短所/リスク（残存）**: gate拡張により、後続モーラの入力が今まで以上に
+  長く待たされる可能性がある。件数上限は導入するが、時間上限は実測後の
+  別PRになるため、上限に達するまでの待ち時間そのものは本PRの範囲では
+  未計測のまま残る。
 
 ## 未決定事項
 
@@ -205,9 +312,10 @@ decision を実装する。
    本ADRのスコープ外の別欠陥として引き続き切り出しを推奨。
 3. **`discard_raw_recovery_if_focus_stale` 自体の経路**（本件では不発火
    だったが実在する）は、focus churn が実際に reinit retry 中に起きる
-   別インシデントで別途検証が必要——本 decision の gating 拡張後も、
-   `pending_deferred` ごと破棄されるケース自体は残るため、根絶ではなく
-   緩和である点に注意。
+   別インシデントで別途検証が必要——変更Bの`origin`分離は最小実装(b)
+   （記録のみ、破棄そのものは止めない）に留めるため、本 decision の gating
+   拡張後も `pending_deferred` ごと破棄されるケース自体は残る（根絶ではなく
+   緩和）。`UserInput`由来を破棄せず再送を試みる案(a)は別PRの検討課題。
 4. Unicode 側の同型フラットバッファ2箇所（`UnicodeColdWarmupFsm::deferred_chars`、
    `Output::unicode_cold_deferred`）は「同型だが未観測」として
    `docs/known-bugs.md` に別記録し、本ADRのスコープからは外す。
@@ -221,4 +329,7 @@ decision を実装する。
 BUG-38、BUG-89（`FOCUS_RESYNC`/`OUTPUT_GATE` の deferred replay 経路）、
 BUG-45/BUG-75/ADR-122（per-VK confirm の代理指標ベース判定の構造的欠陥）、
 [docs/bug-reports-triage.md](../bug-reports-triage.md)
-（`01M1JJD54XQXSEJTHHFKV1WKA1` 該当行）。
+（`01M1JJD54XQXSEJTHHFKV1WKA1`・`01M1KEGZ081YHJ1T2NC765SYYH` 該当行）、
+[ADR-101](101-bug74-giveup-retry-with-focus-guard.md)
+（決定3/決定4/決定5、gate免除入口が保護する対象）、`docs/known-bugs.md`
+BUG-74「2026-09-03 追補3」（本件の当初誤診断とその訂正）。

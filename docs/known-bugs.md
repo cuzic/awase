@@ -10385,6 +10385,47 @@ Stale)`)が本PR以前から残っている**(BUG-13領域、コードレビュ�
 未観測)。次にMS-IME側でIMC確認ゲートが理由なく固着する系の症状が報告されたら
 ここから着手すること。
 
+**2026-09-03 追補3: 当初「`SuppressedExistingPoll`の残骸トレードオフ」と誤診断
+——実際はADR-123が実装着手条件としていた確証データだった（訂正版）**
+
+不具合報告機能（ADR-095、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）経由。app_version
+1.18.0、Windows Terminal（`Windows.UI.Input.InputSite.WindowClass`、app_kind=Uwp、
+TsfNative）、GJI。症状カテゴリ WrongCharacterOutput、説明「github pages にはしないで
+と入力しているのに github pages sにはないで となってしまった」。
+
+**初版の診断は誤りだった。** journalの`elapsed_ms`（absorb時刻）だけで時系列を
+再構成し、「し」が`SuppressedExistingPoll`（ADR-101決定5）により完全に失われた、
+と結論したが、Opus敵対的レビュー（3ラウンド）で`KeyInput.timestamp_us`（物理
+打鍵の実時刻）ベースで再検証した結果、以下が判明した:
+
+- 症状は「文字消失」ではなく**「追い越しによる順序反転＋約1.85秒の遅延」**
+  だった。「github pages」の直後に来る「H」由来のモーラ（ユーザー生入力）は
+  失われておらず、`pending_deferred`に滞留した後1.85秒遅れて出力されている。
+  一方「S」由来のliteral "s"は、`pending_deferred`に積まれず即座に独立した
+  新しいprobe（cold_seq=27）を開始して先に確定してしまったため、後から出力
+  される「には」より前の位置に出た。
+- `SuppressedExistingPoll`自体は今回の一次原因ではなく、二次的な症状の一部
+  でしかない。
+- **真因は既存の[ADR-123](adr/123-focus-resync-and-probe-defer-queue-composition-race.md)
+  が既に特定していた「`defer_if_probe_in_flight`が`has_pending_tsf()`だけを見て
+  `pending_deferred`の非空性を考慮しないため、flush待ちの後続モーラを新規入力が
+  追い越せる」というギャップと同一だった。** ADR-123は前回のインシデント
+  （`01M1JJD54XQXSEJTHHFKV1WKA1`、「たとえば」→「ばたと」）でこの機序を確定
+  させていたが、decisionの実装は「次回同種の報告でjournalの`TsfProbeStarted.
+  pending_deferred_len`が実際に非ゼロと確認できたら着手する」条件付きで保留
+  されていた。本reportのjournalで`TsfProbeStarted`の`pending_deferred_len`が
+  cold_seq=27時点で2、cold_seq=28時点で4（いずれも非ゼロ）と確認され、
+  **ADR-123が待っていた実装着手の確証データそのものだった。**
+
+**対応方針:** ADR-123のステータスを「実装着手」へ更新し、恒久対策の設計・
+実装はそちらで一元管理する（本節はこの誤診断の記録として残す）。
+
+**この誤診断自体からの教訓:** journalの`elapsed_ms`は「journalへ記録された
+（absorbされた）時刻」であり、`KeyInput.timestamp_us`（実際に物理キーが
+発生した時刻）とは別物——give-up/reinit/drain replay等で記録タイミングが
+実打鍵から数十〜数百ms遅延することがあるため、複数イベントの前後関係を
+厳密に議論する際は`timestamp_us`を基準にすること。
+
 **関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
 （`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`
 （`RawTsfLiteralRecovery`/`CompositionConfirmed`/`LiteralDetectNote` ハンドラ、

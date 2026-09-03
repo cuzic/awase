@@ -32,6 +32,8 @@ retry後は必ず `drain_output_post_send_effects` を実行する。これに�
 
 retry付き `Polling` 中は、`flush_stale_deferred_vks_after_recovery` による `warmup_coord.pending_deferred` の即時送信を禁止する。`Confirmed` では `retry → post-send effects → deferred flush → guard drop` の順で処理する。`Timeout` では retryせず、focusが一致していれば deferred を送る。`Stale` またはfocus不一致では deferred を破棄し、ログに件数とstatusを残す。
 
+**2026-09-03 訂正注記（ADR-123 round3で発覚）**: 上記「`Confirmed` では `retry → post-send effects → deferred flush`」の記述は設計意図どおりだが、実装上 `flush_deferred_vks_after_gji_reinit_completion` は retry romaji の再送自身が新しい TSF probe を立てる（`has_pending_tsf()` が true になる）ため、`take_pending_deferred_if_probe_idle()` が常に `None` を返し、**構造的に `deferred_flushed=0` になる**（report `01M1KEGZ081YHJ1T2NC765SYYH` の journal で実証）。deferred VK は「retry直後に明示的にflushされる」のではなく、その新しいprobeが完了した後の別経路で回収されている。挙動自体に不具合はないが、本節の記述と実態が食い違っていたため記録する。詳細は [ADR-123](123-focus-resync-and-probe-defer-queue-composition-race.md) 参照。
+
 ### 決定5: SuppressedExistingPollではRAW_TSF_LITERALを汚さない
 
 既存 retry poll 中に新しいgive-upが来た場合、`schedule_chrome_gji_reinit` は `SuppressedExistingPoll` を返す。このとき give-up分岐は `set_raw_literal` を呼ばない。単一グローバル `RAW_TSF_LITERAL` に遅延backspaceだけを残すと、既存retryが成功した直後にそのbackspaceが別文字を消すためである。代償として、新しいgive-upのliteral残骸が画面に残る可能性はあるが、既存pollが救おうとしている先行文字を消すより被害が局所的で診断可能である。
