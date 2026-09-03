@@ -24,7 +24,7 @@ awase intercepts physical key input with a low-level keyboard hook, detects simu
 - **Multi-layered fault tolerance** — hook liveness monitoring, sleep/resume recovery, IME-detection-failure fallback, and automatic TSF cold-start recovery, layered in stages
 - **Asynchronous architecture** — an async executor built on the Windows message loop; blocking APIs are isolated on separate threads with timeout protection
 - **Automatic focus detection** — automatically stops conversion when focus is not on a text input field
-- **System tray resident** — switch layouts, open the settings screen, and toggle enable/disable
+- **System tray resident** — switch layouts, open the settings screen, and toggle thumb-shift/romaji input
 - **US layout support** — switch to a US physical layout with `keyboard_model = "us"`. Because a US keyboard has no Muhenkan/Henkan keys, awase can also impersonate thumb keys onto the left/right Alt keys, or turn the Space key into a thumb key
 
 For details on the technical design, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -70,14 +70,14 @@ data/
 
 Double-click `awase.exe` and it becomes resident in the system tray.
 
-### 4. Turn the Engine ON
+### 4. Switch to thumb-shift input
 
 Default key bindings:
 
 | Action | Key |
 |------|------|
-| Engine ON | **Ctrl+Shift+変換** |
-| Engine OFF | **Ctrl+Shift+無変換** |
+| Switch to thumb-shift input | **Ctrl+Shift+変換** |
+| Switch to romaji input | **Ctrl+Shift+無変換** |
 | IME ON | **Ctrl+変換** (if the IME is already ON, resets it to hiragana / romaji / CapsLock OFF) |
 | IME OFF | **Ctrl+無変換** |
 | Toggle IME-ON halfwidth alphanumeric (MS-IME only) | **Left Shift single tap** (press and release without any other key; tap again to cancel) |
@@ -118,7 +118,7 @@ Note: `left_thumb_key` / `right_thumb_key` must be set to the literal Japanese k
 | `right_thumb_key` | `変換` | Right thumb-shift key |
 | `confirm_mode` | `wait` | Confirm mode (see below) |
 | `output_mode` | `unicode` | Output method (normally no need to change) |
-| `engine_toggle_hotkey` | none | Hotkey to toggle the engine ON/OFF |
+| `engine_toggle_hotkey` | none | Hotkey to toggle thumb-shift/romaji input |
 | `keyboard_model` | `jis` | Physical keyboard layout. For a US layout use `"us"` (also change `default_layout` to `nicola_us.yab`) |
 
 ### Confirm Modes
@@ -145,7 +145,7 @@ Force specific behavior when an app doesn't work correctly.
 force_text = [
     { process = "myapp.exe", class = "Edit" },
 ]
-# エンジンを常に無効にする
+# 常にローマ字入力にする（awase を素通しする）
 force_bypass = [
     { process = "launcher.exe", class = "LauncherClass" },
 ]
@@ -209,7 +209,7 @@ Identification results are learned and cached per app class name (`cache.toml`) 
 ## Troubleshooting
 
 **No characters are typed / strange characters appear**  
-→ The engine may be OFF. Turn it ON with Ctrl+Shift+変換.
+→ It may be in romaji input. Switch to thumb-shift input with Ctrl+Shift+変換.
 
 **Doesn't work in a specific app**  
 → Launch with `RUST_LOG=debug awase.exe`, check the log, and add the app to `[app_overrides]`.

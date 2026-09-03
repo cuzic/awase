@@ -80,7 +80,7 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     if app.engine.take_solo_off_notification() {
         app.platform.tray.show_balloon(
             "awase",
-            "無変換キーの連打でエンジンを緊急停止しました。\n\
+            "無変換キーの連打でローマ字入力に緊急切替しました。\n\
              戻すには Ctrl+Shift+変換 を押してください。",
         );
     }

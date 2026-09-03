@@ -75,7 +75,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # ngram_min_threshold_ms = 30
 # ngram_max_threshold_ms = 120
 
-# エンジン ON/OFF トグルホットキー
+# 親指シフト入力／ローマ字入力 切替ホットキー
 engine_toggle_hotkey = "Ctrl+Shift+F12"
 
 # フォーカス遷移デバウンス時間（ミリ秒）
@@ -90,7 +90,7 @@ engine_toggle_hotkey = "Ctrl+Shift+F12"
 
 # キーバインディング設定
 [keys]
-# エンジン ON/OFF キー（複数指定可）
+# 親指シフト入力／ローマ字入力 切替キー（複数指定可）
 engine_on = ["Ctrl+Shift+Convert"]
 engine_off = ["Ctrl+Shift+Nonconvert"]
 
