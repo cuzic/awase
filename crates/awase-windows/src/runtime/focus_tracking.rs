@@ -19,6 +19,7 @@ const EXPLICIT_OFF_CACHE_SUPPRESS_MS: u64 = 10_000;
 pub(super) struct ClassifiedFocus {
     pub hwnd: HWND,
     pub process_id: u32,
+    pub process_name: Option<String>,
     pub class_name: String,
     pub kind: FocusKind,
 }
@@ -245,10 +246,21 @@ impl Runtime {
         // SAFETY: `learn_imm_capability_on_focus` は Win32 IMM API を呼ぶ unsafe fn。
         //         `hwnd` は `probe` から得た有効なウィンドウハンドルであり、
         //         メッセージループ上（メインスレッド）から呼ばれるためスレッド要件を満たす。
+        let mut process_name = None;
         unsafe {
             imm_learning::learn_imm_capability_on_focus(
                 &mut self.platform,
                 hwnd,
+                || {
+                    let name = crate::focus::classify::get_process_name(process_id).to_lowercase();
+                    // 取得失敗（空文字列）でも Some に包んで返す。CurrentFocus::
+                    // update_with_process_name 側は Some(..) をそのまま採用するため、
+                    // 失敗結果まで含めて再利用でき、同一 pid への get_process_name
+                    // の再呼び出し（/code-review 指摘: 失敗時だけ二重取得が残っていた）
+                    // を防げる。
+                    process_name = Some(name.clone());
+                    name
+                },
                 &class_name,
                 new_app_kind,
             );
@@ -293,6 +305,7 @@ impl Runtime {
         Some(ClassifiedFocus {
             hwnd,
             process_id,
+            process_name,
             class_name,
             kind,
         })
@@ -367,10 +380,11 @@ impl Runtime {
             }
         }
 
-        self.platform.update_focus_info(
+        self.platform.update_focus_info_with_process_name(
             classified.process_id,
             classified.class_name.clone(),
             classified.hwnd.0 as usize,
+            classified.process_name.clone(),
         );
 
         // `update_focus_info` 直後のため `self.focus_hwnd()` は `classified.hwnd` と

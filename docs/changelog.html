@@ -110,6 +110,13 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>修正</h3>
+<ul>
+<li><strong>設定画面・不具合報告画面（<code>awase-settings.exe</code>）でテキスト入力の先頭に意図しないかな文字が混入することがある不具合を修正</strong><ul>
+<li>IMM32制御能力の学習キャッシュがウィンドウクラス名のみをキーにしており、<code>winit</code>（GUIフレームワーク）の汎用クラス名を介して無関係な別プロセスの誤学習が伝播していた（BUG-56と同種、プロセス間版）。キャッシュのキーにプロセス名を含めるようにして修正した</li>
+</ul>
+</li>
+</ul>
 <h2>[1.18.0] - 2026-09-02</h2>
 <h3>追加</h3>
 <ul>

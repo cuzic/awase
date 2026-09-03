@@ -1579,19 +1579,38 @@ impl WindowsPlatform {
         self.focus.update(process_id, class_name, hwnd);
     }
 
+    /// 同一フォーカスプローブ内で取得済みの process_name を再利用して更新する。
+    pub fn update_focus_info_with_process_name(
+        &mut self,
+        process_id: u32,
+        class_name: String,
+        hwnd: usize,
+        process_name: Option<String>,
+    ) {
+        self.focus
+            .update_with_process_name(process_id, class_name, hwnd, process_name);
+    }
+
     /// IMM 能力キャッシュに学習結果を追加し、ファイルに永続化する。
-    pub fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
-        self.focus.learn_imm_capability(class_name, cap);
+    pub fn learn_imm_capability(
+        &mut self,
+        process_name: String,
+        class_name: String,
+        cap: ImmCapability,
+    ) {
+        self.focus
+            .learn_imm_capability(process_name, class_name, cap);
     }
 
     /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する（BUG-56: 閾値回連続で初めて確定）。
-    pub fn record_imm_null_probe(&mut self, class_name: String) {
-        self.focus.record_imm_null_probe(class_name);
+    pub fn record_imm_null_probe(&mut self, process_name: String, class_name: String) {
+        self.focus.record_imm_null_probe(process_name, class_name);
     }
 
     /// 非 NULL 観測を得たら「疑い」カウントをクリアする（BUG-56）。
-    pub fn clear_imm_pending_unavailable(&mut self, class_name: &str) {
-        self.focus.clear_imm_pending_unavailable(class_name);
+    pub fn clear_imm_pending_unavailable(&mut self, process_name: &str, class_name: &str) {
+        self.focus
+            .clear_imm_pending_unavailable(process_name, class_name);
     }
 
     /// UIA ワーカーへの送信チャネルを設定する。
