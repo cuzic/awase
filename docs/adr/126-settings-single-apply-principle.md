@@ -547,6 +547,45 @@ v3のステップ5は`layout_edit_value == layout_edit_origin`（`Option<String>
   1つの条件式に混ぜていたことが、W8/R4-5の「正しい操作が理由不明で弾かれる」
   「エディタの操作履歴に依存する」という2つの症状を同時に生んでいた。
 
+### round5で判明した軽微な改善点（X1〜X5、blockerではない）
+
+v4/v5の実装細部について、architectから5件の非blocker指摘があった。いずれも
+決定文への一文追記で足りる。
+
+- **X1**: ADR-115打鍵列セルは種別ラジオの行ごと無効化される（W3/R4-2）ため、
+  `layout_edit_kind`を`ValueKind::None`に切り替えられなくなり、**「このキーの
+  割り当てを解除」ボタン自体に到達できない**（ボタンの表示条件が
+  `kind == ValueKind::None`のため）。従来はセルを選んで「なし」に切り替え
+  「適用」を押せば打鍵列も解除できたが、この経路がGUIから失われる。
+- **X2**: ステップ5（`raw == origin`でreturn）は`layout_edit_last_seen`を
+  更新しないため、**パースエラーとなる値を入力した後、元の値に戻しても
+  `layout_status`のエラー表示が残ったままになる**（例:「あ」で失敗
+  →`layout_status`にエラー→打ち直して`"ka"`〈origin〉に戻す→ステップ5で
+  即return、`layout_status`はクリアされない）。
+- **X3**: ステップ4（`ime_composing`）でreturnした場合、egui は他に入力が
+  無ければ次フレームを自発的に描画しないため、**IME確定によるコミットが
+  次に何らかの入力イベントが発生するまで遅延しうる**。「適用」ボタン・
+  `Ctrl+S`・他セルのクリックはいずれも先にステップ2〜7を通過するため実害は
+  無いが、D5の「未保存の変更があります」バナー等の即時反映が遅れる可能性が
+  ある。
+- **X4**: バッファ再同期の不変条件（後述）の対象リストに、既存の
+  `paste_layout_cell`（`main.rs:884-894`、クリップボード履歴からの貼り付け）が
+  含まれていない。この経路も`commit_pending_layout_edit()`の外側で
+  `self.layout`を書き換えるが、既存実装は末尾で`select_layout_cell(pos)`を
+  呼んでおり、既に不変条件を満たしている。ただし一覧に明記しておかないと、
+  将来この呼び出しが誤って削除されたときに検知できない。
+- **X5**: `ime_composing`のリセット契機が`select_layout_cell`実行時と
+  `layout_selected_pos == None`時の2つだが、**別タブへの切替や配列パス欄
+  （`main.rs:1980`）へのフォーカス移動中にIME合成が進行していた場合**も、
+  eguiがフォーカス変更時に`Event::Ime`をイベントキューから除去するため
+  （`egui-0.31.1/src/widgets/text_edit/builder.rs:796-803`の`retain`。
+  なおこの除去はTextEdit描画時＝`CentralPanel`内で起きるため、D3ステップ0
+  〈`update()`冒頭のイベント走査〉より後であり、「eguiが除去するせいで
+  `ime_composing`が固着する」という直接の原因ではなく、根本はegui/winit側が
+  フォーカス喪失時に`Commit`/`Disabled`を送らない場合があること——
+  premortemが指摘した記述の正確化）、同様に固着しうる。セルを再選択すれば
+  復帰するため実害は限定的。
+
 ## 決定
 
 ### D1: 配列編集タブのセル単位「適用」ボタンを撤去し、`update()`冒頭で無条件にコミット判定する
@@ -580,12 +619,18 @@ v3のステップ5は`layout_edit_value == layout_edit_origin`（`Option<String>
   **この更新は`commit_pending_layout_edit()`本体より前、`update()`の実質的な
   ステップ0として行う**（round4 architect W5——後でないと1フレーム古い値で
   判定し最初のプレビューフレームを取りこぼす）。加えて、`select_layout_cell`
-  実行時と`layout_selected_pos`が`None`になった時点で強制的に`false`へリセット
-  する（round4 architect W4——eguiはIME合成中にフォーカスが移動すると
-  `Event::Ime`をイベントキューから除去するため〈`egui-0.31.1/src/widgets/
-  text_edit/builder.rs:796-803`〉、`Commit`/`Disabled`が届かないまま真に
-  固着し、以後すべてのコミットが無言で止まりうる。この防御的リセットが無いと
-  eguiの内部実装に存在するこの経路を塞げない）。判定条件は「`ime_composing`が
+  実行時・`layout_selected_pos`が`None`になった時点・**`active_tab`が変わった
+  時点**（round5 architect X5——配列パス欄`main.rs:1980`等、配列編集タブ以外の
+  テキスト欄でIME合成中にタブが切り替わった場合も同様に固着しうる）で強制的に
+  `false`へリセットする（round4 architect W4）。この防御的リセットが必要な
+  根本原因は、eguiがIME合成中にフォーカスが移動すると`Event::Ime`をイベント
+  キューから除去すること自体（`egui-0.31.1/src/widgets/text_edit/builder.rs:
+  796-803`）**ではなく**——この除去はTextEdit描画時＝`CentralPanel`内で起き、
+  D3ステップ0（`update()`冒頭のイベント走査）より後なので、ステップ0の走査
+  からこの除去で`Commit`/`Disabled`が隠される訳ではない——**egui/winitの側が
+  フォーカス喪失時に`Commit`/`Disabled`イベント自体を送らない場合がある**こと
+  （round5 premortemによる根拠の正確化）。防御的リセットの判断自体は変わらず
+  必要。判定条件は「`ime_composing`が
   真」だけでなく「**当該フレームのイベント列に`Event::Ime(_)`が1つでも含まれる**」
   も含める（round4 premortem R4-4——`Ime::Commit`をeguiのTextEditが実際に処理
   するのは`CentralPanel`描画時で`update()`冒頭のイベント走査より後のため、
@@ -613,9 +658,17 @@ v3のステップ5は`layout_edit_value == layout_edit_origin`（`Option<String>
    同じ〉、確定フレームで「既に見た値」と誤判定されコミット機会を失っていた。
    ガードをすべて`layout_edit_last_seen`の参照・更新より前に置くことで、
    `layout_edit_last_seen`は「実際に処理を試みた入力」だけを記録するようになる）。
+   **このreturnの直前で`ctx.request_repaint()`を呼ぶ**（round5 architect X3——
+   eguiは他に入力が無ければ次フレームを自発的に描画しないため、呼ばないと
+   IME確定によるコミットが次の何らかの操作まで遅延しうる。D5のバナー等の
+   即時反映のため1行追加する）。
 5. `(layout_edit_value.clone(), layout_edit_kind)`（以下`raw`）が`layout_edit_origin`
-   と一致するならreturnする（＝選択した時点から実質的な変更が無い。
-   `layout_edit_last_seen`は更新しない）。
+   と一致するなら、**`raw`が`layout_edit_last_seen`と異なる場合にのみ
+   `layout_status`をクリアし`layout_edit_last_seen = Some(raw.clone())`に
+   更新した上で**returnする（＝選択した時点から実質的な変更が無い。round5
+   architect X2——このクリア処理が無いと、パースエラーとなる値を入力した後に
+   元の値へ打ち直しても、ステップ6以降に到達しないため`layout_status`の
+   エラー表示が残り続ける）。
 6. `raw`が`layout_edit_last_seen`と一致するならreturnする（＝前回このステップまで
    到達したときと同じ入力のまま——round3 R3-4解消。無効な入力を残したまま
    他の操作をしても、同じエラーが毎フレーム`layout_status`へ再書き込みされ
@@ -713,6 +766,15 @@ premortem P2-1——から、既存の値を保護する。なお`ime_composing`
 （round3 architect V1）という原則と、「実際にUIも操作不能にして誤操作の経路を
 物理的に塞ぐ」という2つの防御を、片方だけでなく両方とも満たす。**
 
+**この種別ラジオの無効化により、ADR-115打鍵列セルは「なし」への切り替えも
+できなくなるため、D1の「このキーの割り当てを解除」ボタン（表示条件が
+`layout_edit_kind == ValueKind::None`）にも到達できず、GUIからこれらのセルの
+割り当てを解除する手段が失われる（round5 architect X1）。** 従来は「セルを
+選んで『なし』に切り替え→適用」で打鍵列も解除できていたが、この経路は
+本ADRの範囲では復元しない——値の変更と同じく解除も`.yab`の直接編集に委ねる、
+という一貫した扱いにする（値だけ編集不能で解除だけGUIに残す非対称な方が
+かえって分かりにくいと判断する）。
+
 **`select_layout_cell`の冒頭で`layout_status`をクリアし、`layout_edit_origin`
 （文字列と種別のタプル）・`layout_edit_origin_is_sequence`を新しいセルの内容で
 再設定し、`layout_edit_last_seen`を`None`に戻し、`ime_composing`を`false`に
@@ -726,7 +788,7 @@ premortem P2-1——から、既存の値を保護する。なお`ime_composing`
 `layout_edit_origin`・`layout_edit_origin_is_sequence`・`layout_edit_last_seen`・
 `ime_composing`）を再同期しなければならない、というD1の不変条件とする（round4
 premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layout`を丸ごと
-差し替えるパス」から拡張したもの）。** 対象は次の5箇所:
+差し替えるパス」から拡張したもの）。** 対象は次の6箇所:
 
 1. `layout_do_reload`（既存実装で`layout_selected_pos = None`を実行済み、
    `main.rs:1014`）
@@ -737,8 +799,13 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
    再実行で再同期——新規に満たす必要がある）
 5. D1で新設する「特殊キー」ComboBoxの直接コミット経路（同じく`select_layout_cell(pos)`
    の再実行で再同期——新規に満たす必要がある）
+6. 既存の`paste_layout_cell`（クリップボード履歴からの貼り付け、`main.rs:884-894`）
+   ——`commit_pending_layout_edit()`を経由せず`self.layout`へ`insert`し
+   `layout_modified = true`にする既存経路だが、末尾で既に`select_layout_cell(pos)`
+   を呼んでおり、この不変条件を**既に満たしている**（round5 architect X4——
+   将来この呼び出しが誤って削除されたときに検知できるよう、対象として明記する）
 
-1・2は`self.layout`を丸ごと差し替えて選択を解除するのに対し、4・5は単一セルの
+1・2は`self.layout`を丸ごと差し替えて選択を解除するのに対し、4・5・6は単一セルの
 モデル値だけを`commit_pending_layout_edit()`の外側で書き換えるため、
 「選択解除」ではなく「選択したままバッファだけを新しいモデル値に合わせて
 再初期化する」（＝`select_layout_cell`の再実行）という異なる再同期が必要になる
@@ -1016,7 +1083,10 @@ B8の指摘に対する回答）: ウィンドウを閉じる操作はOSレベ�
 - `config.toml`側の「ディスクとの差分」検出・ウィンドウクローズ時の確認（D6、将来の
   別ADR）。
 - ADR-115打鍵列セルの編集機能そのものの拡充（D1では「編集不能にする」という後退的
-  対応に留め、打鍵列を安全に編集できるUIの新設はスコープ外とする）。
+  対応に留め、打鍵列を安全に編集できるUIの新設はスコープ外とする）。**種別ラジオ
+  行の無効化に伴い、これらのセルをGUIの「割り当てを解除」ボタンで解除する経路も
+  同様にスコープ外とする（round5 architect X1）。値の変更・解除のいずれも
+  `.yab`の直接編集に委ねる。**
 - IME変換中の打鍵欄における赤エラー表示のちらつき（round1 P2-2/P2-3で指摘）。
   **（round3で修正・記述更新: `ime_composing`ガード導入前のv2時点では未解決だった
   「変換中の中間文字列がモデルへ書き込まれる」という実害は、D1の`ime_composing`
