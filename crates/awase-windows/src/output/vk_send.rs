@@ -8,9 +8,83 @@ use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::TransmitTarget;
+use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
+
+/// ADR-123 変更A+C 決定4-2: `send_romaji_batched`/`send_romaji_as_tsf` の
+/// 新設 `defer_if_probe_in_flight` gate を適用するかどうか。
+/// 既存の TSF gate（`gate_is_bypass()`/`TsfGate::Bypass`、composition context
+/// の bypass 状態）とは無関係の別概念のため命名を分けている。`Exempt` は
+/// `send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`
+/// （raw recovery 回収再送・ADR-101 決定3 retry 専用）だけが使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferGate {
+    Enforced,
+    Exempt,
+}
+
+impl DeferGate {
+    /// `Enforced`（通常のユーザー入力）は `UserInput`、`Exempt`（raw recovery
+    /// 回収再送・ADR-101 決定3 retry）は `RecoveryResend`。万一 `has_pending_tsf()`
+    /// によって defer された場合でも、discard 経路の origin 別内訳
+    /// （ADR-123 変更B）が正しく分類できるようにする。
+    const fn deferred_origin(self) -> DeferredOrigin {
+        match self {
+            Self::Enforced => DeferredOrigin::UserInput,
+            Self::Exempt => DeferredOrigin::RecoveryResend,
+        }
+    }
+}
+
+impl Output {
+    /// `gate` に応じて `defer_if_probe_in_flight`（全条件）または
+    /// `defer_if_probe_in_flight_recovery_exempt`（`raw_recovery_owns_deferred()`
+    /// を見ない版）のどちらを使うかを切り替える。`has_pending_tsf()` による
+    /// defer は `Exempt` でも従来どおり適用される——除外されるのは
+    /// `raw_recovery_owns_deferred()` の項だけ（理由は
+    /// `send_romaji_batched_bypass_gate` の doc コメント参照）。
+    fn defer_respecting_gate(&self, romaji: &str, gate: DeferGate) -> bool {
+        let origin = gate.deferred_origin();
+        match gate {
+            DeferGate::Enforced => self.defer_if_probe_in_flight(romaji, origin),
+            DeferGate::Exempt => self.defer_if_probe_in_flight_recovery_exempt(romaji, origin),
+        }
+    }
+
+    /// ADR-123 変更A+C 決定4-3（drain-before-send）: `has_pending_tsf()`も
+    /// `raw_recovery_owns_deferred()`も偽で、`pending_deferred`が非空
+    /// 「なだけ」の場合、新しいモーラを追加でキューに積むのではなく、
+    /// 先にキューをflushしてから通常送信に進む。**`assess_warmth()`より
+    /// 前に呼ぶこと**——後に置くとwarm/cold判定がflush前の状態で下され、
+    /// 直後のprobeが汚染された`last_send_ms`/write_deltaを自分の証拠として
+    /// 読みうる（round3指摘）。
+    ///
+    /// **`raw_recovery_owns_deferred()`は`gate`に関わらず常にチェックする
+    /// （4-2の`defer_respecting_gate`とは非対称、Opus敵対的レビュー
+    /// round4-3指摘）。** defer方向（自分の送信を止めるか）では
+    /// 「無関係な別recoveryか自分自身か」の区別が自己defer回避に必要
+    /// だったが、drain方向（他人が所有するキューを解放してよいか）では
+    /// この区別は無意味かつ危険——`raw_recovery_owns_deferred()`が
+    /// trueである以上、それが自分の状態由来であることはない
+    /// （`flush_raw_tsf_literal_romaji`到達時点で自分の`RAW_TSF_LITERAL`は
+    /// 既にswap/take済み・`pending_gji_reinit`は非give-up経路では未予約、
+    /// `resend_gji_reinit_retry_romaji`到達時点では自分の`pending_gji_reinit`
+    /// は`take_gji_reinit_completion`で既にtake済み）。つまりtrueならほぼ
+    /// 確実に無関係な別recoveryが所有中であり、`finish_probe_stage`が
+    /// 守るINV-Fと同じ理由でここも手を出してはならない。
+    fn drain_pending_deferred_before_send_if_queue_only(&self) {
+        if self.is_probe_or_recovery_blocking(true) || self.pending_deferred_len() == 0 {
+            return;
+        }
+        let n = self.flush_pending_deferred_vks();
+        if n > 0 {
+            log::debug!(
+                "[pending-deferred] drain-before-send: 新規モーラの前に取り残し {n} VK(s) をflush"
+            );
+        }
+    }
+}
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
@@ -87,6 +161,29 @@ impl Output {
     /// cold 時は GJI プローブを開始し（ノンブロッキング）、TIMER_TSF_PROBE が
     /// `ChromeProbe` フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
+        self.send_romaji_batched_gated(romaji, DeferGate::Enforced);
+    }
+
+    /// ADR-123 変更A+C 決定4-2: `send_romaji_dispatching_on_gate` 経由の
+    /// raw recovery 回収再送・ADR-101 決定3 retry 専用。新設した
+    /// `defer_if_probe_in_flight` の `raw_recovery_owns_deferred()` 判定を
+    /// この2経路にだけ適用してはならない——`raw_recovery_owns_deferred()` は
+    /// 「今まさに自分が処理している recovery か」と「無関係などこか別の
+    /// recovery が in-flight か」を区別できないグローバル述語であり、
+    /// `flush_raw_tsf_literal_romaji` は自身の `pending_gji_reinit`
+    /// Scheduled→Polling 遷移より**前**に呼ばれる（`flush_raw_tsf_literal_recovery`
+    /// の呼び出し順序）ため、無関係な別 give-up 由来の `pending_gji_reinit` が
+    /// 既に `Polling` 中だと、この再送自身が誤って `pending_deferred` に
+    /// 積まれてしまう（probe を経由しない bare VK flush に化けて BUG-38/
+    /// ADR-103 が塞いだ literal 化リスクが戻る、Opus敵対的レビュー round4指摘）。
+    /// `has_pending_tsf()`（無関係な別 probe が実際に走っているか）による
+    /// defer は PR4 以前から存在する挙動であり、この2経路にも従来どおり
+    /// 適用する（`defer_if_probe_in_flight_recovery_exempt` 参照）。
+    pub(super) fn send_romaji_batched_bypass_gate(&self, romaji: &str) {
+        self.send_romaji_batched_gated(romaji, DeferGate::Exempt);
+    }
+
+    fn send_romaji_batched_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -116,6 +213,8 @@ impl Output {
             log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
 
+        self.drain_pending_deferred_before_send_if_queue_only();
+
         let WarmthContext {
             warm,
             elapsed,
@@ -127,11 +226,19 @@ impl Output {
             fmt_ms(elapsed)
         );
 
-        if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) {
-                return;
-            }
+        // ADR-123 変更A+C 決定4-4: この defer 判定は元々 `prepend_f2_warmup`
+        // （cold）分岐の中でしか呼ばれておらず、warm 判定されたモーラは
+        // `send_romaji_batch_immediate` へ直行して gate を一切通らなかった
+        // （`assess_warmth()` の warm/cold は composition の温度状態であり、
+        // `has_pending_tsf()`/`raw_recovery_owns_deferred()` とは独立した
+        // 別軸——warm でも無関係な別 probe/recovery が in-flight でありうる）。
+        // `assess_warmth()` より後（cold/warm 分岐の外）に置くことで両方を
+        // カバーする。
+        if self.defer_respecting_gate(romaji, gate) {
+            return;
+        }
 
+        if prepend_f2_warmup {
             if session_expired {
                 log::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
             } else {
@@ -212,7 +319,7 @@ impl Output {
         // 計測値）でも即送信すると先頭 VK がリテラル化する（「を」→「wお」、BUG-13）。
         // 従来 Tsf モードにしか配線していなかったが、IMC_GETCONVERSIONMODE の観測
         // 自体は injection mode に依存しないため Vk モードにも展開する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome) {
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome, gate) {
             return;
         }
 
@@ -242,6 +349,16 @@ impl Output {
     }
 
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
+        self.send_romaji_as_tsf_gated(romaji, DeferGate::Enforced);
+    }
+
+    /// `send_romaji_batched_bypass_gate` と対になる TSF 側。理由は同関数の
+    /// doc コメント参照。
+    pub(super) fn send_romaji_as_tsf_bypass_gate(&self, romaji: &str) {
+        self.send_romaji_as_tsf_gated(romaji, DeferGate::Exempt);
+    }
+
+    fn send_romaji_as_tsf_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -272,6 +389,8 @@ impl Output {
             log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
 
+        self.drain_pending_deferred_before_send_if_queue_only();
+
         let WarmthContext {
             warm,
             elapsed,
@@ -291,11 +410,14 @@ impl Output {
             fmt_ms(elapsed)
         );
 
-        if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) {
-                return;
-            }
+        // ADR-123 変更A+C 決定4-4: `send_romaji_batched_gated` と同じ理由で
+        // `assess_warmth()` の cold/warm 分岐の外に置く（warm 判定でも
+        // gate を通す）。
+        if self.defer_respecting_gate(romaji, gate) {
+            return;
+        }
 
+        if prepend_f2_warmup {
             // ノンブロッキング warmup を開始して pending_tsf に保留
             let started = crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self)
                 .run_start(session_expired, elapsed);
@@ -328,7 +450,7 @@ impl Output {
         // MsImeStrategy は needs_f2_probe()=false のため上の GJI probe 分岐に入らず、
         // IME ON 遷移直後（OS 準備に実測 ~130-300ms）でも即送信して先頭 VK がリテラル化
         // していた（「を」→「wお」）。ImeModeFsm の NATIVE 確認が取れるまで defer する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf) {
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf, gate) {
             return;
         }
 
@@ -351,22 +473,36 @@ impl Output {
     /// 呼ばず、対象外のままでよい）。
     ///
     /// GJI の raw TSF literal 再送経路（`Output::flush_raw_tsf_literal_romaji` から
-    /// `send_romaji_batched` 経由で呼ばれる）もこの関数を通るが、GJI 由来のため
-    /// 冒頭の `needs_f2_probe()` ガードで即 false になり no-op（GJI には別途 F2 probe /
-    /// LiteralDetect の保護がある）。この no-op は偶然ではなく、raw literal の記録自体が
-    /// 常に `gji_active`（`gji_is_active_ime()` / `env.gji_active`）でゲートされている
-    /// ため（`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
+    /// `send_romaji_batched`/`send_romaji_batched_bypass_gate` 経由で呼ばれる）
+    /// もこの関数を通るが、GJI 由来のため冒頭の `needs_f2_probe()` ガードで即
+    /// false になり no-op（GJI には別途 F2 probe / LiteralDetect の保護がある）。
+    /// この no-op は偶然ではなく、raw literal の記録自体が常に `gji_active`
+    /// （`gji_is_active_ime()` / `env.gji_active`）でゲートされているため
+    /// （`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
     /// `enter_transmit_chrome`）に成り立つ。記録から `WM_DRAIN_OUTPUT_QUEUE` 経由の
     /// flush までの間に `active_ime_kind` が GJI→MS-IME に切り替わるレースは、TIP 検出が
     /// 2 秒間隔ポーリング + 2 tick 連続一致デバウンス（`gji_monitor.rs`）であるのに対し
     /// flush は同一メッセージループ内で完結するため、実質的に起こり得ない。
-    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget) -> bool {
+    ///
+    /// **`gate` を呼び出し元からそのまま引き継ぐこと（2026-09-03 code review
+    /// 指摘で修正）**: 以前は内部で無条件に `defer_if_probe_in_flight`
+    /// （常に `Enforced` 相当）を直接呼んでおり、`send_romaji_batched_bypass_gate`/
+    /// `send_romaji_as_tsf_bypass_gate`（raw recovery回収再送・ADR-101決定3
+    /// retry専用）経由でここに到達した場合でも`raw_recovery_owns_deferred()`
+    /// を評価してしまっていた。上記の「GJI由来なら`needs_f2_probe()`で
+    /// no-op」という前提が成り立つ間は無害だが、MS-IME戦略の下でこの2経路に
+    /// 到達する変更が将来入ると、4-2で塞いだのと同じ自己defer退行が
+    /// この呼び出し口で再燃する（`gate`引数自体が無かったため、型では
+    /// 防げていなかった）。`defer_respecting_gate`経由にすることで
+    /// `gate`が`Exempt`の場合は`raw_recovery_owns_deferred()`を見ない
+    /// （`has_pending_tsf()`のみ、PR4以前からの挙動）よう統一した。
+    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget, gate: DeferGate) -> bool {
         // GJI 戦略時は F2 probe 機構（prepend_f2_warmup 分岐）が cold-start を担う。
         if self.warmup_coord.needs_f2_probe() {
             return false;
         }
         // 既に probe/coro 進行中 → 確認状態に関わらず defer（送信順序の維持）。
-        if self.defer_if_probe_in_flight(romaji) {
+        if self.defer_respecting_gate(romaji, gate) {
             return true;
         }
         if self.ms_ime_gate_give_up.get() {
@@ -522,7 +658,7 @@ impl Output {
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
-                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
@@ -583,7 +719,7 @@ impl Output {
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
-                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
@@ -620,5 +756,61 @@ impl Output {
     /// `KeyInjector::push_unicode_char_inputs` に委譲する。
     fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
         KeyInjector::push_unicode_char_inputs(inputs, ch, marker);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── drain_pending_deferred_before_send_if_queue_only テスト（ADR-123
+    // 変更A+C 決定4-3）────────────────────────────────────────────────
+
+    #[test]
+    fn drain_pending_deferred_before_send_if_queue_only_preserves_queue_while_blocking() {
+        // blocking 中（has_pending_tsf()=true）は「queue-only」ではないため
+        // drain してはいけない——キューはそのまま残る。実送信(SendInput)を
+        // 発火させないケースのみをここで検証する。
+        //
+        // 既知のテストギャップ（Opus敵対的レビュー round4-3指摘）:
+        // drain が実際に発火する正のケース（queue-only → flush →
+        // pending_deferred_len()==0）はここではカバーしていない。
+        // `flush_pending_deferred_vks` は実際に `SendInput` を発火する経路
+        // （`key_injector.rs`）に委譲しており、この crate には元々
+        // `SendInput` を伴う送信経路を直接叩くユニットテストが1件も無い
+        // （`grep -n "fn.*test" key_injector.rs` で確認済み）。同じ理由で
+        // このケースも e2e/golden シナリオでカバーする前提とする。
+        let o = Output::new();
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        o.warmup_coord
+            .push_deferred_vks(&[(VkCode(0x41), false)], DeferredOrigin::UserInput);
+        assert_eq!(o.pending_deferred_len(), 1);
+
+        o.drain_pending_deferred_before_send_if_queue_only();
+
+        assert_eq!(
+            o.pending_deferred_len(),
+            1,
+            "blocking 中は drain せずキューを保持すべき"
+        );
+    }
+
+    #[test]
+    fn drain_pending_deferred_before_send_if_queue_only_is_noop_when_queue_empty() {
+        // blocking もしておらずキューも空 = 何もしない（drainを試みない）。
+        let o = Output::new();
+        assert_eq!(o.pending_deferred_len(), 0);
+
+        o.drain_pending_deferred_before_send_if_queue_only();
+
+        assert_eq!(o.pending_deferred_len(), 0);
     }
 }

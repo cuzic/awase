@@ -61,6 +61,55 @@ pub fn literal_detect_is_notable(record: &crate::tsf::literal_facts::LiteralDete
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferredRecoveryFlushFacts {
+    Flushed { vk_count: usize },
+    DiscardedStale,
+    SkippedWhilePolling,
+}
+
+#[must_use]
+pub const fn deferred_recovery_flush_is_notable(f: DeferredRecoveryFlushFacts) -> bool {
+    match f {
+        DeferredRecoveryFlushFacts::Flushed { vk_count } => vk_count > 0,
+        DeferredRecoveryFlushFacts::DiscardedStale
+        | DeferredRecoveryFlushFacts::SkippedWhilePolling => true,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderViolation {
+    pub index: usize,
+    pub previous: u64,
+    pub current: u64,
+}
+
+/// `tokens` を先頭から走査し、単調増加が破れた最初の箇所を返す。
+///
+/// `&[u64]` ではなく `impl IntoIterator<Item = u64>` を取る（2026-09-03
+/// code review指摘で変更）: 呼び出し元（`output/mod.rs::
+/// flush_pending_deferred_vks`）は元々 `DeferredVk` の列から `order_token`
+/// だけを `Vec<u64>` へ collect してから渡していたが、これは
+/// flush のたびに（違反が無い共通ケースでも）ヒープ確保が発生していた。
+/// イテレータを直接受けることで、呼び出し元は `vks.iter().map(|vk|
+/// vk.order_token)` をそのまま渡せ、中間 `Vec` を経由しない。
+#[must_use]
+pub fn order_violation(tokens: impl IntoIterator<Item = u64>) -> Option<OrderViolation> {
+    let mut iter = tokens.into_iter().enumerate();
+    let (_, mut previous) = iter.next()?;
+    for (index, current) in iter {
+        if current <= previous {
+            return Some(OrderViolation {
+                index,
+                previous,
+                current,
+            });
+        }
+        previous = current;
+    }
+    None
+}
+
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
     (LaneKind::Timing, 35),
     (LaneKind::State, 30),
@@ -224,6 +273,27 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn deferred_recovery_flush_is_notable_for_informative_outcomes() {
+        use DeferredRecoveryFlushFacts::{DiscardedStale, Flushed, SkippedWhilePolling};
+
+        let cases = [
+            (Flushed { vk_count: 0 }, false),
+            (Flushed { vk_count: 1 }, true),
+            (Flushed { vk_count: 3 }, true),
+            (DiscardedStale, true),
+            (SkippedWhilePolling, true),
+        ];
+
+        for (facts, expected) in cases {
+            assert_eq!(
+                deferred_recovery_flush_is_notable(facts),
+                expected,
+                "{facts:?}"
+            );
+        }
+    }
+
     fn literal_record(
         verdict: crate::tsf::literal_facts::LiteralVerdict,
     ) -> crate::tsf::literal_facts::LiteralDetectRecord {
@@ -297,5 +367,46 @@ mod tests {
         let mut recovering = literal_record(LiteralVerdict::SessionSkip);
         recovering.consecutive_before = 1;
         assert!(literal_detect_is_notable(&recovering));
+    }
+
+    #[test]
+    fn order_violation_accepts_empty_singleton_and_increasing_sequences() {
+        for tokens in [vec![], vec![1], vec![1, 2, 3, 4]] {
+            assert_eq!(order_violation(tokens), None);
+        }
+    }
+
+    #[test]
+    fn order_violation_detects_non_increasing_sequences() {
+        let cases = [
+            (
+                vec![1, 2, 4, 3],
+                OrderViolation {
+                    index: 3,
+                    previous: 4,
+                    current: 3,
+                },
+            ),
+            (
+                vec![1, 3, 2],
+                OrderViolation {
+                    index: 2,
+                    previous: 3,
+                    current: 2,
+                },
+            ),
+            (
+                vec![1, 2, 2],
+                OrderViolation {
+                    index: 2,
+                    previous: 2,
+                    current: 2,
+                },
+            ),
+        ];
+
+        for (tokens, expected) in cases {
+            assert_eq!(order_violation(tokens), Some(expected));
+        }
     }
 }

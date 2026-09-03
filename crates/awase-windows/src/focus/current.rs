@@ -49,6 +49,11 @@ impl CurrentFocus {
     }
 
     /// 既に同一フォーカスプローブ内で取得済みの process_name があれば再利用して更新する。
+    // `process_name` は `self.process_name` へそのまま move するため所有権が要る
+    // （`unwrap_or_else` 経由で move、下記本体参照）。`&str` で受けて呼び出し元で
+    // clone させるのは無駄なアロケーションを増やすだけなので許容する
+    // （2026-09-03 pre-existing、PR #155のCI green化のため対処。ADR-123とは無関係）。
+    #[allow(clippy::needless_pass_by_value)]
     pub fn update_with_process_name(
         &mut self,
         pid: u32,

@@ -10391,6 +10391,70 @@ Stale)`)が本PR以前から残っている**(BUG-13領域、コードレビュ�
 未観測)。次にMS-IME側でIMC確認ゲートが理由なく固着する系の症状が報告されたら
 ここから着手すること。
 
+**2026-09-03 追補3: 当初「`SuppressedExistingPoll`の残骸トレードオフ」と誤診断
+——実際はADR-123が実装着手条件としていた確証データだった（訂正版）**
+
+不具合報告機能（ADR-095、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）経由。app_version
+1.18.0、Windows Terminal（`Windows.UI.Input.InputSite.WindowClass`、app_kind=Uwp、
+TsfNative）、GJI。症状カテゴリ WrongCharacterOutput、説明「github pages にはしないで
+と入力しているのに github pages sにはないで となってしまった」。
+
+**初版の診断は誤りだった。** journalの`elapsed_ms`（absorb時刻）だけで時系列を
+再構成し、「し」が`SuppressedExistingPoll`（ADR-101決定5）により完全に失われた、
+と結論したが、Opus敵対的レビュー（3ラウンド）で`KeyInput.timestamp_us`（物理
+打鍵の実時刻）ベースで再検証した結果、以下が判明した:
+
+- 症状は「文字消失」ではなく**「追い越しによる順序反転＋約1.85秒の遅延」**
+  だった。「github pages」の直後に来る「H」由来のモーラ（ユーザー生入力）は
+  失われておらず、`pending_deferred`に滞留した後1.85秒遅れて出力されている。
+  一方「S」由来のliteral "s"は、`pending_deferred`に積まれず即座に独立した
+  新しいprobe（cold_seq=27）を開始して先に確定してしまったため、後から出力
+  される「には」より前の位置に出た。
+- `SuppressedExistingPoll`自体は今回の一次原因ではなく、二次的な症状の一部
+  でしかない。
+- **真因は既存の[ADR-123](adr/123-focus-resync-and-probe-defer-queue-composition-race.md)
+  が既に特定していた「`defer_if_probe_in_flight`が`has_pending_tsf()`だけを見て
+  `pending_deferred`の非空性を考慮しないため、flush待ちの後続モーラを新規入力が
+  追い越せる」というギャップと同一だった。** ADR-123は前回のインシデント
+  （`01M1JJD54XQXSEJTHHFKV1WKA1`、「たとえば」→「ばたと」）でこの機序を確定
+  させていたが、decisionの実装は「次回同種の報告でjournalの`TsfProbeStarted.
+  pending_deferred_len`が実際に非ゼロと確認できたら着手する」条件付きで保留
+  されていた。本reportのjournalで`TsfProbeStarted`の`pending_deferred_len`が
+  cold_seq=27時点で2、cold_seq=28時点で4（いずれも非ゼロ）と確認され、
+  **ADR-123が待っていた実装着手の確証データそのものだった。**
+
+**対応方針:** ADR-123のステータスを「実装着手」へ更新し、恒久対策の設計・
+実装はそちらで一元管理する（本節はこの誤診断の記録として残す）。
+
+**この誤診断自体からの教訓:** journalの`elapsed_ms`は「journalへ記録された
+（absorbされた）時刻」であり、`KeyInput.timestamp_us`（実際に物理キーが
+発生した時刻）とは別物——give-up/reinit/drain replay等で記録タイミングが
+実打鍵から数十〜数百ms遅延することがあるため、複数イベントの前後関係を
+厳密に議論する際は`timestamp_us`を基準にすること。
+
+**2026-09-03 追補4: ADR-123実装完了（PR #155、developマージ予定）。
+warm経路配線（変更A+C 4-4）の核心的な振る舞い変化に直接対応する回帰
+テストが存在しない（`fix-requires-evidence.md`対象領域につき記録）。**
+
+真因（`pending_deferred`の追い越し）の恒久対策として、ADR-123の決定
+（D→E→B→A+Cの5変更）を実装した。詳細な設計・コミット一覧・Opus敵対的
+レビューで発見・修正した2件の自己defer退行は
+[ADR-123](adr/123-focus-resync-and-probe-defer-queue-composition-race.md)
+「実装（2026-09-03）」節に記録済み。
+
+本節への追記が必要な理由: 4-4（`send_romaji_batched_gated`/
+`send_romaji_as_tsf_gated`のgate判定をcold/warm分岐の外へ移動し、warm
+判定されたモーラにもgateを適用する変更）は`output/vk_send.rs`（キー選択・
+warmup/cold-startの再発ファミリー対象）を変更する fix だが、この振る舞い
+変化そのものを直接固定するユニット/e2e/goldenテストがどちらも存在しない
+（`GjiFsm`を実際に`OnWarm`へ遷移させるテストセットアップが必要でこのPRでは
+見送った）。`fix-requires-evidence.md`が要求する「テストかknown-bugs.md
+記載」のうち後者として、この gap を明示的に記録する。次に
+`pending_deferred`の追い越し・順序反転系の症状が再発した場合、まず
+warm経路（`prepend_f2_warmup=false`）で発生していないか確認すること
+——4-4はcold経路（`prepend_f2_warmup=true`）と異なる配線のため、
+cold側だけ直したつもりでwarm側の穴が残っている可能性を疑うこと。
+
 **関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
 （`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`
 （`RawTsfLiteralRecovery`/`CompositionConfirmed`/`LiteralDetectNote` ハンドラ、

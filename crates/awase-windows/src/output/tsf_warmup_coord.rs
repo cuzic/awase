@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::DeferredVk;
+use crate::tsf::warmup::probe_fsm::{DeferredOrigin, DeferredVk};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use crate::tsf::warmup::warmup_strategy::ImeWarmupStrategy;
 
@@ -54,6 +54,8 @@ pub(crate) struct TsfWarmupCoordinator {
     /// これにより「最初の tick で握り潰される」「probe が上書きされて drop される」という
     /// 2種類のデータ消失を構造的に防ぐ（probe の生存期間に依存しない単一の書き込み先）。
     pending_deferred: RefCell<Vec<DeferredVk>>,
+    /// `pending_deferred` に積む各 VK へ付与する単調増加トークン。
+    next_deferred_order_token: Cell<u64>,
 }
 
 impl TsfWarmupCoordinator {
@@ -67,6 +69,7 @@ impl TsfWarmupCoordinator {
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
             pending_deferred: RefCell::new(Vec::new()),
+            next_deferred_order_token: Cell::new(0),
         }
     }
 
@@ -293,15 +296,85 @@ impl TsfWarmupCoordinator {
     ///
     /// キューは probe machine ではなく coordinator が所有するため、どの machine が
     /// `pending_tsf` に入っているか・何回 tick されたかに関係なく安全に蓄積できる。
-    pub(crate) fn defer_vks_if_in_flight(&self, vks: &[(VkCode, bool)]) -> bool {
+    ///
+    /// **テスト専用（2026-09-03、code review指摘を機に整理）**: 本番コードの
+    /// 唯一の呼び出し元だった`Output::defer_vk_if_probe_in_flight`は
+    /// `raw_recovery_owns_deferred()`・件数上限も見る
+    /// `defer_vks_if_probe_or_recovery_in_flight`（`output/mod.rs`）経由に
+    /// 統合され、この`has_pending_tsf()`のみをgateする版は使わなくなった。
+    /// `push_deferred_vks`（gateなし）とは異なりgate判定込みのため、
+    /// coordinator単体でgate+push+order_token+originの組み合わせを検証する
+    /// テストにはこちらの方が便利で、削除せず残している。
+    #[cfg(test)]
+    pub(crate) fn defer_vks_if_in_flight(
+        &self,
+        vks: &[(VkCode, bool)],
+        origin: DeferredOrigin,
+    ) -> bool {
         if !self.has_pending_tsf() {
             return false;
         }
-        self.pending_deferred.borrow_mut().extend(
-            vks.iter()
-                .map(|&(vk, needs_shift)| DeferredVk { vk, needs_shift }),
-        );
+        self.push_deferred_vks(vks, origin);
         true
+    }
+
+    /// `pending_deferred` の件数上限（ADR-123 変更A+C 決定4-3）。
+    ///
+    /// 実測値: report `01M1KEGZ081YHJ1T2NC765SYYH`（cold_seq=28時点で4件）、
+    /// `01M1JJD54XQXSEJTHHFKV1WKA1`（3件）が既知の最大観測値。上限は
+    /// これらに十分な余裕を持たせた暫定値であり、実測データが増えたら
+    /// 見直すこと（`_MS` 系のタイミング定数ではないため
+    /// `.claude/rules/tuning-constants.md` の実測義務の直接対象ではないが、
+    /// 同じ精神で「効かないので増やした」式の変更は避けること）。
+    pub(crate) const DEFERRED_QUEUE_CAP: usize = 32;
+
+    /// `pending_deferred` に `additional` 件を追加すると上限を超えるか。
+    ///
+    /// 呼び出し元（`Output::defer_if_probe_or_recovery_in_flight`）が、
+    /// 上限を超える場合は push せず「defer を諦めて通常送信へ
+    /// degrade する」判断をする（`docs/adr/123-focus-resync-and-probe-defer-queue-composition-race.md`
+    /// 決定4-3: 強制 flush ではなく degrade を選ぶ理由も参照。強制 flush は
+    /// probe の per-VK confirm 中に生 VK を割り込ませることになり
+    /// BUG-38/ADR-103 が塞いだ interleaving を再現する危険があるため）。
+    ///
+    /// **`additional` を取ること（2026-09-03 code review指摘で修正）**:
+    /// 1回の romaji は複数 VK（例: "kya"=3VK）を一括で push しうるため、
+    /// 「現在の件数だけ」を見て許可すると、上限ちょうど手前
+    /// （`DEFERRED_QUEUE_CAP - 1`）で複数VKのromajiが来た場合に
+    /// `DEFERRED_QUEUE_CAP`を超えて push されてしまう（`push_deferred_vks`
+    /// は全件を無条件に追加するため、途中で打ち切る機構が無い）。
+    /// 呼び出し元はpushする**前**にこれから追加するVK数を渡すこと。
+    pub(crate) fn would_exceed_deferred_cap(&self, additional: usize) -> bool {
+        self.pending_deferred.borrow().len() + additional > Self::DEFERRED_QUEUE_CAP
+    }
+
+    /// `defer_vks_if_in_flight` の gate なし版。
+    ///
+    /// ADR-123 変更A: `has_pending_tsf()` に加えて `raw_recovery_owns_deferred()`
+    /// （`Output` 側の状態、coordinator からは見えない）も defer の理由になり得る。
+    /// coordinator が `Output` の内部状態を直接参照する設計にはしないため、
+    /// 呼び出し元（`Output::defer_if_probe_in_flight`）が両条件を合成した
+    /// 判定結果に基づいてこちらを呼ぶ。ここでは無条件に push するだけで、
+    /// 「defer すべきか」の判断は一切持たない（件数上限のチェックも
+    /// 呼び出し元の責務）。
+    pub(crate) fn push_deferred_vks(&self, vks: &[(VkCode, bool)], origin: DeferredOrigin) {
+        let deferred = vks.iter().map(|&(vk, needs_shift)| DeferredVk {
+            vk,
+            needs_shift,
+            order_token: self.issue_deferred_order_token(),
+            origin,
+        });
+        self.pending_deferred.borrow_mut().extend(deferred);
+    }
+
+    fn issue_deferred_order_token(&self) -> u64 {
+        let token = self
+            .next_deferred_order_token
+            .get()
+            .checked_add(1)
+            .expect("pending_deferred order token exhausted");
+        self.next_deferred_order_token.set(token);
+        token
     }
 
     /// deferred キューが空でないかを覗き見る（消費しない）。
@@ -373,8 +446,83 @@ mod tests {
     #[test]
     fn defer_vks_if_in_flight_returns_false_without_pending_probe() {
         let coord = TsfWarmupCoordinator::new();
-        assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+        assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
         assert!(!coord.has_pending_deferred());
+    }
+
+    // ── DeferredOrigin（ADR-123 変更B）──
+
+    #[test]
+    fn deferred_vks_preserve_their_origin_through_defer_and_take() {
+        // UserInput由来とRecoveryResend由来を混在させても、pending_deferred内で
+        // それぞれ正しく区別して取り出せることを確認する(discard経路がorigin別の
+        // 内訳を取れる前提)。RecoveryResend自体は本PR時点ではまだ本番コードから
+        // 構築されない(ADR-123変更A+Cのgate免除入口が別PR)ため、ここではテスト
+        // コードのみが構築する唯一の箇所になる。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
+        assert!(
+            coord.defer_vks_if_in_flight(&[(VkCode(0x42), false)], DeferredOrigin::RecoveryResend)
+        );
+
+        let drained = coord.take_pending_deferred();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].origin, DeferredOrigin::UserInput);
+        assert_eq!(drained[1].origin, DeferredOrigin::RecoveryResend);
+    }
+
+    // ── is_deferred_queue_full（ADR-123 変更A+C 決定4-3、件数上限）────────
+
+    #[test]
+    fn would_exceed_deferred_cap_true_only_when_addition_overflows_cap() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        for i in 0..TsfWarmupCoordinator::DEFERRED_QUEUE_CAP {
+            assert!(
+                !coord.would_exceed_deferred_cap(1),
+                "上限未満(現在{i}件)では1件追加してもfullと判定してはいけない"
+            );
+            assert!(
+                coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput)
+            );
+        }
+
+        assert!(
+            !coord.would_exceed_deferred_cap(0),
+            "上限ちょうど({}件)でも0件追加なら超過しない",
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+        assert!(
+            coord.would_exceed_deferred_cap(1),
+            "上限ちょうど({}件)から1件追加すると超過すべき",
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+    }
+
+    #[test]
+    fn would_exceed_deferred_cap_accounts_for_multi_vk_romaji_batches() {
+        // code review指摘の再現条件: 上限の1つ手前まで埋まった状態で、
+        // 複数VKからなるromaji(例:"kya"=3VK)が一括pushされるケース。
+        // 件数だけを見て許可すると上限を超えてpushされてしまう。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        for _ in 0..(TsfWarmupCoordinator::DEFERRED_QUEUE_CAP - 1) {
+            assert!(
+                coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput)
+            );
+        }
+
+        assert!(
+            !coord.would_exceed_deferred_cap(1),
+            "上限まで残り1件なら1VKの追加は許可されるべき"
+        );
+        assert!(
+            coord.would_exceed_deferred_cap(3),
+            "上限まで残り1件なのに3VK一括追加は超過と判定すべき"
+        );
     }
 
     // ── pending_deferred_len（ADR-123: TsfProbeStarted.pending_deferred_len 用）──
@@ -387,10 +535,13 @@ mod tests {
         assert_eq!(coord.pending_deferred_len(), 0);
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
 
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x54), false), (VkCode(0x4F), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x54), false), (VkCode(0x4F), false)],
+            DeferredOrigin::UserInput
+        ));
         assert_eq!(coord.pending_deferred_len(), 2, "「と」の2VK分");
 
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x45), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x45), false)], DeferredOrigin::UserInput));
         assert_eq!(
             coord.pending_deferred_len(),
             3,
@@ -411,7 +562,10 @@ mod tests {
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
 
         // まだ一度も tick していない状態で defer する。
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x4C), false), (VkCode(0x59), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x4C), false), (VkCode(0x59), false)],
+            DeferredOrigin::UserInput
+        ));
         assert!(coord.has_pending_deferred());
 
         let drained = coord.take_pending_deferred();
@@ -430,7 +584,7 @@ mod tests {
         // machine 側ではなく coordinator 側にあるため失われない。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
 
         // 別の probe が同じ pending_tsf スロットを上書きする（warn ログのみで許容される操作）。
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
@@ -457,7 +611,7 @@ mod tests {
         // ここで先取りして drain してはいけない。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false)], DeferredOrigin::UserInput));
 
         assert!(coord.take_pending_deferred_if_probe_idle().is_none());
         assert!(
@@ -473,7 +627,10 @@ mod tests {
         // 元バグでは pending_deferred が誰にも flush されず取り残されていた。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false), (VkCode(0x4F), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x55), false), (VkCode(0x4F), false)],
+            DeferredOrigin::UserInput
+        ));
         coord.clear_pending_tsf();
         assert!(!coord.has_pending_tsf());
         assert!(
