@@ -12811,14 +12811,14 @@ belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行�
 する案を最初に検討したが、「eframe/egui 全体が awase 非対応という話になる」
 とユーザーに却下された（詳細は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)）。
 
-**調査で判明した機構・未確定な点・次のアクション:** ソースコード読解
-（`winit`/`egui-winit`）により、egui-winit がテキストウィジェットの
-フォーカス有無に応じて毎フレーム `window.set_ime_allowed()` を呼び、
-winit がこれを同一 HWND への `ImmAssociateContextEx`（IME コンテキストの
-脱着）として実装していること、awase のフォーカス追跡がトップレベル HWND
-の切替のみを契機にしており同一 HWND 内のこの種の変化を検知する経路が
-無いことを特定した。ただし実機ログでの裏取りは未実施であり、実装方針は
-確定していない。詳細・未確定な点・次のアクションは
+**調査の経緯:** ソースコード読解（`winit`/`egui-winit`）から「ウィジェット
+単位のフォーカス移動のたびに同一 HWND の IME コンテキストが脱着される」
+という仮説を立てたが、専用スパイク（`spike_egui_himc_reassociation_probe`）
+による実機（Windows）検証ではこの脱着は再現しなかった。代わりに、
+フォーカス中 `awase-settings.exe` の HIMC が終始 0（NULL）のままという
+別の事実が判明し、`AppImeProfile::from_class_name` の既定分類 `Standard`
+が実態と合っていない可能性が浮上した。実装方針はまだ確定していない。
+詳細・実機検証ログ・次のアクションは
 [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
 
 **関連:** BUG-33/BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、
