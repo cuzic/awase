@@ -67,19 +67,19 @@
 
 #[cfg(windows)]
 mod probe {
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmReleaseContext};
     use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassNameW, GetForegroundWindow,
-        GetMessageW, GetWindowThreadProcessId, KillTimer, MSG, PostQuitMessage, RegisterClassW,
-        SetTimer, TranslateMessage, WM_DESTROY, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        GetMessageW, GetWindowThreadProcessId, KillTimer, PostQuitMessage, RegisterClassW,
+        SetTimer, TranslateMessage, MSG, WM_DESTROY, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     };
-    use windows::core::{PCWSTR, PWSTR};
 
     /// CapsLock。プローブ健全性の裏取り用（`spike_kana_lock_probe.rs` と同じ用途）。
     const VK_CAPITAL: i32 = 0x14;
