@@ -590,17 +590,19 @@ pub fn handle_tray_message(
     .focused_hwnd;
     MENU_TARGET_HWND.store(captured.map_or(0, |h| h.0 as isize), Ordering::Relaxed);
 
-    let update_state = awase::update_state::load(&awase::update_state::default_path());
-    let now = awase::update_state::now_unix();
-    if update_check_enabled && awase::update_state::should_attempt(&update_state, now) {
-        crate::app::launch_settings_with_args(vec!["--check-update".to_owned()]);
-    }
-    let update_display = awase::update_state::display(
-        &update_state,
-        update_check_enabled,
-        env!("CARGO_PKG_VERSION"),
-        now,
-    );
+    // 更新確認が無効なら update_check.json を読みもしない（右クリックのたびに無駄な
+    // ファイルI/O + JSONパースが走るのを避ける。display() はどのみち enabled=false を
+    // 見た瞬間に state を無視して Disabled を返すだけなので、読む意味が無い）。
+    let should_spawn_update_check;
+    let update_display = if update_check_enabled {
+        let update_state = awase::update_state::load(&awase::update_state::default_path());
+        let now = awase::update_state::now_unix();
+        should_spawn_update_check = awase::update_state::should_attempt(&update_state, now);
+        awase::update_state::display(&update_state, true, env!("CARGO_PKG_VERSION"), now)
+    } else {
+        should_spawn_update_check = false;
+        awase::update_state::Display::Disabled
+    };
 
     // SAFETY: `hwnd` はシステムトレイ作成時に `CreateWindowExW` で得た有効なウィンドウハンドル。
     //         `GetCursorPos`・`CreatePopupMenu`・`AppendMenuW`・`TrackPopupMenu`・`DestroyMenu` は
@@ -680,7 +682,7 @@ pub fn handle_tray_message(
             append_menu_item(
                 hmenu,
                 IDM_UPDATE,
-                &format!("新しいバージョン {version} を表示"),
+                &format!("新しいバージョン {version} があります..."),
             );
         }
         append_menu_item(hmenu, IDM_BUG_REPORT, "不具合を報告...");
@@ -704,6 +706,14 @@ pub fn handle_tray_message(
         }
 
         let _ = DestroyMenu(hmenu);
+    }
+
+    // メニュー表示・選択が終わった後にspawnする。結果は今回のメニューには
+    // 反映されない（ユーザー決定どおり、次回以降の右クリックに反映される）ので
+    // 前倒しして得るものが無い一方、CreateProcessW の同期コストをメニュー表示の
+    // 待ち時間から外せる（AVのオンアクセススキャンが重い環境で効く）。
+    if should_spawn_update_check {
+        crate::app::launch_settings_with_args(["--check-update".to_owned()]);
     }
 }
 
@@ -882,10 +892,10 @@ pub fn show_about_dialog(enabled: bool) {
             last_success_ago,
         } => (
             format!(
-                "新しいバージョン{version}があります（最終確認: {}前）",
+                "新しいバージョン {version} があります（最終確認: {}前）",
                 approx_duration(last_success_ago)
             ),
-            format!("{}{version}", awase::version::RELEASE_TAG_URL_PREFIX),
+            awase::version::release_url(&version),
         ),
     };
     let text = format!(
@@ -946,10 +956,7 @@ pub fn open_update_page() {
         .as_deref()
         .and_then(awase::version::parse)
     {
-        Some(version) => open_url(&format!(
-            "{}{version}",
-            awase::version::RELEASE_TAG_URL_PREFIX
-        )),
+        Some(version) => open_url(&awase::version::release_url(&version)),
         None => open_homepage(),
     }
 }
