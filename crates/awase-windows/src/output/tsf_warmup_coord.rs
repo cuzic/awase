@@ -304,6 +304,19 @@ impl TsfWarmupCoordinator {
         if !self.has_pending_tsf() {
             return false;
         }
+        self.push_deferred_vks(vks, origin);
+        true
+    }
+
+    /// `defer_vks_if_in_flight` の gate なし版。
+    ///
+    /// ADR-123 変更A: `has_pending_tsf()` に加えて `raw_recovery_owns_deferred()`
+    /// （`Output` 側の状態、coordinator からは見えない）も defer の理由になり得る。
+    /// coordinator が `Output` の内部状態を直接参照する設計にはしないため、
+    /// 呼び出し元（`Output::defer_if_probe_in_flight`）が両条件を合成した
+    /// 判定結果に基づいてこちらを呼ぶ。ここでは無条件に push するだけで、
+    /// 「defer すべきか」の判断は一切持たない。
+    pub(crate) fn push_deferred_vks(&self, vks: &[(VkCode, bool)], origin: DeferredOrigin) {
         let deferred = vks.iter().map(|&(vk, needs_shift)| DeferredVk {
             vk,
             needs_shift,
@@ -311,7 +324,6 @@ impl TsfWarmupCoordinator {
             origin,
         });
         self.pending_deferred.borrow_mut().extend(deferred);
-        true
     }
 
     fn issue_deferred_order_token(&self) -> u64 {

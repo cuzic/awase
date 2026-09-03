@@ -3008,11 +3008,18 @@ fn discard_pending_construction_is_limited_to_discard_pending_action() {
     );
 }
 
-/// `raw_recovery_owns_deferred` を呼ぶのは `finish_probe_stage` ただ1箇所
-/// （ADR-103 決定4-e、INV-F）。所有権照会がここ以外に散ると、段末の deferred
-/// 解放判断が複数箇所で食い違いうる。
+/// `raw_recovery_owns_deferred` の呼び出し箇所は `finish_probe_stage`
+/// （ADR-103 決定4-e、INV-F: 段末の deferred 解放判断）と
+/// `defer_if_probe_in_flight`（ADR-123 変更A: 新規モーラを defer すべきか
+/// の判断、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
+/// 前者は「pending_deferred を今 flush してよいか」、後者は「新しい入力を
+/// pending_deferred に積むべきか」という別の問いに答えており、いずれも
+/// raw recovery が deferred キューの所有権を握っている間は手を出さない、
+/// という同じ原則の異なる適用箇所である。3箇所目が増えた場合は、本当に
+/// 同じ原則の適用か（さもなくば別の状態表現を検討すべきでないか）を確認
+/// すること。
 #[test]
-fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
+fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     let path = "src/output/mod.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
@@ -3020,9 +3027,9 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
         .matches("self.raw_recovery_owns_deferred()")
         .count();
     assert_eq!(
-        count, 1,
-        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(1 = \
-         finish_probe_stage のみ)と異なります(実際: {count})。"
+        count, 2,
+        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(2 = \
+         finish_probe_stage + defer_if_probe_in_flight)と異なります(実際: {count})。"
     );
 }
 

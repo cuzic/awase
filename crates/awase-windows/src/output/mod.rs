@@ -1307,19 +1307,28 @@ impl Output {
         }
     }
 
-    /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
-    /// probe がなければ何もせず false を返す。
+    /// probe 進行中、または give-up 由来の raw recovery/reinit retry が
+    /// romaji/backspace を予約中なら、romaji を VK 列に変換して deferred_vks に
+    /// 追記し true を返す。どちらでもなければ何もせず false を返す。
+    ///
+    /// ADR-123 変更A: 旧来は `has_pending_tsf()`（TSF probe FSM の在/不在）だけを
+    /// 見ていたため、give-up からの reinit-retry が `Scheduled`/`Polling` の間に
+    /// 届いた別モーラは「probe は in-flight ではない」と誤判定され、それ自身の
+    /// 独立した probe を開始して追い越すことがあった（BUG-74 追補3、
+    /// `report_id: 01M1KEGZ081YHJ1T2NC765SYYH`）。`raw_recovery_owns_deferred()`
+    /// も条件に加えることでこの追い越しを防ぐ。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str, origin: DeferredOrigin) -> bool {
-        if !self.warmup_coord.has_pending_tsf() {
+        if !self.warmup_coord.has_pending_tsf() && !self.raw_recovery_owns_deferred() {
             return false;
         }
         let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         log::debug!(
-            "[tsf] probe in flight → deferred {} VK(s) for {:?}",
+            "[tsf] probe/recovery in flight → deferred {} VK(s) for {:?}",
             vks.len(),
             romaji
         );
-        self.warmup_coord.defer_vks_if_in_flight(&vks, origin)
+        self.warmup_coord.push_deferred_vks(&vks, origin);
+        true
     }
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
