@@ -6,6 +6,13 @@ export interface Env {
 export const SCHEMA_VERSION = 3;
 export const MAX_BODY_BYTES = 512 * 1024;
 export const DAILY_REPORT_LIMIT_PER_IP = 20;
+export const RELEASE_CACHE_KEY = "latest-release:v1";
+
+const RELEASE_REFRESHING_KEY = "latest-release:refreshing";
+const RELEASE_SOFT_TTL_SECONDS = 3600;
+const RELEASE_CACHE_EXPIRATION_TTL_SECONDS = 86400;
+const RELEASE_REFRESHING_TTL_SECONDS = 60;
+const GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/cuzic/awase/releases/latest";
 
 type ImeKind = "Gji" | "MsIme" | "Unknown";
 type KeyboardModel = "Jis" | "Us";
@@ -58,6 +65,20 @@ interface StoredReport {
   payload: BugReportPayload;
 }
 
+interface LatestReleaseCacheEntry {
+  schema_version: 1;
+  latest_version: string;
+  checked_at: string;
+  fetched_at: string;
+}
+
+interface LatestReleaseResponse {
+  schema_version: 1;
+  latest_version: string;
+  checked_at: string;
+  stale: boolean;
+}
+
 export class HttpError extends Error {
   constructor(
     public readonly status: number,
@@ -68,18 +89,29 @@ export class HttpError extends Error {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env);
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env, ctx);
   }
 };
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
   const url = new URL(request.url);
 
-  if (url.pathname !== "/v1/reports") {
-    return jsonResponse({ error: "not_found" }, 404);
+  if (url.pathname === "/v1/reports") {
+    return handleReportIntake(request, env);
+  }
+  if (url.pathname === "/v1/latest-release") {
+    return handleLatestRelease(request, env, ctx);
   }
 
+  return jsonResponse({ error: "not_found" }, 404);
+}
+
+async function handleReportIntake(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") {
     return jsonResponse({ error: "method_not_allowed" }, 405, {
       Allow: "POST"
@@ -134,6 +166,134 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     console.error("report intake failed", error);
     return jsonResponse({ error: "internal_server_error" }, 500);
   }
+}
+
+async function handleLatestRelease(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return jsonResponse({ error: "method_not_allowed" }, 405, {
+      Allow: "GET, HEAD"
+    });
+  }
+
+  // RATE_LIMIT_KV is named for report rate limits, but also stores the release cache by prefix.
+  const cached = parseLatestReleaseCacheEntry(await env.RATE_LIMIT_KV.get(RELEASE_CACHE_KEY));
+  if (cached === null) {
+    const refreshed = await fetchAndCacheLatestRelease(env);
+    if (refreshed === null) {
+      return jsonResponse({ error: "upstream_unavailable" }, 503);
+    }
+    return jsonResponse(latestReleaseResponse(refreshed, false), 200);
+  }
+
+  if (isLatestReleaseFresh(cached, new Date())) {
+    return jsonResponse(latestReleaseResponse(cached, false), 200);
+  }
+
+  ctx.waitUntil(refreshStaleLatestRelease(env));
+  return jsonResponse(latestReleaseResponse(cached, true), 200);
+}
+
+async function refreshStaleLatestRelease(env: Env): Promise<LatestReleaseCacheEntry | null> {
+  if (await env.RATE_LIMIT_KV.get(RELEASE_REFRESHING_KEY) !== null) {
+    return null;
+  }
+
+  await env.RATE_LIMIT_KV.put(RELEASE_REFRESHING_KEY, "1", {
+    expirationTtl: RELEASE_REFRESHING_TTL_SECONDS
+  });
+  return fetchAndCacheLatestRelease(env);
+}
+
+async function fetchAndCacheLatestRelease(env: Env): Promise<LatestReleaseCacheEntry | null> {
+  try {
+    const response = await fetch(GITHUB_LATEST_RELEASE_URL, {
+      method: "GET",
+      headers: {
+        "User-Agent": "awase-update-check-worker (+https://awase.cc)",
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+      }
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const body: unknown = await response.json();
+    if (!isRecord(body) || typeof body.tag_name !== "string") {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const entry: LatestReleaseCacheEntry = {
+      schema_version: 1,
+      latest_version: normalizeReleaseVersion(body.tag_name),
+      checked_at: now,
+      fetched_at: now
+    };
+
+    await env.RATE_LIMIT_KV.put(RELEASE_CACHE_KEY, JSON.stringify(entry), {
+      expirationTtl: RELEASE_CACHE_EXPIRATION_TTL_SECONDS
+    });
+    return entry;
+  } catch (error) {
+    console.error("latest release refresh failed", error);
+    return null;
+  }
+}
+
+function parseLatestReleaseCacheEntry(value: string | null): LatestReleaseCacheEntry | null {
+  if (value === null) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+
+  if (
+    !isRecord(parsed) ||
+    parsed.schema_version !== 1 ||
+    typeof parsed.latest_version !== "string" ||
+    typeof parsed.checked_at !== "string" ||
+    typeof parsed.fetched_at !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    schema_version: 1,
+    latest_version: parsed.latest_version,
+    checked_at: parsed.checked_at,
+    fetched_at: parsed.fetched_at
+  };
+}
+
+function isLatestReleaseFresh(entry: LatestReleaseCacheEntry, now: Date): boolean {
+  const fetchedAt = Date.parse(entry.fetched_at);
+  return Number.isFinite(fetchedAt) && now.getTime() - fetchedAt < RELEASE_SOFT_TTL_SECONDS * 1000;
+}
+
+function latestReleaseResponse(
+  entry: LatestReleaseCacheEntry,
+  stale: boolean
+): LatestReleaseResponse {
+  return {
+    schema_version: 1,
+    latest_version: entry.latest_version,
+    checked_at: entry.checked_at,
+    stale
+  };
+}
+
+function normalizeReleaseVersion(tagName: string): string {
+  return tagName.startsWith("v") ? tagName.slice(1) : tagName;
 }
 
 export function parseContentLength(value: string | null): number | null {

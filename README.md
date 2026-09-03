@@ -24,7 +24,7 @@ awase は低レベルキーボードフックで物理キー入力を横取り�
 - **多重耐障害設計** — フック死活監視・スリープ復帰・IME 検出失敗フォールバック・TSF コールドスタート自動回復を多段装備
 - **非同期アーキテクチャ** — Windows メッセージループベースの非同期エグゼキュータ、ブロッキング API は別スレッドで隔離しタイムアウト保護
 - **フォーカス自動検出** — テキスト入力欄以外では変換を自動停止
-- **システムトレイ常駐** — 配列切替・設定画面・有効/無効トグル
+- **システムトレイ常駐** — 配列切替・設定画面・親指シフト入力／ローマ字入力トグル
 - **US配列対応** — `keyboard_model = "us"` で US 物理配列に切替。無変換/変換キーが無いぶん、左右 Alt キーへの親指キーなりすまし・Space 親指キー化にも対応
 
 技術的な設計の詳細は [ARCHITECTURE.md](ARCHITECTURE.md) を参照してください。
@@ -70,14 +70,14 @@ data/
 
 `awase.exe` をダブルクリックするとシステムトレイに常駐します。
 
-### 4. エンジンを ON にする
+### 4. 親指シフト入力にする
 
 デフォルトのキーバインド：
 
 | 操作 | キー |
 |------|------|
-| エンジン ON | **Ctrl+Shift+変換** |
-| エンジン OFF | **Ctrl+Shift+無変換** |
+| 親指シフト入力にする | **Ctrl+Shift+変換** |
+| ローマ字入力にする | **Ctrl+Shift+無変換** |
 | IME ON | **Ctrl+変換**（IME が既に ON の場合はひらがな・ローマ字・CapsLock OFF へリセット） |
 | IME OFF | **Ctrl+無変換** |
 | IME-ON 半角英数トグル（MS-IME のみ） | **左Shift 単独タップ**（他キーを介さず押して離す。もう一度タップで解除） |
@@ -116,7 +116,7 @@ default_layout  = "nicola_keytop.yab"
 | `right_thumb_key` | `変換` | 右親指シフトキー |
 | `confirm_mode` | `wait` | 確定モード（後述） |
 | `output_mode` | `unicode` | 出力方式（通常は変更不要） |
-| `engine_toggle_hotkey` | なし | エンジン ON/OFF トグルホットキー |
+| `engine_toggle_hotkey` | なし | 親指シフト入力／ローマ字入力トグルホットキー |
 | `keyboard_model` | `jis` | 物理キーボード配列。US 配列なら `"us"`（`default_layout` も `nicola_us.yab` に変更） |
 
 ### 確定モード
@@ -143,7 +143,7 @@ n-gram の仕組みの詳細は [ARCHITECTURE.md](ARCHITECTURE.md#n-gram-によ�
 force_text = [
     { process = "myapp.exe", class = "Edit" },
 ]
-# エンジンを常に無効にする
+# 常にローマ字入力にする（awase を素通しする）
 force_bypass = [
     { process = "launcher.exe", class = "LauncherClass" },
 ]
@@ -207,7 +207,7 @@ awase はフォーカス中のアプリを自動識別し、出力方式を切�
 ## トラブルシューティング
 
 **文字が入力されない / おかしな文字になる**  
-→ エンジンが OFF になっている可能性。Ctrl+Shift+変換 で ON にする。
+→ ローマ字入力になっている可能性。Ctrl+Shift+変換 で親指シフト入力にする。
 
 **特定アプリで動作しない**  
 → `RUST_LOG=debug awase.exe` で起動してログを確認し、`[app_overrides]` に追加。

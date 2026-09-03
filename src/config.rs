@@ -165,6 +165,8 @@ pub struct GeneralConfig {
     pub ime_poll_interval_ms: u32,
     /// 自動起動の設定（"enabled" = 有効, "disabled" = 無効）
     pub auto_start: String,
+    /// タスクトレイから右クリックした際に最新バージョンを確認する。
+    pub update_check: bool,
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
     pub linux_input_backend: String,
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
@@ -402,6 +404,7 @@ impl Default for GeneralConfig {
             focus_debounce_ms: 50,
             ime_poll_interval_ms: 500,
             auto_start: "enabled".to_string(),
+            update_check: true,
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,

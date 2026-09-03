@@ -251,6 +251,8 @@ pub struct Runtime {
     space_is_thumb_key: bool,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
+    /// トレイ右クリック時の更新確認を有効にするか。
+    pub(crate) update_check_enabled: bool,
     /// OS かな入力ロック検知の通知ヒステリシス。
     kana_lock_hysteresis: KanaLockHysteresis,
 }
@@ -1229,6 +1231,7 @@ impl Runtime {
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
+            update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
         }
     }
@@ -1239,6 +1242,10 @@ impl Runtime {
 
     pub(crate) const fn set_keyboard_model(&mut self, model: awase::scanmap::KeyboardModel) {
         self.keyboard_model = model;
+    }
+
+    pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
+        self.update_check_enabled = enabled;
     }
 
     /// `config.general.dbe_mode_key_policy` を反映する。起動時
@@ -1465,6 +1472,7 @@ impl Runtime {
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
+        self.set_update_check_enabled(config.general.update_check);
         self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(

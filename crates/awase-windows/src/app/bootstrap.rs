@@ -570,6 +570,7 @@ pub(super) fn initialize_app(
     ));
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
+        app.set_update_check_enabled(config.general.update_check);
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();

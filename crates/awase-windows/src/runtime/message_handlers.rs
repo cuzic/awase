@@ -80,7 +80,7 @@ fn notify_if_solo_off_triggered(app: &mut Runtime) {
     if app.engine.take_solo_off_notification() {
         app.platform.tray.show_balloon(
             "awase",
-            "無変換キーの連打でエンジンを緊急停止しました。\n\
+            "無変換キーの連打でローマ字入力に緊急切替しました。\n\
              戻すには Ctrl+Shift+変換 を押してください。",
         );
     }
@@ -1009,15 +1009,20 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         lparam.0
     );
-    let (layout_names, current_layout_name, kana_lock_warned): (Vec<String>, String, bool) =
-        with_app_ref(|app| {
-            (
-                app.layouts.iter().map(|e| e.name.clone()).collect(),
-                app.platform.tray.current_layout_name().to_string(),
-                app.platform.tray.kana_lock_warned(),
-            )
-        })
-        .unwrap_or_default();
+    let (layout_names, current_layout_name, kana_lock_warned, update_check_enabled): (
+        Vec<String>,
+        String,
+        bool,
+        bool,
+    ) = with_app_ref(|app| {
+        (
+            app.layouts.iter().map(|e| e.name.clone()).collect(),
+            app.platform.tray.current_layout_name().to_string(),
+            app.platform.tray.kana_lock_warned(),
+            app.update_check_enabled,
+        )
+    })
+    .unwrap_or_default();
     tray::handle_tray_message(
         hwnd,
         lparam,
@@ -1025,6 +1030,7 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
         &current_layout_name,
         crate::is_elevated(),
         kana_lock_warned,
+        update_check_enabled,
     );
 }
 
@@ -1062,7 +1068,11 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
         }
         Some(tray::TrayCommand::ToggleAutoStart) => tray::handle_autostart_toggle(),
         Some(tray::TrayCommand::Restart) => tray::restart_self(),
-        Some(tray::TrayCommand::About) => tray::show_about_dialog(),
+        Some(tray::TrayCommand::About) => {
+            let enabled = with_app_ref(|app| app.update_check_enabled).unwrap_or(false);
+            tray::show_about_dialog(enabled);
+        }
+        Some(tray::TrayCommand::OpenUpdatePage) => tray::open_update_page(),
         Some(tray::TrayCommand::BugReport) => {
             let ime_kind = current_bug_report_ime_kind();
             let Some((dump_result, diagnostics)) = with_app(|app| {

@@ -432,8 +432,17 @@ impl LiteralDetectCore {
     /// `SuspectedLiteral`（deadline 到達）時点で、候補ウィンドウ可視性による
     /// backspace veto を適用すべきか判定する。
     ///
-    /// veto 対象外（per-VK Chrome パス、または候補ウィンドウが可視でない）なら
-    /// [`VetoDecision::NotApplicable`] を返し、呼び出し側は従来通り回収する。
+    /// **この関数自体、`LiteralDetectCore::poll`（本ファイル351行目）経由でしか
+    /// 呼ばれない** —— word パス（`LiteralDetectFsm` / `gji_warmup_coro.rs` の
+    /// cold word パス）専用であり、per-VK 経路（`tsf/warmup/probe_fsm.rs::
+    /// run_per_vk_confirm`）はこの関数もこのメソッドが属す `LiteralDetectCore`
+    /// も一切経由しない（ADR-122 round 2 で確認）。「per-VK Chrome パス」を
+    /// veto 対象外の一種として言及していた旧コメントは誤解を招くため削除した
+    /// —— per-VK 経路は「対象外」ではなく、そもそもこの判定に到達しない。
+    ///
+    /// veto 対象外（候補ウィンドウが可視でない、または `veto_eligible=false` で
+    /// 構築された detector）なら [`VetoDecision::NotApplicable`] を返し、
+    /// 呼び出し側は従来通り回収する。
     fn veto_decision(&mut self, env: TsfEnvSnapshot) -> VetoDecision {
         if !self.detector.veto_eligible() || !env.gji_candidate_visible_now {
             self.veto_started_at_ms = None;
