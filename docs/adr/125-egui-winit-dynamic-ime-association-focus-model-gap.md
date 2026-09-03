@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**根本原因を実機で確定・修正方針採用（未実装）。** タイトルにある
+**根本原因を実機で確定し、修正を実装済み（Codex CLI実装 + Opus敵対的レビュー2周で収束、実機ソークは未実施）。** タイトルにある
 「ウィジェット単位の IME 許可切替とフォーカスモデルのギャップ」という
 当初仮説、およびその後の「`Standard` 分類・IMM32 クロスプロセス制御が
 機能していない」という第2仮説は、いずれも実機スパイクで**否定された**
@@ -17,7 +17,8 @@ winit アプリ由来の「IMM32 が使えない」という学習結果が
 （Qt の汎用クラス名 `Qt663QWindowIcon` が LINE 内の無関係なウィンドウを
 巻き込んだ事故）と同一機構の**プロセス間版**である。修正方針は「決定」
 節の E 案（学習キャッシュを `(process_name, class_name)` でキーする）
-を採用したが、コード変更はまだ行っていない。
+を採用し実装した（「実装結果」節）。実機での症状消失確認はまだ行って
+いない。
 
 最初に検討した対策（`disable_apps` に `awase-settings.exe` を追加し、awase 自身の
 GUI では丸ごと無効化する）はユーザーに却下された。理由は「その考え方だと
@@ -452,17 +453,89 @@ winit アプリ／プロセスに由来する学習結果が、`class_name` の�
 
 ### 次のアクション
 
-1. E 案を実装する（「未解決の設計課題」1〜2 を実装時に確定させる）。
+1. ~~E 案を実装する（「未解決の設計課題」1〜2 を実装時に確定させる）。~~
+   **実装完了（下記「実装結果」節参照）。**
 2. 実装前後の暫定回避として、`cache.toml` の `[imm_capability]` から
    `"Window Class"` エントリを削除し、`awase-settings.exe` で症状が
-   実際に消えることを実機確認する（BUG-56 と同じ手順、E 案の効果検証の
-   ベースラインにもなる）。
+   実際に消えることを実機確認する（BUG-56 と同じ手順）。**実機ソーク
+   （実装後の再現テスト）は未実施——次回セッションでの残タスク。**
 3. `docs/known-bugs.md` に新規 BUG として起票し、BUG-56 との関係
-   （同機構・プロセス間版であること）を明記する。
+   （同機構・プロセス間版であること）を明記する。**完了（BUG-107）。**
 4. 「未解決の設計課題」3（`Imm32Unavailable` 降格後の具体的な誤動作
    メカニズム）は、実装後の実機ソークで余力があれば追加調査する
-   （本 ADR のスコープでは必須としない——原因の特定と一般的な修正で
-   十分価値があり、詳細メカニズムの解明は効果検証で代替できる）。
+   （本 ADR のスコープでは必須としない）。**未着手のまま残る。**
+
+## 実装結果（2026-09-03、Codex CLI 実装 + Opus 敵対的レビュー2周で収束）
+
+E 案（`ImmCapabilityStore` の学習キャッシュを `(process_name, class_name)`
+でキーする）の実装は Codex CLI に委譲し、Opus モデルによる読み取り専用の
+敵対的コードレビューを2周行って収束させた。
+
+### 変更ファイル
+
+`crates/awase-windows/src/focus/classifier.rs`（`ImmCapabilityStore` 本体・
+テスト）、`focus/imm_learning.rs`、`focus/tracker.rs`、`focus/current.rs`、
+`platform.rs`、`runtime/focus_tracking.rs`、`runtime/mod.rs`。
+
+### 設計の実際（当初案からの変更点）
+
+- **in-memory 表現**: 当初案のタプルキー `HashMap<(String,String), _>` では
+  `&str` から直接引けず（`Borrow<(&str,&str)>` 非実装）呼び出しのたびに
+  `String` を2つ確保していたため、レビュー指摘を受けて
+  `HashMap<String, HashMap<String, ImmCapability>>`（process_name →
+  class_name → 能力）のネスト構造に変更した。永続化形式（TOML のネスト
+  テーブル）とも1:1に対応し、`save()` の実装も単純になった。
+  `pending_unavailable`（BUG-56 デバウンス用カウンタ）も同型でネストした。
+- **`process_name` 取得の遅延評価**: `learn_imm_capability_on_focus` の
+  `process_name` 引数を `&str` ではなく `impl FnOnce() -> String` にした
+  （`AppImeProfile::resolve` と同じパターン）。`get_process_name`（Win32
+  プロセスハンドルを開く高コスト API）を、`new_app_kind == Win32` かつ
+  未学習の場合にのみ評価するようにし、呼び出し元
+  （`runtime/focus_tracking.rs::classify_focus_probe`）はクロージャ内で
+  得た値を `ClassifiedFocus::process_name` へ横取りして
+  `CurrentFocus::update_with_process_name`（新設）に再利用することで、
+  同一フォーカスプローブ内での `get_process_name` の二重呼び出しも解消した
+  （レビュー指摘——初期実装はこの点が「未解決の設計課題」2 として未対処の
+  まま出荷されかけていた）。
+- **空プロセス名のガード**: `get_process_name` が失敗（保護プロセス等）して
+  空文字列を返すケースを学習対象から除外した（`imm_learning.rs` と
+  `runtime/mod.rs::learn_imm_capability_from_miss` の両方）。これを怠ると
+  「プロセス名を取得できない全プロセス」が `("", class_name)` という
+  共有バケツになり、**本 ADR が修正しようとしている BUG-107 と同じ
+  プロセス間汚染が「プロセス名不明」の集合内でそのまま再現する**という、
+  レビューで発見された重大な見落としだった。
+- **legacy 形式の即時掃除**: 旧フラット形式のエントリを検出したら
+  `ImmCapabilityStore::new` 内で直ちに `save()` し、`cache.toml` を新形式
+  のみに書き直すようにした（「未解決の設計課題」1）。
+
+### 未解決のまま残った問題（レビューで発見、対応は今回のスコープ外）
+
+- **`cache.toml` がパース不能な状態（新旧キー衝突等）のとき、legacy 掃除は
+  発動せず、その後の `save()` で `[injection_mode]` 等の他セクションが
+  丸ごと失われるリスクが残る**（`save_section` の `.parse().ok()` →
+  `unwrap_or_default()` が原因）。到達には「legacy のクラス名が新しく
+  学習されるプロセス名と完全一致する」必要があり確率は低いが、この差分が
+  新しい到達経路を1つ増やしている。**当初「legacy 掃除で解消する」と
+  誤って判断していたが、Opus の再レビューで「掃除が効くのはパースできる
+  ファイルの場合のみで、パース不能なファイルには効かない」と訂正された。**
+  根治するには `save_section` 自体の「パース失敗時は空ルートで上書き」
+  という既存の脆さに手を入れる必要があり、本 PR のスコープを超えるため
+  対応しない。
+- **学習エントリがプロセス数×クラス数で増加し、上限やプルーニングが無い。**
+  `Button`/`Edit`/`ComboBox`/`Static` のような汎用 Win32 コントロールクラスは
+  フォーカスされる Win32 アプリの数だけエントリが増えうる。対応しない
+  （既知の制限として記録するに留める）。
+- **タスクトレイの「学習キャッシュをクリア」メニュー項目が既存のバグで
+  完全な no-op になっている**（`runtime/message_handlers.rs` の
+  `TrayCommand::ClearImmCache` ハンドラが握り潰している）。本 PR とは
+  無関係な既存バグだが、BUG-56/BUG-107 の「誤学習は cache.toml を手で
+  編集して直す」という運用が GUI からは成立していないことを意味する。
+  別途 known-bugs.md への起票が必要（本 ADR のスコープ外）。
+- **実機ソーク未実施。** 上記すべての修正は Windows 実機での
+  コンパイル確認（`cargo xwin build`/`cargo check --target
+  x86_64-pc-windows-msvc`）と clippy のみで検証済みで、実際に
+  `awase-settings.exe` の不具合報告画面で症状（先頭の「あ」混入）が
+  消えたことはまだ実機確認していない。
 
 ## 範囲外
 

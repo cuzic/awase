@@ -113,7 +113,26 @@ InjectionHint::Default
 - 再起動後も Tsf 強制が即座に適用され、cold-start での injection 誤判定が減少する
 - `cache.toml` の `[imm_capability]` + `[injection_mode]` に学習キャッシュが集約され、
   トレイメニューの「学習キャッシュをクリア」でファイルを1つ削除するだけで一括リセットできる
+  （**注記、2026-09-03**: このトレイメニュー項目は現在完全な no-op になっており実際には
+  機能しない。`docs/known-bugs.md` BUG-108 参照）
 - `save_section()` ヘルパーにより、将来セクションを追加しても他のセクションを壊さない
+
+**追記（2026-09-03、BUG-107/ADR-125）:** `[imm_capability]` の永続化形式は、
+`class_name` 単独キーが複数プロセス間で共有される汎用クラス名
+（`winit` の既定クラス名 `"Window Class"` 等）を介した学習汚染の原因になった
+ため、プロセス名でネストしたテーブル形式へ変更した:
+
+```toml
+# cache.toml（現行形式）
+[imm_capability."awase-settings.exe"]
+"Window Class" = "works"
+
+[imm_capability."chrome.exe"]
+"Chrome_RenderWidgetHostHWND" = "unavailable"
+```
+
+上記の当初の例（`"TTOTAL_MAIN_WINDOW" = "works"` のようなフラット形式）は
+旧形式。詳細は [ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
 
 ## 関連 ADR
 

@@ -7716,6 +7716,12 @@ Qt はウィンドウクラス名をアプリ内の複数の異なるウィジ�
 2026-08-07）。ただしこれは学習し直しの起点をリセットしただけで、同じ一時
 ウィンドウが再度 NULL を返せば再発しうる対症療法。
 
+**追記（2026-09-03、BUG-107）:** `cache.toml` の `[imm_capability]` の
+永続化形式は、`(process_name, class_name)` キー化に伴いプロセス名で
+ネストしたテーブル形式に変わった。上記の手順（フラットな
+`Qt663QWindowIcon = "..."` を削除）は現行の形式には当てはまらない——
+現行形式での暫定回避手順は BUG-107 の該当節を参照。
+
 **恒久修正:** `ImmCapabilityStore` に `pending_unavailable: HashMap<String, u32>`
 （永続化しないセッション内カウンタ）を追加し、`record_null_probe()`／
 `clear_pending_unavailable()` を新設。NULL 観測は即確定せず、同じ `class_name` で
@@ -12862,18 +12868,40 @@ winit ベースのアプリ（または過去のいずれかの `awase-settings.
 （`Imm32Unavailable` 降格後の具体的などの経路が「あ」を出力するかという
 詳細メカニズムまでは未確認、ADR-125「未解決の設計課題」3参照）。
 
-**対応（採用済み、未実装）:** `ImmCapabilityStore` の学習キャッシュのキーを
-`class_name` 単独から `(process_name, class_name)` のタプルへ変更する
+**対応（実装済み、実機ソーク未実施）:** `ImmCapabilityStore` の学習キャッシュの
+キーを `class_name` 単独から `(process_name, class_name)`（実装は
+`HashMap<String, HashMap<String, ImmCapability>>` のネスト構造）へ変更した
 （`config.rs::AppOverrideEntry` が既に `{ process, class }` の組でアプリを
 識別している既存パターンに沿う）。プロセス間の衝突を構造的に防ぐが、BUG-56
-のデバウンス（同一プロセス内の衝突対策）はそのまま維持し独立に共存させる。
-設計の詳細・未解決の実装課題は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)
-「決定」節 E 案を参照。
+のデバウンス（同一プロセス内の衝突対策）はそのまま維持し独立に共存させて
+いる。`cache.toml` の永続化形式もフラット（`class_name = "value"`）から
+プロセス名でネストしたテーブル（`[imm_capability."process.exe"]` の下に
+`class_name = "value"`）へ変更し、旧フラット形式のエントリは起動時に検出
+すると安全に破棄したうえで新形式のみへ書き直す。実装は Codex CLI に委譲し、
+Opus モデルによる読み取り専用の敵対的コードレビューを2周行って収束させた
+（発見された `get_process_name` の無駄な二重呼び出し・空プロセス名による
+汚染バケツの再発等、複数の実害ある問題を反映済み）。設計の詳細・実装結果・
+残存する既知の制限は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+「決定」「実装結果」節を参照。**実機での症状消失確認（実機ソーク）はまだ
+行っていない。**
 
-**暫定回避（BUG-56 と同じ手順、実機未実施）:** `cache.toml` の
-`[imm_capability]` セクションから `"Window Class"` エントリを削除し、
-awase を再起動する（`ImmCapabilityStore` は起動時に一度だけ `cache.toml`
-を読み込むため、ファイル修正だけでは反映されない）。
+**残存する既知の制限（レビューで発見、対応は本件のスコープ外）:**
+- `cache.toml` が新旧キー衝突等でパース不能な状態のとき、legacy 掃除は
+  発動せず、その後の保存で `[injection_mode]` 等の他セクションが丸ごと
+  失われるリスクが低確率ながら残る（`save_section` の既存の脆さ、詳細は
+  ADR-125「実装結果」節）。
+- 学習エントリがプロセス数×クラス数で増加し、上限やプルーニングが無い。
+- タスクトレイの「学習キャッシュをクリア」メニュー項目が別の既存バグで
+  完全な no-op になっており（`runtime/message_handlers.rs` の
+  `TrayCommand::ClearImmCache` ハンドラ）、下記の暫定回避（手動での
+  `cache.toml` 編集）が GUI からは行えない。
+
+**暫定回避（BUG-56 と同じ考え方、新形式向けに更新）:** `cache.toml` の
+`[imm_capability."プロセス名.exe"]` セクション、または該当プロセスの
+サブテーブル内の該当クラス名のエントリを削除し、awase を再起動する
+（`ImmCapabilityStore` は起動時に一度だけ `cache.toml` を読み込むため、
+ファイル修正だけでは反映されない。上記のとおりトレイメニューからは
+実行できない）。
 
 **範囲外・未解決:** 当初報告にあった「テキスト入力が重い」という症状は、
 本 BUG の再現テストでは顕在化しなかったため未解決のまま残る——`かな混入`
@@ -12882,10 +12910,55 @@ awase を再起動する（`ImmCapabilityStore` は起動時に一度だけ `cac
 **関連ファイル:** `crates/awase-windows/src/focus/classifier.rs`
 （`ImmCapabilityStore`）、`crates/awase-windows/src/focus/tracker.rs`
 （`apply_learned_imm_capability`）、`crates/awase-windows/src/focus/
-imm_learning.rs`（`learn_imm_capability_on_focus`）。
+imm_learning.rs`（`learn_imm_capability_on_focus`）、`crates/awase-windows/
+src/focus/current.rs`（`CurrentFocus::update_with_process_name`）。
 
 **関連:** BUG-56（同一プロセス内版、本件はそのプロセス間版）、BUG-33/
 BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、同系統だが原因の軸が
 異なる）、BUG-78（却下案が再利用しようとした `disable_apps` 丸ごと
 バイパス機構の初出）、ADR-121（「原因の半分」を早期に確定として扱って
-しまった教訓、本件で実装を急がず3回の実機検証を重ねた理由）。
+しまった教訓、本件で実装を急がず3回の実機検証を重ねた理由）、BUG-108
+（本件の調査中に発見した、無関係な既存バグ）。
+
+## BUG-108: タスクトレイの「学習キャッシュをクリア」メニュー項目が完全な no-op になっている
+
+**症状（BUG-107 の調査中に発見、実機報告ではなくコード読解で確定）:**
+タスクトレイの右クリックメニューに「学習キャッシュをクリア」という項目が
+表示され、クリックできる（`crates/awase-windows/src/tray.rs:649`、
+`IDM_CLEAR_IMM_CACHE`）が、実際にクリックしても**何も起きない**。
+
+**原因（コード確認済み）:** メニュー項目のクリックは
+`TrayCommand::ClearImmCache`（`tray.rs:79`）にマップされ
+（`tray.rs:697`）、コマンド処理の分岐先
+`crates/awase-windows/src/runtime/message_handlers.rs:1141` に到達するが、
+
+```rust
+Some(tray::TrayCommand::ClearImmCache) | None => {}
+```
+
+という何もしない分岐にまとめられており、`ImmCapabilityStore` のキャッシュ
+（`cache.toml` の `[imm_capability]`）にもファイルにも一切手を付けない。
+`ClearImmCache` という識別子が出現するのはこの3箇所のみで、実際にキャッシュ
+をクリアする実装はどこにも存在しない。
+
+**影響:** BUG-56・BUG-107 がいずれも「誤学習した IMM32 能力キャッシュは
+`cache.toml` を手で編集して直す」ことを暫定回避として案内しているが、
+この GUI 操作は実際には機能しないため、ユーザーはメニュー項目の存在に
+惑わされたうえで、結局手動でのファイル編集（`cache.toml` を直接開いて
+該当エントリを削除）を行うしかない。ADR-125（BUG-107 の設計 ADR）の
+「未解決の設計課題」1 が「複雑な自動移行より捨てて学習し直す方が安全」と
+判断した際、この GUI 操作が機能する前提はそもそも成立していなかった。
+
+**対応:** 未対応。`message_handlers.rs:1141` で `ClearImmCache` を受けたら
+`ImmCapabilityStore` のキャッシュ（メモリ上のもの、および `cache.toml` の
+`[imm_capability]` セクション）を空にして保存し直す実装を追加する必要が
+ある。`ImmCapabilityStore` に外部から呼べるクリア用メソッドが無いため、
+新設が必要。
+
+**関連ファイル:** `crates/awase-windows/src/tray.rs`（`IDM_CLEAR_IMM_CACHE`、
+`TrayCommand::ClearImmCache`）、`crates/awase-windows/src/runtime/
+message_handlers.rs`（該当 no-op 分岐）、`crates/awase-windows/src/focus/
+classifier.rs`（`ImmCapabilityStore`、クリア用メソッド新設が必要）。
+
+**関連:** BUG-56・BUG-107（この GUI 操作が機能する前提で暫定回避手順を
+案内している）。
