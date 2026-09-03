@@ -81,6 +81,13 @@ enum ValueKind {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutDiscardAction {
+    OpenPending,
+    OpenTextBox,
+    Reload,
+}
+
 /// 打鍵欄の入力を検証する。JIS キーボード上のキーとして表現できない文字が
 /// あれば、その文字を返す。
 fn find_invalid_keystroke_char(input: &str) -> Option<char> {
@@ -341,16 +348,29 @@ struct SettingsApp {
     layout_edit_kind: ValueKind,
     layout_edit_value: String,
     layout_edit_special_idx: usize,
+    layout_edit_origin: Option<(String, ValueKind)>,
+    layout_edit_origin_is_sequence: bool,
+    layout_edit_last_seen: Option<(String, ValueKind)>,
+    ime_composing: bool,
+    ime_event_this_frame: bool,
     kana_table: KanaTable,
     layout_modified: bool,
     layout_status: String,
     /// 「配列編集」タブを一度でも開いたか（開いたときに一度だけ .yab を
     /// 読み込む。起動時の同期読み込みを避けるため）。
     layout_loaded: bool,
+    /// 現在の `layout_file_path` から `layout` を正常に読み込めているか。
+    layout_loaded_ok: bool,
+    /// `layout` を最後に正常読み込みした時点のキーボード配列。
+    layout_loaded_model: Option<awase::scanmap::KeyboardModel>,
     /// rfd の非同期ファイルダイアログから戻ってきたパス（開く）
     layout_pending_open: Option<PathBuf>,
     /// rfd の非同期ファイルダイアログから戻ってきたパス（名前を付けて保存）
     layout_pending_save_as: Option<PathBuf>,
+    pending_layout_discard: Option<LayoutDiscardAction>,
+    show_cancel_layout_confirm: bool,
+    pending_status_notes: Vec<String>,
+    config_loaded_model: awase::scanmap::KeyboardModel,
     /// コードレビュー指摘: `AppConfig::save()`（ADR-099 決定3、fsync+
     /// rename・失敗時50ms×最大4回リトライ）を `update()` から同期呼び出し
     /// すると、rename が失敗するケース（AV/OneDrive 等のロック）で最大
@@ -378,7 +398,14 @@ enum PendingSaveResult {
     /// `AppConfig::save()` が失敗した。
     SaveFailed(String),
     /// 保存に成功した。`warnings` は `validate()` が返した警告文。
-    Saved { warnings: Vec<String> },
+    /// `keyboard_model` は保存時点のスナップショット——保存は非同期で
+    /// 完了までの間にユーザーが`self.config`をさらに編集しうるため、
+    /// `poll_pending_save`側で「今の`self.config`」を読むと実際に保存された
+    /// 値とずれる（`config_loaded_model`の更新元として誤る、code-review指摘）。
+    Saved {
+        warnings: Vec<String>,
+        keyboard_model: awase::scanmap::KeyboardModel,
+    },
 }
 
 impl SettingsApp {
@@ -394,6 +421,7 @@ impl SettingsApp {
             }
         };
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
+        let config_loaded_model = config.general.keyboard_model;
 
         let mut app = Self {
             config,
@@ -432,12 +460,23 @@ impl SettingsApp {
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
+            layout_edit_origin: None,
+            layout_edit_origin_is_sequence: false,
+            layout_edit_last_seen: None,
+            ime_composing: false,
+            ime_event_this_frame: false,
             kana_table: KanaTable::build(),
             layout_modified: false,
             layout_status: String::new(),
             layout_loaded: false,
+            layout_loaded_ok: false,
+            layout_loaded_model: None,
             layout_pending_open: None,
             layout_pending_save_as: None,
+            pending_layout_discard: None,
+            show_cancel_layout_confirm: false,
+            pending_status_notes: Vec::new(),
+            config_loaded_model,
             pending_save: None,
             scancode_map_status: None,
             scancode_map_last_message: None,
@@ -463,6 +502,11 @@ impl SettingsApp {
     /// （こちらはエンジンスレッド上で動くため ADR-099 round2 SF-1 で
     /// 別途トレードオフとして許容済み）とは異なり、こちらは最も高頻度に
     /// 呼ばれる呼び出し元（「適用」ボタン）であり、非同期化の効果が大きい。
+    ///
+    /// ADR-126でガード(A)/(B)を分離した結果、意図的に閾値を超えている
+    /// （2つの独立した目的のガードを1つの条件式へ混ぜたことがround4/5の
+    /// バグの原因だったため、無理に関数分割で短縮しない）。
+    #[expect(clippy::too_many_lines)]
     fn apply_confirmed(&mut self) {
         if self.pending_save.is_some() {
             // 前回の保存がまだ完了していなければ多重に起動しない。
@@ -472,6 +516,12 @@ impl SettingsApp {
             self.status = "保存中です。少々お待ちください…".to_string();
             return;
         }
+
+        // code-review指摘: 前回呼び出しがガード等で早期returnした場合に
+        // 積んだままの警告が次回に紛れ込まないよう、関数冒頭で必ずクリアする
+        // （以前はガード(A)より後にあり、ガード(A)がreturnする経路では
+        // クリアされないままになっていた）。
+        self.pending_status_notes.clear();
 
         // /code-review指摘（PR #127、2回目）: self.configはこの直後に
         // AppConfig::from(validated)で上書きされるため、事前の
@@ -489,6 +539,79 @@ impl SettingsApp {
         // 保存されずに警告だけが「適用」を押すたび永遠に再表示され続けていた。
         // validated側をself.configにも反映し、保存対象にする。
         self.config = awase::config::AppConfig::from(validated);
+
+        if self.layout_modified
+            && let Some(loaded_model) = self.layout_loaded_model
+            && loaded_model != self.config.general.keyboard_model
+        {
+            self.status = "配列編集に未保存の変更がありますが、読み込み時と異なるキーボード配列に変更されているため保存できません。キーボード配列を元に戻して適用するか、配列編集タブで変更を破棄してキーボード配列に合った配列を開き直してください。（この変更は下部のバナーが示す未保存の配列編集と同じものです）".to_string();
+            // /code-review指摘: この時点で`self.config`は既に検証済みの新しい
+            // 値に上書き済み（540行目）——中止するのはディスクへの書き込みで
+            // あって`self.config`のロールバックではない。診断リストを
+            // 再計算しないと、変更後の`self.config`と食い違う古い診断が
+            // 画面上部に残り続ける。
+            self.recompute_diagnostics();
+            return;
+        }
+
+        let default_layout_path = resolve_layouts_dir(&self.config.general.layouts_dir)
+            .join(&self.config.general.default_layout);
+        if default_layout_path.exists()
+            && let Err(e) =
+                load_yab_layout(&default_layout_path, self.config.general.keyboard_model)
+        {
+            if self.config_loaded_model != self.config.general.keyboard_model {
+                self.status = format!(
+                    "現在の既定の配列ファイル（{}）が、これから適用するキーボード配列で読み込めないため保存できません。default_layoutをそのキーボード配列に合ったファイルに変更するか、キーボード配列を元に戻してください（{e}）。",
+                    self.config.general.default_layout
+                );
+                // /code-review指摘: 上のガード(A)と同様、`self.config`は
+                // 既に新しい値なので中止前に診断を再計算する。
+                self.recompute_diagnostics();
+                return;
+            }
+            self.pending_status_notes.push(format!(
+                "既定の配列ファイル{}を読み込めません（{e}）。awaseエンジンはこの配列を読み込めない状態です",
+                self.config.general.default_layout
+            ));
+        }
+
+        // 配列編集タブの未保存編集を`.yab`へ書き込めない場合でも、それだけを
+        // 理由に他タブの設定変更まで保存不能にしない（premortem R5-1と同じ
+        // 原則——配列編集タブに閉じた問題が、無関係な設定の保存を巻き込んでは
+        // ならない）。`.yab`書き込みだけをスキップし、警告を添えて
+        // config.toml側の保存は続行する。実際のディスクI/Oエラー
+        // （`layout_write_to_path`の`Err`）はこれとは別に、部分適用を避ける
+        // ため引き続き適用全体を中止する。
+        let mut saved_layout_name = None;
+        if self.layout_modified {
+            if !self.layout_loaded_ok {
+                self.pending_status_notes.push(
+                    "配列ファイルを読み込めていないため配列の変更は保存されていません".to_string(),
+                );
+            } else if let Some(path) = self.layout_file_path.clone() {
+                if path != default_layout_path {
+                    self.pending_status_notes.push(
+                        "この配列ファイルは現在の配列フォルダ／既定の配列と異なるため、awaseエンジンには反映されません"
+                            .to_string(),
+                    );
+                }
+                if let Err(e) = self.layout_write_to_path(&path, true, false) {
+                    self.status = e;
+                    // /code-review指摘: 上の2ガードと同様、中止前に
+                    // `self.config`変更後の診断を再計算する。
+                    self.recompute_diagnostics();
+                    return;
+                }
+                saved_layout_name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string());
+            } else {
+                self.pending_status_notes.push(
+                    "配列ファイルの保存先が未設定のため配列の変更は保存されていません".to_string(),
+                );
+            }
+        }
         // /code-review指摘（PR #133）: self.config はここで既に正規化済みの
         // 新しい値に置き換わっている。診断リストの再計算をバックグラウンド
         // 保存の結果（Saved分岐）だけに任せると、保存が BackupFailed/
@@ -535,13 +658,20 @@ impl SettingsApp {
 
             match clone.save(&config_path) {
                 Ok(()) => {
-                    let _ = tx.send(PendingSaveResult::Saved { warnings });
+                    let _ = tx.send(PendingSaveResult::Saved {
+                        warnings,
+                        keyboard_model: clone.general.keyboard_model,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(PendingSaveResult::SaveFailed(e.to_string()));
                 }
             }
         });
+        if let Some(name) = saved_layout_name {
+            self.pending_status_notes
+                .insert(0, format!("配列 {name} を含む"));
+        }
         self.pending_save = Some(rx);
     }
 
@@ -553,11 +683,27 @@ impl SettingsApp {
             return;
         };
         match rx.try_recv() {
-            Ok(PendingSaveResult::Saved { warnings }) => {
-                if warnings.is_empty() {
-                    self.status = "設定を保存しました".to_string();
+            Ok(PendingSaveResult::Saved {
+                warnings,
+                keyboard_model,
+            }) => {
+                let mut parts = vec!["設定を保存しました".to_string()];
+                parts.append(&mut self.pending_status_notes);
+                if !warnings.is_empty() {
+                    parts.push(format!("警告: {}", warnings.join("; ")));
                 }
+                self.status = if parts.len() == 1 {
+                    parts.remove(0)
+                } else {
+                    let head = parts.remove(0);
+                    format!("{head}（{}）", parts.join(" / "))
+                };
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
+                // code-review指摘: `self.config.general.keyboard_model`は
+                // 非同期保存の完了を待つ間にユーザーがさらに編集していると
+                // 「実際に保存された値」とずれる。送信元でスナップショットした
+                // `keyboard_model`を使う。
+                self.config_loaded_model = keyboard_model;
                 // apply_confirmed() は保存開始前にも recompute_diagnostics()
                 // を呼ぶが、その時点で config_load_state がまだ Dangerous
                 // だった場合はガードに掛かり何もしない。Dangerous から
@@ -568,10 +714,12 @@ impl SettingsApp {
             }
             Ok(PendingSaveResult::BackupFailed(msg)) => {
                 self.status = format!("保存失敗: {msg}");
+                self.pending_status_notes.clear();
                 self.pending_save = None;
             }
             Ok(PendingSaveResult::SaveFailed(e)) => {
                 self.status = format!("保存失敗: {e}");
+                self.pending_status_notes.clear();
                 self.pending_save = None;
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -589,6 +737,16 @@ impl SettingsApp {
     /// 確認モーダルを開く（`show_dangerous_save_confirm`、実処理は
     /// `apply_confirmed()`）。それ以外は通常通り即保存する。
     fn apply(&mut self) {
+        // /code-review指摘: グローバルCtrl+Sハンドラや「適用」ボタンの
+        // 有効/無効化には確認モーダル表示中の抑止を入れたが、`apply()`
+        // 自体には無かった。3択キャンセル確認・配列破棄確認が開いている間に
+        // 何らかの経路で`apply()`が呼ばれると、その確認が尋ねている変更を
+        // そのまま保存してしまう（確認モーダルを実質無視できる）。呼び出し元
+        // ごとに同じ条件を重複させるのではなく、ここで一元的に拒否する。
+        if self.show_cancel_layout_confirm || self.pending_layout_discard.is_some() {
+            self.status = "他の確認が表示されています。先にそちらへ答えてください。".to_string();
+            return;
+        }
         if matches!(
             self.config_load_state,
             awase::config::ConfigLoadState::Dangerous(_)
@@ -600,15 +758,37 @@ impl SettingsApp {
     }
 
     fn cancel(&mut self) {
+        if self.pending_save.is_some() {
+            self.status = "保存中です。少々お待ちください…".to_string();
+            return;
+        }
+        // /code-review指摘: 配列破棄確認モーダル（`pending_layout_discard`、
+        // ツールバー「開く」「再読み込み」「パス欄Enter」経由）が既に表示中に
+        // ここへ到達すると、この直後の`layout_modified`分岐で
+        // `show_cancel_layout_confirm`まで立ってしまい、非ブロッキングな
+        // `egui::Window`が2つ同時に描画される（round2 R2-8と同型）。
+        if self.pending_layout_discard.is_some() {
+            self.status = "他の確認が表示されています。先にそちらへ答えてください。".to_string();
+            return;
+        }
         // コードレビュー指摘: 確認モーダル（`show_dangerous_save_confirm_modal`）は
         // `egui::Modal` のような背景ブロッキングを持たないため、モーダル表示中でも
         // 下部パネルの「キャンセル」ボタンが押せてしまう。ここで cancel() が
         // 呼ばれた場合はモーダルの前提（Dangerous 状態）が解消されるため、
         // 開いたままのモーダルが状態と矛盾しないよう必ず閉じる。
         self.show_dangerous_save_confirm = false;
+        if self.layout_modified {
+            self.show_cancel_layout_confirm = true;
+            return;
+        }
+        self.cancel_config_only();
+    }
+
+    fn cancel_config_only(&mut self) {
         match awase::config::AppConfig::load(&self.config_path) {
             Ok(cfg) => {
                 self.available_layouts = scan_layout_names(&cfg.general.layouts_dir);
+                self.config_loaded_model = cfg.general.keyboard_model;
                 self.config = cfg;
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
                 self.status = "変更を破棄しました".to_string();
@@ -619,6 +799,45 @@ impl SettingsApp {
             }
         }
         self.recompute_diagnostics();
+    }
+
+    fn cancel_config_and_layout(&mut self) {
+        self.cancel_config_only();
+        let Some(path) = self.layout_file_path.clone() else {
+            // /code-review指摘: `layout_file_path`が`None`のまま
+            // `layout_modified`が真になることは通常の操作では起きない
+            // （`layout_modified`を立てる経路はすべて`layout_selected_pos`を
+            // 前提とし、それには`ensure_layout_loaded`——F8によりパスを
+            // 必ず確定させる——を経由する必要があるため）。ただし万一
+            // 到達した場合、`cancel_config_only()`が直前に上書きした
+            // 「変更を破棄しました」は配列側が実際には破棄されていないのに
+            // 成功したと誤解させる。`layout_modified`は真のまま残すのが
+            // 正確なので、ここでは状態を変えず、誤解を招くメッセージだけ
+            // 訂正する。
+            self.status =
+                "設定は破棄しましたが、配列編集の保存先が未設定のため配列側は元に戻せませんでした"
+                    .to_string();
+            return;
+        };
+        match load_yab_layout(&path, self.config.general.keyboard_model) {
+            Ok((ly, lint_warnings)) => {
+                self.layout = ly;
+                self.layout_modified = false;
+                self.layout_loaded_ok = true;
+                self.layout_loaded_model = Some(self.config.general.keyboard_model);
+                self.clear_layout_edit_selection();
+                self.status = append_lint_warnings(
+                    "設定と配列編集を破棄しました".to_string(),
+                    &lint_warnings,
+                );
+            }
+            Err(e) => {
+                self.layout_loaded_ok = false;
+                self.layout_loaded_model = None;
+                self.clear_layout_edit_selection();
+                self.status = format!("読み込み失敗: {e}");
+            }
+        }
     }
 
     /// 起動時設定診断（ADR-116）を再計算する。`config.validate()` の警告と、
@@ -792,6 +1011,87 @@ impl SettingsApp {
         }
     }
 
+    fn show_cancel_layout_confirm_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_cancel_layout_confirm {
+            return;
+        }
+        let mut open = true;
+        let mut config_only = false;
+        let mut both = false;
+        let mut cancel = false;
+        egui::Window::new("確認")
+            .id(egui::Id::new("cancel_layout_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("配列編集に未保存の変更があります。キャンセルする範囲を選んでください。");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("設定だけ元に戻す").clicked() {
+                        config_only = true;
+                    }
+                    if ui.button("両方元に戻す").clicked() {
+                        both = true;
+                    }
+                    if ui.button("やめる").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if config_only {
+            self.show_cancel_layout_confirm = false;
+            self.cancel_config_only();
+        } else if both {
+            self.show_cancel_layout_confirm = false;
+            self.cancel_config_and_layout();
+        } else if cancel || !open {
+            self.show_cancel_layout_confirm = false;
+        }
+    }
+
+    fn show_layout_discard_confirm_modal(&mut self, ctx: &egui::Context) {
+        if self.pending_layout_discard.is_none() {
+            return;
+        }
+        let mut open = true;
+        let mut discard = false;
+        let mut cancel = false;
+        egui::Window::new("確認")
+            .id(egui::Id::new("layout_discard_confirm"))
+            .order(egui::Order::Foreground)
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label("未保存の配列編集を破棄して続行しますか？");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("破棄して続行").clicked() {
+                        discard = true;
+                    }
+                    if ui.button("やめる").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if discard {
+            // `layout_modified`をここで無条件にfalseへ落とさない。`OpenPending`は
+            // 非同期のファイル選択ダイアログを開くだけで、実際の読み込みは
+            // `drain_layout_pending_async`経由で後から行われる——ダイアログを
+            // キャンセルすると何も置き換わらないまま`layout_modified`だけが
+            // 偽になり、未保存の編集が「保存済み」であるかのように扱われてしまう
+            // （下部の未保存インジケータが消え、「適用」が`.yab`を書かなくなる）。
+            // `layout_modified = false`は各読み込み関数
+            // （`layout_load_from_path`/`layout_reload_unchecked`）の成功時にのみ
+            // 行われるため、ここでは何もせず実処理へ委ねる。
+            self.run_pending_layout_discard_action();
+        } else if cancel || !open {
+            self.pending_layout_discard = None;
+        }
+    }
+
     // ── 配列編集タブ（旧 awase-yab-editor）──
 
     const fn layout_face_mut(&mut self, face: Face) -> &mut YabFace {
@@ -816,12 +1116,30 @@ impl SettingsApp {
         }
     }
 
+    fn clear_layout_edit_selection(&mut self) {
+        self.layout_selected_pos = None;
+        self.layout_edit_value.clear();
+        self.layout_edit_origin = None;
+        self.layout_edit_origin_is_sequence = false;
+        self.layout_edit_last_seen = None;
+        self.ime_composing = false;
+    }
+
     fn select_layout_cell(&mut self, pos: PhysicalPos) {
         self.layout_selected_pos = Some(pos);
+        self.layout_status.clear();
         let value = self
             .layout_face(self.layout_current_face)
             .get(&pos)
             .cloned();
+        let origin_is_sequence = matches!(
+            value,
+            Some(
+                YabValue::CtrlChord { .. }
+                    | YabValue::InlineSequence { .. }
+                    | YabValue::MacroRef(_)
+            )
+        );
         match value {
             Some(YabValue::Romaji { romaji, .. }) => {
                 self.layout_edit_kind = ValueKind::Keystroke;
@@ -863,6 +1181,139 @@ impl SettingsApp {
                 self.layout_edit_value.clear();
             }
         }
+        self.layout_edit_origin = Some((self.layout_edit_value.clone(), self.layout_edit_kind));
+        self.layout_edit_origin_is_sequence = origin_is_sequence;
+        self.layout_edit_last_seen = None;
+        self.ime_composing = false;
+    }
+
+    fn update_ime_state(&mut self, ctx: &egui::Context) {
+        self.ime_event_this_frame = false;
+        ctx.input(|i| {
+            for event in &i.events {
+                match event {
+                    egui::Event::Ime(egui::ImeEvent::Enabled | egui::ImeEvent::Preedit(_)) => {
+                        self.ime_composing = true;
+                        self.ime_event_this_frame = true;
+                    }
+                    egui::Event::Ime(egui::ImeEvent::Commit(_) | egui::ImeEvent::Disabled) => {
+                        self.ime_composing = false;
+                        self.ime_event_this_frame = true;
+                    }
+                    _ => {}
+                }
+            }
+        });
+        if self.layout_selected_pos.is_none() {
+            self.ime_composing = false;
+        }
+    }
+
+    fn build_layout_edit_value(&self, allow_empty_as_none: bool) -> Result<YabValue, String> {
+        match self.layout_edit_kind {
+            ValueKind::Keystroke => {
+                let input = normalize_keystroke_input(&self.layout_edit_value);
+                if input.is_empty() {
+                    if allow_empty_as_none {
+                        Ok(YabValue::None)
+                    } else {
+                        Err("空にすると値が消えます。「なし」を選んでください".to_string())
+                    }
+                } else if let Some(bad) = find_invalid_keystroke_char(&input) {
+                    Err(format!(
+                        "「{bad}」は JIS キーボード上のキーとして入力できません"
+                    ))
+                } else if input.chars().all(|c| c.is_ascii_alphabetic()) {
+                    let kana = self.kana_table.kana_for_romaji(&input);
+                    Ok(YabValue::Romaji {
+                        romaji: input,
+                        kana,
+                    })
+                } else {
+                    Ok(YabValue::KeySequence(input))
+                }
+            }
+            ValueKind::Literal => {
+                let s = self.layout_edit_value.clone();
+                if s.is_empty() {
+                    if allow_empty_as_none {
+                        Ok(YabValue::None)
+                    } else {
+                        Err("空にすると値が消えます。「なし」を選んでください".to_string())
+                    }
+                } else {
+                    Ok(YabValue::Literal(s))
+                }
+            }
+            ValueKind::Special => Ok(YabValue::Special(
+                SPECIAL_KEYS[self.layout_edit_special_idx].0,
+            )),
+            ValueKind::Vk => {
+                let hex = self.layout_edit_value.trim().trim_start_matches('V');
+                if hex.is_empty() {
+                    if allow_empty_as_none {
+                        Ok(YabValue::None)
+                    } else {
+                        Err("空にすると値が消えます。「なし」を選んでください".to_string())
+                    }
+                } else if let Ok(code) = u16::from_str_radix(hex, 16) {
+                    Ok(YabValue::Vk(VkCode(code)))
+                } else {
+                    Err(format!("「{hex}」は16進数として解釈できません"))
+                }
+            }
+            ValueKind::None => Ok(YabValue::None),
+        }
+    }
+
+    fn commit_pending_layout_edit(&mut self, ctx: &egui::Context) {
+        let Some(pos) = self.layout_selected_pos else {
+            return;
+        };
+        if self.layout_edit_origin_is_sequence {
+            return;
+        }
+        if matches!(self.layout_edit_kind, ValueKind::None | ValueKind::Special) {
+            return;
+        }
+        if self.ime_composing || self.ime_event_this_frame {
+            ctx.request_repaint();
+            return;
+        }
+
+        let raw = (self.layout_edit_value.clone(), self.layout_edit_kind);
+        if self.layout_edit_origin.as_ref() == Some(&raw) {
+            if self.layout_edit_last_seen.as_ref() != Some(&raw) {
+                self.layout_status.clear();
+                self.layout_edit_last_seen = Some(raw);
+            }
+            return;
+        }
+        if self.layout_edit_last_seen.as_ref() == Some(&raw) {
+            return;
+        }
+        self.layout_edit_last_seen = Some(raw.clone());
+
+        match self.build_layout_edit_value(false) {
+            Ok(value) => {
+                if self.layout_face(self.layout_current_face).get(&pos) != Some(&value) {
+                    self.layout_face_mut(self.layout_current_face)
+                        .insert(pos, value);
+                    self.layout_modified = true;
+                }
+                self.layout_edit_origin = Some(raw);
+                self.layout_status.clear();
+            }
+            Err(msg) => {
+                self.layout_status = msg;
+            }
+        }
+    }
+
+    fn clear_ime_on_tab_change(&mut self, new_tab: Tab) {
+        if self.active_tab != new_tab {
+            self.ime_composing = false;
+        }
     }
 
     /// 選択中セルの生の値を履歴の先頭に積む。同じ値が履歴に既にあれば
@@ -891,80 +1342,76 @@ impl SettingsApp {
         let Some(pos) = self.layout_selected_pos else {
             return;
         };
-        self.layout_status = format!("貼り付けました: {}", cell_tooltip(Some(&value), pos));
+        let message = format!("貼り付けました: {}", cell_tooltip(Some(&value), pos));
         self.layout_face_mut(self.layout_current_face)
             .insert(pos, value);
         self.layout_modified = true;
         // 編集パネルの表示も貼り付け後の値に合わせて更新する。
+        // code-review指摘: `select_layout_cell`は冒頭で`layout_status`を
+        // クリアする（round2 A4）ため、ステータス設定はこの呼び出しの
+        // **後**に行う——先に設定すると即座に消えて表示されない。
+        self.select_layout_cell(pos);
+        self.layout_status = message;
+    }
+
+    /// 「特殊キー」ComboBoxの選択が実際に変わっていれば直接コミットする
+    /// （`commit_pending_layout_edit()`を経由しない独立経路、round3 R3-2）。
+    /// UI描画から切り出してあるのは、egui ComboBoxのポインタ操作を
+    /// シミュレートしなくても`previous_idx`との比較・コミット・
+    /// `select_layout_cell`によるバッファ再同期（round4 R4-3）を
+    /// ユニットテストできるようにするため。
+    fn commit_special_key_if_changed(&mut self, pos: PhysicalPos, previous_idx: usize) {
+        if self.layout_edit_special_idx == previous_idx {
+            return;
+        }
+        let special_key = SPECIAL_KEYS[self.layout_edit_special_idx].0;
+        self.layout_face_mut(self.layout_current_face)
+            .insert(pos, YabValue::Special(special_key));
+        self.layout_modified = true;
         self.select_layout_cell(pos);
     }
 
+    // code-review指摘: ADR-126のD1で旧「適用」ボタンを撤去して以降、本番の
+    // コミット経路は`commit_pending_layout_edit()`のみで、この関数は
+    // 既存テスト（`build_layout_edit_value`の共有パース・バリデーション
+    // ロジックの検証）専用として残している。`#[allow(dead_code)]`のまま
+    // 本番`impl`に残すと、将来「適用ボタンを復活させよう」と誤って再配線
+    // した場合に`layout_edit_origin_is_sequence`/`ime_composing`のガードを
+    // 一切通らずコミットしてしまう——`#[cfg(test)]`で物理的にビルドから
+    // 除外し、その事故を構造的に防ぐ。
+    #[cfg(test)]
     fn apply_layout_edit(&mut self) {
         let Some(pos) = self.layout_selected_pos else {
             return;
         };
-        let value = match self.layout_edit_kind {
-            ValueKind::Keystroke => {
-                let input = normalize_keystroke_input(&self.layout_edit_value);
-                if input.is_empty() {
-                    YabValue::None
-                } else if let Some(bad) = find_invalid_keystroke_char(&input) {
-                    self.layout_status =
-                        format!("「{bad}」は JIS キーボード上のキーとして入力できません");
-                    return;
-                } else if input.chars().all(|c| c.is_ascii_alphabetic()) {
-                    let kana = self.kana_table.kana_for_romaji(&input);
-                    YabValue::Romaji {
-                        romaji: input,
-                        kana,
-                    }
-                } else {
-                    YabValue::KeySequence(input)
-                }
+        let value = match self.build_layout_edit_value(true) {
+            Ok(value) => value,
+            Err(msg) => {
+                self.layout_status = msg;
+                return;
             }
-            ValueKind::Literal => {
-                let s = self.layout_edit_value.clone();
-                if s.is_empty() {
-                    YabValue::None
-                } else {
-                    YabValue::Literal(s)
-                }
-            }
-            ValueKind::Special => YabValue::Special(SPECIAL_KEYS[self.layout_edit_special_idx].0),
-            ValueKind::Vk => {
-                let hex = self.layout_edit_value.trim().trim_start_matches('V');
-                if hex.is_empty() {
-                    YabValue::None
-                } else if let Ok(code) = u16::from_str_radix(hex, 16) {
-                    YabValue::Vk(VkCode(code))
-                } else {
-                    self.layout_status = format!("「{hex}」は16進数として解釈できません");
-                    return;
-                }
-            }
-            ValueKind::None => YabValue::None,
         };
         self.layout_face_mut(self.layout_current_face)
             .insert(pos, value);
         self.layout_modified = true;
         self.layout_status = "変更あり".to_string();
+        self.select_layout_cell(pos);
     }
 
-    fn layout_do_save(&mut self) {
-        let path = self.layout_file_path.clone();
-        match path {
-            Some(p) => self.layout_write_to_path(&p),
-            None => self.layout_do_save_as_dialog(),
-        }
-    }
-
-    fn layout_write_to_path(&mut self, path: &Path) {
+    fn layout_write_to_path(
+        &mut self,
+        path: &Path,
+        update_current_path: bool,
+        recompute_diagnostics: bool,
+    ) -> Result<(), String> {
         let text = self.layout.serialize(self.config.general.keyboard_model);
         match std::fs::write(path, &text) {
             Ok(()) => {
-                self.layout_file_path = Some(path.to_path_buf());
-                self.layout_file_path_buf = path.display().to_string();
-                self.layout_modified = false;
+                if update_current_path {
+                    self.layout_file_path = Some(path.to_path_buf());
+                    self.layout_file_path_buf = path.display().to_string();
+                    self.layout_modified = false;
+                }
                 // 書き込み成功後にのみ lint する（失敗時に計算を無駄にしない）。
                 let lint_warnings = awase::yab::lint(&text);
                 self.layout_status = append_lint_warnings(
@@ -974,13 +1421,27 @@ impl SettingsApp {
                 // ADR-116: 配列編集タブでの保存直後に上部パネルの診断リストが
                 // 古いまま（クォート崩れを直したのに警告が残る等）にならない
                 // よう再計算する。
-                self.recompute_diagnostics();
+                if recompute_diagnostics {
+                    self.recompute_diagnostics();
+                }
+                Ok(())
             }
-            Err(e) => self.layout_status = format!("保存失敗: {e}"),
+            Err(e) => {
+                let msg = format!("保存失敗: {e}");
+                self.layout_status.clone_from(&msg);
+                Err(msg)
+            }
         }
     }
 
     fn layout_do_open_dialog(&mut self) {
+        if !self.confirm_layout_discard_or_defer(LayoutDiscardAction::OpenPending) {
+            return;
+        }
+        self.layout_open_dialog_unchecked();
+    }
+
+    fn layout_open_dialog_unchecked(&mut self) {
         let task = rfd::AsyncFileDialog::new()
             .set_title("配列ファイルを開く")
             .add_filter("YAB 配列ファイル", &["yab"])
@@ -997,7 +1458,7 @@ impl SettingsApp {
 
     fn layout_do_save_as_dialog(&mut self) {
         let task = rfd::AsyncFileDialog::new()
-            .set_title("名前を付けて保存")
+            .set_title("別ファイルへ書き出す")
             .add_filter("YAB 配列ファイル", &["yab"])
             .add_filter("すべてのファイル", &["*"])
             .save_file();
@@ -1013,26 +1474,66 @@ impl SettingsApp {
     fn layout_load_from_path(&mut self, path: &Path) {
         match load_yab_layout(path, self.config.general.keyboard_model) {
             Ok((ly, lint_warnings)) => {
-                self.layout = ly;
                 self.layout_file_path_buf = path.display().to_string();
                 self.layout_file_path = Some(path.to_path_buf());
+                self.layout = ly;
                 self.layout_modified = false;
-                self.layout_selected_pos = None;
+                self.layout_loaded_ok = true;
+                self.layout_loaded_model = Some(self.config.general.keyboard_model);
+                self.clear_layout_edit_selection();
                 self.layout_status = append_lint_warnings(
                     format!("{} を読み込みました", path.display()),
                     &lint_warnings,
                 );
             }
-            Err(e) => self.layout_status = format!("読み込み失敗: {e}"),
+            Err(e) => {
+                // round5 code-review指摘: 失敗時も無条件に`layout_file_path`を
+                // 新パスへ差し替えると、直前まで有効だった配列ファイルへの
+                // 参照が失われる（以後`F5`再読み込みも壊れたパスを見続け、
+                // キャンセルの「両方元に戻す」の復元先も無くなる）。
+                // `layout_file_path`が未設定（起動直後の初回読み込み等）の
+                // 場合のみ、round1 F8の判断どおり試行したパスを既定値として
+                // 割り当てる——「保存先が未設定」という状態そのものは
+                // 失敗時にも作らないが、既に有効なパスを壊れたパスで
+                // 上書きすることはしない。
+                if let Some(existing) = &self.layout_file_path {
+                    // code-review指摘: パス欄が失敗した新パスの表示のまま
+                    // 残ると、実際に有効なファイル（`layout_file_path`）と
+                    // テキスト欄の表示が食い違い、次のF5/Enterがどちらを
+                    // 指しているか分からなくなる。有効な既存パスへ戻す。
+                    self.layout_file_path_buf = existing.display().to_string();
+                } else {
+                    self.layout_file_path_buf = path.display().to_string();
+                    self.layout_file_path = Some(path.to_path_buf());
+                }
+                self.layout_loaded_ok = false;
+                self.layout_loaded_model = None;
+                self.clear_layout_edit_selection();
+                self.layout_status = format!("読み込み失敗: {e}");
+            }
         }
     }
 
     fn layout_do_open_from_text_box(&mut self) {
+        if !self.confirm_layout_discard_or_defer(LayoutDiscardAction::OpenTextBox) {
+            return;
+        }
+        self.layout_open_from_text_box_unchecked();
+    }
+
+    fn layout_do_reload(&mut self) {
+        if !self.confirm_layout_discard_or_defer(LayoutDiscardAction::Reload) {
+            return;
+        }
+        self.layout_reload_unchecked();
+    }
+
+    fn layout_open_from_text_box_unchecked(&mut self) {
         let path = PathBuf::from(&self.layout_file_path_buf);
         self.layout_load_from_path(&path);
     }
 
-    fn layout_do_reload(&mut self) {
+    fn layout_reload_unchecked(&mut self) {
         let Some(path) = self.layout_file_path.clone() else {
             self.layout_status = "ファイルパスが未設定です".to_string();
             return;
@@ -1041,13 +1542,55 @@ impl SettingsApp {
             Ok((ly, lint_warnings)) => {
                 self.layout = ly;
                 self.layout_modified = false;
-                self.layout_selected_pos = None;
+                self.layout_loaded_ok = true;
+                self.layout_loaded_model = Some(self.config.general.keyboard_model);
+                self.clear_layout_edit_selection();
                 self.layout_status = append_lint_warnings(
                     format!("{} を再読み込みしました", path.display()),
                     &lint_warnings,
                 );
             }
-            Err(e) => self.layout_status = format!("再読み込み失敗: {e}"),
+            Err(e) => {
+                self.layout_loaded_ok = false;
+                self.layout_loaded_model = None;
+                self.clear_layout_edit_selection();
+                self.layout_status = format!("再読み込み失敗: {e}");
+            }
+        }
+    }
+
+    fn confirm_layout_discard_or_defer(&mut self, action: LayoutDiscardAction) -> bool {
+        if self.show_cancel_layout_confirm {
+            // /code-review指摘: この関数は「開く」「再読み込み」「パス欄Enter」
+            // （ツールバー）とCtrl+O/F5（`handle_layout_shortcuts`、こちらは
+            // 呼び出し前に別途ガード済み）の両方から呼ばれる。下部「キャンセル」
+            // が開いた3択確認モーダル(`show_cancel_layout_confirm`)が表示中に
+            // ここへ到達すると、ここで`pending_layout_discard`まで立ってしまい
+            // 非ブロッキングな`egui::Window`が2つ同時に描画される
+            // （round2 R2-8と同型）。個々の呼び出し元にガードを重複させるのではなく、
+            // ここで一元的に拒否する。
+            self.layout_status =
+                "他の確認が表示されています。先にそちらへ答えてください。".to_string();
+            return false;
+        }
+        if self.layout_modified {
+            self.pending_layout_discard = Some(action);
+            self.layout_status =
+                "未保存の配列編集があります。破棄するか確認してください。".to_string();
+            false
+        } else {
+            true
+        }
+    }
+
+    fn run_pending_layout_discard_action(&mut self) {
+        let Some(action) = self.pending_layout_discard.take() else {
+            return;
+        };
+        match action {
+            LayoutDiscardAction::OpenPending => self.layout_open_dialog_unchecked(),
+            LayoutDiscardAction::OpenTextBox => self.layout_open_from_text_box_unchecked(),
+            LayoutDiscardAction::Reload => self.layout_reload_unchecked(),
         }
     }
 
@@ -1080,7 +1623,7 @@ impl SettingsApp {
             self.layout_load_from_path(&path);
         }
         if let Some(path) = self.layout_pending_save_as.take() {
-            self.layout_write_to_path(&path);
+            let _ = self.layout_write_to_path(&path, false, true);
         }
     }
 
@@ -1090,8 +1633,16 @@ impl SettingsApp {
         if self.active_tab != Tab::Layout {
             return;
         }
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
-            self.layout_do_save();
+        // code-review指摘（round2 R2-8と同型の退行）: グローバルCtrl+Sには
+        // 確認モーダル表示中の抑止を追加したが、ここ（Ctrl+O/F5）が
+        // 無条件のままだと、3択キャンセルモーダル等を開いた状態でF5を押すと
+        // `confirm_layout_discard_or_defer`経由で破棄確認モーダルが追加で
+        // 開き、非ブロッキングな`egui::Window`同士が同一フレームに共存する。
+        if self.show_dangerous_save_confirm
+            || self.show_cancel_layout_confirm
+            || self.pending_layout_discard.is_some()
+        {
+            return;
         }
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::O)) {
             self.layout_do_open_dialog();
@@ -1997,15 +2548,8 @@ impl SettingsApp {
                 self.layout_do_open_dialog();
             }
             if ui
-                .button("保存")
-                .on_hover_text("押すと: 現在編集中の内容を今開いているファイルへ上書き保存します。")
-                .clicked()
-            {
-                self.layout_do_save();
-            }
-            if ui
-                .button("名前を付けて保存")
-                .on_hover_text("押すと: 保存先を選ぶダイアログを開き、別名/別の場所へ保存します。")
+                .button("別名で書き出す")
+                .on_hover_text("押すと: 現在編集中の内容を別ファイルへ書き出します。開いているファイルは変わりません。")
                 .clicked()
             {
                 self.layout_do_save_as_dialog();
@@ -2087,7 +2631,7 @@ impl SettingsApp {
                     .clicked()
                 {
                     self.layout_current_face = *face;
-                    self.layout_selected_pos = None;
+                    self.clear_layout_edit_selection();
                 }
             }
         });
@@ -2249,11 +2793,12 @@ impl SettingsApp {
         ui.add_space(4.0);
 
         // Type selector (radio buttons)
-        ui.horizontal(|ui| {
-            ui.label("種別:");
-            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Keystroke, "打鍵")
-                .on_hover_text(
-                    "ローマ字（複数文字、例: 「si」「tsu」）またはキーボード上の\n\
+        ui.add_enabled_ui(!self.layout_edit_origin_is_sequence, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("種別:");
+                ui.radio_value(&mut self.layout_edit_kind, ValueKind::Keystroke, "打鍵")
+                    .on_hover_text(
+                        "ローマ字（複数文字、例: 「si」「tsu」）またはキーボード上の\n\
                      記号・数字（例: 「!」「1」）を、実際のキー押下として送信し、\n\
                      IME に処理させます。\n\
                      \n\
@@ -2264,29 +2809,45 @@ impl SettingsApp {
                      JIS キーボード上に存在する文字（半角の英数字・記号）のみ\n\
                      入力できます。全角で入力しても自動で半角に変換されるので、\n\
                      半角/全角を意識する必要はありません。",
-                );
-            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Literal, "リテラル")
-                .on_hover_text(
-                    "指定した文字列を Unicode 文字としてそのまま直接送信します\n\
+                    );
+                ui.radio_value(&mut self.layout_edit_kind, ValueKind::Literal, "リテラル")
+                    .on_hover_text(
+                        "指定した文字列を Unicode 文字としてそのまま直接送信します\n\
                      （IME を一切経由しません）。IME や変換モードに関係なく必ず\n\
                      その文字が出ます。「ー」「…」のような固定記号に向いています。",
-                );
-            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Special, "特殊キー")
-                .on_hover_text(
-                    "Backspace / Escape / Enter / Space / Delete / Insert / \n\
+                    );
+                ui.radio_value(&mut self.layout_edit_kind, ValueKind::Special, "特殊キー")
+                    .on_hover_text(
+                        "Backspace / Escape / Enter / Space / Delete / Insert / \n\
                      矢印 / Home / End / PageUp / PageDown を送信します。",
-                );
-            ui.radio_value(&mut self.layout_edit_kind, ValueKind::Vk, "VKコード")
-                .on_hover_text(
-                    "仮想キーコードを16進数で直接指定します（やまぶきR互換の\n\
+                    );
+                ui.radio_value(&mut self.layout_edit_kind, ValueKind::Vk, "VKコード")
+                    .on_hover_text(
+                        "仮想キーコードを16進数で直接指定します（やまぶきR互換の\n\
                      「V」+16進数指定）。特殊キーに無いキーを送りたい場合に使います。",
-                );
-            ui.radio_value(&mut self.layout_edit_kind, ValueKind::None, "なし")
-                .on_hover_text("このキーへの割り当てを解除します（パススルー）。");
+                    );
+                ui.radio_value(&mut self.layout_edit_kind, ValueKind::None, "なし")
+                    .on_hover_text("このキーへの割り当てを解除します（パススルー）。");
+            });
         });
+        if self.layout_edit_origin_is_sequence {
+            ui.label(
+                egui::RichText::new(
+                    "このセルは打鍵列構文を含むため、GUIでは編集できません。.yabを直接編集してください。",
+                )
+                .small()
+                .color(egui::Color32::GRAY),
+            );
+        }
         ui.add_space(4.0);
 
         // Value input
+        // round4 architect W3/premortem R4-2: ADR-115打鍵列セルは種別ラジオ
+        // （上記）だけでなく値ウィジェットもここで無効化する。
+        // `layout_edit_origin_is_sequence`ガード（commit_pending_layout_edit
+        // ステップ2）が既にコミットを構造的に阻止しているため、これはUI上の
+        // 二重の防御（「操作しても何も起きない」編集可能に見えるUIを残さない）。
+        ui.add_enabled_ui(!self.layout_edit_origin_is_sequence, |ui| {
         match self.layout_edit_kind {
             ValueKind::Keystroke => {
                 ui.horizontal(|ui| {
@@ -2302,7 +2863,7 @@ impl SettingsApp {
                         .on_hover_text(
                             "ローマ字（例: ka, si, tsu）または半角記号/数字（例: !, 1）を入力します。",
                         );
-                    if resp.changed() {
+                    if resp.changed() && !self.ime_composing && !self.ime_event_this_frame {
                         self.layout_edit_value = normalize_keystroke_input(&self.layout_edit_value);
                     }
                 });
@@ -2353,18 +2914,28 @@ impl SettingsApp {
             }
             ValueKind::Special => {
                 let special_hover = "このキーを押したときに送信する特殊キーを選びます。";
+                let previous_idx = self.layout_edit_special_idx;
                 ui.horizontal(|ui| {
                     ui.label("特殊キー:").on_hover_text(special_hover);
-                    egui::ComboBox::from_id_salt("special_key")
+                    let response = egui::ComboBox::from_id_salt("special_key")
                         .selected_text(SPECIAL_KEYS[self.layout_edit_special_idx].1)
                         .show_ui(ui, |ui| {
                             for (i, (_, name)) in SPECIAL_KEYS.iter().enumerate() {
                                 ui.selectable_value(&mut self.layout_edit_special_idx, i, *name);
                             }
                         })
-                        .response
-                        .on_hover_text(special_hover);
+                        .response;
+                    response.on_hover_text(special_hover);
                 });
+                // `ComboBox::show_ui`（`show_index`とは異なる素の版）は内側の
+                // `selectable_value`のクリックを`Response::changed()`へ伝播しない
+                // （egui-0.31.1のcombo_box_dyn実装を確認済み）。ここで`changed()`
+                // を条件にすると特殊キーが恒久的にコミットされないため、選択前後の
+                // インデックス比較で明示的に変更を検知する（判定・コミット自体は
+                // `commit_special_key_if_changed`に切り出し、egui/ComboBoxの
+                // ポインタ操作をシミュレートしなくてもユニットテストできるように
+                // している）。
+                self.commit_special_key_if_changed(pos, previous_idx);
             }
             ValueKind::Vk => {
                 ui.horizontal(|ui| {
@@ -2392,29 +2963,17 @@ impl SettingsApp {
                     egui::RichText::new("このキーへの割り当てを解除します")
                         .color(egui::Color32::GRAY),
                 );
+                if self.layout_face(self.layout_current_face).get(&pos) != Some(&YabValue::None)
+                    && ui.button("このキーの割り当てを解除").clicked()
+                {
+                    self.layout_face_mut(self.layout_current_face)
+                        .insert(pos, YabValue::None);
+                    self.layout_modified = true;
+                    self.select_layout_cell(pos);
+                }
             }
         }
-
-        let can_apply = (self.layout_edit_kind != ValueKind::Keystroke
-            || find_invalid_keystroke_char(self.layout_edit_value.trim()).is_none())
-            && (self.layout_edit_kind != ValueKind::Vk
-                || self.layout_edit_value.trim().is_empty()
-                || u16::from_str_radix(self.layout_edit_value.trim().trim_start_matches('V'), 16)
-                    .is_ok());
-
-        ui.add_space(6.0);
-        if ui
-            .add_enabled(
-                can_apply,
-                egui::Button::new(egui::RichText::new("適用").strong()),
-            )
-            .on_hover_text(
-                "押すと: 上で入力した内容を選択中のセルへ反映します（ファイルへの\n保存は別途「保存」ボタンで行います）。",
-            )
-            .clicked()
-        {
-            self.apply_layout_edit();
-        }
+        });
     }
 
     #[expect(clippy::too_many_lines)]
@@ -2609,8 +3168,27 @@ impl SettingsApp {
 // ── eframe::App ──
 
 impl eframe::App for SettingsApp {
+    // ADR-126で確認モーダルの排他制御を追加した分だけ意図的に閾値を超えている
+    // （フレーム冒頭の処理順序が本ADRの核心のため、無理に関数分割しない）。
+    #[expect(clippy::too_many_lines)]
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ADR-126 D6: ウィンドウを閉じる操作には config/layout どちらの
+        // 未保存確認も入れない。キャンセルボタンの復元操作だけを確認対象にする。
+        self.update_ime_state(ctx);
         self.poll_pending_save(ctx);
+        self.commit_pending_layout_edit(ctx);
+        // code-review指摘: キー捕捉モードだけでなく、確認モーダル表示中
+        // （Dangerous確認・キャンセル3択・配列破棄確認）にもグローバル
+        // Ctrl+Sを発火させない。モーダルの背後で予期せず`apply()`が
+        // 走ってしまうことを防ぐ。
+        if self.capturing.is_none()
+            && !self.show_dangerous_save_confirm
+            && !self.show_cancel_layout_confirm
+            && self.pending_layout_discard.is_none()
+            && ctx.input(|i| i.modifiers.ctrl && !i.modifiers.shift && i.key_pressed(egui::Key::S))
+        {
+            self.apply();
+        }
         self.handle_layout_shortcuts(ctx);
 
         // 複数ディスプレイ対応: DPI スケールの異なるモニタへ移動すると、
@@ -2640,6 +3218,8 @@ impl eframe::App for SettingsApp {
 
         self.config_path_panel(ctx);
         self.show_dangerous_save_confirm_modal(ctx);
+        self.show_cancel_layout_confirm_modal(ctx);
+        self.show_layout_discard_confirm_modal(ctx);
 
         // Side panel for tab selection
         egui::SidePanel::left("tab_panel")
@@ -2671,6 +3251,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Keymap, "ショートカット"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
+                        self.clear_ime_on_tab_change(tab);
                         self.active_tab = tab;
                     }
                 }
@@ -2682,11 +3263,38 @@ impl eframe::App for SettingsApp {
         // （複数ディスプレイの DPI 遷移で実発生）。
         egui::TopBottomPanel::bottom("action_panel").show(ctx, |ui| {
             ui.add_space(6.0);
+            if self.layout_modified {
+                ui.label(
+                    egui::RichText::new("配列編集に未保存の変更があります")
+                        .color(egui::Color32::from_rgb(200, 80, 0)),
+                );
+                ui.add_space(4.0);
+            }
             ui.horizontal(|ui| {
-                if ui.button("適用").clicked() {
+                let save_in_progress = self.pending_save.is_some();
+                // /code-review指摘: グローバルCtrl+S（`update()`冒頭）には
+                // 確認モーダル表示中の抑止を入れたが、この「適用」ボタン自体は
+                // `save_in_progress`しか見ていなかった。3択キャンセル確認や
+                // 配列破棄確認が開いている間にクリックすると、その確認が
+                // 尋ねている変更をそのまま`apply_confirmed()`で保存してしまう
+                // （確認モーダルを実質無視できてしまう）。同じ条件で無効化する。
+                let confirm_modal_open = self.show_dangerous_save_confirm
+                    || self.show_cancel_layout_confirm
+                    || self.pending_layout_discard.is_some();
+                if ui
+                    .add_enabled(
+                        !save_in_progress && !confirm_modal_open,
+                        egui::Button::new("適用"),
+                    )
+                    .on_hover_text("押すと: 変更を保存して awase に再読み込みを通知します（配列編集の変更も保存されます）。")
+                    .clicked()
+                {
                     self.apply();
                 }
-                if ui.button("キャンセル").clicked() {
+                if ui
+                    .add_enabled(!save_in_progress, egui::Button::new("キャンセル"))
+                    .clicked()
+                {
                     self.cancel();
                 }
             });
@@ -4078,17 +4686,19 @@ fn send_reload_config_message() {
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
-        CLIPBOARD_HISTORY_LEN, Face, KanaTable, NewComboBuf, PhysicalPos, SPECIAL_KEYS,
-        SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path, load_yab_layout,
-        resolve_layouts_dir,
+        CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
+        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path,
+        load_yab_layout, resolve_layouts_dir,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
-        let layout = load_yab_layout(&layout_path, config.general.keyboard_model)
-            .map(|(ly, _lint_warnings)| ly)
-            .unwrap_or_else(|_| empty_yab_layout());
+        let (layout, layout_loaded_ok) =
+            load_yab_layout(&layout_path, config.general.keyboard_model)
+                .map(|(ly, _lint_warnings)| (ly, true))
+                .unwrap_or_else(|_| (empty_yab_layout(), false));
+        let config_loaded_model = config.general.keyboard_model;
         SettingsApp {
             config,
             config_path: std::path::PathBuf::from("config.toml"),
@@ -4122,12 +4732,23 @@ mod layout_tab_repro {
             layout_edit_kind: ValueKind::None,
             layout_edit_value: String::new(),
             layout_edit_special_idx: 0,
+            layout_edit_origin: None,
+            layout_edit_origin_is_sequence: false,
+            layout_edit_last_seen: None,
+            ime_composing: false,
+            ime_event_this_frame: false,
             kana_table: KanaTable::build(),
             layout_modified: false,
             layout_status: String::new(),
             layout_loaded: true,
+            layout_loaded_ok,
+            layout_loaded_model: layout_loaded_ok.then_some(config_loaded_model),
             layout_pending_open: None,
             layout_pending_save_as: None,
+            pending_layout_discard: None,
+            show_cancel_layout_confirm: false,
+            pending_status_notes: Vec::new(),
+            config_loaded_model,
             pending_save: None,
             scancode_map_status: None,
             scancode_map_last_message: None,
@@ -4362,7 +4983,7 @@ mod layout_tab_repro {
             "awase_settings_roundtrip_test_{}.yab",
             std::process::id()
         ));
-        app.layout_write_to_path(&path);
+        app.layout_write_to_path(&path, true, true).unwrap();
         assert!(!app.layout_modified, "保存後も変更ありのままになっている");
 
         let content = std::fs::read_to_string(&path).expect("保存したファイルを読み戻せない");
@@ -4582,6 +5203,402 @@ mod layout_tab_repro {
             !app.layout_modified,
             "選択セルが無いのに modified フラグが立ってしまった"
         );
+    }
+
+    fn temp_layout_app() -> (SettingsApp, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "awase_test_settings_layout_{}_{}",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let layout_path = dir.join("test.yab");
+        let layout_text = empty_yab_layout().serialize(awase::scanmap::KeyboardModel::Jis);
+        std::fs::write(&layout_path, layout_text).unwrap();
+
+        let mut config: awase::config::AppConfig = toml::from_str("[general]").unwrap();
+        config.general.layouts_dir = dir.display().to_string();
+        config.general.default_layout = "test.yab".to_string();
+        config.general.keyboard_model = awase::scanmap::KeyboardModel::Jis;
+
+        let mut app = test_settings_app(config);
+        let config_path = dir.join("config.toml");
+        app.config_path = config_path.clone();
+        app.layout_load_from_path(&layout_path);
+        (app, dir, config_path)
+    }
+
+    fn is_empty_cell(value: Option<&YabValue>) -> bool {
+        matches!(value, None | Some(YabValue::None))
+    }
+
+    #[test]
+    fn commit_pending_layout_edit_commits_text_and_kind_changes() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let ctx = eframe::egui::Context::default();
+        let pos = PhysicalPos::new(0, 0);
+
+        app.select_layout_cell(pos);
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "ka".to_string();
+        app.commit_pending_layout_edit(&ctx);
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&pos),
+            Some(YabValue::Romaji { romaji, .. }) if romaji == "ka"
+        ));
+
+        app.layout_edit_kind = ValueKind::Literal;
+        app.commit_pending_layout_edit(&ctx);
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&pos),
+            Some(YabValue::Literal(s)) if s == "ka"
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_pending_layout_edit_skips_sequence_cells_even_if_kind_changes() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let ctx = eframe::egui::Context::default();
+        let pos = PhysicalPos::new(0, 0);
+        let original = YabValue::MacroRef("macro1".to_string());
+        app.layout_face_mut(Face::Normal)
+            .insert(pos, original.clone());
+
+        app.select_layout_cell(pos);
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.commit_pending_layout_edit(&ctx);
+
+        assert_eq!(app.layout_face(Face::Normal).get(&pos), Some(&original));
+        assert!(!app.layout_modified);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_pending_layout_edit_skips_none_special_and_ime_frames() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let ctx = eframe::egui::Context::default();
+        let pos = PhysicalPos::new(0, 0);
+        app.select_layout_cell(pos);
+
+        app.layout_edit_kind = ValueKind::Special;
+        app.layout_edit_special_idx = 1;
+        app.commit_pending_layout_edit(&ctx);
+        assert!(is_empty_cell(app.layout_face(Face::Normal).get(&pos)));
+
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "ka".to_string();
+        app.ime_composing = true;
+        app.commit_pending_layout_edit(&ctx);
+        assert!(is_empty_cell(app.layout_face(Face::Normal).get(&pos)));
+
+        app.ime_composing = false;
+        app.ime_event_this_frame = true;
+        app.commit_pending_layout_edit(&ctx);
+        assert!(is_empty_cell(app.layout_face(Face::Normal).get(&pos)));
+
+        app.ime_event_this_frame = false;
+        app.commit_pending_layout_edit(&ctx);
+        assert!(matches!(
+            app.layout_face(Face::Normal).get(&pos),
+            Some(YabValue::Romaji { romaji, .. }) if romaji == "ka"
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // 上のテストは「commit_pending_layout_editがSpecialをコミットしない」
+    // ことしか見ておらず、`ValueKind::Special`が実際にコミットされる唯一の
+    // 経路（ComboBoxの`response.changed()`——egui-0.31.1のcombo_box_dynは
+    // これを伝播しないため実質デッドコードだった）を一度も通していなかった。
+    // これがcode-reviewで見つかったBlocker（特殊キーがGUIから設定不能）を
+    // 素通りさせた直接の原因のため、独立コミット経路
+    // `commit_special_key_if_changed`を専用にテストする。
+    #[test]
+    fn selecting_a_different_special_key_commits_and_resyncs_buffer() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let pos = PhysicalPos::new(0, 0);
+        app.select_layout_cell(pos);
+        app.layout_edit_kind = ValueKind::Special;
+        let previous_idx = app.layout_edit_special_idx;
+        let new_idx = (previous_idx + 1) % SPECIAL_KEYS.len();
+
+        app.layout_edit_special_idx = new_idx;
+        app.commit_special_key_if_changed(pos, previous_idx);
+
+        let expected = SPECIAL_KEYS[new_idx].0;
+        assert_eq!(
+            app.layout_face(Face::Normal).get(&pos),
+            Some(&YabValue::Special(expected))
+        );
+        assert!(app.layout_modified);
+        // round4 R4-3: 直接コミット後もバッファ（種別・インデックス）は
+        // `select_layout_cell`により新しいモデル値と再同期されている
+        // ——編集パネルの表示とモデルが恒久的に食い違わない。
+        assert_eq!(app.layout_edit_kind, ValueKind::Special);
+        assert_eq!(app.layout_edit_special_idx, new_idx);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn selecting_the_same_special_key_index_does_not_commit() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let pos = PhysicalPos::new(0, 0);
+        app.select_layout_cell(pos);
+        app.layout_edit_kind = ValueKind::Special;
+        let previous_idx = app.layout_edit_special_idx;
+
+        // ラジオを「特殊キー」へ切り替えただけ（ComboBoxは未操作、
+        // インデックスは前回のセルから引き継いだ値のまま）では、
+        // round3 R3-2が防ごうとした「未操作のインデックスが無言で
+        // コミットされる」事故を起こしてはならない。
+        app.commit_special_key_if_changed(pos, previous_idx);
+
+        assert!(is_empty_cell(app.layout_face(Face::Normal).get(&pos)));
+        assert!(!app.layout_modified);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn commit_pending_layout_edit_does_not_repeat_same_error_every_frame() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        let ctx = eframe::egui::Context::default();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Keystroke;
+        app.layout_edit_value = "あ".to_string();
+
+        app.commit_pending_layout_edit(&ctx);
+        assert!(app.layout_status.contains("JIS キーボード"));
+        app.layout_status = "別のステータス".to_string();
+        app.commit_pending_layout_edit(&ctx);
+        assert_eq!(app.layout_status, "別のステータス");
+
+        app.layout_edit_value = String::new();
+        app.layout_edit_origin = Some((String::new(), ValueKind::Keystroke));
+        app.commit_pending_layout_edit(&ctx);
+        assert!(app.layout_status.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_confirmed_writes_modified_layout_and_skips_unmodified_layout() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        let layout_path = app.layout_file_path.clone().unwrap();
+        let before = std::fs::read_to_string(&layout_path).unwrap();
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        assert_eq!(std::fs::read_to_string(&layout_path).unwrap(), before);
+
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let after = std::fs::read_to_string(&layout_path).unwrap();
+        assert_ne!(after, before);
+        assert!(!app.layout_modified);
+        assert!(app.status.contains("配列 test.yab を含む"));
+        let _ = std::fs::remove_file(config_path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // R5-1と同じ原則: 配列編集タブに閉じた問題（読み込み未了）は`.yab`書き込み
+    // だけをスキップし、無関係な設定変更(config.toml保存)まで巻き込んで
+    // 適用不能にしてはならない。
+    #[test]
+    fn apply_confirmed_skips_layout_write_but_still_saves_config_when_loaded_state_is_bad() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        let layout_path = app.layout_file_path.clone().unwrap();
+        let before = std::fs::read_to_string(&layout_path).unwrap();
+        app.layout_modified = true;
+        app.layout_loaded_ok = false;
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        assert_eq!(std::fs::read_to_string(&layout_path).unwrap(), before);
+        assert!(config_path.exists());
+        assert!(
+            app.status
+                .contains("読み込めていないため配列の変更は保存されていません")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_confirmed_guard_a_blocks_modified_layout_model_mismatch() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        app.layout_modified = true;
+        app.layout_loaded_ok = true;
+        app.layout_loaded_model = Some(awase::scanmap::KeyboardModel::Jis);
+        app.config.general.keyboard_model = awase::scanmap::KeyboardModel::Us;
+
+        app.apply_confirmed();
+
+        assert!(app.pending_save.is_none());
+        assert!(app.status.contains("読み込み時と異なるキーボード配列"));
+        assert!(!config_path.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_confirmed_guard_b_allows_matching_default_layout_with_or_without_editor_state() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        let us_path = dir.join("us.yab");
+        std::fs::write(
+            &us_path,
+            empty_yab_layout().serialize(awase::scanmap::KeyboardModel::Us),
+        )
+        .unwrap();
+        app.layout_loaded_model = Some(awase::scanmap::KeyboardModel::Jis);
+        app.layout_modified = false;
+        app.config.general.keyboard_model = awase::scanmap::KeyboardModel::Us;
+        app.config.general.default_layout = "us.yab".to_string();
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        assert!(config_path.exists());
+        assert!(app.status.contains("設定を保存しました"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_confirmed_guard_b_warns_but_saves_when_model_is_unchanged() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        let broken_path = dir.join("broken.yab");
+        std::fs::write(
+            &broken_path,
+            "[ローマ字シフト無し]\n\
+             無,無,無,無,無,無,無,無,無,無,無,無,無,無\n\
+             無,無,無,無,無,無,無,無,無,無,無,無\n\
+             無,無,無,無,無,無,無,無,無,無,無,無\n\
+             無,無,無,無,無,無,無,無,無,無,無\n",
+        )
+        .unwrap();
+        app.config.general.default_layout = "broken.yab".to_string();
+        app.config_loaded_model = app.config.general.keyboard_model;
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        assert!(config_path.exists());
+        assert!(app.status.contains("読み込めません"));
+        assert!(app.status.contains("設定を保存しました"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn apply_confirmed_guard_b_skips_missing_default_layout() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        app.config.general.default_layout = "missing.yab".to_string();
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        assert!(config_path.exists());
+        assert!(app.status.contains("設定を保存しました"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cancel_with_modified_layout_opens_three_way_confirm_and_both_reload_resyncs() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        std::fs::write(&config_path, "[general]\n").unwrap();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+
+        app.cancel();
+        assert!(app.show_cancel_layout_confirm);
+        assert!(app.layout_modified);
+
+        app.cancel_config_and_layout();
+        assert!(!app.layout_modified);
+        assert!(app.layout_selected_pos.is_none());
+        assert!(app.layout_edit_origin.is_none());
+        assert!(is_empty_cell(
+            app.layout_face(Face::Normal).get(&PhysicalPos::new(0, 0))
+        ));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // /code-review指摘（round2 R2-8と同型）: 3択キャンセル確認モーダルが
+    // 開いている間に、配列破棄確認（「開く」「再読み込み」「パス欄Enter」
+    // 経由）を新たに開こうとすると、2つの非ブロッキング`egui::Window`が
+    // 同時に描画されてしまう。`confirm_layout_discard_or_defer`側で
+    // 一元的に拒否することを検証する。
+    #[test]
+    fn discard_confirm_is_refused_while_cancel_confirm_is_open() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+
+        app.cancel();
+        assert!(app.show_cancel_layout_confirm);
+
+        let allowed = app.confirm_layout_discard_or_defer(LayoutDiscardAction::Reload);
+        assert!(!allowed);
+        assert!(
+            app.pending_layout_discard.is_none(),
+            "3択確認が開いている間は配列破棄確認を新たに開いてはならない"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // /code-review指摘: 3択キャンセル確認モーダルが開いている間に「適用」が
+    // 実行されると、確認が尋ねている変更（未保存の配列編集）をそのまま
+    // 保存してしまい、確認モーダル自体を無意味にする。`apply()`が
+    // それを拒否することを検証する。
+    #[test]
+    fn apply_is_refused_while_cancel_confirm_is_open() {
+        let (mut app, dir, config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+        let before = std::fs::read_to_string(app.layout_file_path.clone().unwrap()).unwrap();
+
+        app.cancel();
+        assert!(app.show_cancel_layout_confirm);
+
+        app.apply();
+
+        assert!(app.pending_save.is_none(), "確認表示中は保存を開始しない");
+        assert!(app.layout_modified, "未保存の編集はそのまま残る");
+        assert_eq!(
+            std::fs::read_to_string(app.layout_file_path.clone().unwrap()).unwrap(),
+            before
+        );
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // 逆方向: 配列破棄確認が開いている間に下部「キャンセル」を押しても、
+    // 3択確認モーダルを重ねて開いてはならない。
+    #[test]
+    fn cancel_is_refused_while_discard_confirm_is_open() {
+        let (mut app, dir, _config_path) = temp_layout_app();
+        app.select_layout_cell(PhysicalPos::new(0, 0));
+        app.layout_edit_kind = ValueKind::Literal;
+        app.layout_edit_value = "x".to_string();
+        app.commit_pending_layout_edit(&eframe::egui::Context::default());
+
+        let allowed = app.confirm_layout_discard_or_defer(LayoutDiscardAction::Reload);
+        assert!(!allowed);
+        assert!(app.pending_layout_discard.is_some());
+
+        app.cancel();
+        assert!(
+            !app.show_cancel_layout_confirm,
+            "配列破棄確認が開いている間は3択確認を新たに開いてはならない"
+        );
+        assert!(app.pending_layout_discard.is_some(), "既存の確認は残る");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     // ── ADR-099 決定4b/4c: config_load_state の遷移・保存前バックアップ ──
