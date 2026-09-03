@@ -654,9 +654,20 @@ where
                     }
                     // ベースラインは SendInput **前**に取得する（送信中の SHOW/I-O 変化を見逃さないため）。
                     // TSF/Chrome 共通で write-bytes 閾値 + 候補ウィンドウ SHOW の OR 判定を使う
-                    // （BUG-30 で target 分岐を撤去して統一）。veto_eligible=false: per-VK 単体確認
-                    // では前の VK が開いた候補ウィンドウが可視のまま残っている状態で今回の VK が
-                    // 真にリテラル化するケース（前モーラ由来の誤 veto）を避けるため。
+                    // （BUG-30 で target 分岐を撤去して統一）。
+                    //
+                    // veto_eligible=false: この per-VK 経路（`run_per_vk_confirm` /
+                    // `await_vk_detection`）は `LiteralDetector` を `check_now`/
+                    // `visible_fencing_verdict`/`evidence_now` から直接呼ぶだけで、
+                    // `veto_eligible()` の唯一の読み手である `LiteralDetectCore::poll`
+                    // （`tsf/warmup/literal_detect_fsm.rs`）は経由しない。したがって
+                    // この `false` は現状どの経路からも読まれない（ADR-122 round 2
+                    // で確認、`docs/adr/122-cold-start-per-vk-confirm-race-recovery.md`
+                    // 参照）。値そのものは「前の VK が開いた候補ウィンドウを今回の
+                    // VK の証拠に誤用しない」という意図を保持するため `false` の
+                    // ままにしてあるが、per-VK 経路に候補可視 veto を実際に効かせる
+                    // には別途 `LiteralDetectCore`/`veto_decision` 相当のゲートを
+                    // このループに新設する必要がある（未実装、ADR-122 決定案参照）。
                     let detector = crate::tsf::probe::LiteralDetector::new_with_pre_send_baseline(
                         crate::tsf::observer::gji_write_bytes(),
                         false,
