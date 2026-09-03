@@ -7,7 +7,6 @@
 .DS_Store
 # Wikipedia dump (large)
 jawiki-*.json.gz
-claude.md
 libscanmap.rlib
 rust_out
 librust_out.rlib
