@@ -1874,7 +1874,12 @@ impl Output {
         let len = vks.len();
         let order_tokens: Vec<u64> = vks.iter().map(|vk| vk.order_token).collect();
         if let Some(violation) = crate::journal_policy::order_violation(&order_tokens) {
-            log::warn!(
+            // ADR-123 変更A+C（gate拡張・drain-before-send）がdevelopマージ
+            // 済みのため、warn!からerror!へ昇格した。変更A+C未実装の間は
+            // この順序違反が実際に頻発する既知の状態だったため、その間は
+            // 意図的にwarn!に留めていた（変更E新設時のログレベル判断、
+            // ADR-123変更E参照）。
+            log::error!(
                 "[pending-deferred] order violation: index={} previous={} current={} tokens={:?}",
                 violation.index,
                 violation.previous,

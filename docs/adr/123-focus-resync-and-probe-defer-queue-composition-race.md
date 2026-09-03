@@ -2,14 +2,66 @@
 
 ## ステータス
 
-**実装着手（2026-09-03）。** round 1・round 2（Opus 2体、architect/premortem）で
-根本原因を確定させた後、「実装着手の条件」としていた確証データ
-（`TsfProbeStarted.pending_deferred_len > 0` の実発生）が
+**実装完了・実機ソーク待ち（2026-09-03）。** round 1・round 2（Opus 2体、
+architect/premortem）で根本原因を確定させた後、「実装着手の条件」として
+いた確証データ（`TsfProbeStarted.pending_deferred_len > 0` の実発生）が
 report_id `01M1KEGZ081YHJ1T2NC765SYYH`（2026-09-03）で得られた。この報告を
-受けて decision を Opus 敵対的レビュー3ラウンドで詳細化し、実装計画を確定した
-（下記「2026-09-03 実装着手（round 3）」節）。
+受けて decision を Opus 敵対的レビュー3ラウンドで詳細化し（下記「2026-09-03
+実装着手（round 3）」節）、変更D→E→B→(A+C) の5変更を実装（PR、develop
+マージ済み、コミット一覧は下記「実装（2026-09-03）」節）。
+
+各コミットを Opus 敵対的レビューで検証し、round 4（実装後レビュー）で
+自己 defer 退行を2件発見・修正した（変更A+Cコミット4-1直後の発見→4-2で
+対処、4-3直後の発見→修正コミットで対処。詳細は下記「実装（2026-09-03）」
+節）。実機ソークは未実施。
 
 [GitHub issue #148](https://github.com/cuzic/awase/issues/148) として追跡。
+
+### 実装（2026-09-03）
+
+develop マージ済み。コミット構成:
+
+- 変更D（journalノイズ削減、`journal_policy.rs::deferred_recovery_flush_is_notable`）
+- 変更E（順序トークンによる追い越し検出、`journal_policy.rs::order_violation`。
+  ログレベルは変更A+Cマージまで`log::warn!`、マージ後`log::error!`へ昇格予定
+  ——**未対応**、次回セッションで対応すること）
+- 変更B（`DeferredVk::origin`、`tests/architecture_guard.rs::
+  deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass`）
+- 変更A+C（4コミット構成、`fix/adr123-pr4-gate`ブランチ）:
+  - 4-1: `defer_if_probe_in_flight`の条件を`has_pending_tsf() ||
+    raw_recovery_owns_deferred()`へ拡張
+  - 4-2: raw recovery回収再送・ADR-101決定3のretry専用のgate免除入口
+    （`send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`）
+    を新設。round4指摘: 4-1単体では、これらの再送自身が無関係な別
+    give-upの`pending_gji_reinit`(Polling)を見て自己deferする退行が
+    あった
+  - 4-3: drain-before-send（queue-onlyなら新規モーラの前にflush）+
+    件数上限32（暫定値）。round4指摘: 当初実装はdrain判定に4-2と同じ
+    `gate`非対称を流用しており、raw recovery自身の再送が**無関係な別
+    recoveryが所有中**のキューを横取りしてflushしうるINV-F違反が
+    あった（修正コミットで、drain方向は`gate`に関わらず常に
+    `raw_recovery_owns_deferred()`を確認するよう訂正）
+  - 4-4: `send_romaji_batched_gated`/`send_romaji_as_tsf_gated`の
+    gate判定を`assess_warmth()`のcold/warm分岐の外（分岐前）へ移動し、
+    warm判定されたモーラにもgateを適用
+
+### 既知の残課題（ブロッカーではないが記録）
+
+1. **`ms_ime_gate_defer`内部の`defer_if_probe_in_flight`呼び出しが
+   gate引数（Enforced/Exempt）を無視する非対称**（round4、4-4レビュー
+   指摘）。現状はGJI起源の`needs_f2_probe()`ガードで実害なしだが、将来
+   `ms_ime_gate_defer`にGJI以外から到達する変更が入ると静かに再発しうる。
+   architecture_guard等での固定を検討する余地あり。
+2. **4-4（warm経路配線）の核心的な振る舞い変化を直接固定するテストが
+   ユニット/e2eいずれにも存在しない**（round4、4-4レビュー指摘）。
+   `GjiFsm`を実際に`OnWarm`へ遷移させるテストセットアップが必要で
+   このPRでは見送った。判定ロジック自体（`is_probe_or_recovery_blocking`
+   等）は4-1〜4-3で個別にユニットテスト済み。
+3. **実機ソーク未実施。** 次回同種の報告（`pending_deferred`の追い越し・
+   順序反転）が来た場合、上記の変更で実際に解消しているか確認すること。
+
+変更Eのログレベル昇格（`warn!`→`error!`）は変更A+Cマージ後の対応として
+2026-09-03中に実施済み（`output/mod.rs::flush_pending_deferred_vks`）。
 
 ### 2026-09-03 実装着手（round 3）: 確証データと decision の詳細化
 
