@@ -885,26 +885,40 @@ impl WindowsPlatform {
     /// `StartProbe` として burst 発火する。docs/known-bugs.md 参照）。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         let outcome = self.output.flush_raw_tsf_literal_recovery();
-        self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
-            trigger: "raw_recovery",
-            outcome: match outcome {
-                crate::output::RawRecoveryOutcome::DiscardedStale {
-                    backs,
-                    romaji_present,
-                    deferred_vk_count,
-                } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
-                    backs,
-                    romaji_present,
-                    deferred_vk_count,
-                },
-                crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
-                    crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
-                }
-                crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
-                    crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
-                }
+        let outcome = match outcome {
+            crate::output::RawRecoveryOutcome::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+            } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
             },
-        });
+            crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
+                crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
+            }
+            crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
+                crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
+            }
+        };
+        let facts = match outcome {
+            crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => {
+                crate::journal_policy::DeferredRecoveryFlushFacts::DiscardedStale
+            }
+            crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling => {
+                crate::journal_policy::DeferredRecoveryFlushFacts::SkippedWhilePolling
+            }
+            crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count } => {
+                crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count }
+            }
+        };
+        if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
+            self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
+                trigger: "raw_recovery",
+                outcome,
+            });
+        }
         self.drain_output_post_send_effects();
     }
 
