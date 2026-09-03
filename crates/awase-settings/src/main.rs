@@ -2067,15 +2067,21 @@ impl SettingsApp {
         if first_open {
             log_checkpoint("ツールバー/タブ/凡例 描画完了、グリッド描画開始");
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            self.draw_layout_keyboard_grid(ui);
-            if first_open {
-                log_checkpoint("グリッド描画完了、編集パネル描画開始");
-            }
-            ui.add_space(8.0);
-            ui.separator();
-            self.draw_layout_edit_panel(ui);
-        });
+        // ここで独自の ScrollArea::vertical() をネストしない（旧 awase-yab-editor
+        // 単体バイナリ時代の名残で db854511 の統合時にそのまま持ち込まれていた）。
+        // 縦専用スクロール領域は自身の可視幅にコンテンツを clip し、その clip 後の
+        // サイズだけを親へ返すため、内側にネストすると外側の
+        // egui::ScrollArea::both()（tab_layout の呼び出し元、Main content の
+        // 横スクロール = 最終フォールバック、7207413c 参照）がキーボード図の
+        // 実際の幅を検知できず、横スクロールバーが出ないまま右端が切れる
+        // （ウィンドウを既定幅より手動で縮めると発生。#156 code review 指摘）。
+        self.draw_layout_keyboard_grid(ui);
+        if first_open {
+            log_checkpoint("グリッド描画完了、編集パネル描画開始");
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        self.draw_layout_edit_panel(ui);
 
         if first_open {
             log_checkpoint(&format!(
