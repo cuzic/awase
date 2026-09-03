@@ -2276,6 +2276,71 @@ mod tests {
     }
 
     #[test]
+    fn defer_vk_if_probe_in_flight_also_defers_when_only_raw_recovery_owns_deferred() {
+        // 2026-09-03 code review指摘の回帰テスト: 単一VK版
+        // (defer_vk_if_probe_in_flight、記号のVKフォールバック経路専用)は
+        // 以前 raw_recovery_owns_deferred() を一切見ておらず、romaji版
+        // (上記テスト)と非対称だった。今は共通コア
+        // (defer_vks_if_probe_or_recovery_in_flight)を経由するため、
+        // 同じ条件でdeferすべき。
+        let o = make_output();
+        assert!(!o.warmup_coord.has_pending_tsf());
+        *o.pending_gji_reinit.borrow_mut() = Some(PendingGjiReinit {
+            cold_seq: Generation::INITIAL,
+            focus_gen: 1,
+            phase: PendingGjiReinitPhase::Polling {
+                retry: None,
+                guard: OutputActiveGuard::begin(),
+                poll_token: 7,
+                started_ms: 0,
+            },
+        });
+
+        let deferred =
+            o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput);
+
+        assert!(
+            deferred,
+            "raw_recovery_owns_deferred()=true なら defer_vk_if_probe_in_flight も \
+             defer すべき（romaji版との非対称の回帰テスト）"
+        );
+    }
+
+    #[test]
+    fn defer_vk_if_probe_in_flight_degrades_instead_of_pushing_past_the_cap() {
+        // 2026-09-03 code review指摘の回帰テスト: 単一VK版が件数上限
+        // (would_exceed_deferred_cap)を経由せず無条件pushしていた退行の
+        // 固定。romaji版の同名テストと対をなす。
+        let o = make_output();
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        for _ in 0..TsfWarmupCoordinator::DEFERRED_QUEUE_CAP {
+            assert!(o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput));
+        }
+        assert_eq!(
+            o.pending_deferred_len(),
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+
+        let deferred =
+            o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput);
+
+        assert!(!deferred, "上限到達後は defer せず false を返すべき");
+        assert_eq!(
+            o.pending_deferred_len(),
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP,
+            "上限到達後にキューが増えてはいけない"
+        );
+    }
+
+    #[test]
     fn defer_if_probe_in_flight_recovery_exempt_ignores_raw_recovery_owns_deferred() {
         // 同じ状態でも、raw recovery 自身の再送経路
         // (send_romaji_batched_bypass_gate/send_romaji_as_tsf_bypass_gate 用)
