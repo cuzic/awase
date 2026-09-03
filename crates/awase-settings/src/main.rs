@@ -233,16 +233,17 @@ fn main() -> eframe::Result<()> {
     // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
     // レジストリ操作のみ行い、終了コードで結果を返す（`--bug-report`と
     // 同型のヘッドレス分岐パターン）。
-    if let Some(mode) = arg_value(&args, "--scancode-map") {
-        let enable = match mode {
-            "on" => true,
-            "off" => false,
-            _ => {
-                log::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
-                std::process::exit(1);
-            }
+    if args.iter().any(|a| a == "--scancode-map") {
+        let Some(mode) = arg_value(&args, "--scancode-map") else {
+            log::error!("[scancode-map] --scancode-map に値がありません");
+            std::process::exit(1);
         };
-        std::process::exit(scancode_map_admin::run_elevated_worker(enable));
+        let Some(selection) = awase_windows::scancode_map::ScancodeMapSelection::from_cli_arg(mode)
+        else {
+            log::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
+            std::process::exit(1);
+        };
+        std::process::exit(scancode_map_admin::run_elevated_worker(selection));
     }
 
     let viewport = egui::ViewportBuilder::default()
@@ -1687,15 +1688,16 @@ impl SettingsApp {
         self.scancode_map_section(ui);
     }
 
-    /// Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111決定7）。Scancode Map
-    /// （レジストリ、要昇格・要再起動）方式のみを提供する——ADR-110の
+    /// Caps(英数)⇔Ctrl 入れ替え / Caps(英数)→Ctrl 片方向複製プリセット
+    /// （ADR-111 / ADR-126）。Scancode Map（レジストリ、要昇格・要再起動）
+    /// 方式のみを提供する——ADR-110の
     /// フックベース`key_remap`機構はJIS英数キー位置で日本語IMEと衝突する
     /// 構造的リスクが判明したため撤回済み（`docs/adr/111-...md`参照）。
     fn scancode_map_section(&mut self, ui: &mut egui::Ui) {
         ui.separator();
-        ui.heading("Caps(英数)⇔Ctrl 入れ替え");
+        ui.heading("Caps(英数) / Ctrl プリセット");
         ui.label(
-            "CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を入れ替えます。\n\
+            "CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を変更します。\n\
              Windows のレジストリ（Scancode Map）を書き換えるため、管理者権限の\n\
              確認が1回表示されます。変更の反映には再起動が必要です（サインアウトでは\n\
              反映されないことがあります）。\n\
@@ -1709,13 +1711,29 @@ impl SettingsApp {
         }
 
         match &self.scancode_map_status {
-            Some(scancode_map_admin::ScancodeMapStatus::Active { extra_entries }) => {
+            Some(scancode_map_admin::ScancodeMapStatus::Active {
+                preset,
+                extra_entries,
+            }) => {
+                let preset_name = match preset {
+                    awase_windows::scancode_map::ScancodeMapPreset::Swap => {
+                        "Caps(英数) ⇔ Ctrl 入れ替え"
+                    }
+                    awase_windows::scancode_map::ScancodeMapPreset::CapsAsExtraCtrl => {
+                        "Caps(英数) を Ctrl として追加"
+                    }
+                };
                 if *extra_entries == 0 {
-                    ui.colored_label(egui::Color32::from_rgb(0, 140, 0), "✓ 有効");
+                    ui.colored_label(
+                        egui::Color32::from_rgb(0, 140, 0),
+                        format!("✓ 有効: {preset_name}"),
+                    );
                 } else {
                     ui.colored_label(
                         egui::Color32::from_rgb(0, 140, 0),
-                        format!("✓ 有効（他に awase と無関係な設定が {extra_entries} 件あります）"),
+                        format!(
+                            "✓ 有効: {preset_name}（他に awase と無関係な設定が {extra_entries} 件あります）"
+                        ),
                     );
                 }
             }
@@ -1734,39 +1752,71 @@ impl SettingsApp {
             None => unreachable!("直前に read_status() で埋めている"),
         }
 
-        ui.horizontal(|ui| {
-            let is_active = matches!(
-                self.scancode_map_status,
-                Some(scancode_map_admin::ScancodeMapStatus::Active { .. })
+        let derived = match self.scancode_map_status {
+            Some(scancode_map_admin::ScancodeMapStatus::Active {
+                preset: awase_windows::scancode_map::ScancodeMapPreset::Swap,
+                ..
+            }) => awase_windows::scancode_map::ScancodeMapSelection::Swap,
+            Some(scancode_map_admin::ScancodeMapStatus::Active {
+                preset: awase_windows::scancode_map::ScancodeMapPreset::CapsAsExtraCtrl,
+                ..
+            }) => awase_windows::scancode_map::ScancodeMapSelection::CapsAsExtraCtrl,
+            _ => awase_windows::scancode_map::ScancodeMapSelection::Off,
+        };
+        let mut selection = derived;
+        let is_read_error = matches!(
+            self.scancode_map_status,
+            Some(scancode_map_admin::ScancodeMapStatus::ReadError(_))
+        );
+        ui.add_enabled_ui(!is_read_error, |ui| {
+            ui.radio_value(
+                &mut selection,
+                awase_windows::scancode_map::ScancodeMapSelection::Off,
+                "無効",
             );
-            if ui.button("有効にする").clicked() && !is_active {
-                self.apply_scancode_map_change(true);
-            }
-            if ui.button("無効にする").clicked() && is_active {
-                self.apply_scancode_map_change(false);
-            }
+            ui.radio_value(
+                &mut selection,
+                awase_windows::scancode_map::ScancodeMapSelection::Swap,
+                "Caps(英数) ⇔ Ctrl を入れ替える",
+            );
+            ui.radio_value(
+                &mut selection,
+                awase_windows::scancode_map::ScancodeMapSelection::CapsAsExtraCtrl,
+                "Caps(英数) を Ctrl として追加する（Ctrl が2つになります。元の Ctrl キーはそのまま。英数キー自体は使えなくなります）",
+            );
         });
+        if selection != derived {
+            self.apply_scancode_map_change(selection);
+        }
 
         if let Some(msg) = &self.scancode_map_last_message {
             ui.label(msg);
         }
     }
 
-    /// 有効化/無効化ボタン押下時の処理。自己昇格フロー
+    /// プリセット変更時の処理。自己昇格フロー
     /// （`scancode_map_admin::request_elevated_change`）を起動して完了を
     /// 待ち、結果に応じてメッセージを表示し、状態キャッシュを読み直す
-    /// （ADR-111決定4・決定7）。
-    fn apply_scancode_map_change(&mut self, enable: bool) {
+    /// （ADR-111決定4・決定7、ADR-126決定4・決定5）。
+    fn apply_scancode_map_change(
+        &mut self,
+        selection: awase_windows::scancode_map::ScancodeMapSelection,
+    ) {
         use scancode_map_admin::ElevationOutcome;
-        let outcome = scancode_map_admin::request_elevated_change(enable);
+        let outcome = scancode_map_admin::request_elevated_change(selection);
         self.scancode_map_last_message = Some(match outcome {
-            ElevationOutcome::Success => {
-                if enable {
-                    "有効にしました。反映するには再起動してください。".to_string()
-                } else {
+            ElevationOutcome::Success => match selection {
+                awase_windows::scancode_map::ScancodeMapSelection::Off => {
                     "無効にしました。反映するには再起動してください。".to_string()
                 }
-            }
+                awase_windows::scancode_map::ScancodeMapSelection::Swap => {
+                    "入れ替えを有効にしました。反映するには再起動してください。".to_string()
+                }
+                awase_windows::scancode_map::ScancodeMapSelection::CapsAsExtraCtrl => {
+                    "Ctrl として追加する設定にしました。反映するには再起動してください。"
+                        .to_string()
+                }
+            },
             ElevationOutcome::Failed => "処理に失敗しました。".to_string(),
             ElevationOutcome::Cancelled => {
                 "キャンセルされました（管理者権限が必要です）。".to_string()

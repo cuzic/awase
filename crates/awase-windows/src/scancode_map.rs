@@ -1,8 +1,9 @@
 #![cfg_attr(windows, allow(unsafe_code))]
 // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! Windows Scancode Map（`HKLM\SYSTEM\CurrentControlSet\Control\Keyboard
-//! Layout\Scancode Map`）の読み書きと、Caps(英数)⇔Left Ctrl 入れ替え
-//! プリセット用のバイト列生成・マージロジック（ADR-111）。
+//! Layout\Scancode Map`）の読み書きと、Caps(英数)⇔Left Ctrl 入れ替え /
+//! Caps(英数)→Left Ctrl 片方向複製プリセット用のバイト列生成・
+//! マージロジック（ADR-111 / ADR-126）。
 //!
 //! バイナリ形式は Windows のドキュメント化された固定フォーマット
 //! （4バイトヘッダ×2 + エントリ数(null終端込み) + エントリ配列 + null終端）
@@ -18,13 +19,77 @@ pub const SCANCODE_CAPS_EISU: u16 = 0x003A;
 /// Left Ctrl のスキャンコード（Set 1、非拡張）。
 pub const SCANCODE_LEFT_CTRL: u16 = 0x001D;
 
-/// このプリセットが書き込む2エントリ（`(from, to)` の順）。
-#[must_use]
-pub const fn preset_entries() -> [(u16, u16); 2] {
-    [
-        (SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL),
-        (SCANCODE_LEFT_CTRL, SCANCODE_CAPS_EISU),
-    ]
+/// Scancode Map に書き込む具体的な内容を持つプリセット。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScancodeMapPreset {
+    /// ADR-111: Caps(英数)⇔Left Ctrl 双方向入れ替え。
+    Swap,
+    /// ADR-126: Caps(英数)→Left Ctrl 片方向のみ。
+    CapsAsExtraCtrl,
+}
+
+impl ScancodeMapPreset {
+    /// このプリセットが書き込むエントリ（`(from, to)` の順）。
+    #[must_use]
+    pub const fn entries(self) -> &'static [(u16, u16)] {
+        match self {
+            Self::Swap => &[
+                (SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL),
+                (SCANCODE_LEFT_CTRL, SCANCODE_CAPS_EISU),
+            ],
+            Self::CapsAsExtraCtrl => &[(SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL)],
+        }
+    }
+
+    /// このプリセットが有効なとき「自分が書いた」と主張できる `from` 側
+    /// scancode の集合。
+    const fn owned_from_codes(self) -> &'static [u16] {
+        match self {
+            Self::Swap => &[SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL],
+            Self::CapsAsExtraCtrl => &[SCANCODE_CAPS_EISU],
+        }
+    }
+}
+
+/// GUI のラジオボタン・CLI 引数が表すユーザー選択。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScancodeMapSelection {
+    Off,
+    Swap,
+    CapsAsExtraCtrl,
+}
+
+impl ScancodeMapSelection {
+    /// 選択に対応するプリセット。`Off` はレジストリ値の無効化を表す。
+    #[must_use]
+    pub const fn preset(self) -> Option<ScancodeMapPreset> {
+        match self {
+            Self::Off => None,
+            Self::Swap => Some(ScancodeMapPreset::Swap),
+            Self::CapsAsExtraCtrl => Some(ScancodeMapPreset::CapsAsExtraCtrl),
+        }
+    }
+
+    /// 昇格ワーカーへ渡す CLI 引数値。
+    #[must_use]
+    pub const fn as_cli_arg(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Swap => "swap",
+            Self::CapsAsExtraCtrl => "caps-extra-ctrl",
+        }
+    }
+
+    /// 昇格ワーカー側で CLI 引数値を解釈する。
+    #[must_use]
+    pub fn from_cli_arg(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(Self::Off),
+            "swap" => Some(Self::Swap),
+            "caps-extra-ctrl" => Some(Self::CapsAsExtraCtrl),
+            _ => None,
+        }
+    }
 }
 
 /// Scancode Map の `REG_BINARY` 値をパースし `(from, to)` のリストを返す。
@@ -74,30 +139,81 @@ pub fn build_bytes(entries: &[(u16, u16)]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// `entries` にこのプリセットの2エントリが両方含まれているか。
+/// 現在のエントリ列から、有効なプリセットを検出する。
+/// Swap は CapsAsExtraCtrl の1エントリを包含するため先に判定する。
 #[must_use]
-pub fn is_preset_active(entries: &[(u16, u16)]) -> bool {
-    preset_entries().iter().all(|e| entries.contains(e))
+pub fn current_preset(entries: &[(u16, u16)]) -> Option<ScancodeMapPreset> {
+    if ScancodeMapPreset::Swap
+        .entries()
+        .iter()
+        .all(|e| entries.contains(e))
+    {
+        Some(ScancodeMapPreset::Swap)
+    } else if ScancodeMapPreset::CapsAsExtraCtrl
+        .entries()
+        .iter()
+        .all(|e| entries.contains(e))
+    {
+        Some(ScancodeMapPreset::CapsAsExtraCtrl)
+    } else {
+        None
+    }
 }
 
-/// 有効化時: 既存エントリから `from` がこのプリセットのスキャンコードと
-/// 重複するものを除去し、プリセットの2エントリを追加する（ADR-111決定3）。
+/// 有効化・無効化・切替後に書き込むエントリ列を計算する。
+///
+/// 掃除対象は「検出された現行プリセットの所有 `from` scancode」と
+/// 「目標プリセットの所有 `from` scancode」の和集合だけに限定する。
+///
+/// 既知の限界（決定3「原理的限界」参照）: Swap の2エントリと「CapsAsExtraCtrl
+/// と、値が偶然 Swap の逆方向エントリと一致する第三者エントリ」の組は、
+/// レジストリのバイト列だけでは区別できない。この曖昧な状態は
+/// `current_preset` の Swap優先判定により Swap として扱われるため、
+/// 無効化するとその第三者エントリも一緒に消える。
+///
+/// 実装時に一度、書き込み順序を手がかりにこの2状態を判別しようとする
+/// ヒューリスティックが追加されたが、Opus敵対的コードレビューで撤回した。
+/// 撤回理由は次の2点: 対象を無効化時の遷移のみに限定していたため
+/// `target=CapsAsExtraCtrl` への切替ではB1が別経路で再発する点、および
+/// 順序ヒューリスティックの前提（第三者エントリの間に別エントリが
+/// 挟まる・レジストリ全体が書き直される等）は容易に崩れ、崩れると
+/// 真の Swap を無効化しても消し残りが発生し再試行しても直らない点。
+///
+/// この曖昧性はレジストリ内容のみを真実の情報源にしている以上、原理的に
+/// 解消できない（真に解決するには awase が最後に書いたプリセットを
+/// 別の場所に記録するマーカーが必要で、別ADR相当のスコープ）。
 #[must_use]
-pub fn merge_for_enable(existing: &[(u16, u16)]) -> Vec<(u16, u16)> {
-    let mut out: Vec<(u16, u16)> = remove_preset(existing);
-    out.extend(preset_entries());
+pub fn compute_new_entries(
+    existing: &[(u16, u16)],
+    target: ScancodeMapSelection,
+) -> Vec<(u16, u16)> {
+    let current = current_preset(existing);
+    let target_preset = target.preset();
+    let mut clear: Vec<u16> = Vec::new();
+    if let Some(preset) = current {
+        clear.extend_from_slice(preset.owned_from_codes());
+    }
+    if let Some(preset) = target_preset {
+        clear.extend_from_slice(preset.owned_from_codes());
+    }
+
+    let mut out: Vec<_> = existing
+        .iter()
+        .copied()
+        .filter(|&(from, _)| !clear.contains(&from))
+        .collect();
+    if let Some(preset) = target_preset {
+        out.extend_from_slice(preset.entries());
+    }
     out
 }
 
-/// 無効化時: プリセットの2エントリ（`from`基準）のみを除去する
-/// （ADR-111決定3）。他の（awaseと無関係な）エントリはそのまま残る。
+/// エントリ列から検出したプリセットと、無関係な余剰エントリ数を返す。
 #[must_use]
-pub fn remove_preset(existing: &[(u16, u16)]) -> Vec<(u16, u16)> {
-    existing
-        .iter()
-        .copied()
-        .filter(|&(from, _)| from != SCANCODE_CAPS_EISU && from != SCANCODE_LEFT_CTRL)
-        .collect()
+pub fn detect_status(entries: &[(u16, u16)]) -> (Option<ScancodeMapPreset>, usize) {
+    let preset = current_preset(entries);
+    let owned_len = preset.map_or(0, |p| p.entries().len());
+    (preset, entries.len() - owned_len)
 }
 
 #[cfg(windows)]
@@ -186,7 +302,7 @@ mod registry {
         // SAFETY: `HKEY_LOCAL_MACHINE` は擬似ハンドルで CloseHandle 不要。
         //         SUBKEY/VALUE_NAME は静的な NUL 終端済み UTF-16 文字列。
         let result = unsafe { RegDeleteKeyValueW(HKEY_LOCAL_MACHINE, SUBKEY, VALUE_NAME) };
-        if result == windows::Win32::Foundation::ERROR_SUCCESS {
+        if result == windows::Win32::Foundation::ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND {
             Ok(())
         } else {
             Err(format!("Scancode Map 削除失敗: {result:?}"))
@@ -200,20 +316,27 @@ pub use registry::{delete, read, write};
 #[cfg(test)]
 mod tests {
     use super::{
-        build_bytes, is_preset_active, merge_for_enable, parse_entries, preset_entries,
-        remove_preset, SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL,
+        build_bytes, compute_new_entries, current_preset, detect_status, parse_entries,
+        ScancodeMapPreset, ScancodeMapSelection, SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL,
     };
 
     #[test]
-    fn build_then_parse_roundtrips_preset() {
-        let entries = preset_entries();
-        let bytes = build_bytes(&entries).expect("non-empty entries");
+    fn build_then_parse_roundtrips_swap_preset() {
+        let entries = ScancodeMapPreset::Swap.entries();
+        let bytes = build_bytes(entries).expect("non-empty entries");
         assert_eq!(parse_entries(&bytes), entries.to_vec());
     }
 
     #[test]
-    fn build_bytes_matches_documented_layout_for_preset() {
-        let bytes = build_bytes(&preset_entries()).unwrap();
+    fn build_then_parse_roundtrips_caps_as_extra_ctrl_preset() {
+        let entries = ScancodeMapPreset::CapsAsExtraCtrl.entries();
+        let bytes = build_bytes(entries).expect("non-empty entries");
+        assert_eq!(parse_entries(&bytes), entries.to_vec());
+    }
+
+    #[test]
+    fn build_bytes_matches_documented_layout_for_swap_preset() {
+        let bytes = build_bytes(ScancodeMapPreset::Swap.entries()).unwrap();
         // ヘッダ(Version=0, Flags=0) + count=3(2エントリ+null終端)
         assert_eq!(&bytes[0..4], &0u32.to_le_bytes());
         assert_eq!(&bytes[4..8], &0u32.to_le_bytes());
@@ -242,44 +365,166 @@ mod tests {
     }
 
     #[test]
-    fn is_preset_active_true_when_both_entries_present_among_others() {
+    fn build_bytes_matches_documented_layout_for_caps_as_extra_ctrl_preset() {
+        let bytes = build_bytes(ScancodeMapPreset::CapsAsExtraCtrl.entries()).unwrap();
+        // ヘッダ(Version=0, Flags=0) + count=2(1エントリ+null終端)
+        assert_eq!(&bytes[0..4], &0u32.to_le_bytes());
+        assert_eq!(&bytes[4..8], &0u32.to_le_bytes());
+        assert_eq!(&bytes[8..12], &2u32.to_le_bytes());
+        // エントリ1: to=0x001D, from=0x003A
+        assert_eq!(&bytes[12..14], &0x001Du16.to_le_bytes());
+        assert_eq!(&bytes[14..16], &0x003Au16.to_le_bytes());
+        // null終端
+        assert_eq!(&bytes[16..20], &0u32.to_le_bytes());
+        assert_eq!(bytes.len(), 20);
+    }
+
+    #[test]
+    fn current_preset_detects_swap_when_both_entries_present_among_others() {
         let mut entries = vec![(0x0010, 0x0011)];
-        entries.extend(preset_entries());
-        assert!(is_preset_active(&entries));
+        entries.extend_from_slice(ScancodeMapPreset::Swap.entries());
+        assert_eq!(current_preset(&entries), Some(ScancodeMapPreset::Swap));
     }
 
     #[test]
-    fn is_preset_active_false_when_only_one_direction_present() {
+    fn current_preset_detects_caps_as_extra_ctrl_when_only_one_direction_present() {
         let entries = vec![(SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL)];
-        assert!(!is_preset_active(&entries));
+        assert_eq!(
+            current_preset(&entries),
+            Some(ScancodeMapPreset::CapsAsExtraCtrl)
+        );
     }
 
     #[test]
-    fn merge_for_enable_preserves_unrelated_entries_and_replaces_conflicting_from() {
+    fn current_preset_prefers_swap_over_caps_as_extra_ctrl() {
+        let entries = ScancodeMapPreset::Swap.entries().to_vec();
+        assert_eq!(current_preset(&entries), Some(ScancodeMapPreset::Swap));
+    }
+
+    #[test]
+    fn current_preset_returns_none_for_empty_or_unrelated_entries() {
+        assert_eq!(current_preset(&[]), None);
+        assert_eq!(current_preset(&[(0x0010, 0x0011)]), None);
+    }
+
+    #[test]
+    fn compute_new_entries_off_to_swap() {
         let existing = vec![
             (0x0010, 0x0011),             // 無関係、保持されるべき
             (SCANCODE_CAPS_EISU, 0x0099), // 衝突、置き換えられるべき
             (SCANCODE_LEFT_CTRL, 0x0088), // 衝突、置き換えられるべき
         ];
-        let merged = merge_for_enable(&existing);
-        assert!(merged.contains(&(0x0010, 0x0011)));
-        assert!(is_preset_active(&merged));
-        assert!(!merged.contains(&(SCANCODE_CAPS_EISU, 0x0099)));
-        assert!(!merged.contains(&(SCANCODE_LEFT_CTRL, 0x0088)));
-        assert_eq!(merged.len(), 3);
+        let mut expected = vec![(0x0010, 0x0011)];
+        expected.extend_from_slice(ScancodeMapPreset::Swap.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::Swap),
+            expected
+        );
     }
 
     #[test]
-    fn remove_preset_keeps_unrelated_entries_and_drops_preset_entries() {
+    fn compute_new_entries_off_to_caps_as_extra_ctrl() {
+        let existing = vec![
+            (0x0010, 0x0011),
+            (SCANCODE_CAPS_EISU, 0x0099),
+            (SCANCODE_LEFT_CTRL, 0x0088),
+        ];
+        let mut expected = vec![(0x0010, 0x0011), (SCANCODE_LEFT_CTRL, 0x0088)];
+        expected.extend_from_slice(ScancodeMapPreset::CapsAsExtraCtrl.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::CapsAsExtraCtrl),
+            expected
+        );
+    }
+
+    #[test]
+    fn compute_new_entries_swap_to_caps_as_extra_ctrl() {
         let mut existing = vec![(0x0010, 0x0011)];
-        existing.extend(preset_entries());
-        let removed = remove_preset(&existing);
-        assert_eq!(removed, vec![(0x0010, 0x0011)]);
+        existing.extend_from_slice(ScancodeMapPreset::Swap.entries());
+        let mut expected = vec![(0x0010, 0x0011)];
+        expected.extend_from_slice(ScancodeMapPreset::CapsAsExtraCtrl.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::CapsAsExtraCtrl),
+            expected
+        );
     }
 
     #[test]
-    fn remove_preset_on_preset_only_yields_empty() {
-        let existing = preset_entries().to_vec();
-        assert!(remove_preset(&existing).is_empty());
+    fn compute_new_entries_caps_as_extra_ctrl_to_swap() {
+        let mut existing = vec![(0x0010, 0x0011), (SCANCODE_LEFT_CTRL, 0x0088)];
+        existing.extend_from_slice(ScancodeMapPreset::CapsAsExtraCtrl.entries());
+        let mut expected = vec![(0x0010, 0x0011)];
+        expected.extend_from_slice(ScancodeMapPreset::Swap.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::Swap),
+            expected
+        );
     }
+
+    #[test]
+    fn compute_new_entries_caps_as_extra_ctrl_to_off() {
+        let mut existing = vec![(0x0010, 0x0011)];
+        existing.extend_from_slice(ScancodeMapPreset::CapsAsExtraCtrl.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::Off),
+            vec![(0x0010, 0x0011)]
+        );
+    }
+
+    #[test]
+    fn third_party_left_ctrl_remap_to_unrelated_key_survives_caps_extra_ctrl_enable_and_disable() {
+        // 決定3が実際に保護する、現実的な多数派のケース: 第三者ツールが
+        // Left Ctrl を awase のプリセットと無関係な値にリマップしている
+        // （Swap の逆方向エントリの値 SCANCODE_CAPS_EISU とは異なる）。
+        // CapsAsExtraCtrl は 0x1D を所有しないため、有効化・無効化の
+        // どちらを通しても触れられない。
+        let existing = vec![(SCANCODE_LEFT_CTRL, 0x0099)];
+        let enabled = compute_new_entries(&existing, ScancodeMapSelection::CapsAsExtraCtrl);
+        assert!(enabled.contains(&(SCANCODE_LEFT_CTRL, 0x0099)));
+        assert!(enabled.contains(&(SCANCODE_CAPS_EISU, SCANCODE_LEFT_CTRL)));
+        let disabled = compute_new_entries(&enabled, ScancodeMapSelection::Off);
+        assert_eq!(disabled, existing);
+    }
+
+    #[test]
+    fn ambiguous_third_party_entry_colliding_with_swap_reverse_value_is_not_preserved() {
+        // 既知の限界（決定3「原理的限界」参照）: 第三者エントリの値が
+        // たまたま Swap の逆方向エントリ (0x1D→0x3A) と完全に一致する場合、
+        // CapsAsExtraCtrl 有効化後の状態はレジストリのバイト列だけからは
+        // 真の Swap と区別できない。current_preset は Swap を優先判定する
+        // ため、このケースを無効化すると第三者エントリごと消える
+        // ——バグではなく、レジストリ内容のみを情報源にすることの
+        // 原理的な限界として受容し、ここでその挙動を固定する。
+        let existing = vec![(SCANCODE_LEFT_CTRL, SCANCODE_CAPS_EISU)];
+        let enabled = compute_new_entries(&existing, ScancodeMapSelection::CapsAsExtraCtrl);
+        assert_eq!(
+            current_preset(&enabled),
+            Some(ScancodeMapPreset::Swap),
+            "曖昧な状態はSwapとして検出される(既知の限界)"
+        );
+        let disabled = compute_new_entries(&enabled, ScancodeMapSelection::Off);
+        assert!(
+            disabled.is_empty(),
+            "第三者エントリもろとも消える(既知の限界、B1の対象外)"
+        );
+    }
+
+    #[test]
+    fn detect_status_counts_extra_entries_for_caps_as_extra_ctrl() {
+        let mut entries = vec![(0x0010, 0x0011), (0x0012, 0x0013)];
+        entries.extend_from_slice(ScancodeMapPreset::CapsAsExtraCtrl.entries());
+        assert_eq!(
+            detect_status(&entries),
+            (Some(ScancodeMapPreset::CapsAsExtraCtrl), 2)
+        );
+    }
+
+    // `registry::delete()` の `ERROR_FILE_NOT_FOUND → Ok(())` 分岐は、
+    // 実際の `HKLM\...\Scancode Map` に対して2回連続で削除を試みないと
+    // 検証できない。Opus敵対的コードレビューで「これを単体テストとして
+    // 実行すると、開発者/CIランナーの実際の Scancode Map 設定を書き換え
+    // うる（非昇格ならACCESS_DENIEDで失敗、昇格なら実害）」と指摘され
+    // 削除した。ロジック自体は `result == ERROR_SUCCESS ||
+    // result == ERROR_FILE_NOT_FOUND` という1行の比較追加のみで、
+    // コードレビューで足りる複雑度と判断する。
 }

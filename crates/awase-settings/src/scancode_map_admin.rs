@@ -1,8 +1,9 @@
-//! Caps(英数)⇔Ctrl 入れ替えプリセット（ADR-111）の Scancode Map 適用フロー。
+//! Caps(英数)⇔Ctrl 入れ替え / Caps(英数)→Ctrl 片方向複製プリセット
+//! （ADR-111 / ADR-126）の Scancode Map 適用フロー。
 //!
 //! `awase-settings.exe` は既定では非昇格で起動する（BUG-79対策、
 //! `asInvoker`）。この機能の有効化/無効化ボタンが押されたときだけ、
-//! 自分自身を `--scancode-map on`/`--scancode-map off` で `runas` 起動し、
+//! 自分自身を `--scancode-map swap` 等で `runas` 起動し、
 //! 昇格側プロセス（[`run_elevated_worker`]）がレジストリの読み取り・
 //! マージ・書き込み・読み戻し検証（`awase_windows::scancode_map` 参照、
 //! 決定3）を行う。非昇格側（[`request_elevated_change`]）は
@@ -11,28 +12,30 @@
 //! 使う方）はプロセスハンドルを返さず成否を確実に取得できないため、
 //! こちらは意図的に別の API を使う（ADR-111決定4）。
 
-/// 昇格側プロセスのエントリポイント。`--scancode-map on|off` を検出したら
-/// GUI を起動せずこの関数を呼び、終了コードで結果を返す
+/// 昇格側プロセスのエントリポイント。`--scancode-map <selection>` を
+/// 検出したら GUI を起動せずこの関数を呼び、終了コードで結果を返す
 /// （`main()` の `--bug-report` と同型のヘッドレス分岐パターン）。
 ///
 /// 戻り値: 成功時 `0`、失敗時 `1`（`awase-settings.exe` のプロセス終了
 /// コードとして使う。`ShellExecuteExW` 側が `GetExitCodeProcess` で読む）。
 #[must_use]
-pub fn run_elevated_worker(enable: bool) -> i32 {
+pub fn run_elevated_worker(selection: awase_windows::scancode_map::ScancodeMapSelection) -> i32 {
     #[cfg(windows)]
     {
-        run_elevated_worker_windows(enable)
+        run_elevated_worker_windows(selection)
     }
     #[cfg(not(windows))]
     {
-        let _ = enable;
+        let _ = selection;
         log::error!("[scancode-map] このプラットフォームでは未対応");
         1
     }
 }
 
 #[cfg(windows)]
-fn run_elevated_worker_windows(enable: bool) -> i32 {
+fn run_elevated_worker_windows(
+    selection: awase_windows::scancode_map::ScancodeMapSelection,
+) -> i32 {
     use awase_windows::scancode_map as sm;
 
     let existing = match read_entries() {
@@ -42,11 +45,7 @@ fn run_elevated_worker_windows(enable: bool) -> i32 {
             return 1;
         }
     };
-    let new_entries = if enable {
-        sm::merge_for_enable(&existing)
-    } else {
-        sm::remove_preset(&existing)
-    };
+    let new_entries = sm::compute_new_entries(&existing, selection);
     let write_result = match sm::build_bytes(&new_entries) {
         Some(bytes) => sm::write(&bytes),
         None => sm::delete(),
@@ -84,7 +83,10 @@ fn read_entries() -> Result<Vec<(u16, u16)>, String> {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub enum ScancodeMapStatus {
     /// プリセットが有効（他の無関係なエントリが `extra_entries` 件ある）。
-    Active { extra_entries: usize },
+    Active {
+        preset: awase_windows::scancode_map::ScancodeMapPreset,
+        extra_entries: usize,
+    },
     /// プリセットは無効（値自体が未設定、または他のエントリのみ存在）。
     Inactive { extra_entries: usize },
     /// レジストリ読み取りに失敗。
@@ -99,20 +101,14 @@ pub fn read_status() -> ScancodeMapStatus {
         use awase_windows::scancode_map as sm;
         match read_entries() {
             Ok(entries) => {
-                let active = sm::is_preset_active(&entries);
-                let extra = if active {
-                    entries.len() - sm::preset_entries().len()
-                } else {
-                    entries.len()
-                };
-                if active {
+                let (preset, extra_entries) = sm::detect_status(&entries);
+                if let Some(preset) = preset {
                     ScancodeMapStatus::Active {
-                        extra_entries: extra,
+                        preset,
+                        extra_entries,
                     }
                 } else {
-                    ScancodeMapStatus::Inactive {
-                        extra_entries: extra,
-                    }
+                    ScancodeMapStatus::Inactive { extra_entries }
                 }
             }
             Err(e) => ScancodeMapStatus::ReadError(e),
@@ -138,17 +134,19 @@ pub enum ElevationOutcome {
     LaunchError(String),
 }
 
-/// 自分自身を `--scancode-map on|off` で `runas` 起動し、完了を待って
+/// 自分自身を `--scancode-map <selection>` で `runas` 起動し、完了を待って
 /// 結果を返す（ADR-111決定4）。
 #[must_use]
-pub fn request_elevated_change(enable: bool) -> ElevationOutcome {
+pub fn request_elevated_change(
+    selection: awase_windows::scancode_map::ScancodeMapSelection,
+) -> ElevationOutcome {
     #[cfg(windows)]
     {
-        request_elevated_change_windows(enable)
+        request_elevated_change_windows(selection)
     }
     #[cfg(not(windows))]
     {
-        let _ = enable;
+        let _ = selection;
         ElevationOutcome::LaunchError("このプラットフォームでは未対応".to_string())
     }
 }
@@ -159,7 +157,9 @@ fn to_wide(s: &str) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn request_elevated_change_windows(enable: bool) -> ElevationOutcome {
+fn request_elevated_change_windows(
+    selection: awase_windows::scancode_map::ScancodeMapSelection,
+) -> ElevationOutcome {
     use windows::Win32::Foundation::{CloseHandle, ERROR_CANCELLED, GetLastError};
     use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE, WaitForSingleObject};
     use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
@@ -171,12 +171,8 @@ fn request_elevated_change_windows(enable: bool) -> ElevationOutcome {
     };
     let exe_wide = to_wide(&exe.to_string_lossy());
     let verb_wide = to_wide("runas");
-    let params = if enable {
-        "--scancode-map on"
-    } else {
-        "--scancode-map off"
-    };
-    let params_wide = to_wide(params);
+    let params = format!("--scancode-map {}", selection.as_cli_arg());
+    let params_wide = to_wide(&params);
 
     let mut sei = SHELLEXECUTEINFOW {
         cbSize: u32::try_from(std::mem::size_of::<SHELLEXECUTEINFOW>()).unwrap_or_default(),

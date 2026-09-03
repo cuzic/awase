@@ -5,6 +5,9 @@
 **採用・実装済み（2026-08-31、r4。key_remap撤回はPR #123、Scancode Map実装は
 PR #124でdevelopマージ済み。Windows実機ソーク未実施——未解決の疑問2参照）**
 
+Scancode Map のプリセット関数群は ADR-126 により
+`ScancodeMapPreset`/`compute_new_entries()` へ一般化・改名された。
+
 ## 背景
 
 ADR-110（`key_remap`、PR #120・#121）で「任意の物理キーを別の物理キーとして
