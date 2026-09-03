@@ -2,7 +2,8 @@
 
 ## ステータス
 
-**設計改訂版v6（Opus 2体round1〜round5の敵対的レビューを反映、architect収束済み・premortemのround6レビュー待ち）。**
+**設計確定版v6（Opus 2体architect/premortemによるround1〜round6の敵対的レビューを
+経て両者「問題なし、収束」。未実装、実装フェーズへ移行可）。**
 round1でD1（`changed()`トリガー）・D2（保存先ダイアログ案）の根本的な欠陥が見つかり
 再設計した。round2ではその再設計（`lost_focus()`トリガー）自体が、egui のパネル
 描画順・タブ切替・ショートカット処理のタイミングに依存する新しい「適用しても反映
@@ -42,9 +43,13 @@ round5で、このエンジン健全性ガード(B)を無条件（発火＝常�
 こと自体が新しい退行を生むことを発見した（R5-1）**——キーボード配列を
 一切変更していない適用でも、`default_layout`が（無関係な理由で）既に
 壊れているだけで設定画面全体が保存不能になり、ADR-116の起動時診断の
-意図と衝突する。本版（v6）はガード(B)の中止/警告の分岐を「この適用で
+意図と衝突する。v6はガード(B)の中止/警告の分岐を「この適用で
 キーボード配列が実際に変わるかどうか」で条件分けし、あわせて
 architectの非blocker指摘（X1〜X5・Y1・Y2）も反映した第6改訂版。
+**この修正をもってround6でpremortemも「問題なし、収束」と判定し、
+両者の収束が揃った。** 実装時に拾うべき非blocker事項（ADR-115セルの
+「解除」ボタン到達不能・ステータス上書きタイミング・`config_loaded_model`の
+「成功時のみ」更新など）は各決定の本文中に記録済み。
 
 ## 背景
 
@@ -923,9 +928,14 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
   premortem R5-1——分岐させないと、キーボード配列を一切変更していないのに、
   無関係な理由で既定配列ファイルが壊れているだけで設定画面全体が保存不能に
   なる新しい退行を生む）:
-  - `config_loaded_model: KeyboardModel`（`SettingsApp::new()`時と`cancel()`
-    実行時、および`poll_pending_save`の保存成功〈`main.rs:550-562`〉時に
-    更新する、直近に読み込み/保存が成功した時点のモデル）と
+  - `config_loaded_model: KeyboardModel`（`SettingsApp::new()`時・`cancel()`
+    実行時・`poll_pending_save`の保存成功〈`main.rs:550-562`〉時、**いずれも
+    `AppConfig::load`（または保存）が成功した場合にのみ**更新する、直近に
+    読み込み/保存が成功した時点のモデル——`cancel()`の`AppConfig::load`は
+    失敗しうり〈`main.rs:610-613`のErr分岐、`Dangerous`〉、その場合
+    `self.config`は変わらないため`config_loaded_model`も更新してはならない。
+    `layout_loaded_model`と対称に「成功時のみ」を徹底する——premortem、
+    実装時の注意点）と
     `self.config.general.keyboard_model`が**異なる場合**（＝この適用で
     キーボード配列が変わる）: `apply_confirmed()`全体を中止し、「現在の既定の
     配列ファイル（`default_layout`）が、これから適用するキーボード配列
