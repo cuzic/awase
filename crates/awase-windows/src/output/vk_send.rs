@@ -226,11 +226,19 @@ impl Output {
             fmt_ms(elapsed)
         );
 
-        if prepend_f2_warmup {
-            if self.defer_respecting_gate(romaji, gate) {
-                return;
-            }
+        // ADR-123 変更A+C 決定4-4: この defer 判定は元々 `prepend_f2_warmup`
+        // （cold）分岐の中でしか呼ばれておらず、warm 判定されたモーラは
+        // `send_romaji_batch_immediate` へ直行して gate を一切通らなかった
+        // （`assess_warmth()` の warm/cold は composition の温度状態であり、
+        // `has_pending_tsf()`/`raw_recovery_owns_deferred()` とは独立した
+        // 別軸——warm でも無関係な別 probe/recovery が in-flight でありうる）。
+        // `assess_warmth()` より後（cold/warm 分岐の外）に置くことで両方を
+        // カバーする。
+        if self.defer_respecting_gate(romaji, gate) {
+            return;
+        }
 
+        if prepend_f2_warmup {
             if session_expired {
                 log::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
             } else {
@@ -402,11 +410,14 @@ impl Output {
             fmt_ms(elapsed)
         );
 
-        if prepend_f2_warmup {
-            if self.defer_respecting_gate(romaji, gate) {
-                return;
-            }
+        // ADR-123 変更A+C 決定4-4: `send_romaji_batched_gated` と同じ理由で
+        // `assess_warmth()` の cold/warm 分岐の外に置く（warm 判定でも
+        // gate を通す）。
+        if self.defer_respecting_gate(romaji, gate) {
+            return;
+        }
 
+        if prepend_f2_warmup {
             // ノンブロッキング warmup を開始して pending_tsf に保留
             let started = crate::tsf::warmup::cold_warmup::ColdWarmupSequence::new(self)
                 .run_start(session_expired, elapsed);
