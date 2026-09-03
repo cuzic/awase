@@ -4,7 +4,8 @@ import {
   HttpError,
   incrementDailyRateLimit,
   MAX_BODY_BYTES,
-  parseAndValidatePayload
+  parseAndValidatePayload,
+  RELEASE_CACHE_KEY
 } from "../src/index";
 
 const validPayload = {
@@ -428,6 +429,282 @@ describe("rate limiting", () => {
   });
 });
 
+describe("latest release endpoint", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fetches GitHub synchronously on an empty cache and stores the result", async () => {
+    const kv = new MemoryKv();
+    const pending: Promise<unknown>[] = [];
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(kv),
+      fakeCtx(pending)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      schema_version: 1,
+      latest_version: "1.19.0",
+      checked_at: expect.any(String),
+      stale: false
+    });
+    expect(kv.values.has(RELEASE_CACHE_KEY)).toBe(true);
+    expect(kv.puts.find((put) => put.key === RELEASE_CACHE_KEY)?.options?.expirationTtl).toBe(
+      86400
+    );
+    expect(pending).toHaveLength(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 503 when the cache is empty and GitHub is unavailable", async () => {
+    mockGithubResponse(new Response("rate limited", { status: 403 }));
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "upstream_unavailable" });
+  });
+
+  it("serves a fresh cached release without calling GitHub", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", new Date().toISOString()))
+    );
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(kv),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      schema_version: 1,
+      latest_version: "1.18.0",
+      checked_at: expect.any(String),
+      stale: false
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns stale cache immediately and refreshes it through waitUntil", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
+    );
+    const pending: Promise<unknown>[] = [];
+    const github = mockDeferredGithubLatestRelease();
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(kv),
+      fakeCtx(pending)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      schema_version: 1,
+      latest_version: "1.18.0",
+      checked_at: "2000-01-01T00:00:00Z",
+      stale: true
+    });
+    expect(JSON.parse(kv.values.get(RELEASE_CACHE_KEY) ?? "{}")).toMatchObject({
+      latest_version: "1.18.0"
+    });
+
+    github.resolve("v1.19.0");
+    await Promise.all(pending);
+    expect(JSON.parse(kv.values.get(RELEASE_CACHE_KEY) ?? "{}")).toMatchObject({
+      latest_version: "1.19.0"
+    });
+  });
+
+  it("keeps serving stale cache when a background refresh fails", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
+    );
+    const pending: Promise<unknown>[] = [];
+    mockGithubResponse(new Response("rate limited", { status: 403 }));
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(kv),
+      fakeCtx(pending)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      latest_version: "1.18.0",
+      stale: true
+    });
+    await Promise.all(pending);
+    expect(JSON.parse(kv.values.get(RELEASE_CACHE_KEY) ?? "{}")).toMatchObject({
+      latest_version: "1.18.0"
+    });
+  });
+
+  it("does not call GitHub for stale cache when a refresh is already in progress", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
+    );
+    kv.values.set("latest-release:refreshing", "1");
+    const pending: Promise<unknown>[] = [];
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(kv),
+      fakeCtx(pending)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      latest_version: "1.18.0",
+      stale: true
+    });
+    await Promise.all(pending);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("writes the refreshing marker with a 60 second TTL on the stale path", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
+    );
+    const pending: Promise<unknown>[] = [];
+    mockGithubLatestRelease("v1.19.0");
+
+    await handleRequest(latestReleaseRequest(), latestReleaseEnv(kv), fakeCtx(pending));
+    await Promise.all(pending);
+
+    expect(kv.puts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          key: "latest-release:refreshing",
+          options: { expirationTtl: 60 }
+        })
+      ])
+    );
+  });
+
+  it("refreshes synchronously when ctx is not provided (backward-compatible fallback)", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
+    );
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    // ctx を渡さない2引数呼び出し。handleReportIntake 側の後方互換パスとは別に、
+    // handleLatestRelease 自身の `ctx === undefined` 同期フォールバック分岐
+    // （本番では ctx は常に存在するため実際には通らない経路）を固定する。
+    const response = await handleRequest(latestReleaseRequest(), latestReleaseEnv(kv));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(response.json()).resolves.toMatchObject({
+      latest_version: "1.19.0",
+      stale: false
+    });
+    expect(JSON.parse(kv.values.get(RELEASE_CACHE_KEY) ?? "null")).toMatchObject({
+      latest_version: "1.19.0"
+    });
+  });
+
+  it("sends the required GitHub User-Agent header", async () => {
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    await handleRequest(latestReleaseRequest(), latestReleaseEnv(new MemoryKv()), fakeCtx([]));
+
+    const firstCall = fetchMock.mock.calls[0];
+    if (firstCall === undefined) {
+      throw new Error("expected GitHub fetch");
+    }
+    const init = firstCall[1] as RequestInit | undefined;
+    expect(new Headers(init?.headers).get("User-Agent")).toBe(
+      "awase-update-check-worker (+https://awase.cc)"
+    );
+  });
+
+  it("rejects unsupported methods with the GET and HEAD Allow header", async () => {
+    const response = await handleRequest(
+      latestReleaseRequest({ method: "POST" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("Allow")).toBe("GET, HEAD");
+  });
+
+  it("accepts HEAD with the same headers as GET", async () => {
+    const kv = new MemoryKv();
+    kv.values.set(
+      RELEASE_CACHE_KEY,
+      JSON.stringify(cacheEntry("1.18.0", new Date().toISOString()))
+    );
+
+    const response = await handleRequest(
+      latestReleaseRequest({ method: "HEAD" }),
+      latestReleaseEnv(kv),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+  });
+
+  it("does not include client-unused release URL fields", async () => {
+    mockGithubLatestRelease("v1.19.0");
+
+    const response = await handleRequest(
+      latestReleaseRequest(),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+    const body = await response.json();
+
+    expect(body).not.toHaveProperty("download_url");
+    expect(body).not.toHaveProperty("tag");
+    expect(body).not.toHaveProperty("released_at");
+    expect(body).not.toHaveProperty("release_url");
+  });
+
+  it("keeps report intake routing behavior unchanged", async () => {
+    const env = latestReleaseEnv(new MemoryKv());
+
+    const methodResponse = await handleRequest(
+      new Request("https://report.awase.cc/v1/reports"),
+      env,
+      fakeCtx([])
+    );
+    const notFoundResponse = await handleRequest(
+      new Request("https://report.awase.cc/v1/unknown"),
+      env,
+      fakeCtx([])
+    );
+
+    expect(methodResponse.status).toBe(405);
+    expect(methodResponse.headers.get("Allow")).toBe("POST");
+    expect(notFoundResponse.status).toBe(404);
+  });
+});
+
 function expectHttpError(action: () => unknown, status: number, message: string): void {
   try {
     action();
@@ -439,6 +716,77 @@ function expectHttpError(action: () => unknown, status: number, message: string)
   }
 
   throw new Error("expected HttpError");
+}
+
+function latestReleaseRequest(init?: RequestInit): Request {
+  return new Request("https://report.awase.cc/v1/latest-release", init);
+}
+
+function latestReleaseEnv(kv: MemoryKv): {
+  REPORT_BUCKET: R2Bucket;
+  RATE_LIMIT_KV: KVNamespace;
+} {
+  return {
+    REPORT_BUCKET: new MemoryBucket() as unknown as R2Bucket,
+    RATE_LIMIT_KV: kv as unknown as KVNamespace
+  };
+}
+
+function fakeCtx(pending: Promise<unknown>[]): ExecutionContext {
+  return {
+    waitUntil(promise: Promise<unknown>) {
+      pending.push(promise);
+    },
+    passThroughOnException() {}
+  } as ExecutionContext;
+}
+
+function cacheEntry(latestVersion: string, fetchedAt: string): {
+  schema_version: 1;
+  latest_version: string;
+  checked_at: string;
+  fetched_at: string;
+} {
+  return {
+    schema_version: 1,
+    latest_version: latestVersion,
+    checked_at: fetchedAt,
+    fetched_at: fetchedAt
+  };
+}
+
+function mockGithubLatestRelease(tagName: string) {
+  return mockGithubResponse(Response.json({ tag_name: tagName }));
+}
+
+function mockDeferredGithubLatestRelease(): {
+  resolve: (tagName: string) => void;
+} {
+  let resolveResponse: ((response: Response) => void) | undefined;
+  const responsePromise = new Promise<Response>((resolve) => {
+    resolveResponse = resolve;
+  });
+  const fetchMock = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => responsePromise
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  return {
+    resolve(tagName: string) {
+      if (resolveResponse === undefined) {
+        throw new Error("deferred GitHub mock was not initialized");
+      }
+      resolveResponse(Response.json({ tag_name: tagName }));
+    }
+  };
+}
+
+function mockGithubResponse(response: Response) {
+  const fetchMock = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => response
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 async function expectPostStatus(
