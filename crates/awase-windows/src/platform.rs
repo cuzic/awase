@@ -156,6 +156,35 @@ impl WindowsPlatform {
         });
     }
 
+    /// `GjiAction::StartProbe` ハンドラから呼ぶ。ADR-123: `pending_deferred`
+    /// （probe 実行中に届いた別モーラの VK 退避キュー）が非ゼロのまま
+    /// この probe が開始しようとしているかを journal に記録する
+    /// （issue #148 の根本原因である「追い越し」の直接シグナル）。
+    /// `dispatch_gji_response` 本体の cognitive complexity を抑えるため
+    /// 別関数に切り出している。
+    fn note_tsf_probe_started_from_gji_action(&mut self, probe_id: crate::tsf::gji_fsm::ProbeId) {
+        let pending_deferred_len = self.output.pending_deferred_len();
+        if pending_deferred_len > 0 {
+            // この probe が pending_deferred をまだ flush されていない状態で
+            // 追い越して開始しようとしている(issue #148 の根本原因そのもの)。
+            log::warn!(
+                "[gji-fsm] StartProbe probe_id={probe_id:?} が pending_deferred \
+                 {pending_deferred_len} VK(s) をflush前に追い越して開始 (ADR-123)"
+            );
+        }
+        self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
+            source: "GjiAction::StartProbe".to_owned(),
+            // ADR-123 round 2 (architect) 指摘の修正: 以前はここに probe_id
+            // をそのまま入れていたが、cold_seq とは別の採番空間であり
+            // 読み違いの原因になっていた。
+            cold_seq: self.output.composition.cold_start_count().value(),
+            probe_id: Some(u64::from(probe_id.0)),
+            gji_state: self.gji_state_label(),
+            consecutive_at_start: self.output.composition.consecutive_count(),
+            pending_deferred_len,
+        });
+    }
+
     fn note_tsf_probe_completed(
         &mut self,
         outcome: impl Into<String>,
@@ -511,27 +540,7 @@ impl WindowsPlatform {
                     let now_ms = crate::hook::current_tick_ms();
                     self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
                     self.reset_probe_tick_counters();
-                    let pending_deferred_len = self.output.pending_deferred_len();
-                    if pending_deferred_len > 0 {
-                        // ADR-123: この probe が pending_deferred をまだ flush
-                        // されていない状態で追い越して開始しようとしている
-                        // (issue #148 の根本原因そのもの)。
-                        log::warn!(
-                            "[gji-fsm] StartProbe probe_id={probe_id:?} が pending_deferred \
-                             {pending_deferred_len} VK(s) をflush前に追い越して開始 (ADR-123)"
-                        );
-                    }
-                    self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
-                        source: "GjiAction::StartProbe".to_owned(),
-                        // ADR-123 round 2 (architect) 指摘の修正: 以前はここに
-                        // probe_id をそのまま入れていたが、cold_seq とは別の
-                        // 採番空間であり読み違いの原因になっていた。
-                        cold_seq: self.output.composition.cold_start_count().value(),
-                        probe_id: Some(u64::from(probe_id.0)),
-                        gji_state: self.gji_state_label(),
-                        consecutive_at_start: self.output.composition.consecutive_count(),
-                        pending_deferred_len,
-                    });
+                    self.note_tsf_probe_started_from_gji_action(*probe_id);
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
