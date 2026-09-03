@@ -308,6 +308,28 @@ impl TsfWarmupCoordinator {
         true
     }
 
+    /// `pending_deferred` の件数上限（ADR-123 変更A+C 決定4-3）。
+    ///
+    /// 実測値: report `01M1KEGZ081YHJ1T2NC765SYYH`（cold_seq=28時点で4件）、
+    /// `01M1JJD54XQXSEJTHHFKV1WKA1`（3件）が既知の最大観測値。上限は
+    /// これらに十分な余裕を持たせた暫定値であり、実測データが増えたら
+    /// 見直すこと（`_MS` 系のタイミング定数ではないため
+    /// `.claude/rules/tuning-constants.md` の実測義務の直接対象ではないが、
+    /// 同じ精神で「効かないので増やした」式の変更は避けること）。
+    pub(crate) const DEFERRED_QUEUE_CAP: usize = 32;
+
+    /// `pending_deferred` が上限に達しているか。
+    ///
+    /// 呼び出し元（`Output::defer_if_probe_or_recovery_in_flight`）が、
+    /// 上限に達している場合は push せず「defer を諦めて通常送信へ
+    /// degrade する」判断をする（`docs/adr/123-focus-resync-and-probe-defer-queue-composition-race.md`
+    /// 決定4-3: 強制 flush ではなく degrade を選ぶ理由も参照。強制 flush は
+    /// probe の per-VK confirm 中に生 VK を割り込ませることになり
+    /// BUG-38/ADR-103 が塞いだ interleaving を再現する危険があるため）。
+    pub(crate) fn is_deferred_queue_full(&self) -> bool {
+        self.pending_deferred.borrow().len() >= Self::DEFERRED_QUEUE_CAP
+    }
+
     /// `defer_vks_if_in_flight` の gate なし版。
     ///
     /// ADR-123 変更A: `has_pending_tsf()` に加えて `raw_recovery_owns_deferred()`
@@ -315,7 +337,8 @@ impl TsfWarmupCoordinator {
     /// coordinator が `Output` の内部状態を直接参照する設計にはしないため、
     /// 呼び出し元（`Output::defer_if_probe_in_flight`）が両条件を合成した
     /// 判定結果に基づいてこちらを呼ぶ。ここでは無条件に push するだけで、
-    /// 「defer すべきか」の判断は一切持たない。
+    /// 「defer すべきか」の判断は一切持たない（件数上限のチェックも
+    /// 呼び出し元の責務）。
     pub(crate) fn push_deferred_vks(&self, vks: &[(VkCode, bool)], origin: DeferredOrigin) {
         let deferred = vks.iter().map(|&(vk, needs_shift)| DeferredVk {
             vk,
@@ -430,6 +453,30 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert_eq!(drained[0].origin, DeferredOrigin::UserInput);
         assert_eq!(drained[1].origin, DeferredOrigin::RecoveryResend);
+    }
+
+    // ── is_deferred_queue_full（ADR-123 変更A+C 決定4-3、件数上限）────────
+
+    #[test]
+    fn is_deferred_queue_full_true_only_at_or_above_cap() {
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        for i in 0..TsfWarmupCoordinator::DEFERRED_QUEUE_CAP {
+            assert!(
+                !coord.is_deferred_queue_full(),
+                "上限未満(現在{i}件)ではfullと判定してはいけない"
+            );
+            assert!(
+                coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput)
+            );
+        }
+
+        assert!(
+            coord.is_deferred_queue_full(),
+            "上限ちょうど({}件)でfullと判定すべき",
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
     }
 
     // ── pending_deferred_len（ADR-123: TsfProbeStarted.pending_deferred_len 用）──

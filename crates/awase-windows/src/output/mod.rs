@@ -1341,17 +1341,42 @@ impl Output {
         self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)
     }
 
+    /// `defer_if_probe_or_recovery_in_flight` と同じ「defer すべきか」の
+    /// 判定だけを、実際に defer せず覗き見る版。
+    /// `vk_send.rs::drain_pending_deferred_before_send_if_queue_only`
+    /// （ADR-123 決定4-3 drain-before-send）が、`pending_deferred` が
+    /// 「queue-only」（誰も blocking していないのに非空）かどうかを判定する
+    /// ために使う。`raw_recovery_owns_deferred()` の呼び出し箇所を
+    /// `output/mod.rs` 内に閉じておくため（INV-F 系の集約方針、
+    /// `tests/architecture_guard.rs::raw_recovery_owns_deferred_call_sites_are_accounted_for`
+    /// 参照）、`vk_send.rs` 側から直接呼ばずこの accessor 経由にする。
+    pub(super) fn is_probe_or_recovery_blocking(&self, check_raw_recovery: bool) -> bool {
+        self.warmup_coord.has_pending_tsf()
+            || (check_raw_recovery && self.raw_recovery_owns_deferred())
+    }
+
     fn defer_if_probe_or_recovery_in_flight(
         &self,
         romaji: &str,
         origin: DeferredOrigin,
         check_raw_recovery: bool,
     ) -> bool {
-        let recovery_owns = check_raw_recovery && self.raw_recovery_owns_deferred();
-        if !self.warmup_coord.has_pending_tsf() && !recovery_owns {
+        if !self.is_probe_or_recovery_blocking(check_raw_recovery) {
             return false;
         }
         let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        // ADR-123 変更A+C 決定4-3: 件数上限に達している場合は defer を諦め、
+        // 通常送信経路（今日の挙動と同じ、probe保護なしの可能性あり）へ
+        // degrade する。「最も古いエントリから強制flush」は probe の
+        // per-VK confirm 中に生VKを割り込ませることになり危険なため採らない
+        // （`TsfWarmupCoordinator::is_deferred_queue_full` の doc コメント参照）。
+        if self.warmup_coord.is_deferred_queue_full() {
+            log::error!(
+                "[pending-deferred] count limit exceeded, degrading to immediate send: \
+                 romaji={romaji:?} origin={origin:?}"
+            );
+            return false;
+        }
         log::debug!(
             "[tsf] probe/recovery in flight → deferred {} VK(s) for {:?}",
             vks.len(),
@@ -2252,6 +2277,72 @@ mod tests {
         assert!(
             deferred,
             "has_pending_tsf()=true による defer は recovery_exempt でも維持すべき"
+        );
+    }
+
+    // ── is_probe_or_recovery_blocking テスト（ADR-123 変更A+C 決定4-3、
+    // drain-before-send の判定ロジック）─────────────────────────────────
+
+    #[test]
+    fn is_probe_or_recovery_blocking_true_only_when_something_actually_blocks() {
+        let o = make_output();
+        assert!(
+            !o.is_probe_or_recovery_blocking(true),
+            "何も in-flight でなければ blocking ではない"
+        );
+        assert!(!o.is_probe_or_recovery_blocking(false));
+
+        *o.pending_gji_reinit.borrow_mut() = Some(PendingGjiReinit {
+            cold_seq: Generation::INITIAL,
+            focus_gen: 1,
+            phase: PendingGjiReinitPhase::Polling {
+                retry: None,
+                guard: OutputActiveGuard::begin(),
+                poll_token: 7,
+                started_ms: 0,
+            },
+        });
+        assert!(
+            o.is_probe_or_recovery_blocking(true),
+            "raw_recovery_owns_deferred()=true かつ check_raw_recovery=true なら blocking"
+        );
+        assert!(
+            !o.is_probe_or_recovery_blocking(false),
+            "check_raw_recovery=false なら raw_recovery_owns_deferred() を無視する"
+        );
+    }
+
+    #[test]
+    fn defer_if_probe_in_flight_degrades_instead_of_pushing_past_the_cap() {
+        // 件数上限に達した状態で新たな defer 要求が来た場合、push せず
+        // false を返して「今日と同じ挙動へ degrade」すべき（強制flushは
+        // しない、`TsfWarmupCoordinator::is_deferred_queue_full` の doc
+        // コメント参照）。
+        let o = make_output();
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        for _ in 0..TsfWarmupCoordinator::DEFERRED_QUEUE_CAP {
+            assert!(o.defer_if_probe_in_flight("a", DeferredOrigin::UserInput));
+        }
+        assert_eq!(
+            o.pending_deferred_len(),
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+
+        let deferred = o.defer_if_probe_in_flight("a", DeferredOrigin::UserInput);
+
+        assert!(!deferred, "上限到達後は defer せず false を返すべき");
+        assert_eq!(
+            o.pending_deferred_len(),
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP,
+            "上限到達後にキューが増えてはいけない（強制flushもしない）"
         );
     }
 

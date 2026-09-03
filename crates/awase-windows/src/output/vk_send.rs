@@ -51,6 +51,33 @@ impl Output {
             DeferGate::Exempt => self.defer_if_probe_in_flight_recovery_exempt(romaji, origin),
         }
     }
+
+    /// ADR-123 変更A+C 決定4-3（drain-before-send）: `has_pending_tsf()`も
+    /// `raw_recovery_owns_deferred()`（`gate`が`Enforced`の場合のみ）も
+    /// 偽で、`pending_deferred`が非空「なだけ」の場合、新しいモーラを
+    /// 追加でキューに積むのではなく、先にキューをflushしてから通常送信に
+    /// 進む。**`assess_warmth()`より前に呼ぶこと**——後に置くとwarm/cold
+    /// 判定がflush前の状態で下され、直後のprobeが汚染された
+    /// `last_send_ms`/write_deltaを自分の証拠として読みうる（round3指摘）。
+    ///
+    /// `gate`に関わらず呼んでよい: draining は「古い未flush入力を先に
+    /// 出す」という順序保証の話であり、raw recovery自身の再送
+    /// （`Exempt`）が自己参照する`raw_recovery_owns_deferred()`とは
+    /// 独立した安全な操作。
+    fn drain_pending_deferred_before_send_if_queue_only(&self, gate: DeferGate) {
+        let check_raw_recovery = gate == DeferGate::Enforced;
+        if self.is_probe_or_recovery_blocking(check_raw_recovery)
+            || self.pending_deferred_len() == 0
+        {
+            return;
+        }
+        let n = self.flush_pending_deferred_vks();
+        if n > 0 {
+            log::debug!(
+                "[pending-deferred] drain-before-send: 新規モーラの前に取り残し {n} VK(s) をflush"
+            );
+        }
+    }
 }
 
 /// TSF 送信パイプライン（transmit フェーズのみ）。
@@ -179,6 +206,8 @@ impl Output {
             };
             log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
+
+        self.drain_pending_deferred_before_send_if_queue_only(gate);
 
         let WarmthContext {
             warm,
@@ -345,6 +374,8 @@ impl Output {
             };
             log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
+
+        self.drain_pending_deferred_before_send_if_queue_only(gate);
 
         let WarmthContext {
             warm,
@@ -694,5 +725,53 @@ impl Output {
     /// `KeyInjector::push_unicode_char_inputs` に委譲する。
     fn push_unicode_char_inputs(inputs: &mut Vec<INPUT>, ch: char, marker: usize) {
         KeyInjector::push_unicode_char_inputs(inputs, ch, marker);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── drain_pending_deferred_before_send_if_queue_only テスト（ADR-123
+    // 変更A+C 決定4-3）────────────────────────────────────────────────
+
+    #[test]
+    fn drain_pending_deferred_before_send_if_queue_only_preserves_queue_while_blocking() {
+        // blocking 中（has_pending_tsf()=true）は「queue-only」ではないため
+        // drain してはいけない——キューはそのまま残る。実送信(SendInput)を
+        // 発火させないケースのみをここで検証する（drain が実際に発火する
+        // ケースは e2e/golden シナリオでカバーする）。
+        let o = Output::new();
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        o.warmup_coord
+            .push_deferred_vks(&[(VkCode(0x41), false)], DeferredOrigin::UserInput);
+        assert_eq!(o.pending_deferred_len(), 1);
+
+        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
+
+        assert_eq!(
+            o.pending_deferred_len(),
+            1,
+            "blocking 中は drain せずキューを保持すべき"
+        );
+    }
+
+    #[test]
+    fn drain_pending_deferred_before_send_if_queue_only_is_noop_when_queue_empty() {
+        // blocking もしておらずキューも空 = 何もしない（drainを試みない）。
+        let o = Output::new();
+        assert_eq!(o.pending_deferred_len(), 0);
+
+        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
+
+        assert_eq!(o.pending_deferred_len(), 0);
     }
 }
