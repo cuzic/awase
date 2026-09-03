@@ -253,9 +253,12 @@ impl Runtime {
                 hwnd,
                 || {
                     let name = crate::focus::classify::get_process_name(process_id).to_lowercase();
-                    if !name.is_empty() {
-                        process_name = Some(name.clone());
-                    }
+                    // 取得失敗（空文字列）でも Some に包んで返す。CurrentFocus::
+                    // update_with_process_name 側は Some(..) をそのまま採用するため、
+                    // 失敗結果まで含めて再利用でき、同一 pid への get_process_name
+                    // の再呼び出し（/code-review 指摘: 失敗時だけ二重取得が残っていた）
+                    // を防げる。
+                    process_name = Some(name.clone());
                     name
                 },
                 &class_name,

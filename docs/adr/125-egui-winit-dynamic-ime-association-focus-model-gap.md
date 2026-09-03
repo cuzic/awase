@@ -508,6 +508,25 @@ E 案（`ImmCapabilityStore` の学習キャッシュを `(process_name, class_n
   `ImmCapabilityStore::new` 内で直ちに `save()` し、`cache.toml` を新形式
   のみに書き直すようにした（「未解決の設計課題」1）。
 
+### PR化後の `/code-review` で発見・対応した2点
+
+PR #154 作成後の `/code-review` で追加で2点見つかり、いずれも即修正した。
+
+- **`focus_tracking.rs` の process_name 再利用が失敗パス（空文字列）だけ
+  効いていなかった**: クロージャ内で `if !name.is_empty() { process_name =
+  Some(name.clone()); }` としていたため、`get_process_name` が失敗した
+  場合だけ `process_name` が `None` のまま残り、後続の `CurrentFocus::
+  update_with_process_name` が同じ pid に対して `get_process_name` を
+  もう一度呼んでしまっていた（本 ADR がまさに解消しようとしていた二重
+  取得が、失敗パスにだけ残っていた）。`Some(name.clone())` を常に設定する
+  よう修正し、失敗結果も含めて再利用されるようにした。
+- **空プロセス名で学習を諦める設計判断の意図が、コードにドキュメント化
+  されていなかった**: `imm_learning.rs` の空文字列ガードに、なぜ「空文字列を
+  キーとして学習を続行する」代替案を採らなかったか（そうすると「プロセス名
+  不明」という別の共有バケツで BUG-107 が再現するため）、そのトレードオフ
+  （学習を1件諦めるだけで、フォールバックチェーンが個々の失敗を吸収する
+  設計のため安全側に倒れる）を doc コメントとして明記した。
+
 ### 未解決のまま残った問題（レビューで発見、対応は今回のスコープ外）
 
 - **`cache.toml` がパース不能な状態（新旧キー衝突等）のとき、legacy 掃除は
