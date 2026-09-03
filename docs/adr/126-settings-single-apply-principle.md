@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**設計改訂版v4（Opus 2体round1〜round4の敵対的レビューを反映、round5レビュー待ち）。**
+**設計改訂版v5（Opus 2体round1〜round4の敵対的レビューを反映、round5レビュー待ち）。**
 round1でD1（`changed()`トリガー）・D2（保存先ダイアログ案）の根本的な欠陥が見つかり
 再設計した。round2ではその再設計（`lost_focus()`トリガー）自体が、egui のパネル
 描画順・タブ切替・ショートカット処理のタイミングに依存する新しい「適用しても反映
@@ -26,9 +26,17 @@ round1でD1（`changed()`トリガー）・D2（保存先ダイアログ案）�
 のみだったため種別だけの変更（round2 B3）が回帰していた、(3)その修正
 （originにkindを含める）だけではADR-115打鍵列セルの保護が種別ラジオ経由で
 崩れる、という3点で、(2)と(3)は互いにトレードオフの関係にあり両立には
-追加の構造的ガードが必要だった。本版（v4）はガードの判定順序を組み替え、
+追加の構造的ガードが必要だった。**さらに、`layout_modified`要件撤回自体にも
+両者独立に新しいblockerが見つかった**——`config.toml.sample`が案内する
+「`keyboard_model`と`default_layout`を全般設定タブで同時に正しく変更する」
+という公式の操作手順が、撤回後のガードでは（配列編集タブを一度でも開いた
+という、変更内容と無関係な操作履歴次第で）理由不明のまま止められてしまう
+経路が見つかった（W8/R4-5）。本版（v5）はガードの判定順序を組み替え、
 `layout_edit_origin`をタプル化した上でADR-115セル専用の独立ガード
-（`layout_edit_origin_is_sequence`）を追加し、両立させた第4改訂版。
+（`layout_edit_origin_is_sequence`）を追加して両立させ、あわせてキーボード
+モデル不一致ガードを「データ保護（`layout_modified`必須）」と「エンジン
+健全性検証（`default_layout`の実ファイルを直接検証、操作履歴に非依存）」の
+2つに分離した第5改訂版。
 
 ## 背景
 
@@ -466,7 +474,44 @@ v3のステップ5は`layout_edit_value == layout_edit_origin`（`Option<String>
   他の操作（タブ切替・「適用」）と重なる希少ケースでは中間文字列が残りうる
   （premortem R4-4、収束条件には含めないが1行で直せるため採用する）。
 
-### 収束に向けた設計方針（v4で採用）
+### 【追加blocker】キーボードモデル不一致ガードから`layout_modified`要件を外したことで、公式に案内されている正しいモデル切替手順が実行不能になる（architect W8、premortem R4-5）
+
+上記W1〜W7への対応と並行して送った「D2のスコープ注記に対する回答」
+（`layout_modified`要件の撤回）に対し、両者が独立に新しいblockerを発見した。
+
+`config.toml.sample`（10-12/38-41/50行目）は「`keyboard_model`を変更するときは
+`default_layout`も必ず一緒に変更すること」と明記し、US用の`layout/nicola_us.yab`
+も同梱されている。**正しい手順は、全般設定タブで`keyboard_model=us`と
+`default_layout=nicola_us.yab`を同時に変更して1回「適用」することであり、
+配列編集タブでのセル編集は一切不要。** ところが撤回後のガードは
+`layout_loaded_model != config.general.keyboard_model`だけを見るため、この
+**完全に正しい操作**を次の手順で止めてしまう:
+
+1. 起動時（config=JIS）に配列編集タブを一度開く→`ensure_layout_loaded`が
+   `nicola_keytop.yab`をJISで読み込み、`layout_loaded_model = Jis`になる
+2. 全般設定タブで`keyboard_model=us`・`default_layout=nicola_us.yab`に変更
+   （セル編集なし、`layout_modified`は偽のまま）
+3. 「適用」→ `layout_loaded_model(Jis) != keyboard_model(Us)`でガードが発火
+   → `apply_confirmed()`全体が中止される
+4. 案内文どおり「配列編集タブで開き直す」を試みても、`再読み込み`は列数超過で
+   確実にパースエラーになる（round3で実測済み、`src/yab/tests.rs:453-464`）ため
+   使えず、「開く」で`nicola_us.yab`を選ぶしかない——ユーザーはエディタを
+   使いたいわけではなく設定を変えたいだけなのに、エディタ操作を強制される
+
+さらに`layout_loaded_model`は「配列編集タブを一度でも開いたか」という、
+**変更しようとしている設定の内容とは無関係な操作履歴**で決まる
+（`ensure_layout_loaded`は`tab_layout`からしか呼ばれない、`main.rs:1930`）。
+一度も開かなければガードは発火せず（`layout_loaded_model`の初期値が未定義
+だったことも合わせて指摘された、premortem R4-5）、開いていれば発火する——
+同じ設定変更が、ユーザーから見えない理由で通ったり弾かれたりする。
+
+**根本原因はガードの判定対象が間違っていること。** `reload_config()`が実際に
+読むのは`resolve_layouts_dir(config.layouts_dir)`配下の`config.default_layout`
+であって、エディタで開いている（かもしれない）ファイルではない。エディタの
+状態と無関係に「適用後に効力を持つ設定の組がエンジンで壊れないか」だけを
+見るべきだった。
+
+### 収束に向けた設計方針（v5で採用）
 
 - `commit_pending_layout_edit()`の判定順序を「ガード（None/Special/ADR-115
   シーケンス/IME合成中）を先にすべて通過してから、初めて`layout_edit_last_seen`
@@ -491,6 +536,16 @@ v3のステップ5は`layout_edit_value == layout_edit_origin`（`Option<String>
 - `ime_composing`の条件を「フラグが真」から「フラグが真、または当該フレームの
   イベント列に`Event::Ime(_)`が含まれる」へ広げ、Commit確定フレームの1フレーム
   ずれを構造的に消す（R4-4採用）。
+- キーボードモデル不一致に関する単一のガードを、**目的の異なる2つの独立した
+  ガードに分離する**（W8/R4-5解消）。(A) 配列編集タブの未保存の編集を、モデル
+  不一致に気づかず書き込んで壊さないための**データ保護ガード**（`layout_modified`
+  かつ`layout_loaded_model`が既知の場合のみ発火——本ADRが当初から持っていた
+  役割そのもの）。(B) `config.general.default_layout`が適用後の
+  `config.general.keyboard_model`で実際にパースできるかを検証する**エンジン
+  健全性ガード**（`layout_loaded_model`・`layout_modified`・配列編集タブを開いた
+  かどうかに一切依存せず、ディスク上の実ファイルを直接検証する）。この2つを
+  1つの条件式に混ぜていたことが、W8/R4-5の「正しい操作が理由不明で弾かれる」
+  「エディタの操作履歴に依存する」という2つの症状を同時に生んでいた。
 
 ## 決定
 
@@ -709,29 +764,49 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
   置く。** `std::mem::take(&mut self.config)`から485行目までの間は`self.config`が
   `Default`値であり、ここでモデル比較を行うと誤判定する（round2 A1解消——最重要
   指摘として扱ったガードの実装位置を明記する）。
-- **キーボードモデル不一致を検出したら、`.yab`書き込み・config.toml保存の両方を
-  中止する（部分適用を許さない）。** 配列を読み込んだ時点の`keyboard_model`を
-  `layout_loaded_model`として保持し（`layout_load_from_path`/`layout_do_reload`の
-  両方で更新する——呼び出し箇所を洗い出し漏れが無いようにする）、適用時に
-  `self.config.general.keyboard_model`と異なるなら、**`layout_modified`の真偽に
-  関わらず**`apply_confirmed()`全体を中止する。**`.yab`だけ守ってconfig.toml側の
-  保存を継続する（v1採用時の判断）は却下する**——それでもconfig.toml経由で
-  エンジンに新モデル・旧配列という不整合が伝播するため（round2 R2-5/R2-6）。
-  部分適用を許さず全体を止めることで、"warning文どおりに動いても必ず失敗する"
-  （R2-5）という状態も生まれない（配列を諦めるかモデル変更を諦めるか、
-  ユーザー自身が選ぶまで何も書き込まれない）。
-  **このガードの発火条件から`layout_modified`要件を外す（round3 premortem、
-  スコープ注記に対する最終回答。当初v3では`layout_modified`を要求する設計を
-  提案していたが、以下の理由で撤回する）。** `YabLayout::parse`は列数超過を実際に
-  エラーにする（`src/yab/tests.rs:453-464`）ため、「配列は一切編集せず、全般設定
-  タブでキーボード配列（JIS/US）だけ切り替えて適用する」という、**セル編集より
-  遥かに踏みやすい操作だけで確実にエンジンが壊れる**。このガードを「モデル不一致で
-  エンジンが壊れることを防ぐ」ものと位置付ける以上、`layout_modified`で範囲を
-  絞る理由がない——`self.status`のメッセージも「配列編集の未保存の変更」を前提と
-  せず、「読み込み済みの配列（`layout_loaded_model`）と現在のキーボード配列の
-  設定が一致しないため保存できません。キーボード配列を元に戻して適用するか、
-  配列編集タブで現在のキーボード配列に合った配列を開き直してください」という、
-  `layout_modified`の真偽どちらでも成立する文言にする。
+- **キーボードモデル不一致に関するガードを、目的の異なる2つの独立したガードに
+  分離する（round4 architect W8/premortem R4-5解消——単一の条件式に混ぜていた
+  ことが「正しい操作が理由不明で弾かれる」原因だった）。** いずれも検出したら
+  `.yab`書き込み・config.toml保存の両方を中止する（部分適用を許さない。
+  `.yab`だけ守ってconfig.toml側の保存を継続する（v1採用時の判断）は却下する
+  ——それでもconfig.toml経由でエンジンに新モデル・旧配列という不整合が伝播する
+  ため、round2 R2-5/R2-6）。
+
+  **(A) データ保護ガード（配列編集タブの未保存の変更を守る）。** 配列を
+  読み込んだ時点の`keyboard_model`を`layout_loaded_model: Option<KeyboardModel>`
+  として保持する（`layout_load_from_path`/`layout_do_reload`の両方の**成功時に
+  のみ**`Some(model)`に更新し、未読み込み・読み込み失敗中は`None`のままにする
+  ——premortem R4-5、初期値の未定義を解消）。適用時、**`layout_modified`が真かつ
+  `layout_loaded_model`が`Some(m)`かつ`m != self.config.general.keyboard_model`**
+  のときにのみ発火し、「配列編集タブに未保存の変更がありますが、読み込み時と
+  異なるキーボード配列（JIS/US）に変更されているため保存できません。キーボード
+  配列を元に戻して適用するか、配列編集タブで変更を破棄してキーボード配列に
+  合った配列を開き直してください」と表示する。目的は`YabLayout::serialize`が
+  列数超過を**エラーにせず黙って列を落とす**ことによる`self.layout`書き込み時の
+  データ消失を防ぐことだけであり、`layout_modified`が偽（＝これから何も書き込ま
+  れない）なら発火する理由が無い——**round3で一度撤回した`layout_modified`要件は、
+  W8/R4-5を受けてこのガード(A)に限り復活させる**（後述のガード(B)がW8/R4-5の
+  本質的な原因だった「実際に壊れる操作を止められていない」を別途カバーする）。
+
+  **(B) エンジン健全性ガード（`config.toml`保存後にエンジンが読む実ファイルを
+  検証する）。** `layout_loaded_model`・`layout_modified`・配列編集タブを
+  一度でも開いたかどうかに**一切依存せず**、適用しようとしている
+  `resolve_layouts_dir(&self.config.general.layouts_dir).join(
+  &self.config.general.default_layout)`が実際にディスク上に存在する場合、その
+  内容を`YabLayout::parse(_, self.config.general.keyboard_model)`（＝適用後に
+  有効になるモデル）で試しにパースする。失敗したら`apply_confirmed()`全体を
+  中止し、「現在の既定の配列ファイル（`default_layout`）が、これから適用する
+  キーボード配列（JIS/US）で読み込めないため保存できません。`default_layout`を
+  そのキーボード配列に合ったファイルに変更するか、キーボード配列を元に戻して
+  ください」と表示する。対象ファイルが存在しない場合はこのガードをスキップする
+  （存在しない`default_layout`自体への対処は本ADRの範囲外——round1 F9の警告で
+  別途カバーされる）。**このガードは「配列編集タブで何を開いているか」を一切
+  参照しないため、`keyboard_model`と`default_layout`を全般設定タブだけで
+  正しく同時変更する（`config.toml.sample`が案内する公式の手順）操作を妨げない**
+  ——architect W8の repro（配列編集タブでJISを開いた**後に**、全般設定タブで
+  `keyboard_model=us`・`default_layout=nicola_us.yab`を正しく同時変更する）
+  では、ガード(A)は`layout_modified`が偽なので発火せず、ガード(B)は
+  `nicola_us.yab`がUsモデルで正しくパースできるため発火しない——適用は成功する。
 - **`awase.exe`のエンジンに実際に反映される条件を、適用時に警告する。**
   `reload_config()`は`resolve_layouts_dir(&config.general.layouts_dir)`配下かつ
   `config.general.default_layout`と同名の`.yab`しか読まない（round1 F9）。
@@ -917,6 +992,21 @@ B8の指摘に対する回答）: ウィンドウを閉じる操作はOSレベ�
   （round4 W1——実機のIME入力に依存するため自動テスト化が難しければ、
   `ctx.input_mut`等でIMEイベント列を直接注入するegui向けのテストヘルパーで
   代替するか、(i)と同様に手動確認手順の明記で代替する）。
+- round4のW8/R4-5で判明したガード分離の回帰テスト: (n) 配列編集タブを一度も
+  開かずに（`layout_loaded_model == None`）全般設定タブのみで`keyboard_model`と
+  `default_layout`を対応する組へ正しく同時変更した場合、ガード(A)は発火せず
+  （`layout_modified`が偽）、ガード(B)も発火しない（新しい`default_layout`が
+  新しい`keyboard_model`で正しくパースできる）ため適用が成功する（W8の
+  repro自体の再発防止）、(o) 配列編集タブでJISの`.yab`を開いた**後**に、
+  全般設定タブだけで`keyboard_model`と`default_layout`を対応する組へ正しく
+  同時変更した場合も同様に適用が成功する（`layout_loaded_model`が`Some(Jis)`に
+  なっていてもガード(A)は`layout_modified`が偽なので発火しないことの確認——
+  architectの具体的なrepro手順そのもの）、(p) 配列編集タブで編集した後
+  （`layout_modified = true`）、全般設定タブでキーボード配列だけ変更して
+  `default_layout`を変えずに適用すると、ガード(A)が発火し中止される
+  （データ保護ガードの本来の役割）、(q) `default_layout`が指す`.yab`が
+  存在しない場合はガード(B)をスキップし、既存のround1 F9警告（別ファイル
+  警告）だけが表示される。
 
 ## 範囲外
 
