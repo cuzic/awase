@@ -2,13 +2,20 @@
 
 ## ステータス
 
-**設計改訂版v2（Opus 2体round1・round2の敵対的レビューを反映、round3レビュー待ち）。**
+**設計改訂版v3（Opus 2体round1・round2・round3の敵対的レビューを反映、round4レビュー待ち）。**
 round1でD1（`changed()`トリガー）・D2（保存先ダイアログ案）の根本的な欠陥が見つかり
-再設計した。**round2ではその再設計（`lost_focus()`トリガー）自体が、egui のパネル
+再設計した。round2ではその再設計（`lost_focus()`トリガー）自体が、egui のパネル
 描画順・タブ切替・ショートカット処理のタイミングに依存する新しい「適用しても反映
-されない」経路を生むことが両者独立に判明し、未収束のまま終わった。** 本版はコミット
+されない」経路を生むことが両者独立に判明し、未収束のまま終わった。v2はコミット
 処理を「どのウィジェットがいつフォーカスを失うか」から完全に切り離す設計（`update()`
-冒頭での無条件コミット判定）に変更し、round2の指摘を反映した第2改訂版。
+冒頭での無条件コミット判定）に変更しround2の指摘は解消したが、**round3で
+「バッファの中身＝ユーザーの意図した値」という新たな暗黙の前提が崩れる2つの経路
+（IME変換の未確定文字列、`ValueKind::Special`の未操作インデックス）と、ステータス
+表示の毎フレーム上書き、`self.layout`総入れ替え時のバッファ再同期漏れが両者独立に
+指摘され、これも未収束のまま終わった。** 本版はコミット判定を「モデルとの単純比較」
+から「セル選択時点のスナップショット（`layout_edit_origin`）との差分＋IME合成中で
+ないこと」に変更し、`ValueKind::Special`をコミット判定の対象から外して独立の即時
+確定経路に分離した、round3の指摘を反映した第3改訂版。
 
 ## 背景
 
@@ -249,6 +256,113 @@ round1改訂（`lost_focus()`トリガー、`layout_file_path`を常に確定、
   というADR自身が問題視するパターンをキャンセル側に残していた（architect C1、
   premortem R2-11）。
 
+## round3レビューで判明した設計上の欠陥（v2のコミット判定条件は不十分）
+
+v2改訂（`update()`冒頭での無条件コミット判定）をOpus 2体に再度敵対的レビューさせた
+ところ、round2の3件（R2-1〜R2-3）はいずれも構造的に解消していることが両者独立に
+確認された一方、**「バッファに入っている内容＝ユーザーが確定させたかった値」という
+v2が新たに置いた前提そのものが崩れる経路が2件**、その他複数の指摘が見つかった。
+
+### 「バッファと現在のモデル値を直接比較する」判定を却下した理由
+
+v2のD1は`commit_pending_layout_edit()`の差分判定を「`layout_edit_value`から構築した
+値」対「`self.layout_face(face).get(pos)`の現在値」で行っていたが、これは以下の
+2ケースで「ユーザーが一度も触っていない値」を「変更された」と誤判定する。
+
+- **IME変換の未確定文字列がそのままコミットされる。** `commit_pending_layout_edit()`
+  は`changed()`のようなイベントではなく毎フレームの状態比較なので、round1で却下した
+  `changed()`トリガーが持っていた「IME変換の途中経過でも発火する」という欠陥を、
+  トリガーを変えても**形を変えて温存していた**。「…」というリテラルセルを選択し、
+  IMEで「てん」に変換中に`Esc`でキャンセルすると、変換中の中間文字列が確定入力の
+  瞬間ごとに毎フレーム`self.layout`へ書き込まれ続け、最終的に空文字列に戻っても
+  それまでの中間状態（「て」「てん」等）が既にモデルへ反映済みで、`Esc`は
+  何も救済しない（architect V3、premortem R3-1、両者独立に発見。round1 P2-1で
+  指摘した症状——空文字列コミットで値が消える——とは別の、同じIME起因の新しい
+  経路）。
+- **`ValueKind::Special`のラジオボタンを押しただけで、意図しない値が即座に
+  コミットされる。** `layout_edit_special_idx`はテキストバッファ（`layout_edit_value`）
+  とは独立したComboBoxの選択インデックスであり、セル切替時に初期化されず前のセルで
+  操作した値（または未操作なら既定の0=Backspace相当）を引き継いだまま残る。
+  「特殊キー」ラジオへ切り替えた瞬間、`commit_pending_layout_edit()`は
+  `SPECIAL_KEYS[layout_edit_special_idx]`を「現在のモデル値と異なる」と判定して
+  即座にコミットしてしまう——**ComboBoxを一度も開かず、ラジオを押しただけで
+  セルの値がBackspace等へ無言で書き換わる**（premortem R3-2、round2 R2-9で
+  「なし」について指摘した自己矛盾と同型の欠陥が、対処範囲を「なし」だけに
+  絞ったことで「特殊キー」に取り残されていた）。
+- **上記2つの根は同じ設計欠陥である。** 「バッファの現在値」対「モデルの現在値」を
+  直接比較するかぎり、**バッファに値は入っているが、ユーザーが選択後に一度も
+  実際に操作していない**という状態を区別できない。ADR-115打鍵列セルを読み取り専用
+  にする対処（v2 D1）も同じ理由で不完全——`ui.add_enabled(false, ...)`はウィジェットの
+  描画属性であって`commit_pending_layout_edit()`の判定条件には一切影響しないため、
+  読み取り専用にしても「セルを選択しただけで、シリアライズ表示文字列がリテラルとして
+  誤って再コミットされる」という経路は塞がれていない（architect V1）。さらに、
+  この「表示文字列がストアされた値へ過不足なく往復する」という前提自体が、将来
+  `SpecialKey`のバリアント追加等で`SPECIAL_KEYS`配列の更新を忘れると静かに壊れる
+  暗黙の不変条件になっていた（architect V2、一般化した指摘）。
+
+### その他、round3で新たに発見された問題
+
+- **`self.layout`を丸ごと差し替える処理（キャンセルの「両方元に戻す」、
+  `layout_do_reload`、`layout_load_from_path`成功時）が、選択中セルのバッファ
+  （`layout_selected_pos`/`layout_edit_value`等）を再同期していない。** 差し替え後も
+  古いセルが選択されたままだと、次フレームの`commit_pending_layout_edit()`が
+  古いバッファ内容を新しい`self.layout`と比較し、**「元に戻したはずの値」を
+  再び上書きコミットしてしまう**——round1 P1-2（読み込み後の選択位置ズレ）と同種の
+  「モデル総入れ替え後の選択・バッファ再同期漏れ」が、コミット判定を新設した
+  ことで別の実害（サイレントな再コミット）として再発する（premortem R3-3）。
+- **`layout_status`が、無効な入力が残っているセルを選択している間、毎フレーム
+  同じパースエラーで上書きされ続ける。** `commit_pending_layout_edit()`は
+  `update()`冒頭で毎フレーム実行されるため、パースに失敗するバッファを持つセルを
+  選択したまま他の操作（下部「適用」での保存成功等）をしても、**その成功メッセージが
+  画面に表示される前の次のフレームで、`layout_status`へのパースエラー書き込みに
+  即座に上書きされ、ユーザーは成功メッセージを一切見られない**（premortem R3-4）。
+- 「範囲外」節（旧行477-479）が「IME変換中の打鍵欄における赤エラー表示のちらつきは
+  `commit_pending_layout_edit()`化によりモデルへの実害は無くなった」としているのは、
+  上記のIME欠陥（R3-1）が未修正のv2時点の記述であり誤り。修正後の記述に更新する
+  必要がある（premortem R3-5）。
+- **キーボードモデル不一致ガード（D2）の発火条件が`layout_modified`を要求する
+  ため、「配列は編集していないが、全般設定タブでキーボードモデルだけ変更して
+  適用した」場合はガードが発火しない。** 配列とモデルの不一致自体は
+  `layout_modified`の真偽に関わらずエンジン側で問題になりうる、既存の（本ADRの
+  スコープ外で発生していた）別種の不整合であり、新規のリグレッションではないが、
+  D2がこのガードを「モデル不一致問題への対処」と位置付けている以上、
+  スコープをどう区切るか（`layout_modified`要件を外すか、外さない理由を明記するか）
+  をADR側で明示する必要がある（premortem、スコープ注記）。
+
+### 収束に向けた設計方針（両者が同意した方向性）
+
+- `commit_pending_layout_edit()`の判定基準を「モデルとの直接比較」から
+  **「セル選択時点でのスナップショット（`layout_edit_origin`）との差分」**に変更する。
+  `select_layout_cell`実行時に、そのセルの表示用文字列（現在`layout_edit_value`を
+  初期化するのに使っている値）を`layout_edit_origin: Option<String>`へ保存し、
+  以後は`layout_edit_value != layout_edit_origin`のときのみ「ユーザーが実際に
+  編集した」とみなす。ADR-115打鍵列セルは選択しても`layout_edit_value`が
+  `layout_edit_origin`（＝初期表示値）から変化しようがない（読み取り専用のため）ので、
+  この時点で自然にコミット対象から外れる（V1解消）。将来型が増えても
+  「表示文字列がストアされた値に過不足なく往復するか」という不変条件に依存しなく
+  なる（V2解消）。
+- IME合成中かどうかを追跡する`ime_composing: bool`を追加し（`ctx.input(|i| &i.events)`
+  で`egui::Event::Ime`の`Enabled`/`Preedit`受信時に`true`、`Commit`/`Disabled`受信時に
+  `false`にする。`ImeEvent`はpublicだが`TextEditState::ime_enabled`は`pub(crate)`で
+  参照できないため自前追跡が必要——architect V3の確認事項）、`ime_composing`が真の
+  間は`commit_pending_layout_edit()`を完全にスキップする（IME確定後、次フレームで
+  `layout_edit_origin`との差分判定が通常どおり走るため、中間状態を経由せず最終的な
+  確定結果だけが評価される。R3-1解消）。
+- `ValueKind::Special`は`commit_pending_layout_edit()`の対象から外し、ComboBox
+  ウィジェット自身の`response.changed()`で即座にコミットする独立経路にする
+  （R3-2解消）。ComboBoxの選択は離散的なイベントでIME合成を経由しないため、
+  round1でテキスト入力について却下した`changed()`トリガーの欠陥（IME未確定文字列
+  での誤発火）はここでは発生しない——「なし」（D1で専用ボタン化済み）と合わせて、
+  自由入力欄を持たない2種別はどちらも「値ウィジェットへの明示操作」でのみコミット
+  する、という統一ルールになる。
+- `self.layout`を丸ごと差し替えるすべての経路で、直後に`layout_selected_pos = None`
+  （および`layout_edit_origin`/`layout_edit_value`のクリア）を行うことをD1の不変
+  条件として明記する（R3-3解消）。
+- `commit_pending_layout_edit()`の冒頭で「前フレームから入力状態
+  （`layout_edit_value`/`layout_edit_kind`）が変化したか」を確認し、変化していない
+  フレームでは`layout_status`を含め一切の処理を行わずに早期returnする
+  （R3-4解消——同じエラーを毎フレーム再書き込みしない）。
+
 ## 決定
 
 ### D1: 配列編集タブのセル単位「適用」ボタンを撤去し、`update()`冒頭で無条件にコミット判定する
@@ -257,19 +371,53 @@ round1改訂（`lost_focus()`トリガー、`layout_file_path`を常に確定、
 `changed()`/`lost_focus()`には一切依存せず、`update()`の**先頭**（`poll_pending_save`
 の隣、既存の`main.rs:2545`付近、`action_panel`・`SidePanel`・`CentralPanel`・
 `handle_layout_shortcuts`の**どれよりも前**）で、次の処理を毎フレーム無条件に行う
-`commit_pending_layout_edit()`を新設する:
+`commit_pending_layout_edit()`を新設する。
 
-1. `layout_selected_pos`が`Some(pos)`かつ`layout_edit_kind != ValueKind::None`のとき、
-   現在の`layout_edit_value`/`layout_edit_kind`/`layout_edit_special_idx`（前フレームまでの
-   ウィジェット操作でユーザーが入力した内容がそのまま残っている）から`YabValue`を
-   構築する（`apply_layout_edit()`が現在行っているパース・バリデーションロジックを
-   そのまま流用する）。
-2. パースが成功し、かつ構築結果が`self.layout_face(face).get(pos)`の現在値と異なる
-   場合のみ、`self.layout_face_mut(face).insert(pos, value)`を実行し
-   `layout_modified = true`にする。既に一致していれば何もしない（無駄な書き込み・
-   ステータス更新を避ける）。
-3. パースが失敗した場合はモデルを変更せず、`layout_status`にエラーメッセージを
-   表示する（既存のメッセージをそのまま使う）。
+**判定基準は「モデルとの直接比較」ではなく「セル選択時点のスナップショットとの差分」
+にする（round3で判明した、バッファの中身を無条件に信用することの危険性への対処）。**
+新設する状態:
+
+- `layout_edit_origin: Option<String>` — `select_layout_cell`実行時に、そのセルの
+  表示用文字列（現在`layout_edit_value`の初期値として使っている値と同じもの）を
+  保存する。セル選択が変わるたび、または`self.layout`が丸ごと差し替わるたびに
+  再設定・クリアする（後述の不変条件を参照）。
+- `ime_composing: bool` — `update()`内で毎フレーム`ctx.input(|i| &i.events)`を走査し、
+  `egui::Event::Ime(ImeEvent::Enabled | ImeEvent::Preedit(_))`を観測したら`true`、
+  `egui::Event::Ime(ImeEvent::Commit(_) | ImeEvent::Disabled)`を観測したら`false`に
+  更新する（`ImeEvent`はpublic、`egui-0.31.1/src/data/input.rs:475,545-557`で確認済み。
+  `TextEditState::ime_enabled`は`pub(crate)`のため参照できず、自前追跡が必要）。
+- `layout_edit_last_seen: Option<(String, ValueKind)>` — 前フレームの
+  `(layout_edit_value.clone(), layout_edit_kind)`を保持する、ステータス上書き抑制
+  専用のキャッシュ。
+
+`commit_pending_layout_edit()`の処理内容:
+
+1. `layout_selected_pos`が`None`なら何もしない。
+2. 現在の`(layout_edit_value.clone(), layout_edit_kind)`を`layout_edit_last_seen`と
+   比較し、**一致していれば（前フレームから何も変化していなければ）ここで即座に
+   returnする**（`layout_status`にも一切触れない。round3 R3-4解消——無効な入力を
+   残したまま他の操作をしても、そのフレーム以外でエラーメッセージが再書き込みされ
+   なくなる）。不一致なら`layout_edit_last_seen`を現在値で更新してから続行する。
+3. `layout_edit_kind == ValueKind::None`または`ValueKind::Special`なら、ここで
+   returnする（前者は専用の「解除」ボタン、後者はComboBox自身の`changed()`で
+   コミットする独立経路のため、このステップでは扱わない。詳細は後述）。
+4. `ime_composing`が真ならreturnする（IME変換の中間状態を一切モデルへ書き込まない。
+   round3 R3-1/V3解消）。
+5. `layout_edit_value == layout_edit_origin`（＝選択した時点から表示文字列が
+   一度も変わっていない）ならreturnする（round3 V1/V2解消——ADR-115打鍵列セルの
+   ようにウィジェットが読み取り専用で`layout_edit_value`が動かしようがない場合、
+   このステップで自然にコミット対象から外れる。将来`YabValue`の種別が増えても、
+   「表示文字列が値に過不足なく往復するか」という不変条件そのものに依存しなく
+   なる）。
+6. ここまで通過したら、`layout_edit_value`から`YabValue`を構築する
+   （`apply_layout_edit()`が現在行っているパース・バリデーションロジックをそのまま
+   流用する）。パースが成功し、かつ構築結果が`self.layout_face(face).get(pos)`の
+   現在値と異なる場合のみ`self.layout_face_mut(face).insert(pos, value)`を実行し
+   `layout_modified = true`、`layout_edit_origin`を今回の`layout_edit_value`で
+   更新する（同じ値を毎フレーム再コミットしないため）。`layout_status`はクリアする。
+   パースが失敗した場合はモデルを変更せず`layout_status`にエラーメッセージを表示する
+   （ステップ2の早期returnにより、これは入力内容が変化した最初のフレームでしか
+   起きない）。
 
 この設計により、「テキスト欄がその瞬間に描画されているか」「フォーカスが今フレーム
 移動したか」に一切依存しなくなる。**下部「適用」を押したその同じフレームでも、
@@ -287,27 +435,39 @@ round1改訂（`lost_focus()`トリガー、`layout_file_path`を常に確定、
 から除外する。** テキスト欄を空にしただけでは既存の値を保持し、`layout_status`に
 「空にすると値が消えます。「なし」を選んでください」等のガイドを出す（IME変換中止
 （`Esc`）や`Ctrl+A`→打ち直しの一瞬に空文字列が確定入力として届く経路——round1
-premortem P2-1——から、既存の値を保護する）。
+premortem P2-1——から、既存の値を保護する。なお`ime_composing`ガード（ステップ4）
+により、変換中の中間的な空文字列自体がコミットされることはなくなったが、
+変換を伴わない`Ctrl+A`→`Delete`等での意図的な全消去は引き続きこのガードの対象と
+する）。
 
-**「なし」種別の値解除は、自動コミットの対象から除外し、専用の明示的操作にする
-（round2 B2+B3を統合した設計）。** 種別ラジオ（`ValueKind::None`を含む5種別）を
-切り替える操作そのものは、`layout_edit_kind`という**表示上の状態**を変えるだけで、
-モデルへの書き込みは行わない。`commit_pending_layout_edit()`は
-`layout_edit_kind == ValueKind::None`のときはコミット処理をスキップする。その代わり、
-編集パネルに`layout_edit_kind == ValueKind::None`かつ現在のセルの値が`YabValue::None`
-でないときにのみ表示される「このキーの割り当てを解除」ボタンを新設し、これを
-明示的に押した場合のみ`YabValue::None`をコミットする（「解除」というラベルなので
-原則3の「適用」多義禁止には抵触しない——「削除」系の操作に確認的なワンクッションを
-残すのは一般的なUXパターンでもある）。
+**「なし」と「特殊キー」の2種別は、いずれも自由入力欄（`layout_edit_value`との
+差分追跡）を持たないため、`commit_pending_layout_edit()`の対象から外し、それぞれ
+専用の明示的操作でのみコミットする（round2 B2+B3、round3 R3-2を統合した設計）。**
+種別ラジオ（`ValueKind`の5種別）を切り替える操作そのものは、`layout_edit_kind`という
+**表示上の状態**を変えるだけで、モデルへの書き込みは一切行わない。
 
-一方、`ValueKind::Special`（ComboBox）を含む**`None`以外の4種別**については、
-種別ラジオや値ウィジェット（ComboBoxの選択、テキスト欄の内容）が現在示している
-状態をそのまま`commit_pending_layout_edit()`が毎フレーム評価し、モデルと異なれば
-コミットする。これにより「打鍵からリテラルへ種別を変え、テキスト欄に触れずに
-別セルへ移る」といった、値ウィジェット自体は変更していないが種別だけ変えた操作も、
-次フレームのコミット判定で自然に拾われる（round2 B3解消——「ラジオ操作そのものは
-コミットしない」という制約は「なし」だけに限定し、それ以外の種別には適用しない
-ことで、B2とB3が両立する）。
+- **「なし」**: 編集パネルに`layout_edit_kind == ValueKind::None`かつ現在のセルの
+  値が`YabValue::None`でないときにのみ表示される「このキーの割り当てを解除」
+  ボタンを新設し、これを明示的に押した場合のみ`YabValue::None`をコミットする
+  （「解除」というラベルなので原則3の「適用」多義禁止には抵触しない——「削除」系の
+  操作に確認的なワンクッションを残すのは一般的なUXパターンでもある）。
+- **「特殊キー」**: ComboBoxウィジェット自身の`response.changed()`が真になった
+  その場で、選択された`SpecialKey`を直接`self.layout_face_mut(face).insert(pos, ...)`
+  へコミットする（`commit_pending_layout_edit()`を経由しない独立経路）。ComboBoxの
+  選択は「特定の選択肢がクリックされた」という離散的なイベントであり、IME合成を
+  経由しないため、round1でテキスト入力について却下した`changed()`トリガーの欠陥
+  （IME未確定文字列での誤発火）はここでは発生しない。これにより
+  `layout_edit_special_idx`は「ラジオへ切り替えただけで未操作のまま残っている値」
+  としてコミットされることがなくなる（round3 R3-2解消）。
+
+`ValueKind::Special`を除く**`None`以外の3種別**（打鍵/リテラル/VK）については、
+テキスト欄の内容が現在示している状態を`commit_pending_layout_edit()`が毎フレーム
+評価し、`layout_edit_origin`から差分があればコミットする。これにより「打鍵から
+リテラルへ種別を変え、テキスト欄に触れずに別セルへ移る」といった、値ウィジェット
+自体は変更していないが種別だけ変えた操作も、次フレームのコミット判定で自然に
+拾われる（round2 B3解消——「ラジオ操作そのものはコミットしない」という制約は
+「なし」「特殊キー」の2種別に限定し、それ以外の種別には適用しないことで、B2とB3が
+両立する）。
 
 **ADR-115の打鍵列（`CtrlChord`/`InlineSequence`/`MacroRef`）を含むセルは、リテラル
 入力欄を読み取り専用にする。** これらは現状も「編集して確定すると`YabValue::Literal`
@@ -315,9 +475,26 @@ premortem P2-1——から、既存の値を保護する）。
 これまでは「明示的に適用ボタンを押す」というワンクッションがあった。自動コミットに
 するとこのクッションが失われるため、この限界に該当するセルは編集不能にし
 （`ui.add_enabled(false, ...)`）、変更したい場合は`.yab`を直接編集するよう案内する。
+なお上記ステップ5（`layout_edit_origin`との差分判定）により、これらのセルは
+読み取り専用化と無関係に「選択しただけでは`layout_edit_value`が変化しようがない」
+ため元々コミット対象から外れる——`ui.add_enabled(false, ...)`はユーザーによる誤編集を
+防ぐUI上の保護として残すが、`commit_pending_layout_edit()`の安全性はこれに依存しない
+（round3 architect V1で指摘された「読み取り専用化だけでは防御にならない」という
+問題への対処）。
 
-**`select_layout_cell`の冒頭で`layout_status`をクリアする。** 直前のセルのエラー
-メッセージが別のセルを編集中も残り続けることを防ぐ（round2 A4）。
+**`select_layout_cell`の冒頭で`layout_status`をクリアし、`layout_edit_origin`を
+新しいセルの表示文字列で再設定する。** 直前のセルのエラーメッセージが別のセルを
+編集中も残り続けることを防ぐ（round2 A4）とともに、新しいセルのバッファ初期値が
+「まだ編集されていない」状態として正しく扱われるようにする。
+
+**`self.layout`を丸ごと差し替えるすべてのコードパスは、差し替え直後に
+`layout_selected_pos = None`（および`layout_edit_origin`のクリア、`layout_edit_kind`
+の既定値への復帰）を行うことをD1の不変条件とする。** 対象はキャンセルの
+「両方元に戻す」（D2）、`layout_do_reload`、`layout_load_from_path`の成功時
+（「開く」ダイアログ・パス欄直接入力の両方）。これを怠ると、差し替え後も選択中
+セルの古いバッファが残ったままとなり、次フレームの`commit_pending_layout_edit()`が
+新しい`self.layout`との差分（＝「元に戻した／読み込み直した」ことによる正当な差分）
+を「ユーザーの新しい編集」と誤認して再コミットしてしまう（round3 R3-3解消）。
 
 ### D2: 配列編集タブの状態（`self.layout`/`layout_modified`）を、画面下部共通の「適用」「キャンセル」の対象に含める
 
@@ -350,6 +527,15 @@ premortem P2-1——から、既存の値を保護する）。
   部分適用を許さず全体を止めることで、"warning文どおりに動いても必ず失敗する"
   （R2-5）という状態も生まれない（配列を諦めるかモデル変更を諦めるか、
   ユーザー自身が選ぶまで何も書き込まれない）。
+  **このガードの発火条件はあえて`layout_modified`を要求する（round3
+  premortem、スコープ注記への回答）。** 「配列は編集していないが、全般設定タブで
+  キーボードモデルだけ変更して適用した」場合にモデルと`.yab`が不整合になる問題
+  自体は本ADRが新たに作るものではなく、`layout_modified`の真偽に関わらず既存の
+  `reload_config()`の側で発生しうる別種の不整合であり、本ADRのスコープ（配列編集
+  タブの「単一の適用」原則違反の解消）には含まれない。本ADRのD2は「配列編集タブの
+  未保存の変更を、モデル不一致に気づかず書き込んで失わせない」ことだけを対象とし、
+  `layout_modified`が偽の場合のモデル/配列不整合そのものへの対処は別ADRの範囲とする
+  （「範囲外」節に追記）。
 - **`awase.exe`のエンジンに実際に反映される条件を、適用時に警告する。**
   `reload_config()`は`resolve_layouts_dir(&config.general.layouts_dir)`配下かつ
   `config.general.default_layout`と同名の`.yab`しか読まない（round1 F9）。
@@ -382,7 +568,16 @@ premortem P2-1——から、既存の値を保護する）。
   4. 「両方元に戻す」を選んだ場合: config.tomlを読み直した**後**（`keyboard_model`
      等が復元された後）、その`keyboard_model`を使って`self.layout`を
      `layout_file_path`から読み直し、`layout_modified = false`にする（順序を誤ると
-     復元前の`keyboard_model`で`.yab`をパースしてしまう）。
+     復元前の`keyboard_model`で`.yab`をパースしてしまう）。**この読み直しが失敗した
+     場合（`layout_file_path`のファイルが外部で削除・破損した等）は、通常の
+     `layout_load_from_path`失敗時と同じ扱いにする**——`layout_loaded_ok = false`、
+     `self.layout`は変更せず（＝直前まで画面に表示していた未保存の編集内容をその
+     まま残す）、`self.status`に読み込み失敗を表示する。`layout_modified`は
+     **falseにしない**（「両方元に戻す」は失敗しており、実際にはまだ未保存の編集が
+     `self.layout`に残っているため。`layout_modified = false`にすると、その後
+     D2の書き込みガードが「変更なし」と誤認し、壊れた状態のまま何もせず「適用成功」
+     と表示しうる——architect V4）。いずれの場合も上記D1の不変条件どおり
+     `layout_selected_pos`はNoneへ戻す。
   5. `layout_modified`が偽なら、確認モーダルを出さず現行どおり即座にconfigを
      読み直す。
   6. `show_dangerous_save_confirm`（既存のDangerous設定確認）は、上記の新しい
@@ -400,6 +595,26 @@ premortem P2-1——から、既存の値を保護する）。
   付け替える。** `handle_layout_shortcuts()`内に残したままだと「配列編集タブでだけ
   `Ctrl+S`が全体適用、他タブでは無反応」という新しい非一貫が生まれるため
   （round2 architect B7）。
+- **`update()`冒頭の処理順序を次のとおり明記する（round3 architect V5）:**
+  1. `poll_pending_save`
+  2. `commit_pending_layout_edit`（D1）
+  3. グローバル`Ctrl+S`判定→`apply()`（本項目）
+  4. `handle_layout_shortcuts`（配列編集タブ限定、`Ctrl+O`/`Ctrl+Shift+S`/`F5`のみ
+     残る。`Ctrl+S`はステップ3に移設済みのため扱わない）
+  5. 各パネルの描画（`SidePanel`・`action_panel`・`CentralPanel`）
+
+  この順序により、ステップ3のグローバル`Ctrl+S`は必ずステップ2でその時点の編集内容が
+  確定した**後**に評価される。
+- **グローバル`Ctrl+S`判定は、`self.capturing.is_some()`（ショートカットタブの
+  キー捕捉モード、`main.rs:314`）の間は発火させない。** キー捕捉モード中は
+  `process_keymap_capture()`が`Ctrl+S`を「Sキー＋Ctrl修飾」という捕捉対象の
+  キーコンボそのものとして解釈する（`egui_key_to_internal`経由）。ここでグローバル
+  `Ctrl+S`も同時に反応すると、ユーザーが「`Ctrl+S`という組み合わせを`[[keymap]]`の
+  `from`に登録したい」だけなのに、意図せず設定全体が保存されてしまう。既存の
+  `process_keymap_capture`が`Escape`（無修飾）だけを特別扱いしキャプチャを
+  キャンセルする設計（`main.rs:1113-1116`）と対称に、「捕捉モード中は他の全ての
+  グローバルショートカットより捕捉が優先される」というルールをステップ3の条件に
+  明記する（round3 architect V6）。
 - **「名前を付けて保存」は「別ファイルへ書き出す（エクスポート）」として再定義し、
   `layout_file_path`と`layout_modified`を変更しない専用の処理にする。** 現状の
   実装（保存先を新しい「現在のファイル」として差し替える）のままD2と組み合わせると、
@@ -433,6 +648,15 @@ D2により、他タブで「適用」を押しても配列編集タブの変更
 真のときだけ「配列編集に未保存の変更があります」という一行を追加する。「適用」
 ボタンのホバーテキストにも「（配列編集の変更も保存されます）」を追記する。
 
+**このバナーの文言は、D2のキーボードモデル不一致ガードで`apply_confirmed()`全体を
+中止した場合の`self.status`メッセージと矛盾しないようにする（round3 architect V7）。**
+モデル不一致で適用が中止された直後は「配列編集に未保存の変更があります」という
+D5のバナーと、D2の「…保存できません」という中止メッセージの両方が同時に表示
+されうる。前者だけを見ると「まだ保存されていないので改めて適用すればよい」と
+誤解しかねないため、D2の中止メッセージ側に「（この変更は下部のバナーが示す
+未保存の配列編集と同じものです）」等、両者が同一の状態を指していることが分かる
+文言を含める。
+
 ### D6: ウィンドウを閉じる操作への対応は現状維持とする（意図的な決定、理由を明記）
 
 `config.toml`側にも現状「ディスクとの差分」を検出する仕組みは無く（`self.config`が
@@ -464,6 +688,16 @@ B8の指摘に対する回答）: ウィンドウを閉じる操作はOSレベ�
   変わらない（上書き事故そのものの回帰）、(c) キャンセルで編集が破棄されディスクの
   内容に戻る、(d) キーボードモデル不一致時に書き込み・config保存の両方が中止される、
   (e) 読み込み失敗中（`layout_loaded_ok == false`）は書き込みが行われない。
+- 上記に加え、round3で判明した経路の回帰テスト: (f) ADR-115打鍵列セルを選択した
+  だけ（テキスト欄に触れない）では`commit_pending_layout_edit()`が何もコミットしない、
+  (g) `ValueKind::Special`のラジオへ切り替えただけ（ComboBoxを操作しない）では
+  コミットされず、ComboBoxで選択肢を選んだ時点でのみコミットされる、(h) キャンセルの
+  「両方元に戻す」または`layout_do_reload`実行後、選択中セルの古いバッファが復元後の
+  モデルへ再コミットされない、(i) 無効な入力を残したまま他の操作をしても
+  `layout_status`が毎フレーム上書きされ続けない（他の場所で設定したステータス
+  メッセージが1フレーム以上残る）。IME合成中のコミット抑止（`ime_composing`）は
+  実機のIME入力に依存するため自動テスト化が難しく、known-bugs.md相当の記録または
+  手動確認手順の明記で代替してよい。
 
 ## 範囲外
 
@@ -474,9 +708,17 @@ B8の指摘に対する回答）: ウィンドウを閉じる操作はOSレベ�
   別ADR）。
 - ADR-115打鍵列セルの編集機能そのものの拡充（D1では「編集不能にする」という後退的
   対応に留め、打鍵列を安全に編集できるUIの新設はスコープ外とする）。
-- IME変換中の打鍵欄における赤エラー表示のちらつき（round1 P2-2/P2-3で指摘、
-  `commit_pending_layout_edit()`化によりモデルへの実害は無くなったが、表示上の
-  ちらつき自体は残る——実害が小さいため別途対応とする）。
+- IME変換中の打鍵欄における赤エラー表示のちらつき（round1 P2-2/P2-3で指摘）。
+  **（round3で修正・記述更新: `ime_composing`ガード導入前のv2時点では未解決だった
+  「変換中の中間文字列がモデルへ書き込まれる」という実害は、D1の`ime_composing`
+  ガードにより解消済み。ここでいう「ちらつき」は、変換完了までパースエラー表示等が
+  一時的に切り替わって見える表示上の見た目のみを指し、モデルへの実害は無い——
+  premortem R3-5）。**
+- `layout_modified`が偽の状態でキーボードモデルだけを変更して適用した場合に
+  モデル/配列の不整合がエンジンへ伝播する問題（D2のガードは`layout_modified`が
+  真の場合のみを対象とする、round3 premortemのスコープ注記）。本ADRが新たに作る
+  経路ではなく、既存の`reload_config()`側の別種の不整合であるため、対処する場合は
+  別ADRとする。
 
 ## 関連
 
