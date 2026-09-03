@@ -53,22 +53,28 @@ impl Output {
     }
 
     /// ADR-123 変更A+C 決定4-3（drain-before-send）: `has_pending_tsf()`も
-    /// `raw_recovery_owns_deferred()`（`gate`が`Enforced`の場合のみ）も
-    /// 偽で、`pending_deferred`が非空「なだけ」の場合、新しいモーラを
-    /// 追加でキューに積むのではなく、先にキューをflushしてから通常送信に
-    /// 進む。**`assess_warmth()`より前に呼ぶこと**——後に置くとwarm/cold
-    /// 判定がflush前の状態で下され、直後のprobeが汚染された
-    /// `last_send_ms`/write_deltaを自分の証拠として読みうる（round3指摘）。
+    /// `raw_recovery_owns_deferred()`も偽で、`pending_deferred`が非空
+    /// 「なだけ」の場合、新しいモーラを追加でキューに積むのではなく、
+    /// 先にキューをflushしてから通常送信に進む。**`assess_warmth()`より
+    /// 前に呼ぶこと**——後に置くとwarm/cold判定がflush前の状態で下され、
+    /// 直後のprobeが汚染された`last_send_ms`/write_deltaを自分の証拠として
+    /// 読みうる（round3指摘）。
     ///
-    /// `gate`に関わらず呼んでよい: draining は「古い未flush入力を先に
-    /// 出す」という順序保証の話であり、raw recovery自身の再送
-    /// （`Exempt`）が自己参照する`raw_recovery_owns_deferred()`とは
-    /// 独立した安全な操作。
-    fn drain_pending_deferred_before_send_if_queue_only(&self, gate: DeferGate) {
-        let check_raw_recovery = gate == DeferGate::Enforced;
-        if self.is_probe_or_recovery_blocking(check_raw_recovery)
-            || self.pending_deferred_len() == 0
-        {
+    /// **`raw_recovery_owns_deferred()`は`gate`に関わらず常にチェックする
+    /// （4-2の`defer_respecting_gate`とは非対称、Opus敵対的レビュー
+    /// round4-3指摘）。** defer方向（自分の送信を止めるか）では
+    /// 「無関係な別recoveryか自分自身か」の区別が自己defer回避に必要
+    /// だったが、drain方向（他人が所有するキューを解放してよいか）では
+    /// この区別は無意味かつ危険——`raw_recovery_owns_deferred()`が
+    /// trueである以上、それが自分の状態由来であることはない
+    /// （`flush_raw_tsf_literal_romaji`到達時点で自分の`RAW_TSF_LITERAL`は
+    /// 既にswap/take済み・`pending_gji_reinit`は非give-up経路では未予約、
+    /// `resend_gji_reinit_retry_romaji`到達時点では自分の`pending_gji_reinit`
+    /// は`take_gji_reinit_completion`で既にtake済み）。つまりtrueならほぼ
+    /// 確実に無関係な別recoveryが所有中であり、`finish_probe_stage`が
+    /// 守るINV-Fと同じ理由でここも手を出してはならない。
+    fn drain_pending_deferred_before_send_if_queue_only(&self) {
+        if self.is_probe_or_recovery_blocking(true) || self.pending_deferred_len() == 0 {
             return;
         }
         let n = self.flush_pending_deferred_vks();
@@ -207,7 +213,7 @@ impl Output {
             log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
 
-        self.drain_pending_deferred_before_send_if_queue_only(gate);
+        self.drain_pending_deferred_before_send_if_queue_only();
 
         let WarmthContext {
             warm,
@@ -375,7 +381,7 @@ impl Output {
             log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
 
-        self.drain_pending_deferred_before_send_if_queue_only(gate);
+        self.drain_pending_deferred_before_send_if_queue_only();
 
         let WarmthContext {
             warm,
@@ -739,8 +745,16 @@ mod tests {
     fn drain_pending_deferred_before_send_if_queue_only_preserves_queue_while_blocking() {
         // blocking 中（has_pending_tsf()=true）は「queue-only」ではないため
         // drain してはいけない——キューはそのまま残る。実送信(SendInput)を
-        // 発火させないケースのみをここで検証する（drain が実際に発火する
-        // ケースは e2e/golden シナリオでカバーする）。
+        // 発火させないケースのみをここで検証する。
+        //
+        // 既知のテストギャップ（Opus敵対的レビュー round4-3指摘）:
+        // drain が実際に発火する正のケース（queue-only → flush →
+        // pending_deferred_len()==0）はここではカバーしていない。
+        // `flush_pending_deferred_vks` は実際に `SendInput` を発火する経路
+        // （`key_injector.rs`）に委譲しており、この crate には元々
+        // `SendInput` を伴う送信経路を直接叩くユニットテストが1件も無い
+        // （`grep -n "fn.*test" key_injector.rs` で確認済み）。同じ理由で
+        // このケースも e2e/golden シナリオでカバーする前提とする。
         let o = Output::new();
         o.install_pending_tsf(Box::new(
             crate::tsf::warmup::chrome_probe::ChromeProbe::new(
@@ -755,7 +769,7 @@ mod tests {
             .push_deferred_vks(&[(VkCode(0x41), false)], DeferredOrigin::UserInput);
         assert_eq!(o.pending_deferred_len(), 1);
 
-        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
+        o.drain_pending_deferred_before_send_if_queue_only();
 
         assert_eq!(
             o.pending_deferred_len(),
@@ -770,7 +784,7 @@ mod tests {
         let o = Output::new();
         assert_eq!(o.pending_deferred_len(), 0);
 
-        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
+        o.drain_pending_deferred_before_send_if_queue_only();
 
         assert_eq!(o.pending_deferred_len(), 0);
     }
