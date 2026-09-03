@@ -12797,3 +12797,31 @@ TsfNative 専用かつ ROMAN ビットを信頼しない設計で、Teams の反
 belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行わない。
 
 **修正履歴:** `40a2d091`（2026-09-02、`feat/issue-137-teams-kana-lock-detection`）。
+
+## BUG-107: 設定画面・不具合報告画面（`awase-settings.exe`、eframe/egui製）でテキスト入力が重く、無関係なかな文字が混入する（調査中・未修正）
+
+**症状（ユーザー報告、2026-09-03）:** タスクトレイの「不具合を報告」画面
+（`crates/awase-settings/src/bug_report.rs`、`--bug-report` 起動）の説明欄で
+文字入力がとても重く（1打鍵ごとに体感できる遅延がある）、さらに入力していない
+はずのかな文字が突然挿入されることがある。同じ症状は通常の設定画面
+（`awase-settings.exe` の主ウィンドウ）でも起こりうる——両者は同じバイナリ・
+同じ `eframe`/`egui`/`winit` スタックを使っている。
+
+**却下した対策:** `disable_apps` に `awase-settings.exe` を追加し丸ごと無効化
+する案を最初に検討したが、「eframe/egui 全体が awase 非対応という話になる」
+とユーザーに却下された（詳細は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)）。
+
+**調査で判明した機構・未確定な点・次のアクション:** ソースコード読解
+（`winit`/`egui-winit`）により、egui-winit がテキストウィジェットの
+フォーカス有無に応じて毎フレーム `window.set_ime_allowed()` を呼び、
+winit がこれを同一 HWND への `ImmAssociateContextEx`（IME コンテキストの
+脱着）として実装していること、awase のフォーカス追跡がトップレベル HWND
+の切替のみを契機にしており同一 HWND 内のこの種の変化を検知する経路が
+無いことを特定した。ただし実機ログでの裏取りは未実施であり、実装方針は
+確定していない。詳細・未確定な点・次のアクションは
+[ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
+
+**関連:** BUG-33/BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、
+同系統だが原因の軸が異なる）、BUG-78（却下案が再利用しようとした
+`disable_apps` 丸ごとバイパス機構の初出）、ADR-121（「原因の半分」を
+早期に確定として扱ってしまった教訓、本件で実装を急がない理由）。
