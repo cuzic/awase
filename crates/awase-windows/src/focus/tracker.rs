@@ -121,15 +121,33 @@ impl FocusTracker {
     /// フォーカス情報を更新する。`app_profile` は `class_name` から自動導出したうえで、
     /// 実測学習（`ImmCapabilityStore`）による降格を適用する。
     pub(crate) fn update(&mut self, pid: u32, class_name: String, hwnd: usize) {
-        self.current
-            .update(pid, class_name, hwnd, self.overrides.input_relay_apps());
-        let learned = self.imm_learning.get(&self.current.class_name);
+        self.update_with_process_name(pid, class_name, hwnd, None);
+    }
+
+    pub(crate) fn update_with_process_name(
+        &mut self,
+        pid: u32,
+        class_name: String,
+        hwnd: usize,
+        process_name: Option<String>,
+    ) {
+        self.current.update_with_process_name(
+            pid,
+            class_name,
+            hwnd,
+            self.overrides.input_relay_apps(),
+            process_name,
+        );
+        let learned = self
+            .imm_learning
+            .get(&self.current.process_name, &self.current.class_name);
         let overridden = Self::apply_learned_imm_capability(self.current.app_profile, learned);
         if overridden != self.current.app_profile {
             log::info!(
-                "[imm-learning] profile 降格: class={:?} {:?} → {:?} \
+                "[imm-learning] profile 降格: process={:?} class={:?} {:?} → {:?} \
                  (実測学習 ImmCapability::Unavailable。誤学習なら cache.toml の \
-                 [imm_capability] から該当クラスを削除)",
+                 [imm_capability] から該当 process/class を削除)",
+                self.current.process_name,
                 self.current.class_name,
                 self.current.app_profile,
                 overridden,
@@ -235,20 +253,31 @@ impl FocusTracker {
 
     // ── IMM 能力学習 ─────────────────────────────────────────────────────────
 
-    pub(crate) fn imm_capability(&self, class_name: &str) -> Option<ImmCapability> {
-        self.imm_learning.get(class_name)
+    pub(crate) fn imm_capability(
+        &self,
+        process_name: &str,
+        class_name: &str,
+    ) -> Option<ImmCapability> {
+        self.imm_learning.get(process_name, class_name)
     }
 
-    pub(crate) fn learn_imm_capability(&mut self, class_name: String, cap: ImmCapability) {
-        self.imm_learning.learn(class_name, cap);
+    pub(crate) fn learn_imm_capability(
+        &mut self,
+        process_name: String,
+        class_name: String,
+        cap: ImmCapability,
+    ) {
+        self.imm_learning.learn(process_name, class_name, cap);
     }
 
-    pub(crate) fn record_imm_null_probe(&mut self, class_name: String) {
-        self.imm_learning.record_null_probe(class_name);
+    pub(crate) fn record_imm_null_probe(&mut self, process_name: String, class_name: String) {
+        self.imm_learning
+            .record_null_probe(process_name, class_name);
     }
 
-    pub(crate) fn clear_imm_pending_unavailable(&mut self, class_name: &str) {
-        self.imm_learning.clear_pending_unavailable(class_name);
+    pub(crate) fn clear_imm_pending_unavailable(&mut self, process_name: &str, class_name: &str) {
+        self.imm_learning
+            .clear_pending_unavailable(process_name, class_name);
     }
 
     // ── Injection モード学習 ────────────────────────────────────────────────

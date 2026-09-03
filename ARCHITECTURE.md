@@ -77,7 +77,7 @@ awase はフォーカスが変わるたびに `AppKindClassifier` がアプリ�
 4. UI Automation による非同期判定（別スレッド、300ms タイムアウト）
 5. IMM32 呼び出し結果からの学習（`imm_capability_cache`）
 
-学習結果はクラス名をキーに `imm_cache.toml` へ永続化されます。再起動後も判定精度が維持されます。
+学習結果はプロセス名・クラス名の組をキーに `cache.toml`（`[imm_capability]`）へ永続化されます。再起動後も判定精度が維持されます（旧 `imm_cache.toml`・クラス名単独キーはADR-058/ADR-125で置き換え済み）。
 
 ---
 
