@@ -2,8 +2,12 @@
 
 ## ステータス
 
-**設計確定版v6（Opus 2体architect/premortemによるround1〜round6の敵対的レビューを
-経て両者「問題なし、収束」。未実装、実装フェーズへ移行可）。**
+**実装済み（v6設計をCodexに実装委譲後、Opusによるコード差分の敵対的レビューを
+2周実施し収束。`crates/awase-settings/src/main.rs`に反映済み、PR作成待ち）。**
+Opus 2体architect/premortemによるround1〜round6の設計レビューで「問題なし、
+収束」に至った後、実装差分に対する別のOpusエージェントによる敵対的コード
+レビューで2件のblocker（下記D1・D2の追記を参照）と複数の非blocker指摘が
+見つかり、すべて修正済み。
 round1でD1（`changed()`トリガー）・D2（保存先ダイアログ案）の根本的な欠陥が見つかり
 再設計した。round2ではその再設計（`lost_focus()`トリガー）自体が、egui のパネル
 描画順・タブ切替・ショートカット処理のタイミングに依存する新しい「適用しても反映
@@ -785,8 +789,8 @@ premortem P2-1——から、既存の値を保護する。なお`ime_composing`
   直後に`select_layout_cell(pos)`を呼び直し、`layout_edit_value`/`layout_edit_origin`/
   `layout_edit_kind`/`layout_edit_last_seen`を新しいモデル値（`YabValue::None`）と
   再同期する（後述の拡張した不変条件、round4 premortem R4-3解消）。
-- **「特殊キー」**: ComboBoxウィジェット自身の`response.changed()`が真になった
-  その場で、選択された`SpecialKey`を直接`self.layout_face_mut(face).insert(pos, ...)`
+- **「特殊キー」**: ComboBoxウィジェット自身の選択が実際に変わった時点で、
+  選択された`SpecialKey`を直接`self.layout_face_mut(face).insert(pos, ...)`
   へコミットする（`commit_pending_layout_edit()`を経由しない独立経路）。ComboBoxの
   選択は「特定の選択肢がクリックされた」という離散的なイベントであり、IME合成を
   経由しないため、round1でテキスト入力について却下した`changed()`トリガーの欠陥
@@ -796,6 +800,18 @@ premortem P2-1——から、既存の値を保護する。なお`ime_composing`
   コミット直後に`select_layout_cell(pos)`を呼び直して各バッファを再同期する**
   （怠ると、後で種別ラジオを他の種別に戻したときに編集パネルの表示とモデルが
   恒久的に食い違う。round4 premortem R4-3解消）。
+  **【実装時の訂正】** 当初「ComboBoxウィジェット自身の`response.changed()`が
+  真になった時点で」と書いていたが、egui 0.31.1では`ComboBox::show_ui`
+  （`show_index`とは異なる素の版）の`combo_box_dyn`実装が、内側の
+  `selectable_value`のクリックを`Response::changed()`へ一切伝播しない
+  （`mark_changed()`を呼ぶのは`show_index`のみ）。そのため上記のまま実装すると
+  `response.changed()`が恒久的に偽となり、特殊キーがGUIから設定不能になる
+  （round1 F2/premortem P2-4が別の実装で再発）——実装後のOpusコードレビューで
+  発覚したblocker。実装では選択前後の`layout_edit_special_idx`比較に置き換えて
+  変更を検知している（`commit_special_key_if_changed()`）。「ComboBoxの選択は
+  離散的なイベントでIME合成を経由しない」という設計判断自体は変わらないが、
+  「`response.changed()`で検知する」という実装手段が特定バージョンのeguiでは
+  成立しなかった、という記録として残す。
 
 `ValueKind::Special`を除く**`None`以外の3種別**（打鍵/リテラル/VK）については、
 テキスト欄の内容が現在示している状態を`commit_pending_layout_edit()`が毎フレーム
@@ -839,8 +855,13 @@ premortem P2-1——から、既存の値を保護する。なお`ime_composing`
 リセットする。** 直前のセルのエラーメッセージが別のセルを編集中も残り続けることを
 防ぐ（round2 A4）とともに、新しいセルのバッファ初期値が「まだ編集されていない」
 状態として正しく扱われるようにする（round4 architect W6——`layout_edit_last_seen`の
-リセット漏れを解消）。
-
+リセット漏れを解消）。**【実装時の注意】** `select_layout_cell`がこのように
+`layout_status`をクリアするため、`select_layout_cell(pos)`を呼んだ**後**に
+`layout_status`へメッセージを設定しなければならない（先に設定すると即座に
+消える）。`paste_layout_cell`（クリップボード貼り付け）が「解除」ボタン・
+「特殊キー」ComboBoxの再同期対応（上記R4-3）の際にこの順序を誤り、
+「貼り付けました」というメッセージが一切表示されない退行が実装後の
+Opusコードレビューで発覚した。
 **`commit_pending_layout_edit()`を経由せずに`self.layout`を変更するすべてのコード
 パスは、変更直後にこの節の状態（`layout_selected_pos`・`layout_edit_value`・
 `layout_edit_origin`・`layout_edit_origin_is_sequence`・`layout_edit_last_seen`・
@@ -880,9 +901,23 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
   常に確定させてよい**（既定パス`resolve_layouts_dir(layouts_dir).join(default_layout)`
   を新規作成時の既定値として割り当てる、round1 F8の判断は維持）が、`.yab`への
   書き込みは`layout_modified && layout_loaded_ok`の両方が真のときのみ許可する。
+  **【実装時の訂正】** `layout_file_path`を「読み込み成否に関わらず常に確定
+  させてよい」は、`layout_file_path`が**まだ`None`**（起動直後の初回読み込み等、
+  F8が想定する「新規作成時」）の場合にのみ適用する。既に有効なパスが設定済みの
+  状態で「開く」「パス欄入力」が失敗した場合にまで無条件に新パスへ差し替えると、
+  直前まで有効だった配列ファイルへの参照を失い、以後`F5`再読み込みも壊れた
+  パスを見続ける退行になる（実装後のOpusコードレビューで発覚、
+  round1 F8の意図はあくまで「保存先が未設定の状態を作らない」ことであり
+  「既存の有効なパスを壊れたパスで上書きする」ことではない）。
   読み込みに失敗している間（壊れた`.yab`を開いた場合等）は、たとえ`layout_modified`が
-  真でも書き込みを行わず、`self.status`に「配列ファイルを読み込めていないため
-  保存できません」と表示する（round2 B1/R2-4解消）。
+  真でも`.yab`書き込みだけをスキップし、**`apply_confirmed()`全体は中止しない**。
+  **【実装時の訂正】** 当初「`self.status`に…と表示する」という記述は
+  `apply_confirmed()`全体を中止する実装と解釈されたが、これはround5 R5-1が
+  確立した原則（配列編集タブに閉じた問題が無関係な設定の保存を巻き込んでは
+  ならない）と矛盾する——壊れた`.yab`を開いた状態で他タブの設定だけを変更
+  しても保存できてしまうべきである。ガード(B)と同じ扱いに揃え、
+  `pending_status_notes`へ警告を積んでconfig.toml保存は続行する
+  （round2 B1/R2-4、round5 R5-1解消）。
 - **`.yab`書き込みとキーボードモデル比較は、`apply_confirmed()`内の
   `self.config = awase::config::AppConfig::from(validated)`（`main.rs:485`）より
   **後**、かつ`pending_save.is_some()`の早期return（`main.rs:461-468`）より**後**に
@@ -1062,7 +1097,13 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
   `process_keymap_capture`が`Escape`（無修飾）だけを特別扱いしキャプチャを
   キャンセルする設計（`main.rs:1113-1116`）と対称に、「捕捉モード中は他の全ての
   グローバルショートカットより捕捉が優先される」というルールをステップ3の条件に
-  明記する（round3 architect V6）。
+  明記する（round3 architect V6）。**同じ抑止条件（キー捕捉モード中に加え、
+  Dangerous確認・3択キャンセル確認・配列破棄確認の各モーダル表示中）を、
+  ステップ4の`handle_layout_shortcuts`（`Ctrl+O`/`Ctrl+Shift+S`/`F5`）にも
+  適用する**（実装後のOpusコードレビュー指摘——グローバル`Ctrl+S`だけに
+  条件を足すと、確認モーダルを開いた状態で`F5`を押した際に破棄確認モーダルが
+  追加で開き、2つの非ブロッキング`egui::Window`が同一フレームに共存する。
+  round2 R2-8と同型の退行）。
 - **「名前を付けて保存」は「別ファイルへ書き出す（エクスポート）」として再定義し、
   `layout_file_path`と`layout_modified`を変更しない専用の処理にする。** 現状の
   実装（保存先を新しい「現在のファイル」として差し替える）のままD2と組み合わせると、
@@ -1081,6 +1122,18 @@ premortem R4-3を踏まえ、round3 R3-3の不変条件の対象を「`self.layo
   2〜4はいずれも同じ「未保存の配列編集を破棄してよいか」の確認処理（D2の3択モーダル
   とは別の、単純な「破棄する/しない」の二択でよい——config.tomlは無関係なため）を
   経由するよう、共通のヘルパー関数に集約する。
+  **【実装時の訂正】** この破棄確認モーダルの「破棄」ボタンハンドラで、
+  実処理（ダイアログを開く／パス欄を再読み込む／再読み込みする）の**前に**
+  `layout_modified = false`を無条件で立てる実装がされ、blockerとして
+  Opusコードレビューで発覚した——`layout_do_open_dialog`のようにダイアログが
+  非同期（`layout_pending_open`に結果が積まれるのを後続フレームで消費する
+  設計）の経路では、ユーザーがファイル選択ダイアログを**キャンセル**すると
+  何も置き換わらないまま`layout_modified`だけが偽になり、未保存の編集が
+  「保存済み」であるかのように扱われる（D5バナーが消え、「適用」が`.yab`を
+  書かなくなる）——本ADRの出発点である「適用したのに反映されない」を新しい
+  経路で再生産する、最も重大な回帰だった。`layout_modified = false`は
+  各読み込み関数（`layout_load_from_path`/`layout_do_reload`相当）の
+  **成功時にのみ**行われるべきで、確認モーダル側では一切操作しない。
 
 ### D4: Scancode Map セクションは対象外とする
 
