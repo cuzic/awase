@@ -472,6 +472,20 @@ mod tests {
     }
 
     #[test]
+    fn compute_new_entries_swap_to_off() {
+        // ADR-111由来のSwapプリセットを無効化する、最も基本的な遷移
+        // （/code-review指摘: リファクタ前はremove_preset_*テストで
+        // カバーされていたが、compute_new_entriesへの統合後どのテストにも
+        // 現れていなかった）。
+        let mut existing = vec![(0x0010, 0x0011)];
+        existing.extend_from_slice(ScancodeMapPreset::Swap.entries());
+        assert_eq!(
+            compute_new_entries(&existing, ScancodeMapSelection::Off),
+            vec![(0x0010, 0x0011)]
+        );
+    }
+
+    #[test]
     fn third_party_left_ctrl_remap_to_unrelated_key_survives_caps_extra_ctrl_enable_and_disable() {
         // 決定3が実際に保護する、現実的な多数派のケース: 第三者ツールが
         // Left Ctrl を awase のプリセットと無関係な値にリマップしている
