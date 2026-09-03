@@ -1318,7 +1318,37 @@ impl Output {
     /// `report_id: 01M1KEGZ081YHJ1T2NC765SYYH`）。`raw_recovery_owns_deferred()`
     /// も条件に加えることでこの追い越しを防ぐ。
     pub(super) fn defer_if_probe_in_flight(&self, romaji: &str, origin: DeferredOrigin) -> bool {
-        if !self.warmup_coord.has_pending_tsf() && !self.raw_recovery_owns_deferred() {
+        self.defer_if_probe_or_recovery_in_flight(romaji, origin, true)
+    }
+
+    /// `defer_if_probe_in_flight` から `raw_recovery_owns_deferred()` の条件だけを
+    /// 除いた版。`send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`
+    /// （raw recovery 回収再送・ADR-101 決定3 retry 専用）が使う。
+    ///
+    /// `raw_recovery_owns_deferred()` は「今まさに自分が処理している recovery か」
+    /// と「無関係などこか別の recovery が in-flight か」を区別できないグローバル
+    /// 述語であり、これらの経路自身の送信にそのまま適用すると自己 defer を
+    /// 起こす（詳細は `send_romaji_batched_bypass_gate` の doc コメント参照）。
+    /// `has_pending_tsf()`（無関係な別 probe が実際に走っているかどうか）は
+    /// この2経路にも従来どおり適用してよい——こちらは自己参照を起こさない
+    /// 独立した観測であり、この gate 自体は PR4 以前から存在していた
+    /// （挙動を後退させない）。
+    pub(super) fn defer_if_probe_in_flight_recovery_exempt(
+        &self,
+        romaji: &str,
+        origin: DeferredOrigin,
+    ) -> bool {
+        self.defer_if_probe_or_recovery_in_flight(romaji, origin, false)
+    }
+
+    fn defer_if_probe_or_recovery_in_flight(
+        &self,
+        romaji: &str,
+        origin: DeferredOrigin,
+        check_raw_recovery: bool,
+    ) -> bool {
+        let recovery_owns = check_raw_recovery && self.raw_recovery_owns_deferred();
+        if !self.warmup_coord.has_pending_tsf() && !recovery_owns {
             return false;
         }
         let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
@@ -1662,10 +1692,13 @@ impl Output {
     /// 手書きで重複していた。
     fn send_romaji_dispatching_on_gate(&self, romaji: &str) {
         use probe_io::ProbeIo as _;
+        // ADR-123 変更A+C 決定4-2: 新設した defer gate をこの2経路（raw recovery
+        // 回収再送・ADR-101 決定3 retry）には適用しない。理由は
+        // `send_romaji_batched_bypass_gate` の doc コメント参照。
         if self.gate_is_bypass() {
-            self.send_romaji_batched(romaji);
+            self.send_romaji_batched_bypass_gate(romaji);
         } else {
-            self.send_romaji_as_tsf(romaji);
+            self.send_romaji_as_tsf_bypass_gate(romaji);
         }
     }
 
@@ -2134,6 +2167,92 @@ mod tests {
         assert!(o.pending_gji_reinit.borrow().is_some());
         let (backs, romaji) = crate::RAW_TSF_LITERAL.take_pending();
         assert_eq!((backs, romaji.as_str()), (2, "ko"));
+    }
+
+    // ── defer_if_probe_in_flight_recovery_exempt テスト（ADR-123 変更A+C
+    // 決定4-2、Opus敵対的レビュー round4指摘: raw recovery 自身の再送が
+    // 無関係な別 give-up の pending_gji_reinit(Polling) を見て自己 defer
+    // してしまう退行）──────────────────────────────────────────────────
+
+    #[test]
+    fn defer_if_probe_in_flight_defers_when_only_raw_recovery_owns_deferred() {
+        // has_pending_tsf()=false（TSF probe は走っていない）だが、無関係な
+        // 別 give-up 由来の pending_gji_reinit が Polling 中 = 通常の
+        // defer_if_probe_in_flight は defer すべき。
+        let o = make_output();
+        assert!(!o.warmup_coord.has_pending_tsf());
+        *o.pending_gji_reinit.borrow_mut() = Some(PendingGjiReinit {
+            cold_seq: Generation::INITIAL,
+            focus_gen: 1,
+            phase: PendingGjiReinitPhase::Polling {
+                retry: None,
+                guard: OutputActiveGuard::begin(),
+                poll_token: 7,
+                started_ms: 0,
+            },
+        });
+
+        let deferred = o.defer_if_probe_in_flight("a", DeferredOrigin::UserInput);
+
+        assert!(
+            deferred,
+            "raw_recovery_owns_deferred()=true なら defer_if_probe_in_flight は defer すべき"
+        );
+    }
+
+    #[test]
+    fn defer_if_probe_in_flight_recovery_exempt_ignores_raw_recovery_owns_deferred() {
+        // 同じ状態でも、raw recovery 自身の再送経路
+        // (send_romaji_batched_bypass_gate/send_romaji_as_tsf_bypass_gate 用)
+        // が使う recovery_exempt 版は raw_recovery_owns_deferred() を無視し、
+        // has_pending_tsf()=false なら defer しない（＝自己 defer しない）。
+        let o = make_output();
+        assert!(!o.warmup_coord.has_pending_tsf());
+        *o.pending_gji_reinit.borrow_mut() = Some(PendingGjiReinit {
+            cold_seq: Generation::INITIAL,
+            focus_gen: 1,
+            phase: PendingGjiReinitPhase::Polling {
+                retry: None,
+                guard: OutputActiveGuard::begin(),
+                poll_token: 7,
+                started_ms: 0,
+            },
+        });
+
+        let deferred =
+            o.defer_if_probe_in_flight_recovery_exempt("a", DeferredOrigin::RecoveryResend);
+
+        assert!(
+            !deferred,
+            "recovery_exempt 版は raw_recovery_owns_deferred()を無視するため \
+             has_pending_tsf()=false なら defer してはいけない（自己defer防止）"
+        );
+    }
+
+    #[test]
+    fn defer_if_probe_in_flight_recovery_exempt_still_defers_when_probe_in_flight() {
+        // has_pending_tsf()=true（無関係な別 probe が実際に走っている）は
+        // recovery_exempt 版でも従来どおり defer する——除外されるのは
+        // raw_recovery_owns_deferred() の項だけ。
+        let o = make_output();
+        o.install_pending_tsf(Box::new(
+            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
+                "x",
+                Generation::INITIAL,
+                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
+                0,
+                OutputActiveGuard::begin(),
+            ),
+        ));
+        assert!(o.warmup_coord.has_pending_tsf());
+
+        let deferred =
+            o.defer_if_probe_in_flight_recovery_exempt("a", DeferredOrigin::RecoveryResend);
+
+        assert!(
+            deferred,
+            "has_pending_tsf()=true による defer は recovery_exempt でも維持すべき"
+        );
     }
 
     // ── shift-conv-guard confirm-gate override 所有権テスト（ADR-084 BUG-49 追補2、pass-5）──

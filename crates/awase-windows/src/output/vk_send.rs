@@ -12,6 +12,47 @@ use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
+/// ADR-123 変更A+C 決定4-2: `send_romaji_batched`/`send_romaji_as_tsf` の
+/// 新設 `defer_if_probe_in_flight` gate を適用するかどうか。
+/// 既存の TSF gate（`gate_is_bypass()`/`TsfGate::Bypass`、composition context
+/// の bypass 状態）とは無関係の別概念のため命名を分けている。`Exempt` は
+/// `send_romaji_batched_bypass_gate`/`send_romaji_as_tsf_bypass_gate`
+/// （raw recovery 回収再送・ADR-101 決定3 retry 専用）だけが使う。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeferGate {
+    Enforced,
+    Exempt,
+}
+
+impl DeferGate {
+    /// `Enforced`（通常のユーザー入力）は `UserInput`、`Exempt`（raw recovery
+    /// 回収再送・ADR-101 決定3 retry）は `RecoveryResend`。万一 `has_pending_tsf()`
+    /// によって defer された場合でも、discard 経路の origin 別内訳
+    /// （ADR-123 変更B）が正しく分類できるようにする。
+    const fn deferred_origin(self) -> DeferredOrigin {
+        match self {
+            Self::Enforced => DeferredOrigin::UserInput,
+            Self::Exempt => DeferredOrigin::RecoveryResend,
+        }
+    }
+}
+
+impl Output {
+    /// `gate` に応じて `defer_if_probe_in_flight`（全条件）または
+    /// `defer_if_probe_in_flight_recovery_exempt`（`raw_recovery_owns_deferred()`
+    /// を見ない版）のどちらを使うかを切り替える。`has_pending_tsf()` による
+    /// defer は `Exempt` でも従来どおり適用される——除外されるのは
+    /// `raw_recovery_owns_deferred()` の項だけ（理由は
+    /// `send_romaji_batched_bypass_gate` の doc コメント参照）。
+    fn defer_respecting_gate(&self, romaji: &str, gate: DeferGate) -> bool {
+        let origin = gate.deferred_origin();
+        match gate {
+            DeferGate::Enforced => self.defer_if_probe_in_flight(romaji, origin),
+            DeferGate::Exempt => self.defer_if_probe_in_flight_recovery_exempt(romaji, origin),
+        }
+    }
+}
+
 /// TSF 送信パイプライン（transmit フェーズのみ）。
 ///
 /// - `transmit`: VK または Unicode kana で romaji を WezTerm に送信
@@ -87,6 +128,29 @@ impl Output {
     /// cold 時は GJI プローブを開始し（ノンブロッキング）、TIMER_TSF_PROBE が
     /// `ChromeProbe` フェーズを進めてローマ字を送信する。
     pub(super) fn send_romaji_batched(&self, romaji: &str) {
+        self.send_romaji_batched_gated(romaji, DeferGate::Enforced);
+    }
+
+    /// ADR-123 変更A+C 決定4-2: `send_romaji_dispatching_on_gate` 経由の
+    /// raw recovery 回収再送・ADR-101 決定3 retry 専用。新設した
+    /// `defer_if_probe_in_flight` の `raw_recovery_owns_deferred()` 判定を
+    /// この2経路にだけ適用してはならない——`raw_recovery_owns_deferred()` は
+    /// 「今まさに自分が処理している recovery か」と「無関係などこか別の
+    /// recovery が in-flight か」を区別できないグローバル述語であり、
+    /// `flush_raw_tsf_literal_romaji` は自身の `pending_gji_reinit`
+    /// Scheduled→Polling 遷移より**前**に呼ばれる（`flush_raw_tsf_literal_recovery`
+    /// の呼び出し順序）ため、無関係な別 give-up 由来の `pending_gji_reinit` が
+    /// 既に `Polling` 中だと、この再送自身が誤って `pending_deferred` に
+    /// 積まれてしまう（probe を経由しない bare VK flush に化けて BUG-38/
+    /// ADR-103 が塞いだ literal 化リスクが戻る、Opus敵対的レビュー round4指摘）。
+    /// `has_pending_tsf()`（無関係な別 probe が実際に走っているか）による
+    /// defer は PR4 以前から存在する挙動であり、この2経路にも従来どおり
+    /// 適用する（`defer_if_probe_in_flight_recovery_exempt` 参照）。
+    pub(super) fn send_romaji_batched_bypass_gate(&self, romaji: &str) {
+        self.send_romaji_batched_gated(romaji, DeferGate::Exempt);
+    }
+
+    fn send_romaji_batched_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -128,7 +192,7 @@ impl Output {
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
+            if self.defer_respecting_gate(romaji, gate) {
                 return;
             }
 
@@ -242,6 +306,16 @@ impl Output {
     }
 
     pub(super) fn send_romaji_as_tsf(&self, romaji: &str) {
+        self.send_romaji_as_tsf_gated(romaji, DeferGate::Enforced);
+    }
+
+    /// `send_romaji_batched_bypass_gate` と対になる TSF 側。理由は同関数の
+    /// doc コメント参照。
+    pub(super) fn send_romaji_as_tsf_bypass_gate(&self, romaji: &str) {
+        self.send_romaji_as_tsf_gated(romaji, DeferGate::Exempt);
+    }
+
+    fn send_romaji_as_tsf_gated(&self, romaji: &str, gate: DeferGate) {
         let chars: VkSequence = romaji.chars().filter_map(ascii_to_vk).collect();
         if chars.is_empty() {
             return;
@@ -292,7 +366,7 @@ impl Output {
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
+            if self.defer_respecting_gate(romaji, gate) {
                 return;
             }
 
