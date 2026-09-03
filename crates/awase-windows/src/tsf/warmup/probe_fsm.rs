@@ -38,16 +38,14 @@ use crate::tsf::literal_facts::{
 /// 「awase 自身が再送しようとしていたromaji」（`RecoveryResend`）と
 /// 「ユーザーが実際に打鍵したがまだ送信されていない入力」（`UserInput`）を
 /// 区別できるようにする。現時点ではログの内訳表示にのみ使う（挙動は変えない、
-/// 最小実装(b)）。`RecoveryResend` はADR-123変更A+C（gate免除入口、別PR）が
-/// 実装されるまで構築されない — `tests/architecture_guard.rs` の
-/// `deferred_origin_recovery_resend_is_not_yet_constructed` がこれを固定する。
+/// 最小実装(b)）。`RecoveryResend` はADR-123変更A+C（`output/vk_send.rs`の
+/// `DeferGate::deferred_origin`、gate免除入口）が唯一の構築箇所 —
+/// `tests/architecture_guard.rs` の
+/// `deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass`
+/// がこれを固定する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeferredOrigin {
     UserInput,
-    // ADR-123変更A+C（gate免除入口、別PR）が実装されるまで本番コードでは
-    // 構築されない。`#[cfg(test)]` の
-    // `deferred_vks_preserve_their_origin_through_defer_and_take` でのみ構築される。
-    #[allow(dead_code)]
     RecoveryResend,
 }
 

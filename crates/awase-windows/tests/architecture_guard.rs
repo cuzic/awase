@@ -3008,11 +3008,18 @@ fn discard_pending_construction_is_limited_to_discard_pending_action() {
     );
 }
 
-/// `raw_recovery_owns_deferred` を呼ぶのは `finish_probe_stage` ただ1箇所
-/// （ADR-103 決定4-e、INV-F）。所有権照会がここ以外に散ると、段末の deferred
-/// 解放判断が複数箇所で食い違いうる。
+/// `raw_recovery_owns_deferred` の呼び出し箇所は `finish_probe_stage`
+/// （ADR-103 決定4-e、INV-F: 段末の deferred 解放判断）と
+/// `defer_if_probe_in_flight`（ADR-123 変更A: 新規モーラを defer すべきか
+/// の判断、report_id `01M1KEGZ081YHJ1T2NC765SYYH`）の2箇所に限定する。
+/// 前者は「pending_deferred を今 flush してよいか」、後者は「新しい入力を
+/// pending_deferred に積むべきか」という別の問いに答えており、いずれも
+/// raw recovery が deferred キューの所有権を握っている間は手を出さない、
+/// という同じ原則の異なる適用箇所である。3箇所目が増えた場合は、本当に
+/// 同じ原則の適用か（さもなくば別の状態表現を検討すべきでないか）を確認
+/// すること。
 #[test]
-fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
+fn raw_recovery_owns_deferred_call_sites_are_accounted_for() {
     let path = "src/output/mod.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
@@ -3020,9 +3027,9 @@ fn raw_recovery_owns_deferred_is_called_only_from_finish_probe_stage() {
         .matches("self.raw_recovery_owns_deferred()")
         .count();
     assert_eq!(
-        count, 1,
-        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(1 = \
-         finish_probe_stage のみ)と異なります(実際: {count})。"
+        count, 2,
+        "{path} 内で `raw_recovery_owns_deferred` の呼び出し箇所数が想定(2 = \
+         finish_probe_stage + defer_if_probe_in_flight)と異なります(実際: {count})。"
     );
 }
 
@@ -3245,31 +3252,30 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     }
 }
 
-/// `DeferredOrigin::RecoveryResend` は本番コードでまだ構築されない。
+/// `DeferredOrigin::RecoveryResend` の本番構築箇所は
+/// `DeferGate::deferred_origin`（`src/output/vk_send.rs`）1箇所に限定する。
 ///
-/// ADR-123 変更B（`docs/adr/123-focus-resync-and-probe-defer-queue-composition-race.md`）
-/// で `DeferredVk` に `origin: DeferredOrigin` を追加したが、`RecoveryResend`
-/// （raw recovery回収再送/ADR-101決定3のretry用のgate免除入口）は変更A+C
-/// （別PR）で新設される予定であり、本PR時点ではまだどこからも構築されない。
-/// この0件という前提が崩れたら、`discard_raw_recovery_if_focus_stale`等の
-/// 破棄経路が想定と異なる由来のVKを巻き込んでいないか確認すること。
+/// ADR-123 変更A+C 決定4-2（gate免除入口）が実装され、`RecoveryResend` が
+/// 初めて本番コードから構築されるようになった。構築箇所が増えた場合、
+/// `discard_raw_recovery_if_focus_stale`等の破棄経路が想定と異なる由来の
+/// VKを巻き込んでいないか確認すること。
 #[test]
-fn deferred_origin_recovery_resend_is_not_yet_constructed() {
-    let paths = [
-        "src/output/mod.rs",
-        "src/output/tsf_warmup_coord.rs",
-        "src/output/vk_send.rs",
+fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
+    let known_sites: &[(&str, usize)] = &[
+        ("src/output/mod.rs", 0),
+        ("src/output/tsf_warmup_coord.rs", 0),
+        // DeferGate::deferred_origin の1箇所のみ。
+        ("src/output/vk_send.rs", 1),
     ];
-    for path in paths {
+    for (path, expected) in known_sites {
         let content = read_crate_file(path);
         let production = production_code_only(&content);
         let count = production.matches("DeferredOrigin::RecoveryResend").count();
         assert_eq!(
-            count, 0,
-            "{path} 内で `DeferredOrigin::RecoveryResend` が本番コードで構築されて \
-             います(実際: {count}件)。ADR-123変更A+C（gate免除入口）が実装された \
-             ということであれば、このテストは削除するか対象箇所を明示的に許可する \
-             形へ更新してください。"
+            count, *expected,
+            "{path} 内で `DeferredOrigin::RecoveryResend` の本番コードでの構築箇所数が \
+             想定({expected})と異なります(実際: {count})。意図した変更ならこのテストの \
+             期待値を更新してください。"
         );
     }
 }
