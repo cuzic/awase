@@ -3244,3 +3244,32 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
         );
     }
 }
+
+/// `DeferredOrigin::RecoveryResend` は本番コードでまだ構築されない。
+///
+/// ADR-123 変更B（`docs/adr/123-focus-resync-and-probe-defer-queue-composition-race.md`）
+/// で `DeferredVk` に `origin: DeferredOrigin` を追加したが、`RecoveryResend`
+/// （raw recovery回収再送/ADR-101決定3のretry用のgate免除入口）は変更A+C
+/// （別PR）で新設される予定であり、本PR時点ではまだどこからも構築されない。
+/// この0件という前提が崩れたら、`discard_raw_recovery_if_focus_stale`等の
+/// 破棄経路が想定と異なる由来のVKを巻き込んでいないか確認すること。
+#[test]
+fn deferred_origin_recovery_resend_is_not_yet_constructed() {
+    let paths = [
+        "src/output/mod.rs",
+        "src/output/tsf_warmup_coord.rs",
+        "src/output/vk_send.rs",
+    ];
+    for path in paths {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = production.matches("DeferredOrigin::RecoveryResend").count();
+        assert_eq!(
+            count, 0,
+            "{path} 内で `DeferredOrigin::RecoveryResend` が本番コードで構築されて \
+             います(実際: {count}件)。ADR-123変更A+C（gate免除入口）が実装された \
+             ということであれば、このテストは削除するか対象箇所を明示的に許可する \
+             形へ更新してください。"
+        );
+    }
+}

@@ -8,7 +8,7 @@ use crate::tsf::output::kana_for_romaji_static;
 use crate::tsf::output::ColdReason;
 use crate::tsf::output::TSF_MARKER;
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::TransmitTarget;
+use crate::tsf::warmup::probe_fsm::{DeferredOrigin, TransmitTarget};
 use awase::types::VkCode;
 use windows::Win32::UI::Input::KeyboardAndMouse::INPUT;
 
@@ -128,7 +128,7 @@ impl Output {
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) {
+            if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
                 return;
             }
 
@@ -292,7 +292,7 @@ impl Output {
         );
 
         if prepend_f2_warmup {
-            if self.defer_if_probe_in_flight(romaji) {
+            if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
                 return;
             }
 
@@ -366,7 +366,7 @@ impl Output {
             return false;
         }
         // 既に probe/coro 進行中 → 確認状態に関わらず defer（送信順序の維持）。
-        if self.defer_if_probe_in_flight(romaji) {
+        if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
             return true;
         }
         if self.ms_ime_gate_give_up.get() {
@@ -522,7 +522,7 @@ impl Output {
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
-                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
                     log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
@@ -583,7 +583,7 @@ impl Output {
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
-                if self.defer_vk_if_probe_in_flight(vk, needs_shift) {
+                if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
                     log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }

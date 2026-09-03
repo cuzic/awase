@@ -33,12 +33,31 @@ use crate::tsf::literal_facts::{
     DetectEvidence, DetectPath, DetectRoute, DetectTarget, LiteralDetectFacts, LiteralVerdict,
 };
 
+/// `DeferredVk` の由来。ADR-123 変更B: focus 変更時等に `pending_deferred`
+/// を丸ごと破棄する経路（`discard_raw_recovery_if_focus_stale` 等）が、
+/// 「awase 自身が再送しようとしていたromaji」（`RecoveryResend`）と
+/// 「ユーザーが実際に打鍵したがまだ送信されていない入力」（`UserInput`）を
+/// 区別できるようにする。現時点ではログの内訳表示にのみ使う（挙動は変えない、
+/// 最小実装(b)）。`RecoveryResend` はADR-123変更A+C（gate免除入口、別PR）が
+/// 実装されるまで構築されない — `tests/architecture_guard.rs` の
+/// `deferred_origin_recovery_resend_is_not_yet_constructed` がこれを固定する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeferredOrigin {
+    UserInput,
+    // ADR-123変更A+C（gate免除入口、別PR）が実装されるまで本番コードでは
+    // 構築されない。`#[cfg(test)]` の
+    // `deferred_vks_preserve_their_origin_through_defer_and_take` でのみ構築される。
+    #[allow(dead_code)]
+    RecoveryResend,
+}
+
 /// probe 進行中に蓄積する後続 VK。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeferredVk {
     pub(crate) vk: VkCode,
     pub(crate) needs_shift: bool,
     pub(crate) order_token: u64,
+    pub(crate) origin: DeferredOrigin,
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;

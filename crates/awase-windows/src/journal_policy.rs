@@ -97,7 +97,6 @@ pub fn order_violation(tokens: &[u64]) -> Option<OrderViolation> {
     })
 }
 
-
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
     (LaneKind::Timing, 35),
     (LaneKind::State, 30),
