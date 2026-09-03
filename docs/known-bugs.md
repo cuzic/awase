@@ -12798,35 +12798,94 @@ belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行�
 
 **修正履歴:** `40a2d091`（2026-09-02、`feat/issue-137-teams-kana-lock-detection`）。
 
-## BUG-107: 設定画面・不具合報告画面（`awase-settings.exe`、eframe/egui製）でテキスト入力が重く、無関係なかな文字が混入する（調査中・未修正）
+## BUG-107: `ImmCapabilityStore` の学習キャッシュが `class_name` のみをキーにしており、winitの汎用クラス名を介して無関係なプロセスの誤学習が `awase-settings.exe` に伝播し、テキスト入力の先頭に「あ」が混入する（BUG-56のプロセス間版）
 
 **症状（ユーザー報告、2026-09-03）:** タスクトレイの「不具合を報告」画面
-（`crates/awase-settings/src/bug_report.rs`、`--bug-report` 起動）の説明欄で
-文字入力がとても重く（1打鍵ごとに体感できる遅延がある）、さらに入力していない
-はずのかな文字が突然挿入されることがある。同じ症状は通常の設定画面
-（`awase-settings.exe` の主ウィンドウ）でも起こりうる——両者は同じバイナリ・
-同じ `eframe`/`egui`/`winit` スタックを使っている。
+（`crates/awase-settings/src/bug_report.rs`、`--bug-report` 起動）や通常の
+設定画面（`awase-settings.exe`）の説明欄に親指シフトで日本語入力すると、
+**入力の先頭に意図しない「あ」が混入する**（実機で2回連続再現、再現性が
+高い）。当初は「テキスト入力がとても重い」という報告も併せてあったが、
+後続の再現テストでは重さは目立たなかった——両者は同時に起きるとは限らない
+別要因の可能性がある（重さの側は本 BUG では未解決のまま残る、「範囲外」
+参照）。
 
 **却下した対策:** `disable_apps` に `awase-settings.exe` を追加し丸ごと無効化
 する案を最初に検討したが、「eframe/egui 全体が awase 非対応という話になる」
-とユーザーに却下された（詳細は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)）。
+とユーザーに却下された。詳細な調査過程（3回の実機スパイク・当初2つの仮説が
+否定された経緯を含む）は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
 
-**調査の経緯:** ソースコード読解（`winit`/`egui-winit`）から「ウィジェット
-単位のフォーカス移動のたびに同一 HWND の IME コンテキストが脱着される」
-という仮説を立てたが、専用スパイク（`spike_egui_himc_reassociation_probe`）
-による実機（Windows）検証ではこの脱着は再現しなかった。代わりに、
-フォーカス中 `awase-settings.exe` の HIMC が終始 0（NULL）のままという
-事実から「`AppImeProfile::Standard` 分類・IMM32 クロスプロセス制御
-そのものが機能していない」という第2の仮説を立てたが、awase 本体と
-同一の Win32 呼び出し列を再現した別のスパイク
-（`spike_egui_ime_control_probe`）による直接検証では、この機構は正常に
-機能していることが確認され、この仮説も否定された。**2つの仮説がいずれも
-実機で否定され**、実装方針はまだ確定していない。次は実際に `awase.exe`
-本体エンジンを動かした状態での症状再現・ログ取得に切り替える。詳細・
-実機検証ログ・次のアクションは
-[ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
+**原因（実機ログ・`cache.toml` 直接確認で確定）:** 実際に `awase.exe`
+（`RUST_LOG=debug`）を起動した状態で症状を再現させたところ、
+`target/debug/awase.log` に次の行が記録されていた:
 
-**関連:** BUG-33/BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、
-同系統だが原因の軸が異なる）、BUG-78（却下案が再利用しようとした
-`disable_apps` 丸ごとバイパス機構の初出）、ADR-121（「原因の半分」を
-早期に確定として扱ってしまった教訓、本件で実装を急がない理由）。
+```
+[imm-learning] profile 降格: class="Window Class" Standard → Imm32Unavailable
+（実測学習 ImmCapability::Unavailable。誤学習なら cache.toml の
+[imm_capability] から該当クラスを削除）
+```
+
+`crates/awase-windows/src/focus/tracker.rs::apply_learned_imm_capability`
+が、`ImmCapabilityStore`（`focus/classifier.rs`）に保存された
+`"Window Class" = "unavailable"` という学習結果に基づき、
+`awase-settings.exe` の静的分類 `Standard`
+（`AppImeProfile::from_class_name` の既定フォールバック）を実行時に
+`Imm32Unavailable` へ降格させていた。`target/debug/cache.toml` を直接
+確認し、実際にこのエントリが存在することを確認した。
+
+**これは BUG-56 と全く同じ機構のプロセス間版である。** BUG-56
+（2026-08-07）は、Qt の汎用クラス名 `Qt663QWindowIcon` が LINE アプリ
+**内**の無関係な一時ウィンドウ（通知アイコン等）と本物のチャット入力欄とで
+使い回され、前者の誤判定が `class_name` をキーとする学習キャッシュ経由で
+後者まで巻き込んだ事故だった。修正（`ImmCapabilityStore::
+record_null_probe`、2回連続観測するまで確定しないデバウンス）は
+**同一プロセス内**の衝突を主眼に設計されており、本件（**異なるプロセス間**
+での衝突）には効かない。`winit`（`awase-settings.exe` が使う GUI
+フレームワーク）は `with_class_name` で明示的に上書きしない限り
+`"Window Class"` という**ハードコードされた既定クラス名**をあらゆる
+winit アプリで共有するため、この Windows 実機上で過去に動かした別の
+winit ベースのアプリ（または過去のいずれかの `awase-settings.exe`
+セッション）が `Imm32Unavailable` と学習されていれば、その学習結果が
+無関係な `awase-settings.exe` の別セッションにまで適用されてしまう。
+
+実機の `cache.toml` を全体確認したところ、`Button`/`Edit`/`ComboBox`/
+`Static`/`SysListView32` のような**極めて一般的な Win32 標準コントロールの
+クラス名**まで多数 `unavailable` として学習されており、`class_name` 単独
+キー方式の汚染リスクは `"Window Class"` に限らず構造的に存在する。
+
+「実機検証ログ2」（ADR-125）で確認したとおり、`awase-settings.exe` に
+対する実際の IMM32 クロスプロセス制御（`ImmGetDefaultIMEWnd`/
+`WM_IME_CONTROL`）は正常に機能する（有効な IME ウィンドウ・50ms 以内の
+応答・正確な ON/OFF 追従）。つまり `Imm32Unavailable` への降格は**誤学習**
+であり、本来 IMM32 が使えないアプリ向けの VK_KANJI トグル・物理 IME キー
+抑止といった制御方式が、実際には IMM32 が正常に機能するウィンドウに対して
+発動してしまうことで、先頭の「あ」のような症状につながっていると考えられる
+（`Imm32Unavailable` 降格後の具体的などの経路が「あ」を出力するかという
+詳細メカニズムまでは未確認、ADR-125「未解決の設計課題」3参照）。
+
+**対応（採用済み、未実装）:** `ImmCapabilityStore` の学習キャッシュのキーを
+`class_name` 単独から `(process_name, class_name)` のタプルへ変更する
+（`config.rs::AppOverrideEntry` が既に `{ process, class }` の組でアプリを
+識別している既存パターンに沿う）。プロセス間の衝突を構造的に防ぐが、BUG-56
+のデバウンス（同一プロセス内の衝突対策）はそのまま維持し独立に共存させる。
+設計の詳細・未解決の実装課題は [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+「決定」節 E 案を参照。
+
+**暫定回避（BUG-56 と同じ手順、実機未実施）:** `cache.toml` の
+`[imm_capability]` セクションから `"Window Class"` エントリを削除し、
+awase を再起動する（`ImmCapabilityStore` は起動時に一度だけ `cache.toml`
+を読み込むため、ファイル修正だけでは反映されない）。
+
+**範囲外・未解決:** 当初報告にあった「テキスト入力が重い」という症状は、
+本 BUG の再現テストでは顕在化しなかったため未解決のまま残る——`かな混入`
+とは別原因の可能性がある。
+
+**関連ファイル:** `crates/awase-windows/src/focus/classifier.rs`
+（`ImmCapabilityStore`）、`crates/awase-windows/src/focus/tracker.rs`
+（`apply_learned_imm_capability`）、`crates/awase-windows/src/focus/
+imm_learning.rs`（`learn_imm_capability_on_focus`）。
+
+**関連:** BUG-56（同一プロセス内版、本件はそのプロセス間版）、BUG-33/
+BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、同系統だが原因の軸が
+異なる）、BUG-78（却下案が再利用しようとした `disable_apps` 丸ごと
+バイパス機構の初出）、ADR-121（「原因の半分」を早期に確定として扱って
+しまった教訓、本件で実装を急がず3回の実機検証を重ねた理由）。
