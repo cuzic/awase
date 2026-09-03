@@ -1,314 +1,356 @@
-# ADR-123: フォーカス再同期ゲート退避キュー（`INPUT_DEFER`）と TSF プローブ退避キュー（`pending_deferred`）が合成し、モーラ境界のない一括 SendInput が発生して文字脱落・順序入替が起きる
+# ADR-123: GJI cold-start 直後、TSF per-VK confirm の連鎖中に `OUTPUT_GATE` が握り続けた物理キーが `pending_deferred` へモーラ境界なく合流し、文字脱落・順序入替が起きる
 
 ## ステータス
 
-**ドラフト（round 0）。Opus 2体（architect/premortem）敵対的レビュー未実施、これから実施する。**
+**round 1（Opus 2体、architect/premortem）完了・未収束。round 1 の指摘を受けて
+実機 journal（`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`）を再解析し、根本原因の
+記述を全面的に書き直した（本版）。round 2 レビューへ進む。**
 
 [GitHub issue #148](https://github.com/cuzic/awase/issues/148) として追跡。
 
+### round 1 で確定した誤り（この版で訂正済み）
+
+architect・premortem の双方が独立に、当初案（round 0）の根本原因記述が
+実コードと不整合であると指摘した。要旨:
+
+- **F-1**: 当初案は cold-start パスとして `send_romaji_as_tsf` →
+  `LiteralDetectFsm`（word-level、単一 300ms 期限）を挙げていたが、
+  `LiteralDetectFsm` は `send_romaji_as_tsf_warm`（**warm 専用**、
+  `literal_detect_fsm.rs:472` の docstring 明記）からしか呼ばれず、
+  cold-start では到達しない。
+- **F-2**: 当初案は `FOCUS_RESYNC` gate が複数モーラ分の物理キーを堰き止める
+  としていたが、`handle_wm_drain_output_queue`（`message_handlers.rs:1300-1420`）
+  は `FOCUS_RESYNC.is_gate_active()` を一切参照せず、2打鍵目到着で
+  `INPUT_DEFER.replay_later()` → 無条件 `post_drain_output_queue()`
+  （`input_defer.rs:64-67`）により resync gate は事実上1打鍵しか堰き止めない。
+- **A-5**: 当初案の因果チェーンは症状の一部（「え」の脱落）しか説明できず、
+  「ば」が先頭に来る順序入替を説明できていなかった。
+
+これらの指摘を受け、`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1` の生 journal を
+R2 から再取得し実際のフィールド値を確認した（下記「実機 journal 解析」節）。
+結果、**F-1 は round 1 の推測（`ChromeProbe`/Vk モード）とも当初案（word-level
+`LiteralDetectFsm`）とも異なる第3の経路（TSF モードの per-VK confirm、
+`target: Tsf`）が実際に走っていたことが判明**した。この報告環境の
+`config.toml` に `[[app_overrides.force_tsf]]` で `WindowsTerminal.exe`
+（`CASCADIA_HOSTING_WINDOW_CLASS`）が明示登録されていたため、Vk モードの
+既定挙動を疑った round 1 の推測もそのままでは成立しない。詳細は下記。
+
 ## 背景
 
-Windows Terminal（TsfNative）+ GJI で「たとえば」と入力したところ「ばたと」に
-文字脱落・順序入替した（`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`、app_version
-1.18.0、`WrongCharacterOutput`）。journal 解析（`DumpTruncated`、total_entries=2560
-中942件のみ、`dropped_key_input=426`）で以下が判明していた:
+Windows Terminal（TsfNative、かつ config で `force_tsf` 指定）+ GJI で
+「たとえば」と入力したところ「ばたと」に文字脱落・順序入替した
+（`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`、app_version 1.18.0、
+`WrongCharacterOutput`、2026-09-03T02:43:07Z 報告）。半角英数持続トグル機能
+（BUG-25）自体は正常動作中であり無関係と確認済み。
 
-1. 入力直前、`msedge.exe` ⇔ `explorer.exe` ⇔ `windowsterminal.exe` 間で激しい
-   Alt+Tab フォーカス往復が発生（`FocusTransition` の dwell_ms が
-   156ms/813ms/140ms と極端に短い）。
-2. 「たとえば」の入力開始タイミングで windowsterminal.exe（TsfNative）へ
-   フォーカスが移り、GJI が `OnCold(Short)` に落ちた直後だった。
-3. 物理キー入力自体は NICOLA 配列上正しい順序だったが、`gate_active=true` の
-   ため各キーが 200〜315ms の遅延で「output-drain」キューに溜まってから
-   一括 replay された。
-4. この間、literal detection（`LiteralDetect`, cold_seq=235/236）が最初の
-   「ta」に TSF 側の合成兆候（`write_delta`, `candidate_visible`）が一切見えず
-   `SuspectedLiteral` → `gave_up=True(backs=1)` と判定し、backspace+再送の
-   リカバリをトリガーした。
-5. しかしこの判定が確定する前に、後続の「to」「e」の物理キーは既にキューに
-   積まれ処理待ちの状態だった。
-6. 結果として GJI 側は単一の合成イベント（`StartComposition` →
-   `CompositionConfirmed`, `write_delta=315` という異常に大きい一括書き込み）
-   しか記録しておらず、「え」が脱落し「ば」が先頭に来る形で確定した。
-
-半角英数持続トグル機能（BUG-25）自体は正常動作中であり無関係と確認済み。
-
-### 既存の関連バグ（参考、再調査不要と判断していたもの）
+### 既存の関連バグ（参考）
 
 - **BUG-38**: `RawTsfLiteralRecovery` の give-up 分岐が `pending_deferred`
   （probe 実行中に届いた後続キーの退避キュー、`TsfWarmupCoordinator` 所有）を
-  flush しないため出力順が入れ替わる、という酷似した過去バグ。修正済み
-  （`Output::flush_raw_tsf_literal_recovery` の末尾に
-  `flush_stale_deferred_vks_after_recovery` を追加）。
+  flush しないため出力順が入れ替わる、という酷似した過去バグ。修正済み。
 - **BUG-89**: gate 中（`OUTPUT_GATE`/`FOCUS_RESYNC`）に defer されたキーは
   `INPUT_DEFER` へ退避され、`handle_wm_drain_output_queue` から
   `KeyOrigin::DeferredReplay` として再生される。
-- **BUG-45/BUG-75**: per-VK confirm の literal 判定は「代理指標（候補ウィンドウ
-  SHOW / GJI I/O バイト増加）のタイムアウト」に基づく belief であり、実際の
-  TSF composition 状態と乖離しても検出も訂正もできない構造的欠陥がある、という
-  指摘が過去に何度もされている。
+- **BUG-45/BUG-75/ADR-122**: per-VK confirm の literal 判定は「代理指標
+  （候補ウィンドウ SHOW / GJI I/O バイト増加）のタイムアウト」に基づく
+  belief であり、実際の TSF composition 状態と乖離しても検出も訂正もできない
+  構造的欠陥がある。ADR-122 は「着弾したかどうかを事後的に推測する路線は、
+  前提を反転させても必ずどちらかの実機ケースで破綻する」と結論している
+  （issue #149、実装ペンディング中）。
 
-これらは「同じ穴の再発」に見えたため当初は BUG-38 の再発（未修正の残存範囲）を
-疑ったが、下記の調査でそれとは別の合流点であると判明した。
+## 実機 journal 解析（round 1 後に追加、確定的な一次証拠）
 
-## 根本原因
+`services/report-worker` から `wrangler r2 object get` で report JSON を再取得し、
+`log_excerpt`（`JournalEntry` の JSON 配列、943件）を `elapsed_ms` 順に精査した。
+`config_toml` に以下が含まれることをまず確認した:
 
-**`INPUT_DEFER`（フォーカス再同期ゲート `FOCUS_RESYNC`/`OUTPUT_GATE` が武装中
-に物理キー生イベントを退避する、`app/mod.rs` が唯一の入口の退避キュー）と
-`pending_deferred`（TSF プローブ実行中に届いた VK を退避する、
-`TsfWarmupCoordinator` 所有のフラット `Vec<DeferredVk>`、BUG-38 が対象とした
-キュー）は独立した別のキューである。ところが `WM_DRAIN_OUTPUT_QUEUE` ハンドラ
-が `INPUT_DEFER` に溜まった複数モーラ分の生キーを同一メッセージループ・ターン
-内で完全に同期的にリプレイするため、そのリプレイ中に新しく起動した TSF probe
-が in-flight の間に届いた後続モーラの romaji が次々と `pending_deferred` に
-巻き込まれる。`DeferredVk` はモーラ境界を持たない単一フラット Vec のため、
-probe 完了時にまとめて flush されると、本来 2 モーラ分（「え」「ば」）である
-VK 列が `split_vk_runs`/`send_vk_run_batch` によって「1本の重畳順ラン」
-（down 全部 → up 全部）としてバッチ化され、単一 SendInput として GJI に届く。
-GJI はこれを単一の合成単位として誤処理し、文字脱落・順序入替を起こす。**
+```toml
+[[app_overrides.force_tsf]]
+process = "WindowsTerminal.exe"
+class = "CASCADIA_HOSTING_WINDOW_CLASS"
+```
 
-### 因果チェーン（詳細、file:line 付き）
+この設定により、本報告の Windows Terminal は **TSF 注入モード**で動作していた
+（round 1 の architect/premortem が推測した「既定は Vk モード」は、この
+ユーザー環境には当てはまらない）。
 
-1. **フォーカス変更 → resync arm**: 高速 Alt+Tab 中、windowsterminal.exe
-   （TsfNative）にフォーカスが移ると `FocusResyncGate::arm()`
-   （`focus_resync.rs:65`）が武装される（`should_arm_focus_resync` は
-   TsfNative かつ日本語 IME のときのみ true、
-   `state/focus_resync_policy.rs:19-26`）。
-2. **最初の物理キー（「た」の1鍵目）が resync をトリガー**:
-   `handle_hook_key_event`（`app/mod.rs:469-510`）で
-   `event.starts_focus_resync()` かつ `FOCUS_RESYNC.is_armed()` →
-   `consume_and_close()`（`focus_resync.rs:103-107`）→
-   `INPUT_DEFER.defer_during_output(event)`（`app/mod.rs:496`）でこのキーが
-   退避される。同時にハード期限タイマー `TIMER_FOCUS_RESYNC`（100ms、
-   `tuning.rs:472` `FOCUS_RESYNC_DEADLINE_MS`）が武装される
-   （`app/mod.rs:492`）。
-3. **後続の物理キー（と/え/ば の各鍵）も同じキューに巻き込まれる**:
-   `app/mod.rs:500-506` の `has_pending_drain` チェック（FIFO 順序保証ロジック）
-   により、resync gate 自体は既に `armed=false` でも、キューが空になるまで
-   後続キーは同じキューに積まれ続ける。
-4. **resync 完了 or 100ms 期限で drain**: `close_focus_resync_gate_if_current`
-   （`key_pipeline.rs:519-531`）または `TIMER_FOCUS_RESYNC` ハンドラ
-   （`message_handlers.rs:541-559`）が `post_drain_output_queue()` を呼び
-   `WM_DRAIN_OUTPUT_QUEUE` を投函 →
-   `handle_wm_drain_output_queue`（`message_handlers.rs:1300`）が起動。
-5. **drain ハンドラの内部順序**（`message_handlers.rs:1316-1368`）:
-   `(a) flush_raw_tsf_literal_recovery()` → `(b) INPUT_DEFER.take_all()`
-   （timestamp 昇順ソート済み）→ `(c) for queued_event in &queue { deliver_key_event(...) }`。
-   (c) は `with_app` クロージャ内で**完全に同期的なループ**であり、途中で
-   `TIMER_TSF_PROBE`（10ms ポーリング）が割り込む余地がない。
-   `deliver_key_event`（`message_handlers.rs:136-244`）は最終的に
-   `app.process_key_event(event)` を同期呼び出しする。
-6. **「た」の romaji 送信が TSF probe を起動し `OUTPUT_GATE` を再ロック**:
-   drain ループ1件目（「た」）の romaji "ta" 確定で `Output::send_romaji_as_tsf`
-   が cold-start パスで `LiteralDetectFsm`（`tsf/warmup/literal_detect_fsm.rs:476-516`）
-   を `install_pending_tsf` する。`LiteralDetectFsm::new()` は
-   `OutputActiveGuard::begin()`（`tsf/probe_bridge.rs:112-118`）を保持し、
-   probe 完了まで `OUTPUT_GATE.active=true` を維持する。この区間の長さは
-   `RAW_TSF_LITERAL_DETECT_MS = 300ms`（`tuning.rs:72`、long-idle 時は 500ms、
-   `tuning.rs:80`）— issue 本文の「200〜315ms」の遅延と一致する。
-7. **と/え/ば の物理キーが再び `INPUT_DEFER` に積まれる**: `OUTPUT_GATE.active=true`
-   になった瞬間から、リアルタイムでタイプされる後続の物理キーは
-   `handle_hook_key_event`（`app/mod.rs:487-498`）の `OUTPUT_GATE.is_active()`
-   判定に再度捕まり `INPUT_DEFER` へ退避される。
-8. **「た」の probe が give-up**: TSF 側に合成兆候が一切見えず
-   `LiteralDetectCore::poll`（`literal_detect_fsm.rs:265-415`）が
-   `SuspectedLiteral` → `gave_up=True(backs=1)` と判定（journal cold_seq=235）。
-   `RawTsfLiteralRecovery` action は `dispatch_probe_actions`
-   （`probe_io.rs:710-830`）で `set_raw_literal` により **static へ退避するのみ**
-   （実送信は `flush_raw_tsf_literal_recovery` まで遅延）。probe machine が
-   drop → `LiteralDetectFsm` の `OutputActiveGuard` が drop →
-   `OUTPUT_GATE.active=false` + 新たな `WM_DRAIN_OUTPUT_QUEUE` が投函される
-   （`tsf/probe_bridge.rs:121-138`）。
-9. **2回目の drain ハンドラ呼び出し**:
-   - (a) `flush_raw_tsf_literal_recovery()`（`output/mod.rs:1635-1650`）:
-     backspace 送信 → romaji 再送（give-up なので無し）→
-     `flush_stale_deferred_vks_after_recovery()`（BUG-38 修正箇所）。この時点で
-     「と」の物理キーはまだ `INPUT_DEFER` にいるだけで engine を一度も通って
-     いないため `pending_deferred` は空（BUG-38 の懸念とは別条件）。
-   - (b)(c) `INPUT_DEFER.take_all()` で と/え/ば の物理キーがまとめて drain され
-     **同一の同期ループ内で** 連続処理される。
-10. **と の romaji "to" が新しい probe を起動**: ループ1件目（と）の romaji
-    確定で `has_pending_tsf()==false`（直前で drop 済み）なので新しい
-    `LiteralDetectFsm` が `install_pending_tsf` され、再び
-    `OutputActiveGuard::begin()` で `OUTPUT_GATE.active=true` になる。
-11. **え と ば が「probe in-flight」経路に落ちる**: 同一ループの2件目（え）・
-    3件目（ば）が処理される時点では「と」の probe はまだ一度も tick されて
-    いない。`Output::defer_if_probe_in_flight`（`output/mod.rs:1277-1290`）が
-    `has_pending_tsf()==true` を見て、romaji "e"・"ba" を VK 列に変換し
-    `warmup_coord.pending_deferred`（`output/tsf_warmup_coord.rs:296-305`
-    `defer_vks_if_in_flight`）に `.extend()` で積む。この
-    `pending_deferred: RefCell<Vec<DeferredVk>>` は**モーラ境界を一切持たない
-    単一フラット Vec**（`DeferredVk { vk, needs_shift }` のみ、
-    `tsf/warmup/probe_fsm.rs:38-41`）。
-12. **「と」probe 完了時に え+ば が無差別に一括 flush される**: 「と」の probe
-    完了時、`finish_probe_stage`（`output/mod.rs:1419-1450`）の
-    `flush_pending_deferred_vks()`（`output/mod.rs:1753-1766`）、または
-    give-up 経路なら `flush_stale_deferred_vks_after_recovery` が
-    `pending_deferred` を丸ごと取り出し `send_deferred_vks` →
-    `send_deferred_probe_vks_from`（`output/key_injector.rs:302-313`）→
-    `split_vk_runs`+`send_vk_run_batch`（`output/key_injector.rs:226-260`）で
-    送信する。
-13. **重畳順バッチが複数モーラをまたいで適用される＝症状の直接原因**:
-    `send_vk_run_batch`（`key_injector.rs:226-243`）は「run 内の全キーの Down
-    を先に全部送り、その後 Up を全部送る」設計（本来は同一ローマ字内の同時
-    打鍵オーバーラップ表現のため、`key_injector.rs:262-271`）。
-    `pending_deferred` はどの VK がどのモーラに属していたかの区切りを保持
-    しないため、「え」(VK_E) + 「ば」(VK_B, VK_A) が1本の run として
-    `down(E) down(B) down(A) up(E) up(B) up(A)` の順で単一 SendInput にまとめ
-    られる。GJI はこれを「1つの重畳打鍵イベント」として解釈し、単一の合成
-    イベント（`write_delta=315`）に丸め込む——「え」消失・「ば」先行という
-    症状に帰結する。
+### 事実1: 全 probe が `path: "PerVk"`, `target: "Tsf"`（F-1 の決着）
 
-### 関係ファイル・関数一覧
+インシデント窓（`elapsed_ms` 12474000〜12481000、windowsterminal.exe への
+フォーカス到達から離脱まで）に記録された3件の `LiteralDetect` エントリ
+（`cold_seq` 235/236/237）は、いずれも次の形だった:
+
+```json
+{"cold_seq": 235, "verdict": "SuspectedLiteral", "route": "CheckNow",
+ "path": "PerVk", "target": "Tsf", "vk": 84 /* 'T' */, "idx": 0, "last_idx": 1,
+ "gave_up": false, "backs": 1, "romaji": "ta"}
+{"cold_seq": 236, "verdict": "SuspectedLiteral", "path": "PerVk", "target": "Tsf",
+ "vk": 84, "idx": 0, "last_idx": 1, "consecutive_before": 1, "gave_up": true,
+ "backs": 1, "romaji": "ta"}
+{"cold_seq": 237, "verdict": "CompositionConfirmed", "path": "PerVk", "target": "Tsf",
+ "vk": 66 /* 'B' */, "idx": 0, "last_idx": 1, "write_delta": 315,
+ "evidence_fresh": true}
+```
+
+**これは round 0 の当初案（word-level `LiteralDetectFsm`）でも round 1 の
+architect/premortem の推測（Vk モードの `ChromeProbe`）でもなく、
+`gji_warmup_coro.rs:172-181` の `run_per_vk_confirm(..., TransmitTarget::Tsf)`
+経路である**（premortem が C-1 で「cold-start の TsfNative+GJI では既に
+per-VK confirm が強制されている」と述べた指摘が、経路名まで含めてそのまま
+実証された形）。`target: Tsf` は `force_tsf` 設定により TSF 注入モードの
+per-VK 確認が使われたことを示す。
+
+### 事実2: 物理キーは probe 進行中に約130〜320ms の追加遅延を伴って
+バースト処理されている（gate 保持の直接証拠）
+
+`KeyInput` エントリは `event.timestamp_us`（実際の物理キー押下時刻、フック
+記録）と、エントリ自身の `elapsed_ms`（journal 記録時刻＝エンジン処理時刻）
+の両方を持つ。両者の差分を全 `KeyInput` について計算すると、通常時は
+**一定の基準オフセット ~532ms**（クロック基準の違いによる固定値、実処理遅延
+ではない）で安定している。ところがインシデント窓内の2つのバースト
+（`seq 42404-42409` と `seq 42415-42418`）だけ、この差分が **664〜848ms**
+（基準比 +132〜+316ms の追加遅延）まで跳ね上がり、バーストが終わると
+即座に基準値へ戻る:
+
+| seq | 内容 | 基準超過分（追加遅延） |
+|---|---|---|
+| 42404 (vk=74 down) | 「と」系の1鍵目 | +316ms |
+| 42406 (vk=29 LeftThumb down) | 同バースト | +145ms |
+| 42409 (vk=29 LeftThumb up) | 同バースト末尾 | +25ms |
+| 42415 (vk=29 LeftThumb down) | 「え」系の1鍵目 | +314ms |
+| 42418 (vk=72 up) | 同バースト末尾 | +158ms |
+| 42426 (Backspace down、バースト外) | recovery 操作 | 基準値に復帰 |
+
+さらに、各バースト内の複数 `KeyInput` はいずれも `elapsed_ms` が2〜3ms差の
+中に密集しており、`state_before`/`state_after`（NICOLA 同時打鍵 FSM の
+`Idle`→`PendingChar`/`PendingThumb`→`Idle`）が**一括で連続処理**されている
+ことを示す。これは「物理キーがどこかのキューに溜まり、probe 完了のたびに
+同期ループで一気にリプレイされる」という当初案の中核メカニズム（step 5, 9）
+を、GJI 内部の推測に頼らず awase 側の一次データだけで裏付ける。
+
+**gate の種類の特定（F-2 への追加証拠、ただし完全な決着ではない）**: journal
+は `OUTPUT_GATE`/`FOCUS_RESYNC` のゲート状態そのものをフィールドとして
+記録していないため、どちらが保持していたかを journal だけから断定はできない。
+しかし2つのバーストの発生タイミングは `TsfProbeStarted`（cold_seq=442 at
+12474411 → 443 at 12475099 → 444 at 12475445）と連続的に一致し、
+`FocusTransition` の `dwell_ms` とは相関しない。round 1 の両エージェントが
+コード読解で示した「`FOCUS_RESYNC` は2打鍵目で事実上解除される」という結論
+（F-2）と整合し、**`OUTPUT_GATE`（TSF probe が保持する `OutputActiveGuard`）
+が実際の保持機構である可能性が高い**。ただし直接証拠ではないため、
+「未決定事項」に実装での確認（gate 種別のログ出力追加）を残す。
+
+### 事実3: 「た」は give-up（backspace のみ、resend なし、reinit も発火せず）、
+「ば」だけが `write_delta=315` という異常値で単独確定した
+
+- cold_seq=236 の give-up（`consecutive_before=1`, `gave_up=true`, `backs=1`）
+  の後、**「た」に対する3回目の probe（romaji 再送を伴う）は一度も観測されない**。
+  次の probe（cold_seq=444/237）は `vk=66`（'B'）から始まっており、これは
+  「た」ではなく別の romaji（`last_idx=1` なので2 VK、'B'+'A' = "ba" と推定）
+  の確認である。
+- インシデント窓内に `ImeActuation`/`ImeEvent`/`ImeOpenApplied` の
+  `VK_IME_OFF`→`VK_IME_ON` reinit に相当するエントリは**一件も無い**
+  （観測された `ImeOpenApplied` は2件とも `reason: "ImmBrokenForceOn"` で
+  give-up 由来ではない）。**round 1 の architect が A-4 で示した
+  「give-up → GJI reinit 予約 → focus 変化で `pending_deferred` 全破棄」
+  という経路は、少なくとも本インシデントでは発火していない**（コード上
+  存在する経路自体を否定するものではないが、本件の直接原因ではない）。
+- cold_seq=237（probe 444）は `GjiFsmTransition: StartComposition(candidate
+  SHOW)` の直後に `CompositionConfirmed`（idx=0, `write_delta=315`）→
+  （47ms後）idx=1 も confirmed・`session_marked=true` という順で完了して
+  いる。`write_delta=315` は他の全 `LiteralDetect` エントリ（`write_delta=0`
+  が大半）と比べて突出して大きく、issue 本文が「異常に大きい一括書き込み」
+  として観測した値と一致する。
+
+**解釈**: 「た」は per-VK confirm で2回とも合成兆候が確認できず give-up
+（backspace(1) のみ、resend も reinit も無し）となり、literal のまま出力に
+残った（最終出力の「た」はこの literal 残留と推定される）。一方、2つの
+物理キーバースト（「と」「え」に対応すると推定される）は engine を通過した
+ものの、probe が in-flight（cold_seq 443→444 の連鎖）だったため
+`pending_deferred` に積まれ、次に始まった probe（「ば」の romaji 送信が
+トリガー）の flush に巻き込まれて **1回の異常に大きい合成書き込み
+（write_delta=315）に融合**した。この融合の結果 GJI 側で「え」が消え、
+確定した文字列の先頭に「ば」が来る形で出力が乱れた、という機序は当初案の
+仮説と一致するが、**「え」が消え「と」が生き残った、という具体的な区別が
+なぜ生じたかは GJI 内部の解釈に依存し、journal からは確定できない**
+（引き続き「推測」）。
+
+## 根本原因（round 1 訂正 + journal 実証を反映）
+
+**Windows Terminal を `force_tsf` 指定した TsfNative + GJI の cold-start で、
+連続する物理キー入力が TSF per-VK confirm の probe 連鎖（`run_per_vk_confirm`,
+`target: Tsf`）と競合する。probe が in-flight の間に届いた物理キーは
+`OUTPUT_GATE`（可能性が高いが直接未確認）に堰き止められ、probe 完了のたびに
+同期的にバースト処理される。バースト中に別の probe が新たに in-flight になると、
+そのモーラの romaji は `pending_deferred`（モーラ境界を持たないフラット
+`Vec<DeferredVk>`）に落ち、次の probe の flush 時に無差別に合流する。この
+合流が異常に大きい単一の GJI 合成イベント（`write_delta=315`）を生み、
+文字脱落・順序入替として観測される。**
+
+### 因果チェーン（journal 実証部分と未実証部分を明示）
+
+1. **フォーカス変更**: windowsterminal.exe（`Windows.UI.Input.InputSite.WindowClass`、
+   `force_tsf` によりプロファイル `TsfNative`）へフォーカス到達
+   （`elapsed_ms=12474411`、直前 explorer.exe の dwell はわずか156ms）。
+   **【実証】** `FocusTransition`/`GjiFsmTransition(FocusChange)` で確認。
+2. **フォーカス到達直後に自動 probe 開始**: `TsfProbeStarted cold_seq=442`
+   （`source: GjiAction::StartProbe`）。ユーザーの打鍵を待たず、フォーカス
+   変更そのものがトリガー。**【実証】**
+3. **「た」romaji 送信 → per-VK confirm 開始**: `ConvClassifyCall` → romaji
+   "ta" 相当のキー入力が engine を通過。**【実証、ただし romaji 自体は
+   `LiteralDetect.romaji` フィールドからの逆算】**
+4. **「た」の1文字目('T')が2回とも SuspectedLiteral → give-up**:
+   `cold_seq=235`（consecutive=0、backspace 予約のみ）→
+   `cold_seq=236`（consecutive=1、`gave_up=true`、backspace(1)、resend 無し）。
+   `since_vk_sent_ms` 297ms/313ms は `RAW_TSF_LITERAL_DETECT_MS=300ms`
+   （`tuning.rs:72`）と一致。**【実証】**
+5. **この間、後続の物理キー（「と」「え」相当）が2バーストに分かれて
+   engine に到達、いずれも基準オフセット比 +130〜+320ms の追加遅延を伴う**。
+   バースト内部は2〜3ms間隔で密集処理される（同期リプレイの特徴）。
+   **【実証】** ただし堰き止めていたのが `OUTPUT_GATE` か `FOCUS_RESYNC` かは
+   **【未実証、コード読解からは `OUTPUT_GATE` が濃厚】**。
+6. **後続モーラの romaji が probe in-flight 中に `pending_deferred` へ
+   落ちる**: `defer_if_probe_in_flight`（`output/mod.rs:1277-1290`）→
+   `warmup_coord.pending_deferred`（`tsf_warmup_coord.rs:296-305`、
+   `DeferredVk{vk,needs_shift}` のみでモーラ境界を持たない）。**【コード上
+   確定、本インシデントでの発火は状況証拠（事実2・3）から強く示唆されるが
+   直接ログには出ない】**
+7. **「ば」の probe（`cold_seq=444/237`）が `pending_deferred` を巻き込んで
+   flush、単一の異常に大きい合成イベントとして確定**: `write_delta=315`。
+   **【実証（この値そのもの）、ただし「なぜえが消えてばが生き残ったか」の
+   GJI 側解釈は推測】**
+8. **give-up した「た」は resend も reinit も発火せず literal のまま残留**。
+   **【実証（reinit 不発火は journal に IME OFF/ON イベントが無いことで確認）】**
+
+### 関係ファイル・関数一覧（訂正版）
 
 | 役割 | file:line |
 |---|---|
-| resync gate 武装/消費/解除 | `crates/awase-windows/src/focus_resync.rs:65,103-107,117-124` |
-| resync arm 条件（純関数） | `crates/awase-windows/src/state/focus_resync_policy.rs:19-26` |
-| resync ハード期限 100ms | `crates/awase-windows/src/tuning.rs:472` |
-| フック直下の gate 判定・`INPUT_DEFER` 投入の唯一の入口 | `crates/awase-windows/src/app/mod.rs:469-510` |
-| `INPUT_DEFER` 実体（VecDeque, cap 1024） | `crates/awase-windows/src/input_defer.rs:11-118` |
-| `OUTPUT_GATE`/`OutputActiveGuard`（RAII, depth カウント） | `crates/awase-windows/src/tsf/probe_bridge.rs:24-149` |
-| `WM_DRAIN_OUTPUT_QUEUE` ハンドラ本体（(a)(b)(c) の順序） | `crates/awase-windows/src/runtime/message_handlers.rs:1300-1420` |
-| `deliver_key_event`（同期でエンジン全体を回す） | `crates/awase-windows/src/runtime/message_handlers.rs:136-244` |
-| `LiteralDetectFsm`（`OUTPUT_GATE` を probe 完了まで保持） | `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs:476-516` |
-| literal-detect 判定コア・give-up 判定 | `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs:260-415` |
-| `RAW_TSF_LITERAL_DETECT_MS = 300ms` | `crates/awase-windows/src/tuning.rs:72,80` |
-| `RawTsfLiteralRecovery` dispatch（backs/romaji を static へ退避のみ） | `crates/awase-windows/src/output/probe_io.rs:710-830` |
-| `flush_raw_tsf_literal_recovery`（backspace→romaji再送→reinit→`pending_deferred` flush の順序） | `crates/awase-windows/src/output/mod.rs:1619-1650` |
-| `flush_stale_deferred_vks_after_recovery`（BUG-38 修正箇所） | `crates/awase-windows/src/output/mod.rs:1698-1735` |
-| `pending_deferred` 実体（`TsfWarmupCoordinator`、モーラ境界なしフラット Vec） | `crates/awase-windows/src/output/tsf_warmup_coord.rs:51-57,296-337` |
-| `defer_if_probe_in_flight`（probe 中の romaji を `pending_deferred` へ） | `crates/awase-windows/src/output/mod.rs:1277-1290` |
-| `finish_probe_stage`（probe 終了時の `pending_deferred` flush） | `crates/awase-windows/src/output/mod.rs:1415-1450` |
-| `flush_pending_deferred_vks` | `crates/awase-windows/src/output/mod.rs:1753-1766` |
-| `send_deferred_vks` → `send_deferred_probe_vks_from` | `crates/awase-windows/src/output/probe_io.rs:139-142`, `crates/awase-windows/src/output/vk_send.rs:609-611` |
-| `split_vk_runs`/`send_vk_run_batch`（down全部→up全部の重畳順バッチ、モーラ境界非考慮） | `crates/awase-windows/src/output/key_injector.rs:226-260,302-313` |
-| `DeferredVk` 構造体（vk/needs_shiftのみ、モーラ情報なし） | `crates/awase-windows/src/tsf/warmup/probe_fsm.rs:38-41` |
-
-### 確度の注記
-
-journal が `DumpTruncated`（2560件中942件のみ、`dropped_key_input=426`）のため:
-
-- **確定（コード読解で直接裏付け）**: 上記1〜7、9〜12（gate の種類・タイミング
-  定数・drain ハンドラの実行順序・`pending_deferred` へのフォールバック条件・
-  `DeferredVk` にモーラ境界が無いこと・`send_vk_run_batch` の down-then-up
-  バッチング）。
-- **強い推測**: 8. の cold_seq=235/236 が「た」probe の give-up 検出と対応
-  すること（journal 引用と `RAW_TSF_LITERAL_DETECT_MS=300ms` の一致から妥当性
-  が高いが、直接ログでの確認ではない）。
-- **推測（GJI 内部挙動に依存し awase 側コードからは確認不能）**: 13. の
-  「down-down-down-up-up-up の重畳順バッチが GJI 側で `write_delta=315` の
-  単一書き込み・え脱落・ば先行という具体的症状に帰結するメカニズム」。SendInput
-  の送出順序自体は確定しているが、GJI のローマ字変換ステートマシンがこれを
-  どう解釈したかは awase 側の観測からの逆算にとどまる。実機再現時に
-  `RUST_LOG=debug` で `key_injector.rs:306-309` 付近のログ（`pending_deferred`
-  flush 時の VK 個数とタイミング）を直接確認できれば、確定へ格上げできる。
+| TSF cold-start の per-VK confirm 経路（本件の実際の経路） | `crates/awase-windows/src/tsf/warmup/gji_warmup_coro.rs:172-181` |
+| per-VK confirm 本体 | `crates/awase-windows/src/tsf/warmup/probe_fsm.rs:436-475` |
+| per-VK の SuspectedLiteral/give-up 判定 | `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs:260-415` |
+| `per_vk_recovery_params`（backspace数・resend要否の決定、ADR-122 案Fの対象と同一） | `crates/awase-windows/src/tsf/warmup/literal_detect_fsm.rs` 内 |
+| give-up 時の GJI reinit 予約（本件では不発火） | `crates/awase-windows/src/output/probe_io.rs:745-760` |
+| `pending_deferred` 実体（モーラ境界なしフラット Vec） | `crates/awase-windows/src/output/tsf_warmup_coord.rs:51-57,296-337` |
+| `defer_if_probe_in_flight` | `crates/awase-windows/src/output/mod.rs:1277-1290` |
+| `flush_pending_deferred_vks` / `flush_stale_deferred_vks_after_recovery` | `crates/awase-windows/src/output/mod.rs:1698-1766` |
+| `split_vk_runs`/`send_vk_run_batch`（down全部→up全部の重畳順バッチ） | `crates/awase-windows/src/output/key_injector.rs:226-260` |
+| `WM_DRAIN_OUTPUT_QUEUE` ハンドラ（同期リプレイループ） | `crates/awase-windows/src/runtime/message_handlers.rs:1300-1420` |
+| `deferred_engine_timers` replay（drain ループ以外のromaji送出点、round1 A-7指摘） | `crates/awase-windows/src/runtime/message_handlers.rs:1391-1408` |
+| `FOCUS_RESYNC` gate が2打鍵目で事実上解除される経路（round1 F-2） | `crates/awase-windows/src/app/mod.rs:485-506`, `crates/awase-windows/src/input_defer.rs:64-67` |
+| `OUTPUT_GATE`/`OutputActiveGuard` | `crates/awase-windows/src/tsf/probe_bridge.rs:24-149` |
+| `RAW_TSF_LITERAL_DETECT_MS = 300ms` | `crates/awase-windows/src/tuning.rs:72` |
+| `force_tsf` 設定によるプロファイル判定 | `config.toml [[app_overrides.force_tsf]]`（本報告環境で `WindowsTerminal.exe` 登録済み） |
 
 ## BUG-38 との異同
 
-**別の欠陥（BUG-38 の再発ではない）と判断する。**
+**別の欠陥（BUG-38 の再発ではない）と判断する。** BUG-38 は「同一 probe の
+give-up サイクル内での `pending_deferred` flush 順序」を保証するのみで、
+「probe 連鎖（cold_seq 442→443→444）が続く間に複数モーラの romaji が
+`pending_deferred` へ無区別に混入すること自体」は対象にしていない
+（`DeferredVk` にモーラ境界フィールドが無いことからも設計時点で未想定）。
+本件は journal 実証により、この混入が実際に起きていたことを示す状況証拠
+（2つの遅延バースト＋単一の異常に大きい `write_delta`）を得た。
 
-- BUG-38 が守る不変条件は「同一の give-up イベントの backspace/romaji再送/
-  reinit がすべて実送信された後でなければ、その**同じ probe 実行中**に届いた
-  `pending_deferred` を flush してはいけない」という**単一 probe サイクル内の
-  順序**の話。
-- 本件は「`INPUT_DEFER`（gate 側の生キー退避）に溜まった別モーラの生キーが、
-  drain の同期リプレイ中に新たな probe を次々に起動しては即座に次のモーラが
-  `pending_deferred` に落ちる」という、BUG-38 の修正が触れている
-  `flush_stale_deferred_vks_after_recovery` の**さらに手前**、つまり
-  `pending_deferred` へ**そもそも複数モーラが混入すること自体**が問題。
-  BUG-38 は「1モーラ分の `pending_deferred` を正しいタイミングで flush する」
-  ことしか保証しておらず、「複数モーラが無区別に混在した場合の安全な分離」は
-  最初から扱っていない（`DeferredVk` にモーラ境界フィールドが無いことからも、
-  設計時点で想定されていないことが分かる）。
-- BUG-38 のシナリオは「probe 実行中に1回だけ」後続キーが届くケースだが、
-  本件は `INPUT_DEFER` 側の gate が先に生キーを塊で堰き止め、それを同期ループ
-  で一気に再生することで `pending_deferred` への混入が**複数モーラ分連鎖する**
-  という、`INPUT_DEFER` と `pending_deferred` という**2つの独立した退避機構が
-  合成されて初めて顕在化する**新しいクラスの競合である。
+## 検討する選択肢（round 1 の指摘を反映して再評価）
 
-## 検討する選択肢
+### 選択肢A: `pending_deferred` にモーラ境界を持たせる
 
-### 選択肢A: `pending_deferred` にモーラ境界を持たせ、モーラごとに独立した SendInput で送る
+- **round 1 評価**: 対症。加えて premortem A-2 が指摘する通り、モーラ境界の
+  ない同型のフラットバッファが他に2箇所存在する（`UnicodeColdWarmupFsm::deferred_chars`
+  `unicode_cold_warmup_fsm.rs:30`、`Output::unicode_cold_deferred`
+  `platform.rs:974`）。Aを採るなら3箇所同時対応が必須。architect A-6 の
+  指摘通り `send_vk_run_batch` の呼び出しを分割すると単一 `SendInput` が
+  持っていた「メッセージポンプが割り込めない」暗黙の保護を失い、BUG-02系
+  race の再燃リスクを新設する。
+- **本ADRでの位置づけ**: 単独では不十分。実装するなら防御的な二段目として、
+  根治（下記D）とセットで扱う。
 
-`DeferredVk` のフラットリスト（`Vec<DeferredVk>`）を、モーラ単位でグルーピング
-した `Vec<Vec<DeferredVk>>` に変更する。`flush_pending_deferred_vks` は
-モーラごとに `send_vk_run_batch` を分けて呼ぶ（モーラ間はバッチを分離、モーラ内
-のみ従来通り重畳順を許可）。
+### 選択肢B: drain ループを probe in-flight 化した時点で中断する
 
-- **長所**: 症状の直接原因（手順13）をピンポイントで塞ぐ。GJI 側が「え」「ば」
-  を別々の compose イベントとして受け取れるようになり、SendInput レベルの
-  誤解釈を構造的に防止。既存の「同一モーラ内は重畳順で送る」という設計意図
-  （`key_injector.rs:262-271`）とも整合する。
-- **短所**: `pending_deferred` を溜める全経路にモーラ境界の受け渡しを追加する
-  必要があり影響範囲がやや広い。モーラ単位に分けても「flush 自体が probe を
-  経由しない生 VK 送信である」点は変わらず、GJI がリテラル化するリスク
-  （`flush_stale_deferred_vks_after_recovery` の doc が既に認めている既知の
-  残課題）は残る。
-- **実装コスト**: 中。テストは `tsf_warmup_coord.rs` の既存ユニットテスト
-  （`deferred_vks_survive_*` 系）の拡張で足りる範囲。
+- **round 1 評価**: **却下**。`should_post_drain` の不変条件
+  （`state/focus_resync_policy.rs:48-50`、「`OUTPUT_GATE` active 中に
+  defer 済みキーを replay するな」）を直接破り、BUG-02/BUG-70 系のリテラル
+  漏れ経路を再生産する（B-1、blocker）。`replay_later` の無条件 post による
+  ビジースピン（B-2）、`InputDeferQueue` に purge API が無いことに起因する
+  フォーカス変更時の別ウィンドウへのキー漏れ（B-3）、reinject 順序逆転
+  （B-3'）、合流点の見落とし（B-2、`deferred_engine_timers` replay 等
+  少なくとも5箇所）という複数の blocker が round 1 で確定した。**採用しない。**
 
-### 選択肢B: drain ループを probe in-flight 化した時点で中断し、残りは新しい drain に委ねる
+### 選択肢C: cold-start 直後だけ per-VK confirm を強制する
 
-`handle_wm_drain_output_queue` の (c) ループで `deliver_key_event` 呼び出し後に
-`warmup_coord.has_pending_tsf()` をチェックし、true になった時点で残りのキュー
-を `INPUT_DEFER.replay_later()` で書き戻してループを打ち切る。probe 完了時
-（`finish_probe_stage`）に改めて drain を post する（既存の
-`post_drain_output_queue()` 経路を流用）。
+- **round 1 評価 + journal 実証**: **完全に no-op と確定**。journal 事実1
+  の通り、本インシデントは最初から `path: "PerVk"` で走っている——Cが
+  強制しようとしている状態が既定で発生済み。**却下。**
 
-- **長所**: `pending_deferred` への複数モーラ混入という現象そのものが起きなく
-  なる（根治に近い）。「1件の probe = 1件の後続キー退避」という BUG-38 の設計
-  時の前提に実態を合わせる形で、`pending_deferred` 側のコードは無改造で済む。
-- **短所**: 高速タイピング時、各モーラごとに 300〜500ms の literal-detect 待ち
-  が直列化されうるため、cold-start 直後の連続入力のレイテンシが悪化するリスク
-  がある。ユーザー体感の入力遅延が新たな不具合として顕在化する可能性があり、
-  実測での検証が必須（`tuning-constants.md` の規約対象）。
-- **実装コスト**: 中〜高。drain ループの中断・再開ロジックと、`INPUT_DEFER` へ
-  の戻し順序（FIFO 維持）を慎重に設計する必要がある。
+### 選択肢D（architect 提案、round 1 で新規）: drain バーストを「1つの出力エピソード」として扱う
 
-### 選択肢C: cold-start 直後の最初の1語に限り per-VK confirm へ強制フォールバック
+`INPUT_DEFER.take_all()` で得たバースト全体に対し、**先頭で1回だけ probe を
+張り、以降のモーラは新規 probe を張らずに（＝`pending_deferred` へ落とさず）
+順次そのまま送る**。バーストの境界（gate 期間の入口/出口）でフラグを立て
+下ろす。
 
-`assess_warmth`（`output/mod.rs:1262-1275`）等の warm/cold 判定に「resync 直後」
-フラグを追加し、cold-start 直後の最初の probe だけ per-VK 経路（1文字ずつ確認、
-`veto_eligible=false`）を強制する。per-VK は1 VK ごとの待ち時間が短く
-`OUTPUT_GATE` を長時間ホールドしないため、後続モーラが `INPUT_DEFER` に
-溜まりにくくなる。
+- **長所**: `pending_deferred` へ複数モーラが混入する現象そのものが起きない。
+  Bのようにループを中断しないため B-1/B-3 系の blocker が発生しない。
+  `deferred_engine_timers` replay（A-7）も同じフラグのスコープに含めれば
+  B-2 の合流点漏れが構造的に起きない。
+- **短所**: 先頭モーラの probe が give-up した場合、後続モーラも同じ理由で
+  literal 化しうる——ただしこれは既存リスク（cold_seq=236 の「た」で実際に
+  起きた事象そのもの）の露出であり、新規リスクではない。
+- **本 journal の事実との整合性**: 事実2で観測された「probe 連鎖のたびに
+  新しいバーストが処理される」パターンをDが直接解消する形になっており、
+  観測データと最も整合する選択肢。
+- **実装コスト**: 低〜中（architect 見積り）。
 
-- **長所**: 300ms の word-level probe 待ちがそもそも発生しないため、選択肢Bの
-  レイテンシ懸念を避けられる。cold-start という限定的な条件でのみ挙動を変える
-  ため影響範囲が小さい。
-- **短所**: 根治ではなく緩和策（per-VK でも複数モーラが同期ループで詰まれば
-  同種の競合が理論上は起こりうる、確率を下げるだけ）。per-VK 経路と word-level
-  経路の分岐条件がさらに増え、`ime_controller.rs::characterize_strategy` 周辺
-  の複雑度が上がる。
-- **実装コスト**: 低〜中。
+### 選択肢E（architect 提案、根治だが今回は採らない）: 出力シンクの一本化
 
-### 暫定の方向性（未確定、レビュー前）
+engine が確定した romaji が実際に `SendInput` に到達する経路は
+`send_romaji_batch_immediate`／`pending_deferred` flush／`RAW_TSF_LITERAL`
+の backspace+resend の最低3本あり、相互の順序保証が無い。BUG-38・BUG-75・
+本件はいずれもこの構造的欠陥の別の顔。シーケンス番号付きの単一出力キューへ
+一本化するのが本来の根治だが、ADR-079 Stage2 相当の規模でコストが高い。
+**今回は採用しないが、「なぜ今回は採らないか」を記録に残す**
+（`.claude/rules/experiment-logging.md` の趣旨）。
 
-選択肢Aが症状への直接対策として最も確実だが、選択肢Bと組み合わせる
-（`INPUT_DEFER` 側の「同期バーストで複数モーラを詰め込まない」構造的対策 +
-`pending_deferred` 側の「万一混入しても安全に分離送信する」防御的対策の二段
-構え）方が頑健と考えられる。単独ならまず選択肢Aから着手し、実機ソークで残存
-頻度を見てから選択肢Bの要否を判断する案を軸に検討中。**この選定は Opus 2体
-レビュー未実施の暫定案であり、round 1〜2 で覆る可能性がある。**
+## 決定（暫定、round 2 レビュー待ち）
 
-## 未決定事項
+**選択肢D（バースト単位の単一probe化）を軸に、選択肢A（モーラ境界、
+`UnicodeColdWarmupFsm`/`platform.rs` 含む3箇所同時対応)を防御的な二段目として
+組み合わせる方向を暫定 decision とする。** B は blocker により不採用、
+C は no-op と実証済みのため不採用。E は将来課題として記録するに留める。
 
-- 選択肢A/B/Cのどれを decision とするか（複数案の組み合わせ含む）。
-- 選択肢Bを採る場合のレイテンシ悪化の許容範囲（実測が必要、
-  `tuning-constants.md` 規約対象）。
-- 手順13の GJI 側解釈メカニズムは推測にとどまる。実機 `RUST_LOG=debug` での
-  検証手順を先行させるべきか（BUG-75/ADR-122 の「観測フェーズ先行」パターンの
-  再利用が妥当か）。
-- 本件が `FOCUS_RESYNC`/`OUTPUT_GATE` を経由する他のケース（BUG-89 の
-  `DeferredReplay` 等）でも同型の合成が起こりうるか（横展開の要否）。
+**この decision は round 1 の指摘と round 1後の journal 実証を踏まえた
+再構成であり、round 2 でさらに検証する。** 特に以下は round 2 で重点的に
+確認する:
+- Dの「バースト境界でフラグを立てる」実装が、`deferred_engine_timers` replay
+  を含む全合流点（round 1 architect が挙げた最低5箇所）を本当に覆えるか。
+- Dが「先頭モーラ give-up → 後続モーラも literal化」という許容した短所が、
+  実際にどの程度の頻度で許容範囲か（Aとの組み合わせでどこまで緩和されるか）。
+- Aを3箇所同時対応する場合の実装コストの再見積り。
+
+## 未決定事項（round 1 の指摘により優先順位を再構成）
+
+1. **gate の種別特定**（`OUTPUT_GATE` か `FOCUS_RESYNC` か、事実2で状況証拠は
+   得たが直接証拠ではない）: 実装時にログへ gate 種別を明示出力する対応を
+   先行させるべきか検討する。
+2. **`FOCUS_RESYNC` gate が2打鍵目で事実上解除される件（F-2）**: 本ADRの
+   スコープ外の独立した別欠陥（BUG-77 が塞いだつもりの穴の残り）と判断。
+   別 BUG 番号を採って切り出すことを推奨（番号衝突に注意）。
+3. **横展開**: `UnicodeColdWarmupFsm::deferred_chars`・
+   `Output::unicode_cold_deferred` の同型フラットバッファ2箇所、および
+   `send_keys` の defer 非対称性（`SpecialKey`/`Key`/`KeyUp` は即送信、
+   `Romaji` のみ defer 対象、`platform.rs:1000-1020` 既知）は「検討」ではなく
+   「対応が必要な既知の穴のリスト」として扱う。
+4. **「え」が消え「と」が残った具体的機序**: GJI 内部解釈に依存し
+   awase 側からは確認不能。根治（選択肢D/A）で発生自体を防げれば、この
+   機序の完全解明は必須ではないと考えるが、round 2 で妥当性を確認する。
+5. **レイテンシ影響の実測**（`tuning-constants.md` 規約対象）: 選択肢Dを
+   実装する場合、バースト単位の probe 化がレイテンシに与える影響
+   （既存のper-VKモーラごとの待ちと比べて改善するはず、だが実測要）。
 
 ## 関連
 
-BUG-38（`pending_deferred` flush 順序、本件の直接の前例）、BUG-89（`INPUT_DEFER`/
-`OUTPUT_GATE`/`FOCUS_RESYNC` の deferred replay 経路、gate 中に defer された
-Ctrl+key の別の隙間）、BUG-45/BUG-75（per-VK confirm の代理指標ベース判定の
-構造的欠陥）、ADR-122（BUG-75 再発、cold-start per-VK confirm の race recovery、
-Opus 2体 round 1〜3 が確立した「観測フェーズ先行」「blocker の切り分け」の
-議論パターン）、[docs/bug-reports-triage.md](../bug-reports-triage.md)
+BUG-38、BUG-89（`FOCUS_RESYNC`/`OUTPUT_GATE` の deferred replay 経路）、
+BUG-45/BUG-75/ADR-122（per-VK confirm の代理指標ベース判定の構造的欠陥、
+「着弾したかどうかを事後推測する路線は反転させても破綻する」という教訓）、
+[docs/bug-reports-triage.md](../bug-reports-triage.md)
 （`01M1JJD54XQXSEJTHHFKV1WKA1` 該当行）。
