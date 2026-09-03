@@ -296,6 +296,16 @@ impl TsfWarmupCoordinator {
     ///
     /// キューは probe machine ではなく coordinator が所有するため、どの machine が
     /// `pending_tsf` に入っているか・何回 tick されたかに関係なく安全に蓄積できる。
+    ///
+    /// **テスト専用（2026-09-03、code review指摘を機に整理）**: 本番コードの
+    /// 唯一の呼び出し元だった`Output::defer_vk_if_probe_in_flight`は
+    /// `raw_recovery_owns_deferred()`・件数上限も見る
+    /// `defer_vks_if_probe_or_recovery_in_flight`（`output/mod.rs`）経由に
+    /// 統合され、この`has_pending_tsf()`のみをgateする版は使わなくなった。
+    /// `push_deferred_vks`（gateなし）とは異なりgate判定込みのため、
+    /// coordinator単体でgate+push+order_token+originの組み合わせを検証する
+    /// テストにはこちらの方が便利で、削除せず残している。
+    #[cfg(test)]
     pub(crate) fn defer_vks_if_in_flight(
         &self,
         vks: &[(VkCode, bool)],

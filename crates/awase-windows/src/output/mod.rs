@@ -1361,22 +1361,42 @@ impl Output {
         origin: DeferredOrigin,
         check_raw_recovery: bool,
     ) -> bool {
+        let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
+        self.defer_vks_if_probe_or_recovery_in_flight(&vks, origin, check_raw_recovery, romaji)
+    }
+
+    /// `defer_if_probe_or_recovery_in_flight` の実体。romaji 文字列からの
+    /// VK 変換を終えた後の共通コアで、`defer_vk_if_probe_in_flight`
+    /// （単一 VK 版）とも共有する（2026-09-03 code review指摘で統合——
+    /// 単一VK版が旧来 `warmup_coord.defer_vks_if_in_flight` を直接呼び、
+    /// `raw_recovery_owns_deferred()`も件数上限もどちらも経由しない
+    /// 状態だった。BUG-47により現状は到達不能だが「理論上到達不能」という
+    /// 主張自体が過去に誤りだったことがある経路のため、片方だけ保護する
+    /// 非対称を解消した）。
+    ///
+    /// `log_desc` はログ表示専用（romaji文字列、または単一VKの説明）。
+    fn defer_vks_if_probe_or_recovery_in_flight(
+        &self,
+        vks: &[(VkCode, bool)],
+        origin: DeferredOrigin,
+        check_raw_recovery: bool,
+        log_desc: &str,
+    ) -> bool {
         if !self.is_probe_or_recovery_blocking(check_raw_recovery) {
             return false;
         }
-        let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
         // ADR-123 変更A+C 決定4-3: 件数上限を超える場合は defer を諦め、
         // 通常送信経路（今日の挙動と同じ、probe保護なしの可能性あり）へ
         // degrade する。「最も古いエントリから強制flush」は probe の
         // per-VK confirm 中に生VKを割り込ませることになり危険なため採らない
         // （`TsfWarmupCoordinator::would_exceed_deferred_cap` の doc コメント
-        // 参照）。この romaji が持つ VK 数（`vks.len()`）を渡して判定する
+        // 参照）。この呼び出しが持つ VK 数（`vks.len()`）を渡して判定する
         // ——1件だけを見て許可すると、複数VKからなるromajiの一括pushで
         // 上限を超えうる（2026-09-03 code review指摘で修正）。
         if self.warmup_coord.would_exceed_deferred_cap(vks.len()) {
             log::error!(
                 "[pending-deferred] count limit exceeded, degrading to immediate send: \
-                 romaji={romaji:?} origin={origin:?} vk_count={}",
+                 input={log_desc:?} origin={origin:?} vk_count={}",
                 vks.len()
             );
             return false;
@@ -1384,14 +1404,14 @@ impl Output {
         log::debug!(
             "[tsf] probe/recovery in flight → deferred {} VK(s) for {:?}",
             vks.len(),
-            romaji
+            log_desc
         );
-        self.warmup_coord.push_deferred_vks(&vks, origin);
+        self.warmup_coord.push_deferred_vks(vks, origin);
         true
     }
 
-    /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
-    /// probe がなければ何もせず false を返す。
+    /// probe/recovery 進行中なら単一 VK を deferred_vks に追記し true を返す。
+    /// 進行中でなければ何もせず false を返す。
     ///
     /// 呼び出し元 (`vk_send.rs` の `send_char_as_tsf`/`send_char_as_vk`) は
     /// `CharResolution::Vk` の生 VK フォールバック経路にあり、2026-08-05 の
@@ -1399,22 +1419,29 @@ impl Output {
     /// カバーするようになったため、現状この2箇所は理論上到達しない
     /// （`docs/known-bugs.md` BUG-47 参照）。
     ///
-    /// **ADR-123 変更A+C（`defer_if_probe_or_recovery_in_flight`）のスコープ外
-    /// （2026-09-03 code review指摘）**: この関数は`warmup_coord.
-    /// defer_vks_if_in_flight`を直接呼ぶため、`raw_recovery_owns_deferred()`
-    /// もPR4の件数上限（`would_exceed_deferred_cap`）もどちらも経由しない
-    /// （旧来のhas_pending_tsf()のみのgate）。BUG-47のとおり現状は理論上
-    /// 到達不能だが、「理論上到達不能」という主張自体がBUG-47の履歴が
-    /// 示すとおり過去に誤りだったことがある。この経路が実際に到達可能に
-    /// なる変更が入る場合は、ADR-123のgate/上限をここにも拡張すること。
+    /// **`defer_if_probe_or_recovery_in_flight`（romaji版）と同じ共通コア
+    /// (`defer_vks_if_probe_or_recovery_in_flight`) を使う（2026-09-03
+    /// code review指摘で修正）**: 以前は`warmup_coord.defer_vks_if_in_flight`
+    /// を直接呼んでおり、`raw_recovery_owns_deferred()`もPR4の件数上限
+    /// （`would_exceed_deferred_cap`）もどちらも経由しなかった（旧来の
+    /// has_pending_tsf()のみのgate）。BUG-47のとおり現状は理論上到達
+    /// 不能だが、「理論上到達不能」という主張自体がBUG-47の履歴が示す
+    /// とおり過去に誤りだったことがあるため、romaji版と同じ保護に揃えた。
+    /// この呼び出し元は常に通常のユーザー入力（raw recovery回収再送・
+    /// ADR-101 retryのbypass経路ではない）のため`check_raw_recovery=true`
+    /// （`defer_if_probe_in_flight`と同じ、`Exempt`版は使わない）。
     pub(super) fn defer_vk_if_probe_in_flight(
         &self,
         vk: VkCode,
         needs_shift: bool,
         origin: DeferredOrigin,
     ) -> bool {
-        self.warmup_coord
-            .defer_vks_if_in_flight(&[(vk, needs_shift)], origin)
+        self.defer_vks_if_probe_or_recovery_in_flight(
+            &[(vk, needs_shift)],
+            origin,
+            true,
+            &format!("{vk:?}"),
+        )
     }
 
     /// long-cold 後の GJI 再初期化: VK_IME_OFF→VK_IME_ON を SendInput で注入する。
