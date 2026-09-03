@@ -12816,9 +12816,14 @@ belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行�
 という仮説を立てたが、専用スパイク（`spike_egui_himc_reassociation_probe`）
 による実機（Windows）検証ではこの脱着は再現しなかった。代わりに、
 フォーカス中 `awase-settings.exe` の HIMC が終始 0（NULL）のままという
-別の事実が判明し、`AppImeProfile::from_class_name` の既定分類 `Standard`
-が実態と合っていない可能性が浮上した。実装方針はまだ確定していない。
-詳細・実機検証ログ・次のアクションは
+事実から「`AppImeProfile::Standard` 分類・IMM32 クロスプロセス制御
+そのものが機能していない」という第2の仮説を立てたが、awase 本体と
+同一の Win32 呼び出し列を再現した別のスパイク
+（`spike_egui_ime_control_probe`）による直接検証では、この機構は正常に
+機能していることが確認され、この仮説も否定された。**2つの仮説がいずれも
+実機で否定され**、実装方針はまだ確定していない。次は実際に `awase.exe`
+本体エンジンを動かした状態での症状再現・ログ取得に切り替える。詳細・
+実機検証ログ・次のアクションは
 [ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md) を参照。
 
 **関連:** BUG-33/BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、
