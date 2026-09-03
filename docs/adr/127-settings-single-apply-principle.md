@@ -1,9 +1,11 @@
-# ADR-126: 設定画面（awase-settings）の「単一の適用」原則統一——配列編集タブの反映漏れ解消
+# ADR-127: 設定画面（awase-settings）の「単一の適用」原則統一——配列編集タブの反映漏れ解消
 
 ## ステータス
 
-**実装済み（v6設計をCodexに実装委譲後、Opusによるコード差分の敵対的レビューを
-2周実施し収束。`crates/awase-settings/src/main.rs`に反映済み、PR作成待ち）。**
+**実装完了（v6設計をCodexに実装委譲後、Opusによるコード差分の敵対的レビューを
+2周実施し収束。`/code-review`指摘4件も修正。PR #157でdevelopへマージ済み）。**
+（本ADRはマージ時に既存の別ADR-126〈`126-caps-as-extra-ctrl-preset.md`〉との
+番号衝突が判明したため、ADR-127へ改番した。）
 Opus 2体architect/premortemによるround1〜round6の設計レビューで「問題なし、
 収束」に至った後、実装差分に対する別のOpusエージェントによる敵対的コード
 レビューで2件のblocker（下記D1・D2の追記を参照）と複数の非blocker指摘が
