@@ -258,6 +258,42 @@ code,.code-block{
   color:var(--text-secondary);
   margin-top:0.4rem;
 }
+.install-primary{
+  background:var(--bg);
+  border:2px solid var(--accent);
+  border-radius:12px;
+  padding:1.6rem 1.8rem;
+  box-shadow:var(--card-shadow);
+  margin-bottom:1.5rem;
+}
+.install-primary h3{margin-top:0}
+.install-alt{
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:0 1.2rem;
+}
+.install-alt summary{
+  cursor:pointer;
+  font-weight:600;
+  font-size:0.95rem;
+  color:var(--text-secondary);
+  padding:0.9rem 0;
+  list-style:none;
+}
+.install-alt summary::-webkit-details-marker{display:none}
+.install-alt summary::before{
+  content:"\25B8";
+  display:inline-block;
+  margin-right:0.5em;
+  transition:transform .15s;
+}
+.install-alt[open] summary::before{transform:rotate(90deg)}
+.install-alt[open] summary{
+  color:var(--text);
+  border-bottom:1px solid var(--border);
+  margin-bottom:0.5rem;
+}
+.install-alt[open]{padding-bottom:1.2rem}
 
 /* Modes */
 .modes-grid{
@@ -576,10 +612,12 @@ footer p{margin-bottom:0.3rem}
     <h2 class="section-title">インストール</h2>
     <div class="install-block">
 
-      <h3>MSI インストーラー（推奨）</h3>
-      <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">ダブルクリックでセットアップ完了。スタートアップ登録も自動で行います。</p>
-      <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">最新版をダウンロード (MSI)</a>
-      <p style="color:var(--text-secondary);font-size:0.88rem">ダウンロードできない場合は <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から手動でダウンロードしてください。</p>
+      <div class="install-primary">
+        <h3>MSI インストーラー</h3>
+        <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">ダブルクリックでセットアップ完了。スタートアップ登録も自動で行います。</p>
+        <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">最新版をダウンロード (MSI)</a>
+        <p style="color:var(--text-secondary);font-size:0.88rem">ダウンロードできない場合は <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から手動でダウンロードしてください。</p>
+      </div>
 
       <!-- Scoop 未対応のため非表示
       <h3>Scoop（コマンドライン）</h3>
@@ -587,23 +625,27 @@ footer p{margin-bottom:0.3rem}
       <p class="install-note">Scoop がインストールされていない場合は <a href="https://scoop.sh">scoop.sh</a> を参照してください。</p>
       -->
 
-      <h3>ZIP 版（ポータブル）</h3>
-      <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">インストール不要。解凍してすぐ使えます。</p>
-      <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (ZIP)</a>
-      <ol>
-        <li><a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code id="zip-filename">awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
-        <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
-        <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
-      </ol>
-      <p style="color:var(--text-secondary);font-size:0.88rem">
-        <strong>アップグレード時:</strong> 新しい ZIP を解凍し、同じフォルダへ
-        <code>install.ps1</code> を再度実行するだけで構いません（
-        <code>config.toml</code> と配列ファイルは既定で保持されます）。
-        <code>uninstall.ps1</code> を先に実行する必要はありません。
-      </p>
+      <details class="install-alt">
+        <summary>その他のインストール方法（ZIP版・ソースからビルド）</summary>
 
-      <h3>ソースからビルド</h3>
-      <div class="code-block">cargo build -p awase-windows --release</div>
+        <h3>ZIP 版（ポータブル）</h3>
+        <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">インストール不要。解凍してすぐ使えますが、スタートアップ登録などは手動で行う必要があります。</p>
+        <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">最新版をダウンロード (ZIP)</a>
+        <ol>
+          <li><a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> から <code id="zip-filename">awase-x.x.x-x64.zip</code> をダウンロードして解凍</li>
+          <li>解凍したフォルダ内の <code>install.ps1</code> を PowerShell で実行（スタートアップ登録）</li>
+          <li><code>awase.exe</code> を実行（トレイアイコンに常駐）</li>
+        </ol>
+        <p style="color:var(--text-secondary);font-size:0.88rem">
+          <strong>アップグレード時:</strong> 新しい ZIP を解凍し、同じフォルダへ
+          <code>install.ps1</code> を再度実行するだけで構いません（
+          <code>config.toml</code> と配列ファイルは既定で保持されます）。
+          <code>uninstall.ps1</code> を先に実行する必要はありません。
+        </p>
+
+        <h3>ソースからビルド</h3>
+        <div class="code-block">cargo build -p awase-windows --release</div>
+      </details>
     </div>
   </div>
 </section>

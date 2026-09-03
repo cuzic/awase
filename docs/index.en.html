@@ -258,6 +258,42 @@ code,.code-block{
   color:var(--text-secondary);
   margin-top:0.4rem;
 }
+.install-primary{
+  background:var(--bg);
+  border:2px solid var(--accent);
+  border-radius:12px;
+  padding:1.6rem 1.8rem;
+  box-shadow:var(--card-shadow);
+  margin-bottom:1.5rem;
+}
+.install-primary h3{margin-top:0}
+.install-alt{
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:0 1.2rem;
+}
+.install-alt summary{
+  cursor:pointer;
+  font-weight:600;
+  font-size:0.95rem;
+  color:var(--text-secondary);
+  padding:0.9rem 0;
+  list-style:none;
+}
+.install-alt summary::-webkit-details-marker{display:none}
+.install-alt summary::before{
+  content:"\25B8";
+  display:inline-block;
+  margin-right:0.5em;
+  transition:transform .15s;
+}
+.install-alt[open] summary::before{transform:rotate(90deg)}
+.install-alt[open] summary{
+  color:var(--text);
+  border-bottom:1px solid var(--border);
+  margin-bottom:0.5rem;
+}
+.install-alt[open]{padding-bottom:1.2rem}
 
 /* Modes */
 .modes-grid{
@@ -576,10 +612,12 @@ footer p{margin-bottom:0.3rem}
     <h2 class="section-title">Installation</h2>
     <div class="install-block">
 
-      <h3>MSI installer (recommended)</h3>
-      <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">Double-click to finish setup. It registers itself to start up automatically, too.</p>
-      <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">Download the latest version (MSI)</a>
-      <p style="color:var(--text-secondary);font-size:0.88rem">If the download doesn't work, download it manually from <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a>.</p>
+      <div class="install-primary">
+        <h3>MSI installer</h3>
+        <p class="install-note" style="color:var(--text-secondary);font-size:0.95rem">Double-click to finish setup. It registers itself to start up automatically, too.</p>
+        <a id="dl-msi" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.8rem 0">Download the latest version (MSI)</a>
+        <p style="color:var(--text-secondary);font-size:0.88rem">If the download doesn't work, download it manually from <a href="https://github.com/cuzic/awase/releases">GitHub Releases</a>.</p>
+      </div>
 
       <!-- Scoop 未対応のため非表示
       <h3>Scoop（コマンドライン）</h3>
@@ -587,23 +625,27 @@ footer p{margin-bottom:0.3rem}
       <p class="install-note">Scoop がインストールされていない場合は <a href="https://scoop.sh">scoop.sh</a> を参照してください。</p>
       -->
 
-      <h3>ZIP version (portable)</h3>
-      <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">No installation needed. Unzip and use it right away.</p>
-      <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-primary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (ZIP)</a>
-      <ol>
-        <li>Download <code id="zip-filename">awase-x.x.x-x64.zip</code> from <a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> and unzip it</li>
-        <li>Run <code>install.ps1</code> from the unzipped folder in PowerShell (registers startup)</li>
-        <li>Run <code>awase.exe</code> (it lives in the tray)</li>
-      </ol>
-      <p style="color:var(--text-secondary);font-size:0.88rem">
-        <strong>Upgrading:</strong> just unzip the new release and run
-        <code>install.ps1</code> again in the same folder (<code>config.toml</code>
-        and your layout files are preserved by default). There is no need to
-        run <code>uninstall.ps1</code> first.
-      </p>
+      <details class="install-alt">
+        <summary>Other installation methods (ZIP, build from source)</summary>
 
-      <h3>Build from source</h3>
-      <div class="code-block">cargo build -p awase-windows --release</div>
+        <h3>ZIP version (portable)</h3>
+        <p style="color:var(--text-secondary);font-size:0.95rem;margin-bottom:0.5rem">No installation needed. Unzip and use it right away, but you'll need to register startup manually.</p>
+        <a id="dl-zip-btn" href="https://github.com/cuzic/awase/releases" class="btn btn-secondary" style="display:inline-block;margin:0.3rem 0 0.8rem">Download the latest version (ZIP)</a>
+        <ol>
+          <li>Download <code id="zip-filename">awase-x.x.x-x64.zip</code> from <a id="dl-zip" href="https://github.com/cuzic/awase/releases">GitHub Releases</a> and unzip it</li>
+          <li>Run <code>install.ps1</code> from the unzipped folder in PowerShell (registers startup)</li>
+          <li>Run <code>awase.exe</code> (it lives in the tray)</li>
+        </ol>
+        <p style="color:var(--text-secondary);font-size:0.88rem">
+          <strong>Upgrading:</strong> just unzip the new release and run
+          <code>install.ps1</code> again in the same folder (<code>config.toml</code>
+          and your layout files are preserved by default). There is no need to
+          run <code>uninstall.ps1</code> first.
+        </p>
+
+        <h3>Build from source</h3>
+        <div class="code-block">cargo build -p awase-windows --release</div>
+      </details>
     </div>
   </div>
 </section>
