@@ -2,7 +2,18 @@ use std::cmp::Ordering;
 
 /// リリースページ URL の接頭辞。タグ命名規則 `vX.Y.Z` に依存する。
 /// URL は必ず「この定数 + 検証済み SemVer の Display 出力」だけで組む。
-pub const RELEASE_TAG_URL_PREFIX: &str = "https://github.com/cuzic/awase/releases/tag/v";
+const RELEASE_TAG_URL_PREFIX: &str = "https://github.com/cuzic/awase/releases/tag/v";
+
+/// 検証済み `SemVer` からリリースページ URL を組み立てる、唯一の場所。
+///
+/// URL の材料は①コンパイル時定数の prefix と②`parse()` を通った `SemVer` の `Display`
+/// 出力だけであり、サーバ由来の生文字列がここに混ざる経路は無い（決定5）。呼び出し側
+/// （`tray.rs` の about ダイアログ／更新ページ遷移）はこの関数だけを使い、URL 組み立てを
+/// 個別に再実装しない。
+#[must_use]
+pub fn release_url(version: &SemVer) -> String {
+    format!("{RELEASE_TAG_URL_PREFIX}{version}")
+}
 
 /// パース済み・検証済みのバージョン。
 ///
@@ -100,9 +111,9 @@ pub fn parse(s: &str) -> Option<SemVer> {
     }
 
     let mut parts = core.split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts.next()?.parse::<u64>().ok()?;
-    let patch = parts.next()?.parse::<u64>().ok()?;
+    let major = parse_numeric_core(parts.next()?)?;
+    let minor = parse_numeric_core(parts.next()?)?;
+    let patch = parse_numeric_core(parts.next()?)?;
     if parts.next().is_some() {
         return None;
     }
@@ -115,20 +126,32 @@ pub fn parse(s: &str) -> Option<SemVer> {
     })
 }
 
-fn valid_prerelease(prerelease: &str) -> bool {
-    !prerelease.is_empty()
-        && prerelease.split('.').all(|identifier| {
-            !identifier.is_empty()
-                && identifier
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-')
-        })
+/// `major`/`minor`/`patch` を数値として解釈する。semver 2.0 は数値コアフィールドの
+/// 先行ゼロを禁じている（`"01"` は無効、`"0"` は有効）ため、`str::parse` だけでは
+/// 弾けない（Rust の整数パーサは先行ゼロを許容してしまう）。
+fn parse_numeric_core(s: &str) -> Option<u64> {
+    if s.len() > 1 && s.starts_with('0') {
+        return None;
+    }
+    s.parse::<u64>().ok()
 }
 
-/// `candidate` が `current` より新しければ `Some(true)` を返す。
-#[must_use]
-pub fn is_newer(candidate: &str, current: &str) -> Option<bool> {
-    Some(parse(candidate)? > parse(current)?)
+fn valid_prerelease(prerelease: &str) -> bool {
+    !prerelease.is_empty() && prerelease.split('.').all(is_valid_prerelease_identifier)
+}
+
+fn is_valid_prerelease_identifier(identifier: &str) -> bool {
+    if identifier.is_empty()
+        || !identifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return false;
+    }
+    // semver 2.0: 数字のみの識別子は先行ゼロを禁じる（英数字混在なら "-" 等が
+    // 含まれ得るので対象外。"0" 自体は許可）。
+    let is_numeric_only = identifier.chars().all(|c| c.is_ascii_digit());
+    !is_numeric_only || identifier == "0" || !identifier.starts_with('0')
 }
 
 #[cfg(test)]
@@ -137,8 +160,10 @@ mod tests {
 
     #[test]
     fn compares_core_numbers_numerically() {
+        // 数値比較。辞書順だと "1.18.0" < "1.9.0" になってしまうため必須。
         assert!(parse("1.18.0") > parse("1.9.0"));
-        assert_eq!(is_newer("1.18.0", "1.18.0"), Some(false));
+        assert!(parse("1.17.9") < parse("1.18.0"));
+        assert_eq!(parse("1.18.0"), parse("1.18.0"));
     }
 
     #[test]
@@ -174,6 +199,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_leading_zeros_in_numeric_fields() {
+        // semver 2.0 は数値コアフィールド・数値のみのprerelease識別子の先行ゼロを禁じる。
+        // Rustのstr::parse::<u64>はこれを許容してしまうため専用のガードが要る。
+        for input in ["01.2.3", "1.02.3", "1.2.03", "1.2.3-01", "1.2.3-alpha.02"] {
+            assert_eq!(parse(input), None, "{input}");
+        }
+        // "0" 自体は先行ゼロ扱いにしない。
+        assert!(parse("0.0.0").is_some());
+        assert!(parse("1.2.3-0").is_some());
+    }
+
+    #[test]
     fn validates_prerelease_character_set() {
         for input in [
             "1.19.0-rc 1",
@@ -200,14 +237,6 @@ mod tests {
                 "{formatted}"
             );
         }
-    }
-
-    #[test]
-    fn is_newer_is_false_for_candidate_not_greater_than_current() {
-        assert_eq!(is_newer("1.18.0", "1.18.0"), Some(false));
-        assert_eq!(is_newer("1.17.9", "1.18.0"), Some(false));
-        assert_eq!(is_newer("1.18.0-dev", "1.18.0"), Some(false));
-        assert_eq!(is_newer("not-version", "1.18.0"), None);
     }
 
     #[test]
