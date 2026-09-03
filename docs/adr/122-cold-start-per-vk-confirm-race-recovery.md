@@ -7,6 +7,10 @@
 スコープから外し、別ADR/将来課題へ切り出す（round 3 で architect・
 premortem 双方が同一の分割案を提示、採用）。**
 
+**[GitHub issue #149](https://github.com/cuzic/awase/issues/149) として
+追跡。ユーザー判断により実装は一旦ペンディング（2026-09-03）。次に着手
+する際は実装前提条件4（観測フェーズ）から開始すること。**
+
 **収束の経緯**: round 1 で「案F+案Gの二段構え」を提案したが、round 2 で
 「案Gは per-VK 経路（本incidentの経路）では no-op」と判明。round 2 で
 安全な適用条件（ループローカルの confirm 実績）に絞った修正案を round 3
