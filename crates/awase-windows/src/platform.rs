@@ -156,7 +156,41 @@ impl WindowsPlatform {
         });
     }
 
-    fn note_tsf_probe_completed(&mut self, outcome: impl Into<String>, cold_seq: Option<u64>) {
+    /// `GjiAction::StartProbe` ハンドラから呼ぶ。ADR-123: `pending_deferred`
+    /// （probe 実行中に届いた別モーラの VK 退避キュー）が非ゼロのまま
+    /// この probe が開始しようとしているかを journal に記録する
+    /// （issue #148 の根本原因である「追い越し」の直接シグナル）。
+    /// `dispatch_gji_response` 本体の cognitive complexity を抑えるため
+    /// 別関数に切り出している。
+    fn note_tsf_probe_started_from_gji_action(&mut self, probe_id: crate::tsf::gji_fsm::ProbeId) {
+        let pending_deferred_len = self.output.pending_deferred_len();
+        if pending_deferred_len > 0 {
+            // この probe が pending_deferred をまだ flush されていない状態で
+            // 追い越して開始しようとしている(issue #148 の根本原因そのもの)。
+            log::warn!(
+                "[gji-fsm] StartProbe probe_id={probe_id:?} が pending_deferred \
+                 {pending_deferred_len} VK(s) をflush前に追い越して開始 (ADR-123)"
+            );
+        }
+        self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
+            source: "GjiAction::StartProbe".to_owned(),
+            // ADR-123 round 2 (architect) 指摘の修正: 以前はここに probe_id
+            // をそのまま入れていたが、cold_seq とは別の採番空間であり
+            // 読み違いの原因になっていた。
+            cold_seq: self.output.composition.cold_start_count().value(),
+            probe_id: Some(u64::from(probe_id.0)),
+            gji_state: self.gji_state_label(),
+            consecutive_at_start: self.output.composition.consecutive_count(),
+            pending_deferred_len,
+        });
+    }
+
+    fn note_tsf_probe_completed(
+        &mut self,
+        outcome: impl Into<String>,
+        cold_seq: Option<u64>,
+        probe_id: Option<u64>,
+    ) {
         let now = crate::hook::current_tick_ms();
         let elapsed_ms = self
             .active_tsf_probe_started_ms
@@ -165,6 +199,7 @@ impl WindowsPlatform {
         self.push_journal_entry(crate::journal::JournalEntry::TsfProbeCompleted {
             outcome: outcome.into(),
             cold_seq,
+            probe_id,
             elapsed_ms,
             tick_count: self.probe_tick_index,
             gji_state: self.gji_state_label(),
@@ -376,8 +411,10 @@ impl WindowsPlatform {
         self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
             source: "install_pending_tsf_and_set_timer".to_owned(),
             cold_seq,
+            probe_id: None,
             gji_state: self.gji_state_label(),
             consecutive_at_start: self.output.composition.consecutive_count(),
+            pending_deferred_len: self.output.pending_deferred_len(),
         });
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {
@@ -455,7 +492,7 @@ impl WindowsPlatform {
             } else {
                 "Done"
             };
-            self.note_tsf_probe_completed(outcome, result.completed_cold_seq);
+            self.note_tsf_probe_completed(outcome, result.completed_cold_seq, None);
         }
         self.apply_timer_command(result.timer_cmd);
     }
@@ -503,12 +540,7 @@ impl WindowsPlatform {
                     let now_ms = crate::hook::current_tick_ms();
                     self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
                     self.reset_probe_tick_counters();
-                    self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
-                        source: "GjiAction::StartProbe".to_owned(),
-                        cold_seq: u64::from(probe_id.0),
-                        gji_state: self.gji_state_label(),
-                        consecutive_at_start: self.output.composition.consecutive_count(),
-                    });
+                    self.note_tsf_probe_started_from_gji_action(*probe_id);
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
@@ -539,8 +571,12 @@ impl WindowsPlatform {
                             probe_id: *probe_id,
                         });
                         self.note_gji_transition("WarmupComplete(unicode)", state_before);
+                        // ADR-123 `/code-review` 指摘: このハンドラ内で直前に push した
+                        // TsfProbeStarted と Start/Complete を probe_id で突合できるよう、
+                        // cold_seq には（別の採番空間である）probe_id を入れない。
                         self.note_tsf_probe_completed(
                             "UnicodeImmediate",
+                            None,
                             Some(u64::from(probe_id.0)),
                         );
                         self.dispatch_gji_response(&warmup_resp);
@@ -552,7 +588,15 @@ impl WindowsPlatform {
                         // pending_tsf / OUTPUT_GATE ガード / probe_id を一括キャンセルする。
                         self.output.cancel_probe();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
-                        self.note_tsf_probe_completed("Canceled", Some(u64::from(probe_id.0)));
+                        // ADR-123 `/code-review` 指摘: cancel 時点の
+                        // `cold_start_count()` は StartProbe 時点と一致する保証がない
+                        // （別の cold-mark を挟んでいる可能性がある）ため推測せず、
+                        // probe_id のみを突合キーとして記録する。
+                        self.note_tsf_probe_completed(
+                            "Canceled",
+                            None,
+                            Some(u64::from(probe_id.0)),
+                        );
                     }
                 }
                 // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
@@ -840,7 +884,27 @@ impl WindowsPlatform {
     /// 次の実 `send_keys()` 呼び出しまで滞留し、溜まった分がまとめて stale な
     /// `StartProbe` として burst 発火する。docs/known-bugs.md 参照）。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
-        self.output.flush_raw_tsf_literal_recovery();
+        let outcome = self.output.flush_raw_tsf_literal_recovery();
+        self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
+            trigger: "raw_recovery",
+            outcome: match outcome {
+                crate::output::RawRecoveryOutcome::DiscardedStale {
+                    backs,
+                    romaji_present,
+                    deferred_vk_count,
+                } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
+                    backs,
+                    romaji_present,
+                    deferred_vk_count,
+                },
+                crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
+                    crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
+                }
+                crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
+                    crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
+                }
+            },
+        });
         self.drain_output_post_send_effects();
     }
 
@@ -849,7 +913,9 @@ impl WindowsPlatform {
     /// 1. `resend_gji_reinit_retry_romaji`（retry送信）
     /// 2. `drain_output_post_send_effects`（送信後処理）
     /// 3. `flush_deferred_vks_after_gji_reinit_completion`（deferred flush）
-    /// 4. `drop(completion.guard)`（関数末尾、`match` の外）
+    /// 4. `push_journal_entry(GjiReinitRetryCompleted)`（ADR-123: 診断ログ、
+    ///    flush/discard 件数の確定後・guard drop 前に記録する）
+    /// 5. `drop(completion.guard)`（関数末尾、`match` の外）
     ///
     /// `completion.guard` は成功/timeout/staleいずれの分岐でも関数末尾で1回だけ
     /// dropする。Win32/`Platform`依存のためLinux上でこの呼び出し順自体をユニット
@@ -877,7 +943,11 @@ impl WindowsPlatform {
             completion.retry_romaji.is_some(),
         );
 
-        if status == crate::output::GjiReinitPollStatus::Confirmed && focus_matches {
+        let retry_romaji_present = completion.retry_romaji.is_some();
+        let (deferred_flushed, deferred_discarded) = if status
+            == crate::output::GjiReinitPollStatus::Confirmed
+            && focus_matches
+        {
             if let Some(romaji) = completion.retry_romaji {
                 self.output
                     .mark_gji_reinit_retry_attempted(completion.focus_gen, romaji.clone());
@@ -888,11 +958,13 @@ impl WindowsPlatform {
             if flushed > 0 {
                 self.drain_output_post_send_effects();
             }
+            (flushed, 0)
         } else if focus_matches && status == crate::output::GjiReinitPollStatus::Timeout {
             let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
             if flushed > 0 {
                 self.drain_output_post_send_effects();
             }
+            (flushed, 0)
         } else {
             let discarded = self
                 .output
@@ -900,7 +972,23 @@ impl WindowsPlatform {
             log::warn!(
                 "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
             );
-        }
+            (0, discarded)
+        };
+        // ADR-123: reinit retry の完了を journal（構造化・容量優先度あり）に
+        // 残す。従来は log::debug!/log::warn! の自由文字列のみで、issue #148
+        // の調査時に journal では確認できず app_log_excerpt を直接読む必要が
+        // あった。
+        self.push_journal_entry(crate::journal::JournalEntry::GjiReinitRetryCompleted {
+            token,
+            status: format!("{status:?}"),
+            cold_seq: completion.cold_seq.value(),
+            origin_focus_gen: completion.focus_gen,
+            current_focus_gen,
+            focus_matches,
+            retry_romaji_present,
+            deferred_flushed,
+            deferred_discarded,
+        });
         drop(completion.guard);
     }
 

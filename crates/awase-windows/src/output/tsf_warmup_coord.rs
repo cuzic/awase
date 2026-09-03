@@ -311,6 +311,16 @@ impl TsfWarmupCoordinator {
         !self.pending_deferred.borrow().is_empty()
     }
 
+    /// deferred キューの長さを覗き見る（消費しない）。
+    ///
+    /// ADR-123: 新しい probe（`GjiAction::StartProbe`）が開始する直前にこの値を
+    /// journal（`TsfProbeStarted.pending_deferred_len`）へ記録することで、
+    /// その probe が flush されていない `pending_deferred` を追い越して
+    /// 開始したかどうかを診断できるようにする。
+    pub(crate) fn pending_deferred_len(&self) -> usize {
+        self.pending_deferred.borrow().len()
+    }
+
     /// deferred キューの中身を取り出してクリアする。
     ///
     /// 実際に romaji を送信する直前（`dispatch_probe_actions`）でのみ呼ぶこと。
@@ -365,6 +375,32 @@ mod tests {
         let coord = TsfWarmupCoordinator::new();
         assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
         assert!(!coord.has_pending_deferred());
+    }
+
+    // ── pending_deferred_len（ADR-123: TsfProbeStarted.pending_deferred_len 用）──
+
+    #[test]
+    fn pending_deferred_len_reflects_queued_vk_count_across_multiple_defers() {
+        // issue #148 の実機再現: 別モーラの romaji が probe in-flight 中に
+        // 複数回 defer される（「と」2VK + 「え」1VK = 3VK）ケースを模す。
+        let coord = TsfWarmupCoordinator::new();
+        assert_eq!(coord.pending_deferred_len(), 0);
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x54), false), (VkCode(0x4F), false)]));
+        assert_eq!(coord.pending_deferred_len(), 2, "「と」の2VK分");
+
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x45), false)]));
+        assert_eq!(
+            coord.pending_deferred_len(),
+            3,
+            "「と」+「え」で計3VK（issue #148 の \
+             `[tsf-probe] deferred 3 VK(s) を romaji 直後に送出` と対応）"
+        );
+
+        let drained = coord.take_pending_deferred();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(coord.pending_deferred_len(), 0, "take 後は0に戻る");
     }
 
     #[test]
