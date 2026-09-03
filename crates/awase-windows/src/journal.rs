@@ -135,14 +135,32 @@ impl PhysicalDispositionSummary {
 }
 
 /// `Output::flush_raw_tsf_literal_recovery` の結果サマリ（ADR-123）。
-/// `DecisionKind`/`PhysicalDispositionSummary` と同じブリッジパターン:
-/// `output` モジュール内部の型を journal 向けに変換して持つ。
+///
+/// `DecisionKind`/`PhysicalDispositionSummary` と同じく、`output` モジュール
+/// 内部の型（`output::RawRecoveryOutcome`、architecture guard
+/// `output_and_tsf_production_code_do_not_reference_journal_directly` により
+/// `output`/`tsf` 側からこの型を直接参照できないため）を journal 向けに
+/// 変換して持つブリッジ型。`DecisionKind::from_decision`/
+/// `PhysicalDispositionSummary::new` と異なりこちら向けの `from_*` は無く、
+/// 変換は唯一の呼び出し元（`platform.rs::flush_raw_tsf_literal_recovery`）
+/// のインライン `match` で行う——値をそのまま運ぶだけで判断ロジックを
+/// 含まないため、`output` 側に変換関数を置く必要がない。
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind")]
 pub enum DeferredRecoveryOutcomeSummary {
     /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
     /// backspace/romaji/`pending_deferred` を丸ごと破棄した。
-    DiscardedStale { vk_count: usize },
+    ///
+    /// `backs`/`romaji_present` は破棄した `RAW_TSF_LITERAL` の中身、
+    /// `deferred_vk_count` は破棄した `pending_deferred` の VK 数。
+    /// `deferred_vk_count` だけでは「`pending_deferred` が元々空だった」と
+    /// 「そもそも何も破棄しなかった」が journal 上で区別できないため、
+    /// 3つとも独立に保持する（ADR-123 `/code-review` 指摘）。
+    DiscardedStale {
+        backs: usize,
+        romaji_present: bool,
+        deferred_vk_count: usize,
+    },
     /// 無関係な別の give-up 由来の GJI reinit retry が polling 中だったため、
     /// `pending_deferred` の flush を見送った（次の flush 機会に委ねる）。
     SkippedWhilePolling,
@@ -267,6 +285,20 @@ pub enum JournalEntry {
     TsfProbeCompleted {
         outcome: String,
         cold_seq: Option<u64>,
+        /// `GjiAction::StartProbe`/`CancelProbe` 経由で完了した場合の
+        /// `ProbeId`（`Some`）。
+        ///
+        /// ADR-123 `/code-review` 指摘: `TsfProbeStarted` の `cold_seq` を
+        /// `probe_id` から本物の `cold_seq` へ切り替えたにもかかわらず、
+        /// `GjiAction` 経由の `TsfProbeCompleted`（`UnicodeImmediate`/
+        /// `Canceled`）側は `probe_id` を `cold_seq` に入れたままだったため、
+        /// Start/Complete のペアが `cold_seq` では突合できなくなっていた
+        /// （Started 側は本物の cold_seq、Completed 側は probe_id で
+        /// 別の採番空間）。この2経路は `cold_seq: None, probe_id: Some(..)`
+        /// とし、`probe_id` を突合キーとして明示する。`step_probe`
+        /// （`advance_tsf_probe`）駆動の completion（`Done`/`LearnedTsf` 等）
+        /// はこれまで通り `cold_seq: Some(..), probe_id: None`。
+        probe_id: Option<u64>,
         elapsed_ms: u64,
         tick_count: u32,
         gji_state: String,
@@ -280,12 +312,18 @@ pub enum JournalEntry {
     /// `pending_deferred`（probe 実行中に届いた別モーラの VK 退避キュー）の
     /// flush/discard 結果（ADR-123）。
     ///
-    /// `RawTsfLiteralRecovery` の give-up 直後（`trigger="raw_recovery"`）と
-    /// GJI reinit retry 完了後（`trigger="reinit_completion"`）の2箇所から
-    /// 記録する。両者とも従来は `log::debug!`/`log::warn!` の自由文字列
-    /// でしか残らず、journal（構造化・容量優先度あり）には現れなかった
-    /// （issue #148 の調査で `app_log_excerpt` を直接読まないと確認できず、
-    /// journal の `DumpTruncated` で欠落しうる弱点だった）。
+    /// `RawTsfLiteralRecovery` の give-up 直後（`trigger="raw_recovery"`、
+    /// `platform.rs::flush_raw_tsf_literal_recovery`）から記録する。従来は
+    /// `log::debug!`/`log::warn!` の自由文字列でしか残らず、journal
+    /// （構造化・容量優先度あり）には現れなかった（issue #148 の調査で
+    /// `app_log_excerpt` を直接読まないと確認できず、journal の
+    /// `DumpTruncated` で欠落しうる弱点だった）。
+    ///
+    /// GJI reinit retry 完了後の flush/discard は同じ意味論のデータだが、
+    /// `token`/`focus_matches` 等の周辺情報とまとめて記録した方が読みやすい
+    /// ため、本 variant ではなく `JournalEntry::GjiReinitRetryCompleted` の
+    /// `deferred_flushed`/`deferred_discarded` フィールドに記録する
+    /// （`platform.rs::complete_gji_reinit_retry`）。
     DeferredRecoveryFlush {
         trigger: &'static str,
         outcome: DeferredRecoveryOutcomeSummary,

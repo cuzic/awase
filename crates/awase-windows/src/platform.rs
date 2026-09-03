@@ -156,7 +156,12 @@ impl WindowsPlatform {
         });
     }
 
-    fn note_tsf_probe_completed(&mut self, outcome: impl Into<String>, cold_seq: Option<u64>) {
+    fn note_tsf_probe_completed(
+        &mut self,
+        outcome: impl Into<String>,
+        cold_seq: Option<u64>,
+        probe_id: Option<u64>,
+    ) {
         let now = crate::hook::current_tick_ms();
         let elapsed_ms = self
             .active_tsf_probe_started_ms
@@ -165,6 +170,7 @@ impl WindowsPlatform {
         self.push_journal_entry(crate::journal::JournalEntry::TsfProbeCompleted {
             outcome: outcome.into(),
             cold_seq,
+            probe_id,
             elapsed_ms,
             tick_count: self.probe_tick_index,
             gji_state: self.gji_state_label(),
@@ -457,7 +463,7 @@ impl WindowsPlatform {
             } else {
                 "Done"
             };
-            self.note_tsf_probe_completed(outcome, result.completed_cold_seq);
+            self.note_tsf_probe_completed(outcome, result.completed_cold_seq, None);
         }
         self.apply_timer_command(result.timer_cmd);
     }
@@ -556,8 +562,12 @@ impl WindowsPlatform {
                             probe_id: *probe_id,
                         });
                         self.note_gji_transition("WarmupComplete(unicode)", state_before);
+                        // ADR-123 `/code-review` 指摘: このハンドラ内で直前に push した
+                        // TsfProbeStarted と Start/Complete を probe_id で突合できるよう、
+                        // cold_seq には（別の採番空間である）probe_id を入れない。
                         self.note_tsf_probe_completed(
                             "UnicodeImmediate",
+                            None,
                             Some(u64::from(probe_id.0)),
                         );
                         self.dispatch_gji_response(&warmup_resp);
@@ -569,7 +579,15 @@ impl WindowsPlatform {
                         // pending_tsf / OUTPUT_GATE ガード / probe_id を一括キャンセルする。
                         self.output.cancel_probe();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
-                        self.note_tsf_probe_completed("Canceled", Some(u64::from(probe_id.0)));
+                        // ADR-123 `/code-review` 指摘: cancel 時点の
+                        // `cold_start_count()` は StartProbe 時点と一致する保証がない
+                        // （別の cold-mark を挟んでいる可能性がある）ため推測せず、
+                        // probe_id のみを突合キーとして記録する。
+                        self.note_tsf_probe_completed(
+                            "Canceled",
+                            None,
+                            Some(u64::from(probe_id.0)),
+                        );
                     }
                 }
                 // 実際の送信は Output が担うため FSM の SendInput/SendInputDirect は無視する。
@@ -861,9 +879,15 @@ impl WindowsPlatform {
         self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
             trigger: "raw_recovery",
             outcome: match outcome {
-                crate::output::RawRecoveryOutcome::DiscardedStale { vk_count } => {
-                    crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale { vk_count }
-                }
+                crate::output::RawRecoveryOutcome::DiscardedStale {
+                    backs,
+                    romaji_present,
+                    deferred_vk_count,
+                } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
+                    backs,
+                    romaji_present,
+                    deferred_vk_count,
+                },
                 crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
                     crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
                 }

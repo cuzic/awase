@@ -316,7 +316,20 @@ impl std::fmt::Debug for Output {
 pub(crate) enum RawRecoveryOutcome {
     /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
     /// backspace/romaji/`pending_deferred` を丸ごと破棄した。
-    DiscardedStale { vk_count: usize },
+    ///
+    /// `backs`/`romaji_present` は破棄した `RAW_TSF_LITERAL`（backspace数・
+    /// 再送予定 romaji）、`deferred_vk_count` は破棄した `pending_deferred`
+    /// の VK 数。当初 `deferred_vk_count` のみを保持していたが、
+    /// これだけでは「`pending_deferred` が既に空だった（backspace/romaji は
+    /// 破棄したが `deferred_vk_count=0`）」場合と「そもそも何も破棄しなかった」
+    /// 場合が journal 上で区別できず、`.claude/rules` が戒める「代理指標の
+    /// 不在を事実の不在と読む」誤りを journal 側に持ち込んでしまう
+    /// （ADR-123 `/code-review` 指摘）。
+    DiscardedStale {
+        backs: usize,
+        romaji_present: bool,
+        deferred_vk_count: usize,
+    },
     /// 無関係な別の give-up 由来の GJI reinit retry が polling 中だったため、
     /// `pending_deferred` の flush を見送った。
     SkippedWhilePolling,
@@ -1658,8 +1671,8 @@ impl Output {
     /// 取り残された deferred VK を送出してはいけないため（先に送ると backspace が
     /// deferred 側の文字を巻き込んで消してしまう、`docs/known-bugs.md` BUG-38 参照）。
     pub(crate) fn flush_raw_tsf_literal_recovery(&self) -> RawRecoveryOutcome {
-        if let Some(vk_count) = self.discard_raw_recovery_if_focus_stale() {
-            return RawRecoveryOutcome::DiscardedStale { vk_count };
+        if let Some(outcome) = self.discard_raw_recovery_if_focus_stale() {
+            return outcome;
         }
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
@@ -1690,10 +1703,8 @@ impl Output {
     /// 送られてから**ようやく stale 判定されていた。これは ADR-100 が最初から懸念していた
     /// 「別ウィンドウへの誤送信」を、判定タイミングの違いで再導入していた。
     /// backspace/romaji 送信そのものより前に照合することで、この経路を塞ぐ。
-    /// `Some(discarded_deferred)` を返せば discard 実行済み。
-    /// `discarded_deferred` は `pending_deferred` から実際に破棄された VK 数
-    /// （focus 不一致でも `pending_deferred` が既に空なら 0）。
-    fn discard_raw_recovery_if_focus_stale(&self) -> Option<usize> {
+    /// `Some(RawRecoveryOutcome::DiscardedStale { .. })` を返せば discard 実行済み。
+    fn discard_raw_recovery_if_focus_stale(&self) -> Option<RawRecoveryOutcome> {
         let stale_origin = {
             let pending = self.pending_gji_reinit.borrow();
             pending.as_ref().and_then(|p| {
@@ -1711,15 +1722,19 @@ impl Output {
         crate::RAW_TSF_LITERAL
             .escape_composition
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        let discarded_deferred = self.discard_pending_deferred_after_stale_gji_reinit();
+        let romaji_present = !romaji.is_empty();
+        let deferred_vk_count = self.discard_pending_deferred_after_stale_gji_reinit();
         log::warn!(
             "[raw-tsf-literal] discard raw recovery: focus changed since give-up detection \
              cold={} origin_focus_gen={origin_focus_gen} current_focus_gen={current_focus_gen} \
-             backs={backs} romaji_present={} discarded_deferred={discarded_deferred}",
+             backs={backs} romaji_present={romaji_present} discarded_deferred={deferred_vk_count}",
             cold_seq.value(),
-            !romaji.is_empty(),
         );
-        Some(discarded_deferred)
+        Some(RawRecoveryOutcome::DiscardedStale {
+            backs,
+            romaji_present,
+            deferred_vk_count,
+        })
     }
 
     /// give-up（romaji 再送なし）で `RawTsfLiteralRecovery` が終わった場合に、
@@ -1993,10 +2008,27 @@ mod tests {
 
         let discarded = o.discard_raw_recovery_if_focus_stale();
 
-        assert!(
-            discarded.is_some(),
-            "origin_focus_gen(1) != current(2) なら discard すべき"
-        );
+        // ADR-123 `/code-review` 指摘: `DiscardedStale` は `pending_deferred`
+        // だけでなく実際に破棄した backspace 数・romaji 有無も運ぶ（さもないと
+        // journal を見た将来の調査者が「pending_deferred が空だった」場合と
+        // 「そもそも何も破棄しなかった」場合を区別できない）。
+        match discarded {
+            Some(RawRecoveryOutcome::DiscardedStale {
+                backs,
+                romaji_present,
+                deferred_vk_count,
+            }) => {
+                assert_eq!(backs, 2, "破棄した backspace 数を保持しているべき");
+                assert!(romaji_present, "破棄した romaji の有無を保持しているべき");
+                assert_eq!(
+                    deferred_vk_count, 0,
+                    "本テストでは pending_deferred を積んでいないので0"
+                );
+            }
+            other => panic!(
+                "origin_focus_gen(1) != current(2) なら DiscardedStale を返すべき: {other:?}"
+            ),
+        }
         assert!(
             o.pending_gji_reinit.borrow().is_none(),
             "discard 後は pending_gji_reinit を残さない"
