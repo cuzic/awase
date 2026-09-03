@@ -319,7 +319,7 @@ impl Output {
         // 計測値）でも即送信すると先頭 VK がリテラル化する（「を」→「wお」、BUG-13）。
         // 従来 Tsf モードにしか配線していなかったが、IMC_GETCONVERSIONMODE の観測
         // 自体は injection mode に依存しないため Vk モードにも展開する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome) {
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Chrome, gate) {
             return;
         }
 
@@ -450,7 +450,7 @@ impl Output {
         // MsImeStrategy は needs_f2_probe()=false のため上の GJI probe 分岐に入らず、
         // IME ON 遷移直後（OS 準備に実測 ~130-300ms）でも即送信して先頭 VK がリテラル化
         // していた（「を」→「wお」）。ImeModeFsm の NATIVE 確認が取れるまで defer する。
-        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf) {
+        if self.ms_ime_gate_defer(romaji, TransmitTarget::Tsf, gate) {
             return;
         }
 
@@ -473,22 +473,36 @@ impl Output {
     /// 呼ばず、対象外のままでよい）。
     ///
     /// GJI の raw TSF literal 再送経路（`Output::flush_raw_tsf_literal_romaji` から
-    /// `send_romaji_batched` 経由で呼ばれる）もこの関数を通るが、GJI 由来のため
-    /// 冒頭の `needs_f2_probe()` ガードで即 false になり no-op（GJI には別途 F2 probe /
-    /// LiteralDetect の保護がある）。この no-op は偶然ではなく、raw literal の記録自体が
-    /// 常に `gji_active`（`gji_is_active_ime()` / `env.gji_active`）でゲートされている
-    /// ため（`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
+    /// `send_romaji_batched`/`send_romaji_batched_bypass_gate` 経由で呼ばれる）
+    /// もこの関数を通るが、GJI 由来のため冒頭の `needs_f2_probe()` ガードで即
+    /// false になり no-op（GJI には別途 F2 probe / LiteralDetect の保護がある）。
+    /// この no-op は偶然ではなく、raw literal の記録自体が常に `gji_active`
+    /// （`gji_is_active_ime()` / `env.gji_active`）でゲートされているため
+    /// （`send_romaji_as_tsf_warm` の `LiteralDetectFsm` 設置、`probe_fsm.rs` の
     /// `enter_transmit_chrome`）に成り立つ。記録から `WM_DRAIN_OUTPUT_QUEUE` 経由の
     /// flush までの間に `active_ime_kind` が GJI→MS-IME に切り替わるレースは、TIP 検出が
     /// 2 秒間隔ポーリング + 2 tick 連続一致デバウンス（`gji_monitor.rs`）であるのに対し
     /// flush は同一メッセージループ内で完結するため、実質的に起こり得ない。
-    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget) -> bool {
+    ///
+    /// **`gate` を呼び出し元からそのまま引き継ぐこと（2026-09-03 code review
+    /// 指摘で修正）**: 以前は内部で無条件に `defer_if_probe_in_flight`
+    /// （常に `Enforced` 相当）を直接呼んでおり、`send_romaji_batched_bypass_gate`/
+    /// `send_romaji_as_tsf_bypass_gate`（raw recovery回収再送・ADR-101決定3
+    /// retry専用）経由でここに到達した場合でも`raw_recovery_owns_deferred()`
+    /// を評価してしまっていた。上記の「GJI由来なら`needs_f2_probe()`で
+    /// no-op」という前提が成り立つ間は無害だが、MS-IME戦略の下でこの2経路に
+    /// 到達する変更が将来入ると、4-2で塞いだのと同じ自己defer退行が
+    /// この呼び出し口で再燃する（`gate`引数自体が無かったため、型では
+    /// 防げていなかった）。`defer_respecting_gate`経由にすることで
+    /// `gate`が`Exempt`の場合は`raw_recovery_owns_deferred()`を見ない
+    /// （`has_pending_tsf()`のみ、PR4以前からの挙動）よう統一した。
+    fn ms_ime_gate_defer(&self, romaji: &str, target: TransmitTarget, gate: DeferGate) -> bool {
         // GJI 戦略時は F2 probe 機構（prepend_f2_warmup 分岐）が cold-start を担う。
         if self.warmup_coord.needs_f2_probe() {
             return false;
         }
         // 既に probe/coro 進行中 → 確認状態に関わらず defer（送信順序の維持）。
-        if self.defer_if_probe_in_flight(romaji, DeferredOrigin::UserInput) {
+        if self.defer_respecting_gate(romaji, gate) {
             return true;
         }
         if self.ms_ime_gate_give_up.get() {

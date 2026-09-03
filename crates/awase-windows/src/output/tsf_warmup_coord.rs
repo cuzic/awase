@@ -318,16 +318,24 @@ impl TsfWarmupCoordinator {
     /// 同じ精神で「効かないので増やした」式の変更は避けること）。
     pub(crate) const DEFERRED_QUEUE_CAP: usize = 32;
 
-    /// `pending_deferred` が上限に達しているか。
+    /// `pending_deferred` に `additional` 件を追加すると上限を超えるか。
     ///
     /// 呼び出し元（`Output::defer_if_probe_or_recovery_in_flight`）が、
-    /// 上限に達している場合は push せず「defer を諦めて通常送信へ
+    /// 上限を超える場合は push せず「defer を諦めて通常送信へ
     /// degrade する」判断をする（`docs/adr/123-focus-resync-and-probe-defer-queue-composition-race.md`
     /// 決定4-3: 強制 flush ではなく degrade を選ぶ理由も参照。強制 flush は
     /// probe の per-VK confirm 中に生 VK を割り込ませることになり
     /// BUG-38/ADR-103 が塞いだ interleaving を再現する危険があるため）。
-    pub(crate) fn is_deferred_queue_full(&self) -> bool {
-        self.pending_deferred.borrow().len() >= Self::DEFERRED_QUEUE_CAP
+    ///
+    /// **`additional` を取ること（2026-09-03 code review指摘で修正）**:
+    /// 1回の romaji は複数 VK（例: "kya"=3VK）を一括で push しうるため、
+    /// 「現在の件数だけ」を見て許可すると、上限ちょうど手前
+    /// （`DEFERRED_QUEUE_CAP - 1`）で複数VKのromajiが来た場合に
+    /// `DEFERRED_QUEUE_CAP`を超えて push されてしまう（`push_deferred_vks`
+    /// は全件を無条件に追加するため、途中で打ち切る機構が無い）。
+    /// 呼び出し元はpushする**前**にこれから追加するVK数を渡すこと。
+    pub(crate) fn would_exceed_deferred_cap(&self, additional: usize) -> bool {
+        self.pending_deferred.borrow().len() + additional > Self::DEFERRED_QUEUE_CAP
     }
 
     /// `defer_vks_if_in_flight` の gate なし版。
@@ -458,14 +466,14 @@ mod tests {
     // ── is_deferred_queue_full（ADR-123 変更A+C 決定4-3、件数上限）────────
 
     #[test]
-    fn is_deferred_queue_full_true_only_at_or_above_cap() {
+    fn would_exceed_deferred_cap_true_only_when_addition_overflows_cap() {
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
 
         for i in 0..TsfWarmupCoordinator::DEFERRED_QUEUE_CAP {
             assert!(
-                !coord.is_deferred_queue_full(),
-                "上限未満(現在{i}件)ではfullと判定してはいけない"
+                !coord.would_exceed_deferred_cap(1),
+                "上限未満(現在{i}件)では1件追加してもfullと判定してはいけない"
             );
             assert!(
                 coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput)
@@ -473,9 +481,37 @@ mod tests {
         }
 
         assert!(
-            coord.is_deferred_queue_full(),
-            "上限ちょうど({}件)でfullと判定すべき",
+            !coord.would_exceed_deferred_cap(0),
+            "上限ちょうど({}件)でも0件追加なら超過しない",
             TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+        assert!(
+            coord.would_exceed_deferred_cap(1),
+            "上限ちょうど({}件)から1件追加すると超過すべき",
+            TsfWarmupCoordinator::DEFERRED_QUEUE_CAP
+        );
+    }
+
+    #[test]
+    fn would_exceed_deferred_cap_accounts_for_multi_vk_romaji_batches() {
+        // code review指摘の再現条件: 上限の1つ手前まで埋まった状態で、
+        // 複数VKからなるromaji(例:"kya"=3VK)が一括pushされるケース。
+        // 件数だけを見て許可すると上限を超えてpushされてしまう。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+        for _ in 0..(TsfWarmupCoordinator::DEFERRED_QUEUE_CAP - 1) {
+            assert!(
+                coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput)
+            );
+        }
+
+        assert!(
+            !coord.would_exceed_deferred_cap(1),
+            "上限まで残り1件なら1VKの追加は許可されるべき"
+        );
+        assert!(
+            coord.would_exceed_deferred_cap(3),
+            "上限まで残り1件なのに3VK一括追加は超過と判定すべき"
         );
     }
 

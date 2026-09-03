@@ -1365,15 +1365,19 @@ impl Output {
             return false;
         }
         let vks: Vec<(VkCode, bool)> = romaji.chars().filter_map(ascii_to_vk).collect();
-        // ADR-123 変更A+C 決定4-3: 件数上限に達している場合は defer を諦め、
+        // ADR-123 変更A+C 決定4-3: 件数上限を超える場合は defer を諦め、
         // 通常送信経路（今日の挙動と同じ、probe保護なしの可能性あり）へ
         // degrade する。「最も古いエントリから強制flush」は probe の
         // per-VK confirm 中に生VKを割り込ませることになり危険なため採らない
-        // （`TsfWarmupCoordinator::is_deferred_queue_full` の doc コメント参照）。
-        if self.warmup_coord.is_deferred_queue_full() {
+        // （`TsfWarmupCoordinator::would_exceed_deferred_cap` の doc コメント
+        // 参照）。この romaji が持つ VK 数（`vks.len()`）を渡して判定する
+        // ——1件だけを見て許可すると、複数VKからなるromajiの一括pushで
+        // 上限を超えうる（2026-09-03 code review指摘で修正）。
+        if self.warmup_coord.would_exceed_deferred_cap(vks.len()) {
             log::error!(
                 "[pending-deferred] count limit exceeded, degrading to immediate send: \
-                 romaji={romaji:?} origin={origin:?}"
+                 romaji={romaji:?} origin={origin:?} vk_count={}",
+                vks.len()
             );
             return false;
         }
@@ -1394,6 +1398,15 @@ impl Output {
     /// BUG-47 追補修正で `vk_pair_to_ascii` が `build_symbol_to_vk` の全記号を
     /// カバーするようになったため、現状この2箇所は理論上到達しない
     /// （`docs/known-bugs.md` BUG-47 参照）。
+    ///
+    /// **ADR-123 変更A+C（`defer_if_probe_or_recovery_in_flight`）のスコープ外
+    /// （2026-09-03 code review指摘）**: この関数は`warmup_coord.
+    /// defer_vks_if_in_flight`を直接呼ぶため、`raw_recovery_owns_deferred()`
+    /// もPR4の件数上限（`would_exceed_deferred_cap`）もどちらも経由しない
+    /// （旧来のhas_pending_tsf()のみのgate）。BUG-47のとおり現状は理論上
+    /// 到達不能だが、「理論上到達不能」という主張自体がBUG-47の履歴が
+    /// 示すとおり過去に誤りだったことがある。この経路が実際に到達可能に
+    /// なる変更が入る場合は、ADR-123のgate/上限をここにも拡張すること。
     pub(super) fn defer_vk_if_probe_in_flight(
         &self,
         vk: VkCode,
@@ -1872,13 +1885,18 @@ impl Output {
             return 0;
         };
         let len = vks.len();
-        let order_tokens: Vec<u64> = vks.iter().map(|vk| vk.order_token).collect();
-        if let Some(violation) = crate::journal_policy::order_violation(&order_tokens) {
+        // order_violation はイテレータを直接受けるため、違反が無い共通ケース
+        // では中間 Vec を確保しない（2026-09-03 code review指摘で修正）。
+        // ログ表示用の Vec は違反を検出した場合にのみ組み立てる。
+        if let Some(violation) =
+            crate::journal_policy::order_violation(vks.iter().map(|vk| vk.order_token))
+        {
             // ADR-123 変更A+C（gate拡張・drain-before-send）がdevelopマージ
             // 済みのため、warn!からerror!へ昇格した。変更A+C未実装の間は
             // この順序違反が実際に頻発する既知の状態だったため、その間は
             // 意図的にwarn!に留めていた（変更E新設時のログレベル判断、
             // ADR-123変更E参照）。
+            let order_tokens: Vec<u64> = vks.iter().map(|vk| vk.order_token).collect();
             log::error!(
                 "[pending-deferred] order violation: index={} previous={} current={} tokens={:?}",
                 violation.index,

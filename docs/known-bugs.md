@@ -10432,6 +10432,29 @@ TsfNative）、GJI。症状カテゴリ WrongCharacterOutput、説明「github p
 実打鍵から数十〜数百ms遅延することがあるため、複数イベントの前後関係を
 厳密に議論する際は`timestamp_us`を基準にすること。
 
+**2026-09-03 追補4: ADR-123実装完了（PR #155、developマージ予定）。
+warm経路配線（変更A+C 4-4）の核心的な振る舞い変化に直接対応する回帰
+テストが存在しない（`fix-requires-evidence.md`対象領域につき記録）。**
+
+真因（`pending_deferred`の追い越し）の恒久対策として、ADR-123の決定
+（D→E→B→A+Cの5変更）を実装した。詳細な設計・コミット一覧・Opus敵対的
+レビューで発見・修正した2件の自己defer退行は
+[ADR-123](adr/123-focus-resync-and-probe-defer-queue-composition-race.md)
+「実装（2026-09-03）」節に記録済み。
+
+本節への追記が必要な理由: 4-4（`send_romaji_batched_gated`/
+`send_romaji_as_tsf_gated`のgate判定をcold/warm分岐の外へ移動し、warm
+判定されたモーラにもgateを適用する変更）は`output/vk_send.rs`（キー選択・
+warmup/cold-startの再発ファミリー対象）を変更する fix だが、この振る舞い
+変化そのものを直接固定するユニット/e2e/goldenテストがどちらも存在しない
+（`GjiFsm`を実際に`OnWarm`へ遷移させるテストセットアップが必要でこのPRでは
+見送った）。`fix-requires-evidence.md`が要求する「テストかknown-bugs.md
+記載」のうち後者として、この gap を明示的に記録する。次に
+`pending_deferred`の追い越し・順序反転系の症状が再発した場合、まず
+warm経路（`prepend_f2_warmup=false`）で発生していないか確認すること
+——4-4はcold経路（`prepend_f2_warmup=true`）と異なる配線のため、
+cold側だけ直したつもりでwarm側の穴が残っている可能性を疑うこと。
+
 **関連ファイル:** `crates/awase-windows/src/tsf/literal_facts.rs`
 （`LiteralDetectRecord::romaji` 新設）、`crates/awase-windows/src/output/probe_io.rs`
 （`RawTsfLiteralRecovery`/`CompositionConfirmed`/`LiteralDetectNote` ハンドラ、

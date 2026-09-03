@@ -84,17 +84,30 @@ pub struct OrderViolation {
     pub current: u64,
 }
 
+/// `tokens` を先頭から走査し、単調増加が破れた最初の箇所を返す。
+///
+/// `&[u64]` ではなく `impl IntoIterator<Item = u64>` を取る（2026-09-03
+/// code review指摘で変更）: 呼び出し元（`output/mod.rs::
+/// flush_pending_deferred_vks`）は元々 `DeferredVk` の列から `order_token`
+/// だけを `Vec<u64>` へ collect してから渡していたが、これは
+/// flush のたびに（違反が無い共通ケースでも）ヒープ確保が発生していた。
+/// イテレータを直接受けることで、呼び出し元は `vks.iter().map(|vk|
+/// vk.order_token)` をそのまま渡せ、中間 `Vec` を経由しない。
 #[must_use]
-pub fn order_violation(tokens: &[u64]) -> Option<OrderViolation> {
-    tokens.windows(2).enumerate().find_map(|(index, pair)| {
-        let previous = pair[0];
-        let current = pair[1];
-        (current <= previous).then_some(OrderViolation {
-            index: index + 1,
-            previous,
-            current,
-        })
-    })
+pub fn order_violation(tokens: impl IntoIterator<Item = u64>) -> Option<OrderViolation> {
+    let mut iter = tokens.into_iter().enumerate();
+    let (_, mut previous) = iter.next()?;
+    for (index, current) in iter {
+        if current <= previous {
+            return Some(OrderViolation {
+                index,
+                previous,
+                current,
+            });
+        }
+        previous = current;
+    }
+    None
 }
 
 const RESERVED_PERCENT: [(LaneKind, usize); 4] = [
@@ -359,7 +372,7 @@ mod tests {
     #[test]
     fn order_violation_accepts_empty_singleton_and_increasing_sequences() {
         for tokens in [vec![], vec![1], vec![1, 2, 3, 4]] {
-            assert_eq!(order_violation(&tokens), None);
+            assert_eq!(order_violation(tokens), None);
         }
     }
 
@@ -393,7 +406,7 @@ mod tests {
         ];
 
         for (tokens, expected) in cases {
-            assert_eq!(order_violation(&tokens), Some(expected));
+            assert_eq!(order_violation(tokens), Some(expected));
         }
     }
 }
