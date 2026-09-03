@@ -8,6 +8,7 @@ pub mod paths;
 pub mod platform;
 pub mod scanmap;
 pub mod types;
+pub mod update_state;
 pub mod version;
 pub mod yab;
 
