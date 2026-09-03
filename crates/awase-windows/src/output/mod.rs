@@ -1,6 +1,7 @@
 use crate::state::event_origin::Generation;
 use crate::state::half_width_alnum::HalfWidthAlnumAction;
 use crate::tsf::probe_bridge::OutputActiveGuard;
+use crate::tsf::warmup::probe_fsm::DeferredOrigin;
 use crate::vk::ascii_to_vk;
 use awase::types::{KeyAction, VkCode};
 use std::time::Duration;
@@ -1308,7 +1309,7 @@ impl Output {
 
     /// probe 進行中なら romaji を VK 列に変換して deferred_vks に追記し true を返す。
     /// probe がなければ何もせず false を返す。
-    pub(super) fn defer_if_probe_in_flight(&self, romaji: &str) -> bool {
+    pub(super) fn defer_if_probe_in_flight(&self, romaji: &str, origin: DeferredOrigin) -> bool {
         if !self.warmup_coord.has_pending_tsf() {
             return false;
         }
@@ -1318,7 +1319,7 @@ impl Output {
             vks.len(),
             romaji
         );
-        self.warmup_coord.defer_vks_if_in_flight(&vks)
+        self.warmup_coord.defer_vks_if_in_flight(&vks, origin)
     }
 
     /// probe 進行中なら単一 VK を deferred_vks に追記し true を返す。
@@ -1329,9 +1330,14 @@ impl Output {
     /// BUG-47 追補修正で `vk_pair_to_ascii` が `build_symbol_to_vk` の全記号を
     /// カバーするようになったため、現状この2箇所は理論上到達しない
     /// （`docs/known-bugs.md` BUG-47 参照）。
-    pub(super) fn defer_vk_if_probe_in_flight(&self, vk: VkCode, needs_shift: bool) -> bool {
+    pub(super) fn defer_vk_if_probe_in_flight(
+        &self,
+        vk: VkCode,
+        needs_shift: bool,
+        origin: DeferredOrigin,
+    ) -> bool {
         self.warmup_coord
-            .defer_vks_if_in_flight(&[(vk, needs_shift)])
+            .defer_vks_if_in_flight(&[(vk, needs_shift)], origin)
     }
 
     /// long-cold 後の GJI 再初期化: VK_IME_OFF→VK_IME_ON を SendInput で注入する。
@@ -1822,7 +1828,19 @@ impl Output {
         let vks = self.warmup_coord.take_pending_deferred();
         let len = vks.len();
         if len > 0 {
-            log::warn!("[chrome-reinit-retry] discard deferred {len} VK(s) after stale completion");
+            // ADR-123 変更B: `origin` 別の内訳をログに残す(挙動は変えない、
+            // 最小実装(b))。現時点では UserInput/RecoveryResend いずれも
+            // 区別なく破棄する — `UserInput` 由来を破棄せず再送する案(a)は
+            // 別PRの検討課題（ADR-123「未決定事項」参照）。
+            let user_input_count = vks
+                .iter()
+                .filter(|vk| vk.origin == DeferredOrigin::UserInput)
+                .count();
+            let recovery_resend_count = len - user_input_count;
+            log::warn!(
+                "[chrome-reinit-retry] discard deferred {len} VK(s) after stale completion \
+                 (user_input={user_input_count} recovery_resend={recovery_resend_count})"
+            );
         }
         len
     }

@@ -15,7 +15,7 @@ use std::time::Duration;
 use crate::tsf::gji_fsm::GjiTimer;
 use crate::tsf::gji_fsm::{FocusEpoch, GjiAction, GjiEvent, GjiFsm, ProbeId, ProbeParams};
 use crate::tsf::probe_bridge::OutputActiveGuard;
-use crate::tsf::warmup::probe_fsm::DeferredVk;
+use crate::tsf::warmup::probe_fsm::{DeferredOrigin, DeferredVk};
 use crate::tsf::warmup::tickable_fsm::TickableFsm;
 use crate::tsf::warmup::warmup_strategy::ImeWarmupStrategy;
 
@@ -296,7 +296,11 @@ impl TsfWarmupCoordinator {
     ///
     /// キューは probe machine ではなく coordinator が所有するため、どの machine が
     /// `pending_tsf` に入っているか・何回 tick されたかに関係なく安全に蓄積できる。
-    pub(crate) fn defer_vks_if_in_flight(&self, vks: &[(VkCode, bool)]) -> bool {
+    pub(crate) fn defer_vks_if_in_flight(
+        &self,
+        vks: &[(VkCode, bool)],
+        origin: DeferredOrigin,
+    ) -> bool {
         if !self.has_pending_tsf() {
             return false;
         }
@@ -304,6 +308,7 @@ impl TsfWarmupCoordinator {
             vk,
             needs_shift,
             order_token: self.issue_deferred_order_token(),
+            origin,
         });
         self.pending_deferred.borrow_mut().extend(deferred);
         true
@@ -388,8 +393,31 @@ mod tests {
     #[test]
     fn defer_vks_if_in_flight_returns_false_without_pending_probe() {
         let coord = TsfWarmupCoordinator::new();
-        assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+        assert!(!coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
         assert!(!coord.has_pending_deferred());
+    }
+
+    // ── DeferredOrigin（ADR-123 変更B）──
+
+    #[test]
+    fn deferred_vks_preserve_their_origin_through_defer_and_take() {
+        // UserInput由来とRecoveryResend由来を混在させても、pending_deferred内で
+        // それぞれ正しく区別して取り出せることを確認する(discard経路がorigin別の
+        // 内訳を取れる前提)。RecoveryResend自体は本PR時点ではまだ本番コードから
+        // 構築されない(ADR-123変更A+Cのgate免除入口が別PR)ため、ここではテスト
+        // コードのみが構築する唯一の箇所になる。
+        let coord = TsfWarmupCoordinator::new();
+        coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
+
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
+        assert!(
+            coord.defer_vks_if_in_flight(&[(VkCode(0x42), false)], DeferredOrigin::RecoveryResend)
+        );
+
+        let drained = coord.take_pending_deferred();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].origin, DeferredOrigin::UserInput);
+        assert_eq!(drained[1].origin, DeferredOrigin::RecoveryResend);
     }
 
     // ── pending_deferred_len（ADR-123: TsfProbeStarted.pending_deferred_len 用）──
@@ -402,10 +430,13 @@ mod tests {
         assert_eq!(coord.pending_deferred_len(), 0);
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
 
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x54), false), (VkCode(0x4F), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x54), false), (VkCode(0x4F), false)],
+            DeferredOrigin::UserInput
+        ));
         assert_eq!(coord.pending_deferred_len(), 2, "「と」の2VK分");
 
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x45), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x45), false)], DeferredOrigin::UserInput));
         assert_eq!(
             coord.pending_deferred_len(),
             3,
@@ -426,7 +457,10 @@ mod tests {
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
 
         // まだ一度も tick していない状態で defer する。
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x4C), false), (VkCode(0x59), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x4C), false), (VkCode(0x59), false)],
+            DeferredOrigin::UserInput
+        ));
         assert!(coord.has_pending_deferred());
 
         let drained = coord.take_pending_deferred();
@@ -445,7 +479,7 @@ mod tests {
         // machine 側ではなく coordinator 側にあるため失われない。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x41), false)], DeferredOrigin::UserInput));
 
         // 別の probe が同じ pending_tsf スロットを上書きする（warn ログのみで許容される操作）。
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
@@ -472,7 +506,7 @@ mod tests {
         // ここで先取りして drain してはいけない。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false)]));
+        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false)], DeferredOrigin::UserInput));
 
         assert!(coord.take_pending_deferred_if_probe_idle().is_none());
         assert!(
@@ -488,7 +522,10 @@ mod tests {
         // 元バグでは pending_deferred が誰にも flush されず取り残されていた。
         let coord = TsfWarmupCoordinator::new();
         coord.install_pending_tsf(Box::new(StubMachine { ticks: 0 }));
-        assert!(coord.defer_vks_if_in_flight(&[(VkCode(0x55), false), (VkCode(0x4F), false)]));
+        assert!(coord.defer_vks_if_in_flight(
+            &[(VkCode(0x55), false), (VkCode(0x4F), false)],
+            DeferredOrigin::UserInput
+        ));
         coord.clear_pending_tsf();
         assert!(!coord.has_pending_tsf());
         assert!(
