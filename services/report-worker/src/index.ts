@@ -97,7 +97,7 @@ export default {
 export async function handleRequest(
   request: Request,
   env: Env,
-  ctx?: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<Response> {
   const url = new URL(request.url);
 
@@ -171,7 +171,7 @@ async function handleReportIntake(request: Request, env: Env): Promise<Response>
 async function handleLatestRelease(
   request: Request,
   env: Env,
-  ctx?: ExecutionContext
+  ctx: ExecutionContext
 ): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return jsonResponse({ error: "method_not_allowed" }, 405, {
@@ -191,11 +191,6 @@ async function handleLatestRelease(
 
   if (isLatestReleaseFresh(cached, new Date())) {
     return jsonResponse(latestReleaseResponse(cached, false), 200);
-  }
-
-  if (ctx === undefined) {
-    const refreshed = await refreshStaleLatestRelease(env);
-    return jsonResponse(latestReleaseResponse(refreshed ?? cached, refreshed === null), 200);
   }
 
   ctx.waitUntil(refreshStaleLatestRelease(env));

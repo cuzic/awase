@@ -603,29 +603,6 @@ describe("latest release endpoint", () => {
     );
   });
 
-  it("refreshes synchronously when ctx is not provided (backward-compatible fallback)", async () => {
-    const kv = new MemoryKv();
-    kv.values.set(
-      RELEASE_CACHE_KEY,
-      JSON.stringify(cacheEntry("1.18.0", "2000-01-01T00:00:00Z"))
-    );
-    const fetchMock = mockGithubLatestRelease("v1.19.0");
-
-    // ctx を渡さない2引数呼び出し。handleReportIntake 側の後方互換パスとは別に、
-    // handleLatestRelease 自身の `ctx === undefined` 同期フォールバック分岐
-    // （本番では ctx は常に存在するため実際には通らない経路）を固定する。
-    const response = await handleRequest(latestReleaseRequest(), latestReleaseEnv(kv));
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    await expect(response.json()).resolves.toMatchObject({
-      latest_version: "1.19.0",
-      stale: false
-    });
-    expect(JSON.parse(kv.values.get(RELEASE_CACHE_KEY) ?? "null")).toMatchObject({
-      latest_version: "1.19.0"
-    });
-  });
-
   it("sends the required GitHub User-Agent header", async () => {
     const fetchMock = mockGithubLatestRelease("v1.19.0");
 
@@ -806,7 +783,8 @@ async function expectPostStatus(
     {
       REPORT_BUCKET: new MemoryBucket() as unknown as R2Bucket,
       RATE_LIMIT_KV: new MemoryKv() as unknown as KVNamespace
-    }
+    },
+    fakeCtx([])
   );
   expect(response.status).toBe(status);
   if (error !== undefined) {
