@@ -246,10 +246,15 @@ fn main() -> eframe::Result<()> {
     }
 
     let viewport = egui::ViewportBuilder::default()
-        // 幅 580: サイドパネル(100) + プレビューのキーボード図(13キー×34px+段差
-        // インデント ≈ 464) + 余白。最も幅を要するタブがデフォルトで横スクロール
-        // なしに収まる値（従来の 500 ではプレビュー右端が切れていた）。
-        .with_inner_size([580.0, 650.0])
+        // 幅 760: サイドパネル(100) + 配列編集タブの最も幅を要する行（JIS 最上段
+        // 13キー、ボタン min_size 40px + item_spacing 8px ≈ 616px）+ 余白/
+        // スクロールバー分。580 だと draw_layout_keyboard_grid()
+        // (crates/awase-settings/src/main.rs) のボタン幅が「⌫BS」等4文字
+        // ラベルの視認性のため 34px→40px に広がった後もここが追随しておらず、
+        // デフォルトサイズで開くと配列編集タブのキーボード図が右へはみ出す
+        // ユーザー報告があった（2026-09-03。ウィンドウを広げれば表示は正常に
+        // 戻る＝致命的ではないが既定値の追随漏れ）。
+        .with_inner_size([760.0, 650.0])
         // ウィンドウを小さくしても全項目にスクロール + 下部固定ボタンで届くため、
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
@@ -2062,7 +2067,26 @@ impl SettingsApp {
         if first_open {
             log_checkpoint("ツールバー/タブ/凡例 描画完了、グリッド描画開始");
         }
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        // ScrollArea::vertical()（縦のみ）ではなく ::both() を使う。理由:
+        // 縦専用スクロール領域は横方向を単に available 幅へ clip するだけで
+        // 自前の横スクロールバーを持たず、しかも egui 0.31.1 の ScrollArea は
+        // 常に content_max_size を自身の可視サイズに収める（scroll_area.rs の
+        // `if true {}` 分岐、`content_max_size[d] = f32::INFINITY` はデッド
+        // コード）ため、外側の egui::ScrollArea::both()（tab_layout の呼び出し元、
+        // Main content の横スクロール = 最終フォールバック、7207413c 参照）も
+        // キーボード図の実際の幅を検知できず、横スクロールバーが出ないまま
+        // 右端が切れていた（ウィンドウを既定幅より手動で縮めると発生。#156
+        // code review 1周目の指摘）。
+        //
+        // かといって ScrollArea を丸ごと外すと、ツールバー/保存・開くボタン/
+        // 面タブ/凡例（このスコープの外、上で描画済み）まで grid+編集パネルと
+        // 一緒に縦スクロールしてしまい、編集パネルが伸びた状態で下へスクロール
+        // すると保存ボタンや面タブが画面外に流れて操作しづらくなる（#156
+        // code review 2周目の指摘）。そこでこの内側スコープだけ独立した
+        // スクロール領域として残しつつ、::both() にして自前の横スクロール
+        // バーを持たせることで、上のツールバー類は固定したまま
+        // grid+編集パネル側の横オーバーフローにも到達できるようにする。
+        egui::ScrollArea::both().show(ui, |ui| {
             self.draw_layout_keyboard_grid(ui);
             if first_open {
                 log_checkpoint("グリッド描画完了、編集パネル描画開始");
