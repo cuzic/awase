@@ -13,6 +13,7 @@ use awase_windows::vk::VkCodeExt as _;
 mod bug_report;
 mod scancode_map_admin;
 mod startup_failure;
+mod update_check;
 
 /// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
 #[cfg(target_os = "windows")]
@@ -222,6 +223,11 @@ fn main() -> eframe::Result<()> {
 
     if args.iter().any(|a| a == "--bug-report") {
         return bug_report::run(&parse_bug_report_args(&args));
+    }
+
+    if args.iter().any(|a| a == "--check-update") {
+        update_check::run();
+        std::process::exit(0);
     }
 
     // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
@@ -1203,6 +1209,13 @@ impl SettingsApp {
             }
             .to_string();
         }
+        ui.checkbox(&mut self.config.general.update_check, "更新を確認")
+            .on_hover_text(
+                "ONにすると: トレイを右クリックした際に awase.cc のサーバーへ最新バージョンを\n\
+                 問い合わせ、新しい版があればメニューに表示します。バージョン・OS・端末固有の情報は\n\
+                 送信しません（接続元IPアドレスはCloudflareの標準アクセスログに記録されます）。\n\
+                 OFFにすると一切通信しません。"
+            );
         let keyboard_model_hover = "物理キーボードの配列です。\n\
                  JIS: 無変換/変換キーが物理的に存在する日本語キーボード。\n\
                  US: ANSI 104キー配列。無変換/変換キーが無いため、\n\

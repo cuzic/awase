@@ -576,7 +576,7 @@ pub(crate) fn launch_bug_report(
     launch_settings_with_args(args);
 }
 
-fn launch_settings_with_args(args: impl IntoIterator<Item = String>) {
+pub(crate) fn launch_settings_with_args(args: impl IntoIterator<Item = String>) {
     let args: Vec<String> = args.into_iter().collect();
     let names = if cfg!(windows) {
         vec!["awase-settings.exe"]
@@ -594,7 +594,9 @@ fn launch_settings_with_args(args: impl IntoIterator<Item = String>) {
     for name in &names {
         let path = dir.join(name);
         if path.exists() {
-            let _ = std::process::Command::new(&path).args(&args).spawn();
+            if let Err(e) = std::process::Command::new(&path).args(&args).spawn() {
+                log::warn!("failed to spawn {name}: {e}");
+            }
             return;
         }
     }
