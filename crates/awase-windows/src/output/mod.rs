@@ -1799,6 +1799,16 @@ impl Output {
             return 0;
         };
         let len = vks.len();
+        let order_tokens: Vec<u64> = vks.iter().map(|vk| vk.order_token).collect();
+        if let Some(violation) = crate::journal_policy::order_violation(&order_tokens) {
+            log::warn!(
+                "[pending-deferred] order violation: index={} previous={} current={} tokens={:?}",
+                violation.index,
+                violation.previous,
+                violation.current,
+                order_tokens
+            );
+        }
         let marker = if self.gate_is_bypass() {
             VkMarker::InjectedWithScan
         } else {

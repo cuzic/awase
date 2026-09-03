@@ -38,6 +38,7 @@ use crate::tsf::literal_facts::{
 pub(crate) struct DeferredVk {
     pub(crate) vk: VkCode,
     pub(crate) needs_shift: bool,
+    pub(crate) order_token: u64,
 }
 use crate::tsf::probe::{LiteralDetector, TsfReadinessProbe};
 use crate::tsf::probe_bridge::OutputActiveGuard;

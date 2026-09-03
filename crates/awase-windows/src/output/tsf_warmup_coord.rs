@@ -54,6 +54,8 @@ pub(crate) struct TsfWarmupCoordinator {
     /// これにより「最初の tick で握り潰される」「probe が上書きされて drop される」という
     /// 2種類のデータ消失を構造的に防ぐ（probe の生存期間に依存しない単一の書き込み先）。
     pending_deferred: RefCell<Vec<DeferredVk>>,
+    /// `pending_deferred` に積む各 VK へ付与する単調増加トークン。
+    next_deferred_order_token: Cell<u64>,
 }
 
 impl TsfWarmupCoordinator {
@@ -67,6 +69,7 @@ impl TsfWarmupCoordinator {
             pending_gji_composition_reset: Cell::new(false),
             pending_gji_key_responses: RefCell::new(Vec::new()),
             pending_deferred: RefCell::new(Vec::new()),
+            next_deferred_order_token: Cell::new(0),
         }
     }
 
@@ -297,11 +300,23 @@ impl TsfWarmupCoordinator {
         if !self.has_pending_tsf() {
             return false;
         }
-        self.pending_deferred.borrow_mut().extend(
-            vks.iter()
-                .map(|&(vk, needs_shift)| DeferredVk { vk, needs_shift }),
-        );
+        let deferred = vks.iter().map(|&(vk, needs_shift)| DeferredVk {
+            vk,
+            needs_shift,
+            order_token: self.issue_deferred_order_token(),
+        });
+        self.pending_deferred.borrow_mut().extend(deferred);
         true
+    }
+
+    fn issue_deferred_order_token(&self) -> u64 {
+        let token = self
+            .next_deferred_order_token
+            .get()
+            .checked_add(1)
+            .expect("pending_deferred order token exhausted");
+        self.next_deferred_order_token.set(token);
+        token
     }
 
     /// deferred キューが空でないかを覗き見る（消費しない）。
