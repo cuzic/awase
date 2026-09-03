@@ -2,36 +2,64 @@
 
 ## ステータス
 
-**設計継続中（Opus 2体 round 1・round 2 完了、round 3 実施予定）。**
+**Opus 2体 round 1〜3 完了。案Fを本ADRの decision として確定（実装は
+下記4前提条件を満たしてから）。案G/G'は blocker 未解決のため本ADRの
+スコープから外し、別ADR/将来課題へ切り出す（round 3 で architect・
+premortem 双方が同一の分割案を提示、採用）。**
 
-**round 2 で判明した最重要事実（v3 での大幅な位置づけ変更）**: 案Fと案Gの
-「二段構え」という round 1 の組み合わせ設計は、**案Gが現行コードでは
-no-op である**という事実により成立しなかった。`output/probe_io.rs:660` の
-`veto_eligible=false` を `true` に変えても、その値を読むコードが per-VK
-経路（本 incident の経路）上に一切存在しない（`veto_decision` は
-`LiteralDetectCore::poll` の `SuspectedLiteral` 分岐からしか呼ばれず、
-per-VK 経路はこの関数自体を通らない）。加えて、安全な適用条件（後述、
-ループローカルの confirm 実績）に絞ると、**案Gは本 incident（idx=1、
-idx=0 は confirm 済み）を原理的に救えない**。architect・premortem
-双方が独立に同じ結論に達した。
+**収束の経緯**: round 1 で「案F+案Gの二段構え」を提案したが、round 2 で
+「案Gは per-VK 経路（本incidentの経路）では no-op」と判明。round 2 で
+安全な適用条件（ループローカルの confirm 実績）に絞った修正案を round 3
+でレビューしたところ、architect・premortem 双方が独立に**2つの blocker**
+を発見した——(1) 案Gの終端状態「候補可視のまま cap timeout で無回収
+`Done`」は、`probe_fsm.rs:561-575` のコメントが明記する **2026-07-22
+「これでできる」→「kれでできる」の revert 済み regression をそのまま
+再生産する**（案Gが「保険をかける対象」として引用した実機報告を、案G
+自身が引き起こす）。(2) 適用条件に使うつもりだった `pending_confirm`
+（`probe_fsm.rs:534`）はループ先頭（`:464`）で毎回 `take()` されるため、
+`StaleConfirm` 判定地点では**常に `None`**——round 2 で危険と結論した
+「idx非依存」版と実質的に同じ挙動になってしまう。いずれも「記述の精度」
+ではなく**設計レベルの穴**であり、round 3 内では解決しないため、両
+エージェントの提案どおり案Gを本ADRの decision から外す。
 
-- **本 incident に効くのは案Fのみ**（`grace_hold_verdict` の早期確定
-  バグ修正、deadline まで判定を待つ）。案Fの正しさ自体は round 2 で
-  揺らいでいないが、(a) `EPOCH_FENCE_GRACE_MS` を実質的に廃止する変更に
-  なること、(b) 変更対象のコードが ADR-079 レビュー由来の意図的な設計
-  （「deadline 到達後まで猶予を引き延ばす理由はない」）であり、その
-  理由を確認しないまま反転させようとしていること、(c) `check_now` の
-  SHOW-only 分岐（最も高頻度な warm path）にも影響が及び、そちらは
-  レイテンシ改善ではなく回帰になりうること、の3点が round 2 で新たに
-  判明した。**`VisibleFencing` 経路限定で先行実装すべき**という
-  premortem の提案を採用する。
-- **案G は「本 incident の対策」ではなく「別インシデント（idx==0 の
-  StaleConfirm、"kれでできる" 型）への保険」として位置づけを変更する。**
-  実装も「既存機構の適用範囲是正」ではなく、per-VK の `StaleConfirm`
-  分岐への**新設ゲート**（案G、または architect 提案の代替案G'）として
-  再設計が必要。ループローカル状態を使う設計に修正しても、per-VK ループを
-  中断せず継続する実装（案Eで一度破綻した「未送信 VK を落とさない」制約）
-  が新たに必要になる。round 3 でこの再設計を検証する。
+- **案F（`grace_hold_verdict` の早期確定バグ修正、deadline まで判定を
+  待つ）を decision として確定。実装前に以下4点が前提条件:**
+  1. `grace_hold_verdict` を純粋関数へ切り出し、Linux fixture テストを
+     書く（本 incident の journal に既に記録済みの `grace_hold_ms`/
+     `last_write_ms`/`epoch_send_ms`/`deadline_ms` をそのまま入力にできる）。
+  2. ADR-079 側で「猶予は deadline 到達後まで引き延ばさない」という
+     早期確定を入れた理由を回収する（`grace_hold_verdict` の docstring
+     `probe.rs:744-748` が明記する意図的設計、ADR-079 Opus レビュー
+     欠陥2対処。experiment-logging.md の「なぜ前回それを捨てたのか」
+     パターン、未実施）。
+  3. `EPOCH_FENCE_GRACE_MS` の処遇を決める（案F後、`grace_hold_verdict`
+     内で事実上死ぬ定数になる）。
+  4. **【round 3 で新たに判明】本 incident の実際の deadline は
+     `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`（500ms）ではなく
+     `RAW_TSF_LITERAL_DETECT_MS`（300ms）である**（`target=Chrome` の
+     per-VK 送信は `probe_fsm.rs:676` で 300ms をハードコードしており、
+     long-idle 分岐 `:144` の `is_tsf_mode` 条件を満たさない）。案Fが
+     本 incident に与える猶予は 31ms→300ms にすぎず、これで足りるかは
+     未知数。**実装前に「verdict 確定後も `last_write_ms` を一定時間
+     追跡し、遅れて到着した write の実際の遅延を journal に残す観測
+     フェーズ」を先行させる**（追補2と同じ挙動変更ゼロのパターン）
+     ことを両エージェントが推奨。これなしに実装すると、効かなかった
+     場合に「もっと待たせよう」（案A、定数の釣り上げ）へ流れる圧力が
+     生まれる——tuning-constants.md が警告するエスカレーションの再現。
+  5. 経路の絞り込みは `DetectRoute::VisibleFencing` ではなく
+     `DetectPath::PerVk` を使う（round 3 premortem 指摘、後述）。
+- **案G（per-VK の `StaleConfirm` 分岐への新設ゲート）・案G'（既存
+  `veto_decision` への配線）はいずれも本ADRのスコープ外へ切り出す。**
+  2つの blocker（終端状態の regression 再生産、`pending_confirm` の
+  ライフタイム誤認）を解消しないかぎり実装できない。加えて、blocker
+  (1) を「hold中はループ継続」に修正しても、案Gが実際に救える対象は
+  「idx==0 の `StaleConfirm` で、その VK が実際には着弾していたケース」
+  （BUG-75 元報告、msedge「つかって」）に限られ、**同じ route・同じ idx
+  で着弾していなかった「kれでできる」と区別する信号がない**——これは
+  BUG-75 の6ラウンドが到達した結論と同型であり、実質的に「案E（疑わしき
+  は罰せず）を idx==0・候補可視に絞ったもの」に過ぎない。**本ADRでは
+  この位置づけを記録するに留め、実装は案Fの実機データが出てから
+  再検討する。**
 - **案C（回収を「確認してから送る」）は根本対策として価値があるが、v1 の
   具体化（HIDE イベントで確認）は BUG-75 が既に破棄した「観測トリガと
   観測対象が同一チャネル」という自己汚染パターンに該当する**ため、v1の
@@ -51,14 +79,13 @@ idx=0 は confirm 済み）を原理的に救えない**。architect・premortem
 - **案B（`literal_session_confirmed` のセッション跨ぎ拡張）は削除した。**
   案Eの劣化版であり、cold-start では原理的に情報量ゼロ、かつ案Cの HIDE
   意味論と衝突する。
-- **案E（cold-start 時は recovery を無効化）は「BUG-33 追補4 の論理的帰結」
-  として位置づけを保持するが、v1 の実装記述（recovery を1箇所抑制するだけ）
-  は誤り**であり、正しく書き直すと「未送信 VK をどう扱うか」の再設計が
-  必要になる。案F+G がセッション最初のモーラのケースを実質的にカバーするため、単独案
-  としては当面不要。
+- **案E（cold-start 時は recovery を無効化）は、案Gが実質的に「案Eを
+  idx==0・候補可視に絞ったもの」であると round 3 で判明したことで、
+  評価軸が案Gと同一であることが確定した。** 単独案としては不要（案Gの
+  検討時にまとめて再検討する）。
 
-以下、本文は上記の収束結果を反映した v2。v1 からの主な訂正点は文末
-「round 1 レビューでの主な訂正」参照。
+以下、本文は上記の round 3 収束結果を反映した v4。round 1〜3 の訂正点は
+文末「Round 1/2/3 レビューでの主な訂正」参照。
 
 ## 背景
 
@@ -130,8 +157,13 @@ journal と app.log を突き合わせて確定した事実:
    `grace_hold_verdict`（`crates/awase-windows/src/tsf/probe.rs:762-776`）の
    「猶予切れ時は deadline 未到達でも即 `StaleConfirm` を返す」という
    実装によるもの**（round 1 architect 指摘、v1 の記述はここが曖昧だった）。
-   `deadline_ms` 自体（＝ `RAW_TSF_LITERAL_DETECT_MS`/`_LONG_IDLE`、
-   `tuning.rs` で300/500ms）にはまだ余裕があった。
+   `deadline_ms` 自体にはまだ余裕があった。**この deadline は
+   `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`（500ms）ではなく
+   `RAW_TSF_LITERAL_DETECT_MS`（300ms）である**——`target=Chrome` の
+   per-VK 送信は `probe_fsm.rs:676` で 300ms をハードコードしており、
+   long-idle 分岐（`:144`、`is_tsf_mode` 条件）を通らない（round 3
+   premortem 指摘、`docs/bug-reports-triage.md:54` の `target: Chrome`
+   が一次証拠。v3 まで500msと誤認していた）。
 4. app.log の該当行（`[gji-fsm] WarmupAborted ... while composing →
    AbortedCold(Long)` 直後に `[gji-fsm] CompositionReset: ... genuinely warm の
    ため OnCold に倒さず OnWarm を維持`）は、awase 自身のログが「実際には
@@ -154,7 +186,7 @@ journal と app.log を突き合わせて確定した事実:
    いずれもが回収の滞留時間を延ばすことで悪化させる**（round 1 premortem
    指摘、v1 は「別スレッドに切り出す」と誤って独立扱いしていた）。
 
-## 根本原因（round 1 レビューで訂正済み）
+## 根本原因（round 1〜3 レビューで訂正済み）
 
 ### 訂正1: 「20msの猶予が短すぎる」への一般化は誤り（round 1 architect 指摘）
 
@@ -213,9 +245,9 @@ BUG-75 対話設計が提案した「(b) 既存の session 内 confirm 状態を
   セマンティクスが不明、hwnd 配線の増設が必要、sync path に await を
   持ち込むトレードオフが未解決のまま棚上げ
 
-## 決定案（round 1 レビュー後の優先順位順）
+## 決定案（round 3 収束後）
 
-### 【本incidentに効く唯一の案】案F: `grace_hold_verdict` の早期確定を deadline まで先送りする
+### 【decision・本incidentに効く可能性がある唯一の案】案F: `grace_hold_verdict` の早期確定を deadline まで先送りする
 
 ```rust
 // crates/awase-windows/src/tsf/probe.rs:762-776 付近、最終行を変更
@@ -232,7 +264,14 @@ if now.saturating_sub(hold_since) < Self::EPOCH_FENCE_GRACE_MS {
 `grace_hold_ms=31` はまさにこの早期確定経路によるもので、`deadline_ms`
 自体にはまだ余裕があった。
 
-**round 2 で判明した重要な事実（実装前に要対応）**:
+**「効く」は round 3 で「効く可能性がある」に弱めた（round 3 architect
+指摘）**: 見出し・以下の記述は当初「本incidentに効く唯一の案」と断定して
+いたが、これは本 ADR 自身の訂正1（「まだ来ていない」のか「そもそも来ない
+（ゼロI/O）」のかは journal からは区別できない）と矛盾する。案Fが効くのは
+GJI の I/O が 31ms〜deadline の間に**genuinely**到着していた場合に限られ、
+現時点でその可能性は未確定。詳細は下記「実装前提条件4」参照。
+
+**実装前提条件（round 2・round 3 で判明、実装前に要対応）**:
 
 1. **`EPOCH_FENCE_GRACE_MS` を実質的に廃止する変更である**（round 2
    architect 指摘）。変更後は猶予内分岐と猶予切れ分岐が同一の式
@@ -246,40 +285,76 @@ if now.saturating_sub(hold_since) < Self::EPOCH_FENCE_GRACE_MS {
    引き延ばす理由はない」という当時の判断を反転させる前に、**ADR-079側で
    なぜこの打ち切りを入れたのかを回収する**（experiment-logging.md が言う
    「なぜ前回それを捨てたのか」パターン、未実施）。これは実装の前提条件。
-3. **`check_now` の SHOW-only 分岐（warm path、最も高頻度な経路）への
-   影響は「実利が薄い」ではなく「レイテンシ回帰」である**（round 2
-   premortem 指摘、round 1 の見積もりを訂正）。`show_confirmed &&
-   !write_confirmed`（`probe.rs:731-733`）は SHOW が write サンプルより
-   早く届く warm/高速タイピングの通常ケースで**常時到達**する。現在 20ms
-   で解決していたものが 300ms の deadline まで待つようになり、本
-   incident（実機報告2件）を直すために warm パスの全打鍵（頻度: 常時）に
-   レイテンシリスクを負わせることになる。**`VisibleFencing` 経路限定で
-   先行実装すべき**（関数に「deadline まで粘るか」の引数を足す、当初は
-   短所として軽く書いていたが、これを既定にする）。
+3. **経路の絞り込みは `DetectRoute::VisibleFencing` ではなく
+   `DetectPath::PerVk` を使う**（round 3 premortem 指摘、round 1〜2 の
+   設計を訂正）。ルート分岐（`VisibleFencing` か `check_now` か）は
+   `await_vk_detection` 冒頭（`probe_fsm.rs:377`）の
+   `env.gji_candidate_visible_now` を**1 tick だけ読んだスナップショット**
+   で決まる。候補ウィンドウが可視化するタイミングがこの読みの ±1 tick
+   （10ms）ずれるだけで、同一の cold-start incident が `check_now` 側
+   （SHOW エッジ発火 → `show_confirmed=true` → 20ms で早期確定、案Fの
+   対象外）へ落ちる。つまり `VisibleFencing` 限定は「安全な絞り込み」に
+   見えて、実際には**修正が確率的にしか効かない**設計になる。一方
+   `check_now` の SHOW-only 分岐は「常時到達する warm/高速タイピングの
+   通常ケース」（下記4）でもあり、そこへの適用はレイテンシ回帰になる
+   ため単純な `check_now` 全体への拡大もできない。per-VK 経路は設計上
+   「cold セッション最初のモーラ専用」（`probe_fsm.rs:673`、
+   `gji_warmup_coro.rs:173-177` のゲート）であり warm 高頻度パスと構造的に
+   重ならないため、**`DetectPath::PerVk` で絞れば `VisibleFencing`/
+   `check_now` の両方を均一にカバーしつつ warm path 回帰を避けられる**。
+4. **【round 3 で判明、最重要】本 incident の実際の deadline は
+   `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`（500ms）ではなく
+   `RAW_TSF_LITERAL_DETECT_MS`（300ms）である。** `target=Chrome`
+   （`docs/bug-reports-triage.md:54` が一次証拠）の per-VK 送信は
+   `probe_fsm.rs:676` で `literal_detect_ms: RAW_TSF_LITERAL_DETECT_MS`
+   を**ハードコード**しており、long-idle 分岐（`probe_fsm.rs:144`、
+   `is_long_cold && env.is_tsf_mode` 条件）を通らない。案Fが本 incident に
+   与える猶予は 31ms→300ms にすぎず、これで足りるかは現時点で不明。
+   **実装前に、verdict 確定後も `last_write_ms` を一定時間追跡し「遅れて
+   到着した write の実際の遅延 ms」を journal に残す観測フェーズを
+   先行させる**（追補2と同じ挙動変更ゼロのパターン。両エージェントが
+   同一の推奨）。これがあれば、訂正1が言う「まだ来ていない」／「そもそも
+   来ない」を実データで分離でき、後者が支配的だと判明すれば案Fは本
+   incident に効かないと分かり、案C（回収自体の安全化）へ優先度を移す
+   判断ができる。**観測なしに案Fだけ入れると、効かなかった場合に「もっと
+   待たせよう」（案A、定数の釣り上げ）へ流れる圧力が生まれる**——
+   tuning-constants.md が警告するエスカレーションの再現であり、避ける
+   べき順序。
 
 **長所**: (1) 新しい定数を作らないため tuning-constants.md の実測義務が
-発生しない。案Aが狙う効果（cold-start に長い猶予を与える）を、既存の
-`RAW_TSF_LITERAL_DETECT_MS`/`_LONG_IDLE`（300/500ms）の枠内で実測なしに
-得られる。(2) `visible_fencing_verdict` 側のループは既に「`Some` が返るまで
-tick ごとに呼び直す」構造のため呼び出し側の変更が不要。(3) `VisibleFencing`
-経路に限定する限り、deadline はこの経路が元々待つ上限なので検出待ちの
-レイテンシ最大値は変わらない（ただし output-gate 保持時間への影響は別途
-評価が必要、後述「組み合わせ設計」参照）。(4) 判定ロジック内部に閉じ、
-新しい観測チャネルも事後推測も増やさない。(5) `grace_hold_verdict` は
-既にほぼ純粋関数（`now`/`last_write_ms`/`epoch_send_ms`/`deadline_ms`/
-`hold_since` を引数化すればよい）なので Linux 上の fixture テストに
-落とせる（round 2 premortem 確認）。
+発生しない。(2) `visible_fencing_verdict`/`check_now` 側のループは既に
+「`Some` が返るまで tick ごとに呼び直す」構造のため呼び出し側の変更が
+不要。(3) `DetectPath::PerVk` に限定する限り、deadline はこの経路が元々
+待つ上限なので検出待ちのレイテンシ最大値は変わらない（ただし
+output-gate 保持時間は下記短所(4)のとおり単独でも伸びる）。(4) 判定
+ロジック内部に閉じ、新しい観測チャネルも事後推測も増やさない。(5)
+`grace_hold_verdict` は既にほぼ純粋関数（`now`/`last_write_ms`/
+`epoch_send_ms`/`deadline_ms`/`hold_since` を引数化すればよい）なので
+Linux 上の fixture テストに落とせる（round 2 premortem 確認、本 incident
+の journal に既に記録済みの値をそのままフィクスチャ化できる）。
 
 **短所**: (1) 真に stale だったケースの回収が deadline まで遅れる（十数〜
 数十ms）。ただし `StaleConfirm` の回収は `backs=0` のため、遅れても画面上の
-破損は増えない。(2) 上記「round 2 で判明した重要な事実」の3点（
-`EPOCH_FENCE_GRACE_MS` の扱い、ADR-079 の意図確認、warm path 回帰）が
-未対応。(3) 既存テスト（`probe.rs:1010-1219`）の期待値更新が必要
-（Windows専用、CI待ち）。**premortem は「案Fは round 2 の問題の影響を
-受けず単独で先行実装可能」と評価しており、本 ADR の decision の中で唯一
-本 incident を直接解決できる**（次項参照）。
+破損は増えない。(2) 上記「実装前提条件」1〜4が未対応（うち4は round 3 で
+新たに判明、最優先）。(3) 既存テスト（`probe.rs:1010-1219`）の期待値更新が
+必要（Windows専用、CI待ち）。(4) **【round 3 architect 指摘】案F単独でも
+output-gate 保持時間は 31ms→最大300ms（本 incident の経路。他経路では
+最大500ms）に伸びる**——これは F+G を組み合わせた場合特有のリスクでは
+なく案F単独の短所であり、以前は「組み合わせ設計」節にのみ書いていたが
+ここへ移設した。回収が後ろ倒しになる間もユーザーは打鍵を続けるため、
+最終的に `StaleConfirm` へ落ちた場合、ESC+再送は**より多くの後続キーが
+溜まった状態で**割り込むことになり、重複の出方が悪化しうる（背景節
+項目7が指摘する「回収中の遅延キーが連鎖的に誤判定を誘発しうる」条件を、
+案Fは発生確率ではなく持続時間の側から押し上げる）。
 
-### 【別incidentへの保険、現状は未実装かつ設計未完】案G: per-VK の `StaleConfirm` 分岐に候補可視 hold を新設する
+**round 3 の全体評価**: architect は「案F単独ならマージ可能な水準に収束」
+（上記前提条件1〜4を満たせば）と評価。premortem は「あと一歩」（前提条件
+4の観測フェーズを経ないと『本incidentに効く』という結論の根拠が不足）と
+評価。**両者の一致点は、案Fを単独の decision として切り出せば
+fix-requires-evidence.md の (a) 回帰テスト要件を満たしつつ前進できる、
+という点。**
+
+### 【本ADRのスコープ外へ切り出し、別ADR/将来課題】案G・案G': per-VK の `StaleConfirm` 分岐に候補可視 hold を新設する
 
 **【round 2・最重要】案G は round 1 の記述（`veto_eligible` の適用範囲を
 拡張する）では no-op である。architect・premortem 双方が独立に同じ結論に
@@ -313,20 +388,22 @@ tick ごとに呼び直す」構造のため呼び出し側の変更が不要。
 （round 2 architect 指摘）。round 2 冒頭で「`cold_seq` が新規・前モーラ
 確定実績なし（idx非依存）」へ広げた条件も誤りだった: `literal_session_
 confirmed=false` は「セッション最初のモーラ」ではなく「直近の候補HIDE
-以降で最初のモーラ」を意味するにすぎない（訂正4参照）。正しく安全な
-条件は、プロセスグローバルな `literal_session_confirmed`（BUG-39 の
-既知の不正確さを継承する）ではなく、**`run_per_vk_confirm` のループ
-ローカル状態**（このモーラ内で1つでも VK が `CompositionConfirmed` を
-得たか、`probe_fsm.rs:534` 相当）を使うべきである:
+以降で最初のモーラ」を意味するにすぎない（訂正4参照）。**round 2 では
+これを `run_per_vk_confirm` のループローカル状態（`pending_confirm`、
+`probe_fsm.rs:534` 相当）で置き換えられると考えたが、round 3 でこの
+条件が実装として機能しないと判明した（blocker 2、後述）。**
 
-- このモーラ内でまだ1つも confirm していない（＝ idx=0 で初めて
-  `StaleConfirm` になった） → 候補ウィンドウは前モーラ／前世代由来の
-  可能性が残るとしても、少なくとも「自分が開けた窓を自分の証拠にする」
-  自己汚染ではない → hold してよい
-- **このモーラ内で既に1つ VK が confirm 済み（idx>0）** → その VK が
-  開いた候補ウィンドウを、今確認中の別の VK の証拠として使うことになり、
-  BUG-30 が名指しで避けた「前の VK が開いた候補ウィンドウの誤用」その
-  ものになる → hold してはいけない
+- 意図した条件: このモーラ内でまだ1つも confirm していない（＝ idx=0 で
+  初めて `StaleConfirm` になった） → hold してよい。このモーラ内で既に
+  1つ VK が confirm 済み（idx>0） → その VK が開いた候補ウィンドウを
+  今確認中の別の VK の証拠として使うことになり、BUG-30 が名指しで避けた
+  「前の VK が開いた候補ウィンドウの誤用」になる → hold してはいけない。
+- **round 3 architect の訂正**: idx==0 で hold する場合も、その候補
+  ウィンドウは「idx==0 自身が開けた窓」である可能性が高く（idx==0 の VK
+  は既に送信済みのため）、これを idx==0 自身の hold 根拠にするのは
+  厳密には自己汚染である。安全条件として言えるのは「前の**VK**由来では
+  ない」までであり、「自己汚染ではない」という round 2 の表現は言い過ぎ
+  だった（結論=idx>0では hold しない、は変わらない）。
 
 **本 incident は idx=1 であり idx=0 は confirm 済みなので、この安全な
 条件では hold されない。** つまり「案Gで本 incident を救う」という
@@ -335,95 +412,107 @@ round 1〜round 2 冒頭の主張は、条件を正しく絞ると成立しな�
 発生するケース（BUG-75 が既に記録した2026-07-22「これでできる」→
 「kれでできる」がまさにこの型）——への保険として位置づけを変更する。**
 
-**実装上のもう一つの制約（案Eと共通の罠）**: `probe_fsm.rs:561-601` の
-`StaleConfirm` アームは recovery を emit して `return` する。hold して
-`return` すると、まだ送っていない後続 VK が失われる（2026-07-22 の
-regression の再来）。正しい実装は「hold 中は per-VK ループを継続し、
-hold 明けに `Expired` なら通常の回収へ、`candidate_visible` のまま cap
-timeout に達したら無回収で `Done`」という**ループ継続型**でなければ
-ならない。
+**【round 3・blocker 1】終端状態「無回収 `Done`」は、案Gが保険をかける
+対象そのものを再生産する。** `probe_fsm.rs:561-575` の `StaleConfirm`
+アーム冒頭コメントは、まさにこの挙動（検出のみ・recovery なしで単に
+`Done` にする）を試して revert した記録である: 「まだ送信していない
+後続 VK が一切送られないまま処理が終了し、既に送信済みの VK だけが
+取り残されて消失・文字化けする実害が生じた（実機報告 2026-07-22:
+『これでできる』→『kれでできる』）」。round 2 で書いた案Gの終端仕様
+「`candidate_visible` のまま cap timeout に達したら無回収で `Done`」
+（round 2 版）は、この revert 済み regression を**文言どおり復元する**。
+すなわち同一 ADR 内で「kれでできる」を「案Gが守る対象」と「案Gが壊す
+例」の両方に使ってしまっていた自己矛盾があった。逃げ道（cap timeout でも
+残りの VK を送る）は「既送信プレフィックスを再送しない suffix-only 再送」
+になり、これは BUG-75 で revert した方式そのものである。**案Gの終端は
+文書化済みの2つの regression に挟まれており、ここを設計しない限り
+前進できない。**
 
-**代替案G'（architect 提案）**: 新しい語彙・新しいゲートを作るのではなく、
-**per-VK の `StaleConfirm` を、`SuspectedLiteral` が既に使っている
-`veto_decision` と同じチェックに通す**（ゲートの新設ではなく、既存の
-判定ロジックへの新規配線）。「既存機構の適用範囲の是正」という案Gが
-本来主張したかった性質に、実装としてより近い。ただし per-VK 経路は
-現状 `LiteralDetectCore`/`veto_decision` を一切経由しないため、いずれに
-せよ配線自体は新規であり、上記の「hold中はループ継続」制約も同様に
-適用される。
+**【round 3・blocker 2】適用条件に使うつもりだった `pending_confirm` は、
+判定地点で常に `None` である。** `pending_confirm` は `probe_fsm.rs:460`
+で宣言され、**`:464`（ループ先頭）で毎回 `take()` される**。
+`StaleConfirm` アーム（`:562`付近）に到達した時点では、直前の VK が
+confirm 済みかどうかに関わらず**必ず `None`**。これをそのまま条件に
+使うと、idx=1 でも hold が成立してしまい、round 2 で「危険」と結論した
+「idx非依存」版と実質的に同じ挙動になる（BUG-30 が避けた自己汚染ケースで
+hold してしまう）。round 2 の「`probe_fsm.rs:534` 相当」という記述も、
+534行は `pending_confirm` への**代入地点**であって参照可能な状態では
+ない点を取り違えていた。実装するには `let mut confirmed_in_mora = false;`
+のような**専用の新規フラグ**が必要で、これは「ループローカル状態を使う
+だけ」という round 2 の説明より明示的な追加実装を要する。
+
+**代替案G'（architect 提案、round 3 で非推奨と判明）**: 新しい語彙・
+新しいゲートを作るのではなく、per-VK の `StaleConfirm` を
+`SuspectedLiteral` が既に使っている `veto_decision` と同じチェックに
+通す案。**round 3 architect の再検討で非推奨と判明**: `veto_decision`
+の `Expired → 無回収Done` セマンティクスが安全なのは word パスでは
+「その時点で romaji 全体が既に送信済み」だからであり（`LiteralDetectCore`
+は語をまとめて送った後に判定する）、per-VK では `idx` までしか送って
+いないため同じ「打ち切り」が未送信 suffix の喪失になる（blocker 1と
+同じ罠）。前提条件が異なるため「既存機構の再利用」という利点も実際には
+出ず、加えて word パスと per-VK パスが同じ関数を共有すると、以後 word
+パス側の veto を変更するたびに per-VK に副作用が出る結合が生まれる。
+**案G' は不採用とする。**
+
+**cap の扱い（architect・premortem 双方が同じ結論）**: `GJI_CANDIDATE_
+VETO_CAP_MS`（`tuning.rs:96`）自身の doc コメントが「実測未了 —
+暫定値」（「候補ウィンドウ可視 → I/O/SHOW 確定」までの実測遅延データが
+まだ無く、300msは他の定数からの類推値に過ぎない）と明記している。
+案Gがこの定数を新しい経路（per-VK）に持ち込むこと自体が、
+tuning-constants.md が要求する実測根拠を満たさない定数の適用範囲を
+広げる行為になる。**両エージェントの推奨は「cap/hold という2本目の
+タイマーを持たず、deadline 到達時に `candidate_visible` を一度だけ評価
+する述語にする」**（詳細は下記「タイマー設計」）。これなら
+`GJI_CANDIDATE_VETO_CAP_MS` に一切触れずに済む。
 
 **テスト可能性の非対称性（round 2 premortem 指摘）**: 案Fが変更する
 `grace_hold_verdict` はほぼ純粋関数で Linux fixture テスト化できるのに
 対し、案G/G' は `run_per_vk_confirm`（`#[cfg(windows)]` 配下の async
 コルーチン）への新規実装になるため、現状は Linux で回帰テストが書けない。
-fix-requires-evidence.md の観点でも両者は同列の「第一候補」ではない
-——実質「Fはテスト付きで出せる／Gは known-bugs 追記＋実機ソークのみ」
-という差がある。
 
-**短所/caveat（上記に加えて）**: 42秒アイドルを跨いで前セッションの候補
-ウィンドウが残存している可能性はゼロではなく、`cold_seq` が新規である
-ことも条件に含める必要がある。cap timeout 超過後は無回収の `Done` に
-なるため、`candidate_visible=true` でも理論上ありうる「本当にリテラル
-化した」ケースを見逃すリスクがある——**この実例は既に本 ADR 内に存在する**
-（2026-07-22「kれでできる」、idx==0 の `VisibleFencing` で先頭 'k' が
-真にリテラル化したケース、上記「背景」節参照。round 1 の「実例は未確認」
-という記述は誤りだった、round 2 architect 指摘）。
+**評価軸は案Eと同一である（round 3 architect 指摘）**: blocker 1 を
+「hold中はループ継続」に修正して案Gが成立したとしても、案Gが実際に
+救える対象は「idx==0 の `StaleConfirm` で、その VK が実際には着弾して
+いたケース」（BUG-75 元報告、msedge「つかって」、候補SHOW+18msで着弾
+確認済み）に限られる。**同じ route・同じ idx で着弾していなかったのが
+「kれでできる」であり、両者を区別する信号がない。** これは BUG-75 の
+6ラウンドが到達した結論「前提を反転させても必ずどちらかの実機ケースで
+破綻する」と同型であり、**案Gの実質は「案E（疑わしきは罰せず）を
+idx==0・候補可視に絞ったもの」に過ぎない**。「案Eは単独では不要」と
+「案Gは保険として実装」という一見矛盾する2つの位置づけは、「案Eの
+縮小版として案Gを扱う」という一貫した記述に整理すべき。
 
-**round 3 で検証すべき論点**: (1) ループローカル条件（idx==0 相当）が
-真に安全か、"kya" 等3VK以上のモーラで新しい穴がないか。(2) 案Gと案G'の
-どちらが実装コスト・審査コストの面で妥当か。(3) hold中のループ継続実装が
-既存の per-VK ループ不変条件（`LiteralDetector` は1インスタンス1VK分の
-ベースラインのみ保持）を壊さないか。
+**round 3 の結論: 案G/G'は本ADRのスコープから外し、案Fの実機データが
+出てから（別ADRまたは本ADRの追補として）再検討する。** blocker 1・2は
+記述の精度ではなく設計レベルの穴であり、案Fの審査・実装を待たせるべき
+ではない、というのが architect・premortem 共通の判断。
 
-### 組み合わせ設計: 案F + 案G（round 2 で前提が大きく変わった）
+### タイマー設計（案G再検討時のための記録）
 
-**round 1 の「二段構え」（F=検出頻度を減らす、G=誤判定の実害を消す）という
-組み合わせ設計は、round 2 で成立しないと判明した。** 案Gが現状 no-op で
-あり、安全な条件に絞ると本 incident をそもそもカバーしないため、**本
-incident に関する限り、この組み合わせの実効果は案F単独と同じ**である。
-以下は「両方を実装した場合に何が起きるか」の記録として残す（案Gが
-"kれでできる" 型の別incidentへの保険として実装される前提）。
+将来 案G を再検討する際、`GJI_CANDIDATE_VETO_CAP_MS`（実測未了の暫定値、
+上記参照）と `RAW_TSF_LITERAL_DETECT_MS`/`_LONG_IDLE`（案Fが judge を
+先送りする対象）という独立した2本のタイマーをどう組み合わせるかで
+round 3 に議論があった。
 
-| | 案F | 案G（新設ゲート） |
-|---|---|---|
-| 触る場所 | `probe.rs::grace_hold_verdict`（verdict の**確定タイミング**） | `probe_fsm.rs` の `StaleConfirm` アームに新設（verdict 確定**後**の挙動） |
-| 効果 | `StaleConfirm` が発生する**頻度**を減らす | idx==0 の `StaleConfirm` について、候補可視なら**破壊的な回収を発動させない** |
-| 対象範囲 | `VisibleFencing` 経路（先行実装分） | `candidate_visible=true` かつループ内未confirm（実質 idx==0）のケースのみ |
-| 本incidentへの効果 | **効く**（deadline まで判定を延ばす） | **効かない**（idx=1、既に安全条件から除外） |
-
-**F+G を両方実装した場合の新しいリスク（round 2 premortem/architect 指摘、
-round 1 では見落としていた）**:
-
-1. **タイマーの相互作用が未設計。** `GJI_CANDIDATE_VETO_CAP_MS=300`
-   （`tuning.rs:96`）と `RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE=500`
-   （`tuning.rs:80`）は独立した2本のタイマーである。案Gの hold 開始を
-   「verdict 確定時」にすると、案Fが verdict を500msまで押し出した後に
-   さらに300ms hold するため最大**800ms**のゲート保持になる。逆に既存の
-   `veto_started_at_ms.get_or_insert(now)` パターン（最初の Hold 時点で
-   開始）を踏襲すると、300ms の cap は 500ms の deadline 到達**前**に
-   必ず失効し、**案Gが最も効いてほしい long-idle cold-start が、案Fに
-   よって案Gの効かない唯一のケースになる**——300 < 500 である以上、
-   どちらの実装を選んでも設計として破綻する。cap を deadline 相対に
-   再定義するか、hold を deadline 到達より前段で完結させるかの二択を
-   明示的に設計する必要がある。
-2. **output-gate 保持時間の合算が未評価。** `apply_vk_sent`
-   （`gji_warmup_coro.rs:333-338`）は literal-detect フェーズ全体で
-   `OutputActiveGuard` を保持する。現状のstaleパスは31msでゲートを
-   抜けるが、案F後は最大500ms、F+G併用で最大800ms保持しうる。本 ADR
-   項目7（背景節）が観測済みの「160-200ms遅延replay」がその規模になり、
-   項目7自身が警告する「回収中の遅延キーが連鎖的に誤判定を誘発」の条件を
-   **F+G が能動的に作り出す**。round 1 の「レイテンシの最大値は変わらない」
-   という長所(3)は検出待ちについては正しいが、ゲート保持については誤り
-   （round 2 premortem 指摘）。
-3. **審査コストは足し算になる。** 案Gが新設ゲート（fix-requires-evidence.md
-   の warmup/キー選択 再発ファミリーに該当する新しい破壊抑制ロジックの
-   追加）である以上、「どちらも既存機構の適用範囲是正なので審査コストが
-   増えない」という round 1 の主張は成立しない。
-
-**round 3 で明示的に設計すべき事項**: F+G を両方実装する場合、上記1の
-タイマー相互作用（cap を deadline 相対にする案が有力）を先に決着させる。
-決着しないまま両方実装すると、long-idle cold-start という最も重要な
-シナリオで案Gが静かに無効化される回帰を埋め込むことになる。
+- **「hold 開始を verdict 確定時にする」** → 案Fが verdict を deadline
+  まで押し出した**後**にさらに cap 分 hold するため、ゲート保持が
+  加算される（本 incident の経路では deadline=300ms・cap=300ms のため
+  最大600ms、long-idle 経路では 500+300=800ms）。
+- **「既存の `veto_started_at_ms.get_or_insert(now)` パターン（最初の
+  Hold 時点で開始）を踏襲する」** → cap（300ms）が deadline（300〜
+  500ms）到達**前**に必ず失効しうる、または本 incident の経路（300ms
+  vs 300ms）では tick の丸め次第でどちらに転ぶか非決定になる
+  （round 3 premortem が新たに指摘）。
+- **推奨（architect・premortem 一致）: 2本目のタイマーを持たない。**
+  案Fが既に「少し待てば追いつくかもしれない」役割を deadline 内で
+  果たしているため、deadline 到達後にさらに待つ理由がない。
+  「`deadline_ms` 到達時点で `StaleConfirm` かつ `candidate_visible==true`
+  かつこのモーラ内で未confirmなら、回収せず次の VK へ進む（hold も cap
+  も持たない、1回評価する述語）」という設計に単純化できる。これなら
+  ゲート保持時間は deadline 止まり（案Fの分のみ）で済み、
+  `GJI_CANDIDATE_VETO_CAP_MS` にも一切触れない。ただし blocker 1
+  （終端状態の設計）自体は解消しておらず、「回収せず次のVKへ進む」が
+  具体的に何を送る／送らないかの設計は依然として必要。
 
 ### 【根本対策として並走】案C: 回収を「確認してから送る」設計に変える
 
@@ -522,8 +611,10 @@ recovery を止めると `consecutive_count` が増えず、GJI が本当に死�
 BUG-33 追補4 の原則を ESC+全体再送という（backspace より侵襲の大きい）
 回収にも徹底するという意味で**既存原則の論理的帰結**ではあるが、
 「これでできる」→「kれでできる」（同一 `VisibleFencing` 経路での反例）が
-示すとおり無条件には成立しない。**案F+G がセッション最初のモーラのケースを実質的に
-カバーするため、単独の対策としては現時点で不要と判断する。**
+示すとおり無条件には成立しない。**round 3 で、案G（idx==0・候補可視限定の
+新設ゲート）が実質的に「案Eをこの条件へ絞ったもの」であり評価軸が同一と
+判明した（上記「決定案」節の案G参照）。したがって案Eを単独の対策として
+別途検討する必要はなく、将来案Gを再検討する際にまとめて扱う。**
 
 ### 削除: 案B（`literal_session_confirmed` のセッション跨ぎ拡張）
 
@@ -542,7 +633,7 @@ v1 で提案したが round 1 で削除。理由:
 4. 実質的に「案Eの、不falsifiableな事前確率とBUG-39の既知の不正確さを
    上乗せした劣化版」（round 1 architect）。
 
-## 未決定事項（round 1 で明確化）
+## 未決定事項（round 1〜3 で明確化）
 
 - **テスト経路の訂正（round 1 双方が指摘、v1 の誤りを修正）**:
   `crates/awase-windows/tests/journal_replay.rs` は `state::conv_classify::
@@ -567,11 +658,12 @@ v1 で提案したが round 1 で削除。理由:
     を満たす経路は、この純粋関数抽出を先行させるか、それが間に合わない
     場合は (b) `docs/known-bugs.md` への追記で代替する。**実装に進む場合は
     純粋関数抽出を最初のタスクにすること。**
-- **案A を評価する前提として、「verdict 確定後も一定時間 `last_write_ms` を
-  追跡し続け、遅れて到着した write の実際の遅延を journal に残す」観測
-  フェーズが必要**（現状の追補2フィールドは verdict 確定時にしか記録され
-  ないため、「本当は何 ms 待てば間に合ったか」が原理的に取れない）。これは
-  案Aの選択肢の一つではなく前提条件。
+- **案A（および round 3 で案Fにも適用範囲が広がった）を評価する前提として、
+  「verdict 確定後も一定時間 `last_write_ms` を追跡し続け、遅れて到着した
+  write の実際の遅延を journal に残す」観測フェーズが必要**（現状の追補2
+  フィールドは verdict 確定時にしか記録されないため、「本当は何 ms 待てば
+  間に合ったか」が原理的に取れない）。これは選択肢の一つではなく、案F
+  実装の前提条件4（decision案F節参照）でもある。
 - **案C の具体的な確認チャネル**は本稿では未解決。`DetectRoute` 別に何を
   確認シグナルとして使うか（候補非可視・composition のみ存在するケースを
   含め）が次の検討課題。
@@ -678,6 +770,59 @@ v1 で提案したが round 1 で削除。理由:
 - premortem: 案Fはほぼ純粋関数化できテスト可能、案G/G'は`#[cfg(windows)]`
   下のasyncコルーチンへの新規実装でLinux回帰テストが書けない
   → テスト可能性の非対称性を明記。
+
+## Round 3 レビューでの主な訂正（記録）
+
+round2の改訂（案Gをループローカル`pending_confirm`条件・新設ゲートとして
+再設計した版）をarchitect・premortemへround 3のレビューとして依頼。
+両者が独立に、案Gの再設計自体に2つのblockerを発見し、案Fについても
+実際のdeadline値の誤認という重大な訂正を発見した。
+
+- architect・premortem 双方【blocker 1】: 案Gの終端状態「候補可視のまま
+  cap timeout で無回収`Done`」は、`probe_fsm.rs:561-575`のコメントが
+  明記する2026-07-22「これでできる」→「kれでできる」のrevert済み
+  regressionをそのまま再生産すると判明（未送信の後続VKが失われる）。
+  ADRが同一報告を「案Gが守る対象」と「案Gが壊す例」の両方に使っていた
+  自己矛盾も発覚 → 案Gの終端仕様を要再設計と明記、blocker未解決のため
+  本ADRのdecisionから除外。
+- architect・premortem 双方【blocker 2】: 適用条件に使うつもりだった
+  `pending_confirm`（`probe_fsm.rs:534`）はループ先頭（`:464`）で毎回
+  `take()`されるため、`StaleConfirm`判定地点では常に`None` → round 2の
+  「ループローカル状態を使う」設計が実装として機能しないと判明、専用の
+  新規フラグが必要と訂正。
+- premortem【最重要・案Fへの訂正】: 本incidentは`target=Chrome`
+  （`docs/bug-reports-triage.md:54`が一次証拠）であり、Chrome per-VK送信は
+  `probe_fsm.rs:676`で`RAW_TSF_LITERAL_DETECT_MS`(300ms)をハードコードして
+  おり、long-idle分岐(`:144`)の`is_tsf_mode`条件を満たさない。round1〜2で
+  「deadline=500ms」と誤認していたが実際は300ms → 案Fが本incidentに
+  与える猶予は31ms→300msにすぎず、効くかどうかは未確定と訂正。実装前に
+  「verdict確定後もlast_write_msを追跡する観測フェーズ」を先行させるべき
+  と明記。
+- premortem: F+Gのタイマー分析（300ms cap vs 500ms deadline）も、
+  本incidentの経路では実際には300ms vs 300msの同値であり、tick丸め次第の
+  非決定という第三の状態がある → 組み合わせ設計節の前提を訂正。
+- architect: `GJI_CANDIDATE_VETO_CAP_MS`自身のdocコメントが「実測未了 —
+  暫定値」と自認していることを発見 → 案Gがこの定数を新経路に持ち込むこと
+  自体が実測義務を回避できていないと指摘、cap廃止案を後押し。
+- architect・premortem 双方: F+Gのタイマー相互作用の解決策として「cap/hold
+  という2本目のタイマーを持たず、deadline到達時に候補可視を一度だけ評価
+  する述語にする」という第三の設計を提案 → 「タイマー設計」節として記録。
+- premortem: 案Fの`VisibleFencing`限定は、ルート分岐が1 tick読みの
+  タイミングレースで決まるため確率的にしか効かないと指摘、
+  `DetectPath::PerVk`での絞り込みを提案 → 実装前提条件3を訂正。
+- architect: 案F単独でもoutput-gate保持時間は31ms→最大300ms(本incident
+  の経路)に伸びる、これはF+G固有のリスクではなく案F単独の短所 →
+  「組み合わせ設計」節から案Fの短所へ移設。
+- architect: 「自分が開けた窓を自分の証拠にする自己汚染ではない」という
+  round2の表現は言い過ぎ、idx==0の候補窓もidx==0自身が開けた可能性が
+  高い → 「前のVK由来ではない」までに表現を弱める訂正。
+- architect: 案Gの評価軸は案Eと同一（「リテラル化見逃し」と「重複」の
+  どちらのコストを取るかという同じ賭け）と指摘 → 案Eの位置づけ記述を
+  案Gと整合させて修正。
+- architect・premortem 双方: 「案F+Gの組み合わせ」という当初の枠組み自体を
+  維持すべきでない、案Gはblocker未解決のまま本ADRのdecisionに含めるべき
+  ではない → ADRを分割する方針を両者が独立に提案、採用。ステータス節・
+  決定案の見出しを全面改訂。
 
 ## 関連
 
