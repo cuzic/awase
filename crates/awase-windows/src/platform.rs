@@ -376,8 +376,10 @@ impl WindowsPlatform {
         self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
             source: "install_pending_tsf_and_set_timer".to_owned(),
             cold_seq,
+            probe_id: None,
             gji_state: self.gji_state_label(),
             consecutive_at_start: self.output.composition.consecutive_count(),
+            pending_deferred_len: self.output.pending_deferred_len(),
         });
         self.output.install_pending_tsf(machine);
         if let Some(cmd) = self.output.pending_tsf_timer() {
@@ -503,11 +505,26 @@ impl WindowsPlatform {
                     let now_ms = crate::hook::current_tick_ms();
                     self.active_tsf_probe_started_ms = Some((now_ms, u64::from(probe_id.0)));
                     self.reset_probe_tick_counters();
+                    let pending_deferred_len = self.output.pending_deferred_len();
+                    if pending_deferred_len > 0 {
+                        // ADR-123: この probe が pending_deferred をまだ flush
+                        // されていない状態で追い越して開始しようとしている
+                        // (issue #148 の根本原因そのもの)。
+                        log::warn!(
+                            "[gji-fsm] StartProbe probe_id={probe_id:?} が pending_deferred \
+                             {pending_deferred_len} VK(s) をflush前に追い越して開始 (ADR-123)"
+                        );
+                    }
                     self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
                         source: "GjiAction::StartProbe".to_owned(),
-                        cold_seq: u64::from(probe_id.0),
+                        // ADR-123 round 2 (architect) 指摘の修正: 以前はここに
+                        // probe_id をそのまま入れていたが、cold_seq とは別の
+                        // 採番空間であり読み違いの原因になっていた。
+                        cold_seq: self.output.composition.cold_start_count().value(),
+                        probe_id: Some(u64::from(probe_id.0)),
                         gji_state: self.gji_state_label(),
                         consecutive_at_start: self.output.composition.consecutive_count(),
+                        pending_deferred_len,
                     });
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
@@ -840,7 +857,21 @@ impl WindowsPlatform {
     /// 次の実 `send_keys()` 呼び出しまで滞留し、溜まった分がまとめて stale な
     /// `StartProbe` として burst 発火する。docs/known-bugs.md 参照）。
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
-        self.output.flush_raw_tsf_literal_recovery();
+        let outcome = self.output.flush_raw_tsf_literal_recovery();
+        self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
+            trigger: "raw_recovery",
+            outcome: match outcome {
+                crate::output::RawRecoveryOutcome::DiscardedStale { vk_count } => {
+                    crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale { vk_count }
+                }
+                crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
+                    crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
+                }
+                crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
+                    crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
+                }
+            },
+        });
         self.drain_output_post_send_effects();
     }
 
@@ -877,7 +908,11 @@ impl WindowsPlatform {
             completion.retry_romaji.is_some(),
         );
 
-        if status == crate::output::GjiReinitPollStatus::Confirmed && focus_matches {
+        let retry_romaji_present = completion.retry_romaji.is_some();
+        let (deferred_flushed, deferred_discarded) = if status
+            == crate::output::GjiReinitPollStatus::Confirmed
+            && focus_matches
+        {
             if let Some(romaji) = completion.retry_romaji {
                 self.output
                     .mark_gji_reinit_retry_attempted(completion.focus_gen, romaji.clone());
@@ -888,19 +923,37 @@ impl WindowsPlatform {
             if flushed > 0 {
                 self.drain_output_post_send_effects();
             }
+            (flushed, 0)
         } else if focus_matches && status == crate::output::GjiReinitPollStatus::Timeout {
             let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
             if flushed > 0 {
                 self.drain_output_post_send_effects();
             }
+            (flushed, 0)
         } else {
             let discarded = self
                 .output
                 .discard_pending_deferred_after_stale_gji_reinit();
             log::warn!(
-                "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
-            );
-        }
+                    "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
+                );
+            (0, discarded)
+        };
+        // ADR-123: reinit retry の完了を journal（構造化・容量優先度あり）に
+        // 残す。従来は log::debug!/log::warn! の自由文字列のみで、issue #148
+        // の調査時に journal では確認できず app_log_excerpt を直接読む必要が
+        // あった。
+        self.push_journal_entry(crate::journal::JournalEntry::GjiReinitRetryCompleted {
+            token,
+            status: format!("{status:?}"),
+            cold_seq: completion.cold_seq.value(),
+            origin_focus_gen: completion.focus_gen,
+            current_focus_gen,
+            focus_matches,
+            retry_romaji_present,
+            deferred_flushed,
+            deferred_discarded,
+        });
         drop(completion.guard);
     }
 

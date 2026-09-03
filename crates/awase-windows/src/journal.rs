@@ -134,6 +134,22 @@ impl PhysicalDispositionSummary {
     }
 }
 
+/// `Output::flush_raw_tsf_literal_recovery` の結果サマリ（ADR-123）。
+/// `DecisionKind`/`PhysicalDispositionSummary` と同じブリッジパターン:
+/// `output` モジュール内部の型を journal 向けに変換して持つ。
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "kind")]
+pub enum DeferredRecoveryOutcomeSummary {
+    /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
+    /// backspace/romaji/`pending_deferred` を丸ごと破棄した。
+    DiscardedStale { vk_count: usize },
+    /// 無関係な別の give-up 由来の GJI reinit retry が polling 中だったため、
+    /// `pending_deferred` の flush を見送った（次の flush 機会に委ねる）。
+    SkippedWhilePolling,
+    /// `pending_deferred` を実際に flush した（0 件なら「取り残しなし」）。
+    Flushed { vk_count: usize },
+}
+
 /// ジャーナルに記録するイベントの種別
 #[derive(Debug, Serialize)]
 #[serde(tag = "type")]
@@ -228,8 +244,24 @@ pub enum JournalEntry {
     TsfProbeStarted {
         source: String,
         cold_seq: u64,
+        /// `GjiAction::StartProbe` 経由で開始した場合の `ProbeId`（`Some`）。
+        ///
+        /// ADR-123 round 2（architect レビュー）指摘: `GjiAction::StartProbe`
+        /// 起点のこのエントリは、かつて `probe_id` の値をそのまま `cold_seq`
+        /// フィールドへ格納していた（`cold_seq` と `probe_id` は別の採番空間
+        /// のため、これはログを読み違えさせる実バグだった）。`cold_seq` は
+        /// 常に `CompositionState::cold_start_count()` 由来の値に統一し、
+        /// `probe_id` を別フィールドとして独立させた。
+        probe_id: Option<u64>,
         gji_state: String,
         consecutive_at_start: u32,
+        /// この probe を開始する直前の `pending_deferred`（probe 実行中に届いた
+        /// 別モーラの VK 退避キュー、`TsfWarmupCoordinator` 所有）の長さ。
+        ///
+        /// ADR-123: 非ゼロなら、この新しい probe が `pending_deferred` を
+        /// まだ flush されていない状態で追い越して開始したことを意味する
+        /// （issue #148「たとえば」→「ばたと」の根本原因）。
+        pending_deferred_len: usize,
     },
     /// TSF/GJI probe の完了・中断・学習完了。
     TsfProbeCompleted {
@@ -244,6 +276,38 @@ pub enum JournalEntry {
         record: crate::tsf::literal_facts::LiteralDetectRecord,
         suppressed_confirms: u16,
         since_vk_sent_ms: u64,
+    },
+    /// `pending_deferred`（probe 実行中に届いた別モーラの VK 退避キュー）の
+    /// flush/discard 結果（ADR-123）。
+    ///
+    /// `RawTsfLiteralRecovery` の give-up 直後（`trigger="raw_recovery"`）と
+    /// GJI reinit retry 完了後（`trigger="reinit_completion"`）の2箇所から
+    /// 記録する。両者とも従来は `log::debug!`/`log::warn!` の自由文字列
+    /// でしか残らず、journal（構造化・容量優先度あり）には現れなかった
+    /// （issue #148 の調査で `app_log_excerpt` を直接読まないと確認できず、
+    /// journal の `DumpTruncated` で欠落しうる弱点だった）。
+    DeferredRecoveryFlush {
+        trigger: &'static str,
+        outcome: DeferredRecoveryOutcomeSummary,
+    },
+    /// GJI reinit（`VK_IME_OFF`→`VK_IME_ON`、`RawTsfLiteralRecovery` の
+    /// give-up 分岐が予約する）retry poll の完了（ADR-123）。
+    ///
+    /// `origin_focus_gen`（give-up 検出時点のフォーカス世代）と
+    /// `current_focus_gen`（poll 完了時点の世代）の一致・不一致が、
+    /// `pending_deferred` を安全に flush してよいか（focus_matches）を
+    /// 決める。この判定は従来 `log::debug!`/`log::warn!` のみで、journal
+    /// には一切現れなかった。
+    GjiReinitRetryCompleted {
+        token: u32,
+        status: String,
+        cold_seq: u64,
+        origin_focus_gen: u32,
+        current_focus_gen: u32,
+        focus_matches: bool,
+        retry_romaji_present: bool,
+        deferred_flushed: usize,
+        deferred_discarded: usize,
     },
     /// `elapsed_ms` / OS tick / hook timestamp の対応を取るためのアンカー。
     ClockAnchor { tick_ms: u64, hook_us: u64 },
@@ -385,7 +449,9 @@ impl JournalEntry {
             Self::GjiFsmTransition { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
-            | Self::LiteralDetect { .. } => LaneKind::Timing,
+            | Self::LiteralDetect { .. }
+            | Self::DeferredRecoveryFlush { .. }
+            | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
             Self::ImeActuation { .. } | Self::ConvClassifyCall { .. } | Self::TimerFired { .. } => {
                 LaneKind::Actuation
             }

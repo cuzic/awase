@@ -136,7 +136,38 @@ BUG-38 の修正（`flush_stale_deferred_vks_after_recovery`）自体は正し�
 機能している（手順14で実際に flush されている）。抜けているのは
 「flush されるまでの間、新規 send を止める」側のガードである。
 
-## 決定
+## 実装状況（2026-09-03）
+
+**ユーザー判断により、本 decision（`defer_if_probe_in_flight` の gating 拡張）
+自体の実装は今回見送り、次に挙げる診断ログの計装のみを先行実装した。**
+理由: 根本原因は「た/ば/と/え」1件のインシデントの forensic 再構成から
+導いたものであり、再発時にこの仮説を機械的に確定/反証できる一次データが
+まだ整っていない。再発を待ち、下記フィールドで仮説を確定させてから
+decision を実装する。
+
+実装したフィールド（すべて既存の journal 構造化イベントへの追加、または
+これまで `log::debug!`/`log::warn!` の自由文字列でしか残らず journal
+（構造化・容量優先度あり）には一切現れなかった事実の新規構造化）:
+
+- `JournalEntry::TsfProbeStarted` に `probe_id: Option<u64>`（`cold_seq` との
+  混同を解消、round 2 architect 指摘の修正）と `pending_deferred_len: usize`
+  （**本件の核心**: 新しい probe が `pending_deferred` を追い越して開始した
+  ことを直接示す。非ゼロなら次のインシデントでこの仮説が即座に確定する）
+  を追加。
+- `JournalEntry::DeferredRecoveryFlush`（新設）: `pending_deferred` の
+  flush/discard/skip の3分岐（`RawRecoveryOutcome`）を構造化。
+- `JournalEntry::GjiReinitRetryCompleted`（新設）: reinit retry 完了時の
+  `focus_matches`・flush/discard 件数を構造化。
+
+次回同種のインシデントが再発した際は、journal（`app_log_excerpt` を別途
+読まなくても）だけで「`TsfProbeStarted.pending_deferred_len > 0` のケースが
+実際に発生したか」を機械的に確認できる。これが確認できれば decision の
+実装に進む。関連ファイル: `crates/awase-windows/src/journal.rs`,
+`crates/awase-windows/src/output/mod.rs`,
+`crates/awase-windows/src/output/tsf_warmup_coord.rs`,
+`crates/awase-windows/src/platform.rs`。
+
+## 決定（未実装、次回再発確認後に着手）
 
 **`defer_if_probe_in_flight`（および同種の gating 判定）の条件を
 `has_pending_tsf() || raw_recovery_owns_deferred() || !pending_deferred.is_empty()`

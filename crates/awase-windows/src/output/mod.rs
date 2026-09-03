@@ -305,6 +305,25 @@ impl std::fmt::Debug for Output {
     }
 }
 
+/// `Output::flush_raw_tsf_literal_recovery` の結果（ADR-123）。
+///
+/// 呼び出し元（`platform.rs`）が journal
+/// （`JournalEntry::DeferredRecoveryFlush`）へ記録するための情報。従来は
+/// `log::debug!`/`log::warn!` の自由文字列でしか残らず、`pending_deferred`
+/// が実際に flush/discard されたかが journal から追えなかった
+/// （issue #148 の調査で `app_log_excerpt` を直接読まないと確認できなかった）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RawRecoveryOutcome {
+    /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
+    /// backspace/romaji/`pending_deferred` を丸ごと破棄した。
+    DiscardedStale { vk_count: usize },
+    /// 無関係な別の give-up 由来の GJI reinit retry が polling 中だったため、
+    /// `pending_deferred` の flush を見送った。
+    SkippedWhilePolling,
+    /// `pending_deferred` を実際に flush した（0 件なら「取り残しなし」）。
+    Flushed { vk_count: usize },
+}
+
 /// `assess_warmth` の戻り値。composition の温度状態をまとめる。
 pub(super) struct WarmthContext {
     pub warm: bool,
@@ -1472,6 +1491,12 @@ impl Output {
         self.warmup_coord.has_pending_tsf()
     }
 
+    /// `pending_deferred`（probe 実行中に届いた別モーラの VK 退避キュー）の
+    /// 現在の長さ（ADR-123、診断用）。
+    pub(crate) fn pending_deferred_len(&self) -> usize {
+        self.warmup_coord.pending_deferred_len()
+    }
+
     /// GJI probe をキャンセルし、OUTPUT_GATE ガードを解放する。
     ///
     /// `GjiAction::CancelProbe` ハンドラが呼ぶ。内部で以下を一括実行する:
@@ -1632,9 +1657,9 @@ impl Output {
     /// backspace/romaji再送/reinit がすべて実際に SendInput された後でなければ
     /// 取り残された deferred VK を送出してはいけないため（先に送ると backspace が
     /// deferred 側の文字を巻き込んで消してしまう、`docs/known-bugs.md` BUG-38 参照）。
-    pub fn flush_raw_tsf_literal_recovery(&self) {
-        if self.discard_raw_recovery_if_focus_stale() {
-            return;
+    pub(crate) fn flush_raw_tsf_literal_recovery(&self) -> RawRecoveryOutcome {
+        if let Some(vk_count) = self.discard_raw_recovery_if_focus_stale() {
+            return RawRecoveryOutcome::DiscardedStale { vk_count };
         }
         flush_raw_tsf_literal_backspaces();
         self.flush_raw_tsf_literal_romaji();
@@ -1644,9 +1669,10 @@ impl Output {
                 "[raw-tsf-literal] skip stale deferred flush while GJI reinit retry is polling: \
                  result={start_result:?}"
             );
-            return;
+            return RawRecoveryOutcome::SkippedWhilePolling;
         }
-        self.flush_stale_deferred_vks_after_recovery();
+        let vk_count = self.flush_stale_deferred_vks_after_recovery();
+        RawRecoveryOutcome::Flushed { vk_count }
     }
 
     /// give-up 検出時点の focus 世代と、実際に `WM_DRAIN_OUTPUT_QUEUE` が処理される
@@ -1664,7 +1690,10 @@ impl Output {
     /// 送られてから**ようやく stale 判定されていた。これは ADR-100 が最初から懸念していた
     /// 「別ウィンドウへの誤送信」を、判定タイミングの違いで再導入していた。
     /// backspace/romaji 送信そのものより前に照合することで、この経路を塞ぐ。
-    fn discard_raw_recovery_if_focus_stale(&self) -> bool {
+    /// `Some(discarded_deferred)` を返せば discard 実行済み。
+    /// `discarded_deferred` は `pending_deferred` から実際に破棄された VK 数
+    /// （focus 不一致でも `pending_deferred` が既に空なら 0）。
+    fn discard_raw_recovery_if_focus_stale(&self) -> Option<usize> {
         let stale_origin = {
             let pending = self.pending_gji_reinit.borrow();
             pending.as_ref().and_then(|p| {
@@ -1672,12 +1701,10 @@ impl Output {
                     .then_some((p.cold_seq, p.focus_gen))
             })
         };
-        let Some((cold_seq, origin_focus_gen)) = stale_origin else {
-            return false;
-        };
+        let (cold_seq, origin_focus_gen) = stale_origin?;
         let current_focus_gen = self.current_ime_mode_focus_gen();
         if current_focus_gen == origin_focus_gen {
-            return false;
+            return None;
         }
         self.pending_gji_reinit.borrow_mut().take();
         let (backs, romaji) = crate::RAW_TSF_LITERAL.take_pending();
@@ -1692,7 +1719,7 @@ impl Output {
             cold_seq.value(),
             !romaji.is_empty(),
         );
-        true
+        Some(discarded_deferred)
     }
 
     /// give-up（romaji 再送なし）で `RawTsfLiteralRecovery` が終わった場合に、
@@ -1719,12 +1746,12 @@ impl Output {
     /// ESC で丸ごと破棄された直後でもある）。probe を経由した re-entry は
     /// ADR-079 Stage2（未実装）のスコープであり、本 fix は「取り残されたまま
     /// 順序が入れ替わる」実害の解消に限定する。
-    fn flush_stale_deferred_vks_after_recovery(&self) {
+    fn flush_stale_deferred_vks_after_recovery(&self) -> usize {
         if self.has_polling_gji_reinit_retry() {
             log::debug!(
                 "[raw-tsf-literal] stale deferred flush postponed: GJI reinit retry polling"
             );
-            return;
+            return 0;
         }
         let len = self.flush_pending_deferred_vks();
         if len > 0 {
@@ -1732,6 +1759,7 @@ impl Output {
                 "[raw-tsf-literal] give-up 後に取り残されていた deferred {len} VK(s) を flush"
             );
         }
+        len
     }
 
     pub(crate) fn flush_deferred_vks_after_gji_reinit_completion(&self) -> usize {
@@ -1966,7 +1994,7 @@ mod tests {
         let discarded = o.discard_raw_recovery_if_focus_stale();
 
         assert!(
-            discarded,
+            discarded.is_some(),
             "origin_focus_gen(1) != current(2) なら discard すべき"
         );
         assert!(
@@ -1995,7 +2023,10 @@ mod tests {
 
         let discarded = o.discard_raw_recovery_if_focus_stale();
 
-        assert!(!discarded, "focus 世代が一致するなら discard しない");
+        assert!(
+            discarded.is_none(),
+            "focus 世代が一致するなら discard しない"
+        );
         assert!(
             o.pending_gji_reinit.borrow().is_some(),
             "focus 一致時は pending_gji_reinit をそのまま残す"
@@ -2030,7 +2061,7 @@ mod tests {
 
         let discarded = o.discard_raw_recovery_if_focus_stale();
 
-        assert!(!discarded, "Polling 中の pending は対象外");
+        assert!(discarded.is_none(), "Polling 中の pending は対象外");
         assert!(o.pending_gji_reinit.borrow().is_some());
         let (backs, romaji) = crate::RAW_TSF_LITERAL.take_pending();
         assert_eq!((backs, romaji.as_str()), (2, "ko"));
