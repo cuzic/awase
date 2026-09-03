@@ -1300,9 +1300,9 @@ impl SettingsApp {
                  使用不可・同時打鍵検出自体が機能しません。プログラマブルキーボードで\n\
                  F13-F20 等へ物理リマップするか、Space を検討してください。\n\
                  キー設定タブの候補にある「Left Alt」「Right Alt」を選ぶと、\n\
-                 awase 有効時のみ Alt キーを親指キーとして使えます）。\n\
+                 親指シフト入力中のみ Alt キーを親指キーとして使えます）。\n\
                  \n\
-                 awase 有効/無効（上級者向け設定タブ）・IME ON/OFF（キー設定タブ）の\n\
+                 親指シフト入力／ローマ字入力（上級者向け設定タブ）・IME ON/OFF（キー設定タブ）の\n\
                  ホットキーも未設定になっています（無変換/変換前提の既定値は US では\n\
                  動かないため）。動作する物理キーの組み合わせを設定してください。\n\
                  単独5連打で無効化（既定 Insert キー）は無変換/変換に依存しないため\n\
@@ -1350,8 +1350,8 @@ impl SettingsApp {
         // Thumb keys
         ui.label("親指キー");
         let left_thumb_hover = "左の親指シフトキーに使うキーです。通常は「無変換」キーを使います。\n\
-                 「Left Alt」を選ぶと、物理 Left Alt キーを awase 有効時に限り\n\
-                 左親指キーとして使います（無効時は通常の Alt として機能し、\n\
+                 「Left Alt」を選ぶと、物理 Left Alt キーを親指シフト入力中に限り\n\
+                 左親指キーとして使います（ローマ字入力中は通常の Alt として機能し、\n\
                  Alt+Tab 等を損ないません。PowerToys 等の OS レベルキーリマップと\n\
                  同様の効果を awase 単体で実現する機能です）。";
         ui.horizontal(|ui| {
@@ -1364,7 +1364,7 @@ impl SettingsApp {
             );
         });
         let right_thumb_hover = "右の親指シフトキーに使うキーです。通常は「変換」キーを使います。\n\
-                 「Right Alt」を選ぶと、物理 Right Alt キーを awase 有効時に限り\n\
+                 「Right Alt」を選ぶと、物理 Right Alt キーを親指シフト入力中に限り\n\
                  右親指キーとして使います（詳細は左親指のヒントを参照）。";
         ui.horizontal(|ui| {
             ui.label("  右親指:").on_hover_text(right_thumb_hover);
@@ -1469,9 +1469,9 @@ impl SettingsApp {
         // 2026-08-15 ユーザー判断: 「awase → IME ON/OFFキー」は単に
         // 「IME ON/OFFキー」へ改称。「IME → awase ON/OFFキー」（旧
         // `tab_ime_detect`）は既に GUI から撤去済みで対比する相手が無くなった
-        // ため「awase → 」を残す意味が無い。「awase 有効/無効」（旧称
-        // 「親指シフト ON/OFF」）は2026-09-02に「上級者向け設定」タブへ
-        // 移動済みのため、このタブでは本項目のみを扱う。
+        // ため「awase → 」を残す意味が無い。「親指シフト入力／ローマ字入力」
+        // （旧称「親指シフト ON/OFF」→「awase 有効/無効」）は2026-09-02に
+        // 「上級者向け設定」タブへ移動済みのため、このタブでは本項目のみを扱う。
         ui.label("IME ON/OFFキー");
         combo_key_list_ui(
             ui,
@@ -2359,30 +2359,34 @@ impl SettingsApp {
         // ON/OFF」は、隣接する「IME ON/OFF」（Windows側のIME状態）と紛らわしい
         // という指摘を受け「awase 有効/無効」へ改称。かつ日常的に触る設定
         // ではないため「キー設定」タブから本タブへ移動した。
-        let awase_enable_hover = "awase を無効にすると、キー入力の変換（親指シフト同時打鍵判定・\n\
+        // 2026-09-03 ユーザー判断: 「awase 有効/無効」もエンジンという実装用語が
+        // 残り分かりにくいという指摘を受け、状態そのものを名付ける「親指シフト
+        // 入力／ローマ字入力」へ改称。ON/OFF表記をやめたことで「IME ON/OFF」との
+        // 混同も避けられる。
+        let awase_enable_hover = "ローマ字入力にすると、キー入力の変換（親指シフト同時打鍵判定・\n\
              ローマ字→かな変換）を一切行わず、すべてのキーをそのまま素通しします。\n\
              Windows 側の IME の ON/OFF 状態には影響しません（別項目の「IME ON/OFF」参照）。";
-        ui.label("awase 有効/無効")
+        ui.label("親指シフト入力／ローマ字入力")
             .on_hover_text(awase_enable_hover);
         combo_key_list_ui(
             ui,
-            "awase 有効",
+            "親指シフト入力にする",
             "eng_on",
             &mut self.config.keys.engine_on,
             &mut self.new_engine_on,
-            "awase を有効にするキーの組み合わせです。\n複数登録できます。",
+            "親指シフト入力に切り替えるキーの組み合わせです。\n複数登録できます。",
         );
         combo_key_list_ui(
             ui,
-            "awase 無効",
+            "ローマ字入力にする",
             "eng_off",
             &mut self.config.keys.engine_off,
             &mut self.new_engine_off,
-            "awase を無効にするキーの組み合わせです。\n複数登録できます。",
+            "ローマ字入力に切り替えるキーの組み合わせです。\n複数登録できます。",
         );
-        let solo_repeat_hover = "指定キーを単独で素早く5回連続押下すると awase を無効にします。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
+        let solo_repeat_hover = "指定キーを単独で素早く5回連続押下するとローマ字入力に切り替えます。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
         ui.horizontal(|ui| {
-            ui.label("  単独5連打で無効化:")
+            ui.label("  単独5連打でローマ字入力にする:")
                 .on_hover_text(solo_repeat_hover);
             solo_repeat_combo(
                 ui,
@@ -2393,12 +2397,12 @@ impl SettingsApp {
         ui.add_space(8.0);
 
         // Toggle hotkey
-        ui.label("awase 有効/無効トグル")
+        ui.label("親指シフト入力／ローマ字入力 切替")
             .on_hover_text(awase_enable_hover);
         let engine_toggle_hover =
-            "awase の有効/無効をトグルするホットキーです。\nシステム全体で有効です。";
+            "親指シフト入力とローマ字入力をトグルするホットキーです。\nシステム全体で有効です。";
         ui.horizontal(|ui| {
-            ui.label("  awase切替:").on_hover_text(engine_toggle_hover);
+            ui.label("  切替:").on_hover_text(engine_toggle_hover);
             hotkey_combo_ui(
                 ui,
                 "engine_toggle_hotkey",
@@ -2459,7 +2463,7 @@ impl SettingsApp {
              JIS かな直接入力に切り替わると、awase が送出するローマ字綴りの\n\
              キー列が誤読され、一度切り替わると awase 側からは元に戻せません\n\
              （Windows にこの入力方式を外部から切り替える公式 API が無いため）。\n\
-             JIS かな直接入力を意図的に使いたい場合（= awase の Engine を OFF に\n\
+             JIS かな直接入力を意図的に使いたい場合（= awase をローマ字入力に\n\
              して使う場合など）のみ OFF にしてください。",
         );
         ui.add_space(4.0);

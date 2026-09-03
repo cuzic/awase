@@ -538,14 +538,14 @@ fn set_tooltip(
         format!("awase - かな入力になっています{admin_suffix}")
     } else if layout_name.is_empty() {
         if enabled {
-            format!("NICOLA: ON{admin_suffix}")
+            format!("親指シフト入力{admin_suffix}")
         } else {
-            format!("NICOLA: OFF{admin_suffix}")
+            format!("ローマ字入力{admin_suffix}")
         }
     } else if enabled {
-        format!("NICOLA: ON ({layout_name}){admin_suffix}")
+        format!("親指シフト入力 ({layout_name}){admin_suffix}")
     } else {
-        format!("NICOLA: OFF ({layout_name}){admin_suffix}")
+        format!("ローマ字入力 ({layout_name}){admin_suffix}")
     };
 
     let tip_wide = crate::win32::to_wide(&tip);
@@ -653,7 +653,7 @@ pub fn handle_tray_message(
         append_menu_item(
             hmenu,
             IDM_RESET_STATE,
-            "状態をリセット (Engine ON/Caps OFF/ひらがな)",
+            "状態をリセット (親指シフト入力/Caps OFF/ひらがな)",
         );
 
         // 実験: cold warmup（F2送信/probe待機/捨て駒スキップ、per-VK confirm）は
@@ -686,7 +686,7 @@ pub fn handle_tray_message(
             );
         }
         append_menu_item(hmenu, IDM_BUG_REPORT, "不具合を報告...");
-        append_menu_item(hmenu, IDM_TOGGLE, "有効/無効切替");
+        append_menu_item(hmenu, IDM_TOGGLE, "親指シフト入力／ローマ字入力 切替");
         append_menu_item(hmenu, IDM_EXIT, "終了");
 
         // メニュー表示前にウィンドウをフォアグラウンドにする（メニューが閉じるために必要）

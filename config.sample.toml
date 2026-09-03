@@ -61,10 +61,10 @@ speculative_delay_ms = 30
 #   batched  - 全文字を1回の SendInput（高速）
 output_mode = "unicode"
 
-# エンジン ON キー（NICOLA 入力を有効にするキー）
+# 親指シフト入力にするキー
 engine_on_keys = ["Ctrl+Shift+VK_CONVERT"]
 
-# エンジン OFF キー（NICOLA 入力を無効にするキー）
+# ローマ字入力にするキー
 engine_off_keys = ["Ctrl+Shift+VK_NONCONVERT"]
 
 # IME ON キー（ImmSetOpenStatus API で IME を ON にするキー）

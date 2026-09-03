@@ -18,7 +18,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 
 # キーバインディング設定
 # [keys]
-# エンジン ON/OFF キー（複数指定可、デフォルト: Ctrl+Shift+変換で ON、Ctrl+Shift+無変換で OFF）
+# 親指シフト入力／ローマ字入力 切替キー（複数指定可、デフォルト: Ctrl+Shift+変換で親指シフト入力、Ctrl+Shift+無変換でローマ字入力）
 # engine_on = ["Ctrl+Shift+Convert"]
 # engine_off = ["Ctrl+Shift+Nonconvert"]
 
