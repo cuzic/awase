@@ -78,20 +78,20 @@
 
 #[cfg(windows)]
 mod probe {
+    use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
     use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassNameW, GetForegroundWindow,
-        GetMessageW, GetWindowThreadProcessId, KillTimer, MSG, PostQuitMessage, RegisterClassW,
-        SMTO_ABORTIFHUNG, SendMessageTimeoutW, SetTimer, TranslateMessage, WM_DESTROY, WM_TIMER,
-        WNDCLASSW, WS_OVERLAPPEDWINDOW,
+        GetMessageW, GetWindowThreadProcessId, KillTimer, PostQuitMessage, RegisterClassW,
+        SendMessageTimeoutW, SetTimer, TranslateMessage, MSG, SMTO_ABORTIFHUNG, WM_DESTROY,
+        WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW,
     };
-    use windows::core::{PCWSTR, PWSTR};
 
     /// `crates/awase-windows/src/imm.rs` と同じ値。`pub(crate)` のため
     /// example から直接参照できず、依存も増やしたくないのでリテラルで持つ

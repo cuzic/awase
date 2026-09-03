@@ -212,12 +212,23 @@ impl ForceOverrides {
 /// `base_dir` を外から隠蔽し、`learn()` 一発でキャッシュ更新とファイル保存を行う。
 #[derive(Debug)]
 pub struct ImmCapabilityStore {
-    cache: std::collections::HashMap<String, ImmCapability>,
+    cache: ImmCapabilityCache,
     base_dir: std::path::PathBuf,
-    /// `ImmGetDefaultIMEWnd`=NULL の連続観測回数（class_name ごと、未確定分のみ）。
+    /// `ImmGetDefaultIMEWnd`=NULL の連続観測回数（process_name/class_name ごと、未確定分のみ）。
     /// ディスクへは永続化しない — セッションをまたいで引き継ぐ必要はなく、
     /// 再起動のたびに空から積み直せば十分（BUG-56対策）。
-    pending_unavailable: std::collections::HashMap<String, u32>,
+    pending_unavailable: PendingImmUnavailable,
+}
+
+type ImmCapabilityCache =
+    std::collections::HashMap<String, std::collections::HashMap<String, ImmCapability>>;
+type PendingImmUnavailable =
+    std::collections::HashMap<String, std::collections::HashMap<String, u32>>;
+
+#[derive(Debug)]
+struct LoadedImmCapabilityCache {
+    cache: ImmCapabilityCache,
+    ignored_legacy_entries: usize,
 }
 
 impl ImmCapabilityStore {
@@ -232,93 +243,161 @@ impl ImmCapabilityStore {
     const UNAVAILABLE_CONFIRM_THRESHOLD: u32 = 2;
 
     pub(crate) fn new(base_dir: std::path::PathBuf) -> Self {
-        let cache = Self::load(&base_dir);
-        Self {
-            cache,
+        let loaded = Self::load(&base_dir);
+        let store = Self {
+            cache: loaded.cache,
             base_dir,
             pending_unavailable: std::collections::HashMap::new(),
+        };
+        if loaded.ignored_legacy_entries > 0 {
+            store.save();
         }
+        store
     }
 
-    pub(crate) fn get(&self, class_name: &str) -> Option<ImmCapability> {
-        self.cache.get(class_name).copied()
+    pub(crate) fn get(&self, process_name: &str, class_name: &str) -> Option<ImmCapability> {
+        self.cache
+            .get(process_name)
+            .and_then(|process_cache| process_cache.get(class_name))
+            .copied()
     }
 
-    pub(crate) fn learn(&mut self, class_name: String, cap: ImmCapability) {
-        self.cache.insert(class_name, cap);
+    pub(crate) fn learn(&mut self, process_name: String, class_name: String, cap: ImmCapability) {
+        self.cache
+            .entry(process_name)
+            .or_default()
+            .insert(class_name, cap);
         self.save();
     }
 
     /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する。閾値回連続で観測されて初めて
     /// `Unavailable` として確定・永続化する（`UNAVAILABLE_CONFIRM_THRESHOLD` 参照）。
-    /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの class_name を
+    /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの process/class を
     /// スキップ済みの前提。
-    pub(crate) fn record_null_probe(&mut self, class_name: String) {
-        let count = self
+    pub(crate) fn record_null_probe(&mut self, process_name: String, class_name: String) {
+        let process_pending = self
             .pending_unavailable
-            .entry(class_name.clone())
-            .or_insert(0);
+            .entry(process_name.clone())
+            .or_default();
+        let count = process_pending.entry(class_name.clone()).or_insert(0);
         *count += 1;
-        if *count >= Self::UNAVAILABLE_CONFIRM_THRESHOLD {
-            self.pending_unavailable.remove(&class_name);
-            self.learn(class_name, ImmCapability::Unavailable);
+        let confirmed = *count >= Self::UNAVAILABLE_CONFIRM_THRESHOLD;
+        if confirmed {
+            process_pending.remove(&class_name);
+            if process_pending.is_empty() {
+                self.pending_unavailable.remove(&process_name);
+            }
+            self.learn(process_name, class_name, ImmCapability::Unavailable);
         }
     }
 
-    /// 非 NULL 観測（IMM32 が応答した）を得たら、その class_name の「疑い」カウントを
+    /// 非 NULL 観測（IMM32 が応答した）を得たら、その process/class の「疑い」カウントを
     /// クリアする。決め打ちの一時ウィンドウが NULL を返した直後に本物の入力欄が
     /// フォーカスされて non-NULL を返すケースで、疑いが誤って積み上がらないようにする。
-    pub(crate) fn clear_pending_unavailable(&mut self, class_name: &str) {
-        self.pending_unavailable.remove(class_name);
+    pub(crate) fn clear_pending_unavailable(&mut self, process_name: &str, class_name: &str) {
+        let Some(process_pending) = self.pending_unavailable.get_mut(process_name) else {
+            return;
+        };
+        process_pending.remove(class_name);
+        if process_pending.is_empty() {
+            self.pending_unavailable.remove(process_name);
+        }
     }
 
-    fn load(base_dir: &std::path::Path) -> std::collections::HashMap<String, ImmCapability> {
+    fn load(base_dir: &std::path::Path) -> LoadedImmCapabilityCache {
         let path = base_dir.join(CACHE_FILENAME);
         let Ok(content) = std::fs::read_to_string(&path) else {
-            return std::collections::HashMap::new();
+            return LoadedImmCapabilityCache {
+                cache: std::collections::HashMap::new(),
+                ignored_legacy_entries: 0,
+            };
         };
         let table: toml::Table = match content.parse() {
             Ok(t) => t,
             Err(e) => {
                 log::warn!("Failed to parse {}: {e}", path.display());
-                return std::collections::HashMap::new();
+                return LoadedImmCapabilityCache {
+                    cache: std::collections::HashMap::new(),
+                    ignored_legacy_entries: 0,
+                };
             }
         };
         let mut cache = std::collections::HashMap::new();
+        let mut ignored_legacy_entries = 0usize;
         if let Some(toml::Value::Table(section)) = table.get("imm_capability") {
-            for (class_name, value) in section {
-                if let toml::Value::String(s) = value {
-                    let cap = match s.as_str() {
-                        "works" => ImmCapability::Works,
-                        "unavailable" | "broken" => ImmCapability::Unavailable,
-                        _ => continue,
-                    };
-                    cache.insert(class_name.clone(), cap);
+            for (process_name, value) in section {
+                match value {
+                    toml::Value::Table(process_section) => {
+                        for (class_name, value) in process_section {
+                            if let toml::Value::String(s) = value {
+                                let cap = match s.as_str() {
+                                    "works" => ImmCapability::Works,
+                                    "unavailable" | "broken" => ImmCapability::Unavailable,
+                                    _ => continue,
+                                };
+                                cache
+                                    .entry(process_name.clone())
+                                    .or_insert_with(std::collections::HashMap::new)
+                                    .insert(class_name.clone(), cap);
+                            }
+                        }
+                    }
+                    toml::Value::String(_) => {
+                        ignored_legacy_entries += 1;
+                    }
+                    _ => {}
                 }
             }
         }
-        if !cache.is_empty() {
-            log::info!(
-                "Loaded IMM capability cache: {} entries from {}",
-                cache.len(),
+        if ignored_legacy_entries > 0 {
+            log::warn!(
+                "Ignored {ignored_legacy_entries} legacy flat IMM capability cache entries from {} \
+                 (expected [imm_capability.\"process.exe\"] class = value)",
                 path.display()
             );
         }
-        cache
+        let entry_count = count_imm_capability_entries(&cache);
+        if entry_count > 0 {
+            log::info!(
+                "Loaded IMM capability cache: {} entries from {}",
+                entry_count,
+                path.display()
+            );
+        }
+        LoadedImmCapabilityCache {
+            cache,
+            ignored_legacy_entries,
+        }
     }
 
     fn save(&self) {
         let mut section = toml::Table::new();
-        for (class_name, cap) in &self.cache {
-            let value = match cap {
-                ImmCapability::Works => "works",
-                ImmCapability::Unavailable => "unavailable",
-            };
-            section.insert(class_name.clone(), toml::Value::String(value.to_string()));
+        for (process_name, process_cache) in &self.cache {
+            let mut process_section = toml::Table::new();
+            for (class_name, cap) in process_cache {
+                let value = match cap {
+                    ImmCapability::Works => "works",
+                    ImmCapability::Unavailable => "unavailable",
+                };
+                process_section.insert(class_name.clone(), toml::Value::String(value.to_string()));
+            }
+            section.insert(process_name.clone(), toml::Value::Table(process_section));
         }
         save_section(&self.base_dir, "imm_capability", section);
-        log::debug!("Saved IMM capability cache: {} entries", self.cache.len());
+        log::debug!(
+            "Saved IMM capability cache: {} entries",
+            count_imm_capability_entries(&self.cache)
+        );
     }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        count_imm_capability_entries(&self.cache)
+    }
+}
+
+fn count_imm_capability_entries(cache: &ImmCapabilityCache) -> usize {
+    cache.values().map(std::collections::HashMap::len).sum()
 }
 
 // ── キャッシュファイル共通 write ヘルパー ──────────────────────────────────────
@@ -412,7 +491,7 @@ impl InjectionModeStore {
 
 #[cfg(test)]
 mod imm_capability_store_tests {
-    use super::{ImmCapability, ImmCapabilityStore};
+    use super::{ImmCapability, ImmCapabilityStore, CACHE_FILENAME};
 
     /// テストごとに衝突しない一時ディレクトリを作る。`std::fs` のみで完結するため
     /// Win32 依存なしで Linux 上でも実行できる（`journal.rs` の一時ファイル方式と同じ）。
@@ -424,6 +503,10 @@ mod imm_capability_store_tests {
     /// 事故が起きるため（実機 CI で `single_null_probe_does_not_confirm_unavailable`
     /// 等が `Some(Unavailable)` を誤って観測して発覚）。
     fn temp_store() -> ImmCapabilityStore {
+        ImmCapabilityStore::new(temp_dir())
+    }
+
+    fn temp_dir() -> std::path::PathBuf {
         static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
@@ -433,25 +516,25 @@ mod imm_capability_store_tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp dir for ImmCapabilityStore test");
-        ImmCapabilityStore::new(dir)
+        dir
     }
 
     // BUG-56: 単発の NULL 観測だけでは Unavailable を確定しない。
     #[test]
     fn single_null_probe_does_not_confirm_unavailable() {
         let mut store = temp_store();
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        assert_eq!(store.get("Qt663QWindowIcon"), None);
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        assert_eq!(store.get("line.exe", "Qt663QWindowIcon"), None);
     }
 
     // BUG-56: 閾値回（2回）連続で NULL を観測して初めて Unavailable が確定する。
     #[test]
     fn two_consecutive_null_probes_confirm_unavailable() {
         let mut store = temp_store();
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
         assert_eq!(
-            store.get("Qt663QWindowIcon"),
+            store.get("line.exe", "Qt663QWindowIcon"),
             Some(ImmCapability::Unavailable)
         );
     }
@@ -461,22 +544,115 @@ mod imm_capability_store_tests {
     #[test]
     fn non_null_observation_resets_pending_count() {
         let mut store = temp_store();
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        store.clear_pending_unavailable("Qt663QWindowIcon");
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        assert_eq!(store.get("Qt663QWindowIcon"), None);
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        store.clear_pending_unavailable("line.exe", "Qt663QWindowIcon");
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        assert_eq!(store.get("line.exe", "Qt663QWindowIcon"), None);
     }
 
     // 既に確定済みの class_name はカウントに影響されず安定した値を返す。
     #[test]
     fn already_confirmed_capability_is_stable() {
         let mut store = temp_store();
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        store.record_null_probe("Qt663QWindowIcon".to_string());
-        store.record_null_probe("Qt663QWindowIcon".to_string());
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
+        store.record_null_probe("line.exe".to_string(), "Qt663QWindowIcon".to_string());
         assert_eq!(
-            store.get("Qt663QWindowIcon"),
+            store.get("line.exe", "Qt663QWindowIcon"),
             Some(ImmCapability::Unavailable)
+        );
+    }
+
+    // BUG-107: winit の既定クラス名など、複数プロセスで共有される class_name は
+    // process_name 込みで独立して学習・参照する。
+    #[test]
+    fn same_class_name_is_isolated_by_process_name() {
+        let mut store = temp_store();
+        store.learn(
+            "awase-settings.exe".to_string(),
+            "Window Class".to_string(),
+            ImmCapability::Works,
+        );
+        store.learn(
+            "some-other-app.exe".to_string(),
+            "Window Class".to_string(),
+            ImmCapability::Unavailable,
+        );
+
+        assert_eq!(
+            store.get("awase-settings.exe", "Window Class"),
+            Some(ImmCapability::Works)
+        );
+        assert_eq!(
+            store.get("some-other-app.exe", "Window Class"),
+            Some(ImmCapability::Unavailable)
+        );
+    }
+
+    #[test]
+    fn save_and_load_nested_process_table_format() {
+        let dir = temp_dir();
+        let mut store = ImmCapabilityStore::new(dir.clone());
+        store.learn(
+            "awase-settings.exe".to_string(),
+            "Window Class".to_string(),
+            ImmCapability::Works,
+        );
+        store.learn(
+            "some-other-app.exe".to_string(),
+            "Window Class".to_string(),
+            ImmCapability::Unavailable,
+        );
+
+        let content = std::fs::read_to_string(dir.join(CACHE_FILENAME)).expect("read cache.toml");
+        assert!(content.contains("awase-settings.exe"));
+        assert!(content.contains("some-other-app.exe"));
+
+        let reloaded = ImmCapabilityStore::new(dir);
+        assert_eq!(
+            reloaded.get("awase-settings.exe", "Window Class"),
+            Some(ImmCapability::Works)
+        );
+        assert_eq!(
+            reloaded.get("some-other-app.exe", "Window Class"),
+            Some(ImmCapability::Unavailable)
+        );
+    }
+
+    #[test]
+    fn load_ignores_legacy_flat_class_entries() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join(CACHE_FILENAME),
+            r#"
+[imm_capability]
+"Window Class" = "unavailable"
+
+[imm_capability."awase-settings.exe"]
+"Window Class" = "works"
+"#,
+        )
+        .expect("write cache.toml");
+
+        let store = ImmCapabilityStore::new(dir.clone());
+        assert_eq!(store.len(), 1);
+        assert_eq!(store.get("Window Class", "Window Class"), None);
+        assert_eq!(store.get("", "Window Class"), None);
+        assert_eq!(
+            store.get("awase-settings.exe", "Window Class"),
+            Some(ImmCapability::Works)
+        );
+
+        let content = std::fs::read_to_string(dir.join(CACHE_FILENAME)).expect("read cache.toml");
+        let table: toml::Table = content.parse().expect("parse rewritten cache.toml");
+        let Some(toml::Value::Table(section)) = table.get("imm_capability") else {
+            panic!("missing imm_capability section");
+        };
+        assert!(
+            section
+                .values()
+                .all(|value| matches!(value, toml::Value::Table(_))),
+            "legacy flat string entries should be removed on load"
         );
     }
 }

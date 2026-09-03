@@ -45,15 +45,29 @@ impl CurrentFocus {
     /// フォーカス情報をアトミックに更新する。
     /// `app_profile` は `class_name` と `process_name` から導出してキャッシュする。
     pub fn update(&mut self, pid: u32, class_name: String, hwnd: usize, relay_apps: &[String]) {
+        self.update_with_process_name(pid, class_name, hwnd, relay_apps, None);
+    }
+
+    /// 既に同一フォーカスプローブ内で取得済みの process_name があれば再利用して更新する。
+    pub fn update_with_process_name(
+        &mut self,
+        pid: u32,
+        class_name: String,
+        hwnd: usize,
+        relay_apps: &[String],
+        process_name: Option<String>,
+    ) {
         self.hwnd = hwnd;
         #[cfg(windows)]
         {
-            self.process_name = super::classify::get_process_name(pid).to_lowercase();
+            self.process_name = process_name
+                .unwrap_or_else(|| super::classify::get_process_name(pid).to_lowercase());
             self.root_hwnd = super::classify::root_hwnd_of(hwnd);
         }
         #[cfg(not(windows))]
         {
             let _ = pid;
+            let _ = process_name;
             self.process_name.clear();
             self.root_hwnd = hwnd;
         }

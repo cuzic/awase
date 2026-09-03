@@ -396,8 +396,15 @@ impl Runtime {
         if !self.platform.focus.is_focused() {
             return;
         }
+        let process_name = self.platform.focus.process_name().to_owned();
+        if process_name.is_empty() {
+            return;
+        }
         let class_name = self.platform.focus.class_name().to_owned();
-        let current = self.platform.focus.imm_capability(&class_name);
+        let current = self
+            .platform
+            .focus
+            .imm_capability(&process_name, &class_name);
         if let Some(new_cap) = focus_tracker::FocusTracker::decide_imm_capability(
             miss_before,
             miss_after,
@@ -405,9 +412,10 @@ impl Runtime {
             current,
         ) {
             log::info!(
-                "IMM capability learned: {class_name} → {new_cap:?} (miss {miss_before}→{miss_after})"
+                "IMM capability learned: {process_name}/{class_name} → {new_cap:?} (miss {miss_before}→{miss_after})"
             );
-            self.platform.learn_imm_capability(class_name, new_cap);
+            self.platform
+                .learn_imm_capability(process_name, class_name, new_cap);
         }
     }
 
