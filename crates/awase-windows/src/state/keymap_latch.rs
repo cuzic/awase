@@ -46,11 +46,12 @@ impl KeymapLatch {
 
     /// latch テーブルを空にする（ADR-114 decision4「latch 漏れ対策」経路3・5）。
     ///
-    /// **`target_vk` の KeyUp は注入しない**（テーブルを空にするだけ）。決定3が
-    /// `target_vk` を KeyDown 側で Down+Up 同一バッチとして即時完結させる設計で
-    /// あるため、`target_vk` が「押されたまま」残ることは構造的に無い。ADR-110
-    /// の `release_all_latched_remap_targets()`（`target_vk` を押しっぱなしに
-    /// する設計だったため KeyUp 注入が必要だった）とは前提が異なる。
+    /// **`target_vk` の KeyUp は注入しない**（テーブルを空にするだけ）。ADR-114
+    /// 決定3および ADR-130 決定3が、`to` の各ステップを KeyDown 側で Down+Up
+    /// ペアとして即時完結させる設計であるため、`target_vk` が「押されたまま」
+    /// 残ることは構造的に無い。ADR-110 の `release_all_latched_remap_targets()`
+    /// （`target_vk` を押しっぱなしにする設計だったため KeyUp 注入が必要だった）
+    /// とは前提が異なる。
     pub(crate) fn release_all(&mut self) {
         self.0.clear();
     }
