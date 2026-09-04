@@ -71,20 +71,12 @@ fn count_real_calls(content: &str, needle: &str) -> usize {
 ///
 /// 走査自体は既存の `walk_rs_files`（元々3テストにそれぞれローカル関数として
 /// 重複定義されていたもの、本ヘルパー新設時にトップレベルへ集約）を再利用する。
+///
+/// 実体は `list_rs_files_under("src")`（BUG-110/ADR-132 Phase 2 で追加、
+/// 兄弟クレート横断走査にも使う汎用版）と完全に等価なので、そちらへ委譲する
+/// （敵対的コードレビュー指摘: 重複実装の整理）。
 fn list_src_files() -> Vec<String> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let src_root = Path::new(manifest_dir).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src_root, &mut files);
-    files
-        .iter()
-        .map(|path| {
-            path.strip_prefix(manifest_dir)
-                .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
-        .collect()
+    list_rs_files_under("src")
 }
 
 /// `dir` 以下の `.rs` ファイルを再帰的に `out` へ集める。
@@ -3278,4 +3270,211 @@ fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
              期待値を更新してください。"
         );
     }
+}
+
+// ── BUG-110/ADR-132 Phase 2: WarmupImeOn の gate 迂回防止 ──────────────
+
+/// `manifest_dir` 相対の `rel_root` 以下の `.rs` ファイルを再帰的に列挙し、
+/// `read_crate_file` が使える形（`CARGO_MANIFEST_DIR` 相対パス文字列）で返す。
+///
+/// `WarmupImeOn::from_applied_or_belief` は core クレート（`../../src/`、
+/// `crates/awase-windows` から見て2階層上）の `pub const fn` であり、
+/// `list_src_files()`（`awase-windows` 自身の `src/` のみ走査）では取りこぼす。
+/// 兄弟クレート `awase-linux`/`awase-macos` も含めて漏れなく走査する
+/// （PR #127 のコードレビューで実際に見落とされた前例、上記
+/// `every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new`
+/// と同じ理由）。
+fn list_rs_files_under(rel_root: &str) -> Vec<String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let root = Path::new(manifest_dir).join(rel_root);
+    let mut files = Vec::new();
+    walk_rs_files(&root, &mut files);
+    files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(manifest_dir)
+                .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect()
+}
+
+/// `WarmupImeOn::from_applied_or_belief`（`applied` が既知の間は belief に
+/// フォールバックしない、という単調性を持つ生のコンストラクタ）の本番コード
+/// からの実呼び出しは、BUG-110/ADR-132 Phase 2 のゲート版
+/// `from_applied_or_belief_unless_off_drift` の内部1箇所に限定する。
+///
+/// このゲートを迂回して `from_applied_or_belief` を直接呼ぶ新しい呼び出し元が
+/// 増えると、OFF 方向 drift correction と逆向きに warmup（`VK_IME_ON`）を
+/// 送る経路が黙って復活する（BUG-110 で実際に競合した経路そのもの）。
+/// `needle` の末尾に `(` を含めることで、4つ目のコンストラクタ
+/// `from_applied_or_belief_unless_off_drift(` を誤ってカウントしない
+/// （`from_applied_or_belief` は後者の**接頭辞**だが、直後に続く文字が
+/// `_unless_off_drift` であって `(` ではないため区別できる）。
+///
+/// # このガードが対象としない既知の別経路（敵対的コードレビュー指摘）
+///
+/// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
+/// actuation 直後の随伴 warmup）はこのガードの対象外で、`off_drift_active`
+/// ゲートを通らない。これは4つ目のコンストラクタとは別の、意図的な
+/// 未ゲート経路（ADR-132「Phase 2」節「実装上の既知の限界」参照）であり、
+/// `send_eager_tsf_warmup` へ渡す `origin` 引数（`"gated"`/`"actuated"`）で
+/// ログ上区別する対応を別途行った。
+#[test]
+fn warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor() {
+    let mut files = list_rs_files_under("../../src");
+    files.extend(list_src_files());
+    files.extend(list_rs_files_under("../awase-linux/src"));
+    files.extend(list_rs_files_under("../awase-macos/src"));
+
+    let mut total = 0usize;
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "from_applied_or_belief(");
+        if count > 0 {
+            total += count;
+            hits.push(format!("{path} ({count})"));
+        }
+    }
+    assert_eq!(
+        total, 1,
+        "`WarmupImeOn::from_applied_or_belief(` の本番コードでの実呼び出しが \
+         1箇所（`from_applied_or_belief_unless_off_drift` 内部）以外に \
+         見つかりました: {hits:?}。BUG-110/ADR-132 Phase 2 のゲートを \
+         迂回する新しい呼び出し元が追加されていないか確認してください。"
+    );
+}
+
+/// `needle` の実呼び出し（`fn {name}(` という定義行、および行コメント
+/// `//`/`///`/`//!` は除外——`non_comment_lines` を内部で適用する。ADR等の
+/// doc コメントに引用されたコード片や `#[cfg(test)]` 内の正当なリテラル
+/// 使用が「本番コードの迂回」として誤検知されるのを防ぐ、敵対的コード
+/// レビュー N3 指摘）ごとに、対応する閉じ括弧までの引数リスト文字列
+/// （深さカウントを尊重した「トップレベル」の `,` で分割、トリム済み）を
+/// 返す。文字列リテラル内の括弧・カンマは非対応（本テストが対象とする
+/// 呼び出しはいずれも識別子/真偽値リテラルのみの単純な引数なので十分）。
+/// 対応する閉じ括弧が見つからない場合（構文的に不完全な部分一致等）は
+/// その出現を明示的にスキップする（N4 指摘: 見つからない場合に
+/// `args_start` を終端扱いすると、続く走査が非 UTF-8 境界で panic しうる
+/// バグがあった）。
+fn extract_call_arg_lists(content: &str, needle: &str) -> Vec<Vec<String>> {
+    let content = non_comment_lines(content);
+    let content = content.as_str();
+    let fn_name = needle.trim_end_matches('(');
+    let def_needle = format!("fn {fn_name}(");
+    let mut results = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = content[search_from..].find(needle) {
+        let call_start = search_from + rel;
+        let args_start = call_start + needle.len();
+        let is_definition = content[..call_start]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .is_some_and(|line_start| content[line_start..args_start].contains(&def_needle));
+        if is_definition {
+            search_from = args_start;
+            continue;
+        }
+        let mut depth: i32 = 1;
+        let mut args_end = None;
+        for (offset, ch) in content[args_start..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        args_end = Some(args_start + offset);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(args_end) = args_end else {
+            // 対応する閉じ括弧が見つからなかった（構文的に不完全）。
+            // これ以上この occurrence を安全に解釈できないため、次の
+            // needle 検索へ進む（args_start から1バイトだけ進めると
+            // マルチバイト文字の途中を指す可能性があるため、次の
+            // needle 出現へ直接ジャンプする）。
+            search_from = args_start;
+            continue;
+        };
+        let args_text = &content[args_start..args_end];
+        // トップレベルの `,` でのみ分割する（N5 指摘: 深さカウントを
+        // 終端検出だけでなく分割自体にも使う。ネストした関数呼び出しや
+        // クロージャの引数内カンマで誤分割しない）。
+        let mut args: Vec<String> = Vec::new();
+        let mut arg_depth: i32 = 0;
+        let mut current_start = 0usize;
+        for (offset, ch) in args_text.char_indices() {
+            match ch {
+                '(' | '[' | '{' => arg_depth += 1,
+                ')' | ']' | '}' => arg_depth -= 1,
+                ',' if arg_depth == 0 => {
+                    args.push(args_text[current_start..offset].trim().to_owned());
+                    current_start = offset + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail = args_text[current_start..].trim();
+        if !tail.is_empty() {
+            args.push(tail.to_owned());
+        }
+        results.push(args);
+        search_from = args_end + 1;
+    }
+    results
+}
+
+/// `WarmupImeOn::from_applied_or_belief_unless_off_drift` の第3引数
+/// （`off_drift_active`）に本番コードがリテラル `true`/`false` を直書きして
+/// いないことを確認する（敵対的コードレビュー指摘）。
+///
+/// 上の `warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor`
+/// は `from_applied_or_belief(` の呼び出し件数をゲート版内部の1箇所に固定するが、
+/// その1箇所自体が迂回された場合——新しい呼び出し元がゲート版へ第3引数として
+/// リテラル `false` を直書きし、実際には `check_drift_correction` 由来の判定を
+/// 一切行わない——は検出できない。これが「ゲートを迂回する新しい呼び出し元を
+/// 防ぐ」という宣言目的に対して最も安直な迂回手段であるため、引数が bool 型
+/// リテラルでないことを機械的に確認する。`#[cfg(test)]` 側（`src/platform.rs`
+/// の12通り全数テスト）はリテラルを渡すのが正しい用途なので対象外とする。
+#[test]
+fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
+    let mut files = list_rs_files_under("../../src");
+    files.extend(list_src_files());
+    files.extend(list_rs_files_under("../awase-linux/src"));
+    files.extend(list_rs_files_under("../awase-macos/src"));
+
+    let mut violations: Vec<String> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        for args in extract_call_arg_lists(production, "from_applied_or_belief_unless_off_drift(") {
+            let Some(third) = args.get(2) else {
+                violations.push(format!(
+                    "{path}: from_applied_or_belief_unless_off_drift の引数が \
+                     3個未満 ({args:?})"
+                ));
+                continue;
+            };
+            if third == "true" || third == "false" {
+                violations.push(format!(
+                    "{path}: 第3引数(off_drift_active)にリテラル `{third}` を \
+                     直書き（引数全体: {args:?}）"
+                ));
+            }
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "`from_applied_or_belief_unless_off_drift` の第3引数にリテラル \
+         `true`/`false` を直書きする呼び出しが本番コードに見つかりました: \
+         {violations:?}。BUG-110/ADR-132 Phase 2 のゲートを実質的に無効化 \
+         （常に開く/常に閉じる）する迂回であり、`check_drift_correction` \
+         由来の判定変数を渡すべきです。"
+    );
 }

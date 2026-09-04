@@ -16,15 +16,17 @@ use awase::types::{ModifierKey, VkCode};
 /// `classify_modifier` 側に新しい別名 VK が追加されてもここには伝播せず、
 /// ADR-114 決定5 が塞ごうとしている「PHYSICAL_KEY_STATE ベースの held 判定
 /// キーとの二重管理」の穴が再び開く（実装レビュー指摘）。
-fn forbidden_target_vk_reason(
+#[must_use]
+pub fn forbidden_target_vk_reason(
     vk: VkCode,
     left_thumb_vk: VkCode,
     right_thumb_vk: VkCode,
+    is_to_side: bool,
 ) -> Option<&'static str> {
     if vk == left_thumb_vk || vk == right_thumb_vk {
         return Some("親指キー");
     }
-    if ImeKeyKind::from_vk(vk).is_some() {
+    if ImeKeyKind::from_vk(vk).is_some() || (is_to_side && crate::vk::vk_may_mutate_conv(vk)) {
         return Some("IME 制御系 VK");
     }
     match crate::vk::classify_modifier(vk) {
@@ -67,8 +69,8 @@ pub struct CompiledKeymap {
     pub app: Option<String>,
     /// インターセプトするキーコンボ
     pub combo: ParsedKeyCombo,
-    /// 再注入するキー（None=消費のみ）
-    pub send_vk: Option<VkCode>,
+    /// 再注入するキー列（空=消費のみ）。各ステップは Down+Up ペアで即時完結する。
+    pub send_vks: Vec<VkCode>,
 }
 
 /// コンパイル済みキーマップのテーブル。
@@ -88,7 +90,7 @@ impl KeymapTable {
     /// （ADR-114「未解決の疑問」4・5、`Runtime::recompute_active_keymaps()` 側で扱う）。
     pub fn new(rules: &[KeymapRule], left_thumb_vk: VkCode, right_thumb_vk: VkCode) -> Self {
         let mut result = Vec::new();
-        for rule in rules {
+        'rules: for rule in rules {
             let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
                 log::warn!("[keymap] 'from' のパース失敗: {:?}", rule.from);
                 continue;
@@ -108,7 +110,7 @@ impl KeymapTable {
                 continue;
             }
             if let Some(reason) =
-                forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk)
+                forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk, false)
             {
                 log::warn!(
                     "[keymap] 'from' に {reason} は指定できません（ADR-114 決定5）: {:?}",
@@ -116,29 +118,34 @@ impl KeymapTable {
                 );
                 continue;
             }
-            let send_vk = if let Some(to) = &rule.to {
-                let resolved = VkCode::from_name(to)
-                    .or_else(|| VkCode::from_name(&format!("VK_{to}")))
-                    .or_else(|| crate::vk::parse_key_combo(to).map(|c| c.vk));
+            let mut send_vks = Vec::with_capacity(rule.to.len());
+            for to in &rule.to {
+                let resolved =
+                    VkCode::from_name(to).or_else(|| VkCode::from_name(&format!("VK_{to}")));
                 let Some(vk) = resolved else {
-                    log::warn!("[keymap] 'to' のパース失敗: {to:?}");
-                    continue;
+                    if to.contains('+') {
+                        log::warn!(
+                            "[keymap] 'to' に修飾キーは指定できません（ADR-130 決定2）: {to:?}"
+                        );
+                    } else {
+                        log::warn!("[keymap] 'to' のパース失敗: {to:?}");
+                    }
+                    continue 'rules;
                 };
-                if let Some(reason) = forbidden_target_vk_reason(vk, left_thumb_vk, right_thumb_vk)
+                if let Some(reason) =
+                    forbidden_target_vk_reason(vk, left_thumb_vk, right_thumb_vk, true)
                 {
                     log::warn!(
                         "[keymap] 'to' に {reason} は指定できません（ADR-114 決定5）: {to:?}"
                     );
-                    continue;
+                    continue 'rules;
                 }
-                Some(vk)
-            } else {
-                None
-            };
+                send_vks.push(vk);
+            }
             result.push(CompiledKeymap {
                 app: rule.app.as_deref().map(str::to_lowercase),
                 combo,
-                send_vk,
+                send_vks,
             });
         }
         Self(result)
@@ -174,9 +181,9 @@ impl KeymapTable {
     }
 
     /// アクティブなルールから一致するものを探す。
-    /// 戻り値: None=マッチなし, Some(None)=消費のみ, Some(Some(vk))=送信キー
+    /// 戻り値: None=マッチなし, Some(vec)=マッチあり（空 vec は消費のみ）。
     #[must_use]
-    pub fn find_match(&self, vk: VkCode, mods: ModifierState) -> Option<Option<VkCode>> {
+    pub fn find_match(&self, vk: VkCode, mods: ModifierState) -> Option<Vec<VkCode>> {
         self.0
             .iter()
             .find(|r| {
@@ -186,7 +193,7 @@ impl KeymapTable {
                     && r.combo.alt == mods.alt
                     && !mods.win
             })
-            .map(|r| r.send_vk)
+            .map(|r| r.send_vks.clone())
     }
 
     #[must_use]
@@ -220,7 +227,7 @@ impl KeymapTable {
         let conflicts = self
             .0
             .iter()
-            .any(|rule| rule.combo.vk == vk || rule.send_vk == Some(vk));
+            .any(|rule| rule.combo.vk == vk || rule.send_vks.contains(&vk));
         if conflicts {
             log::log!(
                 level,
@@ -232,6 +239,17 @@ impl KeymapTable {
         }
         conflicts
     }
+}
+
+/// ADR-130 決定3: `[[keymap]]` の `to` 各ステップを独立した Down+Up ペアに展開する。
+#[must_use]
+pub(crate) fn keymap_target_tap_pairs(steps: &[VkCode]) -> Vec<(VkCode, bool)> {
+    let mut pairs = Vec::with_capacity(steps.len() * 2);
+    for &vk in steps {
+        pairs.push((vk, false));
+        pairs.push((vk, true));
+    }
+    pairs
 }
 
 /// `[[keymap]]` ルールがエンジン制御系ホットキーと同じキーコンボを奪っていないか
@@ -315,7 +333,15 @@ mod tests {
         KeymapRule {
             app: app.map(str::to_string),
             from: from.to_string(),
-            to: to.map(str::to_string),
+            to: to.into_iter().map(str::to_string).collect(),
+        }
+    }
+
+    fn rule_steps(app: Option<&str>, from: &str, to: &[&str]) -> KeymapRule {
+        KeymapRule {
+            app: app.map(str::to_string),
+            from: from.to_string(),
+            to: to.iter().map(|s| (*s).to_string()).collect(),
         }
     }
 
@@ -452,6 +478,130 @@ mod tests {
             table.len(),
             1,
             "禁止対象に該当しない通常ルールは skip されない"
+        );
+    }
+
+    #[test]
+    fn new_accepts_multiple_to_steps() {
+        let table = new_table(&[rule_steps(None, "Ctrl+VK_I", &["F7", "F8"])]);
+        let vk_i = VkCode::from_name("VK_I").expect("VK_I resolves");
+        let vk_f7 = VkCode::from_name("VK_F7").expect("VK_F7 resolves");
+        let vk_f8 = VkCode::from_name("VK_F8").expect("VK_F8 resolves");
+
+        assert_eq!(
+            table.find_match(vk_i, mods(true, false, false, false)),
+            Some(vec![vk_f7, vk_f8])
+        );
+    }
+
+    #[test]
+    fn new_skips_modifier_combo_to_step() {
+        let table = new_table(&[rule_steps(None, "Ctrl+VK_I", &["Ctrl+M", "F7"])]);
+        assert!(
+            table.is_empty(),
+            "ADR-130 決定2: to の修飾子付きステップはルール全体を skip する"
+        );
+    }
+
+    #[test]
+    fn to_side_rejects_conv_mutating_vk_but_from_side_does_not() {
+        let (left, _right) = thumb_vks();
+        assert_eq!(
+            forbidden_target_vk_reason(crate::vk::VK_CONVERT, left, crate::vk::VK_SPACE, false),
+            None,
+            "ADR-130 IME除外決定: vk_may_mutate_conv の OR 判定は from 側には適用しない"
+        );
+        assert!(
+            forbidden_target_vk_reason(crate::vk::VK_CONVERT, left, crate::vk::VK_SPACE, true)
+                .is_some(),
+            "ADR-130 IME除外決定: to 側では VK_CONVERT を禁止する"
+        );
+    }
+
+    /// `to_side_rejects_conv_mutating_vk_but_from_side_does_not` は
+    /// `forbidden_target_vk_reason` を直接呼ぶだけで `is_to_side` の
+    /// **呼び出し側**（`KeymapTable::new` の2箇所）を検証しない——`:113`/`:130`
+    /// の `is_to_side` 引数の true/false を取り違えても全テストが通ってしまう
+    /// （コードレビュー指摘 M1）。以下3件は `KeymapTable::new` 経由で検証する。
+    ///
+    /// 親指キーを既定（無変換/変換）から離しておく——`VK_CONVERT` が
+    /// 親指キー由来で禁止されているだけだと、conv-mutating OR
+    /// （ADR-130 IME除外決定）の効果と区別できない。
+    fn thumb_vks_away_from_convert() -> (VkCode, VkCode) {
+        (crate::vk::VK_SPACE, crate::vk::VK_RETURN)
+    }
+
+    #[test]
+    fn new_forbids_conv_mutating_vk_as_to_target_via_keymap_table() {
+        let (left, right) = thumb_vks_away_from_convert();
+        let table = KeymapTable::new(&[rule(None, "Ctrl+VK_I", Some("VK_CONVERT"))], left, right);
+        assert!(
+            table.is_empty(),
+            "`is_to_side=true` の OR 判定により、親指キーでなくても VK_CONVERT を \
+             to に指定したルールは skip されるべき（`keymap.rs:130` の呼び出し）"
+        );
+    }
+
+    #[test]
+    fn new_accepts_conv_mutating_vk_as_from_primary_key_when_not_thumb_key() {
+        let (left, right) = thumb_vks_away_from_convert();
+        let table = KeymapTable::new(&[rule(None, "VK_CONVERT", Some("F7"))], left, right);
+        assert_eq!(
+            table.len(),
+            1,
+            "ADR-130 R2-b: OR 判定は to 側限定であり、親指キーでない \
+             VK_CONVERT を from の主キーにするルールまで過剰禁止しては \
+             ならない（`keymap.rs:113` の呼び出し）"
+        );
+    }
+
+    #[test]
+    fn new_forbids_vk_dbe_roman_and_noroman_as_to_target() {
+        let table_roman = new_table(&[rule(None, "Ctrl+VK_I", Some("VK_DBE_ROMAN"))]);
+        let table_noroman = new_table(&[rule(None, "Ctrl+VK_J", Some("VK_DBE_NOROMAN"))]);
+        assert!(
+            table_roman.is_empty(),
+            "VK_DBE_ROMAN は ImeKeyKind::from_vk 対象外だが vk_may_mutate_conv \
+             には含まれる——これが OR 判定を追加した理由そのもの（BUG-61、\
+             一度 JIS かな側へ切り替わると復旧不能）"
+        );
+        assert!(
+            table_noroman.is_empty(),
+            "VK_DBE_NOROMAN も同様に to 側で禁止されるべき"
+        );
+    }
+
+    #[test]
+    fn decision1_deserializes_legacy_single_to_new_list_and_omitted_to() {
+        let cfg: awase::config::AppConfig = toml::from_str(
+            r#"
+[[keymaps]]
+from = "Ctrl+VK_I"
+to = "F7"
+
+[[keymaps]]
+from = "Ctrl+VK_J"
+to = ["F7", "F8"]
+
+[[keymaps]]
+from = "Ctrl+VK_K"
+"#,
+        )
+        .expect("keymap to compatibility forms deserialize");
+
+        assert_eq!(cfg.keymaps[0].to, vec!["F7"]);
+        assert_eq!(cfg.keymaps[1].to, vec!["F7", "F8"]);
+        assert!(cfg.keymaps[2].to.is_empty());
+    }
+
+    #[test]
+    fn decision3_expands_each_step_to_independent_down_up_pair() {
+        let vk_f7 = VkCode::from_name("VK_F7").expect("VK_F7 resolves");
+        let vk_f8 = VkCode::from_name("VK_F8").expect("VK_F8 resolves");
+
+        assert_eq!(
+            keymap_target_tap_pairs(&[vk_f7, vk_f8]),
+            vec![(vk_f7, false), (vk_f7, true), (vk_f8, false), (vk_f8, true)]
         );
     }
 

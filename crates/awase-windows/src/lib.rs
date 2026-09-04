@@ -325,6 +325,9 @@ pub(crate) const WM_ENGINE_QUIT_REQUEST: u32 = windows::Win32::UI::WindowsAndMes
 /// 収束する（冪等）。
 #[cfg(windows)]
 pub const WM_KANA_LOCK_WARNING_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 26;
+/// hook の IME-mode 診断ログを journal へ吸い上げる契機。
+#[cfg(windows)]
+pub const WM_HOOK_IME_MODE_DIAGNOSTIC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 27;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

@@ -684,7 +684,10 @@ impl Output {
                 // 安全側の挙動として常に cold マークする。
                 self.mark_composition_cold(ColdReason::SymbolVkSent);
                 self.warmup_coord.mark_composition_reset();
-                self.send_eager_tsf_warmup(awase::platform::WarmupImeOn::off());
+                self.send_eager_tsf_warmup(
+                    awase::platform::WarmupImeOn::off(),
+                    crate::output::WarmupOrigin::Off,
+                );
             }
             CharResolution::Unicode(ch) => {
                 log::debug!(

@@ -101,6 +101,39 @@ impl GjiReinitStartResult {
     }
 }
 
+/// [`Output::send_eager_tsf_warmup`] へ渡す `warmup_ime_on` の構築経路
+/// （BUG-110/ADR-132 Phase 2、敵対的コードレビュー N6 指摘）。
+///
+/// `&'static str` を手で各呼び出し元へ配ると、タイポ（`"gate"`等）や
+/// 将来の新規呼び出し元での誤ラベルを型で防げない——この Phase の成果物
+/// （次回実機報告での B1由来/#6由来の内訳確定）を直接損なう種類のミスに
+/// なるため、enum で固定する。`WarmupImeOn` 自体には触れない（ADR-098の
+/// 型設計意図——生 belief を渡す経路をコンパイラで塞ぐ——を薄めないため、
+/// `origin` は独立した引数のまま並行して渡す）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmupOrigin {
+    /// `ImeStateHub::resolve_warmup_ime_on` 経由（`off_drift_active`
+    /// ゲートを通っている）。
+    Gated,
+    /// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
+    /// actuation 直後の随伴 warmup）経由。**このゲートは通らない**
+    /// （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
+    Actuated,
+    /// `WarmupImeOn::off()`（構造的に `can_warmup()` が常に `false` になり、
+    /// この enum が実際にログへ現れることはない到達不能な保険経路）。
+    Off,
+}
+
+impl std::fmt::Display for WarmupOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Gated => "gated",
+            Self::Actuated => "actuated",
+            Self::Off => "off",
+        })
+    }
+}
+
 /// async IMC poll の完了状態。`WM_GJI_REINIT_RETRY_COMPLETE` の lParam にも使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GjiReinitPollStatus {
@@ -1086,7 +1119,20 @@ impl Output {
     /// すると、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する）。
     /// 送信できた場合、NativeF2Consumed 等の前に `mark_composition_cold` が呼ばれて
     /// 0 にリセットされるため二重更新は発生しない。
-    pub fn send_eager_tsf_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
+    ///
+    /// # `origin`（BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘への対応）
+    ///
+    /// ログにだけ載せる診断用の [`WarmupOrigin`]。呼び出し元が渡す
+    /// `warmup_ime_on` の構築経路を表す（`Gated`/`Actuated`/`Off` の3値、
+    /// 詳細は [`WarmupOrigin`] のdoc参照）。次回実機報告で
+    /// `[tsf-eager-warmup]` の `origin=` を grep すれば、B1由来（gated）と
+    /// #6随伴分（actuated）を正確に分離できる（従来はこの区別が無く、
+    /// #6由来の随伴warmupがB1由来として過大計上されていた）。
+    pub fn send_eager_tsf_warmup(
+        &self,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+        origin: WarmupOrigin,
+    ) {
         if !self.conv_mutation_allowed.get() {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
@@ -1107,7 +1153,16 @@ impl Output {
         // 強制する」を束ねており BUG-50 デッドロックの前提だった）。
         match crate::tsf::send::send_eager_warmup_vk_pair() {
             Some(ms) => {
-                log::debug!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
+                // BUG-110/ADR-132 Phase 2: `[warmup-gate]`(抑止側)とペアで INFO
+                // ログにすることで、`force-ON (ImmBrokenForceOn)`(既に info!)との
+                // grep 突合せから VK_IME_ON の内訳(warmup由来 vs force-on由来)を
+                // 確定できるようにする(追補4のアクション1)。`origin=` で
+                // gated(B1本来のゲート対象)/actuated(#6随伴、ゲート対象外)を
+                // 区別する(敵対的コードレビュー指摘への対応、追補6続き)。
+                log::info!(
+                    "[tsf-eager-warmup] VK_IME_ON 送信 (origin={origin}), \
+                     eager_warmup_sent_ms={ms}ms"
+                );
                 self.composition.set_eager_warmup_sent_ms(ms);
             }
             None => {

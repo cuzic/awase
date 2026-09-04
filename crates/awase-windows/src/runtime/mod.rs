@@ -255,6 +255,10 @@ pub struct Runtime {
     pub(crate) update_check_enabled: bool,
     /// OS かな入力ロック検知の通知ヒステリシス。
     kana_lock_hysteresis: KanaLockHysteresis,
+    /// ADR-132 Phase 1: drift GiveUp のトレイ通知は1フォーカスにつき1回に制限する。
+    drift_giveup_notified_this_focus: bool,
+    /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
+    drift_giveup_started_at: Option<std::time::Instant>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -582,6 +586,8 @@ impl Runtime {
             // なるのを避けるため、ここでヒステリシスとトレイ表示の両方を
             // 一律リセットする。
             self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.drift_giveup_notified_this_focus = false;
+            self.drift_giveup_started_at = None;
             self.platform.tray.set_kana_lock_warned(false);
         }
     }
@@ -1233,6 +1239,8 @@ impl Runtime {
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
+            drift_giveup_notified_this_focus: false,
+            drift_giveup_started_at: None,
         }
     }
 
