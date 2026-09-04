@@ -13123,10 +13123,9 @@ BUG-19（conv推論での`desired_open`書き換えがエンジン誤復帰を�
 先例）、BUG-68（IMM32 NATIVEビットが`VK_IME_OFF`で閉じても消えない）、
 ADR-121（no-op側の欠落、対をなす）、ADR-128（本件の設計ADR）。
 
-**追補3（2026-09-04、3件目の実機再現・Phase 1修正後の初発火確認・新しい
-フィードバックループの発見）:** 不具合報告`01M1NA7WYH1HCYAFWGA3F95AVY`
-（`01M1N9HZA87MQSWYYKHGK7QXNA`と同一プロセスの2回目のdump、
-`docs/bug-reports-triage.md`該当行に詳細）。
+**追補3（2026-09-04、3件目の実機再現・Phase 1修正後の初発火確認）:**
+不具合報告`01M1NA7WYH1HCYAFWGA3F95AVY`（`01M1N9HZA87MQSWYYKHGK7QXNA`と
+同一プロセスの2回目のdump、`docs/bug-reports-triage.md`該当行に詳細）。
 
 journalに`DriftGiveUpDiagnostic`が1件記録され（`drift_duration_ms:
 24834`）、**追補2の修正（duration基準のBlind/Read共通トリガー）が実機で
@@ -13134,22 +13133,64 @@ journalに`DriftGiveUpDiagnostic`が1件記録され（`drift_duration_ms:
 （`reason: FocusChanged`、`elapsed_ms: 365422`）もあり、**約6分5秒**と
 いう、これまでで最長の乖離継続時間が記録された。
 
-新たに判明した重要な事実——**ユーザーの手動修正とawaseの自動修正が
-競合するフィードバックループの疑い:** 症状発生区間（約20秒間）の
-`HookImeModeDiagnostic`を見ると、`vk=243/244`（半角/全角、scan=0x29）と
-`vk=242/240`（かな/英数、scan=0x70）という複数のIME切替系物理キーが
-交互に高速反復している一方、`vk=26`（`VK_IME_OFF`）と`vk=22`
-（`VK_KANJI`）が`self_injected=true`で同時に反復記録されていた。
-`config.toml`では`keys.ime_toggle`はコメントアウトで無効なので、
-この`VK_KANJI`送信はユーザー設定由来ではなく**awase内部の
-KanjiToggleフォールバック戦略**由来と判断できる。すなわち、症状に
-気づいたユーザーが複数のIME切替キーを連打して自力回復を試みる一方、
-awase自身もdrift correction（GjiDirect、VK_IME_OFF）と
-KanjiToggleフォールバック（VK_KANJI）を同時多発的に試みており、
-**両者が互いの操作を新たな`PhysicalImeKey`意図として誤検出し合い、
-乖離をさらに長引かせた**可能性が高い。これはADR-128の4ラウンド討論
-（A/B/B'/候補1-v2）のいずれでも想定していなかった相互作用であり、
-Phase 2検討時の重要な追加論点になる。
+**訂正（2回訂正が必要だった）:** 当初「ユーザーとawaseが競合する
+フィードバックループ」と記述し、続く再検証で`vk=22`を`VK_KANJI`と
+誤認して「KanjiToggleフォールバックが92回」と記述したが、**`vk=22`は
+`VK_KANJI`(0x19)ではなく`VK_IME_ON`(0x16)だった**（`vk.rs`で実値を
+確認）。KanjiToggleStrategyは無関係で、正しくは以下のとおり
+**drift correctionとは別の、もう1つの独立した自動修正機構が競合して
+いた**ことが根本原因だった。
+
+`HookImeModeDiagnostic`全件を`(vk, injected, self_injected)`で集計
+（推測ではなくWin32の`LLKHF_INJECTED`フラグ＋awase自身のマーカーに
+よる確定判定）:
+
+| vk | 内訳 | 件数 |
+|---|---|---|
+| `VK_IME_ON`(22) | 全件`injected=true/self_injected=true` | **92件** |
+| `VK_IME_OFF`(26) | 全件`injected=true/self_injected=true` | **32件** |
+| 半角(243)/全角(244)/かな(242)/英数(240) | 全件`injected=false/self_injected=false` | 合計30件 |
+
+journalの`ImeActuation`（drift correctionが記録する唯一のactuation
+journal）は本レポートの全31件が`target: false`のみで、`VK_IME_ON`側の
+送信は1件も記録されていない。すなわち**92件の`VK_IME_ON`送信は
+drift correctionが行ったものではない。**
+
+app_logを調べたところ、`[apply-ime] GJI direct: send 0x0016 (open=true)`
+に続けて`force-ON (ImmBrokenForceOn): apply_ime_open(true) → Applied`
+というログが見つかった。これは`runtime/mod.rs::apply_force_on_for_imm_broken`
+（`is_eligible_for_ime_force_on()` = `is_japanese_ime() &&
+effective_open()`が真の間、周期リフレッシュに相乗りして`VK_IME_ON`を
+再送し続ける、TsfNative/Imm32Unavailable向けの「nonaiyo問題対策」機構、
+ADR-086 INV-15が「生の周期タイマートリガー」として例外的に許容している
+経路）由来で、**drift correctionの`Actuation`状態管理を一切通らない、
+完全に別の書き込み経路**である。
+
+**根本原因（確定）:** `ir_check_drift_correction`が読む`desired`は
+`ImeModel::desired_open()`（生のbeliefフィールド）だが、
+`apply_force_on_for_imm_broken`が読む条件は`effective_open()`
+（`IntentStore`＋`derive_any()`を経た**導出値**）——**この2つは
+同じ「IMEを開きたいかどうか」を表しているはずなのに、別の関数・
+別の解決経路で独立に計算されており、乖離しうる。** 具体的には、
+`FocusChanged`が`last_intent`をクリアした直後は`effective_open()`が
+`derive_any()`（観測ベース）にフォールバックして`true`を返しうる一方、
+`desired_open()`（生フィールド）は次の明示書き込みまで`false`のまま
+残る。この窓で、**drift correction（`desired_open()=false`を根拠に
+`VK_IME_OFF`を送る）と`apply_force_on_for_imm_broken`
+（`effective_open()=true`を根拠に`VK_IME_ON`を送る）が、互いの存在に
+気づかないまま同じ実IMEへ矛盾した書き込みを競合して送り続ける**。
+これが92対32という大量かつ拮抗しない送信数、および6分を超える
+長時間化の実態と考えられる。ユーザーが観測した「＠kaうきka…」という
+混沌とした出力は、この2機構の競合でIME状態が実際に不安定に
+振動していたことの症状として整合する。
+
+これは`.claude/rules/fix-requires-evidence.md`が言う「IME actuation
+合流点」（新しいgate/preconditionを足す際に洗い出すべき箇所、ADR-119）
+の中でも、**合流点そのものが存在しない**——2つの独立した書き込み経路が
+共通の調停なしに同じ対象へ書き込める、という、issue #136/ADR-119よりも
+一段深い構造的欠陥。ADR-128の4ラウンド討論（A/B/B'/候補1-v2）は
+drift correction 1経路のみを前提にしており、この`ImmBrokenForceOn`との
+競合は検討されていなかった。Phase 2再検討時の最重要論点として記録する。
 
 `journal`は`DumpTruncated`（total_entries=2123、emitted=1004、
 dropped_key_input=418）のため、「＠」を直接出力した打鍵そのものは

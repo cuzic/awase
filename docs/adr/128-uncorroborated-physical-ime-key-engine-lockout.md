@@ -520,8 +520,38 @@ OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既�
 では絶対に発火しない設計上の穴が判明し、修正済み（トリガーを
 `duration_ms`ベースの`Blind`/`Read`共通発火点に変更、新規タイミング
 定数は追加せず既存の`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`を再利用）。
-詳細は`docs/known-bugs.md` BUG-109追補1・追補2を参照。Phase 2
-（保留中の修正案の再検討）はPhase 1のログ収集後に判断する。
+詳細は`docs/known-bugs.md` BUG-109追補1・追補2を参照。
+
+**3件目の再現（`01M1NA7WYH1HCYAFWGA3F95AVY`）で、本ADRの4ラウンド討論
+（A/B/B'/候補1-v2）が前提にしていなかった根本原因が判明した。**
+`ir_check_drift_correction`が読む`desired`は`ImeModel::desired_open()`
+（生のbeliefフィールド）だが、`runtime/mod.rs::
+apply_force_on_for_imm_broken`（`is_eligible_for_ime_force_on()`=
+`is_japanese_ime() && effective_open()`を条件に周期リフレッシュへ
+相乗りして`VK_IME_ON`を再送し続ける、ADR-086 INV-15が例外的に許容する
+「nonaiyo問題対策」の周期タイマー経路）が読む条件は`effective_open()`
+（`IntentStore`+`derive_any()`を経た**導出値**）——**本来同じ意味のはずの
+2値が別関数・別解決経路で独立に計算されており、乖離しうる。**
+`FocusChanged`が`last_intent`をクリアした直後、`effective_open()`は
+観測ベースの`derive_any()`にフォールバックして`true`を返しうる一方、
+`desired_open()`（生フィールド）は次の明示書き込みまで`false`のまま
+残る窓があり、この窓で**drift correction（`VK_IME_OFF`）と
+`ImmBrokenForceOn`（`VK_IME_ON`）が互いの存在に気づかないまま同じ実IMEへ
+競合送信し続ける**。3件目の報告では`VK_IME_ON`92件・`VK_IME_OFF`32件
+（いずれも`injected=true/self_injected=true`で確定、`ImeActuation`
+journalには`VK_IME_OFF`側しか記録されず`VK_IME_ON`側はdrift correction
+のActuation管理を経由しないことも確認済み）が競合しており、乖離継続
+6分5秒という記録もこれで説明できる。詳細は`docs/known-bugs.md`
+BUG-109追補3を参照。
+
+これは`.claude/rules/fix-requires-evidence.md`の「IME actuation合流点」
+（issue #136/ADR-119）よりも一段深い、**合流点そのものが存在しない**
+構造的欠陥——2つの独立した書き込み経路が共通の調停なしに同じ対象へ
+書き込める。Phase 2再検討時は、本ADRが検討したdrift correction単体の
+問題（A/B/B'/候補1-v2）に加えて、この`desired_open()`/`effective_open()`
+の二重SSOTと`apply_force_on_for_imm_broken`との調停不在を主要な論点に
+加える必要がある。Phase 2（保留中の修正案の再検討）はPhase 1のログ
+収集後に判断する。
 
 ## 次のアクション
 
