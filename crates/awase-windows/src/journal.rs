@@ -356,8 +356,10 @@ pub enum JournalEntry {
     /// flush/discard 結果（ADR-123）。
     ///
     /// `RawTsfLiteralRecovery` の give-up 直後（`trigger="raw_recovery"`、
-    /// `platform.rs::flush_raw_tsf_literal_recovery`）から記録する。従来は
-    /// `log::debug!`/`log::warn!` の自由文字列でしか残らず、journal
+    /// `platform.rs::flush_raw_tsf_literal_recovery`）と、ADR-128 の
+    /// drain-before-send 実 flush（`trigger="drain_before_send"`、
+    /// `output/vk_send.rs::drain_pending_deferred_before_send_if_queue_only`）から
+    /// 記録する。従来は `log::debug!`/`log::warn!` の自由文字列でしか残らず、journal
     /// （構造化・容量優先度あり）には現れなかった（issue #148 の調査で
     /// `app_log_excerpt` を直接読まないと確認できず、journal の
     /// `DumpTruncated` で欠落しうる弱点だった）。

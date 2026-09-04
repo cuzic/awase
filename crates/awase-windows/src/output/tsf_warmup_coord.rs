@@ -405,12 +405,16 @@ impl TsfWarmupCoordinator {
     /// 空でなければ `Some(vks)` を返す。
     ///
     /// `RawTsfLiteralRecovery` の give-up 分岐（romaji 再送なしで probe が終わる経路）専用。
-    /// `dispatch_probe_actions` の `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk` は
-    /// 自身の送信直後に無条件で `take_pending_deferred` を呼ぶが、この経路だけは
-    /// 呼ばないため（docs/known-bugs.md）、`flush_raw_tsf_literal_recovery` の
-    /// 最後から呼ぶ。probe が in-flight のとき（romaji 再送が新しい probe を張った
-    /// 場合）は `None` を返し、キューには触れない — その新しい probe 自身の
-    /// 上記ハンドラが完了後に正しい順序で flush するのに任せる。
+    /// `dispatch_probe_actions` の `TransmitTsf`/`TransmitChrome`/`TransmitSingleVk` 後の
+    /// deferred 解放は ADR-103 決定4-b で段末 `finish_probe_stage` へ一元化済みだが、
+    /// give-up の段末時点では `raw_recovery_owns_deferred()`（backs/romaji/
+    /// `pending_gji_reinit` を回収側が既に設定済み）が true のため INV-F により
+    /// `finish_probe_stage` は意図的に deferred へ触れない（`output/mod.rs::
+    /// finish_probe_stage`）。backspace/romaji/reinit の実送信がすべて終わった
+    /// `flush_raw_tsf_literal_recovery` 末尾の `flush_stale_deferred_vks_after_recovery`
+    /// が、この経路の同期点になる（BUG-38）。probe が in-flight のとき
+    /// （romaji 再送が新しい probe を張った場合）は `None` を返し、キューには触れない —
+    /// その新しい probe の完了後に `finish_probe_stage` が正しい順序で flush するのに任せる。
     pub(crate) fn take_pending_deferred_if_probe_idle(&self) -> Option<Vec<DeferredVk>> {
         if self.has_pending_tsf() {
             return None;

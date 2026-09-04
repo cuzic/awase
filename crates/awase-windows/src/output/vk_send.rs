@@ -60,6 +60,13 @@ impl Output {
     /// 直後のprobeが汚染された`last_send_ms`/write_deltaを自分の証拠として
     /// 読みうる（round3指摘）。
     ///
+    /// ADR-128: ADR-123 決定4-3 の「新しいモーラ」は通常のユーザー入力
+    /// （`DeferGate::Enforced`）だけを指す。raw recovery 回収再送・GJI reinit
+    /// retry（`DeferGate::Exempt`）でここを通すと、再送自身より前に sibling
+    /// mora を drain して順序反転と per-VK confirm 証拠汚染を起こすため、
+    /// `ms_ime_gate_defer`/`defer_respecting_gate` と同じく呼び出し元の `gate`
+    /// をそのまま引き継いで判定する。
+    ///
     /// **`raw_recovery_owns_deferred()`は`gate`に関わらず常にチェックする
     /// （4-2の`defer_respecting_gate`とは非対称、Opus敵対的レビュー
     /// round4-3指摘）。** defer方向（自分の送信を止めるか）では
@@ -73,7 +80,10 @@ impl Output {
     /// は`take_gji_reinit_completion`で既にtake済み）。つまりtrueならほぼ
     /// 確実に無関係な別recoveryが所有中であり、`finish_probe_stage`が
     /// 守るINV-Fと同じ理由でここも手を出してはならない。
-    fn drain_pending_deferred_before_send_if_queue_only(&self) {
+    fn drain_pending_deferred_before_send_if_queue_only(&self, gate: DeferGate) {
+        if gate != DeferGate::Enforced {
+            return;
+        }
         if self.is_probe_or_recovery_blocking(true) || self.pending_deferred_len() == 0 {
             return;
         }
@@ -82,6 +92,10 @@ impl Output {
             log::debug!(
                 "[pending-deferred] drain-before-send: 新規モーラの前に取り残し {n} VK(s) をflush"
             );
+            // `JournalEntry` への変換は platform.rs 側で行う（output/tsf は
+            // `crate::journal` を直接参照しない、`Output::
+            // pending_drain_before_send_flush` の doc 参照）。
+            self.pending_drain_before_send_flush.set(n);
         }
     }
 }
@@ -213,7 +227,7 @@ impl Output {
             log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
 
-        self.drain_pending_deferred_before_send_if_queue_only();
+        self.drain_pending_deferred_before_send_if_queue_only(gate);
 
         let WarmthContext {
             warm,
@@ -389,7 +403,7 @@ impl Output {
             log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
 
-        self.drain_pending_deferred_before_send_if_queue_only();
+        self.drain_pending_deferred_before_send_if_queue_only(gate);
 
         let WarmthContext {
             warm,
@@ -794,7 +808,7 @@ mod tests {
             .push_deferred_vks(&[(VkCode(0x41), false)], DeferredOrigin::UserInput);
         assert_eq!(o.pending_deferred_len(), 1);
 
-        o.drain_pending_deferred_before_send_if_queue_only();
+        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
 
         assert_eq!(
             o.pending_deferred_len(),
@@ -809,8 +823,37 @@ mod tests {
         let o = Output::new();
         assert_eq!(o.pending_deferred_len(), 0);
 
-        o.drain_pending_deferred_before_send_if_queue_only();
+        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Enforced);
 
         assert_eq!(o.pending_deferred_len(), 0);
+    }
+
+    #[test]
+    fn drain_pending_deferred_before_send_if_queue_only_preserves_queue_when_gate_exempt() {
+        // ADR-128 / BUG-109: BUG-109 で queue に滞留していたのはユーザー入力
+        // モーラ（`DeferredOrigin::UserInput`、「ま」「え」）である。`gate` は
+        // 送信者側（recovery resend か通常ユーザー入力か）の属性で、queue内
+        // アイテムの `origin` とは別軸（ADR-123 変更B）——ここを
+        // `RecoveryResend` にすると「recovery resend 起源の VK は drain
+        // されない」という別の主張に読めてしまうため、`UserInput` を使い
+        // 「recovery resend の送信者はユーザーモーラを drain してはならない」
+        // という本来の主張のまま検証する（コードレビュー指摘）。
+        let o = Output::new();
+        o.warmup_coord
+            .push_deferred_vks(&[(VkCode(0x41), false)], DeferredOrigin::UserInput);
+        assert_eq!(o.pending_deferred_len(), 1);
+
+        o.drain_pending_deferred_before_send_if_queue_only(DeferGate::Exempt);
+
+        assert_eq!(
+            o.pending_deferred_len(),
+            1,
+            "gate=Exempt の recovery resend は drain せずキューを保持すべき"
+        );
+        assert_eq!(
+            o.take_pending_drain_before_send_flush(),
+            0,
+            "drain しなかった以上、journal 化すべき flush 事実も無いはず"
+        );
     }
 }

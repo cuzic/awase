@@ -49,9 +49,9 @@ develop マージ済み。コミット構成:
 
 1. **`ms_ime_gate_defer`内部の`defer_if_probe_in_flight`呼び出しが
    gate引数（Enforced/Exempt）を無視する非対称**（round4、4-4レビュー
-   指摘）。現状はGJI起源の`needs_f2_probe()`ガードで実害なしだが、将来
-   `ms_ime_gate_defer`にGJI以外から到達する変更が入ると静かに再発しうる。
-   architecture_guard等での固定を検討する余地あり。
+   指摘）。→ **解決済み（2026-09-03 code review指摘で修正）。**
+   `output/vk_send.rs:499-505`で`gate: DeferGate`を受け取り
+   `defer_respecting_gate(romaji, gate)`経由に統一済み。
 2. **4-4（warm経路配線）の核心的な振る舞い変化を直接固定するテストが
    ユニット/e2eいずれにも存在しない**（round4、4-4レビュー指摘）。
    `GjiFsm`を実際に`OnWarm`へ遷移させるテストセットアップが必要で
@@ -59,6 +59,16 @@ develop マージ済み。コミット構成:
    等）は4-1〜4-3で個別にユニットテスト済み。
 3. **実機ソーク未実施。** 次回同種の報告（`pending_deferred`の追い越し・
    順序反転）が来た場合、上記の変更で実際に解消しているか確認すること。
+4. **2026-09-04 追記: 決定4-3（drain-before-send）に、上記1が塞いだのと同型だが
+   より実害の大きい非対称が見つかった。** `drain_pending_deferred_before_send_if_queue_only`
+   （`output/vk_send.rs:76-86`）は`defer_respecting_gate`（決定4-2）と
+   異なり`gate`引数を一切見ずに無条件発火するため、GJI reinit retryの
+   再送（`resend_gji_reinit_retry_romaji`、`gate=Exempt`）自身の実送信
+   より前に`pending_deferred`をdrainしてしまい、出力順反転・文字消失の
+   実害が確認された（`report_id: 01M1MW0KSY5KWVYSGPGRBTNSPA`、BUG-109、
+   [ADR-128](128-escape-composition-collateral-deferred-loss.md)）。
+   **本ADRを実装済みとして参照する際は、決定4-3がrecovery resendにも
+   発火する前提のまま実装しないこと**——修正はADR-128側で管理する。
 
 変更Eのログレベル昇格（`warn!`→`error!`）は変更A+Cマージ後の対応として
 2026-09-03中に実施済み（`output/mod.rs::flush_pending_deferred_vks`）。
