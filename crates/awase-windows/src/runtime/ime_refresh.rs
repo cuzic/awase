@@ -611,6 +611,66 @@ impl Runtime {
             )
         };
 
+        // ADR-128 Phase 1 follow-up: the user-facing diagnostic must be based on how long
+        // the drift has persisted, not on `FeedbackPolicy::Blind` reaching `GiveUp`.
+        // `FeedbackPolicy::Read` intentionally never gives up by attempts, so tying this
+        // notification to `GiveUp` leaves read-back capable apps silent during long drift.
+        //
+        // Reuse the already-measured drift-correction wait constant instead of adding a new
+        // tuning number: this is the same "how long should drift correction wait before
+        // escalating" context as Blind re-arm, and avoids introducing an unmeasured magic
+        // number under `.claude/rules/tuning-constants.md`.
+        if duration_ms >= crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS
+            && !self.drift_giveup_notified_this_focus
+        {
+            self.show_tray_balloon(
+                "awase",
+                "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
+            );
+            self.drift_giveup_notified_this_focus = true;
+            self.drift_giveup_started_at = Some(now);
+
+            let trusted = self
+                .platform_state
+                .ime
+                .model()
+                .observations
+                .most_recent_trusted(now);
+            let sent_vk = vec![crate::journal::ImeVkDiagnostic {
+                vk_code: if desired {
+                    crate::vk::VK_IME_ON.0
+                } else {
+                    crate::vk::VK_IME_OFF.0
+                },
+                kind: if desired { "VK_IME_ON" } else { "VK_IME_OFF" },
+                source: "drift-correction-duration-giveup",
+            }];
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::DriftGiveUpDiagnostic {
+                    record: crate::journal::DriftGiveUpDiagnosticRecord {
+                        desired_open: desired,
+                        observed_open: observed,
+                        drift_duration_ms: duration_ms,
+                        observation_source: trusted.map(|o| o.source),
+                        observation_confidence: trusted.map(|o| o.confidence),
+                        sent_vk,
+                        intent_source: self
+                            .platform_state
+                            .ime
+                            .model()
+                            .last_intent
+                            .as_ref()
+                            .map(|intent| intent.source),
+                        layout_name: self.platform.tray.current_layout_name().to_string(),
+                        half_width_alnum_toggle_active: self
+                            .platform_state
+                            .gate
+                            .half_width_alnum_toggle_active,
+                    },
+                },
+            );
+        }
+
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
                 let action = decide_actuation_action(act_policy, act_attempts);
@@ -664,57 +724,6 @@ impl Runtime {
                                  observed={observed} converged={} attempts={}",
                                 receipt.converged(),
                                 receipt.attempts()
-                            );
-                            if !self.drift_giveup_notified_this_focus {
-                                self.show_tray_balloon(
-                                    "awase",
-                                    "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
-                                );
-                                self.drift_giveup_notified_this_focus = true;
-                                self.drift_giveup_started_at = Some(now);
-                            }
-                            let trusted = self
-                                .platform_state
-                                .ime
-                                .model()
-                                .observations
-                                .most_recent_trusted(now);
-                            let sent_vk = vec![crate::journal::ImeVkDiagnostic {
-                                vk_code: if desired {
-                                    crate::vk::VK_IME_ON.0
-                                } else {
-                                    crate::vk::VK_IME_OFF.0
-                                },
-                                kind: if desired { "VK_IME_ON" } else { "VK_IME_OFF" },
-                                source: "drift-correction-blind-giveup",
-                            }];
-                            self.platform_state.ime.journal.record(
-                                crate::journal::JournalEntry::DriftGiveUpDiagnostic {
-                                    record: crate::journal::DriftGiveUpDiagnosticRecord {
-                                        desired_open: desired,
-                                        observed_open: observed,
-                                        drift_duration_ms: duration_ms,
-                                        observation_source: trusted.map(|o| o.source),
-                                        observation_confidence: trusted.map(|o| o.confidence),
-                                        sent_vk,
-                                        intent_source: self
-                                            .platform_state
-                                            .ime
-                                            .model()
-                                            .last_intent
-                                            .as_ref()
-                                            .map(|intent| intent.source),
-                                        layout_name: self
-                                            .platform
-                                            .tray
-                                            .current_layout_name()
-                                            .to_string(),
-                                        half_width_alnum_toggle_active: self
-                                            .platform_state
-                                            .gate
-                                            .half_width_alnum_toggle_active,
-                                    },
-                                },
                             );
                         }
                         Some(gave_up_at) => {
