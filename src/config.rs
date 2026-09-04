@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
 use crate::scanmap::KeyboardModel;
@@ -559,9 +559,31 @@ pub struct KeymapRule {
     /// インターセプトするキーコンボ（例: "Ctrl+VK_I"）。主キーは `VK_` 接頭辞
     /// 付きの名前が必要（`crate::vk::VkCodeExt::from_name` が解決できる形式）。
     pub from: String,
-    /// 再注入するキー（例: "F7"）、省略=消費のみ
-    #[serde(default)]
-    pub to: Option<String>,
+    /// 再注入するキー列（例: `["F7", "F8"]`）。空、または省略=消費のみ。
+    ///
+    /// ADR-130 決定1: deserialize は旧形式 `to = "F7"` と新形式
+    /// `to = ["F7", "F8"]` の両方を受ける。serialize は設定全体の保存時に
+    /// 常に配列形式へ正規化される。
+    #[serde(default, deserialize_with = "deserialize_keymap_to")]
+    pub to: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeymapToCompat {
+    Single(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_keymap_to<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(match Option::<KeymapToCompat>::deserialize(deserializer)? {
+        Some(KeymapToCompat::Single(to)) => vec![to],
+        Some(KeymapToCompat::Many(to)) => to,
+        None => Vec::new(),
+    })
 }
 
 /// `[[keystroke_macro]]` 名前付き打鍵列マクロ（ADR-115 決定2b）。

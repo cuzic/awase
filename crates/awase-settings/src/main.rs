@@ -126,8 +126,12 @@ const CLIPBOARD_HISTORY_LEN: usize = 4;
 enum CaptureTarget {
     /// 既存ルールの from 全体（修飾+主キー）
     ExistingFrom(usize),
-    /// 既存ルールの to 主キー
-    ExistingTo(usize),
+    /// 既存ルールの to の1ステップ（ルール index, ステップ index）。
+    /// キャプチャした結果はこのステップを**置換**する（新規ルール側と対称、
+    /// コードレビュー指摘 M4）。新しいステップを増やすのは「＋」ボタン
+    /// （`rule.to.push(String::new())`）であり、キャプチャの役割ではない
+    /// （M3）。
+    ExistingTo(usize, usize),
     /// 新規ルールの from 全体
     NewFrom,
     /// 新規ルールの to 主キー
@@ -1699,24 +1703,54 @@ impl SettingsApp {
                 // （ADR-114 決定5 — バックエンドが 'from' の Alt 修飾を禁止・skip する
                 // ため、GUI 側でも作れないようにして対称性を保つ）。
                 let _ = alt;
+                let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
+                // 禁止キーをキャプチャした場合は self.status に理由を出す
+                // （以前は無言で捨てられ、ユーザーは拒否されたのか取りこぼした
+                // のか区別できなかった、コードレビュー指摘 m7）。
+                let reject = |internal: &str, is_to_side: bool, status: &mut String| -> bool {
+                    if let Some(reason) =
+                        keymap_forbidden_reason(internal, left_thumb_vk, right_thumb_vk, is_to_side)
+                    {
+                        let side = if is_to_side { "to" } else { "from" };
+                        *status = format!(
+                            "「{}」は {side} に指定できません: {reason}",
+                            key_display_name(internal)
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                };
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if let Some(rule) = self.config.keymaps.get_mut(i) {
+                        if !reject(&internal, false, &mut self.status)
+                            && let Some(rule) = self.config.keymaps.get_mut(i)
+                        {
                             rule.from = format_combo(ctrl, shift, false, &internal);
                         }
                     }
-                    CaptureTarget::ExistingTo(i) => {
-                        if let Some(rule) = self.config.keymaps.get_mut(i) {
-                            rule.to = Some(internal);
+                    CaptureTarget::ExistingTo(i, step_i) => {
+                        // step_i が既に削除されていた場合（キャプチャ待機中に
+                        // 「x」でステップを消された等）は get_mut が None を返し
+                        // 何もしない。
+                        if !reject(&internal, true, &mut self.status)
+                            && let Some(rule) = self.config.keymaps.get_mut(i)
+                            && let Some(step) = rule.to.get_mut(step_i)
+                        {
+                            *step = internal;
                         }
                     }
                     CaptureTarget::NewFrom => {
-                        self.new_keymap_from_ctrl = ctrl;
-                        self.new_keymap_from_shift = shift;
-                        self.new_keymap_from_main = internal;
+                        if !reject(&internal, false, &mut self.status) {
+                            self.new_keymap_from_ctrl = ctrl;
+                            self.new_keymap_from_shift = shift;
+                            self.new_keymap_from_main = internal;
+                        }
                     }
                     CaptureTarget::NewTo => {
-                        self.new_keymap_to_main = internal;
+                        if !reject(&internal, true, &mut self.status) {
+                            self.new_keymap_to_main = internal;
+                        }
                     }
                 }
                 self.capturing = None;
@@ -2037,6 +2071,7 @@ impl SettingsApp {
             &mut self.config.keys.ime_on,
             &mut self.new_ime_on,
             "IME を ON にするキーの組み合わせです。\nIME がオフの状態からオンに切り替えます。",
+            &mut self.status,
         );
         combo_key_list_ui(
             ui,
@@ -2045,6 +2080,7 @@ impl SettingsApp {
             &mut self.config.keys.ime_off,
             &mut self.new_ime_off,
             "IME を OFF にするキーの組み合わせです。\nIME がオンの状態からオフに切り替えます。",
+            &mut self.status,
         );
         combo_key_list_ui(
             ui,
@@ -2053,6 +2089,7 @@ impl SettingsApp {
             &mut self.config.keys.ime_toggle,
             &mut self.new_ime_toggle,
             "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。",
+            &mut self.status,
         );
     }
 
@@ -2071,6 +2108,7 @@ impl SettingsApp {
 
         // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
         let mut capturing = self.capturing;
+        let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
 
         // Existing rules table
         ui.label("登録済みルール");
@@ -2115,6 +2153,7 @@ impl SettingsApp {
                         &format!("from_main_{i}"),
                         &mut main,
                         "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
                     ) {
                         changed = true;
                     }
@@ -2126,22 +2165,63 @@ impl SettingsApp {
 
                     ui.label("→");
 
-                    // to: main key only + capture button
-                    let mut to_main = rule.to.clone().unwrap_or_default();
-                    if main_key_combo_optional(
-                        ui,
-                        &format!("to_main_{i}"),
-                        &mut to_main,
-                        "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。",
-                    ) {
-                        rule.to = if to_main.is_empty() {
-                            None
-                        } else {
-                            Some(to_main)
-                        };
+                    // to: 各ステップに main key ドロップダウン + ⌨（このステップを
+                    // 置換）+ x（このステップを削除）を並べる。「＋」でステップを
+                    // 末尾に追加する——新規ルール側と対称な「＋＝追加／x＝削除／
+                    // ⌨＝置換」という直交した操作にする（コードレビュー指摘 M3/M4）。
+                    let mut rm_to = None;
+                    if rule.to.is_empty() {
+                        ui.label("（消費のみ）");
                     }
-                    let to_target = CaptureTarget::ExistingTo(i);
-                    capture_button(ui, &mut capturing, to_target);
+                    for (step_i, to_main) in rule.to.iter_mut().enumerate() {
+                        main_key_combo_to(
+                            ui,
+                            &format!("to_main_{i}_{step_i}"),
+                            to_main,
+                            "再注入するキー列の1ステップです。各ステップは修飾子なしの Down+Up として送信されます。",
+                            left_thumb_vk,
+                            right_thumb_vk,
+                        );
+                        if to_main.is_empty() {
+                            // 「＋」で追加した直後、まだ何も選んでいないステップ。
+                            // 未選択のまま気付かず保存すると、バックエンドの
+                            // KeymapTable::new がこのルール全体を無言で
+                            // skip する（'to' パース失敗 → continue 'rules）
+                            // ため、GUI 側でも見える形で警告する
+                            // （code-review指摘）。
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 120, 0),
+                                "⚠未選択",
+                            )
+                            .on_hover_text(
+                                "このステップが未選択のまま保存すると、\
+                                 ルール全体が無効になります（バックエンドが\
+                                 警告ログを出して丸ごとスキップします）。",
+                            );
+                        }
+                        capture_button(ui, &mut capturing, CaptureTarget::ExistingTo(i, step_i));
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("押すと: この送信ステップを削除します。")
+                            .clicked()
+                        {
+                            rm_to = Some(step_i);
+                        }
+                    }
+                    if let Some(step_i) = rm_to {
+                        rule.to.remove(step_i);
+                        capturing = adjust_capturing_after_to_step_removed(capturing, i, step_i);
+                    }
+                    if ui
+                        .small_button("+")
+                        .on_hover_text(
+                            "押すと: 送信ステップを末尾に1つ追加します（追加後、\
+                             ドロップダウンまたは⌨で内容を選びます）。",
+                        )
+                        .clicked()
+                    {
+                        rule.to.push(String::new());
+                    }
 
                     if ui
                         .small_button("x")
@@ -2154,6 +2234,7 @@ impl SettingsApp {
             }
             if let Some(i) = rm {
                 self.config.keymaps.remove(i);
+                capturing = adjust_capturing_after_rule_removed(capturing, i);
             }
         }
         ui.add_space(12.0);
@@ -2184,6 +2265,7 @@ impl SettingsApp {
                         "new_from_main",
                         &mut self.new_keymap_from_main,
                         from_hover,
+                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
                     );
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 })
@@ -2195,11 +2277,13 @@ impl SettingsApp {
                     "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。";
                 ui.label("  to:").on_hover_text(to_hover);
                 ui.horizontal_wrapped(|ui| {
-                    main_key_combo_optional(
+                    main_key_combo_to_optional(
                         ui,
                         "new_to_main",
                         &mut self.new_keymap_to_main,
                         to_hover,
+                        left_thumb_vk,
+                        right_thumb_vk,
                     );
                     capture_button(ui, &mut capturing, CaptureTarget::NewTo);
                 })
@@ -2212,32 +2296,38 @@ impl SettingsApp {
             .button("+追加")
             .on_hover_text("押すと: 上で組み立てたルールを一覧に追加します。")
             .clicked()
-            && !self.new_keymap_from_main.is_empty()
         {
-            let from = format_combo(
-                self.new_keymap_from_ctrl,
-                self.new_keymap_from_shift,
-                false, // Alt は使用できない（ADR-114 決定5）
-                &self.new_keymap_from_main,
-            );
-            self.config.keymaps.push(awase::config::KeymapRule {
-                app: if self.new_keymap_app.is_empty() {
-                    None
-                } else {
-                    Some(self.new_keymap_app.clone())
-                },
-                from,
-                to: if self.new_keymap_to_main.is_empty() {
-                    None
-                } else {
-                    Some(self.new_keymap_to_main.clone())
-                },
-            });
-            self.new_keymap_app.clear();
-            self.new_keymap_from_ctrl = false;
-            self.new_keymap_from_shift = false;
-            self.new_keymap_from_main.clear();
-            self.new_keymap_to_main.clear();
+            if self.new_keymap_from_main.is_empty() {
+                // 以前は無言で何も起きなかった（ベストプラクティスレビュー
+                // 指摘）。「＋追加」を押したのに何も起きないと、ボタンが
+                // 壊れていると誤解される。
+                self.status = "from のキーが未選択のため追加できません。".to_string();
+            } else {
+                let from = format_combo(
+                    self.new_keymap_from_ctrl,
+                    self.new_keymap_from_shift,
+                    false, // Alt は使用できない（ADR-114 決定5）
+                    &self.new_keymap_from_main,
+                );
+                self.config.keymaps.push(awase::config::KeymapRule {
+                    app: if self.new_keymap_app.is_empty() {
+                        None
+                    } else {
+                        Some(self.new_keymap_app.clone())
+                    },
+                    from,
+                    to: if self.new_keymap_to_main.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![self.new_keymap_to_main.clone()]
+                    },
+                });
+                self.new_keymap_app.clear();
+                self.new_keymap_from_ctrl = false;
+                self.new_keymap_from_shift = false;
+                self.new_keymap_from_main.clear();
+                self.new_keymap_to_main.clear();
+            }
         }
 
         ui.add_space(16.0);
@@ -2399,6 +2489,7 @@ impl SettingsApp {
             "フォーカス中このプロセスでは、awase のキー変換・IME 制御を一切行いません。\n既定でリモートデスクトップ接続（mstsc.exe）が登録されています\n（接続元での Ctrl キー押しっぱなし不具合対策）。",
             &mut self.config.app_overrides.disable_apps,
             &mut self.new_disable_app,
+            &mut self.status,
         );
     }
 
@@ -2420,6 +2511,7 @@ impl SettingsApp {
             "フォーカス分類を強制的に TextInput にします。\nNICOLA 変換が効かないアプリで有効にします。",
             &mut self.config.app_overrides.force_text,
             buf_text,
+            &mut self.status,
         );
         override_list_ui(
             ui,
@@ -2428,6 +2520,7 @@ impl SettingsApp {
             "フォーカス分類を強制的に NonText にし、全キーを変換せず OS に通します。\nゲーム等、awase を効かせたくないアプリで有効にします。",
             &mut self.config.app_overrides.force_bypass,
             buf_bypass,
+            &mut self.status,
         );
         override_list_ui(
             ui,
@@ -2436,6 +2529,7 @@ impl SettingsApp {
             "文字出力を VK Batched 方式（IME に composition させる）に強制します。",
             &mut self.config.app_overrides.force_vk,
             buf_vk,
+            &mut self.status,
         );
         override_list_ui(
             ui,
@@ -2444,6 +2538,7 @@ impl SettingsApp {
             "文字出力を TSF Sequential 方式に強制します。\nWezTerm 等の TSF ネイティブアプリで使用します。",
             &mut self.config.app_overrides.force_tsf,
             buf_tsf,
+            &mut self.status,
         );
 
         ui.separator();
@@ -2486,7 +2581,13 @@ impl SettingsApp {
         let pb_key_hover = "Ctrl+このキーが素通しされた直後の次の1キーを NICOLA 変換せず\nそのまま通します（tmux の Ctrl+B 等の prefix キー用）。";
         ui.horizontal(|ui| {
             ui.label("Ctrl+").on_hover_text(pb_key_hover);
-            main_key_combo(ui, "new_pb_key", &mut self.new_pb_key, pb_key_hover);
+            main_key_combo(
+                ui,
+                "new_pb_key",
+                &mut self.new_pb_key,
+                pb_key_hover,
+                physical_key_options(),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_pb_process)
                     .desired_width(120.0)
@@ -2503,14 +2604,22 @@ impl SettingsApp {
                 .button("+追加")
                 .on_hover_text("押すと: 上で組み立てたルールを一覧に追加します。")
                 .clicked()
-                && !self.new_pb_key.is_empty()
             {
-                // ランタイムの parse は "Ctrl+<キー>" 形式（Ctrl 必須）を要求する
-                self.config.post_bypass.push(awase::config::PostBypassRule {
-                    key: format_combo(true, false, false, &std::mem::take(&mut self.new_pb_key)),
-                    process: std::mem::take(&mut self.new_pb_process),
-                    class: std::mem::take(&mut self.new_pb_class),
-                });
+                if self.new_pb_key.is_empty() {
+                    self.status = "キーが未選択のため追加できません。".to_string();
+                } else {
+                    // ランタイムの parse は "Ctrl+<キー>" 形式（Ctrl 必須）を要求する
+                    self.config.post_bypass.push(awase::config::PostBypassRule {
+                        key: format_combo(
+                            true,
+                            false,
+                            false,
+                            &std::mem::take(&mut self.new_pb_key),
+                        ),
+                        process: std::mem::take(&mut self.new_pb_process),
+                        class: std::mem::take(&mut self.new_pb_class),
+                    });
+                }
             }
         });
     }
@@ -3002,6 +3111,7 @@ impl SettingsApp {
             &mut self.config.keys.engine_on,
             &mut self.new_engine_on,
             "親指シフト入力に切り替えるキーの組み合わせです。\n複数登録できます。",
+            &mut self.status,
         );
         combo_key_list_ui(
             ui,
@@ -3010,6 +3120,7 @@ impl SettingsApp {
             &mut self.config.keys.engine_off,
             &mut self.new_engine_off,
             "ローマ字入力に切り替えるキーの組み合わせです。\n複数登録できます。",
+            &mut self.status,
         );
         let solo_repeat_hover = "指定キーを単独で素早く5回連続押下するとローマ字入力に切り替えます。\nCtrl スタック等で通常のキー操作が効かなくなった際の緊急脱出用です。";
         ui.horizontal(|ui| {
@@ -3339,6 +3450,7 @@ fn override_list_ui(
     tooltip: &str,
     entries: &mut Vec<awase::config::AppOverrideEntry>,
     buf: &mut (String, String),
+    status: &mut String,
 ) {
     ui.label(label).on_hover_text(tooltip);
     let mut rm = None;
@@ -3380,13 +3492,17 @@ fn override_list_ui(
             .button("+追加")
             .on_hover_text("押すと: 入力したプロセス名・クラス名の組み合わせを一覧に追加します。")
             .clicked()
-            && !buf.0.is_empty()
-            && !buf.1.is_empty()
         {
-            entries.push(awase::config::AppOverrideEntry {
-                process: std::mem::take(&mut buf.0),
-                class: std::mem::take(&mut buf.1),
-            });
+            if buf.0.is_empty() || buf.1.is_empty() {
+                // 以前は無言で何も起きなかった（ベストプラクティスレビュー指摘、
+                // `process_keymap_capture` の拒否理由表示と同じ系統の問題）。
+                *status = "プロセス名・クラス名の両方を入力してください。".to_string();
+            } else {
+                entries.push(awase::config::AppOverrideEntry {
+                    process: std::mem::take(&mut buf.0),
+                    class: std::mem::take(&mut buf.1),
+                });
+            }
         }
     });
     ui.add_space(8.0);
@@ -3404,6 +3520,7 @@ fn process_list_ui(
     tooltip: &str,
     entries: &mut Vec<String>,
     buf: &mut String,
+    status: &mut String,
 ) {
     ui.label(label).on_hover_text(tooltip);
     let mut rm = None;
@@ -3438,9 +3555,12 @@ fn process_list_ui(
             .button("+追加")
             .on_hover_text("押すと: 入力したプロセス名を一覧に追加します。")
             .clicked()
-            && !buf.is_empty()
         {
-            entries.push(std::mem::take(buf));
+            if buf.is_empty() {
+                *status = "プロセス名を入力してください。".to_string();
+            } else {
+                entries.push(std::mem::take(buf));
+            }
         }
     });
     ui.add_space(8.0);
@@ -3638,6 +3758,7 @@ fn combo_key_list_ui(
     keys: &mut Vec<String>,
     new_entry: &mut NewComboBuf,
     tooltip: &str,
+    status: &mut String,
 ) {
     ui.label(format!("  {label}:")).on_hover_text(tooltip);
     let mut rm = None;
@@ -3677,15 +3798,18 @@ fn combo_key_list_ui(
             .button("+追加")
             .on_hover_text("押すと: 上で組み立てたキーの組み合わせを一覧に追加します。")
             .clicked()
-            && !new_entry.main.is_empty()
         {
-            keys.push(format_combo(
-                new_entry.ctrl,
-                new_entry.shift,
-                new_entry.alt,
-                &new_entry.main,
-            ));
-            *new_entry = NewComboBuf::default();
+            if new_entry.main.is_empty() {
+                *status = "キーが未選択のため追加できません。".to_string();
+            } else {
+                keys.push(format_combo(
+                    new_entry.ctrl,
+                    new_entry.shift,
+                    new_entry.alt,
+                    &new_entry.main,
+                ));
+                *new_entry = NewComboBuf::default();
+            }
         }
     });
 }
@@ -3861,6 +3985,183 @@ mod ime_mode_key_options_tests {
     }
 }
 
+/// 物理キーが存在しない IME 仮想キーが「from」（物理キー押下のキャプチャ対象）
+/// 候補に紛れていないことを保証する回帰テスト（2026-09-03 ユーザー指摘）。
+#[cfg(test)]
+mod keymap_from_key_options_tests {
+    use super::{keymap_from_key_options, keymap_to_key_options};
+    use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT, VK_SPACE};
+
+    /// `forbidden_target_vk_reason(..., is_to_side=false)` が禁止するキーは
+    /// keymap from 候補から除外されていること。
+    #[test]
+    fn forbidden_keys_are_excluded_from_from_options() {
+        let from_internals: Vec<&str> = keymap_from_key_options(VK_NONCONVERT, VK_CONVERT)
+            .map(|(_, i)| *i)
+            .collect();
+        for forbidden in ["変換", "無変換", "かな", "漢字", "VK_IME_ON", "VK_IME_OFF"] {
+            assert!(
+                !from_internals.contains(&forbidden),
+                "{forbidden} が keymap_from_key_options（from 候補）に漏れている"
+            );
+        }
+    }
+
+    /// ADR-130 の OR 判定は to 側限定。親指キーを Space 等へ変えたユーザーでは、
+    /// `変換` は from 候補として使えるが to 候補からは除外される。
+    #[test]
+    fn conv_mutating_keys_are_to_side_only_exclusions() {
+        let from_internals: Vec<&str> = keymap_from_key_options(VK_NONCONVERT, VK_SPACE)
+            .map(|(_, i)| *i)
+            .collect();
+        let to_internals: Vec<&str> = keymap_to_key_options(VK_NONCONVERT, VK_SPACE)
+            .map(|(_, i)| *i)
+            .collect();
+
+        assert!(from_internals.contains(&"変換"));
+        assert!(!to_internals.contains(&"変換"));
+    }
+}
+
+/// `keymap_forbidden_reason`（キャプチャ拒否時に `self.status` へ表示する
+/// 理由文字列の算出、コードレビュー指摘 m7）の回帰テスト。
+#[cfg(test)]
+mod keymap_forbidden_reason_tests {
+    use super::keymap_forbidden_reason;
+    use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT, VK_SPACE};
+
+    #[test]
+    fn returns_reason_for_forbidden_to_side_vk() {
+        assert!(
+            keymap_forbidden_reason("VK_KANJI", VK_NONCONVERT, VK_CONVERT, true).is_some(),
+            "IME 制御系 VK は to 側で禁止理由を返すべき"
+        );
+    }
+
+    #[test]
+    fn returns_none_for_allowed_vk() {
+        assert_eq!(
+            keymap_forbidden_reason("VK_F7", VK_NONCONVERT, VK_CONVERT, true),
+            None,
+            "通常キーは禁止理由が無いはず"
+        );
+    }
+
+    #[test]
+    fn or_judgment_is_to_side_only() {
+        // 親指キーを Space に変えているので VK_CONVERT は親指キー由来では
+        // 禁止されない。to 側だけ ADR-130 の OR 判定で禁止される。
+        assert_eq!(
+            keymap_forbidden_reason("VK_CONVERT", VK_NONCONVERT, VK_SPACE, false),
+            None
+        );
+        assert!(keymap_forbidden_reason("VK_CONVERT", VK_NONCONVERT, VK_SPACE, true).is_some());
+    }
+
+    #[test]
+    fn unresolvable_name_is_not_treated_as_forbidden() {
+        // `keymap_internal_allowed` と同じ意味論: 名前解決できない文字列は
+        // 「禁止」ではなく「対象外」として扱う（バックエンドの
+        // 'to' パース失敗パスが別途処理する）。
+        assert_eq!(
+            keymap_forbidden_reason("not-a-real-vk-name", VK_NONCONVERT, VK_CONVERT, true),
+            None
+        );
+    }
+}
+
+/// `adjust_capturing_after_to_step_removed`/`adjust_capturing_after_rule_removed`
+/// の回帰テスト（ベストプラクティスレビュー指摘: キャプチャ待機中に別の
+/// ステップ／ルールを削除すると、位置ベースの `CaptureTarget` がズレて
+/// 意図しない対象を上書きしうる問題）。
+#[cfg(test)]
+mod capturing_index_adjustment_tests {
+    use super::{
+        CaptureTarget, adjust_capturing_after_rule_removed, adjust_capturing_after_to_step_removed,
+    };
+
+    #[test]
+    fn to_step_removal_cancels_capture_on_the_removed_step_itself() {
+        // rule 0 の step 1 をキャプチャ待機中に、まさにその step 1 が削除された。
+        let capturing = Some(CaptureTarget::ExistingTo(0, 1));
+        assert_eq!(
+            adjust_capturing_after_to_step_removed(capturing, 0, 1),
+            None,
+            "削除対象そのものを待っていたキャプチャは取消すべき"
+        );
+    }
+
+    #[test]
+    fn to_step_removal_shifts_capture_on_a_later_step() {
+        // to = [A, B, C]。step 1(B)をキャプチャ待機中に step 0(A)が削除される
+        // と to = [B, C] になり、B は新しい index 0 に移る。
+        let capturing = Some(CaptureTarget::ExistingTo(0, 1));
+        assert_eq!(
+            adjust_capturing_after_to_step_removed(capturing, 0, 0),
+            Some(CaptureTarget::ExistingTo(0, 0)),
+            "後続ステップを待っていたキャプチャはインデックスを1つ詰めるべき \
+             （そうしないと次に押したキーが別のステップを上書きする）"
+        );
+    }
+
+    #[test]
+    fn to_step_removal_leaves_capture_on_an_earlier_step_untouched() {
+        let capturing = Some(CaptureTarget::ExistingTo(0, 0));
+        assert_eq!(
+            adjust_capturing_after_to_step_removed(capturing, 0, 2),
+            capturing,
+            "削除されたステップより前を待っているキャプチャは変更しない"
+        );
+    }
+
+    #[test]
+    fn to_step_removal_in_a_different_rule_is_untouched() {
+        let capturing = Some(CaptureTarget::ExistingTo(1, 0));
+        assert_eq!(
+            adjust_capturing_after_to_step_removed(capturing, 0, 0),
+            capturing,
+            "別のルールのステップ削除は無関係なキャプチャに影響しない"
+        );
+    }
+
+    #[test]
+    fn rule_removal_cancels_capture_on_the_removed_rule() {
+        assert_eq!(
+            adjust_capturing_after_rule_removed(Some(CaptureTarget::ExistingFrom(2)), 2),
+            None
+        );
+        assert_eq!(
+            adjust_capturing_after_rule_removed(Some(CaptureTarget::ExistingTo(2, 3)), 2),
+            None
+        );
+    }
+
+    #[test]
+    fn rule_removal_shifts_capture_on_a_later_rule() {
+        assert_eq!(
+            adjust_capturing_after_rule_removed(Some(CaptureTarget::ExistingFrom(3)), 1),
+            Some(CaptureTarget::ExistingFrom(2))
+        );
+        assert_eq!(
+            adjust_capturing_after_rule_removed(Some(CaptureTarget::ExistingTo(3, 5)), 1),
+            Some(CaptureTarget::ExistingTo(2, 5)),
+            "ルール index だけ詰め、ステップ index はそのまま保つべき"
+        );
+    }
+
+    #[test]
+    fn rule_removal_leaves_capture_on_an_earlier_rule_untouched() {
+        let capturing = Some(CaptureTarget::ExistingFrom(0));
+        assert_eq!(adjust_capturing_after_rule_removed(capturing, 2), capturing);
+    }
+
+    #[test]
+    fn removal_with_no_pending_capture_is_a_no_op() {
+        assert_eq!(adjust_capturing_after_to_step_removed(None, 0, 0), None);
+        assert_eq!(adjust_capturing_after_rule_removed(None, 0), None);
+    }
+}
+
 #[cfg(test)]
 mod thumb_key_display_condition_tests {
     use super::{is_henkan_thumb_key, is_muhenkan_thumb_key};
@@ -3999,6 +4300,152 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("全角", "VK_DBE_DBCSCHAR"),
 ];
 
+/// `KEYMAP_MAIN_KEYS` から、対応する物理キーが存在しない IME 仮想キー
+/// （`ImeKeyKind::ImeOn`/`ImeOff`/`Alphanumeric`/`Katakana`/`Activate`/
+/// `Deactivate`/`ActivatePair`）だけを除いた候補一覧。
+///
+/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::KanjiToggle`) は実在する
+/// 物理キーなので除外しない——`ImeKeyKind::from_vk(vk).is_some()` 全体を
+/// 除外条件にすると、この2つも誤って弾いてしまう（コードレビュー指摘）。
+///
+/// `[[keymap]]` の `from`/`to` 専用の `keymap_from_key_options`/
+/// `keymap_to_key_options` とは別物: あちらは親指キー重複・IME
+/// conv-mutating（ADR-130）といった `[[keymap]]` 固有の禁止理由まで含む
+/// SSOT（`forbidden_target_vk_reason`）を通すが、post_bypass prefix キーや
+/// `engine_toggle_hotkey` は `[[keymap]]` ルールではないため、それらの
+/// keymap 固有の禁止理由は適用対象外（ADR-130 決定6 の SSOT 化は
+/// 「keymap の from/to 候補」のみが対象、コードレビュー指摘 M2）。
+fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEYMAP_MAIN_KEYS.iter().filter(|(_, internal)| {
+        VkCode::from_name(internal).is_some_and(|vk| {
+            !matches!(
+                awase_windows::vk::ImeKeyKind::from_vk(vk),
+                Some(
+                    awase_windows::vk::ImeKeyKind::ImeOn
+                        | awase_windows::vk::ImeKeyKind::ImeOff
+                        | awase_windows::vk::ImeKeyKind::Alphanumeric
+                        | awase_windows::vk::ImeKeyKind::Katakana
+                        | awase_windows::vk::ImeKeyKind::Activate
+                        | awase_windows::vk::ImeKeyKind::Deactivate
+                        | awase_windows::vk::ImeKeyKind::ActivatePair
+                )
+            )
+        })
+    })
+}
+
+/// `KEYMAP_MAIN_KEYS` から、keymap の from 側で禁止される VK を除いた候補一覧。
+fn keymap_from_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    keymap_key_options(left_thumb_vk, right_thumb_vk, false)
+}
+
+/// `KEYMAP_MAIN_KEYS` から、keymap の to 側で禁止される VK を除いた候補一覧。
+fn keymap_to_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    keymap_key_options(left_thumb_vk, right_thumb_vk, true)
+}
+
+fn keymap_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEYMAP_MAIN_KEYS.iter().filter(move |(_, internal)| {
+        keymap_internal_allowed(internal, left_thumb_vk, right_thumb_vk, is_to_side)
+    })
+}
+
+fn keymap_internal_allowed(
+    internal: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> bool {
+    keymap_forbidden_reason(internal, left_thumb_vk, right_thumb_vk, is_to_side).is_none()
+}
+
+/// `internal` が禁止されているなら理由文字列を返す（`keymap_internal_allowed`
+/// の理由付き版）。キャプチャ拒否時に `self.status` へ表示するために使う
+/// （コードレビュー指摘 m7）。`VkCode::from_name` が解決できない文字列は
+/// 禁止扱いにしない（`forbidden_target_vk_reason` の対象外＝許可、という
+/// 既存の `keymap_internal_allowed` の意味論を保つ）。
+fn keymap_forbidden_reason(
+    internal: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> Option<&'static str> {
+    VkCode::from_name(internal).and_then(|vk| {
+        awase_windows::keymap::forbidden_target_vk_reason(
+            vk,
+            left_thumb_vk,
+            right_thumb_vk,
+            is_to_side,
+        )
+    })
+}
+
+/// `rule.to` からステップ `removed_step_i` を削除した後、待機中の `⌨`
+/// キャプチャの対象インデックスを追随させる。
+///
+/// キャプチャは `CaptureTarget::ExistingTo(rule_i, step_i)` という**位置**
+/// でステップを指すため、キャプチャ待機中に別のステップが削除されると
+/// `step_i` がズレて意図しないステップを上書きしうる（ベストプラクティス
+/// レビュー指摘）。削除されたステップ自身を待っていたキャプチャは取消し、
+/// それより後ろのステップを待っていたキャプチャはインデックスを1つ詰める。
+/// 別のルール・より前のステップを対象にしたキャプチャは変更しない。
+#[must_use]
+fn adjust_capturing_after_to_step_removed(
+    capturing: Option<CaptureTarget>,
+    rule_i: usize,
+    removed_step_i: usize,
+) -> Option<CaptureTarget> {
+    match capturing {
+        Some(CaptureTarget::ExistingTo(ci, cstep)) if ci == rule_i => {
+            match cstep.cmp(&removed_step_i) {
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(CaptureTarget::ExistingTo(ci, cstep - 1)),
+                std::cmp::Ordering::Less => capturing,
+            }
+        }
+        other => other,
+    }
+}
+
+/// `self.config.keymaps` からルール `removed_i` を削除した後、待機中の `⌨`
+/// キャプチャの対象インデックスを追随させる
+/// （`adjust_capturing_after_to_step_removed` のルール単位版）。
+#[must_use]
+fn adjust_capturing_after_rule_removed(
+    capturing: Option<CaptureTarget>,
+    removed_i: usize,
+) -> Option<CaptureTarget> {
+    match capturing {
+        Some(CaptureTarget::ExistingFrom(ci)) if ci == removed_i => None,
+        Some(CaptureTarget::ExistingFrom(ci)) if ci > removed_i => {
+            Some(CaptureTarget::ExistingFrom(ci - 1))
+        }
+        Some(CaptureTarget::ExistingTo(ci, _)) if ci == removed_i => None,
+        Some(CaptureTarget::ExistingTo(ci, cstep)) if ci > removed_i => {
+            Some(CaptureTarget::ExistingTo(ci - 1, cstep))
+        }
+        other => other,
+    }
+}
+
+fn keymap_thumb_vks(config: &awase::config::GeneralConfig) -> (VkCode, VkCode) {
+    let left = awase_windows::state::alt_impersonation::resolve_thumb_key(&config.left_thumb_key)
+        .map_or(awase_windows::vk::VK_NONCONVERT, |(vk, _)| vk);
+    let right = awase_windows::state::alt_impersonation::resolve_thumb_key(&config.right_thumb_key)
+        .map_or(awase_windows::vk::VK_CONVERT, |(vk, _)| vk);
+    (left, right)
+}
+
 const fn keyboard_model_label(model: awase::scanmap::KeyboardModel) -> &'static str {
     use awase::scanmap::KeyboardModel;
     match model {
@@ -4084,8 +4531,22 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &
     changed
 }
 
-/// main key ドロップダウン（必須選択版）。変更時は true を返す。
-fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
+/// main key ドロップダウン（必須選択版）。
+///
+/// 呼び出し元はいずれも物理キー押下のキャプチャ対象（keymap の from・
+/// post_bypass prefix キー・グローバルトグルホットキー）だが、候補一覧は
+/// 呼び出し元ごとに異なる（コードレビュー指摘 M2）: keymap の from は
+/// `keymap_from_key_options`（`[[keymap]]` 固有の禁止理由まで含む SSOT）、
+/// それ以外（post_bypass・トグルホットキー）は `physical_key_options`
+/// （物理キーが存在しない IME 仮想キーのみを除外）を渡す。変更時は true を
+/// 返す。
+fn main_key_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &mut String,
+    tooltip: &str,
+    options: impl Iterator<Item = &'static (&'static str, &'static str)>,
+) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
@@ -4096,7 +4557,7 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &s
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in KEYMAP_MAIN_KEYS {
+            for (label, internal) in options {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -4123,7 +4584,7 @@ fn hotkey_combo_ui(ui: &mut egui::Ui, id: &str, current: &mut Option<String>, to
     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
     changed |= ui.checkbox(&mut shift, "Shift").changed();
     changed |= ui.checkbox(&mut alt, "Alt").changed();
-    if main_key_combo(ui, id, &mut main, tooltip) {
+    if main_key_combo(ui, id, &mut main, tooltip, physical_key_options()) {
         changed = true;
     }
     if ui
@@ -4242,12 +4703,51 @@ fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
     })
 }
 
-/// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。変更時は true を返す。
-fn main_key_combo_optional(
+/// main key ドロップダウン（keymap の to＝再注入先専用、必須選択版）。
+///
+/// 物理キー押下のキャプチャ対象ではないが、ADR-130 の OR 判定
+/// （`ImeKeyKind::from_vk(vk).is_some() || vk_may_mutate_conv(vk)`）により
+/// `keymap_to_key_options`（`is_to_side=true`）で絞り込む——IME 制御系 VK は
+/// この経路でも禁止対象（`forbidden_target_vk_reason` 参照）。「消費のみ」
+/// 選択肢はここには無い（それは `main_key_combo_to_optional`）。変更時は
+/// true を返す。
+fn main_key_combo_to(
     ui: &mut egui::Ui,
     id: &str,
     current: &mut String,
     tooltip: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> bool {
+    let display = key_display_name(current).to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in keymap_to_key_options(left_thumb_vk, right_thumb_vk) {
+                if ui.selectable_label(current == internal, *label).clicked() {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+    changed
+}
+
+fn main_key_combo_to_optional(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &mut String,
+    tooltip: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
 ) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
@@ -4267,7 +4767,7 @@ fn main_key_combo_optional(
                 current.clear();
                 changed = true;
             }
-            for (label, internal) in KEYMAP_MAIN_KEYS {
+            for (label, internal) in keymap_to_key_options(left_thumb_vk, right_thumb_vk) {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -4833,7 +5333,7 @@ mod layout_tab_repro {
     /// `full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
     /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/
-    /// `main_key_combo_optional` を含む行）も描画させる。
+    /// `main_key_combo_to` を含む行）も描画させる。
     #[test]
     fn remaining_tabs_render_does_not_panic() {
         let config_path = find_config_path();
@@ -4846,7 +5346,11 @@ mod layout_tab_repro {
         config.keymaps.push(awase::config::KeymapRule {
             app: Some("vim.exe".to_string()),
             from: "Ctrl+I".to_string(),
-            to: Some("VK_F7".to_string()),
+            // 2ステップにして、ADR-130 の複数ステップ to UI（各ステップの
+            // ドロップダウン・⌨・x、末尾の「＋」）が実際にレンダリングされる
+            // ことをこのスモークテストで確認する（ベストプラクティス
+            // レビュー指摘: 単一ステップだけでは "+" ボタンの経路が未検証）。
+            to: vec!["VK_F7".to_string(), "VK_F8".to_string()],
         });
         config.post_bypass.push(awase::config::PostBypassRule {
             key: "Ctrl+B".to_string(),
