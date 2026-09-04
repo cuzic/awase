@@ -13195,3 +13195,67 @@ drift correction 1経路のみを前提にしており、この`ImmBrokenForceOn
 `journal`は`DumpTruncated`（total_entries=2123、emitted=1004、
 dropped_key_input=418）のため、「＠」を直接出力した打鍵そのものは
 特定できなかった。
+
+**追補4（2026-09-04、Opus 2体による「A-2適用」検討・不採用、SSOTは
+2つでなく3つ以上と判明）:** 追補3の根本原因を踏まえ、既存の
+`OpenWarrant`授権機構（ADR-087設計、`state/open_warrant.rs`）を
+`apply_force_on_for_imm_broken`（起案点#6）にだけ強制適用する
+（`ADR-090`が定義する「A-2」フェーズの部分適用）という修正案を、
+Opus 2体（architect/premortem）で3ラウンド討論した。
+
+**結論: 不採用（実装に進むべきでない）。** 主な理由:
+
+1. **`issue_open_warrant()`は「同じSSOTを読ませる」単純な仕組みでは
+   ない、5段の優先順位付き梯子**（Step 0 SafetyValve → Step 1
+   IntentStore → Step 3 Actuating観測 → Step 4a HeuristicDefault →
+   Step 4b heuristic guard → Step 4c `desired_open`採用）であり、
+   `desired_open`と一致するのは梯子が**最下段(Step 4c)まで落ちた
+   場合のみ**。特にStep 4bは「#6を発火させた同じguardが、その
+   guard自身によって`true`で即座に授権される」という**自己整合
+   ループ**になっており、guard起因のforce-ONではA-2は完全にno-opに
+   なる。Step 3（`ObservationSource::Gji`、Actuating権威）もGJI
+   環境では常態的に発火しうるため、「TsfNativeだからActuating観測は
+   来ない」という前提は誤りだった（後述の訂正参照）。
+2. **SSOTは2つではなく、少なくとも3つ存在する。** `runtime/
+   ime_refresh.rs`のフォーカス変更経路が呼ぶ`send_eager_tsf_warmup`
+   は`warmup_ime_on()`（`platform_state.rs`、`applied ?? belief`）
+   という**第三の解決関数**を読み、**`issue_actuation_order`を
+   一切通らないため`OpenWarrant`の対象外**（A-2では原理的に触れない）。
+   実際、report4のapp_log（末尾切り詰め済みの狭い窓）だけでも
+   `[tsf-eager-warmup] VK_IME_ON 送信`ログが確認でき、同じ窓で
+   `force-ON (ImmBrokenForceOn)`は2件、`send_eager_tsf_warmup`
+   呼び出しは5件——**92件の`VK_IME_ON`の相当部分が#6(force-on)では
+   なくwarmup経路由来である可能性が高い**ことが実データで裏付けられた。
+   `#8 focus_change_tsf_native_gji_force_on`という当初の代替候補は
+   ADR-098決定2で既に撤去済み（`ime_refresh.rs:493-497`）であり
+   存在しない。
+3. A-2でwarrantが`None`となり送信自体を中止した場合、
+   `note_force_on_attempt`によるクールダウン起点が刻まれず、
+   `runtime/mod.rs:836-838`が警告する「実効50Hzの無限再試行ループ」
+   （BUG-69/BUG-31族）を再導入するリスクが新たに見つかった
+   （拒否時の再スケジュール設計が未決定のまま実装すると危険）。
+4. A-2はStep 1（`IntentStore`に古いOFF意図がTTL内で残存）でも
+   `None`を返し、BUG-16系の正当なforce-ON再試行まで止めうる。
+
+**維持された知見**（実装は見送るが記録価値がある）:
+- drift correctionが`desired_open()`、force-onが`effective_open()`を
+  読むという二重SSOTの発見自体は正しい。
+- `FocusChanged`が`last_intent=None`にし`effective_open()`が
+  `derive_any()`にフォールバックして`desired_open()`との一致が
+  構造的に切れる窓の特定（`ime_model.rs:621`・`:398-405`）も正しい。
+- `ObservationSource::Gji`/`Tsf`はActuating権威（`ime_event.rs:
+  184-188`）で、プロファイルがTsfNativeでもIME種別由来の観測として
+  発火しうる、という訂正は正しい。
+
+**次のアクション（実装せず、まず既存データで答えられる範囲）:**
+1. report4のapp_log全体（末尾切り詰め前の生ログが必要なら再取得）で
+   `force-ON (ImmBrokenForceOn)`行数と`[tsf-eager-warmup] VK_IME_ON
+   送信`行数を数え、92件のうちの内訳を確定する。
+2. 根本原因節を「2つのSSOT」から「少なくとも3つのSSOT
+   （`desired_open()`/`effective_open()`/`warmup_ime_on()`）＋
+   warrantを通らない送信経路が存在する」へ訂正する（本追補が
+   その訂正を兼ねる）。
+3. 真に必要なのは「起案点ごとのA-2適用」ではなく、**warrantを
+   通らない送信経路（warmup等）をwarrant配下に含める、ADR-090
+   §2.Aの11箇所棚卸しのやり直し**である可能性が高い——ただしこれは
+   本ADR/BUG-110の対応範囲を超える、より大きな仕事。

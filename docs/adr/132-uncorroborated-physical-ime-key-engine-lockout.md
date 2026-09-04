@@ -547,11 +547,33 @@ BUG-110追補3を参照。
 これは`.claude/rules/fix-requires-evidence.md`の「IME actuation合流点」
 （issue #136/ADR-119）よりも一段深い、**合流点そのものが存在しない**
 構造的欠陥——2つの独立した書き込み経路が共通の調停なしに同じ対象へ
-書き込める。Phase 2再検討時は、本ADRが検討したdrift correction単体の
-問題（A/B/B'/候補1-v2）に加えて、この`desired_open()`/`effective_open()`
-の二重SSOTと`apply_force_on_for_imm_broken`との調停不在を主要な論点に
-加える必要がある。Phase 2（保留中の修正案の再検討）はPhase 1のログ
-収集後に判断する。
+書き込める。
+
+**その後の3ラウンド討論で「不採用」判定・SSOTは3つ以上と訂正
+（詳細は`docs/known-bugs.md` BUG-110追補4）。** 既存の`OpenWarrant`
+授権機構（ADR-087/090の「A-2」フェーズ）を`apply_force_on_for_imm_broken`
+にだけ強制適用する修正案をOpus 2体で検討したが、(1) `issue_open_warrant()`
+は`desired_open`を直接読ませる仕組みではなく5段の優先順位付き梯子で、
+最下段（Step 4c）に落ちた場合しか一致しない——特にStep 4bは
+「force-onを発火させた同じguardが自分自身を無条件で授権する」自己整合
+ループになっており適用がno-opになりうる、(2) `send_eager_tsf_warmup`
+（`warmup_ime_on()` = `applied ?? belief`）という**第三のSSOT**が
+`issue_actuation_order`を一切通らず存在し、実データ（report4のapp_log）
+で実際に`VK_IME_ON`を送信していることを確認——**92件の内訳は#6単体
+ではなくwarmup経路が相当量を占める可能性が高く**、A-2 on #6は問題の
+一部にしか届かない、という2つのblockerにより不採用となった。
+「2つのSSOTが競合」という上記の記述は「**少なくとも3つのSSOT
+（`desired_open()`/`effective_open()`/`warmup_ime_on()`）が独立に
+存在し、後者はwarrant機構の対象外**」に訂正する。
+
+Phase 2再検討時は、本ADRが検討したdrift correction単体の問題
+（A/B/B'/候補1-v2）に加えて、この三重SSOTと`apply_force_on_for_imm_broken`/
+`send_eager_tsf_warmup`との調停不在を主要な論点に加える必要がある。
+真に必要な修正は「起案点ごとのA-2適用」ではなく、warrantを通らない
+送信経路をwarrant配下へ含める、ADR-090 §2.Aの11箇所棚卸しのやり直しで
+ある可能性が高い——ただしこれは本ADRの対応範囲を超える、より大きな
+仕事として次回以降に持ち越す。Phase 2（保留中の修正案の再検討）は
+Phase 1のログ収集後に判断する。
 
 ## 次のアクション
 
