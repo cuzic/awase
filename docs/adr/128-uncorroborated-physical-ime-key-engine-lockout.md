@@ -1,8 +1,13 @@
-# ADR-128: 確証の弱い物理IMEキー1回でEngineが無期限ロックアウトされる問題
+# ADR-128: 物理IMEキー1回による明示意図が、失敗しても所有権を返さない問題
 
 ## ステータス
 
-**設計検討中（ドラフトv1、レビュー前）。**
+**設計継続中（v2、未収束）。** Opus 2体（architect/premortem）の敵対的
+レビューで、v1が提示した2案（A: 証拠強度の分離、B: 有界reconciliation）と
+その統合案（B': 明示意図の有界失効）のいずれにも、実コードで裏付けられる
+blockerが見つかった。因果分析はv1から大きく訂正された（下記）。まだ
+「決定」に至っていない——次に検証すべき方向性（B''、後述）は見えているが
+実装可能性の検証は未了。
 
 ## 背景
 
@@ -10,159 +15,249 @@
 
 2026-09-03、Windows Terminal + PowerShell（GJI、JIS配列）で入力中に余分な
 「@」が出力されるとの報告が届いた（`docs/bug-reports-triage.md` 該当行）。
-journal と app_log の時系列突合で以下が確定した:
 
-1. `21:51:55.702`、物理CapsLock位置（scan=0x3A）から `vk=0xF0`
-   (`VK_DBE_ALPHANUMERIC`、いわゆる「英数」キー) の `KeyDown` が届いた。
-   `kp_stage_shadow_ime_toggle`（`runtime/key_pipeline.rs`）がこれを
-   「物理IMEキーによる意図的なIME OFF」と解釈し、`desired_open=false` を
-   即座に確定。同時に `Engine deactivated (ime=false...)` が発火し、
-   awase自身のNICOLA変換エンジンがOFFになった。
-2. しかし実際のGJI変換状態（`observed`）は `open=true` のまま変化せず、
-   `21:51:57.796`〜`21:52:07.312` の間 `[drift] correction: observed=true ≠
-   desired=false` → `apply_ime_open(false)`（`VK_IME_OFF` 送信）が
-   14回超反復し、一度も収束しなかった。
-3. **`Engine activated` のログが再度出るのは `21:52:24.474`
-   ——不具合報告ボタンが押される瞬間まで、約29秒間ノーマル変換エンジンが
-   OFFのままだった。**
-4. journalのK,Y,O,Uキー入力（`decision: PassThrough`, `state: Idle`）は
-   この空白期間中（wall-clock `21:52:06.8`〜`21:52:07.5` 相当）に発生して
-   おり、NICOLA変換が一切かからず生のJIS配列文字がそのまま素通りしていた
-   ことと符合する。「＠」は `VK_IME_OFF`/`VK_DBE_ALPHANUMERIC` というVK
-   コードの値自体が化けたのではなく、**それらのイベントが誤って
-   エンジンOFFを引き起こし、その約29秒間にユーザーが押した物理キー
-   （NICOLA配列では別のかなにシフトされるはずのキー）がJIS配列本来の
-   文字「＠」のまま素通りした**、という間接的な因果と結論した。
+### 因果分析（v2で全面訂正）
 
-### なぜ `vk=0xF0 scan=0x3A` は信頼できないシグナルなのか（既知の事実）
+**v1の因果分析（「drift correctionが無期限リトライを続けたため29秒間
+エンジンがOFFのままだった」）は、Opusレビューで実コードに基づき誤りと
+判明した。** 実際の機構は以下のとおり:
 
-`docs/known-bugs.md` BUG-15 追補7（2026-07-07 実機）で既に確認済み:
+1. `21:51:55.702`、物理CapsLock位置（scan=0x3A、JISキーボードでは
+   「英数」キーでもある）から `vk=0xF0`(`VK_DBE_ALPHANUMERIC`) の
+   `KeyDown` が `injected=false` で届いた。
+   `kp_stage_shadow_ime_toggle`（`runtime/key_pipeline.rs`）が
+   `write_physical_key()` を呼び、以下の3箇所を同時に書き込んだ:
+   - `desired_open = false`
+   - `shadow_model.last_intent`（`state/ime_model.rs`）
+   - `intent_store` の対象hwndエントリ（`state/intent_store.rs`、
+     `EXPLICIT_OFF_INTENT_TTL_MS = 30_000`（`tuning.rs:437`）を持つ）
+2. `PlatformState::effective_open_at()`（`state/platform_state.rs:557-591`）
+   は `intent_store.resolve_effective_open(focus, shadow, now)` を呼ぶ。
+   `IntentStore::resolve_effective_open`（`state/intent_store.rs:158-174`）
+   は、対象hwndに**期限内のエントリがあれば、shadow（＝observed）を
+   一切見ずに `intent.open` をそのまま返す**。TTLは30秒、**クリアされる
+   条件は `FocusChanged` の1箇所のみ**（`ime_model.rs:621`、
+   `last_intent`側も同様）。
+   - `has_user_explicit_intent()` が true の間、`resolve_open_at()`
+     （`ime_model.rs:400-412`）も同様に `desired_open` を無条件採用し、
+     `observations` を一切見ない。
+3. `21:51:57.796`〜`21:52:07.312` の間 `[drift] correction:
+   observed=true ≠ desired=false` → `apply_ime_open(false)` が14回超
+   反復したが、**これは29秒間のうち約9.5秒（`FeedbackPolicy::Blind`
+   max_attempts=5 × 再武装cooldown 3000ms、`tuning.rs:289` から算出した
+   周期と実測が一致）でしかない。残り約17秒はdrift correctionと無関係
+   に、`IntentStore`/`last_intent` がフォーカス変更を待つだけの
+   純粋な待機だった**。
+4. `Engine activated` が再度出る `21:52:24.474` の直前、
+   `21:52:24.471` に `FocusChange [17416→14684] awase_tray_window`
+   （不具合報告ダイアログへのフォーカス移動）が記録されている。**この
+   フォーカス変更こそが `last_intent` をクリアし、ロックアウトを
+   解除したトリガーである。** 「報告ボタンが押される瞬間まで29秒
+   ロックされていた」のは偶然の一致ではなく、フォーカス変更が起きた
+   瞬間まで解除されなかった、という直接の因果である。
+5. journalのK,Y,O,Uキー入力（`decision: PassThrough`, `state: Idle`）は
+   この期間中（wall-clock `21:52:06.8`〜`21:52:07.5` 相当）に発生して
+   おり、NICOLA変換が一切かからず生のJIS配列文字が素通りしていたことと
+   符合する。ただし「＠」がどの物理キーに由来するかはjournalから直接
+   特定できておらず、使用中の `.yab`（本報告の添付ファイルは`＠`を
+   左親指シフト面のPキー右隣に明示的に割り当てている）に依存する
+   因果である点は未確定のまま残る。
 
-> `VK_DBE_ALPHANUMERIC`（scan 0x3A = 物理CapsLock位置）は、実IMEがOFFの
-> 文脈に着弾すると kbd106 の素の英数キー処理（CAPLOCK）でCapsLockを
-> トグルする（実機: belief ON × 実OFF の窓でShift押下のたびにCapsLock
-> 点灯）。
+**再定義した問題**: 「証拠強度」でも「リトライ回数」でもなく、
+**「awaseが物理IMEキー1回でIME状態のactuation所有権（30秒の絶対的な
+`explicit intent`）を取り、actuationが実際に失敗し続けている（drift
+correctionが14回超空振りした）という機構内部で既に判明している情報が
+あっても、その所有権を返す経路が存在しない」** ことが実害の本質。
 
-これはawase自身が**注入**する場合の話だが、今回の報告は**物理キーボード
-からの純粋な入力**として同じ `vk=0xF0 scan=0x3A` が届いたケースであり、
-BUG-15が指摘した「この特定のVK×scan組み合わせは、OS/kbd106ドライバの
-副産物として実IMEの意図を伴わずに発生しうる」という不安定性の別側面が
-表面化したものと考えられる。今回の報告では `config.toml` の
-`keymaps=[]` によりADR-126（Caps→Ctrlプリセット）は無効だったため、
-この誤配線が直接の引き金ではない——CapsLock位置の英数キー自体が
-本質的に持つ不安定性が、プリセット無しでも顕在化した。
+### `vk=0xF0 scan=0x3A` の信頼性について（v1からの訂正）
 
-### 現行実装: 単発イベント→即時belief確定、収束保証なしのリトライ
+v1は「`vk=0xF0 scan=0x3A` は既知の低信頼シグナル」と前提したが、
+これは不正確だった。`docs/known-bugs.md` BUG-15追補7が指摘する
+「spuriousな0xF0を生む」経路は **scan=0x70（かなキー）側**であり、
+`scan=0x3A` はJIS(kbd106)における英数キーの**正規のコード**である。
+`vk.rs:196-198`（ADR-093）のコメント「この5 VKは通常の物理キーボードに
+存在しない合成コード」の方が、このJIS専用キーの実在を見落としている。
 
-`crates/awase-windows/src/vk.rs::shadow_effect()`:
+一方で、`scan` は物理キー押下と合成/エコーイベントを区別する識別子に
+**なりえない**——`VK_DBE_ALPHANUMERIC` を `MapVirtualKeyW` で逆引きすると
+機械的に `scan=0x3A` が得られるため、awase自身や他プロセスが合成した
+0xF0も同じscanを持つ（`docs/known-bugs.md` BUG-25追補1）。また
+`src/config.rs:289-291` には、MS-IMEの「キーとタッチのカスタマイズ」に
+よるOS/ドライバレベルの翻訳が `injected=false` で届く実機事例が
+既に記録されている。**したがって、今回のイベントが「ユーザーが実際に
+英数キーを押した」のか「何らかのIME側のエコー」なのかは、
+`injected=false` という事実だけからは断定できない。** ただし
+`send_gji_half_width_alnum_toggle`（`output/mod.rs:1102-1111`、
+BUG-25半角英数トグル）はSendInputを使うため該当すれば`injected=true`に
+なるはずで、この特定の自機能によるエコーは今回は除外できる。
 
-```rust
-Self::ImeOff | Self::Alphanumeric | Self::Deactivate => ShadowImeEffect::TurnOff,
-```
+### 検討した3案とその棄却理由
 
-`Self::Alphanumeric`（`VK_DBE_ALPHANUMERIC`）は他の明示的なIME OFFキー
-（`VK_IME_OFF`）と全く同列に扱われ、**scanコードによる区別も、
-裏付けとなる2回目の観測を待つ猶予も一切ない**。`kp_stage_shadow_ime_toggle`
-はこの1回のKeyDownだけで `write_physical_key()` を呼び `desired_open` を
-確定する。
+Opusレビュー（architect/premortem、2ラウンド）で以下の3案を検討し、
+いずれも実コードで裏付けられる blocker が見つかったため、**このまま
+採用しない**:
 
-一方、`runtime/ime_refresh.rs` の drift correction は `desired` と
-`observed` が食い違うたびに `FeedbackPolicy::Blind`（`max_attempts=5`）で
-再送を試み、`GiveUp` した後も `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`
-(`tuning.rs`, 3000ms) 経過後に新しい観測があれば無条件で再武装する
-（`state/ime_actuation.rs::blind_rearm_cooldown_elapsed`、BUG-68）。
-**「observedが一貫してdesiredに反し続けたら、desired側を観測に合わせて
-訂正する」という経路は存在しない。** 今回のケースでは実際のGJI conv
-状態（observed=true）の方が終始正しく、awase側の `desired_open=false`
-が誤りだったが、機構はこの可能性を考慮せず無期限にリトライを続けた。
+#### (A) 証拠強度の分離（`vk=0xF0 scan=0x3A` の意図昇格を弱める）
+
+- **`shadow_effect()` を `None` にする（A-1）と、`shadow_action` を
+  唯一の入力源とする `runtime/transport.rs:224-227`（`is_kanji_event`
+  判定）が連動して即座に `Allow`（素通し）に倒れる。** 同ファイル
+  `:243-262` の `is_dbe_mode_key_down`（`dbe_mode_key_policy=Suppress`
+  既定、BUG-52対策）は `is_kanji_event` の内側にあるため丸ごと
+  バイパスされ、実IMEがネイティブに英数へ切り替わってしまう
+  （BUG-52・BUG-15追補7の「belief ON × 実OFF」窓の再導入。JIS配列
+  全般 × 任意IME × 英数キーで発生しうる）。
+- **A-2（裏付け待ちの保留）は、裏付けとなる2回目の証拠がTsfNative/
+  Imm32Unavailable（本報告のプロファイルそのもの）では構造的に
+  取得できない**（`state/observation_store.rs`
+  `ObservationOutcome::NotObservable`）。今回の再発防止を狙った変更が、
+  同じプロファイルで英数キーを恒久的に無効化する形にしかならない。
+- ADR-121（no-op時の冪等再送）の救済経路と同じ`kp_stage_shadow_ime_toggle`
+  の同じ分岐を奪い合う（意図に昇格しなければno-op分岐にも到達しない）。
+- ADR-093の「これらのVKは合成コードであり受信自体が証拠」という前提と
+  真っ向対立する（同じイベントを「信頼できる外部事実」と
+  「awaseの推測で割り引く対象」の両方として扱うことになる）。
+- ADR-119決定1（「解釈しない入力は消費しない」）とBUG-52の「toggleが
+  発火したか否かに関わらずSuppressせよ」という要求が両立しない中間状態を
+  作る。
+
+#### (B) 有界reconciliation（drift correctionが乖離し続けたらdesiredをobservedに訂正）
+
+- **今回の`observed=true`はほぼ確実に`ConvOpenInference`
+  （`kp_stage_idle_conv_check`起源）であり、`state/evidence.rs:138`で
+  `ObservationAuthority::BeliefOnly`（＝actuationの根拠にしてはならない）
+  と型で宣言済みのソースである。** `state/ime_event.rs:115-130`は、
+  過去にこの推論を`desired_open`書き換えの根拠にして「ユーザーが
+  明示的にOFFにした直後にエンジンが勝手にONへ戻る」BUG-19を起こした
+  経緯を名指しで記録している。Bをそのまま実装するとBUG-19の型どおりの
+  再発になる。
+- `ConvOpenInference`はIMM32のNATIVEビット（開閉と無関係な持続設定、
+  BUG-68）から作られるため「observedが乖離し続ける」ことは「実IMEが
+  開いている」ことを含意しない——**そもそも収束しえない性質の観測**。
+- `ConvOpenInference`を除外すると今回のケースでは一度も発火しない
+  （TsfNativeでは`Actuating`権威を持つ観測源が構造的に来ない）。
+  「安全にすると効かない、効かせるとBUG-19を作る」というジレンマ。
+- `desired_open`への書き込みは`ImeModel::reduce()`の4 variantに限定
+  されており（`.claude/rules/ime-belief-architecture.md`）、Bは5つ目の
+  書き込み経路を必要とする。既存の3 variant（`UserImeSetIntent`等）の
+  流用は意図の偽装になり不可、新設するなら`lints/ime_event_guard`と
+  `architecture_guard.rs`の同時更新が要る。
+
+#### (B') 明示意図の有界失効（`desired_open`は書き換えず、GiveUp N巡後に`last_intent`/`IntentStore`のエントリだけを失効させる）
+
+architectがA・Bの両方の欠陥を踏まえて提案した第三案。「`desired_open`を
+捏造しない」という点でBUG-19の型を形式上は回避しているように見えたが、
+premortemの検証で**実効挙動はBとほぼ同一であり、むしろ新たな固着状態を
+生む**ことが判明した:
+
+- **`last_intent`を消した瞬間、`resolve_open_at()`は`derive_any()`に
+  フォールバックし、`ConvOpenInference`1件（Medium confidence）だけで
+  `effective_open()`をtrueに反転させる。** これは既存テスト
+  `resolve_open_at_decided_by_derive_medium_mise_bug_scenario`
+  （`ime_model.rs:1317-1345`）がBUG-26のために意図的に固定している
+  挙動そのもの——「ユーザーの明示OFFがconv 1件で覆される」という
+  Bと同一の実害が、書き込み経路を変えただけで再現する。
+- `IntentStore`のエントリ削除は、まさに「壊れたconv 1件だけでは
+  `effective_open()`を反転させない」ことを守るために存在する装置
+  （`intent_store.rs:149-156`、Linux CIで`tests/intent_store_effective_open.rs`
+  が固定）を名指しで無効化する行為になる。
+- `explicit_intent()`が`None`になると`check_drift_correction`
+  （`platform_state.rs:821-823`）の`ConvOpenInference`短絡ガードが
+  発火し、**drift correction自体が停止する**。定常状態は「belief=ON
+  （B'-1により反転）× 実IME=OFF（VK_IME_OFFを14回送った後ならこちらの
+  可能性が高い）× 訂正の契機なし」——NICOLA変換が実行されつつ実IMEには
+  届かず、シェルにromajiが直接入力される（BUG-02/BUG-63型のリテラル
+  出力）。**元の症状（エンジンOFFで生キー素通り）より実害が大きい
+  可能性がある。**
+- 失効後にユーザーが再度英数キーを押すと、`effective_open()`が既に
+  trueに反転しているため`current≠new_val`となりno-op判定を通らず、
+  同じ書き込み→GiveUp N巡→失効のサイクルが**周期的に繰り返される**
+  （29秒の1回のロックではなく、フォーカスが変わるまで続く限界サイクル）。
+- `GiveUp`という概念自体が`FeedbackPolicy::Blind`（TsfNative/
+  Imm32Unavailable）専用で、`Read`ポリシー（ImmCross系、LINE/Qt/WezTerm等）
+  では発火しない——一般的な安全弁としてはプロファイルの約半分で
+  dead code になる。
+- カウンタの置き場所（`Actuation`は`AnyFreshEvidence`再武装のたびに
+  `discard_actuation()`で破棄される）が未解決のままで、そもそもN巡に
+  到達する前にリセットされ続ける。
+
+### 次に検証すべき方向性（B''、未検証）
+
+premortemが対案として提示した、まだ実装可能性を検証していない方向性:
+
+**belief（IME open/closedの信念）とengine activation（NICOLA変換の
+稼働）を分離する。** 具体的には:
+
+1. 明示意図を失効させる際、`last_intent`を消すのではなく**強度を
+   下げる**（`Explicit` → `Weak`のような区別を導入する）。`Weak`の間は
+   `ObservationAuthority::Actuating`を持つ観測源（`ImmGetOpenStatus`/
+   `ImmCrossProbe`/`ObserverPoll`/`Gji`/`Tsf`）のHigh単独/Medium合意
+   でのみoverrideを許し、`ConvOpenInference`等の`BeliefOnly`ソースでは
+   overrideさせない。TsfNativeでは`Actuating`ソースが構造的に来ないため
+   belief=OFFのまま据え置かれ、B'-1/B'-3の反転・固着を回避できる。
+2. **そのうえで、NICOLA変換エンジンの活性化条件を`effective_open()`
+   から切り離す。** 今回の実害は「IME状態の信念が間違っていたこと」
+   ではなく「エンジンが29秒間停止し続けたこと」なので、beliefの意味論に
+   一切触れずにこの実害だけを消せる可能性がある。
+
+この方向性は`NotRomajiInput`/`ObservedEisu`ガードや`build_ctx().ime_on`
+の消費者群（複数箇所）との整合が未検証であり、実装可能性そのものが
+次のレビュー対象になる。
 
 ### 関連ADR/既知バグ
 
-- **BUG-15 追補7**（`docs/known-bugs.md`）: `vk=0xF0 scan=0x3A` の
-  不安定性の先例（awase自身の注入時のCapsLock汚染）。
-- **BUG-14**: 注入イベント（`event.injected=true`）を物理IMEキー意図に
-  昇格させない、という既存の「証拠の信頼度を区別する」前例。今回の
-  イベントは `injected=false`（純粋な物理キー）であり、BUG-14のガードは
-  効かない——BUG-14が区別するのは「注入か否か」の1軸のみで、「物理だが
-  VK×scanの組み合わせ自体が信頼できるか」という軸は未区別。
-- **ADR-093**: `VK_DBE_*`（0xF0-0xF4）をIME専用の合成VKコードとして
-  扱う基盤。この5 VKの受信を `is_japanese_ime()` の即時true更新
-  トリガーに使うが、false方向への確定には関与しない、という非対称設計
-  が既にある（コメント参照）。今回問題にしているのは同じ5 VKのうち
-  `Alphanumeric` の **shadow_effect（TurnOff）** 側であり、
-  `is_japanese_ime()` の判定とは別軸。
-- **ADR-121**（実装未着手）: 物理IMEキーが effective_open と同じ方向
-  （no-op）だったときに実OS状態との乖離を訂正する経路が無い、という
-  **逆方向**の欠落を扱う。本ADRは物理IMEキー1回の証拠強度が低い場合に
-  belief を**誤った方向へ**確定させてしまう問題であり、対象は異なるが
-  隣接する（どちらも「物理IMEキー→belief更新」経路の信頼性の話）。
-- **BUG-68**（`state/ime_actuation.rs::blind_rearm_cooldown_elapsed`）:
-  GiveUp後の即時再武装ループを防ぐcooldownを追加した先例。今回の課題は
-  その一歩先——「再武装ループ自体に総量の上限や、observed側を信頼する
-  reconciliationが無い」こと。
+- **BUG-15追補6・7**、**BUG-14**、**BUG-25追補1**、**BUG-68**、
+  **BUG-19**、**BUG-26**、**ADR-087**（belief vs actuationの権威分離の
+  出典）: 上記の因果・棄却理由で個別に参照。
+- **ADR-093**（`docs/adr/093-*.md`）: 合成VKコード基盤。今回0xF0が
+  JIS実キーであることが判明し、この ADR の前提（「物理キーボードには
+  存在しない」）自体に見直しの余地があると判明した（副産物、本ADRの
+  スコープ外）。
+- **ADR-121**（実装未着手）: 物理IMEキーがeffective_openと同じ方向
+  （no-op）だったときの欠落を扱う。D4で「OFF方向は別課題」と明記して
+  おり、その「別課題」が本ADRの対象領域にあたる——決定時にADR-121 D4を
+  本ADRが吸収するか明記する必要がある。B'案はADR-121のno-op救済経路も
+  実質的に無効化する（`last_intent`消去後はno-op判定自体が成立しない）
+  ため、両ADRの決定は独立に確定させられない。
 
-## 問題
+## 問題（再定義）
 
-以下の2つが独立に存在し、組み合わさって「1回の低信頼シグナル→約29秒間の
-エンジンロックアウト」という実害を生んだ:
+物理IMEキー1回の検出（`write_physical_key`、`IntentKind::PhysicalImeKey`）
+が、明示的なホットキー操作（`SyncKey`、例: `Ctrl+無変換`）と全く同じ
+30秒・フォーカス限定解除の絶対的権威（`IntentStore`/`last_intent`）を
+獲得する。actuation（drift correction）が実際に失敗し続けている
+という情報がシステム内に既にあっても、この権威を返却する経路が
+存在しないため、フォーカスが変わるまで最長30秒（今回は約29秒）、
+NICOLA変換エンジンが停止し続ける。
 
-1. **証拠強度を区別しない即時確定**: `vk=0xF0 scan=0x3A` のような、
-   既知の理由（kbd106ドライバの副産物）で実IMEの意図を伴わず発生しうる
-   VK×scanの組み合わせが、他の明示的なIME OFFキーと全く同じ重みで
-   即座に `desired_open` を確定させる。
-2. **無期限リトライ、reconciliation経路なし**: 一度 `desired` と
-   `observed` が乖離すると、drift correctionは3秒間隔で無期限に
-   再武装・再送を繰り返すのみで、「observedが一貫して反対し続けている
-   なら、desired側の方が誤っている可能性を考慮する」という上限付きの
-   安全弁が存在しない。
-
-## 論点（レビューで検討したい選択肢）
-
-以下はまだ確定していない設計の方向性。Opusによる敵対的レビューを経て
-決定を固める。
-
-### (A) 証拠強度の分離
-
-`vk=0xF0`（`VK_DBE_ALPHANUMERIC`）を `scan=0x3A`（CapsLock位置）で
-受信した場合に限り、`PhysicalImeKey` 意図への即時昇格を止める、または
-弱める。候補:
-- A-1: `scan=0x3A` の `Alphanumeric` だけ `shadow_effect()` を
-  `None`（意図に昇格させない）にし、`is_japanese_ime()` の
-  upgrade判定（ADR-093、false方向には関与しない非対称設計）は維持する。
-- A-2: 即時確定はせず、一定時間内に裏付けとなる2回目の証拠
-  （同方向の観測、または同じキーの再送）があるまで保留する。
-
-いずれも「JIS配列でCapsLock位置＝英数キーという構造そのものに起因する
-既知の不安定性」を、config非依存でどこまで一般化して直すべきかが論点。
-ADR-126（Caps→Ctrlプリセット）採用者が今後この位置を頻繁に押すように
-なる（＝トリガー頻度が上がりうる）ことも影響評価に含める必要がある
-（ただし今回の報告自体はプリセット未使用でも再現した点に注意）。
-
-### (B) 有界reconciliation
-
-drift correctionが一定回数のGiveUpサイクル、または一定の総経過時間、
-observedと乖離し続けたら、`desired_open` をobservedに合わせて訂正する
-安全弁を追加する。論点:
-- 正当な理由（ユーザーが意図的にIMEをOFFにしていて、observed側の
-  ポーリングが古い/別プロファイル由来で誤っている場合等）による長時間の
-  乖離まで誤って上書きしてしまわないか。
-- 「訂正」ではなく「エンジンを止めたまま無期限に待つのではなく、一定時間で
-  一旦ユーザーに委ねる（例: 次の明示的なIME操作まで待つ）」という
-  reconciliation以外の選択肢も検討に値するか。
-- ADR-121が扱う「no-op側の欠落」と対称的に、「Send側が無期限に空振りする
-  ケースの上限」として一体的に設計すべきか、別ADRのままにすべきか。
-
-### (C) 両方
-
-AとBは独立に価値があり、片方だけでも実害を減らせる可能性がある
-（Aは今回の直接原因を塞ぐ、Bは原因が別のものであっても長時間ロック
-アウトという実害の再発を防ぐ一般的な安全弁になる）。両方採用するか、
-優先順位を付けて段階的に採用するかもレビュー対象。
+なお、0xF0を個別に塞いでも`SyncKey`や`VK_KANJI`等、他の経路からの
+1回の誤検出で同じ29秒ロックアウトが再現しうる（`last_intent`が
+`FocusChanged`でしかクリアされないという構造そのものが原因のため）。
+**入口（どのVKを信頼するか）ではなく、出口（獲得した権威をいつ・どう
+返すか）を直す設計でなければ、この問題ファミリー全体は解決しない。**
 
 ## 決定
 
-（レビュー未実施のため未記入）
+**未確定。** A/B/B'はいずれも不採用。B''（belief/engine分離）の
+実装可能性検証が次のステップ。
 
 ## 実装状況
 
 未着手。
+
+## 次のアクション
+
+1. **実機検証（最優先、1分で可能）**: 同一環境でエンジンOFFを再現させ、
+   フォーカスを他アプリへ移して戻すだけで即座にエンジンが復帰するかを
+   確認する。復帰すれば上記の因果分析（`last_intent`のFocusChanged依存）
+   が実証される。
+2. `[hook] IME-mode`ログ（`hook.rs:837`）の`self_injected`/`injected`/
+   `scan`生値と、0xF2との時間間隔を確認し、今回のvk=0xF0が真に物理
+   キー押下だったか、IME側エコーだったかを裏取りする。
+3. B''（belief/engine分離）が`NotRomajiInput`/`ObservedEisu`ガードや
+   `build_ctx().ime_on`消費者と整合するかを設計・検証する。
+4. `.claude/rules/fix-requires-evidence.md`の「IME belief」
+   「キー選択」両ファミリーに該当するため、決定後は回帰テストまたは
+   `docs/known-bugs.md`記録を伴わせること。「どのキーをIME OFF意図と
+   解釈するか」は過去5日間で6回反転した領域（`docs/experiments.md`
+   エントリ01）であり、拙速な決定は同じ轍を踏みやすい。
