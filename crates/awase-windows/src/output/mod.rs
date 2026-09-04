@@ -299,7 +299,13 @@ pub struct Output {
     /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
     pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
     /// ADR-128: drain-before-send が実際に flush した件数を Platform へ渡す
-    /// ための一時バッファ。
+    /// ための一時バッファ。0 は「未 flush」を表す（`vk_count` は 0 の場合
+    /// push されないため曖昧さは無い、`suppressed_literal_confirms` と
+    /// 同じ 0 デフォルトのアキュムレータパターン）。呼び出しグラフ上、
+    /// 1回の `drain_output_post_send_effects` の間に2回以上 push される
+    /// ことは無い（`send_keys` バッチ内の2文字目以降は
+    /// `is_probe_or_recovery_blocking(true)` が true になるため drain 自体が
+    /// 起きない）ため `Vec` ではなく `Cell` で十分（/code-review 指摘）。
     ///
     /// `output`/`tsf` の本番コードは `crate::journal` を直接参照してはならない
     /// （`JournalEntry` への変換は platform.rs に一元化する、
@@ -316,7 +322,7 @@ pub struct Output {
     /// 揃えている点が異なる——`drain_journal_entries` まで遅延させると、
     /// この計装の目的である「drain が resend より前に発火したことを示す」
     /// こと自体が journal 上で逆順になる、コードレビュー指摘）。
-    pending_drain_before_send_flushes: std::cell::RefCell<Vec<usize>>,
+    pending_drain_before_send_flush: std::cell::Cell<usize>,
 }
 
 impl std::fmt::Debug for Output {
@@ -423,7 +429,7 @@ impl Output {
             next_gji_reinit_retry_token: std::cell::Cell::new(1),
             gji_reinit_retry_tombstone: std::cell::RefCell::new(None),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
-            pending_drain_before_send_flushes: std::cell::RefCell::new(Vec::new()),
+            pending_drain_before_send_flush: std::cell::Cell::new(0),
         }
     }
 
@@ -435,12 +441,12 @@ impl Output {
         self.runtime_outbox.borrow_mut().drain()
     }
 
-    /// ADR-128: drain-before-send が実際に flush した回数分の `vk_count` を
-    /// Platform へ引き渡す（`JournalEntry` への変換は呼び出し元が行う——
-    /// `output`/`tsf` は `crate::journal` を直接参照しない、上記フィールド
-    /// doc 参照）。
-    pub(crate) fn take_pending_drain_before_send_flushes(&self) -> Vec<usize> {
-        std::mem::take(&mut *self.pending_drain_before_send_flushes.borrow_mut())
+    /// ADR-128: drain-before-send が実際に flush した `vk_count` を Platform
+    /// へ引き渡す（`JournalEntry` への変換は呼び出し元が行う——`output`/
+    /// `tsf` は `crate::journal` を直接参照しない、上記フィールド doc 参照）。
+    /// 0 は「今回は flush しなかった」を表す。
+    pub(crate) fn take_pending_drain_before_send_flush(&self) -> usize {
+        self.pending_drain_before_send_flush.replace(0)
     }
 
     pub(crate) fn current_ime_mode_focus_gen(&self) -> u32 {

@@ -1021,7 +1021,15 @@ impl WindowsPlatform {
         // より前）で変換しないと「flush が resend より前に発火した」ことを
         // journal 上で示せず、`GjiReinitRetryCompleted` 等の後続entryより
         // 後ろの seq になってしまう（round: 実装後コードレビュー指摘）。
-        for vk_count in self.output.take_pending_drain_before_send_flushes() {
+        //
+        // `deferred_recovery_flush_is_notable` の判定はこの呼び出し元
+        // （`vk_count` は既に `n > 0` でガード済み）では常に true になるが、
+        // 意図的に外していない——ADR-123 変更D が確立した「notability は
+        // journal_policy.rs の1箇所だけで判定する」という単一判定点を
+        // 崩すと、将来 policy 側の閾値を変えても drain_before_send 側だけ
+        // 追随し忘れる退行を招く（/code-review 指摘・検討のうえ据え置き）。
+        let vk_count = self.output.take_pending_drain_before_send_flush();
+        if vk_count > 0 {
             let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count };
             if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
                 self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {

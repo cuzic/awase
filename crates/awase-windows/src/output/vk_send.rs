@@ -94,8 +94,8 @@ impl Output {
             );
             // `JournalEntry` への変換は platform.rs 側で行う（output/tsf は
             // `crate::journal` を直接参照しない、`Output::
-            // pending_drain_before_send_flushes` の doc 参照）。
-            self.pending_drain_before_send_flushes.borrow_mut().push(n);
+            // pending_drain_before_send_flush` の doc 参照）。
+            self.pending_drain_before_send_flush.set(n);
         }
     }
 }
@@ -850,8 +850,9 @@ mod tests {
             1,
             "gate=Exempt の recovery resend は drain せずキューを保持すべき"
         );
-        assert!(
-            o.take_pending_drain_before_send_flushes().is_empty(),
+        assert_eq!(
+            o.take_pending_drain_before_send_flush(),
+            0,
             "drain しなかった以上、journal 化すべき flush 事実も無いはず"
         );
     }
