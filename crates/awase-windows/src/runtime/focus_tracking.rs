@@ -167,6 +167,7 @@ impl Runtime {
         self.platform_state.focus.focus_epoch =
             self.platform_state.focus.focus_epoch.wrapping_add(1);
         self.platform.notify_focus_changed();
+        self.clear_windows_terminal_vk_kana_replacement_latch("focus-change");
 
         self.recompute_active_keymaps();
         log::debug!(
@@ -487,6 +488,7 @@ impl Runtime {
         // deliver_key_event に一切イベントを渡さないため、latch が残っていても
         // 対応する KeyUp が永遠に届かない。
         self.platform_state.keymap.keymap_latch.release_all();
+        self.clear_windows_terminal_vk_kana_replacement_latch("app-disable-transition");
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず

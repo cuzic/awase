@@ -234,6 +234,15 @@ pub struct Runtime {
     /// 既定 `MsImeOnly` で従来動作を維持し、GJI 経路は `All` の明示設定時だけ
     /// `kp_shift_conv_guard_key_up` から発火する。
     half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy,
+    /// ADR-133 実機スパイク: Windows Terminal の物理 VK_KANA を
+    /// VK_DBE_HIRAGANA + scan 付き送信へ置換する hidden opt-in。
+    windows_terminal_vk_kana_dbe_hiragana_spike: bool,
+    /// ADR-133 実機スパイク: 置換に成功した VK_KANA KeyDown の KeyUp 回収 latch。
+    windows_terminal_vk_kana_replacement_latched: bool,
+    /// ADR-133 実機スパイク: SendInput 部分成功等を検出した後のセッション内停止。
+    windows_terminal_vk_kana_replacement_disabled: bool,
+    /// ADR-133 実機スパイク: latch 防御 clear 用の KeyDown 時刻。
+    windows_terminal_vk_kana_replacement_latched_at: Option<std::time::Instant>,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1234,6 +1243,10 @@ impl Runtime {
             active_actuation: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
+            windows_terminal_vk_kana_dbe_hiragana_spike: false,
+            windows_terminal_vk_kana_replacement_latched: false,
+            windows_terminal_vk_kana_replacement_disabled: false,
+            windows_terminal_vk_kana_replacement_latched_at: None,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
@@ -1270,6 +1283,20 @@ impl Runtime {
         policy: awase::config::HalfWidthAlnumTogglePolicy,
     ) {
         self.half_width_alnum_toggle_policy = policy;
+    }
+
+    pub(crate) fn set_windows_terminal_vk_kana_dbe_hiragana_spike(&mut self, enabled: bool) {
+        if enabled && !self.windows_terminal_vk_kana_dbe_hiragana_spike {
+            log::info!(
+                "[wt-vk-kana-spike] enabled: Windows Terminal の物理 VK_KANA を \
+                 VK_DBE_HIRAGANA + scan 付き送信へ置換します（実機スパイク）"
+            );
+        }
+        if !enabled {
+            self.clear_windows_terminal_vk_kana_replacement_latch("config-disabled");
+            self.windows_terminal_vk_kana_replacement_disabled = false;
+        }
+        self.windows_terminal_vk_kana_dbe_hiragana_spike = enabled;
     }
 
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
@@ -1483,6 +1510,9 @@ impl Runtime {
         self.set_update_check_enabled(config.general.update_check);
         self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
+        self.set_windows_terminal_vk_kana_dbe_hiragana_spike(
+            config.general.windows_terminal_vk_kana_dbe_hiragana_spike,
+        );
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
@@ -1692,6 +1722,7 @@ impl Runtime {
         // [[keymap]] latch も同じ理由で解放する（ADR-114 決定4「latch
         // 漏れ対策」経路5）。
         self.platform_state.keymap.keymap_latch.release_all();
+        self.clear_windows_terminal_vk_kana_replacement_latch("panic-reset");
 
         // 4. PlatformState を全面リセット
         // panic_reset 直後に refresh_ime_state_cache() が走ると、ここで書いた

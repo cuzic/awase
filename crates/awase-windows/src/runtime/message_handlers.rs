@@ -944,6 +944,7 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
             // 漏れ対策」経路5）。ロック中に失われた KeyUp が latch を stuck
             // させたままになるのを防ぐ。
             app.platform_state.keymap.keymap_latch.release_all();
+            app.clear_windows_terminal_vk_kana_replacement_latch("session-unlock");
             app.platform.timer.kill(TIMER_IME_REFRESH);
             app.platform
                 .timer

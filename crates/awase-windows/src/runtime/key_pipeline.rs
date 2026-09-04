@@ -47,6 +47,10 @@ impl Runtime {
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
 
+        if let Some(result) = self.kp_stage_windows_terminal_vk_kana_spike(&event) {
+            return result;
+        }
+
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
         if self.platform.try_hold_key(event) {
@@ -2529,6 +2533,212 @@ impl Runtime {
     }
 }
 
+impl Runtime {
+    const WT_VK_KANA_REPLACEMENT_SCAN: u32 = 0x70;
+    const WT_VK_KANA_LATCH_TIMEOUT_MS: u128 = 10_000;
+
+    pub(crate) fn clear_windows_terminal_vk_kana_replacement_latch(&mut self, reason: &str) {
+        if self.windows_terminal_vk_kana_replacement_latched
+            || self
+                .windows_terminal_vk_kana_replacement_latched_at
+                .is_some()
+        {
+            log::info!("[wt-vk-kana-spike] latch clear: reason={reason}");
+        }
+        self.windows_terminal_vk_kana_replacement_latched = false;
+        self.windows_terminal_vk_kana_replacement_latched_at = None;
+    }
+
+    fn kp_stage_windows_terminal_vk_kana_spike(
+        &mut self,
+        event: &RawKeyEvent,
+    ) -> Option<CallbackResult> {
+        self.clear_stale_windows_terminal_vk_kana_replacement_latch();
+
+        let gate = classify_wt_vk_kana_spike_gate(
+            event.vk_code,
+            event.event_type,
+            event.injected,
+            event.modifier_snapshot,
+            self.windows_terminal_vk_kana_dbe_hiragana_spike,
+            self.windows_terminal_vk_kana_replacement_disabled,
+            self.windows_terminal_vk_kana_replacement_latched,
+            self.is_windows_terminal_vk_kana_spike_target(),
+        );
+
+        match gate {
+            WtVkKanaSpikeGate::SuppressLatchedKeyUp => {
+                self.clear_windows_terminal_vk_kana_replacement_latch("matching-keyup");
+                log::info!(
+                    "[wt-vk-kana-spike] suppress original VK_KANA KeyUp after successful replacement"
+                );
+                return Some(CallbackResult::Consumed);
+            }
+            WtVkKanaSpikeGate::NotVkKana
+            | WtVkKanaSpikeGate::UnlatchedKeyUp
+            | WtVkKanaSpikeGate::KeyDownIneligible => return None,
+            WtVkKanaSpikeGate::KeyDownEligible => {}
+        }
+
+        let replacement_scan = windows_terminal_vk_kana_replacement_scan();
+        if replacement_scan != Self::WT_VK_KANA_REPLACEMENT_SCAN {
+            log::warn!(
+                "[wt-vk-kana-spike] abort: MapVirtualKeyW(VK_DBE_HIRAGANA) scan=0x{replacement_scan:X}, \
+                 expected=0x{:X}, original_scan=0x{:X}, process={:?}, class={:?}",
+                Self::WT_VK_KANA_REPLACEMENT_SCAN,
+                event.scan_code,
+                self.platform.focus.current.process_name,
+                self.platform.focus.current.class_name,
+            );
+            return None;
+        }
+
+        let sent = send_windows_terminal_vk_kana_replacement_batch();
+        if sent == 2 {
+            let shadow_toggled = self.kp_stage_shadow_ime_toggle(event);
+            self.windows_terminal_vk_kana_replacement_latched = true;
+            self.windows_terminal_vk_kana_replacement_latched_at = Some(std::time::Instant::now());
+            log::info!(
+                "[wt-vk-kana-spike] replaced physical VK_KANA with VK_DBE_HIRAGANA scan=0x{replacement_scan:X}; \
+                 original_scan=0x{:X} shadow_toggled={} process={:?} class={:?}",
+                event.scan_code,
+                shadow_toggled,
+                self.platform.focus.current.process_name,
+                self.platform.focus.current.class_name,
+            );
+            return Some(CallbackResult::Consumed);
+        }
+
+        if sent == 1 {
+            let repair_sent = send_windows_terminal_vk_kana_replacement_keyup_repair();
+            self.windows_terminal_vk_kana_replacement_disabled = true;
+            self.clear_windows_terminal_vk_kana_replacement_latch("partial-sendinput");
+            log::warn!(
+                "[wt-vk-kana-spike] partial SendInput {sent}/2; repair_keyup_sent={repair_sent}; \
+                 spike disabled for this session, original VK_KANA will continue through existing path"
+            );
+        } else {
+            log::warn!(
+                "[wt-vk-kana-spike] SendInput sent {sent}/2; original VK_KANA will continue through existing path"
+            );
+        }
+        None
+    }
+
+    fn clear_stale_windows_terminal_vk_kana_replacement_latch(&mut self) {
+        let Some(instant) = self.windows_terminal_vk_kana_replacement_latched_at else {
+            return;
+        };
+        if instant.elapsed().as_millis() > Self::WT_VK_KANA_LATCH_TIMEOUT_MS {
+            self.clear_windows_terminal_vk_kana_replacement_latch("timeout");
+        }
+    }
+
+    fn is_windows_terminal_vk_kana_spike_target(&self) -> bool {
+        use crate::focus::class_names::AppImeProfile;
+        if matches!(
+            self.platform.current_app_profile(),
+            AppImeProfile::InputRelay
+        ) {
+            return false;
+        }
+        let class_name = self.platform.focus.current.class_name.as_str();
+        let process_name = self.platform.focus.current.process_name.as_str();
+        process_name.eq_ignore_ascii_case("windowsterminal.exe")
+            && matches!(
+                class_name,
+                "CASCADIA_HOSTING_WINDOW_CLASS" | "Windows.UI.Input.InputSite.WindowClass"
+            )
+    }
+}
+
+/// `kp_stage_windows_terminal_vk_kana_spike` の分岐を固定するための純粋関数。
+///
+/// ADR-133 D4b（suppress は replacement 全件成功と per-press latch に結合する）
+/// の判定を、`SendInput` 等の副作用から切り離してテストできるようにする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WtVkKanaSpikeGate {
+    /// `VK_KANA` 以外 — 無関係、既存処理へ通す。
+    NotVkKana,
+    /// KeyUp かつ replacement latch 中 — consume して latch を clear する。
+    SuppressLatchedKeyUp,
+    /// KeyUp かつ latch なし — 既存処理へ通す（replacement を送っていない
+    /// KeyUp を suppress してはならない）。
+    UnlatchedKeyUp,
+    /// KeyDown だが spike 適用条件（config on/セッション内 disable なし/
+    /// 無修飾/非注入/対象アプリ）のいずれかを満たさない — 既存処理へ通す。
+    KeyDownIneligible,
+    /// KeyDown かつ全条件を満たす — replacement 送信を試みる。
+    KeyDownEligible,
+}
+
+#[allow(clippy::fn_params_excessive_bools)]
+fn classify_wt_vk_kana_spike_gate(
+    vk_code: awase::types::VkCode,
+    event_type: KeyEventType,
+    injected: bool,
+    modifiers: awase::types::ModifierState,
+    spike_enabled: bool,
+    spike_disabled_for_session: bool,
+    latched: bool,
+    is_target_app: bool,
+) -> WtVkKanaSpikeGate {
+    if vk_code != crate::vk::VK_KANA {
+        return WtVkKanaSpikeGate::NotVkKana;
+    }
+
+    if matches!(event_type, KeyEventType::KeyUp) {
+        return if latched {
+            WtVkKanaSpikeGate::SuppressLatchedKeyUp
+        } else {
+            WtVkKanaSpikeGate::UnlatchedKeyUp
+        };
+    }
+
+    if !spike_enabled
+        || spike_disabled_for_session
+        || !matches!(event_type, KeyEventType::KeyDown)
+        || injected
+        || modifiers.ctrl
+        || modifiers.shift
+        || modifiers.alt
+        || modifiers.win
+        || !is_target_app
+    {
+        return WtVkKanaSpikeGate::KeyDownIneligible;
+    }
+
+    WtVkKanaSpikeGate::KeyDownEligible
+}
+
+fn windows_terminal_vk_kana_replacement_scan() -> u32 {
+    unsafe {
+        windows::Win32::UI::Input::KeyboardAndMouse::MapVirtualKeyW(
+            u32::from(crate::vk::VK_DBE_HIRAGANA.0),
+            windows::Win32::UI::Input::KeyboardAndMouse::MAPVK_VK_TO_VSC,
+        )
+    }
+}
+
+fn send_windows_terminal_vk_kana_replacement_batch() -> u32 {
+    use crate::tsf::output::{make_scan_key_input, IME_KANJI_MARKER};
+    let inputs = [
+        make_scan_key_input(crate::vk::VK_DBE_HIRAGANA, false, IME_KANJI_MARKER),
+        make_scan_key_input(crate::vk::VK_DBE_HIRAGANA, true, IME_KANJI_MARKER),
+    ];
+    crate::win32::send_input_safe(&inputs)
+}
+
+fn send_windows_terminal_vk_kana_replacement_keyup_repair() -> u32 {
+    use crate::tsf::output::{make_scan_key_input, IME_KANJI_MARKER};
+    let inputs = [make_scan_key_input(
+        crate::vk::VK_DBE_HIRAGANA,
+        true,
+        IME_KANJI_MARKER,
+    )];
+    crate::win32::send_input_safe(&inputs)
+}
+
 #[cfg(test)]
 // `FocusProbeOpenStatus::classify` の分岐固定のみ。`classify` 後の副作用（何を
 // 記録し、いつ guard を解除するか）は `state::focus_probe_plan::plan_focus_probe`
@@ -2627,6 +2837,157 @@ mod tests {
             assert!(!decision_contains_romaji_send(&send_keys_decision(vec![
                 action
             ])));
+        }
+    }
+
+    // ADR-133 D4b: kp_stage_windows_terminal_vk_kana_spike の分岐固定。
+    // SendInput 等の副作用は無く、`classify_wt_vk_kana_spike_gate` の入出力のみを見る。
+    mod wt_vk_kana_spike_gate {
+        use super::*;
+        use awase::types::{ModifierState, VkCode};
+
+        fn no_modifiers() -> ModifierState {
+            ModifierState::default()
+        }
+
+        fn eligible_keydown_gate(
+            spike_enabled: bool,
+            spike_disabled_for_session: bool,
+            injected: bool,
+            modifiers: ModifierState,
+            is_target_app: bool,
+        ) -> WtVkKanaSpikeGate {
+            classify_wt_vk_kana_spike_gate(
+                crate::vk::VK_KANA,
+                KeyEventType::KeyDown,
+                injected,
+                modifiers,
+                spike_enabled,
+                spike_disabled_for_session,
+                false, // latched は KeyDown 判定に影響しない
+                is_target_app,
+            )
+        }
+
+        #[test]
+        fn non_vk_kana_is_always_not_applicable() {
+            let gate = classify_wt_vk_kana_spike_gate(
+                VkCode(0x41), // 'A'
+                KeyEventType::KeyDown,
+                false,
+                no_modifiers(),
+                true,
+                false,
+                false,
+                true,
+            );
+            assert_eq!(gate, WtVkKanaSpikeGate::NotVkKana);
+        }
+
+        #[test]
+        fn keyup_without_latch_falls_through_to_existing_path() {
+            let gate = classify_wt_vk_kana_spike_gate(
+                crate::vk::VK_KANA,
+                KeyEventType::KeyUp,
+                false,
+                no_modifiers(),
+                true,
+                false,
+                false, // latched=false
+                true,
+            );
+            assert_eq!(gate, WtVkKanaSpikeGate::UnlatchedKeyUp);
+        }
+
+        #[test]
+        fn keyup_with_latch_is_suppressed() {
+            let gate = classify_wt_vk_kana_spike_gate(
+                crate::vk::VK_KANA,
+                KeyEventType::KeyUp,
+                false,
+                no_modifiers(),
+                true,
+                false,
+                true, // latched=true
+                true,
+            );
+            assert_eq!(gate, WtVkKanaSpikeGate::SuppressLatchedKeyUp);
+        }
+
+        #[test]
+        fn keyup_with_latch_is_suppressed_even_when_config_disabled_meanwhile() {
+            // latch は「先行する KeyDown で replacement を送った」事実の記録であり、
+            // その後 config が off になっても回収対象の KeyUp を既存処理へ漏らしては
+            // ならない（漏れると VK_KANA が二重に処理されうる）。
+            let gate = classify_wt_vk_kana_spike_gate(
+                crate::vk::VK_KANA,
+                KeyEventType::KeyUp,
+                false,
+                no_modifiers(),
+                false, // spike_enabled=false
+                false,
+                true, // latched=true
+                true,
+            );
+            assert_eq!(gate, WtVkKanaSpikeGate::SuppressLatchedKeyUp);
+        }
+
+        #[test]
+        fn keydown_eligible_when_all_conditions_hold() {
+            let gate = eligible_keydown_gate(true, false, false, no_modifiers(), true);
+            assert_eq!(gate, WtVkKanaSpikeGate::KeyDownEligible);
+        }
+
+        #[test]
+        fn keydown_ineligible_when_config_disabled() {
+            let gate = eligible_keydown_gate(false, false, false, no_modifiers(), true);
+            assert_eq!(gate, WtVkKanaSpikeGate::KeyDownIneligible);
+        }
+
+        #[test]
+        fn keydown_ineligible_when_disabled_for_session() {
+            let gate = eligible_keydown_gate(true, true, false, no_modifiers(), true);
+            assert_eq!(gate, WtVkKanaSpikeGate::KeyDownIneligible);
+        }
+
+        #[test]
+        fn keydown_ineligible_when_injected() {
+            let gate = eligible_keydown_gate(true, false, true, no_modifiers(), true);
+            assert_eq!(gate, WtVkKanaSpikeGate::KeyDownIneligible);
+        }
+
+        #[test]
+        fn keydown_ineligible_when_not_target_app() {
+            let gate = eligible_keydown_gate(true, false, false, no_modifiers(), false);
+            assert_eq!(gate, WtVkKanaSpikeGate::KeyDownIneligible);
+        }
+
+        #[test]
+        fn keydown_ineligible_for_each_modifier_held() {
+            let ctrl = ModifierState {
+                ctrl: true,
+                ..ModifierState::default()
+            };
+            let shift = ModifierState {
+                shift: true,
+                ..ModifierState::default()
+            };
+            let alt = ModifierState {
+                alt: true,
+                ..ModifierState::default()
+            };
+            let win = ModifierState {
+                win: true,
+                ..ModifierState::default()
+            };
+            for modifiers in [ctrl, shift, alt, win] {
+                let gate = eligible_keydown_gate(true, false, false, modifiers, true);
+                assert_eq!(
+                    gate,
+                    WtVkKanaSpikeGate::KeyDownIneligible,
+                    "modifiers={modifiers:?}"
+                );
+            }
         }
     }
 }

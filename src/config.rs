@@ -328,6 +328,12 @@ pub struct GeneralConfig {
     /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
     /// （チェックボックスを一切操作しなければ値は変わらない）。
     pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
+    /// Windows Terminal 上で物理 `VK_KANA` が文字化する問題の実機スパイク用。
+    ///
+    /// 既定 `false`。`true` のときだけ、Windows Terminal の無修飾・物理
+    /// `VK_KANA` を `VK_DBE_HIRAGANA` + 実測 scan に置換する実験経路を有効化する。
+    /// 設定GUIと sample config には出さない hidden opt-in。
+    pub windows_terminal_vk_kana_dbe_hiragana_spike: bool,
     /// 打鍵列機能（ADR-115）の有効化。既定 `Off`（隠し設定、config.toml
     /// 手動編集のみで有効化できるオプトイン。実機ソークが積み上がるまで
     /// 設定 GUI には出さない）。
@@ -415,6 +421,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_dedicated_fn_key: None,
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
+            windows_terminal_vk_kana_dbe_hiragana_spike: false,
             keystroke_sequence: KeystrokeSequencePolicy::Off,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
