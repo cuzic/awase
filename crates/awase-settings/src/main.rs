@@ -3861,6 +3861,50 @@ mod ime_mode_key_options_tests {
     }
 }
 
+/// 物理キーが存在しない IME 仮想キーが「from」（物理キー押下のキャプチャ対象）
+/// 候補に紛れていないことを保証する回帰テスト（2026-09-03 ユーザー指摘）。
+#[cfg(test)]
+mod keymap_from_key_options_tests {
+    use super::{KEYMAP_MAIN_KEYS, KEYMAP_VIRTUAL_ONLY_KEYS, keymap_from_key_options};
+
+    /// `KEYMAP_VIRTUAL_ONLY_KEYS` に列挙したキーはすべて `keymap_from_key_options`
+    /// （from 候補）から除外されていること。
+    #[test]
+    fn virtual_only_keys_are_excluded_from_from_options() {
+        let from_internals: Vec<&str> = keymap_from_key_options().map(|(_, i)| *i).collect();
+        for virtual_key in KEYMAP_VIRTUAL_ONLY_KEYS {
+            assert!(
+                !from_internals.contains(virtual_key),
+                "{virtual_key} が keymap_from_key_options（from 候補）に漏れている"
+            );
+        }
+    }
+
+    /// `KEYMAP_VIRTUAL_ONLY_KEYS` はあくまで from 側の絞り込みであり、to 側が
+    /// 使う `KEYMAP_MAIN_KEYS`（フルリスト）からは除去しない。
+    #[test]
+    fn virtual_only_keys_remain_in_full_list_for_to_side() {
+        for virtual_key in KEYMAP_VIRTUAL_ONLY_KEYS {
+            assert!(
+                KEYMAP_MAIN_KEYS.iter().any(|(_, i)| i == virtual_key),
+                "{virtual_key} が KEYMAP_MAIN_KEYS（to 候補）から消えている"
+            );
+        }
+    }
+
+    /// 物理キー（変換/無変換/かな/漢字 等）は引き続き from 候補に残ること。
+    #[test]
+    fn physical_ime_keys_remain_in_from_options() {
+        let from_internals: Vec<&str> = keymap_from_key_options().map(|(_, i)| *i).collect();
+        for physical in ["変換", "無変換", "かな", "漢字"] {
+            assert!(
+                from_internals.contains(&physical),
+                "{physical} が keymap_from_key_options から誤って除外されている"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod thumb_key_display_condition_tests {
     use super::{is_henkan_thumb_key, is_muhenkan_thumb_key};
@@ -3999,6 +4043,34 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("全角", "VK_DBE_DBCSCHAR"),
 ];
 
+/// `KEYMAP_MAIN_KEYS` のうち、対応する物理キーが存在しない IME 仮想キー。
+///
+/// `VK_IME_ON`/`VK_IME_OFF`/`VK_DBE_ALPHANUMERIC`/`VK_DBE_KATAKANA`/
+/// `VK_DBE_HIRAGANA`/`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR` は `vk_name_to_code`
+/// が受理する（= 「to」側でソフトウェアから注入する分には意味がある）ものの、
+/// これらを生成する物理キーはどのキーボードにも存在しない（`変換`/`無変換`/
+/// `かな`/`漢字` とは異なる）。「from」（変換元＝物理キー押下のキャプチャ対象）
+/// 候補に混ぜると、ユーザーが選んでも絶対に発火しないルールができてしまう
+/// （2026-09-03 ユーザー指摘）。
+const KEYMAP_VIRTUAL_ONLY_KEYS: &[&str] = &[
+    "VK_IME_ON",
+    "VK_IME_OFF",
+    "VK_DBE_ALPHANUMERIC",
+    "VK_DBE_KATAKANA",
+    "VK_DBE_HIRAGANA",
+    "VK_DBE_SBCSCHAR",
+    "VK_DBE_DBCSCHAR",
+];
+
+/// `KEYMAP_MAIN_KEYS` から `KEYMAP_VIRTUAL_ONLY_KEYS` を除いた、物理キー
+/// 押下のキャプチャ対象（keymap の from・post_bypass prefix キー・
+/// グローバルトグルホットキー）用の候補一覧。
+fn keymap_from_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEYMAP_MAIN_KEYS
+        .iter()
+        .filter(|(_, internal)| !KEYMAP_VIRTUAL_ONLY_KEYS.contains(internal))
+}
+
 const fn keyboard_model_label(model: awase::scanmap::KeyboardModel) -> &'static str {
     use awase::scanmap::KeyboardModel;
     match model {
@@ -4084,7 +4156,12 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &
     changed
 }
 
-/// main key ドロップダウン（必須選択版）。変更時は true を返す。
+/// main key ドロップダウン（必須選択版）。
+///
+/// 呼び出し元はいずれも物理キー押下のキャプチャ対象（keymap の from・
+/// post_bypass prefix キー・グローバルトグルホットキー）のため、対応する
+/// 物理キーが存在しない IME 仮想キー（`KEYMAP_VIRTUAL_ONLY_KEYS`）は候補から
+/// 除外する（`keymap_from_key_options` 参照）。変更時は true を返す。
 fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
@@ -4096,7 +4173,7 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &s
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in KEYMAP_MAIN_KEYS {
+            for (label, internal) in keymap_from_key_options() {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -4242,7 +4319,12 @@ fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
     })
 }
 
-/// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。変更時は true を返す。
+/// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。
+///
+/// 呼び出し元は keymap の to（再注入先）専用。物理キー押下のキャプチャでは
+/// ないため、`main_key_combo` とは異なり `KEYMAP_MAIN_KEYS` を絞り込まず
+/// そのまま使う（IME 仮想キーもソフトウェアから注入する分には有効）。
+/// 変更時は true を返す。
 fn main_key_combo_optional(
     ui: &mut egui::Ui,
     id: &str,
