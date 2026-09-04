@@ -13259,3 +13259,38 @@ Opus 2体（architect/premortem）で3ラウンド討論した。
    通らない送信経路（warmup等）をwarrant配下に含める、ADR-090
    §2.Aの11箇所棚卸しのやり直し**である可能性が高い——ただしこれは
    本ADR/BUG-110の対応範囲を超える、より大きな仕事。
+
+**追補5（2026-09-04、棚卸しのやり直し完了）:** 上記アクション3を実施。
+ADR-090 §2.Aの「11起案点」は`issue_actuation_order`を呼ぶ箇所の数え
+上げとしては正確だったが、**「実際にWin32へIME関連の書き込みを行う
+全経路」で見るとその部分集合でしかなかった**。`issue_actuation_order`
+を経由しない末端の書き込み関数を起点にボトムアップで洗い出した結果、
+warrant非経由の経路が新たに**4系統**見つかった。
+
+| # | 経路 | 呼び出し元 | トリガー条件 | 送信VK/API | 読んでいるSSOT | 危険度 |
+|---|---|---|---|---|---|---|
+| B1 | `output::send_eager_tsf_warmup` | `platform.rs`5箇所＋`output/vk_send.rs:673` | フォーカス変更時のTSF warmup・composition reset後の保険再送 | `VK_IME_ON`/`VK_IME_OFF` | **`warmup_ime_on()` = `applied ?? belief`（第3のSSOT）** | **最高**（本BUGで実際に競合を起こした経路そのもの） |
+| B2 | `platform::send_engine_state_ime_key` | `executor.rs:763`（engineのactivation状態遷移＝`engine.rs::transition_activation`が発行） | NICOLA engineのON/OFF活性化遷移そのもの（drift/force-onの「IMEをどう思うか」とは独立した第三の軸） | config由来`engine_on_ime_vk`/`engine_off_ime_vk` | **`enabled`+`applied_for_engine_key`（desired_open/effective_open/warmup_ime_onのいずれでもない第4の軸）** | 中（`last_applied==enabled`ガード・`uses_kanji_toggle()`ガードで部分的に自己防御しているが、「現在進行中の他のactuation」は見ていない） |
+| B3 | `panic_reset`内の`set_ime_open_cross_process_async`直接呼び出し | `runtime/mod.rs:1678-1681` | パニックリセット発動時のみ | `ImmSetOpenStatus`直列書き込み | 何も読まない（無条件リセット） | 低（意図的な例外、緊急リセットという性質上warrant迂回は設計として妥当） |
+| B4 | `output::send_gji_half_width_alnum_toggle` | `key_pipeline.rs:1573`/`:1643`（左Shift単独タップ、BUG-25） | BUG-25半角英数持続トグル | `VK_DBE_ALPHANUMERIC`/`VK_DBE_HIRAGANA` | `effective_open()`を単純ゲート（自らbeliefは書き換えない） | 低〜中（タイミング依存の見落としはありうるが自らbeliefを書き換えないため実害は限定的） |
+
+一方、`issue_actuation_order`を経由する側（旧`force_on_and_correct_romaji`
+＝起案点#6を含む）は、warrant経由と確定した——11箇所という数字自体に
+誤りはなかった。**すなわち実際にWin32へ書き込む経路は「(A) warrant経由
+11箇所 + (B) warrant非経由4系統 = 実質15系統」で、ADR-090はそのうち
+11しかwarrant管理下に置いていなかった。**
+
+新たに判明した競合ペア（BUG-110の`VK_IME_ON`/`VK_IME_OFF`混在は
+この1つ目の実例）:
+- **B1(warmup) × A(drift correction)**: 実際に確認済みの競合そのもの
+- **B2(engine_state_ime_key) × A系全般**: 未検証だが同型のリスクを
+  理論上残す（engineの活性化遷移という独立トリガーが、drift/force-on
+  と短時間に交差する可能性）
+- **B4(半角英数トグル) × A系**: `effective_open()`反転中のタイミング
+  依存の見落とし、ただし実害は限定的
+
+**次のアクション（更新）:** B1が最優先（今回の実害の直接原因）。
+B1を`issue_open_warrant`配下に含めるか、`desired_open()`/
+`effective_open()`のどちらかへ統一するかを、Phase 2として別途
+設計する必要がある。B2はB1着手後に同型のリスクとして再検討。
+B3は現状維持でよい。B4は優先度低。
