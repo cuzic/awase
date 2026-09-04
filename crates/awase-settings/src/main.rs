@@ -1730,14 +1730,14 @@ impl SettingsApp {
                         }
                     }
                     CaptureTarget::ExistingTo(i, step_i) => {
+                        // step_i が既に削除されていた場合（キャプチャ待機中に
+                        // 「x」でステップを消された等）は get_mut が None を返し
+                        // 何もしない。
                         if !reject(&internal, true, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
+                            && let Some(step) = rule.to.get_mut(step_i)
                         {
-                            if let Some(step) = rule.to.get_mut(step_i) {
-                                *step = internal;
-                            }
-                            // step_i が既に削除されていた場合（キャプチャ待機中に
-                            // 「x」でステップを消された等）は何もしない。
+                            *step = internal;
                         }
                     }
                     CaptureTarget::NewFrom => {
