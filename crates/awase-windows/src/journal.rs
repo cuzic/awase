@@ -263,12 +263,12 @@ pub enum JournalEntry {
     ImeActuation {
         record: crate::state::ime_actuation::ActuationRecord,
     },
-    /// ADR-128 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
+    /// ADR-132 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
     /// 送信・意図・環境情報だけを構造化して残す。
     DriftGiveUpDiagnostic { record: DriftGiveUpDiagnosticRecord },
-    /// ADR-128 Phase 1: hook の IME-mode 診断ログを journal にも残す。
+    /// ADR-132 Phase 1: hook の IME-mode 診断ログを journal にも残す。
     HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
-    /// ADR-128 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
+    /// ADR-132 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
     DriftGiveUpIntervalEnded {
         reason: &'static str,
         elapsed_ms: u64,

@@ -611,7 +611,7 @@ impl Runtime {
             )
         };
 
-        // ADR-128 Phase 1 follow-up: the user-facing diagnostic must be based on how long
+        // ADR-132 Phase 1 follow-up: the user-facing diagnostic must be based on how long
         // the drift has persisted, not on `FeedbackPolicy::Blind` reaching `GiveUp`.
         // `FeedbackPolicy::Read` intentionally never gives up by attempts, so tying this
         // notification to `GiveUp` leaves read-back capable apps silent during long drift.

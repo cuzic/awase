@@ -1,4 +1,4 @@
-# ADR-128: 物理IMEキー1回による明示意図が、失敗しても所有権を返さない問題
+# ADR-132: 物理IMEキー1回による明示意図が、失敗しても所有権を返さない問題
 
 ## ステータス
 
@@ -512,7 +512,7 @@ OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既�
 `architecture_guard.rs`/`layer_boundary_guard.rs`/`cargo test --lib`
 （core・awase-windowsとも）は全てpass。`desired_open`・`observed`・
 `shadow_effect()`・`transport.rs::plan`・`IntentStore`のいずれも変更
-していない。`docs/known-bugs.md` BUG-109として記録済み。
+していない。`docs/known-bugs.md` BUG-110として記録済み。
 
 ユーザーが実機で2件目の再現（`01M1N5RMQ0HGX60VNG37DXWR26`）を確認した
 過程で、トレイ通知が`FeedbackPolicy::Blind`の`GiveUp`到達だけを
@@ -520,7 +520,7 @@ OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既�
 では絶対に発火しない設計上の穴が判明し、修正済み（トリガーを
 `duration_ms`ベースの`Blind`/`Read`共通発火点に変更、新規タイミング
 定数は追加せず既存の`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`を再利用）。
-詳細は`docs/known-bugs.md` BUG-109追補1・追補2を参照。
+詳細は`docs/known-bugs.md` BUG-110追補1・追補2を参照。
 
 **3件目の再現（`01M1NA7WYH1HCYAFWGA3F95AVY`）で、本ADRの4ラウンド討論
 （A/B/B'/候補1-v2）が前提にしていなかった根本原因が判明した。**
@@ -542,7 +542,7 @@ apply_force_on_for_imm_broken`（`is_eligible_for_ime_force_on()`=
 journalには`VK_IME_OFF`側しか記録されず`VK_IME_ON`側はdrift correction
 のActuation管理を経由しないことも確認済み）が競合しており、乖離継続
 6分5秒という記録もこれで説明できる。詳細は`docs/known-bugs.md`
-BUG-109追補3を参照。
+BUG-110追補3を参照。
 
 これは`.claude/rules/fix-requires-evidence.md`の「IME actuation合流点」
 （issue #136/ADR-119）よりも一段深い、**合流点そのものが存在しない**

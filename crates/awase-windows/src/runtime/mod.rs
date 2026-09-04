@@ -255,9 +255,9 @@ pub struct Runtime {
     pub(crate) update_check_enabled: bool,
     /// OS かな入力ロック検知の通知ヒステリシス。
     kana_lock_hysteresis: KanaLockHysteresis,
-    /// ADR-128 Phase 1: drift GiveUp のトレイ通知は1フォーカスにつき1回に制限する。
+    /// ADR-132 Phase 1: drift GiveUp のトレイ通知は1フォーカスにつき1回に制限する。
     drift_giveup_notified_this_focus: bool,
-    /// ADR-128 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
+    /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
     drift_giveup_started_at: Option<std::time::Instant>,
 }
 

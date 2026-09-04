@@ -13027,7 +13027,7 @@ classifier.rs`（`ImmCapabilityStore`、クリア用メソッド新設が必要�
 **関連:** BUG-56・BUG-107（この GUI 操作が機能する前提で暫定回避手順を
 案内している）。
 
-## BUG-109: 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する
+## BUG-110: 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する
 
 **症状（不具合報告 `01M1MMK8987NT5B2W73PCPZNZ1`、2026-09-03）:** Windows
 Terminal + PowerShell（GJI、JIS配列）で入力中に余分な「＠」が出力される。
@@ -13047,7 +13047,7 @@ TTLも持たないため、**ロックアウトの長さは無期限**（フォ�
 （＠）のまま素通りしたのが直接の症状。詳細な因果分析・検討した根本
 修正案（4案、いずれも既存の防御(BUG-19/26/68/52・ADR-093/119/121)との
 衝突でOpus 2体4ラウンドの敵対的レビューにより不採用）は
-`docs/adr/128-uncorroborated-physical-ime-key-engine-lockout.md`参照。
+`docs/adr/132-uncorroborated-physical-ime-key-engine-lockout.md`参照。
 
 **対応（Phase 1のみ実装、根本修正は未着手）:** ロックアウト自体を解消・
 短縮する修正はいずれもBUG-19型の再発やdrift correctionとの二重
@@ -13081,13 +13081,13 @@ GJI + JIS配列で「＠」大量出力）を再現した（`docs/bug-reports-tr
   さらに`vk=0xF0/0xF2 scan=0x70`（かなキー位置）のペアも複数回観測され、
   これはBUG-52（`transport.rs`のコメント、「IMEが既に目的の状態にある
   時に押されると発生しうる」）が既に記録している既知の不安定源と一致した。
-  **「入口となるVK×scanは1つに固定されない」というADR-128 v3の再定義
+  **「入口となるVK×scanは1つに固定されない」というADR-132 v3の再定義
   （候補5=単発DBEキー恒久除外を不採用にした理由）を実データで裏付けた。**
 - `[drift] correction`ログに`for 341743ms`（約5分42秒）という、1件目の
   29秒を大幅に上回る乖離継続時間が記録された。`FocusChange`（不具合報告
   ダイアログへの遷移）でようやく`Engine activated`に戻っており、
   「`last_intent`はFocusChangedでしか解除されず無期限に持続する」という
-  ADR-128 v4の因果モデルを追加のケースで裏付けた。
+  ADR-132 v4の因果モデルを追加のケースで裏付けた。
 - 一方、`DriftGiveUpDiagnostic`/`DriftGiveUpIntervalEnded`はこのログには
   1件も記録されていなかった。原因を特定: journalの`ImeActuation`エントリ
   を確認したところ、この乖離は`FeedbackPolicy::Blind`ではなく
@@ -13121,7 +13121,7 @@ src/state/ime_model.rs`、`crates/awase-windows/src/state/intent_store.rs`、
 **関連:** BUG-15追補7（同じvk×scanの組み合わせの既知の不安定性）、
 BUG-19（conv推論での`desired_open`書き換えがエンジン誤復帰を招いた
 先例）、BUG-68（IMM32 NATIVEビットが`VK_IME_OFF`で閉じても消えない）、
-ADR-121（no-op側の欠落、対をなす）、ADR-128（本件の設計ADR）。
+ADR-121（no-op側の欠落、対をなす）、ADR-132（本件の設計ADR）。
 
 **追補3（2026-09-04、3件目の実機再現・Phase 1修正後の初発火確認）:**
 不具合報告`01M1NA7WYH1HCYAFWGA3F95AVY`（`01M1N9HZA87MQSWYYKHGK7QXNA`と
@@ -13188,7 +13188,7 @@ ADR-086 INV-15が「生の周期タイマートリガー」として例外的に
 合流点」（新しいgate/preconditionを足す際に洗い出すべき箇所、ADR-119）
 の中でも、**合流点そのものが存在しない**——2つの独立した書き込み経路が
 共通の調停なしに同じ対象へ書き込める、という、issue #136/ADR-119よりも
-一段深い構造的欠陥。ADR-128の4ラウンド討論（A/B/B'/候補1-v2）は
+一段深い構造的欠陥。ADR-132の4ラウンド討論（A/B/B'/候補1-v2）は
 drift correction 1経路のみを前提にしており、この`ImmBrokenForceOn`との
 競合は検討されていなかった。Phase 2再検討時の最重要論点として記録する。
 
