@@ -13026,3 +13026,54 @@ classifier.rs`（`ImmCapabilityStore`、クリア用メソッド新設が必要�
 
 **関連:** BUG-56・BUG-107（この GUI 操作が機能する前提で暫定回避手順を
 案内している）。
+
+## BUG-109: 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する
+
+**症状（不具合報告 `01M1MMK8987NT5B2W73PCPZNZ1`、2026-09-03）:** Windows
+Terminal + PowerShell（GJI、JIS配列）で入力中に余分な「＠」が出力される。
+
+**原因（journal/app_log突合で確定）:** 物理CapsLock位置（scan=0x3A、JIS
+配列では「英数」キーでもある）から届いた`vk=0xF0`（`VK_DBE_ALPHANUMERIC`）
+の`KeyDown`1回を`kp_stage_shadow_ime_toggle`
+（`crates/awase-windows/src/runtime/key_pipeline.rs`）が「物理IMEキーに
+よる意図的なIME OFF」と解釈し、`ImeModel::last_intent`
+（`crates/awase-windows/src/state/ime_model.rs`）へ即座に確定。しかし
+実際のGJI変換状態（`observed`）は`open=true`のまま変化せず、drift
+correctionが`VK_IME_OFF`を14回超反復しても収束しなかった。
+`last_intent`は`reduce()`の`FocusChanged`アーム1箇所でしかクリアされず
+TTLも持たないため、**ロックアウトの長さは無期限**（フォーカスが変わる
+まで）——今回は不具合報告ボタンを押した瞬間の`FocusChanged`まで約29秒。
+その間NICOLA変換エンジンが停止し続け、物理キーがJIS配列本来の文字
+（＠）のまま素通りしたのが直接の症状。詳細な因果分析・検討した根本
+修正案（4案、いずれも既存の防御(BUG-19/26/68/52・ADR-093/119/121)との
+衝突でOpus 2体4ラウンドの敵対的レビューにより不採用）は
+`docs/adr/128-uncorroborated-physical-ime-key-engine-lockout.md`参照。
+
+**対応（Phase 1のみ実装、根本修正は未着手）:** ロックアウト自体を解消・
+短縮する修正はいずれもBUG-19型の再発やdrift correctionとの二重
+actuation等の新たなblockerを踏むため、Phase 1として以下の2つのみを
+実装した（`desired_open`・`observed`・配送判断・actuationのいずれにも
+触れない）:
+
+- drift correctionのBlind GiveUp初到達時、1フォーカスにつき1回、
+  トレイバルーンで「このアプリではIME状態を確認できません」と中立に
+  通知する（`runtime/ime_refresh.rs`）。
+- 次の設計判断に必要な7項目（観測源・信頼度、送信VK、hookの
+  `[hook] IME-mode`診断、intentの種別、区間長・終了理由、使用中の
+  `.yab`、半角英数トグルの状態）をjournalへ構造化記録する
+  （`DriftGiveUpDiagnostic`/`HookImeModeDiagnostic`/
+  `DriftGiveUpIntervalEnded`、`crates/awase-windows/src/journal.rs`）。
+
+Phase 1のログが揃った時点で、根本原因がconv残骸（BUG-68型、実IMEは
+正しく閉じていた）かどうかを判定し、Phase 2（保留中の修正案の再検討）
+か、BUG-68の未解決部分への転進かを判断する。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`、
+`crates/awase-windows/src/runtime/key_pipeline.rs`、`crates/awase-windows/
+src/state/ime_model.rs`、`crates/awase-windows/src/state/intent_store.rs`、
+`crates/awase-windows/src/hook.rs`、`crates/awase-windows/src/journal.rs`。
+
+**関連:** BUG-15追補7（同じvk×scanの組み合わせの既知の不安定性）、
+BUG-19（conv推論での`desired_open`書き換えがエンジン誤復帰を招いた
+先例）、BUG-68（IMM32 NATIVEビットが`VK_IME_OFF`で閉じても消えない）、
+ADR-121（no-op側の欠落、対をなす）、ADR-128（本件の設計ADR）。

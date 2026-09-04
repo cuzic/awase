@@ -505,7 +505,15 @@ OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既�
 
 ## 実装状況
 
-未着手（Phase 1の実装が次のアクション）。
+**Phase 1実装済み（未マージ、実機ソーク未実施）。** トレイバルーン通知
+（1フォーカス1回）と診断ログ7項目（`DriftGiveUpDiagnostic`/
+`HookImeModeDiagnostic`/`DriftGiveUpIntervalEnded`）を追加。
+`cargo check`/`clippy`/`fmt --check`/`cargo dylint`/
+`architecture_guard.rs`/`layer_boundary_guard.rs`/`cargo test --lib`
+（core・awase-windowsとも）は全てpass。`desired_open`・`observed`・
+`shadow_effect()`・`transport.rs::plan`・`IntentStore`のいずれも変更
+していない。`docs/known-bugs.md` BUG-109として記録済み。Phase 2
+（保留中の修正案の再検討）はPhase 1のログ収集後に判断する。
 
 ## 次のアクション
 

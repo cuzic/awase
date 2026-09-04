@@ -119,6 +119,8 @@ impl Runtime {
             // 手段が engine 無効化時のみで、フォーカス変更後に警告が固着したまま
             // 二度と晴れないケースがあった）。
             self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.drift_giveup_notified_this_focus = false;
+            self.drift_giveup_started_at = None;
             self.platform.tray.set_kana_lock_warned(false);
         }
 
@@ -662,6 +664,57 @@ impl Runtime {
                                  observed={observed} converged={} attempts={}",
                                 receipt.converged(),
                                 receipt.attempts()
+                            );
+                            if !self.drift_giveup_notified_this_focus {
+                                self.show_tray_balloon(
+                                    "awase",
+                                    "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
+                                );
+                                self.drift_giveup_notified_this_focus = true;
+                                self.drift_giveup_started_at = Some(now);
+                            }
+                            let trusted = self
+                                .platform_state
+                                .ime
+                                .model()
+                                .observations
+                                .most_recent_trusted(now);
+                            let sent_vk = vec![crate::journal::ImeVkDiagnostic {
+                                vk_code: if desired {
+                                    crate::vk::VK_IME_ON.0
+                                } else {
+                                    crate::vk::VK_IME_OFF.0
+                                },
+                                kind: if desired { "VK_IME_ON" } else { "VK_IME_OFF" },
+                                source: "drift-correction-blind-giveup",
+                            }];
+                            self.platform_state.ime.journal.record(
+                                crate::journal::JournalEntry::DriftGiveUpDiagnostic {
+                                    record: crate::journal::DriftGiveUpDiagnosticRecord {
+                                        desired_open: desired,
+                                        observed_open: observed,
+                                        drift_duration_ms: duration_ms,
+                                        observation_source: trusted.map(|o| o.source),
+                                        observation_confidence: trusted.map(|o| o.confidence),
+                                        sent_vk,
+                                        intent_source: self
+                                            .platform_state
+                                            .ime
+                                            .model()
+                                            .last_intent
+                                            .as_ref()
+                                            .map(|intent| intent.source),
+                                        layout_name: self
+                                            .platform
+                                            .tray
+                                            .current_layout_name()
+                                            .to_string(),
+                                        half_width_alnum_toggle_active: self
+                                            .platform_state
+                                            .gate
+                                            .half_width_alnum_toggle_active,
+                                    },
+                                },
                             );
                         }
                         Some(gave_up_at) => {

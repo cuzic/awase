@@ -77,6 +77,39 @@ impl KeyEventSummary {
     }
 }
 
+/// drift correction が Blind GiveUp に到達した瞬間の診断情報。
+#[derive(Debug, Clone, Serialize)]
+pub struct DriftGiveUpDiagnosticRecord {
+    pub desired_open: bool,
+    pub observed_open: bool,
+    pub drift_duration_ms: u64,
+    pub observation_source: Option<crate::state::ime_event::ObservationSource>,
+    pub observation_confidence: Option<crate::state::ime_event::ObservationConfidence>,
+    pub sent_vk: Vec<ImeVkDiagnostic>,
+    pub intent_source: Option<crate::state::ime_event::UserIntentSource>,
+    pub layout_name: String,
+    pub half_width_alnum_toggle_active: bool,
+}
+
+/// awase が IME 制御目的で送った VK の診断用サマリ。
+#[derive(Debug, Clone, Serialize)]
+pub struct ImeVkDiagnostic {
+    pub vk_code: u16,
+    pub kind: &'static str,
+    pub source: &'static str,
+}
+
+/// low-level hook の `[hook] IME-mode` ログと同じ情報。
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct HookImeModeDiagnosticRecord {
+    pub vk_code: u16,
+    pub is_down: bool,
+    pub self_injected: bool,
+    pub injected: bool,
+    pub scan: u32,
+    pub since_prev_ime_mode_ms: Option<u64>,
+}
+
 /// `Decision` の種別サマリ
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind")]
@@ -229,6 +262,16 @@ pub enum JournalEntry {
     /// `epoch` のみ保存し `strategy` を `policy` から再構築する）。
     ImeActuation {
         record: crate::state::ime_actuation::ActuationRecord,
+    },
+    /// ADR-128 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
+    /// 送信・意図・環境情報だけを構造化して残す。
+    DriftGiveUpDiagnostic { record: DriftGiveUpDiagnosticRecord },
+    /// ADR-128 Phase 1: hook の IME-mode 診断ログを journal にも残す。
+    HookImeModeDiagnostic { record: HookImeModeDiagnosticRecord },
+    /// ADR-128 Phase 1: GiveUp 通知区間がフォーカス変更で終わったことを記録する。
+    DriftGiveUpIntervalEnded {
+        reason: &'static str,
+        elapsed_ms: u64,
     },
     /// IME open/close 適用の完了（ADR-086 §4 INV-18、Phase 3 item 2）。
     ///
@@ -485,14 +528,17 @@ impl JournalEntry {
             | Self::DumpTruncated { .. }
             | Self::DumpTriggered => LaneKind::State,
             Self::GjiFsmTransition { .. }
+            | Self::HookImeModeDiagnostic { .. }
             | Self::TsfProbeStarted { .. }
             | Self::TsfProbeCompleted { .. }
             | Self::LiteralDetect { .. }
             | Self::DeferredRecoveryFlush { .. }
             | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
-            Self::ImeActuation { .. } | Self::ConvClassifyCall { .. } | Self::TimerFired { .. } => {
-                LaneKind::Actuation
-            }
+            Self::ImeActuation { .. }
+            | Self::DriftGiveUpDiagnostic { .. }
+            | Self::DriftGiveUpIntervalEnded { .. }
+            | Self::ConvClassifyCall { .. }
+            | Self::TimerFired { .. } => LaneKind::Actuation,
             Self::KeyInput { .. } => LaneKind::KeyInput,
         }
     }
