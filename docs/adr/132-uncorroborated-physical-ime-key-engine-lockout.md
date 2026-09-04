@@ -2,14 +2,18 @@
 
 ## ステータス
 
-**Phase 1・Phase 2ともに実装済み（developとの同期後、v5）。** Phase 1
+**Phase 1・Phase 2ともに実装済み・敵対的コードレビュー収束済み
+（developとの同期後、v5、developへは未マージ）。** Phase 1
 （候補3のUX可視化＋診断ログ7項目）はOpus 2体（architect/premortem）
 敵対的レビュー・討論4ラウンドで収束、実機3件の再現を経て根本原因
 （`desired_open()`/`effective_open()`/`warmup_ime_on()`の三重SSOT競合）
 を確定した。Phase 2はB1（`warmup_ime_on()`が競合する経路）を対象に
 Opus 2体で追加2ラウンドの討論を行い、`off_drift_active`ゲート
-（INV-B1'）で収束・実装した。詳細は「検討の経緯（v1〜v4のサマリ）」
-節（Phase 1）と「Phase 2（B1の修正、v5で追記）」節を参照。
+（INV-B1'）で収束・実装。実装後、独立した読み取り専用Opusエージェント
+による敵対的コードレビューを2ラウンド実施し、指摘（round 1: #1〜#9、
+round 2: N1〜N7）すべてに対応・収束を確認した。実機ソークは未実施。
+詳細は「検討の経緯（v1〜v4のサマリ）」節（Phase 1）と
+「Phase 2（B1の修正、v5で追記）」節を参照。
 
 ## 背景
 
@@ -936,11 +940,20 @@ premortemとは独立）にレビューさせた。指摘のうち、対応し�
   enum自体のdocに3値すべてを明記し、`send_eager_tsf_warmup`側の
   docはそちらへの参照に整理。
 
-round 2の全指摘に対応した本コミットを同レビューエージェントへ再送し、
-収束確認中。全チェック（`architecture_guard`/`layer_boundary_guard`/
-`golden_scenarios`/`intent_store_effective_open`/
-`warmup_gate_focus_scope`計109件、core `cargo test --lib`978件）は
-pass。
+round 2の全指摘に対応した本コミット（`52a67118`）を同レビュー
+エージェントへ再送し、**収束を確認した**。N1〜N7がすべて意図どおり
+修正されており、修正自体が新たな欠陥を持ち込んでいないことも
+（パーサの実証ハーネスによる非退行確認込みで）検証済み。新規の
+blocker・重要指摘なし。全チェック（`architecture_guard`/
+`layer_boundary_guard`/`golden_scenarios`/
+`intent_store_effective_open`/`warmup_gate_focus_scope`計109件、
+core `cargo test --lib`978件）はpass。
+
+特にN1（ゲートが閉じたままなのに「抑止終了」ログを出す）は、
+この Phase の成果物である実機ログ解析（`[tsf-eager-warmup]
+origin=`と`[warmup-gate]`のgrep突合せによるB1由来/#6由来の内訳確定）
+を直接誤らせる性質のものだったため、ここが直ったことで下記
+「次のアクション1.」が実際に機能する状態になった。
 
 ## 次のアクション
 
