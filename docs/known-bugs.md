@@ -13026,3 +13026,227 @@ classifier.rs`（`ImmCapabilityStore`、クリア用メソッド新設が必要�
 
 **関連:** BUG-56・BUG-107（この GUI 操作が機能する前提で暫定回避手順を
 案内している）。
+
+---
+
+## BUG-109: `drain_pending_deferred_before_send_if_queue_only`（ADR-123 決定4-3）が recovery resend 自身の送信より前に発火し、GJI I/O の証拠を汚染して `StaleConfirm`→`VK_ESCAPE` を誘発、出力順反転と文字消失を引き起こす（ADR-123 決定4-3 の回帰）
+
+**発見の経緯:** タスクトレイの不具合報告機能（ADR-095）経由、`report_id:
+01M1MW0KSY5KWVYSGPGRBTNSPA`（2026-09-04、app_version 1.18.0）。症状カテゴリ
+「入力した文字と違う文字が出た」、説明「なまえま　と入力すると　なま
+になった」。msedge.exe（`Chrome_WidgetWin_1`、profile=TsfNative。journal の
+`LiteralTarget=Chrome` は分類名であって実際のブラウザ種別を示さない）+
+Google 日本語入力（GJI、Uwp フォーカス直前の focus）。
+
+**初版の診断は因果が逆だった。** 当初「`pending_deferred` の flush は正しく
+起きているのに、flush 後に生えた元モーラの stale-confirm 回収が composition
+ごと巻き込んで壊す」と結論したが、Opus 敵対的レビュー（design-review、
+`docs/adr/128-escape-composition-collateral-deferred-loss.md` 起票時）が
+journal の `deferred_flushed: 0`（`seq 2450`）と app_log の実際の呼び出し順
+から、**flush（drain）自体が recovery resend の実送信より前に発火し、それが
+recovery resend 自身の per-VK confirm の証拠を汚染していた**ことを実証した。
+以下は訂正版。
+
+**重要（判定方法についての教訓）:** この report のビルドは ADR-123
+（issue #148、PR #155）の修正を既に含んでいる。journal の app_log に ADR-123
+決定4-3 でのみ追加されるログ行 `[pending-deferred] drain-before-send: 新規
+モーラの前に取り残し N VK(s) をflush`（`output/vk_send.rs:83`、commit
+`ae3af1a0`）が実際に出現しており、`app_version` 文字列だけでは pre/post
+ADR-123 を判定できない（直前の triage 記録 `01M1MTDPKYMRVV6AJ73Z1JGWZQ` は
+バージョン文字列だけで「ADR-123 修正マージ前のビルド」と判定していたが、
+本件はその判定方法に頼れない反例）。ただし結論は「ADR-123 のスコープ外の
+新規欠陥」ではなく、**ADR-123 決定4-3 自身が recovery resend にも発火する
+実装漏れによる回帰**である（詳細は下記「原因」節）。
+
+**症状（journal の `KeyInput.timestamp_us` + app_log 突き合わせで確定）:**
+物理打鍵は「な・ま・え・ま」の4モーラ全て記録されており脱落していない
+（`decision: Consume, effect_count: 3` が4回とも記録）。しかし実際に GJI
+composition へ着弾したのは「な」（3回の再送を経て確定）と最後の「ま」
+（末尾、warm 経路でクリーンに送信）の2モーラのみで、2モーラ目の「ま」と
+3モーラ目の「え」が完全に消失した。**加えて出力順にも反転が起きていた
+可能性が高い**（下記タイムライン手順6・原因節参照）。
+
+**タイムライン（`timestamp_us`/app_log 時刻基準、訂正版。全て msedge.exe
+フォーカス中）:**
+
+1. `00:09:00.883` 「な」送信（cold）→ probe cold_seq=18 で `SuspectedLiteral`
+   → `01:266` backspace×1 + "na" 再送予約、cold mark。
+2. `01:294`-`01:297` "na" 再送、probe cold_seq=19 開始。
+3. `01:312`/`01:315` 「ま」「え」送信 → probe/recovery in-flight のため
+   `pending_deferred` へ退避（累計3VK: M,A,E、flush されず）。
+4. `01:668` cold_seq=19 が2回連続 `SuspectedLiteral` で give-up
+   （backspace×1、再送なし）→ `01:676` GJI reinit（`VK_IME_OFF`→`VK_IME_ON`）
+   送信・IMC ポーリング開始。
+5. `01:751` ポーリングで Hiragana 確認 → `Confirmed`。
+6. **`01:754` `[chrome-reinit-retry] retry romaji via normal path: "na"`**
+   ログ直後に `[tsf-probe] deferred 3 VK(s) を romaji 直後に送出` が出るが、
+   これは `send_romaji_batched_gated` 内で
+   `drain_pending_deferred_before_send_if_queue_only()`
+   （`output/vk_send.rs:216`）→ 実送信（`assess_warmth()` 以降）という
+   呼び出し順のため、**drain は "na" の実送信より前に発火している**
+   （ログの見た目上「romaji 直後」に見えるのは `key_injector.rs:307` の
+   ログ文言が drain 経路と本来の「romaji 直後」経路の両方で同一のため）。
+   journal `seq 2450 GjiReinitRetryCompleted ... deferred_flushed: 0` が
+   裏付ける——**BUG-38 の同期点（`flush_stale_deferred_vks_after_recovery`）
+   はこの時点で何も flush していない。** 実際に「ま」「え」を流したのは
+   ADR-123 decision4-3 の drain である。
+7. `01:797` "na" の実送信（`warm=false`、`idle_at_cold=343ms`）→
+   probe cold_seq=20 開始。
+8. `01:789`/`01:820`/`01:851` 手順3・6 で先に注入済みの「ま」「え」の
+   GJI I/O が3回連続で観測される。
+9. `01:866`-`01:877` "na" の1文字目 'n' が送信され、直後の per-VK confirm
+   が「候補ウィンドウが既に見えている」ことを根拠に literal-detect 待ちを
+   スキップして confirmed 扱いにする（起点 `01:855`）。しかしこの起点は
+   'n' 送信より**前**の write（手順8、直近は `01:851`）に由来し、**'n' の
+   処理結果ではあり得ない**——手順6の drain が "na" 自身の per-VK confirm
+   の証拠を汚染した。
+10. `01:939` "na" の2文字目 'a' で epoch fencing が「直近の GJI I/O が
+    送信時刻に追いついていない」矛盾を検出し `StaleConfirm` と判定 →
+    `per_vk_recovery_params(is_stale=true, failed_idx=1)` が
+    `escape_composition=true` を返す（`literal_detect_fsm.rs:89-92`。
+    **escape は `failed_idx > 0` のみで決まり `is_stale` 自体は無関係**）。
+11. `01:947` `flush_raw_tsf_literal_backspaces` が `VK_ESCAPE` を送信し、
+    現在の composition（手順3・6で注入済みの「まえ」を含む）を丸ごと破棄。
+    直後 `01:952` に "na" のみを再送し確定（`gji-fsm` は `01:944` に既に
+    `OnWarm` 復帰済み——「warm になるまで待つ」対策ではこの窓を防げない）。
+12. `03:167` 4モーラ目「ま」送信。GJI は `OnWarm`・probe 非稼働のため
+    defer されず、warm 経路でそのまま送信・確定。これが出力に現れた「ま」。
+
+**因果の要点（訂正、round2 で保護理由を訂正済み）:** drain（手順6）が
+無ければ手順8〜11は起きない。ただし drain が無い場合に何が起きるかは
+"na" 再送（`platform.rs:967`）が cold/warm どちらの経路を通るかで分岐する
+——**保護しているのは `raw_recovery_owns_deferred()`/INV-F ではない**
+（この時点で既に false）。本件のように cold 経路なら `install_pending_tsf`
+が同期的に `has_pending_tsf()` を true にするため、`platform.rs:971` の
+無条件 flush（`flush_deferred_vks_after_gji_reinit_completion`）はこの時点
+では何もせず、"na" 自身の probe 完了後に正しい順序で
+`flush_raw_tsf_literal_recovery`（BUG-38 が確立した順序保証）が flush する
+——「な」+「まえ」+「ま」=「なまえま」と正しく出力されていた可能性が高い
+（反実仮想、コードパスを実際に辿って確認済み）。"na" 再送が warm 経路を
+通る場合（本件では起きなかったが、手順11の最終再送は実際にこの経路）は
+`platform.rs:971` が即座に flush するため順序・証拠汚染はどちらも解消する
+が、probe を経由しない raw VK 注入の残存リスク自体は残る。詳細は
+[ADR-128](adr/128-escape-composition-collateral-deferred-loss.md)
+「因果の要点」節参照。
+
+**副次的な実害（未言及だった別欠陥）:** drain は「まえ」を「な」より
+**先に**出力している。「な」自身は `01:671` に一旦 backspace で消えている
+ため、ESC が無ければ画面には「まえな」という**順序反転**が見えていたはず
+である。`journal_policy::order_violation`（`output/mod.rs:1918-1934`）は
+バッチ**内**の `order_token` 単調性しか見ないため、この「drain されたキュー
+と recovery resend との相対順序」の反転は構造的に検出できない。
+
+**除外した対抗仮説:** 「`01:797` の F2 warmup が composition を reset した」
+は成立しない。予防的 F2 送信は 2026-07-18 に撤去済み（`vk_send.rs:255-265`）
+で、実ログも `F2/probe待機省略 → per-VK confirm へ` と記録している。
+`prepend_f2_warmup=true`/`forces_f2=true` というログ・変数名は実際の F2
+送信を意味しない（将来の調査者が同じ誤読をしないよう要注意）。
+
+**原因（コード上で確定）:** `output/vk_send.rs::
+drain_pending_deferred_before_send_if_queue_only`（`:76-86`）は
+`is_probe_or_recovery_blocking(true)`（`has_pending_tsf() ||
+raw_recovery_owns_deferred()`）と `pending_deferred_len()==0` だけを見て
+flush の可否を決めており、**呼び出し元の `gate`（`DeferGate::Enforced`/
+`Exempt`）を一切見ない**。`defer_respecting_gate`（同ファイル、ADR-123
+決定4-2）は `gate` に応じて `raw_recovery_owns_deferred()` の扱いを
+切り替えているのに対し、drain 側（決定4-3、`send_romaji_batched_gated`
+`:216` / `send_romaji_as_tsf_gated` `:392` から無条件に呼ばれる）だけが
+この非対称を欠く。結果、`resend_gji_reinit_retry_romaji`（give-up 後の GJI
+reinit retry が `Confirmed` した際、保留していた元モーラを通常経路へ1回
+だけ戻す、ADR-101 決定3、`gate=Exempt` で呼ばれる）**自身の送信**も
+「新規モーラの送信」と誤認され、まだ確定していない元モーラの再送より前に
+`pending_deferred` を drain してしまう。これが手順6〜11 の直接原因である。
+composition の実内容は Chrome では読めない（`himc_null=true`）ため、
+「ESC が『まえ』を消した」自体は状態遷移からの逆算であり、composition
+バッファの直接観測ではない（BUG-75「推論（一次証拠なし）」節と同じ構造的
+制約）。
+
+**検討した対策（`docs/adr/128-escape-composition-collateral-deferred-loss.md`
+に詳細、opus-adversarial-consult round1・round2 で検証済み）:**
+
+- **採用: drain を `DeferGate::Enforced`（通常のユーザー入力）限定にする。**
+  `drain_pending_deferred_before_send_if_queue_only` に `gate: DeferGate`
+  引数を追加し（`ms_ime_gate_defer` が既に使う「呼び出し元から `gate` を
+  そのまま引き継ぐ」パターンに揃える）、`gate != Enforced` なら早期
+  return する。関数シグネチャに `gate` を持たせるのは、既存の2ユニット
+  テスト（`vk_send.rs:797`/`:812`）が引数なしで直接呼んでおり、呼び出し側
+  で分岐する形では新規テストが `SendInput` に到達する経路経由でしか
+  書けなくなるため（round2 指摘）。キューを解放しうる経路は他に5つ残る
+  ため飢餓しない（新規モーラの drain-before-send・`finish_probe_stage`・
+  `flush_raw_tsf_literal_recovery` 末尾・`flush_deferred_vks_after_
+  gji_reinit_completion`（`platform.rs:971`/`:977`、reinit retry 完了直後
+  の無条件 flush）・`discard_pending_deferred_after_stale_gji_reinit`
+  （`platform.rs:985`、破棄経路）——round1 の列挙は前2者を欠いていた）。
+- **却下: `escape_composition` の代わりに backspace で元モーラ分だけ消す
+  案。** (1) `literal_detect_fsm.rs:63-84` の doc が明記する不可侵
+  invariant（BUG-33 追補3・4 の実害2件）と正面衝突する、(2) VK 数とかな数
+  が一致せず消すべき文字数を原理的に知る手段が無い（Chrome では
+  composition も読めない）、(3) 消す向きが入力順序（バグった drain 順序）
+  に依存し破綻する。
+- **保留（再定式化が必要）: composition 確定を待ってから flush する案。**
+  本件では候補シグナル2つ（`GjiFsm::OnWarm` 復帰・per-VK
+  `CompositionConfirmed`）がどちらも ESC 発火前に成立済みだったか、
+  汚染された false-confirm 自体だったため、単純な「確定待ち」では防げない。
+  採用案とほぼ同じ結論（recovery ラウンド間の隙間を埋める）に収束する。
+- **格下げ: まず計測してから決める案 → 修正の代替ではなく独立の計装。**
+  ADR-100 決定4-a への引用は不正確だった（対象が違う）うえ、同 ADR 本文が
+  「計測期間中もユーザーは文字を失い続ける」ことを失敗モードとして名指し
+  している。ただし drain-before-send の flush が現状 journal に一切
+  記録されていない点は独立の欠落であり、`DeferredRecoveryFlush` に
+  `trigger: "drain_before_send"` を追加する計装は採用案と別に価値がある。
+
+**未実施:** 回帰テスト・修正いずれも未着手。ADR-128 の decision（drain を
+`gate: DeferGate` 引数付きにして `Enforced` 限定にする）で実装に着手する。
+回帰テストは `output/vk_send.rs` の既存テスト群（`:770-`）に引数を足した
+上で「`Exempt` では drain がキューを保持する」旨を1本追加する
+（`#[cfg(windows)]` 配下のため Linux では `cargo check --target
+x86_64-pc-windows-msvc -p awase-windows --tests --lib` で確認し、実行は
+`windows-build` CI に委ねる、`fix-requires-evidence.md` (a) を満たす）。
+
+**関連ファイル:** `crates/awase-windows/src/output/vk_send.rs`
+（`drain_pending_deferred_before_send_if_queue_only`（`:76-86`、本件の
+flush 発火点、`gate` 引数追加が必要）、`defer_respecting_gate`（`:44-53`、
+gate 考慮の非対称の比較対象）、`ms_ime_gate_defer`（`:499-505`、`gate` を
+呼び出し元から引き継ぐ既存パターンの前例）、`send_romaji_batched_gated`/
+`send_romaji_as_tsf_gated`（`:216`/`:392`、無条件呼び出し箇所））、
+`crates/awase-windows/src/platform.rs`（`complete_gji_reinit_retry`
+（`:961-975`、resend 直後の第2の無条件 flush 地点
+`flush_deferred_vks_after_gji_reinit_completion`（`:971`/`:977`）と
+`discard_pending_deferred_after_stale_gji_reinit`（`:985`）を含む））、
+`crates/awase-windows/src/tsf/output.rs`（`flush_raw_tsf_literal_backspaces`、
+`VK_ESCAPE` 全消去）、`crates/awase-windows/src/output/key_injector.rs`
+（`send_deferred_vks`、「romaji 直後に送出」ログが drain 経路と共有されて
+いる箇所）、`crates/awase-windows/src/output/mod.rs`
+（`raw_recovery_owns_deferred`（`:1546-1555`、recovery ラウンド間で false
+になる述語）、`finish_probe_stage`（`:1566-1577`、INV-F は本件でも正しく
+発火した）、`take_pending_deferred_if_probe_idle`
+（`tsf_warmup_coord.rs:414-420`、`has_pending_tsf()` のみを見る述語——
+本件の実質的な保護根拠）、`crates/awase-windows/src/tsf/warmup/
+probe_fsm.rs`・`literal_detect_fsm.rs`（`per_vk_recovery_params`、
+`escape = failed_idx > 0`）。
+
+**未解決の残課題（本 BUG のスコープ外、ADR-128 参照）:**
+
+1. `WarmupAborted` 経路では `cancel_probe` を通らないため、GjiFsm の
+   shadow pending は破棄されても `pending_deferred` は温存される非対称が
+   本件ログでも観測された（`01:670` `DiscardPending count=3
+   reason=WarmupAborted`、`cancel_probe`（`output/mod.rs:1636-1647`）の
+   doc が予告した形）。**採用案（drain を `Enforced` 限定にする）は
+   `pending_deferred` の滞留時間を延ばす方向に働くため、この乖離が露出
+   する窓はむしろ広がる**（round2 指摘）。実機ソーク時の観測ポイントに
+   含めること。
+2. per-VK confirm が「候補ウィンドウが既に見えている」ことをそのまま
+   confirm の証拠に使い、候補可視 veto（`probe_io.rs:659-670`
+   `veto_eligible`）がこの経路に配線されていない構造的弱点は、本 BUG の
+   採用案では解消しない（`Enforced` drain が流した本物の新規モーラや
+   他アプリ由来の SHOW でも同型の false-confirm は起こりうる）。
+   veto 配線は ADR-122 決定案のスコープ（未実装）。
+
+**関連:** [ADR-128](adr/128-escape-composition-collateral-deferred-loss.md)
+（本 BUG の decision・タイムライン一次証拠の詳細）、
+[ADR-123](adr/123-focus-resync-and-probe-defer-queue-composition-race.md)
+（決定4-3・drain-before-send を導入した当該 ADR。本 BUG はその実装漏れ）、
+BUG-38（give-up 後の `pending_deferred` flush 漏れ、その同期点は本件で
+一度も flush していない点で無関係）、BUG-75（`StaleConfirm` 回収の
+`escape_composition` 判定そのものの由来）、BUG-33 追補3・4（`VK_BACK` を
+避け `VK_ESCAPE` を使う設計の由来、backspace 案却下の根拠）。
