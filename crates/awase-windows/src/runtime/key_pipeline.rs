@@ -1996,7 +1996,10 @@ impl Runtime {
             && matches!(event.event_type, KeyEventType::KeyDown)
         {
             // ADR-098 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
-            let warmup_ime_on = self.platform_state.ime.warmup_ime_on();
+            let warmup_ime_on = self
+                .platform_state
+                .ime
+                .warmup_ime_on(std::time::Instant::now());
             self.platform.composition_native_f2_down(warmup_ime_on);
         }
 

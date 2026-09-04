@@ -1107,7 +1107,11 @@ impl Output {
         // 強制する」を束ねており BUG-50 デッドロックの前提だった）。
         match crate::tsf::send::send_eager_warmup_vk_pair() {
             Some(ms) => {
-                log::debug!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
+                // BUG-110/ADR-132 Phase 2: `[warmup-gate]`(抑止側)とペアで INFO
+                // ログにすることで、`force-ON (ImmBrokenForceOn)`(既に info!)との
+                // grep 突合せから VK_IME_ON の内訳(warmup由来 vs force-on由来)を
+                // 確定できるようにする(追補4のアクション1)。
+                log::info!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
                 self.composition.set_eager_warmup_sent_ms(ms);
             }
             None => {

@@ -13518,3 +13518,54 @@ B1を`issue_open_warrant`配下に含めるか、`desired_open()`/
 `effective_open()`のどちらかへ統一するかを、Phase 2として別途
 設計する必要がある。B2はB1着手後に同型のリスクとして再検討。
 B3は現状維持でよい。B4は優先度低。
+
+**追補6（2026-09-04、Phase 2実装完了）:** B1の修正をOpus 2体
+（architect/premortem）敵対的討論2ラウンドで設計・実装した。詳細な
+設計経緯は[ADR-132](adr/132-uncorroborated-physical-ime-key-engine-lockout.md)
+「Phase 2（B1の修正、v5で追記）」節を参照。要約:
+
+- **v1（`desired_open()`とのANDゲート）は却下**: `desired_open`が
+  `ImeEvent::FocusChanged`のreduceアームでクリアされずフォーカスを
+  跨いでstaleに残る性質（本BUGの原因そのもの）を、v1は修正の根拠として
+  使ってしまい、cross-windowの正当なcold-startケースまで抑止して
+  BUG-02型のリテラル化を再導入するblockerが判明した。
+- **v2（採用）: `check_drift_correction()`が返すOFF方向drift検出中
+  フラグとのゲート**（`WarmupImeOn::
+  from_applied_or_belief_unless_off_drift`、INV-B1'）。
+  `check_drift_correction`の判定材料はFocusChangedのたびに必ず
+  クリアされるためfocus-scopedで、cross-windowのcold-start warmupを
+  壊さない。B1とdrift correctionが同じ判定式を共有することで、
+  「別々の関数が別々に解決する」というBUG-110の構造的欠陥をこの2者間
+  では作らない。
+- **IntentStoreベースの代替案は不採用**: 3件目報告の実測
+  （drift継続24.8秒 vs 365秒、`IntentStore`OFF方向TTLは30秒）から、
+  365秒区間の92%はTTL切れでゲートが機能しないと判明。
+- **受け入れたトレードオフ**: 新フォーカス直後はゲートが開くが、
+  stale な`desired_open`と新フォーカスの観測が食い違うと
+  `DRIFT_CORRECTION_THRESHOLD_MS`経過後にゲートが再び閉じ、その窓での
+  warmupは（ユーザーが明示的にIMEキーを押すまで）抑止され続ける。
+  「開けながら閉じる」自己矛盾を「閉じたまま」という一貫した誤りへ
+  変える設計判断であり、修正ではなくトレードオフとして受け入れる。
+- **本Phase 2はB1×drift correctionの競合のみを解消する**。#6
+  （`apply_force_on_for_imm_broken`、`effective_open()`を読む）×
+  drift correctionの競合は無傷のまま残る。3件目報告の`VK_IME_ON`
+  92件のうちB1由来の割合は`DumpTruncated`により未確定——`output/
+  mod.rs`の`[tsf-eager-warmup] VK_IME_ON 送信`ログを`info!`へ
+  格上げし（既にinfo!の`force-ON (ImmBrokenForceOn)`と併せてgrep2本
+  で内訳を確定できるようにした）、次回実機報告で判断する。
+- **実装・検証**: `src/platform.rs`（core、`WarmupImeOn::
+  from_applied_or_belief_unless_off_drift`と12通り全数テストT1）、
+  `state/platform_state.rs::resolve_warmup_ime_on`
+  （`check_drift_correction`とのゲート配線、`now: Instant`を
+  呼び出し元から注入するよう変更——`state/`層は壁時計を直接読まない
+  規約に従う）、呼び出し元7箇所（`ime_refresh.rs`/`key_pipeline.rs`/
+  `executor.rs`×5）、`architecture_guard.rs`の呼び出し件数固定
+  テスト（core/awase-linux/awase-macosも走査対象に含める）、新規
+  ungated統合テスト`tests/warmup_gate_focus_scope.rs`（T2/T3、
+  `ObservationStore`のdrift追跡がFocusChangedでクリアされる性質と
+  `desired_open`がクリアされない性質の両方を固定）。
+  `cargo check --target x86_64-pc-windows-msvc -p awase -p
+  awase-windows`/`clippy`/`fmt --check`/`cargo dylint --all`/
+  `architecture_guard`/`layer_boundary_guard`/`golden_scenarios`/
+  `intent_store_effective_open`/`warmup_gate_focus_scope`（計108件）/
+  core `cargo test --lib`（977件）全てpass。実機ソークは未実施。

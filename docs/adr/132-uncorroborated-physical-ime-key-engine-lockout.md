@@ -2,11 +2,14 @@
 
 ## ステータス
 
-**Phase 1採用・実装待ち（v4）。** Opus 2体（architect/premortem）による
-敵対的レビュー・討論を計4ラウンド実施。v1〜v3で提示したA/B/B'/候補1〜5の
-うち、最終的に生き残ったのは**候補3（不確実性のUX可視化）＋診断ログの
-みで、それ以外は全てblocker付きで却下**された。詳細な討論の経緯は
-「検討の経緯（v1〜v4のサマリ）」節、最終決定は「決定」節を参照。
+**Phase 1・Phase 2ともに実装済み（developとの同期後、v5）。** Phase 1
+（候補3のUX可視化＋診断ログ7項目）はOpus 2体（architect/premortem）
+敵対的レビュー・討論4ラウンドで収束、実機3件の再現を経て根本原因
+（`desired_open()`/`effective_open()`/`warmup_ime_on()`の三重SSOT競合）
+を確定した。Phase 2はB1（`warmup_ime_on()`が競合する経路）を対象に
+Opus 2体で追加2ラウンドの討論を行い、`off_drift_active`ゲート
+（INV-B1'）で収束・実装した。詳細は「検討の経緯（v1〜v4のサマリ）」
+節（Phase 1）と「Phase 2（B1の修正、v5で追記）」節を参照。
 
 ## 背景
 
@@ -589,19 +592,207 @@ B2（`send_engine_state_ime_key`、engineの活性化遷移という第4の独�
 かった、というのが最終結論。Phase 2の設計対象はB1を最優先に含める
 必要がある。
 
+## Phase 2（B1の修正、v5で追記）
+
+### 位置づけ: 「修正」ではなくB1/#6の切り分けの一手
+
+**本Phase 2はBUG-110を完全解決するものではない。** B1
+（`send_eager_tsf_warmup`、`warmup_ime_on()`）× drift correction
+の競合だけを構造的に消す。#6（`apply_force_on_for_imm_broken`、
+`effective_open()`を読む）× drift correctionの競合はこのPhaseの
+対象外で無傷のまま残る。3件目実機報告（`01M1NA7WYH1HCYAFWGA3F95AVY`）の
+`VK_IME_ON` 92件のうちB1由来がどれだけを占めるかは journal の
+`DumpTruncated`（total 2123 / emitted 1004）により未確定であり、
+本Phaseの効果は「B1が主犯なら大きく改善、#6が主犯ならほぼ無風」という
+幅を持つ。次の実機再現でこの内訳を確定できるよう、D2（下記）で
+ログを整備した。
+
+### 設計の経緯: v1（`desired_open`ゲート）→ blocker → v2（`off_drift_active`ゲート）
+
+Opus 2体（architect/premortem）による追加討論2ラウンドを実施。
+
+**v1（不採用）**: `resolve_warmup_ime_on`が`self.model().desired_open()`
+（`ImeModel`の生beliefフィールド）とのAND条件でwarmupをゲートする案。
+premortemのレビューで**blocker**と判定された: `ImeEvent::FocusChanged`
+のreduceアーム（`ime_model.rs:611-640`）は`last_intent`/観測プール/
+`applied`をクリアするが**`desired_open`はクリアしない**——本ADRが
+`:536-538`で「`desired_open()`は次の明示書き込みまでfalseのまま残る
+窓がある」とバグの原因として記述したその性質を、v1は修正の根拠として
+使ってしまっていた。具体的な回帰シナリオ: Chrome（ImmCross）で
+IMEを明示OFF（`desired_open=false`）→Windows Terminal（TsfNative、
+GJIでIMEは実際にON）へフォーカス移動→`last_intent`/`applied`/観測は
+クリアされるが`desired_open`はstaleなfalseのまま持ち越し→新フォーカスの
+観測で`effective_open()=true`→v1のゲートは「BUG-110の競合窓」と
+「正当なcross-window（別ウィンドウで実際にIMEが開いている）」を
+区別できず後者まで抑止し、初回打鍵がリテラル化するBUG-02型の退行を
+再導入する。
+
+**v2（採用）**: ゲートを`desired_open`ではなく、**drift correctionが
+今まさにOFF方向で進行中か**（`ImeStateHub::check_drift_correction()`
+が`Some((false, true, _))`を返しているか）に変更した。
+
+```rust
+// src/platform.rs（core、OS非依存）
+impl WarmupImeOn {
+    pub const fn from_applied_or_belief_unless_off_drift(
+        applied: Option<bool>,
+        belief_open: bool,
+        off_drift_active: bool,
+    ) -> Self {
+        if off_drift_active {
+            return Self(false);
+        }
+        Self::from_applied_or_belief(applied, belief_open)
+    }
+}
+
+// state/platform_state.rs::resolve_warmup_ime_on
+let off_drift_active = matches!(
+    self.check_drift_correction(now, self.explicit_intent()),
+    Some((false, true, _))
+);
+WarmupImeOn::from_applied_or_belief_unless_off_drift(
+    applied.applied_open(), self.effective_open(), off_drift_active,
+)
+```
+
+`check_drift_correction`はdrift correction自身が使う判定式そのもの
+（同じ`ImeStateHub`のメソッド）であり、B1とdrift correctionが
+**同じ判定式を共有する**——「別々の関数が別々の解決経路で独立に計算する」
+というBUG-110の構造的欠陥をこの2者間では新たに作らない。
+
+**不変条件 INV-B1'**: `send_eager_tsf_warmup`が`VK_IME_ON`を送信する
+瞬間、OFF方向のdrift correctionは検出されていない。`off_drift_active
+== false`のとき戻り値は`from_applied_or_belief`とbit-identical
+（`architecture_guard`の呼び出し件数固定テストと組み合わせ、今日より
+warmupが多く送られる経路が生まれないことを保証）。
+
+`applied`の`Some`/`None`両枝にゲートが掛かる点が
+`from_applied_or_belief`本来の単調性（appliedがSomeの間は同じ値を
+返す）と異なるが、これは意図的: OFF方向drift検出中は`applied`自体が
+drift correction（`Confirmed{open:false}`）とforce-ON
+（`Confirmed{open:true}`）の両方に交互に書かれてping-pongしており、
+「単調な事実」という前提そのものが崩れているため。
+
+### 検討したが不採用の代替案
+
+- **既存の`OpenWarrant`授権機構（`issue_open_warrant`）配下に含める**:
+  B1のrequested=trueで梯子を辿るとStep 3（`derive_actuating`）で
+  `ObservationSource::Gji`/`Tsf`のActuating権威によりStep 4c
+  （`desired_open`を見る最下段）に届く前に`true`が発行されてしまい、
+  BUG-110の競合窓でも授権されてしまう。warrant機構は「B1とdrift
+  correctionの非矛盾」を原理的に保証できない。
+- **IntentStoreベースのfocus-scopedゲート**（`IntentStore::
+  lookup(current_focus, now)`、エントリ無しなら抑止しない）: 一見
+  focus-scopedで有望だったが、3件目実機報告の実測値
+  （`DriftGiveUpDiagnostic.drift_duration_ms: 24834`、
+  `DriftGiveUpIntervalEnded.elapsed_ms: 365422`、`IntentStore`の
+  OFF方向TTLは`tuning::EXPLICIT_OFF_INTENT_TTL_MS = 30_000`）と
+  突き合わせると、24.8秒の区間はTTL内でヒットしうるが、**365秒の
+  区間はその92%（30秒経過後）がTTL切れで`lookup`が必ずミスし、
+  抑止できない**。最も実害の大きい区間を素通しするため不採用。
+
+### 受け入れたトレードオフ（自己矛盾→一貫した誤りへの変換）
+
+`check_drift_correction`の判定材料（`observations`のdrift追跡・
+`most_recent_trusted`）は`ImeEvent::FocusChanged`のreduceアームが
+呼ぶ`clear_on_focus_change`でフォーカス変更ごとに必ずクリアされる
+ため、v2のゲートはfocus-scoped——**新しいフォーカス直後は必ず解除
+され、cross-windowのcold-start warmup（BUG-02対策）を壊さない**。
+
+ただし新フォーカス後、stale な`desired_open`（前の窓での明示意図が
+持ち越されたもの）と新フォーカスの観測が食い違うと、
+`DRIFT_CORRECTION_THRESHOLD_MS`（既存の`tuning.rs`定数、新規追加なし）
+経過後にdriftが再確立し、以降その窓でのwarmupは（ユーザーが明示的に
+IMEキーを押すまで）抑止され続ける。この状態では同時にdrift correction
+が`VK_IME_OFF`を送っているため、**v2は「開けながら閉じる」という
+自己矛盾を「（stale な desired が解消されるまで）閉じたまま・
+warmupしない」という一貫した誤りへ変える**という設計判断であり、
+「修正」ではなくトレードオフとして受け入れる。ユーザー体感は
+「ON/OFFのちらつき」から「IMEが開かないまま」に変わる。
+`crates/awase-windows/tests/warmup_gate_focus_scope.rs`の
+`drift_re_establishes_in_new_window_when_stale_desired_conflicts_with_fresh_observation`
+がこの挙動を機械可読な形で固定している——将来「cross-windowは
+無条件に守られている」と誤読しないための回帰ガード。
+
+なお同一プロセス内のhwnd切替（`ObservationStore::
+update_focus_window`）はdrift/観測プールをクリアしない。BUG-110の
+3件目報告では乖離が6分5秒継続した事実（=その間`FocusChanged`は
+一度も発火していない、発火すればdriftが即座に消え32件の
+`VK_IME_OFF`が説明できなくなる）から、当該報告の窓内warmupは
+FocusChange経由ではなくexecutorのcomposition経路のみと推論でき、
+実害にはならないと判断した。将来Chromeのタブ切替等で顕在化した
+場合は再検討すること。
+
+### v2が機能する前提（実データに基づく訂正）
+
+`check_drift_correction`は矛盾観測が`ObservationSource::
+ConvOpenInference`単独かつ`explicit_intent()==None`のとき`None`を
+返す早期returnを持つ（BUG-19対策）。もし3件目報告の矛盾観測が
+`ConvOpenInference`単独だったなら、この早期returnによりv2は
+no-opになる——しかし同時にdrift correction自身も同じ早期return
+で止まるため、それでは実測された32件の`VK_IME_OFF`が説明できない。
+**したがって3件目報告の矛盾観測はActuating権威のソース
+（`Gji`/`Tsf`/`ObserverPoll`）だったはずであり、v2はこの前提の
+上で機能する。** 同じ観測がStep 3（`derive_actuating`）にヒットして
+warrant案を破ったことと整合する。
+
+### D2（観測の最小強化）
+
+`output/mod.rs`の`[tsf-eager-warmup] VK_IME_ON 送信`ログを
+`debug!`から`info!`へ格上げした。`apply_force_on_for_imm_broken`側
+（`force-ON (ImmBrokenForceOn)`、既にinfo!）と合わせてgrep2本で
+「92件の内訳」（B1由来 vs #6由来）が次回の実機報告で確定できる。
+併せて`resolve_warmup_ime_on`にゲート発火時の`[warmup-gate]` info
+ログを追加し、抑止の発火回数も追える。journal化（`WarmupEmitted`
+エントリ、`WarmupImeOn`への診断フィールド追加）は`WarmupImeOn`の
+型設計意図（生beliefを渡す経路をコンパイラで塞ぐ）を薄める・
+`platform.rs`5箇所への配線が本体（D1）より広い事故面積を持つ、との
+判断で見送った。
+
+### D3（再発防止ガード）
+
+`architecture_guard.rs::
+warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor`
+が、`WarmupImeOn::from_applied_or_belief`の本番コードからの実呼び出しを
+ゲート版（`from_applied_or_belief_unless_off_drift`）内部の1箇所に
+固定する。`from_applied_or_belief`はcoreクレートの`pub const fn`
+であるため、走査対象に`crates/awase-windows/src/`だけでなく
+core（`src/`）・`crates/awase-linux/src/`・`crates/awase-macos/src/`
+も含める（PR #127のコードレビューで同種の見落としが実際に
+起きた前例に倣う）。
+
+### 回帰テスト
+
+- **T1**（`src/platform.rs`の`mod tests`、core・Linuxで実行）:
+  `from_applied_or_belief_unless_off_drift`の12通り全数
+  （applied 3値 × belief 2値 × off_drift_active 2値）を固定。
+  `off_drift_active=false`の6通りがゲート無し版とbit-identicalで
+  あること、`off_drift_active=true`の6通りがすべて抑止されること
+  （INV-B1'）を検証する。
+- **T2/T3**（`crates/awase-windows/tests/warmup_gate_focus_scope.rs`、
+  新規・ungated統合テスト、Linuxで実行）: `resolve_warmup_ime_on`
+  自体は`#[cfg(windows)]`でLinuxではコンパイルされないため、v2が
+  依存する唯一の性質——`ObservationStore`のdrift追跡が
+  `ImeEvent::FocusChanged`のreduceで確実にクリアされること——を
+  `ImeModel`+`ObservationStore`（いずれもungated）だけで直接固定する。
+  併せて`desired_open`がFocusChangedでクリアされずstaleに残ること
+  （v1がblockerと判定された性質そのもの、将来の再提案へのブレーキ）と、
+  受け入れたトレードオフ（新フォーカスでdriftが再確立されうること）も
+  固定する。
+
 ## 次のアクション
 
-1. **Phase 1の実装**: 候補3の通知UIと、上記7項目の診断ログを実装する。
-2. **実機検証**: 同一環境でエンジンOFFを再現させ、フォーカスを他アプリ
-   へ移して戻すだけで即座にエンジンが復帰するかを確認する（`last_intent`
-   のFocusChanged依存の実証）。
-3. `[hook] IME-mode`ログの`self_injected`/`injected`/`scan`生値と
-   0xF2との時間間隔を確認し、今回のvk=0xF0が真に物理キー押下だったか、
-   IME側エコーだったかを裏取りする。
+1. Phase 2（B1修正）を実機ソークし、次の実機報告で`[tsf-eager-warmup]`
+   /`[warmup-gate]`/`force-ON (ImmBrokenForceOn)`のgrep突合せから
+   92件相当の内訳（B1由来 vs #6由来）を確定する。
+2. 内訳確定後、#6（`apply_force_on_for_imm_broken`）側の同型修正
+   （`check_drift_correction`との排他、または別の設計）を要否判断する。
+   B1由来がほぼゼロだった場合、Phase 2は「効果薄だが無害な予防線」
+   として維持しつつ、#6側の修正を優先する。
+3. B2（`send_engine_state_ime_key`）は未検証のまま残っている
+   （BUG-110追補5参照）。同型のリスクがあるか別途調査すること。
 4. `.claude/rules/fix-requires-evidence.md`の「IME belief」
-   「キー選択」両ファミリーに該当するため、Phase 1実装時も回帰テストまたは
-   `docs/known-bugs.md`記録を伴わせること。「どのキーをIME OFF意図と
-   解釈するか」は過去5日間で6回反転した領域（`docs/experiments.md`
-   エントリ01）であり、拙速な決定は同じ轍を踏みやすい。
-5. Phase 1のログが揃ったら、Phase 2（候補1-v2の再検討）かBUG-68への
-   転進かを判断する。
+   「キー選択」両ファミリーに該当するため、Phase 2実装のコミットには
+   本ADRの追記と`docs/known-bugs.md` BUG-110追補6を伴わせた
+   （満たし済み）。

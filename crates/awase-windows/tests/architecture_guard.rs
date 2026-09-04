@@ -3279,3 +3279,70 @@ fn deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass() {
         );
     }
 }
+
+// ── BUG-110/ADR-132 Phase 2: WarmupImeOn の gate 迂回防止 ──────────────
+
+/// `manifest_dir` 相対の `rel_root` 以下の `.rs` ファイルを再帰的に列挙し、
+/// `read_crate_file` が使える形（`CARGO_MANIFEST_DIR` 相対パス文字列）で返す。
+///
+/// `WarmupImeOn::from_applied_or_belief` は core クレート（`../../src/`、
+/// `crates/awase-windows` から見て2階層上）の `pub const fn` であり、
+/// `list_src_files()`（`awase-windows` 自身の `src/` のみ走査）では取りこぼす。
+/// 兄弟クレート `awase-linux`/`awase-macos` も含めて漏れなく走査する
+/// （PR #127 のコードレビューで実際に見落とされた前例、上記
+/// `every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new`
+/// と同じ理由）。
+fn list_rs_files_under(rel_root: &str) -> Vec<String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let root = Path::new(manifest_dir).join(rel_root);
+    let mut files = Vec::new();
+    walk_rs_files(&root, &mut files);
+    files
+        .iter()
+        .map(|path| {
+            path.strip_prefix(manifest_dir)
+                .unwrap_or_else(|e| panic!("strip_prefix: {e}"))
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect()
+}
+
+/// `WarmupImeOn::from_applied_or_belief`（`applied` が既知の間は belief に
+/// フォールバックしない、という単調性を持つ生のコンストラクタ）の本番コード
+/// からの実呼び出しは、BUG-110/ADR-132 Phase 2 のゲート版
+/// `from_applied_or_belief_unless_off_drift` の内部1箇所に限定する。
+///
+/// このゲートを迂回して `from_applied_or_belief` を直接呼ぶ新しい呼び出し元が
+/// 増えると、OFF 方向 drift correction と逆向きに warmup（`VK_IME_ON`）を
+/// 送る経路が黙って復活する（BUG-110 で実際に競合した経路そのもの）。
+/// `needle` の末尾に `(` を含めることで、4つ目のコンストラクタ
+/// `from_applied_or_belief_unless_off_drift(` を誤ってカウントしない
+/// （`from_applied_or_belief` は後者の**接頭辞**だが、直後に続く文字が
+/// `_unless_off_drift` であって `(` ではないため区別できる）。
+#[test]
+fn warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor() {
+    let mut files = list_rs_files_under("../../src");
+    files.extend(list_src_files());
+    files.extend(list_rs_files_under("../awase-linux/src"));
+    files.extend(list_rs_files_under("../awase-macos/src"));
+
+    let mut total = 0usize;
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, "from_applied_or_belief(");
+        if count > 0 {
+            total += count;
+            hits.push(format!("{path} ({count})"));
+        }
+    }
+    assert_eq!(
+        total, 1,
+        "`WarmupImeOn::from_applied_or_belief(` の本番コードでの実呼び出しが \
+         1箇所（`from_applied_or_belief_unless_off_drift` 内部）以外に \
+         見つかりました: {hits:?}。BUG-110/ADR-132 Phase 2 のゲートを \
+         迂回する新しい呼び出し元が追加されていないか確認してください。"
+    );
+}

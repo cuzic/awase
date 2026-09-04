@@ -573,7 +573,7 @@ impl DecisionExecutor {
         if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
             platform.composition_confirm_key_up(
                 raw_event.vk_code,
-                ime.resolve_warmup_ime_on(self.applied_snapshot),
+                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
             );
         }
     }
@@ -590,7 +590,9 @@ impl DecisionExecutor {
     ) {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
-            platform.composition_ctrl_up(ime.resolve_warmup_ime_on(self.applied_snapshot));
+            platform.composition_ctrl_up(
+                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
+            );
         }
     }
 
@@ -611,7 +613,7 @@ impl DecisionExecutor {
             platform.on_passthrough_key(
                 raw_event.vk_code,
                 true,
-                ime.resolve_warmup_ime_on(self.applied_snapshot),
+                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
             );
         }
     }
@@ -660,7 +662,7 @@ impl DecisionExecutor {
                 platform.on_reinject_key(
                     event.vk_code,
                     true,
-                    ime.resolve_warmup_ime_on(self.applied_snapshot),
+                    ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
                 );
             } else {
                 log::debug!(
@@ -683,7 +685,7 @@ impl DecisionExecutor {
             platform.on_reinject_key(
                 event.vk_code,
                 true,
-                ime.resolve_warmup_ime_on(self.applied_snapshot),
+                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
             );
         }
 

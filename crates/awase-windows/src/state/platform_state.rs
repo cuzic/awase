@@ -529,19 +529,56 @@ impl ImeStateHub {
     /// `applied` を引数で受け取るのは、executor が持つスナップショット
     /// （`applied_snapshot`、batch 内で更新されうる）と hub の live な
     /// `model().applied` の両方から呼べるようにするため。
+    ///
+    /// # BUG-110/ADR-132 Phase 2: OFF 方向 drift correction とのゲート
+    ///
+    /// `now` で評価した [`Self::check_drift_correction`] が OFF 方向
+    /// （`desired=false, observed=true`）を返している間は warmup
+    /// （`VK_IME_ON`）を送らない（[`awase::platform::WarmupImeOn::
+    /// from_applied_or_belief_unless_off_drift`]、INV-B1'）。drift
+    /// correction とまったく同じ判定式（`explicit_intent()` を含む）を
+    /// 共有することで、「別々の関数が別々の解決経路で独立に計算する」という
+    /// BUG-110 の構造的欠陥をこの2者間では作らない。
+    ///
+    /// `check_drift_correction` の判定材料（`observations` の drift 追跡・
+    /// `most_recent_trusted`）は `ImeEvent::FocusChanged` の reduce アーム
+    /// （`clear_on_focus_change`）でフォーカス変更ごとに必ずクリアされるため、
+    /// このゲートは focus-scoped——新しいフォーカスでは必ず解除され、cross-
+    /// window の cold-start warmup（BUG-02 対策）を壊さない。**ただし
+    /// 同一プロセス内の hwnd 切替（`update_focus_window`）は drift を
+    /// クリアしない**（既知の限界。BUG-110 追補6参照。実害が確認されるまで
+    /// 対応しない）。
+    ///
+    /// `now` は呼び出し元から注入する——`state/` 層は壁時計を直接読まない
+    /// （`state/mod.rs` の `TickMs` doc の規約。[`Self::effective_open`] が
+    /// 既にこの規約の負債を抱えているが、新規にここへ壁時計読みを追加しない）。
     pub(crate) fn resolve_warmup_ime_on(
         &self,
         applied: AppliedImeState,
+        now: std::time::Instant,
     ) -> awase::platform::WarmupImeOn {
-        awase::platform::WarmupImeOn::from_applied_or_belief(
+        let off_drift_active = matches!(
+            self.check_drift_correction(now, self.explicit_intent()),
+            Some((false, true, _))
+        );
+        if off_drift_active {
+            log::info!(
+                "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止 \
+                 (applied={:?} effective={})",
+                applied.applied_open(),
+                self.effective_open(),
+            );
+        }
+        awase::platform::WarmupImeOn::from_applied_or_belief_unless_off_drift(
             applied.applied_open(),
             self.effective_open(),
+            off_drift_active,
         )
     }
 
     /// [`Self::resolve_warmup_ime_on`] を `model().applied` に対して呼ぶ版。
-    pub(crate) fn warmup_ime_on(&self) -> awase::platform::WarmupImeOn {
-        self.resolve_warmup_ime_on(self.model().applied)
+    pub(crate) fn warmup_ime_on(&self, now: std::time::Instant) -> awase::platform::WarmupImeOn {
+        self.resolve_warmup_ime_on(self.model().applied, now)
     }
 
     /// [`Self::effective_open`] の判定本体。`now_ms` を明示的に受け取る版。

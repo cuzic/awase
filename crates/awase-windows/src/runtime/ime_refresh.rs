@@ -500,7 +500,10 @@ impl Runtime {
         // （`applied ?? belief`）を使う。決定1-a により TsfNative では `applied`
         // が `Unknown` のまま残るため、生値のままだと `unwrap_or(false)` で
         // warmup が握り潰され BUG-02 のリテラル化が再燃する。
-        let warmup_ime_on = self.platform_state.ime.warmup_ime_on();
+        let warmup_ime_on = self
+            .platform_state
+            .ime
+            .warmup_ime_on(std::time::Instant::now());
         // 旧 eisu_guard（tray で英数／カタカナ等に切り替えた直後の conv を読み、英数なら
         // warmup をスキップする防御）は 2026-08-20、BUG-34 横展開の一環として撤去した。
         //
