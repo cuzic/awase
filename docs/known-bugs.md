@@ -13089,13 +13089,29 @@ GJI + JIS配列で「＠」大量出力）を再現した（`docs/bug-reports-tr
   「`last_intent`はFocusChangedでしか解除されず無期限に持続する」という
   ADR-128 v4の因果モデルを追加のケースで裏付けた。
 - 一方、`DriftGiveUpDiagnostic`/`DriftGiveUpIntervalEnded`はこのログには
-  1件も記録されていない。`[drift] correction`の31件は全て`Send`側で
-  `GiveUp`到達の記述が無く、`FeedbackPolicy::Blind`のmax_attempts到達
-  （`None`側の1回）に一度も達しなかった可能性がある（またはログ巻き戻り
-  200KB上限で古い到達記録が失われた可能性）。Phase 2検討時は、
-  GiveUp到達を前提にした設計（当初のA/B/B'案、候補1-v2）がこの種の
-  「GiveUpに到達しないままobserved≠desiredが5分以上続くケース」を
-  カバーできるかも論点に加える必要がある。
+  1件も記録されていなかった。原因を特定: journalの`ImeActuation`エントリ
+  を確認したところ、この乖離は`FeedbackPolicy::Blind`ではなく
+  **`FeedbackPolicy::Read`**（`ImmGetOpenStatus`、400msデッドライン）で
+  処理されており、同一の`Actuation`が`attempts=162`から`243`まで
+  330秒間`Send`を返し続けていた。`state/ime_actuation.rs::
+  decide_actuation_action`は`Read`の場合`attempts`に関わらず常に`Send`
+  を返す設計（`Blind`専用の`max_attempts`打ち切り＝`GiveUp`という概念が
+  `Read`には無い）ため、これは想定内の挙動であり、**Phase 1のトレイ
+  通知・診断ログが`GiveUp`到達だけをトリガーにしていたことの設計上の
+  穴**だったと判明した（`Blind`専用のTsfNativeプロファイルのはずが
+  なぜ`Read`が使われていたかは未解明、別途調査の価値がある論点として
+  残る）。
+
+  **追補2（2026-09-04、修正済み）:** トレイ通知と`DriftGiveUpDiagnostic`
+  記録のトリガーを、`FeedbackPolicy::Blind`の`GiveUp`到達ではなく、
+  乖離継続時間（`duration_ms >= DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`
+  、既存定数を再利用・新規タイミング定数の追加なし）ベースの、
+  `Blind`/`Read`共通の発火点に変更した（`runtime/ime_refresh.rs`の
+  `match act_policy`より前）。`desired_open`・`observed`・
+  `shadow_effect()`・`transport.rs::plan`・`IntentStore`・`last_intent`
+  のいずれも変更していない。`architecture_guard.rs`/
+  `layer_boundary_guard.rs`/`cargo test --lib`（coreクレート972件・
+  awase-windows561件）は全てpass。
 
 **関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`、
 `crates/awase-windows/src/runtime/key_pipeline.rs`、`crates/awase-windows/

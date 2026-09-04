@@ -505,14 +505,22 @@ OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既�
 
 ## 実装状況
 
-**Phase 1実装済み（未マージ、実機ソーク未実施）。** トレイバルーン通知
+**Phase 1実装済み（未マージ、実機ソーク中）。** トレイバルーン通知
 （1フォーカス1回）と診断ログ7項目（`DriftGiveUpDiagnostic`/
 `HookImeModeDiagnostic`/`DriftGiveUpIntervalEnded`）を追加。
 `cargo check`/`clippy`/`fmt --check`/`cargo dylint`/
 `architecture_guard.rs`/`layer_boundary_guard.rs`/`cargo test --lib`
 （core・awase-windowsとも）は全てpass。`desired_open`・`observed`・
 `shadow_effect()`・`transport.rs::plan`・`IntentStore`のいずれも変更
-していない。`docs/known-bugs.md` BUG-109として記録済み。Phase 2
+していない。`docs/known-bugs.md` BUG-109として記録済み。
+
+ユーザーが実機で2件目の再現（`01M1N5RMQ0HGX60VNG37DXWR26`）を確認した
+過程で、トレイ通知が`FeedbackPolicy::Blind`の`GiveUp`到達だけを
+トリガーにしていたため`FeedbackPolicy::Read`（今回の再現ケースが該当）
+では絶対に発火しない設計上の穴が判明し、修正済み（トリガーを
+`duration_ms`ベースの`Blind`/`Read`共通発火点に変更、新規タイミング
+定数は追加せず既存の`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`を再利用）。
+詳細は`docs/known-bugs.md` BUG-109追補1・追補2を参照。Phase 2
 （保留中の修正案の再検討）はPhase 1のログ収集後に判断する。
 
 ## 次のアクション
