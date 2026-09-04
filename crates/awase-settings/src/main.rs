@@ -126,8 +126,12 @@ const CLIPBOARD_HISTORY_LEN: usize = 4;
 enum CaptureTarget {
     /// 既存ルールの from 全体（修飾+主キー）
     ExistingFrom(usize),
-    /// 既存ルールの to 主キー
-    ExistingTo(usize),
+    /// 既存ルールの to の1ステップ（ルール index, ステップ index）。
+    /// キャプチャした結果はこのステップを**置換**する（新規ルール側と対称、
+    /// コードレビュー指摘 M4）。新しいステップを増やすのは「＋」ボタン
+    /// （`rule.to.push(String::new())`）であり、キャプチャの役割ではない
+    /// （M3）。
+    ExistingTo(usize, usize),
     /// 新規ルールの from 全体
     NewFrom,
     /// 新規ルールの to 主キー
@@ -1700,31 +1704,51 @@ impl SettingsApp {
                 // ため、GUI 側でも作れないようにして対称性を保つ）。
                 let _ = alt;
                 let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
+                // 禁止キーをキャプチャした場合は self.status に理由を出す
+                // （以前は無言で捨てられ、ユーザーは拒否されたのか取りこぼした
+                // のか区別できなかった、コードレビュー指摘 m7）。
+                let reject = |internal: &str, is_to_side: bool, status: &mut String| -> bool {
+                    if let Some(reason) =
+                        keymap_forbidden_reason(internal, left_thumb_vk, right_thumb_vk, is_to_side)
+                    {
+                        let side = if is_to_side { "to" } else { "from" };
+                        *status = format!(
+                            "「{}」は {side} に指定できません: {reason}",
+                            key_display_name(internal)
+                        );
+                        true
+                    } else {
+                        false
+                    }
+                };
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, false)
+                        if !reject(&internal, false, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
                         {
                             rule.from = format_combo(ctrl, shift, false, &internal);
                         }
                     }
-                    CaptureTarget::ExistingTo(i) => {
-                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, true)
+                    CaptureTarget::ExistingTo(i, step_i) => {
+                        if !reject(&internal, true, &mut self.status)
                             && let Some(rule) = self.config.keymaps.get_mut(i)
                         {
-                            rule.to.push(internal);
+                            if let Some(step) = rule.to.get_mut(step_i) {
+                                *step = internal;
+                            }
+                            // step_i が既に削除されていた場合（キャプチャ待機中に
+                            // 「x」でステップを消された等）は何もしない。
                         }
                     }
                     CaptureTarget::NewFrom => {
-                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, false)
-                        {
+                        if !reject(&internal, false, &mut self.status) {
                             self.new_keymap_from_ctrl = ctrl;
                             self.new_keymap_from_shift = shift;
                             self.new_keymap_from_main = internal;
                         }
                     }
                     CaptureTarget::NewTo => {
-                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, true) {
+                        if !reject(&internal, true, &mut self.status) {
                             self.new_keymap_to_main = internal;
                         }
                     }
@@ -2138,7 +2162,10 @@ impl SettingsApp {
 
                     ui.label("→");
 
-                    // to: main key sequence + capture button
+                    // to: 各ステップに main key ドロップダウン + ⌨（このステップを
+                    // 置換）+ x（このステップを削除）を並べる。「＋」でステップを
+                    // 末尾に追加する——新規ルール側と対称な「＋＝追加／x＝削除／
+                    // ⌨＝置換」という直交した操作にする（コードレビュー指摘 M3/M4）。
                     let mut rm_to = None;
                     if rule.to.is_empty() {
                         ui.label("（消費のみ）");
@@ -2152,6 +2179,7 @@ impl SettingsApp {
                             left_thumb_vk,
                             right_thumb_vk,
                         );
+                        capture_button(ui, &mut capturing, CaptureTarget::ExistingTo(i, step_i));
                         if ui
                             .small_button("x")
                             .on_hover_text("押すと: この送信ステップを削除します。")
@@ -2163,8 +2191,16 @@ impl SettingsApp {
                     if let Some(step_i) = rm_to {
                         rule.to.remove(step_i);
                     }
-                    let to_target = CaptureTarget::ExistingTo(i);
-                    capture_button(ui, &mut capturing, to_target);
+                    if ui
+                        .small_button("+")
+                        .on_hover_text(
+                            "押すと: 送信ステップを末尾に1つ追加します（追加後、\
+                             ドロップダウンまたは⌨で内容を選びます）。",
+                        )
+                        .clicked()
+                    {
+                        rule.to.push(String::new());
+                    }
 
                     if ui
                         .small_button("x")
@@ -3931,6 +3967,53 @@ mod keymap_from_key_options_tests {
     }
 }
 
+/// `keymap_forbidden_reason`（キャプチャ拒否時に `self.status` へ表示する
+/// 理由文字列の算出、コードレビュー指摘 m7）の回帰テスト。
+#[cfg(test)]
+mod keymap_forbidden_reason_tests {
+    use super::keymap_forbidden_reason;
+    use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT, VK_SPACE};
+
+    #[test]
+    fn returns_reason_for_forbidden_to_side_vk() {
+        assert!(
+            keymap_forbidden_reason("VK_KANJI", VK_NONCONVERT, VK_CONVERT, true).is_some(),
+            "IME 制御系 VK は to 側で禁止理由を返すべき"
+        );
+    }
+
+    #[test]
+    fn returns_none_for_allowed_vk() {
+        assert_eq!(
+            keymap_forbidden_reason("VK_F7", VK_NONCONVERT, VK_CONVERT, true),
+            None,
+            "通常キーは禁止理由が無いはず"
+        );
+    }
+
+    #[test]
+    fn or_judgment_is_to_side_only() {
+        // 親指キーを Space に変えているので VK_CONVERT は親指キー由来では
+        // 禁止されない。to 側だけ ADR-130 の OR 判定で禁止される。
+        assert_eq!(
+            keymap_forbidden_reason("VK_CONVERT", VK_NONCONVERT, VK_SPACE, false),
+            None
+        );
+        assert!(keymap_forbidden_reason("VK_CONVERT", VK_NONCONVERT, VK_SPACE, true).is_some());
+    }
+
+    #[test]
+    fn unresolvable_name_is_not_treated_as_forbidden() {
+        // `keymap_internal_allowed` と同じ意味論: 名前解決できない文字列は
+        // 「禁止」ではなく「対象外」として扱う（バックエンドの
+        // 'to' パース失敗パスが別途処理する）。
+        assert_eq!(
+            keymap_forbidden_reason("not-a-real-vk-name", VK_NONCONVERT, VK_CONVERT, true),
+            None
+        );
+    }
+}
+
 #[cfg(test)]
 mod thumb_key_display_condition_tests {
     use super::{is_henkan_thumb_key, is_muhenkan_thumb_key};
@@ -4135,14 +4218,27 @@ fn keymap_internal_allowed(
     right_thumb_vk: VkCode,
     is_to_side: bool,
 ) -> bool {
-    VkCode::from_name(internal).is_some_and(|vk| {
+    keymap_forbidden_reason(internal, left_thumb_vk, right_thumb_vk, is_to_side).is_none()
+}
+
+/// `internal` が禁止されているなら理由文字列を返す（`keymap_internal_allowed`
+/// の理由付き版）。キャプチャ拒否時に `self.status` へ表示するために使う
+/// （コードレビュー指摘 m7）。`VkCode::from_name` が解決できない文字列は
+/// 禁止扱いにしない（`forbidden_target_vk_reason` の対象外＝許可、という
+/// 既存の `keymap_internal_allowed` の意味論を保つ）。
+fn keymap_forbidden_reason(
+    internal: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> Option<&'static str> {
+    VkCode::from_name(internal).and_then(|vk| {
         awase_windows::keymap::forbidden_target_vk_reason(
             vk,
             left_thumb_vk,
             right_thumb_vk,
             is_to_side,
         )
-        .is_none()
     })
 }
 
