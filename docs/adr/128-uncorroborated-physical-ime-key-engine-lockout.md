@@ -2,12 +2,11 @@
 
 ## ステータス
 
-**設計継続中（v2、未収束）。** Opus 2体（architect/premortem）の敵対的
-レビューで、v1が提示した2案（A: 証拠強度の分離、B: 有界reconciliation）と
-その統合案（B': 明示意図の有界失効）のいずれにも、実コードで裏付けられる
-blockerが見つかった。因果分析はv1から大きく訂正された（下記）。まだ
-「決定」に至っていない——次に検証すべき方向性（B''、後述）は見えているが
-実装可能性の検証は未了。
+**Phase 1採用・実装待ち（v4）。** Opus 2体（architect/premortem）による
+敵対的レビュー・討論を計4ラウンド実施。v1〜v3で提示したA/B/B'/候補1〜5の
+うち、最終的に生き残ったのは**候補3（不確実性のUX可視化）＋診断ログの
+みで、それ以外は全てblocker付きで却下**された。詳細な討論の経緯は
+「検討の経緯（v1〜v4のサマリ）」節、最終決定は「決定」節を参照。
 
 ## 背景
 
@@ -376,30 +375,151 @@ config化されたホットキーのみを「明示的IME OFF」の唯一の入�
 - **リスク**: 英数キー単独でIME切替をする既存ユーザー体験を退行させる
   （UXの後退として明示的に許容するかはユーザー判断）。
 
+## 検討の経緯（v1〜v4のサマリ）とラウンド3・4で判明した重要な訂正
+
+v3で「候補1（engine活性化のbelief分離）」を最有力としたが、Opus 2体
+（architect/premortem）による2ラウンドの敵対的討論（ラウンド3: architect
+が候補1を「矛盾検出中ラッチ」として具体化→premortemが検証、ラウンド4:
+architectが応答・設計を修正→premortemが最終判定）で、**修正後の設計
+（候補1-v2）にも2つの独立したblockerが残ることが確定し、最終的に不採用**
+となった。この過程で以下の重要な訂正が生まれた（v2/v3の記述を訂正する）:
+
+- **ロックアウトの長さは「最長30秒」ではなく「無期限（`FocusChanged`が
+  起きるまで）」。** `IntentStore`の30秒TTLが先に切れても、`ime_model.rs`
+  の`last_intent`（TTLなし、`reduce()`の`FocusChanged`アーム1箇所でしか
+  クリアされない）が`has_user_explicit_intent()`経由で`resolve_open_at()`
+  を止め続けるため、`IntentStore`のTTLは実質無関係だった。今回たまたま
+  約29秒で復帰したのは、たまたま不具合報告ダイアログへのフォーカス移動が
+  その頃に起きたためであり、上限として保証された値ではない。
+- **候補2の根拠にした「潜在バグ」（30秒TTL失効後に`derive_any()`が
+  `ConvOpenInference`単独でbeliefを反転させる）は成立しない。** 上記の
+  とおり`has_user_explicit_intent()`がtrueの間は`derive_any()`に到達
+  しないため。候補2はこの誤った前提の上に立っていたため、それとは
+  独立に不採用（実害を1秒も縮めない）。
+- **`FocusChanged`による復帰は「観測が残っていて採用された」のではなく
+  2段階**: `observation_store.rs::clear_on_focus_change`が観測プールも
+  同時に全消しする（`per_source.clear_all()`）ため、正しくは
+  「フォーカス変更で`last_intent`と観測プールが同時にクリアされ、その後
+  新しいフォーカスプローブが供給した新鮮な観測が採用された」という
+  2段階の因果である。
+
+### 候補1-v2「矛盾検出中ラッチ」（却下・設計は記録として残す）
+
+architectが提示した最終形は、`ImeModel`に`ProvisionalGate::{Closed,
+Open{opened_at}}`を持たせ、以下のヒステリシス（開閉の非対称条件）で
+engineの活性化ゲートだけを`effective_open()`から切り離す設計だった:
+
+- **開く条件（1つ）**: `check_drift_correction()`が
+  `Some((desired=false, observed=true, duration_ms))`を返し、
+  `duration_ms >= 2000ms`（実測根拠: 本報告のBlindバースト1巡≈3.2秒、
+  初回5発完了まで約2秒）。
+- **閉じる条件（3つのみ）**: (R1) `FocusChanged`、(R2)
+  `ObservationAuthority::Actuating`の観測が`desired_open`と一致、(R3)
+  新しい明示意図の記録。
+- **意図的に閉じない条件**: 観測のstaleness、`check_drift_correction()`
+  が`None`に戻ること、drift correctionのGiveUp/再武装、`BeliefOnly`
+  観測の一致、ゲート自体のタイムアウト——いずれも閉じない。
+
+premortemの最終検証で、この設計にも**2つの独立したblocker**が残ると
+判明した:
+
+1. **区間がactuation-quietでない（blocker）**: `entering_provisional`/
+   `leaving_provisional`という抑制フラグは区間の出入りの2エッジでしか
+   `SetOpen`を止めない。drift correction自体（`ir_apply_drift_correction`）
+   はactivation stateを見ておらず（`is_user_enabled()`はユーザートグルで
+   別物）、区間の全期間にわたって独立に`VK_IME_OFF`を約3.2秒ごとに
+   5発ずつ送り続ける。ゲートのタイムアウトを意図的に設けていないため、
+   区間長は無期限になりうる。**「NICOLA変換をしながら同じ窓へIME OFF
+   キーを撃ち続ける」状態が数分続きうる**——実IMEが開いていれば
+   compositionが破壊され（BUG-24/BUG-70型）、閉じていればromajiが
+   そのままリテラル出力される。
+2. **非対称の向きが安全側と逆（blocker）**: 「弱い証拠（`BeliefOnly`、
+   型が『actuationの根拠になれない』と規定するもの）で開き、強い証拠
+   （`Actuating`、TsfNativeでは構造的に入手不能）でしか閉じない」という
+   設計のため、**誤って開いたことを検出する経路が構造的に存在しない**。
+   `tuning.rs`が既に実測付きで記録している「IMM32のNATIVEビットは
+   `VK_IME_OFF`で閉じても消えない」（BUG-68）という、まさに今回と同型の
+   状況——ユーザーが正しくIMEをOFFにしたのに`ConvOpenInference`が
+   `open=true`を報告し続けるケース——で、ゲートは必ず誤って開き、
+   TsfNativeでは二度と閉じない。NICOLA変換が閉じたIMEへ勝手に復活し
+   romajiリテラルを出す（案Bが持っていたのと同一の実害）。
+
+さらに本質的な論点として、**候補1は「`observed=true`（実IMEは開いている）
+の方が正しい」ことを前提にしているが、`tuning.rs:251-253`の既存記述に
+照らすとこの前提自体が偽である可能性の方が高い**。前提が偽なら、候補1は
+「29秒の無変換パススルー」を「29秒のローマ字リテラル出力」に置き換える
+だけで、症状としてはむしろ悪化する。
+
 ## 決定
 
-**未確定。** A/B/B'はいずれも不採用。上記5候補（単独・組み合わせ
-いずれも可）のうちどれを次に検証するかはユーザー判断待ち。候補2で
-見つかった`derive_any()`の潜在バグは、本ADRの決定と独立に対処する
-価値がある。
+**Phase 1のみを採用する。** 候補3（不確実性のUX可視化）と診断ログ
+記録に限定し、候補1/2/4/5は実装しない（候補1-v2は上記のとおり設計を
+記録として残し、却下する）。
+
+### Phase 1（採用・実装対象）
+
+1. **候補3（UX可視化）**: `ir_apply_drift_correction`のGiveUp到達
+   （`ime_refresh.rs`、`act_gave_up_at == None`側の1回、1フォーカス
+   につき通知は1回に制限してノイズを抑える）を起点に、トレイで
+   軽い通知を出す。文言は「IME状態が不確実」ではなく、観測不能
+   プロファイルの構造的制約として中立に伝える（例:「このアプリでは
+   IME状態を確認できません。気になる場合は該当キーをもう一度押して
+   ください」）——「awaseが壊れている」と読まれ不具合報告のノイズを
+   増やさないため。`desired_open`・`observed`・配送判断・actuationの
+   いずれにも触れないため、本ADRの議論で見つかったblockerを一つも
+   踏まない。
+2. **診断ログの拡充**: 以下7項目を構造化記録する（次にPhase 2の
+   可否・BUG-68への転進を判断するために必須）:
+   - 矛盾を構成した各観測の`ObservationSource`と信頼度
+   - 「矛盾検出中」相当の区間にawaseが送った全VK（出所付き）
+   - `[hook] IME-mode`の`self_injected`/`injected`/`scan`と、直前の
+     同族DBEイベントとの時間間隔
+   - intent昇格時の`IntentKind`（`SyncKey`か`PhysicalImeKey`か）
+   - 区間の終了理由（`FocusChanged`か、他の経路か）と区間長
+   - 使用中の`.yab`ファイル名（「＠」出力の説明が配列依存で反転するため）
+   - `half_width_alnum_toggle_active`の値
+
+### Phase 2（設計凍結・保留）
+
+候補1-v2は上記2つのblockerにより不採用。Phase 1のログでもし「矛盾は
+常に`ConvOpenInference`単独由来だった（＝実IMEは正しく閉じていた）」と
+判明した場合、真因はBUG-68の未解決部分（conv残骸でdrift correctionが
+空回りする）に移る。その場合の対応候補は「`ConvOpenInference`単独では
+OFF方向の再送を打ち切る」だが、これは`tuning.rs:259-264`が既に記録する
+トレードオフ（打ち切るとBUG-51型の「明示OFF後も実IMEが閉じないまま
+最大8分放置される」という別の回復性を失う）を伴う。Phase 1のデータが
+揃うまでこの判断はできない。
+
+候補2・4・5は前節（v2/v3）の理由により不採用のまま。
+
+### スコープ外の発見（別途検討の価値あり）
+
+2ラウンドの討論を通じ、「観測不能プロファイル（TsfNative）で
+`ConvOpenInference`しか観測が無い環境において、その観測を根拠に
+何か（belief でも engine 活性化でも）を自動的に動かそうとすると、
+必ず『conv ビットは開閉と無関係』という物理的制約に突き当たる」ことが
+繰り返し確認された。次に投資すべきは訂正機構の精緻化ではなく、
+**TsfNativeでIME開閉状態を読む観測能力そのものの獲得（あるいはその
+不可能性の確定）**かもしれない。本ADRのスコープ外だが、Phase 1のデータが
+揃った時点で検討する価値がある。
 
 ## 実装状況
 
-未着手。
+未着手（Phase 1の実装が次のアクション）。
 
 ## 次のアクション
 
-1. **実機検証（最優先、1分で可能）**: 同一環境でエンジンOFFを再現させ、
-   フォーカスを他アプリへ移して戻すだけで即座にエンジンが復帰するかを
-   確認する。復帰すれば上記の因果分析（`last_intent`のFocusChanged依存）
-   が実証される。
-2. `[hook] IME-mode`ログ（`hook.rs:837`）の`self_injected`/`injected`/
-   `scan`生値と、0xF2との時間間隔を確認し、今回のvk=0xF0が真に物理
-   キー押下だったか、IME側エコーだったかを裏取りする。
-3. B''（belief/engine分離）が`NotRomajiInput`/`ObservedEisu`ガードや
-   `build_ctx().ime_on`消費者と整合するかを設計・検証する。
+1. **Phase 1の実装**: 候補3の通知UIと、上記7項目の診断ログを実装する。
+2. **実機検証**: 同一環境でエンジンOFFを再現させ、フォーカスを他アプリ
+   へ移して戻すだけで即座にエンジンが復帰するかを確認する（`last_intent`
+   のFocusChanged依存の実証）。
+3. `[hook] IME-mode`ログの`self_injected`/`injected`/`scan`生値と
+   0xF2との時間間隔を確認し、今回のvk=0xF0が真に物理キー押下だったか、
+   IME側エコーだったかを裏取りする。
 4. `.claude/rules/fix-requires-evidence.md`の「IME belief」
-   「キー選択」両ファミリーに該当するため、決定後は回帰テストまたは
+   「キー選択」両ファミリーに該当するため、Phase 1実装時も回帰テストまたは
    `docs/known-bugs.md`記録を伴わせること。「どのキーをIME OFF意図と
    解釈するか」は過去5日間で6回反転した領域（`docs/experiments.md`
    エントリ01）であり、拙速な決定は同じ轍を踏みやすい。
+5. Phase 1のログが揃ったら、Phase 2（候補1-v2の再検討）かBUG-68への
+   転進かを判断する。
