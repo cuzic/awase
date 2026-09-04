@@ -63,7 +63,11 @@ pub fn literal_detect_is_notable(record: &crate::tsf::literal_facts::LiteralDete
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredRecoveryFlushFacts {
-    Flushed { vk_count: usize },
+    /// `raw_recovery` / `drain_before_send` のどちらの trigger でも、
+    /// 実際に VK が flush された場合のみ notable とする。
+    Flushed {
+        vk_count: usize,
+    },
     DiscardedStale,
     SkippedWhilePolling,
 }
