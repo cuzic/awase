@@ -101,6 +101,39 @@ impl GjiReinitStartResult {
     }
 }
 
+/// [`Output::send_eager_tsf_warmup`] へ渡す `warmup_ime_on` の構築経路
+/// （BUG-110/ADR-132 Phase 2、敵対的コードレビュー N6 指摘）。
+///
+/// `&'static str` を手で各呼び出し元へ配ると、タイポ（`"gate"`等）や
+/// 将来の新規呼び出し元での誤ラベルを型で防げない——この Phase の成果物
+/// （次回実機報告での B1由来/#6由来の内訳確定）を直接損なう種類のミスに
+/// なるため、enum で固定する。`WarmupImeOn` 自体には触れない（ADR-098の
+/// 型設計意図——生 belief を渡す経路をコンパイラで塞ぐ——を薄めないため、
+/// `origin` は独立した引数のまま並行して渡す）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmupOrigin {
+    /// `ImeStateHub::resolve_warmup_ime_on` 経由（`off_drift_active`
+    /// ゲートを通っている）。
+    Gated,
+    /// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
+    /// actuation 直後の随伴 warmup）経由。**このゲートは通らない**
+    /// （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
+    Actuated,
+    /// `WarmupImeOn::off()`（構造的に `can_warmup()` が常に `false` になり、
+    /// この enum が実際にログへ現れることはない到達不能な保険経路）。
+    Off,
+}
+
+impl std::fmt::Display for WarmupOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Gated => "gated",
+            Self::Actuated => "actuated",
+            Self::Off => "off",
+        })
+    }
+}
+
 /// async IMC poll の完了状態。`WM_GJI_REINIT_RETRY_COMPLETE` の lParam にも使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GjiReinitPollStatus {
@@ -1089,24 +1122,16 @@ impl Output {
     ///
     /// # `origin`（BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘への対応）
     ///
-    /// ログにだけ載せる診断用文字列。呼び出し元が渡す `warmup_ime_on` の
-    /// 構築経路を表す:
-    /// - `"gated"`: `ImeStateHub::resolve_warmup_ime_on` 経由（BUG-110の
-    ///   `off_drift_active` ゲートを通っている）。
-    /// - `"actuated"`: `WarmupImeOn::from_actuated`（`on_ime_applied` —
-    ///   実 actuation 直後の随伴 warmup）経由。**このゲートは通らない**
-    ///   （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
-    ///
-    /// `WarmupImeOn` 自体に構築経路のフィールドを持たせない（ADR-098の型
-    /// 設計意図——生 belief を渡す経路をコンパイラで塞ぐ——を薄めない）ため、
-    /// 呼び出し元から並行して渡す。次回実機報告で `[tsf-eager-warmup]` の
-    /// `origin=` を grep すれば、B1由来（gated）と #6随伴分（actuated）を
-    /// 正確に分離できる（従来はこの区別が無く、#6由来の随伴warmupが
-    /// B1由来として過大計上されていた）。
+    /// ログにだけ載せる診断用の [`WarmupOrigin`]。呼び出し元が渡す
+    /// `warmup_ime_on` の構築経路を表す（`Gated`/`Actuated`/`Off` の3値、
+    /// 詳細は [`WarmupOrigin`] のdoc参照）。次回実機報告で
+    /// `[tsf-eager-warmup]` の `origin=` を grep すれば、B1由来（gated）と
+    /// #6随伴分（actuated）を正確に分離できる（従来はこの区別が無く、
+    /// #6由来の随伴warmupがB1由来として過大計上されていた）。
     pub fn send_eager_tsf_warmup(
         &self,
         warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: &'static str,
+        origin: WarmupOrigin,
     ) {
         if !self.conv_mutation_allowed.get() {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");

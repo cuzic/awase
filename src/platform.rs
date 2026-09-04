@@ -197,6 +197,30 @@ impl WarmupImeOn {
         Self(open)
     }
 
+    /// `applied ?? belief` の判定本体（`Self::from_applied_or_belief` と
+    /// `resolve_warmup_ime_on` の「ゲート無しなら送っていたはずか」判定が
+    /// 共有する SSOT）。
+    ///
+    /// # なぜ独立した関数として切り出すか（敵対的コードレビュー N2 指摘）
+    ///
+    /// BUG-110/ADR-132 Phase 2 実装時、`state/platform_state.rs::
+    /// resolve_warmup_ime_on` が同じ判定を `applied_open.unwrap_or(effective)`
+    /// として素の `Option::unwrap_or` で再実装していた——「別々の場所が同じ
+    /// 状態を別々に解決する」という BUG-110 自体が問題にしている構造の
+    /// ミニチュアを、その解消を目的とする関数の中に持ち込んでいたことになる。
+    /// `Self::from_applied_or_belief(applied, belief_open).is_on()` を呼べば
+    /// 済むはずが、`architecture_guard.rs` の呼び出し件数固定テスト
+    /// （`from_applied_or_belief(` は `from_applied_or_belief_unless_off_drift`
+    /// 内部の1箇所限定）に抵触するため、正攻法が塞がれていた。この関数を
+    /// 両者から呼ぶことで SSOT を1箇所に戻す。
+    #[must_use]
+    pub const fn would_send(applied: Option<bool>, belief_open: bool) -> bool {
+        match applied {
+            Some(open) => open,
+            None => belief_open,
+        }
+    }
+
     /// `applied` があればそれを、`Unknown` のときだけ belief を使う（`applied ?? belief`）。
     ///
     /// 「belief にフォールバックする」ことを明示的に許すのはこのコンストラクタ
@@ -208,10 +232,7 @@ impl WarmupImeOn {
     /// 成立していない**——ADR-132 INV-B1'）。
     #[must_use]
     pub const fn from_applied_or_belief(applied: Option<bool>, belief_open: bool) -> Self {
-        match applied {
-            Some(open) => Self(open),
-            None => Self(belief_open),
-        }
+        Self(Self::would_send(applied, belief_open))
     }
 
     /// [`Self::from_applied_or_belief`] に「OFF 方向の drift correction が
@@ -534,6 +555,23 @@ mod tests {
                     !gated.is_on(),
                     "off_drift_active=true は無条件で warmup を抑止する \
                      (INV-B1', applied={applied:?}, belief_open={belief_open})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn would_send_matches_from_applied_or_belief_for_all_combinations() {
+        // N2指摘（敵対的コードレビュー）: `would_send`は`from_applied_or_belief`
+        // と同じ判定のSSOTであり、呼び出し元（`resolve_warmup_ime_on`）が
+        // 独自に`Option::unwrap_or`等で再実装しないための共有関数。両者が
+        // 恒久的に一致し続けることをここで固定する。
+        for applied in [None, Some(false), Some(true)] {
+            for belief_open in [false, true] {
+                assert_eq!(
+                    WarmupImeOn::would_send(applied, belief_open),
+                    WarmupImeOn::from_applied_or_belief(applied, belief_open).is_on(),
+                    "applied={applied:?}, belief_open={belief_open}"
                 );
             }
         }

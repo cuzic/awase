@@ -589,17 +589,22 @@ impl ImeStateHub {
             effective,
             off_drift_active,
         );
-        // 敵対的コードレビュー指摘: ゲート無しでも元々送らない値だった場合は
-        // 「抑止した」に数えない——ログの「抑止回数」を実際に意味のある上限値に
-        // する（ゲート自体が無条件の上限値である点は `send_eager_tsf_warmup`
-        // 側の3段 self-gate があるため変わらない）。`from_applied_or_belief`
-        // （`applied ?? belief`）と同じ判定を、その呼び出し件数を1箇所に
-        // 固定するガードテストと衝突しないよう素の `Option::unwrap_or` で
-        // 再現する（コンストラクタは呼ばない）。
-        let would_have_sent_without_gate = applied_open.unwrap_or(effective);
-        let actually_suppressed = off_drift_active && would_have_sent_without_gate;
-        if actually_suppressed {
-            if !self.warmup_gate_suppression_logged.get() {
+        // 敵対的コードレビュー指摘（N1・N2）: ログの「抑止回数」を実際に
+        // 意味のある上限値にするため、ゲート無しでも元々送らない値だった
+        // 場合は「開始」ログを出さない。ただし dedup の**エピソード境界**は
+        // `off_drift_active` 単独で決める——`would_have_sent_without_gate`
+        // まで境界条件に含めると、ADR-132 自身が設計根拠として書いている
+        // 「OFF方向drift検出中は`applied`がdrift correctionとforce-ONの
+        // 両方に交互に書かれてping-pongする」性質により、`off_drift_active`
+        // がtrueのまま`applied`の反転だけで「抑止開始/終了」がフラップし、
+        // ゲートは閉じたままなのに「抑止終了」が誤って出る（N1指摘）。`would_send`
+        // （`from_applied_or_belief`と同じ判定、コンストラクタの呼び出し
+        // 件数固定テストに触れずに共有するための core 関数）は「開始行を
+        // 出す価値があるか」の判定にのみ使う。
+        let would_have_sent_without_gate =
+            awase::platform::WarmupImeOn::would_send(applied_open, effective);
+        if off_drift_active {
+            if would_have_sent_without_gate && !self.warmup_gate_suppression_logged.get() {
                 log::info!(
                     "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止開始 \
                      (applied={applied_open:?} effective={effective})"

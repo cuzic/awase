@@ -3348,12 +3348,21 @@ fn warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructo
     );
 }
 
-/// `needle` の実呼び出し（`fn {name}(` という定義行は除外）ごとに、対応する
-/// 閉じ括弧までの引数リスト文字列（トップレベルの `,` で分割、トリム済み）を
-/// 返す。ネストした括弧・タプル等は深さカウントで対応するが、文字列リテラル内の
-/// 括弧・カンマは非対応（本テストが対象とする呼び出しはいずれも識別子/真偽値
-/// リテラルのみの単純な引数なので十分）。
+/// `needle` の実呼び出し（`fn {name}(` という定義行、および行コメント
+/// `//`/`///`/`//!` は除外——`non_comment_lines` を内部で適用する。ADR等の
+/// doc コメントに引用されたコード片や `#[cfg(test)]` 内の正当なリテラル
+/// 使用が「本番コードの迂回」として誤検知されるのを防ぐ、敵対的コード
+/// レビュー N3 指摘）ごとに、対応する閉じ括弧までの引数リスト文字列
+/// （深さカウントを尊重した「トップレベル」の `,` で分割、トリム済み）を
+/// 返す。文字列リテラル内の括弧・カンマは非対応（本テストが対象とする
+/// 呼び出しはいずれも識別子/真偽値リテラルのみの単純な引数なので十分）。
+/// 対応する閉じ括弧が見つからない場合（構文的に不完全な部分一致等）は
+/// その出現を明示的にスキップする（N4 指摘: 見つからない場合に
+/// `args_start` を終端扱いすると、続く走査が非 UTF-8 境界で panic しうる
+/// バグがあった）。
 fn extract_call_arg_lists(content: &str, needle: &str) -> Vec<Vec<String>> {
+    let content = non_comment_lines(content);
+    let content = content.as_str();
     let fn_name = needle.trim_end_matches('(');
     let def_needle = format!("fn {fn_name}(");
     let mut results = Vec::new();
@@ -3370,27 +3379,51 @@ fn extract_call_arg_lists(content: &str, needle: &str) -> Vec<Vec<String>> {
             continue;
         }
         let mut depth: i32 = 1;
-        let mut args_end = args_start;
+        let mut args_end = None;
         for (offset, ch) in content[args_start..].char_indices() {
             match ch {
                 '(' => depth += 1,
                 ')' => {
                     depth -= 1;
                     if depth == 0 {
-                        args_end = args_start + offset;
+                        args_end = Some(args_start + offset);
                         break;
                     }
                 }
                 _ => {}
             }
         }
+        let Some(args_end) = args_end else {
+            // 対応する閉じ括弧が見つからなかった（構文的に不完全）。
+            // これ以上この occurrence を安全に解釈できないため、次の
+            // needle 検索へ進む（args_start から1バイトだけ進めると
+            // マルチバイト文字の途中を指す可能性があるため、次の
+            // needle 出現へ直接ジャンプする）。
+            search_from = args_start;
+            continue;
+        };
         let args_text = &content[args_start..args_end];
-        let args: Vec<String> = args_text
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .collect();
+        // トップレベルの `,` でのみ分割する（N5 指摘: 深さカウントを
+        // 終端検出だけでなく分割自体にも使う。ネストした関数呼び出しや
+        // クロージャの引数内カンマで誤分割しない）。
+        let mut args: Vec<String> = Vec::new();
+        let mut arg_depth: i32 = 0;
+        let mut current_start = 0usize;
+        for (offset, ch) in args_text.char_indices() {
+            match ch {
+                '(' | '[' | '{' => arg_depth += 1,
+                ')' | ']' | '}' => arg_depth -= 1,
+                ',' if arg_depth == 0 => {
+                    args.push(args_text[current_start..offset].trim().to_owned());
+                    current_start = offset + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail = args_text[current_start..].trim();
+        if !tail.is_empty() {
+            args.push(tail.to_owned());
+        }
         results.push(args);
         search_from = args_end + 1;
     }

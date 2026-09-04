@@ -815,26 +815,26 @@ premortemとは独立）にレビューさせた。指摘のうち、対応し�
 2. **D2のログ内訳がB1由来へ過大計上される**: 1の結果、force-ON
    由来の随伴warmupも同じ`[tsf-eager-warmup] VK_IME_ON 送信`ログを
    出すため、grep突合せでの内訳確定が崩れていた。**対応**:
-   `send_eager_tsf_warmup`に`origin: &'static str`引数を追加し
+   `send_eager_tsf_warmup`に`origin`引数を追加し
    （`platform.rs`の`dispatch_composition_response`/
    `feed_composition_event`/各wrapper関数、計9箇所に機械的に
-   スレッディング）、`"gated"`（`resolve_warmup_ime_on`経由）/
-   `"actuated"`（`on_ime_applied`の`from_actuated`経由）/`"off"`
+   スレッディング）、`Gated`（`resolve_warmup_ime_on`経由）/
+   `Actuated`（`on_ime_applied`の`from_actuated`経由）/`Off`
    （構造的に到達しない`WarmupImeOn::off()`経路）を区別してログに
    載せた。`WarmupImeOn`型自体には触れず（型設計意図を保つ）、
-   呼び出し元から並行して渡す形にした。
+   呼び出し元から並行して渡す形にした。初版は`&'static str`
+   だったが、round 2レビュー（N6、後述）でタイポ・誤ラベルを
+   型で防げない指摘を受け、`output::WarmupOrigin` enumに変更した。
 3. **`[warmup-gate]`ログの重複排除欠如・過大計上**: 打鍵駆動で
    頻繁に呼ばれる経路のため、乖離が長時間続くケース（3件目報告の
    6分5秒）でログが飽和しうる欠陥、および「ゲート無しでも元々
    送らない値だった」場合まで「抑止した」に数える不正確さが
-   あった。**対応**: `intent_override_logged`と同じ`Cell<bool>`
-   dedupパターンを導入（抑止の開始/終了の遷移時のみログ）、抑止の
-   判定条件に「ゲート無しなら送っていたはずか」を加えた
-   （`applied_open.unwrap_or(effective)`、`from_applied_or_belief`
-   と等価だがガードテストの件数固定と衝突しないよう素の
-   `Option::unwrap_or`で再現）。副次的に`effective_open()`の
-   二重評価（TTL境界を跨ぐとログ値とゲート判定値が食い違いうる
-   欠陥）も1回化で解消した。
+   あった。**初版の対応**（round 2レビューでN1指摘によりさらに
+   修正、後述）: `intent_override_logged`と同じ`Cell<bool>`
+   dedupパターンを導入し、抑止の判定条件に「ゲート無しなら送って
+   いたはずか」（`applied_open.unwrap_or(effective)`）を加えた。
+   副次的に`effective_open()`の二重評価（TTL境界を跨ぐとログ値と
+   ゲート判定値が食い違いうる欠陥）も1回化で解消した。
 4. **doc内の型名誤り**: `explicit_intent`引数の説明が
    `PlatformState::explicit_intent()`と誤記していた（正しくは
    `ImeStateHub::explicit_intent()`、`PlatformState`は別型）。
@@ -870,6 +870,77 @@ premortemとは独立）にレビューさせた。指摘のうち、対応し�
   ドキュメントに `now` は呼び出しごとの live 値でありバッチ内
   一貫性は保証しないことを追記した）、`DecisionExecutor`への
   `batch_now`フィールド導入は見送った。
+
+### round 2レビュー: #3の修正自体が新たな欠陥を持ち込んでいた
+
+上記の修正一式をコミット（`2902adf9`）し、**同じレビューエージェント**
+（form (b)の「同一レビュアーへの再確認」規律に従う）に再確認を依頼した
+ところ、#1〜#9はすべて意図どおり対応されていると確認された一方、
+**#3（`[warmup-gate]`ログ）の修正自体が新たな欠陥を持ち込んでいた**
+ことが判明した（N1）。
+
+- **N1（重要、実質blocker）**: dedupの episode 境界を
+  `off_drift_active && would_have_sent_without_gate`のANDで判定して
+  いたため、ADR自身が設計根拠として書いている「OFF方向drift検出中は
+  `applied`がdrift correctionとforce-ONの両方に交互に書かれて
+  ping-pongする」性質により、`off_drift_active`がtrueのまま
+  `applied`の反転だけで「抑止開始/終了」がフラップし、**ゲートは
+  閉じたままなのに「warmup 抑止終了」ログが誤って出る**バグが
+  あった。3件目報告（124回のactuationが6分5秒に集中）では最大
+  ~124行のフラップが発生しうる規模。「診断ログが診断を誤らせる」
+  という、#2で直したのと同じ種類の問題が別の場所に再発していた。
+  **対応**: episode境界を`off_drift_active`単独に戻し、
+  `would_have_sent_without_gate`は「開始行を出す価値があるか」の
+  判定にのみ使うよう修正。
+- **N2（重要）**: N1の`would_have_sent_without_gate`計算
+  （`applied_open.unwrap_or(effective)`）が`from_applied_or_belief`
+  の判定を素の`Option::unwrap_or`で再実装しており、BUG-110自体が
+  問題にしている「別々の場所が同じ状態を別々に解決する」構造の
+  ミニチュアをその解消目的の関数内に持ち込んでいた。しかも
+  `from_applied_or_belief(applied, belief).is_on()`という正攻法は、
+  同コミットで追加したガードテスト（`from_applied_or_belief(`の
+  呼び出し件数固定）が禁止していた——2つのガードが噛み合って
+  重複実装を強制する状態になっていた。**対応**: core
+  （`src/platform.rs`）に判定本体`WarmupImeOn::would_send(applied,
+  belief_open) -> bool`を切り出し、`from_applied_or_belief`と
+  `resolve_warmup_ime_on`の両方がこれを呼ぶ形にSSOTを統一。呼び出し
+  件数固定テストは`would_send(`ではなく`from_applied_or_belief(`を
+  数えるため、既存のガードは無改造のまま両立する。等価性を
+  固定する回帰テスト（`would_send_matches_from_applied_or_belief_for_all_combinations`）
+  も追加した。
+- **N3（中）**: 新設したガードテスト用の括弧バランスパーサ
+  （`extract_call_arg_lists`）が行コメント（`//`/`///`/`//!`）を
+  除外していなかったため、doc コメント中のコード例引用等で
+  「本番コードでの迂回」を誤検知する余地があった。**対応**:
+  既存の`non_comment_lines`ヘルパーをパーサ内部で適用するよう修正。
+- **N4（中）**: 同パーサが対応する閉じ括弧を見つけられなかった場合
+  （構文的に不完全な部分一致等）に`args_end`を`args_start`のまま
+  扱っており、後続の走査がマルチバイト文字（日本語コメントで
+  頻出）の途中バイトを指してpanicする潜在バグがあった。**対応**:
+  `args_end`を`Option`にし、見つからなければその出現を明示的に
+  スキップするよう修正。
+- **N5（軽微）**: パーサのdocが「トップレベルの`,`で分割」と
+  主張していたが、実装は深さを終端検出にしか使わずカンマ分割は
+  全カンマで行っていた（ネストした関数呼び出し内のカンマで誤分割
+  しうる、現状の唯一の呼び出し元では実害ゼロ）。**対応**: 分割自体も
+  深さカウントを尊重するよう実装をdocに合わせて修正。
+- **N6（軽微）**: `origin`を`&'static str`で9箇所に手配りしていた
+  ため、タイポや将来の新規呼び出し元での誤ラベルを型で防げず、
+  この Phase の成果物（次回実機報告の内訳確定）を直接損なう種類の
+  ミスになりうると指摘された。**対応**: `output::WarmupOrigin`
+  enum（`Gated`/`Actuated`/`Off`、`Display`実装）を新設し、
+  `&'static str`を置き換えた。`WarmupImeOn`型自体には触れていない。
+- **N7（軽微）**: `send_eager_tsf_warmup`のdocが`origin`の`# origin`
+  節で`"gated"`/`"actuated"`の2値しか説明しておらず`"off"`
+  （`vk_send.rs`が渡す）が抜けていた。**対応**: `WarmupOrigin`
+  enum自体のdocに3値すべてを明記し、`send_eager_tsf_warmup`側の
+  docはそちらへの参照に整理。
+
+round 2の全指摘に対応した本コミットを同レビューエージェントへ再送し、
+収束確認中。全チェック（`architecture_guard`/`layer_boundary_guard`/
+`golden_scenarios`/`intent_store_effective_open`/
+`warmup_gate_focus_scope`計109件、core `cargo test --lib`978件）は
+pass。
 
 ## 次のアクション
 

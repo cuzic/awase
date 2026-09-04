@@ -13603,3 +13603,28 @@ B3は現状維持でよい。B4は優先度低。
 
 全チェック再実行（`architecture_guard`単体66件、guard/golden/新規
 テスト計109件）でall pass確認済み。
+
+**同レビューエージェントへの再確認（round 2）で、#3の修正自体が
+新たな欠陥を持ち込んでいたことが判明、追加修正済み。** 詳細は
+ADR-132「Phase 2」節「round 2レビュー」参照。要点:
+
+- **N1**: `[warmup-gate]`ログのdedup episode境界が
+  `off_drift_active && would_have_sent_without_gate`のANDだった
+  ため、OFF方向drift検出中に`applied`がdrift correction/force-ON
+  間でping-pongするBUG-110本来のシナリオで「抑止開始/終了」が
+  フラップし、ゲートが閉じたままなのに「抑止終了」が誤って出る
+  バグがあった（#2で直したのと同種の「診断ログが診断を誤らせる」
+  問題の再発）。episode境界を`off_drift_active`単独に戻して修正。
+- **N2**: N1の判定（`applied_open.unwrap_or(effective)`）が
+  `from_applied_or_belief`のロジック重複実装になっており、しかも
+  正攻法（`from_applied_or_belief(...).is_on()`の呼び出し）は
+  同コミットで追加したガードテストが禁止していた。core側に
+  `WarmupImeOn::would_send`をSSOTとして切り出し両者から呼ぶ形に
+  修正、等価性の回帰テストも追加。
+- **N3・N4**: ガードテスト用パーサがコメント行を除外しておらず
+  誤検知の余地、かつ閉じ括弧が見つからない場合に非UTF-8境界で
+  panicする潜在バグがあった。修正済み。
+- **N6**: `origin`引数が`&'static str`でタイポ耐性が無かったため
+  `output::WarmupOrigin` enumに変更。
+
+全チェック再々実行（`cargo test --lib`978件含む）でall pass確認済み。
