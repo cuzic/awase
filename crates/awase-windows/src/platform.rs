@@ -1015,6 +1015,21 @@ impl WindowsPlatform {
     /// `output.send_keys()`/`output.flush_raw_tsf_literal_recovery()` だけ呼ぶと、
     /// バッファされた `Response` が次にこの関数が呼ばれるまで滞留し続ける。
     fn drain_output_post_send_effects(&mut self) {
+        // ADR-128: drain-before-send（`output/vk_send.rs`）が実際に flush した
+        // 件数を journal 化する。`JournalStamper::stamp` は push 時に
+        // seq/elapsed_ms を採番するため、ここ（全送信直後、`drain_journal_entries`
+        // より前）で変換しないと「flush が resend より前に発火した」ことを
+        // journal 上で示せず、`GjiReinitRetryCompleted` 等の後続entryより
+        // 後ろの seq になってしまう（round: 実装後コードレビュー指摘）。
+        for vk_count in self.output.take_pending_drain_before_send_flushes() {
+            let facts = crate::journal_policy::DeferredRecoveryFlushFacts::Flushed { vk_count };
+            if crate::journal_policy::deferred_recovery_flush_is_notable(facts) {
+                self.push_journal_entry(crate::journal::JournalEntry::DeferredRecoveryFlush {
+                    trigger: "drain_before_send",
+                    outcome: crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count },
+                });
+            }
+        }
         // KeyInput shadow routing: LongIdle タイマーリセット等を処理する。
         // Vec で取り出すのは、1回の送信で複数文字を送る際に全 Response（StartProbe 含む）を
         // 保存するため。Option だと後の文字が前の StartProbe Response を上書きしてしまう。

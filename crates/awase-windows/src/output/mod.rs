@@ -298,6 +298,25 @@ pub struct Output {
     /// H-4-b: vk_send.rs Chrome cold パスが `StartTsfProbe` を積み、
     /// drain_runtime_requests が TIMER_TSF_PROBE を起動する。
     pub(crate) runtime_outbox: std::cell::RefCell<crate::runtime::outbox::RuntimeOutbox>,
+    /// ADR-128: drain-before-send が実際に flush した件数を Platform へ渡す
+    /// ための一時バッファ。
+    ///
+    /// `output`/`tsf` の本番コードは `crate::journal` を直接参照してはならない
+    /// （`JournalEntry` への変換は platform.rs に一元化する、
+    /// `tests/architecture_guard.rs::
+    /// output_and_tsf_production_code_do_not_reference_journal_directly`）。
+    /// そのため `drain_pending_deferred_before_send_if_queue_only` は
+    /// `JournalEntry` そのものではなく生の `vk_count` だけをここに積み、
+    /// `WindowsPlatform::drain_output_post_send_effects`（全送信直後に呼ばれる、
+    /// `push_journal_entry` の seq/elapsed_ms が「flush 時刻」に近い値になる
+    /// 唯一の場所）が `JournalEntry::DeferredRecoveryFlush { trigger:
+    /// "drain_before_send", .. }` へ変換する（`tsf::literal_facts::
+    /// LiteralDetectRecord` を platform.rs 側で `JournalEntry::LiteralDetect`
+    /// に包むのと型付けは同じパターンだが、変換タイミングは「発生直後」に
+    /// 揃えている点が異なる——`drain_journal_entries` まで遅延させると、
+    /// この計装の目的である「drain が resend より前に発火したことを示す」
+    /// こと自体が journal 上で逆順になる、コードレビュー指摘）。
+    pending_drain_before_send_flushes: std::cell::RefCell<Vec<usize>>,
 }
 
 impl std::fmt::Debug for Output {
@@ -404,6 +423,7 @@ impl Output {
             next_gji_reinit_retry_token: std::cell::Cell::new(1),
             gji_reinit_retry_tombstone: std::cell::RefCell::new(None),
             runtime_outbox: std::cell::RefCell::new(crate::runtime::outbox::RuntimeOutbox::new()),
+            pending_drain_before_send_flushes: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -413,6 +433,14 @@ impl Output {
     /// 各リクエストを実行する。H-4-b で push 側が配線されるまでは常に空を返す。
     pub(crate) fn take_pending_requests(&self) -> Vec<crate::runtime::outbox::RuntimeRequest> {
         self.runtime_outbox.borrow_mut().drain()
+    }
+
+    /// ADR-128: drain-before-send が実際に flush した回数分の `vk_count` を
+    /// Platform へ引き渡す（`JournalEntry` への変換は呼び出し元が行う——
+    /// `output`/`tsf` は `crate::journal` を直接参照しない、上記フィールド
+    /// doc 参照）。
+    pub(crate) fn take_pending_drain_before_send_flushes(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.pending_drain_before_send_flushes.borrow_mut())
     }
 
     pub(crate) fn current_ime_mode_focus_gen(&self) -> u32 {
