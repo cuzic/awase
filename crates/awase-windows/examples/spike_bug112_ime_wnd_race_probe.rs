@@ -167,10 +167,7 @@ mod probe {
             .get(1)
             .cloned()
             .unwrap_or_else(|| "target/release/awase-settings.exe".to_string());
-        let iterations: usize = args
-            .get(2)
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(10);
+        let iterations: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
 
         // SAFETY: 引数なし、常に安全。自プロセスの pid をログに残すだけ
         //         （EnumWindows が自分自身のウィンドウを誤って拾わないことの
