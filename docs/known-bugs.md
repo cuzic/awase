@@ -13122,3 +13122,35 @@ src/state/ime_model.rs`、`crates/awase-windows/src/state/intent_store.rs`、
 BUG-19（conv推論での`desired_open`書き換えがエンジン誤復帰を招いた
 先例）、BUG-68（IMM32 NATIVEビットが`VK_IME_OFF`で閉じても消えない）、
 ADR-121（no-op側の欠落、対をなす）、ADR-128（本件の設計ADR）。
+
+**追補3（2026-09-04、3件目の実機再現・Phase 1修正後の初発火確認・新しい
+フィードバックループの発見）:** 不具合報告`01M1NA7WYH1HCYAFWGA3F95AVY`
+（`01M1N9HZA87MQSWYYKHGK7QXNA`と同一プロセスの2回目のdump、
+`docs/bug-reports-triage.md`該当行に詳細）。
+
+journalに`DriftGiveUpDiagnostic`が1件記録され（`drift_duration_ms:
+24834`）、**追補2の修正（duration基準のBlind/Read共通トリガー）が実機で
+正しく動作することを確認できた。** 直前には`DriftGiveUpIntervalEnded`
+（`reason: FocusChanged`、`elapsed_ms: 365422`）もあり、**約6分5秒**と
+いう、これまでで最長の乖離継続時間が記録された。
+
+新たに判明した重要な事実——**ユーザーの手動修正とawaseの自動修正が
+競合するフィードバックループの疑い:** 症状発生区間（約20秒間）の
+`HookImeModeDiagnostic`を見ると、`vk=243/244`（半角/全角、scan=0x29）と
+`vk=242/240`（かな/英数、scan=0x70）という複数のIME切替系物理キーが
+交互に高速反復している一方、`vk=26`（`VK_IME_OFF`）と`vk=22`
+（`VK_KANJI`）が`self_injected=true`で同時に反復記録されていた。
+`config.toml`では`keys.ime_toggle`はコメントアウトで無効なので、
+この`VK_KANJI`送信はユーザー設定由来ではなく**awase内部の
+KanjiToggleフォールバック戦略**由来と判断できる。すなわち、症状に
+気づいたユーザーが複数のIME切替キーを連打して自力回復を試みる一方、
+awase自身もdrift correction（GjiDirect、VK_IME_OFF）と
+KanjiToggleフォールバック（VK_KANJI）を同時多発的に試みており、
+**両者が互いの操作を新たな`PhysicalImeKey`意図として誤検出し合い、
+乖離をさらに長引かせた**可能性が高い。これはADR-128の4ラウンド討論
+（A/B/B'/候補1-v2）のいずれでも想定していなかった相互作用であり、
+Phase 2検討時の重要な追加論点になる。
+
+`journal`は`DumpTruncated`（total_entries=2123、emitted=1004、
+dropped_key_input=418）のため、「＠」を直接出力した打鍵そのものは
+特定できなかった。
