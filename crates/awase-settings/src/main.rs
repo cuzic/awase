@@ -2182,6 +2182,23 @@ impl SettingsApp {
                             left_thumb_vk,
                             right_thumb_vk,
                         );
+                        if to_main.is_empty() {
+                            // 「＋」で追加した直後、まだ何も選んでいないステップ。
+                            // 未選択のまま気付かず保存すると、バックエンドの
+                            // KeymapTable::new がこのルール全体を無言で
+                            // skip する（'to' パース失敗 → continue 'rules）
+                            // ため、GUI 側でも見える形で警告する
+                            // （code-review指摘）。
+                            ui.colored_label(
+                                egui::Color32::from_rgb(200, 120, 0),
+                                "⚠未選択",
+                            )
+                            .on_hover_text(
+                                "このステップが未選択のまま保存すると、\
+                                 ルール全体が無効になります（バックエンドが\
+                                 警告ログを出して丸ごとスキップします）。",
+                            );
+                        }
                         capture_button(ui, &mut capturing, CaptureTarget::ExistingTo(i, step_i));
                         if ui
                             .small_button("x")

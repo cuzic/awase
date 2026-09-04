@@ -133,9 +133,15 @@ pub(crate) unsafe fn send_keymap_target(
 
     let sent = crate::win32::send_input_safe(&inputs);
     if sent as usize != inputs.len() {
+        // 複数ステップの場合、先頭だけ報告すると実際に欠落したステップが
+        // どれか診断できない（code-review指摘）。列全体を出す。
+        let target_vks_hex: Vec<String> = target_vks
+            .iter()
+            .map(|vk| format!("0x{:02X}", vk.0))
+            .collect();
         log::warn!(
-            "[keymap] SendInput(target_vk=0x{:02X}) sent {sent}/{} events",
-            target_vks.first().map_or(0, |vk| vk.0),
+            "[keymap] SendInput(target_vks=[{}]) sent {sent}/{} events",
+            target_vks_hex.join(", "),
             inputs.len()
         );
     }
