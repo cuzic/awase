@@ -119,6 +119,8 @@ impl Runtime {
             // 手段が engine 無効化時のみで、フォーカス変更後に警告が固着したまま
             // 二度と晴れないケースがあった）。
             self.kana_lock_hysteresis = KanaLockHysteresis::new();
+            self.drift_giveup_notified_this_focus = false;
+            self.drift_giveup_started_at = None;
             self.platform.tray.set_kana_lock_warned(false);
         }
 
@@ -498,7 +500,10 @@ impl Runtime {
         // （`applied ?? belief`）を使う。決定1-a により TsfNative では `applied`
         // が `Unknown` のまま残るため、生値のままだと `unwrap_or(false)` で
         // warmup が握り潰され BUG-02 のリテラル化が再燃する。
-        let warmup_ime_on = self.platform_state.ime.warmup_ime_on();
+        let warmup_ime_on = self
+            .platform_state
+            .ime
+            .warmup_ime_on(std::time::Instant::now());
         // 旧 eisu_guard（tray で英数／カタカナ等に切り替えた直後の conv を読み、英数なら
         // warmup をスキップする防御）は 2026-08-20、BUG-34 横展開の一環として撤去した。
         //
@@ -608,6 +613,8 @@ impl Runtime {
                 actuation.origin,
             )
         };
+
+        self.ir_notify_drift_giveup_diagnostic(desired, observed, duration_ms, now);
 
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
@@ -821,6 +828,79 @@ impl Runtime {
         if let Some(actuation) = self.active_actuation.as_mut() {
             actuation.advance_epoch();
         }
+    }
+
+    /// `ir_apply_drift_correction` から切り出したユーザー向け診断通知
+    /// （clippy `cognitive_complexity` 対策、敵対的コードレビュー由来の
+    /// CI失敗を受けた純粋なリファクタ——挙動は変更しない）。
+    ///
+    /// ADR-132 Phase 1 follow-up: the user-facing diagnostic must be based on how long
+    /// the drift has persisted, not on `FeedbackPolicy::Blind` reaching `GiveUp`.
+    /// `FeedbackPolicy::Read` intentionally never gives up by attempts, so tying this
+    /// notification to `GiveUp` leaves read-back capable apps silent during long drift.
+    ///
+    /// Reuse the already-measured drift-correction wait constant instead of adding a new
+    /// tuning number: this is the same "how long should drift correction wait before
+    /// escalating" context as Blind re-arm, and avoids introducing an unmeasured magic
+    /// number under `.claude/rules/tuning-constants.md`.
+    fn ir_notify_drift_giveup_diagnostic(
+        &mut self,
+        desired: bool,
+        observed: bool,
+        duration_ms: u64,
+        now: std::time::Instant,
+    ) {
+        if duration_ms < crate::tuning::DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS
+            || self.drift_giveup_notified_this_focus
+        {
+            return;
+        }
+        self.show_tray_balloon(
+            "awase",
+            "このアプリではIME状態を確認できません。\n入力に違和感があれば、該当のIME切替キーをもう一度押してください。",
+        );
+        self.drift_giveup_notified_this_focus = true;
+        self.drift_giveup_started_at = Some(now);
+
+        let trusted = self
+            .platform_state
+            .ime
+            .model()
+            .observations
+            .most_recent_trusted(now);
+        let sent_vk = vec![crate::journal::ImeVkDiagnostic {
+            vk_code: if desired {
+                crate::vk::VK_IME_ON.0
+            } else {
+                crate::vk::VK_IME_OFF.0
+            },
+            kind: if desired { "VK_IME_ON" } else { "VK_IME_OFF" },
+            source: "drift-correction-duration-giveup",
+        }];
+        self.platform_state.ime.journal.record(
+            crate::journal::JournalEntry::DriftGiveUpDiagnostic {
+                record: crate::journal::DriftGiveUpDiagnosticRecord {
+                    desired_open: desired,
+                    observed_open: observed,
+                    drift_duration_ms: duration_ms,
+                    observation_source: trusted.map(|o| o.source),
+                    observation_confidence: trusted.map(|o| o.confidence),
+                    sent_vk,
+                    intent_source: self
+                        .platform_state
+                        .ime
+                        .model()
+                        .last_intent
+                        .as_ref()
+                        .map(|intent| intent.source),
+                    layout_name: self.platform.tray.current_layout_name().to_string(),
+                    half_width_alnum_toggle_active: self
+                        .platform_state
+                        .gate
+                        .half_width_alnum_toggle_active,
+                },
+            },
+        );
     }
 
     // ── Engine 通知 ──

@@ -197,17 +197,95 @@ impl WarmupImeOn {
         Self(open)
     }
 
+    /// `applied ?? belief` の判定本体（`Self::from_applied_or_belief` と
+    /// `resolve_warmup_ime_on` の「ゲート無しなら送っていたはずか」判定が
+    /// 共有する SSOT）。
+    ///
+    /// # なぜ独立した関数として切り出すか（敵対的コードレビュー N2 指摘）
+    ///
+    /// BUG-110/ADR-132 Phase 2 実装時、`state/platform_state.rs::
+    /// resolve_warmup_ime_on` が同じ判定を `applied_open.unwrap_or(effective)`
+    /// として素の `Option::unwrap_or` で再実装していた——「別々の場所が同じ
+    /// 状態を別々に解決する」という BUG-110 自体が問題にしている構造の
+    /// ミニチュアを、その解消を目的とする関数の中に持ち込んでいたことになる。
+    /// `Self::from_applied_or_belief(applied, belief_open).is_on()` を呼べば
+    /// 済むはずが、`architecture_guard.rs` の呼び出し件数固定テスト
+    /// （`from_applied_or_belief(` は `from_applied_or_belief_unless_off_drift`
+    /// 内部の1箇所限定）に抵触するため、正攻法が塞がれていた。この関数を
+    /// 両者から呼ぶことで SSOT を1箇所に戻す。
+    #[must_use]
+    pub const fn would_send(applied: Option<bool>, belief_open: bool) -> bool {
+        match applied {
+            Some(open) => open,
+            None => belief_open,
+        }
+    }
+
     /// `applied` があればそれを、`Unknown` のときだけ belief を使う（`applied ?? belief`）。
     ///
     /// 「belief にフォールバックする」ことを明示的に許すのはこのコンストラクタ
     /// だけであり、それも `applied` が既知の間は決して belief を優先しない
-    /// （単調性: `applied` が `Some` の間は今日と同じ値を返す）。
+    /// （単調性: `applied` が `Some` の間は今日と同じ値を返す。**例外は
+    /// [`Self::from_applied_or_belief_unless_off_drift`] が課す OFF 方向
+    /// drift correction 検出中で、このとき `applied` は複数の未収束な
+    /// 書き手に ping-pong されており「単調な事実」という前提自体が
+    /// 成立していない**——ADR-132 INV-B1'）。
     #[must_use]
     pub const fn from_applied_or_belief(applied: Option<bool>, belief_open: bool) -> Self {
-        match applied {
-            Some(open) => Self(open),
-            None => Self(belief_open),
+        Self(Self::would_send(applied, belief_open))
+    }
+
+    /// [`Self::from_applied_or_belief`] に「OFF 方向の drift correction が
+    /// いま検出中なら warmup を送らない」ゲートを重ねる（BUG-110/ADR-132 Phase 2）。
+    ///
+    /// `off_drift_active`: 呼び出し元が観測した「いま OFF 方向の drift
+    /// （`desired=false, observed=true`）が検出されている」という**外部事実**。
+    /// belief の一種ではない。**ただし「drift correction が実際に
+    /// `VK_IME_OFF` を送り続けている」ことまでは保証しない**——判定式
+    /// （`check_drift_correction`）はdrift correction本体
+    /// （`ir_apply_drift_correction`）が実際に送信するかの追加条件
+    /// （`is_user_enabled`/`is_japanese_ime`/settle待ち/`FeedbackPolicy::
+    /// Blind`のGiveUp状態）を共有していない。敵対的コードレビュー指摘、
+    /// 詳細はADR-132「Phase 2」節「実装後レビューでの指摘と対応」参照。
+    ///
+    /// warmup が送る `VK_IME_ON`（ADR-100 決定2）は open 軸の実 actuation
+    /// でもあるため、OFF 方向 drift correction と同時に送ると逆方向の
+    /// 書き込みが競合する（BUG-110 で実際に `VK_IME_ON` 92 件・`VK_IME_OFF`
+    /// 32 件が競合し、乖離継続 6 分 5 秒を記録した）。このゲートにより
+    /// **INV-B1': このコンストラクタ経由で構築された `WarmupImeOn` を
+    /// `send_eager_tsf_warmup` が `VK_IME_ON` として送信する瞬間、OFF 方向の
+    /// drift correction は検出されていない**が成り立つ。
+    ///
+    /// # スコープの限界（敵対的コードレビュー指摘）
+    ///
+    /// この不変条件は `WarmupImeOn` の**全ての**構築経路には及ばない。
+    /// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
+    /// actuation 直後の随伴 warmup、force-ON が `SetOpen(true)` を適用した
+    /// 直後にも通る）はこのゲートを経由しない、意図的な別経路として残る
+    /// （ADR-132「Phase 2」節「実装上の既知の限界」参照）。区別が必要な
+    /// 診断では `send_eager_tsf_warmup` の `origin` 引数（`"gated"`/
+    /// `"actuated"`）を見ること。
+    ///
+    /// `off_drift_active == false` のとき、戻り値は [`Self::from_applied_or_belief`]
+    /// と bit-identical（`architecture_guard` の呼び出し件数固定テストと
+    /// 組み合わせ、warmup が今日より多く送られる経路が生まれないことを保証する）。
+    ///
+    /// `applied` の両枝（`Some`/`None`）にゲートが掛かる点が
+    /// [`Self::from_applied_or_belief`] の単調性と異なる。これは意図的:
+    /// OFF 方向 drift 検出中は `applied` 自体が drift correction
+    /// （`Confirmed{open:false}`）と force-ON（`Confirmed{open:true}`）の
+    /// 両方に交互に書かれて ping-pong しており、`applied` を「単調な事実」
+    /// として扱う前提そのものが崩れているため。
+    #[must_use]
+    pub const fn from_applied_or_belief_unless_off_drift(
+        applied: Option<bool>,
+        belief_open: bool,
+        off_drift_active: bool,
+    ) -> Self {
+        if off_drift_active {
+            return Self(false);
         }
+        Self::from_applied_or_belief(applied, belief_open)
     }
 
     /// 「IME 状態不明・warmup しない」。
@@ -435,6 +513,92 @@ mod tests {
         assert!(FakeImeDetector(ImeMode::Hiragana).is_active());
         assert!(FakeImeDetector(ImeMode::Katakana).is_active());
         assert!(FakeImeDetector(ImeMode::HalfKatakana).is_active());
+    }
+
+    // ── WarmupImeOn::from_applied_or_belief_unless_off_drift（BUG-110/ADR-132 Phase 2, T1）──
+    //
+    // 12通り全数（applied 3値 × belief_open 2値 × off_drift_active 2値）を固定する。
+    // off_drift_active=false の6通りは from_applied_or_belief と bit-identical
+    // であること（＝今日より warmup が多く送られる経路が生まれないこと）と、
+    // off_drift_active=true の6通りはすべて !is_on() であること（INV-B1'）を検証する。
+
+    #[test]
+    fn warmup_gate_off_drift_inactive_matches_ungated_for_all_combinations() {
+        for applied in [None, Some(false), Some(true)] {
+            for belief_open in [false, true] {
+                let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(
+                    applied,
+                    belief_open,
+                    false,
+                );
+                let ungated = WarmupImeOn::from_applied_or_belief(applied, belief_open);
+                assert_eq!(
+                    gated, ungated,
+                    "off_drift_active=false は from_applied_or_belief と \
+                     bit-identical でなければならない (applied={applied:?}, \
+                     belief_open={belief_open})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_gate_off_drift_active_always_suppresses() {
+        for applied in [None, Some(false), Some(true)] {
+            for belief_open in [false, true] {
+                let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(
+                    applied,
+                    belief_open,
+                    true,
+                );
+                assert!(
+                    !gated.is_on(),
+                    "off_drift_active=true は無条件で warmup を抑止する \
+                     (INV-B1', applied={applied:?}, belief_open={belief_open})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn would_send_matches_from_applied_or_belief_for_all_combinations() {
+        // N2指摘（敵対的コードレビュー）: `would_send`は`from_applied_or_belief`
+        // と同じ判定のSSOTであり、呼び出し元（`resolve_warmup_ime_on`）が
+        // 独自に`Option::unwrap_or`等で再実装しないための共有関数。両者が
+        // 恒久的に一致し続けることをここで固定する。
+        for applied in [None, Some(false), Some(true)] {
+            for belief_open in [false, true] {
+                assert_eq!(
+                    WarmupImeOn::would_send(applied, belief_open),
+                    WarmupImeOn::from_applied_or_belief(applied, belief_open).is_on(),
+                    "applied={applied:?}, belief_open={belief_open}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn warmup_gate_blocks_bug110_window() {
+        // BUG-110 の競合窓: applied=Unknown(TsfNative FocusChange直後)、
+        // effective_open()=true（conv由来の誤った観測）、OFF方向drift検出中。
+        let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(None, true, true);
+        assert!(!gated.is_on());
+    }
+
+    #[test]
+    fn warmup_gate_preserves_cold_start_warmup_when_no_drift() {
+        // BUG-02 再燃防止: drift が検出されていなければ、今日と同じく warmup する。
+        let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(None, true, false);
+        assert!(gated.is_on());
+    }
+
+    #[test]
+    fn warmup_gate_overrides_applied_confirmed_true_when_off_drift_active() {
+        // applied=Some(true)（force-ON が直前に Confirmed{open:true} を書いた）でも、
+        // OFF方向drift検出中なら抑止する——ping-pong中のappliedを単調な事実として
+        // 扱わない、という設計判断（from_applied_or_belief の単調性の意図的な例外）。
+        let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(Some(true), true, true);
+        assert!(!gated.is_on());
     }
 
     #[test]

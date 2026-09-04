@@ -297,8 +297,12 @@ impl WindowsPlatform {
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
     /// `warmup_ime_on` を指定して eager warmup を送信する（ADR-098 決定1-b）。
+    ///
+    /// 唯一の呼び出し元（`ime_refresh.rs` の FocusChange 処理）は
+    /// `warmup_ime_on()`（BUG-110ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn send_eager_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
-        self.output.send_eager_tsf_warmup(warmup_ime_on);
+        self.output
+            .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
     }
 
     /// conv mode 制御権限を更新する (H-3-e)。
@@ -625,6 +629,7 @@ impl WindowsPlatform {
             std::convert::Infallible,
         >,
         warmup_ime_on: awase::platform::WarmupImeOn,
+        origin: crate::output::WarmupOrigin,
     ) -> bool {
         use crate::tsf::composition_fsm::CompositionAction;
         let mut consume_f2 = false;
@@ -634,7 +639,7 @@ impl WindowsPlatform {
                     log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
                     // conv mutation の可否は Output::send_eager_tsf_warmup が
                     // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
-                    self.output.send_eager_tsf_warmup(warmup_ime_on);
+                    self.output.send_eager_tsf_warmup(warmup_ime_on, origin);
                 }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
@@ -659,10 +664,11 @@ impl WindowsPlatform {
         &mut self,
         event: crate::tsf::composition_fsm::CompositionEvent,
         warmup_ime_on: awase::platform::WarmupImeOn,
+        origin: crate::output::WarmupOrigin,
     ) -> bool {
         use timed_fsm::TimedStateMachine;
         let response = self.composition_fsm.on_event(event);
-        let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on);
+        let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on, origin);
         log::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
@@ -671,6 +677,9 @@ impl WindowsPlatform {
     }
 
     /// confirm キー KeyUp を `CompositionFsm` に通知し、保留 warmup があれば送信する。
+    ///
+    /// 唯一の呼び出し元（executor の `try_pending_warmup_on_keyup`）は
+    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn composition_confirm_key_up(
         &mut self,
         vk: awase::types::VkCode,
@@ -679,20 +688,28 @@ impl WindowsPlatform {
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::ConfirmKeyUp { vk },
             warmup_ime_on,
+            crate::output::WarmupOrigin::Gated,
         );
     }
 
     /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
+    ///
+    /// 唯一の呼び出し元（executor の `handle_ctrl_up_recovery`）は
+    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn composition_ctrl_up(&mut self, warmup_ime_on: awase::platform::WarmupImeOn) {
         let warm = self.output.is_composition_warm();
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
             warmup_ime_on,
+            crate::output::WarmupOrigin::Gated,
         );
     }
 
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
+    ///
+    /// 唯一の呼び出し元（`key_pipeline.rs` の物理 F2 down 処理）は
+    /// `warmup_ime_on()` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn composition_native_f2_down(
         &mut self,
         warmup_ime_on: awase::platform::WarmupImeOn,
@@ -702,6 +719,7 @@ impl WindowsPlatform {
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
             warmup_ime_on,
+            crate::output::WarmupOrigin::Gated,
         )
     }
 
@@ -719,6 +737,7 @@ impl WindowsPlatform {
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::FocusChange { tsf_mode },
             awase::platform::WarmupImeOn::off(),
+            crate::output::WarmupOrigin::Off,
         );
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let state_before = self.gji_state_label();
@@ -1383,8 +1402,22 @@ impl TsfComposition for WindowsPlatform {
         } else {
             crate::tsf::composition_fsm::CompositionEvent::ImeOff
         };
+        // BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘: この `warmup_ime_on` は
+        // `from_actuated`（実 actuation 直後の確定値）由来であり、`resolve_warmup_ime_on`
+        // が課す `off_drift_active` ゲートを通らない——force-ON
+        // （`apply_force_on_for_imm_broken`）が `SetOpen(true)` を適用した直後にも
+        // ここを通るため、drift correction が OFF 方向へ送り続けている最中でも
+        // 随伴 warmup（`VK_IME_ON`）が飛びうる。INV-B1'（`send_eager_tsf_warmup` が
+        // `VK_IME_ON` を送信する瞬間 OFF 方向 drift は検出されていない）は
+        // **この経路には及ばない**、既知の限界（ADR-132「Phase 2」節参照）。
+        // `origin=WarmupOrigin::Actuated` を付け、次回実機報告でゲート対象（Gated）の
+        // warmup と区別できるようにする。
         let warmup_ime_on = awase::platform::WarmupImeOn::from_actuated(effective);
-        self.feed_composition_event(comp_event, warmup_ime_on);
+        self.feed_composition_event(
+            comp_event,
+            warmup_ime_on,
+            crate::output::WarmupOrigin::Actuated,
+        );
         if open {
             log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
@@ -1392,7 +1425,8 @@ impl TsfComposition for WindowsPlatform {
             // `injection_mode` は receipt にも settle の引数にも積まない。
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);
-            self.output.send_eager_tsf_warmup(warmup_ime_on);
+            self.output
+                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
         } else {
             log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
@@ -1418,15 +1452,21 @@ impl TsfComposition for WindowsPlatform {
         if is_keydown && vk.is_composition_confirm_key() {
             let tsf_mode = self.output.is_tsf_mode();
             let warm = self.output.is_composition_warm();
+            // 呼び出し元（executor の `handle_confirm_key_passthrough`）は
+            // `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡す。
             self.feed_composition_event(
                 CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
                 warmup_ime_on,
+                crate::output::WarmupOrigin::Gated,
             );
             return self.composition_fsm.pending_warmup_vk() == Some(vk);
         }
         false
     }
 
+    /// 呼び出し元（executor の `handle_reinject`）は `resolve_warmup_ime_on` 経由
+    /// （ゲート適用済み）を渡すため、以下2箇所の `send_eager_tsf_warmup` は
+    /// いずれも `origin=WarmupOrigin::Gated` 固定。
     fn on_reinject_key(
         &mut self,
         vk: awase::types::VkCode,
@@ -1443,7 +1483,8 @@ impl TsfComposition for WindowsPlatform {
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
             // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output.send_eager_tsf_warmup(warmup_ime_on);
+            self.output
+                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
             return;
         }
 
@@ -1464,7 +1505,8 @@ impl TsfComposition for WindowsPlatform {
                 .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
             self.gji_on_composition_reset();
             // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output.send_eager_tsf_warmup(warmup_ime_on);
+            self.output
+                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
         }
     }
 }

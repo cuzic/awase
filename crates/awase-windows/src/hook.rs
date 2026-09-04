@@ -1,6 +1,8 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -23,6 +25,10 @@ const LLKHF_INJECTED: u32 = 0x10;
 /// 両方を防御的にマッチしているのはこのため）。汎用形で届いた場合、この拡張キー
 /// フラグで Left/Right を判別する（Right Alt/Right Ctrl は拡張キー、Left 側は非拡張）。
 const LLKHF_EXTENDED: u32 = 0x01;
+const HOOK_IME_MODE_DIAGNOSTIC_CAP: usize = 64;
+static HOOK_IME_MODE_DIAGNOSTICS: Mutex<VecDeque<crate::journal::HookImeModeDiagnosticRecord>> =
+    Mutex::new(VecDeque::new());
+static LAST_IME_MODE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
 use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
@@ -795,6 +801,24 @@ const fn is_self_injected(extra_info: usize) -> bool {
         || extra_info == crate::tsf::output::IME_KANJI_MARKER
 }
 
+fn push_hook_ime_mode_diagnostic(record: crate::journal::HookImeModeDiagnosticRecord) {
+    let Ok(mut queue) = HOOK_IME_MODE_DIAGNOSTICS.lock() else {
+        return;
+    };
+    if queue.len() >= HOOK_IME_MODE_DIAGNOSTIC_CAP {
+        queue.pop_front();
+    }
+    queue.push_back(record);
+}
+
+pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeModeDiagnosticRecord>
+{
+    let Ok(mut queue) = HOOK_IME_MODE_DIAGNOSTICS.lock() else {
+        return Vec::new();
+    };
+    queue.drain(..).collect()
+}
+
 /// WH_KEYBOARD_LL フックコールバック（専用フックスレッド上で動作）
 ///
 /// 全ての物理キーを消費し `PostThreadMessageW` でエンジンスレッドに転送する。
@@ -833,10 +857,21 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let ime_key_kind = crate::vk::ImeKeyKind::from_vk(vk);
     if ime_key_kind.is_some() {
         let dir = if is_keydown { "down" } else { "up" };
+        let now_ms = current_tick_ms();
+        let prev_ms = LAST_IME_MODE_HOOK_MS.swap(now_ms, Ordering::Relaxed);
         log::debug!(
             "[hook] IME-mode vk=0x{:02X} {dir} self_injected={self_injected} injected={is_injected} scan=0x{:X} extra=0x{:X}",
             vk.0, kb.scanCode, kb.dwExtraInfo,
         );
+        push_hook_ime_mode_diagnostic(crate::journal::HookImeModeDiagnosticRecord {
+            vk_code: vk.0,
+            is_down: is_keydown,
+            self_injected,
+            injected: is_injected,
+            scan: kb.scanCode,
+            since_prev_ime_mode_ms: (prev_ms != 0).then_some(now_ms.saturating_sub(prev_ms)),
+        });
+        crate::win32::post_to_main_thread_quiet(crate::WM_HOOK_IME_MODE_DIAGNOSTIC);
     }
 
     // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す

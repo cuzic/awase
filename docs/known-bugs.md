@@ -13250,3 +13250,387 @@ BUG-38（give-up 後の `pending_deferred` flush 漏れ、その同期点は本�
 一度も flush していない点で無関係）、BUG-75（`StaleConfirm` 回収の
 `escape_composition` 判定そのものの由来）、BUG-33 追補3・4（`VK_BACK` を
 避け `VK_ESCAPE` を使う設計の由来、backspace 案却下の根拠）。
+
+## BUG-110: 物理IMEキー1回の低確度な検出で、NICOLA変換エンジンがフォーカス変更まで無期限停止する
+
+**症状（不具合報告 `01M1MMK8987NT5B2W73PCPZNZ1`、2026-09-03）:** Windows
+Terminal + PowerShell（GJI、JIS配列）で入力中に余分な「＠」が出力される。
+
+**原因（journal/app_log突合で確定）:** 物理CapsLock位置（scan=0x3A、JIS
+配列では「英数」キーでもある）から届いた`vk=0xF0`（`VK_DBE_ALPHANUMERIC`）
+の`KeyDown`1回を`kp_stage_shadow_ime_toggle`
+（`crates/awase-windows/src/runtime/key_pipeline.rs`）が「物理IMEキーに
+よる意図的なIME OFF」と解釈し、`ImeModel::last_intent`
+（`crates/awase-windows/src/state/ime_model.rs`）へ即座に確定。しかし
+実際のGJI変換状態（`observed`）は`open=true`のまま変化せず、drift
+correctionが`VK_IME_OFF`を14回超反復しても収束しなかった。
+`last_intent`は`reduce()`の`FocusChanged`アーム1箇所でしかクリアされず
+TTLも持たないため、**ロックアウトの長さは無期限**（フォーカスが変わる
+まで）——今回は不具合報告ボタンを押した瞬間の`FocusChanged`まで約29秒。
+その間NICOLA変換エンジンが停止し続け、物理キーがJIS配列本来の文字
+（＠）のまま素通りしたのが直接の症状。詳細な因果分析・検討した根本
+修正案（4案、いずれも既存の防御(BUG-19/26/68/52・ADR-093/119/121)との
+衝突でOpus 2体4ラウンドの敵対的レビューにより不採用）は
+`docs/adr/132-uncorroborated-physical-ime-key-engine-lockout.md`参照。
+
+**対応（Phase 1のみ実装、根本修正は未着手）:** ロックアウト自体を解消・
+短縮する修正はいずれもBUG-19型の再発やdrift correctionとの二重
+actuation等の新たなblockerを踏むため、Phase 1として以下の2つのみを
+実装した（`desired_open`・`observed`・配送判断・actuationのいずれにも
+触れない）:
+
+- drift correctionのBlind GiveUp初到達時、1フォーカスにつき1回、
+  トレイバルーンで「このアプリではIME状態を確認できません」と中立に
+  通知する（`runtime/ime_refresh.rs`）。
+- 次の設計判断に必要な7項目（観測源・信頼度、送信VK、hookの
+  `[hook] IME-mode`診断、intentの種別、区間長・終了理由、使用中の
+  `.yab`、半角英数トグルの状態）をjournalへ構造化記録する
+  （`DriftGiveUpDiagnostic`/`HookImeModeDiagnostic`/
+  `DriftGiveUpIntervalEnded`、`crates/awase-windows/src/journal.rs`）。
+
+Phase 1のログが揃った時点で、根本原因がconv残骸（BUG-68型、実IMEは
+正しく閉じていた）かどうかを判定し、Phase 2（保留中の修正案の再検討）
+か、BUG-68の未解決部分への転進かを判断する。
+
+**追補1（2026-09-04、2件目の実機再現・Phase 1診断の実地検証）:**
+ユーザーが未マージのPhase 1ブランチを自前ビルドし検証したところ、
+不具合報告 `01M1N5RMQ0HGX60VNG37DXWR26` として同症状（PowerShell +
+GJI + JIS配列で「＠」大量出力）を再現した（`docs/bug-reports-triage.md`
+該当行に詳細）。journalに`HookImeModeDiagnostic`が180件記録されており、
+**Phase 1の診断ログが実機で正しく機能することを確認できた。**
+
+新たに判明した事実:
+- 発端のVK×scanは`vk=0xF3 scan=0x29`（半角、`VK_DBE_SBCSCHAR`）——
+  1件目の`vk=0xF0 scan=0x3A`（英数/CapsLock位置）とは異なる組み合わせ。
+  さらに`vk=0xF0/0xF2 scan=0x70`（かなキー位置）のペアも複数回観測され、
+  これはBUG-52（`transport.rs`のコメント、「IMEが既に目的の状態にある
+  時に押されると発生しうる」）が既に記録している既知の不安定源と一致した。
+  **「入口となるVK×scanは1つに固定されない」というADR-132 v3の再定義
+  （候補5=単発DBEキー恒久除外を不採用にした理由）を実データで裏付けた。**
+- `[drift] correction`ログに`for 341743ms`（約5分42秒）という、1件目の
+  29秒を大幅に上回る乖離継続時間が記録された。`FocusChange`（不具合報告
+  ダイアログへの遷移）でようやく`Engine activated`に戻っており、
+  「`last_intent`はFocusChangedでしか解除されず無期限に持続する」という
+  ADR-132 v4の因果モデルを追加のケースで裏付けた。
+- 一方、`DriftGiveUpDiagnostic`/`DriftGiveUpIntervalEnded`はこのログには
+  1件も記録されていなかった。原因を特定: journalの`ImeActuation`エントリ
+  を確認したところ、この乖離は`FeedbackPolicy::Blind`ではなく
+  **`FeedbackPolicy::Read`**（`ImmGetOpenStatus`、400msデッドライン）で
+  処理されており、同一の`Actuation`が`attempts=162`から`243`まで
+  330秒間`Send`を返し続けていた。`state/ime_actuation.rs::
+  decide_actuation_action`は`Read`の場合`attempts`に関わらず常に`Send`
+  を返す設計（`Blind`専用の`max_attempts`打ち切り＝`GiveUp`という概念が
+  `Read`には無い）ため、これは想定内の挙動であり、**Phase 1のトレイ
+  通知・診断ログが`GiveUp`到達だけをトリガーにしていたことの設計上の
+  穴**だったと判明した（`Blind`専用のTsfNativeプロファイルのはずが
+  なぜ`Read`が使われていたかは未解明、別途調査の価値がある論点として
+  残る）。
+
+  **追補2（2026-09-04、修正済み）:** トレイ通知と`DriftGiveUpDiagnostic`
+  記録のトリガーを、`FeedbackPolicy::Blind`の`GiveUp`到達ではなく、
+  乖離継続時間（`duration_ms >= DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`
+  、既存定数を再利用・新規タイミング定数の追加なし）ベースの、
+  `Blind`/`Read`共通の発火点に変更した（`runtime/ime_refresh.rs`の
+  `match act_policy`より前）。`desired_open`・`observed`・
+  `shadow_effect()`・`transport.rs::plan`・`IntentStore`・`last_intent`
+  のいずれも変更していない。`architecture_guard.rs`/
+  `layer_boundary_guard.rs`/`cargo test --lib`（coreクレート972件・
+  awase-windows561件）は全てpass。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`、
+`crates/awase-windows/src/runtime/key_pipeline.rs`、`crates/awase-windows/
+src/state/ime_model.rs`、`crates/awase-windows/src/state/intent_store.rs`、
+`crates/awase-windows/src/hook.rs`、`crates/awase-windows/src/journal.rs`。
+
+**関連:** BUG-15追補7（同じvk×scanの組み合わせの既知の不安定性）、
+BUG-19（conv推論での`desired_open`書き換えがエンジン誤復帰を招いた
+先例）、BUG-68（IMM32 NATIVEビットが`VK_IME_OFF`で閉じても消えない）、
+ADR-121（no-op側の欠落、対をなす）、ADR-132（本件の設計ADR）。
+
+**追補3（2026-09-04、3件目の実機再現・Phase 1修正後の初発火確認）:**
+不具合報告`01M1NA7WYH1HCYAFWGA3F95AVY`（`01M1N9HZA87MQSWYYKHGK7QXNA`と
+同一プロセスの2回目のdump、`docs/bug-reports-triage.md`該当行に詳細）。
+
+journalに`DriftGiveUpDiagnostic`が1件記録され（`drift_duration_ms:
+24834`）、**追補2の修正（duration基準のBlind/Read共通トリガー）が実機で
+正しく動作することを確認できた。** 直前には`DriftGiveUpIntervalEnded`
+（`reason: FocusChanged`、`elapsed_ms: 365422`）もあり、**約6分5秒**と
+いう、これまでで最長の乖離継続時間が記録された。
+
+**訂正（2回訂正が必要だった）:** 当初「ユーザーとawaseが競合する
+フィードバックループ」と記述し、続く再検証で`vk=22`を`VK_KANJI`と
+誤認して「KanjiToggleフォールバックが92回」と記述したが、**`vk=22`は
+`VK_KANJI`(0x19)ではなく`VK_IME_ON`(0x16)だった**（`vk.rs`で実値を
+確認）。KanjiToggleStrategyは無関係で、正しくは以下のとおり
+**drift correctionとは別の、もう1つの独立した自動修正機構が競合して
+いた**ことが根本原因だった。
+
+`HookImeModeDiagnostic`全件を`(vk, injected, self_injected)`で集計
+（推測ではなくWin32の`LLKHF_INJECTED`フラグ＋awase自身のマーカーに
+よる確定判定）:
+
+| vk | 内訳 | 件数 |
+|---|---|---|
+| `VK_IME_ON`(22) | 全件`injected=true/self_injected=true` | **92件** |
+| `VK_IME_OFF`(26) | 全件`injected=true/self_injected=true` | **32件** |
+| 半角(243)/全角(244)/かな(242)/英数(240) | 全件`injected=false/self_injected=false` | 合計30件 |
+
+journalの`ImeActuation`（drift correctionが記録する唯一のactuation
+journal）は本レポートの全31件が`target: false`のみで、`VK_IME_ON`側の
+送信は1件も記録されていない。すなわち**92件の`VK_IME_ON`送信は
+drift correctionが行ったものではない。**
+
+app_logを調べたところ、`[apply-ime] GJI direct: send 0x0016 (open=true)`
+に続けて`force-ON (ImmBrokenForceOn): apply_ime_open(true) → Applied`
+というログが見つかった。これは`runtime/mod.rs::apply_force_on_for_imm_broken`
+（`is_eligible_for_ime_force_on()` = `is_japanese_ime() &&
+effective_open()`が真の間、周期リフレッシュに相乗りして`VK_IME_ON`を
+再送し続ける、TsfNative/Imm32Unavailable向けの「nonaiyo問題対策」機構、
+ADR-086 INV-15が「生の周期タイマートリガー」として例外的に許容している
+経路）由来で、**drift correctionの`Actuation`状態管理を一切通らない、
+完全に別の書き込み経路**である。
+
+**根本原因（確定）:** `ir_check_drift_correction`が読む`desired`は
+`ImeModel::desired_open()`（生のbeliefフィールド）だが、
+`apply_force_on_for_imm_broken`が読む条件は`effective_open()`
+（`IntentStore`＋`derive_any()`を経た**導出値**）——**この2つは
+同じ「IMEを開きたいかどうか」を表しているはずなのに、別の関数・
+別の解決経路で独立に計算されており、乖離しうる。** 具体的には、
+`FocusChanged`が`last_intent`をクリアした直後は`effective_open()`が
+`derive_any()`（観測ベース）にフォールバックして`true`を返しうる一方、
+`desired_open()`（生フィールド）は次の明示書き込みまで`false`のまま
+残る。この窓で、**drift correction（`desired_open()=false`を根拠に
+`VK_IME_OFF`を送る）と`apply_force_on_for_imm_broken`
+（`effective_open()=true`を根拠に`VK_IME_ON`を送る）が、互いの存在に
+気づかないまま同じ実IMEへ矛盾した書き込みを競合して送り続ける**。
+これが92対32という大量かつ拮抗しない送信数、および6分を超える
+長時間化の実態と考えられる。ユーザーが観測した「＠kaうきka…」という
+混沌とした出力は、この2機構の競合でIME状態が実際に不安定に
+振動していたことの症状として整合する。
+
+これは`.claude/rules/fix-requires-evidence.md`が言う「IME actuation
+合流点」（新しいgate/preconditionを足す際に洗い出すべき箇所、ADR-119）
+の中でも、**合流点そのものが存在しない**——2つの独立した書き込み経路が
+共通の調停なしに同じ対象へ書き込める、という、issue #136/ADR-119よりも
+一段深い構造的欠陥。ADR-132の4ラウンド討論（A/B/B'/候補1-v2）は
+drift correction 1経路のみを前提にしており、この`ImmBrokenForceOn`との
+競合は検討されていなかった。Phase 2再検討時の最重要論点として記録する。
+
+`journal`は`DumpTruncated`（total_entries=2123、emitted=1004、
+dropped_key_input=418）のため、「＠」を直接出力した打鍵そのものは
+特定できなかった。
+
+**追補4（2026-09-04、Opus 2体による「A-2適用」検討・不採用、SSOTは
+2つでなく3つ以上と判明）:** 追補3の根本原因を踏まえ、既存の
+`OpenWarrant`授権機構（ADR-087設計、`state/open_warrant.rs`）を
+`apply_force_on_for_imm_broken`（起案点#6）にだけ強制適用する
+（`ADR-090`が定義する「A-2」フェーズの部分適用）という修正案を、
+Opus 2体（architect/premortem）で3ラウンド討論した。
+
+**結論: 不採用（実装に進むべきでない）。** 主な理由:
+
+1. **`issue_open_warrant()`は「同じSSOTを読ませる」単純な仕組みでは
+   ない、5段の優先順位付き梯子**（Step 0 SafetyValve → Step 1
+   IntentStore → Step 3 Actuating観測 → Step 4a HeuristicDefault →
+   Step 4b heuristic guard → Step 4c `desired_open`採用）であり、
+   `desired_open`と一致するのは梯子が**最下段(Step 4c)まで落ちた
+   場合のみ**。特にStep 4bは「#6を発火させた同じguardが、その
+   guard自身によって`true`で即座に授権される」という**自己整合
+   ループ**になっており、guard起因のforce-ONではA-2は完全にno-opに
+   なる。Step 3（`ObservationSource::Gji`、Actuating権威）もGJI
+   環境では常態的に発火しうるため、「TsfNativeだからActuating観測は
+   来ない」という前提は誤りだった（後述の訂正参照）。
+2. **SSOTは2つではなく、少なくとも3つ存在する。** `runtime/
+   ime_refresh.rs`のフォーカス変更経路が呼ぶ`send_eager_tsf_warmup`
+   は`warmup_ime_on()`（`platform_state.rs`、`applied ?? belief`）
+   という**第三の解決関数**を読み、**`issue_actuation_order`を
+   一切通らないため`OpenWarrant`の対象外**（A-2では原理的に触れない）。
+   実際、report4のapp_log（末尾切り詰め済みの狭い窓）だけでも
+   `[tsf-eager-warmup] VK_IME_ON 送信`ログが確認でき、同じ窓で
+   `force-ON (ImmBrokenForceOn)`は2件、`send_eager_tsf_warmup`
+   呼び出しは5件——**92件の`VK_IME_ON`の相当部分が#6(force-on)では
+   なくwarmup経路由来である可能性が高い**ことが実データで裏付けられた。
+   `#8 focus_change_tsf_native_gji_force_on`という当初の代替候補は
+   ADR-098決定2で既に撤去済み（`ime_refresh.rs:493-497`）であり
+   存在しない。
+3. A-2でwarrantが`None`となり送信自体を中止した場合、
+   `note_force_on_attempt`によるクールダウン起点が刻まれず、
+   `runtime/mod.rs:836-838`が警告する「実効50Hzの無限再試行ループ」
+   （BUG-69/BUG-31族）を再導入するリスクが新たに見つかった
+   （拒否時の再スケジュール設計が未決定のまま実装すると危険）。
+4. A-2はStep 1（`IntentStore`に古いOFF意図がTTL内で残存）でも
+   `None`を返し、BUG-16系の正当なforce-ON再試行まで止めうる。
+
+**維持された知見**（実装は見送るが記録価値がある）:
+- drift correctionが`desired_open()`、force-onが`effective_open()`を
+  読むという二重SSOTの発見自体は正しい。
+- `FocusChanged`が`last_intent=None`にし`effective_open()`が
+  `derive_any()`にフォールバックして`desired_open()`との一致が
+  構造的に切れる窓の特定（`ime_model.rs:621`・`:398-405`）も正しい。
+- `ObservationSource::Gji`/`Tsf`はActuating権威（`ime_event.rs:
+  184-188`）で、プロファイルがTsfNativeでもIME種別由来の観測として
+  発火しうる、という訂正は正しい。
+
+**次のアクション（実装せず、まず既存データで答えられる範囲）:**
+1. report4のapp_log全体（末尾切り詰め前の生ログが必要なら再取得）で
+   `force-ON (ImmBrokenForceOn)`行数と`[tsf-eager-warmup] VK_IME_ON
+   送信`行数を数え、92件のうちの内訳を確定する。
+2. 根本原因節を「2つのSSOT」から「少なくとも3つのSSOT
+   （`desired_open()`/`effective_open()`/`warmup_ime_on()`）＋
+   warrantを通らない送信経路が存在する」へ訂正する（本追補が
+   その訂正を兼ねる）。
+3. 真に必要なのは「起案点ごとのA-2適用」ではなく、**warrantを
+   通らない送信経路（warmup等）をwarrant配下に含める、ADR-090
+   §2.Aの11箇所棚卸しのやり直し**である可能性が高い——ただしこれは
+   本ADR/BUG-110の対応範囲を超える、より大きな仕事。
+
+**追補5（2026-09-04、棚卸しのやり直し完了）:** 上記アクション3を実施。
+ADR-090 §2.Aの「11起案点」は`issue_actuation_order`を呼ぶ箇所の数え
+上げとしては正確だったが、**「実際にWin32へIME関連の書き込みを行う
+全経路」で見るとその部分集合でしかなかった**。`issue_actuation_order`
+を経由しない末端の書き込み関数を起点にボトムアップで洗い出した結果、
+warrant非経由の経路が新たに**4系統**見つかった。
+
+| # | 経路 | 呼び出し元 | トリガー条件 | 送信VK/API | 読んでいるSSOT | 危険度 |
+|---|---|---|---|---|---|---|
+| B1 | `output::send_eager_tsf_warmup` | `platform.rs`5箇所＋`output/vk_send.rs:673` | フォーカス変更時のTSF warmup・composition reset後の保険再送 | `VK_IME_ON`/`VK_IME_OFF` | **`warmup_ime_on()` = `applied ?? belief`（第3のSSOT）** | **最高**（本BUGで実際に競合を起こした経路そのもの） |
+| B2 | `platform::send_engine_state_ime_key` | `executor.rs:763`（engineのactivation状態遷移＝`engine.rs::transition_activation`が発行） | NICOLA engineのON/OFF活性化遷移そのもの（drift/force-onの「IMEをどう思うか」とは独立した第三の軸） | config由来`engine_on_ime_vk`/`engine_off_ime_vk` | **`enabled`+`applied_for_engine_key`（desired_open/effective_open/warmup_ime_onのいずれでもない第4の軸）** | 中（`last_applied==enabled`ガード・`uses_kanji_toggle()`ガードで部分的に自己防御しているが、「現在進行中の他のactuation」は見ていない） |
+| B3 | `panic_reset`内の`set_ime_open_cross_process_async`直接呼び出し | `runtime/mod.rs:1678-1681` | パニックリセット発動時のみ | `ImmSetOpenStatus`直列書き込み | 何も読まない（無条件リセット） | 低（意図的な例外、緊急リセットという性質上warrant迂回は設計として妥当） |
+| B4 | `output::send_gji_half_width_alnum_toggle` | `key_pipeline.rs:1573`/`:1643`（左Shift単独タップ、BUG-25） | BUG-25半角英数持続トグル | `VK_DBE_ALPHANUMERIC`/`VK_DBE_HIRAGANA` | `effective_open()`を単純ゲート（自らbeliefは書き換えない） | 低〜中（タイミング依存の見落としはありうるが自らbeliefを書き換えないため実害は限定的） |
+
+一方、`issue_actuation_order`を経由する側（旧`force_on_and_correct_romaji`
+＝起案点#6を含む）は、warrant経由と確定した——11箇所という数字自体に
+誤りはなかった。**すなわち実際にWin32へ書き込む経路は「(A) warrant経由
+11箇所 + (B) warrant非経由4系統 = 実質15系統」で、ADR-090はそのうち
+11しかwarrant管理下に置いていなかった。**
+
+新たに判明した競合ペア（BUG-110の`VK_IME_ON`/`VK_IME_OFF`混在は
+この1つ目の実例）:
+- **B1(warmup) × A(drift correction)**: 実際に確認済みの競合そのもの
+- **B2(engine_state_ime_key) × A系全般**: 未検証だが同型のリスクを
+  理論上残す（engineの活性化遷移という独立トリガーが、drift/force-on
+  と短時間に交差する可能性）
+- **B4(半角英数トグル) × A系**: `effective_open()`反転中のタイミング
+  依存の見落とし、ただし実害は限定的
+
+**次のアクション（更新）:** B1が最優先（今回の実害の直接原因）。
+B1を`issue_open_warrant`配下に含めるか、`desired_open()`/
+`effective_open()`のどちらかへ統一するかを、Phase 2として別途
+設計する必要がある。B2はB1着手後に同型のリスクとして再検討。
+B3は現状維持でよい。B4は優先度低。
+
+**追補6（2026-09-04、Phase 2実装完了）:** B1の修正をOpus 2体
+（architect/premortem）敵対的討論2ラウンドで設計・実装した。詳細な
+設計経緯は[ADR-132](adr/132-uncorroborated-physical-ime-key-engine-lockout.md)
+「Phase 2（B1の修正、v5で追記）」節を参照。要約:
+
+- **v1（`desired_open()`とのANDゲート）は却下**: `desired_open`が
+  `ImeEvent::FocusChanged`のreduceアームでクリアされずフォーカスを
+  跨いでstaleに残る性質（本BUGの原因そのもの）を、v1は修正の根拠として
+  使ってしまい、cross-windowの正当なcold-startケースまで抑止して
+  BUG-02型のリテラル化を再導入するblockerが判明した。
+- **v2（採用）: `check_drift_correction()`が返すOFF方向drift検出中
+  フラグとのゲート**（`WarmupImeOn::
+  from_applied_or_belief_unless_off_drift`、INV-B1'）。
+  `check_drift_correction`の判定材料はFocusChangedのたびに必ず
+  クリアされるためfocus-scopedで、cross-windowのcold-start warmupを
+  壊さない。B1とdrift correctionが同じ判定式を共有することで、
+  「別々の関数が別々に解決する」というBUG-110の構造的欠陥をこの2者間
+  では作らない。
+- **IntentStoreベースの代替案は不採用**: 3件目報告の実測
+  （drift継続24.8秒 vs 365秒、`IntentStore`OFF方向TTLは30秒）から、
+  365秒区間の92%はTTL切れでゲートが機能しないと判明。
+- **受け入れたトレードオフ**: 新フォーカス直後はゲートが開くが、
+  stale な`desired_open`と新フォーカスの観測が食い違うと
+  `DRIFT_CORRECTION_THRESHOLD_MS`経過後にゲートが再び閉じ、その窓での
+  warmupは（ユーザーが明示的にIMEキーを押すまで）抑止され続ける。
+  「開けながら閉じる」自己矛盾を「閉じたまま」という一貫した誤りへ
+  変える設計判断であり、修正ではなくトレードオフとして受け入れる。
+- **本Phase 2はB1×drift correctionの競合のみを解消する**。#6
+  （`apply_force_on_for_imm_broken`、`effective_open()`を読む）×
+  drift correctionの競合は無傷のまま残る。3件目報告の`VK_IME_ON`
+  92件のうちB1由来の割合は`DumpTruncated`により未確定——`output/
+  mod.rs`の`[tsf-eager-warmup] VK_IME_ON 送信`ログを`info!`へ
+  格上げし（既にinfo!の`force-ON (ImmBrokenForceOn)`と併せてgrep2本
+  で内訳を確定できるようにした）、次回実機報告で判断する。
+- **実装・検証**: `src/platform.rs`（core、`WarmupImeOn::
+  from_applied_or_belief_unless_off_drift`と12通り全数テストT1）、
+  `state/platform_state.rs::resolve_warmup_ime_on`
+  （`check_drift_correction`とのゲート配線、`now: Instant`を
+  呼び出し元から注入するよう変更——`state/`層は壁時計を直接読まない
+  規約に従う）、呼び出し元7箇所（`ime_refresh.rs`/`key_pipeline.rs`/
+  `executor.rs`×5）、`architecture_guard.rs`の呼び出し件数固定
+  テスト（core/awase-linux/awase-macosも走査対象に含める）、新規
+  ungated統合テスト`tests/warmup_gate_focus_scope.rs`（T2/T3、
+  `ObservationStore`のdrift追跡がFocusChangedでクリアされる性質と
+  `desired_open`がクリアされない性質の両方を固定）。
+  `cargo check --target x86_64-pc-windows-msvc -p awase -p
+  awase-windows`/`clippy`/`fmt --check`/`cargo dylint --all`/
+  `architecture_guard`/`layer_boundary_guard`/`golden_scenarios`/
+  `intent_store_effective_open`/`warmup_gate_focus_scope`（計108件）/
+  core `cargo test --lib`（977件）全てpass。実機ソークは未実施。
+
+**実装直後の敵対的コードレビュー（Opus、読み取り専用の別エージェント）
+で複数の指摘を受け、修正済み。** 詳細はADR-132「Phase 2」節
+「実装後レビューでの指摘と対応」参照。要点:
+
+- **INV-B1'は`WarmupImeOn`の全構築経路には及ばない**ことが判明
+  （`platform.rs::on_ime_applied`の`from_actuated`経路——force-ONが
+  `SetOpen(true)`を適用した直後にも通る——はゲートを経由しない）。
+  ADR/docの過大な主張をスコープ限定に訂正。
+- 上記の結果、D2のログ内訳（92件相当の「B1由来 vs #6由来」）が
+  force-ON随伴分でB1側へ過大計上される欠陥が判明。
+  `send_eager_tsf_warmup`に`origin`引数（`"gated"`/`"actuated"`/
+  `"off"`）を追加し、`platform.rs`の合流点9箇所へ機械的にスレッディング
+  して正確に分離できるよう修正。
+- `[warmup-gate]`ログに重複排除が無く（打鍵駆動で頻発するため乖離が
+  長時間続くと飽和）、かつ「ゲート無しでも元々送らない値」まで
+  「抑止した」に計上する不正確さがあった。`intent_override_logged`と
+  同じ`Cell<bool>`パターンで修正、副次的に`effective_open()`の
+  二重評価（TTL境界を跨ぐとログ値とゲート判定値が食い違いうる）も解消。
+  ガードテストも1件追加（`warmup_gate_third_arg_is_never_a_bare_literal_in_production_code`、
+  ゲート版への第3引数リテラル直書き迂回を検出）。
+- doc型名誤り（`PlatformState::explicit_intent()`→正しくは
+  `ImeStateHub::explicit_intent()`）・重複ヘルパー実装
+  （`list_src_files`）も修正。
+- **対応せず既知の限界としてドキュメント化のみに留めたもの**:
+  ゲート条件（`check_drift_correction`）とdrift correction本体の
+  実際の発火条件（`is_user_enabled`/`is_japanese_ime`/settle待ち/
+  `FeedbackPolicy::Blind`のGiveUp状態）がずれている点、`now: Instant`が
+  `executor.rs`の5箇所で独立に取得されバッチ内一貫性が無い点。
+  いずれも実害は限定的と判断し、設計の再検討が必要な範囲は次回の
+  Opus討論に持ち越した。
+
+全チェック再実行（`architecture_guard`単体66件、guard/golden/新規
+テスト計109件）でall pass確認済み。
+
+**同レビューエージェントへの再確認（round 2）で、#3の修正自体が
+新たな欠陥を持ち込んでいたことが判明、追加修正済み。** 詳細は
+ADR-132「Phase 2」節「round 2レビュー」参照。要点:
+
+- **N1**: `[warmup-gate]`ログのdedup episode境界が
+  `off_drift_active && would_have_sent_without_gate`のANDだった
+  ため、OFF方向drift検出中に`applied`がdrift correction/force-ON
+  間でping-pongするBUG-110本来のシナリオで「抑止開始/終了」が
+  フラップし、ゲートが閉じたままなのに「抑止終了」が誤って出る
+  バグがあった（#2で直したのと同種の「診断ログが診断を誤らせる」
+  問題の再発）。episode境界を`off_drift_active`単独に戻して修正。
+- **N2**: N1の判定（`applied_open.unwrap_or(effective)`）が
+  `from_applied_or_belief`のロジック重複実装になっており、しかも
+  正攻法（`from_applied_or_belief(...).is_on()`の呼び出し）は
+  同コミットで追加したガードテストが禁止していた。core側に
+  `WarmupImeOn::would_send`をSSOTとして切り出し両者から呼ぶ形に
+  修正、等価性の回帰テストも追加。
+- **N3・N4**: ガードテスト用パーサがコメント行を除外しておらず
+  誤検知の余地、かつ閉じ括弧が見つからない場合に非UTF-8境界で
+  panicする潜在バグがあった。修正済み。
+- **N6**: `origin`引数が`&'static str`でタイポ耐性が無かったため
+  `output::WarmupOrigin` enumに変更。
+
+全チェック再々実行（`cargo test --lib`978件含む）でall pass確認済み。
+
+**同レビューエージェントへの再々確認で収束を確認した（2026-09-04）。**
+N1〜N7すべてが意図どおり修正されており、修正自体が新たな欠陥を
+持ち込んでいないことも（パーサの実証ハーネスによる非退行確認込みで）
+検証済み。新規のblocker・重要指摘なし。実機ソークへ進んで問題ない
+という判定。

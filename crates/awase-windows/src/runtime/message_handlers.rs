@@ -95,6 +95,16 @@ pub(crate) fn handle_wm_kana_lock_warning_changed(app: &mut Runtime) {
         .set_kana_lock_warned(app.kana_lock_hysteresis.warned());
 }
 
+/// hook 側で採取した IME-mode 診断を journal へ吸い上げる。
+pub(crate) fn handle_wm_hook_ime_mode_diagnostic(app: &mut Runtime) {
+    for record in hook::drain_hook_ime_mode_diagnostics() {
+        app.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::HookImeModeDiagnostic { record });
+    }
+}
+
 /// バッチ境界で1回だけ走るべき resync 処理（指摘5）。
 ///
 /// `crate::runtime::engine_window::take_needs_engine_resync()` はモーダルポンプの

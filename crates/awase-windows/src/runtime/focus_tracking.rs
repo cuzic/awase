@@ -518,6 +518,14 @@ impl Runtime {
             self.platform_state.ime.input_mode(),
             self.platform_state.ime.belief.is_japanese_ime(),
         );
+        if let Some(started_at) = self.drift_giveup_started_at.take() {
+            self.platform_state.ime.journal.record(
+                crate::journal::JournalEntry::DriftGiveUpIntervalEnded {
+                    reason: "FocusChanged",
+                    elapsed_ms: started_at.elapsed().as_millis() as u64,
+                },
+            );
+        }
 
         // 前ウィンドウの candidate_was_seen をキャリーオーバーしない。
         // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
