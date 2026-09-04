@@ -13314,7 +13314,7 @@ churn を継続的に発生させていた。
 **関連:** BUG-107（同じ `[imm-learning] profile 降格` ログを扱うが原因は別軸
 ——本 BUG はログ発火条件のバグ、BUG-107 は学習キャッシュのキー設計のバグ）。
 
-## BUG-112: `awase-settings.exe` 起動直後の `ImmGetDefaultIMEWnd` が稀に一時的に NULL を返し、`ImmCapabilityStore` がそれを恒久的な `Unavailable` として誤確定する（BUG-107 の「あ混入」の根本原因、ADR-125「未解決の設計課題3」の解決）
+## BUG-112: `ImmCapabilityStore` が `awase-settings.exe` を稀に `Unavailable` と誤学習し恒久化する（BUG-107 の「あ混入」の残存原因、トリガー条件は調査中）
 
 **症状（ユーザー報告、2026-09-04）:** 不具合報告画面の説明欄で親指シフト入力
 すると、稀に先頭に意図しない「あ」が混入する（BUG-107 として既に報告・
@@ -13332,49 +13332,74 @@ process/class キー化で修正済みのはずだった）。
 （`Imm32Unavailable` 降格後の具体的な誤動作メカニズム、および降格の判定
 自体が正しいかどうか）が、別の独立した原因として存在することが判明した。
 
-**再現実験（cache.toml を消去してフレッシュに学習させる、2026-09-04）:**
+**訂正（2026-09-04、当初記述の誤り）:** 本セクションは当初「cache.toml を
+消去してのフレッシュ学習実験を2回行い、1回目は unavailable+あ混入、2回目は
+works+あ混入なしを観測した」と記録していたが、これは誤り。実際に cache.toml
+を消去してフレッシュに学習させる制御実験を行ったのは **1回だけ**であり、
+その1回は `"Window Class" = "works"` と正しく学習され、「あ」は混入
+**しなかった**（下記「再現実験」参照）。「`unavailable` になった回」は
+フレッシュな誤学習の瞬間ではなく、**この調査セッションより前（前日までの
+ADR-125 実機調査等）から `target/debug/cache.toml` に残っていた古いエントリ
+の再利用**だった（そのビルドの `RUST_LOG=debug` ログに `ImmGetDefaultIMEWnd=NULL,
+疑いを記録` という学習イベントのログが1行も無く、`[imm-learning] profile
+降格` だけが即座に出ていたことから、新規学習ではなく既存キャッシュの適用と
+判明した）。誤った記述のまま次のセッションに引き継がれることを防ぐため、
+本節で訂正する。
 
-1. 1回目: `target/debug/cache.toml` を削除し `awase.exe`/`awase-settings.exe`
-   を再起動、説明欄に入力 → **`"Window Class" = "unavailable"` が再学習され、
-   「あ」が混入した**（本 BUG のセクション冒頭の再現）。
-2. 2回目: 同じ手順（cache.toml 削除・再起動・同じ操作）を再実行 →
-   **今度は `"Window Class" = "works"` と正しく学習され、「あ」は混入
-   しなかった**。
+**再現実験（cache.toml を消去してフレッシュに学習させる、2026-09-04、1回のみ）:**
+`target/debug/cache.toml` を削除し `awase.exe`/`awase-settings.exe` を
+再起動、説明欄に入力 → `"Window Class" = "works"` と正しく学習され、
+「あ」は混入しなかった。学習イベントのログ（`ImmGetDefaultIMEWnd=NULL,
+疑いを記録`）も一切出なかった——`ImmGetDefaultIMEWnd` は毎回 non-NULL
+（有効）を返したことを意味する。
 
-同一の起動手順・同一の操作で、学習結果が `unavailable` と `works` の間で
-**再現性なく揺れる**ことを確認した。「works 時は あ混入なし／unavailable
-時は あ混入あり」という対応も一致しており、**誤学習（`Imm32Unavailable`
-への誤降格）と「あ」混入の因果関係は確定した**（詳細な出力経路——降格後の
-どの VK 送信パスが「あ」を出力するか——はまだ未追跡、ADR-125 設計課題3の
-後半は引き続き未解決）。
+**「unavailable ↔ あ混入」の対応は別経路で確認済み:** 上記フレッシュ学習
+実験の**直前**に行ったテスト（BUG-111 の Fix A 検証ビルド、cache.toml は
+未クリアで前述の古い `unavailable` エントリを再利用）では「あ」が混入した
+ことをユーザーが確認している。「古い誤学習が残っている状態では あ が
+混入し、正しく works と学習された状態では混入しない」という対応は
+この2つのテストから確認できており、**誤学習（`Imm32Unavailable` への
+誤降格）と「あ」混入の因果関係自体は確定している**（詳細な出力経路——
+降格後のどの VK 送信パスが「あ」を出力するか——はまだ未追跡、ADR-125
+設計課題3の後半は引き続き未解決）。ただし**フレッシュな誤学習の瞬間を
+実機で直接捕捉できたことは、この調査時点ではまだ一度も無い**。
 
-**原因（推定、確度中）:** `focus/imm_learning.rs::learn_imm_capability_on_focus`
-は `crate::imm::get_ime_wnd(hwnd)`（＝`ImmGetDefaultIMEWnd(hwnd)`）を、
-`run_ime_refresh` の 500ms 周期リフレッシュ経由でフォーカス確立後すぐに
-呼ぶ。`ImmCapabilityStore::UNAVAILABLE_CONFIRM_THRESHOLD = 2`
-（`focus/classifier.rs`、BUG-56 対策の連続観測デバウンス）は「2回連続で
-NULL を観測したら確定」という**回数ベース**のデバウンスであり、2回の観測が
-時間的にどれだけ離れているか（＝ウィンドウ生成からの経過時間）は問わない。
-`awase-settings.exe --bug-report` は起動直後にフォーカスされる単一ウィンドウ
-アプリであるため、起動直後の短い期間（推定: 数百ms〜1秒程度、未実測）
-`ImmGetDefaultIMEWnd` が一時的に NULL を返す実 Win32 レベルの競合状態が
-存在し、500ms 周期のポーリングがこの窓に運悪く2回連続でヒットすると、
-本来一時的なだけの NULL が恒久的な `Unavailable` として `cache.toml` に
-確定・永続化されてしまう（ADR-125「実機検証ログ2」が確認した通り、
-`ImmGetDefaultIMEWnd`/`WM_IME_CONTROL` による実際のクロスプロセス制御
-自体は `awase-settings.exe` に対して正常に機能する——確定した
-`Unavailable` は誤り）。
+**自動化スパイクでの追試（再現せず、2026-09-04）:** `ImmGetDefaultIMEWnd`
+が一時的に NULL を返す実 Win32 レベルの競合状態という仮説を実測するため、
+`crates/awase-windows/examples/spike_bug112_ime_wnd_race_probe.rs`
+（`awase-settings.exe --bug-report` を繰り返し起動し、ウィンドウ検出から
+`ImmGetDefaultIMEWnd` が non-NULL を返すまでの実時間を高頻度ポーリングで
+測るスパイク）を作成し、(a) `awase.exe` を起動せず単独で15回、(b)
+`awase.exe` を実際に起動した状態で15回、それぞれ実行した。**合計30回
+すべてで `null_duration_ms=0`（初回ポーリングから即座に non-NULL）と
+なり、NULL が観測されたことは一度も無かった。** `awase.exe` を起動する
+だけでは競合は再現しない。
+
+**現時点の解釈:** 「ウィンドウ生成直後の一時的な NULL」という単純な
+起動レースだけでは説明がつかない可能性が高くなった。実際に「あ」混入が
+観測された2回のテスト（本 BUG 冒頭の症状、および BUG-111 検証時）は
+いずれも**ユーザーが実際に親指シフトで入力している最中**だった一方、
+スパイクは起動するだけで何も入力しない。誤学習の発生には
+**実際のキー入力（awase のフックが処理中）が並走していること**が
+必要条件である可能性が新たな仮説として浮上した——競合が「新規ウィンドウ
+の IME 未確立」ではなく「awase 自身が別の処理（打鍵処理・warmup・
+actuation 等）でメッセージループ/COM 呼び出しが輻輳している最中に
+`ImmGetDefaultIMEWnd` がその影響を受ける」という、awase 自身の負荷
+依存の競合である可能性。次回セッションでの検証候補: (1) スパイクに
+`SendInput` 等で合成キー入力を注入し typing 負荷を再現する、(2) 本番
+コードパス（`learn_imm_capability_on_focus` 呼び出し箇所）に一時的な
+高頻度診断ログを追加し、実際のユーザー入力再現時に直接タイミングを
+記録する（このスパイクより信頼できるが、本番コードへの一時的な変更が
+必要）。
 
 **却下ではなく保留とした対策（`tuning-constants.md` 抵触のため）:**
 「起動直後 N ms は確定させない」という時間ベースのグレースピリオドを
-`record_null_probe`（`focus/classifier.rs`）に足す案が最も直接的な修正だが、
-`.claude/rules/tuning-constants.md` は新規タイミング定数の導入に実測値を
-要求する。本 BUG の2回の再現実験では「NULL が持続した期間」を秒単位でしか
-把握しておらず（ログのタイムスタンプからは「起動〜初回学習まで」の大まかな
-時間は分かるが、競合窓そのものの実測値ではない）、`N` の根拠となる実測が
-まだ無い。実測せずに定数を導入するとこのルールに抵触するため、恒久修正は
-次回セッションで実測（複数回の起動を細かくポーリングし、`ImmGetDefaultIMEWnd`
-が NULL から non-NULL に切り替わるまでの実時間分布を取る）してから着手する。
+`record_null_probe`（`focus/classifier.rs`）に足す案は、上記のとおり
+そもそも「起動直後の時間」が正しい軸かどうか自体が再検証を要するため
+時期尚早。`.claude/rules/tuning-constants.md` は新規タイミング定数の
+導入に実測値を要求するが、競合の真のトリガー条件（起動直後の経過時間
+なのか、awase 自身の負荷なのか）がまだ実測で確定していないため、
+恒久修正は次回セッションで上記の追加検証をしてから着手する。
 
 **暫定回避（BUG-56/107 と同じ）:** `cache.toml` の
 `[imm_capability."awase-settings.exe"] "Window Class"` エントリを削除し
