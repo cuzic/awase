@@ -1086,7 +1086,28 @@ impl Output {
     /// すると、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する）。
     /// 送信できた場合、NativeF2Consumed 等の前に `mark_composition_cold` が呼ばれて
     /// 0 にリセットされるため二重更新は発生しない。
-    pub fn send_eager_tsf_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
+    ///
+    /// # `origin`（BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘への対応）
+    ///
+    /// ログにだけ載せる診断用文字列。呼び出し元が渡す `warmup_ime_on` の
+    /// 構築経路を表す:
+    /// - `"gated"`: `ImeStateHub::resolve_warmup_ime_on` 経由（BUG-110の
+    ///   `off_drift_active` ゲートを通っている）。
+    /// - `"actuated"`: `WarmupImeOn::from_actuated`（`on_ime_applied` —
+    ///   実 actuation 直後の随伴 warmup）経由。**このゲートは通らない**
+    ///   （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
+    ///
+    /// `WarmupImeOn` 自体に構築経路のフィールドを持たせない（ADR-098の型
+    /// 設計意図——生 belief を渡す経路をコンパイラで塞ぐ——を薄めない）ため、
+    /// 呼び出し元から並行して渡す。次回実機報告で `[tsf-eager-warmup]` の
+    /// `origin=` を grep すれば、B1由来（gated）と #6随伴分（actuated）を
+    /// 正確に分離できる（従来はこの区別が無く、#6由来の随伴warmupが
+    /// B1由来として過大計上されていた）。
+    pub fn send_eager_tsf_warmup(
+        &self,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+        origin: &'static str,
+    ) {
         if !self.conv_mutation_allowed.get() {
             log::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
@@ -1110,8 +1131,13 @@ impl Output {
                 // BUG-110/ADR-132 Phase 2: `[warmup-gate]`(抑止側)とペアで INFO
                 // ログにすることで、`force-ON (ImmBrokenForceOn)`(既に info!)との
                 // grep 突合せから VK_IME_ON の内訳(warmup由来 vs force-on由来)を
-                // 確定できるようにする(追補4のアクション1)。
-                log::info!("[tsf-eager-warmup] VK_IME_ON 送信, eager_warmup_sent_ms={ms}ms");
+                // 確定できるようにする(追補4のアクション1)。`origin=` で
+                // gated(B1本来のゲート対象)/actuated(#6随伴、ゲート対象外)を
+                // 区別する(敵対的コードレビュー指摘への対応、追補6続き)。
+                log::info!(
+                    "[tsf-eager-warmup] VK_IME_ON 送信 (origin={origin}), \
+                     eager_warmup_sent_ms={ms}ms"
+                );
                 self.composition.set_eager_warmup_sent_ms(ms);
             }
             None => {

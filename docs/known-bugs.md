@@ -13569,3 +13569,37 @@ B3は現状維持でよい。B4は優先度低。
   `architecture_guard`/`layer_boundary_guard`/`golden_scenarios`/
   `intent_store_effective_open`/`warmup_gate_focus_scope`（計108件）/
   core `cargo test --lib`（977件）全てpass。実機ソークは未実施。
+
+**実装直後の敵対的コードレビュー（Opus、読み取り専用の別エージェント）
+で複数の指摘を受け、修正済み。** 詳細はADR-132「Phase 2」節
+「実装後レビューでの指摘と対応」参照。要点:
+
+- **INV-B1'は`WarmupImeOn`の全構築経路には及ばない**ことが判明
+  （`platform.rs::on_ime_applied`の`from_actuated`経路——force-ONが
+  `SetOpen(true)`を適用した直後にも通る——はゲートを経由しない）。
+  ADR/docの過大な主張をスコープ限定に訂正。
+- 上記の結果、D2のログ内訳（92件相当の「B1由来 vs #6由来」）が
+  force-ON随伴分でB1側へ過大計上される欠陥が判明。
+  `send_eager_tsf_warmup`に`origin`引数（`"gated"`/`"actuated"`/
+  `"off"`）を追加し、`platform.rs`の合流点9箇所へ機械的にスレッディング
+  して正確に分離できるよう修正。
+- `[warmup-gate]`ログに重複排除が無く（打鍵駆動で頻発するため乖離が
+  長時間続くと飽和）、かつ「ゲート無しでも元々送らない値」まで
+  「抑止した」に計上する不正確さがあった。`intent_override_logged`と
+  同じ`Cell<bool>`パターンで修正、副次的に`effective_open()`の
+  二重評価（TTL境界を跨ぐとログ値とゲート判定値が食い違いうる）も解消。
+  ガードテストも1件追加（`warmup_gate_third_arg_is_never_a_bare_literal_in_production_code`、
+  ゲート版への第3引数リテラル直書き迂回を検出）。
+- doc型名誤り（`PlatformState::explicit_intent()`→正しくは
+  `ImeStateHub::explicit_intent()`）・重複ヘルパー実装
+  （`list_src_files`）も修正。
+- **対応せず既知の限界としてドキュメント化のみに留めたもの**:
+  ゲート条件（`check_drift_correction`）とdrift correction本体の
+  実際の発火条件（`is_user_enabled`/`is_japanese_ime`/settle待ち/
+  `FeedbackPolicy::Blind`のGiveUp状態）がずれている点、`now: Instant`が
+  `executor.rs`の5箇所で独立に取得されバッチ内一貫性が無い点。
+  いずれも実害は限定的と判断し、設計の再検討が必要な範囲は次回の
+  Opus討論に持ち越した。
+
+全チェック再実行（`architecture_guard`単体66件、guard/golden/新規
+テスト計109件）でall pass確認済み。

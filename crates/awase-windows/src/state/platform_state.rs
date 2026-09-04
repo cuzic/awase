@@ -81,6 +81,15 @@ pub(crate) struct ImeStateHub {
     /// （`with_app` パターン）ため `!Sync` でも問題ない。
     intent_override_logged: std::cell::Cell<bool>,
 
+    /// [`ImeStateHub::resolve_warmup_ime_on`] の `off_drift_active` ゲートが
+    /// 「ゲート無しなら実際に送信していたはずの warmup」を抑止している間 `true`。
+    /// 遷移時のみ `[warmup-gate]` INFO ログを出すための dedup 用
+    /// （BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘、`intent_override_logged`
+    /// と同じパターン）。打鍵駆動で頻繁に呼ばれる経路のため、抑止が継続する間
+    /// 毎回ログすると乖離が長時間続くケース（BUG-110 3件目報告の6分5秒）で
+    /// ログが飽和する。
+    warmup_gate_suppression_logged: std::cell::Cell<bool>,
+
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
     /// から独立しており、診断ログの記録有無と generation の一意性が無関係になる。
     generation_alloc: super::GenerationAllocator,
@@ -110,6 +119,7 @@ impl ImeStateHub {
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
             intent_override_logged: std::cell::Cell::new(false),
+            warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
@@ -552,28 +562,55 @@ impl ImeStateHub {
     /// `now` は呼び出し元から注入する——`state/` 層は壁時計を直接読まない
     /// （`state/mod.rs` の `TickMs` doc の規約。[`Self::effective_open`] が
     /// 既にこの規約の負債を抱えているが、新規にここへ壁時計読みを追加しない）。
+    ///
+    /// # `now` はバッチ内で一貫しない（既知の限界、敵対的コードレビュー指摘）
+    ///
+    /// `runtime/executor.rs` の5呼び出し元はいずれも呼び出しごとに
+    /// `std::time::Instant::now()` を独立に取って渡す（`applied` 引数の
+    /// ように `execute_all` バッチ内でスナップショット・共有されていない）。
+    /// そのためバッチ処理が `DRIFT_CORRECTION_THRESHOLD_MS`（400ms）等の
+    /// 境界を跨ぐと、同一バッチ内でゲート判定（`off_drift_active`）が
+    /// 反転しうる。実害は小さいと判断し許容している——バッチ内一貫性が
+    /// 必要になった場合は `DecisionExecutor` に `applied_snapshot` と並ぶ
+    /// `batch_now: Instant` を導入すること。
     pub(crate) fn resolve_warmup_ime_on(
         &self,
         applied: AppliedImeState,
         now: std::time::Instant,
     ) -> awase::platform::WarmupImeOn {
+        let applied_open = applied.applied_open();
+        let effective = self.effective_open();
         let off_drift_active = matches!(
             self.check_drift_correction(now, self.explicit_intent()),
             Some((false, true, _))
         );
-        if off_drift_active {
-            log::info!(
-                "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止 \
-                 (applied={:?} effective={})",
-                applied.applied_open(),
-                self.effective_open(),
-            );
-        }
-        awase::platform::WarmupImeOn::from_applied_or_belief_unless_off_drift(
-            applied.applied_open(),
-            self.effective_open(),
+        let gated = awase::platform::WarmupImeOn::from_applied_or_belief_unless_off_drift(
+            applied_open,
+            effective,
             off_drift_active,
-        )
+        );
+        // 敵対的コードレビュー指摘: ゲート無しでも元々送らない値だった場合は
+        // 「抑止した」に数えない——ログの「抑止回数」を実際に意味のある上限値に
+        // する（ゲート自体が無条件の上限値である点は `send_eager_tsf_warmup`
+        // 側の3段 self-gate があるため変わらない）。`from_applied_or_belief`
+        // （`applied ?? belief`）と同じ判定を、その呼び出し件数を1箇所に
+        // 固定するガードテストと衝突しないよう素の `Option::unwrap_or` で
+        // 再現する（コンストラクタは呼ばない）。
+        let would_have_sent_without_gate = applied_open.unwrap_or(effective);
+        let actually_suppressed = off_drift_active && would_have_sent_without_gate;
+        if actually_suppressed {
+            if !self.warmup_gate_suppression_logged.get() {
+                log::info!(
+                    "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止開始 \
+                     (applied={applied_open:?} effective={effective})"
+                );
+                self.warmup_gate_suppression_logged.set(true);
+            }
+        } else if self.warmup_gate_suppression_logged.get() {
+            log::info!("[warmup-gate] warmup 抑止終了");
+            self.warmup_gate_suppression_logged.set(false);
+        }
+        gated
     }
 
     /// [`Self::resolve_warmup_ime_on`] を `model().applied` に対して呼ぶ版。
@@ -819,7 +856,7 @@ impl ImeStateHub {
     /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。
     ///
     /// 戻り値: `Some((desired, observed, duration_ms))` — 補正が必要な場合
-    /// `explicit_intent`: `PlatformState::explicit_intent()` の値をそのまま渡す。
+    /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,

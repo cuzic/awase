@@ -215,19 +215,35 @@ impl WarmupImeOn {
     }
 
     /// [`Self::from_applied_or_belief`] に「OFF 方向の drift correction が
-    /// いま進行中なら warmup を送らない」ゲートを重ねる（BUG-110/ADR-132 Phase 2）。
+    /// いま検出中なら warmup を送らない」ゲートを重ねる（BUG-110/ADR-132 Phase 2）。
     ///
     /// `off_drift_active`: 呼び出し元が観測した「いま OFF 方向の drift
-    /// correction（`desired=false, observed=true`）が検出されている」という
-    /// **外部事実**。belief の一種ではなく、awase 自身の行為（drift
-    /// correction が `VK_IME_OFF` を送り続けている）の観測である。
+    /// （`desired=false, observed=true`）が検出されている」という**外部事実**。
+    /// belief の一種ではない。**ただし「drift correction が実際に
+    /// `VK_IME_OFF` を送り続けている」ことまでは保証しない**——判定式
+    /// （`check_drift_correction`）はdrift correction本体
+    /// （`ir_apply_drift_correction`）が実際に送信するかの追加条件
+    /// （`is_user_enabled`/`is_japanese_ime`/settle待ち/`FeedbackPolicy::
+    /// Blind`のGiveUp状態）を共有していない。敵対的コードレビュー指摘、
+    /// 詳細はADR-132「Phase 2」節「実装後レビューでの指摘と対応」参照。
     ///
     /// warmup が送る `VK_IME_ON`（ADR-100 決定2）は open 軸の実 actuation
     /// でもあるため、OFF 方向 drift correction と同時に送ると逆方向の
     /// 書き込みが競合する（BUG-110 で実際に `VK_IME_ON` 92 件・`VK_IME_OFF`
     /// 32 件が競合し、乖離継続 6 分 5 秒を記録した）。このゲートにより
-    /// **INV-B1': `send_eager_tsf_warmup` が `VK_IME_ON` を送信する瞬間、
-    /// OFF 方向の drift correction は検出されていない**が成り立つ。
+    /// **INV-B1': このコンストラクタ経由で構築された `WarmupImeOn` を
+    /// `send_eager_tsf_warmup` が `VK_IME_ON` として送信する瞬間、OFF 方向の
+    /// drift correction は検出されていない**が成り立つ。
+    ///
+    /// # スコープの限界（敵対的コードレビュー指摘）
+    ///
+    /// この不変条件は `WarmupImeOn` の**全ての**構築経路には及ばない。
+    /// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
+    /// actuation 直後の随伴 warmup、force-ON が `SetOpen(true)` を適用した
+    /// 直後にも通る）はこのゲートを経由しない、意図的な別経路として残る
+    /// （ADR-132「Phase 2」節「実装上の既知の限界」参照）。区別が必要な
+    /// 診断では `send_eager_tsf_warmup` の `origin` 引数（`"gated"`/
+    /// `"actuated"`）を見ること。
     ///
     /// `off_drift_active == false` のとき、戻り値は [`Self::from_applied_or_belief`]
     /// と bit-identical（`architecture_guard` の呼び出し件数固定テストと
@@ -526,7 +542,7 @@ mod tests {
     #[test]
     fn warmup_gate_blocks_bug110_window() {
         // BUG-110 の競合窓: applied=Unknown(TsfNative FocusChange直後)、
-        // effective_open()=true（conv由来の誤った観測）、OFF方向drift進行中。
+        // effective_open()=true（conv由来の誤った観測）、OFF方向drift検出中。
         let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(None, true, true);
         assert!(!gated.is_on());
     }
@@ -541,7 +557,7 @@ mod tests {
     #[test]
     fn warmup_gate_overrides_applied_confirmed_true_when_off_drift_active() {
         // applied=Some(true)（force-ON が直前に Confirmed{open:true} を書いた）でも、
-        // OFF方向drift進行中なら抑止する——ping-pong中のappliedを単調な事実として
+        // OFF方向drift検出中なら抑止する——ping-pong中のappliedを単調な事実として
         // 扱わない、という設計判断（from_applied_or_belief の単調性の意図的な例外）。
         let gated = WarmupImeOn::from_applied_or_belief_unless_off_drift(Some(true), true, true);
         assert!(!gated.is_on());

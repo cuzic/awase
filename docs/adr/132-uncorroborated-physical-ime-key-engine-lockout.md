@@ -627,9 +627,13 @@ GJIでIMEは実際にON）へフォーカス移動→`last_intent`/`applied`/観
 区別できず後者まで抑止し、初回打鍵がリテラル化するBUG-02型の退行を
 再導入する。
 
-**v2（採用）**: ゲートを`desired_open`ではなく、**drift correctionが
-今まさにOFF方向で進行中か**（`ImeStateHub::check_drift_correction()`
-が`Some((false, true, _))`を返しているか）に変更した。
+**v2（採用）**: ゲートを`desired_open`ではなく、**OFF方向の乖離
+（desired≠observed）が今まさに検出中か**（`ImeStateHub::
+check_drift_correction()`が`Some((false, true, _))`を返しているか）に
+変更した（「進行中」ではなく「検出中」——`check_drift_correction`は
+drift correction本体が実際に`VK_IME_OFF`を送信する条件の全てを
+共有しているわけではない。詳細は下記「実装後レビューでの指摘と対応」
+参照）。
 
 ```rust
 // src/platform.rs（core、OS非依存）
@@ -742,13 +746,19 @@ warrant案を破ったことと整合する。
 `output/mod.rs`の`[tsf-eager-warmup] VK_IME_ON 送信`ログを
 `debug!`から`info!`へ格上げした。`apply_force_on_for_imm_broken`側
 （`force-ON (ImmBrokenForceOn)`、既にinfo!）と合わせてgrep2本で
-「92件の内訳」（B1由来 vs #6由来）が次回の実機報告で確定できる。
+「92件の内訳」（B1由来 vs #6由来）が次回の実機報告で確定できる…
+はずだったが、実装直後の敵対的コードレビューで、この前提が崩れて
+いることが発覚した（下記「実装後レビューでの指摘と対応」参照）。
+最終的には`send_eager_tsf_warmup`に`origin: &'static str`引数
+（`"gated"`/`"actuated"`/`"off"`）を追加し、ログに`origin=`を
+載せることで内訳を正確に分離できるようにした。
+
 併せて`resolve_warmup_ime_on`にゲート発火時の`[warmup-gate]` info
-ログを追加し、抑止の発火回数も追える。journal化（`WarmupEmitted`
-エントリ、`WarmupImeOn`への診断フィールド追加）は`WarmupImeOn`の
-型設計意図（生beliefを渡す経路をコンパイラで塞ぐ）を薄める・
-`platform.rs`5箇所への配線が本体（D1）より広い事故面積を持つ、との
-判断で見送った。
+ログを追加し、抑止の発火回数も追える——ただしこちらも初版には
+バグがあり（後述）修正済み。journal化（`WarmupEmitted`エントリ、
+`WarmupImeOn`への診断フィールド追加）は`WarmupImeOn`の型設計意図
+（生beliefを渡す経路をコンパイラで塞ぐ）を薄める・`platform.rs`
+5箇所への配線が本体（D1）より広い事故面積を持つ、との判断で見送った。
 
 ### D3（再発防止ガード）
 
@@ -760,7 +770,11 @@ warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor`
 であるため、走査対象に`crates/awase-windows/src/`だけでなく
 core（`src/`）・`crates/awase-linux/src/`・`crates/awase-macos/src/`
 も含める（PR #127のコードレビューで同種の見落としが実際に
-起きた前例に倣う）。
+起きた前例に倣う）。加えて`warmup_gate_third_arg_is_never_a_bare_literal_in_production_code`
+（実装後レビュー指摘、下記参照）が、ゲート版自体への第3引数
+（`off_drift_active`）にリテラル`true`/`false`を直書きする迂回
+（呼び出し件数は1のまま保ったうえで実質的にゲートを無効化する
+最も安直な手口）を検出する。
 
 ### 回帰テスト
 
@@ -780,6 +794,82 @@ core（`src/`）・`crates/awase-linux/src/`・`crates/awase-macos/src/`
   （v1がblockerと判定された性質そのもの、将来の再提案へのブレーキ）と、
   受け入れたトレードオフ（新フォーカスでdriftが再確立されうること）も
   固定する。
+
+### 実装後レビューでの指摘と対応（Opus敵対的コードレビュー）
+
+実装完了後、`docs/adr/132-*.md`と実コード（コミット`448b1521`）を
+別の読み取り専用Opusエージェント（design討論を行ったarchitect/
+premortemとは独立）にレビューさせた。指摘のうち、対応したもの:
+
+1. **INV-B1'は`WarmupImeOn`の全構築経路には及ばない**:
+   `platform.rs::on_ime_applied`（実actuation直後、force-ONが
+   `SetOpen(true)`を適用した直後にも通る）は`WarmupImeOn::
+   from_actuated`を使い、`resolve_warmup_ime_on`のゲートを経由
+   しない。ADR/doc/ガードテストのdocがこの経路の存在を無視して
+   「送信の瞬間、drift は検出されていない」と無条件に主張していた
+   のは不正確だった。**対応**: `from_actuated`経路をゲート下に
+   含める設計変更（新たなOpus討論が必要な範囲）は見送り、
+   INV-B1'の主張を「`from_applied_or_belief*`経由で構築された
+   `WarmupImeOn`について」とスコープ限定する doc 訂正、および
+   下記2の`origin`タグで区別可能にする対応に留めた。
+2. **D2のログ内訳がB1由来へ過大計上される**: 1の結果、force-ON
+   由来の随伴warmupも同じ`[tsf-eager-warmup] VK_IME_ON 送信`ログを
+   出すため、grep突合せでの内訳確定が崩れていた。**対応**:
+   `send_eager_tsf_warmup`に`origin: &'static str`引数を追加し
+   （`platform.rs`の`dispatch_composition_response`/
+   `feed_composition_event`/各wrapper関数、計9箇所に機械的に
+   スレッディング）、`"gated"`（`resolve_warmup_ime_on`経由）/
+   `"actuated"`（`on_ime_applied`の`from_actuated`経由）/`"off"`
+   （構造的に到達しない`WarmupImeOn::off()`経路）を区別してログに
+   載せた。`WarmupImeOn`型自体には触れず（型設計意図を保つ）、
+   呼び出し元から並行して渡す形にした。
+3. **`[warmup-gate]`ログの重複排除欠如・過大計上**: 打鍵駆動で
+   頻繁に呼ばれる経路のため、乖離が長時間続くケース（3件目報告の
+   6分5秒）でログが飽和しうる欠陥、および「ゲート無しでも元々
+   送らない値だった」場合まで「抑止した」に数える不正確さが
+   あった。**対応**: `intent_override_logged`と同じ`Cell<bool>`
+   dedupパターンを導入（抑止の開始/終了の遷移時のみログ）、抑止の
+   判定条件に「ゲート無しなら送っていたはずか」を加えた
+   （`applied_open.unwrap_or(effective)`、`from_applied_or_belief`
+   と等価だがガードテストの件数固定と衝突しないよう素の
+   `Option::unwrap_or`で再現）。副次的に`effective_open()`の
+   二重評価（TTL境界を跨ぐとログ値とゲート判定値が食い違いうる
+   欠陥）も1回化で解消した。
+4. **doc内の型名誤り**: `explicit_intent`引数の説明が
+   `PlatformState::explicit_intent()`と誤記していた（正しくは
+   `ImeStateHub::explicit_intent()`、`PlatformState`は別型）。
+   **対応**: `[Self::explicit_intent]`への相対参照に訂正。
+5. **`list_src_files()`と新設`list_rs_files_under("src")`の重複
+   実装**。**対応**: 前者の本体を後者の呼び出しに置き換え。
+
+指摘のうち、**対応せず既知の限界としてドキュメント化に留めたもの**
+（実コードの変更ではなく、記述の正確化で対応——設計の再検討が
+必要な範囲であり、これ以上の拡張は別途Opus討論を要するため）:
+
+- **ゲート条件（`check_drift_correction`）とdrift correction本体
+  （`ir_apply_drift_correction`）の実際の発火条件がずれている**:
+  後者は前者に加えて`is_user_enabled()`/`is_japanese_ime()`/
+  settle待ち/`FeedbackPolicy::Blind`のGiveUp状態という4条件を
+  追加で持つ。特にBlindは「~400ms間隔で最大5回送信→GiveUp→
+  3秒クールダウン」というデューティサイクルのため、**3秒の
+  クールダウン中は`VK_IME_OFF`が1本も飛んでいないのにゲートは
+  閉じたまま**になる区間がある。「B1とdrift correctionが同じ
+  判定式を共有する」という本Phase 2の中心的主張は、`desired`と
+  `observed`の矛盾を検出する式についてのみ厳密に成立し、
+  「実際に対向の書き手が存在するか」までは保証しない。実害は
+  限定的（抑止の方向自体は誤っていない、単に長めに抑止する）
+  ため、次のいずれかで別途対応する: (a) ゲート条件に上記4条件を
+  足して真に同じ判定式にする、(b) ADRの「進行中」という表現を
+  「検出中」に訂正する（今回はこちらのみ実施）。
+- **`now: Instant`のバッチ内不一致**: `executor.rs`の5箇所が
+  独立に`std::time::Instant::now()`を呼ぶため、凍結された
+  `applied_snapshot`とliveな`now`が同一batch内で混在し、理論上
+  400ms境界を跨いで判定が反転しうる。設計討論で期待された
+  「バッチ内一貫性も同時に得られる」という利点は実装に入って
+  いない。実害は小さいと判断し（`resolve_warmup_ime_on`自体の
+  ドキュメントに `now` は呼び出しごとの live 値でありバッチ内
+  一貫性は保証しないことを追記した）、`DecisionExecutor`への
+  `batch_now`フィールド導入は見送った。
 
 ## 次のアクション
 
