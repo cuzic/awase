@@ -13068,6 +13068,35 @@ Phase 1のログが揃った時点で、根本原因がconv残骸（BUG-68型、
 正しく閉じていた）かどうかを判定し、Phase 2（保留中の修正案の再検討）
 か、BUG-68の未解決部分への転進かを判断する。
 
+**追補1（2026-09-04、2件目の実機再現・Phase 1診断の実地検証）:**
+ユーザーが未マージのPhase 1ブランチを自前ビルドし検証したところ、
+不具合報告 `01M1N5RMQ0HGX60VNG37DXWR26` として同症状（PowerShell +
+GJI + JIS配列で「＠」大量出力）を再現した（`docs/bug-reports-triage.md`
+該当行に詳細）。journalに`HookImeModeDiagnostic`が180件記録されており、
+**Phase 1の診断ログが実機で正しく機能することを確認できた。**
+
+新たに判明した事実:
+- 発端のVK×scanは`vk=0xF3 scan=0x29`（半角、`VK_DBE_SBCSCHAR`）——
+  1件目の`vk=0xF0 scan=0x3A`（英数/CapsLock位置）とは異なる組み合わせ。
+  さらに`vk=0xF0/0xF2 scan=0x70`（かなキー位置）のペアも複数回観測され、
+  これはBUG-52（`transport.rs`のコメント、「IMEが既に目的の状態にある
+  時に押されると発生しうる」）が既に記録している既知の不安定源と一致した。
+  **「入口となるVK×scanは1つに固定されない」というADR-128 v3の再定義
+  （候補5=単発DBEキー恒久除外を不採用にした理由）を実データで裏付けた。**
+- `[drift] correction`ログに`for 341743ms`（約5分42秒）という、1件目の
+  29秒を大幅に上回る乖離継続時間が記録された。`FocusChange`（不具合報告
+  ダイアログへの遷移）でようやく`Engine activated`に戻っており、
+  「`last_intent`はFocusChangedでしか解除されず無期限に持続する」という
+  ADR-128 v4の因果モデルを追加のケースで裏付けた。
+- 一方、`DriftGiveUpDiagnostic`/`DriftGiveUpIntervalEnded`はこのログには
+  1件も記録されていない。`[drift] correction`の31件は全て`Send`側で
+  `GiveUp`到達の記述が無く、`FeedbackPolicy::Blind`のmax_attempts到達
+  （`None`側の1回）に一度も達しなかった可能性がある（またはログ巻き戻り
+  200KB上限で古い到達記録が失われた可能性）。Phase 2検討時は、
+  GiveUp到達を前提にした設計（当初のA/B/B'案、候補1-v2）がこの種の
+  「GiveUpに到達しないままobserved≠desiredが5分以上続くケース」を
+  カバーできるかも論点に加える必要がある。
+
 **関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`、
 `crates/awase-windows/src/runtime/key_pipeline.rs`、`crates/awase-windows/
 src/state/ime_model.rs`、`crates/awase-windows/src/state/intent_store.rs`、
