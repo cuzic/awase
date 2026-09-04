@@ -260,7 +260,7 @@ fn consume_keymap_match(
         .active_keymaps
         .find_match(event.vk_code, event.modifier_snapshot)?;
     app.platform_state.keymap.keymap_latch.latch(event.vk_code);
-    if let Some(target_vk) = matched {
+    if !matched.is_empty() {
         // IME composition（GJI/MS-IME 問わず）が表示中に target_vk を
         // そのまま SendInput すると、IME が先にそれを自身のショートカットとして
         // 横取りしてしまう（`cancel_composition_and_arm_post_bypass_on_ctrl` が
@@ -289,7 +289,7 @@ fn consume_keymap_match(
             crate::output::held_modifiers::send_keymap_target(
                 event.modifier_snapshot.ctrl,
                 event.modifier_snapshot.shift,
-                target_vk,
+                &matched,
             );
         }
     }

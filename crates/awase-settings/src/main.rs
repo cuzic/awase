@@ -1699,24 +1699,34 @@ impl SettingsApp {
                 // （ADR-114 決定5 — バックエンドが 'from' の Alt 修飾を禁止・skip する
                 // ため、GUI 側でも作れないようにして対称性を保つ）。
                 let _ = alt;
+                let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
                 match target {
                     CaptureTarget::ExistingFrom(i) => {
-                        if let Some(rule) = self.config.keymaps.get_mut(i) {
+                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, false)
+                            && let Some(rule) = self.config.keymaps.get_mut(i)
+                        {
                             rule.from = format_combo(ctrl, shift, false, &internal);
                         }
                     }
                     CaptureTarget::ExistingTo(i) => {
-                        if let Some(rule) = self.config.keymaps.get_mut(i) {
-                            rule.to = Some(internal);
+                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, true)
+                            && let Some(rule) = self.config.keymaps.get_mut(i)
+                        {
+                            rule.to.push(internal);
                         }
                     }
                     CaptureTarget::NewFrom => {
-                        self.new_keymap_from_ctrl = ctrl;
-                        self.new_keymap_from_shift = shift;
-                        self.new_keymap_from_main = internal;
+                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, false)
+                        {
+                            self.new_keymap_from_ctrl = ctrl;
+                            self.new_keymap_from_shift = shift;
+                            self.new_keymap_from_main = internal;
+                        }
                     }
                     CaptureTarget::NewTo => {
-                        self.new_keymap_to_main = internal;
+                        if keymap_internal_allowed(&internal, left_thumb_vk, right_thumb_vk, true) {
+                            self.new_keymap_to_main = internal;
+                        }
                     }
                 }
                 self.capturing = None;
@@ -2071,6 +2081,7 @@ impl SettingsApp {
 
         // local copy of capturing to avoid borrow-conflict with self.config.keymaps below
         let mut capturing = self.capturing;
+        let (left_thumb_vk, right_thumb_vk) = keymap_thumb_vks(&self.config.general);
 
         // Existing rules table
         ui.label("登録済みルール");
@@ -2115,6 +2126,7 @@ impl SettingsApp {
                         &format!("from_main_{i}"),
                         &mut main,
                         "変換元のキーです。左の Ctrl/Shift/Alt と組み合わせて判定します。",
+                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
                     ) {
                         changed = true;
                     }
@@ -2126,19 +2138,30 @@ impl SettingsApp {
 
                     ui.label("→");
 
-                    // to: main key only + capture button
-                    let mut to_main = rule.to.clone().unwrap_or_default();
-                    if main_key_combo_optional(
-                        ui,
-                        &format!("to_main_{i}"),
-                        &mut to_main,
-                        "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。",
-                    ) {
-                        rule.to = if to_main.is_empty() {
-                            None
-                        } else {
-                            Some(to_main)
-                        };
+                    // to: main key sequence + capture button
+                    let mut rm_to = None;
+                    if rule.to.is_empty() {
+                        ui.label("（消費のみ）");
+                    }
+                    for (step_i, to_main) in rule.to.iter_mut().enumerate() {
+                        main_key_combo_to(
+                            ui,
+                            &format!("to_main_{i}_{step_i}"),
+                            to_main,
+                            "再注入するキー列の1ステップです。各ステップは修飾子なしの Down+Up として送信されます。",
+                            left_thumb_vk,
+                            right_thumb_vk,
+                        );
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("押すと: この送信ステップを削除します。")
+                            .clicked()
+                        {
+                            rm_to = Some(step_i);
+                        }
+                    }
+                    if let Some(step_i) = rm_to {
+                        rule.to.remove(step_i);
                     }
                     let to_target = CaptureTarget::ExistingTo(i);
                     capture_button(ui, &mut capturing, to_target);
@@ -2184,6 +2207,7 @@ impl SettingsApp {
                         "new_from_main",
                         &mut self.new_keymap_from_main,
                         from_hover,
+                        keymap_from_key_options(left_thumb_vk, right_thumb_vk),
                     );
                     capture_button(ui, &mut capturing, CaptureTarget::NewFrom);
                 })
@@ -2195,11 +2219,13 @@ impl SettingsApp {
                     "再注入するキー。「（消費のみ）」を選ぶとキーを消費するだけになります。";
                 ui.label("  to:").on_hover_text(to_hover);
                 ui.horizontal_wrapped(|ui| {
-                    main_key_combo_optional(
+                    main_key_combo_to_optional(
                         ui,
                         "new_to_main",
                         &mut self.new_keymap_to_main,
                         to_hover,
+                        left_thumb_vk,
+                        right_thumb_vk,
                     );
                     capture_button(ui, &mut capturing, CaptureTarget::NewTo);
                 })
@@ -2228,9 +2254,9 @@ impl SettingsApp {
                 },
                 from,
                 to: if self.new_keymap_to_main.is_empty() {
-                    None
+                    Vec::new()
                 } else {
-                    Some(self.new_keymap_to_main.clone())
+                    vec![self.new_keymap_to_main.clone()]
                 },
             });
             self.new_keymap_app.clear();
@@ -2486,7 +2512,13 @@ impl SettingsApp {
         let pb_key_hover = "Ctrl+このキーが素通しされた直後の次の1キーを NICOLA 変換せず\nそのまま通します（tmux の Ctrl+B 等の prefix キー用）。";
         ui.horizontal(|ui| {
             ui.label("Ctrl+").on_hover_text(pb_key_hover);
-            main_key_combo(ui, "new_pb_key", &mut self.new_pb_key, pb_key_hover);
+            main_key_combo(
+                ui,
+                "new_pb_key",
+                &mut self.new_pb_key,
+                pb_key_hover,
+                physical_key_options(),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_pb_process)
                     .desired_width(120.0)
@@ -3865,43 +3897,37 @@ mod ime_mode_key_options_tests {
 /// 候補に紛れていないことを保証する回帰テスト（2026-09-03 ユーザー指摘）。
 #[cfg(test)]
 mod keymap_from_key_options_tests {
-    use super::{KEYMAP_MAIN_KEYS, KEYMAP_VIRTUAL_ONLY_KEYS, keymap_from_key_options};
+    use super::{keymap_from_key_options, keymap_to_key_options};
+    use awase_windows::vk::{VK_CONVERT, VK_NONCONVERT, VK_SPACE};
 
-    /// `KEYMAP_VIRTUAL_ONLY_KEYS` に列挙したキーはすべて `keymap_from_key_options`
-    /// （from 候補）から除外されていること。
+    /// `forbidden_target_vk_reason(..., is_to_side=false)` が禁止するキーは
+    /// keymap from 候補から除外されていること。
     #[test]
-    fn virtual_only_keys_are_excluded_from_from_options() {
-        let from_internals: Vec<&str> = keymap_from_key_options().map(|(_, i)| *i).collect();
-        for virtual_key in KEYMAP_VIRTUAL_ONLY_KEYS {
+    fn forbidden_keys_are_excluded_from_from_options() {
+        let from_internals: Vec<&str> = keymap_from_key_options(VK_NONCONVERT, VK_CONVERT)
+            .map(|(_, i)| *i)
+            .collect();
+        for forbidden in ["変換", "無変換", "かな", "漢字", "VK_IME_ON", "VK_IME_OFF"] {
             assert!(
-                !from_internals.contains(virtual_key),
-                "{virtual_key} が keymap_from_key_options（from 候補）に漏れている"
+                !from_internals.contains(&forbidden),
+                "{forbidden} が keymap_from_key_options（from 候補）に漏れている"
             );
         }
     }
 
-    /// `KEYMAP_VIRTUAL_ONLY_KEYS` はあくまで from 側の絞り込みであり、to 側が
-    /// 使う `KEYMAP_MAIN_KEYS`（フルリスト）からは除去しない。
+    /// ADR-130 の OR 判定は to 側限定。親指キーを Space 等へ変えたユーザーでは、
+    /// `変換` は from 候補として使えるが to 候補からは除外される。
     #[test]
-    fn virtual_only_keys_remain_in_full_list_for_to_side() {
-        for virtual_key in KEYMAP_VIRTUAL_ONLY_KEYS {
-            assert!(
-                KEYMAP_MAIN_KEYS.iter().any(|(_, i)| i == virtual_key),
-                "{virtual_key} が KEYMAP_MAIN_KEYS（to 候補）から消えている"
-            );
-        }
-    }
+    fn conv_mutating_keys_are_to_side_only_exclusions() {
+        let from_internals: Vec<&str> = keymap_from_key_options(VK_NONCONVERT, VK_SPACE)
+            .map(|(_, i)| *i)
+            .collect();
+        let to_internals: Vec<&str> = keymap_to_key_options(VK_NONCONVERT, VK_SPACE)
+            .map(|(_, i)| *i)
+            .collect();
 
-    /// 物理キー（変換/無変換/かな/漢字 等）は引き続き from 候補に残ること。
-    #[test]
-    fn physical_ime_keys_remain_in_from_options() {
-        let from_internals: Vec<&str> = keymap_from_key_options().map(|(_, i)| *i).collect();
-        for physical in ["変換", "無変換", "かな", "漢字"] {
-            assert!(
-                from_internals.contains(&physical),
-                "{physical} が keymap_from_key_options から誤って除外されている"
-            );
-        }
+        assert!(from_internals.contains(&"変換"));
+        assert!(!to_internals.contains(&"変換"));
     }
 }
 
@@ -4043,32 +4069,89 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
     ("全角", "VK_DBE_DBCSCHAR"),
 ];
 
-/// `KEYMAP_MAIN_KEYS` のうち、対応する物理キーが存在しない IME 仮想キー。
+/// `KEYMAP_MAIN_KEYS` から、対応する物理キーが存在しない IME 仮想キー
+/// （`ImeKeyKind::ImeOn`/`ImeOff`/`Alphanumeric`/`Katakana`/`Activate`/
+/// `Deactivate`/`ActivatePair`）だけを除いた候補一覧。
 ///
-/// `VK_IME_ON`/`VK_IME_OFF`/`VK_DBE_ALPHANUMERIC`/`VK_DBE_KATAKANA`/
-/// `VK_DBE_HIRAGANA`/`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR` は `vk_name_to_code`
-/// が受理する（= 「to」側でソフトウェアから注入する分には意味がある）ものの、
-/// これらを生成する物理キーはどのキーボードにも存在しない（`変換`/`無変換`/
-/// `かな`/`漢字` とは異なる）。「from」（変換元＝物理キー押下のキャプチャ対象）
-/// 候補に混ぜると、ユーザーが選んでも絶対に発火しないルールができてしまう
-/// （2026-09-03 ユーザー指摘）。
-const KEYMAP_VIRTUAL_ONLY_KEYS: &[&str] = &[
-    "VK_IME_ON",
-    "VK_IME_OFF",
-    "VK_DBE_ALPHANUMERIC",
-    "VK_DBE_KATAKANA",
-    "VK_DBE_HIRAGANA",
-    "VK_DBE_SBCSCHAR",
-    "VK_DBE_DBCSCHAR",
-];
+/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::KanjiToggle`) は実在する
+/// 物理キーなので除外しない——`ImeKeyKind::from_vk(vk).is_some()` 全体を
+/// 除外条件にすると、この2つも誤って弾いてしまう（コードレビュー指摘）。
+///
+/// `[[keymap]]` の `from`/`to` 専用の `keymap_from_key_options`/
+/// `keymap_to_key_options` とは別物: あちらは親指キー重複・IME
+/// conv-mutating（ADR-130）といった `[[keymap]]` 固有の禁止理由まで含む
+/// SSOT（`forbidden_target_vk_reason`）を通すが、post_bypass prefix キーや
+/// `engine_toggle_hotkey` は `[[keymap]]` ルールではないため、それらの
+/// keymap 固有の禁止理由は適用対象外（ADR-130 決定6 の SSOT 化は
+/// 「keymap の from/to 候補」のみが対象、コードレビュー指摘 M2）。
+fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEYMAP_MAIN_KEYS.iter().filter(|(_, internal)| {
+        VkCode::from_name(internal).is_some_and(|vk| {
+            !matches!(
+                awase_windows::vk::ImeKeyKind::from_vk(vk),
+                Some(
+                    awase_windows::vk::ImeKeyKind::ImeOn
+                        | awase_windows::vk::ImeKeyKind::ImeOff
+                        | awase_windows::vk::ImeKeyKind::Alphanumeric
+                        | awase_windows::vk::ImeKeyKind::Katakana
+                        | awase_windows::vk::ImeKeyKind::Activate
+                        | awase_windows::vk::ImeKeyKind::Deactivate
+                        | awase_windows::vk::ImeKeyKind::ActivatePair
+                )
+            )
+        })
+    })
+}
 
-/// `KEYMAP_MAIN_KEYS` から `KEYMAP_VIRTUAL_ONLY_KEYS` を除いた、物理キー
-/// 押下のキャプチャ対象（keymap の from・post_bypass prefix キー・
-/// グローバルトグルホットキー）用の候補一覧。
-fn keymap_from_key_options() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    KEYMAP_MAIN_KEYS
-        .iter()
-        .filter(|(_, internal)| !KEYMAP_VIRTUAL_ONLY_KEYS.contains(internal))
+/// `KEYMAP_MAIN_KEYS` から、keymap の from 側で禁止される VK を除いた候補一覧。
+fn keymap_from_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    keymap_key_options(left_thumb_vk, right_thumb_vk, false)
+}
+
+/// `KEYMAP_MAIN_KEYS` から、keymap の to 側で禁止される VK を除いた候補一覧。
+fn keymap_to_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    keymap_key_options(left_thumb_vk, right_thumb_vk, true)
+}
+
+fn keymap_key_options(
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    KEYMAP_MAIN_KEYS.iter().filter(move |(_, internal)| {
+        keymap_internal_allowed(internal, left_thumb_vk, right_thumb_vk, is_to_side)
+    })
+}
+
+fn keymap_internal_allowed(
+    internal: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+    is_to_side: bool,
+) -> bool {
+    VkCode::from_name(internal).is_some_and(|vk| {
+        awase_windows::keymap::forbidden_target_vk_reason(
+            vk,
+            left_thumb_vk,
+            right_thumb_vk,
+            is_to_side,
+        )
+        .is_none()
+    })
+}
+
+fn keymap_thumb_vks(config: &awase::config::GeneralConfig) -> (VkCode, VkCode) {
+    let left = awase_windows::state::alt_impersonation::resolve_thumb_key(&config.left_thumb_key)
+        .map_or(awase_windows::vk::VK_NONCONVERT, |(vk, _)| vk);
+    let right = awase_windows::state::alt_impersonation::resolve_thumb_key(&config.right_thumb_key)
+        .map_or(awase_windows::vk::VK_CONVERT, |(vk, _)| vk);
+    (left, right)
 }
 
 const fn keyboard_model_label(model: awase::scanmap::KeyboardModel) -> &'static str {
@@ -4159,10 +4242,19 @@ fn thumb_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &
 /// main key ドロップダウン（必須選択版）。
 ///
 /// 呼び出し元はいずれも物理キー押下のキャプチャ対象（keymap の from・
-/// post_bypass prefix キー・グローバルトグルホットキー）のため、対応する
-/// 物理キーが存在しない IME 仮想キー（`KEYMAP_VIRTUAL_ONLY_KEYS`）は候補から
-/// 除外する（`keymap_from_key_options` 参照）。変更時は true を返す。
-fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &str) -> bool {
+/// post_bypass prefix キー・グローバルトグルホットキー）だが、候補一覧は
+/// 呼び出し元ごとに異なる（コードレビュー指摘 M2）: keymap の from は
+/// `keymap_from_key_options`（`[[keymap]]` 固有の禁止理由まで含む SSOT）、
+/// それ以外（post_bypass・トグルホットキー）は `physical_key_options`
+/// （物理キーが存在しない IME 仮想キーのみを除外）を渡す。変更時は true を
+/// 返す。
+fn main_key_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &mut String,
+    tooltip: &str,
+    options: impl Iterator<Item = &'static (&'static str, &'static str)>,
+) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
@@ -4173,7 +4265,7 @@ fn main_key_combo(ui: &mut egui::Ui, id: &str, current: &mut String, tooltip: &s
         })
         .width(110.0)
         .show_ui(ui, |ui| {
-            for (label, internal) in keymap_from_key_options() {
+            for (label, internal) in options {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -4200,7 +4292,7 @@ fn hotkey_combo_ui(ui: &mut egui::Ui, id: &str, current: &mut Option<String>, to
     changed |= ui.checkbox(&mut ctrl, "Ctrl").changed();
     changed |= ui.checkbox(&mut shift, "Shift").changed();
     changed |= ui.checkbox(&mut alt, "Alt").changed();
-    if main_key_combo(ui, id, &mut main, tooltip) {
+    if main_key_combo(ui, id, &mut main, tooltip, physical_key_options()) {
         changed = true;
     }
     if ui
@@ -4319,17 +4411,51 @@ fn egui_key_to_internal(key: egui::Key) -> Option<&'static str> {
     })
 }
 
-/// main key ドロップダウン（オプショナル版＝「消費のみ」選択肢付き）。
+/// main key ドロップダウン（keymap の to＝再注入先専用、必須選択版）。
 ///
-/// 呼び出し元は keymap の to（再注入先）専用。物理キー押下のキャプチャでは
-/// ないため、`main_key_combo` とは異なり `KEYMAP_MAIN_KEYS` を絞り込まず
-/// そのまま使う（IME 仮想キーもソフトウェアから注入する分には有効）。
-/// 変更時は true を返す。
-fn main_key_combo_optional(
+/// 物理キー押下のキャプチャ対象ではないが、ADR-130 の OR 判定
+/// （`ImeKeyKind::from_vk(vk).is_some() || vk_may_mutate_conv(vk)`）により
+/// `keymap_to_key_options`（`is_to_side=true`）で絞り込む——IME 制御系 VK は
+/// この経路でも禁止対象（`forbidden_target_vk_reason` 参照）。「消費のみ」
+/// 選択肢はここには無い（それは `main_key_combo_to_optional`）。変更時は
+/// true を返す。
+fn main_key_combo_to(
     ui: &mut egui::Ui,
     id: &str,
     current: &mut String,
     tooltip: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
+) -> bool {
+    let display = key_display_name(current).to_string();
+    let mut changed = false;
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(if current.is_empty() {
+            "（未選択）"
+        } else {
+            &display
+        })
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for (label, internal) in keymap_to_key_options(left_thumb_vk, right_thumb_vk) {
+                if ui.selectable_label(current == internal, *label).clicked() {
+                    *current = (*internal).to_string();
+                    changed = true;
+                }
+            }
+        })
+        .response
+        .on_hover_text(tooltip);
+    changed
+}
+
+fn main_key_combo_to_optional(
+    ui: &mut egui::Ui,
+    id: &str,
+    current: &mut String,
+    tooltip: &str,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
 ) -> bool {
     let display = key_display_name(current).to_string();
     let mut changed = false;
@@ -4349,7 +4475,7 @@ fn main_key_combo_optional(
                 current.clear();
                 changed = true;
             }
-            for (label, internal) in KEYMAP_MAIN_KEYS {
+            for (label, internal) in keymap_to_key_options(left_thumb_vk, right_thumb_vk) {
                 if ui.selectable_label(current == internal, *label).clicked() {
                     *current = (*internal).to_string();
                     changed = true;
@@ -4915,7 +5041,7 @@ mod layout_tab_repro {
     /// `full_tab_layout_render_with_real_config_does_not_panic` と同じ
     /// パターン）。`tab_keymap`は既存ルールが無いと空一覧の分岐しか通らない
     /// ため、ダミーの `KeymapRule` を1件足して非空分岐（`main_key_combo`/
-    /// `main_key_combo_optional` を含む行）も描画させる。
+    /// `main_key_combo_to` を含む行）も描画させる。
     #[test]
     fn remaining_tabs_render_does_not_panic() {
         let config_path = find_config_path();
@@ -4928,7 +5054,7 @@ mod layout_tab_repro {
         config.keymaps.push(awase::config::KeymapRule {
             app: Some("vim.exe".to_string()),
             from: "Ctrl+I".to_string(),
-            to: Some("VK_F7".to_string()),
+            to: vec!["VK_F7".to_string()],
         });
         config.post_bypass.push(awase::config::PostBypassRule {
             key: "Ctrl+B".to_string(),
