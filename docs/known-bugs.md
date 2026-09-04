@@ -12967,9 +12967,14 @@ Opus モデルによる読み取り専用の敵対的コードレビューを2�
 ファイル修正だけでは反映されない。上記のとおりトレイメニューからは
 実行できない）。
 
-**範囲外・未解決:** 当初報告にあった「テキスト入力が重い」という症状は、
-本 BUG の再現テストでは顕在化しなかったため未解決のまま残る——`かな混入`
-とは別原因の可能性がある。
+**範囲外・未解決 → 2026-09-04 追補で解明:** 当初報告にあった「テキスト入力が
+重い」という症状は、本 BUG の再現テストでは顕在化しなかったため未解決のまま
+残るとしていたが、**BUG-111 として独立の原因（`[imm-learning]` ログの
+500ms 周期無条件再発火）を特定・修正した**。また「かな混入」（本 BUG が
+指すプロセス間キー汚染とは別に）本体の学習結果自体が誤ることがある、という
+本節が示唆していた可能性も **BUG-112 として確定**した——`ImmGetDefaultIMEWnd`
+起動直後の一時的な NULL が `Unavailable` として誤確定される競合状態であり、
+BUG-107 のキー設計修正が適用済みでも独立に再現する。
 
 **関連ファイル:** `crates/awase-windows/src/focus/classifier.rs`
 （`ImmCapabilityStore`）、`crates/awase-windows/src/focus/tracker.rs`
@@ -12982,7 +12987,9 @@ BUG-37（IMM32/TSF 非信頼アプリでの belief 乖離、同系統だが原�
 異なる）、BUG-78（却下案が再利用しようとした `disable_apps` 丸ごと
 バイパス機構の初出）、ADR-121（「原因の半分」を早期に確定として扱って
 しまった教訓、本件で実装を急がず3回の実機検証を重ねた理由）、BUG-108
-（本件の調査中に発見した、無関係な既存バグ）。
+（本件の調査中に発見した、無関係な既存バグ）、BUG-111（「重い」の実体、
+2026-09-04 追補で特定・修正）、BUG-112（「あ混入」の残存原因、2026-09-04
+追補で特定）。
 
 ## BUG-108: タスクトレイの「学習キャッシュをクリア」メニュー項目が完全な no-op になっている
 
@@ -13250,3 +13257,134 @@ BUG-38（give-up 後の `pending_deferred` flush 漏れ、その同期点は本�
 一度も flush していない点で無関係）、BUG-75（`StaleConfirm` 回収の
 `escape_composition` 判定そのものの由来）、BUG-33 追補3・4（`VK_BACK` を
 避け `VK_ESCAPE` を使う設計の由来、backspace 案却下の根拠）。
+
+## BUG-111: `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発火させる
+
+**症状（ユーザー報告「不具合報告レポートのテキスト入力フォームがおもすぎて実用に
+耐えないほど不快」、2026-09-04）:** 不具合報告画面
+（`awase-settings.exe --bug-report`）の説明欄に親指シフトで入力していると
+「重い」と感じる。実機で `RUST_LOG=debug` を起動し同じ操作を再現したところ、
+`awase-settings.exe` のウィンドウ（class `"Window Class"`）にフォーカスが
+留まったまま約2.5分間で **`[imm-learning] profile 降格: Standard →
+Imm32Unavailable` ログが42回連続で再発火**していることを確認した——実フォーカス
+変更は1回も起きていない。
+
+**原因:** `runtime/ime_refresh.rs::run_ime_refresh`（自己再スケジュール型の
+IME 監視ループ、`ir_stage_focus` が毎ティック `detect_and_update_focus()` を
+無条件に呼ぶ設計、`reschedule_ime_refresh` で概ね500ms周期）は、実フォーカス
+変更の有無に関わらず `apply_focus_probe_result` → `advance_focus_tracking` →
+`FocusTracker::update_with_process_name`（`focus/tracker.rs`）を毎ティック
+呼ぶ。`CurrentFocus::update_with_process_name` が呼び出しのたびに
+`app_profile` をいったん静的分類（`Standard`）にリセットしてから学習済み
+降格を再適用する設計のため、旧コードは「リセット直後の静的値」対「学習済み
+降格値」を比較していた。学習済みエントリが `Imm32Unavailable` のまま変わって
+いなくても、この比較は**リセットのたびに必ず不一致**になり、既に降格済みで
+何一つ新しい情報が無いティックでも `log::info!` が再発火し続けていた。
+
+このログは `RUST_LOG` 未設定の通常運用でも出力される（`init_logging` の
+`default_filter_or("info")`、INFO レベル）ため、通常運用でもディスクI/O
+churn を継続的に発生させていた。
+
+**自己修復との両立:** `update_with_process_name` の毎ティック呼び出し自体は
+`Runtime::learn_imm_capability_from_miss` による store 更新（`Works` への
+回復学習）を反映するために必要（`FocusTracker::apply_learned_imm_capability`
+の doc コメント「次のフォーカス更新から降格は解除される」参照）であり、
+呼び出し自体を間引く修正は自己修復を壊すリスクがある。そのため呼び出しは
+残し、ログ発火条件だけを「直前 tick と同一ウィンドウ (`pid`+`class_name`)
+かつ同一の実効値」のときは抑制するよう修正した（`should_log_demotion` 純粋
+関数、`focus/tracker.rs`）。
+
+**実機A/B検証結果（2026-09-04）:** 修正版ビルドで同じ操作を再現したところ、
+降格ログは42回→**1回**に減少した（同一ウィンドウ在留中の再発火が解消）。
+ユーザーからは「軽くなったと感じた」とのフィードバックを得た。
+
+**残存する未解決課題（本 BUG のスコープ外）:** `classify_focus_probe`
+（`runtime/focus_tracking.rs`）が呼ぶ `imm_learning::learn_imm_capability_on_focus`
+（学習済みならスキップされる、軽量）とは別に、`kind_classifier::resolve_focus_kind`
+（MSAA/UIA クロスプロセス呼び出しを伴う）は実フォーカス変更の有無に関わらず
+毎ティック無条件に再実行され続けている（修正版ビルドの実機ログでも約500ms毎に
+`MSAA: role=...` の再発火を確認済み、2.5分間で103回）。ログ抑制とは独立に、
+この処理自体をフォーカス未変更時にスキップする最適化は未着手。シングルスレッド
+メッセージループ上でこの COM 呼び出しがどの程度打鍵処理をブロックしうるかも
+未計測。
+
+**修正履歴:** `1df09c2c`（2026-09-04、`fix/focus`、`should_log_demotion` 追加・
+回帰テスト3件）。
+
+**関連:** BUG-107（同じ `[imm-learning] profile 降格` ログを扱うが原因は別軸
+——本 BUG はログ発火条件のバグ、BUG-107 は学習キャッシュのキー設計のバグ）。
+
+## BUG-112: `awase-settings.exe` 起動直後の `ImmGetDefaultIMEWnd` が稀に一時的に NULL を返し、`ImmCapabilityStore` がそれを恒久的な `Unavailable` として誤確定する（BUG-107 の「あ混入」の根本原因、ADR-125「未解決の設計課題3」の解決）
+
+**症状（ユーザー報告、2026-09-04）:** 不具合報告画面の説明欄で親指シフト入力
+すると、稀に先頭に意図しない「あ」が混入する（BUG-107 として既に報告・
+process/class キー化で修正済みのはずだった）。
+
+**BUG-107 の修正では説明できない再現を実機で確認:** BUG-107 の修正
+（`ImmCapabilityStore` を `(process_name, class_name)` キーにする、ADR-125）
+が適用済みのビルドで実機再現テストを行ったところ、**「あ」混入は依然として
+再現した**。原因切り分けのため `target/debug/cache.toml` を確認したところ、
+`[imm_capability."awase-settings.exe"] "Window Class" = "unavailable"` が
+**プロセス間汚染ではなく、`awase-settings.exe` 自身の過去セッションでの
+学習として正しくキーされたまま**残っていた——つまり BUG-107 の修正（キー
+設計）自体は正しく機能しているが、**そもそもこの学習結果自体が誤っている**
+という、ADR-125 が「未確認」のまま残していた設計課題3
+（`Imm32Unavailable` 降格後の具体的な誤動作メカニズム、および降格の判定
+自体が正しいかどうか）が、別の独立した原因として存在することが判明した。
+
+**再現実験（cache.toml を消去してフレッシュに学習させる、2026-09-04）:**
+
+1. 1回目: `target/debug/cache.toml` を削除し `awase.exe`/`awase-settings.exe`
+   を再起動、説明欄に入力 → **`"Window Class" = "unavailable"` が再学習され、
+   「あ」が混入した**（本 BUG のセクション冒頭の再現）。
+2. 2回目: 同じ手順（cache.toml 削除・再起動・同じ操作）を再実行 →
+   **今度は `"Window Class" = "works"` と正しく学習され、「あ」は混入
+   しなかった**。
+
+同一の起動手順・同一の操作で、学習結果が `unavailable` と `works` の間で
+**再現性なく揺れる**ことを確認した。「works 時は あ混入なし／unavailable
+時は あ混入あり」という対応も一致しており、**誤学習（`Imm32Unavailable`
+への誤降格）と「あ」混入の因果関係は確定した**（詳細な出力経路——降格後の
+どの VK 送信パスが「あ」を出力するか——はまだ未追跡、ADR-125 設計課題3の
+後半は引き続き未解決）。
+
+**原因（推定、確度中）:** `focus/imm_learning.rs::learn_imm_capability_on_focus`
+は `crate::imm::get_ime_wnd(hwnd)`（＝`ImmGetDefaultIMEWnd(hwnd)`）を、
+`run_ime_refresh` の 500ms 周期リフレッシュ経由でフォーカス確立後すぐに
+呼ぶ。`ImmCapabilityStore::UNAVAILABLE_CONFIRM_THRESHOLD = 2`
+（`focus/classifier.rs`、BUG-56 対策の連続観測デバウンス）は「2回連続で
+NULL を観測したら確定」という**回数ベース**のデバウンスであり、2回の観測が
+時間的にどれだけ離れているか（＝ウィンドウ生成からの経過時間）は問わない。
+`awase-settings.exe --bug-report` は起動直後にフォーカスされる単一ウィンドウ
+アプリであるため、起動直後の短い期間（推定: 数百ms〜1秒程度、未実測）
+`ImmGetDefaultIMEWnd` が一時的に NULL を返す実 Win32 レベルの競合状態が
+存在し、500ms 周期のポーリングがこの窓に運悪く2回連続でヒットすると、
+本来一時的なだけの NULL が恒久的な `Unavailable` として `cache.toml` に
+確定・永続化されてしまう（ADR-125「実機検証ログ2」が確認した通り、
+`ImmGetDefaultIMEWnd`/`WM_IME_CONTROL` による実際のクロスプロセス制御
+自体は `awase-settings.exe` に対して正常に機能する——確定した
+`Unavailable` は誤り）。
+
+**却下ではなく保留とした対策（`tuning-constants.md` 抵触のため）:**
+「起動直後 N ms は確定させない」という時間ベースのグレースピリオドを
+`record_null_probe`（`focus/classifier.rs`）に足す案が最も直接的な修正だが、
+`.claude/rules/tuning-constants.md` は新規タイミング定数の導入に実測値を
+要求する。本 BUG の2回の再現実験では「NULL が持続した期間」を秒単位でしか
+把握しておらず（ログのタイムスタンプからは「起動〜初回学習まで」の大まかな
+時間は分かるが、競合窓そのものの実測値ではない）、`N` の根拠となる実測が
+まだ無い。実測せずに定数を導入するとこのルールに抵触するため、恒久修正は
+次回セッションで実測（複数回の起動を細かくポーリングし、`ImmGetDefaultIMEWnd`
+が NULL から non-NULL に切り替わるまでの実時間分布を取る）してから着手する。
+
+**暫定回避（BUG-56/107 と同じ）:** `cache.toml` の
+`[imm_capability."awase-settings.exe"] "Window Class"` エントリを削除し
+awase を再起動する。GUI からの回避は BUG-108（学習キャッシュクリアの
+no-op）が解消されるまで使えない。
+
+**関連:** BUG-107（学習キャッシュのプロセス間キー汚染、本 BUG とは独立の
+原因だが同じ症状「あ混入」を引き起こしうる）、BUG-111（同じ実機調査
+セッションで発見した無関係な性能バグ、`[imm-learning]` ログの再発火）、
+BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+（「未解決の設計課題」3 の一部を本 BUG が解決）、
+[tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
+定数を導入する際に実測を要求するルール）。
