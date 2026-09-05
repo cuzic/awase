@@ -1993,6 +1993,22 @@ impl Runtime {
                 event.event_type
             );
         }
+        // BUG-113 診断専用（一時的）: Ctrl+無変換 では「@」が出ないことから
+        // send_ime_mode_key(VK_IME_OFF) 自体は真因ではないと確定したため、残る
+        // 仮説「物理半角/全角キー自体が Suppress されず Windows Terminal に raw で
+        // 届いている」を検証する。suppress_reason が None（＝Allow）のときも含めて
+        // 常にログを出す点が既存の [{reason}] key suppress ログと異なる。
+        // 調査終了後は削除すること。
+        if matches!(
+            event.vk_code,
+            crate::vk::VK_DBE_SBCSCHAR | crate::vk::VK_DBE_DBCSCHAR
+        ) {
+            log::warn!(
+                "[bug113-diag] physical={physical:?} profile={profile:?} vk={:#04x} {:?}",
+                event.vk_code,
+                event.event_type
+            );
+        }
 
         // F2 (VK_DBE_HIRAGANA) KeyDown: CompositionFsm に副作用を委譲。
         // Suppress（TSF mode）・Allow（非 TSF mode）いずれの場合も mark_cold + eager warmup を実行。
