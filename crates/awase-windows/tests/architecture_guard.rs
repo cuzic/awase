@@ -2644,7 +2644,12 @@ fn establish_initial_focus_scope_advances_focus_epoch_once() {
 #[test]
 fn establish_initial_focus_scope_does_not_write_ime_belief() {
     // (関数名, 禁止語) の組で例外を明示する。件数と中身は下の専用 assert が縛る。
-    const EXEMPT: &[(&str, &str)] = &[("sync_initial_focus_fence", "dispatch_event(")];
+    const EXEMPT: &[(&str, &str)] = &[
+        ("sync_initial_focus_fence", "dispatch_event("),
+        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
+        // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
+        ("sync_initial_app_policy", "dispatch_event("),
+    ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let bodies = [
@@ -2680,6 +2685,13 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "sync_initial_focus_fence",
             extract_fn_body(&content, "fn sync_initial_focus_fence"),
         ),
+        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
+        // 同じ理由（対象リストへ載せないと belief 書き込みを足しても検知
+        // できない）で明示的に加える。
+        (
+            "sync_initial_app_policy",
+            extract_fn_body(&content, "fn sync_initial_app_policy"),
+        ),
     ];
     for forbidden in [
         "dispatch_event(",
@@ -2713,6 +2725,42 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         non_comment_lines(sync_body).contains("ImeEvent::InitialFocusFenceEstablished"),
         "sync_initial_focus_fence の唯一の dispatch は \
          ImeEvent::InitialFocusFenceEstablished であること"
+    );
+
+    // BUG-114 根本原因1（ADR-134 D1c）: `sync_initial_app_policy` も同様に
+    // dispatch_event ちょうど1件、`InitialAppPolicyEstablished` のみであること。
+    let app_policy_sync_body = extract_fn_body(&content, "fn sync_initial_app_policy");
+    assert_eq!(
+        count_real_calls(app_policy_sync_body, "dispatch_event("),
+        1,
+        "sync_initial_app_policy の dispatch_event はちょうど1件（app_policy 初期化のみ）"
+    );
+    assert!(
+        non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
+        "sync_initial_app_policy の唯一の dispatch は \
+         ImeEvent::InitialAppPolicyEstablished であること"
+    );
+
+    // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
+    // かつ `advance_focus_tracking`（`current_app_profile()` が正しい値を返す
+    // ようになる箇所）より後に呼ぶこと（ADR-134 D1c の実装位置要件）。
+    let bootstrap_body = extract_fn_body(&content, "fn establish_initial_focus_scope");
+    assert_eq!(
+        count_real_calls(bootstrap_body, "self.sync_initial_app_policy("),
+        1,
+        "establish_initial_focus_scope は sync_initial_app_policy をちょうど1回呼ぶこと"
+    );
+    let bootstrap_code = non_comment_lines(bootstrap_body);
+    let advance_idx = bootstrap_code
+        .find("self.advance_focus_tracking(")
+        .expect("establish_initial_focus_scope must call advance_focus_tracking");
+    let app_policy_idx = bootstrap_code
+        .find("self.sync_initial_app_policy(")
+        .expect("establish_initial_focus_scope must call sync_initial_app_policy");
+    assert!(
+        advance_idx < app_policy_idx,
+        "sync_initial_app_policy は advance_focus_tracking の後に呼ぶこと \
+         (先に呼ぶと current_app_profile() がまだ正しい値を返さない、ADR-134 D1c)"
     );
 }
 
@@ -2893,6 +2941,53 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                  このイベントは bootstrap（最初の IME 観測より前）でのみ dispatch される\
                  専用イベントです。新しい呼び出し元を足す前に、それが本当に「起動時の\
                  初回フォーカススコープ確立」なのかを確認してください（ADR-102 決定3-b）。"
+            );
+        }
+    }
+}
+
+/// BUG-114 根本原因1（ADR-134 D1c）: `ImeEvent::InitialAppPolicyEstablished` は
+/// bootstrap 専用であり、dispatch 元は `sync_initial_app_policy` の1箇所だけ。
+/// reducer 側のアームは `self.app_policy = AppImePolicy::from_profile(profile)`
+/// （app_policy 1フィールドの差し替え）しか行わない。
+///
+/// `initial_focus_fence_event_only_touches_the_fence` と同じ構造の監視テスト。
+/// アーム本体が app_policy 以外に触れないことは
+/// `state::ime_model::tests::initial_app_policy_established_touches_only_app_policy`
+/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+#[test]
+fn initial_app_policy_event_only_touches_app_policy() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let checks: &[(&str, &[(&str, usize)])] = &[(
+        "InitialAppPolicyEstablished",
+        &[
+            ("runtime/focus_tracking.rs", 1),
+            ("state/ime_model.rs", 1),
+            ("state/ime_event.rs", 1),
+        ],
+    )];
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            let expected_count = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, expected_count,
+                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
+                 {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
             );
         }
     }

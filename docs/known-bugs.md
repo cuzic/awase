@@ -14095,7 +14095,42 @@ attempts=5` で終了、バースト間隔は7秒〜60秒とばらつきあり�
 `Blind` 文脈でのみ意味を持ち、`Read` 文脈の genuine な `ObserverPoll` を
 巻き込まない。回帰テスト3件
 （`read_back_any_fresh_evidence_ignores_observer_poll_alone` 等）を追加。
-実機での効果確認（暴走が止まるか）は未実施。
+
+**追記（2026-09-05 続き・実機再検証で根本原因1を直接確認、D1c実装）**:
+上記修正（ObserverPoll 除外）を実機に投入して再検証したところ、暴走は
+解消せず**別の形**（`gave up (Blind)` が一度も出ないまま
+`observed=true ≠ desired=false for Nms` が単調に増加し続ける、無条件・
+無停止の毎tick再送）で再現した。この時 `[bug114-diag]`（ADR-134 D4）が
+**全ドリフト判定と同数**出力され、常に
+`snapshot_policy=Read { source: ImmGetOpenStatus, .. } live_policy=Blind
+{ .. } current_focus=None` だった。`current_focus=None` は
+`FocusChanged` の reducer（`state/ime_model.rs`）でのみ書かれるフィールド
+であり、**起動から一度もプロセス切替が起きていない**ことの直接証拠——
+まさに ADR-134 根本原因1（bootstrap 窓）が実機で成立していたことを
+確定させた。ユーザー報告によれば同一の Windows Terminal でも
+SSH/MSYS2 セッションでは再現せず PowerShell セッションで再現する
+とのことだが、これは awase 再起動直後にどのタブ/シェルへフォーカスして
+いたか（＝ bootstrap 窓に入るかどうか）に依存すると考えれば整合する
+（シェルの種類自体が分岐条件になっているわけではないと推定、未検証）。
+
+修正（ADR-134 D1c）: 起動直後の初回フォーカス確立時（
+`runtime/focus_tracking.rs::establish_initial_focus_scope`）に、新設した
+`ImeEvent::InitialAppPolicyEstablished { profile }` イベント
+（`sync_initial_app_policy` から dispatch、`advance_focus_tracking` の
+後・`sync_initial_focus_fence` と同じタイミング）で `app_policy` を
+live の profile 分類から初期化する。`InitialFocusFenceEstablished`
+（`current_fence` 1フィールドの差し替えのみという ADR-102 決定3-b の
+不変条件）とは意図的に別イベントにし、同じ「1フィールドだけ差し替え」
+規律を新イベントにも適用（reducer 実行時テスト
+`initial_app_policy_established_touches_only_app_policy`、テキスト
+スキャンの構造ガード `initial_app_policy_event_only_touches_app_policy`
+の2段で固定）。D1（`ir_apply_drift_correction` のライブ再導出）・D1a
+（`ImePolicyProfile::InputRelay` 追加）は未実装のまま——D1c が bootstrap
+窓を塞いだ後の実機ソークで、根本原因2系（`FocusChanged` を経由しない
+ライブ分類変化）が残存するかを見てから着手する。
+
+**現状**: D1c 実装済み、実機での効果確認（この根本原因1のケースで暴走が
+止まるか）は次のスパイクで実施予定。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された

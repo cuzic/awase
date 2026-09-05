@@ -135,6 +135,11 @@ impl Runtime {
         // その場合は `enter_focus_scope` も走っておらず live 側 epoch も 0 のまま
         // なので、両側は既定値で一致したままになる（BUG-102 の desync は起きない）。
         self.sync_initial_focus_fence(tick_ms);
+        // BUG-114 根本原因1（ADR-134 D1c）: `advance_focus_tracking` 済み
+        // （`self.platform.focus.current.app_profile` 確定済み）の**後**に
+        // 呼ぶこと。これより前だと `current_app_profile()` がまだ正しい
+        // 値を返さない。
+        self.sync_initial_app_policy(tick_ms);
 
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
@@ -214,6 +219,26 @@ impl Runtime {
         log::debug!("[focus-fence] bootstrap initial fence: {fence:?}");
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InitialFocusFenceEstablished { fence },
+            tick_ms,
+        );
+    }
+
+    /// BUG-114 根本原因1（ADR-134 D1c）: 起動直後の初回フォーカス確立時に
+    /// `app_policy` を live 側の profile 分類で初期化する。
+    ///
+    /// これが無いと `app_policy`（`ImeModel::app_policy`）は既定値
+    /// `AppImePolicy::standard()`（`ImmCross` 固定、`default_feedback=Read`）
+    /// のまま、最初のプロセス切替（`FocusChanged`）まで固定される。ユーザーが
+    /// 起動後 1 つのアプリ（Windows Terminal 等）に留まり続けるだけの
+    /// 自然な使い方でこの窓に入り、TsfNative/Imm32Unavailable では読み戻し
+    /// 不能なため `Read` が無条件に再送し続ける（実機確認済み、
+    /// `docs/known-bugs.md` BUG-114）。
+    fn sync_initial_app_policy(&mut self, tick_ms: crate::state::TickMs) {
+        let profile: crate::state::ime_event::ImePolicyProfile =
+            self.platform.current_app_profile().into();
+        log::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InitialAppPolicyEstablished { profile },
             tick_ms,
         );
     }
