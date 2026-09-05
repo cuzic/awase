@@ -2,22 +2,28 @@
 
 ## ステータス
 
-**再調査中（2026-09-05）。バッチ形状（候補V/A/B3/B4）・VK値
-（`VK_IME_OFF` vs `VK_KANJI`）の両仮説は実機A/Bで反証、これらの候補は
-不採用。ユーザー実機観測から PowerShell PSReadLine との相互作用が
-トリガーの一部であることは確認したが、awase 側のどの送信方式・呼び出し
-経路が「@」の必要十分条件かはまだ未特定——「相手（GJI/PSReadLine）の
-実装が脆弱」であることは awase 側の送信動作が無関係であることを
-意味しない（他の known-bugs エントリと同じ扱い）。
-`set_ime_open_cross_process`（`ImmSetOpenStatus`）は TsfNative（Windows
-Terminal 含む）に対してそもそも効果を持たないため候補から除外した。
+**必要十分条件を実機A/Bで確定（2026-09-05）。恒久修正は設計・実装待ち。**
 
-呼び出し連鎖の全数調査で見つかった新候補（`kp_stage_idle_conv_check` が
-spawn する GJI への cross-process 読み取りクエリが、`GjiDirectStrategy::
-apply` の同期 `SendInput` と競合しうる）と、既知の「2重actuation」
-（`shadow_toggle_off_sync`/`engine_decision_sync`）を切り分ける第2弾
-診断スパイクを実装済み・実機投入待ち（`docs/known-bugs.md` BUG-113
-「未解決・次にやること」参照）。**
+バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs `VK_KANJI`）の両仮説、
+および `set_ime_open_cross_process`（TsfNativeに効果なし）はいずれも
+不採用。呼び出し連鎖の全数調査で見つけた2つの候補——(1)
+`GjiDirectStrategy::apply(open=false)` の二重actuation
+（`shadow_toggle_off_sync`/`engine_decision_sync`）、(2)
+`kp_stage_idle_conv_check` が spawn する GJI への cross-process 読み取り
+（`WM_IME_CONTROL/IMC_GETCONVERSIONMODE`）——を1セッション内で4条件
+自動ローテーションする第3弾診断スパイクで実機A/Bした結果、**この2つの
+うちどちらか一方を解消するだけで「@」は再現しなくなる**ことを
+63トライアル（各条件15〜16、baseline以外は0/16または0/15）で確認した。
+詳細は `docs/known-bugs.md` BUG-113 最新の追記、
+`docs/experiments.md` エントリ22参照。
+
+恒久修正候補: 二重actuationの解消（`shadow_toggle_off_sync`/
+`engine_decision_sync`の冗長性そのものの是正、BUG-113の有無に関わらず
+正当化できる）が最有力。`kp_stage_idle_conv_check`のprobeは他シナリオ
+向けの正規機能のため丸ごと無効化ではなく、actuationとの時間的競合を
+避ける方向の設計が必要。`ime_controller.rs`/`runtime/key_pipeline.rs`
+はfix-requires-evidence.mdの「IME actuation合流点」対象——恒久修正は
+Opus敵対的レビューを経てから実装する。
 
 D0-3診断コード一式（バッチ形状・VK値検証専用）は役目を終えたため撤去済み。
 

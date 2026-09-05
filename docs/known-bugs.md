@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**バッチ形状・VK値の両仮説は反証。PowerShell PSReadLine との相互作用が引き金と確認したが、awaseのどのactuation/probeが実際にそれを踏み抜いているかは未特定——次は実機でそこを切り分ける**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**必要十分条件を実機A/Bで確定: 二重actuation・idle-conv-checkのcross-process読み取りのいずれか単独の解消で再現しなくなる。恒久修正は設計・実装待ち**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14061,12 +14061,68 @@ IMM クエリスキップ（`ime.rs::read_ime_state_full` の `is_tsf_native_win
    丸ごとスキップし、「@」の引き金が実際にこの読み取りとの競合なのかを
    確認する。
 
-**現状**: 真因候補は「awase の GJI actuation」まで絞り込んだが、
-具体的にどの送信方式・どの呼び出し経路が「@」の必要十分条件かは
-未特定のまま。旧診断コード一式（バッチ形状・VK値検証専用）は役目を
-終えたため撤去し、上記2トグルの新しい診断スパイクを実装済み
-（未反映）。回避策（PSReadLine無効化、または該当セッションでの awase
-Engine 無効化）は暫定手段として引き続き有効。
+**追記（2026-09-05 続き・実機A/Bで必要十分条件を確定）**:
+上記2トグルを config.toml 編集なしで1セッション内で自動ローテーション
+する第3弾スパイク（`diag_bug113_combo.rs`、`kp_run_inner` 冒頭で物理・
+非注入の `ShadowImeAction::TurnOff` 方向 KeyDown ごとに4条件
+[0=baseline/1=dedupのみ/2=probe skipのみ/3=両方] を巡回、`ime_controller.rs`・
+`key_pipeline.rs` の両方が同じコンボを参照）を実装・実機投入した。
+
+実装初期に2件のバグを実機ログで発見・修正した（教訓として記録）:
+(1) コンボ選択に `!event.injected` ガードが無く、`GjiDirectStrategy::
+apply` 自身が送る `VK_IME_OFF`/`VK_IME_ON` の `SendInput` が injected=true
+で hook にループバックした際にもコンボが進んでしまっていた。
+(2) VK 分類（`event.ime_relevance.shadow_action`）による限定
+（`.is_some()`）だけでは、物理半角/全角キーが `TurnOff`(vk=0xF3)/
+`TurnOn`(vk=0xF4) を押すたびに厳密に交互する（周期2）のに対しコンボの
+巡回周期が4（2の倍数）であるため、**TurnOff 方向が構造的に必ず偶数
+コンボ（0か2、dedup=false）にしか当たらないというエイリアシング**が
+起きていた——dedup=trueが割り当たコンボ1・3は全てTurnOn方向の押下で
+あり、「@」が起きえない方向でしかdedup=trueを検証できていなかった。
+`shadow_action == Some(TurnOff)` に限定してコンボを進めるよう修正し
+解消した（詳細は `runtime/key_pipeline.rs` のコミット履歴・
+docs/experiments.md エントリ22参照）。
+
+この2件を修正した版で実機A/Bを実施した結果、**「@」は combo=0
+（baseline、dedup=false かつ probe skipなし）のときにのみ、極めて
+整合的に（ユーザー表現: 「4回に1回、きわめて整合的」）発生し、
+combo=1（dedupのみ）・combo=2（probe skipのみ）・combo=3（両方）では
+一度も発生しなかった**（各条件15〜16トライアル、TurnOff方向のみ数えて
+合計63トライアル中、baseline以外はゼロ）。すなわち:
+
+- **`GjiDirectStrategy::apply(open=false)` の二重actuation
+  （`shadow_toggle_off_sync`/`engine_decision_sync`）を1回に減らす
+  （dedup）ことは、単独で「@」を防ぐのに十分**である。
+- **`kp_stage_idle_conv_check` が spawn する GJI への cross-process
+  読み取り（`WM_IME_CONTROL/IMC_GETCONVERSIONMODE`）を丸ごとスキップ
+  することも、単独で「@」を防ぐのに十分**である。
+- 両方無効化しても（当然）「@」は出ない。
+
+**結論:** 「@」は、この読み取り専用クエリと、`SendInput` によるIME mode
+key actuation（特にその二重発行）とが時間的に近接して発生することで
+GJI の TSF composition 追跡を乱す、という機構が濃厚である
+（PSReadLine の再描画/バッファ処理との相互作用は、この乱れを可視化する
+経路として働いていると考えられる——GJI 自体がクローズドソースのため
+内部機構としての確定はできない）。**いずれの要因も awase 自身が
+制御可能な送信動作であり、外部要因（PSReadLine）の発見は awase 側の
+修正が不要であることを意味しない。**
+
+**次にやること（恒久修正の設計）**: 二重actuation（dedup相当）の解消は、
+`shadow_toggle_off_sync`/`engine_decision_sync` という異なる2経路から
+同一の物理押下に対して重複してactuationが発行される、という
+アーキテクチャ上の冗長性そのものの是正であり、BUG-113 の有無に関わらず
+正当化できる恒久修正候補として最有力。`kp_stage_idle_conv_check` の
+probe は他のシナリオ（アイドル明けの conv-mode belief 回復）のために
+存在する正規機能であり、丸ごと無効化するのではなく、GJI actuation と
+時間的に重ならないようにする（例: actuation 直後の一定時間は idle-conv
+probe をスキップする、または逆に probe 実行中は actuation を遅延する）
+方向の設計が必要。`ime_controller.rs`/`runtime/key_pipeline.rs` は
+fix-requires-evidence.md の「IME actuation 合流点」対象ファイルであり、
+恒久修正は Opus 敵対的レビューを経てから実装する（ユーザー判断待ち）。
+診断専用コード一式（`diag_bug113_combo.rs`、
+`diag_bug113_dedup_gji_off_actuation`/`diag_bug113_skip_idle_conv_probe`/
+`diag_bug113_combo_cycle_enabled`）は恒久修正が実装され実機確認が
+取れた後に撤去する。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
