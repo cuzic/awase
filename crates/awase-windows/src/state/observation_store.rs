@@ -711,10 +711,14 @@ impl ObservationStore {
     /// 「読み戻しの意味を宣言させる」という本設計の狙いである（B-R2）。
     #[must_use]
     fn most_recent_trusted_after(&self, now: Instant, since: Instant) -> Option<&ImeObservation> {
-        self.per_source
-            .iter()
-            .filter(|o| !o.is_expired(now) && o.at >= since)
-            .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
+        // `most_recent_trusted_after_excluding(now, since, &[])` に委譲する
+        // （code-review指摘、2026-09-05）: 除外リストが空なら
+        // `exclude.contains(&o.source)` は常に false のため、フィルタ条件は
+        // 元の実装と完全に同値。フィルタ/tie-breakロジックが2箇所に
+        // 重複していると、将来どちらか一方だけを変更してしまい
+        // BUG-114型の再発（AnyFreshEvidence側だけ古いロジックのまま残る等）
+        // を招くリスクがあったため一本化した。
+        self.most_recent_trusted_after_excluding(now, since, &[])
     }
 
     /// [`most_recent_trusted_after`] と同じだが、指定した `ObservationSource`
