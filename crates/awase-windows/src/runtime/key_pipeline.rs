@@ -69,31 +69,39 @@ impl Runtime {
     #[expect(clippy::cognitive_complexity)]
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
+        self.enrich_ime_relevance(&mut event);
+
         // BUG-113 診断専用（一時的、第3弾）: このイベント処理全体で使う
-        // コンボを最初に1回だけ選ぶ（物理・非注入のKeyDownのみ、KeyUpや
-        // awase自身のSendInputが自己ループバックしたinjectedイベントでは
-        // 消費しない）。`event.injected`はBUG-14対策で`kp_stage_shadow_
-        // ime_toggle`が見るのと同じフィールドだが、あちらのチェックは
-        // このコンボ選択より後で走る——ここで先にガードしないと、
-        // GjiDirectStrategy::apply が送るVK_IME_OFF/ONのSendInputが
-        // injected=trueで舞い戻ってきた際にもコンボを進めてしまい、
-        // 物理押下とコンボの対応がずれる（2026-09-05実機テストで
-        // 「奇数回目=IME OFF方向で必ず@」という結果が出たが、これは
-        // dedup/probe skipが効いていないのではなく、この対応ずれで
-        // 実際に適用されたコンボが記録と一致していなかったため）。
+        // コンボを最初に1回だけ選ぶ。物理・非注入のKeyDownかつ
+        // `ime_relevance.shadow_action`が付いている（＝物理IMEモード
+        // キーとして分類された）イベントに限定する——`enrich_ime_relevance`
+        // 呼び出しの「後」に置く必要があるのはこのフィールドを参照する
+        // ため。この2条件を最初のバージョンでは満たしておらず、(1)
+        // `!event.injected`を欠いていたため awase 自身の VK_IME_OFF/ON
+        // SendInput が injected=true で舞い戻ってきた際にもコンボを
+        // 進めてしまい、(2) 分類前（`enrich_ime_relevance`より前）に
+        // 判定していたため対象VK以外の通常の打鍵も無条件にコンボを
+        // 消費していた。2026-09-05実機テストで「IME OFF方向の押下では
+        // 必ず@が出る」という結果が出たが、ログを見るとテスト対象キーの
+        // 単発押下とは無関係な~30ms間隔の連続イベントでコンボが進んで
+        // おり、宣言したコンボと実際に適用されたコンボが一致していな
+        // かった。この2条件を両方満たすよう修正した。
         // 以後この関数内の probe 側・actuation 側の両方が同じコンボを
         // 参照する。
-        if matches!(event.event_type, KeyEventType::KeyDown) && !event.injected {
+        if matches!(event.event_type, KeyEventType::KeyDown)
+            && !event.injected
+            && event.ime_relevance.shadow_action.is_some()
+        {
             crate::diag_bug113_combo::select_for_new_event();
             if crate::diag_bug113_combo::combo_cycle_enabled() {
                 let (dedup, skip_probe) = crate::diag_bug113_combo::current_combo_flags();
                 log::warn!(
-                    "[bug113-diag3] event combo={} (dedup={dedup} skip_probe={skip_probe})",
-                    crate::diag_bug113_combo::combo_label(dedup, skip_probe)
+                    "[bug113-diag3] event combo={} (dedup={dedup} skip_probe={skip_probe}) vk=0x{:02X}",
+                    crate::diag_bug113_combo::combo_label(dedup, skip_probe),
+                    event.vk_code
                 );
             }
         }
-        self.enrich_ime_relevance(&mut event);
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
