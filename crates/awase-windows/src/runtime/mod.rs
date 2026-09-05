@@ -1513,6 +1513,9 @@ impl Runtime {
         self.set_windows_terminal_vk_kana_dbe_hiragana_spike(
             config.general.windows_terminal_vk_kana_dbe_hiragana_spike,
         );
+        crate::ime_controller::set_diag_bug113_mode_cycle_enabled(
+            config.general.diag_bug113_mode_cycle_enabled,
+        );
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );

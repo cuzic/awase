@@ -97,6 +97,113 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     }
 }
 
+// ── BUG-113 診断専用スパイク（一時的、恒久機能ではない） ───────────────
+//
+// wScan=0（反証済み）、drift correction の FeedbackPolicy::Read 無限再送
+// （BUG-114、単独では「@」の必要条件ではないと確認済み）、物理キーの
+// suppress 失敗（実機ログで physical=Suppress が常に成立していると確認済み）、
+// VK_IME_OFF 送信自体（Ctrl+無変換 でも同じ send_ime_mode_key(VK_IME_OFF) を
+// 送るのに「@」が出ないことから否定済み）のいずれも否定された後の仮説検証。
+//
+// 残る仮説: 物理半角/全角キー（VK_DBE_SBCSCHAR/DBCSCHAR）は awase のフックが
+// suppress しても、OS のハードウェアキー状態（`GetAsyncKeyState` 等、フックの
+// 消費とは独立に更新される）には「まだ押されている」ことが反映されたままで、
+// GJI 自身の TSF が合成 `VK_IME_OFF` を処理する際にこの残留キー状態を参照して
+// 誤った composition/文字化を起こしている可能性がある。TurnOff 方向でのみ
+// VK_DBE_SBCSCHAR が押下中、TurnOn 方向でのみ VK_DBE_DBCSCHAR が押下中になる
+// ため、「@」が TurnOff 方向でしか出ない非対称性とも整合する。
+//
+// これを複数の仮説を1回のテストセッションでまとめて切り分けるため、
+// `GjiDirectStrategy::apply(open=false)` の呼び出しごとに送信方式を自動で
+// ローテーションする（有効時のみ）:
+//   mode 0（baseline）: 通常どおり send_ime_mode_key(VK_IME_OFF)（対照群）
+//   mode 1（imm-cross）: send_ime_mode_key を一切使わず
+//                        set_ime_open_cross_process(false)（ImmSetOpenStatus、
+//                        メッセージベース）を試す。TsfNative では「構造的に
+//                        使えない」設計前提だが診断目的で一時的に無視する。
+//   mode 2（keystate-clear）: send_ime_mode_key(VK_IME_OFF) の直前に
+//                        VK_DBE_SBCSCHAR の synthetic KeyUp を注入し、
+//                        残留キー状態を能動的にクリアしてから送る（修正候補
+//                        としても機能する）。
+// 各回 `[bug113-diag] mode=N ...` を WARN で記録するので、実機で押下した
+// 何回目に「@」が出たかとログの mode を突き合わせる。
+// 調査終了後は `crate::ime_controller::set_diag_bug113_mode_cycle_enabled`
+// の呼び出し元・本ブロック一式・`ime.rs::diag_bug113_clear_dbe_sbcschar_keystate`
+// ごと削除すること。
+
+static DIAG_BUG113_MODE_CYCLE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static DIAG_BUG113_MODE_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// BUG-113 診断専用（一時的）: `true` の間、`GjiDirectStrategy::apply(open=false)`
+/// の送信方式を呼び出しごとに自動ローテーションする。`bootstrap.rs`（起動時）と
+/// `runtime/mod.rs::apply_config_update`（reload 時）から `config.toml` の
+/// `diag_bug113_mode_cycle_enabled` に応じて直接呼ぶ。
+pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
+    use std::sync::atomic::Ordering;
+    if enabled != DIAG_BUG113_MODE_CYCLE_ENABLED.swap(enabled, Ordering::Relaxed) {
+        log::info!(
+            "[bug113-diag] mode cycle: {}",
+            if enabled { "有効化" } else { "無効化" }
+        );
+    }
+}
+
+/// 有効なら次のモード番号（0/1/2 を巡回）を払い出す。無効なら `None`
+/// （呼び出し元は通常経路を使う）。
+fn diag_bug113_next_off_mode() -> Option<u32> {
+    use std::sync::atomic::Ordering;
+    if !DIAG_BUG113_MODE_CYCLE_ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    Some(DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % 3)
+}
+
+/// BUG-113 診断専用（一時的）: モードに応じて `open=false` を実際に適用する。
+fn diag_bug113_apply_off_mode(mode: u32) -> ImeOpenOutcome {
+    let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Close);
+    match mode {
+        1 => {
+            log::warn!(
+                "[bug113-diag] mode=1(imm-cross): set_ime_open_cross_process(false) を試行\
+                 （send_ime_mode_key は使わない）"
+            );
+            // SAFETY: set_ime_open_cross_process は Win32 API を呼び出す unsafe fn。
+            // メインスレッドから呼ぶこと。
+            if unsafe { crate::ime::set_ime_open_cross_process(false) } {
+                log::warn!("[bug113-diag] mode=1 → 成功");
+                ImeOpenOutcome::Applied
+            } else {
+                log::warn!("[bug113-diag] mode=1 → 失敗");
+                ImeOpenOutcome::Failed
+            }
+        }
+        2 => {
+            log::warn!(
+                "[bug113-diag] mode=2(keystate-clear): VK_DBE_SBCSCHAR の synthetic KeyUp を\
+                 先に注入してから send {vk:#06X}"
+            );
+            crate::ime::diag_bug113_clear_dbe_sbcschar_keystate();
+            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                ImeOpenOutcome::Applied
+            } else {
+                ImeOpenOutcome::UnsafeToToggle
+            }
+        }
+        _ => {
+            log::warn!("[bug113-diag] mode=0(baseline): send {vk:#06X}（対照群、通常経路と同じ）");
+            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                ImeOpenOutcome::Applied
+            } else {
+                ImeOpenOutcome::UnsafeToToggle
+            }
+        }
+    }
+}
+
 // ── GjiDirectStrategy ────────────────────────────────────────────
 
 /// GJI を使った一方向 IME 制御戦略。
@@ -124,6 +231,13 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
             log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
             return ImeOpenOutcome::AlreadyMatched;
+        }
+        // BUG-113 診断専用（一時的）: 有効時は open=false 方向の送信方式を
+        // 自動ローテーションする（mode 0/1/2、上のコメントブロック参照）。
+        if !open {
+            if let Some(mode) = diag_bug113_next_off_mode() {
+                return diag_bug113_apply_off_mode(mode);
+            }
         }
         // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
         let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));

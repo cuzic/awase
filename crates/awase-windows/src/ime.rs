@@ -326,6 +326,26 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     true
 }
 
+/// BUG-113 診断専用（一時的）: `VK_DBE_SBCSCHAR` の synthetic KeyUp を送り、
+/// OS の（少なくとも同期的な）キー状態テーブル上でこのキーを「離した」ことに
+/// する。物理半角/全角キーは awase のフックで suppress されるため OS の
+/// 同期キー状態は既に更新されない可能性が高いが、`GetAsyncKeyState` 等の
+/// 非同期・ハードウェア直結の状態は suppress の影響を受けず「押されたまま」に
+/// 見え続ける可能性がある。この関数はその残留状態を能動的にクリアしてから
+/// `send_ime_mode_key(VK_IME_OFF)` を送るための前処理として使う
+/// （`ime_controller.rs::diag_bug113_apply_off_mode` mode=2 参照）。
+/// 調査終了後は呼び出し元ごと削除すること。
+pub(crate) fn diag_bug113_clear_dbe_sbcschar_keystate() {
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    let inputs = [make_key_input_ex(
+        crate::vk::VK_DBE_SBCSCHAR,
+        true,
+        IME_KANJI_MARKER,
+    )];
+    let sent = crate::win32::send_input_safe(&inputs);
+    log::warn!("[bug113-diag] mode=2: VK_DBE_SBCSCHAR synthetic KeyUp sent={sent}/1");
+}
+
 /// IME モード切り替えキーを、必要なら synthetic Shift↑ を前置して送信する。
 ///
 /// BUG-25 GJI 半角英数 entry/exit 用。`prepend_synthetic_shift_up` が真のときは

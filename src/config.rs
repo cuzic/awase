@@ -334,6 +334,12 @@ pub struct GeneralConfig {
     /// `VK_KANA` を `VK_DBE_HIRAGANA` + 実測 scan に置換する実験経路を有効化する。
     /// 設定GUIと sample config には出さない hidden opt-in。
     pub windows_terminal_vk_kana_dbe_hiragana_spike: bool,
+    /// BUG-113 診断専用（一時的、恒久機能ではない）。既定 `false`。
+    /// `true` のときだけ `GjiDirectStrategy::apply(open=false)` の送信方式を
+    /// 呼び出しごとに自動ローテーション（baseline/ImmCross/keystate-clear）
+    /// する。調査終了後は設定・実装ごと削除すること。設定GUIと sample config
+    /// には出さない hidden opt-in。
+    pub diag_bug113_mode_cycle_enabled: bool,
     /// 打鍵列機能（ADR-115）の有効化。既定 `Off`（隠し設定、config.toml
     /// 手動編集のみで有効化できるオプトイン。実機ソークが積み上がるまで
     /// 設定 GUI には出さない）。
@@ -422,6 +428,7 @@ impl Default for GeneralConfig {
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
             windows_terminal_vk_kana_dbe_hiragana_spike: false,
+            diag_bug113_mode_cycle_enabled: false,
             keystroke_sequence: KeystrokeSequencePolicy::Off,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,

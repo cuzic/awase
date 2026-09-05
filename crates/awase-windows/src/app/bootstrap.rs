@@ -576,6 +576,9 @@ pub(super) fn initialize_app(
         app.set_windows_terminal_vk_kana_dbe_hiragana_spike(
             config.general.windows_terminal_vk_kana_dbe_hiragana_spike,
         );
+        crate::ime_controller::set_diag_bug113_mode_cycle_enabled(
+            config.general.diag_bug113_mode_cycle_enabled,
+        );
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
             manual_fn_key,
