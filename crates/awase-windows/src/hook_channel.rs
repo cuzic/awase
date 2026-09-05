@@ -151,6 +151,14 @@ impl HookKeyRing {
         self.max_occupancy.swap(0, Ordering::AcqRel)
     }
 
+    /// プロセス生存期間中の最大占有数をリセットせずに読む（不具合報告用診断、
+    /// issue #165）。`take_max_occupancy` と異なり消費しないため、
+    /// `WM_DUMP_JOURNAL` 側のリセットタイミングと競合しない。
+    #[must_use]
+    pub fn peek_max_occupancy(&self) -> u32 {
+        self.max_occupancy.load(Ordering::Acquire)
+    }
+
     pub fn has_pending(&self) -> bool {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
@@ -179,6 +187,13 @@ pub static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 #[cfg(windows)]
 static WAKE_POST_FAILED: AtomicBool = AtomicBool::new(false);
 
+/// `WAKE_POST_FAILED` が発生した累計回数（プロセス生存期間中、リセットしない）。
+/// `WAKE_POST_FAILED`（`recover_stuck_wake_if_needed` が毎ウォッチドッグ tick で
+/// consume してしまう）とは別に持つ、不具合報告スナップショット用の診断値
+/// （issue #165: エンジンスレッド詰まり/`PostMessageW`失敗の既存センサを可視化）。
+#[cfg(windows)]
+static WAKE_POST_FAILED_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
+
 /// `WH_KEYBOARD_LL` フックコールバックから同期的に呼ぶ。
 ///
 /// ロック取得・アロケーション・ブロッキング呼び出し・ログ出力を一切行わない
@@ -190,7 +205,15 @@ pub fn request_engine_wake() {
     {
         WAKE_PENDING.store(false, Ordering::Release);
         WAKE_POST_FAILED.store(true, Ordering::Release);
+        WAKE_POST_FAILED_LIFETIME_COUNT.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// `WAKE_POST_FAILED_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+#[cfg(windows)]
+#[must_use]
+pub fn wake_post_failed_lifetime_count() -> u32 {
+    WAKE_POST_FAILED_LIFETIME_COUNT.load(Ordering::Relaxed)
 }
 
 /// エンジンスレッド側のウォッチドッグから呼ぶ。フック側で記録された post 失敗を
@@ -320,6 +343,25 @@ mod tests {
             "clear 後の新規 overflow でラッチが再び立つこと"
         );
         assert_eq!(ring.take_dropped_and_clear_latch(), 1);
+    }
+
+    #[test]
+    fn peek_max_occupancy_does_not_reset() {
+        let ring = HookKeyRing::new();
+        for n in 0..10 {
+            assert_eq!(ring.produce(ev(n)), ProduceResult::Accepted);
+        }
+        // peek は take と異なり同じ値を何度読んでもリセットされない（不具合報告
+        // スナップショット用診断、issue #165: WM_DUMP_JOURNAL 側の take とは
+        // 独立して読めることを確認する）。
+        assert_eq!(ring.peek_max_occupancy(), 9);
+        assert_eq!(ring.peek_max_occupancy(), 9, "peek はリセットしない");
+        assert_eq!(
+            ring.take_max_occupancy(),
+            9,
+            "peek 後も take は正しい値を返す"
+        );
+        assert_eq!(ring.peek_max_occupancy(), 0, "take 後は peek も 0 を返す");
     }
 
     #[test]

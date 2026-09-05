@@ -274,34 +274,21 @@ fn select_default_layout(
     Some((entry.layout.clone(), entry.name.clone()))
 }
 
-/// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
-pub(crate) fn detect_conflicting_software() -> Vec<String> {
+struct ConflictEntry {
+    exe: &'static str,
+    display: &'static str,
+}
+
+/// 実行中プロセス一覧を1回スキャンし、`candidates` に名前（大文字小文字を無視）が
+/// 一致したものの表示名を重複無しで返す。`detect_conflicting_software`/
+/// `detect_relay_or_remap_software` の共通実装。
+fn scan_running_processes(candidates: &[ConflictEntry]) -> Vec<String> {
     use std::mem::size_of;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
     };
-
-    struct ConflictEntry {
-        exe: &'static str,
-        display: &'static str,
-    }
-
-    const CONFLICTS: &[ConflictEntry] = &[
-        ConflictEntry {
-            exe: "yamabuki.exe",
-            display: "やまぶき",
-        },
-        ConflictEntry {
-            exe: "yamabukiR.exe",
-            display: "やまぶきR",
-        },
-        ConflictEntry {
-            exe: "benizara.exe",
-            display: "紅皿",
-        },
-    ];
 
     // SAFETY: CreateToolhelp32Snapshot / Process32FirstW / Process32NextW は
     //         有効なハンドルと dwSize 設定済み PROCESSENTRY32W を渡す標準的な呼び出し。
@@ -322,11 +309,11 @@ pub(crate) fn detect_conflicting_software() -> Vec<String> {
                     .position(|&c| c == 0)
                     .unwrap_or(entry.szExeFile.len());
                 let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-                for conflict in CONFLICTS {
-                    if exe_name.eq_ignore_ascii_case(conflict.exe)
-                        && !results.iter().any(|name| name == conflict.display)
+                for candidate in candidates {
+                    if exe_name.eq_ignore_ascii_case(candidate.exe)
+                        && !results.iter().any(|name| name == candidate.display)
                     {
-                        results.push(conflict.display.to_owned());
+                        results.push(candidate.display.to_owned());
                         break;
                     }
                 }
@@ -338,6 +325,64 @@ pub(crate) fn detect_conflicting_software() -> Vec<String> {
         let _ = CloseHandle(snap);
         results
     }
+}
+
+/// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
+pub(crate) fn detect_conflicting_software() -> Vec<String> {
+    const CONFLICTS: &[ConflictEntry] = &[
+        ConflictEntry {
+            exe: "yamabuki.exe",
+            display: "やまぶき",
+        },
+        ConflictEntry {
+            exe: "yamabukiR.exe",
+            display: "やまぶきR",
+        },
+        ConflictEntry {
+            exe: "benizara.exe",
+            display: "紅皿",
+        },
+    ];
+    scan_running_processes(CONFLICTS)
+}
+
+/// 親指シフト機能そのものとは競合しないが、入力デリバリ経路（マウス/キーボード
+/// 共有、リモートデスクトップ、X サーバー転送、独自リマップ等）に影響しうると
+/// 既知の相互作用が確認されているツール。
+///
+/// `detect_conflicting_software` とは別関数にしている理由: あちらは
+/// `check_conflicting_software` で「終了してください」という起動時警告に使われるが、
+/// ここに挙げるツールは正当な用途で起動されていることが多く、終了を促すのは
+/// 不適切。不具合報告（`competing_software`）の診断情報としてのみ使う
+/// （issue #165: D&D不可・印刷不能の切り分け用）。
+///
+/// リストは網羅的ではない。過去に実際に相互作用が確認できたもののみ収録:
+/// Mouse Without Borders（issue #136/BUG-90）、mstsc.exe（BUG-78、KeyUp消失）、
+/// VcXsrv（project memory記録、合成Ctrl KeyDownの送りっぱなし）。
+pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
+    const CANDIDATES: &[ConflictEntry] = &[
+        ConflictEntry {
+            exe: "PowerToys.MouseWithoutBorders.exe",
+            display: "Mouse Without Borders",
+        },
+        ConflictEntry {
+            exe: "PowerToys.MouseWithoutBordersHelper.exe",
+            display: "Mouse Without Borders (Helper)",
+        },
+        ConflictEntry {
+            exe: "PowerToys.exe",
+            display: "PowerToys",
+        },
+        ConflictEntry {
+            exe: "mstsc.exe",
+            display: "リモートデスクトップ接続 (mstsc)",
+        },
+        ConflictEntry {
+            exe: "vcxsrv.exe",
+            display: "VcXsrv",
+        },
+    ];
+    scan_running_processes(CANDIDATES)
 }
 
 pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
