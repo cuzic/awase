@@ -82,6 +82,47 @@ impl Runtime {
         let japanese = self.platform_state.ime.belief.is_japanese_ime();
         let input_mode = self.platform_state.ime.input_mode();
         let conv = self.platform.output.conv_mode.get();
+        let composition_warm = self.platform.output.is_composition_warm();
+
+        // 実機検証で発見した副問題（GJI/TsfNativeで物理VK_DBE_HIRAGANAが
+        // TSF warmup所有ロジックにより常時Suppressされ、Shift+かなで
+        // カタカナに入った後ひらがなへ戻せない）への対処候補をログに残す。
+        // `hiragana_return_scope()`がOffなら何もしない（既定、挙動変更なし）。
+        if event.vk_code == crate::vk::VK_DBE_HIRAGANA
+            && !is_keyup
+            && !shift
+            && physical == crate::runtime::PhysicalKeyDisposition::Suppress
+        {
+            let open_condition = ime_on && !shadow_toggled;
+            let warm_condition = open_condition && composition_warm;
+            let scope = crate::bug116_spike::hiragana_return_scope();
+            let should_inject = match scope {
+                crate::bug116_spike::HiraganaReturnScope::Off => false,
+                crate::bug116_spike::HiraganaReturnScope::WhenOpen => open_condition,
+                crate::bug116_spike::HiraganaReturnScope::WhenWarm => warm_condition,
+            };
+            log::info!(
+                "[bug116] hiragana-return candidate: scope={scope:?} open_condition={open_condition} \
+                 warm_condition={warm_condition} composition_warm={composition_warm} \
+                 active_ime_kind={active_ime_kind:?} should_inject={should_inject}"
+            );
+            if should_inject
+                && active_ime_kind == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+            {
+                let sent = self.platform.output.send_gji_half_width_alnum_toggle(
+                    HalfWidthAlnumAction::Exit,
+                    ime_on,
+                    false,
+                );
+                log::info!(
+                    "[bug116] hiragana-return: send_gji_half_width_alnum_toggle(Exit) sent={sent}"
+                );
+            } else if should_inject {
+                log::info!(
+                    "[bug116] hiragana-return: MS-IME 向けの復元経路は未実装（GJI限定のスコープ）"
+                );
+            }
+        }
 
         if event.vk_code == crate::vk::VK_DBE_KATAKANA {
             // SAFETY: メインスレッド（メッセージループスレッド）から呼ばれる。
@@ -101,7 +142,8 @@ impl Runtime {
              shift={shift} lshift_ms={lshift_ms:?} rshift_ms={rshift_ms:?} \
              profile={profile:?} ime_kind={active_ime_kind:?} is_tsf={} f2_owned={} policy={:?} \
              shadow_toggled={shadow_toggled} physical={physical:?} physical_baseline={physical_baseline:?} \
-             ime_on={ime_on} japanese={japanese} input_mode={input_mode:?} conv={conv:?} hw_toggle={hw_toggle}",
+             ime_on={ime_on} japanese={japanese} input_mode={input_mode:?} conv={conv:?} hw_toggle={hw_toggle} \
+             composition_warm={composition_warm}",
             crate::bug116_spike::allow_scope(),
             crate::bug116_spike::scan_scope(),
             event.vk_code.0,

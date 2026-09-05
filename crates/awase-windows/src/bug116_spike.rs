@@ -52,8 +52,40 @@ pub(crate) enum ScanScope {
     Real,
 }
 
+/// 実機検証で発見した副問題（GJI/TsfNativeでは物理`VK_DBE_HIRAGANA`
+/// KeyDownがTSF warmup所有ロジックにより常時Suppressされるため、
+/// Shift+かなでカタカナに入った後、物理かなキー(Shiftなし)では
+/// ひらがなへ戻せない）への対処候補。`kp_bug116_spike_log`が
+/// `send_gji_half_width_alnum_toggle(Exit, ..)`（BUG-25/ADR-107で
+/// 既に実機検証済みの、scan付きVK_DBE_HIRAGANA注入+Win/Alt修飾キー
+/// ガード+effective_open()ガード付きの安全な注入経路）を再利用して
+/// 能動的にひらがな復元を送る条件を切り替える。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HiraganaReturnScope {
+    /// 既定。復元注入を一切行わない（現状のまま、ひらがなに戻せない）。
+    Off,
+    /// `effective_open() && !shadow_toggled`（IMEが既にON、かつこの打鍵で
+    /// ON/OFFが切り替わったわけではない）なら復元注入する。cold-start中の
+    /// 誤発火リスクは未検証。
+    WhenOpen,
+    /// `WhenOpen`の条件に加え`is_composition_warm()`も要求する（cold-start
+    /// warmup進行中への誤発火をより避ける、より保守的な条件）。
+    WhenWarm,
+}
+
 static ALLOW: OnceLock<AllowScope> = OnceLock::new();
 static SCAN: OnceLock<ScanScope> = OnceLock::new();
+static HIRAGANA_RETURN: OnceLock<HiraganaReturnScope> = OnceLock::new();
+
+pub(crate) fn hiragana_return_scope() -> HiraganaReturnScope {
+    *HIRAGANA_RETURN.get_or_init(|| {
+        match std::env::var("AWASE_BUG116_HIRAGANA_RETURN").as_deref() {
+            Ok("open") => HiraganaReturnScope::WhenOpen,
+            Ok("warm") => HiraganaReturnScope::WhenWarm,
+            _ => HiraganaReturnScope::Off,
+        }
+    })
+}
 
 /// SB-1: かなロック検出でセッション中の scan 注入を恒久停止する（一度立てたら戻さない）。
 static SCAN_ABORTED: AtomicBool = AtomicBool::new(false);
@@ -117,9 +149,13 @@ pub(crate) fn scan_allowed_for(vk: u16, is_keyup: bool) -> bool {
 pub(crate) fn log_mode_on_startup() {
     let allow = allow_scope();
     let scan = scan_scope();
-    if allow != AllowScope::Off || scan != ScanScope::Zero {
+    let hiragana_return = hiragana_return_scope();
+    if allow != AllowScope::Off
+        || scan != ScanScope::Zero
+        || hiragana_return != HiraganaReturnScope::Off
+    {
         log::warn!(
-            "[bug116] spike mode: allow={allow:?} scan={scan:?} \
+            "[bug116] spike mode: allow={allow:?} scan={scan:?} hiragana_return={hiragana_return:?} \
              （develop 非マージの診断ビルド。BUG-15追補7/BUG-61/BUG-62のハザードに注意）"
         );
     }
