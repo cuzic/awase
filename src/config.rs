@@ -928,13 +928,13 @@ impl AppConfig {
         if let Some(name) = &g.muhenkan_solo_tap_dedicated_fn_key {
             if !SAFE_RANGE.contains(&name.as_str()) {
                 w.push(format!(
-                    "muhenkan_solo_tap_dedicated_fn_key = {name:?} は安全な範囲外です \
-                     （VK_F15〜VK_F24 のうち VK_F13/VK_F14 を除く番号のみ許可、\
-                     ADR-091 §D3.2）。VK_NONCONVERT 等の危険なキーは指定しないこと。\
-                     VK_F13/VK_F14 はターミナルエスケープシーケンス漏れの実機確認が \
-                     あり常に避けること。VK_F21/VK_F22 を使う場合は、GJI 側の既存 \
-                     キー設定（config1.db）で既に別の意味に割り当てられていないか \
-                     確認すること（BUG-64 参照）。"
+                    "muhenkan_solo_tap_dedicated_fn_key = {name:?} は指定できない値です。\
+                     指定できるのは F15〜F24（F13・F14 を除く）のいずれかです \
+                     （例: \"VK_F15\"）。無変換キーなど、他の操作にすでに使われている \
+                     キーは指定できません。F13・F14 は一部のターミナルソフトで別の \
+                     文字として誤認識されることがあるため使用できません。F21・F22 \
+                     を使う場合は、Google 日本語入力（GJI）側の既存のキー設定で、\
+                     同じキーがすでに別の操作に割り当てられていないか確認してください。"
                 ));
             }
         }
@@ -991,7 +991,7 @@ impl AppConfig {
         // この状態なので、「使われません」は不正確で、正しく動く主用途を
         // ユーザーが誤って壊しかねない（/code-review 指摘）。一方
         // `keys.ime_off`/`keys.ime_toggle` は engine 活性中（＝IME が ON で
-        // チョードが成立しうる間）に使うのが主目的であり、その間は本当に
+        // 同時打鍵が成立しうる間）に使うのが主目的であり、その間は本当に
         // 発火しないため、既存の文面のままで正確。
         fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
             if combos
@@ -999,16 +999,27 @@ impl AppConfig {
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
                 let detail = if field == "keys.ime_on" {
-                    "IME が ON（同時打鍵が成立しうる間）はチョード判定を優先するため、\
-                     このコンボは発火しません。ただし IME が OFF の間の単独タップでは \
-                     引き続き IME ON として機能します。"
+                    "このキーは同時打鍵（親指シフト入力）にも使うキーなので、IME が \
+                     ON になっている間は、まず同時打鍵かどうかの判定が優先されます。\
+                     そのため、IME が ON の状態でこのキーだけを押しても IME は \
+                     ON のままで変化しません（実害はありません。ただし設定した \
+                     つもりの動作にはなりません）。IME が OFF の状態でこのキーだけを \
+                     押した場合は、これまでどおり IME を ON にします（本来の主な \
+                     用途はこちらです）。IME が ON の間もこのキー単体で操作したい \
+                     場合は、他のキーに変更するか、Shift などと組み合わせて \
+                     （例: Shift+このキー）設定し直してください。"
                 } else {
-                    "IME が ON の間は同時打鍵判定を優先するため、このキーは IME ON/OFF \
-                     コンボには使われません。"
+                    "このキーは同時打鍵（親指シフト入力）にも使うキーなので、IME が \
+                     ON になっている間は、まず同時打鍵かどうかの判定が優先されます。\
+                     そのため、IME が ON の間はこの設定が働かず、このキーだけを \
+                     押しても IME の OFF・切り替えはできません（実害はありません。\
+                     ただし設定した意味がありません）。他のキーに変更するか、\
+                     Shift などと組み合わせて（例: Shift+このキー）設定し直して \
+                     ください。"
                 };
                 w.push(format!(
-                    "{field} に親指キー（{thumb_key}）が修飾キーなしで設定されています。\
-                     {detail}"
+                    "{field} に、同時打鍵で使う親指キー（{thumb_key}）が、他のキーとの \
+                     組み合わせなしでそのまま設定されています。{detail}"
                 ));
             }
         }
@@ -1033,9 +1044,9 @@ impl AppConfig {
         );
         if jis_only_default {
             w.push(format!(
-                "keyboard_model = \"us\" ですが default_layout が JIS 版の \"{}\" \
-                 のままです。JIS 版は列数が US の上限を超えるためパースに失敗します。\
-                 \"nicola_us.yab\" を指定してください。",
+                "keyboard_model = \"us\" ですが default_layout が JIS配列専用の \
+                 レイアウト \"{}\" のままです。このレイアウトは US キーボードでは \
+                 正しく読み込めません。\"nicola_us.yab\" を指定してください。",
                 g.default_layout
             ));
         }
@@ -1075,13 +1086,15 @@ impl AppConfig {
 
         if !offending_fields.is_empty() {
             w.push(format!(
-                "keyboard_model = \"us\" ですが、無変換/変換キー前提の既定値が \
+                "keyboard_model = \"us\" ですが、無変換/変換キー前提の初期設定が \
                  次の項目に残っています: {}。US キーボードにはこれらの物理キーが \
-                 存在しないため、config.toml で明示的に上書きしてください。\
-                 注意: VK_LMENU/VK_RMENU（Alt）・VK_LCONTROL/VK_RCONTROL（Ctrl）・ \
-                 VK_LWIN/VK_RWIN（Win）は使用不可（OS 予約修飾キーとして即座に \
-                 素通しされ、同時打鍵検出が機能しない）。プログラマブルキーボードで \
-                 無変換/変換や F13-F24 に物理リマップするか、VK_SPACE を検討してください。",
+                 存在しないため、config.toml で別のキーに変更してください。\
+                 注意: Alt・Ctrl・Win（左右とも）は OS がすでに予約しているキーの \
+                 ため、親指キーとしては使用できません（awase が同時打鍵として \
+                 検出するより先に OS 側の機能として使われてしまいます）。物理的に \
+                 キーを配置し直せるキーボードをお使いであれば無変換/変換や \
+                 F13〜F24 の位置に割り当てる方法もありますが、そうでなければ \
+                 スペースキーを親指キーにする設定を検討してください。",
                 offending_fields.join(", ")
             ));
         }
