@@ -315,6 +315,15 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         // 「`None` で bypass する」設計語彙に合わせ、shadow_on だけを
         // 未知に上書きする（`belief_input_mode`/`focus.profile` 等の他
         // フィールドは `shadow_ime_control_view()` のまま活かす）。
+        //
+        // 副産物: `KanjiToggleStrategy`（`fallback_write` が唯一の到達経路、
+        // ADR-117 issue #138診断）の `shadow=` ログフィールドが、この上書き後は
+        // 常に `None` になり診断価値を失う。上書き前の値をここで1行記録して
+        // 補う（Opus敵対的レビューround3 提案）。
+        log::debug!(
+            "[apply-ime] fallback_write: shadow_on={:?} → None で bypass (mechanism={mechanism:?})",
+            view.control.shadow_on
+        );
         view.control.shadow_on = None;
         // issue #136 / BUG-90 決定4: view はこの関数が完了時点で作り直す
         // （モジュール doc 参照）ため、起案時点では InputRelay でなかった

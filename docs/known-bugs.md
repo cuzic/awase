@@ -14227,7 +14227,30 @@ strategy chainを経由しないIMM32専用経路を使い続けるため回復�
 `apply()`を実際には呼ばないのに紛らわしい）も反映し
 `view_for_default_shadow_is_unknown_and_does_not_match`へ改名した。
 
-実機再検証はこれから。
+**追記（2026-09-05 続き・round3で「マージ可」の最終判定）**: 3ラウンド目の
+Opus敵対的レビューで、上記Major修正が実際にシーケンスを閉じることを
+1段ずつ追って確認（`imm_cross_write`の`read_ime_state_fast()`確認→
+`Failed`→`fallback_write`→`gji_direct_already_matches(None, false)
+== false`→実送信）、`MsImeDirect`/`KanjiToggle`への影響がゼロであること
+（`shadow_on`を読まない/ログ引数でしか読まない）も確認され、**「マージ可
+（safe to merge）」の最終判定**を得た。
+
+実機再検証（`Option<bool>`化・`fallback_write`修正の両方を含む版）は
+「マージ前の必須条件」から「マージ後・リリース前のソーク項目」へ格下げ
+してよいとの判断も添えられた——述語が`shadow_on == Some(open)`の1行に
+縮退し全6通りの真理値が純関数テストで固定されていること、`ControlLog`
+の供給4経路（`applied_pair()`/`applied_snapshot`/`None`ハードコード
+2箇所/`fallback_write`の明示`None`）を全て列挙・追跡済みであること、
+develop に対する差分が「OFF×`Some(false)`→skip」の1セルのみで
+「送らなくなる」セルが新規に増えていないこと（最悪でもdevelop相当に
+劣化するだけで、IMEが閉じない類の不具合は構造的に入らない）が根拠。
+
+**ソーク項目**（`.claude/rules/fix-requires-evidence.md`の記録要件を
+兼ねる）: フォーカスを外して戻した後の最初のIME OFF——`ImeEvent::
+FocusChanged`が`applied`を`Unknown`にリセットするため、round2の修正前
+は誤ってskipされていたが、round2の修正でskip→sendに挙動が変わった
+新規パス——で、実際にIMEが閉じること・「@」が再発しないことを、
+通常利用の中で確認すること。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
