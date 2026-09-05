@@ -240,11 +240,10 @@ impl ProbeIo for Output {
                     cold_seq = cold_seq.value(),
                 );
                 let status = crate::with_app(|runtime| {
-                    let current_focus_gen = runtime.platform.output.ime_mode_focus_gen.get();
-                    if current_focus_gen != focus_gen {
+                    if !refresh_ime_mode_if_focus_matches(&runtime.platform.output, focus_gen, conv)
+                    {
                         return GjiReinitPollStatus::Stale;
                     }
-                    runtime.platform.output.update_ime_mode_from_imc(conv);
                     // Hiragana 確認済みならポーリング終了
                     let fsm = runtime.platform.output.ime_mode_fsm.borrow();
                     if fsm.state().is_hiragana() && fsm.is_confirmed() {
@@ -329,6 +328,27 @@ fn fmt_conv(conv: Option<u32>) -> String {
     conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
 }
 
+/// `send_chrome_gji_reinit_and_poll` / `Output::start_ms_ime_ready_poll` の
+/// `with_app` クロージャ内で1 tickごとに独立してコピーされていた「focus_gen
+/// 照合 → 不一致なら stale → `update_ime_mode_from_imc(conv)` で IMC を反映」を
+/// 共通化する。この2行より外側（ループの周期・終了条件・give-up latch・
+/// write_bytes 観測ログ・完了通知の有無）は両者で意味が異なるため、あえて
+/// 呼び出し元にそのまま残す（無理に1つのポーリングループへ統合しない）。
+///
+/// `false`（focus_gen不一致）なら呼び出し元は自分の stale 値を返すこと。
+/// `true`なら`update_ime_mode_from_imc`済みなので、続けて終端判定を行える。
+fn refresh_ime_mode_if_focus_matches(
+    output: &Output,
+    expected_focus_gen: u32,
+    conv: Option<u32>,
+) -> bool {
+    if output.ime_mode_focus_gen.get() != expected_focus_gen {
+        return false;
+    }
+    output.update_ime_mode_from_imc(conv);
+    true
+}
+
 /// `gji_reinit_poll_tick_outcome` が確定させうる終端状態。`GjiReinitPollStatus`
 /// のうち `Timeout` は「まだ確定しない」を表す非終端値なのでここには含まれない
 /// ——コードレビュー指摘(simplify角度): 以前は `Break(GjiReinitPollStatus)` と
@@ -404,10 +424,9 @@ impl Output {
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
                 let status = crate::with_app(|runtime| {
                     let out = &runtime.platform.output;
-                    if out.ime_mode_focus_gen.get() != gen {
+                    if !refresh_ime_mode_if_focus_matches(out, gen, conv) {
                         return MsImePollStatus::Stale;
                     }
-                    out.update_ime_mode_from_imc(conv);
                     if out.ime_mode_fsm.borrow().is_native_ready() {
                         return MsImePollStatus::Ready;
                     }
