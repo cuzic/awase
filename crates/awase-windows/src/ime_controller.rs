@@ -135,11 +135,36 @@ static DIAG_BUG113_MODE_CYCLE_ENABLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 static DIAG_BUG113_MODE_COUNTER: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
+/// `open=false` の「クローズ episode」を跨いだかどうかの追跡。`true` なら
+/// 直前に `open=true` を処理済み＝次に来る `open=false` は新しい episode。
+/// `GjiDirectStrategy::apply(open=false)` は `shadow_toggle_off_sync` /
+/// `engine_decision_sync` の2経路から同一の物理押下に対して連続で2回
+/// 呼ばれることが実機ログで判明した（2026-09-05）。episode 単位でモードを
+/// 固定しないと、1回の物理キー押下で2つの異なるモードが混在してしまい
+/// 「@」の帰属を切り分けられなくなる。
+static DIAG_BUG113_LAST_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+/// 現在のクローズ episode に固定されたモード番号。
+static DIAG_BUG113_CURRENT_MODE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// 有効化してからの総呼び出し回数。安全弁（下記）用。
+static DIAG_BUG113_TOTAL_INVOCATIONS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// 安全弁の上限（2026-09-05 の暴走事故を受けて追加）。実機で
+/// `mode=1(imm-cross)` を挟むと drift correction が収束を確認できず
+/// 20〜90ms 間隔で `mode=0/1/2` を延々と繰り返す暴走が実際に発生した
+/// （物理キー押下が一切無いのに数百回連続で SendInput/ImmSetOpenStatus が
+/// 発火）。この回数を超えたら診断を自動的に無効化し、通常経路へ戻す。
+/// 手動テストで3モード×数サイクル試すには十分だが、暴走時の実害を
+/// 数十回程度に確実に制限できる値として選定（実測ではなく安全マージン
+/// 目的の意図的な小さい上限——タイミング定数ではないため
+/// tuning-constants.md の実測義務の対象外）。
+const DIAG_BUG113_MAX_INVOCATIONS: u32 = 24;
 
 /// BUG-113 診断専用（一時的）: `true` の間、`GjiDirectStrategy::apply(open=false)`
-/// の送信方式を呼び出しごとに自動ローテーションする。`bootstrap.rs`（起動時）と
-/// `runtime/mod.rs::apply_config_update`（reload 時）から `config.toml` の
-/// `diag_bug113_mode_cycle_enabled` に応じて直接呼ぶ。
+/// の送信方式をクローズ episode ごとに自動ローテーションする。`bootstrap.rs`
+/// （起動時）と `runtime/mod.rs::apply_config_update`（reload 時）から
+/// `config.toml` の `diag_bug113_mode_cycle_enabled` に応じて直接呼ぶ。
 pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
     use std::sync::atomic::Ordering;
     if enabled != DIAG_BUG113_MODE_CYCLE_ENABLED.swap(enabled, Ordering::Relaxed) {
@@ -148,16 +173,47 @@ pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
             if enabled { "有効化" } else { "無効化" }
         );
     }
+    if enabled {
+        // 有効化のたびに安全弁カウンタと episode 追跡をリセットする。
+        DIAG_BUG113_TOTAL_INVOCATIONS.store(0, Ordering::Relaxed);
+        DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
+    }
 }
 
-/// 有効なら次のモード番号（0/1/2 を巡回）を払い出す。無効なら `None`
-/// （呼び出し元は通常経路を使う）。
+/// `GjiDirectStrategy::apply(open=true)` を処理した際に呼ぶ。次に来る
+/// `open=false` を新しいクローズ episode として扱えるようにする。
+fn diag_bug113_mark_open() {
+    DIAG_BUG113_LAST_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 有効なら現在のクローズ episode のモード番号（0/1/2 を巡回）を払い出す。
+/// 同じ episode 内の重複呼び出し（`shadow_toggle_off_sync` +
+/// `engine_decision_sync`）には同じモードを返す。無効・安全弁作動時は
+/// `None`（呼び出し元は通常経路を使う）。
 fn diag_bug113_next_off_mode() -> Option<u32> {
     use std::sync::atomic::Ordering;
     if !DIAG_BUG113_MODE_CYCLE_ENABLED.load(Ordering::Relaxed) {
         return None;
     }
-    Some(DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % 3)
+    let invocation = DIAG_BUG113_TOTAL_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
+    if invocation >= DIAG_BUG113_MAX_INVOCATIONS {
+        if DIAG_BUG113_MODE_CYCLE_ENABLED.swap(false, Ordering::Relaxed) {
+            log::warn!(
+                "[bug113-diag] 安全弁作動: 呼び出し回数が {DIAG_BUG113_MAX_INVOCATIONS} 回を\
+                 超えたため mode cycle を自動的に無効化しました（暴走防止、\
+                 2026-09-05 の事故を受けた対策）"
+            );
+        }
+        return None;
+    }
+    let is_new_episode = DIAG_BUG113_LAST_OPEN.swap(false, Ordering::Relaxed);
+    if is_new_episode {
+        let mode = DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % 3;
+        DIAG_BUG113_CURRENT_MODE.store(mode, Ordering::Relaxed);
+        Some(mode)
+    } else {
+        Some(DIAG_BUG113_CURRENT_MODE.load(Ordering::Relaxed))
+    }
 }
 
 /// BUG-113 診断専用（一時的）: モードに応じて `open=false` を実際に適用する。
@@ -227,6 +283,11 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        // BUG-113 診断専用（一時的）: open=true を処理したら episode 境界を
+        // リセットする（AlreadyMatched で早期 return する場合も含む）。
+        if open {
+            diag_bug113_mark_open();
+        }
         if open && view.control.shadow_on {
             // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
             log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
