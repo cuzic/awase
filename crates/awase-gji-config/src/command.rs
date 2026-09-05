@@ -65,7 +65,11 @@ pub enum GjiModeCommand {
 pub fn classify_command(command: &str) -> GjiModeCommand {
     match command {
         "IMEOn" => GjiModeCommand::ImeOn,
-        "IMEOff" => GjiModeCommand::ImeOff,
+        // `CancelAndIMEOff`（BUG-115、ATOKプリセットの`Precomposition`状態）
+        // は「進行中の入力をキャンセルしてIMEを閉じる」意味であり、IME開閉の
+        // 観点では`IMEOff`と同義として扱う（`keymap.rs::group_ime_rows_by_key`
+        // と一貫させる）。
+        "IMEOff" | "CancelAndIMEOff" => GjiModeCommand::ImeOff,
         "CompositionModeHiragana" => GjiModeCommand::SetMode(GjiCompositionMode::Hiragana),
         "CompositionModeFullKatakana" => GjiModeCommand::SetMode(GjiCompositionMode::FullKatakana),
         "CompositionModeHalfKatakana" => GjiModeCommand::SetMode(GjiCompositionMode::HalfKatakana),
@@ -89,6 +93,13 @@ mod tests {
     fn recognizes_ime_on_off() {
         assert_eq!(classify_command("IMEOn"), GjiModeCommand::ImeOn);
         assert_eq!(classify_command("IMEOff"), GjiModeCommand::ImeOff);
+    }
+
+    /// BUG-115: ATOKプリセットの`Precomposition`状態がHenkan/Muhenkanに
+    /// 割り当てる`CancelAndIMEOff`も`ImeOff`相当として分類されること。
+    #[test]
+    fn recognizes_cancel_and_ime_off_as_ime_off() {
+        assert_eq!(classify_command("CancelAndIMEOff"), GjiModeCommand::ImeOff);
     }
 
     #[test]

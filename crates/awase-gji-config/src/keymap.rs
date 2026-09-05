@@ -39,12 +39,33 @@ const STATUSES_WHEN_IME_ON: &[&str] = &[
 /// - `"ON"`/`"OFF"` は GJI 内部の擬似キー名で、`VK_IME_ON`/`VK_IME_OFF`
 ///   （SendInput 等で仮想的に送出される合成キー）に対応する。
 /// - `"Eisu"` は英数キー（`VK_DBE_ALPHANUMERIC`）。
+/// - `"Henkan"`/`"Muhenkan"`（BUG-115）は変換/無変換キー。ADR-092
+///   決定D Step4c実装当時は「GJIは親指キーにIME ON/OFFを割り当てる手段を
+///   持たない」という前提でこの2トークンを未対応のままにしていたが、
+///   実際には`custom_keymap_table`にこれらのトークンが（ユーザーが
+///   ATOKベースからカスタムキーマップを作った場合など）literal に
+///   含まれうることが判明した（`crates/awase-windows/src/
+///   gji_charset_autodetect.rs::classify_thumb_key_ime_actions`参照）。
+///   このエイリアス追加自体は、F15-F24限定の既存の安全範囲フィルタ
+///   （`gji_charset_autodetect.rs::is_in_safe_autodetect_range`）には
+///   一切影響しない——`VK_CONVERT`/`VK_NONCONVERT`はその範囲外なので、
+///   Engine側のF15-F24自動検出には従来通り流入しない。
+/// - `"Hiragana"`/`"Katakana"`（BUG-115）はひらがな/カタカナキー。
+///   Henkan/Muhenkanと同じ理由で、これらのキーが親指シフトキーとして
+///   設定されているユーザーが、GJIの設定でこれらに状態依存のIME ON/OFFを
+///   割り当てている場合の検出に使う（`ms-ime.tsv`/`mobile.tsv`が
+///   `DirectInput`状態でHiragana/Katakanaを`IMEOn`に割り当てていることが
+///   2026-09-05確認済み）。
 const MOZC_KEY_ALIASES: &[(&str, &str)] = &[
     ("Kanji", "VK_KANJI"),
     ("Hankaku/Zenkaku", "VK_KANJI"),
     ("ON", "VK_IME_ON"),
     ("OFF", "VK_IME_OFF"),
     ("Eisu", "VK_DBE_ALPHANUMERIC"),
+    ("Henkan", "VK_CONVERT"),
+    ("Muhenkan", "VK_NONCONVERT"),
+    ("Hiragana", "VK_DBE_HIRAGANA"),
+    ("Katakana", "VK_DBE_KATAKANA"),
 ];
 
 /// Mozc のキートークンを awase の VK 名に変換する。対応表に無い、または
@@ -210,9 +231,12 @@ fn group_ime_rows_by_key(rows: &[KeymapRow]) -> StatusSetsByKey {
     for row in rows {
         // command でまず絞る: IMEOn/IMEOff 以外の行（Backspace 等)は空白キー
         // 判定より先に捨てる。修飾キー付き行のログを IME 無関係コマンドで
-        // 発火させないため。
-        let is_ime_on = row.command == "IMEOn";
-        let is_ime_off = row.command == "IMEOff";
+        // 発火させないため。`classify_command`（`CancelAndIMEOff`を
+        // `IMEOff`と同義に扱うエイリアス処理込み）を使い、
+        // `extract_mode_keys`と分類ロジックを二重管理しない
+        // （/code-review指摘、文字列比較の再実装を避ける）。
+        let is_ime_on = matches!(classify_command(&row.command), GjiModeCommand::ImeOn);
+        let is_ime_off = matches!(classify_command(&row.command), GjiModeCommand::ImeOff);
         if !is_ime_on && !is_ime_off {
             continue;
         }
@@ -294,12 +318,81 @@ mod tests {
             mozc_key_to_vk_name("Eisu").as_deref(),
             Some("VK_DBE_ALPHANUMERIC")
         );
+        // BUG-115: Henkan/Muhenkanは、config1.dbのcustom_keymap_tableに
+        // literalに含まれうる（例: ユーザーがATOKベースからカスタムを
+        // 作った場合）。
+        assert_eq!(mozc_key_to_vk_name("Henkan").as_deref(), Some("VK_CONVERT"));
+        assert_eq!(
+            mozc_key_to_vk_name("Muhenkan").as_deref(),
+            Some("VK_NONCONVERT")
+        );
+        // BUG-115: ひらがな/カタカナキーが親指シフトキーに設定されている
+        // ユーザー向け（ms-ime.tsv/mobile.tsvがDirectInputで両キーを
+        // IMEOnに割り当てている）。
+        assert_eq!(
+            mozc_key_to_vk_name("Hiragana").as_deref(),
+            Some("VK_DBE_HIRAGANA")
+        );
+        assert_eq!(
+            mozc_key_to_vk_name("Katakana").as_deref(),
+            Some("VK_DBE_KATAKANA")
+        );
     }
 
     #[test]
     fn unknown_token_maps_to_none() {
         assert_eq!(mozc_key_to_vk_name("Insert"), None);
         assert_eq!(mozc_key_to_vk_name(""), None);
+    }
+
+    /// BUG-115: ユーザーがATOKベースからカスタムキーマップを作った場合を
+    /// 想定したフィクスチャ（`atok.tsv`実データを、custom_keymap_table
+    /// として書き写した体、と同じ構造）。DirectInputでIMEOn・
+    /// Precompositionで`CancelAndIMEOff`という状態依存の割当てが、
+    /// `toggle`として正しく分類されることを確認する
+    /// （`CancelAndIMEOff`をIMEOff相当として扱うロジックの検証）。
+    #[test]
+    fn henkan_muhenkan_atok_style_custom_table_classifies_as_toggle() {
+        let text = "status\tkey\tcommand
+DirectInput\tHenkan\tIMEOn
+DirectInput\tMuhenkan\tIMEOn
+Precomposition\tHenkan\tCancelAndIMEOff
+Precomposition\tMuhenkan\tCancelAndIMEOff
+";
+        let keys = extract_ime_keys(text);
+        assert_eq!(
+            keys,
+            GjiImeKeys {
+                on: vec![],
+                off: vec![],
+                toggle: vec!["VK_CONVERT".to_string(), "VK_NONCONVERT".to_string()],
+            }
+        );
+    }
+
+    /// BUG-115: overlay相当（Henkan→IMEOnのみ、Muhenkan→IMEOffのみ、状態間
+    /// で矛盾しない）をcustom_keymap_tableに直接書いた場合は`on`/`off`に
+    /// 分類され、`Toggle`にはならない（冪等なので警告不要）ことを確認する。
+    #[test]
+    fn henkan_muhenkan_consistent_custom_table_classifies_as_on_off() {
+        let text = "status\tkey\tcommand
+DirectInput\tHenkan\tIMEOn
+Precomposition\tHenkan\tIMEOn
+Composition\tHenkan\tIMEOn
+Conversion\tHenkan\tIMEOn
+Composition\tMuhenkan\tIMEOff
+Conversion\tMuhenkan\tIMEOff
+Precomposition\tMuhenkan\tIMEOff
+";
+        let keys = extract_ime_keys(text);
+        assert_eq!(
+            keys,
+            GjiImeKeys {
+                on: vec!["VK_CONVERT".to_string()],
+                off: vec!["VK_NONCONVERT".to_string()],
+                toggle: vec![],
+            }
+        );
     }
 
     /// 実機で取得した GJI カスタムキーマップの実データに現れたパターンを

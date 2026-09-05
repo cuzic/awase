@@ -626,6 +626,7 @@ pub(super) fn initialize_app(
             config.general.left_thumb_key == "VK_SPACE"
                 || config.general.right_thumb_key == "VK_SPACE",
         );
+        app.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
@@ -1056,6 +1057,12 @@ pub(super) fn run_all() -> Result<()> {
             config.general.henkan_solo_tap_always_suppress,
         ),
     );
+    let (hiragana_vk, katakana_vk) =
+        crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(
+            left_thumb_vk,
+            right_thumb_vk,
+        );
+    engine.set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
     // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal

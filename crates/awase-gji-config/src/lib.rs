@@ -68,15 +68,62 @@ pub fn read_gji_mode_keys(bytes: &[u8]) -> GjiModeKeys {
 
 /// Mozc `SessionKeymap` enum の `CUSTOM` 値。
 ///
-/// `config.proto`（非公式知識だが `google/mozc` 本家ソースで確認済み:
-/// `NONE=-1, CUSTOM=0, ATOK=1, MSIME=2, KOTOERI=3, MOBILE=4, CHROMEOS=5, ...`）。
+/// `config.proto`（`google/mozc` 本家ソース `src/protocol/config.proto` で
+/// 実値を確認済み: `NONE=-1, CUSTOM=0, ATOK=1, MSIME=2, KOTOERI=3, MOBILE=4,
+/// CHROMEOS=5, OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF=100, ...`）。
 /// `session_keymap` がこの値でない（ATOK/MS-IME 等のプリセットが選択されている）
 /// 場合、GJI は `custom_keymap_table` を一切参照しない。
 pub const SESSION_KEYMAP_CUSTOM: i64 = 0;
 
+/// Mozc `SessionKeymap` enum の `ATOK` 値（BUG-115）。
+///
+/// `google/mozc` の `src/data/keymap/atok.tsv`（2026-09-05取得）は
+/// `DirectInput`状態でHenkan/Muhenkan双方を`IMEOn`に、`Precomposition`
+/// 状態で双方を`CancelAndIMEOff`に割り当てている。他のプリセット
+/// （MSIME/MOBILE/KOTOERI/CHROMEOS）にはこの割当てが無い（MSIME/MOBILEの
+/// Henkanは`Reconvert`でIME開閉と無関係、Muhenkanは同状態への割当て自体が
+/// 無い。KOTOERI/CHROMEOSは該当行が無い）。
+pub const SESSION_KEYMAP_ATOK: i64 = 1;
+
+/// Mozc `SessionKeymap` enum の `MSIME` 値（BUG-115）。Windows版GJIの実質
+/// 既定（`session_keymap`不在/`NONE`時のフォールバック、
+/// `config_handler.cc::GetDefaultKeyMap()`で確認済み）。
+///
+/// `src/data/keymap/ms-ime.tsv`（2026-09-05取得）は`DirectInput`状態で
+/// Hiragana/Katakanaを`IMEOn`に割り当てている（Henkan/Muhenkanは
+/// `Reconvert`のみでIME開閉と無関係、`SESSION_KEYMAP_ATOK`のdoc参照）。
+pub const SESSION_KEYMAP_MSIME: i64 = 2;
+
+/// Mozc `SessionKeymap` enum の `MOBILE` 値（BUG-115）。
+///
+/// `src/data/keymap/mobile.tsv`（2026-09-05取得）は`ms-ime.tsv`と同一の
+/// Henkan/Muhenkan/Hiragana/Katakana割当て。
+pub const SESSION_KEYMAP_MOBILE: i64 = 4;
+
+/// Mozc `SessionKeymap` enum の `OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF` 値
+/// （BUG-115）。
+///
+/// `overlay_keymaps`（`config.proto` field 68、`session_keymap`/
+/// `custom_keymap_table` とは独立の repeated フィールド）にこの値が含まれると、
+/// GJI は `session_keymap` の値（CUSTOM かプリセットか）に関わらず、変換
+/// （Henkan）→IMEOn を Composition/Conversion/DirectInput/Precomposition の
+/// 全4状態に、無変換（Muhenkan）→IMEOff を Composition/Conversion/
+/// Precomposition の3状態（IMEが既にOFFの`DirectInput`除く）に無条件で
+/// 重ね掛けする（本家ソース
+/// `src/data/keymap/overlay_henkan_muhenkan_to_ime_on_off.tsv` で確認済み）。
+/// このクレートは現時点でこの値を検出する手段
+/// （[`crate::wire::GjiRawConfig::overlay_keymaps`]）を提供するのみで、
+/// `read_gji_ime_keys`/`read_gji_mode_keys` の戻り値には反映していない
+/// （無変換/変換キーは `mozc_key_to_vk_name` の出力範囲に含まれないため、
+/// `custom_keymap_table` 経由の通常の抽出ロジックでは表現できない。呼び出し
+/// 側でこの定数を直接チェックする必要がある）。
+pub const SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF: i64 = 100;
+
 #[cfg(test)]
 mod tests {
-    use super::{read_gji_ime_keys, GjiImeKeys};
+    use super::{
+        read_gji_ime_keys, GjiImeKeys, SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF,
+    };
 
     #[test]
     fn empty_bytes_yields_empty_keys() {
@@ -105,5 +152,19 @@ mod tests {
         assert_eq!(keys.on, vec!["VK_F21".to_string()]);
         assert!(keys.off.is_empty());
         assert!(keys.toggle.is_empty());
+    }
+
+    /// BUG-115: field 68 (`overlay_keymaps`) に
+    /// `OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF` (100) が含まれることを、
+    /// `wire::parse_top_level` 経由で検出できることを確認する。
+    #[test]
+    fn detects_henkan_muhenkan_overlay_via_wire_parse() {
+        // field 68, wire type 2 (length-delimited packed varint) に値 100 のみ。
+        // tag = (68 << 3) | 2 = 546 → varint [162, 4]。ペイロード長 1、値 100。
+        let bytes = [162, 4, 1, 100];
+        let raw = crate::wire::parse_top_level(&bytes).expect("should parse");
+        assert!(raw
+            .overlay_keymaps
+            .contains(&SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF));
     }
 }

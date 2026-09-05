@@ -48,6 +48,10 @@ pub struct ClassifiedEvent {
     pub scan_code: ScanCode,
     pub vk_code: VkCode,
     pub timestamp: Timestamp,
+    /// プラットフォーム層が注入イベントとして分類したか。
+    /// 生の OS フラグではなく、delegate-to-open-axis の BUG-14 ガード等に使う
+    /// プラットフォーム非依存の事前分類結果。
+    pub injected: bool,
     /// IME 制御キーか（保留フラッシュ判定用、プラットフォーム層が事前分類）
     pub is_ime_control: bool,
     /// この VK が OS 修飾キー（Ctrl/Shift/Alt/Meta）であるかの事前分類。
@@ -70,6 +74,7 @@ impl ClassifiedEvent {
             scan_code: ScanCode(0),
             vk_code: VkCode(0),
             timestamp: 0,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         }
@@ -454,6 +459,9 @@ pub struct PendingThumbData {
     pub vk_code: VkCode,
     pub is_left: bool,
     pub timestamp: Timestamp,
+    /// この親指キーイベントが注入由来か。Hiragana/Katakana delegate は
+    /// injected=true の単独タップを IME open 軸へ昇格させない。
+    pub injected: bool,
     /// この親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられているか。
     /// `NicolaFsm::timeout_pending_thumb` 参照。
     pub modifier_key: Option<ModifierKey>,
@@ -467,6 +475,7 @@ impl PendingThumbData {
             vk_code: ev.vk_code,
             is_left: ev.key_class.is_left_thumb(),
             timestamp: ev.timestamp,
+            injected: ev.injected,
             modifier_key: ev.modifier_key,
         }
     }
@@ -996,6 +1005,7 @@ mod tests {
             vk_code: VkCode(0x20),
             is_left,
             timestamp: 2000,
+            injected: false,
             modifier_key: None,
         }
     }
@@ -1273,6 +1283,7 @@ mod tests {
             scan_code: ScanCode(0x20),
             vk_code: VkCode(0x48),
             timestamp: 3000,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         };
@@ -1289,6 +1300,7 @@ mod tests {
             scan_code: ScanCode(0x39),
             vk_code: VkCode(0x20),
             timestamp: 4000,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         };
@@ -1304,6 +1316,7 @@ mod tests {
             scan_code: ScanCode(0x70),
             vk_code: VkCode(0xF3),
             timestamp: 5000,
+            injected: false,
             is_ime_control: true,
             modifier_key: None,
         };
@@ -1399,6 +1412,7 @@ mod tests {
             scan_code: ScanCode(1),
             vk_code: VkCode(1),
             timestamp: 0,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         };

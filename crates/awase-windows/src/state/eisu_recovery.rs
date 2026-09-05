@@ -19,10 +19,11 @@
 //! | IME-ON 経路 | 救済 (strategy / source) | 判定関数 |
 //! |---|---|---|
 //! | Decision 経由 `SetOpen(true)`（`kp_stage_post_decision`） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
-//! | 物理 IME キー / SyncKey shadow toggle OFF→ON（`kp_stage_shadow_ime_toggle`） | `InputModeApplyStrategy::UserImeOnEisuReset` | [`eisu_reset_on_ime_on`] |
+//! | owned キーの shadow-toggle（belief 書き込みなし、TurnOn while open） | `InputModeApplyStrategy::UserTurnOnEisuReset` | [`eisu_reset_on_turn_on_while_open`] |
+//! | owned キーの Phase 3 delegate（`SetOpen(true)`、OFF→ON） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
+//! | 非owned キーの物理 IME キー / SyncKey shadow toggle | `InputModeApplyStrategy::UserImeOnEisuReset` / `InputModeApplyStrategy::UserTurnOnEisuReset` | [`eisu_reset_on_ime_on`] / [`eisu_reset_on_turn_on_while_open`] |
 //! | refresh force-ON（`apply_force_on_for_imm_broken`） | `InputModeApplyStrategy::ImmBrokenCorrection`（ObservedEisu は eisu guard で意図的に対象外 — 受動的経路がユーザーの英数選択を踏み潰さないため） | `correction_for_imm_broken` |
 //! | Blacklist typing 中の GJI I/O 観測（`ir_stage_observe`） | `ObservationSource::GjiIoInference`（こちらは真正の外部観測なので `InputModeObserved`） | [`gji_io_eisu_correction`] |
-//! | TurnOn 系キー（ひらがな/かな等）受信、IME は既に open で OFF→ON 遷移なし（`kp_stage_shadow_ime_toggle` の no-op 分岐） | `InputModeApplyStrategy::UserTurnOnEisuReset` | [`eisu_reset_on_turn_on_while_open`] |
 //!
 //! この表と実装の対称性は `tests/architecture_guard.rs` の
 //! `user_ime_on_paths_are_paired_with_eisu_reset` が監視する。

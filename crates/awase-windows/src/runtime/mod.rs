@@ -249,6 +249,14 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
+    /// `GeneralConfig.gji_thumb_key_ime_toggle`のキャッシュ（BUG-115）。
+    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
+    /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
+    gji_thumb_key_ime_toggle_opt_in: bool,
+    /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
+    /// 適用可否（現在親指キーでないこと）は消費時に判定する。
+    gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
+    gji_katakana_shadow_override: Option<awase::types::ShadowImeAction>,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -430,6 +438,16 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
+        if let Some(action) =
+            crate::gji_charset_autodetect::resolve_mode_key_shadow_override_for_event(
+                event.vk_code,
+                self.gji_hiragana_shadow_override,
+                self.gji_katakana_shadow_override,
+                crate::hook::thumb_vk_codes(),
+            )
+        {
+            event.ime_relevance.shadow_action = Some(action);
+        }
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -1236,6 +1254,9 @@ impl Runtime {
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
+            gji_thumb_key_ime_toggle_opt_in: false,
+            gji_hiragana_shadow_override: None,
+            gji_katakana_shadow_override: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1321,11 +1342,83 @@ impl Runtime {
         self.engine.set_ime_toggle_auto_keys(Vec::new());
     }
 
+    /// `gji_charset_autodetect`の`classify_thumb_key_ime_actions`/
+    /// `gate_thumb_key_ime_actions`（BUG-115）が導出した、無変換/変換キーが
+    /// 親指キーの場合のIME open 軸への肩代わりを`Engine`へ反映する
+    /// 入口。MS-IME側の`sync_ime_toggle_auto_detect`（レジストリ由来）と
+    /// 同じ`set_muhenkan/henkan_delegate_to_open_axis`APIを共有するため、
+    /// GJI→MS-IME遷移時はMS-IME側の値が必ず後から上書きする
+    /// （`message_handlers.rs`の呼び出し順序参照）。
+    pub(crate) fn set_gji_thumb_key_delegate_to_open_axis(
+        &mut self,
+        henkan: Option<awase::types::ShadowImeAction>,
+        muhenkan: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_henkan_delegate_to_open_axis(henkan);
+        self.engine.set_muhenkan_delegate_to_open_axis(muhenkan);
+    }
+
+    pub(crate) fn set_gji_mode_key_shadow_overrides(
+        &mut self,
+        hiragana: Option<awase::types::ShadowImeAction>,
+        katakana: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.gji_hiragana_shadow_override = hiragana;
+        self.gji_katakana_shadow_override = katakana;
+    }
+
+    pub(crate) fn set_gji_mode_key_delegate_to_open_axis(
+        &mut self,
+        hiragana: Option<awase::types::ShadowImeAction>,
+        katakana: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_hiragana_delegate_to_open_axis(hiragana);
+        self.engine.set_katakana_delegate_to_open_axis(katakana);
+    }
+
+    #[must_use]
+    pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
+        // 親指キー判定は`gji_charset_autodetect::is_configured_thumb_key`と
+        // 共有し、`hook::thumb_vk_codes()`の展開を2箇所で重複させない
+        // （/code-review指摘）。
+        crate::gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle(
+            vk,
+            crate::gji_charset_autodetect::is_configured_thumb_key(vk),
+            self.engine.hiragana_delegate_to_open_axis(),
+            self.engine.katakana_delegate_to_open_axis(),
+        )
+    }
+
+    /// `muhenkan_solo_tap_dedicated_fn_key`（config.tomlによる手動設定）が
+    /// 有効かどうか。BUG-115: 無変換が親指キーとして設定されておりGJI側の
+    /// IME意味論も検出された場合、これが有効だと無変換側の
+    /// delegate-to-open-axisが優先順位で黙って死ぬ
+    /// （`resolve_pending_thumb_as_single`、専用Fnキーが最優先）ため、
+    /// 警告を出すかどうかの判定に使う。
+    #[must_use]
+    pub(crate) const fn muhenkan_dedicated_fn_key_configured(&self) -> bool {
+        self.muhenkan_dedicated_fn_key_vk.is_some()
+    }
+
     /// `config.general.left_thumb_key`/`right_thumb_key` 由来のキャッシュを
     /// 更新する（ADR-092 決定D Step4a）。起動時（`bootstrap.rs`）と
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
         self.space_is_thumb_key = space_is_thumb_key;
+    }
+
+    /// `config.general.gji_thumb_key_ime_toggle`のキャッシュを更新する
+    /// （BUG-115）。起動時（`bootstrap.rs`）と`apply_config_update`
+    /// （reload時）の両方から呼ぶ。
+    pub(crate) fn set_gji_thumb_key_ime_toggle_opt_in(&mut self, opt_in: bool) {
+        self.gji_thumb_key_ime_toggle_opt_in = opt_in;
+    }
+
+    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
+    /// `gate_thumb_key_ime_actions`へ渡す値（BUG-115）。
+    #[must_use]
+    pub(crate) const fn gji_thumb_key_ime_toggle_opt_in(&self) -> bool {
+        self.gji_thumb_key_ime_toggle_opt_in
     }
 
     /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
@@ -1486,6 +1579,7 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
+        self.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;
@@ -1544,6 +1638,10 @@ impl Runtime {
                     config.general.henkan_solo_tap_always_suppress,
                 ),
             );
+            let (hiragana_vk, katakana_vk) =
+                crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(left, right);
+            self.engine
+                .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
             self.set_space_is_thumb_key(
