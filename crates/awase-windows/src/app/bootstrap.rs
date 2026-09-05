@@ -528,6 +528,8 @@ pub(super) fn initialize_app(
     right_alt_impersonates: bool,
     all_keymaps: crate::keymap::KeymapTable,
 ) {
+    crate::bug116_spike::log_mode_on_startup();
+
     let mut ps = crate::PlatformState::new();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
     ps.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;

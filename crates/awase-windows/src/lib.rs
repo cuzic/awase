@@ -38,6 +38,10 @@ pub mod vk;
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
 #[cfg(windows)]
 pub mod autostart;
+// BUG-116 診断スパイク限定モジュール。develop へマージしない前提
+// （`docs/adr/137-shift-katakana-dbe-mode-key-suppression-regression.md` 参照）。
+#[cfg(windows)]
+pub(crate) mod bug116_spike;
 #[cfg(windows)]
 pub(crate) mod conv_mutation;
 #[cfg(windows)]
