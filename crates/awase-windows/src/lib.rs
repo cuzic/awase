@@ -40,6 +40,9 @@ pub mod vk;
 pub mod autostart;
 #[cfg(windows)]
 pub(crate) mod conv_mutation;
+// BUG-113 診断専用（一時的、第3弾）: 調査終了後に削除すること。
+#[cfg(windows)]
+pub(crate) mod diag_bug113_combo;
 #[cfg(windows)]
 pub mod hook;
 #[cfg(windows)]

@@ -579,6 +579,9 @@ pub(super) fn initialize_app(
         crate::runtime::set_diag_bug113_skip_idle_conv_probe_enabled(
             config.general.diag_bug113_skip_idle_conv_probe,
         );
+        crate::diag_bug113_combo::set_combo_cycle_enabled(
+            config.general.diag_bug113_combo_cycle_enabled,
+        );
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
             manual_fn_key,

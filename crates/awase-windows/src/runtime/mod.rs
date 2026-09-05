@@ -1494,6 +1494,9 @@ impl Runtime {
         set_diag_bug113_skip_idle_conv_probe_enabled(
             config.general.diag_bug113_skip_idle_conv_probe,
         );
+        crate::diag_bug113_combo::set_combo_cycle_enabled(
+            config.general.diag_bug113_combo_cycle_enabled,
+        );
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;

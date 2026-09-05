@@ -396,6 +396,14 @@ pub struct GeneralConfig {
     /// IMC_GETCONVERSIONMODE`）をスキップする。調査終了後は設定・実装
     /// ごと削除すること。設定GUIと sample config には出さない hidden opt-in。
     pub diag_bug113_skip_idle_conv_probe: bool,
+    /// BUG-113 診断専用（一時的、恒久機能ではない）。既定 `false`。
+    /// `true` のときは上記2フィールドより優先し、`diag_bug113_dedup_gji_off_actuation`/
+    /// `diag_bug113_skip_idle_conv_probe`相当の4条件（baseline/dedupのみ/
+    /// probe skipのみ/両方）を物理キーイベントごとに自動ローテーションする。
+    /// 1回のテストセッションで4条件をまとめて検証できる（`[bug113-diag3]`
+    /// ログ参照）。調査終了後は設定・実装ごと削除すること。設定GUIと
+    /// sample config には出さない hidden opt-in。
+    pub diag_bug113_combo_cycle_enabled: bool,
 }
 
 impl Default for GeneralConfig {
@@ -437,6 +445,7 @@ impl Default for GeneralConfig {
             swallow_alt_kana_input_method_switch: true,
             diag_bug113_dedup_gji_off_actuation: false,
             diag_bug113_skip_idle_conv_probe: false,
+            diag_bug113_combo_cycle_enabled: false,
         }
     }
 }

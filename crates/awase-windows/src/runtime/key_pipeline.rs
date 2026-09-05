@@ -69,6 +69,20 @@ impl Runtime {
     #[expect(clippy::cognitive_complexity)]
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
+        // BUG-113 診断専用（一時的、第3弾）: このイベント処理全体で使う
+        // コンボを最初に1回だけ選ぶ（KeyDownのみ、KeyUpでは消費しない）。
+        // 以後この関数内の probe 側・actuation 側の両方が同じコンボを
+        // 参照する。
+        if matches!(event.event_type, KeyEventType::KeyDown) {
+            crate::diag_bug113_combo::select_for_new_event();
+            if crate::diag_bug113_combo::combo_cycle_enabled() {
+                let (dedup, skip_probe) = crate::diag_bug113_combo::current_combo_flags();
+                log::warn!(
+                    "[bug113-diag3] event combo={} (dedup={dedup} skip_probe={skip_probe})",
+                    crate::diag_bug113_combo::combo_label(dedup, skip_probe)
+                );
+            }
+        }
         self.enrich_ime_relevance(&mut event);
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
@@ -436,15 +450,20 @@ impl Runtime {
             return false;
         }
 
-        // BUG-113 診断専用（一時的、第2弾）: resync 経路には影響させない。
-        if resync_generation.is_none()
-            && DIAG_BUG113_SKIP_IDLE_CONV_PROBE.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            log::debug!(
-                "[bug113-diag2] idle-conv-check: probe skipped (diag_bug113_skip_idle_conv_probe)"
-            );
-            self.close_focus_resync_gate_if_current(resync_generation);
-            return false;
+        // BUG-113 診断専用（一時的、第2弾/第3弾）: resync 経路には影響させない。
+        // combo cycle（第3弾）が有効ならそちらを優先し、無効なら単体トグル
+        // （第2弾、`diag_bug113_skip_idle_conv_probe`）にフォールバックする。
+        if resync_generation.is_none() {
+            let skip_probe = if crate::diag_bug113_combo::combo_cycle_enabled() {
+                crate::diag_bug113_combo::current_combo_flags().1
+            } else {
+                DIAG_BUG113_SKIP_IDLE_CONV_PROBE.load(std::sync::atomic::Ordering::Relaxed)
+            };
+            if skip_probe {
+                log::debug!("[bug113-diag2] idle-conv-check: probe skipped");
+                self.close_focus_resync_gate_if_current(resync_generation);
+                return false;
+            }
         }
 
         // BUG-34（docs/known-bugs.md）: get_ime_conversion_mode_raw_timeout は

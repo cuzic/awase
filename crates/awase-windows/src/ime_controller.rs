@@ -189,7 +189,14 @@ fn diag_bug113_mark_open() {
 /// 以降は `false`（呼び出し元は no-op で吸収する）。
 fn diag_bug113_should_actuate_off() -> bool {
     use std::sync::atomic::Ordering;
-    if !DIAG_BUG113_DEDUP_OFF_ACTUATION.load(Ordering::Relaxed) {
+    // combo cycle（第3弾）が有効ならそちらを優先し、無効なら単体トグル
+    // （第2弾、`diag_bug113_dedup_gji_off_actuation`）にフォールバックする。
+    let dedup_enabled = if crate::diag_bug113_combo::combo_cycle_enabled() {
+        crate::diag_bug113_combo::current_combo_flags().0
+    } else {
+        DIAG_BUG113_DEDUP_OFF_ACTUATION.load(Ordering::Relaxed)
+    };
+    if !dedup_enabled {
         return true;
     }
     DIAG_BUG113_LAST_OPEN.swap(false, Ordering::Relaxed)
