@@ -617,6 +617,63 @@ pub fn current_tick_ms() -> u64 {
     unsafe { windows::Win32::System::SystemInformation::GetTickCount64() }
 }
 
+/// OS 全体（他プロセス宛ても含む）で最後にユーザー入力（キー/マウス）があった
+/// `GetTickCount()` 時刻（ms）を返す。取得失敗時は `None`。
+///
+/// issue #165（D&D不可・印刷不能）の「フック落ち」仮説を切り分けるための診断専用
+/// 関数（挙動には影響しない、読み取りのみ）。`hook_alive_tick_ms()`（awase 自身の
+/// フックコールバックが最後に呼ばれた時刻）と比較することで、「OS には直近入力が
+/// 届いているのに awase のフックだけ古いまま」（＝フックにイベントが届いていない
+/// 疑い）と「OS 全体が無操作なだけ」（＝単なるアイドル）を区別できる。
+/// `TIMER_HOOK_WATCHDOG`（`runtime/message_handlers.rs`）から呼ぶことを想定。
+#[must_use]
+pub fn os_last_input_tick_ms() -> Option<u64> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: u32::try_from(size_of::<LASTINPUTINFO>()).unwrap_or(0),
+        dwTime: 0,
+    };
+    // SAFETY: info はスタック上の有効なバッファで cbSize を正しく設定済み。
+    //         GetLastInputInfo はどのスレッドからも呼び出し可能。
+    let ok = unsafe { GetLastInputInfo(&raw mut info) };
+    ok.as_bool().then_some(u64::from(info.dwTime))
+}
+
+/// `HKCU\Control Panel\Desktop\LowLevelHooksTimeout` の実値（ms）を読む。
+/// 未設定/読み取り失敗時は `None`（＝ Windows 既定の 5000ms とみなしてよい）。
+///
+/// 診断専用（issue #165）。値はプロセス起動後にユーザーが変更しても本関数の
+/// 戻り値には反映されない（プロセス生存期間中1回だけ読み、`OnceLock` でキャッシュ
+/// する）——低レベルフックのタイムアウト設定はセッション途中で変えるものではなく、
+/// 頻繁な再読み込みに見合うコストではないため。
+#[must_use]
+pub fn low_level_hooks_timeout_ms() -> Option<u32> {
+    static CACHE: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+        let mut buf = [0u16; 32];
+        let mut size = u32::try_from(size_of_val(&buf)).unwrap_or(0);
+        // SAFETY: HKEY_CURRENT_USER は擬似ハンドル。サブキー・値名は NUL 終端済み
+        //         UTF-16 リテラル。buf/size は呼び出し中有効なスタック上のバッファ。
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                windows::core::w!("Control Panel\\Desktop"),
+                windows::core::w!("LowLevelHooksTimeout"),
+                RRF_RT_REG_SZ,
+                None,
+                Some(buf.as_mut_ptr().cast()),
+                Some(&raw mut size),
+            )
+        };
+        if result.is_err() {
+            return None;
+        }
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        String::from_utf16_lossy(&buf[..len]).trim().parse().ok()
+    })
+}
+
 /// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
 struct SingleThreadCell<T>(UnsafeCell<T>);
 unsafe impl<T> Sync for SingleThreadCell<T> {}

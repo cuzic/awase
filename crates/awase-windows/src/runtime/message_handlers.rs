@@ -572,7 +572,31 @@ pub(crate) unsafe fn handle_wm_timer(
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
             if stale_ms > 5000 {
-                log::warn!("Hook watchdog: no activity for {stale_ms}ms");
+                // issue #165（D&D不可・印刷不能、Geminiの「キーフックのフック落ち」説）
+                // の切り分け用診断。OS全体では直近に入力があったのに awase のフックだけ
+                // 古いままなら「フックにイベントが届いていない」疑いが強まる。OS側も
+                // 無操作なら、単にユーザーがキー/マウス操作をしていないだけと判断できる
+                // （挙動は変えない、ログ文言の拡充のみ）。
+                match hook::os_last_input_tick_ms() {
+                    Some(os_last_input) => {
+                        let os_idle_ms = now.saturating_sub(os_last_input);
+                        log::warn!(
+                            "Hook watchdog: no activity for {stale_ms}ms (OS全体の最終入力は\
+                             {os_idle_ms}ms前{})",
+                            if os_idle_ms < 5000 {
+                                " → フックにイベントが届いていない疑い(issue #165)"
+                            } else {
+                                "、OSも無操作のため単なるアイドルの可能性が高い"
+                            }
+                        );
+                    }
+                    None => {
+                        log::warn!(
+                            "Hook watchdog: no activity for {stale_ms}ms \
+                             (GetLastInputInfo取得失敗)"
+                        );
+                    }
+                }
             } else {
                 log::trace!("Hook watchdog: last activity {stale_ms}ms ago");
             }
@@ -1203,6 +1227,10 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
         handle_count: resources.handle_count,
         gdi_object_count: resources.gdi_object_count,
         user_object_count: resources.user_object_count,
+        // issue #165（D&D不可・印刷不能）の切り分け用診断値。挙動には一切影響しない。
+        low_level_hooks_timeout_ms: hook::low_level_hooks_timeout_ms(),
+        wake_post_failed_lifetime_count: crate::hook_channel::wake_post_failed_lifetime_count(),
+        hook_ring_max_occupancy: crate::hook_channel::HOOK_KEYS.peek_max_occupancy(),
     };
     let (config_toml, layout_yab) =
         crate::app::read_bug_report_attachments(app.platform.tray.current_layout_name());
@@ -1210,11 +1238,16 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
     let retro_eval_stats = Some(crate::bug_report::BugReportRetroEvalStats::from(
         app.engine.retro_eval_stats(),
     ));
+    // issue #165: 親指シフト機能そのものと競合するソフト(detect_conflicting_software)
+    // に加え、入力デリバリ経路に影響しうると既知のツール(detect_relay_or_remap_software)
+    // も診断情報として含める。後者は起動時「終了してください」警告の対象ではない。
+    let mut competing_software = crate::app::detect_conflicting_software();
+    competing_software.extend(crate::app::detect_relay_or_remap_software());
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
         windows_keyboard_layout: format!("LANGID=0x{lang_id:04X} (Japanese={is_japanese})"),
-        competing_software: crate::app::detect_conflicting_software(),
+        competing_software,
         state_snapshot: Some(state_snapshot),
         config_toml,
         layout_yab,

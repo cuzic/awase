@@ -145,6 +145,21 @@ pub struct BugReportStateSnapshot {
     pub gdi_object_count: u32,
     /// プロセスが保持している USER オブジェクト数（`GetGuiResources(GR_USEROBJECTS)`）。
     pub user_object_count: u32,
+    /// `HKCU\Control Panel\Desktop\LowLevelHooksTimeout` の実値（ms）。未設定なら
+    /// `None`（Windows既定の5000msとみなしてよい）。issue #165「キーフックのフック
+    /// 落ち」仮説の切り分け用（`docs/bug-reports-triage.md` 01M1NET4A7D8Z9EYN3JM4WVETP
+    /// 行）。値そのものは診断専用で、awaseの挙動判定には使わない。
+    pub low_level_hooks_timeout_ms: Option<u32>,
+    /// `request_engine_wake` の `PostMessageW` が失敗した累計回数（プロセス生存期間
+    /// 中）。既存の `[hook-ring] request_engine_wake の PostMessageW が失敗した形跡が
+    /// あります` ログ（`hook_channel.rs::recover_stuck_wake_if_needed`）と同じ検出を
+    /// 不具合報告に持たせたもの。0 でなければエンジンスレッド側のメッセージキューが
+    /// 詰まった形跡がある（issue #165 H1: エンジンスレッド詰まり仮説）。
+    pub wake_post_failed_lifetime_count: u32,
+    /// `HOOK_KEYS`（フックスレッド→エンジンスレッド転送用リングバッファ）の
+    /// プロセス生存期間中の最大占有数。容量（1024）に近いほどエンジンスレッド側の
+    /// 処理が詰まっていた形跡が強い（issue #165 H1）。
+    pub hook_ring_max_occupancy: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -646,6 +661,9 @@ mod tests {
             handle_count: 321,
             gdi_object_count: 45,
             user_object_count: 67,
+            low_level_hooks_timeout_ms: Some(5000),
+            wake_post_failed_lifetime_count: 0,
+            hook_ring_max_occupancy: 3,
         }
     }
 
@@ -837,6 +855,9 @@ mod tests {
         assert!(json.contains("\"handle_count\": 321"));
         assert!(json.contains("\"gdi_object_count\": 45"));
         assert!(json.contains("\"user_object_count\": 67"));
+        assert!(json.contains("\"low_level_hooks_timeout_ms\": 5000"));
+        assert!(json.contains("\"wake_post_failed_lifetime_count\": 0"));
+        assert!(json.contains("\"hook_ring_max_occupancy\": 3"));
         assert!(json.contains("\"attach_config\": true"));
         assert!(json.contains("\"config_toml\": \"general.default_layout = \\\"nicola\\\"\""));
         assert!(json.contains("\"attach_layout\": true"));
