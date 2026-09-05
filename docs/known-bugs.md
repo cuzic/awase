@@ -14222,6 +14222,62 @@ Phase 3はこれをHiragana/Katakanaの2キー分拡大するだけ。恒久修�
 すること。詳細は[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
 「Phase 3のリスク評価」節参照。
 
+**実装後のOpus敵対的コードレビューで発覚したブロッカーC1（修正済み）:
+排他制御ゲートに「エンジン活性（belief ON）」条件が抜けていた
+（2026-09-05）:** Phase 2/3の排他制御ゲート（`kp_stage_shadow_ime_
+toggle`、「親指キー×delegate armed」の積）には、Phase 3のdelegateが
+`resolve_pending_thumb_as_single`からしか発火せず、この関数へは
+`Engine::on_input_body`の活性ゲート（belief ONでなければ`PassThrough`）
+を通過しないと到達できない、という条件が抜けていた。belief OFFの
+状態でHiragana/Katakana親指キーを単独タップすると、ゲートが
+（beliefがOFFでも）成立してshadow-toggleのbelief書き込みを止める一方、
+delegateも活性ゲートで弾かれ発火しないため、**「誰も何もしない」状態
+になりbeliefがOFFに固着する**——BUG-115の元症状そのものの再現であり、
+観測できないアプリ（Imm32Unavailable等、BUG-115の報告環境）では
+恒久的に固着する。ゲート条件を「親指キー×delegate armed×belief ON
+（`effective_open()`）」の3項の積に修正して対応した
+（`crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_shadow_
+ime_toggle`）。
+
+この修正後も、belief OFF始点＋GJI側が`Off`/`Toggle`を返す構成
+（既定の`On`は無害）に限り、同一イベント内でshadow-toggleの静的
+`TurnOn`とPhase 3delegateが両方発火する1イベント内二重発火が残る
+（`Toggle`なら「押しても何も起きない」、`Off`ならON→OFFのちらつきが
+1回）。1ショットフラグでの抑止も検討したが、`take_ime_open_requested`
+の消費点が`on_input`/`on_timeout`の2箇所あり両方を正しく塞ぐ必要が
+あるため、issue #136と同型の「合流点の洗い出し漏れ」リスクを実害の
+小さい問題のために背負うことになると判断し、既知の限界として本記録に
+残すに留める（修正しない）。詳細は
+[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+「実装レビューで発覚したC1」節参照。
+
+**実装後のOpus敵対的コードレビューで発覚した既存バグC2（Phase 1以前
+から存在、記録のみ・別issue化、2026-09-05）: Henkan/Muhenkan
+delegate-to-open-axisのTurnOn方向は構造的に発火できない:** C1と同じ
+活性ゲートの制約から、ADR-092決定D Step4b以来存在するHenkan/Muhenkan
+のdelegate-to-open-axisの`TurnOn`方向（OFF→ON復帰）が、原理的に
+発火できないことが判明した。delegateは`resolve_pending_thumb_as_
+single`からしか発火せず、そこへ到達するにはbelief ON（エンジン活性）
+が前提のため、`TurnOn`が評価される時点では既にbeliefはONで常に
+no-opにしかならない。実機（dragonflyg4、2026-09-05）でIME OFFの
+状態から物理「変換」キーを単独タップして確認したところ、
+`resolve_pending_thumb_as_single`に到達した形跡（「IME open axis
+delegated」ログ）は一切なく即PassThroughされ、約6秒後に
+`[idle-conv-check]`という**受動的なTSF conv観測フォールバック**に
+よってbeliefがようやく訂正されていた。つまりHenkan側delegateのON
+方向は実際には機能しておらず、Phase 1がBUG-115の報告症状への対策
+として意図していたON復帰は、観測可能なアプリ（TsfNative/Standard等）
+でのみ効く別経路（受動観測）に実質的に依存している。**観測できない
+アプリ（Imm32Unavailable、BUG-115が実際に報告されたUWP環境）では、
+この受動観測フォールバックも効かないため、Henkan/Muhenkan delegateの
+ON復帰手段が実質存在しない可能性が高い。** 恒久対策の候補は
+`ime_on_auto`（活性ゲートより前の`check_special_keys`で評価されるため
+非活性でも効くが、親指キーへ素で載せるとチョードが壊れるため
+「belief OFFのときだけ有効」という追加の設計が要る）だが、本PRの
+スコープ外として別issueを起票する。詳細は
+[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+「実装レビューで発覚したC2」節参照。
+
 **Phase 1実装済みコード自身が同型の二重actuationバグを持っていた
 （Opusホリスティック設計レビューで発覚・同日撤去、2026-09-05）:**
 上記のPhase 2撤回（`nicola_fsm`汎用化案）を検証したのと同じ観点で

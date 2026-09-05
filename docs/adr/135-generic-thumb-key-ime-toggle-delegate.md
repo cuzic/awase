@@ -3,7 +3,28 @@
 ## ステータス
 
 **設計フェーズ完了。Phase 1・Phase 2・Phase 3のいずれもOpus敵対的
-レビューで収束済み、未実装・未コミット。**
+レビューで収束済み、Phase 1〜3ともブランチ
+`feat/bug115-gji-hiragana-katakana-ime-mode-keys`に実装・コミット済み
+（2026-09-05）。`cargo test`（workspace全体1664件）・
+`cargo nextest run -p awase-windows --test architecture_guard`
+（67件）・`cargo clippy`・`cargo fmt --check`いずれもクリーン。**
+
+**実装後のOpus敵対的コードレビュー1ラウンド目で新規ブロッカーC1と
+既存バグC2を発見、いずれも対応済み**（下記「実装レビューで発覚した
+C1」「C2」各節参照）:
+- **C1（ブロッカー、修正済み）**: Phase 2/3の排他制御ゲート条件に
+  「エンジン活性（belief ON）」が抜けており、belief OFF状態で
+  Hiragana/Katakana親指キーによるIME復帰が固着しうるバグを発見。
+  ゲート条件を「親指キー×delegate armed×belief ON」の3項の積に修正。
+- **C2（既存の欠陥、Phase 1以前から存在、記録のみ・別issue化）**:
+  実機検証により、既存のHenkan/Muhenkan delegate-to-open-axisの
+  `TurnOn`方向（OFF→ON復帰）が活性ゲートの制約で構造的に発火できず、
+  実際のON復帰は受動的な観測フォールバックに依存していたことが判明。
+  観測できないアプリ（Imm32Unavailable、BUG-115の報告環境）では
+  ON復帰手段が実質存在しない可能性がある。本PRのスコープ外として
+  別issueを起票する。
+
+2ラウンド目のOpus敵対的コードレビュー待ち。
 
 - **Phase 1**（config1.db修正〜設定UI修正）: 実装済み・Opus敵対的
   レビュー（コード差分2ラウンド・ランタイム設計2ラウンド・
@@ -941,6 +962,125 @@ actuationに新gateを足すときは全合流点を洗い出す）の対象で�
 「Phase 3 delegate」の2つで全てである（Eisu救済・半角英数復帰の
 副作用は合流点ではなく、両方の経路から独立して実行され続けるため
 対象外）。Henkan/Muhenkanのdelegateは対象外のVKのため無関係。
+
+### 実装レビューで発覚したC1（ブロッカー）: ゲート条件に「エンジン活性（belief ON）」が抜けていた
+
+**上記のゲート条件は「親指キー×delegate armed」の積として設計・実装
+したが、これだけでは不十分だった。** Opus敵対的コードレビュー（実装後、
+2026-09-05）で、ゲート条件がFSM側の実際の発火条件と完全には一致して
+いないことが発覚した。
+
+Phase 3のdelegateは`resolve_pending_thumb_as_single`からしか発火
+しない。この関数へ到達するには`NicolaFsm`が`PendingThumb`へ入る必要が
+あり、そのためには`Engine::on_input_body`の活性ゲート
+（`compute_state`が`!ctx.ime_on`なら`InactiveReason::ImeOff`で
+即`PassThrough`、`engine.rs:264-275`/`:506-517`）を通過しなければ
+ならない。**つまりbelief（`effective_open()`）がOFFの間、delegateは
+構造的に発火できない。** ところが元のゲート条件（「親指キー×delegate
+armed」）にはbelief状態が含まれておらず、belief OFFのままでもゲートが
+成立し、shadow-toggleのbelief書き込みを止めてしまっていた。
+
+**失敗シナリオ（BUG-115の元症状そのものの再現）**: ひらがな＝親指キー、
+GJIはms-ime/mobileプリセット（Windows版GJIの実質既定）で`On`判定→
+delegate armed。IMEをOFFにした状態でひらがなキーを単独タップすると:
+`kp_stage_shadow_ime_toggle`は「親指キー✓×armed✓」でゲート成立→
+belief書き込みをスキップ。`on_input_body`は`ctx.ime_on==false`→
+`InactiveReason::ImeOff`→PassThrough、**FSMに入らないのでdelegateも
+発火しない**。物理キーはOSへ届きGJI自身はIMEをONにするが、**awaseの
+beliefはOFFのまま固着**——エンジンが非活性のまま、親指シフトにならない。
+実IME状態を観測できないアプリ（Imm32Unavailable/TsfNative/InputRelay、
+まさにBUG-115の報告環境）ではこの固着が一時的ではなく恒久的になる。
+
+**対策（実装済み）**: ゲート条件に`effective_open()`（belief ON）を
+AND する——`is_configured_thumb_key(vk) && delegate_armed(vk) &&
+effective_open()`の3項の積にする
+（`crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_shadow_
+ime_toggle`）。**「ゲート条件はFSM側の実際の発火条件と厳密に一致
+していなければならない」という不変条件（Q4で最初に立てたもの）は、
+実装レビューで初めて全項が判明した**——「親指キー×armed」だけでは
+不十分で、「エンジン活性（belief ON）」も発火条件の一部だった。
+
+**この修正後に残る、意図的に許容する残留事項（belief OFF始点のみ、
+一過性）**: belief OFFから押した場合、ゲートは不成立（`effective_
+open()`がfalse）のため通常どおり静的`TurnOn`でbeliefがOFF→ONへ昇格・
+actuateされる。ところが**同一イベント内**でその後`build_input_
+context`が`ctx.ime_on=true`を読むため、活性ゲートを通過してFSMが
+`PendingThumb`へ入り、単独タップ確定時に**delegateも発火する**
+（P1と同型の1イベント内二重発火が、belief OFF始点のケースだけ復活する）。
+GJI側の判定値ごとの帰結:
+- **`On`**（ms-ime/mobileプリセット＝実質既定、最多ケース）: delegate
+  も`TurnOn`。手順1で既にONなので`ime_set_open_effects`の
+  `prev_activation`重複抑止により実害なし。**既定ケースは無害。**
+- **`Off`**（CUSTOMキーマップで明示設定した場合のみ）: ON→OFFの
+  ちらつきが1回起きるが、最終状態はGJIの意味論どおりOFFに収束する。
+  1打鍵で逆方向2回のactuationが走るため、cold-startアプリでの
+  リテラル漏れリスク（BUG-02/BUG-70系）は残る。
+- **`Toggle`**（`gji_thumb_key_ime_toggle=true`のopt-in時のみ到達）:
+  delegateが`!ctx.ime_on`=falseを評価しOFFへ戻す。**押しても何も
+  起きない**（P1と同型の症状）。
+
+**対応方針（採用: 既知の限界として記録、修正は見送る）**: 1ショット
+フラグでdelegate発火を抑止する代替案も検討したが、`take_ime_open_
+requested`の消費点が`on_input`/`on_timeout`の2箇所あり、両方を
+正しく塞がないと`feedback_new_actuation_gate_must_cover_all_choke_
+points`が警告する「合流点の洗い出し漏れ」（issue #136と同型）を
+新たに背負う。実害は`Toggle`opt-in（自己責任として既に位置づけ済み）
+と`Off`（CUSTOMキーマップ限定）に閉じ、既定ケース（`On`）は無害の
+ため、コストに見合わないと判断し見送る。`docs/known-bugs.md`
+BUG-115に記録する。
+
+### 実装レビューで発覚したC2（既存の欠陥、Phase 1発見時点では未検出）: Henkan/Muhenkan delegateのTurnOn方向は構造的に発火できない
+
+C1と同じ活性ゲートの制約から、**既存のHenkan/Muhenkan delegate-to-
+open-axis（ADR-092決定D Step4b、本ADRより前から存在）のTurnOn方向は、
+OFF→ONの遷移を起こすことが原理的にできない**ことが判明した。delegate
+は`resolve_pending_thumb_as_single`からしか発火せず、この関数へは
+belief ON（エンジン活性）でなければ到達できない。したがって
+`TurnOn`のdelegateが実際に評価される時点では、すでにbeliefはON
+——「既にONのときにONにする」という常にno-opの経路にしかならない。
+
+**2026-09-05、実機（dragonflyg4、develop相当のPhase 1以前のコード
+——この欠陥はPhase 1・Phase 2/3のどちらとも無関係に、ADR-092
+Step4b以来ずっと存在していた）で確認済み**: GJIアクティブ、IME OFFの
+状態で物理「変換」キー（`VK_CONVERT`=0x1C、既定で右親指キー）を
+単独タップしたところ、ログは
+
+```
+[engine-input] vk=0x1C KeyDown ... ime_on=false ...
+[relay-guard] vk=0x1c down ...
+[reinject] vk=0x1c down (queued passthrough now firing)
+```
+
+と、`resolve_pending_thumb_as_single`に到達した形跡（「IME open axis
+delegated」ログ）が一切無いまま即PassThroughされた。約6秒後、
+`[idle-conv-check] TsfNative: conv observation open=true reason=
+NativeToggleShadowOff ... → ObserverReported として記録 (engine は
+actuate しない)`という**受動的な観測**によってbeliefがようやく
+ONへ訂正されている——delegateではなく、既存の「TsfNative conv
+観測」フォールバック経路が実際にIME状態を復旧させていた。
+
+**この帰結として、Phase 1がBUG-115の報告症状（「変換キーでON復帰
+しても親指シフトにならない」）への対策として配線したHenkan側delegate
+は、ON方向には効いていない可能性が高い。** 実際に効いているのは
+Muhenkan→`TurnOff`（ON中に押してOFFにする）とATOKの`Toggle`（ON中
+にしか発火しないため実質Off専用）だけで、ON復帰そのものは今回確認した
+受動観測フォールバック（TsfNative/Standardプロファイルなど観測可能な
+アプリでのみ効く）に依存している。**観測できないアプリ
+（Imm32Unavailable、BUG-115が実際に報告されたUWP環境）では、この
+フォールバックも効かず、Henkan/Muhenkan delegateのTurnOn方向も
+効かないため、ON復帰手段が実質存在しない可能性がある。**
+
+**対応方針（本PRのスコープ外、記録のみ・別issue化）**: `fix-requires-
+evidence.md`の再発ファミリー「キー選択」「IME belief」に該当するため
+記録は必須。恒久対策の候補は`ime_on_auto`
+（`Engine::match_ime_on_off_auto`、`check_special_keys`経由で
+活性ゲートより**前**に評価されるため非活性でも効く）だが、親指キーへ
+素で載せるとチョード打鍵のたびにconsumeされチョードが壊れる
+（Phase 1で「親指キーはactuation-autoに載せない」と判断した理由が
+そのまま当てはまる）。「belief OFFのときだけ有効なactuation-auto」の
+ような設計が必要になるため、本PRのスコープ外として別issueを起票する。
+`docs/known-bugs.md` BUG-115の「Phase 1が何を解決したか」の記述も
+この発見に合わせて訂正する。
 
 ### 優先順位競合の確認（Opus2ラウンド目レビューP7で精査済み・断定可）
 

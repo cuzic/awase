@@ -874,7 +874,20 @@ impl Runtime {
             }
             return false;
         }
-        let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
+        // Phase 3 delegate が「所有」するのは、親指キー×delegate armed に加えて
+        // エンジンが活性(=belief ON)である場合だけ（C1、Opus実装レビュー指摘）。
+        // `resolve_pending_thumb_as_single`（delegateの唯一の発火点）は
+        // `NicolaFsm::on_input`経由でしか呼ばれず、`Engine::on_input_body`の
+        // 活性ゲート（`compute_state`が`!ctx.ime_on`ならInactiveReason::ImeOff
+        // でPassThrough、`engine.rs:264-275`/`:506-517`）を通過しない限り
+        // 到達しない。つまりbelief OFFの間、delegateは構造的に発火できない。
+        // ここでbelief状態を見ずに「親指キー×armed」だけでshadow-toggleを
+        // 止めると、delegateも発火せずshadow-toggleも止まる「誰も何も
+        // しない」状態を作り、IME OFFからひらがな/カタカナ親指キーで
+        // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
+        // アプリ——UWP等——では恒久的に固着する）。
+        let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code)
+            && self.platform_state.ime.effective_open();
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
@@ -903,11 +916,15 @@ impl Runtime {
         // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
         if matches!(kind, IntentKind::PhysicalImeKey) && delegate_owned {
             // Phase 3 delegate が実際に所有する入力空間
-            // (現在の親指キー && delegate armed) だけで shadow-toggle の
-            // belief 書き込み/actuationを止める。delegate armed 単独で止めると、
-            // 非親指キー向け Phase 2 shadow_action override の実効ケースまで
-            // 消してしまう。
-            log::info!(
+            // (現在の親指キー && delegate armed && belief ON、C1参照) だけで
+            // shadow-toggle の belief 書き込み/actuationを止める。delegate
+            // armed 単独で止めると、非親指キー向け Phase 2 shadow_action
+            // override の実効ケースまで消してしまう。
+            // C1修正後はbelief ONの間（＝チョード入力中）毎打鍵this分岐を
+            // 通るため、triage用の「intent 昇格」ログ（下のelse節、INFO）と
+            // 違いdebugに留める——delegate側の「IME open axis delegated」
+            // INFOログでtriageに必要な情報はカバーされる（Opusレビュー指摘）。
+            log::debug!(
                 "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
                  belief書き込み/actuationをスキップ",
                 event.vk_code,
