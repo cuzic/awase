@@ -1813,7 +1813,7 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
         count_real_calls(force_on_body, "build_ime_control_view(None)"),
         1,
         "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
-         shadow_on=false を作ることで GJI の no-op skip を bypass する設計。\
+         shadow_on=None を作ることで GJI の no-op skip を bypass する設計。\
          `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
     );
 }
@@ -1837,8 +1837,9 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
     assert_eq!(
         count_real_calls(fallback_write_body, "view.control.shadow_on = None"),
         1,
-        "fallback_write は view.control.shadow_on = None で GjiDirect/MsImeDirect の \
-         already-matched skip を bypass する設計（BUG-113 追補）。この上書きが \
+        "fallback_write は view.control.shadow_on = None で GjiDirect の \
+         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirect/\
+         KanjiToggleはshadow_onをskip判定に使わないため無関係）。この上書きが \
          削除・変更されると、ImmCross Failed 後のフォールバックが \
          pre-actuation write を読み返して自分の送信を握り潰す回帰が再発する。"
     );
