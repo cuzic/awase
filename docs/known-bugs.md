@@ -10477,6 +10477,36 @@ give-up 分岐自体の見直しを検討する」という本件の予告）、
 決定3（提案2＝retry の却下・案L の採用、本バグが案L の初回実装）、
 [docs/experiments.md](../experiments.md) エントリ16。
 
+**追補5（2026-09-05、コードレビュー指摘・未検証、修正はしていない）:
+`Output::start_ms_ime_ready_poll`（`crates/awase-windows/src/output/probe_io.rs`、
+MS-IME confirm-then-transmit ゲートの IMC 確認ポーリング）が、本バグの
+ADR-101/round4 レビューで確定した「`with_app` 再入による `None` は
+`Stale`（真の focus 不一致）と区別する」という教訓を反映していない
+可能性がある。**
+
+`probe_io.rs` の `send_chrome_gji_reinit_and_poll`
+（`gji_reinit_poll_tick_outcome`、本バグの節「関係ファイル・関数一覧」
+参照）は、`with_app` が再入で `None` を返した場合を `Continue`（次tickへ
+継続）として扱い、`Stale`（focus 世代不一致が実際に確認できた場合）とは
+明確に区別している——これはまさに本バグの round4 レビューで見つかった
+教訓（1tick再入しただけで retry と deferred 救済の両方を失うバグ）を
+踏まえた設計。
+
+一方 `Output::start_ms_ime_ready_poll` は `crate::with_app(...)
+.unwrap_or(MsImePollStatus::Stale)` という形で、**`with_app` 再入による
+`None` も、focus_gen 不一致による本物の `Stale` も、一律 `Stale` 扱いに
+している**（両者を区別する分岐が無い）。もし `with_app` の再入が実際に
+起きた場合、MS-IME confirm-then-transmit ゲートのポーリングが「focus が
+変わった」という誤った理由で即座に打ち切られ、本来なら継続すべき
+確認処理が中断される可能性がある。
+
+「probe_io.rs のポーリングループ重複統合」リファクタ（ADR-136の副次的
+発見）を `/simplify` で実施した際、両関数を比較する過程で見つかった
+既存の非対称であり、今回のリファクタが持ち込んだものではない。実機での
+実害（誤動作）は未確認。修正するなら、GJI 側と同様に「`with_app` 再入
+による判定不能」と「真の focus 不一致」を区別する型（`Option<Option<...>>`
+または専用 enum）に揃えることになる。
+
 ---
 
 ## BUG-75: `StaleConfirm` 回収が「先頭 VK は着弾していない」と無条件に仮定して romaji 全体を再送するため、着弾済みの子音が二重になり促音が増える
@@ -10987,6 +11017,31 @@ Windows 実機セッションに委ねる（2台の PC 間で RDP 接続→切�
 **関連:** BUG-48（Win キー KeyUp 消失によるスタック、`is_held_fresh`の
 初出）、BUG-61/BUG-62（Alt+かな による JIS かな直接入力への不可逆切替、
 今回無効化中は例外なく保護を止める判断の対象）。
+
+**追補（2026-09-05、コードレビュー指摘・未検証）: `ir_stage_focus` 内で
+spawn される ImmCrossProbe（focus 用）が `disable_apps` の早期 return
+より前に発火し、無効化アプリでも belief への書き込みが発生する。**
+「二重の actuation/probe がないか」全体調査の一環で ADR-136
+（`docs/adr/136-duplicate-immcross-probe-on-focus-change.md`）として
+Opus 敵対的レビューにかけた際、当初仮説（別の probe との無意味な重複）は
+反証されたが、その過程で本件が副産物として見つかった。
+
+`ir_execute`（`crates/awase-windows/src/runtime/ime_refresh.rs:63-83`）の
+`app_disabled` 早期 return（`:76-78`）は `ir_stage_focus`（:68）の**後**に
+ある。一方 `ir_stage_focus` → `apply_focus_probe_result` →
+`on_focus_process_changed`（`focus_tracking.rs:99`）の内部で、
+`AppImeProfile::Standard` かつ `is_japanese_ime()` なら
+`read_ime_state_full_async()` を非同期 spawn し `write_imm_cross_probe`
+で belief へ書き込む処理（`focus_tracking.rs:694-725`、ADR-075由来の
+ImmCrossProbe）が既に発火してしまっている。**「無効化中は observe/notify/
+drift/warmup/probe を例外なく全停止する」という本 BUG-78 の採用済み対策の
+設計意図に反し、このprobeだけは disable_apps 対象アプリへのフォーカス
+切替でも抑止されず belief を書き込む可能性がある。**
+
+実機での実害（誤動作）は未確認。修正候補は「`app_disabled` チェックを
+`ir_stage_focus` より前に移す」または「ImmCrossProbe spawn 条件に
+`app_disabled` チェックを追加する」のいずれか。次回このパスに触る際に
+修正すること。
 
 ---
 
