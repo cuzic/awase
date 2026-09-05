@@ -97,6 +97,146 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     }
 }
 
+// ── BUG-113 診断専用スパイク（一時的、恒久機能ではない） ───────────────
+//
+// ADR-133 v5（`docs/adr/133-gji-ime-mode-key-sendinput-batch-shape.md`）の
+// D0/D2/D4 を1回の実機スパイクでまとめて検証する。`GjiDirectStrategy::apply
+// (open=false)` の送信方式を呼び出しごとに自動ローテーションする
+// （有効時のみ）:
+//   mode 0（baseline）: 通常どおり send_ime_mode_key(VK_IME_OFF)（対照群）
+//   mode V（split）   : down/up を2回の独立した SendInput に分割（第一候補）
+//   mode A（self-echo）: vk を同一バッチ内で2度打鍵（第二候補）
+//   mode B3（fake-ctrl-3event）: 偽Ctrl↑ + vk↓ + vk↑（候補B採用形）
+//   mode B4（fake-ctrl-4event）: 偽Ctrl↑ + vk↓ + vk↑ + 偽Ctrl↑（B3で
+//                        「@」が消えない場合の予備）
+// 実際に Ctrl/Shift が押下中（Ctrl+無変換 等）の場合は診断を割り込ませず
+// 通常経路に任せる（D0-1 が読みたい「ありのままの」バッチを汚さないため、
+// ADR-133 D1 と同じ条件）。
+// 別枠として、Alt 押下中の物理半角/全角キーは D0-3
+// （`KanjiToggleStrategy` 単独で `p` が混入するか）の専用トリガーとして
+// 扱う（mode cycle の呼び出し回数は消費しない）。
+// 各回 `[bug113-diag] mode=... ...` を WARN で記録するので、実機で押下した
+// 何回目に「@」が出たかとログの mode を突き合わせる。
+// 調査終了後は `crate::ime_controller::set_diag_bug113_mode_cycle_enabled`
+// の呼び出し元・本ブロック一式・`ime.rs` の `diag_bug113_*` 関数一式を
+// 削除すること。
+
+static DIAG_BUG113_MODE_CYCLE_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static DIAG_BUG113_MODE_COUNTER: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// `open=false` の「クローズ episode」を跨いだかどうかの追跡。`true` なら
+/// 直前に `open=true` を処理済み＝次に来る `open=false` は新しい episode。
+/// `GjiDirectStrategy::apply(open=false)` は `shadow_toggle_off_sync` /
+/// `engine_decision_sync` の2経路から同一の物理押下に対して連続で2回
+/// 呼ばれる（2026-09-05 実機ログで確認済み）。episode 単位でモードを
+/// 固定しないと、1回の物理キー押下で2つの異なるモードが混在してしまい
+/// 「@」の帰属を切り分けられなくなる。
+static DIAG_BUG113_LAST_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+/// 現在のクローズ episode に固定されたモード番号。
+static DIAG_BUG113_CURRENT_MODE: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// 有効化してからの総呼び出し回数。安全弁（下記）用。
+static DIAG_BUG113_TOTAL_INVOCATIONS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+/// D0-3（`KanjiToggleStrategy` 発火トリガー）が現在のクローズ episode で
+/// まだ発火していないかどうか。`mark_open` で毎回リセットする。
+static DIAG_BUG113_KANJI_PROBE_PENDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+/// 巡回するモード数（0/V/A/B3/B4 の5つ）。
+const DIAG_BUG113_MODE_COUNT: u32 = 5;
+/// 安全弁の上限（round1レビューMajor 7の算術に基づく: 1候補あたり
+/// 最低10 episode × 5モード × 1 episodeあたり最大2 invocation = 100、
+/// 余裕を見て120。タイミング定数ではないため tuning-constants.md の
+/// 実測義務の対象外——意図的な小さい安全マージン）。
+const DIAG_BUG113_MAX_INVOCATIONS: u32 = 120;
+
+/// BUG-113 診断専用（一時的）: `true` の間、`GjiDirectStrategy::apply(open=false)`
+/// の送信方式をクローズ episode ごとに自動ローテーションする。`bootstrap.rs`
+/// （起動時）と `runtime/mod.rs::apply_config_update`（reload 時）から
+/// `config.toml` の `diag_bug113_mode_cycle_enabled` に応じて直接呼ぶ。
+pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
+    use std::sync::atomic::Ordering;
+    if enabled != DIAG_BUG113_MODE_CYCLE_ENABLED.swap(enabled, Ordering::Relaxed) {
+        log::info!(
+            "[bug113-diag] mode cycle: {}",
+            if enabled { "有効化" } else { "無効化" }
+        );
+    }
+    if enabled {
+        // 有効化のたびに安全弁カウンタと episode 追跡をリセットする。
+        DIAG_BUG113_TOTAL_INVOCATIONS.store(0, Ordering::Relaxed);
+        DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
+        DIAG_BUG113_KANJI_PROBE_PENDING.store(true, Ordering::Relaxed);
+    }
+}
+
+/// `GjiDirectStrategy::apply(open=true)` を処理した際に呼ぶ。次に来る
+/// `open=false` を新しいクローズ episode として扱えるようにする。
+fn diag_bug113_mark_open() {
+    use std::sync::atomic::Ordering;
+    DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
+    DIAG_BUG113_KANJI_PROBE_PENDING.store(true, Ordering::Relaxed);
+}
+
+/// D0-3 トリガーが現在の episode でまだ発火していなければ `true` を返し、
+/// 発火済みとしてマークする（一度だけ発火させるため）。
+fn diag_bug113_kanji_probe_pending_take() -> bool {
+    use std::sync::atomic::Ordering;
+    DIAG_BUG113_KANJI_PROBE_PENDING.swap(false, Ordering::Relaxed)
+}
+
+/// 有効なら現在のクローズ episode のモード番号（0..`DIAG_BUG113_MODE_COUNT`
+/// を巡回）を払い出す。同じ episode 内の重複呼び出し
+/// （`shadow_toggle_off_sync` + `engine_decision_sync`）には同じモードを
+/// 返す。無効・安全弁作動時は `None`（呼び出し元は通常経路を使う）。
+fn diag_bug113_next_off_mode() -> Option<u32> {
+    use std::sync::atomic::Ordering;
+    if !DIAG_BUG113_MODE_CYCLE_ENABLED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let invocation = DIAG_BUG113_TOTAL_INVOCATIONS.fetch_add(1, Ordering::Relaxed);
+    if invocation >= DIAG_BUG113_MAX_INVOCATIONS {
+        if DIAG_BUG113_MODE_CYCLE_ENABLED.swap(false, Ordering::Relaxed) {
+            log::warn!(
+                "[bug113-diag] 安全弁作動: 呼び出し回数が {DIAG_BUG113_MAX_INVOCATIONS} 回を\
+                 超えたため mode cycle を自動的に無効化しました（暴走防止）"
+            );
+        }
+        return None;
+    }
+    let is_new_episode = DIAG_BUG113_LAST_OPEN.swap(false, Ordering::Relaxed);
+    if is_new_episode {
+        let mode =
+            DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % DIAG_BUG113_MODE_COUNT;
+        DIAG_BUG113_CURRENT_MODE.store(mode, Ordering::Relaxed);
+        Some(mode)
+    } else {
+        Some(DIAG_BUG113_CURRENT_MODE.load(Ordering::Relaxed))
+    }
+}
+
+/// BUG-113 診断専用（一時的）: モードに応じて `open=false` を実際に適用する。
+fn diag_bug113_apply_off_mode(mode: u32, vk: awase::types::VkCode) -> ImeOpenOutcome {
+    let ok = match mode {
+        1 => crate::ime::diag_bug113_send_vk_ime_off_split(vk),
+        2 => crate::ime::diag_bug113_send_vk_ime_off_self_echo(vk),
+        3 => crate::ime::diag_bug113_send_vk_ime_off_fake_ctrl_3event(vk),
+        4 => crate::ime::diag_bug113_send_vk_ime_off_fake_ctrl_4event(vk),
+        _ => {
+            log::warn!("[bug113-diag] mode=0(baseline): send {vk:#06X}（対照群、通常経路と同じ）");
+            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
+            unsafe { crate::ime::send_ime_mode_key(vk) }
+        }
+    };
+    if ok {
+        ImeOpenOutcome::Applied
+    } else {
+        ImeOpenOutcome::UnsafeToToggle
+    }
+}
+
 // ── GjiDirectStrategy ────────────────────────────────────────────
 
 /// GJI を使った一方向 IME 制御戦略。
@@ -120,6 +260,11 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+        if open {
+            // BUG-113 診断専用（一時的）: open=true を処理したら episode 境界を
+            // リセットする（AlreadyMatched で早期 return する場合も含む）。
+            diag_bug113_mark_open();
+        }
         if open && view.control.shadow_on {
             // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
             log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
@@ -127,6 +272,34 @@ impl ImeOpenStrategy for GjiDirectStrategy {
         }
         // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
         let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
+
+        if !open {
+            // BUG-113 診断専用（一時的、ADR-133 D0-3）: Alt 押下中の物理
+            // 半角/全角キーは KanjiToggleStrategy 単独発火の専用トリガー。
+            if crate::ime::diag_bug113_should_run_kanji_probe()
+                && diag_bug113_kanji_probe_pending_take()
+            {
+                log::warn!(
+                    "[bug113-diag] D0-3: Alt押下中の物理半角/全角キーを検出 → \
+                     KanjiToggleStrategy(VK_KANJI)を強制発火。直後に「p」が\
+                     混入するか確認してください"
+                );
+                // SAFETY: post_kanji_toggle_to_focused は Win32 API を呼び出す unsafe fn。
+                // メインスレッドから呼ぶこと。
+                unsafe { crate::ime::post_kanji_toggle_to_focused() };
+                return ImeOpenOutcome::FallbackSent;
+            }
+            // BUG-113 診断専用（一時的、ADR-133 D0/D2）: 実際に Ctrl/Shift が
+            // 押下中でなければ、送信方式をモード巡回に委ねる。押下中
+            // （Ctrl+無変換 等）は D0-1 が読みたい「ありのままの」バッチを
+            // 汚さないため通常経路のまま。
+            if !crate::ime::diag_bug113_real_modifiers_held() {
+                if let Some(mode) = diag_bug113_next_off_mode() {
+                    return diag_bug113_apply_off_mode(mode, vk);
+                }
+            }
+        }
+
         log::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
         if unsafe { crate::ime::send_ime_mode_key(vk) } {

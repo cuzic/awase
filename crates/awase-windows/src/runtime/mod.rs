@@ -1486,6 +1486,9 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
+        crate::ime_controller::set_diag_bug113_mode_cycle_enabled(
+            config.general.diag_bug113_mode_cycle_enabled,
+        );
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;
