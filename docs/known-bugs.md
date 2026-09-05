@@ -13811,7 +13811,7 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（`wScan=0`仮説は反証・revert済み、真因はBUG-114）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（真因候補確定: `VK_IME_OFF`単体`SendInput`バッチが引き金、修正方針は敵対的レビュー待ち）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -13871,21 +13871,83 @@ awase フックに届く VK は後述のとおり別物）を押すと、他に�
 Windows Terminal 限定にせず全アプリ・全呼び出し元に対して既定で適用する
 形で実装した。しかしユーザーが実機で A/B 検証したところ「@」の再現に
 **一切変化が無かった**。`RUST_LOG=debug` で追加取得したログにより、この
-`wScan=0` 仮説そのものが誤りだったことが判明した——真因は
-**drift correction が `FeedbackPolicy::Read` を使って `VK_IME_OFF` を
-無制限に近い頻度で再送し続けていたこと**であり、詳細は BUG-114
-（本ファイル下方）に切り出した。`send_ime_mode_key` は元の `wScan=0` 固定へ戻している
-（詳細は `docs/experiments.md` エントリ20）。本 BUG の恒久修正は
-BUG-114 の修正に委ねる。
+`wScan=0` 仮説そのものが誤りだったことが判明した——このとき見つかった
+drift correction の `FeedbackPolicy::Read` 無限に近い頻度の再送は
+BUG-114 として切り出したが、**BUG-114 単独では「@」の必要条件ではない**
+（下記フェーズ2参照）。`send_ime_mode_key` は元の `wScan=0` 固定へ戻して
+いる（詳細は `docs/experiments.md` エントリ20）。
+
+**修正試行2・調査（2026-09-05、同日続き）— 真因候補を
+`VK_IME_OFF` 単体 `SendInput` バッチに絞り込み:**
+
+ユーザーの指摘（「Ctrl+無変換 も同じ `send_ime_mode_key(VK_IME_OFF)` を
+送っているのでは？」）がブレークスルーになった。確認すると、Ctrl+無変換
+も物理半角/全角キーも **まったく同じ** `GjiDirectStrategy::apply(false)
+→ send_ime_mode_key(VK_IME_OFF)` を通るのに、前者では「@」が一度も
+出ない。両者の違いは、`send_ime_mode_key` が修飾キー（Ctrl/Shift）を
+実際に押している場合だけ「release → OFF Down/Up → restore」を **1回の
+`SendInput` バッチにまとめて** 送ること。物理半角/全角キー単独では修飾
+キーが無いため `VK_IME_OFF` の Down/Up だけの**単体2イベントバッチ**に
+なる。
+
+これを検証するため、`GjiDirectStrategy::apply(open=false)` の送信方式を
+呼び出しごとに自動ローテーションする診断スパイク（`config.toml` の
+`diag_bug113_mode_cycle_enabled`、`ime_controller.rs`）を実装し、実機で
+4モードを比較した（2026-09-05、複数ラウンドで再現確認済み）:
+
+| mode | 送り方 | 「@」 |
+| --- | --- | --- |
+| 0（baseline） | 従来どおり `send_ime_mode_key(VK_IME_OFF)`（単体2イベント） | **出る** |
+| 1（imm-cross） | `SendInput` を使わず `set_ime_open_cross_process(false)`（`ImmSetOpenStatus`、メッセージベース） | **出ない** |
+| 2（keystate-clear） | `VK_IME_OFF` の直前に別の `SendInput` 呼び出しで `VK_DBE_SBCSCHAR` の synthetic KeyUp を送ってから mode 0 と同じ単体2イベントを送信 | **出る** |
+| 3（fake-ctrl-bracket） | 実際には Ctrl を押させず、「Ctrl release → `VK_IME_OFF` Down/Up → Ctrl restore」を **1回の `SendInput` バッチにまとめて**送信 | **出ない** |
+
+mode 2 は「残留キー状態」仮説（awase のフックが物理キーを suppress しても
+`GetAsyncKeyState` 等のハードウェア直結の状態は「押されたまま」に見える
+可能性）を検証する目的で先に実装したが、否定された。mode 3 の結果と
+合わせると、**「@」の有無を分けるのは残留キー状態でも API の種類でもなく、
+`VK_IME_OFF` の `SendInput` が単体2イベントのバッチとして送られるか、
+他のイベントと一緒の複数イベントバッチとして送られるか**という「バッチの
+形」らしいところまで絞り込めた。mode 0（baseline）で「@」が出た回では、
+その直後に打った文字が正しく半角の "a" として出力されており（IME OFF
+自体は機能した上で「@」が余分に混入している）、これは「@」が IME OFF
+失敗の兆候ではなく紛れ込む余分な1文字であることを裏付ける。
+
+**未解決:** (1) なぜバッチの形が結果を左右するのか、GJI 内部
+（クローズドソース）の挙動としての説明は無い。(2) `apply(true)`
+（IME ON 方向）は `AlreadyMatched` no-op ガードがあるため通常
+`send_ime_mode_key` に到達せず、単体2イベントバッチでの `VK_IME_ON` 送信を
+まだ検証できていない——ON 方向でも同じ「単体バッチで再現」条件が成立する
+かは次セッションの検証候補（[ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
+「次セッションへの引き継ぎ」項目3、まだ未着手のまま持ち越し）。
+(3) 検証の終盤、新規に開いた Windows Terminal ウィンドウで物理半角/全角
+キーが常に `vk=0xF4 TurnOn（true→true, no-op）` としてしか認識されず
+`TurnOff` 側が検出できなくなる現象が発生した（原因未調査、次セッション
+持ち越し）。(4) 検証中、BUG-114 の drift correction 暴走（`FeedbackPolicy::
+Read` 無限に近い再送）が本 BUG の再現手順を実行するだけで何度も自然発生し、
+安全弁（`ime_controller.rs` の呼び出し回数上限）を追加してようやく実害を
+抑えられる状態だった——BUG-114 は想定より頻発しやすい可能性が高く、
+BUG-113 の修正と独立に優先度を上げて検討する価値がある。
+
+**次にやること:** mode=3（fake-ctrl-bracket）方式を恒久修正の第一候補と
+する。`SendInput` の仕組み自体は変えず、無害な偽のブラケットを足すだけの
+最小変更で済むため、mode=1（`ImmSetOpenStatus`、TsfNative では歴史的に
+不安定・ハングしうるとして避けられてきた経緯がある）より安全と見込まれる。
+ただし採用前に Opus 敵対的レビューで設計を固めること（副作用の有無、
+他アプリへの影響、`docs/experiments.md` の「5日間で6回反転」の前例に
+倣った実機ソーク計画を含む）。
 
 **関連:** [ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
 本 BUG の調査により前提が反証され、真因候補が `send_ime_mode_key` の
-`wScan=0` へ移り、さらにそれも反証されて BUG-114 へ移った経緯を記録）、
-BUG-114（本 BUG の真因、drift correction の `FeedbackPolicy::Read` 無限
-再送）、BUG-110/ADR-132（同じ「Windows Terminal + GJI で余分な @」という
-症状クラスの別原因、`IntentStore`/`last_intent` の絶対的権威化が真因
-——本 BUG・BUG-114 とは異なる独立の原因である点に注意）。
+`wScan=0` →（反証）→ BUG-114 →（BUG-114単独では説明できないと判明）→
+`VK_IME_OFF` 単体 `SendInput` バッチ、と段階的に絞り込まれた経緯を記録）、
+BUG-114（同じ調査から派生した独立のバグ、drift correction の
+`FeedbackPolicy::Read` 無限再送）、BUG-110/ADR-132（同じ「Windows Terminal
++ GJI で余分な @」という症状クラスの別原因、`IntentStore`/`last_intent`
+の絶対的権威化が真因——本 BUG・BUG-114 とは異なる独立の原因である点に
+注意）。実装は `spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ
+（`develop` 未マージ、診断スパイク一式が残っている）。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（原因確定、修正方針は敵対的レビュー待ち）
 

@@ -2,12 +2,14 @@
 
 ## ステータス
 
-**BUG-113 の `wScan=0` 修正は実機A/Bで反証・revert 済み。真因は BUG-114
-（drift correction の `FeedbackPolicy::Read` 無限に近い頻度の再送）に
-切り出し、修正方針は Opus 敵対的レビューで設計してから実装する
-（2026-09-05）。** 詳細は本文末尾「BUG-113 の恒久修正（2026-09-05）」節
-（反証の経緯を追記済み）と `docs/known-bugs.md` BUG-114 を参照。D1〜D6 は
-「実機で反証される前の設計検討過程」として以下にそのまま残す。
+**BUG-113 の真因候補は `VK_IME_OFF` 単体 `SendInput` バッチに絞り込み済み
+（2026-09-05）。修正方針（mode=3 fake-ctrl-bracket 案が第一候補）は Opus
+敵対的レビューで設計してから実装する。** `wScan=0` 仮説・BUG-114 単独説は
+いずれも実機A/Bで反証済み。詳細は本文末尾「BUG-113 の恒久修正
+（2026-09-05）」節（反証とその後の絞り込みの経緯を追記済み）と
+`docs/known-bugs.md` BUG-113/BUG-114 を参照。D1〜D6 は「実機で反証される
+前の設計検討過程」として以下にそのまま残す。実装（診断スパイク一式）は
+`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ（`develop` 未マージ）。
 
 ---
 
@@ -666,15 +668,47 @@ FEEDBACK_READ` という経路が、`FocusChanged` 発火の瞬間だけクラ�
 この真因は本 ADR のスコープ（`VK_KANA`/`VK_KANJI` の scan 化）から外れる
 別のメカニズムのため、[BUG-114](../known-bugs.md) として別途起票した。
 `send_ime_mode_key` は元の `wScan=0` 固定へ revert し、`docs/experiments.md`
-エントリ20に一連の経緯を記録した。BUG-113 自体の恒久修正は BUG-114 の
-修正に委ねる（修正方針は Opus 敵対的レビューで設計してから実装する
-ユーザー判断）。
+エントリ20に一連の経緯を記録した。
+
+### BUG-113 の追加調査（2026-09-05、同日続き）— `VK_IME_OFF` 単体 `SendInput` バッチへの絞り込み
+
+BUG-114 も単独では「@」の必要条件ではないと実機A/Bで判明した（drift
+correction が正常に有界動作した回でも「@」が再現した）。ユーザーの指摘
+「Ctrl+無変換 も同じ `send_ime_mode_key(VK_IME_OFF)` を送っているのでは」
+を受けて調べ直した結果、Ctrl+無変換 と物理半角/全角キーは**まったく同じ**
+`GjiDirectStrategy::apply(false) → send_ime_mode_key(VK_IME_OFF)` を通る
+が、前者は修飾キー（Ctrl）を実際に押しているため `send_ime_mode_key` が
+「release→OFF→restore」を1回の `SendInput` バッチにまとめて送るのに対し、
+後者は修飾キーが無いため `VK_IME_OFF` 単体2イベントのバッチになる、という
+違いを発見した。
+
+`config.toml` の `diag_bug113_mode_cycle_enabled`（`ime_controller.rs`）
+で `GjiDirectStrategy::apply(open=false)` の送信方式を呼び出しごとに
+自動ローテーションする診断スパイクを実装し、実機で4モード
+（0: baseline / 1: `ImmSetOpenStatus` メッセージベース / 2: 別バッチでの
+keystate-clear 前処理 / 3: 実際には修飾キーを押させない偽の Ctrl
+ブラケットで1バッチにまとめる）を比較したところ、**mode 0/2（単体バッチ）
+で「@」が出て、mode 1/3（メッセージベース or 複数イベントバッチ）では
+出ない**ことを複数ラウンドで再現確認した。詳細は
+[docs/known-bugs.md BUG-113](../known-bugs.md) 参照。
 
 ### 残タスク
 
+- mode=3（fake-ctrl-bracket、`VK_IME_OFF` を無害な偽 Ctrl ブラケットと
+  1バッチにまとめて送る）を恒久修正の第一候補として Opus 敵対的レビューで
+  設計し、実装する。mode=1（`ImmSetOpenStatus`）は TsfNative で歴史的に
+  不安定・ハングしうるとして避けられてきた経緯があるため優先度を下げる。
+- `apply(true)`（IME ON 方向）で同じ「単体バッチ」条件が「@」を再現するか
+  未検証（`AlreadyMatched` no-op ガードのため通常は `send_ime_mode_key` に
+  到達しない）。
+- 検証終盤に発生した「新規に開いた Windows Terminal ウィンドウで物理
+  半角/全角キーが `TurnOn`（no-op）としてしか認識されなくなる」現象の
+  原因調査（未着手）。
 - BUG-114（drift correction の `FeedbackPolicy::Read` 無限に近い頻度の
-  再送）の修正方針を Opus 敵対的レビューで設計し、実装する。
-- BUG-114 修正後、Windows Terminal + GJI/MS-IME 実機で「@」が再現しなく
-  なったことの確認。
+  再送）の修正方針を Opus 敵対的レビューで設計し、実装する。BUG-113 の
+  検証中に何度も自然発生しており、想定より頻発しやすい可能性が高いため
+  優先度を上げて検討する価値がある。
+- BUG-113/BUG-114 修正後、Windows Terminal + GJI/MS-IME 実機で「@」が
+  再現しなくなったことの確認。
 - D2 spike（`VK_KANA` 置換、この機体では到達不能コード）の develop
   マージ可否判断。
