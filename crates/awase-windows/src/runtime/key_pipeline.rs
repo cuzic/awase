@@ -70,10 +70,20 @@ impl Runtime {
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         // BUG-113 診断専用（一時的、第3弾）: このイベント処理全体で使う
-        // コンボを最初に1回だけ選ぶ（KeyDownのみ、KeyUpでは消費しない）。
+        // コンボを最初に1回だけ選ぶ（物理・非注入のKeyDownのみ、KeyUpや
+        // awase自身のSendInputが自己ループバックしたinjectedイベントでは
+        // 消費しない）。`event.injected`はBUG-14対策で`kp_stage_shadow_
+        // ime_toggle`が見るのと同じフィールドだが、あちらのチェックは
+        // このコンボ選択より後で走る——ここで先にガードしないと、
+        // GjiDirectStrategy::apply が送るVK_IME_OFF/ONのSendInputが
+        // injected=trueで舞い戻ってきた際にもコンボを進めてしまい、
+        // 物理押下とコンボの対応がずれる（2026-09-05実機テストで
+        // 「奇数回目=IME OFF方向で必ず@」という結果が出たが、これは
+        // dedup/probe skipが効いていないのではなく、この対応ずれで
+        // 実際に適用されたコンボが記録と一致していなかったため）。
         // 以後この関数内の probe 側・actuation 側の両方が同じコンボを
         // 参照する。
-        if matches!(event.event_type, KeyEventType::KeyDown) {
+        if matches!(event.event_type, KeyEventType::KeyDown) && !event.injected {
             crate::diag_bug113_combo::select_for_new_event();
             if crate::diag_bug113_combo::combo_cycle_enabled() {
                 let (dedup, skip_probe) = crate::diag_bug113_combo::current_combo_flags();
