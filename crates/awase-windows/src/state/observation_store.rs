@@ -641,26 +641,36 @@ impl ObservationStore {
             }
             // 旧: `most_recent_trusted_after(now, gave_up_at).is_some()`
             //
-            // **BUG-114 追補（ADR-134 Finding 5、実機確認済み）**: `ObserverPoll`
-            // ソースの観測は、IMM32 を実際に読める場合（`OsPoll` 戦略）だけで
-            // なく、読み戻し手段が構造的に無いと自ら宣言しているプロファイル
-            // （TsfNative/Imm32Unavailable、`Blacklist` 戦略）の GJI I/O 活動
-            // 監視（`observe_gji_after_focus`）からも書かれる。後者は
-            // 「`desired` が実現したか」を一切確認していない弱い代理指標
-            // だが、`AnyFreshEvidence` が無区別に「外界が動いた証拠」として
-            // 採用すると、GJI I/O 活動が続く限りほぼ常に鮮度条件を満たして
-            // しまい、`Blind` の `GiveUp` 後クールダウン（3秒）が実質意味を
-            // 失う。実機ログで `attempts=5` の `GiveUp` から次のバーストまで
-            // 数秒〜数十秒おきに永久に繰り返す暴走を確認済み（BUG-114、
-            // `docs/known-bugs.md` 参照）。この query に限り `ObserverPoll`
-            // を鮮度判定から除外する——`Converged`（`Read` policy の収束
-            // 確認、`OsPoll` 戦略の genuine な `ObserverPoll` に依存）には
-            // 一切影響しない。
+            // **BUG-114 追補（ADR-134 Finding 5、実機確認済み・2段階で拡張）**:
+            // 読み戻し手段が構造的に無いと自ら宣言しているプロファイル
+            // （TsfNative/Imm32Unavailable、`Blacklist` 戦略）では、
+            // `desired` が実現したかを一切確認していない自己言及的な弱い
+            // 代理指標が複数の経路から継続的に record され続ける。これを
+            // `AnyFreshEvidence` が無区別に「外界が動いた証拠」として
+            // 採用すると、`Blind` の `GiveUp` 後クールダウン（3秒）が実質
+            // 意味を失い、`attempts=5` の `GiveUp` から次のバーストまで
+            // 数秒おきに永久に繰り返す暴走になる（`docs/known-bugs.md`
+            // BUG-114）。実機で確認済みの2ソース:
+            // - `ObserverPoll`: `observe_gji_after_focus`（GJI I/O 活動監視）。
+            // - `ConvOpenInference`: `kp_stage_idle_conv_check` が conv ビットの
+            //   `NativeToggleShadowOff`/`KatakanaShadowOff` から書く open 推測
+            //   （`state/platform_state.rs::report_conv_open_inference`）。
+            //   これは shadow-toggle 自身が動かした conv 状態を読み返して
+            //   いるだけの自己言及的な信号であり、実機で ~250〜380ms 間隔の
+            //   高頻度で record され続けることを確認した（[[feedback_conv_mode_unreliable_dont_gate_actuation_on_it]]
+            //   と同じ理由でこの用途にも使うべきでない）。
+            // この query に限りこの2ソースを鮮度判定から除外する——
+            // `Converged`（`Read` policy の収束確認、`OsPoll` 戦略の genuine
+            // な `ObserverPoll` に依存）には一切影響しない。
             ReadBackQuery::AnyFreshEvidence => {
+                const EXCLUDED_FROM_ANY_FRESH_EVIDENCE: [ObservationSource; 2] = [
+                    ObservationSource::ObserverPoll,
+                    ObservationSource::ConvOpenInference,
+                ];
                 let latest = self.most_recent_trusted_after_excluding(
                     now,
                     since,
-                    ObservationSource::ObserverPoll,
+                    &EXCLUDED_FROM_ANY_FRESH_EVIDENCE,
                 );
                 if latest.is_some() {
                     Resolution::ExternalChange
@@ -708,20 +718,23 @@ impl ObservationStore {
     }
 
     /// [`most_recent_trusted_after`] と同じだが、指定した `ObservationSource`
-    /// を鮮度判定の対象から除外する。BUG-114 追補（ADR-134 Finding 5）で
-    /// `ReadBackQuery::AnyFreshEvidence` 専用に追加した——`ObserverPoll` の
-    /// ように「読み戻し手段が構造的に無いプロファイルからも書かれうる」
-    /// ソースを、無区別に「外界が動いた証拠」として扱わないため。
+    /// 群を鮮度判定の対象から除外する。BUG-114 追補（ADR-134 Finding 5）で
+    /// `ReadBackQuery::AnyFreshEvidence` 専用に追加した——`ObserverPoll`/
+    /// `ConvOpenInference` のように「読み戻し手段が構造的に無いプロファイル
+    /// からも自己言及的に書かれうる」ソースを、無区別に「外界が動いた
+    /// 証拠」として扱わないため。除外リストは実機で確認され次第拡張する
+    /// 前提（`read_back` の呼び出し元コメント参照）——現状は既知の2ソース
+    /// のみで、将来別のソースが同種の暴走を起こすと判明したら足すこと。
     #[must_use]
     fn most_recent_trusted_after_excluding(
         &self,
         now: Instant,
         since: Instant,
-        exclude: ObservationSource,
+        exclude: &[ObservationSource],
     ) -> Option<&ImeObservation> {
         self.per_source
             .iter()
-            .filter(|o| !o.is_expired(now) && o.at >= since && o.source != exclude)
+            .filter(|o| !o.is_expired(now) && o.at >= since && !exclude.contains(&o.source))
             .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
     }
 
@@ -1246,6 +1259,11 @@ mod tests {
         }
     }
 
+    /// **BUG-114 追補（ADR-134 Finding 5）で `ConvOpenInference`/`ObserverPoll`
+    /// は「旧述語」からの意図的な乖離になったため、ここでは除外対象に
+    /// 含まれない `Gji` を使う**（除外対象2ソースの専用テストは
+    /// `read_back_any_fresh_evidence_ignores_observer_poll_alone` /
+    /// `read_back_any_fresh_evidence_ignores_conv_open_inference_alone` を参照）。
     #[test]
     fn read_back_any_fresh_evidence_matches_the_legacy_predicate_exhaustively() {
         let base = Instant::now();
@@ -1270,7 +1288,7 @@ mod tests {
             for confidence in confidences {
                 for open in [false, true] {
                     let mut s = ObservationStore::default();
-                    let mut o = obs(open, ObservationSource::ConvOpenInference, at);
+                    let mut o = obs(open, ObservationSource::Gji, at);
                     o.confidence = confidence;
                     rec(&mut s, o);
                     let now = since + Duration::from_millis(20);
@@ -1318,12 +1336,16 @@ mod tests {
         );
     }
 
-    /// 上記と対になる確認: `ObserverPoll` **以外**のソース（例:
-    /// `ConvOpenInference`）が `since` 以降に記録されていれば、従来どおり
-    /// `ExternalChange` として再武装する。除外対象を `ObserverPoll` に
-    /// 限定していることの固定。
+    /// BUG-114 追補・第2弾（実機で ObserverPoll 除外だけでは不十分と判明）の
+    /// 回帰テスト。`ConvOpenInference`（`kp_stage_idle_conv_check` が conv
+    /// ビットの `NativeToggleShadowOff` 等から書く open 推測、shadow-toggle
+    /// 自身が動かした状態を読み返すだけの自己言及的な信号）が単独で
+    /// `since` 以降に record されても再武装しないことを固定する。実機で
+    /// ~250〜380ms 間隔の高頻度で record され続け、`ObserverPoll` を除外
+    /// しただけでは暴走が別の形（`gave up` は正しく5回で止まるが、3秒
+    /// クールダウン明けにこのソースだけでほぼ即座に再武装する）で残った。
     #[test]
-    fn read_back_any_fresh_evidence_still_reacts_to_non_observer_poll_sources() {
+    fn read_back_any_fresh_evidence_ignores_conv_open_inference_alone() {
         let base = Instant::now();
         let since = base;
         let now = since + Duration::from_millis(20);
@@ -1335,21 +1357,45 @@ mod tests {
         let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
         assert_eq!(
             receipt.resolution(),
-            Resolution::ExternalChange,
-            "ObserverPoll 以外のソースは従来どおり再武装条件になること"
+            Resolution::GaveUp,
+            "ConvOpenInference 単独の新しい観測も AnyFreshEvidence の再武装条件に\
+             してはならない (BUG-114/ADR-134 Finding 5 第2弾、実機確認済み)"
         );
     }
 
-    /// `ObserverPoll` と、それ以外の新しい観測が両方存在する場合は、
-    /// 後者だけで `ExternalChange` になること（除外は `ObserverPoll` の
+    /// 上記2件と対になる確認: 除外対象**以外**のソース（例: `Gji`）が
+    /// `since` 以降に記録されていれば、従来どおり `ExternalChange` として
+    /// 再武装する。除外対象を `ObserverPoll`/`ConvOpenInference` の2つに
+    /// 限定していることの固定。
+    #[test]
+    fn read_back_any_fresh_evidence_still_reacts_to_non_excluded_sources() {
+        let base = Instant::now();
+        let since = base;
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::Gji, since));
+        let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+        assert_eq!(
+            receipt.resolution(),
+            Resolution::ExternalChange,
+            "除外対象以外のソースは従来どおり再武装条件になること"
+        );
+    }
+
+    /// 除外対象の2ソースと、それ以外の新しい観測が両方存在する場合は、
+    /// 後者だけで `ExternalChange` になること（除外は指定ソースの
     /// レコードだけをフィルタし、他の観測の判定に影響しないこと）。
     #[test]
-    fn read_back_any_fresh_evidence_reacts_when_observer_poll_and_other_source_both_fresh() {
+    fn read_back_any_fresh_evidence_reacts_when_excluded_and_other_source_both_fresh() {
         let base = Instant::now();
         let since = base;
         let now = since + Duration::from_millis(20);
         let mut s = ObservationStore::default();
         rec(&mut s, obs(true, ObservationSource::ObserverPoll, since));
+        rec(
+            &mut s,
+            obs(true, ObservationSource::ConvOpenInference, since),
+        );
         rec(&mut s, obs(true, ObservationSource::Gji, since));
         let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
         assert_eq!(receipt.resolution(), Resolution::ExternalChange);

@@ -14129,8 +14129,30 @@ live の profile 分類から初期化する。`InitialFocusFenceEstablished`
 窓を塞いだ後の実機ソークで、根本原因2系（`FocusChanged` を経由しない
 ライブ分類変化）が残存するかを見てから着手する。
 
-**現状**: D1c 実装済み、実機での効果確認（この根本原因1のケースで暴走が
-止まるか）は次のスパイクで実施予定。
+**追記（2026-09-05 続き・D1c実機再検証、AnyFreshEvidence除外の第2弾）**:
+D1c を実機に投入して再検証したところ、根本原因1（`current_focus=None`）
+は解消した（`[app-policy] bootstrap initial app_policy: profile=TsfNative`
+のログで確認、`[bug114-diag]` の発火も0件）——しかし `gave up (Blind)`
+が正しく5回で発生しているにもかかわらず、暴走は**別の形**（3秒
+クールダウン明けにほぼ即座に再武装するバーストが繰り返す、Finding 5と
+同型）で残った。ログを詳細に追ったところ、犯人は `ObserverPoll` では
+なく **`ConvOpenInference`**（`kp_stage_idle_conv_check` が conv ビットの
+`NativeToggleShadowOff` から書く open 推測、`[idle-conv-check] TsfNative:
+conv observation open=true reason=NativeToggleShadowOff ... →
+ObserverReported として記録` ログで確認）だった。これは shadow-toggle
+自身が動かした conv 状態を読み返すだけの自己言及的な信号で、実機で
+~250〜380ms 間隔という高頻度で record され続けていた。
+
+修正: `read_back` の `AnyFreshEvidence` 分岐の除外対象を
+`ObserverPoll`・`ConvOpenInference` の2ソースに拡張した
+（`most_recent_trusted_after_excluding` を単一ソースから
+スライス受け取りに変更）。回帰テストも2ソース目
+（`read_back_any_fresh_evidence_ignores_conv_open_inference_alone`）を
+追加。除外リストは実機で新たな自己言及ソースが見つかるたびに拡張する
+前提——コード上のコメントにその旨を明記した。
+
+**現状**: D1c + AnyFreshEvidence 除外拡張（2ソース）を実装済み。実機での
+再々検証は次のスパイクで実施予定。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された
