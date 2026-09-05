@@ -1190,7 +1190,36 @@ impl PlatformRuntime for WindowsPlatform {
 
     fn reinject_key(&mut self, event: &RawKeyEvent) {
         use crate::RawKeyEventExt as _;
-        unsafe { event.reinject() };
+
+        // BUG-116 診断スパイク限定（develop 非マージ、docs/adr/137-...md）。
+        // scan 付与は VK_DBE_KATAKANA 単体にのみ適用（SB-1(1)、0xF0 は物理
+        // CapsLock 位置で BUG-15 追補7 の別ハザード対象のため対象外のまま）。
+        // ゲート判定自体は `kp_bug116_spike_log`（`platform_state` にアクセス
+        // できる場所）が事前に計算済みで、ここではそのラッチを読むだけ
+        // （`WindowsPlatform::reinject_key` から belief に直接触れられない）。
+        let is_keyup = matches!(event.event_type, awase::types::KeyEventType::KeyUp);
+        let want_scan = event.vk_code == crate::vk::VK_DBE_KATAKANA
+            && crate::bug116_spike::scan_scope() == crate::bug116_spike::ScanScope::Real
+            && crate::bug116_spike::scan_allowed_for(event.vk_code.0, is_keyup);
+        let sent_scan: u16 = if want_scan {
+            event.scan_code.0 as u16
+        } else {
+            0
+        };
+        if event.vk_code.0 >= 0xF0 && event.vk_code.0 <= 0xF6 {
+            log::info!(
+                "[bug116] reinject vk=0x{:02X} {} orig_scan=0x{:02X} sent_wScan=0x{:02X} marker=INJECTED",
+                event.vk_code.0,
+                if is_keyup { "up" } else { "down" },
+                event.scan_code.0,
+                sent_scan,
+            );
+        }
+        if sent_scan != 0 {
+            unsafe { event.reinject_with_scan(sent_scan) };
+        } else {
+            unsafe { event.reinject() };
+        }
     }
 
     // ── タイマー ──

@@ -344,6 +344,17 @@ pub trait RawKeyEventExt {
     /// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
     #[allow(unsafe_code)]
     unsafe fn reinject(&self);
+
+    /// BUG-116 診断スパイク限定（develop 非マージ）: `reinject()` と同じだが
+    /// `wScan` に呼び出し元指定の値を使う。`MapVirtualKeyW` の逆引きは
+    /// レイアウト次第で 0 を返しうるため使わず、呼び出し元
+    /// （`platform.rs::reinject_key`）は `event.scan_code`（フックが実際に
+    /// 受け取った物理 scan）を渡すこと（SM-1）。
+    ///
+    /// # Safety
+    /// Win32 API (`send_input_safe`) を呼び出す。メインスレッドから呼ぶこと。
+    #[allow(unsafe_code)]
+    unsafe fn reinject_with_scan(&self, scan: u16);
 }
 
 #[cfg(windows)]
@@ -365,6 +376,36 @@ impl RawKeyEventExt for RawKeyEvent {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(self.vk_code.0),
                     wScan: 0,
+                    dwFlags: if is_keyup {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: INJECTED_MARKER,
+                },
+            },
+        };
+        let _ = win32::send_input_safe(&[input]);
+    }
+
+    #[allow(unsafe_code)]
+    unsafe fn reinject_with_scan(&self, scan: u16) {
+        use crate::output::INJECTED_MARKER;
+        use awase::types::KeyEventType;
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+            VIRTUAL_KEY,
+        };
+
+        let is_keyup = matches!(self.event_type, KeyEventType::KeyUp);
+
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(self.vk_code.0),
+                    wScan: scan,
                     dwFlags: if is_keyup {
                         KEYEVENTF_KEYUP
                     } else {

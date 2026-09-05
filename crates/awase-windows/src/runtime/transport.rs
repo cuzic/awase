@@ -151,6 +151,12 @@ impl PhysicalKeyDisposition {
     ///   （英数/カタカナ/半角/全角への切替）を能動的に実行してしまうため、toggle が
     ///   発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
     ///   `docs/known-bugs.md` BUG-52 参照）。
+    ///   **BUG-116 診断スパイク（develop 非マージ）**: この無条件 Suppress は、
+    ///   ユーザーが意図的に行う「Shift+かな→カタカナ」（Windows 標準の IME
+    ///   挙動）も巻き添えにしている可能性がある（`docs/adr/137-...md`）。
+    ///   `bug116_spike::AllowScope` が `Off` 以外のとき、`VK_DBE_KATAKANA`
+    ///   単体に限りこの Suppress を条件付きで解除する（`plan_with_spike_scope`
+    ///   参照）。前提が実機で確認できるまでは未確定。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -167,6 +173,33 @@ impl PhysicalKeyDisposition {
         f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
         dbe_mode_key_policy: DbeModeKeyPolicy,
+    ) -> Self {
+        Self::plan_with_spike_scope(
+            event,
+            profile,
+            shadow_toggled,
+            is_tsf_mode,
+            f2_warmup_owned,
+            active_ime_kind,
+            dbe_mode_key_policy,
+            crate::bug116_spike::allow_scope(),
+        )
+    }
+
+    /// BUG-116 診断スパイク限定: `allow_scope` を明示指定できる内部版。
+    /// develop へマージしない（`docs/adr/137-...md` 参照）。`plan()` は本番用に
+    /// `bug116_spike::allow_scope()` を渡すだけの薄いラッパー。ベースライン算出
+    /// （spike 無効時に何を返すはずだったかの自己検証用ログ、S1 の
+    /// `physical_baseline`）のため `AllowScope::Off` を渡す2回目の呼び出しにも使う。
+    pub(crate) fn plan_with_spike_scope(
+        event: &RawKeyEvent,
+        profile: AppImeProfile,
+        shadow_toggled: bool,
+        is_tsf_mode: bool,
+        f2_warmup_owned: bool,
+        active_ime_kind: ActiveImeKind,
+        dbe_mode_key_policy: DbeModeKeyPolicy,
+        spike_allow_scope: crate::bug116_spike::AllowScope,
     ) -> Self {
         // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
         // （issue #136 / BUG-90 決定4）。**F2分岐より先に判定する**
@@ -254,6 +287,19 @@ impl PhysicalKeyDisposition {
                         | crate::vk::VK_DBE_DBCSCHAR
                 )
                 && event.event_type == KeyEventType::KeyDown;
+            // BUG-116 診断スパイク限定（develop 非マージ）: `VK_DBE_KATAKANA`
+            // 単体に限り、`spike_allow_scope` に応じて上の無条件 Suppress を
+            // 解除する。0xF0/0xF3/0xF4 は対象外のまま（BUG-15 追補7 の
+            // CapsLock/かなロック汚染ハザードが scan 付与時に及ぶため、
+            // Allow スコープの広さとは無関係にスコープを 0xF1 単体へ絞る、SB-1(1)）。
+            let spike_allow = event.vk_code == crate::vk::VK_DBE_KATAKANA
+                && event.event_type == KeyEventType::KeyDown
+                && match spike_allow_scope {
+                    crate::bug116_spike::AllowScope::Off => false,
+                    crate::bug116_spike::AllowScope::Shift => event.modifier_snapshot.shift,
+                    crate::bug116_spike::AllowScope::Always => true,
+                };
+            let is_dbe_mode_key_down = is_dbe_mode_key_down && !spike_allow;
             ime_actuation_owned
                 && (shadow_toggled
                     || is_dbe_mode_key_down

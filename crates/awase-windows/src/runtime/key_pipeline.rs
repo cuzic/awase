@@ -41,6 +41,79 @@ impl Runtime {
         self.kp_run_inner(event, true)
     }
 
+    /// BUG-116 診断スパイク限定（develop 非マージ）: `VK_DBE_ALPHANUMERIC`
+    /// (0xF0) 〜 `VK_DBE_NOROMAN` (0xF6) の判定入力を1行のログに集約する
+    /// （S1、`docs/adr/137-...md`）。挙動は変更しない。
+    ///
+    /// `VK_DBE_KATAKANA` (0xF1) についてのみ、scan 付き reinject を許可して
+    /// よいかのゲート（実 IME が belief 上 ON かつ日本語 IME、かつ OS の
+    /// かな入力ロックが On でない）をここで計算し、`bug116_spike` の
+    /// ラッチへ記録する（`reinject_key` は `platform_state` に直接
+    /// アクセスできないため、判定はここで完結させて結果だけを渡す。
+    /// SB-1(2)(3)）。ゲートは「安全側に倒す近似」であり保証ではない——
+    /// `effective_open()` は belief であり実 IME の状態と乖離しうる。
+    fn kp_bug116_spike_log(
+        &self,
+        event: &RawKeyEvent,
+        profile: crate::focus::class_names::AppImeProfile,
+        active_ime_kind: crate::tsf::observer::ActiveImeKind,
+        shadow_toggled: bool,
+        physical: crate::runtime::PhysicalKeyDisposition,
+    ) {
+        if !(0xF0..=0xF6).contains(&event.vk_code.0) {
+            return;
+        }
+        let is_keyup = matches!(event.event_type, KeyEventType::KeyUp);
+        let shift = event.modifier_snapshot.shift;
+        let lshift_ms = hook::physical_key_held_ms(crate::vk::VK_LSHIFT);
+        let rshift_ms = hook::physical_key_held_ms(crate::vk::VK_RSHIFT);
+        let physical_baseline = crate::runtime::PhysicalKeyDisposition::plan_with_spike_scope(
+            event,
+            profile,
+            shadow_toggled,
+            self.platform.is_tsf_mode(),
+            self.platform.output.f2_warmup_owned(),
+            active_ime_kind,
+            self.dbe_mode_key_policy,
+            crate::bug116_spike::AllowScope::Off,
+        );
+        let hw_toggle = self.platform_state.gate.half_width_alnum_toggle_active;
+        let ime_on = self.platform_state.ime.effective_open();
+        let japanese = self.platform_state.ime.belief.is_japanese_ime();
+        let input_mode = self.platform_state.ime.input_mode();
+        let conv = self.platform.output.conv_mode.get();
+
+        if event.vk_code == crate::vk::VK_DBE_KATAKANA {
+            // SAFETY: メインスレッド（メッセージループスレッド）から呼ばれる。
+            let kana_lock_on = matches!(
+                unsafe { crate::observer::kana_lock::read_kana_lock() },
+                awase::engine::kana_input_warn::KanaLockReading::On
+            );
+            if kana_lock_on {
+                crate::bug116_spike::abort_scan("read_kana_lock()==On");
+            }
+            let gate_ok = !kana_lock_on && ime_on && japanese;
+            crate::bug116_spike::record_scan_gate(event.vk_code.0, is_keyup, gate_ok);
+        }
+
+        log::info!(
+            "[bug116] allow={:?} scan={:?} vk=0x{:02X} {} scan_code=0x{:02X} injected={} \
+             shift={shift} lshift_ms={lshift_ms:?} rshift_ms={rshift_ms:?} \
+             profile={profile:?} ime_kind={active_ime_kind:?} is_tsf={} f2_owned={} policy={:?} \
+             shadow_toggled={shadow_toggled} physical={physical:?} physical_baseline={physical_baseline:?} \
+             ime_on={ime_on} japanese={japanese} input_mode={input_mode:?} conv={conv:?} hw_toggle={hw_toggle}",
+            crate::bug116_spike::allow_scope(),
+            crate::bug116_spike::scan_scope(),
+            event.vk_code.0,
+            if is_keyup { "up" } else { "down" },
+            event.scan_code.0,
+            event.injected,
+            self.platform.is_tsf_mode(),
+            self.platform.output.f2_warmup_owned(),
+            self.dbe_mode_key_policy,
+        );
+    }
+
     /// パイプライン実装。`skip_rescue_defer=true` で救済窓 defer をスキップ。
     #[expect(clippy::cognitive_complexity)]
     #[expect(clippy::too_many_lines)]
@@ -217,15 +290,17 @@ impl Runtime {
         // 参照。decision だけでは実際に OS へ届いたかが journal から
         // 分からなかった点が調査のきっかけ）。
         let profile = self.platform.current_app_profile();
+        let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         let physical = crate::runtime::PhysicalKeyDisposition::plan(
             &event,
             profile,
             shadow_toggled,
             self.platform.is_tsf_mode(),
             self.platform.output.f2_warmup_owned(),
-            crate::tsf::observer::tsf_obs().active_ime_kind(),
+            active_ime_kind,
             self.dbe_mode_key_policy,
         );
+        self.kp_bug116_spike_log(&event, profile, active_ime_kind, shadow_toggled, physical);
         self.platform_state
             .ime
             .journal
