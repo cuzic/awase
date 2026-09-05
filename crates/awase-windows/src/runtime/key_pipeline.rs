@@ -20,6 +20,30 @@ use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAct
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
+// BUG-113 診断専用（一時的、第2弾、恒久機能ではない）: docs/known-bugs.md
+// BUG-113「未解決・次にやること」・docs/experiments.md エントリ21参照。
+// `kp_stage_idle_conv_check`（非resync）が spawn する GJI への cross-process
+// 読み取り（`get_ime_conversion_mode_raw_timeout_async`、`WM_IME_CONTROL/
+// IMC_GETCONVERSIONMODE`）が `GjiDirectStrategy::apply` の同期 `SendInput`
+// と時間的に競合しうる、という2026-09-05の呼び出し連鎖調査で見つかった
+// 新候補を検証するためのトグル。有効時はこの読み取りを丸ごとスキップする
+// （resync 経路には影響しない）。調査終了後は本トグル一式・呼び出し元
+// （`app/bootstrap.rs`・`runtime/mod.rs`）を削除すること。
+static DIAG_BUG113_SKIP_IDLE_CONV_PROBE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// BUG-113 診断専用（一時的、第2弾）: `config.toml` の
+/// `diag_bug113_skip_idle_conv_probe` に応じて直接呼ぶ。
+pub(crate) fn set_diag_bug113_skip_idle_conv_probe_enabled(enabled: bool) {
+    use std::sync::atomic::Ordering;
+    if enabled != DIAG_BUG113_SKIP_IDLE_CONV_PROBE.swap(enabled, Ordering::Relaxed) {
+        log::info!(
+            "[bug113-diag2] skip idle-conv probe: {}",
+            if enabled { "有効化" } else { "無効化" }
+        );
+    }
+}
+
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
 enum IntentKind {
@@ -408,6 +432,17 @@ impl Runtime {
                     crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
                 );
             }
+            self.close_focus_resync_gate_if_current(resync_generation);
+            return false;
+        }
+
+        // BUG-113 診断専用（一時的、第2弾）: resync 経路には影響させない。
+        if resync_generation.is_none()
+            && DIAG_BUG113_SKIP_IDLE_CONV_PROBE.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            log::debug!(
+                "[bug113-diag2] idle-conv-check: probe skipped (diag_bug113_skip_idle_conv_probe)"
+            );
             self.close_focus_resync_gate_if_current(resync_generation);
             return false;
         }

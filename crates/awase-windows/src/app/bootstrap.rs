@@ -573,6 +573,12 @@ pub(super) fn initialize_app(
         app.set_update_check_enabled(config.general.update_check);
         app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
+        crate::ime_controller::set_diag_bug113_dedup_off_actuation_enabled(
+            config.general.diag_bug113_dedup_gji_off_actuation,
+        );
+        crate::runtime::set_diag_bug113_skip_idle_conv_probe_enabled(
+            config.general.diag_bug113_skip_idle_conv_probe,
+        );
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
             manual_fn_key,

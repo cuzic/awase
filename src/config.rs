@@ -382,6 +382,20 @@ pub struct GeneralConfig {
     /// 参照）。既定値は `true`（常に無効化）。JIS かな直接入力を意図的に
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
+    /// BUG-113 診断専用（一時的、恒久機能ではない）。既定 `false`。
+    /// `true` のときだけ `GjiDirectStrategy::apply(open=false)` の実
+    /// アクチュエーション（`send_ime_mode_key`）を1クローズ episode に
+    /// つき最初の呼び出しだけに限定する（dedup、2回目は no-op で吸収）。
+    /// 調査終了後は設定・実装ごと削除すること。設定GUIと sample config
+    /// には出さない hidden opt-in。
+    pub diag_bug113_dedup_gji_off_actuation: bool,
+    /// BUG-113 診断専用（一時的、恒久機能ではない）。既定 `false`。
+    /// `true` のときだけ、非resyncの `kp_stage_idle_conv_check` が spawn
+    /// する GJI への cross-process 読み取り
+    /// （`get_ime_conversion_mode_raw_timeout_async`、`WM_IME_CONTROL/
+    /// IMC_GETCONVERSIONMODE`）をスキップする。調査終了後は設定・実装
+    /// ごと削除すること。設定GUIと sample config には出さない hidden opt-in。
+    pub diag_bug113_skip_idle_conv_probe: bool,
 }
 
 impl Default for GeneralConfig {
@@ -421,6 +435,8 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
+            diag_bug113_dedup_gji_off_actuation: false,
+            diag_bug113_skip_idle_conv_probe: false,
         }
     }
 }
