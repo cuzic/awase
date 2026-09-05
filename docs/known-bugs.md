@@ -14110,6 +14110,30 @@ awase の送信動作が無関係であることを意味しない——これ�
 実装が原因」であっても awase 側でタイミング調整・送信方式変更・
 ブラックリスト等の緩和策を講じてきたのと同じ扱いにすべきだった。
 
+**追記（2026-09-05 続き・PSReadLine 側の対応する既知バグを確認）**:
+上記の「PSReadLine との相互作用」について、PSReadLine 自体の GitHub
+issue に一致する既知バグが存在することを確認した:
+[PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
+（「日本語配列キーボードの一部のキーが `@` と誤認識される」）。同 issue
+によると、IME 操作キー（無変換等）は有効な仮想キーコードを持つが文字
+データ（`UnicodeChar`）を持たない `KEY_EVENT_RECORD` として届き、
+PSReadLine の入力処理がこれを正しく無視できず `@` として誤表示する。
+2026-09-05 時点で修正コミット/PR は見当たらず、未修正のまま。
+
+これは後述の「結論」で「PSReadLine の再描画/バッファ処理との相互作用
+……GJI 自体がクローズドソースのため内部機構としての確定はできない」と
+記した部分のうち、**「なぜ具体的に `@` という文字になるのか」だけは
+GJI 側ではなく PSReadLine 側の確認済みバグで説明がつく**ことを意味する
+（awase→GJI 間で composition 追跡が乱れる機構自体は GJI がクローズド
+ソースのため引き続き未確定）。ただし
+[[feedback_external_factor_found_does_not_mean_no_fix_needed]] の教訓
+どおり、これは awase 側の恒久修正（二重 actuation 解消）が不要だった
+ことを意味しない——実際に症状を解消したのは awase 側の修正であり、本
+追記は「@」という表示形の由来を補足する記録に過ぎない。もう一つの独立
+した十分条件（`kp_stage_idle_conv_check` の probe 競合、下記「未解決」
+参照）が将来別の経路で再現した場合も、同じ PSReadLine 側のバグにより
+同じ「@」という形で可視化される可能性が高い。
+
 **未解決・次にやること（実機切り分け、第2弾スパイク実装済み・実機検証待ち）:**
 バッチ形状（V/A/B3/B4/baseline）と VK 値（`VK_IME_OFF` vs `VK_KANJI`）は
 いずれも無関係と判明した。上記「修正試行2」の mode テーブルで唯一
@@ -14354,6 +14378,10 @@ FocusChanged`が`applied`を`Unknown`にリセットするため、round2の修�
 誤読 →（反証）→ PSReadLine との相互作用が引き金（確認、ただし
 awase側の送信方式・呼び出し経路のどれが必要十分条件かは未特定）、と
 段階的に絞り込まれた経緯を記録)、
+[PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
+（IME 操作キーの無文字 `KEY_EVENT_RECORD` を `@` と誤表示する PSReadLine
+側の既知バグ。「@」という表示形の由来を説明するが、awase 側の恒久修正が
+不要だったことは意味しない）、
 BUG-114（同じ調査から派生した独立のバグ、drift correction の
 `FeedbackPolicy::Read` 無限再送。こちらは awase 側の実在バグとして別途
 修正済み）、BUG-110/ADR-132（同じ「Windows Terminal
