@@ -2736,6 +2736,7 @@ impl NicolaFsm {
         timestamp: Timestamp,
         composing: bool,
         modifier_key: Option<crate::types::ModifierKey>,
+        injected: bool,
     ) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_solo_repeat_vk.0 != 0 && vk_code == self.engine_off_solo_repeat_vk {
@@ -2761,7 +2762,7 @@ impl NicolaFsm {
             scan_code,
             vk_code,
             modifier_key,
-            false,
+            injected,
             composing,
         );
         if ime_open_request.is_some() {
@@ -3135,6 +3136,7 @@ impl NicolaFsm {
                 thumb.timestamp,
                 composing,
                 thumb.modifier_key,
+                thumb.injected,
             ),
             EngineState::PendingCharThumb {
                 char_key,
@@ -3257,6 +3259,51 @@ mod tests {
             fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, false, false);
         assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
         assert_eq!(request, None);
+    }
+
+    // `timeout_pending_thumb`（PendingThumbタイムアウト経路）は
+    // `resolve_pending_thumb_as_single`とは別の呼び出し口であり、
+    // `PendingThumbData::injected`を正しく引き継がないと、注入された
+    // 偽の単独タップがタイムアウト経由でdelegateを発火させてしまう
+    // （/codex-review指摘、"pending-thumb timeout path"でのBUG-14
+    // ガードバイパス）。直接呼び出し経路（上記テスト群）だけでなく、
+    // タイムアウト経路も独立して固定する。
+    #[test]
+    fn timeout_pending_thumb_ignores_injected_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let hiragana_vk = VkCode(0x70);
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
+        fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        let resp = fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, true);
+        assert!(
+            matches!(resp.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk),
+            "injectedな単独タップはPassthroughへフォールバックするはず、実際: {:?}",
+            resp.actions
+        );
+        assert_eq!(
+            fsm.take_ime_open_requested(),
+            None,
+            "injectedな単独タップがタイムアウト経由でdelegateを発火させてはならない"
+        );
+    }
+
+    #[test]
+    fn timeout_pending_thumb_fires_delegate_for_non_injected_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let hiragana_vk = VkCode(0x70);
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
+        fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOff));
+        let resp = fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, false);
+        assert!(
+            resp.actions.is_empty(),
+            "delegate発火時はactionsが空のはず、実際: {:?}",
+            resp.actions
+        );
+        assert_eq!(
+            fsm.take_ime_open_requested(),
+            Some(crate::types::ShadowImeAction::TurnOff),
+            "非injectedな単独タップはタイムアウト経由でもdelegateが正しく発火するはず"
+        );
     }
 
     #[test]
