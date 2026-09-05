@@ -1818,6 +1818,32 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
     );
 }
 
+/// BUG-113 追補（Opus 敵対的レビューで発見・修正）: `open_chain.rs::fallback_write`
+/// は先行機構（ImmCross）が実際に OS を読み戻して「まだ desired 状態でない」
+/// ことを確認した`Failed`の後にしか呼ばれない（`imm_cross_write`参照）。
+/// この時点で`shadow_ime_control_view()`が返す実`applied`をそのまま使うと、
+/// `key_pipeline.rs::kp_stage_shadow_ime_toggle`のImmCross経路がactuationの
+/// **前**に書く`record_confirmed(false)`（pre-actuation write）を読み返す
+/// 循環になり、`GjiDirectStrategy`の`gji_direct_already_matches`が誤って
+/// `AlreadyMatched`を返し、実際にはOSがまだON なのに`VK_IME_OFF`が送られない
+/// 回帰を作り込む。`fallback_write`は`view.control.shadow_on`を明示的に
+/// `None`へ上書きしてこの循環をbypassする設計（`force_on_and_correct_romaji`
+/// のINV-28と同じ語彙）。テキスト走査でこの1行を固定する。
+#[test]
+fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
+    let open_chain_rs = read_crate_file("src/runtime/open_chain.rs");
+    let production = production_code_only(&open_chain_rs);
+    let fallback_write_body = extract_fn_body(production, "fn fallback_write");
+    assert_eq!(
+        count_real_calls(fallback_write_body, "view.control.shadow_on = None"),
+        1,
+        "fallback_write は view.control.shadow_on = None で GjiDirect/MsImeDirect の \
+         already-matched skip を bypass する設計（BUG-113 追補）。この上書きが \
+         削除・変更されると、ImmCross Failed 後のフォールバックが \
+         pre-actuation write を読み返して自分の送信を握り潰す回帰が再発する。"
+    );
+}
+
 // ── ADR-089 Phase B（§2.3・§6 item 6/7）─────────────────────────────────────
 
 /// 実 actuation の起案が `ActuationOrder::issue()` 1 本を通ることを固定する

@@ -893,7 +893,7 @@ mod tests {
     /// `gji_direct_already_matches` で「skip しない」と判定されることを
     /// 固定する——両方とも純粋・副作用フリー。
     #[test]
-    fn gji_direct_apply_off_is_not_already_matched_when_shadow_unknown() {
+    fn view_for_default_shadow_is_unknown_and_does_not_match() {
         let view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
         assert_eq!(
             view.control.shadow_on, None,

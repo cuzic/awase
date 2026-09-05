@@ -3,11 +3,11 @@
 ## ステータス
 
 **恒久修正（二重actuationの解消）を実装。develop マージ前の Opus 敵対的
-レビューで Blocker（`shadow_on` を `bool` に潰すと「未知」を「確認済み
-OFF」と誤認し、drift correction 等の正当な再送を握り潰す）が見つかり、
-`ControlLog.shadow_on` を `Option<bool>` 化して修正済み。実機での初回
-確認（`!shadow_on` 版）は取れているが、`Option<bool>` 化後の再検証は
-これから（2026-09-05）。**
+レビュー2ラウンドで Blocker 1件（`shadow_on` を `bool` に潰すと「未知」を
+「確認済み OFF」と誤認）+ Major 1件（`open_chain.rs::fallback_write` が
+pre-actuation write を読み返す循環）を発見・修正済み。実機での初回確認
+（`!shadow_on` 版、Blocker修正前）は取れているが、両修正後の実機再検証は
+これから（2026-09-05）。3ラウンド目のレビュー結果待ち。**
 
 バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs `VK_KANJI`）の両仮説、
 および `set_ime_open_cross_process`（TsfNativeに効果なし）はいずれも

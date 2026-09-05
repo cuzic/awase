@@ -14195,6 +14195,38 @@ Some(open)`という単一の対称な純粋関数に統一し、`shadow_on == N
 で確認済み。`.claude/rules/fix-requires-evidence.md`にも
 `ControlLog.shadow_on`の供給元一覧を追記し、次回の再発防止とした。
 
+**追記（2026-09-05 続き・再レビューでMajor発見、修正）**: 上記修正を
+再度Opus敵対的レビューにかけたところ、Blocker 1/2-a/2-bは正しく閉じたと
+確認された一方、**新たなMajor（このPR自身が作り込んだ回帰）**が
+見つかった: `runtime/open_chain.rs::fallback_write`——ImmCrossが実際に
+OSを読み戻して「まだdesired状態でない」ことを確認した`Failed`の後にのみ
+呼ばれる、ImmCross/Plain/Unknownプロファイル×GJI（通常のWin32アプリ+GJI）
+向けのフォールバック経路——が、`shadow_ime_control_view()`で実
+`applied`を読んでいた。`key_pipeline.rs::kp_stage_shadow_ime_toggle`の
+ImmCross経路はactuationの**前**に`record_confirmed(false)`を書くため
+（「直後の実ImmCross applyを伴うため正当」という前提）、`fallback_write`
+到達時点では`applied_pair() == Some((false, ts))`になっており、
+新しい`gji_direct_already_matches(Some(false), false)`が`true`と
+判定してしまい、**OSがまだONだと実際に確認したにもかかわらず
+`VK_IME_OFF`を送らずAlreadyMatchedを返す**——「自分が送信前に書いた
+belief」を「送信すべきか」の判定に読み返す循環だった。develop には
+このガード自体が無かった（常に送っていた）ため、本PRが作り込んだ回帰。
+TsfNative/Imm32Unavailable（`FEEDBACK_BLIND`）だったBlockerと異なり、
+このプロファイル群は`FEEDBACK_READ`でdrift correctionが
+strategy chainを経由しないIMM32専用経路を使い続けるため回復手段自体は
+残っており、Blockerではなく**Major**（実害はあるが出口はある）と
+判定された。
+
+修正: `fallback_write`で`view.control.shadow_on`を明示的に`None`へ
+上書きしてから機構を適用する——`force_on_and_correct_romaji`
+（ADR-087 INV-28）と同じ「`None`でbypassする」設計語彙。回帰テスト
+`tests/architecture_guard.rs::fallback_write_bypasses_gji_shadow_on_via_none_override`
+（`fallback_write`本体に`view.control.shadow_on = None`が正確に1件
+あることをテキスト走査で固定）を追加した。テスト名の指摘
+（`gji_direct_apply_off_is_not_already_matched_when_shadow_unknown`が
+`apply()`を実際には呼ばないのに紛らわしい）も反映し
+`view_for_default_shadow_is_unknown_and_does_not_match`へ改名した。
+
 実機再検証はこれから。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
