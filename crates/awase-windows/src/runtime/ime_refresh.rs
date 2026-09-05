@@ -603,6 +603,7 @@ impl Runtime {
         // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは下の
         // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
         let policy = self.platform_state.ime.default_feedback();
+        self.ir_diag_bug114_feedback_policy_staleness(policy);
         let (act_policy, act_attempts, act_sent_at, act_gave_up_at, act_origin) = {
             let actuation = self.actuation_for(desired, policy);
             (
@@ -901,6 +902,39 @@ impl Runtime {
                 },
             },
         );
+    }
+
+    /// BUG-114 診断専用スパイク（挙動は一切変えない、ログのみ）。
+    ///
+    /// `app_policy.default_feedback`（`ImeEvent::FocusChanged` 発火時点の
+    /// プロファイル分類スナップショットに固定され、以後のフォーカスセッション中
+    /// 更新されない、`state/ime_model.rs:615` 参照）と、いま
+    /// `current_app_profile()` から素直に再導出した `FeedbackPolicy` を比較し、
+    /// 食い違っていれば警告ログを出す。
+    ///
+    /// `docs/known-bugs.md` BUG-114 は「`FocusChanged` 発火の瞬間に実際に
+    /// どのクラス名/プロファイルが使われていたか（`Standard` へのフォールバックが
+    /// 本当に発生したか）を直接確認できていない」ことを未確定部分として残していた。
+    /// 本関数はその場しのぎの修正ではなく、まず実機で「キャッシュされた
+    /// `default_feedback` は本当に古いのか、古いとすれば具体的に何と何が
+    /// 食い違っているのか」を観測するためのスパイクである。ログが出た時点の
+    /// `live_app_profile`/`live_ime_profile` が、修正候補（分類レース自体を直す/
+    /// feedback をライブ再導出する/`Read` に安全弁を足す/`cannot_verify_real_ime_state`
+    /// で強制 Blind 化する）のどれが実際に効くかを判断する材料になる。
+    fn ir_diag_bug114_feedback_policy_staleness(&self, cached: FeedbackPolicy) {
+        let live_app_profile = self.platform.current_app_profile();
+        let live_ime_profile = crate::state::ime_event::ImePolicyProfile::from(live_app_profile);
+        let live_policy =
+            crate::state::app_ime_policy::AppImePolicy::from_profile(live_ime_profile)
+                .default_feedback;
+        if cached != live_policy {
+            log::warn!(
+                "[bug114-diag] app_policy.default_feedback={cached:?}（FocusChanged\
+                 スナップショット）が live={live_policy:?}（current_app_profile=\
+                 {live_app_profile:?}, live_ime_profile={live_ime_profile:?}）と食い違って\
+                 います — drift correction が古い feedback policy を使っています"
+            );
+        }
     }
 
     // ── Engine 通知 ──
