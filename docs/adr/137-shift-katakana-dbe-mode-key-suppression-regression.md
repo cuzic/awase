@@ -122,10 +122,24 @@ Shift 押下中はこの追加 Suppress 条件を無効化する、という単�
   による自動 abort が必須（0xF0 は物理 CapsLock 位置で、追補7 が実IME OFF
   文脈への着弾で CapsLock をトグルすると実機確認済みのため対象外）。
 - **SB-2**: JIS かな固着からの復旧に使う Alt+かな（物理的には
-  `VK_DBE_ROMAN`/`VK_DBE_NOROMAN`）は、`hook.rs` が Alt 押下の有無に
-  関わらず**既定で常時 swallow** する（BUG-62）。つまり **awase が稼働中は
-  復旧操作そのものが物理的に効かない**。実機検証時は「awase を Exit で
-  終了 → Alt+かなで復旧 → 確認後に再起動」の手順を必ず先に把握しておく。
+  `VK_DBE_ROMAN`/`VK_DBE_NOROMAN`）は、`hook.rs:1066-1068` が
+  `CACHED_SWALLOW_ALT_KANA_MODE_SWITCH` のみで判定しており、Alt 押下の
+  有無（`alt_key_held()`）はログ出力にしか使われず判定に入らない——つまり
+  **既定では Alt 押下の有無に関わらず常時 swallow** する（BUG-62）。
+  awase が稼働中は復旧操作そのものが物理的に効かない。
+
+  **推奨する実機手順（事前武装、premortem 提案）**: scan モード
+  （`AWASE_BUG116_SCAN=real`）に入る**前**に、設定
+  `GeneralConfig::swallow_alt_kana_input_method_switch`（`src/config.rs:384`、
+  既定 `true`）を `false` にして設定リロード（`runtime/mod.rs:1486-1487`
+  経由でライブ反映、または `awase-settings` のトグル UI）しておく。こうする
+  と万一 JIS かな固着を踏んでも、Alt+かなのワンアクションだけで復旧できる
+  ——「awase を Exit → 復旧 → 再起動」という確実だが重い手順（`abort_scan()`
+  のラッチや各種 belief が初期化され、そのフェーズを測り直しになる）は
+  **フォールバック**（事前武装を忘れた場合・設定リロードが効かなかった
+  場合）として温存する。事前武装中はテスター自身の誤爆 Alt+かなも素通し
+  されるが、監視下の短時間であり、かつ「ハザードが実際に起きるか」自体が
+  DT-4 で観測したい事象なので実験目的と整合する。
 
 ### Major（要旨のみ、詳細は `diag/bug116-shift-katakana` のコミット本文参照）
 
