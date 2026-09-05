@@ -97,111 +97,6 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     }
 }
 
-// ── BUG-113 診断専用スパイク・第2弾（一時的、恒久機能ではない） ─────────
-//
-// docs/known-bugs.md BUG-113「未解決・次にやること」・docs/experiments.md
-// エントリ21参照。バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs
-// `VK_KANJI`）の両仮説は実機A/Bで反証済み。ユーザー実機観測から PowerShell
-// PSReadLine との相互作用が引き金であることは確認したが、awase 側の
-// どの送信方式・呼び出し経路が「@」の必要十分条件かはまだ未特定——
-// 「相手（GJI/PSReadLine）の実装が脆弱」であることは awase 側の送信動作の
-// 責任を免除しない。
-//
-// 2026-09-05 の呼び出し連鎖調査で、`GjiDirectStrategy::apply(open=false)`
-// は同一の物理キー押下に対し `shadow_toggle_off_sync`/`engine_decision_sync`
-// の2経路から連続で2回呼ばれ、実際に `send_ime_mode_key` の `SendInput` を
-// 2回発行していることを再確認した。また、これとは別に
-// `runtime/key_pipeline.rs::kp_stage_idle_conv_check`（アイドル500ms超・
-// 直近1500ms以内に明示的IME操作なしの条件で発火、本 BUG の再現条件と一致）
-// が非同期ワーカースレッド上で `get_ime_conversion_mode_raw_timeout_async`
-// （GJI の IME ウィンドウへの `SendMessageTimeoutW(WM_IME_CONTROL/
-// IMC_GETCONVERSIONMODE)`、cross-process の**読み取り専用**クエリ）を
-// spawn しており、これは `GjiDirectStrategy::apply` の同期 `SendInput`
-// 発行と時間的に競合しうる——バッチ形状・VK値ラウンドでは一度も検証
-// されていない新しい候補である。
-//
-// なお `set_ime_open_cross_process`（`ImmSetOpenStatus`）ベースの制御は
-// 候補から除外した: `AppImeProfile::TsfNative`（Windows Terminal 含む）は
-// `can_use_imm32_cross_process() == false`（`focus/class_names.rs`）であり、
-// この API はそもそも TSF アプリに対して効果を持たないため、「@」が
-// 出なくても「回避できた」のか「単に何も起きなかった」のか区別できず
-// 意味のある比較にならない。
-//
-// 本スパイクは2つの独立した hidden config トグルを用意する（実機での
-// 組み合わせテストは config.toml を編集して awase を再起動して行う。
-// 統計的に意味のある判定には1トグル・1状態あたり最低20 episode程度の
-// 試行が必要——round1 敵対的レビュー Major 7 の「少数試行では偽陰性で
-// 候補が誤って『効いた』と判定されうる」という指摘が過去に一度的中して
-// いるため、docs/experiments.md エントリ21参照）:
-//
-//   `diag_bug113_dedup_gji_off_actuation`（本ブロック）: 有効なら
-//   `GjiDirectStrategy::apply(open=false)` の実アクチュエーション
-//   （`send_ime_mode_key` の `SendInput`）を1クローズ episode につき
-//   最初の呼び出し（`shadow_toggle_off_sync`）のみに限定し、2回目
-//   （`engine_decision_sync`）は no-op で吸収する。
-//
-//   `diag_bug113_skip_idle_conv_probe`（`runtime/key_pipeline.rs` 側で
-//   実装、本ブロックとは別ファイル）: 有効なら非resyncの
-//   `kp_stage_idle_conv_check` が spawn する上記 cross-process 読み取りを
-//   スキップする。
-//
-// 調査終了後は `crate::ime_controller::set_diag_bug113_dedup_off_actuation_enabled`
-// の呼び出し元・本ブロック一式、および `key_pipeline.rs` 側の対応する
-// トグルを削除すること。
-
-static DIAG_BUG113_DEDUP_OFF_ACTUATION: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-/// `open=false` の「クローズ episode」を跨いだかどうかの追跡。`true` なら
-/// 直前に `open=true` を処理済み＝次に来る `open=false` は新しい episode
-/// の最初の呼び出し。`GjiDirectStrategy::apply(open=false)` は
-/// `shadow_toggle_off_sync` / `engine_decision_sync` の2経路から同一の
-/// 物理押下に対して連続で2回呼ばれる（2026-09-05 実機ログで確認済み）。
-static DIAG_BUG113_LAST_OPEN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
-
-/// BUG-113 診断専用（一時的、第2弾）: `true` の間、
-/// `GjiDirectStrategy::apply(open=false)` の実アクチュエーションを1クローズ
-/// episode につき最初の呼び出しだけに限定する（dedup）。`bootstrap.rs`
-/// （起動時）と `runtime/mod.rs::apply_config_update`（reload 時）から
-/// `config.toml` の `diag_bug113_dedup_gji_off_actuation` に応じて直接呼ぶ。
-pub(crate) fn set_diag_bug113_dedup_off_actuation_enabled(enabled: bool) {
-    use std::sync::atomic::Ordering;
-    if enabled != DIAG_BUG113_DEDUP_OFF_ACTUATION.swap(enabled, Ordering::Relaxed) {
-        log::info!(
-            "[bug113-diag2] dedup off-actuation: {}",
-            if enabled { "有効化" } else { "無効化" }
-        );
-    }
-    if enabled {
-        DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
-    }
-}
-
-/// `GjiDirectStrategy::apply(open=true)` を処理した際に呼ぶ。次に来る
-/// `open=false` を新しいクローズ episode として扱えるようにする。
-fn diag_bug113_mark_open() {
-    use std::sync::atomic::Ordering;
-    DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
-}
-
-/// dedup が無効なら常に `true`（現行どおり毎回送信）。有効なら、現在の
-/// クローズ episode 内で最初の呼び出しのときだけ `true` を返し、2回目
-/// 以降は `false`（呼び出し元は no-op で吸収する）。
-fn diag_bug113_should_actuate_off() -> bool {
-    use std::sync::atomic::Ordering;
-    // combo cycle（第3弾）が有効ならそちらを優先し、無効なら単体トグル
-    // （第2弾、`diag_bug113_dedup_gji_off_actuation`）にフォールバックする。
-    let dedup_enabled = if crate::diag_bug113_combo::combo_cycle_enabled() {
-        crate::diag_bug113_combo::current_combo_flags().0
-    } else {
-        DIAG_BUG113_DEDUP_OFF_ACTUATION.load(Ordering::Relaxed)
-    };
-    if !dedup_enabled {
-        return true;
-    }
-    DIAG_BUG113_LAST_OPEN.swap(false, Ordering::Relaxed)
-}
-
 // ── GjiDirectStrategy ────────────────────────────────────────────
 
 /// GJI を使った一方向 IME 制御戦略。
@@ -215,6 +110,19 @@ fn diag_bug113_should_actuate_off() -> bool {
 /// TsfNative では旧 F22 キーバインド時代に「半角英数止まり」の問題があったが、
 /// VK_IME_OFF (0x1A) 移行後は TSF compartment が正しく閉じることを確認済み。
 ///
+/// `apply(open, ..)` は同一の物理キー押下に対し `shadow_toggle_off_sync`/
+/// `engine_decision_sync` の2経路から連続で2回呼ばれる（意図的な設計—
+/// shadow belief 系と engine decision 系が独立に同じ結論へ到達する）。
+/// ON方向は既存の `shadow_on` チェックがこの2回目の呼び出しを
+/// `AlreadyMatched` として吸収するが、OFF方向には対称的なチェックが
+/// 無く、2回目の呼び出しも毎回実際に `SendInput` していた（BUG-113）。
+/// Windows Terminal + Google 日本語入力 + PowerShell(PSReadLine) では、
+/// この重複 `SendInput` が GJI の TSF composition 追跡を乱し、余分な
+/// 「@」が入力される（2026-09-05 実機A/Bで確認、必要十分条件の一つ。
+/// もう一つの独立した十分条件——`kp_stage_idle_conv_check` の
+/// cross-process 読み取りとの時間的競合——は別途対応、docs/known-bugs.md
+/// BUG-113 参照）。
+///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
 struct GjiDirectStrategy;
@@ -225,26 +133,25 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        if open {
-            // BUG-113 診断専用（一時的、第2弾）: open=true を処理したら episode
-            // 境界をリセットする（AlreadyMatched で早期 return する場合も含む）。
-            diag_bug113_mark_open();
-        }
         if open && view.control.shadow_on {
             // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
             log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
             return ImeOpenOutcome::AlreadyMatched;
         }
+        if !open && !view.control.shadow_on {
+            // BUG-113 恒久修正: ON方向の `shadow_on` チェックと対称。shadow が
+            // 既に OFF（`ImeModel.applied_pair()` 由来、直近の apply が
+            // `Applied`/`FallbackSent`/`AlreadyMatched` で成功した場合のみ
+            // 更新される——`UnsafeToToggle`/`Failed` では更新されないため、
+            // 未送信・失敗後の正当な再試行は従来どおり実際に送信される）
+            // なら VK_IME_OFF は no-op と見込まれるためスキップする。これにより
+            // `shadow_toggle_off_sync`/`engine_decision_sync` の2回目の
+            // 呼び出しが重複して `SendInput` することを防ぐ。
+            log::debug!("[apply-ime] GJI direct: shadow OFF, skip VK_IME_OFF");
+            return ImeOpenOutcome::AlreadyMatched;
+        }
         // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
         let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
-        if !open && !diag_bug113_should_actuate_off() {
-            // BUG-113 診断専用（一時的、第2弾、dedup有効時のみ）: 同一クローズ
-            // episode内の2回目以降の呼び出しを吸収する。
-            log::debug!(
-                "[bug113-diag2] dedup: episode内2回目以降のsend_ime_mode_key({vk:#06X})を吸収（no-op）"
-            );
-            return ImeOpenOutcome::FallbackSent;
-        }
         log::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
         if unsafe { crate::ime::send_ime_mode_key(vk) } {
@@ -866,6 +773,58 @@ mod tests {
             ImeOpenOutcome::NotOwned,
             "InputRelay では ImeController::apply がどの機構も試行せず \
              NotOwned を即返さなければならない（issue #136 / BUG-90 決定4）"
+        );
+    }
+
+    /// BUG-113 恒久修正: `GjiDirectStrategy::apply(open=false)` は、shadow が
+    /// 既に OFF（`view.control.shadow_on == false`）なら実際に `SendInput`
+    /// せず `AlreadyMatched` を返さなければならない。ON方向の既存ガード
+    /// （`shadow_on` なら `AlreadyMatched`）と対称。このガードが無いと、
+    /// 同一の物理キー押下に対し `shadow_toggle_off_sync`/`engine_decision_sync`
+    /// の2経路から `GjiDirectStrategy::apply(open=false)` が連続で2回
+    /// 呼ばれた際、2回目も実際に `SendInput` してしまい、Windows Terminal +
+    /// Google 日本語入力 + PowerShell(PSReadLine) で余分な「@」が入力される
+    /// （docs/known-bugs.md BUG-113、実機A/Bで必要十分条件の一つと確定済み）。
+    #[test]
+    fn gji_direct_apply_off_is_already_matched_when_shadow_already_off() {
+        use crate::state::actuation_chain::ActuationOrder;
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::event_origin::{EventOrigin, EventSource, Generation};
+        use crate::state::force_guard::ForceGuardSet;
+        use crate::state::ime_event::{HwndId, ImePolicyProfile};
+        use crate::state::intent_store::IntentStore;
+        use crate::state::observation_store::ObservationStore;
+        use crate::state::open_warrant::WarrantContext;
+        use std::time::Instant;
+
+        let intent_store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let guards = ForceGuardSet::default();
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
+        let ctx = WarrantContext {
+            intent_store: &intent_store,
+            obs: &obs,
+            guards: &guards,
+            policy: &policy,
+            desired_open: false,
+            is_japanese_ime: true,
+            now: Instant::now(),
+            now_ms: crate::state::TickMs(0),
+        };
+        let origin = EventOrigin::new(EventSource::Physical, Generation::new(1));
+        let order = ActuationOrder::issue(false, HwndId(0x1234), &ctx, origin);
+
+        // `view_for` は `control.shadow_on: false` を既定にする（＝直前の apply が
+        // 既に OFF を報告済み、という「2回目の呼び出し」の状況を再現する）。
+        let view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
+        let outcome = ImeController::apply(order, &view);
+
+        assert_eq!(
+            outcome,
+            ImeOpenOutcome::AlreadyMatched,
+            "GjiDirectStrategy::apply(open=false) は shadow が既に OFF なら \
+             実際に SendInput せず AlreadyMatched を返さなければならない \
+             （BUG-113、ON方向の既存ガードと対称）"
         );
     }
 

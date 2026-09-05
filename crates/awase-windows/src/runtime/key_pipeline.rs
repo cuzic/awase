@@ -20,30 +20,6 @@ use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAct
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
-// BUG-113 診断専用（一時的、第2弾、恒久機能ではない）: docs/known-bugs.md
-// BUG-113「未解決・次にやること」・docs/experiments.md エントリ21参照。
-// `kp_stage_idle_conv_check`（非resync）が spawn する GJI への cross-process
-// 読み取り（`get_ime_conversion_mode_raw_timeout_async`、`WM_IME_CONTROL/
-// IMC_GETCONVERSIONMODE`）が `GjiDirectStrategy::apply` の同期 `SendInput`
-// と時間的に競合しうる、という2026-09-05の呼び出し連鎖調査で見つかった
-// 新候補を検証するためのトグル。有効時はこの読み取りを丸ごとスキップする
-// （resync 経路には影響しない）。調査終了後は本トグル一式・呼び出し元
-// （`app/bootstrap.rs`・`runtime/mod.rs`）を削除すること。
-static DIAG_BUG113_SKIP_IDLE_CONV_PROBE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// BUG-113 診断専用（一時的、第2弾）: `config.toml` の
-/// `diag_bug113_skip_idle_conv_probe` に応じて直接呼ぶ。
-pub(crate) fn set_diag_bug113_skip_idle_conv_probe_enabled(enabled: bool) {
-    use std::sync::atomic::Ordering;
-    if enabled != DIAG_BUG113_SKIP_IDLE_CONV_PROBE.swap(enabled, Ordering::Relaxed) {
-        log::info!(
-            "[bug113-diag2] skip idle-conv probe: {}",
-            if enabled { "有効化" } else { "無効化" }
-        );
-    }
-}
-
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
 enum IntentKind {
@@ -70,48 +46,6 @@ impl Runtime {
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
-
-        // BUG-113 診断専用（一時的、第3弾）: このイベント処理全体で使う
-        // コンボを最初に1回だけ選ぶ。物理・非注入のKeyDownかつ
-        // `ime_relevance.shadow_action == Some(TurnOff)`（＝「@」が実際に
-        // 出現しうる方向の物理IMEモードキー）に限定する——`enrich_ime_
-        // relevance`呼び出しの「後」に置く必要があるのはこのフィールドを
-        // 参照するため。
-        //
-        // 当初は`.is_some()`（TurnOn/TurnOff両方）でコンボを進めていたが、
-        // 2026-09-05実機テストで「IME OFF方向の押下では必ず@が出る」と
-        // いう結果が出た。ログで確認したところ、物理半角/全角キーは
-        // TurnOff(vk=0xF3)/TurnOn(vk=0xF4)を押すたびに厳密に交互する
-        // （周期2）のに対し、コンボは0→1→2→3の周期4で回っており、
-        // 4は2の倍数のため**TurnOff方向は必ず偶数コンボ（0か2、
-        // dedup=false）にしか当たらない**という構造的な交絡があった
-        // ——dedup=trueが割り当てられたケース（コンボ1・3）は全てTurnOn
-        // 方向の押下であり、そもそも「@」が起きえない方向でしか
-        // dedup=trueを試していなかった。TurnOff方向に限定してコンボを
-        // 進めることでこの交絡を解消する（TurnOn方向の押下は combo を
-        // 進めず、直前の TurnOff 用コンボをそのまま使い回す——`ime_
-        // controller.rs`側の dedup 判定は`!open`分岐でのみ効くため
-        // TurnOn方向では無関係、`kp_stage_idle_conv_check`側の probe
-        // skip判定はTurnOn方向にも適用されるが実害はない）。
-        // 以後この関数内の probe 側・actuation 側の両方が同じコンボを
-        // 参照する。
-        if matches!(event.event_type, KeyEventType::KeyDown)
-            && !event.injected
-            && matches!(
-                event.ime_relevance.shadow_action,
-                Some(ShadowImeAction::TurnOff)
-            )
-        {
-            crate::diag_bug113_combo::select_for_new_event();
-            if crate::diag_bug113_combo::combo_cycle_enabled() {
-                let (dedup, skip_probe) = crate::diag_bug113_combo::current_combo_flags();
-                log::warn!(
-                    "[bug113-diag3] event combo={} (dedup={dedup} skip_probe={skip_probe}) vk=0x{:02X}",
-                    crate::diag_bug113_combo::combo_label(dedup, skip_probe),
-                    event.vk_code
-                );
-            }
-        }
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
@@ -476,22 +410,6 @@ impl Runtime {
             }
             self.close_focus_resync_gate_if_current(resync_generation);
             return false;
-        }
-
-        // BUG-113 診断専用（一時的、第2弾/第3弾）: resync 経路には影響させない。
-        // combo cycle（第3弾）が有効ならそちらを優先し、無効なら単体トグル
-        // （第2弾、`diag_bug113_skip_idle_conv_probe`）にフォールバックする。
-        if resync_generation.is_none() {
-            let skip_probe = if crate::diag_bug113_combo::combo_cycle_enabled() {
-                crate::diag_bug113_combo::current_combo_flags().1
-            } else {
-                DIAG_BUG113_SKIP_IDLE_CONV_PROBE.load(std::sync::atomic::Ordering::Relaxed)
-            };
-            if skip_probe {
-                log::debug!("[bug113-diag2] idle-conv-check: probe skipped");
-                self.close_focus_resync_gate_if_current(resync_generation);
-                return false;
-            }
         }
 
         // BUG-34（docs/known-bugs.md）: get_ime_conversion_mode_raw_timeout は

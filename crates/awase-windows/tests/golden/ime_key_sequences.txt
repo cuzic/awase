@@ -33,7 +33,12 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 # GjiDirect (is_applicable: active_ime_kind==GoogleJapaneseInput):
 #   ON  → shadow_on なら送信せず AlreadyMatched（VK_IME_ON no-op 見込みでスキップ）、
 #         さもなくば VK_IME_ON (0x16) = ime::post_gji_ime_on() → Applied。
-#   OFF → VK_IME_OFF (0x1A) = ime::post_gji_ime_off() → Applied。
+#   OFF → !shadow_on なら送信せず AlreadyMatched（VK_IME_OFF no-op 見込みでスキップ、
+#         ON方向と対称。BUG-113: 同一の物理キー押下で shadow_toggle_off_sync/
+#         engine_decision_sync の2経路から apply(open=false) が連続で2回呼ばれる際、
+#         このガードが無いと2回とも実際にSendInputし、Windows Terminal + GJI +
+#         PowerShell(PSReadLine) で余分な「@」が入力される不具合があった）、
+#         さもなくば VK_IME_OFF (0x1A) = ime::post_gji_ime_off() → Applied。
 #   VK_IME_ON/OFF は Windows 標準の冪等キーで GJI が TSF 層でネイティブ処理する。
 #   GJI+TsfNative の OFF は旧 VK_KANJI から VK_IME_OFF へ移行済み（489cdf1）。
 #   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）

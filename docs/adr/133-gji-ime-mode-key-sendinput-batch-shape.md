@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**必要十分条件を実機A/Bで確定（2026-09-05）。恒久修正は設計・実装待ち。**
+**恒久修正（二重actuationの解消）を実装、実機検証待ち（2026-09-05）。**
 
 バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs `VK_KANJI`）の両仮説、
 および `set_ime_open_cross_process`（TsfNativeに効果なし）はいずれも
@@ -17,13 +17,15 @@
 詳細は `docs/known-bugs.md` BUG-113 最新の追記、
 `docs/experiments.md` エントリ22参照。
 
-恒久修正候補: 二重actuationの解消（`shadow_toggle_off_sync`/
-`engine_decision_sync`の冗長性そのものの是正、BUG-113の有無に関わらず
-正当化できる）が最有力。`kp_stage_idle_conv_check`のprobeは他シナリオ
-向けの正規機能のため丸ごと無効化ではなく、actuationとの時間的競合を
-避ける方向の設計が必要。`ime_controller.rs`/`runtime/key_pipeline.rs`
-はfix-requires-evidence.mdの「IME actuation合流点」対象——恒久修正は
-Opus敵対的レビューを経てから実装する。
+ユーザー判断で二重actuationの解消を先に実装した: `GjiDirectStrategy::apply`
+のOFF方向に、既存のON方向（`shadow_on` → `AlreadyMatched`）と対称な
+`!shadow_on` → `AlreadyMatched` ガードを追加（`ime_controller.rs`）。
+回帰テスト`gji_direct_apply_off_is_already_matched_when_shadow_already_off`
+を追加済み。診断専用コード一式（`diag_bug113_combo.rs` 等）は同じコミットで
+撤去した。`kp_stage_idle_conv_check`のprobe競合はもう一つの独立した
+十分条件として残置——このprobeは他シナリオ向けの正規機能のため丸ごと
+無効化ではなく、actuationとの時間的競合を避ける方向の設計が必要で、
+着手する場合は別途新しい診断コードを起こす。
 
 D0-3診断コード一式（バッチ形状・VK値検証専用）は役目を終えたため撤去済み。
 

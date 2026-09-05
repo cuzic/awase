@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**必要十分条件を実機A/Bで確定: 二重actuation・idle-conv-checkのcross-process読み取りのいずれか単独の解消で再現しなくなる。恒久修正は設計・実装待ち**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消（GjiDirectStrategy OFF方向のAlreadyMatchedガード追加）を実装、実機検証待ち。probe競合はもう一つの独立した十分条件として残置**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14107,22 +14107,29 @@ GJI の TSF composition 追跡を乱す、という機構が濃厚である
 制御可能な送信動作であり、外部要因（PSReadLine）の発見は awase 側の
 修正が不要であることを意味しない。**
 
-**次にやること（恒久修正の設計）**: 二重actuation（dedup相当）の解消は、
-`shadow_toggle_off_sync`/`engine_decision_sync` という異なる2経路から
-同一の物理押下に対して重複してactuationが発行される、という
-アーキテクチャ上の冗長性そのものの是正であり、BUG-113 の有無に関わらず
-正当化できる恒久修正候補として最有力。`kp_stage_idle_conv_check` の
-probe は他のシナリオ（アイドル明けの conv-mode belief 回復）のために
-存在する正規機能であり、丸ごと無効化するのではなく、GJI actuation と
-時間的に重ならないようにする（例: actuation 直後の一定時間は idle-conv
-probe をスキップする、または逆に probe 実行中は actuation を遅延する）
-方向の設計が必要。`ime_controller.rs`/`runtime/key_pipeline.rs` は
-fix-requires-evidence.md の「IME actuation 合流点」対象ファイルであり、
-恒久修正は Opus 敵対的レビューを経てから実装する（ユーザー判断待ち）。
-診断専用コード一式（`diag_bug113_combo.rs`、
-`diag_bug113_dedup_gji_off_actuation`/`diag_bug113_skip_idle_conv_probe`/
-`diag_bug113_combo_cycle_enabled`）は恒久修正が実装され実機確認が
-取れた後に撤去する。
+**追記（2026-09-05 続き・恒久修正を実装、実機検証待ち）**: ユーザー判断で
+二重actuation解消（dedup相当）を先に実装することにした。
+`GjiDirectStrategy::apply` の OFF方向に、既存のON方向
+（`open && view.control.shadow_on` → `AlreadyMatched`）と対称な
+`!open && !view.control.shadow_on` → `AlreadyMatched` ガードを追加した。
+`view.control.shadow_on` は `ImeModel.applied_pair()` 由来で、直近の
+apply が `Applied`/`FallbackSent`/`AlreadyMatched` で成功した場合のみ
+更新される（`UnsafeToToggle`/`Failed` では更新されないため、未送信・
+失敗後の正当な再試行は従来どおり実際に送信される——`record_ime_apply_result`
+の分岐で確認済み）。これにより `shadow_toggle_off_sync`/
+`engine_decision_sync` の2回目の呼び出しは、1回目が成功していれば
+`AlreadyMatched` で吸収され、実際に `SendInput` するのは1回だけになる。
+診断専用コード一式（`diag_bug113_combo.rs`、`diag_bug113_dedup_gji_off_
+actuation`/`diag_bug113_skip_idle_conv_probe`/`diag_bug113_combo_cycle_enabled`
+とその呼び出し元）は本修正と同じコミットで撤去済み。回帰テスト
+`gji_direct_apply_off_is_already_matched_when_shadow_already_off`
+（`ime_controller.rs`）を追加した。
+
+もう一つの独立した十分条件——`kp_stage_idle_conv_check` の cross-process
+読み取りとの時間的競合——は今回は対応しない。このprobeは他のシナリオ
+（アイドル明けの conv-mode belief 回復）のために存在する正規機能であり、
+丸ごと無効化するのではなく GJI actuation と時間的に重ならないようにする
+設計が必要——次に着手する場合は別途新しい診断コードを起こすこと。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、

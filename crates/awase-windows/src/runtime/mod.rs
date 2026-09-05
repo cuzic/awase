@@ -8,8 +8,6 @@ mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
 mod key_pipeline;
-// BUG-113 診断専用（一時的、第2弾）: 調査終了後に削除すること。
-pub(crate) use key_pipeline::set_diag_bug113_skip_idle_conv_probe_enabled;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
 pub(crate) mod open_chain;
@@ -1487,15 +1485,6 @@ impl Runtime {
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
-        );
-        crate::ime_controller::set_diag_bug113_dedup_off_actuation_enabled(
-            config.general.diag_bug113_dedup_gji_off_actuation,
-        );
-        set_diag_bug113_skip_idle_conv_probe_enabled(
-            config.general.diag_bug113_skip_idle_conv_probe,
-        );
-        crate::diag_bug113_combo::set_combo_cycle_enabled(
-            config.general.diag_bug113_combo_cycle_enabled,
         );
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
