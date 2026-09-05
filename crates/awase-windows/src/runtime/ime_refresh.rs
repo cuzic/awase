@@ -563,44 +563,6 @@ impl Runtime {
             .check_drift_correction(now, explicit_intent)
     }
 
-    /// BUG-114 診断専用（一時的、恒久機能ではない）: ADR-134 D4。
-    ///
-    /// `app_policy`（`FocusChanged` 時点のスナップショット）と、ライブ判定
-    /// （`can_use_imm32_cross_process()` が使っているのと同じ
-    /// `current_app_profile()`）が食い違っていないかを1行で記録する。
-    /// 挙動は一切変えない（ADR-131 と同じ「計装のみ」パターン）。
-    ///
-    /// **D4 単独先行段階（検証計画0、D1 未適用）のコード**: D1 実装後は
-    /// `live_policy` がそのまま呼び出し元の `policy` 引数になり、
-    /// `snapshot_policy` だけが D4 専用の追加読み戻しとして残る（ADR-134
-    /// D4 参照）。実機ログ1本で根本原因1（`current_focus==None`）・
-    /// 根本原因2-1（`current_focus.is_some()` かつ live≠snapshot）・
-    /// 根本原因2-2（`imm_capability==Some(Unavailable)`）・根本原因3
-    /// （live==snapshot==Read だが `detect_miss_count` が閾値未満）を
-    /// 判別できる。調査終了後は本メソッドの呼び出し元ごと削除すること。
-    fn ir_notify_bug114_diag(&self, snapshot_policy: FeedbackPolicy) {
-        let live_profile: crate::state::ime_event::ImePolicyProfile =
-            self.platform.current_app_profile().into();
-        let live_policy =
-            crate::state::app_ime_policy::AppImePolicy::from_profile(live_profile).default_feedback;
-        if live_policy == snapshot_policy {
-            return;
-        }
-        log::debug!(
-            "[bug114-diag] snapshot_policy={:?} live_policy={:?} class_name={:?} \
-             current_focus={:?} detect_miss_count={} imm_capability={:?}",
-            snapshot_policy,
-            live_policy,
-            self.platform.focus.class_name(),
-            self.platform_state.ime.model().current_focus(),
-            self.platform_state.ime.detect_miss_count(),
-            self.platform.focus.imm_capability(
-                self.platform.focus.process_name(),
-                self.platform.focus.class_name()
-            ),
-        );
-    }
-
     fn ir_apply_drift_correction(&mut self) {
         // BUG-20 で non-ImmCross（GJI/TsfNative/Blacklist）向けの再送分岐を追加した際、
         // この関数冒頭に残っていた `ir_resolve_skip_imm_query()`（=
@@ -641,7 +603,6 @@ impl Runtime {
         // 使い続ける。since フェンシング（`most_recent_trusted_after`）を使うのは下の
         // `Read` 収束「確認」側のみで、この非対称は ADR-080 が意図的に許容している。
         let policy = self.platform_state.ime.default_feedback();
-        self.ir_notify_bug114_diag(policy);
         let (act_policy, act_attempts, act_sent_at, act_gave_up_at, act_origin) = {
             let actuation = self.actuation_for(desired, policy);
             (

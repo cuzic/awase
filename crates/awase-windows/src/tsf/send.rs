@@ -41,9 +41,5 @@ pub(crate) fn send_eager_warmup_vk_pair() -> Option<u64> {
         make_tsf_key_input(VK_IME_ON, true),
     ];
     let _ = crate::win32::send_input_safe(&inputs);
-    // ADR-133 D0-2 診断用マーカー（挙動は変えない）: この裸2イベント
-    // VK_IME_ON 送信の直後に「@」や「u」/「U」等の余分な文字が混入しないかを
-    // 実機ログと突き合わせる。
-    log::debug!("[bug113-diag] D0-2: send_eager_warmup_vk_pair 送信 (VK_IME_ON, 裸2イベント)");
     Some(crate::hook::current_tick_ms())
 }

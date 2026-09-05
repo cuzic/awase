@@ -382,14 +382,6 @@ pub struct GeneralConfig {
     /// 参照）。既定値は `true`（常に無効化）。JIS かな直接入力を意図的に
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
-    /// BUG-113 診断専用（一時的、恒久機能ではない）。既定 `false`。
-    /// `true` のときだけ `GjiDirectStrategy::apply(open=false)` の送信方式を
-    /// 呼び出しごとに自動ローテーション（baseline/split/self-echo/
-    /// fake-ctrl-3event/fake-ctrl-4event）する。加えて Alt 押下中の物理
-    /// 半角/全角キーを `KanjiToggleStrategy` 単独発火の診断トリガーとして
-    /// 扱う（ADR-133 D0-3）。調査終了後は設定・実装ごと削除すること。
-    /// 設定GUIと sample config には出さない hidden opt-in。
-    pub diag_bug113_mode_cycle_enabled: bool,
 }
 
 impl Default for GeneralConfig {
@@ -429,7 +421,6 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
-            diag_bug113_mode_cycle_enabled: false,
         }
     }
 }
