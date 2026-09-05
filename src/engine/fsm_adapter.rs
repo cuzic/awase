@@ -211,6 +211,41 @@ impl FsmAdapter {
         self.fsm.set_henkan_delegate_to_open_axis(action);
     }
 
+    pub(super) const fn set_hiragana_katakana_thumb_key_config(
+        &mut self,
+        hiragana_vk: Option<crate::types::VkCode>,
+        katakana_vk: Option<crate::types::VkCode>,
+    ) {
+        self.fsm
+            .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
+    }
+
+    pub(super) const fn set_hiragana_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_hiragana_delegate_to_open_axis(action);
+    }
+
+    pub(super) const fn set_katakana_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_katakana_delegate_to_open_axis(action);
+    }
+
+    pub(super) const fn hiragana_delegate_to_open_axis(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.hiragana_delegate_to_open_axis()
+    }
+
+    pub(super) const fn katakana_delegate_to_open_axis(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.katakana_delegate_to_open_axis()
+    }
+
     /// IME open 軸への副作用要求を取り出す（1ショット、ADR-092 決定D Step4b）。
     pub(super) const fn take_ime_open_requested(
         &mut self,

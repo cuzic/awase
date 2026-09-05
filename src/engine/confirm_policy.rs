@@ -208,6 +208,7 @@ mod tests {
             scan_code: scan,
             vk_code: vk,
             timestamp: 0,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         }
@@ -220,6 +221,7 @@ mod tests {
             scan_code: SCAN_NONCONVERT,
             vk_code: VK_NONCONVERT,
             timestamp: 0,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         }
@@ -232,6 +234,7 @@ mod tests {
             scan_code: SCAN_CONVERT,
             vk_code: VK_CONVERT,
             timestamp: 0,
+            injected: false,
             is_ime_control: false,
             modifier_key: None,
         }

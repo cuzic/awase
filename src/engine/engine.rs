@@ -190,6 +190,36 @@ impl Engine {
         self.adapter.set_henkan_delegate_to_open_axis(action);
     }
 
+    /// Hiragana/Katakana が現在の親指キーなら Platform 層から解決済み VK を渡す。
+    pub const fn set_hiragana_katakana_thumb_key_config(
+        &mut self,
+        hiragana_vk: Option<VkCode>,
+        katakana_vk: Option<VkCode>,
+    ) {
+        self.adapter
+            .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
+    }
+
+    /// Hiragana 親指キー単独タップの IME open 軸 delegate を設定する。
+    pub const fn set_hiragana_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_hiragana_delegate_to_open_axis(action);
+    }
+
+    /// Katakana 親指キー単独タップの IME open 軸 delegate を設定する。
+    pub const fn set_katakana_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_katakana_delegate_to_open_axis(action);
+    }
+
+    #[must_use]
+    pub const fn hiragana_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
+        self.adapter.hiragana_delegate_to_open_axis()
+    }
+
+    #[must_use]
+    pub const fn katakana_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
+        self.adapter.katakana_delegate_to_open_axis()
+    }
+
     /// Enter 親指キーのフォールバック挙動を設定する。
     ///
     /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが

@@ -300,6 +300,20 @@ pub struct NicolaFsm {
     /// `muhenkan_delegate_to_open_axis` と対称（変換キー用）。
     henkan_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
 
+    /// `left_thumb_key`/`right_thumb_key` のいずれかが Hiragana に割り当てられて
+    /// いる場合、その VK コード。実際の VK 番号は Platform 層の責務であり、
+    /// core は渡された値と等値比較するだけ。
+    hiragana_vk: Option<VkCode>,
+
+    /// `hiragana_vk` が単独タップとして確定したときの IME open 軸 delegate。
+    hiragana_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
+
+    /// `hiragana_vk` と対称（Katakana キー用）。
+    katakana_vk: Option<VkCode>,
+
+    /// `hiragana_delegate_to_open_axis` と対称（Katakana キー用）。
+    katakana_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
+
     /// `resolve_pending_thumb_as_single` が `DelegateToOpenAxis` 相当の判定を
     /// 下した直後、`Engine` 層が次の `on_input`/`on_timeout` で取り出すまで
     /// 保持するワンショットの副作用要求（ADR-092 決定D Step4b）。
@@ -374,6 +388,13 @@ pub struct NicolaFsm {
     /// として二重計上しないためのガード（`engine_off_extra_key_suppressed`
     /// と同型、`handle_bypass`/`on_key_up` 参照）。
     backspace_down: bool,
+}
+
+struct ThumbSoloSpecialHandling {
+    dedicated_fn_key: Option<VkCode>,
+    delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
+    mode_key_config: Option<ModeKeyConfig>,
+    injected_guarded_delegate: bool,
 }
 
 /// ADR-120 決定0a 項目2c の観測窓状態。`last_vk` は直前にこの窓を消費した
@@ -474,6 +495,10 @@ impl NicolaFsm {
             muhenkan_solo_tap_dedicated_fn_key: None,
             muhenkan_delegate_to_open_axis: None,
             henkan_delegate_to_open_axis: None,
+            hiragana_vk: None,
+            hiragana_delegate_to_open_axis: None,
+            katakana_vk: None,
+            katakana_delegate_to_open_axis: None,
             ime_open_requested: None,
             henkan_vk: None,
             mode_key_henkan: ModeKeyConfig::from_legacy_bools(false, true),
@@ -562,6 +587,7 @@ impl NicolaFsm {
                         thumb.scan_code,
                         thumb.vk_code,
                         thumb.modifier_key,
+                        thumb.injected,
                         c,
                     ),
                     ComposingHint::Unknown => (
@@ -800,11 +826,87 @@ impl NicolaFsm {
         self.henkan_delegate_to_open_axis = action;
     }
 
+    /// Hiragana/Katakana が現在の親指キーなら、その VK を Platform 層から渡す。
+    /// core は生 VK 定数を持たず、ここで渡された値との等値比較のみを行う。
+    pub const fn set_hiragana_katakana_thumb_key_config(
+        &mut self,
+        hiragana_vk: Option<VkCode>,
+        katakana_vk: Option<VkCode>,
+    ) {
+        self.hiragana_vk = hiragana_vk;
+        self.katakana_vk = katakana_vk;
+    }
+
+    /// Hiragana 親指キー単独タップの IME open 軸 delegate を設定する。
+    pub const fn set_hiragana_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.hiragana_delegate_to_open_axis = action;
+    }
+
+    /// Katakana 親指キー単独タップの IME open 軸 delegate を設定する。
+    pub const fn set_katakana_delegate_to_open_axis(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.katakana_delegate_to_open_axis = action;
+    }
+
+    #[must_use]
+    pub const fn hiragana_delegate_to_open_axis(&self) -> Option<crate::types::ShadowImeAction> {
+        self.hiragana_delegate_to_open_axis
+    }
+
+    #[must_use]
+    pub const fn katakana_delegate_to_open_axis(&self) -> Option<crate::types::ShadowImeAction> {
+        self.katakana_delegate_to_open_axis
+    }
+
     /// `resolve_pending_thumb_as_single` がセットした IME open 軸への副作用
     /// 要求を取り出す（1ショット、ADR-092 決定D Step4b）。`Engine::on_input`/
     /// `on_timeout` が呼ぶ。
     pub const fn take_ime_open_requested(&mut self) -> Option<crate::types::ShadowImeAction> {
         self.ime_open_requested.take()
+    }
+
+    fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
+        if self.muhenkan_vk == Some(vk_code) {
+            ThumbSoloSpecialHandling {
+                dedicated_fn_key: self.muhenkan_solo_tap_dedicated_fn_key,
+                delegate_to_open_axis: self.muhenkan_delegate_to_open_axis,
+                mode_key_config: Some(self.mode_key_muhenkan),
+                injected_guarded_delegate: false,
+            }
+        } else if self.henkan_vk == Some(vk_code) {
+            ThumbSoloSpecialHandling {
+                dedicated_fn_key: None,
+                delegate_to_open_axis: self.henkan_delegate_to_open_axis,
+                mode_key_config: Some(self.mode_key_henkan),
+                injected_guarded_delegate: false,
+            }
+        } else if self.hiragana_vk == Some(vk_code) {
+            ThumbSoloSpecialHandling {
+                dedicated_fn_key: None,
+                delegate_to_open_axis: self.hiragana_delegate_to_open_axis,
+                mode_key_config: None,
+                injected_guarded_delegate: true,
+            }
+        } else if self.katakana_vk == Some(vk_code) {
+            ThumbSoloSpecialHandling {
+                dedicated_fn_key: None,
+                delegate_to_open_axis: self.katakana_delegate_to_open_axis,
+                mode_key_config: None,
+                injected_guarded_delegate: true,
+            }
+        } else {
+            ThumbSoloSpecialHandling {
+                dedicated_fn_key: None,
+                delegate_to_open_axis: None,
+                mode_key_config: None,
+                injected_guarded_delegate: false,
+            }
+        }
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -1410,6 +1512,7 @@ impl NicolaFsm {
                     thumb.scan_code,
                     thumb.vk_code,
                     thumb.modifier_key,
+                    thumb.injected,
                     self.phys.composing,
                 );
                 if ime_open_request.is_some() {
@@ -1537,6 +1640,7 @@ impl NicolaFsm {
                     vk_code: ev.vk_code,
                     is_left: ev.key_class.is_left_thumb(),
                     timestamp: ev.timestamp,
+                    injected: ev.injected,
                     modifier_key: ev.modifier_key,
                 },
             );
@@ -1592,6 +1696,7 @@ impl NicolaFsm {
             thumb.scan_code,
             thumb.vk_code,
             thumb.modifier_key,
+            thumb.injected,
             self.phys.composing,
         );
         if ime_open_request.is_some() {
@@ -1608,6 +1713,7 @@ impl NicolaFsm {
             thumb.scan_code,
             thumb.vk_code,
             thumb.modifier_key,
+            thumb.injected,
             self.phys.composing,
         );
         if ime_open_request.is_some() {
@@ -1859,6 +1965,7 @@ impl NicolaFsm {
         scan_code: ScanCode,
         vk_code: VkCode,
         modifier_key: Option<crate::types::ModifierKey>,
+        injected: bool,
         composing: bool,
     ) -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
@@ -1883,24 +1990,9 @@ impl NicolaFsm {
         // Composition/Conversion 時の `SwitchKanaType` としてバインドしておく
         // ことで、GJI が自身の内部状態を見てかな形状をトグルする
         // （awase 側は belief を持たない）。
-        let (dedicated_fn_key, delegate_to_open_axis, mode_key_config) =
-            if self.muhenkan_vk == Some(vk_code) {
-                (
-                    self.muhenkan_solo_tap_dedicated_fn_key,
-                    self.muhenkan_delegate_to_open_axis,
-                    Some(self.mode_key_muhenkan),
-                )
-            } else if self.henkan_vk == Some(vk_code) {
-                (
-                    None,
-                    self.henkan_delegate_to_open_axis,
-                    Some(self.mode_key_henkan),
-                )
-            } else {
-                (None, None, None)
-            };
+        let special = self.thumb_solo_special_handling(vk_code);
 
-        if let Some(fn_key) = dedicated_fn_key {
+        if let Some(fn_key) = special.dedicated_fn_key {
             let action = KeyAction::Key(fn_key);
             let output = OutputUpdate::record(scan_code, &action, None);
             return (
@@ -1911,7 +2003,12 @@ impl NicolaFsm {
                 None,
             );
         }
-        if let Some(open_axis_action) = delegate_to_open_axis {
+        if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|_| {
+            // Hiragana/Katakana は MS-IME/CTF から注入されうるため、注入された
+            // 偽の単独タップでは delegate を発火させない。ここでは suppress せず
+            // 既定分岐へ落とし、キー自体は従来どおり OS へ届く余地を残す。
+            !(special.injected_guarded_delegate && injected)
+        }) {
             // composing 中は fail-closed に倒す。誤って true でも suppress に落ちるだけだが、
             // 誤って false で TurnOff/Toggle(→OFF) すると composition を復旧不能に破棄する。
             if !composing {
@@ -1925,7 +2022,7 @@ impl NicolaFsm {
             }
             // fallthrough: ModeKeyConfig.composing（既定 Suppress）へ委ねる。
         }
-        if let Some(mode_key_config) = mode_key_config {
+        if let Some(mode_key_config) = special.mode_key_config {
             let action = SoloTapAction::from(mode_key_config.for_composing(composing));
             let resolved = match action {
                 SoloTapAction::Suppress => ResolvedAction {
@@ -2505,6 +2602,7 @@ impl NicolaFsm {
             thumb.scan_code,
             thumb.vk_code,
             thumb.modifier_key,
+            thumb.injected,
             self.phys.composing,
         );
         if ime_open_request.is_some() {
@@ -2534,6 +2632,7 @@ impl NicolaFsm {
                 thumb.scan_code,
                 thumb.vk_code,
                 thumb.modifier_key,
+                thumb.injected,
                 self.phys.composing,
             ),
             EngineState::Idle
@@ -2658,8 +2757,13 @@ impl NicolaFsm {
         //
         // suppress/送出の判定（composing ガード・Space 例外・OS 修飾キーガード）は
         // resolve_pending_thumb_as_single に委譲し、flush 経路と挙動を統一する。
-        let (resolved, ime_open_request) =
-            self.resolve_pending_thumb_as_single(scan_code, vk_code, modifier_key, composing);
+        let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
+            scan_code,
+            vk_code,
+            modifier_key,
+            false,
+            composing,
+        );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
         }
@@ -3106,6 +3210,53 @@ mod tests {
         );
         let (_, kana) = fsm.lookup_face(Some(pos), &face).unwrap();
         assert_eq!(kana, None);
+    }
+
+    #[test]
+    fn hiragana_delegate_to_open_axis_fires_on_non_injected_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let hiragana_vk = VkCode(0x70);
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
+        fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOff));
+        let (resolved, request) =
+            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, false, false);
+        assert!(resolved.actions.is_empty());
+        assert_eq!(request, Some(crate::types::ShadowImeAction::TurnOff));
+    }
+
+    #[test]
+    fn katakana_delegate_to_open_axis_fires_on_non_injected_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let katakana_vk = VkCode(0x71);
+        fsm.set_hiragana_katakana_thumb_key_config(None, Some(katakana_vk));
+        fsm.set_katakana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::Toggle));
+        let (resolved, request) =
+            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), katakana_vk, None, false, false);
+        assert!(resolved.actions.is_empty());
+        assert_eq!(request, Some(crate::types::ShadowImeAction::Toggle));
+    }
+
+    #[test]
+    fn hiragana_delegate_to_open_axis_ignores_injected_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let hiragana_vk = VkCode(0x70);
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
+        fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) =
+            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, true, false);
+        assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
+        assert_eq!(request, None);
+    }
+
+    #[test]
+    fn hiragana_delegate_to_open_axis_none_falls_back_to_default_passthrough() {
+        let mut fsm = make_test_fsm();
+        let hiragana_vk = VkCode(0x70);
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
+        let (resolved, request) =
+            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, false, false);
+        assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
+        assert_eq!(request, None);
     }
 
     #[test]
