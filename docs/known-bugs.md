@@ -15056,3 +15056,90 @@ GUIが編集しうる他のフィールドには一切触れない（読み直�
 追加済み——`main.rs`の`swallow_alt_kana_input_method_switch`チェックボックス
 の直後）。編集ウィジェットが存在するフィールドは`self.config`が
 GUI操作で正しく更新されるため、この種のstale化は起きない。
+
+**追補（2026-09-05、`/code-review`指摘、同日修正）:** 上記のstale
+read-modify-write修正は`keys.ime_detect`にしか適用していなかったが、
+同じくGUIに編集ウィジェットが無いフィールドは他にも存在した:
+`keys.engine_on_ime_key`/`keys.engine_off_ime_key`（ADR-092決定D Step1で
+既定`None`に凍結された上級者専用の複合副作用キー）、
+`app_overrides.input_relay_apps`（ADR-119で追加された入力中継アプリ
+一覧）、`keystroke_macro`（ADR-115決定2bの打鍵列マクロ一覧）。
+これらも同じ構造的クローバーに晒されていた。修正はGUIウィジェットを
+持たない全フィールドを再読み込み対象に拡張（`apply_confirmed()`）。
+回帰テスト`layout_tab_repro::apply_confirmed_preserves_externally_edited_gui_less_fields`
+を追加済み。
+
+### Phase 2/3実装後に`/code-review`で発覚した追加欠陥3件（2026-09-05発見・同日修正）
+
+PR #168の`/code-review`（8並列 finder angle + Opus検証サブエージェント
+2バッチで独立確認）で、Phase 2/3実装自体に以下3件の実欠陥が見つかった
+（いずれもCONFIRMED、`crates/awase-windows/src/runtime/key_pipeline.rs`
+の`kp_stage_shadow_ime_toggle`と`crates/awase-windows/src/gji_charset_autodetect.rs`
+の`sync_gji_charset_autodetect`/`warn_thumb_key_toggle_if_needed`を修正）。
+
+1. **`IntentKind::SyncKey`分岐がC1排他ゲート(`delegate_owned`)を素通り
+   していた** — `kp_stage_shadow_ime_toggle`のC1ゲートは
+   `IntentKind::PhysicalImeKey`分岐のみをガードしており、
+   `config.toml`の`keys.ime_detect`（`sync_toggle_keys`/`sync_on_keys`/
+   `sync_off_keys`）で同じVKがsync keyとしても設定されていた場合、
+   `write_sync_key`がFSM delegateの発火と二重にbelief書き込みを行う
+   （issue #136/ADR-119と同型の合流点漏れ）。`validate_thumb_key_in_ime_combos`
+   は`keys.ime_on/ime_off/ime_toggle`しか検査せず`keys.ime_detect`との
+   重複は検知しないため、実際に発生しうる設定だった。修正: `delegate_owned`
+   のガードを`SyncKey`/`PhysicalImeKey`の両分岐に適用。
+2. **GJI離脱時、無変換/変換のGJI由来delegateが解除されないケースが
+   あった** — `sync_gji_charset_autodetect`の`!is_gji`クリーンアップは
+   Hiragana/Katakana側のdelegate/shadow overrideは解除するが、
+   無変換/変換側の`gji_thumb_key_delegate_to_open_axis`は
+   「MS-IME側の`sync_ime_toggle_auto_detect`が必ず上書きする」という
+   前提で解除していなかった。しかしその上書きは`IME種別検出成功 &&
+   kind==MicrosoftIme`の場合にしか走らないため、GJI→IME種別未検出
+   （TSF/IME種別検出が失敗する非対応アプリへのフォーカス移動等）への
+   遷移では、stale なGJI由来delegateが無期限に残留し、無関係なアプリ
+   での単独タップがIME状態を静かに反転させうる。修正: クリーンアップ
+   ブロックで`set_gji_thumb_key_delegate_to_open_axis(None, None)`も
+   明示的に呼ぶ。
+3. **eisu救済ロジックが実際に発火する方向と異なる方向を見ていた** —
+   `kp_stage_shadow_ime_toggle`のno-op時eisu救済
+   （`eisu_reset_on_turn_on_while_open`）は、delegate_owned時も
+   VKの固定ハードウェア分類（Hiragana/Katakana親指キーは常にTurnOn）
+   である`action`を見ていたが、CUSTOM GJIキーマップでは実際にFSM
+   delegateへ配線される方向（TurnOff等）がこれと乖離しうる。修正:
+   delegate_owned時は`Engine::hiragana_delegate_to_open_axis()`/
+   `katakana_delegate_to_open_axis()`から実際の配線方向を取得して使う。
+
+いずれもPhase 2/3実装のごく初期の実機シナリオ（sync keyとの併用、
+IME種別未検出への遷移、CUSTOM keymapでのOff/Toggle配線）でのみ顕在化
+する、実機依存の再現困難なケース。`cargo test -p awase-windows --lib`/
+`cargo nextest run -p awase-windows --test architecture_guard`は全緑の
+まま。専用の回帰テストは追加していない（実機のIME種別検出タイミング・
+GJIプロセス連携に依存し、Linux上のユニットテストで安定再現する構成が
+困難なため、known-bugs.mdへの記録で代替、本ルール適用範囲の
+`fix-requires-evidence.md`参照）。
+
+### 診断ログの精度低下（`/code-review`指摘、2026-09-05発見・同日修正）
+
+`sync_gji_charset_autodetect`の`config1.db`読み込み経路は、旧実装では
+「ファイルが読めない」（GJI未インストール等、平常運転）と「読めたが
+wire-format解析に失敗した」（本BUG-115自身が実際に踏んだfield番号
+ズレ——`session_keymap`が22→41——のような、将来のMozc/GJI側スキーマ
+変更を示唆する異常事態）を区別していたが、Phase 2/3実装のリファクタで
+両者が同じ`Option<GjiRawConfig>`の`None`に畳まれ、同じ「GJI 未インストール」
+デバッグログになっていた。次にこの種のスキーマ変更が起きた際、調査が
+誤って「未インストール」方向へ誘導される。修正: `bytes_read_ok`で
+区別し、パース失敗時は専用のデバッグメッセージ（本BUG-115のfield番号
+ズレ修正経緯を参照するよう促す）を出すようにした。
+
+### F5診断（専用Fnキーによるdelegateマスキング警告）のゲート条件誤り（`/code-review`指摘、2026-09-05発見・同日修正）
+
+`warn_thumb_key_toggle_if_needed`のF5診断（`muhenkan_solo_tap_dedicated_fn_key`
+が無変換のdelegate-to-open-axisを黙って無効化していることを警告する
+ブロック）は、`warning != ThumbKeyImeWarning::None`（Toggle分類が
+検出された場合のみ）でゲートしていた。しかし実際のマスキング条件
+（`thumb_solo_special_handling`の優先順位）はToggle分類とは無関係に
+`wiring.muhenkan.is_some()`でありさえすれば成立する。ユーザーが
+ToggleDeclined案内どおりGJIキーマップをOn/Off限定に直すと`warning`は
+`None`に戻るが、マスキング自体は解消されないため、この診断が二度と
+出なくなり「なぜ無変換の単独タップがIME状態に追従しないのか」の
+手がかりが失われていた。修正: ゲート条件を`wiring.muhenkan.is_some()`
+に変更（`warn_thumb_key_toggle_if_needed`の引数に`muhenkan`を追加）。

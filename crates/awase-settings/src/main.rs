@@ -539,8 +539,21 @@ impl SettingsApp {
         // フィールドはこのセッション中の意図した変更を含みうるため、
         // まるごと再読み込みで上書きしてはならない（読み込みに失敗しても
         // 保存自体は中止せず、それまでの`self.config`の値のまま続行する）。
+        //
+        // /code-review指摘（PR #168）: `keys.ime_detect`と同じくGUIに編集
+        // ウィジェットが無いフィールドは他にも存在し（`engine_on_ime_key`/
+        // `engine_off_ime_key`＝ADR-092決定D Step1で既定Noneに凍結された
+        // 上級者専用複合副作用キー、`app_overrides.input_relay_apps`＝
+        // ADR-119で追加された入力中継アプリ一覧、`keystroke_macro`＝
+        // ADR-115決定2bの打鍵列マクロ一覧）、いずれも同じ構造的クローバーに
+        // 晒されていた。GUIウィジェットを持たない全フィールドを網羅的に
+        // 再読み込みする。
         if let Ok(fresh) = awase::config::AppConfig::load(&self.config_path) {
             self.config.keys.ime_detect = fresh.keys.ime_detect;
+            self.config.keys.engine_on_ime_key = fresh.keys.engine_on_ime_key;
+            self.config.keys.engine_off_ime_key = fresh.keys.engine_off_ime_key;
+            self.config.app_overrides.input_relay_apps = fresh.app_overrides.input_relay_apps;
+            self.config.keystroke_macro = fresh.keystroke_macro;
         }
 
         // /code-review指摘（PR #127、2回目）: self.configはこの直後に
@@ -6452,6 +6465,73 @@ speculative_delay_ms = 30
             "外部エディタでの編集(VK_F17)が、GUI起動時の古いスナップショット\
              (VK_F16)で上書きされてはならない"
         );
+    }
+
+    /// /code-review指摘（PR #168）の回帰テスト: `keys.ime_detect`と同じく
+    /// GUIに編集ウィジェットが無い他のフィールド（`engine_on_ime_key`/
+    /// `engine_off_ime_key`/`app_overrides.input_relay_apps`/
+    /// `keystroke_macro`）も、外部エディタでの手動編集が「適用」で
+    /// 上書きされてはならない（上記`apply_confirmed_preserves_externally_edited_ime_detect`
+    /// と同型、対象フィールドを拡張した回帰）。
+    #[test]
+    fn apply_confirmed_preserves_externally_edited_gui_less_fields() {
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_gui_less_fields_preserve_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::write(
+            &config_path,
+            "[general]\n\
+             [keys]\n\
+             engine_on_ime_key = \"VK_F16\"\n\
+             engine_off_ime_key = \"VK_F17\"\n\
+             [keys.ime_detect]\n\
+             [app_overrides]\n\
+             input_relay_apps = [\"old.exe\"]\n\
+             [[keystroke_macro]]\n\
+             name = \"old\"\n\
+             steps = []\n",
+        )
+        .unwrap();
+        let config = awase::config::AppConfig::load(&config_path).unwrap();
+        let mut app = test_settings_app(config);
+        app.config_path = config_path.clone();
+        app.config_load_state = ConfigLoadState::Loaded;
+
+        // 設定画面を開いたまま、外部エディタでGUIウィジェットの無い
+        // フィールドだけを書き換えた体。
+        std::fs::write(
+            &config_path,
+            "[general]\n\
+             [keys]\n\
+             engine_on_ime_key = \"VK_F18\"\n\
+             engine_off_ime_key = \"VK_F19\"\n\
+             [keys.ime_detect]\n\
+             [app_overrides]\n\
+             input_relay_apps = [\"new.exe\"]\n\
+             [[keystroke_macro]]\n\
+             name = \"new\"\n\
+             steps = []\n",
+        )
+        .unwrap();
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let saved = awase::config::AppConfig::load(&config_path).unwrap();
+        let _ = std::fs::remove_file(&config_path);
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert_eq!(saved.keys.engine_on_ime_key, Some("VK_F18".to_string()));
+        assert_eq!(saved.keys.engine_off_ime_key, Some("VK_F19".to_string()));
+        assert_eq!(
+            saved.app_overrides.input_relay_apps,
+            vec!["new.exe".to_string()]
+        );
+        assert_eq!(saved.keystroke_macro.len(), 1);
+        assert_eq!(saved.keystroke_macro[0].name, "new");
     }
 
     /// コードレビュー指摘の回帰テスト: `apply_confirmed()` は保存の完了を

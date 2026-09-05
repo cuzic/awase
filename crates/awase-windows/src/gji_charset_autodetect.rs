@@ -620,6 +620,16 @@ mod windows_impl {
                 app.clear_gji_ime_on_off_auto_keys();
                 app.set_gji_mode_key_shadow_overrides(None, None);
                 app.set_gji_mode_key_delegate_to_open_axis(None, None);
+                // 無変換/変換側のGJI由来delegateも同様に解除する。従来は
+                // 「GJI→非GJI遷移では必ずMS-IME側のsync_ime_toggle_auto_detect
+                // が無条件で上書きするため冗長」としてここでは解除していな
+                // かったが、それは`kind==MicrosoftIme`検出成功時にしか
+                // 成立しない前提だった（/code-review指摘）。IME種別が
+                // 未検出のままGJI以外へ遷移するケース（例: TSF/IME種別検出が
+                // 失敗する非対応アプリへのフォーカス移動）ではMS-IME側の
+                // 同期が走らず、GJI由来のstaleなdelegateが無期限に残留し、
+                // 無関係なアプリでの単独タップがIME状態を静かに反転させる。
+                app.set_gji_thumb_key_delegate_to_open_axis(None, None);
             }
             return;
         }
@@ -628,6 +638,7 @@ mod windows_impl {
         }
 
         let bytes = read_config1_db();
+        let bytes_read_ok = bytes.is_some();
         let raw = bytes
             .as_deref()
             .and_then(awase_gji_config::wire::parse_top_level);
@@ -663,7 +674,7 @@ mod windows_impl {
             muhenkan_kind,
             app.gji_thumb_key_ime_toggle_opt_in(),
         );
-        warn_thumb_key_toggle_if_needed(app, wiring.warning);
+        warn_thumb_key_toggle_if_needed(app, wiring.warning, wiring.muhenkan);
 
         // BUG-115（F7）: 無変換/変換が親指シフトのチョードキーとして
         // 設定されている場合のみ、Step4bと同じdelegate-to-open-axis
@@ -700,10 +711,26 @@ mod windows_impl {
         // delegate-to-open-axis が担当する。
 
         let Some(raw) = raw else {
-            log::debug!(
-                "[gji-charset-autodetect] config1.db を読めませんでした \
-                 （GJI 未インストール、または初回起動でまだ作成されていない等）"
-            );
+            // /code-review指摘（PR #168）: 「ファイルが読めない」（GJI未
+            // インストール等、平常運転で起きうる）と「読めたがwire-format
+            // 解析に失敗した」（このPR自身が実際に踏んだfield番号ズレ
+            // ————22→41修正参照————のような、将来のMozc/GJI側スキーマ変更を
+            // 示唆する異常事態）を同じデバッグメッセージに畳んでしまうと、
+            // 後者が発生した際に次の調査が誤って「未インストール」方向へ
+            // 誘導される。以前のコードは後者を無言でreturnしていたが、
+            // 今回は明示的に区別してログする。
+            if bytes_read_ok {
+                log::debug!(
+                    "[gji-charset-autodetect] config1.db は読めましたがwire-format \
+                     解析に失敗しました（Mozc/GJI側のスキーマ変更の可能性。\
+                     docs/known-bugs.md BUG-115のfield番号ズレ修正経緯を参照）"
+                );
+            } else {
+                log::debug!(
+                    "[gji-charset-autodetect] config1.db を読めませんでした \
+                     （GJI 未インストール、または初回起動でまだ作成されていない等）"
+                );
+            }
             app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
             return;
         };
@@ -759,7 +786,11 @@ mod windows_impl {
     /// BUG-115（N8）: 無変換/変換のIME意味論判定結果をユーザーへ通知する。
     /// 同一内容の警告はプロセス内で一度だけ
     /// （`msime_key_assignment::check_and_warn`と同型のデデュープ）。
-    fn warn_thumb_key_toggle_if_needed(app: &Runtime, warning: ThumbKeyImeWarning) {
+    fn warn_thumb_key_toggle_if_needed(
+        app: &Runtime,
+        warning: ThumbKeyImeWarning,
+        muhenkan: Option<ImeToggleKind>,
+    ) {
         let packed = warning as u8;
         if LAST_TOGGLE_WARNING.swap(packed, Ordering::Relaxed) == packed {
             return; // 同じ内容で通知済み
@@ -789,7 +820,7 @@ mod windows_impl {
         }
         if is_configured_thumb_key(ModeKeyCandidate::Muhenkan.vk())
             && app.muhenkan_dedicated_fn_key_configured()
-            && !matches!(warning, ThumbKeyImeWarning::None)
+            && muhenkan.is_some()
         {
             // F5: 専用Fnキー（muhenkan_solo_tap_dedicated_fn_key）が優先
             // されるため、無変換が親指キーの場合、そのdelegate-to-open-axis
@@ -797,6 +828,13 @@ mod windows_impl {
             // 優先順位、henkan側には専用Fnキーの概念自体が無い非対称）。
             // 無変換が親指キーでない場合はactuation-auto経由になり
             // dedicated_fn_keyとは無関係なので、この警告は不要。
+            // ゲート条件は`warning != None`（Toggle検出時のみ）ではなく
+            // `muhenkan.is_some()`（On/Off/Toggleいずれでもマスクされる）
+            // を使う——このマスキングはToggle分類とは無関係に、
+            // `wiring.muhenkan`がSomeでありさえすれば発生するため。
+            // ユーザーがToggleDeclined案内に従いキーマップをOn/Off限定に
+            // 直しても`warning`はNoneに戻るが、マスキング自体は解消しない
+            // （/code-review指摘）。
             log::warn!(
                 "[gji-charset-autodetect] muhenkan_solo_tap_dedicated_fn_keyが設定済みの \
                  ため、無変換キーのIME open軸への追従は無効化されます（変換キー側のみ \

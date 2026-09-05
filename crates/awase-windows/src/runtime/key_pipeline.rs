@@ -914,12 +914,18 @@ impl Runtime {
         // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
         // 経路の一つでありながら、従来ここには INFO ログが一切無く、実機ログだけでは
         // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
-        if matches!(kind, IntentKind::PhysicalImeKey) && delegate_owned {
+        if delegate_owned {
             // Phase 3 delegate が実際に所有する入力空間
             // (現在の親指キー && delegate armed && belief ON、C1参照) だけで
             // shadow-toggle の belief 書き込み/actuationを止める。delegate
             // armed 単独で止めると、非親指キー向け Phase 2 shadow_action
             // override の実効ケースまで消してしまう。
+            // `IntentKind::SyncKey`（config `keys.ime_detect`の
+            // sync_on/off/toggle_keys）にも同様に適用する——この親指キーが
+            // 同時にsync keyとしても設定されていた場合、ここを
+            // PhysicalImeKeyだけに限定するとwrite_sync_keyがdelegateの
+            // 発火と二重にbeliefを書き込む（/code-review指摘、issue #136/
+            // ADR-119と同型の合流点漏れ）。
             // C1修正後はbelief ONの間（＝チョード入力中）毎打鍵this分岐を
             // 通るため、triage用の「intent 昇格」ログ（下のelse節、INFO）と
             // 違いdebugに留める——delegate側の「IME open axis delegated」
@@ -945,17 +951,17 @@ impl Runtime {
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
         // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
         // 型側でも要求するため、ここで None になることは無い。
-        match kind {
-            IntentKind::SyncKey => {
-                let Some(witness) = IntentWitness::from_sync_key(event) else {
-                    return false;
-                };
-                self.platform_state
-                    .ime
-                    .write_sync_key(witness, new_val, tick_ms);
-            }
-            IntentKind::PhysicalImeKey => {
-                if !delegate_owned {
+        if !delegate_owned {
+            match kind {
+                IntentKind::SyncKey => {
+                    let Some(witness) = IntentWitness::from_sync_key(event) else {
+                        return false;
+                    };
+                    self.platform_state
+                        .ime
+                        .write_sync_key(witness, new_val, tick_ms);
+                }
+                IntentKind::PhysicalImeKey => {
                     let Some(witness) = IntentWitness::from_physical(event) else {
                         return false;
                     };
@@ -986,8 +992,30 @@ impl Runtime {
             // ここで同様の stale ObservedEisu 救済を別途行う（2026-07-09 MS Edge/MS-IME
             // で実発生: IME open のまま conv だけ Eisu に固着すると、ひらがなキーを
             // 押しても復帰できなかった）。
+            //
+            // delegate_owned の場合、`action` はVKの固定ハードウェア分類
+            // （Hiragana/Katakana親指キーは常にTurnOn）のままで、CUSTOM
+            // keymapで実際にFSM delegateへ配線された方向（TurnOff/Toggleも
+            // ありうる）とは独立に決まる（/code-review指摘）。ここでの
+            // 方向判定は実際に発火する方向（FSM delegateの配線先）を
+            // 見なければ、TurnOff方向のdelegateなのにTurnOn向けのeisu
+            // 救済を誤って走らせてしまう。
+            let turn_on_direction = if delegate_owned {
+                match event.vk_code {
+                    vk if vk == crate::vk::VK_DBE_HIRAGANA => {
+                        self.engine.hiragana_delegate_to_open_axis()
+                    }
+                    vk if vk == crate::vk::VK_DBE_KATAKANA => {
+                        self.engine.katakana_delegate_to_open_axis()
+                    }
+                    _ => None,
+                }
+                .unwrap_or(action)
+            } else {
+                action
+            };
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
-                matches!(action, ShadowImeAction::TurnOn),
+                matches!(turn_on_direction, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
             ) {
                 // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
