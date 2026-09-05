@@ -796,3 +796,26 @@ Phase 1の一部（自動判定・設定支援ポップアップ・config1.db書
   今回はADR-092側の呼び出し元・テストを個別に確認した上で分離できたが、
   次に同種の自動判定機構を追加する際は、GJI検出の合流点は共有しつつも
   機能ごとに関数を分けておくと、将来の部分撤去が容易になる。
+
+---
+
+## エントリ 20: BUG-113「Windows Terminal + GJI で余分な@」— `send_ime_mode_key` の `wScan=0` 修正は実機A/Bで反証、副産物として BUG-114（drift correction の `FeedbackPolicy::Read` 無限再送）を発見
+
+**背景**: ADR-133 の実機検証（2026-09-05）で、`GjiDirectStrategy::apply
+(open=false)` が `send_ime_mode_key(VK_IME_OFF)` を `wScan=0` で送信して
+いることが BUG-113（Windows Terminal + GJI、Engine 有効時に半角/全角キーで
+「@」が出る）の真因候補と絞り込まれていた。
+
+| 日付 | 仮説 | 環境（アプリ×IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-05 | `send_ime_mode_key` の mode key 本体（`VK_IME_ON`/`VK_IME_OFF`）を `wScan=0` 固定（`make_key_input_ex()`）から `wVk` 保持＋`MapVirtualKeyW` 実測 scan 埋め込み（`make_scan_key_input()`、`KEYEVENTF_SCANCODE` なし）へ変更すれば「@」が再現しなくなるはず | Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`）× Google 日本語入力、dragonflyg4実機、`spike/adr133-wt-vk-kana-dbe-hiragana`ブランチ | `send_ime_mode_key`（`ime.rs`）の送信を全呼び出し元（`GjiDirectStrategy`/`MsImeDirectStrategy`/`send_engine_state_ime_key`）に対し既定 on（Windows Terminal 限定 hidden opt-in にはしなかった） | ユーザーが実機で再現手順（Engine有効、半角/全角キー単独押下）を試したところ「何も変化はありませんでした」（@が出る現象そのままだった）。`RUST_LOG=debug`での追加ログ確認で、実際には物理キー1回の押下に対し `[drift] correction: observed=true ≠ desired=false` が **~14秒間、20〜90msおきに連続発火**し、`VK_IME_OFF`を`SendInput`で送り続けていたことが判明（`gave up`ログは0件）。ログの`strategy=`タグは`drift_correction_read`——`caps(TsfNative, Gji)`が本来返すべき`FEEDBACK_BLIND`ではなく`FEEDBACK_READ`が使われていた。コード読解の結果、`focus/class_names.rs::AppImeProfile::from_class_name`がフォールバックで`Standard`を返すケースがあり、`FocusChanged`発火の瞬間にこれが起きると`ImePolicyProfile::ImmCross`→`FEEDBACK_READ`が`app_policy`に焼き付き、以後のフォーカスセッション中ずっと`Read`のまま（`current_app_profile()`自体は後から正しく`TsfNative`を返すのに`app_policy`は`FocusChanged`時のスナップショットしか見ない）になる経路を発見。`Read`は`decide_actuation_action`にGiveUp分岐が無く常に`Send`を返すため、IMMクエリが構造的に不可能な当該クラス（`Skipping IMM query for known-broken class`）では収束観測が一生得られず無限に近い頻度で再送し続ける | 撤回（`send_ime_mode_key`は元の`wScan=0`固定へrevert）。**「@」の真因はこのBUG-114単独ではないと後日判明**（drift correctionが正常に有界動作した回でも「@」は再現した、known-bugs.md BUG-113参照）——BUG-114自体は独立の実在バグとして別途起票、真因候補は後日`send_ime_mode_key`の`SendInput`バッチ形状（ADR-133）へ絞り込まれた | e8aa19b0（元コミット）→（本revertコミット） |
+
+**学び**: 「候補まで絞り込んだ」状態でも実機A/Bを経ずに「全アプリ・既定on」の
+グローバル変更へ踏み切ると、反証されたときの後始末（revert対象の特定・
+docsの巻き戻し）が大きくなる。特にこの変更は Windows Terminal 限定に
+スコープすることもできたが、ユーザー判断で全アプリ適用にした結果、
+反証後は影響範囲の広い変更を丸ごとrevertする必要が生じた。また
+「何も変化がない」という否定的な実機報告こそ、次の仮説を焦って作らず
+`RUST_LOG=debug`のような詳細ログに立ち返って実際に何が起きているかを
+虚心に見直すべきサインだった——今回は debug ログ1回の取得で全く別の、
+より深刻な機構（無限に近い再送ループ）を発見できた。
