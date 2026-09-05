@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（真因候補確定: `VK_IME_OFF`単体`SendInput`バッチが引き金、修正方針は敵対的レビュー待ち）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**バッチ形状仮説は実機A/Bで反証、真因は未確定のまま持ち越し**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -13953,6 +13953,41 @@ BUG-113 の修正と独立に優先度を上げて検討する価値がある。
 （対象 VK 自身を2度打鍵し、偽の修飾キーも新しい VK も持ち込まない）。
 両候補とも Opus 敵対的レビュー未実施、自己エコーパディングは実機未検証
 （ADR-133 D2/D4 参照）。
+
+**追記（2026-09-05・実機A/Bでバッチ形状仮説を反証）**: ADR-133 v5 の
+D0/D2 を `fix/bug113-114-ime-off-batch-and-feedback-staleness` ブランチで
+実機スパイクした（BUG-114 の drift correction 暴走をほぼ解消した後の、
+比較的クリーンな状態での検証）。候補V（`SendInput` 分割）・候補A
+（自己エコー）・候補B3/B4（偽Ctrlブラケット、3/4イベント）・mode=0
+（対照群）を巡回したところ、**ユーザー報告により「ほぼ毎回、候補を
+問わず『@』が出る」ことが判明した**。さらに、当初 BUG-113 発見の
+きっかけだった「Ctrl+無変換 では『@』が一度も出ない」という観測自体、
+実機で再確認したところ**最初の1回がたまたま出なかっただけで、2回目
+以降は Ctrl+無変換 でも『@』が出る**ことが分かった——これは round1
+敵対的レビューの Major 7（「4回連続で出ないのは真の発生率30%でも24%の
+確率で起こりうる」という統計的脆弱性の指摘）がまさに的中した形である。
+
+**結論: 「`SendInput` バッチのイベント数・修飾キーの有無が『@』の
+有無を左右する」というバッチ形状仮説は反証された。** 全候補・
+Ctrl+無変換を含むすべての条件で「@」が再現するため、唯一の共通点は
+「`VK_IME_OFF`(0x1A) を送信していること」自体になる。ADR-133 Major 5
+が指摘していた「JIS 106配列で `@` キーのスキャンコードが 0x1A と一致する」
+という機構仮説（`wVk` の値がどこかでスキャンコードとして誤読されている
+可能性）が、バッチ形状よりも有力な説明として残った。
+
+D0-3（`KanjiToggleStrategy`/`VK_KANJI` 単独発火、Alt+物理半角/全角キーで
+トリガー）でこの仮説を検証しようとしたところ、**診断コード自体に実装
+バグが見つかった**: 1回の物理キー押下が内部で2回（`shadow_toggle_off_sync`/
+`engine_decision_sync`）呼ばれる際、1回目だけを `KanjiToggleStrategy` へ
+誘導し2回目を吸収し忘れていたため、2回目が通常の mode-cycle（候補
+V/A/B3/B4 のいずれか）に素通りしていた。ユーザーが Alt+半角/全角キーで
+観測した「@」は、このバグにより **`KanjiToggleStrategy` 由来ではなく
+2回目呼び出しの mode-cycle 候補由来だった可能性が高い**——D0-3 は実質
+未検証のまま持ち越しとなった。episode 単位で判定を1回に固定し2回目を
+明示的に no-op で吸収するよう修正済み、次のスパイクで再検証する。
+
+**現状**: バッチ形状仮説は反証、真因は「VK 値の誤読」仮説に絞り込み中。
+D0-3（`KanjiToggleStrategy` 単独発火で `p` が混入するか）の実機再検証待ち。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
@@ -14151,8 +14186,19 @@ ObserverReported として記録` ログで確認）だった。これは shadow
 追加。除外リストは実機で新たな自己言及ソースが見つかるたびに拡張する
 前提——コード上のコメントにその旨を明記した。
 
-**現状**: D1c + AnyFreshEvidence 除外拡張（2ソース）を実装済み。実機での
-再々検証は次のスパイクで実施予定。
+**追記（2026-09-05 続き・実機再々検証で解決を確認）**: D1c + AnyFreshEvidence
+除外拡張（2ソース）を実機に投入して再々検証した結果、ログ全体
+（94,913行）で `drift correction` バーストは**1回のみ**、その1回も
+`gave up (Blind)` 後に一度も再武装しなかった（`fresh observation after
+give-up` 0件）。BUG-113 の実機診断中（物理半角/全角キーを多数回押す
+負荷テスト）でもこの水準に収まっており、**BUG-114 の drift correction
+暴走は実質解消したと判断する**。
+
+**現状**: D1c + AnyFreshEvidence 除外拡張（2ソース）を実装済み・実機で
+解決を確認。D1（`ir_apply_drift_correction` のライブ再導出）・D1a
+（`ImePolicyProfile::InputRelay` 追加）は根本原因2系（`FocusChanged` を
+経由しないライブ分類変化）向けの補完として未実装のまま残す——実機ソーク
+でこの経路の再発が確認された場合に着手する。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された

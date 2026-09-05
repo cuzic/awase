@@ -140,10 +140,24 @@ static DIAG_BUG113_CURRENT_MODE: std::sync::atomic::AtomicU32 =
 /// 有効化してからの総呼び出し回数。安全弁（下記）用。
 static DIAG_BUG113_TOTAL_INVOCATIONS: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
-/// D0-3（`KanjiToggleStrategy` 発火トリガー）が現在のクローズ episode で
-/// まだ発火していないかどうか。`mark_open` で毎回リセットする。
-static DIAG_BUG113_KANJI_PROBE_PENDING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
+/// D0-3（`KanjiToggleStrategy` 発火トリガー）: 現在のクローズ episode の
+/// 判定（Alt 押下中か）を確定済みかどうか。`mark_open` で毎回リセットする。
+static DIAG_BUG113_KANJI_PROBE_DECIDED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// 現在のクローズ episode が D0-3 probe episode（Alt 押下中に開始）か
+/// どうか。`DIAG_BUG113_KANJI_PROBE_DECIDED` が立つときに一緒に確定する。
+static DIAG_BUG113_KANJI_PROBE_EPISODE_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// D0-3 probe episode 内で実際に `post_kanji_toggle_to_focused()` を
+/// 送信済みかどうか。**1 episode あたり厳密に1回だけ送信する**ため
+/// （`shadow_toggle_off_sync`/`engine_decision_sync` の重複呼び出しで
+/// 2回送ると VK_KANJI は非冪等トグルのため打ち消し合ってしまう。round4
+/// の実機テストで、この吸収漏れにより2回目の呼び出しが通常の mode-cycle
+/// に素通りしていたと判明した——D0-3 で観測された「@」は実は
+/// KanjiToggleStrategy 由来ではなく mode-cycle 側の候補由来だった可能性が
+/// 高い）。
+static DIAG_BUG113_KANJI_PROBE_SENT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// 巡回するモード数（0/V/A/B3/B4 の5つ）。
 const DIAG_BUG113_MODE_COUNT: u32 = 5;
 /// 安全弁の上限（round1レビューMajor 7の算術に基づく: 1候補あたり
@@ -168,7 +182,9 @@ pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
         // 有効化のたびに安全弁カウンタと episode 追跡をリセットする。
         DIAG_BUG113_TOTAL_INVOCATIONS.store(0, Ordering::Relaxed);
         DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
-        DIAG_BUG113_KANJI_PROBE_PENDING.store(true, Ordering::Relaxed);
+        DIAG_BUG113_KANJI_PROBE_DECIDED.store(false, Ordering::Relaxed);
+        DIAG_BUG113_KANJI_PROBE_EPISODE_ACTIVE.store(false, Ordering::Relaxed);
+        DIAG_BUG113_KANJI_PROBE_SENT.store(false, Ordering::Relaxed);
     }
 }
 
@@ -177,14 +193,34 @@ pub(crate) fn set_diag_bug113_mode_cycle_enabled(enabled: bool) {
 fn diag_bug113_mark_open() {
     use std::sync::atomic::Ordering;
     DIAG_BUG113_LAST_OPEN.store(true, Ordering::Relaxed);
-    DIAG_BUG113_KANJI_PROBE_PENDING.store(true, Ordering::Relaxed);
+    DIAG_BUG113_KANJI_PROBE_DECIDED.store(false, Ordering::Relaxed);
+    DIAG_BUG113_KANJI_PROBE_EPISODE_ACTIVE.store(false, Ordering::Relaxed);
+    DIAG_BUG113_KANJI_PROBE_SENT.store(false, Ordering::Relaxed);
 }
 
-/// D0-3 トリガーが現在の episode でまだ発火していなければ `true` を返し、
-/// 発火済みとしてマークする（一度だけ発火させるため）。
-fn diag_bug113_kanji_probe_pending_take() -> bool {
+/// D0-3 判定。現在のクローズ episode 内で最初に呼ばれたときだけ Alt 押下
+/// 状態を読み、episode 全体に固定する（`shadow_toggle_off_sync`/
+/// `engine_decision_sync` の2回目の呼び出し時点で Alt が離されていても、
+/// 同じ episode 内では一貫した判定にするため）。戻り値は「この episode は
+/// probe episode か」であり、実際に送信するかどうかは呼び出し元が
+/// `diag_bug113_kanji_probe_send_once` で別途判定する。
+fn diag_bug113_kanji_probe_episode_is_active() -> bool {
     use std::sync::atomic::Ordering;
-    DIAG_BUG113_KANJI_PROBE_PENDING.swap(false, Ordering::Relaxed)
+    if DIAG_BUG113_KANJI_PROBE_DECIDED.swap(true, Ordering::Relaxed) {
+        DIAG_BUG113_KANJI_PROBE_EPISODE_ACTIVE.load(Ordering::Relaxed)
+    } else {
+        let active = crate::ime::diag_bug113_should_run_kanji_probe();
+        DIAG_BUG113_KANJI_PROBE_EPISODE_ACTIVE.store(active, Ordering::Relaxed);
+        active
+    }
+}
+
+/// probe episode 内で、まだ実送信していなければ `true`（＝今回送信すべき）
+/// を返し、送信済みとしてマークする。2回目以降の呼び出しは `false`
+/// （呼び出し元は何もせず no-op で吸収する）。
+fn diag_bug113_kanji_probe_send_once() -> bool {
+    use std::sync::atomic::Ordering;
+    !DIAG_BUG113_KANJI_PROBE_SENT.swap(true, Ordering::Relaxed)
 }
 
 /// 有効なら現在のクローズ episode のモード番号（0..`DIAG_BUG113_MODE_COUNT`
@@ -276,17 +312,28 @@ impl ImeOpenStrategy for GjiDirectStrategy {
         if !open {
             // BUG-113 診断専用（一時的、ADR-133 D0-3）: Alt 押下中の物理
             // 半角/全角キーは KanjiToggleStrategy 単独発火の専用トリガー。
-            if crate::ime::diag_bug113_should_run_kanji_probe()
-                && diag_bug113_kanji_probe_pending_take()
-            {
-                log::warn!(
-                    "[bug113-diag] D0-3: Alt押下中の物理半角/全角キーを検出 → \
-                     KanjiToggleStrategy(VK_KANJI)を強制発火。直後に「p」が\
-                     混入するか確認してください"
-                );
-                // SAFETY: post_kanji_toggle_to_focused は Win32 API を呼び出す unsafe fn。
-                // メインスレッドから呼ぶこと。
-                unsafe { crate::ime::post_kanji_toggle_to_focused() };
+            // episode 判定（Alt 押下中か）は最初の呼び出し時点で1回だけ確定し、
+            // 同じ episode 内の2回目の呼び出し（`shadow_toggle_off_sync`/
+            // `engine_decision_sync`）はこの判定に従う——round4 の実機テストで、
+            // 2回目の呼び出しを吸収し忘れて通常の mode-cycle に素通りさせて
+            // いたため、観測された「@」が実は KanjiToggleStrategy 由来では
+            // なく mode-cycle 側の候補由来だった可能性が判明した反省。
+            if diag_bug113_kanji_probe_episode_is_active() {
+                if diag_bug113_kanji_probe_send_once() {
+                    log::warn!(
+                        "[bug113-diag] D0-3: Alt押下中の物理半角/全角キーを検出 → \
+                         KanjiToggleStrategy(VK_KANJI)を強制発火。直後に「p」が\
+                         混入するか確認してください"
+                    );
+                    // SAFETY: post_kanji_toggle_to_focused は Win32 API を呼び出す unsafe fn。
+                    // メインスレッドから呼ぶこと。
+                    unsafe { crate::ime::post_kanji_toggle_to_focused() };
+                } else {
+                    log::debug!(
+                        "[bug113-diag] D0-3: 同一 episode 内の2回目の呼び出しを吸収（no-op、\
+                         VK_KANJI 二重送信による打ち消し合いを避けるため）"
+                    );
+                }
                 return ImeOpenOutcome::FallbackSent;
             }
             // BUG-113 診断専用（一時的、ADR-133 D0/D2）: 実際に Ctrl/Shift が
