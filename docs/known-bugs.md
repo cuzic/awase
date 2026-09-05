@@ -14638,14 +14638,20 @@ BUG-110/ADR-132（`IntentStore`/`last_intent` の絶対的権威化が真因の�
 （ひらがなのまま）。ユーザー報告により2026-09-05に判明。ゆっくり確実に
 操作しても再現する。
 
-**アプリ/IME:** `AppImeProfile::TsfNative` / `Imm32Unavailable` かつ
+**アプリ/IME（要注意: コード読解由来の推定であり、報告者に実際の再現アプリを
+確認できていない）:** `AppImeProfile::TsfNative` / `Imm32Unavailable` かつ
 `ime_actuation_owned`（GJI/MS-IME への直接 actuation 戦略が有効）な組み合わせ
-全般。`AppImeProfile::Standard`（ImmCross、素の Win32 アプリ）は
+全般と推定している。`AppImeProfile::Standard`（ImmCross、素の Win32 アプリ）は
 `runtime/transport.rs:228-230` により KANJI 関連キーを Down/Up 問わず無条件
 Suppress しているため、この経路では**さらに以前から**（`0e364eaa`,
-2026-05-28 以降）常に再現する。
+2026-05-28 以降）常に再現するはず。**もし報告者の実際のアプリが Standard
+だった場合、下記の原因記述・修正方針は的外れであり、真の対象は
+`transport.rs:228-230` の無条件 Suppress（`feedback_immcross_owns_kanji`
+の設計原則）になる。** 実装前に報告者へ再現アプリを確認すること
+（[ADR-137](adr/137-shift-katakana-dbe-mode-key-suppression-regression.md) 参照）。
 
-**原因（確定、`git log -S`/`git bisect` 相当の手動追跡で特定）:**
+**原因（候補、`git log -S`/`git bisect` 相当の手動追跡で特定——ただし
+Opus敵対的レビューで「確定」ではなく「未検証の仮説」と判定された、後述）:**
 
 Windows のキーボードレイアウト変換層は、JIS配列の scan 0x70 キーを
 Shift 併用で押すと `VK_DBE_KATAKANA` (0xF1) を生成する（Windows 標準仕様、
@@ -14672,19 +14678,29 @@ ime_actuation_owned && (shadow_toggled || is_dbe_mode_key_down || matches!(event
 
 | 時期 | コミット | Shift+かな→カタカナ |
 |---|---|---|
-| 〜2026-07-31 | （`076b8709^`） | 動く（TsfNative/Imm32Unavailable） |
-| 2026-08-01 `076b8709`（BUG-46修正, v1.12.0） | `ime_actuation_owned && (shadow_toggled \|\| KeyUp)` → IME既にON中は `shadow_toggled=false` のため Allow | IME ON中は動く／IME OFFからは壊れた |
+| 〜2026-07-31 | （`076b8709^`） | 動いていたと**推定**（TsfNative/Imm32Unavailable） |
+| 2026-08-01 `076b8709`（BUG-46修正, v1.12.0） | `ime_actuation_owned && (shadow_toggled \|\| KeyUp)` → IME既にON中は `shadow_toggled=false` のため Allow | IME ON中は動いていたと**推定**／IME OFFからは壊れた |
 | 2026-08-05〜09 `bdf4a139`→`9a02ce6b`（**BUG-52修正**, v1.13.0） | `is_dbe_mode_key_down` 条件を追加し、KeyDownを`shadow_toggled`に関わらず常時Suppress | **完全に死亡（現在まで）** |
+
+**この表は「Allow を返せば OS/IME に届く」という前提の上に成り立っており、
+Opus敵対的レビューでこの前提自体が未検証と判定された（`RawKeyEventExt::
+reinject()` は常に `wScan: 0` で `SendInput` するため、scan 依存の
+モードキー処理をする IME では届いても無視される可能性がある）。「動いて
+いた」という記述は実機ログではなくコード読解からの推定であることに注意。**
 
 BUG-52 の実際の repro（本ファイル該当節参照）は「NICOLA の物理『IME ON』
 キー（scan 0x70、awase の engine トグル用に割当）を **Shift なしで** 連打
 すると、IME が既に ON の状態で `VK_DBE_HIRAGANA` の代わりに
 `VK_DBE_KATAKANA` が生成され、素通しされて実 IME が勝手にカタカナへ
-切り替わる」というものであり、**Shift は一切関与していない**。修正時に
+切り替わる」というものであり、記録上は Shift への言及がない。ただし
+この「Shift なし」自体もログの語りからの推測であり、修正時に
 `shadow_toggled` の代わりに Shift 押下有無を弁別条件に使わなかったため、
 「バグ52の悪いケース（Shiftなし、engineトグル連打）」と「今回失われた
-良いケース（Shiftあり、ユーザーが明示的にカタカナ変換を要求）」の両方を
-まとめて Suppress してしまった。
+可能性のある良いケース（Shiftあり、ユーザーが明示的にカタカナ変換を
+要求）」を区別できず両方まとめて Suppress してしまった、という**仮説**
+に留まる。BUG-52 自身が「なぜ 0xF1/0xF2 が交互に生成されるか未解明」と
+明記しており、Shift 併用時にも 0xF1 が生成されて BUG-52 が観測していた
+可能性を排除できていない（詳細は ADR-137 参照）。
 
 **見落とし（今回発見の副産物）:** `docs/adr/135-generic-thumb-key-ime-toggle-delegate.md:1219-1231`
 （2026-09-05付、Phase 2/3スコープ外の別件観察として記録済み）は本症状を
@@ -14700,9 +14716,19 @@ IMEが既にONの状態でのShift+かな→カタカナが復活する可能性
 でもSuppressのままであり、`Standard`/ImmCrossプロファイルではこの設定
 自体が無視される。
 
-**現状:** 原因特定済み・修正未着手。修正方針は
+**現状（2026-09-05 更新）:** 原因は上記の通り**候補**の段階に留まる。
+Opus 2体（architect/premortem役）による4ラウンドの敵対的レビューで、
+「Shiftが弁別軸になるか」「Allowを返せば実IMEに届くか」「報告者の実際の
+アプリはどのプロファイルか」「scan付き注入のJISかな固着ハザードにどう
+安全に対処するか」等、実装前に実機で確認すべき論点が多数見つかったため、
+「確定した修正」ではなく「実機で検証するための診断スパイク」を
+`diag/bug116-shift-katakana` ブランチ（develop非マージ）に実装した。
+修正方針・レビューで発見した論点・スパイクの設計は
 [ADR-137](adr/137-shift-katakana-dbe-mode-key-suppression-regression.md) 参照。
 
 **関連:** BUG-52（本バグの直接の原因となった修正）、BUG-46（BUG-52の遠因と
-なった一般化）、[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
+なった一般化）、BUG-15追補7・BUG-61・BUG-62（scan付きDBEモードキー注入の
+JISかな固着ハザードと、その復旧手段自体をawaseが常時swallowする問題。
+ADR-137のスパイク設計で安全ゲートとして反映済み）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。
