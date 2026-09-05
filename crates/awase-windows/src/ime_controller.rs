@@ -125,6 +125,15 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 //                        VK_DBE_SBCSCHAR の synthetic KeyUp を注入し、
 //                        残留キー状態を能動的にクリアしてから送る（修正候補
 //                        としても機能する）。
+//   mode 3（fake-ctrl-bracket）: Ctrl+無変換 も同じ send_ime_mode_key
+//                        (VK_IME_OFF) を送るのに「@」が一度も出ないという
+//                        ユーザー指摘（2026-09-05）を受けた追加仮説。
+//                        Ctrl+無変換 では実際に Ctrl が押されているため
+//                        send_ime_mode_key が「Ctrl release→OFF→Ctrl
+//                        restore」を1バッチにまとめて送るが、物理キー単独
+//                        では VK_IME_OFF 単体の2イベントだけになる。実際には
+//                        Ctrl を押させず、この「バッチの形」だけを模倣して
+//                        送り、形の違いが「@」の有無に関係するか確かめる。
 // 各回 `[bug113-diag] mode=N ...` を WARN で記録するので、実機で押下した
 // 何回目に「@」が出たかとログの mode を突き合わせる。
 // 調査終了後は `crate::ime_controller::set_diag_bug113_mode_cycle_enabled`
@@ -155,11 +164,12 @@ static DIAG_BUG113_TOTAL_INVOCATIONS: std::sync::atomic::AtomicU32 =
 /// 20〜90ms 間隔で `mode=0/1/2` を延々と繰り返す暴走が実際に発生した
 /// （物理キー押下が一切無いのに数百回連続で SendInput/ImmSetOpenStatus が
 /// 発火）。この回数を超えたら診断を自動的に無効化し、通常経路へ戻す。
-/// 手動テストで3モード×数サイクル試すには十分だが、暴走時の実害を
-/// 数十回程度に確実に制限できる値として選定（実測ではなく安全マージン
-/// 目的の意図的な小さい上限——タイミング定数ではないため
+/// mode 3 追加（4 モード循環、1 episode あたり最大2回呼ばれる）に合わせて
+/// 32 へ引き上げた——4 サイクル分の手動テストには十分だが、暴走時の実害を
+/// 依然として数十回程度に確実に制限できる値として選定（実測ではなく安全
+/// マージン目的の意図的な小さい上限——タイミング定数ではないため
 /// tuning-constants.md の実測義務の対象外）。
-const DIAG_BUG113_MAX_INVOCATIONS: u32 = 24;
+const DIAG_BUG113_MAX_INVOCATIONS: u32 = 32;
 
 /// BUG-113 診断専用（一時的）: `true` の間、`GjiDirectStrategy::apply(open=false)`
 /// の送信方式をクローズ episode ごとに自動ローテーションする。`bootstrap.rs`
@@ -208,7 +218,7 @@ fn diag_bug113_next_off_mode() -> Option<u32> {
     }
     let is_new_episode = DIAG_BUG113_LAST_OPEN.swap(false, Ordering::Relaxed);
     if is_new_episode {
-        let mode = DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % 3;
+        let mode = DIAG_BUG113_MODE_COUNTER.fetch_add(1, Ordering::Relaxed) % 4;
         DIAG_BUG113_CURRENT_MODE.store(mode, Ordering::Relaxed);
         Some(mode)
     } else {
@@ -243,6 +253,17 @@ fn diag_bug113_apply_off_mode(mode: u32) -> ImeOpenOutcome {
             crate::ime::diag_bug113_clear_dbe_sbcschar_keystate();
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                ImeOpenOutcome::Applied
+            } else {
+                ImeOpenOutcome::UnsafeToToggle
+            }
+        }
+        3 => {
+            log::warn!(
+                "[bug113-diag] mode=3(fake-ctrl-bracket): 偽の Ctrl release→OFF→restore を\
+                 1バッチにまとめて送信（send_ime_mode_key は使わない）"
+            );
+            if crate::ime::diag_bug113_send_vk_ime_off_bundled_with_fake_ctrl_bracket() {
                 ImeOpenOutcome::Applied
             } else {
                 ImeOpenOutcome::UnsafeToToggle

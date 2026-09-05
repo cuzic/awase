@@ -346,6 +346,34 @@ pub(crate) fn diag_bug113_clear_dbe_sbcschar_keystate() {
     log::warn!("[bug113-diag] mode=2: VK_DBE_SBCSCHAR synthetic KeyUp sent={sent}/1");
 }
 
+/// BUG-113 診断専用（一時的）: `VK_IME_OFF` を「偽の Ctrl release → OFF →
+/// Ctrl restore」として1回の `SendInput` バッチにまとめて送る。実際には
+/// Ctrl は押されていない（`HeldModifiers::push_restore` の実物理キー確認を
+/// 経由しない、意図的に無条件の偽ブラケット）。
+///
+/// Ctrl+無変換 は実際に Ctrl が押されているため `send_ime_mode_key` がこの形
+/// （release-OFF-restore を1バッチにまとめる）で送るが、物理半角/全角キー
+/// 単独では修飾キーが無いため `VK_IME_OFF` 単体の2イベントだけになる
+/// （通常の `send_ime_mode_key`/mode=0 と同じ形）。Ctrl+無変換 では「@」が
+/// 一度も出ないのに物理キー単独では出ることから、この「バッチの形」の違いが
+/// 「@」の有無に関係するかを確かめる（ユーザー指摘、2026-09-05）。
+/// 調査終了後は呼び出し元ごと削除すること。
+pub(crate) fn diag_bug113_send_vk_ime_off_bundled_with_fake_ctrl_bracket() -> bool {
+    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    let inputs = [
+        make_key_input_ex(crate::vk::VK_CONTROL, true, IME_KANJI_MARKER),
+        make_key_input_ex(crate::vk::VK_IME_OFF, false, IME_KANJI_MARKER),
+        make_key_input_ex(crate::vk::VK_IME_OFF, true, IME_KANJI_MARKER),
+        make_key_input_ex(crate::vk::VK_CONTROL, false, IME_KANJI_MARKER),
+    ];
+    let sent = crate::win32::send_input_safe(&inputs);
+    log::warn!(
+        "[bug113-diag] mode=3: fake Ctrl bracket + VK_IME_OFF sent={sent}/{}",
+        inputs.len()
+    );
+    sent as usize == inputs.len()
+}
+
 /// IME モード切り替えキーを、必要なら synthetic Shift↑ を前置して送信する。
 ///
 /// BUG-25 GJI 半角英数 entry/exit 用。`prepend_synthetic_shift_up` が真のときは
