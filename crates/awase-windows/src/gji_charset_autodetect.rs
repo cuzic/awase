@@ -472,6 +472,47 @@ pub(crate) fn delegate_owns_mode_key_shadow_toggle(
             || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some()))
 }
 
+/// 無変換/変換キーのGJI検出値を、親指キーかどうかで
+/// delegate-to-open-axis（親指キー）とactuation-auto（非親指キー、
+/// `on`/`off`/`toggle`への追加）に振り分ける（BUG-115 F7）。
+/// Hiragana/Katakana側の`resolve_mode_key_shadow_override_for_event`/
+/// `delegate_owns_mode_key_shadow_toggle`と対になる、無変換/変換専用の
+/// 振り分けロジック。プラットフォーム非依存の純粋関数として
+/// `windows_impl`の外に置き、Linux上でテスト可能にする
+/// （元は`windows_impl`内のprivate関数だったため、decision table
+/// テストで到達できなかった——`route_thumb_key_action`という同名のまま
+/// 引き上げた）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn route_thumb_key_action(
+    action: Option<ImeToggleKind>,
+    is_thumb_key: bool,
+    vk: VkCode,
+    on: &mut Vec<ParsedKeyCombo>,
+    off: &mut Vec<ParsedKeyCombo>,
+    toggle: &mut Vec<ParsedKeyCombo>,
+) -> Option<ShadowImeAction> {
+    let action = action?;
+    if is_thumb_key {
+        return Some(match action {
+            ImeToggleKind::On => ShadowImeAction::TurnOn,
+            ImeToggleKind::Off => ShadowImeAction::TurnOff,
+            ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+        });
+    }
+    let combo = ParsedKeyCombo {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        vk,
+    };
+    match action {
+        ImeToggleKind::On => on.push(combo),
+        ImeToggleKind::Off => off.push(combo),
+        ImeToggleKind::Toggle => toggle.push(combo),
+    }
+    None
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::{reset_streak_latch_for_reload, sync_gji_charset_autodetect};
 
@@ -479,15 +520,15 @@ pub(crate) use windows_impl::{reset_streak_latch_for_reload, sync_gji_charset_au
 mod windows_impl {
     use std::sync::atomic::{AtomicU8, Ordering};
 
-    use awase::config::ParsedKeyCombo;
-    use awase::types::{ShadowImeAction, VkCode};
+    use awase::types::VkCode;
 
     use crate::runtime::Runtime;
 
     use super::{
         classify_mode_key_ime_action, classify_thumb_key_ime_actions,
         extract_ime_on_off_toggle_combos, gate_thumb_key_ime_actions,
-        resolve_gji_mode_key_shadow_overrides, ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
+        resolve_gji_mode_key_shadow_overrides, route_thumb_key_action, ImeToggleKind,
+        ModeKeyCandidate, ThumbKeyImeWarning,
     };
 
     const NOT_GJI: u8 = 0;
@@ -692,40 +733,6 @@ mod windows_impl {
         vk == left || vk == right
     }
 
-    /// [`ImeToggleKind`]の判定結果を、`is_thumb_key`に応じてStep4b
-    /// delegate-to-open-axis（`Some(ShadowImeAction)`を返す）か、
-    /// Step4cと同じactuation-auto（`on`/`off`/`toggle`へ`vk`を積む）
-    /// のどちらかへ振り分ける（BUG-115 F7）。
-    fn route_thumb_key_action(
-        action: Option<ImeToggleKind>,
-        is_thumb_key: bool,
-        vk: VkCode,
-        on: &mut Vec<ParsedKeyCombo>,
-        off: &mut Vec<ParsedKeyCombo>,
-        toggle: &mut Vec<ParsedKeyCombo>,
-    ) -> Option<ShadowImeAction> {
-        let action = action?;
-        if is_thumb_key {
-            return Some(match action {
-                ImeToggleKind::On => ShadowImeAction::TurnOn,
-                ImeToggleKind::Off => ShadowImeAction::TurnOff,
-                ImeToggleKind::Toggle => ShadowImeAction::Toggle,
-            });
-        }
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk,
-        };
-        match action {
-            ImeToggleKind::On => on.push(combo),
-            ImeToggleKind::Off => off.push(combo),
-            ImeToggleKind::Toggle => toggle.push(combo),
-        }
-        None
-    }
-
     /// BUG-115（N8）: 無変換/変換のIME意味論判定結果をユーザーへ通知する。
     /// 同一内容の警告はプロセス内で一度だけ
     /// （`msime_key_assignment::check_and_warn`と同型のデデュープ）。
@@ -918,8 +925,9 @@ Precomposition\tEisu\tToggleAlphanumericMode
     use super::{
         classify_mode_key_ime_action, classify_thumb_key_ime_actions,
         delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
-        resolve_gji_mode_key_shadow_overrides, resolve_mode_key_shadow_override_for_event,
-        ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
+        ime_toggle_kind_to_shadow_action, resolve_gji_mode_key_shadow_overrides,
+        resolve_mode_key_shadow_override_for_event, route_thumb_key_action, ImeToggleKind,
+        ModeKeyCandidate, ThumbKeyImeWarning,
     };
     use awase::types::ShadowImeAction;
     use awase_gji_config::wire::GjiRawConfig;
@@ -1296,5 +1304,272 @@ Precomposition\tEisu\tToggleAlphanumericMode
             Some(ShadowImeAction::TurnOn),
             None,
         ));
+    }
+
+    // ── GJI検出→反映の全体パイプライン decision table（ユーザー依頼、
+    // 2026-09-05）──
+    //
+    // Phase 1〜3を通じて何度も見落とされてきた「非親指キーはactuation-auto/
+    // shadow_actionオーバーライド、親指キーはdelegate-to-open-axis」という
+    // 振り分けと、「Toggleだけopt-inでゲートする」という規則を、4キー
+    // （Henkan/Muhenkan/Hiragana/Katakana）×GJI判定値（None/On/Off/Toggle）
+    // ×opt_in×is_thumbの全組み合わせ（4×4×2×2=64通り）に対して、実際の
+    // 本番用純粋関数（`classify_mode_key_ime_action`/
+    // `classify_thumb_key_ime_actions`/`gate_thumb_key_ime_actions`/
+    // `route_thumb_key_action`/`ime_toggle_kind_to_shadow_action`/
+    // `resolve_mode_key_shadow_override_for_event`/
+    // `delegate_owns_mode_key_shadow_toggle`）を呼び出して検証する。
+    //
+    // 64通りは全数（exhaustive）であり、その部分集合として任意の2軸間の
+    // 全組（pairwise）も自動的に網羅される——4値軸(Key)×4値軸(Classify)
+    // だけで16通りの「全組」が必要になるため、2値軸(opt_in/is_thumb)を
+    // 含めても全数を取るのが最も単純かつ取りこぼしが無い。
+
+    /// 4キーそれぞれが対応するMozcキートークン（CUSTOM keymap table用）。
+    fn mozc_token(key: ModeKeyCandidate) -> &'static str {
+        match key {
+            ModeKeyCandidate::Henkan => "Henkan",
+            ModeKeyCandidate::Muhenkan => "Muhenkan",
+            ModeKeyCandidate::Hiragana => "Hiragana",
+            ModeKeyCandidate::Katakana => "Katakana",
+        }
+    }
+
+    /// 指定したキーに対して`classify_mode_key_ime_action`が指定の判定値を
+    /// 返すような`GjiRawConfig`（CUSTOM keymap table方式）を構築する。
+    /// `awase-gji-config::keymap::group_ime_rows_by_key`の分類規則
+    /// （on_statuses/off_statusesの非空・空の組み合わせのみで決まり、
+    /// 具体的な状態名自体は問わない）に基づく最小構成。
+    fn custom_raw_yielding(key: ModeKeyCandidate, desired: Option<ImeToggleKind>) -> GjiRawConfig {
+        let tok = mozc_token(key);
+        let table = match desired {
+            None => "status\tkey\tcommand\nDirectInput\tF21\tIMEOn\n".to_string(),
+            Some(ImeToggleKind::On) => format!("status\tkey\tcommand\nDirectInput\t{tok}\tIMEOn\n"),
+            Some(ImeToggleKind::Off) => {
+                format!("status\tkey\tcommand\nPrecomposition\t{tok}\tIMEOff\n")
+            }
+            Some(ImeToggleKind::Toggle) => format!(
+                "status\tkey\tcommand\nDirectInput\t{tok}\tIMEOn\nPrecomposition\t{tok}\tIMEOff\n"
+            ),
+        };
+        GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_CUSTOM),
+            custom_keymap_table: Some(table),
+            ..GjiRawConfig::default()
+        }
+    }
+
+    /// パイプラインの最終的な帰結。4キー共通の型で表す
+    /// （Henkan/Muhenkanは`ActuationAuto`、Hiragana/Katakanaは
+    /// `ShadowOverride`が非親指キー側の帰結になる——キー族によって
+    /// 消費先の機構自体が異なるため区別する）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum PipelineOutcome {
+        /// GJI判定がNone、またはToggleでopt-in未設定のため何も反映されない。
+        Nothing,
+        /// 親指キー: delegate-to-open-axisへ反映される（単独タップ確定時に
+        /// この値でIME open軸を操作する）。
+        Delegate(ShadowImeAction),
+        /// 非親指キーのHenkan/Muhenkan: Step4c実効automation
+        /// （`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`）へ積まれる。
+        ActuationAuto(ImeToggleKind),
+        /// 非親指キーのHiragana/Katakana: 静的`shadow_action`を
+        /// オーバーライドする。
+        ShadowOverride(ShadowImeAction),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum KeyFamily {
+        HenkanMuhenkan,
+        HiraganaKatakana,
+    }
+
+    fn key_family(key: ModeKeyCandidate) -> KeyFamily {
+        match key {
+            ModeKeyCandidate::Henkan | ModeKeyCandidate::Muhenkan => KeyFamily::HenkanMuhenkan,
+            ModeKeyCandidate::Hiragana | ModeKeyCandidate::Katakana => KeyFamily::HiraganaKatakana,
+        }
+    }
+
+    /// **仕様（この関数自体が decision table の正解列）**: GJI判定値・opt_in・
+    /// is_thumbから期待される帰結を、本番実装から独立して導出する。
+    /// 本番の`gate_thumb_key_ime_actions`/`ime_toggle_kind_to_shadow_action`
+    /// と**同じ規則を意図的に再実装**している——ここが本番コードの
+    /// コピーになってしまうと「実装のバグをテストごと固定する」だけに
+    /// なるため、規則を素直に書き下す（Toggleのみopt-inでゲート、
+    /// 親指キーならdelegate、非親指キーならキー族ごとの機構へ）。
+    fn expected_outcome(
+        classify: Option<ImeToggleKind>,
+        opt_in: bool,
+        is_thumb: bool,
+        family: KeyFamily,
+    ) -> PipelineOutcome {
+        let Some(kind) = classify else {
+            return PipelineOutcome::Nothing;
+        };
+        let is_toggle = matches!(kind, ImeToggleKind::Toggle);
+        if is_toggle && !opt_in {
+            return PipelineOutcome::Nothing;
+        }
+        if is_thumb {
+            let action = match kind {
+                ImeToggleKind::On => ShadowImeAction::TurnOn,
+                ImeToggleKind::Off => ShadowImeAction::TurnOff,
+                ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+            };
+            return PipelineOutcome::Delegate(action);
+        }
+        match family {
+            KeyFamily::HenkanMuhenkan => PipelineOutcome::ActuationAuto(kind),
+            KeyFamily::HiraganaKatakana => {
+                let action = match kind {
+                    ImeToggleKind::On => ShadowImeAction::TurnOn,
+                    ImeToggleKind::Off => ShadowImeAction::TurnOff,
+                    ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+                };
+                PipelineOutcome::ShadowOverride(action)
+            }
+        }
+    }
+
+    /// Henkan/Muhenkan側の実際のパイプラインを本番関数だけで辿って
+    /// 帰結を得る（`classify_thumb_key_ime_actions` →
+    /// `gate_thumb_key_ime_actions` → `route_thumb_key_action`）。
+    fn actual_outcome_henkan_muhenkan(
+        target: ModeKeyCandidate,
+        raw: &GjiRawConfig,
+        opt_in: bool,
+        is_thumb: bool,
+    ) -> PipelineOutcome {
+        let (henkan_c, muhenkan_c) = classify_thumb_key_ime_actions(raw);
+        let wiring = gate_thumb_key_ime_actions(henkan_c, muhenkan_c, opt_in);
+        let gated = match target {
+            ModeKeyCandidate::Henkan => wiring.henkan,
+            ModeKeyCandidate::Muhenkan => wiring.muhenkan,
+            _ => unreachable!("this helper is Henkan/Muhenkan専用"),
+        };
+        let mut on = Vec::new();
+        let mut off = Vec::new();
+        let mut toggle = Vec::new();
+        let delegate =
+            route_thumb_key_action(gated, is_thumb, target.vk(), &mut on, &mut off, &mut toggle);
+        if let Some(action) = delegate {
+            return PipelineOutcome::Delegate(action);
+        }
+        if !on.is_empty() {
+            return PipelineOutcome::ActuationAuto(ImeToggleKind::On);
+        }
+        if !off.is_empty() {
+            return PipelineOutcome::ActuationAuto(ImeToggleKind::Off);
+        }
+        if !toggle.is_empty() {
+            return PipelineOutcome::ActuationAuto(ImeToggleKind::Toggle);
+        }
+        PipelineOutcome::Nothing
+    }
+
+    /// Hiragana/Katakana側の実際のパイプラインを本番関数だけで辿って
+    /// 帰結を得る（`classify_mode_key_ime_action` →
+    /// `ime_toggle_kind_to_shadow_action` →
+    /// `resolve_mode_key_shadow_override_for_event`/
+    /// `delegate_owns_mode_key_shadow_toggle`）。C1で修正した
+    /// 「delegate armed単独ではなく親指キー×armedの積」という不変条件を
+    /// `delegate_owns_mode_key_shadow_toggle`経由で検証する
+    /// （belief ON条件は`Runtime`層にありここでは検証対象外、ADR-135
+    /// 「実装レビューで発覚したC1」節参照）。
+    fn actual_outcome_hiragana_katakana(
+        target: ModeKeyCandidate,
+        raw: &GjiRawConfig,
+        opt_in: bool,
+        is_thumb: bool,
+    ) -> PipelineOutcome {
+        let classify = classify_mode_key_ime_action(target, raw);
+        let armed = classify.and_then(|k| ime_toggle_kind_to_shadow_action(k, opt_in));
+        let vk = target.vk();
+        // vkと一致しない番兵VK。is_thumbがtrueのときだけ対象キーを
+        // 親指ペアに含める。
+        let sentinel = VkCode(0xEE);
+        let thumb_pair = if is_thumb {
+            (vk, sentinel)
+        } else {
+            (sentinel, sentinel)
+        };
+        let (hiragana_armed, katakana_armed) = match target {
+            ModeKeyCandidate::Hiragana => (armed, None),
+            ModeKeyCandidate::Katakana => (None, armed),
+            _ => unreachable!("this helper is Hiragana/Katakana専用"),
+        };
+        if delegate_owns_mode_key_shadow_toggle(vk, is_thumb, hiragana_armed, katakana_armed) {
+            return PipelineOutcome::Delegate(
+                armed.expect("armedのはず(delegate_owns==trueの前提)"),
+            );
+        }
+        if let Some(action) = resolve_mode_key_shadow_override_for_event(
+            vk,
+            hiragana_armed,
+            katakana_armed,
+            thumb_pair,
+        ) {
+            return PipelineOutcome::ShadowOverride(action);
+        }
+        PipelineOutcome::Nothing
+    }
+
+    #[test]
+    fn gji_detection_to_application_pipeline_decision_table() {
+        const KEYS: [ModeKeyCandidate; 4] = [
+            ModeKeyCandidate::Henkan,
+            ModeKeyCandidate::Muhenkan,
+            ModeKeyCandidate::Hiragana,
+            ModeKeyCandidate::Katakana,
+        ];
+        const CLASSIFY_VALUES: [Option<ImeToggleKind>; 4] = [
+            None,
+            Some(ImeToggleKind::On),
+            Some(ImeToggleKind::Off),
+            Some(ImeToggleKind::Toggle),
+        ];
+        const BOOLS: [bool; 2] = [false, true];
+
+        let mut checked = 0usize;
+        for key in KEYS {
+            for classify in CLASSIFY_VALUES {
+                // classify_mode_key_ime_action自体が意図どおりの値を
+                // 返すことを自己点検する（raw構築ヘルパーの正しさの検証、
+                // decision table本体のノイズにならないよう別途assertする）。
+                let raw = custom_raw_yielding(key, classify);
+                assert_eq!(
+                    classify_mode_key_ime_action(key, &raw),
+                    classify,
+                    "custom_raw_yieldingの構築自体が壊れている: key={key:?} desired={classify:?}"
+                );
+
+                for opt_in in BOOLS {
+                    for is_thumb in BOOLS {
+                        let family = key_family(key);
+                        let expected = expected_outcome(classify, opt_in, is_thumb, family);
+                        let actual = match family {
+                            KeyFamily::HenkanMuhenkan => {
+                                actual_outcome_henkan_muhenkan(key, &raw, opt_in, is_thumb)
+                            }
+                            KeyFamily::HiraganaKatakana => {
+                                actual_outcome_hiragana_katakana(key, &raw, opt_in, is_thumb)
+                            }
+                        };
+                        assert_eq!(
+                            actual, expected,
+                            "key={key:?} classify={classify:?} opt_in={opt_in} \
+                             is_thumb={is_thumb}: 期待={expected:?} 実際={actual:?}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            checked,
+            KEYS.len() * CLASSIFY_VALUES.len() * BOOLS.len() * BOOLS.len(),
+            "4x4x2x2=64通りを全数網羅したことの自己点検"
+        );
     }
 }
