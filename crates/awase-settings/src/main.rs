@@ -527,6 +527,22 @@ impl SettingsApp {
         // クリアされないままになっていた）。
         self.pending_status_notes.clear();
 
+        // 2026-09-05ユーザー報告: `keys.ime_detect`はGUIに編集ウィジェットが
+        // 無い（`4d36f663`で撤去済み、上級者はconfig.toml直接編集を想定する
+        // 設計）。`self.config`は起動時（またはキャンセル時）に一度だけ
+        // 読み込んだメモリ上のスナップショットなので、設定画面を開いたまま
+        // 外部エディタで`[keys.ime_detect]`を手動編集していても、この
+        // 「適用」でその古いスナップショットが丸ごとファイルへ上書き保存され、
+        // 手動編集が消えて見えていた（stale read-modify-write）。保存直前に
+        // ディスク上の最新値だけを拾い直して補う。GUIが編集しうる他の
+        // フィールドはここでは一切触れない——`self.config`のそれ以外の
+        // フィールドはこのセッション中の意図した変更を含みうるため、
+        // まるごと再読み込みで上書きしてはならない（読み込みに失敗しても
+        // 保存自体は中止せず、それまでの`self.config`の値のまま続行する）。
+        if let Ok(fresh) = awase::config::AppConfig::load(&self.config_path) {
+            self.config.keys.ime_detect = fresh.keys.ime_detect;
+        }
+
         // /code-review指摘（PR #127、2回目）: self.configはこの直後に
         // AppConfig::from(validated)で上書きされるため、事前の
         // `self.config.clone()`はvalidate()に渡した瞬間に捨てられる
@@ -3203,6 +3219,24 @@ impl SettingsApp {
              （Windows にこの入力方式を外部から切り替える公式 API が無いため）。\n\
              JIS かな直接入力を意図的に使いたい場合（= awase をローマ字入力に\n\
              して使う場合など）のみ OFF にしてください。",
+        );
+        ui.add_space(4.0);
+        ui.checkbox(
+            &mut self.config.general.gji_thumb_key_ime_toggle,
+            "GJI（Google 日本語入力）の無変換/変換キーの状態依存トグルをベストエフォートで追従する（自己責任）",
+        )
+        .on_hover_text(
+            "OFF(既定)の場合、GJIのキーマップ設定（ATOKプリセット、または\n\
+             カスタムキーマップでの同種の割当て）が無変換/変換キー単体に\n\
+             状態依存のIME ON/OFFトグルを割り当てていても、awaseはそれに\n\
+             追従せず、ログで警告のみ行います。ONにすると、その割当てを\n\
+             ベストエフォートで反映します。\n\
+             この種のトグルは非冪等（誤って発火すると意図せずIME状態が\n\
+             反転する）なので、既定ではOFFにしています。\n\
+             （ひらがな/カタカナキーはこの設定の対象外です。GJIの設定に\n\
+             関わらず常に固定でIME ONへ追従します——現状はawase側で\n\
+             GJI固有のトグル設定を反映する仕組みが未実装のためです。\n\
+             詳細は docs/known-bugs.md の BUG-115 を参照してください。）",
         );
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
@@ -6365,6 +6399,56 @@ speculative_delay_ms = 30
         );
         assert!(!app.show_dangerous_save_confirm);
         let _ = std::fs::remove_file(&config_path);
+    }
+
+    /// BUG-115追記（2026-09-05ユーザー報告）の回帰テスト: `keys.ime_detect`
+    /// はGUIに編集ウィジェットが無いため、設定画面を開いたまま外部エディタ
+    /// で`config.toml`の`[keys.ime_detect]`を書き換えても、`self.config`
+    /// （起動時に読み込んだ古いスナップショット）が「適用」のたびに
+    /// ファイルへ上書き保存され、外部編集が消えて見えていた
+    /// （stale read-modify-write）。`apply_confirmed()`が保存直前に
+    /// ディスク上の最新`ime_detect`を拾い直すことを確認する。
+    #[test]
+    fn apply_confirmed_preserves_externally_edited_ime_detect() {
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_ime_detect_preserve_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        // GUI起動時点の状態を模す: ime_detect.on = ["VK_F16"]。
+        std::fs::write(
+            &config_path,
+            "[general]\n[keys.ime_detect]\non = [\"VK_F16\"]\n",
+        )
+        .unwrap();
+        let config = awase::config::AppConfig::load(&config_path).unwrap();
+        assert_eq!(config.keys.ime_detect.on, vec!["VK_F16".to_string()]);
+        let mut app = test_settings_app(config);
+        app.config_path = config_path.clone();
+        app.config_load_state = ConfigLoadState::Loaded;
+
+        // 設定画面を開いたまま、外部エディタでime_detectだけを書き換えた体。
+        std::fs::write(
+            &config_path,
+            "[general]\n[keys.ime_detect]\non = [\"VK_F17\"]\n",
+        )
+        .unwrap();
+
+        // GUIには他に変更が無い状態で「適用」を押す。
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let saved = awase::config::AppConfig::load(&config_path).unwrap();
+        let _ = std::fs::remove_file(&config_path);
+        let bak_path = config_path.with_extension("toml.bak");
+        let _ = std::fs::remove_file(&bak_path);
+
+        assert_eq!(
+            saved.keys.ime_detect.on,
+            vec!["VK_F17".to_string()],
+            "外部エディタでの編集(VK_F17)が、GUI起動時の古いスナップショット\
+             (VK_F16)で上書きされてはならない"
+        );
     }
 
     /// コードレビュー指摘の回帰テスト: `apply_confirmed()` は保存の完了を
