@@ -70,10 +70,16 @@ const KEY_DOC: &str = "\
 #   （ROMAN ビット付与）で JIS かな入力化けを防ぐ。
 #
 # GjiDirect (is_applicable: active_ime_kind==GoogleJapaneseInput):
-#   ON  → shadow_on なら送信せず AlreadyMatched（VK_IME_ON no-op 見込みでスキップ）、
+#   `gji_direct_already_matches(shadow_on: Option<bool>, open)` = `shadow_on == Some(open)`
+#   がtrueなら送信せずAlreadyMatched。`shadow_on == None`（未知、`AppliedImeState::
+#   Unknown`やdrift correction/idle-conv-check DirectInput回復のように意図的に
+#   `applied`を渡さない経路）は常にfalse（＝実際に送信する）——BUG-113 Blocker
+#   （Opus敵対的レビューで発見）: `bool`に潰した`!shadow_on`でOFF方向だけ「未知」を
+#   「確認済みOFF」と誤認し、drift correction等の正当な再送を無音で握り潰していた。
+#   ON  → shadow_on==Some(true) なら送信せず AlreadyMatched（VK_IME_ON no-op 見込みでスキップ）、
 #         さもなくば VK_IME_ON (0x16) = ime::post_gji_ime_on() → Applied。
-#   OFF → !shadow_on なら送信せず AlreadyMatched（VK_IME_OFF no-op 見込みでスキップ、
-#         ON方向と対称。BUG-113: 同一の物理キー押下で shadow_toggle_off_sync/
+#   OFF → shadow_on==Some(false) なら送信せず AlreadyMatched（VK_IME_OFF no-op 見込みで
+#         スキップ、ON方向と対称。BUG-113: 同一の物理キー押下で shadow_toggle_off_sync/
 #         engine_decision_sync の2経路から apply(open=false) が連続で2回呼ばれる際、
 #         このガードが無いと2回とも実際にSendInputし、Windows Terminal + GJI +
 #         PowerShell(PSReadLine) で余分な「@」が入力される不具合があった）、

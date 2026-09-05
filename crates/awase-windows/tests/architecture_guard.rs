@@ -1778,10 +1778,13 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 /// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
 /// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は
 /// `applied` に `None` を渡すことで `GjiDirectStrategy::apply`
-/// （`ime_controller.rs:110`、`shadow_on == true` のとき `VK_IME_ON` を
-/// no-op skip する）を最初から bypass する設計になっている
-/// （`build_ime_control_view(None)` → `applied.unwrap_or((false, 0))` →
-/// `control.shadow_on = false`、`platform.rs::build_ime_control_view` 参照）。
+/// （`gji_direct_already_matches`、`shadow_on == Some(true)` のとき
+/// `VK_IME_ON` を no-op skip する）を最初から bypass する設計になっている
+/// （`build_ime_control_view(None)` → `control.shadow_on = None`、
+/// `platform.rs::build_ime_control_view` 参照。`None` は `Some(true)` とも
+/// `Some(false)` とも一致しないため、ON方向・OFF方向のどちらの
+/// already-matched判定もbypassする——BUG-113 修正後もこの性質は保たれる、
+/// `docs/known-bugs.md` BUG-113 参照）。
 ///
 /// この不変条件が崩れる（`None` の代わりに実 `applied` 値を渡すよう変更される）と、
 /// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで

@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消（GjiDirectStrategy OFF方向のAlreadyMatchedガード追加）を実装・実機確認済み。probe競合はもう一つの独立した十分条件として残置、着手時は別途診断コードが必要**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消を実装・初版は実機確認済みだがmerge前レビューでBlocker発見、`ControlLog.shadow_on`をOption<bool>化して修正。実機再検証待ち。probe競合はもう一つの独立した十分条件として残置**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14140,6 +14140,62 @@ OFF→ONを繰り返す）では各方向につき`[apply-ime] GJI direct: send`
 1回だけ記録され（修正前は同方向で2回連続していた）、「@」の混入が
 一切発生しないことを確認した。**Ctrl+無変換・物理半角/全角キーの
 いずれでも「@」が表示されなくなった**（ユーザー確認済み）。
+
+**追記（2026-09-05 続き・Opus敵対的レビューでBlocker発見、修正）**:
+developへのマージ前レビューで、上記修正に **Blocker（マージ不可判定）**
+が見つかった。`ImeControlView.control.shadow_on` は `ImeModel.
+applied_pair()`（`Option<(bool, u64)>`）を `platform.rs::build_ime_
+control_view` の `applied.unwrap_or((false, 0))` で `bool` に潰した値
+であり、「確認済み OFF」と「未知（`AppliedImeState::Unknown`、または
+`applied` に意図的に `None` を渡す経路）」を区別できていなかった。
+ON方向の既存ガード（`open && shadow_on`）はこの潰れ方の**安全側**
+（未知→false→送る）に偶然乗っていたが、追加したOFF方向ガード
+（`!open && !shadow_on`）は**危険側**（未知→true→送らない）に乗って
+しまい、「ON方向と対称」という設計上の主張は `Option` を潰した後の値
+に対しては成り立たなかった。
+
+実害となる経路が3つ判明した: (a) `is_effectively_tsf_native` なアプリ
+でフォーカス変更直後（`ImeEvent::FocusChanged` が `applied` を
+`Unknown` にリセットし、ADR-098決定1-aによりTsfNativeでは
+`record_confirmed`による再確立が意図的にスキップされる）の最初のIME
+OFF、(b) drift correctionのOFF方向回復経路
+（`runtime/ime_refresh.rs::ir_apply_drift_correction`の non-ImmCross
+分岐、`apply_ime_open_with_belief(order, None, belief)` — `applied`に
+`None`を渡すことで意図的にshadowを無視させる設計、BUG-20/BUG-51の
+回復手段そのもの）、(c) idle-conv-checkのDirectInput回復経路
+（`runtime/key_pipeline.rs`、コメントに「direct beliefで
+already_matchedをバイパスしてapplyする」と明記、同じく`None`
+ハードコード）。いずれも必要な`VK_IME_OFF`が無音で送られなくなり、
+かつ`AlreadyMatched`が`record_confirmed(false)`として「収束した」と
+誤記録されるためログにも異常が出ない（symptom が「@が出る」ではなく
+「IMEが閉じない」という別の形で現れるため、今回の実機A/Bでは検出でき
+なかった）。`state/ime_model.rs::applied_open()`のdocコメントが警告する
+「送信を省略してよいかの判定にbelief フォールバックを使うな」
+（ADR-098決定1-b、BUG-02系の再燃例）という既知の罠を、warmupとは別の
+actuation側で踏み直していた。
+
+**修正**: `ControlLog.shadow_on`を`bool`から`Option<bool>`に変更し、
+`platform.rs::build_ime_control_view`で`unwrap_or`による早期の潰しを
+やめて`Option`のまま`ImeControlView`へ伝播させた。ON方向・OFF方向の
+skip判定を`gji_direct_already_matches(shadow_on, open) = shadow_on ==
+Some(open)`という単一の対称な純粋関数に統一し、`shadow_on == None`
+（未知）はどちらの方向でも「skip しない」（＝実際に送信する）側に
+倒れるようにした。回帰テストを2件追加: 純粋関数
+`gji_direct_already_matches_treats_unknown_shadow_as_not_matched`
+（`None`をON/OFFどちらの確認済みとも誤認しないことを固定）と、
+`gji_direct_apply_off_is_not_already_matched_when_shadow_unknown`
+（`view_for`の既定が実際に`None`であることと合わせて固定）。既存の
+`gji_direct_apply_off_is_already_matched_when_shadow_already_off`は
+`shadow_on: Some(false)`を明示するよう更新した。force-ON経路
+（`runtime/mod.rs::force_on_and_correct_romaji`、
+`build_ime_control_view(None)`でON方向のno-op skipを意図的にbypassする
+設計、BUG-16/ADR-087 INV-28）が`Option<bool>`化後も正しく機能すること
+（`None`は`Some(true)`とも`Some(false)`とも一致しないため）を
+`tests/architecture_guard.rs::force_write_paths_bypass_gji_shadow_on_via_none_applied`
+で確認済み。`.claude/rules/fix-requires-evidence.md`にも
+`ControlLog.shadow_on`の供給元一覧を追記し、次回の再発防止とした。
+
+実機再検証はこれから。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、

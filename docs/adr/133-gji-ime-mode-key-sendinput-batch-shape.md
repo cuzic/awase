@@ -2,7 +2,12 @@
 
 ## ステータス
 
-**恒久修正（二重actuationの解消）を実装・実機確認済み（2026-09-05）。**
+**恒久修正（二重actuationの解消）を実装。develop マージ前の Opus 敵対的
+レビューで Blocker（`shadow_on` を `bool` に潰すと「未知」を「確認済み
+OFF」と誤認し、drift correction 等の正当な再送を握り潰す）が見つかり、
+`ControlLog.shadow_on` を `Option<bool>` 化して修正済み。実機での初回
+確認（`!shadow_on` 版）は取れているが、`Option<bool>` 化後の再検証は
+これから（2026-09-05）。**
 
 バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs `VK_KANJI`）の両仮説、
 および `set_ime_open_cross_process`（TsfNativeに効果なし）はいずれも
@@ -17,21 +22,42 @@
 詳細は `docs/known-bugs.md` BUG-113 最新の追記、
 `docs/experiments.md` エントリ22参照。
 
-ユーザー判断で二重actuationの解消を先に実装した: `GjiDirectStrategy::apply`
-のOFF方向に、既存のON方向（`shadow_on` → `AlreadyMatched`）と対称な
-`!shadow_on` → `AlreadyMatched` ガードを追加（`ime_controller.rs`）。
-回帰テスト`gji_direct_apply_off_is_already_matched_when_shadow_already_off`
-を追加済み。診断専用コード一式（`diag_bug113_combo.rs` 等）は同じコミットで
-撤去した。`kp_stage_idle_conv_check`のprobe競合はもう一つの独立した
-十分条件として残置——このprobeは他シナリオ向けの正規機能のため丸ごと
-無効化ではなく、actuationとの時間的競合を避ける方向の設計が必要で、
+ユーザー判断で二重actuationの解消を先に実装した。初版は
+`GjiDirectStrategy::apply`のOFF方向に、既存のON方向（`shadow_on` →
+`AlreadyMatched`）と対称な`!shadow_on` → `AlreadyMatched`ガードを
+追加する形だった（`ime_controller.rs`）。実機（dragonflyg4）で確認:
+物理半角/全角キーの押下・Ctrl+無変換の連打のいずれでも「@」は表示
+されなくなり、`[apply-ime] GJI direct: shadow OFF, skip VK_IME_OFF`が
+2回目以降の呼び出しで確実に発火し`SendInput`が各方向1回だけになって
+いることも確認した。
+
+**develop マージ前の Opus 敵対的レビューで Blocker 発見・修正**:
+`ControlLog.shadow_on`は`ImeModel.applied_pair()`（`Option<(bool,
+u64)>`）を`platform.rs`の`unwrap_or((false, 0))`で`bool`に潰した値で
+あり、「確認済みOFF」と「未知（`AppliedImeState::Unknown`、または
+drift correction/idle-conv-checkのDirectInput回復のように意図的に
+`applied`に`None`を渡す経路）」を区別できていなかった。ON方向の
+初版ガードはこの潰れ方の安全側（未知→送る）に偶然乗っていたが、追加した
+OFF方向ガードは危険側（未知→送らない）に乗ってしまい、必要な
+`VK_IME_OFF`が無音で握り潰されうる状態だった（症状が「@が出る」では
+なく「IMEが閉じない」という別の形で現れるため、初回の実機A/Bでは
+検出できなかった。詳細は`docs/known-bugs.md` BUG-113参照）。
+
+修正: `ControlLog.shadow_on`を`Option<bool>`化し、ON/OFF両方向の
+skip判定を`gji_direct_already_matches(shadow_on, open) = shadow_on ==
+Some(open)`という単一の対称な純粋関数に統一した。`shadow_on == None`
+（未知）はどちらの方向でも「実際に送信する」側に倒れる。回帰テストを
+2件追加（純粋関数テストと`view_for`既定値の固定）、既存テストも
+`Some(false)`を明示するよう更新した。force-ON経路
+（BUG-16/ADR-087 INV-28、`build_ime_control_view(None)`によるbypass）が
+`Option<bool>`化後も正しく機能することを既存のarchitecture_guardテストで
+確認済み。診断専用コード一式（`diag_bug113_combo.rs`等）は同じコミット
+セットで撤去した。`kp_stage_idle_conv_check`のprobe競合はもう一つの
+独立した十分条件として残置——このprobeは他シナリオ向けの正規機能のため
+丸ごと無効化ではなく、actuationとの時間的競合を避ける方向の設計が必要で、
 着手する場合は別途新しい診断コードを起こす。
 
-実機（dragonflyg4）で確認済み: 物理半角/全角キーの押下・Ctrl+無変換の
-連打のいずれでも「@」は表示されなくなった。ログで
-`[apply-ime] GJI direct: shadow OFF, skip VK_IME_OFF` が2回目以降の
-呼び出しで確実に発火し、`SendInput` が各方向1回だけになっていることも
-確認済み。
+`Option<bool>`化後の実機再検証はこれから。
 
 D0-3診断コード一式（バッチ形状・VK値検証専用）は役目を終えたため撤去済み。
 
