@@ -267,11 +267,26 @@ pub unsafe fn post_gji_ime_off() {
 /// force-ON（`Runtime::consume_force_open_pending`）はこの制約の代わりに
 /// `Output::ime_mode_focus_gen` の照合（時間軸フェンス）のみで守る。
 ///
+/// ADR-133 BUG-113 改修: `wVk` を保持したまま `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)`
+/// で求めた実 scan を `wScan` にも埋める（`tsf/output.rs::make_scan_key_input()`
+/// と同じ形、`KEYEVENTF_SCANCODE` は付けない）。以前は `wScan=0` 固定
+/// （`make_key_input_ex()`）で送っていたが、Windows Terminal + GJI で
+/// `GjiDirectStrategy::apply(open=false)` が毎回送る `VK_IME_OFF` の `wScan=0` が
+/// 余分な「@」の真因候補と実機診断で確定した（`docs/known-bugs.md` BUG-113、
+/// [ADR-133](../../docs/adr/133-windows-terminal-vk-kana-scan-code.md) 参照）。
+/// `make_scan_key_input()` 自体は TSF マーカー送信や `VK_DBE_HIRAGANA` 復元経路で
+/// 既に広く使われている形であり、`KEYEVENTF_SCANCODE` を付けないため既知の
+/// WezTerm ハザード（scan 付き注入が IME をバイパスする問題）とは無関係。
+/// ctrl/shift の release/restore（`HeldModifiers::push_release`/`push_restore`）は
+/// 対象外のまま（`wScan=0`）とする——BUG-113 の実機ログでは modifier 無押下の
+/// 単発 mode key 送信でのみ「@」が再現しており、release/restore が絡む経路の
+/// scan 挙動を変える根拠が無い。
+///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    use crate::tsf::output::{make_scan_key_input, IME_KANJI_MARKER};
 
     // Win キー押下中は注入をスキップする。
     // Win+VK_IME_ON/OFF は OS に未認識ショートカットとして届き、Win↑ のタイミングで
@@ -291,8 +306,8 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
     let held_skip_alt = HeldModifiers { alt: false, ..held };
     let mut inputs: Vec<INPUT> = Vec::with_capacity(6);
     held_skip_alt.push_release(&mut inputs, IME_KANJI_MARKER);
-    inputs.push(make_key_input_ex(vk, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(vk, true, IME_KANJI_MARKER));
+    inputs.push(make_scan_key_input(vk, false, IME_KANJI_MARKER));
+    inputs.push(make_scan_key_input(vk, true, IME_KANJI_MARKER));
     // SAFETY: push_restore は Win32 SendInput を呼ぶ。
     let still = unsafe { held_skip_alt.push_restore(&mut inputs, IME_KANJI_MARKER) };
 

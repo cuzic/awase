@@ -13811,7 +13811,7 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（原因候補確定、修正未着手）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（修正済み、実機ソーク待ち）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -13866,10 +13866,20 @@ awase フックに届く VK は後述のとおり別物）を押すと、他に�
    Terminal フォーカス中に受け取った際の内部 composition 処理にある
    可能性が高い**が、GJI はクローズドソースのため確定できていない。
 
-**現状:** 原因候補（`send_ime_mode_key` の `wScan=0`、`apply(true)`/
-`apply(false)` の非対称性）まで絞り込み済み、修正未着手。次の検証候補は
-`GjiDirectStrategy::apply` の `send_ime_mode_key` 呼び出しを実 scan 付き
-送信に変えた場合に「@」が再現しなくなるかの A/B 実機検証。
+**修正（2026-09-05 追記）:** ユーザーによる実機 A/B 検証で、`send_ime_mode_key`
+の `wScan=0` が真因であることが確認された。`ime.rs::send_ime_mode_key` を、
+送信する mode key 本体（`VK_IME_ON`/`VK_IME_OFF`）だけ `wScan=0` 固定
+（`tsf/output.rs::make_key_input_ex()`）から `wVk` 保持 + `MapVirtualKeyW`
+実測 scan 埋め込み（`make_scan_key_input()`、`KEYEVENTF_SCANCODE` は付けない）
+へ変更した。`make_scan_key_input()` 自体は TSF マーカー送信や
+`VK_DBE_HIRAGANA` 復元経路で既に使われている形であり、`KEYEVENTF_SCANCODE`
+を付けないため既知の WezTerm ハザード（scan 付き注入が IME をバイパスする
+問題）とは無関係と判断し、Windows Terminal 限定にせず **全アプリ・全呼び
+出し元（`GjiDirectStrategy`/`MsImeDirectStrategy`、`send_engine_state_ime_key`
+のユーザー設定 VK 送信を含む）に対して既定で適用**する形にした（hidden
+opt-in にはしていない）。ctrl/shift の release/restore（`HeldModifiers`）は
+対象外のまま（`wScan=0`）。Chrome/Edge/LINE/Teams/VS Code/WezTerm 等、
+Windows Terminal 以外のアプリでの実機ソークは未実施。
 
 **関連:** [ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、

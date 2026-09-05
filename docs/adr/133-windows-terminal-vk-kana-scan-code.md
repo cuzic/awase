@@ -2,7 +2,13 @@
 
 ## ステータス
 
-**設計の前提が実機検証で反証され、再設計待ち（2026-09-05）。**
+**BUG-113 の恒久修正を実装済み（2026-09-05、`develop` 未マージ）。** 詳細は
+本文末尾「BUG-113 の恒久修正（2026-09-05）」節を参照。D1〜D6 は「実機で
+反証される前の設計検討過程」として以下にそのまま残す。
+
+---
+
+**（以下、旧ステータス。設計の前提が実機検証で反証され、再設計待ち。）**
 v4（Sol 2体の敵対的レビュー round4 で収束）まではドキュメントレビューのみで
 「収束済みドラフト」としていたが、2026-09-05 に dragonflyg4 実機で D2 の
 hidden スパイクを検証した結果、**この機体では物理 `VK_KANA`(0x15) が
@@ -564,3 +570,66 @@ Windows Terminal のソースコードだけでは確認できない領域まで
    系）を有効化した状態での再現、または GJI 側の設定変更（半角/全角
    キーの動作割り当てを変える等、GJI 設定画面側の対症的な回避策の
    有無）も調査対象に含めるとよい。
+
+## BUG-113 の恒久修正（2026-09-05）
+
+上記「次セッションへの引き継ぎ」項目2の A/B 実機検証をユーザーが実施し、
+`send_ime_mode_key` の `wScan=0` が余分な「@」の真因であることが確認された。
+
+### 修正内容
+
+`ime.rs::send_ime_mode_key` の mode key 本体（`vk` 引数、GJI/MS-IME 経路では
+`VK_IME_ON`/`VK_IME_OFF`）の送信を、`tsf/output.rs::make_key_input_ex()`
+（`wScan=0` 固定）から `make_scan_key_input()`（`wVk` 保持 + `MapVirtualKeyW`
+実測 scan、`KEYEVENTF_SCANCODE` なし）へ置き換えた。ctrl/shift の
+release/restore（`HeldModifiers::push_release`/`push_restore`）は対象外
+のまま（`wScan=0`）——BUG-113 の実機ログは modifier 無押下の単発 mode key
+送信でのみ「@」を確認しており、release/restore が絡む経路の scan 挙動を
+変える根拠が無いため。
+
+### スコープ判断: Windows Terminal 限定ではなく全アプリ・既定 on
+
+D2（`VK_KANA` 置換）が採った「Windows Terminal 限定 hidden 実験」という
+スコープを踏襲するか、`send_ime_mode_key` の全呼び出し元（`GjiDirectStrategy`
+/`MsImeDirectStrategy`、`send_engine_state_ime_key` のユーザー設定 VK 送信を
+含む）に対して既定で適用するかを検討した。
+
+`make_scan_key_input()` 自体は目新しい経路ではなく、TSF マーカー送信
+（`make_tsf_key_input`）や `VK_DBE_HIRAGANA` 復元経路
+（`send_ime_mode_key_with_shift_release_prefix`）で既に広く使われている
+形であり、D3 で確認済みの唯一の実機ハザード（WezTerm が `KEYEVENTF_SCANCODE`
+付き注入で IME をバイパスする）は今回のフラグを付けない変更とは無関係と
+判断できる。この点を踏まえ、ユーザー判断で **Windows Terminal 限定の
+hidden opt-in にはせず、全アプリ・全呼び出し元に対して既定で適用**する
+ことにした。
+
+ただし本判断は Windows Terminal + GJI での実機確認のみに基づき、
+Chrome/Edge/LINE/Teams/VS Code/WezTerm 等での A/B 検証は行っていない。
+`ime-belief-architecture.md`/`fix-requires-evidence.md` が対象とする
+「キー選択（IME ON/OFF に送る VK）」reincidence family
+（`docs/experiments.md` 記載の「5日間で6回反転」の前例）に該当する変更
+であるため、退行が見つかった場合は速やかに `wScan=0` 側への revert を
+検討し、[experiment-logging](../../.claude/rules/experiment-logging.md)
+の規約に従ってアプリ・IME・再現手順を revert コミットに記録すること。
+
+また、本変更は普段このリポジトリで IME actuation 変更前に行っている
+Opus 敵対的設計レビュー（2体レビュー）を経ずに実装した。ADR 本文
+（D1〜D6・実機検証ログ）が既に詳細だったことと、変更が
+`make_scan_key_input()` という既存の実績パターンへの置き換えに留まる
+ことを理由にユーザーが省略を選択した。ソーク中に想定外の退行が出た
+場合は、この判断自体も見直し対象とすること。
+
+### D2（`VK_KANA` → `VK_DBE_HIRAGANA` 置換スパイク）の扱い
+
+未決定のまま。「実機検証ログ」節のとおりこの機体では到達不能コードだが、
+他のキーボード/ドライバ環境で `VK_KANA`(0x15) が実際に届く可能性は排除
+できていない。develop へマージするか撤去するかは別途ユーザー判断が必要。
+
+### 残タスク
+
+- Windows Terminal + GJI/MS-IME 実機で「@」が再現しなくなったことの
+  最終確認（ユーザーが確認済みの A/B 検証が、修正実装後のビルドに対する
+  ものかを次回明示すること）。
+- Chrome/Edge/LINE/Teams/VS Code/WezTerm 等、Windows Terminal 以外の
+  実機ソーク。
+- D2 spike の develop マージ可否判断。
