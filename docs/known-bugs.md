@@ -13810,3 +13810,20 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 （「未解決の設計課題」3 の一部を本 BUG が解決）、
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
+
+**追記（2026-09-04、不具合報告 `01M1NEVHMXXY4903124J0RMS68` の調査で判明）:**
+`awase-settings.exe` の `"Window Class"` とは別に、`lockapp.exe`/`explorer.exe`
+系の UWP 入力ウィンドウ（journal 上のクラス名は `Windows.UI.Core.CoreWindow`、
+ログ表示名は `"InputSiteWindowClass"`）でも `[imm-learning] profile 降格:
+Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再発火している
+実機ログを確認した。同一セッションでその後 GJI のモード切替が不安定になる
+症状（英数キーで OFF にした後、対になる ON キーを押すまで親指シフトが
+再起動しない——ただしこの部分自体は仕様どおりの挙動と判定済み、本 BUG の
+スコープ外）と description 本文中の不自然な「あ」の混入（「あさくらエディタで」
+「あ症状が出ました」）が観測されたが、journal に「あ」の実際の出力イベント
+自体は記録されておらず、この誤降格と「あ」混入の直接の因果は本セッションでは
+確認できていない。**トリガー条件（このタイミングでこのプロセス/クラスの
+組み合わせだけ誤降格する理由）は依然不明**だが、対象が `awase-settings.exe`
+の `"Window Class"` 単体ではなく複数のプロセス・ウィンドウクラスにまたがる
+ことを示す独立した実データとして記録する。詳細は
+[docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
