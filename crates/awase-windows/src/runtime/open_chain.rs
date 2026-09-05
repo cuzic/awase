@@ -296,7 +296,35 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
-        let view = app.shadow_ime_control_view();
+        let mut view = app.shadow_ime_control_view();
+        // BUG-113 追補（Opus 敵対的レビューで発見）: この関数は先行機構が
+        // `Failed` を返した後にしか呼ばれず、`imm_cross_write` の `Failed` は
+        // `read_ime_state_fast()` で「OS はまだ desired 状態でない」ことを
+        // 実際に確認した場合だけ返る（`imm_cross_write` 参照）。したがって
+        // この時点で shadow ベースの already-matched skip
+        // （`gji_direct_already_matches`）を適用する根拠は無い。
+        // `key_pipeline.rs::kp_stage_shadow_ime_toggle` の ImmCross 経路は
+        // actuation の**前**に `record_confirmed(false)` を書くため
+        // （「直後の実 ImmCross apply を伴うため正当」という前提）、ここで
+        // `shadow_ime_control_view()` の実 `applied` をそのまま読むと、
+        // 「自分がこれから送ろうとしている値」を「送信前に書いた belief」で
+        // 握り潰す循環になり、OS がまだ desired でないと確認済みなのに
+        // `GjiDirectStrategy` が `AlreadyMatched` を返してしまう
+        // （実害: IME が閉じないまま awase だけ「収束した」と誤記録する）。
+        // `force_on_and_correct_romaji`（ADR-087 INV-28）と同じ
+        // 「`None` で bypass する」設計語彙に合わせ、shadow_on だけを
+        // 未知に上書きする（`belief_input_mode`/`focus.profile` 等の他
+        // フィールドは `shadow_ime_control_view()` のまま活かす）。
+        //
+        // 副産物: `KanjiToggleStrategy`（`fallback_write` が唯一の到達経路、
+        // ADR-117 issue #138診断）の `shadow=` ログフィールドが、この上書き後は
+        // 常に `None` になり診断価値を失う。上書き前の値をここで1行記録して
+        // 補う（Opus敵対的レビューround3 提案）。
+        log::debug!(
+            "[apply-ime] fallback_write: shadow_on={:?} → None で bypass (mechanism={mechanism:?})",
+            view.control.shadow_on
+        );
+        view.control.shadow_on = None;
         // issue #136 / BUG-90 決定4: view はこの関数が完了時点で作り直す
         // （モジュール doc 参照）ため、起案時点では InputRelay でなかった
         // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。

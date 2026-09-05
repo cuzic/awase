@@ -814,6 +814,16 @@ impl ImeModel {
                 // が固定する）。
                 self.observations.establish_initial_fence(fence);
             }
+            ImeEvent::InitialAppPolicyEstablished { profile } => {
+                // BUG-114 根本原因1（ADR-134 D1c）: 起動から最初のプロセス
+                // 切替まで `app_policy` が既定値 `Read` のまま固定される
+                // 問題を、起動時の live profile で初期化することで塞ぐ。
+                // `app_policy` のみを書き換える（`FocusChanged` と同じ導出
+                // 式だが、`current_focus`/observations 等の他フィールドは
+                // 触らない——`initial_app_policy_event_only_touches_app_policy`
+                // が固定する）。
+                self.app_policy = AppImePolicy::from_profile(profile);
+            }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
         // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
@@ -989,6 +999,56 @@ mod tests {
             before,
             "InitialFocusFenceEstablished は current_fence 以外を書き換えてはならない \
              (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
+        );
+    }
+
+    /// BUG-114 根本原因1（ADR-134 D1c）の回帰テスト。
+    ///
+    /// `InitialAppPolicyEstablished` は `app_policy` **以外の一切のフィールドに
+    /// 触れない**（`InitialFocusFenceEstablished` と同じ「1フィールドだけ差し替え」
+    /// 不変条件）。`initial_focus_fence_established_touches_only_the_fence` と
+    /// 同じ手法（既に目的の値になっているモデルへ同じイベントを流し、モデル全体の
+    /// `Debug` 表現が1文字も変わらないことで巻き添え書き込みを検出する）で固定する。
+    #[test]
+    fn initial_app_policy_established_touches_only_app_policy() {
+        let now = Instant::now();
+        let profile = ImePolicyProfile::TsfNative;
+
+        // (1) app_policy が (フィクスチャの) 非既定値のモデルへ dispatch すると、
+        // app_policy だけが指定した profile 由来の値になる。
+        let mut model = fully_populated_model(now);
+        assert_ne!(
+            model.app_policy,
+            AppImePolicy::from_profile(profile),
+            "フィクスチャの app_policy と検証対象の profile 由来の値が\
+             たまたま一致すると (2) の検出力が無くなる"
+        );
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialAppPolicyEstablished { profile },
+        ));
+        assert_eq!(
+            model.app_policy,
+            AppImePolicy::from_profile(profile),
+            "app_policy は live 側（bootstrap で確立した profile）に同期される"
+        );
+
+        // (2) 既に app_policy がその値になっているモデルへ同じイベントを流すと、
+        // モデル全体の Debug 表現が1文字も変わらない = app_policy 以外を
+        // 書いていない。
+        let mut model = fully_populated_model(now);
+        model.app_policy = AppImePolicy::from_profile(profile);
+        let before = format!("{model:?}");
+        model.reduce(&envelope(
+            1,
+            ImeEvent::InitialAppPolicyEstablished { profile },
+        ));
+        assert_eq!(
+            format!("{model:?}"),
+            before,
+            "InitialAppPolicyEstablished は app_policy 以外を書き換えてはならない \
+             (BUG-114/ADR-134 D1c: FocusChanged 以前に belief を書き換えない、\
+             ADR-102 決定3-b と同じ規律)"
         );
     }
 

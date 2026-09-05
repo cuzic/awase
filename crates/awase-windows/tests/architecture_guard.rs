@@ -1778,10 +1778,13 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 /// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
 /// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は
 /// `applied` に `None` を渡すことで `GjiDirectStrategy::apply`
-/// （`ime_controller.rs:110`、`shadow_on == true` のとき `VK_IME_ON` を
-/// no-op skip する）を最初から bypass する設計になっている
-/// （`build_ime_control_view(None)` → `applied.unwrap_or((false, 0))` →
-/// `control.shadow_on = false`、`platform.rs::build_ime_control_view` 参照）。
+/// （`gji_direct_already_matches`、`shadow_on == Some(true)` のとき
+/// `VK_IME_ON` を no-op skip する）を最初から bypass する設計になっている
+/// （`build_ime_control_view(None)` → `control.shadow_on = None`、
+/// `platform.rs::build_ime_control_view` 参照。`None` は `Some(true)` とも
+/// `Some(false)` とも一致しないため、ON方向・OFF方向のどちらの
+/// already-matched判定もbypassする——BUG-113 修正後もこの性質は保たれる、
+/// `docs/known-bugs.md` BUG-113 参照）。
 ///
 /// この不変条件が崩れる（`None` の代わりに実 `applied` 値を渡すよう変更される）と、
 /// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで
@@ -1810,8 +1813,35 @@ fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
         count_real_calls(force_on_body, "build_ime_control_view(None)"),
         1,
         "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
-         shadow_on=false を作ることで GJI の no-op skip を bypass する設計。\
+         shadow_on=None を作ることで GJI の no-op skip を bypass する設計。\
          `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
+    );
+}
+
+/// BUG-113 追補（Opus 敵対的レビューで発見・修正）: `open_chain.rs::fallback_write`
+/// は先行機構（ImmCross）が実際に OS を読み戻して「まだ desired 状態でない」
+/// ことを確認した`Failed`の後にしか呼ばれない（`imm_cross_write`参照）。
+/// この時点で`shadow_ime_control_view()`が返す実`applied`をそのまま使うと、
+/// `key_pipeline.rs::kp_stage_shadow_ime_toggle`のImmCross経路がactuationの
+/// **前**に書く`record_confirmed(false)`（pre-actuation write）を読み返す
+/// 循環になり、`GjiDirectStrategy`の`gji_direct_already_matches`が誤って
+/// `AlreadyMatched`を返し、実際にはOSがまだON なのに`VK_IME_OFF`が送られない
+/// 回帰を作り込む。`fallback_write`は`view.control.shadow_on`を明示的に
+/// `None`へ上書きしてこの循環をbypassする設計（`force_on_and_correct_romaji`
+/// のINV-28と同じ語彙）。テキスト走査でこの1行を固定する。
+#[test]
+fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
+    let open_chain_rs = read_crate_file("src/runtime/open_chain.rs");
+    let production = production_code_only(&open_chain_rs);
+    let fallback_write_body = extract_fn_body(production, "fn fallback_write");
+    assert_eq!(
+        count_real_calls(fallback_write_body, "view.control.shadow_on = None"),
+        1,
+        "fallback_write は view.control.shadow_on = None で GjiDirect の \
+         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirect/\
+         KanjiToggleはshadow_onをskip判定に使わないため無関係）。この上書きが \
+         削除・変更されると、ImmCross Failed 後のフォールバックが \
+         pre-actuation write を読み返して自分の送信を握り潰す回帰が再発する。"
     );
 }
 
@@ -2644,7 +2674,12 @@ fn establish_initial_focus_scope_advances_focus_epoch_once() {
 #[test]
 fn establish_initial_focus_scope_does_not_write_ime_belief() {
     // (関数名, 禁止語) の組で例外を明示する。件数と中身は下の専用 assert が縛る。
-    const EXEMPT: &[(&str, &str)] = &[("sync_initial_focus_fence", "dispatch_event(")];
+    const EXEMPT: &[(&str, &str)] = &[
+        ("sync_initial_focus_fence", "dispatch_event("),
+        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
+        // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
+        ("sync_initial_app_policy", "dispatch_event("),
+    ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let bodies = [
@@ -2680,6 +2715,13 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
             "sync_initial_focus_fence",
             extract_fn_body(&content, "fn sync_initial_focus_fence"),
         ),
+        // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
+        // 同じ理由（対象リストへ載せないと belief 書き込みを足しても検知
+        // できない）で明示的に加える。
+        (
+            "sync_initial_app_policy",
+            extract_fn_body(&content, "fn sync_initial_app_policy"),
+        ),
     ];
     for forbidden in [
         "dispatch_event(",
@@ -2713,6 +2755,42 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         non_comment_lines(sync_body).contains("ImeEvent::InitialFocusFenceEstablished"),
         "sync_initial_focus_fence の唯一の dispatch は \
          ImeEvent::InitialFocusFenceEstablished であること"
+    );
+
+    // BUG-114 根本原因1（ADR-134 D1c）: `sync_initial_app_policy` も同様に
+    // dispatch_event ちょうど1件、`InitialAppPolicyEstablished` のみであること。
+    let app_policy_sync_body = extract_fn_body(&content, "fn sync_initial_app_policy");
+    assert_eq!(
+        count_real_calls(app_policy_sync_body, "dispatch_event("),
+        1,
+        "sync_initial_app_policy の dispatch_event はちょうど1件（app_policy 初期化のみ）"
+    );
+    assert!(
+        non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
+        "sync_initial_app_policy の唯一の dispatch は \
+         ImeEvent::InitialAppPolicyEstablished であること"
+    );
+
+    // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
+    // かつ `advance_focus_tracking`（`current_app_profile()` が正しい値を返す
+    // ようになる箇所）より後に呼ぶこと（ADR-134 D1c の実装位置要件）。
+    let bootstrap_body = extract_fn_body(&content, "fn establish_initial_focus_scope");
+    assert_eq!(
+        count_real_calls(bootstrap_body, "self.sync_initial_app_policy("),
+        1,
+        "establish_initial_focus_scope は sync_initial_app_policy をちょうど1回呼ぶこと"
+    );
+    let bootstrap_code = non_comment_lines(bootstrap_body);
+    let advance_idx = bootstrap_code
+        .find("self.advance_focus_tracking(")
+        .expect("establish_initial_focus_scope must call advance_focus_tracking");
+    let app_policy_idx = bootstrap_code
+        .find("self.sync_initial_app_policy(")
+        .expect("establish_initial_focus_scope must call sync_initial_app_policy");
+    assert!(
+        advance_idx < app_policy_idx,
+        "sync_initial_app_policy は advance_focus_tracking の後に呼ぶこと \
+         (先に呼ぶと current_app_profile() がまだ正しい値を返さない、ADR-134 D1c)"
     );
 }
 
@@ -2893,6 +2971,53 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                  このイベントは bootstrap（最初の IME 観測より前）でのみ dispatch される\
                  専用イベントです。新しい呼び出し元を足す前に、それが本当に「起動時の\
                  初回フォーカススコープ確立」なのかを確認してください（ADR-102 決定3-b）。"
+            );
+        }
+    }
+}
+
+/// BUG-114 根本原因1（ADR-134 D1c）: `ImeEvent::InitialAppPolicyEstablished` は
+/// bootstrap 専用であり、dispatch 元は `sync_initial_app_policy` の1箇所だけ。
+/// reducer 側のアームは `self.app_policy = AppImePolicy::from_profile(profile)`
+/// （app_policy 1フィールドの差し替え）しか行わない。
+///
+/// `initial_focus_fence_event_only_touches_the_fence` と同じ構造の監視テスト。
+/// アーム本体が app_policy 以外に触れないことは
+/// `state::ime_model::tests::initial_app_policy_established_touches_only_app_policy`
+/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+#[test]
+fn initial_app_policy_event_only_touches_app_policy() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let checks: &[(&str, &[(&str, usize)])] = &[(
+        "InitialAppPolicyEstablished",
+        &[
+            ("runtime/focus_tracking.rs", 1),
+            ("state/ime_model.rs", 1),
+            ("state/ime_event.rs", 1),
+        ],
+    )];
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            let expected_count = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, expected_count,
+                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
+                 {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
             );
         }
     }

@@ -921,7 +921,11 @@ impl DecisionExecutor {
             let conv_mode = None;
 
             let belief_inputs = crate::output::OpenBeliefInputs {
-                shadow_on: view.control.shadow_on,
+                // `OpenBeliefInputs.shadow_on` は診断ログ専用の消費先（上記コメント
+                // 参照）で、BUG-113 修正の対象外。`ControlLog.shadow_on` が
+                // `Option<bool>` 化された後もこちらの既存挙動（未知は false
+                // 扱い）を変えない。
+                shadow_on: view.control.shadow_on.unwrap_or(false),
                 applied: self.applied_snapshot,
                 candidate_visible: view.observed.candidate_visible,
                 candidate_was_seen: view.observed.candidate_was_seen,
