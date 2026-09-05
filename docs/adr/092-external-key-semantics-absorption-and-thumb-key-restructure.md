@@ -6,6 +6,20 @@
 コードレビューを経て確定）。** Step3・Step5 は今回のセッションでも見送り
 （下記「Step3/Step5見送りの最終判断」参照）。
 
+**Step4c の前提の一部訂正（2026-09-05、BUG-115）**: 下記「GJI は親指キーに
+IME ON/OFF を割り当てる手段を持たない」という結論は、`custom_keymap_table`
+（field 42）経由の**ユーザーが変更可能なキーマップ**に関しては実データでも
+裏付けられたが、`overlay_keymaps`（`config.proto` field 68、`session_keymap`
+とは独立の repeated フィールド）を通じて無変換→IMEOff・変換→IMEOnを
+（`session_keymap`の値に関わらず）重ね掛けする
+`OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF` という**別経路**の存在を見落として
+いた。加えて、Step4c 実装の `session_keymap` フィールド番号自体が22（誤り、
+実際は41）になっていたバグも発見・修正した。Step4b
+（無変換/変換 delegate-to-open-axis）は、その後 GJI 側にも対称配線した
+（overlay/ATOKプリセット/CUSTOMキーマップのliteralトークンの3情報源、
+`Toggle`のみopt-inゲート）。詳細と実装状況は
+[docs/known-bugs.md BUG-115](../known-bugs.md) 参照。
+
 **Step4（決定4 上段・肩代わり本体）の実装状況（追記、2026-08-15）**:
 - **Step4a（Ctrl+Space/Shift+Space トグル）**: 実機（dragonflyg4）で
   `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` がトグル（値`2`）

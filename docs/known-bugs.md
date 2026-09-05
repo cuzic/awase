@@ -13921,3 +13921,373 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 関与しているかどうかをログから判定できるようにした。**本仮説は BUG-112
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
+
+## BUG-115: `awase-gji-config` の `session_keymap` フィールド番号が誤っており、GJI が無変換/変換キーでIME ON/OFFを制御する overlay 設定も未対応
+
+**症状（ユーザー報告、不具合報告 `01M1R1T7VCB5K5DDM3Q00DCKXY`、2026-09-05）:**
+GJI（Google 日本語入力）を UWP アプリで使用中、日本語をOFFにした後「変換」
+キーでON復帰すると、日本語入力にはなる（音になる）が親指シフト変換には
+ならない。「ひらがな/カタカナ」キーでON復帰すると正しく親指シフトになる。
+報告者は「ひらがな/カタカナも CapsLock も GJI では設定していないはず」と
+述べていたが、実際には awase 側の `config.toml` で `engine_on =
+["VK_DBE_HIRAGANA"]` が設定されており、GJI 側の設定ではなく awase 側の
+`engine_on`（能動的にIMEを開き直す actuation）がこのキーだけを救っていた
+ことが判明した。「変換」キーは awase のどの actuation/probe 設定にも
+登録されておらず、GJI 自身が独自に IME を ON にしても awase の belief
+（`compute_state` が参照する `ctx.ime_on`）が追随しないまま、というのが
+症状の直接の機序（`src/engine/engine.rs:239-253`、`ImeOff` ゲートで非活性）。
+
+**調査の過程で発見した実装バグ（2件、`crates/awase-gji-config`）:**
+
+1. **`session_keymap` のフィールド番号が誤っていた。** `wire.rs` は
+   `SESSION_KEYMAP_FIELD = 22` としていたが、`google/mozc` 本家
+   `src/protocol/config.proto` を実際に取得して確認したところ、
+   `session_keymap` は **field 41** であり、field 22 は無関係の
+   `check_default`（bool、既定IME確認ダイアログの表示要否、デフォルト
+   `true`）だった。両者とも wire type が varint で一致するため、パースは
+   エラーにならず「もっともらしい」誤った値を返し続けていた。実機の
+   `config1.db`（Tomoya 環境、clipwire 経由で取得・
+   汎用protobufスキャナで全フィールド列挙して検証）で
+   `field 22 = 1, field 41 = 0(CUSTOM)` を確認——誤って field 22 を
+   使うと「1 = ATOK」という完全な誤判定になる。これにより
+   `crates/awase-windows/src/gji_charset_autodetect.rs` の
+   `session_keymap == CUSTOM` ゲート（ADR-092 決定D Step4c）は、
+   ほぼ常に無関係な値で判定していたことになる。
+2. **`overlay_keymaps`（field 68）が未対応。** Mozc には
+   `OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF = 100` という
+   `SessionKeymap` enum 値があり、これが `config.proto` の
+   `repeated SessionKeymap overlay_keymaps = 68 [packed = true]` に
+   含まれていると、`session_keymap`/`custom_keymap_table` の値に関わらず
+   `overlay_henkan_muhenkan_to_ime_on_off.tsv`
+   （Henkan→IMEOnは`Composition/Conversion/DirectInput/Precomposition`の
+   全4状態、Muhenkan→IMEOffは`Composition/Conversion/Precomposition`の3状態
+   ——IMEが既にOFFの`DirectInput`は対象外）が無条件で重ね掛けされる。これは
+   まさに報告者の症状と一致するメカニズムだが、`awase-gji-config` は
+   field 42 までしか読んでおらず、field 68 の存在確認手段が無かった。
+   報告者自身の `config1.db` は不具合報告に含まれておらず（awase の
+   `config.toml` とは別ファイル）、この overlay が実際に有効だったかは
+   未確認のまま。
+
+**ADR-092 の前提の一部訂正:** ADR-092 決定D Step4c は「GJI は無変換/変換
+キーに IME ON/OFF を割り当てる手段を持たない」（`custom_keymap_table` の
+`mozc_key_to_vk_name` 出力範囲に含まれないため）という前提のもと、この
+経路を Engine 側の自動検出（F15-F24限定）の対象外とした。この前提は
+`custom_keymap_table` 経由の**ユーザーが変更可能なキーマップ**に関しては
+実データ（Tomoya 環境の `config1.db`）でも裏付けられたが、
+`overlay_keymaps` という**別の独立フィールド**を通じて無変換/変換に
+IME ON/OFF を割り当てる手段が存在すること自体は当時見落とされていた。
+
+**修正状況（2026-09-05）:** `crates/awase-gji-config/src/wire.rs` の
+`SESSION_KEYMAP_FIELD` を 22→41 に修正し、`overlay_keymaps`（field 68、
+repeated varint、packed/非packed 両対応）のパースを追加した
+（`GjiRawConfig::overlay_keymaps: Vec<i64>`、
+`lib.rs::SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF = 100`
+定数を追加）。回帰テストはクレート内に追加済み
+（`wire::tests::parses_overlay_keymaps_as_packed_varints` 等）。
+
+**この修正の前向きの帰結（Opus敵対的レビューで指摘、2026-09-05）:**
+修正前は field 22(`check_default`、`optional bool`のため明示設定時のみ
+直列化される。実機で確認した限りでは`1`) を `session_keymap` だと誤読して
+いたため、`gji_charset_autodetect.rs:177` の `session_keymap == CUSTOM`
+ゲートは、field 22 が `1`（≠`Some(0)`）でも不在（`None`≠`Some(0)`）でも
+いずれにせよ不一致でスキップされていた（Step4c の自動検出はほぼ発火した
+ことが無かったと推測される）。修正後は
+本当の`session_keymap`（field 41）を正しく読むため、**GJIのキーマップ種別が
+実際に「カスタム」であるユーザー環境では、Step4c のIME ON/OFF/トグルキー
+自動検出が今回の修正で事実上初めて発火するようになる**（プロジェクトオーナー
+自身の実機の `config1.db` も session_keymap=CUSTOM であり該当する）。実害
+範囲は`is_in_safe_autodetect_range`（F15-F24限定）により「GJIのカスタム
+キーマップでF15-F24にIME ON/OFF/トグルを割り当てているユーザー」に限られ、
+`message_handlers.rs`のGJI→MS-IME呼び出し順序によりMS-IME側の値を潰す
+こともないが、**実機ソークで意図しない自動検出の発火が無いか確認が必要**。
+
+**ランタイムへの反映（2026-09-05、実装完了）:** overlay検出結果は
+「MS-IME向けにのみ配線されていた無変換/変換 delegate-to-open-axis」
+（ADR-092 決定D Step4b、`crates/awase-windows/src/runtime/message_handlers.rs:834-848`）
+と同じ機構をGJI向けにも対称配線する形で反映した
+（Opus敵対的**設計**レビュー2ラウンドで収束後に実装、詳細は次節）。
+`ime_detect`（probe）への自動追加は、ADR-092:1136-1145で撤回済みの
+「毎打鍵ごとに反転する」致命的回帰と同じ罠を踏むため不採用とした。
+
+### 設計: 無変換/変換キーのIME意味論をどう反映するか
+
+**情報源は3つある**（`crates/awase-windows/src/gji_charset_autodetect.rs::classify_thumb_key_ime_actions`
+が優先順位付きで1つの結論にまとめる純粋関数、Linux上でもテスト可能）:
+
+1. **`overlay_keymaps`に値100が含まれる**（最優先、`session_keymap`の値と
+   無関係）: Henkan→`On`・Muhenkan→`Off`。状態非依存で一貫しているため
+   常に安全（冪等）。
+2. **`session_keymap == CUSTOM`で`custom_keymap_table`にliteralな
+   `Henkan`/`Muhenkan`トークンがある**（ユーザーがATOKベースからカスタム
+   キーマップを作った場合など）: `awase-gji-config::keymap::extract_ime_keys`
+   が`STATUSES_WHEN_IME_OFF`/`STATUSES_WHEN_IME_ON`に基づき`On`/`Off`/
+   `Toggle`へ分類する（既存のF15-F24キー分類ロジックを再利用、
+   `CancelAndIMEOff`コマンドも`IMEOff`相当として認識するよう
+   `command.rs`/`keymap.rs`を拡張した）。
+3. **`session_keymap == ATOK`（プリセット、overlay/custom無し）**:
+   `google/mozc`の`src/data/keymap/atok.tsv`（2026-09-05取得）実データを
+   静的テーブルとして埋め込み、Henkan/Muhenkan双方を`Toggle`と判定する。
+
+**`Toggle`（状態依存で非冪等）だけがopt-inゲートの対象**（`gate_thumb_key_ime_actions`）。
+`On`/`Off`は情報源に関わらず常にそのまま反映してよい。opt-inは
+`GeneralConfig::gji_thumb_key_ime_toggle`（既定`false`）で、`config.toml`
+から手動編集する（設定UIからの編集は別課題、後述）。
+
+**なぜ`Toggle`の既定をONにしないか（重要、正確に記録する）:** ATOKの
+`DirectInput`⇔`Precomposition`の反転は、実は`ShadowImeAction::Toggle`
+（`Engine::apply_ime_open_request`の`Toggle => !ctx.ime_on`）で**正確に
+表現できる**——「表現不能」ではない。それでも既定をOFFにしている理由は
+プロダクト判断であり、次の4点による（Opus敵対的レビュー指摘、
+**この4点を落として「表現不能」とだけ書くと、将来のセッションが
+`Toggle`で書けることを再発見して誤って既定ON化してしまう**——
+`experiment-logging.md`が防ごうとしているパターンそのものなので、
+必ずこの4点とセットで記録すること）:
+
+1. `Toggle`は非冪等。無変換/変換の単独タップ確定判定
+   （`resolve_pending_thumb_as_single`）は、実は「単独タップが確定した
+   瞬間」だけでなく、チョード判定に失敗した経路（`nicola_fsm.rs`の
+   1409/1591/1607/2504行目、左親指面が定義されていない文字キーと
+   組み合わせた場合など）からも呼ばれる。`TurnOn`/`TurnOff`なら誤発火は
+   no-opで済むが、`Toggle`だと誤発火が「状態の反転」になり連続誤発火で
+   発振しうる。
+2. ATOKでは変換・無変換の**両方**がToggleになり、NICOLA親指キー2本とも
+   IME切替を持つことになり露出が2倍になる。
+3. ATOKプリセットは（overlayと違い）ユーザーが明示的にONにするものでは
+   なく、キーマップにATOKを選んだだけの全ユーザーに自動適用される
+   （親指シフト利用者と重なりが大きい層）。
+4. GJIはMozcのフォークであり、`atok.tsv`の内容が本家と完全一致する保証は
+   無い。
+
+### 無変換/変換が親指シフトのチョードキーでない場合（F7）
+
+delegate-to-open-axis機構は`resolve_pending_thumb_as_single`という
+**単独タップ確定経路にしか呼ばれない**ため、`left_thumb_key`/
+`right_thumb_key`が無変換/変換に設定されていないユーザーでは原理的に
+発火しない（元の不具合報告者は`right_thumb_key = "変換"`/
+`left_thumb_key = "無変換"`だったため該当しないが、一般には該当しうる）。
+この場合は代わりに、Step4cと同じ`ime_on_auto`/`ime_off_auto`/
+`ime_toggle_auto`（`Engine`側の`SpecialKeyMatch::ImeOn/Off/Toggle`、素の
+物理キーとして押されたら常にactuationしてよい経路、BUG-14の
+`event.injected`除外もそのまま効く）へ振り分ける
+（`route_thumb_key_action`が`left_thumb_key`/`right_thumb_key`の現在の
+解決結果を見て、親指キーならdelegate-to-open-axis、そうでなければ
+actuation-autoのどちらに載せるかを毎リロード時に決定する）。
+
+**専用Fnキーとの非対称（F5）:** `muhenkan_solo_tap_dedicated_fn_key`が
+設定済みだと、無変換が親指キーの場合はdelegate-to-open-axisより専用Fnキー
+が優先されるため無変換側だけ黙って無効化される（henkan側には専用Fnキーの
+概念自体が無い）。この場合`log::warn!`で通知する。
+
+### 既知の残存事項（別Issue/未対応のまま）
+
+- **F1（低優先度、`Toggle`をopt-inした場合のみ関係）**: 上記「チョード
+  判定に失敗した経路」からdelegate-to-open-axisが発火する既存の穴
+  （MS-IME版にも同様に存在、新規欠陥ではない）。恒久対策は
+  `resolve_pending_thumb_as_single`に「第2キーが実際に届いたか」を示す
+  引数を足し、その場合はdelegateをスキップする改修（MS-IME側にも同時に
+  効く）。`Toggle`を使わない限り（`On`/`Off`は冪等なので）実害は無い。
+- **`custom_keymap_table`のHenkan/Muhenkanトークンの状態依存
+  `Toggle`ケース**（ATOKベースからカスタムを作った場合）も、静的テーブル
+  のATOKケースと同じopt-inゲートの対象（`gate_thumb_key_ime_actions`が
+  情報源を問わず`Toggle`のみゲートするため、実装上は自動的にカバー
+  済み）。
+- **実機ソーク未実施**: overlay検出・ATOK静的テーブル・CUSTOM literal
+  トークン検出のいずれも、実機のGJIで動作確認できていない
+  （報告者・プロジェクトオーナーいずれの環境でも`overlay_keymaps`や
+  ATOKプリセットが実際に有効だったケースは確認できていない）。
+- **medium、2026-09-05、Phase 1ホリスティックレビュー再確認で新規発見**:
+  無変換/変換が親指キーでない場合に`route_thumb_key_action`が
+  `ime_on_auto`/`ime_off_auto`へ載せる経路は、GJI側の「状態限定」
+  （例: `DirectInput`のときだけIME ON、それ以外は通常の変換キーとして
+  機能する行）を落とす。`awase-gji-config/src/keymap.rs`の
+  `extract_ime_keys`は`IMEOn`/`IMEOff`行だけを見て無条件ONキーとして
+  分類するため、同じCUSTOMテーブルに`Composition Henkan Convert`
+  （通常の変換動作）の行があってもawase側には伝わらない。
+  `Engine::match_ime_on_off_auto`は状態を見ずにマッチし
+  `Decision::consumed_with`でキーをconsumeするため、GJIがCUSTOM
+  キーマップかつ変換/無変換を親指キーにしていないユーザーでは、
+  composing中に素の変換キーを押しても本来の変換動作が効かなくなりうる
+  （F15-F24でこれが無害だったのはIME制御以外の役割を持たないキーだから
+  であり、変換/無変換は役割を持つため同じ扱いは成立しない）。実害は
+  「GJIがCUSTOMキーマップ」かつ「変換/無変換を親指キーにしていない」
+  ユーザーに限られ、overlayケース（全4状態を覆う）は該当しない。
+  今すぐ修正が必要なほどではないが、Phase 2でshadow_actionオーバーレイ
+  方式へ寄せる際に一緒に見直すべき（`is_in_safe_autodetect_range`を
+  迂回してこの2キーをactuation-autoに載せている設計自体を再検討する）。
+
+### ひらがな/カタカナキーを親指シフトキーに設定しているエッジケース（2026-09-05追記、同日設計訂正）
+
+ユーザー指摘: 「ひらがなキーを親指シフトキーとして設定した上で、ひらがな
+単独打鍵をGJI設定でIME ON/OFFに設定している」ケースも、無変換/変換と
+全く同じ構造の問題になりうる。実際、Mozc本家`ms-ime.tsv`/`mobile.tsv`
+（GJIの実質既定プリセット）は`DirectInput`状態でHiragana/Katakana双方を
+`IMEOn`に割り当てている——つまりATOKプリセットの無変換/変換より、こちらの
+方がむしろ**発生条件が緩い**（デフォルトプリセットで既に該当するため）。
+
+**重要な訂正（2026-09-05、Opus敵対的設計レビューで判明。旧記述は誤り
+だったので下は残さず訂正後の内容のみ記す。詳細は
+[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)参照）:**
+当初「Hiragana/Katakanaにはdelegate-to-open-axis相当の安全な自動反映
+手段が構造的に存在しない」と結論づけ、`nicola_fsm.rs`を汎用化する設計
+（ADR-135 Phase 2 v1）を起票したが、これは誤りだった。**実際には
+`crates/awase-windows/src/vk.rs::ImeKeyKind::from_vk`
+（`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`/`VK_DBE_ALPHANUMERIC`/`VK_KANJI`/
+`VK_IME_ON`/`VK_IME_OFF`等を認識）→`hook.rs`の`shadow_action`→
+`runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`という、既存の
+shadow-toggle機構が既にこれらのキーの追従を担当している**（BUG-14の
+`event.injected`除外・`IntentWitness`型化込みで実装済み）。
+delegate-to-open-axis（Step4b）が必要だったのは、この静的マップに
+`VK_CONVERT`/`VK_NONCONVERT`（無変換/変換）**だけ**が含まれていない
+からであり、汎用化すべき軸を取り違えていた。当初案のまま実装していたら、
+`shadow_action`を既に持つキーに対して2つの経路が同一打鍵で二重に
+発火する（`VK_KANJI`はToggle同士で二重発動＝実質no-op）という致命的な
+不具合を作るところだった。
+
+**正しい方向性（設計確定、未実装、ADR-135参照）:** `nicola_fsm.rs`は
+変更しない。代わりに、Phase 1で実装済みの`classify_mode_key_ime_action`
+の判定結果を、`ImeKeyKind::from_vk`由来の**静的**`shadow_action`への
+オーバーライドとして`kp_stage_shadow_ime_toggle`に流し込む
+（`sync_direction` > オーバーライド > 静的`shadow_action`の優先順位）。
+無変換/変換はこの機構の対象外のまま（`ImeKeyKind::from_vk`が最初から
+この2キーを認識しないため）、delegate-to-open-axisが引き続き専任する
+——対象キーが重複しない2つの独立した機構として共存する。
+
+`classify_mode_key_ime_action`関数自体（overlay/CUSTOM literalトークン/
+プリセット静的知識の3ソースを優先順位付きで統合する部分）は正しい設計
+のまま維持し、消費先だけをdelegate-to-open-axisからshadow_actionへの
+オーバーライドへ差し替える。回帰テスト
+（`classify_msime_mobile_preset_yields_on_for_hiragana_katakana`等）も
+そのまま有効。
+
+**Phase 2単独の限界（2026-09-05、Opus敵対的レビュー1ラウンド目で発覚）:**
+このオーバーライドは、Hiragana/Katakanaが**親指シフトのチョードキー
+として設定されていない場合にのみ**適用する。理由は
+`kp_stage_shadow_ime_toggle`が単独タップ確定を待たず`KeyDown`ごとに
+無条件で発火するため、親指キーの場合にオーバーライドを`Off`/`Toggle`に
+すると、NICOLAのチョード打鍵のたびにIME OFFが再アサートされたり
+IMEが反転したりする（後者はADR-092で既に撤回済みの「毎打鍵ごとに
+反転する」致命的回帰と同型）。**したがってこの節の見出しである
+「ひらがなキーを親指シフトキーとして設定した上でIME ON/OFFに設定して
+いるエッジケース」（BUG-115の本来の動機シナリオ）自体は、Phase 2**単独**
+のこの設計では救えない。**
+
+**Phase 3で統合対応（2026-09-05、ユーザー指摘「Phase 2とPhase 3を同時に
+やる方が効率的」を受け設計統合）:** Henkan/Muhenkanが既に持つ
+`delegate-to-open-axis`（チョード確定ロジックを経由し単独タップの
+ときだけ発火する既存の安全な機構）をHiragana/Katakanaへも拡張する
+Phase 3を新設し、Phase 2と統合してADR-135で設計・レビューする方針に
+変更した。これにより「Hiragana/Katakanaを親指キーにしている場合」も
+正しく解決できる見込み——ただしHiragana/Katakanaは（Henkan/Muhenkanと
+異なり）MS-IME/CTFから実際に注入されうるキー（BUG-14で実機確認済み）
+のため、`delegate-to-open-axis`をそのまま拡張すると新たなBUG-14型の
+脆弱性を作る。この対策として`injected`フラグをNICOLAコア
+（`ClassifiedEvent`/`PendingThumbData`）まで伝播させるコア拡張が
+必要になった（現状`RawKeyEvent.injected`は`Engine`の境界で握りつぶされ
+NICOLAコアへ渡っていない）。**Phase 3はOpus敵対的設計レビュー3ラウンド
+で収束済み（2026-09-05、「以上で全指摘、収束」）。実装着手前の実機検証
+（`[shadow-toggle] intent 昇格`ログの実出力・BUG-52非再発）も完了済み
+（2026-09-05、dragonflyg4）。設計・検証とも完了、未実装。** 詳細は
+[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+「Phase 2単独の限界」「Phase 3」節参照。
+
+**別件観察（2026-09-05、実機検証中に発見・未調査・BUG-115とは無関係）:**
+物理の「ひらがな/カタカナ」兼用キーで、Shift+押下（カタカナ狙い）が
+実際にはひらがなモードになる現象を確認した（ゆっくり確実に操作しても
+再現）。`RUST_LOG=debug`のログでは、物理ドライバがShift有無を正しく
+`vk=0xF1`（カタカナ）/`vk=0xF2`（ひらがな）に区別して送出できている
+ことを確認済みで、awase側のVK分類・shadow-toggle機構（`kind=
+PhysicalImeKey`、IME開閉軸のみ扱う）は両VKとも正しく`action=TurnOn`
+として処理している。したがって原因はawaseのIME開閉ロジックではなく、
+GJI自身の変換モード解釈、またはOS側の別レイヤーにある可能性が高い。
+未調査のまま記録のみ（ADR-135「未検証事項」節にも同じ観察を記録）。
+
+**Phase 3設計上の既知の限界（実装前から判明済み、ADR-119の明文化された
+不変条件への既知の違反、2026-09-05）:** Phase 3のdelegate-to-open-axis
+は、単独タップ確定時に`Decision::Consume`（物理キーをOSへ送出しない）
+を返す。`AppImeProfile::InputRelay`（MWB/RDP等、awase自身がactuationを
+持たず物理キーをそのまま配送する前提のプロファイル、ADR-119決定4/
+issue #136で確立）下では、Consumeしたキーに対してawase側もactuateしない
+（`executor.rs:788-791`が`NotOwned`を返して即return）ため、「OS側にも
+awase側にも誰もIMEを切り替えない二重の空振り」（ADR-119が明文化して
+禁じる不変条件）にそのまま該当する。ADR-119決定4のcondition (b)
+（物理IMEモードキーをsuppressしない）は`transport.rs::plan`に実装
+されているが、`plan`の結果が参照されるのは`Decision::PassThrough`/
+`PassThroughWith`のときだけで、`Decision::Consume`経路には構造的に
+効かない（`executor.rs::execute_relay:398-443`）——「transportで
+Allowしているから大丈夫」ではない。**この限界はHenkan/Muhenkanの
+既存delegate-to-open-axisも既に持っており（新規欠陥ではない）**、
+Phase 3はこれをHiragana/Katakanaの2キー分拡大するだけ。恒久修正
+（InputRelay時はdelegateを発火させず既定分岐＝Passthroughへ落とす等）
+はPhase 3単体ではなく、Henkan/Muhenkanと共通の1 issueとして別途起票
+すること。詳細は[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+「Phase 3のリスク評価」節参照。
+
+**Phase 1実装済みコード自身が同型の二重actuationバグを持っていた
+（Opusホリスティック設計レビューで発覚・同日撤去、2026-09-05）:**
+上記のPhase 2撤回（`nicola_fsm`汎用化案）を検証したのと同じ観点で
+「実装済みのPhase 1もOpusで俯瞰的・敵対的にレビューしてほしい」という
+指示のもと再レビューしたところ、**Phase 1で既に実装・コミット前の
+作業ツリーに入っていた**`gji_charset_autodetect.rs::windows_impl::
+sync_gji_charset_autodetect`のHiragana/Katakanaループ
+（`classify_mode_key_ime_action`の結果を、親指キーでなければ
+`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`へ直接pushしていた部分）が、
+撤回したPhase 2 v1と全く同じ欠陥を持っていたことが判明した。
+`VK_DBE_HIRAGANA`/`VK_DBE_KATAKANA`は`vk.rs::ImeKeyKind::from_vk`の
+静的マップで既に`shadow_action`（固定で`TurnOn`）を持っており、
+`kp_stage_shadow_ime_toggle`が毎打鍵belief更新とactuationの両方を行う。
+Phase 1のループはこれとは独立にactuation-autoへも同じキーを載せていたため、
+同一打鍵で`kp_stage_shadow_ime_toggle`と`Engine::match_ime_on_off_auto`
+→`ime_set_open_effects`が両方発火する。後者は状態が変化しなくても
+`Effect::Ime(SetOpen)`を無条件に積む（`engine.rs:810-829`）ため、
+二重発火自体は常に起きる（発火結果が偶然一致してno-opになるかは
+タイミング次第）。しかも影響範囲はATOKの特殊ケースではなく、
+**config1.dbが読めない場合のfail-openフォールバックも含め、
+MS-IME/MOBILEプリセット（GJIの実質既定）でHiragana/Katakanaを
+親指キーに設定していないGJIユーザーほぼ全員**（`classify_mode_key_ime_action`
+がこれらのプリセット下でHiragana/Katakanaに`Some(On)`を返し、
+`On`はopt-inゲートを素通りするため）に該当していた。
+
+**対応（2026-09-05）:** Phase 1のこのループ（`windows_impl`内、
+`warn_mode_key_thumb_key_unsupported_if_needed`関数とその専用デデュープ
+ラッチ`LAST_MODE_KEY_THUMB_WARNING`込み）を完全に撤去した。無変換/変換の
+delegate-to-open-axis/actuation-auto配線（`VK_CONVERT`/`VK_NONCONVERT`は
+`ImeKeyKind::from_vk`に含まれず`shadow_action`を持たないため無関係）は
+変更していない。`classify_mode_key_ime_action`関数自体とその回帰テスト
+（`gji_charset_autodetect::tests`モジュール、Hiragana/Katakana向けの
+ケースを含む）は、Phase 2（shadow_actionオーバーレイ）実装時に再利用する
+前提でそのまま残した（呼び出し元だけ削除）。
+`cargo test -p awase-windows --lib gji_charset_autodetect`で全20テストの
+再確認済み。
+
+### 設定UIの既知の欠陥（別件、2026-09-05発見・同日修正）
+
+`config.toml`の`[keys.ime_detect]`セクションを手動編集していても、
+設定UI（awase-settings.exe）から設定を保存すると`ime_detect`の内容が
+消えてしまう、という報告があった（2026-09-05、ユーザー報告）。
+
+**原因（調査済み）:** 設定UI（`crates/awase-settings/src/main.rs`）は
+起動時に読み込んだ`AppConfig`を`self.config`として丸ごと保持し、
+「適用」時もその丸ごとのスナップショットをそのままファイルへ上書き
+保存する設計（`apply_confirmed()`）。`keys.ime_detect`はGUIに編集
+ウィジェットが無い（`4d36f663`で撤去済み）ため`self.config.keys.ime_detect`
+はGUI操作では一切変化せず、起動時点の値のまま固定されている。設定画面を
+開いたまま外部エディタで`[keys.ime_detect]`を手動編集すると、次に
+「適用」を押した瞬間にこの起動時点の古い値でファイルが上書きされ、
+外部編集が消えて見えていた（stale read-modify-write / lost update）。
+`AppConfig`を「丸ごと新規組み立て」しているわけではなく、GUIが把握して
+いない他のフィールド一般が消えるわけではない——`ime_detect`のように
+「GUIに全く編集経路が無いフィールド」に固有の問題。
+
+**修正（2026-09-05）:** `apply_confirmed()`の冒頭で、保存直前に
+`config.toml`をディスクから読み直し、`keys.ime_detect`だけをその最新値へ
+差し替えるようにした（`crates/awase-settings/src/main.rs::apply_confirmed`）。
+GUIが編集しうる他のフィールドには一切触れない（読み直しに失敗しても
+保存自体は中止しない）。回帰テスト
+`layout_tab_repro::apply_confirmed_preserves_externally_edited_ime_detect`
+を追加済み（修正を外すとfailすることを確認済み）。
+
+新設した`gji_thumb_key_ime_toggle`は、この問題の対象外（`[general]`の
+通常フィールドで、GUIの「上級者向け設定」タブにチェックボックスとして
+追加済み——`main.rs`の`swallow_alt_kana_input_method_switch`チェックボックス
+の直後）。編集ウィジェットが存在するフィールドは`self.config`が
+GUI操作で正しく更新されるため、この種のstale化は起きない。
