@@ -2,8 +2,25 @@
 
 ## ステータス
 
-**設計承認（Opus 敵対的レビュー round4 で承認、v5）。
-検証計画0（D4 先行実装によるログ取得）に進める水準。**
+**実装済み・実機で解決確認済み（2026-09-05）。**
+
+D1c（bootstrap 時の `app_policy` 初期化、根本原因1）と、
+`ReadBackQuery::AnyFreshEvidence` からの自己言及ソース除外
+（`ObserverPoll`・`ConvOpenInference` の2ソース、Finding 5）を実装。
+実機（dragonflyg4、Windows Terminal + GJI）でログ全体94,913行中 drift
+correction バーストは1回のみ、`gave up (Blind)` 後の再武装は0件まで
+収束したことを確認した（詳細は `docs/known-bugs.md` BUG-114 追記参照）。
+D1（`ir_apply_drift_correction` のライブ再導出）・D1a
+（`ImePolicyProfile::InputRelay` 追加）は根本原因2系向けの補完として
+未実装のまま——実機ソークで当該経路の再発が確認された場合に着手する。
+
+<details>
+<summary>旧ステータス（設計段階、参考として保持）</summary>
+
+設計承認（Opus 敵対的レビュー round4 で承認、v5）。
+検証計画0（D4 先行実装によるログ取得）に進める水準。
+
+</details>
 BUG-113（[ADR-133](133-gji-ime-mode-key-sendinput-batch-shape.md)）の
 実機調査中に発見。`docs/known-bugs.md` BUG-114 に実機ログを記録済み。
 

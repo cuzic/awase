@@ -2,8 +2,32 @@
 
 ## ステータス
 
-**設計承認（Opus 敵対的レビュー round4 で承認、v5）。
-D0（実機での機構検証3件）に進める水準。**
+**再調査中（2026-09-05）。バッチ形状（候補V/A/B3/B4）・VK値
+（`VK_IME_OFF` vs `VK_KANJI`）の両仮説は実機A/Bで反証、これらの候補は
+不採用。ユーザー実機観測から PowerShell PSReadLine との相互作用が
+トリガーの一部であることは確認したが、awase 側のどの送信方式・呼び出し
+経路が「@」の必要十分条件かはまだ未特定——「相手（GJI/PSReadLine）の
+実装が脆弱」であることは awase 側の送信動作が無関係であることを
+意味しない（他の known-bugs エントリと同じ扱い）。
+`set_ime_open_cross_process`（`ImmSetOpenStatus`）は TsfNative（Windows
+Terminal 含む）に対してそもそも効果を持たないため候補から除外した。
+
+呼び出し連鎖の全数調査で見つかった新候補（`kp_stage_idle_conv_check` が
+spawn する GJI への cross-process 読み取りクエリが、`GjiDirectStrategy::
+apply` の同期 `SendInput` と競合しうる）と、既知の「2重actuation」
+（`shadow_toggle_off_sync`/`engine_decision_sync`）を切り分ける第2弾
+診断スパイクを実装済み・実機投入待ち（`docs/known-bugs.md` BUG-113
+「未解決・次にやること」参照）。**
+
+D0-3診断コード一式（バッチ形状・VK値検証専用）は役目を終えたため撤去済み。
+
+<details>
+<summary>旧ステータス（設計段階、参考として保持）</summary>
+
+設計承認（Opus 敵対的レビュー round4 で承認、v5）。
+D0（実機での機構検証3件）に進める水準。
+
+</details>
 
 v1 は「裸2イベントバッチが原因」という仮説の下、対象VK自身の自己エコー
 パディング（候補A）と偽Ctrlブラケット（候補B、mode=3相当）を提示したが、

@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**バッチ形状仮説は実機A/Bで反証、真因は未確定のまま持ち越し**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**バッチ形状・VK値の両仮説は反証。PowerShell PSReadLine との相互作用が引き金と確認したが、awaseのどのactuation/probeが実際にそれを踏み抜いているかは未特定——次は実機でそこを切り分ける**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -13986,22 +13986,105 @@ V/A/B3/B4 のいずれか）に素通りしていた。ユーザーが Alt+半�
 未検証のまま持ち越しとなった。episode 単位で判定を1回に固定し2回目を
 明示的に no-op で吸収するよう修正済み、次のスパイクで再検証する。
 
-**現状**: バッチ形状仮説は反証、真因は「VK 値の誤読」仮説に絞り込み中。
-D0-3（`KanjiToggleStrategy` 単独発火で `p` が混入するか）の実機再検証待ち。
+**追記（2026-09-05 続き・VK 値のスキャンコード誤読仮説も反証）**:
+ADR-133 Major 5（JIS 106配列で「@」キーのスキャンコードが `VK_IME_OFF`
+(0x1A) の値と一致するという機構仮説）を検証するため、`KanjiToggleStrategy`
+（`VK_KANJI`=0x19、JIS 配列なら本来「P」）を Alt+物理半角/全角キーで
+強制発火させる診断（D0-3、`ime_controller.rs`/`ime.rs` の
+`diag_bug113_*` 一式）を実機で実行した。結果、**「p」は一切混入せず
+「@」のみ出力された**。`VK_IME_OFF`(0x1A) でも `VK_KANJI`(0x19) でも
+「@」しか出ないため、VK 値そのもの・スキャンコード誤読という機構仮説も
+反証された。
+
+**追記（2026-09-05 続き・PSReadLine との相互作用を確認、ただし「awase側の
+問題ではない」は誤った結論——訂正）**:
+ユーザーの追加観測（(1) awase Engine を `Ctrl+Shift+無変換` で無効化する
+と発生しない、(2) 同じ Windows Terminal 内でも SSH/MSYS2 bash セッション
+では発生せず PowerShell セッションでのみ発生する）から PowerShell の
+PSReadLine（予測入力/ゴーストテキスト表示モジュール）との相互作用を疑い、
+PowerShell 上で `Remove-Module PSReadLine -Force` を実行して同モジュールを
+無効化したところ、**「@」が発生しなくなることを実機確認した**。
+
+セッション終盤、この結果を「GJI と PSReadLine の相互作用が真因であり
+awase 側のコードバグではない」と結論づけて本 BUG をクローズ扱いにしたが、
+**この結論はユーザーのレビューで誤りと指摘され撤回した**。トリガーは
+一貫して「awase が GJI に対して何らかの IME actuation（mode key
+送信）を行うこと」であり、PSReadLine/GJI 単体ではこの現象は起きない。
+「相手側の実装が脆弱である」ことは、その脆弱性を実際に踏み抜いている
+awase の送信動作が無関係であることを意味しない——これは本リポジトリの
+他の既知バグ（Chrome cold-start、TSF native 系等）が「相手アプリ/IME の
+実装が原因」であっても awase 側でタイミング調整・送信方式変更・
+ブラックリスト等の緩和策を講じてきたのと同じ扱いにすべきだった。
+
+**未解決・次にやること（実機切り分け、第2弾スパイク実装済み・実機検証待ち）:**
+バッチ形状（V/A/B3/B4/baseline）と VK 値（`VK_IME_OFF` vs `VK_KANJI`）は
+いずれも無関係と判明した。上記「修正試行2」の mode テーブルで唯一
+「出ない」という結果だった mode 1（imm-cross、`set_ime_open_cross_process`/
+`ImmSetOpenStatus`）は、**候補から除外した**: `AppImeProfile::TsfNative`
+（Windows Terminal 含む）は `can_use_imm32_cross_process() == false`
+（`focus/class_names.rs`）であり、この API はそもそも TSF アプリに
+効果を持たない。したがって mode 1 で「@」が出なかったのは「回避できた」
+のではなく「単に IME 状態が変化しなかった」だけの可能性が高く、意味のある
+比較にならない。
+
+2026-09-05 続き、呼び出し連鎖の全数調査（物理半角/全角キー押下から
+awase が行う Win32/TSF 呼び出しを observer/probe/actuation すべて洗い出し）
+で、**バッチ形状・VK値ラウンドでは一度も検証されていない新しい候補**を
+発見した: `runtime/key_pipeline.rs::kp_stage_idle_conv_check`
+（アイドル500ms超・直近1500ms以内に明示的IME操作なしという、本 BUG の
+再現条件と一致するゲート）が非同期ワーカースレッド上で
+`get_ime_conversion_mode_raw_timeout_async`（GJI の IME ウィンドウへの
+`SendMessageTimeoutW(WM_IME_CONTROL/IMC_GETCONVERSIONMODE)`、**読み取り
+専用**のcross-processクエリ）を spawn しており、これは
+`GjiDirectStrategy::apply` の同期 `SendInput` 発行（`shadow_toggle_off_sync`
+経由、`kp_run_inner` のステージ順でこの spawn より後）と時間的に競合
+しうる。この読み取りは `docs/known-bugs.md` の「Windows Terminal 向け
+IMM クエリスキップ（`ime.rs::read_ime_state_full` の `is_tsf_native_window`
+早期return）」の対象**外**——別のコードパスであり、スキップされずに
+実際に発行される。
+
+第2弾診断スパイク（`fix/bug113-114-ime-off-batch-and-feedback-staleness`
+ブランチに実装済み、実機投入待ち）は、2つの独立した hidden config
+トグルで以下を切り分ける（`ime_controller.rs`/`key_pipeline.rs`/
+`config.rs` 参照。組み合わせは config.toml を編集して awase を再起動する
+ことでテストする。1トグル・1状態あたり最低20 episode程度の試行を推奨
+——round1 レビュー Major 7 の統計的脆弱性の教訓）:
+
+1. `diag_bug113_dedup_gji_off_actuation`: 同一の物理キー押下で
+   `shadow_toggle_off_sync`/`engine_decision_sync` の2経路から
+   `GjiDirectStrategy::apply(open=false)` が2回呼ばれ、実際に
+   `send_ime_mode_key` の `SendInput` を2回発行している点（BUG-113調査中
+   に発見済み）自体が「@」の必要条件かどうかを、1クローズepisodeにつき
+   1回だけの実アクチュエーションに絞って確認する。
+2. `diag_bug113_skip_idle_conv_probe`: 上記で新たに見つかった
+   `WM_IME_CONTROL/IMC_GETCONVERSIONMODE` の cross-process 読み取りを
+   丸ごとスキップし、「@」の引き金が実際にこの読み取りとの競合なのかを
+   確認する。
+
+**現状**: 真因候補は「awase の GJI actuation」まで絞り込んだが、
+具体的にどの送信方式・どの呼び出し経路が「@」の必要十分条件かは
+未特定のまま。旧診断コード一式（バッチ形状・VK値検証専用）は役目を
+終えたため撤去し、上記2トグルの新しい診断スパイクを実装済み
+（未反映）。回避策（PSReadLine無効化、または該当セッションでの awase
+Engine 無効化）は暫定手段として引き続き有効。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
 本 BUG の調査により前提が反証され、真因候補が `send_ime_mode_key` の
 `wScan=0` →（反証）→ BUG-114 →（BUG-114単独では説明できないと判明）→
-`VK_IME_OFF` 単体 `SendInput` バッチ、と段階的に絞り込まれた経緯を記録）、
+`VK_IME_OFF` 単体 `SendInput` バッチ →（反証）→ VK 値のスキャンコード
+誤読 →（反証）→ PSReadLine との相互作用が引き金（確認、ただし
+awase側の送信方式・呼び出し経路のどれが必要十分条件かは未特定）、と
+段階的に絞り込まれた経緯を記録)、
 BUG-114（同じ調査から派生した独立のバグ、drift correction の
-`FeedbackPolicy::Read` 無限再送）、BUG-110/ADR-132（同じ「Windows Terminal
+`FeedbackPolicy::Read` 無限再送。こちらは awase 側の実在バグとして別途
+修正済み）、BUG-110/ADR-132（同じ「Windows Terminal
 + GJI で余分な @」という症状クラスの別原因、`IntentStore`/`last_intent`
 の絶対的権威化が真因——本 BUG・BUG-114 とは異なる独立の原因である点に
-注意）。実装は `spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ
-（`develop` 未マージ、診断スパイク一式が残っている）。
+注意）。`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ（`VK_KANA` 置換、
+この機体では到達不能コードだったため不要と判明）は削除候補。
 
-## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（原因確定、修正方針は敵対的レビュー待ち）
+## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
