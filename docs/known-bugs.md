@@ -13810,3 +13810,59 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 （「未解決の設計課題」3 の一部を本 BUG が解決）、
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
+
+**追記（2026-09-04、不具合報告 `01M1NEVHMXXY4903124J0RMS68` の調査で判明）:**
+`awase-settings.exe` の `"Window Class"` とは別に、`lockapp.exe`/`explorer.exe`
+系の UWP 入力ウィンドウ（journal 上のクラス名は `Windows.UI.Core.CoreWindow`、
+ログ表示名は `"InputSiteWindowClass"`）でも `[imm-learning] profile 降格:
+Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再発火している
+実機ログを確認した。同一セッションでその後 GJI のモード切替が不安定になる
+症状（英数キーで OFF にした後、対になる ON キーを押すまで親指シフトが
+再起動しない——ただしこの部分自体は仕様どおりの挙動と判定済み、本 BUG の
+スコープ外）と description 本文中の不自然な「あ」の混入（「あさくらエディタで」
+「あ症状が出ました」）が観測されたが、journal に「あ」の実際の出力イベント
+自体は記録されておらず、この誤降格と「あ」混入の直接の因果は本セッションでは
+確認できていない。**トリガー条件（このタイミングでこのプロセス/クラスの
+組み合わせだけ誤降格する理由）は依然不明**だが、対象が `awase-settings.exe`
+の `"Window Class"` 単体ではなく複数のプロセス・ウィンドウクラスにまたがる
+ことを示す独立した実データとして記録する。詳細は
+[docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
+
+**追記2（2026-09-04、未検証の独立仮説・計装のみ）:** 上記調査の過程で、
+`Imm32Unavailable` 誤学習とは**別の、まだ実機で一度も確認できていない**
+独立の仮説をコードリーディングのみで発見した。`InjectionMode::Unicode`
+（`AppKind` から決まる軸で、上記の `AppImeProfile::Imm32Unavailable` とは
+独立）の long-cold warmup（`output/mod.rs::send_unicode_cold_warmup_keys`）は
+GJI を起こすため `VK_A` DOWN/UP → `VK_BACK` DOWN/UP という犠牲キーを送り、
+`VK_A` が作る「あ」の composition を即座に BS で取り消す想定になっている。
+`tsf/warmup/unicode_cold_warmup_fsm.rs::UnicodeColdWarmupFsm` は
+`gji_write_bytes()` の増加（または 200ms タイムアウト）だけを「GJI が
+反応した」証拠として次の deferred chars 送信へ進むが、その増加は `VK_A`
+自身の書き込みでも起こりうるため、**BS が composition を確実に取り消せた
+ことまでは保証しない**。GJI が cold で処理が遅れていると、犠牲キーの
+「あ」が破棄されないまま残る可能性がある。
+
+当初この仮説に基づき、GJI candidate window の可視性を見て `VK_ESCAPE` で
+残存 composition を強制破棄する挙動変更を実装したが、opus-adversarial-consult
+（2026-09-04）で **No-Go** の判定を受けた。主な指摘: (1) 候補ウィンドウの
+SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火するため、
+最も composition が残っていそうな経路（write-bytes 増加パス、~10ms後）では
+可視性チェックがほぼ確実に false のまま＝提案した対策が構造的に発火しない
+一方、200ms タイムアウト側（そもそも composition が存在しない可能性が高い側）
+でだけ発火してしまう、証拠と対処が逆転した設計だった。(2)
+`gji_candidate_visible` はプロセス/ウィンドウのフィルタが一切ない全
+システム観測で、無関係プロセスの候補表示に汚染されうる実例が既知
+（`01M0VJEWSEZFFWAV0JFEVPB3D5` 行、342回の無関係発火）。(3) HIDE
+イベントの取りこぼしで恒久的に true にラッチしうる。(4) 追加した回帰
+テストは Windows 限定コードで Linux では未実行、かつ実行されると
+`OUTPUT_GATE_TEST_LOCK` を取っておらず既存テストを壊す構造だった。
+
+そのため挙動変更（`VK_ESCAPE` 送信）は見送り、**挙動を一切変えない
+診断ログのみ**を `UnicodeColdWarmupFsm` の flush 時点に追加した
+（write bytes 増分・GJI candidate SHOW の遷移有無・
+`ime_composition_active_now()` を `info!` で記録、`fix/bug112-...` という
+ブランチ名・コメントも「未検証の独立仮説」であることが伝わる表現に修正）。
+この診断ログにより、次に「あ」混入が実機で再現した際、この経路が実際に
+関与しているかどうかをログから判定できるようにした。**本仮説は BUG-112
+の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
+候補である**——両者を混同しないこと。
