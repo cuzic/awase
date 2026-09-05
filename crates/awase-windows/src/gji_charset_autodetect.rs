@@ -23,7 +23,7 @@
 //!   空の結果に静かにフォールバック」という既存方針を踏襲する。
 
 use awase::config::ParsedKeyCombo;
-use awase::types::VkCode;
+use awase::types::{ShadowImeAction, VkCode};
 
 use crate::vk::VkCodeExt as _;
 
@@ -208,23 +208,16 @@ pub(crate) fn classify_thumb_key_ime_actions(
 /// delegate-to-open-axis（`henkan_delegate_to_open_axis`/
 /// `muhenkan_delegate_to_open_axis`、`src/engine/nicola_fsm.rs`の専用
 /// フィールド2つ）が必要だった。`Hiragana`/`Katakana`バリアントと
-/// [`classify_mode_key_ime_action`]自体はここに残してあるが、
-/// `windows_impl::sync_gji_charset_autodetect`からの実際の配線
-/// （actuation-autoへ載せる処理）はPhase 1ホリスティックレビューで
-/// 既存のshadow-toggle機構との二重actuationが発覚し撤去済み
-/// （2026-09-05）。GJI検出値をshadow_actionへ正しく反映する設計は
-/// ADR-135「Phase 2（再設計）」で扱う——実装時にこの分類関数と
-/// テストを再利用する想定。
+/// [`classify_mode_key_ime_action`]は、無変換/変換向けの既存delegateに加え、
+/// ADR-135 Phase 2/3でHiragana/Katakanaのshadow_action overrideと
+/// delegate-to-open-axisにも使う。Hiragana/Katakanaをactuation-autoへ
+/// 載せる処理は、既存shadow-toggleとの二重actuationを作るため採用しない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ModeKeyCandidate {
     Henkan,
     Muhenkan,
-    // Phase 2（ADR-135「Phase 2（再設計）」）実装まで本番コードから未使用。
-    // classify_mode_key_ime_action と回帰テストのために維持している。
-    #[allow(dead_code)]
     Hiragana,
-    #[allow(dead_code)]
     Katakana,
 }
 
@@ -412,6 +405,73 @@ pub(crate) fn gate_thumb_key_ime_actions(
     }
 }
 
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const fn ime_toggle_kind_to_shadow_action(
+    kind: ImeToggleKind,
+    opt_in: bool,
+) -> Option<ShadowImeAction> {
+    match kind {
+        ImeToggleKind::On => Some(ShadowImeAction::TurnOn),
+        ImeToggleKind::Off => Some(ShadowImeAction::TurnOff),
+        ImeToggleKind::Toggle if opt_in => Some(ShadowImeAction::Toggle),
+        ImeToggleKind::Toggle => None,
+    }
+}
+
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn resolve_gji_mode_key_shadow_overrides(
+    is_gji: bool,
+    raw: Option<&awase_gji_config::wire::GjiRawConfig>,
+    opt_in: bool,
+) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
+    if !is_gji {
+        return (None, None);
+    }
+    let Some(raw) = raw else {
+        return (None, None);
+    };
+    let hiragana = classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, raw)
+        .and_then(|kind| ime_toggle_kind_to_shadow_action(kind, opt_in));
+    let katakana = classify_mode_key_ime_action(ModeKeyCandidate::Katakana, raw)
+        .and_then(|kind| ime_toggle_kind_to_shadow_action(kind, opt_in));
+    (hiragana, katakana)
+}
+
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn resolve_mode_key_shadow_override_for_event(
+    vk: VkCode,
+    hiragana_override: Option<ShadowImeAction>,
+    katakana_override: Option<ShadowImeAction>,
+    thumb_pair: (VkCode, VkCode),
+) -> Option<ShadowImeAction> {
+    if vk == thumb_pair.0 || vk == thumb_pair.1 {
+        return None;
+    }
+    if vk == ModeKeyCandidate::Hiragana.vk() {
+        hiragana_override
+    } else if vk == ModeKeyCandidate::Katakana.vk() {
+        katakana_override
+    } else {
+        None
+    }
+}
+
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn delegate_owns_mode_key_shadow_toggle(
+    vk: VkCode,
+    is_configured_thumb_key: bool,
+    hiragana_delegate: Option<ShadowImeAction>,
+    katakana_delegate: Option<ShadowImeAction>,
+) -> bool {
+    is_configured_thumb_key
+        && ((vk == ModeKeyCandidate::Hiragana.vk() && hiragana_delegate.is_some())
+            || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some()))
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::{reset_streak_latch_for_reload, sync_gji_charset_autodetect};
 
@@ -425,8 +485,9 @@ mod windows_impl {
     use crate::runtime::Runtime;
 
     use super::{
-        classify_thumb_key_ime_actions, extract_ime_on_off_toggle_combos,
-        gate_thumb_key_ime_actions, ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
+        classify_mode_key_ime_action, classify_thumb_key_ime_actions,
+        extract_ime_on_off_toggle_combos, gate_thumb_key_ime_actions,
+        resolve_gji_mode_key_shadow_overrides, ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
     };
 
     const NOT_GJI: u8 = 0;
@@ -446,6 +507,7 @@ mod windows_impl {
     /// GJI⇔MS-IME往復のたびに再警告すると煩わしいため、内容が変わった
     /// ときだけ再警告する）。
     static LAST_TOGGLE_WARNING: AtomicU8 = AtomicU8::new(NOT_WARNED);
+    static LAST_MODE_KEY_THUMB_WARNING: AtomicU8 = AtomicU8::new(NOT_WARNED);
     const NOT_WARNED: u8 = 0xFF;
 
     /// `app/mod.rs::reload_config`から、GJI利用中の設定リロード時に呼ぶ
@@ -492,6 +554,8 @@ mod windows_impl {
                 // ため、GJI→MS-IME遷移ではここで解除した直後に MS-IME 側が
                 // 新しい値で上書きし、破綻しない（Opus コードレビュー指摘）。
                 app.clear_gji_ime_on_off_auto_keys();
+                app.set_gji_mode_key_shadow_overrides(None, None);
+                app.set_gji_mode_key_delegate_to_open_axis(None, None);
             }
             return;
         }
@@ -503,6 +567,18 @@ mod windows_impl {
         let raw = bytes
             .as_deref()
             .and_then(awase_gji_config::wire::parse_top_level);
+        let (hiragana_shadow_override, katakana_shadow_override) =
+            resolve_gji_mode_key_shadow_overrides(
+                true,
+                raw.as_ref(),
+                app.gji_thumb_key_ime_toggle_opt_in(),
+            );
+        app.set_gji_mode_key_shadow_overrides(hiragana_shadow_override, katakana_shadow_override);
+        app.set_gji_mode_key_delegate_to_open_axis(
+            hiragana_shadow_override,
+            katakana_shadow_override,
+        );
+        warn_mode_key_thumb_key_unsupported_if_needed(app, raw.as_ref());
 
         // BUG-115（F2、must-fix）: 無変換/変換のIME意味論は、あらゆる早期
         // return（config1.dbが読めない・session_keymap!=CUSTOMゲート）より
@@ -554,21 +630,10 @@ mod windows_impl {
         );
         app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
 
-        // BUG-115（Phase 1ホリスティックレビューで撤去、2026-09-05）:
-        // 「ひらがな/カタカナ」キーをここでactuation-auto（on/off/toggle）に
-        // 載せる処理がかつて存在したが、VK_DBE_HIRAGANA/VK_DBE_KATAKANAは
-        // `vk.rs::ImeKeyKind::from_vk`の静的マップで既にshadow_action
-        // （TurnOn固定）を持ち、`key_pipeline.rs::kp_stage_shadow_ime_toggle`
-        // が毎打鍵belief更新とactuationの両方を行う。ここで同じキーを
-        // actuation-autoにも載せると、撤回されたADR-135 Phase 2 v1
-        // （nicola_fsm汎用化案）と同型の二重actuationになる
-        // （`Engine::ime_set_open_effects`はstateが変化しなくても
-        // `Effect::Ime(SetOpen)`を無条件に積む、`engine.rs:810-829`）。
-        // GJI側の意味論（Toggleかもしれない等）をshadow_action側へ正しく
-        // 反映する設計はADR-135「Phase 2（再設計）」（shadow_actionの
-        // オーバーレイ）で扱う。`classify_mode_key_ime_action`自体と
-        // そのHiragana/Katakana向けテストは、Phase 2実装時に再利用する
-        // ためこのファイルに残してある（呼び出しは削除済み）。
+        // BUG-115 Phase 2/3: Hiragana/Katakana は actuation-auto には載せない。
+        // 非親指キーでは Runtime::enrich_ime_relevance の shadow_action
+        // override、親指キーでは resolve_pending_thumb_as_single の
+        // delegate-to-open-axis が担当する。
 
         let Some(raw) = raw else {
             log::debug!(
@@ -710,6 +775,41 @@ mod windows_impl {
         }
     }
 
+    fn warn_mode_key_thumb_key_unsupported_if_needed(
+        app: &Runtime,
+        raw: Option<&awase_gji_config::wire::GjiRawConfig>,
+    ) {
+        let Some(raw) = raw else {
+            LAST_MODE_KEY_THUMB_WARNING.store(NOT_WARNED, Ordering::Relaxed);
+            return;
+        };
+        let declined = [ModeKeyCandidate::Hiragana, ModeKeyCandidate::Katakana]
+            .into_iter()
+            .any(|key| {
+                is_configured_thumb_key(key.vk())
+                    && matches!(
+                        classify_mode_key_ime_action(key, raw),
+                        Some(ImeToggleKind::Toggle)
+                    )
+                    && !app.gji_thumb_key_ime_toggle_opt_in()
+            });
+        let packed = u8::from(declined);
+        if !declined {
+            LAST_MODE_KEY_THUMB_WARNING.store(NOT_WARNED, Ordering::Relaxed);
+            return;
+        }
+        if LAST_MODE_KEY_THUMB_WARNING.swap(packed, Ordering::Relaxed) == packed {
+            return;
+        }
+        log::warn!(
+            "[gji-charset-autodetect] GJIの設定が親指キーとして設定された \
+             Hiragana/Katakana に状態依存のIME ON/OFFトグルを割り当てていますが、\
+             gji_thumb_key_ime_toggle=false のため自動反映しません。挙動を理解した \
+             上で必要なら config.toml で gji_thumb_key_ime_toggle=true を設定してください \
+             （docs/known-bugs.md BUG-115参照）。"
+        );
+    }
+
     /// `config1.db`のパス。`%USERPROFILE%\AppData\LocalLow\Google\Google Japanese Input\config1.db`
     /// （実機確認済み、Google 日本語入力はIMEとして低整合性レベルのプロセスから
     /// も読める必要があるため`LocalLow`配下に置かれる）。
@@ -816,9 +916,12 @@ Precomposition\tEisu\tToggleAlphanumericMode
     // ── classify_thumb_key_ime_actions / gate_thumb_key_ime_actions (BUG-115) ──
 
     use super::{
-        classify_mode_key_ime_action, classify_thumb_key_ime_actions, gate_thumb_key_ime_actions,
+        classify_mode_key_ime_action, classify_thumb_key_ime_actions,
+        delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
+        resolve_gji_mode_key_shadow_overrides, resolve_mode_key_shadow_override_for_event,
         ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
     };
+    use awase::types::ShadowImeAction;
     use awase_gji_config::wire::GjiRawConfig;
 
     fn raw_with_overlay() -> GjiRawConfig {
@@ -1094,5 +1197,104 @@ Precomposition\tEisu\tToggleAlphanumericMode
         assert_eq!(wiring.henkan, None); // Toggleはopt-inなしで却下
         assert_eq!(wiring.muhenkan, Some(ImeToggleKind::Off)); // Offはそのまま反映
         assert_eq!(wiring.warning, ThumbKeyImeWarning::ToggleDeclined);
+    }
+
+    #[test]
+    fn mode_key_shadow_override_skips_when_raw_is_unavailable() {
+        assert_eq!(
+            resolve_gji_mode_key_shadow_overrides(true, None, true),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn mode_key_shadow_override_skips_when_classifier_returns_none() {
+        let raw = raw_with_session_keymap(awase_gji_config::SESSION_KEYMAP_ATOK);
+        assert_eq!(
+            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), true),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn mode_key_shadow_override_gates_toggle_by_opt_in() {
+        let table = "status\tkey\tcommand\nDirectInput\tHiragana\tIMEOn\nPrecomposition\tHiragana\tIMEOff\n";
+        let raw = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_CUSTOM),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), false),
+            (None, None)
+        );
+        assert_eq!(
+            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), true),
+            (Some(ShadowImeAction::Toggle), None)
+        );
+    }
+
+    #[test]
+    fn mode_key_shadow_override_clears_when_not_gji() {
+        let raw = raw_with_session_keymap(awase_gji_config::SESSION_KEYMAP_MSIME);
+        assert_eq!(
+            resolve_gji_mode_key_shadow_overrides(false, Some(&raw), true),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn mode_key_shadow_override_applies_only_to_non_thumb_keys() {
+        let hiragana = ModeKeyCandidate::Hiragana.vk();
+        let katakana = ModeKeyCandidate::Katakana.vk();
+        let other_left = VkCode(0x41);
+        let other_right = VkCode(0x42);
+        assert_eq!(
+            resolve_mode_key_shadow_override_for_event(
+                hiragana,
+                Some(ShadowImeAction::TurnOff),
+                Some(ShadowImeAction::Toggle),
+                (other_left, other_right),
+            ),
+            Some(ShadowImeAction::TurnOff)
+        );
+        assert_eq!(
+            resolve_mode_key_shadow_override_for_event(
+                hiragana,
+                Some(ShadowImeAction::TurnOff),
+                Some(ShadowImeAction::Toggle),
+                (hiragana, other_right),
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_mode_key_shadow_override_for_event(
+                katakana,
+                None,
+                Some(ShadowImeAction::Toggle),
+                (other_left, other_right),
+            ),
+            Some(ShadowImeAction::Toggle)
+        );
+    }
+
+    #[test]
+    fn mode_key_delegate_ownership_is_thumb_key_times_delegate_armed() {
+        let hiragana = ModeKeyCandidate::Hiragana.vk();
+        assert!(!delegate_owns_mode_key_shadow_toggle(
+            hiragana,
+            false,
+            Some(ShadowImeAction::TurnOn),
+            None,
+        ));
+        assert!(!delegate_owns_mode_key_shadow_toggle(
+            hiragana, true, None, None,
+        ));
+        assert!(delegate_owns_mode_key_shadow_toggle(
+            hiragana,
+            true,
+            Some(ShadowImeAction::TurnOn),
+            None,
+        ));
     }
 }

@@ -651,6 +651,65 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
          発火しません。撤去する場合は ObservedEisu 循環デッドロック (2026-07-09 MS Edge/\
          MS-IME で実発生) の再発防止策を代わりに用意してください。"
     );
+    let eisu_recovery = read_crate_file("src/state/eisu_recovery.rs");
+    for needle in [
+        "owned キーの shadow-toggle",
+        "owned キーの Phase 3 delegate",
+        "非owned キーの物理 IME キー / SyncKey shadow toggle",
+    ] {
+        assert!(
+            eisu_recovery.contains(needle),
+            "src/state/eisu_recovery.rs の user IME-ON 経路×ObservedEisu救済の \
+             対応表に `{needle}` がありません。ADR-135 Phase 3 の owned/non-owned \
+             分割に合わせてSSOTを更新してください。"
+        );
+    }
+}
+
+#[test]
+fn ime_relevance_shadow_action_writes_are_accounted_for() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let expected: &[(&str, usize, &str)] = &[
+        (
+            "hook.rs",
+            1,
+            "hook::classify_ime_relevance が静的 ImeKeyKind から初期値を書く",
+        ),
+        (
+            "runtime/mod.rs",
+            1,
+            "Runtime::enrich_ime_relevance が GJI Hiragana/Katakana override を消費時に上書きする",
+        ),
+    ];
+
+    for path in files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = read_crate_file(&format!("src/{rel}"));
+        let production = production_code_only(&content);
+        let count = if rel == "hook.rs" {
+            production.matches("shadow_action,").count()
+        } else {
+            production.matches("ime_relevance.shadow_action =").count()
+        };
+        let expected_count = expected
+            .iter()
+            .find(|(f, _, _)| *f == rel)
+            .map_or(0, |(_, n, _)| *n);
+        assert_eq!(
+            count, expected_count,
+            "src/{rel} の event.ime_relevance.shadow_action 書き込み箇所数が想定\
+             ({expected_count})と異なります(実際: {count})。本番の書き込み点は \
+             hook::classify_ime_relevance と Runtime::enrich_ime_relevance の2箇所に\
+             限定してください。"
+        );
+    }
 }
 
 /// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を

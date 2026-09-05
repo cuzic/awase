@@ -874,6 +874,7 @@ impl Runtime {
             }
             return false;
         }
+        let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
@@ -900,17 +901,30 @@ impl Runtime {
         // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
         // 経路の一つでありながら、従来ここには INFO ログが一切無く、実機ログだけでは
         // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
-        log::info!(
-            "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-             kind={:?} injected={} {}→{}",
-            event.vk_code,
-            event.scan_code,
-            action,
-            kind,
-            event.injected,
-            current,
-            new_val,
-        );
+        if matches!(kind, IntentKind::PhysicalImeKey) && delegate_owned {
+            // Phase 3 delegate が実際に所有する入力空間
+            // (現在の親指キー && delegate armed) だけで shadow-toggle の
+            // belief 書き込み/actuationを止める。delegate armed 単独で止めると、
+            // 非親指キー向け Phase 2 shadow_action override の実効ケースまで
+            // 消してしまう。
+            log::info!(
+                "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
+                 belief書き込み/actuationをスキップ",
+                event.vk_code,
+            );
+        } else {
+            log::info!(
+                "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
+                 kind={:?} injected={} {}→{}",
+                event.vk_code,
+                event.scan_code,
+                action,
+                kind,
+                event.injected,
+                current,
+                new_val,
+            );
+        }
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
         // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
         // 型側でも要求するため、ここで None になることは無い。
@@ -924,12 +938,14 @@ impl Runtime {
                     .write_sync_key(witness, new_val, tick_ms);
             }
             IntentKind::PhysicalImeKey => {
-                let Some(witness) = IntentWitness::from_physical(event) else {
-                    return false;
-                };
-                self.platform_state
-                    .ime
-                    .write_physical_key(witness, new_val, tick_ms);
+                if !delegate_owned {
+                    let Some(witness) = IntentWitness::from_physical(event) else {
+                        return false;
+                    };
+                    self.platform_state
+                        .ime
+                        .write_physical_key(witness, new_val, tick_ms);
+                }
             }
         }
         if self.platform_state.ime.effective_open() == current {

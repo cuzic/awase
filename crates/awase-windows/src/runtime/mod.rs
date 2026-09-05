@@ -253,6 +253,10 @@ pub struct Runtime {
     /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
     /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
     gji_thumb_key_ime_toggle_opt_in: bool,
+    /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
+    /// 適用可否（現在親指キーでないこと）は消費時に判定する。
+    gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
+    gji_katakana_shadow_override: Option<awase::types::ShadowImeAction>,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -434,6 +438,16 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
+        if let Some(action) =
+            crate::gji_charset_autodetect::resolve_mode_key_shadow_override_for_event(
+                event.vk_code,
+                self.gji_hiragana_shadow_override,
+                self.gji_katakana_shadow_override,
+                crate::hook::thumb_vk_codes(),
+            )
+        {
+            event.ime_relevance.shadow_action = Some(action);
+        }
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -1241,6 +1255,8 @@ impl Runtime {
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             gji_thumb_key_ime_toggle_opt_in: false,
+            gji_hiragana_shadow_override: None,
+            gji_katakana_shadow_override: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1340,6 +1356,35 @@ impl Runtime {
     ) {
         self.engine.set_henkan_delegate_to_open_axis(henkan);
         self.engine.set_muhenkan_delegate_to_open_axis(muhenkan);
+    }
+
+    pub(crate) fn set_gji_mode_key_shadow_overrides(
+        &mut self,
+        hiragana: Option<awase::types::ShadowImeAction>,
+        katakana: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.gji_hiragana_shadow_override = hiragana;
+        self.gji_katakana_shadow_override = katakana;
+    }
+
+    pub(crate) fn set_gji_mode_key_delegate_to_open_axis(
+        &mut self,
+        hiragana: Option<awase::types::ShadowImeAction>,
+        katakana: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_hiragana_delegate_to_open_axis(hiragana);
+        self.engine.set_katakana_delegate_to_open_axis(katakana);
+    }
+
+    #[must_use]
+    pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
+        let (left, right) = crate::hook::thumb_vk_codes();
+        crate::gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle(
+            vk,
+            vk == left || vk == right,
+            self.engine.hiragana_delegate_to_open_axis(),
+            self.engine.katakana_delegate_to_open_axis(),
+        )
     }
 
     /// `muhenkan_solo_tap_dedicated_fn_key`（config.tomlによる手動設定）が
@@ -1591,6 +1636,14 @@ impl Runtime {
                     config.general.henkan_solo_tap_always_suppress,
                 ),
             );
+            let hiragana_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_DBE_HIRAGANA);
+            let katakana_vk = [left, right]
+                .into_iter()
+                .find(|&vk| vk == crate::vk::VK_DBE_KATAKANA);
+            self.engine
+                .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
             self.set_space_is_thumb_key(
