@@ -14110,29 +14110,60 @@ awase の送信動作が無関係であることを意味しない——これ�
 実装が原因」であっても awase 側でタイミング調整・送信方式変更・
 ブラックリスト等の緩和策を講じてきたのと同じ扱いにすべきだった。
 
-**追記（2026-09-05 続き・PSReadLine 側の対応する既知バグを確認）**:
+**追記（2026-09-05 続き・PSReadLine/Windows Terminal 双方の OSS を調査、
+症状レベルの類似のみ確認・機構レベルの一致は未確認と訂正）**:
 上記の「PSReadLine との相互作用」について、PSReadLine 自体の GitHub
-issue に一致する既知バグが存在することを確認した:
+issue に症状が酷似する既知バグが存在する:
 [PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
-（「日本語配列キーボードの一部のキーが `@` と誤認識される」）。同 issue
-によると、IME 操作キー（無変換等）は有効な仮想キーコードを持つが文字
-データ（`UnicodeChar`）を持たない `KEY_EVENT_RECORD` として届き、
-PSReadLine の入力処理がこれを正しく無視できず `@` として誤表示する。
-2026-09-05 時点で修正コミット/PR は見当たらず、未修正のまま。
+（「日本語配列キーボードの一部のキーが `@` と誤認識される」、`[console]::
+ReadKey()` で無変換キーを検証すると `KeyChar` が空（文字データ無し）
+であるにもかかわらず PSReadLine が `@` と誤表示すると報告されている。
+2026-09-05 時点で修正コミット/PR は見当たらず未修正）。
 
-これは後述の「結論」で「PSReadLine の再描画/バッファ処理との相互作用
-……GJI 自体がクローズドソースのため内部機構としての確定はできない」と
-記した部分のうち、**「なぜ具体的に `@` という文字になるのか」だけは
-GJI 側ではなく PSReadLine 側の確認済みバグで説明がつく**ことを意味する
-（awase→GJI 間で composition 追跡が乱れる機構自体は GJI がクローズド
-ソースのため引き続き未確定）。ただし
+この issue を根拠に「awase が送る `VK_IME_OFF` 等が PSReadLine 側の
+`KEY_EVENT_RECORD` 処理バグを踏んでいる」という機構レベルの一致を
+一度は本追記に記録したが、**これは検証不足の早合点だった（ユーザーの
+指摘で訂正）**。実際に確認したのは以下のみ:
+
+1. awase 自身のコードには `KEY_EVENT_RECORD`/`ReadConsoleInput`/
+   `INPUT_RECORD` への参照が一つも無い（`grep` で確認済み）。この構造体
+   は awase の送信経路（`SendInput`/`KEYBDINPUT`、低レベルフックの
+   `KBDLLHOOKSTRUCT`）には一切登場せず、受信側（Windows Terminal /
+   conhost / .NET ランタイム / PSReadLine 内部）にのみ存在する概念。
+2. Windows Terminal 自身は OSS であり（`src/terminal/input/
+   terminalInput.cpp`）、`TerminalInput::HandleKey(const INPUT_RECORD&
+   event)` が実際に `KEY_EVENT_RECORD` を受け取り、
+   `codepoint = event.Event.KeyEvent.uChar.UnicodeChar` を直接読んで
+   いることをソースで確認した。しかし同ファイルには `VK_KANJI`/
+   `VK_CONVERT`/`VK_NONCONVERT`/`VK_DBE_*`/`VK_PROCESSKEY`/
+   `VK_IME_ON`/`VK_IME_OFF` への言及は一件も無く、IME 操作キー専用の
+   特別扱いや「`@` を返すフォールバック」は見当たらない。最終フォール
+   バック `_formatFallback()` は、Ctrl/Alt 修飾が無く `codepoint == 0`
+   の場合は**何も送信せず即 return**するコードパスであり、これだけを
+   見ると「文字を持たない IME キー単体の押下」から `@` が生成される
+   経路をこのファイル単体では説明できない。
+3. したがって、「@」が実際に生成されるとすれば `uChar.UnicodeChar`
+   フィールド自体が awase の送信（`wScan` の扱いを含む）を起点に
+   `0x40`（`@`）へと解決されている、という話になるはずだが、その
+   `UnicodeChar` を実際に計算しているのは Windows 自身の（クローズド
+   ソースの）キーボードレイアウト処理（`ToUnicodeEx` 相当）であり、
+   Windows Terminal のリポジトリの外側にある。PSReadLine 側
+   （#2206）・Windows Terminal 側（本ファイル）のいずれの OSS コードを
+   読んでも、機構レベルでの確証は得られなかった。
+
+**結論（訂正後）**: 「IME 操作キー→`@`」という**症状**は PSReadLine
+#2206 と酷似しているが、**機構が同一である確証は無い**。「GJI が
+クローズドソースのため内部機構を確定できない」という元々の限界は、
+Windows 自身のキーボードレイアウト処理という別の（これもクローズド
+ソースの）境界に置き換わっただけで、依然として未確定のまま。
 [[feedback_external_factor_found_does_not_mean_no_fix_needed]] の教訓
-どおり、これは awase 側の恒久修正（二重 actuation 解消）が不要だった
-ことを意味しない——実際に症状を解消したのは awase 側の修正であり、本
-追記は「@」という表示形の由来を補足する記録に過ぎない。もう一つの独立
-した十分条件（`kp_stage_idle_conv_check` の probe 競合、下記「未解決」
-参照）が将来別の経路で再現した場合も、同じ PSReadLine 側のバグにより
-同じ「@」という形で可視化される可能性が高い。
+どおり、この不確実性は awase 側の恒久修正（二重 actuation 解消）が
+不要だったことを意味しない——実際に症状を解消したのは awase 側の修正
+であり、本追記は「@」という表示形の由来について現時点でわかっている
+こと・わかっていないことを整理した記録に過ぎない。もう一つの独立した
+十分条件（`kp_stage_idle_conv_check` の probe 競合、下記「未解決」
+参照）が将来別の経路で再現した場合、同じ「@」という形で可視化される
+かどうかも未検証。
 
 **未解決・次にやること（実機切り分け、第2弾スパイク実装済み・実機検証待ち）:**
 バッチ形状（V/A/B3/B4/baseline）と VK 値（`VK_IME_OFF` vs `VK_KANJI`）は
@@ -14379,9 +14410,10 @@ FocusChanged`が`applied`を`Unknown`にリセットするため、round2の修�
 awase側の送信方式・呼び出し経路のどれが必要十分条件かは未特定）、と
 段階的に絞り込まれた経緯を記録)、
 [PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
-（IME 操作キーの無文字 `KEY_EVENT_RECORD` を `@` と誤表示する PSReadLine
-側の既知バグ。「@」という表示形の由来を説明するが、awase 側の恒久修正が
-不要だったことは意味しない）、
+（IME 操作キーが `@` と誤表示される PSReadLine 側の既知バグ。症状は酷似
+するが、Windows Terminal 自身の OSS（`terminalInput.cpp`）を読んでも
+機構レベルでの一致は確認できていない——詳細は本 BUG 本文の訂正追記
+参照。awase 側の恒久修正が不要だったことを意味しない点は変わらない）、
 BUG-114（同じ調査から派生した独立のバグ、drift correction の
 `FeedbackPolicy::Read` 無限再送。こちらは awase 側の実在バグとして別途
 修正済み）、BUG-110/ADR-132（同じ「Windows Terminal
