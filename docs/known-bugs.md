@@ -13810,3 +13810,70 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 （「未解決の設計課題」3 の一部を本 BUG が解決）、
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
+
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（原因候補確定、修正未着手）
+
+**アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
+WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
+TsfNative`）。
+**IME:** Google 日本語入力（GJI）、`ActiveImeKind::GoogleJapaneseInput`。
+JIS 106 キーボード。
+
+**症状:** awase の NICOLA Engine が有効な状態で、物理半角/全角キー
+（Windows API 上は `VK_KANJI` と呼ばれることが多いが、実際にこの機体の
+awase フックに届く VK は後述のとおり別物）を押すと、他に一切キー入力を
+していなくても、Windows Terminal 上に「@」が1文字出力される。
+
+**再現手順（dragonflyg4 実機、2026-09-05 確認）:**
+1. Windows Terminal + GJI で awase Engine を有効にする。
+2. 物理半角/全角キーを1回押す（他のキーは押さない）。
+3. 「@」が出力される。
+
+**確認できなかった条件:** Engine を `Ctrl+Shift+無変換` で明示的に無効化
+した状態では、同じキーを複数回押しても「@」は出ない（ユーザー実機報告、
+ログでも該当する actuation ログの不在を確認済み）。
+
+**原因（コード読解 + 実機ログ + 実機診断スクリプトで判明した範囲、
+未確定部分あり）:**
+
+1. この機体では物理半角/全角キーは `VK_KANJI`(0x19) ではなく、
+   `VK_DBE_SBCSCHAR`(0xF3、半角方向)/`VK_DBE_DBCSCHAR`(0xF4、全角方向)
+   として awase フックに届く（押すたびに交互にトグル）。物理「かな」キーが
+   `VK_KANA`(0x15) ではなく `VK_DBE_HIRAGANA`(0xF2) として届くのと同型
+   （[ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md) 参照）。
+2. `vk=0xF3`(半角方向、TurnOff) の直後だけ「@」が出現し、`vk=0xF4`
+   （全角方向、TurnOn）では出現しないことをタイムスタンプ相関で2回連続
+   確認した。
+3. `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` はこの VK を
+   物理 IME キーとして検出し、shadow belief（IME ON/OFF の内部追跡）を
+   更新する。この belief 更新自体は Engine の有効/無効と無関係に常時動く
+   （実機ログで確認済み）。
+4. `ime_controller.rs::GjiDirectStrategy::apply(open)` が実際の IME 制御
+   VK 送信を担う。`apply(false)`（IME OFF 方向）は毎回 `send_ime_mode_key
+   (VK_IME_OFF)` を呼ぶのに対し、`apply(true)`（IME ON 方向）は
+   `view.control.shadow_on` が既に true なら `AlreadyMatched` で送信を
+   スキップする no-op 最適化がある——これが「半角方向（OFF）だけ @ が
+   出る」非対称性の候補。
+5. この `send_ime_mode_key()` 呼び出し（＝実際の VK 送信、Engine が
+   有効なときだけ発火することを実機ログで確認済み）は `tsf/output.rs::
+   make_key_input_ex()` 経由で `KEYBDINPUT.wScan = 0` 固定で送信する。
+6. dragonflyg4 実機で `MapVirtualKeyW`/`ToUnicodeEx` を `VK_IME_OFF` 等に
+   対し直接呼び出して検証したが、単体では文字は生成されなかった
+   （scan は正しく解決: `VK_IME_OFF→0xF1` 等）。したがって「Windows
+   Terminal が生の VK を素朴に `ToUnicodeEx` で誤変換している」という
+   単純な仮説はこの単体テストでは再現しない。**「@」の直接の生成源は
+   GJI 自身の TSF が `wScan=0` の `VK_IME_OFF` の `SendInput` を Windows
+   Terminal フォーカス中に受け取った際の内部 composition 処理にある
+   可能性が高い**が、GJI はクローズドソースのため確定できていない。
+
+**現状:** 原因候補（`send_ime_mode_key` の `wScan=0`、`apply(true)`/
+`apply(false)` の非対称性）まで絞り込み済み、修正未着手。次の検証候補は
+`GjiDirectStrategy::apply` の `send_ime_mode_key` 呼び出しを実 scan 付き
+送信に変えた場合に「@」が再現しなくなるかの A/B 実機検証。
+
+**関連:** [ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
+（当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
+本 BUG の調査により前提が反証され、真因候補が `send_ime_mode_key` の
+`wScan=0` へ移った経緯を記録）、BUG-110/ADR-132（同じ「Windows Terminal
++ GJI で余分な @」という症状クラスの別原因、`IntentStore`/`last_intent`
+の絶対的権威化が真因——本 BUG とは異なる独立の原因である点に注意）。

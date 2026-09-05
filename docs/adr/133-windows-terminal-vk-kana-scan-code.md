@@ -2,7 +2,24 @@
 
 ## ステータス
 
-**収束済みドラフト（v4、Sol 2体の敵対的レビュー round4 で収束）。**
+**設計の前提が実機検証で反証され、再設計待ち（2026-09-05）。**
+v4（Sol 2体の敵対的レビュー round4 で収束）まではドキュメントレビューのみで
+「収束済みドラフト」としていたが、2026-09-05 に dragonflyg4 実機で D2 の
+hidden スパイクを検証した結果、**この機体では物理 `VK_KANA`(0x15) が
+hook に一度も到達しない**（後述「実機検証ログ」参照）ことが判明し、D2 の
+実装（`kp_stage_windows_terminal_vk_kana_spike`）は到達不能コードだったと
+確定した。さらに、ユーザーが「VK_KANJI」と呼ぶ半角/全角キーで実際に
+再現する「@」も、`VK_KANJI`(0x19) ではなく別の VK
+（`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`）が原因であり、その真因候補は
+Windows Terminal 自身の文字化ではなく **awase 自身の `GjiDirectStrategy::
+apply(open=false)` が `send_ime_mode_key(VK_IME_OFF)` を `wScan=0` で
+送信していること** に絞られた。これは本 ADR が当初想定した「Windows
+Terminal が生の IME モード VK を誤って文字化する」という前提そのものが
+崩れたことを意味する。以下の v1〜v4 の記述は「実機で反証される前の設計
+検討過程」として保持するが、**D1〜D6 の決定・実装タスク・検証計画は
+実機検証ログの内容を踏まえて次セッションで再設計すること**（「次セッションへの
+引き継ぎ」節参照）。
+
 2026-09-04、Windows Terminal + 日本語 IME で `VK_KANJI` / `VK_KANA`
 押下時に余分な「@」が出る報告を受け、Windows Terminal と日本語 106
 キーボード配列の公開ソースを読んだ上で起票した。v1 は
@@ -15,7 +32,8 @@ KeyUp latch、`try_hold_key` より前の配置、`MapVirtualKeyW(VK_DBE_HIRAGAN
 の runtime preflight が不足していると指摘されたため、v3 で反映した。
 round3 では部分 `SendInput` 成功時に元キーを consume する逃げ道が残っている
 と指摘され、v4 で削除した。Sol-A/Sol-B ともに「Windows Terminal 限定の
-hidden 実験計画として収束」と判定した。実機検証は未実施。
+hidden 実験計画として収束」と判定したが、これは実機で D2 の前提そのものが
+崩れる前のドキュメントレビューの結論である。
 
 ## 背景
 
@@ -379,3 +397,170 @@ stuck KeyUp のいずれかが再現した場合は即撤回する。
 - A1: v3 の部分成功分岐に「実装上不可能なら consume」という逃げが残っていた。
   D4b から削除し、部分/ゼロ成功時に元 `VK_KANA` を既存処理へ戻せない挿入点では
   実装禁止とした。
+
+## 実機検証ログ（2026-09-05、dragonflyg4）
+
+`develop` から `spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ
+（worktree: `~/rust-nicola-worktrees/spike-adr133-wt-vk-kana`）を切り、
+D1〜D6 の実装（本 ADR 記載の hidden config
+`windows_terminal_vk_kana_dbe_hiragana_spike`、既定 false）を実機で
+検証した。検証は Windows Terminal + GJI、JIS キーボード、`clipwire`
+経由のリモートビルド・ログ取得で行った（対話的なキー押下・ターミナル出力の
+目視確認自体はユーザーが実施）。
+
+### 1. 物理 `VK_KANA` はこの機体のフックに一度も到達しない
+
+hidden config を有効化し、物理「かな」キーを単独で押しても
+`[wt-vk-kana-spike]` 系のログ（`replaced physical VK_KANA`/`abort`/
+`partial SendInput` のいずれも）が一切出力されなかった。一方
+`[shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn` は毎回
+正しく記録され、Engine の ON/OFF も追従した。
+
+さらに `hook.rs` 自身が持つ診断ログ（`[hook] VK_KANA {dir} 到達`、BUG-08
+調査用に既存）も、同一セッション中に物理「かな」キーを複数回押しても
+**一度も出力されなかった**（`Select-String -Pattern '[hook] VK_KANA'` が
+空）。つまり `hook_callback` の `KBDLLHOOKSTRUCT.vkCode` の時点で、
+物理「かな」キーは既に `VK_KANA`(0x15) ではなく `VK_DBE_HIRAGANA`(0xF2,
+scan=0x70) として awase に届いている。ADR 本文「未解決の疑問」1点目
+（物理 `VK_KANA` の KeyDown を受けた時点で、Windows/IME がフックより前の
+層で既に何らかの入力方式切替を行っている可能性）を実機で肯定する結果。
+
+これにより **D2（`VK_KANA` → `VK_DBE_HIRAGANA` 置換）の実装は、この機体
+では到達不能コードだった**と確定した。ユーザーが「VK_KANA で @ が出なく
+なった」と報告した現象は、本スパイクの効果ではなく、既存の（ADR-133
+より前からある）`VK_DBE_HIRAGANA` ネイティブ処理（shadow-toggle）が
+元々正しく機能していたことによる。他のキーボード/キーボードレイアウト
+ドライバでは `VK_KANA`(0x15) が本当に届く可能性は排除できない
+（未検証）。
+
+### 2. 「VK_KANJI」と呼ばれるキーも同様に別 VK として届く
+
+ユーザーが「VK_KANJI」と呼ぶ半角/全角キー（物理スキャン 0x29）も、
+`VK_KANJI`(0x19) ではなく **`VK_DBE_SBCSCHAR`(0xF3)・`VK_DBE_DBCSCHAR`
+(0xF4)** として届く。押すたびにこの2つを交互にトグルする
+（`vk.rs::ImeKeyKind::Deactivate`(0xF3, TurnOff) /
+`ActivatePair`(0xF4, TurnOn)）。日本語106キーボードドライバの公開サンプル
+（[kbd106.c](https://github.com/microsoft/Windows-driver-samples/blob/main/input/layout/fe_kbds/jpn/106/kbd106.c)）
+にも、この物理キーの NLS Base Vk が `VK_DBE_SBCSCHAR` と定義されている
+記述があり（`VK_DBE_DBCSCHAR` への言及は同ファイルには無い＝0xF4 側は
+awase 到達時点で別要因により生成されている可能性がある）、実機観測と
+整合する。
+
+タイムスタンプ相関で2回連続、**`vk=0xF3`(TurnOff) の直後だけ「@」が
+出現し、`vk=0xF4`(TurnOn) では出現しない**ことをユーザーの実機テストで
+確認した（何もキー入力していない状態でも、この物理キー単体の押下だけで
+「@」が出る）。
+
+### 3. 「@」は Engine が有効なときだけ発生する（Windows Terminal 単体の問題ではない）
+
+ユーザー報告により、`Ctrl+Shift+無変換` で awase の Engine を明示的に
+OFF にした状態で同じ半角/全角キーを押しても「@」は出ないことが判明した。
+これは本 ADR が当初想定していた「Windows Terminal が生の IME モード VK
+を誤って文字化する」（Terminal 側単体で完結する現象）という前提と矛盾する
+——Engine の有効/無効で Windows Terminal 自身の `ToUnicodeEx` フォール
+バック挙動が変わる理由はない。
+
+`runtime/transport.rs::PhysicalKeyDisposition::plan` を読むと、
+`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR` の KeyDown は
+`dbe_mode_key_policy = Suppress`（既定）かつ `ime_actuation_owned`
+（GJI Direct or MS-IME Direct が適用可能）のとき常に Suppress され、
+物理キーは OS に届かない。その代わりに shadow-toggle が記録した
+intent（TurnOn/TurnOff）に基づき `ime_controller.rs::GjiDirectStrategy::
+apply(open)` が実際の IME 制御 VK（`VK_IME_ON`/`VK_IME_OFF`）を
+`send_ime_mode_key()` 経由で送信する。
+
+Engine を明示的に OFF にした状態でも半角/全角キーを複数回押してもらい、
+ログを直接確認したところ、`[shadow-toggle] intent 昇格: vk=0xF4 ...
+action=TurnOn` 自体は Engine OFF 中も毎回正しく記録され続けている
+（belief 更新は Engine の有効/無効と無関係に動く）一方、Engine ON 時には
+必ず直後に出ていた `IME control: preconditions.ime_on = ... (SetOpenRequest,
+origin=ActivationSync)` ログが、**Engine OFF 中は一度も出現しなかった**。
+つまり:
+
+- shadow-toggle による belief（intent）更新は Engine 状態と無関係に常時動く。
+- 実際の IME 制御 VK 送信（`GjiDirectStrategy::apply` 呼び出しに至る
+  precondition dispatch）は、**Engine が有効なときだけ**発火する。
+
+これにより「Engine 無効時は actuation パイプライン自体が動かず
+`send_ime_mode_key` が一切呼ばれないため『@』も出ない」という説明が
+ログで直接裏付けられた（この検証では Engine OFF 中に `vk=0xF3`
+（TurnOff）の実例は取得できなかったが、`vk=0xF4`（TurnOn）で同じ非発火
+パターンが確認できているため、TurnOff 側も同様と推定される）。
+
+### 4. `send_ime_mode_key(VK_IME_OFF)` の `wScan=0` が新たな容疑者
+
+`GjiDirectStrategy::apply`（`ime_controller.rs`）を読むと:
+
+- `apply(true)`: `view.control.shadow_on` が既に true なら
+  `AlreadyMatched` で **送信をスキップ**する（no-op 最適化）。実機ログでも
+  `vk=0xF4`(TurnOn) の多くが `true→true`（無変化）であり、この場合
+  `VK_IME_ON` は送信されていない。
+- `apply(false)`: no-op ガードが無く、**毎回** `VK_IME_OFF` を
+  `send_ime_mode_key()` で送信する。
+
+`send_ime_mode_key()` は `tsf/output.rs::make_key_input_ex()` 経由で
+`KEYBDINPUT.wScan = 0` 固定で送る（本 ADR の背景セクションが元々問題視
+していたのと同じパターン）。この非対称性（OFF 方向だけ毎回送信される）が、
+「`VK_DBE_SBCSCHAR`(TurnOff) 側だけに「@」が偏る」という観測と符合する
+候補である。
+
+ただし、dragonflyg4 実機で `MapVirtualKeyW`/`ToUnicodeEx` を
+`VK_IME_OFF`/`VK_IME_ON`/`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`/
+`VK_DBE_HIRAGANA`/`VK_KANJI`/`VK_KANA` それぞれに対し直接呼び出して
+検証したところ、**いずれも文字は生成されなかった**（`scan` は正しく
+解決できている: `VK_IME_OFF→0xF1`、`VK_DBE_SBCSCHAR→0x29` 等、
+アクティブな `HKL` に対して `GetKeyboardLayout(0)` で取得）。つまり
+「Windows Terminal（または任意のプロセス）が素朴に `ToUnicodeEx` を
+呼ぶと `VK_IME_OFF`/scan=0 が『@』になる」という単純な仮説は、この
+単体テストでは再現しなかった。
+
+**したがって現時点の最有力仮説は「Windows Terminal 自身の文字化」では
+なく、「GJI 自身の TSF が、`wScan=0` の `VK_IME_OFF` の `SendInput` を
+Windows Terminal にフォーカスが当たった状態で受け取った際、内部の
+composition/変換状態と噛み合わず誤った文字を composition 経由で確定
+させている」という、GJI 内部（クローズドソース）の挙動である**。
+Windows Terminal のソースコードだけでは確認できない領域まで来ている。
+
+### 結論
+
+- ADR-133 が当初想定していた「`VK_KANA`/`VK_KANJI` 自体が Windows
+  Terminal によって誤って文字化される」という前提は、少なくとも
+  dragonflyg4 実機では成立しない。両キーとも、awase のフックに届く時点で
+  既に別の VK（`VK_DBE_HIRAGANA`/`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`）に
+  変換済みであり、D2 の `VK_KANA` 置換スパイクは到達不能だった。
+- 実際に再現する「@」の真因候補は、**`GjiDirectStrategy::apply(open=false)`
+  が `send_ime_mode_key(VK_IME_OFF)` を `wScan=0` で送信していること**
+  （かつ `apply(true)` 側には `AlreadyMatched` no-op ガードがあるため
+  対称に検証できていないこと）に絞られた。GJI 側の内部処理は未確認。
+
+## 次セッションへの引き継ぎ
+
+1. **本 ADR の D1〜D6・実装タスク・検証計画は上記の実機検証ログを前提に
+   再設計すること。** `VK_KANA`/`VK_KANJI` 置換という当初のアプローチでは
+   なく、`send_ime_mode_key()`（および `GjiDirectStrategy`/
+   `MsImeDirectStrategy` 全般）が Windows Terminal のような TSF-native
+   アプリへ `wScan=0` で `VK_IME_ON`/`VK_IME_OFF` を送っていること自体が
+   対象になる可能性が高い。
+2. 候補実験: `GjiDirectStrategy::apply` の `send_ime_mode_key` 呼び出しを、
+   `make_scan_key_input()` 相当の実 scan 付き送信に変えた場合に「@」が
+   再現しなくなるか、Windows Terminal + GJI/MS-IME 実機で A/B 検証する。
+   ただし `KEYEVENTF_SCANCODE` を付けると WezTerm で IME バイパスが
+   起きた既知の実機ハザード（D3 参照）があるため、scan 付与の形は
+   `make_scan_key_input()` と同じ（`wVk` 保持 + `wScan` 実測埋め込み、
+   `KEYEVENTF_SCANCODE` なし）に限定すること。
+3. `apply(true)` 側の `AlreadyMatched` no-op ガードを一時的に外して
+   `VK_IME_ON` を強制送信させ、TurnOn 方向でも「@」が起きるか確認できると、
+   「OFF 方向だけの非対称」という仮説と「単に検証機会が少なかっただけ」
+   という可能性を切り分けられる（実装変更ではなく実機での一時的な検証
+   目的のみ）。
+4. 本セッションで実装した `windows_terminal_vk_kana_dbe_hiragana_spike`
+   hidden config・`kp_stage_windows_terminal_vk_kana_spike` 一式
+   （`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ、`develop` 未マージ）
+   は、この機体では到達不能と確認済みだが、他のキーボード/ドライバ環境で
+   `VK_KANA`(0x15) が実際に届く可能性は排除できていない。develop へ
+   マージするか、撤去して新しい設計に一本化するかはユーザー判断が必要。
+5. GJI 自身の挙動はソースコード調査では追えないため、次の実機検証では
+   `RUST_LOG=debug` でのより詳細な TSF/composition ログ（`ime_diagnostic`
+   系）を有効化した状態での再現、または GJI 側の設定変更（半角/全角
+   キーの動作割り当てを変える等、GJI 設定画面側の対症的な回避策の
+   有無）も調査対象に含めるとよい。
