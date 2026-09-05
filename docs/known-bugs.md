@@ -1,6 +1,6 @@
 # awase 既知の不具合
 
-> 最終更新: 2026-08-27
+> 最終更新: 2026-09-05
 
 ---
 
@@ -14630,3 +14630,79 @@ BUG-110/ADR-132（`IntentStore`/`last_intent` の絶対的権威化が真因の�
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （`ImeModel` 以外の belief 的状態にも3段防御の適用要否を検討する際の
 判断基準）。
+
+## BUG-116: Shift+物理かなキー（JIS配列 `VK_DBE_KATAKANA`）でカタカナ変換に切り替わらない（BUG-52修正のリグレッション）
+
+**症状:** JIS配列の「カタカナ ひらがな ローマ字」キー（scan 0x70）を Shift
+と同時に押しても、GJI/MS-IME の変換モードがカタカナに切り替わらない
+（ひらがなのまま）。ユーザー報告により2026-09-05に判明。ゆっくり確実に
+操作しても再現する。
+
+**アプリ/IME:** `AppImeProfile::TsfNative` / `Imm32Unavailable` かつ
+`ime_actuation_owned`（GJI/MS-IME への直接 actuation 戦略が有効）な組み合わせ
+全般。`AppImeProfile::Standard`（ImmCross、素の Win32 アプリ）は
+`runtime/transport.rs:228-230` により KANJI 関連キーを Down/Up 問わず無条件
+Suppress しているため、この経路では**さらに以前から**（`0e364eaa`,
+2026-05-28 以降）常に再現する。
+
+**原因（確定、`git log -S`/`git bisect` 相当の手動追跡で特定）:**
+
+Windows のキーボードレイアウト変換層は、JIS配列の scan 0x70 キーを
+Shift 併用で押すと `VK_DBE_KATAKANA` (0xF1) を生成する（Windows 標準仕様、
+「Shift+かな→カタカナ」という一般的な IME 挙動のトリガー）。ところが
+`crates/awase-windows/src/runtime/transport.rs::PhysicalKeyDisposition::plan`
+（`:236-260`）は、`dbe_mode_key_policy = Suppress`（既定値）のとき
+`VK_DBE_ALPHANUMERIC`/`VK_DBE_KATAKANA`/`VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR`
+の KeyDown を **Shift の押下有無に関わらず** `shadow_toggled` を問わず常に
+Suppress する:
+
+```rust
+let is_dbe_mode_key_down = matches!(dbe_mode_key_policy, DbeModeKeyPolicy::Suppress)
+    && matches!(event.vk_code,
+        crate::vk::VK_DBE_ALPHANUMERIC | crate::vk::VK_DBE_KATAKANA
+            | crate::vk::VK_DBE_SBCSCHAR | crate::vk::VK_DBE_DBCSCHAR)
+    && event.event_type == KeyEventType::KeyDown;
+ime_actuation_owned && (shadow_toggled || is_dbe_mode_key_down || matches!(event.event_type, KeyEventType::KeyUp))
+```
+
+このため `VK_DBE_KATAKANA` の KeyDown は実 IME に一切届かず、Windows 標準の
+カタカナ変換トリガーが発火しない。
+
+**いつ壊れたか（コミット履歴で確定）:**
+
+| 時期 | コミット | Shift+かな→カタカナ |
+|---|---|---|
+| 〜2026-07-31 | （`076b8709^`） | 動く（TsfNative/Imm32Unavailable） |
+| 2026-08-01 `076b8709`（BUG-46修正, v1.12.0） | `ime_actuation_owned && (shadow_toggled \|\| KeyUp)` → IME既にON中は `shadow_toggled=false` のため Allow | IME ON中は動く／IME OFFからは壊れた |
+| 2026-08-05〜09 `bdf4a139`→`9a02ce6b`（**BUG-52修正**, v1.13.0） | `is_dbe_mode_key_down` 条件を追加し、KeyDownを`shadow_toggled`に関わらず常時Suppress | **完全に死亡（現在まで）** |
+
+BUG-52 の実際の repro（本ファイル該当節参照）は「NICOLA の物理『IME ON』
+キー（scan 0x70、awase の engine トグル用に割当）を **Shift なしで** 連打
+すると、IME が既に ON の状態で `VK_DBE_HIRAGANA` の代わりに
+`VK_DBE_KATAKANA` が生成され、素通しされて実 IME が勝手にカタカナへ
+切り替わる」というものであり、**Shift は一切関与していない**。修正時に
+`shadow_toggled` の代わりに Shift 押下有無を弁別条件に使わなかったため、
+「バグ52の悪いケース（Shiftなし、engineトグル連打）」と「今回失われた
+良いケース（Shiftあり、ユーザーが明示的にカタカナ変換を要求）」の両方を
+まとめて Suppress してしまった。
+
+**見落とし（今回発見の副産物）:** `docs/adr/135-generic-thumb-key-ime-toggle-delegate.md:1219-1231`
+（2026-09-05付、Phase 2/3スコープ外の別件観察として記録済み）は本症状を
+「awase側のVK分類は正しいのでGJI/OS側の変換モード解釈が原因では」と
+誤診していた。実際には `transport.rs` がIMEに届く前にKeyDownを握り
+つぶしているため、GJI/OS側の問題ではない。当該ドキュメントは要訂正。
+
+**回避策（既存の隠し設定、ADR-091 §D3.6, `6b94608e` 2026-08-14）:**
+`[general] dbe_mode_key_policy = "passthrough"` にすると `is_dbe_mode_key_down`
+の追加Suppress条件自体が無効化され、BUG-52のリスクを引き受ける代わりに
+IMEが既にONの状態でのShift+かな→カタカナが復活する可能性がある（未検証）。
+ただしIME OFFからのShift+かな（`shadow_toggled=true`のケース）はこの設定
+でもSuppressのままであり、`Standard`/ImmCrossプロファイルではこの設定
+自体が無視される。
+
+**現状:** 原因特定済み・修正未着手。修正方針は
+[ADR-137](adr/137-shift-katakana-dbe-mode-key-suppression-regression.md) 参照。
+
+**関連:** BUG-52（本バグの直接の原因となった修正）、BUG-46（BUG-52の遠因と
+なった一般化）、[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
+（IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。
