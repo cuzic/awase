@@ -13811,7 +13811,7 @@ BUG-56（`record_null_probe` デバウンスの初出）、[ADR-125](adr/125-egu
 [tuning-constants](../.claude/rules/tuning-constants.md)（恒久修正で新規
 定数を導入する際に実測を要求するルール）。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（修正済み、実機ソーク待ち）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（`wScan=0`仮説は反証・revert済み、真因はBUG-114）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -13866,24 +13866,123 @@ awase フックに届く VK は後述のとおり別物）を押すと、他に�
    Terminal フォーカス中に受け取った際の内部 composition 処理にある
    可能性が高い**が、GJI はクローズドソースのため確定できていない。
 
-**修正（2026-09-05 追記）:** ユーザーによる実機 A/B 検証で、`send_ime_mode_key`
-の `wScan=0` が真因であることが確認された。`ime.rs::send_ime_mode_key` を、
-送信する mode key 本体（`VK_IME_ON`/`VK_IME_OFF`）だけ `wScan=0` 固定
-（`tsf/output.rs::make_key_input_ex()`）から `wVk` 保持 + `MapVirtualKeyW`
-実測 scan 埋め込み（`make_scan_key_input()`、`KEYEVENTF_SCANCODE` は付けない）
-へ変更した。`make_scan_key_input()` 自体は TSF マーカー送信や
-`VK_DBE_HIRAGANA` 復元経路で既に使われている形であり、`KEYEVENTF_SCANCODE`
-を付けないため既知の WezTerm ハザード（scan 付き注入が IME をバイパスする
-問題）とは無関係と判断し、Windows Terminal 限定にせず **全アプリ・全呼び
-出し元（`GjiDirectStrategy`/`MsImeDirectStrategy`、`send_engine_state_ime_key`
-のユーザー設定 VK 送信を含む）に対して既定で適用**する形にした（hidden
-opt-in にはしていない）。ctrl/shift の release/restore（`HeldModifiers`）は
-対象外のまま（`wScan=0`）。Chrome/Edge/LINE/Teams/VS Code/WezTerm 等、
-Windows Terminal 以外のアプリでの実機ソークは未実施。
+**修正試行1（2026-09-05・反証・revert済み）:** `send_ime_mode_key` の
+`wScan=0` を実 scan 付き送信（`make_scan_key_input()`）に変える修正を、
+Windows Terminal 限定にせず全アプリ・全呼び出し元に対して既定で適用する
+形で実装した。しかしユーザーが実機で A/B 検証したところ「@」の再現に
+**一切変化が無かった**。`RUST_LOG=debug` で追加取得したログにより、この
+`wScan=0` 仮説そのものが誤りだったことが判明した——真因は
+**drift correction が `FeedbackPolicy::Read` を使って `VK_IME_OFF` を
+無制限に近い頻度で再送し続けていたこと**であり、詳細は BUG-114
+（本ファイル下方）に切り出した。`send_ime_mode_key` は元の `wScan=0` 固定へ戻している
+（詳細は `docs/experiments.md` エントリ20）。本 BUG の恒久修正は
+BUG-114 の修正に委ねる。
 
 **関連:** [ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
 本 BUG の調査により前提が反証され、真因候補が `send_ime_mode_key` の
-`wScan=0` へ移った経緯を記録）、BUG-110/ADR-132（同じ「Windows Terminal
-+ GJI で余分な @」という症状クラスの別原因、`IntentStore`/`last_intent`
-の絶対的権威化が真因——本 BUG とは異なる独立の原因である点に注意）。
+`wScan=0` へ移り、さらにそれも反証されて BUG-114 へ移った経緯を記録）、
+BUG-114（本 BUG の真因、drift correction の `FeedbackPolicy::Read` 無限
+再送）、BUG-110/ADR-132（同じ「Windows Terminal + GJI で余分な @」という
+症状クラスの別原因、`IntentStore`/`last_intent` の絶対的権威化が真因
+——本 BUG・BUG-114 とは異なる独立の原因である点に注意）。
+
+## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（原因確定、修正方針は敵対的レビュー待ち）
+
+**アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
+WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
+TsfNative`）。
+**IME:** Google 日本語入力（GJI）、`ActiveImeKind::GoogleJapaneseInput`。
+
+**症状:** BUG-113 の実機再現手順（Engine 有効時に物理半角/全角キーを1回
+押す）を実行すると、`RUST_LOG=debug` のログ上、`runtime/ime_refresh.rs`
+の drift correction が **約14秒間、20〜90ms おきに連続発火**し、その
+たびに実際に `SendInput` で `VK_IME_OFF` (0x1A) を送り続ける
+（`gave up` ログは1件も出ない）。BUG-113 の「@」はこのバーストによって
+GJI の TSF composition が乱される副作用である可能性が高い（GJI 自身の
+内部処理はクローズドソースのため確定はできない）。
+
+**再現ログ（dragonflyg4 実機、2026-09-05 確認、抜粋）:**
+
+```
+[drift] correction: observed=true ≠ desired=false for 1837ms → set_ime_open(false)
+[warrant-shadow] chain=sync open=false origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(31) } ...
+[apply-ime] GJI direct: send 0x001A (open=false)
+[ime-mode] SendInput vk=0x1A ... total=2 events
+[hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0xF1 ...
+[hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0xF1 ...
+[apply-ime] open=false eff=false conf=true → outcome=Applied
+Blacklist drift correction: apply_ime_open(false) → Applied
+（20〜90ms後、observed=true のまま再度同じ流れが発生。以下 duration_ms が
+ 単調増加しながら約14秒間・数十回連続。ログ全文で "gave up" は0件）
+```
+
+**原因（コード読解 + 実機ログで確定）:**
+
+1. `state/app_ime_policy.rs::caps()` は `(ImePolicyProfile::TsfNative,
+   ImeKindId::Gji)` に対して `FEEDBACK_BLIND`（`max_attempts` で
+   `GiveUp` する有界な再試行方針）を割り当てるよう設計されている。
+   ところが実機ログの `strategy=` タグは一貫して `drift_correction_read`
+   ——つまり実際に使われたのは `FeedbackPolicy::Read`（`decide_actuation_action`
+   に `GiveUp` 分岐が無く、`Blind` と異なり常に `Send` を返す無条件再送
+   ポリシー）だった。
+2. `app_policy`（`default_feedback`/`focus_settle_ms` の SSOT）は
+   `ImeEvent::FocusChanged { profile, .. }` 受信時
+   （`state/ime_model.rs:615`）にのみ `AppImePolicy::from_profile(profile)`
+   で更新され、以後は同じフォーカスセッション中ずっとそのまま使われる。
+   `profile` は `FocusChanged` dispatch 時点
+   （`runtime/focus_tracking.rs:537`）の `self.platform.current_app_profile()`
+   の**その瞬間のスナップショット**である。
+3. `focus/class_names.rs::AppImeProfile::from_class_name` は
+   `IMM32_UNAVAILABLE_CLASSES` → `is_tsf_native_window` の順で判定し、
+   どちらにも一致しない場合は `Standard`（`#[default]`）にフォールバック
+   する。`ImePolicyProfile::from(AppImeProfile::Standard) = ImmCross`
+   であり、`caps(ImmCross, Gji) = FEEDBACK_READ` となる。
+4. すなわち `FocusChanged` が発火した**その瞬間**に、フォーカス中クラス名が
+   `CASCADIA_HOSTING_WINDOW_CLASS` / `Windows.UI.Input.InputSite.WindowClass`
+   のいずれとも一致していなかった（別の一時的なクラス名だった、または
+   フォーカス追跡の内部状態がまだ更新されていなかった等）場合、
+   `AppImeProfile::from_class_name` は `Standard` を返し、`app_policy` に
+   `FEEDBACK_READ` が焼き付く。`current_app_profile()` 自体はその後の
+   全ての呼び出し（`[apply-ime] GJI direct: send` 選択、`dispatch-ime`
+   の `profile=TsfNative` ログ等）で正しく `TsfNative` を返しているが、
+   `app_policy` はそれを一切参照しない（次の `FocusChanged` まで固定）
+   ため、この不整合はフォーカスセッション全体を通じて解消されない。
+5. `FeedbackPolicy::Read` は「実読み戻し可能なプロファイル（ImmCross 等）」
+   向けの設計であり、`sent_at` 以降の trusted 観測が `desired` と一致すれば
+   `Confirmed` として再送を止める。しかし Windows Terminal の
+   `Windows.UI.Input.InputSite.WindowClass` は `read_ime_state_full` が
+   `Skipping IMM query for known-broken class` として IMM クエリ自体を
+   スキップするクラスであり、`Read` が待っている「収束を示す trusted
+   観測」が構造的に一生発生しない。結果、`decide_actuation_action` は
+   毎 tick（drift correction の観測周期、実測 20〜90ms）
+   `ActuationAction::Send` を返し続け、`VK_IME_OFF` の `SendInput` が
+   無制限に近い頻度で繰り返される。
+
+**未確定部分:** `FocusChanged` 発火の瞬間に実際にどのクラス名が
+`current_app_profile()` に渡っていたか（`Standard` へのフォールバックが
+実際に発生した証拠ログ）は今回のログ取得範囲では直接確認できていない。
+`caps(ImmCross, Gji) = FEEDBACK_READ` であることから逆算した推定であり、
+`AppImeProfile::Standard` 以外の経路（例えば `InputRelay` 誤判定、
+`ImePolicyProfile::from` の別分岐）で同じ `Read` に到達する可能性も
+コード上は排除できていない。次のログ取得では `FocusChanged` 発火時刻
+前後の `on_focus_process_changed`/`current_app_profile()` 呼び出しに
+一時的な診断ログを追加し、実際の `profile` 値を直接確認するとよい。
+
+**現状:** 原因のメカニズム（`FeedbackPolicy` が `FocusChanged` 時の
+プロファイル分類スナップショットに固定され、`current_app_profile()` の
+後続の正しい再分類を反映しない）まで特定済み、修正未着手。この
+`app_policy` スナップショット方式・`caps()` の feedback 割り当て・
+`Read`/`Blind` の GiveUp 非対称性はいずれも IME belief アーキテクチャの
+中核（`state/app_ime_policy.rs`、`state/ime_model.rs::FocusChanged` 分岐）
+に関わるため、修正方針はユーザー判断により Opus 敵対的レビューで設計
+してから実装する。
+
+**関連:** [ADR-133](adr/133-windows-terminal-vk-kana-scan-code.md)
+（本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された
+経緯）、BUG-113（本 BUG により再現する症状「@」の直接の親 BUG）、
+BUG-110/ADR-132（`IntentStore`/`last_intent` の絶対的権威化が真因の、
+同じ症状クラスの別原因——独立した原因である点に注意）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
+（`ImeModel` 以外の belief 的状態にも3段防御の適用要否を検討する際の
+判断基準）。

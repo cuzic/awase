@@ -2,9 +2,12 @@
 
 ## ステータス
 
-**BUG-113 の恒久修正を実装済み（2026-09-05、`develop` 未マージ）。** 詳細は
-本文末尾「BUG-113 の恒久修正（2026-09-05）」節を参照。D1〜D6 は「実機で
-反証される前の設計検討過程」として以下にそのまま残す。
+**BUG-113 の `wScan=0` 修正は実機A/Bで反証・revert 済み。真因は BUG-114
+（drift correction の `FeedbackPolicy::Read` 無限に近い頻度の再送）に
+切り出し、修正方針は Opus 敵対的レビューで設計してから実装する
+（2026-09-05）。** 詳細は本文末尾「BUG-113 の恒久修正（2026-09-05）」節
+（反証の経緯を追記済み）と `docs/known-bugs.md` BUG-114 を参照。D1〜D6 は
+「実機で反証される前の設計検討過程」として以下にそのまま残す。
 
 ---
 
@@ -571,10 +574,13 @@ Windows Terminal のソースコードだけでは確認できない領域まで
    キーの動作割り当てを変える等、GJI 設定画面側の対症的な回避策の
    有無）も調査対象に含めるとよい。
 
-## BUG-113 の恒久修正（2026-09-05）
+## BUG-113 の恒久修正・試行1（2026-09-05、実機A/Bで反証・revert 済み）
 
 上記「次セッションへの引き継ぎ」項目2の A/B 実機検証をユーザーが実施し、
-`send_ime_mode_key` の `wScan=0` が余分な「@」の真因であることが確認された。
+当初 `send_ime_mode_key` の `wScan=0` が余分な「@」の真因候補と絞り込んで
+いたため、以下の修正を試行した。**しかし本節末尾のとおり、この修正を
+実際に実機でテストしたところ「@」の再現に一切変化が無く、仮説そのものが
+反証された。** 節全体は「反証された修正の記録」として保持する。
 
 ### 修正内容
 
@@ -625,11 +631,50 @@ Opus 敵対的設計レビュー（2体レビュー）を経ずに実装した�
 他のキーボード/ドライバ環境で `VK_KANA`(0x15) が実際に届く可能性は排除
 できていない。develop へマージするか撤去するかは別途ユーザー判断が必要。
 
+### 反証（2026-09-05、上記修正の実機A/Bテスト）
+
+上記の修正（`send_ime_mode_key` の scan 化・全アプリ既定適用）を実装した
+ビルドを Windows Terminal + GJI 実機で最新コミットから再ビルド・再起動して
+テストしたところ、ユーザーから「@ が出力される現象何も変化はありません
+でした」と報告があった。
+
+`RUST_LOG=debug` で改めてログを取得したところ、BUG-113 の再現手順（Engine
+有効時に物理半角/全角キーを1回押す）に対し、`runtime/ime_refresh.rs` の
+drift correction が **約14秒間、20〜90ms おきに連続発火**し、`VK_IME_OFF`
+を `SendInput` で送り続けていたことが判明した（`gave up` ログは1件も無い）。
+ログの `strategy=` タグは一貫して `drift_correction_read`——`caps
+(TsfNative, Gji)` が本来割り当てるはずの `FEEDBACK_BLIND`（有界な
+`GiveUp` 付き再試行）ではなく `FeedbackPolicy::Read`（無条件で送り続ける
+方針）が使われていた。
+
+コード読解の結果、`focus/class_names.rs::AppImeProfile::from_class_name`
+が既知のクラス名（`CASCADIA_HOSTING_WINDOW_CLASS`/`Windows.UI.Input.
+InputSite.WindowClass`）のいずれにも一致しない場合 `Standard` へ
+フォールバックすること、`app_policy`（`default_feedback` の SSOT）は
+`ImeEvent::FocusChanged` 受信時のプロファイル分類スナップショットに
+以後のフォーカスセッション全体で固定され続けること（`current_app_profile()`
+自体が後から正しく `TsfNative` を返すようになっても反映されない）を
+発見した。`AppImeProfile::Standard → ImePolicyProfile::ImmCross →
+FEEDBACK_READ` という経路が、`FocusChanged` 発火の瞬間だけクラス名の
+分類がずれた場合にこの `Read` 固定化を引き起こしうる。`Read` は
+「実読み戻し可能なプロファイル」向けの設計だが、Windows Terminal の
+`Windows.UI.Input.InputSite.WindowClass` は IMM クエリ自体が
+`Skipping IMM query for known-broken class` としてスキップされる
+クラスであり、収束を示す観測が構造的に一生発生しないため、無条件再送が
+実質無限ループになる。
+
+この真因は本 ADR のスコープ（`VK_KANA`/`VK_KANJI` の scan 化）から外れる
+別のメカニズムのため、[BUG-114](../known-bugs.md) として別途起票した。
+`send_ime_mode_key` は元の `wScan=0` 固定へ revert し、`docs/experiments.md`
+エントリ20に一連の経緯を記録した。BUG-113 自体の恒久修正は BUG-114 の
+修正に委ねる（修正方針は Opus 敵対的レビューで設計してから実装する
+ユーザー判断）。
+
 ### 残タスク
 
-- Windows Terminal + GJI/MS-IME 実機で「@」が再現しなくなったことの
-  最終確認（ユーザーが確認済みの A/B 検証が、修正実装後のビルドに対する
-  ものかを次回明示すること）。
-- Chrome/Edge/LINE/Teams/VS Code/WezTerm 等、Windows Terminal 以外の
-  実機ソーク。
-- D2 spike の develop マージ可否判断。
+- BUG-114（drift correction の `FeedbackPolicy::Read` 無限に近い頻度の
+  再送）の修正方針を Opus 敵対的レビューで設計し、実装する。
+- BUG-114 修正後、Windows Terminal + GJI/MS-IME 実機で「@」が再現しなく
+  なったことの確認。
+- D2 spike（`VK_KANA` 置換、この機体では到達不能コード）の develop
+  マージ可否判断。
