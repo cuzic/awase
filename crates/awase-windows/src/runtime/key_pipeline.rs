@@ -73,24 +73,34 @@ impl Runtime {
 
         // BUG-113 診断専用（一時的、第3弾）: このイベント処理全体で使う
         // コンボを最初に1回だけ選ぶ。物理・非注入のKeyDownかつ
-        // `ime_relevance.shadow_action`が付いている（＝物理IMEモード
-        // キーとして分類された）イベントに限定する——`enrich_ime_relevance`
-        // 呼び出しの「後」に置く必要があるのはこのフィールドを参照する
-        // ため。この2条件を最初のバージョンでは満たしておらず、(1)
-        // `!event.injected`を欠いていたため awase 自身の VK_IME_OFF/ON
-        // SendInput が injected=true で舞い戻ってきた際にもコンボを
-        // 進めてしまい、(2) 分類前（`enrich_ime_relevance`より前）に
-        // 判定していたため対象VK以外の通常の打鍵も無条件にコンボを
-        // 消費していた。2026-09-05実機テストで「IME OFF方向の押下では
-        // 必ず@が出る」という結果が出たが、ログを見るとテスト対象キーの
-        // 単発押下とは無関係な~30ms間隔の連続イベントでコンボが進んで
-        // おり、宣言したコンボと実際に適用されたコンボが一致していな
-        // かった。この2条件を両方満たすよう修正した。
+        // `ime_relevance.shadow_action == Some(TurnOff)`（＝「@」が実際に
+        // 出現しうる方向の物理IMEモードキー）に限定する——`enrich_ime_
+        // relevance`呼び出しの「後」に置く必要があるのはこのフィールドを
+        // 参照するため。
+        //
+        // 当初は`.is_some()`（TurnOn/TurnOff両方）でコンボを進めていたが、
+        // 2026-09-05実機テストで「IME OFF方向の押下では必ず@が出る」と
+        // いう結果が出た。ログで確認したところ、物理半角/全角キーは
+        // TurnOff(vk=0xF3)/TurnOn(vk=0xF4)を押すたびに厳密に交互する
+        // （周期2）のに対し、コンボは0→1→2→3の周期4で回っており、
+        // 4は2の倍数のため**TurnOff方向は必ず偶数コンボ（0か2、
+        // dedup=false）にしか当たらない**という構造的な交絡があった
+        // ——dedup=trueが割り当てられたケース（コンボ1・3）は全てTurnOn
+        // 方向の押下であり、そもそも「@」が起きえない方向でしか
+        // dedup=trueを試していなかった。TurnOff方向に限定してコンボを
+        // 進めることでこの交絡を解消する（TurnOn方向の押下は combo を
+        // 進めず、直前の TurnOff 用コンボをそのまま使い回す——`ime_
+        // controller.rs`側の dedup 判定は`!open`分岐でのみ効くため
+        // TurnOn方向では無関係、`kp_stage_idle_conv_check`側の probe
+        // skip判定はTurnOn方向にも適用されるが実害はない）。
         // 以後この関数内の probe 側・actuation 側の両方が同じコンボを
         // 参照する。
         if matches!(event.event_type, KeyEventType::KeyDown)
             && !event.injected
-            && event.ime_relevance.shadow_action.is_some()
+            && matches!(
+                event.ime_relevance.shadow_action,
+                Some(ShadowImeAction::TurnOff)
+            )
         {
             crate::diag_bug113_combo::select_for_new_event();
             if crate::diag_bug113_combo::combo_cycle_enabled() {
