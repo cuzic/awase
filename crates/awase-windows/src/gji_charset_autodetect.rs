@@ -493,11 +493,11 @@ pub(crate) fn route_thumb_key_action(
 ) -> Option<ShadowImeAction> {
     let action = action?;
     if is_thumb_key {
-        return Some(match action {
-            ImeToggleKind::On => ShadowImeAction::TurnOn,
-            ImeToggleKind::Off => ShadowImeAction::TurnOff,
-            ImeToggleKind::Toggle => ShadowImeAction::Toggle,
-        });
+        // `action`は呼び出し元（`gate_thumb_key_ime_actions`）で既にToggleの
+        // opt-inゲートを通過済みなので、ここでは`opt_in=true`固定で
+        // `ime_toggle_kind_to_shadow_action`に委譲し、On/Off/Toggleの
+        // 変換ロジックを二重管理しない（/code-review指摘）。
+        return ime_toggle_kind_to_shadow_action(action, true);
     }
     let combo = ParsedKeyCombo {
         ctrl: false,
@@ -513,8 +513,31 @@ pub(crate) fn route_thumb_key_action(
     None
 }
 
+/// `left_thumb_key`/`right_thumb_key`のうちHiragana/Katakanaに一致する方の
+/// VKを解決する（`NicolaFsm::set_hiragana_katakana_thumb_key_config`へ渡す
+/// 値）。起動時（`app/bootstrap.rs`）とreload時
+/// （`runtime/mod.rs::apply_config_update`）の両方から呼び、同じ導出
+/// ロジックを2箇所で重複させない（/code-review指摘——`space_is_thumb_key`/
+/// `muhenkan_dedicated_fn_key`が過去に同種のboot/reload重複から実際に
+/// 乖離した前例があるため、共有ヘルパーへ揃える）。
+#[must_use]
+pub(crate) fn resolve_hiragana_katakana_thumb_vks(
+    left: VkCode,
+    right: VkCode,
+) -> (Option<VkCode>, Option<VkCode>) {
+    let hiragana_vk = [left, right]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_DBE_HIRAGANA);
+    let katakana_vk = [left, right]
+        .into_iter()
+        .find(|&vk| vk == crate::vk::VK_DBE_KATAKANA);
+    (hiragana_vk, katakana_vk)
+}
+
 #[cfg(windows)]
-pub(crate) use windows_impl::{reset_streak_latch_for_reload, sync_gji_charset_autodetect};
+pub(crate) use windows_impl::{
+    is_configured_thumb_key, reset_streak_latch_for_reload, sync_gji_charset_autodetect,
+};
 
 #[cfg(windows)]
 mod windows_impl {
@@ -728,7 +751,7 @@ mod windows_impl {
     /// いるか（BUG-115）。`crate::hook::thumb_vk_codes()`
     /// （`apply_config_update`/起動時に更新される、常に最新の親指キー
     /// ペア）と比較する汎用ヘルパー——無変換/変換に限らず任意のVKに使える。
-    fn is_configured_thumb_key(vk: VkCode) -> bool {
+    pub(crate) fn is_configured_thumb_key(vk: VkCode) -> bool {
         let (left, right) = crate::hook::thumb_vk_codes();
         vk == left || vk == right
     }

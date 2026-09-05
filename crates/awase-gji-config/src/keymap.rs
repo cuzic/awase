@@ -231,13 +231,12 @@ fn group_ime_rows_by_key(rows: &[KeymapRow]) -> StatusSetsByKey {
     for row in rows {
         // command でまず絞る: IMEOn/IMEOff 以外の行（Backspace 等)は空白キー
         // 判定より先に捨てる。修飾キー付き行のログを IME 無関係コマンドで
-        // 発火させないため。
-        let is_ime_on = row.command == "IMEOn";
-        // `CancelAndIMEOff`（BUG-115、ATOKプリセット由来）はIMEを閉じる点で
-        // `IMEOff`と同義として扱う。Precomposition状態で「進行中の入力を
-        // キャンセルしてIMEを閉じる」意味だが、awase側は状態を4分岐で
-        // 追跡しないため、単に「IME開閉」の観点でIMEOff相当として集計する。
-        let is_ime_off = row.command == "IMEOff" || row.command == "CancelAndIMEOff";
+        // 発火させないため。`classify_command`（`CancelAndIMEOff`を
+        // `IMEOff`と同義に扱うエイリアス処理込み）を使い、
+        // `extract_mode_keys`と分類ロジックを二重管理しない
+        // （/code-review指摘、文字列比較の再実装を避ける）。
+        let is_ime_on = matches!(classify_command(&row.command), GjiModeCommand::ImeOn);
+        let is_ime_off = matches!(classify_command(&row.command), GjiModeCommand::ImeOff);
         if !is_ime_on && !is_ime_off {
             continue;
         }

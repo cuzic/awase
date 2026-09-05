@@ -1378,10 +1378,12 @@ impl Runtime {
 
     #[must_use]
     pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
-        let (left, right) = crate::hook::thumb_vk_codes();
+        // 親指キー判定は`gji_charset_autodetect::is_configured_thumb_key`と
+        // 共有し、`hook::thumb_vk_codes()`の展開を2箇所で重複させない
+        // （/code-review指摘）。
         crate::gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle(
             vk,
-            vk == left || vk == right,
+            crate::gji_charset_autodetect::is_configured_thumb_key(vk),
             self.engine.hiragana_delegate_to_open_axis(),
             self.engine.katakana_delegate_to_open_axis(),
         )
@@ -1636,12 +1638,8 @@ impl Runtime {
                     config.general.henkan_solo_tap_always_suppress,
                 ),
             );
-            let hiragana_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_DBE_HIRAGANA);
-            let katakana_vk = [left, right]
-                .into_iter()
-                .find(|&vk| vk == crate::vk::VK_DBE_KATAKANA);
+            let (hiragana_vk, katakana_vk) =
+                crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(left, right);
             self.engine
                 .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
