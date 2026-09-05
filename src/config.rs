@@ -382,6 +382,40 @@ pub struct GeneralConfig {
     /// 参照）。既定値は `true`（常に無効化）。JIS かな直接入力を意図的に
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
+
+    /// GJI（Google 日本語入力）の設定（`config1.db`。ATOKプリセットの
+    /// `session_keymap`、またはカスタムキーマップ内の literal な
+    /// `Henkan`/`Muhenkan`トークン）が、無変換/変換キー単体に状態依存の
+    /// IME ON/OFFトグル動作を割り当てている場合に、それを awase の
+    /// delegate-to-open-axis（無変換/変換が親指シフトのチョードキーとして
+    /// 設定されている場合。ADR-092 決定D Step4bと同じ機構）または
+    /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
+    /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
+    ///
+    /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
+    /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
+    /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを
+    /// `IMEOn`、`Precomposition`状態で`CancelAndIMEOff`に割り当てている
+    /// ことを`google/mozc`の`src/data/keymap/atok.tsv`で2026-09-05に確認
+    /// 済み——「表現不能」ではない）が、既定を`true`にしない理由が4つある:
+    ///
+    /// 1. `Toggle`は非冪等。無変換/変換の単独タップ確定判定
+    ///    （`resolve_pending_thumb_as_single`）はチョード判定に失敗した
+    ///    キーからも呼ばれうる経路が複数あり、`TurnOn`/`TurnOff`と違い
+    ///    誤発火が「状態の反転」になり連続誤発火で発振しうる。
+    /// 2. ATOKでは変換・無変換の**両方**がToggleになり、NICOLA親指キー
+    ///    2本ともIME切替を持つことになり露出が2倍になる。
+    /// 3. ATOKプリセットは（overlayと違い）ユーザーが明示的にONにする
+    ///    ものではなく、キーマップにATOKを選んだだけの全ユーザーに
+    ///    自動適用される（親指シフト利用者と重なりが大きい層）。
+    /// 4. GJIはMozcのフォークであり、`atok.tsv`の内容が本家と完全一致
+    ///    する保証は無い。
+    ///
+    /// これらのリスクを理解した上で有効化したいユーザーのためのopt-in
+    /// フラグ。`true`にすると`log::info!`で反映したことを通知する
+    /// （`false`のまま矛盾を検出した場合は`log::warn!`で対処法を案内する）。
+    #[serde(default)]
+    pub gji_thumb_key_ime_toggle: bool,
 }
 
 impl Default for GeneralConfig {
@@ -421,6 +455,7 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
+            gji_thumb_key_ime_toggle: false,
         }
     }
 }

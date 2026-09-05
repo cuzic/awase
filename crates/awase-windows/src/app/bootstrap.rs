@@ -626,6 +626,7 @@ pub(super) fn initialize_app(
             config.general.left_thumb_key == "VK_SPACE"
                 || config.general.right_thumb_key == "VK_SPACE",
         );
+        app.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

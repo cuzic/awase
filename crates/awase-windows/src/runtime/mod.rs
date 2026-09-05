@@ -249,6 +249,10 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
+    /// `GeneralConfig.gji_thumb_key_ime_toggle`のキャッシュ（BUG-115）。
+    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
+    /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
+    gji_thumb_key_ime_toggle_opt_in: bool,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -1236,6 +1240,7 @@ impl Runtime {
             half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
+            gji_thumb_key_ime_toggle_opt_in: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1321,11 +1326,52 @@ impl Runtime {
         self.engine.set_ime_toggle_auto_keys(Vec::new());
     }
 
+    /// `gji_charset_autodetect`の`classify_thumb_key_ime_actions`/
+    /// `gate_thumb_key_ime_actions`（BUG-115）が導出した、無変換/変換キーが
+    /// 親指キーの場合のIME open 軸への肩代わりを`Engine`へ反映する
+    /// 入口。MS-IME側の`sync_ime_toggle_auto_detect`（レジストリ由来）と
+    /// 同じ`set_muhenkan/henkan_delegate_to_open_axis`APIを共有するため、
+    /// GJI→MS-IME遷移時はMS-IME側の値が必ず後から上書きする
+    /// （`message_handlers.rs`の呼び出し順序参照）。
+    pub(crate) fn set_gji_thumb_key_delegate_to_open_axis(
+        &mut self,
+        henkan: Option<awase::types::ShadowImeAction>,
+        muhenkan: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_henkan_delegate_to_open_axis(henkan);
+        self.engine.set_muhenkan_delegate_to_open_axis(muhenkan);
+    }
+
+    /// `muhenkan_solo_tap_dedicated_fn_key`（config.tomlによる手動設定）が
+    /// 有効かどうか。BUG-115: 無変換が親指キーとして設定されておりGJI側の
+    /// IME意味論も検出された場合、これが有効だと無変換側の
+    /// delegate-to-open-axisが優先順位で黙って死ぬ
+    /// （`resolve_pending_thumb_as_single`、専用Fnキーが最優先）ため、
+    /// 警告を出すかどうかの判定に使う。
+    #[must_use]
+    pub(crate) const fn muhenkan_dedicated_fn_key_configured(&self) -> bool {
+        self.muhenkan_dedicated_fn_key_vk.is_some()
+    }
+
     /// `config.general.left_thumb_key`/`right_thumb_key` 由来のキャッシュを
     /// 更新する（ADR-092 決定D Step4a）。起動時（`bootstrap.rs`）と
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
         self.space_is_thumb_key = space_is_thumb_key;
+    }
+
+    /// `config.general.gji_thumb_key_ime_toggle`のキャッシュを更新する
+    /// （BUG-115）。起動時（`bootstrap.rs`）と`apply_config_update`
+    /// （reload時）の両方から呼ぶ。
+    pub(crate) fn set_gji_thumb_key_ime_toggle_opt_in(&mut self, opt_in: bool) {
+        self.gji_thumb_key_ime_toggle_opt_in = opt_in;
+    }
+
+    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
+    /// `gate_thumb_key_ime_actions`へ渡す値（BUG-115）。
+    #[must_use]
+    pub(crate) const fn gji_thumb_key_ime_toggle_opt_in(&self) -> bool {
+        self.gji_thumb_key_ime_toggle_opt_in
     }
 
     /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
@@ -1486,6 +1532,7 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
+        self.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;

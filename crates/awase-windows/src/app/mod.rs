@@ -682,6 +682,19 @@ pub(crate) fn reload_config() {
         {
             message_handlers::sync_ime_toggle_auto_detect(app);
         }
+        // BUG-115 F4: MS-IME側と対称に、GJI利用中の設定リロードでも
+        // config1.db を再読みする。`gji_thumb_key_ime_toggle`を
+        // 設定画面で変更した場合、次のGJIストリーク（＝再起動やIME切替）
+        // まで反映されない stale化を防ぐ（Opusレビュー指摘、MS-IME/GJIは
+        // 排他のため`sync_ime_kind_from_observation`と同じガードを使う）。
+        if obs.ime_kind_detected()
+            && matches!(
+                obs.active_ime_kind(),
+                crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+            )
+        {
+            crate::gji_charset_autodetect::reset_streak_latch_for_reload(app);
+        }
     });
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
