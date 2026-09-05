@@ -629,10 +629,10 @@ impl ObservationStore {
         query: ReadBackQuery,
         attempts: u32,
     ) -> ConvergedReceipt {
-        let latest = self.most_recent_trusted_after(now, since);
         let resolution = match query {
             // 旧: `most_recent_trusted_after(now, act_sent_at).is_some_and(|o| o.open == desired)`
             ReadBackQuery::Converged { desired } => {
+                let latest = self.most_recent_trusted_after(now, since);
                 if latest.is_some_and(|o| o.open == desired) {
                     Resolution::Confirmed
                 } else {
@@ -640,7 +640,28 @@ impl ObservationStore {
                 }
             }
             // 旧: `most_recent_trusted_after(now, gave_up_at).is_some()`
+            //
+            // **BUG-114 追補（ADR-134 Finding 5、実機確認済み）**: `ObserverPoll`
+            // ソースの観測は、IMM32 を実際に読める場合（`OsPoll` 戦略）だけで
+            // なく、読み戻し手段が構造的に無いと自ら宣言しているプロファイル
+            // （TsfNative/Imm32Unavailable、`Blacklist` 戦略）の GJI I/O 活動
+            // 監視（`observe_gji_after_focus`）からも書かれる。後者は
+            // 「`desired` が実現したか」を一切確認していない弱い代理指標
+            // だが、`AnyFreshEvidence` が無区別に「外界が動いた証拠」として
+            // 採用すると、GJI I/O 活動が続く限りほぼ常に鮮度条件を満たして
+            // しまい、`Blind` の `GiveUp` 後クールダウン（3秒）が実質意味を
+            // 失う。実機ログで `attempts=5` の `GiveUp` から次のバーストまで
+            // 数秒〜数十秒おきに永久に繰り返す暴走を確認済み（BUG-114、
+            // `docs/known-bugs.md` 参照）。この query に限り `ObserverPoll`
+            // を鮮度判定から除外する——`Converged`（`Read` policy の収束
+            // 確認、`OsPoll` 戦略の genuine な `ObserverPoll` に依存）には
+            // 一切影響しない。
             ReadBackQuery::AnyFreshEvidence => {
+                let latest = self.most_recent_trusted_after_excluding(
+                    now,
+                    since,
+                    ObservationSource::ObserverPoll,
+                );
                 if latest.is_some() {
                     Resolution::ExternalChange
                 } else {
@@ -683,6 +704,24 @@ impl ObservationStore {
         self.per_source
             .iter()
             .filter(|o| !o.is_expired(now) && o.at >= since)
+            .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
+    }
+
+    /// [`most_recent_trusted_after`] と同じだが、指定した `ObservationSource`
+    /// を鮮度判定の対象から除外する。BUG-114 追補（ADR-134 Finding 5）で
+    /// `ReadBackQuery::AnyFreshEvidence` 専用に追加した——`ObserverPoll` の
+    /// ように「読み戻し手段が構造的に無いプロファイルからも書かれうる」
+    /// ソースを、無区別に「外界が動いた証拠」として扱わないため。
+    #[must_use]
+    fn most_recent_trusted_after_excluding(
+        &self,
+        now: Instant,
+        since: Instant,
+        exclude: ObservationSource,
+    ) -> Option<&ImeObservation> {
+        self.per_source
+            .iter()
+            .filter(|o| !o.is_expired(now) && o.at >= since && o.source != exclude)
             .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
     }
 
@@ -1252,6 +1291,68 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// BUG-114 追補（ADR-134 Finding 5）の回帰テスト。
+    ///
+    /// `ObserverPoll` ソースの観測（`Blacklist` 戦略の GJI I/O 活動監視、
+    /// `observe_gji_after_focus` が書く）だけが `since` 以降に record された
+    /// 場合、`AnyFreshEvidence` は「外界が動いた証拠」として採用せず
+    /// `GiveUp`（再武装しない）のままであることを固定する。実機で
+    /// `attempts=5` の `GiveUp` から数秒〜数十秒おきに際限なく再武装する
+    /// 暴走が確認されており（`docs/known-bugs.md` BUG-114）、この観測source
+    /// が「鮮度だけで無条件に外界の変化とみなされる」ことが原因だった。
+    #[test]
+    fn read_back_any_fresh_evidence_ignores_observer_poll_alone() {
+        let base = Instant::now();
+        let since = base;
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, since));
+        let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+        assert_eq!(
+            receipt.resolution(),
+            Resolution::GaveUp,
+            "ObserverPoll 単独の新しい観測は AnyFreshEvidence の再武装条件にしてはならない \
+             (BUG-114/ADR-134 Finding 5)"
+        );
+    }
+
+    /// 上記と対になる確認: `ObserverPoll` **以外**のソース（例:
+    /// `ConvOpenInference`）が `since` 以降に記録されていれば、従来どおり
+    /// `ExternalChange` として再武装する。除外対象を `ObserverPoll` に
+    /// 限定していることの固定。
+    #[test]
+    fn read_back_any_fresh_evidence_still_reacts_to_non_observer_poll_sources() {
+        let base = Instant::now();
+        let since = base;
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        rec(
+            &mut s,
+            obs(true, ObservationSource::ConvOpenInference, since),
+        );
+        let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+        assert_eq!(
+            receipt.resolution(),
+            Resolution::ExternalChange,
+            "ObserverPoll 以外のソースは従来どおり再武装条件になること"
+        );
+    }
+
+    /// `ObserverPoll` と、それ以外の新しい観測が両方存在する場合は、
+    /// 後者だけで `ExternalChange` になること（除外は `ObserverPoll` の
+    /// レコードだけをフィルタし、他の観測の判定に影響しないこと）。
+    #[test]
+    fn read_back_any_fresh_evidence_reacts_when_observer_poll_and_other_source_both_fresh() {
+        let base = Instant::now();
+        let since = base;
+        let now = since + Duration::from_millis(20);
+        let mut s = ObservationStore::default();
+        rec(&mut s, obs(true, ObservationSource::ObserverPoll, since));
+        rec(&mut s, obs(true, ObservationSource::Gji, since));
+        let receipt = s.read_back(now, since, ReadBackQuery::AnyFreshEvidence, 5);
+        assert_eq!(receipt.resolution(), Resolution::ExternalChange);
     }
 
     /// `AnyFreshEvidence` は `open` の値に依存しない——同じ `since` で

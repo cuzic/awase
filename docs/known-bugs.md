@@ -14066,6 +14066,37 @@ policy 決定だけをライブ判定から再導出する最小修正案（D1�
 `actuation_for` の「reuse 時 policy 無視」不変条件は変更しない。
 Opus 敵対的レビュー未実施。
 
+**追記（2026-09-05・実機再現でADR-134 Finding 5を確認、修正実装）**:
+BUG-113 の診断スパイク（ADR-133 D0/D2、`fix/bug113-114-ime-off-batch-and-
+feedback-staleness` ブランチ）を実機（dragonflyg4、Windows Terminal +
+GJI）でテスト中、`RUST_LOG=debug` のログに `[drift] correction:
+observed=true ≠ desired=false for Nms` のバーストが**5回**自然発生した
+（各バースト5回の再送、`[drift] actuation gave up (Blind): ...
+attempts=5` で終了、バースト間隔は7秒〜60秒とばらつきあり）。この間
+`[bug114-diag]`（ADR-134 D4、`app_policy` スナップショットとライブ判定の
+食い違いを記録する診断ログ）は**1件も出力されなかった**——つまり今回の
+暴走は上記の「`FocusChanged` 時点の誤分類」（根本原因1〜3、D1/D1c で
+対処予定）とは**独立**に発生した。`attempts=5` の `GiveUp` が明確に出て
+いることから `FeedbackPolicy::Blind` は正しく選択されており、ADR-134が
+「Finding 5」として指摘していた別の欠陥——`ReadBackQuery::AnyFreshEvidence`
+が `Blind` 戦略（TsfNative/Imm32Unavailable）の GJI I/O 活動監視
+（`observe_gji_after_focus` が書く `ObservationSource::ObserverPoll`）を
+無区別に「外界が動いた証拠」として採用してしまい、`GiveUp` 後の
+3秒クールダウン明けにほぼ確実に再武装してしまう——が実機で直接確認
+された。
+
+修正: `state/observation_store.rs::ObservationStore::read_back` の
+`ReadBackQuery::AnyFreshEvidence` 分岐のみ、`ObserverPoll` ソースを鮮度
+判定から除外する（`most_recent_trusted_after_excluding` 新設）。
+`ReadBackQuery::Converged`（`FeedbackPolicy::Read` の収束確認、genuine な
+`OsPoll` 戦略の `ObserverPoll` に依存）には触れない——`Blind` が割り当て
+られるプロファイル（Imm32Unavailable/TsfNative）は構造的に常に
+`Blacklist` 読み取り戦略になり `OsPoll` を経由しないため、この除外は
+`Blind` 文脈でのみ意味を持ち、`Read` 文脈の genuine な `ObserverPoll` を
+巻き込まない。回帰テスト3件
+（`read_back_any_fresh_evidence_ignores_observer_poll_alone` 等）を追加。
+実機での効果確認（暴走が止まるか）は未実施。
+
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された
 経緯）、[ADR-134](adr/134-drift-correction-feedback-policy-focus-snapshot-staleness.md)
