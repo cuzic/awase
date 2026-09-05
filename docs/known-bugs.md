@@ -13828,7 +13828,7 @@ Standard → Imm32Unavailable` が短時間（1秒未満）に7回連続で再�
 ことを示す独立した実データとして記録する。詳細は
 [docs/bug-reports-triage.md](bug-reports-triage.md) の当該 report 行を参照。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消（GjiDirectStrategy OFF方向のAlreadyMatchedガード追加）を実装、実機検証待ち。probe競合はもう一つの独立した十分条件として残置**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消（GjiDirectStrategy OFF方向のAlreadyMatchedガード追加）を実装・実機確認済み。probe競合はもう一つの独立した十分条件として残置、着手時は別途診断コードが必要**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14107,7 +14107,7 @@ GJI の TSF composition 追跡を乱す、という機構が濃厚である
 制御可能な送信動作であり、外部要因（PSReadLine）の発見は awase 側の
 修正が不要であることを意味しない。**
 
-**追記（2026-09-05 続き・恒久修正を実装、実機検証待ち）**: ユーザー判断で
+**追記（2026-09-05 続き・恒久修正を実装、実機確認済み）**: ユーザー判断で
 二重actuation解消（dedup相当）を先に実装することにした。
 `GjiDirectStrategy::apply` の OFF方向に、既存のON方向
 （`open && view.control.shadow_on` → `AlreadyMatched`）と対称な
@@ -14130,6 +14130,16 @@ actuation`/`diag_bug113_skip_idle_conv_probe`/`diag_bug113_combo_cycle_enabled`
 （アイドル明けの conv-mode belief 回復）のために存在する正規機能であり、
 丸ごと無効化するのではなく GJI actuation と時間的に重ならないようにする
 設計が必要——次に着手する場合は別途新しい診断コードを起こすこと。
+
+**追記（2026-09-05 続き・実機確認）**: 本修正を実機（dragonflyg4）に投入し、
+(1) Ctrl+無変換の連打（IME OFF方向のまま約11秒間・約38回の`apply(open=false)`
+呼び出し）ではログの`[apply-ime] GJI direct: shadow OFF, skip VK_IME_OFF`
+がユーザーの1回目の押下以降すべてに出力され、2回目以降の`SendInput`が
+確実に吸収されていることを確認、(2) 通常の押下（半角/全角キーで
+OFF→ONを繰り返す）では各方向につき`[apply-ime] GJI direct: send`が
+1回だけ記録され（修正前は同方向で2回連続していた）、「@」の混入が
+一切発生しないことを確認した。**Ctrl+無変換・物理半角/全角キーの
+いずれでも「@」が表示されなくなった**（ユーザー確認済み）。
 
 **関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
 （当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
