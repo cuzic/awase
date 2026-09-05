@@ -367,11 +367,25 @@ impl DecisionExecutor {
     /// drain 経路 (`WM_DRAIN_OUTPUT_QUEUE`) 専用: PassThrough を OS に届けるための
     /// `ReinjectKey` を末尾にキューイングする。
     ///
-    /// 通常 hook 経路では PassThrough は `CallNextHookEx` で OS に直接届く。
-    /// しかし OUTPUT_GATE active 期間や with_app 再入セーフネットで `INPUT_DEFER` へ
-    /// Consumed として退避されたキーは drain で engine に replay されたあと
-    /// `CallbackResult::PassThrough` が返っても hook 経路に戻らないため、
-    /// 明示的に SendInput で送出する必要がある。
+    /// **訂正（2026-09-05、BUG-116 調査で発覚）**: 以前このコメントは「通常
+    /// hook 経路では PassThrough は `CallNextHookEx` で OS に直接届く」と
+    /// 書いていたが、これは誤り。フック (`hook.rs::hook_proc`) は
+    /// `produce_result` が通常時（`ProduceResult::Accepted`）は常に
+    /// `LRESULT(1)` を返して元イベントを消費する（`hook.rs:1195-1199`）ため、
+    /// **通常 hook 経路でも PassThrough は必ず `enqueue_reinject`（
+    /// `runtime/message_handlers.rs:244-250`）経由で SendInput により
+    /// 再送出される**。`CallNextHookEx` で OS に直接届く経路は存在しない。
+    /// この誤った mental model が、`docs/adr/137-...md`（BUG-116）で
+    /// 「`PhysicalKeyDisposition::plan` が Allow を返せば OS に届く」という
+    /// 前提の一因になっていた（実際には reinject が `wScan: 0` を使うため、
+    /// scan 依存のモードキー処理に影響しうる）。
+    ///
+    /// drain 経路 (`WM_DRAIN_OUTPUT_QUEUE`) がこの関数を明示的に呼ぶ理由は
+    /// 元々の記述どおり: OUTPUT_GATE active 期間や with_app 再入セーフネットで
+    /// `INPUT_DEFER` へ Consumed として退避されたキーは drain で engine に
+    /// replay されたあと `CallbackResult::PassThrough` が返っても hook 経路
+    /// （そもそも通常 hook 経路も `enqueue_reinject` を通る）には戻らないため、
+    /// ここから明示的に呼び出す必要がある。
     pub(crate) fn enqueue_reinject(&mut self, event: RawKeyEvent) {
         self.queue
             .push_back(Effect::Input(InputEffect::ReinjectKey(event)));
