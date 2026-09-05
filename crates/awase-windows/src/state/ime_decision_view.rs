@@ -104,13 +104,26 @@ impl ObservedState {
 
 /// `apply_ime_open` が最後に OS に送ったコマンド値（制御ログ）。
 ///
-/// 真の観測値ではない。`ImeModel.applied_open`（SSOT）から
+/// 真の観測値ではない。`ImeModel.applied_open()`（SSOT、`AppliedImeState`）から
 /// 各 apply サイクルの先頭で pre-fetch されるスナップショット。
 /// VK_KANJI がトグルキーであるため、重複送信を避けるために参照する。
+///
+/// **`Option<bool>` であって `bool` ではないことが重要**（BUG-113 Blocker、
+/// Opus 敵対的レビューで発見）: `None` は「まだ何もコマンドを送っていない、
+/// または `applied` が `AppliedImeState::Unknown`（フォーカス変更直後等）」を
+/// 表し、「確認済み OFF」（`Some(false)`）とは明確に区別する。`bool` に
+/// 潰して `unwrap_or(false)` してしまうと、`None`（証拠なし）を
+/// 「確認済み OFF」と誤認してしまい、OFF 方向の already-matched スキップ
+/// 判定が正当な再送（drift correction・idle-conv-check の DirectInput
+/// 回復等、意図的に shadow を無視して送る設計の経路）を無音で握り潰す
+/// （`state/ime_model.rs::applied_open()` の doc コメントが警告する
+/// ADR-098 決定1-b の罠と同型、docs/known-bugs.md BUG-113 参照）。
 #[derive(Clone, Copy)]
 pub(crate) struct ControlLog {
     /// `apply_ime_open` が最後に OS に送ったコマンド値。
-    pub shadow_on: bool,
+    /// `Some(true)`=確認済み ON、`Some(false)`=確認済み OFF、`None`=未知
+    /// （まだ根拠が無い——「送信すべき」側として扱うこと）。
+    pub shadow_on: Option<bool>,
 }
 
 /// `apply_ime_open` / `ImeOpenStrategy` 用の統一スナップショットビュー。

@@ -489,6 +489,26 @@ pub enum ImeEvent {
         fence: crate::state::probe_admission::FocusFence,
     },
 
+    /// 起動直後の初回フォーカス確立時、`app_policy` を live 側の profile 分類で
+    /// 初期化する（BUG-114 根本原因1、ADR-134 D1c）。
+    ///
+    /// `ImeModel::app_policy` の書き込み口は従来
+    /// `FocusChanged`（プロセス変更時のみ）と初期値
+    /// `AppImePolicy::standard()`（`ImmCross` 固定）の2箇所しかなかった。
+    /// 起動から最初のプロセス切替までの間（ユーザーが一度もアプリを
+    /// 切り替えない、ごく自然な使い方）は `app_policy.default_feedback`
+    /// が既定値 `Read` のまま固定され、TsfNative/Imm32Unavailable
+    /// （読み戻し不能で `Blind` が本来割り当てられるべきプロファイル）に
+    /// フォーカスしていても `Read` の無条件再送に陥る（実機で
+    /// `current_focus=None`・`live_policy=Blind`・`snapshot_policy=Read`
+    /// の食い違いを確認済み、`docs/known-bugs.md` BUG-114）。
+    ///
+    /// `InitialFocusFenceEstablished` とは意図的に**別イベント**にする——
+    /// あちらは「fence 1フィールドの差し替えのみ」という不変条件
+    /// （ADR-102 決定3-b、`initial_focus_fence_event_only_touches_the_fence`
+    /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
+    InitialAppPolicyEstablished { profile: ImePolicyProfile },
+
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
     // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。

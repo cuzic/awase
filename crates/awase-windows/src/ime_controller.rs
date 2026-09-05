@@ -97,6 +97,20 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     }
 }
 
+/// `GjiDirectStrategy::apply` の already-matched 判定（純粋関数）。
+///
+/// shadow が `open` 方向で「確認済み」（`Some(open)`）のときだけ `true`
+/// を返す。`shadow_on == None`（未知——`AppliedImeState::Unknown` や、
+/// drift correction/idle-conv-check の DirectInput 回復のように意図的に
+/// `applied` を渡さない経路）は決して `true` にならない——「証拠が無い
+/// ときは実際に送信する」側に倒す（BUG-113 Blocker、Opus 敵対的レビューで
+/// 発見。`bool` に潰した `!shadow_on` で「未知」を「確認済み OFF」と
+/// 誤認し、正当な再送を無音で握り潰していた）。
+#[must_use]
+fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool {
+    shadow_on == Some(open)
+}
+
 // ── GjiDirectStrategy ────────────────────────────────────────────
 
 /// GJI を使った一方向 IME 制御戦略。
@@ -110,6 +124,20 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
 /// TsfNative では旧 F22 キーバインド時代に「半角英数止まり」の問題があったが、
 /// VK_IME_OFF (0x1A) 移行後は TSF compartment が正しく閉じることを確認済み。
 ///
+/// `apply(open, ..)` は同一の物理キー押下に対し `shadow_toggle_off_sync`/
+/// `engine_decision_sync` の2経路から連続で2回呼ばれる（意図的な設計—
+/// shadow belief 系と engine decision 系が独立に同じ結論へ到達する）。
+/// `gji_direct_already_matches`（shadow が `open` 方向で「確認済み」なら
+/// スキップ、`Some(open)`）がこの2回目の呼び出しを `AlreadyMatched` として
+/// 吸収する。以前は OFF 方向だけ非対称な実装（`bool` に潰した
+/// `!shadow_on` で「未知」まで「確認済み OFF」と誤認）だったため、2回目の
+/// 呼び出しも毎回実際に `SendInput` していた（BUG-113）。Windows Terminal・
+/// Google 日本語入力・PowerShell(PSReadLine) の組み合わせでは、この重複
+/// `SendInput` が GJI の TSF composition 追跡を乱し、余分な「@」が入力
+/// される（2026-09-05 実機A/Bで確認、必要十分条件の一つ。もう一つの
+/// 独立した十分条件——`kp_stage_idle_conv_check` の cross-process 読み取り
+/// との時間的競合——は別途対応、docs/known-bugs.md BUG-113 参照）。
+///
 /// 適用条件:
 /// - `active_ime_kind == GoogleJapaneseInput` (CLSID ベース判定)
 struct GjiDirectStrategy;
@@ -120,9 +148,22 @@ impl ImeOpenStrategy for GjiDirectStrategy {
     }
 
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        if open && view.control.shadow_on {
-            // shadow が ON を示しており VK_IME_ON は no-op と見込まれるためスキップ
-            log::debug!("[apply-ime] GJI direct: shadow ON, skip VK_IME_ON");
+        if gji_direct_already_matches(view.control.shadow_on, open) {
+            // shadow が desired 方向で「確認済み」（`Some(open)`）なら no-op と
+            // 見込まれるためスキップする。`shadow_on == None`（未知——まだ
+            // 何も確認していない、`AppliedImeState::Unknown` 等）はここに
+            // 該当しない（`gji_direct_already_matches` 参照）。BUG-113
+            // 恒久修正: 以前は OFF 方向だけ「shadow が ON だと確認できて
+            // いない」を `bool` に潰した `!shadow_on` で判定しており、
+            // `None`（未知）まで「確認済み OFF」と誤認して drift correction
+            // 等の正当な再送を無音で握り潰していた（Opus 敵対的レビューで
+            // 発見、docs/known-bugs.md BUG-113 参照）。ON 方向の元の実装
+            // （`open && shadow_on`）はこの `bool` 化の下でも `None→false`
+            // が安全側（送る）に倒れていたため、当時は問題が露見しなかった。
+            log::debug!(
+                "[apply-ime] GJI direct: shadow already {} (open={open}), skip",
+                if open { "ON" } else { "OFF" }
+            );
             return ImeOpenOutcome::AlreadyMatched;
         }
         // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
@@ -265,7 +306,7 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
         // 作り直すため、この値は直前の ImmCross 試行にとっては送信「後」の値
         // でもある点に注意（`fallback_write` の doc コメント参照）。
         log::info!(
-            "[apply-ime] shadow={} candidate={} was_seen={} profile={:?} \
+            "[apply-ime] shadow={:?} candidate={} was_seen={} profile={:?} \
              composition_active={} show_seq={} change_seq={} → desired={open}: \
              SendInput VK_KANJI (issue #138診断)",
             view.control.shadow_on,
@@ -651,7 +692,7 @@ pub fn characterize_strategy(active_gji: bool, profile: &str, skip_imm: bool) ->
             active_ime_kind,
             ..ObservedState::default()
         },
-        control: ControlLog { shadow_on: false },
+        control: ControlLog { shadow_on: None },
         belief_input_mode: awase::engine::InputModeState::Unknown,
     };
     if skip_imm {
@@ -682,6 +723,11 @@ mod tests {
         (AppImeProfile::TsfNative, ActiveImeKind::MicrosoftIme),
     ];
 
+    /// `shadow_on: None`（未知）を既定にする——これが実際に多くのケースで
+    /// 起きる現実的な状態であり（フォーカス変更直後・起動直後等）、
+    /// `Some(false)` を既定にすると BUG-113 Blocker のような「未知を
+    /// 確認済み扱いする」バグを覆い隠してしまう。`Some(...)` が必要な
+    /// テストは個別に `ControlLog { shadow_on: Some(...) }` を組み立てる。
     fn view_for(profile: AppImeProfile, kind: ActiveImeKind) -> ImeControlView<'static> {
         ImeControlView {
             focus: FocusFacts {
@@ -693,7 +739,7 @@ mod tests {
                 active_ime_kind: kind,
                 ..ObservedState::default()
             },
-            control: ControlLog { shadow_on: false },
+            control: ControlLog { shadow_on: None },
             belief_input_mode: awase::engine::InputModeState::Unknown,
         }
     }
@@ -748,6 +794,115 @@ mod tests {
             ImeOpenOutcome::NotOwned,
             "InputRelay では ImeController::apply がどの機構も試行せず \
              NotOwned を即返さなければならない（issue #136 / BUG-90 決定4）"
+        );
+    }
+
+    /// `gji_direct_already_matches` の純粋関数テスト（Win32 呼び出しを一切
+    /// 経由しない）。BUG-113 Blocker（Opus 敵対的レビューで発見）の核心:
+    /// `shadow_on == None`（未知）は、`open` の値によらず「確認済み」と
+    /// 判定してはならない——`unwrap_or(false)` で `bool` に潰していた旧
+    /// 実装は、OFF 方向でこの `None` を「確認済み OFF」と誤認し、drift
+    /// correction・idle-conv-check の DirectInput 回復のように意図的に
+    /// `applied` を渡さず「shadow を無視して実際に送れ」と設計された経路の
+    /// 正当な再送を無音で握り潰していた（docs/known-bugs.md BUG-113 参照）。
+    #[test]
+    fn gji_direct_already_matches_treats_unknown_shadow_as_not_matched() {
+        assert!(gji_direct_already_matches(Some(true), true));
+        assert!(gji_direct_already_matches(Some(false), false));
+        assert!(
+            !gji_direct_already_matches(None, true),
+            "shadow_on=None（未知）を ON 確認済みと誤認してはならない"
+        );
+        assert!(
+            !gji_direct_already_matches(None, false),
+            "shadow_on=None（未知）を OFF 確認済みと誤認してはならない（BUG-113 Blocker）"
+        );
+        assert!(!gji_direct_already_matches(Some(false), true));
+        assert!(!gji_direct_already_matches(Some(true), false));
+    }
+
+    /// BUG-113 恒久修正: `GjiDirectStrategy::apply(open=false)` は、shadow が
+    /// `Some(false)`（確認済み OFF）なら実際に `SendInput` せず
+    /// `AlreadyMatched` を返さなければならない。ON方向の既存ガードと対称
+    /// （`gji_direct_already_matches` 参照）。このガードが無いと、同一の
+    /// 物理キー押下に対し `shadow_toggle_off_sync`/`engine_decision_sync`
+    /// の2経路から `GjiDirectStrategy::apply(open=false)` が連続で2回
+    /// 呼ばれた際、2回目も実際に `SendInput` してしまい、Windows Terminal +
+    /// Google 日本語入力 + PowerShell(PSReadLine) で余分な「@」が入力される
+    /// （docs/known-bugs.md BUG-113、実機A/Bで必要十分条件の一つと確定済み）。
+    #[test]
+    fn gji_direct_apply_off_is_already_matched_when_shadow_already_off() {
+        use crate::state::actuation_chain::ActuationOrder;
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::event_origin::{EventOrigin, EventSource, Generation};
+        use crate::state::force_guard::ForceGuardSet;
+        use crate::state::ime_event::{HwndId, ImePolicyProfile};
+        use crate::state::intent_store::IntentStore;
+        use crate::state::observation_store::ObservationStore;
+        use crate::state::open_warrant::WarrantContext;
+        use std::time::Instant;
+
+        let intent_store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let guards = ForceGuardSet::default();
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
+        let ctx = WarrantContext {
+            intent_store: &intent_store,
+            obs: &obs,
+            guards: &guards,
+            policy: &policy,
+            desired_open: false,
+            is_japanese_ime: true,
+            now: Instant::now(),
+            now_ms: crate::state::TickMs(0),
+        };
+        let origin = EventOrigin::new(EventSource::Physical, Generation::new(1));
+        let order = ActuationOrder::issue(false, HwndId(0x1234), &ctx, origin);
+
+        // 直前の apply が既に OFF を確認済み（`Some(false)`）＝「2回目の
+        // 呼び出し」の状況を再現する。`view_for` の既定（`None`、未知）を
+        // 明示的に上書きする。
+        let mut view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
+        view.control.shadow_on = Some(false);
+        let outcome = ImeController::apply(order, &view);
+
+        assert_eq!(
+            outcome,
+            ImeOpenOutcome::AlreadyMatched,
+            "GjiDirectStrategy::apply(open=false) は shadow が既に OFF なら \
+             実際に SendInput せず AlreadyMatched を返さなければならない \
+             （BUG-113、ON方向の既存ガードと対称）"
+        );
+    }
+
+    /// BUG-113 Blocker（Opus 敵対的レビューで発見）の統合テスト:
+    /// `shadow_on == None`（未知、`AppliedImeState::Unknown` 相当——
+    /// フォーカス変更直後や起動直後で実際に起こる）のとき、
+    /// `GjiDirectStrategy::apply(open=false)` は `AlreadyMatched` を
+    /// 返して**はならない**。もし返してしまうと、drift correction や
+    /// idle-conv-check の DirectInput 回復のように「shadow が何であれ
+    /// 実際に送信すべき」設計の経路が無音で握り潰され、必要な
+    /// `VK_IME_OFF` が一度も OS に届かないまま `record_confirmed(false)`
+    /// で「収束した」と誤記録される（belief laundering）。
+    ///
+    /// `apply()` 自体（`ImeController::apply`）は Win32 副作用を持つため、
+    /// 「skip しない」側をそこまで通して検証するとテスト実行環境で本物の
+    /// キーイベントを注入してしまう（`tests/ime_key_sequence_golden.rs` の
+    /// 冒頭コメント参照、このリポジトリ全体の既存方針）。代わりに
+    /// `view_for` の既定が実際に `None`（未知）であること、およびその値が
+    /// `gji_direct_already_matches` で「skip しない」と判定されることを
+    /// 固定する——両方とも純粋・副作用フリー。
+    #[test]
+    fn view_for_default_shadow_is_unknown_and_does_not_match() {
+        let view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
+        assert_eq!(
+            view.control.shadow_on, None,
+            "view_for の既定は未知（None）でなければならない（BUG-113 Blockerの再発防止）"
+        );
+        assert!(
+            !gji_direct_already_matches(view.control.shadow_on, false),
+            "shadow_on=None のとき GjiDirectStrategy は AlreadyMatched を \
+             返してはならない（BUG-113 Blocker）"
         );
     }
 

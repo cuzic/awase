@@ -13922,6 +13922,715 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消を実装、Opus敵対的レビュー3ラウンド（Blocker1件・Major1件を発見・修正）を経て実機確認済み。物理キー・Ctrl+無変換・Alt+Tab後最初のIME OFFいずれも再発なし。probe競合はもう一つの独立した十分条件として残置**）
+
+**アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
+WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
+TsfNative`）。
+**IME:** Google 日本語入力（GJI）、`ActiveImeKind::GoogleJapaneseInput`。
+JIS 106 キーボード。
+
+**症状:** awase の NICOLA Engine が有効な状態で、物理半角/全角キー
+（Windows API 上は `VK_KANJI` と呼ばれることが多いが、実際にこの機体の
+awase フックに届く VK は後述のとおり別物）を押すと、他に一切キー入力を
+していなくても、Windows Terminal 上に「@」が1文字出力される。
+
+**再現手順（dragonflyg4 実機、2026-09-05 確認）:**
+1. Windows Terminal + GJI で awase Engine を有効にする。
+2. 物理半角/全角キーを1回押す（他のキーは押さない）。
+3. 「@」が出力される。
+
+**確認できなかった条件:** Engine を `Ctrl+Shift+無変換` で明示的に無効化
+した状態では、同じキーを複数回押しても「@」は出ない（ユーザー実機報告、
+ログでも該当する actuation ログの不在を確認済み）。
+
+**原因（コード読解 + 実機ログ + 実機診断スクリプトで判明した範囲、
+未確定部分あり）:**
+
+1. この機体では物理半角/全角キーは `VK_KANJI`(0x19) ではなく、
+   `VK_DBE_SBCSCHAR`(0xF3、半角方向)/`VK_DBE_DBCSCHAR`(0xF4、全角方向)
+   として awase フックに届く（押すたびに交互にトグル）。物理「かな」キーが
+   `VK_KANA`(0x15) ではなく `VK_DBE_HIRAGANA`(0xF2) として届くのと同型
+   （[ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md) 参照）。
+2. `vk=0xF3`(半角方向、TurnOff) の直後だけ「@」が出現し、`vk=0xF4`
+   （全角方向、TurnOn）では出現しないことをタイムスタンプ相関で2回連続
+   確認した。
+3. `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` はこの VK を
+   物理 IME キーとして検出し、shadow belief（IME ON/OFF の内部追跡）を
+   更新する。この belief 更新自体は Engine の有効/無効と無関係に常時動く
+   （実機ログで確認済み）。
+4. `ime_controller.rs::GjiDirectStrategy::apply(open)` が実際の IME 制御
+   VK 送信を担う。`apply(false)`（IME OFF 方向）は毎回 `send_ime_mode_key
+   (VK_IME_OFF)` を呼ぶのに対し、`apply(true)`（IME ON 方向）は
+   `view.control.shadow_on` が既に true なら `AlreadyMatched` で送信を
+   スキップする no-op 最適化がある——これが「半角方向（OFF）だけ @ が
+   出る」非対称性の候補。
+5. この `send_ime_mode_key()` 呼び出し（＝実際の VK 送信、Engine が
+   有効なときだけ発火することを実機ログで確認済み）は `tsf/output.rs::
+   make_key_input_ex()` 経由で `KEYBDINPUT.wScan = 0` 固定で送信する。
+6. dragonflyg4 実機で `MapVirtualKeyW`/`ToUnicodeEx` を `VK_IME_OFF` 等に
+   対し直接呼び出して検証したが、単体では文字は生成されなかった
+   （scan は正しく解決: `VK_IME_OFF→0xF1` 等）。したがって「Windows
+   Terminal が生の VK を素朴に `ToUnicodeEx` で誤変換している」という
+   単純な仮説はこの単体テストでは再現しない。**「@」の直接の生成源は
+   GJI 自身の TSF が `wScan=0` の `VK_IME_OFF` の `SendInput` を Windows
+   Terminal フォーカス中に受け取った際の内部 composition 処理にある
+   可能性が高い**が、GJI はクローズドソースのため確定できていない。
+
+**修正試行1（2026-09-05・反証・revert済み）:** `send_ime_mode_key` の
+`wScan=0` を実 scan 付き送信（`make_scan_key_input()`）に変える修正を、
+Windows Terminal 限定にせず全アプリ・全呼び出し元に対して既定で適用する
+形で実装した。しかしユーザーが実機で A/B 検証したところ「@」の再現に
+**一切変化が無かった**。`RUST_LOG=debug` で追加取得したログにより、この
+`wScan=0` 仮説そのものが誤りだったことが判明した——このとき見つかった
+drift correction の `FeedbackPolicy::Read` 無限に近い頻度の再送は
+BUG-114 として切り出したが、**BUG-114 単独では「@」の必要条件ではない**
+（下記フェーズ2参照）。`send_ime_mode_key` は元の `wScan=0` 固定へ戻して
+いる（詳細は `docs/experiments.md` エントリ20）。
+
+**修正試行2・調査（2026-09-05、同日続き）— 真因候補を
+`VK_IME_OFF` 単体 `SendInput` バッチに絞り込み:**
+
+ユーザーの指摘（「Ctrl+無変換 も同じ `send_ime_mode_key(VK_IME_OFF)` を
+送っているのでは？」）がブレークスルーになった。確認すると、Ctrl+無変換
+も物理半角/全角キーも **まったく同じ** `GjiDirectStrategy::apply(false)
+→ send_ime_mode_key(VK_IME_OFF)` を通るのに、前者では「@」が一度も
+出ない。両者の違いは、`send_ime_mode_key` が修飾キー（Ctrl/Shift）を
+実際に押している場合だけ「release → OFF Down/Up → restore」を **1回の
+`SendInput` バッチにまとめて** 送ること。物理半角/全角キー単独では修飾
+キーが無いため `VK_IME_OFF` の Down/Up だけの**単体2イベントバッチ**に
+なる。
+
+これを検証するため、`GjiDirectStrategy::apply(open=false)` の送信方式を
+呼び出しごとに自動ローテーションする診断スパイク（`config.toml` の
+`diag_bug113_mode_cycle_enabled`、`ime_controller.rs`）を実装し、実機で
+4モードを比較した（2026-09-05、複数ラウンドで再現確認済み）:
+
+| mode | 送り方 | 「@」 |
+| --- | --- | --- |
+| 0（baseline） | 従来どおり `send_ime_mode_key(VK_IME_OFF)`（単体2イベント） | **出る** |
+| 1（imm-cross） | `SendInput` を使わず `set_ime_open_cross_process(false)`（`ImmSetOpenStatus`、メッセージベース） | **出ない** |
+| 2（keystate-clear） | `VK_IME_OFF` の直前に別の `SendInput` 呼び出しで `VK_DBE_SBCSCHAR` の synthetic KeyUp を送ってから mode 0 と同じ単体2イベントを送信 | **出る** |
+| 3（fake-ctrl-bracket） | 実際には Ctrl を押させず、「Ctrl release → `VK_IME_OFF` Down/Up → Ctrl restore」を **1回の `SendInput` バッチにまとめて**送信 | **出ない** |
+
+mode 2 は「残留キー状態」仮説（awase のフックが物理キーを suppress しても
+`GetAsyncKeyState` 等のハードウェア直結の状態は「押されたまま」に見える
+可能性）を検証する目的で先に実装したが、否定された。mode 3 の結果と
+合わせると、**「@」の有無を分けるのは残留キー状態でも API の種類でもなく、
+`VK_IME_OFF` の `SendInput` が単体2イベントのバッチとして送られるか、
+他のイベントと一緒の複数イベントバッチとして送られるか**という「バッチの
+形」らしいところまで絞り込めた。mode 0（baseline）で「@」が出た回では、
+その直後に打った文字が正しく半角の "a" として出力されており（IME OFF
+自体は機能した上で「@」が余分に混入している）、これは「@」が IME OFF
+失敗の兆候ではなく紛れ込む余分な1文字であることを裏付ける。
+
+**未解決:** (1) なぜバッチの形が結果を左右するのか、GJI 内部
+（クローズドソース）の挙動としての説明は無い。(2) `apply(true)`
+（IME ON 方向）は `AlreadyMatched` no-op ガードがあるため通常
+`send_ime_mode_key` に到達せず、単体2イベントバッチでの `VK_IME_ON` 送信を
+まだ検証できていない——ON 方向でも同じ「単体バッチで再現」条件が成立する
+かは次セッションの検証候補（[ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
+「次セッションへの引き継ぎ」項目3、まだ未着手のまま持ち越し）。
+(3) 検証の終盤、新規に開いた Windows Terminal ウィンドウで物理半角/全角
+キーが常に `vk=0xF4 TurnOn（true→true, no-op）` としてしか認識されず
+`TurnOff` 側が検出できなくなる現象が発生した（原因未調査、次セッション
+持ち越し）。(4) 検証中、BUG-114 の drift correction 暴走（`FeedbackPolicy::
+Read` 無限に近い再送）が本 BUG の再現手順を実行するだけで何度も自然発生し、
+安全弁（`ime_controller.rs` の呼び出し回数上限）を追加してようやく実害を
+抑えられる状態だった——BUG-114 は想定より頻発しやすい可能性が高く、
+BUG-113 の修正と独立に優先度を上げて検討する価値がある。
+
+**次にやること:** ~~mode=3（fake-ctrl-bracket）方式を恒久修正の第一候補と
+する。~~ **追記（2026-09-05 続き）**: [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
+を全面改稿し、mode=3 相当の偽 Ctrl ブラケットは実機検証済みのフォールバック
+候補に格下げした。第一候補は新規に設計した「自己エコーパディング」
+（対象 VK 自身を2度打鍵し、偽の修飾キーも新しい VK も持ち込まない）。
+両候補とも Opus 敵対的レビュー未実施、自己エコーパディングは実機未検証
+（ADR-133 D2/D4 参照）。
+
+**追記（2026-09-05・実機A/Bでバッチ形状仮説を反証）**: ADR-133 v5 の
+D0/D2 を `fix/bug113-114-ime-off-batch-and-feedback-staleness` ブランチで
+実機スパイクした（BUG-114 の drift correction 暴走をほぼ解消した後の、
+比較的クリーンな状態での検証）。候補V（`SendInput` 分割）・候補A
+（自己エコー）・候補B3/B4（偽Ctrlブラケット、3/4イベント）・mode=0
+（対照群）を巡回したところ、**ユーザー報告により「ほぼ毎回、候補を
+問わず『@』が出る」ことが判明した**。さらに、当初 BUG-113 発見の
+きっかけだった「Ctrl+無変換 では『@』が一度も出ない」という観測自体、
+実機で再確認したところ**最初の1回がたまたま出なかっただけで、2回目
+以降は Ctrl+無変換 でも『@』が出る**ことが分かった——これは round1
+敵対的レビューの Major 7（「4回連続で出ないのは真の発生率30%でも24%の
+確率で起こりうる」という統計的脆弱性の指摘）がまさに的中した形である。
+
+**結論: 「`SendInput` バッチのイベント数・修飾キーの有無が『@』の
+有無を左右する」というバッチ形状仮説は反証された。** 全候補・
+Ctrl+無変換を含むすべての条件で「@」が再現するため、唯一の共通点は
+「`VK_IME_OFF`(0x1A) を送信していること」自体になる。ADR-133 Major 5
+が指摘していた「JIS 106配列で `@` キーのスキャンコードが 0x1A と一致する」
+という機構仮説（`wVk` の値がどこかでスキャンコードとして誤読されている
+可能性）が、バッチ形状よりも有力な説明として残った。
+
+D0-3（`KanjiToggleStrategy`/`VK_KANJI` 単独発火、Alt+物理半角/全角キーで
+トリガー）でこの仮説を検証しようとしたところ、**診断コード自体に実装
+バグが見つかった**: 1回の物理キー押下が内部で2回（`shadow_toggle_off_sync`/
+`engine_decision_sync`）呼ばれる際、1回目だけを `KanjiToggleStrategy` へ
+誘導し2回目を吸収し忘れていたため、2回目が通常の mode-cycle（候補
+V/A/B3/B4 のいずれか）に素通りしていた。ユーザーが Alt+半角/全角キーで
+観測した「@」は、このバグにより **`KanjiToggleStrategy` 由来ではなく
+2回目呼び出しの mode-cycle 候補由来だった可能性が高い**——D0-3 は実質
+未検証のまま持ち越しとなった。episode 単位で判定を1回に固定し2回目を
+明示的に no-op で吸収するよう修正済み、次のスパイクで再検証する。
+
+**追記（2026-09-05 続き・VK 値のスキャンコード誤読仮説も反証）**:
+ADR-133 Major 5（JIS 106配列で「@」キーのスキャンコードが `VK_IME_OFF`
+(0x1A) の値と一致するという機構仮説）を検証するため、`KanjiToggleStrategy`
+（`VK_KANJI`=0x19、JIS 配列なら本来「P」）を Alt+物理半角/全角キーで
+強制発火させる診断（D0-3、`ime_controller.rs`/`ime.rs` の
+`diag_bug113_*` 一式）を実機で実行した。結果、**「p」は一切混入せず
+「@」のみ出力された**。`VK_IME_OFF`(0x1A) でも `VK_KANJI`(0x19) でも
+「@」しか出ないため、VK 値そのもの・スキャンコード誤読という機構仮説も
+反証された。
+
+**追記（2026-09-05 続き・PSReadLine との相互作用を確認、ただし「awase側の
+問題ではない」は誤った結論——訂正）**:
+ユーザーの追加観測（(1) awase Engine を `Ctrl+Shift+無変換` で無効化する
+と発生しない、(2) 同じ Windows Terminal 内でも SSH/MSYS2 bash セッション
+では発生せず PowerShell セッションでのみ発生する）から PowerShell の
+PSReadLine（予測入力/ゴーストテキスト表示モジュール）との相互作用を疑い、
+PowerShell 上で `Remove-Module PSReadLine -Force` を実行して同モジュールを
+無効化したところ、**「@」が発生しなくなることを実機確認した**。
+
+セッション終盤、この結果を「GJI と PSReadLine の相互作用が真因であり
+awase 側のコードバグではない」と結論づけて本 BUG をクローズ扱いにしたが、
+**この結論はユーザーのレビューで誤りと指摘され撤回した**。トリガーは
+一貫して「awase が GJI に対して何らかの IME actuation（mode key
+送信）を行うこと」であり、PSReadLine/GJI 単体ではこの現象は起きない。
+「相手側の実装が脆弱である」ことは、その脆弱性を実際に踏み抜いている
+awase の送信動作が無関係であることを意味しない——これは本リポジトリの
+他の既知バグ（Chrome cold-start、TSF native 系等）が「相手アプリ/IME の
+実装が原因」であっても awase 側でタイミング調整・送信方式変更・
+ブラックリスト等の緩和策を講じてきたのと同じ扱いにすべきだった。
+
+**追記（2026-09-05 続き・PSReadLine/Windows Terminal 双方の OSS を調査、
+症状レベルの類似のみ確認・機構レベルの一致は未確認と訂正）**:
+上記の「PSReadLine との相互作用」について、PSReadLine 自体の GitHub
+issue に症状が酷似する既知バグが存在する:
+[PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
+（「日本語配列キーボードの一部のキーが `@` と誤認識される」、`[console]::
+ReadKey()` で無変換キーを検証すると `KeyChar` が空（文字データ無し）
+であるにもかかわらず PSReadLine が `@` と誤表示すると報告されている。
+2026-09-05 時点で修正コミット/PR は見当たらず未修正）。
+
+この issue を根拠に「awase が送る `VK_IME_OFF` 等が PSReadLine 側の
+`KEY_EVENT_RECORD` 処理バグを踏んでいる」という機構レベルの一致を
+一度は本追記に記録したが、**これは検証不足の早合点だった（ユーザーの
+指摘で訂正）**。実際に確認したのは以下のみ:
+
+1. awase 自身のコードには `KEY_EVENT_RECORD`/`ReadConsoleInput`/
+   `INPUT_RECORD` への参照が一つも無い（`grep` で確認済み）。この構造体
+   は awase の送信経路（`SendInput`/`KEYBDINPUT`、低レベルフックの
+   `KBDLLHOOKSTRUCT`）には一切登場せず、受信側（Windows Terminal /
+   conhost / .NET ランタイム / PSReadLine 内部）にのみ存在する概念。
+2. Windows Terminal 自身は OSS であり（`src/terminal/input/
+   terminalInput.cpp`）、`TerminalInput::HandleKey(const INPUT_RECORD&
+   event)` が実際に `KEY_EVENT_RECORD` を受け取り、
+   `codepoint = event.Event.KeyEvent.uChar.UnicodeChar` を直接読んで
+   いることをソースで確認した。しかし同ファイルには `VK_KANJI`/
+   `VK_CONVERT`/`VK_NONCONVERT`/`VK_DBE_*`/`VK_PROCESSKEY`/
+   `VK_IME_ON`/`VK_IME_OFF` への言及は一件も無く、IME 操作キー専用の
+   特別扱いや「`@` を返すフォールバック」は見当たらない。最終フォール
+   バック `_formatFallback()` は、Ctrl/Alt 修飾が無く `codepoint == 0`
+   の場合は**何も送信せず即 return**するコードパスであり、これだけを
+   見ると「文字を持たない IME キー単体の押下」から `@` が生成される
+   経路をこのファイル単体では説明できない。
+3. したがって、「@」が実際に生成されるとすれば `uChar.UnicodeChar`
+   フィールド自体が awase の送信（`wScan` の扱いを含む）を起点に
+   `0x40`（`@`）へと解決されている、という話になるはずだが、その
+   `UnicodeChar` を実際に計算しているのは Windows 自身の（クローズド
+   ソースの）キーボードレイアウト処理（`ToUnicodeEx` 相当）であり、
+   Windows Terminal のリポジトリの外側にある。PSReadLine 側
+   （#2206）・Windows Terminal 側（本ファイル）のいずれの OSS コードを
+   読んでも、機構レベルでの確証は得られなかった。
+
+**結論（訂正後）**: 「IME 操作キー→`@`」という**症状**は PSReadLine
+#2206 と酷似しているが、**機構が同一である確証は無い**。「GJI が
+クローズドソースのため内部機構を確定できない」という元々の限界は、
+Windows 自身のキーボードレイアウト処理という別の（これもクローズド
+ソースの）境界に置き換わっただけで、依然として未確定のまま。
+[[feedback_external_factor_found_does_not_mean_no_fix_needed]] の教訓
+どおり、この不確実性は awase 側の恒久修正（二重 actuation 解消）が
+不要だったことを意味しない——実際に症状を解消したのは awase 側の修正
+であり、本追記は「@」という表示形の由来について現時点でわかっている
+こと・わかっていないことを整理した記録に過ぎない。もう一つの独立した
+十分条件（`kp_stage_idle_conv_check` の probe 競合、下記「未解決」
+参照）が将来別の経路で再現した場合、同じ「@」という形で可視化される
+かどうかも未検証。
+
+**未解決・次にやること（実機切り分け、第2弾スパイク実装済み・実機検証待ち）:**
+バッチ形状（V/A/B3/B4/baseline）と VK 値（`VK_IME_OFF` vs `VK_KANJI`）は
+いずれも無関係と判明した。上記「修正試行2」の mode テーブルで唯一
+「出ない」という結果だった mode 1（imm-cross、`set_ime_open_cross_process`/
+`ImmSetOpenStatus`）は、**候補から除外した**: `AppImeProfile::TsfNative`
+（Windows Terminal 含む）は `can_use_imm32_cross_process() == false`
+（`focus/class_names.rs`）であり、この API はそもそも TSF アプリに
+効果を持たない。したがって mode 1 で「@」が出なかったのは「回避できた」
+のではなく「単に IME 状態が変化しなかった」だけの可能性が高く、意味のある
+比較にならない。
+
+2026-09-05 続き、呼び出し連鎖の全数調査（物理半角/全角キー押下から
+awase が行う Win32/TSF 呼び出しを observer/probe/actuation すべて洗い出し）
+で、**バッチ形状・VK値ラウンドでは一度も検証されていない新しい候補**を
+発見した: `runtime/key_pipeline.rs::kp_stage_idle_conv_check`
+（アイドル500ms超・直近1500ms以内に明示的IME操作なしという、本 BUG の
+再現条件と一致するゲート）が非同期ワーカースレッド上で
+`get_ime_conversion_mode_raw_timeout_async`（GJI の IME ウィンドウへの
+`SendMessageTimeoutW(WM_IME_CONTROL/IMC_GETCONVERSIONMODE)`、**読み取り
+専用**のcross-processクエリ）を spawn しており、これは
+`GjiDirectStrategy::apply` の同期 `SendInput` 発行（`shadow_toggle_off_sync`
+経由、`kp_run_inner` のステージ順でこの spawn より後）と時間的に競合
+しうる。この読み取りは `docs/known-bugs.md` の「Windows Terminal 向け
+IMM クエリスキップ（`ime.rs::read_ime_state_full` の `is_tsf_native_window`
+早期return）」の対象**外**——別のコードパスであり、スキップされずに
+実際に発行される。
+
+第2弾診断スパイク（`fix/bug113-114-ime-off-batch-and-feedback-staleness`
+ブランチに実装済み、実機投入待ち）は、2つの独立した hidden config
+トグルで以下を切り分ける（`ime_controller.rs`/`key_pipeline.rs`/
+`config.rs` 参照。組み合わせは config.toml を編集して awase を再起動する
+ことでテストする。1トグル・1状態あたり最低20 episode程度の試行を推奨
+——round1 レビュー Major 7 の統計的脆弱性の教訓）:
+
+1. `diag_bug113_dedup_gji_off_actuation`: 同一の物理キー押下で
+   `shadow_toggle_off_sync`/`engine_decision_sync` の2経路から
+   `GjiDirectStrategy::apply(open=false)` が2回呼ばれ、実際に
+   `send_ime_mode_key` の `SendInput` を2回発行している点（BUG-113調査中
+   に発見済み）自体が「@」の必要条件かどうかを、1クローズepisodeにつき
+   1回だけの実アクチュエーションに絞って確認する。
+2. `diag_bug113_skip_idle_conv_probe`: 上記で新たに見つかった
+   `WM_IME_CONTROL/IMC_GETCONVERSIONMODE` の cross-process 読み取りを
+   丸ごとスキップし、「@」の引き金が実際にこの読み取りとの競合なのかを
+   確認する。
+
+**追記（2026-09-05 続き・実機A/Bで必要十分条件を確定）**:
+上記2トグルを config.toml 編集なしで1セッション内で自動ローテーション
+する第3弾スパイク（`diag_bug113_combo.rs`、`kp_run_inner` 冒頭で物理・
+非注入の `ShadowImeAction::TurnOff` 方向 KeyDown ごとに4条件
+[0=baseline/1=dedupのみ/2=probe skipのみ/3=両方] を巡回、`ime_controller.rs`・
+`key_pipeline.rs` の両方が同じコンボを参照）を実装・実機投入した。
+
+実装初期に2件のバグを実機ログで発見・修正した（教訓として記録）:
+(1) コンボ選択に `!event.injected` ガードが無く、`GjiDirectStrategy::
+apply` 自身が送る `VK_IME_OFF`/`VK_IME_ON` の `SendInput` が injected=true
+で hook にループバックした際にもコンボが進んでしまっていた。
+(2) VK 分類（`event.ime_relevance.shadow_action`）による限定
+（`.is_some()`）だけでは、物理半角/全角キーが `TurnOff`(vk=0xF3)/
+`TurnOn`(vk=0xF4) を押すたびに厳密に交互する（周期2）のに対しコンボの
+巡回周期が4（2の倍数）であるため、**TurnOff 方向が構造的に必ず偶数
+コンボ（0か2、dedup=false）にしか当たらないというエイリアシング**が
+起きていた——dedup=trueが割り当たコンボ1・3は全てTurnOn方向の押下で
+あり、「@」が起きえない方向でしかdedup=trueを検証できていなかった。
+`shadow_action == Some(TurnOff)` に限定してコンボを進めるよう修正し
+解消した（詳細は `runtime/key_pipeline.rs` のコミット履歴・
+docs/experiments.md エントリ22参照）。
+
+この2件を修正した版で実機A/Bを実施した結果、**「@」は combo=0
+（baseline、dedup=false かつ probe skipなし）のときにのみ、極めて
+整合的に（ユーザー表現: 「4回に1回、きわめて整合的」）発生し、
+combo=1（dedupのみ）・combo=2（probe skipのみ）・combo=3（両方）では
+一度も発生しなかった**（各条件15〜16トライアル、TurnOff方向のみ数えて
+合計63トライアル中、baseline以外はゼロ）。すなわち:
+
+- **`GjiDirectStrategy::apply(open=false)` の二重actuation
+  （`shadow_toggle_off_sync`/`engine_decision_sync`）を1回に減らす
+  （dedup）ことは、単独で「@」を防ぐのに十分**である。
+- **`kp_stage_idle_conv_check` が spawn する GJI への cross-process
+  読み取り（`WM_IME_CONTROL/IMC_GETCONVERSIONMODE`）を丸ごとスキップ
+  することも、単独で「@」を防ぐのに十分**である。
+- 両方無効化しても（当然）「@」は出ない。
+
+**結論:** 「@」は、この読み取り専用クエリと、`SendInput` によるIME mode
+key actuation（特にその二重発行）とが時間的に近接して発生することで
+GJI の TSF composition 追跡を乱す、という機構が濃厚である
+（PSReadLine の再描画/バッファ処理との相互作用は、この乱れを可視化する
+経路として働いていると考えられる——GJI 自体がクローズドソースのため
+内部機構としての確定はできない）。**いずれの要因も awase 自身が
+制御可能な送信動作であり、外部要因（PSReadLine）の発見は awase 側の
+修正が不要であることを意味しない。**
+
+**追記（2026-09-05 続き・恒久修正を実装、実機確認済み）**: ユーザー判断で
+二重actuation解消（dedup相当）を先に実装することにした。
+`GjiDirectStrategy::apply` の OFF方向に、既存のON方向
+（`open && view.control.shadow_on` → `AlreadyMatched`）と対称な
+`!open && !view.control.shadow_on` → `AlreadyMatched` ガードを追加した。
+`view.control.shadow_on` は `ImeModel.applied_pair()` 由来で、直近の
+apply が `Applied`/`FallbackSent`/`AlreadyMatched` で成功した場合のみ
+更新される（`UnsafeToToggle`/`Failed` では更新されないため、未送信・
+失敗後の正当な再試行は従来どおり実際に送信される——`record_ime_apply_result`
+の分岐で確認済み）。これにより `shadow_toggle_off_sync`/
+`engine_decision_sync` の2回目の呼び出しは、1回目が成功していれば
+`AlreadyMatched` で吸収され、実際に `SendInput` するのは1回だけになる。
+診断専用コード一式（`diag_bug113_combo.rs`、`diag_bug113_dedup_gji_off_
+actuation`/`diag_bug113_skip_idle_conv_probe`/`diag_bug113_combo_cycle_enabled`
+とその呼び出し元）は本修正と同じコミットで撤去済み。回帰テスト
+`gji_direct_apply_off_is_already_matched_when_shadow_already_off`
+（`ime_controller.rs`）を追加した。
+
+もう一つの独立した十分条件——`kp_stage_idle_conv_check` の cross-process
+読み取りとの時間的競合——は今回は対応しない。このprobeは他のシナリオ
+（アイドル明けの conv-mode belief 回復）のために存在する正規機能であり、
+丸ごと無効化するのではなく GJI actuation と時間的に重ならないようにする
+設計が必要——次に着手する場合は別途新しい診断コードを起こすこと。
+
+**追記（2026-09-05 続き・実機確認）**: 本修正を実機（dragonflyg4）に投入し、
+(1) Ctrl+無変換の連打（IME OFF方向のまま約11秒間・約38回の`apply(open=false)`
+呼び出し）ではログの`[apply-ime] GJI direct: shadow OFF, skip VK_IME_OFF`
+がユーザーの1回目の押下以降すべてに出力され、2回目以降の`SendInput`が
+確実に吸収されていることを確認、(2) 通常の押下（半角/全角キーで
+OFF→ONを繰り返す）では各方向につき`[apply-ime] GJI direct: send`が
+1回だけ記録され（修正前は同方向で2回連続していた）、「@」の混入が
+一切発生しないことを確認した。**Ctrl+無変換・物理半角/全角キーの
+いずれでも「@」が表示されなくなった**（ユーザー確認済み）。
+
+**追記（2026-09-05 続き・Opus敵対的レビューでBlocker発見、修正）**:
+developへのマージ前レビューで、上記修正に **Blocker（マージ不可判定）**
+が見つかった。`ImeControlView.control.shadow_on` は `ImeModel.
+applied_pair()`（`Option<(bool, u64)>`）を `platform.rs::build_ime_
+control_view` の `applied.unwrap_or((false, 0))` で `bool` に潰した値
+であり、「確認済み OFF」と「未知（`AppliedImeState::Unknown`、または
+`applied` に意図的に `None` を渡す経路）」を区別できていなかった。
+ON方向の既存ガード（`open && shadow_on`）はこの潰れ方の**安全側**
+（未知→false→送る）に偶然乗っていたが、追加したOFF方向ガード
+（`!open && !shadow_on`）は**危険側**（未知→true→送らない）に乗って
+しまい、「ON方向と対称」という設計上の主張は `Option` を潰した後の値
+に対しては成り立たなかった。
+
+実害となる経路が3つ判明した: (a) `is_effectively_tsf_native` なアプリ
+でフォーカス変更直後（`ImeEvent::FocusChanged` が `applied` を
+`Unknown` にリセットし、ADR-098決定1-aによりTsfNativeでは
+`record_confirmed`による再確立が意図的にスキップされる）の最初のIME
+OFF、(b) drift correctionのOFF方向回復経路
+（`runtime/ime_refresh.rs::ir_apply_drift_correction`の non-ImmCross
+分岐、`apply_ime_open_with_belief(order, None, belief)` — `applied`に
+`None`を渡すことで意図的にshadowを無視させる設計、BUG-20/BUG-51の
+回復手段そのもの）、(c) idle-conv-checkのDirectInput回復経路
+（`runtime/key_pipeline.rs`、コメントに「direct beliefで
+already_matchedをバイパスしてapplyする」と明記、同じく`None`
+ハードコード）。いずれも必要な`VK_IME_OFF`が無音で送られなくなり、
+かつ`AlreadyMatched`が`record_confirmed(false)`として「収束した」と
+誤記録されるためログにも異常が出ない（symptom が「@が出る」ではなく
+「IMEが閉じない」という別の形で現れるため、今回の実機A/Bでは検出でき
+なかった）。`state/ime_model.rs::applied_open()`のdocコメントが警告する
+「送信を省略してよいかの判定にbelief フォールバックを使うな」
+（ADR-098決定1-b、BUG-02系の再燃例）という既知の罠を、warmupとは別の
+actuation側で踏み直していた。
+
+**修正**: `ControlLog.shadow_on`を`bool`から`Option<bool>`に変更し、
+`platform.rs::build_ime_control_view`で`unwrap_or`による早期の潰しを
+やめて`Option`のまま`ImeControlView`へ伝播させた。ON方向・OFF方向の
+skip判定を`gji_direct_already_matches(shadow_on, open) = shadow_on ==
+Some(open)`という単一の対称な純粋関数に統一し、`shadow_on == None`
+（未知）はどちらの方向でも「skip しない」（＝実際に送信する）側に
+倒れるようにした。回帰テストを2件追加: 純粋関数
+`gji_direct_already_matches_treats_unknown_shadow_as_not_matched`
+（`None`をON/OFFどちらの確認済みとも誤認しないことを固定）と、
+`gji_direct_apply_off_is_not_already_matched_when_shadow_unknown`
+（`view_for`の既定が実際に`None`であることと合わせて固定）。既存の
+`gji_direct_apply_off_is_already_matched_when_shadow_already_off`は
+`shadow_on: Some(false)`を明示するよう更新した。force-ON経路
+（`runtime/mod.rs::force_on_and_correct_romaji`、
+`build_ime_control_view(None)`でON方向のno-op skipを意図的にbypassする
+設計、BUG-16/ADR-087 INV-28）が`Option<bool>`化後も正しく機能すること
+（`None`は`Some(true)`とも`Some(false)`とも一致しないため）を
+`tests/architecture_guard.rs::force_write_paths_bypass_gji_shadow_on_via_none_applied`
+で確認済み。`.claude/rules/fix-requires-evidence.md`にも
+`ControlLog.shadow_on`の供給元一覧を追記し、次回の再発防止とした。
+
+**追記（2026-09-05 続き・再レビューでMajor発見、修正）**: 上記修正を
+再度Opus敵対的レビューにかけたところ、Blocker 1/2-a/2-bは正しく閉じたと
+確認された一方、**新たなMajor（このPR自身が作り込んだ回帰）**が
+見つかった: `runtime/open_chain.rs::fallback_write`——ImmCrossが実際に
+OSを読み戻して「まだdesired状態でない」ことを確認した`Failed`の後にのみ
+呼ばれる、ImmCross/Plain/Unknownプロファイル×GJI（通常のWin32アプリ+GJI）
+向けのフォールバック経路——が、`shadow_ime_control_view()`で実
+`applied`を読んでいた。`key_pipeline.rs::kp_stage_shadow_ime_toggle`の
+ImmCross経路はactuationの**前**に`record_confirmed(false)`を書くため
+（「直後の実ImmCross applyを伴うため正当」という前提）、`fallback_write`
+到達時点では`applied_pair() == Some((false, ts))`になっており、
+新しい`gji_direct_already_matches(Some(false), false)`が`true`と
+判定してしまい、**OSがまだONだと実際に確認したにもかかわらず
+`VK_IME_OFF`を送らずAlreadyMatchedを返す**——「自分が送信前に書いた
+belief」を「送信すべきか」の判定に読み返す循環だった。develop には
+このガード自体が無かった（常に送っていた）ため、本PRが作り込んだ回帰。
+TsfNative/Imm32Unavailable（`FEEDBACK_BLIND`）だったBlockerと異なり、
+このプロファイル群は`FEEDBACK_READ`でdrift correctionが
+strategy chainを経由しないIMM32専用経路を使い続けるため回復手段自体は
+残っており、Blockerではなく**Major**（実害はあるが出口はある）と
+判定された。
+
+修正: `fallback_write`で`view.control.shadow_on`を明示的に`None`へ
+上書きしてから機構を適用する——`force_on_and_correct_romaji`
+（ADR-087 INV-28）と同じ「`None`でbypassする」設計語彙。回帰テスト
+`tests/architecture_guard.rs::fallback_write_bypasses_gji_shadow_on_via_none_override`
+（`fallback_write`本体に`view.control.shadow_on = None`が正確に1件
+あることをテキスト走査で固定）を追加した。テスト名の指摘
+（`gji_direct_apply_off_is_not_already_matched_when_shadow_unknown`が
+`apply()`を実際には呼ばないのに紛らわしい）も反映し
+`view_for_default_shadow_is_unknown_and_does_not_match`へ改名した。
+
+**追記（2026-09-05 続き・round3で「マージ可」の最終判定）**: 3ラウンド目の
+Opus敵対的レビューで、上記Major修正が実際にシーケンスを閉じることを
+1段ずつ追って確認（`imm_cross_write`の`read_ime_state_fast()`確認→
+`Failed`→`fallback_write`→`gji_direct_already_matches(None, false)
+== false`→実送信）、`MsImeDirect`/`KanjiToggle`への影響がゼロであること
+（`shadow_on`を読まない/ログ引数でしか読まない）も確認され、**「マージ可
+（safe to merge）」の最終判定**を得た。
+
+実機再検証（`Option<bool>`化・`fallback_write`修正の両方を含む版）は
+「マージ前の必須条件」から「マージ後・リリース前のソーク項目」へ格下げ
+してよいとの判断も添えられた——述語が`shadow_on == Some(open)`の1行に
+縮退し全6通りの真理値が純関数テストで固定されていること、`ControlLog`
+の供給4経路（`applied_pair()`/`applied_snapshot`/`None`ハードコード
+2箇所/`fallback_write`の明示`None`）を全て列挙・追跡済みであること、
+develop に対する差分が「OFF×`Some(false)`→skip」の1セルのみで
+「送らなくなる」セルが新規に増えていないこと（最悪でもdevelop相当に
+劣化するだけで、IMEが閉じない類の不具合は構造的に入らない）が根拠。
+
+**ソーク項目**（`.claude/rules/fix-requires-evidence.md`の記録要件を
+兼ねる）: フォーカスを外して戻した後の最初のIME OFF——`ImeEvent::
+FocusChanged`が`applied`を`Unknown`にリセットするため、round2の修正前
+は誤ってskipされていたが、round2の修正でskip→sendに挙動が変わった
+新規パス——で、実際にIMEが閉じること・「@」が再発しないことを、
+通常利用の中で確認すること。
+
+**関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
+（当初「`VK_KANA`/`VK_KANJI` 自体の文字化」という前提で起票されたが、
+本 BUG の調査により前提が反証され、真因候補が `send_ime_mode_key` の
+`wScan=0` →（反証）→ BUG-114 →（BUG-114単独では説明できないと判明）→
+`VK_IME_OFF` 単体 `SendInput` バッチ →（反証）→ VK 値のスキャンコード
+誤読 →（反証）→ PSReadLine との相互作用が引き金（確認、ただし
+awase側の送信方式・呼び出し経路のどれが必要十分条件かは未特定）、と
+段階的に絞り込まれた経緯を記録)、
+[PowerShell/PSReadLine#2206](https://github.com/PowerShell/PSReadLine/issues/2206)
+（IME 操作キーが `@` と誤表示される PSReadLine 側の既知バグ。症状は酷似
+するが、Windows Terminal 自身の OSS（`terminalInput.cpp`）を読んでも
+機構レベルでの一致は確認できていない——詳細は本 BUG 本文の訂正追記
+参照。awase 側の恒久修正が不要だったことを意味しない点は変わらない）、
+BUG-114（同じ調査から派生した独立のバグ、drift correction の
+`FeedbackPolicy::Read` 無限再送。こちらは awase 側の実在バグとして別途
+修正済み）、BUG-110/ADR-132（同じ「Windows Terminal
++ GJI で余分な @」という症状クラスの別原因、`IntentStore`/`last_intent`
+の絶対的権威化が真因——本 BUG・BUG-114 とは異なる独立の原因である点に
+注意）。`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ（`VK_KANA` 置換、
+この機体では到達不能コードだったため不要と判明）は削除候補。
+
+## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
+
+**アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
+WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
+TsfNative`）。
+**IME:** Google 日本語入力（GJI）、`ActiveImeKind::GoogleJapaneseInput`。
+
+**症状:** BUG-113 の実機再現手順（Engine 有効時に物理半角/全角キーを1回
+押す）を実行すると、`RUST_LOG=debug` のログ上、`runtime/ime_refresh.rs`
+の drift correction が **約14秒間、20〜90ms おきに連続発火**し、その
+たびに実際に `SendInput` で `VK_IME_OFF` (0x1A) を送り続ける
+（`gave up` ログは1件も出ない）。BUG-113 の「@」はこのバーストによって
+GJI の TSF composition が乱される副作用である可能性が高い（GJI 自身の
+内部処理はクローズドソースのため確定はできない）。
+
+**再現ログ（dragonflyg4 実機、2026-09-05 確認、抜粋）:**
+
+```
+[drift] correction: observed=true ≠ desired=false for 1837ms → set_ime_open(false)
+[warrant-shadow] chain=sync open=false origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(31) } ...
+[apply-ime] GJI direct: send 0x001A (open=false)
+[ime-mode] SendInput vk=0x1A ... total=2 events
+[hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0xF1 ...
+[hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0xF1 ...
+[apply-ime] open=false eff=false conf=true → outcome=Applied
+Blacklist drift correction: apply_ime_open(false) → Applied
+（20〜90ms後、observed=true のまま再度同じ流れが発生。以下 duration_ms が
+ 単調増加しながら約14秒間・数十回連続。ログ全文で "gave up" は0件）
+```
+
+**原因（コード読解 + 実機ログで確定）:**
+
+1. `state/app_ime_policy.rs::caps()` は `(ImePolicyProfile::TsfNative,
+   ImeKindId::Gji)` に対して `FEEDBACK_BLIND`（`max_attempts` で
+   `GiveUp` する有界な再試行方針）を割り当てるよう設計されている。
+   ところが実機ログの `strategy=` タグは一貫して `drift_correction_read`
+   ——つまり実際に使われたのは `FeedbackPolicy::Read`（`decide_actuation_action`
+   に `GiveUp` 分岐が無く、`Blind` と異なり常に `Send` を返す無条件再送
+   ポリシー）だった。
+2. `app_policy`（`default_feedback`/`focus_settle_ms` の SSOT）は
+   `ImeEvent::FocusChanged { profile, .. }` 受信時
+   （`state/ime_model.rs:615`）にのみ `AppImePolicy::from_profile(profile)`
+   で更新され、以後は同じフォーカスセッション中ずっとそのまま使われる。
+   `profile` は `FocusChanged` dispatch 時点
+   （`runtime/focus_tracking.rs:537`）の `self.platform.current_app_profile()`
+   の**その瞬間のスナップショット**である。
+3. `focus/class_names.rs::AppImeProfile::from_class_name` は
+   `IMM32_UNAVAILABLE_CLASSES` → `is_tsf_native_window` の順で判定し、
+   どちらにも一致しない場合は `Standard`（`#[default]`）にフォールバック
+   する。`ImePolicyProfile::from(AppImeProfile::Standard) = ImmCross`
+   であり、`caps(ImmCross, Gji) = FEEDBACK_READ` となる。
+4. すなわち `FocusChanged` が発火した**その瞬間**に、フォーカス中クラス名が
+   `CASCADIA_HOSTING_WINDOW_CLASS` / `Windows.UI.Input.InputSite.WindowClass`
+   のいずれとも一致していなかった（別の一時的なクラス名だった、または
+   フォーカス追跡の内部状態がまだ更新されていなかった等）場合、
+   `AppImeProfile::from_class_name` は `Standard` を返し、`app_policy` に
+   `FEEDBACK_READ` が焼き付く。`current_app_profile()` 自体はその後の
+   全ての呼び出し（`[apply-ime] GJI direct: send` 選択、`dispatch-ime`
+   の `profile=TsfNative` ログ等）で正しく `TsfNative` を返しているが、
+   `app_policy` はそれを一切参照しない（次の `FocusChanged` まで固定）
+   ため、この不整合はフォーカスセッション全体を通じて解消されない。
+5. `FeedbackPolicy::Read` は「実読み戻し可能なプロファイル（ImmCross 等）」
+   向けの設計であり、`sent_at` 以降の trusted 観測が `desired` と一致すれば
+   `Confirmed` として再送を止める。しかし Windows Terminal の
+   `Windows.UI.Input.InputSite.WindowClass` は `read_ime_state_full` が
+   `Skipping IMM query for known-broken class` として IMM クエリ自体を
+   スキップするクラスであり、`Read` が待っている「収束を示す trusted
+   観測」が構造的に一生発生しない。結果、`decide_actuation_action` は
+   毎 tick（drift correction の観測周期、実測 20〜90ms）
+   `ActuationAction::Send` を返し続け、`VK_IME_OFF` の `SendInput` が
+   無制限に近い頻度で繰り返される。
+
+**未確定部分:** `FocusChanged` 発火の瞬間に実際にどのクラス名が
+`current_app_profile()` に渡っていたか（`Standard` へのフォールバックが
+実際に発生した証拠ログ）は今回のログ取得範囲では直接確認できていない。
+`caps(ImmCross, Gji) = FEEDBACK_READ` であることから逆算した推定であり、
+`AppImeProfile::Standard` 以外の経路（例えば `InputRelay` 誤判定、
+`ImePolicyProfile::from` の別分岐）で同じ `Read` に到達する可能性も
+コード上は排除できていない。次のログ取得では `FocusChanged` 発火時刻
+前後の `on_focus_process_changed`/`current_app_profile()` 呼び出しに
+一時的な診断ログを追加し、実際の `profile` 値を直接確認するとよい。
+
+**現状:** 原因のメカニズム（`FeedbackPolicy` が `FocusChanged` 時の
+プロファイル分類スナップショットに固定され、`current_app_profile()` の
+後続の正しい再分類を反映しない）まで特定済み、修正未着手。この
+`app_policy` スナップショット方式・`caps()` の feedback 割り当て・
+`Read`/`Blind` の GiveUp 非対称性はいずれも IME belief アーキテクチャの
+中核（`state/app_ime_policy.rs`、`state/ime_model.rs::FocusChanged` 分岐）
+に関わるため、修正方針はユーザー判断により Opus 敵対的レビューで設計
+してから実装する。
+
+**追記（2026-09-05 続き）**: [ADR-134](adr/134-drift-correction-feedback-policy-focus-snapshot-staleness.md)
+として修正方針を起票した。`can_use_imm32_cross_process()`（ライブ判定、
+`ir_resolve_skip_imm_query`/実送信ルーティングが既に使っている）と
+`AppImePolicy::default_feedback`（`FocusChanged` 時スナップショット）が
+食い違う SSOT 分裂が本質と特定し、`ir_apply_drift_correction` の
+policy 決定だけをライブ判定から再導出する最小修正案（D1）を提示した。
+`actuation_for` の「reuse 時 policy 無視」不変条件は変更しない。
+Opus 敵対的レビュー未実施。
+
+**追記（2026-09-05・実機再現でADR-134 Finding 5を確認、修正実装）**:
+BUG-113 の診断スパイク（ADR-133 D0/D2、`fix/bug113-114-ime-off-batch-and-
+feedback-staleness` ブランチ）を実機（dragonflyg4、Windows Terminal +
+GJI）でテスト中、`RUST_LOG=debug` のログに `[drift] correction:
+observed=true ≠ desired=false for Nms` のバーストが**5回**自然発生した
+（各バースト5回の再送、`[drift] actuation gave up (Blind): ...
+attempts=5` で終了、バースト間隔は7秒〜60秒とばらつきあり）。この間
+`[bug114-diag]`（ADR-134 D4、`app_policy` スナップショットとライブ判定の
+食い違いを記録する診断ログ）は**1件も出力されなかった**——つまり今回の
+暴走は上記の「`FocusChanged` 時点の誤分類」（根本原因1〜3、D1/D1c で
+対処予定）とは**独立**に発生した。`attempts=5` の `GiveUp` が明確に出て
+いることから `FeedbackPolicy::Blind` は正しく選択されており、ADR-134が
+「Finding 5」として指摘していた別の欠陥——`ReadBackQuery::AnyFreshEvidence`
+が `Blind` 戦略（TsfNative/Imm32Unavailable）の GJI I/O 活動監視
+（`observe_gji_after_focus` が書く `ObservationSource::ObserverPoll`）を
+無区別に「外界が動いた証拠」として採用してしまい、`GiveUp` 後の
+3秒クールダウン明けにほぼ確実に再武装してしまう——が実機で直接確認
+された。
+
+修正: `state/observation_store.rs::ObservationStore::read_back` の
+`ReadBackQuery::AnyFreshEvidence` 分岐のみ、`ObserverPoll` ソースを鮮度
+判定から除外する（`most_recent_trusted_after_excluding` 新設）。
+`ReadBackQuery::Converged`（`FeedbackPolicy::Read` の収束確認、genuine な
+`OsPoll` 戦略の `ObserverPoll` に依存）には触れない——`Blind` が割り当て
+られるプロファイル（Imm32Unavailable/TsfNative）は構造的に常に
+`Blacklist` 読み取り戦略になり `OsPoll` を経由しないため、この除外は
+`Blind` 文脈でのみ意味を持ち、`Read` 文脈の genuine な `ObserverPoll` を
+巻き込まない。回帰テスト3件
+（`read_back_any_fresh_evidence_ignores_observer_poll_alone` 等）を追加。
+
+**追記（2026-09-05 続き・実機再検証で根本原因1を直接確認、D1c実装）**:
+上記修正（ObserverPoll 除外）を実機に投入して再検証したところ、暴走は
+解消せず**別の形**（`gave up (Blind)` が一度も出ないまま
+`observed=true ≠ desired=false for Nms` が単調に増加し続ける、無条件・
+無停止の毎tick再送）で再現した。この時 `[bug114-diag]`（ADR-134 D4）が
+**全ドリフト判定と同数**出力され、常に
+`snapshot_policy=Read { source: ImmGetOpenStatus, .. } live_policy=Blind
+{ .. } current_focus=None` だった。`current_focus=None` は
+`FocusChanged` の reducer（`state/ime_model.rs`）でのみ書かれるフィールド
+であり、**起動から一度もプロセス切替が起きていない**ことの直接証拠——
+まさに ADR-134 根本原因1（bootstrap 窓）が実機で成立していたことを
+確定させた。ユーザー報告によれば同一の Windows Terminal でも
+SSH/MSYS2 セッションでは再現せず PowerShell セッションで再現する
+とのことだが、これは awase 再起動直後にどのタブ/シェルへフォーカスして
+いたか（＝ bootstrap 窓に入るかどうか）に依存すると考えれば整合する
+（シェルの種類自体が分岐条件になっているわけではないと推定、未検証）。
+
+修正（ADR-134 D1c）: 起動直後の初回フォーカス確立時（
+`runtime/focus_tracking.rs::establish_initial_focus_scope`）に、新設した
+`ImeEvent::InitialAppPolicyEstablished { profile }` イベント
+（`sync_initial_app_policy` から dispatch、`advance_focus_tracking` の
+後・`sync_initial_focus_fence` と同じタイミング）で `app_policy` を
+live の profile 分類から初期化する。`InitialFocusFenceEstablished`
+（`current_fence` 1フィールドの差し替えのみという ADR-102 決定3-b の
+不変条件）とは意図的に別イベントにし、同じ「1フィールドだけ差し替え」
+規律を新イベントにも適用（reducer 実行時テスト
+`initial_app_policy_established_touches_only_app_policy`、テキスト
+スキャンの構造ガード `initial_app_policy_event_only_touches_app_policy`
+の2段で固定）。D1（`ir_apply_drift_correction` のライブ再導出）・D1a
+（`ImePolicyProfile::InputRelay` 追加）は未実装のまま——D1c が bootstrap
+窓を塞いだ後の実機ソークで、根本原因2系（`FocusChanged` を経由しない
+ライブ分類変化）が残存するかを見てから着手する。
+
+**追記（2026-09-05 続き・D1c実機再検証、AnyFreshEvidence除外の第2弾）**:
+D1c を実機に投入して再検証したところ、根本原因1（`current_focus=None`）
+は解消した（`[app-policy] bootstrap initial app_policy: profile=TsfNative`
+のログで確認、`[bug114-diag]` の発火も0件）——しかし `gave up (Blind)`
+が正しく5回で発生しているにもかかわらず、暴走は**別の形**（3秒
+クールダウン明けにほぼ即座に再武装するバーストが繰り返す、Finding 5と
+同型）で残った。ログを詳細に追ったところ、犯人は `ObserverPoll` では
+なく **`ConvOpenInference`**（`kp_stage_idle_conv_check` が conv ビットの
+`NativeToggleShadowOff` から書く open 推測、`[idle-conv-check] TsfNative:
+conv observation open=true reason=NativeToggleShadowOff ... →
+ObserverReported として記録` ログで確認）だった。これは shadow-toggle
+自身が動かした conv 状態を読み返すだけの自己言及的な信号で、実機で
+~250〜380ms 間隔という高頻度で record され続けていた。
+
+修正: `read_back` の `AnyFreshEvidence` 分岐の除外対象を
+`ObserverPoll`・`ConvOpenInference` の2ソースに拡張した
+（`most_recent_trusted_after_excluding` を単一ソースから
+スライス受け取りに変更）。回帰テストも2ソース目
+（`read_back_any_fresh_evidence_ignores_conv_open_inference_alone`）を
+追加。除外リストは実機で新たな自己言及ソースが見つかるたびに拡張する
+前提——コード上のコメントにその旨を明記した。
+
+**追記（2026-09-05 続き・実機再々検証で解決を確認）**: D1c + AnyFreshEvidence
+除外拡張（2ソース）を実機に投入して再々検証した結果、ログ全体
+（94,913行）で `drift correction` バーストは**1回のみ**、その1回も
+`gave up (Blind)` 後に一度も再武装しなかった（`fresh observation after
+give-up` 0件）。BUG-113 の実機診断中（物理半角/全角キーを多数回押す
+負荷テスト）でもこの水準に収まっており、**BUG-114 の drift correction
+暴走は実質解消したと判断する**。
+
+**現状**: D1c + AnyFreshEvidence 除外拡張（2ソース）を実装済み・実機で
+解決を確認。D1（`ir_apply_drift_correction` のライブ再導出）・D1a
+（`ImePolicyProfile::InputRelay` 追加）は根本原因2系（`FocusChanged` を
+経由しないライブ分類変化）向けの補完として未実装のまま残す——実機ソーク
+でこの経路の再発が確認された場合に着手する。
+
+**関連:** [ADR-133](adr/133-gji-ime-mode-key-sendinput-batch-shape.md)
+（本 BUG が発見された調査の出発点、BUG-113 の `wScan=0` 仮説が反証された
+経緯）、[ADR-134](adr/134-drift-correction-feedback-policy-focus-snapshot-staleness.md)
+（本 BUG の修正方針）、BUG-113（本 BUG により再現する症状「@」の直接の親 BUG）、
+BUG-110/ADR-132（`IntentStore`/`last_intent` の絶対的権威化が真因の、
+同じ症状クラスの別原因——独立した原因である点に注意）、
+[ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
+（`ImeModel` 以外の belief 的状態にも3段防御の適用要否を検討する際の
+判断基準）。
+
 ## BUG-115: `awase-gji-config` の `session_keymap` フィールド番号が誤っており、GJI が無変換/変換キーでIME ON/OFFを制御する overlay 設定も未対応
 
 **症状（ユーザー報告、不具合報告 `01M1R1T7VCB5K5DDM3Q00DCKXY`、2026-09-05）:**

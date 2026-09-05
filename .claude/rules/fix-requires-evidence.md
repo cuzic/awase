@@ -23,6 +23,7 @@
 | キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs` |
 | force-write / actuation ターゲット（ADR-084/086） | `platform.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | IME actuation 合流点（新しい gate/precondition を足す場所、ADR-119） | `ime_controller.rs::apply`（同期経路唯一の合流点）, `runtime/open_chain.rs::run_open_chain_async`/`fallback_write`/`imm_cross_write`（非同期経路。3関数**すべて**が独立に再検出する設計、1箇所だけでは足りない）, `runtime/executor.rs::dispatch_ime_set_open`（早期exit最適化、上記と重複するが単独では不十分） |
+| `ImeControlView.control.shadow_on`（`ControlLog`）の供給元（BUG-113、gate自体は1箇所でも供給元は経路ごとに違う） | `platform.rs::build_ime_control_view`（`ImeModel.applied_pair()`経由、`None`=未知）、`runtime/ime_refresh.rs::ir_apply_drift_correction`（`apply_ime_open_with_belief(order, None, ..)` — drift correction OFF方向回復、`None`ハードコード）、`runtime/key_pipeline.rs`のidle-conv-check DirectInput回復（同じく`None`ハードコード、コメントに「already_matchedをバイパスして apply する」と明記）、`runtime/executor.rs`の`applied_snapshot`。**`shadow_on`を`bool`に潰す（`unwrap_or(false)`）と「未知」と「確認済みfalse」の区別が消え、`None`で意図的にbypassしている経路の意図を握り潰す**——`Option<bool>`のまま扱い、「送信を省略してよいか」の判定は陽性の確認済み証拠（`Some(x)`）にのみ基づかせること（`state/ime_model.rs::applied_open()`のdocが警告するADR-098決定1-bの罠と同型）。 |
 
 ## テストの置き場所（このリポジトリの既存資産）
 

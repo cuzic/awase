@@ -796,3 +796,123 @@ Phase 1の一部（自動判定・設定支援ポップアップ・config1.db書
   今回はADR-092側の呼び出し元・テストを個別に確認した上で分離できたが、
   次に同種の自動判定機構を追加する際は、GJI検出の合流点は共有しつつも
   機能ごとに関数を分けておくと、将来の部分撤去が容易になる。
+
+---
+
+## エントリ 20: BUG-113「Windows Terminal + GJI で余分な@」— `send_ime_mode_key` の `wScan=0` 修正は実機A/Bで反証、副産物として BUG-114（drift correction の `FeedbackPolicy::Read` 無限再送）を発見
+
+**背景**: ADR-133 の実機検証（2026-09-05）で、`GjiDirectStrategy::apply
+(open=false)` が `send_ime_mode_key(VK_IME_OFF)` を `wScan=0` で送信して
+いることが BUG-113（Windows Terminal + GJI、Engine 有効時に半角/全角キーで
+「@」が出る）の真因候補と絞り込まれていた。
+
+| 日付 | 仮説 | 環境（アプリ×IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-05 | `send_ime_mode_key` の mode key 本体（`VK_IME_ON`/`VK_IME_OFF`）を `wScan=0` 固定（`make_key_input_ex()`）から `wVk` 保持＋`MapVirtualKeyW` 実測 scan 埋め込み（`make_scan_key_input()`、`KEYEVENTF_SCANCODE` なし）へ変更すれば「@」が再現しなくなるはず | Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`）× Google 日本語入力、dragonflyg4実機、`spike/adr133-wt-vk-kana-dbe-hiragana`ブランチ | `send_ime_mode_key`（`ime.rs`）の送信を全呼び出し元（`GjiDirectStrategy`/`MsImeDirectStrategy`/`send_engine_state_ime_key`）に対し既定 on（Windows Terminal 限定 hidden opt-in にはしなかった） | ユーザーが実機で再現手順（Engine有効、半角/全角キー単独押下）を試したところ「何も変化はありませんでした」（@が出る現象そのままだった）。`RUST_LOG=debug`での追加ログ確認で、実際には物理キー1回の押下に対し `[drift] correction: observed=true ≠ desired=false` が **~14秒間、20〜90msおきに連続発火**し、`VK_IME_OFF`を`SendInput`で送り続けていたことが判明（`gave up`ログは0件）。ログの`strategy=`タグは`drift_correction_read`——`caps(TsfNative, Gji)`が本来返すべき`FEEDBACK_BLIND`ではなく`FEEDBACK_READ`が使われていた。コード読解の結果、`focus/class_names.rs::AppImeProfile::from_class_name`がフォールバックで`Standard`を返すケースがあり、`FocusChanged`発火の瞬間にこれが起きると`ImePolicyProfile::ImmCross`→`FEEDBACK_READ`が`app_policy`に焼き付き、以後のフォーカスセッション中ずっと`Read`のまま（`current_app_profile()`自体は後から正しく`TsfNative`を返すのに`app_policy`は`FocusChanged`時のスナップショットしか見ない）になる経路を発見。`Read`は`decide_actuation_action`にGiveUp分岐が無く常に`Send`を返すため、IMMクエリが構造的に不可能な当該クラス（`Skipping IMM query for known-broken class`）では収束観測が一生得られず無限に近い頻度で再送し続ける | 撤回（`send_ime_mode_key`は元の`wScan=0`固定へrevert）。**「@」の真因はこのBUG-114単独ではないと後日判明**（drift correctionが正常に有界動作した回でも「@」は再現した、known-bugs.md BUG-113参照）——BUG-114自体は独立の実在バグとして別途起票、真因候補は後日`send_ime_mode_key`の`SendInput`バッチ形状（ADR-133）へ絞り込まれた | e8aa19b0（元コミット）→（本revertコミット） |
+
+**学び**: 「候補まで絞り込んだ」状態でも実機A/Bを経ずに「全アプリ・既定on」の
+グローバル変更へ踏み切ると、反証されたときの後始末（revert対象の特定・
+docsの巻き戻し）が大きくなる。特にこの変更は Windows Terminal 限定に
+スコープすることもできたが、ユーザー判断で全アプリ適用にした結果、
+反証後は影響範囲の広い変更を丸ごとrevertする必要が生じた。また
+「何も変化がない」という否定的な実機報告こそ、次の仮説を焦って作らず
+`RUST_LOG=debug`のような詳細ログに立ち返って実際に何が起きているかを
+虚心に見直すべきサインだった——今回は debug ログ1回の取得で全く別の、
+より深刻な機構（無限に近い再送ループ）を発見できた。
+
+---
+
+## エントリ 21: BUG-113「Windows Terminal + GJI で余分な@」— バッチ形状・VK値の両仮説を実機A/Bで反証、PSReadLine相互作用を発見するも「awase側のバグではない」という結論はユーザーレビューで撤回
+
+**背景**: エントリ20・ADR-133 v5 で絞り込んだ「`VK_IME_OFF` 単体
+`SendInput` バッチが真因」という仮説を、`fix/bug113-114-ime-off-batch-
+and-feedback-staleness` ブランチの診断コード（`DIAG_BUG113_*`）で
+実機検証した。
+
+| 日付 | 仮説 | 環境（アプリ×IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-05 | `SendInput` バッチのイベント数・修飾キーの有無（候補V=分割/A=自己エコー/B3・B4=偽Ctrlブラケット）が「@」の有無を左右する | Windows Terminal × GJI、dragonflyg4実機 | `GjiDirectStrategy::apply(open=false)` の送信方式を候補ごとに自動ローテーション | 候補V/A/B3/B4・baselineすべてで「@」がほぼ毎回出た。当初「Ctrl+無変換では@が一度も出ない」という起点観測自体、実機再確認で「最初の1回がたまたま出なかっただけ」と判明（round1レビューMajor 7の統計的脆弱性指摘が的中） | 反証。バッチ形状は無関係 | 65ba766b |
+| 2026-09-05 | JIS 106配列で「@」キーのスキャンコードが `VK_IME_OFF`(0x1A) の値と一致する（VK値のスキャンコード誤読） | 同上 | `KanjiToggleStrategy`（`VK_KANJI`=0x19、本来「P」）をAlt+物理半角/全角キーで強制発火（D0-3） | 「p」は一切混入せず「@」のみ出力された | 反証。VK値も無関係 | 65ba766b |
+| 2026-09-05 | （コード内在の実装ミス）D0-3自体、1回の物理キー押下で`shadow_toggle_off_sync`/`engine_decision_sync`の2回呼び出しのうち1回目だけを`KanjiToggleStrategy`へ誘導し2回目を吸収し忘れていた | 同上 | episode単位で判定を1回に固定し2回目をno-opで吸収するよう修正 | 修正後、D0-3の観測（上記「p」不出現）は再検証していないが、旧D0-3データの信頼性に疑義が生じた | 診断コード自体のバグとして修正、D0-3は実質未検証のまま持ち越し | 65ba766b |
+
+**PSReadLineとの相互作用発見**: ユーザー観測（awase Engine無効化で
+発生しない、同じWindows Terminal内でもSSH/MSYS2セッションでは発生せず
+PowerShellセッションでのみ発生する）から PSReadLine を疑い、
+`Remove-Module PSReadLine -Force` で無効化したところ「@」が発生しなく
+なることを実機確認した。
+
+**判断ミスと訂正**: この結果を受けてセッション終盤、「真因は GJI と
+PSReadLine の相互作用であり、awase 側のコードバグではない。修正対象
+なし」と結論づけ、known-bugs.md/ADR-133 をクローズ扱いで記録した。
+**この結論は次セッションでユーザーから直接的な指摘を受けて撤回した**
+（「awase側のバグではある。何をどう思ったらバグではない、という結論に
+なるのか」）。トリガーは一貫して「awaseがGJIに対して何らかのIME
+actuationを行うこと」であり、PSReadLine/GJI単体では発生しない——
+「相手の実装が脆弱」であることは、その脆弱性を実際に踏み抜いている
+awase側の送信動作の責任を免除しない。本リポジトリの他のknown-bugs
+エントリ（Chrome cold-start等）でも「相手アプリ/IMEの実装が原因」の
+バグに対してタイミング調整や送信方式変更で緩和策を講じてきており、
+BUG-113だけを例外的に「修正不要」とするのは一貫性を欠いていた。
+
+**学び**:
+- **「外部コンポーネントの脆弱な実装との相互作用」を見つけても、
+  それだけでは「自分のコードの問題ではない」という結論にはならない。**
+  自分のコードがその相互作用を実際にトリガーしている限り、回避策・
+  緩和策を検討する責任は残る。外部要因の発見は「原因の理解が進んだ」
+  ことを意味するのであって、「対応不要」を意味しない。
+- **「バッチ形状もVK値も無関係、PSReadLineとの相互作用が引き金」という
+  事実の記録と、「だから修正しない」という方針判断は別のレイヤーであり、
+  前者が確定しても後者を独断で決めてはいけない。** 方針判断（修正するか、
+  ユーザー側回避策のみで済ませるか）はユーザーに確認してから記録する。
+- 過去に一度だけ「出ない」という結果が出た候補（mode 1: `ImmSetOpenStatus`
+  ベースの `set_ime_open_cross_process`、`SendInput` を使わない経路）が、
+  その後のより統計的に厳密な検証ラウンドでは再検証されずに埋もれていた
+  ——という指摘を一度は次の検証候補として記録したが、ユーザーの指摘で
+  「`AppImeProfile::TsfNative`（Windows Terminal 含む）は
+  `can_use_imm32_cross_process() == false` であり、この API はそもそも
+  TSF アプリに効果を持たない」と判明し、候補自体を除外した。**「過去に
+  一度だけ良い結果が出た」という事実だけでなく、その候補が対象アーキ
+  テクチャ上そもそも意味を持ちうるかを先に確認すべきだった**——確認
+  していれば、意味のない再検証を計画に書く前に気づけた。
+- 呼び出し連鎖を一度も全数調査していなかった。バッチ形状・VK値という
+  「送信の形」だけを可変にしたラウンドを何度も回す一方で、同じ物理
+  キー押下に付随する**別の**Win32/TSF呼び出し（`kp_stage_idle_conv_check`
+  が spawn する cross-process 読み取りクエリ等）が競合している可能性を
+  一度も洗い出していなかった。「候補のバリエーションを増やす」前に
+  「そもそも何が起きているか全数調査する」方が早道だったかもしれない。
+
+---
+
+## エントリ 22: BUG-113「Windows Terminal + GJI で余分な@」— dedup/probe skipの1セッション内自動ローテーション、実装2箇所のバグを経て必要十分条件を実機A/Bで確定
+
+**背景**: エントリ21で見つけた2候補（二重actuationのdedup、
+`kp_stage_idle_conv_check`のcross-process読み取りのskip）を、config編集
+による再起動を挟まず1回のテストセッションで4条件（baseline/dedupのみ/
+probe skipのみ/両方）自動ローテーションして検証したいというユーザーの
+要望を受け、`diag_bug113_combo.rs`を新設した。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-05 | 単体トグルでdedup=true固定にした先行テストで54エピソード連続@0件だった効果を、1セッション内の4条件自動ローテーションでも再現できるはず | Windows Terminal × GJI × PowerShell(PSReadLine有効)、dragonflyg4実機 | `kp_run_inner`冒頭でKeyDown（非注入）ごとにコンボを進める実装（v1） | ユーザー報告「奇数回目で必ず@が出る」。ログを見るとテスト対象キーと無関係な~30ms間隔の連続イベントでコンボが進んでいた | 反証（実装バグ）。`event.injected`ガード欠如で awase 自身のVK_IME_OFF/ON SendInputループバックがコンボを消費していたと判明 | f28e52e6...現行ブランチ内 |
+| 2026-09-05 | `!event.injected`を追加すれば直る | 同上 | `enrich_ime_relevance`呼び出し後に移動し`shadow_action.is_some()`も追加（v2） | ユーザー報告「全く同じ状態」。ログのvk値を見ると0xF3/0xF4が交互に出ており物理押下は正しく捕捉されていたが、依然「IME OFF方向で必ず@」 | 反証（別の実装バグ）。物理半角/全角キーはTurnOff(0xF3)/TurnOn(0xF4)を厳密に周期2で交互するのに対し、コンボは周期4（2の倍数）で回っていたため、TurnOff方向は構造的に必ず偶数コンボ（dedup=false）にしか当たらないエイリアシングが発生し、dedup=trueは一度もTurnOff方向で検証されていなかった | 同上 |
+| 2026-09-05 | コンボ進行を`shadow_action == Some(TurnOff)`に限定すれば直る | 同上 | v3実装 | ユーザー報告「ビンゴ、1回目と5回目だけ@が出る」→さらに継続テストで「4回に1回、極めて整合的」。各条件15〜16トライアル（TurnOff方向のみ、合計63）で、baseline以外（dedupのみ・probe skipのみ・両方）は「@」0件 | **確定**。二重actuation解消・idle-conv-check probe skipのいずれか単独で「@」を防ぐのに十分 | 8405ce73 |
+
+**学び**:
+- **「1回のテストセッションで複数条件を自動ローテーションする」設計は、
+  単体トグルより効率的だが、対象事象自体が持つ周期性とローテーション
+  周期のエイリアシングという、単体トグルでは起こり得なかった新しい
+  失敗モードを持ち込む。** 今回は「物理キーが2方向に厳密に交互する」
+  という前提を見落としたまま「4条件を均等に回す」設計を組んでしまい、
+  2回の実機ラウンドを無駄にした。複数条件の自動巡回を設計する際は、
+  「巡回対象の物理現象自体に既知の周期性がないか」を先に確認すべき
+  だった。
+- ユーザーの「奇数回目で必ず@が出る」→「つまりIME OFFのときに必ず」
+  という言い換えが、机上のログ解析だけでは気づけなかった「コンボ周期と
+  押下方向周期のエイリアシング」という真の原因への最短経路だった。
+  実機を操作している人間の言葉による現象の言い換えは、ログ解析より
+  先に構造的な仮説を絞り込めることがある。
+- 63トライアルという中規模のサンプルサイズで「baseline以外は0件」という
+  明確な結果が得られたことで、round1レビューMajor 7が繰り返し警告して
+  きた「少数試行での偽陰性」の罠を今回は回避できた——これは実装バグを
+  2回踏んで遠回りした代償として、最終的に十分な試行数を積み上げる
+  結果になったという側面もある。
