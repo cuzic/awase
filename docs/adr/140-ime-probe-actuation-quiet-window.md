@@ -606,8 +606,15 @@ Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映�
   帰結だが、`should_run_idle_conv_check`の発火条件がeager TSF
   warmup・force-ONの発火条件と重なるため、abandon率がどの程度になるかは
   未実測。M1で追加した分母付きカウンタを使い、実機ソークで「@」再発の
-  有無に加えてabandon率とidle-conv-checkの実際の適用（タスクバーからの
-  モード変更検知が生きているか）を確認すること。
+  有無に加えてabandon率を確認すること。**注意（再レビューで判明）**:
+  `spawned - abandoned`は「checkpoint1/2を通過した数」であって「実際に
+  belief適用まで到達した数」ではない——その先に`Read(None)`・epoch棄却・
+  `close_focus_resync_gate_if_current`のfalse・(a)(b)(c)(d) discardが
+  残っているため、適用到達数は新カウンタだけでは算出できない。
+  idle-conv-checkが実際に機能しているか（タスクバーからのモード変更検知が
+  生きているか）は`RUST_LOG=debug`の`[idle-conv-check]`系ログ（discard
+  理由をすべて出力済み）で確認する運用とし、Step1の完了条件としては
+  abandon率の確認で足りるため追加計装は行わない。
 - **M3（Major、決定Iの分離意図の毀損）**: checkpoint3（apply時点、resync
   gateクローズ**後**に走る）の discard が誤って`record_abandoned`を呼び、
   体感遅延ゼロのabandonをresyncカウンタに混入させていた。決定Iがカウンタを
@@ -632,7 +639,21 @@ Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映�
 
 いずれの指摘も、確定設計A〜Iの決定内容自体を覆すものではなく、実装時の
 反映漏れ（M3）と、決定Iの完了条件を実際に判定可能にするための追加計装
-（M1/M2）だった。
+（M1/M2）だった。再レビュー（同エージェント、同一commit `cfc90403`を
+直接確認）でBlocker・Major無しの収束を確認、Minor 1件（m5）のみ追加で
+検出された:
+
+- **m5（Minor、再レビューで検出）**: m4の`>=`化により、2テスト
+  （`record_abandoned`/`record_spawned`）が「resync/normal を分けて
+  数える」というsplit自体を検証しなくなっていた（両カウンタを無条件に
+  加算する実装に壊れても緑のまま通る）。プロセス共有staticに対して
+  flakyにならずsplitを検証するには専用のローカルインスタンスへの切り出しが
+  要るが、このモジュールの薄さに対して過剰と判断し、テスト名を実態
+  （`record_{abandoned,spawned}_increments_the_counter_matching_its_argument`）
+  に合わせるに留めた。splitの正しさ自体はmodule docの決定Iの記述と
+  呼び出し元（`key_pipeline.rs`）のコードレビューで担保する。
+
+収束（Blocker/Major 0件、Minor全件対応済み）。
 
 ## 関連
 

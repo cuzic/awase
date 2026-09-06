@@ -167,9 +167,20 @@ mod tests {
     // （BUG-65と同型のテスト分離リスク）。したがって「他スレッドがちょうど
     // 割り込まなかった」ことを前提にする厳密等値ではなく、「自分が呼んだ分は
     // 少なくとも反映されている」ことだけを検証する（`>=`）。
+    //
+    // 実装レビュー指摘m5（再レビュー）: この `>=` 化により、以下2テストは
+    // 「resync/normal を分けて数える」という split 自体はもはや検証していない
+    // ——両カウンタを無条件に加算する実装に壊れても緑のまま通る。プロセス
+    // 共有 static に対して flaky にならずに split を検証するには専用の
+    // ローカルインスタンスへの切り出しが要るが、このモジュールの薄さに対して
+    // 過剰と判断し、テスト名を実態（「呼んだ側の引数に対応するカウンタが
+    // 増える」ことのみ）に合わせるに留める。split の正しさは
+    // `crate::probe_actuation_fence` module doc の決定Iの記述と、
+    // 呼び出し元 `key_pipeline.rs`（`record_abandoned(resync_generation)`/
+    // `record_spawned(resync_generation)`）のコードレビューで担保する。
 
     #[test]
-    fn record_abandoned_splits_resync_and_normal_counters() {
+    fn record_abandoned_increments_the_counter_matching_its_argument() {
         let resync_before = abandoned_resync_lifetime_count();
         let normal_before = abandoned_normal_lifetime_count();
 
@@ -181,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn record_spawned_splits_resync_and_normal_counters() {
+    fn record_spawned_increments_the_counter_matching_its_argument() {
         let resync_before = spawned_resync_lifetime_count();
         let normal_before = spawned_normal_lifetime_count();
 
