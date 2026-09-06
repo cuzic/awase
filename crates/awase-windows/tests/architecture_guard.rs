@@ -3723,16 +3723,74 @@ fn half_width_alnum_state_fields_are_not_accessed_directly() {
          （state/half_width_alnum.rs のメソッド経由に限定すること）。実際: {hits:?}"
     );
 
-    // 2. 宣言側走査（再pub化検知）。
+    // 2. 宣言側走査（再pub化検知）。`pub field` の素朴なリテラル一致だと
+    //    `pub(crate) field` のような可視性修飾子付きの再宣言を素通りして
+    //    しまうため、修飾子の有無を問わず検出する `declares_pub_field` を使う。
     let source = read_crate_file("src/state/half_width_alnum.rs");
     for field in FIELDS {
-        let pub_needle = format!("pub {field}");
         assert!(
-            !source.contains(&pub_needle),
-            "`HalfWidthAlnumState::{field}` が `pub` フィールドとして \
-             宣言されています。private のまま維持すること。"
+            !declares_pub_field(&source, field),
+            "`HalfWidthAlnumState::{field}` が `pub`（`pub(crate)` 等の \
+             可視性修飾子付きを含む）フィールドとして宣言されています。\
+             private のまま維持すること。"
         );
     }
+}
+
+/// `source` の中でフィールド `field` が `pub`（修飾子なし）または
+/// `pub(crate)`/`pub(super)`/`pub(in ...)` のような可視性修飾子付きの
+/// `pub` として宣言されているかを判定する。
+///
+/// 空白の量・改行位置に依存しないよう、比較前に全ての空白を除去する
+/// （`half_width_alnum_state_fields_are_not_accessed_directly` の使用箇所
+/// 走査、および `build_input_context_callers_do_not_drop_thumb_down_state`
+/// と同じ手法）。素朴な `contains("pub {field}")` は `pub(crate) {field}`
+/// のような修飾子付き再宣言を検出できない（M4: Opus敵対的レビュー指摘）。
+fn declares_pub_field(source: &str, field: &str) -> bool {
+    let squashed: String = source.split_whitespace().collect();
+    // 修飾子なし: `pub left_tap_armed` → squash後 `publeft_tap_armed`。
+    if squashed.contains(&format!("pub{field}")) {
+        return true;
+    }
+    // `pub(crate)`/`pub(super)`/`pub(in a::b)` 等の修飾子付き:
+    // squash後は `pub(...)left_tap_armed` の形になる。`pub(` に対応する
+    // `)` までをスキップしてから直後が `field` かを見る。
+    let mut rest = squashed.as_str();
+    while let Some(idx) = rest.find("pub(") {
+        let after_open = &rest[idx + "pub(".len()..];
+        let Some(close_idx) = after_open.find(')') else {
+            break;
+        };
+        let after_close = &after_open[close_idx + 1..];
+        if after_close.starts_with(field) {
+            return true;
+        }
+        rest = after_close;
+    }
+    false
+}
+
+/// `declares_pub_field` 自体の回帰テスト（M4: 素朴な `contains("pub {field}")`
+/// は `pub(crate)` 修飾子付きの再宣言を検出できなかった、という指摘の再発防止）。
+#[test]
+fn declares_pub_field_detects_qualified_visibility() {
+    assert!(declares_pub_field(
+        "pub left_tap_armed: bool,",
+        "left_tap_armed"
+    ));
+    assert!(declares_pub_field(
+        "pub(crate) toggle_held: bool,",
+        "toggle_held"
+    ));
+    assert!(declares_pub_field(
+        "pub(super) entry_policy: Policy,",
+        "entry_policy"
+    ));
+    assert!(!declares_pub_field(
+        "toggle_held: bool, // not pub",
+        "toggle_held"
+    ));
+    assert!(!declares_pub_field("pub other_field: bool,", "toggle_held"));
 }
 
 /// `config.general.half_width_alnum_toggle` の反映（`Runtime::
