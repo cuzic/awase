@@ -80,12 +80,22 @@ IME モードキー・`VK_KANA`・`VK_DBE_ROMAN`/`NOROMAN`・Alt 系 vk 等の**
 
 ## 決定
 
-### 決定1: `log` から `tracing` へ一括移行する（`tracing-log` 恒久併用はしない）
+### 決定1: `log` から `tracing` へ一括移行する（自コードでの `log::*!` 併用はしない）
 
 マクロレベルでは `log::info!("...")` → `tracing::info!("...")` は機械的な置換で足りる。
-`tracing-log` によるブリッジ併用を恒久方針にはしない — 2つの計装スタックが並存すると
-「新しいログをどちらのマクロで書くべきか」を毎回判断するコストが発生する。移行期間中の
-一時的な併用のみ許容する。
+**このリポジトリ自身のコードが `log::*!` マクロを新たに書くことは恒久的に禁止**する —
+2つの計装スタックが並存すると「新しいログをどちらのマクロで書くべきか」を毎回判断する
+コストが発生する。実装完了時点（PR #172）で `log::` 呼び出しは production コードから
+ゼロになり、`log`/`env_logger` は全 `Cargo.toml` の `[dependencies]` からも削除済み。
+
+一方で `tracing-log`（`tracing-subscriber` の default feature、`crates/awase-windows/
+Cargo.toml` 参照）自体は**恒久的に維持する**。これは自コードの併用禁止とは別軸の話で、
+`egui`/`winit` 等サードパーティ crate が内部で `log::*!` を呼ぶ場合に、`SubscriberInitExt::
+{init, try_init}` 経由で自動設置される `LogTracer` がその出力を拾い続けるために要る
+ブリッジである。当初案では「移行期間中の一時的な併用のみ許容する」としていたが、
+これは自コードと第三者コードを区別せずに書いており誤り。PR #172 実装後のOpus敵対的
+コードレビュー（r1 N-8）で指摘され訂正した。将来のセッションがこのコメントを見ずに
+「移行が終わったなら `tracing-log` も外せるはず」と誤って外さないよう、ここに明記する。
 
 `tracing-subscriber::fmt` + `EnvFilter` を使い `RUST_LOG` 互換性を維持する。出力行の
 フォーマット（`env_logger` の `[ts LEVEL target] msg` から `tracing-subscriber` 既定の
@@ -533,7 +543,9 @@ ETW はそれを見せてくれない。
 
 - **OpenTelemetry SDK フルスタック導入**: 分散トレーシング前提の重量級構成であり、
   単一プロセスのデスクトップアプリには過剰。
-- **`tracing-log` の恒久併用**: 決定1参照。移行期間中の一時利用のみ許容する。
+- **自コードでの `log::*!`/`tracing::*!` 恒久併用**: 決定1参照。自コードは `tracing::*!`
+  に一本化し `log::*!` は書かない。（`tracing-log` ブリッジ自体はサードパーティ crate
+  向けに恒久維持する — 決定1参照、これは別軸で棄却していない。）
 - **metrics の Prometheus 常時エクスポート、および `dev-metrics-http`**:
   エンドユーザー環境・開発機のどちらでも常時 HTTP サーバーを立てるのは受益者不在の
   リスク。同じ情報は決定5で採用した `BugReportStateSnapshot` の拡張で得られる。
@@ -575,6 +587,28 @@ ETW はそれを見せてくれない。
 - 決定4の `emit_tracing`（24種程度の `JournalEntry` variant 分の match アーム）の
   保守コストは、呼び出し元49箇所への分散ではなく `journal.rs` 内の1関数に閉じるため
   低いと評価しているが、実装時に実際の行数・レビュー負荷を確認する。
+- 以下はPR #172マージ後の実装コードレビュー（r1/r2）で見つかったが、Blockerではなく
+  マージ後フォローアップに送った項目。次にこの領域を触るセッションのための申し送り:
+  - `app/logging.rs::RotatingLogState::maybe_rotate` のファイル再openにバックオフが
+    無い。openが持続的に失敗する環境（標準ユーザー権限での `Program Files`
+    インストール等）では `write()` 呼び出しのたびに `CreateFileW`+`fs::metadata` を
+    空振りし続ける。`RUST_LOG=debug` では決定4のjournal fan-outが打鍵ごとに発火する
+    ため、エンジンスレッド上で毎打鍵2回の失敗syscallになりうる。数秒に1回へ絞る
+    cooldown（`last_reopen_attempt_tick`相当）の追加を推奨。
+  - `#[instrument(fields(<裸識別子>))]` が値を記録しない罠（決定3のBlocker、本文
+    参照）を機械的に再発防止するテストがまだ無い。`fields(...)` をトップレベルの
+    カンマで分割し `=`/`?`/`%` を持たないトークンを禁止するテキスト走査を
+    `architecture_guard.rs` に足すのが最小コスト（20行程度）。
+  - `journal.rs::physical_disposition_str` が `Suppress { reason }` の `reason`
+    （`"tsf-f2"`/`"imm-cross"`/`"imm32-off"`）を落として `"Suppress"` に潰している。
+    この `reason` は `runtime/transport.rs::plan`（BUG-46/52/116）のtriageで最初に
+    見る値であり、`&'static str` なので `tracing::Value` にそのまま乗せられる。
+  - `.githooks/pre-push` は `ime_refresh` を追加したが、実行時に参照される
+    `.git/hooks/pre-push`（`core.hooksPath` が指す側、未追跡）は未同期のまま。
+    ユーザー確認を要する操作のためPRスコープ外とした。
+  - `maybe_rotate` のローテーション処理は `fs::remove_file(&backup)` を
+    `fs::rename` より先に実行しているため、rename が失敗すると旧世代
+    （`awase.log.old`）だけが失われ新世代ローテーションも成立しない。
 
 ## 関連ファイル
 
