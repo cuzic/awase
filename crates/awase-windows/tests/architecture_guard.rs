@@ -3931,3 +3931,86 @@ fn hook_callback_log_call_count_is_pinned() {
          意図した変更ならこのテストの期待値を更新すること。"
     );
 }
+
+/// リポジトリルート相対のファイルを読む（`read_crate_file` は crate ルート
+/// 相対専用のため、`.claude/`・`.githooks/` はこちらを使う）。
+fn read_repo_root_file(rel_path: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // crates/awase-windows/ から見てリポジトリルートは2段上。
+    let repo_root = Path::new(manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| panic!("failed to resolve repo root from {manifest_dir}"));
+    let raw = fs::read_to_string(repo_root.join(rel_path))
+        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    raw.replace("\r\n", "\n")
+}
+
+/// ADR-139 決定3の `#[instrument]` 対象ファイルが、
+/// `.claude/rules/fix-requires-evidence.md` の再発ファミリー表、または
+/// `.githooks/pre-push` の正規表現のいずれかでカバーされていることを保証する。
+///
+/// **この assert は一方向のみ**（決定3 ⊆ 表 ∪ 正規表現）。逆方向——表/正規表現が
+/// 守るべきファイルを決定3側が instrument し忘れていないか——は検知できない
+/// （表・正規表現・決定3の3者は完全な集合一致にならない: `tuning.rs` は表・
+/// 正規表現には現れるが決定3では定数のみのため明示的に対象外、正規表現は
+/// ディレクトリ/パスのプレフィックス単位でありファイル単位の決定3リストとは
+/// 粒度が異なる。タスク分解レビューで判明、ADR-139 決定3参照）。
+/// 決定3の対象ファイルが増減したらこの定数リストも更新すること。
+#[test]
+fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
+    const DECISION3_FILES: &[&str] = &[
+        "ime_controller.rs",
+        "runtime/open_chain.rs",
+        "runtime/executor.rs",
+        "runtime/conv_actuation.rs",
+        "output/conv_actuation.rs",
+        "runtime/transport.rs",
+        "output/tsf_warmup_coord.rs",
+        "output/probe_io.rs",
+        "output/ime_apply_planner.rs",
+        "state/ime_model.rs",
+        "state/observation_store.rs",
+        "runtime/ime_coordinator.rs",
+        "focus/classifier.rs",
+        "focus/classify.rs",
+        "focus/uia.rs",
+        "focus/msaa.rs",
+        "runtime/focus_tracking.rs",
+        "state/conv_mode.rs",
+        "ime.rs",
+        "output/vk_send.rs",
+        "platform.rs",
+        "runtime/ime_refresh.rs",
+        "runtime/key_pipeline.rs",
+        "tsf/probe.rs",
+        "tsf/observer.rs",
+        "tsf/output.rs",
+    ];
+
+    let table = read_repo_root_file(".claude/rules/fix-requires-evidence.md");
+    let hook = read_repo_root_file(".githooks/pre-push");
+
+    for file in DECISION3_FILES {
+        let file_stem = file.rsplit('/').next().unwrap_or(file);
+        let module_stem = file_stem.trim_end_matches(".rs");
+        // 表・正規表現とも、個別ファイル名ではなくディレクトリ単位
+        // （`focus/`・`output/`・`tsf/`等）で再発ファミリーを指す行がある
+        // （例: 「focus 遷移」行は `focus/` とだけ書き、`focus/classifier.rs`
+        // を個別列挙しない）ため、ディレクトリプレフィックスでの一致も許容する。
+        let dir_prefix = file.rsplit_once('/').map(|(dir, _)| format!("{dir}/"));
+        let dir_hit = dir_prefix
+            .as_deref()
+            .is_some_and(|d| table.contains(d) || hook.contains(d));
+        let in_table = table.contains(file_stem) || table.contains(module_stem);
+        let in_hook = hook.contains(file_stem) || hook.contains(module_stem);
+        assert!(
+            in_table || in_hook || dir_hit,
+            "ADR-139決定3の対象 `{file}` が fix-requires-evidence.md の再発ファミリー表にも \
+             .githooks/pre-push の正規表現にも見つかりません。決定3がホットスポット表の \
+             範囲外へ逸脱していないか（本当に再発ファミリー領域か）確認すること。\
+             意図した対象追加なら表または正規表現側も更新するか、このテストの \
+             コメントに除外理由を明記すること。"
+        );
+    }
+}
