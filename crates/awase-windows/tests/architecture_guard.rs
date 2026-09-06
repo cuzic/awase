@@ -3888,3 +3888,46 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         );
     }
 }
+
+/// `hook_callback`（`WH_KEYBOARD_LL` フックプロシージャ本体）内のログ/tracing
+/// マクロ呼び出し数を固定する（ADR-139 決定2）。
+///
+/// `hook_channel.rs:183-199` の不変条件「フックコールバック上ではロック取得・
+/// アロケーション・ブロッキング呼び出し・ログ出力を一切行わない」により、
+/// 通常のキー打鍵経路はログ呼び出しゼロで抜ける。現在ある7箇所は全て
+/// IME モードキー・`VK_KANA`・`VK_DBE_ROMAN`/`NOROMAN`・Alt 系 vk という
+/// **稀な分岐内のみ**（`hook.rs` のコメントに「VK_KANA は稀なキーなので
+/// ログコストは無視できる」と評価済み）。`log`→`tracing` 移行（決定1）で
+/// `tracing-appender::non_blocking` 等を安易に導入すると「non_blocking なら
+/// フックコールバックで自由にログしてよい」という誤読を招きかねないため、
+/// この数が増えていないことをテストで固定し、invariant が緩む方向の変更を
+/// 機械的に検知する。意図した追加ならこのテストの期待値を更新すること。
+#[test]
+fn hook_callback_log_call_count_is_pinned() {
+    const START_MARKER: &str = "unsafe extern \"system\" fn hook_callback(";
+    const END_MARKER: &str = "pub fn now_timestamp_us";
+
+    let content = read_crate_file("src/hook.rs");
+    let start = content
+        .find(START_MARKER)
+        .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in hook.rs"));
+    let end = content[start..]
+        .find(END_MARKER)
+        .map(|i| start + i)
+        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after hook_callback"));
+    let body = &content[start..end];
+
+    let count = body.matches("tracing::trace!").count()
+        + body.matches("tracing::debug!").count()
+        + body.matches("tracing::info!").count()
+        + body.matches("tracing::warn!").count()
+        + body.matches("tracing::error!").count();
+    assert_eq!(
+        count, 7,
+        "hook_callback 内のログ/tracing マクロ呼び出し数が想定(7)と異なります \
+         (実際: {count})。hook_channel.rs:183-199 の不変条件\
+         （フックコールバック上でログ出力を一切行わない）が緩んでいないか、\
+         増えた呼び出しが本当に稀な分岐内に限定されているかを確認すること。\
+         意図した変更ならこのテストの期待値を更新すること。"
+    );
+}
