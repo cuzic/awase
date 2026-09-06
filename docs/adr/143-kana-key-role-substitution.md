@@ -2,10 +2,11 @@
 
 ## ステータス
 
-**r4（Opus 2体の敵対的レビューを4ラウンド実施。r3でBlockerは
-premortem役ゼロ・architect役1件〈BUG-10食い逃げ救済経路の消失〉に
-収束、`ime_will_be_turned_on_elsewhere`を新設して対応。r5レビュー
-未実施）。**
+**r5（Opus 2体の敵対的レビューを5ラウンド実施。r4で新設した
+`ime_will_be_turned_on_elsewhere`自体が評価タイミング・KeyUp適用の
+両面で新規Blocker2件を生んでいたため、`ime_actuation_will_fire_before`
+への改名・事前スナップショット化・KeyUp除外・戻り値の構造化で訂正。
+r6レビュー未実施）。**
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -162,6 +163,36 @@ SSOT要件を追記（architect役Minor2と同一結論、独立到達）、R3-m
 途中に分岐点が無いこと」まで確認する必要がある。NB3（r2、存在しない
 ガードを根拠にした）とNB6（r3、存在するが見落とした分岐〈no-op〉を
 根拠から漏らした）は同型の失敗である。
+
+### レビュー指摘との対応表（r4→r5、5ラウンド目）
+
+両エージェントが独立に同一の2つのBlockerへ到達した（NB7=R4-B1、
+NB8=R4-B2）——r4で新設した`ime_will_be_turned_on_elsewhere`自体が、
+まさにこの機構が対処しようとしていた「生の0xF2直接送出」を別の経路
+から再導入していた。
+
+architect役: NB7(`effective_open()`をライブ値で読むと機構全体が発火
+しない)→事前スナップショット化・`_before`命名規約への統一、
+NB8(KeyUpで再評価すると成功パスで毎打鍵非対称が生じる)→KeyUpの判定
+から完全に除外、NM11(`delegate_owned`が呼び出し元から二重計算になる)
+→`kp_stage_shadow_ime_toggle`の戻り値を構造体化、Minor1(決定5の
+scan省略に根拠が無い)→背景節の事実を根拠として追記、Minor2(フラグ名が
+実態とずれ誤読を誘発)→`ime_actuation_will_fire_before`へ改名、
+Nit1(カタカナ側delegateへの言及漏れ)→0xF2固定により構造的に非該当と
+明記。
+premortem役: R4-B1(`effective_open()`のタイミング問題、architect役
+NB7と同一発見)→同上で解消、R4-B2(KeyUp側の構造的常時false、architect
+役NB8と同一発見)→同上で解消、R4-M1(近似であることの明記不足)→既知の
+制限として明記、R4-M2(delegateの代入後構成での正しさ未検証)→実機確認
+項目に追加、R4-m1〜m3→narrow edge記述の訂正・テスト計画のDown/Up分離・
+`suppress_reason`ヘルパのDown/Up対応。
+
+5ラウンド共通の教訓: 本ADRのようにActuation/belief/配送が絡む機構では、
+「新しい条件が正しい値を指すか」だけでなく「その値がいつ読まれるか
+（呼び出し前後でどちらのスナップショットか）」まで具体的なコード行で
+検証しないと、r4のように機構全体が無効化される欠陥を見逃す。このリポ
+ジトリには`half_width_alnum_toggle_before`という同型の前例が既に存在
+しており、次に類似の値を扱う際はまずこの命名規約・配線を踏襲すること。
 
 ## 背景
 
@@ -356,24 +387,50 @@ R3-M1/R3-M2/R3-M3指摘への対応）**:
 
 `transport.rs::plan`のF2専用分岐を拡張し、以下の条件を満たす場合にのみ、
 `is_tsf_mode`/`f2_warmup_owned`の値に関わらず`Suppress`を返す。**KeyDown
-とKeyUpで条件が異なる**（r4で分離、後述）:
+とKeyUpで条件が異なる**（r4で分離、r5でKeyUpの条件をさらに訂正
+——architect役NB8・premortem役R4-B2指摘への対応。詳細は後述）:
 
 ```
 // KeyDown（新規押下時点でのみ判定、ADR-141の規律と同一）
 event.vk_code == VK_DBE_HIRAGANA
-  && !event.injected                  // 他プロセスrelayの0xF2を巻き込まない
-  && kana_role_active                 // かなスロットが関与する役割代入が
-                                       // 現在有効な場合のみ適用する
-  && event.scan_code != SCAN_KANA     // 役割代入由来であることの判定
-                                       // （決定1のscan不変性を再利用）
-  && ime_will_be_turned_on_elsewhere  // r4で追加、NB6/NM10対応（後述）
+  && !event.injected                    // 他プロセスrelayの0xF2を巻き込まない
+  && kana_role_active                   // かなスロットが関与する役割代入が
+                                         // 現在有効な場合のみ適用する
+  && event.scan_code != SCAN_KANA       // 役割代入由来であることの判定
+                                         // （決定1のscan不変性を再利用）
+  && ime_actuation_will_fire_before     // r4で追加・r5で改名、NB6/NM10対応（後述）
 
-// KeyUp（r4でkana_role_activeを除外、premortem役R3-M1対応）
+// KeyUp（r4でkana_role_activeを除外、r5でime_actuation_will_fire_beforeも除外
+// ——architect役NB8・premortem役R4-B2指摘への対応、後述）
 event.vk_code == VK_DBE_HIRAGANA
   && !event.injected
   && event.scan_code != SCAN_KANA
-  && ime_will_be_turned_on_elsewhere
 ```
+
+**r5でKeyUpの条件を訂正した理由（NB8/R4-B2）**: r4はKeyUpにも
+`ime_will_be_turned_on_elsewhere`（r5で`ime_actuation_will_fire_before`
+へ改名、後述）を含めていたが、これは**通常の成功パスで毎打鍵**
+Down/Up非対称を生む欠陥だった。`kp_stage_shadow_ime_toggle`は
+KeyUpに対して先頭で即returnする（`key_pipeline.rs:1009-1011`）ため、
+KeyUp時点ではtoggleもactuationも起きず、beliefはDownで書き込まれた
+値（IME ON側）のまま——つまりKeyUp側でこの値を再評価すると**常に偽**
+になり、Down（Suppress）とUp（Allowへフォールスルー）が常に非対称に
+なって、対応するDownを持たない0xF2のKeyUpが毎打鍵OSへ送出される。
+これは「1回の打鍵の最中に別要因でIME状態が変わる」という狭い条件では
+なく、この機能が正しく動作したときに必ず通る経路だった（r4の記述は
+この点で見積もりを誤っていた）。
+
+**決定**: KeyUpの判定からは`kana_role_active`と
+`ime_actuation_will_fire_before`の両方を外し、静的3条件（vk・
+非injected・scan）のみで判定する。この3つは1回の打鍵の中で変化しない
+値なので、Down/Upの判定は常に一致する。この設計は、KANJI系KeyUpを
+BUG-46対応で常にSuppressするようになった既存の規律
+（`transport.rs:118-125`、「`deferred_vks`の残留もinertと結論」）と
+同型であり、DBE/KANJI系キー種別ではDownとUpの配送を非対称に扱う前例が
+既にある。**Down側がAllowへフォールスルーした場合**（BUG-10救済で
+ネイティブ配送に委ねた場合）でも、Up側は上記3条件が真であれば
+Suppressされる——OSは物理Downを受け取るがUpを受け取らない非対称になる
+が、これも同じBUG-46前例が許容している配送パターンである。
 
 - **`!event.injected`が無いと**（r2の欠陥）: `transport.rs`の評価順序は
   InputRelay早期return（`:260`）→F2分岐（`:276`）→injected早期return
@@ -416,20 +473,19 @@ event.vk_code == VK_DBE_HIRAGANA
   同じSSOTを通じて`kana_role_active`に反映される——両者が異なる
   タイミングで更新される二重管理を作らない。
 - **KeyUpで`kana_role_active`を要求しない理由（r4追加、premortem役
-  R3-M1指摘への対応）**: `kana_role_active`はGUI「詳細設定」からの
-  reloadで変更されうる（`hook.rs:567`）。物理キーを押している最中に
-  reloadが走ると、Down時点では真だった`kana_role_active`がUp時点では
-  偽になりうる。この場合、Up側が偽でフォールスルーすると
-  `is_tsf_mode && f2_warmup_owned`次第で`Allow`となり、対応するDownを
-  持たない0xF2のKeyUpがOSへ送出される（決定4のInputRelayケースと同型の
-  問題が、フォーカス遷移なしで起こる）。この経路は、hook.rs側の代入
-  テーブル自体はADR-141の`confirmed_target`規律（Down時点の確定値を
-  KeyUpまで保持する）に従っているため、Up時点でも`event.vk_code ==
-  VK_DBE_HIRAGANA`かつ`event.scan_code != SCAN_KANA`は Down と一貫して
-  成立する——`kana_role_active`だけを再評価対象から外せば、この一貫性
-  だけでUpの判定が閉じる。
-- **`ime_will_be_turned_on_elsewhere`（r4で新設、NB6/NM10対応）**:
-  詳細は下記「BUG-10の補償論証」参照。
+  R3-M1指摘。r5でより根本的な理由〈NB8〉に置き換え）**: `kana_role_
+  active`はGUI「詳細設定」からのreloadで変更されうるため、押下中に
+  reloadが走るとDown/Upで値が食い違いうる、というのがr4時点の理由
+  だった。r5でKeyUpの条件を静的3条件のみへ簡素化した結果、
+  `kana_role_active`はそもそもUpの判定に現れなくなり、この経路自体が
+  発生しなくなった（hook.rs側の代入テーブルがADR-141の`confirmed_
+  target`規律〈Down時点の確定値をKeyUpまで保持する〉に従っている
+  ため、Up時点でも`event.vk_code == VK_DBE_HIRAGANA`かつ
+  `event.scan_code != SCAN_KANA`はDownと一貫して成立し、この一貫性
+  だけでUpの判定が閉じる）。
+- **`ime_actuation_will_fire_before`（r4で新設・r5で改名、NB6/NM10/NB7
+  対応）**: 詳細は下記「BUG-10の補償論証」参照。KeyDownでのみ参照し、
+  KeyUpでは参照しない（上記NB8参照）。
 - 上記条件が偽の場合は、既存の`is_tsf_mode && f2_warmup_owned`による
   判定へフォールスルーする（現行と完全に同一）。この機能を使わない
   ユーザーの`plan()`の挙動は、この変更前後でビット単位で同一になる。
@@ -524,37 +580,86 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
      処理してIME ONにするため素通しが正しい」という救済）が塞がれて
      いた。
 
-   **決定（r4）**: `plan()`の条件に`ime_will_be_turned_on_elsewhere`
-   （上記条件ブロック参照）を追加する。これは「かなスロットへの代入を
-   Suppressしても、既存の仕組みのどれかが実際にIMEをONにする」ことを
-   表す値で、以下のように定義する:
+   **決定（r4で新設、r5で名称・評価タイミング・NM11を訂正）**:
+   `plan()`のKeyDown側の条件（上記条件ブロック参照）に
+   `ime_actuation_will_fire_before`を追加する（**r5改名、architect役
+   Minor2指摘**: r4の`ime_will_be_turned_on_elsewhere`は「ONになる」
+   という結果状態を連想させ、ライブ値を読む実装を誘発しやすい名前
+   だった。「発火するか」＋「事前スナップショット」を名前に含める）。
+   これは「かなスロットへの代入をSuppressしても、既存の仕組みのどれかが
+   実際にIMEをONにする」ことを表す値で、以下のように定義する:
    ```
-   ime_will_be_turned_on_elsewhere =
+   ime_actuation_will_fire_before =
        if delegate_owned {
            hiragana_delegate_to_open_axis_armed  // NM10対応、後述
        } else {
-           !effective_open()  // ゲート(3)の条件そのもの
-                               // ＝beliefが「まだ閉じている」場合のみtrue
+           !ime_open_before  // ゲート(3)の条件そのもの
+                              // ＝toggle実行前のbeliefが「まだ閉じている」
+                              // 場合のみtrue
        }
    ```
-   `delegate_owned`・`effective_open()`はいずれも`kp_stage_shadow_ime_
-   toggle`と同じ呼び出し元（`key_pipeline.rs:270`付近、`plan()`より前）
-   で評価可能な値であり、`shadow_toggled`と同様に`plan()`への追加の
-   引数として（同一スレッド・同一イベント処理内で）渡せる——決定4の
+
+   **評価タイミングの訂正（r5、architect役NB7・premortem役R4-B1指摘へ
+   の対応）**: r4は「`kp_stage_shadow_ime_toggle`と同じ呼び出し元で
+   評価可能」とだけ書いており、これは`kp_stage_shadow_ime_toggle`
+   実行**後**のライブ値を読む実装を許してしまっていた。しかし同関数
+   は`effective_open()`が参照するbeliefを**同期的に書き込む**
+   （`key_pipeline.rs:1150-1153`の`write_physical_key`、直後`:1158`の
+   `effective_open() == new_val`比較で自身のno-op判定に使っている
+   ことからも、書き込みが即座に反映されることが分かる）。したがって
+   `plan()`（`:392`、toggle呼び出し`:270`より後）に到達した時点で
+   `effective_open()`を読むと、toggleが実際にIMEを開いた場合も
+   already-openでno-opだった場合も**常にtrueを指す**——`!ime_open_
+   before`は常にfalseとなり、決定2の機構全体が発火しなくなる
+   （r1〜r3で解消したはずの「役割代入由来の生の0xF2をOSへ送る」経路が
+   全面的に復活する）。
+
+   **決定**: `ime_open_before`は`kp_stage_shadow_ime_toggle`呼び出し
+   **直前**に取得したスナップショットでなければならない。これは
+   `DbeModeKeyContext::half_width_alnum_toggle_active`が同じ理由で
+   `_before`スナップショットとして設計されている前例（`transport.rs:
+   57-63`のdoc:「`kp_stage_shadow_ime_toggle`実行前のスナップショットを
+   渡すこと——ライブ値を渡すとこのガードが常にすり抜ける」）と全く
+   同型であり、同じ`_before`命名規約に揃える。
+
+   **戻り値の構造化（r5追加、architect役NM11指摘）**: `delegate_owned`
+   は`kp_stage_shadow_ime_toggle`内のローカル変数（`key_pipeline.rs:
+   1074-1075`）であり、同関数の戻り値は現在`bool`（`shadow_toggled`）
+   のみである。呼び出し元で`delegate_owned`・`ime_open_before`を
+   別途再計算すると、`suppress_reason`のdoc（`transport.rs:22-27`）や
+   `DbeModeKeyContext::is_configured_thumb_key`のdoc（`transport.rs:
+   65-69`、「同じ判定を同一イベントに対して2回計算しない」）が明示的に
+   禁じる二重管理になる。**決定**: `kp_stage_shadow_ime_toggle`の
+   戻り値を小構造体（例:`ShadowToggleOutcome { shadow_toggled: bool,
+   delegate_owned: bool, ime_open_before: bool }`）へ変更し、
+   `shadow_toggled`・`delegate_owned`・`ime_open_before`の3値を
+   同一呼び出しから一括で受け取る。3値とも`plan()`への追加引数として
+   同一スレッド・同一イベント処理内で渡せる——決定4の
    `KANA_DOWN_WAS_ALLOWED`がクロススレッドで破綻したのとは異なり、
    これは同一呼び出し内の値の受け渡しであり新たなスレッド安全性の
-   懸念を持ち込まない。この値が偽（＝どの既存機構もIMEをONにしない）
-   の場合、Suppressの4条件目を満たさずフォールスルーし、既存の
+   懸念を持ち込まない。
+
+   `ime_actuation_will_fire_before`が偽（＝どの既存機構もIMEをONに
+   しない）の場合、Suppressの条件を満たさずフォールスルーし、既存の
    `is_tsf_mode && f2_warmup_owned`判定（Allowを含みうる）に委ねる
    ——BUG-10が守っていた「食い逃げ」防止の救済経路をそのまま保持する。
+   KeyUpではこの値を参照しない（上記NB8参照）。
 
-   **narrow edge（既知の限定的な制限として受容）**: `ime_will_be_
-   turned_on_elsewhere`は物理キーのDown/Up双方で個別に（新鮮に）評価
-   されるため、この値が同一の物理キー押下の最中にbelief変化（他の
-   要因によるIME状態変化）で反転する可能性は理論上残る。この窓は
-   「1回の打鍵の最中に別要因でIME状態が変わる」という極めて狭い条件を
-   要するため、決定4のInputRelay既知の制限と同型に、解決を試みない
-   既知の限定的なリスクとして記録するに留める。
+   **近似であることの明記（r5追加、premortem役R4-M1指摘）**:
+   `ime_actuation_will_fire_before`は「beliefが変わる（`kp_stage_
+   shadow_ime_toggle`が`shadow_toggled`を返す）」ことの近似であり、
+   「実際にIMEがactuateされる」ことの保証ではない。beliefが変わった
+   後の実際のactuationは下流（`executor.rs::dispatch_ime_set_open`→
+   `ime_controller::apply`）で行われ、そこにはADR-119の
+   `AppImeProfile::InputRelay`ゲートをはじめ複数のpreconditionがある
+   （`.claude/rules/fix-requires-evidence.md`の「IME actuation合流点」
+   が列挙する経路群）。InputRelayについては`plan()`自身の早期return
+   （`transport.rs:260`）が先に`Allow`を返すため整合するが、それ以外の
+   下流ゲート（drift correction系等）でactuationが落ちる組み合わせが
+   無いかは未検証——belief遷移は起きたが実際には誰もIMEをONにしない
+   場合、NB6が防ごうとしたBUG-10の食い逃げがそのまま残る。この近似の
+   限界を既知の制限として記録し、下流ゲートの棚卸しはPhase A実装時の
+   確認項目とする（未解決の疑問6と統合）。
 3. **`kp_restore_hiragana_for_suppressed_mode_key`（BUG-116決定2、
    `key_pipeline.rs:81-201`）を役割代入由来のイベントから除外する**
    （**r3で方針転換、premortem役R2-B3指摘への対応**）: r2は「この関数が
@@ -644,7 +749,11 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
    小さなヘルパ関数（例:`fn is_kana_role_suppress(event, dbe) -> bool`）
    を新設し、`plan()`と`suppress_reason`の両方がこのヘルパを呼ぶ形に
    一本化する（`DbeModeKeyContext`を`suppress_reason`にも渡せるよう
-   シグネチャを拡張する）。
+   シグネチャを拡張する）。**r5追加（premortem役R4-m3指摘）**: KeyDown
+   とKeyUpで判定条件が異なる（KeyUpは静的3条件のみ）ため、ヘルパ自体も
+   `event.event_type`で分岐し、Down/Upそれぞれの条件を反映する。
+   「ラベル判定とSuppress判定が同一のヘルパを共有し、両者が乖離しない
+   こと」を要件とする。
 8. **判別子`event.scan_code != SCAN_KANA`の健全性の証明（r4追加、
    architect役Minor1指摘）**: 本決定は「`scan_code != SCAN_KANA`ならば
    役割代入由来である」ことを前提にしているが、この健全性を明示的に
@@ -833,6 +942,15 @@ OSのレイアウト変換層がこのKeyUpを`VK_DBE_ROMAN`/`NOROMAN`として�
    改善項目に格下げする（Phase A実装時の宿題として残すが、本決定の
    正しさはこれに依存しない）。
 
+   **なぜscanを見なくてよいか（r5追加、architect役Minor1指摘）**:
+   背景節が確定した「JIS配列でこれらのVKを生成しうる物理キーはscan
+   0x70の1個だけ」という事実により、非注入の0xF5/0xF6/`VK_KANA`は
+   物理かなキー由来しかありえない（他の物理キーがこれらのvkを生成する
+   経路が存在しない）。したがって`!is_injected`だけで「この swallow
+   対象イベントは物理かなキー由来である」ことが導ける——scan一致の
+   条件は元々冗長だった。BUG-08/61/62のガードに手を入れる箇所なので、
+   この根拠を明記しておく。
+
 このチェックはscan値（0x70）に紐づく既存の状態を参照するだけであり、
 swallowガード自体が既存で防いでいるOSへの生イベント配送（0xF5/0xF6の
 素通し・`VK_KANA`+Alt素通し）は一切変更しない——BUG-08/61/62対策
@@ -925,12 +1043,27 @@ r0はここで「かなスロットの役割代入と親指キー設定は同時
 ゲート（`key_pipeline.rs:1074-1075`、`:1121-1128`）が真になり、
 shadow-toggle actuationがスキップされる（親指キーとして扱われ、
 open軸はdelegateに委譲される設計のため）。この構成は決定2が新設した
-`ime_will_be_turned_on_elsewhere`が`delegate_owned`の場合の分岐
-（`hiragana_delegate_to_open_axis_armed`を見る）でカバーしており、
+`ime_actuation_will_fire_before`（r5改名）が`delegate_owned`の場合の
+分岐（`hiragana_delegate_to_open_axis_armed`を見る）でカバーしており、
 delegateがarmedでなければSuppressせずAllowへフォールスルーする。
 `hiragana_delegate_to_open_axis`がarmedでない場合に「誰も何もしない」
 状態（`key_pipeline.rs:1065-1072`がBUG-115の元症状として警告する状態）
 を再現しないための決定2側の対応は、この分岐によって既に閉じている。
+
+**r5追加（architect役Nit1指摘）**: `delegate_owned`の実体は
+`mode_key_delegate_owns_shadow_toggle(event.vk_code)`であり、原理的には
+親指キーが「カタカナ」(0xF1)の構成では`katakana_delegate_to_open_axis`
+が対象になりうる。しかし決定2が`to`側の合成vkを`VK_DBE_HIRAGANA`
+(0xF2)に一本化しているため、役割代入経由で`delegate_owned`が真になる
+のは`thumb_vk == 0xF2`の場合のみであり、カタカナ側は構造的に該当
+しない。
+
+**r5追加（premortem役R4-M2指摘）**: `hiragana_delegate_to_open_axis`は
+物理かなキーが親指キーである前提で設計・検証された機構である。本決定が
+許容する構成（代入により物理変換キーが親指キーとして扱われる）で、
+このdelegateが実際にopen軸をONにするかは未検証。決定6が「意図した
+挙動」とする構成そのものなので、Phase A実装の実機確認項目に追加する
+（未解決の疑問6と統合）。
 
 ### 決定7（r2でほぼ解消）: Shift併用時の懸念は決定2の再設計により大部分が消滅した
 
@@ -1024,7 +1157,12 @@ R2-m3指摘）**: `classify_key`は`vk == left_thumb/right_thumb`を最初に
 `kana_role_active=false`のケース（R2-B2の回帰防止、既存の
 `is_tsf_mode && f2_warmup_owned`判定にフォールスルーすることを確認）
 を名指しで要求する。`plan`はLinux実行可能な純粋関数なので、いずれも
-`cargo test -p awase-windows --lib`で自動テスト化できる。
+`cargo test -p awase-windows --lib`で自動テスト化できる。**r5追加
+（premortem役R4-m2指摘）**: KeyDownとKeyUpで判定条件が異なるため、
+`kana_role_active=false`の期待値もDown/Upで異なる（Downは既存判定へ
+フォールスルー、Upは静的3条件のみでSuppress）。回帰テストはDown用・
+Up用に分けて用意する。`ime_actuation_will_fire_before`（KeyDownのみ
+参照）の真偽2ケースもテストに含める。
 
 ### 決定9: 代入後vkを基準に評価される下流の合流点を棚卸しする
 
@@ -1238,3 +1376,24 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
   共有ヘルパ新設）・Minor4（InputRelay既知の制限にKeyUpがinertである
   保証が無い旨を追記）・Nit1（`DbeModeKeyContext`の2ガードが無意味化
   する旨を決定7に追記）も反映。
+- r5（2026-09-06）: Opus 2体の敵対的レビュー5ラウンド目で、r4で新設した
+  `ime_will_be_turned_on_elsewhere`自体に、両エージェントが独立に同一の
+  Blocker2件を発見した。(1) NB7/R4-B1——`effective_open()`をライブ値で
+  読むと、`kp_stage_shadow_ime_toggle`（belief更新はplan()より前に
+  同期的に実行される）の後では常にtrueを指すため、この機構が代入成功
+  の全ケースで発火しなくなっていた（`half_width_alnum_toggle_before`が
+  同じ理由で既に`_before`スナップショットとして存在する既知の罠と同型）。
+  (2) NB8/R4-B2——KeyUp側でこの値を再評価すると、`kp_stage_shadow_ime_
+  toggle`がKeyUpで即returnしbeliefがDownで書き込まれた値のまま残るため
+  常にfalseとなり、成功パスそのもので毎打鍵、対応するDownを持たない
+  0xF2のKeyUpがOSへ送出されていた。修正として、`ime_will_be_turned_on_
+  elsewhere`を`ime_actuation_will_fire_before`へ改名し、`kp_stage_
+  shadow_ime_toggle`呼び出し**直前**のスナップショットとして定義し
+  直し、KeyUpの判定から完全に除外（静的3条件のみに簡素化、BUG-46の
+  KANJI系KeyUp常時Suppress前例に揃える）。architect役NM11指摘により
+  `kp_stage_shadow_ime_toggle`の戻り値を`shadow_toggled`・
+  `delegate_owned`・`ime_open_before`を運ぶ構造体へ変更し、呼び出し元
+  での二重計算を排除。premortem役R4-M1（近似であることの明記）・
+  R4-M2（delegateの代入後構成での正しさ未検証）・architect役Minor1
+  （決定5のscan省略の根拠明記）・Minor2（フラグ改名）・Nit1（カタカナ
+  側delegateへの非該当明記）も反映。
