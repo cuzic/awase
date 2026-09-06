@@ -45,6 +45,69 @@ impl PhysicalKeyDisposition {
     }
 }
 
+/// `plan()` が `VK_DBE_*` KeyDown の Suppress 可否を決めるのに必要な、純粋関数
+/// からは見えない実行時状態（BUG-116 決定1、ADR-137）。
+///
+/// `DbeModeKeyPolicy` からの `From` を持つため、この文脈を必要としない既存の
+/// 呼び出し（回帰テスト含む）は従来どおり `DbeModeKeyPolicy` をそのまま渡せる
+/// （その場合2フラグは false ＝ BUG-52 修正時点と同じ挙動）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DbeModeKeyContext {
+    pub(crate) policy: DbeModeKeyPolicy,
+    /// 半角英数持続トグル区間か。**`kp_stage_shadow_ime_toggle` 実行前**の
+    /// スナップショットを渡すこと——同ステージが `kp_restore_kana_from_half_width`
+    /// へ委譲すると、このフラグのライブ値は同じイベント処理中に false へ落ちる
+    /// （`kp_restore_kana_from_half_width` が同期的に false をセットするため）。
+    /// ライブ値を渡すとこのガードが常にすり抜ける（Opus敵対的レビュー B-2 指摘）。
+    pub(crate) half_width_alnum_toggle_active: bool,
+    /// この VK が NICOLA 親指キーとして設定されているか（BUG-115）。
+    /// ユーザーが「ひらがな/カタカナ」キーを親指キー（同時打鍵用）として設定し、
+    /// `hiragana_delegate_to_open_axis`/`katakana_delegate_to_open_axis` が
+    /// armed の場合、この KeyDown は IME モードキーではなく NICOLA の同時打鍵
+    /// 入力である。ガードが無いと Shift（小指シフト面）併用の打鍵ごとに実 IME を
+    /// カタカナへ飛ばしてしまう（Opus敵対的レビュー B-1 指摘）。
+    pub(crate) is_configured_thumb_key: bool,
+}
+
+impl From<DbeModeKeyPolicy> for DbeModeKeyContext {
+    fn from(policy: DbeModeKeyPolicy) -> Self {
+        Self {
+            policy,
+            half_width_alnum_toggle_active: false,
+            is_configured_thumb_key: false,
+        }
+    }
+}
+
+/// BUG-116 決定1（ADR-137）: Windows 標準の「Shift+かな→カタカナ変換」を実 IME に
+/// 通すための、BUG-52 由来の無条件 Suppress に対する唯一の例外。
+///
+/// スコープを `VK_DBE_KATAKANA` (0xF1) の KeyDown 単体に絞る（ADR-137 M-1）:
+/// Windows 標準トリガーとしての根拠があるのは 0xF1 のみで、0xF0/0xF3/0xF4 に
+/// 同じ緩和を広げる理由が無い（0xF0 は物理 CapsLock 位置で、BUG-15 追補7 の
+/// CapsLock 汚染ハザードの当事者でもある）。
+///
+/// scan は付与しない。`RawKeyEventExt::reinject()` の `wScan: 0` のままで GJI が
+/// カタカナへ切り替わることを 2026-09-05 に実機確認済み（ADR-137）。したがって
+/// BUG-15 追補7 / BUG-61 の「scan 付き DBE キー注入による JIS かな固着」ハザード
+/// はこの決定では一切踏まない（対照的に ADR-137 決定2 のひらがな復元注入は
+/// scan 付き注入を使うため、このハザードを踏む——詳細は ADR-137 参照）。
+///
+/// 2つの否定ガード:
+/// - `half_width_alnum_toggle_active`: この区間では `kp_stage_shadow_ime_toggle`
+///   の no-op 分岐が `kp_restore_kana_from_half_width` へ委譲し、scan 付き
+///   `VK_DBE_HIRAGANA` を独自に注入する。素通しした物理 0xF1 と競合させない
+///   （ADR-137 M-3）。
+/// - `is_configured_thumb_key`: 上記 `DbeModeKeyContext` のドキュメント参照
+///   （ADR-137、BUG-115 delegate 機構との衝突対策）。
+fn shift_katakana_passthrough(event: &RawKeyEvent, dbe: DbeModeKeyContext) -> bool {
+    event.vk_code == crate::vk::VK_DBE_KATAKANA
+        && event.event_type == KeyEventType::KeyDown
+        && event.modifier_snapshot.shift
+        && !dbe.half_width_alnum_toggle_active
+        && !dbe.is_configured_thumb_key
+}
+
 /// passthrough キーの Down/Up 対称性と output guard defer を管理するキュー。
 ///
 /// `check_output_guard_defer` で defer した KeyDown の VK を `deferred_vks` に記録し、
@@ -58,6 +121,12 @@ impl PhysicalKeyDisposition {
 /// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert。
 /// 「leak しているように見える」からと TTL/クリア機構を追加する前に、まずこの残留が
 /// 実際に `check_keyup_symmetry` の誤発火につながる経路があるか確認すること。
+///
+/// **例外（BUG-116/ADR-137）**: `VK_DBE_KATAKANA` (0xF1) の KeyDown は Shift 併用時
+/// のみ Allow になりうる（`shift_katakana_passthrough`）ため、この KeyDown が defer
+/// されると `deferred_vks` に入る。ただし 0xF1 の KeyUp は引き続き常に Suppress の
+/// ままで `check_keyup_symmetry` に到達しないため、0xF3/0xF4 と同様に残留は inert
+/// （挙動には影響しない）。
 pub(crate) struct PassthroughQueue {
     deferred_vks: HashSet<VkCode>,
 }
@@ -151,6 +220,12 @@ impl PhysicalKeyDisposition {
     ///   （英数/カタカナ/半角/全角への切替）を能動的に実行してしまうため、toggle が
     ///   発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
     ///   `docs/known-bugs.md` BUG-52 参照）。
+    ///   **例外の例外（BUG-116/ADR-137、2026-09-06 実装）**: `VK_DBE_KATAKANA`
+    ///   単体に限り、`shift_katakana_passthrough` が true なら（Shift 併用、かつ
+    ///   hw トグル中でも設定済み親指キーでもない）上記の無条件 Suppress を
+    ///   解除する。Windows 標準の「Shift+かな→カタカナ」を実 IME に通すための
+    ///   唯一の抜け道。scan は付与しない（実機確認済み、`shift_katakana_passthrough`
+    ///   のdoc参照）。0xF0/0xF3/0xF4 は対象外のまま。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -166,8 +241,9 @@ impl PhysicalKeyDisposition {
         is_tsf_mode: bool,
         f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
-        dbe_mode_key_policy: DbeModeKeyPolicy,
+        dbe_mode_key: impl Into<DbeModeKeyContext>,
     ) -> Self {
+        let dbe = dbe_mode_key.into();
         // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
         // （issue #136 / BUG-90 決定4）。**F2分岐より先に判定する**
         // （/code-review指摘で発見・修正）: F2分岐のSuppressは「awase自身の
@@ -185,7 +261,18 @@ impl PhysicalKeyDisposition {
             return Self::Allow;
         }
 
-        // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress
+        // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress。
+        //
+        // **訂正（2026-09-06、BUG-116/ADR-137）**: このコメントは元々「awase 自身が
+        // warmup として物理 F2 の代わりに SendInput(F2) を再送する契約」を前提に
+        // 書かれていたが、ADR-100 決定2（2026-08-22）で eager warmup の送信キーは
+        // `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変更済み
+        // （`output/mod.rs::send_eager_tsf_warmup`）。つまり物理 F2 の代替として
+        // 実際に送られるのは open 軸のみで、charset 軸（カタカナ→ひらがな）を
+        // 戻す効果は無い。この「埋め合わせの片肺化」が、GJI 環境で物理かなキー
+        // 単独ではひらがなに戻せない副問題（ADR-137 M-6）の真因であり、
+        // `key_pipeline.rs::kp_restore_hiragana_for_suppressed_mode_key`
+        // （BUG-116 決定2）がこの埋め合わせを別経路で補っている。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
             return if is_tsf_mode && f2_warmup_owned {
                 Self::Suppress
@@ -245,7 +332,13 @@ impl PhysicalKeyDisposition {
             // 現状維持、ADR-091 §D3.6）ならこの追加 Suppress 条件自体を無効化する
             // ——上級者が BUG-52 のリスクを引き受けて素のパススルーを選んだ場合の
             // 抜け道。`shadow_toggled`/KeyUp 側の既存 Suppress 条件は変更しない。
-            let is_dbe_mode_key_down = matches!(dbe_mode_key_policy, DbeModeKeyPolicy::Suppress)
+            //
+            // BUG-116/ADR-137 決定1: `VK_DBE_KATAKANA` の KeyDown に限り、
+            // `shift_katakana_passthrough` が true なら（Shift 併用、かつ
+            // hw トグル中でも設定済み親指キーでもない）この無条件 Suppress を
+            // 解除する。詳細・安全上の注意は `shift_katakana_passthrough` の
+            // doc コメント参照。
+            let is_dbe_mode_key_down = matches!(dbe.policy, DbeModeKeyPolicy::Suppress)
                 && matches!(
                     event.vk_code,
                     crate::vk::VK_DBE_ALPHANUMERIC
@@ -253,7 +346,8 @@ impl PhysicalKeyDisposition {
                         | crate::vk::VK_DBE_SBCSCHAR
                         | crate::vk::VK_DBE_DBCSCHAR
                 )
-                && event.event_type == KeyEventType::KeyDown;
+                && event.event_type == KeyEventType::KeyDown
+                && !shift_katakana_passthrough(event, dbe);
             ime_actuation_owned
                 && (shadow_toggled
                     || is_dbe_mode_key_down
@@ -570,6 +664,12 @@ mod plan_tests {
     /// （英数/カタカナ/半角/全角への切替）を適用してしまうため、`VK_KANJI` 等と
     /// 異なり shadow_toggled=false でも Suppress する必要がある（0xF3/0xF4 は
     /// 実機での漏洩は未確認だが、同じコードパスを通るため同様に対象とする）。
+    ///
+    /// **BUG-52 回帰ガードのピン留め（BUG-116/ADR-137）**: `dbe_mode_event` は
+    /// `ModifierState::default()` 経由で `shift=false` の `RawKeyEvent` を作る
+    /// ため、このテストは「Shift なしでは `VK_DBE_KATAKANA` も含めて全て
+    /// Suppress」を固定している。BUG-116 決定1 の Allow はこのテストを書き換え
+    /// ずに追加されており、BUG-52 の非再発はこのテストがそのまま担保し続ける。
     #[test]
     fn dbe_mode_keydown_suppressed_even_when_not_shadow_toggled() {
         for (vk, action, vk_label) in dbe_mode_vks() {
@@ -975,6 +1075,231 @@ mod plan_tests {
         assert_eq!(
             disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
             Some("imm32-off")
+        );
+    }
+
+    // ── BUG-116/ADR-137 決定1: Shift+VK_DBE_KATAKANA の KeyDown を実 IME へ通す ──
+
+    fn with_shift(mut event: RawKeyEvent) -> RawKeyEvent {
+        event.modifier_snapshot.shift = true;
+        event
+    }
+
+    fn dbe_ctx(
+        half_width_alnum_toggle_active: bool,
+        is_configured_thumb_key: bool,
+    ) -> DbeModeKeyContext {
+        DbeModeKeyContext {
+            policy: DbeModeKeyPolicy::Suppress,
+            half_width_alnum_toggle_active,
+            is_configured_thumb_key,
+        }
+    }
+
+    /// BUG-116 の修正そのもの: Shift 併用の `VK_DBE_KATAKANA` KeyDown は、
+    /// hw トグル中でも親指キー設定でもなければ Allow される。scan は変更しない
+    /// （`reinject()` の `wScan: 0` のままで GJI がカタカナへ切り替わることを
+    /// 2026-09-05 に実機確認済み、ADR-137）。
+    #[test]
+    fn shift_katakana_keydown_is_allowed() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = with_shift(dbe_mode_event(
+                crate::vk::VK_DBE_KATAKANA,
+                ShadowImeAction::TurnOn,
+                KeyEventType::KeyDown,
+            ));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(
+                    &ev,
+                    profile,
+                    false,
+                    false,
+                    false,
+                    active_ime_kind,
+                    dbe_ctx(false, false),
+                ),
+                PhysicalKeyDisposition::Allow,
+                "{label}: Shift+VK_DBE_KATAKANA は Allow のはず（BUG-116）"
+            );
+        }
+    }
+
+    /// ADR-137 M-3: 半角英数持続トグル区間では、`kp_stage_shadow_ime_toggle` の
+    /// no-op 分岐が既に `kp_restore_kana_from_half_width` 経由で scan 付き
+    /// `VK_DBE_HIRAGANA` を注入している。素通しした物理 0xF1 と競合させない
+    /// ため、この区間では Shift 併用でも Suppress のままにする。
+    #[test]
+    fn shift_katakana_keydown_suppressed_while_half_width_toggle_active() {
+        let ev = with_shift(dbe_mode_event(
+            crate::vk::VK_DBE_KATAKANA,
+            ShadowImeAction::TurnOn,
+            KeyEventType::KeyDown,
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                dbe_ctx(true, false),
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    /// BUG-115 delegate 機構との衝突対策: 「ひらがな/カタカナ」キーを NICOLA
+    /// 親指キーとして設定している構成では、この KeyDown は IME モードキーでは
+    /// なく同時打鍵入力である。ガードが無いと Shift（小指シフト面）併用の
+    /// 打鍵ごとに実 IME をカタカナへ飛ばしてしまう（Opus 敵対的レビュー B-1）。
+    #[test]
+    fn shift_katakana_keydown_suppressed_when_configured_as_thumb_key() {
+        let ev = with_shift(dbe_mode_event(
+            crate::vk::VK_DBE_KATAKANA,
+            ShadowImeAction::TurnOn,
+            KeyEventType::KeyDown,
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                dbe_ctx(false, true),
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    /// M-2（ADR-137 スコープ外）: IME OFF からの Shift+かな、または belief 乖離時
+    /// （`shadow_toggled=true`）は本修正の対象外のまま Suppress される。
+    #[test]
+    fn shift_katakana_keydown_suppressed_when_shadow_toggled() {
+        let ev = with_shift(dbe_mode_event(
+            crate::vk::VK_DBE_KATAKANA,
+            ShadowImeAction::TurnOn,
+            KeyEventType::KeyDown,
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                true,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                dbe_ctx(false, false),
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    /// ADR-137 M-1: スコープは `VK_DBE_KATAKANA` 単体。Windows 標準トリガーの
+    /// 根拠が無い 0xF0/0xF3/0xF4 は Shift 併用でも緩めない（0xF0 は物理
+    /// CapsLock 位置で BUG-15 追補7 の CapsLock 汚染ハザードの当事者でもある）。
+    #[test]
+    fn shift_does_not_unsuppress_other_dbe_mode_keys() {
+        for (vk, action, vk_label) in dbe_mode_vks() {
+            if vk == crate::vk::VK_DBE_KATAKANA {
+                continue;
+            }
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                let ev = with_shift(dbe_mode_event(vk, action, KeyEventType::KeyDown));
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        profile,
+                        false,
+                        false,
+                        false,
+                        active_ime_kind,
+                        dbe_ctx(false, false),
+                    ),
+                    PhysicalKeyDisposition::Suppress,
+                    "{vk_label} / {label}: Shift 併用でも 0xF1 以外は Suppress のまま"
+                );
+            }
+        }
+    }
+
+    /// ADR-137 M-4: KeyDown だけ Allow・KeyUp は既存どおり Suppress のまま
+    /// （意図的な非対称、`PassthroughQueue` の doc コメント参照）。
+    #[test]
+    fn shift_katakana_keyup_stays_suppressed() {
+        for (profile, active_ime_kind, label) in owned_actuation_cases() {
+            let ev = with_shift(dbe_mode_event(
+                crate::vk::VK_DBE_KATAKANA,
+                ShadowImeAction::TurnOn,
+                KeyEventType::KeyUp,
+            ));
+            assert_eq!(
+                PhysicalKeyDisposition::plan(
+                    &ev,
+                    profile,
+                    false,
+                    false,
+                    false,
+                    active_ime_kind,
+                    dbe_ctx(false, false),
+                ),
+                PhysicalKeyDisposition::Suppress,
+                "{label}: Shift+VK_DBE_KATAKANA の KeyUp は引き続き Suppress"
+            );
+        }
+    }
+
+    /// `AppImeProfile::Standard`（ImmCross）は本 ADR のスコープ外のまま
+    /// （`feedback_immcross_owns_kanji` の設計原則、無条件 Suppress は不変）。
+    #[test]
+    fn shift_katakana_suppressed_in_immcross() {
+        let ev = with_shift(dbe_mode_event(
+            crate::vk::VK_DBE_KATAKANA,
+            ShadowImeAction::TurnOn,
+            KeyEventType::KeyDown,
+        ));
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::Standard,
+                false,
+                false,
+                false,
+                ActiveImeKind::MicrosoftIme,
+                dbe_ctx(false, false),
+            ),
+            PhysicalKeyDisposition::Suppress
+        );
+    }
+
+    /// `dbe_mode_key_policy=Passthrough`（ADR-091 §D3.6 の既存の抜け道）でも、
+    /// Shift 併用の 0xF1 は引き続き Allow される（Passthrough は「常に緩める」
+    /// 側であり、決定1 のガードと矛盾しない）。
+    #[test]
+    fn shift_katakana_allowed_only_under_suppress_policy() {
+        let ev = with_shift(dbe_mode_event(
+            crate::vk::VK_DBE_KATAKANA,
+            ShadowImeAction::TurnOn,
+            KeyEventType::KeyDown,
+        ));
+        let ctx = DbeModeKeyContext {
+            policy: DbeModeKeyPolicy::Passthrough,
+            half_width_alnum_toggle_active: false,
+            is_configured_thumb_key: false,
+        };
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::TsfNative,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput,
+                ctx,
+            ),
+            PhysicalKeyDisposition::Allow
         );
     }
 }

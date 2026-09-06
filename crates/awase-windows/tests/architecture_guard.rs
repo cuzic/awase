@@ -3662,7 +3662,6 @@ fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
          由来の判定変数を渡すべきです。"
     );
 }
-
 // ── `half_width_alnum` 機能カプセル化（旧 `GateStore` 4フィールド + 旧
 //    `Runtime::half_width_alnum_toggle_policy` の統合） ──────────────────
 
@@ -3844,4 +3843,44 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
          `self.platform_state.gate.half_width_alnum.set_policy(policy)` へ \
          デリゲートすること（実際の本体: {setter_body:?}）"
     );
+}
+
+/// BUG-116/ADR-137 決定1/2 の安全ガードが本番コードから消えていないことを
+/// 固定する。`transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
+/// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
+/// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
+#[test]
+fn bug116_shift_katakana_guards_are_present_in_production_code() {
+    let transport = read_crate_file("src/runtime/transport.rs");
+    let transport = strip_any_test_module(&transport);
+    for token in [
+        "fn shift_katakana_passthrough",
+        "half_width_alnum_toggle_active",
+        "is_configured_thumb_key",
+        "VK_DBE_KATAKANA",
+    ] {
+        assert!(
+            transport.contains(token),
+            "runtime/transport.rs の本番コードから `{token}` が消えています \
+             （BUG-116/ADR-137 決定1のガード）"
+        );
+    }
+
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = strip_any_test_module(&kp);
+    for token in [
+        "fn kp_restore_hiragana_for_suppressed_mode_key",
+        "is_configured_thumb_key",
+        "is_composition_warm",
+        "PhysicalKeyDisposition::Suppress",
+        "read_kana_lock",
+        "conv_mutation_allowed",
+        "kana_mode_restore_key_down",
+    ] {
+        assert!(
+            kp.contains(token),
+            "runtime/key_pipeline.rs の本番コードから `{token}` が消えています \
+             （BUG-116/ADR-137 決定2のガード）"
+        );
+    }
 }

@@ -1540,6 +1540,12 @@ pub(crate) struct GateStore {
     /// [`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`] を超えていれば in-flight とはみなさず
     /// 新規 spawn を許可する（完了取りこぼし時の自己回復）。
     pub idle_conv_check_in_flight_since_ms: Option<u64>,
+    /// BUG-116/ADR-137 決定2: 物理 `VK_DBE_HIRAGANA` KeyDown によるひらがな復元
+    /// 注入（`kp_restore_hiragana_for_suppressed_mode_key`）が、対応する KeyUp
+    /// 前の auto-repeat KeyDown で重複発火しないようにする latch。KeyDown で
+    /// 注入したら true にし、その VK の KeyUp で false に戻す
+    /// （`half_width_alnum_toggle_active` と同型のパターン）。
+    pub kana_mode_restore_key_down: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1564,6 +1570,7 @@ impl GateStore {
             sync_key_gate: SyncKeyGate::new(),
             half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
             idle_conv_check_in_flight_since_ms: None,
+            kana_mode_restore_key_down: false,
         }
     }
 }
