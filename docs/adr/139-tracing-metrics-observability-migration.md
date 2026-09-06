@@ -550,9 +550,16 @@ ETW はそれを見せてくれない。
 
 ## 未解決の疑問
 
-- Phase 1 の機械置換がバイナリサイズ・起動時間に与える影響は未計測。`tracing`
-  サブスクライバースタックは `log`/`env_logger` よりコンパイル時展開が大きいとされる。
-  実測してから Phase 1 完了を判断する。
+- ~~Phase 1 の機械置換がバイナリサイズ・起動時間に与える影響は未計測~~ →
+  **実測済み（2026-09-06）**。`cargo xwin build --target x86_64-pc-windows-msvc
+  --release -p awase-windows`（lld-link 使用）で `awase.exe` を移行前後で
+  ビルドし比較: 移行前（`log`/`env_logger`）4,881,920 バイト → 移行後
+  （`tracing`/`tracing-subscriber`）4,792,832 バイト（**-89,088 バイト、
+  -1.82%**）。懸念された「`tracing` サブスクライバースタックはコンパイル時
+  展開が大きい」という増加は観測されず、むしろわずかに縮小した
+  （`env_logger`/`log` の削除分が `tracing-subscriber` 等の追加分を上回った
+  とみられる）。起動時間は実機（Windows）でしか計測できないため未計測のまま
+  だが、バイナリサイズの観点では Phase 1 完了の判断を妨げる要因はない。
 - 決定2で保留にした非同期化（`non_blocking` writer）の採否・`lossy` 方針・ドロップ
   可視化の設計は未確定。必要になった時点で別途決定する。
 - `#[cfg(windows)]` 配下にある `#[cfg(test)]` ユニットテスト（`runtime/` 等）は
