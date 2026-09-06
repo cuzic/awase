@@ -15335,3 +15335,65 @@ BUG-115（`gji_charset_autodetect::is_configured_thumb_key`による衝突
 回避ガードを本修正の決定1/2両方に追加）、
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。
+
+## BUG-117: `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNative)の特定テキストボックスで Ctrl+無変換 による IME OFF が数秒後に勝手に ON へ戻る（**原因未確定、作業仮説のみ**）
+
+**症状（不具合報告 `01M1TQ2KVRW0SA73SBHWA7Y2NE`、2026-09-06、v1.18.0、GJI）:**
+msedge.exe（`Chrome_WidgetWin_1`、`app_kind=TsfNative`）で、Ctrl+無変換を
+押しても半角/全角キーを押しても IME OFF にならなかった。他のテキストボックス
+にフォーカスすると IME OFF になった。awase エンジンを無効化すると入力できた。
+報告者への追加ヒアリングで、**症状は特定のテキストボックスでのみ再現し、
+他のテキストボックスでは再現しない**ことを確認した。
+
+**journal解析で確認できた事実:**
+
+```
+17198208ms  HookImeModeDiagnostic vk=0xF4(DBCSCHAR) up / vk=0xF3(SBCSCHAR) down
+            → UserImeSetIntent{target:false, source:PhysicalImeKey}  （半角化、意図通り）
+   :        Ctrl+無変換を複数回押下 → ChordEnded{CtrlMuhenkanImeOff}
+            → ImeApplyRequested{target:false} → ImeOpenApplied{AlreadyMatched/Applied}
+            （awase視点では成功、GjiFsmTransition は OffCold のまま）
+17206039ms  （7.8秒後、対応する物理操作がjournal上に見当たらない）
+            HookImeModeDiagnostic vk=0xF3(SBCSCHAR) up / vk=0xF4(DBCSCHAR) down
+            → UserImeSetIntent{target:true, source:PhysicalImeKey}  （全角化、勝手に）
+            → 直後に awase 自身が IME ON を再適用し GjiFsmTransition が OnCold へ遷移
+```
+
+`state/ime_model.rs::reduce()` の `UserImeSetIntent` ハンドラは `source` を
+一切検証せず `self.desired_open = target` を無条件実行する。加えて
+`runtime/ime_refresh.rs::ir_decide_read_strategy` のコード内コメントに
+「Ctrl+無変換等の明示的IME操作後、実際にOS状態が変化したか即時検証する
+（`explicit_verify`）...TsfNative/Blacklist アプリは `skip_imm_query=true`
+で弾かれるため対象外」と明記されており、msedge.exe（TsfNative）ではこの
+検証自体が構造的に無効化されている。
+
+**作業仮説（未検証）:** Chromium（Blink）は `<input type="email"/"url"/
+"tel"/"number">` や `inputmode` 属性を持つフィールドにフォーカスすると、
+TSF の `ITfInputScope` 経由で IME 側に入力制限ヒントを渡す。GJI がこの
+ヒントを受けてユーザー操作なしに自動でモード切替（`VK_DBE_SBCSCHAR`/
+`DBCSCHAR` 相当の状態通知）を行うと、`injected=false` のため awase は
+これを本物の物理キー押下と区別できず、`UserImeSetIntent{PhysicalImeKey}`
+として `desired_open` を無条件に上書きしてしまう。他の（input-scope
+ヒントを持たない）フィールドでは GJI の自動切替が起きないため再現しない、
+という説明は「特定のテキストボックスのみ再現」という報告者確認と整合する。
+
+**未確定な点:**
+
+- `VK_DBE_SBCSCHAR(0xF3) up → VK_DBE_DBCSCHAR(0xF4) down` ペアの発生源
+  （GJI の input-scope 対応による自動切替か、ユーザー自身の物理操作か、
+  他の外部要因か）はコード読解・journal解析だけでは特定できない。
+  Windows 実機での TSF ログ（`ITfInputScope::GetInputScopes` 呼び出しの
+  有無）や、報告者への「どの種類の入力欄だったか」の追加ヒアリングが
+  必要。
+- 上記仮説が正しいとしても、`UserImeSetIntent{PhysicalImeKey}` が発生源を
+  検証しないという構造自体は本バグの有無に関わらず既存の設計であり、
+  修正すべきかどうか（対応: 直前の明示的ユーザー操作からごく短時間の
+  `PhysicalImeKey` 由来の反転を疑わしいとして抑制する等）は未検討。
+
+**関連ファイル:** `crates/awase-windows/src/state/ime_model.rs`
+（`ImeModel::reduce`、`UserImeSetIntent`）、`crates/awase-windows/src/runtime/
+ime_refresh.rs`（`ir_decide_read_strategy`、`explicit_verify`/`skip_imm_query`）。
+関連: BUG-43（TsfNative/Blacklist パスが observation store を更新できないという
+同系統の構造的限界）、BUG-45節に埋没した見出し欠落バグ（`transport.rs::
+PhysicalKeyDisposition::plan` の TsfNative 物理 KANJI 系キー二重 actuation、
+本バグとは別経路）。
