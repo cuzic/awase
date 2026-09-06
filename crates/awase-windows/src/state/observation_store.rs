@@ -447,6 +447,7 @@ impl ObservationStore {
         self.record_any(observed, at);
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(?observed))]
     fn record_any(&mut self, observed: AnyObservation, at: Instant) {
         let source = observed.source();
         // input_mode 専用の 2 ソースは open 観測プールに構造的に入らない。

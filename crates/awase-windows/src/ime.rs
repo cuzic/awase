@@ -33,6 +33,7 @@ use crate::win32::HwndExt as _;
 /// # Safety
 /// Calls Win32 APIs. Must be called from the main thread.
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all, fields(open))]
 pub unsafe fn set_ime_open_cross_process(open: bool) -> bool {
     let t0 = std::time::Instant::now();
     let gui_result =

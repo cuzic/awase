@@ -70,6 +70,7 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         key_sequence_policy::imm_cross_applicable(view.focus.profile)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // ROMAN ビットの事前補完（MS-IME + ImmCross でかなモードのまま IME ON すると
         // JIS かな入力になる問題への対処）は、ADR-089 §6 Phase C item 12 で
@@ -147,6 +148,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
         key_sequence_policy::gji_direct_applicable(view.observed.active_ime_kind)
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         if gji_direct_already_matches(view.control.shadow_on, open) {
             // shadow が desired 方向で「確認済み」（`Some(open)`）なら no-op と
@@ -216,6 +218,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
         )
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // ADR-117（issue #138 切り分け）: `composition_active`/`ime_show_seq`/
         // `ime_change_seq` の解釈上の注意は `TsfObservations::ime_composition_active`
@@ -298,6 +301,7 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
         true // 汎用フォールバック: IME 種別不明環境 + ImmCross 失敗時の代替
     }
 
+    #[tracing::instrument(level = "debug", skip_all, fields(open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
     fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
         // ADR-117（issue #138 切り分け）: Standard×MS-IME で ImmCross が Failed を
         // 返した場合に `runtime/open_chain.rs::fallback_write` が実際に到達させる

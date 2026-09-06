@@ -168,6 +168,7 @@ impl DecisionExecutor {
     /// （旧 Filter モードは 2026-07-06 撤去 — relay-defer/INPUT_DEFER 対称性/
     /// NonText パススルー等がすべて Relay 前提で設計・実機検証されており、
     /// Filter は長期間テストされていないレガシー経路だったため。）
+    #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) fn execute_from_hook(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -199,6 +200,7 @@ impl DecisionExecutor {
     /// （`Engine::prev_activation` は該当遷移を確定済みで、同じ SetOpen は自然には
     /// 再発行されないため。2026-07-08: GjiFsm が resync できず「このせっけい」の
     /// 文字欠落に至った実機ログから判明）。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) fn execute_from_loop(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -634,6 +636,7 @@ impl DecisionExecutor {
 
     // ── 共通 ──
 
+    #[tracing::instrument(level = "debug", skip_all, fields(?generation))]
     fn execute_one(
         &mut self,
         platform: &mut WindowsPlatform,
@@ -790,6 +793,7 @@ impl DecisionExecutor {
     /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
     /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
+    #[tracing::instrument(level = "debug", skip_all, fields(open, ?generation))]
     fn dispatch_ime_set_open(
         &mut self,
         platform: &WindowsPlatform,

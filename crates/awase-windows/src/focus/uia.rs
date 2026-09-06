@@ -170,6 +170,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 ///
 /// COM が初期化済みのスレッドから呼び出すこと
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが

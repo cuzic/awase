@@ -115,6 +115,7 @@ impl TsfWarmupCoordinator {
     }
 
     /// GjiFsm にイベントを送り、Response を返す。
+    #[tracing::instrument(level = "debug", skip_all, fields(?event))]
     pub(crate) fn gji_on_event(&self, event: GjiEvent) -> GjiResponse {
         self.tsf_warmup.borrow_mut().on_gji_event(event)
     }

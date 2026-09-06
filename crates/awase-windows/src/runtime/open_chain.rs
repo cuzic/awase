@@ -142,6 +142,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // （`spawn_local` のシングルスレッド実行が前提、HWND はスレッドアフィニティを
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
+#[tracing::instrument(level = "debug", skip_all, fields(open))]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
     // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
@@ -294,6 +295,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// ImmCross 試行にとっては「送信後」（tear-down 済みかもしれない）の値でもある**。
 /// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
+#[tracing::instrument(level = "debug", skip_all, fields(open, ?mechanism))]
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let mut view = app.shadow_ime_control_view();
@@ -358,6 +360,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
 // `Send` にならない。`win32_async::spawn_local`（シングルスレッド実行）経由で
 // のみ呼ばれるため実害はない（`ActuationTarget::verify_still_current` と同じ制約）。
 #[allow(clippy::future_not_send)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
     // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_

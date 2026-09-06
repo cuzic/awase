@@ -181,6 +181,7 @@ impl ForceOverrides {
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
     ///
     /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
+    #[tracing::instrument(level = "debug", skip_all, fields(process_id, class_name))]
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
         if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
             return InjectionHint::Default;

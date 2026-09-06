@@ -137,6 +137,7 @@ impl Output {
     /// 既存の分離を維持）。確定した mode 主張を伴う呼び出し元を移行する際は、
     /// 引数に `Option<(InputModeState, InputModeApplyStrategy)>` を追加し
     /// `Runtime::apply_input_mode_correction` を呼ぶこと。
+    #[tracing::instrument(level = "debug", skip_all, fields(?target, ?reason))]
     pub(crate) fn actuate_conv_mode(
         &self,
         target: ConvModeTarget,

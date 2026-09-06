@@ -539,6 +539,7 @@ impl ImeModel {
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
     #[expect(clippy::cognitive_complexity)]
+    #[tracing::instrument(level = "debug", skip_all, fields(event = ?envelope.event))]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {

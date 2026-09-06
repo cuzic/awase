@@ -159,6 +159,7 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 ///
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
+#[tracing::instrument(level = "debug")]
 pub fn flush_raw_tsf_literal_backspaces() {
     use crate::vk::{VK_BACK, VK_ESCAPE};
     use std::sync::atomic::Ordering::Relaxed;

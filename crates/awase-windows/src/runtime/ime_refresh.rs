@@ -565,6 +565,7 @@ impl Runtime {
             .check_drift_correction(now, explicit_intent)
     }
 
+    #[tracing::instrument(level = "debug", skip_all)]
     fn ir_apply_drift_correction(&mut self) {
         // BUG-20 で non-ImmCross（GJI/TsfNative/Blacklist）向けの再送分岐を追加した際、
         // この関数冒頭に残っていた `ir_resolve_skip_imm_query()`（=

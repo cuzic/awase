@@ -84,6 +84,7 @@ impl TsfReadinessProbe {
     ///
     /// `None` = まだ待機中、`Some(outcome)` = 送信可能。
     /// TIMER_TSF_PROBE ハンドラから 10ms ごとに呼ぶ。
+    #[tracing::instrument(level = "debug", skip_all, fields(total_max_ms))]
     pub fn check_outcome(&self, total_max_ms: u64) -> Option<GjiProbeOutcome> {
         if !self.check_now(total_max_ms) {
             return None;

@@ -73,6 +73,7 @@ impl Runtime {
     /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
     /// detect_and_update_focus の fetch 部分を除いた apply のみ。
     /// async drain 後に with_app 内で呼ぶ用途に使う。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn apply_focus_probe_result(
         &mut self,
         probe: Option<crate::focus::probe::FocusSnapshot>,

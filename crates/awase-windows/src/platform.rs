@@ -1522,6 +1522,7 @@ impl WindowsPlatform {
     /// `None`（未適用・`AppliedImeState::Unknown`）は `ControlLog.shadow_on`
     /// の `None`（未知）へそのまま伝播する——`Some(false)`（確認済み OFF）
     /// と潰して混同してはならない（BUG-113 Blocker、docs/known-bugs.md 参照）。
+    #[tracing::instrument(level = "debug", skip_all, fields(?applied))]
     pub(crate) fn build_ime_control_view(
         &self,
         applied: Option<(bool, u64)>,

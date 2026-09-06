@@ -15,6 +15,7 @@ use crate::state::{ConvActuationOutcome, ConvModeTarget, ConvMutationReason, Tic
 
 impl Runtime {
     /// conv-mode を変更する唯一の窓口。詳細は [`crate::output::conv_actuation`] を参照。
+    #[tracing::instrument(level = "debug", skip_all, fields(?target, ?reason))]
     pub(crate) fn actuate_conv_mode(
         &self,
         target: ConvModeTarget,

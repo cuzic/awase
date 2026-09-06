@@ -64,6 +64,7 @@ impl std::fmt::Display for ClassifyReason {
 /// deny-first（バイパスを優先）、allow は確信がある場合のみ。
 /// 判定不能なら `Undetermined` を返す。
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn classify_focus(hwnd: HWND) -> ClassifyResult {
     if hwnd.non_null().is_none() {
         return ClassifyResult {

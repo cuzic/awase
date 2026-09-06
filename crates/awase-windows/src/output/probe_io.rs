@@ -525,6 +525,7 @@ impl DispatchResult {
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::cognitive_complexity)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,
     initial_actions: Vec<crate::tsf::warmup::probe_fsm::ProbeAction>,

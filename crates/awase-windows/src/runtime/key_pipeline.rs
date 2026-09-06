@@ -542,6 +542,11 @@ impl Runtime {
     /// 戻り値: 非同期 conv 読み取りを spawn した（＝resync の場合、gate がまだ
     /// active で呼び出し元がハード期限タイマーを武装すべき）なら `true`。
     /// いずれかのガードで同期的に return した場合は `false`。
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(is_first_key_after_focus, resync_generation)
+    )]
     fn kp_stage_idle_conv_check_inner(
         &mut self,
         event: &RawKeyEvent,
