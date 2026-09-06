@@ -731,6 +731,18 @@ mode_raw_timeout_async`呼び出し4箇所（診断ログ専用、意図的に�
 の確認、型不整合・デッドロック・パニック経路の不在を検証し、収束と判定
 した（Blocker 0件）。
 
+### Step1b マージ前`/code-review max`再確認（3箇所目のcheckpoint3欠落を検出・修正）
+
+上記S2は`start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll`の2箇所
+だけにcheckpoint3を追加したが、Step1bで新たにフェンスした3箇所目
+`platform.rs`のFocusChange直後IMCヒントprobe（`gji_on_focus_change`内）には
+checkpoint3が入っていなかった——同じ`get_ime_conversion_mode_fenced_async`
+（checkpoint1/2のみ）を使う構造は同型なのに、read完了直後のフェンス再比較
+だけこの1箇所に欠けていた。severityは変わらず低い（`update_ime_mode_hint_
+from_imc`はconfirmedを立てないhint専用のため、汚染された値が適用されても
+BUG-13のconfirm-then-transmitゲートを誤って開けることはない）が、S2と
+同じ交錯防止を3箇所全てで一貫させるため、同型のcheckpoint3チェックを追加した。
+
 ## 関連
 
 [docs/known-bugs.md](../known-bugs.md) BUG-113、

@@ -14557,6 +14557,14 @@ FencedProbeOutcome`を返す）経由に配線した。abandon時の扱いはSte
 （詳細は[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)の
 「Step1b 実装レビュー」節参照）。
 
+**追記（2026-09-06 続き・マージ前`/code-review max`再確認）:** 上記S2の
+checkpoint3追加が`start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll`
+の2箇所のみで、Step1bで新たにフェンスした3箇所目`platform.rs`のFocusChange
+直後IMCヒントprobe（`gji_on_focus_change`）に同型のcheckpoint3が欠けていた
+ことを検出、追加した（hint専用でconfirmedを立てないためseverityは元々低いが、
+3箇所の交錯防止を一貫させた。詳細はADR-140「Step1b マージ前`/code-review max`
+再確認」節参照）。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_

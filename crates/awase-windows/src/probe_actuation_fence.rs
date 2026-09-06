@@ -93,8 +93,10 @@
 //! ソークで確認する（Step1 の完了条件）用に、不具合報告（`bug_report.rs`）へ
 //! 両方とも累積値のまま渡す。
 //!
-//! **[`record_abandoned`] を呼ぶのは checkpoint1/2（issue 前、`idle_conv_check_probe`
-//! 内）で検知した abandon のみ**（実装レビュー指摘M3）。checkpoint3（apply 時点、
+//! **[`record_abandoned`] を呼ぶのは checkpoint1/2（issue 前、
+//! `crate::ime::get_ime_conversion_mode_fenced_async` 内、Step1bで
+//! `idle_conv_check_probe` から汎用化・改名）で検知した abandon のみ**
+//! （実装レビュー指摘M3）。checkpoint3（apply 時点、
 //! `key_pipeline.rs::apply_idle_conv_check` の `conv_mutation_seq` と同型の比較）は
 //! 到達時点で resync gate が既にクローズ済み＝体感遅延ゼロであり、既存の
 //! (a)(b)(c) discard（shift ガード/explicit action/conv_mutation_seq 不一致）と
