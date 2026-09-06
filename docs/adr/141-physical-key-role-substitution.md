@@ -1,4 +1,4 @@
-# ADR-140: 物理キー役割代入（Physical Key Role Substitution）基盤
+# ADR-141: 物理キー役割代入（Physical Key Role Substitution）基盤
 
 ## ステータス
 
@@ -229,20 +229,20 @@ Phase Aでは発生しなくなる（安全な3キーはいずれもBUG-08/61/62
    auto-repeat扱いになり代入がスキップされる——決定2がBUG-100対策として
    構造的に防いだはずの状態が、`is_injected`を見落とすと別経路から再現する。
 
-   **【Phase Bからの申し送り、ADR-141決定B7参照】** 上記の「Alt適用前後の
+   **【Phase Bからの申し送り、ADR-142決定B7参照】** 上記の「Alt適用前後の
    比較」「`!is_injected`ガード」は、実装時には本項・決定2のシグネチャに
    直接書くのではなく、`event_eligible: bool`
    （`!alt_impersonated && !is_injected`）という単一パラメータへ吸収し、
    `decide_role_substitution`（決定2）に渡す設計に変更すること
-   （ADR-141のPhase Bテスト計画レビューで判明、Linux側のテスト網羅性を
+   （ADR-142のPhase Bテスト計画レビューで判明、Linux側のテスト網羅性を
    大きく広げられるため）。この場合、hook.rs側は`!is_injected`の早期
    returnゲートを持たず、安全な3キーのイベントを**無条件に**
    `decide_role_substitution`へ渡し、`event_eligible`の計算だけを担う
    （ガードを呼び出し側の分岐からパラメータの計算へ移す）。
    `event_eligible`は`decide_alt_impersonation`の`engine_enabled`と
    同じく**新規押下時点でのみ**参照すること（無条件の早期returnは
-   BUG-41と同型のstuck keyを再導入する、ADR-141決定B7参照）。詳細な
-   シグネチャ・網羅テーブルの拡張（16→32通り）はADR-141決定B7を参照。
+   BUG-41と同型のstuck keyを再導入する、ADR-142決定B7参照）。詳細な
+   シグネチャ・網羅テーブルの拡張（16→32通り）はADR-142決定B7を参照。
 2. **役割代入ルールの集合は、対象3キー上の全単射（置換）でなければ
    ならない**: 明示的にルールが無いキーは恒等（自分自身へ写る）として
    補完し、補完後の写像が「異なる2つの入力が同じ出力を持つ」ことが無い
@@ -426,7 +426,7 @@ Altセンチネル設定の両方を名指ししたエラーを出す）。こ�
    いずれにも`None`を返す）ため、決定0のスコープ縮小によりこの経路の
    実害はPhase Aでは発生しない。
 
-   **【訂正、ADR-141 r1レビューで判明】** 本項が続けて指摘していた
+   **【訂正、ADR-142 r1レビューで判明】** 本項が続けて指摘していた
    「`vk_may_mutate_conv`の非対称性が`transport.rs::plan`の判定を変える」
    という記述は**誤帰属だった**。`vk_may_mutate_conv`の全呼び出し箇所を
    確認したところ`transport.rs`は一度も呼んでおらず、実際の呼び出し元は
@@ -438,7 +438,7 @@ Altセンチネル設定の両方を名指ししたエラーを出す）。こ�
    本項が示した非対称性の実害は`transport.rs::plan`ではなく
    `win32.rs:169`の`conv_mutation`ゲートに現れる（ADR-084/086のconv
    actuation系、`fix-requires-evidence.md`の「conv mode」再発ファミリー
-   に該当）。詳細と検証方針はADR-141決定B7を参照。
+   に該当）。詳細と検証方針はADR-142決定B7を参照。
 4. **`vk::is_composition_confirm_key`（`vk.rs:319`、`0x20`/`0x0D`/`0x1B`
    のみ）**: `VK_SPACE`を含むため、スペースを絡めた役割代入
    （変換↔スペース、無変換↔スペース）はcomposition確定処理
