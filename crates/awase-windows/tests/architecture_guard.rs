@@ -4050,8 +4050,13 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
             continue;
         }
         let content = read_crate_file(&format!("src/{file}"));
+        // コメント中の説明的な言及（例: 本テスト自身の存在を解説する
+        // `runtime/ime_refresh.rs` のコメントが偶然 `#[tracing::instrument]`
+        // という文字列を含む）に誤って一致しないよう、コメント行を除去してから
+        // 実際の属性出現を数える（PRコードレビュー指摘）。
+        let production = non_comment_lines(production_code_only(&content));
         assert!(
-            content.contains("#[tracing::instrument"),
+            production.contains("#[tracing::instrument"),
             "ADR-139決定3の対象 `{file}` に #[tracing::instrument] が1つもありません。\
              リストに載せたなら実際に計装すること。計装すべき関数が無いファイルなら \
              NO_INSTRUMENT_EXCEPTIONS に理由付きで追加すること。"
