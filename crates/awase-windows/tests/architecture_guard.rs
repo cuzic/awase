@@ -3002,6 +3002,11 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                 ("state/ime_model.rs", 1),
                 // variant 定義そのもの。
                 ("state/ime_event.rs", 1),
+                // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
+                // 判別子文字列としてvariant名を返すだけの非機能的な参照
+                // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
+                // リテラルの両方でvariant名が現れるため2としてカウントされる。
+                ("journal.rs", 2),
             ],
         ),
         (
@@ -3061,6 +3066,11 @@ fn initial_app_policy_event_only_touches_app_policy() {
             ("runtime/focus_tracking.rs", 1),
             ("state/ime_model.rs", 1),
             ("state/ime_event.rs", 1),
+            // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
+            // 判別子文字列としてvariant名を返すだけの非機能的な参照
+            // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
+            // リテラルの両方でvariant名が現れるため2としてカウントされる。
+            ("journal.rs", 2),
         ],
     )];
     for path in &files {
@@ -4013,4 +4023,49 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
              コメントに除外理由を明記すること。"
         );
     }
+}
+
+/// ADR-139 決定4 必須条件2・3: `journal.rs` の `emit_tracing` 実装
+/// （`JournalEntry::emit_tracing`／判別子文字列ヘルパー群／
+/// `JournalEnvelope::emit_tracing`）に `?`/`%` シギル（Debug/Display
+/// フォーマット）と `_ =>`/`.. =>` ワイルドカードアームが出現しないことを保証する。
+///
+/// `?`/`%` はDebug文字列化であり、ADR-082決定1（`ImeEvent`等の型を保った
+/// journal記録）を実質的に巻き戻す。ワイルドカードは`match`の網羅性検査
+/// （将来variantが増えたときにコンパイルエラーで検知する、この機構の唯一の
+/// 安全装置）を破壊する。コメント中の `` `?`/`%` `` `` `_ =>` `` という説明的な
+/// 言及は対象外にするため、コメント行を除去してから走査する。
+#[test]
+fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
+    const START_MARKER: &str = "fn decision_kind_str(";
+    const END_MARKER: &str = "/// 統合イベントジャーナル。";
+
+    let content = read_crate_file("src/journal.rs");
+    let start = content
+        .find(START_MARKER)
+        .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in journal.rs"));
+    let end = content[start..]
+        .find(END_MARKER)
+        .map(|i| start + i)
+        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after {START_MARKER:?}"));
+    let block = non_comment_lines(&content[start..end]);
+
+    assert!(
+        !block.contains('?'),
+        "journal.rs の emit_tracing 実装に `?`（Debug フォーマット）が含まれています。\
+         ADR-139決定4はDebug文字列化を禁止しています（ADR-082決定1の巻き戻し防止）。\
+         判別子文字列は型に手を入れず journal.rs 内の private fn でマッピングすること。"
+    );
+    assert!(
+        !block.contains('%'),
+        "journal.rs の emit_tracing 実装に `%`（Display フォーマット）が含まれています。\
+         ADR-139決定4はDisplayフォーマットも禁止しています（理由は `?` と同じ）。"
+    );
+    assert!(
+        !block.contains("_ =>") && !block.contains(".. =>"),
+        "journal.rs の emit_tracing 実装（またはその判別子文字列ヘルパー）に \
+         ワイルドカードアームが含まれています。将来 variant が増えたときの \
+         コンパイルエラー検知（この機構の唯一の安全装置）が失われるため、\
+         全 variant を明示的に列挙すること。"
+    );
 }
