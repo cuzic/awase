@@ -5,7 +5,6 @@
 use awase::engine::{Decision, Effect, InputEffect, TimerEffect};
 use awase::types::{KeyAction, KeyEventType, SpecialKey, VkCode};
 use evdev::{uinput::VirtualDeviceBuilder, AttributeSet, EventType, InputEvent, Key};
-use log::warn;
 
 /// KEY_LEFTSHIFT の evdev キーコード
 const KEY_LEFTSHIFT: u16 = 42;
@@ -128,7 +127,7 @@ impl UinputOutput {
                     self.emit_key(vk.0, 0);
                 }
                 KeyAction::Char(ch) => {
-                    warn!(
+                    tracing::warn!(
                         "Char('{}') output is not yet supported on Linux (Unicode direct input requires xdotool or IM protocol)",
                         ch
                     );
@@ -147,7 +146,7 @@ impl UinputOutput {
                                 self.emit_key(KEY_LEFTSHIFT, 0);
                             }
                         } else {
-                            warn!("KeySequence char '{ch}' has no evdev keycode mapping, skipping");
+                            tracing::warn!("KeySequence char '{ch}' has no evdev keycode mapping, skipping");
                         }
                     }
                 }
@@ -156,13 +155,13 @@ impl UinputOutput {
                 // 実送信の実装は本ADRのスコープ外（決定10、コンパイル通過
                 // が目的）。
                 KeyAction::CtrlChord(vk) => {
-                    warn!(
+                    tracing::warn!(
                         "CtrlChord(Ctrl+0x{:02X}) output is not yet supported on Linux",
                         vk.0
                     );
                 }
                 KeyAction::Sequence(items) => {
-                    warn!(
+                    tracing::warn!(
                         "Sequence({} items) output is not yet supported on Linux",
                         items.len()
                     );
@@ -181,7 +180,7 @@ impl UinputOutput {
     fn emit_key(&mut self, code: u16, value: i32) {
         let ev = InputEvent::new(EventType::KEY, code, value);
         if let Err(e) = self.device.emit(&[ev]) {
-            warn!("uinput emit failed (code={code}, value={value}): {e}");
+            tracing::warn!("uinput emit failed (code={code}, value={value}): {e}");
         }
     }
 
@@ -197,7 +196,7 @@ impl UinputOutput {
                     self.emit_key(KEY_LEFTSHIFT, 0);
                 }
             } else {
-                warn!("Romaji char '{ch}' has no evdev keycode mapping, skipping");
+                tracing::warn!("Romaji char '{ch}' has no evdev keycode mapping, skipping");
             }
         }
     }
@@ -242,18 +241,18 @@ impl UinputOutput {
                     self.reinject(raw_event.vk_code, raw_event.event_type);
                 }
                 Effect::Timer(TimerEffect::Set { id, duration }) => {
-                    log::debug!(
+                    tracing::debug!(
                         "Timer set request: id={id}, duration={duration:?} (not yet implemented)"
                     );
                 }
                 Effect::Timer(TimerEffect::Kill(id)) => {
-                    log::debug!("Timer kill request: id={id} (not yet implemented)");
+                    tracing::debug!("Timer kill request: id={id} (not yet implemented)");
                 }
                 Effect::Ime(ime_effect) => {
-                    log::debug!("IME effect: {ime_effect:?} (not yet implemented)");
+                    tracing::debug!("IME effect: {ime_effect:?} (not yet implemented)");
                 }
                 Effect::Ui(ui_effect) => {
-                    log::debug!("UI effect: {ui_effect:?}");
+                    tracing::debug!("UI effect: {ui_effect:?}");
                 }
             }
         }

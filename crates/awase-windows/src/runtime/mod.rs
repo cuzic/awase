@@ -1298,7 +1298,7 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Warn);
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", crate::keymap::KeymapConflictLevel::Warn);
         }
     }
 
@@ -1709,7 +1709,7 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Debug);
+                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", crate::keymap::KeymapConflictLevel::Debug);
         }
     }
 

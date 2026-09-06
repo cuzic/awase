@@ -147,9 +147,18 @@ enum CaptureTarget {
 ///
 /// これが無いと GUI サブシステムでは panic してもコンソールに何も残らず
 /// 「無言のまま強制終了」になる（2026-07-11 プレビュータブ egui::Grid panic の
-/// 調査で発覚。当時 env_logger 自体が初期化されておらず log::warn! も no-op
+/// 調査で発覚。当時 env_logger 自体が初期化されておらず tracing::warn! も no-op
 /// だった）。
+///
+/// ADR-139 決定2（BufWriter・ローテーション・flush方針）は awase.exe の
+/// `awase.log` のみを対象としており、`awase-settings.log` はスコープ外
+/// （747MB 肥大化の実測は awase.exe 側のものであり、設定画面はログ量が
+/// 桁違いに少ない）。ここでは `log`→`tracing` の移行（決定1）のみ行い、
+/// ファイルへは `BufWriter` を挟まず直接書き込む（＝1行ごとに実質 flush 済み）。
 fn init_logging(debug_console: bool) {
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::EnvFilter;
+
     let log_path = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awase-settings.log")))
@@ -157,12 +166,14 @@ fn init_logging(debug_console: bool) {
 
     if debug_console {
         attach_parent_console();
-        let mut builder =
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
-        builder.format_timestamp_millis();
-        builder.target(env_logger::Target::Stderr);
-        builder.init();
-        log::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .finish()
+            .init();
+        tracing::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
         return;
     }
 
@@ -171,25 +182,61 @@ fn init_logging(debug_console: bool) {
         .append(true)
         .open(&log_path);
 
-    let mut builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    builder.format_timestamp_millis();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     if let Ok(file) = log_file {
-        builder.target(env_logger::Target::Pipe(Box::new(file)));
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(file));
+        let _ = SETTINGS_LOG_FILE.set(std::sync::Arc::clone(&handle));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(move || SettingsLogWriter(std::sync::Arc::clone(&handle)))
+            .finish()
+            .init();
+    } else {
+        // ファイルが開けない場合は stderr フォールバック
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .finish()
+            .init();
     }
-    // ファイルが開けない場合は stderr フォールバック
-    builder.init();
-    log::info!("awase-settings starting... (log → {})", log_path.display());
+    tracing::info!("awase-settings starting... (log → {})", log_path.display());
+}
+
+/// `init_logging` がファイルを開けた場合にのみ設置される書き込みハンドル。
+/// `log_checkpoint` からの明示 flush（後述）専用。
+static SETTINGS_LOG_FILE: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<std::fs::File>>> =
+    std::sync::OnceLock::new();
+
+struct SettingsLogWriter(std::sync::Arc<std::sync::Mutex<std::fs::File>>);
+
+impl std::io::Write for SettingsLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_or(Ok(buf.len()), |mut f| std::io::Write::write(&mut *f, buf))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .map_or(Ok(()), |mut f| std::io::Write::flush(&mut *f))
+    }
 }
 
 /// ログを記録した直後に即 `flush` するチェックポイント。
 ///
-/// 通常の `log::info!` はバッファされる場合があり、直後にハング/クラッシュ
-/// すると出力が失われることがある（実機で「配列編集タブ関連のログが一切
-/// 出ない」と報告された際、原因切り分けのために導入）。
+/// `std::fs::File` への書き込みは（`BufWriter` を挟んでいないため）実質的に
+/// 毎行 syscall されているが、明示 flush の意図（実機で「配列編集タブ関連の
+/// ログが一切出ない」と報告された際の切り分け用）を保つためそのまま残す。
+/// 呼び出し内では他の `tracing::*!` マクロを呼ばない（`SETTINGS_LOG_FILE` の
+/// `Mutex` 再入を避けるため、ADR-139 決定2 の flush 実装規約に合わせる）。
 fn log_checkpoint(msg: &str) {
-    log::info!("[layout-tab] checkpoint: {msg}");
-    log::logger().flush();
+    tracing::info!("[layout-tab] checkpoint: {msg}");
+    if let Some(handle) = SETTINGS_LOG_FILE.get()
+        && let Ok(mut f) = handle.lock()
+    {
+        let _ = std::io::Write::flush(&mut *f);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -222,7 +269,7 @@ fn install_panic_logging_hook() {
             .copied()
             .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("(non-string payload)");
-        log::error!("[PANIC] {msg} @ {location}");
+        tracing::error!("[PANIC] {msg} @ {location}");
         prev_hook(info);
     }));
 }
@@ -247,11 +294,11 @@ fn main() -> eframe::Result<()> {
     // 同型のヘッドレス分岐パターン）。
     if args.iter().any(|a| a == "--scancode-map") {
         let Some(mode) = arg_value(&args, "--scancode-map") else {
-            log::error!("[scancode-map] --scancode-map に値がありません");
+            tracing::error!("[scancode-map] --scancode-map に値がありません");
             std::process::exit(1);
         };
         let Some(selection) = ScancodeMapSelection::from_cli_arg(mode) else {
-            log::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
+            tracing::error!("[scancode-map] 不正な --scancode-map 値: {mode}");
             std::process::exit(1);
         };
         std::process::exit(scancode_map_admin::run_elevated_worker(selection));
@@ -420,7 +467,7 @@ impl SettingsApp {
             Ok(cfg) => (cfg, awase::config::ConfigLoadState::Loaded),
             Err(e) => {
                 let state = awase::config::classify_load_error(&e);
-                log::warn!("Config load failed: {e} (classified as {state:?}), using defaults");
+                tracing::warn!("Config load failed: {e} (classified as {state:?}), using defaults");
                 (default_config(), state)
             }
         };
@@ -668,7 +715,7 @@ impl SettingsApp {
             // 上書きしてしまう）。
             //
             // コードレビュー指摘 C2: バックアップに失敗しても以前は
-            // `log::warn!` するだけで保存を続行しており、Dangerous を招いた
+            // `tracing::warn!` するだけで保存を続行しており、Dangerous を招いた
             // 原因（PermissionDenied・共有違反など）はバックアップの
             // 読み取り＝コピーも失敗させやすいため、最もバックアップが必要な
             // 場面でこそ原本が無防備に上書きされ得た。バックアップ対象の
@@ -685,7 +732,7 @@ impl SettingsApp {
                         )));
                         return;
                     }
-                    log::info!("Backed up unreadable config to {}", bak_path.display());
+                    tracing::info!("Backed up unreadable config to {}", bak_path.display());
                 }
             }
 
@@ -5224,7 +5271,7 @@ fn send_reload_config_message() {
                 let lparam = windows::Win32::Foundation::LPARAM(0);
                 let _ = PostMessageW(hwnd, WM_RELOAD_CONFIG, msg, lparam);
             } else {
-                log::warn!(
+                tracing::warn!(
                     "設定リロード通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
                      awase.exe が起動していないか、権限レベルが異なる可能性があります。"
                 );

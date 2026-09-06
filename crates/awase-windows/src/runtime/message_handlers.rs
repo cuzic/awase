@@ -1141,6 +1141,13 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     None
                 }
             };
+            // ADR-139 決定2: awase.log は BufWriter でラップされており、末尾の
+            // 未flush分（クラッシュ直前の最も価値の高い行を含みうる）が
+            // 不具合報告に読み込まれる前に確実にディスクへ出るよう、ここで
+            // 明示的に flush する。awase.log を実際に読むのは
+            // `--applog` 引数で起動される別プロセス（awase-settings.exe）であり、
+            // awase.exe 側のこの flush を経ないと反映されない。
+            crate::app::flush_log_writer();
             let app_log_path = crate::app::bug_report_log_path();
             let app_log_path = app_log_path.exists().then_some(app_log_path.as_path());
             match dump_result {

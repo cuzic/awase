@@ -10,22 +10,28 @@ use awase_macos::vk::key_name_to_keycode;
 
 fn main() -> Result<()> {
     // 1. Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
+            |_| tracing_subscriber::EnvFilter::new("info"),
+        ))
+        .finish()
+        .init();
 
-    log::info!("awase-macos starting");
+    tracing::info!("awase-macos starting");
 
     // 2. Load config
     let config_path = Path::new("config.toml");
     let config = if config_path.exists() {
         AppConfig::load(config_path)?
     } else {
-        log::warn!("config.toml not found, using defaults");
+        tracing::warn!("config.toml not found, using defaults");
         let toml_str = "[general]";
         toml::from_str(toml_str).context("Failed to create default config")?
     };
     let (config, warnings) = config.validate();
     for w in &warnings {
-        log::warn!("Config: {w}");
+        tracing::warn!("Config: {w}");
     }
 
     // 3. Resolve key names to macOS keycodes
@@ -55,11 +61,11 @@ fn main() -> Result<()> {
             config.general.keystroke_sequence,
         );
         for w in &keystroke_warnings {
-            log::warn!("Layout ({}): {w}", layout_path.display());
+            tracing::warn!("Layout ({}): {w}", layout_path.display());
         }
         layout
     } else {
-        log::warn!(
+        tracing::warn!(
             "Layout file not found: {}, using empty layout",
             layout_path.display()
         );
@@ -101,7 +107,7 @@ fn main() -> Result<()> {
     );
 
     // 7. Event loop (stub)
-    log::info!("awase-macos running. Press Ctrl+C to exit.");
+    tracing::info!("awase-macos running. Press Ctrl+C to exit.");
 
     let mut event_loop = awase_macos::event_loop::EventLoop::new();
     event_loop.run()?;
