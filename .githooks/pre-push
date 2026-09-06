@@ -25,7 +25,7 @@ warn_if_missing_evidence() {
         changed+="$(git diff --name-only "${rsha}..${lsha}" 2>/dev/null || true)"$'\n'
     done <<< "$refs"
 
-    local target='crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|platform\.rs|tuning\.rs)'
+    local target='crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|platform\.rs|tuning\.rs)'
     local evidence='(crates/awase-windows/tests/|docs/known-bugs\.md)'
 
     if printf '%s' "$changed" | grep -qE "$target"; then
