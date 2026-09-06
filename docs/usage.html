@@ -572,10 +572,8 @@ footer p{margin-bottom:0.3rem}
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
         <tr><td>IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
         <tr><td>IME ON/OFF トグル</td><td>押した時点の IME 状態に応じて ON⇔OFF を反転するキー。既定: 漢字キー。複数登録可</td></tr>
-        <tr><td>親指シフト ON キー</td><td>NICOLA エンジンを ON にするキー。複数登録可</td></tr>
-        <tr><td>親指シフト OFF キー</td><td>NICOLA エンジンを OFF にするキー。複数登録可</td></tr>
-        <tr><td>親指シフト切替ホットキー</td><td>グローバルホットキーで親指シフト ON/OFF をトグル</td></tr>
       </table>
+      <p class="note">親指シフト入力／ローマ字入力の切り替えキー（旧称「親指シフト ON/OFF キー」）は「上級者向け設定」タブに移動しました。詳細は下記「上級者向け設定タブ」を参照してください。</p>
       <p class="note">GJI（Google 日本語入力）を使っていて無変換キーを親指キーに選んでいる場合、awase.exe は起動時・GJI 検出時に config1.db を読み、無変換キー単独タップで専用の Fn キー（既定候補: F21）を送るよう自動的に判定します（「専用Fnキー変換」、ADR-091 §D3.2）。これは無変換キーの単独タップで文字種（ひらがな/カタカナ等）をトグルしたく、かつ「モードずれ」（awase 側の想定と GJI 側の実際の状態が食い違う問題）を避けたい上級者向けの機能です。GJI 側の config1.db にこの Fn キーの「かな種別切替」バインドがまだ無い場合は、awase.exe がポップアップで設定を提案します（同意すれば自動で追加、バックアップ付き）。設定画面（本ページ）からの手動操作は現在提供していません。特定の Fn キーへ固定したい場合は下記「GJI 専用Fnキー変換の手動設定」の通り <code>config.toml</code> を直接編集してください。</p>
       <p class="note">「IME → awase」方向（外部 IME の状態変化を awase が解釈するための設定、半角/全角キー等）は GUI から撤去しました。既定は空欄で通常は不要なうえ、他の候補（IME オン/オフキー）は物理的に存在しないキーのため GUI で選ばせる価値が薄いと判断したためです。必要な場合は下記「IME 検出キーの手動設定」の通り <code>config.toml</code> を直接編集すれば引き続き設定できますが、上記「IME ON/OFF トグル」と同じキーは指定しないでください（二重処理で正しく動作しなくなります）。</p>
     </div>
@@ -617,16 +615,38 @@ footer p{margin-bottom:0.3rem}
     </div>
 
     <div class="card">
-      <h3>詳細設定タブ</h3>
+      <h3>上級者向け設定タブ</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">日常的に触らない設定をまとめたタブです。</p>
       <table class="tab-table">
         <tr><th>項目</th><th>説明</th></tr>
-        <tr><td>n-gram ファイル</td><td>n-gram 統計データのパス（.csv.gz または .toml）。ngram_predictive モードで使用</td></tr>
+        <tr><td>親指シフト入力にする</td><td>親指シフト入力（NICOLA変換）に切り替えるキー（旧称「親指シフト ON キー」）。複数登録可</td></tr>
+        <tr><td>ローマ字入力にする</td><td>ローマ字入力（変換なしで素通し）に切り替えるキー（旧称「親指シフト OFF キー」）。複数登録可</td></tr>
+        <tr><td>単独5連打でローマ字入力にする</td><td>指定キーを400ms以内に5回連続タップするとローマ字入力に切り替える、Ctrl スタック等の緊急脱出用の設定</td></tr>
+        <tr><td>親指シフト入力／ローマ字入力 切替</td><td>グローバルホットキーで親指シフト入力⇔ローマ字入力をトグル（旧称「親指シフト切替ホットキー」、既定: Ctrl+Shift+F12）</td></tr>
+        <tr><td>3キー分岐マージン</td><td>文字→親指→文字と3キーが来た場合に、タイミングだけで確定するか n-gram で判定するかの境界（%）</td></tr>
+        <tr><td>重なり不足マージン</td><td>文字キーと親指キーの物理的な重なり時間がこの割合未満だと「重なり不足」とみなす境界（%）</td></tr>
+        <tr><td>Alt+かな による IME 入力方式切替を無効化する</td><td>MS-IME の「ローマ字入力⇔JISかな直接入力」切替ショートカットをブロック（既定: ON。JISかな直接入力に切り替わると awase 側からは復帰できないための保護）</td></tr>
+        <tr><td>GJI の無変換/変換/ひらがな/カタカナキー状態依存トグルを追従する</td><td>GJI 側のキーマップ設定がこれらのキーに状態依存の IME ON/OFF トグルを割り当てている場合、ベストエフォートで追従する（既定: OFF、自己責任。非冪等な動作のため既定では無効。詳細は known-bugs.md の BUG-115 を参照）</td></tr>
+        <tr><td>左Shift単独タップで半角英数トグルを有効にする</td><td>左Shift単独タップで、IMEをONにしたまま半角英数入力に切り替える（既定: OFF、実機ソーク中の機能）</td></tr>
+        <tr><td>n-gram ファイル</td><td>n-gram 統計データのパス（.csv.gz または .toml）。同時打鍵のタイブレークに confirm_mode を問わず常に使われる</td></tr>
         <tr><td>n-gram 調整幅</td><td>n-gram 予測で同時打鍵閾値を調整する幅（ms）</td></tr>
         <tr><td>n-gram 最小/最大閾値</td><td>n-gram 予測で調整される閾値の下限・上限（ms）</td></tr>
         <tr><td>フォーカスデバウンス</td><td>Alt+Tab 連続操作時の誤検知を防ぐ待機時間（ms）</td></tr>
         <tr><td>IME ポーリング間隔</td><td>マウスで言語バーを操作したときなどの変化を検出する周期（ms）</td></tr>
         <tr><td>レイアウトディレクトリ</td><td>.yab ファイルを置くフォルダのパス</td></tr>
       </table>
+    </div>
+
+    <div class="card">
+      <h3>Caps(英数) / Ctrl プリセット（ショートカットタブ）</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">CapsLock（JISキーボードでは英数キー）と左Ctrlの役割を、Windowsのレジストリ（Scancode Map）を書き換えて変更する機能です。3択（無効／入れ替え／追加）から選べます。</p>
+      <table class="tab-table">
+        <tr><th>選択肢</th><th>動作</th></tr>
+        <tr><td>無効</td><td>変更しない（既定）</td></tr>
+        <tr><td>Caps(英数) ⇔ Ctrl を入れ替える</td><td>CapsLock（英数）キーとCtrlキーの役割を入れ替える</td></tr>
+        <tr><td>Caps(英数) を Ctrl として追加する</td><td>CapsLock（英数）キーを追加のCtrlキーにする。元のCtrlキーはそのまま使えるが、英数キー自体は使えなくなる</td></tr>
+      </table>
+      <p class="note">変更には管理者権限の確認（UAC）が1回表示され、反映には再起動が必要です（サインアウトのみでは反映されないことがあります）。この設定はPC全体（全ユーザー）に影響し、リモートデスクトップのセッション内では動作しません。</p>
     </div>
   </div>
 </section>
