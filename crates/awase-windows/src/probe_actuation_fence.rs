@@ -71,6 +71,17 @@
 //! `get_ime_conversion_mode_fenced_async`（または同型の専用ヘルパー）
 //! 経由で行い、共通ヘルパーには絶対に比較を置かないこと。
 //!
+//! **残る未フェンス呼び出し（意図的、実装レビューQ5で確認済み）**:
+//! `crate::ime::get_ime_conversion_mode_raw_timeout_async`（フェンス無しの
+//! 生版）の呼び出しは `tsf/warmup/cold_warmup.rs`・`output/vk_send.rs`
+//! （2箇所）・`output/probe_io.rs`（`send_chrome_gji_reinit_and_poll`とは
+//! 別の1箇所）に残る。いずれも読んだ `conv` を `tracing::debug!`/`info!`
+//! に渡すだけの**純粋な診断ログ専用**で、belief にもゲート（`ms_ime_gate_*`/
+//! `ime_mode_fsm`等）にも一切触れないため、意図的にフェンス対象外としている
+//! （`get_ime_conversion_mode_fenced_async`を使う必要があるのは「読んだ値を
+//! 実際の判断に使う」経路のみ）。新しい呼び出しを追加する際、belief/ゲートに
+//! 触れるなら必ずフェンス版を使うこと。
+//!
 //! # abandon カウンタ（決定I: resync 経路と通常経路を分けて数える）
 //!
 //! resync 経路（[`crate::focus_resync`] 由来）の abandon は「defer 中のキーが

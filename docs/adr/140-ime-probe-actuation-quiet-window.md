@@ -697,6 +697,40 @@ Abandon時の扱いは呼び出し元ごとに異なる（決定E/Fと同じ「�
   純粋なリファクタ/スコープ明確化の提案であり、実装レビューが検証した
   「Blockerではない」という判定どおり見送った。
 
+### Step1b 実装レビュー（opus-adversarial-consult、near-Blocker 2件を発見・修正）
+
+Step1bの初回実装（`8cd9268f`）に対する実装レビューで、near-Blocker
+（マージ前修正推奨）2件が見つかり反映した:
+
+- **S1（`start_ms_ime_ready_poll`が「必ず終了する」保証を失っていた）**:
+  `Abandoned => MsImePollStatus::Pending`が`with_app`を一切呼ばずに
+  返っていたため、abandonしたtickではdeadlineチェック
+  （`current_tick_ms() >= effective_deadline_ms` →
+  `ms_ime_gate_give_up.set(true)` → `Expired`）が完全にスキップされ、
+  abandonが連続する限りこのタスクが不死になりうる欠陥だった
+  （BUG-114のようなactuationストーム下で顕在化しうる）。deadline判定を
+  `ms_ime_ready_poll_check_deadline`として分離し、conv が信用できない
+  （abandonまたは後述S2のcheckpoint3不一致）場合も必ずこれを呼ぶよう
+  修正した——convは使わないがdeadline判定だけは毎tick行う、という形で
+  終了保証を復元した。
+- **S2（ループ2箇所はcheckpoint1が実質デッドコードで、checkpoint3も
+  無かった）**: `start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_
+  poll`はいずれも`fence_at_call`を`.await`の直前で取るため、checkpoint1
+  （main、決定Dの1点目）の窓が実質ゼロで、実際に効くのはcheckpoint2
+  （worker、`SendMessageTimeoutW`呼び出し直前）だけだった。かつ、
+  **最も起こりやすい交錯**（probeの`SendMessageTimeoutW`がin-flightの
+  間にメインスレッドがactuationを発行する）はissue前の2チェックでは
+  原理的に捕捉できず、これを捕まえるcheckpoint3相当が2箇所とも未実装
+  だった。read完了直後にフェンスを再比較する処理を両方に追加し、
+  不一致なら既存の「未観測」扱い（`send_chrome_gji_reinit_and_poll`は
+  `None`、`start_ms_ime_ready_poll`はdeadline判定のみ）に合流させた。
+
+いずれもStep1bの初回実装のミスであり、確定設計A〜IやStep1本体の設計を
+覆すものではない。レビューは他に、未フェンスの`get_ime_conversion_
+mode_raw_timeout_async`呼び出し4箇所（診断ログ専用、意図的に非フェンス）
+の確認、型不整合・デッドロック・パニック経路の不在を検証し、収束と判定
+した（Blocker 0件）。
+
 ## 関連
 
 [docs/known-bugs.md](../known-bugs.md) BUG-113、
