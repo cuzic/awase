@@ -2,11 +2,11 @@
 
 ## ステータス
 
-**r6（Opus 2体の敵対的レビューを6ラウンド実施。premortem役はr5で
-Blockerゼロと判定、architect役がauto-repeat経路の新規Blocker1件を
-発見。決定2をfresh press時点でSuppress/Allowを確定しauto-repeat/KeyUpは
-その決定を踏襲する設計へ整理し、`shadow_toggled`の再利用で機構も
-簡素化。r7レビュー未実施）。**
+**r7（Opus 2体の敵対的レビューを7ラウンド実施。premortem役はr6で
+Blockerゼロと判定、architect役がfresh press検出の未定義に起因する
+新規Blocker1件を発見。hook.rsが`is_fresh_press`を明示ビットとして
+`RawKeyEvent`に運ぶ設計へ訂正し、ラッチの自己修復性を確保。r8レビュー
+未実施）。**
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -224,6 +224,41 @@ NB7/NB8・r5のNB9）で発見したBlockerは、いずれも「actuation/belief
 で、Down/auto-repeat/KeyUpという3種類のイベントを個別に検討する必要
 自体を無くした。
 
+### レビュー指摘との対応表（r6→r7、7ラウンド目）
+
+premortem役はr6にBlockerゼロと判定した（Major 3件、いずれもラッチ
+仕様の記述漏れ）。architect役は新規Blocker1件（NB10）を発見した——
+r3・r4・r6に続き4度目の「片方がゼロ・もう片方が新規Blocker発見」と
+いう分かれ方で、今回も両エージェントが独立に「fresh pressの判定根拠
+がメインスレッドから参照できないhook側の値を指している」という同一の
+核心に到達した（architect役NB10・premortem役R6-M1）。
+
+architect役: NB10(fresh press検出手段が未定義でラッチがstale `Some`に
+なる経路が3つある)→hook.rsが`is_fresh_press`を`RawKeyEvent`の新
+フィールドとして明示的に運ぶ設計へ訂正、NM13(ラッチ判定とInputRelay
+早期returnの評価順序が未定義)→ADR-119の既存順序を優先し狭い既知の
+制限として明記、NM14(`delegate_will_turn_on`が既存の`turn_on_
+direction`の再実装)→既存計算を流用する形へ訂正、Minor1〜3・Nit1→
+決定2/決定4の記述に反映。
+premortem役: R6-M1(fresh press判定根拠がhook側`was_down`でメイン
+スレッドから参照不能、architect役NB10と同一発見)→同上で解消、
+R6-M2(ラッチを参照してよいイベントの限定が未記載)→静的3条件を満たす
+イベントに限定する記述を追加、R6-M3(ラッチが取り残される経路が実在し
+フックスレッドからクリアできない)→fresh press明示ビットによる自己
+修復で解消、R6-m1〜m3→決定2/決定8に反映。
+
+7ラウンド共通の総括: r6のラッチ化は「いつ再評価するか」の問題は解決
+したが、「freshnessをどう検出するか」という新しい時間軸の問題を
+持ち込んでいた——r1（クロススレッドで値を渡そうとして破綻）と対称的な
+失敗である。r1は「メインスレッドの値をフック側で読もうとした」、
+r7で見つかったのは「フック側の値をメインスレッドで読もうとした」で、
+向きは逆だが構造は同じ「スレッド境界を跨ぐ値の受け渡しを暗黙に仮定
+する」という誤り。解決策も対称的で、r1はメインスレッド側で完結する
+設計に倒したのに対し、r7はhook.rsが計算した値を`RawKeyEvent`という
+既存のデータフロー経由でメインスレッドへ**明示的に運ぶ**設計に倒した
+（プラットフォーム層が事前分類した値をcoreへ渡す、というADR-019の
+層境界原則にも合致する）。
+
 ## 背景
 
 ### ADR-141決定0がかな系キーを除外した理由（再掲）
@@ -425,20 +460,31 @@ actuation_will_fire = shadow_toggled || delegate_will_turn_on
   ケースがあった）。同じ判定を`plan()`側で再計算しない、という
   `DbeModeKeyContext::is_configured_thumb_key`のdoc（`transport.rs:
   65-69`）の規律にも合致する。
-- `delegate_will_turn_on`は`kp_stage_shadow_ime_toggle`内で新設する
-  最小限の追加出力（1ビット）で、`delegate_owned`（`:1074-1075`）が
-  真の場合に限り、`hiragana_delegate_to_open_axis()`の戻り値
-  （`Option<ShadowImeAction>`、`:1185-1195`）が`Some(ShadowImeAction::
-  TurnOn)`と一致するかで決める。**単純な`is_some()`（armed判定）では
-  ない**——同関数の既存コメント（/code-reviewで既に指摘済み）が
-  警告するとおり、delegateの配線先はTurnOff/Toggleでもありうるため、
-  armed判定だけではIMEをONにしないdelegateでもSuppressしてしまう
-  （r5の欠陥）。
+- `delegate_will_turn_on`は`delegate_owned`（`:1074-1075`）が真の場合に
+  限り、`turn_on_direction`（`key_pipeline.rs:1188-1200`、既存の
+  no-op分岐内で`hiragana_delegate_to_open_axis()`/`katakana_delegate_
+  to_open_axis()`の`Option<ShadowImeAction>`を引いて`.unwrap_or(action)`
+  している既存計算）が`ShadowImeAction::TurnOn`と一致するかで決める。
+  **単純な`is_some()`（armed判定）ではない**——同関数の既存コメント
+  （`:1181-1187`、/code-reviewで既に指摘済み）が警告するとおり、
+  delegateの配線先はTurnOff/Toggleでもありうるため、armed判定だけでは
+  IMEをONにしないdelegateでもSuppressしてしまう（r5の欠陥）。
+
+  **r7訂正（architect役NM14指摘）**: `delegate_will_turn_on`を新しい
+  判定式として独自に書いてはならない。`delegate_owned`が真の場合、
+  `turn_on_direction`は**既に**（no-op分岐の中で）計算済みであり
+  （`delegate_owned`が真なら必ずno-op分岐に入るため、この計算は
+  必ず走っている）、これを流用しないと`DbeModeKeyContext::
+  is_configured_thumb_key`のdocが禁じる二重管理になる。`turn_on_
+  direction`を関数の戻り値に載せ、`delegate_will_turn_on = (delegate_
+  owned && turn_on_direction == ShadowImeAction::TurnOn)`という形で
+  呼び出し元が導出する。
 
 `kp_stage_shadow_ime_toggle`の戻り値は`shadow_toggled`と
-`delegate_will_turn_on`の2値（r4〜r5が提案した3値の`ShadowToggleOutcome`
-構造体は不要——`shadow_toggled`を再利用するため`ime_open_before`という
-フィールド自体が要らなくなった）を運べる形に変更する。
+`turn_on_direction`（`delegate_owned`が偽の場合は無視してよい）の2値
+（r4〜r5が提案した3値の`ShadowToggleOutcome`構造体は不要——
+`shadow_toggled`を再利用するため`ime_open_before`というフィールド自体
+が要らなくなった）を運べる形に変更する。
 
 **fresh press時点での確定とラッチ（NB8/NB9/NM12、r6で新設）**:
 r4〜r5は、Down/Up/auto-repeatのそれぞれで動的条件を毎回再評価しようと
@@ -449,30 +495,76 @@ toggle`がKeyUpで即returnするため`shadow_toggled`相当が常に「変化�
 `actuation_will_fire`が常に偽になり、押しっぱなしの間ずっと生の0xF2が
 OSへ流れ続ける（NB9、決定6が許容する親指キー構成では特に深刻）。
 
-**決定**: 動的条件の評価は**fresh press（`was_down`がfalseからtrueへ
-遷移する瞬間、ADR-141の`engine_enabled`規律と同一）でのみ**行い、判定
-結果（Suppress/Allow）を`plan()`呼び出し元（メインスレッドの
-`kp_run_inner`）に閉じた単一の`Option<bool>`ラッチへ格納する。
-全単射（決定3）により、ある瞬間に「安全な3キー→かな」方向で0xF2を
-生成しうる物理キーは高々1つなので、単一の値で足りる。auto-repeat
-KeyDownとそれに対応するKeyUpは、このラッチの値をそのまま踏襲し、
-動的条件を再評価しない。KeyUp処理後にラッチをクリアする。
+**決定**: 動的条件の評価は**fresh press**（新規押下の瞬間、ADR-141の
+`engine_enabled`規律と同一）**でのみ**行い、判定結果（Suppress/Allow）
+を`plan()`呼び出し元（メインスレッドの`kp_run_inner`）に閉じた単一の
+`Option<bool>`ラッチへ格納する。全単射（決定3）により、ある瞬間に
+「安全な3キー→かな」方向で0xF2を生成しうる物理キーは高々1つなので、
+単一の値で足りる。auto-repeat KeyDownとそれに対応するKeyUpは、この
+ラッチの値をそのまま踏襲し、動的条件を再評価しない。0xF2のKeyUp処理後
+にラッチをクリアする（他vkのイベントはこのラッチを読みも書きも
+クリアもしない）。
 
-この設計により、KeyDown/auto-repeat/KeyUpの3種別すべてが単一の判定
-規律に揃い、Down/Upで異なる条件式を持つ必要が無くなる（r5のNM12
-——BUG-46前例の引用が不正確だった問題、r5のR5-M3——KeyUp条件から
-`kana_role_active`が抜けたことで「機能未使用ユーザーには挙動が
-ビット単位で同一」という主張が崩れていた問題——は、いずれもこの
-ラッチ方式により発生条件自体が無くなる。ラッチは`kana_role_active`が
-真の場合にのみSuppress側で確定するため、機能未使用ユーザーの挙動は
-fresh press・auto-repeat・KeyUpのいずれでも変更前とビット単位で
-同一のままになる）。
+**fresh pressの検出方式（r7訂正、architect役NB10・premortem役R6-M1
+指摘への対応）**: r6は「`was_down`がfalseからtrueへ遷移する瞬間」と
+書いていたが、`was_down`はhook.rs（フックスレッド）側の状態であり、
+メインスレッドの`kp_run_inner`からは参照できない（`RawKeyEvent`
+にもrepeat/freshを示すフィールドは無い、`src/types.rs:190-215`）。
+「ラッチの`None`/`Some`自体からfreshnessを推論する」という代替案も
+検討したが、これは**KeyUpが`kp_run_inner`に到達しない3経路**——
+`FOCUS_APP_DISABLED`早期return（`hook.rs:980-982`）、overflowラッチ
+（`hook.rs:1100-1102`）、`ProduceResult::Overflow`（`hook.rs:1203-1205`）
+——でラッチが`Some(...)`のまま取り残された場合、次のfresh pressを
+auto-repeatと誤認して古い決定を踏襲してしまう（`Some(true)`残留なら
+BUG-10の食い逃げが、`Some(false)`残留なら二重配送が再発する）。
+これらの経路はいずれもフックスレッドの関数であり、メインスレッドの
+ラッチに手が届かない（届かせようとするとr1の`KANA_DOWN_WAS_ALLOWED`
+と同じクロススレッド問題に戻る）。
+
+**決定**: fresh pressの判定は、ラッチの状態から推論せず、hook.rsが
+明示的なビットとして運ぶ。決定1の挿入点（`hook.rs:1135`以降）で、
+hook.rsは`is_keydown && !was_down`を既に判定できる立場にあるため、
+これを`RawKeyEvent`の新フィールド（例:`is_fresh_press: bool`）として
+`build_raw_key_event`に含める——`key_classification`/`ime_relevance`/
+`physical_pos`/`modifier_key`と同じ「プラットフォーム層が事前に決定
+する」フィールド群の一員として自然に収まり、VKのマジックナンバーでは
+ないためADR-019にも抵触しない。この方式なら、**fresh pressでは必ず
+ラッチを上書きする**ため、取りこぼしたstaleなラッチが残っていても
+次のfresh pressで自己修復し、上記3経路すべてが無害化される
+（NB10解消）。
+
+**ラッチを参照・更新してよいイベントの限定（r7追加、premortem役R6-M2
+指摘への対応）**: ラッチの読み書きは、静的3条件（`event.vk_code ==
+VK_DBE_HIRAGANA && !event.injected && event.scan_code != SCAN_KANA`）
+を満たすイベントに限る。満たさないイベント（物理かなキー自身の押下
+〈`scan_code == SCAN_KANA`〉、他プロセスrelayのinjected 0xF2など）は
+ラッチを一切読まず、既存判定へ進む。この限定が無いと、取り残された
+staleなラッチが無関係なイベントに適用され、物理かなキーでは本来
+`is_tsf_mode && f2_warmup_owned`で判定すべきものが無条件Suppressに
+なり（MS-IME環境でBUG-10の食い逃げ）、injected relayではADR-119回帰が
+別経路で復活する。
 
 **ラッチのスレッド安全性**: `plan()`の呼び出しはメインスレッドの
-`kp_run_inner`に閉じており、このラッチもそこに閉じた値として実装する。
-r1の`KANA_DOWN_WAS_ALLOWED`がフックスレッド（hook.rsの hold-state）
-とメインスレッド（`plan()`）を跨いで破綻したのとは構造的に別物——今回は
-書き込みと読み出しが同一スレッド・同一関数群内で完結する。
+`kp_run_inner`に閉じており、このラッチもそこに閉じた値（`plan()`の
+内部状態ではなく、呼び出し元`kp_run_inner`が保持し引数として渡す値）
+として実装する。r1の`KANA_DOWN_WAS_ALLOWED`がフックスレッド（hook.rs
+のhold-state）とメインスレッド（`plan()`）を跨いで破綻したのとは構造的
+に別物——今回は書き込みと読み出しが同一スレッド・同一関数群内で完結
+する。`is_fresh_press`フィールドはhook.rs側で計算されるが、それを
+`RawKeyEvent`経由でメインスレッドへ**運ぶだけ**であり、hook.rs側の
+状態をメインスレッドから直接参照するわけではない（既存の
+`key_classification`等と同じデータフロー）。
+
+**stale latch取り残しへの残存対応（r7追加、premortem役R6-M3指摘への
+対応）**: 上記のfresh press明示ビットにより、ラッチが取り残されても
+次のfresh pressで必ず上書きされ自己修復する。ただし決定4が挙げる
+ADR-141決定7の3箇所＋決定5の2箇所（計5箇所、いずれもフックスレッドの
+関数）には、この新しいラッチは**含まれない**——これらの箇所から
+メインスレッドのラッチへ手を伸ばす必要は無く（そうすればクロス
+スレッド問題に戻る）、fresh press明示ビットによる自己修復だけで十分
+である。取り残されたラッチが与えうる実害は「次のfresh press一回分の
+待ち時間だけ、直前の（古い）dispositionが誤って適用される」ことに
+限定される（R6-M2の限定により影響範囲は0xF2のイベントのみ）。
 
 **確定する条件（fresh press時点でのみ評価）**:
 ```
@@ -485,8 +577,33 @@ event.vk_code == VK_DBE_HIRAGANA
 真ならばラッチに`Some(true)`（Suppress）を、偽ならば`Some(false)`
 （Allow、既存の`is_tsf_mode && f2_warmup_owned`判定へフォールスルー）
 を格納する。ラッチが`None`（fresh pressが観測されないままKeyUp等に
-到達した異常系、`reset_physical_key_state`等での状態クリア後を含む）
-の場合は、既存の判定へフォールスルーする（安全側デフォルト）。
+到達した異常系）の場合は、既存の判定へフォールスルーする（安全側
+デフォルト）——ただし**KeyUpについては`None`でもSuppress側を安全側と
+する**（r7追加、premortem役R6-m1指摘: BUG-46の「KANJI系KeyUpは常に
+Suppress」という既存の規律、`transport.rs:118-125`、に揃える。`None`
+のままAllowへフォールスルーすると、対応するDownを持たない0xF2のKeyUp
+がOSへ送出されうる）。
+
+**config reload時のラッチの扱い（r7追加、premortem役R6-m2指摘）**:
+`kana_role_active`が押下中のreloadで反転しても、ラッチはfresh press
+時点で確定した値を保持し続ける——reloadの瞬間にラッチをクリアしては
+ならない（クリアすると押下中のDown/Upが非対称になる）。ADR-141決定3の
+`confirmed_target`規律と同じ立場である。
+
+**評価順序の明示（r7追加、architect役NM13指摘への対応）**: 本ラッチに
+よるSuppress判定は、`transport.rs`のF2専用分岐（`:276`）を拡張する形で
+実装し、`transport.rs:260`のInputRelay早期returnより**後**に評価する
+（ADR-119/issue #136がこの順序自体をレビューで発見・修正した経緯
+——`:246-259`のコメント「F2分岐より先に判定する」——を尊重し、
+本ADRのために変更しない）。したがって、fresh press時点で非InputRelay
+プロファイルだったためラッチがSuppress側に確定した押下でも、Up時点で
+フォーカスがInputRelayウィンドウへ移っていれば、InputRelayの早期return
+が先に評価され`Allow`が返る——対応するDownを持たない0xF2のKeyUpがOSへ
+送出されうる。この経路は「押下中にフォーカスがInputRelayウィンドウへ
+移る」という狭い条件を要するため、ADR-141決定4末尾がAltセンチネル
+構成の既存衝突に対して取った立場（悪化させないが解消もしない）と同型
+に整理し、本ADRでは解決を試みない既知の狭い制限として記録するに留める
+（ADR-119の順序を優先する判断の代償として明示する）。
 
 **`!event.injected`が無いと**（r2の欠陥）: `transport.rs`の評価順序は
 InputRelay早期return（`:260`）→F2分岐（`:276`）→injected早期return
@@ -593,7 +710,13 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
    actuationが落ちる組み合わせが無いかは未検証——belief遷移は起きたが
    実際には誰もIMEをONにしない場合、BUG-10の食い逃げが残る。下流
    ゲートの棚卸しはPhase A実装時の確認項目とする（未解決の疑問6と
-   統合）。
+   統合）。**r7追加（architect役Minor3指摘）**: ラッチ化により、この
+   近似の限界が及ぶ範囲が一段広がった——r5までは動的条件をイベントごと
+   に再評価していたため、近似が外れても次の打鍵で状況が変わりうる
+   余地があったが、r6のラッチ化により**fresh press時点の1回きりの
+   判定が押下期間全体を支配する**。近似が外れた場合、その押下が終わる
+   まで訂正されない。この点を踏まえ、下流ゲートの棚卸しの優先度を
+   Phase A実装の前提条件（未解決の疑問6）として維持する。
 4. **delegate分岐の代入後構成での正しさは未検証**: `hiragana_
    delegate_to_open_axis`は物理かなキーが親指キーである前提で設計・
    検証された機構である。決定6が「意図した挙動」とする構成（代入に
@@ -735,7 +858,12 @@ KeyUp注入の対象として列挙する3箇所——`reset_physical_key_state(
 `SCAN_KANA_CONFIRMED_TARGET`が`Some(vk)`を保持している場合のKeyUp注入
 処理を追加する必要がある。これはADR-141決定7の3箇所へのkana分の追加
 であり、決定5が新設する2つのswallow分岐（`hook.rs:1013-1046`・
-`:1066-1087`）とは別の合流点である（合計5箇所）。
+`:1066-1087`）とは別の合流点である（合計5箇所）。**r7追加
+（architect役Minor2指摘）**: これら5箇所はいずれもフックスレッドの
+hold-state（`SCAN_KANA_WAS_DOWN`/`SCAN_KANA_CONFIRMED_TARGET`）を扱う
+ものであり、決定2が新設するメインスレッドのラッチとは別物——ラッチは
+`is_fresh_press`明示ビットにより自己修復する設計（決定2参照）のため、
+この5箇所にラッチのクリア処理を追加する必要は無い。
 
 ### 決定5: 上流のAlt+かなswallowガードに、かなスロットの保留KeyUpを注入してからクリアする分岐を追加する（`from`=かな方向専用）
 
@@ -1024,10 +1152,15 @@ auto-repeat→KeyUp→クリア）を対象にした状態遷移テストが必�
 fresh pressで確定したSuppress/Allowが、その後のauto-repeat・KeyUpで
 再評価されず踏襲されることを確認する（NB8/NB9の回帰防止）。
 `actuation_will_fire`（`shadow_toggled || delegate_will_turn_on`）の
-真偽2ケース、および`delegate_will_turn_on`が`hiragana_delegate_to_
-open_axis()`の戻り値が`Some(ShadowImeAction::TurnOn)`の場合のみ真に
-なること（`Some(TurnOff)`/`Some(Toggle)`/`None`ではいずれも偽になる
-こと）もテストに含める。
+真偽2ケース、および`delegate_will_turn_on`が`turn_on_direction ==
+ShadowImeAction::TurnOn`の場合のみ真になること（`TurnOff`/`Toggle`
+ではいずれも偽になること）もテストに含める。**r7追加（premortem役
+R6-m3指摘）**: (i) auto-repeat2打目以降が1打目と同じdispositionになる
+こと（NB9の回帰防止）、(ii) ラッチ`None`でのKeyUpがSuppress側になる
+こと（r7で追加した安全側デフォルト、決定2参照）、(iii) 静的3条件
+（`vk_code`・`!injected`・`scan_code`）を満たさないイベントはラッチを
+一切読まないこと（R6-M2の回帰防止）、の3ケースを追加する。いずれも
+`plan()`とラッチ状態遷移の組でLinux実行可能である。
 
 ### 決定9: 代入後vkを基準に評価される下流の合流点を棚卸しする
 
@@ -1293,3 +1426,24 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
   r2〜r5の変遷の詳細説明を圧縮し最終設計を中心に書き直した（変遷の
   詳細はステータス節・本changelogを参照）。決定4のInputRelay関連の
   既知の制限も、ラッチ化により発生条件が無くなったため記述を整理した。
+- r7（2026-09-06）: Opus 2体の敵対的レビュー7ラウンド目で、architect役
+  がfresh press検出手段の未定義に起因する新規Blocker1件（NB10）を
+  発見した——r6は「`was_down`がfalseからtrueへ遷移する瞬間」をfresh
+  pressの判定根拠としていたが、`was_down`はhook.rs（フックスレッド）
+  側の状態でありメインスレッドの`kp_run_inner`からは参照できない。
+  「ラッチの`None`/`Some`からfreshnessを推論する」という代替も、
+  KeyUpが`kp_run_inner`に到達しない3経路（`FOCUS_APP_DISABLED`早期
+  return・overflowラッチ・`ProduceResult::Overflow`）でラッチが
+  stale `Some`のまま残り、次のfresh pressをauto-repeatと誤認して
+  古い決定を踏襲してしまう欠陥を持っていた（premortem役R6-M1が独立に
+  同じ核心を指摘）。修正として、hook.rsが決定1の挿入点で既に判定
+  できる`is_keydown && !was_down`を`is_fresh_press`という明示ビットで
+  `RawKeyEvent`に運ぶ設計に変更し、fresh pressでは必ずラッチを上書き
+  する自己修復性を持たせた。premortem役のR6-M2（ラッチを参照して
+  よいイベントの限定が未記載）・R6-M3（ラッチのクリア経路の一部が
+  フックスレッドで到達不能）も同時に解消した。architect役のNM13
+  （ラッチ判定とInputRelay早期returnの評価順序が未定義）は、ADR-119
+  が確立した既存の順序（InputRelayを優先）を尊重する選択をし、フォー
+  カス遷移という狭い条件下でのDown/Up非対称を既知の限定的な制限として
+  受容することにした。NM14（`delegate_will_turn_on`が既存の`turn_on_
+  direction`の再実装だった）も、既存計算を流用する形へ訂正した。
