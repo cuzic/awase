@@ -2,8 +2,11 @@
 
 ## ステータス
 
-**収束（r21、2026-09-06、両エージェント最終承認・Blocker/Major/Minor
-（Minor1件は既知の制限として反映済み）/Nitすべて解消）。** 以下は
+**収束（r25、2026-09-06、両エージェント最終承認・Blocker/Major/Minor/
+Nitすべて解消）。** r21収束後、ユーザー要望で決定7に新機能
+（Shift+代入先キーでカタカナへ切り替え、GJI限定）を追加し、これも
+Blocker1件・Major5件を経て両エージェントの承認を得た（詳細は決定7
+「r22」「r23」節を参照）。以下は
 r21に至るまでの経緯。
 
 **r21（2026-09-06、`engine_enabled`の置き場所を「サイクル単位の
@@ -166,6 +169,19 @@ Phase A実装時の受け入れ条件として以下の実機確認が必要（�
 計画に加えて）: 代入先キー押下でGJI・MS-IME双方の実IMEが実際にONになる
 こと、代入先キーを押しっぱなしにしてIMEが暴れないこと（auto-repeat時の
 二重actuation防止の検証）、代入先キーからOSへ何も送出されないこと。
+
+**Shift+代入先キー機能（決定7 r22/r23）の実機確認チェックリスト
+（2026-09-06、premortem役指摘で集約）**: 上記4点に加えて以下も
+Phase A実装時に確認する。
+5. 要望を出したユーザーの環境がGJIかMS-IMEか（scan=0のためMS-IMEでは
+   無反応の見込み＝既知の制限として確定させる前提情報）。
+6. scan=0の`VK_DBE_KATAKANA`をGJIが「Shift+かな相当」として実際に
+   解釈するか（未解決の疑問、決定7参照）。
+7. `ime_open_before == true`のときのカタカナ送信が、実際にカタカナへ
+   切り替わるか（かつ2回目以降の挙動が物理キーと一致するか）。
+8. 右Shift押下時に、解放（両側`make_scan_key_input`）と復元（押されて
+   いた側のみ）が正しく動き、左Shiftのstuckが起きないか。
+9. `half_width_alnum_toggle_active`区間で競合しないか（ADR-137 M-3）。
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -685,6 +701,20 @@ NICOLA FSMを素通りするわけではない。pending中の同時打鍵候補
   （BUG-52/116のガードを含む）は一切変更しない。本ADRの分岐は、かなスロット
   と安全な3キーのいずれかとの間に**非自明な**入れ替えが設定された場合にのみ
   発火する。
+
+## 設計原則（本ADR全体を通じて4回発見された同型バグからの一般規則）
+
+**同一イベント処理内で、先行ステージが書き込む値をガード条件に使う場合は、
+必ずそのステージ実行前のスナップショット（`_before`命名規約）を取る。
+ライブ値（実行後に読む値）をガードに使うと、恒真または恒偽になり
+「保護しているように見えて実際には何もしていない」状態になる。**
+（2026-09-06、architect役Nit指摘で一般化。個別の発見箇所は
+`half_width_alnum_toggle_active`〈既存、Opusレビュー由来〉→r4のNB7
+（`effective_open()`のライブ値読み）→r7のNB11（`is_fresh_press`を
+挿入点で読むと`PHYSICAL_KEY_*`が更新済み）→r25のR25-M1（`ime_open_
+before`導入前の`effective_open()`直接読み）の4回。次にこのADR・
+`plan()`・actuation経路へ新しい判定材料を足す際は、この規則を
+真っ先にチェックリストとして当てること。）
 
 ## 決定
 
@@ -1878,6 +1908,269 @@ Shift併用、すなわちMS-IMEの半角/全角スペース切替相当にな�
 ユーザーでは物理かなキーが常に代入対象になるため意味を持たなくなる。
 BUG-116/ADR-137は2026-09-06実装の直近機能であり、後で「なぜ効かないのか」
 を追う人のために一言記録しておく。
+
+**r23（2026-09-06、ユーザー要望・r22への両エージェント指摘を反映して
+全面訂正）: `to`=かな方向でもShift併用時にカタカナへ切り替える**
+
+これまで`to`=かな方向のShift併用は「特別な分岐が無い」だけだった
+（fresh pressで`kana_role_actuate`が発火し、Shiftの有無にかかわらず
+常にIME ON〈ひらがな相当〉になる）。ユーザーから、「かな↔変換」の
+ようなswap設定をした場合に、**代入先の変換キーでもShift併用時に
+カタカナへ切り替わってほしい**という要望が出た。
+
+**位置づけ（architect役指摘、r23で追記）**: これは新規のユーザー要望と
+いうより、**決定7が既に記録している「Shift併用効果（`shift_katakana_
+passthrough`経由のカタカナ入力）が代入によって失われる」という既知の
+制限を、代入先の位置へ「移す」ことで復元する機能**である。全単射で
+役割が移動するという本ADRの中核の意味論——物理かなキーが失った機能が
+どこか別の場所に必ず現れる——と一致しており、決定7の既存の制限と
+対になる話として理解すると設計の必然性が通る。
+
+**設計方針（変更なし）**: awase側でconv-mode状態を読み取って次の状態を
+計算するのではなく（この挙動の正確なメカニズムはBUG-116自身が「未解明」
+と認めている）、**物理Shift+かなキーが実際に生成するのと同じvk
+（`VK_DBE_KATAKANA`、0xF1）を合成してIMEへ送り、その後の解釈は完全に
+IME自身に委ねる**。ユーザーが明示した原則「IMEの実際の状態を無視して
+特定の動作を強制してはいけない」に沿う。
+
+**r22で見落としていた点（architect役NB17・premortem役R22-M1指摘）**:
+「既存の`send_ime_mode_key_with_shift_release_prefix`をそのまま流用する」
+としていたが、この関数は内部で`vk == VK_DBE_HIRAGANA`かどうかでscan値の
+有無を分岐しており（`ime.rs:379-386`）、`VK_DBE_KATAKANA`は`else`側
+（`make_key_input_ex`、**scan=0**）に入る。ところが:
+- **GJI**: scan=0のままカタカナへ切り替わることをADR-137が2026-09-05に
+  実機確認済み（`shift_katakana_passthrough`のdoc、`transport.rs:82-95`）
+  → **動く**。
+- **MS-IME**: `key_pipeline.rs:1955-1961`の2026-07-07実機記録
+  「scan=0の`send_ime_mode_key`ではMS-IME(TSF)がモードキーとして処理
+  しない」→ **無反応**の見込み。
+
+自然な直し方（`if`側の条件を0xF1にも広げてscanを付ける）は、
+**BUG-15追補7/BUG-61の「scan付きDBEキー注入によるJISかな固着」
+ハザードに直行する**（`kp_restore_hiragana_for_suppressed_mode_key`が
+同じ経路に`read_kana_lock()`のABORTガードを持つのはこのため）。
+
+**決定（範囲の限定）**: scanは付けない（**GJI限定機能とする**）。
+MS-IMEでは本機能は無反応になることを既知の制限として受け入れる
+——BUG-61（復旧不能）のリスクを新たに背負うより、機能をGJIに限定する
+方が安全側の選択である。**ただし「MS-IMEで無反応になる」という予測は、
+`VK_DBE_KATAKANA`(0xF1)自体の実測ではなく`VK_DBE_ALPHANUMERIC`(0xF2)
+についての2026-07-07実測（`key_pipeline.rs:1955-1961`）からの類推
+であり、Phase A実装時に0xF1でも同様であることを実機確認する**
+（architect役指摘）。scan付き注入によるMS-IME対応は、
+`read_kana_lock()`等の追加ガードとともに将来の検討課題とし、本ADRの
+スコープ外とする。この選択によりBUG-15追補7のガード（`read_kana_lock`）
+は不要になる——scan=0の合成注入はそもそもこのハザードの対象外だから
+である（`shift_katakana_passthrough`のdocが「scanを付与しないため
+BUG-15追補7/BUG-61のハザードを一切踏まない」と明記している対称）。
+
+**呼び出しに必要なガード（既存の類似経路が持つものを再現する、
+architect役・premortem役指摘）**:
+1. **`conv_mutation_allowed.get()`**（`kp_restore_hiragana_for_
+   suppressed_mode_key`と同じゲート、ADR-086の`ConvModeAuthority::
+   UserOwned`契約——エンジンuser-disabled中はconv-modeに触れない）。
+2. **`ime_mode_key_injection_blocked_by_modifier()`**
+   （`win_key_held() || alt_key_held()`）。決定2-9のAlt安全性論拠
+   （送出vkがDBE系でない）はこの新経路には適用されない（まさにDBE系
+   vkを送るため）ので、この経路専用に必須。**置き場所は`send_ime_
+   mode_key_with_shift_release_prefix`関数自身の内部**とする
+   （2026-09-06、architect役NM29の再指摘で確定）。`send_input_safe`
+   への移設は、物理DBEキーのrelay中継（`reinject()`経由）まで巻き込み
+   ADR-119「解釈しない入力は消費しない」に反するため不採用——センチネル
+   （awase以外が生成しえない値）を`send_input_safe`にドロップした
+   r12のR12-B1とは事情が異なる。一方、呼び出し側テストで代替する案も
+   「到達経路の網羅への依存」を残すため見送り、より狭い共通点である
+   **この関数自身**（awase自身のactuation専用、relayトラフィックを
+   通さない）に置く。具体的には、`ime.rs:339`の既存ガード
+   `if crate::hook::win_key_held() { ... return false; }`を
+   `if crate::hook::ime_mode_key_injection_blocked_by_modifier() { ...
+   return false; }`へ拡張する（Winのみ→Alt/Win両方）。既存の呼び出し元
+   （`output/mod.rs:1201`のGJI半角英数トグル出口、`key_pipeline.rs:
+   2004`の`kp_restore_kana_from_half_width`）は呼び出し側で既に
+   同じ判定を行っているため、この拡張は冪等で挙動が変わらない。この
+   1行の拡張で、本機能の新しい呼び出し元だけでなく将来の呼び出し元も
+   自動的にカバーされる。**（Minor、2026-09-06、premortem役指摘）**
+   これにより既存2呼び出し元では判定が呼び出し側・関数内部の2箇所で
+   行われる二重チェックになる（`transport.rs:65-69`が戒める「同じ
+   判定を同一イベントに対して2回計算しない」という規律とは軽く矛盾
+   するが、挙動は変わらず実害も無い）。実装時に呼び出し側の重複判定を
+   削るか、コメントで「関数内部が唯一の判定点である」ことを明記して
+   重複を許容するかは実装判断とする。
+3. **`half_width_alnum_toggle_active`が真の間は発火しない**
+   （ADR-137 M-3と同型の競合——この区間は`kp_restore_kana_from_
+   half_width`が独自にscan付き`VK_DBE_HIRAGANA`を注入するため、
+   同時に0xF1を送ると競合する）。
+4. **`ime_open_before`（`kp_stage_shadow_ime_toggle`実行**前**の
+   `effective_open()`スナップショット）でカタカナ送信の可否を決める**
+   （2026-09-06、architect役・premortem役が独立に到達したR25-M1指摘で
+   最終確定。当初「カタカナ送信の直前に`effective_open()`を確認する」
+   としていたが、これは`kp_stage_shadow_ime_toggle`が
+   `write_sync_key`でbeliefを**同期的に**書き込んだ**後**に、自分が
+   直前に書いた値を読み返すだけの**恒真ガード**になっていた——r4の
+   NB7（`effective_open()`のライブ値読み）・NB11（`is_fresh_press`）・
+   `half_width_alnum_toggle_active`（ライブ値だと常にすり抜けるとdocが
+   警告）に続く4度目の同型の罠。加えて「`effective_open()`は実IMEの
+   観測値」という当初の記述自体も誤りで、正しくは**belief**（`ImeModel`
+   内部の意図値）であり、実IMEの観測値〈`observed`側〉とは別物
+   （両者の乖離は決定2-10のNB6/BUG-10として既に受容している）。
+
+**決定（`_before`スナップショット方式、NM30の解決を兼ねる）**:
+`half_width_alnum_toggle_before`と同じ命名規約で、`kp_stage_shadow_
+ime_toggle`を呼ぶ**前**に`ime_open_before = effective_open()`を
+取得しておく。**命名の注意（2026-09-06、architect役Nit指摘）**:
+この名前はr4〜r11で使われ、r12で機構ごと撤回された`ShadowToggleOutcome
+{ ..., ime_open_before }`（配送判断`actuation_will_fire`のための
+pre-toggleスナップショット）と同名である。値としては同じ
+「toggle実行前の`effective_open()`」だが、**消費者が異なる**
+（撤回された旧機構は配送判断に使っていたが、本機能はcharset送信の
+可否判断に使う）。実装時に変更履歴のr11関連記述と混同しないこと。
+
+- **`ime_open_before == false`**（この押下の前はIMEが閉じていた）:
+  この押下の役割は「IMEを開くこと」に限定し、**カタカナ送信は行わない**
+  （`kp_stage_shadow_ime_toggle`だけ呼ぶ）。
+- **`ime_open_before == true`**（この押下の前から既にIMEが開いていた）:
+  `kp_stage_shadow_ime_toggle`はno-op分岐になる（r5のNB6）が、それとは
+  独立に**カタカナ送信を行う**。
+
+この決定は、当初NM30が挙げた3択（(a)effectバッチ完了後へ回す、
+(b)beliefが元から開いていた場合のみ即送信、(c)順序反転を受容する）の
+うち**(b)を採用する形**になる——`ime_open_before`は`kp_stage_shadow_
+ime_toggle`実行前の値なので、IME ONのeffectが非同期（ImmCross等）で
+未完了のまま先にカタカナが飛ぶ、というNM30が懸念した順序反転の窓
+そのものが構造的に発生しない（IMEが閉じていた押下ではカタカナを
+そもそも送らないため）。副次的な利点として、この設計はユーザーが
+実機で報告した物理Shift+かなキーの挙動「1回目はひらがな、2回目で
+カタカナ」を、awase自身がconv-mode遷移ロジックを一切モデル化する
+ことなく自然に再現する——1回目は`ime_open_before=false`でIMEを開く
+だけ、2回目は`ime_open_before=true`でカタカナが送られる、という
+対応になる（ただしこれは結果が一致するだけであり、実IME内部が本当に
+同じ機構で動いているという証明ではない——設計判断の根拠はあくまで
+「IME ONのeffectと競合しない」という安全性であり、実機挙動との一致は
+独立した傍証として記録するに留める）。
+
+**`prepend_synthetic_shift_up = true`、ただし既存関数に1行の修正が
+必要（2026-09-06、architect役NB19指摘で最終確定——premortem役の`true`
+案・architect役の当初の`false`案は、ともに半分だけ正しかった）**:
+
+- `prepend=false`の場合、Shift解放は`push_release`（held_modifiers.rs:
+  52-63）が汎用`VK_SHIFT`（0x10、scan無し）で行う。ところが
+  `ime.rs:346-364`のdocが警告するとおり、`MapVirtualKeyW`は汎用
+  `VK_SHIFT`から**左Shiftのscan(0x2A)しか返さず**、Windowsの内部
+  キー状態は`VK_LSHIFT`のみ更新され`VK_RSHIFT`側は更新されない。
+  本機能はユーザーが右Shiftを押している場合も普通にあるため、
+  `prepend=false`だと右Shift押下中はOSから見たShiftが押下中のまま
+  残り、決定0 M4が確定させた「Shift押下中はDBEキーのKeyDown自体が
+  フックに配送されない」条件に抵触し、**送信そのものが不発**になり
+  うる。
+- `prepend=true`の場合、左右両方のscan付きShift-upを明示的に送るため
+  解放は確実になるが、現状の実装（`ime.rs:352`）は
+  `held_skip_alt.shift = held.shift && !prepend_synthetic_shift_up`
+  としており、`prepend=true`だとこれが`false`になる。`push_restore`
+  は`self.shift`（＝`held_skip_alt.shift`）が`false`だと、物理的に
+  まだ押されているShiftを**復元しない**（NM27で確認済みの問題が
+  そのまま残る）。
+
+**根本原因**: 既存関数は「呼び出し時点で物理Shiftは既に解放済み」
+という呼び出し元（左Shiftタップ検出・緊急解除）しか持たなかったため、
+「確実な解放」と「正しい復元」を両立させる必要が無かった。本機能
+（ユーザーがShiftを押し続けたまま代入先キーを押す）は、**物理Shiftが
+押下中のまま呼ばれる初めての呼び出し元**であり、この2つを両立させる
+必要がある。
+
+**決定（既存関数への修正を含む）**: `send_ime_mode_key_with_shift_
+release_prefix`の`held_skip_alt`の構築（`ime.rs:350-354`）を、
+`prepend_synthetic_shift_up`の値に関わらず`shift: held.shift`に変更する
+（`&& !prepend_synthetic_shift_up`の条件を削除）。本機能からは
+`prepend_synthetic_shift_up = true`で呼ぶ。この修正後:
+- `prepend=true`により`push_release`が左右両方のscan付きShift-upに
+  加えて汎用`VK_SHIFT`のupも1つ余分に送るが、KeyUpの重複は同ファイル
+  他所の既存判断（重複は無害）と同型で実害が無い。
+- `push_restore`は`held_skip_alt.shift = held.shift`（修正後は常に
+  物理状態をそのまま反映）に基づき、復元時点の実際の物理キー状態を
+  正しく見て復元する。
+- **既存の呼び出し元（GJI半角英数トグルの出口）への影響**（2026-09-06、
+  premortem役指摘で precise 化）: `held.shift == false`の間（＝通常時、
+  既存呼び出し元がこの状態にある大多数のケース）は無影響。ただし
+  「呼び出し時点でまだ物理的にShiftが押されているレース」が仮に
+  起きた場合、修正前は復元されなかったものが修正後は正しく復元される
+  ようになる——これは既存呼び出し元にとっても悪化ではなくより正しい
+  方向への変化である。
+
+この修正自体もfix-requires-evidence.mdの再発ファミリー
+（force-write/actuationターゲット、`ime.rs`）に該当するため、
+実装時に回帰テスト（「物理Shiftを保持したまま呼んだ場合に正しく
+復元されること」「既存呼び出し元の挙動が変わらないこと」の両方）が
+必要。
+
+**さらに1点、上記修正後も残る問題（2026-09-06、premortem役R23-M1
+指摘）**: `push_restore`自体の復元送信（`held_modifiers.rs:87-89`）は
+`make_key_input_ex(VK_SHIFT, false, marker)`——**汎用VK_SHIFT**であり、
+左右どちらの物理キーが押されていたかを区別しない。ユーザーが右Shiftを
+押していた場合、`push_release`側は`prepend=true`のLSHIFT/RSHIFT両方の
+scan付きupにより両方確実に解放されるが、**`push_restore`が送る復元は
+汎用VK_SHIFTのdown**であり、`MapVirtualKeyW`の性質上これは内部的に
+「左Shiftが押された」と記録される。ユーザーが実際に離すのは右Shiftな
+ので、この合成的な「左Shift押下」に対応するupは永久に来ず、**左Shiftが
+OS内部でstuckする**（ADR-141決定7が繰り返し警戒してきた「stuck-trueは
+危険側」）。
+
+**決定（restoreも左右を区別する）**: 本機能専用に、`HeldModifiers::read()`
+が既に判定している`is_physical_key_down(VK_LSHIFT)`/
+`is_physical_key_down(VK_RSHIFT)`を使い、呼び出し時点でどちらの物理
+Shiftが押されているかを記録しておく。解放は`prepend=true`のとおり
+両方をscan付きで送ってよい（重複解放は無害）が、**復元は記録しておいた
+側だけを`make_scan_key_input`で送る**（復元時点で該当側がまだ物理的に
+押されているかを再確認したうえで）。これは既存関数の2つのモード
+（`prepend=true`/`false`）のどちらにも無い第3の振る舞いのため、
+`send_ime_mode_key_with_shift_release_prefix`に第3のモードを追加する
+か、本機能の呼び出し側で個別に組み立てるかは実装判断とするが、
+**「解放は両側可、復元は実際に押されていた側のみ」という要件は
+両立させる必要がある**ことをここに明記する。両Shiftが同時に押されて
+いる稀なケース（例: 両手でShiftを押しながら片手で代入先キーを押す）
+では両側とも復元対象になる。
+
+**判定を行うスレッド（premortem役R22-m1指摘）**: `event.modifier_
+snapshot`は決定1の挿入点（`hook.rs:1137`付近）には存在せず
+（`hook.rs:1173`で構築される）、r4のNB7/R4-M2で2度踏んだのと同じ
+「ライブ値/挿入点に存在しない値」の罠になる。したがって本機能の
+Shift判定は**メインスレッドの`kp_run_inner`側**で行う——
+`event.modifier_snapshot.shift`と、その押下が実際に`to`=かな方向の
+fresh pressだった証跡（`event.ime_relevance.sync_direction ==
+Some(ShadowImeAction::TurnOn)`、決定2-3が載せる値）の両方を条件にする。
+
+**決定9-1への追記（premortem役R22-m2指摘）**: `VK_DBE_KATAKANA`は
+`vk_may_mutate_conv`が真を返すvk範囲（0xF0-0xF6）に含まれるため、
+本経路は`send_input_safe`の`conv_mutation::bump()`を通る——決定9-1が
+「センチネル方式では役割代入由来のイベントがconv_mutationゲートを
+通らなくなった」と整理していたことへの例外が1件増える。
+`fix-requires-evidence.md`の「conv mode」再発ファミリー該当のため、
+実装時に回帰テストか`known-bugs.md`記録が必要。
+
+**決定2-10項目1・決定7の既知の制限との整合（NM26/R22-M2指摘）**:
+決定2-10項目1は「代入先キーはopen軸のみを操作し、charset軸の復帰は
+再現しない」としていたが、本決定はcharset軸（カタカナ）を**GJI限定で**
+操作する専用経路を追加するものであり、決定2-10項目1が言う「BUG-25/
+ADR-107の制約〈GJI/MS-IMEでexit実装を共有しない〉を満たす専用経路」に
+該当する（GJIとMS-IMEで実装を分けずに済んでいるのは、本機能が
+**MS-IME側では発火しない**——scanを付けていないため——ことの裏返しで
+あり、両IMEで同一の挙動を共有しているわけではない）。決定2-10項目1・
+決定7の既知の制限は、「open軸のみ」「Shift併用効果は再現されない」を
+それぞれ「GJIに限りcharset軸〈カタカナ〉も操作する。MS-IMEは対象外」
+「`to`=かな方向はGJIに限りShift併用でカタカナ相当を再現する」と訂正
+する。
+
+**未解決の疑問（実装前に確認が必要、次回レビューで検証）**:
+1. GJI限定機能であることをPhase Cのユーザー向け説明（GUI）にどう
+   表現するか。
+2. `from`=かな方向のhold-state（決定4）との相互作用——`to`方向の
+   fresh press判定は安全な3キー側の`{KEY}_WAS_DOWN`を使うため直接の
+   衝突は無いはずだが、次回レビューで確認する。
+3. **【解決済み、architect役NM30→R25-M1の`_before`スナップショット
+   方式で解決】IME ONとカタカナ送信の順序保証**: 決定7-r23の項目4
+   参照。`ime_open_before`（toggle実行前のスナップショット）で
+   分岐することにより、IME ONのeffectが非同期で未完了のままカタカナが
+   飛ぶという順序反転の窓が構造的に発生しなくなった（IMEが閉じていた
+   押下ではカタカナをそもそも送らない）。
 
 ### 決定8: config形式の記号は本ADRで確定し、設定GUIのプリセット表現のみPhase Cへ切り出す
 
