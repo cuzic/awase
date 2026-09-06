@@ -2,13 +2,11 @@
 
 ## ステータス
 
-**r9（Opus 2体の敵対的レビューを9ラウンド実施。r8の`is_fresh_press`が
-`PHYSICAL_KEY_DOWN_AT_MS`という別の状態機械のライフサイクルを借用した
-ことで生じた二重情報源問題（NB12）を発見・修正。fresh press判定の
-情報源を役割代入自身の`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`
-〈`role_substitution_fresh_press: Option<bool>`〉に一本化し、クリア
-箇所をADR-141決定7＋本ADR決定5の5箇所と完全に一致させた。r10レビュー
-未実施）。**
+**r10（Opus 2体の敵対的レビューを10ラウンド実施。r9でBlockerは両
+エージェントともゼロと判定され、設計の骨格が収束。残る指摘は記述の
+訂正・補強のみ——フォールバックの正当化訂正、ADR-141/142間の
+`{KEY}_WAS_DOWN`更新規則の不一致の申し送り、決定9-3との区別の明記。
+r11レビュー未実施）。**
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -324,6 +322,37 @@ R8-m1〜m3→フィールド型の変更・テスト計画・将来の変更へ�
 管理と本質的に同じものだったことに、8ラウンドを経てようやく気づいた
 形である。
 
+### レビュー指摘との対応表（r9→r10、10ラウンド目）
+
+**両エージェントとも新規Blockerゼロと判定した初めてのラウンド。**
+r0〜r9の10ラウンドを通じて設計の骨格（決定2のアーキテクチャ転換・
+fresh press時点でのラッチ化・情報源の一本化）はr9で安定し、r10で
+指摘されたのはいずれも記述の訂正・補強のみだった。
+
+architect役: NM17(フォールバックの正当化がr9で「不要」と誤って
+宣言されていた)→対で来ないinjectedによる`was_down`stuckへの保険
+として正当化を訂正、NM18(ADR-141決定1とADR-142決定B7がinjected
+イベントでの`{KEY}_WAS_DOWN`更新有無について食い違う)→本ADRは
+「injectedでは更新しない」に依存すると明記しADR-141側への申し送りと
+する、Minor1〜3・Nit1→フィールド契約の明確化・フォールバック発火時の
+正しさの論証追加・依存値一覧表への`event_eligible`行追加・「一致
+させた」から「一致が構造的に従う」への言い換え。
+premortem役: R9-M1(決定9-3が却下した出自フィールドとの性質の違いが
+未記載)→キーライフサイクルの事実である旨を明記して区別、R9-m1
+（`clear_hook_latches_for_app_disable`のLeave時にも同型の再確定が
+起こりうる）→既知の制限に追記、R9-m2（`SCAN_KANA_WAS_DOWN`由来の値に
+現時点で消費者が無い）→フィールドdocに明記、R9-m3（guardテスト・
+journal serde互換への波及）→決定8のテスト計画に追記。
+
+10ラウンド共通の総括: r9でBlockerがゼロになった後もr10で新たな
+Major指摘（NM17・NM18）が出たことは、「Blockerが無いこと」と「記述が
+実装者を正しく導けること」が別の基準であることを示している。特に
+NM17（前ラウンドで入れた仕掛けの正当化が、別の変更のついでに書き
+換えられて意図を失う）は、r0〜r9で繰り返し観測されたパターン
+（「改訂が新Blockerを生む」）の記述版といえる——コードだけでなく
+ADR自身の文章も、変更のたびに「なぜこの仕掛けが必要か」の一貫性を
+検証する必要がある。
+
 ## 背景
 
 ### ADR-141決定0がかな系キーを除外した理由（再掲）
@@ -628,24 +657,62 @@ press`を`PHYSICAL_KEY_DOWN_AT_MS`の更新ブロック内で計算する設計�
 この判定は`is_keydown && !was_down`という式そのもので、役割代入対象の
 fromキーまたは`to`側で使われる安全な3キーの物理キーについてのみ、
 この`was_down`を参照する。情報源をこの1つに統一することで、クリア箇所
-は自動的にADR-141決定7の3箇所＋本ADR決定5の2箇所（計5箇所）に揃い、
-二重管理そのものが構造的に消える。
+は（人手で揃えるのではなく）**定義から自動的に**ADR-141決定7の3箇所
+＋本ADR決定5の2箇所（計5箇所）に一致する（r10訂正、architect役Nit1
+指摘: r8時点の失敗〈`PHYSICAL_KEY_DOWN_AT_MS`という独立した状態を
+手で揃えようとして食い違った〉との本質的な違いは「一致させた」では
+なく「一致が構造的に保証される」ことにある。将来の変更提案——例えば
+性能のために専用キャッシュを別途持つ——に対する歯止めとして、この
+違いを明記する）。
+
+**injectedイベントでの`{KEY}_WAS_DOWN`更新有無への依存（r10追加、
+architect役NM18指摘）**: `role_substitution_fresh_press`が`{KEY}_
+WAS_DOWN`から導かれるようになったことで、この状態に新しい消費者が
+できた。したがって「injectedイベントが`{KEY}_WAS_DOWN`を更新するか」
+が本ADRの正しさにとって重要になったが、親ADR2本の記述が食い違って
+いる——ADR-141決定1は「役割代入の適用とhold-stateの更新は、いずれも
+`!is_injected`ガード内で行う」（injectedでは更新しない）とする一方、
+ADR-142決定B7は「hook.rs側は`!is_injected`の早期returnゲートを持たず、
+安全な3キーのイベントを無条件に`decide_role_substitution`へ渡す」
+（素直に読むと`was_down`の更新も無条件になる）としている。B7の読み方
+を採ると、ADR-141決定1が名指しで防いだstuck-`was_down`が復活する
+（上記フォールバックが`None`の場合のみを救うため、完全な保険には
+ならない）。**決定**: 本ADRは「injectedイベントは`{KEY}_WAS_DOWN`を
+更新しない」という前提に依存すると明記し、ADR-141/142側のこの不一致
+を解消対象として申し送る（ADR-141決定7の3箇所への波及をADR-141本体へ
+参照ポインタとして追加したのと同じ手当て）。既存の`apply_alt_
+impersonation`（`hook.rs:86-99`）が`ALT_L_WAS_DOWN.store(is_keydown,
+...)`を無条件に行っている実装は、素直に真似るとB7の読み方になる
+ため、実装者が誤りやすい箇所として注意を促す。
 
 **フィールドの型（r9訂正、NB11(a)の再解決）**: 汎用の`is_fresh_press:
 bool`ではなく、`role_substitution_fresh_press: Option<bool>`とする
 （`None`＝役割代入の対象外〈安全な3キー・かなスロットのいずれでも
 ない、またはinjected〉のイベント、`Some(true)`＝fresh press、
-`Some(false)`＝auto-repeat）。`bool`固定にすると「fresh pressの'A'が
-非freshと記録される」という嘘のフィールドをcoreの公開構造体に持ち込む
-ことになる（`feedback_dont_provision_ahead_without_consumer_logic`が
-警告する「消費ロジックの無い予備フィールドの先回り」と同型のリスク、
-premortem役R7-M2・R8-m1が指摘した「injectedイベントでは常にfalse」
-という不正確さも`None`で自然に表現できる）。`key_classification`/
-`ime_relevance`/`physical_pos`/`modifier_key`と同じ「プラットフォーム
-層が事前に決定する」フィールド群の一員として自然に収まり、VKの
-マジックナンバーではないためADR-019にも抵触しない（`docs/layer-
-boundaries.md`のカテゴリでいえば、これら既存フィールドと同じ
-「プラットフォーム層が事前分類してcoreへ渡す情報」に該当する）。
+`Some(false)`＝auto-repeat）。安全な3キー・かなスロットの4オブジェクト
+のうち、config上ルールが明示されていない恒等写像のキーについても
+`{KEY}_WAS_DOWN`自体は存在するため`Some`になる（r10追加、architect役
+Minor1指摘: フィールドの契約として明記する）。`bool`固定にすると
+「fresh pressの'A'が非freshと記録される」という嘘のフィールドをcoreの
+公開構造体に持ち込むことになる（`feedback_dont_provision_ahead_
+without_consumer_logic`が警告する「消費ロジックの無い予備フィールド
+の先回り」と同型のリスク、premortem役R7-M2・R8-m1が指摘した
+「injectedイベントでは常にfalse」という不正確さも`None`で自然に表現
+できる）。`key_classification`/`ime_relevance`/`physical_pos`/
+`modifier_key`と同じ「プラットフォーム層が事前に決定する」フィールド
+群の一員として自然に収まり、VKのマジックナンバーではないためADR-019
+にも抵触しない（`docs/layer-boundaries.md`のカテゴリでいえば、これら
+既存フィールドと同じ「プラットフォーム層が事前分類してcoreへ渡す情報」
+に該当する）。
+
+**決定9-3との区別（r10追加、premortem役R9-M1指摘）**: 決定9-3は
+`RawKeyEvent`に「役割代入由来か」という**出自**（provenance）を示す
+フィールドを追加する案を、スコープクリープ・層境界を理由に却下した。
+`role_substitution_fresh_press`はこれとは性質が異なる——出自ではなく
+「このKeyDownがauto-repeatかどうか」という**キーライフサイクルの
+事実**であり、`key_classification`/`physical_pos`と同じ「platformが
+事前に確定してcoreへ渡す情報」の系列に属する。両者は似て見えるが
+別物であることを明記する。
 
 **vkキーであることの限界が消えた（r9、NM16は解消）**: r8時点では
 `PHYSICAL_KEY_DOWN_AT_MS`がvkインデックスであるため、物理かなキー
@@ -699,20 +766,40 @@ press`の情報源を`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`に統一した
 （古い）dispositionが誤って適用される」ことに限定される（R6-M2の
 限定により影響範囲は0xF2のイベントのみ）。
 
-**fresh press自身が失われた場合のフォールバック（r8追加、premortem役
-R7-M3指摘への対応）**: `role_substitution_fresh_press`を持つKeyDown
-自体が`HOOK_KEYS`のoverflow（`hook.rs:1100-1102`／`:1203-1205`）で
-`kp_run_inner`に届かない場合、以後のauto-repeat KeyDownは
-`Some(false)`のままラッチ`None`を読み続け、既存判定へのフォールスルー
-が繰り返される（MS-IME/非TSFでは`Allow`＝auto-repeatの間ずっと生の
-0xF2がOSへ流れる、NB9の縮小版）。**決定**:
-`role_substitution_fresh_press`を主たる判定に使いつつ、ラッチが
-`None`のまま静的3条件
-を満たすKeyDownを観測した場合も評価点として扱う
-（`role_substitution_fresh_press`が`Some(false)`でもラッチが`None`
-なら動的条件を評価し確定させる）。r6の推論
-方式（`None`+KeyDown＝評価）をフォールバックとして併用することで、
-fresh press自身が失われた場合でも次のKeyDownで確実に確定させる。
+**フォールバック（r8追加。r10で正当化を訂正、architect役NM17指摘への
+対応）**: `role_substitution_fresh_press`を主たる判定に使いつつ、
+ラッチが`None`のまま静的3条件を満たすKeyDownを観測した場合も評価点
+として扱う（`role_substitution_fresh_press`が`Some(false)`でもラッチ
+が`None`なら動的条件を評価し確定させる）。
+
+**r10での訂正**: r9は情報源統一の効果を「r8時点の自己修復の論証は、
+そもそも取りこぼし自体が起こらなくなったため不要になった」と書いて
+いたが、これは不正確だった——**このフォールバックは依然として必須**
+であり、正当化すべき危険が変わっただけである。
+
+情報源統一後も、`role_substitution_fresh_press`の元になる`{KEY}_
+WAS_DOWN`が「対で来ない注入」でstuckする経路が残っている。ADR-141
+決定1が明記するとおり「Down/Upが対で来ない注入（リレーツールでは
+珍しくない）で`was_down`がstuckすると、次の物理押下がauto-repeat
+扱いになり代入がスキップされる」。例えばMWB・リモートデスクトップ・
+AutoHotkeyが物理変換キーのinjected KeyDownだけを送りKeyUpを送らない
+場合、`CONVERT_WAS_DOWN`はtrueのまま残る。その後ユーザーが実際に
+物理変換キーを押すと、`role_substitution_fresh_press`は`Some(false)`
+（auto-repeat扱い）になり、fresh pressビットだけではこの新規押下を
+評価点として認識できない——このときラッチが`None`であることを条件と
+する本フォールバックだけが評価を救う。
+
+さらに、`HOOK_KEYS`のoverflow（`hook.rs:1100-1102`／
+`:1203-1205`）でfresh press自体がロストするケースも、`None`という
+条件が結果的にカバーする（NB9の縮小版の再発防止）。この経路で
+フォールバックが正しい値を確定できる理由は自明ではないため明記
+する: fresh pressのKeyDownがoverflowで`kp_run_inner`に届かなかった
+場合、そのイベントは`kp_stage_shadow_ime_toggle`も走らせていない
+ため**actuationも同時に失われている**——beliefは変化しないままで
+ある。したがって次のauto-repeat KeyDownが届いた時点で
+`kp_stage_shadow_ime_toggle`が初めてbeliefを変え、`shadow_toggled`
+が真になる。フォールバック発火時点の動的条件（`actuation_will_
+fire`）は、本来のfresh press時点で評価していた場合と同じ値になる。
 
 **確定する条件（fresh pressビットが真、またはラッチが`None`のKeyDown
 時点でのみ評価）**:
@@ -947,6 +1034,14 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
     ハザードではない（安全な3キー同士の役割代入でも同型の再確定が
     起こりうる）。既知の限定的な制限として記録するに留める——実害は
     当該押下の残り時間に限定され、指を離せば自己修復する。
+
+    **r10追加（premortem役R9-m1指摘）**: 同型の再確定は
+    `clear_hook_latches_for_app_disable`の`SuppressionEdge::Leave`
+    （`disable_apps`対象ウィンドウから戻る瞬間）でも起こりうる——
+    押下中に`disable_apps`対象へフォーカスが移り、戻ってきた時点で
+    hold-stateがクリアされていれば、`reset_physical_key_state`と同型
+    のmid-hold再確定が発生する。実害の範囲・自己修復の性質は上記と
+    同一である。
 11. **依存する値の一覧表（r8追加、architect役の総括での推奨）**:
     r0〜r7で発見されたBlockerは、いずれも「決定2が依存する既存の値を
     いつ・どこで読むか」という同一クラスの問題だった。以下に決定2が
@@ -961,6 +1056,7 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
     | `kana_role_active` | configロード/reload時 | `:392` | する（押下中のreload）→fresh pressでのみ評価し、確定後はラッチが優先される |
     | `role_substitution_fresh_press` | 決定1の挿入点（`hook.rs:1135`以降、`decide_role_substitution`に渡す`was_down`と同一） | `:392`（`RawKeyEvent`経由） | しない（`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`という単一の情報源から計算、ADR-141決定7＋決定5の5箇所で正しくクリアされる） |
     | `profile` | `key_pipeline.rs:385` | `transport.rs:260` | する（フォーカス遷移）→NM13の既知の制限（決定4参照） |
+    | `event_eligible` | 決定1の挿入点（`!alt_impersonated && !is_injected`） | 同挿入点（`decide_role_substitution`の引数） | しない（同一イベント内で計算・消費）。ただしこれが`{KEY}_WAS_DOWN`の更新を条件づけるか否かが未定（r10追加、architect役Minor3・NM18参照） |
 
     この表から、「押しっぱなしで0xF2が繰り返し届かないこと」
     （`role_substitution_fresh_press`の行）・「押下中のreloadでKeyUp
@@ -968,6 +1064,16 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
     遷移でorphan
     KeyUpが出ないこと」（`profile`の行）という3つの実機受け入れ条件が
     直接導ける。
+12. **`SCAN_KANA_WAS_DOWN`由来の値には現時点で消費者が無い（r10追加、
+    premortem役R9-m2指摘）**: `from`=かな方向のイベントは決定2の静的
+    3条件（`scan_code != SCAN_KANA`）で除外されるため、かなスロット
+    由来の`role_substitution_fresh_press`（`Some`/`None`）を読む消費者
+    は現時点で存在しない（決定4/決定5のフック側判定はhook.rs内で
+    完結しており、この値を参照しない）。`feedback_dont_provision_
+    ahead_without_consumer_logic`の観点から、フィールドのdocに
+    「かなスロットについては値を持つが、現時点の消費者は無い（決定2の
+    ラッチは`to`=かな方向のみを対象とする）」と明記する——将来
+    「使われていないから削除してよい」と誤判断されないようにする。
 
 ### 決定3: 全単射モデルを4要素（安全な3キー＋かなスロット）へ拡張する
 
@@ -1378,7 +1484,15 @@ architect役の依存値一覧表指摘）**: `role_substitution_fresh_press`が
 「KeyUpで`Some(false)`」「離してから再押下で`Some(true)`」の3ケースを
 追加する（`windows-build` CI対象）。`reset_physical_key_state`
 （`panic_reset()`経由で押下中に呼ばれうる）が呼ばれた場合の挙動
-（決定2の既知の制限、下記参照）もテストで確認する。
+（決定2の既知の制限、下記参照）もテストで確認する。**r10追加
+（premortem役R9-m3指摘）**: `RawKeyEvent`へのフィールド追加は、
+`crates/awase-windows/tests/architecture_guard.rs`/
+`layer_boundary_guard.rs`（ソーススキャン型のguardテスト）や
+`src/config.rs`のround-trip系テストにも波及しうる。guardテストが
+新フィールドを弾かないことの確認と、journal記録
+（`journal.rs`の`KeyInput`）のserde後方互換（`#[serde(default)]`等に
+よる旧journalとの互換維持、premortem役R8-m1で既出）を、決定計画に
+並べて明記する。
 
 ### 決定9: 代入後vkを基準に評価される下流の合流点を棚卸しする
 
@@ -1720,3 +1834,22 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
   （`reset_physical_key_state`によるmid-holdの再確定）は、情報源統一
   後もADR-141が既に持つ性質として既知の制限に明記するに留めた
   （本ADRが新規に導入するハザードではない）。
+- r10（2026-09-06）: Opus 2体の敵対的レビュー10ラウンド目。**両
+  エージェントとも新規Blockerゼロと判定した初めてのラウンド**。
+  architect役のMajor2件——NM17（r9がフォールバックの正当化を「取り
+  こぼし対策として不要になった」と誤って書き換えていたが、フォール
+  バック自体は本文に残っており、対で来ないinjectedイベントによる
+  `was_down`のstuck〈ADR-141決定1が明記する危険〉に対する保険として
+  引き続き必須だった）、NM18（ADR-141決定1とADR-142決定B7が、
+  injectedイベントで`{KEY}_WAS_DOWN`を更新するか否かについて食い違って
+  おり、本ADRがどちらに依存するかを表明していなかった）——に対応し、
+  フォールバックの正当化を訂正、「injectedでは更新しない」への依存を
+  明記してADR-141/142側へ申し送った。premortem役のMajor1件（R9-M1:
+  決定9-3が却下した出自フィールドとの性質の違いが未記載）に対応し、
+  `role_substitution_fresh_press`は出自ではなくキーライフサイクルの
+  事実である旨を明記。Minor4件（`clear_hook_latches_for_app_disable`
+  Leave時の同型再確定・`SCAN_KANA_WAS_DOWN`由来の値に現時点で消費者が
+  無いことの明記・guardテスト/journal serde互換への波及・依存値一覧
+  表への`event_eligible`行追加）も反映した。r0〜r9で繰り返された
+  「改訂が新Blockerを生む」パターンのADR記述版として、NM17を教訓として
+  残す。
