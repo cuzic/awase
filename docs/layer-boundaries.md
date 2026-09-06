@@ -317,6 +317,10 @@ grep -rn "SendMessageTimeoutW\|SendMessage\b" crates/awase-windows/src/ \
 外からは `arm_tap` / `note_physical_key_down` / `on_shift_up` /
 `commit_enter_imc` / `commit_enter_gji` / `begin_restore_kana` /
 `rearm_after_failed_gji_exit` 等のメソッド経由でのみ読み書きする。
+**Shift KeyUpのentry/exit判定は`on_shift_up`が唯一の入口**——内部で使う
+`take_shift_up_kind_disarming_both`はモジュールprivate（`pub`にしない）で
+あり、外部から個別に呼んで`on_shift_up`のpolicy/entry_ime_ok判定を迂回
+できないようにする。
 
 **Why**: `.claude/rules/ime-belief-architecture.md` の「蓄積する値は書き込み
 経路を1箇所の関数に集約し、フィールドを private 化する」という判断基準
@@ -341,11 +345,16 @@ SendInput成功後のみ）という非対称な不変条件が、呼び出し�
 
 **検出**:
 ```sh
-grep -rn "pub left_tap_armed\|pub right_tap_armed\|pub conv_guard_pending\|pub toggle_held\|pub entry_policy" \
+# `pub`単体だけでなく `pub(crate)`/`pub(super)` 等の可視性修飾子付きの
+# 再宣言も拾えるよう、`pub` の直後に任意の `(...)` を許容する形にする
+# （M4: 素朴な `pub {field}` リテラル一致だと `pub(crate) {field}` を
+# 検出できなかった、という指摘の反映）。
+grep -rnE "pub(\([a-zA-Z_:]+\))? *(left_tap_armed|right_tap_armed|conv_guard_pending|toggle_held|entry_policy)" \
   crates/awase-windows/src/state/half_width_alnum.rs
 ```
 期待: 0件（`crates/awase-windows/tests/architecture_guard.rs::
-half_width_alnum_state_fields_are_not_accessed_directly` が本番コード全体の
+half_width_alnum_state_fields_are_not_accessed_directly` が
+`declares_pub_field`（修飾子付き再宣言も検出）経由で本番コード全体の
 生アクセス0件と併せて自動検知する）。
 
 ---
@@ -378,7 +387,7 @@ grep -rnE "0x[0-9a-fA-F]{2,4}" crates/awase-windows/src/ | grep -v "vk\.rs\|test
 grep -rn "SendMessageTimeoutW" crates/awase-windows/src/ | grep -v "imm\.rs\|ime\.rs"
 
 # カテゴリ F
-grep -rn "pub left_tap_armed\|pub right_tap_armed\|pub conv_guard_pending\|pub toggle_held\|pub entry_policy" \
+grep -rnE "pub(\([a-zA-Z_:]+\))? *(left_tap_armed|right_tap_armed|conv_guard_pending|toggle_held|entry_policy)" \
   crates/awase-windows/src/state/half_width_alnum.rs
 ```
 
