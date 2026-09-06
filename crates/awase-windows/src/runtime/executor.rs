@@ -852,7 +852,9 @@ impl DecisionExecutor {
                 };
             win32_async::spawn_local(async move {
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    tracing::debug!("[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle");
+                    tracing::debug!(
+                        "[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle"
+                    );
                     crate::runtime::message_handlers::post_async_ime_apply_complete(
                         open,
                         awase::platform::ImeOpenOutcome::UnsafeToToggle,

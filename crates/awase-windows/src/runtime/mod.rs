@@ -1298,7 +1298,11 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", crate::keymap::KeymapConflictLevel::Warn);
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key",
+                    crate::keymap::KeymapConflictLevel::Warn,
+                );
         }
     }
 
@@ -1709,7 +1713,11 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", crate::keymap::KeymapConflictLevel::Debug);
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key",
+                    crate::keymap::KeymapConflictLevel::Debug,
+                );
         }
     }
 
@@ -1895,7 +1903,9 @@ unsafe fn cancel_ime_composition() {
     //         `ImmContextGuard` は RAII で `ImmReleaseContext` を呼ぶため、
     //         コンテキストリークは発生しない。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
-        tracing::debug!("[ctrl-bypass] ImmGetContext returned NULL for hwnd={hwnd:?}, cancel skipped");
+        tracing::debug!(
+            "[ctrl-bypass] ImmGetContext returned NULL for hwnd={hwnd:?}, cancel skipped"
+        );
         return;
     };
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04

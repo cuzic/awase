@@ -156,8 +156,8 @@ enum CaptureTarget {
 /// 桁違いに少ない）。ここでは `log`→`tracing` の移行（決定1）のみ行い、
 /// ファイルへは `BufWriter` を挟まず直接書き込む（＝1行ごとに実質 flush 済み）。
 fn init_logging(debug_console: bool) {
-    use tracing_subscriber::util::SubscriberInitExt as _;
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::util::SubscriberInitExt as _;
 
     let log_path = std::env::current_exe()
         .ok()
@@ -166,8 +166,7 @@ fn init_logging(debug_console: bool) {
 
     if debug_console {
         attach_parent_console();
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)

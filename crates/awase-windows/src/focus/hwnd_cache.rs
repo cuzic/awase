@@ -94,7 +94,9 @@ impl HwndImeCache {
                 HWND_CACHE_MAX_AGE_MS,
             );
         } else {
-            tracing::debug!("HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe");
+            tracing::debug!(
+                "HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe"
+            );
         }
         None
     }

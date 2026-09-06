@@ -254,7 +254,9 @@ impl Output {
 
         if prepend_f2_warmup {
             if session_expired {
-                tracing::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
+                tracing::debug!(
+                    "[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)"
+                );
             } else {
                 tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
@@ -673,7 +675,9 @@ impl Output {
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
-                    tracing::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
+                    tracing::debug!(
+                        "    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)"
+                    );
                     return;
                 }
                 Self::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
@@ -737,7 +741,9 @@ impl Output {
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
-                    tracing::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
+                    tracing::debug!(
+                        "    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)"
+                    );
                     return;
                 }
                 // scan code 付き（VkMarker::InjectedWithScan）、send_romaji_batch_immediate

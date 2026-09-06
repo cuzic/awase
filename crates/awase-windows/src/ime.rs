@@ -968,7 +968,9 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         let conv = conv as u32;
         let is_native = conv & IME_CMODE_NATIVE != 0;
         let is_roman = conv & IME_CMODE_ROMAN != 0;
-        tracing::debug!("read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}");
+        tracing::debug!(
+            "read_ime_state_fast: conv=0x{conv:08X} native={is_native} roman={is_roman}"
+        );
     }
 
     FastImeProbeResult {

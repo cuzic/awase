@@ -134,8 +134,7 @@ pub(super) fn init_logging(debug_console: bool) {
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }
         // --debug の stderr 経路は ADR-139 決定2 のスコープ外（同期のまま）。
-        let filter =
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)

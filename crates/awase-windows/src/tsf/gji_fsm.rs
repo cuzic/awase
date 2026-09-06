@@ -840,7 +840,9 @@ impl TimedStateMachine for GjiFsm {
             // ── StartComposition ───────────────────────────────────────────
             GjiEvent::StartComposition => match &self.state {
                 GjiState::OnWarm { .. } => {
-                    tracing::debug!("[gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)");
+                    tracing::debug!(
+                        "[gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)"
+                    );
                     self.transition_warm_to_composing()
                 }
 
@@ -954,7 +956,9 @@ impl TimedStateMachine for GjiFsm {
                 );
                 if is_medium_or_long_cold {
                     if let GjiState::OnCold { kind, .. } = &self.state {
-                        tracing::debug!("[gji-fsm] NativeF2Consumed: {kind:?} cold, probe continues");
+                        tracing::debug!(
+                            "[gji-fsm] NativeF2Consumed: {kind:?} cold, probe continues"
+                        );
                     }
                     Response::consume()
                 } else {

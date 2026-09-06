@@ -50,7 +50,9 @@ pub(super) fn create_profile_ctx(
     unsafe {
         let mgr: ITfInputProcessorProfileMgr =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
-                .map_err(|e| tracing::warn!("[tip-detect] CoCreateInstance(ProfileMgr) failed: {e}"))
+                .map_err(|e| {
+                    tracing::warn!("[tip-detect] CoCreateInstance(ProfileMgr) failed: {e}")
+                })
                 .ok()?;
         let profiles: ITfInputProcessorProfiles = mgr
             .cast()

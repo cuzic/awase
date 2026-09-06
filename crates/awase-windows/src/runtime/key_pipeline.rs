@@ -1208,7 +1208,9 @@ impl Runtime {
                 // ため（2026-07-11 codexレビュー: 単に書き戻すとbeliefだけromaji-capable
                 // に戻り実convは半角英数のままの壊れた中間状態になる）。
                 if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                    tracing::info!("[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                    tracing::info!(
+                        "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
+                    );
                     self.kp_restore_kana_from_half_width(false);
                 } else {
                     self.apply_input_mode_correction(
@@ -1317,7 +1319,9 @@ impl Runtime {
                     crate::state::ime_event::OpenApplyReason::ShadowToggle,
                 );
             }
-            tracing::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false");
+            tracing::debug!(
+                "[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false"
+            );
         }
         tracing::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
@@ -2168,7 +2172,9 @@ impl Runtime {
                         }
                     }
                 }
-                tracing::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+                tracing::warn!(
+                    "[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了"
+                );
                 // 復元が最終的に失敗した場合は override を解除し、通常の安全弁
                 // （IMC 未確認なら give-up latch）へ戻す。延長したまま放置すると
                 // 本当に IMC が読めない環境でも give-up が永久に立たなくなる。
@@ -2592,7 +2598,9 @@ impl Runtime {
                 } else {
                     // warn: バグ報告に添付する awase.log（info レベル既定）に残す
                     // ため。BUG-34 横展開の切り分け材料。
-                    tracing::warn!("[focus-conv-check] SendHealth degrade で conv 読み取りを見送り");
+                    tracing::warn!(
+                        "[focus-conv-check] SendHealth degrade で conv 読み取りを見送り"
+                    );
                 }
             }
         }
@@ -2709,7 +2717,9 @@ impl Runtime {
                                     })
                                     .await;
                                 if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                                    tracing::warn!("[ImmCrossProbe] romaji 修正に失敗: {outcome:?}");
+                                    tracing::warn!(
+                                        "[ImmCrossProbe] romaji 修正に失敗: {outcome:?}"
+                                    );
                                 }
                             });
                         }

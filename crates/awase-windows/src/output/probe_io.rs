@@ -558,7 +558,9 @@ where
                     match target {
                         TransmitTarget::Tsf => {
                             if io.gate_is_bypass() {
-                                tracing::debug!("[do-transmit] gate=Bypass, skipping TSF injection");
+                                tracing::debug!(
+                                    "[do-transmit] gate=Bypass, skipping TSF injection"
+                                );
                                 break 'stage Some(StageEndReason::GateBypass);
                             }
                             if chars.is_empty() {

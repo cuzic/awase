@@ -278,7 +278,9 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                tracing::info!("FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)");
+                tracing::info!(
+                    "FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)"
+                );
             }
         }
         let ctx = self.build_ctx();

@@ -1878,7 +1878,9 @@ fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    tracing::info!("=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ===");
+    tracing::info!(
+        "=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ==="
+    );
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {

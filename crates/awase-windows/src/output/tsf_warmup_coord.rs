@@ -101,7 +101,9 @@ impl TsfWarmupCoordinator {
         use crate::tsf::observer::ActiveImeKind;
         match kind {
             ActiveImeKind::MicrosoftIme => {
-                tracing::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
+                tracing::info!(
+                    "[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)"
+                );
                 *self.tsf_warmup.borrow_mut() =
                     Box::new(crate::tsf::warmup::warmup_strategy::MsImeStrategy);
             }

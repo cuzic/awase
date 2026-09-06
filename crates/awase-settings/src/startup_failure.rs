@@ -97,7 +97,9 @@ fn run_with_fallback_impl(
         Ok(()) => tracing::info!("{app_name}: wgpu フォールバックで起動に成功しました"),
         Err(wgpu_err) => {
             let detail = describe_fallback_failure(app_name, &glow_err, wgpu_err);
-            tracing::error!("{app_name}: eframe::run_native failed even with wgpu fallback:\n{detail}");
+            tracing::error!(
+                "{app_name}: eframe::run_native failed even with wgpu fallback:\n{detail}"
+            );
             show_dialog(&detail);
         }
     }

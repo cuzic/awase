@@ -146,7 +146,9 @@ impl UinputOutput {
                                 self.emit_key(KEY_LEFTSHIFT, 0);
                             }
                         } else {
-                            tracing::warn!("KeySequence char '{ch}' has no evdev keycode mapping, skipping");
+                            tracing::warn!(
+                                "KeySequence char '{ch}' has no evdev keycode mapping, skipping"
+                            );
                         }
                     }
                 }

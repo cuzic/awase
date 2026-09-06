@@ -960,7 +960,9 @@ impl WindowsPlatform {
         status: crate::output::GjiReinitPollStatus,
     ) {
         let Some(completion) = self.output.take_gji_reinit_completion(token) else {
-            tracing::warn!("[chrome-reinit-retry] completion ignored: token={token} status={status:?}");
+            tracing::warn!(
+                "[chrome-reinit-retry] completion ignored: token={token} status={status:?}"
+            );
             return;
         };
         let current_focus_gen = self.output.current_ime_mode_focus_gen();
@@ -1495,7 +1497,9 @@ impl TsfComposition for WindowsPlatform {
             // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
             // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
             if self.output.is_composition_warm() {
-                tracing::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ");
+                tracing::trace!(
+                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ"
+                );
                 return;
             }
             tracing::debug!(
