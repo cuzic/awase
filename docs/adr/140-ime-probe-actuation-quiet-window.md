@@ -352,11 +352,20 @@ read-modify-write全体の前半であり、この呼び出し対自体がactuat
 
 結論: 「issueの瞬間をメインスレッド側から制御する経路が存在しない」と
 いう却下理由は**不正確**だった。設計案D（フェンス値のissue時点比較）は
-`offload()`（またはこれをラップする形）にチェックを挿入することで
 構造的に実現可能。ただし、ワーカースレッド起動（`std::thread::spawn`）
 から実際の`SendMessageTimeoutW`呼び出しまでの間には、OSのスレッド
 スケジューリングに起因する小さな不確定窓が残ることに注意
-（この窓自体の大きさは未測定）。
+（この窓自体の大きさは未測定、下記「Step 1確定設計」節の追加
+チェックポイントD参照）。
+
+**重要な訂正（下記「Step 1確定設計」節のOpusレビューで判明）**:
+上記「`offload()`（またはこれをラップする形）にチェックを挿入する」
+という結論は誤りだった。`crates/awase-windows/src/ime.rs::offload_unsafe`
+はprobeとactuationの**両方**（8つのasyncラッパー共通）が通る
+ヘルパーであり、ここにフェンスを置くと「actuationがactuationを待つ」
+という、対称ロック方式で既に却下した失敗モードを1階層上で再現する。
+`win32-async`クレート（`offload.rs`含む）は一切変更しない。正しい
+挿入点はprobe側の呼び出し元（`key_pipeline.rs`、詳細は次節）。
 
 ### Step 0 実測データ第一弾（dragonflyg4実機、2026-09-06、n=6）
 
@@ -384,9 +393,152 @@ read-modify-write全体の前半であり、この呼び出し対自体がactuat
 
 ### やらないこと（この追記のスコープ外）
 
-- 排他窓の具体的な定数値の決定（実測不足のため）
-- 案D以外の設計候補（StepCoro案・案E）との比較確定
-- Step 1本体の実装
+- 排他窓の具体的な定数値の決定（実測不足のため——ただし案Dはms定数を
+  持たないため、この制約は下記「Step 1確定設計」の対象外）
+- Step 1本体の実装（設計はStep 1確定設計節で確定したが、コードはまだ
+  書いていない）
+
+## Step 1確定設計（v4、Opus敵対的レビュー4ラウンドで収束、2026-09-06）
+
+opus-adversarial-consultで4ラウンドの読み取り専用レビュー（設計提案→
+指摘→改訂→再指摘、を実装コード無しで反復）を行い、以下で収束した。
+各ラウンドで実装前提が覆る発見があったため、経過も含めて記録する
+（`experiment-logging.md`と同じ理由——「なぜ前の案を捨てたか」を
+残さないと同じ案を再検討して同じ失敗を踏む）。
+
+### A. 新規フェンスカウンタ
+
+`AtomicU64`（`conv_mutation`と同型）を新設する。**既存の`conv_mutation`
+は流用しない**——`conv_mutation::bump()`のゲート`win32.rs::
+input_may_mutate_conv`（`vk_may_mutate_conv`）はopen専用VK
+（`VK_IME_ON`/`VK_IME_OFF`/`VK_KANJI`）では増分しない仕様（`conv_mutation.rs`
+module doc）。BUG-113のactuationはまさにGJIのopen軸（`IME_KANJI_MARKER`）
+であり、既存フェンスは「issue時点を見ていない」以前に**このactuationを
+1回も数えていない**。本ADR確定事実2（「issueだけが無防備」）に、
+「軸の欠落」という見落としがあったことになる。
+
+### B. bump地点: 物理syscall境界2箇所、syscallの前、同一判定条件を共有
+
+論理呼び出し箇所（`ime_controller.rs::apply`等の3つのチョークポイント）
+を個別にbumpする方式は採らない——未発見の第4・第5経路（本ADR確定事実5が
+「少なくとも3つ確認、全てとは限らない」と明記）があると再びissue #136型の
+「1箇所塞いで別箇所に穴」を再演するため。代わりに、OSに到達する物理境界
+そのもの（唯一のチョークポイント）でbumpする:
+
+- `win32.rs::send_input_safe`: Step 0診断ログの`ime_actuation_marker_kind`
+  判定（`IME_KANJI_MARKER`または`TSF_MARKER`+VK_IME_ON/OFF）と**同一の
+  条件式**でbump。判定を共有することで将来の乖離を防ぐ。
+- `imm.rs::send_ime_control`: Step 0診断ログのkind=actuation判定
+  （`!matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE)`）と
+  **同一の条件式**でbump。これも既存の`imm.rs`側`conv_mutation::bump()`
+  呼び出し（`IMC_SETCONVERSIONMODE`のみ）がopen軸の`IMC_SETOPENSTATUS`を
+  数えていないのと同型の穴であり、新カウンタでは含める。
+
+**要件（偶然の実装詳細ではない）**: bumpは対応するsyscall
+（`SendInput`/`SendMessageTimeoutW`）の**前**でなければならない。
+理由: 下記Dのworkerチェックポイントは「発行済みだがまだ返っていない
+actuationをworker側probeから見える状態にする」ことに依存するため。
+`Ordering::Relaxed`で足りる（単一ロケーションのカウンタで、これ経由で
+他のデータをpublishしないため、`conv_mutation`と同じ理屈）。
+
+### C. 比較点: probe側の呼び出し元（`ime.rs::offload_unsafe`には置かない）
+
+`key_pipeline.rs:665`付近（`kp_stage_idle_conv_check_inner`の
+`spawn_local` body内、probe呼び出しの`.await`直前）でspawn時点に
+キャプチャした値と比較する。`ime.rs::offload_unsafe`はprobe/actuation
+双方が通る共通ヘルパーのため、ここに置くと「actuationがactuationを
+待つ」問題が再発する（上記「重要な訂正」参照）。
+
+### D. 追加2チェックポイント（「次のprobeで再検出」に依存しない）
+
+新カウンタが`AtomicU64`でワーカースレッドからも読めることを利用し、
+3箇所で比較する:
+
+1. **issue(main)**: Cの`.await`直前（主機構）
+2. **issue(worker)**: `offload`に渡すクロージャの中、実際の
+   `SendMessageTimeoutW`呼び出し直前でもう一度比較（コストはアトミック
+   ロード1回。窓が「スレッド起動→syscall全体」から「syscall直前の
+   数命令」まで縮む）
+3. **apply**: 結果が返った後、既存の`conv_mutation_seq`比較
+   （`key_pipeline.rs:805`）と同型の比較を新カウンタでも実施
+
+### E/F. abandon時の3値区別（gate/in-flightフラグとの相互作用）
+
+フェンス不一致（abandon）は、純粋な読み取り失敗（`None`）とは区別可能な
+第三の値として表現し、closureまで運ぶ（案Eの「abandon理由の構造化enum」
+をそのまま使う）:
+
+- **`Abandoned{resync_generation: Some(_)}`**: closure内で**何もせず
+  return**（`close_focus_resync_gate_if_current`を呼ばない＝gateを
+  閉じない）。根拠: `kp_trigger_focus_resync`は spawn時点で同期的に
+  `schedule_focus_resync_deadline()`を武装済み（`app/mod.rs:499-504`）
+  であり、abandonが起きるのはその後の別メッセージループターンなので、
+  「gateを閉じずに戻れば`TIMER_FOCUS_RESYNC`ハンドラ
+  （`message_handlers.rs:551-561`）が`open_if_current`経由で世代照合
+  しつつ必ず引き取る」ことが構造的に保証される（`focus_resync.rs:117-125`
+  の`compare_exchange`により二重drainも起きない）。resync経路で
+  フェンス不一致時にそのままdrainを許す（却下した案(i)）と、
+  「awase自身が書き込み中のIME状態をresyncが読んで信じる」という
+  BUG-113の発生機構そのもの（probeがactuationと交錯→drift correctionが
+  第二のactuationに増幅）をフォーカス変更直後の最も汚染されやすい局面で
+  再演する（BUG-57と同型の入口）。リトライ案（却下した案(ii)）は
+  「回数」で束縛すれば時間定数を持ち込まずに済むが、今回は不要と判断。
+- **`Abandoned{resync_generation: None}`**: in-flightフラグ
+  （`idle_conv_check_in_flight_since_ms`）を解放してreturn。
+- **`None`（純粋な読み取り失敗）**: 現状のまま（`close_focus_resync_gate_
+  if_current`を含む既存パスをそのまま通る）。
+
+**`focus_resync.rs`側にも1行残すこと**: 同ファイルのmodule doc
+（22-35行目）が既に述べる「disarmが未配線でも安全側に働く（ガード4が
+resyncのconv読み取り自体を棄却するので、最大`FOCUS_RESYNC_DEADLINE_MS`
+無駄に待つだけ）」という"待つだけで安全"構造の**2例目**が今回のabandon
+であることを明記する。書かないと、後続セッションが
+「`close_focus_resync_gate_if_current`は必ず通る」という前提で上に
+設計を積んでしまう恐れがある。
+
+### G. `architecture_guard.rs`への双子ガード追加
+
+Bが「物理境界は単一チョークポイント」に依存しているため、両方を
+テストで固定する（`apply_mechanism`の既存ガード`architecture_guard.rs:2253`
+と同型）:
+
+- 「`SendInput(`の生産コード呼び出しは`win32.rs`の1箇所のみ」
+- 「`SendMessageTimeoutW(`の生産コード呼び出しは`imm.rs`の1箇所のみ」
+  （`imm.rs:127-130`のコメントが既に宣言しているが、固定するテストは
+  未設置）
+
+いずれも文字列リテラル・コメント中の偽陽性（`SendInput(`が
+`held_modifiers.rs:143`、`ime.rs:195,314,411`、`ime_controller.rs:287`、
+`transport.rs:199,232`のログ文言・コメントに出現する）を除外すること。
+
+### H. 案E・StepCoro案の扱い
+
+案E（`ProbeAction`/`dispatch_probe_actions`パターン）は、abandon理由の
+構造化enum化（上記E/F）のみ採用する。`VecDeque`によるキュー集約機構は
+導入しない（今回の調停判定には過剰）。StepCoro案（probeライフサイクルの
+明示的コルーチン化）はリファクタであってバグ修正ではないため、別PRに
+切り出す（同一PRに混ぜると`experiment-logging.md`が要求する「何を
+撤回したか」の追跡が効かなくなる）。
+
+### I. 完了条件: abandon率の実測（starvation確認）
+
+案Dはms定数を持たないため`tuning-constants.md`の実測義務は適用されないが、
+別種の実測が新たに必要になる。actuationが常に先行しprobeが永久に不成立
+（starvation）になると、idle-conv-checkの本来の目的（タスクバーからの
+モード変更検知）が静かに死ぬ。**abandonカウンタはresync経路と通常経路を
+分けて数えること**（ユーザー体感コストが桁違い——通常経路のabandonは
+「今回のidle-conv-checkを1回諦めた」だけだが、resync経路のabandonは
+「defer中のキーが`FOCUS_RESYNC_DEADLINE_MS`まで出てこない」という体感
+遅延に直結する。合算した1つのカウンタだと前者に埋もれて後者の頻発を
+見逃す）。`bug_report.rs:127`付近の既存idle-conv-check計装にこの2種の
+abandon回数を追加し、実機ソークで機能不全が起きていないことを確認する
+のをStep 1の完了条件に含める。
+
+### やらないこと（Step 1確定設計のスコープ外）
+
+- 実装そのもの（次のアクション）
+- StepCoro案の実装（別PR）
+- 排他窓の量を表すms定数の導入（案Dは不要）
 
 ## 関連
 
