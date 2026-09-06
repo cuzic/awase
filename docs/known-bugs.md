@@ -13700,6 +13700,29 @@ N1〜N7すべてが意図どおり修正されており、修正自体が新た�
 検証済み。新規のblocker・重要指摘なし。実機ソークへ進んで問題ない
 という判定。
 
+**追補4（2026-09-05、report `01M1NT9878F6ZF0ZVHBQBWBT53`）**: これまでの
+4件（本追補以前）の実機再現はいずれも`[shadow-toggle]`（物理IMEキー1回の
+検出）が`desired_open`を直接反転させる入口だったが、本reportは
+**物理IMEキーを経由しない新しい入口**を示した。Windows Terminal
+(`force_tsf`指定)+PowerShellで、ユーザーがCtrl+無変換のexplicit engine-off
+key comboを押下→`IME OFF (key combo)`(origin=ExplicitUserAction)で
+`desired_open=false`確定・`VK_IME_OFF`送信は`Applied`まで到達したが、
+直後の`idle-conv-check`がGJIの実conv値(0x19=NATIVE|ROMAN、変化なし)を
+観測し`NativeToggleShadowOff`理由で`ObserverReported{ConvOpenInference,
+open:true}`を記録（BUG-19対策どおり`desired_open`自体は書き換わらない
+——observer designは正しく機能している）。結果`observed=true ≠
+desired=false`のdrift correctionが約6秒間（`FocusChange`で不具合報告
+ダイアログへ遷移するまで）`VK_IME_OFF`を再送し続けたが一度も収束せず、
+その間NICOLA変換エンジンは`ime_on=false`で非活性なのに実GJIのnative
+変換はONのまま生き続け、物理キーが二重処理されて「きう＠k...」の
+混在出力になった。継続時間が短く（~6秒）`DriftGiveUpDiagnostic`の
+発火閾値に届かなかったため、Phase 1診断ログは本reportの根本原因の
+特定には寄与していない（app_logの生ログ突き合わせで特定）。**この
+新しい入口点が既存の2書き込み経路競合（追補3のdrift
+correction/`ImmBrokenForceOn`）と同一機構か、あるいは
+「explicit OFF送信後もGJIのnative convが変化しない」という別の
+未解明の現象かは未確認**——Phase 2着手時に切り分けが必要。
+
 ## BUG-111: `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発火させる
 
 **症状（ユーザー報告「不具合報告レポートのテキスト入力フォームがおもすぎて実用に
