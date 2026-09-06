@@ -589,6 +589,51 @@ abandon回数を追加し、実機ソークで機能不全が起きていない�
 全変更を通じて`crates/win32-async`（`offload.rs`含む）は一切変更していない
 （決定Cが明示的に禁止した`ime::offload_unsafe`への比較挿入も行っていない）。
 
+### 実装レビュー（opus-adversarial-consult、2026-09-06）で発見・修正した点
+
+Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映した:
+
+- **M1（Major、分母の欠落）**: 決定Iのabandonカウンタは分子のみで、
+  「idle-conv-check probeを実際にspawnした回数」という分母が無く、
+  abandon率（starvation判定に必須）が算出不能だった。
+  `probe_actuation_fence::{record_spawned, spawned_resync_lifetime_count,
+  spawned_normal_lifetime_count}`を追加し、`BugReportStateSnapshot`にも
+  `idle_conv_check_spawned_resync_count`/`_normal_count`として追加した。
+- **M2（Major、意味論変更の広さが未実測）**: `kp_stage_idle_conv_check`は
+  パイプライン中で`kp_stage_shadow_ime_toggle`等より前段にあるため、
+  同一キーイベントの後続ステージがactuationを発行すると、issue前の
+  checkpoint1で必ずabandonする構造になっている。この構造自体は決定どおりの
+  帰結だが、`should_run_idle_conv_check`の発火条件がeager TSF
+  warmup・force-ONの発火条件と重なるため、abandon率がどの程度になるかは
+  未実測。M1で追加した分母付きカウンタを使い、実機ソークで「@」再発の
+  有無に加えてabandon率とidle-conv-checkの実際の適用（タスクバーからの
+  モード変更検知が生きているか）を確認すること。
+- **M3（Major、決定Iの分離意図の毀損）**: checkpoint3（apply時点、resync
+  gateクローズ**後**に走る）の discard が誤って`record_abandoned`を呼び、
+  体感遅延ゼロのabandonをresyncカウンタに混入させていた。決定Iがカウンタを
+  分けた理由（resync経路のabandonは体感遅延に直結、通常経路は1回諦める
+  だけ）と矛盾するため、checkpoint3では`record_abandoned`を呼ばず、既存の
+  (a)(b)(c) discardと同様に無カウントの破棄のみに統一した。
+- **m1（Minor）**: `record_abandoned`呼び出しが`with_app`クロージャ内に
+  あり、`with_app`再入時（`None`を返す既知のケース）に取りこぼす構造
+  だった。`with_app`の外・`outcome`確定直後に移動して解消。
+- **m2（Minor）**: `count_real_calls_excluding_string_literals`が行末
+  コメント中の言及（`foo(); // SendInput(...)`）を実呼び出しと誤カウント
+  する穴があった。needle手前に`//`があるかも見るよう修正（ブロック
+  コメント等の残る既知の限界はdoc comment化）。
+- **m3（Minor）**: module docの「物理境界は単一チョークポイント」という
+  記述が、syscall発行口の単一性とactuation判定（marker依存）の網羅性を
+  混同しうる書き方だった。shift-conv-guardの`VK_DBE_HIRAGANA`注入
+  （`TSF_MARKER`だが`VK_IME_ON/OFF`ではないためbump対象外、別のガードで
+  実害なし）を具体例として明記し、両者を切り分けた。
+- **m4（Minor）**: 新規ユニットテストがプロセス共有staticカウンタに対して
+  厳密等値でアサートしており、テストバイナリ内の並行実行でflakyになりうる
+  （BUG-65と同型）。`>=`比較に変更。
+
+いずれの指摘も、確定設計A〜Iの決定内容自体を覆すものではなく、実装時の
+反映漏れ（M3）と、決定Iの完了条件を実際に判定可能にするための追加計装
+（M1/M2）だった。
+
 ## 関連
 
 [docs/known-bugs.md](../known-bugs.md) BUG-113、

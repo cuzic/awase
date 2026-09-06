@@ -2336,20 +2336,33 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
 }
 
 /// `count_real_calls` に加えて、tracing フォーマット文字列中の言及
-/// （例: `tracing::debug!("... SendInput(...) ...")`）を除外する。
+/// （例: `tracing::debug!("... SendInput(...) ...")`）と、行末コメント中の
+/// 言及（例: `foo(); // SendInput(...) の説明`）を除外する。
 ///
 /// `SendInput`/`SendMessageTimeoutW` は関数定義ではなく Win32 API 名なので
 /// `fn xxx(` 形の自己定義除外は不要な一方、これらのシンボル名はログメッセージ
-/// （`ime.rs`/`held_modifiers.rs` 等）や doc コメント中の説明で頻出する。
-/// 同じ行の needle 出現位置より前に `"` があれば文字列リテラル中の言及と
-/// みなして除外する（実際の呼び出し行に `"` が先行することはない）。
+/// （`ime.rs`/`held_modifiers.rs` 等）や doc コメント・行末コメント中の説明で
+/// 頻出する。同じ行の needle 出現位置より前に `"`（文字列リテラル開始）または
+/// `//`（行末コメント開始）があれば、コード上の実呼び出しではないとみなして
+/// 除外する。
+///
+/// 既知の未対応ケース（実装レビュー指摘m2、現在のコードベースには該当なし
+/// だが将来のfalse positive/negativeとして記録しておく）: ブロックコメント
+/// （`/* ... SendInput( ... */`）、同一行に文字列リテラルが needle より
+/// **前**にある実呼び出し（`line[..pos]`に`"`が誤って含まれ見逃す）、
+/// 1行に needle が複数回出現するケース（行単位でしか数えない）。
+/// `production_code_only` 自体の限界（`#[cfg(test)] mod tests` 以外の名前の
+/// テストモジュールは本番扱いになる）もこの関数固有ではなく本ファイル全体の
+/// 既存の制約を継承する。
 fn count_real_calls_excluding_string_literals(content: &str, needle: &str) -> usize {
     content
         .lines()
         .filter(|line| !line.trim_start().starts_with("//"))
         .filter(|line| {
-            line.find(needle)
-                .is_some_and(|pos| !line[..pos].contains('"'))
+            line.find(needle).is_some_and(|pos| {
+                let prefix = &line[..pos];
+                !prefix.contains('"') && !prefix.contains("//")
+            })
         })
         .count()
 }

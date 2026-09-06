@@ -30,6 +30,17 @@
 //! 足りる（`conv_mutation` と同じ理屈: 単一ロケーションのカウンタで、これ経由で
 //! 他のデータを publish しないため）。
 //!
+//! **注意（実装レビュー指摘m3）**: 「物理境界が単一チョークポイントである」
+//! という上記の主張が保証するのは *syscall の発行口が1箇所である* ことのみで、
+//! *その syscall が actuation として bump 対象になるかどうか* は marker/VK の
+//! 判定（`ime_actuation_marker_kind`）に依存する。例えば
+//! `key_pipeline.rs` の shift-conv-guard が注入する `VK_DBE_HIRAGANA`
+//! （`TSF_MARKER`、`VK_IME_ON`/`OFF`ではない）はこの判定に一致せず bump
+//! しない——これは probe が読む conv ワード自体を変えうる書き込みだが、
+//! `half_width_alnum.is_guard_pending()` による別の discard（apply_idle_conv_check
+//! の (a)）で捕捉される前提のため実害はない。ただし本フェンス単体が
+//! 「conv/open を変えうる全ての書き込みを bump する」ことまでは保証しない。
+//!
 //! # 比較点（probe 側の呼び出し元のみ、`ime::offload_unsafe` には絶対に置かない）
 //!
 //! 現状の唯一の消費者は `runtime/key_pipeline.rs::kp_stage_idle_conv_check_inner`
@@ -50,6 +61,19 @@
 //! idle-conv-check の本来の目的が静かに死ぬ事態）が起きていないかを実機
 //! ソークで確認する（Step1 の完了条件）用に、不具合報告（`bug_report.rs`）へ
 //! 両方とも累積値のまま渡す。
+//!
+//! **[`record_abandoned`] を呼ぶのは checkpoint1/2（issue 前、`idle_conv_check_probe`
+//! 内）で検知した abandon のみ**（実装レビュー指摘M3）。checkpoint3（apply 時点、
+//! `key_pipeline.rs::apply_idle_conv_check` の `conv_mutation_seq` と同型の比較）は
+//! 到達時点で resync gate が既にクローズ済み＝体感遅延ゼロであり、既存の
+//! (a)(b)(c) discard（shift ガード/explicit action/conv_mutation_seq 不一致）と
+//! 同様にカウントせず discard するだけに留める——resync カウンタへ混ぜると、
+//! 決定Iが分離した「体感コストが桁違いの信号」が薄まってしまう。
+//!
+//! **abandon 率（決定Iが要求する starvation 判定）には分母が必要**（実装
+//! レビュー指摘M1）。[`record_spawned`] を probe を実際に spawn するたびに
+//! 呼び、[`record_abandoned`] と同じ resync/通常の軸で累積する。
+//! `abandoned_*_lifetime_count() / spawned_*_lifetime_count()` が abandon 率。
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -71,14 +95,23 @@ pub(crate) fn current() -> u64 {
 }
 
 /// resync 経路（`kp_trigger_focus_resync` 由来）の probe abandon 累計回数
-/// （プロセス生存期間中、リセットしない）。
+/// （プロセス生存期間中、リセットしない）。`fetch_add` は `u32::MAX`到達時に
+/// ラップするが、1プロセスの生存期間中にそこまで到達することは実用上ない
+/// ため `saturating_add` にはしていない（他の lifetime カウンタ、
+/// 例えば `hook_channel::WAKE_POST_FAILED_LIFETIME_COUNT`、と同じ判断）。
 static ABANDONED_RESYNC_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
 /// 通常経路（`kp_stage_idle_conv_check`）の probe abandon 累計回数。
 static ABANDONED_NORMAL_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
+/// resync 経路の probe を実際に spawn した累計回数（abandon 率の分母、
+/// 実装レビュー指摘M1）。
+static SPAWNED_RESYNC_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
+/// 通常経路の probe を実際に spawn した累計回数。
+static SPAWNED_NORMAL_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// probe が actuation との交錯を検知して abandon したことを記録する。
-/// `resync_generation.is_some()` なら resync 経路、`None` なら通常経路として
-/// 別々に数える（module doc 参照）。
+/// probe が actuation との交錯を検知して checkpoint1/2（issue 前）で abandon
+/// したことを記録する。`resync_generation.is_some()` なら resync 経路、`None`
+/// なら通常経路として別々に数える（module doc 参照。checkpoint3〈apply 時点〉
+/// はここを呼ばない——同 doc の M3 注記参照）。
 pub(crate) fn record_abandoned(resync_generation: Option<u64>) {
     if resync_generation.is_some() {
         ABANDONED_RESYNC_LIFETIME_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -97,6 +130,26 @@ pub(crate) fn abandoned_normal_lifetime_count() -> u32 {
     ABANDONED_NORMAL_LIFETIME_COUNT.load(Ordering::Relaxed)
 }
 
+/// idle-conv-check probe を実際に spawn したことを記録する（abandon 率の分母、
+/// 実装レビュー指摘M1）。`record_abandoned` と同じ resync/通常の軸で数える。
+pub(crate) fn record_spawned(resync_generation: Option<u64>) {
+    if resync_generation.is_some() {
+        SPAWNED_RESYNC_LIFETIME_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        SPAWNED_NORMAL_LIFETIME_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// `SPAWNED_RESYNC_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+pub(crate) fn spawned_resync_lifetime_count() -> u32 {
+    SPAWNED_RESYNC_LIFETIME_COUNT.load(Ordering::Relaxed)
+}
+
+/// `SPAWNED_NORMAL_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+pub(crate) fn spawned_normal_lifetime_count() -> u32 {
+    SPAWNED_NORMAL_LIFETIME_COUNT.load(Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,17 +162,33 @@ mod tests {
         assert!(after > before, "bump() は current() を単調に進める");
     }
 
+    // 実装レビュー指摘m4: これらのカウンタはプロセス共有の static であり、
+    // 同じテストバイナリ内の他のテストが並行して bump/record_* を呼びうる
+    // （BUG-65と同型のテスト分離リスク）。したがって「他スレッドがちょうど
+    // 割り込まなかった」ことを前提にする厳密等値ではなく、「自分が呼んだ分は
+    // 少なくとも反映されている」ことだけを検証する（`>=`）。
+
     #[test]
     fn record_abandoned_splits_resync_and_normal_counters() {
         let resync_before = abandoned_resync_lifetime_count();
         let normal_before = abandoned_normal_lifetime_count();
 
         record_abandoned(Some(42));
-        assert_eq!(abandoned_resync_lifetime_count(), resync_before + 1);
-        assert_eq!(abandoned_normal_lifetime_count(), normal_before);
+        assert!(abandoned_resync_lifetime_count() >= resync_before + 1);
 
         record_abandoned(None);
-        assert_eq!(abandoned_resync_lifetime_count(), resync_before + 1);
-        assert_eq!(abandoned_normal_lifetime_count(), normal_before + 1);
+        assert!(abandoned_normal_lifetime_count() >= normal_before + 1);
+    }
+
+    #[test]
+    fn record_spawned_splits_resync_and_normal_counters() {
+        let resync_before = spawned_resync_lifetime_count();
+        let normal_before = spawned_normal_lifetime_count();
+
+        record_spawned(Some(42));
+        assert!(spawned_resync_lifetime_count() >= resync_before + 1);
+
+        record_spawned(None);
+        assert!(spawned_normal_lifetime_count() >= normal_before + 1);
     }
 }

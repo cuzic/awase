@@ -1233,6 +1233,10 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
             crate::probe_actuation_fence::abandoned_resync_lifetime_count(),
         idle_conv_check_abandoned_normal_count:
             crate::probe_actuation_fence::abandoned_normal_lifetime_count(),
+        idle_conv_check_spawned_resync_count:
+            crate::probe_actuation_fence::spawned_resync_lifetime_count(),
+        idle_conv_check_spawned_normal_count:
+            crate::probe_actuation_fence::spawned_normal_lifetime_count(),
         process_uptime_secs: resources.process_uptime_secs,
         working_set_bytes: resources.working_set_bytes,
         handle_count: resources.handle_count,

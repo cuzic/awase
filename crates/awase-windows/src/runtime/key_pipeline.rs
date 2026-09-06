@@ -715,8 +715,19 @@ impl Runtime {
         // 再比較し、spawn 以降に GJI actuation が発行されていれば OS 呼び出し自体を
         // 発行せず Abandoned を返す。
         let probe_actuation_fence_at_spawn = crate::probe_actuation_fence::current();
+        // ADR-140 Step1 決定I / 実装レビュー指摘M1: abandon 率の分母として、
+        // probe を実際に spawn した回数を記録する（resync/通常を分けて数える
+        // のは record_abandoned と同じ理由、probe_actuation_fence module doc 参照）。
+        crate::probe_actuation_fence::record_spawned(resync_generation);
         win32_async::spawn_local(async move {
             let outcome = idle_conv_check_probe(10, probe_actuation_fence_at_spawn).await;
+            // 実装レビュー指摘m1: with_app は再入時に None を返しうる
+            // （下記 spawn_local body 冒頭のコメント参照）。abandon カウンタは
+            // app 状態に依存しないので、with_app の外・outcome が確定した直後に
+            // 記録することで、再入による取りこぼしを避ける。
+            if matches!(outcome, IdleConvCheckOutcome::Abandoned) {
+                crate::probe_actuation_fence::record_abandoned(resync_generation);
+            }
             let _ = crate::with_app(|app| {
                 let conv = match outcome {
                     // ADR-140 Step1 決定E/F: フェンス不一致で abandon した場合は
@@ -726,7 +737,6 @@ impl Runtime {
                     // deadline が必ず拾う、`close_focus_resync_gate_if_current` を
                     // 呼ばないだけで安全）。通常経路では in-flight フラグだけ解放する。
                     IdleConvCheckOutcome::Abandoned => {
-                        crate::probe_actuation_fence::record_abandoned(resync_generation);
                         if resync_generation.is_none() {
                             app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
                         }
@@ -760,7 +770,6 @@ impl Runtime {
                             conv_mutation_seq_at_spawn,
                             probe_actuation_fence_at_spawn,
                             explicit_action_ms_at_spawn,
-                            resync_generation,
                             accepted.fence,
                         );
                     },
@@ -810,15 +819,12 @@ impl Runtime {
     /// spawn 時のスナップショット（`conv_mutation_seq_at_spawn` /
     /// `probe_actuation_fence_at_spawn` / `explicit_action_ms_at_spawn`）と apply
     /// 時点を突き合わせて、これらが起きていないことを再確認してから適用する。
-    /// `resync_generation` は (d) の abandon カウンタ分類（resync 経路/通常経路、
-    /// ADR-140 決定I）にのみ使う。
     fn apply_idle_conv_check(
         &mut self,
         conv: u32,
         conv_mutation_seq_at_spawn: u64,
         probe_actuation_fence_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
-        resync_generation: Option<u64>,
         spawn_fence: crate::state::probe_admission::FocusFence,
     ) {
         // (a) shift ガード再検証: spawn 後に kp_stage_shift_conv_guard が立てた可能性がある。
@@ -899,9 +905,14 @@ impl Runtime {
         // `close_focus_resync_gate_if_current` の後に呼ばれる）、issue(main)/(worker)
         // のような「gate を閉じない」特別扱いはしない——読み取り結果を破棄するだけで
         // 汚染された conv が belief に適用されるのを防ぐという目的は達成される。
+        // 実装レビュー指摘M3: この discard は abandon カウンタ（`record_abandoned`）
+        // には数えない——ここに到達する時点で体感遅延は既にゼロ（resync gate
+        // クローズ済み）であり、上の (a)(b)(c) discard も同様に数えていないのと
+        // 整合させる。カウントすると、決定Iが分けた「resync 経路の abandon は
+        // 体感遅延に直結する」という信号に、遅延ゼロの discard が混入し薄まる
+        // （`probe_actuation_fence` module doc 参照）。
         let probe_actuation_fence_now = crate::probe_actuation_fence::current();
         if probe_actuation_fence_now != probe_actuation_fence_at_spawn {
-            crate::probe_actuation_fence::record_abandoned(resync_generation);
             tracing::debug!(
                 "[idle-conv-check] apply 時に GJI actuation との交錯を検出 \
                  (probe_actuation_fence {probe_actuation_fence_at_spawn}→{probe_actuation_fence_now}) → \

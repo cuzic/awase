@@ -138,6 +138,12 @@ pub struct BugReportStateSnapshot {
     pub idle_conv_check_abandoned_resync_count: u32,
     /// 同上、通常経路（`kp_stage_idle_conv_check`）の累計回数。
     pub idle_conv_check_abandoned_normal_count: u32,
+    /// ADR-140 Step1 実装レビュー指摘M1: 上記abandonカウンタの分母
+    /// （resync経路でprobeを実際にspawnした累計回数）。分母が無いと
+    /// abandonカウンタ単体では「頻発しているか」を判定できないため追加した。
+    pub idle_conv_check_spawned_resync_count: u32,
+    /// 同上、通常経路の累計回数。
+    pub idle_conv_check_spawned_normal_count: u32,
     /// 「長時間使うと重くなる」報告の切り分け用に追加したプロセスリソース
     /// スナップショット。単発の報告だけでは判断できないが、複数の報告を
     /// `process_uptime_secs` でソートして並べれば、稼働時間とともに
@@ -668,6 +674,8 @@ mod tests {
             idle_conv_check_in_flight_ms: None,
             idle_conv_check_abandoned_resync_count: 0,
             idle_conv_check_abandoned_normal_count: 0,
+            idle_conv_check_spawned_resync_count: 0,
+            idle_conv_check_spawned_normal_count: 0,
             process_uptime_secs: 3_600,
             working_set_bytes: 42_000_000,
             handle_count: 321,
