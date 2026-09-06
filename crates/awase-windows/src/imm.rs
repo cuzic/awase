@@ -143,6 +143,11 @@ pub(crate) unsafe fn send_ime_control(
         crate::conv_mutation::bump();
     }
     let start_ms = crate::hook::current_tick_ms();
+    // ADR-140 Step0診断ログ: send_health用のstart_ms/end_ms（current_tick_ms()基準、
+    // サーキットブレーカの既存閾値がms単位で依存しているため単位を変えない）とは
+    // 別に、probe/actuation発行タイミングの相関用として高分解能タイムスタンプを
+    // 追加で記録する。
+    let issue_us = crate::hook::now_timestamp_us();
     // SAFETY: ime_wnd は呼出元が ImmGetDefaultIMEWnd で取得した有効な IME ウィンドウハンドル。
     //         SMTO_ABORTIFHUNG によりハングしたスレッドで無期限にブロックしない。
     //         result はスタック上の有効な usize でポインタ渡しが安全。
@@ -157,7 +162,21 @@ pub(crate) unsafe fn send_ime_control(
             Some(&raw mut result),
         )
     };
+    let elapsed_us = crate::hook::now_timestamp_us().saturating_sub(issue_us);
+    // ADR-140 コードレビュー指摘（MAJOR）: end_ms は send_health のサーキット
+    // ブレーカ計測に使われるため、下の log::debug! のフォーマット/I/O コストを
+    // その計測窓に含めてはならない——先に end_ms を確定させてから記録する。
     let end_ms = crate::hook::current_tick_ms();
+    log::debug!(
+        "[ime-io] cross_process cmd=0x{cmd:04X} kind={} ime_wnd={ime_wnd:?} \
+         thread={:?} issue_us={issue_us} elapsed_us={elapsed_us}",
+        if matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
+            "probe"
+        } else {
+            "actuation"
+        },
+        std::thread::current().id(),
+    );
     crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
     (ok.0 != 0).then_some(result)
 }
