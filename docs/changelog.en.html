@@ -110,6 +110,57 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.19.0] - 2026-09-06</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>The tray icon can now check whether a newer version is available</strong><ul>
+<li>The right-click menu shows a newer version when one exists, with a direct link to the download page. No periodic background network activity is performed &mdash; the check only happens when you open the menu. Can be disabled via `general.update_check` in `config.toml`</li>
+</ul>
+</li>
+<li><strong>Added a settings-screen preset that turns Caps Lock (Eisu) into an extra Ctrl key</strong><ul>
+<li>Uses Windows' built-in Scancode Map mechanism (via the registry) and can be enabled/disabled from the settings window (requires administrator privileges; a Windows restart is needed for the change to take effect)</li>
+</ul>
+</li>
+<li><strong>`[[keymap]]` (per-app key reassignment) targets (`to`) can now be a sequence of multiple keystrokes</strong><ul>
+<li>Previously only a simple one-key-to-one-key substitution was supported; a single press can now send several key operations in sequence</li>
+</ul>
+</li>
+<li><strong>Google Japanese Input (GJI) users can now assign the Non-conversion/Conversion and Hiragana/Katakana keys the meaning of turning the IME on/off/toggling it</strong><ul>
+<li>Addresses a case where, even when these keys are configured as NICOLA thumb keys, mismatched GJI-side settings could cause thumb-shift conversion not to resume correctly after turning the IME back on</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed stray kana characters sometimes appearing at the start of text input in the settings and bug-report windows (`awase-settings.exe`)</strong><ul>
+<li>The IMM32 control-capability learning cache was keyed only by window class name, which let unrelated processes' mislearned state leak across processes via `winit`'s (the GUI framework's) generic class name (the same family as an earlier, single-process version of this bug). Fixed by including the process name in the cache key</li>
+</ul>
+</li>
+<li><strong>Fixed Shift+physical Kana key (the "Katakana/Hiragana/Romaji" key on JIS keyboards) not switching to katakana conversion</strong><ul>
+<li>With Google Japanese Input, holding Shift while pressing the Kana key should trigger Windows' standard katakana conversion, but this had been unconditionally disabled as a side effect of an earlier fix. Also fixed the Kana key alone not being able to switch back to hiragana once in katakana mode</li>
+</ul>
+</li>
+<li><strong>Fixed the tray's "Clear learning cache" menu item doing nothing when clicked</strong></li>
+<li><strong>Fixed characters occasionally being dropped or appearing out of order during Japanese input in some apps</strong></li>
+<li><strong>Fixed Windows Terminal's automatic IME-state correction firing at an almost unbounded rate even when it wasn't actually needed</strong></li>
+<li><strong>Added a tray notification for the case where pressing a physical IME key once can leave the NICOLA conversion engine stuck indefinitely until the focused window changes, with the key's own character being typed literally instead</strong><ul>
+<li>A full fix for the underlying cause proved difficult, so for now awase only lets you know when this happens</li>
+</ul>
+</li>
+<li><strong>Fixed a stray "@" being typed in Windows Terminal with Google Japanese Input</strong></li>
+<li><strong>Fixed text input in the settings and bug-report windows sometimes feeling sluggish</strong><ul>
+<li>An internal state-check routine was being re-run excessively even when focus hadn't changed, generating a large volume of log writes</li>
+</ul>
+</li>
+<li><strong>Fixed the wrong symbols for the thumb-shift 0/- keys on the genuine Fujitsu "FMV-KB232" layout</strong> (should be &#12302; &#12303; rather than { })</li>
+<li><strong>Rewrote settings-window warning messages to remove ADR numbers, raw key codes, and internal jargon (chord, warmup, etc.), making them clearer for general users</strong></li>
+<li><strong>Fixed editing certain `config.toml` fields (IME-detection key settings) in an external editor while the settings window was open causing those changes to be silently discarded the moment "Apply" was pressed</strong></li>
+<li><strong>Excluded keys that can never actually fire (IME-only virtual keys) from the "from" candidates in the shortcut-reassignment tab</strong></li>
+<li><strong>Renamed the settings item "Thumb-shift On/Off" to "awase Enabled/Disabled" and moved it to the advanced settings tab, since it's not something most people need to touch day to day</strong><ul>
+<li>Addresses feedback that it was easily confused with the neighboring "IME On/Off" (the Windows-side IME state)</li>
+</ul>
+</li>
+</ul>
 <h2>[1.18.0] - 2026-09-02</h2>
 <h3>Added</h3>
 <ul>
