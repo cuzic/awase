@@ -1515,35 +1515,16 @@ pub(crate) struct GateStore {
     pub post_bypass: ScopedOneShot<crate::win32::ForegroundScope, PostBypassArm>,
     /// IME 同期キー直後のキー保留バッファ（旧 `ime_gate`）。
     pub sync_key_gate: SyncKeyGate,
-    /// 今回の左Shift downが単独タップ候補か（`kp_stage_shift_conv_guard`）。
+    /// 左右Shift単独タップによる「IME-ON 半角英数」持続トグルの全状態
+    /// （旧 `left_shift_tap_candidate`/`right_shift_tap_candidate`/
+    /// `shift_conv_guard_pending`/`half_width_alnum_toggle_active` の4
+    /// フィールドと、旧 `Runtime::half_width_alnum_toggle_policy` を統合）。
     ///
-    /// 左Shift KeyDownでtrueにセットし、Shift保持中に`VK_LSHIFT`/`VK_RSHIFT`以外の
-    /// 非注入物理KeyDownが来たらfalseに倒す（チョード判定）。左Shift KeyUp時に
-    /// これがtrueのままなら「本物の単独タップ」として半角英数トグルの対象にする。
-    pub left_shift_tap_candidate: bool,
-    /// 今回の右Shift downが単独タップ候補か（`kp_stage_shift_conv_guard`）。
-    /// `left_shift_tap_candidate` と対称の判定（右Shift版）。BUG-25追補9で
-    /// 左Shiftチョード（Shift+文字で大文字を打つ）の途中解放がトグルを
-    /// 誤って解除しないよう修正した際、右Shift側にも同じ区別が必要になった
-    /// （右Shift単独タップ＝緊急解除、右Shiftチョード＝トグル持続）。
-    pub right_shift_tap_candidate: bool,
-    /// 今回のShift downに対応する復元処理が必要か（`kp_stage_shift_conv_guard`）。
-    ///
-    /// Shift KeyDownで awase が conv=0x00000000（IME-ON 半角英数）へ切り替えたとき
-    /// true。Shift KeyUpで`std::mem::take`し、trueならKeyUp側の復元/トグル判定を
-    /// 走らせる。**`half_width_alnum_toggle_active`とは独立**（トグルON中の
-    /// Shift downでも必ずtrueにする——立てないとKeyUp側でトグルOFF/右Shift緊急解除が
-    /// 発火しなくなる、2026-07-11 codexレビューで発覚）。
-    pub shift_conv_guard_pending: bool,
-    /// 左Shift単独タップによる「IME-ON半角英数」持続トグルが有効か。
-    ///
-    /// `shift_conv_guard_pending`と違い、Shift keyup後も左Shiftの次の単独タップ
-    /// （または右Shiftタップ/フォーカス変更による緊急解除）まで true であり続ける。
-    /// true の間、`platform_state.ime.input_mode()`はObservedEisuへ誘導され
-    /// Engineが`Inactive(NotRomajiInput)`で素通りになる（IMEはbelief上ONのまま）。
-    /// idle-conv-check / ime_refresh の OS poll を凍結する（`shift_conv_guard_pending`
-    /// と同じ理由: conv=0x0000は awase自身の意図的な状態のため）。
-    pub half_width_alnum_toggle_active: bool,
+    /// `HalfWidthAlnumState` のフィールドは private。読み書きは
+    /// `state/half_width_alnum.rs` のメソッド経由に限定する
+    /// （`tests/architecture_guard.rs` が生フィールド名の本番出現数を
+    /// 0 に固定する）。
+    pub half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState,
     /// `kp_stage_idle_conv_check` の conv 読み取り（offload 済み、`SendMessageTimeoutW`
     /// ベース）が in-flight かどうか。spawn 時の `hook::current_tick_ms()` を持つ
     /// （BUG-34 横展開レビュー指摘: 単なる bool だと、完了時に `with_app` が
@@ -1587,10 +1568,7 @@ impl GateStore {
             last_hook_activity_ms: 0,
             post_bypass: ScopedOneShot::new(),
             sync_key_gate: SyncKeyGate::new(),
-            left_shift_tap_candidate: false,
-            right_shift_tap_candidate: false,
-            shift_conv_guard_pending: false,
-            half_width_alnum_toggle_active: false,
+            half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
             idle_conv_check_in_flight_since_ms: None,
             kana_mode_restore_key_down: false,
         }

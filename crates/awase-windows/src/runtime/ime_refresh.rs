@@ -253,7 +253,7 @@ impl Runtime {
         // 既存同様 spawn_local 経由の非同期 retry ループを含むため、この呼び出しが
         // フォーカス変更処理をブロックすることはない）。物理 Shift が押されている
         // とは限らないため synthetic Shift up の前置は不要（false）。
-        if self.platform_state.gate.half_width_alnum_toggle_active {
+        if self.platform_state.gate.half_width_alnum.is_toggle_active() {
             log::info!("[shift-conv-guard] FocusChanged 中 → 半角英数トグルを強制解除");
             self.kp_restore_kana_from_half_width(false);
         }
@@ -323,8 +323,8 @@ impl Runtime {
         // conv=0x00000000 は awase 自身が意図的に設定した状態であり、観測して
         // belief（input_mode=ObservedEisu 等）に反映してはならない。解放時の復元 +
         // 既存の観測経路が事後に整合させる。
-        if self.platform_state.gate.shift_conv_guard_pending
-            || self.platform_state.gate.half_width_alnum_toggle_active
+        if self.platform_state.gate.half_width_alnum.is_guard_pending()
+            || self.platform_state.gate.half_width_alnum.is_toggle_active()
         {
             log::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
             return ImeReadStrategy::SkipTyping;
@@ -897,7 +897,8 @@ impl Runtime {
                     half_width_alnum_toggle_active: self
                         .platform_state
                         .gate
-                        .half_width_alnum_toggle_active,
+                        .half_width_alnum
+                        .is_toggle_active(),
                 },
             },
         );
