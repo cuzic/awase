@@ -169,6 +169,23 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
     crate::vk::vk_may_mutate_conv(awase::types::VkCode(ki.wVk.0))
 }
 
+/// `input` が awase 自身の IME actuation 送信（`send_ime_mode_key` 等）かどうかを
+/// `dwExtraInfo` のマーカーで判定する（ADR-140 Step0 診断ログ用）。
+///
+/// VK の固定リストでは判定しない: `keys.engine_on_ime_key`/`engine_off_ime_key`
+/// （`src/config.rs:550-556`）はユーザー設定可能な自由文字列で `VkCodeExt::from_name`
+/// 経由で F13-F24 等にもなりうるため、VK 値の固定リストでは設定済みマシンで
+/// actuation が不可視になり、測定したい対象が測定できなくなる本末転倒を招く。
+fn input_is_ime_actuation(input: &INPUT) -> bool {
+    if input.r#type != INPUT_KEYBOARD {
+        return false;
+    }
+    // SAFETY: r#type == INPUT_KEYBOARD を確認済みなので Anonymous.ki は
+    //         このユニオンの有効なアクティブフィールドである。
+    let ki = unsafe { input.Anonymous.ki };
+    ki.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER
+}
+
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 ///
 /// BUG-34 横展開 Step0-a: このクレートの全 `SendInput` 呼び出しは本関数を
@@ -186,6 +203,12 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
 pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     if inputs.iter().any(input_may_mutate_conv) {
         crate::conv_mutation::bump();
+    }
+    if inputs.iter().any(input_is_ime_actuation) {
+        log::debug!(
+            "[ime-io] actuation SendInput issue_us={}",
+            crate::hook::now_timestamp_us()
+        );
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。

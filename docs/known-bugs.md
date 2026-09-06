@@ -14452,6 +14452,30 @@ BUG-114（同じ調査から派生した独立のバグ、drift correction の
 注意）。`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ（`VK_KANA` 置換、
 この機体では到達不能コードだったため不要と判明）は削除候補。
 
+**追記（2026-09-06、Step 0診断ログ追加、[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)参照）:**
+「二重actuationの解消」とは独立に残置されている、`kp_stage_idle_conv_check`
+のクロスプロセスprobe読み取りとGJI actuationの発行タイミング競合（真の
+レースではなく決定論的順序）について、実機データ収集のための診断ログを
+追加した。`[ime-io]`タグで、actuationの`SendInput`発行（`win32.rs::
+send_input_safe`、`IME_KANJI_MARKER`判定）と、クロスプロセスprobe/
+actuation（`imm.rs::send_ime_control`、`IMC_GETOPENSTATUS`/
+`IMC_GETCONVERSIONMODE`が`probe`、それ以外が`actuation`）の発行タイム
+スタンプ（`now_timestamp_us()`基準、µs分解能、同一時間軸）を記録できる
+ようになった。
+
+**実機データ収集時の注意（サーキットブレーカとの突き合わせ必須）:**
+`send_health`のサーキットブレーカ（`imm.rs`、`SLOW_THRESHOLD_MS=100`、
+2回連続超過で`COOLDOWN_MS=2000`の間、一部呼び出しサイトが
+`send_health::blocking_allowed()`で発行自体を見送る）が作動している間は
+`[ime-io] cross_process ... kind=probe`行が出力されない。**「`[ime-io]
+probe`行が無い」ことは「probeが不要だった／発生しなかった」ことを意味
+せず、サーキットブレーカによる見送りの可能性がある**——これを`awase.log`
+の`[send-health]`行と突き合わせずに読むと、低速probeが絡むシナリオが
+系統的に過小サンプリングされる。
+
+次のステップは実機での`RUST_LOG=debug`収集によるΔms分布の実測
+（ADR-140のStep 0データ収集プロトコル参照）。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
