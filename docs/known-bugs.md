@@ -3070,7 +3070,10 @@ settle待ち・クールダウン定数を実装しない。BUG-25のクロー�
    逃げ道が構造的に不発になりうる問題。** `MapVirtualKeyW(VK_SHIFT)`は左Shiftの
    scan(0x2A)しか返さないため、右Shift単独タップで緊急解除した場合、OS内部の
    `VK_RSHIFT`状態が更新されずShift押下中と誤認され続け、決定0 M4が実機で確定
-   させた「Shift押下中はDBEキーのKeyDown自体がフックに配送されない」条件を踏む
+   させた「Shift押下中はDBEキーのKeyDown自体がフックに配送されない」条件
+   （**awase自身がSendInputするscan=0の`VK_DBE_ALPHANUMERIC`について実測した
+   もの**——BUG-116/ADR-137で確認した「物理scan 0x70由来の`VK_DBE_KATAKANA`は
+   Shift押下中でも正常にフックへ配送される」とは対象が異なり矛盾しない）を踏む
    おそれがあった。`VK_LSHIFT`/`VK_RSHIFT`両方のsynthetic Shift↑を送るよう修正
    （KeyUpの重複は無害、既存の復元経路と同じ根拠）。実機での最終確認はTask 9に
    追加する。
@@ -15144,7 +15147,7 @@ ToggleDeclined案内どおりGJIキーマップをOn/Off限定に直すと`warni
 手がかりが失われていた。修正: ゲート条件を`wiring.muhenkan.is_some()`
 に変更（`warn_thumb_key_toggle_if_needed`の引数に`muhenkan`を追加）。
 
-## BUG-116: Shift+物理かなキー（JIS配列 `VK_DBE_KATAKANA`）でカタカナ変換に切り替わらない（BUG-52修正のリグレッション）
+## BUG-116: Shift+物理かなキー（JIS配列 `VK_DBE_KATAKANA`）でカタカナ変換に切り替わらない（BUG-52修正のリグレッション、**決定1/2実装・実機確認済み**）
 
 **症状:** JIS配列の「カタカナ ひらがな ローマ字」キー（scan 0x70）を Shift
 と同時に押しても、GJI/MS-IME の変換モードがカタカナに切り替わらない
@@ -15196,10 +15199,13 @@ ime_actuation_owned && (shadow_toggled || is_dbe_mode_key_down || matches!(event
 | 2026-08-05〜09 `bdf4a139`→`9a02ce6b`（**BUG-52修正**, v1.13.0） | `is_dbe_mode_key_down` 条件を追加し、KeyDownを`shadow_toggled`に関わらず常時Suppress | **完全に死亡（現在まで）** |
 
 **この表は「Allow を返せば OS/IME に届く」という前提の上に成り立っており、
-Opus敵対的レビューでこの前提自体が未検証と判定された（`RawKeyEventExt::
-reinject()` は常に `wScan: 0` で `SendInput` するため、scan 依存の
-モードキー処理をする IME では届いても無視される可能性がある）。「動いて
-いた」という記述は実機ログではなくコード読解からの推定であることに注意。**
+Opus敵対的レビューの時点ではこの前提自体が未検証と判定されていた
+（`RawKeyEventExt::reinject()` は常に `wScan: 0` で `SendInput` するため、
+scan 依存のモードキー処理をする IME では届いても無視される可能性が
+あった）。**その後の実機検証（2026-09-06）で、少なくとも TsfNative+GJI
+環境では `wScan: 0` のままで Allow が実際に効くことを確認済み**（下記
+「修正」節参照）。表中の「動いていた」という記述自体は実機ログではなく
+コード読解からの推定のままであることに注意。
 
 BUG-52 の実際の repro（本ファイル該当節参照）は「NICOLA の物理『IME ON』
 キー（scan 0x70、awase の engine トグル用に割当）を **Shift なしで** 連打
@@ -15229,19 +15235,68 @@ IMEが既にONの状態でのShift+かな→カタカナが復活する可能性
 でもSuppressのままであり、`Standard`/ImmCrossプロファイルではこの設定
 自体が無視される。
 
-**現状（2026-09-05 更新）:** 原因は上記の通り**候補**の段階に留まる。
-Opus 2体（architect/premortem役）による4ラウンドの敵対的レビューで、
-「Shiftが弁別軸になるか」「Allowを返せば実IMEに届くか」「報告者の実際の
-アプリはどのプロファイルか」「scan付き注入のJISかな固着ハザードにどう
-安全に対処するか」等、実装前に実機で確認すべき論点が多数見つかったため、
-「確定した修正」ではなく「実機で検証するための診断スパイク」を
-`diag/bug116-shift-katakana` ブランチ（develop非マージ）に実装した。
-修正方針・レビューで発見した論点・スパイクの設計は
-[ADR-137](adr/137-shift-katakana-dbe-mode-key-suppression-regression.md) 参照。
+**修正（2026-09-06、実機確認済み）:** `diag/bug116-shift-katakana`ブランチ
+（develop非マージの診断スパイク）を実機（TsfNative+GJI環境）に投入し、
+以下を確認した:
+
+- **Shift併用時に`vk=0xF1 scan=0x70 shift=true`が観測され、Shiftなし連打
+  では`vk=0xF1`は一度も出なかった**（サンプルは限定的だが、上記「原因」節の
+  仮説と矛盾する観測はゼロ件）。
+- **scanは一切変更せず（`reinject()`の`wScan:0`のまま）Allowにするだけで
+  実機でカタカナ変換に切り替わった。** scan付与（SB-1のJISかな固着
+  ハザードがある危険なモード）は一度も試す必要がなく、本バグの修正
+  スコープから完全に除外できた。
+- テスト環境は`profile=TsfNative ime_kind=GoogleJapaneseInput`であり、
+  `Standard`/ImmCrossのみに限定される症状ではないことを確認した
+  （ただし報告者本人のアプリが同一かは未確認のまま、下記「未解決事項」
+  参照）。
+- **新規発見**: 上記の修正だけでは「カタカナには入れるが、物理かなキー
+  単独ではひらがなに戻せない」という副問題が実機で発生した。原因は
+  GJI環境で物理`VK_DBE_HIRAGANA`(0xF2)KeyDownが常時Suppressされる
+  既存仕様（`output/tsf_warmup_coord.rs::needs_f2_probe()`）にあり、
+  この副作用は今まで無害だったが本修正で露出した。対処として
+  `effective_open() && !shadow_toggled && is_composition_warm()`の
+  条件で、ADR-107(BUG-25)実機検証済みの安全な注入経路
+  `Output::send_gji_half_width_alnum_toggle(Exit, ..)`を呼んでひらがな
+  復元を能動的に送る方式を実装し、実機で成功を確認した。
+- 上記の修正を有効化した状態で物理IMEトグルキーを連打しても`vk=0xF1`は
+  一度も観測されず、**BUG-52の非再発を実機で確認した。**
+
+実装は`fix/bug116-shift-katakana-return`ブランチ（PR化してdevelopへ
+マージ）に反映。設計・Opus敵対的レビュー（BUG-115のdelegate機構との
+衝突、ADR-100/ADR-098-F4/BUG-50との関係等）・実機検証の詳細な経緯は
+[ADR-137](adr/137-shift-katakana-dbe-mode-key-suppression-regression.md)
+参照。
+
+**新規挙動の副作用（意図的、要認識）:** GJI + TsfNativeでIME ONかつwarmの
+とき、物理かなキーKeyDownごとに（auto-repeatは除く）`VK_DBE_HIRAGANA`
+相当が1回SendInputされる。以前はこの物理キーは常に無言でSuppressされて
+いた。
+
+**未解決事項（残存）:**
+- M-2（`shadow_toggled=true`経路、IME OFFからのShift+かな）は本修正の
+  スコープ外のまま。
+- Shift押下状態のstuck（BUG-48/BUG-62と同型）に対する鮮度ガードは未実装。
+  実機で1度も再現しなかったため今回は見送ったが、再発時はWin/Alt同様の
+  `is_held_fresh`ガードの追加を検討する。
+- MS-IME環境での実機検証は未実施（`needs_f2_probe()=false`によりこの
+  副問題自体が発生しないというコード読解ベースの推定に留まる。ただし
+  `ActiveImeKind`はGJI検出/非検出の2値なので、GJI未検出かつMS-IME未検出
+  という状態でも「MS-IMEと推定」される点に注意——「MS-IME検出済みの
+  場合は発生しない」が正確な言い方）。
+- **報告者本人のアプリ確認は未実施のまま実装した。** 上記の通りテスト
+  環境はTsfNative+GJIだが、報告者の実際の環境と同一かは確認できて
+  いない。`Standard`/ImmCross だった場合、この修正は報告者の症状に
+  無関係であり、真の対象は`transport.rs`のImmCross無条件Suppress
+  （`feedback_immcross_owns_kanji`の設計原則）になる。
 
 **関連:** BUG-52（本バグの直接の原因となった修正）、BUG-46（BUG-52の遠因と
-なった一般化）、BUG-15追補7・BUG-61・BUG-62（scan付きDBEモードキー注入の
-JISかな固着ハザードと、その復旧手段自体をawaseが常時swallowする問題。
-ADR-137のスパイク設計で安全ゲートとして反映済み）、
+なった一般化）、ADR-100決定2（eager warmupの送信キーを`VK_DBE_HIRAGANA`
+から`VK_IME_ON`へ変更した際、charset軸の埋め合わせが片肺になったことが
+今回発見した副問題の真因）、BUG-15追補7・BUG-61・BUG-62（scan付きDBE
+モードキー注入のJISかな固着ハザードと、その復旧手段自体をawaseが常時
+swallowする問題。決定2の注入経路がこのハザードを踏む点はADR-137参照）、
+BUG-115（`gji_charset_autodetect::is_configured_thumb_key`による衝突
+回避ガードを本修正の決定1/2両方に追加）、
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。

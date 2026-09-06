@@ -1392,12 +1392,16 @@ owned キーで`write_physical_key`をスキップすることで、`last_intent
   カタカナではなくひらがなになる現象を確認した（ゆっくり確実に操作
   しても再現）。ログ上は物理ドライバがShift有無を正しく`vk=0xF1`
   （カタカナ）/`vk=0xF2`（ひらがな）に区別して送出できているため、
-  awase側のVK分類の問題ではなさそうだが、原因未特定。**この現象は
-  shadow-toggle機構（IME開閉のON/OFF軸だけを扱う）の対象外**——
-  ひらがな/カタカナの変換モード選択はGJI自身が受け取ったVKをどう
-  解釈するかの問題であり、Phase 2/3のどの設計判断にも影響しない。
-  別途調査するかは未定、`docs/known-bugs.md`に観察として記録するに
-  留める。
+  ~~awase側のVK分類の問題ではなさそうだが、原因未特定~~。
+  **【訂正、2026-09-06、BUG-116/ADR-137で原因確定・修正済み】** 上記の
+  「awase側のVK分類は正しいのでGJI/OS側の変換モード解釈が原因では」
+  という推測は誤りだった。実際には
+  `runtime/transport.rs::PhysicalKeyDisposition::plan`がBUG-52修正
+  （2026-08-05）以降`VK_DBE_KATAKANA`のKeyDownをShift押下有無を見ずに
+  常時Suppressしており、GJIにVKが届く前にawase側で握りつぶされていた
+  （BUG-116として起票、[ADR-137](137-shift-katakana-dbe-mode-key-suppression-regression.md)
+  で決定1/2として実装・実機確認済み）。「GJI自身の解釈問題」ではなく
+  「awase側の配送判断」が真因だった。
 - BUG-115報告者の症状再現時、実際に`engine_on = ["VK_DBE_HIRAGANA"]`
   （awase側の手動config）と`shadow_action`（GJI/MS-IME非依存の静的
   機構）のどちらが「かなキーで正しく動く」結果を生んでいたかは、
