@@ -5573,6 +5573,10 @@ Windows cross-compile（`cargo check --target x86_64-pc-windows-gnu` /
 
 **関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`（`ir_apply_drift_correction`）、`crates/awase-windows/src/runtime/mod.rs`（`Runtime::last_drift_correction_send` フィールド追加）、`crates/awase-windows/src/state/platform_state.rs`（`check_drift_correction`、変更なし）。関連: BUG-20（drift correction 送信側の対称バグ）、BUG-33（drift correction 検知側の逆方向バグ）。
 
+**追記（実機ソークデータ、2026-09-06、不具合報告 `01M1TG7AQRE9WPRBS1CQQS0WVG`、v1.19.0＝ADR-080 Blind policy込み）:** タスクトレイ経由の不具合報告（Windows Terminal + PowerShell、GJI、msedge系ではなくWindowsTerminal.exe）のjournal/app_logを解析したところ、上記「次回この症状が出ないか確認すること」への回答が得られた。`Blacklist drift correction: apply_ime_open(false) → Applied` ログは1バーストあたり**正確に5回**で毎回停止しており（04:32:18/04:34:02/04:37:01、プロセス再起動を跨いでも再現）、修正前の16連射・無限ループは**再発していない**——`IME_ACTUATION_BLIND_MAX_ATTEMPTS=5`による有界化は実機で機能していることを確認できた。ただし `check_drift_correction` が検知する乖離（`observed=true≠desired=false`）自体は**約1.5〜3分おきに周期的に再発**しており、そのたびに5回分の`VK_IME_OFF`送信バーストが発生する。報告者の症状（「PowerShellで英字/漢字キーで@が入る件、0.19.0で改善されたようなされてないような」）は、この「無限連射は止まったが乖離の周期的再発とそれに伴う5連射バーストは残っている」という状態と整合する——BUG-113が確立した「このバーストがGJIのTSF compositionを乱し`@`を生む」という機構の十分条件は、5回でも満たされ得る。
+
+**現状の評価:** ADR-080のBlind policy（tight loop防止）は意図通り機能しており、これ自体の追加対応は不要。残存する問題は「乖離がなぜ周期的に再発するか」という別軸の問題で、これはBUG-43の原因が構造的に指す「TsfNative/Blacklistパスはobservation storeを更新する手段がない」という限界そのもの（本バグの「原因」節参照）に起因する可能性が高い。BUG-114（`docs/known-bugs.md`該当節）の「D1（`ir_apply_drift_correction`のライブ再導出）・D1a（`ImePolicyProfile::InputRelay`追加）は根本原因2系（`FocusChanged`を経由しないライブ分類変化）向けの補完として未実装のまま残す——実機ソークでこの経路の再発が確認された場合に着手する」という保留条件に該当する可能性があり、次のアクションとしてD1/D1aの実装要否を再検討すべき。
+
 ## BUG-44: `tray_wnd_proc` の「到達不能」判断が逆で、トレイ右クリックのコンテキストメニューが一切表示されなくなった
 
 **症状:** `develop` ブランチで、システムトレイのアイコンを右クリックしてもコンテキストメニューが一瞬も表示されない（フラッシュすらしない）。ユーザー報告（2026-07-27）。実機ログは未取得。
