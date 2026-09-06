@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消を実装、Opus敵対的レビュー3ラウンド（Blocker1件・Major1件を発見・修正）を経て実機確認済み。物理キー・Ctrl+無変換・Alt+Tab後最初のIME OFFいずれも再発なし。probe競合はもう一つの独立した十分条件として残置**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）は再発しなくなった。半角状態での変換/無変換キーでは「@」単発は残るが大量暴発は解消——これは別の未特定要因として残置（詳細は末尾の追記参照）**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14475,6 +14475,52 @@ probe`行が無い」ことは「probeが不要だった／発生しなかった
 
 次のステップは実機での`RUST_LOG=debug`収集によるΔms分布の実測
 （ADR-140のStep 0データ収集プロトコル参照）。
+
+**追記（2026-09-06、Step 1実装、[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)
+確定設計v4参照、実機ソーク前）:** probe/actuationの発行競合を解消する排他機構
+（案D、フェンス値のissue時点比較）を実装した。新設の`probe_actuation_fence`
+（`AtomicU64`、`conv_mutation`とは別カウンタ）を、OSへ到達する物理syscall境界
+2箇所（`win32.rs::send_input_safe`のactuationマーカー判定、`imm.rs::
+send_ime_control`のactuation cmd判定——いずれもStep 0診断ログと同一条件）で
+bumpし、`kp_stage_idle_conv_check_inner`のprobe呼び出し元がissue直前
+（メインスレッド側=offloadへ委譲する直前、ワーカースレッド側=実際の
+`SendMessageTimeoutW`呼び出し直前）の2箇所と、結果が返った後（apply時点、
+`conv_mutation_seq`と同型の比較）の計3箇所でこのフェンスを比較する。
+issue前の2箇所で不一致を検知した場合はOS呼び出し自体を発行せず`Abandoned`
+として扱い、resync経由（`kp_trigger_focus_resync`）ならgateを閉じずハード
+期限タイマーに引き取らせ、通常経由ならin-flightフラグだけ解放する。apply
+時点の不一致は読み取り結果を破棄するのみ（既存のconv_mutation_seqチェックと
+同じ扱い）。abandon発生はresync経路/通常経路を分けて累計カウントし、不具合
+報告（`idle_conv_check_abandoned_resync_count`/`_normal_count`）に含めた
+（starvation検知用）。`SendInput(`/`SendMessageTimeoutW(`の生産コード呼び出し
+サイトが各1箇所であることを固定する`architecture_guard.rs`の回帰テストも
+追加した。**この時点では実機での「@」再現テストによる効果検証は未実施**
+——次のステップは dragonflyg4 実機での再現手順（本BUGの「再現手順」節参照）
+によるA/B確認。
+
+**追記（2026-09-06 続き・実機A/B確認、部分的に効果を確認）:** 上記Step1実装を
+dragonflyg4実機（`fix/adr140-step1-probe-actuation-fence`ブランチ、コミット
+`61d73eda`）に投入し、ユーザーが実機確認した。
+
+- **本BUGの「再現手順」節どおりの手順（Engine有効時に物理半角/全角キーを1回
+  押すだけ）では「@」が出力されなくなった**——Step1が対象としていた
+  probe/actuation競合の解消がこの経路では効いている。
+- 一方、**半角（直接入力/IME OFF）状態で変換/無変換キーを押した場合には
+  引き続き「@」が出力される**。ただし「追記（実機ソークデータ、2026-09-06、
+  不具合報告`01M1TG7AQRE9WPRBS1CQQS0WVG`）」節が記録した、drift correction
+  再検知のたびに`IME_ACTUATION_BLIND_MAX_ATTEMPTS=5`上限まで送信する
+  「5連射バースト」のような**大量暴発は再現しなくなった**（ユーザー確認の
+  原文: 「以前のように大量に暴発されることはなくなりました」）。
+
+この結果は、probe/actuation競合（Step1が対象、本BUGの主再現手順）とは
+**別の、まだ未特定の十分条件**が変換/無変換+直接入力の組み合わせに残って
+いることを示す。Step1のスコープ（`kp_stage_idle_conv_check_inner`の
+probe呼び出しのみ）が対象にしていない経路——例えば変換/無変換キー自体が
+辿るshadow-toggle経路や、drift correctionの別のprobe呼び出し元——で、
+本BUGと同型または別種の交錯が起きている可能性がある。**この残置課題は
+本ADR-140 Step1のスコープ外の別調査として扱い、本PRでは追いかけない**
+（Step1はその設計対象である主再現手順に対して効果を確認できたため、
+このPR自体は完了とみなす）。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 

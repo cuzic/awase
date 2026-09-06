@@ -70,6 +70,8 @@ pub mod panic_detect;
 #[cfg(windows)]
 pub mod platform;
 #[cfg(windows)]
+pub(crate) mod probe_actuation_fence;
+#[cfg(windows)]
 pub mod runtime;
 #[cfg(windows)]
 pub(crate) mod send_health;

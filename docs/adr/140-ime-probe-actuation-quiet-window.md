@@ -1,10 +1,18 @@
-# ADR-140: IME probe/actuation の発行競合 — Step 0（診断ログ追加）のみ採用、Step 1（排他機構）は実機実測待ちで未着手
+# ADR-140: IME probe/actuation の発行競合 — Step 0（診断ログ）・Step 1（排他機構）とも実装・実機確認済み
 
 ## ステータス
 
-**採用（Step 0のみ、2026-09-06）。** Step 1（排他/フェンス機構本体）は
-このADRの対象外であり、Step 0で実機から得られる実測値なしには設計・実装
-に着手できない。
+**採用。Step 0（診断ログ）・Step 1（排他/フェンス機構本体）とも実装済み、
+Step 1は本ADRの主再現手順に対して実機効果確認済み（2026-09-06）。** Step 1は
+確定設計v4（下記「Step 1確定設計」節）どおり`probe_actuation_fence`として
+実装した（実装箇所は同節末尾「実装（2026-09-06）」参照）。dragonflyg4実機で
+BUG-113の主再現手順（物理半角/全角キー1回）による「@」は再発しなくなった
+ことを確認した。ただし半角（直接入力）状態での変換/無変換キー押下では
+「@」単発が残る（大量暴発は解消）——これは本Step1のスコープ
+（`kp_stage_idle_conv_check_inner`のprobe）が対象にしていない別の未特定要因
+であり、`docs/known-bugs.md` BUG-113に残置課題として記録し、本ADRの
+スコープ外の別調査に切り出す。決定Iのabandon率実機ソーク（starvation
+確認）は引き続き未実施。
 
 ## Context
 
@@ -539,6 +547,113 @@ abandon回数を追加し、実機ソークで機能不全が起きていない�
 - 実装そのもの（次のアクション）
 - StepCoro案の実装（別PR）
 - 排他窓の量を表すms定数の導入（案Dは不要）
+
+## 実装（2026-09-06）
+
+確定設計（A〜I）を以下のとおり実装した。実装時に確定設計から意図的に
+逸脱した点のみここに記録する（`experiment-logging.md`と同じ理由）:
+
+- **A/B**: `crates/awase-windows/src/probe_actuation_fence.rs`（新設）。
+  bump地点は`win32.rs::send_input_safe`（`ime_actuation_marker_kind`と
+  同一条件）・`imm.rs::send_ime_control`（`kind=actuation`判定と同一条件）。
+- **C/D**: `runtime/key_pipeline.rs`に新設した`idle_conv_check_probe`
+  （free async fn）が3チェックポイントを実装する。**確定設計からの逸脱**:
+  設計文は`Abandoned{resync_generation: Some(_)/None}`という、abandon
+  理由の enum 自体に`resync_generation`を持たせる形を書いていたが、実装は
+  `enum IdleConvCheckOutcome { Read(Option<u32>), Abandoned }`という
+  resync非依存の単純な形にし、resync/通常の分岐は呼び出し元
+  （`kp_stage_idle_conv_check_inner`、`resync_generation`を元々クロージャ
+  内に保持している）に委ねた。フェンス比較という「メカニズム」と
+  resyncゲートの扱いという「ポリシー」を分離でき、`idle_conv_check_probe`
+  自体はresyncの存在を一切知らなくてよくなる。`Abandoned`到達時の
+  3分岐（resync=gate維持/通常=in-flight解放）の実際の分岐ロジックは
+  設計どおり。
+- **E/F**: 上記のとおり呼び出し元で分岐。checkpoint3（apply、`apply_idle_
+  conv_check`内、既存`conv_mutation_seq`チェックと同型）はresync gateが
+  既にクローズ済みの時点で走るため、gate維持の特別扱いはせず読み取り結果を
+  破棄するのみ（設計の「3. apply」の記述と整合、E/Fの3分岐対象は
+  checkpoint1/2のみ）。
+- **G**: `tests/architecture_guard.rs::
+  send_input_and_send_message_timeout_w_have_single_production_call_site`。
+  `count_real_calls`ではなく新設の`count_real_calls_excluding_string_
+  literals`（同じneedleがtracingフォーマット文字列中に出現する既知の
+  誤検出——`ime.rs`/`held_modifiers.rs`等——を「needleの手前に`"`があるか」
+  で除外）を使う。
+- **H**: 案E（`ProbeAction`/`dispatch_probe_actions`パターン）のキュー集約
+  機構・StepCoro案は実装していない（設計どおり別スコープ）。
+- **I**: `probe_actuation_fence::{abandoned_resync_lifetime_count,
+  abandoned_normal_lifetime_count}`を`BugReportStateSnapshot`の
+  `idle_conv_check_abandoned_resync_count`/`_normal_count`として不具合
+  報告に含めた。
+
+全変更を通じて`crates/win32-async`（`offload.rs`含む）は一切変更していない
+（決定Cが明示的に禁止した`ime::offload_unsafe`への比較挿入も行っていない）。
+
+### 実装レビュー（opus-adversarial-consult、2026-09-06）で発見・修正した点
+
+Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映した:
+
+- **M1（Major、分母の欠落）**: 決定Iのabandonカウンタは分子のみで、
+  「idle-conv-check probeを実際にspawnした回数」という分母が無く、
+  abandon率（starvation判定に必須）が算出不能だった。
+  `probe_actuation_fence::{record_spawned, spawned_resync_lifetime_count,
+  spawned_normal_lifetime_count}`を追加し、`BugReportStateSnapshot`にも
+  `idle_conv_check_spawned_resync_count`/`_normal_count`として追加した。
+- **M2（Major、意味論変更の広さが未実測）**: `kp_stage_idle_conv_check`は
+  パイプライン中で`kp_stage_shadow_ime_toggle`等より前段にあるため、
+  同一キーイベントの後続ステージがactuationを発行すると、issue前の
+  checkpoint1で必ずabandonする構造になっている。この構造自体は決定どおりの
+  帰結だが、`should_run_idle_conv_check`の発火条件がeager TSF
+  warmup・force-ONの発火条件と重なるため、abandon率がどの程度になるかは
+  未実測。M1で追加した分母付きカウンタを使い、実機ソークで「@」再発の
+  有無に加えてabandon率を確認すること。**注意（再レビューで判明）**:
+  `spawned - abandoned`は「checkpoint1/2を通過した数」であって「実際に
+  belief適用まで到達した数」ではない——その先に`Read(None)`・epoch棄却・
+  `close_focus_resync_gate_if_current`のfalse・(a)(b)(c)(d) discardが
+  残っているため、適用到達数は新カウンタだけでは算出できない。
+  idle-conv-checkが実際に機能しているか（タスクバーからのモード変更検知が
+  生きているか）は`RUST_LOG=debug`の`[idle-conv-check]`系ログ（discard
+  理由をすべて出力済み）で確認する運用とし、Step1の完了条件としては
+  abandon率の確認で足りるため追加計装は行わない。
+- **M3（Major、決定Iの分離意図の毀損）**: checkpoint3（apply時点、resync
+  gateクローズ**後**に走る）の discard が誤って`record_abandoned`を呼び、
+  体感遅延ゼロのabandonをresyncカウンタに混入させていた。決定Iがカウンタを
+  分けた理由（resync経路のabandonは体感遅延に直結、通常経路は1回諦める
+  だけ）と矛盾するため、checkpoint3では`record_abandoned`を呼ばず、既存の
+  (a)(b)(c) discardと同様に無カウントの破棄のみに統一した。
+- **m1（Minor）**: `record_abandoned`呼び出しが`with_app`クロージャ内に
+  あり、`with_app`再入時（`None`を返す既知のケース）に取りこぼす構造
+  だった。`with_app`の外・`outcome`確定直後に移動して解消。
+- **m2（Minor）**: `count_real_calls_excluding_string_literals`が行末
+  コメント中の言及（`foo(); // SendInput(...)`）を実呼び出しと誤カウント
+  する穴があった。needle手前に`//`があるかも見るよう修正（ブロック
+  コメント等の残る既知の限界はdoc comment化）。
+- **m3（Minor）**: module docの「物理境界は単一チョークポイント」という
+  記述が、syscall発行口の単一性とactuation判定（marker依存）の網羅性を
+  混同しうる書き方だった。shift-conv-guardの`VK_DBE_HIRAGANA`注入
+  （`TSF_MARKER`だが`VK_IME_ON/OFF`ではないためbump対象外、別のガードで
+  実害なし）を具体例として明記し、両者を切り分けた。
+- **m4（Minor）**: 新規ユニットテストがプロセス共有staticカウンタに対して
+  厳密等値でアサートしており、テストバイナリ内の並行実行でflakyになりうる
+  （BUG-65と同型）。`>=`比較に変更。
+
+いずれの指摘も、確定設計A〜Iの決定内容自体を覆すものではなく、実装時の
+反映漏れ（M3）と、決定Iの完了条件を実際に判定可能にするための追加計装
+（M1/M2）だった。再レビュー（同エージェント、同一commit `cfc90403`を
+直接確認）でBlocker・Major無しの収束を確認、Minor 1件（m5）のみ追加で
+検出された:
+
+- **m5（Minor、再レビューで検出）**: m4の`>=`化により、2テスト
+  （`record_abandoned`/`record_spawned`）が「resync/normal を分けて
+  数える」というsplit自体を検証しなくなっていた（両カウンタを無条件に
+  加算する実装に壊れても緑のまま通る）。プロセス共有staticに対して
+  flakyにならずsplitを検証するには専用のローカルインスタンスへの切り出しが
+  要るが、このモジュールの薄さに対して過剰と判断し、テスト名を実態
+  （`record_{abandoned,spawned}_increments_the_counter_matching_its_argument`）
+  に合わせるに留めた。splitの正しさ自体はmodule docの決定Iの記述と
+  呼び出し元（`key_pipeline.rs`）のコードレビューで担保する。
+
+収束（Blocker/Major 0件、Minor全件対応済み）。
 
 ## 関連
 

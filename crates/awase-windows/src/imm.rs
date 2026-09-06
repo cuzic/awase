@@ -142,6 +142,16 @@ pub(crate) unsafe fn send_ime_control(
     if cmd == IMC_SETCONVERSIONMODE {
         crate::conv_mutation::bump();
     }
+    // ADR-140 Step1 決定B: probe/actuation フェンスの bump は、下の診断ログの
+    // `kind=actuation` 判定と完全に同一の条件（probe 系コマンド以外）で行う。
+    // `conv_mutation` の bump（IMC_SETCONVERSIONMODE のみ）と異なり、GJI の
+    // open 軸（`IMC_SETOPENSTATUS`）もここで数える——`conv_mutation` が
+    // 数えていなかった軸そのものが BUG-113 の actuation だったため
+    // （`crate::probe_actuation_fence` doc 参照）。実際の `SendMessageTimeoutW`
+    // 呼び出しより前に bump することが決定Bの必須要件。
+    if !matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
+        crate::probe_actuation_fence::bump();
+    }
     let start_ms = crate::hook::current_tick_ms();
     // ADR-140 Step0診断ログ: send_health用のstart_ms/end_ms（current_tick_ms()基準、
     // サーキットブレーカの既存閾値がms単位で依存しているため単位を変えない）とは

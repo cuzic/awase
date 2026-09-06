@@ -231,6 +231,12 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         crate::conv_mutation::bump();
     }
     if let Some(kind) = inputs.iter().find_map(ime_actuation_marker_kind) {
+        // ADR-140 Step1 決定B: probe/actuation フェンスの bump は、この診断ログと
+        // 完全に同一の条件（`ime_actuation_marker_kind` が `Some` を返す）で行う。
+        // 判定を共有することで将来の乖離を防ぐ（`crate::probe_actuation_fence` doc 参照）。
+        // 実際の `SendInput` 呼び出しより前にこの分岐があるため、bump は syscall の
+        // 前に完了する（決定Bの必須要件）。
+        crate::probe_actuation_fence::bump();
         tracing::debug!(
             "[ime-io] actuation SendInput kind={kind} issue_us={}",
             crate::hook::now_timestamp_us()

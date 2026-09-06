@@ -128,6 +128,22 @@ pub struct BugReportStateSnapshot {
     /// `None` なら in-flight なし。長時間 `Some` が続く場合は完了取りこぼし
     /// （旧: 永久ラッチのバグ、レビューで修正済みだが再発検知用に残す）を疑う。
     pub idle_conv_check_in_flight_ms: Option<u64>,
+    /// ADR-140 Step1 決定I: idle-conv-check probe が GJI actuation との交錯を
+    /// 検知して abandon した累計回数（resync 経路、`FocusResyncGate` 経由）。
+    /// resync 経路の abandon は defer 中のキーが `FOCUS_RESYNC_DEADLINE_MS`
+    /// まで出てこない体感遅延に直結するため、通常経路とは別に数える
+    /// （`crate::probe_actuation_fence` module doc 参照）。増え続ける場合は
+    /// probe の starvation（本来の目的であるタスクバーからのモード変更検知が
+    /// 機能不全に陥っている）を疑う。
+    pub idle_conv_check_abandoned_resync_count: u32,
+    /// 同上、通常経路（`kp_stage_idle_conv_check`）の累計回数。
+    pub idle_conv_check_abandoned_normal_count: u32,
+    /// ADR-140 Step1 実装レビュー指摘M1: 上記abandonカウンタの分母
+    /// （resync経路でprobeを実際にspawnした累計回数）。分母が無いと
+    /// abandonカウンタ単体では「頻発しているか」を判定できないため追加した。
+    pub idle_conv_check_spawned_resync_count: u32,
+    /// 同上、通常経路の累計回数。
+    pub idle_conv_check_spawned_normal_count: u32,
     /// 「長時間使うと重くなる」報告の切り分け用に追加したプロセスリソース
     /// スナップショット。単発の報告だけでは判断できないが、複数の報告を
     /// `process_uptime_secs` でソートして並べれば、稼働時間とともに
@@ -656,6 +672,10 @@ mod tests {
             send_health_consecutive_slow: 0,
             send_health_breaker_tripped: false,
             idle_conv_check_in_flight_ms: None,
+            idle_conv_check_abandoned_resync_count: 0,
+            idle_conv_check_abandoned_normal_count: 0,
+            idle_conv_check_spawned_resync_count: 0,
+            idle_conv_check_spawned_normal_count: 0,
             process_uptime_secs: 3_600,
             working_set_bytes: 42_000_000,
             handle_count: 321,

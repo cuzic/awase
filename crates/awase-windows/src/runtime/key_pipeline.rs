@@ -27,6 +27,56 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
+/// `idle_conv_check_probe` の結果（ADR-140 Step1 決定E/F）。
+///
+/// `Read(None)`（純粋な読み取り失敗、`SendMessageTimeoutW` のタイムアウト等）と
+/// `Abandoned`（probe issue 前後で GJI actuation フェンスの不一致を検知し、
+/// probe 自体を安全側に諦めた）を区別可能な別の値として表現する。呼び出し元
+/// （`kp_stage_idle_conv_check_inner`）はこの区別を使って resync gate の
+/// 扱いを変える——`Read(None)` は「probe した上で失敗した」ので既存の gate
+/// クローズ経路をそのまま通すが、`Abandoned` は「probe 自体を発行しなかった」
+/// ので resync 経路では gate を閉じずハード期限タイマーに引き取らせる。
+enum IdleConvCheckOutcome {
+    /// probe を実際に issue し、結果が返った（成功/タイムアウトを問わない）。
+    Read(Option<u32>),
+    /// probe issue 前後でフェンス不一致を検知し、OS 呼び出し自体を発行しなかった。
+    Abandoned,
+}
+
+/// `kp_stage_idle_conv_check_inner` 専用の conv 読み取り（ADR-140 Step1 決定C/D）。
+///
+/// probe の issue タイミングを2箇所でチェックする:
+///
+/// 1. **issue(main)**: メインスレッド上、`win32_async::offload` へ委譲する前
+///    （このチェック自体、offload への委譲直前という意味で「issue 直前」）。
+/// 2. **issue(worker)**: ワーカースレッド上、実際の `SendMessageTimeoutW`
+///    （`get_ime_conversion_mode_raw_timeout` 内部）を呼ぶ直前。
+///
+/// いずれかで `fence_at_spawn` と現在値が異なれば、GJI actuation が
+/// spawn 以降に発行されたとみなし、probe の OS 呼び出し自体を行わず
+/// [`IdleConvCheckOutcome::Abandoned`] を返す。
+///
+/// `crate::ime::offload_unsafe`/`get_ime_conversion_mode_raw_timeout_async`
+/// （8箇所の probe/actuation 共通ヘルパー）は意図的に経由しない——共通
+/// ヘルパーにフェンス比較を置くと「actuation が actuation を待つ」問題を
+/// 再演する（`crate::probe_actuation_fence` module doc 参照）。
+async fn idle_conv_check_probe(timeout_ms: u32, fence_at_spawn: u64) -> IdleConvCheckOutcome {
+    if crate::probe_actuation_fence::current() != fence_at_spawn {
+        return IdleConvCheckOutcome::Abandoned;
+    }
+    win32_async::offload(move || {
+        if crate::probe_actuation_fence::current() != fence_at_spawn {
+            return IdleConvCheckOutcome::Abandoned;
+        }
+        // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。
+        //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない
+        //         （`crate::ime::offload_unsafe` 内の他の呼び出しと同じ理由）。
+        let conv = unsafe { crate::ime::get_ime_conversion_mode_raw_timeout(timeout_ms) };
+        IdleConvCheckOutcome::Read(conv)
+    })
+    .await
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -660,9 +710,40 @@ impl Runtime {
         // 一本化する（旧 output_in_flight_ms ベースの last_send 比較は
         // apply_idle_conv_check 側で撤去、下記 doc 参照）。
         let conv_mutation_seq_at_spawn = crate::conv_mutation::current();
+        // ADR-140 Step1 決定A/C: probe/actuation フェンスの spawn 時スナップショット。
+        // `idle_conv_check_probe` がこの値と issue 直前（メイン/ワーカー両スレッド）で
+        // 再比較し、spawn 以降に GJI actuation が発行されていれば OS 呼び出し自体を
+        // 発行せず Abandoned を返す。
+        let probe_actuation_fence_at_spawn = crate::probe_actuation_fence::current();
+        // ADR-140 Step1 決定I / 実装レビュー指摘M1: abandon 率の分母として、
+        // probe を実際に spawn した回数を記録する（resync/通常を分けて数える
+        // のは record_abandoned と同じ理由、probe_actuation_fence module doc 参照）。
+        crate::probe_actuation_fence::record_spawned(resync_generation);
         win32_async::spawn_local(async move {
-            let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
+            let outcome = idle_conv_check_probe(10, probe_actuation_fence_at_spawn).await;
+            // 実装レビュー指摘m1: with_app は再入時に None を返しうる
+            // （下記 spawn_local body 冒頭のコメント参照）。abandon カウンタは
+            // app 状態に依存しないので、with_app の外・outcome が確定した直後に
+            // 記録することで、再入による取りこぼしを避ける。
+            if matches!(outcome, IdleConvCheckOutcome::Abandoned) {
+                crate::probe_actuation_fence::record_abandoned(resync_generation);
+            }
             let _ = crate::with_app(|app| {
+                let conv = match outcome {
+                    // ADR-140 Step1 決定E/F: フェンス不一致で abandon した場合は
+                    // 純粋な読み取り失敗（IdleConvCheckOutcome::Read(None)）とは区別し、
+                    // resync 経路では gate を閉じない（ハード期限タイマーに引き取らせる
+                    // ——`kp_trigger_focus_resync` が spawn 時点で同期的に武装済みの
+                    // deadline が必ず拾う、`close_focus_resync_gate_if_current` を
+                    // 呼ばないだけで安全）。通常経路では in-flight フラグだけ解放する。
+                    IdleConvCheckOutcome::Abandoned => {
+                        if resync_generation.is_none() {
+                            app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
+                        }
+                        return;
+                    }
+                    IdleConvCheckOutcome::Read(conv) => conv,
+                };
                 if resync_generation.is_none() {
                     app.platform_state.gate.idle_conv_check_in_flight_since_ms = None;
                 }
@@ -687,6 +768,7 @@ impl Runtime {
                         app.apply_idle_conv_check(
                             conv,
                             conv_mutation_seq_at_spawn,
+                            probe_actuation_fence_at_spawn,
                             explicit_action_ms_at_spawn,
                             accepted.fence,
                         );
@@ -731,15 +813,17 @@ impl Runtime {
     ///
     /// 読み取りが in-flight の間（旧同期コードでは起こり得なかった隙間）に、
     /// awase 自身が (a) shift ガードを立てる、(b) explicit IME 操作を記録する、
-    /// (c) conv ワードを変えうる書き込みを送る、のいずれかを行っていたら、
+    /// (c) conv ワードを変えうる書き込みを送る、(d) GJI actuation の issue と
+    /// 交錯する（ADR-140 Step1 決定D チェックポイント3）のいずれかを行っていたら、
     /// 読み取った `conv` は awase 自身の遷移途中を拾った汚染値の可能性がある。
     /// spawn 時のスナップショット（`conv_mutation_seq_at_spawn` /
-    /// `explicit_action_ms_at_spawn`）と apply 時点を突き合わせて、これらが
-    /// 起きていないことを再確認してから適用する。
+    /// `probe_actuation_fence_at_spawn` / `explicit_action_ms_at_spawn`）と apply
+    /// 時点を突き合わせて、これらが起きていないことを再確認してから適用する。
     fn apply_idle_conv_check(
         &mut self,
         conv: u32,
         conv_mutation_seq_at_spawn: u64,
+        probe_actuation_fence_at_spawn: u64,
         explicit_action_ms_at_spawn: u64,
         spawn_fence: crate::state::probe_admission::FocusFence,
     ) {
@@ -807,6 +891,31 @@ impl Runtime {
             tracing::debug!(
                 "[idle-conv-check] apply 時に自己出力(conv変異)を検出 \
                  (conv_mutation_seq {conv_mutation_seq_at_spawn}→{conv_mutation_seq_now}) → \
+                 読み取り結果 conv=0x{conv:08X} を破棄"
+            );
+            return;
+        }
+
+        // (d) ADR-140 Step1 決定D チェックポイント3(apply): probe issue(main)/issue(worker)
+        // の2チェックポイント（`idle_conv_check_probe`）はいずれも「issue する前」の
+        // 検査であり、issue 後〜結果が返るまでの間（`SendMessageTimeoutW` 自体の
+        // 所要時間中）に発行された actuation は捕捉できない。上の conv_mutation_seq
+        // チェックと同型の比較を probe/actuation フェンスでも行い、この窓を塞ぐ。
+        // ここに到達する時点で resync gate は既にクローズ済みのため（この関数は
+        // `close_focus_resync_gate_if_current` の後に呼ばれる）、issue(main)/(worker)
+        // のような「gate を閉じない」特別扱いはしない——読み取り結果を破棄するだけで
+        // 汚染された conv が belief に適用されるのを防ぐという目的は達成される。
+        // 実装レビュー指摘M3: この discard は abandon カウンタ（`record_abandoned`）
+        // には数えない——ここに到達する時点で体感遅延は既にゼロ（resync gate
+        // クローズ済み）であり、上の (a)(b)(c) discard も同様に数えていないのと
+        // 整合させる。カウントすると、決定Iが分けた「resync 経路の abandon は
+        // 体感遅延に直結する」という信号に、遅延ゼロの discard が混入し薄まる
+        // （`probe_actuation_fence` module doc 参照）。
+        let probe_actuation_fence_now = crate::probe_actuation_fence::current();
+        if probe_actuation_fence_now != probe_actuation_fence_at_spawn {
+            tracing::debug!(
+                "[idle-conv-check] apply 時に GJI actuation との交錯を検出 \
+                 (probe_actuation_fence {probe_actuation_fence_at_spawn}→{probe_actuation_fence_now}) → \
                  読み取り結果 conv=0x{conv:08X} を破棄"
             );
             return;
