@@ -1438,6 +1438,7 @@ impl Runtime {
             self.engine.katakana_delegate_to_open_axis(),
             self.engine.henkan_delegate_to_open_axis(),
             self.engine.muhenkan_delegate_to_open_axis(),
+            self.muhenkan_dedicated_fn_key_configured(),
         )
     }
 

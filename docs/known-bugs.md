@@ -15591,6 +15591,23 @@ Allow）を追加し、GJI自身による物理キー処理を妨げないよう
 [ADR-141](adr/141-henkan-muhenkan-delegate-inactive-recovery.md)参照
 （Opus敵対的レビュー2ラウンドで収束、棄却した原案・代替案も同ADRに記録）。
 
+**実装後の`/code-review`で発見・修正した2件（2026-09-06）:**
+1. MS-IME側（`sync_ime_toggle_auto_detect`）が、無変換/変換をNICOLA親指
+   キーに設定していないユーザーでもレジストリ由来の値を無条件で
+   shadow_action overrideへ書き込んでいたため、`is_configured_thumb_key`
+   によるチェックが効かず、awase自身の能動actuationとMS-IME自身の
+   ネイティブ処理が二重に発火しうる新規の二重actuation（BUG-46型）を
+   作っていた。GJI側の`route_thumb_key_action`と同じ「親指キーのときだけ
+   overrideへ渡す」条件を追加して修正。
+2. `delegate_owns_mode_key_shadow_toggle`が`muhenkan_solo_tap_dedicated_
+   fn_key`の優先順位（`resolve_pending_thumb_as_single`では専用Fnキーが
+   delegateより優先）を考慮しておらず、専用Fnキー設定時にshadow-toggleが
+   「delegateが処理する」と誤信して身を引き、delegateも実際には発火
+   しない（専用Fnキーが優先されるため）という、C2と同型の「誰も何も
+   しない」穴が無変換側だけ再発しうる状態だった。ownership判定に
+   `!muhenkan_dedicated_fn_key_configured`条件を追加して修正
+   （Henkanには専用Fnキーの概念自体が無いため対象外）。
+
 **残存する既知の限界（ADR-141に記録、対応せず）:**
 - `Toggle`（`gji_thumb_key_ime_toggle=true`のopt-in時のみ）はshadow-toggle
   の冪等no-op分岐が効かないため、押しっぱなしでbeliefの反転とOFF方向

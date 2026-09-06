@@ -468,12 +468,22 @@ pub(crate) fn delegate_owns_mode_key_shadow_toggle(
     katakana_delegate: Option<ShadowImeAction>,
     henkan_delegate: Option<ShadowImeAction>,
     muhenkan_delegate: Option<ShadowImeAction>,
+    muhenkan_dedicated_fn_key_configured: bool,
 ) -> bool {
     is_configured_thumb_key
         && ((vk == ModeKeyCandidate::Hiragana.vk() && hiragana_delegate.is_some())
             || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some())
             || (vk == ModeKeyCandidate::Henkan.vk() && henkan_delegate.is_some())
-            || (vk == ModeKeyCandidate::Muhenkan.vk() && muhenkan_delegate.is_some()))
+            // ADR-141実装レビュー(/code-review指摘): `muhenkan_solo_tap_
+            // dedicated_fn_key`が設定済みだと、`resolve_pending_thumb_
+            // as_single`の優先順位（専用Fnキー > delegate）でdelegateが
+            // 実際には発火しない（BUG-115「専用Fnキーとの非対称」節）。
+            // それを見ずにここが true を返すと、shadow-toggleが「delegate
+            // が処理する」と誤信して身を引き、delegateも発火しないため
+            // 「誰も何もしない」C2と同型の穴が専用Fnキー設定時に再発する。
+            || (vk == ModeKeyCandidate::Muhenkan.vk()
+                && muhenkan_delegate.is_some()
+                && !muhenkan_dedicated_fn_key_configured))
 }
 
 /// [`resolve_mode_key_shadow_override_for_event`]の無変換/変換専用版
@@ -1400,9 +1410,10 @@ Precomposition\tEisu\tToggleAlphanumericMode
             None,
             None,
             None,
+            false,
         ));
         assert!(!delegate_owns_mode_key_shadow_toggle(
-            hiragana, true, None, None, None, None,
+            hiragana, true, None, None, None, None, false,
         ));
         assert!(delegate_owns_mode_key_shadow_toggle(
             hiragana,
@@ -1411,6 +1422,7 @@ Precomposition\tEisu\tToggleAlphanumericMode
             None,
             None,
             None,
+            false,
         ));
         // ADR-141: Henkan/Muhenkanも同じ関数で判定される。
         let henkan = ModeKeyCandidate::Henkan.vk();
@@ -1421,6 +1433,7 @@ Precomposition\tEisu\tToggleAlphanumericMode
             None,
             Some(ShadowImeAction::TurnOn),
             None,
+            false,
         ));
         assert!(delegate_owns_mode_key_shadow_toggle(
             henkan,
@@ -1429,6 +1442,37 @@ Precomposition\tEisu\tToggleAlphanumericMode
             None,
             Some(ShadowImeAction::TurnOn),
             None,
+            false,
+        ));
+    }
+
+    /// /code-review指摘（実装レビューで発見）: `muhenkan_solo_tap_dedicated_
+    /// fn_key`が設定済みだと`resolve_pending_thumb_as_single`の優先順位で
+    /// delegateが実際には発火しない（専用Fnキーが勝つ）ため、delegateが
+    /// armedでもownershipはfalseを返すべき（さもないとshadow-toggleが
+    /// 「delegateが処理する」と誤信して身を引き、どちらも処理しない
+    /// C2型の穴が再発する）。Henkanには専用Fnキーの概念自体が無いため
+    /// 対象外（既存の非対称、BUG-115「専用Fnキーとの非対称」節）。
+    #[test]
+    fn muhenkan_dedicated_fn_key_configured_blocks_delegate_ownership() {
+        let muhenkan = ModeKeyCandidate::Muhenkan.vk();
+        assert!(delegate_owns_mode_key_shadow_toggle(
+            muhenkan,
+            true,
+            None,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOff),
+            false,
+        ));
+        assert!(!delegate_owns_mode_key_shadow_toggle(
+            muhenkan,
+            true,
+            None,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOff),
+            true,
         ));
     }
 
@@ -1666,6 +1710,7 @@ Precomposition\tEisu\tToggleAlphanumericMode
             katakana_armed,
             None,
             None,
+            false,
         ) {
             return PipelineOutcome::Delegate(
                 armed.expect("armedのはず(delegate_owns==trueの前提)"),

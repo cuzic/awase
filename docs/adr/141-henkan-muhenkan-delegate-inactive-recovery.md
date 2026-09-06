@@ -2,7 +2,10 @@
 
 ## ステータス
 
-**設計確定（Opus敵対的レビュー2ラウンドで収束）。実装未着手。**
+**設計確定（Opus敵対的レビュー2ラウンドで収束）・実装済み（PR #177、
+BUG-118として起票）。実装後の`/code-review`でMS-IME経路の非親指キー
+ケースの二重actuation・`muhenkan_solo_tap_dedicated_fn_key`との優先順位
+未考慮の2件を発見・修正済み。実機ソーク（必須条件6）は未実施。**
 対象は develop ブランチ。
 
 **経緯**: 初稿は「`route_thumb_key_action` を排他振り分けから
