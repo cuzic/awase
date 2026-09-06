@@ -511,7 +511,7 @@ impl Runtime {
     /// （force 系の適用は generation を持たずこの経路を通らない）、`reason` は
     /// ジャーナルへ直接記録することで force 系も含めた全経路の provenance を
     /// 一意に残す。
-    #[tracing::instrument(level = "debug", skip_all, fields(open, ?outcome, ?generation, ?reason))]
+    #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?outcome, ?generation, ?reason))]
     pub fn on_ime_apply_complete(
         &mut self,
         open: bool,

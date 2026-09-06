@@ -682,7 +682,7 @@ impl JournalEntry {
     /// variantごとに小関数へ分割すると、match の網羅性チェック
     /// （将来variant追加時のコンパイルエラー検知、この機構の唯一の安全装置）
     /// が複数関数に分散し、かえって見通しが悪くなる。
-    #[expect(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity)]
     fn emit_tracing(&self, seq: u64, elapsed_ms: u64) {
         match self {
             Self::KeyInput {

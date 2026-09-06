@@ -142,7 +142,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // （`spawn_local` のシングルスレッド実行が前提、HWND はスレッドアフィニティを
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
-#[tracing::instrument(level = "debug", skip_all, fields(open))]
+#[tracing::instrument(level = "debug", skip_all, fields(open = open))]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
     // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
@@ -295,7 +295,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// ImmCross 試行にとっては「送信後」（tear-down 済みかもしれない）の値でもある**。
 /// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
-#[tracing::instrument(level = "debug", skip_all, fields(open, ?mechanism))]
+#[tracing::instrument(level = "debug", skip_all, fields(open = open, ?mechanism))]
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let mut view = app.shadow_ime_control_view();

@@ -61,7 +61,7 @@ pub(crate) struct OpenBelief {
 /// 独立に行う）。ADR-108 決定2の緩和経路は `Confirmed` を `Optimistic` へ降格
 /// させないため、この `confident` 判定は現状維持される。将来 `confident` を本番
 /// 分岐へ再配線する場合は、同決定が書く `Optimistic` の扱いを先に見直すこと。
-#[tracing::instrument(level = "debug", skip_all, fields(desired_open))]
+#[tracing::instrument(level = "debug", skip_all, fields(desired_open = desired_open))]
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
     let effective_open = inputs.conv_mode.map_or(
         inputs.shadow_on

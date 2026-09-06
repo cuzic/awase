@@ -3998,6 +3998,22 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
         "tsf/output.rs",
     ];
 
+    // `#[tracing::instrument]` を1つも持たない対象（PRコードレビューで、
+    // このリストに載っているのに計装されていないことが検出された）。
+    // 中身を確認した上での意図的な除外のみここに載せ、理由を書くこと。
+    const NO_INSTRUMENT_EXCEPTIONS: &[(&str, &str)] = &[
+        (
+            "runtime/ime_coordinator.rs",
+            "29行、ImeCoordinator::new()のみ。実際のIME適用結果の集約は\
+             runtime/mod.rs::on_ime_apply_completeが担い、そちらに#[instrument]済み。",
+        ),
+        (
+            "tsf/observer.rs",
+            "ほぼ全てatomicのアクセサ（notify/baseline/has_changed/reset/value等）で、\
+             相関情報を持つ意味のある処理単位が無い。",
+        ),
+    ];
+
     let table = read_repo_root_file(".claude/rules/fix-requires-evidence.md");
     let hook = read_repo_root_file(".githooks/pre-push");
 
@@ -4007,7 +4023,11 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
         // 表・正規表現とも、個別ファイル名ではなくディレクトリ単位
         // （`focus/`・`output/`・`tsf/`等）で再発ファミリーを指す行がある
         // （例: 「focus 遷移」行は `focus/` とだけ書き、`focus/classifier.rs`
-        // を個別列挙しない）ため、ディレクトリプレフィックスでの一致も許容する。
+        // を個別列挙しない、`.githooks/pre-push`の正規表現も同様）ため、
+        // ディレクトリプレフィックスでの一致も許容する。**この包含チェックは
+        // 一方向かつ緩い**（決定3が表/正規表現の範囲を逸脱していないかしか
+        // 見ない。表/正規表現がカバーすべきファイルを決定3が計装し忘れて
+        // いないかは、下の「実際に#[instrument]があるか」チェックが担う）。
         let dir_prefix = file.rsplit_once('/').map(|(dir, _)| format!("{dir}/"));
         let dir_hit = dir_prefix
             .as_deref()
@@ -4021,6 +4041,20 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
              範囲外へ逸脱していないか（本当に再発ファミリー領域か）確認すること。\
              意図した対象追加なら表または正規表現側も更新するか、このテストの \
              コメントに除外理由を明記すること。"
+        );
+
+        // 逆方向: リストに載っているのに実際は計装されていない、という
+        // このPR自身が作った状態（B4/B-4、PRコードレビューで検出）を検知する。
+        if let Some((_, reason)) = NO_INSTRUMENT_EXCEPTIONS.iter().find(|(f, _)| f == file) {
+            let _ = reason; // 理由はコメント/定数として保持するのみ、assertはしない
+            continue;
+        }
+        let content = read_crate_file(&format!("src/{file}"));
+        assert!(
+            content.contains("#[tracing::instrument"),
+            "ADR-139決定3の対象 `{file}` に #[tracing::instrument] が1つもありません。\
+             リストに載せたなら実際に計装すること。計装すべき関数が無いファイルなら \
+             NO_INSTRUMENT_EXCEPTIONS に理由付きで追加すること。"
         );
     }
 }

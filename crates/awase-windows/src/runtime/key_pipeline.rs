@@ -545,7 +545,10 @@ impl Runtime {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(is_first_key_after_focus, resync_generation)
+        fields(
+            is_first_key_after_focus = is_first_key_after_focus,
+            resync_generation = resync_generation
+        )
     )]
     fn kp_stage_idle_conv_check_inner(
         &mut self,

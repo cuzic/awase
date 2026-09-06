@@ -110,7 +110,7 @@ pub(crate) struct TsfSendPipeline;
 
 impl TsfSendPipeline {
     /// VK run または Unicode kana を送信し、バックスペース数を返す。
-    #[tracing::instrument(level = "debug", skip_all, fields(romaji))]
+    #[tracing::instrument(level = "debug", skip_all, fields(romaji = romaji))]
     pub(crate) fn transmit(
         romaji: &str,
         chars: &[(VkCode, bool)],

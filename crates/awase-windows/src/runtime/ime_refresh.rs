@@ -571,7 +571,7 @@ impl Runtime {
     // 別に複雑度を増やす）。この関数はADR-080不変条件6の対象で
     // architecture_guard.rsのマーカーベーステストが依存する繊細な構造のため、
     // ロジックの分割はしない。
-    #[expect(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity)]
     #[tracing::instrument(level = "debug", skip_all)]
     fn ir_apply_drift_correction(&mut self) {
         // BUG-20 で non-ImmCross（GJI/TsfNative/Blacklist）向けの再送分岐を追加した際、

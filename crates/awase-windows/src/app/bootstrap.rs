@@ -152,6 +152,11 @@ pub(super) fn init_logging(debug_console: bool) {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(writer)
+            // ファイル出力にANSIエスケープシーケンスを混入させない
+            // （env_loggerのWriteStyle::Autoは非端末出力で自動的に無効化していたが、
+            // tracing-subscriberは既定でansi featureが有効なため明示指定が必要。
+            // 不具合報告に添付されるawase.logが読めなくなるのを防ぐ）。
+            .with_ansi(false)
             .finish()
             .init();
         tracing::info!(

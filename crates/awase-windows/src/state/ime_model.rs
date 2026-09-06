@@ -539,7 +539,12 @@ impl ImeModel {
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
     #[expect(clippy::cognitive_complexity)]
-    #[tracing::instrument(level = "debug", skip_all, fields(event = ?envelope.event))]
+    // `event` は `fields(?envelope.event)` のようなDebug展開をしない
+    // （PRコードレビュー指摘: journal→tracing fan-out〈決定4〉が同じ
+    // ImeEventを`event_kind = "UserImeToggleIntent"`のような判別子文字列で
+    // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeToggleIntent
+    // { source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {

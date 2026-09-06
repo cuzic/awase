@@ -793,7 +793,7 @@ impl DecisionExecutor {
     /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
     /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
-    #[tracing::instrument(level = "debug", skip_all, fields(open, ?generation))]
+    #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?generation))]
     fn dispatch_ime_set_open(
         &mut self,
         platform: &WindowsPlatform,

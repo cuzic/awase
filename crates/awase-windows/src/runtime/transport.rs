@@ -237,7 +237,13 @@ impl PhysicalKeyDisposition {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(?profile, shadow_toggled, is_tsf_mode, f2_warmup_owned, ?active_ime_kind)
+        fields(
+            ?profile,
+            shadow_toggled = shadow_toggled,
+            is_tsf_mode = is_tsf_mode,
+            f2_warmup_owned = f2_warmup_owned,
+            ?active_ime_kind
+        )
     )]
     pub(crate) fn plan(
         event: &RawKeyEvent,
