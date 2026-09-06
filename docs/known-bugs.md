@@ -14548,6 +14548,15 @@ FencedProbeOutcome`を返す）経由に配線した。abandon時の扱いはSte
 これらの経路の交錯によるものかは未検証——次のステップは実機での再現
 テスト。
 
+**追記（2026-09-06 続き・Step1bの実装レビューでnear-Blocker 2件を発見・
+修正）:** 上記Step1bの初回実装に、`start_ms_ime_ready_poll`が「必ず
+終了する」保証を失っていた欠陥（abandonが連続するとdeadlineチェック
+が完全にスキップされタスクが不死になりうる）と、ループ2箇所で
+「probeがin-flight中に発行されたactuation」という最も起こりやすい
+交錯を捕まえるcheckpoint3相当が未実装だった欠陥が見つかり、修正した
+（詳細は[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)の
+「Step1b 実装レビュー」節参照）。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
