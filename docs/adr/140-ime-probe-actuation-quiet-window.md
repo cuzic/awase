@@ -731,7 +731,7 @@ mode_raw_timeout_async`呼び出し4箇所（診断ログ専用、意図的に�
 の確認、型不整合・デッドロック・パニック経路の不在を検証し、収束と判定
 した（Blocker 0件）。
 
-### Step1b マージ前`/code-review max`再確認（3箇所目のcheckpoint3欠落を検出・修正）
+### Step1b マージ前`/code-review max`再確認（checkpoint3欠落と世代照合欠落を検出・修正）
 
 上記S2は`start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll`の2箇所
 だけにcheckpoint3を追加したが、Step1bで新たにフェンスした3箇所目
@@ -742,6 +742,21 @@ checkpoint3が入っていなかった——同じ`get_ime_conversion_mode_fence
 from_imc`はconfirmedを立てないhint専用のため、汚染された値が適用されても
 BUG-13のconfirm-then-transmitゲートを誤って開けることはない）が、S2と
 同じ交錯防止を3箇所全てで一貫させるため、同型のcheckpoint3チェックを追加した。
+
+同じ再確認で、`start_ms_ime_ready_poll`のabandon分岐（S1でdeadline判定を
+必ず呼ぶよう修正した側）に、good-read分岐が`refresh_ime_mode_if_focus_
+matches`経由で必ず行っていた`ime_mode_focus_gen`世代照合が移植されていない
+欠陥も見つかった。世代照合を欠くと、フォーカスが切り替わった後も生き続ける
+旧世代のこのタスクが、（`probe_actuation_fence`がプロセス全体で1本の共有
+カウンタのため、新フォーカス側の通常のIME操作でも起こりうる）actuationとの
+交錯でabandon分岐に落ち続けた場合、旧世代の`deadline_ms`期限切れを検知した
+瞬間に**現在（新世代）の**`Output.ms_ime_gate_give_up`を誤って立ててしまう
+——新世代は一度もタイムアウトしていないのに、BUG-13のゲートが黙って無効化
+される。今回のS2 checkpoint3欠落（低severity、hint専用）とは異なり、
+こちらは`confirmed=true`を実際に立てて送信可否を決めるゲートそのものを
+壊しうるため severity は高い。abandon分岐にも世代照合を追加し、`gen`不一致
+時は`MsImePollStatus::Stale`で終了するよう修正した（詳細・再現条件は
+[docs/known-bugs.md](../known-bugs.md) BUG-113追記参照）。
 
 ## 関連
 

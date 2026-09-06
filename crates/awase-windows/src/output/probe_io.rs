@@ -495,6 +495,20 @@ impl Output {
     /// 期限判定だけは必ず行う——これを省略すると actuation が連続する限り
     /// このタスクが不死になり `ms_ime_gate_give_up` を一度も立てなくなる
     /// （実装レビュー指摘S1）。
+    ///
+    /// **`/code-review max`指摘（S1実装のフォローアップ）**: 上記 abandon 分岐は
+    /// 元々 `ime_mode_focus_gen` の世代照合を欠いていた——good-read 分岐は
+    /// `refresh_ime_mode_if_focus_matches` 経由で必ず世代照合してから
+    /// `Output` へ触れるのに対し、abandon 分岐は照合なしで
+    /// `ms_ime_ready_poll_check_deadline` を呼んでいたため、フォーカスが
+    /// 切り替わった後も生き続ける旧世代のこのタスクが、（グローバル1本の
+    /// フェンスのため新フォーカス側の通常の IME 操作でも起こりうる）
+    /// actuation との交錯でこの分岐に落ち続けると、旧世代の `deadline_ms`
+    /// 期限切れを検知した瞬間に**現在の（新世代の）** `ms_ime_gate_give_up`
+    /// を誤って立ててしまう——新世代は一度もタイムアウトしていないのに
+    /// BUG-13 のゲートが無効化される。abandon 分岐にも世代照合を追加し、
+    /// 世代が一致しない限り `Output` へ触れない（`Stale` で終了する）よう
+    /// good-read 分岐と揃えた。
     pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: Generation, deadline_ms: u64) {
         let gen = self.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
@@ -539,15 +553,27 @@ impl Output {
                              (issue前 or read後) → このtickの読み取りを破棄（次tickへ継続）",
                             cold_seq = cold_seq.value(),
                         );
-                        // 指摘S1: conv は信用しないが、期限判定だけは行う（終了保証）。
-                        // ここを呼ばないと abandon が連続する限りタスクが不死になり
-                        // `ms_ime_gate_give_up` を一度も立てなくなる。
+                        // `/code-review max`指摘: 指摘S1で「conv が信用できなくても
+                        // deadline判定だけは行う」形にした際、good-read側の分岐が
+                        // `refresh_ime_mode_if_focus_matches` 経由で必ず行っていた
+                        // `ime_mode_focus_gen` 世代照合を、この分岐にだけ移植し忘れて
+                        // いた。世代照合を欠くと、フォーカスが切り替わった後も生き
+                        // 続ける旧世代（`gen`）のこのタスクが、GJI actuationとの交錯
+                        // （このタスクが生きている限りいつでも起こりうる。フェンス
+                        // グローバル1本のため、新フォーカス側の通常のIME操作でも
+                        // bumpされる）でこの分岐に落ち続け、旧世代の`deadline_ms`
+                        // が期限切れ（実時間は既に経過済みのため高確率で真）になった
+                        // 瞬間、**現在の（新世代の）** `Output.ms_ime_gate_give_up`
+                        // を誤って立ててしまう——新世代側は一度もタイムアウトして
+                        // いないのに、BUG-13のconfirm-then-transmitゲートが黙って
+                        // 無効化され、未準備なIMEへ早期送信しうる。good-read側と
+                        // 同じ「世代が一致しない限りOutputへ触れない」規律に揃える。
                         crate::with_app(|runtime| {
-                            if ms_ime_ready_poll_check_deadline(
-                                &runtime.platform.output,
-                                deadline_ms,
-                                cold_seq,
-                            ) {
+                            let out = &runtime.platform.output;
+                            if out.ime_mode_focus_gen.get() != gen {
+                                return MsImePollStatus::Stale;
+                            }
+                            if ms_ime_ready_poll_check_deadline(out, deadline_ms, cold_seq) {
                                 MsImePollStatus::Expired
                             } else {
                                 MsImePollStatus::Pending

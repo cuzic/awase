@@ -14557,12 +14557,47 @@ FencedProbeOutcome`を返す）経由に配線した。abandon時の扱いはSte
 （詳細は[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)の
 「Step1b 実装レビュー」節参照）。
 
-**追記（2026-09-06 続き・マージ前`/code-review max`再確認）:** 上記S2の
-checkpoint3追加が`start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll`
-の2箇所のみで、Step1bで新たにフェンスした3箇所目`platform.rs`のFocusChange
-直後IMCヒントprobe（`gji_on_focus_change`）に同型のcheckpoint3が欠けていた
-ことを検出、追加した（hint専用でconfirmedを立てないためseverityは元々低いが、
-3箇所の交錯防止を一貫させた。詳細はADR-140「Step1b マージ前`/code-review max`
+**追記（2026-09-06 続き・マージ前`/code-review max`再確認、`start_ms_ime_ready_
+poll`の世代照合欠落を検出・修正）:** 上記S1で abandon 分岐（GJI actuation との
+交錯を検知したtick）にも `ms_ime_ready_poll_check_deadline` による期限判定を
+必ず行うよう修正した際、good-read 分岐が `refresh_ime_mode_if_focus_matches`
+経由で必ず行っていた `ime_mode_focus_gen` の世代照合を、abandon 分岐にだけ
+移植し忘れていた欠陥を検出した。
+
+**症状/機構**: `start_ms_ime_ready_poll` はフォーカス世代 `gen`（spawn 時点の
+`ime_mode_focus_gen`）をキャプチャして回り続けるループだが、abandon 分岐は
+この `gen` と現在の `ime_mode_focus_gen` を比較せずに
+`ms_ime_ready_poll_check_deadline(&runtime.platform.output, ..)` を呼んでいた
+（`Output.ms_ime_gate_give_up` を書き込みうる）。`probe_actuation_fence` は
+プロセス全体で1本の共有カウンタのため、フォーカスが新しいウィンドウ
+（世代 `gen+1`）に移った後も、新ウィンドウ側の通常の IME 操作（actuation）が
+起きるだけで、旧世代のこのタスクは abandon 分岐に落ち続けられる。旧世代の
+`deadline_ms` は実時間の経過により高確率で期限切れになっており、これを
+検知した瞬間、**現在（新世代）の** `Output.ms_ime_gate_give_up` を誤って
+`true` にしてしまう——新ウィンドウは一度もタイムアウトしていないのに、
+BUG-13 の confirm-then-transmit ゲートが黙って無効化され、未準備な IME への
+早期送信（先頭文字リテラル化）を招きうる。
+
+**再現条件**: (1) MS-IME アプリでウィンドウAにフォーカスがあり
+`start_ms_ime_ready_poll` が起動している、(2) 確認が完了する前に素早く
+ウィンドウB（同じく MS-IME confirm-then-transmit ゲートが起動する別アプリ）
+へフォーカスを移す、(3) ウィンドウBで通常の IME 操作（GJI actuation 相当の
+`IMC_SETOPENSTATUS`/`IMC_SETCONVERSIONMODE`・IME制御キー送信のいずれか）が
+起き続け、旧世代タスクが abandon 分岐に落ち続ける、(4) 旧世代の
+`deadline_ms` 経過後にこの分岐へ到達 → ウィンドウBの `ms_ime_gate_give_up`
+が誤って立つ。実機A/Bでの単独再現確認は未実施（コードレビューでの発見）。
+
+**修正**: abandon 分岐にも good-read 分岐と同じ「世代が一致しない限り
+`Output` へ触れない」規律を追加し、`gen` 不一致時は `MsImePollStatus::Stale`
+で黙って終了するようにした（`crates/awase-windows/src/output/probe_io.rs::
+start_ms_ime_ready_poll`）。
+
+上記とは別に、S2のcheckpoint3追加が`start_ms_ime_ready_poll`/
+`send_chrome_gji_reinit_and_poll`の2箇所のみで、Step1bで新たにフェンスした
+3箇所目`platform.rs`のFocusChange直後IMCヒントprobe（`gji_on_focus_change`）
+に同型のcheckpoint3が欠けていたことも検出、追加した（hint専用でconfirmed
+を立てないためseverityは元々低いが、3箇所の交錯防止を一貫させた。詳細は
+ADR-140「Step1b マージ前`/code-review max`
 再確認」節参照）。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
