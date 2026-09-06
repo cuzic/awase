@@ -228,6 +228,21 @@ Phase Aでは発生しなくなる（安全な3キーはいずれもBUG-08/61/62
    （リレーツールでは珍しくない）で`was_down`がstuckすると、次の物理押下が
    auto-repeat扱いになり代入がスキップされる——決定2がBUG-100対策として
    構造的に防いだはずの状態が、`is_injected`を見落とすと別経路から再現する。
+
+   **【Phase Bからの申し送り、ADR-141決定B7参照】** 上記の「Alt適用前後の
+   比較」「`!is_injected`ガード」は、実装時には本項・決定2のシグネチャに
+   直接書くのではなく、`event_eligible: bool`
+   （`!alt_impersonated && !is_injected`）という単一パラメータへ吸収し、
+   `decide_role_substitution`（決定2）に渡す設計に変更すること
+   （ADR-141のPhase Bテスト計画レビューで判明、Linux側のテスト網羅性を
+   大きく広げられるため）。この場合、hook.rs側は`!is_injected`の早期
+   returnゲートを持たず、安全な3キーのイベントを**無条件に**
+   `decide_role_substitution`へ渡し、`event_eligible`の計算だけを担う
+   （ガードを呼び出し側の分岐からパラメータの計算へ移す）。
+   `event_eligible`は`decide_alt_impersonation`の`engine_enabled`と
+   同じく**新規押下時点でのみ**参照すること（無条件の早期returnは
+   BUG-41と同型のstuck keyを再導入する、ADR-141決定B7参照）。詳細な
+   シグネチャ・網羅テーブルの拡張（16→32通り）はADR-141決定B7を参照。
 2. **役割代入ルールの集合は、対象3キー上の全単射（置換）でなければ
    ならない**: 明示的にルールが無いキーは恒等（自分自身へ写る）として
    補完し、補完後の写像が「異なる2つの入力が同じ出力を持つ」ことが無い
@@ -409,10 +424,21 @@ Altセンチネル設定の両方を名指ししたエラーを出す）。こ�
 3. **`runtime/transport.rs::PhysicalKeyDisposition::plan`**: 安全な3キーの
    範囲では`shadow_action`は生じない（`ImeKeyKind::from_vk`が3キー
    いずれにも`None`を返す）ため、決定0のスコープ縮小によりこの経路の
-   実害はPhase Aでは発生しない。ただし`vk_may_mutate_conv`（`vk.rs:187-194`）
-   は`VK_CONVERT`(0x1C)を含むが`VK_NONCONVERT`(0x1D)を含まない**非対称**が
-   あり、変換↔無変換の役割代入は`conv_mutation`ゲートの発火有無自体を
-   反転させる。実害は限定的だが、Phase Bのテストで確認すること。
+   実害はPhase Aでは発生しない。
+
+   **【訂正、ADR-141 r1レビューで判明】** 本項が続けて指摘していた
+   「`vk_may_mutate_conv`の非対称性が`transport.rs::plan`の判定を変える」
+   という記述は**誤帰属だった**。`vk_may_mutate_conv`の全呼び出し箇所を
+   確認したところ`transport.rs`は一度も呼んでおらず、実際の呼び出し元は
+   `crates/awase-windows/src/keymap.rs:29`（`[[keymaps]]`の`to`側禁止判定、
+   config.tomlに書かれた**静的な**vkを見るため役割代入の影響を受けない）
+   と`crates/awase-windows/src/win32.rs:169`（`send_input_safe`の
+   `conv_mutation`ゲート、こちらは`RawKeyEventExt::reinject()`が渡す
+   **代入後のvk**を見るため実際に影響を受ける）の2箇所である。したがって
+   本項が示した非対称性の実害は`transport.rs::plan`ではなく
+   `win32.rs:169`の`conv_mutation`ゲートに現れる（ADR-084/086のconv
+   actuation系、`fix-requires-evidence.md`の「conv mode」再発ファミリー
+   に該当）。詳細と検証方針はADR-141決定B7を参照。
 4. **`vk::is_composition_confirm_key`（`vk.rs:319`、`0x20`/`0x0D`/`0x1B`
    のみ）**: `VK_SPACE`を含むため、スペースを絡めた役割代入
    （変換↔スペース、無変換↔スペース）はcomposition確定処理
