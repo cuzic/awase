@@ -870,6 +870,54 @@ pub async fn get_ime_conversion_mode_raw_timeout_async(timeout_ms: u32) -> Optio
     offload_unsafe(move || unsafe { get_ime_conversion_mode_raw_timeout(timeout_ms) }).await
 }
 
+/// `get_ime_conversion_mode_raw_timeout` の、GJI actuation フェンス
+/// （[`crate::probe_actuation_fence`]）付き版（ADR-140 Step1b）。
+///
+/// probe の issue タイミングを2箇所でチェックする:
+///
+/// 1. **issue(main)**: メインスレッド上、`win32_async::offload` へ委譲する前。
+/// 2. **issue(worker)**: ワーカースレッド上、実際の `SendMessageTimeoutW`
+///    （[`get_ime_conversion_mode_raw_timeout`] 内部）を呼ぶ直前。
+///
+/// いずれかで `fence_at_call` と現在値が異なれば、GJI actuation が
+/// `fence_at_call` 取得以降に発行されたとみなし、probe の OS 呼び出し自体を
+/// 行わず [`crate::probe_actuation_fence::FencedProbeOutcome::Abandoned`]
+/// を返す。
+///
+/// **`fence_at_call` の取得位置が呼び出し元の責務**: この関数自体は
+/// `crate::probe_actuation_fence::current()` を内部で再取得しない
+/// （その場で取得しても「直前の値と比較して常に一致する」だけで無意味な
+/// ため）。呼び出し元は、この呼び出しに先立つ `.await`
+/// （`win32_async::spawn_local` の初回 poll 遅延や、直前の `sleep_ms`
+/// 等）を挟まない同期地点で `current()` を取得すること——挟むと、その
+/// `.await` の間に発行された actuation を見逃す（`kp_stage_idle_conv_check_
+/// inner` が spawn 時点でこの値をキャプチャしているのが例）。
+///
+/// [`offload_unsafe`]（8箇所の probe/actuation 共通ヘルパー）は意図的に
+/// 経由しない——共通ヘルパーにフェンス比較を置くと「actuation が
+/// actuation を待つ」問題を再演する（`crate::probe_actuation_fence`
+/// module doc 参照）。
+pub(crate) async fn get_ime_conversion_mode_fenced_async(
+    timeout_ms: u32,
+    fence_at_call: u64,
+) -> crate::probe_actuation_fence::FencedProbeOutcome {
+    use crate::probe_actuation_fence::FencedProbeOutcome;
+    if crate::probe_actuation_fence::current() != fence_at_call {
+        return FencedProbeOutcome::Abandoned;
+    }
+    win32_async::offload(move || {
+        if crate::probe_actuation_fence::current() != fence_at_call {
+            return FencedProbeOutcome::Abandoned;
+        }
+        // SAFETY: get_ime_conversion_mode_raw_timeout は unsafe fn。
+        //         SendMessageTimeoutW はクロスプロセス呼び出しのためスレッドに依存しない
+        //         （`offload_unsafe` 内の他の呼び出しと同じ理由）。
+        let conv = unsafe { get_ime_conversion_mode_raw_timeout(timeout_ms) };
+        FencedProbeOutcome::Read(conv)
+    })
+    .await
+}
+
 /// 現在のキーボードレイアウトの言語情報を返す。
 ///
 /// Returns `(is_japanese, lang_id)` — 日本語レイアウトかどうかと言語 ID (下位16ビット)。

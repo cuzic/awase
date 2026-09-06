@@ -655,6 +655,109 @@ Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映�
 
 収束（Blocker/Major 0件、Minor全件対応済み）。
 
+## Step1b（2026-09-06、`/code-review max`指摘への対応）
+
+Step1のPRに対する`/code-review max`が、`kp_stage_idle_conv_check_inner`と
+全く同型（`spawn_local`/ポーリングループ→クロスプロセス conv 読み取り→
+`with_app`、focus世代の照合のみ）でありながら`probe_actuation_fence`の
+対象外だった probe 経路を3箇所検出した:
+
+1. `output/probe_io.rs::start_ms_ime_ready_poll`（MS-IME BUG-13
+   confirm-then-transmitゲート、`confirmed=true`を実際に立てる経路）
+2. `output/probe_io.rs::send_chrome_gji_reinit_and_poll`（Chrome
+   cold-reinit時のGJI確認ポーリング）
+3. `platform.rs`のFocusChange直後IMCヒントprobe（hint専用、severity低）
+
+比較ロジック（決定C/D、チェックポイント1/2）を`crate::ime::
+get_ime_conversion_mode_fenced_async`（`crate::probe_actuation_fence::
+FencedProbeOutcome`を返す）として汎用化し、`kp_stage_idle_conv_check_
+inner`を含む4箇所全てがこれを共通の入口として使うよう配線した
+（`crate::ime::offload_unsafe`には引き続き比較を置かない、決定C厳守）。
+
+Abandon時の扱いは呼び出し元ごとに異なる（決定E/Fと同じ「メカニズムと
+ポリシーの分離」方針）:
+
+- `kp_stage_idle_conv_check_inner`: resync gateの非対称扱い（既存どおり）。
+- 上記3箇所: resync gate概念が無いため、いずれも「今回のtickは進展なし、
+  次tickへ継続」として既存の未観測（`with_app`再入等）扱いに合流させる
+  だけでよい。abandon専用カウンタ（決定I相当）は追加していない
+  ——これら3箇所はidle-conv-checkほど高頻度に発火しない（MS-IME
+  confirm-gate/Chrome cold-reinit/FocusChangeの各契機のみ）ため
+  starvationリスクが低く、実機ソークでの`RUST_LOG=debug`ログ確認で
+  足りると判断した。
+
+やらないこと（Step1bのスコープ外）:
+
+- 決定I相当のabandonカウンタを新3箇所へ追加すること（上記理由により
+  見送り、必要になれば追加する）。
+- `/code-review max`が指摘したその他のNit（`probe_actuation_fence.rs`の
+  bump/current・record_abandoned/record_spawnedのボイラープレート重複、
+  `architecture_guard.rs`の`count_real_calls`との重複、`examples/`配下の
+  spike実験バイナリのフェンス対象外化）——正確性・安全性に影響しない
+  純粋なリファクタ/スコープ明確化の提案であり、実装レビューが検証した
+  「Blockerではない」という判定どおり見送った。
+
+### Step1b 実装レビュー（opus-adversarial-consult、near-Blocker 2件を発見・修正）
+
+Step1bの初回実装（`8cd9268f`）に対する実装レビューで、near-Blocker
+（マージ前修正推奨）2件が見つかり反映した:
+
+- **S1（`start_ms_ime_ready_poll`が「必ず終了する」保証を失っていた）**:
+  `Abandoned => MsImePollStatus::Pending`が`with_app`を一切呼ばずに
+  返っていたため、abandonしたtickではdeadlineチェック
+  （`current_tick_ms() >= effective_deadline_ms` →
+  `ms_ime_gate_give_up.set(true)` → `Expired`）が完全にスキップされ、
+  abandonが連続する限りこのタスクが不死になりうる欠陥だった
+  （BUG-114のようなactuationストーム下で顕在化しうる）。deadline判定を
+  `ms_ime_ready_poll_check_deadline`として分離し、conv が信用できない
+  （abandonまたは後述S2のcheckpoint3不一致）場合も必ずこれを呼ぶよう
+  修正した——convは使わないがdeadline判定だけは毎tick行う、という形で
+  終了保証を復元した。
+- **S2（ループ2箇所はcheckpoint1が実質デッドコードで、checkpoint3も
+  無かった）**: `start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_
+  poll`はいずれも`fence_at_call`を`.await`の直前で取るため、checkpoint1
+  （main、決定Dの1点目）の窓が実質ゼロで、実際に効くのはcheckpoint2
+  （worker、`SendMessageTimeoutW`呼び出し直前）だけだった。かつ、
+  **最も起こりやすい交錯**（probeの`SendMessageTimeoutW`がin-flightの
+  間にメインスレッドがactuationを発行する）はissue前の2チェックでは
+  原理的に捕捉できず、これを捕まえるcheckpoint3相当が2箇所とも未実装
+  だった。read完了直後にフェンスを再比較する処理を両方に追加し、
+  不一致なら既存の「未観測」扱い（`send_chrome_gji_reinit_and_poll`は
+  `None`、`start_ms_ime_ready_poll`はdeadline判定のみ）に合流させた。
+
+いずれもStep1bの初回実装のミスであり、確定設計A〜IやStep1本体の設計を
+覆すものではない。レビューは他に、未フェンスの`get_ime_conversion_
+mode_raw_timeout_async`呼び出し4箇所（診断ログ専用、意図的に非フェンス）
+の確認、型不整合・デッドロック・パニック経路の不在を検証し、収束と判定
+した（Blocker 0件）。
+
+### Step1b マージ前`/code-review max`再確認（checkpoint3欠落と世代照合欠落を検出・修正）
+
+上記S2は`start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll`の2箇所
+だけにcheckpoint3を追加したが、Step1bで新たにフェンスした3箇所目
+`platform.rs`のFocusChange直後IMCヒントprobe（`gji_on_focus_change`内）には
+checkpoint3が入っていなかった——同じ`get_ime_conversion_mode_fenced_async`
+（checkpoint1/2のみ）を使う構造は同型なのに、read完了直後のフェンス再比較
+だけこの1箇所に欠けていた。severityは変わらず低い（`update_ime_mode_hint_
+from_imc`はconfirmedを立てないhint専用のため、汚染された値が適用されても
+BUG-13のconfirm-then-transmitゲートを誤って開けることはない）が、S2と
+同じ交錯防止を3箇所全てで一貫させるため、同型のcheckpoint3チェックを追加した。
+
+同じ再確認で、`start_ms_ime_ready_poll`のabandon分岐（S1でdeadline判定を
+必ず呼ぶよう修正した側）に、good-read分岐が`refresh_ime_mode_if_focus_
+matches`経由で必ず行っていた`ime_mode_focus_gen`世代照合が移植されていない
+欠陥も見つかった。世代照合を欠くと、フォーカスが切り替わった後も生き続ける
+旧世代のこのタスクが、（`probe_actuation_fence`がプロセス全体で1本の共有
+カウンタのため、新フォーカス側の通常のIME操作でも起こりうる）actuationとの
+交錯でabandon分岐に落ち続けた場合、旧世代の`deadline_ms`期限切れを検知した
+瞬間に**現在（新世代）の**`Output.ms_ime_gate_give_up`を誤って立ててしまう
+——新世代は一度もタイムアウトしていないのに、BUG-13のゲートが黙って無効化
+される。今回のS2 checkpoint3欠落（低severity、hint専用）とは異なり、
+こちらは`confirmed=true`を実際に立てて送信可否を決めるゲートそのものを
+壊しうるため severity は高い。abandon分岐にも世代照合を追加し、`gen`不一致
+時は`MsImePollStatus::Stale`で終了するよう修正した（詳細・再現条件は
+[docs/known-bugs.md](../known-bugs.md) BUG-113追記参照）。
+
 ## 関連
 
 [docs/known-bugs.md](../known-bugs.md) BUG-113、
