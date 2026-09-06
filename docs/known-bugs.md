@@ -15336,7 +15336,15 @@ BUG-115（`gji_charset_autodetect::is_configured_thumb_key`による衝突
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。
 
-## BUG-117: `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNative)の特定テキストボックスで Ctrl+無変換 による IME OFF が数秒後に勝手に ON へ戻る（**原因未確定、作業仮説のみ**）
+## BUG-117: `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNative)の特定テキストボックスで Ctrl+無変換 による IME OFF が数秒後に勝手に ON へ戻る（**原因未確定・再現せず、保留**）
+
+**追記（2026-09-06、保留）:** 報告者が同一環境で再度操作したところ、本症状は
+**再発しなかった**。恒常的な再現手順が確立していないため、これ以上の追跡調査
+は一旦保留とする。下記に記録した journal 解析結果とコード側の構造的ギャップ
+（`UserImeSetIntent` が `source` の真正性を検証しない、TsfNative で
+`explicit_verify` が無効）はそのまま残し、次に類似症状（Edge 等 TsfNative
+アプリの特定テキストボックスで IME OFF が効かない）が再現した際の手がかりと
+する。
 
 **症状（不具合報告 `01M1TQ2KVRW0SA73SBHWA7Y2NE`、2026-09-06、v1.18.0、GJI）:**
 msedge.exe（`Chrome_WidgetWin_1`、`app_kind=TsfNative`）で、Ctrl+無変換を
