@@ -2,62 +2,170 @@
 
 ## ステータス
 
-**収束（r11相当、両エージェント最終確認済み）。r10でOpus 2体の敵対的
-レビューを10ラウンド実施しBlocker/Major/Minor/Nit全てゼロで承認された
-後、持ち越し3点（実装順序・NM18・from_name表現）を実際に解消する過程で、
-architect役・premortem役との追加協議（実質r11、途中でさらにBlocker
-相当1件・Major相当1件を新規発見・修正）により以下を確定した。
-2026-09-06、両エージェントとも最終差分を確認しBlocker/Major/Minor
-（Nit3件は反映済み）ゼロで再承認:**
+**収束（r21、2026-09-06、両エージェント最終承認・Blocker/Major/Minor
+（Minor1件は既知の制限として反映済み）/Nitすべて解消）。** 以下は
+r21に至るまでの経緯。
+
+**r21（2026-09-06、`engine_enabled`の置き場所を「サイクル単位の
+fresh press無効化」へ一本化して確定、両エージェントへ再確認依頼中）**:
+`engine_enabled`の扱いは6段階の試行錯誤を経た。(1) NM24でADR-141
+決定1の`event_eligible`へ追加→(2) NM25でhold-storeまで連動し
+`{KEY}_WAS_DOWN`が取り残されると判明、`kana_role_actuate`だけに移す→
+(3) NB14でvkのセンチネル書き換え自体はゲートされず完全な死にキーに
+なると判明、`to`方向のfresh press確定（`rule_target`をNoneとして
+扱う）へ移す→(4) R13-M1で`to`方向だけのゲートは`from`方向との非対称
+で全単射が破れると判明、`from`側にも対称に追加→(5) NB15/R14-M2で
+`from`側の述語に直接混ぜると押下中のエンジントグルでKeyUpが取り残される
+と判明→(6) NB16で「かなに直接触れる腕だけ」を無効化すると3-cycleの
+残り1腕が生き残り全単射が破れると判明。**最終的に、決定3に「かな
+スロットが関与するサイクル全体（3-cycle等の全ての腕を含む）を、
+fresh press時点でconfig由来の単一の値`kana_cycle_active`により
+一括で無効化する」という概念を新設し、決定1・決定2-2はどちらも
+この値だけを参照する形に一本化した**（`is_kana_slot_press`・
+`kana_role_actuate`いずれの式にも`engine_enabled`を直接混ぜない）。
+かなスロットを含まない独立したサイクル（安全な3キーのみの構成）は
+この判定と無関係なため、ユーザーが確認した製品方針「安全な3キー
+同士の入れ替えはエンジンのON/OFFと独立に動作し続けてほしい（秀Caps
+相当の常駐リマッパとして）」どおりエンジン非依存のまま動作し続ける
+（ADR-141の`event_eligible`は無変更のまま）。NM23はdrift correction
+緩和策自身が`is_japanese_ime()`にゲートされ、grace窓では機能しない
+ことを既知の制限として明記。r14までの内容は以下のとおり。
+
+r12の
+アーキテクチャ転換をOpus 2体の敵対的レビュー（architect役・premortem役、
+r0〜r11と同一エージェント）に再度かけ、r13でBlocker 1件（R12-B1）・
+Major 1件（R12-M1）・Minor 3件・Nit 1件を反映後、architect役の独立
+レビューでさらにBlocker 1件（NB13、rule tableとhold-stateの層の混同）・
+Major 2件（NM19: BUG-10救済経路の記録漏れ、NM20:「NICOLA判定に一切
+関与しない」という前提の書きすぎ）・Major相当の訂正1件（NM21:
+「唯一の絞り点」が実は`reinject()`ではなく`send_input_safe`だった）・
+Minor数件を発見、すべて反映した。r11で「収束」と宣言した設計は、実装
+着手前の根本再調査で前提の1つが誤りだと判明したため撤回した。決定1・
+決定3・決定5・決定8は維持、決定2を全面置換、決定4・決定6・決定7・
+決定9を整合するよう調整した。旧決定2（r0〜r11の設計）は「旧設計
+（r11まで）の記録」節に要約として残す。r0〜r11で発見した個別の
+Blockerを表形式で再検証し、いずれも再発しないことを確認済み
+（premortem役、詳細は決定2各節参照）。両エージェントへ再確認依頼中。**
+
+**r13→r14で反映した指摘の要約**:
+- **Blocker（NB13、architect役指摘）**: 決定2-2が「rule tableの
+  `rule_target`をそのまま返し、hook.rs側でvkだけセンチネルへ差し替える」
+  としていたが、これだと`{KEY}_CONFIRMED_TARGET`に実0xF2が残り、
+  決定2-8・決定4が要求する「confirmed_target==センチネル」の前提と
+  矛盾し、KeyUpのたび実0xF2がOSへ漏れる。hook.rsは戻り値の**2要素とも**
+  センチネルへ差し替えることを明記（rule table自体は0xF2のまま、
+  hold-stateはセンチネル、という2層の区別を確立）。
+- **Blocker→再訂正（R12-B1→NM21、architect役指摘）**: 「OSへ絶対に
+  出ない」保証の絞り点を、当初`reinject()`としていたが、真の唯一の
+  チョークポイントは`win32::send_input_safe`（doc既載、`vk_may_mutate_
+  conv`ゲートも同じ理由でここに置かれている）と判明。ガードを
+  `send_input_safe`へ移設し、`reinject()`はそれを内部で呼ぶだけの
+  経路の1つとして再整理。
+- **Major（R12-M1→NM19、architect役が記録の甘さを再指摘）**: NB6
+  （BUG-10食い逃げ救済）喪失について、`ir_apply_drift_correction`が
+  タイマー駆動の独立した定期リフレッシュであり、打鍵と無関係に自動で
+  乖離補正を試みることを実コードで確認し、「2打鍵で回復」という仮説
+  ではなく「バックグラウンドで自動回復する」という検証済みの緩和策に
+  差し替えた。
+- **Major（NM20、architect役指摘）**: 「`to`=かな方向はNICOLA判定に
+  一切関与しない」という前提が言い過ぎだった。正確には「`Char`に
+  分類されないため同時打鍵の構成キーにはなりえないが、`Passthrough`
+  イベントとしてengineは通過する」——複数箇所の記述を訂正。
+- **Minor**: `is_sync_key`を根拠なく`true`にしていた点を`false`に訂正
+  （決定2-3）、`reinject()`のシグネチャをスニペット上も実装と一致させる
+  （premortem役Nit）、ドロップ時のログ追加、`plan()`側ガードが二重防御
+  として消せない理由の明記、決定6の陳腐化した「親指キー判定」への
+  言及を削除。
+- **Nit**: configのどの入力経路からもセンチネル値が生成されないことの
+  確認を追加（決定2-1）。
+
+### r12でアーキテクチャを転換した理由
+
+r11までの決定2は、**「OSへ合成`VK_DBE_HIRAGANA`(0xF2)をSendInputで
+直接送ってはならない」という制約**を出発点にしていた。この制約を守る
+ために、hook.rsの挿入点でvkを0xF2へ書き換えた上で、メインスレッドの
+`transport.rs::PhysicalKeyDisposition::plan`の既存F2判定分岐を条件付き
+Suppressへ拡張し、「別の場所で既に発火しているはずのIME actuation
+（`kp_stage_shadow_ime_toggle`→`ime_controller::apply`）に便乗する」
+という**間接設計**になっていた。この間接性——「actuationを呼ぶべきか」
+の判断と「actuationを実際に呼ぶ」処理が別の場所にあり、前者が後者の
+発火を*推測*しなければならない——が、r2〜r11で格闘した問題の大半
+（`actuation_will_fire`の近似、fresh pressラッチ、`role_substitution_
+fresh_press`フィールド、`kana_role_active`のSSOT、NM17のフォールバック、
+NM18、R11-M1のクロススレッド不可能性）を生んでいた。
+
+実装着手前の再調査で、この出発点の制約自体が2点で誤っていた:
+
+1. **「合成0xF2を絶対に送らない」は誇張だった**:
+   `crates/awase-windows/src/ime.rs::send_ime_mode_key_with_shift_
+   release_prefix`が、**既に本番コードで**scan付き合成
+   `VK_DBE_HIRAGANA`をSendInputしている（GJI半角英数トグルの出口処理、
+   `output/mod.rs:1231`から呼ばれる）。そのガードは同`:1201`の
+   `hook::ime_mode_key_injection_blocked_by_modifier()`（`hook.rs:296`）
+   ——**Win/Alt押下中かどうかだけ**である。BUG-61（Alt+かなで復旧不能）が実際に
+   問題にしているのは**Alt/Win押下中の**合成送信であって、「合成0xF2
+   を送ること自体」ではない。
+2. **より重要: そもそもvkを0xF2にする必要が無かった**。`to`=かな方向
+   （安全な3キー→かな）は、代入後の意味論が「IMEをONにする」という
+   純粋なモード切替であり、`Char`に分類されないため**NICOLA同時打鍵の
+   構成キーにはなりえない**（正確な言い方——2026-09-06訂正、
+   architect役NM20指摘。「NICOLA判定に一切関与しない」は言い過ぎで、
+   `Passthrough`イベントとしてengineの`on_input`は通過する。背景節
+   「`to`=かな方向がNICOLA判定に参加しないこと」参照）。したがって
+   `classify_key`が代入後vkから何を導くかは重要ではなく、`Passthrough`
+   に落ちさえすればよい。`from`=かな方向（物理かなキー→安全な3キー）
+   は代入後のキーが実際に`Char`として同時打鍵の構成キーになりうる
+   ため挿入点での書き換えが必須だが、r11の決定2は`to`方向にも同じ
+   構造をそのまま踏襲した結果、0xF2という**実在するIME意味論を持つvk**
+   を経由させ、下流のF2分岐（BUG-52/116ガード）・`kp_restore_hiragana_
+   for_suppressed_mode_key`・`vk_may_mutate_conv`・
+   `shift_katakana_passthrough`・delegate機構と全面的に絡み合わせて
+   しまっていた。
+
+**r12の決定**: `to`=かな方向のvk書き換え先を、実在するIME意味論を持つ
+0xF2ではなく、**どのvk空間の値とも衝突しない専用センチネル**
+（`VK_ROLE_KANA_ACTUATE`、決定2参照）にする。センチネルは下流のどの
+既存判定にも一致しないため、F2分岐との絡み合いが構造的に消える。
+その代わり`plan()`にセンチネル専用の無条件Suppress分岐を1つ置き、
+actuationはメインスレッド側で**直接**呼ぶ。「呼ぶべきかの判断」と
+「実際に呼ぶ処理」が同一スレッド・同一イベント処理の中で同期的に完結
+するため、r11までの間接推論とそれが生んだ機構が丸ごと不要になる。
+
+### r11から引き継ぐ確定事項
 
 1. **実装順序**: ADR-141（Phase A基盤）→ADR-142（Phase B config/GUI）
    →本ADRの順で実装すること（変更なし）。
-2. **【解決済み】NM18（ADR-141決定1とADR-142決定B7の`{KEY}_WAS_DOWN`
-   更新規則の不一致）**: 「hold-stateへのstoreは`event_eligible`で
-   ゲートし、vk変換自体は無条件に行う」という形で決着した（ADR-141
-   決定1「r-later訂正」・ADR-142決定B7「訂正」参照）。当初「ADR-141
-   決定1の字面どおり（適用とstoreをいずれも`!is_injected`ガード内で
-   行う）を正とする」という r10時点の推奨は、ADR-142決定B7のr3→r4
-   stuck-key対策と矛盾することが追加協議で判明し撤回された。この訂正
-   に伴い、本ADR決定2のフォールバック（NM17）の正当化も再訂正した
-   （injected由来のhold-state stuckは両方向とも構造的に消滅、残る
-   正当化は`ProduceResult::Overflow`経路のみ）。
-3. **【解決済み】かなスロットの`from_name`表現（決定8-1〜8-4）**:
-   config記号は`"VK_DBE_HIRAGANA"`のみ受理（`"VK_KANA"`/`"かな"`/
-   `"カナ"`/`"Kana"`と0xF0/0xF1/0xF3-0xF6は拒否）、rule table格納値は
-   0xF2、拒否・正規化は単射チェックより前。GUI表示文言のみPhase C送り。
-4. **【追加で発見・修正、Blocker相当】かなスロットの恒等補完の意味**
-   （決定3参照）: 「恒等＝rule_targetをかなスロットの正規VkCodeとして
-   テーブル引きする」実装だと、かなスロットを一切設定していないユーザー
-   でもBUG-52/BUG-116（ADR-137）の既存挙動が壊れることが判明した。
-   「恒等＝テーブル引き自体をスキップしvkを書き換えない」に訂正した。
-5. **【追加で発見・修正、Major相当×3】injected KeyUpによるラッチ迂回**
-   （決定2・決定4参照）: `to`=かな方向のDownがSuppressされた後、リレー
-   ツール等のinjected KeyUpが決定2の静的3条件（`!event.injected`）を
-   満たさずラッチを迂回し、対応するDownを持たない0xF2のKeyUpがOSへ
-   送出されうる経路を発見。3段階で訂正した:
-   (a) 当初`confirmed_target == Some(VK_DBE_HIRAGANA)`を条件にしたが、
-   これは「Downは常にSuppressされる」というr3時点の前提に乗っており、
-   決定2のr4以降（`actuation_will_fire`が偽のフォールスルー）では
-   DownがAllowされOSへ実際に配送される場合があるため誤り（architect役
-   指摘）→条件をラッチの値そのもの（`Some(true)`＝Suppressのときのみ）
-   に訂正。
-   (b) その訂正版も「hook.rs側のvk変換自体を止める」実装は不可能と
-   判明（premortem役R11-M1指摘——変換はフックスレッド、ラッチは
-   メインスレッドの値でクロススレッド参照になる）→例外の置き場所を
-   `plan()`側のKeyUp専用Suppress分岐へ移し、hook.rs側の変換（ADR-141
-   決定1「適用は無条件」）自体には触れない形に再訂正。
-   (c) この移動によりinjected KeyUpがラッチを**読む**ようになった
-   ため、ラッチの**クリア**規則も`!event.injected`でゲートしないと、
-   injected Upが先にラッチをクリアし直後の物理Upがフォールスルーする
-   形で同じ問題が別経路から復活すると判明（architect役指摘）→クリアは
-   非注入のKeyUpのみ、読み取りはKeyUpに限りinjectedにも開く、という
-   形に最終確定した。
+2. **かなスロットの`from_name`表現（決定8-1〜8-4）**: config記号は
+   `"VK_DBE_HIRAGANA"`のみ受理（`"VK_KANA"`/`"かな"`/`"カナ"`/`"Kana"`
+   と0xF0/0xF1/0xF3-0xF6は拒否）、rule table格納値は0xF2、拒否・正規化
+   は単射チェックより前。GUI表示文言のみPhase C送り。**r12補足**:
+   rule table上の格納値が0xF2であることと、実行時にhook.rsが書き換える
+   先がセンチネルであることは別の話である（決定2参照）——テーブルは
+   「かなスロットというオブジェクト」の識別子として0xF2を使い、
+   `to`=かな方向の書き換え先だけがセンチネルになる。
+3. **かなスロットの恒等補完の意味（決定3）**: 「恒等＝テーブル引き
+   自体をスキップしvkを書き換えない」。「恒等＝rule_targetをかな
+   スロットの正規VkCodeとしてテーブル引きする」実装だと、かなスロット
+   を一切設定していないユーザーでもBUG-52/BUG-116（ADR-137）の既存
+   挙動が壊れる。r12でも変更なし（この決定はセンチネル導入と独立に
+   必要）。
+4. **【r12で消滅】NM18（`{KEY}_WAS_DOWN`のinjected更新規則の不一致）**:
+   r11の決定2はこの規則に**正しさを依存**していたが、r12設計では
+   どちらの読み方でも最悪「当該押下1回分がactuationせずに終わる」
+   だけで、次の物理KeyUpで自己修復する（決定2「injected/overflowでの
+   取りこぼし」参照）。本ADRは依存しない。ADR-141/142側の不一致解消は
+   引き続きそちらの課題として残る。
+5. **【r12で消滅】injected KeyUpによるラッチ迂回（r11のBlocker相当
+   ×1・Major相当×3）**: センチネルは**イベント種別・injected有無に
+   関わらず常にSuppress**されるため、「Downは配送されたのにUpだけ
+   Suppressされる（またはその逆）」という非対称が構造的に発生しない。
+   ラッチ自体が不要になったため、その読み取り・書き込み・クリアの
+   規律をめぐるr11の3段階の訂正もすべて消滅した。
 
 Phase A実装時の受け入れ条件として以下の実機確認が必要（決定8のテスト
 計画に加えて）: 代入先キー押下でGJI・MS-IME双方の実IMEが実際にONになる
-こと、代入先キーを押しっぱなしにしてOSへ0xF2が繰り返し届かないこと
-（auto-repeat時の二重送出防止の検証）。**
+こと、代入先キーを押しっぱなしにしてIMEが暴れないこと（auto-repeat時の
+二重actuation防止の検証）、代入先キーからOSへ何も送出されないこと。
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -492,6 +600,68 @@ ADR-141決定0（`docs/adr/141-physical-key-role-substitution.md:111-149`）は
 「かなスロットの物理キーをvkに関わらず識別する」という本ADRの要件に
 極めて好都合であり、決定1の設計根拠になる。
 
+### スレッド境界とキューの実態（r12の再調査で確定、決定2の設計根拠）
+
+r1〜r11は「フックスレッドとメインスレッドの間で値を安全に渡せない」
+という制約に繰り返し突き当たった（r1の`KANA_DOWN_WAS_ALLOWED`、r7の
+NB10、r11のR11-M1）。この制約の正確な形を確定させる:
+
+- フックコールバックは**本物の別OSスレッド**で動く:
+  `hook.rs:747 install_hook()`が`std::thread::Builder::new().name
+  ("awase-hook")`でスレッドをspawnし、`SetWindowsHookExW`＋
+  `GetMessageW`専用ループを回す。
+- そのスレッドとメイン（"engine"）スレッドの間は、
+  `crates/awase-windows/src/hook_channel.rs`の`HookKeyRing`（SPSC
+  リングバッファ、`CAP=1024`）**1本だけ**で繋がっている。運ばれるのは
+  分類済みの抽象イベント`RawKeyEvent`（vk/scan/injected/
+  `key_classification`/`ime_relevance`/`physical_pos`/`modifier_key`/
+  `modifier_snapshot`）である。
+- **フックは対象キーを常に即Suppressする**: `hook.rs:1195`の
+  `HOOK_KEYS.produce(event)`の直後、`hook.rs:1199`が
+  `ProduceResult::Accepted => LRESULT(1)`を返す。つまりキューへ投入
+  した時点で応答が確定し、WH_KEYBOARD_LLの同期制約はここで切れている。
+  「Allow」に相当する実際のOS配送は、メインスレッドが後から
+  `RawKeyEventExt::reinject()`で**非同期に**SendInputする形で行われる
+  （`crates/awase-windows/src/lib.rs:348-376`）。
+
+この構造から2つの帰結が出る。(a) フックスレッドで決めなければならない
+のは「OSへ即座に何を返すか」ではなく「メインスレッドへ**どんな抽象
+イベントを渡すか**」だけである。(b) したがってフックスレッドが持つ
+情報（`{KEY}_WAS_DOWN`等のhold-state）を、`RawKeyEvent`のフィールドと
+して**運ぶ**ことは自然にできる一方、メインスレッド側の値をフック
+スレッドから**読む**ことは依然としてできない。r1・r11が破綻したのは
+後者を試みたためであり、r7〜r10が`role_substitution_fresh_press`という
+新フィールドを作ろうとしたのは前者の正しい形だった。r12の決定2は、
+その「運ぶ」対象を新フィールドではなく**既存の`ime_relevance`
+フィールド**（もともとプラットフォーム層が事前分類してcoreへ渡す
+ための場所）にすることで、新フィールドの追加自体を不要にする。
+
+### `to`=かな方向がNICOLA判定に参加しないこと（r12の再調査で確定）
+
+ADR-141決定1が挿入点を`classify_key`（`hook.rs:1171`）より**前**に
+置いているのは、`classify_key`が**書き換え後のvk**でNICOLA同時打鍵の
+親指キー判定を行う必要があるためである（ADR-019のcore/platform境界:
+coreは生のvkを見ず、事前分類された`KeyClassification`だけを見る）。
+これは`from`=かな方向（物理かなキー→安全な3キー、代入後はNICOLA判定に
+参加する）には正当な制約である。
+
+一方`to`=かな方向は、代入後の意味論が「IMEをONにする」という純粋な
+モード切替であり、`Char`に分類されないため**NICOLA同時打鍵の構成
+キーにはなりえない**（2026-09-06訂正、architect役NM20指摘——「NICOLA
+判定には一切参加しない」は正確ではない。センチネルのイベントは
+`Passthrough`として`HookKeyRing`経由でengineの`on_input`を通過し、
+NICOLA FSMを素通りするわけではない。pending中の同時打鍵候補がある
+状態でこのPassthroughイベントが届いた場合の挙動——flushの契機になる
+かどうか——はPhase A実装時の確認項目とする、決定2-10参照）。したがって
+`classify_key`が代入後vkから何を導くかは重要ではなく、**`Passthrough`
+に落ちさえすればよい**。決定2のセンチネルは実際にそうなる:
+`vk::is_passthrough`（`vk.rs:243-263`）はセンチネル値を含まないが、
+続く`scan_to_pos(model, scan)`が`None`を返す（`scan`は書き換えられず
+元の物理scanのまま——変換=0x79・無変換=0x7B・スペース=0x39・
+かな=0x70はJIS/USどちらのテーブルにも存在しない、
+`crates/awase-windows/src/scanmap.rs`）ため、`classify_key`は
+`(KeyClassification::Passthrough, None)`を返す。
+
 ## スコープ
 
 - **対象**: 物理かなキー（scan 0x70、以下「かなスロット」）と、ADR-141の
@@ -502,10 +672,11 @@ ADR-141決定0（`docs/adr/141-physical-key-role-substitution.md:111-149`）は
   - `to`に`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`(0xF5/0xF6)を割り当てること
     （決定2、BUG-61により構造的に禁止）。
   - `to`に`VK_DBE_ALPHANUMERIC`/`VK_DBE_KATAKANA`/`VK_DBE_SBCSCHAR`/
-    `VK_DBE_DBCSCHAR`(0xF0/0xF1/0xF3/0xF4)を割り当てること（決定2の
-    r2再設計により、`to`=かなの意味論は「`VK_DBE_HIRAGANA`固定・常に
-    Suppress・awase自身がIME ON相当をactuateする」の1通りに一本化された
-    ため、他の`VK_DBE_*`亜種をGUIの選択肢に出す余地自体が無い）。
+    `VK_DBE_DBCSCHAR`(0xF0/0xF1/0xF3/0xF4)を割り当てること（**r12訂正**:
+    `to`=かなの意味論は「専用センチネルへ書き換え・常にSuppress・
+    awase自身がIME ON相当をactuateする」の1通りに一本化されており、
+    そもそもOSへ`VK_DBE_*`のいずれかを送る経路が存在しないため、
+    どの`VK_DBE_*`亜種をGUIの選択肢に出す余地も無い）。
   - IME OFF方向の代入（決定2の既知の制限1、「かなスロット＝IME ON指示」
     という意味論に限定するため再現しない）。
   - config形式・設定GUIの具体的な表現（Phase C、ADR-142と同様に後続ADRへ
@@ -527,6 +698,18 @@ ADR-141決定1の挿入点（`hook.rs:1135`の`vk = rewritten_vk;`直後、`if
 ```
 is_kana_slot_press = (scan == SCAN_KANA) && event_eligible
 ```
+
+**`engine_enabled`はこの述語に含めない（2026-09-06、NB15・NB16・
+R13-M1・R14-M2を経て決定3の「かな関与サイクル」概念に一本化して
+確定）**: `is_kana_slot_press`は`scan`・`event_eligible`という
+「イベントの出自」（押下中に変化しない性質）だけで決まる述語のまま
+とし、可変のグローバル状態である`engine_enabled`をここに混ぜない
+（NB15指摘: 混ぜると押下中のエンジントグルでKeyUpが取り残される）。
+`engine_enabled`（正確には決定3が定義する`kana_cycle_active`）は、
+fresh press時点で`rule_target`を`decide_role_substitution`へ渡す
+かどうかの判断にのみ効かせる——詳細な機構・全単射を破らない理由は
+決定3「エンジンOFF時は『かなスロットが関与するサイクル全体』を
+無効化する」を参照。
 
 `event_eligible`はADR-142決定B7が安全な3キー用に確立した
 `!alt_impersonated && !is_injected`と**同一のパラメータをそのまま流用する**
@@ -569,709 +752,667 @@ shadow IME beliefは物理かなキー押下を一切観測しなくなる。こ
 実装時にこの観測経路の消失が既存のbelief更新ロジックに悪影響を与えないか
 個別に確認が必要（未解決の疑問5）。
 
-### 決定2（r6で全面整理——r2〜r5の変遷はステータス節・変更履歴を参照）: toがかなスロットになる場合、fresh press時点でSuppress/Allowを確定し、以後の同一押下ではその決定を踏襲する
+### 決定2（r12で全面書き直し——r0〜r11の設計は「旧設計（r11まで）の記録」節を参照）: toがかなスロットになる場合、専用センチネルvkへ書き換え、常にSuppressし、メインスレッドが直接actuateする
 
 **中核の設計判断**: 安全な3キーのいずれかがかなスロットへ代入される場合
-（例:「変換→かな」）、実際のIME ON操作は`kp_stage_shadow_ime_toggle`
-（`key_pipeline.rs:270`付近、`plan()`〈`:392`〉より**前**に呼ばれる）が
-既に行っている——役割代入で書き換えられたvk（`VK_DBE_HIRAGANA`）は
-`build_raw_key_event`の`classify_ime_relevance(vk)`（代入後vk基準）に
-よって`ImeKeyKind::Activate`→`ShadowImeAction::TurnOn`として分類され、
-`plan()`の判定を待たずにactuationが発火する。これはADR-141の「vkを
-書き換えれば以後の全パイプラインがそれだけを見る」という設計の帰結で
-あり、決定1がこれを一般化した時点で既に成立していた（NB4、r3で判明）。
+（例:「変換→かな」）、hook.rsの挿入点で書き換える先を
+`VK_DBE_HIRAGANA`(0xF2)のような**実在するIME意味論を持つvk**にはせず、
+NICOLA判定・`classify_key`・下流のどのvk判定とも衝突しない**専用の
+センチネルvk**にする。センチネルを載せたイベントは、
+`PhysicalKeyDisposition::plan`が**無条件にSuppress**し、OSへは一切
+配送しない。実際のIME ON操作は、メインスレッドの`kp_run_inner`が
+既存のactuation経路へ**直接**投入する。
 
-したがって決定2が実際に決めるべきことは1点のみである: **役割代入由来の
-`VK_DBE_HIRAGANA`が、既に発火済みのactuationに加えて、`reinject()`
-経由でOSへも重複して送出されるのを止める**こと。
+この3点（センチネル／無条件Suppress／同一スレッドでの直接投入）が、
+r11までの決定2が抱えていた間接性——「別の場所で既に発火したはずの
+actuationを推測して二重配送を止める」——を構造的に置き換える。
 
-**actuation発火の判定（NB6/R5-M1/R5-M2、r6で確定）**: 「既存の仕組みが
-実際にIMEをONにするか」は、新しいスナップショット機構を作らず、
-`kp_stage_shadow_ime_toggle`が**既に**返している情報に寄せる。
+#### 決定2-1: センチネルvkの定義と値
 
-```
-actuation_will_fire = shadow_toggled || delegate_will_turn_on
-```
-
-- `shadow_toggled`は`kp_stage_shadow_ime_toggle`の既存の戻り値
-  （「IME ON/OFFが変化したらtrueを返す」、`key_pipeline.rs:1001-1002`）
-  であり、既に`plan()`の引数として渡っている（`:390-394`）。この値は
-  同関数が持つ4つの早期return（KeyUp `:1009-1011`、`event.injected`
-  `:1116-1123`、`intent_kind`なし`:1086-1088`、`IntentWitness`なし
-  `:1143`/`:1151`）とno-op分岐（`:1180`）を**すべて内包**しており、
-  r4〜r5が独自に持ち込んだ`ime_open_before`スナップショットより厳密
-  （r5の`!ime_open_before`は`is_japanese_ime()`ゲート等の早期return
-  経路を区別できず、actuationが起きていないのにSuppress判定してしまう
-  ケースがあった）。同じ判定を`plan()`側で再計算しない、という
-  `DbeModeKeyContext::is_configured_thumb_key`のdoc（`transport.rs:
-  65-69`）の規律にも合致する。
-- `delegate_will_turn_on`は`delegate_owned`（`:1074-1075`）が真の場合に
-  限り、`turn_on_direction`（`key_pipeline.rs:1188-1200`、既存の
-  no-op分岐内で`hiragana_delegate_to_open_axis()`/`katakana_delegate_
-  to_open_axis()`の`Option<ShadowImeAction>`を引いて`.unwrap_or(action)`
-  している既存計算）が`ShadowImeAction::TurnOn`と一致するかで決める。
-  **単純な`is_some()`（armed判定）ではない**——同関数の既存コメント
-  （`:1181-1187`、/code-reviewで既に指摘済み）が警告するとおり、
-  delegateの配線先はTurnOff/Toggleでもありうるため、armed判定だけでは
-  IMEをONにしないdelegateでもSuppressしてしまう（r5の欠陥）。
-
-  **r7訂正（architect役NM14指摘）**: `delegate_will_turn_on`を新しい
-  判定式として独自に書いてはならない。`delegate_owned`が真の場合、
-  `turn_on_direction`は**既に**（no-op分岐の中で）計算済みであり
-  （`delegate_owned`が真なら必ずno-op分岐に入るため、この計算は
-  必ず走っている）、これを流用しないと`DbeModeKeyContext::
-  is_configured_thumb_key`のdocが禁じる二重管理になる。`turn_on_
-  direction`を関数の戻り値に載せ、`delegate_will_turn_on = (delegate_
-  owned && turn_on_direction == ShadowImeAction::TurnOn)`という形で
-  呼び出し元が導出する。
-
-`kp_stage_shadow_ime_toggle`の戻り値は`shadow_toggled`と
-`turn_on_direction`（`delegate_owned`が偽の場合は無視してよい）の2値
-（r4〜r5が提案した3値の`ShadowToggleOutcome`構造体は不要——
-`shadow_toggled`を再利用するため`ime_open_before`というフィールド自体
-が要らなくなった）を運べる形に変更する。
-
-**fresh press時点での確定とラッチ（NB8/NB9/NM12、r6で新設）**:
-r4〜r5は、Down/Up/auto-repeatのそれぞれで動的条件を毎回再評価しようと
-して、2種類の欠陥を生んだ——(a) KeyUpでの再評価は`kp_stage_shadow_ime_
-toggle`がKeyUpで即returnするため`shadow_toggled`相当が常に「変化なし」
-になり、Down/Upが常に非対称になる（NB8）。(b) auto-repeat KeyDownでの
-再評価は、1打目のactuationでbeliefが既に開いているため2打目以降で
-`actuation_will_fire`が常に偽になり、押しっぱなしの間ずっと生の0xF2が
-OSへ流れ続ける（NB9、決定6が許容する親指キー構成では特に深刻）。
-
-**決定**: 動的条件の評価は**fresh press**（新規押下の瞬間、ADR-141の
-`engine_enabled`規律と同一）**でのみ**行い、判定結果（Suppress/Allow）
-を`plan()`呼び出し元（メインスレッドの`kp_run_inner`）に閉じた単一の
-`Option<bool>`ラッチへ格納する。全単射（決定3）により、ある瞬間に
-「安全な3キー→かな」方向で0xF2を生成しうる物理キーは高々1つなので、
-単一の値で足りる。auto-repeat KeyDownとそれに対応するKeyUpは、この
-ラッチの値をそのまま踏襲し、動的条件を再評価しない。0xF2のKeyUp処理後
-にラッチをクリアする（他vkのイベントはこのラッチを読みも書きも
-クリアもしない）。
-
-**fresh pressの検出方式（r7訂正、architect役NB10・premortem役R6-M1
-指摘への対応）**: r6は「`was_down`がfalseからtrueへ遷移する瞬間」と
-書いていたが、`was_down`はhook.rs（フックスレッド）側の状態であり、
-メインスレッドの`kp_run_inner`からは参照できない（`RawKeyEvent`
-にもrepeat/freshを示すフィールドは無い、`src/types.rs:190-215`）。
-「ラッチの`None`/`Some`自体からfreshnessを推論する」という代替案も
-検討したが、これは**KeyUpが`kp_run_inner`に到達しない3経路**——
-`FOCUS_APP_DISABLED`早期return（`hook.rs:980-982`）、overflowラッチ
-（`hook.rs:1100-1102`）、`ProduceResult::Overflow`（`hook.rs:1203-1205`）
-——でラッチが`Some(...)`のまま取り残された場合、次のfresh pressを
-auto-repeatと誤認して古い決定を踏襲してしまう（`Some(true)`残留なら
-BUG-10の食い逃げが、`Some(false)`残留なら二重配送が再発する）。
-これらの経路はいずれもフックスレッドの関数であり、メインスレッドの
-ラッチに手が届かない（届かせようとするとr1の`KANA_DOWN_WAS_ALLOWED`
-と同じクロススレッド問題に戻る）。
-
-**決定**: fresh pressの判定は、ラッチの状態から推論せず、hook.rsが
-明示的なビットとして運ぶ。
-
-**計算位置の訂正（r8、architect役NB11・premortem役R7-M1指摘への対応）**:
-r7は「決定1の挿入点（`hook.rs:1135`以降）で`is_keydown && !was_down`
-を判定する」としていたが、これは常にfalseになる——挿入点で汎用的に
-参照できる押下状態は`PHYSICAL_KEY_STATE`（定義`hook.rs:186`）と
-`PHYSICAL_KEY_DOWN_AT_MS`のみで、いずれも**挿入点より前**（`:951-968`）
-で**このKeyDown自身により既に更新済み**である。これはr4のNB7
-（`effective_open()`のライブ値読み）と同じ失敗モードで、このリポジトリ
-で同じ罠が3度目（`half_width_alnum_toggle_active`、NB7、今回）になる
-ところだった。
-
-**r8の解決策とそこに残った欠陥（NB12、r9で訂正）**: r8は`is_fresh_
-press`を`PHYSICAL_KEY_DOWN_AT_MS`の更新ブロック内で計算する設計に
-したが、これは新たに「fresh pressの情報源が2つになる」という問題を
-生んでいた。`PHYSICAL_KEY_DOWN_AT_MS`は**長押し時間計測**のための
-独自の状態機械で、そのクリア規律（`reset_physical_key_state`で全256
-スロット、`clear_hook_latches_for_app_disable`のLeave時はCtrl/Shiftの
-6スロットのみ、BUG-78対策）は、役割代入自身の`{KEY}_WAS_DOWN`/
-`SCAN_KANA_WAS_DOWN`のクリア規律（ADR-141決定7の3箇所＋本ADR決定5の
-2箇所）と**一致するのは`reset_physical_key_state`だけ**だった。
-`disable_apps`のEnter遷移やoverflowラッチ経路では、役割代入側の
-`{KEY}_WAS_DOWN`はクリアされる（fresh press再確定）のに
-`PHYSICAL_KEY_DOWN_AT_MS`は維持される（auto-repeat判定のまま）という
-食い違いが起こり、NB10が解決したはずの3経路のうち2つで自己修復性が
-再び失われていた。
-
-**決定（r9）**: fresh pressの情報源を1つに統一する。fresh press判定は
-`PHYSICAL_KEY_DOWN_AT_MS`ではなく、**役割代入自身の`{KEY}_WAS_DOWN`
-（安全な3キー、ADR-141決定2）/`SCAN_KANA_WAS_DOWN`（かなスロット、
-本ADR決定4）**から計算する。`decide_role_substitution`（ADR-141決定2の
-判定関数）は`was_down: bool`を引数に取り更新後の状態を返す設計なので、
-決定1の挿入点（`hook.rs:1135`以降）でこの関数に**渡すのとまったく
-同じ`was_down`**（更新前の値）を使えば、挿入点で計算してもr7のNB11の
-ような順序汚染を受けない——r7がNB11で見落としていたのは、汎用の
-`PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS`だけを検討し、役割代入
-専用の`{KEY}_WAS_DOWN`という第3の情報源を見ていなかったことだった。
-
-この判定は`is_keydown && !was_down`という式そのもので、役割代入対象の
-fromキーまたは`to`側で使われる安全な3キーの物理キーについてのみ、
-この`was_down`を参照する。情報源をこの1つに統一することで、クリア箇所
-は（人手で揃えるのではなく）**定義から自動的に**ADR-141決定7の3箇所
-＋本ADR決定5の2箇所（計5箇所）に一致する（r10訂正、architect役Nit1
-指摘: r8時点の失敗〈`PHYSICAL_KEY_DOWN_AT_MS`という独立した状態を
-手で揃えようとして食い違った〉との本質的な違いは「一致させた」では
-なく「一致が構造的に保証される」ことにある。将来の変更提案——例えば
-性能のために専用キャッシュを別途持つ——に対する歯止めとして、この
-違いを明記する）。
-
-**injectedイベントでの`{KEY}_WAS_DOWN`更新有無への依存（r10追加、
-architect役NM18指摘）**: `role_substitution_fresh_press`が`{KEY}_
-WAS_DOWN`から導かれるようになったことで、この状態に新しい消費者が
-できた。したがって「injectedイベントが`{KEY}_WAS_DOWN`を更新するか」
-が本ADRの正しさにとって重要になったが、親ADR2本の記述が食い違って
-いる——ADR-141決定1は「役割代入の適用とhold-stateの更新は、いずれも
-`!is_injected`ガード内で行う」（injectedでは更新しない）とする一方、
-ADR-142決定B7は「hook.rs側は`!is_injected`の早期returnゲートを持たず、
-安全な3キーのイベントを無条件に`decide_role_substitution`へ渡す」
-（素直に読むと`was_down`の更新も無条件になる）としている。B7の読み方
-を採ると、ADR-141決定1が名指しで防いだstuck-`was_down`が復活する
-（上記フォールバックが`None`の場合のみを救うため、完全な保険には
-ならない）。**決定**: 本ADRは「injectedイベントは`{KEY}_WAS_DOWN`を
-更新しない」という前提に依存すると明記し、ADR-141/142側のこの不一致
-を解消対象として申し送る（ADR-141決定7の3箇所への波及をADR-141本体へ
-参照ポインタとして追加したのと同じ手当て）。既存の`apply_alt_
-impersonation`（`hook.rs:86-99`）が`ALT_L_WAS_DOWN.store(is_keydown,
-...)`を無条件に行っている実装は、素直に真似るとB7の読み方になる
-ため、実装者が誤りやすい箇所として注意を促す。
-
-**フィールドの型（r9訂正、NB11(a)の再解決）**: 汎用の`is_fresh_press:
-bool`ではなく、`role_substitution_fresh_press: Option<bool>`とする
-（`None`＝役割代入の対象外〈安全な3キー・かなスロットのいずれでも
-ない、またはinjected〉のイベント、`Some(true)`＝fresh press、
-`Some(false)`＝auto-repeat）。安全な3キー・かなスロットの4オブジェクト
-のうち、config上ルールが明示されていない恒等写像のキーについても
-`{KEY}_WAS_DOWN`自体は存在するため`Some`になる（r10追加、architect役
-Minor1指摘: フィールドの契約として明記する）。`bool`固定にすると
-「fresh pressの'A'が非freshと記録される」という嘘のフィールドをcoreの
-公開構造体に持ち込むことになる（`feedback_dont_provision_ahead_
-without_consumer_logic`が警告する「消費ロジックの無い予備フィールド
-の先回り」と同型のリスク、premortem役R7-M2・R8-m1が指摘した
-「injectedイベントでは常にfalse」という不正確さも`None`で自然に表現
-できる）。`key_classification`/`ime_relevance`/`physical_pos`/
-`modifier_key`と同じ「プラットフォーム層が事前に決定する」フィールド
-群の一員として自然に収まり、VKのマジックナンバーではないためADR-019
-にも抵触しない（`docs/layer-boundaries.md`のカテゴリでいえば、これら
-既存フィールドと同じ「プラットフォーム層が事前分類してcoreへ渡す情報」
-に該当する）。
-
-**決定9-3との区別（r10追加、premortem役R9-M1指摘）**: 決定9-3は
-`RawKeyEvent`に「役割代入由来か」という**出自**（provenance）を示す
-フィールドを追加する案を、スコープクリープ・層境界を理由に却下した。
-`role_substitution_fresh_press`はこれとは性質が異なる——出自ではなく
-「このKeyDownがauto-repeatかどうか」という**キーライフサイクルの
-事実**であり、`key_classification`/`physical_pos`と同じ「platformが
-事前に確定してcoreへ渡す情報」の系列に属する。両者は似て見えるが
-別物であることを明記する。
-
-**vkキーであることの限界が消えた（r9、NM16は解消）**: r8時点では
-`PHYSICAL_KEY_DOWN_AT_MS`がvkインデックスであるため、物理かなキー
-自身（vkが0xF0/0xF1/0xF2の間で揺れる）については信頼できないという
-制約があった。r9の情報源統一により、かなスロットについては
-`SCAN_KANA_WAS_DOWN`（scanベース、決定1の設計原則をそのまま継承）
-から計算されるため、この制約は不要になる——`role_substitution_fresh_
-press`は安全な3キー・かなスロットのどちらについても、それぞれの
-専用hold-stateの規律にそのまま従う。
-
-この設計により、**fresh pressでは必ずラッチを上書きする**という
-自己修復性の論拠は、「情報源が単一であり、その単一の情報源が既に
-5箇所で正しくクリアされている」という、より強い形で成立する
-（r8時点の「取りこぼしたら次のfresh pressで上書きされる」という
-自己修復の論証は、そもそも取りこぼし自体が起こらなくなったため
-不要になった）。
-
-**ラッチを参照・更新してよいイベントの限定（r7追加、premortem役R6-M2
-指摘への対応。2026-09-06訂正、architect役Minor指摘）**: ラッチの
-**書き込み・クリア**は、静的3条件（`event.vk_code == VK_DBE_HIRAGANA
-&& !event.injected && event.scan_code != SCAN_KANA`）を満たすイベント
-に限る。満たさないイベント（物理かなキー自身の押下〈`scan_code ==
-SCAN_KANA`〉、他プロセスrelayのinjected 0xF2など）はラッチを書き込み・
-クリアせず、既存判定へ進む。この限定が無いと、取り残されたstaleな
-ラッチが無関係なイベントに適用され、物理かなキーでは本来
-`is_tsf_mode && f2_warmup_owned`で判定すべきものが無条件Suppressに
-なり（MS-IME環境でBUG-10の食い逃げ）、injected relayではADR-119回帰が
-別経路で復活する。**訂正**: **読み取り**については、KeyUpに限り
-injectedなイベントも許す（下記「injected KeyUpがラッチを迂回する
-ケースへの対処」参照——役割代入で確定した押下の解放に対応するための
-決定2のKeyUp専用Suppress分岐）。R6-M2が懸念したstaleラッチの誤適用は、
-書き込み・クリアを従来どおり非注入に限定していれば維持される
-（読み取りだけをKeyUpに限り開いても、ラッチの値自体は非注入イベント
-でしか変化しないため、無関係なイベントに古い値が誤って「新規に
-書き込まれる」ことは起きない）。
-
-**既知の制限（architect役指摘、2026-09-06追加）**: 読み取りを
-injectedへ開いた副作用として、ローカルで代入先キーを押している最中
-（ラッチが`Some(true)`）に、リレーツールが（awaseの変換を経由しない）
-生の0xF2 KeyUpを送ってきた場合も、この分岐でSuppressされる。awase
-自身が変換したUp（scanが物理変換キーの値等）とリレーの生Up（scan=0）
-は理屈上区別できるが、新たな判別子を追加するほどの実害ではないと
-判断し、ADR-119「解釈しない入力は消費しない」に対する狭い例外として
-ここに記録する（発生窓が「ローカルの押下中」に限られるため、
-リモート側のキーが恒久的に無反応になるADR-119の被害像には至らない）。
-
-**この制限が上記「危険度の優先順位」と矛盾しない理由（premortem役
-補足、2026-09-06追加）**: この制限は、リレー由来の（Suppressされて
-いない）0xF2 Downに対応するUpをSuppressする形になるため、字面だけ
-見ると「orphan Upを避けるためにstuck Downを作る」——優先順位に反する
-選択に見える。しかし実際には実害が小さい。BUG-46修正以降、KANJI/DBE系
-（0xF2を含む）のKeyUpは既に**常時Suppress**されており
-（`transport.rs:118-125`）、対応するUpを持たないDBE系Downは**既に
-常態として受容・inert**である（`deferred_vks`の残留と同型）。「危険な
-stuck Down」という優先順位が守ろうとしているのは、auto-repeatで文字
-入力が暴走しうる**通常キー**（Space/変換/無変換等）の場合であり、
-DBE系モードキーにはこの失敗モード自体が成立しない。したがって本制限は
-優先順位の**例外**ではなく、優先順位の**適用範囲外**（対象がDBE系である
-ため元々リスクが無い）として整理できる。
-
-**injected KeyUpがラッチを迂回するケースへの対処（2026-09-06追加、
-architect役Major指摘・premortem役の対称な解法提案）**: 静的3条件は
-`!event.injected`を含むため、次の経路でラッチが迂回されうる: (1)
-物理変換キーのfresh press（eligible）→ラッチがSuppress（0xF2の
-DownはOSへ届かない）を確定。(2) その後リレーツール等が同じ変換キーの
-injected KeyUpを送る→ADR-141決定1の訂正（適用は無条件）により変換
-自体は行われ`vk=0xF2・injected=true`のイベントになるが、静的3条件の
-`!event.injected`を満たさないためラッチを読まず既存のF2分岐へフォール
-スルーする→MS-IME・非TSF環境では`Allow`となり、**対応するDownを一度も
-持たない0xF2のKeyUpがOSへ送出される**。
-
-この経路は、ADR-141決定7が既に持つ「`{KEY}_CONFIRMED_TARGET ==
-Some(VK_DBE_HIRAGANA)`の場合はKeyUp注入を発火させない（Downが一度も
-配送されていないため注入する意味が無い）」という例外（本ADR決定4
-参照）と類似の理由で解消できるが、**条件は`confirmed_target`ではなく
-ラッチの値そのものにする**（2026-09-06、architect役Major指摘で訂正
-——`confirmed_target == Some(VK_DBE_HIRAGANA)`は「Downが常にSuppress
-される」というr3時点の前提に乗っていたが、決定2のr4以降の設計では
-`actuation_will_fire`が偽の場合〈belief既にOPEN側でのBUG-10救済、
-delegateがturn-on以外〉にラッチが`Some(false)`＝Allowへフォールスルー
-し、**その場合はOSが実際に0xF2のDownを受け取っている**。この場合に
-injected Upの変換を止めると、OS側の0xF2が解放されないまま残り、対応
-する物理Upが上流ガードで失われると恒久的にstuckする）。
-
-**置き場所の訂正（2026-09-06、premortem役R11-M1指摘）**: 当初「ラッチが
-`Some(true)`の間はhook.rs挿入点でのvk変換自体を行わない」という案を
-検討したが、**これは実装不可能だった**——vk変換はADR-141決定1の挿入点
-（`hook.rs:1135`、フックスレッド）でのみ行われるのに対し、ラッチは
-`plan()`の呼び出し元（メインスレッドの`kp_run_inner`）に閉じた値で
-あり、フックスレッドから直接参照できない。「参照できない経路では
-安全側デフォルト（変換する）を適用する」を機械的に当てはめると、
-変換は常に行われることになり、この例外自体がデッドコードになって
-orphan 0xF2 KeyUpの問題が未解決のまま残ってしまう。
-
-**決定（訂正版）**: 例外はhook.rs側の変換を止める形ではなく、
-**`plan()`側にKeyUp専用のSuppress分岐を追加する**形で実装する。
-orphan 0xF2 KeyUpが実際にOSへ届くのは`plan()`が`Allow`を返し
-`reinject()`が走る一点だけなので、そこをSuppressすればよい——変換
-自体（ADR-141決定1の「適用は無条件」）はhook.rs側で変更せず、
-変換後のvk=0xF2としてメインスレッドに届いた**後**、`plan()`が以下を
-追加条件としてSuppressを返す:
-
-```
-（決定2の追加分岐、KeyUpのみ）
-event.vk_code == VK_DBE_HIRAGANA
-  && event.injected
-  && event.scan_code != SCAN_KANA
-  && ラッチ == Some(true)        // Downがこの押下でSuppressされていた
-  → Suppress
+```rust
+// crates/awase-windows/src/vk.rs
+/// 役割代入で「安全な3キー → かなスロット」方向が成立したことを表す内部
+/// センチネル VK（ADR-143 決定2）。
+///
+/// Windows の VK コードは 0x00-0xFF に収まる（`KBDLLHOOKSTRUCT.vkCode` は
+/// 1-254 と定義されている）ため、0x0100 は **OS・キーボードレイアウト・
+/// 他プロセスのいずれからも生成されえない**。この値を持つイベントは
+/// hook.rs の役割代入挿入点が作ったものだけである。
+pub const VK_ROLE_KANA_ACTUATE: VkCode = VkCode(0x0100);
 ```
 
-ラッチが`Some(false)`（Downを配送済み）または`None`（不明）の場合は
-この分岐に入らず、既存のF2判定（`Allow`）へフォールスルーし、Upを
-通常どおり届ける——いずれも「stuck Downを作らない」安全側である。
-この分岐は`plan()`（メインスレッド）で完結するためラッチを問題なく
-参照でき、決定1の静的3条件（`!event.injected`）とは別の、KeyUp限定の
-追加分岐として実装する。ADR-119との関係: ここでSuppressするのは
-「Downを一度もOSへ配送していない押下のUp」に限られるため、ADR-119
-（issue #136）が守ろうとした「リモートのかなキーが完全に無反応になる」
-ケースには当たらない——リレーツール側から見ればDown自体が最初から
-awase側でSuppressされていた押下であり、Upだけを機能させる意味が無い。
+**値の選定根拠**:
 
-**危険度の優先順位（premortem役R11-m1指摘、2026-09-06追加）**:
-本ADR・ADR-141を通じて、stuck Down（危険——OSにキーが押しっぱなしの
-まま残る）とorphan/重複Up（無害側——BUG-46のKANJI系Up常時Suppress・
-`deferred_vks`残留inertと同型の既に受容された性質）のどちらかを選ぶ
-局面では、常に**「stuck Downを避けることを優先し、orphan/重複Upは
-許容する」**という優先順位に従う。上記の`plan()`分岐・決定4のKeyUp
-注入抑止・ADR-141決定1の重複KeyUp許容は、いずれもこの単一の優先順位
-から導かれる（個別に矛盾して見える場合は、この優先順位に立ち返って
-判断する）。
+- `VkCode`は`u16`（`src/types.rs:8`）なので0xFF超の値を表現できる。
+  「Windows VK空間の外」であることが、衝突しないことの**構造的**保証に
+  なる（未使用の0x88-0x8F等を選ぶと、将来OSが割り当てる／別レイアウトが
+  生成する可能性を排除できない）。
+- 256要素配列（`PHYSICAL_KEY_STATE`〈`hook.rs:186`〉・
+  `PHYSICAL_KEY_DOWN_AT_MS`〈`:193`〉）は**いずれも`.get()`**で添字
+  アクセスしており、範囲外は`None`で安全に素通りする（パニックしない）。
+  センチネルはそもそもこれらに記録されるべきでない値なので、この挙動が
+  正しい。
+- `vk_may_mutate_conv`（`vk.rs:187-194`、対象は0x15/0x1C/0xF0-0xF6）・
+  `is_ime_control`（`:267`）・`is_ime_context`（`:273`）・
+  `ImeKeyKind::from_vk`・`is_synthetic_dbe_ime_hotkey`・
+  `is_composition_confirm_key`・`is_passthrough`のいずれにも一致しない。
+- `vk_to_char`系の数値演算（`vk.rs:649-650`）は`0x41..=0x5A`/`0x30..=0x39`
+  のレンジガード内なので影響を受けない。
 
-**ラッチ`None`の扱い（premortem役R11-m2指摘）**: 決定4のKeyUp注入
-抑止・上記`plan()`分岐とも、ラッチが`Some(true)`である場合にのみ
-抑止/Suppressし、それ以外（`Some(false)`・`None`）はすべて通常どおり
-注入/Allowする、という単一の規則で統一する（「`Some(true)`以外は
-すべて安全側」という形が最も誤読が少ない）。
+**ADR-141決定4の「Altセンチネル」とは別物である**: ADR-141が「センチネル」
+と呼んでいるのは`left_thumb_key`/`right_thumb_key`の**設定文字列**
+（`"Left Alt"`/`"Right Alt"`）であり、VK空間の値ではない。本ADRの
+`VK_ROLE_KANA_ACTUATE`は、このリポジトリで初めてVK空間に導入する
+センチネル値である。両者を混同しないこと。
 
-**ラッチのスレッド安全性**: `plan()`の呼び出しはメインスレッドの
-`kp_run_inner`に閉じており、このラッチもそこに閉じた値（`plan()`の
-内部状態ではなく、呼び出し元`kp_run_inner`が保持し引数として渡す値）
-として実装する。r1の`KANA_DOWN_WAS_ALLOWED`がフックスレッド（hook.rs
-のhold-state）とメインスレッド（`plan()`）を跨いで破綻したのとは構造的
-に別物——今回は書き込みと読み出しが同一スレッド・同一関数群内で完結
-する。`role_substitution_fresh_press`フィールドはhook.rs側で計算
-されるが、それを`RawKeyEvent`経由でメインスレッドへ**運ぶだけ**で
-あり、hook.rs側の状態をメインスレッドから直接参照するわけではない
-（既存の`key_classification`等と同じデータフロー）。
+**config経路からも生成されないことの確認（2026-09-06追加、premortem役
+R12-n1指摘）**: 「OSからは来ない」に加えて、awase内部のどの入力経路
+からもこの値が生成されないことを確認する——`VkCodeExt::from_name`
+（`vk.rs`の照合表）は0x0100を返す綴りを持たず、`[[keymaps]]`/
+`[[key_role]]`は生の数値表記（`"0x100"`等）を受け付けない（文字列を
+`from_name`経由でのみ解決する設計、決定8参照）。したがって
+`VK_ROLE_KANA_ACTUATE`はhook.rsの役割代入挿入点（決定2-2）だけが
+生成しうる値であることが、OS側・config側の両方から閉じている。
 
-**stale latch取り残しへの残存対応（r7追加、premortem役R6-M3指摘への
-対応。r9でNB12対応により論拠を強化）**: `role_substitution_fresh_
-press`の情報源を`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`に統一した
-（NB12対応）ことにより、この値自体がADR-141決定7の3箇所＋決定5の2箇所
-（計5箇所）で常に正しくクリアされる——r8時点で懸念していた「情報源が
-別の状態機械のため経路によってクリア規律が食い違う」という問題は
-構造的に存在しなくなった。`kp_run_inner`側のSuppress/Allowラッチ自体
-はこれら5箇所には含まれない（含める必要が無い——そもそも情報源が
-単一になったことで、いつ`Some`のまま取り残されても次の`Some(true)`な
-`role_substitution_fresh_press`で確実に上書きされる）。取り残された
-ラッチが与えうる実害は「次のfresh press一回分の待ち時間だけ、直前の
-（古い）dispositionが誤って適用される」ことに限定される（R6-M2の
-限定により影響範囲は0xF2のイベントのみ）。
+#### 決定2-2: hook.rs挿入点での書き換えとactuationビット
 
-**フォールバック（r8追加。r10で正当化を訂正、architect役NM17指摘への
-対応）**: `role_substitution_fresh_press`を主たる判定に使いつつ、
-ラッチが`None`のまま静的3条件を満たすKeyDownを観測した場合も評価点
-として扱う（`role_substitution_fresh_press`が`Some(false)`でもラッチ
-が`None`なら動的条件を評価し確定させる）。
+決定1の挿入点（`hook.rs:1135`の`vk = rewritten_vk;`直後、
+`decide_role_substitution`の呼び出し位置）で、解決済みルールが
+「押された物理キーのスロット → かなスロット」だった場合:
 
-**r10での訂正**: r9は情報源統一の効果を「r8時点の自己修復の論証は、
-そもそも取りこぼし自体が起こらなくなったため不要になった」と書いて
-いたが、これは不正確だった——**このフォールバックは依然として必須**
-であり、正当化すべき危険が変わっただけである。
-
-**r11での再訂正（2026-09-06、ADR-141決定1/ADR-142決定B7の訂正——
-hold-storeのゲートを`event_eligible`にしたこと——を受けた再検証）**:
-r10はフォールバックの主たる正当化として「MWB等が物理変換キーのinjected
-KeyDownだけを送りKeyUpを送らない場合、`CONVERT_WAS_DOWN`がtrueのまま
-残る」というシナリオを挙げていたが、**ADR-141決定1のr-later訂正
-（hold-stateへのstoreをinjected/非eligibleでは行わない）により、この
-シナリオは構造的に発生しなくなった**——injectedなKeyDownはstoreされない
-ため`{KEY}_WAS_DOWN`をtrueにできない。逆方向（物理KeyDown→injectedな
-KeyUp→物理KeyUpが後から上流ガードで失われる）というシナリオも検討したが、
-安全な3キーのKeyUpが挿入点に届かない経路（`FOCUS_APP_DISABLED`・
-overflowラッチ・`ProduceResult::Overflow`・セッションロック）はいずれも
-ADR-141決定7-1〜3が既に`was_down`をクリアする（`confirmed_target.
-is_some()`を条件にしており、injected Upがstoreをスキップしていても
-`Some`のまま残るためクリアは正常に発火する）ため、こちらもstuckしない。
-したがって**injected由来のhold-state stuckは、fresh press判定の観点では
-両方向とも構造的に消滅した**。
-
-**フォールバックが今なお必要な唯一の確定した理由は
-`ProduceResult::Overflow`（`hook.rs:1203-1205`）である**: 役割代入の
-挿入点（`hook.rs:1135`）は`produce()`（`hook.rs:1195`）より前にあるため、
-fresh pressのKeyDownでhold-stateへのstoreが終わった**後に**`produce()`が
-overflowでイベント自体を破棄することがありうる。この場合、状態
-（`{KEY}_WAS_DOWN=true`）だけが進み、対応するイベントは`kp_run_inner`に
-一度も届かずラッチは`None`のまま残る。以後のauto-repeat KeyDownは
-`role_substitution_fresh_press=Some(false)`になり、ラッチが`None`である
-ことを条件とする本フォールバックだけが評価点を作る。対照的に
-`hook.rs:1100`（overflowラッチの早期return）はそもそも挿入点に到達
-しないため`{KEY}_WAS_DOWN`が更新されず、次に到達したイベントは正しく
-freshになる——こちらはフォールバックを必要としない。
-
-この経路でフォールバックが正しい値を確定できる理由も明記する: fresh
-pressのKeyDownが`:1203`のoverflowで`kp_run_inner`に届かなかった場合、
-そのイベントは`kp_stage_shadow_ime_toggle`も走らせていないため
-**actuationも同時に失われている**——beliefは変化しないままである。
-したがって次のauto-repeat KeyDownが届いた時点で
-`kp_stage_shadow_ime_toggle`が初めてbeliefを変え、`shadow_toggled`が
-真になる。フォールバック発火時点の動的条件（`actuation_will_fire`）は、
-本来のfresh press時点で評価していた場合と同じ値になる。
-
-**正当化の書き方についての教訓（premortem役指摘）**: 上記のとおり
-「特定シナリオの列挙」で正当化すると、そのシナリオが後の設計変更で
-消えたときに再び書き直しが必要になり、最悪「不要」と誤判定され削除
-される（r9→r10で一度、r10→r11で二度目に発生した）。そのためフォール
-バック自体の存在理由は「ラッチが未確定のまま押下ライフサイクルが進行
-している状態への防御的な受け皿」という一般形で理解し、`ProduceResult::
-Overflow`は現時点で確認できている具体例の1つと位置づける。ADR-141
-決定7-3の発火条件（overflowラッチ解除時、生の物理KeyUpの代わりに
-代入後vkのKeyUpを注入する処理が、KeyUp到達時のみ発火するのか、pending
-な`confirmed_target`がある限りKeyDownでも発火しうるのかが本文からは
-確定しない）次第では、この経路以外にも評価点が必要になる可能性が残る
-——フォールバックの条件自体（ラッチ`None`のKeyDownを評価点にする）は
-このいずれの解釈でも安全側に働くため、変更しない。
-
-**確定する条件（fresh pressビットが真、またはラッチが`None`のKeyDown
-時点でのみ評価）**:
 ```
-event.vk_code == VK_DBE_HIRAGANA
-  && !event.injected
-  && kana_role_active
-  && event.scan_code != SCAN_KANA
-  && actuation_will_fire
+（フックスレッド、決定1の挿入点、fresh press時点のみ）
+rule_target がかなスロット && kana_cycle_active
+  → decide_role_substitutionへ渡すrule_targetはそのまま
+    （通常どおりconfirmed_target = Some(かなスロット)が確定しうる）
+rule_target がかなスロット && !kana_cycle_active
+  → decide_role_substitutionへ渡すrule_targetをNoneとして扱う
+    （代入不成立。confirmed_target = None、vkは元の物理vkのまま）
+
+（confirmed_targetがかなスロットとして確定した場合のみ）
+  → vk = VK_ROLE_KANA_ACTUATE
+  → kana_role_actuate = event_eligible && is_keydown && !was_down
 ```
-真ならばラッチに`Some(true)`（Suppress）を、偽ならば`Some(false)`
-（Allow、既存の`is_tsf_mode && f2_warmup_owned`判定へフォールスルー）
-を格納する。auto-repeat KeyDown（`role_substitution_fresh_press`が
-`Some(false)`かつラッチが`Some`）とKeyUpは、この確定済みラッチを
-そのまま踏襲し再評価しない。
-**非注入の**0xF2のKeyUpを観測した時点で、`plan()`の戻り値や早期return
-の分岐に関わらず`kp_run_inner`側でラッチをクリアする（r8追加、
-architect役Minor2指摘: ラッチのライフサイクルを`plan()`内部の分岐
-——InputRelay早期returnを含む——に依存させない。**2026-09-06訂正
-（architect役Major指摘）**: クリアの条件に`!event.injected`を明記
-する——後述のinjected KeyUp用Suppress分岐がラッチを**読む**ように
-なったため、クリアまでinjectedイベントに開くと、injectedなUpが
-先にラッチをクリアしてしまい、直後の物理Upが`None`を読んでフォール
-スルーし、対応するDownを持たない0xF2のKeyUpがOSへ出る——今回の
-修正で防ごうとした問題がクリア経路から別途復活する。読み取りのみ
-KeyUpに限りinjectedへ開き、書き込み・クリアは従来どおり非注入に
-限定する）。KeyUp到達時点でラッチが`None`
-（異常系）の場合はSuppress側を安全側とする（r7追加、premortem役
-R6-m1指摘: BUG-46の「KANJI系KeyUpは常にSuppress」という既存の規律、
-`transport.rs:118-125`、に揃える。`None`のままAllowへフォールスルー
-すると、対応するDownを持たない0xF2のKeyUpがOSへ送出されうる）。
 
-**config reload時のラッチの扱い（r7追加、premortem役R6-m2指摘）**:
-`kana_role_active`が押下中のreloadで反転しても、ラッチはfresh press
-時点で確定した値を保持し続ける——reloadの瞬間にラッチをクリアしては
-ならない（クリアすると押下中のDown/Upが非対称になる）。ADR-141決定3の
-`confirmed_target`規律と同じ立場である。
+`kana_cycle_active`は決定3が定義する「かなスロットが関与するサイクル
+全体がエンジンON時のみ有効」という値（`= engine_enabled`、ただし
+サイクル全体に対して一括で適用される）である。`kana_role_actuate`の
+式には`engine_enabled`を重ねて含めない——エンジンOFFなら上記の
+`rule_target`確定段階で`confirmed_target`が`None`になり、vkがセンチネル
+へ書き換わること自体が無いため、`kana_role_actuate`側に同じ条件を
+重ねても到達しない（二重管理を避ける）。
 
-**評価順序の明示（r7追加、architect役NM13指摘への対応）**: 本ラッチに
-よるSuppress判定は、`transport.rs`のF2専用分岐（`:276`）を拡張する形で
-実装し、`transport.rs:260`のInputRelay早期returnより**後**に評価する
-（ADR-119/issue #136がこの順序自体をレビューで発見・修正した経緯
-——`:246-259`のコメント「F2分岐より先に判定する」——を尊重し、
-本ADRのために変更しない）。したがって、fresh press時点で非InputRelay
-プロファイルだったためラッチがSuppress側に確定した押下でも、Up時点で
-フォーカスがInputRelayウィンドウへ移っていれば、InputRelayの早期return
-が先に評価され`Allow`が返る——対応するDownを持たない0xF2のKeyUpがOSへ
-送出されうる。この経路は「押下中にフォーカスがInputRelayウィンドウへ
-移る」という狭い条件を要するため、ADR-141決定4末尾がAltセンチネル
-構成の既存衝突に対して取った立場（悪化させないが解消もしない）と同型
-に整理し、本ADRでは解決を試みない既知の狭い制限として記録するに留める
-（ADR-119の順序を優先する判断の代償として明示する）。**r8追加
-（architect役Minor3指摘、r5 Minor4の留保を再併記）**: この経路で
-OSへ送出されうる0xF2のKeyUpは、BUG-52の無条件Suppressガードが
-「素通しすると実IME（MS-IME）がWindows標準仕様どおり能動的にネイティブ
-効果（英数/カタカナ/半角/全角への切替）を適用してしまう」として遮断
-している当のキー種別であり、**KeyUp単独が無害（inert）である保証は
-ADR本文にも実機記録にも無い**。「狭い条件なので解決を試みない」という
-判断自体は妥当だが、その代償に残る不確実性として記録する。
+- `was_down`は、**その物理キー（安全な3キーのいずれか）自身の
+  `{KEY}_WAS_DOWN`**（ADR-141決定2が新設するhold-state）の更新前の値
+  であり、`decide_role_substitution`に渡すのとまったく同じ値である。
+  したがって`is_keydown && !was_down`は「この押下のfresh press」を表す
+  （r9のNB12対応で確立した「情報源を役割代入自身のhold-stateに一本化
+  する」原則をそのまま継承する）。
+- `event_eligible`は決定1・ADR-142決定B7と同一の`!alt_impersonated &&
+  !is_injected`（変更なし）。
+- **`engine_enabled`（`kana_cycle_active`）の置き場所は、この形に
+  確定するまで4段階の試行錯誤を経た**（2026-09-06、NM24→NM25→NB14→
+  NB15/NB16→確定。詳細な失敗の内容はステータス節の経緯と決定3の
+  「かなスロットが関与するサイクル全体を無効化する」を参照）:
+  `event_eligible`自体に含めるとhold-storeがエンジン状態に連動し
+  `was_down`が取り残される（NM25）、`kana_role_actuate`にのみ含める
+  とvk書き換え自体は止まらず完全な死にキーになる（NB14）、`to`方向
+  だけ・`from`方向だけを個別にゲートすると全単射が破れる（NB15の
+  逆方向・NB16の3-cycle）。**正しい置き場所は、決定3が定義する
+  「サイクル単位のfresh press時点の`rule_target`無効化」だけ**であり、
+  `is_kana_slot_press`（決定1）・`kana_role_actuate`のどちらの式にも
+  `engine_enabled`を直接混ぜない。`confirmed_target`はfresh press
+  時点で確定しKeyUpまで保持される（ADR-141決定2の既存規律）ため、
+  押下中にエンジンがトグルされてもDown/Upは常に対称になる。
+- **この判定と消費はどちらもフックスレッド内で完結する**——r7〜r10が
+  `RawKeyEvent`に`role_substitution_fresh_press`という新フィールドを
+  追加しようとしていたのは、判定（フックスレッド）と消費（メイン
+  スレッドの`plan()`）が分かれていたためである。r12では消費先が
+  `build_raw_key_event`（同じフックスレッド、`hook.rs:824-851`）に
+  なるため、**新フィールドは不要**になる。
 
-**`!event.injected`が無いと**（r2の欠陥）: `transport.rs`の評価順序は
-InputRelay早期return（`:260`）→F2分岐（`:276`）→injected早期return
-（`:302`以降）であり、F2分岐はinjectedチェックより**前**にある。他
-プロセス（Mouse Without Borders等）がSendInputでrelayした0xF2は
-`wScan: 0`で届くため`scan_code != SCAN_KANA`が真になり、無条件で
-Suppressされてしまう。injectedイベントはBUG-14ガード（`kp_stage_
-shadow_ime_toggle`）により`shadow_toggled`へ昇格しないためawase自身も
-actuateしない——結果、ADR-119（issue #136）決定1が防いだ「解釈しない
-入力を消費する」＝リモート側のかなキーが完全に無反応になる「二重の
-空振り」が再導入される。
+**auto-repeatとKeyUpでもvkの書き換え自体は行う**（`kana_role_actuate`が
+偽になるだけ）。これが「Down/Up/auto-repeatが常に同じdisposition
+（Suppress）になる」ことの根拠であり、r11がラッチで実現しようとした
+性質を、値そのもので保証する形に置き換えている。
 
-**`kana_role_active`が無いと**（r2の欠陥）: この条件は`plan()`の引数
-からのみ決まる必要がある純粋関数の制約に従い、`DbeModeKeyContext`
-（`transport.rs:63-69`の`is_configured_thumb_key`と同型の追加）の
-フィールドとして追加する。「かなスロットが関与する役割代入ルールが
-現在有効か」を示す`AtomicBool`で、`CACHED_SWALLOW_ALT_KANA_MODE_
-SWITCH`（`hook.rs:457`、setterは`:567`）と同型に、configロード時と
-`app/mod.rs::reload_config()`の両方で更新する（ADR-142決定B1が定めた
-「起動時とreload時の両方から呼ぶ」検証と同じ配線に相乗りする）。
-`From<DbeModeKeyPolicy>`実装の既定値を`false`にすれば既存の回帰
-テストは無改修で通る。この条件が無いと、`[[key_role]]`を1つも設定
-していないユーザーにもこのSuppressが適用され、スコープ節の「代入なし
-の場合は既存挙動を一切変更しない」という宣言に反し、BUG-10（食い逃げ、
-後述）の回帰面を機能未使用のユーザーにまで広げてしまう。
+**センチネルへの差し替えは呼び出し側（hook.rs）で行い、
+`decide_role_substitution`（ADR-141決定2の純粋関数）は変更しない**:
+rule table自体は0xF2のまま保持する（決定8-1、config表現・全単射
+検証・決定9の下流合流点の推論はすべて0xF2基準で行われるため）。
+`decide_role_substitution`はrule tableの`rule_target`（0xF2）を
+そのまま**受け取り**、`(書き換え後vk, 次に保持する確定役割)`という
+戻り値の2要素双方に0xF2を返す——ここまではADR-141決定2の純粋関数を
+一切変更しない。
 
-**SSOTの要件**: `kana_role_active`は独立した経路で計算してはならない。
-hook.rs側の役割代入テーブル（決定1のfrom判定・決定3の全単射検証済み
-ルール集合）と`kana_role_active`が別々に計算されると、両者が乖離した
-場合（hookは代入する側・`kana_role_active`はfalse側、という最悪の
-組み合わせ）に「代入後の0xF2が`Allow`されて`reinject()`でOSへ出る」
-という、本ADRが解消したはずの生の0xF2直接送出が復活する
-（`awase-settings::is_muhenkan_thumb_key`のdocが警告するissue #99型の
-二重管理と同型のリスク）。`kana_role_active`は、ADR-142決定B1が新設
-する`state/key_role.rs`の解決済みテーブル（hook.rs側が代入判定に使う
-のと同一のSSOT）から**導出する**ことを要件とし、独立したbool値として
-別経路で計算しない。決定5のオプトアウト無効化（`swallow_alt_kana_
-input_method_switch=false`時のルール集合全体無効化）も、この同じSSOT
-を通じて`kana_role_active`に反映される。
+**hook.rs側で、この戻り値の2要素とも**（書き換え後vkだけでなく、次に
+保持する確定役割＝`{KEY}_CONFIRMED_TARGET`に格納する値も）**センチネル
+へ差し替える**（2026-09-06訂正、architect役NB13指摘）。差し替えないと
+`{KEY}_CONFIRMED_TARGET`に0xF2が残り、ADR-141決定2の「KeyUpは
+confirmed_targetから対称に変換する」規律により、KeyUp側だけ実0xF2を
+載せてしまう（Downはセンチネル）。このKeyUpは決定2-4のセンチネル
+専用分岐にも`reinject()`のガードにも一致せず、既存のF2分岐
+（`transport.rs:276`）へ落ちて`Allow`となり、**対応するDownを持たない
+実0xF2のKeyUpが毎打鍵OSへ送出される**——さらに決定2-8・決定4の
+「`{KEY}_CONFIRMED_TARGET == Some(VK_ROLE_KANA_ACTUATE)`のときADR-141
+決定7のKeyUp注入を発火させない」という条件も一致しなくなり、二重に
+実0xF2が漏れる。
 
-**Alt押下時の安全性の論拠**: `GjiDirectStrategy`/`MsImeDirectStrategy`
-がIME ON操作として実際に送出するVKは`VK_IME_ON`(0x16)、
-`KanjiToggleStrategy`は`VK_KANJI`(0x19)であり、**いずれも`VK_DBE_*`
-一族ではない**（MS-IMEのON操作は2026-08-06・BUG-50対応で
+まとめると: **rule table＝0xF2（config・全単射・決定9はこの層で完結）、
+hold-state（`{KEY}_CONFIRMED_TARGET`）＝センチネル（決定2-4・決定2-8・
+決定4はこの層で完結）**という2層の区別を明確に保つ。これは決定3が
+既に呼び出し側に置いた判断（「かなスロットの`rule_target`が恒等なら
+関数呼び出し自体を行わない」）と同じ層に属し、ADR-141側の純粋関数に
+かなスロット固有の知識を持ち込まないためである。
+
+`kana_role_actuate`は`build_raw_key_event`（`hook.rs:824-851`）へ
+引数として渡す（`is_injected`等と同じ扱い）。フックスレッド内の
+ローカル変数のまま完結するので、`static`もアトミックも新設しない。
+
+#### 決定2-3: `ime_relevance`にactuation意図を載せる
+
+`build_raw_key_event`（`hook.rs:824-851`）が`vk == VK_ROLE_KANA_ACTUATE`
+の場合に構築する`ime_relevance`を次のとおり特別扱いする（それ以外の
+vkについては`classify_ime_relevance(vk)`のまま、一切変更しない）:
+
+```
+ImeRelevance {
+    may_change_ime:  kana_role_actuate,
+    shadow_action:   None,
+    is_sync_key:     false,
+    sync_direction:  kana_role_actuate.then_some(ShadowImeAction::TurnOn),
+    is_ime_control:  false,
+}
+```
+
+**`is_sync_key`を`true`にしない理由（2026-09-06追加、premortem役R12-m1
+指摘）**: 当初は`sync_direction`と対にして`true`にしていたが、
+`IntentWitness::from_sync_key`（`evidence.rs:364-368`）は
+`!injected && sync_direction.is_some()`しか見ておらず`is_sync_key`を
+参照しない。`is_sync_key`の実際の読み出し箇所は現状コードベースに
+存在せず（`focus_tracker.rs`の3箇所は書き込みのみ）、消費ロジックの
+無いフィールドに値を立てる理由が無い
+（`feedback_dont_provision_ahead_without_consumer_logic`の趣旨）。
+`false`のままにする。
+
+**なぜ`sync_direction`（`IntentKind::SyncKey`）であって
+`shadow_action`（`IntentKind::PhysicalImeKey`）ではないか**——3つの
+理由があり、いずれも実コードで検証済み:
+
+1. **`is_japanese_ime()`ゲートを通らない**:
+   `kp_stage_shadow_ime_toggle`（`key_pipeline.rs:1077-1086`）は
+   `sync_direction`を最優先で採用し、`shadow_action`は
+   `self.platform_state.ime.belief.is_japanese_ime()`が真のときにしか
+   見ない。役割代入は**ユーザーがconfigで宣言した意味**であって、
+   「日本語IMEがこのキーを報告した」という観測ではないため、probe
+   ベースの確率的beliefでゲートするのは誤りである（ゲートすると、
+   grace期間中の`is_japanese_ime()`偽答で「OSへも送らず・actuateも
+   しない」完全な死にキーになる）。
+2. **意味論として正直である**: `UserIntentSource::SyncKey`のdocは
+   「設定された同期キー」（`state/ime_event.rs:73-77`）であり、
+   `[[key_role]]`で`to="VK_DBE_HIRAGANA"`と宣言されたキーはまさに
+   これに当たる。`PhysicalImeKey`は「物理KANJI押下」の意であり、
+   物理的には変換キーであるこのイベントに名乗らせるのは偽装になる。
+   `write_sync_key`と`write_physical_key`（`state/platform_state.rs:
+   1256`/`:1309`）は`source`タグ以外の実装が同一なので、belief更新の
+   挙動自体は変わらない。
+3. **`plan()`の既存条件に引っかからない**: `transport.rs::plan`の
+   `let is_kanji_event = event.ime_relevance.shadow_action.is_some();`
+   （`:311`）に一致させないことで、ImmCross無条件Suppressアーム・
+   BUG-46の`ime_actuation_owned`アームのどちらにも入らない。
+   センチネルの配送判断は決定2-4の専用分岐**だけ**が決める。
+
+**`shadow_action`を`None`のままにする副次効果**:
+`IntentWitness::from_physical`（`state/evidence.rs:356-362`）は
+`shadow_action.is_some()`を要求するため`None`を返し、
+`IntentWitness::from_sync_key`（`:364-370`）だけが`Some`を返す。
+`!e.injected`の要求は両者共通なので、**injectedイベントが役割代入
+経由でactuationへ昇格することは型で不可能**（BUG-14の型化がそのまま
+効く）。加えて`kp_stage_shadow_ime_toggle`自身が`event.injected`で
+早期return（`key_pipeline.rs:1050-1060`）するため、二重に閉じている。
+
+**`is_japanese_ime()`の即時true更新（ADR-093）はセンチネルでは
+発火させない**: `should_upgrade_is_japanese_ime`（`vk.rs`）は
+`is_synthetic_dbe_ime_hotkey`（0xF0-0xF4）に限定されており、
+センチネルは含まれない。これは意図した設計である——ADR-093の論拠は
+「このVKが届くこと自体が、何らかのIMEがこのキーを処理・報告している
+証拠」だが、センチネルはawase自身が変換キーの押下から作った値であり、
+IMEの存在証明にはならない。ここを拡張すると、日本語IMEが無い環境でも
+`is_japanese_ime()`が真になり、force-ON actuation経路
+（`is_eligible_for_ime_force_on()`）が誤って解禁される。
+
+**`enrich_ime_relevance`との関係**: `kp_run_inner`冒頭
+（`key_pipeline.rs:207`）が呼ぶ`enrich_ime_relevance`
+（`runtime/mod.rs:435-447`）は、(a) 設定された`sync_toggle_keys`/
+`sync_on_keys`/`sync_off_keys`にvkが含まれる場合に`sync_direction`を
+上書きし、(b) `resolve_mode_key_shadow_override_for_event`で
+`shadow_action`を上書きする。センチネルは(a)のいずれの集合にも入らず
+（設定GUIの選択肢に無いvk空間外の値であり、`VkCodeExt::from_name`も
+解決しない）、(b)は0xF2/0xF1の親指キー構成にのみ反応するため、
+**どちらもセンチネルには作用しない**。決定2-3が載せた値はそのまま
+`kp_stage_shadow_ime_toggle`へ届く。
+
+**この結論が依存する実装の性質（2026-09-06追加、architect役Minor
+指摘）**: `enrich_ime_relevance`の(a)がif/else-if連鎖で**一致した
+場合にのみset**し、**非一致の場合に既存値をクリアしない**ことは、
+現在のコードの性質であって、変わらないことが保証された契約ではない。
+将来誰かがこの関数に`else { rel.is_sync_key = false; rel.
+sync_direction = None; }`のような網羅的なクリア処理を足すと、決定2-3
+が`build_raw_key_event`で載せた`sync_direction`が静かに消え、決定2の
+機構全体が沈黙する。この依存を本節に明記しておくことで、
+`enrich_ime_relevance`を変更する際のレビュー観点になる。
+
+#### 決定2-4: `plan()`のセンチネル専用分岐（無条件Suppress）
+
+`transport.rs::PhysicalKeyDisposition::plan`の**先頭**（InputRelay
+早期return〈`:260`〉よりも前）に、次の分岐を追加する:
+
+```rust
+// ADR-143 決定2: 役割代入で「安全な3キー → かなスロット」に化けたキー。
+// OS へ配送する意味を持たない内部センチネルなので、イベント種別・
+// injected・profile に関わらず常に Suppress する。
+if event.vk_code == crate::vk::VK_ROLE_KANA_ACTUATE {
+    return Self::Suppress;
+}
+```
+
+**この位置とこの無条件性の根拠**:
+
+- **なぜAllowにできないか**: `Allow`は`RawKeyEventExt::reinject()`が
+  `wVk: VIRTUAL_KEY(self.vk_code.0)`でSendInputすることを意味する
+  （`lib.rs:348-376`）。センチネルをそのまま送ればOSにとって無意味な
+  VKのSendInputになる。したがってセンチネルに対して`Allow`という選択肢
+  は存在しない。
+- **なぜinjectedを条件に含めないか**: センチネルを生成できるのは
+  hook.rsの挿入点だけである。他プロセスが`SendInput(wVk=0x0100)`を
+  試みることは理屈上できるが、`KBDLLHOOKSTRUCT.vkCode`はMicrosoft
+  公式に1-254と定義されており、その値は正規のキーではない。仮に届いた
+  としてもSuppressするのが安全側であり、ADR-119「解釈しない入力は
+  消費しない」が守ろうとした「リモート側の**実在するキー**が無反応に
+  なる」被害像には当たらない。
+- **なぜInputRelay早期returnより前か**: 後ろに置くとInputRelay
+  ウィンドウでセンチネルが`Allow`になり、上記の無意味なSendInputが
+  実際に起きる。ADR-119が確立した「F2分岐よりInputRelayを先に見る」
+  という順序（`transport.rs:246-259`のコメント）は0xF2という**実在
+  するキー**についての判断であり、センチネルはその対象ではない
+  ——この分岐は既存の順序を変更するのではなく、既存の判断列全体の
+  手前に「そもそもOSへ出せない値」を落とすフィルタを1つ足すものである。
+- **既知の制限（InputRelayウィンドウでの不発）**: この結果、
+  InputRelayプロファイルのウィンドウにフォーカスがある間、`to`=かな
+  方向の代入先キーは**OSへも届かず、awaseもactuateしない**（actuation
+  側もADR-119の`AppImeProfile::InputRelay`ゲートで落ちる）ため完全に
+  無反応になる。物理かなキーそのものは従来どおりAllowされる（決定1が
+  `from`側の代入を設定していない限り）ので、影響は本機能の`to`=かな
+  ルールを設定したユーザーに限られる。回避策は`disable_apps`に当該
+  リレーウィンドウを登録すること——`FOCUS_APP_DISABLED`早期return
+  （`hook.rs:980-982`）は決定1の挿入点より前にあり、役割代入自体が
+  丸ごとバイパスされるため、元の物理キーがそのままOSへ届く。この
+  既知の制限は、r11のNM13（押下中のフォーカス遷移でorphan KeyUpが
+  出る）とは別種であり、**r12では押下中にフォーカスがInputRelayへ
+  移ってもorphan KeyUpは発生しない**（Down/Upとも常にSuppressのため）
+  ——NM13は解消済みとして扱う。
+
+**`suppress_reason`の対応**（r11の既知の制限7に相当）:
+`PhysicalKeyDisposition::suppress_reason`（`transport.rs:32-45`）に
+センチネル用の理由ラベル（例: `"kana-role"`）を1アームだけ追加する。
+r11が要求していた「Suppress判定の全条件を評価する共有ヘルパを新設し
+`plan()`と`suppress_reason`の両方から呼ぶ」という手当ては**不要**に
+なった——判定がvk値の単純な等値比較1つに縮んだため、二重管理の
+リスクが構造的に無い（BUG-90調査が必要とする「役割代入起因のSuppress
+と物理かなキー起因のGJI warmup契約〈`"tsf-f2"`〉を区別する」という
+目的は、このラベル追加で満たされる）。
+
+**Blocker（2026-09-06、premortem役R12-B1指摘）: 「OSへ絶対に出ない」
+という保証を`plan()`の1ゲートだけに委ねてはならない**——`physical`
+（`plan()`の戻り値）が実際に参照されるのは`executor.rs::execute_relay`
+の2アーム（`Decision::PassThrough`と`Decision::PassThroughWith`）だけ
+であり、**effect列経由で`Effect::Input(InputEffect::ReinjectKey(evt))`
+が積まれて`reinject()`へ渡る経路は`physical`を一切参照しない**。実在
+する生産点は少なくとも2つある: (1) `engine/engine.rs:328-332`の
+`lifecycle.flush_pending_key_ups()`（保留中のKeyUpをstuck key対策として
+再注入する経路）、(2) `message_handlers.rs:1400-1420`の`INPUT_DEFER`
+output-drain replay。センチネルは`classify_key`で`KeyClassification::
+Passthrough`になる（決定8参照）ため、NICOLA pending状態がある間に
+押されると engine側でConsumeされ`KeyLifecycle`のpending KeyUpに載る
+可能性があり、そこを経由すると`plan()`を一切通らずに`wVk:
+VIRTUAL_KEY(0x0100)`のSendInputが発行されうる。これはr0（`transport::
+plan`のF2分岐の位置）・r2（injected早期returnの順序）・r4
+（`kp_stage_shadow_ime_toggle`の3つのゲート）で繰り返し露呈した「他にも
+経路がある」という同じ失敗パターンである。
+
+**決定（再訂正、2026-09-06、architect役NM21指摘）**: 「センチネルは
+OSへ出ない」という大域的性質を、`reinject()`ではなく
+**`win32::send_input_safe`（`win32.rs:229`）の先頭1箇所**で構造的に
+保証する。この関数のdocコメントが既に「このクレートの全`SendInput`
+呼び出しは本関数を経由する**唯一のチョークポイント**である」と明記
+しており（`vk_may_mutate_conv`のconv_mutationゲートが同じ理由でここに
+置かれている、`win32.rs:216-221`参照）、`reinject()`自身も内部で
+`send_input_safe`を呼ぶ（`lib.rs:372`）。加えて`reinject()`は複数ある
+呼び出し経路の1つに過ぎない——ADR-141決定7-3のKeyUp注入
+（`make_key_input_ex`+`send_input_safe`直接呼び出し）、`ime.rs::
+send_ime_mode_key`、`key_pipeline.rs`のf2_inputs、`hook.rs::
+inject_alt_menu_mask`もすべて同じ関数を経由する。`reinject()`だけに
+ガードを置くと、決定2-8・決定4が「設計ルール」として要求している
+「`{KEY}_CONFIRMED_TARGET == Some(センチネル)`のときADR-141決定7の
+KeyUp注入を発火させない」が、もし将来どこかで見落とされた場合に
+`send_input_safe`まで達してしまう——これはR12-B1が警告した「到達経路の
+網羅への依存」と同じ形のリスクである。
+
+```rust
+#[must_use]
+pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
+    if inputs.iter().any(|i| {
+        i.r#type == INPUT_KEYBOARD
+            // SAFETY: type チェック済みなので Anonymous.ki は有効なフィールド。
+            && unsafe { i.Anonymous.ki }.wVk.0 == crate::vk::VK_ROLE_KANA_ACTUATE.0
+    }) {
+        return 0; // ADR-143 決定2: センチネルはOSへ出さない
+                  // (唯一のSendInputチョークポイントでの構造的保証)
+    }
+    // ...既存の実装（conv_mutationゲート等）
+}
+```
+
+戻り値`0`は「送信した件数」という既存の契約（実際のSendInputが0件成功
+した場合と同じ値）をそのまま使うため、シグネチャ変更が不要で
+呼び出し元への波及が無い（NM22が指摘した「戻り値の意味が未定義な
+bool導入」を避ける）。
+
+**将来の拡張に向けた注記（2026-09-06追加、premortem役Nit指摘）**:
+このガードは「バッチ内にセンチネルが1つでもあればバッチ全体を
+`return 0`で捨てる」実装である。現時点でセンチネルを含むバッチは
+`reinject()`が組み立てる単発`INPUT`のみであり、正規のキーとの混在は
+発生しない。**将来、センチネルと他の正規キーを同一バッチで送る呼び出しを
+追加する場合、この「バッチ全体を捨てる」実装ではセンチネル以外の
+`INPUT`まで黙って落ちる**ため、その時点でフィルタ方式（センチネルの
+要素だけを`inputs`から除外してから`SendInput`する）へ変更すること。
+
+`plan()`の無条件Suppress（決定2-4本体）は削除せず、二重の防御として
+残す——`send_input_safe`側のガードが「最後の砦（構造的）」、`plan()`
+側のガードは「そもそも呼ばせない（設計上の一貫性・`suppress_reason`
+ラベルによるBUG-90調査での区別・journal記録との整合のため、こちらも
+消してはならない）」という別の役割を持つ。決定2-4本体にも「`physical`
+は`execute_relay`の2アームしかゲートしない。effect列経由の
+`ReinjectKey`やADR-141決定7-3のKeyUp注入は別経路であり、そちらは
+`send_input_safe`側で落とす」ことを明記する。
+
+**ログ（Minor、architect役指摘。2026-09-06、文言を再訂正）**:
+ドロップ時に`log::debug!("[kana-role] sentinel drop (intentional,
+not OS-blocked)")`のような1行を残す（このリポジトリの
+`[relay-passthrough]`/`[relay-defer]`/`[kana-mode-restore]`等の
+角括弧タグ命名規約に倣う）。戻り値`0`は「意図的にドロップした」場合と
+「OSにブロックされた（UIPI等）」場合を区別しない——`inject_alt_menu_
+mask`が`sent=2/2`を、`send_gji_half_width_alnum_toggle`が`sent=`を
+ログに出すように、件数を見る呼び出し元は他に存在するため、ログ文言
+自体に「意図的なドロップである」ことを明記し、この区別をログの読み手
+（実機調査者）に伝える。実機調査で「そもそもセンチネルが送信経路に
+到達したのか」を切り分けられるようにするため、決定2-10の受け入れ
+条件(c)（Spy++等でSendInput送出ゼロを確認）の裏付けとしても機能する。
+
+#### 決定2-5: actuationの呼び出し点
+
+センチネルのイベントは`HookKeyRing`経由でメインスレッドへ渡り、
+`kp_run_inner`（`key_pipeline.rs:206`）が通常どおり処理する。
+`kp_stage_shadow_ime_toggle`（`:270`で呼ばれる）が決定2-3で載せた
+`sync_direction = Some(TurnOn)`を読み、既存経路のまま
+`write_sync_key(witness, true, tick_ms)`→belief更新→下流の
+`executor.rs::dispatch_ime_set_open`→`ime_controller::apply`という
+**既存のactuation合流点**へ流れる。
+
+**新しい呼び出し点は作らない**。`.claude/rules/fix-requires-evidence.md`
+の「IME actuation合流点」（ADR-119、issue #136の教訓——新しいgateを
+1箇所に置いて満足すると、他の合流点が素通しになる）と対称の理由で、
+新しい**actuation経路**を足すのも同じリスクを持つ。r12設計は既存の
+`kp_stage_shadow_ime_toggle`という単一の合流点をそのまま使い、
+そこへ渡す入力（`ime_relevance`）だけをプラットフォーム層で決める
+——これはADR-019が定める「プラットフォーム層が事前分類し、判断は
+既存の単一箇所で行う」という層境界そのものである。
+
+**r11との決定的な違い**: r11は「actuationが**既に**発火しているはず
+だから、二重配送だけ止める」という*推測*を`plan()`側で行っていた
+（`actuation_will_fire = shadow_toggled || delegate_will_turn_on`）。
+r12は「actuationを発火させる入力を自分で作り、配送は無条件に止める」
+——推測する対象が存在しない。したがって以下がすべて不要になる:
+
+| r11の機構 | r12で不要になった理由 |
+| --- | --- |
+| `actuation_will_fire`（`shadow_toggled`/`turn_on_direction`を`plan()`へ運ぶ） | Suppressが無条件のため、actuationの発火有無を配送判断に使わない |
+| `kp_stage_shadow_ime_toggle`の戻り値の構造体化 | 同上（`shadow_toggled: bool`のまま） |
+| fresh press時点でのSuppress/Allowラッチ（`Option<bool>`） | disposition が押下中ずっと同じ（常にSuppress）のため、ラッチする対象が無い |
+| `RawKeyEvent::role_substitution_fresh_press`フィールド | fresh press判定の消費先がフックスレッド内（決定2-2）に移り、運ぶ必要が消えた |
+| フォールバック（ラッチ`None`のKeyDownを評価点にする、NM17） | ラッチが無い |
+| `kana_role_active`（`DbeModeKeyContext`の4つ目のフィールド）とそのSSOT要件 | センチネルの**存在自体**が「かなルールが有効」の証拠。別経路で計算したboolと乖離しうる構造が無い |
+| injected KeyUp専用のSuppress分岐と、ラッチ読み取り/クリアのinjected規律 | Down/Up/injectedのすべてが同じ無条件Suppressになる |
+| `kp_restore_hiragana_for_suppressed_mode_key`への`scan_code == SCAN_KANA`除外条件（r11の既知の制限2） | 同関数は`event.vk_code != VK_DBE_HIRAGANA`で即return（`key_pipeline.rs:90`）。センチネルは0xF2ではないので**改修不要** |
+| `delegate_will_turn_on`／`hiragana_delegate_to_open_axis`の方向判定 | センチネルは親指キーになりえない（決定6参照）ため`delegate_owned`が構造的に偽 |
+
+#### 決定2-6: auto-repeatとKeyUpの扱い
+
+- **KeyUp**: `kp_stage_shadow_ime_toggle`は先頭でKeyUpを即return
+  （`key_pipeline.rs:1009-1011`）するため、actuationは発火しない。
+  配送は決定2-4により無条件Suppress。**Down/Upは常に対称**である。
+- **auto-repeat KeyDown**: `kana_role_actuate`が偽になるので
+  `sync_direction`が`None`となり、`kp_stage_shadow_ime_toggle`は
+  `intent_kind`が`None`で早期return（`:1087-1089`）する。二重
+  actuationは起きない。
+- **二重の防御になっている点**: 仮に`kana_role_actuate`の計算が
+  （injected/overflow等で）誤って真になっても、`kp_stage_shadow_ime_
+  toggle`のno-op分岐（`:1159`、`effective_open() == current`）が
+  belief書き込みとapply-imeを見送るため、実IMEへの二重actuationには
+  ならない。これは物理かなキーを押しっぱなしにしたときの既存挙動と
+  同一である（no-op分岐内の`eisu_reset_on_turn_on_while_open`だけは
+  repeatごとに走るが、これも物理かなキー押しっぱなしと同じ既存挙動で
+  あり、本ADRが新規に持ち込むものではない）。
+
+#### 決定2-7: injected／overflowでの取りこぼしとその影響
+
+`kana_role_actuate`が誤って偽になり、その押下がactuationしないまま
+終わる経路が2つある:
+
+1. **injectedイベントが`{KEY}_WAS_DOWN`を更新する読み方を採った場合**
+   （ADR-141決定1とADR-142決定B7の不一致、r11のNM18）: injectedな
+   KeyDownが`was_down=true`にすると、直後の物理KeyDownがfreshと判定
+   されない。
+2. **`ProduceResult::Overflow`（`hook.rs:1203-1205`）**: 挿入点
+   （`:1135`）はキュー投入（`:1195`）より前なので、hold-stateへの
+   storeが済んだ後にイベント自体が破棄されうる。
+
+**いずれも「その押下1回がactuationせずに終わる」だけで、状態は壊れない**
+——配送は常にSuppressなので、r11が恐れた「Downだけ配送されてUpが
+Suppressされる（またはその逆）」という非対称は発生しない。次の物理
+KeyUpが`{KEY}_WAS_DOWN`を偽に戻すため、次の押下は正しくfreshになる
+（自己修復する）。r11がこの2経路のために必要としていたフォールバック
+機構と、NM18の「injectedでは更新しない」への依存は、どちらも不要に
+なった。
+
+#### 決定2-8: ADR-141決定7（KeyUp注入）との関係
+
+ADR-141決定7は、`{KEY}_CONFIRMED_TARGET`が`Some(vk)`のまま押下が
+中断される経路（`reset_physical_key_state`・
+`clear_hook_latches_for_app_disable`・
+`passthrough_or_swallow_for_impersonation`）で、代入後vkのKeyUpを
+OSへ注入して stuck Down を防ぐ。
+
+**決定**: `{KEY}_CONFIRMED_TARGET == Some(VK_ROLE_KANA_ACTUATE)`の
+場合は**KeyUp注入を行わない**。センチネルのDownは一度もOSへ配送されて
+いない（決定2-4の無条件Suppress）ため、対応するUpを注入する意味が無く、
+注入すれば無意味なVKのSendInputになる。
+
+この条件は`{KEY}_CONFIRMED_TARGET`という**フックスレッド側の値だけ**で
+判定できるため、r11がぶつかった「ラッチはメインスレッドの値なので
+決定7-3（フックスレッド）から参照できない」という問題
+（premortem役R11-M1）は発生しない。r11は「Downが常にSuppressされる」
+という前提が決定2のr4以降で崩れたために条件をラッチの値へ移さざるを
+得なかったが、r12ではこの前提が**無条件に**成り立つため、単純な
+`confirmed_target`の等値比較へ戻せる。
+
+**危険度の優先順位との整合**: 本ADR・ADR-141が従う「stuck Downを避ける
+ことを優先し、orphan/重複Upは許容する」という優先順位に対し、本決定は
+「注入しない」側を選んでいる。これは優先順位の例外ではなく**適用範囲外**
+である——OS側にセンチネルのDownが存在しないので、避けるべきstuck Down
+自体が存在しない。
+
+**この例外はADR-141本体にも参照ポインタを追加する**（ADR-143だけに
+書くと、ADR-141を単体で読む実装者が無条件でKeyUp注入を実装してしまう。
+ADR-142がr5で行ったのと同じ手当て）。
+
+#### 決定2-9: Alt/Win押下時の安全性
+
+r0〜r1が出発点にしていた「Alt/Win押下中に合成`VK_DBE_HIRAGANA`を
+SendInputするとBUG-61（復旧不能）を誘発しうる」という実機診断
+（`key_pipeline.rs:1983-1989`、2026-08-17）に対して、r12設計は
+**そもそも合成`VK_DBE_*`をSendInputしない**ため該当しない。
+センチネルはOSへ送られず、actuationがOSへ送るVKは
+`GjiDirectStrategy`/`MsImeDirectStrategy`の`VK_IME_ON`(0x16)、
+`KanjiToggleStrategy`の`VK_KANJI`(0x19)であり、いずれも
+`VK_DBE_*`一族ではない（MS-IMEのON操作は2026-08-06・BUG-50対応で
 `VK_DBE_HIRAGANA`から`VK_IME_ON`単発へ変更済み、`ime_controller.rs:
-190-203`）。BUG-61が問題にしているのはAlt+`VK_DBE_*`一族という特定の
-組み合わせがOSレベルの入力方式切替ショートカットとして解釈されること
-であり、`VK_IME_ON`/`VK_KANJI`はこのショートカットの対象ではないため、
-Alt押下中にactuationが発火してもBUG-61のリスクには該当しない
-（`ime_mode_key_injection_blocked_by_modifier()`を経由するから安全、
-という論拠は事実誤認だった——同関数の呼び出し箇所は半角英数トグル
-復元の2箇所のみで、actuation本経路には存在しない）。
+190-203`）。
 
-**この論拠が成立しなくなる条件**: 将来`key_sequence_policy`の送出VK
-選択がIME ON操作用に`VK_DBE_*`一族へ戻される変更が入った場合、この
-安全性の論拠は崩れる。そのような変更を行う際は本ADRの前提が崩れる
-ことを明記し、Alt押下時のガードを別途追加する必要がある。
+**この論拠が成立しなくなる条件**（r11から変更なし）: 将来
+`key_sequence_policy`の送出VK選択がIME ON操作用に`VK_DBE_*`一族へ
+戻される変更が入った場合、この安全性の論拠は崩れる。そのような変更を
+行う際は本ADRの前提が崩れることを明記し、Alt押下時のガードを別途
+追加する必要がある。なお、既に本番コードに存在する合成0xF2送出
+（`ime.rs::send_ime_mode_key_with_shift_release_prefix`、GJI半角英数
+トグルの出口）は`hook::ime_mode_key_injection_blocked_by_modifier()`
+でWin/Alt押下中をガードしており、本ADRはこの経路には触れない。
 
-**既知の制限・残課題**:
+#### 決定2-10: 既知の制限・確認項目
+
+0. **エンジンOFF中は、かなスロットが関与するサイクル全体が恒等に
+   戻る**（2026-09-06追加、premortem役R13-M1・architect役NB15/NB16
+   指摘を経て決定3の「かな関与サイクル」概念に一本化）: 無変換3連打
+   等でエンジンをOFFにしている間、かなスロットが関与するサイクルに
+   属するルール（例:「変換⇔かな」の2-cycle、または「変換→かな→
+   スペース→変換」のような3-cycleならその**全ての腕**）は不成立になり、
+   関係する物理キーはすべてそれぞれの素の挙動（`VK_CONVERT`・実機
+   依存の`VK_DBE_*`・`VK_SPACE`等）に戻る。これは意図的なトレードオフ
+   である——個別の腕（`to`=かな方向だけ、`from`=かな方向だけ）を
+   個別にゲートすると、死にキー（NB14）・全単射違反（NB15の逆方向・
+   NB16の3-cycle）のいずれかが必ず生じるため、**サイクル単位で一括
+   無効化するのが唯一の安全な選択**だった（詳細は決定3参照）。
+   **かなスロットを含まない独立したサイクル（例: 変換⇔無変換の
+   2-cycle）はこの判定と無関係で、エンジンOFF中も引き続き動作する**
+   ——ユーザーが確認した製品方針「安全な3キー同士の入れ替えはエンジン
+   のON/OFFと独立に動作し続けてほしい」はこちらで満たされる。
+   3-cycle構成では「変換⇔かな」を設定するとサイクルに含まれる他の
+   ルールもエンジンOFF中は一緒に止まる、という帰結をPhase CのGUI
+   説明に含める必要がある（決定3のPhase Cへの申し送り参照）。
+
 1. **IME OFF方向・charset軸（カタカナ/半角英数→ひらがな）の復帰は
-   再現しない**: 物理かなキーは、IMEが既にひらがな状態にある時に
-   押されると実機的に「かな入力を終了する」効果を持つことがあるが、
-   決定2の既知の制限2（`kp_restore_hiragana_for_suppressed_mode_key`
-   の除外）により、代入先キーは**open軸（IME ON）のみ**を操作し、
-   `VK_IME_ON`はcharset軸には一切触れない（`ime_controller.rs:
-   224-228`）。ADR-100決定2以降の「eager warmupがopen軸のみ」という
-   片肺化（ADR-137 M-6の真因）と同型の制限であり、意図的に選択した
-   トレードオフである。将来charset軸まで再現したい場合は、GJI/MS-IME
-   でexit実装を共有しない（BUG-25/ADR-107）という制約を満たす専用
-   経路を新たに設計する必要がある。
-2. **`kp_restore_hiragana_for_suppressed_mode_key`（BUG-116決定2、
-   `key_pipeline.rs:81-201`）を役割代入由来のイベントから除外する**:
-   同関数のコメント（`:104-108`）が明記する「`physical == Suppress`
-   かつ0xF2は`plan()`のF2分岐でのみ成立し、その条件は`is_tsf_mode &&
-   f2_warmup_owned`そのもの。したがって`physical == Suppress`である
-   ことがGJI戦略としてSuppressされたことの**必要十分条件**である」
-   という同値性を、決定2のSuppress条件拡張が壊す。GJI戦略でなくとも
-   役割代入由来のSuppressで`physical == Suppress`が成立するため、
-   MS-IME環境でもこの関数が発火し`send_gji_half_width_alnum_toggle
-   (Exit, ..)`という**GJI専用のscan付きVK_DBE_HIRAGANA注入**が
-   MS-IMEセッションへ誤発火する（BUG-25/ADR-107が明記する「GJI/MS-IME
-   でexit実装を共有しない」原則への違反、かつBUG-15追補7のかなロック
-   トグルハザードの当事者）。**決定**: 同関数の発火条件に
-   `event.scan_code == SCAN_KANA`を追加し、役割代入由来のイベント
-   （`scan_code != SCAN_KANA`）をこの関数の対象外にする。この除外は
-   同関数の**最初の早期return**として、`:90`の`if event.vk_code !=
-   VK_DBE_HIRAGANA { return; }`と同じ位置に置く（`:93-103`のKeyUp
-   早期return・`kana_mode_restore_key_down`ラッチ解除より**前**——
-   後段に置くと代入先キーのKeyUpが物理かなキーの立てたラッチを誤って
-   解除しうる）。同関数のコメント（`:104-108`）にこの前提変更を追記
-   する。監査対象（`is_configured_thumb_key`・
-   `half_width_alnum_toggle_before`・`kana_mode_restore_key_down`・
-   `conv_mutation_allowed`・`is_composition_warm()`複合条件・
-   `read_kana_lock()`によるABORT）は未解決の疑問6として残す。
-3. **近似であることの明記**: `actuation_will_fire`は「beliefが変わる
-   （`shadow_toggled`/`delegate_will_turn_on`）」ことの近似であり、
-   「実際にIMEがactuateされる」ことの保証ではない。belief変化後の
-   実際のactuationは下流（`executor.rs::dispatch_ime_set_open`→
-   `ime_controller::apply`）で行われ、ADR-119の`AppImeProfile::
-   InputRelay`ゲートをはじめ複数のpreconditionがある
-   （`.claude/rules/fix-requires-evidence.md`の「IME actuation合流点」
-   参照）。InputRelayは`plan()`自身の早期return（`transport.rs:260`）
-   が先に`Allow`を返すため整合するが、それ以外の下流ゲートで
-   actuationが落ちる組み合わせが無いかは未検証——belief遷移は起きたが
-   実際には誰もIMEをONにしない場合、BUG-10の食い逃げが残る。下流
-   ゲートの棚卸しはPhase A実装時の確認項目とする（未解決の疑問6と
-   統合）。**r7追加（architect役Minor3指摘）**: ラッチ化により、この
-   近似の限界が及ぶ範囲が一段広がった——r5までは動的条件をイベントごと
-   に再評価していたため、近似が外れても次の打鍵で状況が変わりうる
-   余地があったが、r6のラッチ化により**fresh press時点の1回きりの
-   判定が押下期間全体を支配する**。近似が外れた場合、その押下が終わる
-   まで訂正されない。この点を踏まえ、下流ゲートの棚卸しの優先度を
-   Phase A実装の前提条件（未解決の疑問6）として維持する。
-4. **delegate分岐の代入後構成での正しさは未検証**: `hiragana_
-   delegate_to_open_axis`は物理かなキーが親指キーである前提で設計・
-   検証された機構である。決定6が「意図した挙動」とする構成（代入に
-   より物理変換キーが親指キーとして扱われる）で、このdelegateが実際に
-   open軸をONにするかは未検証。Phase A実装の実機確認項目に追加する
-   （未解決の疑問6と統合）。`delegate_owned`の実体は`mode_key_
-   delegate_owns_shadow_toggle(event.vk_code)`であり、親指キーが
-   「カタカナ」(0xF1)の構成では`katakana_delegate_to_open_axis`が
-   対象になりうるが、決定2が`to`側の合成vkを0xF2に固定しているため
-   `delegate_owned`が真になるのは`thumb_vk == 0xF2`の場合のみで、
-   カタカナ側は構造的に該当しない。
+   再現しない**（r11から変更なし）: 代入先キーは**open軸（IME ON）
+   のみ**を操作する。`VK_IME_ON`はcharset軸には一切触れない
+   （`ime_controller.rs:224-228`）。ADR-100決定2以降の「eager warmupが
+   open軸のみ」という片肺化（ADR-137 M-6の真因）と同型の制限であり、
+   意図的に選択したトレードオフである。将来charset軸まで再現したい
+   場合は、GJI/MS-IMEでexit実装を共有しない（BUG-25/ADR-107）という
+   制約を満たす専用経路を新たに設計する必要がある。
+2. **`composition_native_f2_down`が呼ばれなくなる**（r12で新規に
+   明記）: `kp_stage_execute`（`key_pipeline.rs:2236-2244`）は
+   `event.vk_code == VK_DBE_HIRAGANA`のKeyDownに対して
+   `mark_cold` + eager warmupを行う。センチネルは0xF2ではないので
+   この副作用が起きない。r11設計（vk=0xF2）では起きていたので、
+   これはr12で変わる点である。actuation経路（`ime_controller::apply`）
+   自身がwarmup契約を持つため理論上は問題ないはずだが、**Phase A実装時
+   の確認項目**とする（Chrome等のTSFネイティブアプリで、代入先キーで
+   IME ONした直後の1文字目がリテラル化しないか）。
+3. **InputRelayウィンドウでの不発**: 決定2-4の既知の制限を参照。
+2.5. **【2026-09-06追加、architect役NM20指摘】センチネルがPassthrough
+   イベントとしてNICOLA FSMを通過することの影響**: センチネルは
+   `Char`に分類されないため同時打鍵の構成キーにはなりえないが、
+   `classify_key`が`Passthrough`を返す以上、`HookKeyRing`経由で
+   engineの`on_input`を通過すること自体は避けられない（r11の0xF2
+   設計でも同型だったため退行ではない）。pending中の同時打鍵候補が
+   ある状態でこのPassthroughイベントが届いた場合に、既存のFSMが
+   それを解決/flushの契機として扱うかどうかを**Phase A実装時に
+   確認する**（物理変換キーを押した以上、他の保留中候補をflushする
+   挙動はむしろ自然であり、実害を想定してはいないが、確認済み事項
+   として明記する必要がある）。
+3.5. **【Major、2026-09-06追加、premortem役R12-M1指摘】NB6
+   （BUG-10「食い逃げ」救済経路）が失われる**: r4でarchitect役が発見した
+   NB6——`kp_stage_shadow_ime_toggle`のno-op分岐（`key_pipeline.rs:1159`、
+   `effective_open() == current`）により、beliefが既にONのときは
+   actuationが発火しない——は、r11では`actuation_will_fire`が偽の場合に
+   `Allow`へフォールスルーし、MS-IME/非TSFが物理0xF2をネイティブ処理
+   することで救済されていた。r12は配送を**無条件Suppress**にしたため、
+   この救済経路が構造的に消えている。結果、belief=ON・実IME=OFFという
+   乖離状態では、代入先キーを何度押しても「OSへも出ない・actuateも
+   しない」完全な無反応になる（`transport.rs:264-274`のコメントが
+   「ここで消すと物理ひらがなキーが食い逃げされ、intent/Engineだけ
+   ONで実IMEがOFFのまま乖離する（BUG-10、2026-07-06実機）」と警告
+   している状況そのもの）。**これはr12で意識的に受け入れるトレード
+   オフとして記録する**（8ラウンド追跡した論点なので黙って消さない。
+   2026-09-06、architect役NM19が再指摘し記録の追加を要求）。
+
+   **検証済みの緩和策（(a)を実コードで確認、architect役の要求に対応）**:
+   `runtime/ime_refresh.rs::ir_apply_drift_correction`は`ir_stage_notify`
+   （`:227-233`、末尾で`reschedule_ime_refresh()`により次回実行を
+   スケジュールする**タイマー駆動の定期リフレッシュ**）から呼ばれ、
+   ユーザーの打鍵とは独立に周期的に`desired`（belief）と`observed`
+   （実IMEの観測値）の乖離を検知し、乖離していれば`actuation_for`
+   経由でactuationを再送する。この再送は「beliefを実状態に合わせる」
+   のではなく「実状態をbeliefに合わせにいく」向き（`desired`を目標に
+   actuationする）であり、`kp_stage_shadow_ime_toggle`のno-op分岐が
+   ブロックした押下起点のactuationとは**別の、独立した経路**である。
+   したがってbelief=ON・実IME=OFFの乖離は、代入先キーの再押下を待たず、
+   このリフレッシュサイクル（実測間隔はPhase A実装時に確認）が回るたび
+   に自動的に補正が試みられる——「2打鍵で回復する」という仮説
+   （architect役が検証を要求した案(a)）ではなく、**打鍵と無関係な
+   バックグラウンド回復**という、より確実な形で成立する。
+   もう1点の緩和策として、(b) 物理かなキー自身は（`from`=かなのルールを
+   設定していない限り）従来どおり`Allow`されるため、ユーザー操作による
+   即時の回復手段も別途残る。
+
+   **緩和策(a)の前提条件と、それが崩れる窓（2026-09-06追加、architect役
+   NM23指摘）**: `ir_apply_drift_correction`自身も冒頭で
+   `!self.engine.is_user_enabled() || !self.platform_state.ime.belief.
+   is_japanese_ime()`という早期returnを持つ（`ime_refresh.rs:574`）。
+   決定2-3が`sync_direction`（SyncKey）を選んだ第一の理由は「probe
+   ベースの確率的belief`is_japanese_ime()`でゲートすると、grace期間中の
+   偽答で完全な死にキーになる」ことだった。ところが緩和策(a)自身は
+   その`is_japanese_ime()`に依存している。スリープ復帰・フォーカス
+   変更直後のgrace窓で`is_japanese_ime()`が偽答している間は、(1)
+   actuation経路自体は決定2-3のおかげで通るがbeliefのno-op分岐で
+   止まりうる、(2) 物理配送は無条件Suppress、(3) drift correctionも
+   このゲートで走らない——**3つの経路が同時に塞がる**。この窓は
+   一時的（grace期間が終われば`is_japanese_ime()`は正答に戻り、
+   緩和策(a)は定常的に機能する）だが、「打鍵と無関係に自動回復する」
+   という上記の主張はこの窓の間は成立しないことを明記する。
+4. **`deferred_vks`への残留は起こらない**（r11の既知の制限6が消滅）:
+   センチネルは常にSuppressなので`check_output_guard_defer`に到達
+   せず、`deferred_vks`（`transport.rs:110-125`）に入らない。
+   `check_keyup_symmetry`への影響も無い。
 5. **`to`に`VK_DBE_ROMAN`/`NOROMAN`(0xF5/0xF6)・その他の`VK_DBE_*`
-   亜種を割り当てることは引き続き禁止する**: `to`=かなスロットの意味
-   は「`VK_DBE_HIRAGANA`固定・条件を満たせば常にSuppress・OSへの
-   二重配送を止めるだけで実際のactuationは既存経路が行う」に一本化
-   されており、他の`VK_DBE_*`値を`to`として選択させる余地はそもそも
-   存在しない。
-6. **`deferred_vks`への0xF2残留**: Down側がAllow（BUG-10救済で
-   ネイティブ配送に委ねた場合）だった場合、`transport.rs:110-125`の
-   `deferred_vks`に0xF2が残留しうる。既存の0xF1/0xF3/0xF4と同じ扱いで
-   inertと見込まれるが、`check_keyup_symmetry`への影響が無いかは
-   Phase A実装時に確認する。
-7. **`suppress_reason`のラベル訂正が必要**: `PhysicalKeyDisposition::
-   suppress_reason`（`transport.rs:32-45`）は`event.vk_code ==
-   VK_DBE_HIRAGANA`の場合に理由ラベルを常に`"tsf-f2"`とする。役割
-   代入由来のSuppressもこのラベルで記録されると、BUG-90調査が前提と
-   する「journalの`KeyInput.decision`（意味論的判断）と
-   `suppress_reason`（実際の配送判断）を突き合わせる」という目的に
-   とって、役割代入起因の配送問題と物理かなキー起因のGJI warmup契約を
-   区別できなくなる。Suppress判定の全条件（ラッチの値を含む）を評価
-   する小さなヘルパ関数を新設し、`plan()`と`suppress_reason`の両方が
-   このヘルパを呼ぶ形に一本化する（`DbeModeKeyContext`を
-   `suppress_reason`にも渡せるようシグネチャを拡張する）。
-8. **判別子`event.scan_code != SCAN_KANA`の健全性の証明**: 挿入点で
-   vkを書き換える機構はAlt impersonationと役割代入の2つのみである。
-   Alt impersonationの発動フラグは`resolve_thumb_key`
-   （`alt_impersonation.rs:38-45`）が`"Left Alt"`/`"Right Alt"`にのみ
-   `true`を返し、その2つはそれぞれ`VK_NONCONVERT`/`VK_CONVERT`に解決
-   される（`src/config.rs:214-220`が、これを独立したチェックボックス
-   ではなく`left_thumb_key`/`right_thumb_key`の選択肢に統合すること
-   で、値が一箇所だけに存在し設定GUIの表示条件と実際の有効状態がズレる
-   余地を無くす設計だと明記している。`bootstrap.rs:200-210`→
-   `hook::set_alt_impersonation_enabled`〈`:536`〉→
-   `CACHED_LEFT/RIGHT_ALT_IMPERSONATION_ENABLED`〈`hook.rs:436-437`〉
-   という単一経路で導出される）。したがってAlt impersonationが0xF2を
-   生成することは構造的に不可能であり、`scan_code != SCAN_KANA`は
-   役割代入由来であることの健全な判別子である。将来Altセンチネルの
-   解決先を変える変更が入った場合、この前提が崩れることに注意
-   （「送出VKがDBE系でない」という別の前提と同様に扱う）。
-9. **Phase Aの受け入れ条件**: 実装完了後、代入先キーの押下で実際に
-   GJI・MS-IME双方の実IMEがONになることを実機で確認することを、
-   Phase A実装の受け入れ条件とする。
-10. **`reset_physical_key_state`によるmid-holdの再確定（r9追加、
-    premortem役R8-M1指摘）**: `reset_physical_key_state()`
-    （`hook.rs:334-347`）は`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`を含む
-    hold-stateを全クリアする。役割代入対象キーを押しっぱなしのまま
-    これが呼ばれると（呼び出し元は`WTS_SESSION_UNLOCK`と
-    `panic_reset()`——前者はアンロック時点で物理キーはどれも離されて
-    いると仮定してよいため実害が薄いが、後者は打鍵中に走りうる）、
-    直後のauto-repeat KeyDownが`role_substitution_fresh_press=
-    Some(true)`（fresh press）と再判定され、ラッチが再評価される。この
-    時点では1打目のactuationで既にbeliefが開いているため
-    `actuation_will_fire`は偽となり、ラッチは`Some(false)`（Allow）へ
-    反転する——残りのauto-repeatとKeyUpで生の0xF2がOSへ流れる
-    （Alt押下中ならBUG-61のリスクも伴う）。これは`reset_physical_key_
-    state`がADR-141決定7以来「押下中の物理キー状態を全クリアする」と
-    いう設計を既に持っていることの帰結であり、本ADRが新たに導入する
-    ハザードではない（安全な3キー同士の役割代入でも同型の再確定が
-    起こりうる）。既知の限定的な制限として記録するに留める——実害は
-    当該押下の残り時間に限定され、指を離せば自己修復する。
-
-    **r10追加（premortem役R9-m1指摘）**: 同型の再確定は
-    `clear_hook_latches_for_app_disable`の`SuppressionEdge::Leave`
-    （`disable_apps`対象ウィンドウから戻る瞬間）でも起こりうる——
-    押下中に`disable_apps`対象へフォーカスが移り、戻ってきた時点で
-    hold-stateがクリアされていれば、`reset_physical_key_state`と同型
-    のmid-hold再確定が発生する。実害の範囲・自己修復の性質は上記と
-    同一である。
-11. **依存する値の一覧表（r8追加、architect役の総括での推奨）**:
-    r0〜r7で発見されたBlockerは、いずれも「決定2が依存する既存の値を
-    いつ・どこで読むか」という同一クラスの問題だった。以下に決定2が
-    依存する値と、その計算地点・参照地点・間で更新されうるかを一覧
-    する。この表はPhase A実装のチェックリスト、および実機受け入れ
-    条件の導出元として機能する。
-
-    | 値 | 計算される地点 | 参照される地点 | 間で更新されうるか |
-    | --- | --- | --- | --- |
-    | `shadow_toggled` | `key_pipeline.rs:270` | `:392`（`plan()`引数） | しない（同一呼び出しの戻り値） |
-    | `delegate_owned`/`turn_on_direction` | `:1074-1075`/`:1188-1200` | `:392` | しない（同上、戻り値に載せる） |
-    | `kana_role_active` | configロード/reload時 | `:392` | する（押下中のreload）→fresh pressでのみ評価し、確定後はラッチが優先される |
-    | `role_substitution_fresh_press` | 決定1の挿入点（`hook.rs:1135`以降、`decide_role_substitution`に渡す`was_down`と同一） | `:392`（`RawKeyEvent`経由） | しない（`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`という単一の情報源から計算、ADR-141決定7＋決定5の5箇所で正しくクリアされる） |
-    | `profile` | `key_pipeline.rs:385` | `transport.rs:260` | する（フォーカス遷移）→NM13の既知の制限（決定4参照） |
-    | `event_eligible` | 決定1の挿入点（`!alt_impersonated && !is_injected`） | 同挿入点（`decide_role_substitution`の引数） | しない（同一イベント内で計算・消費）。ただしこれが`{KEY}_WAS_DOWN`の更新を条件づけるか否かが未定（r10追加、architect役Minor3・NM18参照） |
-
-    この表から、「押しっぱなしで0xF2が繰り返し届かないこと」
-    （`role_substitution_fresh_press`の行）・「押下中のreloadでKeyUp
-    が失われないこと」（`kana_role_active`の行）・「押下中のフォーカス
-    遷移でorphan
-    KeyUpが出ないこと」（`profile`の行）という3つの実機受け入れ条件が
-    直接導ける。
-12. **`SCAN_KANA_WAS_DOWN`由来の値には現時点で消費者が無い（r10追加、
-    premortem役R9-m2指摘）**: `from`=かな方向のイベントは決定2の静的
-    3条件（`scan_code != SCAN_KANA`）で除外されるため、かなスロット
-    由来の`role_substitution_fresh_press`（`Some`/`None`）を読む消費者
-    は現時点で存在しない（決定4/決定5のフック側判定はhook.rs内で
-    完結しており、この値を参照しない）。`feedback_dont_provision_
-    ahead_without_consumer_logic`の観点から、フィールドのdocに
-    「かなスロットについては値を持つが、現時点の消費者は無い（決定2の
-    ラッチは`to`=かな方向のみを対象とする）」と明記する——将来
-    「使われていないから削除してよい」と誤判断されないようにする。
+   亜種を割り当てることは引き続き禁止する**: `to`=かなスロットの
+   意味は「センチネルへ書き換え・常にSuppress・awase自身がIME ON
+   相当をactuateする」に一本化されており、OSへ`VK_DBE_*`を送る経路
+   自体が存在しないため、他の値を`to`として選択させる余地が無い。
+6. **判別子の健全性**（r11の既知の制限8を継承・簡素化）: 挿入点で
+   vkを書き換える機構はAlt impersonationと役割代入の2つのみであり、
+   Alt impersonationの書き換え先は`resolve_thumb_key`
+   （`alt_impersonation.rs:38-45`）により`VK_NONCONVERT`/`VK_CONVERT`
+   に限られる。したがって`vk == VK_ROLE_KANA_ACTUATE`は役割代入由来
+   であることの健全な判別子である。r11が必要としていた
+   `event.scan_code != SCAN_KANA`という**間接的な**判別子（0xF2が
+   物理かなキー由来か役割代入由来かをscanで見分ける）は、値そのものが
+   一意になったため不要になった。
+7. **`reset_physical_key_state`によるmid-holdの再確定**（r11の既知の
+   制限10を継承・影響を縮小）: `reset_physical_key_state()`
+   （`hook.rs:334-347`）や`clear_hook_latches_for_app_disable`の
+   `SuppressionEdge::Leave`が押下中に走ると`{KEY}_WAS_DOWN`が
+   クリアされ、直後のauto-repeat KeyDownがfresh pressと再判定されて
+   `kana_role_actuate`が真になる。r11ではこれがラッチの反転
+   （Suppress→Allowで生の0xF2が流出）を招いたが、r12では
+   `kp_stage_shadow_ime_toggle`のno-op分岐が余分なactuationを吸収する
+   （決定2-6）だけで、配送は変わらない。ADR-141が既に持つ性質であり、
+   本ADRが新たに導入するハザードではない。
+8. **Phase Aの受け入れ条件**: 実装完了後、(a) 代入先キーの押下で実際に
+   GJI・MS-IME双方の実IMEがONになること、(b) 代入先キーを押しっぱなしに
+   してもIMEが暴れないこと（auto-repeat時の二重actuation防止）、(c)
+   代入先キーの押下・auto-repeat・KeyUpのいずれからもOSへ何も送出され
+   ないこと（Spy++等でSendInputを観測）、(d) 上記2のcold-start確認、
+   の4点を実機で確認する。
 
 ### 決定3: 全単射モデルを4要素（安全な3キー＋かなスロット）へ拡張する
 
@@ -1323,7 +1464,85 @@ vkはこの限りではない）。恒等補完を素直に「テーブル引き
 出し自体を行わず**、vkを一切変更しない。これは実装上の最適化ではなく、
 正しさの要件として決定1・決定2の前段に明記する。
 
-### 決定4（r2で簡素化）: hold-state・KeymapLatchをかなスロット専用ペアとして追加する（`from`=かな方向のみ）
+**エンジンOFF時は「かなスロットが関与するサイクル全体」を無効化する
+（2026-09-06追加、architect役NB15・NB16指摘、premortem役R13-M1・
+R14-M2の議論を統合）**: `engine_enabled`をどこに置くかで4段階の
+試行錯誤があった（詳細はステータス節参照）。最終的に、決定1（`from`
+方向）・決定2-2（`to`方向）に個別の`engine_enabled`条件を書き込む
+のではなく、**config読み込み/reload時**に以下を計算し、フックスレッド
+はその結果（1個の真偽値、以下`kana_cycle_active`）だけを参照する
+形に一本化する:
+
+1. 4要素{変換, 無変換, スペース, かな}上の置換（決定3の全単射）を
+   サイクル分解する。
+2. かなスロットが属するサイクルが**非自明**（かなスロット自身への
+   恒等ではない）場合、そのサイクルに属する**すべての要素**（かな
+   スロットに直接触れない要素も含む——例: 3-cycle「変換→かな→
+   スペース→変換」なら`スペース→変換`の腕も）を「かな関与サイクル」
+   としてマークする。
+3. `kana_cycle_active = engine_enabled`（このサイクルに属するルールが
+   有効かどうかは、エンジンがONの間だけ）。かなスロットを含まない
+   独立したサイクル（例: 「変換⇔無変換」の2-cycle、上記3-cycle例で
+   言えば無変換の恒等）はこの判定と無関係で、常時有効のまま。
+
+fresh press時点（決定1の`from`判定、決定2-2の`to`判定のいずれか）で、
+解決済みの`rule_target`が「かな関与サイクル」に属するルールを指して
+おり、かつ`!kana_cycle_active`の場合、`decide_role_substitution`へ
+渡す`rule_target`を`None`として扱う（決定3が確立した「恒等は
+テーブル引きスキップ」と同じ機構をそのまま使う）。それ以外
+（`rule_target`がかな関与サイクルに属さない、またはサイクルが
+アクティブ）は通常どおり処理する。
+
+この一本化により以下がすべて解決する:
+- **NB15/R14-M2**（`is_kana_slot_press`に直接`engine_enabled`を
+  織り込むと押下中のトグルでKeyUpが取り残される）: `is_kana_slot_press`
+  自体は`(scan == SCAN_KANA) && event_eligible`のまま変更しない。
+  `kana_cycle_active`はfresh press時点の`rule_target`確定判断にのみ
+  効き、`confirmed_target`が押下期間中ラッチするため（ADR-141決定2・
+  決定4のhold-state）、押下中に`engine_enabled`が変化してもDown/Upは
+  常に対称になる。
+- **NB16**（かな関与サイクルの一部の腕だけを無効化すると3-cycleで
+  全単射が破れる）: サイクル単位で一括無効化するため、サイクルの
+  どの腕も個別に生き残らない。全単射は常にサイクル全体で恒等に戻る
+  か、サイクル全体で有効になるかのどちらかであり、部分適用は起こら
+  ない（ADR-141決定1-2の「個別ルールのskipではなくルール集合全体を
+  無効化する」、決定5の`swallow_alt_kana_input_method_switch=false`
+  時の措置と同型）。
+- **R13-M1**（`to`方向だけ・`from`方向だけを個別にゲートすると非対称
+  になる）: 両方向とも同一の`kana_cycle_active`を参照するため、
+  対称性は定義から保証される。
+
+**Phase Cへの申し送り**: 「変換⇔かな」を設定すると、同じサイクルに
+含まれる他のルール（3-cycle構成の第三の腕）もエンジンOFF中は一緒に
+無効化される、という帰結をGUI説明に含める必要がある。安全な3キーの
+みで完結する独立したサイクル（かなスロットを含まない構成）は、
+ユーザーが確認した製品方針どおりエンジンのON/OFFと独立に動作し続ける。
+
+**既知の制限（Minor、2026-09-06追加、architect役指摘）**: 同一サイクル
+内の2キーが、押下中のエンジントグルを跨いで一時的に同じvkを生成しうる
+過渡窓が残る。例（3-cycle 変換→かな→スペース→変換）: エンジンONで
+スペースを押す（`confirmed_target = Some(VK_CONVERT)`）→押したまま
+エンジンOFF→変換を新規押下（`rule_target = None`で恒等→`VK_CONVERT`）
+——この間、スペース（ラッチ済みの旧写像）と変換（新しい判定＝恒等）が
+同時に`VK_CONVERT`を生成する。これはADR-141決定3がconfig reloadに
+ついて既に受け入れている性質（「reload中にルールが変わってもKeyUp時の
+変換は確定時点の値を使う」）と同じ形の過渡窓であり、`confirmed_target`
+ラッチ規律そのものに内在する——本ADRが新規に導入するものではない。
+ただしconfig reloadが設定GUI経由の稀な操作であるのに対し、エンジン
+トグルは無変換3連打という打鍵中に起こりうる操作のため、露出頻度は
+一段高い。対処にはサイクル単位のラッチ（同一サイクルの他キーが押下中は
+再確定を止める）が必要になり実装コストに見合わないため、既知の制限
+として記録するに留める。
+
+### 決定4（r2で簡素化、r12で`from`方向専用であることを明確化）: hold-state・KeymapLatchをかなスロット専用ペアとして追加する（`from`=かな方向のみ）
+
+**r12での位置づけの明確化**: 本決定が追加するhold-stateペアは
+**`from`=かな方向（物理かなキー→安全な3キー）専用**である。`to`=かな
+方向（安全な3キー→かなスロット）には**新しいhold-stateを追加しない**
+——その方向で押される物理キーは安全な3キーのいずれかであり、
+ADR-141決定2が既に`{KEY}_WAS_DOWN`/`{KEY}_CONFIRMED_TARGET`のペアを
+持っているためである。決定2-2のfresh press判定（`is_keydown &&
+!was_down`）も、そのADR-141側の既存ペアをそのまま使う。
 
 ADR-141決定2は、安全な3キーそれぞれに固定長・名前付きの
 `{KEY}_WAS_DOWN: bool`/`{KEY}_CONFIRMED_TARGET: Option<VkCode>`を持つ
@@ -1356,53 +1575,29 @@ swallow分岐のクリーンアップは既に`!is_injected`を必須条件に�
 `{KEY}_CONFIRMED_TARGET`」に付くべきものだったこと、の2点で根本的に
 破綻していた。
 
-**「安全な3キー→かな」方向にはKeyUp注入が不要な場合がある（r6で確定、
-2026-09-06にarchitect役Major指摘で条件を訂正）**: 決定2のr6設計
-（fresh press時点でSuppress/Allowをラッチし、以後の同一押下の
-auto-repeat/KeyUpはそのラッチをそのまま踏襲する）により、この方向の
-Down/Upは**ラッチが確定した値の範囲では常に一致する**——r2〜r5で
-個別に検討していた「DownがSuppress・UpがAllowになりうる例外」
-（InputRelayへのフォーカス遷移〈NM6〉、`kana_role_active`の押下中
-反転〈R3-M1〉、auto-repeatでの反転〈NB9〉）は、いずれもラッチが
-個々のイベントで動的条件を再評価しないことにより発生条件自体が
-無くなった。
+**「安全な3キー→かな」方向にはKeyUp注入を行わない（r12で無条件化）**:
+決定2-8のとおり、`{KEY}_CONFIRMED_TARGET == Some(VK_ROLE_KANA_ACTUATE)`
+の場合はADR-141決定7のKeyUp注入を**無条件に**行わない。センチネルの
+Downは一度もOSへ配送されていないため、Upを注入する意味が無い。
 
-**訂正**: 当初「`{KEY}_CONFIRMED_TARGET == Some(VK_DBE_HIRAGANA)`の
-場合には発火させない」としていたが、これは「この方向のDownは常に
-Suppressされる」というr3時点の前提に乗っていた。決定2のr4以降、
-`actuation_will_fire`が偽の場合（BUG-10救済のフォールスルー等）は
-ラッチが`Some(false)`＝Allowになり、**OSは実際に0xF2のDownを受け
-取っている**。この場合にKeyUp注入を止めると、ADR-141決定7が補償する
-はずのstuck-Downが救済されなくなる。**正しい条件はラッチの値そのもの**
-——ラッチが`Some(true)`（Suppress）を保持している場合にのみKeyUp注入を
-発火させず、`Some(false)`（Allow）の場合はADR-141決定7のとおり通常
-どおり発火させる。ラッチはメインスレッド（`kp_run_inner`）に閉じた値
-のため、フックスレッド側の経路（決定7-3のoverflow経路等）でラッチを
-直接参照できない場合は、安全側のデフォルトとして「注入する」を選ぶ
-（未対のUpの方が、stuck Downより安全——ADR-141決定7-2の非対称に従う）。
-**決定7-3（フックスレッド）ではラッチを参照できないため、本規則により
-常に注入側になる——フックスレッドからラッチを参照する実装をしては
-ならない**（premortem役R11-m1補足、2026-09-06。r1の
-`KANA_DOWN_WAS_ALLOWED`と同じクロススレッド罠の再発防止）。なお決定5
-が新設する2つのswallow分岐は`SCAN_KANA_*`（`from`=かな方向、targetは
-安全な3キーのいずれかのvkであり0xF2にはならない）が対象であり、この
-0xF2限定の規則とは無関係——この規則が実際に効くのはADR-141決定7の
-5箇所のうち、かなスロット（`{KEY}_CONFIRMED_TARGET == Some(VK_DBE_
-HIRAGANA)`）に対する`reset_physical_key_state`・
-`clear_hook_latches_for_app_disable`（メインスレッド、ラッチ参照可）・
-`passthrough_or_swallow_for_impersonation`（フックスレッド、常に注入
-側）の3箇所のみである。
+**r0〜r11からの変化**: r2〜r5は「DownがSuppress・UpがAllowになりうる
+例外」（InputRelayへのフォーカス遷移〈NM6〉、`kana_role_active`の押下中
+反転〈R3-M1〉、auto-repeatでの反転〈NB9〉）を個別に検討し、r6は
+fresh pressラッチでそれらの発生条件を消し、r11はさらに「ラッチが
+`Some(true)`のときだけ注入しない」という条件付きの形へ訂正した上で、
+「そのラッチはメインスレッドの値なので決定7-3（フックスレッド）からは
+参照できない＝そこでは常に注入側になる」という但し書きを必要とした
+（premortem役R11-M1）。r12ではDown/Up/auto-repeat/injectedのすべてが
+無条件Suppressになるため、条件そのものが`{KEY}_CONFIRMED_TARGET`という
+**フックスレッド側の値だけ**で完結し、この但し書きが不要になった。
+決定5が新設する2つのswallow分岐は`SCAN_KANA_*`（`from`=かな方向、
+targetは安全な3キーのいずれかのvkでありセンチネルにはならない）が対象
+であり、この規則とは無関係である。
+
 **この例外はADR-141決定7自身への申し送りとしてADR-141本体にも参照
 ポインタを追加する**（ADR-142がr5で行ったのと同じ手当て——ADR-143だけ
 に書くと、ADR-141を単体で読む実装者が無条件でKeyUp注入を実装して
 しまう）。
-
-かつてr2〜r5で個別に検討していた「InputRelayへのフォーカス遷移中の
-Down/Up非対称」は、決定2のr6ラッチ設計（Up・auto-repeatはfresh press
-時点の判定を再評価せずそのまま踏襲する）により発生条件自体が無くなった
-——`profile`が押下中に変わっても、ラッチが確定させた disposition が
-そのままUpにも適用されるため、対応するDownを持たない0xF2のKeyUpが
-OSへ送出される事態は構造的に起こらない。
 
 **`from`=かな方向（物理かなキー→安全な3キー）には引き続きhold-stateが
 必要**: この方向は代入後vkが通常の安全な3キーのいずれかになり、
@@ -1421,14 +1616,15 @@ KeyUp注入の対象として列挙する3箇所——`reset_physical_key_state(
 `SCAN_KANA_CONFIRMED_TARGET`が`Some(vk)`を保持している場合のKeyUp注入
 処理を追加する必要がある。これはADR-141決定7の3箇所へのkana分の追加
 であり、決定5が新設する2つのswallow分岐（`hook.rs:1013-1046`・
-`:1066-1087`）とは別の合流点である（合計5箇所）。**r7追加
-（architect役Minor2指摘）**: これら5箇所はいずれもフックスレッドの
-hold-state（`SCAN_KANA_WAS_DOWN`/`SCAN_KANA_CONFIRMED_TARGET`）を扱う
-ものであり、決定2が新設するメインスレッドのラッチとは別物——決定2の
-`role_substitution_fresh_press`は（r9でNB12対応により）まさにこの
-`SCAN_KANA_WAS_DOWN`を含む役割代入自身のhold-stateから計算されるため、
-ここでのクリアがそのままfresh press判定の正しさにも反映される。
-メインスレッドのラッチ自体をこの5箇所で個別にクリアする必要は無い。
+`:1066-1087`）とは別の合流点である（合計5箇所）。**r12訂正
+（r7のarchitect役Minor2への回答を差し替え）**: これら5箇所はいずれも
+フックスレッドのhold-state（`SCAN_KANA_WAS_DOWN`/
+`SCAN_KANA_CONFIRMED_TARGET`）を扱うものである。r7〜r11は「これらは
+決定2が新設するメインスレッドのラッチとは別物」という注記を必要と
+していたが、r12ではメインスレッドのラッチ自体が存在しないため、この
+区別を意識する必要が無くなった。`to`=かな方向のfresh press判定
+（決定2-2）が使う`{KEY}_WAS_DOWN`はADR-141決定2の既存ペアであり、
+その5箇所でのクリア規律にそのまま従う。
 
 ### 決定5: 上流のAlt+かなswallowガードに、かなスロットの保留KeyUpを注入してからクリアする分岐を追加する（`from`=かな方向専用）
 
@@ -1566,16 +1762,33 @@ r0はここで「かなスロットの役割代入と親指キー設定は同時
 **代入後vk**基準で親指キー押下時刻を更新する。この判定は決定1の役割
 代入（`hook.rs:1135`）より**後**に実行される。したがって:
 
-- `right_thumb_vk = VK_DBE_HIRAGANA`（GUIで「ひらがな」を選択）かつ
-  「変換↔かな」の役割代入を設定した場合、物理変換キーを押すと代入で
-  vk=0xF2に書き換わり、`update_thumb`が正しくこれを親指キー押下として
-  認識する。逆に物理かなキーを押すと代入でvk=VK_CONVERTに書き換わり、
-  親指キーとしては認識されなくなる。これは「秀Caps的な入れ替え」が
-  意図する挙動そのものであり、バグではない（ADR-141決定4がr2で
-  「全単射により親指キーの役割は逆写像で正しく再配置される、これは
-  要望そのものが意図する挙動」と結論したのと同型）。
+- 物理かなキーを押すと代入でvk=VK_CONVERT等に書き換わり、親指キー
+  （`right_thumb_vk = VK_DBE_HIRAGANA`）としては認識されなくなる。
+  これは「秀Caps的な入れ替え」が意図する挙動そのものであり、バグでは
+  ない（ADR-141決定4がr2で「全単射により親指キーの役割は逆写像で
+  正しく再配置される、これは要望そのものが意図する挙動」と結論したのと
+  同型）。
+- **r12訂正（逆方向は成立しなくなった）**: r11までは「`right_thumb_vk
+  = VK_DBE_HIRAGANA`かつ『変換↔かな』を設定した場合、物理変換キーを
+  押すと代入でvk=0xF2に書き換わり、`update_thumb`が正しくこれを親指
+  キー押下として認識する」としていた。r12では`to`=かな方向の書き換え先
+  がセンチネル（`VK_ROLE_KANA_ACTUATE`）になるため、`update_thumb`の
+  `vk == config.right_thumb_vk`（0xF2との比較）は成立せず、**代入先の
+  物理変換キーは親指キーにならない**。センチネルは「NICOLA同時打鍵に
+  参加しない、純粋なIMEモード切替」を意味する値なので、これは設計上
+  一貫した帰結である（背景節「`to`=かな方向がNICOLA判定に参加しない
+  こと」参照）。
+- **その帰結として、`thumb_key`に「ひらがな」(0xF2)を選び、かつ
+  かなスロットを含む非自明な役割代入を設定した構成では、その親指キーが
+  どの物理キーからも到達不能になる**（物理かなキーは代入で別のvkへ、
+  代入先の安全なキーはセンチネルへ化けるため）。これは決定9-2が既に
+  必須要件としている「意図しない反転をconfig検証時に警告する」対象に
+  そのまま該当するので、Phase C（設定GUI）の警告リストにこの組み合わせ
+  を加える。**ADR-141決定4のr2の教訓（全面禁止は既定configで機能を
+  丸ごと無効化しうる致命的な欠陥になりやすい）に従い、拒否ではなく
+  警告に留める。**
 - したがって親指キー設定と役割代入設定を同時に有効化することを禁止する
-  理由はなく、追加のバリデーションは不要と判断する。
+  理由はなく、追加のバリデーション（拒否）は不要と判断する。
 - **r2追加（premortem役R1-m4指摘）**: `left_thumb_vk`/`right_thumb_vk`が
   `VK_KANA`(0x15)に設定されている場合、代入後vkが0x15になることは
   構造的に無い（決定2は`to`=かなの合成vkを`VK_DBE_HIRAGANA`に一本化して
@@ -1587,38 +1800,36 @@ r0はここで「かなスロットの役割代入と親指キー設定は同時
 
 **決定**: 追加のconfig検証は行わない。ADR-141決定4のr2の教訓（全面禁止は
 既定configで機能を丸ごと無効化しうる致命的な欠陥になりやすい）を踏まえ、
-「代入後vk基準で全ての下流ロジック（親指キー判定・既定ホットキー判定
-〈決定9参照〉）が一貫して動く」という全単射モデルの性質そのものに委ねる。
+「代入後vk基準で下流ロジック（既定ホットキー判定〈決定9参照〉）が
+一貫して動く」という全単射モデルの性質そのものに委ねる（**r12訂正、
+architect役Minor指摘**: 親指キー判定は上記のとおりr12ではセンチネルに
+より到達不能になる側なので、この一貫性の主語から外す——親指キー判定
+自体は「一貫して動く」のではなく「到達不能になり、Phase Cの警告対象に
+なる」という別の扱いである）。
 
-**r4追加（architect役NM10指摘）**: `right_thumb_vk = VK_DBE_HIRAGANA`
-かつ「変換↔かな」の役割代入という、本決定が明示的に許容する構成では、
-物理変換キーを押した際に`kp_stage_shadow_ime_toggle`の`delegate_owned`
-ゲート（`key_pipeline.rs:1074-1075`、`:1121-1128`）が真になり、
-shadow-toggle actuationがスキップされる（親指キーとして扱われ、
-open軸はdelegateに委譲される設計のため）。この構成は決定2が新設した
-`ime_actuation_will_fire_before`（r5改名）が`delegate_owned`の場合の
-分岐（`hiragana_delegate_to_open_axis_armed`を見る）でカバーしており、
-delegateがarmedでなければSuppressせずAllowへフォールスルーする。
-`hiragana_delegate_to_open_axis`がarmedでない場合に「誰も何もしない」
-状態（`key_pipeline.rs:1065-1072`がBUG-115の元症状として警告する状態）
-を再現しないための決定2側の対応は、この分岐によって既に閉じている。
+**r12: delegate機構との相互作用は構造的に消滅した（r4のNM10・r5の
+Nit1・R4-M2をまとめて解消）**: r4〜r11は、`right_thumb_vk =
+VK_DBE_HIRAGANA`かつ「変換↔かな」という構成で、代入後vk=0xF2の押下が
+`kp_stage_shadow_ime_toggle`の`delegate_owned`ゲート
+（`key_pipeline.rs:1074-1075`）に掛かってshadow-toggle actuationが
+スキップされ、「誰も何もしない」状態（BUG-115の元症状）になる可能性に
+対処するため、決定2に`ime_actuation_will_fire_before`（後の
+`delegate_will_turn_on`）という分岐を必要としていた。
 
-**r5追加（architect役Nit1指摘）**: `delegate_owned`の実体は
-`mode_key_delegate_owns_shadow_toggle(event.vk_code)`であり、原理的には
-親指キーが「カタカナ」(0xF1)の構成では`katakana_delegate_to_open_axis`
-が対象になりうる。しかし決定2が`to`側の合成vkを`VK_DBE_HIRAGANA`
-(0xF2)に一本化しているため、役割代入経由で`delegate_owned`が真になる
-のは`thumb_vk == 0xF2`の場合のみであり、カタカナ側は構造的に該当
-しない。
+r12では`to`=かな方向の代入後vkがセンチネルになるため:
 
-**r5追加（premortem役R4-M2指摘）**: `hiragana_delegate_to_open_axis`は
-物理かなキーが親指キーである前提で設計・検証された機構である。本決定が
-許容する構成（代入により物理変換キーが親指キーとして扱われる）で、
-このdelegateが実際にopen軸をONにするかは未検証。決定6が「意図した
-挙動」とする構成そのものなので、Phase A実装の実機確認項目に追加する
-（未解決の疑問6と統合）。
+- `delegate_owned`の実体は`mode_key_delegate_owns_shadow_toggle
+  (event.vk_code)`（`runtime/mod.rs:1375-1385`）で、内部で
+  `is_configured_thumb_key(vk)`を見る。センチネルは親指キーになりえない
+  （上記）ため`delegate_owned`は**構造的に常に偽**である。
+- したがって代入先キーの押下は必ず通常のintent経路（決定2-3の
+  `sync_direction`）を通り、actuationが発火する。「誰も何もしない」
+  状態は発生しない。
+- r5のNit1（カタカナ側delegateへの言及）・r5のR4-M2（delegateが代入後
+  構成で実際にopen軸をONにするかが未検証）という2件の残課題も、
+  delegateが関与しなくなったことで対象自体が消滅した。
 
-### 決定7（r2でほぼ解消）: Shift併用時の懸念は決定2の再設計により大部分が消滅した
+### 決定7（r2でほぼ解消、r12でさらに強化）: Shift併用時の懸念は決定2の再設計により大部分が消滅した
 
 r0は「Shift併用時にカタカナへ切り替わらない」という（誤った）既知の
 制限を記載し、r1はこれをhook.rs側のmodifierゲート（Shift押下中は代入
@@ -1627,6 +1838,13 @@ OSへ生のvkを一切送らなくなったため、「Shift併用でOS/IMEが0x
 カタカナ切替と誤解釈する」という問題自体（r0-M2、`shift_katakana_
 passthrough`の分岐可能性）が構造的に発生しなくなった。したがって`to`
 方向についてはhook.rs側のShiftゲートは不要であり、決定2から削除した。
+
+**r12補足**: この性質はさらに強くなった。r2〜r11では代入後vkが0xF2
+だったため、`shift_katakana_passthrough`（`transport.rs:103-109`）の
+条件式（`vk_code == VK_DBE_KATAKANA`）にたまたま一致しないことに依存
+していた。r12ではセンチネルが`plan()`の先頭で無条件Suppressされるため、
+`shift_katakana_passthrough`を含む`plan()`内のどの判定にもそもそも
+到達しない。
 
 **`from`=かな方向（物理かなキー→安全な3キー）のShift併用**: この方向は
 通常の安全な3キーのいずれかへの代入であり、ADR-141の安全な3キー同士の
@@ -1683,13 +1901,23 @@ ADR-141/142と同様、本ADR（Phase A相当）は挿入点・判定ロジッ�
 する」という案（変種A）を検討したが、**採用しなかった**。理由:
 
 1. **rule tableに格納する値は`VK_DBE_HIRAGANA`(0xF2)でなければならない**
-   （`decide_role_substitution`の`rule_target`がそのまま書き換え後vkに
-   なるため。0x15のまま格納すると、決定2のSuppress条件の第一条件
-   `event.vk_code == VK_DBE_HIRAGANA`を一度も満たさず**決定2の機構が
-   一度も発火しない**うえ、`transport::plan`が既存のKANJIアームへ落ち
-   `Allow`となった経路で`reinject()`が**VK_KANA(0x15)をOSへ送出し
-   BUG-08〈合成VK_KANAによるかなロック反転〉を新規に踏みうる**——「沈黙」
-   ではなく実害がある）。
+   ——ただし**r12で理由が変わった**。rule table上の0xF2は「かなスロット
+   というオブジェクトの識別子」であり、`to`=かな方向で実際に書き換え先
+   となるvkは`VK_ROLE_KANA_ACTUATE`（決定2-1）である。したがって
+   `rule_target`をそのまま書き換え後vkにするのは`from`=かな方向
+   （target=安全な3キーのvk）だけで、`to`=かな方向はセンチネルへ差し替える。
+
+   **それでも0xF2に一本化する理由**（r12でも有効）: (a) 決定3の単射
+   チェックは「4つのオブジェクトの識別子」の上で行うため、かなスロットが
+   常に同じ1つの値で表される必要がある（0x15と0xF2が混在すると、同じ
+   物理キーが2つの別オブジェクトとして単射チェックをすり抜ける、下記2）。
+   (b) `from`=かな方向のルールで、対になる安全なキー側の`to`が
+   「かなスロット」を指す場合の照合も同じ値で行われる。(c) `VK_KANA`
+   (0x15)を格納すると、`from`=かな方向以外の経路で万一この値が
+   書き換え後vkとして使われたときに`reinject()`が**VK_KANA(0x15)をOSへ
+   送出しBUG-08〈合成VK_KANAによるかなロック反転〉を踏みうる**
+   ——r12設計では`to`=かな方向がセンチネル化されてこの経路は塞がれたが、
+   識別子として0x15を残す積極的な理由も無い。
 2. 0x15→0xF2の正規化を採用すると、config読み込み・reload・GUI保存・
    GUI読み込みの**すべての入口**で正規化を通す義務が生じる。1箇所でも
    漏れると、`from="かな"`（0x15のまま）と`from="VK_DBE_HIRAGANA"`
@@ -1761,98 +1989,135 @@ BUG-61（復旧不能な入力方式切替）に直結し、0xF0/0xF1は`transpo
 テスト（ADR-141決定2が要求する「変換を押しっぱなしのまま無変換を押して
 離しても変換側のconfirmed_targetが保持される」の4要素版）も必要。
 
-**確認済み事項（r2追加、architect役Minor5/r0-Nit2指摘への対応）**:
+**確認済み事項（r2追加、r12で範囲を拡大して再確認）**:
 `classify_key`（`hook.rs:42-63`）は挿入点直後で`(vk, scan)`の両方を
-消費するが、かなスロットについては安全であることを確認済み。
-`scan_to_pos_jis`（現行JISテーブル）にscan 0x70のエントリが無いため
-`Char`には落ちず`Passthrough`になり、0xF0-0xF2は`is_passthrough`のVK
-範囲（0x70..=0x87、VK_F1〜VK_F24の意味）の外にある。ただしこれは
-現行JISテーブルの内容に依存した安全性であり、US配列テーブルが将来
-scan 0x70を持つようになった場合は再検証が必要。**r3追加（premortem役
-R2-m3指摘）**: `classify_key`は`vk == left_thumb/right_thumb`を最初に
-評価するため、親指キーが`VK_DBE_HIRAGANA`に設定された構成（決定6が
-「意図した挙動」とするケース）では、代入後の0xF2は`LeftThumb`/
-`RightThumb`に分類される。この分類経路も確認範囲に含めて安全である
-ことを確認済み（決定6の論拠そのもの）。
+消費するが、かなスロット・センチネルのいずれについても安全であることを
+確認済み。
 
-**テスト・実装計画への追加項目（r3追加、premortem役R2-m1・R2-B3指摘への
-対応）**: `transport.rs::plan`の既存ユニット/goldenテスト（Linux実行
-可能な純粋関数テスト）に`scan_code`の設定・`kana_role_active`フラグの
-既定値（`false`）テストを追加する。`DbeModeKeyContext`への4つ目の
-フィールド追加に伴う`From<DbeModeKeyPolicy>`の既定値（`kana_role_active
-= false`）テストも必要（ADR-142決定B7のテスト計画の拡張として書き足す）。
-`kp_restore_hiragana_for_suppressed_mode_key`（決定2既知の制限3）の
-`event.scan_code == SCAN_KANA`除外条件のテストも追加する。**r4追加
-（premortem役R3-m4指摘）**: 回帰防止の要として、`injected=true`の
-ケース（R2-B1の回帰防止、Suppressされないことを確認）と
-`kana_role_active=false`のケース（R2-B2の回帰防止、既存の
-`is_tsf_mode && f2_warmup_owned`判定にフォールスルーすることを確認）
-を名指しで要求する。`plan`はLinux実行可能な純粋関数なので、いずれも
-`cargo test -p awase-windows --lib`で自動テスト化できる。**r6追加**:
-決定2のfresh press時点ラッチ機構については、`plan()`単体の純粋関数
-テストに加え、`kp_run_inner`側のラッチ状態遷移（fresh press→
-auto-repeat→KeyUp→クリア）を対象にした状態遷移テストが必要——
-fresh pressで確定したSuppress/Allowが、その後のauto-repeat・KeyUpで
-再評価されず踏襲されることを確認する（NB8/NB9の回帰防止）。
-`actuation_will_fire`（`shadow_toggled || delegate_will_turn_on`）の
-真偽2ケース、および`delegate_will_turn_on`が`turn_on_direction ==
-ShadowImeAction::TurnOn`の場合のみ真になること（`TurnOff`/`Toggle`
-ではいずれも偽になること）もテストに含める。**r7追加（premortem役
-R6-m3指摘）**: (i) auto-repeat2打目以降が1打目と同じdispositionになる
-こと（NB9の回帰防止）、(ii) ラッチ`None`でのKeyUpがSuppress側になる
-こと（r7で追加した安全側デフォルト、決定2参照）、(iii) 静的3条件
-（`vk_code`・`!injected`・`scan_code`）を満たさないイベントはラッチを
-一切読まないこと（R6-M2の回帰防止）、の3ケースを追加する。いずれも
-`plan()`とラッチ状態遷移の組でLinux実行可能である。**r8追加
-（architect役Minor1・premortem役R7-m1指摘）**: `RawKeyEvent`への
-`role_substitution_fresh_press`フィールド追加は、`build_raw_key_event`
-（hook.rs）だけでなく、journal replay基盤（`journal_replay.rs`）・
-`golden_scenarios.rs`・各種ユニットテストの`RawKeyEvent`リテラル
-構築箇所すべてへ波及する。これらの機械的更新と、journal記録
-（`journal.rs`の`KeyInput`）のserde互換性（`#[serde(default)]`等に
-よる旧journalとの互換維持）をテスト計画に加える。fresh press自身が
-overflowで失われた場合のフォールバック（ラッチ`None`でのKeyDown
-評価、決定2参照）のテストも追加する。**r9追加（premortem役R8-m3・
-architect役の依存値一覧表指摘）**: `role_substitution_fresh_press`が
-依拠する`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`更新規則（auto-repeatでは
-上書きしない・KeyUpでクリアする）が将来変わった場合に静かに壊れない
-よう、hook.rs側の単体テストとして「auto-repeat KeyDownで`Some(false)`」
-「KeyUpで`Some(false)`」「離してから再押下で`Some(true)`」の3ケースを
-追加する（`windows-build` CI対象）。`reset_physical_key_state`
-（`panic_reset()`経由で押下中に呼ばれうる）が呼ばれた場合の挙動
-（決定2の既知の制限、下記参照）もテストで確認する。**r10追加
-（premortem役R9-m3指摘）**: `RawKeyEvent`へのフィールド追加は、
-`crates/awase-windows/tests/architecture_guard.rs`/
-`layer_boundary_guard.rs`（ソーススキャン型のguardテスト）や
-`src/config.rs`のround-trip系テストにも波及しうる。guardテストが
-新フィールドを弾かないことの確認と、journal記録
-（`journal.rs`の`KeyInput`）のserde後方互換（`#[serde(default)]`等に
-よる旧journalとの互換維持、premortem役R8-m1で既出）を、決定計画に
-並べて明記する。
+- **かなスロット（`from`=かな方向）**: `scan_to_pos_jis`（現行JIS
+  テーブル）にscan 0x70のエントリが無いため`Char`には落ちず
+  `Passthrough`になり、0xF0-0xF2は`is_passthrough`のVK範囲
+  （0x70..=0x87、VK_F1〜VK_F24の意味）の外にある。
+- **センチネル（`to`=かな方向、r12追加）**: `VK_ROLE_KANA_ACTUATE`は
+  `is_passthrough`（`vk.rs:243-263`）の列挙に無いが、続く
+  `scan_to_pos(model, scan)`が`None`を返すため`Passthrough`になる。
+  `scan`は書き換えられず元の物理scanのまま届き、変換=0x79・
+  無変換=0x7B・スペース=0x39はJIS/USどちらのテーブルにも存在しない
+  （`crates/awase-windows/src/scanmap.rs`、JISは`0x02-0x35`＋
+  `0x73`/`0x7D`、USは`0x02-0x35`のみ）。
+- ただしこれは現行スキャンテーブルの内容に依存した安全性であり、
+  JIS/USいずれかのテーブルが将来scan 0x70/0x79/0x7B/0x39を持つように
+  なった場合は再検証が必要である。**この不変条件をユニットテストで
+  固定する**（`scan_to_pos(model, scan).is_none()`をこの4つのscanと
+  両モデルについてアサートする、Linux実行可能）。
+- **r12訂正（r3のR2-m3への回答を差し替え）**: r3〜r11は「親指キーが
+  `VK_DBE_HIRAGANA`に設定された構成では、代入後の0xF2は`LeftThumb`/
+  `RightThumb`に分類される（決定6の論拠そのもの）」としていたが、
+  r12ではセンチネルが親指VKと一致しないため`Passthrough`になる。
+  決定6のr12訂正を参照。
+- **「NICOLA判定に参加しない」の意味の明確化（2026-09-06追加、
+  premortem役R12-m2指摘）**: 「`to`=かな方向はNICOLA同時打鍵判定に
+  参加しない」とは、**同時打鍵の構成キーになりえない**という意味で
+  あって、`Passthrough`キーとしてpending状態のflush契機になること
+  まで否定するものではない（物理変換キーを押した以上、他の保留中の
+  同時打鍵候補をflushする挙動はむしろ自然）。この区別は決定2-4の
+  Blocker（R12-B1、`KeyLifecycle`のpending KeyUpに載りうる経路）と
+  直結するため、ここでは「NICOLA判定への不参加」と「OSへの配送」を
+  混同しないこと——後者は決定2-4・`reinject()`側のガードのみが
+  保証する。
 
-### 決定9: 代入後vkを基準に評価される下流の合流点を棚卸しする
+**テスト・実装計画（r12で全面的に書き直し）**: r2〜r10で積み上げた
+テスト項目の大半は、対象となる機構（ラッチ・`kana_role_active`・
+`role_substitution_fresh_press`フィールド・`kp_restore_hiragana_for_
+suppressed_mode_key`の除外条件）がr12で消滅したため不要になった。
+r12設計で必要なのは以下である。
 
-premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vkを見る下流
-ロジックを以下のとおり棚卸しする。
+**(A) `transport.rs::plan`の純粋関数テスト（Linux実行可能、
+`cargo test -p awase-windows --lib`）**:
+
+1. `vk_code == VK_ROLE_KANA_ACTUATE`のKeyDown/KeyUp/injected=true/
+   `AppImeProfile::InputRelay`/`AppImeProfile::ImmCross`/
+   `is_tsf_mode`・`f2_warmup_owned`の全組み合わせで**常に`Suppress`**
+   を返すこと（決定2-4の無条件性の回帰防止。特にInputRelayとの
+   評価順序——センチネル分岐が先に来ること——を名指しでテストする）。
+2. センチネルを使わない既存の全ケースが**ビット単位で従来どおり**
+   であること（`DbeModeKeyContext`にフィールドを増やさない設計なので、
+   既存テストが無改修で通ることがそのまま証拠になる。既存テストの
+   期待値を1つも変更していないことをレビューで確認する）。
+3. `suppress_reason`がセンチネルに対して新ラベル（`"kana-role"`）を
+   返し、`VK_DBE_HIRAGANA`に対しては従来どおり`"tsf-f2"`を返すこと。
+
+**(B) hook.rs側（`windows-build` CI対象、`#[cfg(windows)]`）**:
+
+4. `decide_role_substitution`が`to`=かなのルールに対してセンチネルを
+   返すこと（純粋関数部分はLinuxでもテスト可能なら含める）。
+5. `kana_role_actuate`の3ケース——「離してから再押下で真」
+   「auto-repeat KeyDownで偽」「KeyUpで偽」——を、ADR-141決定2の
+   `{KEY}_WAS_DOWN`更新規則に依拠する形でテストする（決定2-2）。
+   規則が将来変わった場合に静かに壊れないための固定。
+6. `build_raw_key_event`がセンチネルに対して
+   `sync_direction = Some(TurnOn)`（fresh pressのとき）／`None`
+   （auto-repeat・KeyUp・非eligibleのとき）を載せ、`shadow_action`は
+   **常に`None`**であること（決定2-3）。
+7. `event_eligible`が偽（injected／alt impersonated）のとき
+   `kana_role_actuate`が偽になること。
+8. **【R12-B1対応、2026-09-06追加】`RawKeyEventExt::reinject()`が
+   `vk_code == VK_ROLE_KANA_ACTUATE`のとき、呼び出し元（`physical`の
+   値、effect列経由のいずれか）に関わらず実際の`SendInput`を一切
+   発行せず`true`を返すこと。`windows`クレート型（`INPUT`）に依存する
+   ため`#[cfg(windows)]`・`windows-build` CI対象。この1テストが
+   R12-B1（複数の到達経路の網羅ではなく単一の絞り点での保証）の
+   回帰防止そのものである。
+
+**(C) 決定4（`from`=かな方向）**: 従来どおり
+`SCAN_KANA_WAS_DOWN`/`SCAN_KANA_CONFIRMED_TARGET`の4要素スロット
+混線テスト（本節の冒頭で述べたADR-141決定2の4要素版）と、決定5の
+swallow分岐でのKeyUp注入テストが必要。加えてr12では、
+`{KEY}_CONFIRMED_TARGET == Some(VK_ROLE_KANA_ACTUATE)`のときADR-141
+決定7のKeyUp注入が**発火しない**ことをテストする（決定2-8）。
+
+**(D) 波及範囲（r8〜r10の指摘のうち、r12でも有効なもの）**:
+`RawKeyEvent`への**新フィールド追加が無くなった**ため、r8のMinor1／
+r10のR9-m3が挙げていた波及（journal replay基盤・`golden_scenarios.rs`
+・各種`RawKeyEvent`リテラル構築箇所の機械的更新、`journal.rs`の
+`KeyInput`のserde後方互換、`architecture_guard.rs`/
+`layer_boundary_guard.rs`への影響）は**すべて発生しない**。r12で新たに
+波及するのは`vk.rs`への定数1つの追加と、`transport.rs`の分岐1つ・
+`suppress_reason`の1アーム・`build_raw_key_event`の特別扱い1箇所
+だけである。ただし`VkCode`に0xFF超の値が入ることは初めてなので、
+`vk.rs`の既存テスト（`0x00u16..=0xFF`を全走査する`to_char`不変条件
+テスト等、`vk.rs:819-822`）がセンチネルを走査対象に含めていないこと
+（含める必要が無いこと）を確認する。
+
+### 決定9（r12で大幅に簡素化）: 代入後vkを基準に評価される下流の合流点を棚卸しする
+
+premortem役M6指摘を受けて始めた棚卸し。**r12でセンチネル設計に転換した
+結果、`to`=かな方向についてはこの節の大半が不要になった**——センチネルは
+下流のどの既存判定にも一致しない値として選んであり（決定2-1）、
+「一致しないこと」が設計の目的だからである。以下は`from`=かな方向
+（物理かなキー→安全な3キー、こちらは従来どおり実在するvkへ書き換えて
+OSへ配送する）を中心とした棚卸しに縮小した。
 
 1. **`vk_may_mutate_conv`（`vk.rs:187-194`、ADR-084/086 conv mode force
    policyの再発ファミリー）**: `VK_CONVERT`(0x1C)・`VK_KANA`(0x15)・
    0xF0-0xF6は`true`、`VK_NONCONVERT`(0x1D)・`VK_SPACE`は`false`。
-   「変換→かな」の代入では変換キーは代入前後どちらもconv-mutating
-   （0x1Cも0xF2も`true`）のため実質的な変化は無い。一方、全単射
-   （決定3）により2-cycleでは必ず逆方向（かな→無変換、かな→スペース）
-   も同時に設定されるため、**両方向の反転を確認する必要がある**
-   （**r2追加、architect役Minor2指摘**）: 「無変換→かな」または
-   「スペース→かな」では、その物理キーが代入前は非conv-mutating
-   だったのに代入後はconv-mutatingになる。同時に、対になる「かな→
-   無変換」または「かな→スペース」では、物理かなキーがconv-mutating
-   から非conv-mutatingへ反転する。実際の露出点は`win32.rs:169`の
-   `send_input_safe`が参照するconv_mutationゲートで、`reinject()`が
-   渡す代入後vkを見る。conv mode policy=force（ADR-086）がこの双方向の
-   反転を正しく扱えるかは未検証であり、実装前に`state/conv_mode.rs`・
-   `runtime/conv_actuation.rs`との相互作用を専用に確認する必要がある
-   （`.claude/rules/fix-requires-evidence.md`の「conv mode」ファミリー
-   に該当、未解決の疑問7）。
+   実際の露出点は`win32.rs:169`の`send_input_safe`が参照する
+   conv_mutationゲートであり、`reinject()`が渡す代入後vkを見る。
+   - **`to`=かな方向（r12で解消）**: 代入先キーは`plan()`が無条件
+     Suppressするため`reinject()`されず、`send_input_safe`にも到達
+     しない。「無変換/スペース→かなで、その物理キーが代入後に
+     conv-mutatingへ反転する」というr2の懸念（architect役Minor2）は
+     **発生しない**（センチネル自体も`vk_may_mutate_conv`の対象外だが、
+     そもそも送出されないのでこの事実に依存する必要すら無い）。
+   - **`from`=かな方向（引き続き要検証）**: 「かな→無変換」または
+     「かな→スペース」では、物理かなキーがconv-mutating（0xF0-0xF2）
+     から非conv-mutating（`VK_NONCONVERT`/`VK_SPACE`）へ反転する。
+     この**片方向の**反転をADR-086のforce policyが正しく扱えるかは
+     未検証であり、実装前に`state/conv_mode.rs`・
+     `runtime/conv_actuation.rs`との相互作用を確認する必要がある
+     （`.claude/rules/fix-requires-evidence.md`の「conv mode」ファミリー
+     に該当、未解決の疑問7）。r11時点の「双方向の反転」から
+     「片方向のみ」へ検証範囲が縮小した。
 2. **既定ホットキー（`Ctrl+変換`=IME ON、`Ctrl+Shift+変換`=engine ON等）・
    `runtime/focus_tracker.rs::enrich_ime_relevance`のper-app sync key
    （ADR-141決定6-2）・`vk::is_composition_confirm_key`（`vk.rs:319`、
@@ -1862,7 +2127,11 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
    同型の論拠——2-cycleなら入れ替わった相手キーで、3-cycle以上でも
    巡回先のキーで、必ずどこかの物理キーがそのVKを生成し続ける）。
    したがって**機能そのものの喪失は起こらない**（全単射性による構造的
-   保証）。
+   保証）。**r12補足**: センチネルはこれらのどのVK集合にも属さないが、
+   全単射により「かなスロットへ写る安全なキー」はちょうど1つであり、
+   その1つが持っていたVK（例:`VK_CONVERT`）は逆写像の相手キー
+   （物理かなキー）が生成し続ける。したがってセンチネル導入は
+   この構造的保証を弱めない。
 
    ただし ADR-141決定6が確立した要件は「喪失しないことの保証」では
    なく「**意図しない反転が起きることをconfig検証時に警告する**」こと
@@ -1875,23 +2144,46 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
    変換確定操作に直結する挙動変化であり、ADR-141決定6が安全な3キー内の
    反転について課した「Phase B（本ADRではPhase C）のconfig検証で衝突を
    警告する機能を必須要件とする」を、かなスロットを含む4要素の組み合わせ
-   へそのまま拡張する。GUI文言の検討は未解決の疑問3と統合。
-3. **`AppImeProfile::ImmCross`への0xF2漏洩は、本ADRが新規に持ち込む
-   ハザードではない**（**r2訂正、architect役NM5・premortem役R1-M6
-   指摘**: r1決定9-3はこれを本ADR固有の新規ハザードとして扱い、
-   `RawKeyEvent`への出自フィールド追加まで検討課題に挙げていたが、
-   これはスコープクリープだった）。`transport.rs::plan`の評価順序
-   （InputRelay早期return→F2分岐→injected早期return→ImmCrossアーム）
-   は、ImmCrossプロファイル×`is_tsf_mode=false`の場合に`VK_DBE_HIRAGANA`
-   がF2分岐で`Allow`されてImmCrossアームに到達しないという性質を既に
-   持っている——**これは物理かなキー自身の押下についても現状で真**
-   であり、役割代入が変えるのは「どの物理キーがそれを生むか」だけで、
-   配送判断そのものは同一である。加えて決定2の再設計により、役割代入
-   由来の0xF2（`scan_code != SCAN_KANA`）はSuppress側でラッチされる限り
-   本ADRが新たにこの経路でImmCrossへ漏洩を増やすことは無い（物理かな
-   キー自身の押下〈`scan_code == SCAN_KANA`〉についての既存の性質は
-   本ADRのスコープ外、ADR-141決定4末尾がAltセンチネル構成の既存衝突に
-   対して取った立場——悪化させないが解消もしない——と同型に整理する）。
+   へそのまま拡張する。**r12追加**: 決定6が新たに特定した「`thumb_key`
+   ＝ひらがな × 非自明なかな役割代入 → その親指キーが到達不能になる」
+   組み合わせも、この警告リストに含める。GUI文言の検討は未解決の疑問3と
+   統合。
+3. **`AppImeProfile::ImmCross`への漏洩は起こらない**（r12で確定、
+   r2訂正の結論をさらに強化）: r1決定9-3はこれを本ADR固有の新規
+   ハザードとして扱い`RawKeyEvent`への出自フィールド追加まで検討課題に
+   挙げていたが、これはスコープクリープだった（**r2訂正、architect役
+   NM5・premortem役R1-M6指摘**）。r12では、`to`=かな方向のイベントは
+   `plan()`の先頭でSuppressされ、ImmCrossアーム（`profile.
+   can_use_imm32_cross_process()`）にそもそも到達しない。
+   `from`=かな方向は代入後vkが安全な3キーのいずれかになり、これらは
+   `shadow_action`を持たないため`is_kanji_event`が偽で`Allow`される
+   ——これは代入前の物理変換キー等とまったく同じ扱いであり、
+   `feedback_immcross_owns_kanji`が守ろうとした「ImmCrossアプリには
+   物理IMEキーを見せない」という原則は**むしろ強化される**（物理かな
+   キーがIMEキーとしてImmCrossアプリへ届く経路が1つ減る）。
+   物理かなキー自身の押下（代入なしの場合）についての既存の性質は
+   本ADRのスコープ外である。
+4. **`kp_restore_hiragana_for_suppressed_mode_key`（BUG-116決定2、
+   `key_pipeline.rs:81-201`）は改修不要**（r12でr11の既知の制限2が
+   消滅）: 同関数は`event.vk_code != VK_DBE_HIRAGANA`で即return
+   （`:90`）する。センチネルは0xF2ではないため、役割代入由来の
+   イベントはこの関数に一切触れない。r11は代入後vkが0xF2だったため、
+   同関数のコメント（`:104-108`）が明記する「`physical == Suppress`
+   かつ0xF2は`plan()`のF2分岐でのみ成立し、それは`is_tsf_mode &&
+   f2_warmup_owned`の必要十分条件である」という同値性を壊し、MS-IME
+   環境でGJI専用のscan付き0xF2注入（BUG-25/ADR-107が禁じる「GJI/MS-IME
+   でexit実装を共有しない」原則の違反、BUG-15追補7のかなロックトグル
+   ハザードの当事者）を誤発火させるため、`event.scan_code ==
+   SCAN_KANA`という除外条件の追加を必要としていた。r12ではこの同値性が
+   そのまま保たれるため、**同関数には一切手を入れない**。
+5. **`kp_stage_execute`の`composition_native_f2_down`（`key_pipeline.rs:
+   2236-2244`）は発火しなくなる**（r12で新規に特定）: 同じく
+   `event.vk_code == VK_DBE_HIRAGANA`のKeyDownを条件とする。r11設計
+   （代入後vk=0xF2）では代入先キーの押下でも`mark_cold` + eager warmup
+   が走っていたが、r12では走らない。決定2-10の確認項目2として
+   Phase A実装時の実機確認に回す。
+6. **`should_upgrade_is_japanese_ime`（ADR-093）は意図的に対象外**:
+   決定2-3参照。センチネルを対象に含めてはならない。
 
 ## 未解決の疑問
 
@@ -1901,51 +2193,131 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
    格納値は0xF2、拒否・正規化は単射チェックより前）。GUI表示ラベルの
    文言のみPhase Cへ申し送り。
 2. **`awase-settings`の`THUMB_KEY_OPTIONS`とkey_role設定GUIの表示上の整合**:
-   決定6を撤回した結果、追加のバリデーションGUIは不要になったが、
+   決定6を撤回した結果、追加のバリデーション（拒否）GUIは不要になったが、
    ユーザーが両機能を組み合わせて設定した場合の挙動（決定6の説明）を
-   どうGUI文言で伝えるかはPhase Cの課題として残る。
+   どうGUI文言で伝えるかはPhase Cの課題として残る。**r12で範囲拡大**:
+   決定6が新たに特定した「`thumb_key`＝ひらがな × 非自明なかな役割代入
+   → その親指キーが到達不能」の警告文言もここに含める。
 3. **かなスロットを`to`にする代入・既定ホットキーの再配置についてのユーザー
    向け説明**（決定9-2と統合）: 「変換→かな」設定時、変換キー本来のIME
    変換機能は失われるが、既定ホットキー自体は全単射により別の物理キーへ
    自動的に付いていく。この「機能の移動」をユーザーにどう伝えるか
    （GUI文言、Phase C）は未決定。
-4. **（r2で部分的に解消、r3で範囲を訂正）MS-IME環境での決定2の有効性**:
-   r1時点では`reinject()`の`wScan: 0`がMS-IME環境で実際にモードキーとして
-   処理されるかが未検証だったが、決定2のr2再設計（OSへ役割代入由来の
-   `reinject()`を送らない設計への転換）により、**reinject経路について
-   この懸念は解消した**（architect役Minor4指摘）。ただし、actuation経路
-   自体（`ime.rs::send_ime_mode_key_with_shift_release_prefix`が
-   `make_scan_key_input`をimportしており、scan付きで送る経路を持つ）に
-   ついては、送出VKがDBE系でないという決定2の安全性論拠により本ADRの
-   対象外だが、scanの有無に依存する問題が形を変えて残っていないかは
-   Phase A実装時に再評価する。
+4. **【r12で解消】MS-IME環境での`reinject()`の`wScan: 0`問題**:
+   r1時点では`reinject()`の`wScan: 0`がMS-IME環境で実際にモードキーと
+   して処理されるかが未検証だったが、r2以降（そしてr12でも）`to`=かな
+   方向はOSへ何も送らない設計であり、この懸念は該当しない。actuation
+   経路自体（`ime.rs::send_ime_mode_key_with_shift_release_prefix`が
+   `make_scan_key_input`をimportしており、scan付きで送る経路を持つ）は
+   本ADRが変更しないため対象外。
 5. **物理かなキーの役割代入がIME belief観測に与える影響**: 決定1の
    副作用として記載した、`classify_ime_relevance`経由のshadow belief
    観測が代入後は失われる点について、既存のbelief更新ロジック
-   （`state/ime_model.rs`）への実害の有無は未検証。
-6. **`kp_restore_hiragana_for_suppressed_mode_key`の各ゲートの役割代入対応
-   監査（r2で優先度上昇）**: 決定2の既知の制限3に記載した
-   `is_configured_thumb_key`・`half_width_alnum_toggle_before`・
-   `kana_mode_restore_key_down`（単一グローバルラッチ）・
+   （`state/ime_model.rs`）への実害の有無は未検証。**r12補足**:
+   `to`=かな方向については決定2-3の`sync_direction`が代わりに
+   `write_sync_key`経由でbeliefを更新するため観測経路は残る。未検証
+   なのは`from`=かな方向（物理かなキーが安全な3キーへ化け、
+   `shadow_action`をもはや生成しない）のみである。
+6. **【r12で大幅に縮小】`kp_restore_hiragana_for_suppressed_mode_key`の
+   各ゲートの役割代入対応監査**: r2〜r11は、決定2が同関数の発火条件を
+   拡張することを前提に`is_configured_thumb_key`・
+   `half_width_alnum_toggle_before`・`kana_mode_restore_key_down`・
    `conv_mutation_allowed`・`is_composition_warm()`複合条件・
    `read_kana_lock()`によるABORT（いずれも`key_pipeline.rs:81-201`の
-   範囲内）が、代入元が物理かなキー以外になった場合にも正しく動作
-   するかの専用監査が必要。決定2のr2再設計により「安全な3キー→かな」
-   方向のDownはSuppress側でラッチされた場合に発火するようになったため、この経路の発火
-   頻度がr1時点より増しており、監査の優先度が上がっている。
+   範囲内）の監査を必要としていた。r12では同関数に一切触れない
+   （決定9-4）ため、この監査は不要になった。**残る確認項目**は
+   決定2-10の(2)（`composition_native_f2_down`が呼ばれなくなることの
+   実機影響）と、下流actuationゲートの棚卸し（下記8）である。
 7. **conv mode force policy（ADR-086）との相互作用**: 決定9-1に記載した
-   `vk_may_mutate_conv`の意味論反転（無変換/スペース→かな、および
-   その逆方向、双方向の反転）が、ADR-086のforce policyの前提を壊さない
-   かの専用検証が必要。
-8. **（r2で解消）ImmCrossプロファイルへの代入後0xF2漏洩の防止方式**:
-   決定9-3のr2訂正のとおり、これは本ADR固有の新規ハザードではなく
-   既存の性質であり、かつ決定2の再設計により役割代入由来の0xF2は
-   Suppress側でラッチされる限りOSへ届かないため、防止方式の検討自体が不要になった。
+   `vk_may_mutate_conv`の意味論反転が、ADR-086のforce policyの前提を
+   壊さないかの専用検証が必要。**r12で範囲縮小**: 検証対象は
+   `from`=かな方向の片方向反転（物理かなキーがconv-mutatingから
+   非conv-mutatingへ）のみになった。
+8. **下流actuationゲートの棚卸し**（r11の決定2「既知の制限3」から
+   独立させた）: 決定2-5のactuationは`kp_stage_shadow_ime_toggle`→
+   belief更新→`executor.rs::dispatch_ime_set_open`→
+   `ime_controller::apply`という既存経路に乗るが、この経路には
+   ADR-119の`AppImeProfile::InputRelay`ゲートをはじめ複数の
+   preconditionがある（`.claude/rules/fix-requires-evidence.md`の
+   「IME actuation合流点」参照）。InputRelayについては決定2-4の
+   既知の制限として整理済みだが、それ以外の下流ゲートでactuationが
+   落ちる組み合わせが無いかは未検証——belief遷移は起きたが実際には
+   誰もIMEをONにしない場合、代入先キーが（OSへも送られないため）
+   完全な死にキーになる。Phase A実装の前提条件とする。
 9. **（r3で解消、削除）「安全な3キー→かな」方向の実装方式**: r2は
-   Suppressされたイベントをactuation経路へ「渡す」実装方式を未確定として
-   いたが、r3で判明したとおりactuationは既存の`kp_stage_shadow_ime_
-   toggle`が`plan()`より前に既に発火させており、新規の実装は不要
-   （決定2のNB4参照）。この疑問自体が前提の誤りに基づいていたため削除。
+   Suppressされたイベントをactuation経路へ「渡す」実装方式を未確定と
+   していた。r12では決定2-3/2-5が実装方式を明示的に確定させたため、
+   この疑問は完全に閉じた。
+
+## 旧設計（r0〜r11）の記録
+
+r12で撤回した旧決定2の骨格と、その過程で見つかった知見を、同じ失敗を
+繰り返さないために要約して残す（各ラウンドの詳細はステータス節の
+「レビュー指摘との対応表」と変更履歴を参照）。
+
+**旧設計の骨格（r11時点）**:
+
+1. hook.rsの挿入点で`to`=かな方向のvkを`VK_DBE_HIRAGANA`(0xF2)へ
+   書き換える。
+2. 代入後vk基準の`classify_ime_relevance`により`ShadowImeAction::
+   TurnOn`が付き、`kp_stage_shadow_ime_toggle`（`plan()`より前）で
+   actuationが**既に発火している**。
+3. したがって`plan()`が決めるべきは「OSへの二重配送を止めるか」だけ
+   になる。しかし「actuationが本当に発火したか」は`plan()`からは
+   直接見えないため、`actuation_will_fire = shadow_toggled ||
+   delegate_will_turn_on`という近似を作り、`kp_stage_shadow_ime_
+   toggle`の戻り値を構造体化して`plan()`へ運んだ。
+4. この近似はイベントごとに再評価すると壊れる（KeyUpでは常に偽、
+   auto-repeatでは2打目以降常に偽）ため、fresh press時点で
+   Suppress/Allowを`Option<bool>`ラッチに確定させ、以後の同一押下は
+   それを踏襲する設計にした。
+5. fresh press自体をどこで検出するかで4ラウンド（r7〜r10）を要し、
+   最終的に「役割代入自身の`{KEY}_WAS_DOWN`から計算し、
+   `RawKeyEvent::role_substitution_fresh_press: Option<bool>`という
+   新フィールドでメインスレッドへ運ぶ」形に落ち着いた。
+6. さらに、機能未使用ユーザーへ影響を広げないための`kana_role_active`
+   フラグ（`DbeModeKeyContext`の4つ目のフィールド、SSOT要件つき）、
+   物理かなキー由来の0xF2と区別するための`scan_code != SCAN_KANA`
+   判別子、injected KeyUpがラッチを迂回する経路への専用Suppress分岐、
+   ラッチのクリア規律のinjectedゲート、`kp_restore_hiragana_for_
+   suppressed_mode_key`への除外条件、`suppress_reason`の二重管理を
+   防ぐ共有ヘルパ、が積み上がっていた。
+
+**なぜ撤回したか**: 上記3〜6はすべて、1が「実在するIME意味論を持つvk」
+を選んだことの帰結だった。0xF2は`transport.rs::plan`のF2分岐・BUG-52/116
+のガード・`kp_restore_hiragana_for_suppressed_mode_key`・
+`vk_may_mutate_conv`・`shift_katakana_passthrough`・delegate機構という
+既存の判定群と全面的に絡み合っており、「役割代入由来の0xF2」と
+「物理かなキー由来の0xF2」を後段で区別し直す作業が延々と必要になった。
+センチネルを使えばこの区別が値そのもので付くため、区別のための機構が
+まとめて不要になる。
+
+**旧設計から引き継ぐべき知見（r12設計でも有効）**:
+
+- **r3の教訓**: 新しく依拠する既存経路の安全性は「経路を共有するから
+  安全」ではなく「送出される値そのものが危険な組み合わせに該当しない
+  から安全」という、検証可能な形で論じる（決定2-9はこの形になっている）。
+- **r4〜r8の教訓**: actuation/belief関連の値は「正しい値を指すか」だけ
+  でなく「いつ読まれるか（呼び出し前後でどちらのスナップショットか）」
+  まで具体的なコード行で検証する。`half_width_alnum_toggle_before`と
+  いう命名規約がこのリポジトリの既存の答えである。
+- **r9の教訓**: 既存のイディオム（判定式）は流用してよいが、その状態の
+  ライフサイクル（誰がいつ、どの範囲をクリアするか）まで一緒に借りては
+  ならない。
+- **r1/r7/r11の教訓（r12設計の直接の土台）**: スレッド境界を跨ぐ値の
+  受け渡しを暗黙に仮定しない。フックスレッドの値は`RawKeyEvent`で
+  **運べる**が、メインスレッドの値をフックスレッドから**読む**ことは
+  できない。r12設計はこの非対称性を正面から受け入れ、判定と消費を
+  同一スレッド内に閉じることで解決している（決定2-2・決定2-8）。
+- **r10の教訓**: 「Blockerが無いこと」と「記述が実装者を正しく導ける
+  こと」は別の基準である。特に、前ラウンドで入れた仕掛けの正当化が、
+  別の変更のついでに書き換えられて意図を失う（NM17）ことに注意する。
+- **r12自身の教訓**: 11ラウンドの敵対的レビューは、**与えられた
+  出発点の中で**設計を正しくすることには極めて有効だったが、
+  出発点そのもの（「合成0xF2を絶対に送ってはならない」という誇張された
+  制約と、「`to`方向も`from`方向と同じ構造にする」という無自覚な
+  踏襲）を疑うことはできなかった。ラウンドを重ねても複雑さが単調に
+  増え続ける場合、個々の指摘に応答するのをやめて前提を読み直す。
 
 ## 変更履歴
 
@@ -2187,3 +2559,75 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
   表への`event_eligible`行追加）も反映した。r0〜r9で繰り返された
   「改訂が新Blockerを生む」パターンのADR記述版として、NM17を教訓として
   残す。
+- r11（2026-09-06）: r10で持ち越した3点（実装順序・NM18・`from_name`
+  表現）を解消する過程で、architect役・premortem役との追加協議により
+  Blocker相当1件（かなスロットの恒等補完の意味——「恒等＝テーブル引きを
+  スキップ」であって「恒等＝正規VkCodeでテーブル引き」ではない、決定3）
+  とMajor相当3件（injected KeyUpがラッチを迂回し、対応するDownを持たない
+  0xF2のKeyUpがOSへ送出されうる経路——条件を`confirmed_target`から
+  ラッチの値そのものへ／例外の置き場所をhook.rsから`plan()`のKeyUp専用
+  分岐へ／ラッチのクリアも`!event.injected`でゲート、の3段階訂正）を
+  新規に発見・修正した。この時点で「収束」と宣言したが、r12で決定2ごと
+  撤回された（詳細はr12の項および「旧設計（r11まで）の記録」節）。
+- r12（2026-09-06）: **敵対的レビューではなく、実装着手前の根本再調査に
+  よるアーキテクチャ転換**。「レビューを重ねすぎて過度に慎重・複雑に
+  なっていないか」というユーザーの指摘を受けて2段階の調査を行い、
+  r0〜r11の決定2が置いていた出発点の前提が2点で誤っていたと確定した。
+  (1) 「OSへ合成`VK_DBE_HIRAGANA`をSendInputで直接送ってはならない」
+  という制約は誇張だった——`ime.rs::send_ime_mode_key_with_shift_
+  release_prefix`が既に本番コードでscan付き合成0xF2を送っており
+  （`output/mod.rs:1231`から呼ばれるGJI半角英数トグルの出口）、
+  そのガードは`ime_mode_key_injection_blocked_by_modifier()`＝
+  Win/Alt押下中かどうかだけである。BUG-61が問題にしているのは
+  Alt/Win押下中の合成送信であって合成0xF2そのものではない。
+  (2) より重要な発見として、`to`=かな方向はNICOLA同時打鍵判定に一切
+  参加しない純粋なIMEモード切替であり、`classify_key`より前でvkを
+  書き換える必然性がそもそも無かった（`from`=かな方向には必要）。
+  r11までの決定2は`to`方向にも`from`方向と同じ構造を無自覚に踏襲した
+  結果、0xF2という実在するIME意味論を持つvkを経由させ、下流のF2分岐・
+  BUG-52/116ガード・`kp_restore_hiragana_for_suppressed_mode_key`・
+  `vk_may_mutate_conv`・`shift_katakana_passthrough`・delegate機構と
+  全面的に絡み合わせていた。
+
+  併せて`crates/awase-windows/src/hook_channel.rs`の`HookKeyRing`
+  （SPSCリングバッファ、`CAP=1024`）を再確認し、フックが対象キーを
+  常に即Suppressして（`hook.rs:1199`）キュー投入だけで応答を返し、
+  実際のOS配送はメインスレッドの非同期`reinject()`が行うという構造を
+  背景節に明記した。r1・r7・r11が繰り返しぶつかった「スレッド境界を
+  跨ぐ値」の問題は、フック→メインの一方向は`RawKeyEvent`で運べる／
+  逆方向は読めない、という非対称として整理できる。
+
+  **決定2を全面書き直し**: `to`=かな方向の書き換え先を、実在するIME
+  意味論を持つ0xF2ではなく、Windows VK空間の外にある専用センチネル
+  `VK_ROLE_KANA_ACTUATE = VkCode(0x0100)`にする（決定2-1）。fresh press
+  判定はフックスレッド内で完結し（決定2-2）、`build_raw_key_event`が
+  `ime_relevance.sync_direction = Some(TurnOn)`を載せる（決定2-3、
+  `IntentKind::SyncKey`を選ぶ理由は`is_japanese_ime()`ゲートを通らない
+  こと・意味論的な正直さ・`plan()`の`is_kanji_event`に一致しないこと
+  の3点）。`plan()`の先頭にセンチネル専用の無条件Suppress分岐を1つ
+  置き（決定2-4）、actuationは既存の`kp_stage_shadow_ime_toggle`
+  という単一合流点をそのまま使う（決定2-5、新しいactuation経路は
+  作らない）。これにより`actuation_will_fire`・`kp_stage_shadow_ime_
+  toggle`の戻り値構造体化・`Option<bool>`ラッチ・`RawKeyEvent::
+  role_substitution_fresh_press`フィールド・NM17のフォールバック・
+  `kana_role_active`とそのSSOT要件・injected KeyUp専用Suppress分岐・
+  ラッチのクリア規律・`kp_restore_hiragana_for_suppressed_mode_key`
+  への除外条件・`suppress_reason`の共有ヘルパが**すべて不要**になった
+  （対応表は決定2-5）。NM13（押下中のフォーカス遷移でorphan KeyUp）・
+  NM18（`{KEY}_WAS_DOWN`のinjected更新規則への依存）・R11-M1
+  （クロススレッド参照で実装不可能だった例外）も同時に解消した。
+
+  **他の決定の調整**: 決定4を「`from`方向専用」と明確化し（`to`方向は
+  ADR-141決定2の既存hold-stateを使うので新規追加不要）、KeyUp注入の
+  抑止条件を`{KEY}_CONFIRMED_TARGET == Some(VK_ROLE_KANA_ACTUATE)`の
+  無条件判定へ戻した（決定2-8）。決定6は、代入先キーがセンチネルに
+  なるため親指キーとして認識されなくなること（r11の記述と逆になる）と、
+  その帰結として「`thumb_key`＝ひらがな × 非自明なかな役割代入」で
+  親指キーが到達不能になることをPhase Cの警告対象に加えた。同時に
+  delegate機構（NM10・r5 Nit1・R4-M2）は`delegate_owned`が構造的に
+  偽になるため対象自体が消滅した。決定9は`to`方向の合流点がほぼ全て
+  非該当になったため大幅に簡素化し、代わりに新しく特定した
+  `composition_native_f2_down`の不発火（決定9-5）を確認項目として
+  追加した。未解決の疑問6を大幅縮小、疑問8（下流actuationゲートの
+  棚卸し）を独立させた。旧決定2の骨格と、r0〜r11で得た再利用可能な
+  教訓は「旧設計（r11まで）の記録」節に残した。

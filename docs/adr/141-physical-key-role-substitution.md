@@ -13,6 +13,20 @@ Blocker/Majorを反映。r4レビュー未実施）。**
 storeのみ`event_eligible`でゲート」に訂正した。詳細は決定1本文の
 「r-later訂正」を参照。
 
+**追補2（2026-09-06、ADR-143 r14〜r16のレビューで発覚・ユーザー判断を
+経て確定）**: 役割代入がエンジンOFF時にも発動し続ける（Alt
+impersonationは`engine_enabled`でゲートされるのに役割代入は無視して
+いた）という未定義事項が判明した。`event_eligible`に`engine_enabled`
+を含める修正を検討したが、(a) これをstoreのゲートにも適用すると
+エンジンのON/OFF切替を挟んだ場合に`{KEY}_WAS_DOWN`が取り残される新規の
+stuck経路を生む（NM25）、(b) そもそもユーザーに確認したところ「安全な
+3キー同士の入れ替えは秀Caps相当の常駐リマッパとしてエンジンのON/OFFと
+独立に動作し続けてほしい」という回答だった、の2点から、**本ADRの
+`event_eligible`は変更せず（`engine_enabled`を含めない）、エンジン
+依存はADR-143の`to`=かな方向（awase自身のIME actuation機構に依存する
+ため）だけに限定して追加する**方針に確定した。詳細は決定1の該当箇所を
+参照。
+
 本ADRは、変換/無変換/スペースキーを相互に入れ替える秀Caps相当の機能
 （ユーザー要望、2026-09-05、Alt系は対象外と決定済み）を実現するための**基盤**
 のみを扱う。実際のconfig形式・設定GUIは後続ADR（Phase B、本ADRマージ後に着手）
@@ -278,21 +292,54 @@ Phase Aでは発生しなくなる（安全な3キーはいずれもBUG-08/61/62
 
    **【Phase Bからの申し送り、ADR-142決定B7参照】** 上記の「Alt適用前後の
    比較」「injected判定」は、実装時には本項・決定2のシグネチャに直接書く
-   のではなく、`event_eligible: bool`（`!alt_impersonated && !is_injected`）
-   という単一パラメータへ吸収し、`decide_role_substitution`（決定2）に
-   渡す設計に変更すること（ADR-142のPhase Bテスト計画レビューで判明、
-   Linux側のテスト網羅性を大きく広げられるため）。この場合、hook.rs側は
-   早期returnゲートを持たず、安全な3キーのイベントを**無条件に**
-   `decide_role_substitution`へ渡し、`event_eligible`の計算だけを担う
-   （ガードを呼び出し側の分岐からパラメータの計算へ移す）。
-   `event_eligible`は`decide_alt_impersonation`の`engine_enabled`と
-   同じく**新規押下時点でのみ**参照すること（無条件の早期returnは
-   BUG-41と同型のstuck keyを再導入する、ADR-142決定B7参照）。詳細な
-   シグネチャ・網羅テーブルの拡張（16→32通り）はADR-142決定B7を参照。
+   のではなく、`event_eligible: bool`という単一パラメータへ吸収し、
+   `decide_role_substitution`（決定2）に渡す設計に変更すること
+   （ADR-142のPhase Bテスト計画レビューで判明、Linux側のテスト網羅性を
+   大きく広げられるため）。この場合、hook.rs側は早期returnゲートを
+   持たず、安全な3キーのイベントを**無条件に**`decide_role_substitution`
+   へ渡し、`event_eligible`の計算だけを担う（ガードを呼び出し側の分岐
+   からパラメータの計算へ移す）。`event_eligible`は`decide_alt_
+   impersonation`の`engine_enabled`と同じく**新規押下時点でのみ**参照
+   すること（無条件の早期returnはBUG-41と同型のstuck keyを再導入する、
+   ADR-142決定B7参照）。詳細なシグネチャ・網羅テーブルの拡張
+   （16→32通り）はADR-142決定B7を参照。
+
+   **エンジンOFF時の挙動（2026-09-06追加、ADR-143レビューでarchitect役
+   NM24指摘、ユーザー判断を経て確定）**: 役割代入がエンジンOFF時にも
+   発動し続ける（`hook_callback`の`ncode`/`self_injected`/
+   `FOCUS_APP_DISABLED`/VK_KANAガード/overflowラッチ/Alt impersonation
+   のいずれにも役割代入を止める大域ゲートが無い）ことが判明した。
+   一度は`event_eligible`に`engine_enabled`を含める修正を検討したが、
+   ユーザーに確認したところ、**安全な3キー同士の入れ替え（本ADRが
+   扱う範囲）は秀Caps相当の常駐リマッパとして、エンジンのON/OFFとは
+   独立に動作し続けてほしい**という回答を得た（無変換3連打でエンジンを
+   OFFにしても、変換⇔スペースのような入れ替えは無効化されるべきでは
+   ない）。**したがって`event_eligible`（本ADR・ADR-142の定義）には
+   `engine_enabled`を含めない。** ADR-141の役割代入は`engine_enabled`
+   非依存のまま据え置く。
+
+   一方、後続ADR-143の`to`=かな方向（安全なキーを押すとawase自身の
+   IME actuation機構を呼び出す）は、awaseのエンジン機能そのものに
+   依存するため、エンジンOFF中に発動する意味が無い。この方向だけは
+   ADR-143側で個別に`engine_enabled`を追加条件として持つ
+   （ADR-143決定2参照、`kana_role_actuate`の計算に含める）。
+   `decide_alt_impersonation`の実装（`hook.rs:86-99`）を確認すると、
+   `engine_enabled`がゲートするのは判定だけで、hold-stateのstore
+   （`ALT_L_WAS_DOWN.store(is_keydown, ..)`）は無条件である——`to`=かな
+   方向に`engine_enabled`を追加する際も、この「storeは無条件、判定
+   （actuation発火）だけがengine依存」という構造に倣うこと（`event_
+   eligible`自体は変更せず、`kana_role_actuate`の式にのみ
+   `&& engine_enabled`を追加する）。これにより、エンジンのON/OFF切替を
+   挟んでも安全な3キー側のhold-storeは常に無条件で行われ、NM25が
+   指摘した「storeまでengine状態でゲートするとエンジントグル経由で
+   `{KEY}_WAS_DOWN`が取り残される」という問題は、そもそも`event_
+   eligible`自体を変更しないことで発生しない。
 
    **重要（ADR-143レビューで判明、Major相当）**: hold-stateへのstoreの
-   ゲートは`!is_injected`単独ではなく**`event_eligible`そのもの**にする
-   こと。`!is_injected`だけをゲートにすると、Alt impersonation由来の
+   ゲートは`!is_injected`単独ではなく**`event_eligible`そのもの**
+   （`!alt_impersonated && !is_injected`、`engine_enabled`は含まない
+   ——上記のとおり本ADRの範囲では意図的に含めない）にすること。
+   `!is_injected`だけをゲートにすると、Alt impersonation由来の
    イベント（挿入点では既にAltが親指キーのvkへ書き換わっている、かつ
    injectedではない）がstoreされてしまう。`{KEY}_WAS_DOWN`は代入前
    （＝Alt適用後）のvkでインデックスされるため、Altセンチネル親指キーと

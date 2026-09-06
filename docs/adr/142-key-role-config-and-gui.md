@@ -609,6 +609,17 @@ AppConfig`）に`key_role`フィールドを追加する際は、過去に`keyst
   途中で変化しても（Down時は物理、Up時はリレー経由の注入、等）、Down/Up
   ペアの対称性が保たれる。
 
+  **`engine_enabled`は含めない（2026-09-06追加、ADR-143レビューで
+  一度検討した後にユーザー判断で撤回）**: ADR-143レビュー中に本節の
+  `event_eligible`へ`engine_enabled`を追加する案を検討したが、
+  ユーザーに確認した結果「安全な3キー同士の入れ替え（本節が扱う
+  範囲）は秀Caps相当の常駐リマッパとしてエンジンのON/OFFと独立に
+  動作し続けてほしい」との回答を得たため撤回した。本節の
+  `event_eligible`（`!alt_impersonated && !is_injected`）は変更しない。
+  `engine_enabled`はADR-143の`to`=かな方向（awase自身のIME actuation
+  機構に依存するため）だけに個別に追加される——詳細はADR-141決定1・
+  ADR-143決定2参照。
+
   1. **6変数のスロット混線防止テスト**は、`decide_role_substitution`を
      異なる`original_vk`（変換/無変換/スペース）で独立に複数回呼び出し、
      一方の呼び出し列がもう一方の`confirmed_target`に影響しないことを
