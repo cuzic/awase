@@ -10,6 +10,9 @@
 機構との衝突を含む新たな Blocker 3件を、本実装向けの Opus 2体敵対的レビュー
 （`opus-architect-bug116-impl`/`opus-premortem-bug116-impl`）で発見・全て
 対処済み。詳細は下記「本実装のレビューで発見した追加の論点（v3）」参照。
+さらに PR #171 に対する `/code-review` で CONFIRMED 2件・PLAUSIBLE 2件・
+cleanup 1件を追加発見・全て対処済み（下記「`/code-review` で発見した
+論点（v4）」参照）。
 
 `diag/bug116-shift-katakana` ブランチ（develop 非マージの診断スパイク）を
 実機（TsfNative + GJI、Windows Terminal 環境相当）にビルド・投入し、
@@ -293,7 +296,20 @@ ADR-100 決定2（2026-08-22）・ADR-098 F4・BUG-50 が意図的に置き換�
 | 実装m-1 | 決定2 の条件判定はテーブル駆動テスト化しづらい（`Runtime` 全体が要る） | **静的ガードで代替**: `tests/architecture_guard.rs` にトークン固定テストを追加（Linux で実行可能） |
 | 実装m-2 | `deferred_vks` 残留（旧 M-4 と同一論点） | **対応済み**: doc コメント更新 |
 | 実装m-3 | `plan()` の引数数 | **対応済み**: `DbeModeKeyContext` 導入 |
-| 実装m-4 | `docs/known-bugs.md:3073`/`ime.rs:365` の ADR-107 M4 記述が「Shift 押下中は DBE キー自体が配送されない」と過度に一般化されており、BUG-116（scan=0x70/0xF1 の物理配送を実機確認済み）と矛盾して見える | **未対応（残存）**。ADR-107 M4 の実測対象は「awase 自身が注入する scan=0 の `VK_DBE_ALPHANUMERIC`」であり BUG-116 とは対象が異なるため矛盾はしないが、将来の誤読を防ぐ限定句の追記が望ましい |
+| 実装m-4 | `docs/known-bugs.md:3073`/`ime.rs:365` の ADR-107 M4 記述が「Shift 押下中は DBE キー自体が配送されない」と過度に一般化されており、BUG-116（scan=0x70/0xF1 の物理配送を実機確認済み）と矛盾して見える | **対応済み**: 両箇所に「awase 自身が注入する scan=0 の `VK_DBE_ALPHANUMERIC` について実測したもの」という限定句を追記 |
+
+## `/code-review` で発見した論点（v4、PR #171）
+
+実装コミット後の `/code-review` で Blocker 相当2件（CONFIRMED）・要検討2件
+（PLAUSIBLE）・cleanup 1件を発見。全て対処済み。
+
+| # | 論点 | 判定 | 対応 |
+|---|---|---|---|
+| review-1 | **起動直後・フォーカス直後の GJI 未検出窓で物理かなキーが代償行為なしに完全にロストする。** `active_ime_kind()` は GJI 未検出時に安全側の `MicrosoftIme` をデフォルト返却するが、`f2_warmup_owned()`（`TsfWarmupCoordinator` の既定戦略 `GjiFsm`）は同じ未検出窓で `true` を返す。この2つのデフォルト値の食い違いにより「Suppress は発火するが `active_ime_kind` はまだ `MicrosoftIme`」という状態が構造的に存在し、決定2 の `active_ime_kind == GoogleJapaneseInput` ガードがこれを弾いていた | **CONFIRMED** | **対応済み**: `active_ime_kind` によるスコープ限定を撤去。`physical == Suppress`（0xF2 に対して既に `is_tsf_mode && f2_warmup_owned` の必要十分条件）のみを条件にすることで、この窓を構造的に無くした |
+| review-2 | **決定2 は根本原因（F2 Suppress が warm/cold を見ない）を直さないバンドエイドであり、ADR-100/BUG-50 が意図的に排除した scan 付き注入パターンを再導入する。** より筋の良い代替案（F2 Suppress 条件自体に `is_composition_warm()` を組み込む）が検討・記録されていない | **CONFIRMED** | **記録で対応**: `kp_restore_hiragana_for_suppressed_mode_key` のdocコメントと本 ADR に、この代替案を検討したがADR-100/BUG-50が扱ってきたF2 Suppressの中核条件に踏み込むリスクが実機未検証で大きいと判断し見送った旨を明記。将来の再設計時の出発点として残す |
+| review-3 | Shift 併用の物理 `VK_DBE_HIRAGANA` が復元されず完全にロストしうる（決定2 のガードが `shift=true` を除外する一方、`plan()` の F2 分岐は shift を見ない） | **PLAUSIBLE**（実機データでは Shift 併用時は一貫して `vk=0xF1` のみ観測され `vk=0xF2` は出なかったが、絶対に起きないことの証明ではない） | **記録で対応**: pre-PR から existing の Suppress のまま（新規の退行ではない）である旨をコードコメントに明記。実害が確認されたら別途対応 |
+| review-4 | KeyUp 側の M-2 latch 解除が `event.injected` を確認しておらず、外部由来の injected KeyUp でラッチが早期解除されると、まだ物理的に押下中の auto-repeat KeyDown が重複発火しうる | **PLAUSIBLE**（BUG-14 で実例のある外部プロセス injected パターンが前提） | **対応済み**: KeyUp 分岐にも `!event.injected` を追加 |
+| review-5 | `is_configured_thumb_key` が `DbeModeKeyContext` 構築時と決定2 判定内の2箇所で重複計算されている | cleanup | **対応済み**: 呼び出し元で1回だけ計算し、両方に同じ値を渡す |
 
 ### BUG-115 delegate 機構との衝突確認（architect による詳細分析）
 
@@ -461,6 +477,13 @@ Shift 押下時は「IME トグル関連キーではない」と再分類する
 - **実装M-5（GJI cold 時の無言 no-op）**: ログ出力のみで対応、
   「たまに効かない」という新しい非決定的症状として known-bugs.md に
   記録済み。
+- **review-3（Shift 併用の物理 `VK_DBE_HIRAGANA` が復元されずロストしうる）**:
+  実機データでは起きなかったが理論上排除できていない。実害が確認されたら
+  別途対応する（上記「`/code-review` で発見した論点」参照）。
+- **review-2（decision2 が F2 Suppress の根本条件を直さないバンドエイド）**:
+  「F2 Suppress 条件自体に `is_composition_warm()` を組み込む」という
+  より筋の良い代替案は実機未検証のリスクを理由に見送った。将来この
+  副問題が再発した場合の再設計の出発点として記録する。
 - **MS-IME 環境での検証は未実施**: 決定2は `ActiveImeKind::
   GoogleJapaneseInput` にスコープを限定している。「MS-IME 検出済みの
   場合は `needs_f2_probe()=false` によりこの副問題自体が発生しない」が

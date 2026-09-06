@@ -3690,7 +3690,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         "fn kp_restore_hiragana_for_suppressed_mode_key",
         "is_configured_thumb_key",
         "is_composition_warm",
-        "ActiveImeKind::GoogleJapaneseInput",
+        "PhysicalKeyDisposition::Suppress",
         "read_kana_lock",
         "conv_mutation_allowed",
         "kana_mode_restore_key_down",

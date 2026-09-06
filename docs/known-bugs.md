@@ -15273,6 +15273,14 @@ IMEが既にONの状態でのShift+かな→カタカナが復活する可能性
 相当が1回SendInputされる。以前はこの物理キーは常に無言でSuppressされて
 いた。
 
+**PR #171の`/code-review`で追加修正（2026-09-06）:** 起動直後・フォーカス
+直後のGJI未検出窓で物理かなキーが代償行為なしに完全にロストする競合
+（`active_ime_kind()`のデフォルト`MicrosoftIme`と`f2_warmup_owned()`の
+既定戦略`GjiFsm`のデフォルト`true`が食い違うため）を発見・修正。ひらがな
+復元の発火条件から`active_ime_kind`によるスコープ限定を撤去し、
+`physical == Suppress`のみを条件にすることで解消した。詳細はADR-137の
+「`/code-review`で発見した論点」参照。
+
 **未解決事項（残存）:**
 - M-2（`shadow_toggled=true`経路、IME OFFからのShift+かな）は本修正の
   スコープ外のまま。

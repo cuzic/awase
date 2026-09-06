@@ -69,40 +69,84 @@ impl Runtime {
     /// あちらは `composition_native_f2_down()` 経由で `is_tsf_mode=true` なら
     /// warm/cold に関わらず `MarkCold` するため、後に置くと `is_composition_warm()`
     /// が常に false になり発火しない。
+    ///
+    /// **既知のトレードオフ（/code-review 指摘、CONFIRMED）**: この関数は
+    /// `transport.rs` の F2 Suppress 条件（`is_tsf_mode && f2_warmup_owned`、
+    /// warm/cold を一切見ない）自体は変更せず、その埋め合わせとして別経路の
+    /// 能動注入を追加するバンドエイド方式を採る。より筋の良い代替案は
+    /// 「F2 Suppress 条件自体に `is_composition_warm()` を組み込み、warm な
+    /// GJI セッションでは物理 F2 を Allow する」ことだが、この変更は
+    /// ADR-100/BUG-50 が扱ってきた F2 Suppress の中核条件に踏み込むことに
+    /// なり、実機未検証のまま本 PR のスコープに含めるにはリスクが大きいと
+    /// 判断し見送った。この判断自体は実機未検証であり、将来この副問題が
+    /// 再発した場合は F2 Suppress 条件側の見直しを検討すること。
     fn kp_restore_hiragana_for_suppressed_mode_key(
         &mut self,
         event: &RawKeyEvent,
-        active_ime_kind: crate::tsf::observer::ActiveImeKind,
         shadow_toggled: bool,
         physical: crate::runtime::PhysicalKeyDisposition,
         half_width_alnum_toggle_before: bool,
+        is_configured_thumb_key: bool,
     ) {
         let is_keyup = matches!(event.event_type, KeyEventType::KeyUp);
         if event.vk_code != crate::vk::VK_DBE_HIRAGANA {
             return;
         }
         if is_keyup {
-            // KeyDown 起点の repeat latch（M-2）をここで解除する。
-            self.platform_state.gate.kana_mode_restore_key_down = false;
+            // KeyDown 起点の repeat latch（M-2）をここで解除する。BUG-14 の規律
+            // どおり、外部プロセス由来の injected KeyUp（MS-IME/CTF 自身の
+            // SendInput）でラッチを早期解除しない——押しっぱなし中に外部注入の
+            // KeyUp が割り込むと、まだ物理的に押下中の auto-repeat KeyDown が
+            // ラッチ解除後に重複発火しうる（/code-review 指摘）。
+            if !event.injected {
+                self.platform_state.gate.kana_mode_restore_key_down = false;
+            }
             return;
         }
         // `physical == Suppress` かつ 0xF2 は `plan()` の F2 分岐（InputRelay より
-        // 後、injected チェックより前）でしか成立しない。つまりここに来る時点で
-        // `is_tsf_mode && f2_warmup_owned`（= GJI 戦略）が確定している。ただし
+        // 後、injected チェックより前）でのみ成立し、その条件は
+        // `is_tsf_mode && f2_warmup_owned` そのもの。つまり `physical == Suppress`
+        // であることが「GJI 戦略として Suppress された」ことの必要十分条件であり、
+        // 追加で `active_ime_kind` を確認する必要はない。
+        //
+        // **訂正（/code-review 指摘、CONFIRMED）**: 当初は
+        // `active_ime_kind == GoogleJapaneseInput` も条件に含めていたが、
+        // `active_ime_kind()` は GJI 未検出時に安全側の `MicrosoftIme` を
+        // デフォルト返却する一方、`f2_warmup_owned()`（`TsfWarmupCoordinator`
+        // の既定戦略 `GjiFsm`）は起動直後・フォーカス直後の GJI 未検出窓でも
+        // 既定で `true` を返す。この2つのデフォルト値の食い違いにより、
+        // フォーカス直後の短い窓（`WM_IME_KIND_CHANGED` 到達前）で
+        // 「Suppress は発火するが `active_ime_kind` はまだ `MicrosoftIme`
+        // のまま」という状態が構造的に存在し、この窓で物理かなキーが
+        // 代償行為なしに完全にロストしていた（本 PR が直そうとした M-6 の
+        // 変種が起動直後の窓に残っていた）。`physical == Suppress` のみを
+        // 条件にすることでこの窓を構造的に無くす。
+        //
         // injected チェックより前の分岐なので、外部プロセス由来の注入（MWB /
         // MS-IME 自身の SendInput、BUG-14）も到達しうる——ユーザーの物理操作で
         // ない入力を actuation の根拠にしない。
+        //
+        // `event.modifier_snapshot.shift`: Shift 併用の物理 `VK_DBE_HIRAGANA`
+        // は意図的に対象外にする（/code-review 指摘、PLAUSIBLE として残存を
+        // 認める）。ADR-137 の実機データでは Shift 併用時は一貫して `vk=0xF1`
+        // が観測され `vk=0xF2` は一度も出なかった（B-1）ため実際に起きにくいと
+        // 考えられるが、「起こり得ない」ことの証明ではない。この状態が発生
+        // した場合、決定1 が処理する Shift+0xF1（カタカナ）とは異なる未定義の
+        // 状態であり、本 PR のスコープを最小に保つため復元を試みず、
+        // pre-PR と同じ「無条件に Suppress されたまま」の挙動に留める
+        // （新規の退行ではない）。
         if event.injected
             || event.modifier_snapshot.shift
             || physical != crate::runtime::PhysicalKeyDisposition::Suppress
-            || active_ime_kind != crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
         {
             return;
         }
         // BUG-115: このキーが親指キーとして設定されている構成では、この KeyDown
         // は NICOLA の同時打鍵入力であって IME モードキーではない。ガードが無いと
-        // 打鍵ごとに `VK_DBE_HIRAGANA` を SendInput することになる。
-        if crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code) {
+        // 打鍵ごとに `VK_DBE_HIRAGANA` を SendInput することになる。呼び出し元が
+        // `DbeModeKeyContext` 構築時に計算済みの値をそのまま受け取る（同じ判定を
+        // 同一イベントに対して2回計算しない、/code-review 指摘）。
+        if is_configured_thumb_key {
             return;
         }
         // 半角英数持続トグル区間では `kp_stage_shadow_ime_toggle` の no-op 分岐が
@@ -343,6 +387,8 @@ impl Runtime {
         // 分からなかった点が調査のきっかけ）。
         let profile = self.platform.current_app_profile();
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
+        let is_configured_thumb_key =
+            crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code);
         let physical = crate::runtime::PhysicalKeyDisposition::plan(
             &event,
             profile,
@@ -353,9 +399,7 @@ impl Runtime {
             crate::runtime::DbeModeKeyContext {
                 policy: self.dbe_mode_key_policy,
                 half_width_alnum_toggle_active: half_width_alnum_toggle_before,
-                is_configured_thumb_key: crate::gji_charset_autodetect::is_configured_thumb_key(
-                    event.vk_code,
-                ),
+                is_configured_thumb_key,
             },
         );
         // BUG-116/ADR-137 決定2: `plan()` が Suppress と判定した物理かなキーの
@@ -364,10 +408,10 @@ impl Runtime {
         // ため、後に置くと `is_composition_warm()` が常に false になり発火しない）。
         self.kp_restore_hiragana_for_suppressed_mode_key(
             &event,
-            active_ime_kind,
             shadow_toggled,
             physical,
             half_width_alnum_toggle_before,
+            is_configured_thumb_key,
         );
         self.platform_state
             .ime
