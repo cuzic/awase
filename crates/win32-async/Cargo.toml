@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 log = "0.4"
+tracing = "0.1"
 
 [target.'cfg(windows)'.dependencies]
 winmsg-executor = "0.3"
