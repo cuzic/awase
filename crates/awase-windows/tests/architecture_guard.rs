@@ -3662,3 +3662,128 @@ fn warmup_gate_third_arg_is_never_a_bare_literal_in_production_code() {
          由来の判定変数を渡すべきです。"
     );
 }
+
+// ── `half_width_alnum` 機能カプセル化（旧 `GateStore` 4フィールド + 旧
+//    `Runtime::half_width_alnum_toggle_policy` の統合） ──────────────────
+
+/// `HalfWidthAlnumState` の5フィールドへの本番コードからの直接アクセスが
+/// 0件であること、および宣言側で再び `pub` 化されていないことを固定する。
+///
+/// # なぜ `per_source_fields_are_not_assigned_directly` のような行単位一致を
+/// そのまま使わないのか
+///
+/// `runtime/ime_refresh.rs` の journal record 構築のように、rustfmt が
+/// フィールド初期化子を
+///
+/// ```ignore
+/// half_width_alnum_toggle_active: self
+///     .platform_state
+///     .gate
+///     .half_width_alnum_toggle_active,
+/// ```
+///
+/// のように複数行へ折り返す実例が既にあった（本PRで修正済みだが、退行検知の
+/// ためにこの形も拾えるようにする）。`build_input_context_callers_do_not_drop_thumb_down_state`
+/// と同じ手法（`split_whitespace().collect()` で空白を全て除去してから
+/// 部分文字列一致を見る）を使うことで、インデント幅・改行位置に依存せず
+/// `.half_width_alnum.left_tap_armed` のような生アクセスを検出する。
+#[test]
+fn half_width_alnum_state_fields_are_not_accessed_directly() {
+    const FIELDS: [&str; 5] = [
+        "left_tap_armed",
+        "right_tap_armed",
+        "conv_guard_pending",
+        "toggle_held",
+        "entry_policy",
+    ];
+
+    // 1. 使用箇所走査: 本番コード全体（`state/half_width_alnum.rs` 自身の
+    //    実装は除く——フィールドを実際に読み書きしてよいのはこのファイルの
+    //    メソッド本体だけ）。
+    let files = list_src_files();
+    let mut hits: Vec<String> = Vec::new();
+    for path in &files {
+        if path == "src/state/half_width_alnum.rs" {
+            continue;
+        }
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let squashed: String = production.split_whitespace().collect();
+        for field in FIELDS {
+            let needle = format!(".half_width_alnum.{field}");
+            let count = squashed.matches(&needle).count();
+            if count > 0 {
+                hits.push(format!("{path}: {needle} x{count}"));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "`HalfWidthAlnumState` のフィールドへ本番コードから直接触らないこと \
+         （state/half_width_alnum.rs のメソッド経由に限定すること）。実際: {hits:?}"
+    );
+
+    // 2. 宣言側走査（再pub化検知）。
+    let source = read_crate_file("src/state/half_width_alnum.rs");
+    for field in FIELDS {
+        let pub_needle = format!("pub {field}");
+        assert!(
+            !source.contains(&pub_needle),
+            "`HalfWidthAlnumState::{field}` が `pub` フィールドとして \
+             宣言されています。private のまま維持すること。"
+        );
+    }
+}
+
+/// `config.general.half_width_alnum_toggle` の反映（`Runtime::
+/// set_half_width_alnum_toggle_policy`）が、起動時（`app/bootstrap.rs`）と
+/// 設定リロード時（`Runtime::apply_config_update`）の**両方**から呼ばれて
+/// いることを固定する（BUG-103と同型の「片方の経路だけ配線し忘れる」
+/// 再発ファミリー対策）。
+///
+/// `every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new`
+/// と同じ手法（呼び出し回数を数える）を使う。
+#[test]
+fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
+    let bootstrap = read_crate_file("src/app/bootstrap.rs");
+    let bootstrap_production = non_comment_lines(production_code_only(&bootstrap));
+    let bootstrap_count =
+        count_real_calls(&bootstrap_production, "set_half_width_alnum_toggle_policy(");
+    assert_eq!(
+        bootstrap_count, 1,
+        "src/app/bootstrap.rs は起動時に \
+         `set_half_width_alnum_toggle_policy(...)` をちょうど1回呼ぶこと \
+         （実際: {bootstrap_count}）"
+    );
+
+    let runtime_mod = read_crate_file("src/runtime/mod.rs");
+    // `apply_config_update` の本体内で呼ばれていることまで確認する
+    // （定義とは別の箇所に呼び出しがあるだけでは reload 時の反映を保証しない）。
+    let apply_config_update_body =
+        extract_fn_body(&runtime_mod, "pub(crate) fn apply_config_update(");
+    let reload_count = count_real_calls(
+        apply_config_update_body,
+        "set_half_width_alnum_toggle_policy(",
+    );
+    assert_eq!(
+        reload_count, 1,
+        "Runtime::apply_config_update は設定リロード時に \
+         `set_half_width_alnum_toggle_policy(...)` をちょうど1回呼ぶこと \
+         （実際: {reload_count}）"
+    );
+
+    // `set_half_width_alnum_toggle_policy` メソッド自体は
+    // `HalfWidthAlnumState::set_policy` へのデリゲートであること
+    // （B1対応: メソッド自体を削除せず残す）。
+    let setter_body = extract_fn_body(
+        &runtime_mod,
+        "pub(crate) fn set_half_width_alnum_toggle_policy(",
+    );
+    assert_eq!(
+        count_real_calls(setter_body, "half_width_alnum.set_policy("),
+        1,
+        "Runtime::set_half_width_alnum_toggle_policy は \
+         `self.platform_state.gate.half_width_alnum.set_policy(policy)` へ \
+         デリゲートすること（実際の本体: {setter_body:?}）"
+    );
+}
