@@ -164,10 +164,10 @@ pub(crate) unsafe fn send_ime_control(
     };
     let elapsed_us = crate::hook::now_timestamp_us().saturating_sub(issue_us);
     // ADR-140 コードレビュー指摘（MAJOR）: end_ms は send_health のサーキット
-    // ブレーカ計測に使われるため、下の log::debug! のフォーマット/I/O コストを
+    // ブレーカ計測に使われるため、下の tracing::debug! のフォーマット/I/O コストを
     // その計測窓に含めてはならない——先に end_ms を確定させてから記録する。
     let end_ms = crate::hook::current_tick_ms();
-    log::debug!(
+    tracing::debug!(
         "[ime-io] cross_process cmd=0x{cmd:04X} kind={} ime_wnd={ime_wnd:?} \
          thread={:?} issue_us={issue_us} elapsed_us={elapsed_us}",
         if matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {

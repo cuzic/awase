@@ -231,7 +231,7 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         crate::conv_mutation::bump();
     }
     if let Some(kind) = inputs.iter().find_map(ime_actuation_marker_kind) {
-        log::debug!(
+        tracing::debug!(
             "[ime-io] actuation SendInput kind={kind} issue_us={}",
             crate::hook::now_timestamp_us()
         );
