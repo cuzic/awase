@@ -230,10 +230,6 @@ pub struct Runtime {
     /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
     /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
     dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
-    /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
-    /// 既定 `MsImeOnly` で従来動作を維持し、GJI 経路は `All` の明示設定時だけ
-    /// `kp_shift_conv_guard_key_up` から発火する。
-    half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1251,7 +1247,6 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
-            half_width_alnum_toggle_policy: awase::config::HalfWidthAlnumTogglePolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             gji_thumb_key_ime_toggle_opt_in: false,
@@ -1290,7 +1285,7 @@ impl Runtime {
         &mut self,
         policy: awase::config::HalfWidthAlnumTogglePolicy,
     ) {
-        self.half_width_alnum_toggle_policy = policy;
+        self.platform_state.gate.half_width_alnum.set_policy(policy);
     }
 
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
