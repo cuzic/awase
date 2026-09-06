@@ -5,6 +5,14 @@
 **r3（Opus 2体の敵対的レビューを3ラウンド実施。r2の改訂作業で新たに混入した
 Blocker/Majorを反映。r4レビュー未実施）。**
 
+**追補（2026-09-06、後続ADR-143のレビュー中に発覚・決定1を訂正）**:
+決定1の「役割代入の適用とhold-stateの更新はいずれも`!is_injected`ガード内
+で行う」という当初の字面は、ADR-142決定B7がr3→r4で確立したstuck-key対策
+（KeyUpは`confirmed_target`から対称に変換し、eligibilityを再評価しない）
+と矛盾することが判明した。決定1を「適用（vk変換）は無条件、hold-stateへの
+storeのみ`event_eligible`でゲート」に訂正した。詳細は決定1本文の
+「r-later訂正」を参照。
+
 本ADRは、変換/無変換/スペースキーを相互に入れ替える秀Caps相当の機能
 （ユーザー要望、2026-09-05、Alt系は対象外と決定済み）を実現するための**基盤**
 のみを扱う。実際のconfig形式・設定GUIは後続ADR（Phase B、本ADRマージ後に着手）
@@ -215,34 +223,86 @@ Phase Aでは発生しなくなる（安全な3キーはいずれもBUG-08/61/62
    の旧疑問1は製品判断としては残さず、この技術的な非合成ルールとして
    確定させる）。
 
-   **さらに、役割代入の適用とhold-state（決定2）の更新は、いずれも
-   `hook.rs:1137`の既存ブロックと同じ`!is_injected`ガード内で行う**
-   （r2レビューN3、premortem役指摘）。`hook.rs:935`の`is_self_injected`
-   早期returnはawase自身が注入したイベントのみを弾き、他プロセス
-   （Mouse Without Borders・リモートデスクトップ・AutoHotkey等）が
-   `LLKHF_INJECTED`付きでリレーしたイベントは挿入点まで到達する。これに
-   役割代入を適用すると、他プロセスがリレーした`VK_SPACE`がローカル側で
-   `VK_NONCONVERT`に化けてしまい、ADR-119（issue #136）が確立した
-   「解釈しない入力は消費しない」という方針（`transport.rs:284-309`の
-   `is_injected`早期return）と矛盾する。加えて、Down/Upが対で来ない注入
-   （リレーツールでは珍しくない）で`was_down`がstuckすると、次の物理押下が
-   auto-repeat扱いになり代入がスキップされる——決定2がBUG-100対策として
-   構造的に防いだはずの状態が、`is_injected`を見落とすと別経路から再現する。
+   **この非合成ルールが効くのは新規押下時点でのみである**（2026-09-06
+   追加、ADR-143レビューでpremortem役指摘）。下記「r-later訂正」により
+   適用（vk変換）は無条件になったため、`confirmed_target`を保持中の
+   非eligibleなイベント（例:`left_thumb_key="Left Alt"`構成で物理
+   無変換キーを押している最中にLeft Altを押すと、Alt側のイベントも
+   確定済みの`confirmed_target`に従って変換される）には、この宣言の
+   対象外として役割代入が適用される。これはr2時点の設計（適用・store
+   いずれも`!is_injected`ガード内、Altはinjectedではないため同様に
+   適用されていた）から変わっていない既存の性質であり、新規の劣化では
+   ない。
+
+   **さらに、役割代入の適用（vk変換）と、hold-state（決定2）への
+   store（次回参照用の書き戻し）は、別の関心事として扱う**
+   （r2レビューN3、premortem役指摘。**ADR-143レビューで訂正**——
+   下記「r-later訂正」参照）。`hook.rs:935`の`is_self_injected`早期return
+   はawase自身が注入したイベントのみを弾き、他プロセス（Mouse Without
+   Borders・リモートデスクトップ・AutoHotkey等）が`LLKHF_INJECTED`付きで
+   リレーしたイベントは挿入点まで到達する。
+
+   **r-later訂正（ADR-143レビューで発覚、architect役・premortem役が
+   協議し収束）**: r2時点の本文は「適用とstoreはいずれも`!is_injected`
+   ガード内で行う」としていたが、この字面のまま実装するとADR-142決定B7
+   のr3→r4修正（stuck-key対策）と衝突する。正しくは以下のとおり:
+
+   - **適用（vk変換）は無条件に行う**: `decide_role_substitution`は
+     injected/non-injectedを問わずすべての対象イベントに対して呼び出し、
+     その戻り値（書き換え後vk）をそのままOSへの送出値として使う。これは
+     ADR-142決定B7が確立した「KeyUpは`confirmed_target`から対称に変換する
+     （eligibilityを再評価しない）」という規律の帰結であり、これを怠ると
+     injectedなKeyUpが未変換のまま流れてOS側にstuck keyが残る
+     （B7が潰した問題そのものが復活する）。
+   - **hold-state（`{KEY}_WAS_DOWN`/`{KEY}_CONFIRMED_TARGET`）へのstore
+     のみ、`event_eligible`（下記）がtrueのときに限定する**。これにより
+     他プロセスがリレーした入力が新規のconfirmed_targetを確定させる
+     （ADR-119「解釈しない入力は消費しない」への違反）ことと、非対で来る
+     注入により`was_down`がstuckすることの両方を、hold-state側の書き戻し
+     を止めることで防ぐ。適用側は無条件のままなので、この分離によって
+     ADR-142決定B7のstuck-key対策とは衝突しない。
+   - `apply_alt_impersonation`（`hook.rs:86-99`）の`ALT_L_WAS_DOWN.store(
+     is_keydown, ..)`は**無条件store**であり、役割代入の実装はこれを
+     真似てはならない（NM18、ADR-143レビューで判明した実装者が誤りやすい
+     箇所）。役割代入のstore箇所には「Alt版と異なりinjected/非eligibleでは
+     storeしない。理由: 本決定（stuck-was_down防止）」という趣旨のコード
+     コメントを残すこと。
+   - **既知の制限（重複KeyUp）**: 物理Downの後、非eligibleなKeyUp
+     （injected等）が先に届いて代入後vkのKeyUpが送出され（storeは
+     されない）、その後に真の物理KeyUpが届くと代入後vkのKeyUpがOSへ
+     もう一度送出される（重複）。これは無害側の非対称
+     （stuck-trueは危険だがstuck-falseはそうならない、という決定7の
+     性質と同じ）であり、`key_pipeline.rs:2012`付近が別の合流点で
+     既に採用している「KeyUpの重複は無害」という判断と同種のもの
+     である。バグ報告として再調査せずに済むよう、ここに明記する。
 
    **【Phase Bからの申し送り、ADR-142決定B7参照】** 上記の「Alt適用前後の
-   比較」「`!is_injected`ガード」は、実装時には本項・決定2のシグネチャに
-   直接書くのではなく、`event_eligible: bool`
-   （`!alt_impersonated && !is_injected`）という単一パラメータへ吸収し、
-   `decide_role_substitution`（決定2）に渡す設計に変更すること
-   （ADR-142のPhase Bテスト計画レビューで判明、Linux側のテスト網羅性を
-   大きく広げられるため）。この場合、hook.rs側は`!is_injected`の早期
-   returnゲートを持たず、安全な3キーのイベントを**無条件に**
+   比較」「injected判定」は、実装時には本項・決定2のシグネチャに直接書く
+   のではなく、`event_eligible: bool`（`!alt_impersonated && !is_injected`）
+   という単一パラメータへ吸収し、`decide_role_substitution`（決定2）に
+   渡す設計に変更すること（ADR-142のPhase Bテスト計画レビューで判明、
+   Linux側のテスト網羅性を大きく広げられるため）。この場合、hook.rs側は
+   早期returnゲートを持たず、安全な3キーのイベントを**無条件に**
    `decide_role_substitution`へ渡し、`event_eligible`の計算だけを担う
    （ガードを呼び出し側の分岐からパラメータの計算へ移す）。
    `event_eligible`は`decide_alt_impersonation`の`engine_enabled`と
    同じく**新規押下時点でのみ**参照すること（無条件の早期returnは
    BUG-41と同型のstuck keyを再導入する、ADR-142決定B7参照）。詳細な
    シグネチャ・網羅テーブルの拡張（16→32通り）はADR-142決定B7を参照。
+
+   **重要（ADR-143レビューで判明、Major相当）**: hold-stateへのstoreの
+   ゲートは`!is_injected`単独ではなく**`event_eligible`そのもの**にする
+   こと。`!is_injected`だけをゲートにすると、Alt impersonation由来の
+   イベント（挿入点では既にAltが親指キーのvkへ書き換わっている、かつ
+   injectedではない）がstoreされてしまう。`{KEY}_WAS_DOWN`は代入前
+   （＝Alt適用後）のvkでインデックスされるため、Altセンチネル親指キーと
+   物理無変換キーが同じスロットを共有し、「物理無変換キーを押したまま
+   Left Altを離す」という操作でAlt側のKeyUpが誤ってstoreされ、物理
+   無変換キー自身のhold-stateが途中でクリアされる（離したときに代入先
+   vkのKeyUpが送られないstuck keyになる）。`event_eligible`をゲートに
+   すれば、確定（confirmation）と永続化（persistence）が同一ゲートを
+   共有し、決定4のAltセンチネル不動点制約に安全性を依存せず構造的に
+   閉じる。
 2. **役割代入ルールの集合は、対象3キー上の全単射（置換）でなければ
    ならない**: 明示的にルールが無いキーは恒等（自分自身へ写る）として
    補完し、補完後の写像が「異なる2つの入力が同じ出力を持つ」ことが無い

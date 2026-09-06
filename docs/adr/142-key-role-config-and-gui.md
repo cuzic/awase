@@ -7,6 +7,13 @@
 r5は軽微なNit反映のみで、レビュアーへの再確認は両エージェントの
 判断により不要）。**
 
+**追補（2026-09-06、後続ADR-143のレビュー中に発覚・決定B7を訂正）**:
+決定B7が「なぜ`!is_injected`の早期returnを無くしても実害が出ないか」で
+述べた安全性論拠が、ADR-141決定4の不動点制約という別ルールに依存していた
+ことが判明した。hold-stateへのstoreのゲートを`!is_injected`単独ではなく
+`event_eligible`そのものにすることで、決定4に依存せず構造的に安全にした。
+詳細は決定B7本文の「訂正」箇所とADR-141決定1「r-later訂正」を参照。
+
 ADR-141（物理キー役割代入の基盤、Phase A、r3で収束済み）が確立した挿入点・
 hold-state設計・全単射制約・Altセンチネル不動点制約を前提に、実際のTOML
 config形式・`awase-settings`設定GUI・バリデーションの実装配置を決める。
@@ -637,6 +644,15 @@ AppConfig`）に`key_role`フィールドを追加する際は、過去に`keyst
      latch状態を伴う）であり、純粋関数への切り出しが本質的に難しい。
      `win32.rs:169`と同様、`windows-build`CIジョブで実行する
      `#[cfg(test)]`として実装する（r2レビューpremortem役N-1）。
+  6. **store側のゲートテスト**（2026-09-06追加、ADR-143レビューで判明）:
+     `decide_role_substitution`自体の網羅テーブル（項目3、`event_eligible`
+     の32通り）は「呼び出し結果が何を返すか」のみを検証し、「呼び出し元
+     （hook.rs）が結果をhold-stateへstoreするかどうか」は対象外である。
+     `event_eligible=false`のイベント（injected、またはAlt impersonation
+     由来）を処理した後に`{KEY}_WAS_DOWN`/`{KEY}_CONFIRMED_TARGET`が
+     変化しないことを、項目5と同様`windows-build`CIジョブの
+     `#[cfg(test)]`として別途追加する（vk変換自体は無条件に行われる点と
+     混同しないこと——検証対象はstore側のみ）。
 
   **申し送り内容の追記**（r3レビューpremortem役S-3、r4レビューarchitect役
   Nit）: 上記のシグネチャ拡張はADR-141決定2だけでなく**決定1-1も
@@ -670,10 +686,22 @@ AppConfig`）に`key_role`フィールドを追加する際は、過去に`keyst
   なっても、KeyUpで`confirmed_target`と`was_down`が両方クリアされる
   ため自己修復的であり、「一時的に代入がスキップされる」（安全側）に
   留まる——ADR-141決定7の「stuck-trueは危険だがstuck-falseはそうならない」
-  という非対称と同じ性質である。Alt impersonation出力
-  （`VK_NONCONVERT`/`VK_CONVERT`）が安全な3キーそのものと同じスロットを
-  引く経路についても、ADR-141決定4の不動点制約によりそのスロットの
-  `rule_target`が恒等になるため、結果的に無害である。
+  という非対称と同じ性質である。
+
+  **訂正（2026-09-06、ADR-143レビューで判明、Major相当）**: 上記の
+  「Alt impersonation出力が安全な3キーと同じスロットを引く経路も、
+  ADR-141決定4の不動点制約により結果的に無害」という論拠は、**store側の
+  ゲートを`!is_injected`単独にした場合にのみ必要になる**もので、
+  決定4という別ルールへ安全性を依存させてしまっていた。正しくは、
+  hold-state（`{KEY}_WAS_DOWN`/`confirmed_target`）へのstoreのゲートを
+  `!is_injected`ではなく**`event_eligible`そのもの**にする（vk変換自体は
+  引き続き無条件——ここは変えない）。これによりAlt impersonation由来の
+  イベント（injectedではないがAlt適用済み）もstoreされなくなり、
+  「物理無変換キーを押したままLeft Altを離す」という操作でAlt側のKeyUpが
+  誤ってstoreされ物理無変換キー自身のhold-stateが途中でクリアされる
+  （NONCONVERT_WAS_DOWNが誤ってfalseに変わってしまう）経路が構造的に閉じる。決定4の
+  不動点制約は結果として引き続き成立するが、**それに依存しなくても安全**
+  という形に強化された。詳細はADR-141決定1「r-later訂正」を参照。
 - **`state/key_role.rs`は必ずungatedで登録する**（r1レビュー
   premortem役W-4）: `state/mod.rs`は`alt_impersonation`等を
   `#[cfg_attr(not(windows), allow(dead_code))] pub mod`として登録して
