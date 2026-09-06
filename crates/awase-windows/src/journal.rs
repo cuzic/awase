@@ -674,6 +674,15 @@ impl JournalEntry {
     /// **`_ =>` ワイルドカードを書かない**こと。`architecture_guard.rs` の
     /// `journal_emit_tracing_has_no_debug_display_sigils_or_wildcards` が
     /// `?`/`%` シギルと併せてこれを機械的に禁止する。
+    ///
+    /// 19 variant を1関数で網羅する構造上、`cognitive_complexity` は必然的に
+    /// 高くなる（実測 21/15、Windows実機CIで検出）。`hook_callback` 等
+    /// 既存の大規模dispatch関数と同型の許容パターン（本ファイルの他、
+    /// `output/mod.rs`・`runtime/key_pipeline.rs`等13箇所に既存）。
+    /// variantごとに小関数へ分割すると、match の網羅性チェック
+    /// （将来variant追加時のコンパイルエラー検知、この機構の唯一の安全装置）
+    /// が複数関数に分散し、かえって見通しが悪くなる。
+    #[expect(clippy::cognitive_complexity)]
     fn emit_tracing(&self, seq: u64, elapsed_ms: u64) {
         match self {
             Self::KeyInput {

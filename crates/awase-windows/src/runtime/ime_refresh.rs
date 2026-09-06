@@ -565,6 +565,13 @@ impl Runtime {
             .check_drift_correction(now, explicit_intent)
     }
 
+    // `#[tracing::instrument]`（ADR-139決定3）のマクロ展開が実測でcognitive_complexityを
+    // 17/15へ押し上げた（Windows実機CIで検出、log→tracingのマクロ名置換自体は
+    // ADR-139決定1で影響なしと確認済みだったが、#[instrument]の展開はそれとは
+    // 別に複雑度を増やす）。この関数はADR-080不変条件6の対象で
+    // architecture_guard.rsのマーカーベーステストが依存する繊細な構造のため、
+    // ロジックの分割はしない。
+    #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(level = "debug", skip_all)]
     fn ir_apply_drift_correction(&mut self) {
         // BUG-20 で non-ImmCross（GJI/TsfNative/Blacklist）向けの再送分岐を追加した際、
