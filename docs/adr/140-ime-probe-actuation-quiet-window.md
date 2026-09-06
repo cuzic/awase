@@ -60,10 +60,10 @@ Explore 2体 + Opus設計2体による深い調査（相互批判による収束
    別ADRへ切り出す。
 5. **GJI actuationの発行経路は少なくとも3つ確認されており、他にも
    存在しうる**（実コード照合済み、以下引用は全てこのタスクで直接
-   確認したfile:line。リポジトリパスは`crates/awase-windows/src/`
-   相対）:
+   確認したfile:line。特に断りのない限り`crates/awase-windows/src/`相対、
+   `src/config.rs`のようにルートクレート`src/`相対のものは都度明記）:
    - **(a) 同期経路**: `ime_controller.rs:546`の`ImeController::apply`が
-     「同期経路の唯一の合流点」であることは同関数のdocコメント
+     「同期経路の唯一の合流点」であることは同関数本体のコメント
      （`ime_controller.rs:548-551`）で明記され、実際の生産コード上の
      呼び出し元は`runtime/key_pipeline.rs:1311`と`platform.rs:1561`の
      2箇所のみ（`ime_controller.rs:790`/`:867`はテストのみ）。内部で
@@ -193,6 +193,32 @@ Step 1の設計候補は複数存在し収束途上である。将来的な排�
 起きている（Chrome probe定数のエスカレーション事例、
 `tuning-constants.md`参照。数値そのものも本ADRでは引用しない）。
 
+**Step 1候補として追記（2026-09-06、ユーザー提案）**: probe（`kp_stage_idle_conv_check_inner`）
+のライフサイクル（spawn → issue時点の確認 → apply/abandon）を、
+`conv_mutation_seq_at_spawn`等の場当たり的なスナップショット変数を
+`.await`をまたいで持ち回す現状の実装から、`crates/timed-fsm`の
+`StepCoro`（`timed_fsm::coro::StepCoro`）を使った明示的なコルーチンへ
+書き換える案。根拠:
+
+- `timed-fsm`自身のドキュメント（`crates/timed-fsm/src/coro.rs`）が
+  「フェーズが直線的に進む多段ワークフロー」には`StepCoro`が、
+  「どの状態でも同じイベントセットを受け付ける」機械には
+  `TimedStateMachine`（enum状態＋遷移テーブル）が向くと明記している。
+  probeのライフサイクルは前者（直線的な多段ワークフロー）に該当する。
+- このリポジトリには直接の先例がある: `tsf/warmup/probe_fsm.rs`
+  （TSF/Chrome cold-start probe）は元々明示的な`ProbePhase` enumで
+  実装されていたが、`StepCoro`ベースの実装に置き換えられている
+  （同ファイルの module doc「フェーズ遷移はStepCoro async本体に直線記述し、
+  ProbePhase enumは不要」）。
+- `StepCoro`の`step()`はテストから直接呼べる（`timed_fsm::coro`の
+  doctestを参照）ため、両設計案（Opus 2体）が要求していた
+  「Linuxで回帰テスト可能」という条件を、offloadやwin32-asyncの実行時
+  機構なしに満たせる。
+
+**この案の採否は未確定。Step 1着手時に、既存の`ImeIoArbiter`/フェンス
+等価方式（前掲の設計案A〜D）と比較検討すること。** 本ADRのスコープ
+（Step 0のみ）には影響しない。
+
 ## Step 0 データ収集プロトコル
 
 収集するログは`tuning-constants.md`が要求する「測ったもの／数値／導出」
@@ -208,6 +234,13 @@ Step 1の設計候補は複数存在し収束途上である。将来的な排�
 - **導出**: 収集したΔmsの分布（最大値・p99等）から、Step 1で必要になる
   排他窓の量を導出する。ここが「実測に基づく値」であり、本ADRでは
   導出できないため書かない。
+
+**ログ量の注意**: `imm.rs::send_ime_control`はChrome/GJI cold-start
+再初期化ポーリング（10ms間隔）にも乗るチョークポイントであるため、
+`RUST_LOG=debug`での収集は高頻度・大容量になる。journalの
+`DumpTruncated`機構が既存のprobe/actuationログでも切り詰めを起こす
+実績があるため、収集時間を絞る・grepで`[ime-io]`のみに絞る等の対策を
+収集手順に含めること。
 
 **Step 1着手前の必須ゲート条件**（`79134f5`の教訓を明示的なゲートとして
 記載する）: `79134f5`（Chrome probe定数修正）は、Chrome cold-startの
