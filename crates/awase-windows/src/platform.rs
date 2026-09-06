@@ -768,8 +768,28 @@ impl WindowsPlatform {
         // 「安全に送信してよい」と誤認し、フォーカス変更直後の未準備な状態へ
         // romaji を即送信して先頭文字がリテラル化した。`confirmed` を立てない
         // `update_ime_mode_hint_from_imc` を使うこと。
+        //
+        // ADR-140 Step1b（`/code-review max`指摘）: `kp_stage_idle_conv_check_inner`
+        // と全く同型のクロスプロセス conv 読み取りでありながらフェンス対象外
+        // だった。hint専用（confirmed を立てない）ため severity は低いが、
+        // GJI actuation と交錯した値で cold 判定のヒントが歪むこと自体は
+        // 避けられる（`crate::probe_actuation_fence` module doc 参照）。
+        let probe_actuation_fence_at_spawn = crate::probe_actuation_fence::current();
         win32_async::spawn_local(async move {
-            let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
+            let outcome = crate::ime::get_ime_conversion_mode_fenced_async(
+                50,
+                probe_actuation_fence_at_spawn,
+            )
+            .await;
+            let conv = match outcome {
+                crate::probe_actuation_fence::FencedProbeOutcome::Abandoned => {
+                    tracing::debug!(
+                        "[ime-mode] FocusProbe: GJI actuation との交錯を検知 → hint更新をabandon"
+                    );
+                    return;
+                }
+                crate::probe_actuation_fence::FencedProbeOutcome::Read(conv) => conv,
+            };
             let _ = crate::with_app(|runtime| {
                 let current_gen = runtime.platform.output.ime_mode_focus_gen.get();
                 if current_gen == ime_mode_gen {

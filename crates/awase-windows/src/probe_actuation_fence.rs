@@ -27,8 +27,16 @@
 //!   **同一の条件式**で bump する。
 //!
 //! 判定を診断ログと共有することで将来の乖離を防ぐ。`Ordering::Relaxed` で
-//! 足りる（`conv_mutation` と同じ理屈: 単一ロケーションのカウンタで、これ経由で
-//! 他のデータを publish しないため）。
+//! 足りる: 単一ロケーションのカウンタで、これ経由で他のデータを publish
+//! しないため（`conv_mutation` と同じ理屈）。**ただし精密には次の点で
+//! `conv_mutation` と異なる**（`/code-review max`指摘）: `conv_mutation` の
+//! 比較は常にメインスレッドから行われるのに対し、本フェンスは
+//! `get_ime_conversion_mode_fenced_async` のチェックポイント2（issue(worker)）
+//! でワーカースレッドから読む。単一アトミック変数には x86_64/ARM64 上で
+//! 単一の全順序があるため観測される staleness は理論上も起きにくく、かつ
+//! チェックポイント3（apply、メインスレッド）が第二の検出機会として残るため
+//! 実害はないが、「`conv_mutation` と全く同じ理由で安全」という単純な類推は
+//! 不正確——ワーカースレッドから読む点は `conv_mutation` に前例がない。
 //!
 //! **注意（実装レビュー指摘m3）**: 「物理境界が単一チョークポイントである」
 //! という上記の主張が保証するのは *syscall の発行口が1箇所である* ことのみで、
@@ -43,13 +51,25 @@
 //!
 //! # 比較点（probe 側の呼び出し元のみ、`ime::offload_unsafe` には絶対に置かない）
 //!
-//! 現状の唯一の消費者は `runtime/key_pipeline.rs::kp_stage_idle_conv_check_inner`
-//! （BUG-113 の idle-conv-check probe）。`crate::ime::offload_unsafe` は
-//! probe/actuation 双方が通る共通ヘルパーのため、ここに比較を置くと
-//! 「actuation が actuation を待つ」という、却下済みの対称ロック方式と同型の
-//! 失敗モードを1階層上で再現する。将来別の probe 経路がこのフェンスを使う
-//! 場合も、比較は必ずその probe 呼び出し元（`ime.rs`/`imm.rs` の共通ヘルパー
-//! ではない）で行うこと。
+//! 比較ロジック自体は [`crate::ime::get_ime_conversion_mode_fenced_async`]
+//! に集約されている（ADR-140 Step1b、`/code-review max`指摘: Step1完了時点
+//! では`kp_stage_idle_conv_check_inner`だけがフェンスされ、全く同型
+//! （`spawn_local`/ループ→クロスプロセス conv 読み取り→`with_app`、
+//! focus世代の照合のみ）の他の probe 経路——`output/probe_io.rs::
+//! start_ms_ime_ready_poll`〈MS-IME BUG-13 confirm-then-transmitゲート〉・
+//! `send_chrome_gji_reinit_and_poll`〈Chrome cold-reinit時のGJI確認〉・
+//! `platform.rs`のFocusChange直後IMCヒント probe——がフェンス対象外のまま
+//! 残っていた。この関数を共通の入口にすることで、新しい probe 経路を
+//! 追加する開発者が「フェンスすべきかどうか」を毎回再検討しなくても、
+//! この関数を使う限り自動的にフェンスされる)。
+//!
+//! `crate::ime::offload_unsafe` は probe/actuation 双方が通る共通ヘルパーの
+//! ため、ここに比較を置くと「actuation が actuation を待つ」という、
+//! 却下済みの対称ロック方式と同型の失敗モードを1階層上で再現する
+//! ——`get_ime_conversion_mode_fenced_async`は意図的にこれを経由しない。
+//! 将来さらに別の probe 経路を追加する場合も、比較は必ず
+//! `get_ime_conversion_mode_fenced_async`（または同型の専用ヘルパー）
+//! 経由で行い、共通ヘルパーには絶対に比較を置かないこと。
 //!
 //! # abandon カウンタ（決定I: resync 経路と通常経路を分けて数える）
 //!
@@ -92,6 +112,24 @@ pub(crate) fn bump() {
 /// 判定しない——`conv_mutation::current()` と同じ規約）。
 pub(crate) fn current() -> u64 {
     PROBE_ACTUATION_FENCE.load(Ordering::Relaxed)
+}
+
+/// [`crate::ime::get_ime_conversion_mode_fenced_async`] の結果（ADR-140
+/// Step1 決定E/F、Step1bで全 probe 呼び出し元共通の型として抽出）。
+///
+/// `Read(None)`（純粋な読み取り失敗、`SendMessageTimeoutW` のタイムアウト等）と
+/// `Abandoned`（probe issue 前後で GJI actuation フェンスの不一致を検知し、
+/// probe 自体を安全側に諦めた）を区別可能な別の値として表現する。呼び出し元
+/// ごとに `Abandoned` の扱いは異なってよい（例:
+/// `kp_stage_idle_conv_check_inner` は resync gate の扱いを変える、
+/// `start_ms_ime_ready_poll`/`send_chrome_gji_reinit_and_poll` は
+/// 単に「今回のtickは進展なし」として次のpollへ進む）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FencedProbeOutcome {
+    /// probe を実際に issue し、結果が返った（成功/タイムアウトを問わない）。
+    Read(Option<u32>),
+    /// probe issue 前後でフェンス不一致を検知し、OS 呼び出し自体を発行しなかった。
+    Abandoned,
 }
 
 /// resync 経路（`kp_trigger_focus_resync` 由来）の probe abandon 累計回数

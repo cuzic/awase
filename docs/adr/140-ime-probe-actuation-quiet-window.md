@@ -655,6 +655,48 @@ Blockerは無かったが、Major 3件・Minor 4件の指摘を受けて反映�
 
 収束（Blocker/Major 0件、Minor全件対応済み）。
 
+## Step1b（2026-09-06、`/code-review max`指摘への対応）
+
+Step1のPRに対する`/code-review max`が、`kp_stage_idle_conv_check_inner`と
+全く同型（`spawn_local`/ポーリングループ→クロスプロセス conv 読み取り→
+`with_app`、focus世代の照合のみ）でありながら`probe_actuation_fence`の
+対象外だった probe 経路を3箇所検出した:
+
+1. `output/probe_io.rs::start_ms_ime_ready_poll`（MS-IME BUG-13
+   confirm-then-transmitゲート、`confirmed=true`を実際に立てる経路）
+2. `output/probe_io.rs::send_chrome_gji_reinit_and_poll`（Chrome
+   cold-reinit時のGJI確認ポーリング）
+3. `platform.rs`のFocusChange直後IMCヒントprobe（hint専用、severity低）
+
+比較ロジック（決定C/D、チェックポイント1/2）を`crate::ime::
+get_ime_conversion_mode_fenced_async`（`crate::probe_actuation_fence::
+FencedProbeOutcome`を返す）として汎用化し、`kp_stage_idle_conv_check_
+inner`を含む4箇所全てがこれを共通の入口として使うよう配線した
+（`crate::ime::offload_unsafe`には引き続き比較を置かない、決定C厳守）。
+
+Abandon時の扱いは呼び出し元ごとに異なる（決定E/Fと同じ「メカニズムと
+ポリシーの分離」方針）:
+
+- `kp_stage_idle_conv_check_inner`: resync gateの非対称扱い（既存どおり）。
+- 上記3箇所: resync gate概念が無いため、いずれも「今回のtickは進展なし、
+  次tickへ継続」として既存の未観測（`with_app`再入等）扱いに合流させる
+  だけでよい。abandon専用カウンタ（決定I相当）は追加していない
+  ——これら3箇所はidle-conv-checkほど高頻度に発火しない（MS-IME
+  confirm-gate/Chrome cold-reinit/FocusChangeの各契機のみ）ため
+  starvationリスクが低く、実機ソークでの`RUST_LOG=debug`ログ確認で
+  足りると判断した。
+
+やらないこと（Step1bのスコープ外）:
+
+- 決定I相当のabandonカウンタを新3箇所へ追加すること（上記理由により
+  見送り、必要になれば追加する）。
+- `/code-review max`が指摘したその他のNit（`probe_actuation_fence.rs`の
+  bump/current・record_abandoned/record_spawnedのボイラープレート重複、
+  `architecture_guard.rs`の`count_real_calls`との重複、`examples/`配下の
+  spike実験バイナリのフェンス対象外化）——正確性・安全性に影響しない
+  純粋なリファクタ/スコープ明確化の提案であり、実装レビューが検証した
+  「Blockerではない」という判定どおり見送った。
+
 ## 関連
 
 [docs/known-bugs.md](../known-bugs.md) BUG-113、

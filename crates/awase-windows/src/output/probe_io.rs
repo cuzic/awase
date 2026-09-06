@@ -231,36 +231,56 @@ impl ProbeIo for Output {
                         cold_seq = cold_seq.value(),
                     );
                 }
-                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
-                tracing::debug!(
-                    "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={} \
-                     write_delta=+{write_delta}B",
-                    fmt_conv(conv),
-                    conv.is_some_and(|v| crate::imm::cmode_has(v, crate::imm::IME_CMODE_NATIVE)),
-                    cold_seq = cold_seq.value(),
-                );
-                let status = crate::with_app(|runtime| {
-                    if !refresh_ime_mode_if_focus_matches(&runtime.platform.output, focus_gen, conv)
-                    {
-                        return GjiReinitPollStatus::Stale;
+                // ADR-140 Step1b（`/code-review max`指摘）: `kp_stage_idle_conv_check_inner`
+                // と全く同型のクロスプロセス conv 読み取りでありながらフェンス対象外
+                // だった。GJI actuation との交錯を見逃すと、cold-start 直後の未安定な
+                // conv を Hiragana 確認済みと誤認しうる（`crate::probe_actuation_fence`
+                // module doc 参照）。
+                let fence_at_call = crate::probe_actuation_fence::current();
+                let outcome =
+                    crate::ime::get_ime_conversion_mode_fenced_async(15, fence_at_call).await;
+                let status = match outcome {
+                    crate::probe_actuation_fence::FencedProbeOutcome::Abandoned => None,
+                    crate::probe_actuation_fence::FencedProbeOutcome::Read(conv) => {
+                        tracing::debug!(
+                            "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={} \
+                             write_delta=+{write_delta}B",
+                            fmt_conv(conv),
+                            conv.is_some_and(|v| crate::imm::cmode_has(
+                                v,
+                                crate::imm::IME_CMODE_NATIVE
+                            )),
+                            cold_seq = cold_seq.value(),
+                        );
+                        crate::with_app(|runtime| {
+                            if !refresh_ime_mode_if_focus_matches(
+                                &runtime.platform.output,
+                                focus_gen,
+                                conv,
+                            ) {
+                                return GjiReinitPollStatus::Stale;
+                            }
+                            // Hiragana 確認済みならポーリング終了
+                            let fsm = runtime.platform.output.ime_mode_fsm.borrow();
+                            if fsm.state().is_hiragana() && fsm.is_confirmed() {
+                                GjiReinitPollStatus::Confirmed
+                            } else {
+                                GjiReinitPollStatus::Timeout
+                            }
+                        })
                     }
-                    // Hiragana 確認済みならポーリング終了
-                    let fsm = runtime.platform.output.ime_mode_fsm.borrow();
-                    if fsm.state().is_hiragana() && fsm.is_confirmed() {
-                        GjiReinitPollStatus::Confirmed
-                    } else {
-                        GjiReinitPollStatus::Timeout
-                    }
-                });
+                };
                 // ADR-101/BUG-74 コードレビュー指摘: `with_app` が再入で `None` を
                 // 返した場合、focus 世代照合も Hiragana 確認も行えていない（判定不能）
                 // だけであり、実際に stale（フォーカスが変わった）と分かったわけではない。
                 // 旧実装はここを `Stale` 扱いにして即座に completion を確定させていたため、
                 // たまたま1tick 再入しただけで retry と deferred 救済の両方を失っていた。
                 // 未観測として次 tick へ継続する（`Timeout` 分岐と同じ「何もしない」扱い）。
+                // ADR-140 Step1b: 上記の abandon（`None`）も同じ「未観測」扱いに合流する。
                 if status.is_none() {
                     tracing::debug!(
-                        "[chrome-reinit] cold={cold_seq} with_app reentrant, skip tick #{i}",
+                        "[chrome-reinit] cold={cold_seq} with_app reentrant or fence-abandoned, \
+                         skip tick #{i}",
                         cold_seq = cold_seq.value(),
                     );
                 }
@@ -417,39 +437,60 @@ impl Output {
     /// `ime_mode_focus_gen` の世代照合により、ポーリング中にフォーカスが変わった場合は
     /// stale 結果で `ImeModeFsm` / latch を汚染せず黙って終了する。
     /// 待機側は `MsImeReadyCoro`（`pending_tsf`）が env 経由で確認を観測する。
+    ///
+    /// ADR-140 Step1b（`/code-review max`指摘）: `kp_stage_idle_conv_check_inner`
+    /// と全く同型の spawn→クロスプロセス conv 読み取り→`with_app` の形でありながら
+    /// フェンス対象外だった。この読み取りは `confirmed=true` を実際に立てて
+    /// `Output::ms_ime_gate_defer`（BUG-13）の送信可否を決めるため、GJI/actuation
+    /// との交錯を見逃すと未準備な IME への早期送信を招きうる
+    /// （`crate::probe_actuation_fence` module doc 参照）。
     pub(crate) fn start_ms_ime_ready_poll(&self, cold_seq: Generation, deadline_ms: u64) {
         let gen = self.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
             loop {
-                let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
-                let status = crate::with_app(|runtime| {
-                    let out = &runtime.platform.output;
-                    if !refresh_ime_mode_if_focus_matches(out, gen, conv) {
-                        return MsImePollStatus::Stale;
-                    }
-                    if out.ime_mode_fsm.borrow().is_native_ready() {
-                        return MsImePollStatus::Ready;
-                    }
-                    // ADR-084（BUG-49 追補2）: `shift-conv-guard` の hold 中は
-                    // `confirm_gate_deadline_override_ms` が元の `deadline_ms`
-                    // （送信試行時点起点）を押し出す。詳細は `MsImeReadyCoro` の
-                    // 同型コメント参照。
-                    let effective_deadline_ms =
-                        deadline_ms.max(out.confirm_gate_deadline_override_ms.get());
-                    if crate::hook::current_tick_ms() >= effective_deadline_ms {
-                        out.ms_ime_gate_give_up.set(true);
-                        tracing::warn!(
-                            "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
-                             (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
-                             （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
+                let fence_at_call = crate::probe_actuation_fence::current();
+                let outcome =
+                    crate::ime::get_ime_conversion_mode_fenced_async(10, fence_at_call).await;
+                let status = match outcome {
+                    crate::probe_actuation_fence::FencedProbeOutcome::Abandoned => {
+                        tracing::debug!(
+                            "[msime-ready] cold={cold_seq} GJI actuation との交錯を検知 → \
+                             このtickの読み取りをabandon（次tickへ継続）",
                             cold_seq = cold_seq.value(),
                         );
-                        MsImePollStatus::Expired
-                    } else {
                         MsImePollStatus::Pending
                     }
-                })
-                .unwrap_or(MsImePollStatus::Stale);
+                    crate::probe_actuation_fence::FencedProbeOutcome::Read(conv) => {
+                        crate::with_app(|runtime| {
+                            let out = &runtime.platform.output;
+                            if !refresh_ime_mode_if_focus_matches(out, gen, conv) {
+                                return MsImePollStatus::Stale;
+                            }
+                            if out.ime_mode_fsm.borrow().is_native_ready() {
+                                return MsImePollStatus::Ready;
+                            }
+                            // ADR-084（BUG-49 追補2）: `shift-conv-guard` の hold 中は
+                            // `confirm_gate_deadline_override_ms` が元の `deadline_ms`
+                            // （送信試行時点起点）を押し出す。詳細は `MsImeReadyCoro` の
+                            // 同型コメント参照。
+                            let effective_deadline_ms =
+                                deadline_ms.max(out.confirm_gate_deadline_override_ms.get());
+                            if crate::hook::current_tick_ms() >= effective_deadline_ms {
+                                out.ms_ime_gate_give_up.set(true);
+                                tracing::warn!(
+                                    "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
+                                     (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
+                                     （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
+                                    cold_seq = cold_seq.value(),
+                                );
+                                MsImePollStatus::Expired
+                            } else {
+                                MsImePollStatus::Pending
+                            }
+                        })
+                        .unwrap_or(MsImePollStatus::Stale)
+                    }
+                };
 
                 match status {
                     MsImePollStatus::Ready => {

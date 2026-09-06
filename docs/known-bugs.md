@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）は再発しなくなった。半角状態での変換/無変換キーでは「@」単発は残るが大量暴発は解消——これは別の未特定要因として残置（詳細は末尾の追記参照）**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キーでは「@」単発は残るが大量暴発は解消——これは別の未特定要因として残置（詳細は末尾の追記参照）**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14521,6 +14521,32 @@ probe呼び出しのみ）が対象にしていない経路——例えば変換
 本ADR-140 Step1のスコープ外の別調査として扱い、本PRでは追いかけない**
 （Step1はその設計対象である主再現手順に対して効果を確認できたため、
 このPR自体は完了とみなす）。
+
+**追記（2026-09-06 続き・Step1b、`/code-review max`指摘への対応）:**
+Step1のPR（上記）に対する`/code-review max`が、`kp_stage_idle_conv_check_
+inner`と全く同型（`spawn_local`/ポーリングループ→クロスプロセス conv 読み取り
+→`with_app`、focus世代の照合のみ）でありながら`probe_actuation_fence`の
+対象外だった probe 経路を3箇所検出した（実コード確認済み）:
+
+1. `output/probe_io.rs::start_ms_ime_ready_poll`（MS-IME の BUG-13
+   confirm-then-transmitゲート、`confirmed=true`を実際に立てて送信可否を
+   決める経路——GJI actuationとの交錯を見逃すと未準備なIMEへ早期送信
+   しうる、本BUGと同じ機構）
+2. `output/probe_io.rs::send_chrome_gji_reinit_and_poll`（Chrome
+   cold-reinit時のGJI確認ポーリング、まさに本BUGと同種のGJI向け経路）
+3. `platform.rs`のFocusChange直後IMCヒントprobe（`update_ime_mode_hint_
+   from_imc`、confirmedを立てないhint専用のためseverityは低い）
+
+3箇所とも`crate::ime::get_ime_conversion_mode_fenced_async`（Step1の
+`idle_conv_check_probe`を汎用化したもの、`crate::probe_actuation_fence::
+FencedProbeOutcome`を返す）経由に配線した。abandon時の扱いはStep1の
+`kp_stage_idle_conv_check_inner`のような resync gate の非対称扱いは不要
+（このgate概念がない）で、いずれも「今回のtickは進展なし、次tickへ
+継続」として既存の未観測（`with_app`再入等）扱いに合流させた。
+
+半角状態での変換/無変換キーで残る「@」単発（大量暴発は既に解消済み）が
+これらの経路の交錯によるものかは未検証——次のステップは実機での再現
+テスト。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
