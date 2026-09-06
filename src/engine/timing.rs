@@ -218,7 +218,7 @@ impl<'a> TimingJudge<'a> {
             _ => f32::NEG_INFINITY,
         };
 
-        log::trace!(
+        tracing::trace!(
             "3-key arbitration: d1={d1}µs d2={d2}µs score_a={score_a:.3} score_b={score_b:.3}"
         );
 

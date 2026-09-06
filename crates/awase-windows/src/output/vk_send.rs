@@ -89,7 +89,7 @@ impl Output {
         }
         let n = self.flush_pending_deferred_vks();
         if n > 0 {
-            log::debug!(
+            tracing::debug!(
                 "[pending-deferred] drain-before-send: 新規モーラの前に取り残し {n} VK(s) をflush"
             );
             // `JournalEntry` への変換は platform.rs 側で行う（output/tsf は
@@ -127,7 +127,7 @@ impl TsfSendPipeline {
         };
 
         let t_send = crate::hook::current_tick_ms();
-        log::debug!(
+        tracing::debug!(
             "[tsf-transmit] cold={} romaji={:?} → {} t={}ms (eager={})",
             outcome.cold_seq.value(),
             romaji,
@@ -146,7 +146,7 @@ impl TsfSendPipeline {
                 chars.len()
             },
             |kana| {
-                log::debug!(
+                tracing::debug!(
                     "[h1-run] cold={} unicode TSF: {romaji:?} → '{}' (U+{:04X})",
                     outcome.cold_seq.value(),
                     kana,
@@ -224,7 +224,7 @@ impl Output {
             } else {
                 "ime=MsIme".to_string()
             };
-            log::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
+            tracing::info!("[key-output] KeyInput(batched): romaji={romaji:?} {ime_suffix}");
         }
 
         self.drain_pending_deferred_before_send_if_queue_only(gate);
@@ -235,7 +235,7 @@ impl Output {
             session_expired,
             prepend_f2_warmup,
         } = self.assess_warmth();
-        log::debug!(
+        tracing::debug!(
             "[vk-send] romaji={romaji:?} warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
@@ -254,14 +254,14 @@ impl Output {
 
         if prepend_f2_warmup {
             if session_expired {
-                log::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
+                tracing::debug!("[vk-warmup] session expired ({elapsed}ms) → F2-only先行バッチ (案A)");
             } else {
-                log::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
+                tracing::debug!("[vk-warmup] cold → F2-only先行バッチ (案A)");
             }
 
             let cold_seq = self.composition.increment_cold_start_count();
             let win_class = unsafe { crate::ime::get_foreground_window_class() };
-            log::debug!(
+            tracing::debug!(
                 "[h1-window] cold={cold_seq} class={win_class}",
                 cold_seq = cold_seq.value(),
             );
@@ -272,7 +272,7 @@ impl Output {
             // 担うため、送信前に GJI の準備を待つ予防は二重の保険だった。
             let f2_sent_ms = crate::hook::current_tick_ms();
             let (probe_min_ms, probe_max_ms) = (0, 0);
-            log::debug!(
+            tracing::debug!(
                 "[h1-probe] cold={cold_seq} idle_at_cold={}ms F2/probe待機省略 → per-VK confirm へ",
                 self.composition.idle_ms_at_last_cold(),
                 cold_seq = cold_seq.value(),
@@ -309,7 +309,7 @@ impl Output {
             win32_async::spawn_local(async move {
                 // 診断: pre-send IME conversion mode（旧 [cold-diag] log）
                 let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
-                log::debug!(
+                tracing::debug!(
                     "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={}",
                     conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
                     conv_pre
@@ -400,7 +400,7 @@ impl Output {
             } else {
                 "ime=MsIme".to_string()
             };
-            log::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
+            tracing::info!("[key-output] KeyInput(tsf): romaji={romaji:?} {ime_suffix}");
         }
 
         self.drain_pending_deferred_before_send_if_queue_only(gate);
@@ -419,7 +419,7 @@ impl Output {
         // 非 TSF epoch では常に 0。2026-07-06 到達不能パス監査 B1）。
         let used_eager_path = false;
 
-        log::debug!(
+        tracing::debug!(
             "[tsf-send] warm={warm} elapsed={}ms session_expired={session_expired} prepend_f2_warmup={prepend_f2_warmup}",
             fmt_ms(elapsed)
         );
@@ -438,7 +438,7 @@ impl Output {
             let cold_seq = started.probe.cold_seq;
             self.gji_begin_probe_guard();
             let probe_params = self.gji_current_probe_params().unwrap_or_else(|| {
-                log::warn!(
+                tracing::warn!(
                     "[tsf-send] cold パスだが GjiFsm に Authorized probe が無い（state={})",
                     self.gji_state_label()
                 );
@@ -528,7 +528,7 @@ impl Output {
                 return false;
             }
             let cold_seq = self.composition.cold_start_count();
-            log::info!(
+            tracing::info!(
                 "[msime-ready] cold={cold_seq} target={target:?} IME mode 未確認 \
                  (state={:?} confirmed={}) → {romaji:?} を defer して IMC 確認待ち",
                 fsm.state(),
@@ -563,7 +563,7 @@ impl Output {
             last_unicode_ms != 0 && crate::tsf::observer::gji_last_io_ms() <= last_unicode_ms
         };
         let used_eager_path = if in_post_unicode_pending {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-warm-start] cold={cold_seq} PendingGjiConfirm: GJI 未応答 → romaji={romaji:?} を unicode で強制送信",
                 cold_seq = cold_seq.value(),
             );
@@ -572,7 +572,7 @@ impl Output {
             used_eager_path
         };
 
-        log::debug!(
+        tracing::debug!(
             "[tsf-warm-start] cold={cold_seq} romaji={romaji:?} t={t_warm}ms",
             cold_seq = cold_seq.value(),
         );
@@ -591,7 +591,7 @@ impl Output {
             let chars_len = chars.len();
             win32_async::spawn_local(async move {
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(10).await;
-                log::debug!(
+                tracing::debug!(
                     "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} gji_idle={gji_idle}ms \
                      conv={} ROMAN={} NATIVE={}",
                     conv.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
@@ -645,7 +645,7 @@ impl Output {
     pub(super) fn send_char_as_tsf(&self, ch: char) {
         match self.injector.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
-                log::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
+                tracing::debug!("    send_char_as_tsf: '{ch}' → romaji \"{romaji}\"");
                 self.send_romaji_as_tsf(romaji);
             }
             CharResolution::Vk(vk, needs_shift) => {
@@ -660,7 +660,7 @@ impl Output {
                 // バイト列が同一になるよう vk_pair_to_ascii を ascii_to_vk の厳密な
                 // 逆写像として設計してある（vk.rs のラウンドトリップテスト参照）。
                 if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
-                    log::debug!(
+                    tracing::debug!(
                         "    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift} \
                          → romaji \"{ascii}\" 経由 (cold-start保護あり)"
                     );
@@ -668,12 +668,12 @@ impl Output {
                     self.send_romaji_as_tsf(ascii.encode_utf8(&mut buf));
                     return;
                 }
-                log::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                tracing::debug!("    send_char_as_tsf: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
-                    log::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
+                    tracing::debug!("    send_char_as_tsf: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
                 Self::send_vk_pair(vk, needs_shift, VkMarker::Tsf);
@@ -690,7 +690,7 @@ impl Output {
                 );
             }
             CharResolution::Unicode(ch) => {
-                log::debug!(
+                tracing::debug!(
                     "    send_char_as_tsf: '{ch}' (U+{:04X}) → fallback Unicode",
                     ch as u32
                 );
@@ -712,7 +712,7 @@ impl Output {
     pub(super) fn send_char_as_vk(&self, ch: char) {
         match self.injector.resolve_char(ch) {
             CharResolution::Romaji(romaji) => {
-                log::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
+                tracing::debug!("    send_char_as_vk: '{ch}' → romaji \"{romaji}\"");
                 // Batched (1回の SendInput) を使うことで、後続キー（Enter reinject 等）との
                 // 競合を防ぐ。per_key では K↓K↑ と A↓A↑ が別 SendInput になり、
                 // 間に Enter が割り込むと "kあ" のような出力破壊が起きる。
@@ -724,7 +724,7 @@ impl Output {
                 // send_char_as_tsf 側の同種修正と対称（コメント参照）。
                 // 2026-08-03/2026-08-05 ユーザー報告 BUG-47。
                 if let Some(ascii) = crate::vk::vk_pair_to_ascii(vk, needs_shift) {
-                    log::debug!(
+                    tracing::debug!(
                         "    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift} \
                          → romaji \"{ascii}\" 経由 (cold-start保護あり)"
                     );
@@ -732,12 +732,12 @@ impl Output {
                     self.send_romaji_batched(ascii.encode_utf8(&mut buf));
                     return;
                 }
-                log::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
+                tracing::debug!("    send_char_as_vk: '{ch}' → VK 0x{vk:02X} shift={needs_shift}");
                 // probe 進行中は VK を後回しにして romaji との送信順序を保証する
                 // （このフォールバック自体が現状理論上到達しない。理由は下の
                 // send_vk_pair 直後のコメント参照）。
                 if self.defer_vk_if_probe_in_flight(vk, needs_shift, DeferredOrigin::UserInput) {
-                    log::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
+                    tracing::debug!("    send_char_as_vk: VK 0x{vk:02X} deferred (probe in flight)");
                     return;
                 }
                 // scan code 付き（VkMarker::InjectedWithScan）、send_romaji_batch_immediate
@@ -748,7 +748,7 @@ impl Output {
                 Self::send_vk_pair(vk, needs_shift, VkMarker::InjectedWithScan);
             }
             CharResolution::Unicode(ch) => {
-                log::debug!(
+                tracing::debug!(
                     "    send_char_as_vk: '{ch}' (U+{:04X}) → fallback Unicode",
                     ch as u32
                 );

@@ -144,7 +144,7 @@ impl PassthroughQueue {
     pub(crate) fn check_keyup_symmetry(&mut self, event: &RawKeyEvent) -> Option<RawKeyEvent> {
         let is_key_down = matches!(event.event_type, KeyEventType::KeyDown);
         if !is_key_down && self.deferred_vks.remove(&event.vk_code) {
-            log::debug!(
+            tracing::debug!(
                 "[relay-sym] PassThrough KeyUp vk={:#04x}: KeyDown was deferred → force reinject for symmetry",
                 event.vk_code,
             );
@@ -177,7 +177,7 @@ impl PassthroughQueue {
             } else {
                 "pending effects".to_string()
             };
-            log::debug!(
+            tracing::debug!(
                 "[relay-defer] PassThrough deferred: {reason}, reinject(vk={:#04x} {})",
                 event.vk_code,
                 if is_key_down { "down" } else { "up" },

@@ -144,7 +144,7 @@ impl Output {
         _tick_ms: TickMs,
     ) -> ConvActuationOutcome {
         if !self.conv_mutation_allowed.get() {
-            log::debug!(
+            tracing::debug!(
                 "[conv-actuate] {reason:?} → conv_mutation_allowed=false のため却下 \
                  (target={target:?})"
             );
@@ -157,7 +157,7 @@ impl Output {
         self.ms_ime_gate_give_up.set(false);
 
         let raw_target = target.imm_conv_value();
-        log::info!("[conv-actuate] {reason:?} → target=0x{raw_target:08X} 書き込み (spawn)");
+        tracing::info!("[conv-actuate] {reason:?} → target=0x{raw_target:08X} 書き込み (spawn)");
         // ADR-086 INV-14: 起案時点（＝今、unconfirm と同一トランザクション内）の
         // hwnd を capture してから spawn_local へ渡す。フォーカス世代
         // （ime_mode_focus_gen）は `with_app` 経由でしか読めない（`ime.rs` は
@@ -169,7 +169,7 @@ impl Output {
         let focus_gen = self.ime_mode_focus_gen.get();
         win32_async::spawn_local(async move {
             let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                log::debug!("[conv-actuate] {reason:?} → capture 失敗（フォーカス無し）");
+                tracing::debug!("[conv-actuate] {reason:?} → capture 失敗（フォーカス無し）");
                 return;
             };
             let outcome = crate::ime::set_ime_conv_for_target(target, Some(raw_target), || {
@@ -177,7 +177,7 @@ impl Output {
                     .unwrap_or_else(|| focus_gen.wrapping_add(1))
             })
             .await;
-            log::info!("[conv-actuate] {reason:?} → 結果: {outcome:?}");
+            tracing::info!("[conv-actuate] {reason:?} → 結果: {outcome:?}");
         });
 
         ConvActuationOutcome::Actuated

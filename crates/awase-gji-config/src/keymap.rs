@@ -125,7 +125,7 @@ type StatusSetsByKey = BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>;
 /// 手順:
 /// 1. `command` が `IMEOn`/`IMEOff` の行だけを残す。
 /// 2. `key` に空白を含む行（修飾キー付き）は stage 1 のスコープ外として除外
-///    （`log::debug!` のみ、エラーにはしない）。
+///    （`tracing::debug!` のみ、エラーにはしない）。
 /// 3. 残った行をキー単位で集約し、[`STATUSES_WHEN_IME_OFF`]/
 ///    [`STATUSES_WHEN_IME_ON`] に基づいて toggle/on/off/矛盾（除外）に分類する。
 #[must_use]
@@ -136,7 +136,7 @@ pub fn extract_ime_keys(custom_keymap_table: &str) -> GjiImeKeys {
     let mut result = GjiImeKeys::default();
     for (key, (on_statuses, off_statuses)) in grouped {
         let Some(vk_name) = mozc_key_to_vk_name(&key) else {
-            log::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
+            tracing::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
             continue;
         };
         classify_and_push(&key, &vk_name, &on_statuses, &off_statuses, &mut result);
@@ -176,7 +176,7 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
             continue;
         }
         if row.key.contains(char::is_whitespace) {
-            log::debug!(
+            tracing::debug!(
                 "gji-config: 修飾キー付き行は stage 1 のスコープ外のため無視: key={}",
                 row.key
             );
@@ -191,7 +191,7 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
     let mut result = GjiModeKeys::default();
     for (key, commands) in by_key {
         let Some(vk_name) = mozc_key_to_vk_name(&key) else {
-            log::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
+            tracing::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
             continue;
         };
         let mut distinct = commands.into_iter();
@@ -199,7 +199,7 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
             continue;
         };
         if distinct.next().is_some() {
-            log::warn!(
+            tracing::warn!(
                 "gji-config: 状態間で遷移先が一意に定まらないためスキップしました: key={key}"
             );
             continue;
@@ -241,7 +241,7 @@ fn group_ime_rows_by_key(rows: &[KeymapRow]) -> StatusSetsByKey {
             continue;
         }
         if row.key.contains(char::is_whitespace) {
-            log::debug!(
+            tracing::debug!(
                 "gji-config: 修飾キー付き行は stage 1 のスコープ外のため無視: key={}",
                 row.key
             );
@@ -283,7 +283,7 @@ fn classify_and_push(
     } else if !off_statuses.is_empty() && on_statuses.is_empty() {
         result.off.push(vk_name.to_string());
     } else {
-        log::warn!(
+        tracing::warn!(
             "gji-config: 状態間で矛盾する割当のためスキップしました: key={key} on={on_statuses:?} off={off_statuses:?}"
         );
     }

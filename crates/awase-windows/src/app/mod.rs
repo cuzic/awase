@@ -86,7 +86,7 @@ impl StartupDiagnostics {
 
     fn warn(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        log::warn!("startup: {msg}");
+        tracing::warn!("startup: {msg}");
         self.warnings.push(msg);
     }
 
@@ -94,9 +94,9 @@ impl StartupDiagnostics {
         if self.warnings.is_empty() {
             return;
         }
-        log::info!("{} startup warning(s):", self.warnings.len());
+        tracing::info!("{} startup warning(s):", self.warnings.len());
         for w in &self.warnings {
-            log::info!("  - {w}");
+            tracing::info!("  - {w}");
         }
         let _ = with_app(|app| {
             app.show_tray_balloon(
@@ -116,7 +116,7 @@ impl Drop for HotKeyGuard {
         unsafe {
             let _ = UnregisterHotKey(None, self.0);
         }
-        log::info!("Hotkey {} unregistered", self.0);
+        tracing::info!("Hotkey {} unregistered", self.0);
     }
 }
 
@@ -137,9 +137,9 @@ pub fn run() -> Result<()> {
 /// 設定ファイルを読み込む
 fn load_config() -> Result<AppConfig> {
     let config_path = find_config_path()?;
-    log::info!("Loading config from: {}", config_path.display());
+    tracing::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
-    log::info!(
+    tracing::info!(
         "Default layout: {}, Threshold: {}ms",
         config.general.default_layout,
         config.general.simultaneous_threshold_ms,
@@ -185,7 +185,7 @@ pub(crate) fn read_bug_report_attachments(
     }) {
         Ok(text) => Some(text),
         Err(e) => {
-            log::warn!("[bug-report] config.toml read failed: {e}");
+            tracing::warn!("[bug-report] config.toml read failed: {e}");
             None
         }
     };
@@ -194,7 +194,7 @@ pub(crate) fn read_bug_report_attachments(
         let parsed: AppConfig = match toml::from_str(toml_text) {
             Ok(parsed) => parsed,
             Err(e) => {
-                log::warn!("[bug-report] config.toml parse failed: {e}");
+                tracing::warn!("[bug-report] config.toml parse failed: {e}");
                 return None;
             }
         };
@@ -203,14 +203,14 @@ pub(crate) fn read_bug_report_attachments(
         // が反映されず、実際に読まれている .yab と異なる場所を見に行く。
         let (validated, warnings) = parsed.validate();
         for w in &warnings {
-            log::warn!("[bug-report] config.toml validation warning: {w}");
+            tracing::warn!("[bug-report] config.toml validation warning: {w}");
         }
         let layouts_dir = resolve_relative(&validated.general.layouts_dir);
         let yab_path = layouts_dir.join(format!("{active_layout_name}.yab"));
         match std::fs::read_to_string(&yab_path) {
             Ok(text) => Some(text),
             Err(e) => {
-                log::warn!("[bug-report] {} read failed: {e}", yab_path.display());
+                tracing::warn!("[bug-report] {} read failed: {e}", yab_path.display());
                 None
             }
         }
@@ -234,7 +234,7 @@ fn parse_key_combos(
             })
         })
         .collect();
-    log::info!("{label}: {keys:?} ({} parsed)", parsed.len());
+    tracing::info!("{label}: {keys:?} ({} parsed)", parsed.len());
     parsed
 }
 
@@ -258,7 +258,7 @@ fn init_ime_sync_keys(
     let toggle = parse_vk_list(&ime_detect.toggle, "toggle");
     let on = parse_vk_list(&ime_detect.on, "on");
     let off = parse_vk_list(&ime_detect.off, "off");
-    log::info!(
+    tracing::info!(
         "IME detect keys: toggle={:?} on={:?} off={:?}",
         ime_detect.toggle,
         ime_detect.on,
@@ -306,7 +306,7 @@ fn init_ngram_validated(config: &ValidatedConfig, diag: &mut StartupDiagnostics)
     let max_us = u64::from(config.general.ngram_max_threshold_ms) * 1000;
     match NgramModel::from_file(&ngram_path, range_us, min_us, max_us) {
         Ok(model) => {
-            log::info!("N-gram model loaded from {}", ngram_path.display());
+            tracing::info!("N-gram model loaded from {}", ngram_path.display());
             let _ = with_app(|app| app.set_ngram_model(model));
         }
         Err(e) => diag.warn(format!("n-gramモデル解析失敗: {e}")),
@@ -318,13 +318,13 @@ pub(crate) fn check_keyboard_layout_on_change() {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
     if !is_japanese {
         if lang_id == crate::vk::LANGID_ENGLISH_US {
-            log::warn!(
+            tracing::warn!(
                 "Input language changed to English keyboard (101/102). \
                  Thumb-shift requires Japanese keyboard layout (106/109). \
                  LANGID=0x{lang_id:04X}",
             );
         } else {
-            log::warn!(
+            tracing::warn!(
                 "Input language changed to non-Japanese layout (LANGID=0x{lang_id:04X}). \
                  Thumb-shift requires Japanese keyboard layout (106/109).",
             );
@@ -438,7 +438,7 @@ pub(crate) fn dispatch_engine_message(
             let dropped = crate::hook_channel::HOOK_KEYS.take_dropped_and_clear_latch();
             if dropped > 0 {
                 crate::runtime::engine_window::mark_needs_engine_resync();
-                log::warn!("[hook-ring] dropped {dropped} key event(s)");
+                tracing::warn!("[hook-ring] dropped {dropped} key event(s)");
             }
             for event in events {
                 handle_hook_key_event(event);
@@ -574,7 +574,7 @@ pub(crate) fn launch_bug_report(
         args.push("--diagnostics".to_owned());
         args.push(path.to_string_lossy().into_owned());
     }
-    // BUG-34 横展開: journal（構造化イベント）とは別に、実際の log::warn!/info!/
+    // BUG-34 横展開: journal（構造化イベント）とは別に、実際の tracing::warn!/info!/
     // debug! 出力（awase.log）の末尾も添付できるようにする。journal には無い
     // send_health/degrade 系の警告ログを拾うため。
     if let Some(path) = app_log_path {
@@ -592,23 +592,23 @@ pub(crate) fn launch_settings_with_args(args: impl IntoIterator<Item = String>) 
         vec!["awase-settings"]
     };
     let Ok(exe) = std::env::current_exe() else {
-        log::warn!("awase-settings not found");
+        tracing::warn!("awase-settings not found");
         return;
     };
     let Some(dir) = exe.parent() else {
-        log::warn!("awase-settings not found");
+        tracing::warn!("awase-settings not found");
         return;
     };
     for name in &names {
         let path = dir.join(name);
         if path.exists() {
             if let Err(e) = std::process::Command::new(&path).args(&args).spawn() {
-                log::warn!("failed to spawn {name}: {e}");
+                tracing::warn!("failed to spawn {name}: {e}");
             }
             return;
         }
     }
-    log::warn!("awase-settings not found");
+    tracing::warn!("awase-settings not found");
 }
 
 /// 設定ファイルを再読み込みし、エンジンのパラメータを更新する
@@ -616,7 +616,7 @@ pub(crate) fn reload_config() {
     let raw_config = match load_config() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to reload config: {e}");
+            tracing::warn!("Failed to reload config: {e}");
             return;
         }
     };
@@ -625,7 +625,7 @@ pub(crate) fn reload_config() {
     // （ngram用・keys用・layout用）を作り、それぞれ report() していたため、
     // 設定リロード1回でトレイバルーンが最大3回出ていた。1つに統合し、
     // report() は関数末尾で1回だけ呼ぶ。あわせて config.validate() の
-    // 警告がこれまで log::warn! だけでユーザーに一切届いていなかった
+    // 警告がこれまで tracing::warn! だけでユーザーに一切届いていなかった
     // 非対称（起動時は diag.warn 経由でトレイバルーンに出る）も解消する。
     let mut diag = StartupDiagnostics::new();
 
@@ -708,9 +708,9 @@ pub(crate) fn reload_config() {
         Ok(layouts) => {
             let _ = with_app(|app| app.reload_layouts(layouts, &config.general.default_layout));
         }
-        Err(e) => log::warn!("Failed to rescan layouts on config reload: {e}"),
+        Err(e) => tracing::warn!("Failed to rescan layouts on config reload: {e}"),
     }
 
     diag.report();
-    log::info!("Config reloaded successfully");
+    tracing::info!("Config reloaded successfully");
 }

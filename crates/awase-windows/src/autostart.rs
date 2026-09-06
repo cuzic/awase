@@ -24,11 +24,11 @@ const VALUE_NAME: windows::core::PCWSTR = windows::core::w!("awase");
 #[must_use]
 pub fn register() -> bool {
     let Ok(exe) = std::env::current_exe() else {
-        log::error!("Failed to get current executable path");
+        tracing::error!("Failed to get current executable path");
         return false;
     };
     let Some(exe_str) = exe.to_str() else {
-        log::error!("Executable path contains non-UTF-8 characters");
+        tracing::error!("Executable path contains non-UTF-8 characters");
         return false;
     };
 
@@ -50,10 +50,10 @@ pub fn register() -> bool {
     };
 
     if result.is_ok() {
-        log::info!("Auto-start registered: {exe_str}");
+        tracing::info!("Auto-start registered: {exe_str}");
         true
     } else {
-        log::error!("Failed to register auto-start: {result:?}");
+        tracing::error!("Failed to register auto-start: {result:?}");
         false
     }
 }
@@ -65,10 +65,10 @@ pub fn unregister() -> bool {
     let result = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_SUBKEY, VALUE_NAME) };
 
     if result.is_ok() {
-        log::info!("Auto-start unregistered");
+        tracing::info!("Auto-start unregistered");
         true
     } else {
-        log::warn!("Failed to unregister auto-start (may not exist): {result:?}");
+        tracing::warn!("Failed to unregister auto-start (may not exist): {result:?}");
         false
     }
 }
@@ -106,13 +106,13 @@ pub fn migrate_from_schtasks() {
 
     match output {
         Ok(o) if o.status.success() => {
-            log::info!("Migration: removed legacy schtasks task '{TASK_NAME}'");
+            tracing::info!("Migration: removed legacy schtasks task '{TASK_NAME}'");
         }
         Ok(_) => {
             // タスクが存在しない場合は正常（ほとんどの実行はここを通る）
         }
         Err(e) => {
-            log::warn!("Migration: failed to invoke schtasks: {e}");
+            tracing::warn!("Migration: failed to invoke schtasks: {e}");
         }
     }
 }

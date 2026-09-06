@@ -128,10 +128,10 @@ pub(crate) enum ThumbKeyImeWarning {
     None,
     /// 無変換/変換に状態依存トグル（`Toggle`）を検出したが、
     /// `gji_thumb_key_ime_toggle`が`false`（既定）のため反映しなかった。
-    /// 対処法を案内する`log::warn!`が必要。
+    /// 対処法を案内する`tracing::warn!`が必要。
     ToggleDeclined,
     /// 状態依存トグルを、ユーザーのopt-in設定によりベストエフォートで
-    /// 反映した。`log::info!`で通知する。
+    /// 反映した。`tracing::info!`で通知する。
     ToggleHonored,
 }
 
@@ -605,7 +605,7 @@ mod windows_impl {
     pub(crate) fn sync_gji_charset_autodetect(app: &mut Runtime, is_gji: bool) {
         if !is_gji {
             if LAST_GJI_STREAK_CHECKED.swap(NOT_GJI, Ordering::Relaxed) == GJI_CHECKED {
-                log::info!(
+                tracing::info!(
                     "[gji-charset-autodetect] GJI から離脱: 自動検出したIME ON/OFFキーを解除"
                 );
                 // ime_on_auto/ime_off_auto/ime_toggle_auto を全て解除する
@@ -720,13 +720,13 @@ mod windows_impl {
             // 誘導される。以前のコードは後者を無言でreturnしていたが、
             // 今回は明示的に区別してログする。
             if bytes_read_ok {
-                log::debug!(
+                tracing::debug!(
                     "[gji-charset-autodetect] config1.db は読めましたがwire-format \
                      解析に失敗しました（Mozc/GJI側のスキーマ変更の可能性。\
                      docs/known-bugs.md BUG-115のfield番号ズレ修正経緯を参照）"
                 );
             } else {
-                log::debug!(
+                tracing::debug!(
                     "[gji-charset-autodetect] config1.db を読めませんでした \
                      （GJI 未インストール、または初回起動でまだ作成されていない等）"
                 );
@@ -743,7 +743,7 @@ mod windows_impl {
             // ここでの early returnはF15-F24自動検出だけをスキップする
             // （BUG-115、Step4c fix#4と同型の再発条件——配置順は
             // 回帰テストで固定）。
-            log::debug!(
+            tracing::debug!(
                 "[gji-charset-autodetect] session_keymap が CUSTOM ではないため \
                  F15-F24自動判定をスキップ: {:?}",
                 raw.session_keymap
@@ -766,7 +766,7 @@ mod windows_impl {
         off.extend(f_off);
         toggle.extend(f_toggle);
         if !on.is_empty() || !off.is_empty() || !toggle.is_empty() {
-            log::info!(
+            tracing::info!(
                 "[gji-charset-autodetect] config1.db から IME ON/OFF/トグルキーを \
                  自動検出しました: on={on:?} off={off:?} toggle={toggle:?}"
             );
@@ -798,7 +798,7 @@ mod windows_impl {
         match warning {
             ThumbKeyImeWarning::None => {}
             ThumbKeyImeWarning::ToggleDeclined => {
-                log::warn!(
+                tracing::warn!(
                     "[gji-charset-autodetect] GJIの設定（ATOKプリセット、またはカスタム\
                      キーマップ）が無変換/変換キー単体に状態依存のIME ON/OFFトグルを\
                      割り当てており、awaseの想定と衝突する可能性があります。対処法: \
@@ -811,7 +811,7 @@ mod windows_impl {
                 );
             }
             ThumbKeyImeWarning::ToggleHonored => {
-                log::info!(
+                tracing::info!(
                     "[gji-charset-autodetect] gji_thumb_key_ime_toggle=true \
                      設定により、無変換/変換キーの状態依存トグルをベストエフォートで \
                      反映しました（docs/known-bugs.md BUG-115参照）。"
@@ -835,7 +835,7 @@ mod windows_impl {
             // ユーザーがToggleDeclined案内に従いキーマップをOn/Off限定に
             // 直しても`warning`はNoneに戻るが、マスキング自体は解消しない
             // （/code-review指摘）。
-            log::warn!(
+            tracing::warn!(
                 "[gji-charset-autodetect] muhenkan_solo_tap_dedicated_fn_keyが設定済みの \
                  ため、無変換キーのIME open軸への追従は無効化されます（変換キー側のみ \
                  有効）。詳細はdocs/known-bugs.md BUG-115参照。"
@@ -869,7 +869,7 @@ mod windows_impl {
         if LAST_MODE_KEY_THUMB_WARNING.swap(packed, Ordering::Relaxed) == packed {
             return;
         }
-        log::warn!(
+        tracing::warn!(
             "[gji-charset-autodetect] GJIの設定が親指キーとして設定された \
              Hiragana/Katakana に状態依存のIME ON/OFFトグルを割り当てていますが、\
              gji_thumb_key_ime_toggle=false のため自動反映しません。挙動を理解した \

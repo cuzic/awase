@@ -9,7 +9,7 @@ pub struct ImeDetector;
 
 impl ImeDetector {
     pub fn new() -> Self {
-        log::info!("IME detector: stub (TISCopyCurrentKeyboardInputSource not yet implemented)");
+        tracing::info!("IME detector: stub (TISCopyCurrentKeyboardInputSource not yet implemented)");
         Self
     }
 

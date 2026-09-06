@@ -137,7 +137,7 @@ pub struct FocusFence {
 ///         let _ = with_app(|app| {
 ///             let current = app.focus_fence();
 ///             if let Admission::Reject(r) = ticket.admit(current) {
-///                 log::debug!("[ImmCrossProbe] rejected: {r}");
+///                 tracing::debug!("[ImmCrossProbe] rejected: {r}");
 ///                 return;
 ///             }
 ///             app.platform_state.ime.write_imm_cross_probe(open, tick_ms);
@@ -294,7 +294,7 @@ impl ImmLikeTicket {
 /// `ImmCrossProbe` / `FocusProbe` 系の複数の非同期完了ハンドラにほぼ同じ形で複製
 /// されていた（この struct 冒頭 doc の使用例が、まさにその複製されていたグルー
 /// コード）。受理されれば `f(app, accepted)` を呼び、棄却時は `reject_log` を
-/// そのまま `log::debug!` に渡して `None` を返す。
+/// そのまま `tracing::debug!` に渡して `None` を返す。
 ///
 /// `reject_log` は呼び出し元ごとに異なる（タグ名・文言）ログ本文をそのまま渡す
 /// （ログ文言自体は既存の観測結果であり、このリファクタで変更しない）。hwnd 不一致
@@ -321,11 +321,11 @@ pub(crate) fn admit_epoch_in_app<R>(
             let current_root = app.platform.focus.current.root_hwnd;
             let same_root = spawn_root == current_root;
             record_hwnd_mismatch(same_root);
-            log::debug!("{reject_log} (same_root={same_root})");
+            tracing::debug!("{reject_log} (same_root={same_root})");
             None
         }
         Admission::Reject(_) => {
-            log::debug!("{reject_log}");
+            tracing::debug!("{reject_log}");
             None
         }
     }

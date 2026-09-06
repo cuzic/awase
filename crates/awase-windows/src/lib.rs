@@ -200,14 +200,14 @@ pub static RUNTIME: SingleThreadCell<Runtime> = SingleThreadCell::new();
 /// `RUNTIME` グローバルへの集約アクセスポイント。
 ///
 /// `RefCell` の実行時借用チェックにより再入を安全に検出する。
-/// 再入を検出した場合は `log::warn!` を出力して `None` を返す（UB なし）。
+/// 再入を検出した場合は `tracing::warn!` を出力して `None` を返す（UB なし）。
 #[cfg(windows)]
 #[must_use = "再入時は None を返す。消えてはいけないメッセージには with_app_or_repost を、\
 意図的に捨てる場合は `let _ = with_app(...)` を使うこと"]
 pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     RUNTIME.try_borrow_mut().map_or_else(
         || {
-            log::warn!(
+            tracing::warn!(
                 "with_app re-entry detected — returning None (caller should re-post if needed)"
             );
             None

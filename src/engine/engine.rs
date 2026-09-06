@@ -346,9 +346,9 @@ impl Engine {
         // 既存の `Engine {activated,deactivated}` ログは active/inactive が
         // "遷移した" 場合にしか出ないため、ime_on=true のまま何らかの理由で
         // 非活性が継続している（＝遷移が起きない）ケースを毎キー入力ごとに
-        // 可視化する。遷移の有無を問わず出すため log::debug! で十分な頻度に留める。
+        // 可視化する。遷移の有無を問わず出すため tracing::debug! で十分な頻度に留める。
         if ctx.ime_on && !now_active {
-            log::debug!(
+            tracing::debug!(
                 "[diag-engine-active] ime_on=true なのに非活性: reason={:?} \
                  romaji_capable={} japanese={} user_enabled={} was_active={} input_mode={:?}",
                 new_state,
@@ -374,7 +374,7 @@ impl Engine {
                 effects.extend(flush);
                 self.release_pending_and_reinject(&mut effects);
             }
-            log::info!(
+            tracing::info!(
                 "Engine {} (ime={}, romaji={}, japanese={}, user={}, reason={:?})",
                 if now_active {
                     "activated"
@@ -530,7 +530,7 @@ impl Engine {
         // `on_timeout` は永久に呼ばれず、drain をそちらだけに頼ると 5 連打しても
         // 何も起きない（2026-08-26 コードレビュー指摘、report1）。
         if self.adapter.take_engine_off_requested() {
-            log::info!("Engine OFF triggered by consecutive solo key presses");
+            tracing::info!("Engine OFF triggered by consecutive solo key presses");
             self.solo_off_notify = true;
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
@@ -557,7 +557,7 @@ impl Engine {
 
         // ソロ連打によるエンジン OFF トリガー
         if self.adapter.take_engine_off_requested() {
-            log::info!("Engine OFF triggered by consecutive solo key presses");
+            tracing::info!("Engine OFF triggered by consecutive solo key presses");
             self.solo_off_notify = true;
             return self.apply_special_key_match(&SpecialKeyMatch::EngineOff, ctx);
         }
@@ -584,7 +584,7 @@ impl Engine {
             ShadowImeAction::TurnOff => false,
             ShadowImeAction::Toggle => !ctx.ime_on,
         };
-        log::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
         // 直接 push_effect してはならない。上のdoc参照）。
@@ -624,7 +624,7 @@ impl Engine {
                 let old_active = self.compute_active(ctx);
                 let (user_enabled, mut decision) = self.adapter.toggle_enabled();
                 let new_active = self.compute_active(ctx);
-                log::info!(
+                tracing::info!(
                     "Engine user_enabled toggled: {} (active: {})",
                     if user_enabled { "ON" } else { "OFF" },
                     if new_active { "ON" } else { "OFF" },
@@ -1043,7 +1043,7 @@ impl Engine {
         let old_active = self.compute_active(ctx);
         let (_, mut decision) = self.adapter.set_enabled(true);
         let new_active = self.compute_active(ctx);
-        log::info!("Engine user_enabled ON ({trigger}, active={new_active})");
+        tracing::info!("Engine user_enabled ON ({trigger}, active={new_active})");
         if new_active {
             self.apply_active_transition(old_active, new_active, &mut decision);
         } else {
@@ -1061,16 +1061,16 @@ impl Engine {
                 let old_active = self.compute_active(ctx);
                 let (_, mut decision) = self.adapter.set_enabled(false);
                 let new_active = self.compute_active(ctx);
-                log::info!("Engine user_enabled OFF (key combo, active={new_active})");
+                tracing::info!("Engine user_enabled OFF (key combo, active={new_active})");
                 self.apply_active_transition(old_active, new_active, &mut decision);
                 decision
             }
             SpecialKeyMatch::ImeOn => {
-                log::info!("IME ON (key combo)");
+                tracing::info!("IME ON (key combo)");
                 self.build_ime_set_open_decision(ctx, true)
             }
             SpecialKeyMatch::ImeOff => {
-                log::info!("IME OFF (key combo)");
+                tracing::info!("IME OFF (key combo)");
                 self.build_ime_set_open_decision(ctx, false)
             }
             SpecialKeyMatch::ImeToggle => {
@@ -1078,7 +1078,7 @@ impl Engine {
                 // トグル方向が反転しうる——既存の `ImeDetectConfig.toggle` 経由の
                 // VK_KANJI トグルと同じ弱点で、新規リスクではない。
                 let new_open = !ctx.ime_on;
-                log::info!("IME Toggle (key combo) → {new_open}");
+                tracing::info!("IME Toggle (key combo) → {new_open}");
                 self.build_ime_set_open_decision(ctx, new_open)
             }
         }
@@ -1168,7 +1168,7 @@ impl SpecialKeyCombos {
                 .iter()
                 .any(|k| matches_key_combo(*k, event, modifiers))
             {
-                log::debug!(
+                tracing::debug!(
                     "[special-key] IME ON match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
                     event.vk_code,
                     modifiers.ctrl,
@@ -1183,7 +1183,7 @@ impl SpecialKeyCombos {
                 .iter()
                 .any(|k| matches_key_combo(*k, event, modifiers))
             {
-                log::debug!(
+                tracing::debug!(
                     "[special-key] IME OFF match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
                     event.vk_code,
                     modifiers.ctrl,
@@ -1200,7 +1200,7 @@ impl SpecialKeyCombos {
                 .iter()
                 .any(|k| matches_key_combo(*k, event, modifiers))
             {
-                log::debug!(
+                tracing::debug!(
                     "[special-key] IME Toggle match: vk={:#06X} ctrl={} shift={} alt={} extra_info={:#x}",
                     event.vk_code,
                     modifiers.ctrl,

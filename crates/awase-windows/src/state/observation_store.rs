@@ -456,7 +456,7 @@ impl ObservationStore {
             source,
             ObservationSource::ConvBitsInference | ObservationSource::GjiIoInference
         ) {
-            log::debug!("[observation] {source:?} は open 観測プールに入らないため破棄");
+            tracing::debug!("[observation] {source:?} は open 観測プールに入らないため破棄");
             return;
         }
         self.per_source.set(
@@ -537,7 +537,7 @@ impl ObservationStore {
              （現在: {:?} / 要求: {fence:?}、BUG-102）",
             self.current_fence
         );
-        log::debug!(
+        tracing::debug!(
             "[focus-fence] establish_initial_fence: {:?} -> {fence:?}",
             self.current_fence
         );
@@ -552,7 +552,7 @@ impl ObservationStore {
     /// 追従させることで、`derive_any()` の `is_identity_ok` が stale な hwnd と
     /// 比較し続けて以後の観測を恒久的に拒否する退行を防ぐ。
     pub fn update_focus_window(&mut self, new_hwnd: HwndId) {
-        log::debug!(
+        tracing::debug!(
             "[focus-hwnd-track] update_focus_window: current_fence.hwnd {:?} -> {new_hwnd:?}",
             self.current_fence.hwnd
         );
@@ -610,7 +610,7 @@ impl ObservationStore {
     /// （INV-46）、BUG-33 型の収束偽装が構造的に不可能になる。
     ///
     /// ADR-089 Phase C の時点では `ConvergedReceipt` は構築されるだけで
-    /// `log::debug!` にしか渡らず、実際の収束判定は
+    /// `tracing::debug!` にしか渡らず、実際の収束判定は
     /// `most_recent_trusted_after` が返す `ImeObservation` が担っていた
     /// （§9-16「効いていない」）。本メソッドと `most_recent_trusted_after` の
     /// module private 化で、初めてコンパイラ強制になる。
@@ -823,7 +823,7 @@ impl ObservationStore {
                     // ADR-106 決定3: epoch は一致しているのに hwnd だけ不一致で
                     // 除外されるケース（同一プロセス内でのウィンドウ切替）を、
                     // epoch 不一致による除外と区別して実機ログで確認できるようにする。
-                    log::debug!(
+                    tracing::debug!(
                         "[identity-gate] hwnd不一致で除外: source={:?} obs_hwnd={:?} current_hwnd={:?} confidence={:?}",
                         o.source,
                         obs_fence.hwnd,

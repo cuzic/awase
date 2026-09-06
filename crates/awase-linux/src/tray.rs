@@ -12,24 +12,24 @@ pub struct SystemTray {
 impl SystemTray {
     /// トレイアイコンを作成する（スタブ: ログ出力のみ）
     pub fn new() -> Self {
-        log::info!("System tray: stub implementation (StatusNotifierItem not yet implemented)");
+        tracing::info!("System tray: stub implementation (StatusNotifierItem not yet implemented)");
         Self { enabled: true }
     }
 
     /// エンジン状態を更新する
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        log::info!("Tray: engine {}", if enabled { "ON" } else { "OFF" });
+        tracing::info!("Tray: engine {}", if enabled { "ON" } else { "OFF" });
     }
 
     /// バルーン通知を表示する（スタブ）
     pub fn show_balloon(&self, title: &str, message: &str) {
-        log::info!("Tray balloon: {title}: {message}");
+        tracing::info!("Tray balloon: {title}: {message}");
     }
 
     /// レイアウト名を設定する（スタブ）
     pub fn set_layout_name(&self, name: &str) {
-        log::info!("Tray: layout = {name}");
+        tracing::info!("Tray: layout = {name}");
     }
 }
 

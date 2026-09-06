@@ -129,7 +129,7 @@ impl Drop for OutputActiveGuard {
             // OUTPUT_GATE 解除〜drain ハンドラ実行の間のキーは [drain-race] で記録される。
             // この時点 (=解除瞬間) のキュー長を出して race 期間の挙動を辿りやすくする。
             let pending = crate::INPUT_DEFER.pending_len_nonblocking();
-            log::debug!(
+            tracing::debug!(
                 "[output-gate] deactivated (depth 1→0), pending_drain={} → post WM_DRAIN_OUTPUT_QUEUE",
                 pending.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             );

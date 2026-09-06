@@ -286,7 +286,7 @@ fn extract_fn_body<'a>(content: &'a str, fn_signature_needle: &str) -> &'a str {
 
 /// `content[open_brace..]` の `open_brace` に対応する閉じ括弧の絶対バイト位置を
 /// 返す（波括弧の対応を数える）。**文字列リテラル（`"..."`、`\"` エスケープ考慮）
-/// の中身は無視する** — `log::debug!("... {{ ... }}")` のような Rust の
+/// の中身は無視する** — `tracing::debug!("... {{ ... }}")` のような Rust の
 /// format 文字列エスケープ（`{{`/`}}` はリテラルの `{`/`}` 1文字を表し、
 /// コード構造上の波括弧ではない）が深さカウントを狂わせるのを防ぐため
 /// （opus レビュー指摘、変異テストで実際に誤検知を確認済み、2026-08-08）。
@@ -1110,7 +1110,7 @@ fn any_observation_replay_door_is_not_used_in_production() {
 fn ime_open_actuation_entry_points_are_accounted_for() {
     // needle は先頭に `.` を付けたメソッド呼び出し形にする。定義行
     // (`fn apply_ime_open_with_belief(` 等) は `.` を伴わないため自動的に除外され、
-    // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
+    // `tracing::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
     // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
     // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
     //
@@ -1164,7 +1164,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         (".set_ime_open(", 0),
         // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
         // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
-        // ——近いのは `log::warn!` の文字列（`:725`）で、先頭に `.` が無いため
+        // ——近いのは `tracing::warn!` の文字列（`:725`）で、先頭に `.` が無いため
         // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
         (".set_ime_open_ordered(", 2),
         // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
@@ -1381,7 +1381,7 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
 /// `match act_signature` 部分の開始マーカー。`ir_apply_drift_correction` の中で
 /// `FeedbackPolicy` を分岐する `match act_policy { ... }` ブロックの先頭。
 const DRIFT_MATCH_MARKER: &str = "match act_policy {";
-/// 実送信ブロックの先頭にある `log::warn!` のメッセージ接頭辞。この直前で
+/// 実送信ブロックの先頭にある `tracing::warn!` のメッセージ接頭辞。この直前で
 /// `match act_policy { ... }`（早期 return 分岐）が終わる。
 const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 
@@ -1389,11 +1389,15 @@ const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 /// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
 ///
 /// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
-/// `log::warn!("[drift] correction: observed=...")` の直前。この `log::warn!` より後は
+/// `tracing::warn!("[drift] correction: observed=...")` の直前。この `tracing::warn!` より後は
 /// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
 /// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
 /// **関数全体ではなく match ブロックだけ**を検査対象にする。行番号ではなくマーカー文字列で
 /// 境界を求めるため、周辺のコードが動いても壊れにくい。
+///
+/// ADR-139 決定1: `log::warn!` から `tracing::warn!` への機械置換に伴い、この関数が
+/// 探すマーカー文字列も同一コミットで更新した（更新を怠ると `ime_refresh.rs` の
+/// 置換直後にこの関数が必ず panic する — 実際にタスク分解レビューで検出された）。
 fn extract_drift_correction_match_block(content: &str) -> &str {
     let start = content
         .find(DRIFT_MATCH_MARKER)
@@ -1401,11 +1405,11 @@ fn extract_drift_correction_match_block(content: &str) -> &str {
     let send_marker = content.find(DRIFT_SEND_LOG_MARKER).unwrap_or_else(|| {
         panic!("send-path marker {DRIFT_SEND_LOG_MARKER:?} not found in ime_refresh.rs")
     });
-    // match ブロック内は `log::debug!` のみ。実送信は `log::warn!` で始まる唯一の箇所。
+    // match ブロック内は `tracing::debug!` のみ。実送信は `tracing::warn!` で始まる唯一の箇所。
     let send_log = content[start..send_marker]
-        .rfind("log::warn!(")
+        .rfind("tracing::warn!(")
         .map_or_else(
-            || panic!("no `log::warn!(` found between match block and send-path marker"),
+            || panic!("no `tracing::warn!(` found between match block and send-path marker"),
             |i| start + i,
         );
     assert!(
@@ -1461,7 +1465,7 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
              `observations` への書き込み（`ObserverReported` 等の dispatch）を \
              一切発生させてはなりません。違反すると docs/known-bugs.md BUG-33 と同型の \
              収束偽装（自分の belief を観測として書き戻し、drift 検知が二度と発火しない）\
-             が再発します。実送信は match ブロックの後（`log::warn!(\"[drift] correction: \
+             が再発します。実送信は match ブロックの後（`tracing::warn!(\"[drift] correction: \
              observed=...\")` 以降）でのみ行い、そこでの `DriftDetected` dispatch は \
              不変条件6 のスコープ外です。"
         );
@@ -1809,7 +1813,7 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
     // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
     // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
-    // （`log::debug!("... set_ime_open(false) called ...")`）だけ。
+    // （`tracing::debug!("... set_ime_open(false) called ...")`）だけ。
     let set_ime_open_count = count_real_calls(body, "set_ime_open(");
     assert_eq!(
         set_ime_open_count, 1,

@@ -180,6 +180,6 @@ pub fn flush_raw_tsf_literal_backspaces() {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ]
     }));
-    log::debug!("[raw-tsf-literal] flush escape={escape_composition} backspace ×{n}");
+    tracing::debug!("[raw-tsf-literal] flush escape={escape_composition} backspace ×{n}");
     let _ = crate::win32::send_input_safe(&inputs);
 }

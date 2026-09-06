@@ -143,7 +143,7 @@ pub(crate) fn strip_ime_set_open_if_settling(
     decision
         .effects_mut()
         .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
-    log::debug!(
+    tracing::debug!(
         "[focus-settle] SetOpen({target}) effect stripped from decision \
          (focus transition barrier still settling)"
     );
@@ -258,7 +258,7 @@ impl DecisionExecutor {
         //    guard 解除済みなら execute_one してから queue に進む (batching を継続)。
         if let Some(event) = self.guard_held.take() {
             if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
-                log::debug!(
+                tracing::debug!(
                     "[reinject-guard] held event, suspending for {remaining}ms (vk={:#04x})",
                     event.vk_code,
                 );
@@ -281,7 +281,7 @@ impl DecisionExecutor {
                     unreachable!("is_reinject was true")
                 };
                 if let Some(remaining) = self.reinject_wait_remaining(platform, &event) {
-                    log::debug!(
+                    tracing::debug!(
                         "[reinject-guard] suspending drain for {remaining}ms (vk={:#04x})",
                         event.vk_code,
                     );
@@ -431,7 +431,7 @@ impl DecisionExecutor {
                 // flush 出力あり → Consume して flush + キー再注入を FIFO でキュー。
                 // physical=Suppress（KANJI 物理キー抑止）の場合は reinject を積まない。
                 let reinject = physical == PhysicalKeyDisposition::Allow;
-                log::debug!(
+                tracing::debug!(
                     "[relay-flush] PassThroughWith: queue {} effect(s){} (vk={:#04x} {})",
                     effects.len(),
                     if reinject {
@@ -532,7 +532,7 @@ impl DecisionExecutor {
         // ケースは残存する既知の限界（BUG-58 のフリーズ解消と比べて実害は小さいと
         // 判断、将来 PassThrough 全般を defer する場合は改めて検討）。
         let has_pending = self.has_pending() || platform.has_pending_tsf_work();
-        log::debug!(
+        tracing::debug!(
             "[relay-guard] vk={:#04x} {} in_flight_ms={} has_pending={} output_in_flight={}",
             raw_event.vk_code,
             if is_key_down { "down" } else { "up" },
@@ -561,7 +561,7 @@ impl DecisionExecutor {
             raw_event.key_classification,
             awase::types::KeyClassification::Passthrough
         ) {
-            log::debug!(
+            tracing::debug!(
                 "[relay-passthrough] PassThrough idle: direct OS pass-through (vk={:#04x} {})",
                 raw_event.vk_code,
                 if is_key_down { "down" } else { "up" },
@@ -679,14 +679,14 @@ impl DecisionExecutor {
                     ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
                 );
             } else {
-                log::debug!(
+                tracing::debug!(
                     "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
                 );
             }
             return;
         }
 
-        log::debug!(
+        tracing::debug!(
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",
             event.vk_code,
         );
@@ -820,7 +820,7 @@ impl DecisionExecutor {
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
             // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
-            log::debug!(
+            tracing::debug!(
                 "[dispatch-ime] ImmCross async: optimistic applied_snapshot={open} \
                  (suppress send_engine_state_ime_key)"
             );
@@ -852,7 +852,7 @@ impl DecisionExecutor {
                 };
             win32_async::spawn_local(async move {
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    log::debug!("[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle");
+                    tracing::debug!("[dispatch-ime] capture 失敗（フォーカス無し） → UnsafeToToggle");
                     crate::runtime::message_handlers::post_async_ime_apply_complete(
                         open,
                         awase::platform::ImeOpenOutcome::UnsafeToToggle,
@@ -900,7 +900,7 @@ impl DecisionExecutor {
             // 現在存在しない（`already_matched`/`AlreadyMatched` は
             // `ime_controller::ImeController::apply` が `view.control.shadow_on` から独立に
             // 判定する）。`belief.confident` の本番消費者は診断ログ
-            // （`platform.rs::apply_ime_open_with_view` の `log::debug!`）のみ。
+            // （`platform.rs::apply_ime_open_with_view` の `tracing::debug!`）のみ。
             let now_ms = crate::hook::current_tick_ms();
 
             // BUG-34 横展開 B: 以前はここで MS-IME + TsfNative の場合のみ
@@ -912,7 +912,7 @@ impl DecisionExecutor {
             //
             // この read の唯一の消費先は belief_inputs.conv_mode →
             // reduce_open_belief → belief.effective_open/confident だが、
-            // apply_ime_open_with_view (platform.rs) は belief を log::debug! に
+            // apply_ime_open_with_view (platform.rs) は belief を tracing::debug! に
             // 渡すだけで、実行本体 ImeController::apply(order, view) は belief
             // 引数を受け取っていない（読んだ値は最終的にログ2行にしか影響しない）。
             // そのため fence や degrade 方針を設計する必要はなく、単純に conv_mode
@@ -949,7 +949,7 @@ impl DecisionExecutor {
                 now_ms,
             };
             let belief = crate::output::reduce_open_belief(&belief_inputs, open);
-            log::debug!(
+            tracing::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
                 belief.effective_open,
                 belief.confident,
@@ -960,7 +960,7 @@ impl DecisionExecutor {
             let order = issue_order(ime, open, "engine_decision_sync");
             let outcome = platform.apply_ime_open_with_view(order, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
-                log::warn!("apply_ime_open({open}) failed");
+                tracing::warn!("apply_ime_open({open}) failed");
             }
             Some((open, outcome))
         }

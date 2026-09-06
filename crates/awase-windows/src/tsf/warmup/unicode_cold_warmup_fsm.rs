@@ -69,7 +69,7 @@ impl UnicodeColdWarmupFsm {
         deferred_chars: Vec<char>,
         baseline_bytes: u64,
     ) -> Self {
-        log::debug!(
+        tracing::debug!(
             "[unicode-cold-warmup] cold={cold_seq} FSM 開始: {} chars deferred, baseline_bytes={baseline_bytes}",
             deferred_chars.len(),
             cold_seq = cold_seq.value(),
@@ -108,7 +108,7 @@ impl UnicodeColdWarmupFsm {
             .gji_candidate_show
             .has_changed(self.candidate_show_baseline);
         let ime_composition_active_now = crate::tsf::observer::ime_composition_active_now();
-        log::info!(
+        tracing::info!(
             "[unicode-cold-warmup] cold={} gji_wrote={gji_wrote} timed_out={timed_out} \
              elapsed={}ms write_delta={write_delta} candidate_show_changed={candidate_show_changed} \
              candidate_visible_now={} ime_composition_active_now={ime_composition_active_now} \
@@ -119,7 +119,7 @@ impl UnicodeColdWarmupFsm {
         );
 
         let chars = std::mem::take(&mut self.deferred_chars);
-        log::debug!(
+        tracing::debug!(
             "[unicode-cold-warmup] cold={} gji_wrote={gji_wrote} timed_out={timed_out} \
              elapsed={}ms → {} chars 送信",
             self.cold_seq.value(),
@@ -143,7 +143,7 @@ impl crate::tsf::warmup::tickable_fsm::TickableFsm for UnicodeColdWarmupFsm {
     }
 
     fn push_deferred_unicode_chars(&mut self, chars: &[char]) -> bool {
-        log::debug!(
+        tracing::debug!(
             "[unicode-cold-warmup] cold={} in-flight FSM に {} chars 追記 (合計 {} chars)",
             self.cold_seq.value(),
             chars.len(),

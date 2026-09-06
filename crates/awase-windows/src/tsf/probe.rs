@@ -221,7 +221,7 @@ impl WarmEpoch {
     /// `last_send_ms` を現在時刻に更新する。
     pub fn update_last_send_ms(&self) {
         let ms = crate::hook::current_tick_ms();
-        log::debug!("[mark-send] last_send_ms={ms}");
+        tracing::debug!("[mark-send] last_send_ms={ms}");
         self.last_send_ms.set(ms);
     }
 
@@ -358,7 +358,7 @@ impl CompositionState {
         let idle_ms = self.ms_since_last_send();
         if reason == crate::output::ColdReason::RawTsfLiteralRecovery {
             let n = self.cold_ctx.increment_consecutive_count();
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms consecutive={n} → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         } else {
             // consecutive_count はフォーカス変更と SetOpenTrue（engine activation）でリセット。
             // SetOpenTrue = engine が新たに IME ON を決定した瞬間。前回セッションのリテラル履歴は
@@ -373,7 +373,7 @@ impl CompositionState {
             ) {
                 self.cold_ctx.reset_consecutive_count();
             }
-            log::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
+            tracing::debug!("[composition] marked cold reason={reason:?} idle={idle_ms}ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup");
         }
         self.warm_epoch.mark_cold();
         self.cold_ctx.record_cold(reason, idle_ms);
@@ -398,7 +398,7 @@ impl CompositionState {
         self.cold_ctx
             .record_cold(crate::output::ColdReason::FocusChange, idle_ms);
         self.cold_ctx.reset_consecutive_count();
-        log::debug!("[composition] focus changed → marked cold");
+        tracing::debug!("[composition] focus changed → marked cold");
     }
 
     /// 最後の `send_keys` 完了からの経過時間（ms）。

@@ -89,7 +89,7 @@ async fn gji_coro_body(
 
         // probe 完了時の実測値（elapsed/gji_idle/settled）は「予算に対して実際どれだけ
         // かかったか」を事後ログから直接確認するために必要（切り分けログ強化、2026-07-09）。
-        log::debug!(
+        tracing::debug!(
             "[gji-coro] cold={} GjiProbe 完了 ({}ms gji_idle={}ms settled={})",
             ctx.cold_seq.value(),
             outcome.elapsed_ms,
@@ -104,7 +104,7 @@ async fn gji_coro_body(
             // だったため撤去した。reactive な LiteralDetect のみに委ねる
             // （`docs/known-bugs.md` BUG-24 参照。再度有効化する場合はこのコミット
             // の revert が必要）。
-            log::debug!(
+            tracing::debug!(
                 "[gji-coro] cold={} settle 必要 (reason={cold_reason:?} gji_idle_ms={} \
                  probe_elapsed={}ms settled={}) → skip FreshF2, reactive LiteralDetect のみ",
                 ctx.cold_seq.value(),
@@ -149,7 +149,7 @@ async fn gji_coro_body(
     // リテラル発生時に「なぜ LiteralDetect に入った/入らなかったか」を事後診断
     // できなかった（切り分けログ強化、2026-07-09 の "kお" 系調査で判明。
     // gji_settled/confirm_key_tsf_hint は BUG-40 追加）。
-    log::debug!(
+    tracing::debug!(
         "[gji-coro] cold={} transmit-plan needs_literal={} nc_fired={} gji_settled={} \
          confirm_key_tsf_hint={} is_tsf_mode={}",
         ctx.cold_seq.value(),
@@ -204,7 +204,7 @@ async fn gji_coro_body(
         let used_eager_path = plan.used_eager_path;
         win32_async::spawn_local(async move {
             win32_async::sleep_ms(crate::tuning::RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE as u32).await;
-            log::debug!(
+            tracing::debug!(
                 "[gji-coro-diag] cold={cold_seq} skip-verify nc_fired={nc_fired} \
                  gji_active={gji_active} used_eager_path={used_eager_path}",
                 cold_seq = cold_seq.value(),

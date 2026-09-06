@@ -83,7 +83,7 @@ impl crate::ime::ImeSnapshot {
                 clear_force_on_panic_reset: true,
             }
         } else if self.is_tsf_native {
-            log::debug!(
+            tracing::debug!(
                 "IME detection skipped (TSF-native window), preserving ime_on={current_ime_on}"
             );
             PollOutcome {
@@ -93,7 +93,7 @@ impl crate::ime::ImeSnapshot {
                 clear_force_on_panic_reset: false,
             }
         } else if guard_active {
-            log::debug!(
+            tracing::debug!(
                 "IME detection failed but force_on_guard active, preserving ime_on={current_ime_on}"
             );
             PollOutcome {
@@ -119,7 +119,7 @@ impl crate::ime::ImeSnapshot {
         let romaji = self.is_romaji?;
         let prev = current_input_mode.is_romaji_capable();
         if prev != romaji {
-            log::info!(
+            tracing::info!(
                 "IME input method changed: {} → {}",
                 if prev { "romaji" } else { "kana" },
                 if romaji { "romaji" } else { "kana" },
@@ -144,7 +144,7 @@ impl crate::ime::ImeSnapshot {
             current_input_mode,
         );
         if let Some(new_mode) = result {
-            log::info!(
+            tracing::info!(
                 "IME input method changed: conv=0x{prev_conv:08X}→0x{curr_conv:08X}, belief {current_input_mode:?}→{new_mode:?}"
             );
         }
@@ -196,7 +196,7 @@ pub fn classify_ime_snapshot(
                         .is_some_and(|c| !awase::engine::ConvMode::from_u32(c).is_eisu())
                 {
                     let conv = snap.conversion_mode.unwrap_or(0);
-                    log::info!(
+                    tracing::info!(
                         "IME input method changed: ObservedEisu → AssumedRomaji \
                          (conv=0x{conv:08X}, GJI/ImmCross stale recovery)"
                     );
@@ -209,7 +209,7 @@ pub fn classify_ime_snapshot(
             })
     };
 
-    log::debug!(
+    tracing::debug!(
         "IME snapshot: japanese={:?} ime_on={:?} romaji={:?} conv={:?} guard={}",
         snap.is_japanese_ime,
         snap.ime_on,

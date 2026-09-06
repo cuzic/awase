@@ -81,7 +81,7 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
         // 別途担う。`composition_active`/`ime_show_seq`/`ime_change_seq` の解釈上の
         // 注意は `TsfObservations::ime_composition_active` の doc コメント参照。
-        log::info!(
+        tracing::info!(
             "[apply-ime] ImmCross sync: open={open} composition_active={} show_seq={} \
              change_seq={} (issue #138診断)",
             view.observed.composition_active,
@@ -91,7 +91,7 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
         if unsafe { crate::ime::set_ime_open_cross_process(open) } {
             ImeOpenOutcome::Applied
         } else {
-            log::info!("[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed");
+            tracing::info!("[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed");
             ImeOpenOutcome::Failed
         }
     }
@@ -160,7 +160,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
             // 発見、docs/known-bugs.md BUG-113 参照）。ON 方向の元の実装
             // （`open && shadow_on`）はこの `bool` 化の下でも `None→false`
             // が安全側（送る）に倒れていたため、当時は問題が露見しなかった。
-            log::debug!(
+            tracing::debug!(
                 "[apply-ime] GJI direct: shadow already {} (open={open}), skip",
                 if open { "ON" } else { "OFF" }
             );
@@ -168,7 +168,7 @@ impl ImeOpenStrategy for GjiDirectStrategy {
         }
         // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
         let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
-        log::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
+        tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
         // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
         if unsafe { crate::ime::send_ime_mode_key(vk) } {
             ImeOpenOutcome::Applied
@@ -234,7 +234,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             //
             // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON、MS-IME 冪等 ON キー）。
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
-            log::info!(
+            tracing::info!(
                 "[apply-ime] MS-IME direct: send {vk:#06X} (IME ON) composition_active={} \
                  show_seq={} change_seq={} (issue #138診断)",
                 view.observed.composition_active,
@@ -248,7 +248,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
                 // 「適用済み」no-op になり belief ON × 実 IME OFF が固定される
                 // （2026-07-07 実機: ロック解除 → Win+Ctrl+→ 直後の「korede」化。
                 // BUG-16 追補）。未適用として返し、次の refresh/force-ON に再送させる。
-                log::info!(
+                tracing::info!(
                     "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
                      → UnsafeToToggle"
                 );
@@ -259,7 +259,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
             // 既に DirectInput の場合は no-op のため conv チェック不要。
             let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close);
-            log::info!(
+            tracing::info!(
                 "[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等) \
                  composition_active={} show_seq={} change_seq={} (issue #138診断)",
                 view.observed.composition_active,
@@ -268,7 +268,7 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             );
             // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
             if !unsafe { crate::ime::send_ime_mode_key(vk) } {
-                log::info!(
+                tracing::info!(
                     "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
                      → UnsafeToToggle"
                 );
@@ -305,7 +305,7 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
         // 注意（MS-IME での信頼性未検証）に加え、`fallback_write` が view を
         // 作り直すため、この値は直前の ImmCross 試行にとっては送信「後」の値
         // でもある点に注意（`fallback_write` の doc コメント参照）。
-        log::info!(
+        tracing::info!(
             "[apply-ime] shadow={:?} candidate={} was_seen={} profile={:?} \
              composition_active={} show_seq={} change_seq={} → desired={open}: \
              SendInput VK_KANJI (issue #138診断)",
@@ -458,7 +458,7 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
     //         Win32 API を呼ぶ unsafe fn。`ImeOpenStrategy::apply` の呼び出しチェーンは
     //         すべてメインスレッド（フックまたはメッセージループ）である。
     let Some(target) = (unsafe { crate::ime::ActuationTarget::capture_blocking(focus_gen) }) else {
-        log::debug!("[imm-romaji] capture 失敗（フォーカス無し）→ ROMAN 補完スキップ");
+        tracing::debug!("[imm-romaji] capture 失敗（フォーカス無し）→ ROMAN 補完スキップ");
         return;
     };
     // SAFETY: 同上。
@@ -466,7 +466,7 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
     if outcome != crate::ime::ActuationOutcome::Written {
         // INV-14: `Aborted` を成功として扱わない。実機での競合頻度を事後に
         // 測れるよう必ずログに残す（ADR-086 §6 段4）。
-        log::debug!("[imm-romaji] ROMAN 補完 {outcome:?} (mechanism={mechanism:?})");
+        tracing::debug!("[imm-romaji] ROMAN 補完 {outcome:?} (mechanism={mechanism:?})");
     }
 }
 
@@ -523,14 +523,14 @@ pub(crate) struct ImeController;
 /// ゼロが「安全」なのか「未測定」なのか区別できない。
 pub(crate) fn log_shadow_warrant(chain: &str, order: &ActuationOrder) {
     if order.would_have_blocked() {
-        log::info!(
+        tracing::info!(
             "[warrant-shadow] chain={chain} open={} origin={:?} would_have_blocked=true \
              (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)",
             order.open(),
             order.origin(),
         );
     } else {
-        log::debug!(
+        tracing::debug!(
             "[warrant-shadow] chain={chain} open={} origin={:?} warranted",
             order.open(),
             order.origin(),
@@ -572,7 +572,7 @@ impl ImeController {
         let mut writer = SyncChainWriter { view };
         let outcome = actuation.run_chain(caps_chain_for(view), &mut writer);
         if outcome == ImeOpenOutcome::Failed {
-            log::warn!(
+            tracing::warn!(
                 "[apply-ime] all strategies failed for class={}",
                 view.focus.class_name
             );

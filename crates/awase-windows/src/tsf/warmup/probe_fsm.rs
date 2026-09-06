@@ -414,13 +414,13 @@ async fn await_vk_detection(
             let _ = poll_input;
         };
         match verdict {
-            DetectionResult::CompositionConfirmed => log::debug!(
+            DetectionResult::CompositionConfirmed => tracing::debug!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] \
                  candidate window already visible → skip literal-detect wait (vk=0x{:02X})",
                 vk.0,
                 cold_seq = cold_seq.value(),
             ),
-            DetectionResult::StaleConfirm => log::warn!(
+            DetectionResult::StaleConfirm => tracing::warn!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] candidate window already \
                  visible だが直近の GJI I/O が猶予期間内に送信時刻へ追いつかず \
                  → stale confirm として扱う (vk=0x{:02X})",
@@ -502,7 +502,7 @@ pub(crate) async fn run_per_vk_confirm(
             // 落ちるため、正しく入力できていた文字まで毎回 backspace で消え、実質何も
             // 入力できなくなった。無リカバリの `return` に戻す
             // （docs/known-bugs.md BUG-27 参照）。
-            log::warn!(
+            tracing::warn!(
                 "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] vk_sent 未設定 → 中断",
                 cold_seq = cold_seq.value(),
             );
@@ -540,7 +540,7 @@ pub(crate) async fn run_per_vk_confirm(
 
         match detection {
             DetectionResult::CompositionConfirmed => {
-                log::debug!(
+                tracing::debug!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] confirmed (vk=0x{:02X})",
                     vk.0,
                     cold_seq = cold_seq.value(),
@@ -556,7 +556,7 @@ pub(crate) async fn run_per_vk_confirm(
             DetectionResult::SuspectedLiteral => {
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(false, idx);
-                log::debug!(
+                tracing::debug!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] suspected literal \
                      (vk=0x{:02X} backs={backs} escape={escape_composition})",
                     vk.0,
@@ -598,7 +598,7 @@ pub(crate) async fn run_per_vk_confirm(
                 // いた。
                 let (backs, escape_composition) =
                     crate::tsf::warmup::literal_detect_fsm::per_vk_recovery_params(true, idx);
-                log::warn!(
+                tracing::warn!(
                     "[{log_tag}] cold={cold_seq} per-VK[{idx}/{last_idx}] stale confirm 検出 \
                      → backspace は送らず romaji 再送のみ行う (vk=0x{:02X} backs={backs} \
                      escape={escape_composition})",
@@ -619,7 +619,7 @@ pub(crate) async fn run_per_vk_confirm(
         }
     }
 
-    log::debug!(
+    tracing::debug!(
         "[{log_tag}] cold={cold_seq} per-VK: 全 {} VK 確認済み → セッション確認",
         vk_chars.len(),
         cold_seq = cold_seq.value(),
@@ -669,7 +669,7 @@ async fn tsf_probe_coro_body(
         let Some(outcome) = probe.check_outcome(total_max_ms) else {
             continue;
         };
-        log::debug!(
+        tracing::debug!(
             "[tsf-probe] cold={cold_seq} ChromeProbe 完了 ({}ms)",
             outcome.elapsed_ms,
             cold_seq = cold_seq.value(),
@@ -766,7 +766,7 @@ async fn tsf_probe_coro_body(
                 ]
             }
             DetectionResult::CompositionConfirmed => {
-                log::debug!(
+                tracing::debug!(
                     "[raw-tsf-literal] cold={cold_seq} composition confirmed",
                     cold_seq = cold_seq.value(),
                 );
@@ -786,7 +786,7 @@ async fn tsf_probe_coro_body(
                 // 限り送らない（`per_vk_recovery_params` のドキュメント参照）。
                 // StaleConfirm は confirm 根拠が古いことの検出であって literal の
                 // 証拠ではないため backs=0 とする。
-                log::warn!(
+                tracing::warn!(
                     "[raw-tsf-literal] cold={cold_seq} stale confirm 検出 → \
                      backspace は送らず romaji 再送のみ行う",
                     cold_seq = cold_seq.value(),

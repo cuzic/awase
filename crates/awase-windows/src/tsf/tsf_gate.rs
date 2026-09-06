@@ -170,7 +170,7 @@ impl TimedStateMachine for TsfGateMachine {
 
     fn on_timeout(&mut self, _id: GateTimer) -> Response<GateAction, GateTimer> {
         if self.state == TsfGateState::PendingWarmup {
-            log::warn!(
+            tracing::warn!(
                 "[tsf-gate] WarmupTimeout: PendingWarmup が {WARMUP_TIMEOUT_MS}ms 継続 → Bypass にフォールバック"
             );
             self.state = TsfGateState::Bypass;
@@ -221,7 +221,7 @@ impl TsfGate {
         // `InitiateHold` アクションを `HoldingGate` が受けて
         // 自動的に held クリア + 保留モード ON を行う。
         let _ = self.inner.on_event(GateEvent::FocusChange);
-        log::debug!("[tsf-gate] focus change → PendingWarmup (held cleared)");
+        tracing::debug!("[tsf-gate] focus change → PendingWarmup (held cleared)");
     }
 
     /// TSF モードと確定した場合に呼ぶ。
@@ -234,7 +234,7 @@ impl TsfGate {
     pub fn on_tsf_confirmed(&mut self) -> Vec<RawKeyEvent> {
         let (_, drained) = self.inner.on_event(GateEvent::TsfConfirmed);
         if !drained.is_empty() {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-gate] TSF confirmed → Probing (releasing {} held keys)",
                 drained.len()
             );
@@ -250,7 +250,7 @@ impl TsfGate {
     pub fn on_bypass(&mut self) -> Vec<RawKeyEvent> {
         let (_, drained) = self.inner.on_event(GateEvent::BypassConfirmed);
         if !drained.is_empty() {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-gate] → Bypass (releasing {} held keys)",
                 drained.len()
             );
@@ -262,7 +262,7 @@ impl TsfGate {
     pub fn on_ready(&mut self) {
         let _ = self.inner.on_event(GateEvent::ProbeComplete);
         if self.inner.machine.state() == TsfGateState::Ready {
-            log::debug!("[tsf-gate] TSF probe complete → Ready");
+            tracing::debug!("[tsf-gate] TSF probe complete → Ready");
         }
     }
 
@@ -290,12 +290,12 @@ impl TsfGate {
         let etype = event.event_type;
         let ok = self.inner.try_hold(event);
         if ok {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-gate] held vk=0x{vk:02X} {etype:?} (total={})",
                 self.inner.len(),
             );
         } else {
-            log::warn!(
+            tracing::warn!(
                 "[tsf-gate] held queue full (max={HELD_MAX}), passing through vk=0x{vk:02X} {etype:?}",
             );
         }

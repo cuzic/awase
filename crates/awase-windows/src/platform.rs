@@ -167,7 +167,7 @@ impl WindowsPlatform {
         if pending_deferred_len > 0 {
             // この probe が pending_deferred をまだ flush されていない状態で
             // 追い越して開始しようとしている(issue #148 の根本原因そのもの)。
-            log::warn!(
+            tracing::warn!(
                 "[gji-fsm] StartProbe probe_id={probe_id:?} が pending_deferred \
                  {pending_deferred_len} VK(s) をflush前に追い越して開始 (ADR-123)"
             );
@@ -481,7 +481,7 @@ impl WindowsPlatform {
         if result.learned_tsf {
             // UnicodeLiteralObserverFsm が GJI write なしと判断 → フォーカス中クラスを Tsf に昇格。
             let class_name = self.focus.class_name().to_string();
-            log::info!("[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）");
+            tracing::info!("[injection-mode] {class_name:?} → Tsf 事後昇格（GJI write 未観測）");
             self.focus.learn_injection_mode_tsf(class_name);
             // 現セッション（現在のフォーカスウィンドウ）にも即時 Tsf モードを適用する。
             self.output
@@ -519,7 +519,7 @@ impl WindowsPlatform {
                     id: GjiTimer::LongIdle,
                     duration,
                 } => {
-                    log::debug!(
+                    tracing::debug!(
                         "[gji-fsm] LongIdle timer set duration={}ms",
                         duration.as_millis()
                     );
@@ -535,7 +535,7 @@ impl WindowsPlatform {
         for action in &response.actions {
             match action {
                 GjiAction::StartProbe { probe_id, params } => {
-                    log::debug!(
+                    tracing::debug!(
                         "[gji-fsm] StartProbe probe_id={probe_id:?} forces_f2={} long={}",
                         params.forces_prepend_f2,
                         params.is_long_cold
@@ -556,7 +556,7 @@ impl WindowsPlatform {
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
-                                log::debug!(
+                                tracing::debug!(
                                     "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
                                 );
                                 self.output.send_f22_f21_reinit();
@@ -588,7 +588,7 @@ impl WindowsPlatform {
                 }
                 GjiAction::CancelProbe { probe_id } => {
                     if self.output.gji_current_probe_id() == Some(*probe_id) {
-                        log::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
+                        tracing::debug!("[gji-fsm] CancelProbe probe_id={probe_id:?}");
                         // pending_tsf / OUTPUT_GATE ガード / probe_id を一括キャンセルする。
                         self.output.cancel_probe();
                         self.timer.kill(crate::TIMER_TSF_PROBE);
@@ -609,7 +609,7 @@ impl WindowsPlatform {
                 // 行為として記録する。副作用は無い（実データの破棄は GjiFsm 内部の
                 // 状態上書きで既に完了しており、ここはログ・診断専用）。
                 GjiAction::DiscardPending { count, reason } => {
-                    log::debug!("[gji-fsm] DiscardPending count={count} reason={reason:?}");
+                    tracing::debug!("[gji-fsm] DiscardPending count={count} reason={reason:?}");
                 }
             }
         }
@@ -636,7 +636,7 @@ impl WindowsPlatform {
         for action in &response.actions {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
-                    log::debug!("[composition-fsm] EmitWarmup ({reason:?})");
+                    tracing::debug!("[composition-fsm] EmitWarmup ({reason:?})");
                     // conv mutation の可否は Output::send_eager_tsf_warmup が
                     // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
                     self.output.send_eager_tsf_warmup(warmup_ime_on, origin);
@@ -669,7 +669,7 @@ impl WindowsPlatform {
         use timed_fsm::TimedStateMachine;
         let response = self.composition_fsm.on_event(event);
         let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on, origin);
-        log::trace!(
+        tracing::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
         );
@@ -775,7 +775,7 @@ impl WindowsPlatform {
                 if current_gen == ime_mode_gen {
                     runtime.platform.output.update_ime_mode_hint_from_imc(conv);
                 } else {
-                    log::debug!(
+                    tracing::debug!(
                         "[ime-mode] FocusProbe: stale gen={ime_mode_gen} current={current_gen} → skip"
                     );
                 }
@@ -855,7 +855,7 @@ impl WindowsPlatform {
     /// `observation_event_proc` が `pending_start_composition` を set した後、
     /// `advance_tsf_probe` / `send_keys` で `take_pending_start_composition()` が true を返したときに呼ぶ。
     pub(crate) fn gji_on_start_composition(&mut self) {
-        log::debug!("[gji-fsm] StartComposition (candidate SHOW)");
+        tracing::debug!("[gji-fsm] StartComposition (candidate SHOW)");
         self.dispatch_gji_event(
             "StartComposition(candidate SHOW)",
             crate::tsf::gji_fsm::GjiEvent::StartComposition,
@@ -869,7 +869,7 @@ impl WindowsPlatform {
     /// `OnComposing` 以外の状態では epoch が取れないためスキップする（GjiFsm 側でも無視される）。
     pub(crate) fn gji_on_end_composition(&mut self) {
         if let Some(epoch) = self.output.gji_current_composition_epoch() {
-            log::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
+            tracing::debug!("[gji-fsm] EndComposition (candidate HIDE) epoch={epoch:?}");
             self.dispatch_gji_event(
                 format!("EndComposition(candidate HIDE, epoch={epoch:?})"),
                 crate::tsf::gji_fsm::GjiEvent::EndComposition { epoch },
@@ -960,12 +960,12 @@ impl WindowsPlatform {
         status: crate::output::GjiReinitPollStatus,
     ) {
         let Some(completion) = self.output.take_gji_reinit_completion(token) else {
-            log::warn!("[chrome-reinit-retry] completion ignored: token={token} status={status:?}");
+            tracing::warn!("[chrome-reinit-retry] completion ignored: token={token} status={status:?}");
             return;
         };
         let current_focus_gen = self.output.current_ime_mode_focus_gen();
         let focus_matches = current_focus_gen == completion.focus_gen;
-        log::debug!(
+        tracing::debug!(
             "[chrome-reinit-retry] completion: token={} status={:?} cold={} \
              origin_focus_gen={} current_focus_gen={} retry={}",
             token,
@@ -1002,13 +1002,13 @@ impl WindowsPlatform {
             let discarded = self
                 .output
                 .discard_pending_deferred_after_stale_gji_reinit();
-            log::warn!(
+            tracing::warn!(
                 "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
             );
             (0, discarded)
         };
         // ADR-123: reinit retry の完了を journal（構造化・容量優先度あり）に
-        // 残す。従来は log::debug!/log::warn! の自由文字列のみで、issue #148
+        // 残す。従来は tracing::debug!/tracing::warn! の自由文字列のみで、issue #148
         // の調査時に journal では確認できず app_log_excerpt を直接読む必要が
         // あった。
         self.push_journal_entry(crate::journal::JournalEntry::GjiReinitRetryCompleted {
@@ -1091,7 +1091,7 @@ impl WindowsPlatform {
     /// 飛行中 FSM への追記に成功した場合は VK_IME_ON / VK_A+BS を再送しない。
     fn start_unicode_cold_warmup(&mut self, cold_seq: Generation, deferred: Vec<char>) {
         if self.output.try_push_unicode_chars_to_pending(&deferred) {
-            log::debug!(
+            tracing::debug!(
                 "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
                 deferred.len()
             );
@@ -1099,7 +1099,7 @@ impl WindowsPlatform {
         }
         let baseline = crate::tsf::observer::gji_write_bytes();
         self.output.send_unicode_cold_warmup_keys(cold_seq);
-        log::info!(
+        tracing::info!(
             "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
              VK_IME_ON+VK_A+BS → {} chars defer",
             deferred.len(),
@@ -1237,7 +1237,7 @@ impl PlatformRuntime for WindowsPlatform {
         if self.suppress_engine_state_key {
             // ポーリング/フォーカス変化起因の遷移では VK を送らない。
             // 送ると IME 状態が変わり → 次のポーリングでエンジンが逆転 → 無限ループになる。
-            log::debug!(
+            tracing::debug!(
                 "[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})"
             );
             return;
@@ -1250,7 +1250,7 @@ impl PlatformRuntime for WindowsPlatform {
         // ケース（例: user_enabled トグルで IME はそのまま）に限定する。
         let last_applied = applied.unwrap_or(false);
         if last_applied == enabled {
-            log::debug!(
+            tracing::debug!(
                 "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
                 self.current_app_profile()
             );
@@ -1262,7 +1262,7 @@ impl PlatformRuntime for WindowsPlatform {
         //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
         let profile = self.current_app_profile();
         if profile.uses_kanji_toggle() {
-            log::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
+            tracing::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
             return;
         }
         let vk = if enabled {
@@ -1419,7 +1419,7 @@ impl TsfComposition for WindowsPlatform {
             crate::output::WarmupOrigin::Actuated,
         );
         if open {
-            log::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+            tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
             // `injection_mode` は receipt にも settle の引数にも積まない。
@@ -1428,7 +1428,7 @@ impl TsfComposition for WindowsPlatform {
             self.output
                 .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
         } else {
-            log::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
+            tracing::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
             receipt.settle(self);
@@ -1476,7 +1476,7 @@ impl TsfComposition for WindowsPlatform {
         use crate::vk::VkCodeExt as _;
 
         if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
-            log::debug!(
+            tracing::debug!(
                 "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
             );
             self.output
@@ -1495,10 +1495,10 @@ impl TsfComposition for WindowsPlatform {
             // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
             // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
             if self.output.is_composition_warm() {
-                log::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ");
+                tracing::trace!("[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ");
                 return;
             }
-            log::debug!(
+            tracing::debug!(
                 "[composition] reinject KeyDown vk={vk:#04x} → marking cold + eager warmup",
             );
             self.output
@@ -1559,7 +1559,7 @@ impl WindowsPlatform {
     ) -> awase::platform::ImeOpenOutcome {
         let open = order.open();
         let outcome = crate::ime_controller::ImeController::apply(order, view);
-        log::debug!(
+        tracing::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,
             belief.confident

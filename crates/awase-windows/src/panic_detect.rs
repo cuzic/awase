@@ -97,7 +97,7 @@ pub fn record_ime_keydown(is_on: bool, now_ms: u64) {
     RAPID_IME_TIMESTAMPS.try_with_mut(|tracker| {
         if tracker.push(is_on, now_ms) {
             tracker.clear();
-            log::warn!("Rapid IME key press detected — requesting panic reset");
+            tracing::warn!("Rapid IME key press detected — requesting panic reset");
             crate::win32::post_to_main_thread(crate::WM_PANIC_RESET);
         }
     });

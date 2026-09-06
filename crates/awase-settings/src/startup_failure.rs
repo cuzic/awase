@@ -71,7 +71,7 @@ fn run_with_fallback_impl(
     let Err(glow_err) = glow_result else {
         return glow_result;
     };
-    log::warn!(
+    tracing::warn!(
         "{app_name}: glow(OpenGL) レンダラーでの起動に失敗、wgpu(Direct3D/Vulkan) \
          へフォールバックします: {glow_err}"
     );
@@ -94,10 +94,10 @@ fn run_with_fallback_impl(
         Box::new(move |cc| Ok(app_creator(cc))),
     );
     match &wgpu_result {
-        Ok(()) => log::info!("{app_name}: wgpu フォールバックで起動に成功しました"),
+        Ok(()) => tracing::info!("{app_name}: wgpu フォールバックで起動に成功しました"),
         Err(wgpu_err) => {
             let detail = describe_fallback_failure(app_name, &glow_err, wgpu_err);
-            log::error!("{app_name}: eframe::run_native failed even with wgpu fallback:\n{detail}");
+            tracing::error!("{app_name}: eframe::run_native failed even with wgpu fallback:\n{detail}");
             show_dialog(&detail);
         }
     }
@@ -117,7 +117,7 @@ fn run_with_fallback_impl(
     let result = eframe::run_native(app_name, options, Box::new(move |cc| Ok(app_creator(cc))));
     if let Err(e) = &result {
         let detail = describe(app_name, e);
-        log::error!("{app_name}: eframe::run_native failed:\n{detail}");
+        tracing::error!("{app_name}: eframe::run_native failed:\n{detail}");
         show_dialog(&detail);
     }
     result
@@ -161,7 +161,7 @@ fn select_wgpu_adapter(
         return Ok(adapter.clone());
     }
     if let Some(adapter) = adapters.iter().find(compatible) {
-        log::warn!(
+        tracing::warn!(
             "wgpu: 実グラフィックスアダプタが見つからず、ソフトウェアアダプタへ \
              フォールバックします: {:?}",
             adapter.get_info()

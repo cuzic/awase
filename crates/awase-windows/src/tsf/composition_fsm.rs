@@ -164,7 +164,7 @@ impl TimedStateMachine for CompositionFsm {
             // ── IME ON / OFF ───────────────────────────────────────────────
             CompositionEvent::ImeOn { tsf_mode } => {
                 // IME ON 直後は cold（次の入力で warmup が必要）。
-                log::trace!("[composition-fsm] ImeOn(tsf={tsf_mode}) → Cold");
+                tracing::trace!("[composition-fsm] ImeOn(tsf={tsf_mode}) → Cold");
                 self.state = CompositionState::Cold {
                     reason: ColdReason::SetOpenTrue,
                 };
@@ -178,7 +178,7 @@ impl TimedStateMachine for CompositionFsm {
 
             // ── FocusChange ────────────────────────────────────────────────
             CompositionEvent::FocusChange { tsf_mode } => {
-                log::trace!("[composition-fsm] FocusChange(tsf={tsf_mode}) → Cold (epoch++)");
+                tracing::trace!("[composition-fsm] FocusChange(tsf={tsf_mode}) → Cold (epoch++)");
                 self.epoch = self.epoch.next();
                 self.state = CompositionState::Cold {
                     reason: ColdReason::FocusChange,

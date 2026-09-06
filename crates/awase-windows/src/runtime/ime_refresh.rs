@@ -149,7 +149,7 @@ impl Runtime {
         strategy: &ImeReadStrategy,
         ime_snap: Option<&crate::ime::ImeSnapshot>,
     ) {
-        log::debug!(
+        tracing::debug!(
             "[stage-observe] strategy={:?} belief_on={} explicit_intent={:?}",
             strategy,
             self.platform_state.ime.effective_open(),
@@ -158,7 +158,7 @@ impl Runtime {
         match strategy {
             ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {
-                log::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
+                tracing::debug!("Skipping IMM query for known-broken class (shadow state SSOT)");
                 // GJI I/O 観測は active IME が GJI のときに限定する。MS-IME 使用中も
                 // GJI Converter プロセスは常駐しており、そのバックグラウンド I/O を
                 // 根拠に observer_poll を書くと無関係な belief 汚染になる。
@@ -169,7 +169,7 @@ impl Runtime {
                         self.platform_state.focus.last_focus_change_ms,
                         self.platform_state.ime.input_mode(),
                     );
-                    log::debug!(
+                    tracing::debug!(
                         "[stage-observe] observer_poll={:?}",
                         obs.observer_poll_value
                     );
@@ -188,7 +188,7 @@ impl Runtime {
                     // （state/eisu_recovery.rs の経路×救済対応表を参照）。
                     if let Some(mode) = obs.input_mode_correction {
                         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-                        log::info!(
+                        tracing::info!(
                             "[stage-observe] GJI I/O 中に belief=ObservedEisu → AssumedRomaji \
                              訂正 (GjiIoInference)"
                         );
@@ -203,7 +203,7 @@ impl Runtime {
                         );
                     }
                 } else {
-                    log::debug!("[stage-observe] GJI observe skipped (active IME is not GJI)");
+                    tracing::debug!("[stage-observe] GJI observe skipped (active IME is not GJI)");
                 }
             }
             ImeReadStrategy::OsPoll => {
@@ -254,7 +254,7 @@ impl Runtime {
         // フォーカス変更処理をブロックすることはない）。物理 Shift が押されている
         // とは限らないため synthetic Shift up の前置は不要（false）。
         if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-            log::info!("[shift-conv-guard] FocusChanged 中 → 半角英数トグルを強制解除");
+            tracing::info!("[shift-conv-guard] FocusChanged 中 → 半角英数トグルを強制解除");
             self.kp_restore_kana_from_half_width(false);
         }
         // IMM broken アプリ（Chrome 等）に切り替わった際に input_mode が
@@ -267,7 +267,7 @@ impl Runtime {
             && !self.platform_state.ime.input_mode().is_romaji_capable()
         {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
-                log::info!(
+                tracing::info!(
                     "FocusChanged: input_mode assumed romaji (IMM broken, stale kana from prev window)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
@@ -278,7 +278,7 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                log::info!("FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)");
+                tracing::info!("FocusChanged: input_mode スキップ (belief=ObservedEisu, eisu guard)");
             }
         }
         let ctx = self.build_ctx();
@@ -310,10 +310,10 @@ impl Runtime {
                 && self.platform_state.ime.model().applied
                     != crate::state::ime_model::AppliedImeState::Unknown;
             if !explicit_verify {
-                log::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
+                tracing::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;
             }
-            log::debug!(
+            tracing::debug!(
                 "Explicit intent: bypassing typing-idle guard for IME verify (idle={idle_ms}ms)"
             );
         }
@@ -326,7 +326,7 @@ impl Runtime {
         if self.platform_state.gate.half_width_alnum.is_guard_pending()
             || self.platform_state.gate.half_width_alnum.is_toggle_active()
         {
-            log::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
+            tracing::debug!("Skipping observer/SSOT write: shift-conv-guard 中");
             return ImeReadStrategy::SkipTyping;
         }
 
@@ -412,7 +412,7 @@ impl Runtime {
             let ime_changed = ime_on_before_poll != ime_on_after;
             let mode_changed = input_mode_before_poll != input_mode_after;
             if ime_changed || mode_changed {
-                log::info!(
+                tracing::info!(
                     "ObserverPoll +{}ms since focus: {}{}",
                     age_ms,
                     if ime_changed {
@@ -432,7 +432,7 @@ impl Runtime {
                     },
                 );
             } else if miss_after > 0 {
-                log::debug!(
+                tracing::debug!(
                     "ObserverPoll +{age_ms}ms since focus: detection failed (miss={miss_after}), stale ime_on={ime_on_before_poll} mode={input_mode_before_poll:?}",
                 );
             }
@@ -446,7 +446,7 @@ impl Runtime {
         if !skip_imm_query {
             crate::ime_diagnostic::ImeDiagnosticSnapshot::capture("focus_changed").log();
         }
-        log::debug!("[composition] focus change → marking cold");
+        tracing::debug!("[composition] focus change → marking cold");
 
         // `matches!(profile, AppImeProfile::TsfNative)` ではなく `is_effectively_tsf_native`
         // を使うこと。CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) 等は
@@ -528,7 +528,7 @@ impl Runtime {
         // 復帰すると、この warmup で一度だけひらがなへ戻る（既知の制限として受け入れ、
         // ガードでの防御はしない）。
         self.platform.send_eager_warmup(warmup_ime_on);
-        log::debug!(
+        tracing::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())"
         );
 
@@ -537,7 +537,7 @@ impl Runtime {
             // 足せないため inherent な `set_ime_open_ordered` へ移した。
             let order = self.issue_actuation_order(false, "focus_change_enforce_off");
             let _ = self.platform.set_ime_open_ordered(order);
-            log::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
+            tracing::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
         }
     }
 
@@ -664,7 +664,7 @@ impl Runtime {
                                 crate::state::ime_actuation::Resolution::GaveUp,
                                 act_attempts,
                             );
-                            log::debug!(
+                            tracing::debug!(
                                 "[drift] actuation gave up (Blind): desired={desired} \
                                  observed={observed} converged={} attempts={}",
                                 receipt.converged(),
@@ -720,7 +720,7 @@ impl Runtime {
                             if receipt.resolution()
                                 == crate::state::ime_actuation::Resolution::ExternalChange
                             {
-                                log::debug!(
+                                tracing::debug!(
                                     "[drift] fresh observation after give-up → 試行を破棄して\
                                      再試行: desired={desired} observed={observed} attempts={}",
                                     receipt.attempts()
@@ -753,7 +753,7 @@ impl Runtime {
                     act_attempts,
                 );
                 if receipt.converged() {
-                    log::debug!(
+                    tracing::debug!(
                         "[drift] actuation confirmed (Read): desired={desired} \
                          converged={} attempts={} → 破棄",
                         receipt.converged(),
@@ -765,7 +765,7 @@ impl Runtime {
             }
         }
 
-        log::warn!(
+        tracing::warn!(
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
              → set_ime_open({desired})"
         );
@@ -811,7 +811,7 @@ impl Runtime {
             let outcome = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
-            log::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
+            tracing::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(
                 desired,
                 outcome,
@@ -908,7 +908,7 @@ impl Runtime {
 
     fn ir_notify_engine_refresh(&mut self) {
         let ctx = self.build_ctx();
-        log::debug!(
+        tracing::debug!(
             "[notify-refresh] ctx.ime_on={} ctx.is_jp={} explicit_intent={:?}",
             ctx.ime_on,
             ctx.is_japanese_ime,

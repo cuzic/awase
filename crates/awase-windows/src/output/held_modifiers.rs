@@ -139,7 +139,7 @@ pub(crate) unsafe fn send_keymap_target(
             .iter()
             .map(|vk| format!("0x{:02X}", vk.0))
             .collect();
-        log::warn!(
+        tracing::warn!(
             "[keymap] SendInput(target_vks=[{}]) sent {sent}/{} events",
             target_vks_hex.join(", "),
             inputs.len()

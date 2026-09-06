@@ -263,7 +263,7 @@ impl ImeStateHub {
             // 診断ログ (2026-08-05): 従来ここは完全無音だったため、実機ログだけでは
             // 「明示 OFF がこのフィルタでサイレント無効化された」ケースを他の原因と
             // 区別できなかった。挙動は変更しない。
-            log::info!(
+            tracing::info!(
                 "[chord-filter] SetOpen(false) request filtered: ctrl_ime_chord が既に active \
                  (last_intent/desired_open は更新されない)"
             );
@@ -284,7 +284,7 @@ impl ImeStateHub {
             // focus probe が観測を更新すれば、次の入力イベントで正しい SetOpen が再発行され自己修復する。
             //
             // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ（頻度は低い）。
-            log::info!(
+            tracing::info!(
                 "[focus-settle] SetOpen({target}) request filtered at belief last line of defense \
                  (focus transition barrier still settling at event start)"
             );
@@ -337,7 +337,7 @@ impl ImeStateHub {
     ) -> bool {
         if self.is_ctrl_ime_chord_active() && !target {
             // 診断ログ: handle_engine_set_open 側と同じ理由で info に格上げ。
-            log::info!(
+            tracing::info!(
                 "[chord-filter] ActivationSync SetOpen(false) request filtered: \
                  ctrl_ime_chord が既に active"
             );
@@ -345,7 +345,7 @@ impl ImeStateHub {
         }
         if focus_transition_was_pending {
             // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ。
-            log::info!(
+            tracing::info!(
                 "[focus-settle] ActivationSync SetOpen({target}) request filtered at belief \
                  last line of defense (focus transition barrier still settling at event start)"
             );
@@ -380,7 +380,7 @@ impl ImeStateHub {
             .active_chord_kind()
             .unwrap_or(ChordKind::CtrlMuhenkanImeOff);
         self.dispatch_event(ImeEvent::ChordEnded { kind }, tick_ms);
-        log::debug!("[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{vk:02X})");
+        tracing::debug!("[ctrl-bypass] chord barrier cleared (Ctrl KeyUp vk=0x{vk:02X})");
     }
 
     // ── Input barrier ──
@@ -605,14 +605,14 @@ impl ImeStateHub {
             awase::platform::WarmupImeOn::would_send(applied_open, effective);
         if off_drift_active {
             if would_have_sent_without_gate && !self.warmup_gate_suppression_logged.get() {
-                log::info!(
+                tracing::info!(
                     "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止開始 \
                      (applied={applied_open:?} effective={effective})"
                 );
                 self.warmup_gate_suppression_logged.set(true);
             }
         } else if self.warmup_gate_suppression_logged.get() {
-            log::info!("[warmup-gate] warmup 抑止終了");
+            tracing::info!("[warmup-gate] warmup 抑止終了");
             self.warmup_gate_suppression_logged.set(false);
         }
         gated
@@ -643,7 +643,7 @@ impl ImeStateHub {
         match decision.intent {
             Some(intent) if decision.value != shadow => {
                 if !self.intent_override_logged.get() {
-                    log::info!(
+                    tracing::info!(
                         "[intent-store] effective_open override 開始: hwnd={:?} \
                          intent.open={} (source={:?}, age={}ms) shadow_model={shadow}",
                         intent.target,
@@ -656,13 +656,13 @@ impl ImeStateHub {
             }
             Some(_) => {
                 if self.intent_override_logged.get() {
-                    log::info!("[intent-store] effective_open override 終了 (shadow が一致)");
+                    tracing::info!("[intent-store] effective_open override 終了 (shadow が一致)");
                     self.intent_override_logged.set(false);
                 }
             }
             None => {
                 if self.intent_override_logged.get() {
-                    log::info!(
+                    tracing::info!(
                         "[intent-store] effective_open override 終了 \
                          (intent 消失/期限切れ/フォーカス変更)"
                     );
@@ -952,7 +952,7 @@ impl ImeStateHub {
             .shadow_model
             .classify_apply_completion(open, outcome, generation);
         if matches!(acceptance, ImeApplyAcceptance::Stale) {
-            log::debug!(
+            tracing::debug!(
                 "[ime-apply] stale completion ignored for side effects: target={open} \
                  outcome={outcome:?} generation={generation} pending={:?}",
                 self.shadow_model.pending_generation()
@@ -1071,7 +1071,7 @@ impl ImeStateHub {
                 .observe_miss_monitor
                 .consecutive_miss_count;
             if miss == crate::IME_DETECT_MISS_THRESHOLD {
-                log::warn!("IME detection failed {miss} consecutive times, will force IME ON");
+                tracing::warn!("IME detection failed {miss} consecutive times, will force IME ON");
             }
         }
         if update.clear_force_on_broken_app_bootstrap {
@@ -1135,7 +1135,7 @@ impl ImeStateHub {
                     self.intent_store
                         .invalidate_for_cache_restore(hwnd, snap.recorded_ms, tick_ms)
                 {
-                    log::info!(
+                    tracing::info!(
                         "[intent-store] cache restore より新しい明示意図を保持 \
                          (cache recorded_ms={} < intent recorded_at_ms={intent_recorded_at_ms})",
                         snap.recorded_ms,
@@ -1181,7 +1181,7 @@ impl ImeStateHub {
             return;
         }
         if let Some(intent) = self.shadow_model.last_intent.as_ref() {
-            log::debug!(
+            tracing::debug!(
                 "Imm32Unavailable entry: preserving ime_on=false (intent source={:?})",
                 intent.source
             );
@@ -1194,7 +1194,7 @@ impl ImeStateHub {
         // 明示意図に勝つ」逆転になるため行わない（pre-mortem #2）。
         if let Some(hwnd) = self.shadow_model.current_focus() {
             if let Some(intent) = self.intent_store.lookup(hwnd, tick_ms) {
-                log::debug!(
+                tracing::debug!(
                     "Imm32Unavailable entry: preserving stored intent open={} (source={:?})",
                     intent.open,
                     intent.source
@@ -1202,7 +1202,7 @@ impl ImeStateHub {
                 return;
             }
         }
-        log::info!(
+        tracing::info!(
             "Imm32Unavailable entry without trusted cache: 安全デフォルト ON を Low confidence \
              observation として記録 (no explicit intent, Japanese layout, IME state \
              uncontrollable in Imm32Unavailable)"
@@ -1408,7 +1408,7 @@ impl ImeStateHub {
         reason: crate::state::conv_classify::ConvSyncReason,
         tick_ms: TickMs,
     ) {
-        log::debug!("[conv-open-inference] reason={reason:?} open={open}");
+        tracing::debug!("[conv-open-inference] reason={reason:?} open={open}");
         let focus_epoch = self.shadow_model.observations.current_fence().epoch;
         self.dispatch_event(
             ImeEvent::ObserverReported(

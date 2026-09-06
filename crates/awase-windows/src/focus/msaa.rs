@@ -123,14 +123,14 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
 
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {
-                    log::debug!("MSAA: {role:?} → TextInput");
+                    tracing::debug!("MSAA: {role:?} → TextInput");
                     return ClassifyResult {
                         kind: FocusKind::TextInput,
                         reason: ClassifyReason::MsaaRole(format!("{role:?}")),
                     };
                 }
                 if role.is_non_text() {
-                    log::debug!("MSAA: {role:?} → NonText");
+                    tracing::debug!("MSAA: {role:?} → NonText");
                     return ClassifyResult {
                         kind: FocusKind::NonText,
                         reason: ClassifyReason::MsaaRole(format!("{role:?}")),
@@ -138,7 +138,7 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
                 }
             }
 
-            log::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)");
+            tracing::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)");
         }
     }
 

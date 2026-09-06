@@ -359,7 +359,7 @@ pub enum JournalEntry {
     /// `platform.rs::flush_raw_tsf_literal_recovery`）と、ADR-128 の
     /// drain-before-send 実 flush（`trigger="drain_before_send"`、
     /// `output/vk_send.rs::drain_pending_deferred_before_send_if_queue_only`）から
-    /// 記録する。従来は `log::debug!`/`log::warn!` の自由文字列でしか残らず、journal
+    /// 記録する。従来は `tracing::debug!`/`tracing::warn!` の自由文字列でしか残らず、journal
     /// （構造化・容量優先度あり）には現れなかった（issue #148 の調査で
     /// `app_log_excerpt` を直接読まないと確認できず、journal の
     /// `DumpTruncated` で欠落しうる弱点だった）。
@@ -379,7 +379,7 @@ pub enum JournalEntry {
     /// `origin_focus_gen`（give-up 検出時点のフォーカス世代）と
     /// `current_focus_gen`（poll 完了時点の世代）の一致・不一致が、
     /// `pending_deferred` を安全に flush してよいか（focus_matches）を
-    /// 決める。この判定は従来 `log::debug!`/`log::warn!` のみで、journal
+    /// 決める。この判定は従来 `tracing::debug!`/`tracing::warn!` のみで、journal
     /// には一切現れなかった。
     GjiReinitRetryCompleted {
         token: u32,

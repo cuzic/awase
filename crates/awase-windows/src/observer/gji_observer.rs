@@ -34,7 +34,7 @@ pub(crate) fn observe_gji_after_focus(
     let gji_after_focus = last_io > last_focus_change_ms;
 
     if last_io > 0 && gji_after_focus && now_ms.saturating_sub(last_io) < GJI_CONFIRM_WINDOW_MS {
-        log::debug!(
+        tracing::debug!(
             "[gji-poll] GJI I/O observed {}ms ago (after focus+{}ms) → observer_poll=true",
             now_ms.saturating_sub(last_io),
             last_io.saturating_sub(last_focus_change_ms),
@@ -48,7 +48,7 @@ pub(crate) fn observe_gji_after_focus(
         }
     } else {
         if last_io > 0 && !gji_after_focus {
-            log::debug!(
+            tracing::debug!(
                 "[gji-poll] GJI I/O {}ms ago predates focus change ({}ms before focus) → skipped",
                 now_ms.saturating_sub(last_io),
                 last_focus_change_ms.saturating_sub(last_io),

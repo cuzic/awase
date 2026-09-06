@@ -101,12 +101,12 @@ impl TsfWarmupCoordinator {
         use crate::tsf::observer::ActiveImeKind;
         match kind {
             ActiveImeKind::MicrosoftIme => {
-                log::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
+                tracing::info!("[output] Switching warmup strategy → MsImeStrategy (MS-IME detected)");
                 *self.tsf_warmup.borrow_mut() =
                     Box::new(crate::tsf::warmup::warmup_strategy::MsImeStrategy);
             }
             ActiveImeKind::GoogleJapaneseInput => {
-                log::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
+                tracing::info!("[output] Switching warmup strategy → GjiFsm (GJI detected)");
                 *self.tsf_warmup.borrow_mut() = Box::new(GjiFsm::new());
             }
         }
@@ -216,13 +216,13 @@ impl TsfWarmupCoordinator {
         // BUG-27 調査用: 上書きされる旧 machine の cold_seq も出す
         // （新 cold_seq だけでは「誰が誰を上書きしたか」が分からなかった）。
         if let Some(old) = slot.as_ref() {
-            log::warn!(
+            tracing::warn!(
                 "[tsf-probe] overwriting in-flight probe cold={} with new probe cold={}",
                 old.cold_seq_hint().value(),
                 machine.cold_seq_hint().value()
             );
         } else {
-            log::trace!(
+            tracing::trace!(
                 "[tsf-probe-coord] install_pending_tsf cold={} (fresh)",
                 machine.cold_seq_hint().value()
             );
@@ -237,19 +237,20 @@ impl TsfWarmupCoordinator {
         // None が返るのは「probe 完了済み・timer は生きているが drain 待ち」等の
         // 正常系でも起き得るため warn ではなく trace（既存の [tsf-probe-tick] 側
         // ログと組み合わせて、machine の有無を tick ごとに突き合わせる想定）。
-        match &m {
-            Some(machine) => log::trace!(
+        if let Some(machine) = &m {
+            tracing::trace!(
                 "[tsf-probe-coord] take_pending_tsf → Some(cold={})",
                 machine.cold_seq_hint().value()
-            ),
-            None => log::trace!("[tsf-probe-coord] take_pending_tsf → None"),
+            );
+        } else {
+            tracing::trace!("[tsf-probe-coord] take_pending_tsf → None");
         }
         m
     }
 
     /// `pending_tsf` に machine を戻す（`step_probe` の Continue 用）。
     pub(crate) fn restore_pending_tsf(&self, machine: Box<dyn TickableFsm>) {
-        log::trace!(
+        tracing::trace!(
             "[tsf-probe-coord] restore_pending_tsf cold={}",
             machine.cold_seq_hint().value()
         );
@@ -261,7 +262,7 @@ impl TsfWarmupCoordinator {
         // BUG-27 調査用ログ: CancelProbe 経路で pending_tsf が本当に破棄された
         // 場合にのみログを出す（すでに None なら何も起きていない）。
         if let Some(machine) = self.pending_tsf.borrow_mut().take() {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-probe-coord] clear_pending_tsf: discarding cold={}",
                 machine.cold_seq_hint().value()
             );

@@ -45,13 +45,13 @@ impl ImeEventLog {
         };
         self.next_seq += 1;
 
-        log::trace!("[ime-event seq={}] {:?}", time.seq, event);
+        tracing::trace!("[ime-event seq={}] {:?}", time.seq, event);
 
         let envelope = ImeEventEnvelope { time, event };
         if self.buffer.len() == self.capacity {
             let dropped = self.buffer.pop_front();
             if let Some(env) = &dropped {
-                log::trace!(
+                tracing::trace!(
                     "[ime-event-log] capacity={} reached, dropping oldest seq={}",
                     self.capacity,
                     env.time.seq,

@@ -144,7 +144,7 @@ pub fn find_keyboard_device() -> anyhow::Result<PathBuf> {
         match Device::open(&path) {
             Ok(device) => {
                 if is_suitable_keyboard(&device) {
-                    log::info!(
+                    tracing::info!(
                         "Found keyboard device: {} ({})",
                         path.display(),
                         device.name().unwrap_or("unknown")
@@ -153,7 +153,7 @@ pub fn find_keyboard_device() -> anyhow::Result<PathBuf> {
                 }
             }
             Err(e) => {
-                log::debug!("Cannot open {}: {}", path.display(), e);
+                tracing::debug!("Cannot open {}: {}", path.display(), e);
             }
         }
     }
@@ -200,7 +200,7 @@ impl EvdevInput {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let device =
             Device::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
-        log::info!(
+        tracing::info!(
             "Opened evdev device: {} ({})",
             path.display(),
             device.name().unwrap_or("unknown")
@@ -220,14 +220,14 @@ impl EvdevInput {
     /// イベントを受け取れなくなる。uinput で再注入する場合に使う。
     pub fn grab(&mut self) -> anyhow::Result<()> {
         self.device.grab().context("EVIOCGRAB failed")?;
-        log::info!("Exclusive grab acquired on device");
+        tracing::info!("Exclusive grab acquired on device");
         Ok(())
     }
 
     /// 排他取得を解除する
     pub fn ungrab(&mut self) -> anyhow::Result<()> {
         self.device.ungrab().context("EVIOCUNGRAB failed")?;
-        log::info!("Exclusive grab released");
+        tracing::info!("Exclusive grab released");
         Ok(())
     }
 
@@ -274,7 +274,7 @@ impl EvdevInput {
                         injected: false,
                     };
 
-                    log::trace!(
+                    tracing::trace!(
                         "evdev: code={} type={:?} classification={:?}",
                         keycode,
                         event_type,

@@ -626,7 +626,7 @@ impl ImeModel {
                     epoch: focus_epoch,
                     hwnd: to,
                 });
-                log::debug!("[explicit-intent] cleared (focus change)");
+                tracing::debug!("[explicit-intent] cleared (focus change)");
                 self.applied = AppliedImeState::Unknown;
                 // `pending` ではなく `last_seen_generation` から算出する
                 // （struct doc 参照）。`pending` が既に None でも、これまで
@@ -673,7 +673,7 @@ impl ImeModel {
                 // + 同一 epoch）のみが駆動する。
                 if let Some(existing) = &self.pending {
                     if !existing.is_timed_out(envelope.time.monotonic) {
-                        log::warn!(
+                        tracing::warn!(
                             "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
                              が進行中の pending(generation={}, target={}) を上書きする — \
                              上書きされた apply の完了は target と focus epoch が一致すれば \
@@ -783,7 +783,7 @@ impl ImeModel {
                 if confidence >= ObservationConfidence::Medium {
                     self.input_mode = mode;
                 } else {
-                    log::debug!(
+                    tracing::debug!(
                         "[input-mode] Low confidence observation 無視: {mode:?} (confidence={confidence:?})"
                     );
                 }
@@ -830,7 +830,7 @@ impl ImeModel {
         // あって、待っていた当の完了を弾くためのフィルタではない。
         if let Some(pending) = &self.pending {
             if pending.is_timed_out(envelope.time.monotonic) {
-                log::debug!(
+                tracing::debug!(
                     "[ime-model] pending transition timed out (generation={}, target={}) — purge",
                     pending.generation,
                     pending.target

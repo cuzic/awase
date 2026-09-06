@@ -85,9 +85,9 @@ fn find_gji_pid() -> Option<(u32, String)> {
     let _ = unsafe { CloseHandle(snapshot) };
 
     match &found {
-        Some((pid, name)) => log::debug!("[gji-monitor] found GJI process: {name} pid={pid}"),
+        Some((pid, name)) => tracing::debug!("[gji-monitor] found GJI process: {name} pid={pid}"),
         None => {
-            log::debug!(
+            tracing::debug!(
                 "[gji-monitor] no GJI process found (searched prefixes: {GJI_PROCESS_PREFIXES:?}), google/japanese procs: {google_procs:?}",
             );
         }
@@ -417,7 +417,7 @@ pub fn start_monitor_thread() -> win32_worker::WorkerThread {
 
 #[expect(clippy::cognitive_complexity)]
 fn monitor_loop(token: &win32_worker::ShutdownToken) {
-    log::info!("[gji-monitor] thread started");
+    tracing::info!("[gji-monitor] thread started");
 
     // COM STA 初期化 (TSF プロファイル API に必要)
     // S_FALSE (既に初期化済み) も含めて無視する。
@@ -439,11 +439,11 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         // WM_IME_KIND_CHANGED が届かず GjiFsm が残り続けるバグを防ぐ。
         if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
             TSF_OBS.set_tsf_active_kind(kind);
-            log::info!("[tip-detect] initial IME kind: {kind:?}");
+            tracing::info!("[tip-detect] initial IME kind: {kind:?}");
             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
         }
     } else {
-        log::warn!("[tip-detect] TSF COM 初期化失敗 — CLSID ベース IME 判定を無効化");
+        tracing::warn!("[tip-detect] TSF COM 初期化失敗 — CLSID ベース IME 判定を無効化");
     }
 
     let mut monitor: Option<GjiMonitor> = None;
@@ -469,11 +469,11 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     let current = TSF_OBS.active_ime_kind();
                     if let Some(confirmed) = kind_debounce.observe(kind, current) {
                         if TSF_OBS.set_tsf_active_kind(confirmed) {
-                            log::info!("[tip-detect] IME kind → {confirmed:?}");
+                            tracing::info!("[tip-detect] IME kind → {confirmed:?}");
                             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
                         }
                     } else if kind != current {
-                        log::debug!(
+                        tracing::debug!(
                             "[tip-detect] IME kind candidate {kind:?} (current={current:?}), \
                              awaiting confirmation next tick"
                         );
@@ -484,7 +484,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
         if monitor.is_none() && now >= next_attach_ms {
             if let Some(m) = GjiMonitor::try_attach() {
-                log::info!("[gji-monitor] attached to GJI process (I/O monitoring enabled)");
+                tracing::info!("[gji-monitor] attached to GJI process (I/O monitoring enabled)");
                 TSF_OBS
                     .gji_last_io_ms
                     .store(m.last_change_ms(), Ordering::Relaxed);
@@ -496,7 +496,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                 if let Some((ref mgr, _)) = tsf_ctx {
                     if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
                         if TSF_OBS.set_tsf_active_kind(kind) {
-                            log::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
+                            tracing::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
                             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
                         }
                     }
@@ -505,7 +505,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             } else {
                 TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                 next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
-                log::debug!("[gji-monitor] GJI process not found (I/O monitoring unavailable)");
+                tracing::debug!("[gji-monitor] GJI process not found (I/O monitoring unavailable)");
                 // プロセス非検出時は WM_IME_KIND_CHANGED を発行しない。
                 // CLSID ポーリングが IME 種別を管理する。
             }
@@ -514,7 +514,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if let Some(ref mut m) = monitor {
             match m.sample() {
                 None => {
-                    log::info!("[gji-monitor] GJI process exited, will re-attach");
+                    tracing::info!("[gji-monitor] GJI process exited, will re-attach");
                     TSF_OBS.gji_monitor_ok.store(false, Ordering::Relaxed);
                     monitor = None;
                     next_attach_ms = now + crate::tuning::GJI_REATTACH_INTERVAL_MS;
@@ -542,7 +542,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                         TSF_OBS
                             .gji_last_write_ms
                             .store(m.last_write_change_ms(), Ordering::Relaxed);
-                        log::debug!(
+                        tracing::debug!(
                             "[gji-io] WRITE: w_ops=+{} w_KB=+{:.1} \
                              (r_ops=+{} x_ops=+{})",
                             delta.write_ops,
@@ -551,7 +551,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                             delta.other_ops,
                         );
                     } else if delta.any() {
-                        log::debug!(
+                        tracing::debug!(
                             "[gji-io] r_ops=+{} w_ops=+{} x_ops=+{} read_KB=+{:.1}",
                             delta.read_ops,
                             delta.write_ops,
@@ -560,7 +560,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                         );
                     }
                     if delta.read_bytes >= 512 * 1024 {
-                        log::info!(
+                        tracing::info!(
                             "[gji-io] HEAVY read: +{:.1}KB \
                              (possible cold-start dictionary reload)",
                             delta.read_bytes as f64 / 1024.0,
@@ -574,7 +574,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             .sleep_ms(crate::tuning::GJI_SAMPLE_INTERVAL_MS)
             .is_break()
         {
-            log::info!("[gji-monitor] shutdown signal received, exiting");
+            tracing::info!("[gji-monitor] shutdown signal received, exiting");
             break;
         }
     }

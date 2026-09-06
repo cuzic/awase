@@ -72,7 +72,7 @@ pub unsafe fn learn_imm_capability_on_focus(
     }
 
     if unsafe { crate::imm::get_ime_wnd(hwnd) }.is_none() {
-        log::info!(
+        tracing::info!(
             "IMM32 capability: ImmGetDefaultIMEWnd=NULL, 疑いを記録 \
              (process={process_name}, class={class_name})。\
              閾値回連続で観測されたら Unavailable として確定する（BUG-56対策）"

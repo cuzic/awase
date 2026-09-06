@@ -575,7 +575,7 @@ impl Actuation<Verified> {
             match act.classify(outcome) {
                 Ok(terminal) => return terminal,
                 Err(WriteErr::Retryable(next, _)) => {
-                    log::debug!(
+                    tracing::debug!(
                         "[apply-ime] {} failed, trying next fallback",
                         mechanism.name()
                     );
@@ -606,7 +606,7 @@ impl Actuation<Verified> {
             match act.classify(outcome) {
                 Ok(terminal) => return terminal,
                 Err(WriteErr::Retryable(next, _)) => {
-                    log::debug!(
+                    tracing::debug!(
                         "[apply-ime] {} failed, trying next fallback (async)",
                         mechanism.name()
                     );

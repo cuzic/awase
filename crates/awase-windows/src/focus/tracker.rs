@@ -159,7 +159,7 @@ impl FocusTracker {
         if overridden != self.current.app_profile {
             let same_window = prev_pid == pid && prev_class_name_matches;
             if Self::should_log_demotion(same_window, prev_profile, overridden) {
-                log::info!(
+                tracing::info!(
                     "[imm-learning] profile 降格: process={:?} class={:?} {:?} → {:?} \
                      (実測学習 ImmCapability::Unavailable。誤学習なら cache.toml の \
                      [imm_capability] から該当 process/class を削除)",
